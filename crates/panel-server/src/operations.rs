@@ -88,6 +88,12 @@ impl Operations {
     ) -> Result<Self, OperationError> {
         if service_unit.is_empty()
             || service_unit.len() > 128
+            || !service_unit.ends_with(".service")
+            || !service_unit
+                .bytes()
+                .next()
+                .is_some_and(|byte| byte.is_ascii_alphanumeric())
+            || service_unit.contains("..")
             || !service_unit.bytes().all(|byte| {
                 byte.is_ascii_alphanumeric() || matches!(byte, b'@' | b'_' | b'-' | b'.')
             })
@@ -328,5 +334,16 @@ mod tests {
         assert!(parse_record_type("AXFR").is_err());
         assert!(parse_record_type("AAAA").is_ok());
         assert!(Operations::new("../../bad".to_owned(), "127.0.0.1:53".parse().unwrap()).is_err());
+        assert!(
+            Operations::new(
+                "--system.service".to_owned(),
+                "127.0.0.1:53".parse().unwrap()
+            )
+            .is_err()
+        );
+        assert!(Operations::new("kixdns".to_owned(), "127.0.0.1:53".parse().unwrap()).is_err());
+        assert!(
+            Operations::new("kixdns.service".to_owned(), "127.0.0.1:53".parse().unwrap()).is_ok()
+        );
     }
 }

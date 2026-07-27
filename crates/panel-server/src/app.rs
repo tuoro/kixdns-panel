@@ -16,7 +16,7 @@ use axum_extra::extract::cookie::{Cookie, SameSite};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use time::Duration;
-use tokio::sync::Semaphore;
+use tokio::sync::{Mutex, Semaphore};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
@@ -67,6 +67,7 @@ pub struct AppState {
     secure_cookie: bool,
     login_limiter: Arc<LoginLimiter>,
     password_slots: Arc<Semaphore>,
+    config_apply_lock: Arc<Mutex<()>>,
     dummy_password_hash: Arc<str>,
 }
 
@@ -198,6 +199,7 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         secure_cookie: settings.secure_cookie,
         login_limiter: Arc::new(LoginLimiter::default()),
         password_slots: Arc::new(Semaphore::new(4)),
+        config_apply_lock: Arc::new(Mutex::new(())),
         dummy_password_hash: Arc::from(dummy_password_hash),
     };
 
@@ -442,6 +444,7 @@ async fn save_config(
 ) -> AppResult<Json<ConfigApplyResponse>> {
     let session = authenticate(&state.database, &jar).await?;
     verify_csrf(&session, &jar, &headers)?;
+    let _apply_guard = state.config_apply_lock.lock().await;
     let previous = state.config.current().await.map_err(map_config_error)?;
     let before_reload = state
         .control
@@ -517,6 +520,7 @@ async fn restore_config(
 ) -> AppResult<Json<ConfigApplyResponse>> {
     let session = authenticate(&state.database, &jar).await?;
     verify_csrf(&session, &jar, &headers)?;
+    let _apply_guard = state.config_apply_lock.lock().await;
     let previous = state.config.current().await.map_err(map_config_error)?;
     let before_reload = state
         .control
@@ -944,18 +948,27 @@ async fn shutdown_signal() {
 mod tests {
     use std::net::{Ipv4Addr, SocketAddr};
 
+    use axum::Router;
     use axum::body::{Body, to_bytes};
     use axum::extract::ConnectInfo;
-    use axum::http::header::{CONTENT_TYPE, COOKIE, SET_COOKIE};
+    use axum::http::header::{
+        CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE, SET_COOKIE,
+    };
     use axum::http::{Request, StatusCode};
     use serde_json::Value;
-    use tempfile::tempdir;
+    use tempfile::{TempDir, tempdir};
     use tower::ServiceExt;
 
     use super::{AppSettings, build_app};
 
-    #[tokio::test]
-    async fn setup_issues_session_and_write_requires_csrf() {
+    struct AuthenticatedApp {
+        _directory: TempDir,
+        app: Router,
+        cookies: String,
+        csrf_token: String,
+    }
+
+    async fn test_app() -> (TempDir, Router) {
         let directory = tempdir().unwrap();
         let config_path = directory.path().join("pipeline.json");
         std::fs::write(&config_path, "{\"pipelines\":[]}").unwrap();
@@ -980,45 +993,88 @@ mod tests {
         })
         .await
         .unwrap();
+        (directory, app)
+    }
 
-        let mut setup = Request::post("/api/v1/setup")
+    async fn authenticated_app() -> AuthenticatedApp {
+        let (directory, app) = test_app().await;
+        let mut request = Request::post("/api/v1/setup")
             .header(CONTENT_TYPE, "application/json")
             .body(Body::from(
                 r#"{"username":"admin","password":"a-secure-password"}"#,
             ))
             .unwrap();
-        setup
+        request
             .extensions_mut()
             .insert(ConnectInfo(SocketAddr::from((Ipv4Addr::LOCALHOST, 42_000))));
-        let response = app.clone().oneshot(setup).await.unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let cookies = response
+        assert_eq!(response.headers().get(CACHE_CONTROL).unwrap(), "no-store");
+        assert!(
+            response
+                .headers()
+                .get(CONTENT_SECURITY_POLICY)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("frame-ancestors 'none'")
+        );
+        let set_cookies = response
             .headers()
             .get_all(SET_COOKIE)
             .iter()
-            .map(|value| value.to_str().unwrap().split(';').next().unwrap())
+            .map(|value| value.to_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        let cookies = set_cookies
+            .iter()
+            .map(|value| value.split(';').next().unwrap())
             .collect::<Vec<_>>()
             .join("; ");
         assert!(cookies.contains("kixdns_session="));
         assert!(cookies.contains("kixdns_csrf="));
+        let session_cookie = set_cookies
+            .iter()
+            .find(|value| value.starts_with("kixdns_session="))
+            .unwrap();
+        let csrf_cookie = set_cookies
+            .iter()
+            .find(|value| value.starts_with("kixdns_csrf="))
+            .unwrap();
+        assert!(session_cookie.contains("HttpOnly"));
+        assert!(session_cookie.contains("SameSite=Strict"));
+        assert!(csrf_cookie.contains("SameSite=Strict"));
+        assert!(!csrf_cookie.contains("HttpOnly"));
         let payload: Value =
             serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap())
                 .unwrap();
-        assert!(payload["csrf_token"].as_str().is_some());
+        let csrf_token = payload["csrf_token"].as_str().unwrap().to_owned();
+        AuthenticatedApp {
+            _directory: directory,
+            app,
+            cookies,
+            csrf_token,
+        }
+    }
 
-        let unauthorized = app
+    #[tokio::test]
+    async fn setup_issues_session_and_write_requires_csrf() {
+        let context = authenticated_app().await;
+
+        let unauthorized = context
+            .app
             .clone()
             .oneshot(Request::get("/api/v1/config").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
 
-        let forbidden = app
+        let forbidden = context
+            .app
             .clone()
             .oneshot(
                 Request::put("/api/v1/config")
                     .header(CONTENT_TYPE, "application/json")
-                    .header(COOKIE, cookies)
+                    .header(COOKIE, context.cookies.clone())
                     .body(Body::from(
                         r#"{"content":{"pipelines":[]},"expected_sha256":"invalid"}"#,
                     ))
@@ -1028,16 +1084,34 @@ mod tests {
             .unwrap();
         assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
 
-        let deep_link = app
+        let logout = context
+            .app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/auth/logout")
+                    .header(COOKIE, context.cookies)
+                    .header("x-csrf-token", context.csrf_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(logout.status(), StatusCode::OK);
+        assert_eq!(logout.headers().get_all(SET_COOKIE).iter().count(), 2);
+
+        let deep_link = context
+            .app
             .clone()
             .oneshot(Request::get("/config").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(deep_link.status(), StatusCode::OK);
+        assert!(deep_link.headers().contains_key(CONTENT_SECURITY_POLICY));
         let body = to_bytes(deep_link.into_body(), 64 * 1024).await.unwrap();
         assert_eq!(body.as_ref(), b"<main>KixDNS Panel</main>");
 
-        let unknown_api = app
+        let unknown_api = context
+            .app
             .oneshot(
                 Request::get("/api/v1/not-an-endpoint")
                     .body(Body::empty())

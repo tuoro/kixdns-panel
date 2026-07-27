@@ -1,14 +1,15 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use prometheus_parse::{Scrape, Value as MetricValue};
+use prometheus_parse::{Sample, Scrape, Value as MetricValue};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[cfg_attr(not(unix), allow(dead_code))]
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+const CONTROL_PROTOCOL_VERSION: u8 = 1;
 
 #[derive(Clone)]
 pub struct ControlClient {
@@ -60,6 +61,11 @@ pub struct CacheFlushResult {
     pub response_entries_after: u64,
     pub rule_entries_before: u64,
     pub rule_entries_after: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProtocolEnvelope {
+    protocol_version: u8,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -182,8 +188,7 @@ impl ControlClient {
         T: serde::de::DeserializeOwned,
     {
         let (_, body) = self.request("GET", path, Vec::new()).await?;
-        serde_json::from_slice(&body)
-            .map_err(|error| ControlError::Protocol(format!("解析 {path} 响应失败：{error}")))
+        decode_versioned_json(path, &body)
     }
 
     async fn post_json<T>(&self, path: &str, body: Vec<u8>) -> Result<T, ControlError>
@@ -191,8 +196,7 @@ impl ControlClient {
         T: serde::de::DeserializeOwned,
     {
         let (_, body) = self.request("POST", path, body).await?;
-        serde_json::from_slice(&body)
-            .map_err(|error| ControlError::Protocol(format!("解析 {path} 响应失败：{error}")))
+        decode_versioned_json(path, &body)
     }
 
     #[cfg(unix)]
@@ -267,37 +271,77 @@ impl ControlClient {
     }
 }
 
+fn decode_versioned_json<T>(path: &str, body: &[u8]) -> Result<T, ControlError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let envelope: ProtocolEnvelope = serde_json::from_slice(body)
+        .map_err(|error| ControlError::Protocol(format!("解析 {path} 响应失败：{error}")))?;
+    if envelope.protocol_version != CONTROL_PROTOCOL_VERSION {
+        return Err(ControlError::Protocol(format!(
+            "{path} 使用不受支持的控制协议 v{}，面板仅支持 v{CONTROL_PROTOCOL_VERSION}",
+            envelope.protocol_version
+        )));
+    }
+    serde_json::from_slice(body)
+        .map_err(|error| ControlError::Protocol(format!("解析 {path} 响应失败：{error}")))
+}
+
 fn parse_metrics(text: &str) -> Result<MetricsSnapshot, ControlError> {
     let scrape = Scrape::parse(text.lines().map(|line| Ok(line.to_owned())))
         .map_err(|error| ControlError::Protocol(format!("解析 Prometheus 指标失败：{error}")))?;
-    let mut snapshot = MetricsSnapshot::default();
-    let mut pipelines = BTreeMap::new();
-    let mut rules = BTreeMap::new();
-    let mut upstreams = BTreeMap::<(String, String), UpstreamCount>::new();
-
+    let mut builder = MetricsBuilder::default();
     for sample in scrape.samples {
+        builder.record(&sample);
+    }
+    builder.finish()
+}
+
+#[derive(Default)]
+struct MetricsBuilder {
+    snapshot: MetricsSnapshot,
+    pipelines: BTreeMap<String, u64>,
+    rules: BTreeMap<(String, String, String), u64>,
+    upstreams: BTreeMap<(String, String), UpstreamCount>,
+    seen: BTreeSet<&'static str>,
+}
+
+impl MetricsBuilder {
+    fn record(&mut self, sample: &Sample) {
         let Some(value) = numeric_value(&sample.value) else {
-            continue;
+            return;
         };
+        if self.record_scalar(&sample.metric, value) {
+            return;
+        }
         match sample.metric.as_str() {
-            "kixdns_requests_total" => snapshot.requests_total = value,
-            "kixdns_requests_inflight" => snapshot.requests_inflight = value,
-            "kixdns_cache_lookups_total" => snapshot.cache_lookups_total = value,
-            "kixdns_cache_entries" => snapshot.cache_entries = value,
-            "kixdns_config_generation" => snapshot.config_generation = value,
             "kixdns_cache_hits_total" => match sample.labels.get("kind") {
-                Some("fresh") => snapshot.cache_hits_fresh = value,
-                Some("stale") => snapshot.cache_hits_stale = value,
+                Some("fresh") => {
+                    self.snapshot.cache_hits_fresh = value;
+                    self.seen.insert("kixdns_cache_hits_total{kind=fresh}");
+                }
+                Some("stale") => {
+                    self.snapshot.cache_hits_stale = value;
+                    self.seen.insert("kixdns_cache_hits_total{kind=stale}");
+                }
                 _ => {}
             },
             "kixdns_config_reload_total" => match sample.labels.get("result") {
-                Some("success") => snapshot.reload_success = value,
-                Some("failure") => snapshot.reload_failure = value,
+                Some("success") => {
+                    self.snapshot.reload_success = value;
+                    self.seen
+                        .insert("kixdns_config_reload_total{result=success}");
+                }
+                Some("failure") => {
+                    self.snapshot.reload_failure = value;
+                    self.seen
+                        .insert("kixdns_config_reload_total{result=failure}");
+                }
                 _ => {}
             },
             "kixdns_pipeline_hits_total" => {
                 if let Some(name) = sample.labels.get("pipeline") {
-                    pipelines.insert(name.to_owned(), value);
+                    self.pipelines.insert(name.to_owned(), value);
                 }
             }
             "kixdns_rule_matches_total" => {
@@ -306,7 +350,7 @@ fn parse_metrics(text: &str) -> Result<MetricsSnapshot, ControlError> {
                     sample.labels.get("rule"),
                     sample.labels.get("phase"),
                 ) {
-                    rules.insert(
+                    self.rules.insert(
                         (pipeline.to_owned(), rule.to_owned(), phase.to_owned()),
                         value,
                     );
@@ -317,7 +361,8 @@ fn parse_metrics(text: &str) -> Result<MetricsSnapshot, ControlError> {
                     sample.labels.get("upstream"),
                     sample.labels.get("transport"),
                 ) {
-                    let entry = upstreams
+                    let entry = self
+                        .upstreams
                         .entry((upstream.to_owned(), transport.to_owned()))
                         .or_insert_with(|| UpstreamCount {
                             upstream: upstream.to_owned(),
@@ -340,21 +385,70 @@ fn parse_metrics(text: &str) -> Result<MetricsSnapshot, ControlError> {
         }
     }
 
-    snapshot.pipelines = pipelines
-        .into_iter()
-        .map(|(name, count)| NamedCount { name, count })
-        .collect();
-    snapshot.rules = rules
-        .into_iter()
-        .map(|((pipeline, rule, phase), count)| RuleCount {
-            pipeline,
-            rule,
-            phase,
-            count,
-        })
-        .collect();
-    snapshot.upstreams = upstreams.into_values().collect();
-    Ok(snapshot)
+    fn record_scalar(&mut self, metric: &str, value: u64) -> bool {
+        let (target, key) = match metric {
+            "kixdns_requests_total" => (&mut self.snapshot.requests_total, "kixdns_requests_total"),
+            "kixdns_requests_inflight" => (
+                &mut self.snapshot.requests_inflight,
+                "kixdns_requests_inflight",
+            ),
+            "kixdns_cache_lookups_total" => (
+                &mut self.snapshot.cache_lookups_total,
+                "kixdns_cache_lookups_total",
+            ),
+            "kixdns_cache_entries" => (&mut self.snapshot.cache_entries, "kixdns_cache_entries"),
+            "kixdns_config_generation" => (
+                &mut self.snapshot.config_generation,
+                "kixdns_config_generation",
+            ),
+            _ => return false,
+        };
+        *target = value;
+        self.seen.insert(key);
+        true
+    }
+
+    fn finish(mut self) -> Result<MetricsSnapshot, ControlError> {
+        const REQUIRED: [&str; 9] = [
+            "kixdns_requests_total",
+            "kixdns_requests_inflight",
+            "kixdns_cache_lookups_total",
+            "kixdns_cache_hits_total{kind=fresh}",
+            "kixdns_cache_hits_total{kind=stale}",
+            "kixdns_cache_entries",
+            "kixdns_config_generation",
+            "kixdns_config_reload_total{result=success}",
+            "kixdns_config_reload_total{result=failure}",
+        ];
+        let missing = REQUIRED
+            .into_iter()
+            .filter(|name| !self.seen.contains(name))
+            .collect::<Vec<_>>();
+        if missing.is_empty() {
+            self.snapshot.pipelines = self
+                .pipelines
+                .into_iter()
+                .map(|(name, count)| NamedCount { name, count })
+                .collect();
+            self.snapshot.rules = self
+                .rules
+                .into_iter()
+                .map(|((pipeline, rule, phase), count)| RuleCount {
+                    pipeline,
+                    rule,
+                    phase,
+                    count,
+                })
+                .collect();
+            self.snapshot.upstreams = self.upstreams.into_values().collect();
+            Ok(self.snapshot)
+        } else {
+            Err(ControlError::Protocol(format!(
+                "指标响应缺少必需序列：{}",
+                missing.join("、")
+            )))
+        }
+    }
 }
 
 fn numeric_value(value: &MetricValue) -> Option<u64> {
@@ -373,13 +467,20 @@ fn numeric_value(value: &MetricValue) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_metrics;
+    use super::{ControlError, Health, decode_versioned_json, parse_metrics};
 
     #[test]
     fn parses_and_groups_panel_metrics() {
         let text = r#"
 kixdns_requests_total 42
+kixdns_requests_inflight 2
+kixdns_cache_lookups_total 20
 kixdns_cache_hits_total{kind="fresh"} 8
+kixdns_cache_hits_total{kind="stale"} 1
+kixdns_cache_entries 7
+kixdns_config_generation 3
+kixdns_config_reload_total{result="success"} 2
+kixdns_config_reload_total{result="failure"} 0
 kixdns_pipeline_hits_total{pipeline="default"} 21
 kixdns_rule_matches_total{pipeline="default",rule="allow",phase="request"} 13
 kixdns_upstream_attempts_total{upstream="1.1.1.1:53",transport="udp"} 9
@@ -391,5 +492,17 @@ kixdns_upstream_results_total{upstream="1.1.1.1:53",transport="udp",result="succ
         assert_eq!(metrics.pipelines[0].count, 21);
         assert_eq!(metrics.rules[0].rule, "allow");
         assert_eq!(metrics.upstreams[0].success, 7);
+    }
+
+    #[test]
+    fn rejects_incomplete_metrics_and_unknown_protocol_versions() {
+        assert!(matches!(
+            parse_metrics("kixdns_requests_total 1\n"),
+            Err(ControlError::Protocol(_))
+        ));
+
+        let response = br#"{"protocol_version":2}"#;
+        let decoded = decode_versioned_json::<Health>("/v1/health", response);
+        assert!(matches!(decoded, Err(ControlError::Protocol(_))));
     }
 }

@@ -205,7 +205,10 @@ pub fn unix_timestamp() -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{token_hash, validate_password, validate_username};
+    use std::net::{IpAddr, Ipv4Addr};
+
+    use super::{LoginLimiter, token_hash, validate_password, validate_username};
+    use crate::error::AppError;
 
     #[test]
     fn validates_credentials() {
@@ -220,5 +223,20 @@ mod tests {
         let hash = token_hash("secret-token");
         assert_eq!(hash.len(), 64);
         assert!(!hash.contains("secret-token"));
+    }
+
+    #[test]
+    fn limits_repeated_login_failures() {
+        let limiter = LoginLimiter::default();
+        let address = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        for _ in 0..5 {
+            limiter.record_failure(address);
+        }
+        assert!(matches!(
+            limiter.check(address),
+            Err(AppError::TooManyRequests)
+        ));
+        limiter.clear(address);
+        assert!(limiter.check(address).is_ok());
     }
 }

@@ -137,6 +137,9 @@ impl UpdateManager {
             .into_iter()
             .next()
             .ok_or_else(|| UpdateError::Network("没有成功的增强构建".to_owned()))?;
+        validate_commit(&run.head_sha).map_err(|_| {
+            UpdateError::Verification("GitHub Action 未返回完整构建提交 SHA".to_owned())
+        })?;
         let artifacts_url = format!(
             "https://api.github.com/repos/{}/actions/runs/{}/artifacts?per_page=100",
             self.repository, run.id
@@ -388,6 +391,7 @@ fn validate_slug(value: &str, repository: bool) -> Result<(), UpdateError> {
         || value.len() > 200
         || (repository && slash_count != 1)
         || (!repository && slash_count != 0)
+        || value.split('/').any(|part| matches!(part, "" | "." | ".."))
         || !value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'_' | b'-' | b'.'))
@@ -534,6 +538,8 @@ mod tests {
         assert!(validate_slug("https://evil.invalid", true).is_err());
         assert!(validate_slug("build-enhanced.yml", false).is_ok());
         assert!(validate_slug("../../workflow", false).is_err());
+        assert!(validate_slug("..", false).is_err());
+        assert!(validate_slug("owner/..", true).is_err());
         assert!(validate_digest(&format!("sha256:{}", "a".repeat(64))).is_ok());
         assert!(validate_digest("sha256:bad").is_err());
         assert!(validate_commit("374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25").is_ok());
