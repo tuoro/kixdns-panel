@@ -42,6 +42,10 @@ async function authenticate(endpoint: '/api/v1/auth/login' | '/api/v1/setup', us
 
 async function logout(): Promise<void> {
   await apiRequest<{ ok: boolean }>('/api/v1/auth/logout', { method: 'POST' })
+  expire()
+}
+
+function expire(): void {
   user.value = null
   setCsrfToken('')
 }
@@ -55,5 +59,6 @@ export function useSession() {
     login: (username: string, password: string) => authenticate('/api/v1/auth/login', username, password),
     setup: (username: string, password: string) => authenticate('/api/v1/setup', username, password),
     logout,
+    expire,
   }
 }

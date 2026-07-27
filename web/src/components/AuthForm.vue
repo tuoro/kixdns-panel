@@ -60,7 +60,7 @@ async function submit(): Promise<void> {
           <span>{{ submitting ? '正在验证' : isSetup ? '创建并进入' : '登录' }}</span><ArrowRight :size="18" />
         </button>
       </form>
-      <div class="auth-security"><ShieldCheck :size="17" /><span>凭据使用 Argon2id 加密，会话仅保存在 HttpOnly Cookie</span></div>
+      <div class="auth-security"><ShieldCheck :size="17" /><span>凭据使用 Argon2id 哈希保护，会话仅保存在 HttpOnly Cookie</span></div>
     </section>
     <aside class="auth-status">
       <div class="auth-status__signal"><i></i><span>Enhanced Control</span></div>

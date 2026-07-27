@@ -19,6 +19,7 @@ export class ApiError extends Error {
 
 let csrfToken = ''
 const demoMode = import.meta.env.VITE_DEMO_MODE === 'true'
+export const SESSION_EXPIRED_EVENT = 'kixdns:session-expired'
 
 export function setCsrfToken(token: string): void {
   csrfToken = token
@@ -39,6 +40,13 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}): Promi
     credentials: 'same-origin',
   })
   if (!response.ok) {
+    if (
+      response.status === 401
+      && !['/api/v1/auth/login', '/api/v1/auth/session'].includes(path)
+      && typeof window !== 'undefined'
+    ) {
+      window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT))
+    }
     const body = await response.json().catch(() => ({})) as ErrorEnvelope
     throw new ApiError(
       body.error?.message ?? `请求失败 (${response.status})`,

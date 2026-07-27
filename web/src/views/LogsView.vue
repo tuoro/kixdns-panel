@@ -39,7 +39,7 @@ async function load(silent = false): Promise<void> {
   try {
     entries.value = (await apiRequest<LogsResponse>('/api/v1/logs?limit=500')).entries
   } catch (error) {
-    toast.error(errorMessage(error))
+    if (!silent) toast.error(errorMessage(error))
   } finally {
     loading.value = false
   }

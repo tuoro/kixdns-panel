@@ -60,7 +60,7 @@ async function logout(): Promise<void> {
         </RouterLink>
       </nav>
       <div class="sidebar__footer">
-        <div class="service-indicator"><span></span><div><strong>增强控制已连接</strong><small>协议 v1</small></div></div>
+        <div class="service-indicator"><span></span><div><strong>本机增强通道</strong><small>协议 v1</small></div></div>
         <button class="sidebar__logout" type="button" :disabled="signingOut" @click="logout">
           <LogOut :size="17" /><span>{{ signingOut ? '正在退出' : '退出登录' }}</span>
         </button>

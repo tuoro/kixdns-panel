@@ -19,19 +19,19 @@ const cacheHitRate = computed(() => {
   if (!metrics?.cache_lookups_total) return 0
   return (metrics.cache_hits_fresh + metrics.cache_hits_stale) / metrics.cache_lookups_total
 })
-const maxPipeline = computed(() => Math.max(...(overview.value?.metrics.pipelines.map((item) => item.count) ?? [1])))
+const maxPipeline = computed(() => Math.max(1, ...(overview.value?.metrics.pipelines.map((item) => item.count) ?? [])))
 
 async function load(silent = false): Promise<void> {
   if (!silent) refreshing.value = true
   try {
-    const [nextOverview, nextService] = await Promise.all([
+    const [overviewResult, serviceResult] = await Promise.allSettled([
       apiRequest<Overview>('/api/v1/overview'),
       apiRequest<ServiceStatus>('/api/v1/service'),
     ])
-    overview.value = nextOverview
-    service.value = nextService
-  } catch (error) {
-    toast.error(errorMessage(error))
+    if (overviewResult.status === 'fulfilled') overview.value = overviewResult.value
+    else if (!silent) toast.error(errorMessage(overviewResult.reason))
+    if (serviceResult.status === 'fulfilled') service.value = serviceResult.value
+    else if (!silent) toast.error(errorMessage(serviceResult.reason))
   } finally {
     loading.value = false
     refreshing.value = false
@@ -101,7 +101,7 @@ onBeforeUnmount(() => window.clearInterval(timer))
 
         <article class="panel panel--span-12">
           <header class="panel__header"><div><h2>上游请求</h2><p>内部尝试、成功和异常计数</p></div></header>
-          <div class="table-scroll"><table><thead><tr><th>上游</th><th>传输</th><th>尝试</th><th>成功率</th><th>错误</th><th>拒绝</th></tr></thead><tbody><tr v-for="item in overview.metrics.upstreams" :key="`${item.upstream}:${item.transport}`"><td class="mono table-strong">{{ item.upstream }}</td><td><span class="tag tag--muted">{{ item.transport }}</span></td><td>{{ formatNumber(item.attempts) }}</td><td>{{ formatPercent(item.attempts ? item.success / item.attempts : 0) }}</td><td :class="{ 'text-danger': item.errors > 0 }">{{ formatNumber(item.errors) }}</td><td>{{ formatNumber(item.rejected) }}</td></tr></tbody></table></div>
+          <div class="table-scroll"><table><thead><tr><th>上游</th><th>传输</th><th>尝试</th><th>成功率</th><th>错误</th><th>拒绝</th></tr></thead><tbody><tr v-for="item in overview.metrics.upstreams" :key="`${item.upstream}:${item.transport}`"><td class="mono table-strong">{{ item.upstream }}</td><td><span class="tag tag--muted">{{ item.transport }}</span></td><td>{{ formatNumber(item.attempts) }}</td><td>{{ formatPercent(item.attempts ? item.success / item.attempts : 0) }}</td><td :class="{ 'text-danger': item.errors > 0 }">{{ formatNumber(item.errors) }}</td><td>{{ formatNumber(item.rejected) }}</td></tr><tr v-if="overview.metrics.upstreams.length === 0"><td class="empty-state" colspan="6">尚无上游请求数据</td></tr></tbody></table></div>
         </article>
 
         <article class="panel panel--span-12">
@@ -110,5 +110,6 @@ onBeforeUnmount(() => window.clearInterval(timer))
         </article>
       </section>
     </template>
+    <section v-else class="panel empty-state">运行数据暂不可用，请检查增强控制通道。</section>
   </div>
 </template>

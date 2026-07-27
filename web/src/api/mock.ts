@@ -107,6 +107,7 @@ const versions: ConfigVersions = {
 }
 
 let serviceRunning = true
+let updateAvailable = true
 
 export async function mockRequest<T>(path: string, init?: RequestInit): Promise<T> {
   await new Promise((resolve) => setTimeout(resolve, 120))
@@ -158,8 +159,9 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
     const body = JSON.parse(String(init?.body)) as { domain: string; record_type: string }
     return { server: '127.0.0.1:53', domain: body.domain, record_type: body.record_type, response_code: 'No Error', elapsed_ms: 12, truncated: false, answers: [`${body.domain}. 300 IN A 104.18.26.120`, `${body.domain}. 300 IN A 104.18.27.120`] } as DnsDiagnostic as T
   }
+  if (path === '/api/v1/updates/apply') updateAvailable = false
   if (path === '/api/v1/updates' || path === '/api/v1/updates/apply') {
-    return { installed_commit: 'faf09f8', latest_commit: '2d89c31d4ad9d252155215d78af8c9c128112233', run_id: 30235703570, created_at: new Date().toISOString(), run_url: '#', artifact: 'kixdns-enhanced-linux-x86_64', artifact_digest: `sha256:${'a'.repeat(64)}`, download_url: '#', available: true } as UpdateInfo as T
+    return { installed_commit: updateAvailable ? 'faf09f8' : '2d89c31d4ad9d252155215d78af8c9c128112233', latest_commit: '2d89c31d4ad9d252155215d78af8c9c128112233', run_id: 30235703570, created_at: new Date().toISOString(), run_url: '#', artifact: 'kixdns-enhanced-linux-x86_64', artifact_digest: `sha256:${'a'.repeat(64)}`, download_url: '#', available: updateAvailable } as UpdateInfo as T
   }
   throw new Error(`未实现的演示接口：${method} ${path}`)
 }

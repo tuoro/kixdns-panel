@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Check, Clock3, History, RefreshCw, RotateCcw, Save, ShieldCheck, TriangleAlert } from '@lucide/vue'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { onBeforeRouteLeave } from 'vue-router'
 import { apiRequest, jsonBody } from '../api/client'
 import type { ConfigApplyResult, ConfigDocument, ConfigVersion, ConfigVersions, ValidationResult } from '../api/types'
 import JsonEditor from '../components/JsonEditor.vue'
@@ -20,6 +21,21 @@ const validation = ref<ValidationResult | null>(null)
 const parseError = ref('')
 const toast = useToast()
 const changed = computed(() => source.value !== baseline.value)
+
+watch(source, () => {
+  validation.value = null
+  parseError.value = ''
+})
+
+function confirmDiscard(): boolean {
+  return !changed.value || window.confirm('当前配置尚未保存，确定离开？')
+}
+
+function preventAccidentalClose(event: BeforeUnloadEvent): void {
+  if (!changed.value) return
+  event.preventDefault()
+  event.returnValue = ''
+}
 
 function parseSource(): Record<string, unknown> | null {
   parseError.value = ''
@@ -111,22 +127,27 @@ async function restore(version: ConfigVersion): Promise<void> {
   }
 }
 
-onMounted(load)
+onBeforeRouteLeave(confirmDiscard)
+onMounted(() => {
+  window.addEventListener('beforeunload', preventAccidentalClose)
+  void load()
+})
+onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccidentalClose))
 </script>
 
 <template>
   <div class="page config-page">
     <div class="page-actions">
       <div v-if="document" class="document-meta"><span class="status-dot"></span><span>当前摘要</span><code>{{ shortHash(document.sha256, 14) }}</code></div>
-      <button class="button button--secondary" type="button" :disabled="loading" @click="load"><RefreshCw :size="16" :class="{ spin: loading }" />重新读取</button>
+      <button class="button button--secondary" type="button" :disabled="loading || saving || restoring !== null" @click="load"><RefreshCw :size="16" :class="{ spin: loading }" />重新读取</button>
     </div>
     <div class="config-layout">
       <section class="editor-panel">
         <header class="editor-toolbar">
           <div><strong>pipeline.json</strong><span v-if="changed" class="unsaved-dot">未保存</span></div>
           <div>
-            <button class="button button--secondary" type="button" :disabled="loading || validating" @click="validate"><ShieldCheck :size="16" />{{ validating ? '校验中' : '校验' }}</button>
-            <button class="button button--primary" type="button" :disabled="loading || saving || !changed" @click="save"><Save :size="16" />{{ saving ? '应用中' : '保存并热加载' }}</button>
+            <button class="button button--secondary" type="button" :disabled="loading || validating || saving || restoring !== null" @click="validate"><ShieldCheck :size="16" />{{ validating ? '校验中' : '校验' }}</button>
+            <button class="button button--primary" type="button" :disabled="loading || validating || saving || restoring !== null || !changed" @click="save"><Save :size="16" />{{ saving ? '应用中' : '保存并热加载' }}</button>
           </div>
         </header>
         <div v-if="loading" class="editor-loading">正在读取配置…</div>
@@ -144,7 +165,7 @@ onMounted(load)
         <header><div><History :size="18" /><h2>版本历史</h2></div><span>{{ versions.length }}</span></header>
         <div class="history-list">
           <article v-for="version in versions" :key="version.id" :class="{ 'history-item--current': version.sha256 === document?.sha256 }">
-            <div class="history-item__top"><strong>#{{ version.id }}</strong><span v-if="version.sha256 === document?.sha256" class="tag tag--success">当前</span><button v-else class="icon-button icon-button--small" type="button" title="恢复此版本" :disabled="restoring !== null" @click="restore(version)"><RotateCcw :size="15" :class="{ spin: restoring === version.id }" /></button></div>
+            <div class="history-item__top"><strong>#{{ version.id }}</strong><span v-if="version.sha256 === document?.sha256" class="tag tag--success">当前</span><button v-else class="icon-button icon-button--small" type="button" title="恢复此版本" :disabled="restoring !== null || saving || validating" @click="restore(version)"><RotateCcw :size="15" :class="{ spin: restoring === version.id }" /></button></div>
             <p>{{ version.message || '未填写版本说明' }}</p>
             <code>{{ shortHash(version.sha256, 12) }}</code>
             <small>{{ version.actor }} · {{ formatDate(version.created_at) }}</small>
