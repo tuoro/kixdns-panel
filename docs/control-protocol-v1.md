@@ -21,7 +21,7 @@ Linux 默认地址为 `/run/kixdns/admin.sock`。协议使用 Unix Socket 上的
   "protocol_version": 1,
   "generation": 18,
   "sha256": "4d5b...",
-  "loaded_at": "2026-07-28T10:30:00Z",
+  "loaded_at_unix": 1785215400,
   "last_reload": {
     "success": true,
     "error": null
@@ -57,6 +57,5 @@ Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致
 - 缓存命中率为 `fresh + stale` 命中数除以缓存查询数。
 - Pipeline 命中表示一次请求选择或跳转进入该 Pipeline。
 - 规则命中表示匹配器链结果为真；`phase` 为 `request` 或 `response`。
-- 上游 attempt 表示一次实际网络尝试，result 表示该尝试最终结果，而不是规则中的 Forward 动作数。
+- 上游 attempt 表示一次已配置的上游操作，result 表示该操作最终结果，而不是规则中的 Forward 动作数。`tcp_udp` 的内部 TCP 回退属于同一次操作。
 - 并发数覆盖进入异步处理至响应完成的请求，不包含已在同步快速路径返回的请求。
-

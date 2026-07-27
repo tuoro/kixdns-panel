@@ -1,5 +1,6 @@
 [workspace]
 members = ["tools/xtask"]
+exclude = [".upstream/*"]
 resolver = "3"
 
 [workspace.package]
@@ -14,4 +15,3 @@ unsafe_code = "forbid"
 [workspace.lints.clippy]
 all = "warn"
 pedantic = "warn"
-
