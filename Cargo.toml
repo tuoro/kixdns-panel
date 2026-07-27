@@ -1,5 +1,5 @@
 [workspace]
-members = ["tools/xtask"]
+members = ["crates/panel-server", "tools/xtask"]
 exclude = [".upstream/*"]
 resolver = "3"
 
