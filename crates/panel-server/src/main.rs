@@ -37,6 +37,34 @@ struct Args {
     #[arg(long, env = "KIXDNS_DIAGNOSTIC_SERVER", default_value = "127.0.0.1:53")]
     diagnostic_server: SocketAddr,
 
+    /// 发布增强 Artifact 的 GitHub 仓库。
+    #[arg(
+        long,
+        env = "KIXDNS_UPDATE_REPOSITORY",
+        default_value = "tuoro/kixdns-panel"
+    )]
+    update_repository: String,
+
+    /// 增强构建工作流文件名。
+    #[arg(
+        long,
+        env = "KIXDNS_UPDATE_WORKFLOW",
+        default_value = "build-enhanced.yml"
+    )]
+    update_workflow: String,
+
+    /// 下载 Artifact 的分支。
+    #[arg(long, env = "KIXDNS_UPDATE_BRANCH", default_value = "main")]
+    update_branch: String,
+
+    /// nightly.link Artifact 名称。
+    #[arg(long, env = "KIXDNS_UPDATE_ARTIFACT", default_value_t = default_artifact())]
+    update_artifact: String,
+
+    /// 自动更新替换的 `KixDNS Enhanced` 二进制路径。
+    #[arg(long, env = "KIXDNS_BINARY", default_value = "/usr/local/bin/kixdns")]
+    kixdns_binary: PathBuf,
+
     /// 为浏览器 Cookie 设置 Secure；通过 HTTPS 反向代理部署时应启用。
     #[arg(long, env = "KIXDNS_PANEL_SECURE_COOKIE", default_value_t = false)]
     secure_cookie: bool,
@@ -58,8 +86,20 @@ async fn main() -> anyhow::Result<()> {
         control_socket: args.control_socket,
         service_unit: args.service_unit,
         diagnostic_server: args.diagnostic_server,
+        update_repository: args.update_repository,
+        update_workflow: args.update_workflow,
+        update_branch: args.update_branch,
+        update_artifact: args.update_artifact,
+        kixdns_binary: args.kixdns_binary,
         secure_cookie: args.secure_cookie,
     })
     .await
     .context("面板服务异常退出")
+}
+
+fn default_artifact() -> String {
+    match std::env::consts::ARCH {
+        "aarch64" => "kixdns-enhanced-linux-arm64".to_owned(),
+        _ => "kixdns-enhanced-linux-x86_64".to_owned(),
+    }
 }

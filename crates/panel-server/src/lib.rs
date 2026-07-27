@@ -5,5 +5,6 @@ mod control;
 mod db;
 mod error;
 mod operations;
+mod updates;
 
 pub use app::{AppSettings, build_app, run};

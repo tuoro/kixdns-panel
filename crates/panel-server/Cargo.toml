@@ -15,11 +15,13 @@ base64 = "0.22"
 bytes = "1"
 clap = { version = "4.5", features = ["derive", "env"] }
 getrandom = "0.3"
+futures-util = "0.3"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 hickory-proto = "0.26"
 prometheus-parse = "0.2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -32,6 +34,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "proces
 tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+zip = { version = "4.6", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

@@ -87,7 +87,12 @@ impl Database {
                         detail     TEXT NOT NULL,
                         created_at INTEGER NOT NULL
                     );
-                    PRAGMA user_version = 1;
+                    CREATE TABLE IF NOT EXISTS app_settings (
+                        key        TEXT PRIMARY KEY,
+                        value      TEXT NOT NULL,
+                        updated_at INTEGER NOT NULL
+                    );
+                    PRAGMA user_version = 2;
                     ",
                 )?;
                 Ok(())
@@ -338,6 +343,37 @@ impl Database {
             connection.execute(
                 "INSERT INTO audit_events(actor, action, detail, created_at) VALUES(?1, ?2, ?3, ?4)",
                 params![actor, action, detail, created_at],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn get_setting(&self, key: &'static str) -> anyhow::Result<Option<String>> {
+        self.call(move |connection| {
+            connection
+                .query_row(
+                    "SELECT value FROM app_settings WHERE key = ?1",
+                    [key],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(Into::into)
+        })
+        .await
+    }
+
+    pub async fn set_setting(
+        &self,
+        key: &'static str,
+        value: String,
+        updated_at: i64,
+    ) -> anyhow::Result<()> {
+        self.call(move |connection| {
+            connection.execute(
+                "INSERT INTO app_settings(key, value, updated_at) VALUES(?1, ?2, ?3) \
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                params![key, value, updated_at],
             )?;
             Ok(())
         })

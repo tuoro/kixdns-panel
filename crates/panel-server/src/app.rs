@@ -36,6 +36,7 @@ use crate::error::{AppError, AppResult};
 use crate::operations::{
     DnsDiagnostic, LogEntry, OperationError, Operations, ServiceAction, ServiceStatus,
 };
+use crate::updates::{UpdateError, UpdateInfo, UpdateManager};
 
 #[derive(Debug, Clone)]
 pub struct AppSettings {
@@ -45,6 +46,11 @@ pub struct AppSettings {
     pub control_socket: PathBuf,
     pub service_unit: String,
     pub diagnostic_server: SocketAddr,
+    pub update_repository: String,
+    pub update_workflow: String,
+    pub update_branch: String,
+    pub update_artifact: String,
+    pub kixdns_binary: PathBuf,
     pub secure_cookie: bool,
 }
 
@@ -54,6 +60,7 @@ pub struct AppState {
     config: ConfigStore,
     control: ControlClient,
     operations: Operations,
+    updates: UpdateManager,
     secure_cookie: bool,
     login_limiter: Arc<LoginLimiter>,
     password_slots: Arc<Semaphore>,
@@ -168,12 +175,22 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
     let config = ConfigStore::new(settings.config_path, database.clone());
     config.initialize_history().await?;
     let dummy_password_hash = hash_password("dummy-password-for-timing".to_owned()).await?;
+    let updates = UpdateManager::new(
+        database.clone(),
+        settings.update_repository,
+        settings.update_workflow,
+        settings.update_branch,
+        settings.update_artifact,
+        settings.kixdns_binary,
+    )
+    .map_err(|error| anyhow::anyhow!(error))?;
     let state = AppState {
         database,
         config,
         control: ControlClient::new(settings.control_socket),
         operations: Operations::new(settings.service_unit, settings.diagnostic_server)
             .map_err(|error| anyhow::anyhow!(error))?,
+        updates,
         secure_cookie: settings.secure_cookie,
         login_limiter: Arc::new(LoginLimiter::default()),
         password_slots: Arc::new(Semaphore::new(4)),
@@ -196,6 +213,8 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         .route("/api/v1/service/{action}", post(service_action))
         .route("/api/v1/logs", get(logs))
         .route("/api/v1/diagnostics/dns", post(dns_diagnostic))
+        .route("/api/v1/updates", get(check_updates))
+        .route("/api/v1/updates/apply", post(apply_update))
         .fallback(not_found)
         .layer(axum::extract::DefaultBodyLimit::max(
             MAX_CONFIG_BYTES + 64 * 1024,
@@ -640,6 +659,44 @@ async fn dns_diagnostic(
     Ok(Json(result))
 }
 
+async fn check_updates(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> AppResult<Json<UpdateInfo>> {
+    authenticate(&state.database, &jar).await?;
+    state
+        .updates
+        .check()
+        .await
+        .map(Json)
+        .map_err(map_update_error)
+}
+
+async fn apply_update(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> AppResult<Json<UpdateInfo>> {
+    let session = authenticate(&state.database, &jar).await?;
+    verify_csrf(&session, &jar, &headers)?;
+    let result = state
+        .updates
+        .apply(&state.operations, &state.control)
+        .await
+        .map_err(map_update_error)?;
+    state
+        .database
+        .audit(
+            Some(session.username),
+            "update.apply".to_owned(),
+            format!("安装增强构建 {}", result.latest_commit),
+            unix_timestamp(),
+        )
+        .await
+        .map_err(AppError::Internal)?;
+    Ok(Json(result))
+}
+
 async fn rollback_config(
     state: &AppState,
     previous_content: Value,
@@ -792,6 +849,24 @@ fn map_operation_error(error: OperationError) -> AppError {
     }
 }
 
+fn map_update_error(error: UpdateError) -> AppError {
+    match error {
+        UpdateError::Invalid(message) => AppError::BadRequest("update_invalid", message),
+        UpdateError::Network(message) => {
+            AppError::ServiceUnavailable("update_network_error", message)
+        }
+        UpdateError::Verification(message) => {
+            AppError::Unprocessable("update_verification_failed", message)
+        }
+        UpdateError::Install(message) => {
+            AppError::ServiceUnavailable("update_install_failed", message)
+        }
+        UpdateError::Unsupported => {
+            AppError::ServiceUnavailable("update_unsupported", "当前平台不支持自动更新".to_owned())
+        }
+    }
+}
+
 const fn default_log_limit() -> usize {
     200
 }
@@ -876,6 +951,11 @@ mod tests {
             control_socket: directory.path().join("admin.sock"),
             service_unit: "kixdns.service".to_owned(),
             diagnostic_server: "127.0.0.1:53".parse().unwrap(),
+            update_repository: "tuoro/kixdns-panel".to_owned(),
+            update_workflow: "build-enhanced.yml".to_owned(),
+            update_branch: "main".to_owned(),
+            update_artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
+            kixdns_binary: directory.path().join("kixdns"),
             secure_cookie: false,
         })
         .await

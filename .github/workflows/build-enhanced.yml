@@ -108,8 +108,9 @@ jobs:
             "dist/kixdns-enhanced-linux-${{ matrix.arch }}/kixdns"
           cp upstream.lock.json "dist/kixdns-enhanced-linux-${{ matrix.arch }}/"
           cp docs/control-protocol-v1.md "dist/kixdns-enhanced-linux-${{ matrix.arch }}/"
-          sha256sum "dist/kixdns-enhanced-linux-${{ matrix.arch }}/kixdns" \
-            > "dist/kixdns-enhanced-linux-${{ matrix.arch }}/SHA256SUMS"
+          pushd "dist/kixdns-enhanced-linux-${{ matrix.arch }}"
+          sha256sum kixdns > SHA256SUMS
+          popd
 
       - name: Upload enhanced artifact
         uses: actions/upload-artifact@v7
