@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use time::Duration;
 use tokio::sync::Semaphore;
+use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
 use crate::auth::{
@@ -51,6 +52,7 @@ pub struct AppSettings {
     pub update_branch: String,
     pub update_artifact: String,
     pub kixdns_binary: PathBuf,
+    pub web_root: PathBuf,
     pub secure_cookie: bool,
 }
 
@@ -197,31 +199,40 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         dummy_password_hash: Arc::from(dummy_password_hash),
     };
 
-    Ok(Router::new()
-        .route("/api/v1/health", get(health))
-        .route("/api/v1/setup", get(setup_status).post(setup))
-        .route("/api/v1/auth/login", post(login))
-        .route("/api/v1/auth/logout", post(logout))
-        .route("/api/v1/auth/session", get(session))
-        .route("/api/v1/overview", get(overview))
-        .route("/api/v1/config", get(get_config).put(save_config))
-        .route("/api/v1/config/validate", post(validate_config))
-        .route("/api/v1/config/versions", get(config_versions))
-        .route("/api/v1/config/versions/{id}/restore", post(restore_config))
-        .route("/api/v1/cache/flush", post(flush_cache))
-        .route("/api/v1/service", get(service_status))
-        .route("/api/v1/service/{action}", post(service_action))
-        .route("/api/v1/logs", get(logs))
-        .route("/api/v1/diagnostics/dns", post(dns_diagnostic))
-        .route("/api/v1/updates", get(check_updates))
-        .route("/api/v1/updates/apply", post(apply_update))
+    let api = Router::new()
+        .route("/health", get(health))
+        .route("/setup", get(setup_status).post(setup))
+        .route("/auth/login", post(login))
+        .route("/auth/logout", post(logout))
+        .route("/auth/session", get(session))
+        .route("/overview", get(overview))
+        .route("/config", get(get_config).put(save_config))
+        .route("/config/validate", post(validate_config))
+        .route("/config/versions", get(config_versions))
+        .route("/config/versions/{id}/restore", post(restore_config))
+        .route("/cache/flush", post(flush_cache))
+        .route("/service", get(service_status))
+        .route("/service/{action}", post(service_action))
+        .route("/logs", get(logs))
+        .route("/diagnostics/dns", post(dns_diagnostic))
+        .route("/updates", get(check_updates))
+        .route("/updates/apply", post(apply_update))
         .fallback(not_found)
+        .with_state(state);
+
+    let index_file = settings.web_root.join("index.html");
+    let web = ServeDir::new(settings.web_root)
+        .append_index_html_on_directories(true)
+        .fallback(ServeFile::new(index_file));
+
+    Ok(Router::new()
+        .nest("/api/v1", api)
+        .fallback_service(web)
         .layer(axum::extract::DefaultBodyLimit::max(
             MAX_CONFIG_BYTES + 64 * 1024,
         ))
         .layer(TraceLayer::new_for_http())
-        .layer(middleware::from_fn(security_headers))
-        .with_state(state))
+        .layer(middleware::from_fn(security_headers)))
 }
 
 async fn health() -> Json<Value> {
@@ -891,7 +902,9 @@ async fn security_headers(request: Request<Body>, next: Next) -> Response {
     headers.insert(REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
     headers.insert(
         CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static("default-src 'self'; frame-ancestors 'none'; base-uri 'self'"),
+        HeaderValue::from_static(
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+        ),
     );
     if is_api {
         headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -944,6 +957,9 @@ mod tests {
         let directory = tempdir().unwrap();
         let config_path = directory.path().join("pipeline.json");
         std::fs::write(&config_path, "{\"pipelines\":[]}").unwrap();
+        let web_root = directory.path().join("web");
+        std::fs::create_dir(&web_root).unwrap();
+        std::fs::write(web_root.join("index.html"), "<main>KixDNS Panel</main>").unwrap();
         let app = build_app(AppSettings {
             bind: "127.0.0.1:0".parse().unwrap(),
             database_path: directory.path().join("panel.db"),
@@ -956,6 +972,7 @@ mod tests {
             update_branch: "main".to_owned(),
             update_artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
             kixdns_binary: directory.path().join("kixdns"),
+            web_root,
             secure_cookie: false,
         })
         .await
@@ -994,6 +1011,7 @@ mod tests {
         assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
 
         let forbidden = app
+            .clone()
             .oneshot(
                 Request::put("/api/v1/config")
                     .header(CONTENT_TYPE, "application/json")
@@ -1006,5 +1024,28 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+
+        let deep_link = app
+            .clone()
+            .oneshot(Request::get("/config").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(deep_link.status(), StatusCode::OK);
+        let body = to_bytes(deep_link.into_body(), 64 * 1024).await.unwrap();
+        assert_eq!(body.as_ref(), b"<main>KixDNS Panel</main>");
+
+        let unknown_api = app
+            .oneshot(
+                Request::get("/api/v1/not-an-endpoint")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unknown_api.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            unknown_api.headers().get(CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
     }
 }

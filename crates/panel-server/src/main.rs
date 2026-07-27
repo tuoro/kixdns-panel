@@ -65,6 +65,10 @@ struct Args {
     #[arg(long, env = "KIXDNS_BINARY", default_value = "/usr/local/bin/kixdns")]
     kixdns_binary: PathBuf,
 
+    /// Vue 前端构建产物目录。
+    #[arg(long, env = "KIXDNS_WEB_ROOT", default_value = "web/dist")]
+    web_root: PathBuf,
+
     /// 为浏览器 Cookie 设置 Secure；通过 HTTPS 反向代理部署时应启用。
     #[arg(long, env = "KIXDNS_PANEL_SECURE_COOKIE", default_value_t = false)]
     secure_cookie: bool,
@@ -91,6 +95,7 @@ async fn main() -> anyhow::Result<()> {
         update_branch: args.update_branch,
         update_artifact: args.update_artifact,
         kixdns_binary: args.kixdns_binary,
+        web_root: args.web_root,
         secure_cookie: args.secure_cookie,
     })
     .await
