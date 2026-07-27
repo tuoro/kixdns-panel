@@ -6,6 +6,9 @@ use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
+
+const PATCH_STAMP: &str = ".kixdns-panel-patches";
 
 #[derive(Debug, Deserialize)]
 struct UpstreamLock {
@@ -50,7 +53,7 @@ fn prepare(root: &Path) -> Result<()> {
     validate_commit(&lock.commit)?;
 
     let source_root = root.join(".upstream");
-    let checkout = source_root.join(format!("kixdns-{}", &lock.commit[..12]));
+    let checkout = source_root.join(format!("kixdns-{}-p{}", &lock.commit[..12], lock.patchset));
     fs::create_dir_all(&source_root).context("创建 .upstream 目录失败")?;
 
     if !checkout.join(".git").is_dir() {
@@ -83,12 +86,12 @@ fn prepare(root: &Path) -> Result<()> {
         );
     }
 
-    apply_patches(root, &checkout)?;
+    apply_patches(root, &checkout, lock.patchset)?;
     println!("上游增强源码已准备：{}", checkout.display());
     Ok(())
 }
 
-fn apply_patches(root: &Path, checkout: &Path) -> Result<()> {
+fn apply_patches(root: &Path, checkout: &Path, patchset: u32) -> Result<()> {
     let patch_dir = root.join("patches");
     if !patch_dir.is_dir() {
         println!("补丁目录尚未创建，保留原始上游源码");
@@ -103,23 +106,50 @@ fn apply_patches(root: &Path, checkout: &Path) -> Result<()> {
         .collect::<Vec<_>>();
     patches.sort();
 
+    let expected_stamp = patch_stamp(patchset, &patches)?;
+    let stamp_path = checkout.join(PATCH_STAMP);
+    if fs::read_to_string(&stamp_path).is_ok_and(|stamp| stamp == expected_stamp) {
+        println!("补丁集已应用：v{patchset}");
+        return Ok(());
+    }
+    if !output(checkout, "git", ["status", "--porcelain"])?.is_empty() {
+        bail!(
+            "上游目录存在未标记变更，无法安全应用补丁。请保留需要的修改后移走目录：{}",
+            checkout.display()
+        );
+    }
+
     for patch in patches {
         let patch_arg = patch.as_os_str().to_string_lossy();
-        if status(
-            checkout,
-            "git",
-            ["apply", "--reverse", "--check", &patch_arg],
-        )? {
-            println!("补丁已应用：{}", patch.display());
-            continue;
-        }
         run(checkout, "git", ["apply", "--check", &patch_arg])
             .with_context(|| format!("补丁与上游不兼容：{}", patch.display()))?;
         run(checkout, "git", ["apply", &patch_arg])
             .with_context(|| format!("应用补丁失败：{}", patch.display()))?;
         println!("已应用补丁：{}", patch.display());
     }
+    fs::write(&stamp_path, expected_stamp)
+        .with_context(|| format!("写入补丁集标记失败：{}", stamp_path.display()))?;
     Ok(())
+}
+
+fn patch_stamp(patchset: u32, patches: &[PathBuf]) -> Result<String> {
+    let mut digest = Sha256::new();
+    for patch in patches {
+        let name = patch
+            .file_name()
+            .context("补丁路径缺少文件名")?
+            .as_encoded_bytes();
+        let content =
+            fs::read(patch).with_context(|| format!("读取补丁失败：{}", patch.display()))?;
+        digest.update(name.len().to_le_bytes());
+        digest.update(name);
+        digest.update(content.len().to_le_bytes());
+        digest.update(content);
+    }
+    Ok(format!(
+        "patchset={patchset}\nsha256={:x}\n",
+        digest.finalize()
+    ))
 }
 
 fn print_info(root: &Path) -> Result<()> {
@@ -153,22 +183,6 @@ where
         bail!("命令 {program} 执行失败：{status}");
     }
     Ok(())
-}
-
-fn status<I, S>(directory: &Path, program: &str, args: I) -> Result<bool>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    Ok(Command::new(program)
-        .args(args)
-        .current_dir(directory)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .with_context(|| format!("无法执行 {program}"))?
-        .success())
 }
 
 fn output<I, S>(directory: &Path, program: &str, args: I) -> Result<String>

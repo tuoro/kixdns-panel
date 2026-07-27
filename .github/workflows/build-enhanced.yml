@@ -66,7 +66,7 @@ jobs:
         shell: bash
         run: |
           cargo xtask prepare
-          echo "UPSTREAM_DIR=.upstream/kixdns-$(jq -r .commit upstream.lock.json | cut -c1-12)" >> "$GITHUB_ENV"
+          echo "UPSTREAM_DIR=.upstream/kixdns-$(jq -r .commit upstream.lock.json | cut -c1-12)-p$(jq -r .patchset upstream.lock.json)" >> "$GITHUB_ENV"
 
       - name: Verify enhanced source
         run: |
@@ -117,7 +117,7 @@ jobs:
         shell: bash
         run: |
           cargo xtask prepare
-          echo "UPSTREAM_DIR=.upstream/kixdns-$(jq -r .commit upstream.lock.json | cut -c1-12)" >> "$GITHUB_ENV"
+          echo "UPSTREAM_DIR=.upstream/kixdns-$(jq -r .commit upstream.lock.json | cut -c1-12)-p$(jq -r .patchset upstream.lock.json)" >> "$GITHUB_ENV"
 
       - name: Export build identity
         shell: bash

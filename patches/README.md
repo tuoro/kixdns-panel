@@ -1,6 +1,6 @@
 # 增强补丁
 
-该目录按文件名顺序保存针对 `upstream.lock.json` 锁定提交的补丁。上游源码不进入本仓库；`cargo xtask prepare` 会检出锁定提交并以 `git apply` 重放所有 `.patch` 文件。
+该目录按文件名顺序保存针对 `upstream.lock.json` 锁定提交的补丁。上游源码不进入本仓库；`cargo xtask prepare` 会检出到 `.upstream/kixdns-<commit>-p<patchset>`，并以 `git apply` 重放所有 `.patch` 文件。工具使用补丁内容 SHA-256 标记完整补丁集，支持幂等执行并拒绝混用不同内容。
 
 补丁更新流程：
 

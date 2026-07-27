@@ -65,7 +65,7 @@ jobs:
         shell: bash
         run: |
           cargo xtask prepare
-          upstream_dir=".upstream/kixdns-$(jq -r .commit upstream.lock.json | cut -c1-12)"
+          upstream_dir=".upstream/kixdns-$(jq -r .commit upstream.lock.json | cut -c1-12)-p$(jq -r .patchset upstream.lock.json)"
           cd "$upstream_dir"
           cargo fmt --check
           cargo test --lib --locked
