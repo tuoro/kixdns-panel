@@ -16,3 +16,4 @@
 1. `0001-panel-observability.patch`：本机控制协议和内部指标。
 2. `0002-config-validation.patch`：复用 KixDNS 解析与运行时编译的候选配置校验。
 3. `0003-security-dependency-refresh.patch`：刷新存在 RustSec 公告的依赖，并迁移 MaxMind 与 PEM API。
+4. `0004-fast-path-rule-metrics.patch`：补齐编译静态规则与规则缓存快速路径的命中计数。
