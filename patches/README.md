@@ -10,3 +10,9 @@
 4. 在干净检出中运行 `cargo xtask prepare`，再执行格式、测试和 Clippy 检查。
 
 补丁不是手工维护的源码副本。修改增强功能时应编辑检出源码并重新生成补丁，避免补丁内容与已验证代码不一致。
+
+当前补丁顺序：
+
+1. `0001-panel-observability.patch`：本机控制协议和内部指标。
+2. `0002-config-validation.patch`：复用 KixDNS 解析与运行时编译的候选配置校验。
+3. `0003-security-dependency-refresh.patch`：刷新存在 RustSec 公告的依赖，并迁移 MaxMind 与 PEM API。

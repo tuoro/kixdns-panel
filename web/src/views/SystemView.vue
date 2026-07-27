@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { CircleCheck, ExternalLink, GitCommitHorizontal, Play, RefreshCw, RotateCw, ServerCog, Square, UploadCloud } from 'lucide-vue-next'
+import { CircleCheck, ExternalLink, GitCommitHorizontal, Play, RefreshCw, RotateCw, ServerCog, Square, UploadCloud } from '@lucide/vue'
 import { computed, onMounted, ref } from 'vue'
 import { apiRequest } from '../api/client'
 import type { ServiceAction, ServiceStatus, UpdateInfo } from '../api/types'

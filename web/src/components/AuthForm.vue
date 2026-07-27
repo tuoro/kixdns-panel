@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Activity, ArrowRight, Eye, EyeOff, ShieldCheck } from 'lucide-vue-next'
+import { Activity, ArrowRight, Eye, EyeOff, ShieldCheck } from '@lucide/vue'
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useSession } from '../composables/useSession'

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Activity, Database, Eraser, RefreshCw, Timer, Zap } from 'lucide-vue-next'
+import { Activity, Database, Eraser, RefreshCw, Timer, Zap } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { apiRequest } from '../api/client'
 import type { CacheFlushResult, Overview, ServiceStatus } from '../api/types'

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Check, Clock3, History, RefreshCw, RotateCcw, Save, ShieldCheck, TriangleAlert } from 'lucide-vue-next'
+import { Check, Clock3, History, RefreshCw, RotateCcw, Save, ShieldCheck, TriangleAlert } from '@lucide/vue'
 import { computed, onMounted, ref } from 'vue'
 import { apiRequest, jsonBody } from '../api/client'
 import type { ConfigApplyResult, ConfigDocument, ConfigVersion, ConfigVersions, ValidationResult } from '../api/types'

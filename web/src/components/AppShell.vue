@@ -9,7 +9,7 @@ import {
   Network,
   ServerCog,
   X,
-} from 'lucide-vue-next'
+} from '@lucide/vue'
 import { computed, ref } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { useSession } from '../composables/useSession'

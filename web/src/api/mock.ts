@@ -62,7 +62,7 @@ const overview: Overview = {
     pid: 1428,
     version: '0.1.0',
     upstream_commit: '374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25',
-    patchset: '2',
+    patchset: '3',
     started_at_unix: now - 289420,
     uptime_seconds: 289420,
     config_generation: 18,

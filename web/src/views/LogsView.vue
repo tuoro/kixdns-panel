@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Download, Pause, Play, RefreshCw, Search } from 'lucide-vue-next'
+import { Download, Pause, Play, RefreshCw, Search } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { apiRequest } from '../api/client'
 import type { LogEntry, LogsResponse } from '../api/types'

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { CheckCircle2, Clock3, Network, Play, Server, ShieldCheck } from 'lucide-vue-next'
+import { CheckCircle2, Clock3, Network, Play, Server, ShieldCheck } from '@lucide/vue'
 import { ref } from 'vue'
 import { apiRequest, jsonBody } from '../api/client'
 import type { DnsDiagnostic } from '../api/types'

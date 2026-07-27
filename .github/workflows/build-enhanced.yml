@@ -46,6 +46,11 @@ jobs:
           cargo test --workspace --locked
           cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      - name: Audit panel dependencies
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit --deny warnings
+
       - name: Verify web console
         working-directory: web
         run: |
@@ -69,6 +74,7 @@ jobs:
           cargo fmt --check
           cargo test --lib --locked
           cargo clippy --all-targets --all-features --locked -- -D warnings
+          cargo audit --deny warnings
 
   build:
     name: Build Linux ${{ matrix.arch }}

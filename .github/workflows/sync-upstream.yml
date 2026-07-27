@@ -30,6 +30,9 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Install dependency auditor
+        run: cargo install cargo-audit --locked
+
       - name: Read latest successful official action
         id: upstream
         shell: bash
@@ -67,6 +70,7 @@ jobs:
           cargo fmt --check
           cargo test --lib --locked
           cargo clippy --all-targets --all-features --locked -- -D warnings
+          cargo audit --deny warnings
 
       - name: Open upstream update pull request
         if: steps.upstream.outputs.commit != steps.upstream.outputs.current
