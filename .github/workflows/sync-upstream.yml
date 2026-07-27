@@ -1,0 +1,94 @@
+name: Track successful upstream action
+
+on:
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-kixdns-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Validate latest successful upstream commit
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout panel repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Read latest successful official action
+        id: upstream
+        shell: bash
+        run: |
+          response="$(gh api 'repos/olicesx/kixdns/actions/workflows/build.yml/runs?branch=main&status=success&per_page=1')"
+          commit="$(jq -r '.workflow_runs[0].head_sha // empty' <<< "$response")"
+          run_id="$(jq -r '.workflow_runs[0].id // empty' <<< "$response")"
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo '官方 Action 未返回完整提交 SHA' >&2; exit 1; }
+          [[ "$run_id" =~ ^[0-9]+$ ]] || { echo '官方 Action 未返回 run id' >&2; exit 1; }
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "current=$(jq -r .commit upstream.lock.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Stop when already current
+        if: steps.upstream.outputs.commit == steps.upstream.outputs.current
+        run: echo "上游锁定已是最近成功构建"
+
+      - name: Update lock file
+        if: steps.upstream.outputs.commit != steps.upstream.outputs.current
+        env:
+          COMMIT: ${{ steps.upstream.outputs.commit }}
+          RUN_ID: ${{ steps.upstream.outputs.run_id }}
+        run: |
+          jq --arg commit "$COMMIT" --argjson run_id "$RUN_ID" \
+            '.commit = $commit | .official_run_id = $run_id' upstream.lock.json > upstream.lock.json.new
+          mv upstream.lock.json.new upstream.lock.json
+
+      - name: Validate patch compatibility
+        if: steps.upstream.outputs.commit != steps.upstream.outputs.current
+        shell: bash
+        run: |
+          cargo xtask prepare
+          upstream_dir=".upstream/kixdns-$(jq -r .commit upstream.lock.json | cut -c1-12)"
+          cd "$upstream_dir"
+          cargo fmt --check
+          cargo test --lib --locked
+          cargo clippy --all-targets --all-features --locked -- -D warnings
+
+      - name: Open upstream update pull request
+        if: steps.upstream.outputs.commit != steps.upstream.outputs.current
+        env:
+          COMMIT: ${{ steps.upstream.outputs.commit }}
+          RUN_ID: ${{ steps.upstream.outputs.run_id }}
+        shell: bash
+        run: |
+          short="${COMMIT:0:12}"
+          branch="automation/upstream-${short}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add upstream.lock.json
+          git commit -m "chore: track upstream ${short}"
+          git push --force origin "HEAD:refs/heads/${branch}"
+          existing="$(gh pr list --head "$branch" --state open --json url --jq '.[0].url // empty')"
+          if [[ -z "$existing" ]]; then
+            body="$(printf '锁定 KixDNS 官方 build.yml 最近成功 Action 的提交。\n\n- commit: `%s`\n- run: https://github.com/olicesx/kixdns/actions/runs/%s\n- 增强补丁、测试和 Clippy 已通过' "$COMMIT" "$RUN_ID")"
+            gh pr create \
+              --base main \
+              --head "$branch" \
+              --title "chore: track successful upstream ${short}" \
+              --body "$body"
+          fi

@@ -28,6 +28,7 @@ pub struct UpdateManager {
     workflow: Arc<str>,
     branch: Arc<str>,
     artifact: Arc<str>,
+    initial_commit: Option<Arc<str>>,
     binary_path: Arc<PathBuf>,
     apply_lock: Arc<Mutex<()>>,
 }
@@ -91,12 +92,16 @@ impl UpdateManager {
         workflow: String,
         branch: String,
         artifact: String,
+        installed_commit: Option<String>,
         binary_path: PathBuf,
     ) -> Result<Self, UpdateError> {
         validate_slug(&repository, true)?;
         validate_slug(&workflow, false)?;
         validate_slug(&branch, false)?;
         validate_slug(&artifact, false)?;
+        if let Some(commit) = installed_commit.as_deref() {
+            validate_commit(commit)?;
+        }
         let client = reqwest::Client::builder()
             .user_agent(concat!("kixdns-panel/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(20))
@@ -109,6 +114,7 @@ impl UpdateManager {
             workflow: Arc::from(workflow),
             branch: Arc::from(branch),
             artifact: Arc::from(artifact),
+            initial_commit: installed_commit.map(Arc::from),
             binary_path: Arc::new(binary_path),
             apply_lock: Arc::new(Mutex::new(())),
         })
@@ -119,7 +125,8 @@ impl UpdateManager {
             .database
             .get_setting(INSTALLED_COMMIT_KEY)
             .await
-            .map_err(|error| UpdateError::Install(error.to_string()))?;
+            .map_err(|error| UpdateError::Install(error.to_string()))?
+            .or_else(|| self.initial_commit.as_deref().map(str::to_owned));
         let runs_url = format!(
             "https://api.github.com/repos/{}/actions/workflows/{}/runs?branch={}&status=success&per_page=1",
             self.repository, self.workflow, self.branch
@@ -399,6 +406,15 @@ fn validate_digest(digest: &str) -> Result<(), UpdateError> {
     validate_hex_digest(value)
 }
 
+fn validate_commit(commit: &str) -> Result<(), UpdateError> {
+    if commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(UpdateError::Invalid(
+            "已安装构建提交必须是完整的 40 位十六进制 SHA".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_hex_digest(value: &str) -> Result<(), UpdateError> {
     if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(UpdateError::Verification("SHA-256 摘要格式无效".to_owned()));
@@ -510,7 +526,7 @@ fn ensure_update_platform() -> Result<(), UpdateError> {
 mod tests {
     use std::io::{Cursor, Write};
 
-    use super::{extract_binary, sha256, validate_digest, validate_slug};
+    use super::{extract_binary, sha256, validate_commit, validate_digest, validate_slug};
 
     #[test]
     fn validates_fixed_update_coordinates_and_digests() {
@@ -520,6 +536,8 @@ mod tests {
         assert!(validate_slug("../../workflow", false).is_err());
         assert!(validate_digest(&format!("sha256:{}", "a".repeat(64))).is_ok());
         assert!(validate_digest("sha256:bad").is_err());
+        assert!(validate_commit("374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25").is_ok());
+        assert!(validate_commit("not-a-commit").is_err());
     }
 
     #[test]

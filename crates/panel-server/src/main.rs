@@ -61,6 +61,10 @@ struct Args {
     #[arg(long, env = "KIXDNS_UPDATE_ARTIFACT", default_value_t = default_artifact())]
     update_artifact: String,
 
+    /// 当前完整安装包对应的面板仓库提交；在线更新记录优先于此值。
+    #[arg(long, env = "KIXDNS_INSTALLED_COMMIT")]
+    installed_commit: Option<String>,
+
     /// 自动更新替换的 `KixDNS Enhanced` 二进制路径。
     #[arg(long, env = "KIXDNS_BINARY", default_value = "/usr/local/bin/kixdns")]
     kixdns_binary: PathBuf,
@@ -94,6 +98,7 @@ async fn main() -> anyhow::Result<()> {
         update_workflow: args.update_workflow,
         update_branch: args.update_branch,
         update_artifact: args.update_artifact,
+        installed_commit: args.installed_commit,
         kixdns_binary: args.kixdns_binary,
         web_root: args.web_root,
         secure_cookie: args.secure_cookie,

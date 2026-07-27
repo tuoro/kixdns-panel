@@ -51,6 +51,7 @@ pub struct AppSettings {
     pub update_workflow: String,
     pub update_branch: String,
     pub update_artifact: String,
+    pub installed_commit: Option<String>,
     pub kixdns_binary: PathBuf,
     pub web_root: PathBuf,
     pub secure_cookie: bool,
@@ -183,6 +184,7 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         settings.update_workflow,
         settings.update_branch,
         settings.update_artifact,
+        settings.installed_commit,
         settings.kixdns_binary,
     )
     .map_err(|error| anyhow::anyhow!(error))?;
@@ -971,6 +973,7 @@ mod tests {
             update_workflow: "build-enhanced.yml".to_owned(),
             update_branch: "main".to_owned(),
             update_artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
+            installed_commit: None,
             kixdns_binary: directory.path().join("kixdns"),
             web_root,
             secure_cookie: false,

@@ -1,0 +1,46 @@
+[Unit]
+Description=KixDNS Enhanced DNS 服务
+Documentation=https://github.com/tuoro/kixdns-panel
+Wants=network-online.target
+After=network-online.target
+ConditionPathIsExecutable=/var/lib/kixdns-panel/bin/kixdns
+ConditionPathExists=/etc/kixdns/pipeline.json
+
+[Service]
+Type=simple
+User=kixdns
+Group=kixdns
+UMask=0027
+Environment=RUST_LOG=info
+ExecStart=/var/lib/kixdns-panel/bin/kixdns run --config /etc/kixdns/pipeline.json --admin-socket /run/kixdns/admin.sock
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=20s
+LimitNOFILE=65536
+RuntimeDirectory=kixdns
+RuntimeDirectoryMode=0750
+
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
