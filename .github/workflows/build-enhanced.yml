@@ -76,6 +76,12 @@ jobs:
           cargo clippy --all-targets --all-features --locked -- -D warnings
           cargo audit --deny warnings
 
+      - name: Verify enhanced runtime contract
+        run: |
+          cd "$UPSTREAM_DIR"
+          cargo build --locked
+          python3 "$GITHUB_WORKSPACE/scripts/dns_smoke.py" target/debug/kixdns
+
   build:
     name: Build Linux ${{ matrix.arch }}
     needs: verify

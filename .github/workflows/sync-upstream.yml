@@ -71,6 +71,8 @@ jobs:
           cargo test --lib --locked
           cargo clippy --all-targets --all-features --locked -- -D warnings
           cargo audit --deny warnings
+          cargo build --locked
+          python3 "$GITHUB_WORKSPACE/scripts/dns_smoke.py" target/debug/kixdns
 
       - name: Open upstream update pull request
         if: steps.upstream.outputs.commit != steps.upstream.outputs.current

@@ -7,6 +7,10 @@ node_modules/
 web/dist/
 web/.vite/
 
+# Python
+__pycache__/
+*.py[cod]
+
 # Local runtime data
 /data/
 *.db
@@ -32,4 +36,3 @@ Thumbs.db
 
 # Upstream source is fetched on demand and is never vendored.
 /.upstream/
-
