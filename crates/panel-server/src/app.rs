@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use axum::body::Body;
-use axum::extract::{ConnectInfo, Path, State};
+use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::header::{CACHE_CONTROL, CONTENT_SECURITY_POLICY, REFERRER_POLICY};
 use axum::http::{HeaderMap, HeaderValue, Request};
 use axum::middleware::{self, Next};
@@ -25,16 +25,26 @@ use crate::auth::{
     verify_password,
 };
 use crate::config_store::{ConfigError, ConfigStore, MAX_CONFIG_BYTES};
+use crate::control::{
+    ActiveConfig, CacheFlushResult, ControlClient, ControlError, Health, MetricsSnapshot,
+    ValidationResult,
+};
 use crate::db::{
     ConfigVersionSummary, Database, SessionRecord, UserRecord, ensure_database_parent,
 };
 use crate::error::{AppError, AppResult};
+use crate::operations::{
+    DnsDiagnostic, LogEntry, OperationError, Operations, ServiceAction, ServiceStatus,
+};
 
 #[derive(Debug, Clone)]
 pub struct AppSettings {
     pub bind: SocketAddr,
     pub database_path: PathBuf,
     pub config_path: PathBuf,
+    pub control_socket: PathBuf,
+    pub service_unit: String,
+    pub diagnostic_server: SocketAddr,
     pub secure_cookie: bool,
 }
 
@@ -42,6 +52,8 @@ pub struct AppSettings {
 pub struct AppState {
     database: Database,
     config: ConfigStore,
+    control: ControlClient,
+    operations: Operations,
     secure_cookie: bool,
     login_limiter: Arc<LoginLimiter>,
     password_slots: Arc<Semaphore>,
@@ -90,6 +102,40 @@ struct VersionsResponse {
     versions: Vec<ConfigVersionSummary>,
 }
 
+#[derive(Debug, Serialize)]
+struct OverviewResponse {
+    health: Health,
+    active_config: ActiveConfig,
+    metrics: MetricsSnapshot,
+}
+
+#[derive(Debug, Serialize)]
+struct ConfigApplyResponse {
+    version_id: i64,
+    sha256: String,
+    active_config: ActiveConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    validation: Option<ValidationResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LogsQuery {
+    #[serde(default = "default_log_limit")]
+    limit: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct LogsResponse {
+    entries: Vec<LogEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DnsDiagnosticRequest {
+    domain: String,
+    #[serde(default = "default_record_type")]
+    record_type: String,
+}
+
 /// 启动面板 HTTP 服务并等待关闭信号。
 ///
 /// # Errors
@@ -125,6 +171,9 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
     let state = AppState {
         database,
         config,
+        control: ControlClient::new(settings.control_socket),
+        operations: Operations::new(settings.service_unit, settings.diagnostic_server)
+            .map_err(|error| anyhow::anyhow!(error))?,
         secure_cookie: settings.secure_cookie,
         login_limiter: Arc::new(LoginLimiter::default()),
         password_slots: Arc::new(Semaphore::new(4)),
@@ -137,9 +186,16 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         .route("/api/v1/auth/login", post(login))
         .route("/api/v1/auth/logout", post(logout))
         .route("/api/v1/auth/session", get(session))
+        .route("/api/v1/overview", get(overview))
         .route("/api/v1/config", get(get_config).put(save_config))
+        .route("/api/v1/config/validate", post(validate_config))
         .route("/api/v1/config/versions", get(config_versions))
         .route("/api/v1/config/versions/{id}/restore", post(restore_config))
+        .route("/api/v1/cache/flush", post(flush_cache))
+        .route("/api/v1/service", get(service_status))
+        .route("/api/v1/service/{action}", post(service_action))
+        .route("/api/v1/logs", get(logs))
+        .route("/api/v1/diagnostics/dns", post(dns_diagnostic))
         .fallback(not_found)
         .layer(axum::extract::DefaultBodyLimit::max(
             MAX_CONFIG_BYTES + 64 * 1024,
@@ -313,14 +369,58 @@ async fn get_config(
         .map_err(map_config_error)
 }
 
+async fn overview(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> AppResult<Json<OverviewResponse>> {
+    authenticate(&state.database, &jar).await?;
+    let (health, active_config, metrics) = tokio::join!(
+        state.control.health(),
+        state.control.active_config(),
+        state.control.metrics(),
+    );
+    Ok(Json(OverviewResponse {
+        health: health.map_err(map_control_error)?,
+        active_config: active_config.map_err(map_control_error)?,
+        metrics: metrics.map_err(map_control_error)?,
+    }))
+}
+
+async fn validate_config(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Json(content): Json<Value>,
+) -> AppResult<Json<ValidationResult>> {
+    let session = authenticate(&state.database, &jar).await?;
+    verify_csrf(&session, &jar, &headers)?;
+    state
+        .control
+        .validate(&content)
+        .await
+        .map(Json)
+        .map_err(map_control_error)
+}
+
 async fn save_config(
     State(state): State<AppState>,
     jar: CookieJar,
     headers: HeaderMap,
     Json(request): Json<SaveConfigRequest>,
-) -> AppResult<Json<crate::config_store::SaveResult>> {
+) -> AppResult<Json<ConfigApplyResponse>> {
     let session = authenticate(&state.database, &jar).await?;
     verify_csrf(&session, &jar, &headers)?;
+    let previous = state.config.current().await.map_err(map_config_error)?;
+    let before_reload = state
+        .control
+        .active_config()
+        .await
+        .map_err(map_control_error)?;
+    let validation = state
+        .control
+        .validate(&request.content)
+        .await
+        .map_err(map_control_error)?;
     let result = state
         .config
         .save(
@@ -331,6 +431,24 @@ async fn save_config(
         )
         .await
         .map_err(map_config_error)?;
+    let active_config = match state
+        .control
+        .wait_for_config(
+            &result.sha256,
+            before_reload.reload_sequence,
+            std::time::Duration::from_secs(5),
+        )
+        .await
+    {
+        Ok(active) => active,
+        Err(error) => {
+            rollback_config(&state, previous.content, &result.sha256, &session.username).await?;
+            return Err(AppError::Unprocessable(
+                "reload_failed",
+                format!("新配置未生效，已自动回滚：{error}"),
+            ));
+        }
+    };
     state
         .database
         .audit(
@@ -341,7 +459,12 @@ async fn save_config(
         )
         .await
         .map_err(AppError::Internal)?;
-    Ok(Json(result))
+    Ok(Json(ConfigApplyResponse {
+        version_id: result.version_id,
+        sha256: result.sha256,
+        active_config,
+        validation: Some(validation),
+    }))
 }
 
 async fn config_versions(
@@ -359,14 +482,38 @@ async fn restore_config(
     jar: CookieJar,
     headers: HeaderMap,
     Json(request): Json<RestoreConfigRequest>,
-) -> AppResult<Json<crate::config_store::SaveResult>> {
+) -> AppResult<Json<ConfigApplyResponse>> {
     let session = authenticate(&state.database, &jar).await?;
     verify_csrf(&session, &jar, &headers)?;
+    let previous = state.config.current().await.map_err(map_config_error)?;
+    let before_reload = state
+        .control
+        .active_config()
+        .await
+        .map_err(map_control_error)?;
     let result = state
         .config
         .restore(id, &request.expected_sha256, session.username.clone())
         .await
         .map_err(map_config_error)?;
+    let active_config = match state
+        .control
+        .wait_for_config(
+            &result.sha256,
+            before_reload.reload_sequence,
+            std::time::Duration::from_secs(5),
+        )
+        .await
+    {
+        Ok(active) => active,
+        Err(error) => {
+            rollback_config(&state, previous.content, &result.sha256, &session.username).await?;
+            return Err(AppError::Unprocessable(
+                "reload_failed",
+                format!("历史配置未生效，已自动回滚：{error}"),
+            ));
+        }
+    };
     state
         .database
         .audit(
@@ -377,7 +524,164 @@ async fn restore_config(
         )
         .await
         .map_err(AppError::Internal)?;
+    Ok(Json(ConfigApplyResponse {
+        version_id: result.version_id,
+        sha256: result.sha256,
+        active_config,
+        validation: None,
+    }))
+}
+
+async fn flush_cache(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> AppResult<Json<CacheFlushResult>> {
+    let session = authenticate(&state.database, &jar).await?;
+    verify_csrf(&session, &jar, &headers)?;
+    let result = state
+        .control
+        .flush_cache()
+        .await
+        .map_err(map_control_error)?;
+    state
+        .database
+        .audit(
+            Some(session.username),
+            "cache.flush".to_owned(),
+            format!(
+                "清理响应缓存 {} 项、规则缓存 {} 项",
+                result.response_entries_before, result.rule_entries_before
+            ),
+            unix_timestamp(),
+        )
+        .await
+        .map_err(AppError::Internal)?;
     Ok(Json(result))
+}
+
+async fn service_status(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> AppResult<Json<ServiceStatus>> {
+    authenticate(&state.database, &jar).await?;
+    state
+        .operations
+        .service_status()
+        .await
+        .map(Json)
+        .map_err(map_operation_error)
+}
+
+async fn service_action(
+    State(state): State<AppState>,
+    Path(action): Path<String>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> AppResult<Json<ServiceStatus>> {
+    let session = authenticate(&state.database, &jar).await?;
+    verify_csrf(&session, &jar, &headers)?;
+    let parsed = ServiceAction::parse(&action).map_err(map_operation_error)?;
+    let status = state
+        .operations
+        .service_action(parsed)
+        .await
+        .map_err(map_operation_error)?;
+    state
+        .database
+        .audit(
+            Some(session.username),
+            format!("service.{action}"),
+            format!("服务状态：{}/{}", status.active_state, status.sub_state),
+            unix_timestamp(),
+        )
+        .await
+        .map_err(AppError::Internal)?;
+    Ok(Json(status))
+}
+
+async fn logs(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Query(query): Query<LogsQuery>,
+) -> AppResult<Json<LogsResponse>> {
+    authenticate(&state.database, &jar).await?;
+    let entries = state
+        .operations
+        .logs(query.limit)
+        .await
+        .map_err(map_operation_error)?;
+    Ok(Json(LogsResponse { entries }))
+}
+
+async fn dns_diagnostic(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Json(request): Json<DnsDiagnosticRequest>,
+) -> AppResult<Json<DnsDiagnostic>> {
+    let session = authenticate(&state.database, &jar).await?;
+    verify_csrf(&session, &jar, &headers)?;
+    let result = state
+        .operations
+        .dns_query(request.domain, request.record_type.clone())
+        .await
+        .map_err(map_operation_error)?;
+    state
+        .database
+        .audit(
+            Some(session.username),
+            "diagnostic.dns".to_owned(),
+            format!("执行 {} 查询", request.record_type),
+            unix_timestamp(),
+        )
+        .await
+        .map_err(AppError::Internal)?;
+    Ok(Json(result))
+}
+
+async fn rollback_config(
+    state: &AppState,
+    previous_content: Value,
+    failed_sha256: &str,
+    actor: &str,
+) -> AppResult<()> {
+    let current_sequence = state
+        .control
+        .active_config()
+        .await
+        .map_or(0, |active| active.reload_sequence);
+    let rollback = state
+        .config
+        .save(
+            previous_content,
+            failed_sha256,
+            "热加载失败自动回滚".to_owned(),
+            actor.to_owned(),
+        )
+        .await
+        .map_err(map_config_error)?;
+    state
+        .control
+        .wait_for_config(
+            &rollback.sha256,
+            current_sequence,
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .map_err(|error| {
+            AppError::Internal(anyhow::anyhow!("自动回滚后 KixDNS 未恢复：{error}"))
+        })?;
+    state
+        .database
+        .audit(
+            Some(actor.to_owned()),
+            "config.auto_rollback".to_owned(),
+            format!("自动回滚生成配置版本 #{}", rollback.version_id),
+            unix_timestamp(),
+        )
+        .await
+        .map_err(AppError::Internal)
 }
 
 async fn create_authenticated_response(
@@ -464,6 +768,38 @@ fn map_config_error(error: ConfigError) -> AppError {
     }
 }
 
+fn map_control_error(error: ControlError) -> AppError {
+    match error {
+        ControlError::Rejected(message) => AppError::Unprocessable("kixdns_rejected", message),
+        ControlError::Unavailable(message) => {
+            AppError::ServiceUnavailable("kixdns_unavailable", message)
+        }
+        ControlError::Protocol(message) => {
+            AppError::ServiceUnavailable("kixdns_protocol_error", message)
+        }
+    }
+}
+
+fn map_operation_error(error: OperationError) -> AppError {
+    match error {
+        OperationError::Invalid(message) => AppError::BadRequest("operation_invalid", message),
+        OperationError::Unsupported => {
+            AppError::ServiceUnavailable("operation_unsupported", "当前平台不支持此操作".to_owned())
+        }
+        OperationError::Failed(message) => {
+            AppError::ServiceUnavailable("operation_failed", message)
+        }
+    }
+}
+
+const fn default_log_limit() -> usize {
+    200
+}
+
+fn default_record_type() -> String {
+    "A".to_owned()
+}
+
 async fn not_found() -> AppError {
     AppError::NotFound("not_found", "端点不存在".to_owned())
 }
@@ -537,6 +873,9 @@ mod tests {
             bind: "127.0.0.1:0".parse().unwrap(),
             database_path: directory.path().join("panel.db"),
             config_path,
+            control_socket: directory.path().join("admin.sock"),
+            service_unit: "kixdns.service".to_owned(),
+            diagnostic_server: "127.0.0.1:53".parse().unwrap(),
             secure_cookie: false,
         })
         .await

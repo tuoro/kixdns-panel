@@ -22,6 +22,7 @@ Linux 默认地址为 `/run/kixdns/admin.sock`。协议使用 Unix Socket 上的
   "generation": 18,
   "sha256": "4d5b...",
   "loaded_at_unix": 1785215400,
+  "reload_sequence": 24,
   "last_reload": {
     "success": true,
     "error": null
@@ -30,6 +31,7 @@ Linux 默认地址为 `/run/kixdns/admin.sock`。协议使用 Unix Socket 上的
 ~~~
 
 Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致时才报告已生效。
+`reload_sequence` 在每次热加载成功或最终失败时递增，客户端必须等待它大于写入前的值，避免把旧回执误判为本次结果。
 
 ### `GET /v1/metrics`
 
@@ -47,6 +49,10 @@ Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致
 - `kixdns_config_reload_total{result}`
 
 标签值必须转义，且只能来自配置中有界的 Pipeline、规则和上游集合。
+
+### `POST /v1/config/validate`
+
+请求体为候选 KixDNS JSON 配置，最大 4 MiB。增强进程使用与热加载完全相同的解析、规范化和运行时编译流程验证配置，但不修改磁盘或活动配置。成功返回 Pipeline 与规则数量；失败返回 `422` 和结构化错误。
 
 ### `POST /v1/cache/flush`
 

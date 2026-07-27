@@ -17,6 +17,10 @@ pub enum AppError {
     NotFound(&'static str, String),
     #[error("请求过于频繁，请稍后重试")]
     TooManyRequests,
+    #[error("{1}")]
+    Unprocessable(&'static str, String),
+    #[error("{1}")]
+    ServiceUnavailable(&'static str, String),
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -53,6 +57,10 @@ impl IntoResponse for AppError {
                 "rate_limited",
                 "请求过于频繁，请稍后重试".to_owned(),
             ),
+            Self::Unprocessable(code, message) => (StatusCode::UNPROCESSABLE_ENTITY, code, message),
+            Self::ServiceUnavailable(code, message) => {
+                (StatusCode::SERVICE_UNAVAILABLE, code, message)
+            }
             Self::Internal(error) => {
                 tracing::error!(error = ?error, "请求处理失败");
                 (
