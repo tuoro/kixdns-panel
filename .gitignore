@@ -1,0 +1,35 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Node.js
+node_modules/
+web/dist/
+web/.vite/
+
+# Local runtime data
+/data/
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.pid
+.env
+.env.*
+!.env.example
+
+# Build and test output
+/dist/
+/coverage/
+/playwright-report/
+/test-results/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Upstream source is fetched on demand and is never vendored.
+/.upstream/
+

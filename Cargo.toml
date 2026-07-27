@@ -1,0 +1,17 @@
+[workspace]
+members = ["tools/xtask"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+license = "GPL-3.0-only"
+authors = ["KixDNS Panel Contributors"]
+repository = "https://github.com/tuoro/kixdns-panel"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+
