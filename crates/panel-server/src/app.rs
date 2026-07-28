@@ -39,6 +39,7 @@ use crate::operations::{
 };
 use crate::updates::{
     InstalledVersion, UpdateError, UpdateInfo, UpdateManager, UpdateSettings, VersionCatalog,
+    VersionSource,
 };
 
 #[derive(Debug, Clone)]
@@ -140,6 +141,12 @@ struct LogsQuery {
     limit: usize,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct KixdnsVersionsQuery {
+    #[serde(default)]
+    source: VersionSource,
+}
+
 #[derive(Debug, Serialize)]
 struct LogsResponse {
     entries: Vec<LogEntry>,
@@ -232,7 +239,7 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         .route("/updates/apply", post(apply_update))
         .route("/kixdns/versions", get(kixdns_versions))
         .route(
-            "/kixdns/versions/{commit}/install",
+            "/kixdns/versions/{source}/{source_id}/install",
             post(install_kixdns_version),
         )
         .route(
@@ -750,12 +757,13 @@ async fn apply_update(
 
 async fn kixdns_versions(
     State(state): State<AppState>,
+    Query(query): Query<KixdnsVersionsQuery>,
     jar: CookieJar,
 ) -> AppResult<Json<VersionCatalog>> {
     authenticate(&state.database, &jar).await?;
     state
         .updates
-        .catalog()
+        .catalog(query.source)
         .await
         .map(Json)
         .map_err(map_update_error)
@@ -763,7 +771,7 @@ async fn kixdns_versions(
 
 async fn install_kixdns_version(
     State(state): State<AppState>,
-    Path(commit): Path<String>,
+    Path((source, source_id)): Path<(VersionSource, u64)>,
     jar: CookieJar,
     headers: HeaderMap,
 ) -> AppResult<Json<InstalledVersion>> {
@@ -771,7 +779,7 @@ async fn install_kixdns_version(
     verify_csrf(&session, &jar, &headers)?;
     let result = state
         .updates
-        .install_version(&commit, &state.operations, &state.control)
+        .install_version(source, source_id, &state.operations, &state.control)
         .await
         .map_err(map_update_error)?;
     state
@@ -779,7 +787,7 @@ async fn install_kixdns_version(
         .audit(
             Some(session.username),
             "kixdns.version.install".to_owned(),
-            format!("安装并激活增强构建 {}", result.commit),
+            format!("从 {source:?} 安装并激活增强构建 {}", result.commit),
             unix_timestamp(),
         )
         .await
