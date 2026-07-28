@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: write
   contents: write
   pull-requests: write
 
@@ -47,9 +48,22 @@ jobs:
           echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
           echo "current=$(jq -r .commit upstream.lock.json)" >> "$GITHUB_OUTPUT"
 
-      - name: Stop when already current
+      - name: Ensure current lock has a successful build
         if: steps.upstream.outputs.commit == steps.upstream.outputs.current
-        run: echo "上游锁定已是最近成功构建"
+        shell: bash
+        run: |
+          lock_updated_at="$(git log -1 --format=%ct -- upstream.lock.json)"
+          latest_build_at="$(
+            gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/workflows/build-kixdns.yml/runs" \
+              -f branch=main -f status=success -f per_page=20 \
+              --jq '[.workflow_runs[] | select(.event != "pull_request")][0].created_at // empty'
+          )"
+          if [[ -z "$latest_build_at" ]] || (( $(date -d "$latest_build_at" +%s) < lock_updated_at )); then
+            gh workflow run build-kixdns.yml --ref main
+            echo "当前锁定缺少成功 Artifact，已重新派发增强构建"
+          else
+            echo "上游锁定和增强 Artifact 均为最新"
+          fi
 
       - name: Update lock file
         if: steps.upstream.outputs.commit != steps.upstream.outputs.current
@@ -75,7 +89,7 @@ jobs:
           cargo build --locked
           python3 "$GITHUB_WORKSPACE/scripts/dns_smoke.py" target/debug/kixdns
 
-      - name: Open upstream update pull request
+      - name: Merge validated upstream update
         if: steps.upstream.outputs.commit != steps.upstream.outputs.current
         env:
           COMMIT: ${{ steps.upstream.outputs.commit }}
@@ -90,12 +104,15 @@ jobs:
           git add upstream.lock.json
           git commit -m "chore: track upstream ${short}"
           git push --force origin "HEAD:refs/heads/${branch}"
-          existing="$(gh pr list --head "$branch" --state open --json url --jq '.[0].url // empty')"
-          if [[ -z "$existing" ]]; then
+          pull_request="$(gh pr list --head "$branch" --state open --json url --jq '.[0].url // empty')"
+          if [[ -z "$pull_request" ]]; then
             body="$(printf '锁定 KixDNS 官方 build.yml 最近成功 Action 的提交。\n\n- commit: `%s`\n- run: https://github.com/olicesx/kixdns/actions/runs/%s\n- 增强补丁、测试和 Clippy 已通过' "$COMMIT" "$RUN_ID")"
-            gh pr create \
+            pull_request="$(gh pr create \
               --base main \
               --head "$branch" \
               --title "chore: track successful upstream ${short}" \
-              --body "$body"
+              --body "$body")"
           fi
+          gh pr merge "$pull_request" --squash --delete-branch
+          [[ "$(gh pr view "$pull_request" --json state --jq .state)" == 'MERGED' ]]
+          gh workflow run build-kixdns.yml --ref main
