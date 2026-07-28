@@ -7,7 +7,8 @@ KixDNS 的非 Fork 增强发行版与管理面板。项目按官方 `main` 分�
 - KixDNS 内部请求、并发、缓存、Pipeline、规则和上游指标
 - 带代次、SHA-256、重载序号与错误信息的结构化热加载回执
 - Argon2id 管理员认证、HttpOnly 会话、CSRF 防护和登录限流
-- JSON 配置校验、乐观锁保存、版本历史、回滚和失败自动恢复
+- 与上游编辑器功能对齐的结构化表单、原始 JSON、流程预览及导入导出
+- KixDNS 编译校验、乐观锁保存、版本历史、回滚和失败自动恢复
 - systemd 固定动作控制、journal 日志、固定目标 DNS 诊断
 - GitHub 公共元数据 + nightly.link 下载，Artifact 与包内双重摘要校验
 - Vue 3 响应式控制台，桌面侧栏与移动端底部导航
