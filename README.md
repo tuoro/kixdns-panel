@@ -47,8 +47,8 @@ Browser -> Panel Web -> Panel Server -> SQLite / 配置 / systemd
 
 | 面板版本源 | 上游身份 | 增强工作流 | x86_64 Artifact |
 | --- | --- | --- | --- |
-| Actions | 官方 Run `#30235703570`，提交 `374d63ccfdde` | `build-kixdns.yml` | `kixdns-enhanced-action-30235703570-p5-10844244cec4-linux-x86_64` |
-| Releases | 正式版 `v0.1.1`，提交 `647c5b1d2af6` | `build-kixdns-release.yml` | `kixdns-enhanced-release-v0.1.1-p5-b05f496186fa-linux-x86_64` |
+| Actions | 官方 Run `#30235703570`，提交 `374d63ccfdde` | `build-kixdns.yml` | `kixdns-enhanced-action-30235703570-p5-084923594dcf-linux-x86_64` |
+| Releases | 正式版 `v0.1.1`，提交 `647c5b1d2af6` | `build-kixdns-release.yml` | `kixdns-enhanced-release-v0.1.1-p5-a8ccd99dab08-linux-x86_64` |
 
 两种包都来自本仓库 Actions，并通过 nightly.link 下载；`Releases` 只表示其上游源码基线来自 `olicesx/kixdns` 正式发布，本仓库不创建 GitHub Release。Action 目录当前包含 4 个已验证版本，之后自动追加并滚动保留最多 10 个；Release 从增强协议基线 `v0.1.1` 起只追加、不设数量上限。`v0.1.0` 的核心架构早于增强协议，不能安全套用当前补丁，因此不会伪装成可安装增强包。
 
