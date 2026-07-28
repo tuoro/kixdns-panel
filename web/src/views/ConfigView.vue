@@ -1,18 +1,39 @@
 <script setup lang="ts">
-import { Check, Clock3, History, RefreshCw, RotateCcw, Save, ShieldCheck, TriangleAlert } from '@lucide/vue'
+import {
+  Braces,
+  Check,
+  Clock3,
+  Download,
+  FileUp,
+  History,
+  RefreshCw,
+  RotateCcw,
+  Save,
+  Settings2,
+  ShieldCheck,
+  TriangleAlert,
+  Workflow,
+} from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
 import { apiRequest, jsonBody } from '../api/client'
 import type { ConfigApplyResult, ConfigDocument, ConfigVersion, ConfigVersions, ValidationResult } from '../api/types'
+import ConfigFlowPreview from '../components/config/ConfigFlowPreview.vue'
+import StructuredConfigEditor from '../components/config/StructuredConfigEditor.vue'
 import JsonEditor from '../components/JsonEditor.vue'
+import { normalizeConfig, serializeConfig } from '../config-editor/model'
+import type { ConfigEditorMode, KixConfig } from '../config-editor/types'
 import { useToast } from '../composables/useToast'
 import { errorMessage, formatDate, shortHash } from '../utils'
 
 const document = ref<ConfigDocument | null>(null)
+const config = ref<KixConfig | null>(null)
 const versions = ref<ConfigVersion[]>([])
 const source = ref('')
 const baseline = ref('')
 const message = ref('')
+const mode = ref<ConfigEditorMode>('structured')
+const fileInput = ref<HTMLInputElement | null>(null)
 const loading = ref(true)
 const validating = ref(false)
 const saving = ref(false)
@@ -21,11 +42,17 @@ const validation = ref<ValidationResult | null>(null)
 const parseError = ref('')
 const toast = useToast()
 const changed = computed(() => source.value !== baseline.value)
+let syncingConfig = false
 
 watch(source, () => {
   validation.value = null
   parseError.value = ''
 })
+
+watch(config, (value) => {
+  if (!value || syncingConfig) return
+  source.value = serializeConfig(value)
+}, { deep: true, flush: 'sync' })
 
 function confirmDiscard(): boolean {
   return !changed.value || window.confirm('当前配置尚未保存，确定离开？')
@@ -50,6 +77,25 @@ function parseSource(): Record<string, unknown> | null {
   }
 }
 
+function syncStructuredFromSource(): boolean {
+  const content = parseSource()
+  if (!content) return false
+  syncingConfig = true
+  config.value = normalizeConfig(content)
+  source.value = serializeConfig(config.value)
+  syncingConfig = false
+  return true
+}
+
+function activateMode(nextMode: ConfigEditorMode): void {
+  if (mode.value === nextMode) return
+  if (mode.value === 'json' && nextMode !== 'json' && !syncStructuredFromSource()) {
+    toast.error('JSON 解析失败，修正后才能切换视图')
+    return
+  }
+  mode.value = nextMode
+}
+
 async function load(): Promise<void> {
   loading.value = true
   try {
@@ -59,8 +105,11 @@ async function load(): Promise<void> {
     ])
     document.value = nextDocument
     versions.value = history.versions
-    source.value = JSON.stringify(nextDocument.content, null, 2)
+    syncingConfig = true
+    config.value = normalizeConfig(nextDocument.content)
+    source.value = serializeConfig(config.value)
     baseline.value = source.value
+    syncingConfig = false
     validation.value = null
   } catch (error) {
     toast.error(errorMessage(error))
@@ -78,7 +127,7 @@ async function validate(): Promise<ValidationResult | null> {
       method: 'POST',
       ...jsonBody(content),
     })
-    toast.success(`配置通过校验：${validation.value.pipeline_count} 条 Pipeline，${validation.value.rule_count} 条规则`)
+    toast.success(`配置通过校验，${validation.value.pipeline_count} 条 Pipeline，${validation.value.rule_count} 条规则`)
     return validation.value
   } catch (error) {
     toast.error(errorMessage(error))
@@ -127,6 +176,37 @@ async function restore(version: ConfigVersion): Promise<void> {
   }
 }
 
+async function importFile(event: Event): Promise<void> {
+  const input = event.currentTarget as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  try {
+    if (file.size > 2 * 1024 * 1024) throw new Error('配置文件不能超过 2 MiB')
+    source.value = await file.text()
+    if (!syncStructuredFromSource()) {
+      mode.value = 'json'
+      throw new Error(parseError.value || 'JSON 解析失败')
+    }
+    mode.value = 'structured'
+    toast.success(`已导入 ${file.name}`)
+  } catch (error) {
+    toast.error(errorMessage(error))
+  } finally {
+    input.value = ''
+  }
+}
+
+function downloadJson(): void {
+  if (!parseSource()) return
+  const blob = new Blob([source.value], { type: 'application/json;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const anchor = window.document.createElement('a')
+  anchor.href = url
+  anchor.download = 'pipeline.json'
+  anchor.click()
+  URL.revokeObjectURL(url)
+}
+
 onBeforeRouteLeave(confirmDiscard)
 onMounted(() => {
   window.addEventListener('beforeunload', preventAccidentalClose)
@@ -145,19 +225,32 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
       <section class="editor-panel">
         <header class="editor-toolbar">
           <div><strong>pipeline.json</strong><span v-if="changed" class="unsaved-dot">未保存</span></div>
-          <div>
+          <div class="editor-toolbar__actions">
+            <input ref="fileInput" class="visually-hidden" type="file" accept=".json,application/json" @change="importFile">
+            <button class="icon-button" type="button" title="导入 JSON" :disabled="loading || saving" @click="fileInput?.click()"><FileUp :size="16" /></button>
+            <button class="icon-button" type="button" title="下载 JSON" :disabled="loading" @click="downloadJson"><Download :size="16" /></button>
             <button class="button button--secondary" type="button" :disabled="loading || validating || saving || restoring !== null" @click="validate"><ShieldCheck :size="16" />{{ validating ? '校验中' : '校验' }}</button>
             <button class="button button--primary" type="button" :disabled="loading || validating || saving || restoring !== null || !changed" @click="save"><Save :size="16" />{{ saving ? '应用中' : '保存并热加载' }}</button>
           </div>
         </header>
+
+        <nav class="config-mode-tabs" role="tablist" aria-label="配置编辑模式">
+          <button type="button" role="tab" :aria-selected="mode === 'structured'" :class="{ active: mode === 'structured' }" @click="activateMode('structured')"><Settings2 :size="15" />表单</button>
+          <button type="button" role="tab" :aria-selected="mode === 'json'" :class="{ active: mode === 'json' }" @click="activateMode('json')"><Braces :size="15" />JSON</button>
+          <button type="button" role="tab" :aria-selected="mode === 'flow'" :class="{ active: mode === 'flow' }" @click="activateMode('flow')"><Workflow :size="15" />流程</button>
+        </nav>
+
         <div v-if="loading" class="editor-loading">正在读取配置…</div>
-        <JsonEditor v-else v-model="source" />
+        <StructuredConfigEditor v-else-if="mode === 'structured' && config" v-model="config" @notice="toast.info($event)" />
+        <JsonEditor v-else-if="mode === 'json'" v-model="source" />
+        <ConfigFlowPreview v-else-if="config" :config="config" />
+
         <footer class="editor-footer">
           <div class="validation-state">
             <TriangleAlert v-if="parseError" :size="16" /><Check v-else-if="validation?.valid" :size="16" /><Clock3 v-else :size="16" />
             <span :class="{ 'text-danger': parseError }">{{ parseError || (validation?.valid ? `KixDNS 校验通过 · ${validation.pipeline_count} Pipeline / ${validation.rule_count} 规则` : '保存前将调用 KixDNS 内部编译器校验') }}</span>
           </div>
-          <input v-model="message" aria-label="版本说明" maxlength="160" placeholder="版本说明（可选）" />
+          <input v-model="message" aria-label="版本说明" maxlength="160" placeholder="版本说明（可选）">
         </footer>
       </section>
 
