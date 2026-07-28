@@ -2,6 +2,20 @@
 
 KixDNS 的非 Fork 增强发行版与管理面板。项目按官方 `main` 分支最近成功 Action 的提交构建，不保存上游源码副本；增强能力以可重放补丁维护，管理端通过稳定的本机协议与数据面解耦。
 
+## 界面预览
+
+### 运行概览
+
+![运行概览：请求、缓存、Pipeline、上游与配置状态](docs/images/dashboard.png)
+
+### 配置管理
+
+![配置管理：结构化编辑、JSON、流程预览与版本历史](docs/images/configuration.png)
+
+### 系统与更新
+
+![系统与更新：宿主机服务控制、版本安装与切换](docs/images/system.png)
+
 ## 已实现能力
 
 - KixDNS 内部请求、并发、缓存、Pipeline、规则和上游指标
