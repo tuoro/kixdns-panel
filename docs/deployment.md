@@ -4,7 +4,7 @@
 
 首个生产目标为带 systemd 与 Polkit 的 Linux x86_64/ARM64。安装需要 `systemctl`、`polkit`、`sha256sum` 和 `getent`；下载示例还使用 `curl`、`unzip` 与 `jq`。
 
-完整安装包由 `Build enhanced KixDNS` Action 生成，不依赖 GitHub Release。包中包含 KixDNS Enhanced、Panel Server、Vue 静态资源、服务单元和安装脚本。
+完整安装包由 `Build KixDNS Panel` Action 生成，不依赖 GitHub Release。面板工作流复用上游身份、补丁集和架构完全匹配的已校验 KixDNS Artifact，不会因面板修改而重新编译数据面。包中包含 KixDNS Enhanced、Panel Server、Vue 静态资源、服务单元和安装脚本。
 
 ## 获取并验证安装包
 
@@ -12,7 +12,7 @@ nightly.link 可以直接下载公共 Action Artifact，不需要 GitHub Token�
 
 ```bash
 REPOSITORY=tuoro/kixdns-panel
-WORKFLOW=build-enhanced.yml
+WORKFLOW=build-panel.yml
 ARTIFACT=kixdns-panel-linux-x86_64
 
 RUN_ID="$(curl -fsSL \
@@ -95,7 +95,7 @@ sudo systemctl restart kixdns-panel.service
 
 面板“系统”页管理的是 KixDNS Enhanced 数据面，不会在线替换 Panel Server 或 Web：
 
-1. 从 GitHub 公共 API 读取本项目最近 12 次成功的 `Build enhanced KixDNS` Action；安装时按完整 40 位提交 SHA 在最近 30 次成功构建中定位对应 Run。
+1. 从 GitHub 公共 API 读取本项目最近 12 次成功的 `Build KixDNS Enhanced` Action；安装时按完整 40 位提交 SHA 在最近 30 次成功构建中定位对应 Run。
 2. 使用该 Run 的 nightly.link 固定地址匿名下载 Artifact，不要求用户配置 GitHub Token，也不接受前端传入下载 URL。
 3. 校验 GitHub Artifact digest、包内 `SHA256SUMS`、`upstream.lock.json` 构建身份、控制协议、ELF 格式和 CPU 架构，再写入 `/var/lib/kixdns-panel/versions/<commit>/`。
 4. 激活版本时重新校验清单和二进制 SHA-256，然后停止服务、原子替换运行文件、启动服务并等待增强接口健康。
@@ -105,7 +105,7 @@ sudo systemctl restart kixdns-panel.service
 
 SQLite 中配置历史最多保留 100 条，审计事件最多保留 10,000 条；每次写入与清理处于同一事务，服务启动时也会整理旧数据库，避免长期运行造成无界增长。
 
-Panel Server 与 Web 更新仍需下载新的完整包并重新运行 `scripts/install.sh`。脚本保留现有配置、数据库和环境文件，旧静态资源保存在 `/usr/share/kixdns-panel/web.previous`。完整包内的 `BUILD_COMMIT` 会写入面板环境，作为初始 KixDNS 版本标识。
+Panel Server 与 Web 更新仍需下载新的完整包并重新运行 `scripts/install.sh`。脚本保留现有配置、数据库和环境文件，旧静态资源保存在 `/usr/share/kixdns-panel/web.previous`。完整包使用 `PANEL_BUILD_COMMIT` 标识管理面构建，使用 `KIXDNS_BUILD_COMMIT` 标识被复用的数据面构建；只有后者会写入 `KIXDNS_INSTALLED_COMMIT`。旧版默认工作流名会迁移到 `build-kixdns.yml`，自定义更新源保持不变。
 
 服务生命周期只支持启动、停止和重启。KixDNS 没有独立的服务重载动作，面板不会提供重载按钮、API、Polkit 动词或 systemd `ExecReload`。配置保存和历史版本恢复使用 KixDNS 的文件监听热加载链路：候选内容先由 KixDNS 自身校验；写入后必须收到新的 `reload_sequence` 且 SHA-256 一致，否则面板恢复旧配置。该回执不等同于服务重载命令。
 

@@ -43,6 +43,16 @@ Panel Web ---- Panel Server ---- SQLite
 
 每日同步 Action 只读取上游官方 `build.yml` 最近一次成功运行。新提交通过补丁重放、测试和 Clippy 后才创建锁定文件更新 PR；失败时主分支和现有 Artifact 都保持不变。面板 Web/Server 只依赖控制协议版本，因此上游适配不会迫使管理端同步修改。
 
+## 构建边界
+
+面板和增强内核使用独立工作流，避免把面板提交误认为新的 KixDNS 版本：
+
+- `build-kixdns.yml` 只监听 `upstream.lock.json`、`patches/`、xtask、冒烟测试和 Rust 工具链。它验证并生成 `kixdns-enhanced-linux-{arch}`，纯面板或文档修改不会触发。
+- `build-panel.yml` 只监听 Panel Server、Web、部署脚本和面板依赖。它从最近成功的内核工作流复用上游身份完全匹配的 Artifact，经包内 SHA-256 和 ELF 架构校验后生成完整安装包，不重新编译 KixDNS。
+- PR 只执行对应边界的验证 Job，不上传可安装 Artifact；README、截图等纯文档变化不触发打包工作流。
+
+完整包分别保存 `PANEL_BUILD_COMMIT` 和 `KIXDNS_BUILD_COMMIT`。前者标识管理面构建，后者标识数据面构建；`KIXDNS_SOURCE_RUN_ID` 保留被复用内核的 Action Run。Artifact digest 只用于验证 ZIP 传输内容，包内 `binary_sha256` 才是 KixDNS 二进制内容身份。
+
 ## 安全边界
 
 - 管理通道默认使用 Unix Socket，权限为 `0660`；不监听公网管理端口。
