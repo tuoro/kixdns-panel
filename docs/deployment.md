@@ -55,6 +55,8 @@ ARM64 使用 `kixdns-panel-linux-arm64`。安装脚本还会校验包内 `SHA256
 
 面板进程不以 root 运行。Polkit 规则只允许 `kixdns-panel` 对 `kixdns.service` 执行 `start`、`stop`、`restart`；后端本身也使用相同动作白名单。systemd 单元启用了只读系统目录、私有临时目录、能力边界和地址族限制。
 
+日志页依赖 `systemd-journal` 组。journald 本身不支持按 unit 授权，因此该组也能读取宿主机其他 journal；这是当前部署的明确权限边界。不能接受此权限时，应移除 `kixdns-panel` 的 `systemd-journal` 附加组，同时停用面板日志页。不要用带参数通配符的 sudoers 规则替代，它会扩大命令执行范围。
+
 ## 初次访问
 
 默认只监听 `127.0.0.1:5738`。本机可直接访问，也可先使用 SSH 隧道：
@@ -79,6 +81,8 @@ location / {
 }
 ```
 
+默认仅信任回环地址 `127.0.0.1/32,::1/128` 提供的 `X-Forwarded-For`。如果反向代理运行在容器或另一台主机，必须把它的精确 CIDR 写入 `KIXDNS_TRUSTED_PROXIES`；未受信任的直连请求无法伪造限流来源。后端从右向左剥离可信代理，使用第一个非可信地址作为客户端地址。
+
 启用 HTTPS 后修改并重启：
 
 ```bash
@@ -93,11 +97,13 @@ sudo systemctl restart kixdns-panel.service
 
 1. 从 GitHub 公共 API 读取本项目最近 12 次成功的 `Build enhanced KixDNS` Action；安装时按完整 40 位提交 SHA 在最近 30 次成功构建中定位对应 Run。
 2. 使用该 Run 的 nightly.link 固定地址匿名下载 Artifact，不要求用户配置 GitHub Token，也不接受前端传入下载 URL。
-3. 校验 GitHub Artifact digest、包内 `SHA256SUMS`、ELF 格式和 CPU 架构，再写入 `/var/lib/kixdns-panel/versions/<commit>/`。
+3. 校验 GitHub Artifact digest、包内 `SHA256SUMS`、`upstream.lock.json` 构建身份、控制协议、ELF 格式和 CPU 架构，再写入 `/var/lib/kixdns-panel/versions/<commit>/`。
 4. 激活版本时重新校验清单和二进制 SHA-256，然后停止服务、原子替换运行文件、启动服务并等待增强接口健康。
 5. 启动或健康检查失败时恢复原二进制；首次安装失败则恢复为未安装状态。
 
 已下载版本可直接切换，无需重复联网。面板最多保留 8 个本地版本，清理时始终保留当前版本。完整安装包自带的 KixDNS 会在首次版本操作时自动收录到库存。
+
+SQLite 中配置历史最多保留 100 条，审计事件最多保留 10,000 条；每次写入与清理处于同一事务，服务启动时也会整理旧数据库，避免长期运行造成无界增长。
 
 Panel Server 与 Web 更新仍需下载新的完整包并重新运行 `scripts/install.sh`。脚本保留现有配置、数据库和环境文件，旧静态资源保存在 `/usr/share/kixdns-panel/web.previous`。完整包内的 `BUILD_COMMIT` 会写入面板环境，作为初始 KixDNS 版本标识。
 

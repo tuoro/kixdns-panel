@@ -162,17 +162,17 @@ main() {
   command -v systemctl >/dev/null || fail "系统未安装 systemd"
   command -v getent >/dev/null || fail "系统缺少 getent"
   command -v pkaction >/dev/null || fail "系统未安装 polkit"
+  command -v sha256sum >/dev/null || fail "系统缺少 sha256sum"
   require_file "${PACKAGE_ROOT}/bin/kixdns"
   require_file "${PACKAGE_ROOT}/bin/kixdns-panel-server"
   require_file "${PACKAGE_ROOT}/web/index.html"
   require_file "${PACKAGE_ROOT}/deploy/config/pipeline.json"
   require_file "${PACKAGE_ROOT}/BUILD_COMMIT"
+  require_file "${PACKAGE_ROOT}/SHA256SUMS"
   build_commit="$(tr -d '[:space:]' < "${PACKAGE_ROOT}/BUILD_COMMIT")"
   [[ "${build_commit}" =~ ^[0-9a-fA-F]{40}$ ]] || fail "BUILD_COMMIT 不是完整提交 SHA"
 
-  if [[ -f "${PACKAGE_ROOT}/SHA256SUMS" ]]; then
-    (cd "${PACKAGE_ROOT}" && sha256sum --check --quiet SHA256SUMS) || fail "安装包摘要校验失败"
-  fi
+  (cd "${PACKAGE_ROOT}" && sha256sum --check --quiet SHA256SUMS) || fail "安装包摘要校验失败"
 
   create_accounts
   install -d -o "${PANEL_USER}" -g "${KIXDNS_GROUP}" -m 0750 \

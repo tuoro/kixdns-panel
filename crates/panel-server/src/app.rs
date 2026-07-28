@@ -21,9 +21,9 @@ use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
 use crate::auth::{
-    CSRF_COOKIE, LoginLimiter, SESSION_COOKIE, SESSION_SECONDS, authenticate, hash_password,
-    issue_session, token_hash, unix_timestamp, validate_password, validate_username, verify_csrf,
-    verify_password,
+    CSRF_COOKIE, LoginLimiter, SESSION_COOKIE, SESSION_SECONDS, TrustedProxies, authenticate,
+    hash_password, issue_session, token_hash, unix_timestamp, validate_password, validate_username,
+    verify_csrf, verify_password,
 };
 use crate::config_store::{ConfigError, ConfigStore, MAX_CONFIG_BYTES};
 use crate::control::{
@@ -58,6 +58,7 @@ pub struct AppSettings {
     pub kixdns_versions: PathBuf,
     pub web_root: PathBuf,
     pub secure_cookie: bool,
+    pub trusted_proxies: TrustedProxies,
 }
 
 #[derive(Clone)]
@@ -68,6 +69,7 @@ pub struct AppState {
     operations: Operations,
     updates: UpdateManager,
     secure_cookie: bool,
+    trusted_proxies: TrustedProxies,
     login_limiter: Arc<LoginLimiter>,
     password_slots: Arc<Semaphore>,
     config_apply_lock: Arc<Mutex<()>>,
@@ -203,6 +205,7 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
             .map_err(|error| anyhow::anyhow!(error))?,
         updates,
         secure_cookie: settings.secure_cookie,
+        trusted_proxies: settings.trusted_proxies,
         login_limiter: Arc::new(LoginLimiter::default()),
         password_slots: Arc::new(Semaphore::new(4)),
         config_apply_lock: Arc::new(Mutex::new(())),
@@ -271,10 +274,12 @@ async fn setup_status(State(state): State<AppState>) -> AppResult<Json<SetupStat
 async fn setup(
     State(state): State<AppState>,
     ConnectInfo(address): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     jar: CookieJar,
     Json(request): Json<Credentials>,
 ) -> AppResult<(CookieJar, Json<AuthResponse>)> {
-    state.login_limiter.check(address.ip())?;
+    let client_ip = state.trusted_proxies.client_ip(address.ip(), &headers);
+    state.login_limiter.check(client_ip, &request.username)?;
     if state
         .database
         .has_users()
@@ -307,7 +312,7 @@ async fn setup(
                 AppError::Internal(error)
             }
         })?;
-    state.login_limiter.clear(address.ip());
+    state.login_limiter.clear(client_ip, &username);
     state
         .database
         .audit(
@@ -324,10 +329,12 @@ async fn setup(
 async fn login(
     State(state): State<AppState>,
     ConnectInfo(address): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     jar: CookieJar,
     Json(request): Json<Credentials>,
 ) -> AppResult<(CookieJar, Json<AuthResponse>)> {
-    state.login_limiter.check(address.ip())?;
+    let client_ip = state.trusted_proxies.client_ip(address.ip(), &headers);
+    state.login_limiter.check(client_ip, &request.username)?;
     let username = validate_username(&request.username).ok();
     let user = match username {
         Some(username) => state
@@ -356,10 +363,12 @@ async fn login(
         .await
         .map_err(AppError::Internal)?;
     let Some(user) = user.filter(|_| password_valid && password_allowed) else {
-        state.login_limiter.record_failure(address.ip());
+        state
+            .login_limiter
+            .record_failure(client_ip, &request.username);
         return Err(AppError::Unauthorized);
     };
-    state.login_limiter.clear(address.ip());
+    state.login_limiter.clear(client_ip, &user.username);
     state
         .database
         .audit(
@@ -1050,7 +1059,7 @@ mod tests {
     use tempfile::{TempDir, tempdir};
     use tower::ServiceExt;
 
-    use super::{AppSettings, build_app};
+    use super::{AppSettings, TrustedProxies, build_app};
 
     struct AuthenticatedApp {
         _directory: TempDir,
@@ -1082,6 +1091,7 @@ mod tests {
             kixdns_versions: directory.path().join("versions"),
             web_root,
             secure_cookie: false,
+            trusted_proxies: TrustedProxies::default(),
         })
         .await
         .unwrap();

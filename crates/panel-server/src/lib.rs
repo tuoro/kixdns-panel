@@ -8,3 +8,4 @@ mod operations;
 mod updates;
 
 pub use app::{AppSettings, build_app, run};
+pub use auth::TrustedProxies;

@@ -8,6 +8,9 @@ use anyhow::{Context, bail};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::Serialize;
 
+const MAX_CONFIG_VERSIONS: i64 = 100;
+const MAX_AUDIT_EVENTS: i64 = 10_000;
+
 #[derive(Clone)]
 pub struct Database {
     path: Arc<PathBuf>,
@@ -95,6 +98,8 @@ impl Database {
                     PRAGMA user_version = 2;
                     ",
                 )?;
+                prune_config_versions(connection)?;
+                prune_audit_events(connection)?;
                 Ok(())
             })
             .await
@@ -243,12 +248,16 @@ impl Database {
         created_at: i64,
     ) -> anyhow::Result<i64> {
         self.call(move |connection| {
-            connection.execute(
+            let transaction = connection.transaction()?;
+            transaction.execute(
                 "INSERT INTO config_versions(sha256, content, message, actor, created_at) \
                  VALUES(?1, ?2, ?3, ?4, ?5)",
                 params![sha256, content, message, actor, created_at],
             )?;
-            Ok(connection.last_insert_rowid())
+            let id = transaction.last_insert_rowid();
+            prune_config_versions(&transaction)?;
+            transaction.commit()?;
+            Ok(id)
         })
         .await
     }
@@ -262,7 +271,8 @@ impl Database {
         created_at: i64,
     ) -> anyhow::Result<Option<i64>> {
         self.call(move |connection| {
-            let latest: Option<String> = connection
+            let transaction = connection.transaction()?;
+            let latest: Option<String> = transaction
                 .query_row(
                     "SELECT sha256 FROM config_versions ORDER BY id DESC LIMIT 1",
                     [],
@@ -272,12 +282,15 @@ impl Database {
             if latest.as_deref() == Some(&sha256) {
                 return Ok(None);
             }
-            connection.execute(
+            transaction.execute(
                 "INSERT INTO config_versions(sha256, content, message, actor, created_at) \
                  VALUES(?1, ?2, ?3, ?4, ?5)",
                 params![sha256, content, message, actor, created_at],
             )?;
-            Ok(Some(connection.last_insert_rowid()))
+            let id = transaction.last_insert_rowid();
+            prune_config_versions(&transaction)?;
+            transaction.commit()?;
+            Ok(Some(id))
         })
         .await
     }
@@ -340,10 +353,13 @@ impl Database {
         created_at: i64,
     ) -> anyhow::Result<()> {
         self.call(move |connection| {
-            connection.execute(
+            let transaction = connection.transaction()?;
+            transaction.execute(
                 "INSERT INTO audit_events(actor, action, detail, created_at) VALUES(?1, ?2, ?3, ?4)",
                 params![actor, action, detail, created_at],
             )?;
+            prune_audit_events(&transaction)?;
+            transaction.commit()?;
             Ok(())
         })
         .await
@@ -379,6 +395,24 @@ impl Database {
         })
         .await
     }
+}
+
+fn prune_config_versions(connection: &Connection) -> rusqlite::Result<()> {
+    connection.execute(
+        "DELETE FROM config_versions WHERE id <= COALESCE((\
+         SELECT id FROM config_versions ORDER BY id DESC LIMIT 1 OFFSET ?1), 0)",
+        [MAX_CONFIG_VERSIONS],
+    )?;
+    Ok(())
+}
+
+fn prune_audit_events(connection: &Connection) -> rusqlite::Result<()> {
+    connection.execute(
+        "DELETE FROM audit_events WHERE id <= COALESCE((\
+         SELECT id FROM audit_events ORDER BY id DESC LIMIT 1 OFFSET ?1), 0)",
+        [MAX_AUDIT_EVENTS],
+    )?;
+    Ok(())
 }
 
 fn prepare_database_file(path: &Path) -> anyhow::Result<()> {
@@ -434,4 +468,55 @@ pub fn ensure_database_parent(path: &Path) -> anyhow::Result<()> {
             .with_context(|| format!("创建数据库目录失败：{}", parent.display()))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::{Connection, params};
+
+    use super::{MAX_AUDIT_EVENTS, MAX_CONFIG_VERSIONS, prune_audit_events, prune_config_versions};
+
+    #[test]
+    fn retains_only_recent_configuration_and_audit_rows() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE config_versions (id INTEGER PRIMARY KEY, value TEXT);\
+                 CREATE TABLE audit_events (id INTEGER PRIMARY KEY, value TEXT);",
+            )
+            .unwrap();
+        let transaction = connection.transaction().unwrap();
+        for id in 1..=MAX_CONFIG_VERSIONS + 5 {
+            transaction
+                .execute(
+                    "INSERT INTO config_versions(id, value) VALUES(?1, ?2)",
+                    params![id, id.to_string()],
+                )
+                .unwrap();
+        }
+        for id in 1..=MAX_AUDIT_EVENTS + 5 {
+            transaction
+                .execute(
+                    "INSERT INTO audit_events(id, value) VALUES(?1, ?2)",
+                    params![id, id.to_string()],
+                )
+                .unwrap();
+        }
+        prune_config_versions(&transaction).unwrap();
+        prune_audit_events(&transaction).unwrap();
+        transaction.commit().unwrap();
+
+        let config_range: (i64, i64) = connection
+            .query_row("SELECT COUNT(*), MIN(id) FROM config_versions", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        let audit_range: (i64, i64) = connection
+            .query_row("SELECT COUNT(*), MIN(id) FROM audit_events", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(config_range, (MAX_CONFIG_VERSIONS, 6));
+        assert_eq!(audit_range, (MAX_AUDIT_EVENTS, 6));
+    }
 }

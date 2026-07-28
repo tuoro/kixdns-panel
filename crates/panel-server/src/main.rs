@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use clap::Parser;
-use kixdns_panel_server::{AppSettings, run};
+use kixdns_panel_server::{AppSettings, TrustedProxies, run};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
@@ -84,6 +84,14 @@ struct Args {
     /// 为浏览器 Cookie 设置 Secure；通过 HTTPS 反向代理部署时应启用。
     #[arg(long, env = "KIXDNS_PANEL_SECURE_COOKIE", default_value_t = false)]
     secure_cookie: bool,
+
+    /// 允许提供 `X-Forwarded-For` 的反向代理 CIDR，逗号分隔。
+    #[arg(
+        long,
+        env = "KIXDNS_TRUSTED_PROXIES",
+        default_value = "127.0.0.1/32,::1/128"
+    )]
+    trusted_proxies: TrustedProxies,
 }
 
 #[tokio::main]
@@ -111,6 +119,7 @@ async fn main() -> anyhow::Result<()> {
         kixdns_versions: args.kixdns_versions,
         web_root: args.web_root,
         secure_cookie: args.secure_cookie,
+        trusted_proxies: args.trusted_proxies,
     })
     .await
     .context("面板服务异常退出")

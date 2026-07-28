@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::str::FromStr;
 use std::sync::Mutex;
 use std::time::{Duration as StdDuration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -11,6 +12,7 @@ use axum_extra::extract::CookieJar;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use getrandom::fill;
+use ipnet::IpNet;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
@@ -23,6 +25,78 @@ pub const CSRF_HEADER: &str = "x-csrf-token";
 pub const SESSION_SECONDS: i64 = 12 * 60 * 60;
 const MAX_ATTEMPTS: u32 = 5;
 const ATTEMPT_WINDOW: StdDuration = StdDuration::from_mins(15);
+const MAX_FORWARDED_HOPS: usize = 32;
+
+#[derive(Debug, Clone)]
+pub struct TrustedProxies(Vec<IpNet>);
+
+impl Default for TrustedProxies {
+    fn default() -> Self {
+        Self(vec![
+            "127.0.0.1/32".parse().expect("固定 IPv4 网段有效"),
+            "::1/128".parse().expect("固定 IPv6 网段有效"),
+        ])
+    }
+}
+
+impl FromStr for TrustedProxies {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let networks = value
+            .split(',')
+            .map(str::trim)
+            .filter(|network| !network.is_empty())
+            .map(|network| {
+                network
+                    .parse::<IpNet>()
+                    .map_err(|error| format!("可信代理网段 {network} 无效：{error}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if networks.is_empty() {
+            return Err("至少需要一个可信代理网段".to_owned());
+        }
+        if networks.len() > 64 {
+            return Err("可信代理网段不能超过 64 个".to_owned());
+        }
+        Ok(Self(networks))
+    }
+}
+
+impl TrustedProxies {
+    #[must_use]
+    pub fn client_ip(&self, peer: IpAddr, headers: &HeaderMap) -> IpAddr {
+        if !self.contains(peer) {
+            return peer;
+        }
+        let mut forwarded = Vec::new();
+        for value in headers.get_all("x-forwarded-for") {
+            let Ok(value) = value.to_str() else {
+                return peer;
+            };
+            for address in value.split(',').map(str::trim) {
+                if forwarded.len() == MAX_FORWARDED_HOPS || address.is_empty() {
+                    return peer;
+                }
+                let Ok(address) = address.parse() else {
+                    return peer;
+                };
+                forwarded.push(address);
+            }
+        }
+        forwarded
+            .iter()
+            .rev()
+            .copied()
+            .find(|address| !self.contains(*address))
+            .or_else(|| forwarded.first().copied())
+            .unwrap_or(peer)
+    }
+
+    fn contains(&self, address: IpAddr) -> bool {
+        self.0.iter().any(|network| network.contains(&address))
+    }
+}
 
 #[derive(Debug, Clone)]
 struct AttemptState {
@@ -30,20 +104,37 @@ struct AttemptState {
     started_at: Instant,
 }
 
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+struct LoginKey {
+    address: IpAddr,
+    username_hash: [u8; 32],
+}
+
+impl LoginKey {
+    fn new(address: IpAddr, username: &str) -> Self {
+        let normalized = username.trim().to_ascii_lowercase();
+        Self {
+            address,
+            username_hash: Sha256::digest(normalized.as_bytes()).into(),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct LoginLimiter {
-    attempts: Mutex<HashMap<IpAddr, AttemptState>>,
+    attempts: Mutex<HashMap<LoginKey, AttemptState>>,
 }
 
 impl LoginLimiter {
-    pub fn check(&self, address: IpAddr) -> AppResult<()> {
+    pub fn check(&self, address: IpAddr, username: &str) -> AppResult<()> {
+        let key = LoginKey::new(address, username);
         let mut attempts = self
             .attempts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         attempts.retain(|_, state| state.started_at.elapsed() < ATTEMPT_WINDOW);
         if attempts
-            .get(&address)
+            .get(&key)
             .is_some_and(|state| state.failures >= MAX_ATTEMPTS)
         {
             return Err(AppError::TooManyRequests);
@@ -51,23 +142,25 @@ impl LoginLimiter {
         Ok(())
     }
 
-    pub fn record_failure(&self, address: IpAddr) {
+    pub fn record_failure(&self, address: IpAddr, username: &str) {
+        let key = LoginKey::new(address, username);
         let mut attempts = self
             .attempts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let state = attempts.entry(address).or_insert_with(|| AttemptState {
+        attempts.retain(|_, state| state.started_at.elapsed() < ATTEMPT_WINDOW);
+        let state = attempts.entry(key).or_insert_with(|| AttemptState {
             failures: 0,
             started_at: Instant::now(),
         });
         state.failures = state.failures.saturating_add(1);
     }
 
-    pub fn clear(&self, address: IpAddr) {
+    pub fn clear(&self, address: IpAddr, username: &str) {
         self.attempts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&address);
+            .remove(&LoginKey::new(address, username));
     }
 }
 
@@ -207,7 +300,9 @@ pub fn unix_timestamp() -> i64 {
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
-    use super::{LoginLimiter, token_hash, validate_password, validate_username};
+    use axum::http::{HeaderMap, HeaderValue};
+
+    use super::{LoginLimiter, TrustedProxies, token_hash, validate_password, validate_username};
     use crate::error::AppError;
 
     #[test]
@@ -230,13 +325,37 @@ mod tests {
         let limiter = LoginLimiter::default();
         let address = IpAddr::V4(Ipv4Addr::LOCALHOST);
         for _ in 0..5 {
-            limiter.record_failure(address);
+            limiter.record_failure(address, "admin");
         }
         assert!(matches!(
-            limiter.check(address),
+            limiter.check(address, "ADMIN"),
             Err(AppError::TooManyRequests)
         ));
-        limiter.clear(address);
-        assert!(limiter.check(address).is_ok());
+        assert!(limiter.check(address, "other-admin").is_ok());
+        limiter.clear(address, "admin");
+        assert!(limiter.check(address, "admin").is_ok());
+    }
+
+    #[test]
+    fn trusts_forwarding_headers_only_from_configured_proxies() {
+        let proxies: TrustedProxies = "127.0.0.1/32,10.0.0.0/8".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            HeaderValue::from_static("198.51.100.7, 10.10.0.2"),
+        );
+        assert_eq!(
+            proxies.client_ip(Ipv4Addr::LOCALHOST.into(), &headers),
+            "198.51.100.7".parse::<IpAddr>().unwrap()
+        );
+
+        let untrusted_peer = "203.0.113.9".parse::<IpAddr>().unwrap();
+        assert_eq!(proxies.client_ip(untrusted_peer, &headers), untrusted_peer);
+
+        headers.insert("x-forwarded-for", HeaderValue::from_static("invalid"));
+        assert_eq!(
+            proxies.client_ip(Ipv4Addr::LOCALHOST.into(), &headers),
+            IpAddr::V4(Ipv4Addr::LOCALHOST)
+        );
     }
 }
