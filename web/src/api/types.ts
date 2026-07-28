@@ -155,6 +155,36 @@ export interface UpdateInfo {
   available: boolean
 }
 
+export interface RemoteKixdnsVersion {
+  commit: string
+  run_id: number
+  created_at: string
+  run_url: string
+  artifact: string
+  download_url: string
+  installed: boolean
+  active: boolean
+}
+
+export interface InstalledKixdnsVersion {
+  commit: string
+  run_id: number | null
+  created_at: string | null
+  run_url: string | null
+  artifact: string
+  artifact_digest: string | null
+  binary_sha256: string
+  installed_at: number
+  active: boolean
+}
+
+export interface KixdnsVersionCatalog {
+  active_commit: string | null
+  binary_present: boolean
+  remote_versions: RemoteKixdnsVersion[]
+  installed_versions: InstalledKixdnsVersion[]
+}
+
 export interface SetupStatus {
   required: boolean
 }

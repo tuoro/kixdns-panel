@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { ServiceStatus, ValidationResult } from './types'
+import type { KixdnsVersionCatalog, ServiceStatus, ValidationResult } from './types'
 import { mockRequest } from './mock'
 
 describe('演示 API', () => {
@@ -20,5 +20,22 @@ describe('演示 API', () => {
     })
     expect(result.valid).toBe(true)
     expect(result.pipeline_count).toBe(2)
+  })
+
+  it('安装并切换 KixDNS 构建', async () => {
+    const initial = await mockRequest<KixdnsVersionCatalog>('/api/v1/kixdns/versions')
+    const latest = initial.remote_versions[0]
+    expect(latest.active).toBe(false)
+    expect(latest.installed).toBe(false)
+
+    await mockRequest(`/api/v1/kixdns/versions/${latest.commit}/install`, { method: 'POST' })
+    const installed = await mockRequest<KixdnsVersionCatalog>('/api/v1/kixdns/versions')
+    expect(installed.active_commit).toBe(latest.commit)
+    expect(installed.installed_versions.some((version) => version.commit === latest.commit)).toBe(true)
+
+    const previous = initial.active_commit as string
+    await mockRequest(`/api/v1/kixdns/versions/${previous}/activate`, { method: 'POST' })
+    const switched = await mockRequest<KixdnsVersionCatalog>('/api/v1/kixdns/versions')
+    expect(switched.active_commit).toBe(previous)
   })
 })

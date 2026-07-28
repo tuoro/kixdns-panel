@@ -7,6 +7,7 @@ import type {
   DnsDiagnostic,
   LogsResponse,
   Overview,
+  KixdnsVersionCatalog,
   ServiceStatus,
   UpdateInfo,
   ValidationResult,
@@ -108,6 +109,39 @@ const versions: ConfigVersions = {
 
 let serviceRunning = true
 let updateAvailable = true
+const demoRemoteVersions = [
+  { commit: '8eb8588ebe3e7965cf40ca161c05ac400ac2f5e5', run_id: 30332133247, created_at: new Date(now * 1000).toISOString(), run_url: '#', artifact: 'kixdns-enhanced-linux-x86_64', download_url: '#' },
+  { commit: '374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25', run_id: 30290418722, created_at: new Date((now - 86400) * 1000).toISOString(), run_url: '#', artifact: 'kixdns-enhanced-linux-x86_64', download_url: '#' },
+  { commit: '2d89c31d4ad9d252155215d78af8c9c128112233', run_id: 30235703570, created_at: new Date((now - 172800) * 1000).toISOString(), run_url: '#', artifact: 'kixdns-enhanced-linux-x86_64', download_url: '#' },
+]
+let activeKixdnsCommit = demoRemoteVersions[1].commit
+const installedKixdnsCommits = new Set([activeKixdnsCommit, demoRemoteVersions[2].commit])
+
+function demoVersionCatalog(): KixdnsVersionCatalog {
+  return {
+    active_commit: activeKixdnsCommit,
+    binary_present: true,
+    remote_versions: demoRemoteVersions.map((version) => ({
+      ...version,
+      installed: installedKixdnsCommits.has(version.commit),
+      active: version.commit === activeKixdnsCommit,
+    })),
+    installed_versions: [...installedKixdnsCommits].map((commit, index) => {
+      const remote = demoRemoteVersions.find((version) => version.commit === commit)
+      return {
+        commit,
+        run_id: remote?.run_id ?? null,
+        created_at: remote?.created_at ?? null,
+        run_url: remote?.run_url ?? null,
+        artifact: remote?.artifact ?? 'kixdns-enhanced-linux-x86_64',
+        artifact_digest: `sha256:${String(index + 1).repeat(64)}`.slice(0, 71),
+        binary_sha256: String(index + 4).repeat(64),
+        installed_at: now - index * 86400,
+        active: commit === activeKixdnsCommit,
+      }
+    }),
+  }
+}
 
 export async function mockRequest<T>(path: string, init?: RequestInit): Promise<T> {
   await new Promise((resolve) => setTimeout(resolve, 120))
@@ -123,6 +157,15 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
   if (path.startsWith('/api/v1/service/') && method === 'POST') {
     serviceRunning = !path.endsWith('/stop')
     return { unit: 'kixdns.service', active_state: serviceRunning ? 'active' : 'inactive', sub_state: serviceRunning ? 'running' : 'dead', main_pid: serviceRunning ? 1428 : 0 } as T
+  }
+  if (path === '/api/v1/kixdns/versions' && method === 'GET') return demoVersionCatalog() as T
+  if (path.startsWith('/api/v1/kixdns/versions/') && method === 'POST') {
+    const commit = path.split('/')[5]
+    if (path.endsWith('/install')) installedKixdnsCommits.add(commit)
+    activeKixdnsCommit = commit
+    serviceRunning = true
+    const version = demoVersionCatalog().installed_versions.find((item) => item.commit === commit)
+    return version as T
   }
   if (path === '/api/v1/config' && method === 'GET') return config as T
   if (path === '/api/v1/config/versions') return versions as T
