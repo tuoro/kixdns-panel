@@ -161,6 +161,7 @@ export interface RemoteKixdnsVersion {
   created_at: string
   run_url: string
   artifact: string
+  artifact_digest: string
   download_url: string
   installed: boolean
   active: boolean

@@ -80,6 +80,7 @@ pub struct RemoteVersion {
     pub created_at: String,
     pub run_url: String,
     pub artifact: String,
+    pub artifact_digest: String,
     pub download_url: String,
     pub installed: bool,
     pub active: bool,
@@ -170,7 +171,6 @@ struct ExtractedArtifact {
 #[derive(Debug, Clone)]
 struct ResolvedVersion {
     remote: RemoteVersion,
-    artifact_digest: String,
 }
 
 struct CachedRemoteVersions {
@@ -398,8 +398,7 @@ impl UpdateManager {
             .filter_map(|run| {
                 let artifact_digest = digests.remove(&run.id)?;
                 Some(ResolvedVersion {
-                    remote: self.remote_version(run),
-                    artifact_digest,
+                    remote: self.remote_version(run, artifact_digest),
                 })
             })
             .take(REMOTE_VERSION_LIMIT)
@@ -414,7 +413,7 @@ impl UpdateManager {
             .ok_or_else(|| UpdateError::Invalid("指定提交不在最近 30 次成功增强构建中".to_owned()))
     }
 
-    fn remote_version(&self, run: WorkflowRun) -> RemoteVersion {
+    fn remote_version(&self, run: WorkflowRun, artifact_digest: String) -> RemoteVersion {
         let download_url = format!(
             "https://nightly.link/{}/actions/runs/{}/{}.zip",
             self.repository, run.id, self.artifact
@@ -425,6 +424,7 @@ impl UpdateManager {
             created_at: run.created_at,
             run_url: run.html_url,
             artifact: self.artifact.to_string(),
+            artifact_digest,
             download_url,
             installed: false,
             active: false,
@@ -450,8 +450,7 @@ impl UpdateManager {
         })?;
         validate_digest(&artifact_digest)?;
         Ok(ResolvedVersion {
-            remote: self.remote_version(run),
-            artifact_digest,
+            remote: self.remote_version(run, artifact_digest),
         })
     }
 
@@ -500,6 +499,7 @@ impl UpdateManager {
             bytes.extend_from_slice(&chunk);
         }
         let expected = version
+            .remote
             .artifact_digest
             .strip_prefix("sha256:")
             .ok_or_else(|| UpdateError::Verification("Artifact digest 格式无效".to_owned()))?;
@@ -528,7 +528,7 @@ impl UpdateManager {
             created_at: Some(version.remote.created_at.clone()),
             run_url: Some(version.remote.run_url.clone()),
             artifact: version.remote.artifact.clone(),
-            artifact_digest: Some(version.artifact_digest.clone()),
+            artifact_digest: Some(version.remote.artifact_digest.clone()),
             upstream_repository: Some(extracted.identity.repository),
             upstream_commit: Some(extracted.identity.commit),
             patchset: Some(extracted.identity.patchset),
@@ -785,7 +785,7 @@ fn to_update_info(version: ResolvedVersion, installed_commit: Option<String>) ->
         created_at: version.remote.created_at,
         run_url: version.remote.run_url,
         artifact: version.remote.artifact,
-        artifact_digest: version.artifact_digest,
+        artifact_digest: version.remote.artifact_digest,
         download_url: version.remote.download_url,
         available,
     }
@@ -1206,8 +1206,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        MANIFEST_SCHEMA_VERSION, VersionManifest, extract_artifact, load_verified_version, sha256,
-        store_version, validate_commit, validate_digest, validate_slug,
+        MANIFEST_SCHEMA_VERSION, RemoteVersion, VersionManifest, extract_artifact,
+        load_verified_version, sha256, store_version, validate_commit, validate_digest,
+        validate_slug,
     };
 
     const TEST_IDENTITY: &str = r#"{
@@ -1241,6 +1242,25 @@ mod tests {
         assert!(validate_digest("sha256:bad").is_err());
         assert!(validate_commit("374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25").is_ok());
         assert!(validate_commit("not-a-commit").is_err());
+    }
+
+    #[test]
+    fn serializes_remote_artifact_identity() {
+        let artifact_digest = format!("sha256:{}", "a".repeat(64));
+        let remote = RemoteVersion {
+            commit: "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25".to_owned(),
+            run_id: 42,
+            created_at: "2026-07-28T00:00:00Z".to_owned(),
+            run_url: "https://github.com/example/actions/runs/42".to_owned(),
+            artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
+            artifact_digest: artifact_digest.clone(),
+            download_url: "https://nightly.link/example/actions/runs/42/artifact.zip".to_owned(),
+            installed: false,
+            active: false,
+        };
+
+        let serialized = serde_json::to_value(remote).unwrap();
+        assert_eq!(serialized["artifact_digest"], artifact_digest);
     }
 
     #[test]
