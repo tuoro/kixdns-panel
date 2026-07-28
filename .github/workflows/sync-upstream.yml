@@ -26,15 +26,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-        with:
-          toolchain: 1.97.1
-          components: rustfmt, clippy
-
-      - name: Install dependency auditor
-        run: cargo install cargo-audit --version 0.22.2 --locked
-
       - name: Read latest successful official action
         id: upstream
         shell: bash
@@ -74,6 +65,17 @@ jobs:
           jq --arg commit "$COMMIT" --argjson run_id "$RUN_ID" \
             '.commit = $commit | .official_run_id = $run_id' upstream.lock.json > upstream.lock.json.new
           mv upstream.lock.json.new upstream.lock.json
+
+      - name: Install Rust
+        if: steps.upstream.outputs.commit != steps.upstream.outputs.current
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy
+
+      - name: Install dependency auditor
+        if: steps.upstream.outputs.commit != steps.upstream.outputs.current
+        run: cargo install cargo-audit --version 0.22.2 --locked
 
       - name: Validate patch compatibility
         if: steps.upstream.outputs.commit != steps.upstream.outputs.current
