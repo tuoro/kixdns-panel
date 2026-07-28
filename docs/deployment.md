@@ -49,6 +49,7 @@ ARM64 使用 `kixdns-panel-linux-arm64`。安装脚本还会校验包内 `SHA256
 | `/etc/kixdns-panel/panel.env` | 面板启动参数 |
 | `/var/lib/kixdns-panel/panel.db` | 用户、会话、版本与审计数据 |
 | `/var/lib/kixdns-panel/bin/kixdns` | 可自动更新的数据面二进制 |
+| `/var/lib/kixdns-panel/versions/<commit>/` | 已校验的 KixDNS 二进制与版本清单 |
 | `/run/kixdns/admin.sock` | `0660` 本机增强控制通道 |
 | `/usr/share/kixdns-panel/web` | 前端静态资源 |
 
@@ -86,20 +87,21 @@ sudo sed -i 's/^KIXDNS_PANEL_SECURE_COOKIE=.*/KIXDNS_PANEL_SECURE_COOKIE=true/' 
 sudo systemctl restart kixdns-panel.service
 ```
 
-## 更新与回滚
+## KixDNS 安装与版本管理
 
-面板内的“系统与更新”只更新 KixDNS Enhanced：
+面板“系统”页管理的是 KixDNS Enhanced 数据面，不会在线替换 Panel Server 或 Web：
 
-1. 从 GitHub 公共 API读取最近成功构建和 Artifact digest。
-2. 通过 nightly.link 下载，不需要用户 Token。
-3. 校验归档 digest、包内 `SHA256SUMS`、ELF 格式和 CPU 架构。
-4. 停止服务、替换二进制并等待增强接口健康。
-5. 启动或健康检查失败时自动恢复 `kixdns.previous`。
+1. 从 GitHub 公共 API 读取本项目最近 12 次成功的 `Build enhanced KixDNS` Action；安装时按完整 40 位提交 SHA 在最近 30 次成功构建中定位对应 Run。
+2. 使用该 Run 的 nightly.link 固定地址匿名下载 Artifact，不要求用户配置 GitHub Token，也不接受前端传入下载 URL。
+3. 校验 GitHub Artifact digest、包内 `SHA256SUMS`、ELF 格式和 CPU 架构，再写入 `/var/lib/kixdns-panel/versions/<commit>/`。
+4. 激活版本时重新校验清单和二进制 SHA-256，然后停止服务、原子替换运行文件、启动服务并等待增强接口健康。
+5. 启动或健康检查失败时恢复原二进制；首次安装失败则恢复为未安装状态。
 
-Panel Server 与 Web 更新需下载新的完整包并重新运行 `scripts/install.sh`。脚本保留现有配置、数据库和环境文件，旧静态资源保存在 `/usr/share/kixdns-panel/web.previous`。
-完整包内的 `BUILD_COMMIT` 会写入面板环境，因此刚安装的构建不会被误判为待更新版本；在线更新成功后的数据库记录具有更高优先级。
+已下载版本可直接切换，无需重复联网。面板最多保留 8 个本地版本，清理时始终保留当前版本。完整安装包自带的 KixDNS 会在首次版本操作时自动收录到库存。
 
-配置保存和历史版本恢复都有独立回滚：候选内容先由 KixDNS 自身校验；写入后必须收到新的 `reload_sequence` 且 SHA-256 一致，否则面板恢复旧配置。
+Panel Server 与 Web 更新仍需下载新的完整包并重新运行 `scripts/install.sh`。脚本保留现有配置、数据库和环境文件，旧静态资源保存在 `/usr/share/kixdns-panel/web.previous`。完整包内的 `BUILD_COMMIT` 会写入面板环境，作为初始 KixDNS 版本标识。
+
+服务生命周期只支持启动、停止和重启。KixDNS 没有独立的服务重载动作，面板不会提供重载按钮、API、Polkit 动词或 systemd `ExecReload`。配置保存和历史版本恢复使用 KixDNS 的文件监听热加载链路：候选内容先由 KixDNS 自身校验；写入后必须收到新的 `reload_sequence` 且 SHA-256 一致，否则面板恢复旧配置。该回执不等同于服务重载命令。
 
 ## 运维命令
 

@@ -9,8 +9,10 @@ KixDNS 的非 Fork 增强发行版与管理面板。项目按官方 `main` 分�
 - Argon2id 管理员认证、HttpOnly 会话、CSRF 防护和登录限流
 - 与上游编辑器功能对齐的结构化表单、原始 JSON、流程预览及导入导出
 - KixDNS 编译校验、乐观锁保存、版本历史、回滚和失败自动恢复
-- systemd 固定动作控制、journal 日志、固定目标 DNS 诊断
-- GitHub 公共元数据 + nightly.link 下载，Artifact 与包内双重摘要校验
+- 面板内安装 KixDNS、浏览最近成功 Action 构建并切换本地版本
+- systemd 启动、停止、重启固定动作控制，journal 日志与固定目标 DNS 诊断
+- GitHub 公共元数据 + nightly.link 匿名下载，Artifact 与包内双重摘要校验
+- 版本激活健康检查、失败自动恢复与最多 8 个本地版本的受控库存
 - Vue 3 响应式控制台，桌面侧栏与移动端底部导航
 - x86_64/ARM64 Action 构建、每日上游兼容性检查和完整 Linux 安装包
 - 发布前真实启动增强进程，验证 DNS 应答、内部指标与结构化热加载回执
@@ -42,7 +44,7 @@ cd kixdns-panel
 sudo bash ./scripts/install.sh
 ```
 
-安装后面板监听 `http://127.0.0.1:5738`。首次访问创建管理员；远程生产访问应使用 HTTPS 反向代理并启用 Secure Cookie。完整步骤、权限模型、升级与卸载见[部署指南](docs/deployment.md)。
+安装后面板监听 `http://127.0.0.1:5738`。首次访问创建管理员；远程生产访问应使用 HTTPS 反向代理并启用 Secure Cookie。登录后可在“系统”页安装或切换 KixDNS 构建，并控制服务启动、停止和重启。KixDNS 没有独立的服务重载动作，因此面板不提供重载按钮或 API；配置保存后的文件监听热加载是另一条独立链路。完整步骤、权限模型、版本管理与卸载见[部署指南](docs/deployment.md)。
 
 ## 本地开发
 

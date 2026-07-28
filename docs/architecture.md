@@ -7,7 +7,7 @@ KixDNS Panel 是一个基于上游 KixDNS 源码自动构建的增强发行版�
 系统由三个相互隔离的部分组成：
 
 1. **KixDNS Enhanced**：保留上游 DNS 数据面，增加本机管理 Socket、指标和结构化配置状态。
-2. **Panel Server**：负责认证、配置版本、原子保存、服务控制、更新、日志和诊断。
+2. **Panel Server**：负责认证、配置版本、原子保存、服务控制、KixDNS 版本库存、日志和诊断。
 3. **Panel Web**：只调用 Panel Server API，不直接访问 KixDNS 管理 Socket 或宿主机文件。
 
 ~~~text
@@ -17,6 +17,7 @@ Browser
 Panel Web ---- Panel Server ---- SQLite
                     |
                     +---- config/pipeline.json
+                    +---- versions/<commit>/
                     +---- systemd / Windows Service
                     +---- GitHub metadata / artifact provider
                     |
@@ -51,7 +52,9 @@ Panel Web ---- Panel Server ---- SQLite
 - 密码使用 Argon2id，数据库不保存明文会话令牌。
 - 指标禁止域名、客户端 IP 等高基数或敏感标签。
 - Panel Server 以独立非 root 账号运行；systemd 控制同时受 API 白名单和精确到 unit/verb 的 Polkit 规则限制。
-- 自动更新只接受固定仓库、工作流、分支与 Artifact 名称，安装前校验外层和包内 SHA-256、ELF 与架构。
+- KixDNS 版本源只接受固定仓库、工作流、分支与 Artifact 名称；提交必须是最近成功构建返回的完整 SHA，前端不能指定 URL 或文件路径。
+- 安装前校验外层和包内 SHA-256、ELF 与架构，激活前再次校验本地清单与二进制摘要；替换后必须通过健康检查，否则恢复原状态。
+- 服务动作白名单只有 `start`、`stop`、`restart`。配置文件监听产生的结构化热加载回执属于增强控制协议，不是 systemd 服务重载能力。
 
 ## 运行平台
 
