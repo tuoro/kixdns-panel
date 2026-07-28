@@ -26,7 +26,7 @@ tracked_artifact() {
   local base=$1
   local lock_file=$2
   local prefix="${base%-linux-*}"
-  local platform="${base#${prefix}-}"
+  local platform="${base#"${prefix}"-}"
   local source
   local reference
   source="$(jq -r .source "$lock_file")"
