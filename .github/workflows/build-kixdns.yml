@@ -147,3 +147,104 @@ jobs:
           path: dist/kixdns-enhanced-linux-${{ matrix.arch }}
           if-no-files-found: error
           retention-days: 90
+
+  release:
+    name: Publish enhanced release
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout panel repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download enhanced artifacts
+        shell: bash
+        run: |
+          for arch in x86_64 arm64; do
+            artifact="kixdns-enhanced-linux-${arch}"
+            gh run download "$GITHUB_RUN_ID" --name "$artifact" --dir "dist/artifacts/${artifact}"
+          done
+
+      - name: Package release assets
+        id: identity
+        shell: bash
+        run: |
+          upstream_commit="$(jq -r .commit upstream.lock.json)"
+          patchset="$(jq -r .patchset upstream.lock.json)"
+          revision="$(jq -r .build_revision upstream.lock.json)"
+          [[ "$upstream_commit" =~ ^[0-9a-f]{40}$ ]] || { echo '上游提交无效' >&2; exit 1; }
+          [[ "$patchset" =~ ^[1-9][0-9]*$ ]] || { echo '补丁集版本无效' >&2; exit 1; }
+          [[ "$revision" =~ ^[1-9][0-9]*$ ]] || { echo '构建修订无效' >&2; exit 1; }
+          tag="kixdns-${upstream_commit:0:12}-p${patchset}-r${revision}"
+          mkdir -p dist/release
+          for arch in x86_64 arm64; do
+            artifact="kixdns-enhanced-linux-${arch}"
+            source="dist/artifacts/${artifact}"
+            for file in kixdns upstream.lock.json KIXDNS_BUILD_COMMIT SHA256SUMS; do
+              [[ -f "${source}/${file}" && ! -L "${source}/${file}" ]] || { echo "${artifact} 缺少 ${file}" >&2; exit 1; }
+            done
+            [[ "$(tr -d '\r\n' < "${source}/KIXDNS_BUILD_COMMIT")" == "$GITHUB_SHA" ]] || { echo "${artifact} 构建提交不匹配" >&2; exit 1; }
+            (cd "$source" && sha256sum --check SHA256SUMS)
+            (cd "$source" && zip -q -r "$GITHUB_WORKSPACE/dist/release/${artifact}.zip" .)
+          done
+          (cd dist/release && sha256sum ./*.zip > SHA256SUMS)
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "upstream_commit=${upstream_commit}" >> "$GITHUB_OUTPUT"
+          echo "patchset=${patchset}" >> "$GITHUB_OUTPUT"
+          echo "revision=${revision}" >> "$GITHUB_OUTPUT"
+
+      - name: Create immutable release
+        env:
+          TAG: ${{ steps.identity.outputs.tag }}
+          UPSTREAM_COMMIT: ${{ steps.identity.outputs.upstream_commit }}
+          PATCHSET: ${{ steps.identity.outputs.patchset }}
+          REVISION: ${{ steps.identity.outputs.revision }}
+        shell: bash
+        run: |
+          find_release() {
+            gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" |
+              jq -c --arg tag "$TAG" '.[] | select(.tag_name == $tag)' |
+              head -n 1
+          }
+
+          release_json="$(find_release)"
+          if [[ -n "$release_json" ]]; then
+            target="$(jq -r .target_commitish <<< "$release_json")"
+            [[ "$target" == "$GITHUB_SHA" ]] || {
+              echo "Release ${TAG} 已指向 ${target}；构建配方变化时必须递增 build_revision" >&2
+              exit 1
+            }
+            [[ "$(jq -r .draft <<< "$release_json")" == "true" ]] || {
+              expected=$'kixdns-enhanced-linux-x86_64.zip\nkixdns-enhanced-linux-arm64.zip\nSHA256SUMS'
+              actual="$(jq -r '.assets[].name' <<< "$release_json" | sort)"
+              [[ "$actual" == "$(sort <<< "$expected")" ]] || { echo "已发布 Release 的资产不完整" >&2; exit 1; }
+              echo "Release ${TAG} 已完整发布，无需重复上传"
+              exit 0
+            }
+          else
+            notes="$(printf 'KixDNS Enhanced 自动构建。\n\n- 上游提交：[%s](https://github.com/olicesx/kixdns/commit/%s)\n- 增强补丁集：v%s\n- 构建修订：r%s\n- 构建 Action：[%s](https://github.com/%s/actions/runs/%s)' "$UPSTREAM_COMMIT" "$UPSTREAM_COMMIT" "$PATCHSET" "$REVISION" "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")"
+            gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "KixDNS ${UPSTREAM_COMMIT:0:12} · p${PATCHSET} r${REVISION}" --notes "$notes"
+          fi
+
+          release_json="$(find_release)"
+          [[ -n "$release_json" ]] || { echo "无法读取 Release ${TAG}" >&2; exit 1; }
+          for asset in dist/release/kixdns-enhanced-linux-x86_64.zip dist/release/kixdns-enhanced-linux-arm64.zip dist/release/SHA256SUMS; do
+            name="$(basename "$asset")"
+            if jq -e --arg name "$name" '.assets[] | select(.name == $name)' <<< "$release_json" >/dev/null; then
+              echo "草稿中已存在 ${name}，跳过"
+            else
+              gh release upload "$TAG" "$asset"
+            fi
+          done
+          for _ in 1 2 3 4 5; do
+            release_json="$(find_release)"
+            [[ "$(jq '[.assets[] | select((.digest // "") | startswith("sha256:"))] | length' <<< "$release_json")" == "3" ]] && break
+            sleep 2
+          done
+          [[ "$(jq '[.assets[] | select((.digest // "") | startswith("sha256:"))] | length' <<< "$release_json")" == "3" ]] || { echo 'Release 资产摘要尚未完整生成' >&2; exit 1; }
+          gh release edit "$TAG" --draft=false --latest

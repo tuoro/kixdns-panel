@@ -17,6 +17,7 @@ struct UpstreamLock {
     repository: String,
     commit: String,
     patchset: u32,
+    build_revision: u32,
     control_protocol: u32,
 }
 
@@ -52,7 +53,7 @@ fn load_lock(root: &Path) -> Result<UpstreamLock> {
 
 fn prepare(root: &Path) -> Result<()> {
     let lock = load_lock(root)?;
-    validate_commit(&lock.commit)?;
+    validate_lock(&lock)?;
 
     let source_root = root.join(".upstream");
     let checkout = source_root.join(format!("kixdns-{}-p{}", &lock.commit[..12], lock.patchset));
@@ -237,10 +238,20 @@ fn encode_hex(bytes: impl AsRef<[u8]>) -> String {
 
 fn print_info(root: &Path) -> Result<()> {
     let lock = load_lock(root)?;
+    validate_lock(&lock)?;
     println!("仓库：https://github.com/{}", lock.repository);
     println!("提交：{}", lock.commit);
     println!("补丁集：{}", lock.patchset);
+    println!("构建修订：{}", lock.build_revision);
     println!("控制协议：v{}", lock.control_protocol);
+    Ok(())
+}
+
+fn validate_lock(lock: &UpstreamLock) -> Result<()> {
+    validate_commit(&lock.commit)?;
+    if lock.patchset == 0 || lock.build_revision == 0 || lock.control_protocol == 0 {
+        bail!("upstream.lock.json 中的版本号必须大于 0");
+    }
     Ok(())
 }
 
@@ -298,7 +309,8 @@ mod tests {
     use tempfile::{tempdir, tempdir_in};
 
     use super::{
-        CheckoutPlaceholder, activate_checkout, inspect_checkout_placeholder, validate_commit,
+        CheckoutPlaceholder, UpstreamLock, activate_checkout, inspect_checkout_placeholder,
+        validate_commit, validate_lock,
     };
 
     #[test]
@@ -310,6 +322,18 @@ mod tests {
     fn rejects_short_or_non_hex_commit() {
         assert!(validate_commit("374d63c").is_err());
         assert!(validate_commit("z74d63ccfdde6d281d3c7b5de9c689bfb0b0fb25").is_err());
+    }
+
+    #[test]
+    fn rejects_zero_build_revision() {
+        let lock = UpstreamLock {
+            repository: "olicesx/kixdns".to_owned(),
+            commit: "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25".to_owned(),
+            patchset: 5,
+            build_revision: 0,
+            control_protocol: 1,
+        };
+        assert!(validate_lock(&lock).is_err());
     }
 
     #[test]
