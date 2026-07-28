@@ -41,7 +41,7 @@ cd kixdns-panel
 sudo bash ./scripts/install.sh
 ```
 
-安装后面板监听 `http://127.0.0.1:4165`。首次访问创建管理员；远程生产访问应使用 HTTPS 反向代理并启用 Secure Cookie。完整步骤、权限模型、升级与卸载见[部署指南](docs/deployment.md)。
+安装后面板监听 `http://127.0.0.1:5738`。首次访问创建管理员；远程生产访问应使用 HTTPS 反向代理并启用 Secure Cookie。完整步骤、权限模型、升级与卸载见[部署指南](docs/deployment.md)。
 
 ## 本地开发
 

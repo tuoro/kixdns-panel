@@ -56,13 +56,13 @@ ARM64 使用 `kixdns-panel-linux-arm64`。安装脚本还会校验包内 `SHA256
 
 ## 初次访问
 
-默认只监听 `127.0.0.1:4165`。本机可直接访问，也可先使用 SSH 隧道：
+默认只监听 `127.0.0.1:5738`。本机可直接访问，也可先使用 SSH 隧道：
 
 ```bash
-ssh -L 4165:127.0.0.1:4165 user@dns-host
+ssh -L 5738:127.0.0.1:5738 user@dns-host
 ```
 
-浏览器打开 `http://127.0.0.1:4165`，首次页面会要求创建管理员。密码至少 12 个字符。
+浏览器打开 `http://127.0.0.1:5738`，首次页面会要求创建管理员。密码至少 12 个字符。
 
 ## HTTPS 反向代理
 
@@ -70,7 +70,7 @@ ssh -L 4165:127.0.0.1:4165 user@dns-host
 
 ```nginx
 location / {
-    proxy_pass http://127.0.0.1:4165;
+    proxy_pass http://127.0.0.1:5738;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-Proto https;

@@ -7,7 +7,7 @@ export default defineConfig({
     host: '127.0.0.1',
     port: 4173,
     proxy: {
-      '/api': 'http://127.0.0.1:4165',
+      '/api': 'http://127.0.0.1:5738',
     },
   },
   build: {

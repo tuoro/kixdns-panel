@@ -10,7 +10,7 @@ use tracing_subscriber::EnvFilter;
 #[command(version, about = "KixDNS 增强管理面板服务")]
 struct Args {
     /// 面板 HTTP 监听地址。
-    #[arg(long, env = "KIXDNS_PANEL_BIND", default_value = "127.0.0.1:4165")]
+    #[arg(long, env = "KIXDNS_PANEL_BIND", default_value = "127.0.0.1:5738")]
     bind: SocketAddr,
 
     /// `SQLite` 数据库路径。
