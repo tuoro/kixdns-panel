@@ -4,17 +4,15 @@ KixDNS 的非 Fork 增强发行版与管理面板。项目按官方 `main` 分�
 
 ## 界面预览
 
-### 运行概览
+| 运行概览 | 配置管理 |
+| :--: | :--: |
+| ![运行概览](docs/images/dashboard.png) | ![配置管理](docs/images/configuration.png) |
 
-![运行概览：请求、缓存、Pipeline、上游与配置状态](docs/images/dashboard.png)
+| 系统与更新 | DNS 诊断 |
+| :--: | :--: |
+| ![系统与更新](docs/images/system.png) | ![DNS 诊断](docs/images/diagnostics.png) |
 
-### 配置管理
-
-![配置管理：结构化编辑、JSON、流程预览与版本历史](docs/images/configuration.png)
-
-### 系统与更新
-
-![系统与更新：宿主机服务控制、版本安装与切换](docs/images/system.png)
+*截图来自本地演示环境，运行指标、构建版本与查询结果均为示例数据。*
 
 ## 已实现能力
 
