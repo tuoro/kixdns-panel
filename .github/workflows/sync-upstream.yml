@@ -1,4 +1,4 @@
-name: Track successful upstream action
+name: Track successful upstream versions
 
 on:
   schedule:
@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   sync:
-    name: Validate latest successful upstream commit
+    name: Validate upstream Action and Release
     runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}
@@ -26,95 +26,123 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Read latest successful official action
+      - name: Read latest upstream tracks
         id: upstream
         shell: bash
         run: |
-          response="$(gh api 'repos/olicesx/kixdns/actions/workflows/build.yml/runs?branch=main&status=success&per_page=1')"
-          commit="$(jq -r '.workflow_runs[0].head_sha // empty' <<< "$response")"
-          run_id="$(jq -r '.workflow_runs[0].id // empty' <<< "$response")"
-          [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo '官方 Action 未返回完整提交 SHA' >&2; exit 1; }
-          [[ "$run_id" =~ ^[0-9]+$ ]] || { echo '官方 Action 未返回 run id' >&2; exit 1; }
-          echo "commit=$commit" >> "$GITHUB_OUTPUT"
-          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
-          echo "current=$(jq -r .commit upstream.lock.json)" >> "$GITHUB_OUTPUT"
+          action_response="$(gh api 'repos/olicesx/kixdns/actions/workflows/build.yml/runs?branch=main&status=success&per_page=1')"
+          action_commit="$(jq -r '.workflow_runs[0].head_sha // empty' <<< "$action_response")"
+          action_run_id="$(jq -r '.workflow_runs[0].id // empty' <<< "$action_response")"
+          release_response="$(gh api 'repos/olicesx/kixdns/releases/latest')"
+          release_id="$(jq -r '.id // empty' <<< "$release_response")"
+          release_tag="$(jq -r '.tag_name // empty' <<< "$release_response")"
+          release_commit="$(gh api "repos/olicesx/kixdns/commits/${release_tag}" --jq .sha)"
 
-      - name: Ensure current lock has a successful build
-        if: steps.upstream.outputs.commit == steps.upstream.outputs.current
+          [[ "$action_commit" =~ ^[0-9a-f]{40}$ && "$action_run_id" =~ ^[0-9]+$ ]] || { echo '官方 Action 元数据无效' >&2; exit 1; }
+          [[ "$release_commit" =~ ^[0-9a-f]{40}$ && "$release_id" =~ ^[0-9]+$ ]] || { echo '官方 Release 元数据无效' >&2; exit 1; }
+          [[ "$release_tag" =~ ^[A-Za-z0-9._-]+$ ]] || { echo '官方 Release 标签无效' >&2; exit 1; }
+
+          echo "action_commit=$action_commit" >> "$GITHUB_OUTPUT"
+          echo "action_run_id=$action_run_id" >> "$GITHUB_OUTPUT"
+          echo "action_current=$(jq -r .commit upstream.lock.json)" >> "$GITHUB_OUTPUT"
+          echo "release_commit=$release_commit" >> "$GITHUB_OUTPUT"
+          echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "release_current=$(jq -r .commit upstream.release.lock.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure Action track has a current build
+        if: steps.upstream.outputs.action_commit == steps.upstream.outputs.action_current
         shell: bash
         run: |
           lock_updated_at="$(git log -1 --format=%ct -- upstream.lock.json)"
-          latest_build_at="$(
-            gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/workflows/build-kixdns.yml/runs" \
-              -f branch=main -f status=success -f per_page=20 \
-              --jq '[.workflow_runs[] | select(.event != "pull_request")][0].created_at // empty'
-          )"
+          latest_build_at="$(gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/workflows/build-kixdns.yml/runs" -f branch=main -f status=success -f per_page=20 --jq '[.workflow_runs[] | select(.event != "pull_request")][0].created_at // empty')"
           if [[ -z "$latest_build_at" ]] || (( $(date -d "$latest_build_at" +%s) < lock_updated_at )); then
             gh workflow run build-kixdns.yml --ref main
-            echo "当前锁定缺少成功 Artifact，已重新派发增强构建"
+            echo "Action 轨道缺少当前 Artifact，已派发构建"
           else
-            echo "上游锁定和增强 Artifact 均为最新"
+            echo "Action 轨道锁定和 Artifact 均为最新"
           fi
 
-      - name: Update lock file
-        if: steps.upstream.outputs.commit != steps.upstream.outputs.current
-        env:
-          COMMIT: ${{ steps.upstream.outputs.commit }}
-          RUN_ID: ${{ steps.upstream.outputs.run_id }}
+      - name: Ensure Release track has a current build
+        if: steps.upstream.outputs.release_commit == steps.upstream.outputs.release_current
+        shell: bash
         run: |
-          jq --arg commit "$COMMIT" --argjson run_id "$RUN_ID" \
+          lock_updated_at="$(git log -1 --format=%ct -- upstream.release.lock.json)"
+          latest_build_at="$(gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/workflows/build-kixdns-release.yml/runs" -f branch=main -f status=success -f per_page=20 --jq '[.workflow_runs[] | select(.event != "pull_request")][0].created_at // empty')"
+          if [[ -z "$latest_build_at" ]] || (( $(date -d "$latest_build_at" +%s) < lock_updated_at )); then
+            gh workflow run build-kixdns-release.yml --ref main
+            echo "Release 轨道缺少当前 Artifact，已派发构建"
+          else
+            echo "Release 轨道锁定和 Artifact 均为最新"
+          fi
+
+      - name: Update candidate locks
+        if: steps.upstream.outputs.action_commit != steps.upstream.outputs.action_current || steps.upstream.outputs.release_commit != steps.upstream.outputs.release_current
+        env:
+          ACTION_COMMIT: ${{ steps.upstream.outputs.action_commit }}
+          ACTION_RUN_ID: ${{ steps.upstream.outputs.action_run_id }}
+          RELEASE_COMMIT: ${{ steps.upstream.outputs.release_commit }}
+          RELEASE_ID: ${{ steps.upstream.outputs.release_id }}
+          RELEASE_TAG: ${{ steps.upstream.outputs.release_tag }}
+        shell: bash
+        run: |
+          jq --arg commit "$ACTION_COMMIT" --argjson run_id "$ACTION_RUN_ID" \
             '.commit = $commit | .official_run_id = $run_id' upstream.lock.json > upstream.lock.json.new
           mv upstream.lock.json.new upstream.lock.json
+          jq --arg commit "$RELEASE_COMMIT" --argjson release_id "$RELEASE_ID" --arg tag "$RELEASE_TAG" \
+            '.commit = $commit | .release_id = $release_id | .release_tag = $tag' upstream.release.lock.json > upstream.release.lock.json.new
+          mv upstream.release.lock.json.new upstream.release.lock.json
 
       - name: Install Rust
-        if: steps.upstream.outputs.commit != steps.upstream.outputs.current
+        if: steps.upstream.outputs.action_commit != steps.upstream.outputs.action_current || steps.upstream.outputs.release_commit != steps.upstream.outputs.release_current
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy
 
       - name: Install dependency auditor
-        if: steps.upstream.outputs.commit != steps.upstream.outputs.current
+        if: steps.upstream.outputs.action_commit != steps.upstream.outputs.action_current || steps.upstream.outputs.release_commit != steps.upstream.outputs.release_current
         run: cargo install cargo-audit --version 0.22.2 --locked
 
       - name: Validate patch compatibility
-        if: steps.upstream.outputs.commit != steps.upstream.outputs.current
+        if: steps.upstream.outputs.action_commit != steps.upstream.outputs.action_current || steps.upstream.outputs.release_commit != steps.upstream.outputs.release_current
         shell: bash
         run: |
-          cargo xtask prepare
-          upstream_dir=".upstream/kixdns-$(jq -r .commit upstream.lock.json | cut -c1-12)-p$(jq -r .patchset upstream.lock.json)"
-          cd "$upstream_dir"
-          cargo fmt --check
-          cargo test --lib --locked
-          cargo clippy --all-targets --all-features --locked -- -D warnings
-          cargo audit --deny warnings
-          cargo build --locked
-          python3 "$GITHUB_WORKSPACE/scripts/dns_smoke.py" target/debug/kixdns
+          for lock in upstream.lock.json upstream.release.lock.json; do
+            cargo xtask prepare --lock "$lock"
+            upstream_dir=".upstream/kixdns-$(jq -r .source "$lock")-$(jq -r .commit "$lock" | cut -c1-12)-p$(jq -r .patchset "$lock")"
+            (
+              cd "$upstream_dir"
+              cargo fmt --check
+              cargo test --lib --locked
+              cargo clippy --all-targets --all-features --locked -- -D warnings
+              cargo audit --deny warnings
+              cargo build --locked
+              python3 "$GITHUB_WORKSPACE/scripts/dns_smoke.py" target/debug/kixdns
+            )
+          done
 
       - name: Merge validated upstream update
-        if: steps.upstream.outputs.commit != steps.upstream.outputs.current
+        if: steps.upstream.outputs.action_commit != steps.upstream.outputs.action_current || steps.upstream.outputs.release_commit != steps.upstream.outputs.release_current
         env:
-          COMMIT: ${{ steps.upstream.outputs.commit }}
-          RUN_ID: ${{ steps.upstream.outputs.run_id }}
+          ACTION_COMMIT: ${{ steps.upstream.outputs.action_commit }}
+          ACTION_RUN_ID: ${{ steps.upstream.outputs.action_run_id }}
+          RELEASE_COMMIT: ${{ steps.upstream.outputs.release_commit }}
+          RELEASE_ID: ${{ steps.upstream.outputs.release_id }}
+          RELEASE_TAG: ${{ steps.upstream.outputs.release_tag }}
         shell: bash
         run: |
-          short="${COMMIT:0:12}"
-          branch="automation/upstream-${short}"
+          branch="automation/upstream-${ACTION_COMMIT:0:8}-${RELEASE_COMMIT:0:8}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$branch"
-          git add upstream.lock.json
-          git commit -m "chore: track upstream ${short}"
+          git add upstream.lock.json upstream.release.lock.json
+          git commit -m "chore: track verified upstream versions"
           git push --force origin "HEAD:refs/heads/${branch}"
           pull_request="$(gh pr list --head "$branch" --state open --json url --jq '.[0].url // empty')"
           if [[ -z "$pull_request" ]]; then
-            body="$(printf '锁定 KixDNS 官方 build.yml 最近成功 Action 的提交。\n\n- commit: `%s`\n- run: https://github.com/olicesx/kixdns/actions/runs/%s\n- 增强补丁、测试和 Clippy 已通过' "$COMMIT" "$RUN_ID")"
-            pull_request="$(gh pr create \
-              --base main \
-              --head "$branch" \
-              --title "chore: track successful upstream ${short}" \
-              --body "$body")"
+            body="$(printf '同步 KixDNS 两条已验证上游轨道。\n\n- Action：提交 `%s`，Run https://github.com/olicesx/kixdns/actions/runs/%s\n- Release：`%s`，提交 `%s`，https://github.com/olicesx/kixdns/releases/tag/%s\n- 两条轨道的增强补丁、测试、Clippy、RustSec 与 DNS 冒烟均已通过' "$ACTION_COMMIT" "$ACTION_RUN_ID" "$RELEASE_TAG" "$RELEASE_COMMIT" "$RELEASE_TAG")"
+            pull_request="$(gh pr create --base main --head "$branch" --title "chore: track verified upstream versions" --body "$body")"
           fi
           gh pr merge "$pull_request" --squash --delete-branch
           [[ "$(gh pr view "$pull_request" --json state --jq .state)" == 'MERGED' ]]
-          gh workflow run build-kixdns.yml --ref main

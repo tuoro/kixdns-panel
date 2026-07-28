@@ -1,0 +1,146 @@
+name: Build KixDNS track
+
+on:
+  workflow_call:
+    inputs:
+      lock_file:
+        description: Verified upstream lock to build
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify enhanced source
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout panel repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy
+
+      - name: Install dependency auditor
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Cache enhanced build
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: |
+            . -> target
+            .upstream/* -> target
+
+      - name: Verify build tooling
+        run: |
+          cargo fmt --all -- --check
+          cargo test --package xtask --locked
+          cargo clippy --package xtask --all-targets --locked -- -D warnings
+
+      - name: Prepare enhanced source
+        shell: bash
+        env:
+          LOCK_FILE: ${{ inputs.lock_file }}
+        run: |
+          cargo xtask prepare --lock "$LOCK_FILE"
+          echo "UPSTREAM_DIR=.upstream/kixdns-$(jq -r .source "$LOCK_FILE")-$(jq -r .commit "$LOCK_FILE" | cut -c1-12)-p$(jq -r .patchset "$LOCK_FILE")" >> "$GITHUB_ENV"
+
+      - name: Verify enhanced source
+        run: |
+          cd "$UPSTREAM_DIR"
+          cargo fmt --check
+          cargo test --lib --locked
+          cargo clippy --all-targets --all-features --locked -- -D warnings
+          cargo audit --deny warnings
+
+      - name: Verify enhanced runtime contract
+        run: |
+          cd "$UPSTREAM_DIR"
+          cargo build --locked
+          python3 "$GITHUB_WORKSPACE/scripts/dns_smoke.py" target/debug/kixdns
+
+  build:
+    name: Build Linux ${{ matrix.arch }}
+    if: github.event_name != 'pull_request'
+    needs: verify
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+
+    steps:
+      - name: Checkout panel repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: 1.97.1
+          targets: ${{ matrix.target }}
+
+      - name: Cache enhanced build
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: |
+            . -> target
+            .upstream/* -> target
+
+      - name: Prepare enhanced source
+        shell: bash
+        env:
+          LOCK_FILE: ${{ inputs.lock_file }}
+        run: |
+          cargo xtask prepare --lock "$LOCK_FILE"
+          echo "UPSTREAM_DIR=.upstream/kixdns-$(jq -r .source "$LOCK_FILE")-$(jq -r .commit "$LOCK_FILE" | cut -c1-12)-p$(jq -r .patchset "$LOCK_FILE")" >> "$GITHUB_ENV"
+
+      - name: Export build identity
+        id: identity
+        shell: bash
+        env:
+          LOCK_FILE: ${{ inputs.lock_file }}
+        run: |
+          source="$(jq -r .source "$LOCK_FILE")"
+          case "$source" in
+            action) reference="$(jq -r .official_run_id "$LOCK_FILE")" ;;
+            release) reference="$(jq -r .release_tag "$LOCK_FILE")" ;;
+            *) echo "未知上游来源：${source}" >&2; exit 1 ;;
+          esac
+          [[ "$reference" =~ ^[A-Za-z0-9._-]+$ ]] || { echo '上游来源标识无效' >&2; exit 1; }
+          artifact="kixdns-enhanced-${source}-${reference}-linux-${{ matrix.arch }}"
+          echo "KIXDNS_UPSTREAM_COMMIT=$(jq -r .commit "$LOCK_FILE")" >> "$GITHUB_ENV"
+          echo "KIXDNS_PANEL_PATCHSET=$(jq -r .patchset "$LOCK_FILE")" >> "$GITHUB_ENV"
+          echo "ARTIFACT_NAME=${artifact}" >> "$GITHUB_ENV"
+          echo "artifact_name=${artifact}" >> "$GITHUB_OUTPUT"
+
+      - name: Build release binary
+        run: cargo build --manifest-path "$UPSTREAM_DIR/Cargo.toml" --release --locked --target ${{ matrix.target }}
+
+      - name: Package enhanced artifact
+        shell: bash
+        env:
+          LOCK_FILE: ${{ inputs.lock_file }}
+        run: |
+          enhanced="dist/${ARTIFACT_NAME}"
+          install -Dm755 "$UPSTREAM_DIR/target/${{ matrix.target }}/release/kixdns" "$enhanced/kixdns"
+          cp "$LOCK_FILE" "$enhanced/upstream.lock.json"
+          printf '%s\n' "$GITHUB_SHA" > "$enhanced/KIXDNS_BUILD_COMMIT"
+          (cd "$enhanced" && sha256sum kixdns upstream.lock.json KIXDNS_BUILD_COMMIT > SHA256SUMS)
+
+      - name: Upload enhanced artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.identity.outputs.artifact_name }}
+          path: dist/${{ steps.identity.outputs.artifact_name }}
+          if-no-files-found: error
+          retention-days: 90

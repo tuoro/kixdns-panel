@@ -19,7 +19,24 @@ validate_slug() {
 }
 
 artifact_identity() {
-  jq -ceS '{repository, commit, patchset, build_revision, control_protocol}' "$1"
+  jq -ceS '{repository, source, commit, official_run_id, release_id, release_tag, patchset, control_protocol}' "$1"
+}
+
+tracked_artifact() {
+  local base=$1
+  local lock_file=$2
+  local prefix="${base%-linux-*}"
+  local platform="${base#${prefix}-}"
+  local source
+  local reference
+  source="$(jq -r .source "$lock_file")"
+  case "${source}" in
+    action) reference="$(jq -r .official_run_id "$lock_file")" ;;
+    release) reference="$(jq -r .release_tag "$lock_file")" ;;
+    *) return 1 ;;
+  esac
+  [[ "${reference}" =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+  printf '%s-%s-%s-%s\n' "${prefix}" "${source}" "${reference}" "${platform}"
 }
 
 validate_architecture() {
@@ -80,6 +97,7 @@ main() {
   [[ -f "${lock_file}" && ! -L "${lock_file}" ]] || fail '上游锁定文件无效'
   [[ ! -e "${destination}" ]] || fail '目标目录已经存在'
   expected_identity="$(artifact_identity "${lock_file}")" || fail '上游锁定身份无效'
+  ARTIFACT="$(tracked_artifact "${ARTIFACT}" "${lock_file}")" || fail '无法生成轨道 Artifact 名称'
 
   while IFS=$'\t' read -r run_id run_commit; do
     [[ "${run_id}" =~ ^[0-9]+$ && "${run_commit}" =~ ^[0-9a-f]{40}$ ]] || continue

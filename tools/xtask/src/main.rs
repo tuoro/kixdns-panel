@@ -12,28 +12,69 @@ use tempfile::{Builder, TempDir};
 
 const PATCH_STAMP: &str = ".kixdns-panel-patches";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum UpstreamSource {
+    Action,
+    Release,
+}
+
+impl UpstreamSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Action => "action",
+            Self::Release => "release",
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct UpstreamLock {
     repository: String,
+    source: UpstreamSource,
     commit: String,
+    #[serde(default)]
+    official_run_id: Option<u64>,
+    #[serde(default)]
+    release_id: Option<u64>,
+    #[serde(default)]
+    release_tag: Option<String>,
     patchset: u32,
-    build_revision: u32,
     control_protocol: u32,
 }
 
 fn main() -> Result<()> {
-    let command = env::args().nth(1).unwrap_or_else(|| "help".to_owned());
+    let mut arguments = env::args().skip(1);
+    let command = arguments.next().unwrap_or_else(|| "help".to_owned());
+    let lock_file = parse_lock_argument(arguments)?;
     let root = workspace_root()?;
 
     match command.as_str() {
-        "prepare" => prepare(&root),
-        "info" => print_info(&root),
+        "prepare" => prepare(&root, &lock_file),
+        "info" => print_info(&root, &lock_file),
         "help" | "-h" | "--help" => {
             print_help();
             Ok(())
         }
         other => bail!("未知 xtask 命令：{other}"),
     }
+}
+
+fn parse_lock_argument(mut arguments: impl Iterator<Item = String>) -> Result<PathBuf> {
+    let Some(flag) = arguments.next() else {
+        return Ok(PathBuf::from("upstream.lock.json"));
+    };
+    let value = arguments.next().context("--lock 缺少锁文件名")?;
+    if flag != "--lock"
+        || arguments.next().is_some()
+        || !matches!(
+            value.as_str(),
+            "upstream.lock.json" | "upstream.release.lock.json"
+        )
+    {
+        bail!("仅支持 --lock upstream.lock.json 或 upstream.release.lock.json");
+    }
+    Ok(PathBuf::from(value))
 }
 
 fn workspace_root() -> Result<PathBuf> {
@@ -44,19 +85,24 @@ fn workspace_root() -> Result<PathBuf> {
         .context("无法确定工作区根目录")
 }
 
-fn load_lock(root: &Path) -> Result<UpstreamLock> {
-    let path = root.join("upstream.lock.json");
+fn load_lock(root: &Path, lock_file: &Path) -> Result<UpstreamLock> {
+    let path = root.join(lock_file);
     let raw = fs::read_to_string(&path)
         .with_context(|| format!("读取上游锁定文件失败：{}", path.display()))?;
-    serde_json::from_str(&raw).context("解析 upstream.lock.json 失败")
+    serde_json::from_str(&raw).with_context(|| format!("解析 {} 失败", lock_file.display()))
 }
 
-fn prepare(root: &Path) -> Result<()> {
-    let lock = load_lock(root)?;
+fn prepare(root: &Path, lock_file: &Path) -> Result<()> {
+    let lock = load_lock(root, lock_file)?;
     validate_lock(&lock)?;
 
     let source_root = root.join(".upstream");
-    let checkout = source_root.join(format!("kixdns-{}-p{}", &lock.commit[..12], lock.patchset));
+    let checkout = source_root.join(format!(
+        "kixdns-{}-{}-p{}",
+        lock.source.as_str(),
+        &lock.commit[..12],
+        lock.patchset
+    ));
     fs::create_dir_all(&source_root).context("创建 .upstream 目录失败")?;
 
     if !checkout.join(".git").is_dir() {
@@ -72,7 +118,7 @@ fn prepare(root: &Path) -> Result<()> {
         );
     }
 
-    apply_patches(root, &checkout, lock.patchset)?;
+    apply_patches(root, &checkout, &lock)?;
     println!("上游增强源码已准备：{}", checkout.display());
     Ok(())
 }
@@ -166,25 +212,23 @@ fn inspect_checkout_placeholder(checkout: &Path) -> Result<CheckoutPlaceholder> 
     )
 }
 
-fn apply_patches(root: &Path, checkout: &Path, patchset: u32) -> Result<()> {
+fn apply_patches(root: &Path, checkout: &Path, lock: &UpstreamLock) -> Result<()> {
     let patch_dir = root.join("patches");
     if !patch_dir.is_dir() {
         println!("补丁目录尚未创建，保留原始上游源码");
         return Ok(());
     }
 
-    let mut patches = fs::read_dir(&patch_dir)
-        .context("读取 patches 目录失败")?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.extension() == Some(OsStr::new("patch")))
-        .collect::<Vec<_>>();
-    patches.sort();
-
-    let expected_stamp = patch_stamp(patchset, &patches)?;
+    let mut patches = Vec::new();
+    if lock.source == UpstreamSource::Release {
+        let release_tag = lock.release_tag.as_deref().expect("已验证 Release 标签");
+        patches.extend(read_patches(&patch_dir.join("release").join(release_tag))?);
+    }
+    patches.extend(read_patches(&patch_dir)?);
+    let expected_stamp = patch_stamp(lock.patchset, lock.source, &patches)?;
     let stamp_path = checkout.join(PATCH_STAMP);
     if fs::read_to_string(&stamp_path).is_ok_and(|stamp| stamp == expected_stamp) {
-        println!("补丁集已应用：v{patchset}");
+        println!("补丁集已应用：v{}", lock.patchset);
         return Ok(());
     }
     if !output(checkout, "git", ["status", "--porcelain"])?.is_empty() {
@@ -207,7 +251,22 @@ fn apply_patches(root: &Path, checkout: &Path, patchset: u32) -> Result<()> {
     Ok(())
 }
 
-fn patch_stamp(patchset: u32, patches: &[PathBuf]) -> Result<String> {
+fn read_patches(directory: &Path) -> Result<Vec<PathBuf>> {
+    if !directory.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut patches = fs::read_dir(directory)
+        .context("读取 patches 目录失败")?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension() == Some(OsStr::new("patch")))
+        .collect::<Vec<_>>();
+    patches.sort();
+
+    Ok(patches)
+}
+
+fn patch_stamp(patchset: u32, source: UpstreamSource, patches: &[PathBuf]) -> Result<String> {
     let mut digest = Sha256::new();
     for patch in patches {
         let name = patch
@@ -222,7 +281,8 @@ fn patch_stamp(patchset: u32, patches: &[PathBuf]) -> Result<String> {
         digest.update(content);
     }
     Ok(format!(
-        "patchset={patchset}\nsha256={}\n",
+        "source={}\npatchset={patchset}\nsha256={}\n",
+        source.as_str(),
         encode_hex(digest.finalize())
     ))
 }
@@ -236,23 +296,49 @@ fn encode_hex(bytes: impl AsRef<[u8]>) -> String {
     encoded
 }
 
-fn print_info(root: &Path) -> Result<()> {
-    let lock = load_lock(root)?;
+fn print_info(root: &Path, lock_file: &Path) -> Result<()> {
+    let lock = load_lock(root, lock_file)?;
     validate_lock(&lock)?;
+    println!("锁文件：{}", lock_file.display());
     println!("仓库：https://github.com/{}", lock.repository);
+    println!(
+        "来源：{}",
+        match lock.source {
+            UpstreamSource::Action => "Action",
+            UpstreamSource::Release => "Release",
+        }
+    );
     println!("提交：{}", lock.commit);
     println!("补丁集：{}", lock.patchset);
-    println!("构建修订：{}", lock.build_revision);
     println!("控制协议：v{}", lock.control_protocol);
     Ok(())
 }
 
 fn validate_lock(lock: &UpstreamLock) -> Result<()> {
     validate_commit(&lock.commit)?;
-    if lock.patchset == 0 || lock.build_revision == 0 || lock.control_protocol == 0 {
+    if lock.patchset == 0 || lock.control_protocol == 0 {
         bail!("upstream.lock.json 中的版本号必须大于 0");
     }
+    match lock.source {
+        UpstreamSource::Action
+            if lock.official_run_id.is_some_and(|run_id| run_id > 0)
+                && lock.release_id.is_none()
+                && lock.release_tag.is_none() => {}
+        UpstreamSource::Release
+            if lock.release_id.is_some_and(|release_id| release_id > 0)
+                && lock.release_tag.as_deref().is_some_and(valid_reference)
+                && lock.official_run_id.is_none() => {}
+        _ => bail!("upstream.lock.json 中的来源元数据不完整"),
+    }
     Ok(())
+}
+
+fn valid_reference(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 100
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
 fn validate_commit(commit: &str) -> Result<()> {
@@ -298,8 +384,8 @@ where
 
 fn print_help() {
     println!("KixDNS Panel 构建任务");
-    println!("  cargo xtask info     显示锁定的上游版本");
-    println!("  cargo xtask prepare  检出上游并应用增强补丁");
+    println!("  cargo xtask info [--lock <文件>]     显示锁定的上游版本");
+    println!("  cargo xtask prepare [--lock <文件>]  检出上游并应用增强补丁");
 }
 
 #[cfg(test)]
@@ -309,8 +395,8 @@ mod tests {
     use tempfile::{tempdir, tempdir_in};
 
     use super::{
-        CheckoutPlaceholder, UpstreamLock, activate_checkout, inspect_checkout_placeholder,
-        validate_commit, validate_lock,
+        CheckoutPlaceholder, UpstreamLock, UpstreamSource, activate_checkout,
+        inspect_checkout_placeholder, validate_commit, validate_lock,
     };
 
     #[test]
@@ -325,12 +411,15 @@ mod tests {
     }
 
     #[test]
-    fn rejects_zero_build_revision() {
+    fn rejects_incomplete_source_identity() {
         let lock = UpstreamLock {
             repository: "olicesx/kixdns".to_owned(),
+            source: UpstreamSource::Release,
             commit: "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25".to_owned(),
+            official_run_id: None,
+            release_id: None,
+            release_tag: Some("v0.1.1".to_owned()),
             patchset: 5,
-            build_revision: 0,
             control_protocol: 1,
         };
         assert!(validate_lock(&lock).is_err());

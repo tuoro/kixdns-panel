@@ -1,10 +1,12 @@
 # 增强补丁
 
-该目录按文件名顺序保存针对 `upstream.lock.json` 锁定提交的补丁。上游源码不进入本仓库；`cargo xtask prepare` 会检出到 `.upstream/kixdns-<commit>-p<patchset>`，并以 `git apply` 重放所有 `.patch` 文件。工具使用补丁内容 SHA-256 标记完整补丁集，支持幂等执行并拒绝混用不同内容。
+该目录按文件名顺序保存针对上游锁定提交的补丁。上游源码不进入本仓库；`cargo xtask prepare` 会检出到 `.upstream/kixdns-<source>-<commit>-p<patchset>`，并以 `git apply` 重放所有通用 `.patch` 文件。工具使用来源、补丁版本和内容 SHA-256 标记完整补丁集，支持幂等执行并拒绝混用不同内容。
+
+`release/<tag>/` 中的补丁只用于对应的正式 Release，并先于通用补丁应用。它只对齐较旧正式版与通用补丁所需的上游基线，不复制增强功能实现，也不会影响未来发布。
 
 补丁更新流程：
 
-1. 在 `.upstream/kixdns-<commit>` 中完成并验证修改。
+1. 在 `.upstream/kixdns-<source>-<commit>-p<patchset>` 中完成并验证修改。
 2. 对新增文件执行 `git add -N <file>`，使其进入差异。
 3. 使用 `git diff --binary --output=<patch>` 重新生成对应补丁。
 4. 在干净检出中运行 `cargo xtask prepare`，再执行格式、测试和 Clippy 检查。

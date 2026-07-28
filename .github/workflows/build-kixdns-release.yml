@@ -1,24 +1,24 @@
-name: Build KixDNS Enhanced
+name: Build KixDNS Enhanced from Release
 
 on:
   push:
     branches: [main]
     paths:
-      - .github/workflows/build-kixdns.yml
+      - .github/workflows/build-kixdns-release.yml
       - .github/workflows/build-kixdns-track.yml
       - patches/**
       - scripts/dns_smoke.py
       - tools/xtask/**
-      - upstream.lock.json
+      - upstream.release.lock.json
       - rust-toolchain.toml
   pull_request:
     paths:
-      - .github/workflows/build-kixdns.yml
+      - .github/workflows/build-kixdns-release.yml
       - .github/workflows/build-kixdns-track.yml
       - patches/**
       - scripts/dns_smoke.py
       - tools/xtask/**
-      - upstream.lock.json
+      - upstream.release.lock.json
       - rust-toolchain.toml
   workflow_dispatch:
 
@@ -26,11 +26,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: kixdns-action-${{ github.ref }}
+  group: kixdns-release-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
     uses: ./.github/workflows/build-kixdns-track.yml
     with:
-      lock_file: upstream.lock.json
+      lock_file: upstream.release.lock.json
