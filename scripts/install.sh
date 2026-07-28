@@ -191,7 +191,7 @@ main() {
   rm -rf -- "${BACKUP_ROOT}"
 
   printf '\n安装完成。\n'
-  printf '面板地址：http://127.0.0.1:8080\n'
+  printf '面板地址：http://127.0.0.1:4165\n'
   printf '首次访问时创建管理员账号；远程访问请先配置 HTTPS 反向代理。\n'
 }
 
