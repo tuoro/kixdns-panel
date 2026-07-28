@@ -31,41 +31,39 @@ describe('演示 API', () => {
     await mockRequest(`/api/v1/kixdns/versions/${latest.source}/${latest.source_id}/install`, { method: 'POST' })
     const installed = await mockRequest<KixdnsVersionCatalog>('/api/v1/kixdns/versions?source=release')
     expect(installed.active_commit).toBe(latest.commit)
-    expect(installed.installed_versions.some((version) => version.commit === latest.commit)).toBe(true)
+    expect(installed.active_source).toBe('release')
+    expect(installed.installed_versions.some((version) => version.source === 'release' && version.commit === latest.commit)).toBe(true)
 
     const previous = initial.active_commit as string
-    await mockRequest(`/api/v1/kixdns/versions/${previous}/activate`, { method: 'POST' })
+    const previousSource = initial.active_source as string
+    await mockRequest(`/api/v1/kixdns/versions/${previousSource}/${previous}/activate`, { method: 'POST' })
     const switched = await mockRequest<KixdnsVersionCatalog>('/api/v1/kixdns/versions?source=release')
     expect(switched.active_commit).toBe(previous)
+    expect(switched.active_source).toBe(previousSource)
   })
 
-  it('用真实构建身份区分同一上游的不同包', async () => {
+  it('展示上游官方 Action 与增强构建的独立身份', async () => {
     const catalog = await mockRequest<KixdnsVersionCatalog>('/api/v1/kixdns/versions?source=action')
-    expect(catalog.remote_versions.map((version) => version.run_id)).toEqual([
-      30361560969,
-      30353958253,
-      30344337649,
-    ])
-    expect(new Set(catalog.remote_versions.map((version) => version.commit)).size).toBe(3)
+    expect(catalog.remote_versions[0].run_id).toBe(30235703570)
+    expect(catalog.remote_versions[0].source_id).toBe(30364672952)
+    expect(catalog.remote_versions[0].source_url).toContain('olicesx/kixdns/actions/runs/30235703570')
+    expect(catalog.remote_versions[0].build_url).toContain('tuoro/kixdns-panel/actions/runs/30364672952')
     expect(catalog.remote_versions.every((version) => /^sha256:[a-f0-9]{64}$/.test(version.artifact_digest))).toBe(true)
     expect(catalog.installed_versions.every((version) => version.commit !== version.upstream_commit)).toBe(true)
-    expect(new Set(catalog.installed_versions.map((version) => version.upstream_commit))).toEqual(new Set([
-      '374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25',
-    ]))
-    expect(new Set(catalog.installed_versions.map((version) => version.binary_sha256))).toEqual(new Set([
-      'ee714ecae2d9f93e1ee8e242b1e351be4671ad53b4adc4dc3e70d20472a9c27a',
-    ]))
+    expect(catalog.installed_versions.some((version) => version.upstream_commit === '374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25')).toBe(true)
   })
 
-  it('在 Release 与 Action 来源间复用同一构建库存', async () => {
+  it('按来源隔离相同增强提交的本地库存', async () => {
     const releases = await mockRequest<KixdnsVersionCatalog>('/api/v1/kixdns/versions?source=release')
     const release = releases.remote_versions[0]
     await mockRequest(`/api/v1/kixdns/versions/${release.source}/${release.source_id}/install`, { method: 'POST' })
     const actions = await mockRequest<KixdnsVersionCatalog>('/api/v1/kixdns/versions?source=action')
     expect(releases.source).toBe('release')
     expect(actions.source).toBe('action')
-    expect(release.release_tag).toBe('kixdns-374d63ccfdde-p5-r1')
+    expect(release.release_tag).toBe('v0.1.1')
     expect(release.commit).toBe(actions.remote_versions[0].commit)
     expect(actions.remote_versions[0].installed).toBe(true)
+    expect(actions.remote_versions[0].active).toBe(false)
+    expect(actions.installed_versions.filter((version) => version.commit === release.commit).map((version) => version.source).sort()).toEqual(['action', 'release'])
   })
 })

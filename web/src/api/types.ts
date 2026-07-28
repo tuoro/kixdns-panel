@@ -165,6 +165,7 @@ export interface RemoteKixdnsVersion {
   release_tag: string | null
   created_at: string
   source_url: string
+  build_url: string
   artifact: string
   artifact_digest: string
   download_url: string
@@ -180,12 +181,12 @@ export interface InstalledKixdnsVersion {
   release_tag: string | null
   created_at: string | null
   source_url: string | null
+  build_url: string | null
   artifact: string
   artifact_digest: string | null
   upstream_repository: string | null
   upstream_commit: string | null
   patchset: number | null
-  build_revision: number | null
   control_protocol: number | null
   binary_sha256: string
   installed_at: number
@@ -194,6 +195,7 @@ export interface InstalledKixdnsVersion {
 
 export interface KixdnsVersionCatalog {
   source: KixdnsVersionSource
+  active_source: KixdnsVersionSource | null
   active_commit: string | null
   binary_present: boolean
   remote_versions: RemoteKixdnsVersion[]

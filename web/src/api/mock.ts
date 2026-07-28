@@ -111,49 +111,26 @@ const versions: ConfigVersions = {
 
 let serviceRunning = true
 let updateAvailable = true
-const upstreamCommit = '374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25'
-const artifactName = 'kixdns-enhanced-linux-x86_64'
-const binarySha256 = 'ee714ecae2d9f93e1ee8e242b1e351be4671ad53b4adc4dc3e70d20472a9c27a'
+const panelBuildCommit = '1d7657902a0a874805869ccd5139ab1afad32c1f'
+const actionUpstreamCommit = '374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25'
+const releaseUpstreamCommit = '647c5b1d2af6963176d7f8da6c3ed031e6b58497'
+const binarySha256: Record<KixdnsVersionSource, string> = {
+  action: 'ee714ecae2d9f93e1ee8e242b1e351be4671ad53b4adc4dc3e70d20472a9c27a',
+  release: '5dff4bbcc579f2882678f5aab0074601f4790770771430b09bb75d7a51057c4d',
+}
 const actionVersions: RemoteKixdnsVersion[] = [
   {
     source: 'action',
-    source_id: 30361560969,
-    commit: 'ec507c47896d958e6d17efc755b03340c10bf98e',
-    run_id: 30361560969,
+    source_id: 30364672952,
+    commit: panelBuildCommit,
+    run_id: 30235703570,
     release_tag: null,
-    created_at: '2026-07-28T13:01:32Z',
-    source_url: 'https://github.com/tuoro/kixdns-panel/actions/runs/30361560969',
-    artifact: artifactName,
-    artifact_digest: 'sha256:7d0eb465fcc4735ef9586b0b6f724e136d944cfcc424129650661cadeb1bf38c',
-    download_url: `https://nightly.link/tuoro/kixdns-panel/actions/runs/30361560969/${artifactName}.zip`,
-    installed: false,
-    active: false,
-  },
-  {
-    source: 'action',
-    source_id: 30353958253,
-    commit: '4e8002d08a56afc08be335d0d5ed337c7690f9af',
-    run_id: 30353958253,
-    release_tag: null,
-    created_at: '2026-07-28T11:14:01Z',
-    source_url: 'https://github.com/tuoro/kixdns-panel/actions/runs/30353958253',
-    artifact: artifactName,
-    artifact_digest: 'sha256:c0cb5c7015fee516ccbfe88ba62b31e9cdfaa542a48a75e48c572f3e31e03576',
-    download_url: `https://nightly.link/tuoro/kixdns-panel/actions/runs/30353958253/${artifactName}.zip`,
-    installed: false,
-    active: false,
-  },
-  {
-    source: 'action',
-    source_id: 30344337649,
-    commit: 'c459982f2c705e4ef81069fec38882324c5faf0d',
-    run_id: 30344337649,
-    release_tag: null,
-    created_at: '2026-07-28T08:54:55Z',
-    source_url: 'https://github.com/tuoro/kixdns-panel/actions/runs/30344337649',
-    artifact: artifactName,
-    artifact_digest: 'sha256:98aa2dd5567b1fd9516af058c7b9900a45d615438e64543d0010b995078eb1bf',
-    download_url: `https://nightly.link/tuoro/kixdns-panel/actions/runs/30344337649/${artifactName}.zip`,
+    created_at: '2026-07-28T13:41:30Z',
+    source_url: 'https://github.com/olicesx/kixdns/actions/runs/30235703570',
+    build_url: 'https://github.com/tuoro/kixdns-panel/actions/runs/30364672952',
+    artifact: 'kixdns-enhanced-action-30235703570-linux-x86_64',
+    artifact_digest: 'sha256:56a14ec20c0ed5c395762ea658e3990749a1677ab2923b0b74d032265c8942cd',
+    download_url: 'https://nightly.link/tuoro/kixdns-panel/actions/runs/30364672952/kixdns-enhanced-action-30235703570-linux-x86_64.zip',
     installed: false,
     active: false,
   },
@@ -162,15 +139,16 @@ const actionVersions: RemoteKixdnsVersion[] = [
 const releaseVersions: RemoteKixdnsVersion[] = [
   {
     source: 'release',
-    source_id: 361095213,
-    commit: actionVersions[0].commit,
+    source_id: 30364672955,
+    commit: panelBuildCommit,
     run_id: null,
-    release_tag: 'kixdns-374d63ccfdde-p5-r1',
-    created_at: '2026-07-28T13:15:32Z',
-    source_url: 'https://github.com/tuoro/kixdns-panel/releases/tag/kixdns-374d63ccfdde-p5-r1',
-    artifact: artifactName,
-    artifact_digest: 'sha256:e5680835c2705c231a1a12792ca278c49ebc658af833c9e8d919a2317e512905',
-    download_url: `https://github.com/tuoro/kixdns-panel/releases/download/kixdns-374d63ccfdde-p5-r1/${artifactName}.zip`,
+    release_tag: 'v0.1.1',
+    created_at: '2026-07-28T13:41:30Z',
+    source_url: 'https://github.com/olicesx/kixdns/releases/tag/v0.1.1',
+    build_url: 'https://github.com/tuoro/kixdns-panel/actions/runs/30364672955',
+    artifact: 'kixdns-enhanced-release-v0.1.1-linux-x86_64',
+    artifact_digest: 'sha256:ba376a1cc5b90c4c349a322cff7ee300cfa5ccf776f41257c5c005cca3099061',
+    download_url: 'https://nightly.link/tuoro/kixdns-panel/actions/runs/30364672955/kixdns-enhanced-release-v0.1.1-linux-x86_64.zip',
     installed: false,
     active: false,
   },
@@ -180,42 +158,44 @@ const demoRemoteVersions: Record<KixdnsVersionSource, RemoteKixdnsVersion[]> = {
   action: actionVersions,
   release: releaseVersions,
 }
-let activeKixdnsCommit = actionVersions[1].commit
+const kixdnsVersionKey = (version: Pick<RemoteKixdnsVersion, 'source' | 'commit'>): string => `${version.source}:${version.commit}`
+let activeKixdnsVersion = kixdnsVersionKey(actionVersions[0])
 const installedKixdnsVersions = new Map<string, RemoteKixdnsVersion>([
-  [activeKixdnsCommit, actionVersions[1]],
-  [actionVersions[2].commit, actionVersions[2]],
+  [activeKixdnsVersion, actionVersions[0]],
 ])
 
 function demoVersionCatalog(source: KixdnsVersionSource): KixdnsVersionCatalog {
   const remoteVersions = demoRemoteVersions[source]
+  const [activeSource, activeCommit] = activeKixdnsVersion.split(':') as [KixdnsVersionSource, string]
   return {
     source,
-    active_commit: activeKixdnsCommit,
+    active_source: activeSource,
+    active_commit: activeCommit,
     binary_present: true,
     remote_versions: remoteVersions.map((version) => ({
       ...version,
-      installed: installedKixdnsVersions.has(version.commit),
-      active: version.commit === activeKixdnsCommit,
+      installed: installedKixdnsVersions.has(kixdnsVersionKey(version)),
+      active: kixdnsVersionKey(version) === activeKixdnsVersion,
     })),
-    installed_versions: [...installedKixdnsVersions].map(([commit, remote], index) => {
+    installed_versions: [...installedKixdnsVersions.values()].map((remote, index) => {
       return {
         source: remote.source,
         source_id: remote.source_id,
-        commit,
+        commit: remote.commit,
         run_id: remote.run_id,
         release_tag: remote.release_tag,
         created_at: remote.created_at,
         source_url: remote.source_url,
+        build_url: remote.build_url,
         artifact: remote.artifact,
         artifact_digest: remote.artifact_digest,
         upstream_repository: 'olicesx/kixdns',
-        upstream_commit: upstreamCommit,
+        upstream_commit: remote.source === 'release' ? releaseUpstreamCommit : actionUpstreamCommit,
         patchset: 5,
-        build_revision: remote.source === 'release' ? 1 : null,
         control_protocol: 1,
-        binary_sha256: binarySha256,
+        binary_sha256: binarySha256[remote.source],
         installed_at: now - index * 86400,
-        active: commit === activeKixdnsCommit,
+        active: kixdnsVersionKey(remote) === activeKixdnsVersion,
       }
     }),
   }
@@ -244,18 +224,22 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
   }
   if (pathname.startsWith('/api/v1/kixdns/versions/') && method === 'POST') {
     const parts = pathname.split('/')
-    let commit = parts[5]
+    const source = parts[5] as KixdnsVersionSource
+    let remote: RemoteKixdnsVersion | undefined
     if (pathname.endsWith('/install')) {
-      const source = parts[5] as KixdnsVersionSource
       const sourceId = Number(parts[6])
-      const remote = demoRemoteVersions[source]?.find((version) => version.source_id === sourceId)
+      remote = demoRemoteVersions[source]?.find((version) => version.source_id === sourceId)
       if (!remote) throw new Error('演示版本来源不存在')
-      commit = remote.commit
-      installedKixdnsVersions.set(commit, remote)
+      installedKixdnsVersions.set(kixdnsVersionKey(remote), remote)
+    } else if (pathname.endsWith('/activate')) {
+      const commit = parts[6]
+      remote = installedKixdnsVersions.get(`${source}:${commit}`)
+      if (!remote) throw new Error('演示版本尚未安装')
     }
-    activeKixdnsCommit = commit
+    if (!remote) throw new Error('演示版本操作无效')
+    activeKixdnsVersion = kixdnsVersionKey(remote)
     serviceRunning = true
-    const version = demoVersionCatalog('action').installed_versions.find((item) => item.commit === commit)
+    const version = demoVersionCatalog(source).installed_versions.find((item) => item.source === source && item.commit === remote.commit)
     return version as T
   }
   if (path === '/api/v1/config' && method === 'GET') return config as T
@@ -296,7 +280,7 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
   if (path === '/api/v1/updates/apply') updateAvailable = false
   if (path === '/api/v1/updates' || path === '/api/v1/updates/apply') {
     const latest = actionVersions[0]
-    return { installed_commit: updateAvailable ? activeKixdnsCommit : latest.commit, latest_commit: latest.commit, run_id: latest.run_id ?? latest.source_id, created_at: latest.created_at, run_url: latest.source_url, artifact: latest.artifact, artifact_digest: latest.artifact_digest, download_url: latest.download_url, available: updateAvailable } as UpdateInfo as T
+    return { installed_commit: updateAvailable ? activeKixdnsVersion.split(':')[1] : latest.commit, latest_commit: latest.commit, run_id: latest.source_id, created_at: latest.created_at, run_url: latest.source_url, artifact: latest.artifact, artifact_digest: latest.artifact_digest, download_url: latest.download_url, available: updateAvailable } as UpdateInfo as T
   }
   throw new Error(`未实现的演示接口：${method} ${path}`)
 }
