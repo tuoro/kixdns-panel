@@ -19,22 +19,23 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout panel repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
+          toolchain: 1.97.1
           components: rustfmt, clippy
 
       - name: Install Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: 24
+          node-version: 24.12.0
           cache: npm
           cache-dependency-path: web/package-lock.json
 
       - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: |
             . -> target
@@ -48,7 +49,7 @@ jobs:
 
       - name: Audit panel dependencies
         run: |
-          cargo install cargo-audit --locked
+          cargo install cargo-audit --version 0.22.2 --locked
           cargo audit --deny warnings
 
       - name: Verify web console
@@ -99,17 +100,18 @@ jobs:
 
     steps:
       - name: Checkout panel repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
+          toolchain: 1.97.1
           targets: ${{ matrix.target }}
 
       - name: Install Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: 24
+          node-version: 24.12.0
           cache: npm
           cache-dependency-path: web/package-lock.json
 
@@ -160,7 +162,7 @@ jobs:
           (cd "$bundle" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
 
       - name: Upload enhanced update artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: kixdns-enhanced-linux-${{ matrix.arch }}
           path: dist/kixdns-enhanced-linux-${{ matrix.arch }}
@@ -168,7 +170,7 @@ jobs:
           retention-days: 30
 
       - name: Upload complete panel artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: kixdns-panel-linux-${{ matrix.arch }}
           path: dist/kixdns-panel-linux-${{ matrix.arch }}
