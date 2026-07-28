@@ -1234,7 +1234,7 @@ mod tests {
     fn validates_fixed_update_coordinates_and_digests() {
         assert!(validate_slug("tuoro/kixdns-panel", true).is_ok());
         assert!(validate_slug("https://evil.invalid", true).is_err());
-        assert!(validate_slug("build-enhanced.yml", false).is_ok());
+        assert!(validate_slug("build-kixdns.yml", false).is_ok());
         assert!(validate_slug("../../workflow", false).is_err());
         assert!(validate_slug("..", false).is_err());
         assert!(validate_slug("owner/..", true).is_err());

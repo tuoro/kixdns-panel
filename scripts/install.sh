@@ -110,17 +110,26 @@ install_web() {
   mv -- "${staged}" "${target}"
 }
 
-set_installed_commit() {
+update_panel_environment() {
   local commit=$1
   local target=/etc/kixdns-panel/panel.env
   local temporary
   temporary="$(mktemp /etc/kixdns-panel/.panel.env.XXXXXX)"
-  if grep -q '^KIXDNS_INSTALLED_COMMIT=' "${target}"; then
-    sed "s/^KIXDNS_INSTALLED_COMMIT=.*/KIXDNS_INSTALLED_COMMIT=${commit}/" "${target}" > "${temporary}"
-  else
-    cp -- "${target}" "${temporary}"
-    printf 'KIXDNS_INSTALLED_COMMIT=%s\n' "${commit}" >> "${temporary}"
-  fi
+  awk -v commit="${commit}" '
+    /^KIXDNS_UPDATE_WORKFLOW=build-enhanced\.yml$/ {
+      print "KIXDNS_UPDATE_WORKFLOW=build-kixdns.yml"
+      next
+    }
+    /^KIXDNS_INSTALLED_COMMIT=/ {
+      print "KIXDNS_INSTALLED_COMMIT=" commit
+      found = 1
+      next
+    }
+    { print }
+    END {
+      if (!found) print "KIXDNS_INSTALLED_COMMIT=" commit
+    }
+  ' "${target}" > "${temporary}"
   chown root:"${KIXDNS_GROUP}" "${temporary}"
   chmod 0640 "${temporary}"
   mv -fT -- "${temporary}" "${target}"
@@ -142,7 +151,7 @@ install_configuration() {
     chown root:"${KIXDNS_GROUP}" /etc/kixdns-panel/panel.env
     chmod 0640 /etc/kixdns-panel/panel.env
   fi
-  set_installed_commit "${build_commit}"
+  update_panel_environment "${build_commit}"
 }
 
 install_services() {
@@ -157,7 +166,8 @@ install_services() {
 }
 
 main() {
-  local build_commit
+  local kixdns_build_commit
+  local panel_build_commit
   require_root
   command -v systemctl >/dev/null || fail "系统未安装 systemd"
   command -v getent >/dev/null || fail "系统缺少 getent"
@@ -167,10 +177,13 @@ main() {
   require_file "${PACKAGE_ROOT}/bin/kixdns-panel-server"
   require_file "${PACKAGE_ROOT}/web/index.html"
   require_file "${PACKAGE_ROOT}/deploy/config/pipeline.json"
-  require_file "${PACKAGE_ROOT}/BUILD_COMMIT"
+  require_file "${PACKAGE_ROOT}/PANEL_BUILD_COMMIT"
+  require_file "${PACKAGE_ROOT}/KIXDNS_BUILD_COMMIT"
   require_file "${PACKAGE_ROOT}/SHA256SUMS"
-  build_commit="$(tr -d '[:space:]' < "${PACKAGE_ROOT}/BUILD_COMMIT")"
-  [[ "${build_commit}" =~ ^[0-9a-fA-F]{40}$ ]] || fail "BUILD_COMMIT 不是完整提交 SHA"
+  panel_build_commit="$(tr -d '[:space:]' < "${PACKAGE_ROOT}/PANEL_BUILD_COMMIT")"
+  kixdns_build_commit="$(tr -d '[:space:]' < "${PACKAGE_ROOT}/KIXDNS_BUILD_COMMIT")"
+  [[ "${panel_build_commit}" =~ ^[0-9a-fA-F]{40}$ ]] || fail "PANEL_BUILD_COMMIT 不是完整提交 SHA"
+  [[ "${kixdns_build_commit}" =~ ^[0-9a-fA-F]{40}$ ]] || fail "KIXDNS_BUILD_COMMIT 不是完整提交 SHA"
 
   (cd "${PACKAGE_ROOT}" && sha256sum --check --quiet SHA256SUMS) || fail "安装包摘要校验失败"
 
@@ -186,12 +199,14 @@ main() {
   install -o root -g root -m 0755 "${PACKAGE_ROOT}/bin/kixdns-panel-server" /usr/local/bin/.kixdns-panel-server.new
   mv -fT -- /usr/local/bin/.kixdns-panel-server.new /usr/local/bin/kixdns-panel-server
   install_web
-  install_configuration "${build_commit}"
+  install_configuration "${kixdns_build_commit}"
   install_services
   trap - ERR
   rm -rf -- "${BACKUP_ROOT}"
 
   printf '\n安装完成。\n'
+  printf '面板构建：%.12s\n' "${panel_build_commit}"
+  printf 'KixDNS 构建：%.12s\n' "${kixdns_build_commit}"
   printf '面板地址：http://127.0.0.1:5738\n'
   printf '首次访问时创建管理员账号；远程访问请先配置 HTTPS 反向代理。\n'
 }

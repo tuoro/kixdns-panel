@@ -49,7 +49,7 @@ struct Args {
     #[arg(
         long,
         env = "KIXDNS_UPDATE_WORKFLOW",
-        default_value = "build-enhanced.yml"
+        default_value = "build-kixdns.yml"
     )]
     update_workflow: String,
 

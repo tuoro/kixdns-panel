@@ -1083,7 +1083,7 @@ mod tests {
             service_unit: "kixdns.service".to_owned(),
             diagnostic_server: "127.0.0.1:53".parse().unwrap(),
             update_repository: "tuoro/kixdns-panel".to_owned(),
-            update_workflow: "build-enhanced.yml".to_owned(),
+            update_workflow: "build-kixdns.yml".to_owned(),
             update_branch: "main".to_owned(),
             update_artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
             installed_commit: None,
