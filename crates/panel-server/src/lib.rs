@@ -3,6 +3,7 @@ mod auth;
 mod config_store;
 mod control;
 mod db;
+mod digest;
 mod error;
 mod operations;
 mod updates;

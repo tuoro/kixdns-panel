@@ -7,12 +7,12 @@ use std::time::UNIX_EPOCH;
 use anyhow::{Context, bail};
 use serde::Serialize;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use tempfile::Builder;
 use tokio::sync::Mutex;
 
 use crate::auth::unix_timestamp;
 use crate::db::{ConfigVersionSummary, Database};
+use crate::digest::sha256_hex;
 
 pub const MAX_CONFIG_BYTES: usize = 4 * 1024 * 1024;
 
@@ -279,7 +279,7 @@ fn sync_parent(parent: &Path) -> anyhow::Result<()> {
 }
 
 fn sha256(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    sha256_hex(bytes)
 }
 
 fn constant_hash_eq(left: &str, right: &str) -> bool {

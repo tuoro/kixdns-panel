@@ -1,5 +1,6 @@
 use std::env;
 use std::ffi::OsStr;
+use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -220,9 +221,18 @@ fn patch_stamp(patchset: u32, patches: &[PathBuf]) -> Result<String> {
         digest.update(content);
     }
     Ok(format!(
-        "patchset={patchset}\nsha256={:x}\n",
-        digest.finalize()
+        "patchset={patchset}\nsha256={}\n",
+        encode_hex(digest.finalize())
     ))
+}
+
+fn encode_hex(bytes: impl AsRef<[u8]>) -> String {
+    let bytes = bytes.as_ref();
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(encoded, "{byte:02x}").expect("写入 String 不会失败");
+    }
+    encoded
 }
 
 fn print_info(root: &Path) -> Result<()> {

@@ -8,13 +8,13 @@ use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use tempfile::{Builder, NamedTempFile};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::auth::unix_timestamp;
 use crate::control::ControlClient;
 use crate::db::Database;
+use crate::digest::sha256_hex;
 use crate::operations::{Operations, ServiceAction};
 
 const ACTIVE_COMMIT_KEY: &str = "installed_panel_commit";
@@ -1094,7 +1094,7 @@ fn validate_hex_digest(value: &str) -> Result<(), UpdateError> {
 }
 
 fn sha256(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    sha256_hex(bytes)
 }
 
 fn constant_hash_eq(left: &str, right: &str) -> bool {

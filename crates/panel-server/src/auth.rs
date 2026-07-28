@@ -17,6 +17,7 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 use crate::db::{Database, SessionRecord, UserRecord};
+use crate::digest::sha256_hex;
 use crate::error::{AppError, AppResult};
 
 pub const SESSION_COOKIE: &str = "kixdns_session";
@@ -227,7 +228,7 @@ pub fn random_token() -> anyhow::Result<String> {
 
 #[must_use]
 pub fn token_hash(token: &str) -> String {
-    format!("{:x}", Sha256::digest(token.as_bytes()))
+    sha256_hex(token.as_bytes())
 }
 
 pub async fn authenticate(database: &Database, jar: &CookieJar) -> AppResult<SessionRecord> {
