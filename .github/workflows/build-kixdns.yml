@@ -1,21 +1,35 @@
-name: Build enhanced KixDNS
+name: Build KixDNS Enhanced
 
 on:
   push:
     branches: [main]
+    paths:
+      - .github/workflows/build-kixdns.yml
+      - patches/**
+      - scripts/dns_smoke.py
+      - tools/xtask/**
+      - upstream.lock.json
+      - rust-toolchain.toml
   pull_request:
+    paths:
+      - .github/workflows/build-kixdns.yml
+      - patches/**
+      - scripts/dns_smoke.py
+      - tools/xtask/**
+      - upstream.lock.json
+      - rust-toolchain.toml
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: enhanced-${{ github.workflow }}-${{ github.ref }}
+  group: kixdns-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   verify:
-    name: Verify panel and patch set
+    name: Verify enhanced source
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout panel repository
@@ -27,47 +41,33 @@ jobs:
           toolchain: 1.97.1
           components: rustfmt, clippy
 
-      - name: Install Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24.12.0
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+      - name: Install dependency auditor
+        run: cargo install cargo-audit --version 0.22.2 --locked
 
-      - name: Cache Rust build
+      - name: Cache enhanced build
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: |
             . -> target
             .upstream/* -> target
 
-      - name: Verify panel server
+      - name: Verify build tooling
         run: |
           cargo fmt --all -- --check
-          cargo test --workspace --locked
-          cargo clippy --workspace --all-targets --locked -- -D warnings
-
-      - name: Audit panel dependencies
-        run: |
-          cargo install cargo-audit --version 0.22.2 --locked
-          cargo audit --deny warnings
-
-      - name: Verify web console
-        working-directory: web
-        run: |
-          npm ci
-          npm audit --audit-level=moderate
-          npm test
-          npm run build
-
-      - name: Verify deployment scripts
-        run: shellcheck scripts/*.sh
+          cargo test --package xtask --locked
+          cargo clippy --package xtask --all-targets --locked -- -D warnings
 
       - name: Prepare enhanced source
         shell: bash
         run: |
           cargo xtask prepare
           echo "UPSTREAM_DIR=.upstream/kixdns-$(jq -r .commit upstream.lock.json | cut -c1-12)-p$(jq -r .patchset upstream.lock.json)" >> "$GITHUB_ENV"
+
+      - name: Export build identity
+        shell: bash
+        run: |
+          echo "KIXDNS_UPSTREAM_COMMIT=$(jq -r .commit upstream.lock.json)" >> "$GITHUB_ENV"
+          echo "KIXDNS_PANEL_PATCHSET=$(jq -r .patchset upstream.lock.json)" >> "$GITHUB_ENV"
 
       - name: Verify enhanced source
         run: |
@@ -85,6 +85,7 @@ jobs:
 
   build:
     name: Build Linux ${{ matrix.arch }}
+    if: github.event_name != 'pull_request'
     needs: verify
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -108,18 +109,12 @@ jobs:
           toolchain: 1.97.1
           targets: ${{ matrix.target }}
 
-      - name: Install Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - name: Cache enhanced build
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          node-version: 24.12.0
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Build web console
-        working-directory: web
-        run: |
-          npm ci
-          npm run build
+          workspaces: |
+            . -> target
+            .upstream/* -> target
 
       - name: Prepare enhanced source
         shell: bash
@@ -133,46 +128,22 @@ jobs:
           echo "KIXDNS_UPSTREAM_COMMIT=$(jq -r .commit upstream.lock.json)" >> "$GITHUB_ENV"
           echo "KIXDNS_PANEL_PATCHSET=$(jq -r .patchset upstream.lock.json)" >> "$GITHUB_ENV"
 
-      - name: Build release binaries
-        run: |
-          cargo build --manifest-path "$UPSTREAM_DIR/Cargo.toml" --release --locked --target ${{ matrix.target }}
-          cargo build --package kixdns-panel-server --release --locked --target ${{ matrix.target }}
+      - name: Build release binary
+        run: cargo build --manifest-path "$UPSTREAM_DIR/Cargo.toml" --release --locked --target ${{ matrix.target }}
 
-      - name: Package enhanced update artifact
+      - name: Package enhanced artifact
         shell: bash
         run: |
           enhanced="dist/kixdns-enhanced-linux-${{ matrix.arch }}"
           install -Dm755 "$UPSTREAM_DIR/target/${{ matrix.target }}/release/kixdns" "$enhanced/kixdns"
           cp upstream.lock.json "$enhanced/"
-          cp docs/control-protocol-v1.md "$enhanced/"
-          (cd "$enhanced" && sha256sum kixdns > SHA256SUMS)
+          printf '%s\n' "$GITHUB_SHA" > "$enhanced/KIXDNS_BUILD_COMMIT"
+          (cd "$enhanced" && sha256sum kixdns upstream.lock.json KIXDNS_BUILD_COMMIT > SHA256SUMS)
 
-      - name: Package complete panel artifact
-        shell: bash
-        run: |
-          bundle="dist/kixdns-panel-linux-${{ matrix.arch }}"
-          install -Dm755 "$UPSTREAM_DIR/target/${{ matrix.target }}/release/kixdns" "$bundle/bin/kixdns"
-          install -Dm755 "target/${{ matrix.target }}/release/kixdns-panel-server" "$bundle/bin/kixdns-panel-server"
-          mkdir -p "$bundle/web" "$bundle/docs"
-          cp -a web/dist/. "$bundle/web/"
-          cp -a deploy scripts "$bundle/"
-          cp docs/architecture.md docs/control-protocol-v1.md docs/deployment.md "$bundle/docs/"
-          cp README.md LICENSE upstream.lock.json "$bundle/"
-          printf '%s\n' "$GITHUB_SHA" > "$bundle/BUILD_COMMIT"
-          (cd "$bundle" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
-
-      - name: Upload enhanced update artifact
+      - name: Upload enhanced artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: kixdns-enhanced-linux-${{ matrix.arch }}
           path: dist/kixdns-enhanced-linux-${{ matrix.arch }}
           if-no-files-found: error
-          retention-days: 30
-
-      - name: Upload complete panel artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: kixdns-panel-linux-${{ matrix.arch }}
-          path: dist/kixdns-panel-linux-${{ matrix.arch }}
-          if-no-files-found: error
-          retention-days: 30
+          retention-days: 90
