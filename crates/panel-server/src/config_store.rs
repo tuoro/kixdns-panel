@@ -126,6 +126,17 @@ impl ConfigStore {
         .await
     }
 
+    pub async fn version_content(&self, version_id: i64) -> Result<Value, ConfigError> {
+        let version = self
+            .database
+            .get_config_version(version_id)
+            .await?
+            .ok_or(ConfigError::NotFound)?;
+        let content = serde_json::from_str(&version.content).context("历史配置内容已损坏")?;
+        validate_config_shape(&content)?;
+        Ok(content)
+    }
+
     async fn save_locked(
         &self,
         content: Value,
@@ -328,6 +339,10 @@ mod tests {
 
         let versions = store.versions().await.unwrap();
         let initial_version = versions.last().unwrap();
+        assert_eq!(
+            store.version_content(initial_version.id).await.unwrap(),
+            json!({"pipelines": []})
+        );
         let restored = store
             .restore(initial_version.id, &saved.sha256, "admin".to_owned())
             .await

@@ -99,7 +99,7 @@ sudo systemctl restart kixdns-panel.service
 Panel Server 与 Web 更新需下载新的完整包并重新运行 `scripts/install.sh`。脚本保留现有配置、数据库和环境文件，旧静态资源保存在 `/usr/share/kixdns-panel/web.previous`。
 完整包内的 `BUILD_COMMIT` 会写入面板环境，因此刚安装的构建不会被误判为待更新版本；在线更新成功后的数据库记录具有更高优先级。
 
-配置保存也有独立回滚：候选配置先由 KixDNS 自身校验；写入后必须收到新的 `reload_sequence` 且 SHA-256 一致，否则面板恢复旧配置。
+配置保存和历史版本恢复都有独立回滚：候选内容先由 KixDNS 自身校验；写入后必须收到新的 `reload_sequence` 且 SHA-256 一致，否则面板恢复旧配置。
 
 ## 运维命令
 

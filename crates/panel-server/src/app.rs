@@ -527,6 +527,16 @@ async fn restore_config(
         .active_config()
         .await
         .map_err(map_control_error)?;
+    let candidate = state
+        .config
+        .version_content(id)
+        .await
+        .map_err(map_config_error)?;
+    let validation = state
+        .control
+        .validate(&candidate)
+        .await
+        .map_err(map_control_error)?;
     let result = state
         .config
         .restore(id, &request.expected_sha256, session.username.clone())
@@ -564,7 +574,7 @@ async fn restore_config(
         version_id: result.version_id,
         sha256: result.sha256,
         active_config,
-        validation: None,
+        validation: Some(validation),
     }))
 }
 
