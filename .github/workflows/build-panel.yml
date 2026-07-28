@@ -136,6 +136,8 @@ jobs:
       - name: Reuse verified KixDNS artifact
         env:
           GH_TOKEN: ${{ github.token }}
+          KIXDNS_ARTIFACT_WAIT_ATTEMPTS: 90
+          KIXDNS_ARTIFACT_WAIT_SECONDS: 20
         run: |
           bash scripts/fetch-kixdns-artifact.sh \
             "$GITHUB_REPOSITORY" build-kixdns.yml main \

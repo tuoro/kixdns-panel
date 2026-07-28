@@ -3,6 +3,8 @@ set -Eeuo pipefail
 
 ARTIFACT=''
 SCRIPT_DIRECTORY=''
+WAIT_ATTEMPTS="${KIXDNS_ARTIFACT_WAIT_ATTEMPTS:-1}"
+WAIT_SECONDS="${KIXDNS_ARTIFACT_WAIT_SECONDS:-20}"
 
 fail() {
   printf '获取 KixDNS Artifact 失败：%s\n' "$*" >&2
@@ -17,6 +19,27 @@ validate_slug() {
   local value=$1
   local label=$2
   [[ "${value}" =~ ^[A-Za-z0-9._/-]+$ && "${value}" != *..* ]] || fail "${label}格式无效"
+}
+
+validate_wait_policy() {
+  [[ "${WAIT_ATTEMPTS}" =~ ^[1-9][0-9]*$ ]] || fail 'Artifact 等待次数无效'
+  [[ "${WAIT_SECONDS}" =~ ^[1-9][0-9]*$ ]] || fail 'Artifact 等待间隔无效'
+  ((WAIT_ATTEMPTS <= 90)) || fail 'Artifact 等待次数超过上限'
+  ((WAIT_SECONDS <= 60)) || fail 'Artifact 等待间隔超过上限'
+}
+
+workflow_is_pending() {
+  local repository=$1
+  local workflow=$2
+  local branch=$3
+  local response
+  response="$(
+    gh api --method GET "repos/${repository}/actions/workflows/${workflow}/runs" \
+      -f branch="${branch}" -f per_page=30
+  )"
+  jq -e '[.workflow_runs[] | select(
+    .event != "pull_request" and .status != "completed"
+  )] | length > 0' <<< "${response}" >/dev/null
 }
 
 artifact_identity() {
@@ -83,6 +106,7 @@ main() {
   require_command jq
   require_command readelf
   require_command sha256sum
+  validate_wait_policy
   validate_slug "${repository}" '仓库'
   validate_slug "${workflow}" '工作流'
   validate_slug "${branch}" '分支'
@@ -92,26 +116,35 @@ main() {
   expected_identity="$(artifact_identity "${lock_file}")" || fail '上游锁定身份无效'
   ARTIFACT="$(tracked_artifact "${ARTIFACT}" "${lock_file}")" || fail '无法生成轨道 Artifact 名称'
 
-  while IFS=$'\t' read -r run_id run_commit; do
-    [[ "${run_id}" =~ ^[0-9]+$ && "${run_commit}" =~ ^[0-9a-f]{40}$ ]] || continue
-    staging="$(mktemp -d "${RUNNER_TEMP:-/tmp}/kixdns-artifact.XXXXXX")"
-    if gh run download "${run_id}" --repo "${repository}" --name "${ARTIFACT}" --dir "${staging}" >/dev/null 2>&1 \
-      && validate_candidate "${staging}" "${run_commit}" "${expected_identity}"; then
-      install -d -m 0755 "${destination}"
-      install -m 0755 "${staging}/kixdns" "${destination}/kixdns"
-      cp -- "${staging}/upstream.lock.json" "${destination}/upstream.lock.json"
-      printf '%s\n' "${run_commit}" > "${destination}/KIXDNS_BUILD_COMMIT"
-      printf '%s\n' "${run_id}" > "${destination}/KIXDNS_SOURCE_RUN_ID"
+  local attempt
+  for ((attempt = 1; attempt <= WAIT_ATTEMPTS; attempt++)); do
+    while IFS=$'\t' read -r run_id run_commit; do
+      [[ "${run_id}" =~ ^[0-9]+$ && "${run_commit}" =~ ^[0-9a-f]{40}$ ]] || continue
+      staging="$(mktemp -d "${RUNNER_TEMP:-/tmp}/kixdns-artifact.XXXXXX")"
+      if gh run download "${run_id}" --repo "${repository}" --name "${ARTIFACT}" --dir "${staging}" >/dev/null 2>&1 \
+        && validate_candidate "${staging}" "${run_commit}" "${expected_identity}"; then
+        install -d -m 0755 "${destination}"
+        install -m 0755 "${staging}/kixdns" "${destination}/kixdns"
+        cp -- "${staging}/upstream.lock.json" "${destination}/upstream.lock.json"
+        printf '%s\n' "${run_commit}" > "${destination}/KIXDNS_BUILD_COMMIT"
+        printf '%s\n' "${run_id}" > "${destination}/KIXDNS_SOURCE_RUN_ID"
+        rm -rf -- "${staging}"
+        printf '已复用 KixDNS 构建：Run #%s，提交 %s\n' "${run_id}" "${run_commit}"
+        return
+      fi
       rm -rf -- "${staging}"
-      printf '已复用 KixDNS 构建：Run #%s，提交 %s\n' "${run_id}" "${run_commit}"
-      return
+    done < <(
+      gh api --method GET "repos/${repository}/actions/workflows/${workflow}/runs" \
+        -f branch="${branch}" -f status=success -f per_page=30 \
+        --jq '.workflow_runs[] | select(.event != "pull_request") | [.id, .head_sha] | @tsv'
+    )
+
+    if ((attempt == WAIT_ATTEMPTS)) || ! workflow_is_pending "${repository}" "${workflow}" "${branch}"; then
+      break
     fi
-    rm -rf -- "${staging}"
-  done < <(
-    gh api --method GET "repos/${repository}/actions/workflows/${workflow}/runs" \
-      -f branch="${branch}" -f status=success -f per_page=30 \
-      --jq '.workflow_runs[] | select(.event != "pull_request") | [.id, .head_sha] | @tsv'
-  )
+    printf '等待 KixDNS Artifact：%s（第 %s/%s 次）\n' "${ARTIFACT}" "${attempt}" "${WAIT_ATTEMPTS}"
+    sleep "${WAIT_SECONDS}"
+  done
 
   fail "最近 30 次成功运行中没有身份匹配的 ${ARTIFACT}；请先手动运行 ${workflow}"
 }
