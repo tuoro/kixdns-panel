@@ -17,12 +17,14 @@ use crate::db::Database;
 use crate::digest::sha256_hex;
 use crate::operations::{Operations, ServiceAction};
 
-const ACTIVE_COMMIT_KEY: &str = "installed_panel_commit";
+const ACTIVE_VERSION_KEY: &str = "installed_panel_version";
+const LEGACY_ACTIVE_COMMIT_KEY: &str = "installed_panel_commit";
+const UPSTREAM_REPOSITORY: &str = "olicesx/kixdns";
 const MAX_ARTIFACT_BYTES: usize = 128 * 1024 * 1024;
 const MAX_BINARY_BYTES: u64 = 96 * 1024 * 1024;
 const REMOTE_VERSION_LIMIT: usize = 12;
 const MAX_INSTALLED_VERSIONS: usize = 8;
-const MANIFEST_SCHEMA_VERSION: u32 = 3;
+const MANIFEST_SCHEMA_VERSION: u32 = 4;
 const CONTROL_PROTOCOL_VERSION: u32 = 1;
 const MAX_BUILD_IDENTITY_BYTES: u64 = 64 * 1024;
 const REMOTE_CACHE_TTL: Duration = Duration::from_mins(1);
@@ -33,6 +35,7 @@ pub struct UpdateManager {
     database: Database,
     repository: Arc<str>,
     workflow: Arc<str>,
+    release_workflow: Arc<str>,
     branch: Arc<str>,
     artifact: Arc<str>,
     initial_commit: Option<Arc<str>>,
@@ -45,6 +48,7 @@ pub struct UpdateManager {
 pub struct UpdateSettings {
     pub repository: String,
     pub workflow: String,
+    pub release_workflow: String,
     pub branch: String,
     pub artifact: String,
     pub installed_commit: Option<String>,
@@ -68,6 +72,7 @@ pub struct UpdateInfo {
 #[derive(Debug, Clone, Serialize)]
 pub struct VersionCatalog {
     pub source: VersionSource,
+    pub active_source: Option<VersionSource>,
     pub active_commit: Option<String>,
     pub binary_present: bool,
     pub remote_versions: Vec<RemoteVersion>,
@@ -82,6 +87,49 @@ pub enum VersionSource {
     Release,
 }
 
+impl VersionSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Action => "action",
+            Self::Release => "release",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct VersionKey {
+    source: VersionSource,
+    commit: String,
+}
+
+impl VersionKey {
+    fn new(source: VersionSource, commit: impl Into<String>) -> Result<Self, UpdateError> {
+        let commit = commit.into().to_ascii_lowercase();
+        validate_commit(&commit)?;
+        Ok(Self { source, commit })
+    }
+
+    fn encoded(&self) -> String {
+        format!("{}:{}", self.source.as_str(), self.commit)
+    }
+
+    fn directory_name(&self) -> String {
+        format!("{}-{}", self.source.as_str(), self.commit)
+    }
+
+    fn parse(value: &str) -> Result<Self, UpdateError> {
+        let Some((source, commit)) = value.split_once(':') else {
+            return Self::new(VersionSource::Action, value);
+        };
+        let source = match source {
+            "action" => VersionSource::Action,
+            "release" => VersionSource::Release,
+            _ => return Err(UpdateError::Invalid("活动版本来源无效".to_owned())),
+        };
+        Self::new(source, commit)
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RemoteVersion {
     pub source: VersionSource,
@@ -91,6 +139,7 @@ pub struct RemoteVersion {
     pub release_tag: Option<String>,
     pub created_at: String,
     pub source_url: String,
+    pub build_url: String,
     pub artifact: String,
     pub artifact_digest: String,
     pub download_url: String,
@@ -107,12 +156,12 @@ pub struct InstalledVersion {
     pub release_tag: Option<String>,
     pub created_at: Option<String>,
     pub source_url: Option<String>,
+    pub build_url: Option<String>,
     pub artifact: String,
     pub artifact_digest: Option<String>,
     pub upstream_repository: Option<String>,
     pub upstream_commit: Option<String>,
     pub patchset: Option<u32>,
-    pub build_revision: Option<u32>,
     pub control_protocol: Option<u32>,
     pub binary_sha256: String,
     pub installed_at: i64,
@@ -134,6 +183,8 @@ struct VersionManifest {
     created_at: Option<String>,
     #[serde(default, alias = "run_url")]
     source_url: Option<String>,
+    #[serde(default)]
+    build_url: Option<String>,
     artifact: String,
     artifact_digest: Option<String>,
     #[serde(default)]
@@ -142,8 +193,6 @@ struct VersionManifest {
     upstream_commit: Option<String>,
     #[serde(default)]
     patchset: Option<u32>,
-    #[serde(default)]
-    build_revision: Option<u32>,
     #[serde(default)]
     control_protocol: Option<u32>,
     binary_sha256: String,
@@ -181,31 +230,31 @@ struct ArtifactWorkflowRun {
     id: u64,
 }
 
-#[derive(Debug, Deserialize)]
-struct GitHubRelease {
-    id: u64,
-    tag_name: String,
-    target_commitish: String,
-    published_at: Option<String>,
-    html_url: String,
-    draft: bool,
-    assets: Vec<ReleaseAsset>,
+#[derive(Debug, Clone)]
+enum TrackReference {
+    Action(u64),
+    Release(String),
 }
 
-#[derive(Debug, Deserialize)]
-struct ReleaseAsset {
+#[derive(Debug)]
+struct TrackArtifact {
     name: String,
-    digest: Option<String>,
-    browser_download_url: String,
+    digest: String,
+    reference: TrackReference,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct BuildIdentity {
     repository: String,
+    source: VersionSource,
     commit: String,
-    patchset: u32,
     #[serde(default)]
-    build_revision: Option<u32>,
+    official_run_id: Option<u64>,
+    #[serde(default)]
+    release_id: Option<u64>,
+    #[serde(default)]
+    release_tag: Option<String>,
+    patchset: u32,
     control_protocol: u32,
 }
 
@@ -244,6 +293,7 @@ impl UpdateManager {
         let UpdateSettings {
             repository,
             workflow,
+            release_workflow,
             branch,
             artifact,
             installed_commit,
@@ -252,8 +302,10 @@ impl UpdateManager {
         } = settings;
         validate_slug(&repository, true)?;
         validate_slug(&workflow, false)?;
+        validate_slug(&release_workflow, false)?;
         validate_slug(&branch, false)?;
         validate_slug(&artifact, false)?;
+        artifact_coordinates(&artifact)?;
         if let Some(commit) = installed_commit.as_deref() {
             validate_commit(commit)?;
         }
@@ -273,6 +325,7 @@ impl UpdateManager {
             database,
             repository: Arc::from(repository),
             workflow: Arc::from(workflow),
+            release_workflow: Arc::from(release_workflow),
             branch: Arc::from(branch),
             artifact: Arc::from(artifact),
             initial_commit: installed_commit.map(Arc::from),
@@ -284,25 +337,33 @@ impl UpdateManager {
     }
 
     pub async fn catalog(&self, source: VersionSource) -> Result<VersionCatalog, UpdateError> {
-        let active_commit = self.active_commit().await?;
+        let active_version = self.active_version().await?;
         let binary_present = regular_file_exists(self.binary_path.as_ref())?;
-        if binary_present && let Some(commit) = active_commit.as_deref() {
-            self.adopt_active_version(commit).await?;
+        if binary_present && let Some(version) = active_version.as_ref() {
+            self.adopt_active_version(version).await?;
         }
-        let mut installed_versions = self.installed_versions(active_commit.as_deref()).await?;
+        let mut installed_versions = self.installed_versions(active_version.as_ref()).await?;
         let installed = installed_versions
             .iter()
-            .map(|version| version.commit.as_str())
+            .filter_map(|version| {
+                version
+                    .source
+                    .map(|source| (source, version.commit.clone()))
+            })
             .collect::<HashSet<_>>();
         let mut remote_versions = self.remote_versions(source, REMOTE_VERSION_LIMIT).await?;
         for version in &mut remote_versions {
-            version.installed = installed.contains(version.commit.as_str());
-            version.active = active_commit.as_deref() == Some(version.commit.as_str());
+            let key = (version.source, version.commit.clone());
+            version.installed = installed.contains(&key);
+            version.active = active_version.as_ref().is_some_and(|active| {
+                active.source == version.source && active.commit == version.commit
+            });
         }
         installed_versions.sort_by_key(|version| Reverse(version.installed_at));
         Ok(VersionCatalog {
             source,
-            active_commit,
+            active_source: active_version.as_ref().map(|version| version.source),
+            active_commit: active_version.map(|version| version.commit),
             binary_present,
             remote_versions,
             installed_versions,
@@ -310,14 +371,14 @@ impl UpdateManager {
     }
 
     pub async fn check(&self) -> Result<UpdateInfo, UpdateError> {
-        let active_commit = self.active_commit().await?;
+        let active_version = self.active_version().await?;
         let resolved = self
             .resolved_remote_versions(VersionSource::Action)
             .await?
             .into_iter()
             .next()
             .ok_or_else(|| UpdateError::Network("没有可安装的成功增强构建".to_owned()))?;
-        Ok(to_update_info(resolved, active_commit))
+        Ok(to_update_info(resolved, active_version.as_ref()))
     }
 
     pub async fn apply(
@@ -326,21 +387,22 @@ impl UpdateManager {
         control: &ControlClient,
     ) -> Result<UpdateInfo, UpdateError> {
         let _guard = self.apply_lock.lock().await;
-        let active_commit = self.active_commit().await?;
+        let active_version = self.active_version().await?;
         let candidate = self
             .resolved_remote_versions(VersionSource::Action)
             .await?
             .into_iter()
             .next()
             .ok_or_else(|| UpdateError::Network("没有可安装的成功增强构建".to_owned()))?;
-        let resolved = self.resolve_action(candidate.remote.source_id).await?;
-        if active_commit.as_deref() != Some(resolved.remote.commit.as_str()) {
+        let resolved = self
+            .resolve_remote(VersionSource::Action, candidate.remote.source_id)
+            .await?;
+        let key = VersionKey::new(VersionSource::Action, resolved.remote.commit.clone())?;
+        if active_version.as_ref() != Some(&key) {
             self.install_resolved(&resolved).await?;
-            self.activate_locked(&resolved.remote.commit, operations, control)
-                .await?;
+            self.activate_locked(&key, operations, control).await?;
         }
-        let installed_commit = Some(resolved.remote.commit.clone());
-        Ok(to_update_info(resolved, installed_commit))
+        Ok(to_update_info(resolved, Some(&key)))
     }
 
     pub async fn install_version(
@@ -352,38 +414,59 @@ impl UpdateManager {
     ) -> Result<InstalledVersion, UpdateError> {
         let _guard = self.apply_lock.lock().await;
         let resolved = self.resolve_remote(source, source_id).await?;
-        let commit = resolved.remote.commit.clone();
+        let key = VersionKey::new(source, resolved.remote.commit.clone())?;
         self.install_resolved(&resolved).await?;
-        self.activate_locked(&commit, operations, control).await
+        self.activate_locked(&key, operations, control).await
     }
 
     pub async fn activate_version(
         &self,
+        source: VersionSource,
         commit: &str,
         operations: &Operations,
         control: &ControlClient,
     ) -> Result<InstalledVersion, UpdateError> {
-        validate_commit(commit)?;
+        let key = VersionKey::new(source, commit)?;
         let _guard = self.apply_lock.lock().await;
-        self.activate_locked(commit, operations, control).await
+        self.activate_locked(&key, operations, control).await
     }
 
-    async fn active_commit(&self) -> Result<Option<String>, UpdateError> {
+    async fn active_version(&self) -> Result<Option<VersionKey>, UpdateError> {
         if !regular_file_exists(self.binary_path.as_ref())? {
             return Ok(None);
         }
-        self.database
-            .get_setting(ACTIVE_COMMIT_KEY)
+        let current = self
+            .database
+            .get_setting(ACTIVE_VERSION_KEY)
             .await
-            .map_err(|error| UpdateError::Install(error.to_string()))
-            .map(|value| value.or_else(|| self.initial_commit.as_deref().map(str::to_owned)))
+            .map_err(|error| UpdateError::Install(error.to_string()))?;
+        if let Some(current) = current {
+            return VersionKey::parse(&current).map(Some);
+        }
+        let legacy = self
+            .database
+            .get_setting(LEGACY_ACTIVE_COMMIT_KEY)
+            .await
+            .map_err(|error| UpdateError::Install(error.to_string()))?;
+        legacy
+            .or_else(|| self.initial_commit.as_deref().map(str::to_owned))
+            .map(|commit| VersionKey::new(VersionSource::Action, commit))
+            .transpose()
     }
 
-    async fn workflow_runs(&self, limit: usize) -> Result<Vec<WorkflowRun>, UpdateError> {
+    async fn workflow_runs(
+        &self,
+        source: VersionSource,
+        limit: usize,
+    ) -> Result<Vec<WorkflowRun>, UpdateError> {
         let limit = limit.clamp(1, 30);
+        let workflow = match source {
+            VersionSource::Action => &self.workflow,
+            VersionSource::Release => &self.release_workflow,
+        };
         let runs_url = format!(
             "https://api.github.com/repos/{}/actions/workflows/{}/runs?branch={}&status=success&per_page={limit}",
-            self.repository, self.workflow, self.branch
+            self.repository, workflow, self.branch
         );
         let runs = self.get_json::<WorkflowRuns>(&runs_url).await?;
         let mut commits = HashSet::new();
@@ -420,10 +503,7 @@ impl UpdateManager {
             return Ok(cached.versions.clone());
         }
 
-        let versions = match source {
-            VersionSource::Action => self.fetch_action_versions().await?,
-            VersionSource::Release => self.fetch_release_versions().await?,
-        };
+        let versions = self.fetch_track_versions(source).await?;
         self.remote_cache.write().await.insert(
             source,
             CachedRemoteVersions {
@@ -434,49 +514,46 @@ impl UpdateManager {
         Ok(versions)
     }
 
-    async fn fetch_action_versions(&self) -> Result<Vec<ResolvedVersion>, UpdateError> {
-        let runs = self.workflow_runs(30).await?;
+    async fn fetch_track_versions(
+        &self,
+        source: VersionSource,
+    ) -> Result<Vec<ResolvedVersion>, UpdateError> {
+        let runs = self.workflow_runs(source, 30).await?;
         let artifacts_url = format!(
             "https://api.github.com/repos/{}/actions/artifacts?per_page=100",
             self.repository
         );
         let artifacts = self.get_json::<ArtifactList>(&artifacts_url).await?;
-        let mut digests = HashMap::new();
+        let mut by_run = HashMap::new();
         for artifact in artifacts.artifacts {
-            if artifact.name != self.artifact.as_ref() || artifact.expired {
+            if artifact.expired {
                 continue;
             }
+            let Some(reference) = parse_artifact_reference(&self.artifact, source, &artifact.name)
+            else {
+                continue;
+            };
             let (Some(workflow_run), Some(digest)) = (artifact.workflow_run, artifact.digest)
             else {
                 continue;
             };
             if validate_digest(&digest).is_ok() {
-                digests.entry(workflow_run.id).or_insert(digest);
+                by_run.entry(workflow_run.id).or_insert(TrackArtifact {
+                    name: artifact.name,
+                    digest,
+                    reference,
+                });
             }
         }
         Ok(runs
             .into_iter()
             .filter_map(|run| {
-                let artifact_digest = digests.remove(&run.id)?;
+                let artifact = by_run.remove(&run.id)?;
                 Some(ResolvedVersion {
-                    remote: self.action_version(run, artifact_digest),
+                    remote: self.track_version(source, run, artifact),
                 })
             })
-            .take(REMOTE_VERSION_LIMIT)
-            .collect())
-    }
-
-    async fn fetch_release_versions(&self) -> Result<Vec<ResolvedVersion>, UpdateError> {
-        let url = format!(
-            "https://api.github.com/repos/{}/releases?per_page=30",
-            self.repository
-        );
-        Ok(self
-            .get_json::<Vec<GitHubRelease>>(&url)
-            .await?
-            .into_iter()
-            .filter_map(|release| self.release_version(release))
-            .take(REMOTE_VERSION_LIMIT)
+            .take(30)
             .collect())
     }
 
@@ -485,114 +562,51 @@ impl UpdateManager {
         source: VersionSource,
         source_id: u64,
     ) -> Result<ResolvedVersion, UpdateError> {
-        match source {
-            VersionSource::Action => self.resolve_action(source_id).await,
-            VersionSource::Release => self
-                .fetch_release_versions()
-                .await?
-                .into_iter()
-                .find(|version| version.remote.source_id == source_id)
-                .ok_or_else(|| {
-                    UpdateError::Invalid("指定 Release 不在最近 30 个有效发布中".to_owned())
-                }),
-        }
-    }
-
-    async fn find_run(&self, run_id: u64) -> Result<WorkflowRun, UpdateError> {
-        self.workflow_runs(30)
+        self.fetch_track_versions(source)
             .await?
             .into_iter()
-            .find(|run| run.id == run_id)
-            .ok_or_else(|| {
-                UpdateError::Invalid("指定 Action 不在最近 30 次成功增强构建中".to_owned())
-            })
+            .find(|version| version.remote.source_id == source_id)
+            .ok_or_else(|| UpdateError::Invalid("指定版本不在最近 30 次成功增强构建中".to_owned()))
     }
 
-    fn action_version(&self, run: WorkflowRun, artifact_digest: String) -> RemoteVersion {
+    fn track_version(
+        &self,
+        source: VersionSource,
+        run: WorkflowRun,
+        artifact: TrackArtifact,
+    ) -> RemoteVersion {
         let download_url = format!(
             "https://nightly.link/{}/actions/runs/{}/{}.zip",
-            self.repository, run.id, self.artifact
+            self.repository, run.id, artifact.name
         );
+        let build_url = run.html_url;
+        let (run_id, release_tag, source_url) = match artifact.reference {
+            TrackReference::Action(official_run_id) => (
+                Some(official_run_id),
+                None,
+                format!("https://github.com/{UPSTREAM_REPOSITORY}/actions/runs/{official_run_id}"),
+            ),
+            TrackReference::Release(tag) => (
+                None,
+                Some(tag.clone()),
+                format!("https://github.com/{UPSTREAM_REPOSITORY}/releases/tag/{tag}"),
+            ),
+        };
         RemoteVersion {
-            source: VersionSource::Action,
+            source,
             source_id: run.id,
             commit: run.head_sha,
-            run_id: Some(run.id),
-            release_tag: None,
+            run_id,
+            release_tag,
             created_at: run.created_at,
-            source_url: run.html_url,
-            artifact: self.artifact.to_string(),
-            artifact_digest,
+            source_url,
+            build_url,
+            artifact: artifact.name,
+            artifact_digest: artifact.digest,
             download_url,
             installed: false,
             active: false,
         }
-    }
-
-    fn release_version(&self, release: GitHubRelease) -> Option<ResolvedVersion> {
-        if release.draft
-            || validate_commit(&release.target_commitish).is_err()
-            || validate_release_tag(&release.tag_name).is_err()
-        {
-            return None;
-        }
-        let created_at = release.published_at?;
-        let asset_name = format!("{}.zip", self.artifact);
-        let asset = release
-            .assets
-            .into_iter()
-            .find(|asset| asset.name == asset_name)?;
-        let artifact_digest = asset.digest?;
-        if validate_digest(&artifact_digest).is_err()
-            || !is_release_download_url(
-                &asset.browser_download_url,
-                &self.repository,
-                &release.tag_name,
-                &asset_name,
-            )
-        {
-            return None;
-        }
-        Some(ResolvedVersion {
-            remote: RemoteVersion {
-                source: VersionSource::Release,
-                source_id: release.id,
-                commit: release.target_commitish,
-                run_id: None,
-                release_tag: Some(release.tag_name),
-                created_at,
-                source_url: release.html_url,
-                artifact: self.artifact.to_string(),
-                artifact_digest,
-                download_url: asset.browser_download_url,
-                installed: false,
-                active: false,
-            },
-        })
-    }
-
-    async fn resolve_action(&self, run_id: u64) -> Result<ResolvedVersion, UpdateError> {
-        let run = self.find_run(run_id).await?;
-        validate_commit(&run.head_sha).map_err(|_| {
-            UpdateError::Verification("GitHub Action 未返回完整构建提交 SHA".to_owned())
-        })?;
-        let artifacts_url = format!(
-            "https://api.github.com/repos/{}/actions/runs/{}/artifacts?per_page=100",
-            self.repository, run.id
-        );
-        let artifacts = self.get_json::<ArtifactList>(&artifacts_url).await?;
-        let artifact = artifacts
-            .artifacts
-            .into_iter()
-            .find(|artifact| artifact.name == self.artifact.as_ref() && !artifact.expired)
-            .ok_or_else(|| UpdateError::Network("构建产物不存在或已过期".to_owned()))?;
-        let artifact_digest = artifact.digest.ok_or_else(|| {
-            UpdateError::Verification("GitHub 未提供 Artifact digest，拒绝自动安装".to_owned())
-        })?;
-        validate_digest(&artifact_digest)?;
-        Ok(ResolvedVersion {
-            remote: self.action_version(run, artifact_digest),
-        })
     }
 
     async fn get_json<T>(&self, url: &str) -> Result<T, UpdateError>
@@ -654,7 +668,8 @@ impl UpdateManager {
     }
 
     async fn install_resolved(&self, version: &ResolvedVersion) -> Result<(), UpdateError> {
-        if self.version_exists(&version.remote.commit)? {
+        let key = VersionKey::new(version.remote.source, version.remote.commit.clone())?;
+        if self.version_exists(&key)? {
             return Ok(());
         }
         let archive = self.download(version).await?;
@@ -669,13 +684,7 @@ impl UpdateManager {
                 "包内构建提交与 GitHub 来源提交不匹配".to_owned(),
             ));
         }
-        if version.remote.source == VersionSource::Release {
-            let tag =
-                version.remote.release_tag.as_deref().ok_or_else(|| {
-                    UpdateError::Verification("Release 来源缺少版本标签".to_owned())
-                })?;
-            validate_release_build_identity(tag, &extracted.identity)?;
-        }
+        validate_remote_build_identity(&version.remote, &extracted.identity)?;
         validate_elf(&extracted.binary)?;
         let manifest = VersionManifest {
             schema_version: MANIFEST_SCHEMA_VERSION,
@@ -686,12 +695,12 @@ impl UpdateManager {
             release_tag: version.remote.release_tag.clone(),
             created_at: Some(version.remote.created_at.clone()),
             source_url: Some(version.remote.source_url.clone()),
+            build_url: Some(version.remote.build_url.clone()),
             artifact: version.remote.artifact.clone(),
             artifact_digest: Some(version.remote.artifact_digest.clone()),
             upstream_repository: Some(extracted.identity.repository),
             upstream_commit: Some(extracted.identity.commit),
             patchset: Some(extracted.identity.patchset),
-            build_revision: extracted.identity.build_revision,
             control_protocol: Some(extracted.identity.control_protocol),
             binary_sha256: sha256(&extracted.binary),
             installed_at: unix_timestamp(),
@@ -707,26 +716,25 @@ impl UpdateManager {
 
     async fn activate_locked(
         &self,
-        commit: &str,
+        key: &VersionKey,
         operations: &Operations,
         control: &ControlClient,
     ) -> Result<InstalledVersion, UpdateError> {
         if regular_file_exists(self.binary_path.as_ref())?
-            && let Some(active) = self.active_commit().await?
+            && let Some(active) = self.active_version().await?
         {
             self.adopt_active_version(&active).await?;
         }
         let versions_path = Arc::clone(&self.versions_path);
-        let commit_owned = commit.to_owned();
-        let (manifest, binary) = tokio::task::spawn_blocking(move || {
-            load_verified_version(&versions_path, &commit_owned)
-        })
-        .await
-        .map_err(|error| UpdateError::Install(error.to_string()))??;
+        let key_owned = key.clone();
+        let (manifest, binary) =
+            tokio::task::spawn_blocking(move || load_verified_version(&versions_path, &key_owned))
+                .await
+                .map_err(|error| UpdateError::Install(error.to_string()))??;
         let previous = self.activate_binary(binary, operations, control).await?;
         if let Err(error) = self
             .database
-            .set_setting(ACTIVE_COMMIT_KEY, commit.to_owned(), unix_timestamp())
+            .set_setting(ACTIVE_VERSION_KEY, key.encoded(), unix_timestamp())
             .await
         {
             if let Err(rollback) = self
@@ -742,7 +750,7 @@ impl UpdateManager {
             )));
         }
         let versions_path = Arc::clone(&self.versions_path);
-        let active = commit.to_owned();
+        let active = key.clone();
         match tokio::task::spawn_blocking(move || prune_versions(&versions_path, &active)).await {
             Ok(Ok(())) => {}
             Ok(Err(error)) => tracing::warn!(%error, "活动版本已切换，但清理旧版本失败"),
@@ -751,33 +759,32 @@ impl UpdateManager {
         Ok(manifest.into_installed(true))
     }
 
-    async fn adopt_active_version(&self, commit: &str) -> Result<(), UpdateError> {
-        validate_commit(commit)?;
-        if self.version_exists(commit)? {
+    async fn adopt_active_version(&self, key: &VersionKey) -> Result<(), UpdateError> {
+        if self.version_exists(key)? {
             return Ok(());
         }
         let binary_path = Arc::clone(&self.binary_path);
         let versions_path = Arc::clone(&self.versions_path);
-        let commit = commit.to_owned();
+        let key = key.clone();
         let artifact = self.artifact.to_string();
         tokio::task::spawn_blocking(move || {
             let binary = read_regular_file(&binary_path, "当前 KixDNS 二进制")?;
             validate_elf(&binary)?;
             let manifest = VersionManifest {
                 schema_version: MANIFEST_SCHEMA_VERSION,
-                source: None,
+                source: Some(key.source),
                 source_id: None,
-                commit,
+                commit: key.commit,
                 run_id: None,
                 release_tag: None,
                 created_at: None,
                 source_url: None,
+                build_url: None,
                 artifact,
                 artifact_digest: None,
                 upstream_repository: None,
                 upstream_commit: None,
                 patchset: None,
-                build_revision: None,
                 control_protocol: None,
                 binary_sha256: sha256(&binary),
                 installed_at: unix_timestamp(),
@@ -788,10 +795,13 @@ impl UpdateManager {
         .map_err(|error| UpdateError::Install(error.to_string()))?
     }
 
-    fn version_exists(&self, commit: &str) -> Result<bool, UpdateError> {
-        let path = version_path(self.versions_path.as_ref(), commit)?;
+    fn version_exists(&self, key: &VersionKey) -> Result<bool, UpdateError> {
+        let path = locate_version_directory(self.versions_path.as_ref(), key)?;
         match fs::symlink_metadata(path) {
-            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => Ok(true),
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                load_verified_version(self.versions_path.as_ref(), key)?;
+                Ok(true)
+            }
             Ok(_) => Err(UpdateError::Install("版本目录类型无效".to_owned())),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
             Err(error) => Err(UpdateError::Install(error.to_string())),
@@ -800,15 +810,13 @@ impl UpdateManager {
 
     async fn installed_versions(
         &self,
-        active_commit: Option<&str>,
+        active_version: Option<&VersionKey>,
     ) -> Result<Vec<InstalledVersion>, UpdateError> {
         let versions_path = Arc::clone(&self.versions_path);
-        let active_commit = active_commit.map(str::to_owned);
-        tokio::task::spawn_blocking(move || {
-            list_installed(&versions_path, active_commit.as_deref())
-        })
-        .await
-        .map_err(|error| UpdateError::Install(error.to_string()))?
+        let active_version = active_version.cloned();
+        tokio::task::spawn_blocking(move || list_installed(&versions_path, active_version.as_ref()))
+            .await
+            .map_err(|error| UpdateError::Install(error.to_string()))?
     }
 
     async fn activate_binary(
@@ -913,18 +921,18 @@ impl VersionManifest {
     fn into_installed(self, active: bool) -> InstalledVersion {
         InstalledVersion {
             source: self.source,
-            source_id: self.source_id.or(self.run_id),
+            source_id: self.source_id,
             commit: self.commit,
             run_id: self.run_id,
             release_tag: self.release_tag,
             created_at: self.created_at,
             source_url: self.source_url,
+            build_url: self.build_url,
             artifact: self.artifact,
             artifact_digest: self.artifact_digest,
             upstream_repository: self.upstream_repository,
             upstream_commit: self.upstream_commit,
             patchset: self.patchset,
-            build_revision: self.build_revision,
             control_protocol: self.control_protocol,
             binary_sha256: self.binary_sha256,
             installed_at: self.installed_at,
@@ -933,10 +941,12 @@ impl VersionManifest {
     }
 }
 
-fn to_update_info(version: ResolvedVersion, installed_commit: Option<String>) -> UpdateInfo {
-    let available = installed_commit.as_deref() != Some(version.remote.commit.as_str());
+fn to_update_info(version: ResolvedVersion, active: Option<&VersionKey>) -> UpdateInfo {
+    let available = active.is_none_or(|active| {
+        active.source != version.remote.source || active.commit != version.remote.commit
+    });
     UpdateInfo {
-        installed_commit,
+        installed_commit: active.map(|active| active.commit.clone()),
         latest_commit: version.remote.commit,
         run_id: version.remote.source_id,
         created_at: version.remote.created_at,
@@ -1071,9 +1081,14 @@ fn store_version(
         ));
     }
     ensure_directory(versions_path)?;
-    let target = version_path(versions_path, &manifest.commit)?;
+    let source = manifest.source.unwrap_or_default();
+    let key = VersionKey::new(source, manifest.commit.clone())?;
+    if manifest.schema_version == MANIFEST_SCHEMA_VERSION && manifest.source.is_none() {
+        return Err(UpdateError::Verification("当前版本清单缺少来源".to_owned()));
+    }
+    let target = version_path(versions_path, &key);
     if target.exists() {
-        load_verified_version(versions_path, &manifest.commit)?;
+        load_verified_version(versions_path, &key)?;
         return Ok(());
     }
     let stage = Builder::new()
@@ -1095,21 +1110,31 @@ fn store_version(
 
 fn load_verified_version(
     versions_path: &Path,
-    commit: &str,
+    key: &VersionKey,
 ) -> Result<(VersionManifest, Vec<u8>), UpdateError> {
-    let directory = version_path(versions_path, commit)?;
+    let directory = locate_version_directory(versions_path, key)?;
     let metadata = fs::symlink_metadata(&directory)
         .map_err(|_| UpdateError::Invalid("指定版本尚未安装".to_owned()))?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return Err(UpdateError::Verification("版本目录类型无效".to_owned()));
     }
     let manifest_bytes = read_regular_file(&directory.join("manifest.json"), "版本清单")?;
-    let manifest: VersionManifest = serde_json::from_slice(&manifest_bytes)
+    let mut manifest: VersionManifest = serde_json::from_slice(&manifest_bytes)
         .map_err(|error| UpdateError::Verification(format!("版本清单无效：{error}")))?;
     if !(1..=MANIFEST_SCHEMA_VERSION).contains(&manifest.schema_version)
-        || manifest.commit != commit
+        || !manifest.commit.eq_ignore_ascii_case(&key.commit)
     {
         return Err(UpdateError::Verification("版本清单身份不匹配".to_owned()));
+    }
+    if manifest.schema_version < MANIFEST_SCHEMA_VERSION {
+        manifest.source = Some(key.source);
+        manifest.source_id = None;
+        manifest.run_id = None;
+        manifest.release_tag = None;
+        manifest.source_url = None;
+        manifest.build_url = None;
+    } else if manifest.source != Some(key.source) {
+        return Err(UpdateError::Verification("版本清单来源不匹配".to_owned()));
     }
     if let Some(digest) = manifest.artifact_digest.as_deref() {
         validate_digest(digest)?;
@@ -1135,43 +1160,55 @@ fn load_verified_version(
 
 fn list_installed(
     versions_path: &Path,
-    active_commit: Option<&str>,
+    active_version: Option<&VersionKey>,
 ) -> Result<Vec<InstalledVersion>, UpdateError> {
     let mut versions = Vec::new();
+    let mut found = HashSet::new();
     for entry in
         fs::read_dir(versions_path).map_err(|error| UpdateError::Install(error.to_string()))?
     {
         let entry = entry.map_err(|error| UpdateError::Install(error.to_string()))?;
-        let Some(commit) = entry.file_name().to_str().map(str::to_owned) else {
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
         };
-        if validate_commit(&commit).is_err() {
+        let Some(key) = parse_version_directory(&name) else {
+            continue;
+        };
+        if !found.insert(key.clone()) {
             continue;
         }
-        match load_verified_version(versions_path, &commit) {
+        match load_verified_version(versions_path, &key) {
             Ok((manifest, _)) => {
-                versions.push(manifest.into_installed(active_commit == Some(commit.as_str())));
+                versions.push(manifest.into_installed(active_version == Some(&key)));
             }
-            Err(error) => tracing::warn!(commit, %error, "忽略损坏的本地 KixDNS 版本"),
+            Err(error) => tracing::warn!(version = name, %error, "忽略损坏的本地 KixDNS 版本"),
         }
     }
     Ok(versions)
 }
 
-fn prune_versions(versions_path: &Path, active_commit: &str) -> Result<(), UpdateError> {
-    let mut versions = list_installed(versions_path, Some(active_commit))?;
+fn prune_versions(versions_path: &Path, active_version: &VersionKey) -> Result<(), UpdateError> {
+    let mut versions = list_installed(versions_path, Some(active_version))?;
     versions.sort_by_key(|version| Reverse(version.installed_at));
     let keep = versions
         .iter()
         .take(MAX_INSTALLED_VERSIONS)
-        .map(|version| version.commit.clone())
-        .chain(std::iter::once(active_commit.to_owned()))
+        .filter_map(|version| {
+            version
+                .source
+                .and_then(|source| VersionKey::new(source, version.commit.clone()).ok())
+        })
+        .chain(std::iter::once(active_version.clone()))
         .collect::<HashSet<_>>();
     for version in versions {
-        if keep.contains(&version.commit) {
+        let Some(source) = version.source else {
+            continue;
+        };
+        let key = VersionKey::new(source, version.commit)?;
+        if keep.contains(&key) {
             continue;
         }
-        let path = version_path(versions_path, &version.commit)?;
+        let path = locate_version_directory(versions_path, &key)?;
         let metadata =
             fs::symlink_metadata(&path).map_err(|error| UpdateError::Install(error.to_string()))?;
         if metadata.file_type().is_symlink() || !metadata.is_dir() {
@@ -1182,9 +1219,44 @@ fn prune_versions(versions_path: &Path, active_commit: &str) -> Result<(), Updat
     sync_directory(versions_path)
 }
 
-fn version_path(versions_path: &Path, commit: &str) -> Result<PathBuf, UpdateError> {
-    validate_commit(commit)?;
-    Ok(versions_path.join(commit.to_ascii_lowercase()))
+fn parse_version_directory(name: &str) -> Option<VersionKey> {
+    if validate_commit(name).is_ok() {
+        return VersionKey::new(VersionSource::Action, name).ok();
+    }
+    let (source, commit) = name.split_once('-')?;
+    let source = match source {
+        "action" => VersionSource::Action,
+        "release" => VersionSource::Release,
+        _ => return None,
+    };
+    VersionKey::new(source, commit).ok()
+}
+
+fn version_path(versions_path: &Path, key: &VersionKey) -> PathBuf {
+    versions_path.join(key.directory_name())
+}
+
+fn locate_version_directory(
+    versions_path: &Path,
+    key: &VersionKey,
+) -> Result<PathBuf, UpdateError> {
+    let current = version_path(versions_path, key);
+    if path_entry_exists(&current)? || key.source == VersionSource::Release {
+        return Ok(current);
+    }
+    let legacy = versions_path.join(&key.commit);
+    if path_entry_exists(&legacy)? {
+        return Ok(legacy);
+    }
+    Ok(current)
+}
+
+fn path_entry_exists(path: &Path) -> Result<bool, UpdateError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(UpdateError::Install(error.to_string())),
+    }
 }
 
 fn ensure_directory(path: &Path) -> Result<(), UpdateError> {
@@ -1269,20 +1341,45 @@ fn validate_release_tag(tag: &str) -> Result<(), UpdateError> {
     Ok(())
 }
 
-fn is_release_download_url(url: &str, repository: &str, tag: &str, asset: &str) -> bool {
-    url == format!("https://github.com/{repository}/releases/download/{tag}/{asset}")
+fn artifact_coordinates(artifact: &str) -> Result<(&str, &str), UpdateError> {
+    let (prefix, architecture) = artifact
+        .rsplit_once("-linux-")
+        .ok_or_else(|| UpdateError::Invalid("Artifact 名称必须以 -linux-<架构> 结尾".to_owned()))?;
+    if prefix.is_empty() || architecture.is_empty() {
+        return Err(UpdateError::Invalid("Artifact 名称无效".to_owned()));
+    }
+    Ok((prefix, architecture))
+}
+
+fn parse_artifact_reference(
+    base: &str,
+    source: VersionSource,
+    artifact: &str,
+) -> Option<TrackReference> {
+    let (prefix, architecture) = artifact_coordinates(base).ok()?;
+    let prefix = format!("{prefix}-{}-", source.as_str());
+    let suffix = format!("-linux-{architecture}");
+    let reference = artifact.strip_prefix(&prefix)?.strip_suffix(&suffix)?;
+    match source {
+        VersionSource::Action => reference
+            .parse::<u64>()
+            .ok()
+            .filter(|run_id| *run_id > 0 && run_id.to_string() == reference)
+            .map(TrackReference::Action),
+        VersionSource::Release => validate_release_tag(reference)
+            .ok()
+            .map(|()| TrackReference::Release(reference.to_owned())),
+    }
 }
 
 fn validate_build_identity(identity: &BuildIdentity) -> Result<(), UpdateError> {
-    validate_slug(&identity.repository, true)
-        .map_err(|_| UpdateError::Verification("上游仓库身份无效".to_owned()))?;
+    if identity.repository != UPSTREAM_REPOSITORY {
+        return Err(UpdateError::Verification("上游仓库身份无效".to_owned()));
+    }
     validate_commit(&identity.commit)
         .map_err(|_| UpdateError::Verification("上游提交身份无效".to_owned()))?;
     if identity.patchset == 0 {
         return Err(UpdateError::Verification("增强补丁集版本无效".to_owned()));
-    }
-    if identity.build_revision == Some(0) {
-        return Err(UpdateError::Verification("构建修订版本无效".to_owned()));
     }
     if identity.control_protocol != CONTROL_PROTOCOL_VERSION {
         return Err(UpdateError::Verification(format!(
@@ -1290,25 +1387,46 @@ fn validate_build_identity(identity: &BuildIdentity) -> Result<(), UpdateError> 
             identity.control_protocol
         )));
     }
+    match identity.source {
+        VersionSource::Action
+            if identity.official_run_id.is_some_and(|run_id| run_id > 0)
+                && identity.release_id.is_none()
+                && identity.release_tag.is_none() => {}
+        VersionSource::Release
+            if identity.release_id.is_some_and(|release_id| release_id > 0)
+                && identity
+                    .release_tag
+                    .as_deref()
+                    .is_some_and(|tag| validate_release_tag(tag).is_ok())
+                && identity.official_run_id.is_none() => {}
+        _ => {
+            return Err(UpdateError::Verification(
+                "包内上游来源身份不完整".to_owned(),
+            ));
+        }
+    }
     Ok(())
 }
 
-fn validate_release_build_identity(tag: &str, identity: &BuildIdentity) -> Result<(), UpdateError> {
-    let revision = identity
-        .build_revision
-        .ok_or_else(|| UpdateError::Verification("Release 产物缺少构建修订身份".to_owned()))?;
-    let expected = format!(
-        "kixdns-{}-p{}-r{}",
-        &identity.commit[..12],
-        identity.patchset,
-        revision
-    );
-    if tag != expected {
-        return Err(UpdateError::Verification(format!(
-            "Release 标签与包内构建身份不匹配：期望 {expected}"
-        )));
+fn validate_remote_build_identity(
+    remote: &RemoteVersion,
+    identity: &BuildIdentity,
+) -> Result<(), UpdateError> {
+    if remote.source != identity.source {
+        return Err(UpdateError::Verification(
+            "包内上游来源与所选版本轨道不匹配".to_owned(),
+        ));
     }
-    Ok(())
+    match remote.source {
+        VersionSource::Action if remote.run_id == identity.official_run_id => Ok(()),
+        VersionSource::Release if remote.release_tag == identity.release_tag => Ok(()),
+        VersionSource::Action => Err(UpdateError::Verification(
+            "包内官方 Action Run 与 Artifact 名称不匹配".to_owned(),
+        )),
+        VersionSource::Release => Err(UpdateError::Verification(
+            "包内上游 Release 标签与 Artifact 名称不匹配".to_owned(),
+        )),
+    }
 }
 
 fn validate_manifest_source(manifest: &VersionManifest) -> Result<(), UpdateError> {
@@ -1318,9 +1436,10 @@ fn validate_manifest_source(manifest: &VersionManifest) -> Result<(), UpdateErro
         manifest.run_id,
         manifest.release_tag.as_deref(),
     ) {
-        (None, None, _, None) => Ok(()),
+        (None, None, _, None) if manifest.schema_version < MANIFEST_SCHEMA_VERSION => Ok(()),
+        (Some(_), None, None, None) => Ok(()),
         (Some(VersionSource::Action), Some(source_id), Some(run_id), None)
-            if source_id > 0 && source_id == run_id =>
+            if source_id > 0 && run_id > 0 =>
         {
             Ok(())
         }
@@ -1338,23 +1457,22 @@ fn validate_manifest_build_identity(manifest: &VersionManifest) -> Result<(), Up
         manifest.upstream_repository.as_ref(),
         manifest.upstream_commit.as_ref(),
         manifest.patchset,
-        manifest.build_revision,
         manifest.control_protocol,
     ) {
-        (None, None, None, None, None) => Ok(()),
-        (
-            Some(repository),
-            Some(commit),
-            Some(patchset),
-            build_revision,
-            Some(control_protocol),
-        ) => validate_build_identity(&BuildIdentity {
-            repository: repository.clone(),
-            commit: commit.clone(),
-            patchset,
-            build_revision,
-            control_protocol,
-        }),
+        (None, None, None, None) => Ok(()),
+        (Some(repository), Some(commit), Some(patchset), Some(control_protocol)) => {
+            if repository != UPSTREAM_REPOSITORY {
+                return Err(UpdateError::Verification("上游仓库身份无效".to_owned()));
+            }
+            validate_commit(commit)
+                .map_err(|_| UpdateError::Verification("上游提交身份无效".to_owned()))?;
+            if patchset == 0 || control_protocol != CONTROL_PROTOCOL_VERSION {
+                return Err(UpdateError::Verification(
+                    "版本清单中的增强构建身份无效".to_owned(),
+                ));
+            }
+            Ok(())
+        }
         _ => Err(UpdateError::Verification(
             "版本清单中的构建身份不完整".to_owned(),
         )),
@@ -1481,18 +1599,20 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        BuildIdentity, MANIFEST_SCHEMA_VERSION, RemoteVersion, VersionManifest, VersionSource,
-        extract_artifact, is_release_download_url, load_verified_version, sha256, store_version,
-        validate_commit, validate_digest, validate_release_build_identity, validate_slug,
+        BuildIdentity, MANIFEST_SCHEMA_VERSION, RemoteVersion, TrackReference, VersionKey,
+        VersionManifest, VersionSource, extract_artifact, load_verified_version,
+        parse_artifact_reference, sha256, store_version, validate_commit, validate_digest,
+        validate_remote_build_identity, validate_slug,
     };
 
     const TEST_BUILD_COMMIT: &str = "4e8002d08a56afc08be335d0d5ed337c7690f9af";
 
     const TEST_IDENTITY: &str = r#"{
         "repository":"olicesx/kixdns",
+        "source":"action",
         "commit":"374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25",
+        "official_run_id":30235703570,
         "patchset":5,
-        "build_revision":1,
         "control_protocol":1
     }"#;
 
@@ -1529,15 +1649,30 @@ mod tests {
         assert!(validate_digest("sha256:bad").is_err());
         assert!(validate_commit("374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25").is_ok());
         assert!(validate_commit("not-a-commit").is_err());
-        assert!(is_release_download_url(
-            "https://github.com/tuoro/kixdns-panel/releases/download/kixdns-374d63ccfdde-p5-r1/kixdns-enhanced-linux-x86_64.zip",
-            "tuoro/kixdns-panel",
-            "kixdns-374d63ccfdde-p5-r1",
-            "kixdns-enhanced-linux-x86_64.zip",
+        assert!(matches!(
+            parse_artifact_reference(
+                "kixdns-enhanced-linux-x86_64",
+                VersionSource::Action,
+                "kixdns-enhanced-action-30235703570-linux-x86_64"
+            ),
+            Some(TrackReference::Action(30_235_703_570))
         ));
-        let identity = serde_json::from_str::<BuildIdentity>(TEST_IDENTITY).unwrap();
-        assert!(validate_release_build_identity("kixdns-374d63ccfdde-p5-r1", &identity).is_ok());
-        assert!(validate_release_build_identity("kixdns-374d63ccfdde-p5-r2", &identity).is_err());
+        assert!(matches!(
+            parse_artifact_reference(
+                "kixdns-enhanced-linux-x86_64",
+                VersionSource::Release,
+                "kixdns-enhanced-release-v0.1.1-linux-x86_64"
+            ),
+            Some(TrackReference::Release(tag)) if tag == "v0.1.1"
+        ));
+        assert!(
+            parse_artifact_reference(
+                "kixdns-enhanced-linux-x86_64",
+                VersionSource::Release,
+                "kixdns-enhanced-release-../../bad-linux-x86_64"
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -1550,8 +1685,9 @@ mod tests {
             run_id: Some(42),
             release_tag: None,
             created_at: "2026-07-28T00:00:00Z".to_owned(),
-            source_url: "https://github.com/example/actions/runs/42".to_owned(),
-            artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
+            source_url: "https://github.com/olicesx/kixdns/actions/runs/42".to_owned(),
+            build_url: "https://github.com/tuoro/kixdns-panel/actions/runs/99".to_owned(),
+            artifact: "kixdns-enhanced-action-42-linux-x86_64".to_owned(),
             artifact_digest: artifact_digest.clone(),
             download_url: "https://nightly.link/example/actions/runs/42/artifact.zip".to_owned(),
             installed: false,
@@ -1631,24 +1767,29 @@ mod tests {
             run_id: Some(42),
             release_tag: None,
             created_at: Some("2026-07-28T00:00:00Z".to_owned()),
-            source_url: Some("https://github.com/example/actions/runs/42".to_owned()),
-            artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
+            source_url: Some("https://github.com/olicesx/kixdns/actions/runs/42".to_owned()),
+            build_url: Some("https://github.com/tuoro/kixdns-panel/actions/runs/99".to_owned()),
+            artifact: "kixdns-enhanced-action-42-linux-x86_64".to_owned(),
             artifact_digest: Some(format!("sha256:{}", "a".repeat(64))),
             upstream_repository: Some("olicesx/kixdns".to_owned()),
             upstream_commit: Some(commit.to_owned()),
             patchset: Some(5),
-            build_revision: Some(1),
             control_protocol: Some(1),
             binary_sha256: sha256(&binary),
             installed_at: 42,
         };
+        let key = VersionKey::new(VersionSource::Action, commit).unwrap();
         store_version(directory.path(), &manifest, &binary).unwrap();
-        let (loaded, loaded_binary) = load_verified_version(directory.path(), commit).unwrap();
+        let (loaded, loaded_binary) = load_verified_version(directory.path(), &key).unwrap();
         assert_eq!(loaded.commit, commit);
         assert_eq!(loaded_binary, binary);
 
-        std::fs::write(directory.path().join(commit).join("kixdns"), b"tampered").unwrap();
-        assert!(load_verified_version(directory.path(), commit).is_err());
+        std::fs::write(
+            directory.path().join(key.directory_name()).join("kixdns"),
+            b"tampered",
+        )
+        .unwrap();
+        assert!(load_verified_version(directory.path(), &key).is_err());
     }
 
     #[test]
@@ -1665,20 +1806,116 @@ mod tests {
             release_tag: None,
             created_at: None,
             source_url: None,
+            build_url: None,
             artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
             artifact_digest: None,
             upstream_repository: None,
             upstream_commit: None,
             patchset: None,
-            build_revision: None,
             control_protocol: None,
             binary_sha256: sha256(&binary),
             installed_at: 42,
         };
 
         store_version(directory.path(), &manifest, &binary).unwrap();
-        let (loaded, _) = load_verified_version(directory.path(), commit).unwrap();
+        let key = VersionKey::new(VersionSource::Action, commit).unwrap();
+        std::fs::rename(
+            directory.path().join(key.directory_name()),
+            directory.path().join(commit),
+        )
+        .unwrap();
+        let (loaded, _) = load_verified_version(directory.path(), &key).unwrap();
         assert_eq!(loaded.schema_version, 1);
+        assert_eq!(loaded.source, Some(VersionSource::Action));
         assert!(loaded.upstream_commit.is_none());
+    }
+
+    #[test]
+    fn keeps_action_and_release_builds_with_the_same_commit_separate() {
+        let directory = tempdir().unwrap();
+        let binary = test_elf();
+        let commit = TEST_BUILD_COMMIT;
+        let make_manifest =
+            |source, source_id, run_id, release_tag, artifact: &str| VersionManifest {
+                schema_version: MANIFEST_SCHEMA_VERSION,
+                source: Some(source),
+                source_id: Some(source_id),
+                commit: commit.to_owned(),
+                run_id,
+                release_tag,
+                created_at: Some("2026-07-28T00:00:00Z".to_owned()),
+                source_url: Some("https://github.com/olicesx/kixdns".to_owned()),
+                build_url: Some("https://github.com/tuoro/kixdns-panel/actions/runs/99".to_owned()),
+                artifact: artifact.to_owned(),
+                artifact_digest: Some(format!("sha256:{}", "a".repeat(64))),
+                upstream_repository: Some("olicesx/kixdns".to_owned()),
+                upstream_commit: Some("374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25".to_owned()),
+                patchset: Some(5),
+                control_protocol: Some(1),
+                binary_sha256: sha256(&binary),
+                installed_at: 42,
+            };
+        let action = make_manifest(
+            VersionSource::Action,
+            99,
+            Some(30_235_703_570),
+            None,
+            "kixdns-enhanced-action-30235703570-linux-x86_64",
+        );
+        let release = make_manifest(
+            VersionSource::Release,
+            100,
+            None,
+            Some("v0.1.1".to_owned()),
+            "kixdns-enhanced-release-v0.1.1-linux-x86_64",
+        );
+
+        store_version(directory.path(), &action, &binary).unwrap();
+        store_version(directory.path(), &release, &binary).unwrap();
+
+        let action_key = VersionKey::new(VersionSource::Action, commit).unwrap();
+        let release_key = VersionKey::new(VersionSource::Release, commit).unwrap();
+        assert!(directory.path().join(action_key.directory_name()).is_dir());
+        assert!(directory.path().join(release_key.directory_name()).is_dir());
+        assert_eq!(
+            load_verified_version(directory.path(), &action_key)
+                .unwrap()
+                .0
+                .source,
+            Some(VersionSource::Action)
+        );
+        assert_eq!(
+            load_verified_version(directory.path(), &release_key)
+                .unwrap()
+                .0
+                .source,
+            Some(VersionSource::Release)
+        );
+    }
+
+    #[test]
+    fn verifies_package_identity_against_selected_track() {
+        let identity = serde_json::from_str::<BuildIdentity>(TEST_IDENTITY).unwrap();
+        let remote = RemoteVersion {
+            source: VersionSource::Action,
+            source_id: 99,
+            commit: TEST_BUILD_COMMIT.to_owned(),
+            run_id: Some(30_235_703_570),
+            release_tag: None,
+            created_at: "2026-07-28T00:00:00Z".to_owned(),
+            source_url: "https://github.com/olicesx/kixdns/actions/runs/30235703570".to_owned(),
+            build_url: "https://github.com/tuoro/kixdns-panel/actions/runs/99".to_owned(),
+            artifact: "kixdns-enhanced-action-30235703570-linux-x86_64".to_owned(),
+            artifact_digest: format!("sha256:{}", "a".repeat(64)),
+            download_url: "https://nightly.link/example/artifact.zip".to_owned(),
+            installed: false,
+            active: false,
+        };
+        assert!(validate_remote_build_identity(&remote, &identity).is_ok());
+        let mut wrong_track = remote;
+        wrong_track.source = VersionSource::Release;
+        wrong_track.run_id = None;
+        wrong_track.release_tag = Some("v0.1.1".to_owned());
+        assert!(validate_remote_build_identity(&wrong_track, &identity).is_err());
     }
 }

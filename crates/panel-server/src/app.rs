@@ -52,6 +52,7 @@ pub struct AppSettings {
     pub diagnostic_server: SocketAddr,
     pub update_repository: String,
     pub update_workflow: String,
+    pub update_release_workflow: String,
     pub update_branch: String,
     pub update_artifact: String,
     pub installed_commit: Option<String>,
@@ -196,6 +197,7 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         UpdateSettings {
             repository: settings.update_repository,
             workflow: settings.update_workflow,
+            release_workflow: settings.update_release_workflow,
             branch: settings.update_branch,
             artifact: settings.update_artifact,
             installed_commit: settings.installed_commit,
@@ -243,7 +245,7 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
             post(install_kixdns_version),
         )
         .route(
-            "/kixdns/versions/{commit}/activate",
+            "/kixdns/versions/{source}/{commit}/activate",
             post(activate_kixdns_version),
         )
         .fallback(not_found)
@@ -797,7 +799,7 @@ async fn install_kixdns_version(
 
 async fn activate_kixdns_version(
     State(state): State<AppState>,
-    Path(commit): Path<String>,
+    Path((source, commit)): Path<(VersionSource, String)>,
     jar: CookieJar,
     headers: HeaderMap,
 ) -> AppResult<Json<InstalledVersion>> {
@@ -805,7 +807,7 @@ async fn activate_kixdns_version(
     verify_csrf(&session, &jar, &headers)?;
     let result = state
         .updates
-        .activate_version(&commit, &state.operations, &state.control)
+        .activate_version(source, &commit, &state.operations, &state.control)
         .await
         .map_err(map_update_error)?;
     state
@@ -1092,6 +1094,7 @@ mod tests {
             diagnostic_server: "127.0.0.1:53".parse().unwrap(),
             update_repository: "tuoro/kixdns-panel".to_owned(),
             update_workflow: "build-kixdns.yml".to_owned(),
+            update_release_workflow: "build-kixdns-release.yml".to_owned(),
             update_branch: "main".to_owned(),
             update_artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
             installed_commit: None,

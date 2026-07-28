@@ -125,9 +125,13 @@ update_panel_environment() {
       found = 1
       next
     }
+    /^KIXDNS_UPDATE_RELEASE_WORKFLOW=/ {
+      release_workflow = 1
+    }
     { print }
     END {
       if (!found) print "KIXDNS_INSTALLED_COMMIT=" commit
+      if (!release_workflow) print "KIXDNS_UPDATE_RELEASE_WORKFLOW=build-kixdns-release.yml"
     }
   ' "${target}" > "${temporary}"
   chown root:"${KIXDNS_GROUP}" "${temporary}"
