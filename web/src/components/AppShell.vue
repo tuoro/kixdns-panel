@@ -10,7 +10,7 @@ import {
   ServerCog,
   X,
 } from '@lucide/vue'
-import { computed, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { useSession } from '../composables/useSession'
 import { useToast } from '../composables/useToast'
@@ -21,6 +21,7 @@ const router = useRouter()
 const session = useSession()
 const toast = useToast()
 const menuOpen = ref(false)
+const menuButton = ref<HTMLButtonElement | null>(null)
 const signingOut = ref(false)
 const title = computed(() => route.meta.title ?? 'KixDNS Panel')
 
@@ -31,6 +32,15 @@ const navigation = [
   { to: '/diagnostics', label: '诊断', icon: Network },
   { to: '/system', label: '系统', icon: ServerCog },
 ]
+
+function closeMenu(restoreFocus = false): void {
+  menuOpen.value = false
+  if (restoreFocus) void nextTick(() => menuButton.value?.focus())
+}
+
+function handleKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape' && menuOpen.value) closeMenu(true)
+}
 
 async function logout(): Promise<void> {
   signingOut.value = true
@@ -43,15 +53,18 @@ async function logout(): Promise<void> {
     signingOut.value = false
   }
 }
+
+onMounted(() => window.addEventListener('keydown', handleKeydown))
+onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
 </script>
 
 <template>
   <div class="app-shell">
-    <aside class="sidebar" :class="{ 'sidebar--open': menuOpen }">
+    <aside id="primary-sidebar" class="sidebar" :class="{ 'sidebar--open': menuOpen }">
       <div class="brand">
         <span class="brand__mark"><Activity :size="20" /></span>
         <span><strong>KixDNS</strong><small>CONTROL PLANE</small></span>
-        <button class="icon-button sidebar__close" type="button" title="关闭菜单" @click="menuOpen = false"><X :size="20" /></button>
+        <button class="icon-button sidebar__close" type="button" title="关闭菜单" aria-label="关闭菜单" @click="closeMenu(true)"><X :size="20" /></button>
       </div>
       <nav class="sidebar__nav" aria-label="主导航">
         <RouterLink v-for="item in navigation" :key="item.to" :to="item.to" @click="menuOpen = false">
@@ -67,11 +80,11 @@ async function logout(): Promise<void> {
       </div>
     </aside>
 
-    <div v-if="menuOpen" class="sidebar-backdrop" @click="menuOpen = false"></div>
+    <div v-if="menuOpen" class="sidebar-backdrop" aria-hidden="true" @click="closeMenu(true)"></div>
 
     <div class="workspace">
       <header class="topbar">
-        <button class="icon-button menu-button" type="button" title="打开菜单" @click="menuOpen = true"><Menu :size="21" /></button>
+        <button ref="menuButton" class="icon-button menu-button" type="button" title="打开菜单" aria-label="打开菜单" aria-controls="primary-sidebar" :aria-expanded="menuOpen" @click="menuOpen = true"><Menu :size="21" /></button>
         <div><p class="eyebrow">KixDNS Enhanced</p><h1>{{ title }}</h1></div>
         <div class="operator"><span>{{ session.user.value?.username.slice(0, 1).toUpperCase() }}</span><div><strong>{{ session.user.value?.username }}</strong><small>管理员</small></div></div>
       </header>
