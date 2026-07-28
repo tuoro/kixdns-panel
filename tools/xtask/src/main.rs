@@ -2,7 +2,7 @@ use std::env;
 use std::ffi::OsStr;
 use std::fmt::Write;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
@@ -39,6 +39,8 @@ struct UpstreamLock {
     release_id: Option<u64>,
     #[serde(default)]
     release_tag: Option<String>,
+    #[serde(default)]
+    compatibility: Option<String>,
     patchset: u32,
     control_protocol: u32,
 }
@@ -65,16 +67,38 @@ fn parse_lock_argument(mut arguments: impl Iterator<Item = String>) -> Result<Pa
         return Ok(PathBuf::from("upstream.lock.json"));
     };
     let value = arguments.next().context("--lock 缺少锁文件名")?;
-    if flag != "--lock"
-        || arguments.next().is_some()
-        || !matches!(
-            value.as_str(),
-            "upstream.lock.json" | "upstream.release.lock.json"
-        )
-    {
-        bail!("仅支持 --lock upstream.lock.json 或 upstream.release.lock.json");
+    let path = PathBuf::from(value);
+    if flag != "--lock" || arguments.next().is_some() || !valid_lock_path(&path) {
+        bail!("锁文件必须是根目录当前锁，或 upstreams/actions、upstreams/releases 下的 JSON 文件");
     }
-    Ok(PathBuf::from(value))
+    Ok(path)
+}
+
+fn valid_lock_path(path: &Path) -> bool {
+    if matches!(
+        path.to_str(),
+        Some("upstream.lock.json" | "upstream.release.lock.json")
+    ) {
+        return true;
+    }
+    let components = path.components().collect::<Vec<_>>();
+    let [
+        Component::Normal(root),
+        Component::Normal(track),
+        Component::Normal(file),
+    ] = components.as_slice()
+    else {
+        return false;
+    };
+    if *root != OsStr::new("upstreams") || !matches!(track.to_str(), Some("actions" | "releases")) {
+        return false;
+    }
+    let file = Path::new(file);
+    file.extension() == Some(OsStr::new("json"))
+        && file
+            .file_stem()
+            .and_then(OsStr::to_str)
+            .is_some_and(valid_reference)
 }
 
 fn workspace_root() -> Result<PathBuf> {
@@ -220,6 +244,11 @@ fn apply_patches(root: &Path, checkout: &Path, lock: &UpstreamLock) -> Result<()
     }
 
     let mut patches = Vec::new();
+    if let Some(compatibility) = lock.compatibility.as_deref() {
+        patches.extend(read_patches(
+            &patch_dir.join("compatibility").join(compatibility),
+        )?);
+    }
     if lock.source == UpstreamSource::Release {
         let release_tag = lock.release_tag.as_deref().expect("已验证 Release 标签");
         patches.extend(read_patches(&patch_dir.join("release").join(release_tag))?);
@@ -319,6 +348,13 @@ fn validate_lock(lock: &UpstreamLock) -> Result<()> {
     if lock.patchset == 0 || lock.control_protocol == 0 {
         bail!("upstream.lock.json 中的版本号必须大于 0");
     }
+    if lock
+        .compatibility
+        .as_deref()
+        .is_some_and(|profile| !valid_reference(profile))
+    {
+        bail!("upstream.lock.json 中的 compatibility 无效");
+    }
     match lock.source {
         UpstreamSource::Action
             if lock.official_run_id.is_some_and(|run_id| run_id > 0)
@@ -384,19 +420,20 @@ where
 
 fn print_help() {
     println!("KixDNS Panel 构建任务");
-    println!("  cargo xtask info [--lock <文件>]     显示锁定的上游版本");
-    println!("  cargo xtask prepare [--lock <文件>]  检出上游并应用增强补丁");
+    println!("  cargo xtask info [--lock <锁文件>]     显示锁定的上游版本");
+    println!("  cargo xtask prepare [--lock <锁文件>]  检出上游并应用增强补丁");
 }
 
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::Path;
 
     use tempfile::{tempdir, tempdir_in};
 
     use super::{
         CheckoutPlaceholder, UpstreamLock, UpstreamSource, activate_checkout,
-        inspect_checkout_placeholder, validate_commit, validate_lock,
+        inspect_checkout_placeholder, valid_lock_path, validate_commit, validate_lock,
     };
 
     #[test]
@@ -419,10 +456,25 @@ mod tests {
             official_run_id: None,
             release_id: None,
             release_tag: Some("v0.1.1".to_owned()),
+            compatibility: None,
             patchset: 5,
             control_protocol: 1,
         };
         assert!(validate_lock(&lock).is_err());
+    }
+
+    #[test]
+    fn accepts_only_scoped_catalog_locks() {
+        assert!(valid_lock_path(Path::new("upstream.lock.json")));
+        assert!(valid_lock_path(Path::new(
+            "upstreams/actions/30235703570.json"
+        )));
+        assert!(valid_lock_path(Path::new("upstreams/releases/v0.1.1.json")));
+        assert!(!valid_lock_path(Path::new("../upstream.lock.json")));
+        assert!(!valid_lock_path(Path::new(
+            "upstreams/actions/bad/name.json"
+        )));
+        assert!(!valid_lock_path(Path::new("upstreams/other/v0.1.1.json")));
     }
 
     #[test]

@@ -1,6 +1,8 @@
 name: Build KixDNS Enhanced
 
 on:
+  schedule:
+    - cron: "17 4 * * 1"
   push:
     branches: [main]
     paths:
@@ -9,6 +11,8 @@ on:
       - patches/**
       - scripts/dns_smoke.py
       - tools/xtask/**
+      - scripts/kixdns-artifact-identity.sh
+      - upstreams/actions/**
       - upstream.lock.json
       - rust-toolchain.toml
   pull_request:
@@ -18,11 +22,20 @@ on:
       - patches/**
       - scripts/dns_smoke.py
       - tools/xtask/**
+      - scripts/kixdns-artifact-identity.sh
+      - upstreams/actions/**
       - upstream.lock.json
       - rust-toolchain.toml
   workflow_dispatch:
+    inputs:
+      force:
+        description: Rebuild all catalog versions
+        required: false
+        default: false
+        type: boolean
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -33,4 +46,5 @@ jobs:
   build:
     uses: ./.github/workflows/build-kixdns-track.yml
     with:
-      lock_file: upstream.lock.json
+      catalog_directory: upstreams/actions
+      force: ${{ github.event_name == 'workflow_dispatch' && inputs.force }}

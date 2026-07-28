@@ -30,9 +30,9 @@ jobs:
         id: upstream
         shell: bash
         run: |
-          action_response="$(gh api 'repos/olicesx/kixdns/actions/workflows/build.yml/runs?branch=main&status=success&per_page=1')"
-          action_commit="$(jq -r '.workflow_runs[0].head_sha // empty' <<< "$action_response")"
-          action_run_id="$(jq -r '.workflow_runs[0].id // empty' <<< "$action_response")"
+          action_response="$(gh api 'repos/olicesx/kixdns/actions/workflows/build.yml/runs?branch=main&status=success&per_page=30')"
+          action_commit="$(jq -r '[.workflow_runs[] | select(.event == "push")][0].head_sha // empty' <<< "$action_response")"
+          action_run_id="$(jq -r '[.workflow_runs[] | select(.event == "push")][0].id // empty' <<< "$action_response")"
           release_response="$(gh api 'repos/olicesx/kixdns/releases/latest')"
           release_id="$(jq -r '.id // empty' <<< "$release_response")"
           release_tag="$(jq -r '.tag_name // empty' <<< "$release_response")"
@@ -50,48 +50,41 @@ jobs:
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
           echo "release_current=$(jq -r .commit upstream.release.lock.json)" >> "$GITHUB_OUTPUT"
 
-      - name: Ensure Action track has a current build
-        if: steps.upstream.outputs.action_commit == steps.upstream.outputs.action_current
-        shell: bash
-        run: |
-          lock_updated_at="$(git log -1 --format=%ct -- upstream.lock.json)"
-          latest_build_at="$(gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/workflows/build-kixdns.yml/runs" -f branch=main -f status=success -f per_page=20 --jq '[.workflow_runs[] | select(.event != "pull_request")][0].created_at // empty')"
-          if [[ -z "$latest_build_at" ]] || (( $(date -d "$latest_build_at" +%s) < lock_updated_at )); then
-            gh workflow run build-kixdns.yml --ref main
-            echo "Action 轨道缺少当前 Artifact，已派发构建"
-          else
-            echo "Action 轨道锁定和 Artifact 均为最新"
-          fi
-
-      - name: Ensure Release track has a current build
-        if: steps.upstream.outputs.release_commit == steps.upstream.outputs.release_current
-        shell: bash
-        run: |
-          lock_updated_at="$(git log -1 --format=%ct -- upstream.release.lock.json)"
-          latest_build_at="$(gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/workflows/build-kixdns-release.yml/runs" -f branch=main -f status=success -f per_page=20 --jq '[.workflow_runs[] | select(.event != "pull_request")][0].created_at // empty')"
-          if [[ -z "$latest_build_at" ]] || (( $(date -d "$latest_build_at" +%s) < lock_updated_at )); then
-            gh workflow run build-kixdns-release.yml --ref main
-            echo "Release 轨道缺少当前 Artifact，已派发构建"
-          else
-            echo "Release 轨道锁定和 Artifact 均为最新"
-          fi
-
       - name: Update candidate locks
         if: steps.upstream.outputs.action_commit != steps.upstream.outputs.action_current || steps.upstream.outputs.release_commit != steps.upstream.outputs.release_current
         env:
           ACTION_COMMIT: ${{ steps.upstream.outputs.action_commit }}
+          ACTION_CURRENT: ${{ steps.upstream.outputs.action_current }}
           ACTION_RUN_ID: ${{ steps.upstream.outputs.action_run_id }}
           RELEASE_COMMIT: ${{ steps.upstream.outputs.release_commit }}
+          RELEASE_CURRENT: ${{ steps.upstream.outputs.release_current }}
           RELEASE_ID: ${{ steps.upstream.outputs.release_id }}
           RELEASE_TAG: ${{ steps.upstream.outputs.release_tag }}
         shell: bash
         run: |
-          jq --arg commit "$ACTION_COMMIT" --argjson run_id "$ACTION_RUN_ID" \
-            '.commit = $commit | .official_run_id = $run_id' upstream.lock.json > upstream.lock.json.new
-          mv upstream.lock.json.new upstream.lock.json
-          jq --arg commit "$RELEASE_COMMIT" --argjson release_id "$RELEASE_ID" --arg tag "$RELEASE_TAG" \
-            '.commit = $commit | .release_id = $release_id | .release_tag = $tag' upstream.release.lock.json > upstream.release.lock.json.new
-          mv upstream.release.lock.json.new upstream.release.lock.json
+          if [[ "$ACTION_COMMIT" != "$ACTION_CURRENT" ]]; then
+            jq --arg commit "$ACTION_COMMIT" --argjson run_id "$ACTION_RUN_ID" \
+              '.commit = $commit | .official_run_id = $run_id | del(.compatibility)' upstream.lock.json > upstream.lock.json.new
+            mv upstream.lock.json.new upstream.lock.json
+          fi
+          if [[ "$RELEASE_COMMIT" != "$RELEASE_CURRENT" ]]; then
+            jq --arg commit "$RELEASE_COMMIT" --argjson release_id "$RELEASE_ID" --arg tag "$RELEASE_TAG" \
+              '.commit = $commit | .release_id = $release_id | .release_tag = $tag | del(.compatibility)' upstream.release.lock.json > upstream.release.lock.json.new
+            mv upstream.release.lock.json.new upstream.release.lock.json
+          fi
+
+      - name: Update version catalogs
+        if: steps.upstream.outputs.action_commit != steps.upstream.outputs.action_current || steps.upstream.outputs.release_commit != steps.upstream.outputs.release_current
+        shell: bash
+        run: |
+          mkdir -p upstreams/actions upstreams/releases
+          action_run_id="$(jq -r .official_run_id upstream.lock.json)"
+          cp upstream.lock.json "upstreams/actions/${action_run_id}.json"
+          mapfile -t action_files < <(find upstreams/actions -maxdepth 1 -type f -name '*.json' -print | sort -r)
+          for file in "${action_files[@]:10}"; do rm -f -- "$file"; done
+
+          release_tag="$(jq -r .release_tag upstream.release.lock.json)"
+          cp upstream.release.lock.json "upstreams/releases/${release_tag}.json"
 
       - name: Install Rust
         if: steps.upstream.outputs.action_commit != steps.upstream.outputs.action_current || steps.upstream.outputs.release_commit != steps.upstream.outputs.release_current
@@ -136,7 +129,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$branch"
-          git add upstream.lock.json upstream.release.lock.json
+          git add upstream.lock.json upstream.release.lock.json upstreams/actions upstreams/releases
           git commit -m "chore: track verified upstream versions"
           git push --force origin "HEAD:refs/heads/${branch}"
           pull_request="$(gh pr list --head "$branch" --state open --json url --jq '.[0].url // empty')"

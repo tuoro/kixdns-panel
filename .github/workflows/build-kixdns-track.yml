@@ -3,18 +3,83 @@ name: Build KixDNS track
 on:
   workflow_call:
     inputs:
-      lock_file:
-        description: Verified upstream lock to build
+      catalog_directory:
+        description: Verified upstream lock catalog
         required: true
         type: string
+      force:
+        description: Rebuild every catalog entry
+        required: false
+        default: false
+        type: boolean
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
-  verify:
-    name: Verify enhanced source
+  inventory:
+    name: Find missing packages
     runs-on: ubuntu-24.04
+    outputs:
+      count: ${{ steps.catalog.outputs.count }}
+      locks: ${{ steps.catalog.outputs.locks }}
+    steps:
+      - name: Checkout panel repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Select catalog entries to build
+        id: catalog
+        shell: bash
+        env:
+          CATALOG_DIRECTORY: ${{ inputs.catalog_directory }}
+          FORCE_BUILD: ${{ inputs.force || github.event_name == 'pull_request' }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$CATALOG_DIRECTORY" =~ ^upstreams/(actions|releases)$ ]] || {
+            echo "版本目录无效：$CATALOG_DIRECTORY" >&2
+            exit 1
+          }
+          mapfile -t catalog < <(find "$CATALOG_DIRECTORY" -maxdepth 1 -type f -name '*.json' -print | sort -r)
+          ((${#catalog[@]} > 0)) || { echo '版本目录为空' >&2; exit 1; }
+
+          threshold="$(date -u -d '+7 days' '+%Y-%m-%dT%H:%M:%SZ')"
+          selected=()
+          for lock_file in "${catalog[@]}"; do
+            if [[ "$FORCE_BUILD" == true ]]; then
+              selected+=("$lock_file")
+              continue
+            fi
+            missing=false
+            for architecture in x86_64 arm64; do
+              artifact="$(bash scripts/kixdns-artifact-identity.sh "$lock_file" "$architecture")"
+              response="$(gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${artifact}&per_page=10")"
+              if ! jq -e --arg threshold "$threshold" \
+                '[.artifacts[] | select(.expired == false and .expires_at > $threshold)] | length > 0' \
+                <<< "$response" >/dev/null; then
+                missing=true
+                break
+              fi
+            done
+            [[ "$missing" == true ]] && selected+=("$lock_file")
+          done
+
+          locks="$(printf '%s\n' "${selected[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')"
+          [[ "$locks" != '[]' ]] || locks='[""]'
+          echo "count=${#selected[@]}" >> "$GITHUB_OUTPUT"
+          echo "locks=$locks" >> "$GITHUB_OUTPUT"
+          echo "需要构建 ${#selected[@]} / ${#catalog[@]} 个上游版本"
+
+  verify:
+    name: Verify ${{ matrix.lock_file }}
+    if: needs.inventory.outputs.count != '0'
+    needs: inventory
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        lock_file: ${{ fromJSON(needs.inventory.outputs.locks) }}
     steps:
       - name: Checkout panel repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -42,9 +107,8 @@ jobs:
           cargo clippy --package xtask --all-targets --locked -- -D warnings
 
       - name: Prepare enhanced source
-        shell: bash
         env:
-          LOCK_FILE: ${{ inputs.lock_file }}
+          LOCK_FILE: ${{ matrix.lock_file }}
         run: |
           cargo xtask prepare --lock "$LOCK_FILE"
           echo "UPSTREAM_DIR=.upstream/kixdns-$(jq -r .source "$LOCK_FILE")-$(jq -r .commit "$LOCK_FILE" | cut -c1-12)-p$(jq -r .patchset "$LOCK_FILE")" >> "$GITHUB_ENV"
@@ -64,14 +128,16 @@ jobs:
           python3 "$GITHUB_WORKSPACE/scripts/dns_smoke.py" target/debug/kixdns
 
   build:
-    name: Build Linux ${{ matrix.arch }}
-    if: github.event_name != 'pull_request'
-    needs: verify
-    runs-on: ${{ matrix.runner }}
+    name: Build ${{ matrix.lock_file }} / ${{ matrix.platform.arch }}
+    if: github.event_name != 'pull_request' && needs.inventory.outputs.count != '0'
+    needs: [inventory, verify]
+    runs-on: ${{ matrix.platform.runner }}
     strategy:
       fail-fast: false
+      max-parallel: 6
       matrix:
-        include:
+        lock_file: ${{ fromJSON(needs.inventory.outputs.locks) }}
+        platform:
           - arch: x86_64
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
@@ -87,7 +153,7 @@ jobs:
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           toolchain: 1.97.1
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.platform.target }}
 
       - name: Cache enhanced build
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
@@ -97,42 +163,32 @@ jobs:
             .upstream/* -> target
 
       - name: Prepare enhanced source
-        shell: bash
         env:
-          LOCK_FILE: ${{ inputs.lock_file }}
+          LOCK_FILE: ${{ matrix.lock_file }}
         run: |
           cargo xtask prepare --lock "$LOCK_FILE"
           echo "UPSTREAM_DIR=.upstream/kixdns-$(jq -r .source "$LOCK_FILE")-$(jq -r .commit "$LOCK_FILE" | cut -c1-12)-p$(jq -r .patchset "$LOCK_FILE")" >> "$GITHUB_ENV"
 
       - name: Export build identity
         id: identity
-        shell: bash
         env:
-          LOCK_FILE: ${{ inputs.lock_file }}
+          LOCK_FILE: ${{ matrix.lock_file }}
         run: |
-          source="$(jq -r .source "$LOCK_FILE")"
-          case "$source" in
-            action) reference="$(jq -r .official_run_id "$LOCK_FILE")" ;;
-            release) reference="$(jq -r .release_tag "$LOCK_FILE")" ;;
-            *) echo "未知上游来源：${source}" >&2; exit 1 ;;
-          esac
-          [[ "$reference" =~ ^[A-Za-z0-9._-]+$ ]] || { echo '上游来源标识无效' >&2; exit 1; }
-          artifact="kixdns-enhanced-${source}-${reference}-linux-${{ matrix.arch }}"
+          artifact="$(bash scripts/kixdns-artifact-identity.sh "$LOCK_FILE" "${{ matrix.platform.arch }}")"
           echo "KIXDNS_UPSTREAM_COMMIT=$(jq -r .commit "$LOCK_FILE")" >> "$GITHUB_ENV"
           echo "KIXDNS_PANEL_PATCHSET=$(jq -r .patchset "$LOCK_FILE")" >> "$GITHUB_ENV"
           echo "ARTIFACT_NAME=${artifact}" >> "$GITHUB_ENV"
           echo "artifact_name=${artifact}" >> "$GITHUB_OUTPUT"
 
       - name: Build release binary
-        run: cargo build --manifest-path "$UPSTREAM_DIR/Cargo.toml" --release --locked --target ${{ matrix.target }}
+        run: cargo build --manifest-path "$UPSTREAM_DIR/Cargo.toml" --release --locked --target ${{ matrix.platform.target }}
 
       - name: Package enhanced artifact
-        shell: bash
         env:
-          LOCK_FILE: ${{ inputs.lock_file }}
+          LOCK_FILE: ${{ matrix.lock_file }}
         run: |
           enhanced="dist/${ARTIFACT_NAME}"
-          install -Dm755 "$UPSTREAM_DIR/target/${{ matrix.target }}/release/kixdns" "$enhanced/kixdns"
+          install -Dm755 "$UPSTREAM_DIR/target/${{ matrix.platform.target }}/release/kixdns" "$enhanced/kixdns"
           cp "$LOCK_FILE" "$enhanced/upstream.lock.json"
           printf '%s\n' "$GITHUB_SHA" > "$enhanced/KIXDNS_BUILD_COMMIT"
           (cd "$enhanced" && sha256sum kixdns upstream.lock.json KIXDNS_BUILD_COMMIT > SHA256SUMS)
