@@ -319,7 +319,8 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .log-level--warning { color: #f0ca86; background: #49371d; }
 .log-level--info { color: #8dbca2; background: #233a2f; }
 
-.diagnostics-layout, .system-layout { display: grid; grid-template-columns: minmax(300px, 5fr) minmax(0, 7fr); gap: 14px; align-items: start; }
+.diagnostics-layout, .system-layout { display: grid; gap: 14px; align-items: start; }
+.diagnostics-layout { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
 .diagnostic-form { display: grid; gap: 18px; padding: 20px 17px; }
 .diagnostic-form label, .auth-panel label { display: grid; gap: 7px; color: #4c5557; font-size: 11px; font-weight: 650; }
 .diagnostic-form input, .auth-panel input { width: 100%; height: 40px; padding: 0 11px; color: #272e30; background: #fff; border: 1px solid #d5dcda; border-radius: 5px; outline: 0; font-size: 12px; }
@@ -340,8 +341,8 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .security-note p { display: grid; gap: 3px; }
 .security-note strong { font-size: 10px; }
 .security-note span { font-size: 9px; line-height: 1.5; }
-.diagnostic-result-panel { min-height: 466px; }
-.diagnostic-placeholder, .diagnostic-running { min-height: 398px; display: grid; place-items: center; align-content: center; gap: 10px; color: #939c99; }
+.diagnostic-result-panel { min-height: 409px; display: flex; flex-direction: column; }
+.diagnostic-placeholder, .diagnostic-running { min-height: 0; display: grid; place-items: center; align-content: center; flex: 1; gap: 10px; color: #939c99; }
 .diagnostic-placeholder p, .diagnostic-running strong { font-size: 11px; font-weight: 550; }
 .diagnostic-running span { width: 28px; height: 28px; border: 3px solid #d7e6de; border-top-color: var(--green); border-radius: 50%; animation: spin .8s linear infinite; }
 .diagnostic-result { padding: 18px; }
@@ -460,7 +461,7 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 }
 
 @media (max-width: 1000px) {
-  .version-columns { grid-template-columns: 1fr; }
+  .diagnostics-layout, .version-columns { grid-template-columns: 1fr; }
   .local-versions { border-top: 1px solid var(--line); border-left: 0; }
 }
 
@@ -476,7 +477,7 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
   .structured-editor, .flow-preview { max-height: none; }
   .history-panel { order: 2; }
   .history-list { max-height: 340px; }
-  .diagnostics-layout, .system-layout { grid-template-columns: 1fr; }
+  .system-layout { grid-template-columns: 1fr; }
   .auth-page { grid-template-columns: minmax(0, 1fr); }
   .auth-panel { padding: 38px; }
   .auth-brand { margin-bottom: 48px; }
