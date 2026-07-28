@@ -19,7 +19,7 @@ validate_slug() {
 }
 
 artifact_identity() {
-  jq -ceS '{repository, commit, patchset, control_protocol}' "$1"
+  jq -ceS '{repository, commit, patchset, build_revision, control_protocol}' "$1"
 }
 
 validate_architecture() {

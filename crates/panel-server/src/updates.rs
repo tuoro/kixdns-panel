@@ -112,6 +112,7 @@ pub struct InstalledVersion {
     pub upstream_repository: Option<String>,
     pub upstream_commit: Option<String>,
     pub patchset: Option<u32>,
+    pub build_revision: Option<u32>,
     pub control_protocol: Option<u32>,
     pub binary_sha256: String,
     pub installed_at: i64,
@@ -141,6 +142,8 @@ struct VersionManifest {
     upstream_commit: Option<String>,
     #[serde(default)]
     patchset: Option<u32>,
+    #[serde(default)]
+    build_revision: Option<u32>,
     #[serde(default)]
     control_protocol: Option<u32>,
     binary_sha256: String,
@@ -201,6 +204,8 @@ struct BuildIdentity {
     repository: String,
     commit: String,
     patchset: u32,
+    #[serde(default)]
+    build_revision: Option<u32>,
     control_protocol: u32,
 }
 
@@ -664,6 +669,13 @@ impl UpdateManager {
                 "包内构建提交与 GitHub 来源提交不匹配".to_owned(),
             ));
         }
+        if version.remote.source == VersionSource::Release {
+            let tag =
+                version.remote.release_tag.as_deref().ok_or_else(|| {
+                    UpdateError::Verification("Release 来源缺少版本标签".to_owned())
+                })?;
+            validate_release_build_identity(tag, &extracted.identity)?;
+        }
         validate_elf(&extracted.binary)?;
         let manifest = VersionManifest {
             schema_version: MANIFEST_SCHEMA_VERSION,
@@ -679,6 +691,7 @@ impl UpdateManager {
             upstream_repository: Some(extracted.identity.repository),
             upstream_commit: Some(extracted.identity.commit),
             patchset: Some(extracted.identity.patchset),
+            build_revision: extracted.identity.build_revision,
             control_protocol: Some(extracted.identity.control_protocol),
             binary_sha256: sha256(&extracted.binary),
             installed_at: unix_timestamp(),
@@ -764,6 +777,7 @@ impl UpdateManager {
                 upstream_repository: None,
                 upstream_commit: None,
                 patchset: None,
+                build_revision: None,
                 control_protocol: None,
                 binary_sha256: sha256(&binary),
                 installed_at: unix_timestamp(),
@@ -910,6 +924,7 @@ impl VersionManifest {
             upstream_repository: self.upstream_repository,
             upstream_commit: self.upstream_commit,
             patchset: self.patchset,
+            build_revision: self.build_revision,
             control_protocol: self.control_protocol,
             binary_sha256: self.binary_sha256,
             installed_at: self.installed_at,
@@ -939,28 +954,19 @@ fn extract_artifact(archive: &[u8]) -> Result<ExtractedArtifact, UpdateError> {
     let checksums = read_zip_entry(&mut archive, "SHA256SUMS", 64 * 1024)?;
     let checksums = String::from_utf8(checksums)
         .map_err(|_| UpdateError::Verification("SHA256SUMS 不是 UTF-8".to_owned()))?;
-    let expected = checksums
-        .lines()
-        .find_map(|line| {
-            let mut fields = line.split_whitespace();
-            let digest = fields.next()?;
-            let name = fields.next()?.trim_start_matches('*');
-            (name == "kixdns").then(|| digest.to_owned())
-        })
-        .ok_or_else(|| UpdateError::Verification("SHA256SUMS 缺少 kixdns".to_owned()))?;
-    validate_hex_digest(&expected)?;
-    let binary = read_zip_entry(&mut archive, "kixdns", MAX_BINARY_BYTES)?;
-    let actual = sha256(&binary);
-    if !constant_hash_eq(&expected, &actual) {
-        return Err(UpdateError::Verification(format!(
-            "二进制摘要不匹配：期望 {expected}，实际 {actual}"
-        )));
-    }
-    let identity = read_zip_entry(&mut archive, "upstream.lock.json", MAX_BUILD_IDENTITY_BYTES)?;
+    let checksums = parse_checksums(&checksums)?;
+    let binary = read_verified_zip_entry(&mut archive, &checksums, "kixdns", MAX_BINARY_BYTES)?;
+    let identity = read_verified_zip_entry(
+        &mut archive,
+        &checksums,
+        "upstream.lock.json",
+        MAX_BUILD_IDENTITY_BYTES,
+    )?;
     let identity: BuildIdentity = serde_json::from_slice(&identity)
         .map_err(|error| UpdateError::Verification(format!("构建身份无效：{error}")))?;
     validate_build_identity(&identity)?;
-    let build_commit = read_zip_entry(&mut archive, "KIXDNS_BUILD_COMMIT", 128)?;
+    let build_commit =
+        read_verified_zip_entry(&mut archive, &checksums, "KIXDNS_BUILD_COMMIT", 128)?;
     let build_commit = String::from_utf8(build_commit)
         .map_err(|_| UpdateError::Verification("KIXDNS_BUILD_COMMIT 不是 UTF-8".to_owned()))?;
     let build_commit = build_commit.trim().to_owned();
@@ -973,11 +979,61 @@ fn extract_artifact(archive: &[u8]) -> Result<ExtractedArtifact, UpdateError> {
     })
 }
 
+fn parse_checksums(checksums: &str) -> Result<HashMap<String, String>, UpdateError> {
+    let mut parsed = HashMap::new();
+    for line in checksums.lines().filter(|line| !line.trim().is_empty()) {
+        let mut fields = line.split_whitespace();
+        let digest = fields
+            .next()
+            .ok_or_else(|| UpdateError::Verification("SHA256SUMS 格式无效".to_owned()))?;
+        let name = fields
+            .next()
+            .map(|value| value.trim_start_matches('*'))
+            .ok_or_else(|| UpdateError::Verification("SHA256SUMS 格式无效".to_owned()))?;
+        if fields.next().is_some() {
+            return Err(UpdateError::Verification(
+                "SHA256SUMS 包含不受支持的文件名".to_owned(),
+            ));
+        }
+        validate_hex_digest(digest)?;
+        if parsed.insert(name.to_owned(), digest.to_owned()).is_some() {
+            return Err(UpdateError::Verification(format!(
+                "SHA256SUMS 重复声明 {name}"
+            )));
+        }
+    }
+    Ok(parsed)
+}
+
+fn read_verified_zip_entry(
+    archive: &mut zip::ZipArchive<Cursor<&[u8]>>,
+    checksums: &HashMap<String, String>,
+    name: &str,
+    limit: u64,
+) -> Result<Vec<u8>, UpdateError> {
+    let expected = checksums
+        .get(name)
+        .ok_or_else(|| UpdateError::Verification(format!("SHA256SUMS 缺少 {name}")))?;
+    let bytes = read_zip_entry(archive, name, limit)?;
+    let actual = sha256(&bytes);
+    if !constant_hash_eq(expected, &actual) {
+        return Err(UpdateError::Verification(format!(
+            "{name} 摘要不匹配：期望 {expected}，实际 {actual}"
+        )));
+    }
+    Ok(bytes)
+}
+
 fn read_zip_entry(
     archive: &mut zip::ZipArchive<Cursor<&[u8]>>,
     name: &str,
     limit: u64,
 ) -> Result<Vec<u8>, UpdateError> {
+    if archive.file_names().filter(|entry| *entry == name).count() != 1 {
+        return Err(UpdateError::Verification(format!(
+            "Artifact 中的 {name} 缺失或重复"
+        )));
+    }
     let file = archive
         .by_name(name)
         .map_err(|_| UpdateError::Verification(format!("Artifact 缺少 {name}")))?;
@@ -1225,10 +1281,31 @@ fn validate_build_identity(identity: &BuildIdentity) -> Result<(), UpdateError> 
     if identity.patchset == 0 {
         return Err(UpdateError::Verification("增强补丁集版本无效".to_owned()));
     }
+    if identity.build_revision == Some(0) {
+        return Err(UpdateError::Verification("构建修订版本无效".to_owned()));
+    }
     if identity.control_protocol != CONTROL_PROTOCOL_VERSION {
         return Err(UpdateError::Verification(format!(
             "控制协议不兼容：需要 v{CONTROL_PROTOCOL_VERSION}，产物为 v{}",
             identity.control_protocol
+        )));
+    }
+    Ok(())
+}
+
+fn validate_release_build_identity(tag: &str, identity: &BuildIdentity) -> Result<(), UpdateError> {
+    let revision = identity
+        .build_revision
+        .ok_or_else(|| UpdateError::Verification("Release 产物缺少构建修订身份".to_owned()))?;
+    let expected = format!(
+        "kixdns-{}-p{}-r{}",
+        &identity.commit[..12],
+        identity.patchset,
+        revision
+    );
+    if tag != expected {
+        return Err(UpdateError::Verification(format!(
+            "Release 标签与包内构建身份不匹配：期望 {expected}"
         )));
     }
     Ok(())
@@ -1261,17 +1338,23 @@ fn validate_manifest_build_identity(manifest: &VersionManifest) -> Result<(), Up
         manifest.upstream_repository.as_ref(),
         manifest.upstream_commit.as_ref(),
         manifest.patchset,
+        manifest.build_revision,
         manifest.control_protocol,
     ) {
-        (None, None, None, None) => Ok(()),
-        (Some(repository), Some(commit), Some(patchset), Some(control_protocol)) => {
-            validate_build_identity(&BuildIdentity {
-                repository: repository.clone(),
-                commit: commit.clone(),
-                patchset,
-                control_protocol,
-            })
-        }
+        (None, None, None, None, None) => Ok(()),
+        (
+            Some(repository),
+            Some(commit),
+            Some(patchset),
+            build_revision,
+            Some(control_protocol),
+        ) => validate_build_identity(&BuildIdentity {
+            repository: repository.clone(),
+            commit: commit.clone(),
+            patchset,
+            build_revision,
+            control_protocol,
+        }),
         _ => Err(UpdateError::Verification(
             "版本清单中的构建身份不完整".to_owned(),
         )),
@@ -1398,9 +1481,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        MANIFEST_SCHEMA_VERSION, RemoteVersion, VersionManifest, VersionSource, extract_artifact,
-        is_release_download_url, load_verified_version, sha256, store_version, validate_commit,
-        validate_digest, validate_slug,
+        BuildIdentity, MANIFEST_SCHEMA_VERSION, RemoteVersion, VersionManifest, VersionSource,
+        extract_artifact, is_release_download_url, load_verified_version, sha256, store_version,
+        validate_commit, validate_digest, validate_release_build_identity, validate_slug,
     };
 
     const TEST_BUILD_COMMIT: &str = "4e8002d08a56afc08be335d0d5ed337c7690f9af";
@@ -1409,6 +1492,7 @@ mod tests {
         "repository":"olicesx/kixdns",
         "commit":"374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25",
         "patchset":5,
+        "build_revision":1,
         "control_protocol":1
     }"#;
 
@@ -1422,6 +1506,15 @@ mod tests {
         };
         binary[18..20].copy_from_slice(&machine.to_le_bytes());
         binary
+    }
+
+    fn test_checksums(binary: &[u8], identity: &str) -> String {
+        format!(
+            "{}  kixdns\n{}  upstream.lock.json\n{}  KIXDNS_BUILD_COMMIT\n",
+            sha256(binary),
+            sha256(identity.as_bytes()),
+            sha256(TEST_BUILD_COMMIT.as_bytes())
+        )
     }
 
     #[test]
@@ -1442,6 +1535,9 @@ mod tests {
             "kixdns-374d63ccfdde-p5-r1",
             "kixdns-enhanced-linux-x86_64.zip",
         ));
+        let identity = serde_json::from_str::<BuildIdentity>(TEST_IDENTITY).unwrap();
+        assert!(validate_release_build_identity("kixdns-374d63ccfdde-p5-r1", &identity).is_ok());
+        assert!(validate_release_build_identity("kixdns-374d63ccfdde-p5-r2", &identity).is_err());
     }
 
     #[test]
@@ -1469,7 +1565,7 @@ mod tests {
     #[test]
     fn extracts_only_checksum_verified_binary() {
         let binary = b"test-binary";
-        let checksum = format!("{}  kixdns\n", sha256(binary));
+        let checksum = test_checksums(binary, TEST_IDENTITY);
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
         let options = zip::write::SimpleFileOptions::default();
         writer.start_file("kixdns", options).unwrap();
@@ -1487,7 +1583,7 @@ mod tests {
         assert_eq!(extracted.identity.patchset, 5);
         assert_eq!(extracted.build_commit, TEST_BUILD_COMMIT);
 
-        let wrong_checksum = format!("{}  kixdns\n", "0".repeat(64));
+        let wrong_checksum = checksum.replace(&sha256(binary), &"0".repeat(64));
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
         writer.start_file("kixdns", options).unwrap();
         writer.write_all(binary).unwrap();
@@ -1504,9 +1600,9 @@ mod tests {
     #[test]
     fn rejects_incompatible_control_protocol() {
         let binary = b"test-binary";
-        let checksum = format!("{}  kixdns\n", sha256(binary));
         let incompatible =
             TEST_IDENTITY.replace("\"control_protocol\":1", "\"control_protocol\":2");
+        let checksum = test_checksums(binary, &incompatible);
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
         let options = zip::write::SimpleFileOptions::default();
         writer.start_file("kixdns", options).unwrap();
@@ -1541,6 +1637,7 @@ mod tests {
             upstream_repository: Some("olicesx/kixdns".to_owned()),
             upstream_commit: Some(commit.to_owned()),
             patchset: Some(5),
+            build_revision: Some(1),
             control_protocol: Some(1),
             binary_sha256: sha256(&binary),
             installed_at: 42,
@@ -1573,6 +1670,7 @@ mod tests {
             upstream_repository: None,
             upstream_commit: None,
             patchset: None,
+            build_revision: None,
             control_protocol: None,
             binary_sha256: sha256(&binary),
             installed_at: 42,

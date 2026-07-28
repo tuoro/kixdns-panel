@@ -155,11 +155,16 @@ export interface UpdateInfo {
   available: boolean
 }
 
+export type KixdnsVersionSource = 'action' | 'release'
+
 export interface RemoteKixdnsVersion {
+  source: KixdnsVersionSource
+  source_id: number
   commit: string
-  run_id: number
+  run_id: number | null
+  release_tag: string | null
   created_at: string
-  run_url: string
+  source_url: string
   artifact: string
   artifact_digest: string
   download_url: string
@@ -168,15 +173,19 @@ export interface RemoteKixdnsVersion {
 }
 
 export interface InstalledKixdnsVersion {
+  source: KixdnsVersionSource | null
+  source_id: number | null
   commit: string
   run_id: number | null
+  release_tag: string | null
   created_at: string | null
-  run_url: string | null
+  source_url: string | null
   artifact: string
   artifact_digest: string | null
   upstream_repository: string | null
   upstream_commit: string | null
   patchset: number | null
+  build_revision: number | null
   control_protocol: number | null
   binary_sha256: string
   installed_at: number
@@ -184,6 +193,7 @@ export interface InstalledKixdnsVersion {
 }
 
 export interface KixdnsVersionCatalog {
+  source: KixdnsVersionSource
   active_commit: string | null
   binary_present: boolean
   remote_versions: RemoteKixdnsVersion[]

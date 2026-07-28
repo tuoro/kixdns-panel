@@ -4,7 +4,7 @@
 
 首个生产目标为带 systemd 与 Polkit 的 Linux x86_64/ARM64。安装需要 `systemctl`、`polkit`、`sha256sum` 和 `getent`；下载示例还使用 `curl`、`unzip` 与 `jq`。
 
-完整安装包由 `Build KixDNS Panel` Action 生成，不依赖 GitHub Release。面板工作流复用上游身份、补丁集和架构完全匹配的已校验 KixDNS Artifact，不会因面板修改而重新编译数据面。包中包含 KixDNS Enhanced、Panel Server、Vue 静态资源、服务单元和安装脚本。
+完整安装包由 `Build KixDNS Panel` Action 生成。KixDNS Enhanced 同时发布为版本化 Release，供已安装面板切换数据面版本；Release 不等同于完整面板安装包。面板工作流复用上游身份、补丁集、构建修订和架构完全匹配的已校验 KixDNS Artifact，不会因面板修改而重新编译数据面。完整包包含 KixDNS Enhanced、Panel Server、Vue 静态资源、服务单元和安装脚本。
 
 ## 获取并验证安装包
 
@@ -95,13 +95,13 @@ sudo systemctl restart kixdns-panel.service
 
 面板“系统”页管理的是 KixDNS Enhanced 数据面，不会在线替换 Panel Server 或 Web：
 
-1. 从 GitHub 公共 API 读取本项目最近 12 次成功的 `Build KixDNS Enhanced` Action；安装时按完整 40 位提交 SHA 在最近 30 次成功构建中定位对应 Run。
-2. 使用该 Run 的 nightly.link 固定地址匿名下载 Artifact，不要求用户配置 GitHub Token，也不接受前端传入下载 URL。
-3. 校验 GitHub Artifact digest、包内 `SHA256SUMS`、`upstream.lock.json` 构建身份、控制协议、ELF 格式和 CPU 架构，再写入 `/var/lib/kixdns-panel/versions/<commit>/`。
-4. 激活版本时重新校验清单和二进制 SHA-256，然后停止服务、原子替换运行文件、启动服务并等待增强接口健康。
-5. 启动或健康检查失败时恢复原二进制；首次安装失败则恢复为未安装状态。
+1. “Releases”读取最近的非草稿发布并直连 GitHub 资产；“Actions”读取最近 12 次成功的 `Build KixDNS Enhanced` 构建并通过 nightly.link 匿名下载。两者均不要求用户配置 GitHub Token。
+2. 安装请求只提交 `release/action` 与 GitHub 来源 ID。后端在固定仓库中重新解析该来源，拒绝前端传入下载 URL，并将 Action 限制在最近 30 次成功构建、Release 限制在最近的有效发布中。
+3. 校验 GitHub asset/Artifact digest、包内 `SHA256SUMS`、`KIXDNS_BUILD_COMMIT`、`upstream.lock.json` 构建身份、控制协议、ELF 格式和 CPU 架构。Release 还必须满足标签中的上游提交、补丁集和构建修订与包内身份一致。
+4. 校验完成后按完整构建提交写入 `/var/lib/kixdns-panel/versions/<commit>/`。同一构建同时出现在 Actions 和 Releases 时只保存一份二进制，安装清单记录首次安装来源。
+5. 激活版本时重新校验清单和二进制 SHA-256，然后停止服务、原子替换运行文件、启动服务并等待增强接口健康；启动或健康检查失败时恢复原状态。
 
-已下载版本可直接切换，无需重复联网。面板最多保留 8 个本地版本，清理时始终保留当前版本。完整安装包自带的 KixDNS 会在首次版本操作时自动收录到库存。
+已下载版本可直接切换，无需重复联网。面板最多保留 8 个本地版本，清理时始终保留当前版本。完整安装包自带的 KixDNS 会在首次版本操作时自动收录到库存。Release 标签格式为 `kixdns-<上游短 SHA>-p<补丁集>-r<构建修订>`；上游或补丁集不变但构建配方、Rust 工具链变化时，维护者必须递增 `upstream.lock.json` 的 `build_revision`。
 
 SQLite 中配置历史最多保留 100 条，审计事件最多保留 10,000 条；每次写入与清理处于同一事务，服务启动时也会整理旧数据库，避免长期运行造成无界增长。
 

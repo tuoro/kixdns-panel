@@ -4,6 +4,7 @@ import {
   CircleCheck,
   Download,
   ExternalLink,
+  GitBranch,
   HardDrive,
   Package,
   Play,
@@ -11,12 +12,14 @@ import {
   RotateCw,
   ServerCog,
   Square,
+  Tag as TagIcon,
 } from '@lucide/vue'
 import { computed, onMounted, ref } from 'vue'
 import { apiRequest } from '../api/client'
 import type {
   InstalledKixdnsVersion,
   KixdnsVersionCatalog,
+  KixdnsVersionSource,
   RemoteKixdnsVersion,
   ServiceAction,
   ServiceStatus,
@@ -29,6 +32,7 @@ type VersionAction = { commit: string; kind: 'install' | 'activate' }
 
 const service = ref<ServiceStatus | null>(null)
 const catalog = ref<KixdnsVersionCatalog | null>(null)
+const versionSource = ref<KixdnsVersionSource>('release')
 const loadingService = ref(true)
 const loadingVersions = ref(true)
 const serviceAction = ref<ServiceAction | null>(null)
@@ -37,7 +41,7 @@ const serviceError = ref('')
 const versionsError = ref('')
 const toast = useToast()
 let pendingService: Promise<void> | null = null
-let pendingVersions: Promise<void> | null = null
+let versionsRequest = 0
 
 const running = computed(() => service.value?.active_state === 'active')
 const installed = computed(() => catalog.value?.binary_present === true)
@@ -63,6 +67,16 @@ function artifactDigest(digest: string | null | undefined): string {
   return shortHash(digest?.replace(/^sha256:/, ''), 12)
 }
 
+function sourceLabel(version: InstalledKixdnsVersion | RemoteKixdnsVersion): string {
+  if (version.source === 'release') return version.release_tag ?? 'Release'
+  if (version.source === 'action') return version.run_id ? `Run #${version.run_id}` : 'Action'
+  return '未记录'
+}
+
+function remoteVersionLabel(version: RemoteKixdnsVersion): string {
+  return version.release_tag ?? `Run #${version.run_id ?? version.source_id}`
+}
+
 function loadService(silent = false): Promise<void> {
   if (pendingService) return pendingService
   loadingService.value = true
@@ -80,19 +94,28 @@ function loadService(silent = false): Promise<void> {
 }
 
 function loadVersions(silent = false): Promise<void> {
-  if (pendingVersions) return pendingVersions
+  const request = ++versionsRequest
+  const source = versionSource.value
   loadingVersions.value = true
-  pendingVersions = (async () => {
-    catalog.value = await apiRequest<KixdnsVersionCatalog>('/api/v1/kixdns/versions')
+  return (async () => {
+    const next = await apiRequest<KixdnsVersionCatalog>(`/api/v1/kixdns/versions?source=${source}`)
+    if (request !== versionsRequest) return
+    catalog.value = next
     versionsError.value = ''
   })().catch((error: unknown) => {
+    if (request !== versionsRequest) return
     versionsError.value = `版本目录：${errorMessage(error)}`
     if (!silent && catalog.value) toast.error(versionsError.value)
   }).finally(() => {
+    if (request !== versionsRequest) return
     loadingVersions.value = false
-    pendingVersions = null
   })
-  return pendingVersions
+}
+
+function selectVersionSource(source: KixdnsVersionSource): void {
+  if (source === versionSource.value) return
+  versionSource.value = source
+  void loadVersions()
 }
 
 async function refreshAll(): Promise<void> {
@@ -115,10 +138,10 @@ async function control(action: ServiceAction): Promise<void> {
 }
 
 async function installVersion(version: RemoteKixdnsVersion): Promise<void> {
-  if (!window.confirm(`安装并启用构建 ${shortHash(version.commit, 12)}？KixDNS 服务会重启。`)) return
+  if (!window.confirm(`安装并启用 ${remoteVersionLabel(version)}？KixDNS 服务会重启。`)) return
   versionAction.value = { commit: version.commit, kind: 'install' }
   try {
-    await apiRequest<InstalledKixdnsVersion>(`/api/v1/kixdns/versions/${version.commit}/install`, { method: 'POST' })
+    await apiRequest<InstalledKixdnsVersion>(`/api/v1/kixdns/versions/${version.source}/${version.source_id}/install`, { method: 'POST' })
     toast.success('KixDNS 已安装并通过健康检查')
     await Promise.all([loadVersions(true), loadService(true)])
   } catch (error) {
@@ -186,7 +209,7 @@ onMounted(refreshAll)
           <dl class="detail-list runtime-details">
             <div><dt>当前构建</dt><dd class="mono">{{ shortHash(catalog.active_commit, 12) }}</dd></div>
             <div><dt>控制协议</dt><dd>{{ activeVersion?.control_protocol ? `v${activeVersion.control_protocol}` : '未记录' }}</dd></div>
-            <div><dt>Action Run</dt><dd><a v-if="activeVersion?.run_url" :href="activeVersion.run_url" target="_blank" rel="noopener noreferrer">#{{ activeVersion.run_id }}<ExternalLink :size="13" /></a><span v-else>未记录</span></dd></div>
+            <div><dt>安装来源</dt><dd><a v-if="activeVersion?.source_url" :href="activeVersion.source_url" target="_blank" rel="noopener noreferrer">{{ sourceLabel(activeVersion) }}<ExternalLink :size="13" /></a><span v-else>未记录</span></dd></div>
             <div><dt>二进制摘要</dt><dd class="mono">{{ shortHash(activeVersion?.binary_sha256, 14) }}</dd></div>
           </dl>
         </template>
@@ -195,24 +218,30 @@ onMounted(refreshAll)
 
     <section class="panel version-panel">
       <header class="panel__header version-panel__header">
-        <div><h2>KixDNS 版本</h2><p>成功 Action 构建与本地版本库存</p></div>
-        <button class="icon-button" type="button" title="刷新版本" :disabled="loadingVersions || versionAction !== null" @click="loadVersions()"><RefreshCw :size="18" :class="{ spin: loadingVersions }" /></button>
+        <div><h2>KixDNS 版本</h2><p>远端版本源与本地版本库存</p></div>
+        <div class="version-panel__tools">
+          <div class="version-source-tabs" role="tablist" aria-label="版本源">
+            <button type="button" role="tab" :aria-selected="versionSource === 'release'" :class="{ 'version-source-tab--active': versionSource === 'release' }" @click="selectVersionSource('release')"><TagIcon :size="14" />Releases</button>
+            <button type="button" role="tab" :aria-selected="versionSource === 'action'" :class="{ 'version-source-tab--active': versionSource === 'action' }" @click="selectVersionSource('action')"><GitBranch :size="14" />Actions</button>
+          </div>
+          <button class="icon-button" type="button" title="刷新版本" :disabled="loadingVersions || versionAction !== null" @click="loadVersions()"><RefreshCw :size="18" :class="{ spin: loadingVersions }" /></button>
+        </div>
       </header>
-      <div v-if="loadingVersions && !catalog" class="version-loading">正在读取可用构建…</div>
-      <div v-else-if="catalog" class="version-columns">
+      <div v-if="loadingVersions && (!catalog || catalog.source !== versionSource)" class="version-loading">正在读取可用构建…</div>
+      <div v-else-if="catalog && catalog.source === versionSource" class="version-columns">
         <div class="remote-versions">
-          <div class="version-section-title"><div><Download :size="16" /><strong>可用构建</strong></div><span>{{ catalog.remote_versions.length }} 个</span></div>
+          <div class="version-section-title"><div><Download :size="16" /><strong>{{ versionSource === 'release' ? '可用发布' : '可用构建' }}</strong></div><span>{{ catalog.remote_versions.length }} 个</span></div>
           <div class="version-list">
-            <article v-for="(version, index) in catalog.remote_versions" :key="version.commit" class="version-row">
+            <article v-for="(version, index) in catalog.remote_versions" :key="`${version.source}-${version.source_id}`" class="version-row">
               <div class="version-identity">
-                <div><span class="identity-label">面板构建</span><code>{{ shortHash(version.commit, 12) }}</code><span v-if="index === 0" class="tag tag--success">最新</span><span v-else-if="version.active" class="tag tag--success">当前</span><span v-else-if="version.installed" class="tag tag--muted">本地</span></div>
-                <p><span>{{ artifactArchitecture(version.artifact) }}</span><a :href="version.run_url" target="_blank" rel="noopener noreferrer">Run #{{ version.run_id }}<ExternalLink :size="12" /></a><span class="mono">包 {{ artifactDigest(version.artifact_digest) }}</span><span>{{ buildTime(version.created_at) }}</span></p>
+                <div><span class="identity-label">面板构建</span><code>{{ shortHash(version.commit, 12) }}</code><span v-if="index === 0" class="tag tag--success">{{ version.source === 'release' ? '最新发布' : '最新' }}</span><span v-else-if="version.active" class="tag tag--success">当前</span><span v-else-if="version.installed" class="tag tag--muted">本地</span></div>
+                <p><span>{{ artifactArchitecture(version.artifact) }}</span><a :href="version.source_url" target="_blank" rel="noopener noreferrer">{{ remoteVersionLabel(version) }}<ExternalLink :size="12" /></a><span class="mono">包 {{ artifactDigest(version.artifact_digest) }}</span><span>{{ buildTime(version.created_at) }}</span></p>
               </div>
               <button v-if="version.active" class="button button--secondary version-action" type="button" disabled><CircleCheck :size="15" />当前版本</button>
               <button v-else-if="version.installed" class="button button--secondary version-action" type="button" :disabled="versionAction !== null" @click="activateVersion(version)"><RotateCw :size="15" :class="{ spin: actionBusy(version.commit) }" />{{ actionBusy(version.commit) ? '切换中' : '切换' }}</button>
               <button v-else class="button button--primary version-action" type="button" :disabled="versionAction !== null" @click="installVersion(version)"><Download :size="15" />{{ actionBusy(version.commit) ? '安装中' : '安装并启用' }}</button>
             </article>
-            <div v-if="catalog.remote_versions.length === 0" class="version-empty">没有可用的成功构建</div>
+            <div v-if="catalog.remote_versions.length === 0" class="version-empty">{{ versionSource === 'release' ? '尚无可用 Release' : '没有可用的成功构建' }}</div>
           </div>
         </div>
 
@@ -221,7 +250,7 @@ onMounted(refreshAll)
           <div class="local-version-list">
             <article v-for="version in catalog.installed_versions" :key="version.commit" :class="version.active ? 'local-version local-version--active' : 'local-version'">
               <div><span class="identity-label">面板构建</span><code>{{ shortHash(version.commit, 12) }}</code><span v-if="version.active" class="tag tag--success">当前</span></div>
-              <p v-if="version.upstream_commit"><span class="mono">上游 {{ shortHash(version.upstream_commit, 9) }}</span><span>p{{ version.patchset }}</span><span>{{ artifactArchitecture(version.artifact) }}</span></p>
+              <p v-if="version.upstream_commit"><span class="mono">上游 {{ shortHash(version.upstream_commit, 9) }}</span><span>p{{ version.patchset }}<template v-if="version.build_revision"> r{{ version.build_revision }}</template></span><span>{{ artifactArchitecture(version.artifact) }}</span><a v-if="version.source_url" :href="version.source_url" target="_blank" rel="noopener noreferrer">{{ sourceLabel(version) }}</a></p>
               <p v-else>构建身份未记录</p>
               <p><span class="mono">二进制 {{ shortHash(version.binary_sha256, 12) }}</span><span>{{ formatDate(version.installed_at) }}</span></p>
               <button v-if="!version.active" class="icon-button icon-button--small" type="button" title="切换到此版本" :disabled="versionAction !== null" @click="activateVersion(version)"><RotateCw :size="14" :class="{ spin: actionBusy(version.commit) }" /></button>

@@ -48,6 +48,7 @@ Panel Web ---- Panel Server ---- SQLite
 面板和增强内核使用独立工作流，避免把面板提交误认为新的 KixDNS 版本：
 
 - `build-kixdns.yml` 只监听 `upstream.lock.json`、`patches/`、xtask、冒烟测试和 Rust 工具链。它验证并生成 `kixdns-enhanced-linux-{arch}`，纯面板或文档修改不会触发。
+- 两个架构构建都成功后，内核工作流以 `kixdns-<上游短 SHA>-p<补丁集>-r<构建修订>` 创建 Release。相同标签只允许对应一个面板构建提交；构建配方或工具链变化时必须递增 `build_revision`，避免覆盖历史资产。
 - `build-panel.yml` 只监听 Panel Server、Web、部署脚本和面板依赖。它从最近成功的内核工作流复用上游身份完全匹配的 Artifact，经包内 SHA-256 和 ELF 架构校验后生成完整安装包，不重新编译 KixDNS。
 - PR 只执行对应边界的验证 Job，不上传可安装 Artifact；README、截图等纯文档变化不触发打包工作流。
 
@@ -62,7 +63,8 @@ Panel Web ---- Panel Server ---- SQLite
 - 密码使用 Argon2id，数据库不保存明文会话令牌。
 - 指标禁止域名、客户端 IP 等高基数或敏感标签。
 - Panel Server 以独立非 root 账号运行；systemd 控制同时受 API 白名单和精确到 unit/verb 的 Polkit 规则限制。
-- KixDNS 版本源只接受固定仓库、工作流、分支与 Artifact 名称；提交必须是最近成功构建返回的完整 SHA，前端不能指定 URL 或文件路径。
+- KixDNS 版本源只接受固定仓库、工作流、分支、Artifact 与 Release 资产名称；安装请求只携带来源类型和 GitHub 来源 ID，前端不能指定 URL 或文件路径。
+- Release 标签、目标提交、资产摘要与包内上游提交、补丁集、构建修订和构建提交必须一致；Actions 与 Releases 使用独立远端缓存，但按构建提交共享本地库存。
 - 安装前校验外层和包内 SHA-256、ELF 与架构，激活前再次校验本地清单与二进制摘要；替换后必须通过健康检查，否则恢复原状态。
 - 服务动作白名单只有 `start`、`stop`、`restart`。配置文件监听产生的结构化热加载回执属于增强控制协议，不是 systemd 服务重载能力。
 

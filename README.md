@@ -21,12 +21,12 @@ KixDNS 的非 Fork 增强发行版与管理面板。项目按官方 `main` 分�
 - Argon2id 管理员认证、HttpOnly 会话、CSRF 防护和登录限流
 - 与上游编辑器功能对齐的结构化表单、原始 JSON、流程预览及导入导出
 - KixDNS 编译校验、乐观锁保存、版本历史、回滚和失败自动恢复
-- 面板内安装 KixDNS、浏览最近成功 Action 构建并切换本地版本
+- 面板内安装 KixDNS、切换 Releases/Actions 版本源并回切本地版本
 - systemd 启动、停止、重启固定动作控制，journal 日志与固定目标 DNS 诊断
-- GitHub 公共元数据 + nightly.link 匿名下载，Artifact 与包内双重摘要校验
+- Release 资产直连或 nightly.link 匿名下载，GitHub 资产摘要与包内摘要双重校验
 - 版本激活健康检查、失败自动恢复与最多 8 个本地版本的受控库存
 - Vue 3 响应式控制台，桌面侧栏与移动端底部导航
-- 面板与增强内核独立的 x86_64/ARM64 Action 构建、每日自动跟随已验证上游和完整 Linux 安装包
+- 面板与增强内核独立的 x86_64/ARM64 Action 构建、版本化 Release、每日自动跟随已验证上游和完整 Linux 安装包
 - 发布前真实启动增强进程，验证 DNS 应答、内部指标与结构化热加载回执
 
 ## 架构
