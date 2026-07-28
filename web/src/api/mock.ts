@@ -8,6 +8,7 @@ import type {
   LogsResponse,
   Overview,
   KixdnsVersionCatalog,
+  RemoteKixdnsVersion,
   ServiceStatus,
   UpdateInfo,
   ValidationResult,
@@ -109,10 +110,43 @@ const versions: ConfigVersions = {
 
 let serviceRunning = true
 let updateAvailable = true
-const demoRemoteVersions = [
-  { commit: '8eb8588ebe3e7965cf40ca161c05ac400ac2f5e5', run_id: 30332133247, created_at: new Date(now * 1000).toISOString(), run_url: '#', artifact: 'kixdns-enhanced-linux-x86_64', download_url: '#' },
-  { commit: '374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25', run_id: 30290418722, created_at: new Date((now - 86400) * 1000).toISOString(), run_url: '#', artifact: 'kixdns-enhanced-linux-x86_64', download_url: '#' },
-  { commit: '2d89c31d4ad9d252155215d78af8c9c128112233', run_id: 30235703570, created_at: new Date((now - 172800) * 1000).toISOString(), run_url: '#', artifact: 'kixdns-enhanced-linux-x86_64', download_url: '#' },
+const upstreamCommit = '374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25'
+const artifactName = 'kixdns-enhanced-linux-x86_64'
+const binarySha256 = 'ee714ecae2d9f93e1ee8e242b1e351be4671ad53b4adc4dc3e70d20472a9c27a'
+const demoRemoteVersions: RemoteKixdnsVersion[] = [
+  {
+    commit: 'bf0d53fb4b2a0434fa1b35ce1a76f75085137927',
+    run_id: 30347922634,
+    created_at: '2026-07-28T09:45:22Z',
+    run_url: 'https://github.com/tuoro/kixdns-panel/actions/runs/30347922634',
+    artifact: artifactName,
+    artifact_digest: 'sha256:326199a1d72bf5430b06f945ebc9b60b3933139215b14ff24d770538cdf979be',
+    download_url: `https://nightly.link/tuoro/kixdns-panel/actions/runs/30347922634/${artifactName}.zip`,
+    installed: false,
+    active: false,
+  },
+  {
+    commit: '30e90607685c3a780e2b1005457ff13c57f7a5f7',
+    run_id: 30347062884,
+    created_at: '2026-07-28T09:33:09Z',
+    run_url: 'https://github.com/tuoro/kixdns-panel/actions/runs/30347062884',
+    artifact: artifactName,
+    artifact_digest: 'sha256:ada39cf50e54d4d095e56aa379cb5e3e8b88b5b4185d4428c2a3900242b26db2',
+    download_url: `https://nightly.link/tuoro/kixdns-panel/actions/runs/30347062884/${artifactName}.zip`,
+    installed: false,
+    active: false,
+  },
+  {
+    commit: 'c459982f2c705e4ef81069fec38882324c5faf0d',
+    run_id: 30344337649,
+    created_at: '2026-07-28T08:54:55Z',
+    run_url: 'https://github.com/tuoro/kixdns-panel/actions/runs/30344337649',
+    artifact: artifactName,
+    artifact_digest: 'sha256:98aa2dd5567b1fd9516af058c7b9900a45d615438e64543d0010b995078eb1bf',
+    download_url: `https://nightly.link/tuoro/kixdns-panel/actions/runs/30344337649/${artifactName}.zip`,
+    installed: false,
+    active: false,
+  },
 ]
 let activeKixdnsCommit = demoRemoteVersions[1].commit
 const installedKixdnsCommits = new Set([activeKixdnsCommit, demoRemoteVersions[2].commit])
@@ -133,13 +167,13 @@ function demoVersionCatalog(): KixdnsVersionCatalog {
         run_id: remote?.run_id ?? null,
         created_at: remote?.created_at ?? null,
         run_url: remote?.run_url ?? null,
-        artifact: remote?.artifact ?? 'kixdns-enhanced-linux-x86_64',
-        artifact_digest: `sha256:${String(index + 1).repeat(64)}`.slice(0, 71),
+        artifact: remote?.artifact ?? artifactName,
+        artifact_digest: remote?.artifact_digest ?? null,
         upstream_repository: 'olicesx/kixdns',
-        upstream_commit: '374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25',
+        upstream_commit: upstreamCommit,
         patchset: 5,
         control_protocol: 1,
-        binary_sha256: String(index + 4).repeat(64),
+        binary_sha256: binarySha256,
         installed_at: now - index * 86400,
         active: commit === activeKixdnsCommit,
       }
@@ -208,7 +242,8 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
   }
   if (path === '/api/v1/updates/apply') updateAvailable = false
   if (path === '/api/v1/updates' || path === '/api/v1/updates/apply') {
-    return { installed_commit: updateAvailable ? 'faf09f8' : '2d89c31d4ad9d252155215d78af8c9c128112233', latest_commit: '2d89c31d4ad9d252155215d78af8c9c128112233', run_id: 30235703570, created_at: new Date().toISOString(), run_url: '#', artifact: 'kixdns-enhanced-linux-x86_64', artifact_digest: `sha256:${'a'.repeat(64)}`, download_url: '#', available: updateAvailable } as UpdateInfo as T
+    const latest = demoRemoteVersions[0]
+    return { installed_commit: updateAvailable ? activeKixdnsCommit : latest.commit, latest_commit: latest.commit, run_id: latest.run_id, created_at: latest.created_at, run_url: latest.run_url, artifact: latest.artifact, artifact_digest: latest.artifact_digest, download_url: latest.download_url, available: updateAvailable } as UpdateInfo as T
   }
   throw new Error(`未实现的演示接口：${method} ${path}`)
 }

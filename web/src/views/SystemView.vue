@@ -55,6 +55,14 @@ function buildTime(value: string | null): string {
   }).format(new Date(value))
 }
 
+function artifactArchitecture(artifact: string): string {
+  return artifact.match(/-(x86_64|aarch64)$/)?.[1] ?? artifact
+}
+
+function artifactDigest(digest: string | null | undefined): string {
+  return shortHash(digest?.replace(/^sha256:/, ''), 12)
+}
+
 function loadService(silent = false): Promise<void> {
   if (pendingService) return pendingService
   loadingService.value = true
@@ -196,7 +204,10 @@ onMounted(refreshAll)
           <div class="version-section-title"><div><Download :size="16" /><strong>可用构建</strong></div><span>{{ catalog.remote_versions.length }} 个</span></div>
           <div class="version-list">
             <article v-for="(version, index) in catalog.remote_versions" :key="version.commit" class="version-row">
-              <div class="version-identity"><div><code>{{ shortHash(version.commit, 12) }}</code><span v-if="index === 0" class="tag tag--success">最新</span><span v-else-if="version.active" class="tag tag--success">当前</span><span v-else-if="version.installed" class="tag tag--muted">本地</span></div><p>{{ buildTime(version.created_at) }} · <a :href="version.run_url" target="_blank" rel="noopener noreferrer">Run #{{ version.run_id }}<ExternalLink :size="12" /></a></p></div>
+              <div class="version-identity">
+                <div><span class="identity-label">面板构建</span><code>{{ shortHash(version.commit, 12) }}</code><span v-if="index === 0" class="tag tag--success">最新</span><span v-else-if="version.active" class="tag tag--success">当前</span><span v-else-if="version.installed" class="tag tag--muted">本地</span></div>
+                <p><span>{{ artifactArchitecture(version.artifact) }}</span><a :href="version.run_url" target="_blank" rel="noopener noreferrer">Run #{{ version.run_id }}<ExternalLink :size="12" /></a><span class="mono">包 {{ artifactDigest(version.artifact_digest) }}</span><span>{{ buildTime(version.created_at) }}</span></p>
+              </div>
               <button v-if="version.active" class="button button--secondary version-action" type="button" disabled><CircleCheck :size="15" />当前版本</button>
               <button v-else-if="version.installed" class="button button--secondary version-action" type="button" :disabled="versionAction !== null" @click="activateVersion(version)"><RotateCw :size="15" :class="{ spin: actionBusy(version.commit) }" />{{ actionBusy(version.commit) ? '切换中' : '切换' }}</button>
               <button v-else class="button button--primary version-action" type="button" :disabled="versionAction !== null" @click="installVersion(version)"><Download :size="15" />{{ actionBusy(version.commit) ? '安装中' : '安装并启用' }}</button>
@@ -209,8 +220,10 @@ onMounted(refreshAll)
           <div class="version-section-title"><div><Archive :size="16" /><strong>本地版本</strong></div><span>最多保留 8 个</span></div>
           <div class="local-version-list">
             <article v-for="version in catalog.installed_versions" :key="version.commit" :class="version.active ? 'local-version local-version--active' : 'local-version'">
-              <div><code>{{ shortHash(version.commit, 12) }}</code><span v-if="version.active" class="tag tag--success">当前</span></div>
-              <p>{{ version.upstream_commit ? `上游 ${shortHash(version.upstream_commit, 9)} · p${version.patchset}` : '构建身份未记录' }} · {{ formatDate(version.installed_at) }}</p>
+              <div><span class="identity-label">面板构建</span><code>{{ shortHash(version.commit, 12) }}</code><span v-if="version.active" class="tag tag--success">当前</span></div>
+              <p v-if="version.upstream_commit"><span class="mono">上游 {{ shortHash(version.upstream_commit, 9) }}</span><span>p{{ version.patchset }}</span><span>{{ artifactArchitecture(version.artifact) }}</span></p>
+              <p v-else>构建身份未记录</p>
+              <p><span class="mono">二进制 {{ shortHash(version.binary_sha256, 12) }}</span><span>{{ formatDate(version.installed_at) }}</span></p>
               <button v-if="!version.active" class="icon-button icon-button--small" type="button" title="切换到此版本" :disabled="versionAction !== null" @click="activateVersion(version)"><RotateCw :size="14" :class="{ spin: actionBusy(version.commit) }" /></button>
             </article>
             <div v-if="catalog.installed_versions.length === 0" class="version-empty">尚无本地版本</div>

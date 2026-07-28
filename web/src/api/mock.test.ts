@@ -38,4 +38,22 @@ describe('演示 API', () => {
     const switched = await mockRequest<KixdnsVersionCatalog>('/api/v1/kixdns/versions')
     expect(switched.active_commit).toBe(previous)
   })
+
+  it('用真实构建身份区分同一上游的不同包', async () => {
+    const catalog = await mockRequest<KixdnsVersionCatalog>('/api/v1/kixdns/versions')
+    expect(catalog.remote_versions.map((version) => version.run_id)).toEqual([
+      30347922634,
+      30347062884,
+      30344337649,
+    ])
+    expect(new Set(catalog.remote_versions.map((version) => version.commit)).size).toBe(3)
+    expect(catalog.remote_versions.every((version) => /^sha256:[a-f0-9]{64}$/.test(version.artifact_digest))).toBe(true)
+    expect(catalog.installed_versions.every((version) => version.commit !== version.upstream_commit)).toBe(true)
+    expect(new Set(catalog.installed_versions.map((version) => version.upstream_commit))).toEqual(new Set([
+      '374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25',
+    ]))
+    expect(new Set(catalog.installed_versions.map((version) => version.binary_sha256))).toEqual(new Set([
+      'ee714ecae2d9f93e1ee8e242b1e351be4671ad53b4adc4dc3e70d20472a9c27a',
+    ]))
+  })
 })
