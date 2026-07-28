@@ -173,6 +173,10 @@ export interface InstalledKixdnsVersion {
   run_url: string | null
   artifact: string
   artifact_digest: string | null
+  upstream_repository: string | null
+  upstream_commit: string | null
+  patchset: number | null
+  control_protocol: number | null
   binary_sha256: string
   installed_at: number
   active: boolean

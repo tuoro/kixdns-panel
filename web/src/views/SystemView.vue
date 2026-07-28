@@ -155,11 +155,11 @@ onMounted(refreshAll)
         <template v-else-if="catalog">
           <div :class="installed ? 'runtime-state' : 'runtime-state runtime-state--missing'">
             <span><HardDrive :size="22" /></span>
-            <div><strong>{{ installed ? 'KixDNS 已安装' : 'KixDNS 尚未安装' }}</strong><p class="mono">{{ installed ? shortHash(catalog.active_commit, 16) : '选择下方构建进行安装' }}</p></div>
+            <div><strong>{{ installed ? 'KixDNS 已安装' : 'KixDNS 尚未安装' }}</strong><p class="mono">{{ installed ? (activeVersion?.upstream_commit ? `上游 ${shortHash(activeVersion.upstream_commit, 12)} · 补丁集 v${activeVersion.patchset}` : '构建身份未记录') : '选择下方构建进行安装' }}</p></div>
           </div>
           <dl class="detail-list runtime-details">
             <div><dt>当前构建</dt><dd class="mono">{{ shortHash(catalog.active_commit, 12) }}</dd></div>
-            <div><dt>本地版本</dt><dd>{{ catalog.installed_versions.length }} 个</dd></div>
+            <div><dt>控制协议</dt><dd>{{ activeVersion?.control_protocol ? `v${activeVersion.control_protocol}` : '未记录' }}</dd></div>
             <div><dt>Action Run</dt><dd><a v-if="activeVersion?.run_url" :href="activeVersion.run_url" target="_blank" rel="noopener noreferrer">#{{ activeVersion.run_id }}<ExternalLink :size="13" /></a><span v-else>未记录</span></dd></div>
             <div><dt>二进制摘要</dt><dd class="mono">{{ shortHash(activeVersion?.binary_sha256, 14) }}</dd></div>
           </dl>
@@ -192,7 +192,7 @@ onMounted(refreshAll)
           <div class="local-version-list">
             <article v-for="version in catalog.installed_versions" :key="version.commit" :class="version.active ? 'local-version local-version--active' : 'local-version'">
               <div><code>{{ shortHash(version.commit, 12) }}</code><span v-if="version.active" class="tag tag--success">当前</span></div>
-              <p>{{ formatDate(version.installed_at) }}</p>
+              <p>{{ version.upstream_commit ? `上游 ${shortHash(version.upstream_commit, 9)} · p${version.patchset}` : '构建身份未记录' }} · {{ formatDate(version.installed_at) }}</p>
               <button v-if="!version.active" class="icon-button icon-button--small" type="button" title="切换到此版本" :disabled="versionAction !== null" @click="activateVersion(version)"><RotateCw :size="14" :class="{ spin: actionBusy(version.commit) }" /></button>
             </article>
             <div v-if="catalog.installed_versions.length === 0" class="version-empty">尚无本地版本</div>

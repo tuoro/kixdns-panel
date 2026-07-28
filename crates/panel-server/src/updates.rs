@@ -1,16 +1,16 @@
 use std::cmp::Reverse;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Cursor, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tempfile::{Builder, NamedTempFile};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::auth::unix_timestamp;
 use crate::control::ControlClient;
@@ -22,7 +22,10 @@ const MAX_ARTIFACT_BYTES: usize = 128 * 1024 * 1024;
 const MAX_BINARY_BYTES: u64 = 96 * 1024 * 1024;
 const REMOTE_VERSION_LIMIT: usize = 12;
 const MAX_INSTALLED_VERSIONS: usize = 8;
-const MANIFEST_SCHEMA_VERSION: u32 = 1;
+const MANIFEST_SCHEMA_VERSION: u32 = 2;
+const CONTROL_PROTOCOL_VERSION: u32 = 1;
+const MAX_BUILD_IDENTITY_BYTES: u64 = 64 * 1024;
+const REMOTE_CACHE_TTL: Duration = Duration::from_mins(1);
 
 #[derive(Clone)]
 pub struct UpdateManager {
@@ -36,6 +39,7 @@ pub struct UpdateManager {
     binary_path: Arc<PathBuf>,
     versions_path: Arc<PathBuf>,
     apply_lock: Arc<Mutex<()>>,
+    remote_cache: Arc<RwLock<Option<CachedRemoteVersions>>>,
 }
 
 pub struct UpdateSettings {
@@ -89,6 +93,10 @@ pub struct InstalledVersion {
     pub run_url: Option<String>,
     pub artifact: String,
     pub artifact_digest: Option<String>,
+    pub upstream_repository: Option<String>,
+    pub upstream_commit: Option<String>,
+    pub patchset: Option<u32>,
+    pub control_protocol: Option<u32>,
     pub binary_sha256: String,
     pub installed_at: i64,
     pub active: bool,
@@ -103,6 +111,14 @@ struct VersionManifest {
     run_url: Option<String>,
     artifact: String,
     artifact_digest: Option<String>,
+    #[serde(default)]
+    upstream_repository: Option<String>,
+    #[serde(default)]
+    upstream_commit: Option<String>,
+    #[serde(default)]
+    patchset: Option<u32>,
+    #[serde(default)]
+    control_protocol: Option<u32>,
     binary_sha256: String,
     installed_at: i64,
 }
@@ -130,12 +146,36 @@ struct Artifact {
     name: String,
     expired: bool,
     digest: Option<String>,
+    workflow_run: Option<ArtifactWorkflowRun>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArtifactWorkflowRun {
+    id: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct BuildIdentity {
+    repository: String,
+    commit: String,
+    patchset: u32,
+    control_protocol: u32,
+}
+
+struct ExtractedArtifact {
+    binary: Vec<u8>,
+    identity: BuildIdentity,
 }
 
 #[derive(Debug, Clone)]
 struct ResolvedVersion {
     remote: RemoteVersion,
     artifact_digest: String,
+}
+
+struct CachedRemoteVersions {
+    loaded_at: Instant,
+    versions: Vec<ResolvedVersion>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -192,6 +232,7 @@ impl UpdateManager {
             binary_path: Arc::new(binary_path),
             versions_path: Arc::new(versions_path),
             apply_lock: Arc::new(Mutex::new(())),
+            remote_cache: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -222,13 +263,12 @@ impl UpdateManager {
 
     pub async fn check(&self) -> Result<UpdateInfo, UpdateError> {
         let active_commit = self.active_commit().await?;
-        let run = self
-            .workflow_runs(1)
+        let resolved = self
+            .resolved_remote_versions()
             .await?
             .into_iter()
             .next()
-            .ok_or_else(|| UpdateError::Network("没有成功的增强构建".to_owned()))?;
-        let resolved = self.resolve_run(run).await?;
+            .ok_or_else(|| UpdateError::Network("没有可安装的成功增强构建".to_owned()))?;
         Ok(to_update_info(resolved, active_commit))
     }
 
@@ -239,13 +279,13 @@ impl UpdateManager {
     ) -> Result<UpdateInfo, UpdateError> {
         let _guard = self.apply_lock.lock().await;
         let active_commit = self.active_commit().await?;
-        let run = self
-            .workflow_runs(1)
+        let candidate = self
+            .resolved_remote_versions()
             .await?
             .into_iter()
             .next()
-            .ok_or_else(|| UpdateError::Network("没有成功的增强构建".to_owned()))?;
-        let resolved = self.resolve_run(run).await?;
+            .ok_or_else(|| UpdateError::Network("没有可安装的成功增强构建".to_owned()))?;
+        let resolved = self.resolve_run(candidate.workflow_run()).await?;
         if active_commit.as_deref() != Some(resolved.remote.commit.as_str()) {
             self.install_resolved(&resolved).await?;
             self.activate_locked(&resolved.remote.commit, operations, control)
@@ -310,10 +350,59 @@ impl UpdateManager {
 
     async fn remote_versions(&self, limit: usize) -> Result<Vec<RemoteVersion>, UpdateError> {
         Ok(self
-            .workflow_runs(limit)
+            .resolved_remote_versions()
             .await?
             .into_iter()
-            .map(|run| self.remote_version(run))
+            .take(limit)
+            .map(|version| version.remote)
+            .collect())
+    }
+
+    async fn resolved_remote_versions(&self) -> Result<Vec<ResolvedVersion>, UpdateError> {
+        if let Some(cached) = self.remote_cache.read().await.as_ref()
+            && cached.loaded_at.elapsed() < REMOTE_CACHE_TTL
+        {
+            return Ok(cached.versions.clone());
+        }
+
+        let versions = self.fetch_remote_versions().await?;
+        *self.remote_cache.write().await = Some(CachedRemoteVersions {
+            loaded_at: Instant::now(),
+            versions: versions.clone(),
+        });
+        Ok(versions)
+    }
+
+    async fn fetch_remote_versions(&self) -> Result<Vec<ResolvedVersion>, UpdateError> {
+        let runs = self.workflow_runs(30).await?;
+        let artifacts_url = format!(
+            "https://api.github.com/repos/{}/actions/artifacts?per_page=100",
+            self.repository
+        );
+        let artifacts = self.get_json::<ArtifactList>(&artifacts_url).await?;
+        let mut digests = HashMap::new();
+        for artifact in artifacts.artifacts {
+            if artifact.name != self.artifact.as_ref() || artifact.expired {
+                continue;
+            }
+            let (Some(workflow_run), Some(digest)) = (artifact.workflow_run, artifact.digest)
+            else {
+                continue;
+            };
+            if validate_digest(&digest).is_ok() {
+                digests.entry(workflow_run.id).or_insert(digest);
+            }
+        }
+        Ok(runs
+            .into_iter()
+            .filter_map(|run| {
+                let artifact_digest = digests.remove(&run.id)?;
+                Some(ResolvedVersion {
+                    remote: self.remote_version(run),
+                    artifact_digest,
+                })
+            })
+            .take(REMOTE_VERSION_LIMIT)
             .collect())
     }
 
@@ -428,10 +517,10 @@ impl UpdateManager {
             return Ok(());
         }
         let archive = self.download(version).await?;
-        let binary = tokio::task::spawn_blocking(move || extract_binary(&archive))
+        let extracted = tokio::task::spawn_blocking(move || extract_artifact(&archive))
             .await
             .map_err(|error| UpdateError::Verification(error.to_string()))??;
-        validate_elf(&binary)?;
+        validate_elf(&extracted.binary)?;
         let manifest = VersionManifest {
             schema_version: MANIFEST_SCHEMA_VERSION,
             commit: version.remote.commit.clone(),
@@ -440,13 +529,19 @@ impl UpdateManager {
             run_url: Some(version.remote.run_url.clone()),
             artifact: version.remote.artifact.clone(),
             artifact_digest: Some(version.artifact_digest.clone()),
-            binary_sha256: sha256(&binary),
+            upstream_repository: Some(extracted.identity.repository),
+            upstream_commit: Some(extracted.identity.commit),
+            patchset: Some(extracted.identity.patchset),
+            control_protocol: Some(extracted.identity.control_protocol),
+            binary_sha256: sha256(&extracted.binary),
             installed_at: unix_timestamp(),
         };
         let versions_path = Arc::clone(&self.versions_path);
-        tokio::task::spawn_blocking(move || store_version(&versions_path, &manifest, &binary))
-            .await
-            .map_err(|error| UpdateError::Install(error.to_string()))??;
+        tokio::task::spawn_blocking(move || {
+            store_version(&versions_path, &manifest, &extracted.binary)
+        })
+        .await
+        .map_err(|error| UpdateError::Install(error.to_string()))??;
         Ok(())
     }
 
@@ -468,16 +563,31 @@ impl UpdateManager {
         })
         .await
         .map_err(|error| UpdateError::Install(error.to_string()))??;
-        self.activate_binary(binary, operations, control).await?;
-        self.database
+        let previous = self.activate_binary(binary, operations, control).await?;
+        if let Err(error) = self
+            .database
             .set_setting(ACTIVE_COMMIT_KEY, commit.to_owned(), unix_timestamp())
             .await
-            .map_err(|error| UpdateError::Install(error.to_string()))?;
+        {
+            if let Err(rollback) = self
+                .restore_previous(previous.as_deref(), operations, control)
+                .await
+            {
+                return Err(UpdateError::Install(format!(
+                    "记录活动版本失败：{error}；恢复原版本也失败：{rollback}"
+                )));
+            }
+            return Err(UpdateError::Install(format!(
+                "记录活动版本失败，已恢复原版本：{error}"
+            )));
+        }
         let versions_path = Arc::clone(&self.versions_path);
         let active = commit.to_owned();
-        tokio::task::spawn_blocking(move || prune_versions(&versions_path, &active))
-            .await
-            .map_err(|error| UpdateError::Install(error.to_string()))??;
+        match tokio::task::spawn_blocking(move || prune_versions(&versions_path, &active)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => tracing::warn!(%error, "活动版本已切换，但清理旧版本失败"),
+            Err(error) => tracing::warn!(%error, "活动版本已切换，但清理任务异常结束"),
+        }
         Ok(manifest.into_installed(true))
     }
 
@@ -501,6 +611,10 @@ impl UpdateManager {
                 run_url: None,
                 artifact,
                 artifact_digest: None,
+                upstream_repository: None,
+                upstream_commit: None,
+                patchset: None,
+                control_protocol: None,
                 binary_sha256: sha256(&binary),
                 installed_at: unix_timestamp(),
             };
@@ -538,7 +652,7 @@ impl UpdateManager {
         binary: Vec<u8>,
         operations: &Operations,
         control: &ControlClient,
-    ) -> Result<(), UpdateError> {
+    ) -> Result<Option<Vec<u8>>, UpdateError> {
         #[cfg(not(unix))]
         ensure_update_platform()?;
         validate_elf(&binary)?;
@@ -595,7 +709,7 @@ impl UpdateManager {
             return Err(UpdateError::Install(format!("{error}；已恢复原状态")));
         }
         sync_directory(parent)?;
-        Ok(())
+        Ok(current)
     }
 
     async fn restore_previous(
@@ -640,9 +754,24 @@ impl VersionManifest {
             run_url: self.run_url,
             artifact: self.artifact,
             artifact_digest: self.artifact_digest,
+            upstream_repository: self.upstream_repository,
+            upstream_commit: self.upstream_commit,
+            patchset: self.patchset,
+            control_protocol: self.control_protocol,
             binary_sha256: self.binary_sha256,
             installed_at: self.installed_at,
             active,
+        }
+    }
+}
+
+impl ResolvedVersion {
+    fn workflow_run(&self) -> WorkflowRun {
+        WorkflowRun {
+            id: self.remote.run_id,
+            head_sha: self.remote.commit.clone(),
+            created_at: self.remote.created_at.clone(),
+            html_url: self.remote.run_url.clone(),
         }
     }
 }
@@ -662,7 +791,7 @@ fn to_update_info(version: ResolvedVersion, installed_commit: Option<String>) ->
     }
 }
 
-fn extract_binary(archive: &[u8]) -> Result<Vec<u8>, UpdateError> {
+fn extract_artifact(archive: &[u8]) -> Result<ExtractedArtifact, UpdateError> {
     let mut archive = zip::ZipArchive::new(Cursor::new(archive))
         .map_err(|error| UpdateError::Verification(format!("Artifact 不是有效 ZIP：{error}")))?;
     let checksums = read_zip_entry(&mut archive, "SHA256SUMS", 64 * 1024)?;
@@ -685,7 +814,11 @@ fn extract_binary(archive: &[u8]) -> Result<Vec<u8>, UpdateError> {
             "二进制摘要不匹配：期望 {expected}，实际 {actual}"
         )));
     }
-    Ok(binary)
+    let identity = read_zip_entry(&mut archive, "upstream.lock.json", MAX_BUILD_IDENTITY_BYTES)?;
+    let identity: BuildIdentity = serde_json::from_slice(&identity)
+        .map_err(|error| UpdateError::Verification(format!("构建身份无效：{error}")))?;
+    validate_build_identity(&identity)?;
+    Ok(ExtractedArtifact { binary, identity })
 }
 
 fn read_zip_entry(
@@ -714,7 +847,14 @@ fn store_version(
     manifest: &VersionManifest,
     binary: &[u8],
 ) -> Result<(), UpdateError> {
+    if !(1..=MANIFEST_SCHEMA_VERSION).contains(&manifest.schema_version) {
+        return Err(UpdateError::Verification("版本清单格式不受支持".to_owned()));
+    }
     validate_commit(&manifest.commit)?;
+    if let Some(digest) = manifest.artifact_digest.as_deref() {
+        validate_digest(digest)?;
+    }
+    validate_manifest_build_identity(manifest)?;
     validate_elf(binary)?;
     if !constant_hash_eq(&manifest.binary_sha256, &sha256(binary)) {
         return Err(UpdateError::Verification(
@@ -757,9 +897,15 @@ fn load_verified_version(
     let manifest_bytes = read_regular_file(&directory.join("manifest.json"), "版本清单")?;
     let manifest: VersionManifest = serde_json::from_slice(&manifest_bytes)
         .map_err(|error| UpdateError::Verification(format!("版本清单无效：{error}")))?;
-    if manifest.schema_version != MANIFEST_SCHEMA_VERSION || manifest.commit != commit {
+    if !(1..=MANIFEST_SCHEMA_VERSION).contains(&manifest.schema_version)
+        || manifest.commit != commit
+    {
         return Err(UpdateError::Verification("版本清单身份不匹配".to_owned()));
     }
+    if let Some(digest) = manifest.artifact_digest.as_deref() {
+        validate_digest(digest)?;
+    }
+    validate_manifest_build_identity(&manifest)?;
     validate_hex_digest(&manifest.binary_sha256)?;
     let binary = read_regular_file(&directory.join("kixdns"), "版本二进制")?;
     if u64::try_from(binary.len()).unwrap_or(u64::MAX) > MAX_BINARY_BYTES {
@@ -901,6 +1047,45 @@ fn validate_commit(commit: &str) -> Result<(), UpdateError> {
     Ok(())
 }
 
+fn validate_build_identity(identity: &BuildIdentity) -> Result<(), UpdateError> {
+    validate_slug(&identity.repository, true)
+        .map_err(|_| UpdateError::Verification("上游仓库身份无效".to_owned()))?;
+    validate_commit(&identity.commit)
+        .map_err(|_| UpdateError::Verification("上游提交身份无效".to_owned()))?;
+    if identity.patchset == 0 {
+        return Err(UpdateError::Verification("增强补丁集版本无效".to_owned()));
+    }
+    if identity.control_protocol != CONTROL_PROTOCOL_VERSION {
+        return Err(UpdateError::Verification(format!(
+            "控制协议不兼容：需要 v{CONTROL_PROTOCOL_VERSION}，产物为 v{}",
+            identity.control_protocol
+        )));
+    }
+    Ok(())
+}
+
+fn validate_manifest_build_identity(manifest: &VersionManifest) -> Result<(), UpdateError> {
+    match (
+        manifest.upstream_repository.as_ref(),
+        manifest.upstream_commit.as_ref(),
+        manifest.patchset,
+        manifest.control_protocol,
+    ) {
+        (None, None, None, None) => Ok(()),
+        (Some(repository), Some(commit), Some(patchset), Some(control_protocol)) => {
+            validate_build_identity(&BuildIdentity {
+                repository: repository.clone(),
+                commit: commit.clone(),
+                patchset,
+                control_protocol,
+            })
+        }
+        _ => Err(UpdateError::Verification(
+            "版本清单中的构建身份不完整".to_owned(),
+        )),
+    }
+}
+
 fn validate_hex_digest(value: &str) -> Result<(), UpdateError> {
     if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(UpdateError::Verification("SHA-256 摘要格式无效".to_owned()));
@@ -1021,9 +1206,16 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        MANIFEST_SCHEMA_VERSION, VersionManifest, extract_binary, load_verified_version, sha256,
+        MANIFEST_SCHEMA_VERSION, VersionManifest, extract_artifact, load_verified_version, sha256,
         store_version, validate_commit, validate_digest, validate_slug,
     };
+
+    const TEST_IDENTITY: &str = r#"{
+        "repository":"olicesx/kixdns",
+        "commit":"374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25",
+        "patchset":5,
+        "control_protocol":1
+    }"#;
 
     fn test_elf() -> Vec<u8> {
         let mut binary = vec![0_u8; 32];
@@ -1061,9 +1253,13 @@ mod tests {
         writer.write_all(binary).unwrap();
         writer.start_file("SHA256SUMS", options).unwrap();
         writer.write_all(checksum.as_bytes()).unwrap();
+        writer.start_file("upstream.lock.json", options).unwrap();
+        writer.write_all(TEST_IDENTITY.as_bytes()).unwrap();
         let archive = writer.finish().unwrap().into_inner();
 
-        assert_eq!(extract_binary(&archive).unwrap(), binary);
+        let extracted = extract_artifact(&archive).unwrap();
+        assert_eq!(extracted.binary, binary);
+        assert_eq!(extracted.identity.patchset, 5);
 
         let wrong_checksum = format!("{}  kixdns\n", "0".repeat(64));
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
@@ -1071,8 +1267,29 @@ mod tests {
         writer.write_all(binary).unwrap();
         writer.start_file("SHA256SUMS", options).unwrap();
         writer.write_all(wrong_checksum.as_bytes()).unwrap();
+        writer.start_file("upstream.lock.json", options).unwrap();
+        writer.write_all(TEST_IDENTITY.as_bytes()).unwrap();
         let tampered = writer.finish().unwrap().into_inner();
-        assert!(extract_binary(&tampered).is_err());
+        assert!(extract_artifact(&tampered).is_err());
+    }
+
+    #[test]
+    fn rejects_incompatible_control_protocol() {
+        let binary = b"test-binary";
+        let checksum = format!("{}  kixdns\n", sha256(binary));
+        let incompatible =
+            TEST_IDENTITY.replace("\"control_protocol\":1", "\"control_protocol\":2");
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default();
+        writer.start_file("kixdns", options).unwrap();
+        writer.write_all(binary).unwrap();
+        writer.start_file("SHA256SUMS", options).unwrap();
+        writer.write_all(checksum.as_bytes()).unwrap();
+        writer.start_file("upstream.lock.json", options).unwrap();
+        writer.write_all(incompatible.as_bytes()).unwrap();
+        let archive = writer.finish().unwrap().into_inner();
+
+        assert!(extract_artifact(&archive).is_err());
     }
 
     #[test]
@@ -1088,6 +1305,10 @@ mod tests {
             run_url: Some("https://github.com/example/actions/runs/42".to_owned()),
             artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
             artifact_digest: Some(format!("sha256:{}", "a".repeat(64))),
+            upstream_repository: Some("olicesx/kixdns".to_owned()),
+            upstream_commit: Some(commit.to_owned()),
+            patchset: Some(5),
+            control_protocol: Some(1),
             binary_sha256: sha256(&binary),
             installed_at: 42,
         };
@@ -1098,5 +1319,32 @@ mod tests {
 
         std::fs::write(directory.path().join(commit).join("kixdns"), b"tampered").unwrap();
         assert!(load_verified_version(directory.path(), commit).is_err());
+    }
+
+    #[test]
+    fn reads_legacy_manifest_without_build_identity() {
+        let directory = tempdir().unwrap();
+        let binary = test_elf();
+        let commit = "8eb8588ebe3e7965cf40ca161c05ac400ac2f5e5";
+        let manifest = VersionManifest {
+            schema_version: 1,
+            commit: commit.to_owned(),
+            run_id: None,
+            created_at: None,
+            run_url: None,
+            artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
+            artifact_digest: None,
+            upstream_repository: None,
+            upstream_commit: None,
+            patchset: None,
+            control_protocol: None,
+            binary_sha256: sha256(&binary),
+            installed_at: 42,
+        };
+
+        store_version(directory.path(), &manifest, &binary).unwrap();
+        let (loaded, _) = load_verified_version(directory.path(), commit).unwrap();
+        assert_eq!(loaded.schema_version, 1);
+        assert!(loaded.upstream_commit.is_none());
     }
 }
