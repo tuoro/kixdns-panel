@@ -175,9 +175,11 @@ jobs:
           LOCK_FILE: ${{ matrix.lock_file }}
         run: |
           artifact="$(bash scripts/kixdns-artifact-identity.sh "$LOCK_FILE" "${{ matrix.platform.arch }}")"
-          echo "KIXDNS_UPSTREAM_COMMIT=$(jq -r .commit "$LOCK_FILE")" >> "$GITHUB_ENV"
-          echo "KIXDNS_PANEL_PATCHSET=$(jq -r .patchset "$LOCK_FILE")" >> "$GITHUB_ENV"
-          echo "ARTIFACT_NAME=${artifact}" >> "$GITHUB_ENV"
+          {
+            echo "KIXDNS_UPSTREAM_COMMIT=$(jq -r .commit "$LOCK_FILE")"
+            echo "KIXDNS_PANEL_PATCHSET=$(jq -r .patchset "$LOCK_FILE")"
+            echo "ARTIFACT_NAME=${artifact}"
+          } >> "$GITHUB_ENV"
           echo "artifact_name=${artifact}" >> "$GITHUB_OUTPUT"
 
       - name: Build release binary

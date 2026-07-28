@@ -1018,8 +1018,8 @@ impl VersionManifest {
 }
 
 fn to_update_info(version: ResolvedVersion, active: Option<&VersionKey>) -> UpdateInfo {
-    let available = VersionKey::remote(&version.remote)
-        .map_or(true, |latest| active != Some(&latest));
+    let available =
+        VersionKey::remote(&version.remote).map_or(true, |latest| active != Some(&latest));
     UpdateInfo {
         installed_commit: active.map(|active| active.commit.clone()),
         latest_commit: version.remote.commit,

@@ -42,13 +42,15 @@ jobs:
           [[ "$release_commit" =~ ^[0-9a-f]{40}$ && "$release_id" =~ ^[0-9]+$ ]] || { echo '官方 Release 元数据无效' >&2; exit 1; }
           [[ "$release_tag" =~ ^[A-Za-z0-9._-]+$ ]] || { echo '官方 Release 标签无效' >&2; exit 1; }
 
-          echo "action_commit=$action_commit" >> "$GITHUB_OUTPUT"
-          echo "action_run_id=$action_run_id" >> "$GITHUB_OUTPUT"
-          echo "action_current=$(jq -r .commit upstream.lock.json)" >> "$GITHUB_OUTPUT"
-          echo "release_commit=$release_commit" >> "$GITHUB_OUTPUT"
-          echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
-          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
-          echo "release_current=$(jq -r .commit upstream.release.lock.json)" >> "$GITHUB_OUTPUT"
+          {
+            echo "action_commit=$action_commit"
+            echo "action_run_id=$action_run_id"
+            echo "action_current=$(jq -r .commit upstream.lock.json)"
+            echo "release_commit=$release_commit"
+            echo "release_id=$release_id"
+            echo "release_tag=$release_tag"
+            echo "release_current=$(jq -r .commit upstream.release.lock.json)"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Update candidate locks
         if: steps.upstream.outputs.action_commit != steps.upstream.outputs.action_current || steps.upstream.outputs.release_commit != steps.upstream.outputs.release_current
@@ -134,6 +136,8 @@ jobs:
           git push --force origin "HEAD:refs/heads/${branch}"
           pull_request="$(gh pr list --head "$branch" --state open --json url --jq '.[0].url // empty')"
           if [[ -z "$pull_request" ]]; then
+            # Markdown 代码标记必须保持为字面量。
+            # shellcheck disable=SC2016
             body="$(printf '同步 KixDNS 两条已验证上游轨道。\n\n- Action：提交 `%s`，Run https://github.com/olicesx/kixdns/actions/runs/%s\n- Release：`%s`，提交 `%s`，https://github.com/olicesx/kixdns/releases/tag/%s\n- 两条轨道的增强补丁、测试、Clippy、RustSec 与 DNS 冒烟均已通过' "$ACTION_COMMIT" "$ACTION_RUN_ID" "$RELEASE_TAG" "$RELEASE_COMMIT" "$RELEASE_TAG")"
             pull_request="$(gh pr create --base main --head "$branch" --title "chore: track verified upstream versions" --body "$body")"
           fi

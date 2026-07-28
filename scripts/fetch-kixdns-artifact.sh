@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 ARTIFACT=''
+SCRIPT_DIRECTORY=''
 
 fail() {
   printf '获取 KixDNS Artifact 失败：%s\n' "$*" >&2
@@ -19,24 +20,15 @@ validate_slug() {
 }
 
 artifact_identity() {
-  jq -ceS '{repository, source, commit, official_run_id, release_id, release_tag, patchset, control_protocol}' "$1"
+  jq -ceS '{repository, source, commit, official_run_id, release_id, release_tag, compatibility, patchset, control_protocol}' "$1"
 }
 
 tracked_artifact() {
   local base=$1
   local lock_file=$2
-  local prefix="${base%-linux-*}"
-  local platform="${base#"${prefix}"-}"
-  local source
-  local reference
-  source="$(jq -r .source "$lock_file")"
-  case "${source}" in
-    action) reference="$(jq -r .official_run_id "$lock_file")" ;;
-    release) reference="$(jq -r .release_tag "$lock_file")" ;;
-    *) return 1 ;;
-  esac
-  [[ "${reference}" =~ ^[A-Za-z0-9._-]+$ ]] || return 1
-  printf '%s-%s-%s-%s\n' "${prefix}" "${source}" "${reference}" "${platform}"
+  local architecture="${base##*-linux-}"
+  [[ "${architecture}" =~ ^(x86_64|arm64)$ ]] || return 1
+  bash "${SCRIPT_DIRECTORY}/kixdns-artifact-identity.sh" "${lock_file}" "${architecture}"
 }
 
 validate_architecture() {
@@ -85,6 +77,7 @@ main() {
   local run_id
   local run_commit
   local staging
+  SCRIPT_DIRECTORY="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 
   require_command gh
   require_command jq

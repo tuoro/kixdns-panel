@@ -8,6 +8,7 @@ on:
       - crates/panel-server/**
       - deploy/**
       - scripts/fetch-kixdns-artifact.sh
+      - scripts/kixdns-artifact-identity.sh
       - scripts/install.sh
       - scripts/uninstall.sh
       - web/**
@@ -20,6 +21,7 @@ on:
       - crates/panel-server/**
       - deploy/**
       - scripts/fetch-kixdns-artifact.sh
+      - scripts/kixdns-artifact-identity.sh
       - scripts/install.sh
       - scripts/uninstall.sh
       - web/**
@@ -153,7 +155,16 @@ jobs:
           cp README.md LICENSE upstream.lock.json "$bundle/"
           cp dist/reused-kixdns/KIXDNS_BUILD_COMMIT dist/reused-kixdns/KIXDNS_SOURCE_RUN_ID "$bundle/"
           printf '%s\n' "$GITHUB_SHA" > "$bundle/PANEL_BUILD_COMMIT"
-          (cd "$bundle" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
+          checksum_file="$(mktemp)"
+          trap 'rm -f "$checksum_file"' EXIT
+          (
+            cd "$bundle"
+            while IFS= read -r -d '' file; do
+              sha256sum "$file"
+            done < <(find . -type f ! -name SHA256SUMS -print0 | sort -z)
+          ) > "$checksum_file"
+          mv "$checksum_file" "$bundle/SHA256SUMS"
+          trap - EXIT
 
       - name: Upload complete panel artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
