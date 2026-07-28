@@ -28,7 +28,7 @@ import StatusBanner from '../components/StatusBanner.vue'
 import { useToast } from '../composables/useToast'
 import { errorMessage, formatDate, shortHash } from '../utils'
 
-type VersionAction = { source: KixdnsVersionSource; commit: string; kind: 'install' | 'activate' }
+type VersionAction = { identity: string; kind: 'install' | 'activate' }
 
 const service = ref<ServiceStatus | null>(null)
 const catalog = ref<KixdnsVersionCatalog | null>(null)
@@ -75,6 +75,10 @@ function sourceLabel(version: InstalledKixdnsVersion | RemoteKixdnsVersion): str
 
 function remoteVersionLabel(version: RemoteKixdnsVersion): string {
   return version.release_tag ?? `Run #${version.run_id ?? version.source_id}`
+}
+
+function versionIdentity(version: InstalledKixdnsVersion | RemoteKixdnsVersion): string {
+  return `${version.source ?? 'action'}:${version.source_id ?? version.commit}`
 }
 
 function loadService(silent = false): Promise<void> {
@@ -139,7 +143,7 @@ async function control(action: ServiceAction): Promise<void> {
 
 async function installVersion(version: RemoteKixdnsVersion): Promise<void> {
   if (!window.confirm(`安装并启用 ${remoteVersionLabel(version)}？KixDNS 服务会重启。`)) return
-  versionAction.value = { source: version.source, commit: version.commit, kind: 'install' }
+  versionAction.value = { identity: versionIdentity(version), kind: 'install' }
   try {
     await apiRequest<InstalledKixdnsVersion>(`/api/v1/kixdns/versions/${version.source}/${version.source_id}/install`, { method: 'POST' })
     toast.success('KixDNS 已安装并通过健康检查')
@@ -154,9 +158,10 @@ async function installVersion(version: RemoteKixdnsVersion): Promise<void> {
 async function activateVersion(version: InstalledKixdnsVersion | RemoteKixdnsVersion): Promise<void> {
   if (version.active || !window.confirm(`切换到构建 ${shortHash(version.commit, 12)}？KixDNS 服务会重启。`)) return
   const source = version.source ?? 'action'
-  versionAction.value = { source, commit: version.commit, kind: 'activate' }
+  const identity = version.source_id ?? version.commit
+  versionAction.value = { identity: versionIdentity(version), kind: 'activate' }
   try {
-    await apiRequest<InstalledKixdnsVersion>(`/api/v1/kixdns/versions/${source}/${version.commit}/activate`, { method: 'POST' })
+    await apiRequest<InstalledKixdnsVersion>(`/api/v1/kixdns/versions/${source}/${identity}/activate`, { method: 'POST' })
     toast.success('KixDNS 版本已切换并通过健康检查')
     await Promise.all([loadVersions(true), loadService(true)])
   } catch (error) {
@@ -167,7 +172,7 @@ async function activateVersion(version: InstalledKixdnsVersion | RemoteKixdnsVer
 }
 
 function actionBusy(version: InstalledKixdnsVersion | RemoteKixdnsVersion): boolean {
-  return versionAction.value?.source === (version.source ?? 'action') && versionAction.value.commit === version.commit
+  return versionAction.value?.identity === versionIdentity(version)
 }
 
 onMounted(refreshAll)
@@ -236,7 +241,7 @@ onMounted(refreshAll)
             <article v-for="(version, index) in catalog.remote_versions" :key="`${version.source}-${version.source_id}`" class="version-row">
               <div class="version-identity">
                 <div><span class="identity-label">增强构建</span><code>{{ shortHash(version.commit, 12) }}</code><span v-if="index === 0" class="tag tag--success">{{ version.source === 'release' ? '最新发布' : '最新' }}</span><span v-else-if="version.active" class="tag tag--success">当前</span><span v-else-if="version.installed" class="tag tag--muted">本地</span></div>
-                <p><span>{{ artifactArchitecture(version.artifact) }}</span><a :href="version.source_url" target="_blank" rel="noopener noreferrer">上游 {{ remoteVersionLabel(version) }}<ExternalLink :size="12" /></a><a :href="version.build_url" target="_blank" rel="noopener noreferrer">增强 Action<ExternalLink :size="12" /></a><span class="mono">包 {{ artifactDigest(version.artifact_digest) }}</span><span>{{ buildTime(version.created_at) }}</span></p>
+                <p><span>{{ artifactArchitecture(version.artifact) }}</span><span v-if="version.patchset">p{{ version.patchset }}</span><a :href="version.source_url" target="_blank" rel="noopener noreferrer">上游 {{ remoteVersionLabel(version) }}<ExternalLink :size="12" /></a><a :href="version.build_url" target="_blank" rel="noopener noreferrer">增强 Action<ExternalLink :size="12" /></a><span class="mono">包 {{ artifactDigest(version.artifact_digest) }}</span><span>{{ buildTime(version.created_at) }}</span></p>
               </div>
               <button v-if="version.active" class="button button--secondary version-action" type="button" disabled><CircleCheck :size="15" />当前版本</button>
               <button v-else-if="version.installed" class="button button--secondary version-action" type="button" :disabled="versionAction !== null" @click="activateVersion(version)"><RotateCw :size="15" :class="{ spin: actionBusy(version) }" />{{ actionBusy(version) ? '切换中' : '切换' }}</button>
@@ -249,7 +254,7 @@ onMounted(refreshAll)
         <aside class="local-versions">
           <div class="version-section-title"><div><Archive :size="16" /><strong>本地版本</strong></div><span>最多保留 8 个</span></div>
           <div class="local-version-list">
-            <article v-for="version in catalog.installed_versions" :key="`${version.source ?? 'action'}-${version.commit}`" :class="version.active ? 'local-version local-version--active' : 'local-version'">
+            <article v-for="version in catalog.installed_versions" :key="versionIdentity(version)" :class="version.active ? 'local-version local-version--active' : 'local-version'">
               <div><span class="identity-label">{{ version.source === 'release' ? 'Release' : 'Action' }}</span><code>{{ shortHash(version.commit, 12) }}</code><span v-if="version.active" class="tag tag--success">当前</span></div>
               <p v-if="version.upstream_commit"><span class="mono">上游 {{ shortHash(version.upstream_commit, 9) }}</span><span>p{{ version.patchset }}</span><span>{{ artifactArchitecture(version.artifact) }}</span><a v-if="version.source_url" :href="version.source_url" target="_blank" rel="noopener noreferrer">{{ sourceLabel(version) }}</a><a v-if="version.build_url" :href="version.build_url" target="_blank" rel="noopener noreferrer">增强 Action</a></p>
               <p v-else>构建身份未记录</p>

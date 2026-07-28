@@ -99,6 +99,7 @@ impl VersionSource {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct VersionKey {
     source: VersionSource,
+    source_id: Option<u64>,
     commit: String,
 }
 
@@ -106,19 +107,42 @@ impl VersionKey {
     fn new(source: VersionSource, commit: impl Into<String>) -> Result<Self, UpdateError> {
         let commit = commit.into().to_ascii_lowercase();
         validate_commit(&commit)?;
-        Ok(Self { source, commit })
+        Ok(Self {
+            source,
+            source_id: None,
+            commit,
+        })
+    }
+
+    fn tracked(
+        source: VersionSource,
+        source_id: u64,
+        commit: impl Into<String>,
+    ) -> Result<Self, UpdateError> {
+        if source_id == 0 {
+            return Err(UpdateError::Invalid("版本来源身份无效".to_owned()));
+        }
+        let mut key = Self::new(source, commit)?;
+        key.source_id = Some(source_id);
+        Ok(key)
     }
 
     fn encoded(&self) -> String {
-        format!("{}:{}", self.source.as_str(), self.commit)
+        match self.source_id {
+            Some(source_id) => format!("{}:{source_id}:{}", self.source.as_str(), self.commit),
+            None => format!("{}:{}", self.source.as_str(), self.commit),
+        }
     }
 
     fn directory_name(&self) -> String {
-        format!("{}-{}", self.source.as_str(), self.commit)
+        match self.source_id {
+            Some(source_id) => format!("{}-{source_id}-{}", self.source.as_str(), self.commit),
+            None => format!("{}-{}", self.source.as_str(), self.commit),
+        }
     }
 
     fn parse(value: &str) -> Result<Self, UpdateError> {
-        let Some((source, commit)) = value.split_once(':') else {
+        let Some((source, identity)) = value.split_once(':') else {
             return Self::new(VersionSource::Action, value);
         };
         let source = match source {
@@ -126,7 +150,25 @@ impl VersionKey {
             "release" => VersionSource::Release,
             _ => return Err(UpdateError::Invalid("活动版本来源无效".to_owned())),
         };
-        Self::new(source, commit)
+        let Some((source_id, commit)) = identity.split_once(':') else {
+            return Self::new(source, identity);
+        };
+        let source_id = source_id
+            .parse::<u64>()
+            .map_err(|_| UpdateError::Invalid("活动版本来源身份无效".to_owned()))?;
+        Self::tracked(source, source_id, commit)
+    }
+
+    fn remote(version: &RemoteVersion) -> Result<Self, UpdateError> {
+        Self::tracked(version.source, version.source_id, version.commit.clone())
+    }
+
+    fn installed(version: &InstalledVersion) -> Result<Self, UpdateError> {
+        let source = version.source.unwrap_or_default();
+        match version.source_id {
+            Some(source_id) => Self::tracked(source, source_id, version.commit.clone()),
+            None => Self::new(source, version.commit.clone()),
+        }
     }
 }
 
@@ -137,6 +179,7 @@ pub struct RemoteVersion {
     pub commit: String,
     pub run_id: Option<u64>,
     pub release_tag: Option<String>,
+    pub patchset: Option<u32>,
     pub created_at: String,
     pub source_url: String,
     pub build_url: String,
@@ -219,6 +262,7 @@ struct ArtifactList {
 
 #[derive(Debug, Deserialize)]
 struct Artifact {
+    id: u64,
     name: String,
     expired: bool,
     digest: Option<String>,
@@ -230,7 +274,7 @@ struct ArtifactWorkflowRun {
     id: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum TrackReference {
     Action(u64),
     Release(String),
@@ -238,9 +282,11 @@ enum TrackReference {
 
 #[derive(Debug)]
 struct TrackArtifact {
+    source_id: u64,
     name: String,
     digest: String,
     reference: TrackReference,
+    patchset: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -267,6 +313,7 @@ struct ExtractedArtifact {
 #[derive(Debug, Clone)]
 struct ResolvedVersion {
     remote: RemoteVersion,
+    build_run_id: u64,
 }
 
 struct CachedRemoteVersions {
@@ -345,19 +392,13 @@ impl UpdateManager {
         let mut installed_versions = self.installed_versions(active_version.as_ref()).await?;
         let installed = installed_versions
             .iter()
-            .filter_map(|version| {
-                version
-                    .source
-                    .map(|source| (source, version.commit.clone()))
-            })
+            .filter_map(|version| VersionKey::installed(version).ok())
             .collect::<HashSet<_>>();
         let mut remote_versions = self.remote_versions(source, REMOTE_VERSION_LIMIT).await?;
         for version in &mut remote_versions {
-            let key = (version.source, version.commit.clone());
+            let key = VersionKey::remote(version)?;
             version.installed = installed.contains(&key);
-            version.active = active_version.as_ref().is_some_and(|active| {
-                active.source == version.source && active.commit == version.commit
-            });
+            version.active = active_version.as_ref() == Some(&key);
         }
         installed_versions.sort_by_key(|version| Reverse(version.installed_at));
         Ok(VersionCatalog {
@@ -397,7 +438,7 @@ impl UpdateManager {
         let resolved = self
             .resolve_remote(VersionSource::Action, candidate.remote.source_id)
             .await?;
-        let key = VersionKey::new(VersionSource::Action, resolved.remote.commit.clone())?;
+        let key = VersionKey::remote(&resolved.remote)?;
         if active_version.as_ref() != Some(&key) {
             self.install_resolved(&resolved).await?;
             self.activate_locked(&key, operations, control).await?;
@@ -414,7 +455,7 @@ impl UpdateManager {
     ) -> Result<InstalledVersion, UpdateError> {
         let _guard = self.apply_lock.lock().await;
         let resolved = self.resolve_remote(source, source_id).await?;
-        let key = VersionKey::new(source, resolved.remote.commit.clone())?;
+        let key = VersionKey::remote(&resolved.remote)?;
         self.install_resolved(&resolved).await?;
         self.activate_locked(&key, operations, control).await
     }
@@ -422,12 +463,15 @@ impl UpdateManager {
     pub async fn activate_version(
         &self,
         source: VersionSource,
-        commit: &str,
+        version: &str,
         operations: &Operations,
         control: &ControlClient,
     ) -> Result<InstalledVersion, UpdateError> {
-        let key = VersionKey::new(source, commit)?;
         let _guard = self.apply_lock.lock().await;
+        let key = match version.parse::<u64>() {
+            Ok(source_id) if source_id > 0 => self.installed_key(source, source_id).await?,
+            _ => VersionKey::new(source, version)?,
+        };
         self.activate_locked(&key, operations, control).await
     }
 
@@ -469,12 +513,10 @@ impl UpdateManager {
             self.repository, workflow, self.branch
         );
         let runs = self.get_json::<WorkflowRuns>(&runs_url).await?;
-        let mut commits = HashSet::new();
         Ok(runs
             .workflow_runs
             .into_iter()
             .filter(|run| validate_commit(&run.head_sha).is_ok())
-            .filter(|run| commits.insert(run.head_sha.clone()))
             .take(limit)
             .collect())
     }
@@ -524,12 +566,12 @@ impl UpdateManager {
             self.repository
         );
         let artifacts = self.get_json::<ArtifactList>(&artifacts_url).await?;
-        let mut by_run = HashMap::new();
+        let mut by_run = HashMap::<u64, Vec<TrackArtifact>>::new();
         for artifact in artifacts.artifacts {
             if artifact.expired {
                 continue;
             }
-            let Some(reference) = parse_artifact_reference(&self.artifact, source, &artifact.name)
+            let Some(parsed) = parse_artifact_reference(&self.artifact, source, &artifact.name)
             else {
                 continue;
             };
@@ -538,23 +580,42 @@ impl UpdateManager {
                 continue;
             };
             if validate_digest(&digest).is_ok() {
-                by_run.entry(workflow_run.id).or_insert(TrackArtifact {
-                    name: artifact.name,
-                    digest,
-                    reference,
+                by_run
+                    .entry(workflow_run.id)
+                    .or_default()
+                    .push(TrackArtifact {
+                        source_id: artifact.id,
+                        name: artifact.name,
+                        digest,
+                        reference: parsed.reference,
+                        patchset: parsed.patchset,
+                    });
+            }
+        }
+        let mut references = HashSet::new();
+        let mut versions = Vec::new();
+        for run in runs {
+            for artifact in by_run.remove(&run.id).unwrap_or_default() {
+                if !references.insert(artifact.reference.clone()) {
+                    continue;
+                }
+                versions.push(ResolvedVersion {
+                    build_run_id: run.id,
+                    remote: self.track_version(source, run.clone(), artifact),
                 });
             }
         }
-        Ok(runs
-            .into_iter()
-            .filter_map(|run| {
-                let artifact = by_run.remove(&run.id)?;
-                Some(ResolvedVersion {
-                    remote: self.track_version(source, run, artifact),
-                })
+        versions.sort_by(|left, right| {
+            right.build_run_id.cmp(&left.build_run_id).then_with(|| {
+                right
+                    .remote
+                    .run_id
+                    .cmp(&left.remote.run_id)
+                    .then_with(|| right.remote.release_tag.cmp(&left.remote.release_tag))
             })
-            .take(30)
-            .collect())
+        });
+        versions.truncate(30);
+        Ok(versions)
     }
 
     async fn resolve_remote(
@@ -594,10 +655,11 @@ impl UpdateManager {
         };
         RemoteVersion {
             source,
-            source_id: run.id,
+            source_id: artifact.source_id,
             commit: run.head_sha,
             run_id,
             release_tag,
+            patchset: artifact.patchset,
             created_at: run.created_at,
             source_url,
             build_url,
@@ -668,7 +730,7 @@ impl UpdateManager {
     }
 
     async fn install_resolved(&self, version: &ResolvedVersion) -> Result<(), UpdateError> {
-        let key = VersionKey::new(version.remote.source, version.remote.commit.clone())?;
+        let key = VersionKey::remote(&version.remote)?;
         if self.version_exists(&key)? {
             return Ok(());
         }
@@ -819,6 +881,20 @@ impl UpdateManager {
             .map_err(|error| UpdateError::Install(error.to_string()))?
     }
 
+    async fn installed_key(
+        &self,
+        source: VersionSource,
+        source_id: u64,
+    ) -> Result<VersionKey, UpdateError> {
+        let versions_path = Arc::clone(&self.versions_path);
+        tokio::task::spawn_blocking(move || {
+            find_installed_key(&versions_path, source, source_id)?
+                .ok_or_else(|| UpdateError::Invalid("指定版本尚未安装或来源身份已失效".to_owned()))
+        })
+        .await
+        .map_err(|error| UpdateError::Install(error.to_string()))?
+    }
+
     async fn activate_binary(
         &self,
         binary: Vec<u8>,
@@ -942,9 +1018,8 @@ impl VersionManifest {
 }
 
 fn to_update_info(version: ResolvedVersion, active: Option<&VersionKey>) -> UpdateInfo {
-    let available = active.is_none_or(|active| {
-        active.source != version.remote.source || active.commit != version.remote.commit
-    });
+    let available = VersionKey::remote(&version.remote)
+        .map_or(true, |latest| active != Some(&latest));
     UpdateInfo {
         installed_commit: active.map(|active| active.commit.clone()),
         latest_commit: version.remote.commit,
@@ -1082,7 +1157,10 @@ fn store_version(
     }
     ensure_directory(versions_path)?;
     let source = manifest.source.unwrap_or_default();
-    let key = VersionKey::new(source, manifest.commit.clone())?;
+    let key = match manifest.source_id {
+        Some(source_id) => VersionKey::tracked(source, source_id, manifest.commit.clone())?,
+        None => VersionKey::new(source, manifest.commit.clone())?,
+    };
     if manifest.schema_version == MANIFEST_SCHEMA_VERSION && manifest.source.is_none() {
         return Err(UpdateError::Verification("当前版本清单缺少来源".to_owned()));
     }
@@ -1133,7 +1211,11 @@ fn load_verified_version(
         manifest.release_tag = None;
         manifest.source_url = None;
         manifest.build_url = None;
-    } else if manifest.source != Some(key.source) {
+    } else if manifest.source != Some(key.source)
+        || key
+            .source_id
+            .is_some_and(|source_id| manifest.source_id != Some(source_id))
+    {
         return Err(UpdateError::Verification("版本清单来源不匹配".to_owned()));
     }
     if let Some(digest) = manifest.artifact_digest.as_deref() {
@@ -1187,24 +1269,42 @@ fn list_installed(
     Ok(versions)
 }
 
+fn find_installed_key(
+    versions_path: &Path,
+    source: VersionSource,
+    source_id: u64,
+) -> Result<Option<VersionKey>, UpdateError> {
+    for entry in
+        fs::read_dir(versions_path).map_err(|error| UpdateError::Install(error.to_string()))?
+    {
+        let entry = entry.map_err(|error| UpdateError::Install(error.to_string()))?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let Some(key) = parse_version_directory(&name) else {
+            continue;
+        };
+        let Ok((manifest, _)) = load_verified_version(versions_path, &key) else {
+            continue;
+        };
+        if manifest.source == Some(source) && manifest.source_id == Some(source_id) {
+            return Ok(Some(key));
+        }
+    }
+    Ok(None)
+}
+
 fn prune_versions(versions_path: &Path, active_version: &VersionKey) -> Result<(), UpdateError> {
     let mut versions = list_installed(versions_path, Some(active_version))?;
     versions.sort_by_key(|version| Reverse(version.installed_at));
     let keep = versions
         .iter()
         .take(MAX_INSTALLED_VERSIONS)
-        .filter_map(|version| {
-            version
-                .source
-                .and_then(|source| VersionKey::new(source, version.commit.clone()).ok())
-        })
+        .filter_map(|version| VersionKey::installed(version).ok())
         .chain(std::iter::once(active_version.clone()))
         .collect::<HashSet<_>>();
     for version in versions {
-        let Some(source) = version.source else {
-            continue;
-        };
-        let key = VersionKey::new(source, version.commit)?;
+        let key = VersionKey::installed(&version)?;
         if keep.contains(&key) {
             continue;
         }
@@ -1223,13 +1323,17 @@ fn parse_version_directory(name: &str) -> Option<VersionKey> {
     if validate_commit(name).is_ok() {
         return VersionKey::new(VersionSource::Action, name).ok();
     }
-    let (source, commit) = name.split_once('-')?;
+    let (source, identity) = name.split_once('-')?;
     let source = match source {
         "action" => VersionSource::Action,
         "release" => VersionSource::Release,
         _ => return None,
     };
-    VersionKey::new(source, commit).ok()
+    let Some((source_id, commit)) = identity.split_once('-') else {
+        return VersionKey::new(source, identity).ok();
+    };
+    let source_id = source_id.parse::<u64>().ok()?;
+    VersionKey::tracked(source, source_id, commit).ok()
 }
 
 fn version_path(versions_path: &Path, key: &VersionKey) -> PathBuf {
@@ -1241,7 +1345,16 @@ fn locate_version_directory(
     key: &VersionKey,
 ) -> Result<PathBuf, UpdateError> {
     let current = version_path(versions_path, key);
-    if path_entry_exists(&current)? || key.source == VersionSource::Release {
+    if path_entry_exists(&current)? {
+        return Ok(current);
+    }
+    if key.source_id.is_some() {
+        let trackless = versions_path.join(format!("{}-{}", key.source.as_str(), key.commit));
+        if path_entry_exists(&trackless)? {
+            return Ok(trackless);
+        }
+    }
+    if key.source == VersionSource::Release {
         return Ok(current);
     }
     let legacy = versions_path.join(&key.commit);
@@ -1351,16 +1464,22 @@ fn artifact_coordinates(artifact: &str) -> Result<(&str, &str), UpdateError> {
     Ok((prefix, architecture))
 }
 
+struct ParsedArtifactReference {
+    reference: TrackReference,
+    patchset: Option<u32>,
+}
+
 fn parse_artifact_reference(
     base: &str,
     source: VersionSource,
     artifact: &str,
-) -> Option<TrackReference> {
+) -> Option<ParsedArtifactReference> {
     let (prefix, architecture) = artifact_coordinates(base).ok()?;
     let prefix = format!("{prefix}-{}-", source.as_str());
     let suffix = format!("-linux-{architecture}");
-    let reference = artifact.strip_prefix(&prefix)?.strip_suffix(&suffix)?;
-    match source {
+    let identity = artifact.strip_prefix(&prefix)?.strip_suffix(&suffix)?;
+    let (reference, patchset) = parse_artifact_build_identity(identity)?;
+    let reference = match source {
         VersionSource::Action => reference
             .parse::<u64>()
             .ok()
@@ -1369,7 +1488,25 @@ fn parse_artifact_reference(
         VersionSource::Release => validate_release_tag(reference)
             .ok()
             .map(|()| TrackReference::Release(reference.to_owned())),
+    }?;
+    Some(ParsedArtifactReference {
+        reference,
+        patchset,
+    })
+}
+
+fn parse_artifact_build_identity(identity: &str) -> Option<(&str, Option<u32>)> {
+    let Some((reference, build)) = identity.rsplit_once("-p") else {
+        return Some((identity, None));
+    };
+    let Some((patchset, fingerprint)) = build.split_once('-') else {
+        return Some((identity, None));
+    };
+    if fingerprint.len() != 12 || !fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Some((identity, None));
     }
+    let patchset = patchset.parse::<u32>().ok().filter(|value| *value > 0)?;
+    Some((reference, Some(patchset)))
 }
 
 fn validate_build_identity(identity: &BuildIdentity) -> Result<(), UpdateError> {
@@ -1415,6 +1552,14 @@ fn validate_remote_build_identity(
     if remote.source != identity.source {
         return Err(UpdateError::Verification(
             "包内上游来源与所选版本轨道不匹配".to_owned(),
+        ));
+    }
+    if remote
+        .patchset
+        .is_some_and(|patchset| patchset != identity.patchset)
+    {
+        return Err(UpdateError::Verification(
+            "包内补丁集与 Artifact 名称不匹配".to_owned(),
         ));
     }
     match remote.source {
@@ -1599,10 +1744,10 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        BuildIdentity, MANIFEST_SCHEMA_VERSION, RemoteVersion, TrackReference, VersionKey,
-        VersionManifest, VersionSource, extract_artifact, load_verified_version,
-        parse_artifact_reference, sha256, store_version, validate_commit, validate_digest,
-        validate_remote_build_identity, validate_slug,
+        BuildIdentity, MANIFEST_SCHEMA_VERSION, ParsedArtifactReference, RemoteVersion,
+        TrackReference, VersionKey, VersionManifest, VersionSource, extract_artifact,
+        load_verified_version, parse_artifact_reference, sha256, store_version, validate_commit,
+        validate_digest, validate_remote_build_identity, validate_slug,
     };
 
     const TEST_BUILD_COMMIT: &str = "4e8002d08a56afc08be335d0d5ed337c7690f9af";
@@ -1649,13 +1794,23 @@ mod tests {
         assert!(validate_digest("sha256:bad").is_err());
         assert!(validate_commit("374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25").is_ok());
         assert!(validate_commit("not-a-commit").is_err());
+        let tracked = VersionKey::tracked(
+            VersionSource::Action,
+            42,
+            "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25",
+        )
+        .unwrap();
+        assert_eq!(VersionKey::parse(&tracked.encoded()).unwrap(), tracked);
         assert!(matches!(
             parse_artifact_reference(
                 "kixdns-enhanced-linux-x86_64",
                 VersionSource::Action,
                 "kixdns-enhanced-action-30235703570-linux-x86_64"
             ),
-            Some(TrackReference::Action(30_235_703_570))
+            Some(ParsedArtifactReference {
+                reference: TrackReference::Action(30_235_703_570),
+                patchset: None,
+            })
         ));
         assert!(matches!(
             parse_artifact_reference(
@@ -1663,7 +1818,21 @@ mod tests {
                 VersionSource::Release,
                 "kixdns-enhanced-release-v0.1.1-linux-x86_64"
             ),
-            Some(TrackReference::Release(tag)) if tag == "v0.1.1"
+            Some(ParsedArtifactReference {
+                reference: TrackReference::Release(tag),
+                patchset: None,
+            }) if tag == "v0.1.1"
+        ));
+        assert!(matches!(
+            parse_artifact_reference(
+                "kixdns-enhanced-linux-x86_64",
+                VersionSource::Action,
+                "kixdns-enhanced-action-30235703570-p5-44e7e6b02316-linux-x86_64"
+            ),
+            Some(ParsedArtifactReference {
+                reference: TrackReference::Action(30_235_703_570),
+                patchset: Some(5),
+            })
         ));
         assert!(
             parse_artifact_reference(
@@ -1684,6 +1853,7 @@ mod tests {
             commit: "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25".to_owned(),
             run_id: Some(42),
             release_tag: None,
+            patchset: None,
             created_at: "2026-07-28T00:00:00Z".to_owned(),
             source_url: "https://github.com/olicesx/kixdns/actions/runs/42".to_owned(),
             build_url: "https://github.com/tuoro/kixdns-panel/actions/runs/99".to_owned(),
@@ -1778,7 +1948,7 @@ mod tests {
             binary_sha256: sha256(&binary),
             installed_at: 42,
         };
-        let key = VersionKey::new(VersionSource::Action, commit).unwrap();
+        let key = VersionKey::tracked(VersionSource::Action, 42, commit).unwrap();
         store_version(directory.path(), &manifest, &binary).unwrap();
         let (loaded, loaded_binary) = load_verified_version(directory.path(), &key).unwrap();
         assert_eq!(loaded.commit, commit);
@@ -1831,7 +2001,7 @@ mod tests {
     }
 
     #[test]
-    fn keeps_action_and_release_builds_with_the_same_commit_separate() {
+    fn keeps_tracked_builds_with_the_same_commit_separate() {
         let directory = tempdir().unwrap();
         let binary = test_elf();
         let commit = TEST_BUILD_COMMIT;
@@ -1869,14 +2039,29 @@ mod tests {
             Some("v0.1.1".to_owned()),
             "kixdns-enhanced-release-v0.1.1-linux-x86_64",
         );
+        let previous_action = make_manifest(
+            VersionSource::Action,
+            101,
+            Some(30_231_271_280),
+            None,
+            "kixdns-enhanced-action-30231271280-linux-x86_64",
+        );
 
         store_version(directory.path(), &action, &binary).unwrap();
         store_version(directory.path(), &release, &binary).unwrap();
+        store_version(directory.path(), &previous_action, &binary).unwrap();
 
-        let action_key = VersionKey::new(VersionSource::Action, commit).unwrap();
-        let release_key = VersionKey::new(VersionSource::Release, commit).unwrap();
+        let action_key = VersionKey::tracked(VersionSource::Action, 99, commit).unwrap();
+        let release_key = VersionKey::tracked(VersionSource::Release, 100, commit).unwrap();
+        let previous_action_key = VersionKey::tracked(VersionSource::Action, 101, commit).unwrap();
         assert!(directory.path().join(action_key.directory_name()).is_dir());
         assert!(directory.path().join(release_key.directory_name()).is_dir());
+        assert!(
+            directory
+                .path()
+                .join(previous_action_key.directory_name())
+                .is_dir()
+        );
         assert_eq!(
             load_verified_version(directory.path(), &action_key)
                 .unwrap()
@@ -1902,6 +2087,7 @@ mod tests {
             commit: TEST_BUILD_COMMIT.to_owned(),
             run_id: Some(30_235_703_570),
             release_tag: None,
+            patchset: Some(5),
             created_at: "2026-07-28T00:00:00Z".to_owned(),
             source_url: "https://github.com/olicesx/kixdns/actions/runs/30235703570".to_owned(),
             build_url: "https://github.com/tuoro/kixdns-panel/actions/runs/99".to_owned(),

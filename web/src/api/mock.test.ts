@@ -44,10 +44,12 @@ describe('演示 API', () => {
 
   it('展示上游官方 Action 与增强构建的独立身份', async () => {
     const catalog = await mockRequest<KixdnsVersionCatalog>('/api/v1/kixdns/versions?source=action')
+    expect(catalog.remote_versions).toHaveLength(4)
     expect(catalog.remote_versions[0].run_id).toBe(30235703570)
-    expect(catalog.remote_versions[0].source_id).toBe(30364672952)
+    expect(catalog.remote_versions[0].source_id).not.toBe(catalog.remote_versions[0].run_id)
+    expect(new Set(catalog.remote_versions.map((version) => version.source_id)).size).toBe(4)
     expect(catalog.remote_versions[0].source_url).toContain('olicesx/kixdns/actions/runs/30235703570')
-    expect(catalog.remote_versions[0].build_url).toContain('tuoro/kixdns-panel/actions/runs/30364672952')
+    expect(catalog.remote_versions[0].build_url).toContain('tuoro/kixdns-panel/actions/runs/')
     expect(catalog.remote_versions.every((version) => /^sha256:[a-f0-9]{64}$/.test(version.artifact_digest))).toBe(true)
     expect(catalog.installed_versions.every((version) => version.commit !== version.upstream_commit)).toBe(true)
     expect(catalog.installed_versions.some((version) => version.upstream_commit === '374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25')).toBe(true)

@@ -163,6 +163,7 @@ export interface RemoteKixdnsVersion {
   commit: string
   run_id: number | null
   release_tag: string | null
+  patchset: number | null
   created_at: string
   source_url: string
   build_url: string
