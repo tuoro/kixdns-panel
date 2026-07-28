@@ -26,6 +26,23 @@ describe('结构化配置模型', () => {
     expect(config.future_option).toEqual({ enabled: true })
   })
 
+  it('将国家代码规范化为数组并移除旧版 GeoSite 伪开关', () => {
+    const config = normalizeConfig({
+      settings: { geosite_enabled: false, geosite_data_paths: ['geosite.dat'] },
+      pipelines: [{
+        id: 'geo',
+        rules: [{
+          name: 'country',
+          matchers: [{ type: 'geoip_country', country_codes: 'geoip:cn, us' }],
+        }],
+      }],
+    })
+
+    expect(config.settings.geosite_enabled).toBeUndefined()
+    expect(config.settings.geosite_data_paths).toEqual(['geosite.dat'])
+    expect(config.pipelines[0]?.rules[0]?.matchers[0]?.country_codes).toEqual(['CN', 'US'])
+  })
+
   it('重命名 Pipeline 时同步分流与三个动作阶段的引用', () => {
     const config = normalizeConfig({
       pipeline_select: [{ pipeline: 'old', matchers: [] }],
@@ -56,6 +73,9 @@ describe('结构化配置模型', () => {
     matcher.cidr = '127.0.0.0/8'
     resetMatcher(matcher, 'qtype', 'request')
     expect(matcher).toEqual({ type: 'qtype', operator: 'and', value: 'A' })
+
+    resetMatcher(matcher, 'geoip_country', 'request')
+    expect(matcher.country_codes).toEqual([])
 
     const action = createAction('forward')
     action.ecs = createEcs('static')

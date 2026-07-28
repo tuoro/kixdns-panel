@@ -22,7 +22,7 @@ export interface MatcherConfig extends ConfigObject {
   value?: string
   cidr?: string
   expect?: boolean
-  country_codes?: string
+  country_codes?: string[]
   mode?: string
 }
 

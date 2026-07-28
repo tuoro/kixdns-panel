@@ -20,6 +20,18 @@ function changeType(matcher: MatcherConfig, event: Event): void {
 function remove(index: number): void {
   matchers.value.splice(index, 1)
 }
+
+function countryCodesValue(matcher: MatcherConfig): string {
+  return Array.isArray(matcher.country_codes) ? matcher.country_codes.join(', ') : ''
+}
+
+function setCountryCodes(matcher: MatcherConfig, event: Event): void {
+  matcher.country_codes = (event.currentTarget as HTMLInputElement).value
+    .replace(/^geoip:/i, '')
+    .split(',')
+    .map((item) => item.trim().toUpperCase())
+    .filter(Boolean)
+}
 </script>
 
 <template>
@@ -37,7 +49,7 @@ function remove(index: number): void {
       </select>
       <input v-else-if="fields(matcher).includes('value')" v-model="matcher.value" type="text" :aria-label="`条件 ${index + 1} 值`" :placeholder="matcher.type.includes('geo_site') ? 'cn 或 geosite:cn' : '匹配值'">
       <input v-if="fields(matcher).includes('cidr')" v-model="matcher.cidr" type="text" :aria-label="`条件 ${index + 1} CIDR`" placeholder="127.0.0.0/8, 10.0.0.0/8">
-      <input v-if="fields(matcher).includes('country_codes')" v-model="matcher.country_codes" type="text" :aria-label="`条件 ${index + 1} 国家代码`" placeholder="CN, US 或 geoip:CN">
+      <input v-if="fields(matcher).includes('country_codes')" type="text" :value="countryCodesValue(matcher)" :aria-label="`条件 ${index + 1} 国家代码`" placeholder="CN, US 或 geoip:CN" @input="setCountryCodes(matcher, $event)">
       <select v-if="fields(matcher).includes('mode')" v-model="matcher.mode" :aria-label="`条件 ${index + 1} 匹配模式`">
         <option value="exact">精确</option>
         <option value="prefix">前缀</option>

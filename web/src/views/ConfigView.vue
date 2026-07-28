@@ -181,7 +181,7 @@ async function importFile(event: Event): Promise<void> {
   const file = input.files?.[0]
   if (!file) return
   try {
-    if (file.size > 2 * 1024 * 1024) throw new Error('配置文件不能超过 2 MiB')
+    if (file.size > 4 * 1024 * 1024) throw new Error('配置文件不能超过 4 MiB')
     source.value = await file.text()
     if (!syncStructuredFromSource()) {
       mode.value = 'json'

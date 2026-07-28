@@ -19,11 +19,20 @@ function cloneObject(value: ConfigObject): ConfigObject {
   return JSON.parse(JSON.stringify(value)) as ConfigObject
 }
 
+function normalizeCountryCodes(value: unknown): string[] {
+  const values = Array.isArray(value) ? value : typeof value === 'string' ? value.replace(/^geoip:/i, '').split(',') : []
+  return values
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim().toUpperCase())
+    .filter(Boolean)
+}
+
 function normalizeMatcher(value: unknown, scope: MatcherScope): MatcherConfig {
   const matcher = isObject(value) ? value : {}
   const fallback = MATCHER_DEFINITIONS[scope][0]?.value ?? 'any'
   matcher.type = typeof matcher.type === 'string' ? matcher.type : fallback
   matcher.operator = typeof matcher.operator === 'string' ? matcher.operator : 'and'
+  if ('country_codes' in matcher) matcher.country_codes = normalizeCountryCodes(matcher.country_codes)
   return matcher as MatcherConfig
 }
 
@@ -63,7 +72,9 @@ function normalizePipelineSelect(value: unknown): PipelineSelectConfig {
 
 export function normalizeConfig(value: ConfigObject): KixConfig {
   const config = cloneObject(value)
-  config.settings = isObject(config.settings) ? config.settings : {}
+  const settings = isObject(config.settings) ? config.settings : {}
+  delete settings.geosite_enabled
+  config.settings = settings
   config.pipeline_select = Array.isArray(config.pipeline_select) ? config.pipeline_select.map(normalizePipelineSelect) : []
   config.pipelines = Array.isArray(config.pipelines) ? config.pipelines.map(normalizePipeline) : []
   return config as KixConfig
@@ -94,7 +105,7 @@ export function resetMatcher(matcher: MatcherConfig, type: string, scope: Matche
   if (fields.includes('value')) matcher.value = type === 'qtype' ? 'A' : ''
   if (fields.includes('cidr')) matcher.cidr = ''
   if (fields.includes('expect')) matcher.expect = true
-  if (fields.includes('country_codes')) matcher.country_codes = ''
+  if (fields.includes('country_codes')) matcher.country_codes = []
   if (fields.includes('mode')) matcher.mode = 'exact'
   return matcher
 }

@@ -11,7 +11,8 @@ function summarizeMatchers(matchers: MatcherConfig[]): string {
   if (matchers.length === 0) return '任意请求'
   return matchers.map((matcher, index) => {
     const operator = index === 0 ? '' : `${matcher.operator.toUpperCase()} `
-    const value = matcher.value ?? matcher.cidr ?? matcher.country_codes ?? (typeof matcher.expect === 'boolean' ? String(matcher.expect) : '')
+    const countryCodes = Array.isArray(matcher.country_codes) ? matcher.country_codes.join(', ') : matcher.country_codes
+    const value = matcher.value ?? matcher.cidr ?? countryCodes ?? (typeof matcher.expect === 'boolean' ? String(matcher.expect) : '')
     return `${operator}${matcher.type}${value ? `:${value}` : ''}`
   }).join(' · ')
 }

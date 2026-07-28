@@ -117,8 +117,7 @@ export const SETTING_SECTIONS: SettingSection[] = [
       { key: 'geoip_dat_path', label: 'GeoIP .dat 文件路径', type: 'text', placeholder: 'geoip.dat', wide: true },
       { key: 'geoip_auto_convert', label: '自动转换 MMDB', type: 'boolean', visibleWhenAny: ['geoip_db_path', 'geoip_dat_path'] },
       { key: 'geoip_filter_countries', label: '转换国家过滤', type: 'csv', placeholder: 'CN, US, JP', visibleWhenAny: ['geoip_db_path', 'geoip_dat_path'] },
-      { key: 'geosite_enabled', label: '启用 GeoSite', type: 'boolean' },
-      { key: 'geosite_data_paths', label: 'GeoSite 数据文件', type: 'list', placeholder: 'geosite.dat', wide: true, visibleWhen: 'geosite_enabled' },
+      { key: 'geosite_data_paths', label: 'GeoSite 数据文件（留空禁用）', type: 'list', placeholder: 'geosite.dat', wide: true },
     ],
   },
 ]
