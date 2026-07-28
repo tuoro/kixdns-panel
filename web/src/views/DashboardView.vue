@@ -76,7 +76,7 @@ onBeforeUnmount(() => window.clearInterval(timer))
       </section>
 
       <section class="dashboard-grid">
-        <article class="panel panel--span-7">
+        <article class="panel panel--span-6">
           <header class="panel__header"><div><h2>Pipeline 命中</h2><p>按累计请求次数排序</p></div><span class="tag">{{ overview.metrics.pipelines.length }} 条</span></header>
           <div class="bar-list">
             <div v-for="pipeline in overview.metrics.pipelines" :key="pipeline.name" class="bar-row">
@@ -87,7 +87,7 @@ onBeforeUnmount(() => window.clearInterval(timer))
           </div>
         </article>
 
-        <article class="panel panel--span-5 runtime-panel">
+        <article class="panel panel--span-6 runtime-panel">
           <header class="panel__header"><div><h2>运行时配置</h2><p>最近一次结构化热加载</p></div><span :class="overview.active_config.last_reload.success ? 'tag tag--success' : 'tag tag--danger'">{{ overview.active_config.last_reload.success ? '生效' : '失败' }}</span></header>
           <dl class="detail-list">
             <div><dt>配置代次</dt><dd>#{{ overview.active_config.generation }}</dd></div>
