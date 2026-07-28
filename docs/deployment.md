@@ -4,7 +4,7 @@
 
 首个生产目标为带 systemd 与 Polkit 的 Linux x86_64/ARM64。安装需要 `systemctl`、`polkit`、`sha256sum` 和 `getent`；下载示例还使用 `curl`、`unzip` 与 `jq`。
 
-完整安装包由 `Build KixDNS Panel` Action 生成。KixDNS Enhanced 同时发布为版本化 Release，供已安装面板切换数据面版本；Release 不等同于完整面板安装包。面板工作流复用上游身份、补丁集、构建修订和架构完全匹配的已校验 KixDNS Artifact，不会因面板修改而重新编译数据面。完整包包含 KixDNS Enhanced、Panel Server、Vue 静态资源、服务单元和安装脚本。
+完整安装包由 `Build KixDNS Panel` Action 生成。KixDNS Enhanced 的上游 Action 与正式 Release 轨道也都只发布为本仓库 Actions Artifact，本仓库当前不创建 GitHub Release。面板工作流复用上游身份、补丁集和架构完全匹配的已校验 Action 轨道 Artifact，不会因面板修改而重新编译数据面。完整包包含 KixDNS Enhanced、Panel Server、Vue 静态资源、服务单元和安装脚本。
 
 ## 获取并验证安装包
 
@@ -49,7 +49,7 @@ ARM64 使用 `kixdns-panel-linux-arm64`。安装脚本还会校验包内 `SHA256
 | `/etc/kixdns-panel/panel.env` | 面板启动参数 |
 | `/var/lib/kixdns-panel/panel.db` | 用户、会话、版本与审计数据 |
 | `/var/lib/kixdns-panel/bin/kixdns` | 可自动更新的数据面二进制 |
-| `/var/lib/kixdns-panel/versions/<commit>/` | 已校验的 KixDNS 二进制与版本清单 |
+| `/var/lib/kixdns-panel/versions/<source>-<commit>/` | 按来源隔离的 KixDNS 二进制与版本清单 |
 | `/run/kixdns/admin.sock` | `0660` 本机增强控制通道 |
 | `/usr/share/kixdns-panel/web` | 前端静态资源 |
 
@@ -95,17 +95,19 @@ sudo systemctl restart kixdns-panel.service
 
 面板“系统”页管理的是 KixDNS Enhanced 数据面，不会在线替换 Panel Server 或 Web：
 
-1. “Releases”读取最近的非草稿发布并直连 GitHub 资产；“Actions”读取最近 12 次成功的 `Build KixDNS Enhanced` 构建并通过 nightly.link 匿名下载。两者均不要求用户配置 GitHub Token。
-2. 安装请求只提交 `release/action` 与 GitHub 来源 ID。后端在固定仓库中重新解析该来源，拒绝前端传入下载 URL，并将 Action 限制在最近 30 次成功构建、Release 限制在最近的有效发布中。
-3. 校验 GitHub asset/Artifact digest、包内 `SHA256SUMS`、`KIXDNS_BUILD_COMMIT`、`upstream.lock.json` 构建身份、控制协议、ELF 格式和 CPU 架构。Release 还必须满足标签中的上游提交、补丁集和构建修订与包内身份一致。
-4. 校验完成后按完整构建提交写入 `/var/lib/kixdns-panel/versions/<commit>/`。同一构建同时出现在 Actions 和 Releases 时只保存一份二进制，安装清单记录首次安装来源。
+1. “Actions”读取 `build-kixdns.yml` 的成功构建并显示包名中的上游官方 Run；“Releases”读取 `build-kixdns-release.yml` 的成功构建并显示包名中的上游正式标签。两者都从本仓库 Actions 通过 nightly.link 匿名下载，不要求用户配置 GitHub Token。
+2. 安装请求只提交 `release/action` 与本仓库增强构建 Run ID。后端在固定工作流最近 30 次成功运行中重新解析来源，拒绝前端传入下载 URL 或文件路径。
+3. 校验 GitHub Artifact digest、包内 `SHA256SUMS`、`KIXDNS_BUILD_COMMIT`、`upstream.lock.json` 的 `source` 与官方 Run/Release 身份、补丁集、控制协议、ELF 格式和 CPU 架构。
+4. 校验完成后按 `source + 构建提交` 写入 `/var/lib/kixdns-panel/versions/<source>-<commit>/`。同一次面板提交可能同时构建两条不同上游基线，因此不能只按提交 SHA 复用库存。
 5. 激活版本时重新校验清单和二进制 SHA-256，然后停止服务、原子替换运行文件、启动服务并等待增强接口健康；启动或健康检查失败时恢复原状态。
 
-已下载版本可直接切换，无需重复联网。面板最多保留 8 个本地版本，清理时始终保留当前版本。完整安装包自带的 KixDNS 会在首次版本操作时自动收录到库存。Release 标签格式为 `kixdns-<上游短 SHA>-p<补丁集>-r<构建修订>`；上游或补丁集不变但构建配方、Rust 工具链变化时，维护者必须递增 `upstream.lock.json` 的 `build_revision`。
+真实示例：上游 Action `#30235703570` 对应 `kixdns-enhanced-action-30235703570-linux-x86_64`；上游 Release `v0.1.1` 对应 `kixdns-enhanced-release-v0.1.1-linux-x86_64`。其增强构建分别位于本仓库 Run `#30364672952` 与 `#30364672955`，下载 URL 均为 `https://nightly.link/tuoro/kixdns-panel/actions/runs/<run-id>/<artifact>.zip`。
+
+已下载版本可直接切换，无需重复联网。面板最多保留 8 个本地版本，清理时始终保留当前版本。完整安装包自带的 KixDNS 会在首次版本操作时自动收录为 Action 轨道库存。Actions Artifact 当前保留 90 天；已过期的远端包不会出现在可安装列表，但本地已校验库存不受影响。
 
 SQLite 中配置历史最多保留 100 条，审计事件最多保留 10,000 条；每次写入与清理处于同一事务，服务启动时也会整理旧数据库，避免长期运行造成无界增长。
 
-Panel Server 与 Web 更新仍需下载新的完整包并重新运行 `scripts/install.sh`。脚本保留现有配置、数据库和环境文件，旧静态资源保存在 `/usr/share/kixdns-panel/web.previous`。完整包使用 `PANEL_BUILD_COMMIT` 标识管理面构建，使用 `KIXDNS_BUILD_COMMIT` 标识被复用的数据面构建；只有后者会写入 `KIXDNS_INSTALLED_COMMIT`。旧版默认工作流名会迁移到 `build-kixdns.yml`，自定义更新源保持不变。
+Panel Server 与 Web 更新仍需下载新的完整包并重新运行 `scripts/install.sh`。脚本保留现有配置、数据库和环境文件，旧静态资源保存在 `/usr/share/kixdns-panel/web.previous`。完整包使用 `PANEL_BUILD_COMMIT` 标识管理面构建，使用 `KIXDNS_BUILD_COMMIT` 标识被复用的数据面构建；只有后者会写入 `KIXDNS_INSTALLED_COMMIT`。旧版默认工作流名会迁移到 `build-kixdns.yml`，缺少的 `KIXDNS_UPDATE_RELEASE_WORKFLOW` 会补为 `build-kixdns-release.yml`，已有自定义更新源保持不变。
 
 服务生命周期只支持启动、停止和重启。KixDNS 没有独立的服务重载动作，面板不会提供重载按钮、API、Polkit 动词或 systemd `ExecReload`。配置保存和历史版本恢复使用 KixDNS 的文件监听热加载链路：候选内容先由 KixDNS 自身校验；写入后必须收到新的 `reload_sequence` 且 SHA-256 一致，否则面板恢复旧配置。该回执不等同于服务重载命令。
 
