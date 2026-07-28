@@ -10,6 +10,7 @@ on:
       - .github/workflows/build-kixdns-track.yml
       - patches/**
       - scripts/dns_smoke.py
+      - scripts/verify-patchsets.sh
       - tools/xtask/**
       - scripts/kixdns-artifact-identity.sh
       - upstreams/actions/**
@@ -21,6 +22,7 @@ on:
       - .github/workflows/build-kixdns-track.yml
       - patches/**
       - scripts/dns_smoke.py
+      - scripts/verify-patchsets.sh
       - tools/xtask/**
       - scripts/kixdns-artifact-identity.sh
       - upstreams/actions/**

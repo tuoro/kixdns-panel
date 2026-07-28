@@ -28,14 +28,44 @@ files=(
   .github/workflows/build-kixdns-track.yml
 )
 while IFS= read -r file; do files+=("$file"); done < <(find tools/xtask/src -type f -print | sort)
-while IFS= read -r file; do files+=("$file"); done < <(find patches -maxdepth 1 -type f -name '*.patch' -print | sort)
+patchset_directory="patches/sets/${patchset}"
+[[ -d "$patchset_directory/common" ]] || {
+  echo "补丁集 p${patchset} 缺少通用补丁目录" >&2
+  exit 1
+}
 compatibility="$(jq -r '.compatibility // empty' "$lock_file")"
-if [[ -n "$compatibility" && -d "patches/compatibility/$compatibility" ]]; then
-  while IFS= read -r file; do files+=("$file"); done < <(find "patches/compatibility/$compatibility" -type f -name '*.patch' -print | sort)
+if [[ -n "$compatibility" ]]; then
+  [[ "$compatibility" =~ ^[A-Za-z0-9._-]+$ ]] || {
+    echo '上游兼容层身份无效' >&2
+    exit 1
+  }
+  compatibility_directory="${patchset_directory}/compatibility/${compatibility}"
+  [[ -d "$compatibility_directory" ]] || {
+    echo "补丁集 p${patchset} 缺少兼容层 ${compatibility}" >&2
+    exit 1
+  }
+  selected_count=${#files[@]}
+  while IFS= read -r file; do files+=("$file"); done < <(find "$compatibility_directory" -maxdepth 1 -type f -name '*.patch' -print | sort)
+  ((${#files[@]} > selected_count)) || {
+    echo "补丁集 p${patchset} 的兼容层 ${compatibility} 为空" >&2
+    exit 1
+  }
 fi
-if [[ "$source" == release && -d "patches/release/$reference" ]]; then
-  while IFS= read -r file; do files+=("$file"); done < <(find "patches/release/$reference" -type f -name '*.patch' -print | sort)
+release_directory="${patchset_directory}/release/${reference}"
+if [[ "$source" == release && -d "$release_directory" ]]; then
+  selected_count=${#files[@]}
+  while IFS= read -r file; do files+=("$file"); done < <(find "$release_directory" -maxdepth 1 -type f -name '*.patch' -print | sort)
+  ((${#files[@]} > selected_count)) || {
+    echo "补丁集 p${patchset} 的 Release 目录 ${reference} 为空" >&2
+    exit 1
+  }
 fi
+selected_count=${#files[@]}
+while IFS= read -r file; do files+=("$file"); done < <(find "$patchset_directory/common" -maxdepth 1 -type f -name '*.patch' -print | sort)
+((${#files[@]} > selected_count)) || {
+  echo "补丁集 p${patchset} 缺少通用补丁" >&2
+  exit 1
+}
 
 fingerprint="$({
   [[ -f "$lock_file" ]] || { echo "构建输入不存在：$lock_file" >&2; exit 1; }

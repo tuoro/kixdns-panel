@@ -237,23 +237,7 @@ fn inspect_checkout_placeholder(checkout: &Path) -> Result<CheckoutPlaceholder> 
 }
 
 fn apply_patches(root: &Path, checkout: &Path, lock: &UpstreamLock) -> Result<()> {
-    let patch_dir = root.join("patches");
-    if !patch_dir.is_dir() {
-        println!("补丁目录尚未创建，保留原始上游源码");
-        return Ok(());
-    }
-
-    let mut patches = Vec::new();
-    if let Some(compatibility) = lock.compatibility.as_deref() {
-        patches.extend(read_patches(
-            &patch_dir.join("compatibility").join(compatibility),
-        )?);
-    }
-    if lock.source == UpstreamSource::Release {
-        let release_tag = lock.release_tag.as_deref().expect("已验证 Release 标签");
-        patches.extend(read_patches(&patch_dir.join("release").join(release_tag))?);
-    }
-    patches.extend(read_patches(&patch_dir)?);
+    let patches = patches_for_lock(root, lock)?;
     let expected_stamp = patch_stamp(lock.patchset, lock.source, &patches)?;
     let stamp_path = checkout.join(PATCH_STAMP);
     if fs::read_to_string(&stamp_path).is_ok_and(|stamp| stamp == expected_stamp) {
@@ -278,6 +262,47 @@ fn apply_patches(root: &Path, checkout: &Path, lock: &UpstreamLock) -> Result<()
     fs::write(&stamp_path, expected_stamp)
         .with_context(|| format!("写入补丁集标记失败：{}", stamp_path.display()))?;
     Ok(())
+}
+
+fn patches_for_lock(root: &Path, lock: &UpstreamLock) -> Result<Vec<PathBuf>> {
+    let patchset_dir = root
+        .join("patches")
+        .join("sets")
+        .join(lock.patchset.to_string());
+    if !patchset_dir.is_dir() {
+        bail!("补丁集目录不存在：{}", patchset_dir.display());
+    }
+
+    let mut patches = Vec::new();
+    if let Some(compatibility) = lock.compatibility.as_deref() {
+        let directory = patchset_dir.join("compatibility").join(compatibility);
+        let selected = read_patches(&directory)?;
+        if selected.is_empty() {
+            bail!("补丁集 v{} 缺少兼容层 {compatibility}", lock.patchset);
+        }
+        patches.extend(selected);
+    }
+    if lock.source == UpstreamSource::Release {
+        let release_tag = lock.release_tag.as_deref().expect("已验证 Release 标签");
+        let directory = patchset_dir.join("release").join(release_tag);
+        if directory.is_dir() {
+            let selected = read_patches(&directory)?;
+            if selected.is_empty() {
+                bail!(
+                    "补丁集 v{} 的 Release 目录 {release_tag} 为空",
+                    lock.patchset
+                );
+            }
+            patches.extend(selected);
+        }
+    }
+
+    let common = read_patches(&patchset_dir.join("common"))?;
+    if common.is_empty() {
+        bail!("补丁集 v{} 缺少通用补丁", lock.patchset);
+    }
+    patches.extend(common);
+    Ok(patches)
 }
 
 fn read_patches(directory: &Path) -> Result<Vec<PathBuf>> {
@@ -433,7 +458,8 @@ mod tests {
 
     use super::{
         CheckoutPlaceholder, UpstreamLock, UpstreamSource, activate_checkout,
-        inspect_checkout_placeholder, valid_lock_path, validate_commit, validate_lock,
+        inspect_checkout_placeholder, patches_for_lock, valid_lock_path, validate_commit,
+        validate_lock,
     };
 
     #[test]
@@ -461,6 +487,77 @@ mod tests {
             control_protocol: 1,
         };
         assert!(validate_lock(&lock).is_err());
+    }
+
+    #[test]
+    fn selects_only_the_patchset_referenced_by_the_lock() {
+        let root = tempdir().unwrap();
+        for patchset in [5, 6] {
+            let common = root
+                .path()
+                .join("patches")
+                .join("sets")
+                .join(patchset.to_string())
+                .join("common");
+            fs::create_dir_all(&common).unwrap();
+            fs::write(common.join("0001-common.patch"), patchset.to_string()).unwrap();
+        }
+        let compatibility = root
+            .path()
+            .join("patches/sets/5/compatibility/pre-local-time");
+        fs::create_dir_all(&compatibility).unwrap();
+        fs::write(
+            compatibility.join("0000-compatibility.patch"),
+            "compatibility",
+        )
+        .unwrap();
+
+        let lock = UpstreamLock {
+            repository: "olicesx/kixdns".to_owned(),
+            source: UpstreamSource::Action,
+            commit: "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25".to_owned(),
+            official_run_id: Some(30_235_703_570),
+            release_id: None,
+            release_tag: None,
+            compatibility: Some("pre-local-time".to_owned()),
+            patchset: 5,
+            control_protocol: 1,
+        };
+
+        let patches = patches_for_lock(root.path(), &lock).unwrap();
+        assert_eq!(patches.len(), 2);
+        assert!(
+            patches
+                .iter()
+                .all(|path| path.starts_with(root.path().join("patches/sets/5")))
+        );
+        assert!(
+            patches
+                .iter()
+                .all(|path| !path.starts_with(root.path().join("patches/sets/6")))
+        );
+    }
+
+    #[test]
+    fn rejects_missing_compatibility_profile() {
+        let root = tempdir().unwrap();
+        let common = root.path().join("patches/sets/5/common");
+        fs::create_dir_all(&common).unwrap();
+        fs::write(common.join("0001-common.patch"), "common").unwrap();
+        let lock = UpstreamLock {
+            repository: "olicesx/kixdns".to_owned(),
+            source: UpstreamSource::Action,
+            commit: "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25".to_owned(),
+            official_run_id: Some(30_235_703_570),
+            release_id: None,
+            release_tag: None,
+            compatibility: Some("missing".to_owned()),
+            patchset: 5,
+            control_protocol: 1,
+        };
+
+        let error = patches_for_lock(root.path(), &lock).unwrap_err();
+        assert!(error.to_string().contains("缺少兼容层 missing"));
     }
 
     #[test]

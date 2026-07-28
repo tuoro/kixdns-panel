@@ -32,6 +32,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Verify patchset catalog
+        run: bash scripts/verify-patchsets.sh
+
       - name: Read latest upstream track
         id: upstream
         shell: bash
