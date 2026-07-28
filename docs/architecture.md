@@ -40,6 +40,7 @@ Panel Web ---- Panel Server ---- SQLite
 - DNS 冒烟测试使用隔离端口和 Unix Socket，验证静态应答、快速路径规则计数、配置摘要及热加载序号。
 - Action 与 Release 独立验证；一条轨道失败不会阻塞另一条轨道推进。
 - 兼容性验证失败不会覆盖当前增强版，并按轨道创建或更新唯一的 GitHub Issue；验证恢复后自动关闭告警。
+- 每个锁绑定 `patches/sets/<patchset>/` 中的不可变补丁集；适配新 API 必须新增更高编号，已发布版本继续使用原集合。
 - 面板和增强版使用各自的锁文件；两者必须通过 RustSec 审计，安全依赖迁移以独立可重放补丁维护。
 
 每日同步分别读取上游官方 `build.yml` 最近一次成功运行和最新正式 Release。两条轨道串行且相互隔离，候选通过补丁重放、测试、Clippy、RustSec 审计和 DNS 冒烟测试后，机器人为对应轨道创建审计 PR，更新当前锁并追加版本目录。兼容性失败时，工作流更新该轨道的 `[compat]` Issue，附候选身份、提交、日志摘要和完整运行链接；主分支、另一条轨道与现有 Artifact 都保持不变。锁文件固定已验证提交以保证构建可复现，但自动同步会持续推进这些固定点。面板 Web/Server 只依赖控制协议版本，因此上游适配不会迫使管理端同步修改。
@@ -49,7 +50,8 @@ Panel Web ---- Panel Server ---- SQLite
 面板和增强内核使用独立工作流，避免把面板提交误认为新的 KixDNS 版本：
 
 - `build-kixdns.yml` 监听 Action 目录，`build-kixdns-release.yml` 监听 Release 目录；两者复用 `build-kixdns-track.yml` 的库存检查、验证和打包步骤。
-- Artifact 名称为 `kixdns-enhanced-<来源>-<上游身份>-p<补丁集>-<输入指纹>-linux-<架构>`。输入指纹覆盖锁文件、补丁、构建工具、工作流和 Rust 工具链；目录新增版本时只补建缺失项，面板代码变化不会重打包数据面。
+- Artifact 名称为 `kixdns-enhanced-<来源>-<上游身份>-p<补丁集>-<输入指纹>-linux-<架构>`。输入指纹只覆盖锁文件选择的补丁集以及构建工具、工作流和 Rust 工具链；新增更高补丁集不会改变历史版本指纹，目录新增版本时只补建缺失项。
+- 构建库存会校验全部锁的补丁集引用。拉取请求和直接推送均不得修改主分支已有集合，只能新增高于当前最大值的编号。
 - 每周库存检查会续建缺失或将在 7 天内过期的包；Artifact 仍使用 GitHub 的 90 天保留期，本仓库不创建 GitHub Release。
 - `build-panel.yml` 只监听 Panel Server、Web、部署脚本和面板依赖。它从最近成功的内核工作流复用上游身份完全匹配的 Artifact，经包内 SHA-256 和 ELF 架构校验后生成完整安装包，不重新编译 KixDNS。
 - PR 只执行对应边界的验证 Job，不上传可安装 Artifact；README、截图等纯文档变化不触发打包工作流。

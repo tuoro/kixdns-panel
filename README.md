@@ -41,7 +41,7 @@ Browser -> Panel Web -> Panel Server -> SQLite / 配置 / systemd
                        KixDNS Enhanced
 ```
 
-上游源码仅在构建目录中检出。[upstream.lock.json](upstream.lock.json) 与 [upstream.release.lock.json](upstream.release.lock.json) 指向两条轨道的当前版本，[upstreams](upstreams) 保存可切换目录；`cargo xtask prepare --lock <文件>` 按对应锁应用 [patches](patches)。面板服务不导入上游 crate，只依赖[增强控制协议 v1](docs/control-protocol-v1.md)。
+上游源码仅在构建目录中检出。[upstream.lock.json](upstream.lock.json) 与 [upstream.release.lock.json](upstream.release.lock.json) 指向两条轨道的当前版本，[upstreams](upstreams) 保存可切换目录；`cargo xtask prepare --lock <文件>` 按锁中的编号应用 [不可变补丁集](patches)。面板服务不导入上游 crate，只依赖[增强控制协议 v1](docs/control-protocol-v1.md)。
 
 ### 版本轨道示例
 
@@ -52,7 +52,7 @@ Browser -> Panel Web -> Panel Server -> SQLite / 配置 / systemd
 
 两种包都来自本仓库 Actions，并通过 nightly.link 下载；`Releases` 只表示其上游源码基线来自 `olicesx/kixdns` 正式发布，本仓库不创建 GitHub Release。Action 目录当前包含 4 个已验证版本，之后自动追加并滚动保留最多 10 个；Release 从增强协议基线 `v0.1.1` 起只追加、不设数量上限。`v0.1.0` 的核心架构早于增强协议，不能安全套用当前补丁，因此不会伪装成可安装增强包。
 
-包名中的补丁集和输入指纹由上游锁、补丁、构建工具与 Rust 工具链共同生成。只有这些输入变化才会产生新包，普通面板代码或文档提交不会重复编译 KixDNS。本地库存使用 `来源 + Artifact ID + 构建提交` 区分同一工作流批量生成的版本。
+包名中的补丁集和输入指纹由上游锁、该锁选择的不可变补丁集、构建工具与 Rust 工具链共同生成。适配新 API 时新增补丁集并只切换新候选锁，旧版本继续使用原补丁集且不会重新编译；普通面板代码或文档提交同样不会触发 KixDNS 构建。本地库存使用 `来源 + Artifact ID + 构建提交` 区分同一工作流批量生成的版本。
 
 ## 快速开始
 
