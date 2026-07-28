@@ -69,6 +69,14 @@ struct Args {
     #[arg(long, env = "KIXDNS_BINARY", default_value = "/usr/local/bin/kixdns")]
     kixdns_binary: PathBuf,
 
+    /// 已校验 `KixDNS Enhanced` 版本库存目录。
+    #[arg(
+        long,
+        env = "KIXDNS_VERSIONS",
+        default_value = "/var/lib/kixdns-panel/versions"
+    )]
+    kixdns_versions: PathBuf,
+
     /// Vue 前端构建产物目录。
     #[arg(long, env = "KIXDNS_WEB_ROOT", default_value = "web/dist")]
     web_root: PathBuf,
@@ -100,6 +108,7 @@ async fn main() -> anyhow::Result<()> {
         update_artifact: args.update_artifact,
         installed_commit: args.installed_commit,
         kixdns_binary: args.kixdns_binary,
+        kixdns_versions: args.kixdns_versions,
         web_root: args.web_root,
         secure_cookie: args.secure_cookie,
     })

@@ -37,7 +37,9 @@ use crate::error::{AppError, AppResult};
 use crate::operations::{
     DnsDiagnostic, LogEntry, OperationError, Operations, ServiceAction, ServiceStatus,
 };
-use crate::updates::{UpdateError, UpdateInfo, UpdateManager};
+use crate::updates::{
+    InstalledVersion, UpdateError, UpdateInfo, UpdateManager, UpdateSettings, VersionCatalog,
+};
 
 #[derive(Debug, Clone)]
 pub struct AppSettings {
@@ -53,6 +55,7 @@ pub struct AppSettings {
     pub update_artifact: String,
     pub installed_commit: Option<String>,
     pub kixdns_binary: PathBuf,
+    pub kixdns_versions: PathBuf,
     pub web_root: PathBuf,
     pub secure_cookie: bool,
 }
@@ -181,12 +184,15 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
     let dummy_password_hash = hash_password("dummy-password-for-timing".to_owned()).await?;
     let updates = UpdateManager::new(
         database.clone(),
-        settings.update_repository,
-        settings.update_workflow,
-        settings.update_branch,
-        settings.update_artifact,
-        settings.installed_commit,
-        settings.kixdns_binary,
+        UpdateSettings {
+            repository: settings.update_repository,
+            workflow: settings.update_workflow,
+            branch: settings.update_branch,
+            artifact: settings.update_artifact,
+            installed_commit: settings.installed_commit,
+            binary_path: settings.kixdns_binary,
+            versions_path: settings.kixdns_versions,
+        },
     )
     .map_err(|error| anyhow::anyhow!(error))?;
     let state = AppState {
@@ -221,6 +227,15 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         .route("/diagnostics/dns", post(dns_diagnostic))
         .route("/updates", get(check_updates))
         .route("/updates/apply", post(apply_update))
+        .route("/kixdns/versions", get(kixdns_versions))
+        .route(
+            "/kixdns/versions/{commit}/install",
+            post(install_kixdns_version),
+        )
+        .route(
+            "/kixdns/versions/{commit}/activate",
+            post(activate_kixdns_version),
+        )
         .fallback(not_found)
         .with_state(state);
 
@@ -724,6 +739,71 @@ async fn apply_update(
     Ok(Json(result))
 }
 
+async fn kixdns_versions(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> AppResult<Json<VersionCatalog>> {
+    authenticate(&state.database, &jar).await?;
+    state
+        .updates
+        .catalog()
+        .await
+        .map(Json)
+        .map_err(map_update_error)
+}
+
+async fn install_kixdns_version(
+    State(state): State<AppState>,
+    Path(commit): Path<String>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> AppResult<Json<InstalledVersion>> {
+    let session = authenticate(&state.database, &jar).await?;
+    verify_csrf(&session, &jar, &headers)?;
+    let result = state
+        .updates
+        .install_version(&commit, &state.operations, &state.control)
+        .await
+        .map_err(map_update_error)?;
+    state
+        .database
+        .audit(
+            Some(session.username),
+            "kixdns.version.install".to_owned(),
+            format!("安装并激活增强构建 {}", result.commit),
+            unix_timestamp(),
+        )
+        .await
+        .map_err(AppError::Internal)?;
+    Ok(Json(result))
+}
+
+async fn activate_kixdns_version(
+    State(state): State<AppState>,
+    Path(commit): Path<String>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> AppResult<Json<InstalledVersion>> {
+    let session = authenticate(&state.database, &jar).await?;
+    verify_csrf(&session, &jar, &headers)?;
+    let result = state
+        .updates
+        .activate_version(&commit, &state.operations, &state.control)
+        .await
+        .map_err(map_update_error)?;
+    state
+        .database
+        .audit(
+            Some(session.username),
+            "kixdns.version.activate".to_owned(),
+            format!("切换增强构建 {}", result.commit),
+            unix_timestamp(),
+        )
+        .await
+        .map_err(AppError::Internal)?;
+    Ok(Json(result))
+}
+
 async fn rollback_config(
     state: &AppState,
     previous_content: Value,
@@ -999,6 +1079,7 @@ mod tests {
             update_artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
             installed_commit: None,
             kixdns_binary: directory.path().join("kixdns"),
+            kixdns_versions: directory.path().join("versions"),
             web_root,
             secure_cookie: false,
         })
