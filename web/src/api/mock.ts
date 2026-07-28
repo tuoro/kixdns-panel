@@ -111,14 +111,21 @@ const versions: ConfigVersions = {
 
 let serviceRunning = true
 let updateAvailable = true
-const panelBuildCommit = 'e240e1e2a8dd90aadb9bc9c8b0026f2225960929'
-const actionUpstreamCommit = '374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25'
+const panelBuildCommit = '05f51503219e77849517596b7392cff919437c8b'
+const actionBuildRunId = 30376438766
+const releaseBuildRunId = 30376438414
+const actionUpstreamCommits: Record<number, string> = {
+  30235703570: '374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25',
+  30231271280: '647c5b1d2af6963176d7f8da6c3ed031e6b58497',
+  30229870401: 'f59d6f800a20228235d37324cdd8f9517ca27855',
+  30228238557: '58dec64326fda73daf8b21f97a42c97248e9b42a',
+}
 const releaseUpstreamCommit = '647c5b1d2af6963176d7f8da6c3ed031e6b58497'
 const binarySha256: Record<KixdnsVersionSource, string> = {
   action: 'ee714ecae2d9f93e1ee8e242b1e351be4671ad53b4adc4dc3e70d20472a9c27a',
   release: '5dff4bbcc579f2882678f5aab0074601f4790770771430b09bb75d7a51057c4d',
 }
-function actionVersion(sourceId: number, runId: number, createdAt: string, fingerprint: string): RemoteKixdnsVersion {
+function actionVersion(sourceId: number, runId: number, fingerprint: string, digest: string): RemoteKixdnsVersion {
   return {
     source: 'action',
     source_id: sourceId,
@@ -126,38 +133,38 @@ function actionVersion(sourceId: number, runId: number, createdAt: string, finge
     run_id: runId,
     release_tag: null,
     patchset: 5,
-    created_at: createdAt,
+    created_at: '2026-07-28T16:03:48Z',
     source_url: `https://github.com/olicesx/kixdns/actions/runs/${runId}`,
-    build_url: 'https://github.com/tuoro/kixdns-panel/actions/runs/30370000000',
+    build_url: `https://github.com/tuoro/kixdns-panel/actions/runs/${actionBuildRunId}`,
     artifact: `kixdns-enhanced-action-${runId}-p5-${fingerprint}-linux-x86_64`,
-    artifact_digest: `sha256:${runId.toString(16).padStart(64, '0')}`,
-    download_url: `https://nightly.link/tuoro/kixdns-panel/actions/runs/30370000000/kixdns-enhanced-action-${runId}-p5-${fingerprint}-linux-x86_64.zip`,
+    artifact_digest: digest,
+    download_url: `https://nightly.link/tuoro/kixdns-panel/actions/runs/${actionBuildRunId}/kixdns-enhanced-action-${runId}-p5-${fingerprint}-linux-x86_64.zip`,
     installed: false,
     active: false,
   }
 }
 
 const actionVersions: RemoteKixdnsVersion[] = [
-  actionVersion(8691000004, 30235703570, '2026-07-28T15:20:00Z', 'de94256a3d1c'),
-  actionVersion(8691000003, 30231271280, '2026-07-28T15:20:00Z', 'a73c36e849d7'),
-  actionVersion(8691000002, 30229870401, '2026-07-28T15:20:00Z', '00e8ba7a0306'),
-  actionVersion(8691000001, 30228238557, '2026-07-28T15:20:00Z', '7d529b52cbd4'),
+  actionVersion(8695590365, 30235703570, '10844244cec4', 'sha256:d6ea8edd8c9de8f1eaa5da58899c238102402ea380bbd7e93de813b89c9b15a0'),
+  actionVersion(8695589205, 30231271280, 'e662fc842875', 'sha256:c43352d24182a5ac74af457af67bca18bb8fcf2189ba29da6fc2fbc0eed388a7'),
+  actionVersion(8695597834, 30229870401, '869e5ef84b1b', 'sha256:1d4339431769964db35fb895b96dff743ad60109ea10133eb193e3c3d650d60b'),
+  actionVersion(8695686119, 30228238557, '584dd80d891b', 'sha256:a33ebe3cd7cdd175221ac751af082d434a848d3548a9ac4bb6eccfe56cc5080b'),
 ]
 
 const releaseVersions: RemoteKixdnsVersion[] = [
   {
     source: 'release',
-    source_id: 30364672955,
+    source_id: 8695402611,
     commit: panelBuildCommit,
     run_id: null,
     release_tag: 'v0.1.1',
     patchset: 5,
-    created_at: '2026-07-28T13:41:30Z',
+    created_at: '2026-07-28T16:03:47Z',
     source_url: 'https://github.com/olicesx/kixdns/releases/tag/v0.1.1',
-    build_url: 'https://github.com/tuoro/kixdns-panel/actions/runs/30364672955',
-    artifact: 'kixdns-enhanced-release-v0.1.1-linux-x86_64',
-    artifact_digest: 'sha256:ba376a1cc5b90c4c349a322cff7ee300cfa5ccf776f41257c5c005cca3099061',
-    download_url: 'https://nightly.link/tuoro/kixdns-panel/actions/runs/30364672955/kixdns-enhanced-release-v0.1.1-linux-x86_64.zip',
+    build_url: `https://github.com/tuoro/kixdns-panel/actions/runs/${releaseBuildRunId}`,
+    artifact: 'kixdns-enhanced-release-v0.1.1-p5-b05f496186fa-linux-x86_64',
+    artifact_digest: 'sha256:0e208928be027b3123c34678ca9a43dda2419c8269d0e3c3d2669ad3f89e1cb1',
+    download_url: `https://nightly.link/tuoro/kixdns-panel/actions/runs/${releaseBuildRunId}/kixdns-enhanced-release-v0.1.1-p5-b05f496186fa-linux-x86_64.zip`,
     installed: false,
     active: false,
   },
@@ -199,7 +206,9 @@ function demoVersionCatalog(source: KixdnsVersionSource): KixdnsVersionCatalog {
         artifact: remote.artifact,
         artifact_digest: remote.artifact_digest,
         upstream_repository: 'olicesx/kixdns',
-        upstream_commit: remote.source === 'release' ? releaseUpstreamCommit : actionUpstreamCommit,
+        upstream_commit: remote.source === 'release'
+          ? releaseUpstreamCommit
+          : actionUpstreamCommits[remote.run_id ?? 0] ?? null,
         patchset: 5,
         control_protocol: 1,
         binary_sha256: binarySha256[remote.source],

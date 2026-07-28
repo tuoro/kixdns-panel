@@ -28,6 +28,23 @@ export function shortHash(value: string | null | undefined, length = 10): string
   return value ? value.slice(0, length) : '未记录'
 }
 
+interface KixdnsVersionIdentity {
+  source: 'action' | 'release' | null
+  source_id: number | null
+  run_id: number | null
+  release_tag: string | null
+}
+
+export function formatKixdnsVersion(version: KixdnsVersionIdentity | null | undefined): string {
+  if (!version) return '未记录'
+  if (version.source === 'release') return version.release_tag ?? 'Release'
+  if (version.source === 'action') {
+    if (version.run_id) return `Run #${version.run_id}`
+    return version.source_id ? `Artifact #${version.source_id}` : 'Action'
+  }
+  return '未记录'
+}
+
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : '操作失败，请稍后重试'
 }
