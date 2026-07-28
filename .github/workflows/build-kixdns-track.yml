@@ -33,7 +33,8 @@ jobs:
         shell: bash
         env:
           CATALOG_DIRECTORY: ${{ inputs.catalog_directory }}
-          FORCE_BUILD: ${{ inputs.force || github.event_name == 'pull_request' }}
+          # PR 也按完整输入指纹查库存；只有手动调度可以要求全量重建。
+          FORCE_BUILD: ${{ inputs.force }}
           GH_TOKEN: ${{ github.token }}
         run: |
           [[ "$CATALOG_DIRECTORY" =~ ^upstreams/(actions|releases)$ ]] || {
