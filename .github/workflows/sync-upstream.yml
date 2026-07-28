@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
 
 permissions:
-  actions: write
   contents: write
+  issues: write
   pull-requests: write
 
 concurrency:
@@ -16,130 +16,251 @@ concurrency:
 
 jobs:
   sync:
-    name: Validate upstream Action and Release
+    name: Validate upstream ${{ matrix.track }}
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        track: [action, release]
     env:
       GH_TOKEN: ${{ github.token }}
+      TRACK: ${{ matrix.track }}
     steps:
       - name: Checkout panel repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - name: Read latest upstream tracks
+      - name: Read latest upstream track
         id: upstream
         shell: bash
         run: |
-          action_response="$(gh api 'repos/olicesx/kixdns/actions/workflows/build.yml/runs?branch=main&status=success&per_page=30')"
-          action_commit="$(jq -r '[.workflow_runs[] | select(.event == "push")][0].head_sha // empty' <<< "$action_response")"
-          action_run_id="$(jq -r '[.workflow_runs[] | select(.event == "push")][0].id // empty' <<< "$action_response")"
-          release_response="$(gh api 'repos/olicesx/kixdns/releases/latest')"
-          release_id="$(jq -r '.id // empty' <<< "$release_response")"
-          release_tag="$(jq -r '.tag_name // empty' <<< "$release_response")"
-          release_commit="$(gh api "repos/olicesx/kixdns/commits/${release_tag}" --jq .sha)"
+          case "$TRACK" in
+            action)
+              response="$(gh api 'repos/olicesx/kixdns/actions/workflows/build.yml/runs?branch=main&status=success&per_page=30')"
+              commit="$(jq -r '[.workflow_runs[] | select(.event == "push")][0].head_sha // empty' <<< "$response")"
+              reference="$(jq -r '[.workflow_runs[] | select(.event == "push")][0].id // empty' <<< "$response")"
+              current="$(jq -r .commit upstream.lock.json)"
+              lock_file='upstream.lock.json'
+              label='Action'
+              source_url="https://github.com/olicesx/kixdns/actions/runs/${reference}"
+              [[ "$commit" =~ ^[0-9a-f]{40}$ && "$reference" =~ ^[0-9]+$ ]] || {
+                echo '官方 Action 元数据无效' >&2
+                exit 1
+              }
+              ;;
+            release)
+              response="$(gh api 'repos/olicesx/kixdns/releases/latest')"
+              reference="$(jq -r '.tag_name // empty' <<< "$response")"
+              release_id="$(jq -r '.id // empty' <<< "$response")"
+              commit="$(gh api "repos/olicesx/kixdns/commits/${reference}" --jq .sha)"
+              current="$(jq -r .commit upstream.release.lock.json)"
+              lock_file='upstream.release.lock.json'
+              label='Release'
+              source_url="https://github.com/olicesx/kixdns/releases/tag/${reference}"
+              [[ "$commit" =~ ^[0-9a-f]{40}$ && "$release_id" =~ ^[0-9]+$ ]] || {
+                echo '官方 Release 元数据无效' >&2
+                exit 1
+              }
+              [[ "$reference" =~ ^[A-Za-z0-9._-]+$ ]] || {
+                echo '官方 Release 标签无效' >&2
+                exit 1
+              }
+              echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "不支持的上游轨道：${TRACK}" >&2
+              exit 1
+              ;;
+          esac
 
-          [[ "$action_commit" =~ ^[0-9a-f]{40}$ && "$action_run_id" =~ ^[0-9]+$ ]] || { echo '官方 Action 元数据无效' >&2; exit 1; }
-          [[ "$release_commit" =~ ^[0-9a-f]{40}$ && "$release_id" =~ ^[0-9]+$ ]] || { echo '官方 Release 元数据无效' >&2; exit 1; }
-          [[ "$release_tag" =~ ^[A-Za-z0-9._-]+$ ]] || { echo '官方 Release 标签无效' >&2; exit 1; }
-
+          changed=false
+          [[ "$commit" == "$current" ]] || changed=true
           {
-            echo "action_commit=$action_commit"
-            echo "action_run_id=$action_run_id"
-            echo "action_current=$(jq -r .commit upstream.lock.json)"
-            echo "release_commit=$release_commit"
-            echo "release_id=$release_id"
-            echo "release_tag=$release_tag"
-            echo "release_current=$(jq -r .commit upstream.release.lock.json)"
+            echo "changed=$changed"
+            echo "commit=$commit"
+            echo "current=$current"
+            echo "reference=$reference"
+            echo "lock_file=$lock_file"
+            echo "label=$label"
+            echo "source_url=$source_url"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Update candidate locks
-        if: steps.upstream.outputs.action_commit != steps.upstream.outputs.action_current || steps.upstream.outputs.release_commit != steps.upstream.outputs.release_current
+      - name: Prepare candidate lock
+        if: steps.upstream.outputs.changed == 'true'
         env:
-          ACTION_COMMIT: ${{ steps.upstream.outputs.action_commit }}
-          ACTION_CURRENT: ${{ steps.upstream.outputs.action_current }}
-          ACTION_RUN_ID: ${{ steps.upstream.outputs.action_run_id }}
-          RELEASE_COMMIT: ${{ steps.upstream.outputs.release_commit }}
-          RELEASE_CURRENT: ${{ steps.upstream.outputs.release_current }}
+          CANDIDATE_COMMIT: ${{ steps.upstream.outputs.commit }}
+          CANDIDATE_REFERENCE: ${{ steps.upstream.outputs.reference }}
           RELEASE_ID: ${{ steps.upstream.outputs.release_id }}
-          RELEASE_TAG: ${{ steps.upstream.outputs.release_tag }}
         shell: bash
         run: |
-          if [[ "$ACTION_COMMIT" != "$ACTION_CURRENT" ]]; then
-            jq --arg commit "$ACTION_COMMIT" --argjson run_id "$ACTION_RUN_ID" \
-              '.commit = $commit | .official_run_id = $run_id | del(.compatibility)' upstream.lock.json > upstream.lock.json.new
-            mv upstream.lock.json.new upstream.lock.json
-          fi
-          if [[ "$RELEASE_COMMIT" != "$RELEASE_CURRENT" ]]; then
-            jq --arg commit "$RELEASE_COMMIT" --argjson release_id "$RELEASE_ID" --arg tag "$RELEASE_TAG" \
-              '.commit = $commit | .release_id = $release_id | .release_tag = $tag | del(.compatibility)' upstream.release.lock.json > upstream.release.lock.json.new
-            mv upstream.release.lock.json.new upstream.release.lock.json
-          fi
-
-      - name: Update version catalogs
-        if: steps.upstream.outputs.action_commit != steps.upstream.outputs.action_current || steps.upstream.outputs.release_commit != steps.upstream.outputs.release_current
-        shell: bash
-        run: |
-          mkdir -p upstreams/actions upstreams/releases
-          action_run_id="$(jq -r .official_run_id upstream.lock.json)"
-          cp upstream.lock.json "upstreams/actions/${action_run_id}.json"
-          mapfile -t action_files < <(find upstreams/actions -maxdepth 1 -type f -name '*.json' -print | sort -r)
-          for file in "${action_files[@]:10}"; do rm -f -- "$file"; done
-
-          release_tag="$(jq -r .release_tag upstream.release.lock.json)"
-          cp upstream.release.lock.json "upstreams/releases/${release_tag}.json"
+          case "$TRACK" in
+            action)
+              jq --arg commit "$CANDIDATE_COMMIT" --argjson run_id "$CANDIDATE_REFERENCE" \
+                '.commit = $commit | .official_run_id = $run_id | del(.compatibility)' \
+                upstream.lock.json > upstream.lock.json.new
+              mv upstream.lock.json.new upstream.lock.json
+              ;;
+            release)
+              jq --arg commit "$CANDIDATE_COMMIT" --argjson release_id "$RELEASE_ID" \
+                --arg tag "$CANDIDATE_REFERENCE" \
+                '.commit = $commit | .release_id = $release_id | .release_tag = $tag | del(.compatibility)' \
+                upstream.release.lock.json > upstream.release.lock.json.new
+              mv upstream.release.lock.json.new upstream.release.lock.json
+              ;;
+          esac
 
       - name: Install Rust
-        if: steps.upstream.outputs.action_commit != steps.upstream.outputs.action_current || steps.upstream.outputs.release_commit != steps.upstream.outputs.release_current
+        if: steps.upstream.outputs.changed == 'true'
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy
 
       - name: Install dependency auditor
-        if: steps.upstream.outputs.action_commit != steps.upstream.outputs.action_current || steps.upstream.outputs.release_commit != steps.upstream.outputs.release_current
+        if: steps.upstream.outputs.changed == 'true'
         run: cargo install cargo-audit --version 0.22.2 --locked
 
       - name: Validate patch compatibility
-        if: steps.upstream.outputs.action_commit != steps.upstream.outputs.action_current || steps.upstream.outputs.release_commit != steps.upstream.outputs.release_current
+        id: validate
+        if: steps.upstream.outputs.changed == 'true'
+        env:
+          LOCK_FILE: ${{ steps.upstream.outputs.lock_file }}
         shell: bash
         run: |
-          for lock in upstream.lock.json upstream.release.lock.json; do
-            cargo xtask prepare --lock "$lock"
-            upstream_dir=".upstream/kixdns-$(jq -r .source "$lock")-$(jq -r .commit "$lock" | cut -c1-12)-p$(jq -r .patchset "$lock")"
-            (
-              cd "$upstream_dir"
-              cargo fmt --check
-              cargo test --lib --locked
-              cargo clippy --all-targets --all-features --locked -- -D warnings
-              cargo audit --deny warnings
-              cargo build --locked
-              python3 "$GITHUB_WORKSPACE/scripts/dns_smoke.py" target/debug/kixdns
-            )
-          done
+          validation_log="$RUNNER_TEMP/kixdns-compatibility-validation.log"
+          validation_report="$RUNNER_TEMP/kixdns-compatibility-report.md"
+          set +e
+          (
+            cargo xtask prepare --lock "$LOCK_FILE"
+            upstream_dir=".upstream/kixdns-$(jq -r .source "$LOCK_FILE")-$(jq -r .commit "$LOCK_FILE" | cut -c1-12)-p$(jq -r .patchset "$LOCK_FILE")"
+            cd "$upstream_dir"
+            cargo fmt --check
+            cargo test --lib --locked
+            cargo clippy --all-targets --all-features --locked -- -D warnings
+            cargo audit --deny warnings
+            cargo build --locked
+            python3 "$GITHUB_WORKSPACE/scripts/dns_smoke.py" target/debug/kixdns
+          ) 2>&1 | tee "$validation_log"
+          status=${PIPESTATUS[0]}
+          set -e
+
+          if ((status != 0)); then
+            {
+              echo '### 失败日志末尾'
+              echo
+              echo '```text'
+              tail -n 100 "$validation_log"
+              echo '```'
+            } > "$validation_report"
+            exit "$status"
+          fi
+
+      - name: Add validated version to catalog
+        if: steps.upstream.outputs.changed == 'true'
+        env:
+          CANDIDATE_REFERENCE: ${{ steps.upstream.outputs.reference }}
+          LOCK_FILE: ${{ steps.upstream.outputs.lock_file }}
+        shell: bash
+        run: |
+          case "$TRACK" in
+            action)
+              mkdir -p upstreams/actions
+              cp "$LOCK_FILE" "upstreams/actions/${CANDIDATE_REFERENCE}.json"
+              mapfile -t catalog < <(find upstreams/actions -maxdepth 1 -type f -name '*.json' -print | sort -r)
+              for file in "${catalog[@]:10}"; do rm -f -- "$file"; done
+              ;;
+            release)
+              mkdir -p upstreams/releases
+              cp "$LOCK_FILE" "upstreams/releases/${CANDIDATE_REFERENCE}.json"
+              ;;
+          esac
 
       - name: Merge validated upstream update
-        if: steps.upstream.outputs.action_commit != steps.upstream.outputs.action_current || steps.upstream.outputs.release_commit != steps.upstream.outputs.release_current
+        if: steps.upstream.outputs.changed == 'true'
         env:
-          ACTION_COMMIT: ${{ steps.upstream.outputs.action_commit }}
-          ACTION_RUN_ID: ${{ steps.upstream.outputs.action_run_id }}
-          RELEASE_COMMIT: ${{ steps.upstream.outputs.release_commit }}
-          RELEASE_ID: ${{ steps.upstream.outputs.release_id }}
-          RELEASE_TAG: ${{ steps.upstream.outputs.release_tag }}
+          CANDIDATE_COMMIT: ${{ steps.upstream.outputs.commit }}
+          CANDIDATE_REFERENCE: ${{ steps.upstream.outputs.reference }}
+          LOCK_FILE: ${{ steps.upstream.outputs.lock_file }}
+          SOURCE_LABEL: ${{ steps.upstream.outputs.label }}
+          SOURCE_URL: ${{ steps.upstream.outputs.source_url }}
         shell: bash
         run: |
-          branch="automation/upstream-${ACTION_COMMIT:0:8}-${RELEASE_COMMIT:0:8}"
+          branch="automation/upstream-${TRACK}-${CANDIDATE_COMMIT:0:12}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$branch"
-          git add upstream.lock.json upstream.release.lock.json upstreams/actions upstreams/releases
-          git commit -m "chore: track verified upstream versions"
+          git add "$LOCK_FILE" "upstreams/${TRACK}s"
+          git commit -m "chore: track verified upstream ${TRACK}"
           git push --force origin "HEAD:refs/heads/${branch}"
           pull_request="$(gh pr list --head "$branch" --state open --json url --jq '.[0].url // empty')"
           if [[ -z "$pull_request" ]]; then
-            # Markdown 代码标记必须保持为字面量。
-            # shellcheck disable=SC2016
-            body="$(printf '同步 KixDNS 两条已验证上游轨道。\n\n- Action：提交 `%s`，Run https://github.com/olicesx/kixdns/actions/runs/%s\n- Release：`%s`，提交 `%s`，https://github.com/olicesx/kixdns/releases/tag/%s\n- 两条轨道的增强补丁、测试、Clippy、RustSec 与 DNS 冒烟均已通过' "$ACTION_COMMIT" "$ACTION_RUN_ID" "$RELEASE_TAG" "$RELEASE_COMMIT" "$RELEASE_TAG")"
-            pull_request="$(gh pr create --base main --head "$branch" --title "chore: track verified upstream versions" --body "$body")"
+            body_file="$RUNNER_TEMP/upstream-pull-request.md"
+            {
+              echo "同步已验证的 KixDNS ${SOURCE_LABEL} 上游版本。"
+              echo
+              echo "- 上游身份：\`${CANDIDATE_REFERENCE}\`"
+              echo "- 上游提交：\`${CANDIDATE_COMMIT}\`"
+              echo "- 上游来源：${SOURCE_URL}"
+              echo '- 验证：增强补丁、测试、Clippy、RustSec 与 DNS 冒烟均已通过'
+            } > "$body_file"
+            pull_request="$(gh pr create --base main --head "$branch" \
+              --title "chore: track verified upstream ${TRACK}" --body-file "$body_file")"
           fi
           gh pr merge "$pull_request" --squash --delete-branch
           [[ "$(gh pr view "$pull_request" --json state --jq .state)" == 'MERGED' ]]
+
+      - name: Report compatibility failure
+        if: always() && steps.validate.outcome == 'failure'
+        env:
+          CANDIDATE_COMMIT: ${{ steps.upstream.outputs.commit }}
+          CANDIDATE_REFERENCE: ${{ steps.upstream.outputs.reference }}
+          SOURCE_LABEL: ${{ steps.upstream.outputs.label }}
+          SOURCE_URL: ${{ steps.upstream.outputs.source_url }}
+        shell: bash
+        run: |
+          title="[compat] KixDNS ${SOURCE_LABEL} 需要适配"
+          marker="<!-- kixdns-upstream-compatibility:${TRACK} -->"
+          workflow_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          body_file="$RUNNER_TEMP/kixdns-compatibility-issue.md"
+          report_file="$RUNNER_TEMP/kixdns-compatibility-report.md"
+          {
+            echo "$marker"
+            echo '## 上游兼容性验证失败'
+            echo
+            echo "- 轨道：${SOURCE_LABEL}"
+            echo "- 候选身份：\`${CANDIDATE_REFERENCE}\`"
+            echo "- 上游提交：\`${CANDIDATE_COMMIT}\`"
+            echo "- 上游来源：${SOURCE_URL}"
+            echo "- 完整日志：${workflow_url}"
+            echo
+            echo '该候选不会写入版本目录，现有可安装版本和 Artifact 不受影响。'
+            echo
+            if [[ -f "$report_file" ]]; then
+              cat "$report_file"
+            else
+              echo '验证步骤未生成日志摘要，请查看完整工作流日志。'
+            fi
+          } > "$body_file"
+
+          issue="$(gh issue list --state open --limit 100 --json number,title | \
+            jq -r --arg title "$title" '.[] | select(.title == $title) | .number' | head -n 1)"
+          if [[ -n "$issue" ]]; then
+            gh issue edit "$issue" --title "$title" --body-file "$body_file"
+          else
+            gh issue create --title "$title" --body-file "$body_file"
+          fi
+
+      - name: Close resolved compatibility alert
+        if: success()
+        env:
+          SOURCE_LABEL: ${{ steps.upstream.outputs.label }}
+        shell: bash
+        run: |
+          title="[compat] KixDNS ${SOURCE_LABEL} 需要适配"
+          issue="$(gh issue list --state open --limit 100 --json number,title | \
+            jq -r --arg title "$title" '.[] | select(.title == $title) | .number' | head -n 1)"
+          if [[ -n "$issue" ]]; then
+            gh issue close "$issue" --comment '对应轨道已通过兼容性验证，告警自动关闭。'
+          fi
