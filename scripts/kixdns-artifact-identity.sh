@@ -20,7 +20,6 @@ esac
 }
 
 files=(
-  "$lock_file"
   Cargo.lock
   rust-toolchain.toml
   tools/xtask/Cargo.toml
@@ -39,10 +38,11 @@ if [[ "$source" == release && -d "patches/release/$reference" ]]; then
 fi
 
 fingerprint="$({
+  [[ -f "$lock_file" ]] || { echo "构建输入不存在：$lock_file" >&2; exit 1; }
+  printf 'upstream.lock.json\0%s\n' "$(sha256sum "$lock_file" | cut -d ' ' -f1)"
   for file in "${files[@]}"; do
     [[ -f "$file" ]] || { echo "构建输入不存在：$file" >&2; exit 1; }
-    printf '%s\0' "$file"
-    sha256sum "$file"
+    printf '%s\0%s\n' "$file" "$(sha256sum "$file" | cut -d ' ' -f1)"
   done
 } | sha256sum | cut -c1-12)"
 

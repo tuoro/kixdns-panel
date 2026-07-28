@@ -84,7 +84,19 @@ jobs:
           npm run build
 
       - name: Verify deployment scripts
-        run: shellcheck scripts/*.sh
+        shell: bash
+        run: |
+          shellcheck scripts/*.sh
+          action_catalog="upstreams/actions/$(jq -r .official_run_id upstream.lock.json).json"
+          release_catalog="upstreams/releases/$(jq -r .release_tag upstream.release.lock.json).json"
+          cmp --silent upstream.lock.json "$action_catalog"
+          cmp --silent upstream.release.lock.json "$release_catalog"
+          for architecture in x86_64 arm64; do
+            [[ "$(bash scripts/kixdns-artifact-identity.sh upstream.lock.json "$architecture")" == \
+              "$(bash scripts/kixdns-artifact-identity.sh "$action_catalog" "$architecture")" ]]
+            [[ "$(bash scripts/kixdns-artifact-identity.sh upstream.release.lock.json "$architecture")" == \
+              "$(bash scripts/kixdns-artifact-identity.sh "$release_catalog" "$architecture")" ]]
+          done
 
   build:
     name: Build Linux ${{ matrix.arch }}
