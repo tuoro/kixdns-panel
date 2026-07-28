@@ -7,6 +7,7 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use tempfile::{Builder, TempDir};
 
 const PATCH_STAMP: &str = ".kixdns-panel-patches";
 
@@ -57,24 +58,7 @@ fn prepare(root: &Path) -> Result<()> {
     fs::create_dir_all(&source_root).context("创建 .upstream 目录失败")?;
 
     if !checkout.join(".git").is_dir() {
-        let url = format!("https://github.com/{}.git", lock.repository);
-        run(
-            root,
-            "git",
-            ["clone", "--filter=blob:none", "--no-checkout", &url]
-                .into_iter()
-                .chain([checkout.as_os_str().to_string_lossy().as_ref()]),
-        )?;
-        run(
-            &checkout,
-            "git",
-            ["fetch", "--depth", "1", "origin", lock.commit.as_str()],
-        )?;
-        run(
-            &checkout,
-            "git",
-            ["checkout", "--detach", lock.commit.as_str()],
-        )?;
+        initialize_checkout(root, &source_root, &checkout, &lock)?;
     }
 
     let head = output(&checkout, "git", ["rev-parse", "HEAD"])?;
@@ -89,6 +73,95 @@ fn prepare(root: &Path) -> Result<()> {
     apply_patches(root, &checkout, lock.patchset)?;
     println!("上游增强源码已准备：{}", checkout.display());
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckoutPlaceholder {
+    Missing,
+    Empty,
+    CachedTarget,
+}
+
+fn initialize_checkout(
+    root: &Path,
+    source_root: &Path,
+    checkout: &Path,
+    lock: &UpstreamLock,
+) -> Result<()> {
+    let placeholder = inspect_checkout_placeholder(checkout)?;
+    let prefix = format!(".kixdns-{}-prepare-", &lock.commit[..12]);
+    let staging = Builder::new()
+        .prefix(&prefix)
+        .tempdir_in(source_root)
+        .context("创建上游临时检出目录失败")?;
+    let url = format!("https://github.com/{}.git", lock.repository);
+    run(
+        root,
+        "git",
+        [
+            OsStr::new("clone"),
+            OsStr::new("--filter=blob:none"),
+            OsStr::new("--no-checkout"),
+            OsStr::new(&url),
+            staging.path().as_os_str(),
+        ],
+    )?;
+    run(
+        staging.path(),
+        "git",
+        ["fetch", "--depth", "1", "origin", lock.commit.as_str()],
+    )?;
+    run(
+        staging.path(),
+        "git",
+        ["checkout", "--detach", lock.commit.as_str()],
+    )?;
+
+    activate_checkout(staging, checkout, placeholder)
+}
+
+fn activate_checkout(
+    staging: TempDir,
+    checkout: &Path,
+    placeholder: CheckoutPlaceholder,
+) -> Result<()> {
+    let staging = staging.keep();
+    if placeholder == CheckoutPlaceholder::CachedTarget {
+        fs::rename(checkout.join("target"), staging.join("target"))
+            .context("保留上游 Rust 构建缓存失败")?;
+    }
+    if placeholder != CheckoutPlaceholder::Missing {
+        fs::remove_dir(checkout)
+            .with_context(|| format!("移除空的上游占位目录失败：{}", checkout.display()))?;
+    }
+    fs::rename(&staging, checkout)
+        .with_context(|| format!("启用上游临时检出失败；检出内容保留在 {}", staging.display()))?;
+    Ok(())
+}
+
+fn inspect_checkout_placeholder(checkout: &Path) -> Result<CheckoutPlaceholder> {
+    if !checkout.exists() {
+        return Ok(CheckoutPlaceholder::Missing);
+    }
+    if !checkout.is_dir() {
+        bail!("上游检出路径不是目录，拒绝覆盖：{}", checkout.display());
+    }
+    let entries = fs::read_dir(checkout)
+        .with_context(|| format!("读取上游占位目录失败：{}", checkout.display()))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    if entries.is_empty() {
+        return Ok(CheckoutPlaceholder::Empty);
+    }
+    if entries.len() == 1
+        && entries[0].file_name() == OsStr::new("target")
+        && entries[0].file_type()?.is_dir()
+    {
+        return Ok(CheckoutPlaceholder::CachedTarget);
+    }
+    bail!(
+        "上游目录不是 Git 检出且包含未知内容，拒绝覆盖：{}",
+        checkout.display()
+    )
 }
 
 fn apply_patches(root: &Path, checkout: &Path, patchset: u32) -> Result<()> {
@@ -210,7 +283,13 @@ fn print_help() {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_commit;
+    use std::fs;
+
+    use tempfile::{tempdir, tempdir_in};
+
+    use super::{
+        CheckoutPlaceholder, activate_checkout, inspect_checkout_placeholder, validate_commit,
+    };
 
     #[test]
     fn accepts_full_commit_sha() {
@@ -221,5 +300,63 @@ mod tests {
     fn rejects_short_or_non_hex_commit() {
         assert!(validate_commit("374d63c").is_err());
         assert!(validate_commit("z74d63ccfdde6d281d3c7b5de9c689bfb0b0fb25").is_err());
+    }
+
+    #[test]
+    fn recognizes_safe_checkout_placeholders() {
+        let root = tempdir().unwrap();
+        let missing = root.path().join("missing");
+        assert_eq!(
+            inspect_checkout_placeholder(&missing).unwrap(),
+            CheckoutPlaceholder::Missing
+        );
+
+        let empty = root.path().join("empty");
+        fs::create_dir(&empty).unwrap();
+        assert_eq!(
+            inspect_checkout_placeholder(&empty).unwrap(),
+            CheckoutPlaceholder::Empty
+        );
+
+        let cached = root.path().join("cached");
+        fs::create_dir(&cached).unwrap();
+        fs::create_dir(cached.join("target")).unwrap();
+        assert_eq!(
+            inspect_checkout_placeholder(&cached).unwrap(),
+            CheckoutPlaceholder::CachedTarget
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_partial_checkouts() {
+        let root = tempdir().unwrap();
+        let checkout = root.path().join("checkout");
+        fs::create_dir(&checkout).unwrap();
+        fs::write(checkout.join("README"), "保留").unwrap();
+
+        let error = inspect_checkout_placeholder(&checkout).unwrap_err();
+        assert!(error.to_string().contains("包含未知内容"));
+    }
+
+    #[test]
+    fn activates_checkout_without_discarding_cached_target() {
+        let root = tempdir().unwrap();
+        let checkout = root.path().join("checkout");
+        fs::create_dir(&checkout).unwrap();
+        fs::create_dir(checkout.join("target")).unwrap();
+        fs::write(checkout.join("target/cache"), "cached").unwrap();
+        let staging = tempdir_in(root.path()).unwrap();
+        fs::write(staging.path().join("source"), "checked out").unwrap();
+
+        activate_checkout(staging, &checkout, CheckoutPlaceholder::CachedTarget).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(checkout.join("source")).unwrap(),
+            "checked out"
+        );
+        assert_eq!(
+            fs::read_to_string(checkout.join("target/cache")).unwrap(),
+            "cached"
+        );
     }
 }
