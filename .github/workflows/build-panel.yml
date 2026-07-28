@@ -1,0 +1,164 @@
+name: Build KixDNS Panel
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/build-panel.yml
+      - crates/panel-server/**
+      - deploy/**
+      - scripts/fetch-kixdns-artifact.sh
+      - scripts/install.sh
+      - scripts/uninstall.sh
+      - web/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+  pull_request:
+    paths:
+      - .github/workflows/build-panel.yml
+      - crates/panel-server/**
+      - deploy/**
+      - scripts/fetch-kixdns-artifact.sh
+      - scripts/install.sh
+      - scripts/uninstall.sh
+      - web/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: panel-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify panel
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout panel repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.12.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Cache panel build
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: . -> target
+
+      - name: Verify panel server
+        run: |
+          cargo fmt --all -- --check
+          cargo test --workspace --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Audit panel dependencies
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo audit --deny warnings
+
+      - name: Verify web console
+        working-directory: web
+        run: |
+          npm ci
+          npm audit --audit-level=moderate
+          npm test
+          npm run build
+
+      - name: Verify deployment scripts
+        run: shellcheck scripts/*.sh
+
+  build:
+    name: Build Linux ${{ matrix.arch }}
+    if: github.event_name != 'pull_request'
+    needs: verify
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+
+    steps:
+      - name: Checkout panel repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: 1.97.1
+          targets: ${{ matrix.target }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.12.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Cache panel build
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: . -> target
+
+      - name: Build web console
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build panel server
+        run: cargo build --package kixdns-panel-server --release --locked --target ${{ matrix.target }}
+
+      - name: Reuse verified KixDNS artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash scripts/fetch-kixdns-artifact.sh \
+            "$GITHUB_REPOSITORY" build-kixdns.yml main \
+            "kixdns-enhanced-linux-${{ matrix.arch }}" \
+            upstream.lock.json dist/reused-kixdns
+
+      - name: Package complete panel artifact
+        shell: bash
+        run: |
+          bundle="dist/kixdns-panel-linux-${{ matrix.arch }}"
+          install -Dm755 dist/reused-kixdns/kixdns "$bundle/bin/kixdns"
+          install -Dm755 "target/${{ matrix.target }}/release/kixdns-panel-server" "$bundle/bin/kixdns-panel-server"
+          mkdir -p "$bundle/web" "$bundle/docs"
+          cp -a web/dist/. "$bundle/web/"
+          cp -a deploy scripts "$bundle/"
+          cp docs/architecture.md docs/control-protocol-v1.md docs/deployment.md "$bundle/docs/"
+          cp README.md LICENSE upstream.lock.json "$bundle/"
+          cp dist/reused-kixdns/KIXDNS_BUILD_COMMIT dist/reused-kixdns/KIXDNS_SOURCE_RUN_ID "$bundle/"
+          printf '%s\n' "$GITHUB_SHA" > "$bundle/PANEL_BUILD_COMMIT"
+          (cd "$bundle" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
+
+      - name: Upload complete panel artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: kixdns-panel-linux-${{ matrix.arch }}
+          path: dist/kixdns-panel-linux-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 30
