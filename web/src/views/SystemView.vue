@@ -134,8 +134,13 @@ onMounted(refreshAll)
         <template v-else-if="service">
           <div class="service-state">
             <span :class="running ? 'service-state__icon' : 'service-state__icon service-state__icon--stopped'"><CircleCheck :size="24" /></span>
-            <div><small>{{ service.unit }}</small><strong>{{ running ? '正在运行' : '已停止' }}</strong><p>{{ service.active_state }} / {{ service.sub_state }} · PID {{ service.main_pid || '—' }}</p></div>
+            <div><small>{{ service.unit }}</small><strong>{{ running ? '正在运行' : '已停止' }}</strong></div>
           </div>
+          <dl class="detail-list service-details">
+            <div><dt>活动状态</dt><dd class="mono">{{ service.active_state }}</dd></div>
+            <div><dt>运行状态</dt><dd class="mono">{{ service.sub_state }}</dd></div>
+            <div><dt>主进程</dt><dd class="mono">{{ service.main_pid ? `PID ${service.main_pid}` : '—' }}</dd></div>
+          </dl>
           <div class="service-actions">
             <button class="button button--secondary" type="button" :disabled="!installed || running || serviceAction !== null" @click="control('start')"><Play :size="16" />启动</button>
             <button class="button button--secondary" type="button" :disabled="!installed || !running || serviceAction !== null" @click="control('restart')"><RotateCw :size="16" :class="{ spin: serviceAction === 'restart' }" />重启</button>
