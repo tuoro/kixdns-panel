@@ -263,6 +263,7 @@ impl UpdateManager {
         operations: &Operations,
         control: &ControlClient,
     ) -> Result<(), UpdateError> {
+        #[cfg(not(unix))]
         ensure_update_platform()?;
         validate_elf(&binary)?;
         let target = self.binary_path.as_ref();
@@ -496,11 +497,13 @@ fn persist(temporary: NamedTempFile, path: &Path) -> Result<(), UpdateError> {
 }
 
 #[cfg_attr(not(unix), allow(clippy::unnecessary_wraps))]
-fn sync_directory(_path: &Path) -> Result<(), UpdateError> {
+fn sync_directory(path: &Path) -> Result<(), UpdateError> {
     #[cfg(unix)]
-    fs::File::open(_path)
+    fs::File::open(path)
         .and_then(|directory| directory.sync_all())
         .map_err(|error| UpdateError::Install(error.to_string()))?;
+    #[cfg(not(unix))]
+    let _ = path;
     Ok(())
 }
 
@@ -514,11 +517,6 @@ async fn wait_until_healthy(control: &ControlClient) -> Result<(), UpdateError> 
     Err(UpdateError::Install(
         "新版本在 10 秒内未通过健康检查".to_owned(),
     ))
-}
-
-#[cfg(unix)]
-fn ensure_update_platform() -> Result<(), UpdateError> {
-    Ok(())
 }
 
 #[cfg(not(unix))]

@@ -857,6 +857,7 @@ fn map_control_error(error: ControlError) -> AppError {
 fn map_operation_error(error: OperationError) -> AppError {
     match error {
         OperationError::Invalid(message) => AppError::BadRequest("operation_invalid", message),
+        #[cfg(not(unix))]
         OperationError::Unsupported => {
             AppError::ServiceUnavailable("operation_unsupported", "当前平台不支持此操作".to_owned())
         }

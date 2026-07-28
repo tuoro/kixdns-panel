@@ -75,6 +75,7 @@ impl ServiceAction {
 pub enum OperationError {
     #[error("{0}")]
     Invalid(String),
+    #[cfg(not(unix))]
     #[error("当前平台不支持此操作")]
     Unsupported,
     #[error("宿主机操作失败：{0}")]
