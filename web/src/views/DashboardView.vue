@@ -3,6 +3,7 @@ import { Activity, Database, Eraser, RefreshCw, Timer, Zap } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { apiRequest } from '../api/client'
 import type { CacheFlushResult, Overview, ServiceStatus } from '../api/types'
+import StatusBanner from '../components/StatusBanner.vue'
 import { useToast } from '../composables/useToast'
 import { errorMessage, formatDuration, formatNumber, formatPercent, shortHash } from '../utils'
 
@@ -10,9 +11,15 @@ const overview = ref<Overview | null>(null)
 const service = ref<ServiceStatus | null>(null)
 const loading = ref(true)
 const refreshing = ref(false)
+const requesting = ref(false)
 const flushing = ref(false)
+const overviewError = ref('')
+const serviceError = ref('')
 const toast = useToast()
 let timer: number | undefined
+let pendingLoad: Promise<void> | null = null
+
+const loadError = computed(() => [overviewError.value, serviceError.value].filter(Boolean).join('；'))
 
 const cacheHitRate = computed(() => {
   const metrics = overview.value?.metrics
@@ -21,21 +28,30 @@ const cacheHitRate = computed(() => {
 })
 const maxPipeline = computed(() => Math.max(1, ...(overview.value?.metrics.pipelines.map((item) => item.count) ?? [])))
 
-async function load(silent = false): Promise<void> {
+function load(silent = false): Promise<void> {
+  if (pendingLoad) return pendingLoad
   if (!silent) refreshing.value = true
-  try {
+  requesting.value = true
+  pendingLoad = (async () => {
     const [overviewResult, serviceResult] = await Promise.allSettled([
       apiRequest<Overview>('/api/v1/overview'),
       apiRequest<ServiceStatus>('/api/v1/service'),
     ])
-    if (overviewResult.status === 'fulfilled') overview.value = overviewResult.value
-    else if (!silent) toast.error(errorMessage(overviewResult.reason))
-    if (serviceResult.status === 'fulfilled') service.value = serviceResult.value
-    else if (!silent) toast.error(errorMessage(serviceResult.reason))
-  } finally {
+    if (overviewResult.status === 'fulfilled') {
+      overview.value = overviewResult.value
+      overviewError.value = ''
+    } else overviewError.value = `运行数据：${errorMessage(overviewResult.reason)}`
+    if (serviceResult.status === 'fulfilled') {
+      service.value = serviceResult.value
+      serviceError.value = ''
+    } else serviceError.value = `服务状态：${errorMessage(serviceResult.reason)}`
+  })().finally(() => {
     loading.value = false
     refreshing.value = false
-  }
+    requesting.value = false
+    pendingLoad = null
+  })
+  return pendingLoad
 }
 
 async function flushCache(): Promise<void> {
@@ -63,8 +79,10 @@ onBeforeUnmount(() => window.clearInterval(timer))
   <div class="page dashboard-page">
     <div class="page-actions">
       <div class="status-line"><span :class="service?.active_state === 'active' ? 'status-dot' : 'status-dot status-dot--danger'"></span>{{ service?.unit ?? 'kixdns.service' }} · {{ service?.sub_state ?? '读取中' }}</div>
-      <button class="button button--secondary" type="button" :disabled="refreshing" @click="load()"><RefreshCw :size="16" :class="{ spin: refreshing }" />刷新</button>
+      <button class="button button--secondary" type="button" :disabled="requesting" @click="load()"><RefreshCw :size="16" :class="{ spin: refreshing }" />刷新</button>
     </div>
+
+    <StatusBanner v-if="loadError" :message="loadError" :stale="Boolean(overview || service)" :busy="requesting" @retry="load()" />
 
     <div v-if="loading" class="skeleton-grid"><span v-for="index in 4" :key="index"></span></div>
     <template v-else-if="overview">

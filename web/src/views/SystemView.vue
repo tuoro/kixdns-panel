@@ -21,6 +21,7 @@ import type {
   ServiceAction,
   ServiceStatus,
 } from '../api/types'
+import StatusBanner from '../components/StatusBanner.vue'
 import { useToast } from '../composables/useToast'
 import { errorMessage, formatDate, shortHash } from '../utils'
 
@@ -32,11 +33,16 @@ const loadingService = ref(true)
 const loadingVersions = ref(true)
 const serviceAction = ref<ServiceAction | null>(null)
 const versionAction = ref<VersionAction | null>(null)
+const serviceError = ref('')
+const versionsError = ref('')
 const toast = useToast()
+let pendingService: Promise<void> | null = null
+let pendingVersions: Promise<void> | null = null
 
 const running = computed(() => service.value?.active_state === 'active')
 const installed = computed(() => catalog.value?.binary_present === true)
 const activeVersion = computed(() => catalog.value?.installed_versions.find((item) => item.active) ?? null)
+const loadError = computed(() => [serviceError.value, versionsError.value].filter(Boolean).join('；'))
 
 function buildTime(value: string | null): string {
   if (!value) return '构建时间未记录'
@@ -49,31 +55,40 @@ function buildTime(value: string | null): string {
   }).format(new Date(value))
 }
 
-async function loadService(silent = false): Promise<void> {
+function loadService(silent = false): Promise<void> {
+  if (pendingService) return pendingService
   loadingService.value = true
-  try {
+  pendingService = (async () => {
     service.value = await apiRequest<ServiceStatus>('/api/v1/service')
-  } catch (error) {
-    if (!silent) toast.error(errorMessage(error))
-  } finally {
+    serviceError.value = ''
+  })().catch((error: unknown) => {
+    serviceError.value = `服务状态：${errorMessage(error)}`
+    if (!silent && service.value) toast.error(serviceError.value)
+  }).finally(() => {
     loadingService.value = false
-  }
+    pendingService = null
+  })
+  return pendingService
 }
 
-async function loadVersions(silent = false): Promise<void> {
+function loadVersions(silent = false): Promise<void> {
+  if (pendingVersions) return pendingVersions
   loadingVersions.value = true
-  try {
+  pendingVersions = (async () => {
     catalog.value = await apiRequest<KixdnsVersionCatalog>('/api/v1/kixdns/versions')
-  } catch (error) {
-    if (!silent) toast.error(errorMessage(error))
-  } finally {
+    versionsError.value = ''
+  })().catch((error: unknown) => {
+    versionsError.value = `版本目录：${errorMessage(error)}`
+    if (!silent && catalog.value) toast.error(versionsError.value)
+  }).finally(() => {
     loadingVersions.value = false
-  }
+    pendingVersions = null
+  })
+  return pendingVersions
 }
 
 async function refreshAll(): Promise<void> {
   await Promise.all([loadService(true), loadVersions(true)])
-  if (!service.value || !catalog.value) toast.error('部分系统状态读取失败')
 }
 
 async function control(action: ServiceAction): Promise<void> {
@@ -82,6 +97,7 @@ async function control(action: ServiceAction): Promise<void> {
   serviceAction.value = action
   try {
     service.value = await apiRequest<ServiceStatus>(`/api/v1/service/${action}`, { method: 'POST' })
+    serviceError.value = ''
     toast.success(`KixDNS 服务已${names[action]}`)
   } catch (error) {
     toast.error(errorMessage(error))
@@ -127,10 +143,11 @@ onMounted(refreshAll)
 
 <template>
   <div class="page system-page">
+    <StatusBanner v-if="loadError" :message="loadError" :stale="Boolean(service || catalog)" :busy="loadingService || loadingVersions" @retry="refreshAll" />
     <div class="system-layout">
       <section class="panel service-panel">
         <header class="panel__header"><div><h2>宿主机服务</h2><p>kixdns.service</p></div><ServerCog :size="20" /></header>
-        <div v-if="loadingService" class="inline-loading">读取服务状态…</div>
+        <div v-if="loadingService && !service" class="inline-loading">读取服务状态…</div>
         <template v-else-if="service">
           <div class="service-state">
             <span :class="running ? 'service-state__icon' : 'service-state__icon service-state__icon--stopped'"><CircleCheck :size="24" /></span>
@@ -147,6 +164,7 @@ onMounted(refreshAll)
             <button class="button button--danger-quiet" type="button" :disabled="!running || serviceAction !== null" @click="control('stop')"><Square :size="15" />停止</button>
           </div>
         </template>
+        <div v-else class="inline-loading">服务状态暂不可用</div>
       </section>
 
       <section class="panel runtime-panel">
@@ -199,6 +217,7 @@ onMounted(refreshAll)
           </div>
         </aside>
       </div>
+      <div v-else class="version-empty">版本目录暂不可用</div>
     </section>
   </div>
 </template>

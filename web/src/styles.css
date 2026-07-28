@@ -46,7 +46,9 @@ code, .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monosp
 .sidebar__nav a.router-link-exact-active svg { color: #83d4a9; }
 .sidebar__footer { margin-top: auto; padding: 16px 12px 20px; border-top: 1px solid #2b3234; }
 .service-indicator { display: flex; align-items: center; gap: 10px; padding: 6px 10px 15px; }
-.service-indicator > span, .status-dot { width: 8px; height: 8px; display: inline-block; flex: 0 0 auto; background: #42b97b; border-radius: 50%; box-shadow: 0 0 0 3px rgba(66, 185, 123, .13); }
+.service-indicator > span, .status-dot { width: 8px; height: 8px; display: inline-block; flex: 0 0 auto; border-radius: 50%; }
+.service-indicator > span { background: #7f8986; box-shadow: none; }
+.status-dot { background: #42b97b; box-shadow: 0 0 0 3px rgba(66, 185, 123, .13); }
 .service-indicator div { display: grid; gap: 2px; }
 .service-indicator strong { color: #cbd3d0; font-size: 11px; font-weight: 600; }
 .service-indicator small { color: #75817d; font-size: 10px; }
@@ -442,6 +444,12 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .toast--error > svg { color: var(--red); }
 .toast--info > svg { color: var(--amber); }
 .empty-state { padding: 22px; color: #929b98; font-size: 10px; text-align: center; }
+.status-banner { min-height: 54px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; margin-bottom: 14px; padding: 9px 11px; color: #8e3131; background: #fff7f7; border: 1px solid #e8c7c7; border-radius: 6px; }
+.status-banner > svg { color: var(--red); }
+.status-banner > div { min-width: 0; display: grid; gap: 2px; }
+.status-banner strong { font-size: 11px; }
+.status-banner p { overflow-wrap: anywhere; color: #805f5f; font-size: 10px; line-height: 1.4; }
+.status-banner .icon-button { color: #8e4b4b; background: transparent; border-color: #dfbdbd; }
 .sidebar-backdrop { display: none; }
 
 @media (max-width: 1120px) {
@@ -466,6 +474,7 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 }
 
 @media (max-width: 860px) {
+  body.menu-open { overflow: hidden; }
   .sidebar { visibility: hidden; transform: translateX(-100%); transition: transform .2s ease, visibility 0s linear .2s; }
   .sidebar--open { visibility: visible; transform: translateX(0); transition-delay: 0s; }
   .sidebar__close, .menu-button { display: inline-grid !important; }

@@ -21,6 +21,7 @@ import type { ConfigApplyResult, ConfigDocument, ConfigVersion, ConfigVersions, 
 import ConfigFlowPreview from '../components/config/ConfigFlowPreview.vue'
 import StructuredConfigEditor from '../components/config/StructuredConfigEditor.vue'
 import JsonEditor from '../components/JsonEditor.vue'
+import StatusBanner from '../components/StatusBanner.vue'
 import { normalizeConfig, serializeConfig } from '../config-editor/model'
 import type { ConfigEditorMode, KixConfig } from '../config-editor/types'
 import { useToast } from '../composables/useToast'
@@ -40,9 +41,11 @@ const saving = ref(false)
 const restoring = ref<number | null>(null)
 const validation = ref<ValidationResult | null>(null)
 const parseError = ref('')
+const loadError = ref('')
 const toast = useToast()
 const changed = computed(() => source.value !== baseline.value)
 let syncingConfig = false
+let pendingLoad: Promise<void> | null = null
 
 watch(source, () => {
   validation.value = null
@@ -96,9 +99,10 @@ function activateMode(nextMode: ConfigEditorMode): void {
   mode.value = nextMode
 }
 
-async function load(): Promise<void> {
+function load(): Promise<void> {
+  if (pendingLoad) return pendingLoad
   loading.value = true
-  try {
+  pendingLoad = (async () => {
     const [nextDocument, history] = await Promise.all([
       apiRequest<ConfigDocument>('/api/v1/config'),
       apiRequest<ConfigVersions>('/api/v1/config/versions'),
@@ -111,11 +115,14 @@ async function load(): Promise<void> {
     baseline.value = source.value
     syncingConfig = false
     validation.value = null
-  } catch (error) {
-    toast.error(errorMessage(error))
-  } finally {
+    loadError.value = ''
+  })().catch((error: unknown) => {
+    loadError.value = errorMessage(error)
+  }).finally(() => {
     loading.value = false
-  }
+    pendingLoad = null
+  })
+  return pendingLoad
 }
 
 async function validate(): Promise<ValidationResult | null> {
@@ -221,6 +228,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
       <div v-if="document" class="document-meta"><span class="status-dot"></span><span>当前摘要</span><code>{{ shortHash(document.sha256, 14) }}</code></div>
       <button class="button button--secondary" type="button" :disabled="loading || saving || restoring !== null" @click="load"><RefreshCw :size="16" :class="{ spin: loading }" />重新读取</button>
     </div>
+    <StatusBanner v-if="loadError" :message="loadError" :stale="Boolean(document)" :busy="loading" @retry="load" />
     <div class="config-layout">
       <section class="editor-panel">
         <header class="editor-toolbar">
@@ -241,6 +249,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
         </nav>
 
         <div v-if="loading" class="editor-loading">正在读取配置…</div>
+        <div v-else-if="!document" class="editor-loading">配置暂不可用</div>
         <StructuredConfigEditor v-else-if="mode === 'structured' && config" v-model="config" @notice="toast.info($event)" />
         <JsonEditor v-else-if="mode === 'json'" v-model="source" />
         <ConfigFlowPreview v-else-if="config" :config="config" />
