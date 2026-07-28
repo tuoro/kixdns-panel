@@ -207,13 +207,15 @@ jobs:
         shell: bash
         run: |
           find_release() {
-            gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" |
-              jq -c --arg tag "$TAG" '.[] | select(.tag_name == $tag)' |
-              head -n 1
+            gh release view "$TAG" --json isDraft,targetCommitish,assets --jq '{
+              draft: .isDraft,
+              target_commitish: .targetCommitish,
+              assets: [.assets[] | {name, digest}]
+            }'
           }
 
-          release_json="$(find_release)"
-          if [[ -n "$release_json" ]]; then
+          release_json=""
+          if release_json="$(find_release 2>/dev/null)"; then
             target="$(jq -r .target_commitish <<< "$release_json")"
             [[ "$target" == "$GITHUB_SHA" ]] || {
               echo "Release ${TAG} 已指向 ${target}；构建配方变化时必须递增 build_revision" >&2
@@ -231,7 +233,10 @@ jobs:
             gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "KixDNS ${UPSTREAM_COMMIT:0:12} · p${PATCHSET} r${REVISION}" --notes "$notes"
           fi
 
-          release_json="$(find_release)"
+          for _ in 1 2 3 4 5; do
+            release_json="$(find_release 2>/dev/null)" && break
+            sleep 1
+          done
           [[ -n "$release_json" ]] || { echo "无法读取 Release ${TAG}" >&2; exit 1; }
           for asset in dist/release/kixdns-enhanced-linux-x86_64.zip dist/release/kixdns-enhanced-linux-arm64.zip dist/release/SHA256SUMS; do
             name="$(basename "$asset")"
