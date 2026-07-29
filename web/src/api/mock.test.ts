@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { KixdnsVersionCatalog, ServiceStatus, ValidationResult } from './types'
+import type { GeoDataManifest, KixdnsVersionCatalog, ServiceStatus, ValidationResult } from './types'
 import { mockRequest } from './mock'
 
 describe('演示 API', () => {
@@ -20,6 +20,21 @@ describe('演示 API', () => {
     })
     expect(result.valid).toBe(true)
     expect(result.pipeline_count).toBe(2)
+  })
+
+  it('同步远程 Geo 数据并返回受管路径', async () => {
+    const result = await mockRequest<GeoDataManifest>('/api/v1/config/geo-data/sync', {
+      method: 'POST',
+      body: JSON.stringify({
+        geoip_mmdb_url: 'https://example.com/country.mmdb',
+        geoip_dat_url: null,
+        geosite_urls: ['https://example.com/geosite.dat'],
+      }),
+    })
+    expect(result.geoip_mmdb?.path).toMatch(/^\/var\/lib\/kixdns-panel\/geo\/geoip-mmdb-/)
+    expect(result.geoip_dat).toBeNull()
+    expect(result.geosite).toHaveLength(1)
+    expect(result.geosite[0]?.url).toBe('https://example.com/geosite.dat')
   })
 
   it('安装并切换 KixDNS 构建', async () => {

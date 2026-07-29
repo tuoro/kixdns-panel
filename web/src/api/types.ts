@@ -114,6 +114,26 @@ export interface ConfigApplyResult {
   validation?: ValidationResult
 }
 
+export interface GeoDataResource {
+  url: string
+  path: string
+  sha256: string
+  size: number
+  downloaded_at: number
+}
+
+export interface GeoDataManifest {
+  geoip_mmdb: GeoDataResource | null
+  geoip_dat: GeoDataResource | null
+  geosite: GeoDataResource[]
+}
+
+export interface GeoDataSyncRequest {
+  geoip_mmdb_url: string | null
+  geoip_dat_url: string | null
+  geosite_urls: string[]
+}
+
 export interface CacheFlushResult {
   protocol_version: number
   response_entries_before: number

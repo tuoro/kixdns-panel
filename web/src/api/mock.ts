@@ -5,6 +5,8 @@ import type {
   ConfigDocument,
   ConfigVersions,
   DnsDiagnostic,
+  GeoDataManifest,
+  GeoDataSyncRequest,
   LogsResponse,
   Overview,
   KixdnsVersionCatalog,
@@ -25,6 +27,8 @@ let config: ConfigDocument = {
       cache_capacity: 20000,
       default_upstream: '1.1.1.1:53',
       upstream_timeout_ms: 1800,
+      geoip_db_path: '/var/lib/kixdns-panel/geo/geoip-mmdb-4c425e120e43.mmdb',
+      geosite_data_paths: ['/var/lib/kixdns-panel/geo/geosite-67b90a027f2c.dat'],
     },
     pipelines: [
       {
@@ -50,6 +54,24 @@ const activeConfig: ActiveConfig = {
   loaded_at_unix: now - 430,
   reload_sequence: 24,
   last_reload: { success: true, error: null },
+}
+
+let geoData: GeoDataManifest = {
+  geoip_mmdb: {
+    url: 'https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country.mmdb',
+    path: '/var/lib/kixdns-panel/geo/geoip-mmdb-4c425e120e43.mmdb',
+    sha256: '4c425e120e43eaf45383ee0bf12302f83fd247bd4b421f7ecda38ab76e95f3e1',
+    size: 6_438_912,
+    downloaded_at: now - 7200,
+  },
+  geoip_dat: null,
+  geosite: [{
+    url: 'https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat',
+    path: '/var/lib/kixdns-panel/geo/geosite-67b90a027f2c.dat',
+    sha256: '67b90a027f2ce03cb94371723eec95bfb4ea7646691ba75e4b42a8b99f1465ee',
+    size: 5_904_224,
+    downloaded_at: now - 7200,
+  }],
 }
 
 const session: AuthSession = {
@@ -263,6 +285,23 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
     return version as T
   }
   if (path === '/api/v1/config' && method === 'GET') return config as T
+  if (path === '/api/v1/config/geo-data' && method === 'GET') return geoData as T
+  if (path === '/api/v1/config/geo-data/sync' && method === 'POST') {
+    const body = JSON.parse(String(init?.body)) as GeoDataSyncRequest
+    const resource = (url: string, prefix: string, extension: string, index = 0) => ({
+      url,
+      path: `/var/lib/kixdns-panel/geo/${prefix}-demo${Date.now().toString(16)}${index}.${extension}`,
+      sha256: `demo${Date.now().toString(16)}${index}`.padEnd(64, '0').slice(0, 64),
+      size: 5_904_224 + index * 1024,
+      downloaded_at: Math.floor(Date.now() / 1000),
+    })
+    geoData = {
+      geoip_mmdb: body.geoip_mmdb_url ? resource(body.geoip_mmdb_url, 'geoip-mmdb', 'mmdb') : null,
+      geoip_dat: body.geoip_dat_url ? resource(body.geoip_dat_url, 'geoip-dat', body.geoip_dat_url.endsWith('.json') ? 'json' : 'dat') : null,
+      geosite: body.geosite_urls.map((url, index) => resource(url, 'geosite', url.endsWith('.json') ? 'json' : 'dat', index)),
+    }
+    return geoData as T
+  }
   if (path === '/api/v1/config/versions') return versions as T
   if (path === '/api/v1/config/validate') {
     const content = JSON.parse(String(init?.body)) as Record<string, unknown>

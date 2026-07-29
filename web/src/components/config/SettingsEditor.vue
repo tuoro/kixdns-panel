@@ -2,8 +2,10 @@
 import { Plus, Trash2 } from '@lucide/vue'
 import { SETTING_SECTIONS, settingVisible, type SettingField } from '../../config-editor/schema'
 import type { GlobalSettings } from '../../config-editor/types'
+import GeoDataEditor from './GeoDataEditor.vue'
 
 const settings = defineModel<GlobalSettings>({ required: true })
+defineEmits<{ notice: [message: string] }>()
 
 function scalarValue(field: SettingField): string | number {
   const value = settings.value[field.key]
@@ -92,4 +94,5 @@ function removeListItem(field: SettingField, index: number): void {
       </template>
     </div>
   </section>
+  <GeoDataEditor v-model="settings" @notice="$emit('notice', $event)" />
 </template>
