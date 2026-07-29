@@ -34,6 +34,7 @@ use crate::db::{
     ConfigVersionSummary, Database, SessionRecord, UserRecord, ensure_database_parent,
 };
 use crate::error::{AppError, AppResult};
+use crate::geo_data::{GeoDataError, GeoDataManager, GeoDataManifest, GeoDataSyncRequest};
 use crate::operations::{
     DnsDiagnostic, LogEntry, OperationError, Operations, ServiceAction, ServiceStatus,
 };
@@ -58,6 +59,7 @@ pub struct AppSettings {
     pub installed_commit: Option<String>,
     pub kixdns_binary: PathBuf,
     pub kixdns_versions: PathBuf,
+    pub geo_data_path: PathBuf,
     pub web_root: PathBuf,
     pub secure_cookie: bool,
     pub trusted_proxies: TrustedProxies,
@@ -70,6 +72,7 @@ pub struct AppState {
     control: ControlClient,
     operations: Operations,
     updates: UpdateManager,
+    geo_data: GeoDataManager,
     secure_cookie: bool,
     trusted_proxies: TrustedProxies,
     login_limiter: Arc<LoginLimiter>,
@@ -206,6 +209,8 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         },
     )
     .map_err(|error| anyhow::anyhow!(error))?;
+    let geo_data = GeoDataManager::new(database.clone(), settings.geo_data_path)
+        .map_err(|error| anyhow::anyhow!(error))?;
     let state = AppState {
         database,
         config,
@@ -213,6 +218,7 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         operations: Operations::new(settings.service_unit, settings.diagnostic_server)
             .map_err(|error| anyhow::anyhow!(error))?,
         updates,
+        geo_data,
         secure_cookie: settings.secure_cookie,
         trusted_proxies: settings.trusted_proxies,
         login_limiter: Arc::new(LoginLimiter::default()),
@@ -230,6 +236,8 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         .route("/overview", get(overview))
         .route("/config", get(get_config).put(save_config))
         .route("/config/validate", post(validate_config))
+        .route("/config/geo-data", get(get_geo_data))
+        .route("/config/geo-data/sync", post(sync_geo_data))
         .route("/config/versions", get(config_versions))
         .route("/config/versions/{id}/restore", post(restore_config))
         .route("/cache/flush", post(flush_cache))
@@ -467,6 +475,50 @@ async fn validate_config(
         .await
         .map(Json)
         .map_err(map_control_error)
+}
+
+async fn get_geo_data(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> AppResult<Json<GeoDataManifest>> {
+    authenticate(&state.database, &jar).await?;
+    state
+        .geo_data
+        .current()
+        .await
+        .map(Json)
+        .map_err(map_geo_data_error)
+}
+
+async fn sync_geo_data(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Json(request): Json<GeoDataSyncRequest>,
+) -> AppResult<Json<GeoDataManifest>> {
+    let session = authenticate(&state.database, &jar).await?;
+    verify_csrf(&session, &jar, &headers)?;
+    let result = state
+        .geo_data
+        .sync(request)
+        .await
+        .map_err(map_geo_data_error)?;
+    state
+        .database
+        .audit(
+            Some(session.username),
+            "config.geo_data.sync".to_owned(),
+            format!(
+                "同步 Geo 数据：MMDB {}，GeoIP {}，GeoSite {} 个",
+                usize::from(result.geoip_mmdb.is_some()),
+                usize::from(result.geoip_dat.is_some()),
+                result.geosite.len()
+            ),
+            unix_timestamp(),
+        )
+        .await
+        .map_err(AppError::Internal)?;
+    Ok(Json(result))
 }
 
 async fn save_config(
@@ -963,6 +1015,16 @@ fn map_control_error(error: ControlError) -> AppError {
     }
 }
 
+fn map_geo_data_error(error: GeoDataError) -> AppError {
+    match error {
+        GeoDataError::Invalid(message) => AppError::BadRequest("geo_data_invalid", message),
+        GeoDataError::Download(message) => {
+            AppError::Unprocessable("geo_data_download_failed", message)
+        }
+        GeoDataError::Internal(error) => AppError::Internal(error),
+    }
+}
+
 fn map_operation_error(error: OperationError) -> AppError {
     match error {
         OperationError::Invalid(message) => AppError::BadRequest("operation_invalid", message),
@@ -1100,6 +1162,7 @@ mod tests {
             installed_commit: None,
             kixdns_binary: directory.path().join("kixdns"),
             kixdns_versions: directory.path().join("versions"),
+            geo_data_path: directory.path().join("geo"),
             web_root,
             secure_cookie: false,
             trusted_proxies: TrustedProxies::default(),
@@ -1237,5 +1300,55 @@ mod tests {
             unknown_api.headers().get(CONTENT_TYPE).unwrap(),
             "application/json"
         );
+    }
+
+    #[tokio::test]
+    async fn geo_data_api_requires_auth_and_rejects_insecure_urls() {
+        let context = authenticated_app().await;
+        let unauthorized = context
+            .app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/config/geo-data")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let current = context
+            .app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/config/geo-data")
+                    .header(COOKIE, context.cookies.clone())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(current.status(), StatusCode::OK);
+        let payload: Value =
+            serde_json::from_slice(&to_bytes(current.into_body(), 64 * 1024).await.unwrap())
+                .unwrap();
+        assert!(payload["geoip_mmdb"].is_null());
+        assert_eq!(payload["geosite"], serde_json::json!([]));
+
+        let rejected = context
+            .app
+            .oneshot(
+                Request::post("/api/v1/config/geo-data/sync")
+                    .header(CONTENT_TYPE, "application/json")
+                    .header(COOKIE, context.cookies)
+                    .header("x-csrf-token", context.csrf_token)
+                    .body(Body::from(
+                        r#"{"geoip_mmdb_url":"http://127.0.0.1/geo.mmdb","geosite_urls":[]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
     }
 }

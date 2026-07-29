@@ -6,7 +6,7 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     encode_hex(Sha256::digest(bytes))
 }
 
-fn encode_hex(bytes: impl AsRef<[u8]>) -> String {
+pub(crate) fn encode_hex(bytes: impl AsRef<[u8]>) -> String {
     let bytes = bytes.as_ref();
     let mut encoded = String::with_capacity(bytes.len() * 2);
     for byte in bytes {

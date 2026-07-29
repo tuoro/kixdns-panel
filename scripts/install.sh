@@ -193,7 +193,8 @@ main() {
 
   create_accounts
   install -d -o "${PANEL_USER}" -g "${KIXDNS_GROUP}" -m 0750 \
-    /var/lib/kixdns-panel /var/lib/kixdns-panel/bin /var/lib/kixdns-panel/versions
+    /var/lib/kixdns-panel /var/lib/kixdns-panel/bin /var/lib/kixdns-panel/versions \
+    /var/lib/kixdns-panel/geo
   [[ ! -L /var/lib/kixdns-panel/bin/kixdns ]] || fail "KixDNS 二进制目标不能是符号链接"
   [[ ! -L /usr/local/bin/kixdns-panel-server ]] || fail "面板二进制目标不能是符号链接"
   prepare_rollback

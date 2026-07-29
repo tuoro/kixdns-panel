@@ -85,6 +85,14 @@ struct Args {
     )]
     kixdns_versions: PathBuf,
 
+    /// 面板下载并管理的 GeoIP/GeoSite 数据目录。
+    #[arg(
+        long,
+        env = "KIXDNS_GEO_DATA",
+        default_value = "/var/lib/kixdns-panel/geo"
+    )]
+    geo_data: PathBuf,
+
     /// Vue 前端构建产物目录。
     #[arg(long, env = "KIXDNS_WEB_ROOT", default_value = "web/dist")]
     web_root: PathBuf,
@@ -126,6 +134,7 @@ async fn main() -> anyhow::Result<()> {
         installed_commit: args.installed_commit,
         kixdns_binary: args.kixdns_binary,
         kixdns_versions: args.kixdns_versions,
+        geo_data_path: args.geo_data,
         web_root: args.web_root,
         secure_cookie: args.secure_cookie,
         trusted_proxies: args.trusted_proxies,
