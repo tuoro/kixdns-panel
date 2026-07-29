@@ -200,6 +200,7 @@ const kixdnsVersionKey = (version: Pick<RemoteKixdnsVersion, 'source' | 'source_
 let activeKixdnsVersion = kixdnsVersionKey(actionVersions[0])
 const installedKixdnsVersions = new Map<string, RemoteKixdnsVersion>([
   [activeKixdnsVersion, actionVersions[0]],
+  [kixdnsVersionKey(actionVersions[1]), actionVersions[1]],
 ])
 
 function demoVersionCatalog(source: KixdnsVersionSource): KixdnsVersionCatalog {
@@ -277,6 +278,18 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
         version.source === source && (String(version.source_id) === identity || version.commit === identity),
       )
       if (!remote) throw new Error('演示版本尚未安装')
+    } else if (pathname.endsWith('/delete')) {
+      const identity = parts[6]
+      const entry = [...installedKixdnsVersions.entries()].find(([, version]) =>
+        version.source === source && (String(version.source_id) === identity || version.commit === identity),
+      )
+      if (!entry) throw new Error('演示版本尚未安装')
+      if (entry[0] === activeKixdnsVersion) throw new Error('当前运行版本不能删除，请先切换版本')
+      const version = demoVersionCatalog(source).installed_versions.find((item) =>
+        item.source === source && item.source_id === entry[1].source_id,
+      )
+      installedKixdnsVersions.delete(entry[0])
+      return version as T
     }
     if (!remote) throw new Error('演示版本操作无效')
     activeKixdnsVersion = kixdnsVersionKey(remote)

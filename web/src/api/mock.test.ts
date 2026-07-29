@@ -83,6 +83,24 @@ describe('演示 API', () => {
     expect(release.commit).toBe(actions.remote_versions[0].commit)
     expect(actions.remote_versions[0].installed).toBe(true)
     expect(actions.remote_versions[0].active).toBe(false)
-    expect(actions.installed_versions.filter((version) => version.commit === release.commit).map((version) => version.source).sort()).toEqual(['action', 'release'])
+    expect(new Set(actions.installed_versions.filter((version) => version.commit === release.commit).map((version) => version.source))).toEqual(new Set(['action', 'release']))
+  })
+
+  it('删除非活动本地版本并拒绝删除当前版本', async () => {
+    const before = await mockRequest<KixdnsVersionCatalog>('/api/v1/kixdns/versions?source=action')
+    const removable = before.installed_versions.find((version) => !version.active)
+    const active = before.installed_versions.find((version) => version.active)
+    expect(removable).toBeDefined()
+    expect(active).toBeDefined()
+
+    const removableIdentity = removable?.source_id ?? removable?.commit
+    await mockRequest(`/api/v1/kixdns/versions/${removable?.source ?? 'action'}/${removableIdentity}/delete`, { method: 'POST' })
+    const after = await mockRequest<KixdnsVersionCatalog>('/api/v1/kixdns/versions?source=action')
+    expect(after.installed_versions).toHaveLength(before.installed_versions.length - 1)
+    expect(after.installed_versions.some((version) => version.source_id === removable?.source_id)).toBe(false)
+
+    const activeIdentity = active?.source_id ?? active?.commit
+    await expect(mockRequest(`/api/v1/kixdns/versions/${active?.source ?? 'action'}/${activeIdentity}/delete`, { method: 'POST' }))
+      .rejects.toThrow('当前运行版本不能删除')
   })
 })

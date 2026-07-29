@@ -13,6 +13,7 @@ import {
   ServerCog,
   Square,
   Tag as TagIcon,
+  Trash2,
 } from '@lucide/vue'
 import { computed, onMounted, ref } from 'vue'
 import { apiRequest } from '../api/client'
@@ -28,7 +29,7 @@ import StatusBanner from '../components/StatusBanner.vue'
 import { useToast } from '../composables/useToast'
 import { errorMessage, formatDate, formatKixdnsVersion, shortHash } from '../utils'
 
-type VersionAction = { identity: string; kind: 'install' | 'activate' }
+type VersionAction = { identity: string; kind: 'install' | 'activate' | 'delete' }
 
 const service = ref<ServiceStatus | null>(null)
 const catalog = ref<KixdnsVersionCatalog | null>(null)
@@ -161,8 +162,25 @@ async function activateVersion(version: InstalledKixdnsVersion | RemoteKixdnsVer
   }
 }
 
-function actionBusy(version: InstalledKixdnsVersion | RemoteKixdnsVersion): boolean {
+async function deleteVersion(version: InstalledKixdnsVersion): Promise<void> {
+  if (version.active || !window.confirm(`删除本地版本 ${formatKixdnsVersion(version)}？已删除的版本需要重新下载。`)) return
+  const source = version.source ?? 'action'
+  const identity = version.source_id ?? version.commit
+  versionAction.value = { identity: versionIdentity(version), kind: 'delete' }
+  try {
+    await apiRequest<InstalledKixdnsVersion>(`/api/v1/kixdns/versions/${source}/${identity}/delete`, { method: 'POST' })
+    toast.success('本地 KixDNS 版本已删除')
+    await loadVersions(true)
+  } catch (error) {
+    toast.error(errorMessage(error))
+  } finally {
+    versionAction.value = null
+  }
+}
+
+function actionBusy(version: InstalledKixdnsVersion | RemoteKixdnsVersion, kind?: VersionAction['kind']): boolean {
   return versionAction.value?.identity === versionIdentity(version)
+    && (!kind || versionAction.value.kind === kind)
 }
 
 onMounted(refreshAll)
@@ -250,7 +268,10 @@ onMounted(refreshAll)
               <p v-if="version.upstream_commit"><span class="mono">上游 {{ shortHash(version.upstream_commit, 9) }}</span><span>p{{ version.patchset }}</span><span>{{ artifactArchitecture(version.artifact) }}</span><a v-if="version.source_url" :href="version.source_url" target="_blank" rel="noopener noreferrer">上游详情</a><a v-if="version.build_url" :href="version.build_url" target="_blank" rel="noopener noreferrer">增强 Action</a></p>
               <p v-else>构建身份未记录</p>
               <p><span class="mono">增强 {{ shortHash(version.commit, 9) }}</span><span class="mono">二进制 {{ shortHash(version.binary_sha256, 12) }}</span><span>{{ formatDate(version.installed_at) }}</span></p>
-              <button v-if="!version.active" class="icon-button icon-button--small" type="button" title="切换到此版本" :disabled="versionAction !== null" @click="activateVersion(version)"><RotateCw :size="14" :class="{ spin: actionBusy(version) }" /></button>
+              <div v-if="!version.active" class="local-version-actions">
+                <button class="icon-button icon-button--small" type="button" title="切换到此版本" aria-label="切换到此版本" :disabled="versionAction !== null" @click="activateVersion(version)"><RotateCw :size="14" :class="{ spin: actionBusy(version, 'activate') }" /></button>
+                <button class="icon-button icon-button--small icon-button--danger" type="button" :title="actionBusy(version, 'delete') ? '正在删除' : '删除本地版本'" aria-label="删除本地版本" :disabled="versionAction !== null" @click="deleteVersion(version)"><RefreshCw v-if="actionBusy(version, 'delete')" :size="14" class="spin" /><Trash2 v-else :size="14" /></button>
+              </div>
             </article>
             <div v-if="catalog.installed_versions.length === 0" class="version-empty">尚无本地版本</div>
           </div>
