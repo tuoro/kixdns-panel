@@ -12,7 +12,7 @@ use reqwest::{Client, Response, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tempfile::{Builder, NamedTempFile};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
 use crate::auth::unix_timestamp;
@@ -95,8 +95,10 @@ impl ResourceKind {
 }
 
 impl GeoDataManager {
-    pub fn new(database: Database, root: PathBuf) -> Result<Self, GeoDataError> {
-        prepare_root(&root)?;
+    pub fn new(database: Database, root: &Path) -> Result<Self, GeoDataError> {
+        prepare_root(root)?;
+        let root =
+            fs::canonicalize(root).map_err(|error| internal_io("规范化 Geo 数据目录", error))?;
         Ok(Self {
             database,
             root: Arc::new(root),
@@ -202,7 +204,7 @@ impl GeoDataManager {
         let sha256 = encode_hex(hasher.finalize());
         let filename = format!("{}-{sha256}.{}", kind.prefix(), kind.extension(&final_url));
         let path = self.root.join(filename);
-        persist_content_addressed(temporary, &path)?;
+        persist_content_addressed(temporary, &path, &sha256, size).await?;
 
         Ok(GeoDataResource {
             url: raw_url.to_owned(),
@@ -424,9 +426,14 @@ fn prepare_root(path: &Path) -> Result<(), GeoDataError> {
     Ok(())
 }
 
-fn persist_content_addressed(temporary: NamedTempFile, path: &Path) -> Result<(), GeoDataError> {
+async fn persist_content_addressed(
+    temporary: NamedTempFile,
+    path: &Path,
+    expected_sha256: &str,
+    expected_size: u64,
+) -> Result<(), GeoDataError> {
     if path.exists() {
-        return Ok(());
+        return verify_existing(path, expected_sha256, expected_size).await;
     }
     match temporary.persist_noclobber(path) {
         Ok(_) => {
@@ -434,9 +441,49 @@ fn persist_content_addressed(temporary: NamedTempFile, path: &Path) -> Result<()
             sync_parent(path)?;
             Ok(())
         }
-        Err(error) if error.error.kind() == ErrorKind::AlreadyExists => Ok(()),
+        Err(error) if error.error.kind() == ErrorKind::AlreadyExists => {
+            verify_existing(path, expected_sha256, expected_size).await
+        }
         Err(error) => Err(internal_io("保存 Geo 数据", error.error)),
     }
+}
+
+async fn verify_existing(
+    path: &Path,
+    expected_sha256: &str,
+    expected_size: u64,
+) -> Result<(), GeoDataError> {
+    let metadata = tokio::fs::symlink_metadata(path)
+        .await
+        .map_err(|error| internal_io("检查已有 Geo 数据", error))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() != expected_size {
+        return Err(GeoDataError::Internal(anyhow::anyhow!(
+            "已有 Geo 数据与内容摘要不一致：{}",
+            path.display()
+        )));
+    }
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .map_err(|error| internal_io("读取已有 Geo 数据", error))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .await
+            .map_err(|error| internal_io("校验已有 Geo 数据", error))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    if encode_hex(hasher.finalize()) != expected_sha256 {
+        return Err(GeoDataError::Internal(anyhow::anyhow!(
+            "已有 Geo 数据与内容摘要不一致：{}",
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -462,9 +509,15 @@ fn internal_io(action: &str, error: std::io::Error) -> GeoDataError {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-    use super::{ResourceKind, is_public_ip, normalize_geosite_urls, parse_url};
+    use tempfile::{Builder, tempdir};
+
+    use super::{
+        ResourceKind, is_public_ip, normalize_geosite_urls, parse_url, persist_content_addressed,
+    };
+    use crate::digest::sha256_hex;
 
     #[test]
     fn only_accepts_safe_https_urls() {
@@ -509,5 +562,27 @@ mod tests {
         assert_eq!(ResourceKind::Site.extension(&url), "json");
         assert_eq!(ResourceKind::IpDat.extension(&url), "json");
         assert_eq!(ResourceKind::Mmdb.extension(&url), "mmdb");
+    }
+
+    #[tokio::test]
+    async fn verifies_existing_content_addressed_files_before_reuse() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("geoip-mmdb-digest.mmdb");
+        std::fs::write(&path, b"evil").unwrap();
+        let mut temporary = Builder::new().tempfile_in(directory.path()).unwrap();
+        temporary.write_all(b"good").unwrap();
+        let digest = sha256_hex(b"good");
+        assert!(
+            persist_content_addressed(temporary, &path, &digest, 4)
+                .await
+                .is_err()
+        );
+
+        std::fs::write(&path, b"good").unwrap();
+        let mut duplicate = Builder::new().tempfile_in(directory.path()).unwrap();
+        duplicate.write_all(b"good").unwrap();
+        persist_content_addressed(duplicate, &path, &digest, 4)
+            .await
+            .unwrap();
     }
 }

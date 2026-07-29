@@ -209,7 +209,7 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         },
     )
     .map_err(|error| anyhow::anyhow!(error))?;
-    let geo_data = GeoDataManager::new(database.clone(), settings.geo_data_path)
+    let geo_data = GeoDataManager::new(database.clone(), &settings.geo_data_path)
         .map_err(|error| anyhow::anyhow!(error))?;
     let state = AppState {
         database,
