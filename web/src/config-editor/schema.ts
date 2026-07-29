@@ -85,7 +85,7 @@ export const SETTING_SECTIONS: SettingSection[] = [
   },
   {
     id: 'stale',
-    title: 'RFC 8767 过期缓存',
+    title: '过期缓存',
     tone: 'red',
     fields: [
       { key: 'serve_stale', label: '服务过期响应', type: 'boolean' },
