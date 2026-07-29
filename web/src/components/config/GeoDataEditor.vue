@@ -214,12 +214,12 @@ onMounted(loadManifest)
             </div>
             <button class="icon-button icon-button--small" type="button" title="删除 GeoSite 链接" :disabled="syncing" @click="removeRemoteGeosite(index)"><Trash2 :size="14" /></button>
           </div>
-          <button class="inline-command" type="button" :disabled="geositeUrls.length >= 8 || syncing" @click="addRemoteGeosite"><Plus :size="14" />添加链接</button>
+          <div class="geo-resource-commands">
+            <button class="inline-command" type="button" :disabled="geositeUrls.length >= 8 || syncing" @click="addRemoteGeosite"><Plus :size="14" />添加链接</button>
+            <button class="button button--secondary" type="button" :disabled="loading || syncing" @click="syncRemote"><RefreshCw v-if="syncing" :size="15" class="spin" /><Download v-else :size="15" />{{ syncing ? '下载中' : '下载并写入配置' }}</button>
+          </div>
+          <span v-if="statusError" class="geo-data-error"><TriangleAlert :size="14" />{{ statusError }}</span>
         </div>
-      </div>
-      <div class="geo-data-actions">
-        <span v-if="statusError" class="geo-data-error"><TriangleAlert :size="14" />{{ statusError }}</span>
-        <button class="button button--secondary" type="button" :disabled="loading || syncing" @click="syncRemote"><RefreshCw v-if="syncing" :size="15" class="spin" /><Download v-else :size="15" />{{ syncing ? '下载中' : '下载并写入配置' }}</button>
       </div>
     </div>
 
@@ -236,7 +236,7 @@ onMounted(loadManifest)
           <button class="inline-command" type="button" @click="addLocalGeosite"><Plus :size="14" />添加路径</button>
         </div>
       </div>
-      <div v-if="statusError" class="geo-data-actions"><span class="geo-data-error"><TriangleAlert :size="14" />{{ statusError }}</span></div>
+      <span v-if="statusError" class="geo-data-error geo-data-error--local"><TriangleAlert :size="14" />{{ statusError }}</span>
     </div>
 
     <div v-if="hasGeoIp" class="geo-options">

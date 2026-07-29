@@ -230,9 +230,10 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .geo-resource-field small { min-height: 16px; display: flex; align-items: center; gap: 5px; overflow: hidden; color: #72807a; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .geo-resource-field small svg { flex: 0 0 auto; color: var(--green); }
 .geo-resource-field .setting-list__row > div { min-width: 0; display: grid; gap: 4px; }
-.geo-data-actions { min-height: 44px; display: flex; align-items: flex-end; justify-content: flex-end; gap: 12px; padding-top: 10px; }
-.geo-data-error { min-width: 0; display: flex; align-items: center; gap: 6px; margin-right: auto; color: var(--red); font-size: 10px; line-height: 1.4; }
+.geo-resource-commands { min-height: 36px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.geo-data-error { min-width: 0; display: flex; align-items: center; gap: 6px; color: var(--red); font-size: 10px; line-height: 1.4; }
 .geo-data-error svg { flex: 0 0 auto; }
+.geo-data-error--local { margin-top: 10px; }
 .geo-options { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(220px, 2fr); align-items: end; gap: 12px; padding: 0 17px 18px; }
 .selector-list { padding: 0 17px 16px; }
 .selector-block { padding: 13px 0; border-bottom: 1px solid #e7ebe9; }
@@ -552,8 +553,8 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
   .geo-data-editor { padding: 12px 13px 10px; }
   .geo-resource-grid, .geo-options { grid-template-columns: 1fr; }
   .geo-options { padding: 0 13px 15px; }
-  .geo-data-actions { align-items: stretch; flex-direction: column; }
-  .geo-data-actions .button { width: 100%; }
+  .geo-resource-commands { align-items: stretch; flex-direction: column; gap: 4px; }
+  .geo-resource-commands .button { width: 100%; }
   .selector-list, .pipeline-list { padding-inline: 13px; }
   .selector-block__header { grid-template-columns: 28px minmax(0, 1fr) 28px; }
   .selector-block__header select:nth-of-type(2) { grid-column: 2; }
