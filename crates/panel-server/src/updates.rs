@@ -475,6 +475,27 @@ impl UpdateManager {
         self.activate_locked(&key, operations, control).await
     }
 
+    pub async fn delete_version(
+        &self,
+        source: VersionSource,
+        version: &str,
+    ) -> Result<InstalledVersion, UpdateError> {
+        let _guard = self.apply_lock.lock().await;
+        let key = match version.parse::<u64>() {
+            Ok(source_id) if source_id > 0 => self.installed_key(source, source_id).await?,
+            _ => VersionKey::new(source, version)?,
+        };
+        if self.active_version().await?.as_ref() == Some(&key) {
+            return Err(UpdateError::Invalid(
+                "当前运行版本不能删除，请先切换版本".to_owned(),
+            ));
+        }
+        let versions_path = Arc::clone(&self.versions_path);
+        tokio::task::spawn_blocking(move || delete_stored_version(&versions_path, &key))
+            .await
+            .map_err(|error| UpdateError::Install(error.to_string()))?
+    }
+
     async fn active_version(&self) -> Result<Option<VersionKey>, UpdateError> {
         if !regular_file_exists(self.binary_path.as_ref())? {
             return Ok(None);
@@ -1319,6 +1340,24 @@ fn prune_versions(versions_path: &Path, active_version: &VersionKey) -> Result<(
     sync_directory(versions_path)
 }
 
+fn delete_stored_version(
+    versions_path: &Path,
+    key: &VersionKey,
+) -> Result<InstalledVersion, UpdateError> {
+    let (manifest, _) = load_verified_version(versions_path, key)?;
+    let path = locate_version_directory(versions_path, key)?;
+    let metadata =
+        fs::symlink_metadata(&path).map_err(|error| UpdateError::Install(error.to_string()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(UpdateError::Verification(
+            "待删除版本目录类型无效".to_owned(),
+        ));
+    }
+    fs::remove_dir_all(path).map_err(|error| UpdateError::Install(error.to_string()))?;
+    sync_directory(versions_path)?;
+    Ok(manifest.into_installed(false))
+}
+
 fn parse_version_directory(name: &str) -> Option<VersionKey> {
     if validate_commit(name).is_ok() {
         return VersionKey::new(VersionSource::Action, name).ok();
@@ -1745,10 +1784,12 @@ mod tests {
 
     use super::{
         BuildIdentity, MANIFEST_SCHEMA_VERSION, ParsedArtifactReference, RemoteVersion,
-        TrackReference, VersionKey, VersionManifest, VersionSource, extract_artifact,
-        load_verified_version, parse_artifact_reference, sha256, store_version, validate_commit,
-        validate_digest, validate_remote_build_identity, validate_slug,
+        TrackReference, UpdateError, UpdateManager, UpdateSettings, VersionKey, VersionManifest,
+        VersionSource, delete_stored_version, extract_artifact, load_verified_version,
+        parse_artifact_reference, sha256, store_version, validate_commit, validate_digest,
+        validate_remote_build_identity, validate_slug,
     };
+    use crate::db::Database;
 
     const TEST_BUILD_COMMIT: &str = "4e8002d08a56afc08be335d0d5ed337c7690f9af";
 
@@ -1780,6 +1821,30 @@ mod tests {
             sha256(identity.as_bytes()),
             sha256(TEST_BUILD_COMMIT.as_bytes())
         )
+    }
+
+    fn test_manifest(source_id: u64, commit: &str, binary: &[u8]) -> VersionManifest {
+        VersionManifest {
+            schema_version: MANIFEST_SCHEMA_VERSION,
+            source: Some(VersionSource::Action),
+            source_id: Some(source_id),
+            commit: commit.to_owned(),
+            run_id: Some(source_id),
+            release_tag: None,
+            created_at: Some("2026-07-28T00:00:00Z".to_owned()),
+            source_url: Some(format!(
+                "https://github.com/olicesx/kixdns/actions/runs/{source_id}"
+            )),
+            build_url: Some("https://github.com/tuoro/kixdns-panel/actions/runs/99".to_owned()),
+            artifact: format!("kixdns-enhanced-action-{source_id}-linux-x86_64"),
+            artifact_digest: Some(format!("sha256:{}", "a".repeat(64))),
+            upstream_repository: Some("olicesx/kixdns".to_owned()),
+            upstream_commit: Some("374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25".to_owned()),
+            patchset: Some(5),
+            control_protocol: Some(1),
+            binary_sha256: sha256(binary),
+            installed_at: 42,
+        }
     }
 
     #[test]
@@ -1960,6 +2025,96 @@ mod tests {
         )
         .unwrap();
         assert!(load_verified_version(directory.path(), &key).is_err());
+    }
+
+    #[test]
+    fn deletes_only_verified_local_version_directories() {
+        let directory = tempdir().unwrap();
+        let binary = test_elf();
+        let commit = "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25";
+        let key = VersionKey::tracked(VersionSource::Action, 42, commit).unwrap();
+        store_version(
+            directory.path(),
+            &test_manifest(42, commit, &binary),
+            &binary,
+        )
+        .unwrap();
+
+        let deleted = delete_stored_version(directory.path(), &key).unwrap();
+
+        assert_eq!(deleted.source_id, Some(42));
+        assert!(!deleted.active);
+        assert!(!directory.path().join(key.directory_name()).exists());
+
+        std::fs::write(
+            directory.path().join(key.directory_name()),
+            b"not-a-directory",
+        )
+        .unwrap();
+        assert!(matches!(
+            delete_stored_version(directory.path(), &key),
+            Err(UpdateError::Verification(_))
+        ));
+        assert!(directory.path().join(key.directory_name()).is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlinked_version_directory_when_deleting() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let commit = "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25";
+        let key = VersionKey::tracked(VersionSource::Action, 42, commit).unwrap();
+        symlink(outside.path(), directory.path().join(key.directory_name())).unwrap();
+
+        assert!(matches!(
+            delete_stored_version(directory.path(), &key),
+            Err(UpdateError::Verification(_))
+        ));
+        assert!(outside.path().is_dir());
+    }
+
+    #[tokio::test]
+    async fn refuses_to_delete_the_active_version() {
+        let directory = tempdir().unwrap();
+        let database = Database::open(directory.path().join("panel.db"))
+            .await
+            .unwrap();
+        let binary_path = directory.path().join("bin/kixdns");
+        let versions_path = directory.path().join("versions");
+        let manager = UpdateManager::new(
+            database.clone(),
+            UpdateSettings {
+                repository: "tuoro/kixdns-panel".to_owned(),
+                workflow: "build-kixdns.yml".to_owned(),
+                release_workflow: "build-kixdns-release.yml".to_owned(),
+                branch: "main".to_owned(),
+                artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
+                installed_commit: None,
+                binary_path: binary_path.clone(),
+                versions_path: versions_path.clone(),
+            },
+        )
+        .unwrap();
+        let binary = test_elf();
+        let commit = "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25";
+        let key = VersionKey::tracked(VersionSource::Action, 42, commit).unwrap();
+        std::fs::write(binary_path, &binary).unwrap();
+        store_version(&versions_path, &test_manifest(42, commit, &binary), &binary).unwrap();
+        database
+            .set_setting(super::ACTIVE_VERSION_KEY, key.encoded(), 42)
+            .await
+            .unwrap();
+
+        let error = manager
+            .delete_version(VersionSource::Action, "42")
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, UpdateError::Invalid(_)));
+        assert!(versions_path.join(key.directory_name()).is_dir());
     }
 
     #[test]

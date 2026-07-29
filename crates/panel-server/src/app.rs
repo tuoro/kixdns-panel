@@ -256,6 +256,10 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
             "/kixdns/versions/{source}/{commit}/activate",
             post(activate_kixdns_version),
         )
+        .route(
+            "/kixdns/versions/{source}/{identity}/delete",
+            post(delete_kixdns_version),
+        )
         .fallback(not_found)
         .with_state(state);
 
@@ -875,6 +879,32 @@ async fn activate_kixdns_version(
     Ok(Json(result))
 }
 
+async fn delete_kixdns_version(
+    State(state): State<AppState>,
+    Path((source, identity)): Path<(VersionSource, String)>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> AppResult<Json<InstalledVersion>> {
+    let session = authenticate(&state.database, &jar).await?;
+    verify_csrf(&session, &jar, &headers)?;
+    let result = state
+        .updates
+        .delete_version(source, &identity)
+        .await
+        .map_err(map_update_error)?;
+    state
+        .database
+        .audit(
+            Some(session.username),
+            "kixdns.version.delete".to_owned(),
+            format!("删除本地增强构建 {}", result.commit),
+            unix_timestamp(),
+        )
+        .await
+        .map_err(AppError::Internal)?;
+    Ok(Json(result))
+}
+
 async fn rollback_config(
     state: &AppState,
     previous_content: Value,
@@ -1350,5 +1380,31 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn version_delete_requires_authentication_and_csrf() {
+        let context = authenticated_app().await;
+        let endpoint = "/api/v1/kixdns/versions/action/42/delete";
+
+        let unauthorized = context
+            .app
+            .clone()
+            .oneshot(Request::post(endpoint).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let forbidden = context
+            .app
+            .oneshot(
+                Request::post(endpoint)
+                    .header(COOKIE, context.cookies)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
     }
 }
