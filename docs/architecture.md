@@ -18,6 +18,7 @@ Panel Web ---- Panel Server ---- SQLite
                     |
                     +---- config/pipeline.json
                     +---- versions/<source>-<artifact-id>-<commit>/
+                    +---- geo/<kind>-<sha256>.<ext>
                     +---- systemd / Windows Service
                     +---- GitHub metadata / artifact provider
                     |
@@ -68,6 +69,7 @@ Panel Web ---- Panel Server ---- SQLite
 - 指标禁止域名、客户端 IP 等高基数或敏感标签。
 - Panel Server 以独立非 root 账号运行；systemd 控制同时受 API 白名单和精确到 unit/verb 的 Polkit 规则限制。
 - KixDNS 版本源只接受固定仓库、两条工作流、分支和按规则解析的 Artifact 名称；安装请求只携带来源类型和 GitHub Artifact ID，前端不能指定 URL 或文件路径。
+- Geo 数据源只接受 HTTPS，逐次固定公网 DNS 解析并重新校验重定向，限制下载体积与文件数量；内容寻址文件保持历史配置可回滚，面板专用 URL 元数据不进入 KixDNS 配置。
 - 后端从 Artifact 名称解析上游官方 Run 或 Release 标签，再校验包内 `source`、上游身份、提交、补丁集、控制协议和本仓库构建提交。两条轨道使用独立远端缓存与 `source + artifact_id + commit` 本地库存键，同一次工作流可安全暴露多个版本。
 - 安装前校验外层和包内 SHA-256、ELF 与架构，激活前再次校验本地清单与二进制摘要；替换后必须通过健康检查，否则恢复原状态。
 - 服务动作白名单只有 `start`、`stop`、`restart`。配置文件监听产生的结构化热加载回执属于增强控制协议，不是 systemd 服务重载能力。

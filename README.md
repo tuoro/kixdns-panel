@@ -20,6 +20,7 @@ KixDNS 的非 Fork 增强发行版与管理面板。项目维护上游正式 Rel
 - 带代次、SHA-256、重载序号与错误信息的结构化热加载回执
 - Argon2id 管理员认证、HttpOnly 会话、CSRF 防护和登录限流
 - 与上游编辑器功能对齐的结构化表单、原始 JSON、流程预览及导入导出
+- GeoIP/GeoSite HTTPS 链接下载、内容摘要托管与本地路径兼容模式
 - KixDNS 编译校验、乐观锁保存、版本历史、回滚和失败自动恢复
 - 面板内安装 KixDNS、切换 Releases/Actions 版本源并回切本地版本
 - systemd 启动、停止、重启固定动作控制，journal 日志与固定目标 DNS 诊断

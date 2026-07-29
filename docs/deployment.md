@@ -50,6 +50,7 @@ ARM64 使用 `kixdns-panel-linux-arm64`。安装脚本还会校验包内 `SHA256
 | `/var/lib/kixdns-panel/panel.db` | 用户、会话、版本与审计数据 |
 | `/var/lib/kixdns-panel/bin/kixdns` | 可自动更新的数据面二进制 |
 | `/var/lib/kixdns-panel/versions/<source>-<artifact-id>-<commit>/` | 按 Artifact 身份隔离的 KixDNS 二进制与版本清单 |
+| `/var/lib/kixdns-panel/geo/` | 按内容摘要保存的 GeoIP 与 GeoSite 数据 |
 | `/run/kixdns/admin.sock` | `0660` 本机增强控制通道 |
 | `/usr/share/kixdns-panel/web` | 前端静态资源 |
 
@@ -107,6 +108,12 @@ sudo systemctl restart kixdns-panel.service
 
 SQLite 中配置历史最多保留 100 条，审计事件最多保留 10,000 条；每次写入与清理处于同一事务，服务启动时也会整理旧数据库，避免长期运行造成无界增长。
 
+## GeoIP 与 GeoSite 数据
+
+配置管理页支持“远程链接”和“本地路径”两种模式。远程模式只接受 HTTPS 文件直链；Panel Server 下载后按 SHA-256 写入 `KIXDNS_GEO_DATA`，再把实际本地路径填入待保存配置。链接元数据保存在 SQLite，不会写入 KixDNS 配置。已有本地路径不会被迁移或覆盖，仍可直接使用本地路径模式。
+
+下载端拒绝 URL 用户信息、本机、私网、链路本地和保留地址，每次重定向都会重新解析并固定公网地址；单个文件上限 128 MiB，最多允许 8 个 GeoSite 文件。文件使用 `0640`、内容寻址文件名与原子落盘，`kixdns` 通过同组只读。旧哈希文件不会自动覆盖或清理，以保证配置历史回滚仍能读取原数据。
+
 Panel Server 与 Web 更新仍需下载新的完整包并重新运行 `scripts/install.sh`。脚本保留现有配置、数据库和环境文件，旧静态资源保存在 `/usr/share/kixdns-panel/web.previous`。完整包使用 `PANEL_BUILD_COMMIT` 标识管理面构建，使用 `KIXDNS_BUILD_COMMIT` 标识被复用的数据面构建；只有后者会写入 `KIXDNS_INSTALLED_COMMIT`。旧版默认工作流名会迁移到 `build-kixdns.yml`，缺少的 `KIXDNS_UPDATE_RELEASE_WORKFLOW` 会补为 `build-kixdns-release.yml`，已有自定义更新源保持不变。
 
 服务生命周期只支持启动、停止和重启。KixDNS 没有独立的服务重载动作，面板不会提供重载按钮、API、Polkit 动词或 systemd `ExecReload`。配置保存和历史版本恢复使用 KixDNS 的文件监听热加载链路：候选内容先由 KixDNS 自身校验；写入后必须收到新的 `reload_sequence` 且 SHA-256 一致，否则面板恢复旧配置。该回执不等同于服务重载命令。
@@ -126,6 +133,7 @@ sudo systemctl restart kixdns-panel.service
 - 面板显示控制接口不可用：检查 `/run/kixdns/admin.sock`、两个账号的 `kixdns` 组关系和 KixDNS 日志。
 - 服务控制被拒绝：确认 Polkit 已安装且 `/etc/polkit-1/rules.d/50-kixdns-panel.rules` 已加载。
 - 日志读取失败：确认 `kixdns-panel` 属于 `systemd-journal` 组，重启面板使组关系生效。
+- Geo 数据下载失败：确认填写的是 HTTPS 文件直链，且目标不会重定向到登录页、私网或超过 128 MiB 的文件。
 
 ## 卸载
 
