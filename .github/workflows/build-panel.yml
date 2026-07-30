@@ -1,6 +1,8 @@
 name: Build KixDNS Panel
 
 on:
+  release:
+    types: [published]
   push:
     branches: [main]
     paths:
@@ -52,6 +54,13 @@ jobs:
           toolchain: 1.97.1
           components: rustfmt, clippy
 
+      - name: Verify release identity
+        if: github.event_name == 'release'
+        shell: bash
+        run: |
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "kixdns-panel-server") | .version')"
+          [[ "${GITHUB_REF_NAME}" == "v${version}" ]]
+
       - name: Install Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -102,6 +111,9 @@ jobs:
     name: Build Linux ${{ matrix.arch }}
     if: github.event_name != 'pull_request'
     needs: verify
+    permissions:
+      actions: read
+      contents: read
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -169,6 +181,9 @@ jobs:
           cp README.md LICENSE upstream.lock.json "$bundle/"
           cp dist/reused-kixdns/KIXDNS_BUILD_COMMIT dist/reused-kixdns/KIXDNS_SOURCE_RUN_ID "$bundle/"
           printf '%s\n' "$GITHUB_SHA" > "$bundle/PANEL_BUILD_COMMIT"
+          if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
+            printf '%s\n' "${GITHUB_REF_NAME}" > "$bundle/PANEL_RELEASE"
+          fi
           checksum_file="$(mktemp)"
           trap 'rm -f "$checksum_file"' EXIT
           (
@@ -179,6 +194,9 @@ jobs:
           ) > "$checksum_file"
           mv "$checksum_file" "$bundle/SHA256SUMS"
           trap - EXIT
+          if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
+            (cd dist && zip -qr "kixdns-panel-linux-${{ matrix.arch }}.zip" "kixdns-panel-linux-${{ matrix.arch }}")
+          fi
 
       - name: Upload complete panel artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -187,3 +205,37 @@ jobs:
           path: dist/kixdns-panel-linux-${{ matrix.arch }}
           if-no-files-found: error
           retention-days: 30
+
+      - name: Stage release package
+        if: github.event_name == 'release'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: kixdns-panel-release-${{ matrix.arch }}
+          path: dist/kixdns-panel-linux-${{ matrix.arch }}.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish panel release
+    if: github.event_name == 'release'
+    needs: build
+    permissions:
+      actions: read
+      contents: write
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download release packages
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: kixdns-panel-release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Upload release packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          shopt -s nullglob
+          packages=(dist/*.zip)
+          [[ ${#packages[@]} -eq 2 ]]
+          gh release upload "${GITHUB_REF_NAME}" "${packages[@]}" --clobber

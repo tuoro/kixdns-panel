@@ -111,18 +111,30 @@ install_web() {
 }
 
 update_panel_environment() {
-  local commit=$1
+  local kixdns_commit=$1
+  local panel_commit=$2
+  local panel_release=$3
   local target=/etc/kixdns-panel/panel.env
   local temporary
   temporary="$(mktemp /etc/kixdns-panel/.panel.env.XXXXXX)"
-  awk -v commit="${commit}" '
+  awk -v kixdns_commit="${kixdns_commit}" -v panel_commit="${panel_commit}" -v panel_release="${panel_release}" '
     /^KIXDNS_UPDATE_WORKFLOW=build-enhanced\.yml$/ {
       print "KIXDNS_UPDATE_WORKFLOW=build-kixdns.yml"
       next
     }
     /^KIXDNS_INSTALLED_COMMIT=/ {
-      print "KIXDNS_INSTALLED_COMMIT=" commit
-      found = 1
+      print "KIXDNS_INSTALLED_COMMIT=" kixdns_commit
+      kixdns_found = 1
+      next
+    }
+    /^KIXDNS_PANEL_INSTALLED_COMMIT=/ {
+      print "KIXDNS_PANEL_INSTALLED_COMMIT=" panel_commit
+      panel_found = 1
+      next
+    }
+    /^KIXDNS_PANEL_INSTALLED_RELEASE=/ {
+      print "KIXDNS_PANEL_INSTALLED_RELEASE=" panel_release
+      panel_release_found = 1
       next
     }
     /^KIXDNS_UPDATE_RELEASE_WORKFLOW=/ {
@@ -130,7 +142,9 @@ update_panel_environment() {
     }
     { print }
     END {
-      if (!found) print "KIXDNS_INSTALLED_COMMIT=" commit
+      if (!kixdns_found) print "KIXDNS_INSTALLED_COMMIT=" kixdns_commit
+      if (!panel_found) print "KIXDNS_PANEL_INSTALLED_COMMIT=" panel_commit
+      if (!panel_release_found) print "KIXDNS_PANEL_INSTALLED_RELEASE=" panel_release
       if (!release_workflow) print "KIXDNS_UPDATE_RELEASE_WORKFLOW=build-kixdns-release.yml"
     }
   ' "${target}" > "${temporary}"
@@ -140,7 +154,9 @@ update_panel_environment() {
 }
 
 install_configuration() {
-  local build_commit=$1
+  local kixdns_build_commit=$1
+  local panel_build_commit=$2
+  local panel_release=$3
   local artifact
   artifact="$(detect_artifact)"
   install -d -o "${PANEL_USER}" -g "${KIXDNS_GROUP}" -m 0750 /etc/kixdns
@@ -150,12 +166,14 @@ install_configuration() {
   fi
   if [[ ! -e /etc/kixdns-panel/panel.env ]]; then
     sed -e "s/^KIXDNS_UPDATE_ARTIFACT=.*/KIXDNS_UPDATE_ARTIFACT=${artifact}/" \
-      -e "s/^KIXDNS_INSTALLED_COMMIT=.*/KIXDNS_INSTALLED_COMMIT=${build_commit}/" \
+      -e "s/^KIXDNS_INSTALLED_COMMIT=.*/KIXDNS_INSTALLED_COMMIT=${kixdns_build_commit}/" \
+      -e "s/^KIXDNS_PANEL_INSTALLED_COMMIT=.*/KIXDNS_PANEL_INSTALLED_COMMIT=${panel_build_commit}/" \
+      -e "s/^KIXDNS_PANEL_INSTALLED_RELEASE=.*/KIXDNS_PANEL_INSTALLED_RELEASE=${panel_release}/" \
       "${PACKAGE_ROOT}/deploy/panel.env.example" > /etc/kixdns-panel/panel.env
     chown root:"${KIXDNS_GROUP}" /etc/kixdns-panel/panel.env
     chmod 0640 /etc/kixdns-panel/panel.env
   fi
-  update_panel_environment "${build_commit}"
+  update_panel_environment "${kixdns_build_commit}" "${panel_build_commit}" "${panel_release}"
 }
 
 install_services() {
@@ -172,6 +190,7 @@ install_services() {
 main() {
   local kixdns_build_commit
   local panel_build_commit
+  local panel_release=""
   require_root
   command -v systemctl >/dev/null || fail "系统未安装 systemd"
   command -v getent >/dev/null || fail "系统缺少 getent"
@@ -186,6 +205,10 @@ main() {
   require_file "${PACKAGE_ROOT}/SHA256SUMS"
   panel_build_commit="$(tr -d '[:space:]' < "${PACKAGE_ROOT}/PANEL_BUILD_COMMIT")"
   kixdns_build_commit="$(tr -d '[:space:]' < "${PACKAGE_ROOT}/KIXDNS_BUILD_COMMIT")"
+  if [[ -f "${PACKAGE_ROOT}/PANEL_RELEASE" ]]; then
+    panel_release="$(tr -d '[:space:]' < "${PACKAGE_ROOT}/PANEL_RELEASE")"
+    [[ "${panel_release}" =~ ^[0-9A-Za-z._-]{1,100}$ ]] || fail "PANEL_RELEASE 标签无效"
+  fi
   [[ "${panel_build_commit}" =~ ^[0-9a-fA-F]{40}$ ]] || fail "PANEL_BUILD_COMMIT 不是完整提交 SHA"
   [[ "${kixdns_build_commit}" =~ ^[0-9a-fA-F]{40}$ ]] || fail "KIXDNS_BUILD_COMMIT 不是完整提交 SHA"
 
@@ -204,7 +227,7 @@ main() {
   install -o root -g root -m 0755 "${PACKAGE_ROOT}/bin/kixdns-panel-server" /usr/local/bin/.kixdns-panel-server.new
   mv -fT -- /usr/local/bin/.kixdns-panel-server.new /usr/local/bin/kixdns-panel-server
   install_web
-  install_configuration "${kixdns_build_commit}"
+  install_configuration "${kixdns_build_commit}" "${panel_build_commit}" "${panel_release}"
   install_services
   trap - ERR
   rm -rf -- "${BACKUP_ROOT}"

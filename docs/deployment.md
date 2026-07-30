@@ -114,7 +114,7 @@ SQLite 中配置历史最多保留 100 条，审计事件最多保留 10,000 条
 
 下载端拒绝 URL 用户信息、本机、私网、链路本地和保留地址，每次重定向都会重新解析并固定公网地址；单个文件上限 128 MiB，最多允许 8 个 GeoSite 文件。文件使用 `0640`、内容寻址文件名与原子落盘，`kixdns` 通过同组只读。旧哈希文件不会自动覆盖或清理，以保证配置历史回滚仍能读取原数据。
 
-Panel Server 与 Web 更新仍需下载新的完整包并重新运行 `scripts/install.sh`。脚本保留现有配置、数据库和环境文件，旧静态资源保存在 `/usr/share/kixdns-panel/web.previous`。完整包使用 `PANEL_BUILD_COMMIT` 标识管理面构建，使用 `KIXDNS_BUILD_COMMIT` 标识被复用的数据面构建；只有后者会写入 `KIXDNS_INSTALLED_COMMIT`。旧版默认工作流名会迁移到 `build-kixdns.yml`，缺少的 `KIXDNS_UPDATE_RELEASE_WORKFLOW` 会补为 `build-kixdns-release.yml`，已有自定义更新源保持不变。
+Panel Server 与 Web 更新仍需下载新的完整包并重新运行 `scripts/install.sh`。脚本保留现有配置、数据库和环境文件，旧静态资源保存在 `/usr/share/kixdns-panel/web.previous`。完整包使用 `PANEL_BUILD_COMMIT` 标识管理面构建，使用 `KIXDNS_BUILD_COMMIT` 标识被复用的数据面构建，并分别写入 `KIXDNS_PANEL_INSTALLED_COMMIT` 与 `KIXDNS_INSTALLED_COMMIT`。正式包还会携带 `PANEL_RELEASE` 并写入 `KIXDNS_PANEL_INSTALLED_RELEASE`；当前开发阶段的 Action 包没有该标签。未来正式发版后，面板只根据 `tuoro/kixdns-panel` 最新正式 GitHub Release 及当前架构的 Release 安装包提示自身更新，不会把日常 Action 构建当作新版，也不会自行执行高权限替换。旧版默认工作流名会迁移到 `build-kixdns.yml`，缺少的 `KIXDNS_UPDATE_RELEASE_WORKFLOW` 会补为 `build-kixdns-release.yml`，已有自定义更新源保持不变。
 
 服务生命周期只支持启动、停止和重启。KixDNS 没有独立的服务重载动作，面板不会提供重载按钮、API、Polkit 动词或 systemd `ExecReload`。配置保存和历史版本恢复使用 KixDNS 的文件监听热加载链路：候选内容先由 KixDNS 自身校验；写入后必须收到新的 `reload_sequence` 且 SHA-256 一致，否则面板恢复旧配置。该回执不等同于服务重载命令。
 

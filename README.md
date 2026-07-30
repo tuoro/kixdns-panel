@@ -51,13 +51,13 @@ Browser -> Panel Web -> Panel Server -> SQLite / 配置 / systemd
 | Actions | 官方 Run `#30235703570`，提交 `374d63ccfdde` | `build-kixdns.yml` | `kixdns-enhanced-action-30235703570-p5-084923594dcf-linux-x86_64` |
 | Releases | 正式版 `v0.1.1`，提交 `647c5b1d2af6` | `build-kixdns-release.yml` | `kixdns-enhanced-release-v0.1.1-p5-a8ccd99dab08-linux-x86_64` |
 
-两种包都来自本仓库 Actions，并通过 nightly.link 下载；`Releases` 只表示其上游源码基线来自 `olicesx/kixdns` 正式发布，本仓库不创建 GitHub Release。Action 目录当前包含 4 个已验证版本，之后自动追加并滚动保留最多 10 个；Release 从增强协议基线 `v0.1.1` 起只追加、不设数量上限。`v0.1.0` 的核心架构早于增强协议，不能安全套用当前补丁，因此不会伪装成可安装增强包。
+两种 KixDNS 增强包都来自本仓库 Actions，并通过 nightly.link 下载；这里的 `Releases` 只表示数据面源码基线来自 `olicesx/kixdns` 正式发布，与本面板自身的 Release 相互独立。Action 目录当前包含 4 个已验证版本，之后自动追加并滚动保留最多 10 个；Release 从增强协议基线 `v0.1.1` 起只追加、不设数量上限。`v0.1.0` 的核心架构早于增强协议，不能安全套用当前补丁，因此不会伪装成可安装增强包。
 
 包名中的补丁集和输入指纹由上游锁、该锁选择的不可变补丁集、构建工具与 Rust 工具链共同生成。适配新 API 时新增补丁集并只切换新候选锁，旧版本继续使用原补丁集且不会重新编译；普通面板代码或文档提交同样不会触发 KixDNS 构建。本地库存使用 `来源 + Artifact ID + 构建提交` 区分同一工作流批量生成的版本。
 
 ## 快速开始
 
-从 `Build KixDNS Panel` 最近成功 Action 下载对应架构的完整包，或通过 nightly.link 获取：
+当前开发阶段从 `Build KixDNS Panel` 最近成功 Action 下载对应架构的完整包，或通过 nightly.link 获取：
 
 ```bash
 # x86_64；ARM64 将文件名中的 x86_64 改为 arm64
@@ -67,6 +67,8 @@ mkdir kixdns-panel && unzip kixdns-panel.zip -d kixdns-panel
 cd kixdns-panel
 sudo bash ./scripts/install.sh
 ```
+
+项目完成并发布面板正式版后，Release 会提供 `kixdns-panel-linux-x86_64.zip` 与 `kixdns-panel-linux-arm64.zip`。正式包记录 Release 标签，面板只根据后续正式 Release 提示自身更新；普通 `main` 提交和临时 Action 包不会触发面板更新提示。
 
 安装后面板监听 `http://127.0.0.1:5738`。首次访问创建管理员；远程生产访问应使用 HTTPS 反向代理并启用 Secure Cookie。登录后可在“系统”页安装或切换 KixDNS 构建，并控制服务启动、停止和重启。KixDNS 没有独立的服务重载动作，因此面板不提供重载按钮或 API；配置保存后的文件监听热加载是另一条独立链路。完整步骤、权限模型、版本管理与卸载见[部署指南](docs/deployment.md)。
 

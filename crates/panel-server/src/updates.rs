@@ -20,6 +20,7 @@ use crate::operations::{Operations, ServiceAction};
 const ACTIVE_VERSION_KEY: &str = "installed_panel_version";
 const LEGACY_ACTIVE_COMMIT_KEY: &str = "installed_panel_commit";
 const UPSTREAM_REPOSITORY: &str = "olicesx/kixdns";
+const PANEL_REPOSITORY: &str = "tuoro/kixdns-panel";
 const MAX_ARTIFACT_BYTES: usize = 128 * 1024 * 1024;
 const MAX_BINARY_BYTES: u64 = 96 * 1024 * 1024;
 const REMOTE_VERSION_LIMIT: usize = 12;
@@ -28,6 +29,7 @@ const MANIFEST_SCHEMA_VERSION: u32 = 4;
 const CONTROL_PROTOCOL_VERSION: u32 = 1;
 const MAX_BUILD_IDENTITY_BYTES: u64 = 64 * 1024;
 const REMOTE_CACHE_TTL: Duration = Duration::from_mins(1);
+const PANEL_CACHE_TTL: Duration = Duration::from_mins(15);
 
 #[derive(Clone)]
 pub struct UpdateManager {
@@ -39,10 +41,13 @@ pub struct UpdateManager {
     branch: Arc<str>,
     artifact: Arc<str>,
     initial_commit: Option<Arc<str>>,
+    panel_commit: Option<Arc<str>>,
+    panel_release: Option<Arc<str>>,
     binary_path: Arc<PathBuf>,
     versions_path: Arc<PathBuf>,
     apply_lock: Arc<Mutex<()>>,
     remote_cache: Arc<RwLock<HashMap<VersionSource, CachedRemoteVersions>>>,
+    panel_cache: Arc<RwLock<Option<CachedPanelUpdate>>>,
 }
 
 pub struct UpdateSettings {
@@ -52,6 +57,8 @@ pub struct UpdateSettings {
     pub branch: String,
     pub artifact: String,
     pub installed_commit: Option<String>,
+    pub panel_installed_commit: Option<String>,
+    pub panel_installed_release: Option<String>,
     pub binary_path: PathBuf,
     pub versions_path: PathBuf,
 }
@@ -77,6 +84,39 @@ pub struct VersionCatalog {
     pub binary_present: bool,
     pub remote_versions: Vec<RemoteVersion>,
     pub installed_versions: Vec<InstalledVersion>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateNotifications {
+    pub kixdns: KixdnsUpdateNotice,
+    pub panel: PanelUpdateNotice,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct KixdnsUpdateNotice {
+    pub available: bool,
+    pub source: VersionSource,
+    pub current_commit: Option<String>,
+    pub latest_commit: String,
+    pub source_id: u64,
+    pub run_id: Option<u64>,
+    pub release_tag: Option<String>,
+    pub created_at: String,
+    pub build_url: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PanelUpdateNotice {
+    pub available: bool,
+    pub current_version: String,
+    pub current_commit: Option<String>,
+    pub current_release: Option<String>,
+    pub latest_version: Option<String>,
+    pub published_at: Option<String>,
+    pub release_url: Option<String>,
+    pub artifact: Option<String>,
+    pub artifact_digest: Option<String>,
+    pub download_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -274,6 +314,19 @@ struct ArtifactWorkflowRun {
     id: u64,
 }
 
+#[derive(Debug, Deserialize)]
+struct GithubRelease {
+    tag_name: String,
+    published_at: Option<String>,
+    assets: Vec<ReleaseAsset>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReleaseAsset {
+    name: String,
+    digest: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum TrackReference {
     Action(u64),
@@ -321,6 +374,11 @@ struct CachedRemoteVersions {
     versions: Vec<ResolvedVersion>,
 }
 
+struct CachedPanelUpdate {
+    loaded_at: Instant,
+    notice: PanelUpdateNotice,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum UpdateError {
     #[error("更新配置无效：{0}")]
@@ -344,6 +402,8 @@ impl UpdateManager {
             branch,
             artifact,
             installed_commit,
+            panel_installed_commit,
+            panel_installed_release,
             binary_path,
             versions_path,
         } = settings;
@@ -355,6 +415,20 @@ impl UpdateManager {
         artifact_coordinates(&artifact)?;
         if let Some(commit) = installed_commit.as_deref() {
             validate_commit(commit)?;
+        }
+        if let Some(commit) = panel_installed_commit.as_deref() {
+            validate_commit(commit)?;
+        }
+        if let Some(release) = panel_installed_release.as_deref() {
+            let installed = parse_panel_release_version(release)
+                .map_err(|_| UpdateError::Invalid("已安装面板 Release 标签无效".to_owned()))?;
+            let package = semver::Version::parse(env!("CARGO_PKG_VERSION"))
+                .map_err(|error| UpdateError::Invalid(format!("面板版本无效：{error}")))?;
+            if installed != package {
+                return Err(UpdateError::Invalid(
+                    "已安装面板 Release 与程序版本不一致".to_owned(),
+                ));
+            }
         }
         ensure_directory(&versions_path)?;
         let binary_parent = binary_path
@@ -376,10 +450,31 @@ impl UpdateManager {
             branch: Arc::from(branch),
             artifact: Arc::from(artifact),
             initial_commit: installed_commit.map(Arc::from),
+            panel_commit: panel_installed_commit
+                .map(|commit| Arc::from(commit.to_ascii_lowercase())),
+            panel_release: panel_installed_release.map(Arc::from),
             binary_path: Arc::new(binary_path),
             versions_path: Arc::new(versions_path),
             apply_lock: Arc::new(Mutex::new(())),
             remote_cache: Arc::new(RwLock::new(HashMap::new())),
+            panel_cache: Arc::new(RwLock::new(None)),
+        })
+    }
+
+    pub async fn notifications(&self) -> Result<UpdateNotifications, UpdateError> {
+        let active = self.active_version().await?;
+        let source = active
+            .as_ref()
+            .map_or_else(VersionSource::default, |version| version.source);
+        let latest = self
+            .resolved_remote_versions(source)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| UpdateError::Network("没有可安装的成功增强构建".to_owned()))?;
+        Ok(UpdateNotifications {
+            kixdns: to_kixdns_update_notice(&latest.remote, active.as_ref()),
+            panel: self.panel_update().await?,
         })
     }
 
@@ -529,6 +624,15 @@ impl UpdateManager {
             VersionSource::Action => &self.workflow,
             VersionSource::Release => &self.release_workflow,
         };
+        self.workflow_runs_for(workflow, limit).await
+    }
+
+    async fn workflow_runs_for(
+        &self,
+        workflow: &str,
+        limit: usize,
+    ) -> Result<Vec<WorkflowRun>, UpdateError> {
+        let limit = limit.clamp(1, 30);
         let runs_url = format!(
             "https://api.github.com/repos/{}/actions/workflows/{}/runs?branch={}&status=success&per_page={limit}",
             self.repository, workflow, self.branch
@@ -540,6 +644,29 @@ impl UpdateManager {
             .filter(|run| validate_commit(&run.head_sha).is_ok())
             .take(limit)
             .collect())
+    }
+
+    async fn panel_update(&self) -> Result<PanelUpdateNotice, UpdateError> {
+        if let Some(cached) = self.panel_cache.read().await.as_ref()
+            && cached.loaded_at.elapsed() < PANEL_CACHE_TTL
+        {
+            return Ok(cached.notice.clone());
+        }
+        let release_url =
+            format!("https://api.github.com/repos/{PANEL_REPOSITORY}/releases/latest");
+        let release = self
+            .get_json_optional::<GithubRelease>(&release_url)
+            .await?;
+        let notice = to_panel_update_notice(
+            self.panel_commit.as_deref(),
+            self.panel_release.as_deref(),
+            release.as_ref(),
+        )?;
+        self.panel_cache.write().await.replace(CachedPanelUpdate {
+            loaded_at: Instant::now(),
+            notice: notice.clone(),
+        });
+        Ok(notice)
     }
 
     async fn remote_versions(
@@ -705,6 +832,28 @@ impl UpdateManager {
             .map_err(|error| UpdateError::Network(error.to_string()))?
             .json()
             .await
+            .map_err(|error| UpdateError::Network(error.to_string()))
+    }
+
+    async fn get_json_optional<T>(&self, url: &str) -> Result<Option<T>, UpdateError>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        let response = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .map_err(|error| UpdateError::Network(error.to_string()))?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        response
+            .error_for_status()
+            .map_err(|error| UpdateError::Network(error.to_string()))?
+            .json()
+            .await
+            .map(Some)
             .map_err(|error| UpdateError::Network(error.to_string()))
     }
 
@@ -1051,6 +1200,97 @@ fn to_update_info(version: ResolvedVersion, active: Option<&VersionKey>) -> Upda
         artifact_digest: version.remote.artifact_digest,
         download_url: version.remote.download_url,
         available,
+    }
+}
+
+fn to_kixdns_update_notice(
+    version: &RemoteVersion,
+    active: Option<&VersionKey>,
+) -> KixdnsUpdateNotice {
+    let available = active.is_some_and(|active| {
+        active.source != version.source
+            || !active.commit.eq_ignore_ascii_case(&version.commit)
+            || active.source_id != Some(version.source_id)
+    });
+    KixdnsUpdateNotice {
+        available,
+        source: version.source,
+        current_commit: active.map(|active| active.commit.clone()),
+        latest_commit: version.commit.clone(),
+        source_id: version.source_id,
+        run_id: version.run_id,
+        release_tag: version.release_tag.clone(),
+        created_at: version.created_at.clone(),
+        build_url: version.build_url.clone(),
+    }
+}
+
+fn to_panel_update_notice(
+    current_commit: Option<&str>,
+    current_release: Option<&str>,
+    release: Option<&GithubRelease>,
+) -> Result<PanelUpdateNotice, UpdateError> {
+    let current_version = semver::Version::parse(env!("CARGO_PKG_VERSION"))
+        .map_err(|error| UpdateError::Invalid(format!("面板版本无效：{error}")))?;
+    let Some(release) = release else {
+        return Ok(PanelUpdateNotice {
+            available: false,
+            current_version: current_version.to_string(),
+            current_commit: current_commit.map(str::to_owned),
+            current_release: current_release.map(str::to_owned),
+            latest_version: None,
+            published_at: None,
+            release_url: None,
+            artifact: None,
+            artifact_digest: None,
+            download_url: None,
+        });
+    };
+    let latest_version = parse_panel_release_version(&release.tag_name)?;
+    let asset = release
+        .assets
+        .iter()
+        .find(|asset| asset.name == panel_release_asset_name());
+    if let Some(digest) = asset.and_then(|asset| asset.digest.as_deref()) {
+        validate_digest(digest)?;
+    }
+    let installed_version = current_release
+        .map(parse_panel_release_version)
+        .transpose()
+        .map_err(|error| UpdateError::Invalid(format!("已安装面板 Release 无效：{error}")))?;
+    let available = asset.is_some()
+        && installed_version.as_ref().map_or_else(
+            || latest_version >= current_version,
+            |installed| latest_version > *installed,
+        );
+    let release_url = format!(
+        "https://github.com/{PANEL_REPOSITORY}/releases/tag/{}",
+        release.tag_name
+    );
+    let download_url = asset.map(|asset| {
+        format!(
+            "https://github.com/{PANEL_REPOSITORY}/releases/download/{}/{}",
+            release.tag_name, asset.name
+        )
+    });
+    Ok(PanelUpdateNotice {
+        available,
+        current_version: current_version.to_string(),
+        current_commit: current_commit.map(str::to_owned),
+        current_release: current_release.map(str::to_owned),
+        latest_version: Some(latest_version.to_string()),
+        published_at: release.published_at.clone(),
+        release_url: Some(release_url),
+        artifact: asset.map(|asset| asset.name.clone()),
+        artifact_digest: asset.and_then(|asset| asset.digest.clone()),
+        download_url,
+    })
+}
+
+fn panel_release_asset_name() -> &'static str {
+    match std::env::consts::ARCH {
+        "aarch64" => "kixdns-panel-linux-arm64.zip",
+        _ => "kixdns-panel-linux-x86_64.zip",
     }
 }
 
@@ -1493,6 +1733,15 @@ fn validate_release_tag(tag: &str) -> Result<(), UpdateError> {
     Ok(())
 }
 
+fn parse_panel_release_version(tag: &str) -> Result<semver::Version, UpdateError> {
+    validate_release_tag(tag)?;
+    let version = tag
+        .strip_prefix('v')
+        .ok_or_else(|| UpdateError::Verification("面板 Release 标签必须使用 v 前缀".to_owned()))?;
+    semver::Version::parse(version)
+        .map_err(|error| UpdateError::Verification(format!("面板 Release 版本无效：{error}")))
+}
+
 fn artifact_coordinates(artifact: &str) -> Result<(&str, &str), UpdateError> {
     let (prefix, architecture) = artifact
         .rsplit_once("-linux-")
@@ -1783,11 +2032,12 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        BuildIdentity, MANIFEST_SCHEMA_VERSION, ParsedArtifactReference, RemoteVersion,
-        TrackReference, UpdateError, UpdateManager, UpdateSettings, VersionKey, VersionManifest,
-        VersionSource, delete_stored_version, extract_artifact, load_verified_version,
-        parse_artifact_reference, sha256, store_version, validate_commit, validate_digest,
-        validate_remote_build_identity, validate_slug,
+        BuildIdentity, GithubRelease, MANIFEST_SCHEMA_VERSION, ParsedArtifactReference,
+        ReleaseAsset, RemoteVersion, TrackReference, UpdateError, UpdateManager, UpdateSettings,
+        VersionKey, VersionManifest, VersionSource, delete_stored_version, extract_artifact,
+        load_verified_version, panel_release_asset_name, parse_artifact_reference, sha256,
+        store_version, to_kixdns_update_notice, to_panel_update_notice, validate_commit,
+        validate_digest, validate_remote_build_identity, validate_slug,
     };
     use crate::db::Database;
 
@@ -1931,6 +2181,88 @@ mod tests {
 
         let serialized = serde_json::to_value(remote).unwrap();
         assert_eq!(serialized["artifact_digest"], artifact_digest);
+    }
+
+    #[test]
+    fn notifies_only_for_newer_panel_release_with_matching_asset() {
+        let no_release = to_panel_update_notice(Some(TEST_BUILD_COMMIT), None, None).unwrap();
+        assert!(!no_release.available);
+        assert!(no_release.latest_version.is_none());
+
+        let release = |tag: &str, asset_name: &str| GithubRelease {
+            tag_name: tag.to_owned(),
+            published_at: Some("2026-07-30T00:00:00Z".to_owned()),
+            assets: vec![ReleaseAsset {
+                name: asset_name.to_owned(),
+                digest: Some(format!("sha256:{}", "a".repeat(64))),
+            }],
+        };
+        let same = release("v0.1.0", panel_release_asset_name());
+        assert!(
+            !to_panel_update_notice(None, Some("v0.1.0"), Some(&same))
+                .unwrap()
+                .available
+        );
+        assert!(
+            to_panel_update_notice(Some(TEST_BUILD_COMMIT), None, Some(&same))
+                .unwrap()
+                .available
+        );
+
+        let older = release("v0.0.9", panel_release_asset_name());
+        assert!(
+            !to_panel_update_notice(Some(TEST_BUILD_COMMIT), None, Some(&older))
+                .unwrap()
+                .available
+        );
+
+        let wrong_asset = release("v0.2.0", "kixdns-panel-windows.zip");
+        assert!(
+            !to_panel_update_notice(None, None, Some(&wrong_asset))
+                .unwrap()
+                .available
+        );
+
+        let newer = release("v0.2.0", panel_release_asset_name());
+        let notice = to_panel_update_notice(Some(TEST_BUILD_COMMIT), None, Some(&newer)).unwrap();
+        assert!(notice.available);
+        assert_eq!(notice.current_version, "0.1.0");
+        assert_eq!(notice.latest_version.as_deref(), Some("0.2.0"));
+        assert_eq!(
+            notice.download_url.as_deref(),
+            Some(
+                format!(
+                    "https://github.com/tuoro/kixdns-panel/releases/download/v0.2.0/{}",
+                    panel_release_asset_name()
+                )
+                .as_str()
+            )
+        );
+    }
+
+    #[test]
+    fn legacy_kixdns_identity_is_not_treated_as_exact_build() {
+        let remote = RemoteVersion {
+            source: VersionSource::Action,
+            source_id: 42,
+            commit: TEST_BUILD_COMMIT.to_owned(),
+            run_id: Some(7),
+            release_tag: None,
+            patchset: Some(5),
+            created_at: "2026-07-30T00:00:00Z".to_owned(),
+            source_url: "https://github.com/olicesx/kixdns/actions/runs/7".to_owned(),
+            build_url: "https://github.com/tuoro/kixdns-panel/actions/runs/8".to_owned(),
+            artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
+            artifact_digest: format!("sha256:{}", "a".repeat(64)),
+            download_url: "https://nightly.link/example.zip".to_owned(),
+            installed: false,
+            active: false,
+        };
+        let legacy = VersionKey::new(VersionSource::Action, TEST_BUILD_COMMIT).unwrap();
+        assert!(to_kixdns_update_notice(&remote, Some(&legacy)).available);
+
+        let exact = VersionKey::tracked(VersionSource::Action, 42, TEST_BUILD_COMMIT).unwrap();
+        assert!(!to_kixdns_update_notice(&remote, Some(&exact)).available);
     }
 
     #[test]
@@ -2093,6 +2425,8 @@ mod tests {
                 branch: "main".to_owned(),
                 artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
                 installed_commit: None,
+                panel_installed_commit: None,
+                panel_installed_release: None,
                 binary_path: binary_path.clone(),
                 versions_path: versions_path.clone(),
             },

@@ -39,8 +39,8 @@ use crate::operations::{
     DnsDiagnostic, LogEntry, OperationError, Operations, ServiceAction, ServiceStatus,
 };
 use crate::updates::{
-    InstalledVersion, UpdateError, UpdateInfo, UpdateManager, UpdateSettings, VersionCatalog,
-    VersionSource,
+    InstalledVersion, UpdateError, UpdateInfo, UpdateManager, UpdateNotifications, UpdateSettings,
+    VersionCatalog, VersionSource,
 };
 
 #[derive(Debug, Clone)]
@@ -57,6 +57,8 @@ pub struct AppSettings {
     pub update_branch: String,
     pub update_artifact: String,
     pub installed_commit: Option<String>,
+    pub panel_installed_commit: Option<String>,
+    pub panel_installed_release: Option<String>,
     pub kixdns_binary: PathBuf,
     pub kixdns_versions: PathBuf,
     pub geo_data_path: PathBuf,
@@ -204,6 +206,8 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
             branch: settings.update_branch,
             artifact: settings.update_artifact,
             installed_commit: settings.installed_commit,
+            panel_installed_commit: settings.panel_installed_commit,
+            panel_installed_release: settings.panel_installed_release,
             binary_path: settings.kixdns_binary,
             versions_path: settings.kixdns_versions,
         },
@@ -246,6 +250,7 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         .route("/logs", get(logs))
         .route("/diagnostics/dns", post(dns_diagnostic))
         .route("/updates", get(check_updates))
+        .route("/updates/status", get(update_notifications))
         .route("/updates/apply", post(apply_update))
         .route("/kixdns/versions", get(kixdns_versions))
         .route(
@@ -788,6 +793,19 @@ async fn check_updates(
         .map_err(map_update_error)
 }
 
+async fn update_notifications(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> AppResult<Json<UpdateNotifications>> {
+    authenticate(&state.database, &jar).await?;
+    state
+        .updates
+        .notifications()
+        .await
+        .map(Json)
+        .map_err(map_update_error)
+}
+
 async fn apply_update(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -1190,6 +1208,8 @@ mod tests {
             update_branch: "main".to_owned(),
             update_artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
             installed_commit: None,
+            panel_installed_commit: None,
+            panel_installed_release: None,
             kixdns_binary: directory.path().join("kixdns"),
             kixdns_versions: directory.path().join("versions"),
             geo_data_path: directory.path().join("geo"),
@@ -1273,6 +1293,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let updates = context
+            .app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/updates/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(updates.status(), StatusCode::UNAUTHORIZED);
 
         let forbidden = context
             .app
