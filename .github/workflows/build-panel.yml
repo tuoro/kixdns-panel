@@ -106,6 +106,25 @@ jobs:
             [[ "$(bash scripts/kixdns-artifact-identity.sh upstream.release.lock.json "$architecture")" == \
               "$(bash scripts/kixdns-artifact-identity.sh "$release_catalog" "$architecture")" ]]
           done
+          identities_before="$(
+            for lock_file in upstream.lock.json upstream.release.lock.json; do
+              for architecture in x86_64 arm64; do
+                bash scripts/kixdns-artifact-identity.sh "$lock_file" "$architecture"
+              done
+            done
+          )"
+          cargo_lock_backup="$(mktemp)"
+          cp -- Cargo.lock "$cargo_lock_backup"
+          trap 'cp -- "$cargo_lock_backup" Cargo.lock; rm -f -- "$cargo_lock_backup"' EXIT
+          printf '\n# panel-only dependency change\n' >> Cargo.lock
+          identities_after="$(
+            for lock_file in upstream.lock.json upstream.release.lock.json; do
+              for architecture in x86_64 arm64; do
+                bash scripts/kixdns-artifact-identity.sh "$lock_file" "$architecture"
+              done
+            done
+          )"
+          [[ "$identities_before" == "$identities_after" ]]
 
   build:
     name: Build Linux ${{ matrix.arch }}

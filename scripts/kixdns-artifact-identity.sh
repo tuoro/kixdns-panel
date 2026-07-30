@@ -19,8 +19,8 @@ esac
   exit 1
 }
 
+# 根 Cargo.lock 同时包含面板依赖，不属于 KixDNS 数据面构建身份。
 files=(
-  Cargo.lock
   rust-toolchain.toml
   tools/xtask/Cargo.toml
   scripts/dns_smoke.py
