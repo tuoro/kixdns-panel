@@ -5,6 +5,7 @@ ARTIFACT=''
 SCRIPT_DIRECTORY=''
 WAIT_ATTEMPTS="${KIXDNS_ARTIFACT_WAIT_ATTEMPTS:-1}"
 WAIT_SECONDS="${KIXDNS_ARTIFACT_WAIT_SECONDS:-20}"
+SETTLE_ATTEMPTS="${KIXDNS_ARTIFACT_SETTLE_ATTEMPTS:-6}"
 
 fail() {
   printf '获取 KixDNS Artifact 失败：%s\n' "$*" >&2
@@ -24,8 +25,10 @@ validate_slug() {
 validate_wait_policy() {
   [[ "${WAIT_ATTEMPTS}" =~ ^[1-9][0-9]*$ ]] || fail 'Artifact 等待次数无效'
   [[ "${WAIT_SECONDS}" =~ ^[1-9][0-9]*$ ]] || fail 'Artifact 等待间隔无效'
+  [[ "${SETTLE_ATTEMPTS}" =~ ^[1-9][0-9]*$ ]] || fail 'Artifact 一致性等待次数无效'
   ((WAIT_ATTEMPTS <= 90)) || fail 'Artifact 等待次数超过上限'
   ((WAIT_SECONDS <= 60)) || fail 'Artifact 等待间隔超过上限'
+  ((SETTLE_ATTEMPTS <= 15)) || fail 'Artifact 一致性等待次数超过上限'
 }
 
 workflow_is_pending() {
@@ -117,6 +120,8 @@ main() {
   ARTIFACT="$(tracked_artifact "${ARTIFACT}" "${lock_file}")" || fail '无法生成轨道 Artifact 名称'
 
   local attempt
+  local observed_pending=false
+  local settle_attempt=0
   for ((attempt = 1; attempt <= WAIT_ATTEMPTS; attempt++)); do
     while IFS=$'\t' read -r run_id run_commit; do
       [[ "${run_id}" =~ ^[0-9]+$ && "${run_commit}" =~ ^[0-9a-f]{40}$ ]] || continue
@@ -139,7 +144,15 @@ main() {
         --jq '.workflow_runs[] | select(.event != "pull_request") | [.id, .head_sha] | @tsv'
     )
 
-    if ((attempt == WAIT_ATTEMPTS)) || ! workflow_is_pending "${repository}" "${workflow}" "${branch}"; then
+    if ((attempt == WAIT_ATTEMPTS)); then
+      break
+    fi
+    if workflow_is_pending "${repository}" "${workflow}" "${branch}"; then
+      observed_pending=true
+      settle_attempt=0
+    elif [[ "${observed_pending}" == true ]] && ((settle_attempt < SETTLE_ATTEMPTS)); then
+      settle_attempt=$((settle_attempt + 1))
+    else
       break
     fi
     printf '等待 KixDNS Artifact：%s（第 %s/%s 次）\n' "${ARTIFACT}" "${attempt}" "${WAIT_ATTEMPTS}"
