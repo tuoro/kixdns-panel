@@ -36,6 +36,7 @@ Panel Web ---- Panel Server ---- SQLite
 
 - 面板只依赖版本化的控制协议，不导入上游 KixDNS crate。
 - 原始 JSON 是配置事实来源；可视化表单只修改已知字段并保留未知字段。
+- 配置字段通过[配置能力契约](config-capabilities.md)门控；当前进程读取 health，目标版本读取经摘要校验的 Artifact 清单，缺失声明时保守视为不支持。
 - Action 轨道追加官方 `main` 分支最近成功 Action，最多保留 10 个已验证候选；Release 轨道从 `v0.1.1` 增强基线起追加正式发布，不设固定数量上限。
 - 只有补丁应用、编译、测试和 DNS 冒烟测试均成功时，候选版本才可发布。
 - DNS 冒烟测试使用隔离端口和 Unix Socket，验证静态应答、快速路径规则计数、配置摘要及热加载序号。
@@ -52,6 +53,7 @@ Panel Web ---- Panel Server ---- SQLite
 
 - `build-kixdns.yml` 监听 Action 目录，`build-kixdns-release.yml` 监听 Release 目录；两者复用 `build-kixdns-track.yml` 的库存检查、验证和打包步骤。
 - Artifact 名称为 `kixdns-enhanced-<来源>-<上游身份>-p<补丁集>-<输入指纹>-linux-<架构>`。输入指纹只覆盖锁文件选择的补丁集以及构建工具、工作流和 Rust 工具链；新增更高补丁集不会改变历史版本指纹，目录新增版本时只补建缺失项。
+- 每个 Artifact 携带 `KIXDNS_CAPABILITIES.json`，并与二进制、上游锁和构建提交共同写入 `SHA256SUMS`；能力清单也是输入指纹的一部分。
 - 构建库存会校验全部锁的补丁集引用。拉取请求和直接推送均不得修改主分支已有集合，只能新增高于当前最大值的编号。
 - 每周库存检查会续建缺失或将在 7 天内过期的包；Artifact 仍使用 GitHub 的 90 天保留期，本仓库不创建 GitHub Release。
 - `build-panel.yml` 只监听 Panel Server、Web、部署脚本和面板依赖。它从最近成功的内核工作流复用上游身份完全匹配的 Artifact，经包内 SHA-256 和 ELF 架构校验后生成完整安装包，不重新编译 KixDNS。
@@ -75,6 +77,7 @@ Panel Web ---- Panel Server ---- SQLite
 - Geo 数据源只接受 HTTPS，逐次固定公网 DNS 解析并重新校验重定向，限制下载体积与文件数量；内容寻址文件保持历史配置可回滚，面板专用 URL 元数据不进入 KixDNS 配置。
 - 后端从 Artifact 名称解析上游官方 Run 或 Release 标签，再校验包内 `source`、上游身份、提交、补丁集、控制协议和本仓库构建提交。两条轨道使用独立远端缓存与 `source + artifact_id + commit` 本地库存键，同一次工作流可安全暴露多个版本。
 - 安装前校验外层和包内 SHA-256、ELF 与架构，激活前再次校验本地清单与二进制摘要；替换后必须通过健康检查，否则恢复原状态。
+- 配置保存、恢复和版本激活共用后端能力注册表；不兼容版本在停止服务前被拒绝，面板不自动删除或降级用户字段。
 - 服务动作白名单只有 `start`、`stop`、`restart`。配置文件监听产生的结构化热加载回执属于增强控制协议，不是 systemd 服务重载能力。
 
 ## 运行平台

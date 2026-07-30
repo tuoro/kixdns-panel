@@ -22,6 +22,7 @@ KixDNS 的非 Fork 增强发行版与管理面板。项目维护上游正式 Rel
 - 与上游编辑器功能对齐的结构化表单、原始 JSON、流程预览及导入导出
 - GeoIP/GeoSite HTTPS 链接下载、内容摘要托管与本地路径兼容模式
 - KixDNS 编译校验、乐观锁保存、版本历史、回滚和失败自动恢复
+- 配置字段能力门控、后端强制校验与版本切换前兼容预检
 - 面板内安装 KixDNS、切换 Releases/Actions 版本源并回切本地版本
 - systemd 启动、停止、重启固定动作控制，journal 日志与固定目标 DNS 诊断
 - 上游 Releases/Actions 都由本仓库 Action 生成增强 Artifact，并通过 nightly.link 匿名下载
@@ -48,8 +49,8 @@ Browser -> Panel Web -> Panel Server -> SQLite / 配置 / systemd
 
 | 面板版本源 | 上游身份 | 增强工作流 | x86_64 Artifact |
 | --- | --- | --- | --- |
-| Actions | 官方 Run `#30235703570`，提交 `374d63ccfdde` | `build-kixdns.yml` | `kixdns-enhanced-action-30235703570-p5-084923594dcf-linux-x86_64` |
-| Releases | 正式版 `v0.1.1`，提交 `647c5b1d2af6` | `build-kixdns-release.yml` | `kixdns-enhanced-release-v0.1.1-p5-a8ccd99dab08-linux-x86_64` |
+| Actions | 官方 Run `#30235703570`，提交 `374d63ccfdde` | `build-kixdns.yml` | `kixdns-enhanced-action-30235703570-p8-46ac788fc96c-linux-x86_64` |
+| Releases | 正式版 `v0.1.1`，提交 `647c5b1d2af6` | `build-kixdns-release.yml` | `kixdns-enhanced-release-v0.1.1-p5-c70f631829c0-linux-x86_64` |
 
 两种 KixDNS 增强包都来自本仓库 Actions，并通过 nightly.link 下载；这里的 `Releases` 只表示数据面源码基线来自 `olicesx/kixdns` 正式发布，与本面板自身的 Release 相互独立。Action 目录当前包含 4 个已验证版本，之后自动追加并滚动保留最多 10 个；Release 从增强协议基线 `v0.1.1` 起只追加、不设数量上限。`v0.1.0` 的核心架构早于增强协议，不能安全套用当前补丁，因此不会伪装成可安装增强包。
 
@@ -92,4 +93,4 @@ npm run dev
 VITE_DEMO_MODE=true npm run dev
 ```
 
-更多设计细节见[系统架构](docs/architecture.md)，补丁维护方法见[补丁说明](patches/README.md)。本项目采用 GPL-3.0-only 许可证。
+更多设计细节见[系统架构](docs/architecture.md)，字段兼容规则见[配置能力契约](docs/config-capabilities.md)，补丁维护方法见[补丁说明](patches/README.md)。本项目采用 GPL-3.0-only 许可证。

@@ -10,7 +10,9 @@ Linux 默认地址为 `/run/kixdns/admin.sock`。协议使用 Unix Socket 上的
 
 ### `GET /v1/health`
 
-返回进程状态、上游提交、增强补丁版本、启动时间、当前配置代数和可选能力列表。支持排行统计的版本包含 `capabilities: ["stats_top_v1"]`；客户端只能在能力存在时调用对应端点。
+返回进程状态、上游提交、增强补丁版本、启动时间、当前配置代数和可选能力列表。当前增强版包含 `capabilities: ["stats_top_v1", "config_query_stats_v1"]`：前者允许调用排行端点，后者表示 KixDNS 会解析查询统计配置字段。客户端只能在对应能力存在时使用端点或写入受控字段。
+
+运行时能力负责当前进程的配置门控。尚未启动的目标版本使用 Artifact 内经 SHA-256 校验的 `KIXDNS_CAPABILITIES.json` 预检，完整规则见[配置能力契约](config-capabilities.md)。
 
 ### `GET /v1/config/active`
 
@@ -74,6 +76,7 @@ Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致
 - `settings.statistics_anonymize_client_ip`：IPv4 按 `/24`、IPv6 按 `/64` 聚合，默认 `false`。
 
 开关或脱敏方式发生变化时，现有排行立即清空，避免不同隐私口径的数据混合。
+这两个字段要求 `config_query_stats_v1`；旧增强版运行时返回 `stats_top_v1` 时，面板将其视为当前进程的兼容别名。
 
 ## 指标语义
 

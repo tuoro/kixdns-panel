@@ -3,7 +3,8 @@
 `sets/<编号>/` 保存不可变的版本化补丁集，锁文件中的 `patchset` 只读取对应编号。上游源码不进入本仓库；`cargo xtask prepare` 会检出到 `.upstream/kixdns-<source>-<commit>-p<patchset>`，并以 `git apply` 重放所选集合中的补丁。工具使用来源、补丁版本和内容 SHA-256 标记完整补丁集，支持幂等执行并拒绝混用不同内容。
 
 ~~~text
-sets/6/
+sets/8/
+  capabilities.json               # Artifact 配置能力声明
   common/                         # 该补丁集的增强实现
   compatibility/<名称>/           # 锁文件显式选择的前置兼容层
   release/<tag>/                  # 对应正式版的可选前置补丁
@@ -13,11 +14,12 @@ sets/6/
 
 补丁更新流程：
 
-1. 从当前补丁集复制出更高编号，例如从 `sets/5/` 创建 `sets/6/`；不要修改 `sets/5/`。
+1. 从当前补丁集复制出更高编号，例如从 `sets/7/` 创建 `sets/8/`；不要修改 `sets/7/`。
 2. 使用指向新编号的候选锁准备 `.upstream/kixdns-<source>-<commit>-p<patchset>`，并在检出源码中完成修改。
 3. 对新增文件执行 `git add -N <file>`，使用 `git diff --binary --output=<新补丁路径>` 重新生成新集合中受影响的补丁。
-4. 在干净检出中运行 `cargo xtask prepare --lock <候选锁>`，再执行格式、测试、Clippy、RustSec 和 DNS 冒烟检查。
-5. 同一拉取请求提交新补丁集、候选锁和对应版本目录；旧锁和旧补丁集保持不变。
+4. 新增配置字段时同步更新 `capabilities.json`、增强 health 声明和面板的集中能力注册表；不要根据版本号推断字段支持。
+5. 在干净检出中运行 `cargo xtask prepare --lock <候选锁>`，再执行格式、测试、Clippy、RustSec 和 DNS 冒烟检查。
+6. 同一拉取请求提交新补丁集、候选锁和对应版本目录；旧锁和旧补丁集保持不变。
 
 补丁不是手工维护的源码副本。修改增强功能时应编辑检出源码并重新生成补丁，避免补丁内容与已验证代码不一致。
 
@@ -36,7 +38,7 @@ sets/6/
 
 这种顺序把适配限制在候选版本：旧锁、旧目录和旧 Artifact 保持可复现，面板服务仅在控制协议确实变化时才需要联动修改。
 
-当前 `sets/6/common/` 补丁顺序：
+当前 `sets/8/common/` 补丁顺序：
 
 1. `0001-panel-observability.patch`：本机控制协议和内部指标。
 2. `0002-config-validation.patch`：复用 KixDNS 解析与运行时编译的候选配置校验。
@@ -44,3 +46,4 @@ sets/6/
 4. `0004-fast-path-rule-metrics.patch`：补齐编译静态规则与规则缓存快速路径的命中计数。
 5. `0005-runtime-safety.patch`：让热加载摘要绑定解析快照，并限制动态指标序列数量与标签长度。
 6. `0006-query-ranking.patch`：增加有界内存的客户端与域名排行、隐私配置和 `stats_top_v1` 控制接口。
+7. `0007-config-capabilities.patch`：为查询统计字段声明 `config_query_stats_v1` 配置能力。

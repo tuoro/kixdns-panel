@@ -219,7 +219,8 @@ jobs:
           mkdir -p "$bundle/web" "$bundle/docs"
           cp -a web/dist/. "$bundle/web/"
           cp -a deploy scripts "$bundle/"
-          cp docs/architecture.md docs/control-protocol-v1.md docs/deployment.md "$bundle/docs/"
+          cp docs/architecture.md docs/config-capabilities.md docs/control-protocol-v1.md \
+            docs/deployment.md "$bundle/docs/"
           cp README.md LICENSE upstream.lock.json "$bundle/"
           cp dist/reused-kixdns/KIXDNS_BUILD_COMMIT dist/reused-kixdns/KIXDNS_SOURCE_RUN_ID \
             dist/reused-kixdns/KIXDNS_CAPABILITIES.json "$bundle/"
