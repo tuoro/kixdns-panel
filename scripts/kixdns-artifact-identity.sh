@@ -53,6 +53,7 @@ files=(
   rust-toolchain.toml
   tools/xtask/Cargo.toml
   scripts/dns_smoke.py
+  scripts/verify-glibc-baseline.sh
   scripts/kixdns-artifact-identity.sh
   .github/workflows/build-kixdns-track.yml
 )

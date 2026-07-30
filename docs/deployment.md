@@ -2,7 +2,7 @@
 
 ## 支持范围
 
-首个生产目标为带 systemd 与 Polkit 的 Linux x86_64/ARM64。安装需要 `systemctl`、`polkit`、`sha256sum` 和 `getent`；下载示例还使用 `curl`、`unzip` 与 `jq`。
+首个生产目标为带 systemd 与 Polkit 的 Linux x86_64/ARM64。官方 GNU 二进制以 GLIBC 2.35 为最高兼容基线，可运行于 Ubuntu 22.04、Debian 12 及使用更新 GLIBC 的发行版。安装需要 `systemctl`、`polkit`、`sha256sum` 和 `getent`；下载示例还使用 `curl`、`unzip` 与 `jq`。
 
 完整安装包由 `Build KixDNS Panel` Action 生成。KixDNS Enhanced 的上游 Action 与正式 Release 轨道也都只发布为本仓库 Actions Artifact，本仓库当前不创建 GitHub Release。面板工作流复用上游身份、补丁集和架构完全匹配的已校验 Action 轨道 Artifact，不会因面板修改而重新编译数据面。完整包包含 KixDNS Enhanced、Panel Server、Vue 静态资源、服务单元和安装脚本。
 

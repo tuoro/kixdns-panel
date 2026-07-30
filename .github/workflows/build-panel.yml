@@ -13,6 +13,7 @@ on:
       - scripts/kixdns-artifact-identity.sh
       - scripts/install.sh
       - scripts/test-install-policy.sh
+      - scripts/verify-glibc-baseline.sh
       - scripts/uninstall.sh
       - web/**
       - Cargo.toml
@@ -27,6 +28,7 @@ on:
       - scripts/kixdns-artifact-identity.sh
       - scripts/install.sh
       - scripts/test-install-policy.sh
+      - scripts/verify-glibc-baseline.sh
       - scripts/uninstall.sh
       - web/**
       - Cargo.toml
@@ -137,6 +139,10 @@ jobs:
       actions: read
       contents: read
     runs-on: ${{ matrix.runner }}
+    container:
+      image: ubuntu:22.04
+    env:
+      GLIBC_BASELINE: "2.35"
     strategy:
       fail-fast: false
       matrix:
@@ -149,6 +155,13 @@ jobs:
             target: aarch64-unknown-linux-gnu
 
     steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            binutils build-essential ca-certificates cmake curl git jq perl pkg-config python3 unzip zip zstd
+          rm -rf /var/lib/apt/lists/*
+
       - name: Checkout panel repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -189,6 +202,13 @@ jobs:
             "$GITHUB_REPOSITORY" build-kixdns.yml main \
             "kixdns-enhanced-linux-${{ matrix.arch }}" \
             upstream.lock.json dist/reused-kixdns
+
+      - name: Verify GLIBC baseline
+        run: |
+          bash scripts/verify-glibc-baseline.sh \
+            "target/${{ matrix.target }}/release/kixdns-panel-server" "$GLIBC_BASELINE"
+          bash scripts/verify-glibc-baseline.sh \
+            dist/reused-kixdns/kixdns "$GLIBC_BASELINE"
 
       - name: Package complete panel artifact
         shell: bash

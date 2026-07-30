@@ -55,6 +55,7 @@ Panel Web ---- Panel Server ---- SQLite
 - 构建库存会校验全部锁的补丁集引用。拉取请求和直接推送均不得修改主分支已有集合，只能新增高于当前最大值的编号。
 - 每周库存检查会续建缺失或将在 7 天内过期的包；Artifact 仍使用 GitHub 的 90 天保留期，本仓库不创建 GitHub Release。
 - `build-panel.yml` 只监听 Panel Server、Web、部署脚本和面板依赖。它从最近成功的内核工作流复用上游身份完全匹配的 Artifact，经包内 SHA-256 和 ELF 架构校验后生成完整安装包，不重新编译 KixDNS。
+- 发布构建固定在 Ubuntu 22.04 容器中完成，并拒绝包含高于 `GLIBC_2.35` 符号的 KixDNS 或 Panel Server，避免 GitHub Runner 升级悄然抬高发行版要求。
 - PR 只执行对应边界的验证 Job，不上传可安装 Artifact；README、截图等纯文档变化不触发打包工作流。
 
 完整包分别保存 `PANEL_BUILD_COMMIT` 和 `KIXDNS_BUILD_COMMIT`。前者标识管理面构建，后者标识数据面构建；`KIXDNS_SOURCE_RUN_ID` 保留被复用内核的 Action Run。Artifact digest 只用于验证 ZIP 传输内容，包内 `binary_sha256` 才是 KixDNS 二进制内容身份。

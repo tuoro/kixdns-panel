@@ -57,6 +57,8 @@ Browser -> Panel Web -> Panel Server -> SQLite / 配置 / systemd
 
 ## 快速开始
 
+官方 GNU 安装包要求 GLIBC 2.35 或更高版本，支持 Ubuntu 22.04、Debian 12 及更新发行版的 x86_64/ARM64 系统。
+
 当前开发阶段从 `Build KixDNS Panel` 最近成功 Action 下载对应架构的完整包，或通过 nightly.link 获取：
 
 ```bash
