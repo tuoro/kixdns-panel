@@ -1,5 +1,6 @@
 mod app;
 mod auth;
+mod config_capabilities;
 mod config_store;
 mod control;
 mod db;

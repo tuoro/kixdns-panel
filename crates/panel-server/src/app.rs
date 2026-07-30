@@ -25,6 +25,7 @@ use crate::auth::{
     hash_password, issue_session, token_hash, unix_timestamp, validate_password, validate_username,
     verify_csrf, verify_password,
 };
+use crate::config_capabilities::ensure_config_supported;
 use crate::config_store::{ConfigError, ConfigStore, MAX_CONFIG_BYTES};
 use crate::control::{
     ActiveConfig, CacheFlushResult, ControlClient, ControlError, Health, MetricsSnapshot,
@@ -531,6 +532,8 @@ async fn validate_config(
 ) -> AppResult<Json<ValidationResult>> {
     let session = authenticate(&state.database, &jar).await?;
     verify_csrf(&session, &jar, &headers)?;
+    let _apply_guard = state.config_apply_lock.lock().await;
+    ensure_running_config_supported(&state, &content).await?;
     state
         .control
         .validate(&content)
@@ -592,6 +595,7 @@ async fn save_config(
     let session = authenticate(&state.database, &jar).await?;
     verify_csrf(&session, &jar, &headers)?;
     let _apply_guard = state.config_apply_lock.lock().await;
+    ensure_running_config_supported(&state, &request.content).await?;
     let previous = state.config.current().await.map_err(map_config_error)?;
     let before_reload = state
         .control
@@ -679,6 +683,7 @@ async fn restore_config(
         .version_content(id)
         .await
         .map_err(map_config_error)?;
+    ensure_running_config_supported(&state, &candidate).await?;
     let validation = state
         .control
         .validate(&candidate)
@@ -866,9 +871,11 @@ async fn apply_update(
 ) -> AppResult<Json<UpdateInfo>> {
     let session = authenticate(&state.database, &jar).await?;
     verify_csrf(&session, &jar, &headers)?;
+    let _apply_guard = state.config_apply_lock.lock().await;
+    let config = state.config.current().await.map_err(map_config_error)?;
     let result = state
         .updates
-        .apply(&state.operations, &state.control)
+        .apply(&config.content, &state.operations, &state.control)
         .await
         .map_err(map_update_error)?;
     state
@@ -906,9 +913,17 @@ async fn install_kixdns_version(
 ) -> AppResult<Json<InstalledVersion>> {
     let session = authenticate(&state.database, &jar).await?;
     verify_csrf(&session, &jar, &headers)?;
+    let _apply_guard = state.config_apply_lock.lock().await;
+    let config = state.config.current().await.map_err(map_config_error)?;
     let result = state
         .updates
-        .install_version(source, source_id, &state.operations, &state.control)
+        .install_version(
+            source,
+            source_id,
+            &config.content,
+            &state.operations,
+            &state.control,
+        )
         .await
         .map_err(map_update_error)?;
     state
@@ -932,9 +947,17 @@ async fn activate_kixdns_version(
 ) -> AppResult<Json<InstalledVersion>> {
     let session = authenticate(&state.database, &jar).await?;
     verify_csrf(&session, &jar, &headers)?;
+    let _apply_guard = state.config_apply_lock.lock().await;
+    let config = state.config.current().await.map_err(map_config_error)?;
     let result = state
         .updates
-        .activate_version(source, &commit, &state.operations, &state.control)
+        .activate_version(
+            source,
+            &commit,
+            &config.content,
+            &state.operations,
+            &state.control,
+        )
         .await
         .map_err(map_update_error)?;
     state
@@ -1018,6 +1041,12 @@ async fn rollback_config(
         )
         .await
         .map_err(AppError::Internal)
+}
+
+async fn ensure_running_config_supported(state: &AppState, content: &Value) -> AppResult<()> {
+    let health = state.control.health().await.map_err(map_control_error)?;
+    ensure_config_supported(content, &health.capabilities)
+        .map_err(|error| AppError::Unprocessable("unsupported_config_fields", error.to_string()))
 }
 
 async fn create_authenticated_response(
@@ -1161,6 +1190,9 @@ fn map_update_error(error: UpdateError) -> AppError {
         }
         UpdateError::Install(message) => {
             AppError::ServiceUnavailable("update_install_failed", message)
+        }
+        UpdateError::IncompatibleConfig(message) => {
+            AppError::Unprocessable("unsupported_config_fields", message)
         }
         UpdateError::Unsupported => {
             AppError::ServiceUnavailable("update_unsupported", "当前平台不支持自动更新".to_owned())

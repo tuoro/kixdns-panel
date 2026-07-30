@@ -8,10 +8,14 @@ use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tempfile::{Builder, NamedTempFile};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::auth::unix_timestamp;
+use crate::config_capabilities::{
+    canonical_runtime_capabilities, ensure_config_supported, validate_declared_capabilities,
+};
 use crate::control::ControlClient;
 use crate::db::Database;
 use crate::digest::sha256_hex;
@@ -25,9 +29,11 @@ const MAX_ARTIFACT_BYTES: usize = 128 * 1024 * 1024;
 const MAX_BINARY_BYTES: u64 = 96 * 1024 * 1024;
 const REMOTE_VERSION_LIMIT: usize = 12;
 const MAX_INSTALLED_VERSIONS: usize = 8;
-const MANIFEST_SCHEMA_VERSION: u32 = 4;
+const MANIFEST_SCHEMA_VERSION: u32 = 5;
+const SOURCE_MANIFEST_SCHEMA_VERSION: u32 = 4;
 const CONTROL_PROTOCOL_VERSION: u32 = 1;
 const MAX_BUILD_IDENTITY_BYTES: u64 = 64 * 1024;
+const MAX_CAPABILITIES_BYTES: u64 = 64 * 1024;
 const REMOTE_CACHE_TTL: Duration = Duration::from_mins(1);
 const PANEL_CACHE_TTL: Duration = Duration::from_mins(15);
 
@@ -250,6 +256,7 @@ pub struct InstalledVersion {
     pub upstream_commit: Option<String>,
     pub patchset: Option<u32>,
     pub control_protocol: Option<u32>,
+    pub config_capabilities: Vec<String>,
     pub binary_sha256: String,
     pub installed_at: i64,
     pub active: bool,
@@ -282,6 +289,8 @@ struct VersionManifest {
     patchset: Option<u32>,
     #[serde(default)]
     control_protocol: Option<u32>,
+    #[serde(default)]
+    config_capabilities: Vec<String>,
     binary_sha256: String,
     installed_at: i64,
 }
@@ -365,6 +374,14 @@ struct ExtractedArtifact {
     binary: Vec<u8>,
     identity: BuildIdentity,
     build_commit: String,
+    config_capabilities: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ArtifactCapabilities {
+    schema_version: u32,
+    config_capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -393,6 +410,8 @@ pub enum UpdateError {
     Verification(String),
     #[error("安装更新失败：{0}")]
     Install(String),
+    #[error("目标版本与当前配置不兼容：{0}")]
+    IncompatibleConfig(String),
     #[error("当前平台不支持自动更新")]
     Unsupported,
 }
@@ -546,6 +565,7 @@ impl UpdateManager {
 
     pub async fn apply(
         &self,
+        config: &Value,
         operations: &Operations,
         control: &ControlClient,
     ) -> Result<UpdateInfo, UpdateError> {
@@ -563,8 +583,9 @@ impl UpdateManager {
             .await?;
         let key = VersionKey::remote(&resolved.remote)?;
         if active_version.as_ref() != Some(&key) {
-            self.install_resolved(&resolved).await?;
-            self.activate_locked(&key, operations, control).await?;
+            self.install_resolved(&resolved, config).await?;
+            self.activate_locked(&key, config, operations, control)
+                .await?;
         }
         Ok(to_update_info(resolved, Some(&key)))
     }
@@ -573,6 +594,7 @@ impl UpdateManager {
         &self,
         source: VersionSource,
         source_id: u64,
+        config: &Value,
         operations: &Operations,
         control: &ControlClient,
     ) -> Result<InstalledVersion, UpdateError> {
@@ -580,14 +602,16 @@ impl UpdateManager {
         let _guard = self.apply_lock.lock().await;
         let resolved = self.resolve_remote(source, source_id).await?;
         let key = VersionKey::remote(&resolved.remote)?;
-        self.install_resolved(&resolved).await?;
-        self.activate_locked(&key, operations, control).await
+        self.install_resolved(&resolved, config).await?;
+        self.activate_locked(&key, config, operations, control)
+            .await
     }
 
     pub async fn activate_version(
         &self,
         source: VersionSource,
         version: &str,
+        config: &Value,
         operations: &Operations,
         control: &ControlClient,
     ) -> Result<InstalledVersion, UpdateError> {
@@ -597,7 +621,8 @@ impl UpdateManager {
             Ok(source_id) if source_id > 0 => self.installed_key(source, source_id).await?,
             _ => VersionKey::new(source, version)?,
         };
-        self.activate_locked(&key, operations, control).await
+        self.activate_locked(&key, config, operations, control)
+            .await
     }
 
     pub async fn delete_version(
@@ -940,7 +965,11 @@ impl UpdateManager {
         Ok(bytes)
     }
 
-    async fn install_resolved(&self, version: &ResolvedVersion) -> Result<(), UpdateError> {
+    async fn install_resolved(
+        &self,
+        version: &ResolvedVersion,
+        config: &Value,
+    ) -> Result<(), UpdateError> {
         let key = VersionKey::remote(&version.remote)?;
         if self.version_exists(&key)? {
             return Ok(());
@@ -958,6 +987,8 @@ impl UpdateManager {
             ));
         }
         validate_remote_build_identity(&version.remote, &extracted.identity)?;
+        ensure_config_supported(config, &extracted.config_capabilities)
+            .map_err(|error| UpdateError::IncompatibleConfig(error.to_string()))?;
         validate_elf(&extracted.binary)?;
         let manifest = VersionManifest {
             schema_version: MANIFEST_SCHEMA_VERSION,
@@ -975,6 +1006,7 @@ impl UpdateManager {
             upstream_commit: Some(extracted.identity.commit),
             patchset: Some(extracted.identity.patchset),
             control_protocol: Some(extracted.identity.control_protocol),
+            config_capabilities: extracted.config_capabilities,
             binary_sha256: sha256(&extracted.binary),
             installed_at: unix_timestamp(),
         };
@@ -990,6 +1022,7 @@ impl UpdateManager {
     async fn activate_locked(
         &self,
         key: &VersionKey,
+        config: &Value,
         operations: &Operations,
         control: &ControlClient,
     ) -> Result<InstalledVersion, UpdateError> {
@@ -997,6 +1030,9 @@ impl UpdateManager {
             && let Some(active) = self.active_version().await?
         {
             self.adopt_active_version(&active).await?;
+            if let Err(error) = self.capture_active_capabilities(&active, control).await {
+                tracing::warn!(%error, "无法记录当前 KixDNS 的配置能力");
+            }
         }
         let versions_path = Arc::clone(&self.versions_path);
         let key_owned = key.clone();
@@ -1004,6 +1040,8 @@ impl UpdateManager {
             tokio::task::spawn_blocking(move || load_verified_version(&versions_path, &key_owned))
                 .await
                 .map_err(|error| UpdateError::Install(error.to_string()))??;
+        ensure_config_supported(config, &manifest.config_capabilities)
+            .map_err(|error| UpdateError::IncompatibleConfig(error.to_string()))?;
         let previous = self.activate_binary(binary, operations, control).await?;
         if let Err(error) = self
             .database
@@ -1059,10 +1097,32 @@ impl UpdateManager {
                 upstream_commit: None,
                 patchset: None,
                 control_protocol: None,
+                config_capabilities: Vec::new(),
                 binary_sha256: sha256(&binary),
                 installed_at: unix_timestamp(),
             };
             store_version(&versions_path, &manifest, &binary)
+        })
+        .await
+        .map_err(|error| UpdateError::Install(error.to_string()))?
+    }
+
+    async fn capture_active_capabilities(
+        &self,
+        key: &VersionKey,
+        control: &ControlClient,
+    ) -> Result<(), UpdateError> {
+        let capabilities = canonical_runtime_capabilities(
+            &control
+                .health()
+                .await
+                .map_err(|error| UpdateError::Install(error.to_string()))?
+                .capabilities,
+        );
+        let versions_path = Arc::clone(&self.versions_path);
+        let key = key.clone();
+        tokio::task::spawn_blocking(move || {
+            update_stored_capabilities(&versions_path, &key, capabilities)
         })
         .await
         .map_err(|error| UpdateError::Install(error.to_string()))?
@@ -1221,6 +1281,7 @@ impl VersionManifest {
             upstream_commit: self.upstream_commit,
             patchset: self.patchset,
             control_protocol: self.control_protocol,
+            config_capabilities: self.config_capabilities,
             binary_sha256: self.binary_sha256,
             installed_at: self.installed_at,
             active,
@@ -1377,10 +1438,31 @@ fn extract_artifact(archive: &[u8]) -> Result<ExtractedArtifact, UpdateError> {
     let build_commit = build_commit.trim().to_owned();
     validate_commit(&build_commit)
         .map_err(|_| UpdateError::Verification("包内构建提交无效".to_owned()))?;
+    let config_capabilities = match read_optional_verified_zip_entry(
+        &mut archive,
+        &checksums,
+        "KIXDNS_CAPABILITIES.json",
+        MAX_CAPABILITIES_BYTES,
+    )? {
+        Some(content) => {
+            let manifest: ArtifactCapabilities = serde_json::from_slice(&content)
+                .map_err(|error| UpdateError::Verification(format!("配置能力清单无效：{error}")))?;
+            if manifest.schema_version != 1 {
+                return Err(UpdateError::Verification(
+                    "配置能力清单版本不受支持".to_owned(),
+                ));
+            }
+            validate_declared_capabilities(&manifest.config_capabilities)
+                .map_err(UpdateError::Verification)?;
+            manifest.config_capabilities
+        }
+        None => Vec::new(),
+    };
     Ok(ExtractedArtifact {
         binary,
         identity,
         build_commit,
+        config_capabilities,
     })
 }
 
@@ -1429,6 +1511,25 @@ fn read_verified_zip_entry(
     Ok(bytes)
 }
 
+fn read_optional_verified_zip_entry(
+    archive: &mut zip::ZipArchive<Cursor<&[u8]>>,
+    checksums: &HashMap<String, String>,
+    name: &str,
+    limit: u64,
+) -> Result<Option<Vec<u8>>, UpdateError> {
+    let count = archive.file_names().filter(|entry| *entry == name).count();
+    match count {
+        0 if checksums.contains_key(name) => Err(UpdateError::Verification(format!(
+            "SHA256SUMS 声明了缺失的 {name}"
+        ))),
+        0 => Ok(None),
+        1 => read_verified_zip_entry(archive, checksums, name, limit).map(Some),
+        _ => Err(UpdateError::Verification(format!(
+            "Artifact 中的 {name} 重复"
+        ))),
+    }
+}
+
 fn read_zip_entry(
     archive: &mut zip::ZipArchive<Cursor<&[u8]>>,
     name: &str,
@@ -1469,6 +1570,8 @@ fn store_version(
     }
     validate_manifest_source(manifest)?;
     validate_manifest_build_identity(manifest)?;
+    validate_declared_capabilities(&manifest.config_capabilities)
+        .map_err(UpdateError::Verification)?;
     validate_elf(binary)?;
     if !constant_hash_eq(&manifest.binary_sha256, &sha256(binary)) {
         return Err(UpdateError::Verification(
@@ -1481,7 +1584,7 @@ fn store_version(
         Some(source_id) => VersionKey::tracked(source, source_id, manifest.commit.clone())?,
         None => VersionKey::new(source, manifest.commit.clone())?,
     };
-    if manifest.schema_version == MANIFEST_SCHEMA_VERSION && manifest.source.is_none() {
+    if manifest.schema_version >= SOURCE_MANIFEST_SCHEMA_VERSION && manifest.source.is_none() {
         return Err(UpdateError::Verification("当前版本清单缺少来源".to_owned()));
     }
     let target = version_path(versions_path, &key);
@@ -1524,7 +1627,7 @@ fn load_verified_version(
     {
         return Err(UpdateError::Verification("版本清单身份不匹配".to_owned()));
     }
-    if manifest.schema_version < MANIFEST_SCHEMA_VERSION {
+    if manifest.schema_version < SOURCE_MANIFEST_SCHEMA_VERSION {
         manifest.source = Some(key.source);
         manifest.source_id = None;
         manifest.run_id = None;
@@ -1543,6 +1646,8 @@ fn load_verified_version(
     }
     validate_manifest_source(&manifest)?;
     validate_manifest_build_identity(&manifest)?;
+    validate_declared_capabilities(&manifest.config_capabilities)
+        .map_err(UpdateError::Verification)?;
     validate_hex_digest(&manifest.binary_sha256)?;
     let binary = read_regular_file(&directory.join("kixdns"), "版本二进制")?;
     if u64::try_from(binary.len()).unwrap_or(u64::MAX) > MAX_BINARY_BYTES {
@@ -1558,6 +1663,29 @@ fn load_verified_version(
         ));
     }
     Ok((manifest, binary))
+}
+
+fn update_stored_capabilities(
+    versions_path: &Path,
+    key: &VersionKey,
+    capabilities: Vec<String>,
+) -> Result<(), UpdateError> {
+    validate_declared_capabilities(&capabilities).map_err(UpdateError::Verification)?;
+    let (mut manifest, _) = load_verified_version(versions_path, key)?;
+    if manifest.config_capabilities == capabilities
+        && manifest.schema_version == MANIFEST_SCHEMA_VERSION
+    {
+        return Ok(());
+    }
+    manifest.schema_version = MANIFEST_SCHEMA_VERSION;
+    manifest.config_capabilities = capabilities;
+    let directory = locate_version_directory(versions_path, key)?;
+    let mut bytes = serde_json::to_vec_pretty(&manifest)
+        .map_err(|error| UpdateError::Install(error.to_string()))?;
+    bytes.push(b'\n');
+    let temporary = write_private_file(&directory, ".manifest-", &bytes)?;
+    persist(temporary, &directory.join("manifest.json"))?;
+    sync_directory(&directory)
 }
 
 fn list_installed(
@@ -1928,7 +2056,7 @@ fn validate_manifest_source(manifest: &VersionManifest) -> Result<(), UpdateErro
         manifest.run_id,
         manifest.release_tag.as_deref(),
     ) {
-        (None, None, _, None) if manifest.schema_version < MANIFEST_SCHEMA_VERSION => Ok(()),
+        (None, None, _, None) if manifest.schema_version < SOURCE_MANIFEST_SCHEMA_VERSION => Ok(()),
         (Some(_), None, None, None) => Ok(()),
         (Some(VersionSource::Action), Some(source_id), Some(run_id), None)
             if source_id > 0 && run_id > 0 =>
@@ -2095,8 +2223,8 @@ mod tests {
         ReleaseAsset, RemoteVersion, TrackReference, UpdateError, UpdateManager, UpdateSettings,
         VersionKey, VersionManifest, VersionSource, delete_stored_version, extract_artifact,
         load_verified_version, panel_release_asset_name, parse_artifact_reference, sha256,
-        store_version, to_kixdns_update_notice, to_panel_update_notice, validate_commit,
-        validate_digest, validate_remote_build_identity, validate_slug,
+        store_version, to_kixdns_update_notice, to_panel_update_notice, update_stored_capabilities,
+        validate_commit, validate_digest, validate_remote_build_identity, validate_slug,
     };
     use crate::db::Database;
 
@@ -2151,6 +2279,7 @@ mod tests {
             upstream_commit: Some("374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25".to_owned()),
             patchset: Some(5),
             control_protocol: Some(1),
+            config_capabilities: Vec::new(),
             binary_sha256: sha256(binary),
             installed_at: 42,
         }
@@ -2344,6 +2473,7 @@ mod tests {
         assert_eq!(extracted.binary, binary);
         assert_eq!(extracted.identity.patchset, 5);
         assert_eq!(extracted.build_commit, TEST_BUILD_COMMIT);
+        assert!(extracted.config_capabilities.is_empty());
 
         let wrong_checksum = checksum.replace(&sha256(binary), &"0".repeat(64));
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
@@ -2357,6 +2487,38 @@ mod tests {
         writer.write_all(TEST_BUILD_COMMIT.as_bytes()).unwrap();
         let tampered = writer.finish().unwrap().into_inner();
         assert!(extract_artifact(&tampered).is_err());
+    }
+
+    #[test]
+    fn extracts_checksum_verified_config_capabilities() {
+        let binary = b"test-binary";
+        let capabilities =
+            br#"{"schema_version":1,"config_capabilities":["config_query_stats_v1"]}"#;
+        let checksum = format!(
+            "{}  kixdns\n{}  upstream.lock.json\n{}  KIXDNS_CAPABILITIES.json\n{}  KIXDNS_BUILD_COMMIT\n",
+            sha256(binary),
+            sha256(TEST_IDENTITY.as_bytes()),
+            sha256(capabilities),
+            sha256(TEST_BUILD_COMMIT.as_bytes())
+        );
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default();
+        writer.start_file("kixdns", options).unwrap();
+        writer.write_all(binary).unwrap();
+        writer.start_file("SHA256SUMS", options).unwrap();
+        writer.write_all(checksum.as_bytes()).unwrap();
+        writer.start_file("upstream.lock.json", options).unwrap();
+        writer.write_all(TEST_IDENTITY.as_bytes()).unwrap();
+        writer
+            .start_file("KIXDNS_CAPABILITIES.json", options)
+            .unwrap();
+        writer.write_all(capabilities).unwrap();
+        writer.start_file("KIXDNS_BUILD_COMMIT", options).unwrap();
+        writer.write_all(TEST_BUILD_COMMIT.as_bytes()).unwrap();
+        let archive = writer.finish().unwrap().into_inner();
+
+        let extracted = extract_artifact(&archive).unwrap();
+        assert_eq!(extracted.config_capabilities, vec!["config_query_stats_v1"]);
     }
 
     #[test]
@@ -2401,6 +2563,7 @@ mod tests {
             upstream_commit: Some(commit.to_owned()),
             patchset: Some(5),
             control_protocol: Some(1),
+            config_capabilities: Vec::new(),
             binary_sha256: sha256(&binary),
             installed_at: 42,
         };
@@ -2416,6 +2579,29 @@ mod tests {
         )
         .unwrap();
         assert!(load_verified_version(directory.path(), &key).is_err());
+    }
+
+    #[test]
+    fn preserves_v4_source_identity_when_adding_capabilities() {
+        let directory = tempdir().unwrap();
+        let binary = test_elf();
+        let commit = "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25";
+        let mut manifest = test_manifest(42, commit, &binary);
+        manifest.schema_version = 4;
+        let key = VersionKey::tracked(VersionSource::Action, 42, commit).unwrap();
+        store_version(directory.path(), &manifest, &binary).unwrap();
+
+        update_stored_capabilities(
+            directory.path(),
+            &key,
+            vec!["config_query_stats_v1".to_owned()],
+        )
+        .unwrap();
+        let (loaded, _) = load_verified_version(directory.path(), &key).unwrap();
+
+        assert_eq!(loaded.schema_version, MANIFEST_SCHEMA_VERSION);
+        assert_eq!(loaded.source_id, Some(42));
+        assert_eq!(loaded.config_capabilities, vec!["config_query_stats_v1"]);
     }
 
     #[test]
@@ -2597,6 +2783,7 @@ mod tests {
             upstream_commit: None,
             patchset: None,
             control_protocol: None,
+            config_capabilities: Vec::new(),
             binary_sha256: sha256(&binary),
             installed_at: 42,
         };
@@ -2636,6 +2823,7 @@ mod tests {
                 upstream_commit: Some("374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25".to_owned()),
                 patchset: Some(5),
                 control_protocol: Some(1),
+                config_capabilities: Vec::new(),
                 binary_sha256: sha256(&binary),
                 installed_at: 42,
             };
