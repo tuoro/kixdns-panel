@@ -213,6 +213,7 @@ jobs:
         run: bash scripts/verify-glibc-baseline.sh "$UPSTREAM_DIR/target/${{ matrix.platform.target }}/release/kixdns" "$GLIBC_BASELINE"
 
       - name: Package enhanced artifact
+        shell: bash
         env:
           LOCK_FILE: ${{ matrix.lock_file }}
         run: |
@@ -221,7 +222,19 @@ jobs:
           checksum_inputs=(kixdns upstream.lock.json)
           install -Dm755 "$UPSTREAM_DIR/target/${{ matrix.platform.target }}/release/kixdns" "$enhanced/kixdns"
           cp "$LOCK_FILE" "$enhanced/upstream.lock.json"
+          if ((KIXDNS_PANEL_PATCHSET >= 8)); then
+            [[ -f "$capabilities" ]] || {
+              echo "补丁集 p${KIXDNS_PANEL_PATCHSET} 缺少能力清单" >&2
+              exit 1
+            }
+          fi
           if [[ -f "$capabilities" ]]; then
+            jq -e '
+              .schema_version == 1 and
+              (.config_capabilities | type == "array") and
+              ([.config_capabilities[] | type == "string" and test("^[a-z][a-z0-9_]{0,63}$")] | all) and
+              ((.config_capabilities | unique | length) == (.config_capabilities | length))
+            ' "$capabilities" >/dev/null
             cp "$capabilities" "$enhanced/KIXDNS_CAPABILITIES.json"
             checksum_inputs+=(KIXDNS_CAPABILITIES.json)
           fi
