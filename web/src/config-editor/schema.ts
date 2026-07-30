@@ -108,6 +108,15 @@ export const SETTING_SECTIONS: SettingSection[] = [
       { key: 'flow_control_adjustment_interval_secs', label: '调整间隔 (s)', type: 'number', min: 1, placeholder: '5', visibleWhen: 'flow_control_enabled' },
     ],
   },
+  {
+    id: 'statistics',
+    title: '查询统计',
+    tone: 'ink',
+    fields: [
+      { key: 'statistics_enabled', label: '启用查询排行', type: 'boolean', title: '在内存中统计客户端和请求域名排行' },
+      { key: 'statistics_anonymize_client_ip', label: '客户端 IP 脱敏', type: 'boolean', title: 'IPv4 按 /24、IPv6 按 /64 聚合', visibleWhen: 'statistics_enabled' },
+    ],
+  },
 ]
 
 export const MATCH_OPERATORS: SelectOption[] = [

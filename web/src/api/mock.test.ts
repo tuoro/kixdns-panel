@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { GeoDataManifest, KixdnsVersionCatalog, ServiceStatus, UpdateNotifications, ValidationResult } from './types'
+import type { GeoDataManifest, KixdnsVersionCatalog, QueryStatsSnapshot, ServiceStatus, StatsClearResult, UpdateNotifications, ValidationResult } from './types'
 import { mockRequest } from './mock'
 
 describe('演示 API', () => {
@@ -20,6 +20,21 @@ describe('演示 API', () => {
     })
     expect(result.valid).toBe(true)
     expect(result.pipeline_count).toBe(2)
+  })
+
+  it('按窗口返回并清空查询排行', async () => {
+    const ranking = await mockRequest<QueryStatsSnapshot>('/api/v1/stats/top?window=21600&limit=10')
+    expect(ranking.enabled).toBe(true)
+    expect(ranking.window_seconds).toBe(21_600)
+    expect(ranking.clients[0]?.count).toBeGreaterThan(0)
+    expect(ranking.domains[0]?.name).toBe('api.github.com')
+
+    const cleared = await mockRequest<StatsClearResult>('/api/v1/stats/clear', { method: 'POST' })
+    expect(cleared.cleared).toBe(true)
+    const empty = await mockRequest<QueryStatsSnapshot>('/api/v1/stats/top?window=21600&limit=10')
+    expect(empty.requests_observed).toBe(0)
+    expect(empty.clients).toEqual([])
+    expect(empty.domains).toEqual([])
   })
 
   it('同步远程 Geo 数据并返回受管路径', async () => {
@@ -65,7 +80,7 @@ describe('演示 API', () => {
     expect(new Set(catalog.remote_versions.map((version) => version.source_id)).size).toBe(4)
     expect(catalog.remote_versions[0].source_url).toContain('olicesx/kixdns/actions/runs/30235703570')
     expect(catalog.remote_versions[0].build_url).toContain('tuoro/kixdns-panel/actions/runs/30376438766')
-    expect(catalog.remote_versions[0].artifact).toBe('kixdns-enhanced-action-30235703570-p5-10844244cec4-linux-x86_64')
+    expect(catalog.remote_versions[0].artifact).toBe('kixdns-enhanced-action-30235703570-p6-22a9353cd999-linux-x86_64')
     expect(catalog.remote_versions.every((version) => /^sha256:[a-f0-9]{64}$/.test(version.artifact_digest))).toBe(true)
     expect(new Set(catalog.remote_versions.map((version) => version.run_id)).size).toBe(4)
     expect(catalog.installed_versions.every((version) => version.commit !== version.upstream_commit)).toBe(true)

@@ -19,6 +19,7 @@ export interface Health {
   started_at_unix: number
   uptime_seconds: number
   config_generation: number
+  capabilities: string[]
 }
 
 export interface ActiveConfig {
@@ -67,6 +68,24 @@ export interface MetricsSnapshot {
   pipelines: NamedCount[]
   rules: RuleCount[]
   upstreams: UpstreamCount[]
+}
+
+export interface QueryStatsSnapshot {
+  protocol_version: number
+  enabled: boolean
+  anonymized_clients: boolean
+  window_seconds: number
+  retention_seconds: number
+  generated_at_unix: number
+  requests_observed: number
+  dropped_updates: number
+  clients: NamedCount[]
+  domains: NamedCount[]
+}
+
+export interface StatsClearResult {
+  protocol_version: number
+  cleared: boolean
 }
 
 export interface Overview {

@@ -28,6 +28,8 @@ let config: ConfigDocument = {
       cache_capacity: 20000,
       default_upstream: '1.1.1.1:53',
       upstream_timeout_ms: 1800,
+      statistics_enabled: true,
+      statistics_anonymize_client_ip: false,
       geoip_db_path: '/var/lib/kixdns-panel/geo/geoip-mmdb-4c425e120e43.mmdb',
       geosite_data_paths: ['/var/lib/kixdns-panel/geo/geosite-67b90a027f2c.dat'],
     },
@@ -87,11 +89,12 @@ const overview: Overview = {
     status: 'ok',
     pid: 1428,
     version: '0.1.0',
-    upstream_commit: '647c5b1d2af6963176d7f8da6c3ed031e6b58497',
-    patchset: '5',
+    upstream_commit: '374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25',
+    patchset: '6',
     started_at_unix: now - 289420,
     uptime_seconds: 289420,
     config_generation: 18,
+    capabilities: ['stats_top_v1'],
   },
   active_config: activeConfig,
   metrics: {
@@ -123,6 +126,31 @@ const overview: Overview = {
   },
 }
 
+const queryStats = {
+  protocol_version: 1,
+  enabled: true,
+  anonymized_clients: false,
+  window_seconds: 86_400,
+  retention_seconds: 86_400,
+  generated_at_unix: now,
+  requests_observed: 2_481_930,
+  dropped_updates: 0,
+  clients: [
+    { name: '192.168.1.12', count: 692_481 },
+    { name: '192.168.1.8', count: 514_932 },
+    { name: '192.168.1.27', count: 388_104 },
+    { name: '192.168.1.36', count: 247_681 },
+    { name: '192.168.1.5', count: 194_206 },
+  ],
+  domains: [
+    { name: 'api.github.com', count: 188_942 },
+    { name: 'dns.google', count: 164_773 },
+    { name: 'connectivitycheck.gstatic.com', count: 139_308 },
+    { name: 'gateway.icloud.com', count: 108_621 },
+    { name: 'clients4.google.com', count: 91_447 },
+  ],
+}
+
 const versions: ConfigVersions = {
   versions: [
     { id: 18, sha256: config.sha256, message: '调整上游超时', actor: 'admin', created_at: now - 430 },
@@ -148,27 +176,27 @@ const binarySha256: Record<KixdnsVersionSource, string> = {
   action: 'ee714ecae2d9f93e1ee8e242b1e351be4671ad53b4adc4dc3e70d20472a9c27a',
   release: '5dff4bbcc579f2882678f5aab0074601f4790770771430b09bb75d7a51057c4d',
 }
-function actionVersion(sourceId: number, runId: number, fingerprint: string, digest: string): RemoteKixdnsVersion {
+function actionVersion(sourceId: number, runId: number, fingerprint: string, digest: string, patchset = 5): RemoteKixdnsVersion {
   return {
     source: 'action',
     source_id: sourceId,
     commit: panelBuildCommit,
     run_id: runId,
     release_tag: null,
-    patchset: 5,
+    patchset,
     created_at: '2026-07-28T16:03:48Z',
     source_url: `https://github.com/olicesx/kixdns/actions/runs/${runId}`,
     build_url: `https://github.com/tuoro/kixdns-panel/actions/runs/${actionBuildRunId}`,
-    artifact: `kixdns-enhanced-action-${runId}-p5-${fingerprint}-linux-x86_64`,
+    artifact: `kixdns-enhanced-action-${runId}-p${patchset}-${fingerprint}-linux-x86_64`,
     artifact_digest: digest,
-    download_url: `https://nightly.link/tuoro/kixdns-panel/actions/runs/${actionBuildRunId}/kixdns-enhanced-action-${runId}-p5-${fingerprint}-linux-x86_64.zip`,
+    download_url: `https://nightly.link/tuoro/kixdns-panel/actions/runs/${actionBuildRunId}/kixdns-enhanced-action-${runId}-p${patchset}-${fingerprint}-linux-x86_64.zip`,
     installed: false,
     active: false,
   }
 }
 
 const actionVersions: RemoteKixdnsVersion[] = [
-  actionVersion(8695590365, 30235703570, '10844244cec4', 'sha256:d6ea8edd8c9de8f1eaa5da58899c238102402ea380bbd7e93de813b89c9b15a0'),
+  actionVersion(8695590365, 30235703570, '22a9353cd999', 'sha256:d6ea8edd8c9de8f1eaa5da58899c238102402ea380bbd7e93de813b89c9b15a0', 6),
   actionVersion(8695589205, 30231271280, 'e662fc842875', 'sha256:c43352d24182a5ac74af457af67bca18bb8fcf2189ba29da6fc2fbc0eed388a7'),
   actionVersion(8695597834, 30229870401, '869e5ef84b1b', 'sha256:1d4339431769964db35fb895b96dff743ad60109ea10133eb193e3c3d650d60b'),
   actionVersion(8695686119, 30228238557, '584dd80d891b', 'sha256:a33ebe3cd7cdd175221ac751af082d434a848d3548a9ac4bb6eccfe56cc5080b'),
@@ -198,7 +226,7 @@ const demoRemoteVersions: Record<KixdnsVersionSource, RemoteKixdnsVersion[]> = {
   release: releaseVersions,
 }
 const kixdnsVersionKey = (version: Pick<RemoteKixdnsVersion, 'source' | 'source_id' | 'commit'>): string => `${version.source}:${version.source_id}:${version.commit}`
-let activeKixdnsVersion = kixdnsVersionKey(actionVersions[1])
+let activeKixdnsVersion = kixdnsVersionKey(actionVersions[0])
 const installedKixdnsVersions = new Map<string, RemoteKixdnsVersion>([
   [activeKixdnsVersion, actionVersions[1]],
   [kixdnsVersionKey(actionVersions[0]), actionVersions[0]],
@@ -254,6 +282,16 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
   if (path === '/api/v1/auth/login' || path === '/api/v1/setup') return session as T
   if (path === '/api/v1/auth/logout') return { ok: true } as T
   if (path === '/api/v1/overview') return overview as T
+  if (pathname === '/api/v1/stats/top' && method === 'GET') {
+    queryStats.window_seconds = Number(url.searchParams.get('window')) || 86_400
+    return queryStats as T
+  }
+  if (path === '/api/v1/stats/clear' && method === 'POST') {
+    queryStats.requests_observed = 0
+    queryStats.clients = []
+    queryStats.domains = []
+    return { protocol_version: 1, cleared: true } as T
+  }
   if (path === '/api/v1/service' && method === 'GET') {
     return { unit: 'kixdns.service', active_state: serviceRunning ? 'active' : 'inactive', sub_state: serviceRunning ? 'running' : 'dead', main_pid: serviceRunning ? 1428 : 0 } as T
   }
