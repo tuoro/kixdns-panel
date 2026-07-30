@@ -57,12 +57,16 @@ describe('演示 API', () => {
     const latest = initial.remote_versions[0]
     expect(latest.active).toBe(false)
     expect(latest.installed).toBe(false)
+    expect(latest.patchset).toBe(8)
+    expect(latest.build_url).toContain('tuoro/kixdns-panel/actions/runs/30568119141')
+    expect(latest.artifact).toBe('kixdns-enhanced-release-v0.1.1-p8-1598ba62c01f-linux-x86_64')
 
     await mockRequest(`/api/v1/kixdns/versions/${latest.source}/${latest.source_id}/install`, { method: 'POST' })
     const installed = await mockRequest<KixdnsVersionCatalog>('/api/v1/kixdns/versions?source=release')
     expect(installed.active_commit).toBe(latest.commit)
     expect(installed.active_source).toBe('release')
     expect(installed.installed_versions.some((version) => version.source === 'release' && version.commit === latest.commit)).toBe(true)
+    expect(installed.installed_versions.find((version) => version.source_id === latest.source_id)?.config_capabilities).toContain('config_query_stats_v1')
 
     const previous = initial.active_commit as string
     const previousSource = initial.active_source as string
@@ -79,15 +83,18 @@ describe('演示 API', () => {
     expect(catalog.remote_versions[0].source_id).not.toBe(catalog.remote_versions[0].run_id)
     expect(new Set(catalog.remote_versions.map((version) => version.source_id)).size).toBe(4)
     expect(catalog.remote_versions[0].source_url).toContain('olicesx/kixdns/actions/runs/30235703570')
-    expect(catalog.remote_versions[0].build_url).toContain('tuoro/kixdns-panel/actions/runs/30376438766')
-    expect(catalog.remote_versions[0].artifact).toBe('kixdns-enhanced-action-30235703570-p7-4cf33a6c029f-linux-x86_64')
+    expect(catalog.remote_versions[0].build_url).toContain('tuoro/kixdns-panel/actions/runs/30565639501')
+    expect(catalog.remote_versions[0].artifact).toBe('kixdns-enhanced-action-30235703570-p8-46ac788fc96c-linux-x86_64')
+    expect(
+      catalog.installed_versions.find((version) => version.source_id === catalog.remote_versions[0].source_id)?.config_capabilities,
+    ).toContain('config_query_stats_v1')
     expect(catalog.remote_versions.every((version) => /^sha256:[a-f0-9]{64}$/.test(version.artifact_digest))).toBe(true)
     expect(new Set(catalog.remote_versions.map((version) => version.run_id)).size).toBe(4)
     expect(catalog.installed_versions.every((version) => version.commit !== version.upstream_commit)).toBe(true)
     expect(catalog.installed_versions.some((version) => version.upstream_commit === '374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25')).toBe(true)
   })
 
-  it('按来源隔离相同增强提交的本地库存', async () => {
+  it('按来源与 Artifact 身份隔离本地库存', async () => {
     const releases = await mockRequest<KixdnsVersionCatalog>('/api/v1/kixdns/versions?source=release')
     const release = releases.remote_versions[0]
     await mockRequest(`/api/v1/kixdns/versions/${release.source}/${release.source_id}/install`, { method: 'POST' })
@@ -95,10 +102,10 @@ describe('演示 API', () => {
     expect(releases.source).toBe('release')
     expect(actions.source).toBe('action')
     expect(release.release_tag).toBe('v0.1.1')
-    expect(release.commit).toBe(actions.remote_versions[0].commit)
     expect(actions.remote_versions[0].installed).toBe(true)
     expect(actions.remote_versions[0].active).toBe(false)
-    expect(new Set(actions.installed_versions.filter((version) => version.commit === release.commit).map((version) => version.source))).toEqual(new Set(['action', 'release']))
+    expect(actions.installed_versions.some((version) => version.source === 'action' && version.source_id === actions.remote_versions[0].source_id)).toBe(true)
+    expect(actions.installed_versions.some((version) => version.source === 'release' && version.source_id === release.source_id)).toBe(true)
   })
 
   it('删除非活动本地版本并拒绝删除当前版本', async () => {

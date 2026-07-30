@@ -126,7 +126,7 @@ sudo systemctl restart kixdns-panel.service
 5. 校验完成后按 `source + artifact_id + 构建提交` 写入版本目录，能力保存到本地清单 v5。同一次工作流运行可以批量构建多个上游基线，因此不能只按提交 SHA 复用库存。
 6. 激活版本时重新校验清单、能力和二进制 SHA-256，然后停止服务、原子替换运行文件、启动服务并等待增强接口健康；启动或健康检查失败时恢复原状态。
 
-真实包名示例：上游 Action `#30235703570` 当前对应 `kixdns-enhanced-action-30235703570-p8-46ac788fc96c-linux-x86_64`，上游 Release `v0.1.1` 对应 `kixdns-enhanced-release-v0.1.1-p5-c70f631829c0-linux-x86_64`。下载 URL 统一为 `https://nightly.link/tuoro/kixdns-panel/actions/runs/<增强-run-id>/<artifact>.zip`。
+真实包名示例：上游 Action `#30235703570` 当前对应 `kixdns-enhanced-action-30235703570-p8-46ac788fc96c-linux-x86_64`，上游 Release `v0.1.1` 对应 `kixdns-enhanced-release-v0.1.1-p8-1598ba62c01f-linux-x86_64`。下载 URL 统一为 `https://nightly.link/tuoro/kixdns-panel/actions/runs/<增强-run-id>/<artifact>.zip`。
 
 已下载版本可直接切换，无需重复联网。面板最多保留 8 个本地版本，清理时始终保留当前版本。完整安装包自带的 KixDNS 会在首次版本操作时自动收录为 Action 轨道库存。Actions Artifact 保留 90 天；每周任务会提前 7 天续建，已过期的远端包不会出现在可安装列表，本地已校验库存不受影响。
 
