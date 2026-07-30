@@ -80,7 +80,7 @@ describe('演示 API', () => {
     expect(new Set(catalog.remote_versions.map((version) => version.source_id)).size).toBe(4)
     expect(catalog.remote_versions[0].source_url).toContain('olicesx/kixdns/actions/runs/30235703570')
     expect(catalog.remote_versions[0].build_url).toContain('tuoro/kixdns-panel/actions/runs/30376438766')
-    expect(catalog.remote_versions[0].artifact).toBe('kixdns-enhanced-action-30235703570-p7-8c6fd2a687ce-linux-x86_64')
+    expect(catalog.remote_versions[0].artifact).toBe('kixdns-enhanced-action-30235703570-p7-4cf33a6c029f-linux-x86_64')
     expect(catalog.remote_versions.every((version) => /^sha256:[a-f0-9]{64}$/.test(version.artifact_digest))).toBe(true)
     expect(new Set(catalog.remote_versions.map((version) => version.run_id)).size).toBe(4)
     expect(catalog.installed_versions.every((version) => version.commit !== version.upstream_commit)).toBe(true)

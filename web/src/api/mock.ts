@@ -196,7 +196,7 @@ function actionVersion(sourceId: number, runId: number, fingerprint: string, dig
 }
 
 const actionVersions: RemoteKixdnsVersion[] = [
-  actionVersion(8695590365, 30235703570, '8c6fd2a687ce', 'sha256:d6ea8edd8c9de8f1eaa5da58899c238102402ea380bbd7e93de813b89c9b15a0', 7),
+  actionVersion(8695590365, 30235703570, '4cf33a6c029f', 'sha256:d6ea8edd8c9de8f1eaa5da58899c238102402ea380bbd7e93de813b89c9b15a0', 7),
   actionVersion(8695589205, 30231271280, 'e662fc842875', 'sha256:c43352d24182a5ac74af457af67bca18bb8fcf2189ba29da6fc2fbc0eed388a7'),
   actionVersion(8695597834, 30229870401, '869e5ef84b1b', 'sha256:1d4339431769964db35fb895b96dff743ad60109ea10133eb193e3c3d650d60b'),
   actionVersion(8695686119, 30228238557, '584dd80d891b', 'sha256:a33ebe3cd7cdd175221ac751af082d434a848d3548a9ac4bb6eccfe56cc5080b'),
