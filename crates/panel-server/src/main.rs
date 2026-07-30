@@ -81,7 +81,7 @@ struct Args {
     #[arg(long, env = "KIXDNS_PANEL_INSTALLED_RELEASE")]
     panel_installed_release: Option<String>,
 
-    /// 是否允许面板替换、安装和切换 KixDNS 二进制。
+    /// 是否允许面板替换、安装和切换 `KixDNS` 二进制。
     #[arg(long, env = "KIXDNS_MANAGEMENT_ENABLED", default_value_t = true)]
     kixdns_management_enabled: bool,
 

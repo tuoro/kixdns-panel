@@ -32,6 +32,29 @@ sudo bash ./scripts/install.sh
 
 ARM64 使用 `kixdns-panel-linux-arm64`。安装脚本还会校验包内 `SHA256SUMS`，然后启动两个服务。
 
+## 既有 KixDNS 安装
+
+安装脚本检测到非本面板管理的 KixDNS 时不会默认替换。交互终端会要求选择：
+
+- `1` 保留现有 KixDNS，仅安装受限模式面板；面板不下载、替换或删除其二进制，版本更新提示和版本操作会停用。
+- `2` 保留现有配置，迁移为面板管理的 KixDNS Enhanced；原有 `/etc/systemd/system/<unit>` 和运行状态会保存到 `/var/lib/kixdns-panel/external-backup/`，以后卸载面板可恢复。
+- `3` 取消安装。
+
+无人值守安装必须显式选择，不能依赖默认值：
+
+```bash
+# 保留现有服务，仅安装受限模式面板
+sudo bash ./scripts/install.sh --keep-existing \
+  --kixdns-unit kixdns.service \
+  --kixdns-config /etc/kixdns/pipeline.json \
+  --kixdns-binary /usr/local/bin/kixdns
+
+# 明确迁移到面板管理的增强版
+sudo bash ./scripts/install.sh --replace-existing
+```
+
+迁移模式只替换面板约定的 KixDNS 二进制和 unit，既有配置路径会被写入 `panel.env`；迁移前的 unit、启用状态和运行状态会保留。保留模式下，面板仍可按 Polkit 权限控制既有 unit，但原版 KixDNS 不具备增强指标和结构化热加载回执时，对应页面会显示不可用。迁移到增强版必须重新运行安装脚本并明确选择迁移，面板不会通过常驻 root 权限直接改写 systemd。
+
 ## 权限模型
 
 安装创建两个不可登录系统账号：
@@ -54,7 +77,7 @@ ARM64 使用 `kixdns-panel-linux-arm64`。安装脚本还会校验包内 `SHA256
 | `/run/kixdns/admin.sock` | `0660` 本机增强控制通道 |
 | `/usr/share/kixdns-panel/web` | 前端静态资源 |
 
-面板进程不以 root 运行。Polkit 规则只允许 `kixdns-panel` 对 `kixdns.service` 执行 `start`、`stop`、`restart`；后端本身也使用相同动作白名单。systemd 单元启用了只读系统目录、私有临时目录、能力边界和地址族限制。
+面板进程不以 root 运行。Polkit 规则只允许 `kixdns-panel` 对安装配置中的 KixDNS unit 执行 `start`、`stop`、`restart`；后端本身也使用相同动作白名单。外部模式不会授予面板二进制替换能力。systemd 单元启用了只读系统目录、私有临时目录、能力边界和地址族限制。
 
 日志页依赖 `systemd-journal` 组。journald 本身不支持按 unit 授权，因此该组也能读取宿主机其他 journal；这是当前部署的明确权限边界。不能接受此权限时，应移除 `kixdns-panel` 的 `systemd-journal` 附加组，同时停用面板日志页。不要用带参数通配符的 sudoers 规则替代，它会扩大命令执行范围。
 
@@ -143,10 +166,10 @@ sudo systemctl restart kixdns-panel.service
 sudo bash ./scripts/uninstall.sh
 ```
 
-明确清除 `/etc/kixdns`、`/etc/kixdns-panel`、`/var/lib/kixdns-panel` 和系统账号：
+明确清除面板数据（受管模式还会清除面板生成的 `/etc/kixdns`）：
 
 ```bash
 sudo bash ./scripts/uninstall.sh --purge
 ```
 
-`--purge` 不可恢复，执行前应备份配置和 `panel.db`。
+`--purge` 不可恢复，执行前应备份配置和 `panel.db`。外部模式下，卸载和 `--purge` 都不会删除外部 KixDNS 的 unit、二进制、配置或账号；迁移模式如果存在备份，会先恢复迁移前的 unit 与运行状态。

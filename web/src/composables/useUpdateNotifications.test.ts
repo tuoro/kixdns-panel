@@ -4,6 +4,7 @@ import { buildUpdateNotices } from './useUpdateNotifications'
 
 const status: UpdateNotifications = {
   kixdns: {
+    management_enabled: true,
     available: true,
     source: 'action',
     current_commit: 'a'.repeat(40),
@@ -39,6 +40,14 @@ describe('更新通知', () => {
   it('只展示当前仍可用的更新', () => {
     const notices = buildUpdateNotices({
       kixdns: { ...status.kixdns, available: false },
+      panel: { ...status.panel, available: false },
+    })
+    expect(notices).toEqual([])
+  })
+
+  it('外部 KixDNS 模式不生成增强包通知', () => {
+    const notices = buildUpdateNotices({
+      kixdns: { ...status.kixdns, management_enabled: false, available: false },
       panel: { ...status.panel, available: false },
     })
     expect(notices).toEqual([])

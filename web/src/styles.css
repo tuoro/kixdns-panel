@@ -456,6 +456,11 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .version-panel { margin-top: 14px; }
 .version-panel__header { border-bottom: 1px solid var(--line); }
 .version-panel__tools { display: flex; align-items: center; gap: 8px; }
+.external-mode-notice { min-height: 116px; display: flex; align-items: center; gap: 12px; padding: 20px; color: #53605b; background: #f8faf9; }
+.external-mode-notice > span { width: 38px; height: 38px; display: grid; place-items: center; flex: 0 0 auto; color: var(--green); background: var(--green-soft); border-radius: 5px; }
+.external-mode-notice > div { min-width: 0; display: grid; gap: 5px; }
+.external-mode-notice strong { color: #303936; font-size: 12px; }
+.external-mode-notice p { max-width: 680px; color: #727d79; font-size: 10px; line-height: 1.6; }
 .version-source-tabs { height: 36px; display: grid; grid-template-columns: repeat(2, minmax(92px, 1fr)); gap: 2px; padding: 3px; background: #edf0ef; border: 1px solid #dde2e0; border-radius: 6px; }
 .version-source-tabs button { min-width: 0; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 10px; color: #707a76; background: transparent; border: 0; border-radius: 4px; font-size: 10px; font-weight: 650; }
 .version-source-tabs button:hover { color: #35403c; }

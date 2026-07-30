@@ -18,7 +18,7 @@ export interface UpdateNoticeItem {
 export function buildUpdateNotices(status: UpdateNotifications | null): UpdateNoticeItem[] {
   if (!status) return []
   const notices: UpdateNoticeItem[] = []
-  if (status.kixdns.available) {
+  if (status.kixdns.available && status.kixdns.source_id !== null) {
     const version = status.kixdns.source === 'release'
       ? status.kixdns.release_tag ?? `Release #${status.kixdns.source_id}`
       : status.kixdns.run_id ? `Run #${status.kixdns.run_id}` : `Artifact #${status.kixdns.source_id}`

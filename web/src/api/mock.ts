@@ -209,6 +209,7 @@ function demoVersionCatalog(source: KixdnsVersionSource): KixdnsVersionCatalog {
   const activeRemote = installedKixdnsVersions.get(activeKixdnsVersion)
   return {
     source,
+    management_enabled: true,
     active_source: activeRemote?.source ?? null,
     active_commit: activeRemote?.commit ?? null,
     binary_present: true,
@@ -353,6 +354,7 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
   if (path === '/api/v1/updates/status') {
     return {
       kixdns: {
+        management_enabled: true,
         available: true,
         source: 'action',
         current_commit: panelBuildCommit,

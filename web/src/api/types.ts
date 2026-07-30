@@ -176,15 +176,16 @@ export interface UpdateInfo {
 }
 
 export interface KixdnsUpdateNotice {
+  management_enabled: boolean
   available: boolean
   source: KixdnsVersionSource
   current_commit: string | null
-  latest_commit: string
-  source_id: number
+  latest_commit: string | null
+  source_id: number | null
   run_id: number | null
   release_tag: string | null
-  created_at: string
-  build_url: string
+  created_at: string | null
+  build_url: string | null
 }
 
 export interface PanelUpdateNotice {
@@ -246,6 +247,7 @@ export interface InstalledKixdnsVersion {
 
 export interface KixdnsVersionCatalog {
   source: KixdnsVersionSource
+  management_enabled: boolean
   active_source: KixdnsVersionSource | null
   active_commit: string | null
   binary_present: boolean
