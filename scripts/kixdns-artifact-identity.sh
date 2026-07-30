@@ -130,6 +130,16 @@ fingerprint="$({
           digest='1cb570b8c0a1d9b793738bfdd16c683f261f619467c777a2fc102e60eced0fe4'
           ;;
       esac
+    else
+      # 能力清单 v1 固定到首次发布的打包契约；实际能力内容仍单独进入指纹。
+      case "$file" in
+        scripts/kixdns-artifact-identity.sh)
+          digest='fe2c4173d9078208205f9c9dedfbda93d4c045b162dd267edf138bd02adb5f05'
+          ;;
+        .github/workflows/build-kixdns-track.yml)
+          digest='8ffe7e141b09552ad44cab40d4863826b70f50268fc4ba571c4e2287f8654d55'
+          ;;
+      esac
     fi
     printf '%s\0%s\n' "$file" "$digest"
   done
