@@ -73,7 +73,9 @@ validate_candidate() {
   local directory=$1
   local run_commit=$2
   local expected_identity=$3
+  local expected_capabilities=$4
   local candidate_commit
+  local candidate_capabilities
 
   [[ -f "${directory}/kixdns" && ! -L "${directory}/kixdns" ]] || return 1
   [[ -f "${directory}/SHA256SUMS" && ! -L "${directory}/SHA256SUMS" ]] || return 1
@@ -87,6 +89,13 @@ validate_candidate() {
     ([.config_capabilities[] | type == "string" and test("^[a-z][a-z0-9_]{0,63}$")] | all) and
     ((.config_capabilities | unique | length) == (.config_capabilities | length))
   ' "${directory}/KIXDNS_CAPABILITIES.json" >/dev/null || return 1
+  candidate_capabilities="$(jq -ceS . "${directory}/KIXDNS_CAPABILITIES.json")" || return 1
+  if [[ -n "${expected_capabilities}" ]]; then
+    [[ "${candidate_capabilities}" == "$(jq -ceS . "${expected_capabilities}")" ]] || return 1
+  else
+    jq -e '.config_capabilities | length == 0' \
+      "${directory}/KIXDNS_CAPABILITIES.json" >/dev/null || return 1
+  fi
   validate_architecture "${ARTIFACT}" "${directory}/kixdns" || return 1
 
   candidate_commit="${run_commit}"
@@ -106,7 +115,9 @@ main() {
   ARTIFACT=$4
   local lock_file=$5
   local destination=$6
+  local expected_capabilities=''
   local expected_identity
+  local patchset
   local run_id
   local run_commit
   local staging
@@ -124,6 +135,10 @@ main() {
   [[ -f "${lock_file}" && ! -L "${lock_file}" ]] || fail '上游锁定文件无效'
   [[ ! -e "${destination}" ]] || fail '目标目录已经存在'
   expected_identity="$(artifact_identity "${lock_file}")" || fail '上游锁定身份无效'
+  patchset="$(jq -r '.patchset' "${lock_file}")" || fail '无法读取补丁集编号'
+  if [[ -f "${SCRIPT_DIRECTORY}/../patches/sets/${patchset}/capabilities.json" ]]; then
+    expected_capabilities="${SCRIPT_DIRECTORY}/../patches/sets/${patchset}/capabilities.json"
+  fi
   ARTIFACT="$(tracked_artifact "${ARTIFACT}" "${lock_file}")" || fail '无法生成轨道 Artifact 名称'
 
   local attempt
@@ -134,7 +149,7 @@ main() {
       [[ "${run_id}" =~ ^[0-9]+$ && "${run_commit}" =~ ^[0-9a-f]{40}$ ]] || continue
       staging="$(mktemp -d "${RUNNER_TEMP:-/tmp}/kixdns-artifact.XXXXXX")"
       if gh run download "${run_id}" --repo "${repository}" --name "${ARTIFACT}" --dir "${staging}" >/dev/null 2>&1 \
-        && validate_candidate "${staging}" "${run_commit}" "${expected_identity}"; then
+        && validate_candidate "${staging}" "${run_commit}" "${expected_identity}" "${expected_capabilities}"; then
         install -d -m 0755 "${destination}"
         install -m 0755 "${staging}/kixdns" "${destination}/kixdns"
         cp -- "${staging}/upstream.lock.json" "${destination}/upstream.lock.json"
