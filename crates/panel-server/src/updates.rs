@@ -412,6 +412,8 @@ impl UpdateManager {
             binary_path,
             versions_path,
         } = settings;
+        let panel_installed_release =
+            panel_installed_release.filter(|release| !release.trim().is_empty());
         validate_slug(&repository, true)?;
         validate_slug(&workflow, false)?;
         validate_slug(&release_workflow, false)?;
@@ -2463,6 +2465,32 @@ mod tests {
             Err(UpdateError::Verification(_))
         ));
         assert!(outside.path().is_dir());
+    }
+
+    #[tokio::test]
+    async fn treats_empty_panel_release_as_unset() {
+        let directory = tempdir().unwrap();
+        let manager = UpdateManager::new(
+            Database::open(directory.path().join("panel.db"))
+                .await
+                .unwrap(),
+            UpdateSettings {
+                repository: "tuoro/kixdns-panel".to_owned(),
+                workflow: "build-kixdns.yml".to_owned(),
+                release_workflow: "build-kixdns-release.yml".to_owned(),
+                branch: "main".to_owned(),
+                artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
+                installed_commit: None,
+                panel_installed_commit: None,
+                panel_installed_release: Some(String::new()),
+                management_enabled: true,
+                binary_path: directory.path().join("bin/kixdns"),
+                versions_path: directory.path().join("versions"),
+            },
+        )
+        .unwrap();
+
+        assert!(manager.panel_release.is_none());
     }
 
     #[tokio::test]

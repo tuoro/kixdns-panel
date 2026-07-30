@@ -48,6 +48,27 @@ fi
 KIXDNS_SERVICE_UNIT="kixdns@primary.service"
 validate_unit
 
+environment_source="$(mktemp)"
+environment_output="$(mktemp)"
+trap 'rm -f -- "${environment_source}" "${environment_output}"' EXIT
+printf '%s\n' \
+  'KIXDNS_PANEL_INSTALLED_RELEASE=' \
+  'KIXDNS_UPDATE_RELEASE_WORKFLOW=build-kixdns-release.yml' > "${environment_source}"
+KIXDNS_CONFIG_PATH=/etc/kixdns/pipeline.json
+KIXDNS_BINARY_PATH=/var/lib/kixdns-panel/bin/kixdns
+KIXDNS_CONTROL_SOCKET=/run/kixdns/admin.sock
+KIXDNS_SERVICE_UNIT=kixdns.service
+render_panel_environment "${environment_source}" "${environment_output}" \
+  kixdns-commit panel-commit '' true
+if grep -q '^KIXDNS_PANEL_INSTALLED_RELEASE=' "${environment_output}"; then
+  printf '断言失败：Action 包不应输出空 Release 环境变量\n' >&2
+  exit 1
+fi
+render_panel_environment "${environment_source}" "${environment_output}" \
+  kixdns-commit panel-commit v0.1.0 true
+release_value="$(awk -F= '$1 == "KIXDNS_PANEL_INSTALLED_RELEASE" { print $2 }' "${environment_output}")"
+assert_equals "${release_value}" "v0.1.0" "正式包应保留 Release 标签"
+
 if (parse_arguments --unknown-option) 2>/dev/null; then
   printf '断言失败：未知安装参数不应被接受\n' >&2
   exit 1

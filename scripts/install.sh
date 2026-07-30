@@ -334,15 +334,13 @@ install_web() {
   mv -- "${staged}" "${target}"
 }
 
-update_panel_environment() {
-  local kixdns_commit=$1
-  local panel_commit=$2
-  local panel_release=$3
-  local management_enabled="true"
-  local target=/etc/kixdns-panel/panel.env
-  local temporary
-  [[ ${INSTALL_MODE} == "external" ]] && management_enabled="false"
-  temporary="$(mktemp /etc/kixdns-panel/.panel.env.XXXXXX)"
+render_panel_environment() {
+  local source=$1
+  local output=$2
+  local kixdns_commit=$3
+  local panel_commit=$4
+  local panel_release=$5
+  local management_enabled=$6
   awk -v kixdns_commit="${kixdns_commit}" -v panel_commit="${panel_commit}" \
     -v panel_release="${panel_release}" -v management_enabled="${management_enabled}" \
     -v config_path="${KIXDNS_CONFIG_PATH}" -v binary_path="${KIXDNS_BINARY_PATH}" \
@@ -371,7 +369,7 @@ update_panel_environment() {
       next
     }
     /^KIXDNS_PANEL_INSTALLED_RELEASE=/ {
-      print "KIXDNS_PANEL_INSTALLED_RELEASE=" panel_release
+      if (panel_release != "") print "KIXDNS_PANEL_INSTALLED_RELEASE=" panel_release
       panel_release_found = 1
       next
     }
@@ -387,10 +385,23 @@ update_panel_environment() {
       if (!management_found) print "KIXDNS_MANAGEMENT_ENABLED=" management_enabled
       if (!kixdns_found) print "KIXDNS_INSTALLED_COMMIT=" kixdns_commit
       if (!panel_found) print "KIXDNS_PANEL_INSTALLED_COMMIT=" panel_commit
-      if (!panel_release_found) print "KIXDNS_PANEL_INSTALLED_RELEASE=" panel_release
+      if (!panel_release_found && panel_release != "") print "KIXDNS_PANEL_INSTALLED_RELEASE=" panel_release
       if (!release_workflow) print "KIXDNS_UPDATE_RELEASE_WORKFLOW=build-kixdns-release.yml"
     }
-  ' "${target}" > "${temporary}"
+  ' "${source}" > "${output}"
+}
+
+update_panel_environment() {
+  local kixdns_commit=$1
+  local panel_commit=$2
+  local panel_release=$3
+  local management_enabled="true"
+  local target=/etc/kixdns-panel/panel.env
+  local temporary
+  [[ ${INSTALL_MODE} == "external" ]] && management_enabled="false"
+  temporary="$(mktemp /etc/kixdns-panel/.panel.env.XXXXXX)"
+  render_panel_environment "${target}" "${temporary}" "${kixdns_commit}" \
+    "${panel_commit}" "${panel_release}" "${management_enabled}"
   chown root:"${KIXDNS_GROUP}" "${temporary}"
   chmod 0640 "${temporary}"
   mv -fT -- "${temporary}" "${target}"
@@ -412,7 +423,6 @@ install_configuration() {
     sed -e "s/^KIXDNS_UPDATE_ARTIFACT=.*/KIXDNS_UPDATE_ARTIFACT=${artifact}/" \
       -e "s/^KIXDNS_INSTALLED_COMMIT=.*/KIXDNS_INSTALLED_COMMIT=${kixdns_build_commit}/" \
       -e "s/^KIXDNS_PANEL_INSTALLED_COMMIT=.*/KIXDNS_PANEL_INSTALLED_COMMIT=${panel_build_commit}/" \
-      -e "s/^KIXDNS_PANEL_INSTALLED_RELEASE=.*/KIXDNS_PANEL_INSTALLED_RELEASE=${panel_release}/" \
       "${PACKAGE_ROOT}/deploy/panel.env.example" > /etc/kixdns-panel/panel.env
     chown root:"${KIXDNS_GROUP}" /etc/kixdns-panel/panel.env
     chmod 0640 /etc/kixdns-panel/panel.env
