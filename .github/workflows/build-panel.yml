@@ -159,7 +159,7 @@ jobs:
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            binutils build-essential ca-certificates cmake curl git jq perl pkg-config python3 unzip zip zstd
+            binutils build-essential ca-certificates cmake curl gh git jq perl pkg-config python3 unzip zip zstd
           rm -rf /var/lib/apt/lists/*
 
       - name: Checkout panel repository
