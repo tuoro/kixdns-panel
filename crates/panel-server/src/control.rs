@@ -28,6 +28,8 @@ pub struct Health {
     pub started_at_unix: u64,
     pub uptime_seconds: u64,
     pub config_generation: u64,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,6 +65,26 @@ pub struct CacheFlushResult {
     pub rule_entries_after: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryStatsSnapshot {
+    pub protocol_version: u8,
+    pub enabled: bool,
+    pub anonymized_clients: bool,
+    pub window_seconds: u64,
+    pub retention_seconds: u64,
+    pub generated_at_unix: u64,
+    pub requests_observed: u64,
+    pub dropped_updates: u64,
+    pub clients: Vec<NamedCount>,
+    pub domains: Vec<NamedCount>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatsClearResult {
+    pub protocol_version: u8,
+    pub cleared: bool,
+}
+
 #[derive(Debug, Deserialize)]
 struct ProtocolEnvelope {
     protocol_version: u8,
@@ -84,7 +106,7 @@ pub struct MetricsSnapshot {
     pub upstreams: Vec<UpstreamCount>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NamedCount {
     pub name: String,
     pub count: u64,
@@ -116,6 +138,9 @@ pub enum ControlError {
     Protocol(String),
     #[error("KixDNS 拒绝操作：{0}")]
     Rejected(String),
+    #[error("KixDNS 增强能力不可用：{0}")]
+    #[cfg_attr(not(unix), allow(dead_code))]
+    Unsupported(String),
 }
 
 impl ControlClient {
@@ -139,6 +164,21 @@ impl ControlClient {
         let text = String::from_utf8(body)
             .map_err(|_| ControlError::Protocol("指标响应不是 UTF-8".to_owned()))?;
         parse_metrics(&text)
+    }
+
+    pub async fn top_stats(
+        &self,
+        window_seconds: u64,
+        limit: usize,
+    ) -> Result<QueryStatsSnapshot, ControlError> {
+        self.get_json(&format!(
+            "/v1/stats/top?window={window_seconds}&limit={limit}"
+        ))
+        .await
+    }
+
+    pub async fn clear_stats(&self) -> Result<StatsClearResult, ControlError> {
+        self.post_json("/v1/stats/clear", Vec::new()).await
     }
 
     pub async fn validate(&self, content: &Value) -> Result<ValidationResult, ControlError> {
@@ -252,6 +292,9 @@ impl ControlClient {
                 .ok()
                 .and_then(|value| value.pointer("/error/message")?.as_str().map(str::to_owned))
                 .unwrap_or_else(|| format!("HTTP {status}"));
+            if status == hyper::StatusCode::NOT_FOUND {
+                return Err(ControlError::Unsupported(message));
+            }
             return Err(ControlError::Rejected(message));
         }
         Ok((status.as_u16(), bytes))
@@ -467,7 +510,7 @@ fn numeric_value(value: &MetricValue) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ControlError, Health, decode_versioned_json, parse_metrics};
+    use super::{ControlError, Health, QueryStatsSnapshot, decode_versioned_json, parse_metrics};
 
     #[test]
     fn parses_and_groups_panel_metrics() {
@@ -504,5 +547,33 @@ kixdns_upstream_results_total{upstream="1.1.1.1:53",transport="udp",result="succ
         let response = br#"{"protocol_version":2}"#;
         let decoded = decode_versioned_json::<Health>("/v1/health", response);
         assert!(matches!(decoded, Err(ControlError::Protocol(_))));
+    }
+
+    #[test]
+    fn decodes_query_rankings_and_defaults_old_capabilities() {
+        let response = br#"{
+            "protocol_version":1,
+            "enabled":true,
+            "anonymized_clients":true,
+            "window_seconds":86400,
+            "retention_seconds":86400,
+            "generated_at_unix":100,
+            "requests_observed":42,
+            "dropped_updates":2,
+            "clients":[{"name":"192.168.1.0/24","count":20}],
+            "domains":[{"name":"example.com","count":12}]
+        }"#;
+        let stats = decode_versioned_json::<QueryStatsSnapshot>("/v1/stats/top", response).unwrap();
+        assert_eq!(stats.requests_observed, 42);
+        assert_eq!(stats.clients[0].name, "192.168.1.0/24");
+        assert_eq!(stats.domains[0].count, 12);
+
+        let old_health = br#"{
+            "protocol_version":1,"status":"ok","pid":1,"version":"0.1.0",
+            "upstream_commit":"abc","patchset":"5","started_at_unix":1,
+            "uptime_seconds":2,"config_generation":3
+        }"#;
+        let health = decode_versioned_json::<Health>("/v1/health", old_health).unwrap();
+        assert!(health.capabilities.is_empty());
     }
 }

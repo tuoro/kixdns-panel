@@ -28,7 +28,7 @@ use crate::auth::{
 use crate::config_store::{ConfigError, ConfigStore, MAX_CONFIG_BYTES};
 use crate::control::{
     ActiveConfig, CacheFlushResult, ControlClient, ControlError, Health, MetricsSnapshot,
-    ValidationResult,
+    QueryStatsSnapshot, StatsClearResult, ValidationResult,
 };
 use crate::db::{
     ConfigVersionSummary, Database, SessionRecord, UserRecord, ensure_database_parent,
@@ -154,6 +154,14 @@ struct KixdnsVersionsQuery {
     source: VersionSource,
 }
 
+#[derive(Debug, Deserialize)]
+struct QueryStatsQuery {
+    #[serde(default = "default_stats_window")]
+    window: u64,
+    #[serde(default = "default_stats_limit")]
+    limit: usize,
+}
+
 #[derive(Debug, Serialize)]
 struct LogsResponse {
     entries: Vec<LogEntry>,
@@ -240,6 +248,8 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         .route("/auth/logout", post(logout))
         .route("/auth/session", get(session))
         .route("/overview", get(overview))
+        .route("/stats/top", get(query_stats))
+        .route("/stats/clear", post(clear_query_stats))
         .route("/config", get(get_config).put(save_config))
         .route("/config/validate", post(validate_config))
         .route("/config/geo-data", get(get_geo_data))
@@ -470,6 +480,47 @@ async fn overview(
         active_config: active_config.map_err(map_control_error)?,
         metrics: metrics.map_err(map_control_error)?,
     }))
+}
+
+async fn query_stats(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Query(query): Query<QueryStatsQuery>,
+) -> AppResult<Json<QueryStatsSnapshot>> {
+    authenticate(&state.database, &jar).await?;
+    if !matches!(query.window, 3_600 | 21_600 | 86_400) {
+        return Err(AppError::BadRequest(
+            "stats_window_invalid",
+            "统计窗口仅支持 1、6 或 24 小时".to_owned(),
+        ));
+    }
+    if !(1..=50).contains(&query.limit) {
+        return Err(AppError::BadRequest(
+            "stats_limit_invalid",
+            "排行数量必须在 1 到 50 之间".to_owned(),
+        ));
+    }
+    state
+        .control
+        .top_stats(query.window, query.limit)
+        .await
+        .map(Json)
+        .map_err(map_control_error)
+}
+
+async fn clear_query_stats(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> AppResult<Json<StatsClearResult>> {
+    let session = authenticate(&state.database, &jar).await?;
+    verify_csrf(&session, &jar, &headers)?;
+    state
+        .control
+        .clear_stats()
+        .await
+        .map(Json)
+        .map_err(map_control_error)
 }
 
 async fn validate_config(
@@ -1062,7 +1113,18 @@ fn map_control_error(error: ControlError) -> AppError {
         ControlError::Protocol(message) => {
             AppError::ServiceUnavailable("kixdns_protocol_error", message)
         }
+        ControlError::Unsupported(message) => {
+            AppError::NotFound("kixdns_capability_unsupported", message)
+        }
     }
+}
+
+fn default_stats_window() -> u64 {
+    86_400
+}
+
+fn default_stats_limit() -> usize {
+    20
 }
 
 fn map_geo_data_error(error: GeoDataError) -> AppError {
