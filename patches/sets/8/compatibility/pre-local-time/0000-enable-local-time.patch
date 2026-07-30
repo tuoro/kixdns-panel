@@ -1,0 +1,84 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index a48f59f..8f82cc3 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1345,6 +1345,15 @@ dependencies = [
+  "autocfg",
+ ]
+ 
++[[package]]
++name = "num_threads"
++version = "0.1.7"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "5c7398b9c8b70908f6371f47ed36737907c87c52af34c268fed0bf0ceb92ead9"
++dependencies = [
++ "libc",
++]
++
+ [[package]]
+ name = "once_cell"
+ version = "1.21.4"
+@@ -2147,10 +2156,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "18dfaaeddcb932337b5e7866ee7d0ce9b76d2fd092997146f187ec09b4558a50"
+ dependencies = [
+  "deranged",
++ "libc",
+  "num-conv",
++ "num_threads",
+  "powerfmt",
+  "serde_core",
+  "time-core",
++ "time-macros",
+ ]
+ 
+ [[package]]
+@@ -2159,6 +2171,16 @@ version = "0.1.9"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "9e1c906769ad99c88eaa54e728060edef082f8e358ff32030cb7c7d315e81109"
+ 
++[[package]]
++name = "time-macros"
++version = "0.2.31"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "c431b87111666e491a90baa837f914fb45cd5dc3c268591b0220ff5057f2085f"
++dependencies = [
++ "num-conv",
++ "time-core",
++]
++
+ [[package]]
+ name = "tinystr"
+ version = "0.8.2"
+@@ -2360,6 +2382,7 @@ dependencies = [
+  "sharded-slab",
+  "smallvec",
+  "thread_local",
++ "time",
+  "tracing",
+  "tracing-core",
+  "tracing-log",
+diff --git a/Cargo.toml b/Cargo.toml
+index 27bee8d..c7c43c6 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -18,7 +18,7 @@ serde = { version = "1", features = ["derive"] }
+ serde_json = "1"
+ arc-swap = "1.8"
+ tracing = "0.1"
+-tracing-subscriber = { version = "0.3", features = ["fmt", "json", "env-filter"] }
++tracing-subscriber = { version = "0.3", features = ["fmt", "json", "env-filter", "local-time"] }
+ notify = "6"
+ clap = { version = "4.5", features = ["derive"] }
+ dashmap = "6"
+diff --git a/src/main.rs b/src/main.rs
+index 0a6dbaa..93bae8d 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -361,6 +361,7 @@ fn init_tracing(debug: bool) {
+     // 默认仅保留错误日志以平衡性能与可观测性，除非显式指定
+     // Default to error-level logging to balance performance with observability unless explicitly enabled
+     let fmt_layer = fmt::layer()
++        .with_timer(fmt::time::LocalTime::rfc_3339())
+         .with_target(false)
+         .with_ansi(false)
+         .with_level(debug);

@@ -63,6 +63,19 @@ patchset_directory="patches/sets/${patchset}"
   echo "补丁集 p${patchset} 缺少通用补丁目录" >&2
   exit 1
 }
+capabilities_file="${patchset_directory}/capabilities.json"
+if [[ -f "$capabilities_file" ]]; then
+  jq -e '
+    .schema_version == 1 and
+    (.config_capabilities | type == "array") and
+    ([.config_capabilities[] | type == "string" and test("^[a-z][a-z0-9_]{0,63}$")] | all) and
+    ((.config_capabilities | unique | length) == (.config_capabilities | length))
+  ' "$capabilities_file" >/dev/null || {
+    echo "补丁集 p${patchset} 的能力清单无效" >&2
+    exit 1
+  }
+  files+=("$capabilities_file")
+fi
 compatibility="$(jq -r '.compatibility // empty' "$lock_file")"
 if [[ -n "$compatibility" ]]; then
   [[ "$compatibility" =~ ^[A-Za-z0-9._-]+$ ]] || {

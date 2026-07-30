@@ -78,8 +78,15 @@ validate_candidate() {
   [[ -f "${directory}/kixdns" && ! -L "${directory}/kixdns" ]] || return 1
   [[ -f "${directory}/SHA256SUMS" && ! -L "${directory}/SHA256SUMS" ]] || return 1
   [[ -f "${directory}/upstream.lock.json" && ! -L "${directory}/upstream.lock.json" ]] || return 1
+  [[ -f "${directory}/KIXDNS_CAPABILITIES.json" && ! -L "${directory}/KIXDNS_CAPABILITIES.json" ]] || return 1
   (cd "${directory}" && sha256sum --check --strict --quiet SHA256SUMS) || return 1
   [[ "$(artifact_identity "${directory}/upstream.lock.json")" == "${expected_identity}" ]] || return 1
+  jq -e '
+    .schema_version == 1 and
+    (.config_capabilities | type == "array") and
+    ([.config_capabilities[] | type == "string" and test("^[a-z][a-z0-9_]{0,63}$")] | all) and
+    ((.config_capabilities | unique | length) == (.config_capabilities | length))
+  ' "${directory}/KIXDNS_CAPABILITIES.json" >/dev/null || return 1
   validate_architecture "${ARTIFACT}" "${directory}/kixdns" || return 1
 
   candidate_commit="${run_commit}"
@@ -131,6 +138,7 @@ main() {
         install -d -m 0755 "${destination}"
         install -m 0755 "${staging}/kixdns" "${destination}/kixdns"
         cp -- "${staging}/upstream.lock.json" "${destination}/upstream.lock.json"
+        cp -- "${staging}/KIXDNS_CAPABILITIES.json" "${destination}/KIXDNS_CAPABILITIES.json"
         printf '%s\n' "${run_commit}" > "${destination}/KIXDNS_BUILD_COMMIT"
         printf '%s\n' "${run_id}" > "${destination}/KIXDNS_SOURCE_RUN_ID"
         rm -rf -- "${staging}"

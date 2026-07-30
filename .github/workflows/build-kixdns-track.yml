@@ -217,10 +217,16 @@ jobs:
           LOCK_FILE: ${{ matrix.lock_file }}
         run: |
           enhanced="dist/${ARTIFACT_NAME}"
+          capabilities="patches/sets/${KIXDNS_PANEL_PATCHSET}/capabilities.json"
           install -Dm755 "$UPSTREAM_DIR/target/${{ matrix.platform.target }}/release/kixdns" "$enhanced/kixdns"
           cp "$LOCK_FILE" "$enhanced/upstream.lock.json"
+          if [[ -f "$capabilities" ]]; then
+            cp "$capabilities" "$enhanced/KIXDNS_CAPABILITIES.json"
+          else
+            printf '{"schema_version":1,"config_capabilities":[]}\n' > "$enhanced/KIXDNS_CAPABILITIES.json"
+          fi
           printf '%s\n' "$GITHUB_SHA" > "$enhanced/KIXDNS_BUILD_COMMIT"
-          (cd "$enhanced" && sha256sum kixdns upstream.lock.json KIXDNS_BUILD_COMMIT > SHA256SUMS)
+          (cd "$enhanced" && sha256sum kixdns upstream.lock.json KIXDNS_CAPABILITIES.json KIXDNS_BUILD_COMMIT > SHA256SUMS)
 
       - name: Upload enhanced artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

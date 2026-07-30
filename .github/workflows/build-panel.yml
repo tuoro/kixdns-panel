@@ -221,7 +221,8 @@ jobs:
           cp -a deploy scripts "$bundle/"
           cp docs/architecture.md docs/control-protocol-v1.md docs/deployment.md "$bundle/docs/"
           cp README.md LICENSE upstream.lock.json "$bundle/"
-          cp dist/reused-kixdns/KIXDNS_BUILD_COMMIT dist/reused-kixdns/KIXDNS_SOURCE_RUN_ID "$bundle/"
+          cp dist/reused-kixdns/KIXDNS_BUILD_COMMIT dist/reused-kixdns/KIXDNS_SOURCE_RUN_ID \
+            dist/reused-kixdns/KIXDNS_CAPABILITIES.json "$bundle/"
           printf '%s\n' "$GITHUB_SHA" > "$bundle/PANEL_BUILD_COMMIT"
           if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
             printf '%s\n' "${GITHUB_REF_NAME}" > "$bundle/PANEL_RELEASE"
