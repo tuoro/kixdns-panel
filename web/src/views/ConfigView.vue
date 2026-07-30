@@ -17,12 +17,13 @@ import {
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
 import { apiRequest, jsonBody } from '../api/client'
-import type { ConfigApplyResult, ConfigDocument, ConfigVersion, ConfigVersions, ValidationResult } from '../api/types'
+import type { ConfigApplyResult, ConfigDocument, ConfigVersion, ConfigVersions, Overview, ValidationResult } from '../api/types'
 import ConfigFlowPreview from '../components/config/ConfigFlowPreview.vue'
 import StructuredConfigEditor from '../components/config/StructuredConfigEditor.vue'
 import JsonEditor from '../components/JsonEditor.vue'
 import StatusBanner from '../components/StatusBanner.vue'
 import { normalizeConfig, serializeConfig } from '../config-editor/model'
+import { SETTING_SECTIONS, settingSupported } from '../config-editor/schema'
 import type { ConfigEditorMode, KixConfig } from '../config-editor/types'
 import { useToast } from '../composables/useToast'
 import { errorMessage, formatDate, shortHash } from '../utils'
@@ -42,8 +43,19 @@ const restoring = ref<number | null>(null)
 const validation = ref<ValidationResult | null>(null)
 const parseError = ref('')
 const loadError = ref('')
+const capabilityError = ref('')
+const runtimeCapabilities = ref<string[]>([])
 const toast = useToast()
 const changed = computed(() => source.value !== baseline.value)
+const unsupportedFields = computed(() => {
+  const settings = config.value?.settings
+  if (!settings) return []
+  return SETTING_SECTIONS
+    .flatMap((section) => section.fields)
+    .filter((field) => Object.prototype.hasOwnProperty.call(settings, field.key)
+      && !settingSupported(field, runtimeCapabilities.value))
+    .map((field) => field.label)
+})
 let syncingConfig = false
 let pendingLoad: Promise<void> | null = null
 
@@ -103,10 +115,20 @@ function load(): Promise<void> {
   if (pendingLoad) return pendingLoad
   loading.value = true
   pendingLoad = (async () => {
-    const [nextDocument, history] = await Promise.all([
+    const [nextDocument, history, overview] = await Promise.all([
       apiRequest<ConfigDocument>('/api/v1/config'),
       apiRequest<ConfigVersions>('/api/v1/config/versions'),
+      apiRequest<Overview>('/api/v1/overview').catch((error: unknown) => {
+        capabilityError.value = errorMessage(error)
+        return null
+      }),
     ])
+    if (overview) {
+      runtimeCapabilities.value = overview.health.capabilities
+      capabilityError.value = ''
+    } else {
+      runtimeCapabilities.value = []
+    }
     document.value = nextDocument
     versions.value = history.versions
     syncingConfig = true
@@ -229,6 +251,14 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
       <button class="button button--secondary" type="button" :disabled="loading || saving || restoring !== null" @click="load"><RefreshCw :size="16" :class="{ spin: loading }" />重新读取</button>
     </div>
     <StatusBanner v-if="loadError" :message="loadError" :stale="Boolean(document)" :busy="loading" @retry="load" />
+    <div v-if="capabilityError || unsupportedFields.length" class="config-compatibility-banner">
+      <TriangleAlert :size="18" />
+      <div>
+        <strong>{{ capabilityError ? '无法确认当前 KixDNS 的配置能力' : '配置包含当前版本不支持的字段' }}</strong>
+        <p v-if="capabilityError">受版本约束的已有字段已只读保留，能力恢复后可继续编辑。</p>
+        <p v-else>已只读保留：{{ unsupportedFields.join('、') }}。切换兼容版本，或在 JSON 视图移除后再保存。</p>
+      </div>
+    </div>
     <div class="config-layout">
       <section class="editor-panel">
         <header class="editor-toolbar">
@@ -250,7 +280,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
 
         <div v-if="loading" class="editor-loading">正在读取配置…</div>
         <div v-else-if="!document" class="editor-loading">配置暂不可用</div>
-        <StructuredConfigEditor v-else-if="mode === 'structured' && config" v-model="config" @notice="toast.info($event)" />
+        <StructuredConfigEditor v-else-if="mode === 'structured' && config" v-model="config" :capabilities="runtimeCapabilities" @notice="toast.info($event)" />
         <JsonEditor v-else-if="mode === 'json'" v-model="source" />
         <ConfigFlowPreview v-else-if="config" :config="config" />
 

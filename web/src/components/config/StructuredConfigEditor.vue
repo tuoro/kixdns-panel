@@ -4,6 +4,7 @@ import PipelineEditor from './PipelineEditor.vue'
 import SettingsEditor from './SettingsEditor.vue'
 
 const config = defineModel<KixConfig>({ required: true })
+defineProps<{ capabilities: string[] }>()
 defineEmits<{ notice: [message: string] }>()
 </script>
 
@@ -13,7 +14,7 @@ defineEmits<{ notice: [message: string] }>()
       <header class="config-section__header"><span class="section-mark section-mark--ink"></span><h3>配置格式</h3></header>
       <label class="setting-field"><span>Version</span><input v-model="config.version" type="text" placeholder="1.0"></label>
     </section>
-    <SettingsEditor v-model="config.settings" @notice="$emit('notice', $event)" />
+    <SettingsEditor v-model="config.settings" :capabilities="capabilities" @notice="$emit('notice', $event)" />
     <PipelineEditor v-model="config" @notice="$emit('notice', $event)" />
   </div>
 </template>

@@ -264,6 +264,7 @@ function demoVersionCatalog(source: KixdnsVersionSource): KixdnsVersionCatalog {
           : actionUpstreamCommits[remote.run_id ?? 0] ?? null,
         patchset: 5,
         control_protocol: 1,
+        config_capabilities: remote.patchset === 7 ? ['config_query_stats_v1'] : [],
         binary_sha256: binarySha256[remote.source],
         installed_at: now - index * 86400,
         active: kixdnsVersionKey(remote) === activeKixdnsVersion,

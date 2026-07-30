@@ -14,7 +14,11 @@ export interface SettingField {
   wide?: boolean
   visibleWhen?: string
   visibleWhenAny?: string[]
+  requiresCapability?: string
+  legacyCapabilities?: string[]
 }
+
+export const CONFIG_QUERY_STATS_V1 = 'config_query_stats_v1'
 
 export interface SettingSection {
   id: string
@@ -113,8 +117,8 @@ export const SETTING_SECTIONS: SettingSection[] = [
     title: '查询统计',
     tone: 'ink',
     fields: [
-      { key: 'statistics_enabled', label: '启用查询排行', type: 'boolean', title: '在内存中统计客户端和请求域名排行' },
-      { key: 'statistics_anonymize_client_ip', label: '客户端 IP 脱敏', type: 'boolean', title: 'IPv4 按 /24、IPv6 按 /64 聚合', visibleWhen: 'statistics_enabled' },
+      { key: 'statistics_enabled', label: '启用查询排行', type: 'boolean', title: '在内存中统计客户端和请求域名排行', requiresCapability: CONFIG_QUERY_STATS_V1, legacyCapabilities: ['stats_top_v1'] },
+      { key: 'statistics_anonymize_client_ip', label: '客户端 IP 脱敏', type: 'boolean', title: 'IPv4 按 /24、IPv6 按 /64 聚合', visibleWhen: 'statistics_enabled', requiresCapability: CONFIG_QUERY_STATS_V1, legacyCapabilities: ['stats_top_v1'] },
     ],
   },
 ]
@@ -187,4 +191,19 @@ export function settingVisible(field: SettingField, settings: GlobalSettings): b
   if (field.visibleWhen && !settings[field.visibleWhen]) return false
   if (field.visibleWhenAny && !field.visibleWhenAny.some((key) => Boolean(settings[key]))) return false
   return true
+}
+
+export function settingSupported(field: SettingField, capabilities: readonly string[]): boolean {
+  if (!field.requiresCapability) return true
+  return capabilities.includes(field.requiresCapability)
+    || field.legacyCapabilities?.some((capability) => capabilities.includes(capability)) === true
+}
+
+export function settingShouldRender(
+  field: SettingField,
+  settings: GlobalSettings,
+  capabilities: readonly string[],
+): boolean {
+  if (settingSupported(field, capabilities)) return settingVisible(field, settings)
+  return Object.prototype.hasOwnProperty.call(settings, field.key)
 }

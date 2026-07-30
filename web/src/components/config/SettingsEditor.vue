@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { Plus, Trash2 } from '@lucide/vue'
-import { SETTING_SECTIONS, settingVisible, type SettingField } from '../../config-editor/schema'
+import { Plus, Trash2, TriangleAlert } from '@lucide/vue'
+import { SETTING_SECTIONS, settingShouldRender, settingSupported, type SettingField } from '../../config-editor/schema'
 import type { GlobalSettings } from '../../config-editor/types'
 import GeoDataEditor from './GeoDataEditor.vue'
 
 const settings = defineModel<GlobalSettings>({ required: true })
+const props = defineProps<{ capabilities: string[] }>()
 defineEmits<{ notice: [message: string] }>()
 
 function scalarValue(field: SettingField): string | number {
@@ -60,6 +61,14 @@ function setListItem(field: SettingField, index: number, event: Event): void {
 function removeListItem(field: SettingField, index: number): void {
   settings.value[field.key] = listValue(field).filter((_, itemIndex) => itemIndex !== index)
 }
+
+function supported(field: SettingField): boolean {
+  return settingSupported(field, props.capabilities)
+}
+
+function shouldRender(field: SettingField): boolean {
+  return settingShouldRender(field, settings.value, props.capabilities)
+}
 </script>
 
 <template>
@@ -70,26 +79,29 @@ function removeListItem(field: SettingField, index: number): void {
     </header>
     <div class="settings-grid">
       <template v-for="field in section.fields" :key="field.key">
-        <label v-if="settingVisible(field, settings) && field.type !== 'boolean' && field.type !== 'list'" class="setting-field" :class="{ 'setting-field--wide': field.wide }" :title="field.title">
+        <label v-if="shouldRender(field) && field.type !== 'boolean' && field.type !== 'list'" class="setting-field" :class="{ 'setting-field--wide': field.wide, 'setting-field--unsupported': !supported(field) }" :title="field.title">
           <span>{{ field.label }}</span>
-          <input v-if="field.type === 'text'" type="text" :value="scalarValue(field)" :placeholder="field.placeholder" @input="setText(field, $event)">
-          <input v-else-if="field.type === 'number'" type="number" :value="scalarValue(field)" :placeholder="field.placeholder" :min="field.min" :max="field.max" @input="setNumber(field, $event)">
-          <input v-else type="text" :value="csvValue(field)" :placeholder="field.placeholder" @input="setCsv(field, $event)">
+          <input v-if="field.type === 'text'" type="text" :value="scalarValue(field)" :placeholder="field.placeholder" :disabled="!supported(field)" @input="setText(field, $event)">
+          <input v-else-if="field.type === 'number'" type="number" :value="scalarValue(field)" :placeholder="field.placeholder" :min="field.min" :max="field.max" :disabled="!supported(field)" @input="setNumber(field, $event)">
+          <input v-else type="text" :value="csvValue(field)" :placeholder="field.placeholder" :disabled="!supported(field)" @input="setCsv(field, $event)">
+          <small v-if="!supported(field)" class="setting-compatibility"><TriangleAlert :size="12" />当前版本不支持</small>
         </label>
 
-        <label v-else-if="settingVisible(field, settings) && field.type === 'boolean'" class="setting-toggle" :title="field.title">
+        <label v-else-if="shouldRender(field) && field.type === 'boolean'" class="setting-toggle" :class="{ 'setting-toggle--unsupported': !supported(field) }" :title="field.title">
           <span>{{ field.label }}</span>
-          <input type="checkbox" :checked="Boolean(settings[field.key])" @change="setBoolean(field, $event)">
+          <input type="checkbox" :checked="Boolean(settings[field.key])" :disabled="!supported(field)" @change="setBoolean(field, $event)">
           <i aria-hidden="true"></i>
+          <small v-if="!supported(field)" class="setting-compatibility"><TriangleAlert :size="12" />当前版本不支持，原值已保留</small>
         </label>
 
-        <div v-else-if="settingVisible(field, settings)" class="setting-field setting-field--wide setting-list">
+        <div v-else-if="shouldRender(field)" class="setting-field setting-field--wide setting-list" :class="{ 'setting-field--unsupported': !supported(field) }">
           <span>{{ field.label }}</span>
           <div v-for="(item, index) in listValue(field)" :key="index" class="setting-list__row">
-            <input type="text" :value="item" :placeholder="field.placeholder" :aria-label="`${field.label} ${index + 1}`" @input="setListItem(field, index, $event)">
-            <button class="icon-button icon-button--small" type="button" :title="`删除${field.label}`" @click="removeListItem(field, index)"><Trash2 :size="14" /></button>
+            <input type="text" :value="item" :placeholder="field.placeholder" :aria-label="`${field.label} ${index + 1}`" :disabled="!supported(field)" @input="setListItem(field, index, $event)">
+            <button class="icon-button icon-button--small" type="button" :title="`删除${field.label}`" :disabled="!supported(field)" @click="removeListItem(field, index)"><Trash2 :size="14" /></button>
           </div>
-          <button class="inline-command" type="button" @click="addListItem(field)"><Plus :size="14" />添加路径</button>
+          <button class="inline-command" type="button" :disabled="!supported(field)" @click="addListItem(field)"><Plus :size="14" />添加路径</button>
+          <small v-if="!supported(field)" class="setting-compatibility"><TriangleAlert :size="12" />当前版本不支持，原值已保留</small>
         </div>
       </template>
     </div>

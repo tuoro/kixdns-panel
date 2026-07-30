@@ -259,6 +259,7 @@ export interface InstalledKixdnsVersion {
   upstream_commit: string | null
   patchset: number | null
   control_protocol: number | null
+  config_capabilities: string[]
   binary_sha256: string
   installed_at: number
   active: boolean
