@@ -3,7 +3,7 @@
 `sets/<编号>/` 保存不可变的版本化补丁集，锁文件中的 `patchset` 只读取对应编号。上游源码不进入本仓库；`cargo xtask prepare` 会检出到 `.upstream/kixdns-<source>-<commit>-p<patchset>`，并以 `git apply` 重放所选集合中的补丁。工具使用来源、补丁版本和内容 SHA-256 标记完整补丁集，支持幂等执行并拒绝混用不同内容。
 
 ~~~text
-sets/5/
+sets/6/
   common/                         # 该补丁集的增强实现
   compatibility/<名称>/           # 锁文件显式选择的前置兼容层
   release/<tag>/                  # 对应正式版的可选前置补丁
@@ -36,10 +36,11 @@ sets/5/
 
 这种顺序把适配限制在候选版本：旧锁、旧目录和旧 Artifact 保持可复现，面板服务仅在控制协议确实变化时才需要联动修改。
 
-当前 `sets/5/common/` 补丁顺序：
+当前 `sets/6/common/` 补丁顺序：
 
 1. `0001-panel-observability.patch`：本机控制协议和内部指标。
 2. `0002-config-validation.patch`：复用 KixDNS 解析与运行时编译的候选配置校验。
 3. `0003-security-dependency-refresh.patch`：刷新存在 RustSec 公告的依赖，并迁移 MaxMind 与 PEM API。
 4. `0004-fast-path-rule-metrics.patch`：补齐编译静态规则与规则缓存快速路径的命中计数。
 5. `0005-runtime-safety.patch`：让热加载摘要绑定解析快照，并限制动态指标序列数量与标签长度。
+6. `0006-query-ranking.patch`：增加有界内存的客户端与域名排行、隐私配置和 `stats_top_v1` 控制接口。
