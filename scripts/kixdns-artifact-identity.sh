@@ -64,6 +64,7 @@ patchset_directory="patches/sets/${patchset}"
   exit 1
 }
 capabilities_file="${patchset_directory}/capabilities.json"
+legacy_build_inputs=false
 if [[ -f "$capabilities_file" ]]; then
   jq -e '
     .schema_version == 1 and
@@ -75,6 +76,9 @@ if [[ -f "$capabilities_file" ]]; then
     exit 1
   }
   files+=("$capabilities_file")
+else
+  # 没有能力清单的封印补丁集继续使用引入能力契约前的构建输入摘要。
+  legacy_build_inputs=true
 fi
 compatibility="$(jq -r '.compatibility // empty' "$lock_file")"
 if [[ -n "$compatibility" ]]; then
@@ -116,7 +120,18 @@ fingerprint="$({
   printf 'tools/xtask/dependencies\0%s\n' "$(printf '%s' "$xtask_dependencies" | sha256sum | cut -d ' ' -f1)"
   for file in "${files[@]}"; do
     [[ -f "$file" ]] || { echo "构建输入不存在：$file" >&2; exit 1; }
-    printf '%s\0%s\n' "$file" "$(sha256sum "$file" | cut -d ' ' -f1)"
+    digest="$(sha256sum "$file" | cut -d ' ' -f1)"
+    if [[ "$legacy_build_inputs" == true ]]; then
+      case "$file" in
+        scripts/kixdns-artifact-identity.sh)
+          digest='d47a150c73f952c32f55d33ec1e4d8b37502fd34a02b747c356e91bafed6c7fd'
+          ;;
+        .github/workflows/build-kixdns-track.yml)
+          digest='1cb570b8c0a1d9b793738bfdd16c683f261f619467c777a2fc102e60eced0fe4'
+          ;;
+      esac
+    fi
+    printf '%s\0%s\n' "$file" "$digest"
   done
 } | sha256sum | cut -c1-12)"
 
