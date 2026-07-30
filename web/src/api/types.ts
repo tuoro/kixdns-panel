@@ -175,6 +175,36 @@ export interface UpdateInfo {
   available: boolean
 }
 
+export interface KixdnsUpdateNotice {
+  available: boolean
+  source: KixdnsVersionSource
+  current_commit: string | null
+  latest_commit: string
+  source_id: number
+  run_id: number | null
+  release_tag: string | null
+  created_at: string
+  build_url: string
+}
+
+export interface PanelUpdateNotice {
+  available: boolean
+  current_version: string
+  current_commit: string | null
+  current_release: string | null
+  latest_version: string | null
+  published_at: string | null
+  release_url: string | null
+  artifact: string | null
+  artifact_digest: string | null
+  download_url: string | null
+}
+
+export interface UpdateNotifications {
+  kixdns: KixdnsUpdateNotice
+  panel: PanelUpdateNotice
+}
+
 export type KixdnsVersionSource = 'action' | 'release'
 
 export interface RemoteKixdnsVersion {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { GeoDataManifest, KixdnsVersionCatalog, ServiceStatus, ValidationResult } from './types'
+import type { GeoDataManifest, KixdnsVersionCatalog, ServiceStatus, UpdateNotifications, ValidationResult } from './types'
 import { mockRequest } from './mock'
 
 describe('演示 API', () => {
@@ -102,5 +102,15 @@ describe('演示 API', () => {
     const activeIdentity = active?.source_id ?? active?.commit
     await expect(mockRequest(`/api/v1/kixdns/versions/${active?.source ?? 'action'}/${activeIdentity}/delete`, { method: 'POST' }))
       .rejects.toThrow('当前运行版本不能删除')
+  })
+
+  it('分别返回 KixDNS 与面板正式版更新', async () => {
+    const updates = await mockRequest<UpdateNotifications>('/api/v1/updates/status')
+    expect(updates.kixdns.available).toBe(true)
+    expect(updates.kixdns.source).toBe('action')
+    expect(updates.panel.available).toBe(true)
+    expect(updates.panel.current_release).toBeNull()
+    expect(updates.panel.latest_version).toBe('0.2.0')
+    expect(updates.panel.download_url).toMatch(/releases\/download\/v0\.2\.0/)
   })
 })

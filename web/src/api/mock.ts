@@ -14,6 +14,7 @@ import type {
   RemoteKixdnsVersion,
   ServiceStatus,
   UpdateInfo,
+  UpdateNotifications,
   ValidationResult,
 } from './types'
 
@@ -86,7 +87,7 @@ const overview: Overview = {
     status: 'ok',
     pid: 1428,
     version: '0.1.0',
-    upstream_commit: '374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25',
+    upstream_commit: '647c5b1d2af6963176d7f8da6c3ed031e6b58497',
     patchset: '5',
     started_at_unix: now - 289420,
     uptime_seconds: 289420,
@@ -197,10 +198,10 @@ const demoRemoteVersions: Record<KixdnsVersionSource, RemoteKixdnsVersion[]> = {
   release: releaseVersions,
 }
 const kixdnsVersionKey = (version: Pick<RemoteKixdnsVersion, 'source' | 'source_id' | 'commit'>): string => `${version.source}:${version.source_id}:${version.commit}`
-let activeKixdnsVersion = kixdnsVersionKey(actionVersions[0])
+let activeKixdnsVersion = kixdnsVersionKey(actionVersions[1])
 const installedKixdnsVersions = new Map<string, RemoteKixdnsVersion>([
-  [activeKixdnsVersion, actionVersions[0]],
-  [kixdnsVersionKey(actionVersions[1]), actionVersions[1]],
+  [activeKixdnsVersion, actionVersions[1]],
+  [kixdnsVersionKey(actionVersions[0]), actionVersions[0]],
 ])
 
 function demoVersionCatalog(source: KixdnsVersionSource): KixdnsVersionCatalog {
@@ -348,6 +349,33 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
   if (path === '/api/v1/diagnostics/dns') {
     const body = JSON.parse(String(init?.body)) as { domain: string; record_type: string }
     return { server: '127.0.0.1:53', domain: body.domain, record_type: body.record_type, response_code: 'No Error', elapsed_ms: 12, truncated: false, answers: [`${body.domain}. 300 IN A 104.18.26.120`, `${body.domain}. 300 IN A 104.18.27.120`] } as DnsDiagnostic as T
+  }
+  if (path === '/api/v1/updates/status') {
+    return {
+      kixdns: {
+        available: true,
+        source: 'action',
+        current_commit: panelBuildCommit,
+        latest_commit: panelBuildCommit,
+        source_id: actionVersions[0].source_id,
+        run_id: actionVersions[0].run_id,
+        release_tag: null,
+        created_at: actionVersions[0].created_at,
+        build_url: actionVersions[0].build_url,
+      },
+      panel: {
+        available: true,
+        current_version: '0.1.0',
+        current_commit: '23f70420a74f229aa9755c93b0e0e1ae0c7d3316',
+        current_release: null,
+        latest_version: '0.2.0',
+        published_at: '2026-08-01T08:00:00Z',
+        release_url: 'https://github.com/tuoro/kixdns-panel/releases/tag/v0.2.0',
+        artifact: 'kixdns-panel-linux-x86_64.zip',
+        artifact_digest: 'sha256:9280ba270e01d774e6944efdc435a685250e99f98c36a8cf406507a036c01ba4',
+        download_url: 'https://github.com/tuoro/kixdns-panel/releases/download/v0.2.0/kixdns-panel-linux-x86_64.zip',
+      },
+    } as UpdateNotifications as T
   }
   if (path === '/api/v1/updates/apply') updateAvailable = false
   if (path === '/api/v1/updates' || path === '/api/v1/updates/apply') {

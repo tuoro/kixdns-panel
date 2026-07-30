@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   Activity,
+  Bell,
   Braces,
   FileText,
   Gauge,
@@ -14,12 +15,14 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { useSession } from '../composables/useSession'
 import { useToast } from '../composables/useToast'
+import { useUpdateStatus } from '../composables/useUpdateStatus'
 import { errorMessage } from '../utils'
 
 const route = useRoute()
 const router = useRouter()
 const session = useSession()
 const toast = useToast()
+const updates = useUpdateStatus()
 const menuOpen = ref(false)
 const menuButton = ref<HTMLButtonElement | null>(null)
 const sidebar = ref<HTMLElement | null>(null)
@@ -81,15 +84,39 @@ async function logout(): Promise<void> {
 }
 
 let mobileViewport: MediaQueryList | null = null
+let updateTimer: number | undefined
+const announcedUpdates = new Set<string>()
+
+async function checkUpdates(): Promise<void> {
+  await updates.refresh()
+  const next = updates.status.value
+  if (!next) return
+  const labels: string[] = []
+  const kixdnsKey = `kixdns:${next.kixdns.source}:${next.kixdns.source_id}`
+  if (next.kixdns.available && !announcedUpdates.has(kixdnsKey)) {
+    announcedUpdates.add(kixdnsKey)
+    labels.push('KixDNS 增强包')
+  }
+  const panelKey = `panel:${next.panel.latest_version ?? 'none'}`
+  if (next.panel.available && !announcedUpdates.has(panelKey)) {
+    announcedUpdates.add(panelKey)
+    labels.push(`面板 v${next.panel.latest_version}`)
+  }
+  if (labels.length > 0) toast.info(`${labels.join('、')} ${labels.length > 1 ? '均有更新' : '有更新'}，请前往系统页面查看`)
+}
+
 watch(menuOpen, (open) => document.body.classList.toggle('menu-open', open))
 onMounted(() => {
   window.addEventListener('keydown', handleKeydown)
   mobileViewport = window.matchMedia('(max-width: 860px)')
   mobileViewport.addEventListener('change', handleViewportChange)
+  void checkUpdates()
+  updateTimer = window.setInterval(() => void checkUpdates(), 30 * 60 * 1000)
 })
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleKeydown)
   mobileViewport?.removeEventListener('change', handleViewportChange)
+  window.clearInterval(updateTimer)
   document.body.classList.remove('menu-open')
 })
 </script>
@@ -106,6 +133,7 @@ onBeforeUnmount(() => {
         <RouterLink v-for="item in navigation" :key="item.to" :to="item.to" @click="menuOpen = false">
           <component :is="item.icon" :size="18" />
           <span>{{ item.label }}</span>
+          <em v-if="item.to === '/system' && updates.availableCount.value" class="update-badge">{{ updates.availableCount.value }}</em>
         </RouterLink>
       </nav>
       <div class="sidebar__footer">
@@ -122,6 +150,7 @@ onBeforeUnmount(() => {
       <header class="topbar">
         <button ref="menuButton" class="icon-button menu-button" type="button" title="打开菜单" aria-label="打开菜单" aria-controls="primary-sidebar" :aria-expanded="menuOpen" @click="openMenu"><Menu :size="21" /></button>
         <div><p class="eyebrow">KixDNS Enhanced</p><h1>{{ title }}</h1></div>
+        <button v-if="updates.availableCount.value" class="icon-button topbar-update" type="button" title="查看可用更新" aria-label="查看可用更新" @click="router.push('/system')"><Bell :size="18" /><span>{{ updates.availableCount.value }}</span></button>
         <div class="operator"><span>{{ session.user.value?.username.slice(0, 1).toUpperCase() }}</span><div><strong>{{ session.user.value?.username }}</strong><small>管理员</small></div></div>
       </header>
       <main class="workspace__main"><RouterView /></main>
@@ -129,7 +158,7 @@ onBeforeUnmount(() => {
 
     <nav class="mobile-nav" aria-label="移动端导航" :inert="menuOpen">
       <RouterLink v-for="item in navigation" :key="item.to" :to="item.to">
-        <component :is="item.icon" :size="19" /><span>{{ item.label }}</span>
+        <component :is="item.icon" :size="19" /><span>{{ item.label }}</span><em v-if="item.to === '/system' && updates.availableCount.value" class="update-badge">{{ updates.availableCount.value }}</em>
       </RouterLink>
     </nav>
   </div>

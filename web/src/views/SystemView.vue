@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   Archive,
+  Bell,
   CircleCheck,
   Download,
   ExternalLink,
@@ -15,7 +16,7 @@ import {
   Tag as TagIcon,
   Trash2,
 } from '@lucide/vue'
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { apiRequest } from '../api/client'
 import type {
   InstalledKixdnsVersion,
@@ -27,6 +28,7 @@ import type {
 } from '../api/types'
 import StatusBanner from '../components/StatusBanner.vue'
 import { useToast } from '../composables/useToast'
+import { useUpdateStatus } from '../composables/useUpdateStatus'
 import { errorMessage, formatDate, formatKixdnsVersion, shortHash } from '../utils'
 
 type VersionAction = { identity: string; kind: 'install' | 'activate' | 'delete' }
@@ -41,6 +43,13 @@ const versionAction = ref<VersionAction | null>(null)
 const serviceError = ref('')
 const versionsError = ref('')
 const toast = useToast()
+const {
+  status: updateStatus,
+  checking: checkingUpdates,
+  error: updateError,
+  refresh: refreshUpdates,
+} = useUpdateStatus()
+const versionPanel = ref<HTMLElement | null>(null)
 let pendingService: Promise<void> | null = null
 let versionsRequest = 0
 
@@ -70,6 +79,22 @@ function artifactDigest(digest: string | null | undefined): string {
 
 function versionIdentity(version: InstalledKixdnsVersion | RemoteKixdnsVersion): string {
   return `${version.source ?? 'action'}:${version.source_id ?? version.commit}`
+}
+
+function latestKixdnsVersion(): string {
+  const notice = updateStatus.value?.kixdns
+  if (!notice) return '未记录'
+  if (notice.source === 'release') return notice.release_tag ?? `Release #${notice.source_id}`
+  return notice.run_id ? `Run #${notice.run_id}` : `Artifact #${notice.source_id}`
+}
+
+function panelUpdateLabel(): string {
+  const notice = updateStatus.value?.panel
+  if (!notice?.latest_version) return '正式版通道尚未发布'
+  if (notice.available) return '发现正式版更新'
+  if (!notice.artifact) return '最新正式版暂无当前架构安装包'
+  if (notice.current_release) return '当前正式版已是最新'
+  return '当前开发构建不低于正式版'
 }
 
 function loadService(silent = false): Promise<void> {
@@ -113,6 +138,12 @@ function selectVersionSource(source: KixdnsVersionSource): void {
   void loadVersions()
 }
 
+async function viewKixdnsVersions(): Promise<void> {
+  selectVersionSource(updateStatus.value?.kixdns.source ?? 'release')
+  await nextTick()
+  versionPanel.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
 async function refreshAll(): Promise<void> {
   await Promise.all([loadService(true), loadVersions(true)])
 }
@@ -138,7 +169,7 @@ async function installVersion(version: RemoteKixdnsVersion): Promise<void> {
   try {
     await apiRequest<InstalledKixdnsVersion>(`/api/v1/kixdns/versions/${version.source}/${version.source_id}/install`, { method: 'POST' })
     toast.success('KixDNS 已安装并通过健康检查')
-    await Promise.all([loadVersions(true), loadService(true)])
+    await Promise.all([loadVersions(true), loadService(true), refreshUpdates()])
   } catch (error) {
     toast.error(errorMessage(error))
   } finally {
@@ -154,7 +185,7 @@ async function activateVersion(version: InstalledKixdnsVersion | RemoteKixdnsVer
   try {
     await apiRequest<InstalledKixdnsVersion>(`/api/v1/kixdns/versions/${source}/${identity}/activate`, { method: 'POST' })
     toast.success('KixDNS 版本已切换并通过健康检查')
-    await Promise.all([loadVersions(true), loadService(true)])
+    await Promise.all([loadVersions(true), loadService(true), refreshUpdates()])
   } catch (error) {
     toast.error(errorMessage(error))
   } finally {
@@ -183,7 +214,10 @@ function actionBusy(version: InstalledKixdnsVersion | RemoteKixdnsVersion, kind?
     && (!kind || versionAction.value.kind === kind)
 }
 
-onMounted(refreshAll)
+onMounted(() => {
+  void refreshAll()
+  void refreshUpdates()
+})
 </script>
 
 <template>
@@ -231,7 +265,59 @@ onMounted(refreshAll)
       </section>
     </div>
 
-    <section class="panel version-panel">
+    <section class="panel update-panel">
+      <header class="panel__header">
+        <div><h2>可用更新</h2><p>KixDNS 增强包与面板正式版</p></div>
+        <button class="icon-button" type="button" title="检查更新" aria-label="检查更新" :disabled="checkingUpdates" @click="refreshUpdates"><RefreshCw :size="18" :class="{ spin: checkingUpdates }" /></button>
+      </header>
+      <div v-if="checkingUpdates && !updateStatus" class="inline-loading update-loading">正在检查更新…</div>
+      <div v-else-if="updateStatus" class="update-grid">
+        <article class="update-channel">
+          <div class="update-channel__heading">
+            <span class="update-channel__icon"><GitBranch :size="19" /></span>
+            <div><small>{{ updateStatus.kixdns.source === 'release' ? 'RELEASES' : 'ACTIONS' }}</small><h3>KixDNS 增强包</h3></div>
+            <span :class="updateStatus.kixdns.available ? 'tag tag--success' : 'tag tag--muted'">{{ updateStatus.kixdns.available ? '有更新' : (updateStatus.kixdns.current_commit ? '最新' : '未安装') }}</span>
+          </div>
+          <strong class="update-channel__status">{{ updateStatus.kixdns.available ? '发现新的增强构建' : (updateStatus.kixdns.current_commit ? '当前轨道已是最新' : 'KixDNS 尚未安装') }}</strong>
+          <dl class="update-facts">
+            <div><dt>当前版本</dt><dd class="mono">{{ formatKixdnsVersion(activeVersion) }}</dd></div>
+            <div><dt>最新版本</dt><dd class="mono">{{ latestKixdnsVersion() }}</dd></div>
+            <div><dt>构建时间</dt><dd>{{ buildTime(updateStatus.kixdns.created_at) }}</dd></div>
+          </dl>
+          <div class="update-channel__actions">
+            <button class="button button--primary" type="button" @click="viewKixdnsVersions"><Download :size="15" />查看版本</button>
+            <a class="button button--secondary" :href="updateStatus.kixdns.build_url" target="_blank" rel="noopener noreferrer">构建详情<ExternalLink :size="14" /></a>
+          </div>
+        </article>
+
+        <article class="update-channel">
+          <div class="update-channel__heading">
+            <span class="update-channel__icon update-channel__icon--panel"><Bell :size="19" /></span>
+            <div><small>RELEASE</small><h3>KixDNS Panel</h3></div>
+            <span v-if="updateStatus.panel.available" class="tag tag--success">有更新</span>
+            <span v-else class="tag tag--muted">{{ !updateStatus.panel.latest_version ? '未发布' : (updateStatus.panel.artifact ? '最新' : '无本机包') }}</span>
+          </div>
+          <strong class="update-channel__status">{{ panelUpdateLabel() }}</strong>
+          <dl class="update-facts">
+            <div><dt>当前版本</dt><dd class="mono">{{ updateStatus.panel.current_release ?? `开发构建 v${updateStatus.panel.current_version}` }}</dd></div>
+            <div><dt>最新正式版</dt><dd class="mono">{{ updateStatus.panel.latest_version ? `v${updateStatus.panel.latest_version}` : '尚未发布' }}</dd></div>
+            <div><dt>发布时间</dt><dd>{{ updateStatus.panel.published_at ? buildTime(updateStatus.panel.published_at) : '尚未发布' }}</dd></div>
+          </dl>
+          <div v-if="updateStatus.panel.release_url" class="update-channel__actions">
+            <a v-if="updateStatus.panel.download_url" class="button button--primary" :href="updateStatus.panel.download_url" target="_blank" rel="noopener noreferrer"><Download :size="15" />下载正式包</a>
+            <a class="button button--secondary" :href="updateStatus.panel.release_url" target="_blank" rel="noopener noreferrer">发布说明<ExternalLink :size="14" /></a>
+          </div>
+          <div v-else class="update-channel__placeholder">首个正式 Release 发布后将在此显示</div>
+        </article>
+      </div>
+      <div v-else class="update-check-failed">
+        <span>{{ updateError ? `检查失败：${updateError}` : '更新状态暂不可用' }}</span>
+        <button class="button button--secondary" type="button" :disabled="checkingUpdates" @click="refreshUpdates">重新检查</button>
+      </div>
+      <div v-if="updateError && updateStatus" class="update-stale">最近一次检查失败，当前显示上次结果：{{ updateError }}</div>
+    </section>
+
+    <section ref="versionPanel" class="panel version-panel">
       <header class="panel__header version-panel__header">
         <div><h2>KixDNS 版本</h2><p>远端版本源与本地版本库存</p></div>
         <div class="version-panel__tools">
