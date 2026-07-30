@@ -19,7 +19,36 @@ esac
   exit 1
 }
 
-# 根 Cargo.lock 同时包含面板依赖，不属于 KixDNS 数据面构建身份。
+command -v cargo >/dev/null || { echo '缺少命令：cargo' >&2; exit 1; }
+
+# 只记录 xtask 在 Linux 构建主机上的精确依赖，隔离面板专属依赖变化。
+xtask_dependencies="$(
+  cargo metadata --locked --format-version 1 --filter-platform x86_64-unknown-linux-gnu |
+    jq -ceS '
+      . as $metadata
+      | def direct_dependencies($ids):
+          [$metadata.resolve.nodes[]
+            | select(.id as $id | $ids | index($id))
+            | .deps[].pkg]
+          | unique;
+        def dependency_closure($ids):
+          (($ids + direct_dependencies($ids)) | unique) as $next
+          | if ($next | length) == ($ids | length)
+            then $next
+            else dependency_closure($next)
+            end;
+        ([$metadata.packages[]
+          | select(.name == "xtask" and (.manifest_path | gsub("\\\\"; "/") | endswith("/tools/xtask/Cargo.toml")))
+          | .id] | first) as $root
+      | if $root == null then error("找不到 xtask package") else $root end
+      | dependency_closure([.]) as $ids
+      | [$metadata.packages[]
+          | select(.id as $id | $ids | index($id))
+          | {name, version, source}]
+      | sort_by(.name, .version, .source)
+    '
+)" || { echo '无法解析 xtask 依赖闭包' >&2; exit 1; }
+
 files=(
   rust-toolchain.toml
   tools/xtask/Cargo.toml
@@ -70,6 +99,7 @@ while IFS= read -r file; do files+=("$file"); done < <(find "$patchset_directory
 fingerprint="$({
   [[ -f "$lock_file" ]] || { echo "构建输入不存在：$lock_file" >&2; exit 1; }
   printf 'upstream.lock.json\0%s\n' "$(sha256sum "$lock_file" | cut -d ' ' -f1)"
+  printf 'tools/xtask/dependencies\0%s\n' "$(printf '%s' "$xtask_dependencies" | sha256sum | cut -d ' ' -f1)"
   for file in "${files[@]}"; do
     [[ -f "$file" ]] || { echo "构建输入不存在：$file" >&2; exit 1; }
     printf '%s\0%s\n' "$file" "$(sha256sum "$file" | cut -d ' ' -f1)"

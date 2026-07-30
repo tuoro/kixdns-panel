@@ -35,6 +35,11 @@ jobs:
           PATCHSET_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: bash scripts/verify-patchsets.sh "$PATCHSET_BASE_SHA"
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: 1.97.1
+
       - name: Select catalog entries to build
         id: catalog
         shell: bash

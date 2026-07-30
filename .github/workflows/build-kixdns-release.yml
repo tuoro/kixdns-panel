@@ -12,6 +12,7 @@ on:
       - scripts/dns_smoke.py
       - scripts/verify-patchsets.sh
       - tools/xtask/**
+      - Cargo.lock
       - scripts/kixdns-artifact-identity.sh
       - upstreams/releases/**
       - upstream.release.lock.json
@@ -24,6 +25,7 @@ on:
       - scripts/dns_smoke.py
       - scripts/verify-patchsets.sh
       - tools/xtask/**
+      - Cargo.lock
       - scripts/kixdns-artifact-identity.sh
       - upstreams/releases/**
       - upstream.release.lock.json
