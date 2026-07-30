@@ -295,8 +295,8 @@ index 3dfef9a..72eb0cd 100644
 +impl QueryStats {
 +    fn configure(&self, enabled: bool, anonymized: bool) {
 +        let desired = QUERY_STATS_CONFIGURED
-+            | u8::from(enabled) * QUERY_STATS_ENABLED
-+            | u8::from(anonymized) * QUERY_STATS_ANONYMIZED;
++            | (u8::from(enabled) * QUERY_STATS_ENABLED)
++            | (u8::from(anonymized) * QUERY_STATS_ANONYMIZED);
 +        if self.settings.load(Ordering::Relaxed) == desired {
 +            return;
 +        }
