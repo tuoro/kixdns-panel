@@ -43,6 +43,7 @@ pub struct UpdateManager {
     initial_commit: Option<Arc<str>>,
     panel_commit: Option<Arc<str>>,
     panel_release: Option<Arc<str>>,
+    management_enabled: bool,
     binary_path: Arc<PathBuf>,
     versions_path: Arc<PathBuf>,
     apply_lock: Arc<Mutex<()>>,
@@ -59,6 +60,7 @@ pub struct UpdateSettings {
     pub installed_commit: Option<String>,
     pub panel_installed_commit: Option<String>,
     pub panel_installed_release: Option<String>,
+    pub management_enabled: bool,
     pub binary_path: PathBuf,
     pub versions_path: PathBuf,
 }
@@ -79,6 +81,7 @@ pub struct UpdateInfo {
 #[derive(Debug, Clone, Serialize)]
 pub struct VersionCatalog {
     pub source: VersionSource,
+    pub management_enabled: bool,
     pub active_source: Option<VersionSource>,
     pub active_commit: Option<String>,
     pub binary_present: bool,
@@ -94,15 +97,16 @@ pub struct UpdateNotifications {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct KixdnsUpdateNotice {
+    pub management_enabled: bool,
     pub available: bool,
     pub source: VersionSource,
     pub current_commit: Option<String>,
-    pub latest_commit: String,
-    pub source_id: u64,
+    pub latest_commit: Option<String>,
+    pub source_id: Option<u64>,
     pub run_id: Option<u64>,
     pub release_tag: Option<String>,
-    pub created_at: String,
-    pub build_url: String,
+    pub created_at: Option<String>,
+    pub build_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -404,6 +408,7 @@ impl UpdateManager {
             installed_commit,
             panel_installed_commit,
             panel_installed_release,
+            management_enabled,
             binary_path,
             versions_path,
         } = settings;
@@ -453,6 +458,7 @@ impl UpdateManager {
             panel_commit: panel_installed_commit
                 .map(|commit| Arc::from(commit.to_ascii_lowercase())),
             panel_release: panel_installed_release.map(Arc::from),
+            management_enabled,
             binary_path: Arc::new(binary_path),
             versions_path: Arc::new(versions_path),
             apply_lock: Arc::new(Mutex::new(())),
@@ -462,6 +468,12 @@ impl UpdateManager {
     }
 
     pub async fn notifications(&self) -> Result<UpdateNotifications, UpdateError> {
+        if !self.management_enabled {
+            return Ok(UpdateNotifications {
+                kixdns: KixdnsUpdateNotice::external(),
+                panel: self.panel_update().await?,
+            });
+        }
         let active = self.active_version().await?;
         let source = active
             .as_ref()
@@ -479,8 +491,19 @@ impl UpdateManager {
     }
 
     pub async fn catalog(&self, source: VersionSource) -> Result<VersionCatalog, UpdateError> {
-        let active_version = self.active_version().await?;
         let binary_present = regular_file_exists(self.binary_path.as_ref())?;
+        if !self.management_enabled {
+            return Ok(VersionCatalog {
+                source,
+                management_enabled: false,
+                active_source: None,
+                active_commit: None,
+                binary_present,
+                remote_versions: Vec::new(),
+                installed_versions: Vec::new(),
+            });
+        }
+        let active_version = self.active_version().await?;
         if binary_present && let Some(version) = active_version.as_ref() {
             self.adopt_active_version(version).await?;
         }
@@ -498,6 +521,7 @@ impl UpdateManager {
         installed_versions.sort_by_key(|version| Reverse(version.installed_at));
         Ok(VersionCatalog {
             source,
+            management_enabled: true,
             active_source: active_version.as_ref().map(|version| version.source),
             active_commit: active_version.map(|version| version.commit),
             binary_present,
@@ -507,6 +531,7 @@ impl UpdateManager {
     }
 
     pub async fn check(&self) -> Result<UpdateInfo, UpdateError> {
+        self.ensure_management_enabled()?;
         let active_version = self.active_version().await?;
         let resolved = self
             .resolved_remote_versions(VersionSource::Action)
@@ -522,6 +547,7 @@ impl UpdateManager {
         operations: &Operations,
         control: &ControlClient,
     ) -> Result<UpdateInfo, UpdateError> {
+        self.ensure_management_enabled()?;
         let _guard = self.apply_lock.lock().await;
         let active_version = self.active_version().await?;
         let candidate = self
@@ -548,6 +574,7 @@ impl UpdateManager {
         operations: &Operations,
         control: &ControlClient,
     ) -> Result<InstalledVersion, UpdateError> {
+        self.ensure_management_enabled()?;
         let _guard = self.apply_lock.lock().await;
         let resolved = self.resolve_remote(source, source_id).await?;
         let key = VersionKey::remote(&resolved.remote)?;
@@ -562,6 +589,7 @@ impl UpdateManager {
         operations: &Operations,
         control: &ControlClient,
     ) -> Result<InstalledVersion, UpdateError> {
+        self.ensure_management_enabled()?;
         let _guard = self.apply_lock.lock().await;
         let key = match version.parse::<u64>() {
             Ok(source_id) if source_id > 0 => self.installed_key(source, source_id).await?,
@@ -575,6 +603,7 @@ impl UpdateManager {
         source: VersionSource,
         version: &str,
     ) -> Result<InstalledVersion, UpdateError> {
+        self.ensure_management_enabled()?;
         let _guard = self.apply_lock.lock().await;
         let key = match version.parse::<u64>() {
             Ok(source_id) if source_id > 0 => self.installed_key(source, source_id).await?,
@@ -589,6 +618,16 @@ impl UpdateManager {
         tokio::task::spawn_blocking(move || delete_stored_version(&versions_path, &key))
             .await
             .map_err(|error| UpdateError::Install(error.to_string()))?
+    }
+
+    fn ensure_management_enabled(&self) -> Result<(), UpdateError> {
+        if self.management_enabled {
+            Ok(())
+        } else {
+            Err(UpdateError::Invalid(
+                "当前为外部 KixDNS 模式，面板不会替换或管理其二进制".to_owned(),
+            ))
+        }
     }
 
     async fn active_version(&self) -> Result<Option<VersionKey>, UpdateError> {
@@ -1213,15 +1252,33 @@ fn to_kixdns_update_notice(
             || active.source_id != Some(version.source_id)
     });
     KixdnsUpdateNotice {
+        management_enabled: true,
         available,
         source: version.source,
         current_commit: active.map(|active| active.commit.clone()),
-        latest_commit: version.commit.clone(),
-        source_id: version.source_id,
+        latest_commit: Some(version.commit.clone()),
+        source_id: Some(version.source_id),
         run_id: version.run_id,
         release_tag: version.release_tag.clone(),
-        created_at: version.created_at.clone(),
-        build_url: version.build_url.clone(),
+        created_at: Some(version.created_at.clone()),
+        build_url: Some(version.build_url.clone()),
+    }
+}
+
+impl KixdnsUpdateNotice {
+    fn external() -> Self {
+        Self {
+            management_enabled: false,
+            available: false,
+            source: VersionSource::default(),
+            current_commit: None,
+            latest_commit: None,
+            source_id: None,
+            run_id: None,
+            release_tag: None,
+            created_at: None,
+            build_url: None,
+        }
     }
 }
 
@@ -2427,6 +2484,7 @@ mod tests {
                 installed_commit: None,
                 panel_installed_commit: None,
                 panel_installed_release: None,
+                management_enabled: true,
                 binary_path: binary_path.clone(),
                 versions_path: versions_path.clone(),
             },
@@ -2449,6 +2507,45 @@ mod tests {
 
         assert!(matches!(error, UpdateError::Invalid(_)));
         assert!(versions_path.join(key.directory_name()).is_dir());
+    }
+
+    #[tokio::test]
+    async fn external_mode_never_manages_kixdns_versions() {
+        let directory = tempdir().unwrap();
+        let binary_path = directory.path().join("bin/kixdns");
+        std::fs::create_dir_all(binary_path.parent().unwrap()).unwrap();
+        std::fs::write(&binary_path, test_elf()).unwrap();
+        let manager = UpdateManager::new(
+            Database::open(directory.path().join("panel.db"))
+                .await
+                .unwrap(),
+            UpdateSettings {
+                repository: "tuoro/kixdns-panel".to_owned(),
+                workflow: "build-kixdns.yml".to_owned(),
+                release_workflow: "build-kixdns-release.yml".to_owned(),
+                branch: "main".to_owned(),
+                artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
+                installed_commit: None,
+                panel_installed_commit: None,
+                panel_installed_release: None,
+                management_enabled: false,
+                binary_path,
+                versions_path: directory.path().join("versions"),
+            },
+        )
+        .unwrap();
+
+        let catalog = manager.catalog(VersionSource::Release).await.unwrap();
+        assert!(!catalog.management_enabled);
+        assert!(catalog.binary_present);
+        assert!(catalog.remote_versions.is_empty());
+        assert!(catalog.installed_versions.is_empty());
+        assert!(matches!(
+            manager
+                .delete_version(VersionSource::Action, TEST_BUILD_COMMIT)
+                .await,
+            Err(UpdateError::Invalid(message)) if message.contains("外部 KixDNS")
+        ));
     }
 
     #[test]

@@ -81,6 +81,10 @@ struct Args {
     #[arg(long, env = "KIXDNS_PANEL_INSTALLED_RELEASE")]
     panel_installed_release: Option<String>,
 
+    /// 是否允许面板替换、安装和切换 KixDNS 二进制。
+    #[arg(long, env = "KIXDNS_MANAGEMENT_ENABLED", default_value_t = true)]
+    kixdns_management_enabled: bool,
+
     /// 自动更新替换的 `KixDNS Enhanced` 二进制路径。
     #[arg(long, env = "KIXDNS_BINARY", default_value = "/usr/local/bin/kixdns")]
     kixdns_binary: PathBuf,
@@ -142,6 +146,7 @@ async fn main() -> anyhow::Result<()> {
         installed_commit: args.installed_commit,
         panel_installed_commit: args.panel_installed_commit,
         panel_installed_release: args.panel_installed_release,
+        kixdns_management_enabled: args.kixdns_management_enabled,
         kixdns_binary: args.kixdns_binary,
         kixdns_versions: args.kixdns_versions,
         geo_data_path: args.geo_data,
