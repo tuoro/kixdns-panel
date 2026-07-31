@@ -180,7 +180,11 @@ def exercise_panel(client: PanelClient, dns_port: int) -> None:
         csrf=True,
         payload={"domain": DOMAIN, "record_type": "A"},
     )
-    require(diagnostic.get("response_code") == "NoError", "面板 DNS 诊断失败")
+    response_code = "".join(
+        character for character in str(diagnostic.get("response_code", "")).lower()
+        if character.isalnum()
+    )
+    require(response_code == "noerror", f"面板 DNS 诊断失败：{diagnostic}")
     require(any(RELOADED_IP in answer for answer in diagnostic.get("answers", [])),
             "面板 DNS 诊断没有返回预期地址")
 
