@@ -109,6 +109,11 @@ function switchMode(next: 'runtime' | 'audit'): void {
   if (next === 'audit' && auditEvents.value.length === 0) void loadAudit()
 }
 
+function changeAuditCategory(event: Event): void {
+  auditCategory.value = (event.currentTarget as HTMLSelectElement).value
+  void loadAudit()
+}
+
 function retry(): void {
   if (mode.value === 'runtime') void load()
   else void loadAudit()
@@ -150,7 +155,7 @@ onBeforeUnmount(() => window.clearInterval(timer))
       </header>
       <header v-else class="log-toolbar">
         <div class="search-field"><Search :size="16" /><input v-model="auditQuery" aria-label="筛选操作审计" placeholder="筛选操作人、动作或详情" /></div>
-        <select v-model="auditCategory" aria-label="审计动作类别" @change="loadAudit()">
+        <select v-model="auditCategory" aria-label="审计动作类别" :disabled="auditRequesting" @change="changeAuditCategory">
           <option value="all">全部动作</option><option value="config.">配置</option><option value="service.">服务</option><option value="kixdns.">KixDNS</option><option value="auth.">认证</option><option value="diagnostic.">诊断</option>
         </select>
         <button class="icon-button" type="button" title="刷新审计记录" :disabled="auditRequesting" @click="loadAudit()"><RefreshCw :size="18" :class="{ spin: auditLoading }" /></button>
