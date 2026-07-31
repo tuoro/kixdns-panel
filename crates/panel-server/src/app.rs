@@ -9,7 +9,7 @@ use axum::http::header::{CACHE_CONTROL, CONTENT_SECURITY_POLICY, REFERRER_POLICY
 use axum::http::{HeaderMap, HeaderValue, Request};
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use axum_extra::extract::CookieJar;
 use axum_extra::extract::cookie::{Cookie, SameSite};
@@ -118,13 +118,18 @@ struct SaveConfigRequest {
 }
 
 #[derive(Debug, Deserialize)]
-struct RestoreConfigRequest {
+struct ExpectedConfigRequest {
     expected_sha256: String,
 }
 
 #[derive(Debug, Serialize)]
 struct VersionsResponse {
     versions: Vec<ConfigVersionSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct DeleteConfigVersionResponse {
+    deleted_id: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -256,6 +261,7 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         .route("/config/geo-data", get(get_geo_data))
         .route("/config/geo-data/sync", post(sync_geo_data))
         .route("/config/versions", get(config_versions))
+        .route("/config/versions/{id}", delete(delete_config_version))
         .route("/config/versions/{id}/restore", post(restore_config))
         .route("/cache/flush", post(flush_cache))
         .route("/service", get(service_status))
@@ -667,7 +673,7 @@ async fn restore_config(
     Path(id): Path<i64>,
     jar: CookieJar,
     headers: HeaderMap,
-    Json(request): Json<RestoreConfigRequest>,
+    Json(request): Json<ExpectedConfigRequest>,
 ) -> AppResult<Json<ConfigApplyResponse>> {
     let session = authenticate(&state.database, &jar).await?;
     verify_csrf(&session, &jar, &headers)?;
@@ -728,6 +734,33 @@ async fn restore_config(
         active_config,
         validation: Some(validation),
     }))
+}
+
+async fn delete_config_version(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Json(request): Json<ExpectedConfigRequest>,
+) -> AppResult<Json<DeleteConfigVersionResponse>> {
+    let session = authenticate(&state.database, &jar).await?;
+    verify_csrf(&session, &jar, &headers)?;
+    state
+        .config
+        .delete_version(id, &request.expected_sha256)
+        .await
+        .map_err(map_config_error)?;
+    state
+        .database
+        .audit(
+            Some(session.username),
+            "config.version.delete".to_owned(),
+            format!("删除配置版本 #{id}"),
+            unix_timestamp(),
+        )
+        .await
+        .map_err(AppError::Internal)?;
+    Ok(Json(DeleteConfigVersionResponse { deleted_id: id }))
 }
 
 async fn flush_cache(
@@ -1128,6 +1161,10 @@ fn map_config_error(error: ConfigError) -> AppError {
             "config_conflict",
             "配置已被其他操作修改，请刷新后重试".to_owned(),
         ),
+        ConfigError::ActiveVersion => AppError::Conflict(
+            "config_version_active",
+            "当前生效版本不能删除，请先恢复其他版本".to_owned(),
+        ),
         ConfigError::Invalid(message) => AppError::BadRequest("config_invalid", message),
         ConfigError::Internal(error) => AppError::Internal(error),
     }
@@ -1509,6 +1546,98 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn config_version_delete_protects_current_version_and_requires_csrf() {
+        let context = authenticated_app().await;
+
+        let config_response = context
+            .app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/config")
+                    .header(COOKIE, context.cookies.clone())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let config: Value = serde_json::from_slice(
+            &to_bytes(config_response.into_body(), 64 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+
+        let versions_response = context
+            .app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/config/versions")
+                    .header(COOKIE, context.cookies.clone())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let versions: Value = serde_json::from_slice(
+            &to_bytes(versions_response.into_body(), 64 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let current_id = versions["versions"][0]["id"].as_i64().unwrap();
+        let endpoint = format!("/api/v1/config/versions/{current_id}");
+        let body = format!(
+            r#"{{"expected_sha256":"{}"}}"#,
+            config["sha256"].as_str().unwrap()
+        );
+
+        let unauthorized = context
+            .app
+            .clone()
+            .oneshot(
+                Request::delete(&endpoint)
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let forbidden = context
+            .app
+            .clone()
+            .oneshot(
+                Request::delete(&endpoint)
+                    .header(CONTENT_TYPE, "application/json")
+                    .header(COOKIE, context.cookies.clone())
+                    .body(Body::from(body.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+
+        let protected = context
+            .app
+            .oneshot(
+                Request::delete(endpoint)
+                    .header(CONTENT_TYPE, "application/json")
+                    .header(COOKIE, context.cookies)
+                    .header("x-csrf-token", context.csrf_token)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(protected.status(), StatusCode::CONFLICT);
+        let payload: Value =
+            serde_json::from_slice(&to_bytes(protected.into_body(), 64 * 1024).await.unwrap())
+                .unwrap();
+        assert_eq!(payload["error"]["code"], "config_version_active");
     }
 
     #[tokio::test]

@@ -44,6 +44,8 @@ pub enum ConfigError {
     NotFound,
     #[error("配置已被其他操作修改")]
     Conflict,
+    #[error("当前生效版本不能删除")]
+    ActiveVersion,
     #[error("{0}")]
     Invalid(String),
     #[error(transparent)]
@@ -135,6 +137,29 @@ impl ConfigStore {
         let content = serde_json::from_str(&version.content).context("历史配置内容已损坏")?;
         validate_config_shape(&content)?;
         Ok(content)
+    }
+
+    pub async fn delete_version(
+        &self,
+        version_id: i64,
+        expected_sha256: &str,
+    ) -> Result<(), ConfigError> {
+        let _guard = self.write_lock.lock().await;
+        let current = self.current().await?;
+        if !constant_hash_eq(&current.sha256, expected_sha256) {
+            return Err(ConfigError::Conflict);
+        }
+        let active_version_id = self
+            .database
+            .latest_config_version_id_by_sha256(current.sha256)
+            .await?;
+        if active_version_id == Some(version_id) {
+            return Err(ConfigError::ActiveVersion);
+        }
+        if !self.database.delete_config_version(version_id).await? {
+            return Err(ConfigError::NotFound);
+        }
+        Ok(())
     }
 
     async fn save_locked(
@@ -348,5 +373,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(store.current().await.unwrap().sha256, restored.sha256);
+
+        let active_delete = store
+            .delete_version(restored.version_id, &restored.sha256)
+            .await;
+        assert!(matches!(active_delete, Err(ConfigError::ActiveVersion)));
+
+        store
+            .delete_version(initial_version.id, &restored.sha256)
+            .await
+            .unwrap();
+        assert!(matches!(
+            store.version_content(initial_version.id).await,
+            Err(ConfigError::NotFound)
+        ));
+
+        let conflict = store.delete_version(saved.version_id, "stale-sha256").await;
+        assert!(matches!(conflict, Err(ConfigError::Conflict)));
     }
 }

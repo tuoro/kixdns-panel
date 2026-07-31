@@ -345,6 +345,30 @@ impl Database {
         .await
     }
 
+    pub async fn latest_config_version_id_by_sha256(
+        &self,
+        sha256: String,
+    ) -> anyhow::Result<Option<i64>> {
+        self.call(move |connection| {
+            connection
+                .query_row(
+                    "SELECT id FROM config_versions WHERE sha256 = ?1 ORDER BY id DESC LIMIT 1",
+                    [sha256],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(Into::into)
+        })
+        .await
+    }
+
+    pub async fn delete_config_version(&self, id: i64) -> anyhow::Result<bool> {
+        self.call(move |connection| {
+            Ok(connection.execute("DELETE FROM config_versions WHERE id = ?1", [id])? > 0)
+        })
+        .await
+    }
+
     pub async fn audit(
         &self,
         actor: Option<String>,
