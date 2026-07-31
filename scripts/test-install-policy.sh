@@ -48,6 +48,17 @@ fi
 KIXDNS_SERVICE_UNIT="kixdns@primary.service"
 validate_unit
 
+if (
+  INSTALL_MODE="managed"
+  KIXDNS_CONFIG_PATH=/pipeline.json
+  KIXDNS_BINARY_PATH=/var/lib/kixdns-panel/bin/kixdns
+  KIXDNS_CONTROL_SOCKET=/run/kixdns/admin.sock
+  validate_install_mode
+) 2>/dev/null; then
+  printf '断言失败：受管配置不能直接放在根目录\n' >&2
+  exit 1
+fi
+
 environment_source="$(mktemp)"
 environment_output="$(mktemp)"
 trap 'rm -f -- "${environment_source}" "${environment_output}"' EXIT

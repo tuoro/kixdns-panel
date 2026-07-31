@@ -3,7 +3,7 @@ Description=KixDNS 增强管理面板
 Documentation=https://github.com/tuoro/kixdns-panel
 Wants=network-online.target
 After=network-online.target kixdns.service
-ConditionPathIsExecutable=/usr/local/bin/kixdns-panel-server
+ConditionFileIsExecutable=/usr/local/bin/kixdns-panel-server
 ConditionPathExists=/usr/share/kixdns-panel/web/index.html
 
 [Service]

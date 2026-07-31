@@ -173,10 +173,14 @@ choose_install_mode() {
 }
 
 validate_install_mode() {
+  local config_parent
   validate_unit
   validate_absolute_path "KixDNS 配置路径" "${KIXDNS_CONFIG_PATH}"
   validate_absolute_path "KixDNS 二进制路径" "${KIXDNS_BINARY_PATH}"
   validate_absolute_path "KixDNS 控制 Socket 路径" "${KIXDNS_CONTROL_SOCKET}"
+  config_parent="$(dirname -- "${KIXDNS_CONFIG_PATH}")"
+  [[ ${config_parent} != / && ! -L ${config_parent} ]] ||
+    fail "KixDNS 配置不能直接位于根目录或符号链接目录"
   if [[ ${INSTALL_MODE} == "external" ]]; then
     [[ ${EXISTING_KIXDNS} == true ]] || fail "未检测到可保留的既有 KixDNS"
     [[ -f ${KIXDNS_CONFIG_PATH} ]] || fail "找不到既有 KixDNS 配置：${KIXDNS_CONFIG_PATH}"
@@ -184,6 +188,10 @@ validate_install_mode() {
     systemctl cat "${KIXDNS_SERVICE_UNIT}" >/dev/null 2>&1 ||
       fail "找不到既有 systemd unit：${KIXDNS_SERVICE_UNIT}"
   else
+    if [[ -e ${KIXDNS_CONFIG_PATH} || -L ${KIXDNS_CONFIG_PATH} ]]; then
+      [[ -f ${KIXDNS_CONFIG_PATH} && ! -L ${KIXDNS_CONFIG_PATH} ]] ||
+        fail "受管 KixDNS 配置必须是普通文件"
+    fi
     EXISTING_KIXDNS_BINARY_PATH=${KIXDNS_BINARY_PATH}
     KIXDNS_BINARY_PATH=/var/lib/kixdns-panel/bin/kixdns
   fi
@@ -252,6 +260,7 @@ rollback_install() {
   if [[ ${INSTALL_MODE} == "managed" ]]; then
     restore_path /var/lib/kixdns-panel/bin/kixdns kixdns
     restore_path "/etc/systemd/system/${KIXDNS_SERVICE_UNIT}" kixdns-service
+    restore_managed_config
   fi
   restore_path /usr/local/bin/kixdns-panel-server panel-server
   restore_path /usr/share/kixdns-panel/web web
@@ -279,6 +288,40 @@ rollback_install() {
   rm -rf -- "${BACKUP_ROOT}"
   printf '安装未完成，已恢复原有程序和服务。\n' >&2
   exit "${status}"
+}
+
+backup_managed_config() {
+  local config_parent
+  local metadata
+  [[ ${INSTALL_MODE} == "managed" ]] || return 0
+  config_parent="$(dirname -- "${KIXDNS_CONFIG_PATH}")"
+  backup_path "${KIXDNS_CONFIG_PATH}" kixdns-config
+  if [[ -d ${config_parent} ]]; then
+    metadata="$(stat -c '%u %g %a' -- "${config_parent}")"
+    printf '%s\n' "${metadata}" > "${BACKUP_ROOT}/kixdns-config-directory.meta"
+  else
+    : > "${BACKUP_ROOT}/kixdns-config-directory.missing"
+  fi
+}
+
+restore_managed_config() {
+  local config_parent
+  local owner
+  local group
+  local mode
+  config_parent="$(dirname -- "${KIXDNS_CONFIG_PATH}")"
+  rm -f -- "${KIXDNS_CONFIG_PATH}"
+  if [[ -e ${BACKUP_ROOT}/kixdns-config || -L ${BACKUP_ROOT}/kixdns-config ]]; then
+    install -d -- "${config_parent}"
+    cp -a -- "${BACKUP_ROOT}/kixdns-config" "${KIXDNS_CONFIG_PATH}"
+  fi
+  if [[ -f ${BACKUP_ROOT}/kixdns-config-directory.meta ]]; then
+    read -r owner group mode < "${BACKUP_ROOT}/kixdns-config-directory.meta"
+    chown "${owner}:${group}" -- "${config_parent}"
+    chmod "${mode}" -- "${config_parent}"
+  elif [[ -f ${BACKUP_ROOT}/kixdns-config-directory.missing ]]; then
+    rmdir --ignore-fail-on-non-empty -- "${config_parent}" 2>/dev/null || true
+  fi
 }
 
 preserve_external_install() {
@@ -316,6 +359,7 @@ prepare_rollback() {
   backup_path /etc/systemd/system/kixdns-panel.service panel-service
   backup_path /etc/polkit-1/rules.d/50-kixdns-panel.rules polkit-rule
   backup_path /etc/kixdns-panel/panel.env panel-env
+  backup_managed_config
   trap 'rollback_install $?' ERR
 }
 
@@ -414,10 +458,15 @@ install_configuration() {
   local artifact
   artifact="$(detect_artifact)"
   install -d -o root -g "${KIXDNS_GROUP}" -m 0750 /etc/kixdns-panel
-  if [[ ${INSTALL_MODE} == "managed" && ! -e ${KIXDNS_CONFIG_PATH} ]]; then
+  if [[ ${INSTALL_MODE} == "managed" ]]; then
     install -d -o "${PANEL_USER}" -g "${KIXDNS_GROUP}" -m 0750 "$(dirname -- "${KIXDNS_CONFIG_PATH}")"
-    install -o "${PANEL_USER}" -g "${KIXDNS_GROUP}" -m 0640 \
-      "${PACKAGE_ROOT}/deploy/config/pipeline.json" "${KIXDNS_CONFIG_PATH}"
+    if [[ ! -e ${KIXDNS_CONFIG_PATH} ]]; then
+      install -o "${PANEL_USER}" -g "${KIXDNS_GROUP}" -m 0640 \
+        "${PACKAGE_ROOT}/deploy/config/pipeline.json" "${KIXDNS_CONFIG_PATH}"
+    else
+      chown "${PANEL_USER}:${KIXDNS_GROUP}" -- "${KIXDNS_CONFIG_PATH}"
+      chmod 0640 -- "${KIXDNS_CONFIG_PATH}"
+    fi
   fi
   if [[ ! -e /etc/kixdns-panel/panel.env ]]; then
     sed -e "s/^KIXDNS_UPDATE_ARTIFACT=.*/KIXDNS_UPDATE_ARTIFACT=${artifact}/" \
@@ -432,6 +481,7 @@ install_configuration() {
 
 install_services() {
   local kixdns_unit=/etc/systemd/system/${KIXDNS_SERVICE_UNIT}
+  local config_directory
   local panel_temporary
   local polkit_temporary
   install -d -o root -g root -m 0755 /etc/polkit-1/rules.d
@@ -451,8 +501,13 @@ install_services() {
     install -o root -g root -m 0644 "${kixdns_temporary}" "${kixdns_unit}"
     rm -f -- "${kixdns_temporary}"
   fi
-  awk -v service_unit="${KIXDNS_SERVICE_UNIT}" '
+  config_directory="$(dirname -- "${KIXDNS_CONFIG_PATH}")"
+  awk -v service_unit="${KIXDNS_SERVICE_UNIT}" -v config_directory="${config_directory}" '
     /^After=network-online\.target / { print "After=network-online.target " service_unit; next }
+    /^ReadWritePaths=/ {
+      print "ReadWritePaths=" config_directory " /var/lib/kixdns-panel"
+      next
+    }
     { print }
   ' "${PACKAGE_ROOT}/deploy/systemd/kixdns-panel.service" > "${panel_temporary}"
   install -o root -g root -m 0644 "${panel_temporary}" /etc/systemd/system/kixdns-panel.service

@@ -3,7 +3,7 @@ Description=KixDNS Enhanced DNS 服务
 Documentation=https://github.com/tuoro/kixdns-panel
 Wants=network-online.target
 After=network-online.target
-ConditionPathIsExecutable=/var/lib/kixdns-panel/bin/kixdns
+ConditionFileIsExecutable=/var/lib/kixdns-panel/bin/kixdns
 ConditionPathExists=/etc/kixdns/pipeline.json
 
 [Service]

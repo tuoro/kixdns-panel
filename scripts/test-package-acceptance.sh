@@ -76,7 +76,7 @@ verify_removed() {
   fail "该脚本只允许在 GitHub Actions 临时机运行"
 [[ ${RUNNER_ENVIRONMENT:-} == github-hosted ]] ||
   fail "该脚本拒绝修改自托管 Runner"
-os_id="$(awk -F= '$1 == "ID" { gsub(/\"/, "", $2); print $2; exit }' /etc/os-release)"
+os_id="$(awk -F= '$1 == "ID" { gsub(/"/, "", $2); print $2; exit }' /etc/os-release)"
 [[ ${os_id} == ubuntu ]] ||
   fail "当前验收只允许 Ubuntu 临时机"
 command -v systemctl >/dev/null || fail "临时机缺少 systemd"
@@ -91,8 +91,11 @@ dns_port="$(python3 "${ACCEPTANCE_PY}" prepare --config "${CONFIG_PATH}")"
 
 bash "${INSTALLER}" --replace-existing
 installed=true
-chown kixdns-panel:kixdns "${CONFIG_PATH}"
-chmod 0640 "${CONFIG_PATH}"
+[[ $(stat -c '%U:%G:%a' -- "$(dirname -- "${CONFIG_PATH}")") == kixdns-panel:kixdns:750 ]] ||
+  fail "安装器没有设置可原子写入的配置目录权限"
+[[ $(stat -c '%U:%G:%a' -- "${CONFIG_PATH}") == kixdns-panel:kixdns:640 ]] ||
+  fail "安装器没有设置受控的配置文件权限"
+systemd-analyze verify /etc/systemd/system/kixdns.service /etc/systemd/system/kixdns-panel.service
 panel_env_new="$(mktemp /etc/kixdns-panel/.acceptance-env.XXXXXX)"
 awk -v diagnostic="127.0.0.1:${dns_port}" '
   /^KIXDNS_DIAGNOSTIC_SERVER=/ {
