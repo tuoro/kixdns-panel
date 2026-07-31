@@ -1,5 +1,6 @@
 import type {
   ActiveConfig,
+  AuditPage,
   AuthSession,
   ConfigApplyResult,
   ConfigDocument,
@@ -23,6 +24,15 @@ import type {
 } from './types'
 
 const now = Math.floor(Date.now() / 1000)
+const auditEvents = [
+  { id: 18, actor: 'admin', action: 'config.save', detail: '保存配置版本 #18', created_at: now - 430 },
+  { id: 17, actor: 'admin', action: 'config.geo_data.sync', detail: '同步 Geo 数据：MMDB 1，GeoIP 0，GeoSite 1 个', created_at: now - 7200 },
+  { id: 16, actor: 'admin', action: 'kixdns.version.activate', detail: '切换增强构建 45b9a1c0c7b5', created_at: now - 86400 },
+  { id: 15, actor: 'admin', action: 'service.restart', detail: '服务状态：active/running', created_at: now - 86520 },
+  { id: 14, actor: 'admin', action: 'diagnostic.dns', detail: '执行 A 查询', created_at: now - 172800 },
+  { id: 13, actor: 'admin', action: 'auth.login', detail: '登录成功', created_at: now - 173100 },
+  { id: 12, actor: null, action: 'config.geo_data.schedule.apply', detail: '定时更新 Geo 数据并生成配置版本 #17', created_at: now - 604800 },
+]
 let config: ConfigDocument = {
   content: {
     version: '1.0',
@@ -540,6 +550,17 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
         : `request completed pipeline=default transport=udp elapsed_ms=${8 + (index % 14)}`,
     }))
     return { entries } as LogsResponse as T
+  }
+  if (pathname === '/api/v1/audit' && method === 'GET') {
+    const limit = Math.max(1, Math.min(100, Number(url.searchParams.get('limit')) || 50))
+    const beforeId = Number(url.searchParams.get('before_id')) || Number.POSITIVE_INFINITY
+    const prefix = url.searchParams.get('action_prefix') ?? ''
+    const matching = auditEvents.filter((event) => event.id < beforeId && event.action.startsWith(prefix))
+    const events = matching.slice(0, limit)
+    return {
+      events,
+      next_cursor: matching.length > limit ? events.at(-1)?.id ?? null : null,
+    } as AuditPage as T
   }
   if (path === '/api/v1/diagnostics/dns') {
     const body = JSON.parse(String(init?.body)) as { domain: string; record_type: string }

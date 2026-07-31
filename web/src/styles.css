@@ -399,6 +399,10 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .flow-jump { display: flex; align-items: center; gap: 4px; color: #9a5b0f; font-size: 9px; }
 
 .log-console { overflow: hidden; background: #171c1e; border: 1px solid #2c3335; border-radius: 7px; }
+.log-view-tabs { height: 42px; display: grid; grid-template-columns: repeat(2, minmax(130px, 180px)); align-items: stretch; padding: 5px 12px 0; background: #171c1e; border-bottom: 1px solid #303739; }
+.log-view-tabs button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; color: #7f8a86; background: transparent; border: 0; border-bottom: 2px solid transparent; font-size: 10px; font-weight: 650; }
+.log-view-tabs button:hover { color: #c2cbc8; }
+.log-view-tabs button.active { color: #9cdeb9; border-bottom-color: #4c9a73; }
 .log-toolbar { min-height: 58px; display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: #202628; border-bottom: 1px solid #303739; }
 .search-field { min-width: 180px; max-width: 420px; flex: 1; height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 10px; color: #7f8a86; background: #171c1e; border: 1px solid #384043; border-radius: 5px; }
 .search-field:focus-within { border-color: #4e886d; }
@@ -408,12 +412,17 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .log-toolbar .button--active { color: #9cdeb9; border-color: #3e775c; }
 .log-summary { height: 34px; display: flex; align-items: center; justify-content: space-between; padding: 0 13px; color: #7b8582; background: #191f21; border-bottom: 1px solid #2a3032; font-size: 9px; }
 .log-summary span { display: flex; align-items: center; gap: 7px; }
-.log-stream { height: calc(100vh - 234px); min-height: 420px; overflow: auto; padding: 5px 0 14px; font-family: "SFMono-Regular", Consolas, monospace; }
+.log-stream { height: calc(100vh - 276px); min-height: 420px; overflow: auto; padding: 5px 0 14px; font-family: "SFMono-Regular", Consolas, monospace; }
 .log-line { min-width: 720px; display: grid; grid-template-columns: 90px 42px 88px minmax(0, 1fr); gap: 10px; align-items: baseline; padding: 5px 13px; color: #b6c0bc; font-size: 10px; line-height: 1.45; }
 .log-line:hover { background: #202729; }
 .log-line time { color: #68736f; }
 .log-line strong { overflow: hidden; color: #82bd9c; font-size: 10px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
 .log-line p { color: #b9c1be; overflow-wrap: anywhere; }
+.audit-line { grid-template-columns: 126px 74px 190px minmax(0, 1fr); }
+.audit-line time { white-space: nowrap; }
+.audit-line code { overflow: hidden; color: #d2b277; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.audit-load-more { width: 100%; min-height: 42px; display: flex; align-items: center; justify-content: center; gap: 6px; color: #8dc4a7; background: transparent; border: 0; border-top: 1px solid #293133; font-size: 10px; }
+.audit-load-more:hover:not(:disabled) { background: #202729; }
 .log-level { padding: 2px 3px; border-radius: 2px; font-size: 8px; text-align: center; }
 .log-level--error { color: #ffb0b0; background: #512727; }
 .log-level--warning { color: #f0ca86; background: #49371d; }
@@ -699,10 +708,15 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
   .validation-state span { white-space: normal; }
   .editor-footer input { width: 100%; }
   .log-toolbar { display: grid; grid-template-columns: 1fr auto auto; }
+  .log-view-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); padding-inline: 8px; }
   .search-field { max-width: none; grid-column: 1 / -1; }
   .log-toolbar select { min-width: 0; }
   .log-toolbar .button { min-width: 78px; }
-  .log-stream { height: calc(100vh - 294px); min-height: 350px; }
+  .log-stream { height: calc(100vh - 336px); min-height: 350px; }
+  .audit-line { min-width: 0; grid-template-columns: 104px minmax(0, 1fr); gap: 4px 8px; padding-block: 8px; }
+  .audit-line strong { text-align: right; }
+  .audit-line code, .audit-line p { grid-column: 1 / -1; }
+  .audit-line code { overflow: visible; overflow-wrap: anywhere; text-overflow: clip; white-space: normal; }
   .diagnostic-stats { grid-template-columns: 1fr; }
   .diagnostic-stats div { border-right: 0; border-bottom: 1px solid #e0e5e3; }
   .diagnostic-stats div:last-child { border-bottom: 0; }

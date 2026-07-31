@@ -200,6 +200,19 @@ export interface LogsResponse {
   entries: LogEntry[]
 }
 
+export interface AuditEvent {
+  id: number
+  actor: string | null
+  action: string
+  detail: string
+  created_at: number
+}
+
+export interface AuditPage {
+  events: AuditEvent[]
+  next_cursor: number | null
+}
+
 export interface DnsDiagnostic {
   server: string
   domain: string

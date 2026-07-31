@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type {
+  AuditPage,
   ConfigDocument,
   ConfigVersions,
   ConfigVersionDetail,
@@ -77,6 +78,18 @@ describe('演示 API', () => {
     const cleaned = await mockRequest<GeoDataCleanupResult>('/api/v1/config/geo-data/cleanup', { method: 'POST' })
     expect(cleaned.scanned_files).toBeGreaterThanOrEqual(cleaned.removed_files)
     expect(cleaned.reclaimed_bytes).toBeGreaterThan(0)
+  })
+
+  it('按游标和动作前缀读取操作审计', async () => {
+    const first = await mockRequest<AuditPage>('/api/v1/audit?limit=2&action_prefix=config.')
+    expect(first.events).toHaveLength(2)
+    expect(first.events.every((event) => event.action.startsWith('config.'))).toBe(true)
+    expect(first.next_cursor).toBe(17)
+
+    const second = await mockRequest<AuditPage>(`/api/v1/audit?limit=2&action_prefix=config.&before_id=${first.next_cursor}`)
+    expect(second.events).toHaveLength(1)
+    expect(second.events[0]?.id).toBe(12)
+    expect(second.next_cursor).toBeNull()
   })
 
   it('删除历史配置但保护当前生效版本', async () => {
