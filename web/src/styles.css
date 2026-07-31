@@ -245,11 +245,12 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .history-list article { padding: 13px 14px; border-bottom: 1px solid #e8ecea; }
 .history-list article:last-child { border-bottom: 0; }
 .history-item--current { background: #f3f8f5; box-shadow: inset 3px 0 var(--green); }
-.history-item__top { height: 28px; display: flex; align-items: center; gap: 7px; }
-.history-item__top strong { color: #303638; font-size: 11px; }
-.history-item__top button { margin-left: auto; }
-.history-list p { margin: 7px 0; overflow: hidden; color: #535d59; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.history-list code { display: block; color: #77817d; font-size: 9px; }
+.history-item__top { min-height: 28px; display: flex; align-items: center; gap: 7px; }
+.history-item__top > strong { min-width: 0; overflow: hidden; color: #303638; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.history-item__actions { margin-left: auto; display: flex; flex: 0 0 auto; align-items: center; gap: 5px; }
+.history-item__identity { display: flex; align-items: center; gap: 7px; margin-top: 6px; color: #77817d; font-size: 9px; }
+.history-item__identity span { color: #59635f; font-weight: 700; }
+.history-item__identity code { color: #77817d; font-size: 9px; }
 .history-list small { display: block; margin-top: 7px; color: #939b98; font-size: 9px; }
 
 .structured-editor, .flow-preview { min-height: 520px; max-height: min(72vh, 900px); overflow: auto; background: #f7f9f8; }
@@ -305,6 +306,8 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .geo-data-error { min-width: 0; display: flex; align-items: center; gap: 6px; color: var(--red); font-size: 10px; line-height: 1.4; }
 .geo-data-error svg { flex: 0 0 auto; }
 .geo-data-error--local { margin-top: 10px; }
+.geo-data-success { min-width: 0; display: flex; align-items: center; gap: 6px; color: var(--green); font-size: 10px; line-height: 1.4; }
+.geo-data-success svg { flex: 0 0 auto; }
 .geo-options { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(220px, 2fr); align-items: end; gap: 12px; padding: 0 17px 18px; }
 .selector-list { padding: 0 17px 16px; }
 .selector-block { padding: 13px 0; border-bottom: 1px solid #e7ebe9; }

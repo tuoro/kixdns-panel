@@ -11,13 +11,22 @@ import {
   Save,
   Settings2,
   ShieldCheck,
+  Trash2,
   TriangleAlert,
   Workflow,
 } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
 import { apiRequest, jsonBody } from '../api/client'
-import type { ConfigApplyResult, ConfigDocument, ConfigVersion, ConfigVersions, Overview, ValidationResult } from '../api/types'
+import type {
+  ConfigApplyResult,
+  ConfigDocument,
+  ConfigVersion,
+  ConfigVersions,
+  DeleteConfigVersionResult,
+  Overview,
+  ValidationResult,
+} from '../api/types'
 import ConfigFlowPreview from '../components/config/ConfigFlowPreview.vue'
 import StructuredConfigEditor from '../components/config/StructuredConfigEditor.vue'
 import JsonEditor from '../components/JsonEditor.vue'
@@ -40,6 +49,7 @@ const loading = ref(true)
 const validating = ref(false)
 const saving = ref(false)
 const restoring = ref<number | null>(null)
+const deleting = ref<number | null>(null)
 const validation = ref<ValidationResult | null>(null)
 const parseError = ref('')
 const loadError = ref('')
@@ -47,6 +57,9 @@ const capabilityError = ref('')
 const runtimeCapabilities = ref<string[]>([])
 const toast = useToast()
 const changed = computed(() => source.value !== baseline.value)
+const currentVersionId = computed(() =>
+  versions.value.find((version) => version.sha256 === document.value?.sha256)?.id ?? null,
+)
 const unsupportedFields = computed(() => {
   const settings = config.value?.settings
   if (!settings) return []
@@ -189,7 +202,9 @@ async function save(): Promise<void> {
 }
 
 async function restore(version: ConfigVersion): Promise<void> {
-  if (!document.value || !window.confirm(`恢复版本 #${version.id}？当前配置会先保存为历史版本。`)) return
+  if (!document.value) return
+  const unsavedWarning = changed.value ? '\n\n编辑器中未保存的修改会丢失。' : ''
+  if (!window.confirm(`恢复配置版本 #${version.id}？${unsavedWarning}\n\n当前已保存配置仍会保留在历史记录中。`)) return
   restoring.value = version.id
   try {
     const result = await apiRequest<ConfigApplyResult>(`/api/v1/config/versions/${version.id}/restore`, {
@@ -202,6 +217,28 @@ async function restore(version: ConfigVersion): Promise<void> {
     toast.error(errorMessage(error))
   } finally {
     restoring.value = null
+  }
+}
+
+async function deleteVersion(version: ConfigVersion): Promise<void> {
+  if (!document.value) return
+  if (version.id === currentVersionId.value) {
+    toast.error('当前生效版本不能删除，请先恢复其他版本')
+    return
+  }
+  if (!window.confirm(`删除配置版本 #${version.id}？此操作无法撤销。`)) return
+  deleting.value = version.id
+  try {
+    await apiRequest<DeleteConfigVersionResult>(`/api/v1/config/versions/${version.id}`, {
+      method: 'DELETE',
+      ...jsonBody({ expected_sha256: document.value.sha256 }),
+    })
+    versions.value = versions.value.filter((item) => item.id !== version.id)
+    toast.success(`配置版本 #${version.id} 已删除`)
+  } catch (error) {
+    toast.error(errorMessage(error))
+  } finally {
+    deleting.value = null
   }
 }
 
@@ -248,7 +285,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
   <div class="page config-page">
     <div class="page-actions">
       <div v-if="document" class="document-meta"><span class="status-dot"></span><span>当前摘要</span><code>{{ shortHash(document.sha256, 14) }}</code></div>
-      <button class="button button--secondary" type="button" :disabled="loading || saving || restoring !== null" @click="load"><RefreshCw :size="16" :class="{ spin: loading }" />重新读取</button>
+      <button class="button button--secondary" type="button" :disabled="loading || saving || restoring !== null || deleting !== null" @click="load"><RefreshCw :size="16" :class="{ spin: loading }" />重新读取</button>
     </div>
     <StatusBanner v-if="loadError" :message="loadError" :stale="Boolean(document)" :busy="loading" @retry="load" />
     <div v-if="capabilityError || unsupportedFields.length" class="config-compatibility-banner">
@@ -267,8 +304,8 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
             <input ref="fileInput" class="visually-hidden" type="file" accept=".json,application/json" @change="importFile">
             <button class="icon-button" type="button" title="导入 JSON" :disabled="loading || saving" @click="fileInput?.click()"><FileUp :size="16" /></button>
             <button class="icon-button" type="button" title="下载 JSON" :disabled="loading" @click="downloadJson"><Download :size="16" /></button>
-            <button class="button button--secondary" type="button" :disabled="loading || validating || saving || restoring !== null" @click="validate"><ShieldCheck :size="16" />{{ validating ? '校验中' : '校验' }}</button>
-            <button class="button button--primary" type="button" :disabled="loading || validating || saving || restoring !== null || !changed" @click="save"><Save :size="16" />{{ saving ? '应用中' : '保存并热加载' }}</button>
+            <button class="button button--secondary" type="button" :disabled="loading || validating || saving || restoring !== null || deleting !== null" @click="validate"><ShieldCheck :size="16" />{{ validating ? '校验中' : '校验' }}</button>
+            <button class="button button--primary" type="button" :disabled="loading || validating || saving || restoring !== null || deleting !== null || !changed" @click="save"><Save :size="16" />{{ saving ? '应用中' : '保存并热加载' }}</button>
           </div>
         </header>
 
@@ -289,17 +326,25 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
             <TriangleAlert v-if="parseError" :size="16" /><Check v-else-if="validation?.valid" :size="16" /><Clock3 v-else :size="16" />
             <span :class="{ 'text-danger': parseError }">{{ parseError || (validation?.valid ? `KixDNS 校验通过 · ${validation.pipeline_count} Pipeline / ${validation.rule_count} 规则` : '保存前将调用 KixDNS 内部编译器校验') }}</span>
           </div>
-          <input v-model="message" aria-label="版本说明" maxlength="160" placeholder="版本说明（可选）">
+          <input v-model="message" aria-label="版本备注" maxlength="160" placeholder="版本备注（可选）">
         </footer>
       </section>
 
       <aside class="history-panel">
         <header><div><History :size="18" /><h2>版本历史</h2></div><span>{{ versions.length }}</span></header>
         <div class="history-list">
-          <article v-for="version in versions" :key="version.id" :class="{ 'history-item--current': version.sha256 === document?.sha256 }">
-            <div class="history-item__top"><strong>#{{ version.id }}</strong><span v-if="version.sha256 === document?.sha256" class="tag tag--success">当前</span><button v-else class="icon-button icon-button--small" type="button" title="恢复此版本" :disabled="restoring !== null || saving || validating" @click="restore(version)"><RotateCcw :size="15" :class="{ spin: restoring === version.id }" /></button></div>
-            <p>{{ version.message || '未填写版本说明' }}</p>
-            <code>{{ shortHash(version.sha256, 12) }}</code>
+          <article v-for="version in versions" :key="version.id" :class="{ 'history-item--current': version.id === currentVersionId }">
+            <div class="history-item__top">
+              <strong :title="version.message || '未填写备注'">{{ version.message || '未填写备注' }}</strong>
+              <div class="history-item__actions">
+                <span v-if="version.id === currentVersionId" class="tag tag--success">当前</span>
+                <template v-else>
+                  <button class="icon-button icon-button--small" type="button" title="恢复此版本" :disabled="restoring !== null || deleting !== null || saving || validating" @click="restore(version)"><RotateCcw :size="15" :class="{ spin: restoring === version.id }" /></button>
+                  <button class="icon-button icon-button--small icon-button--danger" type="button" title="删除此版本" :disabled="restoring !== null || deleting !== null || saving || validating" @click="deleteVersion(version)"><Trash2 :size="15" :class="{ spin: deleting === version.id }" /></button>
+                </template>
+              </div>
+            </div>
+            <div class="history-item__identity"><span>#{{ version.id }}</span><code>{{ shortHash(version.sha256, 12) }}</code></div>
             <small>{{ version.actor }} · {{ formatDate(version.created_at) }}</small>
           </article>
           <p v-if="versions.length === 0" class="empty-state">暂无配置版本</p>

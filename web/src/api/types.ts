@@ -119,6 +119,10 @@ export interface ConfigVersions {
   versions: ConfigVersion[]
 }
 
+export interface DeleteConfigVersionResult {
+  deleted_id: number
+}
+
 export interface ValidationResult {
   protocol_version: number
   valid: boolean

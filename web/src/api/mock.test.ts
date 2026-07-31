@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import type { GeoDataManifest, KixdnsVersionCatalog, QueryStatsSnapshot, ServiceStatus, StatsClearResult, UpdateNotifications, ValidationResult } from './types'
+import type {
+  ConfigDocument,
+  ConfigVersions,
+  DeleteConfigVersionResult,
+  GeoDataManifest,
+  KixdnsVersionCatalog,
+  QueryStatsSnapshot,
+  ServiceStatus,
+  StatsClearResult,
+  UpdateNotifications,
+  ValidationResult,
+} from './types'
 import { mockRequest } from './mock'
 
 describe('演示 API', () => {
@@ -50,6 +61,28 @@ describe('演示 API', () => {
     expect(result.geoip_dat).toBeNull()
     expect(result.geosite).toHaveLength(1)
     expect(result.geosite[0]?.url).toBe('https://example.com/geosite.dat')
+  })
+
+  it('删除历史配置但保护当前生效版本', async () => {
+    const config = await mockRequest<ConfigDocument>('/api/v1/config')
+    const before = await mockRequest<ConfigVersions>('/api/v1/config/versions')
+    const current = before.versions.find((version) => version.sha256 === config.sha256)
+    const removable = before.versions.find((version) => version.id !== current?.id)
+    expect(current).toBeDefined()
+    expect(removable).toBeDefined()
+
+    await expect(mockRequest<DeleteConfigVersionResult>(`/api/v1/config/versions/${current?.id}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ expected_sha256: config.sha256 }),
+    })).rejects.toThrow('当前生效版本不能删除')
+
+    const deleted = await mockRequest<DeleteConfigVersionResult>(`/api/v1/config/versions/${removable?.id}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ expected_sha256: config.sha256 }),
+    })
+    expect(deleted.deleted_id).toBe(removable?.id)
+    const after = await mockRequest<ConfigVersions>('/api/v1/config/versions')
+    expect(after.versions.some((version) => version.id === removable?.id)).toBe(false)
   })
 
   it('安装并切换 KixDNS 构建', async () => {

@@ -9,7 +9,7 @@ import {
   Trash2,
   TriangleAlert,
 } from '@lucide/vue'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { apiRequest, jsonBody } from '../../api/client'
 import type { GeoDataManifest, GeoDataResource, GeoDataSyncRequest } from '../../api/types'
 import type { GlobalSettings } from '../../config-editor/types'
@@ -18,7 +18,6 @@ import { errorMessage, formatDate, shortHash } from '../../utils'
 type GeoMode = 'remote' | 'local'
 
 const settings = defineModel<GlobalSettings>({ required: true })
-const emit = defineEmits<{ notice: [message: string] }>()
 const mode = ref<GeoMode>('remote')
 const manifest = ref<GeoDataManifest>({ geoip_mmdb: null, geoip_dat: null, geosite: [] })
 const mmdbUrl = ref('')
@@ -27,7 +26,21 @@ const geositeUrls = ref<string[]>([''])
 const loading = ref(true)
 const syncing = ref(false)
 const statusError = ref('')
+const syncNotice = ref('')
 const hasGeoIp = computed(() => Boolean(stringSetting('geoip_db_path') || stringSetting('geoip_dat_path')))
+let noticeTimer: number | undefined
+
+function clearSyncNotice(): void {
+  syncNotice.value = ''
+  if (noticeTimer !== undefined) window.clearTimeout(noticeTimer)
+  noticeTimer = undefined
+}
+
+function showSyncNotice(message: string): void {
+  clearSyncNotice()
+  syncNotice.value = message
+  noticeTimer = window.setTimeout(clearSyncNotice, 6000)
+}
 
 function stringSetting(key: string): string {
   const value = settings.value[key]
@@ -150,6 +163,7 @@ async function loadManifest(): Promise<void> {
 
 async function syncRemote(): Promise<void> {
   statusError.value = ''
+  clearSyncNotice()
   try {
     const geosite = geositeUrls.value.map((value) => value.trim()).filter(Boolean)
     const mmdb = mmdbUrl.value.trim()
@@ -172,7 +186,7 @@ async function syncRemote(): Promise<void> {
     if (next.geoip_dat) settings.value.geoip_dat_path = next.geoip_dat.path
     else delete settings.value.geoip_dat_path
     settings.value.geosite_data_paths = next.geosite.map((resource) => resource.path)
-    emit('notice', 'Geo 数据已下载并写入配置，请保存并热加载')
+    showSyncNotice('Geo 数据已下载，受管路径已填入当前配置；保存配置后生效')
   } catch (error) {
     statusError.value = errorMessage(error)
   } finally {
@@ -181,6 +195,7 @@ async function syncRemote(): Promise<void> {
 }
 
 onMounted(loadManifest)
+onBeforeUnmount(clearSyncNotice)
 </script>
 
 <template>
@@ -216,8 +231,9 @@ onMounted(loadManifest)
           </div>
           <div class="geo-resource-commands">
             <button class="inline-command" type="button" :disabled="geositeUrls.length >= 8 || syncing" @click="addRemoteGeosite"><Plus :size="14" />添加链接</button>
-            <button class="button button--secondary" type="button" :disabled="loading || syncing" @click="syncRemote"><RefreshCw v-if="syncing" :size="15" class="spin" /><Download v-else :size="15" />{{ syncing ? '下载中' : '下载并写入配置' }}</button>
+            <button class="button button--secondary" type="button" :disabled="loading || syncing" @click="syncRemote"><RefreshCw v-if="syncing" :size="15" class="spin" /><Download v-else :size="15" />{{ syncing ? '下载中' : '下载并填入配置' }}</button>
           </div>
+          <span v-if="syncNotice" class="geo-data-success" role="status" aria-live="polite"><CircleCheck :size="14" />{{ syncNotice }}</span>
           <span v-if="statusError" class="geo-data-error"><TriangleAlert :size="14" />{{ statusError }}</span>
         </div>
       </div>

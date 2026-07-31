@@ -6,7 +6,6 @@ import GeoDataEditor from './GeoDataEditor.vue'
 
 const settings = defineModel<GlobalSettings>({ required: true })
 const props = defineProps<{ capabilities: string[] }>()
-defineEmits<{ notice: [message: string] }>()
 
 function scalarValue(field: SettingField): string | number {
   const value = settings.value[field.key]
@@ -106,5 +105,5 @@ function shouldRender(field: SettingField): boolean {
       </template>
     </div>
   </section>
-  <GeoDataEditor v-model="settings" @notice="$emit('notice', $event)" />
+  <GeoDataEditor v-model="settings" />
 </template>

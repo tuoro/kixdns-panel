@@ -3,6 +3,7 @@ import type {
   AuthSession,
   ConfigApplyResult,
   ConfigDocument,
+  DeleteConfigVersionResult,
   ConfigVersions,
   DnsDiagnostic,
   GeoDataManifest,
@@ -159,6 +160,10 @@ const versions: ConfigVersions = {
     { id: 15, sha256: '193bf884', message: '导入启动时配置', actor: 'system', created_at: now - 604800 },
   ],
 }
+let nextConfigVersionId = Math.max(...versions.versions.map((version) => version.id))
+const configVersionContents = new Map(
+  versions.versions.map((version) => [version.id, structuredClone(config.content)]),
+)
 
 let serviceRunning = true
 let updateAvailable = true
@@ -379,22 +384,71 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
     }
     return geoData as T
   }
-  if (path === '/api/v1/config/versions') return versions as T
+  if (path === '/api/v1/config/versions' && method === 'GET') return versions as T
+  const configVersionMatch = pathname.match(/^\/api\/v1\/config\/versions\/(\d+)$/)
+  if (configVersionMatch && method === 'DELETE') {
+    const body = JSON.parse(String(init?.body)) as { expected_sha256: string }
+    if (body.expected_sha256 !== config.sha256) throw new Error('配置已被其他操作修改，请刷新后重试')
+    const id = Number(configVersionMatch[1])
+    const currentId = versions.versions.find((version) => version.sha256 === config.sha256)?.id
+    if (id === currentId) throw new Error('当前生效版本不能删除，请先恢复其他版本')
+    const index = versions.versions.findIndex((version) => version.id === id)
+    if (index < 0) throw new Error('配置文件不存在')
+    versions.versions.splice(index, 1)
+    configVersionContents.delete(id)
+    return { deleted_id: id } as DeleteConfigVersionResult as T
+  }
   if (path === '/api/v1/config/validate') {
     const content = JSON.parse(String(init?.body)) as Record<string, unknown>
     const pipelines = Array.isArray(content.pipelines) ? content.pipelines : []
     return { protocol_version: 1, valid: true, pipeline_count: pipelines.length, rule_count: 1 } as T
   }
   if (path === '/api/v1/config' && method === 'PUT') {
-    const body = JSON.parse(String(init?.body)) as { content: Record<string, unknown> }
+    const body = JSON.parse(String(init?.body)) as { content: Record<string, unknown>; expected_sha256: string; message?: string }
+    if (body.expected_sha256 !== config.sha256) throw new Error('配置已被其他操作修改，请刷新后重试')
     const nextSha = `demo${Date.now().toString(16)}`.padEnd(64, '0').slice(0, 64)
     config = { ...config, content: body.content, sha256: nextSha, modified_at: Math.floor(Date.now() / 1000) }
     activeConfig.sha256 = nextSha
     activeConfig.generation += 1
     activeConfig.reload_sequence += 1
-    return { version_id: 19, sha256: config.sha256, active_config: activeConfig } as ConfigApplyResult as T
+    const versionId = ++nextConfigVersionId
+    versions.versions.unshift({
+      id: versionId,
+      sha256: nextSha,
+      message: body.message?.trim() || '更新配置',
+      actor: 'admin',
+      created_at: config.modified_at,
+    })
+    configVersionContents.set(versionId, structuredClone(body.content))
+    return { version_id: versionId, sha256: config.sha256, active_config: activeConfig } as ConfigApplyResult as T
   }
-  if (path.includes('/restore')) return { version_id: 19, sha256: config.sha256, active_config: activeConfig } as T
+  const restoreMatch = pathname.match(/^\/api\/v1\/config\/versions\/(\d+)\/restore$/)
+  if (restoreMatch && method === 'POST') {
+    const body = JSON.parse(String(init?.body)) as { expected_sha256: string }
+    if (body.expected_sha256 !== config.sha256) throw new Error('配置已被其他操作修改，请刷新后重试')
+    const sourceId = Number(restoreMatch[1])
+    const sourceVersion = versions.versions.find((version) => version.id === sourceId)
+    const content = configVersionContents.get(sourceId)
+    if (!sourceVersion || !content) throw new Error('配置文件不存在')
+    const versionId = ++nextConfigVersionId
+    config = {
+      content: structuredClone(content),
+      sha256: sourceVersion.sha256,
+      modified_at: Math.floor(Date.now() / 1000),
+    }
+    activeConfig.sha256 = config.sha256
+    activeConfig.generation += 1
+    activeConfig.reload_sequence += 1
+    versions.versions.unshift({
+      id: versionId,
+      sha256: config.sha256,
+      message: `回滚至版本 #${sourceId}`,
+      actor: 'admin',
+      created_at: config.modified_at,
+    })
+    configVersionContents.set(versionId, structuredClone(content))
+    return { version_id: versionId, sha256: config.sha256, active_config: activeConfig } as ConfigApplyResult as T
+  }
   if (path === '/api/v1/cache/flush') {
     return { protocol_version: 1, response_entries_before: 18642, response_entries_after: 0, rule_entries_before: 712, rule_entries_after: 0 } as T
   }
