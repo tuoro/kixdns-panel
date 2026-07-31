@@ -34,6 +34,7 @@ async fn test_app() -> (TempDir, Router) {
         config_path,
         control_socket: directory.path().join("admin.sock"),
         service_unit: "kixdns.service".to_owned(),
+        service_helper_socket: "/run/kixdns-panel/control.sock".into(),
         diagnostic_server: "127.0.0.1:53".parse().unwrap(),
         update_repository: "tuoro/kixdns-panel".to_owned(),
         update_workflow: "build-kixdns.yml".to_owned(),

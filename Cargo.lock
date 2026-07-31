@@ -1028,6 +1028,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "kixdns-panel-helper"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "rustix",
+]
+
+[[package]]
 name = "kixdns-panel-server"
 version = "0.1.0"
 dependencies = [

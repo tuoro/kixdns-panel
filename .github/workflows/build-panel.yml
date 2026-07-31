@@ -8,6 +8,7 @@ on:
     paths:
       - .github/workflows/build-panel.yml
       - crates/panel-server/**
+      - crates/panel-helper/**
       - deploy/**
       - scripts/fetch-kixdns-artifact.sh
       - scripts/kixdns-artifact-identity.sh
@@ -25,6 +26,7 @@ on:
     paths:
       - .github/workflows/build-panel.yml
       - crates/panel-server/**
+      - crates/panel-helper/**
       - deploy/**
       - scripts/fetch-kixdns-artifact.sh
       - scripts/kixdns-artifact-identity.sh
@@ -215,6 +217,9 @@ jobs:
       - name: Build panel server
         run: cargo build --package kixdns-panel-server --release --locked --target ${{ matrix.target }}
 
+      - name: Build service control helper
+        run: cargo build --package kixdns-panel-helper --release --locked --target ${{ matrix.target }}
+
       - name: Reuse verified KixDNS artifact
         env:
           GH_TOKEN: ${{ github.token }}
@@ -231,6 +236,8 @@ jobs:
           bash scripts/verify-glibc-baseline.sh \
             "target/${{ matrix.target }}/release/kixdns-panel-server" "$GLIBC_BASELINE"
           bash scripts/verify-glibc-baseline.sh \
+            "target/${{ matrix.target }}/release/kixdns-panel-helper" "$GLIBC_BASELINE"
+          bash scripts/verify-glibc-baseline.sh \
             dist/reused-kixdns/kixdns "$GLIBC_BASELINE"
 
       - name: Package complete panel artifact
@@ -239,6 +246,7 @@ jobs:
           bundle="dist/kixdns-panel-linux-${{ matrix.arch }}"
           install -Dm755 dist/reused-kixdns/kixdns "$bundle/bin/kixdns"
           install -Dm755 "target/${{ matrix.target }}/release/kixdns-panel-server" "$bundle/bin/kixdns-panel-server"
+          install -Dm755 "target/${{ matrix.target }}/release/kixdns-panel-helper" "$bundle/bin/kixdns-panel-helper"
           mkdir -p "$bundle/web" "$bundle/docs"
           cp -a web/dist/. "$bundle/web/"
           cp -a deploy scripts "$bundle/"
@@ -296,11 +304,6 @@ jobs:
         with:
           name: kixdns-panel-linux-x86_64
           path: dist/kixdns-panel
-
-      - name: Install acceptance dependencies
-        run: |
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends policykit-1
 
       - name: Verify package installation and runtime
         env:

@@ -44,7 +44,9 @@ value="$(environment_value KIXDNS_SERVICE_UNIT || true)"
 }
 
 systemctl disable --now kixdns-panel.service 2>/dev/null || true
+systemctl disable --now kixdns-panel-helper.service 2>/dev/null || true
 rm -f -- /etc/systemd/system/kixdns-panel.service
+rm -f -- /etc/systemd/system/kixdns-panel-helper.service
 if [[ ${KIXDNS_MANAGEMENT_ENABLED} == true ]]; then
   systemctl disable --now "${KIXDNS_SERVICE_UNIT}" 2>/dev/null || true
   rm -f -- "/etc/systemd/system/${KIXDNS_SERVICE_UNIT}"
@@ -62,6 +64,8 @@ if [[ ${KIXDNS_MANAGEMENT_ENABLED} == true ]]; then
 fi
 rm -f -- /etc/polkit-1/rules.d/50-kixdns-panel.rules
 rm -f -- /usr/local/bin/kixdns-panel-server
+rm -f -- /usr/local/libexec/kixdns-panel-helper
+rm -f -- /run/kixdns-panel/control.sock
 rm -rf -- /usr/share/kixdns-panel
 systemctl daemon-reload
 if [[ ${KIXDNS_MANAGEMENT_ENABLED} == true && -f ${EXTERNAL_BACKUP}/install.env ]]; then

@@ -33,6 +33,14 @@ struct Args {
     #[arg(long, env = "KIXDNS_SERVICE_UNIT", default_value = "kixdns.service")]
     service_unit: String,
 
+    /// root 服务控制 helper 的 Unix Socket。
+    #[arg(
+        long,
+        env = "KIXDNS_SERVICE_HELPER_SOCKET",
+        default_value = "/run/kixdns-panel/control.sock"
+    )]
+    service_helper_socket: PathBuf,
+
     /// DNS 诊断固定查询的服务器地址。
     #[arg(long, env = "KIXDNS_DIAGNOSTIC_SERVER", default_value = "127.0.0.1:53")]
     diagnostic_server: SocketAddr,
@@ -137,6 +145,7 @@ async fn main() -> anyhow::Result<()> {
         config_path: args.config,
         control_socket: args.control_socket,
         service_unit: args.service_unit,
+        service_helper_socket: args.service_helper_socket,
         diagnostic_server: args.diagnostic_server,
         update_repository: args.update_repository,
         update_workflow: args.update_workflow,

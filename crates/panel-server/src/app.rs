@@ -58,6 +58,7 @@ pub struct AppSettings {
     pub config_path: PathBuf,
     pub control_socket: PathBuf,
     pub service_unit: String,
+    pub service_helper_socket: PathBuf,
     pub diagnostic_server: SocketAddr,
     pub update_repository: String,
     pub update_workflow: String,
@@ -266,8 +267,12 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         database,
         config,
         control: ControlClient::new(settings.control_socket),
-        operations: Operations::new(settings.service_unit, settings.diagnostic_server)
-            .map_err(|error| anyhow::anyhow!(error))?,
+        operations: Operations::new(
+            settings.service_unit,
+            settings.service_helper_socket,
+            settings.diagnostic_server,
+        )
+        .map_err(|error| anyhow::anyhow!(error))?,
         updates,
         geo_data,
         secure_cookie: settings.secure_cookie,

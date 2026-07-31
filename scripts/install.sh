@@ -12,6 +12,7 @@ KIXDNS_CONFIG_PATH="/etc/kixdns/pipeline.json"
 KIXDNS_BINARY_PATH="/var/lib/kixdns-panel/bin/kixdns"
 EXISTING_KIXDNS_BINARY_PATH=""
 KIXDNS_CONTROL_SOCKET="/run/kixdns/admin.sock"
+KIXDNS_SERVICE_HELPER_SOCKET="/run/kixdns-panel/control.sock"
 EXISTING_PANEL=false
 EXISTING_KIXDNS=false
 EXTERNAL_BACKUP=/var/lib/kixdns-panel/external-backup
@@ -107,6 +108,8 @@ load_existing_panel_settings() {
   [[ -z ${value} ]] || KIXDNS_BINARY_PATH=${value}
   value="$(environment_value KIXDNS_CONTROL_SOCKET || true)"
   [[ -z ${value} ]] || KIXDNS_CONTROL_SOCKET=${value}
+  value="$(environment_value KIXDNS_SERVICE_HELPER_SOCKET || true)"
+  [[ -z ${value} ]] || KIXDNS_SERVICE_HELPER_SOCKET=${value}
   if [[ ${INSTALL_MODE} == "auto" ]]; then
     value="$(environment_value KIXDNS_MANAGEMENT_ENABLED || true)"
     [[ ${value} == "false" ]] && INSTALL_MODE="external" || INSTALL_MODE="managed"
@@ -178,6 +181,9 @@ validate_install_mode() {
   validate_absolute_path "KixDNS 配置路径" "${KIXDNS_CONFIG_PATH}"
   validate_absolute_path "KixDNS 二进制路径" "${KIXDNS_BINARY_PATH}"
   validate_absolute_path "KixDNS 控制 Socket 路径" "${KIXDNS_CONTROL_SOCKET}"
+  validate_absolute_path "面板服务控制 helper Socket" "${KIXDNS_SERVICE_HELPER_SOCKET}"
+  [[ $(dirname -- "${KIXDNS_SERVICE_HELPER_SOCKET}") == /run/kixdns-panel ]] ||
+    fail "面板服务控制 helper Socket 必须位于 /run/kixdns-panel"
   config_parent="$(dirname -- "${KIXDNS_CONFIG_PATH}")"
   [[ ${config_parent} != / && ! -L ${config_parent} ]] ||
     fail "KixDNS 配置不能直接位于根目录或符号链接目录"
@@ -265,9 +271,12 @@ rollback_install() {
   restore_path /usr/local/bin/kixdns-panel-server panel-server
   restore_path /usr/share/kixdns-panel/web web
   restore_path /etc/systemd/system/kixdns-panel.service panel-service
+  restore_path /usr/local/libexec/kixdns-panel-helper panel-helper
+  restore_path /etc/systemd/system/kixdns-panel-helper.service panel-helper-service
   restore_path /etc/polkit-1/rules.d/50-kixdns-panel.rules polkit-rule
   restore_path /etc/kixdns-panel/panel.env panel-env
   systemctl daemon-reload
+  systemctl restart kixdns-panel-helper.service 2>/dev/null || true
   if [[ ${CREATED_EXTERNAL_BACKUP} == true ]]; then
     if [[ $(external_backup_value KIXDNS_WAS_ENABLED || true) == true ]]; then
       systemctl enable "${KIXDNS_SERVICE_UNIT}"
@@ -357,6 +366,8 @@ prepare_rollback() {
   backup_path /usr/local/bin/kixdns-panel-server panel-server
   backup_path /usr/share/kixdns-panel/web web
   backup_path /etc/systemd/system/kixdns-panel.service panel-service
+  backup_path /usr/local/libexec/kixdns-panel-helper panel-helper
+  backup_path /etc/systemd/system/kixdns-panel-helper.service panel-helper-service
   backup_path /etc/polkit-1/rules.d/50-kixdns-panel.rules polkit-rule
   backup_path /etc/kixdns-panel/panel.env panel-env
   backup_managed_config
@@ -388,7 +399,8 @@ render_panel_environment() {
   awk -v kixdns_commit="${kixdns_commit}" -v panel_commit="${panel_commit}" \
     -v panel_release="${panel_release}" -v management_enabled="${management_enabled}" \
     -v config_path="${KIXDNS_CONFIG_PATH}" -v binary_path="${KIXDNS_BINARY_PATH}" \
-    -v control_socket="${KIXDNS_CONTROL_SOCKET}" -v service_unit="${KIXDNS_SERVICE_UNIT}" '
+    -v control_socket="${KIXDNS_CONTROL_SOCKET}" -v helper_socket="${KIXDNS_SERVICE_HELPER_SOCKET}" \
+    -v service_unit="${KIXDNS_SERVICE_UNIT}" '
     /^KIXDNS_UPDATE_WORKFLOW=build-enhanced\.yml$/ {
       print "KIXDNS_UPDATE_WORKFLOW=build-kixdns.yml"
       next
@@ -396,6 +408,7 @@ render_panel_environment() {
     /^KIXDNS_CONFIG=/ { print "KIXDNS_CONFIG=" config_path; config_found = 1; next }
     /^KIXDNS_BINARY=/ { print "KIXDNS_BINARY=" binary_path; binary_found = 1; next }
     /^KIXDNS_CONTROL_SOCKET=/ { print "KIXDNS_CONTROL_SOCKET=" control_socket; socket_found = 1; next }
+    /^KIXDNS_SERVICE_HELPER_SOCKET=/ { print "KIXDNS_SERVICE_HELPER_SOCKET=" helper_socket; helper_socket_found = 1; next }
     /^KIXDNS_SERVICE_UNIT=/ { print "KIXDNS_SERVICE_UNIT=" service_unit; unit_found = 1; next }
     /^KIXDNS_MANAGEMENT_ENABLED=/ {
       print "KIXDNS_MANAGEMENT_ENABLED=" management_enabled
@@ -425,6 +438,7 @@ render_panel_environment() {
       if (!config_found) print "KIXDNS_CONFIG=" config_path
       if (!binary_found) print "KIXDNS_BINARY=" binary_path
       if (!socket_found) print "KIXDNS_CONTROL_SOCKET=" control_socket
+      if (!helper_socket_found) print "KIXDNS_SERVICE_HELPER_SOCKET=" helper_socket
       if (!unit_found) print "KIXDNS_SERVICE_UNIT=" service_unit
       if (!management_found) print "KIXDNS_MANAGEMENT_ENABLED=" management_enabled
       if (!kixdns_found) print "KIXDNS_INSTALLED_COMMIT=" kixdns_commit
@@ -483,10 +497,12 @@ install_services() {
   local kixdns_unit=/etc/systemd/system/${KIXDNS_SERVICE_UNIT}
   local config_directory
   local panel_temporary
-  local polkit_temporary
-  install -d -o root -g root -m 0755 /etc/polkit-1/rules.d
+  local helper_temporary
+  local helper_unit=/etc/systemd/system/kixdns-panel-helper.service
+  local panel_uid
+  panel_uid="$(id -u "${PANEL_USER}")"
   panel_temporary="$(mktemp /etc/systemd/system/.kixdns-panel.XXXXXX)"
-  polkit_temporary="$(mktemp /etc/polkit-1/rules.d/.kixdns-panel.XXXXXX)"
+  helper_temporary="$(mktemp /etc/systemd/system/.kixdns-panel-helper.XXXXXX)"
   if [[ ${INSTALL_MODE} == "managed" ]]; then
     local kixdns_temporary
     kixdns_temporary="$(mktemp /etc/systemd/system/.kixdns.XXXXXX)"
@@ -501,9 +517,19 @@ install_services() {
     install -o root -g root -m 0644 "${kixdns_temporary}" "${kixdns_unit}"
     rm -f -- "${kixdns_temporary}"
   fi
+  awk -v service_unit="${KIXDNS_SERVICE_UNIT}" -v helper_socket="${KIXDNS_SERVICE_HELPER_SOCKET}" \
+    -v panel_uid="${panel_uid}" '
+    /^ExecStart=/ {
+      print "ExecStart=/usr/local/libexec/kixdns-panel-helper --socket " helper_socket " --unit " service_unit " --allowed-uid " panel_uid
+      next
+    }
+    { print }
+  ' "${PACKAGE_ROOT}/deploy/systemd/kixdns-panel-helper.service" > "${helper_temporary}"
+  install -o root -g root -m 0644 "${helper_temporary}" "${helper_unit}"
+  rm -f -- "${helper_temporary}"
   config_directory="$(dirname -- "${KIXDNS_CONFIG_PATH}")"
   awk -v service_unit="${KIXDNS_SERVICE_UNIT}" -v config_directory="${config_directory}" '
-    /^After=network-online\.target / { print "After=network-online.target " service_unit; next }
+    /^After=network-online\.target / { print "After=network-online.target " service_unit " kixdns-panel-helper.service"; next }
     /^ReadWritePaths=/ {
       print "ReadWritePaths=" config_directory " /var/lib/kixdns-panel"
       next
@@ -511,21 +537,15 @@ install_services() {
     { print }
   ' "${PACKAGE_ROOT}/deploy/systemd/kixdns-panel.service" > "${panel_temporary}"
   install -o root -g root -m 0644 "${panel_temporary}" /etc/systemd/system/kixdns-panel.service
-  awk -v service_unit="${KIXDNS_SERVICE_UNIT}" '
-    /action\.lookup\("unit"\) === "kixdns\.service"/ {
-      sub(/"kixdns\.service"/, "\"" service_unit "\"")
-    }
-    { print }
-  ' "${PACKAGE_ROOT}/deploy/polkit/50-kixdns-panel.rules" > "${polkit_temporary}"
-  install -o root -g root -m 0644 "${polkit_temporary}" /etc/polkit-1/rules.d/50-kixdns-panel.rules
-  rm -f -- "${panel_temporary}" "${polkit_temporary}"
+  rm -f -- "${panel_temporary}"
+  rm -f -- /etc/polkit-1/rules.d/50-kixdns-panel.rules
   systemctl daemon-reload
+  systemctl enable kixdns-panel-helper.service kixdns-panel.service
   if [[ ${INSTALL_MODE} == "managed" ]]; then
-    systemctl enable "${KIXDNS_SERVICE_UNIT}" kixdns-panel.service
+    systemctl enable "${KIXDNS_SERVICE_UNIT}"
     systemctl restart "${KIXDNS_SERVICE_UNIT}"
-  else
-    systemctl enable kixdns-panel.service
   fi
+  systemctl restart kixdns-panel-helper.service
   systemctl restart kixdns-panel.service
 }
 
@@ -537,10 +557,10 @@ main() {
   require_root
   command -v systemctl >/dev/null || fail "系统未安装 systemd"
   command -v getent >/dev/null || fail "系统缺少 getent"
-  command -v pkaction >/dev/null || fail "系统未安装 polkit"
   command -v sha256sum >/dev/null || fail "系统缺少 sha256sum"
   require_file "${PACKAGE_ROOT}/bin/kixdns"
   require_file "${PACKAGE_ROOT}/bin/kixdns-panel-server"
+  require_file "${PACKAGE_ROOT}/bin/kixdns-panel-helper"
   require_file "${PACKAGE_ROOT}/web/index.html"
   require_file "${PACKAGE_ROOT}/deploy/config/pipeline.json"
   require_file "${PACKAGE_ROOT}/PANEL_BUILD_COMMIT"
@@ -567,6 +587,7 @@ main() {
   fi
 
   create_accounts
+  install -d -o root -g root -m 0755 /usr/local/libexec
   install -d -o "${PANEL_USER}" -g "${KIXDNS_GROUP}" -m 0750 \
     /var/lib/kixdns-panel /var/lib/kixdns-panel/bin /var/lib/kixdns-panel/versions \
     /var/lib/kixdns-panel/geo
@@ -577,6 +598,7 @@ main() {
   preserve_external_install
   prepare_rollback
   systemctl stop kixdns-panel.service 2>/dev/null || true
+  systemctl stop kixdns-panel-helper.service 2>/dev/null || true
   if [[ ${INSTALL_MODE} == "managed" ]]; then
     systemctl stop "${KIXDNS_SERVICE_UNIT}" 2>/dev/null || true
     install -o "${PANEL_USER}" -g "${KIXDNS_GROUP}" -m 0750 \
@@ -587,6 +609,8 @@ main() {
   fi
   install -o root -g root -m 0755 "${PACKAGE_ROOT}/bin/kixdns-panel-server" /usr/local/bin/.kixdns-panel-server.new
   mv -fT -- /usr/local/bin/.kixdns-panel-server.new /usr/local/bin/kixdns-panel-server
+  install -o root -g root -m 0755 "${PACKAGE_ROOT}/bin/kixdns-panel-helper" /usr/local/libexec/.kixdns-panel-helper.new
+  mv -fT -- /usr/local/libexec/.kixdns-panel-helper.new /usr/local/libexec/kixdns-panel-helper
   install_web
   install_configuration "${kixdns_build_commit}" "${panel_build_commit}" "${panel_release}"
   install_services

@@ -1,22 +1,20 @@
 [Unit]
-Description=KixDNS 增强管理面板
+Description=KixDNS Panel 受限服务控制 helper
 Documentation=https://github.com/tuoro/kixdns-panel
-Wants=network-online.target
-After=network-online.target kixdns.service
-Requires=kixdns-panel-helper.service
-ConditionFileIsExecutable=/usr/local/bin/kixdns-panel-server
-ConditionPathExists=/usr/share/kixdns-panel/web/index.html
+After=local-fs.target
+Before=kixdns-panel.service
+ConditionFileIsExecutable=/usr/local/libexec/kixdns-panel-helper
 
 [Service]
 Type=simple
-User=kixdns-panel
+User=root
 Group=kixdns
-UMask=0027
-EnvironmentFile=-/etc/kixdns-panel/panel.env
-ExecStart=/usr/local/bin/kixdns-panel-server
+RuntimeDirectory=kixdns-panel
+RuntimeDirectoryMode=0750
+ExecStart=/usr/local/libexec/kixdns-panel-helper --socket /run/kixdns-panel/control.sock --unit kixdns.service --allowed-uid 0
 Restart=on-failure
 RestartSec=3s
-TimeoutStopSec=20s
+TimeoutStopSec=10s
 
 NoNewPrivileges=true
 PrivateDevices=true
@@ -30,8 +28,8 @@ ProtectKernelModules=true
 ProtectKernelTunables=true
 ProtectProc=invisible
 ProtectSystem=strict
-ReadWritePaths=/etc/kixdns /var/lib/kixdns-panel
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/run/kixdns-panel
+RestrictAddressFamilies=AF_UNIX
 RestrictNamespaces=true
 RestrictRealtime=true
 RestrictSUIDSGID=true

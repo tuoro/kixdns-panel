@@ -1,4 +1,5 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -12,6 +13,8 @@ use serde::Serialize;
 pub struct Operations {
     #[cfg_attr(not(unix), allow(dead_code))]
     service_unit: Arc<str>,
+    #[cfg_attr(not(unix), allow(dead_code))]
+    service_helper_socket: PathBuf,
     diagnostic_server: SocketAddr,
 }
 
@@ -85,6 +88,7 @@ pub enum OperationError {
 impl Operations {
     pub fn new(
         service_unit: String,
+        service_helper_socket: PathBuf,
         diagnostic_server: SocketAddr,
     ) -> Result<Self, OperationError> {
         if service_unit.is_empty()
@@ -103,6 +107,7 @@ impl Operations {
         }
         Ok(Self {
             service_unit: Arc::from(service_unit),
+            service_helper_socket,
             diagnostic_server,
         })
     }
@@ -134,12 +139,35 @@ impl Operations {
         &self,
         action: ServiceAction,
     ) -> Result<ServiceStatus, OperationError> {
-        run_command(
-            "systemctl",
-            &[action.argument(), self.service_unit.as_ref()],
-            Duration::from_secs(30),
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::UnixStream;
+
+        let mut stream = tokio::time::timeout(
+            Duration::from_secs(10),
+            UnixStream::connect(&self.service_helper_socket),
         )
-        .await?;
+        .await
+        .map_err(|_| OperationError::Failed("helper 连接超时".to_owned()))?
+        .map_err(|error| OperationError::Failed(format!("无法连接服务控制 helper：{error}")))?;
+        stream
+            .write_all(action.argument().as_bytes())
+            .await
+            .map_err(|error| OperationError::Failed(format!("无法发送服务动作：{error}")))?;
+        stream
+            .shutdown()
+            .await
+            .map_err(|error| OperationError::Failed(format!("无法结束服务动作请求：{error}")))?;
+        let mut response = String::new();
+        tokio::time::timeout(
+            Duration::from_secs(30),
+            BufReader::new(stream).read_line(&mut response),
+        )
+        .await
+        .map_err(|_| OperationError::Failed("服务控制超时".to_owned()))?
+        .map_err(|error| OperationError::Failed(format!("读取服务控制结果失败：{error}")))?;
+        if response.trim() != "OK" {
+            return Err(OperationError::Failed(truncate(&response, 1_024)));
+        }
         self.service_status().await
     }
 
@@ -334,17 +362,37 @@ mod tests {
         assert!(ServiceAction::parse("restart; reboot").is_err());
         assert!(parse_record_type("AXFR").is_err());
         assert!(parse_record_type("AAAA").is_ok());
-        assert!(Operations::new("../../bad".to_owned(), "127.0.0.1:53".parse().unwrap()).is_err());
         assert!(
             Operations::new(
-                "--system.service".to_owned(),
+                "../../bad".to_owned(),
+                "/run/kixdns-panel/control.sock".into(),
                 "127.0.0.1:53".parse().unwrap()
             )
             .is_err()
         );
-        assert!(Operations::new("kixdns".to_owned(), "127.0.0.1:53".parse().unwrap()).is_err());
         assert!(
-            Operations::new("kixdns.service".to_owned(), "127.0.0.1:53".parse().unwrap()).is_ok()
+            Operations::new(
+                "--system.service".to_owned(),
+                "/run/kixdns-panel/control.sock".into(),
+                "127.0.0.1:53".parse().unwrap()
+            )
+            .is_err()
+        );
+        assert!(
+            Operations::new(
+                "kixdns".to_owned(),
+                "/run/kixdns-panel/control.sock".into(),
+                "127.0.0.1:53".parse().unwrap()
+            )
+            .is_err()
+        );
+        assert!(
+            Operations::new(
+                "kixdns.service".to_owned(),
+                "/run/kixdns-panel/control.sock".into(),
+                "127.0.0.1:53".parse().unwrap()
+            )
+            .is_ok()
         );
     }
 }
