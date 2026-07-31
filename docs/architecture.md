@@ -70,7 +70,7 @@ Panel Web ---- Panel Server ---- SQLite
 - 浏览器会话使用 HttpOnly、SameSite Cookie；所有写操作要求 CSRF 令牌。
 - 密码使用 Argon2id，数据库不保存明文会话令牌。
 - 指标禁止域名、客户端 IP 等高基数或敏感标签。
-- Panel Server 以独立非 root 账号运行；systemd 控制同时受 API 白名单和精确到 unit/verb 的 Polkit 规则限制。
+- Panel Server 以独立非 root 账号运行；systemd 控制经 root helper 的专属 Unix Socket 转发。Socket 文件权限和 `SO_PEERCRED` 都固定调用方 UID，helper 只接受安装时确定的 unit 与 `start`、`stop`、`restart`。
 - 安装器对既有 KixDNS 默认要求用户选择“保留外部安装”或“迁移为增强版”；外部模式由 `KIXDNS_MANAGEMENT_ENABLED=false` 和后端版本写操作保护共同强制，前端隐藏不可执行的版本库存操作。
 - 迁移会保存原 systemd unit、启用状态和运行状态；卸载时优先恢复该备份，避免把用户原有服务当作面板资产删除。
 - KixDNS 版本源只接受固定仓库、两条工作流、分支和按规则解析的 Artifact 名称；安装请求只携带来源类型和 GitHub Artifact ID，前端不能指定 URL 或文件路径。

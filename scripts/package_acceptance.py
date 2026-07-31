@@ -196,7 +196,7 @@ def exercise_panel(client: PanelClient, dns_port: int) -> None:
     require(cache.get("protocol_version") == 1, "缓存清理没有走增强控制协议")
 
     restarted = client.request("/api/v1/service/restart", method="POST", csrf=True)
-    require(restarted.get("active_state") == "active", "面板无法通过 polkit 重启 KixDNS")
+    require(restarted.get("active_state") == "active", "面板无法通过受限 helper 重启 KixDNS")
     verify_runtime(client, dns_port, RELOADED_IP)
 
     logs = client.request("/api/v1/logs?limit=20")

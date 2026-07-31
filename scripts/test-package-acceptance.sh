@@ -18,15 +18,19 @@ require_clean_host() {
   local path
   for path in \
     /usr/local/bin/kixdns-panel-server \
+    /usr/local/libexec/kixdns-panel-helper \
     /usr/share/kixdns-panel \
     /etc/kixdns-panel \
     /etc/kixdns \
     /var/lib/kixdns-panel \
+    /run/kixdns-panel/control.sock \
     /etc/systemd/system/kixdns-panel.service \
+    /etc/systemd/system/kixdns-panel-helper.service \
     /etc/systemd/system/kixdns.service; do
     [[ ! -e ${path} && ! -L ${path} ]] || fail "临时机已有路径 ${path}"
   done
   ! systemctl cat kixdns-panel.service >/dev/null 2>&1 || fail "临时机已有面板服务"
+  ! systemctl cat kixdns-panel-helper.service >/dev/null 2>&1 || fail "临时机已有 helper 服务"
   ! systemctl cat kixdns.service >/dev/null 2>&1 || fail "临时机已有 KixDNS 服务"
 }
 
@@ -37,10 +41,14 @@ show_failure_logs() {
   systemctl status kixdns.service --no-pager >&2 || true
   printf '\n面板服务状态：\n' >&2
   systemctl status kixdns-panel.service --no-pager >&2 || true
+  printf '\n服务控制 helper 状态：\n' >&2
+  systemctl status kixdns-panel-helper.service --no-pager >&2 || true
   printf '\nKixDNS 日志：\n' >&2
   journalctl -u kixdns.service --no-pager -n 120 >&2 || true
   printf '\n面板日志：\n' >&2
   journalctl -u kixdns-panel.service --no-pager -n 120 >&2 || true
+  printf '\n服务控制 helper 日志：\n' >&2
+  journalctl -u kixdns-panel-helper.service --no-pager -n 120 >&2 || true
 }
 
 cleanup() {
@@ -57,14 +65,18 @@ verify_removed() {
   local path
   systemctl daemon-reload
   ! systemctl is-active --quiet kixdns-panel.service || fail "卸载后面板服务仍在运行"
+  ! systemctl is-active --quiet kixdns-panel-helper.service || fail "卸载后 helper 服务仍在运行"
   ! systemctl is-active --quiet kixdns.service || fail "卸载后 KixDNS 服务仍在运行"
   for path in \
     /usr/local/bin/kixdns-panel-server \
+    /usr/local/libexec/kixdns-panel-helper \
     /usr/share/kixdns-panel \
     /etc/kixdns-panel \
     /etc/kixdns \
     /var/lib/kixdns-panel \
+    /run/kixdns-panel/control.sock \
     /etc/systemd/system/kixdns-panel.service \
+    /etc/systemd/system/kixdns-panel-helper.service \
     /etc/systemd/system/kixdns.service; do
     [[ ! -e ${path} && ! -L ${path} ]] || fail "卸载后仍残留 ${path}"
   done
@@ -80,7 +92,6 @@ os_id="$(awk -F= '$1 == "ID" { gsub(/"/, "", $2); print $2; exit }' /etc/os-rele
 [[ ${os_id} == ubuntu ]] ||
   fail "当前验收只允许 Ubuntu 临时机"
 command -v systemctl >/dev/null || fail "临时机缺少 systemd"
-command -v pkaction >/dev/null || fail "临时机缺少 polkit"
 command -v python3 >/dev/null || fail "临时机缺少 Python 3"
 
 require_clean_host
@@ -95,7 +106,27 @@ installed=true
   fail "安装器没有设置可原子写入的配置目录权限"
 [[ $(stat -c '%U:%G:%a' -- "${CONFIG_PATH}") == kixdns-panel:kixdns:640 ]] ||
   fail "安装器没有设置受控的配置文件权限"
-systemd-analyze verify /etc/systemd/system/kixdns.service /etc/systemd/system/kixdns-panel.service
+systemd-analyze verify /etc/systemd/system/kixdns.service \
+  /etc/systemd/system/kixdns-panel-helper.service /etc/systemd/system/kixdns-panel.service
+grep -Fq -- "--unit kixdns.service --allowed-uid $(id -u kixdns-panel)" \
+  /etc/systemd/system/kixdns-panel-helper.service || fail "helper 没有固定 KixDNS unit 与面板 UID"
+[[ ! -e /etc/polkit-1/rules.d/50-kixdns-panel.rules ]] || fail "安装后仍残留旧 Polkit 规则"
+[[ $(stat -c '%U:%G:%a' -- /run/kixdns-panel/control.sock) == kixdns-panel:kixdns:600 ]] ||
+  fail "服务控制 helper Socket 权限不符合预期"
+kixdns_pid="$(systemctl show --property=MainPID --value kixdns.service)"
+python3 - <<'PY'
+import socket
+
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+client.settimeout(5)
+client.connect("/run/kixdns-panel/control.sock")
+client.sendall(b"restart")
+client.shutdown(socket.SHUT_WR)
+if client.recv(1024):
+    raise SystemExit("root 请求不应通过面板用户 UID 校验")
+PY
+[[ $(systemctl show --property=MainPID --value kixdns.service) == "${kixdns_pid}" ]] ||
+  fail "非面板 UID 绕过了 helper 校验"
 panel_env_new="$(mktemp /etc/kixdns-panel/.acceptance-env.XXXXXX)"
 awk -v diagnostic="127.0.0.1:${dns_port}" '
   /^KIXDNS_DIAGNOSTIC_SERVER=/ {

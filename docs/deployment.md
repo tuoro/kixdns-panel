@@ -2,7 +2,7 @@
 
 ## 支持范围
 
-首个生产目标为带 systemd 与 Polkit 的 Linux x86_64/ARM64。官方 GNU 二进制以 GLIBC 2.35 为最高兼容基线，可运行于 Ubuntu 22.04、Debian 12 及使用更新 GLIBC 的发行版。安装需要 `systemctl`、`polkit`、`sha256sum` 和 `getent`；下载示例还使用 `curl`、`unzip` 与 `jq`。
+首个生产目标为带 systemd 的 Linux x86_64/ARM64。官方 GNU 二进制以 GLIBC 2.35 为最高兼容基线，可运行于 Ubuntu 22.04、Debian 12 及使用更新 GLIBC 的发行版。安装需要 `systemctl`、`sha256sum` 和 `getent`；下载示例还使用 `curl`、`unzip` 与 `jq`。
 
 完整安装包由 `Build KixDNS Panel` Action 生成。KixDNS Enhanced 的上游 Action 与正式 Release 轨道也都只发布为本仓库 Actions Artifact，本仓库当前不创建 GitHub Release。面板工作流复用上游身份、补丁集和架构完全匹配的已校验 Action 轨道 Artifact，不会因面板修改而重新编译数据面。完整包包含 KixDNS Enhanced、Panel Server、Vue 静态资源、服务单元和安装脚本。
 
@@ -30,7 +30,7 @@ cd kixdns-panel
 sudo bash ./scripts/install.sh
 ```
 
-ARM64 使用 `kixdns-panel-linux-arm64`。安装脚本还会校验包内 `SHA256SUMS`，然后启动两个服务。
+ARM64 使用 `kixdns-panel-linux-arm64`。安装脚本还会校验包内 `SHA256SUMS`，然后启动 KixDNS、Panel Server 和受限服务控制 helper。
 
 ## 既有 KixDNS 安装
 
@@ -53,7 +53,7 @@ sudo bash ./scripts/install.sh --keep-existing \
 sudo bash ./scripts/install.sh --replace-existing
 ```
 
-迁移模式只替换面板约定的 KixDNS 二进制和 unit，既有配置路径会被写入 `panel.env`；迁移前的 unit、启用状态和运行状态会保留。保留模式下，面板仍可按 Polkit 权限控制既有 unit，但原版 KixDNS 不具备增强指标和结构化热加载回执时，对应页面会显示不可用。迁移到增强版必须重新运行安装脚本并明确选择迁移，面板不会通过常驻 root 权限直接改写 systemd。
+迁移模式只替换面板约定的 KixDNS 二进制和 unit，既有配置路径会被写入 `panel.env`；迁移前的 unit、启用状态和运行状态会保留。保留模式下，面板仍可通过受限 helper 控制既有 unit，但原版 KixDNS 不具备增强指标和结构化热加载回执时，对应页面会显示不可用。迁移到增强版必须重新运行安装脚本并明确选择迁移，helper 不提供二进制或 systemd unit 改写能力。
 
 ## 权限模型
 
@@ -75,9 +75,11 @@ sudo bash ./scripts/install.sh --replace-existing
 | `/var/lib/kixdns-panel/versions/<source>-<artifact-id>-<commit>/` | 按 Artifact 身份隔离的 KixDNS 二进制与版本清单 |
 | `/var/lib/kixdns-panel/geo/` | 按内容摘要保存的 GeoIP 与 GeoSite 数据 |
 | `/run/kixdns/admin.sock` | `0660` 本机增强控制通道 |
+| `/run/kixdns-panel/control.sock` | `0600`、仅面板 UID 可用的服务控制 helper 通道 |
+| `/usr/local/libexec/kixdns-panel-helper` | root 运行的固定动作服务控制 helper |
 | `/usr/share/kixdns-panel/web` | 前端静态资源 |
 
-面板进程不以 root 运行。Polkit 规则只允许 `kixdns-panel` 对安装配置中的 KixDNS unit 执行 `start`、`stop`、`restart`；后端本身也使用相同动作白名单。外部模式不会授予面板二进制替换能力。systemd 单元启用了只读系统目录、私有临时目录、能力边界和地址族限制。
+面板进程不以 root 运行。独立的 `kixdns-panel-helper` 以 root 运行，但只监听本机 Unix Socket：文件所有者固定为 `kixdns-panel` 且权限为 `0600`，连接后再通过 `SO_PEERCRED` 校验 UID。helper 的 unit 名称和面板 UID 由 root 安装器写入，只接受 `start`、`stop`、`restart`，不执行 Shell，也不能控制其他服务。外部模式不会授予面板二进制替换能力。systemd 单元启用了只读系统目录、私有临时目录、能力边界和地址族限制。
 
 日志页依赖 `systemd-journal` 组。journald 本身不支持按 unit 授权，因此该组也能读取宿主机其他 journal；这是当前部署的明确权限边界。不能接受此权限时，应移除 `kixdns-panel` 的 `systemd-journal` 附加组，同时停用面板日志页。不要用带参数通配符的 sudoers 规则替代，它会扩大命令执行范围。
 
@@ -140,16 +142,17 @@ SQLite 中配置历史最多保留 100 条，审计事件最多保留 10,000 条
 
 Panel Server 与 Web 更新仍需下载新的完整包并重新运行 `scripts/install.sh`。脚本保留现有配置、数据库和环境文件，旧静态资源保存在 `/usr/share/kixdns-panel/web.previous`。完整包使用 `PANEL_BUILD_COMMIT` 标识管理面构建，使用 `KIXDNS_BUILD_COMMIT` 标识被复用的数据面构建，并分别写入 `KIXDNS_PANEL_INSTALLED_COMMIT` 与 `KIXDNS_INSTALLED_COMMIT`。正式包还会携带 `PANEL_RELEASE` 并写入 `KIXDNS_PANEL_INSTALLED_RELEASE`；当前开发阶段的 Action 包没有该标签。未来正式发版后，面板只根据 `tuoro/kixdns-panel` 最新正式 GitHub Release 及当前架构的 Release 安装包提示自身更新，不会把日常 Action 构建当作新版，也不会自行执行高权限替换。旧版默认工作流名会迁移到 `build-kixdns.yml`，缺少的 `KIXDNS_UPDATE_RELEASE_WORKFLOW` 会补为 `build-kixdns-release.yml`，已有自定义更新源保持不变。
 
-服务生命周期只支持启动、停止和重启。KixDNS 没有独立的服务重载动作，面板不会提供重载按钮、API、Polkit 动词或 systemd `ExecReload`。配置保存和历史版本恢复使用 KixDNS 的文件监听热加载链路：候选内容先由 KixDNS 自身校验；写入后必须收到新的 `reload_sequence` 且 SHA-256 一致，否则面板恢复旧配置。该回执不等同于服务重载命令。
+服务生命周期只支持启动、停止和重启。KixDNS 没有独立的服务重载动作，面板不会提供重载按钮、API、helper 动作或 systemd `ExecReload`。配置保存和历史版本恢复使用 KixDNS 的文件监听热加载链路：候选内容先由 KixDNS 自身校验；写入后必须收到新的 `reload_sequence` 且 SHA-256 一致，否则面板恢复旧配置。该回执不等同于服务重载命令。
 
 配置页和版本切换遵循[配置能力契约](config-capabilities.md)。不受当前 KixDNS 支持的新字段不会出现在空配置中；配置已经含有该字段时保持只读并原样保留。JSON/API 不能绕过后端检查，切换到能力不足的本地或远程版本也会在替换二进制前被拒绝。
 
 ## 运维命令
 
 ```bash
-systemctl status kixdns.service kixdns-panel.service
+systemctl status kixdns.service kixdns-panel-helper.service kixdns-panel.service
 journalctl -u kixdns.service -n 200 --no-pager
 journalctl -u kixdns-panel.service -n 200 --no-pager
+journalctl -u kixdns-panel-helper.service -n 200 --no-pager
 sudo systemctl restart kixdns-panel.service
 ```
 
@@ -157,7 +160,7 @@ sudo systemctl restart kixdns-panel.service
 
 - `address already in use`：宿主机已有 DNS 服务占用 53 端口，先调整或停用冲突服务。
 - 面板显示控制接口不可用：检查 `/run/kixdns/admin.sock`、两个账号的 `kixdns` 组关系和 KixDNS 日志。
-- 服务控制被拒绝：确认 Polkit 已安装且 `/etc/polkit-1/rules.d/50-kixdns-panel.rules` 已加载。
+- 服务控制被拒绝：检查 `kixdns-panel-helper.service`、`/run/kixdns-panel/control.sock` 权限和 helper 日志；覆盖旧版安装时旧 Polkit 规则会被自动清理。
 - 日志读取失败：确认 `kixdns-panel` 属于 `systemd-journal` 组，重启面板使组关系生效。
 - Geo 数据下载失败：确认填写的是 HTTPS 文件直链，且目标不会重定向到登录页、私网或超过 128 MiB 的文件。
 
