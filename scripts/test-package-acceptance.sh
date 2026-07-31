@@ -122,7 +122,11 @@ client.settimeout(5)
 client.connect("/run/kixdns-panel/control.sock")
 client.sendall(b"restart")
 client.shutdown(socket.SHUT_WR)
-if client.recv(1024):
+try:
+    response = client.recv(1024)
+except ConnectionResetError:
+    response = b""
+if response:
     raise SystemExit("root 请求不应通过面板用户 UID 校验")
 PY
 [[ $(systemctl show --property=MainPID --value kixdns.service) == "${kixdns_pid}" ]] ||
