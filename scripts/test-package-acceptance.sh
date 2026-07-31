@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+PACKAGE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+CONFIG_PATH=/etc/kixdns/pipeline.json
+PANEL_ENV=/etc/kixdns-panel/panel.env
+ACCEPTANCE_PY="${PACKAGE_ROOT}/scripts/package_acceptance.py"
+INSTALLER="${PACKAGE_ROOT}/scripts/install.sh"
+UNINSTALLER="${PACKAGE_ROOT}/scripts/uninstall.sh"
+installed=false
+
+fail() {
+  printf '安装包验收失败：%s\n' "$*" >&2
+  exit 1
+}
+
+require_clean_host() {
+  local path
+  for path in \
+    /usr/local/bin/kixdns-panel-server \
+    /usr/share/kixdns-panel \
+    /etc/kixdns-panel \
+    /etc/kixdns \
+    /var/lib/kixdns-panel \
+    /etc/systemd/system/kixdns-panel.service \
+    /etc/systemd/system/kixdns.service; do
+    [[ ! -e ${path} && ! -L ${path} ]] || fail "临时机已有路径 ${path}"
+  done
+  ! systemctl cat kixdns-panel.service >/dev/null 2>&1 || fail "临时机已有面板服务"
+  ! systemctl cat kixdns.service >/dev/null 2>&1 || fail "临时机已有 KixDNS 服务"
+}
+
+show_failure_logs() {
+  local status=$1
+  ((status == 0)) && return
+  printf '\nKixDNS 服务状态：\n' >&2
+  systemctl status kixdns.service --no-pager >&2 || true
+  printf '\n面板服务状态：\n' >&2
+  systemctl status kixdns-panel.service --no-pager >&2 || true
+  printf '\nKixDNS 日志：\n' >&2
+  journalctl -u kixdns.service --no-pager -n 120 >&2 || true
+  printf '\n面板日志：\n' >&2
+  journalctl -u kixdns-panel.service --no-pager -n 120 >&2 || true
+}
+
+cleanup() {
+  local status=$?
+  trap - EXIT
+  show_failure_logs "${status}"
+  if [[ ${installed} == true || -f ${PANEL_ENV} ]]; then
+    bash "${UNINSTALLER}" --purge >/dev/null 2>&1 || true
+  fi
+  exit "${status}"
+}
+
+verify_removed() {
+  local path
+  systemctl daemon-reload
+  ! systemctl is-active --quiet kixdns-panel.service || fail "卸载后面板服务仍在运行"
+  ! systemctl is-active --quiet kixdns.service || fail "卸载后 KixDNS 服务仍在运行"
+  for path in \
+    /usr/local/bin/kixdns-panel-server \
+    /usr/share/kixdns-panel \
+    /etc/kixdns-panel \
+    /etc/kixdns \
+    /var/lib/kixdns-panel \
+    /etc/systemd/system/kixdns-panel.service \
+    /etc/systemd/system/kixdns.service; do
+    [[ ! -e ${path} && ! -L ${path} ]] || fail "卸载后仍残留 ${path}"
+  done
+  ! getent passwd kixdns-panel >/dev/null || fail "卸载后仍残留面板账号"
+}
+
+[[ ${EUID} -eq 0 ]] || fail "必须使用 root 权限运行"
+[[ ${CI:-} == true && ${GITHUB_ACTIONS:-} == true ]] ||
+  fail "该脚本只允许在 GitHub Actions 临时机运行"
+[[ ${RUNNER_ENVIRONMENT:-} == github-hosted ]] ||
+  fail "该脚本拒绝修改自托管 Runner"
+os_id="$(awk -F= '$1 == "ID" { gsub(/\"/, "", $2); print $2; exit }' /etc/os-release)"
+[[ ${os_id} == ubuntu ]] ||
+  fail "当前验收只允许 Ubuntu 临时机"
+command -v systemctl >/dev/null || fail "临时机缺少 systemd"
+command -v pkaction >/dev/null || fail "临时机缺少 polkit"
+command -v python3 >/dev/null || fail "临时机缺少 Python 3"
+
+require_clean_host
+trap cleanup EXIT
+
+dns_port="$(python3 "${ACCEPTANCE_PY}" prepare --config "${CONFIG_PATH}")"
+[[ ${dns_port} =~ ^[0-9]+$ ]] || fail "没有获得有效 DNS 端口"
+
+bash "${INSTALLER}" --replace-existing
+installed=true
+chown kixdns-panel:kixdns "${CONFIG_PATH}"
+chmod 0640 "${CONFIG_PATH}"
+panel_env_new="$(mktemp /etc/kixdns-panel/.acceptance-env.XXXXXX)"
+awk -v diagnostic="127.0.0.1:${dns_port}" '
+  /^KIXDNS_DIAGNOSTIC_SERVER=/ {
+    print "KIXDNS_DIAGNOSTIC_SERVER=" diagnostic
+    found = 1
+    next
+  }
+  { print }
+  END { if (!found) print "KIXDNS_DIAGNOSTIC_SERVER=" diagnostic }
+' "${PANEL_ENV}" > "${panel_env_new}"
+chown root:kixdns "${panel_env_new}"
+chmod 0640 "${panel_env_new}"
+mv -fT -- "${panel_env_new}" "${PANEL_ENV}"
+systemctl restart kixdns.service kixdns-panel.service
+
+python3 "${ACCEPTANCE_PY}" verify --dns-port "${dns_port}" --mode setup
+
+# 同一完整包再次安装，验证数据库、配置历史和管理员数据均被保留。
+bash "${INSTALLER}" --replace-existing
+python3 "${ACCEPTANCE_PY}" verify --dns-port "${dns_port}" --mode login
+
+bash "${UNINSTALLER}" --purge
+installed=false
+verify_removed
+trap - EXIT
+printf '完整包安装、覆盖升级、运行联调与卸载验收通过。\n'

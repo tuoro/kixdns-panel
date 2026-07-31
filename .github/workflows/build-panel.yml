@@ -278,10 +278,37 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  acceptance:
+    name: Accept packaged installation
+    if: github.event_name != 'pull_request'
+    needs: build
+    permissions:
+      actions: read
+      contents: read
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download x86_64 panel package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: kixdns-panel-linux-x86_64
+          path: dist/kixdns-panel
+
+      - name: Install acceptance dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends policykit-1
+
+      - name: Verify package installation and runtime
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          sudo --preserve-env=CI,GITHUB_ACTIONS,RUNNER_ENVIRONMENT \
+            bash dist/kixdns-panel/scripts/test-package-acceptance.sh
+
   publish:
     name: Publish panel release
     if: github.event_name == 'release'
-    needs: build
+    needs: [build, acceptance]
     permissions:
       actions: read
       contents: write
