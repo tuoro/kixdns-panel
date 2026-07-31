@@ -47,6 +47,21 @@ pub struct ConfigVersion {
     pub content: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct AuditEvent {
+    pub id: i64,
+    pub actor: Option<String>,
+    pub action: String,
+    pub detail: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AuditPage {
+    pub events: Vec<AuditEvent>,
+    pub next_cursor: Option<i64>,
+}
+
 impl Database {
     pub async fn open(path: PathBuf) -> anyhow::Result<Self> {
         let populated = fs::metadata(&path).is_ok_and(|metadata| metadata.len() > 0);
@@ -350,6 +365,47 @@ impl Database {
             prune_audit_events(&transaction)?;
             transaction.commit()?;
             Ok(())
+        })
+        .await
+    }
+
+    pub async fn list_audit_events(
+        &self,
+        limit: usize,
+        before_id: Option<i64>,
+        action_prefix: Option<String>,
+    ) -> anyhow::Result<AuditPage> {
+        let limit = limit.clamp(1, 100);
+        let query_limit = i64::try_from(limit + 1).unwrap_or(101);
+        let action_pattern = action_prefix.map(|prefix| format!("{prefix}%"));
+        self.call(move |connection| {
+            let mut statement = connection.prepare(
+                "SELECT id, actor, action, detail, created_at FROM audit_events \
+                 WHERE (?1 IS NULL OR id < ?1) AND (?2 IS NULL OR action LIKE ?2) \
+                 ORDER BY id DESC LIMIT ?3",
+            )?;
+            let rows =
+                statement.query_map(params![before_id, action_pattern, query_limit], |row| {
+                    Ok(AuditEvent {
+                        id: row.get(0)?,
+                        actor: row.get(1)?,
+                        action: row.get(2)?,
+                        detail: row.get(3)?,
+                        created_at: row.get(4)?,
+                    })
+                })?;
+            let mut events = rows.collect::<Result<Vec<_>, _>>()?;
+            let has_more = events.len() > limit;
+            events.truncate(limit);
+            let next_cursor = if has_more {
+                events.last().map(|event| event.id)
+            } else {
+                None
+            };
+            Ok(AuditPage {
+                events,
+                next_cursor,
+            })
         })
         .await
     }
@@ -727,6 +783,62 @@ mod tests {
 
         Database::open(path).await.unwrap();
         assert_eq!(database_backups(directory.path()).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn paginates_and_filters_audit_events_without_duplicates() {
+        let directory = tempdir().unwrap();
+        let database = Database::open(directory.path().join("panel.db"))
+            .await
+            .unwrap();
+        for (index, action) in [
+            "auth.login",
+            "config.save",
+            "service.restart",
+            "config.restore",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            database
+                .audit(
+                    Some("admin".to_owned()),
+                    action.to_owned(),
+                    format!("事件 {index}"),
+                    i64::try_from(index).unwrap(),
+                )
+                .await
+                .unwrap();
+        }
+
+        let first = database.list_audit_events(2, None, None).await.unwrap();
+        assert_eq!(first.events.len(), 2);
+        assert_eq!(first.events[0].action, "config.restore");
+        let cursor = first.next_cursor.unwrap();
+        let second = database
+            .list_audit_events(2, Some(cursor), None)
+            .await
+            .unwrap();
+        assert_eq!(second.events.len(), 2);
+        assert!(second.next_cursor.is_none());
+        assert!(
+            first
+                .events
+                .iter()
+                .all(|left| { second.events.iter().all(|right| left.id != right.id) })
+        );
+
+        let filtered = database
+            .list_audit_events(100, None, Some("config.".to_owned()))
+            .await
+            .unwrap();
+        assert_eq!(filtered.events.len(), 2);
+        assert!(
+            filtered
+                .events
+                .iter()
+                .all(|event| event.action.starts_with("config."))
+        );
     }
 
     #[tokio::test]

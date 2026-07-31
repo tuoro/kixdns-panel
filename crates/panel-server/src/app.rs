@@ -32,7 +32,7 @@ use crate::control::{
     QueryStatsSnapshot, StatsClearResult, ValidationResult,
 };
 use crate::db::{
-    ConfigVersionSummary, Database, SessionRecord, UserRecord, ensure_database_parent,
+    AuditPage, ConfigVersionSummary, Database, SessionRecord, UserRecord, ensure_database_parent,
 };
 use crate::error::{AppError, AppResult};
 use crate::geo_data::{
@@ -178,6 +178,14 @@ struct LogsQuery {
     limit: usize,
 }
 
+#[derive(Debug, Deserialize)]
+struct AuditQuery {
+    #[serde(default = "default_audit_limit")]
+    limit: usize,
+    before_id: Option<i64>,
+    action_prefix: Option<String>,
+}
+
 #[derive(Debug, Default, Deserialize)]
 struct KixdnsVersionsQuery {
     #[serde(default)]
@@ -317,6 +325,7 @@ fn api_router(state: AppState) -> Router {
         .route("/service", get(service_status))
         .route("/service/{action}", post(service_action))
         .route("/logs", get(logs))
+        .route("/audit", get(audit_events))
         .route("/diagnostics/dns", post(dns_diagnostic))
         .route("/updates", get(check_updates))
         .route("/updates/status", get(update_notifications))
@@ -999,6 +1008,27 @@ async fn logs(
     Ok(Json(LogsResponse { entries }))
 }
 
+async fn audit_events(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Query(query): Query<AuditQuery>,
+) -> AppResult<Json<AuditPage>> {
+    authenticate(&state.database, &jar).await?;
+    if query.before_id.is_some_and(|id| id <= 0) {
+        return Err(AppError::BadRequest(
+            "audit_query_invalid",
+            "审计游标无效".to_owned(),
+        ));
+    }
+    let action_prefix = normalize_action_prefix(query.action_prefix)?;
+    state
+        .database
+        .list_audit_events(query.limit, query.before_id, action_prefix)
+        .await
+        .map(Json)
+        .map_err(AppError::Internal)
+}
+
 async fn dns_diagnostic(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -1506,6 +1536,31 @@ const fn default_log_limit() -> usize {
     200
 }
 
+const fn default_audit_limit() -> usize {
+    50
+}
+
+fn normalize_action_prefix(value: Option<String>) -> AppResult<Option<String>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if value.len() > 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err(AppError::BadRequest(
+            "audit_query_invalid",
+            "审计动作筛选无效".to_owned(),
+        ));
+    }
+    Ok(Some(value.to_ascii_lowercase()))
+}
+
 fn default_record_type() -> String {
     "A".to_owned()
 }
@@ -1907,6 +1962,96 @@ mod tests {
             serde_json::from_slice(&to_bytes(rejected.into_body(), 64 * 1024).await.unwrap())
                 .unwrap();
         assert_eq!(payload["error"]["code"], "geo_data_schedule_empty");
+    }
+
+    #[tokio::test]
+    async fn audit_api_requires_auth_and_uses_stable_cursor_pagination() {
+        let context = authenticated_app().await;
+        let unauthorized = context
+            .app
+            .clone()
+            .oneshot(Request::get("/api/v1/audit").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let cleanup = context
+            .app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/config/geo-data/cleanup")
+                    .header(COOKIE, context.cookies.clone())
+                    .header("x-csrf-token", context.csrf_token.clone())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cleanup.status(), StatusCode::OK);
+
+        let first = context
+            .app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/audit?limit=1")
+                    .header(COOKIE, context.cookies.clone())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let first: Value =
+            serde_json::from_slice(&to_bytes(first.into_body(), 64 * 1024).await.unwrap()).unwrap();
+        assert_eq!(first["events"].as_array().unwrap().len(), 1);
+        assert_eq!(first["events"][0]["action"], "config.geo_data.cleanup");
+        let first_id = first["events"][0]["id"].as_i64().unwrap();
+        let cursor = first["next_cursor"].as_i64().unwrap();
+
+        let second = context
+            .app
+            .clone()
+            .oneshot(
+                Request::get(format!("/api/v1/audit?limit=1&before_id={cursor}"))
+                    .header(COOKIE, context.cookies.clone())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let second: Value =
+            serde_json::from_slice(&to_bytes(second.into_body(), 64 * 1024).await.unwrap())
+                .unwrap();
+        assert_ne!(second["events"][0]["id"], first_id);
+        assert!(second["next_cursor"].is_null());
+
+        let filtered = context
+            .app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/audit?action_prefix=config.")
+                    .header(COOKIE, context.cookies.clone())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let filtered: Value =
+            serde_json::from_slice(&to_bytes(filtered.into_body(), 64 * 1024).await.unwrap())
+                .unwrap();
+        assert_eq!(filtered["events"].as_array().unwrap().len(), 1);
+
+        let invalid = context
+            .app
+            .oneshot(
+                Request::get("/api/v1/audit?action_prefix=%25")
+                    .header(COOKIE, context.cookies)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
     }
 
     #[test]
