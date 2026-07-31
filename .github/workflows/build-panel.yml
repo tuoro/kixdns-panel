@@ -12,7 +12,9 @@ on:
       - scripts/fetch-kixdns-artifact.sh
       - scripts/kixdns-artifact-identity.sh
       - scripts/install.sh
+      - scripts/package_acceptance.py
       - scripts/test-install-policy.sh
+      - scripts/test-package-acceptance.sh
       - scripts/verify-glibc-baseline.sh
       - scripts/uninstall.sh
       - web/**
@@ -27,7 +29,9 @@ on:
       - scripts/fetch-kixdns-artifact.sh
       - scripts/kixdns-artifact-identity.sh
       - scripts/install.sh
+      - scripts/package_acceptance.py
       - scripts/test-install-policy.sh
+      - scripts/test-package-acceptance.sh
       - scripts/verify-glibc-baseline.sh
       - scripts/uninstall.sh
       - web/**
