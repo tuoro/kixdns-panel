@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {
+  Clock3,
   CircleCheck,
   Download,
   FolderOpen,
@@ -11,7 +12,13 @@ import {
 } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { apiRequest, jsonBody } from '../../api/client'
-import type { GeoDataManifest, GeoDataResource, GeoDataSyncRequest } from '../../api/types'
+import type {
+  GeoDataCleanupResult,
+  GeoDataManifest,
+  GeoDataResource,
+  GeoDataSchedule,
+  GeoDataSyncRequest,
+} from '../../api/types'
 import type { GlobalSettings } from '../../config-editor/types'
 import { errorMessage, formatDate, shortHash } from '../../utils'
 
@@ -20,11 +27,20 @@ type GeoMode = 'remote' | 'local'
 const settings = defineModel<GlobalSettings>({ required: true })
 const mode = ref<GeoMode>('remote')
 const manifest = ref<GeoDataManifest>({ geoip_mmdb: null, geoip_dat: null, geosite: [] })
+const schedule = ref<GeoDataSchedule>({
+  interval_hours: null,
+  last_attempt_at: null,
+  last_success_at: null,
+  last_error: null,
+  next_run_at: null,
+})
 const mmdbUrl = ref('')
 const datUrl = ref('')
 const geositeUrls = ref<string[]>([''])
 const loading = ref(true)
 const syncing = ref(false)
+const scheduleSaving = ref(false)
+const cleaning = ref(false)
 const statusError = ref('')
 const syncNotice = ref('')
 const hasGeoIp = computed(() => Boolean(stringSetting('geoip_db_path') || stringSetting('geoip_dat_path')))
@@ -150,14 +166,53 @@ async function loadManifest(): Promise<void> {
   loading.value = true
   statusError.value = ''
   try {
-    const next = await apiRequest<GeoDataManifest>('/api/v1/config/geo-data')
+    const [next, nextSchedule] = await Promise.all([
+      apiRequest<GeoDataManifest>('/api/v1/config/geo-data'),
+      apiRequest<GeoDataSchedule>('/api/v1/config/geo-data/schedule'),
+    ])
     manifest.value = next
+    schedule.value = nextSchedule
     fillUrls(next)
     mode.value = isManagedConfiguration(next) ? 'remote' : 'local'
   } catch (error) {
     statusError.value = errorMessage(error)
   } finally {
     loading.value = false
+  }
+}
+
+async function saveSchedule(event: Event): Promise<void> {
+  statusError.value = ''
+  clearSyncNotice()
+  const raw = (event.currentTarget as HTMLSelectElement).value
+  const interval = raw === '' ? null : Number(raw) as 24 | 168
+  scheduleSaving.value = true
+  try {
+    schedule.value = await apiRequest<GeoDataSchedule>('/api/v1/config/geo-data/schedule', {
+      method: 'PUT',
+      ...jsonBody({ interval_hours: interval }),
+    })
+    showSyncNotice(interval === null ? 'Geo 自动更新已关闭' : `Geo 自动更新已设为${interval === 24 ? '每天' : '每周'}`)
+  } catch (error) {
+    statusError.value = errorMessage(error)
+  } finally {
+    scheduleSaving.value = false
+  }
+}
+
+async function cleanupGeoData(): Promise<void> {
+  statusError.value = ''
+  clearSyncNotice()
+  cleaning.value = true
+  try {
+    const result = await apiRequest<GeoDataCleanupResult>('/api/v1/config/geo-data/cleanup', { method: 'POST' })
+    showSyncNotice(result.removed_files === 0
+      ? '没有可清理的 Geo 文件'
+      : `已清理 ${result.removed_files} 个文件，释放 ${formatSize(result.reclaimed_bytes)}`)
+  } catch (error) {
+    statusError.value = errorMessage(error)
+  } finally {
+    cleaning.value = false
   }
 }
 
@@ -233,6 +288,26 @@ onBeforeUnmount(clearSyncNotice)
             <button class="inline-command" type="button" :disabled="geositeUrls.length >= 8 || syncing" @click="addRemoteGeosite"><Plus :size="14" />添加链接</button>
             <button class="button button--secondary" type="button" :disabled="loading || syncing" @click="syncRemote"><RefreshCw v-if="syncing" :size="15" class="spin" /><Download v-else :size="15" />{{ syncing ? '下载中' : '下载并填入配置' }}</button>
           </div>
+          <div class="geo-maintenance">
+            <label class="geo-schedule-control">
+              <Clock3 :size="14" />
+              <span>自动更新</span>
+              <select :value="schedule.interval_hours ?? ''" :disabled="loading || scheduleSaving || syncing" @change="saveSchedule">
+                <option value="">关闭</option>
+                <option value="24">每天</option>
+                <option value="168">每周</option>
+              </select>
+            </label>
+            <div class="geo-maintenance__status">
+              <span v-if="schedule.next_run_at">下次 {{ formatDate(schedule.next_run_at) }}</span>
+              <span v-if="schedule.last_success_at">上次成功 {{ formatDate(schedule.last_success_at) }}</span>
+            </div>
+            <button class="icon-button icon-button--small icon-button--danger" type="button" title="清理未引用的 Geo 文件" aria-label="清理未引用的 Geo 文件" :disabled="loading || syncing || cleaning" @click="cleanupGeoData">
+              <RefreshCw v-if="cleaning" :size="14" class="spin" />
+              <Trash2 v-else :size="14" />
+            </button>
+          </div>
+          <span v-if="schedule.last_error" class="geo-data-error"><TriangleAlert :size="14" />后台更新失败：{{ schedule.last_error }}</span>
           <span v-if="syncNotice" class="geo-data-success" role="status" aria-live="polite"><CircleCheck :size="14" />{{ syncNotice }}</span>
           <span v-if="statusError" class="geo-data-error"><TriangleAlert :size="14" />{{ statusError }}</span>
         </div>

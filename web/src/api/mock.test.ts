@@ -4,7 +4,9 @@ import type {
   ConfigVersions,
   ConfigVersionDetail,
   DeleteConfigVersionResult,
+  GeoDataCleanupResult,
   GeoDataManifest,
+  GeoDataSchedule,
   KixdnsVersionCatalog,
   QueryStatsSnapshot,
   ServiceStatus,
@@ -62,6 +64,19 @@ describe('演示 API', () => {
     expect(result.geoip_dat).toBeNull()
     expect(result.geosite).toHaveLength(1)
     expect(result.geosite[0]?.url).toBe('https://example.com/geosite.dat')
+  })
+
+  it('保存 Geo 自动更新设置并清理旧文件', async () => {
+    const scheduled = await mockRequest<GeoDataSchedule>('/api/v1/config/geo-data/schedule', {
+      method: 'PUT',
+      body: JSON.stringify({ interval_hours: 24 }),
+    })
+    expect(scheduled.interval_hours).toBe(24)
+    expect(scheduled.next_run_at).not.toBeNull()
+
+    const cleaned = await mockRequest<GeoDataCleanupResult>('/api/v1/config/geo-data/cleanup', { method: 'POST' })
+    expect(cleaned.scanned_files).toBeGreaterThanOrEqual(cleaned.removed_files)
+    expect(cleaned.reclaimed_bytes).toBeGreaterThan(0)
   })
 
   it('删除历史配置但保护当前生效版本', async () => {

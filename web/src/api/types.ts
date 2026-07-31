@@ -167,6 +167,20 @@ export interface GeoDataSyncRequest {
   geosite_urls: string[]
 }
 
+export interface GeoDataCleanupResult {
+  scanned_files: number
+  removed_files: number
+  reclaimed_bytes: number
+}
+
+export interface GeoDataSchedule {
+  interval_hours: 24 | 168 | null
+  last_attempt_at: number | null
+  last_success_at: number | null
+  last_error: string | null
+  next_run_at: number | null
+}
+
 export interface CacheFlushResult {
   protocol_version: number
   response_entries_before: number

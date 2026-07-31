@@ -7,7 +7,9 @@ import type {
   DeleteConfigVersionResult,
   ConfigVersions,
   DnsDiagnostic,
+  GeoDataCleanupResult,
   GeoDataManifest,
+  GeoDataSchedule,
   GeoDataSyncRequest,
   LogsResponse,
   Overview,
@@ -83,6 +85,14 @@ let geoData: GeoDataManifest = {
     size: 5_904_224,
     downloaded_at: now - 7200,
   }],
+}
+
+let geoDataSchedule: GeoDataSchedule = {
+  interval_hours: 168,
+  last_attempt_at: now - 7200,
+  last_success_at: now - 7195,
+  last_error: null,
+  next_run_at: now + 168 * 3600 - 7200,
 }
 
 const session: AuthSession = {
@@ -395,6 +405,27 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
   }
   if (path === '/api/v1/config' && method === 'GET') return config as T
   if (path === '/api/v1/config/geo-data' && method === 'GET') return geoData as T
+  if (path === '/api/v1/config/geo-data/cleanup' && method === 'POST') {
+    return { scanned_files: 4, removed_files: 1, reclaimed_bytes: 5_904_224 } as GeoDataCleanupResult as T
+  }
+  if (path === '/api/v1/config/geo-data/schedule' && method === 'GET') return geoDataSchedule as T
+  if (path === '/api/v1/config/geo-data/schedule' && method === 'PUT') {
+    const body = JSON.parse(String(init?.body)) as { interval_hours: number | null }
+    if (![null, 24, 168].includes(body.interval_hours)) throw new Error('Geo 自动更新仅支持每天或每周')
+    if (body.interval_hours !== null && !geoData.geoip_mmdb && !geoData.geoip_dat && geoData.geosite.length === 0) {
+      throw new Error('请先配置并下载至少一个远程 Geo 数据源')
+    }
+    if (geoDataSchedule.interval_hours !== body.interval_hours) {
+      geoDataSchedule = {
+        ...geoDataSchedule,
+        interval_hours: body.interval_hours as 24 | 168 | null,
+        last_attempt_at: null,
+        last_error: null,
+        next_run_at: body.interval_hours === null ? null : Math.floor(Date.now() / 1000),
+      }
+    }
+    return geoDataSchedule as T
+  }
   if (path === '/api/v1/config/geo-data/sync' && method === 'POST') {
     const body = JSON.parse(String(init?.body)) as GeoDataSyncRequest
     const resource = (url: string, prefix: string, extension: string, index = 0) => ({

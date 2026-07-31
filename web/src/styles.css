@@ -305,6 +305,12 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .geo-resource-field small svg { flex: 0 0 auto; color: var(--green); }
 .geo-resource-field .setting-list__row > div { min-width: 0; display: grid; gap: 4px; }
 .geo-resource-commands { min-height: 36px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.geo-maintenance { min-height: 40px; display: grid; grid-template-columns: auto minmax(0, 1fr) 28px; align-items: center; gap: 10px; padding-top: 9px; border-top: 1px solid #e7ebe9; }
+.geo-schedule-control { display: inline-flex; align-items: center; gap: 6px; color: #66716c; font-size: 9px; font-weight: 650; white-space: nowrap; }
+.geo-schedule-control svg { color: var(--green); }
+.geo-schedule-control select { height: 28px; padding: 0 24px 0 8px; color: #3f4945; background: #fff; border: 1px solid #d9dfdd; border-radius: 4px; outline: 0; font-size: 9px; }
+.geo-schedule-control select:focus { border-color: #7fb89a; box-shadow: 0 0 0 3px rgba(20, 125, 85, .08); }
+.geo-maintenance__status { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 10px; overflow: hidden; color: #818b87; font-size: 8px; white-space: nowrap; }
 .geo-data-error { min-width: 0; display: flex; align-items: center; gap: 6px; color: var(--red); font-size: 10px; line-height: 1.4; }
 .geo-data-error svg { flex: 0 0 auto; }
 .geo-data-error--local { margin-top: 10px; }
@@ -670,6 +676,8 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
   .geo-options { padding: 0 13px 15px; }
   .geo-resource-commands { align-items: stretch; flex-direction: column; gap: 4px; }
   .geo-resource-commands .button { width: 100%; }
+  .geo-maintenance { grid-template-columns: minmax(0, 1fr) 28px; }
+  .geo-maintenance__status { grid-column: 1 / -1; grid-row: 2; justify-content: flex-start; flex-wrap: wrap; white-space: normal; }
   .selector-list, .pipeline-list { padding-inline: 13px; }
   .selector-block__header { grid-template-columns: 28px minmax(0, 1fr) 28px; }
   .selector-block__header select:nth-of-type(2) { grid-column: 2; }
