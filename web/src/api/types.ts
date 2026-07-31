@@ -105,6 +105,12 @@ export interface ConfigDocument {
   content: Record<string, unknown>
   sha256: string
   modified_at: number
+  version_id: number | null
+  runtime: {
+    status: 'active' | 'different' | 'unavailable'
+    active_sha256: string | null
+    generation: number | null
+  }
 }
 
 export interface ConfigVersion {
@@ -117,6 +123,10 @@ export interface ConfigVersion {
 
 export interface ConfigVersions {
   versions: ConfigVersion[]
+}
+
+export interface ConfigVersionDetail extends ConfigVersion {
+  content: Record<string, unknown>
 }
 
 export interface DeleteConfigVersionResult {

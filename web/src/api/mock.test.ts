@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type {
   ConfigDocument,
   ConfigVersions,
+  ConfigVersionDetail,
   DeleteConfigVersionResult,
   GeoDataManifest,
   KixdnsVersionCatalog,
@@ -70,6 +71,10 @@ describe('演示 API', () => {
     const removable = before.versions.find((version) => version.id !== current?.id)
     expect(current).toBeDefined()
     expect(removable).toBeDefined()
+
+    const detail = await mockRequest<ConfigVersionDetail>(`/api/v1/config/versions/${removable?.id}`)
+    expect(detail.id).toBe(removable?.id)
+    expect(detail.content).not.toEqual(config.content)
 
     await expect(mockRequest<DeleteConfigVersionResult>(`/api/v1/config/versions/${current?.id}`, {
       method: 'DELETE',

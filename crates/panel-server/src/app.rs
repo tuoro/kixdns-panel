@@ -9,7 +9,7 @@ use axum::http::header::{CACHE_CONTROL, CONTENT_SECURITY_POLICY, REFERRER_POLICY
 use axum::http::{HeaderMap, HeaderValue, Request};
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use axum::routing::{delete, get, post};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use axum_extra::extract::CookieJar;
 use axum_extra::extract::cookie::{Cookie, SameSite};
@@ -130,6 +130,22 @@ struct VersionsResponse {
 #[derive(Debug, Serialize)]
 struct DeleteConfigVersionResponse {
     deleted_id: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct ConfigDocumentResponse {
+    content: Value,
+    sha256: String,
+    modified_at: i64,
+    version_id: Option<i64>,
+    runtime: ConfigRuntimeState,
+}
+
+#[derive(Debug, Serialize)]
+struct ConfigRuntimeState {
+    status: &'static str,
+    active_sha256: Option<String>,
+    generation: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -261,7 +277,10 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         .route("/config/geo-data", get(get_geo_data))
         .route("/config/geo-data/sync", post(sync_geo_data))
         .route("/config/versions", get(config_versions))
-        .route("/config/versions/{id}", delete(delete_config_version))
+        .route(
+            "/config/versions/{id}",
+            get(config_version).delete(delete_config_version),
+        )
         .route("/config/versions/{id}/restore", post(restore_config))
         .route("/cache/flush", post(flush_cache))
         .route("/service", get(service_status))
@@ -462,14 +481,32 @@ async fn session(State(state): State<AppState>, jar: CookieJar) -> AppResult<Jso
 async fn get_config(
     State(state): State<AppState>,
     jar: CookieJar,
-) -> AppResult<Json<crate::config_store::ConfigDocument>> {
+) -> AppResult<Json<ConfigDocumentResponse>> {
     authenticate(&state.database, &jar).await?;
-    state
-        .config
-        .current()
-        .await
-        .map(Json)
-        .map_err(map_config_error)
+    let document = state.config.current().await.map_err(map_config_error)?;
+    let runtime = match state.control.active_config().await {
+        Ok(active) => ConfigRuntimeState {
+            status: if active.sha256 == document.sha256 {
+                "active"
+            } else {
+                "different"
+            },
+            active_sha256: Some(active.sha256),
+            generation: Some(active.generation),
+        },
+        Err(_) => ConfigRuntimeState {
+            status: "unavailable",
+            active_sha256: None,
+            generation: None,
+        },
+    };
+    Ok(Json(ConfigDocumentResponse {
+        content: document.content,
+        sha256: document.sha256,
+        modified_at: document.modified_at,
+        version_id: document.version_id,
+        runtime,
+    }))
 }
 
 async fn overview(
@@ -666,6 +703,20 @@ async fn config_versions(
     authenticate(&state.database, &jar).await?;
     let versions = state.config.versions().await.map_err(AppError::Internal)?;
     Ok(Json(VersionsResponse { versions }))
+}
+
+async fn config_version(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    jar: CookieJar,
+) -> AppResult<Json<crate::config_store::ConfigVersionDetail>> {
+    authenticate(&state.database, &jar).await?;
+    state
+        .config
+        .version(id)
+        .await
+        .map(Json)
+        .map_err(map_config_error)
 }
 
 async fn restore_config(
@@ -1638,6 +1689,51 @@ mod tests {
             serde_json::from_slice(&to_bytes(protected.into_body(), 64 * 1024).await.unwrap())
                 .unwrap();
         assert_eq!(payload["error"]["code"], "config_version_active");
+    }
+
+    #[tokio::test]
+    async fn config_document_exposes_runtime_and_version_detail() {
+        let context = authenticated_app().await;
+        let config_response = context
+            .app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/config")
+                    .header(COOKIE, context.cookies.clone())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let config: Value = serde_json::from_slice(
+            &to_bytes(config_response.into_body(), 64 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let current_id = config["version_id"].as_i64().unwrap();
+        assert_eq!(config["runtime"]["status"], "unavailable");
+        assert!(config["runtime"]["active_sha256"].is_null());
+
+        let detail_response = context
+            .app
+            .oneshot(
+                Request::get(format!("/api/v1/config/versions/{current_id}"))
+                    .header(COOKIE, context.cookies)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(detail_response.status(), StatusCode::OK);
+        let detail: Value = serde_json::from_slice(
+            &to_bytes(detail_response.into_body(), 64 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(detail["id"], current_id);
+        assert_eq!(detail["content"]["pipelines"], serde_json::json!([]));
     }
 
     #[tokio::test]

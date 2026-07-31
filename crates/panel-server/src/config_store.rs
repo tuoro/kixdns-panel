@@ -28,8 +28,16 @@ pub struct ConfigDocument {
     pub content: Value,
     pub sha256: String,
     pub modified_at: i64,
+    pub version_id: Option<i64>,
     #[serde(skip)]
     raw: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ConfigVersionDetail {
+    #[serde(flatten)]
+    pub summary: ConfigVersionSummary,
+    pub content: Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -83,9 +91,14 @@ impl ConfigStore {
 
     pub async fn current(&self) -> Result<ConfigDocument, ConfigError> {
         let path = Arc::clone(&self.path);
-        tokio::task::spawn_blocking(move || read_document(&path))
+        let mut document = tokio::task::spawn_blocking(move || read_document(&path))
             .await
-            .context("读取配置任务异常结束")?
+            .context("读取配置任务异常结束")??;
+        document.version_id = self
+            .database
+            .latest_config_version_id_by_sha256(document.sha256.clone())
+            .await?;
+        Ok(document)
     }
 
     pub async fn save(
@@ -129,6 +142,10 @@ impl ConfigStore {
     }
 
     pub async fn version_content(&self, version_id: i64) -> Result<Value, ConfigError> {
+        Ok(self.version(version_id).await?.content)
+    }
+
+    pub async fn version(&self, version_id: i64) -> Result<ConfigVersionDetail, ConfigError> {
         let version = self
             .database
             .get_config_version(version_id)
@@ -136,7 +153,10 @@ impl ConfigStore {
             .ok_or(ConfigError::NotFound)?;
         let content = serde_json::from_str(&version.content).context("历史配置内容已损坏")?;
         validate_config_shape(&content)?;
-        Ok(content)
+        Ok(ConfigVersionDetail {
+            summary: version.summary,
+            content,
+        })
     }
 
     pub async fn delete_version(
@@ -149,11 +169,7 @@ impl ConfigStore {
         if !constant_hash_eq(&current.sha256, expected_sha256) {
             return Err(ConfigError::Conflict);
         }
-        let active_version_id = self
-            .database
-            .latest_config_version_id_by_sha256(current.sha256)
-            .await?;
-        if active_version_id == Some(version_id) {
+        if current.version_id == Some(version_id) {
             return Err(ConfigError::ActiveVersion);
         }
         if !self.database.delete_config_version(version_id).await? {
@@ -226,6 +242,7 @@ fn read_document(path: &Path) -> Result<ConfigDocument, ConfigError> {
         content,
         sha256: sha256(&bytes),
         modified_at,
+        version_id: None,
         raw,
     })
 }
@@ -341,6 +358,7 @@ mod tests {
         store.initialize_history().await.unwrap();
 
         let initial = store.current().await.unwrap();
+        assert!(initial.version_id.is_some());
         let saved = store
             .save(
                 json!({"pipelines": [{"id": "default", "rules": []}]}),

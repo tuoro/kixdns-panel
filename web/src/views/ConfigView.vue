@@ -5,6 +5,7 @@ import {
   Clock3,
   Download,
   FileUp,
+  GitCompare,
   History,
   RefreshCw,
   RotateCcw,
@@ -22,12 +23,14 @@ import type {
   ConfigApplyResult,
   ConfigDocument,
   ConfigVersion,
+  ConfigVersionDetail,
   ConfigVersions,
   DeleteConfigVersionResult,
   Overview,
   ValidationResult,
 } from '../api/types'
 import ConfigFlowPreview from '../components/config/ConfigFlowPreview.vue'
+import ConfigVersionDiffDialog from '../components/config/ConfigVersionDiffDialog.vue'
 import StructuredConfigEditor from '../components/config/StructuredConfigEditor.vue'
 import JsonEditor from '../components/JsonEditor.vue'
 import StatusBanner from '../components/StatusBanner.vue'
@@ -50,6 +53,8 @@ const validating = ref(false)
 const saving = ref(false)
 const restoring = ref<number | null>(null)
 const deleting = ref<number | null>(null)
+const previewing = ref<number | null>(null)
+const previewVersion = ref<ConfigVersionDetail | null>(null)
 const validation = ref<ValidationResult | null>(null)
 const parseError = ref('')
 const loadError = ref('')
@@ -57,9 +62,12 @@ const capabilityError = ref('')
 const runtimeCapabilities = ref<string[]>([])
 const toast = useToast()
 const changed = computed(() => source.value !== baseline.value)
-const currentVersionId = computed(() =>
-  versions.value.find((version) => version.sha256 === document.value?.sha256)?.id ?? null,
-)
+const currentVersionId = computed(() => document.value?.version_id ?? null)
+const runtimeLabel = computed(() => {
+  if (document.value?.runtime.status === 'active') return `运行中 · 代次 #${document.value.runtime.generation}`
+  if (document.value?.runtime.status === 'different') return '文件与运行配置不同'
+  return '运行状态不可用'
+})
 const unsupportedFields = computed(() => {
   const settings = config.value?.settings
   if (!settings) return []
@@ -150,6 +158,7 @@ function load(): Promise<void> {
     baseline.value = source.value
     syncingConfig = false
     validation.value = null
+    previewVersion.value = null
     loadError.value = ''
   })().catch((error: unknown) => {
     loadError.value = errorMessage(error)
@@ -242,6 +251,17 @@ async function deleteVersion(version: ConfigVersion): Promise<void> {
   }
 }
 
+async function openVersionDiff(version: ConfigVersion): Promise<void> {
+  previewing.value = version.id
+  try {
+    previewVersion.value = await apiRequest<ConfigVersionDetail>(`/api/v1/config/versions/${version.id}`)
+  } catch (error) {
+    toast.error(errorMessage(error))
+  } finally {
+    previewing.value = null
+  }
+}
+
 async function importFile(event: Event): Promise<void> {
   const input = event.currentTarget as HTMLInputElement
   const file = input.files?.[0]
@@ -284,7 +304,12 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
 <template>
   <div class="page config-page">
     <div class="page-actions">
-      <div v-if="document" class="document-meta"><span class="status-dot"></span><span>当前摘要</span><code>{{ shortHash(document.sha256, 14) }}</code></div>
+      <div v-if="document" class="document-meta" :title="document.runtime.active_sha256 ? `运行摘要 ${document.runtime.active_sha256}` : '无法读取 KixDNS 运行配置'">
+        <span class="status-dot" :class="{ 'status-dot--warning': document.runtime.status === 'different', 'status-dot--muted': document.runtime.status === 'unavailable' }"></span>
+        <span>{{ runtimeLabel }}</span>
+        <span v-if="document.version_id" class="document-meta__version">版本 #{{ document.version_id }}</span>
+        <code>{{ shortHash(document.sha256, 14) }}</code>
+      </div>
       <button class="button button--secondary" type="button" :disabled="loading || saving || restoring !== null || deleting !== null" @click="load"><RefreshCw :size="16" :class="{ spin: loading }" />重新读取</button>
     </div>
     <StatusBanner v-if="loadError" :message="loadError" :stale="Boolean(document)" :busy="loading" @retry="load" />
@@ -339,6 +364,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
               <div class="history-item__actions">
                 <span v-if="version.id === currentVersionId" class="tag tag--success">当前</span>
                 <template v-else>
+                  <button class="icon-button icon-button--small" type="button" title="比较此版本" :disabled="previewing !== null" @click="openVersionDiff(version)"><GitCompare :size="15" :class="{ spin: previewing === version.id }" /></button>
                   <button class="icon-button icon-button--small" type="button" title="恢复此版本" :disabled="restoring !== null || deleting !== null || saving || validating" @click="restore(version)"><RotateCcw :size="15" :class="{ spin: restoring === version.id }" /></button>
                   <button class="icon-button icon-button--small icon-button--danger" type="button" title="删除此版本" :disabled="restoring !== null || deleting !== null || saving || validating" @click="deleteVersion(version)"><Trash2 :size="15" :class="{ spin: deleting === version.id }" /></button>
                 </template>
@@ -351,5 +377,6 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
         </div>
       </aside>
     </div>
+    <ConfigVersionDiffDialog v-if="previewVersion && document" :current="document.content" :version="previewVersion" @close="previewVersion = null" />
   </div>
 </template>

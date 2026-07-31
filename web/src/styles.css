@@ -103,7 +103,9 @@ code, .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monosp
 .status-line, .document-meta { display: flex; align-items: center; gap: 8px; min-width: 0; color: #596266; font-size: 12px; }
 .document-meta code { max-width: 180px; overflow: hidden; text-overflow: ellipsis; color: #303638; }
 .status-dot--danger { background: #d65454; box-shadow: 0 0 0 3px rgba(214, 84, 84, .12); }
+.status-dot--warning { background: #d69a3e; box-shadow: 0 0 0 3px rgba(214, 154, 62, .13); }
 .status-dot--muted { background: #9ba4a1; box-shadow: none; }
+.document-meta__version { padding-left: 8px; color: #75807c; border-left: 1px solid #d8dedb; }
 .button { min-height: 36px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 7px 13px; border: 1px solid transparent; border-radius: 5px; font-size: 12px; font-weight: 650; white-space: nowrap; transition: background .15s, border-color .15s, color .15s; }
 .button--primary { color: #fff; background: var(--green); border-color: var(--green); }
 .button--primary:hover:not(:disabled) { background: var(--green-dark); border-color: var(--green-dark); }

@@ -3,6 +3,7 @@ import type {
   AuthSession,
   ConfigApplyResult,
   ConfigDocument,
+  ConfigVersionDetail,
   DeleteConfigVersionResult,
   ConfigVersions,
   DnsDiagnostic,
@@ -49,6 +50,12 @@ let config: ConfigDocument = {
   },
   sha256: '45b9a1c0c7b55138a73d9d42ed9750e4532667c22eb79f74de2ca63619a5ce11',
   modified_at: now - 430,
+  version_id: 18,
+  runtime: {
+    status: 'active',
+    active_sha256: '45b9a1c0c7b55138a73d9d42ed9750e4532667c22eb79f74de2ca63619a5ce11',
+    generation: 18,
+  },
 }
 
 const activeConfig: ActiveConfig = {
@@ -162,8 +169,28 @@ const versions: ConfigVersions = {
 }
 let nextConfigVersionId = Math.max(...versions.versions.map((version) => version.id))
 const configVersionContents = new Map(
-  versions.versions.map((version) => [version.id, structuredClone(config.content)]),
+  versions.versions.map((version) => [version.id, demoConfigVersion(version.id)]),
 )
+
+function demoConfigVersion(id: number): Record<string, unknown> {
+  const content = structuredClone(config.content)
+  const settings = content.settings as Record<string, unknown>
+  const pipelines = content.pipelines as Array<Record<string, unknown>>
+  if (id === 17) {
+    settings.upstream_timeout_ms = 2200
+    pipelines.push({ id: 'domestic', rules: [] })
+  } else if (id === 16) {
+    settings.upstream_timeout_ms = 2500
+    pipelines.push({ id: 'blocked', rules: [{ name: 'deny-malware', matchers: [], actions: [] }] })
+  } else if (id === 15) {
+    settings.upstream_timeout_ms = 3000
+    delete settings.statistics_enabled
+    delete settings.statistics_anonymize_client_ip
+    delete settings.geoip_db_path
+    delete settings.geosite_data_paths
+  }
+  return content
+}
 
 let serviceRunning = true
 let updateAvailable = true
@@ -386,11 +413,18 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
   }
   if (path === '/api/v1/config/versions' && method === 'GET') return versions as T
   const configVersionMatch = pathname.match(/^\/api\/v1\/config\/versions\/(\d+)$/)
+  if (configVersionMatch && method === 'GET') {
+    const id = Number(configVersionMatch[1])
+    const version = versions.versions.find((item) => item.id === id)
+    const content = configVersionContents.get(id)
+    if (!version || !content) throw new Error('配置文件不存在')
+    return { ...version, content: structuredClone(content) } as ConfigVersionDetail as T
+  }
   if (configVersionMatch && method === 'DELETE') {
     const body = JSON.parse(String(init?.body)) as { expected_sha256: string }
     if (body.expected_sha256 !== config.sha256) throw new Error('配置已被其他操作修改，请刷新后重试')
     const id = Number(configVersionMatch[1])
-    const currentId = versions.versions.find((version) => version.sha256 === config.sha256)?.id
+    const currentId = config.version_id
     if (id === currentId) throw new Error('当前生效版本不能删除，请先恢复其他版本')
     const index = versions.versions.findIndex((version) => version.id === id)
     if (index < 0) throw new Error('配置文件不存在')
@@ -407,11 +441,18 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
     const body = JSON.parse(String(init?.body)) as { content: Record<string, unknown>; expected_sha256: string; message?: string }
     if (body.expected_sha256 !== config.sha256) throw new Error('配置已被其他操作修改，请刷新后重试')
     const nextSha = `demo${Date.now().toString(16)}`.padEnd(64, '0').slice(0, 64)
-    config = { ...config, content: body.content, sha256: nextSha, modified_at: Math.floor(Date.now() / 1000) }
+    const versionId = ++nextConfigVersionId
+    config = {
+      ...config,
+      content: body.content,
+      sha256: nextSha,
+      modified_at: Math.floor(Date.now() / 1000),
+      version_id: versionId,
+      runtime: { status: 'active', active_sha256: nextSha, generation: activeConfig.generation + 1 },
+    }
     activeConfig.sha256 = nextSha
     activeConfig.generation += 1
     activeConfig.reload_sequence += 1
-    const versionId = ++nextConfigVersionId
     versions.versions.unshift({
       id: versionId,
       sha256: nextSha,
@@ -435,6 +476,12 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
       content: structuredClone(content),
       sha256: sourceVersion.sha256,
       modified_at: Math.floor(Date.now() / 1000),
+      version_id: versionId,
+      runtime: {
+        status: 'active',
+        active_sha256: sourceVersion.sha256,
+        generation: activeConfig.generation + 1,
+      },
     }
     activeConfig.sha256 = config.sha256
     activeConfig.generation += 1
