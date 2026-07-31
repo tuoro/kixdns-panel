@@ -300,6 +300,16 @@ impl Database {
         .await
     }
 
+    pub async fn config_version_contents(&self) -> anyhow::Result<Vec<String>> {
+        self.call(|connection| {
+            let mut statement =
+                connection.prepare("SELECT content FROM config_versions ORDER BY id DESC")?;
+            let rows = statement.query_map([], |row| row.get(0))?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+        })
+        .await
+    }
+
     pub async fn latest_config_version_id_by_sha256(
         &self,
         sha256: String,

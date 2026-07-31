@@ -10,6 +10,7 @@ use futures_util::StreamExt;
 use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, LOCATION};
 use reqwest::{Client, Response, StatusCode, Url};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tempfile::{Builder, NamedTempFile};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -20,6 +21,7 @@ use crate::db::Database;
 use crate::digest::encode_hex;
 
 const MANIFEST_KEY: &str = "geo_data_manifest";
+const SCHEDULE_KEY: &str = "geo_data_schedule";
 const MAX_URL_BYTES: usize = 4096;
 const MAX_GEOSITE_FILES: usize = 8;
 const MAX_DOWNLOAD_BYTES: u64 = 128 * 1024 * 1024;
@@ -54,6 +56,22 @@ pub struct GeoDataSyncRequest {
     pub geoip_dat_url: Option<String>,
     #[serde(default)]
     pub geosite_urls: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GeoDataCleanupResult {
+    pub scanned_files: usize,
+    pub removed_files: usize,
+    pub reclaimed_bytes: u64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct GeoDataSchedule {
+    pub interval_hours: Option<u64>,
+    pub last_attempt_at: Option<i64>,
+    pub last_success_at: Option<i64>,
+    pub last_error: Option<String>,
+    pub next_run_at: Option<i64>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -147,6 +165,74 @@ impl GeoDataManager {
         Ok(manifest)
     }
 
+    pub async fn schedule(&self) -> Result<GeoDataSchedule, GeoDataError> {
+        let Some(value) = self.database.get_setting(SCHEDULE_KEY).await? else {
+            return Ok(GeoDataSchedule::default());
+        };
+        let mut schedule: GeoDataSchedule = serde_json::from_str(&value).map_err(|error| {
+            GeoDataError::Internal(anyhow::Error::new(error).context("Geo 定时更新设置已损坏"))
+        })?;
+        schedule.refresh_next_run();
+        Ok(schedule)
+    }
+
+    pub async fn set_schedule(
+        &self,
+        interval_hours: Option<u64>,
+    ) -> Result<GeoDataSchedule, GeoDataError> {
+        if !matches!(interval_hours, None | Some(24 | 168)) {
+            return Err(GeoDataError::Invalid(
+                "Geo 自动更新仅支持每天或每周".to_owned(),
+            ));
+        }
+        let mut schedule = self.schedule().await?;
+        if schedule.interval_hours == interval_hours {
+            return Ok(schedule);
+        }
+        schedule.interval_hours = interval_hours;
+        schedule.last_attempt_at = None;
+        schedule.last_error = None;
+        schedule.refresh_next_run();
+        self.store_schedule(&schedule).await?;
+        Ok(schedule)
+    }
+
+    pub async fn mark_schedule_attempt(&self, now: i64) -> Result<(), GeoDataError> {
+        let mut schedule = self.schedule().await?;
+        schedule.last_attempt_at = Some(now);
+        schedule.refresh_next_run();
+        self.store_schedule(&schedule).await
+    }
+
+    pub async fn mark_schedule_result(
+        &self,
+        now: i64,
+        error: Option<String>,
+    ) -> Result<(), GeoDataError> {
+        let mut schedule = self.schedule().await?;
+        if error.is_none() {
+            schedule.last_success_at = Some(now);
+        }
+        schedule.last_error = error.map(|message| message.chars().take(500).collect());
+        schedule.refresh_next_run();
+        self.store_schedule(&schedule).await
+    }
+
+    pub async fn cleanup(
+        &self,
+        retained_configs: &[Value],
+    ) -> Result<GeoDataCleanupResult, GeoDataError> {
+        let _guard = self.sync_lock.lock().await;
+        let manifest = self.current().await?;
+        let protected = protected_geo_paths(self.root.as_ref(), retained_configs, &manifest);
+        let root = Arc::clone(&self.root);
+        tokio::task::spawn_blocking(move || cleanup_managed_files(&root, &protected))
+            .await
+            .map_err(|error| {
+                GeoDataError::Internal(anyhow::Error::new(error).context("Geo 清理任务异常结束"))
+            })?
+    }
+
     async fn download(
         &self,
         raw_url: &str,
@@ -214,6 +300,204 @@ impl GeoDataManager {
             downloaded_at: unix_timestamp(),
         })
     }
+
+    async fn store_schedule(&self, schedule: &GeoDataSchedule) -> Result<(), GeoDataError> {
+        let serialized = serde_json::to_string(schedule)
+            .map_err(|error| GeoDataError::Internal(anyhow::Error::new(error)))?;
+        self.database
+            .set_setting(SCHEDULE_KEY, serialized, unix_timestamp())
+            .await?;
+        Ok(())
+    }
+}
+
+impl GeoDataSchedule {
+    #[must_use]
+    pub fn is_due(&self, now: i64) -> bool {
+        self.interval_hours.is_some() && self.next_run_at.is_some_and(|next| next <= now)
+    }
+
+    fn refresh_next_run(&mut self) {
+        self.next_run_at = self.interval_hours.map(|hours| {
+            self.last_attempt_at.map_or_else(unix_timestamp, |attempt| {
+                attempt
+                    .saturating_add(i64::try_from(hours.saturating_mul(3600)).unwrap_or(i64::MAX))
+            })
+        });
+    }
+}
+
+impl GeoDataSyncRequest {
+    #[must_use]
+    pub fn from_manifest(manifest: &GeoDataManifest) -> Self {
+        Self {
+            geoip_mmdb_url: manifest
+                .geoip_mmdb
+                .as_ref()
+                .map(|resource| resource.url.clone()),
+            geoip_dat_url: manifest
+                .geoip_dat
+                .as_ref()
+                .map(|resource| resource.url.clone()),
+            geosite_urls: manifest
+                .geosite
+                .iter()
+                .map(|resource| resource.url.clone())
+                .collect(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.geoip_mmdb_url.is_none()
+            && self.geoip_dat_url.is_none()
+            && self.geosite_urls.is_empty()
+    }
+}
+
+pub fn apply_manifest_paths(
+    content: &mut Value,
+    manifest: &GeoDataManifest,
+) -> Result<bool, GeoDataError> {
+    let root = content
+        .as_object_mut()
+        .ok_or_else(|| GeoDataError::Invalid("配置根节点必须是 JSON 对象".to_owned()))?;
+    let settings = root
+        .entry("settings")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()))
+        .as_object_mut()
+        .ok_or_else(|| GeoDataError::Invalid("settings 必须是 JSON 对象".to_owned()))?;
+    let before = settings.clone();
+    set_optional_path(settings, "geoip_db_path", manifest.geoip_mmdb.as_ref());
+    set_optional_path(settings, "geoip_dat_path", manifest.geoip_dat.as_ref());
+    settings.insert(
+        "geosite_data_paths".to_owned(),
+        Value::Array(
+            manifest
+                .geosite
+                .iter()
+                .map(|resource| Value::String(resource.path.clone()))
+                .collect(),
+        ),
+    );
+    Ok(before != *settings)
+}
+
+fn set_optional_path(
+    settings: &mut serde_json::Map<String, Value>,
+    key: &str,
+    resource: Option<&GeoDataResource>,
+) {
+    if let Some(resource) = resource {
+        settings.insert(key.to_owned(), Value::String(resource.path.clone()));
+    } else {
+        settings.remove(key);
+    }
+}
+
+fn protected_geo_paths(
+    root: &Path,
+    retained_configs: &[Value],
+    manifest: &GeoDataManifest,
+) -> HashSet<PathBuf> {
+    let mut protected = HashSet::new();
+    for resource in manifest
+        .geoip_mmdb
+        .iter()
+        .chain(manifest.geoip_dat.iter())
+        .chain(manifest.geosite.iter())
+    {
+        protect_managed_path(root, &resource.path, &mut protected);
+    }
+    for content in retained_configs {
+        let Some(settings) = content.get("settings").and_then(Value::as_object) else {
+            continue;
+        };
+        for key in ["geoip_db_path", "geoip_dat_path"] {
+            if let Some(path) = settings.get(key).and_then(Value::as_str) {
+                protect_managed_path(root, path, &mut protected);
+            }
+        }
+        if let Some(paths) = settings.get("geosite_data_paths").and_then(Value::as_array) {
+            for path in paths.iter().filter_map(Value::as_str) {
+                protect_managed_path(root, path, &mut protected);
+            }
+        }
+    }
+    protected
+}
+
+fn protect_managed_path(root: &Path, raw_path: &str, protected: &mut HashSet<PathBuf>) {
+    let path = Path::new(raw_path);
+    if path.parent() == Some(root)
+        && path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(is_managed_geo_filename)
+    {
+        protected.insert(path.to_path_buf());
+    }
+}
+
+fn cleanup_managed_files(
+    root: &Path,
+    protected: &HashSet<PathBuf>,
+) -> Result<GeoDataCleanupResult, GeoDataError> {
+    let mut result = GeoDataCleanupResult {
+        scanned_files: 0,
+        removed_files: 0,
+        reclaimed_bytes: 0,
+    };
+    for entry in fs::read_dir(root).map_err(|error| internal_io("读取 Geo 数据目录", error))?
+    {
+        let entry = entry.map_err(|error| internal_io("读取 Geo 数据目录项", error))?;
+        let path = entry.path();
+        let metadata =
+            fs::symlink_metadata(&path).map_err(|error| internal_io("检查 Geo 数据文件", error))?;
+        let managed = metadata.is_file()
+            && !metadata.file_type().is_symlink()
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(is_managed_geo_filename);
+        if !managed {
+            continue;
+        }
+        result.scanned_files += 1;
+        if protected.contains(&path) {
+            continue;
+        }
+        fs::remove_file(&path).map_err(|error| internal_io("删除未引用 Geo 数据", error))?;
+        result.removed_files += 1;
+        result.reclaimed_bytes = result.reclaimed_bytes.saturating_add(metadata.len());
+    }
+    #[cfg(unix)]
+    if result.removed_files > 0 {
+        sync_parent(&root.join("cleanup"))?;
+    }
+    Ok(result)
+}
+
+fn is_managed_geo_filename(name: &str) -> bool {
+    [
+        ("geoip-mmdb-", &["mmdb"][..]),
+        ("geoip-dat-", &["dat", "json"][..]),
+        ("geosite-", &["dat", "json"][..]),
+    ]
+    .iter()
+    .any(|(prefix, extensions)| {
+        let Some(rest) = name.strip_prefix(prefix) else {
+            return false;
+        };
+        let Some((digest, extension)) = rest.rsplit_once('.') else {
+            return false;
+        };
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            && extensions.contains(&extension)
+    })
 }
 
 fn normalize_optional_url(value: Option<String>) -> Result<Option<String>, GeoDataError> {
@@ -515,8 +799,11 @@ mod tests {
     use tempfile::{Builder, tempdir};
 
     use super::{
-        ResourceKind, is_public_ip, normalize_geosite_urls, parse_url, persist_content_addressed,
+        GeoDataError, GeoDataManager, GeoDataManifest, GeoDataResource, GeoDataSyncRequest,
+        ResourceKind, apply_manifest_paths, cleanup_managed_files, is_public_ip,
+        normalize_geosite_urls, parse_url, persist_content_addressed, protected_geo_paths,
     };
+    use crate::db::Database;
     use crate::digest::sha256_hex;
 
     #[test]
@@ -584,5 +871,111 @@ mod tests {
         persist_content_addressed(duplicate, &path, &digest, 4)
             .await
             .unwrap();
+    }
+
+    #[test]
+    fn removes_only_unreferenced_managed_geo_files() {
+        let directory = tempdir().unwrap();
+        let digest_a = "a".repeat(64);
+        let digest_b = "b".repeat(64);
+        let digest_c = "c".repeat(64);
+        let retained = directory.path().join(format!("geoip-mmdb-{digest_a}.mmdb"));
+        let retained_by_history = directory.path().join(format!("geoip-dat-{digest_c}.dat"));
+        let removable = directory.path().join(format!("geosite-{digest_b}.dat"));
+        let unknown = directory.path().join("notes.txt");
+        std::fs::write(&retained, b"keep").unwrap();
+        std::fs::write(&retained_by_history, b"history").unwrap();
+        std::fs::write(&removable, b"remove").unwrap();
+        std::fs::write(&unknown, b"unknown").unwrap();
+
+        let manifest = GeoDataManifest {
+            geoip_mmdb: Some(GeoDataResource {
+                url: "https://example.com/geo.mmdb".to_owned(),
+                path: retained.to_string_lossy().into_owned(),
+                sha256: digest_a,
+                size: 4,
+                downloaded_at: 1,
+            }),
+            ..GeoDataManifest::default()
+        };
+        let history = serde_json::json!({
+            "settings": {
+                "geoip_dat_path": retained_by_history.to_string_lossy()
+            }
+        });
+        let protected = protected_geo_paths(directory.path(), &[history], &manifest);
+        let result = cleanup_managed_files(directory.path(), &protected).unwrap();
+
+        assert_eq!(result.scanned_files, 3);
+        assert_eq!(result.removed_files, 1);
+        assert_eq!(result.reclaimed_bytes, 6);
+        assert!(retained.exists());
+        assert!(retained_by_history.exists());
+        assert!(!removable.exists());
+        assert!(unknown.exists());
+    }
+
+    #[test]
+    fn applies_manifest_paths_and_reuses_remote_sources() {
+        let resource = GeoDataResource {
+            url: "https://example.com/geosite.dat".to_owned(),
+            path: "/var/lib/kixdns/geo/geosite.dat".to_owned(),
+            sha256: "a".repeat(64),
+            size: 42,
+            downloaded_at: 1,
+        };
+        let manifest = GeoDataManifest {
+            geosite: vec![resource],
+            ..GeoDataManifest::default()
+        };
+        let mut content = serde_json::json!({
+            "settings": {"geoip_db_path": "/tmp/old.mmdb"},
+            "pipelines": []
+        });
+
+        assert!(apply_manifest_paths(&mut content, &manifest).unwrap());
+        assert!(content["settings"].get("geoip_db_path").is_none());
+        assert_eq!(
+            content["settings"]["geosite_data_paths"],
+            serde_json::json!(["/var/lib/kixdns/geo/geosite.dat"])
+        );
+        assert!(!apply_manifest_paths(&mut content, &manifest).unwrap());
+
+        let request = GeoDataSyncRequest::from_manifest(&manifest);
+        assert_eq!(
+            request.geosite_urls,
+            vec!["https://example.com/geosite.dat"]
+        );
+        assert!(!request.is_empty());
+    }
+
+    #[tokio::test]
+    async fn schedule_accepts_fixed_intervals_and_preserves_same_setting() {
+        let directory = tempdir().unwrap();
+        let database = Database::open(directory.path().join("panel.db"))
+            .await
+            .unwrap();
+        let manager = GeoDataManager::new(database, &directory.path().join("geo")).unwrap();
+
+        assert!(matches!(
+            manager.set_schedule(Some(12)).await,
+            Err(GeoDataError::Invalid(_))
+        ));
+        let enabled = manager.set_schedule(Some(24)).await.unwrap();
+        assert_eq!(enabled.interval_hours, Some(24));
+        manager.mark_schedule_attempt(1_000).await.unwrap();
+        manager.mark_schedule_result(1_001, None).await.unwrap();
+
+        let unchanged = manager.set_schedule(Some(24)).await.unwrap();
+        assert_eq!(unchanged.last_attempt_at, Some(1_000));
+        assert_eq!(unchanged.last_success_at, Some(1_001));
+        assert_eq!(unchanged.next_run_at, Some(87_400));
+        assert!(!unchanged.is_due(87_399));
+        assert!(unchanged.is_due(87_400));
+
+        let disabled = manager.set_schedule(None).await.unwrap();
+        assert_eq!(disabled.interval_hours, None);
+        assert_eq!(disabled.next_run_at, None);
+        assert!(!disabled.is_due(i64::MAX));
     }
 }

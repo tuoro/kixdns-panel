@@ -211,6 +211,17 @@ impl ConfigStore {
     pub async fn versions(&self) -> anyhow::Result<Vec<ConfigVersionSummary>> {
         self.database.list_config_versions(100).await
     }
+
+    pub async fn retained_contents(&self) -> Result<Vec<Value>, ConfigError> {
+        let mut contents = Vec::new();
+        contents.push(self.current().await?.content);
+        for serialized in self.database.config_version_contents().await? {
+            let content = serde_json::from_str(&serialized).context("历史配置内容已损坏")?;
+            validate_config_shape(&content)?;
+            contents.push(content);
+        }
+        Ok(contents)
+    }
 }
 
 fn read_document(path: &Path) -> Result<ConfigDocument, ConfigError> {

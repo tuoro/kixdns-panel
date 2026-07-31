@@ -35,7 +35,10 @@ use crate::db::{
     ConfigVersionSummary, Database, SessionRecord, UserRecord, ensure_database_parent,
 };
 use crate::error::{AppError, AppResult};
-use crate::geo_data::{GeoDataError, GeoDataManager, GeoDataManifest, GeoDataSyncRequest};
+use crate::geo_data::{
+    GeoDataCleanupResult, GeoDataError, GeoDataManager, GeoDataManifest, GeoDataSchedule,
+    GeoDataSyncRequest, apply_manifest_paths,
+};
 use crate::operations::{
     DnsDiagnostic, LogEntry, OperationError, Operations, ServiceAction, ServiceStatus,
 };
@@ -120,6 +123,11 @@ struct SaveConfigRequest {
 #[derive(Debug, Deserialize)]
 struct ExpectedConfigRequest {
     expected_sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeoDataScheduleRequest {
+    interval_hours: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -262,8 +270,26 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         config_apply_lock: Arc::new(Mutex::new(())),
         dummy_password_hash: Arc::from(dummy_password_hash),
     };
+    spawn_geo_scheduler(state.clone());
+    let api = api_router(state);
 
-    let api = Router::new()
+    let index_file = settings.web_root.join("index.html");
+    let web = ServeDir::new(settings.web_root)
+        .append_index_html_on_directories(true)
+        .fallback(ServeFile::new(index_file));
+
+    Ok(Router::new()
+        .nest("/api/v1", api)
+        .fallback_service(web)
+        .layer(axum::extract::DefaultBodyLimit::max(
+            MAX_CONFIG_BYTES + 64 * 1024,
+        ))
+        .layer(TraceLayer::new_for_http())
+        .layer(middleware::from_fn(security_headers)))
+}
+
+fn api_router(state: AppState) -> Router {
+    Router::new()
         .route("/health", get(health))
         .route("/setup", get(setup_status).post(setup))
         .route("/auth/login", post(login))
@@ -276,6 +302,11 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         .route("/config/validate", post(validate_config))
         .route("/config/geo-data", get(get_geo_data))
         .route("/config/geo-data/sync", post(sync_geo_data))
+        .route("/config/geo-data/cleanup", post(cleanup_geo_data))
+        .route(
+            "/config/geo-data/schedule",
+            get(get_geo_data_schedule).put(save_geo_data_schedule),
+        )
         .route("/config/versions", get(config_versions))
         .route(
             "/config/versions/{id}",
@@ -304,21 +335,7 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
             post(delete_kixdns_version),
         )
         .fallback(not_found)
-        .with_state(state);
-
-    let index_file = settings.web_root.join("index.html");
-    let web = ServeDir::new(settings.web_root)
-        .append_index_html_on_directories(true)
-        .fallback(ServeFile::new(index_file));
-
-    Ok(Router::new()
-        .nest("/api/v1", api)
-        .fallback_service(web)
-        .layer(axum::extract::DefaultBodyLimit::max(
-            MAX_CONFIG_BYTES + 64 * 1024,
-        ))
-        .layer(TraceLayer::new_for_http())
-        .layer(middleware::from_fn(security_headers)))
+        .with_state(state)
 }
 
 async fn health() -> Json<Value> {
@@ -629,6 +646,90 @@ async fn sync_geo_data(
     Ok(Json(result))
 }
 
+async fn cleanup_geo_data(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> AppResult<Json<GeoDataCleanupResult>> {
+    let session = authenticate(&state.database, &jar).await?;
+    verify_csrf(&session, &jar, &headers)?;
+    let retained = state
+        .config
+        .retained_contents()
+        .await
+        .map_err(map_config_error)?;
+    let result = state
+        .geo_data
+        .cleanup(&retained)
+        .await
+        .map_err(map_geo_data_error)?;
+    state
+        .database
+        .audit(
+            Some(session.username),
+            "config.geo_data.cleanup".to_owned(),
+            format!(
+                "清理 Geo 数据：删除 {} 个文件，释放 {} 字节",
+                result.removed_files, result.reclaimed_bytes
+            ),
+            unix_timestamp(),
+        )
+        .await
+        .map_err(AppError::Internal)?;
+    Ok(Json(result))
+}
+
+async fn get_geo_data_schedule(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> AppResult<Json<GeoDataSchedule>> {
+    authenticate(&state.database, &jar).await?;
+    state
+        .geo_data
+        .schedule()
+        .await
+        .map(Json)
+        .map_err(map_geo_data_error)
+}
+
+async fn save_geo_data_schedule(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Json(request): Json<GeoDataScheduleRequest>,
+) -> AppResult<Json<GeoDataSchedule>> {
+    let session = authenticate(&state.database, &jar).await?;
+    verify_csrf(&session, &jar, &headers)?;
+    if request.interval_hours.is_some() {
+        let manifest = state.geo_data.current().await.map_err(map_geo_data_error)?;
+        if GeoDataSyncRequest::from_manifest(&manifest).is_empty() {
+            return Err(AppError::BadRequest(
+                "geo_data_schedule_empty",
+                "请先配置并下载至少一个远程 Geo 数据源".to_owned(),
+            ));
+        }
+    }
+    let schedule = state
+        .geo_data
+        .set_schedule(request.interval_hours)
+        .await
+        .map_err(map_geo_data_error)?;
+    state
+        .database
+        .audit(
+            Some(session.username),
+            "config.geo_data.schedule".to_owned(),
+            schedule.interval_hours.map_or_else(
+                || "关闭 Geo 自动更新".to_owned(),
+                |hours| format!("设置 Geo 自动更新间隔为 {hours} 小时"),
+            ),
+            unix_timestamp(),
+        )
+        .await
+        .map_err(AppError::Internal)?;
+    Ok(Json(schedule))
+}
+
 async fn save_config(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -650,6 +751,7 @@ async fn save_config(
         .validate(&request.content)
         .await
         .map_err(map_control_error)?;
+    ensure_validation_accepted(&validation)?;
     let result = state
         .config
         .save(
@@ -746,6 +848,7 @@ async fn restore_config(
         .validate(&candidate)
         .await
         .map_err(map_control_error)?;
+    ensure_validation_accepted(&validation)?;
     let result = state
         .config
         .restore(id, &request.expected_sha256, session.username.clone())
@@ -1083,6 +1186,106 @@ async fn delete_kixdns_version(
     Ok(Json(result))
 }
 
+fn spawn_geo_scheduler(state: AppState) {
+    tokio::spawn(async move {
+        let start = tokio::time::Instant::now() + std::time::Duration::from_mins(1);
+        let mut ticker = tokio::time::interval_at(start, std::time::Duration::from_mins(15));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            if let Err(error) = run_due_geo_schedule(&state).await {
+                tracing::warn!(error = ?error, "Geo 定时更新失败");
+            }
+        }
+    });
+}
+
+async fn run_due_geo_schedule(state: &AppState) -> anyhow::Result<()> {
+    let now = unix_timestamp();
+    let schedule = state.geo_data.schedule().await?;
+    if !schedule.is_due(now) {
+        return Ok(());
+    }
+    state.geo_data.mark_schedule_attempt(now).await?;
+    let result = apply_scheduled_geo_update(state).await;
+    let error = result.as_ref().err().map(|error| format!("{error:#}"));
+    state
+        .geo_data
+        .mark_schedule_result(unix_timestamp(), error)
+        .await?;
+    result
+}
+
+async fn apply_scheduled_geo_update(state: &AppState) -> anyhow::Result<()> {
+    let manifest = state.geo_data.current().await?;
+    let request = GeoDataSyncRequest::from_manifest(&manifest);
+    if request.is_empty() {
+        anyhow::bail!("没有可用于自动更新的远程 Geo 数据源");
+    }
+    let updated = state.geo_data.sync(request).await?;
+    let _apply_guard = state.config_apply_lock.lock().await;
+    let previous = state.config.current().await?;
+    let mut candidate = previous.content.clone();
+    if !apply_manifest_paths(&mut candidate, &updated)? {
+        return Ok(());
+    }
+
+    let runtime = state.control.active_config().await;
+    let result = match runtime {
+        Ok(before_reload) => {
+            ensure_running_config_supported(state, &candidate).await?;
+            let validation = state.control.validate(&candidate).await?;
+            if !validation.valid {
+                anyhow::bail!("KixDNS 拒绝定时更新后的 Geo 配置");
+            }
+            let result = state
+                .config
+                .save(
+                    candidate,
+                    &previous.sha256,
+                    "定时更新 Geo 数据".to_owned(),
+                    "system".to_owned(),
+                )
+                .await?;
+            if let Err(error) = state
+                .control
+                .wait_for_config(
+                    &result.sha256,
+                    before_reload.reload_sequence,
+                    std::time::Duration::from_secs(5),
+                )
+                .await
+            {
+                rollback_config(state, previous.content, &result.sha256, "system").await?;
+                anyhow::bail!("定时更新后的 Geo 配置未生效，已自动回滚：{error}");
+            }
+            result
+        }
+        Err(ControlError::Unavailable(_)) => {
+            state
+                .config
+                .save(
+                    candidate,
+                    &previous.sha256,
+                    "定时更新 Geo 数据（待 KixDNS 启动）".to_owned(),
+                    "system".to_owned(),
+                )
+                .await?
+        }
+        Err(error) => return Err(anyhow::Error::new(error)),
+    };
+    state
+        .database
+        .audit(
+            None,
+            "config.geo_data.schedule.apply".to_owned(),
+            format!("定时更新 Geo 数据并生成配置版本 #{}", result.version_id),
+            unix_timestamp(),
+        )
+        .await?;
+    Ok(())
+}
+
 async fn rollback_config(
     state: &AppState,
     previous_content: Value,
@@ -1131,6 +1334,17 @@ async fn ensure_running_config_supported(state: &AppState, content: &Value) -> A
     let health = state.control.health().await.map_err(map_control_error)?;
     ensure_config_supported(content, &health.capabilities)
         .map_err(|error| AppError::Unprocessable("unsupported_config_fields", error.to_string()))
+}
+
+fn ensure_validation_accepted(validation: &ValidationResult) -> AppResult<()> {
+    if validation.valid {
+        Ok(())
+    } else {
+        Err(AppError::Unprocessable(
+            "config_validation_failed",
+            "KixDNS 拒绝该配置，请先修正校验错误".to_owned(),
+        ))
+    }
 }
 
 async fn create_authenticated_response(
@@ -1363,10 +1577,11 @@ mod tests {
     use tempfile::{TempDir, tempdir};
     use tower::ServiceExt;
 
-    use super::{AppSettings, TrustedProxies, build_app};
+    use super::{AppSettings, TrustedProxies, build_app, ensure_validation_accepted};
+    use crate::control::ValidationResult;
 
     struct AuthenticatedApp {
-        _directory: TempDir,
+        directory: TempDir,
         app: Router,
         cookies: String,
         csrf_token: String,
@@ -1460,7 +1675,7 @@ mod tests {
                 .unwrap();
         let csrf_token = payload["csrf_token"].as_str().unwrap().to_owned();
         AuthenticatedApp {
-            _directory: directory,
+            directory,
             app,
             cookies,
             csrf_token,
@@ -1597,6 +1812,112 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn geo_cleanup_requires_csrf_and_removes_unreferenced_files() {
+        let context = authenticated_app().await;
+        let digest = "c".repeat(64);
+        let removable = context
+            .directory
+            .path()
+            .join("geo")
+            .join(format!("geosite-{digest}.dat"));
+        std::fs::write(&removable, b"obsolete").unwrap();
+
+        let forbidden = context
+            .app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/config/geo-data/cleanup")
+                    .header(COOKIE, context.cookies.clone())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+        assert!(removable.exists());
+
+        let cleaned = context
+            .app
+            .oneshot(
+                Request::post("/api/v1/config/geo-data/cleanup")
+                    .header(COOKIE, context.cookies)
+                    .header("x-csrf-token", context.csrf_token)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cleaned.status(), StatusCode::OK);
+        let payload: Value =
+            serde_json::from_slice(&to_bytes(cleaned.into_body(), 64 * 1024).await.unwrap())
+                .unwrap();
+        assert_eq!(payload["scanned_files"], 1);
+        assert_eq!(payload["removed_files"], 1);
+        assert_eq!(payload["reclaimed_bytes"], 8);
+        assert!(!removable.exists());
+    }
+
+    #[tokio::test]
+    async fn geo_schedule_requires_sources_before_enabling() {
+        let context = authenticated_app().await;
+        let current = context
+            .app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/config/geo-data/schedule")
+                    .header(COOKIE, context.cookies.clone())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(current.status(), StatusCode::OK);
+
+        let forbidden = context
+            .app
+            .clone()
+            .oneshot(
+                Request::put("/api/v1/config/geo-data/schedule")
+                    .header(CONTENT_TYPE, "application/json")
+                    .header(COOKIE, context.cookies.clone())
+                    .body(Body::from(r#"{"interval_hours":24}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+
+        let rejected = context
+            .app
+            .oneshot(
+                Request::put("/api/v1/config/geo-data/schedule")
+                    .header(CONTENT_TYPE, "application/json")
+                    .header(COOKIE, context.cookies)
+                    .header("x-csrf-token", context.csrf_token)
+                    .body(Body::from(r#"{"interval_hours":24}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+        let payload: Value =
+            serde_json::from_slice(&to_bytes(rejected.into_body(), 64 * 1024).await.unwrap())
+                .unwrap();
+        assert_eq!(payload["error"]["code"], "geo_data_schedule_empty");
+    }
+
+    #[test]
+    fn rejected_validation_cannot_reach_config_write() {
+        let validation = ValidationResult {
+            protocol_version: 1,
+            valid: false,
+            pipeline_count: 0,
+            rule_count: 0,
+        };
+        assert!(ensure_validation_accepted(&validation).is_err());
     }
 
     #[tokio::test]
