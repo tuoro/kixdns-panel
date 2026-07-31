@@ -14,7 +14,14 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
-from dns_smoke import DOMAIN, INITIAL_IP, RELOADED_IP, query_a, render_config
+from dns_smoke import (
+    DOMAIN,
+    INITIAL_IP,
+    RELOADED_IP,
+    SmokeFailure,
+    query_a,
+    render_config,
+)
 
 
 USERNAME = "acceptance-admin"
@@ -39,7 +46,7 @@ def wait_for(operation: Callable[[], T], predicate: Callable[[T], bool], label: 
             value = operation()
             if predicate(value):
                 return value
-        except (AcceptanceFailure, OSError, urllib.error.URLError) as error:
+        except (AcceptanceFailure, OSError, SmokeFailure, urllib.error.URLError) as error:
             last_error = error
         time.sleep(0.25)
     detail = f"：{last_error}" if last_error else ""
@@ -138,7 +145,11 @@ def wait_for_panel(client: PanelClient) -> None:
 
 
 def verify_runtime(client: PanelClient, dns_port: int, expected_ip: str) -> None:
-    query_a(dns_port, expected_ip)
+    wait_for(
+        lambda: query_a(dns_port, expected_ip) or True,
+        bool,
+        "KixDNS DNS 监听就绪",
+    )
     overview = wait_for(
         lambda: client.request("/api/v1/overview"),
         lambda value: value.get("health", {}).get("status") == "ok",
