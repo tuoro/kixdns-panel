@@ -2,7 +2,7 @@ use std::fs::{self, OpenOptions};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, bail};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
@@ -10,6 +10,7 @@ use serde::Serialize;
 
 const MAX_CONFIG_VERSIONS: i64 = 100;
 const MAX_AUDIT_EVENTS: i64 = 10_000;
+const CURRENT_SCHEMA_VERSION: i64 = 3;
 
 #[derive(Clone)]
 pub struct Database {
@@ -48,60 +49,14 @@ pub struct ConfigVersion {
 
 impl Database {
     pub async fn open(path: PathBuf) -> anyhow::Result<Self> {
+        let populated = fs::metadata(&path).is_ok_and(|metadata| metadata.len() > 0);
         prepare_database_file(&path)?;
         let database = Self {
             path: Arc::new(path),
         };
+        let migration_path = Arc::clone(&database.path);
         database
-            .call(|connection| {
-                connection.execute_batch(
-                    r"
-                    PRAGMA journal_mode = WAL;
-                    PRAGMA foreign_keys = ON;
-                    CREATE TABLE IF NOT EXISTS users (
-                        id            INTEGER PRIMARY KEY,
-                        username      TEXT NOT NULL COLLATE NOCASE UNIQUE,
-                        password_hash TEXT NOT NULL,
-                        created_at    INTEGER NOT NULL
-                    );
-                    CREATE TABLE IF NOT EXISTS sessions (
-                        id          INTEGER PRIMARY KEY,
-                        user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                        token_hash  TEXT NOT NULL UNIQUE,
-                        csrf_hash   TEXT NOT NULL,
-                        expires_at  INTEGER NOT NULL,
-                        created_at  INTEGER NOT NULL
-                    );
-                    CREATE INDEX IF NOT EXISTS sessions_expiry_idx ON sessions(expires_at);
-                    CREATE TABLE IF NOT EXISTS config_versions (
-                        id         INTEGER PRIMARY KEY,
-                        sha256     TEXT NOT NULL,
-                        content    TEXT NOT NULL,
-                        message    TEXT NOT NULL,
-                        actor      TEXT NOT NULL,
-                        created_at INTEGER NOT NULL
-                    );
-                    CREATE INDEX IF NOT EXISTS config_versions_created_idx
-                        ON config_versions(created_at DESC);
-                    CREATE TABLE IF NOT EXISTS audit_events (
-                        id         INTEGER PRIMARY KEY,
-                        actor      TEXT,
-                        action     TEXT NOT NULL,
-                        detail     TEXT NOT NULL,
-                        created_at INTEGER NOT NULL
-                    );
-                    CREATE TABLE IF NOT EXISTS app_settings (
-                        key        TEXT PRIMARY KEY,
-                        value      TEXT NOT NULL,
-                        updated_at INTEGER NOT NULL
-                    );
-                    PRAGMA user_version = 2;
-                    ",
-                )?;
-                prune_config_versions(connection)?;
-                prune_audit_events(connection)?;
-                Ok(())
-            })
+            .call(move |connection| initialize_database(connection, &migration_path, populated))
             .await
             .context("初始化数据库结构失败")?;
         #[cfg(unix)]
@@ -421,6 +376,134 @@ impl Database {
     }
 }
 
+fn initialize_database(
+    connection: &mut Connection,
+    path: &Path,
+    populated: bool,
+) -> anyhow::Result<()> {
+    connection.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
+    let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if version > CURRENT_SCHEMA_VERSION {
+        bail!("数据库版本 {version} 高于当前支持的版本 {CURRENT_SCHEMA_VERSION}，请升级面板");
+    }
+    if populated && version < CURRENT_SCHEMA_VERSION {
+        let backup = backup_database(connection, path, version)?;
+        tracing::info!(
+            source_version = version,
+            backup = %backup.display(),
+            "迁移前数据库备份已创建"
+        );
+    }
+
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if version < 1 {
+        transaction.execute_batch(
+            r"
+            CREATE TABLE IF NOT EXISTS users (
+                id            INTEGER PRIMARY KEY,
+                username      TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                password_hash TEXT NOT NULL,
+                created_at    INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS sessions (
+                id          INTEGER PRIMARY KEY,
+                user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                token_hash  TEXT NOT NULL UNIQUE,
+                csrf_hash   TEXT NOT NULL,
+                expires_at  INTEGER NOT NULL,
+                created_at  INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS sessions_expiry_idx ON sessions(expires_at);
+            CREATE TABLE IF NOT EXISTS config_versions (
+                id         INTEGER PRIMARY KEY,
+                sha256     TEXT NOT NULL,
+                content    TEXT NOT NULL,
+                message    TEXT NOT NULL,
+                actor      TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS config_versions_created_idx
+                ON config_versions(created_at DESC);
+            CREATE TABLE IF NOT EXISTS audit_events (
+                id         INTEGER PRIMARY KEY,
+                actor      TEXT,
+                action     TEXT NOT NULL,
+                detail     TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            PRAGMA user_version = 1;
+            ",
+        )?;
+    }
+    if version < 2 {
+        transaction.execute_batch(
+            r"
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key        TEXT PRIMARY KEY,
+                value      TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            PRAGMA user_version = 2;
+            ",
+        )?;
+    }
+    if version < 3 {
+        transaction.execute_batch(
+            r"
+            CREATE INDEX IF NOT EXISTS config_versions_sha_idx
+                ON config_versions(sha256, id DESC);
+            CREATE INDEX IF NOT EXISTS audit_events_created_idx
+                ON audit_events(created_at DESC, id DESC);
+            PRAGMA user_version = 3;
+            ",
+        )?;
+    }
+    transaction.commit()?;
+    prune_config_versions(connection)?;
+    prune_audit_events(connection)?;
+    Ok(())
+}
+
+fn backup_database(
+    connection: &Connection,
+    path: &Path,
+    source_version: i64,
+) -> anyhow::Result<PathBuf> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("数据库文件名不是有效 UTF-8")?;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut sequence = 0_u16;
+    let backup = loop {
+        let suffix = if sequence == 0 {
+            String::new()
+        } else {
+            format!("-{sequence}")
+        };
+        let candidate = parent.join(format!(
+            "{file_name}.v{source_version}-{timestamp}{suffix}.bak"
+        ));
+        if !candidate.exists() {
+            break candidate;
+        }
+        sequence = sequence
+            .checked_add(1)
+            .context("无法为数据库备份生成唯一文件名")?;
+    };
+    let backup_text = backup.to_str().context("数据库备份路径不是有效 UTF-8")?;
+    connection
+        .execute("VACUUM INTO ?1", [backup_text])
+        .context("创建迁移前数据库备份失败")?;
+    #[cfg(unix)]
+    restrict_file_permissions(&backup)?;
+    Ok(backup)
+}
+
 fn prune_config_versions(connection: &Connection) -> rusqlite::Result<()> {
     connection.execute(
         "DELETE FROM config_versions WHERE id <= COALESCE((\
@@ -497,8 +580,12 @@ pub fn ensure_database_parent(path: &Path) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
+    use tempfile::tempdir;
 
-    use super::{MAX_AUDIT_EVENTS, MAX_CONFIG_VERSIONS, prune_audit_events, prune_config_versions};
+    use super::{
+        CURRENT_SCHEMA_VERSION, Database, MAX_AUDIT_EVENTS, MAX_CONFIG_VERSIONS,
+        prune_audit_events, prune_config_versions,
+    };
 
     #[test]
     fn retains_only_recent_configuration_and_audit_rows() {
@@ -542,5 +629,117 @@ mod tests {
             .unwrap();
         assert_eq!(config_range, (MAX_CONFIG_VERSIONS, 6));
         assert_eq!(audit_range, (MAX_AUDIT_EVENTS, 6));
+    }
+
+    #[tokio::test]
+    async fn migrates_v1_database_once_and_keeps_a_consistent_backup() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("panel.db");
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                r"
+                CREATE TABLE users (
+                    id INTEGER PRIMARY KEY,
+                    username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );
+                CREATE TABLE sessions (
+                    id INTEGER PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    csrf_hash TEXT NOT NULL,
+                    expires_at INTEGER NOT NULL,
+                    created_at INTEGER NOT NULL
+                );
+                CREATE TABLE config_versions (
+                    id INTEGER PRIMARY KEY,
+                    sha256 TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );
+                CREATE TABLE audit_events (
+                    id INTEGER PRIMARY KEY,
+                    actor TEXT,
+                    action TEXT NOT NULL,
+                    detail TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );
+                INSERT INTO users(username, password_hash, created_at)
+                    VALUES('admin', 'hash', 1);
+                PRAGMA user_version = 1;
+                ",
+            )
+            .unwrap();
+        drop(connection);
+
+        Database::open(path.clone()).await.unwrap();
+        let migrated = Connection::open(&path).unwrap();
+        let version: i64 = migrated
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(
+            migrated
+                .query_row("SELECT username FROM users", [], |row| row
+                    .get::<_, String>(0))
+                .unwrap(),
+            "admin"
+        );
+        assert!(
+            migrated
+                .query_row(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'app_settings'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .is_ok()
+        );
+        drop(migrated);
+
+        let backups = database_backups(directory.path());
+        assert_eq!(backups.len(), 1);
+        let backup = Connection::open(&backups[0]).unwrap();
+        let backup_version: i64 = backup
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(backup_version, 1);
+        assert_eq!(
+            backup
+                .query_row("SELECT COUNT(*) FROM users", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        drop(backup);
+
+        Database::open(path).await.unwrap();
+        assert_eq!(database_backups(directory.path()).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn rejects_databases_from_a_newer_panel_version() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("panel.db");
+        let connection = Connection::open(&path).unwrap();
+        connection.pragma_update(None, "user_version", 99).unwrap();
+        drop(connection);
+
+        let Err(error) = Database::open(path).await else {
+            panic!("未来版本数据库不应被当前面板打开");
+        };
+        assert!(format!("{error:#}").contains("高于当前支持的版本"));
+        assert!(database_backups(directory.path()).is_empty());
+    }
+
+    fn database_backups(directory: &std::path::Path) -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(directory)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "bak"))
+            .collect()
     }
 }
