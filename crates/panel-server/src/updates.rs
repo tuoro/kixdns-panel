@@ -23,12 +23,15 @@ use crate::operations::{Operations, ServiceAction};
 mod validation;
 
 use validation::{
-    artifact_coordinates, constant_hash_eq, ensure_update_platform, parse_artifact_reference,
-    parse_panel_release_version, persist, sha256, sync_directory, validate_build_identity,
-    validate_commit, validate_digest, validate_elf, validate_hex_digest,
-    validate_manifest_build_identity, validate_manifest_source, validate_remote_build_identity,
-    validate_slug, wait_until_healthy, write_executable, write_private_file,
+    artifact_coordinates, constant_hash_eq, parse_artifact_reference, parse_panel_release_version,
+    persist, sha256, sync_directory, validate_build_identity, validate_commit, validate_digest,
+    validate_elf, validate_hex_digest, validate_manifest_build_identity, validate_manifest_source,
+    validate_remote_build_identity, validate_slug, wait_until_healthy, write_executable,
+    write_private_file,
 };
+
+#[cfg(not(unix))]
+use validation::ensure_update_platform;
 
 const ACTIVE_VERSION_KEY: &str = "installed_panel_version";
 const LEGACY_ACTIVE_COMMIT_KEY: &str = "installed_panel_commit";
