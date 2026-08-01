@@ -335,4 +335,5 @@ jobs:
           shopt -s nullglob
           packages=(dist/*.zip)
           [[ ${#packages[@]} -eq 2 ]]
-          gh release upload "${GITHUB_REF_NAME}" "${packages[@]}" --clobber
+          gh release upload "${GITHUB_REF_NAME}" "${packages[@]}" \
+            --repo "$GITHUB_REPOSITORY" --clobber
