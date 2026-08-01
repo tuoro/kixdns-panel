@@ -134,7 +134,7 @@ choose_kixdns_action() {
     KIXDNS_ACTION=keep
     return
   fi
-  [[ ${KIXDNS_ACTION} == auto ]] || return
+  [[ ${KIXDNS_ACTION} == auto ]] || return 0
   open_terminal
   printf '\n请选择 KixDNS 的处理方式：\n' >&3
   printf '  1. 仅卸载面板，保留当前 KixDNS\n' >&3
@@ -156,7 +156,7 @@ choose_kixdns_action() {
 
 choose_config_action() {
   local choice=""
-  [[ ${CONFIG_ACTION} == auto ]] || return
+  [[ ${CONFIG_ACTION} == auto ]] || return 0
   open_terminal
   printf '\n请选择配置与运行数据的处理方式：\n' >&3
   printf '  1. 保留配置、数据库、版本库和 Geo 数据\n' >&3
@@ -200,7 +200,7 @@ validate_non_interactive() {
 }
 
 load_external_backup() {
-  [[ ${HAS_EXTERNAL_BACKUP} == true ]] || return
+  [[ ${HAS_EXTERNAL_BACKUP} == true ]] || return 0
   ORIGINAL_UNIT="$(backup_value KIXDNS_SERVICE_UNIT || true)"
   ORIGINAL_ENABLED="$(backup_value KIXDNS_WAS_ENABLED || true)"
   ORIGINAL_ACTIVE="$(backup_value KIXDNS_WAS_ACTIVE || true)"
@@ -211,7 +211,7 @@ load_external_backup() {
 }
 
 validate_removal_targets() {
-  [[ ${CONFIG_ACTION} == remove ]] || return
+  [[ ${CONFIG_ACTION} == remove ]] || return 0
   [[ ! -L /etc/kixdns-panel && ! -L /var/lib/kixdns-panel ]] ||
     fail "配置目录不能是符号链接"
   if [[ ${KIXDNS_MANAGEMENT_ENABLED} == true && ${KIXDNS_ACTION} == keep ]]; then
@@ -280,7 +280,7 @@ remove_panel_components() {
 }
 
 remove_managed_kixdns() {
-  [[ ${KIXDNS_MANAGEMENT_ENABLED} == true && ${KIXDNS_ACTION} == remove ]] || return
+  [[ ${KIXDNS_MANAGEMENT_ENABLED} == true && ${KIXDNS_ACTION} == remove ]] || return 0
   stop_unit "${KIXDNS_SERVICE_UNIT}"
   wait_for_unit_inactive "${KIXDNS_SERVICE_UNIT}"
   rm -f -- "/etc/systemd/system/${KIXDNS_SERVICE_UNIT}"
@@ -296,7 +296,7 @@ remove_managed_kixdns() {
 }
 
 remove_panel_state() {
-  [[ ${CONFIG_ACTION} == remove ]] || return
+  [[ ${CONFIG_ACTION} == remove ]] || return 0
   rm -rf -- /etc/kixdns-panel
   if [[ ${KIXDNS_MANAGEMENT_ENABLED} == true && ${KIXDNS_ACTION} == keep ]]; then
     rm -f -- /var/lib/kixdns-panel/panel.db /var/lib/kixdns-panel/panel.db-shm \
@@ -320,7 +320,7 @@ remove_panel_state() {
 }
 
 restore_external_state() {
-  [[ ${RESTORED_EXTERNAL} == true ]] || return
+  [[ ${RESTORED_EXTERNAL} == true ]] || return 0
   if [[ ${ORIGINAL_ENABLED} == true ]]; then
     systemctl enable "${ORIGINAL_UNIT}"
   else

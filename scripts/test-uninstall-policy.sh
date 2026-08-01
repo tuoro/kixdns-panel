@@ -38,6 +38,19 @@ parse_arguments --keep-kixdns --remove-config --yes
 assert_equals "${KIXDNS_ACTION}" keep "显式保留 KixDNS 参数应生效"
 assert_equals "${CONFIG_ACTION}" remove "显式删除配置参数应生效"
 assert_equals "${ASSUME_YES}" true "显式确认参数应生效"
+choose_kixdns_action
+choose_config_action
+
+HAS_EXTERNAL_BACKUP=false
+CONFIG_ACTION=keep
+KIXDNS_MANAGEMENT_ENABLED=false
+KIXDNS_ACTION=keep
+RESTORED_EXTERNAL=false
+load_external_backup
+validate_removal_targets
+remove_managed_kixdns
+remove_panel_state
+restore_external_state
 
 if (KIXDNS_ACTION=auto CONFIG_ACTION=auto PURGE=false parse_arguments --keep-kixdns --remove-kixdns) 2>/dev/null; then
   printf '断言失败：冲突的 KixDNS 处理参数不应被接受\n' >&2
