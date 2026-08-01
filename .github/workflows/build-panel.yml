@@ -131,6 +131,10 @@ jobs:
           shellcheck scripts/*.sh
           bash scripts/test-install-policy.sh
           bash scripts/test-uninstall-policy.sh
+
+      - name: Verify upstream lock catalogs
+        shell: bash
+        run: |
           action_catalog="upstreams/actions/$(jq -r .official_run_id upstream.lock.json).json"
           release_catalog="upstreams/releases/$(jq -r .release_tag upstream.release.lock.json).json"
           cmp --silent upstream.lock.json "$action_catalog"
@@ -141,6 +145,10 @@ jobs:
             [[ "$(bash scripts/kixdns-artifact-identity.sh upstream.release.lock.json "$architecture")" == \
               "$(bash scripts/kixdns-artifact-identity.sh "$release_catalog" "$architecture")" ]]
           done
+
+      - name: Verify panel-only fingerprint stability
+        shell: bash
+        run: |
           identities_before="$(
             for lock_file in upstream.lock.json upstream.release.lock.json; do
               for architecture in x86_64 arm64; do
