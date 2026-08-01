@@ -167,7 +167,7 @@ bash "${INSTALLER}" --replace-existing
 python3 "${ACCEPTANCE_PY}" verify --dns-port "${dns_port}" --mode login
 
 uninstall_log="$(mktemp)"
-if bash "${UNINSTALLER}" --purge >"${uninstall_log}" 2>&1; then
+if bash -x "${UNINSTALLER}" --purge >"${uninstall_log}" 2>&1; then
   cat "${uninstall_log}"
 else
   uninstall_status=$?
