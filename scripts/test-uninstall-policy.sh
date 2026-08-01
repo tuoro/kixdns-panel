@@ -68,6 +68,8 @@ systemctl() {
   fi
   UNIT_CALLS+="$*"$'\n'
 }
+systemctl noop
+UNIT_CALLS=""
 stop_unit kixdns-panel.service
 wait_for_unit_inactive kixdns-panel.service
 [[ ${UNIT_CALLS} == *"disable --now kixdns-panel.service"* ]]
