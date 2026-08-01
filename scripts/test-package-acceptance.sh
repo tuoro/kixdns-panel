@@ -18,6 +18,7 @@ require_clean_host() {
   local path
   for path in \
     /usr/local/bin/kixdns-panel-server \
+    /usr/local/bin/kixdns-panel-uninstall \
     /usr/local/libexec/kixdns-panel-helper \
     /usr/share/kixdns-panel \
     /etc/kixdns-panel \
@@ -69,6 +70,7 @@ verify_removed() {
   ! systemctl is-active --quiet kixdns.service || fail "卸载后 KixDNS 服务仍在运行"
   for path in \
     /usr/local/bin/kixdns-panel-server \
+    /usr/local/bin/kixdns-panel-uninstall \
     /usr/local/libexec/kixdns-panel-helper \
     /usr/share/kixdns-panel \
     /etc/kixdns-panel \
@@ -102,6 +104,8 @@ dns_port="$(python3 "${ACCEPTANCE_PY}" prepare --config "${CONFIG_PATH}")"
 
 bash "${INSTALLER}" --replace-existing
 installed=true
+[[ -x /usr/local/bin/kixdns-panel-uninstall ]] || fail "没有安装全局卸载命令"
+/usr/local/bin/kixdns-panel-uninstall --help >/dev/null
 [[ $(stat -c '%U:%G:%a' -- "$(dirname -- "${CONFIG_PATH}")") == kixdns-panel:kixdns:750 ]] ||
   fail "安装器没有设置可原子写入的配置目录权限"
 [[ $(stat -c '%U:%G:%a' -- "${CONFIG_PATH}") == kixdns-panel:kixdns:640 ]] ||

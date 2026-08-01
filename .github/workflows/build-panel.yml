@@ -13,8 +13,10 @@ on:
       - scripts/fetch-kixdns-artifact.sh
       - scripts/kixdns-artifact-identity.sh
       - scripts/install.sh
+      - scripts/one-click-install.sh
       - scripts/package_acceptance.py
       - scripts/test-install-policy.sh
+      - scripts/test-uninstall-policy.sh
       - scripts/test-package-acceptance.sh
       - scripts/verify-glibc-baseline.sh
       - scripts/uninstall.sh
@@ -31,8 +33,10 @@ on:
       - scripts/fetch-kixdns-artifact.sh
       - scripts/kixdns-artifact-identity.sh
       - scripts/install.sh
+      - scripts/one-click-install.sh
       - scripts/package_acceptance.py
       - scripts/test-install-policy.sh
+      - scripts/test-uninstall-policy.sh
       - scripts/test-package-acceptance.sh
       - scripts/verify-glibc-baseline.sh
       - scripts/uninstall.sh
@@ -126,6 +130,7 @@ jobs:
         run: |
           shellcheck scripts/*.sh
           bash scripts/test-install-policy.sh
+          bash scripts/test-uninstall-policy.sh
           action_catalog="upstreams/actions/$(jq -r .official_run_id upstream.lock.json).json"
           release_catalog="upstreams/releases/$(jq -r .release_tag upstream.release.lock.json).json"
           cmp --silent upstream.lock.json "$action_catalog"
