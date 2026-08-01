@@ -125,12 +125,17 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Verify deployment scripts
+      - name: Lint deployment scripts
         shell: bash
-        run: |
-          shellcheck scripts/*.sh
-          bash scripts/test-install-policy.sh
-          bash scripts/test-uninstall-policy.sh
+        run: shellcheck scripts/*.sh
+
+      - name: Verify installation policy
+        shell: bash
+        run: bash scripts/test-install-policy.sh
+
+      - name: Verify uninstallation policy
+        shell: bash
+        run: bash scripts/test-uninstall-policy.sh
 
       - name: Verify upstream lock catalogs
         shell: bash
