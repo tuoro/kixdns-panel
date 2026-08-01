@@ -218,24 +218,72 @@ validate_removal_targets() {
   fi
 }
 
+stop_unit() {
+  local unit=$1
+  systemctl disable --now "${unit}" 2>/dev/null || true
+  systemctl stop "${unit}" 2>/dev/null || true
+  systemctl kill --kill-who=all "${unit}" 2>/dev/null || true
+  systemctl reset-failed "${unit}" 2>/dev/null || true
+}
+
+wait_for_unit_inactive() {
+  local unit=$1
+  local attempt
+  for ((attempt = 0; attempt < 50; attempt++)); do
+    systemctl is-active --quiet "${unit}" || return 0
+    sleep 0.1
+  done
+  fail "无法停止服务 ${unit}"
+}
+
+terminate_account_processes() {
+  local account=$1
+  local attempt
+  command -v pgrep >/dev/null 2>&1 || return 0
+  pgrep -u "${account}" >/dev/null 2>&1 || return 0
+  pkill -TERM -u "${account}" 2>/dev/null || true
+  for ((attempt = 0; attempt < 50; attempt++)); do
+    pgrep -u "${account}" >/dev/null 2>&1 || return 0
+    sleep 0.1
+  done
+  pkill -KILL -u "${account}" 2>/dev/null || true
+  for ((attempt = 0; attempt < 10; attempt++)); do
+    pgrep -u "${account}" >/dev/null 2>&1 || return 0
+    sleep 0.1
+  done
+  fail "账号 ${account} 仍有无法停止的进程"
+}
+
+remove_account() {
+  local account=$1
+  getent passwd "${account}" >/dev/null 2>&1 || return 0
+  terminate_account_processes "${account}"
+  userdel "${account}" 2>/dev/null ||
+    fail "无法删除账号 ${account}，请先停止该账号的其他进程"
+}
+
 remove_panel_components() {
-  systemctl disable --now kixdns-panel.service 2>/dev/null || true
-  systemctl disable --now kixdns-panel-helper.service 2>/dev/null || true
+  stop_unit kixdns-panel.service
+  wait_for_unit_inactive kixdns-panel.service
+  stop_unit kixdns-panel-helper.service
+  wait_for_unit_inactive kixdns-panel-helper.service
   rm -f -- /etc/systemd/system/kixdns-panel.service
   rm -f -- /etc/systemd/system/kixdns-panel-helper.service
   rm -f -- /etc/polkit-1/rules.d/50-kixdns-panel.rules
   rm -f -- /usr/local/bin/kixdns-panel-server
   rm -f -- /usr/local/bin/kixdns-panel-uninstall
   rm -f -- /usr/local/libexec/kixdns-panel-helper
-  rm -f -- /run/kixdns-panel/control.sock
+  rm -rf -- /run/kixdns-panel
   rm -rf -- /usr/share/kixdns-panel
 }
 
 remove_managed_kixdns() {
   [[ ${KIXDNS_MANAGEMENT_ENABLED} == true && ${KIXDNS_ACTION} == remove ]] || return
-  systemctl disable --now "${KIXDNS_SERVICE_UNIT}" 2>/dev/null || true
+  stop_unit "${KIXDNS_SERVICE_UNIT}"
+  wait_for_unit_inactive "${KIXDNS_SERVICE_UNIT}"
   rm -f -- "/etc/systemd/system/${KIXDNS_SERVICE_UNIT}"
   rm -f -- /var/lib/kixdns-panel/bin/kixdns /var/lib/kixdns-panel/bin/.kixdns.new
+  rm -rf -- /run/kixdns
   if [[ ${HAS_EXTERNAL_BACKUP} == true ]]; then
     if [[ -f ${EXTERNAL_BACKUP}/kixdns.service ]]; then
       install -o root -g root -m 0644 "${EXTERNAL_BACKUP}/kixdns.service" \
@@ -260,11 +308,11 @@ remove_panel_state() {
   else
     rm -rf -- /var/lib/kixdns-panel
   fi
-  userdel kixdns-panel 2>/dev/null || true
+  remove_account kixdns-panel
   if [[ ${KIXDNS_MANAGEMENT_ENABLED} == true && ${KIXDNS_ACTION} == remove && \
     ${HAS_EXTERNAL_BACKUP} == false ]]; then
     rm -rf -- /etc/kixdns
-    userdel kixdns 2>/dev/null || true
+    remove_account kixdns
     groupdel kixdns 2>/dev/null || true
   fi
 }

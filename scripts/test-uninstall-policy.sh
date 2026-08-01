@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC1090,SC1091,SC2034
+# shellcheck disable=SC1090,SC1091,SC2034,SC2329
 set -Eeuo pipefail
 
 PACKAGE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -60,6 +60,21 @@ if (KIXDNS_ACTION=auto CONFIG_ACTION=auto ASSUME_YES=false open_terminal) 2>/dev
   printf '断言失败：无交互终端时不应继续卸载\n' >&2
   exit 1
 fi
+
+UNIT_CALLS=""
+systemctl() {
+  if [[ $1 == is-active ]]; then
+    return 1
+  fi
+  UNIT_CALLS+="$*"$'\n'
+}
+stop_unit kixdns-panel.service
+wait_for_unit_inactive kixdns-panel.service
+[[ ${UNIT_CALLS} == *"disable --now kixdns-panel.service"* ]]
+[[ ${UNIT_CALLS} == *"stop kixdns-panel.service"* ]]
+[[ ${UNIT_CALLS} == *"kill --kill-who=all kixdns-panel.service"* ]]
+[[ ${UNIT_CALLS} == *"reset-failed kixdns-panel.service"* ]]
+unset -f systemctl
 
 one_click_help="$(bash "${PACKAGE_ROOT}/scripts/one-click-install.sh" --help)"
 [[ ${one_click_help} == *"--version"* ]]
