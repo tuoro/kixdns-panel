@@ -10,9 +10,19 @@ UNINSTALLER="${PACKAGE_ROOT}/scripts/uninstall.sh"
 installed=false
 
 fail() {
+  printf '::error file=scripts/test-package-acceptance.sh::%s\n' "$*" >&2
   printf '安装包验收失败：%s\n' "$*" >&2
   exit 1
 }
+
+report_error() {
+  local status=$?
+  trap - ERR
+  printf '::error file=scripts/test-package-acceptance.sh::验收命令失败：%s\n' "${BASH_COMMAND}" >&2
+  exit "${status}"
+}
+
+trap report_error ERR
 
 require_clean_host() {
   local path
