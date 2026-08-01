@@ -1029,7 +1029,7 @@ dependencies = [
 
 [[package]]
 name = "kixdns-panel-helper"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "clap",
  "rustix",
@@ -1037,7 +1037,7 @@ dependencies = [
 
 [[package]]
 name = "kixdns-panel-server"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -2450,7 +2450,7 @@ checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "serde",

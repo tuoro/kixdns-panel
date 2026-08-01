@@ -17,24 +17,24 @@ const status: UpdateNotifications = {
   },
   panel: {
     available: true,
-    current_version: '0.1.0',
+    current_version: '1.0.0',
     current_commit: 'c'.repeat(40),
     current_release: null,
-    latest_version: '0.2.0',
+    latest_version: '1.0.1',
     published_at: '2026-07-30T00:00:00Z',
-    release_url: 'https://github.com/tuoro/kixdns-panel/releases/tag/v0.2.0',
+    release_url: 'https://github.com/tuoro/kixdns-panel/releases/tag/v1.0.1',
     artifact: 'kixdns-panel-linux-x86_64.zip',
     artifact_digest: `sha256:${'d'.repeat(64)}`,
-    download_url: 'https://github.com/tuoro/kixdns-panel/releases/download/v0.2.0/kixdns-panel-linux-x86_64.zip',
+    download_url: 'https://github.com/tuoro/kixdns-panel/releases/download/v1.0.1/kixdns-panel-linux-x86_64.zip',
   },
 }
 
 describe('更新通知', () => {
   it('使用不可变版本身份区分两类通知', () => {
     const notices = buildUpdateNotices(status)
-    expect(notices.map((notice) => notice.id)).toEqual(['kixdns:action:42', 'panel:0.2.0'])
+    expect(notices.map((notice) => notice.id)).toEqual(['kixdns:action:42', 'panel:1.0.1'])
     expect(notices[0]).toMatchObject({ external: false, target: '/system' })
-    expect(notices[1]).toMatchObject({ external: true, meta: 'Release · v0.2.0' })
+    expect(notices[1]).toMatchObject({ external: true, meta: 'Release · v1.0.1' })
   })
 
   it('只展示当前仍可用的更新', () => {

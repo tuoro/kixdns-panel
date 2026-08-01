@@ -582,15 +582,15 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
       },
       panel: {
         available: true,
-        current_version: '0.1.0',
+        current_version: '1.0.0',
         current_commit: '23f70420a74f229aa9755c93b0e0e1ae0c7d3316',
         current_release: null,
-        latest_version: '0.2.0',
+        latest_version: '1.0.1',
         published_at: '2026-08-01T08:00:00Z',
-        release_url: 'https://github.com/tuoro/kixdns-panel/releases/tag/v0.2.0',
+        release_url: 'https://github.com/tuoro/kixdns-panel/releases/tag/v1.0.1',
         artifact: 'kixdns-panel-linux-x86_64.zip',
         artifact_digest: 'sha256:9280ba270e01d774e6944efdc435a685250e99f98c36a8cf406507a036c01ba4',
-        download_url: 'https://github.com/tuoro/kixdns-panel/releases/download/v0.2.0/kixdns-panel-linux-x86_64.zip',
+        download_url: 'https://github.com/tuoro/kixdns-panel/releases/download/v1.0.1/kixdns-panel-linux-x86_64.zip',
       },
     } as UpdateNotifications as T
   }

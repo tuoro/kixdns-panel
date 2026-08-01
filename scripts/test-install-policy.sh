@@ -76,9 +76,9 @@ if grep -q '^KIXDNS_PANEL_INSTALLED_RELEASE=' "${environment_output}"; then
   exit 1
 fi
 render_panel_environment "${environment_source}" "${environment_output}" \
-  kixdns-commit panel-commit v0.1.0 true
+  kixdns-commit panel-commit v1.0.0 true
 release_value="$(awk -F= '$1 == "KIXDNS_PANEL_INSTALLED_RELEASE" { print $2 }' "${environment_output}")"
-assert_equals "${release_value}" "v0.1.0" "正式包应保留 Release 标签"
+assert_equals "${release_value}" "v1.0.0" "正式包应保留 Release 标签"
 helper_socket_value="$(awk -F= '$1 == "KIXDNS_SERVICE_HELPER_SOCKET" { print $2 }' "${environment_output}")"
 assert_equals "${helper_socket_value}" "/run/kixdns-panel/control.sock" "面板环境应写入受限 helper Socket"
 
