@@ -6,6 +6,23 @@
 
 完整安装包由 `Build KixDNS Panel` Action 生成，并在面板 GitHub Release 中发布；当前正式版本为 `v1.0.0`。KixDNS Enhanced 的上游 Action 与正式 Release 轨道仍只发布为本仓库 Actions Artifact。面板工作流复用上游身份、补丁集和架构完全匹配的已校验 Action 轨道 Artifact，不会因面板修改而重新编译数据面。完整包包含 KixDNS Enhanced、Panel Server、Vue 静态资源、服务单元和安装脚本。
 
+## 一键安装
+
+一键安装命令会读取最新正式 Release，按当前架构选择安装包，校验 GitHub API 返回的资产 SHA-256 摘要，然后调用包内安装器：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one-click-install.sh | sudo bash
+```
+
+固定版本时追加 `--version`，例如：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one-click-install.sh \
+  | sudo bash -s -- --version v1.0.0
+```
+
+一键脚本需要 `curl`、`jq`、`unzip` 和 `sha256sum`。安装器检测到已有 KixDNS 时会在终端交互询问“仅安装面板”或“安装 KixDNS Enhanced 并由面板管理”；无人值守环境仍须显式使用 `--keep-existing` 或 `--replace-existing`。
+
 ## 获取并验证安装包
 
 nightly.link 可以直接下载公共 Action Artifact，不需要 GitHub Token。以下示例额外从 GitHub 公共 API 读取 Artifact digest，验证下载归档与 GitHub 记录一致：
@@ -166,16 +183,22 @@ sudo systemctl restart kixdns-panel.service
 
 ## 卸载
 
-默认卸载保留配置和数据：
+安装后推荐使用全局卸载命令：
 
 ```bash
-sudo bash ./scripts/uninstall.sh
+sudo kixdns-panel-uninstall
 ```
 
-明确清除面板数据（受管模式还会清除面板生成的 `/etc/kixdns`）：
+卸载器会依次询问两项：是否保留当前 KixDNS，以及是否保留面板配置、数据库、版本库和 Geo 数据。选择“删除配置”不可恢复，执行前应备份 `pipeline.json` 和 `panel.db`。外部模式下，为避免误删用户已有服务，KixDNS 的二进制、unit、配置和账号始终保留；迁移模式选择移除增强版时，会先恢复迁移前的外部 unit 和运行状态。
+
+无人值守示例：
 
 ```bash
-sudo bash ./scripts/uninstall.sh --purge
+# 仅卸载面板，保留 KixDNS 和面板数据
+sudo kixdns-panel-uninstall --keep-kixdns --keep-config --yes
+
+# 卸载面板并删除面板管理的 KixDNS、配置和运行数据
+sudo kixdns-panel-uninstall --remove-kixdns --remove-config --yes
 ```
 
-`--purge` 不可恢复，执行前应备份配置和 `panel.db`。外部模式下，卸载和 `--purge` 都不会删除外部 KixDNS 的 unit、二进制、配置或账号；迁移模式如果存在备份，会先恢复迁移前的 unit 与运行状态。
+旧命令 `sudo bash ./scripts/uninstall.sh --purge` 仍然兼容，等同于第二个示例。没有本地命令时，可以执行 `curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/uninstall.sh | sudo bash`，交互逻辑完全相同。

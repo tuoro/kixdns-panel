@@ -71,8 +71,9 @@ Panel Web ---- Panel Server ---- SQLite
 - 密码使用 Argon2id，数据库不保存明文会话令牌。
 - 指标禁止域名、客户端 IP 等高基数或敏感标签。
 - Panel Server 以独立非 root 账号运行；systemd 控制经 root helper 的专属 Unix Socket 转发。Socket 文件权限和 `SO_PEERCRED` 都固定调用方 UID，helper 只接受安装时确定的 unit 与 `start`、`stop`、`restart`。
-- 安装器对既有 KixDNS 默认要求用户选择“保留外部安装”或“迁移为增强版”；外部模式由 `KIXDNS_MANAGEMENT_ENABLED=false` 和后端版本写操作保护共同强制，前端隐藏不可执行的版本库存操作。
+- 安装器对既有 KixDNS 要求用户选择“仅安装面板”或“安装并管理增强版”；外部模式由 `KIXDNS_MANAGEMENT_ENABLED=false` 和后端版本写操作保护共同强制，前端隐藏不可执行的版本库存操作。
 - 迁移会保存原 systemd unit、启用状态和运行状态；卸载时优先恢复该备份，避免把用户原有服务当作面板资产删除。
+- 卸载器交互选择是否保留面板管理的 KixDNS，以及是否删除面板配置、数据库、版本库和 Geo 数据；外部 KixDNS 始终不会被卸载器删除。
 - KixDNS 版本源只接受固定仓库、两条工作流、分支和按规则解析的 Artifact 名称；安装请求只携带来源类型和 GitHub Artifact ID，前端不能指定 URL 或文件路径。
 - Geo 数据源只接受 HTTPS，逐次固定公网 DNS 解析并重新校验重定向，限制下载体积与文件数量；内容寻址文件保持历史配置可回滚，面板专用 URL 元数据不进入 KixDNS 配置。
 - 后端从 Artifact 名称解析上游官方 Run 或 Release 标签，再校验包内 `source`、上游身份、提交、补丁集、控制协议和本仓库构建提交。两条轨道使用独立远端缓存与 `source + artifact_id + commit` 本地库存键，同一次工作流可安全暴露多个版本。
