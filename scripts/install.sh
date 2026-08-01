@@ -161,9 +161,9 @@ choose_install_mode() {
   if ! exec 3<>/dev/tty 2>/dev/null; then
     fail "检测到既有 KixDNS；无人值守安装必须指定 --keep-existing 或 --replace-existing"
   fi
-  printf '\n检测到非面板管理的既有 KixDNS：\n' >&3
-  printf '  1. 保留现有安装，仅接入受限模式面板\n' >&3
-  printf '  2. 保留配置，迁移替换为 KixDNS Enhanced\n' >&3
+  printf '\n检测到现有 KixDNS，请选择安装方式：\n' >&3
+  printf '  1. 保留现有 KixDNS，仅安装面板\n' >&3
+  printf '  2. 安装 KixDNS Enhanced 并由面板管理\n' >&3
   printf '  3. 取消安装（默认）\n' >&3
   printf '请选择 [1-3]：' >&3
   IFS= read -r choice <&3 || true
@@ -269,6 +269,7 @@ rollback_install() {
     restore_managed_config
   fi
   restore_path /usr/local/bin/kixdns-panel-server panel-server
+  restore_path /usr/local/bin/kixdns-panel-uninstall panel-uninstall
   restore_path /usr/share/kixdns-panel/web web
   restore_path /etc/systemd/system/kixdns-panel.service panel-service
   restore_path /usr/local/libexec/kixdns-panel-helper panel-helper
@@ -364,6 +365,7 @@ prepare_rollback() {
     backup_path "/etc/systemd/system/${KIXDNS_SERVICE_UNIT}" kixdns-service
   fi
   backup_path /usr/local/bin/kixdns-panel-server panel-server
+  backup_path /usr/local/bin/kixdns-panel-uninstall panel-uninstall
   backup_path /usr/share/kixdns-panel/web web
   backup_path /etc/systemd/system/kixdns-panel.service panel-service
   backup_path /usr/local/libexec/kixdns-panel-helper panel-helper
@@ -595,6 +597,7 @@ main() {
     [[ ! -L /var/lib/kixdns-panel/bin/kixdns ]] || fail "KixDNS 二进制目标不能是符号链接"
   fi
   [[ ! -L /usr/local/bin/kixdns-panel-server ]] || fail "面板二进制目标不能是符号链接"
+  [[ ! -L /usr/local/bin/kixdns-panel-uninstall ]] || fail "卸载命令目标不能是符号链接"
   preserve_external_install
   prepare_rollback
   systemctl stop kixdns-panel.service 2>/dev/null || true
@@ -609,6 +612,8 @@ main() {
   fi
   install -o root -g root -m 0755 "${PACKAGE_ROOT}/bin/kixdns-panel-server" /usr/local/bin/.kixdns-panel-server.new
   mv -fT -- /usr/local/bin/.kixdns-panel-server.new /usr/local/bin/kixdns-panel-server
+  install -o root -g root -m 0755 "${PACKAGE_ROOT}/scripts/uninstall.sh" /usr/local/bin/.kixdns-panel-uninstall.new
+  mv -fT -- /usr/local/bin/.kixdns-panel-uninstall.new /usr/local/bin/kixdns-panel-uninstall
   install -o root -g root -m 0755 "${PACKAGE_ROOT}/bin/kixdns-panel-helper" /usr/local/libexec/.kixdns-panel-helper.new
   mv -fT -- /usr/local/libexec/.kixdns-panel-helper.new /usr/local/libexec/kixdns-panel-helper
   install_web
