@@ -166,7 +166,17 @@ python3 "${ACCEPTANCE_PY}" verify --dns-port "${dns_port}" --mode setup
 bash "${INSTALLER}" --replace-existing
 python3 "${ACCEPTANCE_PY}" verify --dns-port "${dns_port}" --mode login
 
-bash "${UNINSTALLER}" --purge
+uninstall_log="$(mktemp)"
+if bash "${UNINSTALLER}" --purge >"${uninstall_log}" 2>&1; then
+  cat "${uninstall_log}"
+else
+  uninstall_status=$?
+  cat "${uninstall_log}" >&2
+  uninstall_details="$(tail -n 8 "${uninstall_log}" | tr '\n' ' ')"
+  rm -f -- "${uninstall_log}"
+  fail "卸载脚本失败（退出码 ${uninstall_status}）：${uninstall_details}"
+fi
+rm -f -- "${uninstall_log}"
 installed=false
 verify_removed
 trap - EXIT
