@@ -111,7 +111,9 @@ load_settings() {
     fail "panel.env 中的 KixDNS 管理模式无效"
   [[ ${KIXDNS_SERVICE_UNIT} =~ ^[A-Za-z0-9_.@-]{1,120}\.service$ ]] ||
     fail "panel.env 中的 KixDNS unit 名称无效"
-  [[ -f ${EXTERNAL_BACKUP}/install.env ]] && HAS_EXTERNAL_BACKUP=true
+  if [[ -f ${EXTERNAL_BACKUP}/install.env ]]; then
+    HAS_EXTERNAL_BACKUP=true
+  fi
 }
 
 open_terminal() {

@@ -22,6 +22,14 @@ help="$(bash "${UNINSTALLER}" --help)"
 
 source "${UNINSTALLER}"
 
+PANEL_ENV="${PACKAGE_ROOT}/.missing-panel.env"
+EXTERNAL_BACKUP="${PACKAGE_ROOT}/.missing-external-backup"
+KIXDNS_MANAGEMENT_ENABLED=false
+KIXDNS_SERVICE_UNIT=kixdns.service
+HAS_EXTERNAL_BACKUP=false
+load_settings
+assert_equals "${HAS_EXTERNAL_BACKUP}" false "没有迁移备份时设置加载也应成功"
+
 KIXDNS_ACTION=auto
 CONFIG_ACTION=auto
 ASSUME_YES=false
