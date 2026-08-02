@@ -758,6 +758,7 @@ impl UpdateManager {
         let binary_path = Arc::clone(&self.binary_path);
         let metadata_path = Arc::clone(&self.bundled_metadata);
         let key = key.clone();
+        let worker_key = key.clone();
         tokio::task::spawn_blocking(move || {
             let binary = read_regular_file(&binary_path, "当前 KixDNS 二进制")?;
             match load_bundled_manifest(&metadata_path, &key, &binary) {
@@ -1188,7 +1189,7 @@ impl UpdateManager {
         tokio::task::spawn_blocking(move || {
             let binary = read_regular_file(&binary_path, "当前 KixDNS 二进制")?;
             validate_elf(&binary)?;
-            if let Ok((_, stored)) = load_verified_version(&versions_path, &key) {
+            if let Ok((_, stored)) = load_verified_version(&versions_path, &worker_key) {
                 if !constant_hash_eq(&sha256(&binary), &sha256(&stored)) {
                     return Err(UpdateError::Verification(
                         "活动版本记录与当前 KixDNS 二进制不一致".to_owned(),
@@ -1196,19 +1197,21 @@ impl UpdateManager {
                 }
                 return Ok(());
             }
-            let manifest = if initial.as_ref() == Some(&key) && key.source_id.is_some() {
-                load_bundled_manifest(&bundled_metadata, &key, &binary)?
+            let manifest = if initial.as_ref() == Some(&worker_key)
+                && worker_key.source_id.is_some()
+            {
+                load_bundled_manifest(&bundled_metadata, &worker_key, &binary)?
             } else {
-                if key.source_id.is_some() {
+                if worker_key.source_id.is_some() {
                     return Err(UpdateError::Verification(
                         "活动版本缺少可信构建元数据".to_owned(),
                     ));
                 }
                 VersionManifest {
                     schema_version: MANIFEST_SCHEMA_VERSION,
-                    source: Some(key.source),
+                    source: Some(worker_key.source),
                     source_id: None,
-                    commit: key.commit.clone(),
+                    commit: worker_key.commit.clone(),
                     run_id: None,
                     release_tag: None,
                     created_at: None,
