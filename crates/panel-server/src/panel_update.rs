@@ -47,7 +47,7 @@ impl PanelUpdateStatus {
         ) && !self.is_running()
         {
             self.state = PanelUpdateState::Failed;
-            self.message = "上次在线更新未正常结束，请重新发起更新".to_owned();
+            "上次在线更新未正常结束，请重新发起更新".clone_into(&mut self.message);
         }
         Ok(self)
     }
@@ -66,7 +66,9 @@ pub async fn read_status() -> Result<PanelUpdateStatus, anyhow::Error> {
     {
         anyhow::bail!("面板在线更新状态文件权限无效");
     }
-    let mut content = Vec::with_capacity(metadata.len() as usize);
+    let capacity = usize::try_from(metadata.len())
+        .map_err(|_| anyhow::anyhow!("面板在线更新状态文件大小无效"))?;
+    let mut content = Vec::with_capacity(capacity);
     tokio::fs::File::open(STATUS_FILE)
         .await?
         .take(MAX_STATUS_BYTES + 1)
