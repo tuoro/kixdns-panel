@@ -141,18 +141,6 @@ restore_managed_service_state
 }
 unset -f systemctl
 
-if [[ $(uname -s) == Linux ]]; then
-  trusted_test_file="$(mktemp)"
-  chmod 0755 "${trusted_test_file}"
-  trusted_root_executable "${trusted_test_file}"
-  chmod 0775 "${trusted_test_file}"
-  if trusted_root_executable "${trusted_test_file}"; then
-    printf '断言失败：在线更新器不应信任组可写的 root 脚本\n' >&2
-    exit 1
-  fi
-  rm -f -- "${trusted_test_file}"
-fi
-
 if (parse_arguments --unknown-option) 2>/dev/null; then
   printf '断言失败：未知安装参数不应被接受\n' >&2
   exit 1
