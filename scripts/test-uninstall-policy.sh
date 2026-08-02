@@ -101,5 +101,6 @@ unset -f systemctl
 
 one_click_help="$(bash "${PACKAGE_ROOT}/scripts/one-click-install.sh" --help)"
 [[ ${one_click_help} == *"--version"* ]]
+[[ -f "${PACKAGE_ROOT}/scripts/panel-online-update.sh" ]]
 
 printf '卸载策略检查通过。\n'

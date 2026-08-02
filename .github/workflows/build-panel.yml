@@ -14,6 +14,7 @@ on:
       - scripts/kixdns-artifact-identity.sh
       - scripts/install.sh
       - scripts/one-click-install.sh
+      - scripts/panel-online-update.sh
       - scripts/package_acceptance.py
       - scripts/test-install-policy.sh
       - scripts/test-uninstall-policy.sh
@@ -34,6 +35,7 @@ on:
       - scripts/kixdns-artifact-identity.sh
       - scripts/install.sh
       - scripts/one-click-install.sh
+      - scripts/panel-online-update.sh
       - scripts/package_acceptance.py
       - scripts/test-install-policy.sh
       - scripts/test-uninstall-policy.sh
@@ -272,6 +274,8 @@ jobs:
             docs/deployment.md "$bundle/docs/"
           cp README.md LICENSE upstream.lock.json "$bundle/"
           cp dist/reused-kixdns/KIXDNS_BUILD_COMMIT dist/reused-kixdns/KIXDNS_SOURCE_RUN_ID \
+            dist/reused-kixdns/KIXDNS_ARTIFACT_ID dist/reused-kixdns/KIXDNS_ARTIFACT_NAME \
+            dist/reused-kixdns/KIXDNS_ARTIFACT_DIGEST dist/reused-kixdns/KIXDNS_BINARY_SHA256 \
             dist/reused-kixdns/KIXDNS_CAPABILITIES.json "$bundle/"
           printf '%s\n' "$GITHUB_SHA" > "$bundle/PANEL_BUILD_COMMIT"
           if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then

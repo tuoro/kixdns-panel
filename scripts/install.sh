@@ -17,6 +17,10 @@ EXISTING_PANEL=false
 EXISTING_KIXDNS=false
 EXTERNAL_BACKUP=/var/lib/kixdns-panel/external-backup
 CREATED_EXTERNAL_BACKUP=false
+PRESERVE_KIXDNS_STATE=false
+KIXDNS_WAS_ACTIVE=false
+KIXDNS_WAS_ENABLED=false
+PANEL_ONLY_UPDATE=false
 
 usage() {
   cat <<'EOF'
@@ -59,6 +63,9 @@ parse_arguments() {
         [[ $# -ge 2 ]] || fail "$1 缺少参数"
         KIXDNS_CONTROL_SOCKET=$2
         shift
+        ;;
+      --panel-only-update)
+        PANEL_ONLY_UPDATE=true
         ;;
       -h | --help)
         usage
@@ -114,6 +121,12 @@ load_existing_panel_settings() {
     value="$(environment_value KIXDNS_MANAGEMENT_ENABLED || true)"
     [[ ${value} == "false" ]] && INSTALL_MODE="external" || INSTALL_MODE="managed"
   fi
+}
+
+validate_panel_only_update() {
+  [[ ${PANEL_ONLY_UPDATE} == true ]] || return 0
+  [[ ${EXISTING_PANEL} == true ]] || fail "面板在线更新仅适用于已安装的 KixDNS Panel"
+  [[ ${INSTALL_MODE} != "auto" ]] || fail "无法确认现有面板的 KixDNS 管理模式"
 }
 
 detect_service_argument() {
@@ -200,6 +213,32 @@ validate_install_mode() {
     fi
     EXISTING_KIXDNS_BINARY_PATH=${KIXDNS_BINARY_PATH}
     KIXDNS_BINARY_PATH=/var/lib/kixdns-panel/bin/kixdns
+  fi
+}
+
+capture_managed_service_state() {
+  [[ ${PANEL_ONLY_UPDATE} == false ]] || return 0
+  [[ ${INSTALL_MODE} == "managed" && ${EXISTING_PANEL} == true ]] || return 0
+  PRESERVE_KIXDNS_STATE=true
+  systemctl is-active --quiet "${KIXDNS_SERVICE_UNIT}" && KIXDNS_WAS_ACTIVE=true
+  systemctl is-enabled --quiet "${KIXDNS_SERVICE_UNIT}" && KIXDNS_WAS_ENABLED=true
+}
+
+restore_managed_service_state() {
+  [[ ${INSTALL_MODE} == "managed" ]] || return 0
+  if [[ ${PRESERVE_KIXDNS_STATE} == false ]]; then
+    systemctl disable --now "${KIXDNS_SERVICE_UNIT}" 2>/dev/null || true
+    return 0
+  fi
+  if [[ ${KIXDNS_WAS_ENABLED} == true ]]; then
+    systemctl enable "${KIXDNS_SERVICE_UNIT}"
+  else
+    systemctl disable "${KIXDNS_SERVICE_UNIT}" 2>/dev/null || true
+  fi
+  if [[ ${KIXDNS_WAS_ACTIVE} == true ]]; then
+    systemctl restart "${KIXDNS_SERVICE_UNIT}"
+  else
+    systemctl stop "${KIXDNS_SERVICE_UNIT}" 2>/dev/null || true
   fi
 }
 
@@ -325,13 +364,16 @@ rollback_install() {
   local status=$1
   trap - ERR
   set +e
-  if [[ ${INSTALL_MODE} == "managed" ]]; then
+  if [[ ${INSTALL_MODE} == "managed" && ${PANEL_ONLY_UPDATE} == false ]]; then
     restore_path /var/lib/kixdns-panel/bin/kixdns kixdns
+    restore_path /var/lib/kixdns-panel/bundle bundled-metadata
     restore_path "/etc/systemd/system/${KIXDNS_SERVICE_UNIT}" kixdns-service
     restore_managed_config
   fi
   restore_path /usr/local/bin/kixdns-panel-server panel-server
   restore_path /usr/local/bin/kixdns-panel-uninstall panel-uninstall
+  restore_path /usr/local/libexec/kixdns-panel-one-click-install panel-one-click-install
+  restore_path /usr/local/libexec/kixdns-panel-online-update panel-online-update
   restore_path /usr/share/kixdns-panel/web web
   restore_path /etc/systemd/system/kixdns-panel.service panel-service
   restore_path /usr/local/libexec/kixdns-panel-helper panel-helper
@@ -352,8 +394,9 @@ rollback_install() {
       systemctl stop "${KIXDNS_SERVICE_UNIT}"
     fi
     rm -rf -- "${EXTERNAL_BACKUP}"
-  elif [[ ${INSTALL_MODE} == "managed" ]]; then
-    systemctl restart "${KIXDNS_SERVICE_UNIT}" kixdns-panel.service
+  elif [[ ${INSTALL_MODE} == "managed" && ${PANEL_ONLY_UPDATE} == false ]]; then
+    restore_managed_service_state
+    systemctl restart kixdns-panel.service
   else
     systemctl restart kixdns-panel.service
   fi
@@ -422,19 +465,24 @@ preserve_external_install() {
 
 prepare_rollback() {
   BACKUP_ROOT="$(mktemp -d /var/tmp/kixdns-panel-install.XXXXXX)"
-  if [[ ${INSTALL_MODE} == "managed" ]]; then
+  if [[ ${INSTALL_MODE} == "managed" && ${PANEL_ONLY_UPDATE} == false ]]; then
     backup_path /var/lib/kixdns-panel/bin/kixdns kixdns
+    backup_path /var/lib/kixdns-panel/bundle bundled-metadata
     backup_path "/etc/systemd/system/${KIXDNS_SERVICE_UNIT}" kixdns-service
   fi
   backup_path /usr/local/bin/kixdns-panel-server panel-server
   backup_path /usr/local/bin/kixdns-panel-uninstall panel-uninstall
+  backup_path /usr/local/libexec/kixdns-panel-one-click-install panel-one-click-install
+  backup_path /usr/local/libexec/kixdns-panel-online-update panel-online-update
   backup_path /usr/share/kixdns-panel/web web
   backup_path /etc/systemd/system/kixdns-panel.service panel-service
   backup_path /usr/local/libexec/kixdns-panel-helper panel-helper
   backup_path /etc/systemd/system/kixdns-panel-helper.service panel-helper-service
   backup_path /etc/polkit-1/rules.d/50-kixdns-panel.rules polkit-rule
   backup_path /etc/kixdns-panel/panel.env panel-env
-  backup_managed_config
+  if [[ ${PANEL_ONLY_UPDATE} == false ]]; then
+    backup_managed_config
+  fi
   trap 'rollback_install $?' ERR
 }
 
@@ -460,8 +508,10 @@ render_panel_environment() {
   local panel_commit=$4
   local panel_release=$5
   local management_enabled=$6
+  local kixdns_source_id=$7
   awk -v kixdns_commit="${kixdns_commit}" -v panel_commit="${panel_commit}" \
     -v panel_release="${panel_release}" -v management_enabled="${management_enabled}" \
+    -v kixdns_source_id="${kixdns_source_id}" \
     -v config_path="${KIXDNS_CONFIG_PATH}" -v binary_path="${KIXDNS_BINARY_PATH}" \
     -v control_socket="${KIXDNS_CONTROL_SOCKET}" -v helper_socket="${KIXDNS_SERVICE_HELPER_SOCKET}" \
     -v service_unit="${KIXDNS_SERVICE_UNIT}" '
@@ -490,6 +540,11 @@ render_panel_environment() {
       kixdns_found = 1
       next
     }
+    /^KIXDNS_INSTALLED_SOURCE_ID=/ {
+      print "KIXDNS_INSTALLED_SOURCE_ID=" kixdns_source_id
+      source_id_found = 1
+      next
+    }
     /^KIXDNS_PANEL_INSTALLED_COMMIT=/ {
       print "KIXDNS_PANEL_INSTALLED_COMMIT=" panel_commit
       panel_found = 1
@@ -513,6 +568,7 @@ render_panel_environment() {
       if (!unit_found) print "KIXDNS_SERVICE_UNIT=" service_unit
       if (!management_found) print "KIXDNS_MANAGEMENT_ENABLED=" management_enabled
       if (!kixdns_found) print "KIXDNS_INSTALLED_COMMIT=" kixdns_commit
+      if (!source_id_found) print "KIXDNS_INSTALLED_SOURCE_ID=" kixdns_source_id
       if (!panel_found) print "KIXDNS_PANEL_INSTALLED_COMMIT=" panel_commit
       if (!panel_release_found && panel_release != "") print "KIXDNS_PANEL_INSTALLED_RELEASE=" panel_release
       if (!release_workflow) print "KIXDNS_UPDATE_RELEASE_WORKFLOW=build-kixdns-release.yml"
@@ -524,13 +580,14 @@ update_panel_environment() {
   local kixdns_commit=$1
   local panel_commit=$2
   local panel_release=$3
+  local kixdns_source_id=$4
   local management_enabled="true"
   local target=/etc/kixdns-panel/panel.env
   local temporary
   [[ ${INSTALL_MODE} == "external" ]] && management_enabled="false"
   temporary="$(mktemp /etc/kixdns-panel/.panel.env.XXXXXX)"
   render_panel_environment "${target}" "${temporary}" "${kixdns_commit}" \
-    "${panel_commit}" "${panel_release}" "${management_enabled}"
+    "${panel_commit}" "${panel_release}" "${management_enabled}" "${kixdns_source_id}"
   chown root:"${KIXDNS_GROUP}" "${temporary}"
   chmod 0640 "${temporary}"
   mv -fT -- "${temporary}" "${target}"
@@ -540,6 +597,7 @@ install_configuration() {
   local kixdns_build_commit=$1
   local panel_build_commit=$2
   local panel_release=$3
+  local kixdns_source_id=$4
   local artifact
   artifact="$(detect_artifact)"
   install -d -o root -g "${KIXDNS_GROUP}" -m 0750 /etc/kixdns-panel
@@ -557,11 +615,28 @@ install_configuration() {
     sed -e "s/^KIXDNS_UPDATE_ARTIFACT=.*/KIXDNS_UPDATE_ARTIFACT=${artifact}/" \
       -e "s/^KIXDNS_INSTALLED_COMMIT=.*/KIXDNS_INSTALLED_COMMIT=${kixdns_build_commit}/" \
       -e "s/^KIXDNS_PANEL_INSTALLED_COMMIT=.*/KIXDNS_PANEL_INSTALLED_COMMIT=${panel_build_commit}/" \
+      -e "s/^KIXDNS_INSTALLED_SOURCE_ID=.*/KIXDNS_INSTALLED_SOURCE_ID=${kixdns_source_id}/" \
       "${PACKAGE_ROOT}/deploy/panel.env.example" > /etc/kixdns-panel/panel.env
     chown root:"${KIXDNS_GROUP}" /etc/kixdns-panel/panel.env
     chmod 0640 /etc/kixdns-panel/panel.env
   fi
-  update_panel_environment "${kixdns_build_commit}" "${panel_build_commit}" "${panel_release}"
+  update_panel_environment "${kixdns_build_commit}" "${panel_build_commit}" "${panel_release}" \
+    "${kixdns_source_id}"
+}
+
+install_bundled_metadata() {
+  local target=/var/lib/kixdns-panel/bundle
+  [[ ${INSTALL_MODE} == "managed" && ${PANEL_ONLY_UPDATE} == false ]] || return 0
+  install -d -o root -g "${KIXDNS_GROUP}" -m 0750 "${target}"
+  install -o root -g "${KIXDNS_GROUP}" -m 0640 \
+    "${PACKAGE_ROOT}/upstream.lock.json" "${target}/upstream.lock.json"
+  local file
+  for file in KIXDNS_BUILD_COMMIT KIXDNS_SOURCE_RUN_ID KIXDNS_ARTIFACT_ID \
+    KIXDNS_ARTIFACT_NAME KIXDNS_ARTIFACT_DIGEST KIXDNS_BINARY_SHA256 \
+    KIXDNS_CAPABILITIES.json; do
+    install -o root -g "${KIXDNS_GROUP}" -m 0640 \
+      "${PACKAGE_ROOT}/${file}" "${target}/${file}"
+  done
 }
 
 install_services() {
@@ -574,7 +649,7 @@ install_services() {
   panel_uid="$(id -u "${PANEL_USER}")"
   panel_temporary="$(mktemp /etc/systemd/system/.kixdns-panel.XXXXXX)"
   helper_temporary="$(mktemp /etc/systemd/system/.kixdns-panel-helper.XXXXXX)"
-  if [[ ${INSTALL_MODE} == "managed" ]]; then
+  if [[ ${INSTALL_MODE} == "managed" && ${PANEL_ONLY_UPDATE} == false ]]; then
     local kixdns_temporary
     kixdns_temporary="$(mktemp /etc/systemd/system/.kixdns.XXXXXX)"
     awk -v config_path="${KIXDNS_CONFIG_PATH}" -v control_socket="${KIXDNS_CONTROL_SOCKET}" '
@@ -612,9 +687,8 @@ install_services() {
   rm -f -- /etc/polkit-1/rules.d/50-kixdns-panel.rules
   systemctl daemon-reload
   systemctl enable kixdns-panel-helper.service kixdns-panel.service
-  if [[ ${INSTALL_MODE} == "managed" ]]; then
-    systemctl enable "${KIXDNS_SERVICE_UNIT}"
-    systemctl restart "${KIXDNS_SERVICE_UNIT}"
+  if [[ ${INSTALL_MODE} == "managed" && ${PANEL_ONLY_UPDATE} == false ]]; then
+    restore_managed_service_state
   fi
   systemctl restart kixdns-panel-helper.service
   systemctl restart kixdns-panel.service
@@ -622,6 +696,7 @@ install_services() {
 
 main() {
   local kixdns_build_commit
+  local kixdns_source_id
   local panel_bind
   local panel_build_commit
   local panel_url
@@ -636,24 +711,39 @@ main() {
   require_file "${PACKAGE_ROOT}/bin/kixdns-panel-helper"
   require_file "${PACKAGE_ROOT}/web/index.html"
   require_file "${PACKAGE_ROOT}/deploy/config/pipeline.json"
+  require_file "${PACKAGE_ROOT}/scripts/one-click-install.sh"
+  require_file "${PACKAGE_ROOT}/scripts/panel-online-update.sh"
   require_file "${PACKAGE_ROOT}/PANEL_BUILD_COMMIT"
   require_file "${PACKAGE_ROOT}/KIXDNS_BUILD_COMMIT"
+  require_file "${PACKAGE_ROOT}/KIXDNS_SOURCE_RUN_ID"
+  require_file "${PACKAGE_ROOT}/KIXDNS_ARTIFACT_ID"
+  require_file "${PACKAGE_ROOT}/KIXDNS_ARTIFACT_NAME"
+  require_file "${PACKAGE_ROOT}/KIXDNS_ARTIFACT_DIGEST"
+  require_file "${PACKAGE_ROOT}/KIXDNS_BINARY_SHA256"
+  require_file "${PACKAGE_ROOT}/KIXDNS_CAPABILITIES.json"
+  require_file "${PACKAGE_ROOT}/upstream.lock.json"
   require_file "${PACKAGE_ROOT}/SHA256SUMS"
   panel_build_commit="$(tr -d '[:space:]' < "${PACKAGE_ROOT}/PANEL_BUILD_COMMIT")"
   kixdns_build_commit="$(tr -d '[:space:]' < "${PACKAGE_ROOT}/KIXDNS_BUILD_COMMIT")"
+  kixdns_source_id="$(tr -d '[:space:]' < "${PACKAGE_ROOT}/KIXDNS_ARTIFACT_ID")"
   if [[ -f "${PACKAGE_ROOT}/PANEL_RELEASE" ]]; then
     panel_release="$(tr -d '[:space:]' < "${PACKAGE_ROOT}/PANEL_RELEASE")"
     [[ "${panel_release}" =~ ^[0-9A-Za-z._-]{1,100}$ ]] || fail "PANEL_RELEASE 标签无效"
   fi
   [[ "${panel_build_commit}" =~ ^[0-9a-fA-F]{40}$ ]] || fail "PANEL_BUILD_COMMIT 不是完整提交 SHA"
   [[ "${kixdns_build_commit}" =~ ^[0-9a-fA-F]{40}$ ]] || fail "KIXDNS_BUILD_COMMIT 不是完整提交 SHA"
+  [[ "${kixdns_source_id}" =~ ^[1-9][0-9]*$ ]] || fail "KIXDNS_ARTIFACT_ID 无效"
 
   (cd "${PACKAGE_ROOT}" && sha256sum --check --quiet SHA256SUMS) || fail "安装包摘要校验失败"
 
   load_existing_panel_settings
+  validate_panel_only_update
   detect_existing_kixdns
-  choose_install_mode
+  if [[ ${PANEL_ONLY_UPDATE} == false ]]; then
+    choose_install_mode
+  fi
   validate_install_mode
+  capture_managed_service_state
   if [[ ${INSTALL_MODE} == "external" ]]; then
     KIXDNS_BINARY_PATH="$(readlink -f -- "${KIXDNS_BINARY_PATH}")"
     [[ -n ${KIXDNS_BINARY_PATH} ]] || fail "无法解析既有 KixDNS 二进制路径"
@@ -664,39 +754,69 @@ main() {
   install -d -o "${PANEL_USER}" -g "${KIXDNS_GROUP}" -m 0750 \
     /var/lib/kixdns-panel /var/lib/kixdns-panel/bin /var/lib/kixdns-panel/versions \
     /var/lib/kixdns-panel/geo
-  if [[ ${INSTALL_MODE} == "managed" ]]; then
+  [[ ! -L /var/lib/kixdns-panel-update ]] || fail "在线更新状态目录不能是符号链接"
+  install -d -o root -g "${KIXDNS_GROUP}" -m 0750 /var/lib/kixdns-panel-update
+  if [[ ${INSTALL_MODE} == "managed" && ${PANEL_ONLY_UPDATE} == false ]]; then
     [[ ! -L /var/lib/kixdns-panel/bin/kixdns ]] || fail "KixDNS 二进制目标不能是符号链接"
   fi
   [[ ! -L /usr/local/bin/kixdns-panel-server ]] || fail "面板二进制目标不能是符号链接"
   [[ ! -L /usr/local/bin/kixdns-panel-uninstall ]] || fail "卸载命令目标不能是符号链接"
-  preserve_external_install
+  [[ ! -L /usr/local/libexec/kixdns-panel-one-click-install ]] || fail "一键安装器目标不能是符号链接"
+  [[ ! -L /usr/local/libexec/kixdns-panel-online-update ]] || fail "在线更新器目标不能是符号链接"
+  if [[ ${PANEL_ONLY_UPDATE} == false ]]; then
+    preserve_external_install
+  fi
   prepare_rollback
   systemctl stop kixdns-panel.service 2>/dev/null || true
   systemctl stop kixdns-panel-helper.service 2>/dev/null || true
-  if [[ ${INSTALL_MODE} == "managed" ]]; then
+  if [[ ${INSTALL_MODE} == "managed" && ${PANEL_ONLY_UPDATE} == false ]]; then
     systemctl stop "${KIXDNS_SERVICE_UNIT}" 2>/dev/null || true
     install -o "${PANEL_USER}" -g "${KIXDNS_GROUP}" -m 0750 \
       "${PACKAGE_ROOT}/bin/kixdns" /var/lib/kixdns-panel/bin/.kixdns.new
     mv -fT -- /var/lib/kixdns-panel/bin/.kixdns.new /var/lib/kixdns-panel/bin/kixdns
-  else
+  elif [[ ${PANEL_ONLY_UPDATE} == false ]]; then
     kixdns_build_commit=""
+    kixdns_source_id=""
+  else
+    kixdns_build_commit="$(environment_value KIXDNS_INSTALLED_COMMIT || true)"
+    kixdns_source_id="$(environment_value KIXDNS_INSTALLED_SOURCE_ID || true)"
   fi
   install -o root -g root -m 0755 "${PACKAGE_ROOT}/bin/kixdns-panel-server" /usr/local/bin/.kixdns-panel-server.new
   mv -fT -- /usr/local/bin/.kixdns-panel-server.new /usr/local/bin/kixdns-panel-server
   install -o root -g root -m 0755 "${PACKAGE_ROOT}/scripts/uninstall.sh" /usr/local/bin/.kixdns-panel-uninstall.new
   mv -fT -- /usr/local/bin/.kixdns-panel-uninstall.new /usr/local/bin/kixdns-panel-uninstall
+  install -o root -g root -m 0755 "${PACKAGE_ROOT}/scripts/one-click-install.sh" /usr/local/libexec/.kixdns-panel-one-click-install.new
+  mv -fT -- /usr/local/libexec/.kixdns-panel-one-click-install.new /usr/local/libexec/kixdns-panel-one-click-install
+  install -o root -g root -m 0755 "${PACKAGE_ROOT}/scripts/panel-online-update.sh" /usr/local/libexec/.kixdns-panel-online-update.new
+  mv -fT -- /usr/local/libexec/.kixdns-panel-online-update.new /usr/local/libexec/kixdns-panel-online-update
   install -o root -g root -m 0755 "${PACKAGE_ROOT}/bin/kixdns-panel-helper" /usr/local/libexec/.kixdns-panel-helper.new
   mv -fT -- /usr/local/libexec/.kixdns-panel-helper.new /usr/local/libexec/kixdns-panel-helper
   install_web
-  install_configuration "${kixdns_build_commit}" "${panel_build_commit}" "${panel_release}"
+  install_bundled_metadata
+  if [[ ${PANEL_ONLY_UPDATE} == true ]]; then
+    update_panel_environment "${kixdns_build_commit}" "${panel_build_commit}" "${panel_release}" \
+      "${kixdns_source_id}"
+  else
+    install_configuration "${kixdns_build_commit}" "${panel_build_commit}" "${panel_release}" \
+      "${kixdns_source_id}"
+  fi
   install_services
   trap - ERR
   rm -rf -- "${BACKUP_ROOT}"
 
-  printf '\n安装完成。\n'
+  if [[ ${PANEL_ONLY_UPDATE} == true ]]; then
+    printf '\n面板在线更新完成。\n'
+  else
+    printf '\n安装完成。\n'
+  fi
   printf '面板构建：%.12s\n' "${panel_build_commit}"
-  if [[ ${INSTALL_MODE} == "managed" ]]; then
+  if [[ ${PANEL_ONLY_UPDATE} == true ]]; then
+    printf 'KixDNS：未替换，配置与运行状态保持不变\n'
+  elif [[ ${INSTALL_MODE} == "managed" ]]; then
     printf 'KixDNS 模式：面板管理（增强构建 %.12s）\n' "${kixdns_build_commit}"
+    if [[ ${PRESERVE_KIXDNS_STATE} == false ]]; then
+      printf 'KixDNS 状态：已停止（首次安装不会自动启动，可在面板中启动）\n'
+    fi
   else
     printf 'KixDNS 模式：保留外部安装（版本管理已禁用）\n'
   fi

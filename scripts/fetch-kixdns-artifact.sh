@@ -121,6 +121,10 @@ main() {
   local run_id
   local run_commit
   local staging
+  local artifact_record
+  local artifact_id
+  local artifact_digest
+  local binary_digest
   SCRIPT_DIRECTORY="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 
   require_command gh
@@ -147,15 +151,31 @@ main() {
   for ((attempt = 1; attempt <= WAIT_ATTEMPTS; attempt++)); do
     while IFS=$'\t' read -r run_id run_commit; do
       [[ "${run_id}" =~ ^[0-9]+$ && "${run_commit}" =~ ^[0-9a-f]{40}$ ]] || continue
+      artifact_record="$(
+        gh api --method GET "repos/${repository}/actions/runs/${run_id}/artifacts" -f per_page=100 |
+          jq -er --arg name "${ARTIFACT}" '
+            [.artifacts[] | select(.name == $name and .expired == false)]
+            | if length == 1 then [.[0].id, .[0].digest] | @tsv
+              else error("Artifact 身份不唯一") end
+          ' 2>/dev/null
+      )" || continue
+      IFS=$'\t' read -r artifact_id artifact_digest <<< "${artifact_record}"
+      [[ "${artifact_id}" =~ ^[1-9][0-9]*$ && "${artifact_digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || continue
       staging="$(mktemp -d "${RUNNER_TEMP:-/tmp}/kixdns-artifact.XXXXXX")"
       if gh run download "${run_id}" --repo "${repository}" --name "${ARTIFACT}" --dir "${staging}" >/dev/null 2>&1 \
         && validate_candidate "${staging}" "${run_commit}" "${expected_identity}" "${expected_capabilities}"; then
+        binary_digest="$(sha256sum -- "${staging}/kixdns" | awk '{ print $1 }')"
+        [[ "${binary_digest}" =~ ^[0-9a-f]{64}$ ]] || fail '无法计算 KixDNS 二进制摘要'
         install -d -m 0755 "${destination}"
         install -m 0755 "${staging}/kixdns" "${destination}/kixdns"
         cp -- "${staging}/upstream.lock.json" "${destination}/upstream.lock.json"
         cp -- "${staging}/KIXDNS_CAPABILITIES.json" "${destination}/KIXDNS_CAPABILITIES.json"
         printf '%s\n' "${run_commit}" > "${destination}/KIXDNS_BUILD_COMMIT"
         printf '%s\n' "${run_id}" > "${destination}/KIXDNS_SOURCE_RUN_ID"
+        printf '%s\n' "${artifact_id}" > "${destination}/KIXDNS_ARTIFACT_ID"
+        printf '%s\n' "${ARTIFACT}" > "${destination}/KIXDNS_ARTIFACT_NAME"
+        printf '%s\n' "${artifact_digest}" > "${destination}/KIXDNS_ARTIFACT_DIGEST"
+        printf '%s\n' "${binary_digest}" > "${destination}/KIXDNS_BINARY_SHA256"
         rm -rf -- "${staging}"
         printf '已复用 KixDNS 构建：Run #%s，提交 %s\n' "${run_id}" "${run_commit}"
         return

@@ -265,6 +265,8 @@ remove_account() {
 }
 
 remove_panel_components() {
+  stop_unit kixdns-panel-update.service
+  wait_for_unit_inactive kixdns-panel-update.service
   stop_unit kixdns-panel.service
   wait_for_unit_inactive kixdns-panel.service
   stop_unit kixdns-panel-helper.service
@@ -275,8 +277,11 @@ remove_panel_components() {
   rm -f -- /usr/local/bin/kixdns-panel-server
   rm -f -- /usr/local/bin/kixdns-panel-uninstall
   rm -f -- /usr/local/libexec/kixdns-panel-helper
+  rm -f -- /usr/local/libexec/kixdns-panel-one-click-install
+  rm -f -- /usr/local/libexec/kixdns-panel-online-update
   rm -rf -- /run/kixdns-panel
   rm -rf -- /usr/share/kixdns-panel
+  rm -rf -- /var/lib/kixdns-panel-update
 }
 
 remove_managed_kixdns() {

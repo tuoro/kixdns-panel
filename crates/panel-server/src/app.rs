@@ -20,12 +20,18 @@ use tokio::sync::{Mutex, Semaphore};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
+const OVERVIEW_SNAPSHOT_KEY: &str = "overview_snapshot_v1";
+const STATS_SNAPSHOT_1H_KEY: &str = "stats_snapshot_1h_v1";
+const STATS_SNAPSHOT_6H_KEY: &str = "stats_snapshot_6h_v1";
+const STATS_SNAPSHOT_24H_KEY: &str = "stats_snapshot_24h_v1";
+
 mod geo;
 
 use geo::{
     cleanup_geo_data, get_geo_data, get_geo_data_schedule, save_geo_data_schedule,
     spawn_geo_scheduler, sync_geo_data,
 };
+use crate::panel_update::{PanelUpdateStatus, read_status as read_panel_update_status};
 
 use crate::auth::{
     CSRF_COOKIE, LoginLimiter, SESSION_COOKIE, SESSION_SECONDS, TrustedProxies, authenticate,
@@ -66,11 +72,13 @@ pub struct AppSettings {
     pub update_branch: String,
     pub update_artifact: String,
     pub installed_commit: Option<String>,
+    pub installed_source_id: Option<u64>,
     pub panel_installed_commit: Option<String>,
     pub panel_installed_release: Option<String>,
     pub kixdns_management_enabled: bool,
     pub kixdns_binary: PathBuf,
     pub kixdns_versions: PathBuf,
+    pub bundled_metadata: PathBuf,
     pub geo_data_path: PathBuf,
     pub web_root: PathBuf,
     pub secure_cookie: bool,
@@ -141,6 +149,12 @@ struct DeleteConfigVersionResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct PanelUpdateStartResponse {
+    accepted: bool,
+    target_version: String,
+}
+
+#[derive(Debug, Serialize)]
 struct ConfigDocumentResponse {
     content: Value,
     sha256: String,
@@ -156,11 +170,15 @@ struct ConfigRuntimeState {
     generation: Option<u64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct OverviewResponse {
     health: Health,
     active_config: ActiveConfig,
     metrics: MetricsSnapshot,
+    live: bool,
+    #[serde(default)]
+    service_active: Option<bool>,
+    captured_at_unix: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -253,14 +271,20 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
             branch: settings.update_branch,
             artifact: settings.update_artifact,
             installed_commit: settings.installed_commit,
+            installed_source_id: settings.installed_source_id,
             panel_installed_commit: settings.panel_installed_commit,
             panel_installed_release: settings.panel_installed_release,
             management_enabled: settings.kixdns_management_enabled,
             binary_path: settings.kixdns_binary,
             versions_path: settings.kixdns_versions,
+            bundled_metadata: settings.bundled_metadata,
         },
     )
     .map_err(|error| anyhow::anyhow!(error))?;
+    updates
+        .initialize_installed_version()
+        .await
+        .map_err(|error| anyhow::anyhow!(error))?;
     let geo_data = GeoDataManager::new(database.clone(), &settings.geo_data_path)
         .map_err(|error| anyhow::anyhow!(error))?;
     let state = AppState {
@@ -333,6 +357,10 @@ fn api_router(state: AppState) -> Router {
         .route("/diagnostics/dns", post(dns_diagnostic))
         .route("/updates", get(check_updates))
         .route("/updates/status", get(update_notifications))
+        .route(
+            "/panel-update",
+            get(panel_update_status).post(start_panel_update),
+        )
         .route("/updates/apply", post(apply_update))
         .route("/kixdns/versions", get(kixdns_versions))
         .route(
@@ -544,16 +572,55 @@ async fn overview(
     jar: CookieJar,
 ) -> AppResult<Json<OverviewResponse>> {
     authenticate(&state.database, &jar).await?;
-    let (health, active_config, metrics) = tokio::join!(
+    let results = tokio::join!(
         state.control.health(),
         state.control.active_config(),
         state.control.metrics(),
     );
-    Ok(Json(OverviewResponse {
-        health: health.map_err(map_control_error)?,
-        active_config: active_config.map_err(map_control_error)?,
-        metrics: metrics.map_err(map_control_error)?,
-    }))
+    match results {
+        (Ok(health), Ok(active_config), Ok(metrics)) => {
+            let snapshot = OverviewResponse {
+                health,
+                active_config,
+                metrics,
+                live: true,
+                service_active: Some(true),
+                captured_at_unix: u64::try_from(unix_timestamp()).unwrap_or_default(),
+            };
+            if let Ok(serialized) = serde_json::to_string(&snapshot)
+                && let Err(error) = state
+                    .database
+                    .set_setting(OVERVIEW_SNAPSHOT_KEY, serialized, unix_timestamp())
+                    .await
+            {
+                tracing::warn!(%error, "无法保存概览运行快照");
+            }
+            Ok(Json(snapshot))
+        }
+        (health, active_config, metrics) => {
+            if let Ok(Some(serialized)) = state.database.get_setting(OVERVIEW_SNAPSHOT_KEY).await {
+                match serde_json::from_str::<OverviewResponse>(&serialized) {
+                    Ok(mut snapshot) => {
+                        snapshot.live = false;
+                        snapshot.service_active = state
+                            .operations
+                            .service_status()
+                            .await
+                            .ok()
+                            .map(|status| status.active_state == "active");
+                        return Ok(Json(snapshot));
+                    }
+                    Err(error) => tracing::warn!(%error, "忽略损坏的概览运行快照"),
+                }
+            }
+            let error = health
+                .err()
+                .or_else(|| active_config.err())
+                .or_else(|| metrics.err())
+                .expect("失败分支至少包含一个控制接口错误");
+            Err(map_control_error(error))
+        }
+    }
 }
 
 async fn query_stats(
@@ -574,12 +641,41 @@ async fn query_stats(
             "排行数量必须在 1 到 50 之间".to_owned(),
         ));
     }
-    state
-        .control
-        .top_stats(query.window, query.limit)
-        .await
-        .map(Json)
-        .map_err(map_control_error)
+    let snapshot_key = match query.window {
+        3_600 => STATS_SNAPSHOT_1H_KEY,
+        21_600 => STATS_SNAPSHOT_6H_KEY,
+        86_400 => STATS_SNAPSHOT_24H_KEY,
+        _ => unreachable!("统计窗口已经验证"),
+    };
+    match state.control.top_stats(query.window, query.limit).await {
+        Ok(mut snapshot) => {
+            snapshot.live = true;
+            snapshot.captured_at_unix = Some(u64::try_from(unix_timestamp()).unwrap_or_default());
+            if let Ok(serialized) = serde_json::to_string(&snapshot)
+                && let Err(error) = state
+                    .database
+                    .set_setting(snapshot_key, serialized, unix_timestamp())
+                    .await
+            {
+                tracing::warn!(%error, "无法保存查询排行快照");
+            }
+            Ok(Json(snapshot))
+        }
+        Err(error) => {
+            if let Ok(Some(serialized)) = state.database.get_setting(snapshot_key).await {
+                match serde_json::from_str::<QueryStatsSnapshot>(&serialized) {
+                    Ok(mut snapshot) => {
+                        snapshot.live = false;
+                        return Ok(Json(snapshot));
+                    }
+                    Err(snapshot_error) => {
+                        tracing::warn!(%snapshot_error, "忽略损坏的查询排行快照");
+                    }
+                }
+            }
+            Err(map_control_error(error))
+        }
+    }
 }
 
 async fn clear_query_stats(
@@ -955,6 +1051,69 @@ async fn update_notifications(
         .await
         .map(Json)
         .map_err(map_update_error)
+}
+
+async fn panel_update_status(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> AppResult<Json<PanelUpdateStatus>> {
+    authenticate(&state.database, &jar).await?;
+    read_panel_update_status()
+        .await
+        .map(Json)
+        .map_err(AppError::Internal)
+}
+
+async fn start_panel_update(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> AppResult<Json<PanelUpdateStartResponse>> {
+    let session = authenticate(&state.database, &jar).await?;
+    verify_csrf(&session, &jar, &headers)?;
+    if read_panel_update_status()
+        .await
+        .map_err(AppError::Internal)?
+        .is_running()
+    {
+        return Err(AppError::Conflict(
+            "panel_update_running",
+            "面板在线更新正在进行".to_owned(),
+        ));
+    }
+    let notice = state
+        .updates
+        .panel_update_notice()
+        .await
+        .map_err(map_update_error)?;
+    if !notice.available {
+        return Err(AppError::Conflict(
+            "panel_update_not_available",
+            "当前没有可安装的面板正式更新".to_owned(),
+        ));
+    }
+    let target_version = format!("v{}", notice.latest_version.ok_or_else(|| {
+        AppError::Internal(anyhow::anyhow!("可用面板更新缺少目标版本"))
+    })?);
+    state
+        .operations
+        .start_panel_update()
+        .await
+        .map_err(map_operation_error)?;
+    state
+        .database
+        .audit(
+            Some(session.username),
+            "panel.update.start".to_owned(),
+            format!("开始在线更新面板到 {target_version}"),
+            unix_timestamp(),
+        )
+        .await
+        .map_err(AppError::Internal)?;
+    Ok(Json(PanelUpdateStartResponse {
+        accepted: true,
+        target_version,
+    }))
 }
 
 async fn apply_update(

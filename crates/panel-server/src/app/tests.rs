@@ -42,11 +42,13 @@ async fn test_app() -> (TempDir, Router) {
         update_branch: "main".to_owned(),
         update_artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
         installed_commit: None,
+        installed_source_id: None,
         panel_installed_commit: None,
         panel_installed_release: None,
         kixdns_management_enabled: true,
         kixdns_binary: directory.path().join("kixdns"),
         kixdns_versions: directory.path().join("versions"),
+        bundled_metadata: directory.path().join("bundle"),
         geo_data_path: directory.path().join("geo"),
         web_root,
         secure_cookie: false,
@@ -139,6 +141,31 @@ async fn setup_issues_session_and_write_requires_csrf() {
         .await
         .unwrap();
     assert_eq!(updates.status(), StatusCode::UNAUTHORIZED);
+
+    let panel_update_status = context
+        .app
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/panel-update")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(panel_update_status.status(), StatusCode::UNAUTHORIZED);
+
+    let panel_update_without_csrf = context
+        .app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/panel-update")
+                .header(COOKIE, context.cookies.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(panel_update_without_csrf.status(), StatusCode::FORBIDDEN);
 
     let forbidden = context
         .app

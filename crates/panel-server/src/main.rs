@@ -81,6 +81,10 @@ struct Args {
     #[arg(long, env = "KIXDNS_INSTALLED_COMMIT")]
     installed_commit: Option<String>,
 
+    /// 当前完整安装包自带增强 Artifact 的 GitHub ID。
+    #[arg(long, env = "KIXDNS_INSTALLED_SOURCE_ID")]
+    installed_source_id: Option<u64>,
+
     /// 当前完整安装包对应的面板提交，由安装脚本填写。
     #[arg(long, env = "KIXDNS_PANEL_INSTALLED_COMMIT")]
     panel_installed_commit: Option<String>,
@@ -104,6 +108,14 @@ struct Args {
         default_value = "/var/lib/kixdns-panel/versions"
     )]
     kixdns_versions: PathBuf,
+
+    /// 完整安装包保存的 KixDNS 构建身份目录。
+    #[arg(
+        long,
+        env = "KIXDNS_BUNDLED_METADATA",
+        default_value = "/var/lib/kixdns-panel/bundle"
+    )]
+    bundled_metadata: PathBuf,
 
     /// 面板下载并管理的 GeoIP/GeoSite 数据目录。
     #[arg(
@@ -153,11 +165,13 @@ async fn main() -> anyhow::Result<()> {
         update_branch: args.update_branch,
         update_artifact: args.update_artifact,
         installed_commit: args.installed_commit,
+        installed_source_id: args.installed_source_id,
         panel_installed_commit: args.panel_installed_commit,
         panel_installed_release: args.panel_installed_release,
         kixdns_management_enabled: args.kixdns_management_enabled,
         kixdns_binary: args.kixdns_binary,
         kixdns_versions: args.kixdns_versions,
+        bundled_metadata: args.bundled_metadata,
         geo_data_path: args.geo_data,
         web_root: args.web_root,
         secure_cookie: args.secure_cookie,

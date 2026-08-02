@@ -8,6 +8,7 @@ mod digest;
 mod error;
 mod geo_data;
 mod operations;
+mod panel_update;
 mod updates;
 
 pub use app::{AppSettings, build_app, run};

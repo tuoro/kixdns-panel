@@ -90,13 +90,15 @@ mod linux {
         let mut request = Vec::new();
         stream.take(64).read_to_end(&mut request)?;
         let action = parse_action(std::str::from_utf8(&request)?.trim())?;
-        let systemctl = ["/usr/bin/systemctl", "/bin/systemctl"]
-            .into_iter()
-            .find(|path| Path::new(path).is_file())
+        if action == ServiceAction::PanelUpdate {
+            return launch_panel_update();
+        }
+        let systemctl = find_executable(&["/usr/bin/systemctl", "/bin/systemctl"])
             .ok_or("找不到 systemctl")?;
-        let output = Command::new(systemctl)
-            .args(["--no-ask-password", action, &args.unit])
-            .output()?;
+        let mut command = Command::new(systemctl);
+        command.arg("--no-ask-password");
+        command.args(systemctl_arguments(action, &args.unit));
+        let output = command.output()?;
         if !output.status.success() {
             let detail = String::from_utf8_lossy(&output.stderr);
             return Err(format!("systemctl 执行失败: {}", detail.trim()).into());
@@ -104,12 +106,65 @@ mod linux {
         Ok(())
     }
 
-    fn parse_action(action: &str) -> Result<&str, Box<dyn std::error::Error>> {
-        if matches!(action, "start" | "stop" | "restart") {
-            Ok(action)
-        } else {
-            Err("helper 只允许 start、stop 或 restart".into())
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum ServiceAction {
+        Start,
+        Stop,
+        Restart,
+        PanelUpdate,
+    }
+
+    fn parse_action(action: &str) -> Result<ServiceAction, Box<dyn std::error::Error>> {
+        match action {
+            "start" => Ok(ServiceAction::Start),
+            "stop" => Ok(ServiceAction::Stop),
+            "restart" => Ok(ServiceAction::Restart),
+            "panel-update" => Ok(ServiceAction::PanelUpdate),
+            _ => Err("helper 请求动作不受支持".into()),
         }
+    }
+
+    fn systemctl_arguments(action: ServiceAction, unit: &str) -> Vec<&str> {
+        match action {
+            ServiceAction::Start => vec!["enable", "--now", unit],
+            ServiceAction::Stop => vec!["disable", "--now", unit],
+            ServiceAction::Restart => vec!["restart", unit],
+            ServiceAction::PanelUpdate => Vec::new(),
+        }
+    }
+
+    fn launch_panel_update() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::MetadataExt;
+
+        const UPDATER: &str = "/usr/local/libexec/kixdns-panel-online-update";
+        let metadata = fs::symlink_metadata(UPDATER)?;
+        if metadata.file_type().is_symlink()
+            || !metadata.is_file()
+            || metadata.uid() != 0
+            || metadata.mode() & 0o022 != 0
+        {
+            return Err("面板在线更新器权限无效".into());
+        }
+        let systemd_run = find_executable(&["/usr/bin/systemd-run", "/bin/systemd-run"])
+            .ok_or("找不到 systemd-run")?;
+        let output = Command::new(systemd_run)
+            .args([
+                "--quiet",
+                "--collect",
+                "--unit=kixdns-panel-update.service",
+                "--property=Type=exec",
+                UPDATER,
+            ])
+            .output()?;
+        if !output.status.success() {
+            let detail = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("启动面板在线更新失败: {}", detail.trim()).into());
+        }
+        Ok(())
+    }
+
+    fn find_executable<'a>(paths: &[&'a str]) -> Option<&'a str> {
+        paths.iter().copied().find(|path| Path::new(path).is_file())
     }
 
     fn validate_unit(unit: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -146,14 +201,38 @@ mod linux {
     mod tests {
         use std::path::Path;
 
-        use super::{parse_action, validate_socket_path, validate_unit};
+        use super::{
+            ServiceAction, parse_action, systemctl_arguments, validate_socket_path, validate_unit,
+        };
 
         #[test]
         fn accepts_only_fixed_service_actions() {
-            assert!(parse_action("start").is_ok());
-            assert!(parse_action("restart").is_ok());
+            assert_eq!(parse_action("start").unwrap(), ServiceAction::Start);
+            assert_eq!(parse_action("stop").unwrap(), ServiceAction::Stop);
+            assert_eq!(parse_action("restart").unwrap(), ServiceAction::Restart);
+            assert_eq!(
+                parse_action("panel-update").unwrap(),
+                ServiceAction::PanelUpdate
+            );
             assert!(parse_action("restart; reboot").is_err());
             assert!(parse_action("reload").is_err());
+        }
+
+        #[test]
+        fn persists_start_and_stop_state() {
+            assert_eq!(
+                systemctl_arguments(ServiceAction::Start, "kixdns.service"),
+                ["enable", "--now", "kixdns.service"]
+            );
+            assert_eq!(
+                systemctl_arguments(ServiceAction::Stop, "kixdns.service"),
+                ["disable", "--now", "kixdns.service"]
+            );
+            assert_eq!(
+                systemctl_arguments(ServiceAction::Restart, "kixdns.service"),
+                ["restart", "kixdns.service"]
+            );
+            assert!(systemctl_arguments(ServiceAction::PanelUpdate, "kixdns.service").is_empty());
         }
 
         #[test]

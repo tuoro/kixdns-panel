@@ -7,6 +7,7 @@ import argparse
 import http.cookiejar
 import json
 import socket
+import subprocess
 import sys
 import time
 import urllib.error
@@ -119,7 +120,7 @@ class PanelClient:
     def authenticate(self, mode: str) -> None:
         status = self.request("/api/v1/setup")
         setup_required = status.get("required") is True
-        if mode == "setup":
+        if mode == "setup-stopped":
             require(setup_required, "首次安装没有进入初始化状态")
             path = "/api/v1/setup"
         else:
@@ -224,6 +225,47 @@ def verify_installation(base_url: str, dns_port: int, mode: str) -> None:
     client = PanelClient(base_url)
     wait_for_panel(client)
     client.authenticate(mode)
+    if mode == "setup-stopped":
+        service = client.request("/api/v1/service")
+        require(service.get("active_state") == "inactive", "首次安装后 KixDNS 没有保持停止")
+        catalog = client.request("/api/v1/kixdns/versions?source=action")
+        active = next(
+            (version for version in catalog.get("installed_versions", []) if version.get("active")),
+            None,
+        )
+        require(isinstance(active, dict), "完整包 KixDNS 没有导入本地版本库存")
+        require(isinstance(active.get("source_id"), int), "完整包没有记录 Artifact ID")
+        require(active.get("upstream_repository") == "olicesx/kixdns", "完整包上游身份缺失")
+        require(active.get("control_protocol") == 1, "完整包控制协议身份缺失")
+        started = client.request("/api/v1/service/start", method="POST", csrf=True)
+        require(started.get("active_state") == "active", "面板无法启动首次安装的 KixDNS")
+        verify_runtime(client, dns_port, INITIAL_IP)
+        exercise_panel(client, dns_port)
+        live = client.request("/api/v1/overview")
+        require(live.get("live") is True, "运行概览没有标记为实时数据")
+        stopped = client.request("/api/v1/service/stop", method="POST", csrf=True)
+        require(stopped.get("active_state") == "inactive", "面板无法停止 KixDNS")
+        require(
+            subprocess.run(
+                ["systemctl", "is-enabled", "--quiet", "kixdns.service"], check=False
+            ).returncode != 0,
+            "面板停止 KixDNS 后没有禁用开机启动",
+        )
+        snapshot = wait_for(
+            lambda: client.request("/api/v1/overview"),
+            lambda value: value.get("live") is False and value.get("service_active") is False,
+            "KixDNS 停止后的概览快照",
+        )
+        require(snapshot.get("metrics") == live.get("metrics"), "停止后概览没有保留最后运行数据")
+        restarted = client.request("/api/v1/service/start", method="POST", csrf=True)
+        require(restarted.get("active_state") == "active", "快照验收后无法恢复 KixDNS")
+        require(
+            subprocess.run(
+                ["systemctl", "is-enabled", "--quiet", "kixdns.service"], check=False
+            ).returncode == 0,
+            "面板启动 KixDNS 后没有启用开机启动",
+        )
+        return
     expected_ip = INITIAL_IP if mode == "setup" else RELOADED_IP
     verify_runtime(client, dns_port, expected_ip)
     if mode == "setup":
@@ -243,7 +285,7 @@ def main() -> int:
     verify = subparsers.add_parser("verify", help="验证已安装的真实服务")
     verify.add_argument("--base-url", default="http://127.0.0.1:5738")
     verify.add_argument("--dns-port", type=int, required=True)
-    verify.add_argument("--mode", choices=("setup", "login"), required=True)
+    verify.add_argument("--mode", choices=("setup-stopped", "login"), required=True)
     arguments = parser.parse_args()
 
     if sys.platform != "linux":

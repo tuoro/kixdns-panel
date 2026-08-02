@@ -139,6 +139,17 @@ impl Operations {
         &self,
         action: ServiceAction,
     ) -> Result<ServiceStatus, OperationError> {
+        self.helper_request(action.argument()).await?;
+        self.service_status().await
+    }
+
+    #[cfg(unix)]
+    pub async fn start_panel_update(&self) -> Result<(), OperationError> {
+        self.helper_request("panel-update").await
+    }
+
+    #[cfg(unix)]
+    async fn helper_request(&self, action: &str) -> Result<(), OperationError> {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
         use tokio::net::UnixStream;
 
@@ -150,7 +161,7 @@ impl Operations {
         .map_err(|_| OperationError::Failed("helper 连接超时".to_owned()))?
         .map_err(|error| OperationError::Failed(format!("无法连接服务控制 helper：{error}")))?;
         stream
-            .write_all(action.argument().as_bytes())
+            .write_all(action.as_bytes())
             .await
             .map_err(|error| OperationError::Failed(format!("无法发送服务动作：{error}")))?;
         stream
@@ -168,7 +179,7 @@ impl Operations {
         if response.trim() != "OK" {
             return Err(OperationError::Failed(truncate(&response, 1_024)));
         }
-        self.service_status().await
+        Ok(())
     }
 
     #[cfg(not(unix))]
@@ -177,6 +188,12 @@ impl Operations {
         &self,
         _action: ServiceAction,
     ) -> Result<ServiceStatus, OperationError> {
+        Err(OperationError::Unsupported)
+    }
+
+    #[cfg(not(unix))]
+    #[allow(clippy::unused_async)]
+    pub async fn start_panel_update(&self) -> Result<(), OperationError> {
         Err(OperationError::Unsupported)
     }
 

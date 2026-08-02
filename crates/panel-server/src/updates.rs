@@ -59,11 +59,13 @@ pub struct UpdateManager {
     branch: Arc<str>,
     artifact: Arc<str>,
     initial_commit: Option<Arc<str>>,
+    initial_source_id: Option<u64>,
     panel_commit: Option<Arc<str>>,
     panel_release: Option<Arc<str>>,
     management_enabled: bool,
     binary_path: Arc<PathBuf>,
     versions_path: Arc<PathBuf>,
+    bundled_metadata: Arc<PathBuf>,
     apply_lock: Arc<Mutex<()>>,
     remote_cache: Arc<RwLock<HashMap<VersionSource, CachedRemoteVersions>>>,
     panel_cache: Arc<RwLock<Option<CachedPanelUpdate>>>,
@@ -76,11 +78,13 @@ pub struct UpdateSettings {
     pub branch: String,
     pub artifact: String,
     pub installed_commit: Option<String>,
+    pub installed_source_id: Option<u64>,
     pub panel_installed_commit: Option<String>,
     pub panel_installed_release: Option<String>,
     pub management_enabled: bool,
     pub binary_path: PathBuf,
     pub versions_path: PathBuf,
+    pub bundled_metadata: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -103,6 +107,7 @@ pub struct VersionCatalog {
     pub active_source: Option<VersionSource>,
     pub active_commit: Option<String>,
     pub binary_present: bool,
+    pub remote_error: Option<String>,
     pub remote_versions: Vec<RemoteVersion>,
     pub installed_versions: Vec<InstalledVersion>,
 }
@@ -437,11 +442,13 @@ impl UpdateManager {
             branch,
             artifact,
             installed_commit,
+            installed_source_id,
             panel_installed_commit,
             panel_installed_release,
             management_enabled,
             binary_path,
             versions_path,
+            bundled_metadata,
         } = settings;
         let panel_installed_release =
             panel_installed_release.filter(|release| !release.trim().is_empty());
@@ -453,6 +460,13 @@ impl UpdateManager {
         artifact_coordinates(&artifact)?;
         if let Some(commit) = installed_commit.as_deref() {
             validate_commit(commit)?;
+        }
+        if installed_source_id == Some(0)
+            || (installed_source_id.is_some() && installed_commit.is_none())
+        {
+            return Err(UpdateError::Invalid(
+                "已安装 KixDNS 的来源身份不完整".to_owned(),
+            ));
         }
         if let Some(commit) = panel_installed_commit.as_deref() {
             validate_commit(commit)?;
@@ -487,13 +501,15 @@ impl UpdateManager {
             release_workflow: Arc::from(release_workflow),
             branch: Arc::from(branch),
             artifact: Arc::from(artifact),
-            initial_commit: installed_commit.map(Arc::from),
+            initial_commit: installed_commit.map(|commit| Arc::from(commit.to_ascii_lowercase())),
+            initial_source_id: installed_source_id,
             panel_commit: panel_installed_commit
                 .map(|commit| Arc::from(commit.to_ascii_lowercase())),
             panel_release: panel_installed_release.map(Arc::from),
             management_enabled,
             binary_path: Arc::new(binary_path),
             versions_path: Arc::new(versions_path),
+            bundled_metadata: Arc::new(bundled_metadata),
             apply_lock: Arc::new(Mutex::new(())),
             remote_cache: Arc::new(RwLock::new(HashMap::new())),
             panel_cache: Arc::new(RwLock::new(None)),
@@ -504,7 +520,7 @@ impl UpdateManager {
         if !self.management_enabled {
             return Ok(UpdateNotifications {
                 kixdns: KixdnsUpdateNotice::external(),
-                panel: self.panel_update().await?,
+                panel: self.panel_update_notice().await?,
             });
         }
         let active = self.active_version().await?;
@@ -519,8 +535,18 @@ impl UpdateManager {
             .ok_or_else(|| UpdateError::Network("没有可安装的成功增强构建".to_owned()))?;
         Ok(UpdateNotifications {
             kixdns: to_kixdns_update_notice(&latest.remote, active.as_ref()),
-            panel: self.panel_update().await?,
+            panel: self.panel_update_notice().await?,
         })
+    }
+
+    pub async fn initialize_installed_version(&self) -> Result<(), UpdateError> {
+        if !self.management_enabled {
+            return Ok(());
+        }
+        if let Some(active) = self.active_version().await? {
+            self.adopt_active_version(&active).await?;
+        }
+        Ok(())
     }
 
     pub async fn catalog(&self, source: VersionSource) -> Result<VersionCatalog, UpdateError> {
@@ -532,6 +558,7 @@ impl UpdateManager {
                 active_source: None,
                 active_commit: None,
                 binary_present,
+                remote_error: None,
                 remote_versions: Vec::new(),
                 installed_versions: Vec::new(),
             });
@@ -545,7 +572,16 @@ impl UpdateManager {
             .iter()
             .filter_map(|version| VersionKey::installed(version).ok())
             .collect::<HashSet<_>>();
-        let mut remote_versions = self.remote_versions(source, REMOTE_VERSION_LIMIT).await?;
+        let (mut remote_versions, remote_error) = match self
+            .remote_versions(source, REMOTE_VERSION_LIMIT)
+            .await
+        {
+            Ok(versions) => (versions, None),
+            Err(error) => {
+                tracing::warn!(%error, source = source.as_str(), "远端版本目录暂不可用");
+                (Vec::new(), Some(error.to_string()))
+            }
+        };
         for version in &mut remote_versions {
             let key = VersionKey::remote(version)?;
             version.installed = installed.contains(&key);
@@ -558,6 +594,7 @@ impl UpdateManager {
             active_source: active_version.as_ref().map(|version| version.source),
             active_commit: active_version.map(|version| version.commit),
             binary_present,
+            remote_error,
             remote_versions,
             installed_versions,
         })
@@ -673,23 +710,84 @@ impl UpdateManager {
         if !regular_file_exists(self.binary_path.as_ref())? {
             return Ok(None);
         }
+        let initial = self.initial_version_key()?;
+        if let Some(initial) = initial.as_ref()
+            && self.bundled_binary_matches(initial).await?
+        {
+            return Ok(Some(initial.clone()));
+        }
         let current = self
             .database
             .get_setting(ACTIVE_VERSION_KEY)
             .await
             .map_err(|error| UpdateError::Install(error.to_string()))?;
         if let Some(current) = current {
-            return VersionKey::parse(&current).map(Some);
+            let key = VersionKey::parse(&current)?;
+            if self.stored_binary_matches(&key).await? {
+                return Ok(Some(key));
+            }
         }
         let legacy = self
             .database
             .get_setting(LEGACY_ACTIVE_COMMIT_KEY)
             .await
             .map_err(|error| UpdateError::Install(error.to_string()))?;
+        let initial_legacy = if self.initial_source_id.is_none() {
+            self.initial_commit.as_deref().map(str::to_owned)
+        } else {
+            None
+        };
         legacy
-            .or_else(|| self.initial_commit.as_deref().map(str::to_owned))
+            .or(initial_legacy)
             .map(|commit| VersionKey::new(VersionSource::Action, commit))
             .transpose()
+    }
+
+    fn initial_version_key(&self) -> Result<Option<VersionKey>, UpdateError> {
+        self.initial_commit
+            .as_deref()
+            .map(|commit| match self.initial_source_id {
+                Some(source_id) => VersionKey::tracked(VersionSource::Action, source_id, commit),
+                None => VersionKey::new(VersionSource::Action, commit),
+            })
+            .transpose()
+    }
+
+    async fn bundled_binary_matches(&self, key: &VersionKey) -> Result<bool, UpdateError> {
+        if key.source_id.is_none() {
+            return Ok(false);
+        }
+        let binary_path = Arc::clone(&self.binary_path);
+        let metadata_path = Arc::clone(&self.bundled_metadata);
+        let key = key.clone();
+        tokio::task::spawn_blocking(move || {
+            let binary = read_regular_file(&binary_path, "当前 KixDNS 二进制")?;
+            match load_bundled_manifest(&metadata_path, &key, &binary) {
+                Ok(_) => Ok(true),
+                Err(error) => {
+                    tracing::warn!(%error, "完整包身份与当前 KixDNS 二进制不匹配");
+                    Ok(false)
+                }
+            }
+        })
+        .await
+        .map_err(|error| UpdateError::Install(error.to_string()))?
+    }
+
+    async fn stored_binary_matches(&self, key: &VersionKey) -> Result<bool, UpdateError> {
+        let binary_path = Arc::clone(&self.binary_path);
+        let versions_path = Arc::clone(&self.versions_path);
+        let key = key.clone();
+        tokio::task::spawn_blocking(move || {
+            let current = read_regular_file(&binary_path, "当前 KixDNS 二进制")?;
+            match load_verified_version(&versions_path, &key) {
+                Ok((_, stored)) => Ok(constant_hash_eq(&sha256(&current), &sha256(&stored))),
+                Err(UpdateError::Invalid(_)) => Ok(false),
+                Err(error) => Err(error),
+            }
+        })
+        .await
+        .map_err(|error| UpdateError::Install(error.to_string()))?
     }
 
     async fn workflow_runs(
@@ -724,7 +822,7 @@ impl UpdateManager {
             .collect())
     }
 
-    async fn panel_update(&self) -> Result<PanelUpdateNotice, UpdateError> {
+    pub async fn panel_update_notice(&self) -> Result<PanelUpdateNotice, UpdateError> {
         if let Some(cached) = self.panel_cache.read().await.as_ref()
             && cached.loaded_at.elapsed() < PANEL_CACHE_TTL
         {
@@ -1083,40 +1181,60 @@ impl UpdateManager {
     }
 
     async fn adopt_active_version(&self, key: &VersionKey) -> Result<(), UpdateError> {
-        if self.version_exists(key)? {
-            return Ok(());
-        }
         let binary_path = Arc::clone(&self.binary_path);
         let versions_path = Arc::clone(&self.versions_path);
+        let bundled_metadata = Arc::clone(&self.bundled_metadata);
+        let initial = self.initial_version_key()?;
         let key = key.clone();
         let artifact = self.artifact.to_string();
         tokio::task::spawn_blocking(move || {
             let binary = read_regular_file(&binary_path, "当前 KixDNS 二进制")?;
             validate_elf(&binary)?;
-            let manifest = VersionManifest {
-                schema_version: MANIFEST_SCHEMA_VERSION,
-                source: Some(key.source),
-                source_id: None,
-                commit: key.commit,
-                run_id: None,
-                release_tag: None,
-                created_at: None,
-                source_url: None,
-                build_url: None,
-                artifact,
-                artifact_digest: None,
-                upstream_repository: None,
-                upstream_commit: None,
-                patchset: None,
-                control_protocol: None,
-                config_capabilities: Vec::new(),
-                binary_sha256: sha256(&binary),
-                installed_at: unix_timestamp(),
+            if let Ok((_, stored)) = load_verified_version(&versions_path, &key) {
+                if !constant_hash_eq(&sha256(&binary), &sha256(&stored)) {
+                    return Err(UpdateError::Verification(
+                        "活动版本记录与当前 KixDNS 二进制不一致".to_owned(),
+                    ));
+                }
+                return Ok(());
+            }
+            let manifest = if initial.as_ref() == Some(&key) && key.source_id.is_some() {
+                load_bundled_manifest(&bundled_metadata, &key, &binary)?
+            } else {
+                if key.source_id.is_some() {
+                    return Err(UpdateError::Verification(
+                        "活动版本缺少可信构建元数据".to_owned(),
+                    ));
+                }
+                VersionManifest {
+                    schema_version: MANIFEST_SCHEMA_VERSION,
+                    source: Some(key.source),
+                    source_id: None,
+                    commit: key.commit.clone(),
+                    run_id: None,
+                    release_tag: None,
+                    created_at: None,
+                    source_url: None,
+                    build_url: None,
+                    artifact,
+                    artifact_digest: None,
+                    upstream_repository: None,
+                    upstream_commit: None,
+                    patchset: None,
+                    control_protocol: None,
+                    config_capabilities: Vec::new(),
+                    binary_sha256: sha256(&binary),
+                    installed_at: unix_timestamp(),
+                }
             };
             store_version(&versions_path, &manifest, &binary)
         })
         .await
-        .map_err(|error| UpdateError::Install(error.to_string()))?
+        .map_err(|error| UpdateError::Install(error.to_string()))??;
+        self.database
+            .set_setting(ACTIVE_VERSION_KEY, key.encoded(), unix_timestamp())
+            .await
+            .map_err(|error| UpdateError::Install(error.to_string()))
     }
 
     async fn capture_active_capabilities(
@@ -1619,6 +1737,143 @@ fn store_version(
     fs::rename(stage.path(), &target).map_err(|error| UpdateError::Install(error.to_string()))?;
     sync_directory(versions_path)?;
     Ok(())
+}
+
+fn load_bundled_manifest(
+    metadata_path: &Path,
+    key: &VersionKey,
+    binary: &[u8],
+) -> Result<VersionManifest, UpdateError> {
+    if key.source != VersionSource::Action {
+        return Err(UpdateError::Verification(
+            "完整安装包只支持 Action 增强构建身份".to_owned(),
+        ));
+    }
+    let source_id = key
+        .source_id
+        .ok_or_else(|| UpdateError::Verification("完整包缺少 Artifact ID".to_owned()))?;
+    let build_commit = read_metadata_text(metadata_path, "KIXDNS_BUILD_COMMIT", 128)?;
+    validate_commit(&build_commit)
+        .map_err(|_| UpdateError::Verification("完整包构建提交无效".to_owned()))?;
+    if !build_commit.eq_ignore_ascii_case(&key.commit) {
+        return Err(UpdateError::Verification(
+            "完整包构建提交与安装环境不一致".to_owned(),
+        ));
+    }
+    let metadata_source_id = read_metadata_u64(metadata_path, "KIXDNS_ARTIFACT_ID")?;
+    if metadata_source_id != source_id {
+        return Err(UpdateError::Verification(
+            "完整包 Artifact ID 与安装环境不一致".to_owned(),
+        ));
+    }
+    let build_run_id = read_metadata_u64(metadata_path, "KIXDNS_SOURCE_RUN_ID")?;
+    let artifact = read_metadata_text(metadata_path, "KIXDNS_ARTIFACT_NAME", 256)?;
+    validate_slug(&artifact, false)
+        .map_err(|_| UpdateError::Verification("完整包 Artifact 名称无效".to_owned()))?;
+    let artifact_digest = read_metadata_text(metadata_path, "KIXDNS_ARTIFACT_DIGEST", 128)?;
+    validate_digest(&artifact_digest)?;
+    let declared_binary_digest = read_metadata_text(metadata_path, "KIXDNS_BINARY_SHA256", 128)?;
+    validate_hex_digest(&declared_binary_digest)?;
+    let binary_sha256 = sha256(binary);
+    if !constant_hash_eq(&declared_binary_digest, &binary_sha256) {
+        return Err(UpdateError::Verification(
+            "当前 KixDNS 二进制与完整包身份不匹配".to_owned(),
+        ));
+    }
+    let identity_bytes = read_metadata_file(
+        metadata_path,
+        "upstream.lock.json",
+        MAX_BUILD_IDENTITY_BYTES,
+    )?;
+    let identity: BuildIdentity = serde_json::from_slice(&identity_bytes)
+        .map_err(|error| UpdateError::Verification(format!("完整包上游身份无效：{error}")))?;
+    validate_build_identity(&identity)?;
+    if identity.source != VersionSource::Action {
+        return Err(UpdateError::Verification(
+            "完整包上游来源与 Action 轨道不一致".to_owned(),
+        ));
+    }
+    let official_run_id = identity
+        .official_run_id
+        .ok_or_else(|| UpdateError::Verification("完整包缺少上游 Action Run ID".to_owned()))?;
+    let capabilities_bytes = read_metadata_file(
+        metadata_path,
+        "KIXDNS_CAPABILITIES.json",
+        MAX_CAPABILITIES_BYTES,
+    )?;
+    let capabilities: ArtifactCapabilities = serde_json::from_slice(&capabilities_bytes)
+        .map_err(|error| UpdateError::Verification(format!("完整包配置能力无效：{error}")))?;
+    if capabilities.schema_version != 1 {
+        return Err(UpdateError::Verification(
+            "完整包配置能力清单版本不受支持".to_owned(),
+        ));
+    }
+    validate_declared_capabilities(&capabilities.config_capabilities)
+        .map_err(UpdateError::Verification)?;
+    validate_elf(binary)?;
+    Ok(VersionManifest {
+        schema_version: MANIFEST_SCHEMA_VERSION,
+        source: Some(VersionSource::Action),
+        source_id: Some(source_id),
+        commit: build_commit,
+        run_id: Some(official_run_id),
+        release_tag: None,
+        created_at: None,
+        source_url: Some(format!(
+            "https://github.com/{UPSTREAM_REPOSITORY}/actions/runs/{official_run_id}"
+        )),
+        build_url: Some(format!(
+            "https://github.com/{PANEL_REPOSITORY}/actions/runs/{build_run_id}"
+        )),
+        artifact,
+        artifact_digest: Some(artifact_digest),
+        upstream_repository: Some(identity.repository),
+        upstream_commit: Some(identity.commit),
+        patchset: Some(identity.patchset),
+        control_protocol: Some(identity.control_protocol),
+        config_capabilities: capabilities.config_capabilities,
+        binary_sha256,
+        installed_at: unix_timestamp(),
+    })
+}
+
+fn read_metadata_file(
+    directory: &Path,
+    name: &str,
+    limit: u64,
+) -> Result<Vec<u8>, UpdateError> {
+    let bytes = read_regular_file(&directory.join(name), name)?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > limit {
+        return Err(UpdateError::Verification(format!(
+            "完整包元数据 {name} 超过大小限制"
+        )));
+    }
+    Ok(bytes)
+}
+
+fn read_metadata_text(
+    directory: &Path,
+    name: &str,
+    limit: u64,
+) -> Result<String, UpdateError> {
+    let bytes = read_metadata_file(directory, name, limit)?;
+    let value = String::from_utf8(bytes)
+        .map_err(|_| UpdateError::Verification(format!("完整包元数据 {name} 不是 UTF-8")))?;
+    let value = value.trim();
+    if value.is_empty() || value.lines().count() != 1 {
+        return Err(UpdateError::Verification(format!(
+            "完整包元数据 {name} 格式无效"
+        )));
+    }
+    Ok(value.to_owned())
+}
+
+fn read_metadata_u64(directory: &Path, name: &str) -> Result<u64, UpdateError> {
+    read_metadata_text(directory, name, 64)?
+        .parse::<u64>()
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| UpdateError::Verification(format!("完整包元数据 {name} 无效")))
 }
 
 fn load_verified_version(

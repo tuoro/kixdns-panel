@@ -7,7 +7,7 @@ use super::{
     BuildIdentity, GithubRelease, MANIFEST_SCHEMA_VERSION, ReleaseAsset, RemoteVersion,
     TrackReference, UpdateError, UpdateManager, UpdateSettings, VersionKey, VersionManifest,
     VersionSource, delete_stored_version, extract_artifact, load_verified_version,
-    panel_release_asset_name, parse_artifact_reference, sha256, store_version,
+    load_bundled_manifest, panel_release_asset_name, parse_artifact_reference, sha256, store_version,
     to_kixdns_update_notice, to_panel_update_notice, update_stored_capabilities, validate_commit,
     validate_digest, validate_remote_build_identity, validate_slug,
 };
@@ -68,6 +68,134 @@ fn test_manifest(source_id: u64, commit: &str, binary: &[u8]) -> VersionManifest
         binary_sha256: sha256(binary),
         installed_at: 42,
     }
+}
+
+fn write_bundle_metadata(directory: &std::path::Path, binary: &[u8]) {
+    std::fs::create_dir_all(directory).unwrap();
+    for (name, value) in [
+        ("KIXDNS_BUILD_COMMIT", TEST_BUILD_COMMIT.to_owned()),
+        ("KIXDNS_SOURCE_RUN_ID", "99".to_owned()),
+        ("KIXDNS_ARTIFACT_ID", "42".to_owned()),
+        (
+            "KIXDNS_ARTIFACT_NAME",
+            "kixdns-enhanced-action-30235703570-p5-44e7e6b02316-linux-x86_64".to_owned(),
+        ),
+        (
+            "KIXDNS_ARTIFACT_DIGEST",
+            format!("sha256:{}", "a".repeat(64)),
+        ),
+        ("KIXDNS_BINARY_SHA256", sha256(binary)),
+        ("upstream.lock.json", TEST_IDENTITY.to_owned()),
+        (
+            "KIXDNS_CAPABILITIES.json",
+            r#"{"schema_version":1,"config_capabilities":[]}"#.to_owned(),
+        ),
+    ] {
+        std::fs::write(directory.join(name), format!("{value}\n")).unwrap();
+    }
+}
+
+#[test]
+fn imports_verified_bundled_build_identity() {
+    let directory = tempdir().unwrap();
+    let binary = test_elf();
+    write_bundle_metadata(directory.path(), &binary);
+    let key = VersionKey::tracked(VersionSource::Action, 42, TEST_BUILD_COMMIT).unwrap();
+
+    let manifest = load_bundled_manifest(directory.path(), &key, &binary).unwrap();
+
+    assert_eq!(manifest.source_id, Some(42));
+    assert_eq!(manifest.run_id, Some(30_235_703_570));
+    assert_eq!(manifest.commit, TEST_BUILD_COMMIT);
+    assert_eq!(manifest.upstream_repository.as_deref(), Some("olicesx/kixdns"));
+    assert_eq!(
+        manifest.upstream_commit.as_deref(),
+        Some("374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25")
+    );
+    assert_eq!(manifest.patchset, Some(5));
+    assert_eq!(manifest.control_protocol, Some(1));
+    assert_eq!(
+        manifest.build_url.as_deref(),
+        Some("https://github.com/tuoro/kixdns-panel/actions/runs/99")
+    );
+}
+
+#[test]
+fn rejects_bundled_identity_for_a_different_binary() {
+    let directory = tempdir().unwrap();
+    let binary = test_elf();
+    write_bundle_metadata(directory.path(), &binary);
+    let mut changed = binary;
+    changed.push(1);
+    let key = VersionKey::tracked(VersionSource::Action, 42, TEST_BUILD_COMMIT).unwrap();
+
+    assert!(load_bundled_manifest(directory.path(), &key, &changed).is_err());
+}
+
+#[tokio::test]
+async fn bundled_binary_identity_replaces_stale_database_state() {
+    let directory = tempdir().unwrap();
+    let database = Database::open(directory.path().join("panel.db"))
+        .await
+        .unwrap();
+    let binary_path = directory.path().join("bin/kixdns");
+    let versions_path = directory.path().join("versions");
+    let bundled_metadata = directory.path().join("bundle");
+    let binary = test_elf();
+    write_bundle_metadata(&bundled_metadata, &binary);
+    let manager = UpdateManager::new(
+        database.clone(),
+        UpdateSettings {
+            repository: "tuoro/kixdns-panel".to_owned(),
+            workflow: "build-kixdns.yml".to_owned(),
+            release_workflow: "build-kixdns-release.yml".to_owned(),
+            branch: "main".to_owned(),
+            artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
+            installed_commit: Some(TEST_BUILD_COMMIT.to_owned()),
+            installed_source_id: Some(42),
+            panel_installed_commit: None,
+            panel_installed_release: None,
+            management_enabled: true,
+            binary_path: binary_path.clone(),
+            versions_path: versions_path.clone(),
+            bundled_metadata,
+        },
+    )
+    .unwrap();
+    std::fs::write(&binary_path, &binary).unwrap();
+    let stale_binary = {
+        let mut value = test_elf();
+        value.push(1);
+        value
+    };
+    let stale_commit = "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25";
+    let stale_key = VersionKey::tracked(VersionSource::Action, 7, stale_commit).unwrap();
+    store_version(
+        &versions_path,
+        &test_manifest(7, stale_commit, &stale_binary),
+        &stale_binary,
+    )
+    .unwrap();
+    database
+        .set_setting(super::ACTIVE_VERSION_KEY, stale_key.encoded(), 42)
+        .await
+        .unwrap();
+
+    manager.initialize_installed_version().await.unwrap();
+
+    let expected = VersionKey::tracked(VersionSource::Action, 42, TEST_BUILD_COMMIT).unwrap();
+    assert_eq!(manager.active_version().await.unwrap(), Some(expected.clone()));
+    let (manifest, stored) = load_verified_version(&versions_path, &expected).unwrap();
+    assert_eq!(stored, binary);
+    assert_eq!(manifest.source_id, Some(42));
+    assert_eq!(
+        database
+            .get_setting(super::ACTIVE_VERSION_KEY)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(expected.encoded().as_str())
+    );
 }
 
 #[test]
@@ -170,9 +298,9 @@ fn notifies_only_for_newer_panel_release_with_matching_asset() {
             digest: Some(format!("sha256:{}", "a".repeat(64))),
         }],
     };
-    let same = release("v1.0.2", panel_release_asset_name());
+    let same = release("v1.0.3", panel_release_asset_name());
     assert!(
-        !to_panel_update_notice(None, Some("v1.0.2"), Some(&same))
+        !to_panel_update_notice(None, Some("v1.0.3"), Some(&same))
             .unwrap()
             .available
     );
@@ -189,23 +317,23 @@ fn notifies_only_for_newer_panel_release_with_matching_asset() {
             .available
     );
 
-    let wrong_asset = release("v1.0.3", "kixdns-panel-windows.zip");
+    let wrong_asset = release("v1.0.4", "kixdns-panel-windows.zip");
     assert!(
         !to_panel_update_notice(None, None, Some(&wrong_asset))
             .unwrap()
             .available
     );
 
-    let newer = release("v1.0.3", panel_release_asset_name());
+    let newer = release("v1.0.4", panel_release_asset_name());
     let notice = to_panel_update_notice(Some(TEST_BUILD_COMMIT), None, Some(&newer)).unwrap();
     assert!(notice.available);
-    assert_eq!(notice.current_version, "1.0.2");
-    assert_eq!(notice.latest_version.as_deref(), Some("1.0.3"));
+    assert_eq!(notice.current_version, "1.0.3");
+    assert_eq!(notice.latest_version.as_deref(), Some("1.0.4"));
     assert_eq!(
         notice.download_url.as_deref(),
         Some(
             format!(
-                "https://github.com/tuoro/kixdns-panel/releases/download/v1.0.3/{}",
+                "https://github.com/tuoro/kixdns-panel/releases/download/v1.0.4/{}",
                 panel_release_asset_name()
             )
             .as_str()
@@ -450,11 +578,13 @@ async fn treats_empty_panel_release_as_unset() {
             branch: "main".to_owned(),
             artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
             installed_commit: None,
+            installed_source_id: None,
             panel_installed_commit: None,
             panel_installed_release: Some(String::new()),
             management_enabled: true,
             binary_path: directory.path().join("bin/kixdns"),
             versions_path: directory.path().join("versions"),
+            bundled_metadata: directory.path().join("bundle"),
         },
     )
     .unwrap();
@@ -479,11 +609,13 @@ async fn refuses_to_delete_the_active_version() {
             branch: "main".to_owned(),
             artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
             installed_commit: None,
+            installed_source_id: None,
             panel_installed_commit: None,
             panel_installed_release: None,
             management_enabled: true,
             binary_path: binary_path.clone(),
             versions_path: versions_path.clone(),
+            bundled_metadata: directory.path().join("bundle"),
         },
     )
     .unwrap();
@@ -523,11 +655,13 @@ async fn external_mode_never_manages_kixdns_versions() {
             branch: "main".to_owned(),
             artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
             installed_commit: None,
+            installed_source_id: None,
             panel_installed_commit: None,
             panel_installed_release: None,
             management_enabled: false,
             binary_path,
             versions_path: directory.path().join("versions"),
+            bundled_metadata: directory.path().join("bundle"),
         },
     )
     .unwrap();

@@ -77,6 +77,10 @@ pub struct QueryStatsSnapshot {
     pub dropped_updates: u64,
     pub clients: Vec<NamedCount>,
     pub domains: Vec<NamedCount>,
+    #[serde(default = "default_live")]
+    pub live: bool,
+    #[serde(default)]
+    pub captured_at_unix: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,7 +94,7 @@ struct ProtocolEnvelope {
     protocol_version: u8,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MetricsSnapshot {
     pub requests_total: u64,
     pub requests_inflight: u64,
@@ -112,7 +116,7 @@ pub struct NamedCount {
     pub count: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleCount {
     pub pipeline: String,
     pub rule: String,
@@ -120,7 +124,7 @@ pub struct RuleCount {
     pub count: u64,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UpstreamCount {
     pub upstream: String,
     pub transport: String,
@@ -128,6 +132,10 @@ pub struct UpstreamCount {
     pub success: u64,
     pub errors: u64,
     pub rejected: u64,
+}
+
+const fn default_live() -> bool {
+    true
 }
 
 #[derive(Debug, thiserror::Error)]

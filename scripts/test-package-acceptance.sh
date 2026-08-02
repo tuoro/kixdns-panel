@@ -114,9 +114,17 @@ dns_port="$(python3 "${ACCEPTANCE_PY}" prepare --config "${CONFIG_PATH}")"
 
 bash "${INSTALLER}" --replace-existing
 installed=true
+! systemctl is-active --quiet kixdns.service || fail "首次安装不应自动启动 KixDNS"
+! systemctl is-enabled --quiet kixdns.service || fail "首次安装不应启用 KixDNS 开机启动"
 grep -Fxq 'KIXDNS_PANEL_BIND=0.0.0.0:5738' "${PANEL_ENV}" ||
   fail "面板没有监听局域网 IPv4 地址"
 [[ -x /usr/local/bin/kixdns-panel-uninstall ]] || fail "没有安装全局卸载命令"
+[[ $(stat -c '%U:%G:%a' -- /usr/local/libexec/kixdns-panel-one-click-install) == root:root:755 ]] ||
+  fail "在线更新使用的一键安装器权限不符合预期"
+[[ $(stat -c '%U:%G:%a' -- /usr/local/libexec/kixdns-panel-online-update) == root:root:755 ]] ||
+  fail "面板在线更新器权限不符合预期"
+[[ $(stat -c '%U:%G:%a' -- /var/lib/kixdns-panel-update) == root:kixdns:750 ]] ||
+  fail "面板在线更新状态目录权限不符合预期"
 /usr/local/bin/kixdns-panel-uninstall --help >/dev/null
 [[ $(stat -c '%U:%G:%a' -- "$(dirname -- "${CONFIG_PATH}")") == kixdns-panel:kixdns:750 ]] ||
   fail "安装器没有设置可原子写入的配置目录权限"
@@ -129,7 +137,28 @@ grep -Fq -- "--unit kixdns.service --allowed-uid $(id -u kixdns-panel)" \
 [[ ! -e /etc/polkit-1/rules.d/50-kixdns-panel.rules ]] || fail "安装后仍残留旧 Polkit 规则"
 [[ $(stat -c '%U:%G:%a' -- /run/kixdns-panel/control.sock) == kixdns-panel:kixdns:600 ]] ||
   fail "服务控制 helper Socket 权限不符合预期"
+kixdns_source_id="$(awk -F= '$1 == "KIXDNS_INSTALLED_SOURCE_ID" { print $2 }' "${PANEL_ENV}")"
+[[ ${kixdns_source_id} =~ ^[1-9][0-9]*$ ]] || fail "完整包没有写入 KixDNS Artifact ID"
+[[ -f /var/lib/kixdns-panel/bundle/upstream.lock.json ]] || fail "完整包构建身份没有持久化"
+panel_env_new="$(mktemp /etc/kixdns-panel/.acceptance-env.XXXXXX)"
+awk -v diagnostic="127.0.0.1:${dns_port}" '
+  /^KIXDNS_DIAGNOSTIC_SERVER=/ {
+    print "KIXDNS_DIAGNOSTIC_SERVER=" diagnostic
+    found = 1
+    next
+  }
+  { print }
+  END { if (!found) print "KIXDNS_DIAGNOSTIC_SERVER=" diagnostic }
+' "${PANEL_ENV}" > "${panel_env_new}"
+chown root:kixdns "${panel_env_new}"
+chmod 0640 "${panel_env_new}"
+mv -fT -- "${panel_env_new}" "${PANEL_ENV}"
+systemctl restart kixdns-panel.service
+
+python3 "${ACCEPTANCE_PY}" verify --dns-port "${dns_port}" --mode setup-stopped
+systemctl is-enabled --quiet kixdns.service || fail "面板启动 KixDNS 后没有启用开机启动"
 kixdns_pid="$(systemctl show --property=MainPID --value kixdns.service)"
+[[ ${kixdns_pid} =~ ^[1-9][0-9]*$ ]] || fail "面板启动 KixDNS 后没有主进程"
 python3 - <<'PY'
 import socket
 
@@ -147,25 +176,31 @@ if response:
 PY
 [[ $(systemctl show --property=MainPID --value kixdns.service) == "${kixdns_pid}" ]] ||
   fail "非面板 UID 绕过了 helper 校验"
-panel_env_new="$(mktemp /etc/kixdns-panel/.acceptance-env.XXXXXX)"
-awk -v diagnostic="127.0.0.1:${dns_port}" '
-  /^KIXDNS_DIAGNOSTIC_SERVER=/ {
-    print "KIXDNS_DIAGNOSTIC_SERVER=" diagnostic
-    found = 1
-    next
-  }
-  { print }
-  END { if (!found) print "KIXDNS_DIAGNOSTIC_SERVER=" diagnostic }
-' "${PANEL_ENV}" > "${panel_env_new}"
-chown root:kixdns "${panel_env_new}"
-chmod 0640 "${panel_env_new}"
-mv -fT -- "${panel_env_new}" "${PANEL_ENV}"
-systemctl restart kixdns.service kixdns-panel.service
 
-python3 "${ACCEPTANCE_PY}" verify --dns-port "${dns_port}" --mode setup
+kixdns_digest_before="$(sha256sum /var/lib/kixdns-panel/bin/kixdns | awk '{ print $1 }')"
+config_digest_before="$(sha256sum "${CONFIG_PATH}" | awk '{ print $1 }')"
+bundle_digest_before="$(find /var/lib/kixdns-panel/bundle -type f -print0 | sort -z |
+  xargs -0 sha256sum | sha256sum | awk '{ print $1 }')"
+kixdns_commit_before="$(awk -F= '$1 == "KIXDNS_INSTALLED_COMMIT" { print $2 }' "${PANEL_ENV}")"
+kixdns_source_before="$(awk -F= '$1 == "KIXDNS_INSTALLED_SOURCE_ID" { print $2 }' "${PANEL_ENV}")"
+bash "${INSTALLER}" --panel-only-update
+systemctl is-active --quiet kixdns.service || fail "仅更新面板改变了 KixDNS 运行状态"
+systemctl is-enabled --quiet kixdns.service || fail "仅更新面板改变了 KixDNS 开机状态"
+[[ $(sha256sum /var/lib/kixdns-panel/bin/kixdns | awk '{ print $1 }') == "${kixdns_digest_before}" ]] ||
+  fail "仅更新面板替换了 KixDNS 二进制"
+[[ $(sha256sum "${CONFIG_PATH}" | awk '{ print $1 }') == "${config_digest_before}" ]] ||
+  fail "仅更新面板改写了 KixDNS 配置"
+[[ $(find /var/lib/kixdns-panel/bundle -type f -print0 | sort -z | xargs -0 sha256sum |
+  sha256sum | awk '{ print $1 }') == "${bundle_digest_before}" ]] || fail "仅更新面板改写了 KixDNS 构建身份"
+[[ $(awk -F= '$1 == "KIXDNS_INSTALLED_COMMIT" { print $2 }' "${PANEL_ENV}") == "${kixdns_commit_before}" ]] ||
+  fail "仅更新面板改写了 KixDNS 提交身份"
+[[ $(awk -F= '$1 == "KIXDNS_INSTALLED_SOURCE_ID" { print $2 }' "${PANEL_ENV}") == "${kixdns_source_before}" ]] ||
+  fail "仅更新面板改写了 KixDNS Artifact 身份"
 
 # 同一完整包再次安装，验证数据库、配置历史和管理员数据均被保留。
 bash "${INSTALLER}" --replace-existing
+systemctl is-active --quiet kixdns.service || fail "覆盖安装没有保持 KixDNS 运行状态"
+systemctl is-enabled --quiet kixdns.service || fail "覆盖安装没有保持 KixDNS 开机启动状态"
 python3 "${ACCEPTANCE_PY}" verify --dns-port "${dns_port}" --mode login
 
 uninstall_log="$(mktemp)"
