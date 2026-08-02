@@ -114,6 +114,8 @@ dns_port="$(python3 "${ACCEPTANCE_PY}" prepare --config "${CONFIG_PATH}")"
 
 bash "${INSTALLER}" --replace-existing
 installed=true
+grep -Fxq 'KIXDNS_PANEL_BIND=0.0.0.0:5738' "${PANEL_ENV}" ||
+  fail "面板没有监听局域网 IPv4 地址"
 [[ -x /usr/local/bin/kixdns-panel-uninstall ]] || fail "没有安装全局卸载命令"
 /usr/local/bin/kixdns-panel-uninstall --help >/dev/null
 [[ $(stat -c '%U:%G:%a' -- "$(dirname -- "${CONFIG_PATH}")") == kixdns-panel:kixdns:750 ]] ||

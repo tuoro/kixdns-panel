@@ -224,6 +224,68 @@ detect_artifact() {
   esac
 }
 
+is_private_ipv4() {
+  local address=$1
+  awk -F. '
+    NF != 4 { exit 1 }
+    {
+      for (part = 1; part <= 4; part++) {
+        if ($part !~ /^[0-9]+$/ || $part < 0 || $part > 255) exit 1
+      }
+      if ($1 == 10 ||
+          ($1 == 172 && $2 >= 16 && $2 <= 31) ||
+          ($1 == 192 && $2 == 168) ||
+          ($1 == 100 && $2 >= 64 && $2 <= 127)) exit 0
+      exit 1
+    }
+  ' <<< "${address}"
+}
+
+detect_private_ipv4() {
+  local address
+  if command -v ip >/dev/null 2>&1; then
+    address="$(ip -4 route get 1.1.1.1 2>/dev/null |
+      awk '{ for (field = 1; field <= NF; field++) if ($field == "src") { print $(field + 1); exit } }')"
+    if [[ -n ${address} ]] && is_private_ipv4 "${address}"; then
+      printf '%s\n' "${address}"
+      return 0
+    fi
+    while IFS= read -r address; do
+      if is_private_ipv4 "${address}"; then
+        printf '%s\n' "${address}"
+        return 0
+      fi
+    done < <(ip -o -4 address show scope global 2>/dev/null | awk '{ split($4, parts, "/"); print parts[1] }')
+  fi
+  if command -v hostname >/dev/null 2>&1; then
+    for address in $(hostname -I 2>/dev/null || true); do
+      if is_private_ipv4 "${address}"; then
+        printf '%s\n' "${address}"
+        return 0
+      fi
+    done
+  fi
+  return 1
+}
+
+panel_access_url() {
+  local bind=$1
+  local host
+  local port=${bind##*:}
+  [[ ${port} =~ ^[0-9]{1,5}$ ]] || port=5738
+  case ${bind} in
+    0.0.0.0:* | \[::\]:*) host="$(detect_private_ipv4 || true)" ;;
+    \[*\]:*) host=${bind%:*} ;;
+    *:*) host=${bind%:*} ;;
+    *) host="" ;;
+  esac
+  if [[ -n ${host} ]]; then
+    printf 'http://%s:%s\n' "${host}" "${port}"
+  else
+    printf 'http://<本机内网IP>:%s\n' "${port}"
+  fi
+}
+
 create_accounts() {
   getent group "${KIXDNS_GROUP}" >/dev/null || groupadd --system "${KIXDNS_GROUP}"
   if ! id -u "${KIXDNS_USER}" >/dev/null 2>&1; then
@@ -407,6 +469,12 @@ render_panel_environment() {
       print "KIXDNS_UPDATE_WORKFLOW=build-kixdns.yml"
       next
     }
+    /^KIXDNS_PANEL_BIND=127\.0\.0\.1:5738$/ {
+      print "KIXDNS_PANEL_BIND=0.0.0.0:5738"
+      bind_found = 1
+      next
+    }
+    /^KIXDNS_PANEL_BIND=/ { bind_found = 1 }
     /^KIXDNS_CONFIG=/ { print "KIXDNS_CONFIG=" config_path; config_found = 1; next }
     /^KIXDNS_BINARY=/ { print "KIXDNS_BINARY=" binary_path; binary_found = 1; next }
     /^KIXDNS_CONTROL_SOCKET=/ { print "KIXDNS_CONTROL_SOCKET=" control_socket; socket_found = 1; next }
@@ -437,6 +505,7 @@ render_panel_environment() {
     }
     { print }
     END {
+      if (!bind_found) print "KIXDNS_PANEL_BIND=0.0.0.0:5738"
       if (!config_found) print "KIXDNS_CONFIG=" config_path
       if (!binary_found) print "KIXDNS_BINARY=" binary_path
       if (!socket_found) print "KIXDNS_CONTROL_SOCKET=" control_socket
@@ -553,7 +622,9 @@ install_services() {
 
 main() {
   local kixdns_build_commit
+  local panel_bind
   local panel_build_commit
+  local panel_url
   local panel_release=""
   parse_arguments "$@"
   require_root
@@ -629,8 +700,11 @@ main() {
   else
     printf 'KixDNS 模式：保留外部安装（版本管理已禁用）\n'
   fi
-  printf '面板地址：http://127.0.0.1:5738\n'
-  printf '首次访问时创建管理员账号；远程访问请先配置 HTTPS 反向代理。\n'
+  panel_bind="$(environment_value KIXDNS_PANEL_BIND || true)"
+  [[ -n ${panel_bind} ]] || panel_bind=0.0.0.0:5738
+  panel_url="$(panel_access_url "${panel_bind}")"
+  printf '面板地址：%s\n' "${panel_url}"
+  printf '首次访问时创建管理员账号；请仅在可信内网使用，公网访问必须配置防火墙和 HTTPS 反向代理。\n'
 }
 
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then

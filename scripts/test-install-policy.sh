@@ -63,6 +63,7 @@ environment_source="$(mktemp)"
 environment_output="$(mktemp)"
 trap 'rm -f -- "${environment_source}" "${environment_output}"' EXIT
 printf '%s\n' \
+  'KIXDNS_PANEL_BIND=127.0.0.1:5738' \
   'KIXDNS_PANEL_INSTALLED_RELEASE=' \
   'KIXDNS_UPDATE_RELEASE_WORKFLOW=build-kixdns-release.yml' > "${environment_source}"
 KIXDNS_CONFIG_PATH=/etc/kixdns/pipeline.json
@@ -81,6 +82,25 @@ release_value="$(awk -F= '$1 == "KIXDNS_PANEL_INSTALLED_RELEASE" { print $2 }' "
 assert_equals "${release_value}" "v1.0.0" "正式包应保留 Release 标签"
 helper_socket_value="$(awk -F= '$1 == "KIXDNS_SERVICE_HELPER_SOCKET" { print $2 }' "${environment_output}")"
 assert_equals "${helper_socket_value}" "/run/kixdns-panel/control.sock" "面板环境应写入受限 helper Socket"
+bind_value="$(awk -F= '$1 == "KIXDNS_PANEL_BIND" { print $2 }' "${environment_output}")"
+assert_equals "${bind_value}" "0.0.0.0:5738" "旧版默认监听地址应迁移为内网可访问"
+
+printf '%s\n' 'KIXDNS_PANEL_BIND=192.168.10.5:6754' > "${environment_source}"
+render_panel_environment "${environment_source}" "${environment_output}" \
+  kixdns-commit panel-commit '' true
+bind_value="$(awk -F= '$1 == "KIXDNS_PANEL_BIND" { print $2 }' "${environment_output}")"
+assert_equals "${bind_value}" "192.168.10.5:6754" "用户自定义监听地址不应被升级覆盖"
+
+is_private_ipv4 10.0.0.8
+is_private_ipv4 172.31.255.254
+is_private_ipv4 192.168.1.20
+is_private_ipv4 100.127.255.254
+if is_private_ipv4 8.8.8.8 || is_private_ipv4 172.32.0.1 || is_private_ipv4 999.1.1.1; then
+  printf '断言失败：公网或无效地址不应作为内网访问地址\n' >&2
+  exit 1
+fi
+assert_equals "$(panel_access_url '192.168.10.5:6754')" "http://192.168.10.5:6754" \
+  "固定监听地址应生成对应访问链接"
 
 if (parse_arguments --unknown-option) 2>/dev/null; then
   printf '断言失败：未知安装参数不应被接受\n' >&2
