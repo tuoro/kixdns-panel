@@ -758,7 +758,6 @@ impl UpdateManager {
         let binary_path = Arc::clone(&self.binary_path);
         let metadata_path = Arc::clone(&self.bundled_metadata);
         let key = key.clone();
-        let worker_key = key.clone();
         tokio::task::spawn_blocking(move || {
             let binary = read_regular_file(&binary_path, "当前 KixDNS 二进制")?;
             match load_bundled_manifest(&metadata_path, &key, &binary) {
@@ -1185,6 +1184,7 @@ impl UpdateManager {
         let bundled_metadata = Arc::clone(&self.bundled_metadata);
         let initial = self.initial_version_key()?;
         let key = key.clone();
+        let worker_key = key.clone();
         let artifact = self.artifact.to_string();
         tokio::task::spawn_blocking(move || {
             let binary = read_regular_file(&binary_path, "当前 KixDNS 二进制")?;
