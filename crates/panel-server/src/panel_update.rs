@@ -132,7 +132,8 @@ mod tests {
     fn rejects_unknown_status_fields() {
         let content = br#"{"state":"complete","message":"ok","target_version":"v1.0.3","updated_at":1,"url":"https://example.com"}"#;
         assert!(serde_json::from_slice::<PanelUpdateStatus>(content).is_err());
-        let valid = br#"{"state":"failed","message":"error","target_version":"v1.0.3","updated_at":1}"#;
+        let valid =
+            br#"{"state":"failed","message":"error","target_version":"v1.0.3","updated_at":1}"#;
         let status = serde_json::from_slice::<PanelUpdateStatus>(valid).unwrap();
         assert_eq!(status.state, PanelUpdateState::Failed);
     }

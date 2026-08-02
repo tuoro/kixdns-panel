@@ -6,10 +6,10 @@ use super::validation::ParsedArtifactReference;
 use super::{
     BuildIdentity, GithubRelease, MANIFEST_SCHEMA_VERSION, ReleaseAsset, RemoteVersion,
     TrackReference, UpdateError, UpdateManager, UpdateSettings, VersionKey, VersionManifest,
-    VersionSource, delete_stored_version, extract_artifact, load_verified_version,
-    load_bundled_manifest, panel_release_asset_name, parse_artifact_reference, sha256, store_version,
-    to_kixdns_update_notice, to_panel_update_notice, update_stored_capabilities, validate_commit,
-    validate_digest, validate_remote_build_identity, validate_slug,
+    VersionSource, delete_stored_version, extract_artifact, load_bundled_manifest,
+    load_verified_version, panel_release_asset_name, parse_artifact_reference, sha256,
+    store_version, to_kixdns_update_notice, to_panel_update_notice, update_stored_capabilities,
+    validate_commit, validate_digest, validate_remote_build_identity, validate_slug,
 };
 use crate::db::Database;
 
@@ -107,7 +107,10 @@ fn imports_verified_bundled_build_identity() {
     assert_eq!(manifest.source_id, Some(42));
     assert_eq!(manifest.run_id, Some(30_235_703_570));
     assert_eq!(manifest.commit, TEST_BUILD_COMMIT);
-    assert_eq!(manifest.upstream_repository.as_deref(), Some("olicesx/kixdns"));
+    assert_eq!(
+        manifest.upstream_repository.as_deref(),
+        Some("olicesx/kixdns")
+    );
     assert_eq!(
         manifest.upstream_commit.as_deref(),
         Some("374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25")
@@ -184,7 +187,10 @@ async fn bundled_binary_identity_replaces_stale_database_state() {
     manager.initialize_installed_version().await.unwrap();
 
     let expected = VersionKey::tracked(VersionSource::Action, 42, TEST_BUILD_COMMIT).unwrap();
-    assert_eq!(manager.active_version().await.unwrap(), Some(expected.clone()));
+    assert_eq!(
+        manager.active_version().await.unwrap(),
+        Some(expected.clone())
+    );
     let (manifest, stored) = load_verified_version(&versions_path, &expected).unwrap();
     assert_eq!(stored, binary);
     assert_eq!(manifest.source_id, Some(42));

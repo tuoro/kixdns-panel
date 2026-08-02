@@ -93,8 +93,8 @@ mod linux {
         if action == ServiceAction::PanelUpdate {
             return launch_panel_update();
         }
-        let systemctl = find_executable(&["/usr/bin/systemctl", "/bin/systemctl"])
-            .ok_or("找不到 systemctl")?;
+        let systemctl =
+            find_executable(&["/usr/bin/systemctl", "/bin/systemctl"]).ok_or("找不到 systemctl")?;
         let mut command = Command::new(systemctl);
         command.arg("--no-ask-password");
         command.args(systemctl_arguments(action, &args.unit));

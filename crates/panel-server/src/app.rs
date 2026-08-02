@@ -27,11 +27,11 @@ const STATS_SNAPSHOT_24H_KEY: &str = "stats_snapshot_24h_v1";
 
 mod geo;
 
+use crate::panel_update::{PanelUpdateStatus, read_status as read_panel_update_status};
 use geo::{
     cleanup_geo_data, get_geo_data, get_geo_data_schedule, save_geo_data_schedule,
     spawn_geo_scheduler, sync_geo_data,
 };
-use crate::panel_update::{PanelUpdateStatus, read_status as read_panel_update_status};
 
 use crate::auth::{
     CSRF_COOKIE, LoginLimiter, SESSION_COOKIE, SESSION_SECONDS, TrustedProxies, authenticate,
@@ -1092,9 +1092,12 @@ async fn start_panel_update(
             "当前没有可安装的面板正式更新".to_owned(),
         ));
     }
-    let target_version = format!("v{}", notice.latest_version.ok_or_else(|| {
-        AppError::Internal(anyhow::anyhow!("可用面板更新缺少目标版本"))
-    })?);
+    let target_version = format!(
+        "v{}",
+        notice.latest_version.ok_or_else(|| {
+            AppError::Internal(anyhow::anyhow!("可用面板更新缺少目标版本"))
+        })?
+    );
     state
         .operations
         .start_panel_update()

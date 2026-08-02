@@ -572,16 +572,14 @@ impl UpdateManager {
             .iter()
             .filter_map(|version| VersionKey::installed(version).ok())
             .collect::<HashSet<_>>();
-        let (mut remote_versions, remote_error) = match self
-            .remote_versions(source, REMOTE_VERSION_LIMIT)
-            .await
-        {
-            Ok(versions) => (versions, None),
-            Err(error) => {
-                tracing::warn!(%error, source = source.as_str(), "远端版本目录暂不可用");
-                (Vec::new(), Some(error.to_string()))
-            }
-        };
+        let (mut remote_versions, remote_error) =
+            match self.remote_versions(source, REMOTE_VERSION_LIMIT).await {
+                Ok(versions) => (versions, None),
+                Err(error) => {
+                    tracing::warn!(%error, source = source.as_str(), "远端版本目录暂不可用");
+                    (Vec::new(), Some(error.to_string()))
+                }
+            };
         for version in &mut remote_versions {
             let key = VersionKey::remote(version)?;
             version.installed = installed.contains(&key);
@@ -1837,11 +1835,7 @@ fn load_bundled_manifest(
     })
 }
 
-fn read_metadata_file(
-    directory: &Path,
-    name: &str,
-    limit: u64,
-) -> Result<Vec<u8>, UpdateError> {
+fn read_metadata_file(directory: &Path, name: &str, limit: u64) -> Result<Vec<u8>, UpdateError> {
     let bytes = read_regular_file(&directory.join(name), name)?;
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > limit {
         return Err(UpdateError::Verification(format!(
@@ -1851,11 +1845,7 @@ fn read_metadata_file(
     Ok(bytes)
 }
 
-fn read_metadata_text(
-    directory: &Path,
-    name: &str,
-    limit: u64,
-) -> Result<String, UpdateError> {
+fn read_metadata_text(directory: &Path, name: &str, limit: u64) -> Result<String, UpdateError> {
     let bytes = read_metadata_file(directory, name, limit)?;
     let value = String::from_utf8(bytes)
         .map_err(|_| UpdateError::Verification(format!("完整包元数据 {name} 不是 UTF-8")))?;
