@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Activity, Database, Eraser, Globe2, MonitorSmartphone, RefreshCw, ShieldCheck, Timer, Zap } from '@lucide/vue'
+import { Activity, CircleAlert, Database, Eraser, Globe2, MonitorSmartphone, RefreshCw, ShieldCheck, Timer, Zap } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { apiRequest } from '../api/client'
 import type { CacheFlushResult, Overview, QueryStatsSnapshot, ServiceStatus, StatsClearResult } from '../api/types'
@@ -34,6 +34,9 @@ const statsWindows = [
 
 const loadError = computed(() => [overviewError.value, serviceError.value, statsError.value].filter(Boolean).join('；'))
 const statsSupported = computed(() => overview.value?.health.capabilities.includes('stats_top_v1') ?? false)
+const runtimeUnavailable = computed(() => overview.value?.live === false)
+const runtimeStopped = computed(() => runtimeUnavailable.value
+  && (service.value?.active_state === 'inactive' || overview.value?.service_active === false))
 const maxClient = computed(() => Math.max(1, ...(stats.value?.clients.map((item) => item.count) ?? [])))
 const maxDomain = computed(() => Math.max(1, ...(stats.value?.domains.map((item) => item.count) ?? [])))
 
@@ -152,6 +155,10 @@ onBeforeUnmount(() => {
     </div>
 
     <StatusBanner v-if="loadError" :message="loadError" :stale="Boolean(overview || service)" :busy="requesting" @retry="load()" />
+    <section v-if="runtimeUnavailable" class="status-banner status-banner--paused" role="status">
+      <CircleAlert :size="18" />
+      <div><strong>{{ runtimeStopped ? 'KixDNS 已停止' : '实时数据暂不可用' }}</strong><p>{{ runtimeStopped ? '当前显示最后一次运行快照，数据已停止更新。' : '当前显示最近一次成功快照，实时数据恢复后会自动更新。' }}</p></div>
+    </section>
 
     <div v-if="loading" class="skeleton-grid"><span v-for="index in 4" :key="index"></span></div>
     <template v-else-if="overview">
@@ -183,7 +190,7 @@ onBeforeUnmount(() => {
             <div><dt>上游提交</dt><dd class="mono">{{ shortHash(overview.health.upstream_commit, 12) }}</dd></div>
             <div><dt>补丁集</dt><dd>v{{ overview.health.patchset }}</dd></div>
           </dl>
-          <button class="button button--danger-quiet button--full" type="button" :disabled="flushing" @click="flushCache"><Eraser :size="16" />{{ flushing ? '正在清理' : '清空内部缓存' }}</button>
+          <button class="button button--danger-quiet button--full" type="button" :disabled="flushing || runtimeUnavailable" @click="flushCache"><Eraser :size="16" />{{ flushing ? '正在清理' : '清空内部缓存' }}</button>
         </article>
 
         <template v-if="statsSupported">
@@ -195,9 +202,9 @@ onBeforeUnmount(() => {
             </div>
             <div class="stats-section-tools">
               <div class="stats-window-tabs" role="group" aria-label="统计窗口">
-                <button v-for="option in statsWindows" :key="option.value" type="button" :class="{ active: statsWindow === option.value }" :disabled="statsLoading" @click="setStatsWindow(option.value)">{{ option.label }}</button>
+                <button v-for="option in statsWindows" :key="option.value" type="button" :class="{ active: statsWindow === option.value }" :disabled="statsLoading || runtimeUnavailable" @click="setStatsWindow(option.value)">{{ option.label }}</button>
               </div>
-              <button v-if="stats?.enabled" class="icon-button" type="button" title="清空查询排行" :disabled="statsClearing" @click="clearQueryStats"><Eraser :size="16" /></button>
+              <button v-if="stats?.enabled" class="icon-button" type="button" title="清空查询排行" :disabled="statsClearing || runtimeUnavailable" @click="clearQueryStats"><Eraser :size="16" /></button>
             </div>
           </div>
 

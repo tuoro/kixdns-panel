@@ -27,6 +27,7 @@ import type {
   ConfigVersions,
   DeleteConfigVersionResult,
   Overview,
+  ServiceStatus,
   ValidationResult,
 } from '../api/types'
 import ConfigFlowPreview from '../components/config/ConfigFlowPreview.vue'
@@ -59,6 +60,7 @@ const validation = ref<ValidationResult | null>(null)
 const parseError = ref('')
 const loadError = ref('')
 const capabilityError = ref('')
+const runtimeStopped = ref(false)
 const runtimeCapabilities = ref<string[]>([])
 const toast = useToast()
 const changed = computed(() => source.value !== baseline.value)
@@ -66,6 +68,7 @@ const currentVersionId = computed(() => document.value?.version_id ?? null)
 const runtimeLabel = computed(() => {
   if (document.value?.runtime.status === 'active') return `运行中 · 代次 #${document.value.runtime.generation}`
   if (document.value?.runtime.status === 'different') return '文件与运行配置不同'
+  if (runtimeStopped.value) return 'KixDNS 未启动'
   return '运行状态不可用'
 })
 const unsupportedFields = computed(() => {
@@ -136,18 +139,22 @@ function load(): Promise<void> {
   if (pendingLoad) return pendingLoad
   loading.value = true
   pendingLoad = (async () => {
-    const [nextDocument, history, overview] = await Promise.all([
+    const [nextDocument, history, overview, service] = await Promise.all([
       apiRequest<ConfigDocument>('/api/v1/config'),
       apiRequest<ConfigVersions>('/api/v1/config/versions'),
       apiRequest<Overview>('/api/v1/overview').catch((error: unknown) => {
         capabilityError.value = errorMessage(error)
         return null
       }),
+      apiRequest<ServiceStatus>('/api/v1/service').catch(() => null),
     ])
     if (overview) {
-      runtimeCapabilities.value = overview.health.capabilities
-      capabilityError.value = ''
+      runtimeStopped.value = !overview.live
+        && (service?.active_state === 'inactive' || overview.service_active === false)
+      runtimeCapabilities.value = overview.live ? overview.health.capabilities : []
+      capabilityError.value = overview.live ? '' : 'KixDNS 实时能力暂不可用'
     } else {
+      runtimeStopped.value = service?.active_state === 'inactive'
       runtimeCapabilities.value = []
     }
     document.value = nextDocument
@@ -313,11 +320,12 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
       <button class="button button--secondary" type="button" :disabled="loading || saving || restoring !== null || deleting !== null" @click="load"><RefreshCw :size="16" :class="{ spin: loading }" />重新读取</button>
     </div>
     <StatusBanner v-if="loadError" :message="loadError" :stale="Boolean(document)" :busy="loading" @retry="load" />
-    <div v-if="capabilityError || unsupportedFields.length" class="config-compatibility-banner">
+    <div v-if="runtimeStopped || capabilityError || unsupportedFields.length" class="config-compatibility-banner">
       <TriangleAlert :size="18" />
       <div>
-        <strong>{{ capabilityError ? '无法确认当前 KixDNS 的配置能力' : '配置包含当前版本不支持的字段' }}</strong>
-        <p v-if="capabilityError">受版本约束的已有字段已只读保留，能力恢复后可继续编辑。</p>
+        <strong>{{ runtimeStopped ? 'KixDNS 未启动，无法确认当前 KixDNS 配置能力' : (capabilityError ? '无法确认当前 KixDNS 的配置能力' : '配置包含当前版本不支持的字段') }}</strong>
+        <p v-if="runtimeStopped">受版本约束的已有字段已只读保留，启动 KixDNS 后可继续编辑。</p>
+        <p v-else-if="capabilityError">受版本约束的已有字段已只读保留，能力恢复后可继续编辑。</p>
         <p v-else>已只读保留：{{ unsupportedFields.join('、') }}。切换兼容版本，或在 JSON 视图移除后再保存。</p>
       </div>
     </div>

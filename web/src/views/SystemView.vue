@@ -17,12 +17,14 @@ import {
   Tag as TagIcon,
   Trash2,
 } from '@lucide/vue'
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { apiRequest } from '../api/client'
 import type {
   InstalledKixdnsVersion,
   KixdnsVersionCatalog,
   KixdnsVersionSource,
+  PanelUpdateStartResponse,
+  PanelUpdateStatus,
   RemoteKixdnsVersion,
   ServiceAction,
   ServiceStatus,
@@ -43,6 +45,8 @@ const serviceAction = ref<ServiceAction | null>(null)
 const versionAction = ref<VersionAction | null>(null)
 const serviceError = ref('')
 const versionsError = ref('')
+const panelUpdate = ref<PanelUpdateStatus | null>(null)
+const startingPanelUpdate = ref(false)
 const toast = useToast()
 const {
   status: updateStatus,
@@ -53,6 +57,9 @@ const {
 const versionPanel = ref<HTMLElement | null>(null)
 let pendingService: Promise<void> | null = null
 let versionsRequest = 0
+let panelUpdateTimer: ReturnType<typeof setTimeout> | null = null
+let panelUpdateDeadline = 0
+let panelUpdateBaseline = ''
 
 const running = computed(() => service.value?.active_state === 'active')
 const installed = computed(() => catalog.value?.binary_present === true)
@@ -91,12 +98,100 @@ function latestKixdnsVersion(): string {
 }
 
 function panelUpdateLabel(): string {
+  if (panelUpdate.value?.state === 'checking' || panelUpdate.value?.state === 'downloading') {
+    return panelUpdate.value.message || '面板正在在线更新'
+  }
+  if (panelUpdate.value?.state === 'failed') return panelUpdate.value.message
   const notice = updateStatus.value?.panel
   if (!notice?.latest_version) return '正式版通道尚未发布'
   if (notice.available) return '发现正式版更新'
   if (!notice.artifact) return '最新正式版暂无当前架构安装包'
   if (notice.current_release) return '当前正式版已是最新'
   return '当前开发构建不低于正式版'
+}
+
+const panelUpdateRunning = computed(() => (
+  panelUpdate.value?.state === 'checking' || panelUpdate.value?.state === 'downloading'
+))
+
+function schedulePanelUpdatePoll(delay = 2_000): void {
+  if (panelUpdateTimer) clearTimeout(panelUpdateTimer)
+  panelUpdateTimer = setTimeout(() => void pollPanelUpdate(), delay)
+}
+
+async function panelServerHealthy(): Promise<boolean> {
+  try {
+    await apiRequest<{ status: string }>('/api/v1/health')
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function pollPanelUpdate(): Promise<void> {
+  try {
+    const next = await apiRequest<PanelUpdateStatus>('/api/v1/panel-update')
+    const statusIdentity = `${next.state}:${next.target_version}:${next.updated_at}`
+    if (panelUpdateBaseline && statusIdentity === panelUpdateBaseline) {
+      schedulePanelUpdatePoll()
+      return
+    }
+    panelUpdateBaseline = ''
+    panelUpdate.value = next
+    if (next.state === 'complete') {
+      if (await panelServerHealthy()) {
+        toast.success(next.message || '面板在线更新完成')
+        window.location.reload()
+        return
+      }
+    } else if (next.state === 'failed') {
+      toast.error(next.message || '面板在线更新失败')
+      return
+    }
+  } catch {
+    // 面板更新会重启服务，短暂断线属于预期流程。
+  }
+  if (Date.now() < panelUpdateDeadline) {
+    schedulePanelUpdatePoll()
+  } else {
+    toast.error('无法确认在线更新结果，请查看 kixdns-panel-update.service 日志')
+  }
+}
+
+async function loadPanelUpdateStatus(): Promise<void> {
+  try {
+    panelUpdate.value = await apiRequest<PanelUpdateStatus>('/api/v1/panel-update')
+    if (panelUpdateRunning.value) {
+      panelUpdateDeadline = Date.now() + 30 * 60_000
+      schedulePanelUpdatePoll()
+    }
+  } catch {
+    panelUpdate.value = null
+  }
+}
+
+async function startPanelUpdate(): Promise<void> {
+  const version = updateStatus.value?.panel.latest_version
+  if (!version || !window.confirm(`在线更新面板到 v${version}？\n\n面板会短暂重启，KixDNS 服务、配置和当前运行状态保持不变。`)) return
+  startingPanelUpdate.value = true
+  try {
+    const previous = await apiRequest<PanelUpdateStatus>('/api/v1/panel-update')
+    panelUpdateBaseline = `${previous.state}:${previous.target_version}:${previous.updated_at}`
+    const result = await apiRequest<PanelUpdateStartResponse>('/api/v1/panel-update', { method: 'POST' })
+    panelUpdate.value = {
+      state: 'checking',
+      message: `正在准备更新到 ${result.target_version}`,
+      target_version: result.target_version,
+      updated_at: Math.floor(Date.now() / 1_000),
+    }
+    panelUpdateDeadline = Date.now() + 30 * 60_000
+    toast.info('在线更新已开始，面板将短暂重启')
+    schedulePanelUpdatePoll(1_000)
+  } catch (error) {
+    toast.error(errorMessage(error))
+  } finally {
+    startingPanelUpdate.value = false
+  }
 }
 
 function loadService(silent = false): Promise<void> {
@@ -218,6 +313,11 @@ function actionBusy(version: InstalledKixdnsVersion | RemoteKixdnsVersion, kind?
 onMounted(() => {
   void refreshAll()
   void refreshUpdates()
+  void loadPanelUpdateStatus()
+})
+
+onBeforeUnmount(() => {
+  if (panelUpdateTimer) clearTimeout(panelUpdateTimer)
 })
 </script>
 
@@ -307,7 +407,8 @@ onMounted(() => {
           <div class="update-channel__heading">
             <span class="update-channel__icon update-channel__icon--panel"><Bell :size="19" /></span>
             <div><small>RELEASE</small><h3>KixDNS Panel</h3></div>
-            <span v-if="updateStatus.panel.available" class="tag tag--success">有更新</span>
+            <span v-if="panelUpdateRunning" class="tag tag--success">更新中</span>
+            <span v-else-if="updateStatus.panel.available" class="tag tag--success">有更新</span>
             <span v-else class="tag tag--muted">{{ !updateStatus.panel.latest_version ? '未发布' : (updateStatus.panel.artifact ? '最新' : '无本机包') }}</span>
           </div>
           <strong class="update-channel__status">{{ panelUpdateLabel() }}</strong>
@@ -317,7 +418,7 @@ onMounted(() => {
             <div><dt>发布时间</dt><dd>{{ updateStatus.panel.published_at ? buildTime(updateStatus.panel.published_at) : '尚未发布' }}</dd></div>
           </dl>
           <div v-if="updateStatus.panel.release_url" class="update-channel__actions">
-            <a v-if="updateStatus.panel.download_url" class="button button--primary" :href="updateStatus.panel.download_url" target="_blank" rel="noopener noreferrer"><Download :size="15" />下载正式包</a>
+            <button v-if="updateStatus.panel.available" class="button button--primary" type="button" :disabled="startingPanelUpdate || panelUpdateRunning" @click="startPanelUpdate"><RefreshCw :size="15" :class="{ spin: startingPanelUpdate || panelUpdateRunning }" />{{ panelUpdateRunning ? '更新中' : '在线更新' }}</button>
             <a class="button button--secondary" :href="updateStatus.panel.release_url" target="_blank" rel="noopener noreferrer">发布说明<ExternalLink :size="14" /></a>
           </div>
           <div v-else class="update-channel__placeholder">首个正式 Release 发布后将在此显示</div>
@@ -359,7 +460,8 @@ onMounted(() => {
               <button v-else-if="version.installed" class="button button--secondary version-action" type="button" :disabled="versionAction !== null" @click="activateVersion(version)"><RotateCw :size="15" :class="{ spin: actionBusy(version) }" />{{ actionBusy(version) ? '切换中' : '切换' }}</button>
               <button v-else class="button button--primary version-action" type="button" :disabled="versionAction !== null" @click="installVersion(version)"><Download :size="15" />{{ actionBusy(version) ? '安装中' : '安装并启用' }}</button>
             </article>
-            <div v-if="catalog.remote_versions.length === 0" class="version-empty">{{ versionSource === 'release' ? '尚无可用 Release' : '没有可用的成功构建' }}</div>
+            <div v-if="catalog.remote_error" class="version-empty">远端版本暂不可用，本地安装信息不受影响：{{ catalog.remote_error }}</div>
+            <div v-else-if="catalog.remote_versions.length === 0" class="version-empty">{{ versionSource === 'release' ? '尚无可用 Release' : '没有可用的成功构建' }}</div>
           </div>
         </div>
 

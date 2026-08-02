@@ -20,6 +20,8 @@ import type {
   ServiceStatus,
   UpdateInfo,
   UpdateNotifications,
+  PanelUpdateStartResponse,
+  PanelUpdateStatus,
   ValidationResult,
 } from './types'
 
@@ -112,6 +114,9 @@ const session: AuthSession = {
 }
 
 const overview: Overview = {
+  live: true,
+  service_active: true,
+  captured_at_unix: now,
   health: {
     protocol_version: 1,
     status: 'ok',
@@ -177,6 +182,8 @@ const queryStats = {
     { name: 'gateway.icloud.com', count: 108_621 },
     { name: 'clients4.google.com', count: 91_447 },
   ],
+  live: true,
+  captured_at_unix: now,
 }
 
 const versions: ConfigVersions = {
@@ -214,6 +221,12 @@ function demoConfigVersion(id: number): Record<string, unknown> {
 
 let serviceRunning = true
 let updateAvailable = true
+let panelUpdateStatus: PanelUpdateStatus = {
+  state: 'idle',
+  message: '',
+  target_version: '',
+  updated_at: 0,
+}
 const panelBuildCommit = '82c88791869153884f361b1ea3cf123b727fadee'
 const legacyBuildCommit = '05f51503219e77849517596b7392cff919437c8b'
 const actionBuildCommit = '681d813a73f4525dfe97bf3123894b8b714d35d9'
@@ -316,6 +329,7 @@ function demoVersionCatalog(source: KixdnsVersionSource): KixdnsVersionCatalog {
     active_source: activeRemote?.source ?? null,
     active_commit: activeRemote?.commit ?? null,
     binary_present: true,
+    remote_error: null,
     remote_versions: remoteVersions.map((version) => ({
       ...version,
       installed: installedKixdnsVersions.has(kixdnsVersionKey(version)),
@@ -593,6 +607,18 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
         download_url: 'https://github.com/tuoro/kixdns-panel/releases/download/v1.0.1/kixdns-panel-linux-x86_64.zip',
       },
     } as UpdateNotifications as T
+  }
+  if (path === '/api/v1/panel-update' && method === 'GET') {
+    return panelUpdateStatus as T
+  }
+  if (path === '/api/v1/panel-update' && method === 'POST') {
+    panelUpdateStatus = {
+      state: 'downloading',
+      message: '正在下载并校验 v1.0.1',
+      target_version: 'v1.0.1',
+      updated_at: now,
+    }
+    return { accepted: true, target_version: 'v1.0.1' } as PanelUpdateStartResponse as T
   }
   if (path === '/api/v1/updates/apply') updateAvailable = false
   if (path === '/api/v1/updates' || path === '/api/v1/updates/apply') {

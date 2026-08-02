@@ -592,6 +592,9 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .status-banner strong { font-size: 11px; }
 .status-banner p { overflow-wrap: anywhere; color: #805f5f; font-size: 10px; line-height: 1.4; }
 .status-banner .icon-button { color: #8e4b4b; background: transparent; border-color: #dfbdbd; }
+.status-banner--paused { color: #70571f; background: #fffaf0; border-color: #e8d8ae; }
+.status-banner--paused > svg { color: #a27616; }
+.status-banner--paused p { color: #776746; }
 .sidebar-backdrop { display: none; }
 
 @media (max-width: 1120px) {

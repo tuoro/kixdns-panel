@@ -81,6 +81,8 @@ export interface QueryStatsSnapshot {
   dropped_updates: number
   clients: NamedCount[]
   domains: NamedCount[]
+  live: boolean
+  captured_at_unix: number | null
 }
 
 export interface StatsClearResult {
@@ -92,6 +94,9 @@ export interface Overview {
   health: Health
   active_config: ActiveConfig
   metrics: MetricsSnapshot
+  live: boolean
+  service_active: boolean | null
+  captured_at_unix: number
 }
 
 export interface ServiceStatus {
@@ -266,6 +271,20 @@ export interface UpdateNotifications {
   panel: PanelUpdateNotice
 }
 
+export type PanelUpdateState = 'idle' | 'checking' | 'downloading' | 'complete' | 'failed'
+
+export interface PanelUpdateStatus {
+  state: PanelUpdateState
+  message: string
+  target_version: string
+  updated_at: number
+}
+
+export interface PanelUpdateStartResponse {
+  accepted: boolean
+  target_version: string
+}
+
 export type KixdnsVersionSource = 'action' | 'release'
 
 export interface RemoteKixdnsVersion {
@@ -312,6 +331,7 @@ export interface KixdnsVersionCatalog {
   active_source: KixdnsVersionSource | null
   active_commit: string | null
   binary_present: boolean
+  remote_error: string | null
   remote_versions: RemoteKixdnsVersion[]
   installed_versions: InstalledKixdnsVersion[]
 }

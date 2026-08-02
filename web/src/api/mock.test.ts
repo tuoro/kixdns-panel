@@ -9,6 +9,8 @@ import type {
   GeoDataManifest,
   GeoDataSchedule,
   KixdnsVersionCatalog,
+  PanelUpdateStartResponse,
+  PanelUpdateStatus,
   QueryStatsSnapshot,
   ServiceStatus,
   StatsClearResult,
@@ -200,5 +202,12 @@ describe('演示 API', () => {
     expect(updates.panel.current_release).toBeNull()
     expect(updates.panel.latest_version).toBe('1.0.1')
     expect(updates.panel.download_url).toMatch(/releases\/download\/v1\.0\.1/)
+  })
+
+  it('在面板内部启动在线更新并返回进度', async () => {
+    const started = await mockRequest<PanelUpdateStartResponse>('/api/v1/panel-update', { method: 'POST' })
+    const status = await mockRequest<PanelUpdateStatus>('/api/v1/panel-update')
+    expect(started).toEqual({ accepted: true, target_version: 'v1.0.1' })
+    expect(status).toMatchObject({ state: 'downloading', target_version: 'v1.0.1' })
   })
 })
