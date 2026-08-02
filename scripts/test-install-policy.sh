@@ -107,7 +107,7 @@ assert_equals "$(panel_access_url '192.168.10.5:6754')" "http://192.168.10.5:675
 
 SYSTEMCTL_CALLS=""
 # 该测试桩由被测安装函数间接调用。
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 systemctl() {
   case "$1" in
     is-active | is-enabled) return 1 ;;
