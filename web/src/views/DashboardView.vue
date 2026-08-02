@@ -5,6 +5,7 @@ import { apiRequest } from '../api/client'
 import type { CacheFlushResult, Overview, QueryStatsSnapshot, ServiceStatus, StatsClearResult } from '../api/types'
 import StatusBanner from '../components/StatusBanner.vue'
 import { useToast } from '../composables/useToast'
+import { dashboardRuntimeState, hasStaleDashboardData } from '../dashboard-state'
 import { errorMessage, formatDuration, formatNumber, formatPercent, shortHash } from '../utils'
 
 const overview = ref<Overview | null>(null)
@@ -32,11 +33,11 @@ const statsWindows = [
   { label: '24 小时', value: 86_400 },
 ]
 
-const loadError = computed(() => [overviewError.value, serviceError.value, statsError.value].filter(Boolean).join('；'))
+const runtimeState = computed(() => dashboardRuntimeState(overview.value, service.value))
+const overviewDisplayError = computed(() => runtimeState.value === 'stopped-empty' ? '' : overviewError.value)
+const loadError = computed(() => [overviewDisplayError.value, serviceError.value, statsError.value].filter(Boolean).join('；'))
 const statsSupported = computed(() => overview.value?.health.capabilities.includes('stats_top_v1') ?? false)
-const runtimeUnavailable = computed(() => overview.value?.live === false)
-const runtimeStopped = computed(() => runtimeUnavailable.value
-  && (service.value?.active_state === 'inactive' || overview.value?.service_active === false))
+const runtimeUnavailable = computed(() => hasStaleDashboardData(runtimeState.value))
 const maxClient = computed(() => Math.max(1, ...(stats.value?.clients.map((item) => item.count) ?? [])))
 const maxDomain = computed(() => Math.max(1, ...(stats.value?.domains.map((item) => item.count) ?? [])))
 
@@ -154,10 +155,14 @@ onBeforeUnmount(() => {
       <button class="button button--secondary" type="button" :disabled="requesting || statsLoading" @click="refreshAll"><RefreshCw :size="16" :class="{ spin: refreshing || statsLoading }" />刷新</button>
     </div>
 
-    <StatusBanner v-if="loadError" :message="loadError" :stale="Boolean(overview || service)" :busy="requesting" @retry="load()" />
+    <StatusBanner v-if="loadError" :message="loadError" :stale="hasStaleDashboardData(runtimeState)" :busy="requesting" @retry="load()" />
+    <section v-if="!loading && runtimeState === 'stopped-empty'" class="status-banner status-banner--paused" role="status">
+      <CircleAlert :size="18" />
+      <div><strong>KixDNS 未启动</strong><p>当前尚无运行数据，启动 KixDNS 后概览将自动更新。</p></div>
+    </section>
     <section v-if="runtimeUnavailable" class="status-banner status-banner--paused" role="status">
       <CircleAlert :size="18" />
-      <div><strong>{{ runtimeStopped ? 'KixDNS 已停止' : '实时数据暂不可用' }}</strong><p>{{ runtimeStopped ? '当前显示最后一次运行快照，数据已停止更新。' : '当前显示最近一次成功快照，实时数据恢复后会自动更新。' }}</p></div>
+      <div><strong>{{ runtimeState === 'stopped-snapshot' ? 'KixDNS 已停止' : '实时数据暂不可用' }}</strong><p>{{ runtimeState === 'stopped-snapshot' ? '当前显示最后一次运行快照，数据已停止更新。' : '当前显示最近一次成功快照，实时数据恢复后会自动更新。' }}</p></div>
     </section>
 
     <div v-if="loading" class="skeleton-grid"><span v-for="index in 4" :key="index"></span></div>
@@ -254,6 +259,6 @@ onBeforeUnmount(() => {
         </article>
       </section>
     </template>
-    <section v-else class="panel empty-state">运行数据暂不可用，请检查增强控制通道。</section>
+    <section v-else class="panel empty-state">{{ runtimeState === 'stopped-empty' ? 'KixDNS 启动后将在此展示运行数据。' : '运行数据暂不可用，请检查增强控制通道。' }}</section>
   </div>
 </template>
