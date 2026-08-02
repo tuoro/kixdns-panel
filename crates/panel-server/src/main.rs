@@ -109,7 +109,7 @@ struct Args {
     )]
     kixdns_versions: PathBuf,
 
-    /// 完整安装包保存的 KixDNS 构建身份目录。
+    /// 完整安装包保存的 `KixDNS` 构建身份目录。
     #[arg(
         long,
         env = "KIXDNS_BUNDLED_METADATA",
