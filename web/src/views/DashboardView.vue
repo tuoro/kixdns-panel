@@ -5,7 +5,7 @@ import { apiRequest } from '../api/client'
 import type { CacheFlushResult, Overview, QueryStatsSnapshot, ServiceStatus, StatsClearResult } from '../api/types'
 import StatusBanner from '../components/StatusBanner.vue'
 import { useToast } from '../composables/useToast'
-import { dashboardRuntimeState, hasStaleDashboardData } from '../dashboard-state'
+import { dashboardRuntimeState, emptyOverview, emptyQueryStats, hasStaleDashboardData } from '../dashboard-state'
 import { errorMessage, formatDuration, formatNumber, formatPercent, shortHash } from '../utils'
 
 const overview = ref<Overview | null>(null)
@@ -38,15 +38,19 @@ const overviewDisplayError = computed(() => runtimeState.value === 'stopped-empt
 const loadError = computed(() => [overviewDisplayError.value, serviceError.value, statsError.value].filter(Boolean).join('；'))
 const statsSupported = computed(() => overview.value?.health.capabilities.includes('stats_top_v1') ?? false)
 const runtimeUnavailable = computed(() => hasStaleDashboardData(runtimeState.value))
+const runtimeControlsDisabled = computed(() => runtimeState.value !== 'live')
+const displayOverview = computed(() => overview.value ?? (runtimeState.value === 'stopped-empty' ? emptyOverview() : null))
+const showStatsSection = computed(() => statsSupported.value || runtimeState.value === 'stopped-empty')
+const displayStats = computed(() => stats.value ?? (runtimeState.value === 'stopped-empty' ? emptyQueryStats(statsWindow.value) : null))
 const maxClient = computed(() => Math.max(1, ...(stats.value?.clients.map((item) => item.count) ?? [])))
 const maxDomain = computed(() => Math.max(1, ...(stats.value?.domains.map((item) => item.count) ?? [])))
 
 const cacheHitRate = computed(() => {
-  const metrics = overview.value?.metrics
+  const metrics = displayOverview.value?.metrics
   if (!metrics?.cache_lookups_total) return 0
   return (metrics.cache_hits_fresh + metrics.cache_hits_stale) / metrics.cache_lookups_total
 })
-const maxPipeline = computed(() => Math.max(1, ...(overview.value?.metrics.pipelines.map((item) => item.count) ?? [])))
+const maxPipeline = computed(() => Math.max(1, ...(displayOverview.value?.metrics.pipelines.map((item) => item.count) ?? [])))
 
 function load(silent = false): Promise<void> {
   if (pendingLoad) return pendingLoad
@@ -166,73 +170,73 @@ onBeforeUnmount(() => {
     </section>
 
     <div v-if="loading" class="skeleton-grid"><span v-for="index in 4" :key="index"></span></div>
-    <template v-else-if="overview">
+    <template v-else-if="displayOverview">
       <section class="metric-grid" aria-label="核心指标">
-        <article class="metric"><span class="metric__icon metric__icon--green"><Zap :size="19" /></span><div><small>累计请求</small><strong>{{ formatNumber(overview.metrics.requests_total) }}</strong><em>当前 {{ overview.metrics.requests_inflight }} 个并发</em></div></article>
+        <article class="metric"><span class="metric__icon metric__icon--green"><Zap :size="19" /></span><div><small>累计请求</small><strong>{{ formatNumber(displayOverview.metrics.requests_total) }}</strong><em>当前 {{ displayOverview.metrics.requests_inflight }} 个并发</em></div></article>
         <article class="metric"><span class="metric__icon metric__icon--amber"><Activity :size="19" /></span><div><small>缓存命中率</small><strong>{{ formatPercent(cacheHitRate) }}</strong><em>含新鲜与过期命中</em></div></article>
-        <article class="metric"><span class="metric__icon metric__icon--ink"><Database :size="19" /></span><div><small>缓存条目</small><strong>{{ formatNumber(overview.metrics.cache_entries) }}</strong><em>运行时内部条目</em></div></article>
-        <article class="metric"><span class="metric__icon metric__icon--red"><Timer :size="19" /></span><div><small>持续运行</small><strong>{{ formatDuration(overview.health.uptime_seconds) }}</strong><em>PID {{ overview.health.pid }}</em></div></article>
+        <article class="metric"><span class="metric__icon metric__icon--ink"><Database :size="19" /></span><div><small>缓存条目</small><strong>{{ formatNumber(displayOverview.metrics.cache_entries) }}</strong><em>运行时内部条目</em></div></article>
+        <article class="metric"><span class="metric__icon metric__icon--red"><Timer :size="19" /></span><div><small>持续运行</small><strong>{{ overview ? formatDuration(displayOverview.health.uptime_seconds) : '--' }}</strong><em>PID {{ overview ? displayOverview.health.pid : '--' }}</em></div></article>
       </section>
 
       <section class="dashboard-grid">
         <article class="panel panel--span-6">
-          <header class="panel__header"><div><h2>Pipeline 命中</h2><p>按累计请求次数排序</p></div><span class="tag">{{ overview.metrics.pipelines.length }} 条</span></header>
+          <header class="panel__header"><div><h2>Pipeline 命中</h2><p>按累计请求次数排序</p></div><span class="tag">{{ displayOverview.metrics.pipelines.length }} 条</span></header>
           <div class="bar-list">
-            <div v-for="pipeline in overview.metrics.pipelines" :key="pipeline.name" class="bar-row">
+            <div v-for="pipeline in displayOverview.metrics.pipelines" :key="pipeline.name" class="bar-row">
               <div><strong>{{ pipeline.name }}</strong><span>{{ formatNumber(pipeline.count) }}</span></div>
               <span class="bar-track"><i :style="{ width: `${Math.max(2, pipeline.count / maxPipeline * 100)}%` }"></i></span>
             </div>
-            <p v-if="overview.metrics.pipelines.length === 0" class="empty-state">尚无 Pipeline 命中数据</p>
+            <p v-if="displayOverview.metrics.pipelines.length === 0" class="empty-state">尚无 Pipeline 命中数据</p>
           </div>
         </article>
 
         <article class="panel panel--span-6 runtime-panel">
-          <header class="panel__header"><div><h2>运行时配置</h2><p>最近一次结构化热加载</p></div><span :class="overview.active_config.last_reload.success ? 'tag tag--success' : 'tag tag--danger'">{{ overview.active_config.last_reload.success ? '生效' : '失败' }}</span></header>
+          <header class="panel__header"><div><h2>运行时配置</h2><p>最近一次结构化热加载</p></div><span :class="overview ? (displayOverview.active_config.last_reload.success ? 'tag tag--success' : 'tag tag--danger') : 'tag'">{{ overview ? (displayOverview.active_config.last_reload.success ? '生效' : '失败') : '未运行' }}</span></header>
           <dl class="detail-list">
-            <div><dt>配置代次</dt><dd>#{{ overview.active_config.generation }}</dd></div>
-            <div><dt>重载序号</dt><dd>#{{ overview.active_config.reload_sequence }}</dd></div>
-            <div><dt>配置摘要</dt><dd class="mono">{{ shortHash(overview.active_config.sha256, 14) }}</dd></div>
-            <div><dt>上游提交</dt><dd class="mono">{{ shortHash(overview.health.upstream_commit, 12) }}</dd></div>
-            <div><dt>补丁集</dt><dd>v{{ overview.health.patchset }}</dd></div>
+            <div><dt>配置代次</dt><dd>{{ overview ? `#${displayOverview.active_config.generation}` : '--' }}</dd></div>
+            <div><dt>重载序号</dt><dd>{{ overview ? `#${displayOverview.active_config.reload_sequence}` : '--' }}</dd></div>
+            <div><dt>配置摘要</dt><dd class="mono">{{ overview ? shortHash(displayOverview.active_config.sha256, 14) : '--' }}</dd></div>
+            <div><dt>上游提交</dt><dd class="mono">{{ overview ? shortHash(displayOverview.health.upstream_commit, 12) : '--' }}</dd></div>
+            <div><dt>补丁集</dt><dd>{{ overview ? `v${displayOverview.health.patchset}` : '--' }}</dd></div>
           </dl>
-          <button class="button button--danger-quiet button--full" type="button" :disabled="flushing || runtimeUnavailable" @click="flushCache"><Eraser :size="16" />{{ flushing ? '正在清理' : '清空内部缓存' }}</button>
+          <button class="button button--danger-quiet button--full" type="button" :disabled="flushing || runtimeControlsDisabled" @click="flushCache"><Eraser :size="16" />{{ flushing ? '正在清理' : '清空内部缓存' }}</button>
         </article>
 
-        <template v-if="statsSupported">
+        <template v-if="showStatsSection">
           <div class="stats-section-heading panel--span-12">
             <div>
               <h2>查询排行</h2>
-              <p v-if="stats">已观察 {{ formatNumber(stats.requests_observed) }} 次请求<span v-if="stats.dropped_updates"> · 丢弃 {{ formatNumber(stats.dropped_updates) }} 次统计更新</span></p>
+              <p v-if="displayStats">已观察 {{ formatNumber(displayStats.requests_observed) }} 次请求<span v-if="displayStats.dropped_updates"> · 丢弃 {{ formatNumber(displayStats.dropped_updates) }} 次统计更新</span></p>
               <p v-else>客户端与请求域名</p>
             </div>
             <div class="stats-section-tools">
               <div class="stats-window-tabs" role="group" aria-label="统计窗口">
-                <button v-for="option in statsWindows" :key="option.value" type="button" :class="{ active: statsWindow === option.value }" :disabled="statsLoading || runtimeUnavailable" @click="setStatsWindow(option.value)">{{ option.label }}</button>
+                <button v-for="option in statsWindows" :key="option.value" type="button" :class="{ active: statsWindow === option.value }" :disabled="statsLoading || runtimeControlsDisabled" @click="setStatsWindow(option.value)">{{ option.label }}</button>
               </div>
               <button v-if="stats?.enabled" class="icon-button" type="button" title="清空查询排行" :disabled="statsClearing || runtimeUnavailable" @click="clearQueryStats"><Eraser :size="16" /></button>
             </div>
           </div>
 
-          <template v-if="stats?.enabled">
+          <template v-if="displayStats?.enabled">
             <article class="panel panel--span-6 ranking-panel">
-              <header class="panel__header"><div><h2>客户端排行</h2><p>{{ stats.anonymized_clients ? '按脱敏网段聚合' : '按来源地址聚合' }}</p></div><MonitorSmartphone :size="18" /></header>
+              <header class="panel__header"><div><h2>客户端排行</h2><p>{{ displayStats.anonymized_clients ? '按脱敏网段聚合' : '按来源地址聚合' }}</p></div><MonitorSmartphone :size="18" /></header>
               <div class="ranking-list">
-                <div v-for="(item, index) in stats.clients" :key="item.name" class="ranking-row">
+                <div v-for="(item, index) in displayStats.clients" :key="item.name" class="ranking-row">
                   <span>{{ String(index + 1).padStart(2, '0') }}</span>
                   <div><p><strong class="mono" :title="item.name">{{ item.name }}</strong><b>{{ formatNumber(item.count) }}</b></p><i><em :style="{ width: `${Math.max(2, item.count / maxClient * 100)}%` }"></em></i></div>
                 </div>
-                <p v-if="stats.clients.length === 0" class="empty-state">当前窗口暂无客户端数据</p>
+                <p v-if="displayStats.clients.length === 0" class="empty-state">当前窗口暂无客户端数据</p>
               </div>
             </article>
 
             <article class="panel panel--span-6 ranking-panel ranking-panel--domain">
               <header class="panel__header"><div><h2>请求域名排行</h2><p>按查询次数降序排列</p></div><Globe2 :size="18" /></header>
               <div class="ranking-list">
-                <div v-for="(item, index) in stats.domains" :key="item.name" class="ranking-row">
+                <div v-for="(item, index) in displayStats.domains" :key="item.name" class="ranking-row">
                   <span>{{ String(index + 1).padStart(2, '0') }}</span>
                   <div><p><strong class="mono" :title="item.name">{{ item.name }}</strong><b>{{ formatNumber(item.count) }}</b></p><i><em :style="{ width: `${Math.max(2, item.count / maxDomain * 100)}%` }"></em></i></div>
                 </div>
-                <p v-if="stats.domains.length === 0" class="empty-state">当前窗口暂无域名数据</p>
+                <p v-if="displayStats.domains.length === 0" class="empty-state">当前窗口暂无域名数据</p>
               </div>
             </article>
           </template>
@@ -250,12 +254,12 @@ onBeforeUnmount(() => {
 
         <article class="panel panel--span-12">
           <header class="panel__header"><div><h2>上游请求</h2><p>内部尝试、成功和异常计数</p></div></header>
-          <div class="table-scroll"><table><thead><tr><th>上游</th><th>传输</th><th>尝试</th><th>成功率</th><th>错误</th><th>拒绝</th></tr></thead><tbody><tr v-for="item in overview.metrics.upstreams" :key="`${item.upstream}:${item.transport}`"><td class="mono table-strong">{{ item.upstream }}</td><td><span class="tag tag--muted">{{ item.transport }}</span></td><td>{{ formatNumber(item.attempts) }}</td><td>{{ formatPercent(item.attempts ? item.success / item.attempts : 0) }}</td><td :class="{ 'text-danger': item.errors > 0 }">{{ formatNumber(item.errors) }}</td><td>{{ formatNumber(item.rejected) }}</td></tr><tr v-if="overview.metrics.upstreams.length === 0"><td class="empty-state" colspan="6">尚无上游请求数据</td></tr></tbody></table></div>
+          <div class="table-scroll"><table><thead><tr><th>上游</th><th>传输</th><th>尝试</th><th>成功率</th><th>错误</th><th>拒绝</th></tr></thead><tbody><tr v-for="item in displayOverview.metrics.upstreams" :key="`${item.upstream}:${item.transport}`"><td class="mono table-strong">{{ item.upstream }}</td><td><span class="tag tag--muted">{{ item.transport }}</span></td><td>{{ formatNumber(item.attempts) }}</td><td>{{ formatPercent(item.attempts ? item.success / item.attempts : 0) }}</td><td :class="{ 'text-danger': item.errors > 0 }">{{ formatNumber(item.errors) }}</td><td>{{ formatNumber(item.rejected) }}</td></tr><tr v-if="displayOverview.metrics.upstreams.length === 0"><td class="empty-state" colspan="6">尚无上游请求数据</td></tr></tbody></table></div>
         </article>
 
         <article class="panel panel--span-12">
-          <header class="panel__header"><div><h2>规则命中</h2><p>请求与响应阶段的累计执行次数</p></div><span class="tag">{{ overview.metrics.rules.length }} 项</span></header>
-          <div class="rule-grid"><div v-for="rule in overview.metrics.rules" :key="`${rule.pipeline}:${rule.phase}:${rule.rule}`"><span :class="rule.phase === 'request' ? 'phase phase--request' : 'phase phase--response'">{{ rule.phase === 'request' ? '请求' : '响应' }}</span><strong>{{ rule.rule }}</strong><small>{{ rule.pipeline }}</small><b>{{ formatNumber(rule.count) }}</b></div></div>
+          <header class="panel__header"><div><h2>规则命中</h2><p>请求与响应阶段的累计执行次数</p></div><span class="tag">{{ displayOverview.metrics.rules.length }} 项</span></header>
+          <div class="rule-grid"><div v-for="rule in displayOverview.metrics.rules" :key="`${rule.pipeline}:${rule.phase}:${rule.rule}`"><span :class="rule.phase === 'request' ? 'phase phase--request' : 'phase phase--response'">{{ rule.phase === 'request' ? '请求' : '响应' }}</span><strong>{{ rule.rule }}</strong><small>{{ rule.pipeline }}</small><b>{{ formatNumber(rule.count) }}</b></div><p v-if="displayOverview.metrics.rules.length === 0" class="empty-state dashboard-empty-span">尚无规则命中数据</p></div>
         </article>
       </section>
     </template>

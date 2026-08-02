@@ -371,7 +371,11 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
   if (path === '/api/v1/auth/session') return session as T
   if (path === '/api/v1/auth/login' || path === '/api/v1/setup') return session as T
   if (path === '/api/v1/auth/logout') return { ok: true } as T
-  if (path === '/api/v1/overview') return overview as T
+  const emptyFirstInstall = typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-empty-first-install') === 'true'
+  if (path === '/api/v1/overview') {
+    if (emptyFirstInstall) throw new Error('KixDNS 控制接口不可用')
+    return overview as T
+  }
   if (pathname === '/api/v1/stats/top' && method === 'GET') {
     queryStats.window_seconds = Number(url.searchParams.get('window')) || 86_400
     return queryStats as T
@@ -383,6 +387,7 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
     return { protocol_version: 1, cleared: true } as T
   }
   if (path === '/api/v1/service' && method === 'GET') {
+    if (emptyFirstInstall) return { unit: 'kixdns.service', active_state: 'inactive', sub_state: 'dead', main_pid: 0 } as T
     return { unit: 'kixdns.service', active_state: serviceRunning ? 'active' : 'inactive', sub_state: serviceRunning ? 'running' : 'dead', main_pid: serviceRunning ? 1428 : 0 } as T
   }
   if (path.startsWith('/api/v1/service/') && method === 'POST') {

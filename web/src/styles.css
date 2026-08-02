@@ -198,6 +198,7 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .rule-grid strong { min-width: 0; overflow: hidden; color: #31383a; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .rule-grid small { grid-column: 2; color: #8a9390; font-size: 9px; }
 .rule-grid b { grid-column: 1 / -1; margin-top: 7px; color: #252b2d; font-size: 16px; }
+.rule-grid .dashboard-empty-span { grid-column: 1 / -1; background: var(--surface); }
 .phase { min-width: 31px; padding: 3px 4px; border-radius: 3px; font-size: 8px; text-align: center; }
 .phase--request { color: #0d704c; background: var(--green-soft); }
 .phase--response { color: #9a5b08; background: var(--amber-soft); }

@@ -13,6 +13,23 @@ async function expectNoPageOverflow(page: Page): Promise<void> {
   expect(sizes.scrollWidth).toBeLessThanOrEqual(sizes.clientWidth)
 }
 
+test('首次未启动时保留完整概览布局', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('kixdns:demo-empty-first-install', 'true'))
+  await open(page, '/')
+
+  await expect(page.getByText('KixDNS 未启动', { exact: true })).toBeVisible()
+  await expect(page.getByText('数据可能已过期')).toHaveCount(0)
+  await expect(page.locator('.metric')).toHaveCount(4)
+  await expect(page.locator('.metric').first().getByText('0', { exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Pipeline 命中' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '运行时配置' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '客户端排行' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '请求域名排行' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '上游请求' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '规则命中' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '清空内部缓存' })).toBeDisabled()
+})
+
 test('配置历史支持差异、恢复和受保护删除', async ({ page }) => {
   await open(page, '/config')
   const history = page.locator('.history-list')

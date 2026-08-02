@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Overview, ServiceStatus } from './api/types'
-import { dashboardRuntimeState, hasStaleDashboardData } from './dashboard-state'
+import { dashboardRuntimeState, emptyOverview, emptyQueryStats, hasStaleDashboardData } from './dashboard-state'
 
 const stoppedService: ServiceStatus = {
   unit: 'kixdns.service',
@@ -31,5 +31,18 @@ describe('概览运行状态', () => {
     expect(dashboardRuntimeState(liveOverview, null)).toBe('live')
     expect(dashboardRuntimeState(null, null)).toBe('unavailable')
     expect(dashboardRuntimeState({ ...snapshot, service_active: null }, null)).toBe('unavailable-snapshot')
+  })
+
+  it('为首次未启动状态提供完整但不伪造数据的展示模型', () => {
+    const overview = emptyOverview()
+    const stats = emptyQueryStats(86_400)
+
+    expect(overview.live).toBe(false)
+    expect(overview.metrics.requests_total).toBe(0)
+    expect(overview.metrics.pipelines).toEqual([])
+    expect(overview.health.upstream_commit).toBe('')
+    expect(stats.enabled).toBe(true)
+    expect(stats.clients).toEqual([])
+    expect(stats.window_seconds).toBe(86_400)
   })
 })
