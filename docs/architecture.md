@@ -55,12 +55,12 @@ Panel Web ---- Panel Server ---- SQLite
 - Artifact 名称为 `kixdns-enhanced-<来源>-<上游身份>-p<补丁集>-<输入指纹>-linux-<架构>`。输入指纹只覆盖锁文件选择的补丁集以及构建工具、工作流和 Rust 工具链；新增更高补丁集不会改变历史版本指纹，目录新增版本时只补建缺失项。
 - 每个 Artifact 携带 `KIXDNS_CAPABILITIES.json`，并与二进制、上游锁和构建提交共同写入 `SHA256SUMS`；能力清单也是输入指纹的一部分。
 - 构建库存会校验全部锁的补丁集引用。拉取请求和直接推送均不得修改主分支已有集合，只能新增高于当前最大值的编号。
-- 每周库存检查会续建缺失或将在 7 天内过期的上游包；这些 Artifact 仍使用 GitHub 的 90 天保留期，不创建上游 KixDNS Release。面板自身通过 GitHub Release 发布完整安装包，当前正式版本为 `v1.0.2`。
+- 每周库存检查会续建缺失或将在 7 天内过期的上游包；这些 Artifact 仍使用 GitHub 的 90 天保留期，不创建上游 KixDNS Release。面板自身通过 GitHub Release 发布完整安装包，当前正式版本为 `v1.0.3`。
 - `build-panel.yml` 只监听 Panel Server、Web、部署脚本和面板依赖。它从最近成功的内核工作流复用上游身份完全匹配的 Artifact，经包内 SHA-256 和 ELF 架构校验后生成完整安装包，不重新编译 KixDNS。
 - 发布构建固定在 Ubuntu 22.04 容器中完成，并拒绝包含高于 `GLIBC_2.35` 符号的 KixDNS 或 Panel Server，避免 GitHub Runner 升级悄然抬高发行版要求。
 - PR 只执行对应边界的验证 Job，不上传可安装 Artifact；README、截图等纯文档变化不触发打包工作流。
 
-完整包分别保存 `PANEL_BUILD_COMMIT` 和 `KIXDNS_BUILD_COMMIT`。前者标识管理面构建，后者标识数据面构建；`KIXDNS_SOURCE_RUN_ID` 保留被复用内核的 Action Run。Artifact digest 只用于验证 ZIP 传输内容，包内 `binary_sha256` 才是 KixDNS 二进制内容身份。
+完整包分别保存 `PANEL_BUILD_COMMIT` 和 `KIXDNS_BUILD_COMMIT`，同时携带增强 Artifact ID、名称、摘要、二进制 SHA-256、能力清单与上游身份。Panel Server 启动时离线验证这些只读元数据，并以当前二进制摘要纠正旧数据库中的活动版本记录。`KIXDNS_SOURCE_RUN_ID` 保留被复用内核的 Action Run；Artifact digest 用于验证 ZIP 传输内容，二进制 SHA-256 才是 KixDNS 内容身份。
 
 ## 安全边界
 
@@ -70,7 +70,8 @@ Panel Web ---- Panel Server ---- SQLite
 - 浏览器会话使用 HttpOnly、SameSite Cookie；所有写操作要求 CSRF 令牌。
 - 密码使用 Argon2id，数据库不保存明文会话令牌。
 - 指标禁止域名、客户端 IP 等高基数或敏感标签。
-- Panel Server 以独立非 root 账号运行；systemd 控制经 root helper 的专属 Unix Socket 转发。Socket 文件权限和 `SO_PEERCRED` 都固定调用方 UID，helper 只接受安装时确定的 unit 与 `start`、`stop`、`restart`。
+- Panel Server 以独立非 root 账号运行；systemd 控制经 root helper 的专属 Unix Socket 转发。Socket 文件权限和 `SO_PEERCRED` 都固定调用方 UID，helper 对 KixDNS 只接受安装时确定的 unit 与 `start`、`stop`、`restart`，面板更新只接受固定的 `panel-update` 并启动 root 所有的固定更新器。
+- 面板更新源固定为项目最新正式 Release，API 和浏览器不能指定 URL、路径或版本；下载经过 Release 资产摘要和包内摘要双重校验，安装器的面板专用事务不修改 KixDNS 二进制、配置、身份或启停状态。
 - 安装器对既有 KixDNS 要求用户选择“仅安装面板”或“安装并管理增强版”；外部模式由 `KIXDNS_MANAGEMENT_ENABLED=false` 和后端版本写操作保护共同强制，前端隐藏不可执行的版本库存操作。
 - 迁移会保存原 systemd unit、启用状态和运行状态；卸载时优先恢复该备份，避免把用户原有服务当作面板资产删除。
 - 卸载器交互选择是否保留面板管理的 KixDNS，以及是否删除面板配置、数据库、版本库和 Geo 数据；外部 KixDNS 始终不会被卸载器删除。
@@ -80,6 +81,8 @@ Panel Web ---- Panel Server ---- SQLite
 - 安装前校验外层和包内 SHA-256、ELF 与架构，激活前再次校验本地清单与二进制摘要；替换后必须通过健康检查，否则恢复原状态。
 - 配置保存、恢复和版本激活共用后端能力注册表；不兼容版本在停止服务前被拒绝，面板不自动删除或降级用户字段。
 - 服务动作白名单只有 `start`、`stop`、`restart`。配置文件监听产生的结构化热加载回执属于增强控制协议，不是 systemd 服务重载能力。
+- 受管服务的启动映射为 `systemctl enable --now`，停止映射为 `disable --now`，重启不改变 enable 状态；首次安装默认停止，覆盖安装保持原运行与启用状态。
+- 最后一次成功的增强概览和排行按窗口持久化到 SQLite；控制接口不可用时只读返回快照，并独立读取 systemd 状态区分真实停止和短暂故障。
 
 ## 运行平台
 
