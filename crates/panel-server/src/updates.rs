@@ -1197,37 +1197,36 @@ impl UpdateManager {
                 }
                 return Ok(());
             }
-            let manifest = if initial.as_ref() == Some(&worker_key)
-                && worker_key.source_id.is_some()
-            {
-                load_bundled_manifest(&bundled_metadata, &worker_key, &binary)?
-            } else {
-                if worker_key.source_id.is_some() {
-                    return Err(UpdateError::Verification(
-                        "活动版本缺少可信构建元数据".to_owned(),
-                    ));
-                }
-                VersionManifest {
-                    schema_version: MANIFEST_SCHEMA_VERSION,
-                    source: Some(worker_key.source),
-                    source_id: None,
-                    commit: worker_key.commit.clone(),
-                    run_id: None,
-                    release_tag: None,
-                    created_at: None,
-                    source_url: None,
-                    build_url: None,
-                    artifact,
-                    artifact_digest: None,
-                    upstream_repository: None,
-                    upstream_commit: None,
-                    patchset: None,
-                    control_protocol: None,
-                    config_capabilities: Vec::new(),
-                    binary_sha256: sha256(&binary),
-                    installed_at: unix_timestamp(),
-                }
-            };
+            let manifest =
+                if initial.as_ref() == Some(&worker_key) && worker_key.source_id.is_some() {
+                    load_bundled_manifest(&bundled_metadata, &worker_key, &binary)?
+                } else {
+                    if worker_key.source_id.is_some() {
+                        return Err(UpdateError::Verification(
+                            "活动版本缺少可信构建元数据".to_owned(),
+                        ));
+                    }
+                    VersionManifest {
+                        schema_version: MANIFEST_SCHEMA_VERSION,
+                        source: Some(worker_key.source),
+                        source_id: None,
+                        commit: worker_key.commit.clone(),
+                        run_id: None,
+                        release_tag: None,
+                        created_at: None,
+                        source_url: None,
+                        build_url: None,
+                        artifact,
+                        artifact_digest: None,
+                        upstream_repository: None,
+                        upstream_commit: None,
+                        patchset: None,
+                        control_protocol: None,
+                        config_capabilities: Vec::new(),
+                        binary_sha256: sha256(&binary),
+                        installed_at: unix_timestamp(),
+                    }
+                };
             store_version(&versions_path, &manifest, &binary)
         })
         .await
