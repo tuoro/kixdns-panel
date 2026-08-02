@@ -16,7 +16,7 @@ usage() {
 用法：curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one-click-install.sh | sudo bash
 
 可选参数：
-  --version TAG  安装指定正式版本，例如 v1.0.3；默认安装最新正式版
+  --version TAG  安装指定正式版本，例如 v1.0.4；默认安装最新正式版
   --             后续参数原样传给安装器
   -h, --help     显示帮助
 

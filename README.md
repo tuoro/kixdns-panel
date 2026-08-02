@@ -74,7 +74,7 @@ curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one-click-install.sh \
-  | sudo bash -s -- --version v1.0.3
+  | sudo bash -s -- --version v1.0.4
 ```
 
 稳定版从面板 GitHub Release 下载；`main` 分支的 Action 仅用于持续验证和开发包构建：
@@ -82,7 +82,7 @@ curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one
 ```bash
 # x86_64；ARM64 将文件名中的 x86_64 改为 arm64
 curl -fL -o kixdns-panel.zip \
-  https://github.com/tuoro/kixdns-panel/releases/download/v1.0.3/kixdns-panel-linux-x86_64.zip
+  https://github.com/tuoro/kixdns-panel/releases/download/v1.0.4/kixdns-panel-linux-x86_64.zip
 mkdir kixdns-panel && unzip kixdns-panel.zip -d kixdns-panel
 cd kixdns-panel
 sudo bash ./scripts/install.sh
@@ -90,9 +90,9 @@ sudo bash ./scripts/install.sh
 
 如果主机已经存在 KixDNS，安装器会让你选择保留现有安装或迁移为 KixDNS Enhanced，不会默认替换。无人值守安装请显式使用 `--keep-existing` 或 `--replace-existing`；保留模式只接入受限面板，迁移模式会备份原 systemd unit 并保留原配置路径。
 
-面板 `v1.0.3` Release 提供 `kixdns-panel-linux-x86_64.zip` 与 `kixdns-panel-linux-arm64.zip`。正式包记录 Release 标签，面板只根据后续正式 Release 提示自身更新；普通 `main` 提交和临时 Action 包不会触发面板更新提示。发现新版后可在“系统”页直接在线更新，过程固定从 `tuoro/kixdns-panel` 最新正式 Release 下载当前架构包，并校验 GitHub 资产摘要与包内 `SHA256SUMS`；更新只替换 Panel Server、Web、helper 和部署脚本，KixDNS 二进制、配置及启停状态保持不变。
+面板 `v1.0.4` Release 提供 `kixdns-panel-linux-x86_64.zip` 与 `kixdns-panel-linux-arm64.zip`。正式包记录 Release 标签，面板只根据后续正式 Release 提示自身更新；普通 `main` 提交和临时 Action 包不会触发面板更新提示。发现新版后可在“系统”页直接在线更新，过程固定从 `tuoro/kixdns-panel` 最新正式 Release 下载当前架构包，并校验 GitHub 资产摘要与包内 `SHA256SUMS`；更新只替换 Panel Server、Web、helper 和部署脚本，KixDNS 二进制、配置及启停状态保持不变。
 
-安装后面板监听 `0.0.0.0:5738`，安装器会探测默认路由对应的内网 IPv4，并输出形如 `http://192.168.1.20:5738` 的访问链接。首次受管安装不会自动启动 KixDNS，可在“系统”页启动；面板启动会同步启用开机启动，停止会同步禁用，因此宿主机重启后保持最后选择的状态。停止期间概览继续显示最后一次运行快照。首次访问创建管理员；请勿把 HTTP 端口直接映射到公网，跨不可信网络访问应限制防火墙来源，并使用 HTTPS 反向代理与 Secure Cookie。登录后可在“系统”页安装或切换受管 KixDNS 构建，并控制服务启动、停止和重启。增强版本之间切换不重复弹窗，失败会自动恢复；从外部安装迁移到增强版必须重新运行安装器并明确选择迁移。KixDNS 没有独立的服务重载动作，因此面板不提供重载按钮或 API；配置保存后的文件监听热加载是另一条独立链路。完整步骤、权限模型、版本管理与卸载见[部署指南](docs/deployment.md)。
+安装后面板监听 `0.0.0.0:5738`，安装器会探测默认路由对应的内网 IPv4，并输出形如 `http://192.168.1.20:5738` 的访问链接。首次受管安装不会自动启动 KixDNS，可在“系统”页启动；尚未产生运行快照时概览会明确显示未启动，不会误报数据过期。面板启动会同步启用开机启动，停止会同步禁用，因此宿主机重启后保持最后选择的状态；已有运行快照的停止状态仍会显示最后一次数据。首次访问创建管理员；请勿把 HTTP 端口直接映射到公网，跨不可信网络访问应限制防火墙来源，并使用 HTTPS 反向代理与 Secure Cookie。登录后可在“系统”页安装或切换受管 KixDNS 构建，并控制服务启动、停止和重启。增强版本之间切换不重复弹窗，失败会自动恢复；从外部安装迁移到增强版必须重新运行安装器并明确选择迁移。KixDNS 没有独立的服务重载动作，因此面板不提供重载按钮或 API；配置保存后的文件监听热加载是另一条独立链路。完整步骤、权限模型、版本管理与卸载见[部署指南](docs/deployment.md)。
 
 安装完成后可以直接使用全局卸载命令：
 
