@@ -124,6 +124,7 @@ describe('结构化配置模型', () => {
     expect(matcher.country_codes).toEqual([])
 
     const action = createAction('forward')
+    expect(action).toEqual({ type: 'forward', upstream: '', transport: '' })
     action.ecs = createEcs('static')
     resetAction(action, 'static_response')
     expect(action).toEqual({ type: 'static_response', rcode: 'NXDOMAIN' })
@@ -253,5 +254,27 @@ describe('结构化配置模型', () => {
     })
     expect(serialized.pipelines[0]?.rules[0]).not.toHaveProperty('matcher_operator')
     expect(serialized.pipelines[0]?.rules[0]).not.toHaveProperty('response_matcher_operator')
+  })
+
+  it('自动传输不写入 JSON 并保留显式传输协议', () => {
+    const config = normalizeConfig({
+      pipelines: [{
+        id: 'default',
+        rules: [{
+          name: 'forward',
+          actions: [
+            { type: 'forward', upstream: 'doh://dns.example/dns-query' },
+            { type: 'forward', upstream: '1.1.1.1:53', transport: 'tcp' },
+          ],
+        }],
+      }],
+    })
+
+    expect(config.pipelines[0]?.rules[0]?.actions[0]?.transport).toBe('')
+    const actions = JSON.parse(serializeConfig(config)).pipelines[0].rules[0].actions
+    expect(actions).toEqual([
+      { type: 'forward', upstream: 'doh://dns.example/dns-query' },
+      { type: 'forward', upstream: '1.1.1.1:53', transport: 'tcp' },
+    ])
   })
 })

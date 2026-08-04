@@ -51,7 +51,7 @@ function setTtl(action: ActionConfig, event: Event): void {
 
       <template v-else-if="action.type === 'forward'">
         <input v-model="action.upstream" class="action-row__grow" type="text" :aria-label="`动作 ${index + 1} 上游`" placeholder="1.1.1.1:53, doh://dns.google/dns-query">
-        <select v-model="action.transport" :aria-label="`动作 ${index + 1} 传输协议`"><option v-for="transport in TRANSPORT_OPTIONS" :key="transport" :value="transport">{{ transport.toUpperCase() }}</option></select>
+        <select v-model="action.transport" :aria-label="`动作 ${index + 1} 传输协议`"><option value="">自动（按上游）</option><option v-for="transport in TRANSPORT_OPTIONS" :key="transport" :value="transport">{{ transport.toUpperCase() }}</option></select>
         <select :value="action.ecs?.mode ?? ''" :aria-label="`动作 ${index + 1} ECS 模式`" @change="changeEcs(action, $event)"><option value="">无 ECS</option><option value="clear">Clear</option><option value="from_client_ip">Client IP</option><option value="static">固定子网</option></select>
         <input v-if="action.ecs?.mode === 'from_client_ip'" type="number" :value="action.ecs.prefix_v4" min="0" max="32" aria-label="ECS IPv4 前缀" placeholder="24" @input="setEcsNumber(action, 'prefix_v4', $event)">
         <input v-if="action.ecs?.mode === 'from_client_ip'" type="number" :value="action.ecs.prefix_v6" min="0" max="128" aria-label="ECS IPv6 前缀" placeholder="56" @input="setEcsNumber(action, 'prefix_v6', $event)">

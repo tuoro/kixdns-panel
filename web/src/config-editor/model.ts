@@ -70,8 +70,9 @@ function orderMatcher(value: unknown, compactDefaults = false): unknown {
   return orderFields(value, MATCHER_KEYS)
 }
 
-function orderAction(value: unknown): unknown {
+function orderAction(value: unknown, compactDefaults = false): unknown {
   if (!isObject(value)) return value
+  if (compactDefaults && value.transport === '') delete value.transport
   if (Object.prototype.hasOwnProperty.call(value, 'ecs')) value.ecs = orderEcs(value.ecs)
   return orderFields(value, ACTION_KEYS)
 }
@@ -81,15 +82,15 @@ function orderRule(value: unknown, compactDefaults = false): unknown {
   if (compactDefaults && value.matcher_operator === 'and') delete value.matcher_operator
   if (compactDefaults && value.response_matcher_operator === 'and') delete value.response_matcher_operator
   if (Array.isArray(value.matchers)) value.matchers = value.matchers.map((item) => orderMatcher(item, compactDefaults))
-  if (Array.isArray(value.actions)) value.actions = value.actions.map(orderAction)
+  if (Array.isArray(value.actions)) value.actions = value.actions.map((item) => orderAction(item, compactDefaults))
   if (Array.isArray(value.response_matchers)) {
     value.response_matchers = value.response_matchers.map((item) => orderMatcher(item, compactDefaults))
   }
   if (Array.isArray(value.response_actions_on_match)) {
-    value.response_actions_on_match = value.response_actions_on_match.map(orderAction)
+    value.response_actions_on_match = value.response_actions_on_match.map((item) => orderAction(item, compactDefaults))
   }
   if (Array.isArray(value.response_actions_on_miss)) {
-    value.response_actions_on_miss = value.response_actions_on_miss.map(orderAction)
+    value.response_actions_on_miss = value.response_actions_on_miss.map((item) => orderAction(item, compactDefaults))
   }
   return orderFields(value, RULE_KEYS)
 }
@@ -142,6 +143,7 @@ function normalizeMatcher(value: unknown, scope: MatcherScope): MatcherConfig {
 function normalizeAction(value: unknown): ActionConfig {
   const action = isObject(value) ? value : {}
   action.type = typeof action.type === 'string' ? action.type : 'log'
+  if (action.type === 'forward' && typeof action.transport !== 'string') action.transport = ''
   return action as ActionConfig
 }
 
@@ -233,7 +235,7 @@ export function resetAction(action: ActionConfig, type: string): ActionConfig {
   if (type === 'jump_to_pipeline') action.pipeline = ''
   if (type === 'forward') {
     action.upstream = ''
-    action.transport = 'udp'
+    action.transport = ''
   }
   return action
 }

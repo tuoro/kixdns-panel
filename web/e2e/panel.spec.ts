@@ -144,6 +144,14 @@ test('处理流程仅在多条件时显示条件关系', async ({ page }) => {
   await expectNoPageOverflow(page)
 })
 
+test('转发动作支持不写入协议的自动传输模式', async ({ page }) => {
+  await open(page, '/config')
+  const transport = page.getByLabel(/动作 \d+ 传输协议/).first()
+  await expect(transport.locator('option[value=""]')).toHaveText('自动（按上游）')
+  await transport.selectOption('')
+  await expect(transport).toHaveValue('')
+})
+
 test('增强版本可安装、切换并删除非活动库存', async ({ page }) => {
   await open(page, '/system')
   const panel = page.locator('.version-panel')
