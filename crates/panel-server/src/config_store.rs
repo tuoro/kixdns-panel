@@ -11,7 +11,7 @@ use tempfile::Builder;
 use tokio::sync::Mutex;
 
 use crate::auth::unix_timestamp;
-use crate::db::{ConfigVersionSummary, Database};
+use crate::db::{CONFIG_APPLY_FAILED, CONFIG_APPLY_PENDING, ConfigVersionSummary, Database};
 use crate::digest::sha256_hex;
 
 pub const MAX_CONFIG_BYTES: usize = 4 * 1024 * 1024;
@@ -71,6 +71,10 @@ impl ConfigStore {
     }
 
     pub async fn initialize_history(&self) -> anyhow::Result<()> {
+        if self.database.pending_config_version().await?.is_some() {
+            // 待应用版本优先保留；启动时的正式文件只是上一份已生效配置。
+            return Ok(());
+        }
         match self.current().await {
             Ok(document) => {
                 self.database
@@ -101,6 +105,31 @@ impl ConfigStore {
         Ok(document)
     }
 
+    /// 返回面板当前应编辑的配置。存在待应用或应用失败版本时，以该版本为准。
+    pub async fn desired(&self) -> Result<ConfigDocument, ConfigError> {
+        if let Some(version) = self.database.pending_config_version().await? {
+            let content: Value =
+                serde_json::from_str(&version.content).context("待应用配置内容已损坏")?;
+            validate_config_shape(&content)?;
+            return Ok(ConfigDocument {
+                content,
+                sha256: version.summary.sha256,
+                modified_at: version.summary.created_at,
+                version_id: Some(version.summary.id),
+                raw: version.content,
+            });
+        }
+        self.current().await
+    }
+
+    pub async fn pending(&self) -> anyhow::Result<Option<ConfigVersionSummary>> {
+        Ok(self
+            .database
+            .pending_config_version()
+            .await?
+            .map(|version| version.summary))
+    }
+
     pub async fn save(
         &self,
         content: Value,
@@ -116,29 +145,88 @@ impl ConfigStore {
         self.save_locked(content, message, actor).await
     }
 
-    pub async fn restore(
+    /// 将配置保存为待应用版本，不触碰 `KixDNS` 正式配置文件。
+    pub async fn save_pending(
         &self,
-        version_id: i64,
+        content: Value,
         expected_sha256: &str,
+        message: String,
         actor: String,
     ) -> Result<SaveResult, ConfigError> {
         let _guard = self.write_lock.lock().await;
-        let current = self.current().await?;
+        let current = self.desired().await?;
         if !constant_hash_eq(&current.sha256, expected_sha256) {
             return Err(ConfigError::Conflict);
         }
+        self.save_pending_locked(content, message, actor).await
+    }
+
+    /// 将指定待应用版本原子写入正式文件，但暂不改变历史状态。
+    ///
+    /// 调用方应在 `KixDNS` 返回热加载成功回执后再调用 `mark_applied`。
+    pub async fn write_pending(&self, version_id: i64) -> Result<SaveResult, ConfigError> {
+        let _guard = self.write_lock.lock().await;
         let version = self
             .database
             .get_config_version(version_id)
             .await?
             .ok_or(ConfigError::NotFound)?;
-        let content = serde_json::from_str(&version.content).context("历史配置内容已损坏")?;
-        self.save_locked(
-            content,
-            format!("回滚至版本 #{}", version.summary.id),
-            actor,
-        )
-        .await
+        if !matches!(
+            version.summary.apply_state.as_str(),
+            CONFIG_APPLY_PENDING | CONFIG_APPLY_FAILED
+        ) {
+            return Err(ConfigError::Invalid("该配置版本当前不可应用".to_owned()));
+        }
+        let content: Value =
+            serde_json::from_str(&version.content).context("待应用配置内容已损坏")?;
+        validate_config_shape(&content)?;
+        let path = Arc::clone(&self.path);
+        let bytes = version.content.as_bytes().to_vec();
+        tokio::task::spawn_blocking(move || atomic_write(&path, &bytes))
+            .await
+            .context("写入配置任务异常结束")??;
+        Ok(SaveResult {
+            version_id,
+            sha256: version.summary.sha256,
+        })
+    }
+
+    /// 将待应用版本标记为已生效。
+    pub async fn mark_applied(&self, version_id: i64) -> Result<(), ConfigError> {
+        if !self
+            .database
+            .mark_config_version_applied(version_id)
+            .await?
+        {
+            return Err(ConfigError::Conflict);
+        }
+        Ok(())
+    }
+
+    /// 原子恢复正式配置文件，不新增历史版本。
+    pub async fn restore_formal(&self, content: Value) -> Result<(), ConfigError> {
+        validate_config_shape(&content)?;
+        let serialized = format_json(&content)?;
+        if serialized.len() > MAX_CONFIG_BYTES {
+            return Err(ConfigError::Invalid("配置文件不能超过 4 MiB".to_owned()));
+        }
+        let path = Arc::clone(&self.path);
+        let bytes = serialized.into_bytes();
+        tokio::task::spawn_blocking(move || atomic_write(&path, &bytes))
+            .await
+            .context("写入配置任务异常结束")??;
+        Ok(())
+    }
+
+    pub async fn mark_pending_failed(
+        &self,
+        version_id: i64,
+        error: impl Into<String>,
+    ) -> anyhow::Result<()> {
+        self.database
+            .mark_config_version_failed(version_id, error.into())
+            .await?;
+        Ok(())
     }
 
     pub async fn version_content(&self, version_id: i64) -> Result<Value, ConfigError> {
@@ -165,11 +253,17 @@ impl ConfigStore {
         expected_sha256: &str,
     ) -> Result<(), ConfigError> {
         let _guard = self.write_lock.lock().await;
-        let current = self.current().await?;
-        if !constant_hash_eq(&current.sha256, expected_sha256) {
+        let desired = self.desired().await?;
+        if !constant_hash_eq(&desired.sha256, expected_sha256) {
             return Err(ConfigError::Conflict);
         }
-        if current.version_id == Some(version_id) {
+        if self
+            .current()
+            .await
+            .ok()
+            .and_then(|current| current.version_id)
+            == Some(version_id)
+        {
             return Err(ConfigError::ActiveVersion);
         }
         if !self.database.delete_config_version(version_id).await? {
@@ -208,13 +302,40 @@ impl ConfigStore {
         Ok(SaveResult { version_id, sha256 })
     }
 
+    async fn save_pending_locked(
+        &self,
+        content: Value,
+        message: String,
+        actor: String,
+    ) -> Result<SaveResult, ConfigError> {
+        validate_config_shape(&content)?;
+        let serialized = format_json(&content)?;
+        if serialized.len() > MAX_CONFIG_BYTES {
+            return Err(ConfigError::Invalid("配置文件不能超过 4 MiB".to_owned()));
+        }
+        let sha256 = sha256(serialized.as_bytes());
+        let version_id = self
+            .database
+            .store_pending_config_version(
+                sha256.clone(),
+                serialized,
+                normalize_message(&message),
+                actor,
+                unix_timestamp(),
+            )
+            .await?;
+        Ok(SaveResult { version_id, sha256 })
+    }
+
     pub async fn versions(&self) -> anyhow::Result<Vec<ConfigVersionSummary>> {
         self.database.list_config_versions(100).await
     }
 
     pub async fn retained_contents(&self) -> Result<Vec<Value>, ConfigError> {
         let mut contents = Vec::new();
-        contents.push(self.current().await?.content);
+        if let Ok(current) = self.current().await {
+            contents.push(current.content);
+        }
         for serialized in self.database.config_version_contents().await? {
             let content = serde_json::from_str(&serialized).context("历史配置内容已损坏")?;
             validate_config_shape(&content)?;
@@ -398,7 +519,12 @@ mod tests {
             json!({"pipelines": []})
         );
         let restored = store
-            .restore(initial_version.id, &saved.sha256, "admin".to_owned())
+            .save(
+                store.version_content(initial_version.id).await.unwrap(),
+                &saved.sha256,
+                format!("回滚至版本 #{}", initial_version.id),
+                "admin".to_owned(),
+            )
             .await
             .unwrap();
         assert_eq!(store.current().await.unwrap().sha256, restored.sha256);

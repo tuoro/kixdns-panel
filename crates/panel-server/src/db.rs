@@ -10,7 +10,12 @@ use serde::Serialize;
 
 const MAX_CONFIG_VERSIONS: i64 = 100;
 const MAX_AUDIT_EVENTS: i64 = 10_000;
-const CURRENT_SCHEMA_VERSION: i64 = 3;
+const CURRENT_SCHEMA_VERSION: i64 = 4;
+
+pub const CONFIG_APPLY_APPLIED: &str = "applied";
+pub const CONFIG_APPLY_PENDING: &str = "pending";
+pub const CONFIG_APPLY_FAILED: &str = "failed";
+pub const CONFIG_APPLY_SUPERSEDED: &str = "superseded";
 
 #[derive(Clone)]
 pub struct Database {
@@ -39,6 +44,8 @@ pub struct ConfigVersionSummary {
     pub message: String,
     pub actor: String,
     pub created_at: i64,
+    pub apply_state: String,
+    pub apply_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -217,17 +224,174 @@ impl Database {
         actor: String,
         created_at: i64,
     ) -> anyhow::Result<i64> {
+        self.store_config_version_with_state(
+            sha256,
+            content,
+            message,
+            actor,
+            created_at,
+            CONFIG_APPLY_APPLIED,
+        )
+        .await
+    }
+
+    async fn store_config_version_with_state(
+        &self,
+        sha256: String,
+        content: String,
+        message: String,
+        actor: String,
+        created_at: i64,
+        apply_state: &'static str,
+    ) -> anyhow::Result<i64> {
         self.call(move |connection| {
             let transaction = connection.transaction()?;
+            if apply_state == CONFIG_APPLY_APPLIED {
+                transaction.execute(
+                    "UPDATE config_versions
+                     SET apply_state = ?1, apply_error = NULL
+                     WHERE apply_state IN (?2, ?3)",
+                    params![
+                        CONFIG_APPLY_SUPERSEDED,
+                        CONFIG_APPLY_PENDING,
+                        CONFIG_APPLY_FAILED
+                    ],
+                )?;
+            }
             transaction.execute(
-                "INSERT INTO config_versions(sha256, content, message, actor, created_at) \
-                 VALUES(?1, ?2, ?3, ?4, ?5)",
-                params![sha256, content, message, actor, created_at],
+                "INSERT INTO config_versions(
+                     sha256, content, message, actor, created_at, apply_state, apply_error
+                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, NULL)",
+                params![sha256, content, message, actor, created_at, apply_state],
             )?;
             let id = transaction.last_insert_rowid();
             prune_config_versions(&transaction)?;
             transaction.commit()?;
             Ok(id)
+        })
+        .await
+    }
+
+    pub async fn store_pending_config_version(
+        &self,
+        sha256: String,
+        content: String,
+        message: String,
+        actor: String,
+        created_at: i64,
+    ) -> anyhow::Result<i64> {
+        self.call(move |connection| {
+            let transaction = connection.transaction()?;
+            transaction.execute(
+                "UPDATE config_versions
+                 SET apply_state = ?1, apply_error = NULL
+                 WHERE apply_state IN (?2, ?3)",
+                params![
+                    CONFIG_APPLY_SUPERSEDED,
+                    CONFIG_APPLY_PENDING,
+                    CONFIG_APPLY_FAILED
+                ],
+            )?;
+            transaction.execute(
+                "INSERT INTO config_versions(
+                     sha256, content, message, actor, created_at, apply_state, apply_error
+                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, NULL)",
+                params![
+                    sha256,
+                    content,
+                    message,
+                    actor,
+                    created_at,
+                    CONFIG_APPLY_PENDING
+                ],
+            )?;
+            let id = transaction.last_insert_rowid();
+            prune_config_versions(&transaction)?;
+            transaction.commit()?;
+            Ok(id)
+        })
+        .await
+    }
+
+    pub async fn pending_config_version(&self) -> anyhow::Result<Option<ConfigVersion>> {
+        self.call(|connection| {
+            connection
+                .query_row(
+                    "SELECT id, sha256, content, message, actor, created_at, apply_state, apply_error
+                     FROM config_versions
+                     WHERE apply_state IN (?1, ?2)
+                     ORDER BY id DESC LIMIT 1",
+                    params![CONFIG_APPLY_PENDING, CONFIG_APPLY_FAILED],
+                    |row| {
+                        Ok(ConfigVersion {
+                            summary: ConfigVersionSummary {
+                                id: row.get(0)?,
+                                sha256: row.get(1)?,
+                                message: row.get(3)?,
+                                actor: row.get(4)?,
+                                created_at: row.get(5)?,
+                                apply_state: row.get(6)?,
+                                apply_error: row.get(7)?,
+                            },
+                            content: row.get(2)?,
+                        })
+                    },
+                )
+                .optional()
+                .map_err(Into::into)
+        })
+        .await
+    }
+
+    pub async fn mark_config_version_applied(&self, id: i64) -> anyhow::Result<bool> {
+        self.call(move |connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let changed = transaction.execute(
+                "UPDATE config_versions
+                 SET apply_state = ?1, apply_error = NULL
+                 WHERE id = ?2 AND apply_state IN (?3, ?4)",
+                params![
+                    CONFIG_APPLY_APPLIED,
+                    id,
+                    CONFIG_APPLY_PENDING,
+                    CONFIG_APPLY_FAILED
+                ],
+            )?;
+            if changed > 0 {
+                transaction.execute(
+                    "UPDATE config_versions
+                     SET apply_state = ?1, apply_error = NULL
+                     WHERE apply_state IN (?2, ?3) AND id != ?4",
+                    params![
+                        CONFIG_APPLY_SUPERSEDED,
+                        CONFIG_APPLY_PENDING,
+                        CONFIG_APPLY_FAILED,
+                        id
+                    ],
+                )?;
+            }
+            transaction.commit()?;
+            Ok(changed > 0)
+        })
+        .await
+    }
+
+    pub async fn mark_config_version_failed(&self, id: i64, error: String) -> anyhow::Result<bool> {
+        self.call(move |connection| {
+            let changed = connection.execute(
+                "UPDATE config_versions
+                 SET apply_state = ?1, apply_error = ?2
+                 WHERE id = ?3 AND apply_state IN (?4, ?5)",
+                params![
+                    CONFIG_APPLY_FAILED,
+                    error,
+                    id,
+                    CONFIG_APPLY_PENDING,
+                    CONFIG_APPLY_FAILED
+                ],
+            )?;
+            Ok(changed > 0)
         })
         .await
     }
@@ -244,8 +408,9 @@ impl Database {
             let transaction = connection.transaction()?;
             let latest: Option<String> = transaction
                 .query_row(
-                    "SELECT sha256 FROM config_versions ORDER BY id DESC LIMIT 1",
-                    [],
+                    "SELECT sha256 FROM config_versions
+                     WHERE apply_state = ?1 ORDER BY id DESC LIMIT 1",
+                    [CONFIG_APPLY_APPLIED],
                     |row| row.get(0),
                 )
                 .optional()?;
@@ -253,9 +418,17 @@ impl Database {
                 return Ok(None);
             }
             transaction.execute(
-                "INSERT INTO config_versions(sha256, content, message, actor, created_at) \
-                 VALUES(?1, ?2, ?3, ?4, ?5)",
-                params![sha256, content, message, actor, created_at],
+                "INSERT INTO config_versions(
+                     sha256, content, message, actor, created_at, apply_state, apply_error
+                 ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, NULL)",
+                params![
+                    sha256,
+                    content,
+                    message,
+                    actor,
+                    created_at,
+                    CONFIG_APPLY_APPLIED
+                ],
             )?;
             let id = transaction.last_insert_rowid();
             prune_config_versions(&transaction)?;
@@ -272,7 +445,7 @@ impl Database {
         let limit = i64::try_from(limit.min(200)).unwrap_or(200);
         self.call(move |connection| {
             let mut statement = connection.prepare(
-                "SELECT id, sha256, message, actor, created_at \
+                "SELECT id, sha256, message, actor, created_at, apply_state, apply_error \
                  FROM config_versions ORDER BY id DESC LIMIT ?1",
             )?;
             let rows = statement.query_map([limit], |row| {
@@ -282,6 +455,8 @@ impl Database {
                     message: row.get(2)?,
                     actor: row.get(3)?,
                     created_at: row.get(4)?,
+                    apply_state: row.get(5)?,
+                    apply_error: row.get(6)?,
                 })
             })?;
             rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -293,7 +468,7 @@ impl Database {
         self.call(move |connection| {
             connection
                 .query_row(
-                    "SELECT id, sha256, content, message, actor, created_at \
+                    "SELECT id, sha256, content, message, actor, created_at, apply_state, apply_error \
                      FROM config_versions WHERE id = ?1",
                     [id],
                     |row| {
@@ -304,6 +479,8 @@ impl Database {
                                 message: row.get(3)?,
                                 actor: row.get(4)?,
                                 created_at: row.get(5)?,
+                                apply_state: row.get(6)?,
+                                apply_error: row.get(7)?,
                             },
                             content: row.get(2)?,
                         })
@@ -332,8 +509,13 @@ impl Database {
         self.call(move |connection| {
             connection
                 .query_row(
-                    "SELECT id FROM config_versions WHERE sha256 = ?1 ORDER BY id DESC LIMIT 1",
-                    [sha256],
+                    "SELECT id FROM config_versions
+                     WHERE sha256 = ?1
+                     ORDER BY CASE apply_state
+                         WHEN ?2 THEN 0
+                         ELSE 1
+                     END, id DESC LIMIT 1",
+                    params![sha256, CONFIG_APPLY_APPLIED],
                     |row| row.get(0),
                 )
                 .optional()
@@ -524,6 +706,19 @@ fn initialize_database(
             ",
         )?;
     }
+    if version < 4 {
+        transaction.execute_batch(
+            r"
+            ALTER TABLE config_versions
+                ADD COLUMN apply_state TEXT NOT NULL DEFAULT 'applied';
+            ALTER TABLE config_versions
+                ADD COLUMN apply_error TEXT;
+            CREATE INDEX IF NOT EXISTS config_versions_apply_idx
+                ON config_versions(apply_state, id DESC);
+            PRAGMA user_version = 4;
+            ",
+        )?;
+    }
     transaction.commit()?;
     prune_config_versions(connection)?;
     prune_audit_events(connection)?;
@@ -572,9 +767,12 @@ fn backup_database(
 
 fn prune_config_versions(connection: &Connection) -> rusqlite::Result<()> {
     connection.execute(
-        "DELETE FROM config_versions WHERE id <= COALESCE((\
-         SELECT id FROM config_versions ORDER BY id DESC LIMIT 1 OFFSET ?1), 0)",
-        [MAX_CONFIG_VERSIONS],
+        "DELETE FROM config_versions
+         WHERE id <= COALESCE((
+             SELECT id FROM config_versions ORDER BY id DESC LIMIT 1 OFFSET ?1
+         ), 0)
+         AND COALESCE(apply_state, 'applied') != ?2",
+        params![MAX_CONFIG_VERSIONS, CONFIG_APPLY_PENDING],
     )?;
     Ok(())
 }
@@ -658,7 +856,11 @@ mod tests {
         let mut connection = Connection::open_in_memory().unwrap();
         connection
             .execute_batch(
-                "CREATE TABLE config_versions (id INTEGER PRIMARY KEY, value TEXT);\
+                "CREATE TABLE config_versions (
+                     id INTEGER PRIMARY KEY,
+                     value TEXT,
+                     apply_state TEXT NOT NULL DEFAULT 'applied'
+                 );\
                  CREATE TABLE audit_events (id INTEGER PRIMARY KEY, value TEXT);",
             )
             .unwrap();
@@ -764,6 +966,15 @@ mod tests {
                 )
                 .is_ok()
         );
+        let has_apply_state: i64 = migrated
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('config_versions')
+                 WHERE name = 'apply_state'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_apply_state, 1);
         drop(migrated);
 
         let backups = database_backups(directory.path());

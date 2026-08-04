@@ -631,6 +631,79 @@ async fn config_document_exposes_runtime_and_version_detail() {
 }
 
 #[tokio::test]
+async fn config_save_while_kixdns_is_stopped_creates_pending_version() {
+    let context = authenticated_app().await;
+    let current = context
+        .app
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/config")
+                .header(COOKIE, context.cookies.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(current.status(), StatusCode::OK);
+    let current: Value =
+        serde_json::from_slice(&to_bytes(current.into_body(), 64 * 1024).await.unwrap()).unwrap();
+    let expected_sha256 = current["sha256"].as_str().unwrap();
+
+    let response = context
+        .app
+        .clone()
+        .oneshot(
+            Request::put("/api/v1/config")
+                .header(CONTENT_TYPE, "application/json")
+                .header(COOKIE, context.cookies.clone())
+                .header("x-csrf-token", context.csrf_token.clone())
+                .body(Body::from(format!(
+                    r#"{{"content":{{"pipelines":[{{"id":"stopped-test","rules":[]}}]}}, "expected_sha256":"{expected_sha256}", "message":"stopped runtime"}}"#
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+    let payload: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(payload["apply_state"], "pending");
+    assert!(payload["active_config"].is_null());
+    assert!(
+        !body
+            .windows(b"No such file".len())
+            .any(|window| window == b"No such file")
+    );
+    assert!(
+        !body
+            .windows(b"os error 2".len())
+            .any(|window| window == b"os error 2")
+    );
+    let formal_content: Value = serde_json::from_slice(
+        &std::fs::read(context.directory.path().join("pipeline.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(formal_content["pipelines"], serde_json::json!([]));
+
+    let document = context
+        .app
+        .oneshot(
+            Request::get("/api/v1/config")
+                .header(COOKIE, context.cookies)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(document.status(), StatusCode::OK);
+    let document: Value =
+        serde_json::from_slice(&to_bytes(document.into_body(), 64 * 1024).await.unwrap()).unwrap();
+    assert_eq!(document["runtime"]["apply_state"], "pending");
+    assert_eq!(document["pending"]["message"], "stopped runtime");
+    assert_eq!(document["content"]["pipelines"][0]["id"], "stopped-test");
+}
+
+#[tokio::test]
 async fn version_delete_requires_authentication_and_csrf() {
     let context = authenticated_app().await;
     let endpoint = "/api/v1/kixdns/versions/action/42/delete";

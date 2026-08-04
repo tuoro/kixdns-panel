@@ -190,13 +190,17 @@ async fn apply_scheduled_geo_update(state: &AppState) -> anyhow::Result<()> {
     }
     let updated = state.geo_data.sync(request).await?;
     let _apply_guard = state.config_apply_lock.lock().await;
-    let previous = state.config.current().await?;
+    let runtime = state.control.active_config().await;
+    let previous = if matches!(&runtime, Err(ControlError::Unavailable(_))) {
+        state.config.desired().await?
+    } else {
+        state.config.current().await?
+    };
     let mut candidate = previous.content.clone();
     if !apply_manifest_paths(&mut candidate, &updated)? {
         return Ok(());
     }
 
-    let runtime = state.control.active_config().await;
     let result = match runtime {
         Ok(before_reload) => {
             ensure_running_config_supported(state, &candidate).await?;
@@ -230,7 +234,7 @@ async fn apply_scheduled_geo_update(state: &AppState) -> anyhow::Result<()> {
         Err(ControlError::Unavailable(_)) => {
             state
                 .config
-                .save(
+                .save_pending(
                     candidate,
                     &previous.sha256,
                     "定时更新 Geo 数据（待 KixDNS 启动）".to_owned(),

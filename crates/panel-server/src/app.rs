@@ -39,13 +39,14 @@ use crate::auth::{
     verify_csrf, verify_password,
 };
 use crate::config_capabilities::ensure_config_supported;
-use crate::config_store::{ConfigError, ConfigStore, MAX_CONFIG_BYTES};
+use crate::config_store::{ConfigError, ConfigStore, MAX_CONFIG_BYTES, SaveResult};
 use crate::control::{
     ActiveConfig, CacheFlushResult, ControlClient, ControlError, Health, MetricsSnapshot,
     QueryStatsSnapshot, StatsClearResult, ValidationResult,
 };
 use crate::db::{
-    AuditPage, ConfigVersionSummary, Database, SessionRecord, UserRecord, ensure_database_parent,
+    AuditPage, CONFIG_APPLY_APPLIED, CONFIG_APPLY_FAILED, CONFIG_APPLY_PENDING,
+    ConfigVersionSummary, Database, SessionRecord, UserRecord, ensure_database_parent,
 };
 use crate::error::{AppError, AppResult};
 use crate::geo_data::{GeoDataError, GeoDataManager};
@@ -160,7 +161,20 @@ struct ConfigDocumentResponse {
     sha256: String,
     modified_at: i64,
     version_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending: Option<PendingConfigResponse>,
     runtime: ConfigRuntimeState,
+}
+
+#[derive(Debug, Serialize)]
+struct PendingConfigResponse {
+    version_id: i64,
+    sha256: String,
+    message: String,
+    actor: String,
+    created_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -168,6 +182,10 @@ struct ConfigRuntimeState {
     status: &'static str,
     active_sha256: Option<String>,
     generation: Option<u64>,
+    apply_state: String,
+    declared_capabilities: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,7 +203,11 @@ struct OverviewResponse {
 struct ConfigApplyResponse {
     version_id: i64,
     sha256: String,
-    active_config: ActiveConfig,
+    apply_state: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    apply_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    active_config: Option<ActiveConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     validation: Option<ValidationResult>,
 }
@@ -307,6 +329,7 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         dummy_password_hash: Arc::from(dummy_password_hash),
     };
     spawn_geo_scheduler(state.clone());
+    spawn_config_reconciler(state.clone());
     let api = api_router(state);
 
     let index_file = settings.web_root.join("index.html");
@@ -541,21 +564,49 @@ async fn get_config(
     jar: CookieJar,
 ) -> AppResult<Json<ConfigDocumentResponse>> {
     authenticate(&state.database, &jar).await?;
-    let document = state.config.current().await.map_err(map_config_error)?;
+    let document = state.config.desired().await.map_err(map_config_error)?;
+    let pending = state.config.pending().await.map_err(AppError::Internal)?;
+    let declared_capabilities = state
+        .updates
+        .active_capabilities()
+        .await
+        .unwrap_or_default();
+    let pending_status = pending
+        .as_ref()
+        .map(|summary| match summary.apply_state.as_str() {
+            CONFIG_APPLY_FAILED => "failed",
+            _ => "pending",
+        });
     let runtime = match state.control.active_config().await {
         Ok(active) => ConfigRuntimeState {
-            status: if active.sha256 == document.sha256 {
+            status: pending_status.unwrap_or(if active.sha256 == document.sha256 {
                 "active"
             } else {
                 "different"
-            },
+            }),
             active_sha256: Some(active.sha256),
             generation: Some(active.generation),
+            apply_state: pending.as_ref().map_or_else(
+                || "active".to_owned(),
+                |summary| summary.apply_state.clone(),
+            ),
+            declared_capabilities: declared_capabilities.clone(),
+            pending_error: pending
+                .as_ref()
+                .and_then(|summary| summary.apply_error.clone()),
         },
         Err(_) => ConfigRuntimeState {
-            status: "unavailable",
+            status: pending_status.unwrap_or("unavailable"),
             active_sha256: None,
             generation: None,
+            apply_state: pending.as_ref().map_or_else(
+                || "unavailable".to_owned(),
+                |summary| summary.apply_state.clone(),
+            ),
+            declared_capabilities,
+            pending_error: pending
+                .as_ref()
+                .and_then(|summary| summary.apply_error.clone()),
         },
     };
     Ok(Json(ConfigDocumentResponse {
@@ -563,6 +614,14 @@ async fn get_config(
         sha256: document.sha256,
         modified_at: document.modified_at,
         version_id: document.version_id,
+        pending: pending.map(|summary| PendingConfigResponse {
+            version_id: summary.id,
+            sha256: summary.sha256,
+            message: summary.message,
+            actor: summary.actor,
+            created_at: summary.created_at,
+            error: summary.apply_error,
+        }),
         runtime,
     }))
 }
@@ -720,47 +779,14 @@ async fn save_config(
     let session = authenticate(&state.database, &jar).await?;
     verify_csrf(&session, &jar, &headers)?;
     let _apply_guard = state.config_apply_lock.lock().await;
-    ensure_running_config_supported(&state, &request.content).await?;
-    let previous = state.config.current().await.map_err(map_config_error)?;
-    let before_reload = state
-        .control
-        .active_config()
-        .await
-        .map_err(map_control_error)?;
-    let validation = state
-        .control
-        .validate(&request.content)
-        .await
-        .map_err(map_control_error)?;
-    ensure_validation_accepted(&validation)?;
-    let result = state
-        .config
-        .save(
-            request.content,
-            &request.expected_sha256,
-            request.message,
-            session.username.clone(),
-        )
-        .await
-        .map_err(map_config_error)?;
-    let active_config = match state
-        .control
-        .wait_for_config(
-            &result.sha256,
-            before_reload.reload_sequence,
-            std::time::Duration::from_secs(5),
-        )
-        .await
-    {
-        Ok(active) => active,
-        Err(error) => {
-            rollback_config(&state, previous.content, &result.sha256, &session.username).await?;
-            return Err(AppError::Unprocessable(
-                "reload_failed",
-                format!("新配置未生效，已自动回滚：{error}"),
-            ));
-        }
-    };
+    let result = save_candidate(
+        &state,
+        request.content,
+        &request.expected_sha256,
+        request.message,
+        session.username.clone(),
+    )
+    .await?;
     state
         .database
         .audit(
@@ -771,12 +797,7 @@ async fn save_config(
         )
         .await
         .map_err(AppError::Internal)?;
-    Ok(Json(ConfigApplyResponse {
-        version_id: result.version_id,
-        sha256: result.sha256,
-        active_config,
-        validation: Some(validation),
-    }))
+    Ok(Json(result))
 }
 
 async fn config_versions(
@@ -812,47 +833,19 @@ async fn restore_config(
     let session = authenticate(&state.database, &jar).await?;
     verify_csrf(&session, &jar, &headers)?;
     let _apply_guard = state.config_apply_lock.lock().await;
-    let previous = state.config.current().await.map_err(map_config_error)?;
-    let before_reload = state
-        .control
-        .active_config()
-        .await
-        .map_err(map_control_error)?;
     let candidate = state
         .config
         .version_content(id)
         .await
         .map_err(map_config_error)?;
-    ensure_running_config_supported(&state, &candidate).await?;
-    let validation = state
-        .control
-        .validate(&candidate)
-        .await
-        .map_err(map_control_error)?;
-    ensure_validation_accepted(&validation)?;
-    let result = state
-        .config
-        .restore(id, &request.expected_sha256, session.username.clone())
-        .await
-        .map_err(map_config_error)?;
-    let active_config = match state
-        .control
-        .wait_for_config(
-            &result.sha256,
-            before_reload.reload_sequence,
-            std::time::Duration::from_secs(5),
-        )
-        .await
-    {
-        Ok(active) => active,
-        Err(error) => {
-            rollback_config(&state, previous.content, &result.sha256, &session.username).await?;
-            return Err(AppError::Unprocessable(
-                "reload_failed",
-                format!("历史配置未生效，已自动回滚：{error}"),
-            ));
-        }
-    };
+    let result = save_candidate(
+        &state,
+        candidate,
+        &request.expected_sha256,
+        format!("回滚至版本 #{id}"),
+        session.username.clone(),
+    )
+    .await?;
     state
         .database
         .audit(
@@ -863,12 +856,7 @@ async fn restore_config(
         )
         .await
         .map_err(AppError::Internal)?;
-    Ok(Json(ConfigApplyResponse {
-        version_id: result.version_id,
-        sha256: result.sha256,
-        active_config,
-        validation: Some(validation),
-    }))
+    Ok(Json(result))
 }
 
 async fn delete_config_version(
@@ -880,6 +868,7 @@ async fn delete_config_version(
 ) -> AppResult<Json<DeleteConfigVersionResponse>> {
     let session = authenticate(&state.database, &jar).await?;
     verify_csrf(&session, &jar, &headers)?;
+    let _apply_guard = state.config_apply_lock.lock().await;
     state
         .config
         .delete_version(id, &request.expected_sha256)
@@ -953,6 +942,14 @@ async fn service_action(
         .service_action(parsed)
         .await
         .map_err(map_operation_error)?;
+    if matches!(parsed, ServiceAction::Start | ServiceAction::Restart) {
+        let reconcile_state = state.clone();
+        tokio::spawn(async move {
+            if let Err(error) = reconcile_pending(&reconcile_state).await {
+                tracing::warn!(error = ?error, "服务启动后应用待应用配置失败");
+            }
+        });
+    }
     state
         .database
         .audit(
@@ -1298,6 +1295,280 @@ async fn rollback_config(
         .map_err(AppError::Internal)
 }
 
+async fn save_candidate(
+    state: &AppState,
+    content: Value,
+    expected_sha256: &str,
+    message: String,
+    actor: String,
+) -> AppResult<ConfigApplyResponse> {
+    let result = state
+        .config
+        .save_pending(content.clone(), expected_sha256, message, actor.clone())
+        .await
+        .map_err(map_config_error)?;
+    let Some(validation) = validate_candidate(state, &content, &result).await? else {
+        return Ok(pending_response(result.version_id, result.sha256, None));
+    };
+    activate_candidate(state, result, validation).await
+}
+
+async fn validate_candidate(
+    state: &AppState,
+    content: &Value,
+    result: &SaveResult,
+) -> AppResult<Option<ValidationResult>> {
+    let health = match state.control.health().await {
+        Ok(health) => health,
+        Err(error) if should_defer_control(&error) => return Ok(None),
+        Err(error) => {
+            mark_candidate_failed(state, result.version_id, error.to_string()).await?;
+            return Err(map_control_error(error));
+        }
+    };
+    if let Err(error) = ensure_config_supported(content, &health.capabilities) {
+        let message = error.to_string();
+        mark_candidate_failed(state, result.version_id, message.clone()).await?;
+        return Err(AppError::Unprocessable(
+            "unsupported_config_fields",
+            message,
+        ));
+    }
+    let validation = match state.control.validate(content).await {
+        Ok(validation) => validation,
+        Err(error) if should_defer_control(&error) => return Ok(None),
+        Err(error) => {
+            mark_candidate_failed(state, result.version_id, error.to_string()).await?;
+            return Err(map_control_error(error));
+        }
+    };
+    if !validation.valid {
+        mark_candidate_failed(
+            state,
+            result.version_id,
+            "KixDNS 拒绝该配置，请先修正校验错误",
+        )
+        .await?;
+        ensure_validation_accepted(&validation)?;
+    }
+    Ok(Some(validation))
+}
+
+async fn mark_candidate_failed(
+    state: &AppState,
+    version_id: i64,
+    error: impl Into<String>,
+) -> AppResult<()> {
+    state
+        .config
+        .mark_pending_failed(version_id, error)
+        .await
+        .map_err(AppError::Internal)
+}
+
+async fn activate_candidate(
+    state: &AppState,
+    result: SaveResult,
+    validation: ValidationResult,
+) -> AppResult<ConfigApplyResponse> {
+    let previous = state.config.current().await.ok();
+    let before_reload = match state.control.active_config().await {
+        Ok(active) => active,
+        Err(error) if should_defer_control(&error) => {
+            return Ok(pending_response(
+                result.version_id,
+                result.sha256,
+                Some(validation),
+            ));
+        }
+        Err(error) => {
+            mark_candidate_failed(state, result.version_id, error.to_string()).await?;
+            return Err(map_control_error(error));
+        }
+    };
+    state
+        .config
+        .write_pending(result.version_id)
+        .await
+        .map_err(map_config_error)?;
+    let active_config =
+        if before_reload.sha256 == result.sha256 && before_reload.last_reload.success {
+            Ok(before_reload)
+        } else {
+            state
+                .control
+                .wait_for_config(
+                    &result.sha256,
+                    before_reload.reload_sequence,
+                    std::time::Duration::from_secs(5),
+                )
+                .await
+        };
+    let active_config = match active_config {
+        Ok(active) => active,
+        Err(error) => {
+            if let Some(previous) = previous {
+                state
+                    .config
+                    .restore_formal(previous.content)
+                    .await
+                    .map_err(map_config_error)?;
+            }
+            mark_candidate_failed(state, result.version_id, error.to_string()).await?;
+            return Err(AppError::Unprocessable(
+                "reload_failed",
+                format!("新配置未生效，旧配置仍已保留：{error}"),
+            ));
+        }
+    };
+    state
+        .config
+        .mark_applied(result.version_id)
+        .await
+        .map_err(map_config_error)?;
+    Ok(ConfigApplyResponse {
+        version_id: result.version_id,
+        sha256: result.sha256,
+        apply_state: CONFIG_APPLY_APPLIED,
+        apply_error: None,
+        active_config: Some(active_config),
+        validation: Some(validation),
+    })
+}
+
+fn pending_response(
+    version_id: i64,
+    sha256: String,
+    validation: Option<ValidationResult>,
+) -> ConfigApplyResponse {
+    ConfigApplyResponse {
+        version_id,
+        sha256,
+        apply_state: CONFIG_APPLY_PENDING,
+        apply_error: None,
+        active_config: None,
+        validation,
+    }
+}
+
+fn should_defer_control(error: &ControlError) -> bool {
+    matches!(
+        error,
+        ControlError::Unavailable(_) | ControlError::Unsupported(_)
+    )
+}
+
+fn spawn_config_reconciler(state: AppState) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(5));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            if let Err(error) = reconcile_pending(&state).await {
+                tracing::warn!(error = ?error, "待应用配置收敛失败");
+            }
+        }
+    });
+}
+
+async fn reconcile_pending(state: &AppState) -> anyhow::Result<()> {
+    let Some(pending) = state.config.pending().await? else {
+        return Ok(());
+    };
+    if pending.apply_state != CONFIG_APPLY_PENDING {
+        return Ok(());
+    }
+    let _apply_guard = state.config_apply_lock.lock().await;
+    let Some(pending) = state.config.pending().await? else {
+        return Ok(());
+    };
+    if pending.apply_state != CONFIG_APPLY_PENDING {
+        return Ok(());
+    }
+
+    let health = match state.control.health().await {
+        Ok(health) => health,
+        Err(error) if should_defer_control(&error) => return Ok(()),
+        Err(error) => {
+            state
+                .config
+                .mark_pending_failed(pending.id, error.to_string())
+                .await?;
+            return Ok(());
+        }
+    };
+    let content = state.config.version(pending.id).await?.content;
+    if let Err(error) = ensure_config_supported(&content, &health.capabilities) {
+        state
+            .config
+            .mark_pending_failed(pending.id, error.to_string())
+            .await?;
+        return Ok(());
+    }
+    let validation = match state.control.validate(&content).await {
+        Ok(validation) => validation,
+        Err(error) if should_defer_control(&error) => return Ok(()),
+        Err(error) => {
+            state
+                .config
+                .mark_pending_failed(pending.id, error.to_string())
+                .await?;
+            return Ok(());
+        }
+    };
+    if !validation.valid {
+        state
+            .config
+            .mark_pending_failed(pending.id, "KixDNS 拒绝该配置，请先修正校验错误".to_owned())
+            .await?;
+        return Ok(());
+    }
+    let Some(previous) = state.config.current().await.ok() else {
+        state
+            .config
+            .mark_pending_failed(pending.id, "正式配置文件不存在".to_owned())
+            .await?;
+        return Ok(());
+    };
+    let before_reload = match state.control.active_config().await {
+        Ok(active) => active,
+        Err(error) if should_defer_control(&error) => return Ok(()),
+        Err(error) => {
+            state
+                .config
+                .mark_pending_failed(pending.id, error.to_string())
+                .await?;
+            return Ok(());
+        }
+    };
+    state.config.write_pending(pending.id).await?;
+    let active = if before_reload.sha256 == pending.sha256 && before_reload.last_reload.success {
+        Ok(before_reload)
+    } else {
+        state
+            .control
+            .wait_for_config(
+                &pending.sha256,
+                before_reload.reload_sequence,
+                std::time::Duration::from_secs(5),
+            )
+            .await
+    };
+    match active {
+        Ok(_) => {
+            state.config.mark_applied(pending.id).await?;
+        }
+        Err(error) => {
+            state.config.restore_formal(previous.content).await?;
+            state
+                .config
+                .mark_pending_failed(pending.id, error.to_string())
+                .await?;
+        }
+    }
+    Ok(())
+}
+
 async fn ensure_running_config_supported(state: &AppState, content: &Value) -> AppResult<()> {
     let health = state.control.health().await.map_err(map_control_error)?;
     ensure_config_supported(content, &health.capabilities)
@@ -1406,15 +1677,27 @@ fn map_config_error(error: ConfigError) -> AppError {
 fn map_control_error(error: ControlError) -> AppError {
     match error {
         ControlError::Rejected(message) => AppError::Unprocessable("kixdns_rejected", message),
-        ControlError::Unavailable(message) => {
-            AppError::ServiceUnavailable("kixdns_unavailable", message)
-        }
+        ControlError::Unavailable(message) => AppError::ServiceUnavailable(
+            "kixdns_unavailable",
+            normalize_control_unavailable_message(&message),
+        ),
         ControlError::Protocol(message) => {
             AppError::ServiceUnavailable("kixdns_protocol_error", message)
         }
         ControlError::Unsupported(message) => {
             AppError::NotFound("kixdns_capability_unsupported", message)
         }
+    }
+}
+
+fn normalize_control_unavailable_message(message: &str) -> String {
+    if message.contains("No such file")
+        || message.contains("os error 2")
+        || message.contains("找不到指定的文件")
+    {
+        "KixDNS 未启动，增强控制接口暂不可用".to_owned()
+    } else {
+        message.to_owned()
     }
 }
 
