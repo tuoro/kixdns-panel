@@ -54,8 +54,8 @@ use crate::operations::{
     DnsDiagnostic, LogEntry, OperationError, Operations, ServiceAction, ServiceStatus,
 };
 use crate::updates::{
-    InstalledVersion, UpdateError, UpdateInfo, UpdateManager, UpdateNotifications, UpdateSettings,
-    VersionCatalog, VersionSource,
+    GithubTokenStatus, InstalledVersion, UpdateError, UpdateInfo, UpdateManager,
+    UpdateNotifications, UpdateSettings, VersionCatalog, VersionSource,
 };
 
 #[derive(Debug, Clone)]
@@ -80,6 +80,7 @@ pub struct AppSettings {
     pub kixdns_binary: PathBuf,
     pub kixdns_versions: PathBuf,
     pub bundled_metadata: PathBuf,
+    pub github_token_path: PathBuf,
     pub geo_data_path: PathBuf,
     pub web_root: PathBuf,
     pub secure_cookie: bool,
@@ -153,6 +154,11 @@ struct DeleteConfigVersionResponse {
 struct PanelUpdateStartResponse {
     accepted: bool,
     target_version: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubTokenRequest {
+    token: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -300,6 +306,7 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
             binary_path: settings.kixdns_binary,
             versions_path: settings.kixdns_versions,
             bundled_metadata: settings.bundled_metadata,
+            github_token_path: settings.github_token_path,
         },
     )
     .map_err(|error| anyhow::anyhow!(error))?;
@@ -380,6 +387,12 @@ fn api_router(state: AppState) -> Router {
         .route("/diagnostics/dns", post(dns_diagnostic))
         .route("/updates", get(check_updates))
         .route("/updates/status", get(update_notifications))
+        .route(
+            "/settings/github-token",
+            get(github_token_status)
+                .put(save_github_token)
+                .delete(delete_github_token),
+        )
         .route(
             "/panel-update",
             get(panel_update_status).post(start_panel_update),
@@ -1048,6 +1061,65 @@ async fn update_notifications(
         .await
         .map(Json)
         .map_err(map_update_error)
+}
+
+async fn github_token_status(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> AppResult<Json<GithubTokenStatus>> {
+    authenticate(&state.database, &jar).await?;
+    Ok(Json(state.updates.github_token_status().await))
+}
+
+async fn save_github_token(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Json(request): Json<GithubTokenRequest>,
+) -> AppResult<Json<GithubTokenStatus>> {
+    let session = authenticate(&state.database, &jar).await?;
+    verify_csrf(&session, &jar, &headers)?;
+    let status = state
+        .updates
+        .save_github_token(request.token)
+        .await
+        .map_err(map_update_error)?;
+    state
+        .database
+        .audit(
+            Some(session.username),
+            "system.github_token.configure".to_owned(),
+            "配置 GitHub API Token".to_owned(),
+            unix_timestamp(),
+        )
+        .await
+        .map_err(AppError::Internal)?;
+    Ok(Json(status))
+}
+
+async fn delete_github_token(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> AppResult<Json<GithubTokenStatus>> {
+    let session = authenticate(&state.database, &jar).await?;
+    verify_csrf(&session, &jar, &headers)?;
+    let status = state
+        .updates
+        .delete_github_token()
+        .await
+        .map_err(map_update_error)?;
+    state
+        .database
+        .audit(
+            Some(session.username),
+            "system.github_token.remove".to_owned(),
+            "删除 GitHub API Token".to_owned(),
+            unix_timestamp(),
+        )
+        .await
+        .map_err(AppError::Internal)?;
+    Ok(Json(status))
 }
 
 async fn panel_update_status(

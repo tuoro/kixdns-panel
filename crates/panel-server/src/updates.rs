@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tempfile::Builder;
@@ -50,6 +51,7 @@ const MAX_BUILD_IDENTITY_BYTES: u64 = 64 * 1024;
 const MAX_CAPABILITIES_BYTES: u64 = 64 * 1024;
 const REMOTE_CACHE_TTL: Duration = Duration::from_mins(1);
 const PANEL_CACHE_TTL: Duration = Duration::from_mins(15);
+const MAX_GITHUB_TOKEN_BYTES: usize = 256;
 
 fn artifact_page_count(total_count: usize) -> Result<usize, UpdateError> {
     let pages = total_count.div_ceil(ARTIFACT_PAGE_SIZE);
@@ -60,6 +62,123 @@ fn artifact_page_count(total_count: usize) -> Result<usize, UpdateError> {
         "Artifact 数量超过分页安全上限（最多 {} 条）",
         ARTIFACT_PAGE_SIZE * MAX_ARTIFACT_PAGES
     )))
+}
+
+fn parse_rate_limit(headers: &reqwest::header::HeaderMap) -> Option<GithubRateLimit> {
+    let limit = headers
+        .get("x-ratelimit-limit")?
+        .to_str()
+        .ok()?
+        .parse()
+        .ok()?;
+    let remaining = headers
+        .get("x-ratelimit-remaining")?
+        .to_str()
+        .ok()?
+        .parse()
+        .ok()?;
+    let reset_at = headers
+        .get("x-ratelimit-reset")?
+        .to_str()
+        .ok()?
+        .parse()
+        .ok()?;
+    Some(GithubRateLimit {
+        limit,
+        remaining,
+        reset_at,
+    })
+}
+
+fn validate_github_token(token: &str) -> Result<(), UpdateError> {
+    if token.is_empty() || token.len() > MAX_GITHUB_TOKEN_BYTES {
+        return Err(UpdateError::Invalid("GitHub Token 长度无效".to_owned()));
+    }
+    if !token
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err(UpdateError::Invalid(
+            "GitHub Token 只能包含 ASCII 字母、数字、下划线或短横线".to_owned(),
+        ));
+    }
+    if !(token.starts_with("github_pat_")
+        || ["ghp_", "gho_", "ghu_", "ghs_", "ghr_"]
+            .iter()
+            .any(|prefix| token.starts_with(prefix)))
+    {
+        return Err(UpdateError::Invalid(
+            "GitHub Token 格式无效，支持 Fine-grained PAT 和 Classic PAT".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn read_github_token(path: &Path) -> Result<Option<SecretString>, UpdateError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(UpdateError::Invalid(error.to_string())),
+    };
+    if !metadata.file_type().is_file() {
+        return Err(UpdateError::Invalid(
+            "GitHub Token 路径必须是普通文件".to_owned(),
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(UpdateError::Invalid(
+                "GitHub Token 文件权限过宽，请设置为 0600".to_owned(),
+            ));
+        }
+    }
+    if metadata.len() > MAX_GITHUB_TOKEN_BYTES as u64 + 1 {
+        return Err(UpdateError::Invalid("GitHub Token 文件过大".to_owned()));
+    }
+    let token =
+        fs::read_to_string(path).map_err(|error| UpdateError::Invalid(error.to_string()))?;
+    let token = token.strip_suffix('\n').unwrap_or(&token);
+    let token = token.strip_suffix('\r').unwrap_or(token);
+    validate_github_token(token)?;
+    Ok(Some(SecretString::from(token.to_owned())))
+}
+
+fn write_github_token(path: &Path, token: &str) -> Result<(), UpdateError> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| UpdateError::Invalid("GitHub Token 路径缺少父目录".to_owned()))?;
+    ensure_directory(parent)?;
+    if let Ok(metadata) = fs::symlink_metadata(path)
+        && !metadata.file_type().is_file()
+    {
+        return Err(UpdateError::Invalid(
+            "GitHub Token 路径必须是普通文件".to_owned(),
+        ));
+    }
+    let temporary = write_private_file(parent, ".github-token-", token.as_bytes())?;
+    persist(temporary, path)?;
+    sync_directory(parent)
+}
+
+fn remove_github_token(path: &Path) -> Result<(), UpdateError> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| UpdateError::Invalid("GitHub Token 路径缺少父目录".to_owned()))?;
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() => {
+            fs::remove_file(path).map_err(|error| UpdateError::Install(error.to_string()))?;
+            sync_directory(parent)
+        }
+        Ok(_) => Err(UpdateError::Invalid(
+            "GitHub Token 路径必须是普通文件".to_owned(),
+        )),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(UpdateError::Install(error.to_string())),
+    }
 }
 
 #[derive(Clone)]
@@ -83,6 +202,9 @@ pub struct UpdateManager {
     artifact_cache: Arc<RwLock<Option<CachedArtifacts>>>,
     remote_cache: Arc<RwLock<HashMap<VersionSource, CachedRemoteVersions>>>,
     panel_cache: Arc<RwLock<Option<CachedPanelUpdate>>>,
+    github_token_path: Arc<PathBuf>,
+    github_token: Arc<RwLock<Option<SecretString>>>,
+    github_rate_limit: Arc<RwLock<Option<GithubRateLimit>>>,
 }
 
 pub struct UpdateSettings {
@@ -99,6 +221,37 @@ pub struct UpdateSettings {
     pub binary_path: PathBuf,
     pub versions_path: PathBuf,
     pub bundled_metadata: PathBuf,
+    pub github_token_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GithubRateLimit {
+    pub limit: u64,
+    pub remaining: u64,
+    pub reset_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GithubTokenStatus {
+    pub configured: bool,
+    pub rate_limit: Option<GithubRateLimit>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubRateLimitResponse {
+    resources: GithubRateLimitResources,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubRateLimitResources {
+    core: GithubRateLimitCore,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubRateLimitCore {
+    limit: u64,
+    remaining: u64,
+    reset: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -469,6 +622,7 @@ impl UpdateManager {
             binary_path,
             versions_path,
             bundled_metadata,
+            github_token_path,
         } = settings;
         let panel_installed_release =
             panel_installed_release.filter(|release| !release.trim().is_empty());
@@ -513,6 +667,7 @@ impl UpdateManager {
             .timeout(Duration::from_secs(20))
             .build()
             .map_err(|error| UpdateError::Invalid(error.to_string()))?;
+        let github_token = read_github_token(&github_token_path)?;
         Ok(Self {
             client,
             database,
@@ -534,7 +689,88 @@ impl UpdateManager {
             artifact_cache: Arc::new(RwLock::new(None)),
             remote_cache: Arc::new(RwLock::new(HashMap::new())),
             panel_cache: Arc::new(RwLock::new(None)),
+            github_token_path: Arc::new(github_token_path),
+            github_token: Arc::new(RwLock::new(github_token)),
+            github_rate_limit: Arc::new(RwLock::new(None)),
         })
+    }
+
+    pub async fn github_token_status(&self) -> GithubTokenStatus {
+        GithubTokenStatus {
+            configured: self.github_token.read().await.is_some(),
+            rate_limit: self.github_rate_limit.read().await.clone(),
+        }
+    }
+
+    pub async fn save_github_token(&self, token: String) -> Result<GithubTokenStatus, UpdateError> {
+        validate_github_token(&token)?;
+        let (rate_limit, status) = self.verify_github_token(&token).await?;
+        write_github_token(&self.github_token_path, &token)?;
+        *self.github_token.write().await = Some(SecretString::from(token));
+        *self.github_rate_limit.write().await = Some(rate_limit);
+        self.clear_remote_caches().await;
+        Ok(status)
+    }
+
+    pub async fn delete_github_token(&self) -> Result<GithubTokenStatus, UpdateError> {
+        remove_github_token(&self.github_token_path)?;
+        *self.github_token.write().await = None;
+        *self.github_rate_limit.write().await = None;
+        self.clear_remote_caches().await;
+        Ok(self.github_token_status().await)
+    }
+
+    async fn clear_remote_caches(&self) {
+        self.artifact_cache.write().await.take();
+        self.remote_cache.write().await.clear();
+        self.panel_cache.write().await.take();
+    }
+
+    async fn verify_github_token(
+        &self,
+        token: &str,
+    ) -> Result<(GithubRateLimit, GithubTokenStatus), UpdateError> {
+        let response = self
+            .client
+            .get("https://api.github.com/rate_limit")
+            .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|error| {
+                UpdateError::Network(format!("GitHub API connection failed: {error}"))
+            })?;
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(UpdateError::Invalid(
+                "GitHub Token 无效，请检查后重试".to_owned(),
+            ));
+        }
+        if response.status() == reqwest::StatusCode::FORBIDDEN {
+            return Err(UpdateError::Network(
+                "GitHub API 分配的请求额度已用尽".to_owned(),
+            ));
+        }
+        let rate_limit = parse_rate_limit(response.headers());
+        let payload = response
+            .error_for_status()
+            .map_err(|error| UpdateError::Network(error.to_string()))?
+            .json::<GithubRateLimitResponse>()
+            .await
+            .map_err(|error| {
+                UpdateError::Network(format!("GitHub API response invalid: {error}"))
+            })?;
+        let rate_limit = rate_limit.unwrap_or_else(|| GithubRateLimit {
+            limit: payload.resources.core.limit,
+            remaining: payload.resources.core.remaining,
+            reset_at: payload.resources.core.reset,
+        });
+        Ok((
+            rate_limit.clone(),
+            GithubTokenStatus {
+                configured: true,
+                rate_limit: Some(rate_limit),
+            },
+        ))
     }
 
     pub async fn notifications(&self) -> Result<UpdateNotifications, UpdateError> {
@@ -1086,13 +1322,8 @@ impl UpdateManager {
     where
         T: serde::de::DeserializeOwned,
     {
-        self.client
-            .get(url)
-            .send()
-            .await
-            .map_err(|error| UpdateError::Network(error.to_string()))?
-            .error_for_status()
-            .map_err(|error| UpdateError::Network(error.to_string()))?
+        self.github_response(url)
+            .await?
             .json()
             .await
             .map_err(|error| UpdateError::Network(error.to_string()))
@@ -1102,22 +1333,64 @@ impl UpdateManager {
     where
         T: serde::de::DeserializeOwned,
     {
-        let response = self
+        let response = self.github_response_optional(url).await?;
+        let Some(response) = response else {
+            return Ok(None);
+        };
+        response
+            .json()
+            .await
+            .map(Some)
+            .map_err(|error| UpdateError::Network(error.to_string()))
+    }
+
+    async fn github_response(&self, url: &str) -> Result<reqwest::Response, UpdateError> {
+        self.github_response_optional(url)
+            .await?
+            .ok_or_else(|| UpdateError::Network("GitHub API 资源不存在".to_owned()))
+    }
+
+    async fn github_response_optional(
+        &self,
+        url: &str,
+    ) -> Result<Option<reqwest::Response>, UpdateError> {
+        if !url.starts_with("https://api.github.com/") {
+            return Err(UpdateError::Invalid(
+                "GitHub API 地址不可信".to_owned(),
+            ));
+        }
+        let token = self.github_token.read().await.clone();
+        let mut request = self
             .client
             .get(url)
-            .send()
-            .await
-            .map_err(|error| UpdateError::Network(error.to_string()))?;
+            .header(reqwest::header::ACCEPT, "application/vnd.github+json");
+        if let Some(token) = token.as_ref() {
+            request = request.bearer_auth(token.expose_secret());
+        }
+        let response = request.send().await.map_err(|error| {
+            UpdateError::Network(format!("GitHub API connection failed: {error}"))
+        })?;
+        if let Some(rate_limit) = parse_rate_limit(response.headers()) {
+            *self.github_rate_limit.write().await = Some(rate_limit.clone());
+            if response.status() == reqwest::StatusCode::FORBIDDEN && rate_limit.remaining == 0 {
+                return Err(UpdateError::Network(format!(
+                    "GitHub API 请求额度已用尽，将于 {} 重置；请在系统页配置 GitHub Token",
+                    rate_limit.reset_at
+                )));
+            }
+        }
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(UpdateError::Network(
+                "GitHub Token 已失效，请在系统页重新配置".to_owned(),
+            ));
+        }
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }
         response
             .error_for_status()
-            .map_err(|error| UpdateError::Network(error.to_string()))?
-            .json()
-            .await
             .map(Some)
-            .map_err(|error| UpdateError::Network(error.to_string()))
+            .map_err(|error| UpdateError::Network(format!("GitHub API request failed: {error}")))
     }
 
     async fn download(&self, version: &ResolvedVersion) -> Result<Vec<u8>, UpdateError> {

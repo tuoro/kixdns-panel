@@ -10,7 +10,7 @@ use super::{
     extract_artifact, load_bundled_manifest, load_verified_version, panel_release_asset_name,
     parse_artifact_reference, sha256, store_version, to_kixdns_update_notice,
     to_panel_update_notice, update_stored_capabilities, validate_commit, validate_digest,
-    validate_remote_build_identity, validate_slug,
+    validate_github_token, validate_remote_build_identity, validate_slug, write_github_token,
 };
 use crate::db::Database;
 
@@ -50,6 +50,37 @@ fn calculates_all_artifact_pages_and_rejects_unbounded_catalogs() {
         artifact_page_count(ARTIFACT_PAGE_SIZE * MAX_ARTIFACT_PAGES + 1),
         Err(UpdateError::Network(_))
     ));
+}
+
+#[test]
+fn validates_supported_github_tokens_and_rejects_unsafe_content() {
+    for token in ["github_pat_example", "ghp_example", "gho_example"] {
+        validate_github_token(token).unwrap();
+    }
+    for token in [
+        "",
+        "token",
+        "ghp_has space",
+        "ghp_line\nbreak",
+        "ghp_quote\"",
+    ] {
+        assert!(validate_github_token(token).is_err());
+    }
+}
+
+#[test]
+fn stores_github_token_as_a_private_regular_file() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("github-token");
+    write_github_token(&path, "github_pat_example").unwrap();
+    let metadata = std::fs::symlink_metadata(&path).unwrap();
+    assert!(metadata.file_type().is_file());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+    }
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "github_pat_example");
 }
 
 fn test_checksums(binary: &[u8], identity: &str) -> String {
@@ -183,6 +214,7 @@ async fn reads_capabilities_from_unmaterialized_bundled_version() {
             binary_path: binary_path.clone(),
             versions_path,
             bundled_metadata,
+            github_token_path: directory.path().join("github-token"),
         },
     )
     .unwrap();
@@ -221,6 +253,7 @@ async fn bundled_binary_identity_replaces_stale_database_state() {
             binary_path: binary_path.clone(),
             versions_path: versions_path.clone(),
             bundled_metadata,
+            github_token_path: directory.path().join("github-token"),
         },
     )
     .unwrap();
@@ -650,6 +683,7 @@ async fn treats_empty_panel_release_as_unset() {
             binary_path: directory.path().join("bin/kixdns"),
             versions_path: directory.path().join("versions"),
             bundled_metadata: directory.path().join("bundle"),
+            github_token_path: directory.path().join("github-token"),
         },
     )
     .unwrap();
@@ -681,6 +715,7 @@ async fn refuses_to_delete_the_active_version() {
             binary_path: binary_path.clone(),
             versions_path: versions_path.clone(),
             bundled_metadata: directory.path().join("bundle"),
+            github_token_path: directory.path().join("github-token"),
         },
     )
     .unwrap();
@@ -727,6 +762,7 @@ async fn external_mode_never_manages_kixdns_versions() {
             binary_path,
             versions_path: directory.path().join("versions"),
             bundled_metadata: directory.path().join("bundle"),
+            github_token_path: directory.path().join("github-token"),
         },
     )
     .unwrap();

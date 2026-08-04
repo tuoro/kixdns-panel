@@ -117,6 +117,14 @@ struct Args {
     )]
     bundled_metadata: PathBuf,
 
+    /// GitHub API Token 文件路径；未配置时使用匿名模式。
+    #[arg(
+        long,
+        env = "KIXDNS_GITHUB_TOKEN_FILE",
+        default_value = "/var/lib/kixdns-panel/github-token"
+    )]
+    github_token_path: PathBuf,
+
     /// 面板下载并管理的 GeoIP/GeoSite 数据目录。
     #[arg(
         long,
@@ -172,6 +180,7 @@ async fn main() -> anyhow::Result<()> {
         kixdns_binary: args.kixdns_binary,
         kixdns_versions: args.kixdns_versions,
         bundled_metadata: args.bundled_metadata,
+        github_token_path: args.github_token_path,
         geo_data_path: args.geo_data,
         web_root: args.web_root,
         secure_cookie: args.secure_cookie,
