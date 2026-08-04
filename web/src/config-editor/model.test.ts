@@ -92,4 +92,57 @@ describe('结构化配置模型', () => {
     expect(JSON.parse(serializeConfig(parsed)).pipelines[0].ecs).toEqual({ mode: 'from_client_ip', prefix_v4: 24, prefix_v6: 56 })
     expect(() => parseConfigSource('[]')).toThrow('配置根节点必须是 JSON 对象')
   })
+
+  it('按语义顺序序列化已知字段并保留未知字段', () => {
+    const config = normalizeConfig({
+      future_top: true,
+      pipelines: [{
+        rules: [{
+          response_actions_on_miss: [],
+          actions: [{ transport: 'udp', future_action: true, upstream: '1.1.1.1:53', type: 'forward' }],
+          name: 'default',
+          matchers: [{ value: 'example.com', future_matcher: true, type: 'domain_suffix', operator: 'and' }],
+        }],
+        future_pipeline: true,
+        id: 'default',
+      }],
+      settings: {
+        future_second: 2,
+        statistics_enabled: true,
+        cache_capacity: 10_000,
+        future_first: 1,
+        bind_udp: '0.0.0.0:5353',
+      },
+      version: '1.0',
+      pipeline_select: [],
+    })
+    const serialized = JSON.parse(serializeConfig(config)) as Record<string, unknown>
+    const settings = serialized.settings as Record<string, unknown>
+    const pipeline = (serialized.pipelines as Array<Record<string, unknown>>)[0]!
+    const rule = (pipeline.rules as Array<Record<string, unknown>>)[0]!
+    const action = (rule.actions as Array<Record<string, unknown>>)[0]!
+    const matcher = (rule.matchers as Array<Record<string, unknown>>)[0]!
+
+    expect(Object.keys(serialized)).toEqual(['version', 'settings', 'pipeline_select', 'pipelines', 'future_top'])
+    expect(Object.keys(settings)).toEqual([
+      'bind_udp',
+      'cache_capacity',
+      'statistics_enabled',
+      'future_second',
+      'future_first',
+    ])
+    expect(Object.keys(pipeline)).toEqual(['id', 'rules', 'future_pipeline'])
+    expect(Object.keys(rule)).toEqual([
+      'name',
+      'matchers',
+      'matcher_operator',
+      'actions',
+      'response_matchers',
+      'response_matcher_operator',
+      'response_actions_on_match',
+      'response_actions_on_miss',
+    ])
+    expect(Object.keys(matcher)).toEqual(['type', 'operator', 'value', 'future_matcher'])
+    expect(Object.keys(action)).toEqual(['type', 'upstream', 'transport', 'future_action'])
+  })
 })

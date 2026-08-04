@@ -475,7 +475,7 @@ mod tests {
     use serde_json::json;
     use tempfile::tempdir;
 
-    use super::{ConfigError, ConfigStore};
+    use super::{ConfigError, ConfigStore, format_json};
     use crate::db::{Database, ensure_database_parent};
 
     #[tokio::test]
@@ -545,5 +545,26 @@ mod tests {
 
         let conflict = store.delete_version(saved.version_id, "stale-sha256").await;
         assert!(matches!(conflict, Err(ConfigError::Conflict)));
+    }
+
+    #[test]
+    fn preserves_json_object_order_when_formatting() {
+        let content = serde_json::from_str(
+            r#"{"version":"1.0","settings":{"bind_udp":"0.0.0.0:5353","cache_capacity":10000},"pipeline_select":[],"pipelines":[]}"#,
+        )
+        .unwrap();
+        let formatted = format_json(&content).unwrap();
+
+        let positions = [
+            "\"version\"",
+            "\"settings\"",
+            "\"pipeline_select\"",
+            "\"pipelines\"",
+        ]
+        .map(|key| formatted.find(key).unwrap());
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(
+            formatted.find("\"bind_udp\"").unwrap() < formatted.find("\"cache_capacity\"").unwrap()
+        );
     }
 }

@@ -1,4 +1,4 @@
-import { MATCHER_DEFINITIONS } from './schema'
+import { MATCHER_DEFINITIONS, SETTING_SECTIONS } from './schema'
 import type {
   ActionConfig,
   ConfigObject,
@@ -17,6 +17,99 @@ function isObject(value: unknown): value is ConfigObject {
 
 function cloneObject(value: ConfigObject): ConfigObject {
   return JSON.parse(JSON.stringify(value)) as ConfigObject
+}
+
+const TOP_LEVEL_KEYS = ['version', 'settings', 'pipeline_select', 'pipelines', 'background_refresh_rule']
+const GEO_SETTING_KEYS = [
+  'geoip_db_path',
+  'geoip_dat_path',
+  'geosite_data_paths',
+  'geoip_auto_convert',
+  'geoip_filter_countries',
+]
+const SETTING_KEYS = [
+  ...SETTING_SECTIONS.flatMap((section) => section.fields.map((field) => field.key)),
+  ...GEO_SETTING_KEYS,
+]
+const PIPELINE_SELECT_KEYS = ['pipeline', 'matchers', 'matcher_operator']
+const PIPELINE_KEYS = ['id', 'ecs', 'rules']
+const RULE_KEYS = [
+  'name',
+  'matchers',
+  'matcher_operator',
+  'actions',
+  'response_matchers',
+  'response_matcher_operator',
+  'response_actions_on_match',
+  'response_actions_on_miss',
+]
+const MATCHER_KEYS = ['type', 'operator', 'value', 'cidr', 'expect', 'country_codes', 'mode']
+const ACTION_KEYS = ['type', 'level', 'rcode', 'ip', 'text', 'ttl', 'pipeline', 'upstream', 'transport', 'ecs']
+const ECS_KEYS = ['mode', 'prefix_v4', 'prefix_v6', 'ip', 'prefix']
+
+function orderFields(value: ConfigObject, keys: readonly string[]): ConfigObject {
+  const ordered: ConfigObject = {}
+  const known = new Set(keys)
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(value, key)) ordered[key] = value[key]
+  }
+  for (const [key, field] of Object.entries(value)) {
+    if (!known.has(key)) ordered[key] = field
+  }
+  return ordered
+}
+
+function orderEcs(value: unknown): unknown {
+  return isObject(value) ? orderFields(value, ECS_KEYS) : value
+}
+
+function orderMatcher(value: unknown): unknown {
+  return isObject(value) ? orderFields(value, MATCHER_KEYS) : value
+}
+
+function orderAction(value: unknown): unknown {
+  if (!isObject(value)) return value
+  if (Object.prototype.hasOwnProperty.call(value, 'ecs')) value.ecs = orderEcs(value.ecs)
+  return orderFields(value, ACTION_KEYS)
+}
+
+function orderRule(value: unknown): unknown {
+  if (!isObject(value)) return value
+  if (Array.isArray(value.matchers)) value.matchers = value.matchers.map(orderMatcher)
+  if (Array.isArray(value.actions)) value.actions = value.actions.map(orderAction)
+  if (Array.isArray(value.response_matchers)) value.response_matchers = value.response_matchers.map(orderMatcher)
+  if (Array.isArray(value.response_actions_on_match)) {
+    value.response_actions_on_match = value.response_actions_on_match.map(orderAction)
+  }
+  if (Array.isArray(value.response_actions_on_miss)) {
+    value.response_actions_on_miss = value.response_actions_on_miss.map(orderAction)
+  }
+  return orderFields(value, RULE_KEYS)
+}
+
+function orderPipeline(value: unknown): unknown {
+  if (!isObject(value)) return value
+  if (Object.prototype.hasOwnProperty.call(value, 'ecs')) value.ecs = orderEcs(value.ecs)
+  if (Array.isArray(value.rules)) value.rules = value.rules.map(orderRule)
+  return orderFields(value, PIPELINE_KEYS)
+}
+
+function orderPipelineSelect(value: unknown): unknown {
+  if (!isObject(value)) return value
+  if (Array.isArray(value.matchers)) value.matchers = value.matchers.map(orderMatcher)
+  return orderFields(value, PIPELINE_SELECT_KEYS)
+}
+
+function orderConfig(value: ConfigObject): KixConfig {
+  if (isObject(value.settings)) value.settings = orderFields(value.settings, SETTING_KEYS)
+  if (Array.isArray(value.pipeline_select)) {
+    value.pipeline_select = value.pipeline_select.map(orderPipelineSelect)
+  }
+  if (Array.isArray(value.pipelines)) value.pipelines = value.pipelines.map(orderPipeline)
+  if (Object.prototype.hasOwnProperty.call(value, 'background_refresh_rule')) {
+    value.background_refresh_rule = orderRule(value.background_refresh_rule)
+  }
+  return orderFields(value, TOP_LEVEL_KEYS) as KixConfig
 }
 
 function normalizeCountryCodes(value: unknown): string[] {
@@ -77,7 +170,7 @@ export function normalizeConfig(value: ConfigObject): KixConfig {
   config.settings = settings
   config.pipeline_select = Array.isArray(config.pipeline_select) ? config.pipeline_select.map(normalizePipelineSelect) : []
   config.pipelines = Array.isArray(config.pipelines) ? config.pipelines.map(normalizePipeline) : []
-  return config as KixConfig
+  return orderConfig(config)
 }
 
 export function parseConfigSource(source: string): KixConfig {
@@ -87,7 +180,7 @@ export function parseConfigSource(source: string): KixConfig {
 }
 
 export function serializeConfig(config: KixConfig): string {
-  return JSON.stringify(config, null, 2)
+  return JSON.stringify(orderConfig(cloneObject(config)), null, 2)
 }
 
 export function createMatcher(scope: MatcherScope): MatcherConfig {
