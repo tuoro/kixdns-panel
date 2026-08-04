@@ -363,9 +363,9 @@ fn notifies_only_for_newer_panel_release_with_matching_asset() {
             digest: Some(format!("sha256:{}", "a".repeat(64))),
         }],
     };
-    let same = release("v1.0.8", panel_release_asset_name());
+    let same = release("v1.0.9", panel_release_asset_name());
     assert!(
-        !to_panel_update_notice(None, Some("v1.0.8"), Some(&same))
+        !to_panel_update_notice(None, Some("v1.0.9"), Some(&same))
             .unwrap()
             .available
     );
@@ -382,23 +382,23 @@ fn notifies_only_for_newer_panel_release_with_matching_asset() {
             .available
     );
 
-    let wrong_asset = release("v1.0.8", "kixdns-panel-windows.zip");
+    let wrong_asset = release("v1.0.9", "kixdns-panel-windows.zip");
     assert!(
         !to_panel_update_notice(None, None, Some(&wrong_asset))
             .unwrap()
             .available
     );
 
-    let newer = release("v1.0.9", panel_release_asset_name());
+    let newer = release("v1.0.10", panel_release_asset_name());
     let notice = to_panel_update_notice(Some(TEST_BUILD_COMMIT), None, Some(&newer)).unwrap();
     assert!(notice.available);
-    assert_eq!(notice.current_version, "1.0.8");
-    assert_eq!(notice.latest_version.as_deref(), Some("1.0.9"));
+    assert_eq!(notice.current_version, "1.0.9");
+    assert_eq!(notice.latest_version.as_deref(), Some("1.0.10"));
     assert_eq!(
         notice.download_url.as_deref(),
         Some(
             format!(
-                "https://github.com/tuoro/kixdns-panel/releases/download/v1.0.9/{}",
+                "https://github.com/tuoro/kixdns-panel/releases/download/v1.0.10/{}",
                 panel_release_asset_name()
             )
             .as_str()
