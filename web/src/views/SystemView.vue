@@ -142,6 +142,11 @@ async function loadGithubTokenStatus(): Promise<void> {
   }
 }
 
+async function refreshUpdatesWithQuota(): Promise<void> {
+  await refreshUpdates()
+  await loadGithubTokenStatus()
+}
+
 async function saveGithubToken(): Promise<void> {
   if (!githubToken.value || githubTokenBusy.value) return
   githubTokenBusy.value = true
@@ -155,6 +160,7 @@ async function saveGithubToken(): Promise<void> {
     githubTokenError.value = ''
     toast.success('GitHub Token 已验证并保存')
     await Promise.all([loadVersions(true), refreshUpdates()])
+    await loadGithubTokenStatus()
   } catch (error) {
     githubTokenError.value = errorMessage(error)
     toast.error(githubTokenError.value)
@@ -173,6 +179,7 @@ async function deleteGithubToken(): Promise<void> {
     githubTokenError.value = ''
     toast.success('GitHub Token 已删除')
     await Promise.all([loadVersions(true), refreshUpdates()])
+    await loadGithubTokenStatus()
   } catch (error) {
     githubTokenError.value = errorMessage(error)
     toast.error(githubTokenError.value)
@@ -378,10 +385,8 @@ function actionBusy(version: InstalledKixdnsVersion | RemoteKixdnsVersion, kind?
 }
 
 onMounted(() => {
-  void refreshAll()
-  void refreshUpdates()
+  void Promise.all([refreshAll(), refreshUpdates()]).then(() => loadGithubTokenStatus())
   void loadPanelUpdateStatus()
-  void loadGithubTokenStatus()
 })
 
 onBeforeUnmount(() => {
@@ -443,7 +448,7 @@ onBeforeUnmount(() => {
     <section class="panel update-panel">
       <header class="panel__header">
         <div><h2>可用更新</h2><p>KixDNS 增强包与面板正式版</p></div>
-        <button class="icon-button" type="button" title="检查更新" aria-label="检查更新" :disabled="checkingUpdates" @click="refreshUpdates"><RefreshCw :size="18" :class="{ spin: checkingUpdates }" /></button>
+        <button class="icon-button" type="button" title="检查更新" aria-label="检查更新" :disabled="checkingUpdates" @click="refreshUpdatesWithQuota"><RefreshCw :size="18" :class="{ spin: checkingUpdates }" /></button>
       </header>
       <div v-if="checkingUpdates && !updateStatus" class="inline-loading update-loading">正在检查更新…</div>
       <div v-else-if="updateStatus" class="update-grid">
@@ -494,7 +499,7 @@ onBeforeUnmount(() => {
       </div>
       <div v-else class="update-check-failed">
         <span>{{ updateError ? `检查失败：${updateError}` : '更新状态暂不可用' }}</span>
-        <button class="button button--secondary" type="button" :disabled="checkingUpdates" @click="refreshUpdates">重新检查</button>
+        <button class="button button--secondary" type="button" :disabled="checkingUpdates" @click="refreshUpdatesWithQuota">重新检查</button>
       </div>
       <div v-if="updateError && updateStatus" class="update-stale">最近一次检查失败，当前显示上次结果：{{ updateError }}</div>
       <div class="github-credential">

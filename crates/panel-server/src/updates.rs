@@ -745,12 +745,15 @@ impl UpdateManager {
                 "GitHub Token 无效，请检查后重试".to_owned(),
             ));
         }
-        if response.status() == reqwest::StatusCode::FORBIDDEN {
-            return Err(UpdateError::Network(
-                "GitHub API 分配的请求额度已用尽".to_owned(),
-            ));
-        }
         let rate_limit = parse_rate_limit(response.headers());
+        if response.status() == reqwest::StatusCode::FORBIDDEN {
+            let message = if rate_limit.as_ref().is_some_and(|rate| rate.remaining == 0) {
+                "GitHub Token 的 API 配额已用尽，请等待重置或更换 Token"
+            } else {
+                "GitHub 拒绝验证该 Token，请检查访问策略"
+            };
+            return Err(UpdateError::Network(message.to_owned()));
+        }
         let payload = response
             .error_for_status()
             .map_err(|error| UpdateError::Network(error.to_string()))?
@@ -759,7 +762,7 @@ impl UpdateManager {
             .map_err(|error| {
                 UpdateError::Network(format!("GitHub API response invalid: {error}"))
             })?;
-        let rate_limit = rate_limit.unwrap_or_else(|| GithubRateLimit {
+        let rate_limit = rate_limit.unwrap_or(GithubRateLimit {
             limit: payload.resources.core.limit,
             remaining: payload.resources.core.remaining,
             reset_at: payload.resources.core.reset,
@@ -1355,9 +1358,7 @@ impl UpdateManager {
         url: &str,
     ) -> Result<Option<reqwest::Response>, UpdateError> {
         if !url.starts_with("https://api.github.com/") {
-            return Err(UpdateError::Invalid(
-                "GitHub API 地址不可信".to_owned(),
-            ));
+            return Err(UpdateError::Invalid("GitHub API 地址不可信".to_owned()));
         }
         let token = self.github_token.read().await.clone();
         let mut request = self
@@ -1373,10 +1374,12 @@ impl UpdateManager {
         if let Some(rate_limit) = parse_rate_limit(response.headers()) {
             *self.github_rate_limit.write().await = Some(rate_limit.clone());
             if response.status() == reqwest::StatusCode::FORBIDDEN && rate_limit.remaining == 0 {
-                return Err(UpdateError::Network(format!(
-                    "GitHub API 请求额度已用尽，将于 {} 重置；请在系统页配置 GitHub Token",
-                    rate_limit.reset_at
-                )));
+                let message = if token.is_some() {
+                    "GitHub Token 的 API 配额已用尽，请等待重置或更换 Token"
+                } else {
+                    "GitHub 匿名 API 配额已用尽，请在系统页配置 GitHub Token"
+                };
+                return Err(UpdateError::Network(message.to_owned()));
             }
         }
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {

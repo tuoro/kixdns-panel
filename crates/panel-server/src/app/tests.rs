@@ -171,55 +171,6 @@ async fn setup_issues_session_and_write_requires_csrf() {
         .unwrap();
     assert_eq!(updates.status(), StatusCode::UNAUTHORIZED);
 
-    let github_token = context
-        .app
-        .clone()
-        .oneshot(
-            Request::get("/api/v1/settings/github-token")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(github_token.status(), StatusCode::UNAUTHORIZED);
-
-    let github_token_without_csrf = context
-        .app
-        .clone()
-        .oneshot(
-            Request::put("/api/v1/settings/github-token")
-                .header(CONTENT_TYPE, "application/json")
-                .header(COOKIE, context.cookies.clone())
-                .body(Body::from(r#"{"token":"github_pat_example"}"#))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(github_token_without_csrf.status(), StatusCode::FORBIDDEN);
-
-    let github_token_status = context
-        .app
-        .clone()
-        .oneshot(
-            Request::get("/api/v1/settings/github-token")
-                .header(COOKIE, context.cookies.clone())
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(github_token_status.status(), StatusCode::OK);
-    let payload: Value = serde_json::from_slice(
-        &to_bytes(github_token_status.into_body(), 64 * 1024)
-            .await
-            .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        payload,
-        serde_json::json!({"configured": false, "rate_limit": null})
-    );
-
     let panel_update_status = context
         .app
         .clone()
@@ -300,6 +251,54 @@ async fn setup_issues_session_and_write_requires_csrf() {
     assert_eq!(
         unknown_api.headers().get(CONTENT_TYPE).unwrap(),
         "application/json"
+    );
+}
+
+#[tokio::test]
+async fn github_token_settings_require_authentication_and_csrf() {
+    let context = authenticated_app().await;
+    let unauthorized = context
+        .app
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/settings/github-token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+    let forbidden = context
+        .app
+        .clone()
+        .oneshot(
+            Request::put("/api/v1/settings/github-token")
+                .header(CONTENT_TYPE, "application/json")
+                .header(COOKIE, context.cookies.clone())
+                .body(Body::from(r#"{"token":"github_pat_example"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+
+    let status = context
+        .app
+        .oneshot(
+            Request::get("/api/v1/settings/github-token")
+                .header(COOKIE, context.cookies)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(status.status(), StatusCode::OK);
+    let payload: Value =
+        serde_json::from_slice(&to_bytes(status.into_body(), 64 * 1024).await.unwrap()).unwrap();
+    assert_eq!(
+        payload,
+        serde_json::json!({"configured": false, "rate_limit": null})
     );
 }
 
