@@ -15,7 +15,7 @@
     "@codemirror/lang-json": "^6.0.2",
     "@codemirror/state": "^6.5.2",
     "@codemirror/view": "^6.39.10",
-    "@lucide/vue": "^1.27.0",
+    "@lucide/vue": "^1.28.0",
     "vue": "^3.5.13",
     "vue-router": "^4.5.0"
   },
@@ -26,6 +26,6 @@
     "typescript": "~5.9.3",
     "vite": "^6.0.7",
     "vitest": "^4.1.10",
-    "vue-tsc": "^3.3.8"
+    "vue-tsc": "^3.3.9"
   }
 }
