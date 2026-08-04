@@ -64,8 +64,10 @@ function orderEcs(value: unknown): unknown {
   return isObject(value) ? orderFields(value, ECS_KEYS) : value
 }
 
-function orderMatcher(value: unknown): unknown {
-  return isObject(value) ? orderFields(value, MATCHER_KEYS) : value
+function orderMatcher(value: unknown, compactDefaults = false): unknown {
+  if (!isObject(value)) return value
+  if (compactDefaults && value.operator === 'and') delete value.operator
+  return orderFields(value, MATCHER_KEYS)
 }
 
 function orderAction(value: unknown): unknown {
@@ -74,11 +76,15 @@ function orderAction(value: unknown): unknown {
   return orderFields(value, ACTION_KEYS)
 }
 
-function orderRule(value: unknown): unknown {
+function orderRule(value: unknown, compactDefaults = false): unknown {
   if (!isObject(value)) return value
-  if (Array.isArray(value.matchers)) value.matchers = value.matchers.map(orderMatcher)
+  if (compactDefaults && value.matcher_operator === 'and') delete value.matcher_operator
+  if (compactDefaults && value.response_matcher_operator === 'and') delete value.response_matcher_operator
+  if (Array.isArray(value.matchers)) value.matchers = value.matchers.map((item) => orderMatcher(item, compactDefaults))
   if (Array.isArray(value.actions)) value.actions = value.actions.map(orderAction)
-  if (Array.isArray(value.response_matchers)) value.response_matchers = value.response_matchers.map(orderMatcher)
+  if (Array.isArray(value.response_matchers)) {
+    value.response_matchers = value.response_matchers.map((item) => orderMatcher(item, compactDefaults))
+  }
   if (Array.isArray(value.response_actions_on_match)) {
     value.response_actions_on_match = value.response_actions_on_match.map(orderAction)
   }
@@ -88,27 +94,30 @@ function orderRule(value: unknown): unknown {
   return orderFields(value, RULE_KEYS)
 }
 
-function orderPipeline(value: unknown): unknown {
+function orderPipeline(value: unknown, compactDefaults = false): unknown {
   if (!isObject(value)) return value
   if (Object.prototype.hasOwnProperty.call(value, 'ecs')) value.ecs = orderEcs(value.ecs)
-  if (Array.isArray(value.rules)) value.rules = value.rules.map(orderRule)
+  if (Array.isArray(value.rules)) value.rules = value.rules.map((item) => orderRule(item, compactDefaults))
   return orderFields(value, PIPELINE_KEYS)
 }
 
-function orderPipelineSelect(value: unknown): unknown {
+function orderPipelineSelect(value: unknown, compactDefaults = false): unknown {
   if (!isObject(value)) return value
-  if (Array.isArray(value.matchers)) value.matchers = value.matchers.map(orderMatcher)
+  if (compactDefaults && value.matcher_operator === 'and') delete value.matcher_operator
+  if (Array.isArray(value.matchers)) value.matchers = value.matchers.map((item) => orderMatcher(item, compactDefaults))
   return orderFields(value, PIPELINE_SELECT_KEYS)
 }
 
-function orderConfig(value: ConfigObject): KixConfig {
+function orderConfig(value: ConfigObject, compactDefaults = false): KixConfig {
   if (isObject(value.settings)) value.settings = orderFields(value.settings, SETTING_KEYS)
   if (Array.isArray(value.pipeline_select)) {
-    value.pipeline_select = value.pipeline_select.map(orderPipelineSelect)
+    value.pipeline_select = value.pipeline_select.map((item) => orderPipelineSelect(item, compactDefaults))
   }
-  if (Array.isArray(value.pipelines)) value.pipelines = value.pipelines.map(orderPipeline)
+  if (Array.isArray(value.pipelines)) {
+    value.pipelines = value.pipelines.map((item) => orderPipeline(item, compactDefaults))
+  }
   if (Object.prototype.hasOwnProperty.call(value, 'background_refresh_rule')) {
-    value.background_refresh_rule = orderRule(value.background_refresh_rule)
+    value.background_refresh_rule = orderRule(value.background_refresh_rule, compactDefaults)
   }
   return orderFields(value, TOP_LEVEL_KEYS) as KixConfig
 }
@@ -181,7 +190,7 @@ export function parseConfigSource(source: string): KixConfig {
 }
 
 export function serializeConfig(config: KixConfig): string {
-  return JSON.stringify(orderConfig(cloneObject(config)), null, 2)
+  return JSON.stringify(orderConfig(cloneObject(config), true), null, 2)
 }
 
 export function createMatcher(scope: MatcherScope): MatcherConfig {

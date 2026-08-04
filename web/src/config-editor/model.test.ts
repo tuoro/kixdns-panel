@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import type { KixConfig } from './types'
 import {
   applyPipelineSelectMode,
   createAction,
@@ -180,14 +181,77 @@ describe('结构化配置模型', () => {
     expect(Object.keys(rule)).toEqual([
       'name',
       'matchers',
-      'matcher_operator',
       'actions',
       'response_matchers',
-      'response_matcher_operator',
       'response_actions_on_match',
       'response_actions_on_miss',
     ])
-    expect(Object.keys(matcher)).toEqual(['type', 'operator', 'value', 'future_matcher'])
+    expect(Object.keys(matcher)).toEqual(['type', 'value', 'future_matcher'])
     expect(Object.keys(action)).toEqual(['type', 'upstream', 'transport', 'future_action'])
+  })
+
+  it('只省略默认 AND 并保留多条件的有效关系', () => {
+    const config = normalizeConfig({
+      pipeline_select: [
+        {
+          pipeline: 'cn_doh',
+          matchers: [{ type: 'geo_site', value: 'cn' }],
+        },
+        {
+          pipeline: 'global_doh',
+          matcher_operator: 'or',
+          matchers: [
+            { type: 'domain_suffix', value: '.example' },
+            { type: 'qtype', value: 'AAAA' },
+          ],
+        },
+        {
+          pipeline: 'custom',
+          matcher_operator: 'and',
+          matchers: [
+            { type: 'domain_suffix', operator: 'and', value: '.internal' },
+            { type: 'client_ip', operator: 'and_not', cidr: '10.0.0.0/8' },
+          ],
+        },
+      ],
+      pipelines: [{
+        id: 'default',
+        rules: [{
+          name: 'default',
+          matchers: [{ type: 'any', operator: 'and' }],
+          matcher_operator: 'and',
+          actions: [],
+          response_matchers: [{ type: 'response_rcode', operator: 'or', value: 'NOERROR' }],
+          response_matcher_operator: 'and',
+        }],
+      }],
+    })
+
+    const serialized = JSON.parse(serializeConfig(config)) as KixConfig
+    expect(serialized.pipeline_select[0]).toEqual({
+      pipeline: 'cn_doh',
+      matchers: [{ type: 'geo_site', value: 'cn' }],
+    })
+    expect(serialized.pipeline_select[1]).toEqual({
+      pipeline: 'global_doh',
+      matchers: [
+        { type: 'domain_suffix', value: '.example' },
+        { type: 'qtype', value: 'AAAA' },
+      ],
+      matcher_operator: 'or',
+    })
+    expect(serialized.pipeline_select[2]).toEqual({
+      pipeline: 'custom',
+      matchers: [
+        { type: 'domain_suffix', value: '.internal' },
+        { type: 'client_ip', operator: 'and_not', cidr: '10.0.0.0/8' },
+      ],
+    })
+    expect(serialized.pipelines[0]?.rules[0]).toMatchObject({
+      matchers: [{ type: 'any' }],
+      response_matchers: [{ type: 'response_rcode', operator: 'or', value: 'NOERROR' }],
+    })
+    expect(serialized.pipelines[0]?.rules[0]).not.toHaveProperty('matcher_operator')
+    expect(serialized.pipelines[0]?.rules[0]).not.toHaveProperty('response_matcher_operator')
   })
 })
