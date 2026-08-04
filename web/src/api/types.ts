@@ -295,6 +295,17 @@ export interface UpdateNotifications {
   panel: PanelUpdateNotice
 }
 
+export interface GithubRateLimit {
+  limit: number
+  remaining: number
+  reset_at: number
+}
+
+export interface GithubTokenStatus {
+  configured: boolean
+  rate_limit: GithubRateLimit | null
+}
+
 export type PanelUpdateState = 'idle' | 'checking' | 'downloading' | 'complete' | 'failed'
 
 export interface PanelUpdateStatus {

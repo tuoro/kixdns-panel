@@ -12,6 +12,7 @@ import type {
   GeoDataManifest,
   GeoDataSchedule,
   GeoDataSyncRequest,
+  GithubTokenStatus,
   LogsResponse,
   Overview,
   KixdnsVersionCatalog,
@@ -231,6 +232,7 @@ let panelUpdateStatus: PanelUpdateStatus = {
   target_version: '',
   updated_at: 0,
 }
+let githubTokenConfigured = false
 const panelBuildCommit = '82c88791869153884f361b1ea3cf123b727fadee'
 const legacyBuildCommit = '05f51503219e77849517596b7392cff919437c8b'
 const actionBuildCommit = '681d813a73f4525dfe97bf3123894b8b714d35d9'
@@ -669,6 +671,21 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
   if (path === '/api/v1/diagnostics/dns') {
     const body = JSON.parse(String(init?.body)) as { domain: string; record_type: string }
     return { server: '127.0.0.1:53', domain: body.domain, record_type: body.record_type, response_code: 'No Error', elapsed_ms: 12, truncated: false, answers: [`${body.domain}. 300 IN A 104.18.26.120`, `${body.domain}. 300 IN A 104.18.27.120`] } as DnsDiagnostic as T
+  }
+  if (pathname === '/api/v1/settings/github-token') {
+    if (method === 'PUT') {
+      const body = JSON.parse(String(init?.body)) as { token?: string }
+      if (!body.token) throw new Error('GitHub Token 不能为空')
+      githubTokenConfigured = true
+    } else if (method === 'DELETE') {
+      githubTokenConfigured = false
+    }
+    return {
+      configured: githubTokenConfigured,
+      rate_limit: githubTokenConfigured
+        ? { limit: 5_000, remaining: 4_998, reset_at: now + 2_400 }
+        : null,
+    } as GithubTokenStatus as T
   }
   if (path === '/api/v1/updates/status') {
     return {

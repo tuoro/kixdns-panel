@@ -210,4 +210,16 @@ describe('演示 API', () => {
     expect(started).toEqual({ accepted: true, target_version: 'v1.0.1' })
     expect(status).toMatchObject({ state: 'downloading', target_version: 'v1.0.1' })
   })
+
+  it('配置和删除 GitHub Token 时不返回凭据内容', async () => {
+    const saved = await mockRequest('/api/v1/settings/github-token', {
+      method: 'PUT',
+      body: JSON.stringify({ token: 'github_pat_example' }),
+    })
+    expect(saved).toMatchObject({ configured: true, rate_limit: { limit: 5_000 } })
+    expect(JSON.stringify(saved)).not.toContain('github_pat_example')
+
+    const removed = await mockRequest('/api/v1/settings/github-token', { method: 'DELETE' })
+    expect(removed).toEqual({ configured: false, rate_limit: null })
+  })
 })

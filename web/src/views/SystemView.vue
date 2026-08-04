@@ -4,9 +4,12 @@ import {
   Bell,
   CircleCheck,
   Download,
+  Eye,
+  EyeOff,
   ExternalLink,
   GitBranch,
   HardDrive,
+  KeyRound,
   Package,
   Play,
   RefreshCw,
@@ -18,8 +21,9 @@ import {
   Trash2,
 } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import { apiRequest } from '../api/client'
+import { apiRequest, jsonBody } from '../api/client'
 import type {
+  GithubTokenStatus,
   InstalledKixdnsVersion,
   KixdnsVersionCatalog,
   KixdnsVersionSource,
@@ -47,6 +51,11 @@ const serviceError = ref('')
 const versionsError = ref('')
 const panelUpdate = ref<PanelUpdateStatus | null>(null)
 const startingPanelUpdate = ref(false)
+const githubTokenStatus = ref<GithubTokenStatus | null>(null)
+const githubToken = ref('')
+const githubTokenVisible = ref(false)
+const githubTokenBusy = ref(false)
+const githubTokenError = ref('')
 const toast = useToast()
 const {
   status: updateStatus,
@@ -113,6 +122,64 @@ function panelUpdateLabel(): string {
 const panelUpdateRunning = computed(() => (
   panelUpdate.value?.state === 'checking' || panelUpdate.value?.state === 'downloading'
 ))
+
+const githubQuota = computed(() => {
+  const rate = githubTokenStatus.value?.rate_limit
+  return rate ? `${rate.remaining.toLocaleString()} / ${rate.limit.toLocaleString()}` : '等待下次 GitHub API 请求'
+})
+
+function githubRateReset(): string {
+  const reset = githubTokenStatus.value?.rate_limit?.reset_at
+  return reset ? formatDate(reset) : '尚未获取'
+}
+
+async function loadGithubTokenStatus(): Promise<void> {
+  try {
+    githubTokenStatus.value = await apiRequest<GithubTokenStatus>('/api/v1/settings/github-token')
+    githubTokenError.value = ''
+  } catch (error) {
+    githubTokenError.value = errorMessage(error)
+  }
+}
+
+async function saveGithubToken(): Promise<void> {
+  if (!githubToken.value || githubTokenBusy.value) return
+  githubTokenBusy.value = true
+  try {
+    githubTokenStatus.value = await apiRequest<GithubTokenStatus>('/api/v1/settings/github-token', {
+      method: 'PUT',
+      ...jsonBody({ token: githubToken.value }),
+    })
+    githubToken.value = ''
+    githubTokenVisible.value = false
+    githubTokenError.value = ''
+    toast.success('GitHub Token 已验证并保存')
+    await Promise.all([loadVersions(true), refreshUpdates()])
+  } catch (error) {
+    githubTokenError.value = errorMessage(error)
+    toast.error(githubTokenError.value)
+  } finally {
+    githubTokenBusy.value = false
+  }
+}
+
+async function deleteGithubToken(): Promise<void> {
+  if (!githubTokenStatus.value?.configured || githubTokenBusy.value
+    || !window.confirm('删除 GitHub Token 并恢复匿名 API 配额？')) return
+  githubTokenBusy.value = true
+  try {
+    githubTokenStatus.value = await apiRequest<GithubTokenStatus>('/api/v1/settings/github-token', { method: 'DELETE' })
+    githubToken.value = ''
+    githubTokenError.value = ''
+    toast.success('GitHub Token 已删除')
+    await Promise.all([loadVersions(true), refreshUpdates()])
+  } catch (error) {
+    githubTokenError.value = errorMessage(error)
+    toast.error(githubTokenError.value)
+  } finally {
+    githubTokenBusy.value = false
+  }
+}
 
 function schedulePanelUpdatePoll(delay = 2_000): void {
   if (panelUpdateTimer) clearTimeout(panelUpdateTimer)
@@ -314,6 +381,7 @@ onMounted(() => {
   void refreshAll()
   void refreshUpdates()
   void loadPanelUpdateStatus()
+  void loadGithubTokenStatus()
 })
 
 onBeforeUnmount(() => {
@@ -429,6 +497,26 @@ onBeforeUnmount(() => {
         <button class="button button--secondary" type="button" :disabled="checkingUpdates" @click="refreshUpdates">重新检查</button>
       </div>
       <div v-if="updateError && updateStatus" class="update-stale">最近一次检查失败，当前显示上次结果：{{ updateError }}</div>
+      <div class="github-credential">
+        <div class="github-credential__summary">
+          <span><KeyRound :size="18" /></span>
+          <div><strong>GitHub API 凭据</strong><p>用于版本与更新检查，不会发送到 nightly.link</p></div>
+          <span :class="githubTokenStatus?.configured ? 'tag tag--success' : 'tag tag--muted'">{{ githubTokenStatus?.configured ? '已配置' : '匿名' }}</span>
+        </div>
+        <div class="github-credential__form">
+          <label class="github-token-input">
+            <input v-model="githubToken" :type="githubTokenVisible ? 'text' : 'password'" :placeholder="githubTokenStatus?.configured ? '输入新 Token 以替换' : 'github_pat_… 或 ghp_…'" autocomplete="new-password" maxlength="256" :disabled="githubTokenBusy" @keyup.enter="saveGithubToken">
+            <button type="button" :title="githubTokenVisible ? '隐藏 Token' : '显示 Token'" :aria-label="githubTokenVisible ? '隐藏 Token' : '显示 Token'" @click="githubTokenVisible = !githubTokenVisible"><EyeOff v-if="githubTokenVisible" :size="15" /><Eye v-else :size="15" /></button>
+          </label>
+          <button class="button button--primary" type="button" :disabled="!githubToken || githubTokenBusy" @click="saveGithubToken">{{ githubTokenBusy ? '处理中' : (githubTokenStatus?.configured ? '替换' : '保存') }}</button>
+          <button class="icon-button icon-button--danger" type="button" title="删除 Token" aria-label="删除 Token" :disabled="!githubTokenStatus?.configured || githubTokenBusy" @click="deleteGithubToken"><Trash2 :size="16" /></button>
+        </div>
+        <div class="github-credential__meta">
+          <span>API 配额 <strong class="mono">{{ githubQuota }}</strong></span>
+          <span>重置时间 <strong>{{ githubRateReset() }}</strong></span>
+          <span v-if="githubTokenError" class="github-credential__error">{{ githubTokenError }}</span>
+        </div>
+      </div>
     </section>
 
     <section ref="versionPanel" class="panel version-panel">
