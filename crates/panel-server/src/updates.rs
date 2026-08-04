@@ -39,6 +39,8 @@ const UPSTREAM_REPOSITORY: &str = "olicesx/kixdns";
 const PANEL_REPOSITORY: &str = "tuoro/kixdns-panel";
 const MAX_ARTIFACT_BYTES: usize = 128 * 1024 * 1024;
 const MAX_BINARY_BYTES: u64 = 96 * 1024 * 1024;
+const ARTIFACT_PAGE_SIZE: usize = 100;
+const MAX_ARTIFACT_PAGES: usize = 25;
 const REMOTE_VERSION_LIMIT: usize = 12;
 const MAX_INSTALLED_VERSIONS: usize = 8;
 const MANIFEST_SCHEMA_VERSION: u32 = 5;
@@ -48,6 +50,17 @@ const MAX_BUILD_IDENTITY_BYTES: u64 = 64 * 1024;
 const MAX_CAPABILITIES_BYTES: u64 = 64 * 1024;
 const REMOTE_CACHE_TTL: Duration = Duration::from_mins(1);
 const PANEL_CACHE_TTL: Duration = Duration::from_mins(15);
+
+fn artifact_page_count(total_count: usize) -> Result<usize, UpdateError> {
+    let pages = total_count.div_ceil(ARTIFACT_PAGE_SIZE);
+    if pages <= MAX_ARTIFACT_PAGES {
+        return Ok(pages);
+    }
+    Err(UpdateError::Network(format!(
+        "Artifact 数量超过分页安全上限（最多 {} 条）",
+        ARTIFACT_PAGE_SIZE * MAX_ARTIFACT_PAGES
+    )))
+}
 
 #[derive(Clone)]
 pub struct UpdateManager {
@@ -67,6 +80,7 @@ pub struct UpdateManager {
     versions_path: Arc<PathBuf>,
     bundled_metadata: Arc<PathBuf>,
     apply_lock: Arc<Mutex<()>>,
+    artifact_cache: Arc<RwLock<Option<CachedArtifacts>>>,
     remote_cache: Arc<RwLock<HashMap<VersionSource, CachedRemoteVersions>>>,
     panel_cache: Arc<RwLock<Option<CachedPanelUpdate>>>,
 }
@@ -327,10 +341,11 @@ struct WorkflowRun {
 
 #[derive(Debug, Deserialize)]
 struct ArtifactList {
+    total_count: usize,
     artifacts: Vec<Artifact>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct Artifact {
     id: u64,
     name: String,
@@ -339,7 +354,7 @@ struct Artifact {
     workflow_run: Option<ArtifactWorkflowRun>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct ArtifactWorkflowRun {
     id: u64,
 }
@@ -410,6 +425,11 @@ struct ResolvedVersion {
 struct CachedRemoteVersions {
     loaded_at: Instant,
     versions: Vec<ResolvedVersion>,
+}
+
+struct CachedArtifacts {
+    loaded_at: Instant,
+    artifacts: Vec<Artifact>,
 }
 
 struct CachedPanelUpdate {
@@ -511,6 +531,7 @@ impl UpdateManager {
             versions_path: Arc::new(versions_path),
             bundled_metadata: Arc::new(bundled_metadata),
             apply_lock: Arc::new(Mutex::new(())),
+            artifact_cache: Arc::new(RwLock::new(None)),
             remote_cache: Arc::new(RwLock::new(HashMap::new())),
             panel_cache: Arc::new(RwLock::new(None)),
         })
@@ -916,13 +937,9 @@ impl UpdateManager {
         source: VersionSource,
     ) -> Result<Vec<ResolvedVersion>, UpdateError> {
         let runs = self.workflow_runs(source, 30).await?;
-        let artifacts_url = format!(
-            "https://api.github.com/repos/{}/actions/artifacts?per_page=100",
-            self.repository
-        );
-        let artifacts = self.get_json::<ArtifactList>(&artifacts_url).await?;
+        let artifacts = self.repository_artifacts().await?;
         let mut by_run = HashMap::<u64, Vec<TrackArtifact>>::new();
-        for artifact in artifacts.artifacts {
+        for artifact in artifacts {
             if artifact.expired {
                 continue;
             }
@@ -971,6 +988,45 @@ impl UpdateManager {
         });
         versions.truncate(30);
         Ok(versions)
+    }
+
+    async fn repository_artifacts(&self) -> Result<Vec<Artifact>, UpdateError> {
+        let mut cache = self.artifact_cache.write().await;
+        if let Some(cached) = cache.as_ref()
+            && cached.loaded_at.elapsed() < REMOTE_CACHE_TTL
+        {
+            return Ok(cached.artifacts.clone());
+        }
+
+        let mut artifacts = Vec::new();
+        let mut artifact_ids = HashSet::new();
+        let mut total_count = 0;
+        for page in 1..=MAX_ARTIFACT_PAGES {
+            let artifacts_url = format!(
+                "https://api.github.com/repos/{}/actions/artifacts?per_page={ARTIFACT_PAGE_SIZE}&page={page}",
+                self.repository
+            );
+            let response = self.get_json::<ArtifactList>(&artifacts_url).await?;
+            total_count = total_count.max(response.total_count);
+            artifact_page_count(total_count)?;
+            artifacts.extend(
+                response
+                    .artifacts
+                    .into_iter()
+                    .filter(|artifact| artifact_ids.insert(artifact.id)),
+            );
+            if artifacts.len() >= total_count {
+                cache.replace(CachedArtifacts {
+                    loaded_at: Instant::now(),
+                    artifacts: artifacts.clone(),
+                });
+                return Ok(artifacts);
+            }
+        }
+
+        Err(UpdateError::Network(
+            "GitHub Artifact 分页结果不完整，请稍后重试".to_owned(),
+        ))
     }
 
     async fn resolve_remote(

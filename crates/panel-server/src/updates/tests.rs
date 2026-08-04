@@ -4,12 +4,13 @@ use tempfile::tempdir;
 
 use super::validation::ParsedArtifactReference;
 use super::{
-    BuildIdentity, GithubRelease, MANIFEST_SCHEMA_VERSION, ReleaseAsset, RemoteVersion,
-    TrackReference, UpdateError, UpdateManager, UpdateSettings, VersionKey, VersionManifest,
-    VersionSource, delete_stored_version, extract_artifact, load_bundled_manifest,
-    load_verified_version, panel_release_asset_name, parse_artifact_reference, sha256,
-    store_version, to_kixdns_update_notice, to_panel_update_notice, update_stored_capabilities,
-    validate_commit, validate_digest, validate_remote_build_identity, validate_slug,
+    ARTIFACT_PAGE_SIZE, BuildIdentity, GithubRelease, MANIFEST_SCHEMA_VERSION, MAX_ARTIFACT_PAGES,
+    ReleaseAsset, RemoteVersion, TrackReference, UpdateError, UpdateManager, UpdateSettings,
+    VersionKey, VersionManifest, VersionSource, artifact_page_count, delete_stored_version,
+    extract_artifact, load_bundled_manifest, load_verified_version, panel_release_asset_name,
+    parse_artifact_reference, sha256, store_version, to_kixdns_update_notice,
+    to_panel_update_notice, update_stored_capabilities, validate_commit, validate_digest,
+    validate_remote_build_identity, validate_slug,
 };
 use crate::db::Database;
 
@@ -34,6 +35,21 @@ fn test_elf() -> Vec<u8> {
     };
     binary[18..20].copy_from_slice(&machine.to_le_bytes());
     binary
+}
+
+#[test]
+fn calculates_all_artifact_pages_and_rejects_unbounded_catalogs() {
+    assert_eq!(artifact_page_count(0).unwrap(), 0);
+    assert_eq!(artifact_page_count(ARTIFACT_PAGE_SIZE).unwrap(), 1);
+    assert_eq!(artifact_page_count(ARTIFACT_PAGE_SIZE + 1).unwrap(), 2);
+    assert_eq!(
+        artifact_page_count(ARTIFACT_PAGE_SIZE * MAX_ARTIFACT_PAGES).unwrap(),
+        MAX_ARTIFACT_PAGES
+    );
+    assert!(matches!(
+        artifact_page_count(ARTIFACT_PAGE_SIZE * MAX_ARTIFACT_PAGES + 1),
+        Err(UpdateError::Network(_))
+    ));
 }
 
 fn test_checksums(binary: &[u8], identity: &str) -> String {
