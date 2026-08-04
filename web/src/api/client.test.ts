@@ -47,4 +47,27 @@ describe('API 客户端', () => {
     })
     expect(expired).toHaveBeenCalledOnce()
   })
+
+  it('登录凭据错误只保留错误提示，不广播会话失效', async () => {
+    const eventTarget = new EventTarget()
+    const expired = vi.fn()
+    eventTarget.addEventListener(SESSION_EXPIRED_EVENT, expired)
+    vi.stubGlobal('window', eventTarget)
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      '{"error":{"code":"invalid_credentials","message":"用户名或密码错误"}}',
+      { status: 401, headers: { 'content-type': 'application/json' } },
+    )))
+
+    const error: unknown = await apiRequest('/api/v1/auth/login', {
+      method: 'POST',
+      ...jsonBody({ username: 'admin', password: 'wrong-password' }),
+    }).catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(ApiError)
+    expect(error).toMatchObject({
+      status: 401,
+      code: 'invalid_credentials',
+      message: '用户名或密码错误',
+    })
+    expect(expired).not.toHaveBeenCalled()
+  })
 })

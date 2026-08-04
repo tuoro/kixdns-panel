@@ -488,7 +488,7 @@ async fn login(
         state
             .login_limiter
             .record_failure(client_ip, &request.username);
-        return Err(AppError::Unauthorized);
+        return Err(AppError::InvalidCredentials);
     };
     state.login_limiter.clear(client_ip, &user.username);
     state

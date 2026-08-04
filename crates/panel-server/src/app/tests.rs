@@ -119,6 +119,34 @@ async fn authenticated_app() -> AuthenticatedApp {
 }
 
 #[tokio::test]
+async fn login_rejects_invalid_credentials_without_session_cookie() {
+    let context = authenticated_app().await;
+
+    for credentials in [
+        r#"{"username":"missing-user","password":"a-secure-password"}"#,
+        r#"{"username":"admin","password":"wrong-password"}"#,
+    ] {
+        let mut request = Request::post("/api/v1/auth/login")
+            .header(CONTENT_TYPE, "application/json")
+            .body(Body::from(credentials))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from((Ipv4Addr::LOCALHOST, 42_001))));
+
+        let response = context.app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.headers().get_all(SET_COOKIE).iter().count(), 0);
+
+        let payload: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap())
+                .unwrap();
+        assert_eq!(payload["error"]["code"], "invalid_credentials");
+        assert_eq!(payload["error"]["message"], "用户名或密码错误");
+    }
+}
+
+#[tokio::test]
 async fn setup_issues_session_and_write_requires_csrf() {
     let context = authenticated_app().await;
 

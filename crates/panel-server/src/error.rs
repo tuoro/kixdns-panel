@@ -9,6 +9,8 @@ pub enum AppError {
     BadRequest(&'static str, String),
     #[error("未登录或会话已失效")]
     Unauthorized,
+    #[error("用户名或密码错误")]
+    InvalidCredentials,
     #[error("CSRF 校验失败")]
     Forbidden,
     #[error("{1}")]
@@ -44,6 +46,11 @@ impl IntoResponse for AppError {
                 StatusCode::UNAUTHORIZED,
                 "unauthorized",
                 "未登录或会话已失效".to_owned(),
+            ),
+            Self::InvalidCredentials => (
+                StatusCode::UNAUTHORIZED,
+                "invalid_credentials",
+                "用户名或密码错误".to_owned(),
             ),
             Self::Forbidden => (
                 StatusCode::FORBIDDEN,
