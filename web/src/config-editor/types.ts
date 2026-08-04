@@ -1,5 +1,6 @@
 export type MatchOperator = 'and' | 'or' | 'and_not' | 'or_not' | 'not'
 export type MatcherScope = 'selector' | 'request' | 'response'
+export type PipelineSelectMode = 'all' | 'any' | 'custom'
 export type EcsMode = 'clear' | 'from_client_ip' | 'static'
 
 export interface ConfigObject {

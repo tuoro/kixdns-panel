@@ -1,17 +1,19 @@
 <script setup lang="ts">
-import { AlertTriangle, Plus, Trash2 } from '@lucide/vue'
-import { computed } from 'vue'
+import { AlertTriangle, GitBranch, Plus, Trash2 } from '@lucide/vue'
+import { computed, ref } from 'vue'
 import {
   createEcs,
   createPipeline,
   createPipelineSelect,
   createRule,
+  applyPipelineSelectMode,
+  inferPipelineSelectMode,
   pipelineHasActionEcs,
   renamePipeline,
   ruleHasForward,
 } from '../../config-editor/model'
 import { MATCH_OPERATORS } from '../../config-editor/schema'
-import type { KixConfig, PipelineConfig, RuleConfig } from '../../config-editor/types'
+import type { KixConfig, PipelineConfig, PipelineSelectConfig, PipelineSelectMode, RuleConfig } from '../../config-editor/types'
 import ActionList from './ActionList.vue'
 import MatcherList from './MatcherList.vue'
 
@@ -19,6 +21,20 @@ const config = defineModel<KixConfig>({ required: true })
 const emit = defineEmits<{ notice: [message: string] }>()
 const pipelineIds = computed(() => config.value.pipelines.map((item) => item.id))
 const previousIds = new WeakMap<PipelineConfig, string>()
+const customSelectors = ref(new Set<PipelineSelectConfig>())
+
+function selectorMode(selector: PipelineSelectConfig): PipelineSelectMode {
+  return customSelectors.value.has(selector) ? 'custom' : inferPipelineSelectMode(selector)
+}
+
+function setSelectorMode(selector: PipelineSelectConfig, event: Event): void {
+  const mode = (event.currentTarget as HTMLSelectElement).value as PipelineSelectMode
+  const nextCustomSelectors = new Set(customSelectors.value)
+  if (mode === 'custom') nextCustomSelectors.add(selector)
+  else nextCustomSelectors.delete(selector)
+  customSelectors.value = nextCustomSelectors
+  applyPipelineSelectMode(selector, mode)
+}
 
 function rememberId(pipeline: PipelineConfig): void {
   previousIds.set(pipeline, pipeline.id)
@@ -67,15 +83,24 @@ function responseEnabled(rule: RuleConfig): boolean {
       <button class="button button--secondary" type="button" @click="config.pipeline_select.push(createPipelineSelect())"><Plus :size="15" />添加分流</button>
     </header>
     <div class="selector-list">
-      <div v-for="(selector, index) in config.pipeline_select" :key="index" class="selector-block">
-        <div class="selector-block__header">
-          <strong>#{{ index + 1 }}</strong>
-          <select v-model="selector.pipeline" :aria-label="`分流 ${index + 1} 目标 Pipeline`"><option disabled value="">选择 Pipeline</option><option v-for="id in pipelineIds" :key="id" :value="id">{{ id }}</option></select>
-          <select v-model="selector.matcher_operator" :aria-label="`分流 ${index + 1} 默认逻辑`"><option v-for="operator in MATCH_OPERATORS" :key="operator.value" :value="operator.value">{{ operator.label }}</option></select>
+      <article v-for="(selector, index) in config.pipeline_select" :key="index" class="selector-block">
+        <header class="selector-block__header">
+          <div class="selector-block__identity">
+            <span><GitBranch :size="15" /></span>
+            <div><strong>入口分流 #{{ index + 1 }}</strong><small>按顺序匹配，首个命中生效</small></div>
+          </div>
           <button class="icon-button icon-button--small" type="button" :title="`删除分流 ${index + 1}`" @click="config.pipeline_select.splice(index, 1)"><Trash2 :size="14" /></button>
+        </header>
+        <div class="selector-block__controls">
+          <label><span>目标 Pipeline</span><select v-model="selector.pipeline" :aria-label="`分流 ${index + 1} 目标 Pipeline`"><option disabled value="">选择 Pipeline</option><option v-for="id in pipelineIds" :key="id" :value="id">{{ id }}</option></select></label>
+          <label><span>条件关系</span><select :value="selectorMode(selector)" :aria-label="`分流 ${index + 1} 条件关系`" @change="setSelectorMode(selector, $event)"><option value="all">全部满足</option><option value="any">任一满足</option><option value="custom">自定义组合</option></select></label>
         </div>
-        <MatcherList v-model="selector.matchers" scope="selector" />
-      </div>
+        <div class="selector-block__conditions">
+          <div class="selector-block__conditions-title"><div><strong>匹配条件</strong><small>{{ selectorMode(selector) === 'custom' ? '从第二条开始设置与前一结果的关系' : selectorMode(selector) === 'all' ? '所有条件均成立时分流' : '任一条件成立时分流' }}</small></div><em>{{ selector.matchers.length }}</em></div>
+          <MatcherList v-model="selector.matchers" scope="selector" :operator-mode="selectorMode(selector) === 'custom' ? 'custom' : 'hidden'" />
+          <p v-if="selector.matchers.length === 0" class="selector-block__warning"><AlertTriangle :size="14" />未添加条件，这条分流会匹配所有请求</p>
+        </div>
+      </article>
       <p v-if="config.pipeline_select.length === 0" class="config-empty">未配置入口分流，将使用 KixDNS 默认选择行为</p>
     </div>
   </section>

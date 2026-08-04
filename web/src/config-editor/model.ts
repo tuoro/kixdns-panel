@@ -8,6 +8,7 @@ import type {
   MatcherScope,
   PipelineConfig,
   PipelineSelectConfig,
+  PipelineSelectMode,
   RuleConfig,
 } from './types'
 
@@ -237,6 +238,24 @@ export function createEcs(mode: string): EcsConfig | undefined {
 
 export function createPipelineSelect(): PipelineSelectConfig {
   return { pipeline: '', matcher_operator: 'and', matchers: [] }
+}
+
+export function inferPipelineSelectMode(selector: PipelineSelectConfig): PipelineSelectMode {
+  if (selector.matchers.every((matcher) => matcher.operator === 'and')) {
+    if (selector.matcher_operator === 'and') return 'all'
+    if (selector.matcher_operator === 'or') return 'any'
+  }
+  return 'custom'
+}
+
+export function applyPipelineSelectMode(selector: PipelineSelectConfig, mode: PipelineSelectMode): void {
+  if (mode === 'custom') {
+    selector.matcher_operator = 'and'
+    if (selector.matchers[0]) selector.matchers[0].operator = 'and'
+    return
+  }
+  selector.matcher_operator = mode === 'all' ? 'and' : 'or'
+  for (const matcher of selector.matchers) matcher.operator = 'and'
 }
 
 export function nextPipelineId(config: KixConfig, base = 'pipeline', except?: PipelineConfig): string {

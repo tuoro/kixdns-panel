@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
+  applyPipelineSelectMode,
   createAction,
   createEcs,
   createMatcher,
+  inferPipelineSelectMode,
   normalizeConfig,
   parseConfigSource,
   renamePipeline,
@@ -66,6 +68,30 @@ describe('结构化配置模型', () => {
     expect(pipeline.rules[0]?.actions[0]?.pipeline).toBe('new')
     expect(pipeline.rules[0]?.response_actions_on_match[0]?.pipeline).toBe('new')
     expect(pipeline.rules[0]?.response_actions_on_miss[0]?.pipeline).toBe('new')
+  })
+
+  it('将入口分流的常用关系准确映射到底层逻辑字段', () => {
+    const selector = normalizeConfig({
+      pipeline_select: [{
+        pipeline: 'default',
+        matcher_operator: 'or',
+        matchers: [
+          { type: 'domain_suffix', value: '.cn' },
+          { type: 'qtype', value: 'A' },
+        ],
+      }],
+    }).pipeline_select[0]!
+
+    expect(inferPipelineSelectMode(selector)).toBe('any')
+    applyPipelineSelectMode(selector, 'all')
+    expect(selector.matcher_operator).toBe('and')
+    expect(selector.matchers.map((matcher) => matcher.operator)).toEqual(['and', 'and'])
+
+    selector.matchers[1]!.operator = 'and_not'
+    expect(inferPipelineSelectMode(selector)).toBe('custom')
+    applyPipelineSelectMode(selector, 'any')
+    expect(selector.matcher_operator).toBe('or')
+    expect(selector.matchers.map((matcher) => matcher.operator)).toEqual(['and', 'and'])
   })
 
   it('切换匹配器和动作类型时清除不兼容字段', () => {

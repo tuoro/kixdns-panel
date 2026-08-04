@@ -5,7 +5,12 @@ import { createMatcher, resetMatcher } from '../../config-editor/model'
 import { MATCHER_DEFINITIONS, MATCH_OPERATORS, QTYPE_OPTIONS } from '../../config-editor/schema'
 import type { MatcherConfig, MatcherScope } from '../../config-editor/types'
 
-const props = defineProps<{ scope: MatcherScope }>()
+const props = withDefaults(defineProps<{
+  scope: MatcherScope
+  operatorMode?: 'hidden' | 'custom'
+}>(), {
+  operatorMode: 'custom',
+})
 const matchers = defineModel<MatcherConfig[]>({ required: true })
 const definitions = computed(() => MATCHER_DEFINITIONS[props.scope])
 
@@ -19,6 +24,7 @@ function changeType(matcher: MatcherConfig, event: Event): void {
 
 function remove(index: number): void {
   matchers.value.splice(index, 1)
+  if (props.operatorMode === 'custom' && matchers.value[0]) matchers.value[0].operator = 'and'
 }
 
 function countryCodesValue(matcher: MatcherConfig): string {
@@ -36,8 +42,9 @@ function setCountryCodes(matcher: MatcherConfig, event: Event): void {
 
 <template>
   <div class="matcher-list">
-    <div v-for="(matcher, index) in matchers" :key="index" class="matcher-row">
-      <select v-model="matcher.operator" :aria-label="`条件 ${index + 1} 逻辑运算符`">
+    <div v-for="(matcher, index) in matchers" :key="index" class="matcher-row" :class="{ 'matcher-row--simple': operatorMode === 'hidden' }">
+      <span v-if="operatorMode === 'custom' && index === 0" class="matcher-seed">首个条件</span>
+      <select v-else-if="operatorMode === 'custom'" v-model="matcher.operator" :aria-label="`条件 ${index + 1} 逻辑运算符`">
         <option v-for="operator in MATCH_OPERATORS" :key="operator.value" :value="operator.value">{{ operator.label }}</option>
       </select>
       <select :value="matcher.type" :aria-label="`条件 ${index + 1} 类型`" @change="changeType(matcher, $event)">

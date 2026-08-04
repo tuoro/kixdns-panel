@@ -89,6 +89,32 @@ test('Geo 维护结果离开页面后销毁', async ({ page }) => {
   await expect(page.locator('.geo-data-success')).toHaveCount(0)
 })
 
+test('入口分流使用渐进式条件关系编辑', async ({ page }) => {
+  await open(page, '/config')
+  await page.getByRole('button', { name: '添加分流' }).click()
+
+  const selector = page.locator('.selector-block').last()
+  await selector.scrollIntoViewIfNeeded()
+  await expect(selector.getByText('按顺序匹配，首个命中生效')).toBeVisible()
+  await expect(selector.getByText('未添加条件，这条分流会匹配所有请求')).toBeVisible()
+  await expect(selector.getByLabel(/条件关系/)).toHaveValue('all')
+
+  await selector.getByRole('button', { name: '添加条件' }).click()
+  await selector.getByRole('button', { name: '添加条件' }).click()
+  await expect(selector.getByLabel(/逻辑运算符/)).toHaveCount(0)
+  await expect(selector.getByText('所有条件均成立时分流')).toBeVisible()
+
+  await selector.getByLabel(/条件关系/).selectOption('custom')
+  await expect(selector.getByText('首个条件')).toBeVisible()
+  await expect(selector.getByLabel('条件 2 逻辑运算符')).toHaveValue('and')
+  await selector.getByLabel('条件 2 逻辑运算符').selectOption('and_not')
+  await expect(selector.getByLabel('条件 2 逻辑运算符')).toHaveValue('and_not')
+
+  await selector.getByLabel(/条件关系/).selectOption('any')
+  await expect(selector.getByLabel(/逻辑运算符/)).toHaveCount(0)
+  await expect(selector.getByText('任一条件成立时分流')).toBeVisible()
+})
+
 test('增强版本可安装、切换并删除非活动库存', async ({ page }) => {
   await open(page, '/system')
   const panel = page.locator('.version-panel')
