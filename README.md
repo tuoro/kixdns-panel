@@ -29,6 +29,7 @@ KixDNS 的非 Fork 增强发行版与管理面板。项目维护上游正式 Rel
 - KixDNS 停止时保留最后一次概览和查询排行快照，并明确标记数据已停止更新
 - 系统页一键在线更新面板正式版，校验双层摘要且不替换或启停 KixDNS
 - 上游 Releases/Actions 都由本仓库 Action 生成增强 Artifact，并通过 nightly.link 匿名下载
+- 系统页可选配置 GitHub Token，将元数据 API 配额从匿名 60 次/小时提升到认证配额；Token 不会发送到 nightly.link
 - 版本激活健康检查、失败自动恢复与最多 8 个本地版本的受控库存
 - Vue 3 响应式控制台，桌面侧栏与移动端底部导航
 - 面板与两条增强内核轨道独立构建 x86_64/ARM64 Artifact，自动跟随并续期已验证上游
@@ -91,6 +92,8 @@ sudo bash ./scripts/install.sh
 如果主机已经存在 KixDNS，安装器会让你选择保留现有安装或迁移为 KixDNS Enhanced，不会默认替换。无人值守安装请显式使用 `--keep-existing` 或 `--replace-existing`；保留模式只接入受限面板，迁移模式会备份原 systemd unit 并保留原配置路径。
 
 面板 `v1.0.11` Release 提供 `kixdns-panel-linux-x86_64.zip` 与 `kixdns-panel-linux-arm64.zip`。正式包记录 Release 标签，面板只根据后续正式 Release 提示自身更新；普通 `main` 提交和临时 Action 包不会触发面板更新提示。发现新版后可在“系统”页直接在线更新，过程固定从 `tuoro/kixdns-panel` 最新正式 Release 下载当前架构包，并校验 GitHub 资产摘要与包内 `SHA256SUMS`；更新只替换 Panel Server、Web、helper 和部署脚本，KixDNS 二进制、配置及启停状态保持不变。
+
+公共仓库无需 Token 也能使用，但 GitHub 匿名 API 仅提供每个出口 IP 60 次/小时。若同一公网 IP 下有多台设备，建议在“系统”页配置只读的 Fine-grained PAT；面板先通过 GitHub `/rate_limit` 验证，再以 `0600` 保存到 `/var/lib/kixdns-panel/github-token`。接口只返回是否配置和剩余配额，不返回 Token 明文或片段；删除后立即恢复匿名模式。
 
 安装后面板监听 `0.0.0.0:5738`，安装器会探测默认路由对应的内网 IPv4，并输出形如 `http://192.168.1.20:5738` 的访问链接。首次受管安装不会自动启动 KixDNS，可在“系统”页启动；尚未产生运行快照时概览仍保留与运行状态相同的完整面板布局，以零值和 `--` 展示尚无数据的指标，同时明确标记未启动且禁用运行时操作。面板启动会同步启用开机启动，停止会同步禁用，因此宿主机重启后保持最后选择的状态；已有运行快照的停止状态仍会显示最后一次数据。首次访问创建管理员；请勿把 HTTP 端口直接映射到公网，跨不可信网络访问应限制防火墙来源，并使用 HTTPS 反向代理与 Secure Cookie。登录后可在“系统”页安装或切换受管 KixDNS 构建，并控制服务启动、停止和重启。增强版本之间切换不重复弹窗，失败会自动恢复；从外部安装迁移到增强版必须重新运行安装器并明确选择迁移。KixDNS 没有独立的服务重载动作，因此面板不提供重载按钮或 API；配置保存后的文件监听热加载是另一条独立链路。完整步骤、权限模型、版本管理与卸载见[部署指南](docs/deployment.md)。
 

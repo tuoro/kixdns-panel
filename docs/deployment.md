@@ -89,6 +89,7 @@ sudo bash ./scripts/install.sh --replace-existing
 | `/etc/kixdns-panel/panel.env` | 面板启动参数 |
 | `/var/lib/kixdns-panel/panel.db` | 用户、会话、版本与审计数据 |
 | `/var/lib/kixdns-panel/bin/kixdns` | 可自动更新的数据面二进制 |
+| `/var/lib/kixdns-panel/github-token` | 可选 GitHub API Token，仅面板用户和 root 可读（`0600`） |
 | `/var/lib/kixdns-panel/versions/<source>-<artifact-id>-<commit>/` | 按 Artifact 身份隔离的 KixDNS 二进制与版本清单 |
 | `/var/lib/kixdns-panel/bundle/` | 完整安装包自带 KixDNS 的只读构建身份 |
 | `/var/lib/kixdns-panel-update/` | root 写入、面板只读的在线更新状态 |
@@ -142,7 +143,7 @@ sudo systemctl restart kixdns-panel.service
 
 面板“系统”页分别管理 KixDNS Enhanced 数据面版本和面板正式版更新：
 
-1. “Actions”读取 `build-kixdns.yml` 的成功构建并显示包名中的上游官方 Run；“Releases”读取 `build-kixdns-release.yml` 的成功构建并显示包名中的上游正式标签。两者都从本仓库 Actions 通过 nightly.link 匿名下载，不要求用户配置 GitHub Token。Action 最多维护 10 个已验证版本；Release 从 `v0.1.1` 起只追加，不固定限制为两个或其他数量。
+1. “Actions”读取 `build-kixdns.yml` 的成功构建并显示包名中的上游官方 Run；“Releases”读取 `build-kixdns-release.yml` 的成功构建并显示包名中的上游正式标签。两者都从本仓库 Actions 通过 nightly.link 匿名下载；GitHub API 元数据默认使用匿名配额，也可在系统页配置 Token。Action 最多维护 10 个已验证版本；Release 从 `v0.1.1` 起只追加，不固定限制为两个或其他数量。
 2. 安装请求只提交 `release/action` 与 GitHub Artifact ID。后端在固定工作流最近 30 次成功运行中重新解析来源，拒绝前端传入下载 URL 或文件路径。
 3. 校验 GitHub Artifact digest、包内 `SHA256SUMS`、`KIXDNS_BUILD_COMMIT`、`KIXDNS_CAPABILITIES.json`、`upstream.lock.json` 的 `source` 与官方 Run/Release 身份、补丁集、控制协议、ELF 格式和 CPU 架构。
 4. 使用能力清单预检当前配置；不兼容时返回 `422 unsupported_config_fields`，不会停止服务、写入版本库存或改写配置。
@@ -162,6 +163,8 @@ SQLite 中配置历史最多保留 100 条，审计事件最多保留 10,000 条
 下载端拒绝 URL 用户信息、本机、私网、链路本地和保留地址，每次重定向都会重新解析并固定公网地址；单个文件上限 128 MiB，最多允许 8 个 GeoSite 文件。文件使用 `0640`、内容寻址文件名与原子落盘，`kixdns` 通过同组只读。旧哈希文件不会自动覆盖或清理，以保证配置历史回滚仍能读取原数据。
 
 Panel Server 与 Web 可以在“系统”页在线更新，也可以手动下载完整包重新运行 `scripts/install.sh`。在线更新只接受 `tuoro/kixdns-panel` 最新稳定三段式 Release，浏览器不能提交 URL、路径或版本参数；root 更新器按当前架构下载正式资产，先校验 GitHub API 提供的 SHA-256，再校验包内 `SHA256SUMS`。内部 `--panel-only-update` 事务只替换 Panel Server、Web、helper、一键安装器、卸载器和面板 systemd unit，保留 KixDNS 二进制、构建身份、配置、数据库以及运行/启用状态；失败会恢复旧面板。更新期间面板会短暂重启，页面恢复连接后自动刷新。失败详情可查看 `journalctl -u kixdns-panel-update.service`。
+
+系统页保存 Token 前会调用 GitHub `/rate_limit` 验证，支持 Fine-grained PAT 与 Classic PAT。Token 独立存放于 `/var/lib/kixdns-panel/github-token`，不写入 SQLite、`panel.env`、审计详情或 API 响应；版本缓存会在配置或删除后立即失效。Token 只附加到 `https://api.github.com` 请求，nightly.link 和 Release 资产下载不携带认证头。在线更新器和已安装的一键安装器通过临时 `0600` curl 配置复用同一 Token，避免凭据出现在进程参数中。
 
 完整包使用 `PANEL_BUILD_COMMIT` 标识管理面构建，使用 `KIXDNS_BUILD_COMMIT` 标识被复用的数据面构建，并分别写入 `KIXDNS_PANEL_INSTALLED_COMMIT` 与 `KIXDNS_INSTALLED_COMMIT`。正式包携带 `PANEL_RELEASE` 并写入 `KIXDNS_PANEL_INSTALLED_RELEASE`；当前正式版本为 `v1.0.7`，后续版本仍通过正式 GitHub Release 发布。日常 Action 构建不会触发面板正式版更新。旧版默认工作流名会迁移到 `build-kixdns.yml`，缺少的 `KIXDNS_UPDATE_RELEASE_WORKFLOW` 会补为 `build-kixdns-release.yml`，已有自定义 KixDNS 更新源保持不变。
 

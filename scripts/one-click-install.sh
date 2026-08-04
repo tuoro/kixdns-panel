@@ -2,8 +2,10 @@
 set -Eeuo pipefail
 
 readonly REPOSITORY="tuoro/kixdns-panel"
+readonly GITHUB_TOKEN_FILE="/var/lib/kixdns-panel/github-token"
 VERSION=""
 TEMP_DIRECTORY=""
+GITHUB_API_CONFIG=""
 INSTALLER_ARGUMENTS=()
 
 fail() {
@@ -67,6 +69,22 @@ cleanup() {
   fi
 }
 
+prepare_github_api_config() {
+  local mode
+  local token
+  [[ -e ${GITHUB_TOKEN_FILE} ]] || return 0
+  [[ -f ${GITHUB_TOKEN_FILE} && ! -L ${GITHUB_TOKEN_FILE} ]] || fail "GitHub Token 文件不安全"
+  mode="$(stat -c '%a' -- "${GITHUB_TOKEN_FILE}")"
+  [[ ${mode} =~ ^[0-7]{3,4}$ ]] || fail "GitHub Token 文件权限无效"
+  (((8#${mode} & 8#077) == 0)) || fail "GitHub Token 文件权限必须为 0600"
+  [[ $(stat -c '%s' -- "${GITHUB_TOKEN_FILE}") -le 257 ]] || fail "GitHub Token 文件过大"
+  token="$(<"${GITHUB_TOKEN_FILE}")"
+  [[ ${token} =~ ^(github_pat_|gh[pousr]_)[A-Za-z0-9_-]+$ ]] || fail "GitHub Token 格式无效"
+  GITHUB_API_CONFIG="${TEMP_DIRECTORY}/github-api.conf"
+  (umask 077; printf 'header = "Authorization: Bearer %s"\n' "${token}" > "${GITHUB_API_CONFIG}")
+  unset token
+}
+
 validate_archive_entries() {
   local archive=$1
   local entry
@@ -92,6 +110,7 @@ main() {
   local release_json
   local tag
   local -a package_roots
+  local -a github_api_args=()
 
   parse_arguments "$@"
   [[ ${EUID} -eq 0 ]] || fail "请使用 sudo bash 运行一键安装命令"
@@ -101,6 +120,13 @@ main() {
   require_command jq
   require_command sha256sum
   require_command unzip
+
+  TEMP_DIRECTORY="$(mktemp -d /var/tmp/kixdns-panel-one-click.XXXXXX)"
+  trap cleanup EXIT
+  prepare_github_api_config
+  if [[ -n ${GITHUB_API_CONFIG} ]]; then
+    github_api_args=(--config "${GITHUB_API_CONFIG}")
+  fi
 
   architecture="$(detect_architecture)"
   asset_name="kixdns-panel-linux-${architecture}.zip"
@@ -113,6 +139,7 @@ main() {
     --proto '=https' --tlsv1.2 --retry 3 --connect-timeout 10 --max-time 60 \
     --header 'Accept: application/vnd.github+json' \
     --header 'User-Agent: kixdns-panel-one-click-installer' \
+    "${github_api_args[@]}" \
     "${api_url}")" || fail "无法读取 GitHub Release 信息"
   tag="$(jq -er '.tag_name | select(type == "string")' <<< "${release_json}")" ||
     fail "Release 标签缺失"
@@ -130,8 +157,6 @@ main() {
     fail "安装包下载地址不可信"
   [[ ${asset_digest} =~ ^sha256:[0-9a-f]{64}$ ]] || fail "安装包缺少有效的 SHA-256 摘要"
 
-  TEMP_DIRECTORY="$(mktemp -d /var/tmp/kixdns-panel-one-click.XXXXXX)"
-  trap cleanup EXIT
   archive="${TEMP_DIRECTORY}/${asset_name}"
   extract_directory="${TEMP_DIRECTORY}/package"
   curl --fail --silent --show-error --location \

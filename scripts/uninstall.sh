@@ -303,6 +303,7 @@ remove_managed_kixdns() {
 remove_panel_state() {
   [[ ${CONFIG_ACTION} == remove ]] || return 0
   rm -rf -- /etc/kixdns-panel
+  rm -f -- /var/lib/kixdns-panel/github-token
   if [[ ${KIXDNS_MANAGEMENT_ENABLED} == true && ${KIXDNS_ACTION} == keep ]]; then
     rm -f -- /var/lib/kixdns-panel/panel.db /var/lib/kixdns-panel/panel.db-shm \
       /var/lib/kixdns-panel/panel.db-wal

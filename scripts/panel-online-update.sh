@@ -7,7 +7,32 @@ readonly STATUS_FILE="${STATUS_DIRECTORY}/status.json"
 readonly PANEL_ENV="/etc/kixdns-panel/panel.env"
 readonly INSTALLER="/usr/local/libexec/kixdns-panel-one-click-install"
 readonly PANEL_SERVER="/usr/local/bin/kixdns-panel-server"
+readonly GITHUB_TOKEN_FILE="/var/lib/kixdns-panel/github-token"
 TARGET_VERSION=""
+GITHUB_API_CONFIG=""
+
+cleanup() {
+  if [[ -n ${GITHUB_API_CONFIG} && ${GITHUB_API_CONFIG} == "${STATUS_DIRECTORY}"/.github-api.* ]]; then
+    rm -f -- "${GITHUB_API_CONFIG}"
+  fi
+}
+
+prepare_github_api_config() {
+  local mode
+  local token
+  [[ -e ${GITHUB_TOKEN_FILE} ]] || return 0
+  [[ -f ${GITHUB_TOKEN_FILE} && ! -L ${GITHUB_TOKEN_FILE} ]] || return 1
+  mode="$(stat -c '%a' -- "${GITHUB_TOKEN_FILE}")"
+  [[ ${mode} =~ ^[0-7]{3,4}$ ]] || return 1
+  (((8#${mode} & 8#077) == 0)) || return 1
+  [[ $(stat -c '%s' -- "${GITHUB_TOKEN_FILE}") -le 257 ]] || return 1
+  token="$(<"${GITHUB_TOKEN_FILE}")"
+  [[ ${token} =~ ^(github_pat_|gh[pousr]_)[A-Za-z0-9_-]+$ ]] || return 1
+  GITHUB_API_CONFIG="$(mktemp "${STATUS_DIRECTORY}/.github-api.XXXXXX")"
+  chmod 0600 "${GITHUB_API_CONFIG}"
+  printf 'header = "Authorization: Bearer %s"\n' "${token}" > "${GITHUB_API_CONFIG}"
+  unset token
+}
 
 write_status() {
   local state=$1
@@ -57,11 +82,13 @@ main() {
   local latest_json
   local latest_version
   local newest
+  local -a github_api_args=()
   if ! command -v curl >/dev/null || ! command -v jq >/dev/null || \
     ! command -v flock >/dev/null; then
     printf '%s\n' '面板在线更新缺少 curl、jq 或 flock' >&2
     return 127
   fi
+  trap cleanup EXIT
   trap fail_update ERR
   trusted_root_executable "${INSTALLER}" || return 126
   trusted_root_executable "${PANEL_SERVER}" || return 126
@@ -73,10 +100,15 @@ main() {
   }
   write_status checking "正在检查最新正式版"
   sleep 2
+  prepare_github_api_config
+  if [[ -n ${GITHUB_API_CONFIG} ]]; then
+    github_api_args=(--config "${GITHUB_API_CONFIG}")
+  fi
   latest_json="$(curl --fail --silent --show-error --location \
     --proto '=https' --tlsv1.2 --retry 3 --connect-timeout 10 --max-time 60 \
     --header 'Accept: application/vnd.github+json' \
     --header 'User-Agent: kixdns-panel-online-updater' \
+    "${github_api_args[@]}" \
     "https://api.github.com/repos/${REPOSITORY}/releases/latest")"
   latest_version="$(jq -er '.tag_name | select(type == "string")' <<< "${latest_json}")"
   [[ ${latest_version} =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
