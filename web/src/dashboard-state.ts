@@ -24,6 +24,10 @@ export function hasStaleDashboardData(state: DashboardRuntimeState): boolean {
   return state === 'stopped-snapshot' || state === 'unavailable-snapshot'
 }
 
+export function supportsQueryStats(capabilities: string[]): boolean {
+  return capabilities.includes('stats_top_v1')
+}
+
 export function emptyOverview(): Overview {
   return {
     live: false,

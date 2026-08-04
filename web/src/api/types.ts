@@ -111,11 +111,31 @@ export interface ConfigDocument {
   sha256: string
   modified_at: number
   version_id: number | null
+  /**
+   * 待应用版本的摘要。待应用内容仍由上面的 content 返回，避免客户端
+   * 同时维护两份可编辑 JSON。
+   */
+  pending?: PendingConfig | null
   runtime: {
-    status: 'active' | 'different' | 'unavailable'
+    status: 'active' | 'different' | 'pending' | 'failed' | 'unavailable'
     active_sha256: string | null
     generation: number | null
+    apply_state?: ConfigRuntimeApplyState
+    declared_capabilities?: string[]
+    pending_error?: string | null
   }
+}
+
+export type ConfigRuntimeApplyState = 'active' | 'pending' | 'failed' | 'unavailable'
+export type ConfigVersionApplyState = 'applied' | 'pending' | 'failed' | 'superseded'
+
+export interface PendingConfig {
+  version_id?: number | null
+  sha256?: string | null
+  message?: string
+  actor?: string
+  created_at?: number
+  error?: string | null
 }
 
 export interface ConfigVersion {
@@ -124,6 +144,8 @@ export interface ConfigVersion {
   message: string
   actor: string
   created_at: number
+  apply_state?: ConfigVersionApplyState
+  apply_error?: string | null
 }
 
 export interface ConfigVersions {
@@ -148,7 +170,9 @@ export interface ValidationResult {
 export interface ConfigApplyResult {
   version_id: number
   sha256: string
-  active_config: ActiveConfig
+  apply_state?: 'applied' | 'pending'
+  active_config?: ActiveConfig
+  apply_error?: string | null
   validation?: ValidationResult
 }
 

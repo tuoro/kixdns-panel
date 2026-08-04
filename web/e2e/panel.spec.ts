@@ -30,6 +30,28 @@ test('首次未启动时保留完整概览布局', async ({ page }) => {
   await expect(page.getByRole('button', { name: '清空内部缓存' })).toBeDisabled()
 })
 
+test('首次未启动时保存配置会标记为待应用', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('kixdns:demo-empty-first-install', 'true'))
+  await open(page, '/config')
+
+  await expect(page.getByText('KixDNS 未启动，无法确认当前 KixDNS 配置能力')).toBeVisible()
+  await page.locator('.settings-grid .setting-field input').first().fill('0.0.0.0:54')
+  await page.getByRole('button', { name: '保存为待应用' }).click()
+
+  await expect(page.locator('.toast--info').filter({ hasText: '待应用' })).toBeVisible()
+  await expect(page.getByText('配置已保存，当前处于待应用状态')).toBeVisible()
+  await expect(page.locator('.history-item--pending')).toHaveCount(1)
+
+  // 待应用候选存在时，删除历史版本仍应使用候选 SHA 完成并发校验。
+  const history = page.locator('.history-list')
+  page.once('dialog', (dialog) => dialog.accept())
+  await history.getByTitle('删除此版本').first().click()
+  await expect(page.locator('.toast--success').filter({ hasText: '已删除' })).toBeVisible()
+  await expect(history.locator('article')).toHaveCount(4)
+  await expect(page.locator('.history-item--pending')).toHaveCount(0)
+  await expect(page.getByText('KixDNS 未启动', { exact: true })).toBeVisible()
+})
+
 test('配置历史支持差异、恢复和受保护删除', async ({ page }) => {
   await open(page, '/config')
   const history = page.locator('.history-list')

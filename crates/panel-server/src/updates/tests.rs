@@ -136,6 +136,49 @@ fn rejects_bundled_identity_for_a_different_binary() {
 }
 
 #[tokio::test]
+async fn reads_capabilities_from_unmaterialized_bundled_version() {
+    let directory = tempdir().unwrap();
+    let database = Database::open(directory.path().join("panel.db"))
+        .await
+        .unwrap();
+    let binary_path = directory.path().join("bin/kixdns");
+    let versions_path = directory.path().join("versions");
+    let bundled_metadata = directory.path().join("bundle");
+    let binary = test_elf();
+    write_bundle_metadata(&bundled_metadata, &binary);
+    std::fs::write(
+        bundled_metadata.join("KIXDNS_CAPABILITIES.json"),
+        r#"{"schema_version":1,"config_capabilities":["config_query_stats_v1"]}"#,
+    )
+    .unwrap();
+    let manager = UpdateManager::new(
+        database,
+        UpdateSettings {
+            repository: "tuoro/kixdns-panel".to_owned(),
+            workflow: "build-kixdns.yml".to_owned(),
+            release_workflow: "build-kixdns-release.yml".to_owned(),
+            branch: "main".to_owned(),
+            artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
+            installed_commit: Some(TEST_BUILD_COMMIT.to_owned()),
+            installed_source_id: Some(42),
+            panel_installed_commit: None,
+            panel_installed_release: None,
+            management_enabled: true,
+            binary_path: binary_path.clone(),
+            versions_path,
+            bundled_metadata,
+        },
+    )
+    .unwrap();
+    std::fs::write(binary_path, binary).unwrap();
+
+    assert_eq!(
+        manager.active_capabilities().await.unwrap(),
+        vec!["config_query_stats_v1".to_owned()]
+    );
+}
+
+#[tokio::test]
 async fn bundled_binary_identity_replaces_stale_database_state() {
     let directory = tempdir().unwrap();
     let database = Database::open(directory.path().join("panel.db"))

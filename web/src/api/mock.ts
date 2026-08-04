@@ -65,10 +65,14 @@ let config: ConfigDocument = {
   sha256: '45b9a1c0c7b55138a73d9d42ed9750e4532667c22eb79f74de2ca63619a5ce11',
   modified_at: now - 430,
   version_id: 18,
+  pending: null,
   runtime: {
     status: 'active',
     active_sha256: '45b9a1c0c7b55138a73d9d42ed9750e4532667c22eb79f74de2ca63619a5ce11',
     generation: 18,
+    apply_state: 'active',
+    pending_error: null,
+    declared_capabilities: ['config_query_stats_v1'],
   },
 }
 
@@ -188,10 +192,10 @@ const queryStats = {
 
 const versions: ConfigVersions = {
   versions: [
-    { id: 18, sha256: config.sha256, message: '调整上游超时', actor: 'admin', created_at: now - 430 },
-    { id: 17, sha256: 'cc5da21d', message: '新增国内解析管线', actor: 'admin', created_at: now - 86400 },
-    { id: 16, sha256: '982ca084', message: '更新恶意域名规则', actor: 'admin', created_at: now - 172800 },
-    { id: 15, sha256: '193bf884', message: '导入启动时配置', actor: 'system', created_at: now - 604800 },
+    { id: 18, sha256: config.sha256, message: '调整上游超时', actor: 'admin', created_at: now - 430, apply_state: 'applied', apply_error: null },
+    { id: 17, sha256: 'cc5da21d', message: '新增国内解析管线', actor: 'admin', created_at: now - 86400, apply_state: 'applied', apply_error: null },
+    { id: 16, sha256: '982ca084', message: '更新恶意域名规则', actor: 'admin', created_at: now - 172800, apply_state: 'applied', apply_error: null },
+    { id: 15, sha256: '193bf884', message: '导入启动时配置', actor: 'system', created_at: now - 604800, apply_state: 'applied', apply_error: null },
   ],
 }
 let nextConfigVersionId = Math.max(...versions.versions.map((version) => version.id))
@@ -482,14 +486,41 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
   }
   if (configVersionMatch && method === 'DELETE') {
     const body = JSON.parse(String(init?.body)) as { expected_sha256: string }
+    const formalVersion = versions.versions.find((version) => version.apply_state === 'applied')
+    // 与后端 ConfigStore::delete_version 保持一致：待应用时校验编辑中的候选 SHA。
     if (body.expected_sha256 !== config.sha256) throw new Error('配置已被其他操作修改，请刷新后重试')
     const id = Number(configVersionMatch[1])
-    const currentId = config.version_id
+    const currentId = config.pending?.version_id
+      ? formalVersion?.id ?? null
+      : formalVersion?.id ?? config.version_id
     if (id === currentId) throw new Error('当前生效版本不能删除，请先恢复其他版本')
     const index = versions.versions.findIndex((version) => version.id === id)
     if (index < 0) throw new Error('配置文件不存在')
+    const removesPending = config.pending?.version_id === id
     versions.versions.splice(index, 1)
     configVersionContents.delete(id)
+    if (removesPending) {
+      const formalVersion = versions.versions.find((version) => version.apply_state === 'applied')
+      const formalContent = formalVersion ? configVersionContents.get(formalVersion.id) : undefined
+      if (formalVersion && formalContent) {
+        const unavailable = emptyFirstInstall
+        config = {
+          ...config,
+          content: structuredClone(formalContent),
+          sha256: formalVersion.sha256,
+          modified_at: formalVersion.created_at,
+          version_id: formalVersion.id,
+          pending: null,
+          runtime: {
+            ...config.runtime,
+            status: unavailable ? 'unavailable' : 'active',
+            active_sha256: formalVersion.sha256,
+            apply_state: unavailable ? 'unavailable' : 'active',
+            pending_error: null,
+          },
+        }
+      }
+    }
     return { deleted_id: id } as DeleteConfigVersionResult as T
   }
   if (path === '/api/v1/config/validate') {
@@ -502,13 +533,59 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
     if (body.expected_sha256 !== config.sha256) throw new Error('配置已被其他操作修改，请刷新后重试')
     const nextSha = `demo${Date.now().toString(16)}`.padEnd(64, '0').slice(0, 64)
     const versionId = ++nextConfigVersionId
+    const createdAt = Math.floor(Date.now() / 1000)
+    const message = body.message?.trim() || '更新配置'
+    if (emptyFirstInstall) {
+      config = {
+        ...config,
+        content: body.content,
+        sha256: nextSha,
+        modified_at: createdAt,
+        version_id: versionId,
+        pending: {
+          version_id: versionId,
+          sha256: nextSha,
+          message,
+          actor: 'admin',
+          created_at: createdAt,
+          error: null,
+        },
+        runtime: {
+          status: 'unavailable',
+          active_sha256: config.runtime.active_sha256,
+          generation: config.runtime.generation,
+          apply_state: 'pending',
+          pending_error: null,
+          declared_capabilities: ['config_query_stats_v1'],
+        },
+      }
+      versions.versions.unshift({
+        id: versionId,
+        sha256: nextSha,
+        message,
+        actor: 'admin',
+        created_at: createdAt,
+        apply_state: 'pending',
+        apply_error: null,
+      })
+      configVersionContents.set(versionId, structuredClone(body.content))
+      return { version_id: versionId, sha256: nextSha, apply_state: 'pending' } as ConfigApplyResult as T
+    }
     config = {
       ...config,
       content: body.content,
       sha256: nextSha,
-      modified_at: Math.floor(Date.now() / 1000),
+      modified_at: createdAt,
       version_id: versionId,
-      runtime: { status: 'active', active_sha256: nextSha, generation: activeConfig.generation + 1 },
+      pending: null,
+      runtime: {
+        status: 'active',
+        active_sha256: nextSha,
+        generation: activeConfig.generation + 1,
+        apply_state: 'active',
+        pending_error: null,
+        declared_capabilities: ['config_query_stats_v1'],
+      },
     }
     activeConfig.sha256 = nextSha
     activeConfig.generation += 1
@@ -516,12 +593,14 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
     versions.versions.unshift({
       id: versionId,
       sha256: nextSha,
-      message: body.message?.trim() || '更新配置',
+      message,
       actor: 'admin',
       created_at: config.modified_at,
+      apply_state: 'applied',
+      apply_error: null,
     })
     configVersionContents.set(versionId, structuredClone(body.content))
-    return { version_id: versionId, sha256: config.sha256, active_config: activeConfig } as ConfigApplyResult as T
+    return { version_id: versionId, sha256: config.sha256, apply_state: 'applied', active_config: activeConfig } as ConfigApplyResult as T
   }
   const restoreMatch = pathname.match(/^\/api\/v1\/config\/versions\/(\d+)\/restore$/)
   if (restoreMatch && method === 'POST') {
@@ -537,10 +616,14 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
       sha256: sourceVersion.sha256,
       modified_at: Math.floor(Date.now() / 1000),
       version_id: versionId,
+      pending: null,
       runtime: {
         status: 'active',
         active_sha256: sourceVersion.sha256,
         generation: activeConfig.generation + 1,
+        apply_state: 'active',
+        pending_error: null,
+        declared_capabilities: ['config_query_stats_v1'],
       },
     }
     activeConfig.sha256 = config.sha256
@@ -552,9 +635,11 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
       message: `回滚至版本 #${sourceId}`,
       actor: 'admin',
       created_at: config.modified_at,
+      apply_state: 'applied',
+      apply_error: null,
     })
     configVersionContents.set(versionId, structuredClone(content))
-    return { version_id: versionId, sha256: config.sha256, active_config: activeConfig } as ConfigApplyResult as T
+    return { version_id: versionId, sha256: config.sha256, apply_state: 'applied', active_config: activeConfig } as ConfigApplyResult as T
   }
   if (path === '/api/v1/cache/flush') {
     return { protocol_version: 1, response_entries_before: 18642, response_entries_after: 0, rule_entries_before: 712, rule_entries_after: 0 } as T

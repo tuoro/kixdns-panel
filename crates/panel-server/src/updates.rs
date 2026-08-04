@@ -549,6 +549,39 @@ impl UpdateManager {
         Ok(())
     }
 
+    /// 返回本地活动版本声明的配置能力，供 `KixDNS` 停止时的编辑器继续识别字段。
+    pub async fn active_capabilities(&self) -> Result<Vec<String>, UpdateError> {
+        if !self.management_enabled {
+            return Ok(Vec::new());
+        }
+        let Some(key) = self.active_version().await? else {
+            return Ok(Vec::new());
+        };
+        let versions_path = Arc::clone(&self.versions_path);
+        let binary_path = Arc::clone(&self.binary_path);
+        let bundled_metadata = Arc::clone(&self.bundled_metadata);
+        let initial = self.initial_version_key()?;
+        tokio::task::spawn_blocking(move || {
+            let (manifest, _) = match load_verified_version(&versions_path, &key) {
+                Ok(version) => version,
+                Err(_) if initial.as_ref() == Some(&key) && key.source_id.is_some() => {
+                    // 首次安装时版本目录可能尚未建立，仍以已校验的完整包清单为准。
+                    let binary = read_regular_file(&binary_path, "当前 KixDNS 二进制")?;
+                    (
+                        load_bundled_manifest(&bundled_metadata, &key, &binary)?,
+                        binary,
+                    )
+                }
+                Err(error) => return Err(error),
+            };
+            Ok(canonical_runtime_capabilities(
+                &manifest.config_capabilities,
+            ))
+        })
+        .await
+        .map_err(|error| UpdateError::Install(error.to_string()))?
+    }
+
     pub async fn catalog(&self, source: VersionSource) -> Result<VersionCatalog, UpdateError> {
         let binary_present = regular_file_exists(self.binary_path.as_ref())?;
         if !self.management_enabled {

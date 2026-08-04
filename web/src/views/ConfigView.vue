@@ -18,13 +18,14 @@ import {
 } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
-import { apiRequest, jsonBody } from '../api/client'
+import { ApiError, apiRequest, jsonBody } from '../api/client'
 import type {
   ConfigApplyResult,
   ConfigDocument,
   ConfigVersion,
   ConfigVersionDetail,
   ConfigVersions,
+  ConfigRuntimeApplyState,
   DeleteConfigVersionResult,
   Overview,
   ServiceStatus,
@@ -64,13 +65,36 @@ const runtimeStopped = ref(false)
 const runtimeCapabilities = ref<string[]>([])
 const toast = useToast()
 const changed = computed(() => source.value !== baseline.value)
-const currentVersionId = computed(() => document.value?.version_id ?? null)
+const runtimeApplyState = computed<ConfigRuntimeApplyState | undefined>(() => document.value?.runtime.apply_state)
+const hasApplyFailure = computed(() => runtimeApplyState.value === 'failed'
+  || document.value?.runtime.status === 'failed'
+  || Boolean(document.value?.runtime.pending_error)
+  || Boolean(document.value?.pending?.error))
+const hasPending = computed(() => !hasApplyFailure.value
+  && (runtimeApplyState.value === 'pending'
+    || document.value?.runtime.status === 'pending'
+    || Boolean(document.value?.pending)))
+const pendingVersionId = computed(() => document.value?.pending?.version_id
+  ?? (runtimeApplyState.value === 'pending' ? document.value?.version_id : null)
+  ?? null)
+const currentVersionId = computed(() => {
+  const activeSha = document.value?.runtime.active_sha256
+  const applied = versions.value.find((version) => version.apply_state === 'applied'
+    && (!activeSha || version.sha256 === activeSha))
+  if (applied) return applied.id
+  if (hasPending.value || hasApplyFailure.value) return null
+  return document.value?.version_id ?? null
+})
 const runtimeLabel = computed(() => {
+  if (runtimeApplyState.value === 'pending' || hasPending.value || document.value?.runtime.status === 'pending') return '配置待应用'
+  if (runtimeApplyState.value === 'failed' || document.value?.runtime.status === 'failed' || hasApplyFailure.value) return '配置应用失败'
   if (document.value?.runtime.status === 'active') return `运行中 · 代次 #${document.value.runtime.generation}`
   if (document.value?.runtime.status === 'different') return '文件与运行配置不同'
   if (runtimeStopped.value) return 'KixDNS 未启动'
   return '运行状态不可用'
 })
+const runtimeUnavailable = computed(() => document.value?.runtime.status === 'unavailable'
+  && !runtimeStopped.value)
 const unsupportedFields = computed(() => {
   const settings = config.value?.settings
   if (!settings) return []
@@ -79,6 +103,28 @@ const unsupportedFields = computed(() => {
     .filter((field) => Object.prototype.hasOwnProperty.call(settings, field.key)
       && !settingSupported(field, runtimeCapabilities.value))
     .map((field) => field.label)
+})
+const deferSave = computed(() => runtimeStopped.value
+  || runtimeUnavailable.value
+  || Boolean(capabilityError.value)
+  || unsupportedFields.value.length > 0)
+const canApplyPending = computed(() => (hasPending.value || hasApplyFailure.value) && !deferSave.value)
+const canSave = computed(() => changed.value || canApplyPending.value)
+const saveLabel = computed(() => {
+  if (saving.value) return canApplyPending.value ? '应用中' : (deferSave.value ? '保存中' : '应用中')
+  if (hasApplyFailure.value && canApplyPending.value && !changed.value) return '重试应用'
+  if (canApplyPending.value && !changed.value) return '应用待应用'
+  if (deferSave.value) return '保存为待应用'
+  return '保存并热加载'
+})
+const validationLabel = computed(() => {
+  if (parseError.value) return parseError.value
+  if (hasPending.value) return '配置已保存为待应用版本，启动兼容的 KixDNS 后可继续应用'
+  if (validation.value?.valid) {
+    return `KixDNS 校验通过 · ${validation.value.pipeline_count} Pipeline / ${validation.value.rule_count} 规则`
+  }
+  if (deferSave.value) return 'KixDNS 当前未运行或无法确认能力，保存后将在运行时校验并应用'
+  return '保存前将调用 KixDNS 内部编译器校验'
 })
 let syncingConfig = false
 let pendingLoad: Promise<void> | null = null
@@ -101,6 +147,27 @@ function preventAccidentalClose(event: BeforeUnloadEvent): void {
   if (!changed.value) return
   event.preventDefault()
   event.returnValue = ''
+}
+
+function friendlyRuntimeError(error: unknown): string {
+  return friendlyRuntimeMessage(errorMessage(error))
+}
+
+function friendlyRuntimeMessage(message: string): string {
+  if (/No such file|os error 2|控制接口.*不可用|控制接口.*未启动/i.test(message)) {
+    return 'KixDNS 未启动，配置将保存为待应用版本'
+  }
+  return message
+}
+
+function applyResultState(result: ConfigApplyResult): 'applied' | 'pending' {
+  if (result.apply_state === 'pending' || !result.active_config) return 'pending'
+  return 'applied'
+}
+
+function shouldRefreshAfterSaveError(error: unknown): boolean {
+  return error instanceof ApiError
+    && ['unsupported_config_fields', 'config_validation_failed', 'reload_failed', 'kixdns_rejected'].includes(error.code)
 }
 
 function parseSource(): Record<string, unknown> | null {
@@ -143,19 +210,23 @@ function load(): Promise<void> {
       apiRequest<ConfigDocument>('/api/v1/config'),
       apiRequest<ConfigVersions>('/api/v1/config/versions'),
       apiRequest<Overview>('/api/v1/overview').catch((error: unknown) => {
-        capabilityError.value = errorMessage(error)
+        capabilityError.value = friendlyRuntimeError(error)
         return null
       }),
       apiRequest<ServiceStatus>('/api/v1/service').catch(() => null),
     ])
+    const declaredCapabilities = nextDocument.runtime.declared_capabilities ?? []
     if (overview) {
       runtimeStopped.value = !overview.live
         && (service?.active_state === 'inactive' || overview.service_active === false)
-      runtimeCapabilities.value = overview.live ? overview.health.capabilities : []
-      capabilityError.value = overview.live ? '' : 'KixDNS 实时能力暂不可用'
+      runtimeCapabilities.value = overview.live ? overview.health.capabilities : declaredCapabilities
+      capabilityError.value = overview.live || declaredCapabilities.length > 0 ? '' : 'KixDNS 实时能力暂不可用'
     } else {
       runtimeStopped.value = service?.active_state === 'inactive'
-      runtimeCapabilities.value = []
+      runtimeCapabilities.value = declaredCapabilities
+      if (!runtimeStopped.value && !capabilityError.value && declaredCapabilities.length === 0) {
+        capabilityError.value = 'KixDNS 实时能力暂不可用'
+      }
     }
     document.value = nextDocument
     versions.value = history.versions
@@ -179,6 +250,10 @@ function load(): Promise<void> {
 async function validate(): Promise<ValidationResult | null> {
   const content = parseSource()
   if (!content) return null
+  if (deferSave.value) {
+    toast.info('KixDNS 当前未启动或无法确认能力，保存后将作为待应用版本保留')
+    return null
+  }
   validating.value = true
   try {
     validation.value = await apiRequest<ValidationResult>('/api/v1/config/validate', {
@@ -188,7 +263,7 @@ async function validate(): Promise<ValidationResult | null> {
     toast.success(`配置通过校验，${validation.value.pipeline_count} 条 Pipeline，${validation.value.rule_count} 条规则`)
     return validation.value
   } catch (error) {
-    toast.error(errorMessage(error))
+    toast.error(friendlyRuntimeError(error))
     return null
   } finally {
     validating.value = false
@@ -196,22 +271,27 @@ async function validate(): Promise<ValidationResult | null> {
 }
 
 async function save(): Promise<void> {
-  if (!document.value || !changed.value) return
+  if (!document.value || !canSave.value) return
   const content = parseSource()
   if (!content) return
   saving.value = true
   try {
-    const checked = await validate()
-    if (!checked?.valid) return
     const result = await apiRequest<ConfigApplyResult>('/api/v1/config', {
       method: 'PUT',
       ...jsonBody({ content, expected_sha256: document.value.sha256, message: message.value.trim() }),
     })
-    toast.success(`配置已生效，运行时代次 #${result.active_config.generation}`)
+    validation.value = result.validation ?? null
+    if (applyResultState(result) === 'pending') {
+      toast.info('配置已保存为待应用版本，启动兼容的 KixDNS 后即可应用')
+    } else {
+      const generation = result.active_config?.generation
+      toast.success(generation == null ? '配置已生效' : `配置已生效，运行时代次 #${generation}`)
+    }
     message.value = ''
     await load()
   } catch (error) {
-    toast.error(errorMessage(error))
+    toast.error(friendlyRuntimeError(error))
+    if (shouldRefreshAfterSaveError(error)) await load()
   } finally {
     saving.value = false
   }
@@ -227,10 +307,14 @@ async function restore(version: ConfigVersion): Promise<void> {
       method: 'POST',
       ...jsonBody({ expected_sha256: document.value.sha256 }),
     })
-    toast.success(`版本 #${version.id} 已恢复，当前版本 #${result.version_id}`)
+    if (applyResultState(result) === 'pending') {
+      toast.info(`版本 #${version.id} 已保存为待应用版本`)
+    } else {
+      toast.success(`版本 #${version.id} 已恢复，当前版本 #${result.version_id}`)
+    }
     await load()
   } catch (error) {
-    toast.error(errorMessage(error))
+    toast.error(friendlyRuntimeError(error))
   } finally {
     restoring.value = null
   }
@@ -245,11 +329,19 @@ async function deleteVersion(version: ConfigVersion): Promise<void> {
   if (!window.confirm(`删除配置版本 #${version.id}？此操作无法撤销。`)) return
   deleting.value = version.id
   try {
+    const removesDesired = version.id === pendingVersionId.value
+      || version.apply_state === 'pending'
+      || version.apply_state === 'failed'
     await apiRequest<DeleteConfigVersionResult>(`/api/v1/config/versions/${version.id}`, {
       method: 'DELETE',
       ...jsonBody({ expected_sha256: document.value.sha256 }),
     })
-    versions.value = versions.value.filter((item) => item.id !== version.id)
+    if (removesDesired) {
+      await load()
+    } else {
+      const history = await apiRequest<ConfigVersions>('/api/v1/config/versions')
+      versions.value = history.versions
+    }
     toast.success(`配置版本 #${version.id} 已删除`)
   } catch (error) {
     toast.error(errorMessage(error))
@@ -312,21 +404,44 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
   <div class="page config-page">
     <div class="page-actions">
       <div v-if="document" class="document-meta" :title="document.runtime.active_sha256 ? `运行摘要 ${document.runtime.active_sha256}` : '无法读取 KixDNS 运行配置'">
-        <span class="status-dot" :class="{ 'status-dot--warning': document.runtime.status === 'different', 'status-dot--muted': document.runtime.status === 'unavailable' }"></span>
+        <span
+          class="status-dot"
+          :class="{
+            'status-dot--danger': hasApplyFailure,
+            'status-dot--warning': !hasApplyFailure && (hasPending || document.runtime.status === 'pending' || document.runtime.status === 'different'),
+            'status-dot--muted': !hasApplyFailure && !hasPending && document.runtime.status === 'unavailable',
+          }"
+        ></span>
         <span>{{ runtimeLabel }}</span>
-        <span v-if="document.version_id" class="document-meta__version">版本 #{{ document.version_id }}</span>
+        <span v-if="pendingVersionId" class="document-meta__version">待应用 #{{ pendingVersionId }}</span>
+        <span v-else-if="currentVersionId" class="document-meta__version">版本 #{{ currentVersionId }}</span>
         <code>{{ shortHash(document.sha256, 14) }}</code>
       </div>
       <button class="button button--secondary" type="button" :disabled="loading || saving || restoring !== null || deleting !== null" @click="load"><RefreshCw :size="16" :class="{ spin: loading }" />重新读取</button>
     </div>
     <StatusBanner v-if="loadError" :message="loadError" :stale="Boolean(document)" :busy="loading" @retry="load" />
-    <div v-if="runtimeStopped || capabilityError || unsupportedFields.length" class="config-compatibility-banner">
+    <div v-if="hasPending || hasApplyFailure || runtimeStopped || runtimeUnavailable || capabilityError || unsupportedFields.length" class="config-compatibility-banner">
       <TriangleAlert :size="18" />
       <div>
-        <strong>{{ runtimeStopped ? 'KixDNS 未启动，无法确认当前 KixDNS 配置能力' : (capabilityError ? '无法确认当前 KixDNS 的配置能力' : '配置包含当前版本不支持的字段') }}</strong>
-        <p v-if="runtimeStopped">受版本约束的已有字段已只读保留，启动 KixDNS 后可继续编辑。</p>
+        <strong>
+          {{
+            hasPending
+              ? '配置已保存，当前处于待应用状态'
+              : (hasApplyFailure
+                ? '配置应用失败，当前仍保留上一份生效配置'
+                : (runtimeStopped
+                  ? 'KixDNS 未启动，无法确认当前 KixDNS 配置能力'
+                  : (runtimeUnavailable
+                    ? '无法确认当前 KixDNS 的运行能力'
+                    : (capabilityError ? '无法确认当前 KixDNS 的配置能力' : '配置包含当前版本不支持的字段'))))
+          }}
+        </strong>
+        <p v-if="hasPending">编辑内容已经安全保存；启动声明相应能力的 KixDNS 后会自动应用，也可点击“应用待应用”立即重试。</p>
+        <p v-else-if="hasApplyFailure">{{ friendlyRuntimeMessage(document?.runtime.pending_error || document?.pending?.error || '请检查 KixDNS 日志后重试。') }}</p>
+        <p v-else-if="runtimeStopped">当前编辑内容会保存为待应用版本，启动 KixDNS 后可继续应用。</p>
+        <p v-else-if="runtimeUnavailable">当前无法确认控制通道，编辑内容会保存为待应用版本，运行状态恢复后可继续应用。</p>
         <p v-else-if="capabilityError">受版本约束的已有字段已只读保留，能力恢复后可继续编辑。</p>
-        <p v-else>已只读保留：{{ unsupportedFields.join('、') }}。切换兼容版本，或在 JSON 视图移除后再保存。</p>
+        <p v-else>已只读保留：{{ unsupportedFields.join('、') }}。切换兼容版本后可保存为待应用版本。</p>
       </div>
     </div>
     <div class="config-layout">
@@ -337,8 +452,8 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
             <input ref="fileInput" class="visually-hidden" type="file" accept=".json,application/json" @change="importFile">
             <button class="icon-button" type="button" title="导入 JSON" :disabled="loading || saving" @click="fileInput?.click()"><FileUp :size="16" /></button>
             <button class="icon-button" type="button" title="下载 JSON" :disabled="loading" @click="downloadJson"><Download :size="16" /></button>
-            <button class="button button--secondary" type="button" :disabled="loading || validating || saving || restoring !== null || deleting !== null" @click="validate"><ShieldCheck :size="16" />{{ validating ? '校验中' : '校验' }}</button>
-            <button class="button button--primary" type="button" :disabled="loading || validating || saving || restoring !== null || deleting !== null || !changed" @click="save"><Save :size="16" />{{ saving ? '应用中' : '保存并热加载' }}</button>
+            <button class="button button--secondary" type="button" :disabled="loading || validating || saving || restoring !== null || deleting !== null || deferSave" @click="validate"><ShieldCheck :size="16" />{{ validating ? '校验中' : (deferSave ? '运行后校验' : '校验') }}</button>
+            <button class="button button--primary" type="button" :disabled="loading || validating || saving || restoring !== null || deleting !== null || !canSave" @click="save"><Save :size="16" />{{ saveLabel }}</button>
           </div>
         </header>
 
@@ -357,7 +472,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
         <footer class="editor-footer">
           <div class="validation-state">
             <TriangleAlert v-if="parseError" :size="16" /><Check v-else-if="validation?.valid" :size="16" /><Clock3 v-else :size="16" />
-            <span :class="{ 'text-danger': parseError }">{{ parseError || (validation?.valid ? `KixDNS 校验通过 · ${validation.pipeline_count} Pipeline / ${validation.rule_count} 规则` : '保存前将调用 KixDNS 内部编译器校验') }}</span>
+            <span :class="{ 'text-danger': parseError }">{{ validationLabel }}</span>
           </div>
           <input v-model="message" aria-label="版本备注" maxlength="160" placeholder="版本备注（可选）">
         </footer>
@@ -366,12 +481,15 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
       <aside class="history-panel">
         <header><div><History :size="18" /><h2>版本历史</h2></div><span>{{ versions.length }}</span></header>
         <div class="history-list">
-          <article v-for="version in versions" :key="version.id" :class="{ 'history-item--current': version.id === currentVersionId }">
+          <article v-for="version in versions" :key="version.id" :class="{ 'history-item--current': version.id === currentVersionId, 'history-item--pending': version.id === pendingVersionId, 'history-item--failed': version.apply_state === 'failed' }">
             <div class="history-item__top">
               <strong :title="version.message || '未填写备注'">{{ version.message || '未填写备注' }}</strong>
               <div class="history-item__actions">
                 <span v-if="version.id === currentVersionId" class="tag tag--success">当前</span>
-                <template v-else>
+                <span v-else-if="version.apply_state === 'failed'" class="tag tag--danger">失败</span>
+                <span v-else-if="version.id === pendingVersionId || version.apply_state === 'pending'" class="tag tag--warning">待应用</span>
+                <span v-else-if="version.apply_state === 'superseded'" class="tag tag--muted">已替代</span>
+                <template v-if="version.id !== currentVersionId">
                   <button class="icon-button icon-button--small" type="button" title="比较此版本" :disabled="previewing !== null" @click="openVersionDiff(version)"><GitCompare :size="15" :class="{ spin: previewing === version.id }" /></button>
                   <button class="icon-button icon-button--small" type="button" title="恢复此版本" :disabled="restoring !== null || deleting !== null || saving || validating" @click="restore(version)"><RotateCcw :size="15" :class="{ spin: restoring === version.id }" /></button>
                   <button class="icon-button icon-button--small icon-button--danger" type="button" title="删除此版本" :disabled="restoring !== null || deleting !== null || saving || validating" @click="deleteVersion(version)"><Trash2 :size="15" :class="{ spin: deleting === version.id }" /></button>
@@ -380,6 +498,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
             </div>
             <div class="history-item__identity"><span>#{{ version.id }}</span><code>{{ shortHash(version.sha256, 12) }}</code></div>
             <small>{{ version.actor }} · {{ formatDate(version.created_at) }}</small>
+            <small v-if="version.apply_error" class="history-item__error">{{ friendlyRuntimeMessage(version.apply_error) }}</small>
           </article>
           <p v-if="versions.length === 0" class="empty-state">暂无配置版本</p>
         </div>

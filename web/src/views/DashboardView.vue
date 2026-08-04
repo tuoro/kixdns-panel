@@ -5,7 +5,7 @@ import { apiRequest } from '../api/client'
 import type { CacheFlushResult, Overview, QueryStatsSnapshot, ServiceStatus, StatsClearResult } from '../api/types'
 import StatusBanner from '../components/StatusBanner.vue'
 import { useToast } from '../composables/useToast'
-import { dashboardRuntimeState, emptyOverview, emptyQueryStats, hasStaleDashboardData } from '../dashboard-state'
+import { dashboardRuntimeState, emptyOverview, emptyQueryStats, hasStaleDashboardData, supportsQueryStats } from '../dashboard-state'
 import { errorMessage, formatDuration, formatNumber, formatPercent, shortHash } from '../utils'
 
 const overview = ref<Overview | null>(null)
@@ -36,7 +36,7 @@ const statsWindows = [
 const runtimeState = computed(() => dashboardRuntimeState(overview.value, service.value))
 const overviewDisplayError = computed(() => runtimeState.value === 'stopped-empty' ? '' : overviewError.value)
 const loadError = computed(() => [overviewDisplayError.value, serviceError.value, statsError.value].filter(Boolean).join('；'))
-const statsSupported = computed(() => overview.value?.health.capabilities.includes('stats_top_v1') ?? false)
+const statsSupported = computed(() => supportsQueryStats(overview.value?.health.capabilities ?? []))
 const runtimeUnavailable = computed(() => hasStaleDashboardData(runtimeState.value))
 const runtimeControlsDisabled = computed(() => runtimeState.value !== 'live')
 const displayOverview = computed(() => overview.value ?? (runtimeState.value === 'stopped-empty' ? emptyOverview() : null))
