@@ -97,10 +97,13 @@ test('入口分流使用渐进式条件关系编辑', async ({ page }) => {
   await selector.scrollIntoViewIfNeeded()
   await expect(selector.getByText('按顺序匹配，首个命中生效')).toBeVisible()
   await expect(selector.getByText('未添加条件，这条分流会匹配所有请求')).toBeVisible()
-  await expect(selector.getByLabel(/条件关系/)).toHaveValue('all')
+  await expect(selector.getByLabel(/条件关系/)).toHaveCount(0)
 
   await selector.getByRole('button', { name: '添加条件' }).click()
+  await expect(selector.getByLabel(/条件关系/)).toHaveCount(0)
+  await expect(selector.getByText('满足此条件时分流')).toBeVisible()
   await selector.getByRole('button', { name: '添加条件' }).click()
+  await expect(selector.getByLabel(/条件关系/)).toHaveValue('all')
   await expect(selector.getByLabel(/逻辑运算符/)).toHaveCount(0)
   await expect(selector.getByText('所有条件均成立时分流')).toBeVisible()
 

@@ -91,13 +91,13 @@ function responseEnabled(rule: RuleConfig): boolean {
           </div>
           <button class="icon-button icon-button--small" type="button" :title="`删除分流 ${index + 1}`" @click="config.pipeline_select.splice(index, 1)"><Trash2 :size="14" /></button>
         </header>
-        <div class="selector-block__controls">
+        <div class="selector-block__controls" :class="{ 'selector-block__controls--single': selector.matchers.length < 2 }">
           <label><span>目标 Pipeline</span><select v-model="selector.pipeline" :aria-label="`分流 ${index + 1} 目标 Pipeline`"><option disabled value="">选择 Pipeline</option><option v-for="id in pipelineIds" :key="id" :value="id">{{ id }}</option></select></label>
-          <label><span>条件关系</span><select :value="selectorMode(selector)" :aria-label="`分流 ${index + 1} 条件关系`" @change="setSelectorMode(selector, $event)"><option value="all">全部满足</option><option value="any">任一满足</option><option value="custom">自定义组合</option></select></label>
+          <label v-if="selector.matchers.length > 1"><span>条件关系</span><select :value="selectorMode(selector)" :aria-label="`分流 ${index + 1} 条件关系`" @change="setSelectorMode(selector, $event)"><option value="all">全部满足</option><option value="any">任一满足</option><option value="custom">自定义组合</option></select></label>
         </div>
         <div class="selector-block__conditions">
-          <div class="selector-block__conditions-title"><div><strong>匹配条件</strong><small>{{ selectorMode(selector) === 'custom' ? '从第二条开始设置与前一结果的关系' : selectorMode(selector) === 'all' ? '所有条件均成立时分流' : '任一条件成立时分流' }}</small></div><em>{{ selector.matchers.length }}</em></div>
-          <MatcherList v-model="selector.matchers" scope="selector" :operator-mode="selectorMode(selector) === 'custom' ? 'custom' : 'hidden'" />
+          <div class="selector-block__conditions-title"><div><strong>匹配条件</strong><small>{{ selector.matchers.length < 2 ? '满足此条件时分流' : selectorMode(selector) === 'custom' ? '从第二条开始设置与前一结果的关系' : selectorMode(selector) === 'all' ? '所有条件均成立时分流' : '任一条件成立时分流' }}</small></div><em>{{ selector.matchers.length }}</em></div>
+          <MatcherList v-model="selector.matchers" scope="selector" :operator-mode="selector.matchers.length > 1 && selectorMode(selector) === 'custom' ? 'custom' : 'hidden'" />
           <p v-if="selector.matchers.length === 0" class="selector-block__warning"><AlertTriangle :size="14" />未添加条件，这条分流会匹配所有请求</p>
         </div>
       </article>

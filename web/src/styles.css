@@ -331,6 +331,7 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .selector-block__identity strong { color: #35403c; font-size: 10px; }
 .selector-block__identity small { color: #89938f; font-size: 8px; }
 .selector-block__controls { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(150px, 220px); gap: 10px; padding: 12px; border-bottom: 1px solid #edf0ef; }
+.selector-block__controls--single { grid-template-columns: minmax(180px, 1fr); }
 .selector-block__controls label { min-width: 0; display: grid; gap: 5px; }
 .selector-block__controls label > span { color: #67716d; font-size: 9px; font-weight: 650; }
 .selector-block__conditions { display: grid; gap: 7px; padding: 11px 12px 12px; }
