@@ -4,6 +4,8 @@ import {
   createAction,
   createEcs,
   createMatcher,
+  applyMatcherMode,
+  inferMatcherMode,
   inferPipelineSelectMode,
   normalizeConfig,
   parseConfigSource,
@@ -92,6 +94,23 @@ describe('结构化配置模型', () => {
     applyPipelineSelectMode(selector, 'any')
     expect(selector.matcher_operator).toBe('or')
     expect(selector.matchers.map((matcher) => matcher.operator)).toEqual(['and', 'and'])
+  })
+
+  it('将处理流程的常用条件关系映射为 KixDNS 兼容字段', () => {
+    const matchers = [
+      createMatcher('request'),
+      createMatcher('request'),
+    ]
+
+    expect(inferMatcherMode(matchers, 'and')).toBe('all')
+    expect(applyMatcherMode(matchers, 'any')).toBe('or')
+    expect(matchers.map((matcher) => matcher.operator)).toEqual(['and', 'and'])
+    expect(inferMatcherMode(matchers, 'or')).toBe('any')
+
+    matchers[1]!.operator = 'and_not'
+    expect(inferMatcherMode(matchers, 'and')).toBe('custom')
+    expect(applyMatcherMode(matchers, 'custom')).toBe('and')
+    expect(matchers.map((matcher) => matcher.operator)).toEqual(['and', 'and_not'])
   })
 
   it('切换匹配器和动作类型时清除不兼容字段', () => {

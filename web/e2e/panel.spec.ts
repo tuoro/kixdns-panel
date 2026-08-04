@@ -118,6 +118,32 @@ test('入口分流使用渐进式条件关系编辑', async ({ page }) => {
   await expect(selector.getByText('任一条件成立时分流')).toBeVisible()
 })
 
+test('处理流程仅在多条件时显示条件关系', async ({ page }) => {
+  await open(page, '/config')
+  const rule = page.locator('.rule-block').first()
+  await rule.scrollIntoViewIfNeeded()
+
+  const request = rule.locator('.rule-stage').first()
+  while (await request.locator('.matcher-row').count() > 1) {
+    await request.locator('.matcher-row').last().getByTitle(/删除条件/).click()
+  }
+  await expect(request.getByLabel('请求条件关系')).toHaveCount(0)
+  await expect(request.getByLabel(/逻辑运算符/)).toHaveCount(0)
+
+  await request.getByRole('button', { name: '添加条件' }).click()
+  await expect(request.getByLabel('请求条件关系')).toHaveValue('all')
+  await expect(request.getByLabel(/逻辑运算符/)).toHaveCount(0)
+
+  await request.getByLabel('请求条件关系').selectOption('custom')
+  await expect(request.getByText('首个条件')).toBeVisible()
+  await expect(request.getByLabel('条件 2 逻辑运算符')).toHaveValue('and')
+
+  await request.getByLabel('请求条件关系').selectOption('any')
+  await expect(request.getByLabel(/逻辑运算符/)).toHaveCount(0)
+  await expect(request.getByText('任一条件成立时执行')).toBeVisible()
+  await expectNoPageOverflow(page)
+})
+
 test('增强版本可安装、切换并删除非活动库存', async ({ page }) => {
   await open(page, '/system')
   const panel = page.locator('.version-panel')

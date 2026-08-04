@@ -6,14 +6,15 @@ import {
   createPipeline,
   createPipelineSelect,
   createRule,
+  applyMatcherMode,
   applyPipelineSelectMode,
+  inferMatcherMode,
   inferPipelineSelectMode,
   pipelineHasActionEcs,
   renamePipeline,
   ruleHasForward,
 } from '../../config-editor/model'
-import { MATCH_OPERATORS } from '../../config-editor/schema'
-import type { KixConfig, PipelineConfig, PipelineSelectConfig, PipelineSelectMode, RuleConfig } from '../../config-editor/types'
+import type { KixConfig, MatcherConfig, PipelineConfig, PipelineSelectConfig, PipelineSelectMode, RuleConfig } from '../../config-editor/types'
 import ActionList from './ActionList.vue'
 import MatcherList from './MatcherList.vue'
 
@@ -22,6 +23,7 @@ const emit = defineEmits<{ notice: [message: string] }>()
 const pipelineIds = computed(() => config.value.pipelines.map((item) => item.id))
 const previousIds = new WeakMap<PipelineConfig, string>()
 const customSelectors = ref(new Set<PipelineSelectConfig>())
+const customMatcherGroups = ref(new Set<MatcherConfig[]>())
 
 function selectorMode(selector: PipelineSelectConfig): PipelineSelectMode {
   return customSelectors.value.has(selector) ? 'custom' : inferPipelineSelectMode(selector)
@@ -34,6 +36,22 @@ function setSelectorMode(selector: PipelineSelectConfig, event: Event): void {
   else nextCustomSelectors.delete(selector)
   customSelectors.value = nextCustomSelectors
   applyPipelineSelectMode(selector, mode)
+}
+
+function matcherMode(matchers: MatcherConfig[], matcherOperator: string): PipelineSelectMode {
+  return customMatcherGroups.value.has(matchers) ? 'custom' : inferMatcherMode(matchers, matcherOperator)
+}
+
+function setMatcherMode(rule: RuleConfig, stage: 'request' | 'response', event: Event): void {
+  const matchers = stage === 'request' ? rule.matchers : rule.response_matchers
+  const mode = (event.currentTarget as HTMLSelectElement).value as PipelineSelectMode
+  const nextCustomGroups = new Set(customMatcherGroups.value)
+  if (mode === 'custom') nextCustomGroups.add(matchers)
+  else nextCustomGroups.delete(matchers)
+  customMatcherGroups.value = nextCustomGroups
+  const operator = applyMatcherMode(matchers, mode)
+  if (stage === 'request') rule.matcher_operator = operator
+  else rule.response_matcher_operator = operator
 }
 
 function rememberId(pipeline: PipelineConfig): void {
@@ -138,15 +156,21 @@ function responseEnabled(rule: RuleConfig): boolean {
               <header><span>{{ ruleIndex + 1 }}</span><input v-model="rule.name" type="text" :aria-label="`规则 ${ruleIndex + 1} 名称`" placeholder="规则名称"><button class="icon-button icon-button--small" type="button" title="删除规则" @click="removeRule(pipeline, ruleIndex)"><Trash2 :size="14" /></button></header>
 
               <div class="rule-stage">
-                <div class="rule-stage__title"><strong>请求匹配</strong><select v-model="rule.matcher_operator" aria-label="请求匹配默认逻辑"><option v-for="operator in MATCH_OPERATORS" :key="operator.value" :value="operator.value">{{ operator.label }}</option></select></div>
-                <MatcherList v-model="rule.matchers" scope="request" />
+                <div class="rule-stage__title">
+                  <div><strong>请求匹配</strong><small>{{ rule.matchers.length === 0 ? '未添加条件时匹配所有请求' : rule.matchers.length === 1 ? '满足此条件时执行' : matcherMode(rule.matchers, rule.matcher_operator) === 'custom' ? '从第二条开始设置与前一结果的关系' : matcherMode(rule.matchers, rule.matcher_operator) === 'all' ? '所有条件均成立时执行' : '任一条件成立时执行' }}</small></div>
+                  <select v-if="rule.matchers.length > 1" :value="matcherMode(rule.matchers, rule.matcher_operator)" aria-label="请求条件关系" @change="setMatcherMode(rule, 'request', $event)"><option value="all">全部满足</option><option value="any">任一满足</option><option value="custom">自定义组合</option></select>
+                </div>
+                <MatcherList v-model="rule.matchers" scope="request" :operator-mode="rule.matchers.length > 1 && matcherMode(rule.matchers, rule.matcher_operator) === 'custom' ? 'custom' : 'hidden'" />
               </div>
               <div class="rule-stage"><div class="rule-stage__title"><strong>执行动作</strong></div><ActionList v-model="rule.actions" :pipelines="config.pipelines" :current-pipeline-id="pipeline.id" /></div>
 
               <template v-if="responseEnabled(rule)">
                 <div class="rule-stage rule-stage--response">
-                  <div class="rule-stage__title"><strong>响应匹配</strong><select v-model="rule.response_matcher_operator" aria-label="响应匹配默认逻辑"><option v-for="operator in MATCH_OPERATORS" :key="operator.value" :value="operator.value">{{ operator.label }}</option></select></div>
-                  <MatcherList v-model="rule.response_matchers" scope="response" />
+                  <div class="rule-stage__title">
+                    <div><strong>响应匹配</strong><small>{{ rule.response_matchers.length === 0 ? '未添加条件时直接判定匹配成功' : rule.response_matchers.length === 1 ? '满足此条件时执行匹配成功动作' : matcherMode(rule.response_matchers, rule.response_matcher_operator) === 'custom' ? '从第二条开始设置与前一结果的关系' : matcherMode(rule.response_matchers, rule.response_matcher_operator) === 'all' ? '所有条件均成立时判定成功' : '任一条件成立时判定成功' }}</small></div>
+                    <select v-if="rule.response_matchers.length > 1" :value="matcherMode(rule.response_matchers, rule.response_matcher_operator)" aria-label="响应条件关系" @change="setMatcherMode(rule, 'response', $event)"><option value="all">全部满足</option><option value="any">任一满足</option><option value="custom">自定义组合</option></select>
+                  </div>
+                  <MatcherList v-model="rule.response_matchers" scope="response" :operator-mode="rule.response_matchers.length > 1 && matcherMode(rule.response_matchers, rule.response_matcher_operator) === 'custom' ? 'custom' : 'hidden'" />
                 </div>
                 <div class="response-actions">
                   <div class="rule-stage"><div class="rule-stage__title"><strong>匹配成功</strong></div><ActionList v-model="rule.response_actions_on_match" :pipelines="config.pipelines" :current-pipeline-id="pipeline.id" /></div>

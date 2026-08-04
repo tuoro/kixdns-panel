@@ -240,22 +240,29 @@ export function createPipelineSelect(): PipelineSelectConfig {
   return { pipeline: '', matcher_operator: 'and', matchers: [] }
 }
 
-export function inferPipelineSelectMode(selector: PipelineSelectConfig): PipelineSelectMode {
-  if (selector.matchers.every((matcher) => matcher.operator === 'and')) {
-    if (selector.matcher_operator === 'and') return 'all'
-    if (selector.matcher_operator === 'or') return 'any'
+export function inferMatcherMode(matchers: MatcherConfig[], matcherOperator: string): PipelineSelectMode {
+  if (matchers.every((matcher) => matcher.operator === 'and')) {
+    if (matcherOperator === 'and') return 'all'
+    if (matcherOperator === 'or') return 'any'
   }
   return 'custom'
 }
 
-export function applyPipelineSelectMode(selector: PipelineSelectConfig, mode: PipelineSelectMode): void {
+export function applyMatcherMode(matchers: MatcherConfig[], mode: PipelineSelectMode): 'and' | 'or' {
   if (mode === 'custom') {
-    selector.matcher_operator = 'and'
-    if (selector.matchers[0]) selector.matchers[0].operator = 'and'
-    return
+    if (matchers[0]) matchers[0].operator = 'and'
+    return 'and'
   }
-  selector.matcher_operator = mode === 'all' ? 'and' : 'or'
-  for (const matcher of selector.matchers) matcher.operator = 'and'
+  for (const matcher of matchers) matcher.operator = 'and'
+  return mode === 'all' ? 'and' : 'or'
+}
+
+export function inferPipelineSelectMode(selector: PipelineSelectConfig): PipelineSelectMode {
+  return inferMatcherMode(selector.matchers, selector.matcher_operator)
+}
+
+export function applyPipelineSelectMode(selector: PipelineSelectConfig, mode: PipelineSelectMode): void {
+  selector.matcher_operator = applyMatcherMode(selector.matchers, mode)
 }
 
 export function nextPipelineId(config: KixConfig, base = 'pipeline', except?: PipelineConfig): string {

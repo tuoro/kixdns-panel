@@ -383,7 +383,9 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .rule-stage { min-width: 0; padding: 10px 0; }
 .rule-stage + .rule-stage { border-top: 1px dashed #e2e7e5; }
 .rule-stage__title { min-height: 30px; display: flex; align-items: center; gap: 8px; }
-.rule-stage__title strong { color: #5d6864; font-size: 9px; text-transform: uppercase; }
+.rule-stage__title > div { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.rule-stage__title strong { color: #5d6864; font-size: 9px; text-transform: uppercase; white-space: nowrap; }
+.rule-stage__title small { color: #939d99; font-size: 9px; }
 .rule-stage__title select { width: 105px; height: 27px; margin-left: auto; }
 .rule-stage--response { margin-top: 5px; padding: 10px; background: #f7faf8; border-left: 2px solid #86b79e; }
 .response-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
