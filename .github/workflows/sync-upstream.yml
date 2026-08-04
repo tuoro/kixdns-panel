@@ -7,6 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: write
   contents: write
   issues: write
   pull-requests: write
@@ -221,6 +222,37 @@ jobs:
           fi
           gh pr merge "$pull_request" --squash --delete-branch
           [[ "$(gh pr view "$pull_request" --json state --jq .state)" == 'MERGED' ]]
+
+      - name: Trigger enhanced build
+        if: steps.upstream.outputs.changed == 'true'
+        env:
+          CANDIDATE_COMMIT: ${{ steps.upstream.outputs.commit }}
+          LOCK_FILE: ${{ steps.upstream.outputs.lock_file }}
+        shell: bash
+        run: |
+          case "$TRACK" in
+            action) workflow='build-kixdns.yml' ;;
+            release) workflow='build-kixdns-release.yml' ;;
+            *) echo "不支持的上游轨道：$TRACK" >&2; exit 1 ;;
+          esac
+
+          for attempt in {1..10}; do
+            lock_commit="$({
+              gh api "repos/${GITHUB_REPOSITORY}/contents/${LOCK_FILE}?ref=main" --jq .content |
+                tr -d '\n' | base64 --decode 2>/dev/null || true
+            } | jq -r '.commit // empty' 2>/dev/null)"
+            if [[ "$lock_commit" == "$CANDIDATE_COMMIT" ]]; then
+              echo "main 锁文件已在第 ${attempt} 次检查可见"
+              break
+            fi
+            sleep 2
+          done
+
+          [[ "$lock_commit" == "$CANDIDATE_COMMIT" ]] || {
+            echo "main 尚未发布候选锁文件：$LOCK_FILE" >&2
+            exit 1
+          }
+          gh workflow run "$workflow" --ref main
 
       - name: Report compatibility failure
         if: always() && steps.validate.outcome == 'failure'
