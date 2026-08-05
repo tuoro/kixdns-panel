@@ -613,12 +613,28 @@ async fn resolve_public_address(url: &Url) -> Result<(String, SocketAddr), GeoDa
             "Geo 数据主机没有可用地址".to_owned(),
         ));
     }
-    if addresses.iter().any(|address| !is_public_ip(address.ip())) {
-        return Err(GeoDataError::Invalid(
-            "Geo 数据链接不能指向本机、私网或保留地址".to_owned(),
-        ));
+    if let Some(address) = addresses
+        .iter()
+        .find(|address| !is_allowed_download_ip(address.ip()))
+    {
+        return Err(GeoDataError::Invalid(format!(
+            "Geo 数据主机 {host} 解析到不允许的地址 {}，链接不能指向本机、私网或保留地址",
+            address.ip()
+        )));
     }
     Ok((host, addresses[0]))
+}
+
+fn is_allowed_download_ip(ip: IpAddr) -> bool {
+    is_public_ip(ip) || is_mihomo_fake_ip(ip)
+}
+
+fn is_mihomo_fake_ip(ip: IpAddr) -> bool {
+    let IpAddr::V4(ip) = ip else {
+        return false;
+    };
+    let [a, b, _, _] = ip.octets();
+    a == 198 && (18..=19).contains(&b)
 }
 
 fn is_public_ip(ip: IpAddr) -> bool {
@@ -800,8 +816,9 @@ mod tests {
 
     use super::{
         GeoDataError, GeoDataManager, GeoDataManifest, GeoDataResource, GeoDataSyncRequest,
-        ResourceKind, apply_manifest_paths, cleanup_managed_files, is_public_ip,
-        normalize_geosite_urls, parse_url, persist_content_addressed, protected_geo_paths,
+        ResourceKind, apply_manifest_paths, cleanup_managed_files, is_allowed_download_ip,
+        is_mihomo_fake_ip, is_public_ip, normalize_geosite_urls, parse_url,
+        persist_content_addressed, protected_geo_paths,
     };
     use crate::db::Database;
     use crate::digest::sha256_hex;
@@ -827,6 +844,33 @@ mod tests {
         }
         assert!(is_public_ip(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))));
         assert!(is_public_ip("2606:4700:4700::1111".parse().unwrap()));
+    }
+
+    #[test]
+    fn accepts_only_the_mihomo_fake_ip_reserved_range() {
+        for ip in [
+            Ipv4Addr::new(198, 18, 0, 0),
+            Ipv4Addr::new(198, 18, 255, 255),
+            Ipv4Addr::new(198, 19, 255, 255),
+        ] {
+            let ip = IpAddr::V4(ip);
+            assert!(is_mihomo_fake_ip(ip));
+            assert!(!is_public_ip(ip));
+            assert!(is_allowed_download_ip(ip));
+        }
+        for ip in [
+            IpAddr::V4(Ipv4Addr::new(198, 17, 255, 255)),
+            IpAddr::V4(Ipv4Addr::new(198, 20, 0, 0)),
+        ] {
+            assert!(!is_mihomo_fake_ip(ip));
+        }
+        for ip in [
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+            IpAddr::V6(Ipv6Addr::LOCALHOST),
+        ] {
+            assert!(!is_mihomo_fake_ip(ip));
+            assert!(!is_allowed_download_ip(ip));
+        }
     }
 
     #[test]
