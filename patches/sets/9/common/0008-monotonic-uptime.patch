@@ -48,7 +48,7 @@ diff --git a/src/panel.rs b/src/panel.rs
              "config_generation": active.generation,
              "capabilities": ["stats_top_v1", "config_query_stats_v1"],
          })
-@@ -1009,6 +1017,16 @@ mod tests {
+@@ -1009,6 +1017,15 @@ mod tests {
  
      use super::{MAX_METRIC_SERIES_PER_MAP, PanelMetrics, QUERY_STATS_DOMAIN_CAP, QueryStats};
  
