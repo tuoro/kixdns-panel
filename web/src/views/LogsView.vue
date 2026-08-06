@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ClipboardList, Download, Pause, Play, RefreshCw, Search, Terminal } from '@lucide/vue'
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { apiRequest } from '../api/client'
 import type { AuditEvent, AuditPage, LogEntry, LogsResponse } from '../api/types'
 import StatusBanner from '../components/StatusBanner.vue'
@@ -21,6 +21,9 @@ const live = ref(true)
 const loadError = ref('')
 const auditError = ref('')
 const auditCursor = ref<number | null>(null)
+const runtimeCursor = ref<string | null>(null)
+const runtimeStream = ref<HTMLDivElement | null>(null)
+const loadingOlder = ref(false)
 let timer: number | undefined
 let pendingLoad: Promise<void> | null = null
 
@@ -72,8 +75,12 @@ function load(silent = false): Promise<void> {
   if (!silent) loading.value = true
   requesting.value = true
   pendingLoad = (async () => {
-    entries.value = (await apiRequest<LogsResponse>('/api/v1/logs?limit=500')).entries
+    const page = await apiRequest<LogsResponse>('/api/v1/logs?limit=500')
+    entries.value = page.entries
+    runtimeCursor.value = page.next_cursor
     loadError.value = ''
+    await nextTick()
+    if (runtimeStream.value) runtimeStream.value.scrollTop = 0
   })().catch((error: unknown) => {
     loadError.value = errorMessage(error)
   }).finally(() => {
@@ -82,6 +89,44 @@ function load(silent = false): Promise<void> {
     loading.value = false
   })
   return pendingLoad
+}
+
+async function loadOlder(): Promise<void> {
+  if (requesting.value || runtimeCursor.value === null) return
+  requesting.value = true
+  loadingOlder.value = true
+  live.value = false
+  try {
+    const parameters = new URLSearchParams({
+      limit: '500',
+      before: runtimeCursor.value,
+    })
+    const page = await apiRequest<LogsResponse>(`/api/v1/logs?${parameters}`)
+    entries.value = [...entries.value, ...page.entries]
+    runtimeCursor.value = page.next_cursor
+    loadError.value = ''
+  } catch (error) {
+    loadError.value = errorMessage(error)
+  } finally {
+    requesting.value = false
+    loadingOlder.value = false
+  }
+}
+
+function handleRuntimeScroll(event: Event): void {
+  const stream = event.currentTarget as HTMLDivElement
+  if (stream.scrollTop > 24 && live.value) live.value = false
+  const remaining = stream.scrollHeight - stream.scrollTop - stream.clientHeight
+  if (remaining <= 96 && runtimeCursor.value !== null && !requesting.value) void loadOlder()
+}
+
+function toggleLive(): void {
+  if (live.value) {
+    live.value = false
+    return
+  }
+  live.value = true
+  void load()
 }
 
 async function loadAudit(reset = true): Promise<void> {
@@ -149,7 +194,7 @@ onBeforeUnmount(() => window.clearInterval(timer))
       <header v-if="mode === 'runtime'" class="log-toolbar">
         <div class="search-field"><Search :size="16" /><input v-model="query" aria-label="筛选日志" placeholder="筛选消息或来源" /></div>
         <select v-model="level" aria-label="日志级别"><option value="all">全部级别</option><option value="error">错误</option><option value="warning">警告</option><option value="info">信息</option></select>
-        <button class="button button--secondary" type="button" :class="{ 'button--active': live }" @click="live = !live"><Pause v-if="live" :size="16" /><Play v-else :size="16" />{{ live ? '实时' : '已暂停' }}</button>
+        <button class="button button--secondary" type="button" :class="{ 'button--active': live }" :disabled="requesting" @click="toggleLive"><Pause v-if="live" :size="16" /><Play v-else :size="16" />{{ live ? '实时' : '已暂停' }}</button>
         <button class="icon-button" type="button" title="刷新日志" :disabled="requesting" @click="load()"><RefreshCw :size="18" :class="{ spin: loading }" /></button>
         <button class="icon-button" type="button" title="下载筛选结果" :disabled="filtered.length === 0" @click="download"><Download :size="18" /></button>
       </header>
@@ -161,12 +206,13 @@ onBeforeUnmount(() => window.clearInterval(timer))
         <button class="icon-button" type="button" title="刷新审计记录" :disabled="auditRequesting" @click="loadAudit()"><RefreshCw :size="18" :class="{ spin: auditLoading }" /></button>
         <button class="icon-button" type="button" title="下载筛选结果" :disabled="filteredAudit.length === 0" @click="download"><Download :size="18" /></button>
       </header>
-      <div v-if="mode === 'runtime'" class="log-summary"><span>{{ filtered.length }} / {{ entries.length }} 条</span><span><i :class="live ? 'status-dot' : 'status-dot status-dot--muted'"></i>{{ live ? '每 5 秒刷新' : '自动刷新已暂停' }}</span></div>
+      <div v-if="mode === 'runtime'" class="log-summary"><span>{{ filtered.length }} / {{ entries.length }} 条{{ runtimeCursor !== null ? '，向下滚动加载更早日志' : '' }}</span><span><i :class="live ? 'status-dot' : 'status-dot status-dot--muted'"></i>{{ live ? '最新日志在顶部，每 5 秒刷新' : '浏览历史时自动暂停' }}</span></div>
       <div v-else class="log-summary"><span>{{ filteredAudit.length }} / {{ auditEvents.length }} 条</span><span>最多保留 10,000 条操作记录</span></div>
-      <div v-if="mode === 'runtime'" class="log-stream">
+      <div v-if="mode === 'runtime'" ref="runtimeStream" class="log-stream" @scroll="handleRuntimeScroll">
         <div v-for="(entry, index) in filtered" :key="`${entry.timestamp_unix_micros}-${index}`" class="log-line">
           <time>{{ timestamp(entry.timestamp_unix_micros) }}</time><span class="log-level" :class="levelClass(entry.priority)">{{ label(entry.priority) }}</span><strong>{{ entry.source }}</strong><p>{{ entry.message }}</p>
         </div>
+        <button v-if="runtimeCursor !== null" class="runtime-load-more" type="button" :disabled="requesting" @click="loadOlder"><RefreshCw :size="14" :class="{ spin: loadingOlder }" />{{ loadingOlder ? '正在加载' : '加载更早日志' }}</button>
         <p v-if="filtered.length === 0 && !loadError" class="empty-state">没有符合条件的日志</p>
       </div>
       <div v-else class="log-stream">

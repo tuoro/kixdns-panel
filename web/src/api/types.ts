@@ -227,6 +227,7 @@ export interface LogEntry {
 
 export interface LogsResponse {
   entries: LogEntry[]
+  next_cursor: string | null
 }
 
 export interface AuditEvent {

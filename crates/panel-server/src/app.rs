@@ -51,7 +51,7 @@ use crate::db::{
 use crate::error::{AppError, AppResult};
 use crate::geo_data::{GeoDataError, GeoDataManager};
 use crate::operations::{
-    DnsDiagnostic, LogEntry, OperationError, Operations, ServiceAction, ServiceStatus,
+    DnsDiagnostic, LogPage, OperationError, Operations, ServiceAction, ServiceStatus,
 };
 use crate::updates::{
     GithubTokenStatus, InstalledVersion, UpdateError, UpdateInfo, UpdateManager,
@@ -222,6 +222,7 @@ struct ConfigApplyResponse {
 struct LogsQuery {
     #[serde(default = "default_log_limit")]
     limit: usize,
+    before: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -244,11 +245,6 @@ struct QueryStatsQuery {
     window: u64,
     #[serde(default = "default_stats_limit")]
     limit: usize,
-}
-
-#[derive(Debug, Serialize)]
-struct LogsResponse {
-    entries: Vec<LogEntry>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -980,14 +976,24 @@ async fn logs(
     State(state): State<AppState>,
     jar: CookieJar,
     Query(query): Query<LogsQuery>,
-) -> AppResult<Json<LogsResponse>> {
+) -> AppResult<Json<LogPage>> {
     authenticate(&state.database, &jar).await?;
-    let entries = state
+    if query.before.as_deref().is_some_and(|cursor| {
+        cursor.is_empty()
+            || cursor.len() > 4_096
+            || !cursor.bytes().all(|byte| byte.is_ascii_graphic())
+    }) {
+        return Err(AppError::BadRequest(
+            "log_cursor_invalid",
+            "日志游标无效".to_owned(),
+        ));
+    }
+    state
         .operations
-        .logs(query.limit)
+        .logs(query.limit, query.before.as_deref())
         .await
-        .map_err(map_operation_error)?;
-    Ok(Json(LogsResponse { entries }))
+        .map(Json)
+        .map_err(map_operation_error)
 }
 
 async fn audit_events(

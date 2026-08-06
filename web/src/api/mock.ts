@@ -655,7 +655,7 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
         ? 'upstream request timed out, continuing with next configured resolver'
         : `request completed pipeline=default transport=udp elapsed_ms=${8 + (index % 14)}`,
     }))
-    return { entries } as LogsResponse as T
+    return { entries, next_cursor: null } as LogsResponse as T
   }
   if (pathname === '/api/v1/audit' && method === 'GET') {
     const limit = Math.max(1, Math.min(100, Number(url.searchParams.get('limit')) || 50))
