@@ -27,10 +27,11 @@ diff --git a/src/panel.rs b/src/panel.rs
              requests_total: AtomicU64::new(0),
              requests_inflight: Arc::new(AtomicUsize::new(0)),
              cache_lookups_total: AtomicU64::new(0),
-@@ -429,6 +432,11 @@ impl Default for PanelMetrics {
+@@ -429,6 +432,12 @@ impl Default for PanelMetrics {
  }
  
  impl PanelMetrics {
++    #[cfg_attr(not(unix), allow(dead_code))]
 +    #[inline]
 +    fn uptime_seconds(&self) -> u64 {
 +        self.started_at.elapsed().as_secs()
@@ -39,7 +40,7 @@ diff --git a/src/panel.rs b/src/panel.rs
      #[inline]
      pub fn record_request(&self) {
          self.requests_total.fetch_add(1, Ordering::Relaxed);
-@@ -567,7 +575,7 @@ impl PanelMetrics {
+@@ -567,7 +576,7 @@ impl PanelMetrics {
              "upstream_commit": option_env!("KIXDNS_UPSTREAM_COMMIT").unwrap_or("unknown"),
              "patchset": option_env!("KIXDNS_PANEL_PATCHSET").unwrap_or("unknown"),
              "started_at_unix": self.started_at_unix,
@@ -48,15 +49,17 @@ diff --git a/src/panel.rs b/src/panel.rs
              "config_generation": active.generation,
              "capabilities": ["stats_top_v1", "config_query_stats_v1"],
          })
-@@ -1009,6 +1017,15 @@ mod tests {
+@@ -1009,6 +1018,17 @@ mod tests {
  
      use super::{MAX_METRIC_SERIES_PER_MAP, PanelMetrics, QUERY_STATS_DOMAIN_CAP, QueryStats};
  
 +    #[test]
 +    fn uptime_uses_monotonic_clock_after_wall_clock_rewind() {
-+        let mut metrics = PanelMetrics::default();
-+        metrics.started_at_unix = super::unix_timestamp().saturating_add(3_600);
-+        metrics.started_at = std::time::Instant::now() - std::time::Duration::from_secs(61);
++        let metrics = PanelMetrics {
++            started_at_unix: super::unix_timestamp().saturating_add(3_600),
++            started_at: std::time::Instant::now() - std::time::Duration::from_secs(61),
++            ..PanelMetrics::default()
++        };
 +
 +        assert!(metrics.uptime_seconds() >= 61);
 +    }
