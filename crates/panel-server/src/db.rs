@@ -524,9 +524,17 @@ impl Database {
         .await
     }
 
-    pub async fn delete_config_version(&self, id: i64) -> anyhow::Result<bool> {
+    pub async fn delete_config_versions(&self, ids: Vec<i64>) -> anyhow::Result<bool> {
         self.call(move |connection| {
-            Ok(connection.execute("DELETE FROM config_versions WHERE id = ?1", [id])? > 0)
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            for id in ids {
+                if transaction.execute("DELETE FROM config_versions WHERE id = ?1", [id])? == 0 {
+                    return Ok(false);
+                }
+            }
+            transaction.commit()?;
+            Ok(true)
         })
         .await
     }

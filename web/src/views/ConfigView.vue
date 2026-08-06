@@ -27,6 +27,7 @@ import type {
   ConfigVersions,
   ConfigRuntimeApplyState,
   DeleteConfigVersionResult,
+  DeleteConfigVersionsResult,
   Overview,
   ServiceStatus,
   ValidationResult,
@@ -55,6 +56,8 @@ const validating = ref(false)
 const saving = ref(false)
 const restoring = ref<number | null>(null)
 const deleting = ref<number | null>(null)
+const bulkDeleting = ref(false)
+const selectedVersionIds = ref<number[]>([])
 const previewing = ref<number | null>(null)
 const previewVersion = ref<ConfigVersionDetail | null>(null)
 const validation = ref<ValidationResult | null>(null)
@@ -85,6 +88,11 @@ const currentVersionId = computed(() => {
   if (hasPending.value || hasApplyFailure.value) return null
   return document.value?.version_id ?? null
 })
+const deletableVersionIds = computed(() => versions.value
+  .filter((version) => version.id !== currentVersionId.value)
+  .map((version) => version.id))
+const allDeletableVersionsSelected = computed(() => deletableVersionIds.value.length > 0
+  && deletableVersionIds.value.every((versionId) => selectedVersionIds.value.includes(versionId)))
 const runtimeLabel = computed(() => {
   if (runtimeApplyState.value === 'pending' || hasPending.value || document.value?.runtime.status === 'pending') return '配置待应用'
   if (runtimeApplyState.value === 'failed' || document.value?.runtime.status === 'failed' || hasApplyFailure.value) return '配置应用失败'
@@ -230,6 +238,7 @@ function load(): Promise<void> {
     }
     document.value = nextDocument
     versions.value = history.versions
+    selectedVersionIds.value = []
     syncingConfig = true
     config.value = normalizeConfig(nextDocument.content)
     source.value = serializeConfig(config.value)
@@ -341,12 +350,55 @@ async function deleteVersion(version: ConfigVersion): Promise<void> {
     } else {
       const history = await apiRequest<ConfigVersions>('/api/v1/config/versions')
       versions.value = history.versions
+      selectedVersionIds.value = selectedVersionIds.value.filter((versionId) => versionId !== version.id)
     }
     toast.success(`配置版本 #${version.id} 已删除`)
   } catch (error) {
     toast.error(errorMessage(error))
   } finally {
     deleting.value = null
+  }
+}
+
+function toggleVersionSelection(versionId: number): void {
+  if (versionId === currentVersionId.value) return
+  selectedVersionIds.value = selectedVersionIds.value.includes(versionId)
+    ? selectedVersionIds.value.filter((selectedId) => selectedId !== versionId)
+    : [...selectedVersionIds.value, versionId]
+}
+
+function toggleAllDeletableVersions(): void {
+  selectedVersionIds.value = allDeletableVersionsSelected.value
+    ? []
+    : [...deletableVersionIds.value]
+}
+
+async function deleteSelectedVersions(): Promise<void> {
+  if (!document.value || selectedVersionIds.value.length === 0) return
+  const ids = [...selectedVersionIds.value]
+  if (!window.confirm(`删除选中的 ${ids.length} 个配置版本？此操作无法撤销。`)) return
+  bulkDeleting.value = true
+  try {
+    const removesDesired = versions.value.some((version) => ids.includes(version.id)
+      && (version.id === pendingVersionId.value
+        || version.apply_state === 'pending'
+        || version.apply_state === 'failed'))
+    const result = await apiRequest<DeleteConfigVersionsResult>('/api/v1/config/versions/bulk', {
+      method: 'DELETE',
+      ...jsonBody({ ids, expected_sha256: document.value.sha256 }),
+    })
+    selectedVersionIds.value = []
+    if (removesDesired) {
+      await load()
+    } else {
+      const history = await apiRequest<ConfigVersions>('/api/v1/config/versions')
+      versions.value = history.versions
+    }
+    toast.success(`已删除 ${result.deleted_ids.length} 个配置版本`)
+  } catch (error) {
+    toast.error(errorMessage(error))
+  } finally {
+    bulkDeleting.value = false
   }
 }
 
@@ -417,7 +469,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
         <span v-else-if="currentVersionId" class="document-meta__version">版本 #{{ currentVersionId }}</span>
         <code>{{ shortHash(document.sha256, 14) }}</code>
       </div>
-      <button class="button button--secondary" type="button" :disabled="loading || saving || restoring !== null || deleting !== null" @click="load"><RefreshCw :size="16" :class="{ spin: loading }" />重新读取</button>
+      <button class="button button--secondary" type="button" :disabled="loading || saving || restoring !== null || deleting !== null || bulkDeleting" @click="load"><RefreshCw :size="16" :class="{ spin: loading }" />重新读取</button>
     </div>
     <StatusBanner v-if="loadError" :message="loadError" :stale="Boolean(document)" :busy="loading" @retry="load" />
     <div v-if="hasPending || hasApplyFailure || runtimeStopped || runtimeUnavailable || capabilityError || unsupportedFields.length" class="config-compatibility-banner">
@@ -452,8 +504,8 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
             <input ref="fileInput" class="visually-hidden" type="file" accept=".json,application/json" @change="importFile">
             <button class="icon-button" type="button" title="导入 JSON" :disabled="loading || saving" @click="fileInput?.click()"><FileUp :size="16" /></button>
             <button class="icon-button" type="button" title="下载 JSON" :disabled="loading" @click="downloadJson"><Download :size="16" /></button>
-            <button class="button button--secondary" type="button" :disabled="loading || validating || saving || restoring !== null || deleting !== null || deferSave" @click="validate"><ShieldCheck :size="16" />{{ validating ? '校验中' : (deferSave ? '运行后校验' : '校验') }}</button>
-            <button class="button button--primary" type="button" :disabled="loading || validating || saving || restoring !== null || deleting !== null || !canSave" @click="save"><Save :size="16" />{{ saveLabel }}</button>
+            <button class="button button--secondary" type="button" :disabled="loading || validating || saving || restoring !== null || deleting !== null || bulkDeleting || deferSave" @click="validate"><ShieldCheck :size="16" />{{ validating ? '校验中' : (deferSave ? '运行后校验' : '校验') }}</button>
+            <button class="button button--primary" type="button" :disabled="loading || validating || saving || restoring !== null || deleting !== null || bulkDeleting || !canSave" @click="save"><Save :size="16" />{{ saveLabel }}</button>
           </div>
         </header>
 
@@ -479,10 +531,20 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
       </section>
 
       <aside class="history-panel">
-        <header><div><History :size="18" /><h2>版本历史</h2></div><span>{{ versions.length }}</span></header>
+        <header><div><History :size="18" /><h2>版本历史</h2></div><span title="自动保留最近 100 个版本">{{ versions.length }} / 100</span></header>
+        <div v-if="deletableVersionIds.length > 0" class="history-bulk-actions">
+          <label>
+            <input type="checkbox" :checked="allDeletableVersionsSelected" :disabled="bulkDeleting || deleting !== null || restoring !== null || saving || validating" @change="toggleAllDeletableVersions">
+            <span>{{ selectedVersionIds.length > 0 ? `已选 ${selectedVersionIds.length} 项` : '全选可删除项' }}</span>
+          </label>
+          <button class="button button--danger-quiet" type="button" :disabled="selectedVersionIds.length === 0 || bulkDeleting || deleting !== null || restoring !== null || saving || validating" @click="deleteSelectedVersions">
+            <Trash2 :size="14" :class="{ spin: bulkDeleting }" />删除所选
+          </button>
+        </div>
         <div class="history-list">
           <article v-for="version in versions" :key="version.id" :class="{ 'history-item--current': version.id === currentVersionId, 'history-item--pending': version.id === pendingVersionId, 'history-item--failed': version.apply_state === 'failed' }">
             <div class="history-item__top">
+              <input v-if="version.id !== currentVersionId" class="history-item__checkbox" type="checkbox" :aria-label="`选择配置版本 #${version.id}`" :checked="selectedVersionIds.includes(version.id)" :disabled="bulkDeleting || deleting !== null || restoring !== null || saving || validating" @change="toggleVersionSelection(version.id)">
               <strong :title="version.message || '未填写备注'">{{ version.message || '未填写备注' }}</strong>
               <div class="history-item__actions">
                 <span v-if="version.id === currentVersionId" class="tag tag--success">当前</span>
@@ -491,8 +553,8 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
                 <span v-else-if="version.apply_state === 'superseded'" class="tag tag--muted">已替代</span>
                 <template v-if="version.id !== currentVersionId">
                   <button class="icon-button icon-button--small" type="button" title="比较此版本" :disabled="previewing !== null" @click="openVersionDiff(version)"><GitCompare :size="15" :class="{ spin: previewing === version.id }" /></button>
-                  <button class="icon-button icon-button--small" type="button" title="恢复此版本" :disabled="restoring !== null || deleting !== null || saving || validating" @click="restore(version)"><RotateCcw :size="15" :class="{ spin: restoring === version.id }" /></button>
-                  <button class="icon-button icon-button--small icon-button--danger" type="button" title="删除此版本" :disabled="restoring !== null || deleting !== null || saving || validating" @click="deleteVersion(version)"><Trash2 :size="15" :class="{ spin: deleting === version.id }" /></button>
+                  <button class="icon-button icon-button--small" type="button" title="恢复此版本" :disabled="restoring !== null || deleting !== null || bulkDeleting || saving || validating" @click="restore(version)"><RotateCcw :size="15" :class="{ spin: restoring === version.id }" /></button>
+                  <button class="icon-button icon-button--small icon-button--danger" type="button" title="删除此版本" :disabled="restoring !== null || deleting !== null || bulkDeleting || saving || validating" @click="deleteVersion(version)"><Trash2 :size="15" :class="{ spin: deleting === version.id }" /></button>
                 </template>
               </div>
             </div>
