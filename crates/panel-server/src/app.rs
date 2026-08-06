@@ -9,7 +9,7 @@ use axum::http::header::{CACHE_CONTROL, CONTENT_SECURITY_POLICY, REFERRER_POLICY
 use axum::http::{HeaderMap, HeaderValue, Request};
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use axum_extra::extract::CookieJar;
 use axum_extra::extract::cookie::{Cookie, SameSite};
@@ -148,6 +148,17 @@ struct VersionsResponse {
 #[derive(Debug, Serialize)]
 struct DeleteConfigVersionResponse {
     deleted_id: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeleteConfigVersionsRequest {
+    ids: Vec<i64>,
+    expected_sha256: String,
+}
+
+#[derive(Debug, Serialize)]
+struct DeleteConfigVersionsResponse {
+    deleted_ids: Vec<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -370,6 +381,7 @@ fn api_router(state: AppState) -> Router {
             get(get_geo_data_schedule).put(save_geo_data_schedule),
         )
         .route("/config/versions", get(config_versions))
+        .route("/config/versions/bulk", delete(delete_config_versions))
         .route(
             "/config/versions/{id}",
             get(config_version).delete(delete_config_version),
@@ -894,6 +906,33 @@ async fn delete_config_version(
         .await
         .map_err(AppError::Internal)?;
     Ok(Json(DeleteConfigVersionResponse { deleted_id: id }))
+}
+
+async fn delete_config_versions(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Json(request): Json<DeleteConfigVersionsRequest>,
+) -> AppResult<Json<DeleteConfigVersionsResponse>> {
+    let session = authenticate(&state.database, &jar).await?;
+    verify_csrf(&session, &jar, &headers)?;
+    let _apply_guard = state.config_apply_lock.lock().await;
+    let deleted_ids = state
+        .config
+        .delete_versions(request.ids, &request.expected_sha256)
+        .await
+        .map_err(map_config_error)?;
+    state
+        .database
+        .audit(
+            Some(session.username),
+            "config.version.bulk_delete".to_owned(),
+            format!("批量删除 {} 个配置版本", deleted_ids.len()),
+            unix_timestamp(),
+        )
+        .await
+        .map_err(AppError::Internal)?;
+    Ok(Json(DeleteConfigVersionsResponse { deleted_ids }))
 }
 
 async fn flush_cache(

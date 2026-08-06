@@ -6,6 +6,7 @@ import type {
   ConfigDocument,
   ConfigVersionDetail,
   DeleteConfigVersionResult,
+  DeleteConfigVersionsResult,
   ConfigVersions,
   DnsDiagnostic,
   GeoDataCleanupResult,
@@ -222,6 +223,39 @@ function demoConfigVersion(id: number): Record<string, unknown> {
     delete settings.geosite_data_paths
   }
   return content
+}
+
+function currentConfigVersionId(): number | null {
+  const formalVersion = versions.versions.find((version) => version.apply_state === 'applied')
+  return config.pending?.version_id
+    ? formalVersion?.id ?? null
+    : formalVersion?.id ?? config.version_id
+}
+
+function removeConfigVersions(ids: number[], unavailable: boolean): void {
+  const removesPending = ids.includes(config.pending?.version_id ?? -1)
+  versions.versions = versions.versions.filter((version) => !ids.includes(version.id))
+  ids.forEach((id) => configVersionContents.delete(id))
+  if (!removesPending) return
+
+  const formalVersion = versions.versions.find((version) => version.apply_state === 'applied')
+  const formalContent = formalVersion ? configVersionContents.get(formalVersion.id) : undefined
+  if (!formalVersion || !formalContent) return
+  config = {
+    ...config,
+    content: structuredClone(formalContent),
+    sha256: formalVersion.sha256,
+    modified_at: formalVersion.created_at,
+    version_id: formalVersion.id,
+    pending: null,
+    runtime: {
+      ...config.runtime,
+      status: unavailable ? 'unavailable' : 'active',
+      active_sha256: formalVersion.sha256,
+      apply_state: unavailable ? 'unavailable' : 'active',
+      pending_error: null,
+    },
+  }
 }
 
 let serviceRunning = true
@@ -478,6 +512,23 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
     return geoData as T
   }
   if (path === '/api/v1/config/versions' && method === 'GET') return versions as T
+  if (path === '/api/v1/config/versions/bulk' && method === 'DELETE') {
+    const body = JSON.parse(String(init?.body)) as { ids: number[]; expected_sha256: string }
+    if (body.expected_sha256 !== config.sha256) throw new Error('配置已被其他操作修改，请刷新后重试')
+    const ids = [...new Set(body.ids)].sort((left, right) => left - right)
+    if (ids.length === 0) throw new Error('请至少选择一个配置版本')
+    if (ids.length > 100 || ids.some((id) => !Number.isInteger(id) || id <= 0)) {
+      throw new Error('配置版本 ID 无效')
+    }
+    if (ids.includes(currentConfigVersionId() ?? -1)) {
+      throw new Error('当前生效版本不能删除，请先恢复其他版本')
+    }
+    if (ids.some((id) => !versions.versions.some((version) => version.id === id))) {
+      throw new Error('配置文件不存在')
+    }
+    removeConfigVersions(ids, emptyFirstInstall)
+    return { deleted_ids: ids } as DeleteConfigVersionsResult as T
+  }
   const configVersionMatch = pathname.match(/^\/api\/v1\/config\/versions\/(\d+)$/)
   if (configVersionMatch && method === 'GET') {
     const id = Number(configVersionMatch[1])
@@ -488,41 +539,13 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
   }
   if (configVersionMatch && method === 'DELETE') {
     const body = JSON.parse(String(init?.body)) as { expected_sha256: string }
-    const formalVersion = versions.versions.find((version) => version.apply_state === 'applied')
     // 与后端 ConfigStore::delete_version 保持一致：待应用时校验编辑中的候选 SHA。
     if (body.expected_sha256 !== config.sha256) throw new Error('配置已被其他操作修改，请刷新后重试')
     const id = Number(configVersionMatch[1])
-    const currentId = config.pending?.version_id
-      ? formalVersion?.id ?? null
-      : formalVersion?.id ?? config.version_id
-    if (id === currentId) throw new Error('当前生效版本不能删除，请先恢复其他版本')
+    if (id === currentConfigVersionId()) throw new Error('当前生效版本不能删除，请先恢复其他版本')
     const index = versions.versions.findIndex((version) => version.id === id)
     if (index < 0) throw new Error('配置文件不存在')
-    const removesPending = config.pending?.version_id === id
-    versions.versions.splice(index, 1)
-    configVersionContents.delete(id)
-    if (removesPending) {
-      const formalVersion = versions.versions.find((version) => version.apply_state === 'applied')
-      const formalContent = formalVersion ? configVersionContents.get(formalVersion.id) : undefined
-      if (formalVersion && formalContent) {
-        const unavailable = emptyFirstInstall
-        config = {
-          ...config,
-          content: structuredClone(formalContent),
-          sha256: formalVersion.sha256,
-          modified_at: formalVersion.created_at,
-          version_id: formalVersion.id,
-          pending: null,
-          runtime: {
-            ...config.runtime,
-            status: unavailable ? 'unavailable' : 'active',
-            active_sha256: formalVersion.sha256,
-            apply_state: unavailable ? 'unavailable' : 'active',
-            pending_error: null,
-          },
-        }
-      }
-    }
+    removeConfigVersions([id], emptyFirstInstall)
     return { deleted_id: id } as DeleteConfigVersionResult as T
   }
   if (path === '/api/v1/config/validate') {

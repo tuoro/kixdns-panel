@@ -635,6 +635,107 @@ async fn config_version_delete_protects_current_version_and_requires_csrf() {
 }
 
 #[tokio::test]
+async fn config_version_bulk_delete_removes_selected_versions_atomically() {
+    let context = authenticated_app().await;
+    let config_response = context
+        .app
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/config")
+                .header(COOKIE, context.cookies.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let config: Value = serde_json::from_slice(
+        &to_bytes(config_response.into_body(), 64 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let save_body = serde_json::json!({
+        "content": {
+            "version": "1.0",
+            "pipelines": []
+        },
+        "expected_sha256": config["sha256"],
+        "message": "批量删除测试"
+    });
+    let save_response = context
+        .app
+        .clone()
+        .oneshot(
+            Request::put("/api/v1/config")
+                .header(CONTENT_TYPE, "application/json")
+                .header(COOKIE, context.cookies.clone())
+                .header("x-csrf-token", context.csrf_token.clone())
+                .body(Body::from(save_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(save_response.status(), StatusCode::OK);
+    let saved: Value = serde_json::from_slice(
+        &to_bytes(save_response.into_body(), 64 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let version_id = saved["version_id"].as_i64().unwrap();
+    let delete_body = serde_json::json!({
+        "ids": [version_id],
+        "expected_sha256": saved["sha256"]
+    });
+
+    let deleted_response = context
+        .app
+        .clone()
+        .oneshot(
+            Request::delete("/api/v1/config/versions/bulk")
+                .header(CONTENT_TYPE, "application/json")
+                .header(COOKIE, context.cookies.clone())
+                .header("x-csrf-token", context.csrf_token)
+                .body(Body::from(delete_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(deleted_response.status(), StatusCode::OK);
+    let deleted: Value = serde_json::from_slice(
+        &to_bytes(deleted_response.into_body(), 64 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(deleted["deleted_ids"], serde_json::json!([version_id]));
+
+    let versions_response = context
+        .app
+        .oneshot(
+            Request::get("/api/v1/config/versions")
+                .header(COOKIE, context.cookies)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let versions: Value = serde_json::from_slice(
+        &to_bytes(versions_response.into_body(), 64 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        versions["versions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|version| version["id"] != version_id)
+    );
+}
+
+#[tokio::test]
 async fn config_document_exposes_runtime_and_version_detail() {
     let context = authenticated_app().await;
     let config_response = context

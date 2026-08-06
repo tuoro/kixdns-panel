@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
@@ -252,24 +253,51 @@ impl ConfigStore {
         version_id: i64,
         expected_sha256: &str,
     ) -> Result<(), ConfigError> {
+        self.delete_versions(vec![version_id], expected_sha256)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn delete_versions(
+        &self,
+        version_ids: Vec<i64>,
+        expected_sha256: &str,
+    ) -> Result<Vec<i64>, ConfigError> {
+        let version_ids = version_ids.into_iter().collect::<BTreeSet<_>>();
+        if version_ids.is_empty() {
+            return Err(ConfigError::Invalid("请至少选择一个配置版本".to_owned()));
+        }
+        if version_ids.len() > 100 {
+            return Err(ConfigError::Invalid(
+                "单次最多删除 100 个配置版本".to_owned(),
+            ));
+        }
+        if version_ids.iter().any(|version_id| *version_id <= 0) {
+            return Err(ConfigError::Invalid("配置版本 ID 无效".to_owned()));
+        }
+
         let _guard = self.write_lock.lock().await;
         let desired = self.desired().await?;
         if !constant_hash_eq(&desired.sha256, expected_sha256) {
             return Err(ConfigError::Conflict);
         }
-        if self
+        let current_version_id = self
             .current()
             .await
             .ok()
-            .and_then(|current| current.version_id)
-            == Some(version_id)
-        {
+            .and_then(|current| current.version_id);
+        if current_version_id.is_some_and(|current| version_ids.contains(&current)) {
             return Err(ConfigError::ActiveVersion);
         }
-        if !self.database.delete_config_version(version_id).await? {
+        let version_ids = version_ids.into_iter().collect::<Vec<_>>();
+        if !self
+            .database
+            .delete_config_versions(version_ids.clone())
+            .await?
+        {
             return Err(ConfigError::NotFound);
         }
-        Ok(())
+        Ok(version_ids)
     }
 
     async fn save_locked(
@@ -545,6 +573,22 @@ mod tests {
 
         let conflict = store.delete_version(saved.version_id, "stale-sha256").await;
         assert!(matches!(conflict, Err(ConfigError::Conflict)));
+
+        let atomic_failure = store
+            .delete_versions(vec![saved.version_id, 9_999], &restored.sha256)
+            .await;
+        assert!(matches!(atomic_failure, Err(ConfigError::NotFound)));
+        assert!(store.version_content(saved.version_id).await.is_ok());
+
+        let deleted = store
+            .delete_versions(vec![saved.version_id, saved.version_id], &restored.sha256)
+            .await
+            .unwrap();
+        assert_eq!(deleted, vec![saved.version_id]);
+        assert!(matches!(
+            store.version_content(saved.version_id).await,
+            Err(ConfigError::NotFound)
+        ));
     }
 
     #[test]

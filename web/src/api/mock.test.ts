@@ -5,6 +5,7 @@ import type {
   ConfigVersions,
   ConfigVersionDetail,
   DeleteConfigVersionResult,
+  DeleteConfigVersionsResult,
   GeoDataCleanupResult,
   GeoDataManifest,
   GeoDataSchedule,
@@ -118,6 +119,27 @@ describe('演示 API', () => {
     expect(deleted.deleted_id).toBe(removable?.id)
     const after = await mockRequest<ConfigVersions>('/api/v1/config/versions')
     expect(after.versions.some((version) => version.id === removable?.id)).toBe(false)
+
+    const bulkRemovable = after.versions.find((version) => version.id !== current?.id)
+    expect(bulkRemovable).toBeDefined()
+    await expect(mockRequest<DeleteConfigVersionsResult>('/api/v1/config/versions/bulk', {
+      method: 'DELETE',
+      body: JSON.stringify({
+        ids: [current?.id, bulkRemovable?.id],
+        expected_sha256: config.sha256,
+      }),
+    })).rejects.toThrow('当前生效版本不能删除')
+    const afterRejectedBulk = await mockRequest<ConfigVersions>('/api/v1/config/versions')
+    expect(afterRejectedBulk.versions.some((version) => version.id === bulkRemovable?.id)).toBe(true)
+
+    const bulkDeleted = await mockRequest<DeleteConfigVersionsResult>('/api/v1/config/versions/bulk', {
+      method: 'DELETE',
+      body: JSON.stringify({
+        ids: [bulkRemovable?.id],
+        expected_sha256: config.sha256,
+      }),
+    })
+    expect(bulkDeleted.deleted_ids).toEqual([bulkRemovable?.id])
   })
 
   it('安装并切换 KixDNS 构建', async () => {

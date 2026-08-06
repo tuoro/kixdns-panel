@@ -160,6 +160,10 @@ export interface DeleteConfigVersionResult {
   deleted_id: number
 }
 
+export interface DeleteConfigVersionsResult {
+  deleted_ids: number[]
+}
+
 export interface ValidationResult {
   protocol_version: number
   valid: boolean
