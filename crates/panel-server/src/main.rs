@@ -41,7 +41,7 @@ struct Args {
     )]
     service_helper_socket: PathBuf,
 
-    /// DNS 诊断固定查询的服务器地址。
+    /// DNS 诊断服务器地址；本机地址会自动跟随当前配置的 UDP 监听端口。
     #[arg(long, env = "KIXDNS_DIAGNOSTIC_SERVER", default_value = "127.0.0.1:53")]
     diagnostic_server: SocketAddr,
 

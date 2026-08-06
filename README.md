@@ -24,7 +24,7 @@ KixDNS 的非 Fork 增强发行版与管理面板。项目维护上游正式 Rel
 - KixDNS 编译校验、乐观锁保存、版本历史、回滚和失败自动恢复
 - 配置字段能力门控、后端强制校验与版本切换前兼容预检
 - 面板内安装 KixDNS、切换 Releases/Actions 版本源并回切本地版本
-- systemd 启动、停止、重启固定动作控制，journal 日志与固定目标 DNS 诊断
+- systemd 启动、停止、重启固定动作控制，journal 日志与自动跟随当前监听端口的本机 DNS 诊断
 - 首次安装默认保持 KixDNS 停止；面板启停同步开机策略，宿主机重启后保持用户选择
 - KixDNS 停止时保留最后一次概览和查询排行快照，并明确标记数据已停止更新
 - 系统页一键在线更新面板正式版，校验双层摘要且不替换或启停 KixDNS
@@ -75,7 +75,7 @@ curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one-click-install.sh \
-  | sudo bash -s -- --version v1.0.14
+  | sudo bash -s -- --version v1.0.15
 ```
 
 稳定版从面板 GitHub Release 下载；`main` 分支的 Action 仅用于持续验证和开发包构建：
@@ -83,7 +83,7 @@ curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one
 ```bash
 # x86_64；ARM64 将文件名中的 x86_64 改为 arm64
 curl -fL -o kixdns-panel.zip \
-  https://github.com/tuoro/kixdns-panel/releases/download/v1.0.14/kixdns-panel-linux-x86_64.zip
+  https://github.com/tuoro/kixdns-panel/releases/download/v1.0.15/kixdns-panel-linux-x86_64.zip
 mkdir kixdns-panel && unzip kixdns-panel.zip -d kixdns-panel
 cd kixdns-panel
 sudo bash ./scripts/install.sh
@@ -91,7 +91,7 @@ sudo bash ./scripts/install.sh
 
 如果主机已经存在 KixDNS，安装器会让你选择保留现有安装或迁移为 KixDNS Enhanced，不会默认替换。无人值守安装请显式使用 `--keep-existing` 或 `--replace-existing`；保留模式只接入受限面板，迁移模式会备份原 systemd unit 并保留原配置路径。
 
-面板 `v1.0.14` Release 提供 `kixdns-panel-linux-x86_64.zip` 与 `kixdns-panel-linux-arm64.zip`。正式包记录 Release 标签，面板只根据后续正式 Release 提示自身更新；普通 `main` 提交和临时 Action 包不会触发面板更新提示。发现新版后可在“系统”页直接在线更新，过程固定从 `tuoro/kixdns-panel` 最新正式 Release 下载当前架构包，并校验 GitHub 资产摘要与包内 `SHA256SUMS`；更新只替换 Panel Server、Web、helper 和部署脚本，KixDNS 二进制、配置及启停状态保持不变。
+面板 `v1.0.15` Release 提供 `kixdns-panel-linux-x86_64.zip` 与 `kixdns-panel-linux-arm64.zip`。正式包记录 Release 标签，面板只根据后续正式 Release 提示自身更新；普通 `main` 提交和临时 Action 包不会触发面板更新提示。发现新版后可在“系统”页直接在线更新，过程固定从 `tuoro/kixdns-panel` 最新正式 Release 下载当前架构包，并校验 GitHub 资产摘要与包内 `SHA256SUMS`；更新只替换 Panel Server、Web、helper 和部署脚本，KixDNS 二进制、配置及启停状态保持不变。
 
 公共仓库无需 Token 也能使用，但 GitHub 匿名 API 仅提供每个出口 IP 60 次/小时。若同一公网 IP 下有多台设备，建议在“系统”页配置只读的 Fine-grained PAT；面板先通过 GitHub `/rate_limit` 验证，再以 `0600` 保存到 `/var/lib/kixdns-panel/github-token`。接口只返回是否配置和剩余配额，不返回 Token 明文或片段；删除后立即恢复匿名模式。
 
