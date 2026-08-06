@@ -1,0 +1,66 @@
+diff --git a/src/panel.rs b/src/panel.rs
+--- a/src/panel.rs
++++ b/src/panel.rs
+@@ -3,7 +3,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+ use std::path::PathBuf;
+ use std::sync::Arc;
+ use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
+-use std::time::{SystemTime, UNIX_EPOCH};
++use std::time::{Instant, SystemTime, UNIX_EPOCH};
+ 
+ #[cfg(unix)]
+ use anyhow::Context;
+@@ -387,6 +387,8 @@ fn sort_and_truncate(rows: &mut Vec<TopStat>, limit: usize) {
+ pub struct PanelMetrics {
+     #[cfg_attr(not(unix), allow(dead_code))]
+     started_at_unix: u64,
++    #[cfg_attr(not(unix), allow(dead_code))]
++    started_at: Instant,
+     requests_total: AtomicU64,
+     requests_inflight: Arc<AtomicUsize>,
+     cache_lookups_total: AtomicU64,
+@@ -409,6 +411,7 @@ impl Default for PanelMetrics {
+     fn default() -> Self {
+         Self {
+             started_at_unix: unix_timestamp(),
++            started_at: Instant::now(),
+             requests_total: AtomicU64::new(0),
+             requests_inflight: Arc::new(AtomicUsize::new(0)),
+             cache_lookups_total: AtomicU64::new(0),
+@@ -429,6 +432,11 @@ impl Default for PanelMetrics {
+ }
+ 
+ impl PanelMetrics {
++    #[inline]
++    fn uptime_seconds(&self) -> u64 {
++        self.started_at.elapsed().as_secs()
++    }
++
+     #[inline]
+     pub fn record_request(&self) {
+         self.requests_total.fetch_add(1, Ordering::Relaxed);
+@@ -567,7 +575,7 @@ impl PanelMetrics {
+             "upstream_commit": option_env!("KIXDNS_UPSTREAM_COMMIT").unwrap_or("unknown"),
+             "patchset": option_env!("KIXDNS_PANEL_PATCHSET").unwrap_or("unknown"),
+             "started_at_unix": self.started_at_unix,
+-            "uptime_seconds": unix_timestamp().saturating_sub(self.started_at_unix),
++            "uptime_seconds": self.uptime_seconds(),
+             "config_generation": active.generation,
+             "capabilities": ["stats_top_v1", "config_query_stats_v1"],
+         })
+@@ -1009,6 +1017,16 @@ mod tests {
+ 
+     use super::{MAX_METRIC_SERIES_PER_MAP, PanelMetrics, QUERY_STATS_DOMAIN_CAP, QueryStats};
+ 
++    #[test]
++    fn uptime_uses_monotonic_clock_after_wall_clock_rewind() {
++        let mut metrics = PanelMetrics::default();
++        metrics.started_at_unix = super::unix_timestamp().saturating_add(3_600);
++        metrics.started_at = std::time::Instant::now() - std::time::Duration::from_secs(61);
++
++        assert!(metrics.uptime_seconds() >= 61);
++    }
++
+     #[cfg(unix)]
+     #[test]
+     fn escapes_prometheus_labels() {

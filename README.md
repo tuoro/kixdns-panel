@@ -54,8 +54,8 @@ Browser -> Panel Web -> Panel Server -> SQLite / 配置 / systemd
 
 | 面板版本源 | 上游身份 | 增强工作流 | x86_64 Artifact |
 | --- | --- | --- | --- |
-| Actions | 官方 Run `#30235703570`，提交 `374d63ccfdde` | `build-kixdns.yml` | `kixdns-enhanced-action-30235703570-p8-46ac788fc96c-linux-x86_64` |
-| Releases | 正式版 `v0.1.1`，提交 `647c5b1d2af6` | `build-kixdns-release.yml` | `kixdns-enhanced-release-v0.1.1-p8-1598ba62c01f-linux-x86_64` |
+| Actions | 官方 Run `#30912075286`，提交 `e55f0a858053` | `build-kixdns.yml` | `kixdns-enhanced-action-30912075286-p9-767856409425-linux-x86_64` |
+| Releases | 正式版 `v0.1.1`，提交 `647c5b1d2af6` | `build-kixdns-release.yml` | `kixdns-enhanced-release-v0.1.1-p9-f64e04aa4de4-linux-x86_64` |
 
 两种 KixDNS 增强包都来自本仓库 Actions，并通过 nightly.link 下载；这里的 `Releases` 只表示数据面源码基线来自 `olicesx/kixdns` 正式发布，与本面板自身的 Release 相互独立。Action 目录当前包含 4 个已验证版本，之后自动追加并滚动保留最多 10 个；Release 从增强协议基线 `v0.1.1` 起只追加、不设数量上限。`v0.1.0` 的核心架构早于增强协议，不能安全套用当前补丁，因此不会伪装成可安装增强包。
 
@@ -75,7 +75,7 @@ curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one-click-install.sh \
-  | sudo bash -s -- --version v1.0.13
+  | sudo bash -s -- --version v1.0.14
 ```
 
 稳定版从面板 GitHub Release 下载；`main` 分支的 Action 仅用于持续验证和开发包构建：
@@ -83,7 +83,7 @@ curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one
 ```bash
 # x86_64；ARM64 将文件名中的 x86_64 改为 arm64
 curl -fL -o kixdns-panel.zip \
-  https://github.com/tuoro/kixdns-panel/releases/download/v1.0.13/kixdns-panel-linux-x86_64.zip
+  https://github.com/tuoro/kixdns-panel/releases/download/v1.0.14/kixdns-panel-linux-x86_64.zip
 mkdir kixdns-panel && unzip kixdns-panel.zip -d kixdns-panel
 cd kixdns-panel
 sudo bash ./scripts/install.sh
@@ -91,7 +91,7 @@ sudo bash ./scripts/install.sh
 
 如果主机已经存在 KixDNS，安装器会让你选择保留现有安装或迁移为 KixDNS Enhanced，不会默认替换。无人值守安装请显式使用 `--keep-existing` 或 `--replace-existing`；保留模式只接入受限面板，迁移模式会备份原 systemd unit 并保留原配置路径。
 
-面板 `v1.0.13` Release 提供 `kixdns-panel-linux-x86_64.zip` 与 `kixdns-panel-linux-arm64.zip`。正式包记录 Release 标签，面板只根据后续正式 Release 提示自身更新；普通 `main` 提交和临时 Action 包不会触发面板更新提示。发现新版后可在“系统”页直接在线更新，过程固定从 `tuoro/kixdns-panel` 最新正式 Release 下载当前架构包，并校验 GitHub 资产摘要与包内 `SHA256SUMS`；更新只替换 Panel Server、Web、helper 和部署脚本，KixDNS 二进制、配置及启停状态保持不变。
+面板 `v1.0.14` Release 提供 `kixdns-panel-linux-x86_64.zip` 与 `kixdns-panel-linux-arm64.zip`。正式包记录 Release 标签，面板只根据后续正式 Release 提示自身更新；普通 `main` 提交和临时 Action 包不会触发面板更新提示。发现新版后可在“系统”页直接在线更新，过程固定从 `tuoro/kixdns-panel` 最新正式 Release 下载当前架构包，并校验 GitHub 资产摘要与包内 `SHA256SUMS`；更新只替换 Panel Server、Web、helper 和部署脚本，KixDNS 二进制、配置及启停状态保持不变。
 
 公共仓库无需 Token 也能使用，但 GitHub 匿名 API 仅提供每个出口 IP 60 次/小时。若同一公网 IP 下有多台设备，建议在“系统”页配置只读的 Fine-grained PAT；面板先通过 GitHub `/rate_limit` 验证，再以 `0600` 保存到 `/var/lib/kixdns-panel/github-token`。接口只返回是否配置和剩余配额，不返回 Token 明文或片段；删除后立即恢复匿名模式。
 

@@ -1,0 +1,301 @@
+diff --git a/src/config.rs b/src/config.rs
+index e432ee1..68b6e8f 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -6,6 +6,7 @@ use anyhow::Context;
+ use anyhow::Result;
+ use ipnet::IpNet;
+ use serde::Deserialize;
++use sha2::{Digest, Sha256};
+ use tracing::info;
+ 
+ #[derive(Debug, Clone, Deserialize)]
+@@ -805,9 +806,17 @@ fn default_match_operator() -> MatchOperator {
+ }
+ 
+ pub fn load_config(path: &Path) -> Result<PipelineConfig> {
++    load_config_with_sha256(path).map(|(config, _)| config)
++}
++
++/// 从同一份不可变快照读取、计算摘要并解析配置。
++pub fn load_config_with_sha256(path: &Path) -> Result<(PipelineConfig, String)> {
+     let raw = fs::read_to_string(path)
+         .with_context(|| format!("read config file: {}", path.display()))?;
+-    parse_config(&raw).with_context(|| format!("parse config file: {}", path.display()))
++    let sha256 = format!("{:x}", Sha256::digest(raw.as_bytes()));
++    let config =
++        parse_config(&raw).with_context(|| format!("parse config file: {}", path.display()))?;
++    Ok((config, sha256))
+ }
+ 
+ /// Parse and normalize a configuration without touching the filesystem.
+diff --git a/src/main.rs b/src/main.rs
+index 19f4777..742c316 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -10,7 +10,7 @@ use tokio::net::{TcpListener, TcpStream, UdpSocket};
+ use tracing::{debug, error, info, warn};
+ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+ 
+-use kixdns::config::load_config;
++use kixdns::config::load_config_with_sha256;
+ use kixdns::engine::{Engine, FastPathResponse, PreParsedData};
+ use kixdns::matcher::RuntimePipelineConfig;
+ use kixdns::watcher;
+@@ -137,7 +137,7 @@ async fn run_dns_server(
+         .install_default()
+         .map_err(|_| anyhow::anyhow!("failed to install rustls crypto provider"))?;
+ 
+-    let cfg = load_config(&config).context("load initial config")?;
++    let (cfg, config_sha256) = load_config_with_sha256(&config).context("load initial config")?;
+     let cfg = RuntimePipelineConfig::from_config(cfg).context("compile matchers")?;
+     let bind_addr: SocketAddr = cfg.settings.bind_udp.parse().context("parse bind addr")?;
+     let bind_tcp: SocketAddr = cfg
+@@ -170,10 +170,7 @@ async fn run_dns_server(
+         };
+ 
+     let engine = Engine::new(cfg, listener_label.clone()).context("initialize DNS engine")?;
+-    engine
+-        .panel_metrics
+-        .record_initial_config(&config)
+-        .context("record initial panel config state")?;
++    engine.panel_metrics.record_initial_config(config_sha256);
+ 
+     watcher::spawn(config.clone(), engine.clone());
+ 
+diff --git a/src/panel.rs b/src/panel.rs
+index 9d1c98f..3dfef9a 100644
+--- a/src/panel.rs
++++ b/src/panel.rs
+@@ -1,8 +1,9 @@
+-use std::path::{Path, PathBuf};
++use std::path::PathBuf;
+ use std::sync::Arc;
+ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+ use std::time::{SystemTime, UNIX_EPOCH};
+ 
++#[cfg(unix)]
+ use anyhow::Context;
+ #[cfg(unix)]
+ use bytes::Bytes;
+@@ -19,16 +20,17 @@ use hyper::service::service_fn;
+ use hyper::{Method, Request, Response, StatusCode};
+ #[cfg(unix)]
+ use hyper_util::rt::TokioIo;
+-use parking_lot::RwLock;
++use parking_lot::{Mutex, RwLock};
+ #[cfg(unix)]
+ use serde_json::json;
+-use sha2::{Digest, Sha256};
+ 
+ use crate::engine::Engine;
+ 
+ #[cfg(unix)]
+ const PROTOCOL_VERSION: u8 = 1;
+ const MAX_ERROR_LENGTH: usize = 2_048;
++const MAX_METRIC_SERIES_PER_MAP: usize = 1_024;
++const MAX_METRIC_KEY_BYTES: usize = 512;
+ #[cfg(unix)]
+ const MAX_CONFIG_BODY: usize = 4 * 1024 * 1024;
+ 
+@@ -59,6 +61,8 @@ pub struct PanelMetrics {
+     rule_matches: DashMap<Arc<str>, AtomicU64>,
+     upstream_attempts: DashMap<Arc<str>, AtomicU64>,
+     upstream_results: DashMap<Arc<str>, AtomicU64>,
++    metric_series_insert_lock: Mutex<()>,
++    metric_series_dropped: AtomicU64,
+     reload_success: AtomicU64,
+     reload_failure: AtomicU64,
+     reload_sequence: AtomicU64,
+@@ -78,6 +82,8 @@ impl Default for PanelMetrics {
+             rule_matches: DashMap::new(),
+             upstream_attempts: DashMap::new(),
+             upstream_results: DashMap::new(),
++            metric_series_insert_lock: Mutex::new(()),
++            metric_series_dropped: AtomicU64::new(0),
+             reload_success: AtomicU64::new(0),
+             reload_failure: AtomicU64::new(0),
+             reload_sequence: AtomicU64::new(0),
+@@ -116,12 +122,12 @@ impl PanelMetrics {
+ 
+     #[inline]
+     pub fn record_pipeline_hit(&self, pipeline: &str) {
+-        increment(&self.pipeline_hits, Arc::from(pipeline));
++        self.increment(&self.pipeline_hits, Arc::from(pipeline));
+     }
+ 
+     #[inline]
+     pub fn record_rule_match(&self, pipeline: &str, rule: &str, phase: &str) {
+-        increment(
++        self.increment(
+             &self.rule_matches,
+             Arc::from(format!("{pipeline}\0{rule}\0{phase}")),
+         );
+@@ -129,7 +135,7 @@ impl PanelMetrics {
+ 
+     #[inline]
+     pub fn record_upstream_attempt(&self, upstream: &str, transport: &str) {
+-        increment(
++        self.increment(
+             &self.upstream_attempts,
+             Arc::from(format!("{upstream}\0{transport}")),
+         );
+@@ -137,25 +143,22 @@ impl PanelMetrics {
+ 
+     #[inline]
+     pub fn record_upstream_result(&self, upstream: &str, transport: &str, result: &str) {
+-        increment(
++        self.increment(
+             &self.upstream_results,
+             Arc::from(format!("{upstream}\0{transport}\0{result}")),
+         );
+     }
+ 
+-    pub fn record_initial_config(&self, path: &Path) -> anyhow::Result<()> {
+-        let sha256 = sha256_file(path)?;
++    pub fn record_initial_config(&self, sha256: String) {
+         let mut active = self.active_config.write();
+         active.generation = 1;
+         active.sha256 = sha256;
+         active.loaded_at_unix = unix_timestamp();
+         active.last_reload_success = true;
+         active.last_reload_error = None;
+-        Ok(())
+     }
+ 
+-    pub fn record_reload_success(&self, path: &Path) -> anyhow::Result<()> {
+-        let sha256 = sha256_file(path)?;
++    pub fn record_reload_success(&self, sha256: String) {
+         let mut active = self.active_config.write();
+         active.generation = active.generation.saturating_add(1).max(1);
+         active.sha256 = sha256;
+@@ -164,7 +167,27 @@ impl PanelMetrics {
+         active.last_reload_error = None;
+         self.reload_success.fetch_add(1, Ordering::Relaxed);
+         self.reload_sequence.fetch_add(1, Ordering::Release);
+-        Ok(())
++    }
++
++    #[inline]
++    fn increment(&self, map: &DashMap<Arc<str>, AtomicU64>, key: Arc<str>) {
++        if let Some(counter) = map.get(&key) {
++            counter.fetch_add(1, Ordering::Relaxed);
++            return;
++        }
++        if key.len() > MAX_METRIC_KEY_BYTES {
++            self.metric_series_dropped.fetch_add(1, Ordering::Relaxed);
++            return;
++        }
++
++        let _guard = self.metric_series_insert_lock.lock();
++        if let Some(counter) = map.get(&key) {
++            counter.fetch_add(1, Ordering::Relaxed);
++        } else if map.len() < MAX_METRIC_SERIES_PER_MAP {
++            map.insert(key, AtomicU64::new(1));
++        } else {
++            self.metric_series_dropped.fetch_add(1, Ordering::Relaxed);
++        }
+     }
+ 
+     pub fn record_reload_failure(&self, error: &str) {
+@@ -283,6 +306,11 @@ impl PanelMetrics {
+             "kixdns_config_generation",
+             self.active_config.read().generation,
+         );
++        metric(
++            &mut output,
++            "kixdns_panel_metric_series_dropped_total",
++            self.metric_series_dropped.load(Ordering::Relaxed),
++        );
+         output
+     }
+ }
+@@ -468,12 +496,6 @@ fn error_json(code: &str, message: &str) -> serde_json::Value {
+     json!({ "protocol_version": PROTOCOL_VERSION, "error": { "code": code, "message": message } })
+ }
+ 
+-fn increment(map: &DashMap<Arc<str>, AtomicU64>, key: Arc<str>) {
+-    map.entry(key)
+-        .or_insert_with(|| AtomicU64::new(0))
+-        .fetch_add(1, Ordering::Relaxed);
+-}
+-
+ #[cfg(unix)]
+ fn append_map(
+     output: &mut String,
+@@ -537,12 +559,6 @@ fn escape_label(value: &str) -> String {
+         .replace('"', "\\\"")
+ }
+ 
+-fn sha256_file(path: &Path) -> anyhow::Result<String> {
+-    let bytes =
+-        std::fs::read(path).with_context(|| format!("读取配置文件失败：{}", path.display()))?;
+-    Ok(format!("{:x}", Sha256::digest(bytes)))
+-}
+-
+ fn truncate(value: &str, max_length: usize) -> String {
+     value.chars().take(max_length).collect()
+ }
+@@ -555,7 +571,7 @@ fn unix_timestamp() -> u64 {
+ 
+ #[cfg(test)]
+ mod tests {
+-    use super::PanelMetrics;
++    use super::{MAX_METRIC_SERIES_PER_MAP, PanelMetrics};
+ 
+     #[cfg(unix)]
+     #[test]
+@@ -564,11 +580,25 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn records_bounded_metric_keys() {
++    fn caps_metric_keys_and_counts_dropped_series() {
+         let metrics = PanelMetrics::default();
+-        metrics.record_pipeline_hit("default");
+-        metrics.record_rule_match("default", "allow", "request");
+-        assert_eq!(metrics.pipeline_hits.len(), 1);
+-        assert_eq!(metrics.rule_matches.len(), 1);
++        for index in 0..MAX_METRIC_SERIES_PER_MAP + 10 {
++            metrics.record_pipeline_hit(&format!("pipeline-{index}"));
++        }
++        metrics.record_pipeline_hit("pipeline-0");
++
++        assert_eq!(metrics.pipeline_hits.len(), MAX_METRIC_SERIES_PER_MAP);
++        assert_eq!(
++            metrics.metric_series_dropped.load(super::Ordering::Relaxed),
++            10
++        );
++        assert_eq!(
++            metrics
++                .pipeline_hits
++                .get("pipeline-0")
++                .unwrap()
++                .load(super::Ordering::Relaxed),
++            2
++        );
+     }
+ }
+diff --git a/src/watcher.rs b/src/watcher.rs
+index 9267114..7bab2ac 100644
+--- a/src/watcher.rs
++++ b/src/watcher.rs
+@@ -57,13 +57,12 @@ fn run_watcher(path: PathBuf, engine: Engine) -> notify::Result<()> {
+                 // Simple retry mechanism to handle file write races (e.g. truncate+write) / 简单的重试机制来处理文件写入竞争（如截断+写入）
+                 let mut retries = 5;
+                 while retries > 0 {
+-                    match config::load_config(&path).and_then(RuntimePipelineConfig::from_config) {
+-                        Ok(new_cfg) => {
++                    match config::load_config_with_sha256(&path).and_then(|(config, sha256)| {
++                        RuntimePipelineConfig::from_config(config).map(|runtime| (runtime, sha256))
++                    }) {
++                        Ok((new_cfg, sha256)) => {
+                             engine.reload(new_cfg);
+-                            if let Err(err) = engine.panel_metrics.record_reload_success(&path) {
+-                                engine.panel_metrics.record_reload_failure(&err.to_string());
+-                                warn!(target = "watcher", path = %path.display(), error = %err, "record config reload state failed");
+-                            }
++                            engine.panel_metrics.record_reload_success(sha256);
+                             info!(target = "watcher", path = %path.display(), "config reloaded");
+                             break;
+                         }
