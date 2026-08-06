@@ -4,6 +4,9 @@ import { errorMessage, formatDuration, formatKixdnsVersion, formatPercent, short
 describe('界面格式化工具', () => {
   it('生成稳定且紧凑的运行指标', () => {
     expect(formatPercent(0.81234)).toBe('81.2%')
+    expect(formatDuration(0)).toBe('0 秒')
+    expect(formatDuration(59)).toBe('59 秒')
+    expect(formatDuration(60)).toBe('0 小时 1 分钟')
     expect(formatDuration(90061)).toBe('1 天 1 小时')
     expect(shortHash('0123456789abcdef', 8)).toBe('01234567')
     expect(shortHash(null)).toBe('未记录')

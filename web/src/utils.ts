@@ -18,6 +18,7 @@ export function formatDate(timestamp: number): string {
 }
 
 export function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${Math.max(0, Math.floor(seconds))} 秒`
   const days = Math.floor(seconds / 86400)
   const hours = Math.floor((seconds % 86400) / 3600)
   const minutes = Math.floor((seconds % 3600) / 60)
