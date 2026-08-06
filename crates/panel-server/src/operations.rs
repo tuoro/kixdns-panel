@@ -36,6 +36,12 @@ pub struct LogEntry {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct LogPage {
+    pub entries: Vec<LogEntry>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct DnsDiagnostic {
     pub server: String,
     pub domain: String,
@@ -199,28 +205,38 @@ impl Operations {
     }
 
     #[cfg(unix)]
-    pub async fn logs(&self, limit: usize) -> Result<Vec<LogEntry>, OperationError> {
-        let limit = limit.clamp(1, 500).to_string();
-        let output = run_command(
-            "journalctl",
-            &[
-                "--unit",
-                self.service_unit.as_ref(),
-                "--no-pager",
-                "--output=json",
-                "--output-fields=__REALTIME_TIMESTAMP,PRIORITY,SYSLOG_IDENTIFIER,MESSAGE",
-                "--lines",
-                &limit,
-            ],
-            Duration::from_secs(10),
-        )
-        .await?;
-        Ok(parse_journal(&output))
+    pub async fn logs(
+        &self,
+        limit: usize,
+        before_cursor: Option<&str>,
+    ) -> Result<LogPage, OperationError> {
+        let limit = limit.clamp(1, 500);
+        let requested_lines = limit.saturating_add(usize::from(before_cursor.is_some()) + 1);
+        let requested_lines = requested_lines.to_string();
+        let mut arguments = vec![
+            "--unit",
+            self.service_unit.as_ref(),
+            "--no-pager",
+            "--output=json",
+            "--output-fields=__CURSOR,__REALTIME_TIMESTAMP,PRIORITY,SYSLOG_IDENTIFIER,MESSAGE",
+            "--reverse",
+            "--lines",
+            &requested_lines,
+        ];
+        if let Some(cursor) = before_cursor {
+            arguments.extend(["--cursor", cursor]);
+        }
+        let output = run_command("journalctl", &arguments, Duration::from_secs(10)).await?;
+        Ok(parse_journal_page(&output, before_cursor, limit))
     }
 
     #[cfg(not(unix))]
     #[allow(clippy::unused_async)]
-    pub async fn logs(&self, _limit: usize) -> Result<Vec<LogEntry>, OperationError> {
+    pub async fn logs(
+        &self,
+        _limit: usize,
+        _before_cursor: Option<&str>,
+    ) -> Result<LogPage, OperationError> {
         Err(OperationError::Unsupported)
     }
 
@@ -362,33 +378,52 @@ fn parse_service_status(unit: &str, output: &str) -> Result<ServiceStatus, Opera
     })
 }
 
-#[cfg(unix)]
-fn parse_journal(output: &str) -> Vec<LogEntry> {
-    output
+#[cfg(any(unix, test))]
+fn parse_journal_page(output: &str, before_cursor: Option<&str>, limit: usize) -> LogPage {
+    let mut entries = output
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .map(|value| LogEntry {
-            timestamp_unix_micros: json_string(&value, "__REALTIME_TIMESTAMP")
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(0),
-            priority: json_string(&value, "PRIORITY")
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(6),
-            source: truncate(
-                json_string(&value, "SYSLOG_IDENTIFIER").unwrap_or("kixdns"),
-                128,
-            ),
-            message: truncate(json_string(&value, "MESSAGE").unwrap_or(""), 4_096),
+        .map(|value| {
+            (
+                json_string(&value, "__CURSOR").map(str::to_owned),
+                LogEntry {
+                    timestamp_unix_micros: json_string(&value, "__REALTIME_TIMESTAMP")
+                        .and_then(|value| value.parse().ok())
+                        .unwrap_or(0),
+                    priority: json_string(&value, "PRIORITY")
+                        .and_then(|value| value.parse().ok())
+                        .unwrap_or(6),
+                    source: truncate(
+                        json_string(&value, "SYSLOG_IDENTIFIER").unwrap_or("kixdns"),
+                        128,
+                    ),
+                    message: truncate(json_string(&value, "MESSAGE").unwrap_or(""), 4_096),
+                },
+            )
         })
-        .collect()
+        .filter(|(cursor, _)| cursor.as_deref() != before_cursor)
+        .collect::<Vec<_>>();
+    let has_more = entries.len() > limit;
+    entries.truncate(limit);
+    let next_cursor = has_more
+        .then(|| entries.last().and_then(|(cursor, _)| cursor.clone()))
+        .flatten();
+    let entries = entries
+        .into_iter()
+        .map(|(_, entry)| entry)
+        .collect::<Vec<_>>();
+    LogPage {
+        entries,
+        next_cursor,
+    }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, test))]
 fn json_string<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
     value.get(key)?.as_str()
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, test))]
 fn truncate(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
 }
@@ -399,7 +434,7 @@ mod tests {
     use serde_json::json;
     use tokio::net::UdpSocket;
 
-    use super::{Operations, ServiceAction, parse_record_type};
+    use super::{Operations, ServiceAction, parse_journal_page, parse_record_type};
 
     #[test]
     fn rejects_commands_and_unlisted_record_types() {
@@ -438,6 +473,38 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn journal_pages_keep_newest_entries_first_and_exclude_cursor_boundary() {
+        let initial = [
+            r#"{"__CURSOR":"c3","__REALTIME_TIMESTAMP":"3","PRIORITY":"6","SYSLOG_IDENTIFIER":"kixdns","MESSAGE":"newest"}"#,
+            r#"{"__CURSOR":"c2","__REALTIME_TIMESTAMP":"2","PRIORITY":"4","SYSLOG_IDENTIFIER":"kixdns","MESSAGE":"middle"}"#,
+            r#"{"__CURSOR":"c1","__REALTIME_TIMESTAMP":"1","PRIORITY":"3","SYSLOG_IDENTIFIER":"kixdns","MESSAGE":"old"}"#,
+        ]
+        .join("\n");
+        let page = parse_journal_page(&initial, None, 2);
+
+        assert_eq!(
+            page.entries
+                .iter()
+                .map(|entry| entry.timestamp_unix_micros)
+                .collect::<Vec<_>>(),
+            vec![3, 2]
+        );
+        assert_eq!(page.next_cursor.as_deref(), Some("c2"));
+
+        let older = [
+            r#"{"__CURSOR":"c2","__REALTIME_TIMESTAMP":"2","PRIORITY":"4","SYSLOG_IDENTIFIER":"kixdns","MESSAGE":"boundary"}"#,
+            r#"{"__CURSOR":"c1","__REALTIME_TIMESTAMP":"1","PRIORITY":"3","SYSLOG_IDENTIFIER":"kixdns","MESSAGE":"older"}"#,
+            r#"{"__CURSOR":"c0","__REALTIME_TIMESTAMP":"0","PRIORITY":"6","SYSLOG_IDENTIFIER":"kixdns","MESSAGE":"oldest"}"#,
+        ]
+        .join("\n");
+        let page = parse_journal_page(&older, Some("c2"), 1);
+
+        assert_eq!(page.entries.len(), 1);
+        assert_eq!(page.entries[0].timestamp_unix_micros, 1);
+        assert_eq!(page.next_cursor.as_deref(), Some("c1"));
     }
 
     #[test]
