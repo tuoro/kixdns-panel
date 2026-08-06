@@ -1019,9 +1019,10 @@ async fn dns_diagnostic(
 ) -> AppResult<Json<DnsDiagnostic>> {
     let session = authenticate(&state.database, &jar).await?;
     verify_csrf(&session, &jar, &headers)?;
+    let config = state.config.current().await.map_err(map_config_error)?;
     let result = state
         .operations
-        .dns_query(request.domain, request.record_type.clone())
+        .dns_query(&config.content, request.domain, request.record_type.clone())
         .await
         .map_err(map_operation_error)?;
     state

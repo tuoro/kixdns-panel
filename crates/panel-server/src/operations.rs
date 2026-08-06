@@ -8,6 +8,7 @@ use getrandom::fill;
 use hickory_proto::op::{Message, MessageType, OpCode, Query};
 use hickory_proto::rr::{Name, RecordType};
 use serde::Serialize;
+use serde_json::Value;
 
 #[derive(Clone)]
 pub struct Operations {
@@ -225,6 +226,7 @@ impl Operations {
 
     pub async fn dns_query(
         &self,
+        config: &Value,
         domain: String,
         record_type: String,
     ) -> Result<DnsDiagnostic, OperationError> {
@@ -244,7 +246,8 @@ impl Operations {
         let request = message
             .to_vec()
             .map_err(|error| OperationError::Failed(format!("编码 DNS 请求失败：{error}")))?;
-        let bind_address = match self.diagnostic_server.ip() {
+        let diagnostic_server = self.diagnostic_server_for(config)?;
+        let bind_address = match diagnostic_server.ip() {
             IpAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
             IpAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
         };
@@ -252,7 +255,7 @@ impl Operations {
             .await
             .map_err(|error| OperationError::Failed(error.to_string()))?;
         socket
-            .connect(self.diagnostic_server)
+            .connect(diagnostic_server)
             .await
             .map_err(|error| OperationError::Failed(error.to_string()))?;
         let started = Instant::now();
@@ -272,7 +275,7 @@ impl Operations {
             return Err(OperationError::Failed("DNS 响应 ID 不匹配".to_owned()));
         }
         Ok(DnsDiagnostic {
-            server: self.diagnostic_server.to_string(),
+            server: diagnostic_server.to_string(),
             domain,
             record_type: record_type.to_string(),
             response_code: response.metadata.response_code.to_string(),
@@ -280,6 +283,26 @@ impl Operations {
             truncated: response.metadata.truncation,
             answers: response.answers.iter().map(ToString::to_string).collect(),
         })
+    }
+
+    fn diagnostic_server_for(&self, config: &Value) -> Result<SocketAddr, OperationError> {
+        if !self.diagnostic_server.ip().is_loopback() {
+            return Ok(self.diagnostic_server);
+        }
+        let Some(bind_udp) = config.pointer("/settings/bind_udp").and_then(Value::as_str) else {
+            return Ok(self.diagnostic_server);
+        };
+        let bind_udp = bind_udp.parse::<SocketAddr>().map_err(|error| {
+            OperationError::Invalid(format!(
+                "当前配置的 settings.bind_udp 无效，无法确定诊断端口：{error}"
+            ))
+        })?;
+        let ip = match bind_udp.ip() {
+            IpAddr::V4(ip) if ip.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
+            IpAddr::V6(ip) if ip.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
+            ip => ip,
+        };
+        Ok(SocketAddr::new(ip, bind_udp.port()))
     }
 }
 
@@ -372,6 +395,10 @@ fn truncate(value: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use hickory_proto::op::{Message, MessageType};
+    use serde_json::json;
+    use tokio::net::UdpSocket;
+
     use super::{Operations, ServiceAction, parse_record_type};
 
     #[test]
@@ -411,5 +438,85 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn local_diagnostic_server_follows_configured_udp_listener() {
+        let operations = Operations::new(
+            "kixdns.service".to_owned(),
+            "/run/kixdns-panel/control.sock".into(),
+            "127.0.0.1:53".parse().unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            operations
+                .diagnostic_server_for(&json!({"settings": {"bind_udp": "0.0.0.0:5353"}}))
+                .unwrap(),
+            "127.0.0.1:5353".parse().unwrap()
+        );
+        assert_eq!(
+            operations
+                .diagnostic_server_for(&json!({"settings": {"bind_udp": "[::]:8053"}}))
+                .unwrap(),
+            "[::1]:8053".parse().unwrap()
+        );
+        assert_eq!(
+            operations
+                .diagnostic_server_for(&json!({"settings": {"bind_udp": "192.0.2.10:5300"}}))
+                .unwrap(),
+            "192.0.2.10:5300".parse().unwrap()
+        );
+    }
+
+    #[test]
+    fn remote_diagnostic_server_remains_an_explicit_override() {
+        let operations = Operations::new(
+            "kixdns.service".to_owned(),
+            "/run/kixdns-panel/control.sock".into(),
+            "192.0.2.53:53".parse().unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            operations
+                .diagnostic_server_for(&json!({"settings": {"bind_udp": "0.0.0.0:5353"}}))
+                .unwrap(),
+            "192.0.2.53:53".parse().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn dns_query_reaches_non_standard_port_from_current_config() {
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let server_address = server.local_addr().unwrap();
+        let responder = tokio::spawn(async move {
+            let mut request = vec![0_u8; 512];
+            let (length, peer) = server.recv_from(&mut request).await.unwrap();
+            let mut response = Message::from_vec(&request[..length]).unwrap();
+            response.metadata.message_type = MessageType::Response;
+            let response = response.to_vec().unwrap();
+            server.send_to(&response, peer).await.unwrap();
+        });
+        let operations = Operations::new(
+            "kixdns.service".to_owned(),
+            "/run/kixdns-panel/control.sock".into(),
+            "127.0.0.1:53".parse().unwrap(),
+        )
+        .unwrap();
+        let config = json!({
+            "settings": {
+                "bind_udp": server_address.to_string()
+            }
+        });
+
+        let result = operations
+            .dns_query(&config, "example.com".to_owned(), "A".to_owned())
+            .await
+            .unwrap();
+        responder.await.unwrap();
+
+        assert_eq!(result.server, server_address.to_string());
+        assert_eq!(result.response_code, "No Error");
     }
 }
