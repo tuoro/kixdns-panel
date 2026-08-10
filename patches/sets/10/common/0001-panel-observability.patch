@@ -1,0 +1,1355 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 8f82cc3..9880696 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -134,6 +134,15 @@ version = "2.10.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "812e12b5285cc515a9c72a5c1d3b6d46a19dac5acfef5265968c166106e31dd3"
+ 
++[[package]]
++name = "block-buffer"
++version = "0.10.4"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
++dependencies = [
++ "generic-array",
++]
++
+ [[package]]
+ name = "bumpalo"
+ version = "3.19.1"
+@@ -183,7 +192,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "d524456ba66e72eb8b115ff89e01e497f8e6d11d78b70b1aa13c0fbd97540a81"
+ dependencies = [
+  "cfg-if",
+- "cpufeatures",
++ "cpufeatures 0.3.0",
+  "rand_core",
+ ]
+ 
+@@ -295,6 +304,15 @@ version = "0.8.7"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
+ 
++[[package]]
++name = "cpufeatures"
++version = "0.2.17"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "59ed5838eebb26a2bb2e58f6d5b5316989ae9d08bab10e0e6d103e656d1b0280"
++dependencies = [
++ "libc",
++]
++
+ [[package]]
+ name = "cpufeatures"
+ version = "0.3.0"
+@@ -386,6 +404,16 @@ version = "0.2.4"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
+ 
++[[package]]
++name = "crypto-common"
++version = "0.1.7"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "78c8292055d1c1df0cce5d180393dc8cce0abec0a7102adb6c7b1eef6016d60a"
++dependencies = [
++ "generic-array",
++ "typenum",
++]
++
+ [[package]]
+ name = "ctor"
+ version = "0.2.9"
+@@ -422,6 +450,16 @@ version = "0.5.8"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
+ 
++[[package]]
++name = "digest"
++version = "0.10.7"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
++dependencies = [
++ "block-buffer",
++ "crypto-common",
++]
++
+ [[package]]
+ name = "displaydoc"
+ version = "0.2.5"
+@@ -458,7 +496,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
+ dependencies = [
+  "libc",
+- "windows-sys 0.52.0",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+@@ -621,6 +659,16 @@ dependencies = [
+  "slab",
+ ]
+ 
++[[package]]
++name = "generic-array"
++version = "0.14.7"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
++dependencies = [
++ "typenum",
++ "version_check",
++]
++
+ [[package]]
+ name = "getrandom"
+ version = "0.2.17"
+@@ -1005,7 +1053,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
+ dependencies = [
+  "hermit-abi",
+  "libc",
+- "windows-sys 0.52.0",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+@@ -1131,6 +1179,7 @@ dependencies = [
+  "rustls-pemfile",
+  "serde",
+  "serde_json",
++ "sha2",
+  "smallvec",
+  "socket2",
+  "tempfile",
+@@ -1754,7 +1803,7 @@ dependencies = [
+  "errno",
+  "libc",
+  "linux-raw-sys",
+- "windows-sys 0.52.0",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+@@ -1822,7 +1871,7 @@ dependencies = [
+  "security-framework",
+  "security-framework-sys",
+  "webpki-root-certs",
+- "windows-sys 0.52.0",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+@@ -1963,6 +2012,17 @@ dependencies = [
+  "serde",
+ ]
+ 
++[[package]]
++name = "sha2"
++version = "0.10.9"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
++dependencies = [
++ "cfg-if",
++ "cpufeatures 0.2.17",
++ "digest",
++]
++
+ [[package]]
+ name = "sharded-slab"
+ version = "0.1.7"
+@@ -2097,7 +2157,7 @@ dependencies = [
+  "getrandom 0.4.3",
+  "once_cell",
+  "rustix",
+- "windows-sys 0.52.0",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+@@ -2395,6 +2455,12 @@ version = "0.2.5"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+ 
++[[package]]
++name = "typenum"
++version = "1.20.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
++
+ [[package]]
+ name = "unicode-ident"
+ version = "1.0.22"
+@@ -2448,6 +2514,12 @@ version = "0.1.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
+ 
++[[package]]
++name = "version_check"
++version = "0.9.5"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
++
+ [[package]]
+ name = "walkdir"
+ version = "2.5.0"
+@@ -2594,7 +2666,7 @@ version = "0.1.11"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
+ dependencies = [
+- "windows-sys 0.48.0",
++ "windows-sys 0.61.2",
+ ]
+ 
+ [[package]]
+diff --git a/Cargo.toml b/Cargo.toml
+index c7c43c6..bc02104 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -16,6 +16,7 @@ tokio-util = { version = "0.7", features = ["rt"] }
+ hickory-proto = "0.26"
+ serde = { version = "1", features = ["derive"] }
+ serde_json = "1"
++sha2 = "0.10"
+ arc-swap = "1.8"
+ tracing = "0.1"
+ tracing-subscriber = { version = "0.3", features = ["fmt", "json", "env-filter", "local-time"] }
+@@ -63,6 +64,9 @@ codegen-units = 1
+ panic = "abort"
+ strip = true
+ 
++# Keep the enhanced checkout independent when it lives below the panel workspace.
++[workspace]
++
+ # ============================================================================
+ # Cross-compilation Configuration
+ # 交叉编译配置
+diff --git a/src/engine/core.rs b/src/engine/core.rs
+index 606d202..a7326bf 100644
+--- a/src/engine/core.rs
++++ b/src/engine/core.rs
+@@ -16,6 +16,7 @@ use crate::matcher::RuntimePipelineConfig;
+ use crate::matcher::advanced_rule::compile_pipelines;
+ use crate::matcher::geoip::GeoIpManager;
+ use crate::matcher::geosite::GeoSiteManager;
++use crate::panel::PanelMetrics;
+ 
+ use super::concurrency::{FlowControlState, PermitManager};
+ use super::rules::RuleCacheEntry;
+@@ -35,6 +36,7 @@ pub struct Engine {
+     // Rule execution result cache: Hash -> (Key, Decision) / 规则执行结果缓存：哈希 -> (键, 决策)
+     // Key is stored to verify collisions / 存储键以验证冲突
+     pub(crate) rule_cache: Cache<u64, RuleCacheEntry>,
++    pub panel_metrics: Arc<PanelMetrics>,
+     // Runtime metrics for diagnosing concurrency and upstream latency / 运行时指标，用于诊断并发和上游延迟
+     pub metrics_inflight: Arc<AtomicUsize>,
+     pub metrics_total_requests: Arc<AtomicU64>,
+@@ -366,6 +368,7 @@ impl Engine {
+             doq_client,
+             listener_label: Arc::from(listener_label),
+             rule_cache,
++            panel_metrics: Arc::new(PanelMetrics::default()),
+             metrics_inflight: Arc::new(AtomicUsize::new(0)),
+             metrics_total_requests: Arc::new(AtomicU64::new(0)),
+             metrics_fastpath_hits: Arc::new(AtomicU64::new(0)),
+diff --git a/src/engine/execution.rs b/src/engine/execution.rs
+index 512aeb2..0cec759 100644
+--- a/src/engine/execution.rs
++++ b/src/engine/execution.rs
+@@ -24,6 +24,7 @@ use crate::cache::CacheEntry;
+ use crate::config::Transport;
+ use crate::matcher::RuntimePipelineConfig;
+ use crate::matcher::advanced_rule::{compile_pipelines, fast_static_match};
++use crate::panel::CacheHitKind;
+ use crate::proto_utils::parse_quick;
+ 
+ use super::response::build_fast_static_response;
+@@ -284,6 +285,7 @@ impl Engine {
+         };
+         // Count incoming quick-parsed requests / 计数进入的快速解析请求
+         self.incr_total_requests();
++        self.panel_metrics.record_request();
+ 
+         // Get pipeline ID / 获取 pipeline ID
+         let state = self.state.load();
+@@ -308,6 +310,7 @@ impl Engine {
+                 geoip_manager: Some(&self.geoip_manager),
+             },
+         );
++        self.panel_metrics.record_pipeline_hit(&pipeline_id);
+ 
+         // 1. Check Response Cache (L2) / 1. 检查响应缓存（L2）
+         // Compute ECS cache key from pipeline config + peer IP (RFC 7871)
+@@ -325,6 +328,7 @@ impl Engine {
+             ecs_key.as_ref(),
+         );
+ 
++        self.panel_metrics.record_cache_lookup();
+         if let Some(hit) = self.cache.get(&cache_hash) {
+             // Verify collision / 验证冲突
+             if hit.qtype == u16::from(qtype)
+@@ -408,6 +412,7 @@ impl Engine {
+                     // Next query will automatically use refreshed new cache (if completed)
+                     // 下次查询时会自动使用刷新后的新缓存（如果已完成）
+                     self.incr_fastpath_hits();
++                    self.panel_metrics.record_cache_hit(CacheHitKind::Fresh);
+                     return Ok(Some(FastPathResponse::CacheHit {
+                         cached: hit.bytes.clone(),
+                         tx_id: q.tx_id,
+@@ -538,6 +543,12 @@ impl Engine {
+         pre_parsed: Option<PreParsedData>,
+         explicit_cache_hash: Option<u64>,
+     ) -> anyhow::Result<Bytes> {
++        let from_fast_path = pre_parsed.is_some();
++        let _panel_request_guard = if skip_cache {
++            None
++        } else {
++            Some(self.panel_metrics.begin_request())
++        };
+         // Track requests and inflight concurrency for diagnostics. / 跟踪请求和进行中的并发以进行诊断
+         let _req_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
+         self.incr_total_requests();
+@@ -635,6 +646,12 @@ impl Engine {
+                 )
+             };
+ 
++        if !skip_cache && !from_fast_path {
++            self.panel_metrics.record_request();
++            self.panel_metrics.record_pipeline_hit(&pipeline_id);
++            self.panel_metrics.record_cache_lookup();
++        }
++
+         let qname_ref = &qname_cow;
+         let start = std::time::Instant::now();
+ 
+@@ -879,6 +896,7 @@ impl Engine {
+                 if let Some(&idx) = cfg.pipeline_id_index.get(pipeline.as_ref()) {
+                     let p = &cfg.pipelines[idx];
+                     current_pipeline_id = p.id.clone();
++                    self.panel_metrics.record_pipeline_hit(&current_pipeline_id);
+                     // Must recompute ECS key + dedupe_hash: pipeline changed via Jump,
+                     // so the target pipeline's ECS config may differ from the source.
+                     // 必须重算 ECS key + dedupe_hash：pipeline 因 Jump 改变，
+@@ -1853,6 +1871,7 @@ mod tests {
+         // Arrange: Entry created WITHOUT IP
+         let entry_no_ip = RuleCacheEntry {
+             pipeline_id: pipeline_id.clone(),
++            matched_rules: Arc::new(Vec::new()),
+             qname_hash: fast_hash_str(qname),
+             qtype: u16::from(qtype),
+             qclass: u16::from(qclass),
+@@ -1880,6 +1899,7 @@ mod tests {
+         // Arrange: Entry created WITH IP
+         let entry_with_ip = RuleCacheEntry {
+             pipeline_id: pipeline_id.clone(),
++            matched_rules: Arc::new(Vec::new()),
+             qname_hash: fast_hash_str(qname),
+             qtype: u16::from(qtype),
+             qclass: u16::from(qclass),
+@@ -1921,6 +1941,7 @@ mod tests {
+         // Arrange: Expired entry
+         let entry_expired = RuleCacheEntry {
+             pipeline_id: pipeline_id.clone(),
++            matched_rules: Arc::new(Vec::new()),
+             qname_hash: fast_hash_str(qname),
+             qtype: u16::from(qtype),
+             qclass: u16::from(qclass),
+@@ -1938,6 +1959,7 @@ mod tests {
+         // Arrange: Fresh entry
+         let entry_fresh = RuleCacheEntry {
+             pipeline_id: pipeline_id.clone(),
++            matched_rules: Arc::new(Vec::new()),
+             qname_hash: fast_hash_str(qname),
+             qtype: u16::from(qtype),
+             qclass: u16::from(qclass),
+diff --git a/src/engine/phases.rs b/src/engine/phases.rs
+index e6269e7..9939d9f 100644
+--- a/src/engine/phases.rs
++++ b/src/engine/phases.rs
+@@ -7,6 +7,7 @@ use crate::engine::upstream::UpstreamFailure;
+ use crate::engine::utils::InflightCleanupGuard;
+ use crate::engine::utils::engine_helpers::{build_response, build_servfail_response_fast};
+ use crate::matcher::{RuntimeResponseMatcherWithOp, eval_match_chain};
++use crate::panel::CacheHitKind;
+ use crate::proto_utils;
+ use anyhow::Context;
+ use bytes::{Bytes, BytesMut};
+@@ -164,6 +165,7 @@ pub fn check_cache(engine: &Engine, context: &CacheLookupContext<'_>) -> Option<
+                     "RFC 8767: serving stale cache entry on TTL expiry"
+                 );
+ 
++                engine.panel_metrics.record_cache_hit(CacheHitKind::Stale);
+                 return Some(resp_bytes.freeze());
+             } else {
+                 // Cache hit is valid
+@@ -244,6 +246,7 @@ pub fn check_cache(engine: &Engine, context: &CacheLookupContext<'_>) -> Option<
+                     "cache hit"
+                 );
+ 
++                engine.panel_metrics.record_cache_hit(CacheHitKind::Fresh);
+                 return Some(resp_bytes);
+             }
+         }
+@@ -341,6 +344,7 @@ pub fn check_stale_cache(
+                 );
+             }
+ 
++            engine.panel_metrics.record_cache_hit(CacheHitKind::Stale);
+             return Some(resp_bytes.freeze());
+         }
+     }
+diff --git a/src/engine/pipeline.rs b/src/engine/pipeline.rs
+index d948163..2b2eca2 100644
+--- a/src/engine/pipeline.rs
++++ b/src/engine/pipeline.rs
+@@ -159,6 +159,7 @@ impl Engine {
+         request: &RuleEvaluationContext<'_>,
+         decision: Decision,
+         include_ip: bool,
++        matched_rules: &[Arc<str>],
+     ) {
+         let RuleEvaluationContext {
+             client_ip,
+@@ -212,6 +213,7 @@ impl Engine {
+             hash,
+             RuleCacheEntry {
+                 pipeline_id,
++                matched_rules: Arc::new(matched_rules.to_vec()),
+                 qname_hash: fast_hash_str(qname),
+                 qtype: u16::from(qtype),
+                 qclass: u16::from(qclass),
+@@ -250,6 +252,10 @@ impl Engine {
+             if !entry.is_valid() {
+                 self.rule_cache.remove(&rule_hash);
+             } else if entry.matches(&pipeline.id, qname, qtype, qclass, client_ip, include_ip) {
++                for rule_name in entry.matched_rules.iter() {
++                    self.panel_metrics
++                        .record_rule_match(&pipeline.id, rule_name, "request");
++                }
+                 return (*entry.decision).clone();
+             }
+         }
+@@ -313,6 +319,7 @@ impl Engine {
+             geosite_manager: Some(&self.geosite_manager),
+         };
+ 
++        let mut matched_rule_names = SmallVec::<[Arc<str>; 4]>::new();
+         'rules: for idx in candidate_indices {
+             let rule = match pipeline.rules.get(idx) {
+                 Some(r) => r,
+@@ -332,6 +339,9 @@ impl Engine {
+             );
+ 
+             if req_match {
++                self.panel_metrics
++                    .record_rule_match(&pipeline.id, &rule.name, "request");
++                matched_rule_names.push(rule.name.clone());
+                 // Check for multiple Forward actions using pre-computed merge result.
+                 // The merge was computed at config load time (Rule::compute_merged_forward),
+                 // eliminating per-request FxHashSet + format! + join overhead.
+@@ -359,6 +369,7 @@ impl Engine {
+                         request,
+                         d.clone(),
+                         include_ip,
++                        &matched_rule_names,
+                     );
+                     return d;
+                 }
+@@ -379,6 +390,7 @@ impl Engine {
+                                 request,
+                                 d.clone(),
+                                 include_ip,
++                                &matched_rule_names,
+                             );
+                             return d;
+                         }
+@@ -401,6 +413,7 @@ impl Engine {
+                                     request,
+                                     d.clone(),
+                                     include_ip,
++                                    &matched_rule_names,
+                                 );
+                                 return d;
+                             }
+@@ -414,6 +427,7 @@ impl Engine {
+                                 request,
+                                 d.clone(),
+                                 include_ip,
++                                &matched_rule_names,
+                             );
+                             return d;
+                         }
+@@ -427,6 +441,7 @@ impl Engine {
+                                 request,
+                                 d.clone(),
+                                 include_ip,
++                                &matched_rule_names,
+                             );
+                             return d;
+                         }
+@@ -451,6 +466,7 @@ impl Engine {
+                                 request,
+                                 d.clone(),
+                                 include_ip,
++                                &matched_rule_names,
+                             );
+                             return d;
+                         }
+@@ -465,6 +481,7 @@ impl Engine {
+                                 request,
+                                 d.clone(),
+                                 include_ip,
++                                &matched_rule_names,
+                             );
+                             return d;
+                         }
+@@ -502,6 +519,7 @@ impl Engine {
+                                 request,
+                                 d.clone(),
+                                 include_ip,
++                                &matched_rule_names,
+                             );
+                             return d;
+                         }
+@@ -528,6 +546,7 @@ impl Engine {
+                                     request,
+                                     d.clone(),
+                                     include_ip,
++                                    &matched_rule_names,
+                                 );
+                                 return d;
+                             }
+@@ -541,6 +560,7 @@ impl Engine {
+                                 request,
+                                 d.clone(),
+                                 include_ip,
++                                &matched_rule_names,
+                             );
+                             return d;
+                         }
+@@ -575,6 +595,7 @@ impl Engine {
+             request,
+             d.clone(),
+             include_ip,
++            &matched_rule_names,
+         );
+         d
+     }
+diff --git a/src/engine/rules.rs b/src/engine/rules.rs
+index 9b49ee6..4243d66 100644
+--- a/src/engine/rules.rs
++++ b/src/engine/rules.rs
+@@ -108,6 +108,7 @@ pub fn calculate_rule_hash(
+ #[derive(Clone)]
+ pub struct RuleCacheEntry {
+     pub pipeline_id: Arc<str>,
++    pub matched_rules: Arc<Vec<Arc<str>>>,
+     pub qname_hash: u64,
+     pub qtype: u16,
+     pub qclass: u16,
+@@ -129,6 +130,7 @@ impl RuleCacheEntry {
+     ) -> Self {
+         Self {
+             pipeline_id,
++            matched_rules: Arc::new(Vec::new()),
+             qname_hash: fast_hash_str(qname),
+             qtype: u16::from(qtype),
+             qclass: u16::from(qclass),
+@@ -323,6 +325,13 @@ pub(crate) async fn apply_response_actions(
+                             )
+                         },
+                     );
++                    if resp_match {
++                        ctx.engine.panel_metrics.record_rule_match(
++                            ctx.pipeline_id,
++                            ctx.rule_name,
++                            "response",
++                        );
++                    }
+                     return Ok(ResponseActionResult::Upstream {
+                         ctx: resp_ctx,
+                         resp_match,
+@@ -480,6 +489,11 @@ pub(crate) async fn apply_response_actions(
+                 )
+             },
+         );
++        if resp_match {
++            ctx.engine
++                .panel_metrics
++                .record_rule_match(ctx.pipeline_id, ctx.rule_name, "response");
++        }
+         return Ok(ResponseActionResult::Upstream {
+             ctx: resp_ctx,
+             resp_match,
+@@ -920,6 +934,14 @@ pub(crate) async fn process_response_jump(
+                             )
+                         }; // guards are dropped here / 锁在此处释放
+ 
++                        if resp_match_ok {
++                            engine.panel_metrics.record_rule_match(
++                                &pipeline_id,
++                                &rule_name,
++                                "response",
++                            );
++                        }
++
+                         let actions_to_run = if !response_actions_on_match.is_empty()
+                             || !response_actions_on_miss.is_empty()
+                         {
+diff --git a/src/engine/upstream.rs b/src/engine/upstream.rs
+index 64c6ac0..3d997f4 100644
+--- a/src/engine/upstream.rs
++++ b/src/engine/upstream.rs
+@@ -69,6 +69,17 @@ fn parse_upstream_addr(addr: &str, default_transport: Transport) -> (&str, Trans
+     }
+ }
+ 
++fn transport_label(transport: Transport) -> &'static str {
++    match transport {
++        Transport::Udp => "udp",
++        Transport::Tcp => "tcp",
++        Transport::TcpUdp => "tcp_udp",
++        Transport::Doh => "doh",
++        Transport::Dot => "dot",
++        Transport::Doq => "doq",
++    }
++}
++
+ /// Hedge 超时除数：第一次尝试使用 1/N 的时间，为 TCP fallback 预留时间 / Hedge timeout divisor: first attempt uses 1/N of the budget to reserve time for TCP fallback
+ const HEDGE_TIMEOUT_DIVISOR: u32 = 3;
+ 
+@@ -264,6 +275,10 @@ pub async fn forward_upstream(
+ 
+         // 解析地址中的协议前缀 / Parse protocol prefix from address
+         let (addr, transport_for_addr) = parse_upstream_addr(up, default_transport);
++        let configured_transport = transport_label(transport_for_addr);
++        engine
++            .panel_metrics
++            .record_upstream_attempt(addr, configured_transport);
+ 
+         let start = std::time::Instant::now();
+         let (res, proto): (anyhow::Result<Bytes>, &str) = match transport_for_addr {
+@@ -302,6 +317,9 @@ pub async fn forward_upstream(
+ 
+         match res {
+             Ok(ref bytes) => {
++                engine
++                    .panel_metrics
++                    .record_upstream_result(addr, configured_transport, "success");
+                 // 记录成功指标 / Record success metrics
+                 // Increment upstream metrics - 原子操作
+                 engine
+@@ -321,6 +339,9 @@ pub async fn forward_upstream(
+                 return Ok((bytes.clone(), upstream_with_proto));
+             }
+             Err(err) => {
++                engine
++                    .panel_metrics
++                    .record_upstream_result(addr, configured_transport, "error");
+                 // 失败时不构造 prefix，只 warn
+                 tracing::warn!(upstream=%up, error=%err, elapsed_ns = dur.as_nanos() as u64, "single upstream call failed");
+                 return Err(anyhow::Error::new(UpstreamFailure::new(err)));
+@@ -346,6 +367,10 @@ pub async fn forward_upstream(
+     for up in upstreams {
+         // 解析地址中的协议前缀 / Parse protocol prefix from address
+         let (addr, transport_for_task) = parse_upstream_addr(&up, default_transport);
++        let configured_transport = transport_label(transport_for_task);
++        engine
++            .panel_metrics
++            .record_upstream_attempt(addr, configured_transport);
+ 
+         let engine = engine.clone();
+         let packet = packet_owned.clone();
+@@ -401,14 +426,20 @@ pub async fn forward_upstream(
+             // 注意：对于 TcpUdp，计时包含两个任务的 spawn/abort 开销
+             let upstream_with_proto = format!("{}:{}", proto, addr_owned);
+             let dur = start.elapsed();
+-            (upstream_with_proto, res, dur)
++            (
++                upstream_with_proto,
++                addr_owned,
++                configured_transport,
++                res,
++                dur,
++            )
+         });
+     }
+ 
+     // 等待第一个成功响应 / Wait for first successful response
+     while let Some(result) = tasks.join_next().await {
+         match result {
+-            Ok((up_proto, res, dur)) => {
++            Ok((up_proto, upstream_addr, configured_transport, res, dur)) => {
+                 match res {
+                     Ok(bytes) => {
+                         // 快速解析响应码 / Quick parse response code
+@@ -424,6 +455,11 @@ pub async fn forward_upstream(
+                             };
+ 
+                         if should_accept {
++                            engine.panel_metrics.record_upstream_result(
++                                &upstream_addr,
++                                configured_transport,
++                                "success",
++                            );
+                             engine
+                                 .metrics_upstream_calls
+                                 .fetch_add(1, Ordering::Relaxed);
+@@ -441,8 +477,18 @@ pub async fn forward_upstream(
+ 
+                             return Ok((bytes, up_proto));
+                         }
++                        engine.panel_metrics.record_upstream_result(
++                            &upstream_addr,
++                            configured_transport,
++                            "rejected",
++                        );
+                     }
+                     Err(err) => {
++                        engine.panel_metrics.record_upstream_result(
++                            &upstream_addr,
++                            configured_transport,
++                            "error",
++                        );
+                         tracing::warn!(upstream=%up_proto, error=%err, elapsed_ns = dur.as_nanos() as u64, "upstream call failed, waiting for others");
+                         last_err = Some(err);
+                     }
+diff --git a/src/lib.rs b/src/lib.rs
+index f4722e2..1f8e8bd 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -6,6 +6,7 @@ pub mod engine;
+ pub mod error_utils;
+ pub mod lock;
+ pub mod matcher;
++pub mod panel;
+ pub mod proto_utils;
+ pub mod socket_utils;
+ pub mod watcher;
+diff --git a/src/main.rs b/src/main.rs
+index 93bae8d..19f4777 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -38,6 +38,9 @@ enum Commands {
+         /// UDP worker 数量（默认 CPU 核心数） / Number of UDP workers (defaults to CPU core count)
+         #[arg(long = "udp-workers", default_value_t = 0)]
+         udp_workers_count: usize,
++        /// 本机管理 Socket；不设置时禁用增强管理接口。 / Local panel control socket; disabled when omitted.
++        #[arg(long = "admin-socket")]
++        admin_socket: Option<PathBuf>,
+     },
+     /// Convert GeoIP .dat to MMDB format / 转换 GeoIP .dat 为 MMDB 格式
+     ConvertGeoIp {
+@@ -89,7 +92,17 @@ async fn main() -> anyhow::Result<()> {
+             listener_label,
+             debug,
+             udp_workers_count,
+-        }) => run_dns_server(config, listener_label, debug, udp_workers_count).await,
++            admin_socket,
++        }) => {
++            run_dns_server(
++                config,
++                listener_label,
++                debug,
++                udp_workers_count,
++                admin_socket,
++            )
++            .await
++        }
+         None => {
+             // No subcommand provided - run DNS server with defaults
+             run_dns_server(
+@@ -97,6 +110,7 @@ async fn main() -> anyhow::Result<()> {
+                 "default".to_string(),
+                 false,
+                 0,
++                None,
+             )
+             .await
+         }
+@@ -110,6 +124,7 @@ async fn run_dns_server(
+     listener_label: String,
+     debug: bool,
+     udp_workers_count: usize,
++    admin_socket: Option<PathBuf>,
+ ) -> anyhow::Result<()> {
+     // Run DNS server
+     init_tracing(debug);
+@@ -155,6 +170,10 @@ async fn run_dns_server(
+         };
+ 
+     let engine = Engine::new(cfg, listener_label.clone()).context("initialize DNS engine")?;
++    engine
++        .panel_metrics
++        .record_initial_config(&config)
++        .context("record initial panel config state")?;
+ 
+     watcher::spawn(config.clone(), engine.clone());
+ 
+@@ -171,6 +190,24 @@ async fn run_dns_server(
+ 
+     let mut all_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+ 
++    #[cfg(unix)]
++    if let Some(path) = admin_socket {
++        let engine = engine.clone();
++        all_handles.push(tokio::spawn(async move {
++            if let Err(err) = kixdns::panel::serve_admin(path, engine).await {
++                error!(target = "panel", error = %err, "panel control socket exited");
++            }
++        }));
++    }
++
++    #[cfg(not(unix))]
++    if admin_socket.is_some() {
++        warn!(
++            target = "panel",
++            "admin-socket is not supported on this platform"
++        );
++    }
++
+     #[cfg(unix)]
+     {
+         // ✅ OpenBSD 兼容性方案：双 socket（IPv4 + IPv6）+ 零拷贝 recv_buf_from
+diff --git a/src/panel.rs b/src/panel.rs
+new file mode 100644
+index 0000000..563823a
+--- /dev/null
++++ b/src/panel.rs
+@@ -0,0 +1,516 @@
++use std::path::{Path, PathBuf};
++use std::sync::Arc;
++use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
++use std::time::{SystemTime, UNIX_EPOCH};
++
++use anyhow::Context;
++#[cfg(unix)]
++use bytes::Bytes;
++use dashmap::DashMap;
++#[cfg(unix)]
++use http_body_util::Full;
++#[cfg(unix)]
++use hyper::body::Incoming;
++#[cfg(unix)]
++use hyper::header::{CACHE_CONTROL, CONTENT_TYPE, HeaderValue};
++#[cfg(unix)]
++use hyper::service::service_fn;
++#[cfg(unix)]
++use hyper::{Method, Request, Response, StatusCode};
++#[cfg(unix)]
++use hyper_util::rt::TokioIo;
++use parking_lot::RwLock;
++#[cfg(unix)]
++use serde_json::json;
++use sha2::{Digest, Sha256};
++
++use crate::engine::Engine;
++
++#[cfg(unix)]
++const PROTOCOL_VERSION: u8 = 1;
++const MAX_ERROR_LENGTH: usize = 2_048;
++
++#[derive(Clone, Copy)]
++pub enum CacheHitKind {
++    Fresh,
++    Stale,
++}
++
++#[derive(Clone, Default)]
++struct ActiveConfig {
++    generation: u64,
++    sha256: String,
++    loaded_at_unix: u64,
++    last_reload_success: bool,
++    last_reload_error: Option<String>,
++}
++
++pub struct PanelMetrics {
++    #[cfg_attr(not(unix), allow(dead_code))]
++    started_at_unix: u64,
++    requests_total: AtomicU64,
++    requests_inflight: Arc<AtomicUsize>,
++    cache_lookups_total: AtomicU64,
++    cache_hits_fresh: AtomicU64,
++    cache_hits_stale: AtomicU64,
++    pipeline_hits: DashMap<Arc<str>, AtomicU64>,
++    rule_matches: DashMap<Arc<str>, AtomicU64>,
++    upstream_attempts: DashMap<Arc<str>, AtomicU64>,
++    upstream_results: DashMap<Arc<str>, AtomicU64>,
++    reload_success: AtomicU64,
++    reload_failure: AtomicU64,
++    active_config: RwLock<ActiveConfig>,
++}
++
++impl Default for PanelMetrics {
++    fn default() -> Self {
++        Self {
++            started_at_unix: unix_timestamp(),
++            requests_total: AtomicU64::new(0),
++            requests_inflight: Arc::new(AtomicUsize::new(0)),
++            cache_lookups_total: AtomicU64::new(0),
++            cache_hits_fresh: AtomicU64::new(0),
++            cache_hits_stale: AtomicU64::new(0),
++            pipeline_hits: DashMap::new(),
++            rule_matches: DashMap::new(),
++            upstream_attempts: DashMap::new(),
++            upstream_results: DashMap::new(),
++            reload_success: AtomicU64::new(0),
++            reload_failure: AtomicU64::new(0),
++            active_config: RwLock::new(ActiveConfig::default()),
++        }
++    }
++}
++
++impl PanelMetrics {
++    #[inline]
++    pub fn record_request(&self) {
++        self.requests_total.fetch_add(1, Ordering::Relaxed);
++    }
++
++    #[inline]
++    pub fn begin_request(self: &Arc<Self>) -> RequestGuard {
++        self.requests_inflight.fetch_add(1, Ordering::Relaxed);
++        RequestGuard {
++            inflight: Arc::clone(&self.requests_inflight),
++        }
++    }
++
++    #[inline]
++    pub fn record_cache_lookup(&self) {
++        self.cache_lookups_total.fetch_add(1, Ordering::Relaxed);
++    }
++
++    #[inline]
++    pub fn record_cache_hit(&self, kind: CacheHitKind) {
++        let counter = match kind {
++            CacheHitKind::Fresh => &self.cache_hits_fresh,
++            CacheHitKind::Stale => &self.cache_hits_stale,
++        };
++        counter.fetch_add(1, Ordering::Relaxed);
++    }
++
++    #[inline]
++    pub fn record_pipeline_hit(&self, pipeline: &str) {
++        increment(&self.pipeline_hits, Arc::from(pipeline));
++    }
++
++    #[inline]
++    pub fn record_rule_match(&self, pipeline: &str, rule: &str, phase: &str) {
++        increment(
++            &self.rule_matches,
++            Arc::from(format!("{pipeline}\0{rule}\0{phase}")),
++        );
++    }
++
++    #[inline]
++    pub fn record_upstream_attempt(&self, upstream: &str, transport: &str) {
++        increment(
++            &self.upstream_attempts,
++            Arc::from(format!("{upstream}\0{transport}")),
++        );
++    }
++
++    #[inline]
++    pub fn record_upstream_result(&self, upstream: &str, transport: &str, result: &str) {
++        increment(
++            &self.upstream_results,
++            Arc::from(format!("{upstream}\0{transport}\0{result}")),
++        );
++    }
++
++    pub fn record_initial_config(&self, path: &Path) -> anyhow::Result<()> {
++        let sha256 = sha256_file(path)?;
++        let mut active = self.active_config.write();
++        active.generation = 1;
++        active.sha256 = sha256;
++        active.loaded_at_unix = unix_timestamp();
++        active.last_reload_success = true;
++        active.last_reload_error = None;
++        Ok(())
++    }
++
++    pub fn record_reload_success(&self, path: &Path) -> anyhow::Result<()> {
++        let sha256 = sha256_file(path)?;
++        let mut active = self.active_config.write();
++        active.generation = active.generation.saturating_add(1).max(1);
++        active.sha256 = sha256;
++        active.loaded_at_unix = unix_timestamp();
++        active.last_reload_success = true;
++        active.last_reload_error = None;
++        self.reload_success.fetch_add(1, Ordering::Relaxed);
++        Ok(())
++    }
++
++    pub fn record_reload_failure(&self, error: &str) {
++        let mut active = self.active_config.write();
++        active.last_reload_success = false;
++        active.last_reload_error = Some(truncate(error, MAX_ERROR_LENGTH));
++        self.reload_failure.fetch_add(1, Ordering::Relaxed);
++    }
++
++    #[cfg(unix)]
++    fn config_json(&self) -> serde_json::Value {
++        let active = self.active_config.read().clone();
++        json!({
++            "protocol_version": PROTOCOL_VERSION,
++            "generation": active.generation,
++            "sha256": active.sha256,
++            "loaded_at_unix": active.loaded_at_unix,
++            "last_reload": {
++                "success": active.last_reload_success,
++                "error": active.last_reload_error,
++            }
++        })
++    }
++
++    #[cfg(unix)]
++    fn health_json(&self) -> serde_json::Value {
++        let active = self.active_config.read();
++        json!({
++            "protocol_version": PROTOCOL_VERSION,
++            "status": "ok",
++            "pid": std::process::id(),
++            "version": env!("CARGO_PKG_VERSION"),
++            "upstream_commit": option_env!("KIXDNS_UPSTREAM_COMMIT").unwrap_or("unknown"),
++            "patchset": option_env!("KIXDNS_PANEL_PATCHSET").unwrap_or("unknown"),
++            "started_at_unix": self.started_at_unix,
++            "uptime_seconds": unix_timestamp().saturating_sub(self.started_at_unix),
++            "config_generation": active.generation,
++        })
++    }
++
++    #[cfg(unix)]
++    fn render_prometheus(&self, engine: &Engine) -> String {
++        let mut output = String::with_capacity(8_192);
++        metric(
++            &mut output,
++            "kixdns_requests_total",
++            self.requests_total.load(Ordering::Relaxed),
++        );
++        metric(
++            &mut output,
++            "kixdns_requests_inflight",
++            self.requests_inflight.load(Ordering::Relaxed),
++        );
++        metric(
++            &mut output,
++            "kixdns_cache_lookups_total",
++            self.cache_lookups_total.load(Ordering::Relaxed),
++        );
++        labeled_metric(
++            &mut output,
++            "kixdns_cache_hits_total",
++            &[("kind", "fresh")],
++            self.cache_hits_fresh.load(Ordering::Relaxed),
++        );
++        labeled_metric(
++            &mut output,
++            "kixdns_cache_hits_total",
++            &[("kind", "stale")],
++            self.cache_hits_stale.load(Ordering::Relaxed),
++        );
++        metric(
++            &mut output,
++            "kixdns_cache_entries",
++            engine.cache.entry_count(),
++        );
++        append_map(
++            &mut output,
++            "kixdns_pipeline_hits_total",
++            &self.pipeline_hits,
++            &["pipeline"],
++        );
++        append_map(
++            &mut output,
++            "kixdns_rule_matches_total",
++            &self.rule_matches,
++            &["pipeline", "rule", "phase"],
++        );
++        append_map(
++            &mut output,
++            "kixdns_upstream_attempts_total",
++            &self.upstream_attempts,
++            &["upstream", "transport"],
++        );
++        append_map(
++            &mut output,
++            "kixdns_upstream_results_total",
++            &self.upstream_results,
++            &["upstream", "transport", "result"],
++        );
++        labeled_metric(
++            &mut output,
++            "kixdns_config_reload_total",
++            &[("result", "success")],
++            self.reload_success.load(Ordering::Relaxed),
++        );
++        labeled_metric(
++            &mut output,
++            "kixdns_config_reload_total",
++            &[("result", "failure")],
++            self.reload_failure.load(Ordering::Relaxed),
++        );
++        metric(
++            &mut output,
++            "kixdns_config_generation",
++            self.active_config.read().generation,
++        );
++        output
++    }
++}
++
++pub struct RequestGuard {
++    inflight: Arc<AtomicUsize>,
++}
++
++impl Drop for RequestGuard {
++    fn drop(&mut self) {
++        self.inflight.fetch_sub(1, Ordering::Relaxed);
++    }
++}
++
++#[cfg(unix)]
++pub async fn serve_admin(path: PathBuf, engine: Engine) -> anyhow::Result<()> {
++    use std::os::unix::fs::{FileTypeExt, PermissionsExt};
++    use tokio::net::UnixListener;
++
++    if let Ok(metadata) = std::fs::symlink_metadata(&path) {
++        if !metadata.file_type().is_socket() {
++            anyhow::bail!("管理 Socket 路径已存在且不是 Socket：{}", path.display());
++        }
++        std::fs::remove_file(&path).context("删除遗留管理 Socket 失败")?;
++    }
++    if let Some(parent) = path.parent() {
++        std::fs::create_dir_all(parent).context("创建管理 Socket 目录失败")?;
++    }
++
++    let listener = UnixListener::bind(&path).context("绑定管理 Socket 失败")?;
++    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o660))
++        .context("设置管理 Socket 权限失败")?;
++    tracing::info!(target = "panel", path = %path.display(), "panel control socket started");
++
++    loop {
++        let (stream, _) = listener.accept().await?;
++        let engine = engine.clone();
++        tokio::spawn(async move {
++            let io = TokioIo::new(stream);
++            if let Err(error) = hyper::server::conn::http1::Builder::new()
++                .serve_connection(
++                    io,
++                    service_fn(move |request| handle_request(request, engine.clone())),
++                )
++                .await
++            {
++                tracing::debug!(target = "panel", error = %error, "panel connection closed");
++            }
++        });
++    }
++}
++
++#[cfg(not(unix))]
++pub async fn serve_admin(_path: PathBuf, _engine: Engine) -> anyhow::Result<()> {
++    anyhow::bail!("当前平台暂不支持 Unix Socket 管理接口")
++}
++
++#[cfg(unix)]
++async fn handle_request(
++    request: Request<Incoming>,
++    engine: Engine,
++) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
++    let response = match (request.method(), request.uri().path()) {
++        (&Method::GET, "/v1/health") => {
++            json_response(StatusCode::OK, engine.panel_metrics.health_json())
++        }
++        (&Method::GET, "/v1/config/active") => {
++            json_response(StatusCode::OK, engine.panel_metrics.config_json())
++        }
++        (&Method::GET, "/v1/metrics") => text_response(
++            StatusCode::OK,
++            "text/plain; version=0.0.4; charset=utf-8",
++            engine.panel_metrics.render_prometheus(&engine),
++        ),
++        (&Method::POST, "/v1/cache/flush") => {
++            let response_entries_before = engine.cache.entry_count();
++            let rule_entries_before = engine.rule_cache.entry_count();
++            engine.cache.invalidate_all();
++            engine.rule_cache.invalidate_all();
++            engine.cache.run_pending_tasks();
++            engine.rule_cache.run_pending_tasks();
++            json_response(
++                StatusCode::OK,
++                json!({
++                    "protocol_version": PROTOCOL_VERSION,
++                    "response_entries_before": response_entries_before,
++                    "response_entries_after": engine.cache.entry_count(),
++                    "rule_entries_before": rule_entries_before,
++                    "rule_entries_after": engine.rule_cache.entry_count(),
++                }),
++            )
++        }
++        (&Method::GET | &Method::POST, _) => {
++            json_response(StatusCode::NOT_FOUND, error_json("not_found", "端点不存在"))
++        }
++        _ => json_response(
++            StatusCode::METHOD_NOT_ALLOWED,
++            error_json("method_not_allowed", "请求方法不受支持"),
++        ),
++    };
++    Ok(response)
++}
++
++#[cfg(unix)]
++fn json_response(status: StatusCode, value: serde_json::Value) -> Response<Full<Bytes>> {
++    text_response(status, "application/json; charset=utf-8", value.to_string())
++}
++
++#[cfg(unix)]
++fn text_response(
++    status: StatusCode,
++    content_type: &'static str,
++    body: String,
++) -> Response<Full<Bytes>> {
++    let mut response = Response::new(Full::new(Bytes::from(body)));
++    *response.status_mut() = status;
++    response
++        .headers_mut()
++        .insert(CONTENT_TYPE, HeaderValue::from_static(content_type));
++    response
++        .headers_mut()
++        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
++    response.headers_mut().insert(
++        "x-content-type-options",
++        HeaderValue::from_static("nosniff"),
++    );
++    response
++}
++
++#[cfg(unix)]
++fn error_json(code: &str, message: &str) -> serde_json::Value {
++    json!({ "protocol_version": PROTOCOL_VERSION, "error": { "code": code, "message": message } })
++}
++
++fn increment(map: &DashMap<Arc<str>, AtomicU64>, key: Arc<str>) {
++    map.entry(key)
++        .or_insert_with(|| AtomicU64::new(0))
++        .fetch_add(1, Ordering::Relaxed);
++}
++
++#[cfg(unix)]
++fn append_map(
++    output: &mut String,
++    name: &str,
++    map: &DashMap<Arc<str>, AtomicU64>,
++    labels: &[&str],
++) {
++    let mut rows = map
++        .iter()
++        .map(|entry| {
++            (
++                entry.key().to_string(),
++                entry.value().load(Ordering::Relaxed),
++            )
++        })
++        .collect::<Vec<_>>();
++    rows.sort_by(|left, right| left.0.cmp(&right.0));
++    for (key, value) in rows {
++        let values = key.split('\0').collect::<Vec<_>>();
++        if values.len() != labels.len() {
++            continue;
++        }
++        let pairs = labels
++            .iter()
++            .zip(values)
++            .map(|(label, value)| (*label, value))
++            .collect::<Vec<_>>();
++        labeled_metric(output, name, &pairs, value);
++    }
++}
++
++#[cfg(unix)]
++fn metric(output: &mut String, name: &str, value: impl std::fmt::Display) {
++    use std::fmt::Write;
++    let _ = writeln!(output, "{name} {value}");
++}
++
++#[cfg(unix)]
++fn labeled_metric(
++    output: &mut String,
++    name: &str,
++    labels: &[(&str, &str)],
++    value: impl std::fmt::Display,
++) {
++    use std::fmt::Write;
++    let _ = write!(output, "{name}{{");
++    for (index, (label, label_value)) in labels.iter().enumerate() {
++        if index > 0 {
++            output.push(',');
++        }
++        let _ = write!(output, "{label}=\"{}\"", escape_label(label_value));
++    }
++    let _ = writeln!(output, "}} {value}");
++}
++
++#[cfg(unix)]
++fn escape_label(value: &str) -> String {
++    value
++        .replace('\\', "\\\\")
++        .replace('\n', "\\n")
++        .replace('"', "\\\"")
++}
++
++fn sha256_file(path: &Path) -> anyhow::Result<String> {
++    let bytes =
++        std::fs::read(path).with_context(|| format!("读取配置文件失败：{}", path.display()))?;
++    Ok(format!("{:x}", Sha256::digest(bytes)))
++}
++
++fn truncate(value: &str, max_length: usize) -> String {
++    value.chars().take(max_length).collect()
++}
++
++fn unix_timestamp() -> u64 {
++    SystemTime::now()
++        .duration_since(UNIX_EPOCH)
++        .map_or(0, |duration| duration.as_secs())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::PanelMetrics;
++
++    #[cfg(unix)]
++    #[test]
++    fn escapes_prometheus_labels() {
++        assert_eq!(super::escape_label("a\\b\n\"c"), "a\\\\b\\n\\\"c");
++    }
++
++    #[test]
++    fn records_bounded_metric_keys() {
++        let metrics = PanelMetrics::default();
++        metrics.record_pipeline_hit("default");
++        metrics.record_rule_match("default", "allow", "request");
++        assert_eq!(metrics.pipeline_hits.len(), 1);
++        assert_eq!(metrics.rule_matches.len(), 1);
++    }
++}
+diff --git a/src/watcher.rs b/src/watcher.rs
+index 8ff67c6..9267114 100644
+--- a/src/watcher.rs
++++ b/src/watcher.rs
+@@ -60,12 +60,17 @@ fn run_watcher(path: PathBuf, engine: Engine) -> notify::Result<()> {
+                     match config::load_config(&path).and_then(RuntimePipelineConfig::from_config) {
+                         Ok(new_cfg) => {
+                             engine.reload(new_cfg);
++                            if let Err(err) = engine.panel_metrics.record_reload_success(&path) {
++                                engine.panel_metrics.record_reload_failure(&err.to_string());
++                                warn!(target = "watcher", path = %path.display(), error = %err, "record config reload state failed");
++                            }
+                             info!(target = "watcher", path = %path.display(), "config reloaded");
+                             break;
+                         }
+                         Err(err) => {
+                             retries -= 1;
+                             if retries == 0 {
++                                engine.panel_metrics.record_reload_failure(&err.to_string());
+                                 warn!(target = "watcher", path = %path.display(), error = %err, "config reload failed, keeping old config");
+                             } else {
+                                 // Wait a bit and retry / 稍等后重试

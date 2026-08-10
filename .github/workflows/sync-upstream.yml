@@ -145,6 +145,7 @@ jobs:
           validation_report="$RUNNER_TEMP/kixdns-compatibility-report.md"
           set +e
           (
+            set -euo pipefail
             cargo xtask prepare --lock "$LOCK_FILE"
             upstream_dir=".upstream/kixdns-$(jq -r .source "$LOCK_FILE")-$(jq -r .commit "$LOCK_FILE" | cut -c1-12)-p$(jq -r .patchset "$LOCK_FILE")"
             cd "$upstream_dir"
