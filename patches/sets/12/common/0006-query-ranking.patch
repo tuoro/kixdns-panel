@@ -1,0 +1,633 @@
+diff --git a/src/config.rs b/src/config.rs
+index 70b6ae43d79b96f2b05305e50553f34476416943..2410c7be24a9f1c35bfaab252a1703ae6dc53f0f 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -236,6 +236,12 @@ pub struct GlobalSettings {
+     /// UDP 失败时是否自动 fallback 到 TCP（默认 true）。 / UDP failure automatically fallbacks to TCP (default true)
+     #[serde(default = "default_enable_tcp_fallback")]
+     pub enable_tcp_fallback: bool,
++    /// 是否记录面板查询排行（默认 false）。/ Enable bounded query rankings for the panel (default false).
++    #[serde(default)]
++    pub statistics_enabled: bool,
++    /// 是否将客户端 IP 截断为网段后再统计（默认 false）。/ Truncate client IPs to a subnet in statistics (default false).
++    #[serde(default)]
++    pub statistics_anonymize_client_ip: bool,
+ }
+ 
+ impl Default for GlobalSettings {
+@@ -287,6 +293,8 @@ impl Default for GlobalSettings {
+             geoip_filter_countries: Vec::new(),
+             geosite_data_paths: Vec::new(),
+             enable_tcp_fallback: default_enable_tcp_fallback(),
++            statistics_enabled: false,
++            statistics_anonymize_client_ip: false,
+         }
+     }
+ }
+diff --git a/src/engine/execution.rs b/src/engine/execution.rs
+index 768cff154fa487ddbfa850619a104d3394b3e9b1..2ab0d0399b959400580aa7ce90bf12f01da12da6 100644
+--- a/src/engine/execution.rs
++++ b/src/engine/execution.rs
+@@ -297,6 +297,12 @@ impl Engine {
+         // Use unchecked conversion for performance (qname_bytes is validated UTF-8)
+         // 使用未检查转换以提高性能（qname_bytes 是已验证的 UTF-8）
+         let qname_str = q.qname_str_unchecked();
++        self.panel_metrics.record_query(
++            qname_str,
++            peer.ip(),
++            cfg.settings.statistics_enabled,
++            cfg.settings.statistics_anonymize_client_ip,
++        );
+         let (pipeline_opt, pipeline_id) = select_pipeline(
+             cfg,
+             &PipelineSelectionContext {
+@@ -654,6 +660,12 @@ impl Engine {
+ 
+         if !skip_cache && !from_fast_path {
+             self.panel_metrics.record_request();
++            self.panel_metrics.record_query(
++                &qname_cow,
++                peer.ip(),
++                cfg.settings.statistics_enabled,
++                cfg.settings.statistics_anonymize_client_ip,
++            );
+             self.panel_metrics.record_pipeline_hit(&pipeline_id);
+             self.panel_metrics.record_cache_lookup();
+         }
+diff --git a/src/panel.rs b/src/panel.rs
+index 3dfef9a61a40ba621d9c6e30203c01b60bd1f73e..ec249603a0fa3909b22a456b4fd89dea39f1242a 100644
+--- a/src/panel.rs
++++ b/src/panel.rs
+@@ -1,6 +1,8 @@
++use std::collections::HashMap;
++use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+ use std::path::PathBuf;
+ use std::sync::Arc;
+-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
++use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
+ use std::time::{SystemTime, UNIX_EPOCH};
+ 
+ #[cfg(unix)]
+@@ -8,6 +10,8 @@ use anyhow::Context;
+ #[cfg(unix)]
+ use bytes::Bytes;
+ use dashmap::DashMap;
++use dashmap::mapref::entry::Entry;
++use dashmap::try_result::TryResult;
+ #[cfg(unix)]
+ use http_body_util::{BodyExt, Full, Limited};
+ #[cfg(unix)]
+@@ -33,6 +37,14 @@ const MAX_METRIC_SERIES_PER_MAP: usize = 1_024;
+ const MAX_METRIC_KEY_BYTES: usize = 512;
+ #[cfg(unix)]
+ const MAX_CONFIG_BODY: usize = 4 * 1024 * 1024;
++const QUERY_STATS_BUCKET_SECONDS: u64 = 3_600;
++const QUERY_STATS_BUCKETS: usize = 24;
++const QUERY_STATS_SHARDS: usize = 16;
++const QUERY_STATS_DOMAIN_CAP: usize = 4_096;
++const QUERY_STATS_CLIENT_CAP: usize = 1_024;
++const QUERY_STATS_CONFIGURED: u8 = 0b100;
++const QUERY_STATS_ENABLED: u8 = 0b001;
++const QUERY_STATS_ANONYMIZED: u8 = 0b010;
+ 
+ #[derive(Clone, Copy)]
+ pub enum CacheHitKind {
+@@ -49,6 +61,329 @@ struct ActiveConfig {
+     last_reload_error: Option<String>,
+ }
+ 
++#[derive(Clone, Copy, Eq, Hash, PartialEq)]
++enum ClientKey {
++    V4(u32, bool),
++    V6(u64, u64, bool),
++}
++
++impl ClientKey {
++    fn new(address: IpAddr, anonymized: bool) -> Self {
++        match address {
++            IpAddr::V4(address) => {
++                let mut value = u32::from(address);
++                if anonymized {
++                    value &= u32::MAX << 8;
++                }
++                Self::V4(value, anonymized)
++            }
++            IpAddr::V6(address) => {
++                let value = u128::from(address);
++                let high = (value >> 64) as u64;
++                let low = if anonymized { 0 } else { value as u64 };
++                Self::V6(high, low, anonymized)
++            }
++        }
++    }
++
++    #[cfg_attr(not(unix), allow(dead_code))]
++    fn label(self) -> String {
++        match self {
++            Self::V4(value, anonymized) => {
++                let address = Ipv4Addr::from(value).to_string();
++                if anonymized {
++                    format!("{address}/24")
++                } else {
++                    address
++                }
++            }
++            Self::V6(high, low, anonymized) => {
++                let address = Ipv6Addr::from(((high as u128) << 64) | low as u128).to_string();
++                if anonymized {
++                    format!("{address}/64")
++                } else {
++                    address
++                }
++            }
++        }
++    }
++}
++
++struct QueryStatsBucket {
++    epoch: AtomicU64,
++    requests: AtomicU64,
++    dropped_updates: AtomicU64,
++    domain_entries: AtomicUsize,
++    client_entries: AtomicUsize,
++    rotate_lock: Mutex<()>,
++    domains: DashMap<Arc<str>, AtomicU64>,
++    clients: DashMap<ClientKey, AtomicU64>,
++}
++
++impl QueryStatsBucket {
++    fn new() -> Self {
++        Self {
++            epoch: AtomicU64::new(0),
++            requests: AtomicU64::new(0),
++            dropped_updates: AtomicU64::new(0),
++            domain_entries: AtomicUsize::new(0),
++            client_entries: AtomicUsize::new(0),
++            rotate_lock: Mutex::new(()),
++            domains: DashMap::with_shard_amount(QUERY_STATS_SHARDS),
++            clients: DashMap::with_shard_amount(QUERY_STATS_SHARDS),
++        }
++    }
++
++    fn prepare(&self, epoch: u64) -> bool {
++        if self.epoch.load(Ordering::Acquire) == epoch {
++            return true;
++        }
++        let Some(_guard) = self.rotate_lock.try_lock() else {
++            return false;
++        };
++        if self.epoch.load(Ordering::Relaxed) != epoch {
++            self.domains.clear();
++            self.clients.clear();
++            self.requests.store(0, Ordering::Relaxed);
++            self.dropped_updates.store(0, Ordering::Relaxed);
++            self.domain_entries.store(0, Ordering::Relaxed);
++            self.client_entries.store(0, Ordering::Relaxed);
++            self.epoch.store(epoch, Ordering::Release);
++        }
++        true
++    }
++
++    fn clear(&self) {
++        let _guard = self.rotate_lock.lock();
++        self.domains.clear();
++        self.clients.clear();
++        self.requests.store(0, Ordering::Relaxed);
++        self.dropped_updates.store(0, Ordering::Relaxed);
++        self.domain_entries.store(0, Ordering::Relaxed);
++        self.client_entries.store(0, Ordering::Relaxed);
++        self.epoch.store(0, Ordering::Release);
++    }
++
++    fn record_domain(&self, domain: &str) -> bool {
++        match self.domains.try_get(domain) {
++            TryResult::Present(counter) => {
++                counter.fetch_add(1, Ordering::Relaxed);
++                return true;
++            }
++            TryResult::Locked => return false,
++            TryResult::Absent => {}
++        }
++        let Some(entry) = self.domains.try_entry(Arc::from(domain)) else {
++            return false;
++        };
++        match entry {
++            Entry::Occupied(entry) => {
++                entry.get().fetch_add(1, Ordering::Relaxed);
++                true
++            }
++            Entry::Vacant(entry) => {
++                let index = self.domain_entries.fetch_add(1, Ordering::Relaxed);
++                if index >= QUERY_STATS_DOMAIN_CAP {
++                    self.domain_entries.fetch_sub(1, Ordering::Relaxed);
++                    return false;
++                }
++                entry.insert(AtomicU64::new(1));
++                true
++            }
++        }
++    }
++
++    fn record_client(&self, client: ClientKey) -> bool {
++        match self.clients.try_get(&client) {
++            TryResult::Present(counter) => {
++                counter.fetch_add(1, Ordering::Relaxed);
++                return true;
++            }
++            TryResult::Locked => return false,
++            TryResult::Absent => {}
++        }
++        let Some(entry) = self.clients.try_entry(client) else {
++            return false;
++        };
++        match entry {
++            Entry::Occupied(entry) => {
++                entry.get().fetch_add(1, Ordering::Relaxed);
++                true
++            }
++            Entry::Vacant(entry) => {
++                let index = self.client_entries.fetch_add(1, Ordering::Relaxed);
++                if index >= QUERY_STATS_CLIENT_CAP {
++                    self.client_entries.fetch_sub(1, Ordering::Relaxed);
++                    return false;
++                }
++                entry.insert(AtomicU64::new(1));
++                true
++            }
++        }
++    }
++}
++
++struct QueryStats {
++    settings: AtomicU8,
++    settings_lock: Mutex<()>,
++    buckets: Box<[QueryStatsBucket]>,
++}
++
++impl Default for QueryStats {
++    fn default() -> Self {
++        Self {
++            settings: AtomicU8::new(0),
++            settings_lock: Mutex::new(()),
++            buckets: (0..QUERY_STATS_BUCKETS)
++                .map(|_| QueryStatsBucket::new())
++                .collect(),
++        }
++    }
++}
++
++#[cfg_attr(not(unix), allow(dead_code))]
++struct TopStat {
++    name: String,
++    count: u64,
++}
++
++#[cfg_attr(not(unix), allow(dead_code))]
++struct QueryStatsSnapshot {
++    enabled: bool,
++    anonymized_clients: bool,
++    requests_observed: u64,
++    dropped_updates: u64,
++    clients: Vec<TopStat>,
++    domains: Vec<TopStat>,
++}
++
++impl QueryStats {
++    fn configure(&self, enabled: bool, anonymized: bool) {
++        let desired = QUERY_STATS_CONFIGURED
++            | (u8::from(enabled) * QUERY_STATS_ENABLED)
++            | (u8::from(anonymized) * QUERY_STATS_ANONYMIZED);
++        if self.settings.load(Ordering::Relaxed) == desired {
++            return;
++        }
++        let _guard = self.settings_lock.lock();
++        if self.settings.load(Ordering::Relaxed) != desired {
++            self.clear();
++            self.settings.store(desired, Ordering::Release);
++        }
++    }
++
++    fn clear(&self) {
++        for bucket in &self.buckets {
++            bucket.clear();
++        }
++    }
++
++    #[inline]
++    fn record(&self, domain: &str, client: IpAddr, enabled: bool, anonymized: bool) {
++        self.configure(enabled, anonymized);
++        if !enabled {
++            return;
++        }
++        self.record_at(domain, client, anonymized, unix_timestamp());
++    }
++
++    fn record_at(&self, domain: &str, client: IpAddr, anonymized: bool, now: u64) {
++        let epoch = now - now % QUERY_STATS_BUCKET_SECONDS;
++        let index = (epoch / QUERY_STATS_BUCKET_SECONDS) as usize % QUERY_STATS_BUCKETS;
++        let bucket = &self.buckets[index];
++        if !bucket.prepare(epoch) {
++            return;
++        }
++        bucket.requests.fetch_add(1, Ordering::Relaxed);
++        let domain_recorded = bucket.record_domain(domain);
++        let client_recorded = bucket.record_client(ClientKey::new(client, anonymized));
++        if !domain_recorded || !client_recorded {
++            bucket.dropped_updates.fetch_add(1, Ordering::Relaxed);
++        }
++    }
++
++    #[cfg_attr(not(unix), allow(dead_code))]
++    fn snapshot(&self, now: u64, window_seconds: u64, limit: usize) -> QueryStatsSnapshot {
++        let settings = self.settings.load(Ordering::Acquire);
++        let enabled = settings & QUERY_STATS_ENABLED != 0;
++        let anonymized_clients = settings & QUERY_STATS_ANONYMIZED != 0;
++        if !enabled {
++            return QueryStatsSnapshot {
++                enabled,
++                anonymized_clients,
++                requests_observed: 0,
++                dropped_updates: 0,
++                clients: Vec::new(),
++                domains: Vec::new(),
++            };
++        }
++
++        let oldest = now.saturating_sub(window_seconds);
++        let mut requests_observed = 0u64;
++        let mut dropped_updates = 0u64;
++        let mut domains = HashMap::<Arc<str>, u64>::new();
++        let mut clients = HashMap::<ClientKey, u64>::new();
++        for bucket in &self.buckets {
++            let epoch = bucket.epoch.load(Ordering::Acquire);
++            if epoch == 0
++                || epoch > now
++                || epoch.saturating_add(QUERY_STATS_BUCKET_SECONDS) <= oldest
++            {
++                continue;
++            }
++            requests_observed =
++                requests_observed.saturating_add(bucket.requests.load(Ordering::Relaxed));
++            dropped_updates =
++                dropped_updates.saturating_add(bucket.dropped_updates.load(Ordering::Relaxed));
++            for entry in &bucket.domains {
++                let total = domains.entry(Arc::clone(entry.key())).or_default();
++                *total = total.saturating_add(entry.value().load(Ordering::Relaxed));
++            }
++            for entry in &bucket.clients {
++                let total = clients.entry(*entry.key()).or_default();
++                *total = total.saturating_add(entry.value().load(Ordering::Relaxed));
++            }
++        }
++
++        let mut domains = domains
++            .into_iter()
++            .map(|(name, count)| TopStat {
++                name: name.to_string(),
++                count,
++            })
++            .collect::<Vec<_>>();
++        let mut clients = clients
++            .into_iter()
++            .map(|(client, count)| TopStat {
++                name: client.label(),
++                count,
++            })
++            .collect::<Vec<_>>();
++        sort_and_truncate(&mut domains, limit);
++        sort_and_truncate(&mut clients, limit);
++
++        QueryStatsSnapshot {
++            enabled,
++            anonymized_clients,
++            requests_observed,
++            dropped_updates,
++            clients,
++            domains,
++        }
++    }
++}
++
++#[cfg_attr(not(unix), allow(dead_code))]
++fn sort_and_truncate(rows: &mut Vec<TopStat>, limit: usize) {
++    rows.sort_unstable_by(|left, right| {
++        right
++            .count
++            .cmp(&left.count)
++            .then_with(|| left.name.cmp(&right.name))
++    });
++    rows.truncate(limit);
++}
++
+ pub struct PanelMetrics {
+     #[cfg_attr(not(unix), allow(dead_code))]
+     started_at_unix: u64,
+@@ -67,6 +402,7 @@ pub struct PanelMetrics {
+     reload_failure: AtomicU64,
+     reload_sequence: AtomicU64,
+     active_config: RwLock<ActiveConfig>,
++    query_stats: QueryStats,
+ }
+ 
+ impl Default for PanelMetrics {
+@@ -88,6 +424,7 @@ impl Default for PanelMetrics {
+             reload_failure: AtomicU64::new(0),
+             reload_sequence: AtomicU64::new(0),
+             active_config: RwLock::new(ActiveConfig::default()),
++            query_stats: QueryStats::default(),
+         }
+     }
+ }
+@@ -98,6 +435,11 @@ impl PanelMetrics {
+         self.requests_total.fetch_add(1, Ordering::Relaxed);
+     }
+ 
++    #[inline]
++    pub fn record_query(&self, domain: &str, client: IpAddr, enabled: bool, anonymized: bool) {
++        self.query_stats.record(domain, client, enabled, anonymized);
++    }
++
+     #[inline]
+     pub fn begin_request(self: &Arc<Self>) -> RequestGuard {
+         self.requests_inflight.fetch_add(1, Ordering::Relaxed);
+@@ -227,9 +569,52 @@ impl PanelMetrics {
+             "started_at_unix": self.started_at_unix,
+             "uptime_seconds": unix_timestamp().saturating_sub(self.started_at_unix),
+             "config_generation": active.generation,
++            "capabilities": ["stats_top_v1"],
+         })
+     }
+ 
++    #[cfg(unix)]
++    fn stats_json(&self, engine: &Engine, window_seconds: u64, limit: usize) -> serde_json::Value {
++        let state = engine.state.load();
++        let enabled = state.pipeline.settings.statistics_enabled;
++        let anonymized = state.pipeline.settings.statistics_anonymize_client_ip;
++        self.query_stats.configure(enabled, anonymized);
++        let now = unix_timestamp();
++        let snapshot = self.query_stats.snapshot(now, window_seconds, limit);
++        let clients = snapshot
++            .clients
++            .into_iter()
++            .map(|row| json!({"name": row.name, "count": row.count}))
++            .collect::<Vec<_>>();
++        let domains = snapshot
++            .domains
++            .into_iter()
++            .map(|row| json!({"name": row.name, "count": row.count}))
++            .collect::<Vec<_>>();
++        json!({
++            "protocol_version": PROTOCOL_VERSION,
++            "enabled": snapshot.enabled,
++            "anonymized_clients": snapshot.anonymized_clients,
++            "window_seconds": window_seconds,
++            "retention_seconds": QUERY_STATS_BUCKET_SECONDS * QUERY_STATS_BUCKETS as u64,
++            "generated_at_unix": now,
++            "requests_observed": snapshot.requests_observed,
++            "dropped_updates": snapshot.dropped_updates,
++            "clients": clients,
++            "domains": domains,
++        })
++    }
++
++    #[cfg(unix)]
++    fn clear_stats(&self, engine: &Engine) {
++        let state = engine.state.load();
++        self.query_stats.configure(
++            state.pipeline.settings.statistics_enabled,
++            state.pipeline.settings.statistics_anonymize_client_ip,
++        );
++        self.query_stats.clear();
++    }
++
+     #[cfg(unix)]
+     fn render_prometheus(&self, engine: &Engine) -> String {
+         let mut output = String::with_capacity(8_192);
+@@ -385,6 +770,25 @@ async fn handle_request(
+             "text/plain; version=0.0.4; charset=utf-8",
+             engine.panel_metrics.render_prometheus(&engine),
+         ),
++        (&Method::GET, "/v1/stats/top") => match parse_stats_query(request.uri().query()) {
++            Ok((window_seconds, limit)) => json_response(
++                StatusCode::OK,
++                engine
++                    .panel_metrics
++                    .stats_json(&engine, window_seconds, limit),
++            ),
++            Err(message) => json_response(
++                StatusCode::BAD_REQUEST,
++                error_json("stats_query_invalid", message),
++            ),
++        },
++        (&Method::POST, "/v1/stats/clear") => {
++            engine.panel_metrics.clear_stats(&engine);
++            json_response(
++                StatusCode::OK,
++                json!({"protocol_version": PROTOCOL_VERSION, "cleared": true}),
++            )
++        }
+         (&Method::POST, "/v1/config/validate") => validate_config(request).await,
+         (&Method::POST, "/v1/cache/flush") => {
+             let response_entries_before = engine.cache.entry_count();
+@@ -415,6 +819,36 @@ async fn handle_request(
+     Ok(response)
+ }
+ 
++#[cfg(unix)]
++fn parse_stats_query(query: Option<&str>) -> Result<(u64, usize), &'static str> {
++    let mut window_seconds = 86_400;
++    let mut limit = 20usize;
++    for pair in query.into_iter().flat_map(|query| query.split('&')) {
++        if pair.is_empty() {
++            continue;
++        }
++        let Some((key, value)) = pair.split_once('=') else {
++            return Err("查询参数格式无效");
++        };
++        match key {
++            "window" => {
++                window_seconds = value.parse().map_err(|_| "统计窗口无效")?;
++                if !matches!(window_seconds, 3_600 | 21_600 | 86_400) {
++                    return Err("统计窗口仅支持 3600、21600 或 86400 秒");
++                }
++            }
++            "limit" => {
++                limit = value.parse().map_err(|_| "排行数量无效")?;
++                if !(1..=50).contains(&limit) {
++                    return Err("排行数量必须在 1 到 50 之间");
++                }
++            }
++            _ => return Err("包含不受支持的查询参数"),
++        }
++    }
++    Ok((window_seconds, limit))
++}
++
+ #[cfg(unix)]
+ async fn validate_config(request: Request<Incoming>) -> Response<Full<Bytes>> {
+     let body = match Limited::new(request.into_body(), MAX_CONFIG_BODY)
+@@ -571,7 +1005,9 @@ fn unix_timestamp() -> u64 {
+ 
+ #[cfg(test)]
+ mod tests {
+-    use super::{MAX_METRIC_SERIES_PER_MAP, PanelMetrics};
++    use std::net::IpAddr;
++
++    use super::{MAX_METRIC_SERIES_PER_MAP, PanelMetrics, QUERY_STATS_DOMAIN_CAP, QueryStats};
+ 
+     #[cfg(unix)]
+     #[test]
+@@ -601,4 +1037,53 @@ mod tests {
+             2
+         );
+     }
++
++    #[test]
++    fn ranks_domains_and_clients_with_anonymization() {
++        let stats = QueryStats::default();
++        stats.configure(true, true);
++        let now = 100 * super::QUERY_STATS_BUCKET_SECONDS + 120;
++        for _ in 0..3 {
++            stats.record_at("example.com", "192.168.1.42".parse().unwrap(), true, now);
++        }
++        stats.record_at("other.test", "192.168.2.9".parse().unwrap(), true, now);
++
++        let snapshot = stats.snapshot(now, 3_600, 20);
++        assert!(snapshot.enabled);
++        assert!(snapshot.anonymized_clients);
++        assert_eq!(snapshot.requests_observed, 4);
++        assert_eq!(snapshot.domains[0].name, "example.com");
++        assert_eq!(snapshot.domains[0].count, 3);
++        assert_eq!(snapshot.clients[0].name, "192.168.1.0/24");
++        assert_eq!(snapshot.clients[0].count, 3);
++    }
++
++    #[test]
++    fn clears_rankings_when_collection_is_disabled() {
++        let stats = QueryStats::default();
++        let client: IpAddr = "127.0.0.1".parse().unwrap();
++        stats.configure(true, false);
++        stats.record_at("example.com", client, false, 3_600);
++        assert_eq!(stats.snapshot(3_600, 3_600, 20).requests_observed, 1);
++
++        stats.configure(false, false);
++        let snapshot = stats.snapshot(3_600, 3_600, 20);
++        assert!(!snapshot.enabled);
++        assert!(snapshot.domains.is_empty());
++        assert!(snapshot.clients.is_empty());
++    }
++
++    #[test]
++    fn caps_unique_domains_and_reports_dropped_updates() {
++        let stats = QueryStats::default();
++        stats.configure(true, false);
++        let client: IpAddr = "127.0.0.1".parse().unwrap();
++        for index in 0..QUERY_STATS_DOMAIN_CAP + 8 {
++            stats.record_at(&format!("{index}.example"), client, false, 3_600);
++        }
++
++        let snapshot = stats.snapshot(3_600, 3_600, QUERY_STATS_DOMAIN_CAP + 8);
++        assert_eq!(snapshot.domains.len(), QUERY_STATS_DOMAIN_CAP);
++        assert_eq!(snapshot.dropped_updates, 8);
++    }
+ }
