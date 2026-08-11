@@ -40,6 +40,9 @@ jobs:
         with:
           toolchain: 1.97.1
 
+      - name: Verify artifact identity boundary
+        run: bash scripts/test-kixdns-artifact-identity.sh
+
       - name: Select catalog entries to build
         id: catalog
         shell: bash

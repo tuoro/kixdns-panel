@@ -53,7 +53,7 @@ Panel Web ---- Panel Server ---- SQLite
 面板和增强内核使用独立工作流，避免把面板提交误认为新的 KixDNS 版本：
 
 - `build-kixdns.yml` 监听 Action 目录，`build-kixdns-release.yml` 监听 Release 目录；两者复用 `build-kixdns-track.yml` 的库存检查、验证和打包步骤。
-- Artifact 名称为 `kixdns-enhanced-<来源>-<上游身份>-p<补丁集>-<输入指纹>-linux-<架构>`。输入指纹只覆盖锁文件选择的补丁集以及构建工具、工作流和 Rust 工具链；新增更高补丁集不会改变历史版本指纹，目录新增版本时只补建缺失项。
+- Artifact 名称为 `kixdns-enhanced-<来源>-<上游身份>-p<补丁集>-<输入指纹>-linux-<架构>`。输入指纹只覆盖锁文件选择的补丁集、`prepare` 构建路径、工作流和 Rust 工具链；仅用于自动重基的 `overlay.rs` 不进入可变指纹。新增更高补丁集或修改该维护逻辑不会改变历史版本指纹，目录新增版本时只补建缺失项。
 - 每个 Artifact 携带 `KIXDNS_CAPABILITIES.json`，并与二进制、上游锁和构建提交共同写入 `SHA256SUMS`；能力清单也是输入指纹的一部分。
 - 构建库存会校验全部锁的补丁集引用。拉取请求和直接推送均不得修改主分支已有集合，只能新增高于当前最大值的编号。
 - 每周库存检查会续建缺失或将在 7 天内过期的上游包；这些 Artifact 仍使用 GitHub 的 90 天保留期，不创建上游 KixDNS Release。面板自身通过 GitHub Release 发布完整安装包，当前正式版本为 `v1.0.17`。

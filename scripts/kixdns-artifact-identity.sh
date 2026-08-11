@@ -121,6 +121,14 @@ fingerprint="$({
   for file in "${files[@]}"; do
     [[ -f "$file" ]] || { echo "构建输入不存在：$file" >&2; exit 1; }
     digest="$(sha256sum "$file" | cut -d ' ' -f1)"
+    # overlay.rs 只实现自动重基，不参与 prepare 或最终二进制构建。
+    # 固定首次纳入指纹时的摘要，既保留现有 artifact 名，也避免维护逻辑变化重建历史版本。
+    # 任何会影响 prepare 的共享逻辑必须保留在未固定摘要的构建输入中。
+    case "$file" in
+      tools/xtask/src/overlay.rs)
+        digest='2c0ae44101f843199141cb514a80e546a2a868ad339c8058735fc099220be498'
+        ;;
+    esac
     if [[ "$legacy_build_inputs" == true ]]; then
       case "$file" in
         scripts/kixdns-artifact-identity.sh)
