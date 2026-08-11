@@ -107,7 +107,7 @@ jobs:
         run: cargo install cargo-audit --version 0.22.2 --locked
 
       - name: Cache enhanced build
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@a45951ff880207c249adf57334cf2e9bd81d6e1e # v2
         with:
           workspaces: |
             . -> target
@@ -180,7 +180,7 @@ jobs:
           targets: ${{ matrix.platform.target }}
 
       - name: Cache enhanced build
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@a45951ff880207c249adf57334cf2e9bd81d6e1e # v2
         with:
           workspaces: |
             . -> target
