@@ -1,0 +1,173 @@
+diff --git a/src/config.rs b/src/config.rs
+index ecf5cf51efd623dc8c41522c32ae871cb39d1beb..3642d6101dce9a0a40c74e7ecba162f2f65ac777 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -807,8 +807,12 @@ fn default_match_operator() -> MatchOperator {
+ pub fn load_config(path: &Path) -> Result<PipelineConfig> {
+     let raw = fs::read_to_string(path)
+         .with_context(|| format!("read config file: {}", path.display()))?;
+-    let mut cfg: PipelineConfig = serde_json::from_str(&raw)
+-        .with_context(|| format!("parse config file: {}", path.display()))?;
++    parse_config(&raw).with_context(|| format!("parse config file: {}", path.display()))
++}
++
++/// Parse and normalize a configuration without touching the filesystem.
++pub fn parse_config(raw: &str) -> Result<PipelineConfig> {
++    let mut cfg: PipelineConfig = serde_json::from_str(raw).context("parse config JSON")?;
+ 
+     if let Some(version) = cfg.version.as_ref() {
+         info!(target = "config", version = %version, "config loaded");
+@@ -1111,3 +1115,26 @@ fn default_ecs_prefix_v4() -> u8 {
+ fn default_ecs_prefix_v6() -> u8 {
+     56 // Common ISP allocation boundary
+ }
++
++#[cfg(test)]
++mod panel_validation_tests {
++    use super::parse_config;
++
++    #[test]
++    fn parses_minimal_config_from_memory() {
++        let config = parse_config("{}").unwrap();
++        assert!(config.pipelines.is_empty());
++        assert!(config.settings.cache_capacity > 0);
++    }
++
++    #[test]
++    fn rejects_invalid_selector_cidr_from_memory() {
++        let raw = r#"{
++            "pipeline_select": [{
++                "pipeline": "default",
++                "matchers": [{"type": "client_ip", "cidr": "invalid"}]
++            }]
++        }"#;
++        assert!(parse_config(raw).is_err());
++    }
++}
+diff --git a/src/panel.rs b/src/panel.rs
+index 563823ad241f1fef667ea299ddabc55c8f7367de..9d1c98f0a6c8d8f3fc2078435a5ae2e5f8af0198 100644
+--- a/src/panel.rs
++++ b/src/panel.rs
+@@ -8,7 +8,7 @@ use anyhow::Context;
+ use bytes::Bytes;
+ use dashmap::DashMap;
+ #[cfg(unix)]
+-use http_body_util::Full;
++use http_body_util::{BodyExt, Full, Limited};
+ #[cfg(unix)]
+ use hyper::body::Incoming;
+ #[cfg(unix)]
+@@ -29,6 +29,8 @@ use crate::engine::Engine;
+ #[cfg(unix)]
+ const PROTOCOL_VERSION: u8 = 1;
+ const MAX_ERROR_LENGTH: usize = 2_048;
++#[cfg(unix)]
++const MAX_CONFIG_BODY: usize = 4 * 1024 * 1024;
+ 
+ #[derive(Clone, Copy)]
+ pub enum CacheHitKind {
+@@ -59,6 +61,7 @@ pub struct PanelMetrics {
+     upstream_results: DashMap<Arc<str>, AtomicU64>,
+     reload_success: AtomicU64,
+     reload_failure: AtomicU64,
++    reload_sequence: AtomicU64,
+     active_config: RwLock<ActiveConfig>,
+ }
+ 
+@@ -77,6 +80,7 @@ impl Default for PanelMetrics {
+             upstream_results: DashMap::new(),
+             reload_success: AtomicU64::new(0),
+             reload_failure: AtomicU64::new(0),
++            reload_sequence: AtomicU64::new(0),
+             active_config: RwLock::new(ActiveConfig::default()),
+         }
+     }
+@@ -159,6 +163,7 @@ impl PanelMetrics {
+         active.last_reload_success = true;
+         active.last_reload_error = None;
+         self.reload_success.fetch_add(1, Ordering::Relaxed);
++        self.reload_sequence.fetch_add(1, Ordering::Release);
+         Ok(())
+     }
+ 
+@@ -167,6 +172,7 @@ impl PanelMetrics {
+         active.last_reload_success = false;
+         active.last_reload_error = Some(truncate(error, MAX_ERROR_LENGTH));
+         self.reload_failure.fetch_add(1, Ordering::Relaxed);
++        self.reload_sequence.fetch_add(1, Ordering::Release);
+     }
+ 
+     #[cfg(unix)]
+@@ -177,6 +183,7 @@ impl PanelMetrics {
+             "generation": active.generation,
+             "sha256": active.sha256,
+             "loaded_at_unix": active.loaded_at_unix,
++            "reload_sequence": self.reload_sequence.load(Ordering::Acquire),
+             "last_reload": {
+                 "success": active.last_reload_success,
+                 "error": active.last_reload_error,
+@@ -350,6 +357,7 @@ async fn handle_request(
+             "text/plain; version=0.0.4; charset=utf-8",
+             engine.panel_metrics.render_prometheus(&engine),
+         ),
++        (&Method::POST, "/v1/config/validate") => validate_config(request).await,
+         (&Method::POST, "/v1/cache/flush") => {
+             let response_entries_before = engine.cache.entry_count();
+             let rule_entries_before = engine.rule_cache.entry_count();
+@@ -379,6 +387,56 @@ async fn handle_request(
+     Ok(response)
+ }
+ 
++#[cfg(unix)]
++async fn validate_config(request: Request<Incoming>) -> Response<Full<Bytes>> {
++    let body = match Limited::new(request.into_body(), MAX_CONFIG_BODY)
++        .collect()
++        .await
++    {
++        Ok(body) => body.to_bytes(),
++        Err(error) => {
++            let message = if error.is::<http_body_util::LengthLimitError>() {
++                "配置不能超过 4 MiB".to_owned()
++            } else {
++                "读取配置请求失败".to_owned()
++            };
++            return json_response(
++                StatusCode::PAYLOAD_TOO_LARGE,
++                error_json("config_body_invalid", &message),
++            );
++        }
++    };
++
++    let result = crate::config::parse_config(std::str::from_utf8(&body).unwrap_or_default())
++        .and_then(crate::matcher::RuntimePipelineConfig::from_config);
++    match result {
++        Ok(config) => {
++            let pipeline_count = config.pipelines.len();
++            let rule_count = config
++                .pipelines
++                .iter()
++                .map(|pipeline| pipeline.rules.len())
++                .sum::<usize>();
++            json_response(
++                StatusCode::OK,
++                json!({
++                    "protocol_version": PROTOCOL_VERSION,
++                    "valid": true,
++                    "pipeline_count": pipeline_count,
++                    "rule_count": rule_count,
++                }),
++            )
++        }
++        Err(error) => json_response(
++            StatusCode::UNPROCESSABLE_ENTITY,
++            error_json(
++                "config_invalid",
++                &truncate(&format!("{error:#}"), MAX_ERROR_LENGTH),
++            ),
++        ),
++    }
++}
++
+ #[cfg(unix)]
+ fn json_response(status: StatusCode, value: serde_json::Value) -> Response<Full<Bytes>> {
+     text_response(status, "application/json; charset=utf-8", value.to_string())
