@@ -1,0 +1,13 @@
+diff --git a/src/panel.rs b/src/panel.rs
+index ec24960..5a1914b 100644
+--- a/src/panel.rs
++++ b/src/panel.rs
+@@ -569,7 +569,7 @@ impl PanelMetrics {
+             "started_at_unix": self.started_at_unix,
+             "uptime_seconds": unix_timestamp().saturating_sub(self.started_at_unix),
+             "config_generation": active.generation,
+-            "capabilities": ["stats_top_v1"],
++            "capabilities": ["stats_top_v1", "config_query_stats_v1"],
+         })
+     }
+ 
