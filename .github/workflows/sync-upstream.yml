@@ -110,14 +110,14 @@ jobs:
           case "$TRACK" in
             action)
               jq --arg commit "$CANDIDATE_COMMIT" --argjson run_id "$CANDIDATE_REFERENCE" \
-                '.commit = $commit | .official_run_id = $run_id | del(.compatibility)' \
+                '.commit = $commit | .official_run_id = $run_id' \
                 upstream.lock.json > upstream.lock.json.new
               mv upstream.lock.json.new upstream.lock.json
               ;;
             release)
               jq --arg commit "$CANDIDATE_COMMIT" --argjson release_id "$RELEASE_ID" \
                 --arg tag "$CANDIDATE_REFERENCE" \
-                '.commit = $commit | .release_id = $release_id | .release_tag = $tag | del(.compatibility)' \
+                '.commit = $commit | .release_id = $release_id | .release_tag = $tag' \
                 upstream.release.lock.json > upstream.release.lock.json.new
               mv upstream.release.lock.json.new upstream.release.lock.json
               ;;
@@ -134,9 +134,80 @@ jobs:
         if: steps.upstream.outputs.changed == 'true'
         run: cargo install cargo-audit --version 0.22.2 --locked
 
-      - name: Validate patch compatibility
-        id: validate
+      - name: Fetch RustSec advisory database
         if: steps.upstream.outputs.changed == 'true'
+        shell: bash
+        run: |
+          advisory_db="$RUNNER_TEMP/rustsec-advisory-db"
+          git clone --depth 1 https://github.com/RustSec/advisory-db.git "$advisory_db"
+          echo "ADVISORY_DB=$advisory_db" >> "$GITHUB_ENV"
+
+      - name: Try current patchset
+        id: prepare
+        continue-on-error: true
+        if: steps.upstream.outputs.changed == 'true'
+        env:
+          LOCK_FILE: ${{ steps.upstream.outputs.lock_file }}
+        shell: bash
+        run: |
+          validation_log="$RUNNER_TEMP/kixdns-compatibility-validation.log"
+          (
+            set -euo pipefail
+            cargo xtask prepare --lock "$LOCK_FILE"
+            upstream_dir=".upstream/kixdns-$(jq -r .source "$LOCK_FILE")-$(jq -r .commit "$LOCK_FILE" | cut -c1-12)-p$(jq -r .patchset "$LOCK_FILE")"
+            cd "$upstream_dir"
+            cargo audit --db "$ADVISORY_DB" --no-fetch --deny warnings
+          ) 2>&1 | tee "$validation_log"
+          exit "${PIPESTATUS[0]}"
+
+      - name: Rebase overlay automatically
+        id: rebase
+        if: >-
+          steps.upstream.outputs.changed == 'true' &&
+          steps.prepare.outcome == 'failure'
+        env:
+          BASE_COMMIT: ${{ steps.upstream.outputs.current }}
+          LOCK_FILE: ${{ steps.upstream.outputs.lock_file }}
+        shell: bash
+        run: |
+          validation_log="$RUNNER_TEMP/kixdns-compatibility-validation.log"
+          set +e
+          (
+            set -euo pipefail
+            cargo xtask rebase --lock "$LOCK_FILE" --base-commit "$BASE_COMMIT"
+            cargo xtask prepare --lock "$LOCK_FILE"
+            bash scripts/verify-patchsets.sh "$GITHUB_SHA"
+            git diff --check
+          ) 2>&1 | tee -a "$validation_log"
+          status=${PIPESTATUS[0]}
+          set -e
+          if ((status != 0)); then
+            if grep -Eq 'overlay 自动重基存在代码冲突|重新解析 Cargo.lock 失败' "$validation_log"; then
+              echo 'failure_kind=conflict' >> "$GITHUB_OUTPUT"
+            else
+              echo 'failure_kind=infrastructure' >> "$GITHUB_OUTPUT"
+            fi
+            exit "$status"
+          fi
+          echo 'generated=true' >> "$GITHUB_OUTPUT"
+
+      - name: Prefetch candidate dependencies
+        if: >-
+          steps.upstream.outputs.changed == 'true' &&
+          (steps.prepare.outcome == 'success' || steps.rebase.outcome == 'success')
+        env:
+          LOCK_FILE: ${{ steps.upstream.outputs.lock_file }}
+        shell: bash
+        run: |
+          upstream_dir=".upstream/kixdns-$(jq -r .source "$LOCK_FILE")-$(jq -r .commit "$LOCK_FILE" | cut -c1-12)-p$(jq -r .patchset "$LOCK_FILE")"
+          cd "$upstream_dir"
+          cargo fetch --locked
+
+      - name: Validate enhanced candidate
+        id: validate
+        if: >-
+          steps.upstream.outputs.changed == 'true' &&
+          (steps.prepare.outcome == 'success' || steps.rebase.outcome == 'success')
         env:
           LOCK_FILE: ${{ steps.upstream.outputs.lock_file }}
         shell: bash
@@ -146,16 +217,15 @@ jobs:
           set +e
           (
             set -euo pipefail
-            cargo xtask prepare --lock "$LOCK_FILE"
             upstream_dir=".upstream/kixdns-$(jq -r .source "$LOCK_FILE")-$(jq -r .commit "$LOCK_FILE" | cut -c1-12)-p$(jq -r .patchset "$LOCK_FILE")"
             cd "$upstream_dir"
             cargo fmt --check
-            cargo test --lib --locked
-            cargo clippy --all-targets --all-features --locked -- -D warnings
-            cargo audit --deny warnings
-            cargo build --locked
+            cargo test --offline --lib --locked
+            cargo clippy --offline --all-targets --all-features --locked -- -D warnings
+            cargo audit --db "$ADVISORY_DB" --no-fetch --deny warnings
+            cargo build --offline --locked
             python3 "$GITHUB_WORKSPACE/scripts/dns_smoke.py" target/debug/kixdns
-          ) 2>&1 | tee "$validation_log"
+          ) 2>&1 | tee -a "$validation_log"
           status=${PIPESTATUS[0]}
           set -e
 
@@ -204,7 +274,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$branch"
-          git add "$LOCK_FILE" "upstreams/${TRACK}s"
+          git add "$LOCK_FILE" "upstreams/${TRACK}s" patches/sets
           git commit -m "chore: track verified upstream ${TRACK}"
           git push --force origin "HEAD:refs/heads/${branch}"
           pull_request="$(gh pr list --head "$branch" --state open --json url --jq '.[0].url // empty')"
@@ -216,6 +286,9 @@ jobs:
               echo "- 上游身份：\`${CANDIDATE_REFERENCE}\`"
               echo "- 上游提交：\`${CANDIDATE_COMMIT}\`"
               echo "- 上游来源：${SOURCE_URL}"
+              if [[ "${{ steps.rebase.outputs.generated }}" == 'true' ]]; then
+                echo "- 补丁处理：已自动重基为 p$(jq -r .patchset "$LOCK_FILE")"
+              fi
               echo '- 验证：增强补丁、测试、Clippy、RustSec 与 DNS 冒烟均已通过'
             } > "$body_file"
             pull_request="$(gh pr create --base main --head "$branch" \
@@ -256,7 +329,9 @@ jobs:
           gh workflow run "$workflow" --ref main
 
       - name: Report compatibility failure
-        if: always() && steps.validate.outcome == 'failure'
+        if: >-
+          always() &&
+          (steps.rebase.outputs.failure_kind == 'conflict' || steps.validate.outcome == 'failure')
         env:
           CANDIDATE_COMMIT: ${{ steps.upstream.outputs.commit }}
           CANDIDATE_REFERENCE: ${{ steps.upstream.outputs.reference }}
@@ -283,6 +358,12 @@ jobs:
             echo
             if [[ -f "$report_file" ]]; then
               cat "$report_file"
+            elif [[ -f "$RUNNER_TEMP/kixdns-compatibility-validation.log" ]]; then
+              echo '### 失败日志末尾'
+              echo
+              echo '```text'
+              tail -n 100 "$RUNNER_TEMP/kixdns-compatibility-validation.log"
+              echo '```'
             else
               echo '验证步骤未生成日志摘要，请查看完整工作流日志。'
             fi

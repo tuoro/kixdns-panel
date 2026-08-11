@@ -10,17 +10,19 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tempfile::{Builder, TempDir};
 
+mod overlay;
+
 const PATCH_STAMP: &str = ".kixdns-panel-patches";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
-enum UpstreamSource {
+pub(crate) enum UpstreamSource {
     Action,
     Release,
 }
 
 impl UpstreamSource {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Action => "action",
             Self::Release => "release",
@@ -28,32 +30,35 @@ impl UpstreamSource {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct UpstreamLock {
-    repository: String,
-    source: UpstreamSource,
-    commit: String,
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct UpstreamLock {
+    pub(crate) repository: String,
+    pub(crate) source: UpstreamSource,
+    pub(crate) commit: String,
     #[serde(default)]
-    official_run_id: Option<u64>,
+    pub(crate) official_run_id: Option<u64>,
     #[serde(default)]
-    release_id: Option<u64>,
+    pub(crate) release_id: Option<u64>,
     #[serde(default)]
-    release_tag: Option<String>,
+    pub(crate) release_tag: Option<String>,
     #[serde(default)]
-    compatibility: Option<String>,
-    patchset: u32,
-    control_protocol: u32,
+    pub(crate) compatibility: Option<String>,
+    pub(crate) patchset: u32,
+    pub(crate) control_protocol: u32,
 }
 
 fn main() -> Result<()> {
     let mut arguments = env::args().skip(1);
     let command = arguments.next().unwrap_or_else(|| "help".to_owned());
-    let lock_file = parse_lock_argument(arguments)?;
     let root = workspace_root()?;
 
     match command.as_str() {
-        "prepare" => prepare(&root, &lock_file),
-        "info" => print_info(&root, &lock_file),
+        "prepare" => prepare(&root, &parse_lock_argument(arguments)?),
+        "rebase" => {
+            let options = overlay::Options::parse(arguments)?;
+            overlay::rebase_patchset(&root, &options)
+        }
+        "info" => print_info(&root, &parse_lock_argument(arguments)?),
         "help" | "-h" | "--help" => {
             print_help();
             Ok(())
@@ -74,7 +79,7 @@ fn parse_lock_argument(mut arguments: impl Iterator<Item = String>) -> Result<Pa
     Ok(path)
 }
 
-fn valid_lock_path(path: &Path) -> bool {
+pub(crate) fn valid_lock_path(path: &Path) -> bool {
     if matches!(
         path.to_str(),
         Some("upstream.lock.json" | "upstream.release.lock.json")
@@ -109,7 +114,7 @@ fn workspace_root() -> Result<PathBuf> {
         .context("无法确定工作区根目录")
 }
 
-fn load_lock(root: &Path, lock_file: &Path) -> Result<UpstreamLock> {
+pub(crate) fn load_lock(root: &Path, lock_file: &Path) -> Result<UpstreamLock> {
     let path = root.join(lock_file);
     let raw = fs::read_to_string(&path)
         .with_context(|| format!("读取上游锁定文件失败：{}", path.display()))?;
@@ -264,7 +269,7 @@ fn apply_patches(root: &Path, checkout: &Path, lock: &UpstreamLock) -> Result<()
     Ok(())
 }
 
-fn patches_for_lock(root: &Path, lock: &UpstreamLock) -> Result<Vec<PathBuf>> {
+pub(crate) fn patches_for_lock(root: &Path, lock: &UpstreamLock) -> Result<Vec<PathBuf>> {
     let patchset_dir = root
         .join("patches")
         .join("sets")
@@ -368,7 +373,7 @@ fn print_info(root: &Path, lock_file: &Path) -> Result<()> {
     Ok(())
 }
 
-fn validate_lock(lock: &UpstreamLock) -> Result<()> {
+pub(crate) fn validate_lock(lock: &UpstreamLock) -> Result<()> {
     validate_commit(&lock.commit)?;
     if lock.patchset == 0 || lock.control_protocol == 0 {
         bail!("upstream.lock.json 中的版本号必须大于 0");
@@ -402,7 +407,7 @@ fn valid_reference(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
-fn validate_commit(commit: &str) -> Result<()> {
+pub(crate) fn validate_commit(commit: &str) -> Result<()> {
     if commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         bail!("upstream.lock.json 中的 commit 必须是完整的 40 位十六进制 SHA");
     }
@@ -447,6 +452,7 @@ fn print_help() {
     println!("KixDNS Panel 构建任务");
     println!("  cargo xtask info [--lock <锁文件>]     显示锁定的上游版本");
     println!("  cargo xtask prepare [--lock <锁文件>]  检出上游并应用增强补丁");
+    println!("  cargo xtask rebase --lock <锁文件> --base-commit <SHA>  自动重基增强补丁");
 }
 
 #[cfg(test)]
