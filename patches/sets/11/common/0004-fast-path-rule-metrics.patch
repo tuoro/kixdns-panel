@@ -1,0 +1,96 @@
+diff --git a/src/engine/execution.rs b/src/engine/execution.rs
+index 06beb9f..4f8d0d3 100644
+--- a/src/engine/execution.rs
++++ b/src/engine/execution.rs
+@@ -426,7 +426,7 @@ impl Engine {
+         if let Some(compiled) = self.compiled_for(&state, &pipeline_id) {
+             let qclass = DNSClass::from(q.qclass);
+             let qname_str = q.qname_str_unchecked(); // Zero-allocation / 零分配
+-            if let Some(Decision::Static { rcode, answers }) = fast_static_match(
++            if let Some((Decision::Static { rcode, answers }, rule_name)) = fast_static_match(
+                 compiled,
+                 qname_str,
+                 qtype,
+@@ -434,6 +434,8 @@ impl Engine {
+                 peer.ip(),
+                 q.edns_present,
+             ) {
++                self.panel_metrics
++                    .record_rule_match(&pipeline_id, &rule_name, "request");
+                 let resp = build_fast_static_response(
+                     q.tx_id, qname_str, q.qtype, q.qclass, rcode, &answers,
+                 )?;
+@@ -472,6 +474,10 @@ impl Engine {
+                     include_ip_in_hash,
+                 ) && let Decision::Static { rcode, answers } = entry.decision.as_ref()
+                 {
++                    for rule_name in entry.matched_rules.iter() {
++                        self.panel_metrics
++                            .record_rule_match(&pipeline_id, rule_name, "request");
++                    }
+                     let resp = build_fast_static_response(
+                         q.tx_id, qname_str, q.qtype, q.qclass, *rcode, answers,
+                     )?;
+@@ -2333,7 +2339,9 @@ mod tests {
+         );
+ 
+         // 验证返回的是静态 IP 决策
+-        match result2.unwrap() {
++        let (decision, rule_name) = result2.unwrap();
++        assert_eq!(rule_name.as_ref(), "mydomain-static");
++        match decision {
+             Decision::Static { rcode, answers } => {
+                 assert_eq!(rcode, ResponseCode::NoError);
+                 assert!(!answers.is_empty(), "应该有静态 IP 答案");
+diff --git a/src/matcher/advanced_rule.rs b/src/matcher/advanced_rule.rs
+index 1305cad..891985c 100644
+--- a/src/matcher/advanced_rule.rs
++++ b/src/matcher/advanced_rule.rs
+@@ -25,6 +25,7 @@ pub struct CompiledPipeline {
+ pub struct CompiledRule {
+     #[allow(dead_code)]
+     pub rule_idx: usize,
++    pub rule_name: Arc<str>,
+     #[allow(dead_code)]
+     pub matcher_operator: MatchOperator,
+     pub matchers: Vec<CompiledMatcherWithOp>,
+@@ -204,6 +205,7 @@ fn compile_rule(rule: &RuntimeRule, rule_idx: usize) -> CompiledRule {
+ 
+     CompiledRule {
+         rule_idx,
++        rule_name: rule.name.clone(),
+         matcher_operator: rule.matcher_operator,
+         matchers,
+         precomputed,
+@@ -268,7 +270,7 @@ pub(crate) fn fast_static_match(
+     qclass: DNSClass,
+     client_ip: IpAddr,
+     edns_present: bool,
+-) -> Option<Decision> {
++) -> Option<(Decision, Arc<str>)> {
+     let candidates = pipeline.index.get_candidates(qname, qtype);
+     for idx in candidates {
+         let rule = pipeline.rules.get(idx)?;
+@@ -285,14 +287,17 @@ pub(crate) fn fast_static_match(
+         if let Some(pre) = &rule.precomputed {
+             match pre {
+                 PrecomputedAction::Static { rcode } => {
+-                    return Some(Decision::Static {
+-                        rcode: *rcode,
+-                        answers: Vec::new(),
+-                    });
++                    return Some((
++                        Decision::Static {
++                            rcode: *rcode,
++                            answers: Vec::new(),
++                        },
++                        rule.rule_name.clone(),
++                    ));
+                 }
+                 PrecomputedAction::StaticIp { ip } => {
+                     let (rcode, answers) = make_static_ip_answer(qname, ip);
+-                    return Some(Decision::Static { rcode, answers });
++                    return Some((Decision::Static { rcode, answers }, rule.rule_name.clone()));
+                 }
+             }
+         } else {
