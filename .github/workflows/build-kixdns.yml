@@ -15,6 +15,7 @@ on:
       - tools/xtask/**
       - Cargo.lock
       - scripts/kixdns-artifact-identity.sh
+      - scripts/test-kixdns-artifact-identity.sh
       - upstreams/actions/**
       - upstream.lock.json
       - rust-toolchain.toml
@@ -29,6 +30,7 @@ on:
       - tools/xtask/**
       - Cargo.lock
       - scripts/kixdns-artifact-identity.sh
+      - scripts/test-kixdns-artifact-identity.sh
       - upstreams/actions/**
       - upstream.lock.json
       - rust-toolchain.toml
