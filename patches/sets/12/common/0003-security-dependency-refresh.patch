@@ -1,0 +1,85 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index e987034a3b1623909e9dbe76f3cc10a60a16ee88..ef994b725a02a9f47ba0b487bf503881af9b34b1 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -32,7 +32,7 @@ socket2 = "0.6"
+ libc = "0.2"
+ rustc-hash = "2.1.1"
+ smallvec = "1.13"
+-maxminddb = "0.24"
++maxminddb = "0.27"
+ maxminddb-writer = "0.1"
+ futures = "0.3"
+ parking_lot = "0.12"
+@@ -47,7 +47,6 @@ quinn = { version = "0.11", features = ["runtime-tokio", "rustls"] }
+ hyper = { version = "1", features = ["server", "http1"] }
+ hyper-util = { version = "0.1", features = ["server", "tokio"] }
+ http-body-util = "0.1"
+-rustls-pemfile = "2"
+ base64 = "0.22"
+ prost = { version = "0.14.4", features = ["derive"] }
+ 
+diff --git a/src/doh_server.rs b/src/doh_server.rs
+index ebb2f06ed86e8988e16627c75c06d316cbfab29d..aa881dfdccb55f685261938f0e957cb3337d878b 100644
+--- a/src/doh_server.rs
++++ b/src/doh_server.rs
+@@ -19,7 +19,7 @@ use hyper::server::conn::http1;
+ use hyper::service::service_fn;
+ use hyper::{Method, Request, Response, StatusCode};
+ use rustls::ServerConfig;
+-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
++use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
+ use tokio::net::TcpListener;
+ use tokio_rustls::TlsAcceptor;
+ use tracing::{info, warn};
+@@ -246,20 +246,15 @@ fn error_response(status: StatusCode) -> Response<Full<Bytes>> {
+ 
+ /// 从 PEM 文件加载证书 / Load certificates from PEM file
+ fn load_certs(path: &str) -> anyhow::Result<Vec<CertificateDer<'static>>> {
+-    let file = std::fs::File::open(path).context("open cert file")?;
+-    let mut reader = std::io::BufReader::new(file);
+-    rustls_pemfile::certs(&mut reader)
++    CertificateDer::pem_file_iter(path)
++        .context("open cert file")?
+         .collect::<Result<Vec<_>, _>>()
+         .context("parse PEM certificates")
+ }
+ 
+ /// 从 PEM 文件加载私钥 / Load private key from PEM file
+ fn load_private_key(path: &str) -> anyhow::Result<PrivateKeyDer<'static>> {
+-    let file = std::fs::File::open(path).context("open key file")?;
+-    let mut reader = std::io::BufReader::new(file);
+-    rustls_pemfile::private_key(&mut reader)
+-        .context("parse PEM private key")?
+-        .context("no private key found in PEM file")
++    PrivateKeyDer::from_pem_file(path).context("parse PEM private key")
+ }
+ 
+ // ============================================================================
+diff --git a/src/matcher/geoip.rs b/src/matcher/geoip.rs
+index ccf965ee1c99e281398c689d6a93c042274cc6fb..9d1a8181f3d7405a33bf05992f28e351c46c8fc6 100644
+--- a/src/matcher/geoip.rs
++++ b/src/matcher/geoip.rs
+@@ -202,8 +202,11 @@ impl GeoIpManager {
+     /// 从 MMDB 查询 / Lookup from MMDB
+     fn lookup_mmdb(&self, reader: &maxminddb::Reader<Vec<u8>>, ip: IpAddr) -> GeoIpResult {
+         // 使用 MaxMind 数据结构进行查询 / Use MaxMind data structure for lookup
+-        match reader.lookup::<MaxMindCountryRecord>(ip) {
+-            Ok(record) => {
++        match reader
++            .lookup(ip)
++            .and_then(|result| result.decode::<MaxMindCountryRecord>())
++        {
++            Ok(Some(record)) => {
+                 // 尝试从多个字段获取国家代码 / Try to get country code from multiple fields
+                 // 优先级: country > registered_country > represented_country
+                 // Priority: country > registered_country > represented_country
+@@ -221,7 +224,7 @@ impl GeoIpManager {
+                     is_private: is_private_ip(ip),
+                 }
+             }
+-            Err(_) => {
++            Ok(None) | Err(_) => {
+                 // 查询失败，回退到私有 IP 检测 / Lookup failed, fallback to private IP check
+                 GeoIpResult {
+                     country_code: None,
