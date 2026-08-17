@@ -8,6 +8,7 @@ on:
     paths:
       - .github/workflows/build-kixdns.yml
       - .github/workflows/build-kixdns-track.yml
+      - .github/workflows/sync-upstream.yml
       - patches/**
       - scripts/dns_smoke.py
       - scripts/verify-glibc-baseline.sh
@@ -16,6 +17,8 @@ on:
       - Cargo.lock
       - scripts/kixdns-artifact-identity.sh
       - scripts/test-kixdns-artifact-identity.sh
+      - scripts/select-kixdns-action-run.sh
+      - scripts/test-select-kixdns-action-run.sh
       - upstreams/actions/**
       - upstream.lock.json
       - rust-toolchain.toml
@@ -23,6 +26,7 @@ on:
     paths:
       - .github/workflows/build-kixdns.yml
       - .github/workflows/build-kixdns-track.yml
+      - .github/workflows/sync-upstream.yml
       - patches/**
       - scripts/dns_smoke.py
       - scripts/verify-glibc-baseline.sh
@@ -31,6 +35,8 @@ on:
       - Cargo.lock
       - scripts/kixdns-artifact-identity.sh
       - scripts/test-kixdns-artifact-identity.sh
+      - scripts/select-kixdns-action-run.sh
+      - scripts/test-select-kixdns-action-run.sh
       - upstreams/actions/**
       - upstream.lock.json
       - rust-toolchain.toml
