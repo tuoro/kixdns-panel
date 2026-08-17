@@ -44,6 +44,9 @@ jobs:
       - name: Verify patchset catalog
         run: bash scripts/verify-patchsets.sh
 
+      - name: Verify upstream Action selection
+        run: bash scripts/test-select-kixdns-action-run.sh
+
       - name: Read latest upstream track
         id: upstream
         shell: bash
@@ -51,16 +54,12 @@ jobs:
           case "$TRACK" in
             action)
               response="$(gh api 'repos/olicesx/kixdns/actions/workflows/build.yml/runs?branch=main&status=success&per_page=30')"
-              commit="$(jq -r '[.workflow_runs[] | select(.event == "push")][0].head_sha // empty' <<< "$response")"
-              reference="$(jq -r '[.workflow_runs[] | select(.event == "push")][0].id // empty' <<< "$response")"
+              selection="$(bash scripts/select-kixdns-action-run.sh upstream.lock.json <<< "$response")"
+              IFS=$'\t' read -r reference commit changed <<< "$selection"
               current="$(jq -r .commit upstream.lock.json)"
               lock_file='upstream.lock.json'
               label='Action'
               source_url="https://github.com/olicesx/kixdns/actions/runs/${reference}"
-              [[ "$commit" =~ ^[0-9a-f]{40}$ && "$reference" =~ ^[0-9]+$ ]] || {
-                echo '官方 Action 元数据无效' >&2
-                exit 1
-              }
               ;;
             release)
               response="$(gh api 'repos/olicesx/kixdns/releases/latest')"
@@ -80,6 +79,8 @@ jobs:
                 exit 1
               }
               echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+              changed=false
+              [[ "$commit" == "$current" ]] || changed=true
               ;;
             *)
               echo "不支持的上游轨道：${TRACK}" >&2
@@ -87,8 +88,6 @@ jobs:
               ;;
           esac
 
-          changed=false
-          [[ "$commit" == "$current" ]] || changed=true
           {
             echo "changed=$changed"
             echo "commit=$commit"
@@ -98,6 +97,15 @@ jobs:
             echo "label=$label"
             echo "source_url=$source_url"
           } >> "$GITHUB_OUTPUT"
+
+          if [[ "$TRACK" == action && "$changed" == true ]]; then
+            comparison="$(gh api "repos/olicesx/kixdns/compare/${current}...${commit}" --jq .status)"
+            if [[ "$comparison" != ahead ]]; then
+              echo 'failure_kind=source' >> "$GITHUB_OUTPUT"
+              echo "拒绝非快进的上游 Action 候选：${current} -> ${commit} (${comparison})" >&2
+              exit 1
+            fi
+          fi
 
       - name: Prepare candidate lock
         if: steps.upstream.outputs.changed == 'true'
@@ -261,6 +269,7 @@ jobs:
           esac
 
       - name: Merge validated upstream update
+        id: merge
         if: steps.upstream.outputs.changed == 'true'
         env:
           CANDIDATE_COMMIT: ${{ steps.upstream.outputs.commit }}
@@ -331,7 +340,9 @@ jobs:
       - name: Report compatibility failure
         if: >-
           always() &&
-          (steps.rebase.outputs.failure_kind == 'conflict' || steps.validate.outcome == 'failure')
+          (steps.upstream.outputs.failure_kind == 'source' ||
+           steps.rebase.outputs.failure_kind == 'conflict' ||
+           steps.validate.outcome == 'failure')
         env:
           CANDIDATE_COMMIT: ${{ steps.upstream.outputs.commit }}
           CANDIDATE_REFERENCE: ${{ steps.upstream.outputs.reference }}
@@ -378,7 +389,10 @@ jobs:
           fi
 
       - name: Close resolved compatibility alert
-        if: success()
+        if: >-
+          success() &&
+          steps.upstream.outputs.changed == 'true' &&
+          steps.merge.outcome == 'success'
         env:
           SOURCE_LABEL: ${{ steps.upstream.outputs.label }}
         shell: bash

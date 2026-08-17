@@ -43,6 +43,9 @@ jobs:
       - name: Verify artifact identity boundary
         run: bash scripts/test-kixdns-artifact-identity.sh
 
+      - name: Verify upstream Action selection
+        run: bash scripts/test-select-kixdns-action-run.sh
+
       - name: Select catalog entries to build
         id: catalog
         shell: bash
