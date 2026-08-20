@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { summarizeAction, summarizeMatchers, summarizeRule } from './summary'
-import type { RuleConfig } from './types'
+import { analyzeRuleFlow, findBlockingRule, ruleMatchesEveryRequest, summarizeAction, summarizeMatchers, summarizeRule } from './summary'
+import type { PipelineConfig, RuleConfig } from './types'
 
 describe('规则语义摘要', () => {
   it('将 GeoSite 与查询类型表达为全部满足的自然语言', () => {
@@ -42,5 +42,62 @@ describe('规则语义摘要', () => {
     }
 
     expect(summarizeRule(rule)).toEqual({ condition: '任意请求', action: '拒绝请求' })
+  })
+
+  it('按照真实请求动作顺序区分终止、继续和响应后继续', () => {
+    const makeRule = (actions: RuleConfig['actions']): RuleConfig => ({
+      name: 'rule',
+      matchers: [],
+      matcher_operator: 'and',
+      actions,
+      response_matchers: [],
+      response_matcher_operator: 'and',
+      response_actions_on_match: [],
+      response_actions_on_miss: [],
+    })
+
+    expect(analyzeRuleFlow(makeRule([{ type: 'log' }, { type: 'continue' }])).kind).toBe('continue')
+    expect(analyzeRuleFlow(makeRule([{ type: 'static_response', rcode: 'NXDOMAIN' }])).kind).toBe('terminate')
+    expect(analyzeRuleFlow(makeRule([{ type: 'jump_to_pipeline', pipeline: 'next' }])).kind).toBe('jump')
+
+    const forwarding = makeRule([{ type: 'forward', upstream: '1.1.1.1:53' }])
+    forwarding.response_actions_on_match = [{ type: 'continue' }]
+    expect(analyzeRuleFlow(forwarding).kind).toBe('conditional')
+    expect(analyzeRuleFlow(makeRule([{ type: 'future_action' }])).kind).toBe('unknown')
+  })
+
+  it('只对能够静态确定的全匹配规则报告后续遮挡', () => {
+    const pipeline: PipelineConfig = {
+      id: 'default',
+      rules: [
+        {
+          name: 'fallback',
+          matchers: [{ type: 'any', operator: 'and' }],
+          matcher_operator: 'and',
+          actions: [{ type: 'forward' }],
+          response_matchers: [],
+          response_matcher_operator: 'and',
+          response_actions_on_match: [],
+          response_actions_on_miss: [],
+        },
+        {
+          name: 'specific',
+          matchers: [{ type: 'geo_site', operator: 'and', value: 'cn' }],
+          matcher_operator: 'and',
+          actions: [{ type: 'deny' }],
+          response_matchers: [],
+          response_matcher_operator: 'and',
+          response_actions_on_match: [],
+          response_actions_on_miss: [],
+        },
+      ],
+    }
+
+    expect(ruleMatchesEveryRequest(pipeline.rules[0]!)).toBe(true)
+    expect(ruleMatchesEveryRequest(pipeline.rules[1]!)).toBe(false)
+    expect(findBlockingRule(pipeline, 1)).toEqual({ index: 0, name: 'fallback' })
+
+    pipeline.rules[0]!.actions = [{ type: 'continue' }]
+    expect(findBlockingRule(pipeline, 1)).toBeUndefined()
   })
 })

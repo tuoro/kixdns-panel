@@ -396,6 +396,12 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .rule-summary > strong { color: #3f4b46; font-weight: 650; }
 .rule-summary > svg { flex: 0 0 auto; color: #92a09a; }
 .rule-summary > em { padding: 2px 5px; color: #8a651f; background: var(--amber-soft); border-radius: 3px; font-style: normal; white-space: nowrap; }
+.rule-flow { margin-left: auto; padding: 2px 5px; color: #52605a; background: #e9eeec; border-radius: 3px; font-size: 8px; font-weight: 700; white-space: nowrap; }
+.rule-flow--continue { color: #256849; background: var(--green-soft); }
+.rule-flow--jump, .rule-flow--conditional { color: #8a651f; background: var(--amber-soft); }
+.rule-flow--unknown { color: #765f36; background: #f3efe7; }
+.rule-order-warning { display: flex; align-items: flex-start; gap: 6px; margin-top: 7px; padding: 7px 8px; color: #8b4f1d; background: #fff8ed; border: 1px solid #ead8ba; border-radius: 4px; font-size: 9px; line-height: 1.45; }
+.rule-order-warning > svg { flex: 0 0 auto; margin-top: 1px; }
 .rule-stage { min-width: 0; padding: 10px 0; }
 .rule-stage + .rule-stage { border-top: 1px dashed #e2e7e5; }
 .rule-stage__title { min-height: 30px; display: flex; align-items: center; gap: 8px; }

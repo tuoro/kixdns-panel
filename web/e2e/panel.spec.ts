@@ -164,6 +164,25 @@ test('规则支持单条和当前 Pipeline 批量收起展开', async ({ page })
   await expectNoPageOverflow(page)
 })
 
+test('规则显示控制流并提示被前方兜底规则遮挡', async ({ page }) => {
+  await open(page, '/config')
+  const pipeline = page.locator('.pipeline-block').first()
+  await pipeline.scrollIntoViewIfNeeded()
+
+  const fallback = pipeline.locator('.rule-block').first()
+  await expect(fallback.locator('.rule-flow')).toHaveText('在此终止')
+
+  await pipeline.getByRole('button', { name: '添加规则' }).click()
+  const specific = pipeline.locator('.rule-block').nth(1)
+  await specific.locator('header input').fill('specific')
+  await expect(specific.locator('.rule-flow')).toHaveText('继续后续规则')
+  await expect(specific.locator('.rule-order-warning')).toContainText('前面的 #1“secure-forward”匹配任意请求并终止')
+
+  await specific.getByRole('button', { name: '置顶规则 specific' }).click()
+  await expect(pipeline.locator('.rule-order-warning')).toHaveCount(0)
+  await expectNoPageOverflow(page)
+})
+
 test('规则支持在当前 Pipeline 内快捷调整执行顺序', async ({ page }) => {
   await open(page, '/config')
   const pipeline = page.locator('.pipeline-block').first()

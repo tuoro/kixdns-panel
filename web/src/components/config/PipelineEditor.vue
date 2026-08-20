@@ -16,7 +16,7 @@ import {
   ruleHasForward,
 } from '../../config-editor/model'
 import type { KixConfig, MatcherConfig, PipelineConfig, PipelineSelectConfig, PipelineSelectMode, RuleConfig } from '../../config-editor/types'
-import { summarizeRule } from '../../config-editor/summary'
+import { analyzeRuleFlow, findBlockingRule, summarizeRule } from '../../config-editor/summary'
 import ActionList from './ActionList.vue'
 import MatcherList from './MatcherList.vue'
 
@@ -123,6 +123,14 @@ function toggleAllRules(pipeline: PipelineConfig): void {
 function responseEnabled(rule: RuleConfig): boolean {
   return ruleHasForward(rule)
 }
+
+function blockingRuleWarning(pipeline: PipelineConfig, ruleIndex: number): string | undefined {
+  const blocker = findBlockingRule(pipeline, ruleIndex)
+  if (!blocker) return undefined
+  const blockerFlow = analyzeRuleFlow(pipeline.rules[blocker.index]!)
+  const outcome = blockerFlow.kind === 'jump' ? '跳转' : '终止'
+  return `前面的 #${blocker.index + 1}“${blocker.name}”匹配任意请求并${outcome}，此规则按当前顺序不会执行`
+}
 </script>
 
 <template>
@@ -207,6 +215,10 @@ function responseEnabled(rule: RuleConfig): boolean {
                 <ArrowRight :size="13" />
                 <span>执行</span><strong>{{ summarizeRule(rule).action }}</strong>
                 <em v-if="responseEnabled(rule)">含响应阶段</em>
+                <b class="rule-flow" :class="`rule-flow--${analyzeRuleFlow(rule).kind}`">{{ analyzeRuleFlow(rule).label }}</b>
+              </p>
+              <p v-if="blockingRuleWarning(pipeline, ruleIndex)" class="rule-order-warning">
+                <AlertTriangle :size="14" />{{ blockingRuleWarning(pipeline, ruleIndex) }}
               </p>
 
               <template v-if="!ruleCollapsed(rule)">

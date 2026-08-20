@@ -1,4 +1,16 @@
-import type { ActionConfig, MatcherConfig, MatcherScope, RuleConfig } from './types'
+import type { ActionConfig, MatcherConfig, MatcherScope, PipelineConfig, RuleConfig } from './types'
+
+export type RuleFlowKind = 'continue' | 'terminate' | 'jump' | 'conditional' | 'unknown'
+
+export interface RuleFlowSummary {
+  kind: RuleFlowKind
+  label: string
+}
+
+export interface BlockingRuleSummary {
+  index: number
+  name: string
+}
 
 function text(value: unknown, fallback = '未设置'): string {
   if (typeof value === 'string' && value.trim()) return value.trim()
@@ -106,4 +118,60 @@ export function summarizeRule(rule: RuleConfig): { condition: string; action: st
     condition: summarizeMatchers(rule.matchers, rule.matcher_operator, 'request'),
     action: summarizeActions(rule.actions),
   }
+}
+
+function hasResponseContinue(rule: RuleConfig): boolean {
+  return [...rule.response_actions_on_match, ...rule.response_actions_on_miss]
+    .some((action) => action.type === 'continue')
+}
+
+export function analyzeRuleFlow(rule: RuleConfig): RuleFlowSummary {
+  if (rule.actions.filter((action) => action.type === 'forward').length > 1) {
+    return hasResponseContinue(rule)
+      ? { kind: 'conditional', label: '响应后可能继续' }
+      : { kind: 'terminate', label: '在此终止' }
+  }
+
+  for (const action of rule.actions) {
+    if (action.type === 'log') continue
+    if (action.type === 'continue' || action.type === 'replace_txt_response') {
+      return { kind: 'continue', label: '继续后续规则' }
+    }
+    if (action.type === 'jump_to_pipeline') return { kind: 'jump', label: '跳转流程' }
+    if (action.type === 'forward') {
+      return hasResponseContinue(rule)
+        ? { kind: 'conditional', label: '响应后可能继续' }
+        : { kind: 'terminate', label: '在此终止' }
+    }
+    if ([
+      'static_response',
+      'static_ip_response',
+      'static_cname_response',
+      'static_txt_response',
+      'allow',
+      'deny',
+    ].includes(action.type)) return { kind: 'terminate', label: '在此终止' }
+    return { kind: 'unknown', label: '控制流未知' }
+  }
+
+  return { kind: 'continue', label: '继续后续规则' }
+}
+
+export function ruleMatchesEveryRequest(rule: RuleConfig): boolean {
+  if (rule.matchers.length === 0) return true
+  if (!rule.matchers.every((matcher) => matcher.operator === 'and')) return false
+  if (rule.matcher_operator === 'or') return rule.matchers.some((matcher) => matcher.type === 'any')
+  return rule.matcher_operator === 'and' && rule.matchers.every((matcher) => matcher.type === 'any')
+}
+
+export function findBlockingRule(pipeline: PipelineConfig, ruleIndex: number): BlockingRuleSummary | undefined {
+  for (let index = 0; index < ruleIndex; index += 1) {
+    const rule = pipeline.rules[index]
+    if (!rule || !ruleMatchesEveryRequest(rule)) continue
+    const flow = analyzeRuleFlow(rule)
+    if (flow.kind === 'terminate' || flow.kind === 'jump') {
+      return { index, name: rule.name || `规则 ${index + 1}` }
+    }
+  }
+  return undefined
 }
