@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { AlertTriangle, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, GitBranch, Plus, Trash2 } from '@lucide/vue'
+import { AlertTriangle, ArrowDown, ArrowDownToLine, ArrowRight, ArrowUp, ArrowUpToLine, GitBranch, Plus, Trash2 } from '@lucide/vue'
 import { computed, ref } from 'vue'
 import {
   createEcs,
@@ -16,6 +16,7 @@ import {
   ruleHasForward,
 } from '../../config-editor/model'
 import type { KixConfig, MatcherConfig, PipelineConfig, PipelineSelectConfig, PipelineSelectMode, RuleConfig } from '../../config-editor/types'
+import { summarizeRule } from '../../config-editor/summary'
 import ActionList from './ActionList.vue'
 import MatcherList from './MatcherList.vue'
 
@@ -165,6 +166,12 @@ function responseEnabled(rule: RuleConfig): boolean {
                   <button class="icon-button icon-button--small icon-button--danger" type="button" :title="`删除规则 ${rule.name || ruleIndex + 1}`" :aria-label="`删除规则 ${rule.name || ruleIndex + 1}`" @click="removeRule(pipeline, ruleIndex)"><Trash2 :size="14" /></button>
                 </div>
               </header>
+              <p class="rule-summary">
+                <span>当</span><strong>{{ summarizeRule(rule).condition }}</strong>
+                <ArrowRight :size="13" />
+                <span>执行</span><strong>{{ summarizeRule(rule).action }}</strong>
+                <em v-if="responseEnabled(rule)">含响应阶段</em>
+              </p>
 
               <div class="rule-stage">
                 <div class="rule-stage__title">

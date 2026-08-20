@@ -148,6 +148,8 @@ test('规则支持在当前 Pipeline 内快捷调整执行顺序', async ({ page
   await open(page, '/config')
   const pipeline = page.locator('.pipeline-block').first()
   await pipeline.scrollIntoViewIfNeeded()
+  await expect(pipeline.locator('.rule-summary').first()).toContainText(/当\s*任意请求/)
+  await expect(pipeline.locator('.rule-summary').first()).toContainText(/执行\s*转发至 1\.1\.1\.1:53（UDP）/)
 
   await pipeline.getByRole('button', { name: '添加规则' }).click()
   await pipeline.getByRole('button', { name: '添加规则' }).click()
