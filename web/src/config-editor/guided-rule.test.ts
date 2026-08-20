@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { buildGuidedRule, createGuidedRuleDraft, guidedRuleInsertIndex } from './guided-rule'
+import {
+  cloneGuidedRule,
+  createGuidedRuleFromTemplate,
+  guidedRuleInsertIndexForRule,
+  guidedRuleValidationErrors,
+  ignoredActionsAfterTerminal,
+} from './guided-rule'
 import type { PipelineConfig } from './types'
 
 function pipeline(): PipelineConfig {
@@ -18,41 +24,53 @@ function pipeline(): PipelineConfig {
   }
 }
 
-describe('引导式规则创建', () => {
-  it('将 GeoSite 转发意图生成标准规则', () => {
+describe('一键添加规则', () => {
+  it('常用模板生成可继续编辑的完整标准规则', () => {
     const current = pipeline()
-    const draft = createGuidedRuleDraft()
-    draft.scopeValue = 'geosite:cn'
-    draft.targetValue = '223.5.5.5:53'
+    const fallback = createGuidedRuleFromTemplate(current, 'response_fallback', 'global_doh')
 
-    expect(buildGuidedRule(current, draft)).toMatchObject({
-      name: 'geo-site-cn-forward',
-      matchers: [{ type: 'geo_site', operator: 'and', value: 'geosite:cn' }],
-      matcher_operator: 'and',
-      actions: [{ type: 'forward', upstream: '223.5.5.5:53', transport: '' }],
+    expect(fallback).toMatchObject({
+      name: 'response-fallback',
+      matchers: [{ type: 'geo_site', value: 'geosite:cn' }],
+      actions: [{ type: 'forward' }],
+      response_matcher_operator: 'or',
+      response_actions_on_match: [
+        { type: 'log', level: 'warn' },
+        { type: 'jump_to_pipeline', pipeline: 'global_doh' },
+      ],
     })
+    expect(guidedRuleValidationErrors(fallback, current.id)).toEqual([])
+    expect(guidedRuleInsertIndexForRule(current, fallback)).toBe(0)
   })
 
-  it('保留自定义名称并避免与已有规则重名', () => {
-    const current = pipeline()
-    const draft = createGuidedRuleDraft()
-    draft.name = 'fallback-forward'
-    draft.scopeValue = 'cn'
-    draft.targetValue = '223.5.5.5:53'
+  it('编辑副本保留未知字段且不修改原规则', () => {
+    const original = pipeline().rules[0]!
+    original.future_rule_option = { enabled: true }
+    original.actions[0]!.future_action_option = 'keep'
 
-    expect(buildGuidedRule(current, draft).name).toBe('fallback-forward-2')
+    const copy = cloneGuidedRule(original)
+    copy.name = 'changed'
+
+    expect(original.name).toBe('fallback-forward')
+    expect(copy.future_rule_option).toEqual({ enabled: true })
+    expect(copy.actions[0]?.future_action_option).toBe('keep')
   })
 
-  it('把具体规则放到终止型兜底规则之前，把新兜底规则放在末尾', () => {
+  it('校验缺失字段、自跳转和终止动作后的无效动作', () => {
     const current = pipeline()
-    expect(guidedRuleInsertIndex(current, 'geo_site')).toBe(0)
-    expect(guidedRuleInsertIndex(current, 'all')).toBe(1)
+    const blank = createGuidedRuleFromTemplate(current, 'blank')
+    blank.actions = [
+      { type: 'jump_to_pipeline', pipeline: current.id },
+      { type: 'log', level: 'info' },
+    ]
 
-    current.rules[0]!.actions = [{ type: 'continue' }]
-    expect(guidedRuleInsertIndex(current, 'domain_suffix')).toBe(1)
+    expect(guidedRuleValidationErrors(blank, current.id)).toContain('不能跳转到当前 Pipeline')
+    expect(ignoredActionsAfterTerminal(blank.actions)).toBe(1)
+    expect(ignoredActionsAfterTerminal([{ type: 'forward' }, { type: 'log' }], 'response')).toBe(0)
+    expect(ignoredActionsAfterTerminal([{ type: 'continue' }, { type: 'log' }], 'response')).toBe(1)
+    expect(guidedRuleInsertIndexForRule(current, blank)).toBe(1)
 
-    current.rules[0]!.actions = [{ type: 'forward' }]
-    current.rules[0]!.response_actions_on_match = [{ type: 'continue' }]
-    expect(guidedRuleInsertIndex(current, 'qtype')).toBe(0)
+    blank.actions = [{ type: 'continue' }]
+    expect(guidedRuleInsertIndexForRule(current, blank)).toBe(0)
   })
 })

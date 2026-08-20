@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Plus, X } from '@lucide/vue'
+import { ArrowDown, ArrowUp, Plus, X } from '@lucide/vue'
 import { computed } from 'vue'
 import { createMatcher, resetMatcher } from '../../config-editor/model'
 import { MATCHER_DEFINITIONS, MATCH_OPERATORS, QTYPE_OPTIONS } from '../../config-editor/schema'
@@ -32,11 +32,19 @@ function countryCodesValue(matcher: MatcherConfig): string {
 }
 
 function setCountryCodes(matcher: MatcherConfig, event: Event): void {
-  matcher.country_codes = (event.currentTarget as HTMLInputElement).value
+  matcher.country_codes = [...new Set((event.currentTarget as HTMLInputElement).value
     .replace(/^geoip:/i, '')
-    .split(',')
+    .split(/[\s,，;；]+/)
     .map((item) => item.trim().toUpperCase())
-    .filter(Boolean)
+    .filter(Boolean))]
+}
+
+function move(index: number, offset: -1 | 1): void {
+  const target = index + offset
+  if (target < 0 || target >= matchers.value.length) return
+  const [matcher] = matchers.value.splice(index, 1)
+  if (matcher) matchers.value.splice(target, 0, matcher)
+  if (props.operatorMode === 'custom' && matchers.value[0]) matchers.value[0].operator = 'and'
 }
 </script>
 
@@ -63,7 +71,11 @@ function setCountryCodes(matcher: MatcherConfig, event: Event): void {
         <option value="regex">正则</option>
       </select>
       <label v-if="fields(matcher).includes('expect')" class="compact-check"><input v-model="matcher.expect" type="checkbox"><span>期望存在</span></label>
-      <button class="icon-button icon-button--small" type="button" :title="`删除条件 ${index + 1}`" @click="remove(index)"><X :size="14" /></button>
+      <div class="matcher-row__controls">
+        <button class="icon-button icon-button--small" type="button" :disabled="index === 0" :title="`上移条件 ${index + 1}`" @click="move(index, -1)"><ArrowUp :size="14" /></button>
+        <button class="icon-button icon-button--small" type="button" :disabled="index === matchers.length - 1" :title="`下移条件 ${index + 1}`" @click="move(index, 1)"><ArrowDown :size="14" /></button>
+        <button class="icon-button icon-button--small" type="button" :title="`删除条件 ${index + 1}`" @click="remove(index)"><X :size="14" /></button>
+      </div>
     </div>
     <button class="inline-command" type="button" @click="matchers.push(createMatcher(scope))"><Plus :size="14" />添加条件</button>
   </div>
