@@ -144,6 +144,26 @@ test('处理流程仅在多条件时显示条件关系', async ({ page }) => {
   await expectNoPageOverflow(page)
 })
 
+test('规则支持单条和当前 Pipeline 批量收起展开', async ({ page }) => {
+  await open(page, '/config')
+  const pipeline = page.locator('.pipeline-block').first()
+  const rule = pipeline.locator('.rule-block').first()
+  await pipeline.scrollIntoViewIfNeeded()
+
+  await expect(rule.locator('.rule-stage')).not.toHaveCount(0)
+  await rule.getByRole('button', { name: '收起规则 secure-forward' }).click()
+  await expect(rule.locator('.rule-stage')).toHaveCount(0)
+  await expect(rule.locator('.rule-summary')).toBeVisible()
+  await rule.getByRole('button', { name: '展开规则 secure-forward' }).click()
+  await expect(rule.locator('.rule-stage')).not.toHaveCount(0)
+
+  await pipeline.getByRole('button', { name: '全部收起' }).click()
+  await expect(pipeline.locator('.rule-stage')).toHaveCount(0)
+  await pipeline.getByRole('button', { name: '全部展开' }).click()
+  await expect(pipeline.locator('.rule-stage')).not.toHaveCount(0)
+  await expectNoPageOverflow(page)
+})
+
 test('规则支持在当前 Pipeline 内快捷调整执行顺序', async ({ page }) => {
   await open(page, '/config')
   const pipeline = page.locator('.pipeline-block').first()
