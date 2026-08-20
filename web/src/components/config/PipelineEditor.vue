@@ -18,6 +18,7 @@ import {
 import type { KixConfig, MatcherConfig, PipelineConfig, PipelineSelectConfig, PipelineSelectMode, RuleConfig } from '../../config-editor/types'
 import { analyzeRuleFlow, findBlockingRule, summarizeRule } from '../../config-editor/summary'
 import ActionList from './ActionList.vue'
+import DnsSolutionEditor from './DnsSolutionEditor.vue'
 import MatcherList from './MatcherList.vue'
 import RuleCreationGuide from './RuleCreationGuide.vue'
 
@@ -29,6 +30,7 @@ const customSelectors = ref(new Set<PipelineSelectConfig>())
 const customMatcherGroups = ref(new Set<MatcherConfig[]>())
 const collapsedRules = ref(new Set<RuleConfig>())
 const guidedSession = ref<{ pipeline: PipelineConfig; rule?: RuleConfig; ruleIndex?: number }>()
+const manualMode = ref(false)
 
 function selectorMode(selector: PipelineSelectConfig): PipelineSelectMode {
   return customSelectors.value.has(selector) ? 'custom' : inferPipelineSelectMode(selector)
@@ -162,6 +164,9 @@ function saveGuidedRule(rule: RuleConfig, index: number): void {
 </script>
 
 <template>
+  <DnsSolutionEditor v-model="config" :manual-active="manualMode" @manual="manualMode = !manualMode" @notice="emit('notice', $event)" />
+
+  <template v-if="manualMode">
   <section class="config-section">
     <header class="config-section__header config-section__header--actions">
       <div><span class="section-mark section-mark--amber"></span><h3>分流规则</h3><em>{{ config.pipeline_select.length }}</em></div>
@@ -293,4 +298,5 @@ function saveGuidedRule(rule: RuleConfig, index: number): void {
     @cancel="guidedSession = undefined"
     @save="saveGuidedRule"
   />
+  </template>
 </template>

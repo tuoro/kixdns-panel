@@ -13,6 +13,10 @@ async function expectNoPageOverflow(page: Page): Promise<void> {
   expect(sizes.scrollWidth).toBeLessThanOrEqual(sizes.clientWidth)
 }
 
+async function openManualConfig(page: Page): Promise<void> {
+  await page.getByRole('button', { name: '手动配置', exact: true }).click()
+}
+
 test('首次未启动时保留完整概览布局', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('kixdns:demo-empty-first-install', 'true'))
   await open(page, '/')
@@ -89,8 +93,35 @@ test('Geo 维护结果离开页面后销毁', async ({ page }) => {
   await expect(page.locator('.geo-data-success')).toHaveCount(0)
 })
 
+test('默认用完整方案创建并保留手动配置入口', async ({ page }) => {
+  await open(page, '/config')
+  await expect(page.getByRole('heading', { name: 'DNS 处理方案' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '分流规则' })).toHaveCount(0)
+
+  const before = await page.locator('.solution-card').count()
+  await page.getByRole('button', { name: '一键添加方案', exact: true }).click()
+  const guide = page.getByRole('dialog', { name: '一键添加 DNS 方案' })
+  await guide.getByRole('button', { name: /指定域名上游/ }).click()
+  await guide.getByLabel('条件 1 值').fill('example.net')
+  await guide.getByLabel('动作 1 上游').fill('9.9.9.9:53')
+  await expect(guide.locator('.solution-guide__preview').first()).toContainText('example.net')
+  await guide.getByRole('button', { name: '创建方案', exact: true }).click()
+
+  await expect(page.locator('.solution-card')).toHaveCount(before + 1)
+  const created = page.locator('.solution-card').filter({ hasText: 'example.net' })
+  await expect(created).toContainText('9.9.9.9:53')
+  await created.getByRole('button', { name: '一键编辑' }).click()
+  await expect(page.getByRole('dialog', { name: '一键编辑 DNS 方案' })).toBeVisible()
+  await page.getByRole('button', { name: '关闭一键方案' }).click()
+
+  await openManualConfig(page)
+  await expect(page.getByRole('heading', { name: '分流规则' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '处理流程' })).toBeVisible()
+})
+
 test('入口分流使用渐进式条件关系编辑', async ({ page }) => {
   await open(page, '/config')
+  await openManualConfig(page)
   await page.getByRole('button', { name: '添加分流' }).click()
 
   const selector = page.locator('.selector-block').last()
@@ -120,6 +151,7 @@ test('入口分流使用渐进式条件关系编辑', async ({ page }) => {
 
 test('处理流程仅在多条件时显示条件关系', async ({ page }) => {
   await open(page, '/config')
+  await openManualConfig(page)
   const rule = page.locator('.rule-block').first()
   await rule.scrollIntoViewIfNeeded()
 
@@ -146,6 +178,7 @@ test('处理流程仅在多条件时显示条件关系', async ({ page }) => {
 
 test('一键规则支持模板、组合条件、双响应分支和再次编辑', async ({ page }) => {
   await open(page, '/config')
+  await openManualConfig(page)
   await page.getByRole('button', { name: '添加 Pipeline', exact: true }).click()
   const fallbackPipeline = page.locator('.pipeline-block').last()
   await fallbackPipeline.locator('summary').click()
@@ -213,6 +246,7 @@ test('一键规则支持模板、组合条件、双响应分支和再次编辑',
 
 test('规则支持单条和当前 Pipeline 批量收起展开', async ({ page }) => {
   await open(page, '/config')
+  await openManualConfig(page)
   const pipeline = page.locator('.pipeline-block').first()
   const rule = pipeline.locator('.rule-block').first()
   await pipeline.scrollIntoViewIfNeeded()
@@ -233,6 +267,7 @@ test('规则支持单条和当前 Pipeline 批量收起展开', async ({ page })
 
 test('规则显示控制流并提示被前方兜底规则遮挡', async ({ page }) => {
   await open(page, '/config')
+  await openManualConfig(page)
   const pipeline = page.locator('.pipeline-block').first()
   await pipeline.scrollIntoViewIfNeeded()
 
@@ -252,6 +287,7 @@ test('规则显示控制流并提示被前方兜底规则遮挡', async ({ page 
 
 test('规则支持在当前 Pipeline 内快捷调整执行顺序', async ({ page }) => {
   await open(page, '/config')
+  await openManualConfig(page)
   const pipeline = page.locator('.pipeline-block').first()
   await pipeline.scrollIntoViewIfNeeded()
   await expect(pipeline.locator('.rule-summary').first()).toContainText(/当\s*任意请求/)
@@ -278,6 +314,7 @@ test('规则支持在当前 Pipeline 内快捷调整执行顺序', async ({ page
 
 test('转发动作支持不写入协议的自动传输模式', async ({ page }) => {
   await open(page, '/config')
+  await openManualConfig(page)
   const transport = page.getByLabel(/动作 \d+ 传输协议/).first()
   await expect(transport.locator('option[value=""]')).toHaveText('自动（按上游）')
   await transport.selectOption('')
