@@ -56,7 +56,7 @@ Panel Web ---- Panel Server ---- SQLite
 - Artifact 名称为 `kixdns-enhanced-<来源>-<上游身份>-p<补丁集>-<输入指纹>-linux-<架构>`。输入指纹只覆盖锁文件选择的补丁集、`prepare` 构建路径、工作流和 Rust 工具链；仅用于自动重基的 `overlay.rs` 不进入可变指纹。新增更高补丁集或修改该维护逻辑不会改变历史版本指纹，目录新增版本时只补建缺失项。
 - 每个 Artifact 携带 `KIXDNS_CAPABILITIES.json`，并与二进制、上游锁和构建提交共同写入 `SHA256SUMS`；能力清单也是输入指纹的一部分。
 - 构建库存会校验全部锁的补丁集引用。拉取请求和直接推送均不得修改主分支已有集合，只能新增高于当前最大值的编号。
-- 每周库存检查会续建缺失或将在 7 天内过期的上游包；这些 Artifact 仍使用 GitHub 的 90 天保留期，不创建上游 KixDNS Release。面板自身通过 GitHub Release 发布完整安装包，当前正式版本为 `v1.0.21`。
+- 每周库存检查会续建缺失或将在 7 天内过期的上游包；这些 Artifact 仍使用 GitHub 的 90 天保留期，不创建上游 KixDNS Release。面板自身通过 GitHub Release 发布完整安装包，当前正式版本为 `v1.0.22`。
 - `build-panel.yml` 只监听 Panel Server、Web、部署脚本和面板依赖。它从最近成功的内核工作流复用上游身份完全匹配的 Artifact，经包内 SHA-256 和 ELF 架构校验后生成完整安装包，不重新编译 KixDNS。
 - 发布构建固定在 Ubuntu 22.04 容器中完成，并拒绝包含高于 `GLIBC_2.35` 符号的 KixDNS 或 Panel Server，避免 GitHub Runner 升级悄然抬高发行版要求。
 - PR 只执行对应边界的验证 Job，不上传可安装 Artifact；README、截图等纯文档变化不触发打包工作流。
