@@ -161,7 +161,7 @@ function save(): void {
           </section>
 
           <section class="rule-guide__step rule-guide__step--confirm">
-            <header><span>{{ editing ? 4 : 5 }}</span><div><strong>确认完整流程</strong><small>保存后仍可用一键编辑或手动编辑继续调整</small></div></header>
+            <header><span>{{ editing ? 4 : 5 }}</span><div><strong>确认完整流程</strong><small>保存后仍可用一键编辑或自由编辑继续调整</small></div></header>
             <p class="rule-guide__preview"><span>当</span><strong>{{ preview.condition }}</strong><ArrowRight :size="14" /><span>执行</span><strong>{{ preview.action }}</strong></p>
             <template v-if="responseEnabled">
               <p class="rule-guide__preview rule-guide__preview--response"><span>若</span><strong>{{ responseCondition }}</strong><ArrowRight :size="14" /><span>匹配成功</span><strong>{{ successActions }}</strong></p>

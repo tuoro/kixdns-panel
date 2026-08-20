@@ -14,7 +14,9 @@ async function expectNoPageOverflow(page: Page): Promise<void> {
 }
 
 async function openManualConfig(page: Page): Promise<void> {
-  await page.getByRole('button', { name: '手动配置', exact: true }).click()
+  await page.locator('.solution-section__actions').getByRole('button', { name: '自由编辑', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '快捷编辑' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '返回快捷编辑' })).toBeVisible()
 }
 
 test('首次未启动时保留完整概览布局', async ({ page }) => {
@@ -93,9 +95,9 @@ test('Geo 维护结果离开页面后销毁', async ({ page }) => {
   await expect(page.locator('.geo-data-success')).toHaveCount(0)
 })
 
-test('默认用完整方案创建并保留手动配置入口', async ({ page }) => {
+test('默认用完整方案创建并保留自由编辑入口', async ({ page }) => {
   await open(page, '/config')
-  await expect(page.getByRole('heading', { name: 'DNS 处理方案' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '快捷编辑' })).toBeVisible()
   await expect(page.getByRole('heading', { name: '分流规则' })).toHaveCount(0)
 
   const before = await page.locator('.solution-card').count()
@@ -117,6 +119,9 @@ test('默认用完整方案创建并保留手动配置入口', async ({ page }) 
   await openManualConfig(page)
   await expect(page.getByRole('heading', { name: '分流规则' })).toBeVisible()
   await expect(page.getByRole('heading', { name: '处理流程' })).toBeVisible()
+  await page.getByRole('button', { name: '返回快捷编辑' }).click()
+  await expect(page.getByRole('heading', { name: '快捷编辑' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '分流规则' })).toHaveCount(0)
 })
 
 test('入口分流使用渐进式条件关系编辑', async ({ page }) => {

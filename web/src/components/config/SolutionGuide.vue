@@ -195,7 +195,7 @@ function save(): void {
           </template>
 
           <section class="solution-guide__step solution-guide__step--confirm">
-            <header><span>{{ editing ? 5 : 6 }}</span><div><strong>确认完整路径</strong><small>{{ drafts.length > 1 ? `当前查看第 ${activeIndex + 1} 个，共 ${drafts.length} 个` : '保存后仍可一键编辑或进入手动配置' }}</small></div></header>
+            <header><span>{{ editing ? 5 : 6 }}</span><div><strong>确认完整路径</strong><small>{{ drafts.length > 1 ? `当前查看第 ${activeIndex + 1} 个，共 ${drafts.length} 个` : '保存后仍可一键编辑或进入自由编辑' }}</small></div></header>
             <p class="solution-guide__preview"><strong>{{ preview.entry }}</strong><ArrowRight :size="14" /><strong>{{ draft.selector.pipeline }}</strong><ArrowRight :size="14" /><strong>{{ draft.pipelineMode === 'reuse' ? '复用该流程' : preview.action }}</strong></p>
             <p v-if="responseEnabled && draft.pipelineMode !== 'reuse'" class="solution-guide__preview"><span>响应：</span><strong>{{ preview.response }}</strong><ArrowRight :size="14" /><strong>{{ summarizeActions(draft.rule.response_actions_on_match) }}</strong><span>；否则</span><strong>{{ summarizeActions(draft.rule.response_actions_on_miss) }}</strong></p>
             <ul v-if="allErrors.length" class="solution-guide__errors"><li v-for="error in [...new Set(allErrors)]" :key="error">{{ error }}</li></ul>

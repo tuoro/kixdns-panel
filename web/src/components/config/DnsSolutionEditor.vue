@@ -6,7 +6,6 @@ import { summarizeActions, summarizeMatchers } from '../../config-editor/summary
 import type { KixConfig, PipelineConfig } from '../../config-editor/types'
 import SolutionGuide from './SolutionGuide.vue'
 
-const props = defineProps<{ manualActive: boolean }>()
 const config = defineModel<KixConfig>({ required: true })
 const emit = defineEmits<{ manual: []; notice: [message: string] }>()
 const session = ref<DnsSolution | 'create'>()
@@ -23,7 +22,7 @@ function solutionEntry(solution: DnsSolution): string {
 
 function solutionAction(solution: DnsSolution): string {
   if (!solution.pipeline) return solution.reason ?? '目标 Pipeline 不存在'
-  if (solution.kind !== 'simple' || !solution.rule) return solution.reason ?? '需要手动配置'
+  if (solution.kind !== 'simple' || !solution.rule) return solution.reason ?? '需要自由编辑'
   return summarizeActions(solution.rule.actions)
 }
 
@@ -100,10 +99,10 @@ function openManual(): void {
 <template>
   <section class="config-section solution-section">
     <header class="config-section__header config-section__header--actions">
-      <div><span class="section-mark section-mark--green"></span><h3>DNS 处理方案</h3><em>{{ solutions.length }}</em></div>
+      <div><span class="section-mark section-mark--green"></span><h3>快捷编辑</h3><em>{{ solutions.length }}</em></div>
       <div class="solution-section__actions">
         <button class="button button--primary" type="button" @click="session = 'create'"><Sparkles :size="15" />一键添加方案</button>
-        <button class="button button--secondary" type="button" @click="openManual"><Settings2 :size="15" />{{ manualActive ? '收起手动配置' : '手动配置' }}</button>
+        <button class="button button--secondary" type="button" @click="openManual"><Settings2 :size="15" />自由编辑</button>
       </div>
     </header>
     <p class="solution-section__intro">每个方案从入口条件一直展示到处理动作和响应分支；方案仍按从上到下顺序匹配，首个命中生效。</p>
@@ -130,10 +129,10 @@ function openManual(): void {
         <div v-if="solution.kind === 'simple' && solution.rule && (solution.rule.response_matchers.length || solution.rule.response_actions_on_match.length || solution.rule.response_actions_on_miss.length)" class="solution-card__response">
           <span>响应处理</span><strong>{{ summarizeMatchers(solution.rule.response_matchers, solution.rule.response_matcher_operator, 'response') }}</strong><ArrowRight :size="13" /><span>成功：</span><strong>{{ summarizeActions(solution.rule.response_actions_on_match) }}</strong><span>失败：</span><strong>{{ summarizeActions(solution.rule.response_actions_on_miss) }}</strong>
         </div>
-        <p v-if="solution.reason" class="solution-card__reason">{{ solution.reason }}。配置会原样保留，请在手动配置中编辑。</p>
+        <p v-if="solution.reason" class="solution-card__reason">{{ solution.reason }}。配置会原样保留，请在自由编辑中调整。</p>
         <footer>
           <button v-if="solution.kind === 'simple'" class="button button--secondary" type="button" @click="session = solution"><Pencil :size="14" />一键编辑</button>
-          <button v-else class="button button--secondary" type="button" @click="openManual"><Settings2 :size="14" />手动编辑</button>
+          <button v-else class="button button--secondary" type="button" @click="openManual"><Settings2 :size="14" />自由编辑</button>
           <button v-if="solution.selectorIndex !== undefined" class="button button--danger" type="button" @click="removeSolution(solution)"><Trash2 :size="14" />删除方案</button>
         </footer>
       </article>

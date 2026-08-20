@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { AlertTriangle, ArrowDown, ArrowDownToLine, ArrowRight, ArrowUp, ArrowUpToLine, ChevronDown, ChevronUp, FoldVertical, GitBranch, Plus, Sparkles, Trash2, UnfoldVertical } from '@lucide/vue'
+import { AlertTriangle, ArrowDown, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUp, ArrowUpToLine, ChevronDown, ChevronUp, FoldVertical, GitBranch, Plus, Sparkles, Trash2, UnfoldVertical } from '@lucide/vue'
 import { computed, ref } from 'vue'
 import {
   createEcs,
@@ -164,9 +164,15 @@ function saveGuidedRule(rule: RuleConfig, index: number): void {
 </script>
 
 <template>
-  <DnsSolutionEditor v-model="config" :manual-active="manualMode" @manual="manualMode = !manualMode" @notice="emit('notice', $event)" />
+  <DnsSolutionEditor v-if="!manualMode" v-model="config" @manual="manualMode = true" @notice="emit('notice', $event)" />
 
   <template v-if="manualMode">
+  <section class="config-section">
+    <header class="config-section__header config-section__header--actions">
+      <div><span class="section-mark section-mark--green"></span><h3>自由编辑</h3></div>
+      <button class="button button--secondary" type="button" @click="manualMode = false"><ArrowLeft :size="15" />返回快捷编辑</button>
+    </header>
+  </section>
   <section class="config-section">
     <header class="config-section__header config-section__header--actions">
       <div><span class="section-mark section-mark--amber"></span><h3>分流规则</h3><em>{{ config.pipeline_select.length }}</em></div>
