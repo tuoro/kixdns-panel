@@ -693,7 +693,25 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
   }
   if (path === '/api/v1/diagnostics/dns') {
     const body = JSON.parse(String(init?.body)) as { domain: string; record_type: string }
-    return { server: '127.0.0.1:53', domain: body.domain, record_type: body.record_type, response_code: 'No Error', elapsed_ms: 12, truncated: false, answers: [`${body.domain}. 300 IN A 104.18.26.120`, `${body.domain}. 300 IN A 104.18.27.120`] } as DnsDiagnostic as T
+    return {
+      server: 'KixDNS 内部执行链',
+      domain: body.domain,
+      record_type: body.record_type,
+      response_code: 'No Error',
+      elapsed_ms: 12,
+      truncated: false,
+      answers: [`${body.domain}. 300 IN A 104.18.26.120`, `${body.domain}. 300 IN A 104.18.27.120`],
+      trace_supported: true,
+      trace_truncated: false,
+      trace: [
+        { stage: 'request', status: 'parsed', label: `${body.record_type} ${body.domain}`, detail: '客户端：127.0.0.1；监听器：default', elapsed_ms: 0 },
+        { stage: 'pipeline', status: 'selected', label: 'default', detail: null, elapsed_ms: 0 },
+        { stage: 'response_cache', status: 'miss', label: '响应缓存未命中', detail: '管线：default', elapsed_ms: 0 },
+        { stage: 'rule', status: 'matched', label: 'geosite-global', detail: '管线：default；匹配器数：1', elapsed_ms: 1 },
+        { stage: 'decision', status: 'selected', label: '规则 geosite-global 转发', detail: '目标：https://1.1.1.1/dns-query；传输：Some(Https)', elapsed_ms: 1 },
+        { stage: 'upstream', status: 'succeeded', label: 'https://1.1.1.1/dns-query', detail: '响应码：No Error；耗时：12 ms；截断：false', elapsed_ms: 12 },
+      ],
+    } as DnsDiagnostic as T
   }
   if (pathname === '/api/v1/settings/github-token') {
     if (method === 'PUT') {

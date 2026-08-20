@@ -25,9 +25,10 @@ const STATS_SNAPSHOT_1H_KEY: &str = "stats_snapshot_1h_v1";
 const STATS_SNAPSHOT_6H_KEY: &str = "stats_snapshot_6h_v1";
 const STATS_SNAPSHOT_24H_KEY: &str = "stats_snapshot_24h_v1";
 
+mod diagnostics;
 mod geo;
+mod updates;
 
-use crate::panel_update::{PanelUpdateStatus, read_status as read_panel_update_status};
 use geo::{
     cleanup_geo_data, get_geo_data, get_geo_data_schedule, save_geo_data_schedule,
     spawn_geo_scheduler, sync_geo_data,
@@ -45,18 +46,13 @@ use crate::control::{
     QueryStatsSnapshot, StatsClearResult, ValidationResult,
 };
 use crate::db::{
-    AuditPage, CONFIG_APPLY_APPLIED, CONFIG_APPLY_FAILED, CONFIG_APPLY_PENDING,
-    ConfigVersionSummary, Database, SessionRecord, UserRecord, ensure_database_parent,
+    CONFIG_APPLY_APPLIED, CONFIG_APPLY_FAILED, CONFIG_APPLY_PENDING, ConfigVersionSummary,
+    Database, SessionRecord, UserRecord, ensure_database_parent,
 };
 use crate::error::{AppError, AppResult};
 use crate::geo_data::{GeoDataError, GeoDataManager};
-use crate::operations::{
-    DnsDiagnostic, LogPage, OperationError, Operations, ServiceAction, ServiceStatus,
-};
-use crate::updates::{
-    GithubTokenStatus, InstalledVersion, UpdateError, UpdateInfo, UpdateManager,
-    UpdateNotifications, UpdateSettings, VersionCatalog, VersionSource,
-};
+use crate::operations::{OperationError, Operations};
+use crate::updates::{UpdateError, UpdateManager, UpdateSettings};
 
 #[derive(Debug, Clone)]
 pub struct AppSettings {
@@ -162,17 +158,6 @@ struct DeleteConfigVersionsResponse {
 }
 
 #[derive(Debug, Serialize)]
-struct PanelUpdateStartResponse {
-    accepted: bool,
-    target_version: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct GithubTokenRequest {
-    token: String,
-}
-
-#[derive(Debug, Serialize)]
 struct ConfigDocumentResponse {
     content: Value,
     sha256: String,
@@ -230,39 +215,11 @@ struct ConfigApplyResponse {
 }
 
 #[derive(Debug, Deserialize)]
-struct LogsQuery {
-    #[serde(default = "default_log_limit")]
-    limit: usize,
-    before: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AuditQuery {
-    #[serde(default = "default_audit_limit")]
-    limit: usize,
-    before_id: Option<i64>,
-    action_prefix: Option<String>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct KixdnsVersionsQuery {
-    #[serde(default)]
-    source: VersionSource,
-}
-
-#[derive(Debug, Deserialize)]
 struct QueryStatsQuery {
     #[serde(default = "default_stats_window")]
     window: u64,
     #[serde(default = "default_stats_limit")]
     limit: usize,
-}
-
-#[derive(Debug, Deserialize)]
-struct DnsDiagnosticRequest {
-    domain: String,
-    #[serde(default = "default_record_type")]
-    record_type: String,
 }
 
 /// 启动面板 HTTP 服务并等待关闭信号。
@@ -388,37 +345,8 @@ fn api_router(state: AppState) -> Router {
         )
         .route("/config/versions/{id}/restore", post(restore_config))
         .route("/cache/flush", post(flush_cache))
-        .route("/service", get(service_status))
-        .route("/service/{action}", post(service_action))
-        .route("/logs", get(logs))
-        .route("/audit", get(audit_events))
-        .route("/diagnostics/dns", post(dns_diagnostic))
-        .route("/updates", get(check_updates))
-        .route("/updates/status", get(update_notifications))
-        .route(
-            "/settings/github-token",
-            get(github_token_status)
-                .put(save_github_token)
-                .delete(delete_github_token),
-        )
-        .route(
-            "/panel-update",
-            get(panel_update_status).post(start_panel_update),
-        )
-        .route("/updates/apply", post(apply_update))
-        .route("/kixdns/versions", get(kixdns_versions))
-        .route(
-            "/kixdns/versions/{source}/{source_id}/install",
-            post(install_kixdns_version),
-        )
-        .route(
-            "/kixdns/versions/{source}/{commit}/activate",
-            post(activate_kixdns_version),
-        )
-        .route(
-            "/kixdns/versions/{source}/{identity}/delete",
-            post(delete_kixdns_version),
-        )
+        .merge(diagnostics::routes())
+        .merge(updates::routes())
         .fallback(not_found)
         .with_state(state)
 }
@@ -963,412 +891,6 @@ async fn flush_cache(
     Ok(Json(result))
 }
 
-async fn service_status(
-    State(state): State<AppState>,
-    jar: CookieJar,
-) -> AppResult<Json<ServiceStatus>> {
-    authenticate(&state.database, &jar).await?;
-    state
-        .operations
-        .service_status()
-        .await
-        .map(Json)
-        .map_err(map_operation_error)
-}
-
-async fn service_action(
-    State(state): State<AppState>,
-    Path(action): Path<String>,
-    jar: CookieJar,
-    headers: HeaderMap,
-) -> AppResult<Json<ServiceStatus>> {
-    let session = authenticate(&state.database, &jar).await?;
-    verify_csrf(&session, &jar, &headers)?;
-    let parsed = ServiceAction::parse(&action).map_err(map_operation_error)?;
-    let status = state
-        .operations
-        .service_action(parsed)
-        .await
-        .map_err(map_operation_error)?;
-    if matches!(parsed, ServiceAction::Start | ServiceAction::Restart) {
-        let reconcile_state = state.clone();
-        tokio::spawn(async move {
-            if let Err(error) = reconcile_pending(&reconcile_state).await {
-                tracing::warn!(error = ?error, "服务启动后应用待应用配置失败");
-            }
-        });
-    }
-    state
-        .database
-        .audit(
-            Some(session.username),
-            format!("service.{action}"),
-            format!("服务状态：{}/{}", status.active_state, status.sub_state),
-            unix_timestamp(),
-        )
-        .await
-        .map_err(AppError::Internal)?;
-    Ok(Json(status))
-}
-
-async fn logs(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    Query(query): Query<LogsQuery>,
-) -> AppResult<Json<LogPage>> {
-    authenticate(&state.database, &jar).await?;
-    if query.before.as_deref().is_some_and(|cursor| {
-        cursor.is_empty()
-            || cursor.len() > 4_096
-            || !cursor.bytes().all(|byte| byte.is_ascii_graphic())
-    }) {
-        return Err(AppError::BadRequest(
-            "log_cursor_invalid",
-            "日志游标无效".to_owned(),
-        ));
-    }
-    state
-        .operations
-        .logs(query.limit, query.before.as_deref())
-        .await
-        .map(Json)
-        .map_err(map_operation_error)
-}
-
-async fn audit_events(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    Query(query): Query<AuditQuery>,
-) -> AppResult<Json<AuditPage>> {
-    authenticate(&state.database, &jar).await?;
-    if query.before_id.is_some_and(|id| id <= 0) {
-        return Err(AppError::BadRequest(
-            "audit_query_invalid",
-            "审计游标无效".to_owned(),
-        ));
-    }
-    let action_prefix = normalize_action_prefix(query.action_prefix)?;
-    state
-        .database
-        .list_audit_events(query.limit, query.before_id, action_prefix)
-        .await
-        .map(Json)
-        .map_err(AppError::Internal)
-}
-
-async fn dns_diagnostic(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    headers: HeaderMap,
-    Json(request): Json<DnsDiagnosticRequest>,
-) -> AppResult<Json<DnsDiagnostic>> {
-    let session = authenticate(&state.database, &jar).await?;
-    verify_csrf(&session, &jar, &headers)?;
-    let config = state.config.current().await.map_err(map_config_error)?;
-    let result = state
-        .operations
-        .dns_query(&config.content, request.domain, request.record_type.clone())
-        .await
-        .map_err(map_operation_error)?;
-    state
-        .database
-        .audit(
-            Some(session.username),
-            "diagnostic.dns".to_owned(),
-            format!("执行 {} 查询", request.record_type),
-            unix_timestamp(),
-        )
-        .await
-        .map_err(AppError::Internal)?;
-    Ok(Json(result))
-}
-
-async fn check_updates(
-    State(state): State<AppState>,
-    jar: CookieJar,
-) -> AppResult<Json<UpdateInfo>> {
-    authenticate(&state.database, &jar).await?;
-    state
-        .updates
-        .check()
-        .await
-        .map(Json)
-        .map_err(map_update_error)
-}
-
-async fn update_notifications(
-    State(state): State<AppState>,
-    jar: CookieJar,
-) -> AppResult<Json<UpdateNotifications>> {
-    authenticate(&state.database, &jar).await?;
-    state
-        .updates
-        .notifications()
-        .await
-        .map(Json)
-        .map_err(map_update_error)
-}
-
-async fn github_token_status(
-    State(state): State<AppState>,
-    jar: CookieJar,
-) -> AppResult<Json<GithubTokenStatus>> {
-    authenticate(&state.database, &jar).await?;
-    Ok(Json(state.updates.github_token_status().await))
-}
-
-async fn save_github_token(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    headers: HeaderMap,
-    Json(request): Json<GithubTokenRequest>,
-) -> AppResult<Json<GithubTokenStatus>> {
-    let session = authenticate(&state.database, &jar).await?;
-    verify_csrf(&session, &jar, &headers)?;
-    let status = state
-        .updates
-        .save_github_token(request.token)
-        .await
-        .map_err(map_update_error)?;
-    state
-        .database
-        .audit(
-            Some(session.username),
-            "system.github_token.configure".to_owned(),
-            "配置 GitHub API Token".to_owned(),
-            unix_timestamp(),
-        )
-        .await
-        .map_err(AppError::Internal)?;
-    Ok(Json(status))
-}
-
-async fn delete_github_token(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    headers: HeaderMap,
-) -> AppResult<Json<GithubTokenStatus>> {
-    let session = authenticate(&state.database, &jar).await?;
-    verify_csrf(&session, &jar, &headers)?;
-    let status = state
-        .updates
-        .delete_github_token()
-        .await
-        .map_err(map_update_error)?;
-    state
-        .database
-        .audit(
-            Some(session.username),
-            "system.github_token.remove".to_owned(),
-            "删除 GitHub API Token".to_owned(),
-            unix_timestamp(),
-        )
-        .await
-        .map_err(AppError::Internal)?;
-    Ok(Json(status))
-}
-
-async fn panel_update_status(
-    State(state): State<AppState>,
-    jar: CookieJar,
-) -> AppResult<Json<PanelUpdateStatus>> {
-    authenticate(&state.database, &jar).await?;
-    read_panel_update_status()
-        .await
-        .map(Json)
-        .map_err(AppError::Internal)
-}
-
-async fn start_panel_update(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    headers: HeaderMap,
-) -> AppResult<Json<PanelUpdateStartResponse>> {
-    let session = authenticate(&state.database, &jar).await?;
-    verify_csrf(&session, &jar, &headers)?;
-    if read_panel_update_status()
-        .await
-        .map_err(AppError::Internal)?
-        .is_running()
-    {
-        return Err(AppError::Conflict(
-            "panel_update_running",
-            "面板在线更新正在进行".to_owned(),
-        ));
-    }
-    let notice = state
-        .updates
-        .panel_update_notice()
-        .await
-        .map_err(map_update_error)?;
-    if !notice.available {
-        return Err(AppError::Conflict(
-            "panel_update_not_available",
-            "当前没有可安装的面板正式更新".to_owned(),
-        ));
-    }
-    let target_version = format!(
-        "v{}",
-        notice.latest_version.ok_or_else(|| {
-            AppError::Internal(anyhow::anyhow!("可用面板更新缺少目标版本"))
-        })?
-    );
-    state
-        .operations
-        .start_panel_update()
-        .await
-        .map_err(map_operation_error)?;
-    state
-        .database
-        .audit(
-            Some(session.username),
-            "panel.update.start".to_owned(),
-            format!("开始在线更新面板到 {target_version}"),
-            unix_timestamp(),
-        )
-        .await
-        .map_err(AppError::Internal)?;
-    Ok(Json(PanelUpdateStartResponse {
-        accepted: true,
-        target_version,
-    }))
-}
-
-async fn apply_update(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    headers: HeaderMap,
-) -> AppResult<Json<UpdateInfo>> {
-    let session = authenticate(&state.database, &jar).await?;
-    verify_csrf(&session, &jar, &headers)?;
-    let _apply_guard = state.config_apply_lock.lock().await;
-    let config = state.config.current().await.map_err(map_config_error)?;
-    let result = state
-        .updates
-        .apply(&config.content, &state.operations, &state.control)
-        .await
-        .map_err(map_update_error)?;
-    state
-        .database
-        .audit(
-            Some(session.username),
-            "update.apply".to_owned(),
-            format!("安装增强构建 {}", result.latest_commit),
-            unix_timestamp(),
-        )
-        .await
-        .map_err(AppError::Internal)?;
-    Ok(Json(result))
-}
-
-async fn kixdns_versions(
-    State(state): State<AppState>,
-    Query(query): Query<KixdnsVersionsQuery>,
-    jar: CookieJar,
-) -> AppResult<Json<VersionCatalog>> {
-    authenticate(&state.database, &jar).await?;
-    state
-        .updates
-        .catalog(query.source)
-        .await
-        .map(Json)
-        .map_err(map_update_error)
-}
-
-async fn install_kixdns_version(
-    State(state): State<AppState>,
-    Path((source, source_id)): Path<(VersionSource, u64)>,
-    jar: CookieJar,
-    headers: HeaderMap,
-) -> AppResult<Json<InstalledVersion>> {
-    let session = authenticate(&state.database, &jar).await?;
-    verify_csrf(&session, &jar, &headers)?;
-    let _apply_guard = state.config_apply_lock.lock().await;
-    let config = state.config.current().await.map_err(map_config_error)?;
-    let result = state
-        .updates
-        .install_version(
-            source,
-            source_id,
-            &config.content,
-            &state.operations,
-            &state.control,
-        )
-        .await
-        .map_err(map_update_error)?;
-    state
-        .database
-        .audit(
-            Some(session.username),
-            "kixdns.version.install".to_owned(),
-            format!("从 {source:?} 安装并激活增强构建 {}", result.commit),
-            unix_timestamp(),
-        )
-        .await
-        .map_err(AppError::Internal)?;
-    Ok(Json(result))
-}
-
-async fn activate_kixdns_version(
-    State(state): State<AppState>,
-    Path((source, commit)): Path<(VersionSource, String)>,
-    jar: CookieJar,
-    headers: HeaderMap,
-) -> AppResult<Json<InstalledVersion>> {
-    let session = authenticate(&state.database, &jar).await?;
-    verify_csrf(&session, &jar, &headers)?;
-    let _apply_guard = state.config_apply_lock.lock().await;
-    let config = state.config.current().await.map_err(map_config_error)?;
-    let result = state
-        .updates
-        .activate_version(
-            source,
-            &commit,
-            &config.content,
-            &state.operations,
-            &state.control,
-        )
-        .await
-        .map_err(map_update_error)?;
-    state
-        .database
-        .audit(
-            Some(session.username),
-            "kixdns.version.activate".to_owned(),
-            format!("切换增强构建 {}", result.commit),
-            unix_timestamp(),
-        )
-        .await
-        .map_err(AppError::Internal)?;
-    Ok(Json(result))
-}
-
-async fn delete_kixdns_version(
-    State(state): State<AppState>,
-    Path((source, identity)): Path<(VersionSource, String)>,
-    jar: CookieJar,
-    headers: HeaderMap,
-) -> AppResult<Json<InstalledVersion>> {
-    let session = authenticate(&state.database, &jar).await?;
-    verify_csrf(&session, &jar, &headers)?;
-    let result = state
-        .updates
-        .delete_version(source, &identity)
-        .await
-        .map_err(map_update_error)?;
-    state
-        .database
-        .audit(
-            Some(session.username),
-            "kixdns.version.delete".to_owned(),
-            format!("删除本地增强构建 {}", result.commit),
-            unix_timestamp(),
-        )
-        .await
-        .map_err(AppError::Internal)?;
-    Ok(Json(result))
-}
-
 async fn rollback_config(
     state: &AppState,
     previous_content: Value,
@@ -1869,39 +1391,6 @@ fn map_update_error(error: UpdateError) -> AppError {
             AppError::ServiceUnavailable("update_unsupported", "当前平台不支持自动更新".to_owned())
         }
     }
-}
-
-const fn default_log_limit() -> usize {
-    200
-}
-
-const fn default_audit_limit() -> usize {
-    50
-}
-
-fn normalize_action_prefix(value: Option<String>) -> AppResult<Option<String>> {
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    let value = value.trim();
-    if value.is_empty() {
-        return Ok(None);
-    }
-    if value.len() > 64
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-    {
-        return Err(AppError::BadRequest(
-            "audit_query_invalid",
-            "审计动作筛选无效".to_owned(),
-        ));
-    }
-    Ok(Some(value.to_ascii_lowercase()))
-}
-
-fn default_record_type() -> String {
-    "A".to_owned()
 }
 
 async fn not_found() -> AppError {

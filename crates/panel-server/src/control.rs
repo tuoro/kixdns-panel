@@ -89,6 +89,28 @@ pub struct StatsClearResult {
     pub cleared: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiagnosticTrace {
+    pub protocol_version: u8,
+    pub domain: String,
+    pub record_type: String,
+    pub response_code: String,
+    pub elapsed_ms: u64,
+    pub truncated: bool,
+    pub answers: Vec<String>,
+    pub trace_truncated: bool,
+    pub trace: Vec<DiagnosticTraceStep>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiagnosticTraceStep {
+    pub stage: String,
+    pub status: String,
+    pub label: String,
+    pub detail: Option<String>,
+    pub elapsed_ms: u64,
+}
+
 #[derive(Debug, Deserialize)]
 struct ProtocolEnvelope {
     protocol_version: u8,
@@ -197,6 +219,19 @@ impl ControlClient {
 
     pub async fn flush_cache(&self) -> Result<CacheFlushResult, ControlError> {
         self.post_json("/v1/cache/flush", Vec::new()).await
+    }
+
+    pub async fn diagnostic_trace(
+        &self,
+        domain: &str,
+        record_type: &str,
+    ) -> Result<DiagnosticTrace, ControlError> {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "domain": domain,
+            "record_type": record_type,
+        }))
+        .map_err(|error| ControlError::Protocol(format!("序列化诊断请求失败：{error}")))?;
+        self.post_json("/v1/diagnostics/trace", body).await
     }
 
     pub async fn wait_for_config(
@@ -518,7 +553,10 @@ fn numeric_value(value: &MetricValue) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ControlError, Health, QueryStatsSnapshot, decode_versioned_json, parse_metrics};
+    use super::{
+        ControlError, DiagnosticTrace, Health, QueryStatsSnapshot, decode_versioned_json,
+        parse_metrics,
+    };
 
     #[test]
     fn parses_and_groups_panel_metrics() {
@@ -583,5 +621,32 @@ kixdns_upstream_results_total{upstream="1.1.1.1:53",transport="udp",result="succ
         }"#;
         let health = decode_versioned_json::<Health>("/v1/health", old_health).unwrap();
         assert!(health.capabilities.is_empty());
+    }
+
+    #[test]
+    fn decodes_diagnostic_execution_trace() {
+        let response = r#"{
+            "protocol_version":1,
+            "domain":"example.com",
+            "record_type":"A",
+            "response_code":"No Error",
+            "elapsed_ms":12,
+            "truncated":false,
+            "answers":[],
+            "trace_truncated":false,
+            "trace":[{
+                "stage":"rule",
+                "status":"matched",
+                "label":"geosite-global",
+                "detail":"管线：default",
+                "elapsed_ms":1
+            }]
+        }"#;
+        let trace =
+            decode_versioned_json::<DiagnosticTrace>("/v1/diagnostics/trace", response.as_bytes())
+                .unwrap();
+        assert_eq!(trace.domain, "example.com");
+        assert_eq!(trace.trace[0].status, "matched");
+        assert!(!trace.trace_truncated);
     }
 }

@@ -1,0 +1,550 @@
+diff --git a/src/engine/execution.rs b/src/engine/execution.rs
+index da6c8cb..fd7a200 100644
+--- a/src/engine/execution.rs
++++ b/src/engine/execution.rs
+@@ -658,6 +658,18 @@ impl Engine {
+                 )
+             };
+ 
++        crate::panel_trace::record(
++            "request",
++            "parsed",
++            format!("{} {}", qtype, qname_cow),
++            Some(format!(
++                "客户端：{}；监听器：{}",
++                peer.ip(),
++                self.listener_label
++            )),
++        );
++        crate::panel_trace::record("pipeline", "selected", pipeline_id.to_string(), None);
++
+         if !skip_cache && !from_fast_path {
+             self.panel_metrics.record_request();
+             self.panel_metrics.record_query(
+@@ -819,6 +831,15 @@ impl Engine {
+             }
+         }
+ 
++        if !skip_cache {
++            crate::panel_trace::record(
++                "response_cache",
++                "miss",
++                "响应缓存未命中",
++                Some(format!("管线：{pipeline_id}")),
++            );
++        }
++
+         // 优化：保持 Cow<str> 以延迟分配，避免不必要的 String 分配
+         // Optimization: Keep Cow<str> to defer allocation, avoid unnecessary String allocation
+         // 大部分情况下 qname_cow 是 Borrowed（零拷贝），只有快速解析失败时才是 Owned
+@@ -903,6 +924,12 @@ impl Engine {
+         let mut jump_count = 0;
+         'decision_loop: loop {
+             while let Decision::Jump { pipeline } = &decision {
++                crate::panel_trace::record(
++                    "pipeline",
++                    "jump",
++                    format!("{} -> {}", current_pipeline_id, pipeline),
++                    None,
++                );
+                 jump_count += 1;
+                 if jump_count > response_jump_limit {
+                     warn!("max jump limit reached");
+diff --git a/src/engine/phases.rs b/src/engine/phases.rs
+index c1c6c58..9ca0ff3 100644
+--- a/src/engine/phases.rs
++++ b/src/engine/phases.rs
+@@ -166,6 +166,12 @@ pub fn check_cache(engine: &Engine, context: &CacheLookupContext<'_>) -> Option<
+                 );
+ 
+                 engine.panel_metrics.record_cache_hit(CacheHitKind::Stale);
++                crate::panel_trace::record(
++                    "response_cache",
++                    "stale",
++                    "命中过期响应缓存",
++                    Some(format!("原始 TTL：{} 秒", hit.original_ttl)),
++                );
+                 return Some(resp_bytes.freeze());
+             } else {
+                 // Cache hit is valid
+@@ -247,6 +253,12 @@ pub fn check_cache(engine: &Engine, context: &CacheLookupContext<'_>) -> Option<
+                 );
+ 
+                 engine.panel_metrics.record_cache_hit(CacheHitKind::Fresh);
++                crate::panel_trace::record(
++                    "response_cache",
++                    "fresh",
++                    "命中新鲜响应缓存",
++                    Some(format!("剩余 TTL：{} 秒", remaining_ttl)),
++                );
+                 return Some(resp_bytes);
+             }
+         }
+@@ -345,6 +357,12 @@ pub fn check_stale_cache(
+             }
+ 
+             engine.panel_metrics.record_cache_hit(CacheHitKind::Stale);
++            crate::panel_trace::record(
++                "response_cache",
++                "stale",
++                "客户端等待超时，返回过期缓存",
++                None,
++            );
+             return Some(resp_bytes.freeze());
+         }
+     }
+@@ -498,6 +516,13 @@ pub async fn handle_forward_decision(
+     };
+     let packet = ecs_packet.as_ref();
+ 
++    crate::panel_trace::record(
++        "upstream",
++        "started",
++        format!("准备转发到 {upstream}"),
++        Some(format!("规则：{rule_name}；传输：{transport:?}")),
++    );
++
+     let mut cleanup_guard = None;
+ 
+     let resp = if allow_reuse {
+@@ -663,6 +688,15 @@ pub async fn handle_forward_decision(
+             }
+ 
+             let effective_ttl = Duration::from_secs(ttl_secs_cache.max(min_ttl.as_secs()));
++            crate::panel_trace::record(
++                "upstream",
++                "succeeded",
++                actual_upstream.clone(),
++                Some(format!(
++                    "响应码：{rcode}；耗时：{} ms；截断：{truncated}",
++                    start.elapsed().as_millis()
++                )),
++            );
+ 
+             // Try to acquire read locks non-blockingly (fast path for concurrent reads)
+             // 尝试非阻塞获取读锁（并发读的快速路径）
+@@ -727,6 +761,17 @@ pub async fn handle_forward_decision(
+             } else {
+                 &empty_actions
+             };
++            if !response_matchers.is_empty() {
++                crate::panel_trace::record(
++                    "response_rule",
++                    if resp_match_ok { "matched" } else { "missed" },
++                    format!(
++                        "响应匹配器 {}",
++                        if resp_match_ok { "命中" } else { "未命中" }
++                    ),
++                    Some(format!("匹配器数：{}", response_matchers.len())),
++                );
++            }
+ 
+             if actions_to_run.is_empty() {
+                 if effective_ttl > Duration::from_secs(0) {
+diff --git a/src/engine/pipeline.rs b/src/engine/pipeline.rs
+index 24a3228..4541c10 100644
+--- a/src/engine/pipeline.rs
++++ b/src/engine/pipeline.rs
+@@ -162,6 +162,7 @@ impl Engine {
+         include_ip: bool,
+         matched_rules: &[Arc<str>],
+     ) {
++        crate::panel_trace::record_decision(&decision);
+         let RuleEvaluationContext {
+             client_ip,
+             qname,
+@@ -253,13 +254,27 @@ impl Engine {
+             if !entry.is_valid() {
+                 self.rule_cache.remove(&rule_hash);
+             } else if entry.matches(&pipeline.id, qname, qtype, qclass, client_ip, include_ip) {
++                crate::panel_trace::record(
++                    "rule_cache",
++                    "hit",
++                    format!("命中管线 {} 的规则缓存", pipeline.id),
++                    Some(format!("已匹配规则：{}", entry.matched_rules.len())),
++                );
+                 for rule_name in entry.matched_rules.iter() {
+                     self.panel_metrics
+                         .record_rule_match(&pipeline.id, rule_name, "request");
+                 }
+-                return (*entry.decision).clone();
++                let decision = (*entry.decision).clone();
++                crate::panel_trace::record_decision(&decision);
++                return decision;
+             }
+         }
++        crate::panel_trace::record(
++            "rule_cache",
++            "miss",
++            format!("管线 {} 的规则缓存未命中", pipeline.id),
++            None,
++        );
+ 
+         // Borrow instead of clone: state lives for the entire function, no heap alloc
+         // 借用而非克隆：state 在整个函数生命周期内存活，零堆分配
+@@ -306,6 +321,12 @@ impl Engine {
+             candidate_indices.sort_unstable();
+             candidate_indices.dedup();
+         }
++        crate::panel_trace::record(
++            "rules",
++            "candidates",
++            format!("筛选出 {} 条候选规则", candidate_indices.len()),
++            Some(format!("管线：{}", pipeline.id)),
++        );
+ 
+         // 3. Execute Rules
+         // 优化：提取 MatcherContext 到循环外部，避免重复构造
+@@ -338,6 +359,16 @@ impl Engine {
+                     matcher_matches(&m.matcher, &ctx)
+                 },
+             );
++            crate::panel_trace::record(
++                "rule",
++                if req_match { "matched" } else { "missed" },
++                rule.name.to_string(),
++                Some(format!(
++                    "管线：{}；匹配器数：{}",
++                    pipeline.id,
++                    rule.matchers.len()
++                )),
++            );
+ 
+             if req_match {
+                 self.panel_metrics
+diff --git a/src/lib.rs b/src/lib.rs
+index 1f8e8bd..0c158bf 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -7,6 +7,7 @@ pub mod error_utils;
+ pub mod lock;
+ pub mod matcher;
+ pub mod panel;
++pub mod panel_trace;
+ pub mod proto_utils;
+ pub mod socket_utils;
+ pub mod watcher;
+diff --git a/src/panel.rs b/src/panel.rs
+index 41c1c8d..362116b 100644
+--- a/src/panel.rs
++++ b/src/panel.rs
+@@ -26,6 +26,8 @@ use hyper::{Method, Request, Response, StatusCode};
+ use hyper_util::rt::TokioIo;
+ use parking_lot::{Mutex, RwLock};
+ #[cfg(unix)]
++use serde::Deserialize;
++#[cfg(unix)]
+ use serde_json::json;
+ 
+ use crate::engine::Engine;
+@@ -37,6 +39,8 @@ const MAX_METRIC_SERIES_PER_MAP: usize = 1_024;
+ const MAX_METRIC_KEY_BYTES: usize = 512;
+ #[cfg(unix)]
+ const MAX_CONFIG_BODY: usize = 4 * 1024 * 1024;
++#[cfg(unix)]
++const MAX_DIAGNOSTIC_BODY: usize = 2 * 1024;
+ const QUERY_STATS_BUCKET_SECONDS: u64 = 3_600;
+ const QUERY_STATS_BUCKETS: usize = 24;
+ const QUERY_STATS_SHARDS: usize = 16;
+@@ -578,7 +582,7 @@ impl PanelMetrics {
+             "started_at_unix": self.started_at_unix,
+             "uptime_seconds": self.uptime_seconds(),
+             "config_generation": active.generation,
+-            "capabilities": ["stats_top_v1", "config_query_stats_v1"],
++            "capabilities": ["stats_top_v1", "config_query_stats_v1", "diagnostics_trace_v1"],
+         })
+     }
+ 
+@@ -799,6 +803,7 @@ async fn handle_request(
+             )
+         }
+         (&Method::POST, "/v1/config/validate") => validate_config(request).await,
++        (&Method::POST, "/v1/diagnostics/trace") => diagnostic_trace(request, engine).await,
+         (&Method::POST, "/v1/cache/flush") => {
+             let response_entries_before = engine.cache.entry_count();
+             let rule_entries_before = engine.rule_cache.entry_count();
+@@ -828,6 +833,140 @@ async fn handle_request(
+     Ok(response)
+ }
+ 
++#[cfg(unix)]
++#[derive(Deserialize)]
++#[serde(deny_unknown_fields)]
++struct DiagnosticRequest {
++    domain: String,
++    record_type: String,
++}
++
++#[cfg(unix)]
++async fn diagnostic_trace(request: Request<Incoming>, engine: Engine) -> Response<Full<Bytes>> {
++    use hickory_proto::op::{Message, MessageType, OpCode, Query};
++    use hickory_proto::rr::{Name, RecordType};
++    use std::str::FromStr;
++
++    let body = match Limited::new(request.into_body(), MAX_DIAGNOSTIC_BODY)
++        .collect()
++        .await
++    {
++        Ok(body) => body.to_bytes(),
++        Err(_) => {
++            return json_response(
++                StatusCode::PAYLOAD_TOO_LARGE,
++                error_json("diagnostic_body_invalid", "诊断请求不能超过 2 KiB"),
++            );
++        }
++    };
++    let request = match serde_json::from_slice::<DiagnosticRequest>(&body) {
++        Ok(request) => request,
++        Err(error) => {
++            return json_response(
++                StatusCode::BAD_REQUEST,
++                error_json(
++                    "diagnostic_request_invalid",
++                    &format!("诊断请求无效：{error}"),
++                ),
++            );
++        }
++    };
++    if request.domain.len() > 253 {
++        return json_response(
++            StatusCode::BAD_REQUEST,
++            error_json("diagnostic_domain_invalid", "域名过长"),
++        );
++    }
++    let name = match Name::from_ascii(&request.domain) {
++        Ok(name) => name,
++        Err(error) => {
++            return json_response(
++                StatusCode::BAD_REQUEST,
++                error_json("diagnostic_domain_invalid", &format!("域名无效：{error}")),
++            );
++        }
++    };
++    let record_type = request.record_type.trim().to_ascii_uppercase();
++    if !matches!(
++        record_type.as_str(),
++        "A" | "AAAA" | "CNAME" | "MX" | "NS" | "PTR" | "SOA" | "SRV" | "TXT"
++    ) {
++        return json_response(
++            StatusCode::BAD_REQUEST,
++            error_json("diagnostic_record_type_invalid", "不支持的 DNS 记录类型"),
++        );
++    }
++    let record_type = match RecordType::from_str(&record_type) {
++        Ok(record_type) => record_type,
++        Err(error) => {
++            return json_response(
++                StatusCode::BAD_REQUEST,
++                error_json(
++                    "diagnostic_record_type_invalid",
++                    &format!("记录类型无效：{error}"),
++                ),
++            );
++        }
++    };
++    let request_id = (unix_timestamp() as u16) ^ (std::process::id() as u16);
++    let mut message = Message::new(request_id, MessageType::Query, OpCode::Query);
++    message.metadata.recursion_desired = true;
++    message.add_query(Query::query(name, record_type));
++    let packet = match message.to_vec() {
++        Ok(packet) => packet,
++        Err(error) => {
++            return json_response(
++                StatusCode::INTERNAL_SERVER_ERROR,
++                error_json(
++                    "diagnostic_encode_failed",
++                    &format!("编码 DNS 请求失败：{error}"),
++                ),
++            );
++        }
++    };
++    let started = Instant::now();
++    let future = crate::panel_trace::capture(engine.handle_packet(
++        &packet,
++        "127.0.0.1:0".parse().expect("valid loopback address"),
++    ));
++    let (result, steps, trace_truncated) =
++        match tokio::time::timeout(std::time::Duration::from_secs(6), future).await {
++            Ok(result) => result,
++            Err(_) => {
++                return json_response(
++                    StatusCode::GATEWAY_TIMEOUT,
++                    error_json("diagnostic_timeout", "DNS 诊断超过 6 秒"),
++                );
++            }
++        };
++    let response = match result.and_then(|bytes| Message::from_vec(&bytes).map_err(Into::into)) {
++        Ok(response) => response,
++        Err(error) => {
++            return json_response(
++                StatusCode::BAD_GATEWAY,
++                error_json(
++                    "diagnostic_query_failed",
++                    &truncate(&format!("{error:#}"), MAX_ERROR_LENGTH),
++                ),
++            );
++        }
++    };
++    json_response(
++        StatusCode::OK,
++        json!({
++            "protocol_version": PROTOCOL_VERSION,
++            "domain": request.domain,
++            "record_type": record_type.to_string(),
++            "response_code": response.metadata.response_code.to_string(),
++            "elapsed_ms": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
++            "truncated": response.metadata.truncation,
++            "answers": response.answers.iter().map(ToString::to_string).collect::<Vec<_>>(),
++            "trace_truncated": trace_truncated,
++            "trace": steps,
++        }),
++    )
++}
++
+ #[cfg(unix)]
+ fn parse_stats_query(query: Option<&str>) -> Result<(u64, usize), &'static str> {
+     let mut window_seconds = 86_400;
+diff --git a/src/panel_trace.rs b/src/panel_trace.rs
+new file mode 100644
+index 0000000..bc38d37
+--- /dev/null
++++ b/src/panel_trace.rs
+@@ -0,0 +1,138 @@
++use std::cell::RefCell;
++use std::future::Future;
++use std::time::Instant;
++
++use serde::Serialize;
++
++const MAX_STEPS: usize = 128;
++const MAX_LABEL_BYTES: usize = 256;
++const MAX_DETAIL_BYTES: usize = 1_024;
++
++#[derive(Clone, Debug, Serialize)]
++pub struct TraceStep {
++    pub stage: &'static str,
++    pub status: &'static str,
++    pub label: String,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub detail: Option<String>,
++    pub elapsed_ms: u64,
++}
++
++struct Collector {
++    started: Instant,
++    steps: Vec<TraceStep>,
++    truncated: bool,
++}
++
++tokio::task_local! {
++    static TRACE: RefCell<Collector>;
++}
++
++pub async fn capture<F>(future: F) -> (F::Output, Vec<TraceStep>, bool)
++where
++    F: Future,
++{
++    TRACE
++        .scope(
++            RefCell::new(Collector {
++                started: Instant::now(),
++                steps: Vec::new(),
++                truncated: false,
++            }),
++            async move {
++                let output = future.await;
++                let (steps, truncated) = TRACE.with(|trace| {
++                    let mut trace = trace.borrow_mut();
++                    (std::mem::take(&mut trace.steps), trace.truncated)
++                });
++                (output, steps, truncated)
++            },
++        )
++        .await
++}
++
++pub fn record(
++    stage: &'static str,
++    status: &'static str,
++    label: impl Into<String>,
++    detail: Option<String>,
++) {
++    let _ = TRACE.try_with(|trace| {
++        let mut trace = trace.borrow_mut();
++        if trace.steps.len() >= MAX_STEPS {
++            trace.truncated = true;
++            return;
++        }
++        let elapsed_ms = u64::try_from(trace.started.elapsed().as_millis()).unwrap_or(u64::MAX);
++        trace.steps.push(TraceStep {
++            stage,
++            status,
++            label: truncate(label.into(), MAX_LABEL_BYTES),
++            detail: detail.map(|value| truncate(value, MAX_DETAIL_BYTES)),
++            elapsed_ms,
++        });
++    });
++}
++
++pub fn record_decision(decision: &crate::engine::rules::Decision) {
++    use crate::engine::rules::Decision;
++
++    match decision {
++        Decision::Static { rcode, answers } => record(
++            "decision",
++            "selected",
++            format!("静态响应 {rcode}"),
++            Some(format!("答案记录数：{}", answers.len())),
++        ),
++        Decision::Forward {
++            upstream,
++            rule_name,
++            transport,
++            ..
++        } => record(
++            "decision",
++            "selected",
++            format!("规则 {rule_name} 转发"),
++            Some(format!("目标：{upstream}；传输：{transport:?}")),
++        ),
++        Decision::Jump { pipeline } => record(
++            "decision",
++            "selected",
++            format!("跳转到管线 {pipeline}"),
++            None,
++        ),
++    }
++}
++
++fn truncate(mut value: String, limit: usize) -> String {
++    if value.len() <= limit {
++        return value;
++    }
++    let mut boundary = limit.saturating_sub(3);
++    while !value.is_char_boundary(boundary) {
++        boundary = boundary.saturating_sub(1);
++    }
++    value.truncate(boundary);
++    value.push_str("...");
++    value
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{MAX_STEPS, capture, record};
++
++    #[tokio::test]
++    async fn captures_bounded_steps_only_inside_scope() {
++        record("outside", "ignored", "ignored", None);
++        let (value, steps, truncated) = capture(async {
++            for index in 0..=MAX_STEPS {
++                record("rule", "checked", format!("rule-{index}"), None);
++            }
++            7
++        })
++        .await;
++        assert_eq!(value, 7);
++        assert_eq!(steps.len(), MAX_STEPS);
++        assert!(truncated);
++    }
++}

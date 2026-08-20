@@ -6,6 +6,7 @@ import type {
   ConfigVersionDetail,
   DeleteConfigVersionResult,
   DeleteConfigVersionsResult,
+  DnsDiagnostic,
   GeoDataCleanupResult,
   GeoDataManifest,
   GeoDataSchedule,
@@ -53,6 +54,16 @@ describe('演示 API', () => {
     expect(empty.requests_observed).toBe(0)
     expect(empty.clients).toEqual([])
     expect(empty.domains).toEqual([])
+  })
+
+  it('返回真实规则路径形状的 DNS 诊断轨迹', async () => {
+    const result = await mockRequest<DnsDiagnostic>('/api/v1/diagnostics/dns', {
+      method: 'POST',
+      body: JSON.stringify({ domain: 'example.com', record_type: 'A' }),
+    })
+    expect(result.trace_supported).toBe(true)
+    expect(result.trace.some((step) => step.stage === 'rule' && step.status === 'matched')).toBe(true)
+    expect(result.trace.some((step) => step.stage === 'upstream' && step.status === 'succeeded')).toBe(true)
   })
 
   it('同步远程 Geo 数据并返回受管路径', async () => {

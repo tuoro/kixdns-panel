@@ -10,7 +10,7 @@ Linux 默认地址为 `/run/kixdns/admin.sock`。协议使用 Unix Socket 上的
 
 ### `GET /v1/health`
 
-返回进程状态、上游提交、增强补丁版本、启动时间、当前配置代数和可选能力列表。当前增强版包含 `capabilities: ["stats_top_v1", "config_query_stats_v1"]`：前者允许调用排行端点，后者表示 KixDNS 会解析查询统计配置字段。客户端只能在对应能力存在时使用端点或写入受控字段。
+返回进程状态、上游提交、增强补丁版本、启动时间、当前配置代数和可选能力列表。当前增强版包含 `stats_top_v1`、`config_query_stats_v1` 和 `diagnostics_trace_v1`：分别声明查询排行、统计配置字段和规则执行轨迹。客户端只能在对应能力存在时使用端点或写入受控字段。
 
 运行时能力负责当前进程的配置门控。尚未启动的目标版本使用 Artifact 内经 SHA-256 校验的 `KIXDNS_CAPABILITIES.json` 预检，完整规则见[配置能力契约](config-capabilities.md)。
 
@@ -69,6 +69,12 @@ Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致
 ### `POST /v1/stats/clear`
 
 清空全部查询排行，不改变配置中的统计开关。
+
+### `POST /v1/diagnostics/trace`
+
+在当前进程内执行一次真实 DNS 查询并返回结果与有界执行轨迹。请求只接受 `domain` 和固定白名单中的 `record_type`，不能指定服务器；请求体最大 2 KiB，执行最长 6 秒。轨迹覆盖请求解析、Pipeline 选择与跳转、响应/规则缓存、候选规则匹配、最终动作、实际上游和响应阶段匹配。
+
+轨迹最多保留 128 步，超出时设置 `trace_truncated: true`。普通 DNS 请求未进入诊断作用域时不会分配或保存轨迹。该端点会像普通查询一样影响请求指标和缓存；客户端必须先确认 health 含有 `diagnostics_trace_v1`，旧增强版则回退到监听端口上的基础 DNS 查询。
 
 ## 查询统计配置
 
