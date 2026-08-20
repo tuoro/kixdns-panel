@@ -144,6 +144,98 @@ test('处理流程仅在多条件时显示条件关系', async ({ page }) => {
   await expectNoPageOverflow(page)
 })
 
+test('引导创建将 GeoSite 分流规则放到兜底规则之前', async ({ page }) => {
+  await open(page, '/config')
+  const pipeline = page.locator('.pipeline-block').first()
+  await pipeline.scrollIntoViewIfNeeded()
+  await pipeline.getByRole('button', { name: '引导创建' }).click()
+
+  const guide = page.getByRole('dialog', { name: '新增一条规则' })
+  await expect(guide).toBeVisible()
+  await guide.getByLabel('向导请求范围').selectOption('all')
+  await expect(guide.locator('.rule-guide__placement')).toContainText('已有第 1 条兜底规则')
+  await expect(guide.getByRole('button', { name: '创建规则' })).toBeDisabled()
+  await guide.getByLabel('向导请求范围').selectOption('geo_site')
+  await guide.getByLabel('向导 GeoSite 分类').fill('geosite:cn')
+  await guide.getByLabel('向导上游地址').fill('223.5.5.5:53')
+  await expect(guide.locator('.rule-guide__preview')).toContainText('GeoSite cn')
+  await expect(guide.locator('.rule-guide__preview')).toContainText('转发至 223.5.5.5:53')
+  await expect(guide.locator('.rule-guide__placement')).toContainText('放在第 1 条')
+  await guide.getByRole('button', { name: '创建规则' }).click()
+
+  await expect(guide).toHaveCount(0)
+  const names = pipeline.locator('.rule-block > header > input')
+  await expect(names.nth(0)).toHaveValue('geo-site-cn-forward')
+  await expect(names.nth(1)).toHaveValue('secure-forward')
+  await expect(pipeline.locator('.rule-summary').first()).toContainText('GeoSite cn')
+  await expectNoPageOverflow(page)
+})
+
+test('规则支持单条和当前 Pipeline 批量收起展开', async ({ page }) => {
+  await open(page, '/config')
+  const pipeline = page.locator('.pipeline-block').first()
+  const rule = pipeline.locator('.rule-block').first()
+  await pipeline.scrollIntoViewIfNeeded()
+
+  await expect(rule.locator('.rule-stage')).not.toHaveCount(0)
+  await rule.getByRole('button', { name: '收起规则 secure-forward' }).click()
+  await expect(rule.locator('.rule-stage')).toHaveCount(0)
+  await expect(rule.locator('.rule-summary')).toBeVisible()
+  await rule.getByRole('button', { name: '展开规则 secure-forward' }).click()
+  await expect(rule.locator('.rule-stage')).not.toHaveCount(0)
+
+  await pipeline.getByRole('button', { name: '全部收起' }).click()
+  await expect(pipeline.locator('.rule-stage')).toHaveCount(0)
+  await pipeline.getByRole('button', { name: '全部展开' }).click()
+  await expect(pipeline.locator('.rule-stage')).not.toHaveCount(0)
+  await expectNoPageOverflow(page)
+})
+
+test('规则显示控制流并提示被前方兜底规则遮挡', async ({ page }) => {
+  await open(page, '/config')
+  const pipeline = page.locator('.pipeline-block').first()
+  await pipeline.scrollIntoViewIfNeeded()
+
+  const fallback = pipeline.locator('.rule-block').first()
+  await expect(fallback.locator('.rule-flow')).toHaveText('在此终止')
+
+  await pipeline.getByRole('button', { name: '高级添加' }).click()
+  const specific = pipeline.locator('.rule-block').nth(1)
+  await specific.locator('header input').fill('specific')
+  await expect(specific.locator('.rule-flow')).toHaveText('继续后续规则')
+  await expect(specific.locator('.rule-order-warning')).toContainText('前面的 #1“secure-forward”匹配任意请求并终止')
+
+  await specific.getByRole('button', { name: '置顶规则 specific' }).click()
+  await expect(pipeline.locator('.rule-order-warning')).toHaveCount(0)
+  await expectNoPageOverflow(page)
+})
+
+test('规则支持在当前 Pipeline 内快捷调整执行顺序', async ({ page }) => {
+  await open(page, '/config')
+  const pipeline = page.locator('.pipeline-block').first()
+  await pipeline.scrollIntoViewIfNeeded()
+  await expect(pipeline.locator('.rule-summary').first()).toContainText(/当\s*任意请求/)
+  await expect(pipeline.locator('.rule-summary').first()).toContainText(/执行\s*转发至 1\.1\.1\.1:53（UDP）/)
+
+  await pipeline.getByRole('button', { name: '高级添加' }).click()
+  await pipeline.getByRole('button', { name: '高级添加' }).click()
+
+  const names = pipeline.locator('.rule-block > header > input')
+  await names.nth(1).fill('second')
+  await names.nth(2).fill('third')
+
+  await pipeline.getByRole('button', { name: '上移规则 third' }).click()
+  await expect.poll(() => names.evaluateAll((inputs) => inputs.map((input) => (input as HTMLInputElement).value)))
+    .toEqual(['secure-forward', 'third', 'second'])
+
+  await pipeline.getByRole('button', { name: '置顶规则 second' }).click()
+  await expect.poll(() => names.evaluateAll((inputs) => inputs.map((input) => (input as HTMLInputElement).value)))
+    .toEqual(['second', 'secure-forward', 'third'])
+  await expect(pipeline.getByRole('button', { name: '上移规则 second' })).toBeDisabled()
+  await expect(pipeline.getByRole('button', { name: '下移规则 third' })).toBeDisabled()
+  await expectNoPageOverflow(page)
+})
+
 test('转发动作支持不写入协议的自动传输模式', async ({ page }) => {
   await open(page, '/config')
   const transport = page.getByLabel(/动作 \d+ 传输协议/).first()

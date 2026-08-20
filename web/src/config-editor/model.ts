@@ -309,6 +309,21 @@ export function createRule(pipeline: PipelineConfig): RuleConfig {
   }
 }
 
+export function moveRule(pipeline: PipelineConfig, fromIndex: number, toIndex: number): boolean {
+  if (
+    fromIndex < 0
+    || fromIndex >= pipeline.rules.length
+    || toIndex < 0
+    || toIndex >= pipeline.rules.length
+    || fromIndex === toIndex
+  ) return false
+
+  const [rule] = pipeline.rules.splice(fromIndex, 1)
+  if (!rule) return false
+  pipeline.rules.splice(toIndex, 0, rule)
+  return true
+}
+
 function visitActions(config: KixConfig, visitor: (action: ActionConfig) => void): void {
   for (const pipeline of config.pipelines) {
     for (const rule of pipeline.rules) {
