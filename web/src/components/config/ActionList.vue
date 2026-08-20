@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Plus, X } from '@lucide/vue'
+import { ArrowDown, ArrowUp, Plus, X } from '@lucide/vue'
 import { createAction, createEcs, resetAction } from '../../config-editor/model'
 import { ACTION_TYPES, TRANSPORT_OPTIONS } from '../../config-editor/schema'
 import type { ActionConfig, PipelineConfig } from '../../config-editor/types'
@@ -35,6 +35,13 @@ function setTtl(action: ActionConfig, event: Event): void {
   if (raw === '') delete action.ttl
   else action.ttl = Number(raw)
 }
+
+function move(index: number, offset: -1 | 1): void {
+  const target = index + offset
+  if (target < 0 || target >= actions.value.length) return
+  const [action] = actions.value.splice(index, 1)
+  if (action) actions.value.splice(target, 0, action)
+}
 </script>
 
 <template>
@@ -64,7 +71,11 @@ function setTtl(action: ActionConfig, event: Event): void {
         <input v-if="action.type === 'static_txt_response'" type="number" :value="action.ttl" min="1" :aria-label="`动作 ${index + 1} TTL`" placeholder="TTL" @input="setTtl(action, $event)">
       </template>
 
-      <button class="icon-button icon-button--small" type="button" :title="`删除动作 ${index + 1}`" @click="actions.splice(index, 1)"><X :size="14" /></button>
+      <div class="action-row__controls">
+        <button class="icon-button icon-button--small" type="button" :disabled="index === 0" :title="`上移动作 ${index + 1}`" @click="move(index, -1)"><ArrowUp :size="14" /></button>
+        <button class="icon-button icon-button--small" type="button" :disabled="index === actions.length - 1" :title="`下移动作 ${index + 1}`" @click="move(index, 1)"><ArrowDown :size="14" /></button>
+        <button class="icon-button icon-button--small" type="button" :title="`删除动作 ${index + 1}`" @click="actions.splice(index, 1)"><X :size="14" /></button>
+      </div>
     </div>
     <button class="inline-command" type="button" @click="actions.push(createAction())"><Plus :size="14" />添加动作</button>
   </div>

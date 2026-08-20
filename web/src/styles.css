@@ -350,15 +350,15 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .selector-block__warning { display: flex; align-items: center; gap: 6px; padding: 8px 9px; color: #94631f; background: #fff9ef; border: 1px solid #f1dfbf; border-radius: 4px; font-size: 9px; }
 .selector-block__warning svg { flex: 0 0 auto; }
 .matcher-list, .action-list { min-width: 0; display: grid; gap: 6px; }
-.matcher-row { min-width: 0; display: grid; grid-template-columns: 105px 145px repeat(3, minmax(110px, 1fr)) 28px; gap: 6px; align-items: center; }
-.matcher-row--simple { grid-template-columns: minmax(145px, 220px) minmax(180px, 1fr) 28px; }
-.matcher-row--simple > .icon-button { grid-column: 3; }
+.matcher-row { min-width: 0; display: grid; grid-template-columns: 105px 145px repeat(3, minmax(110px, 1fr)) max-content; gap: 6px; align-items: center; }
+.matcher-row--simple { grid-template-columns: minmax(145px, 220px) minmax(180px, 1fr) max-content; }
 .matcher-seed { min-height: 34px; display: grid; place-items: center; color: #77817d; background: #f4f6f5; border: 1px solid #dfe4e2; border-radius: 4px; font-size: 8px; font-weight: 650; }
-.matcher-row > .icon-button, .action-row > .icon-button { grid-column: -2 / -1; }
+.matcher-row__controls { grid-column: -2 / -1; display: flex; gap: 3px; justify-content: flex-end; }
 .compact-check { min-height: 34px; display: inline-flex; align-items: center; gap: 6px; padding: 0 9px; color: #5f6965; background: #f7f9f8; border: 1px solid #dce2df; border-radius: 4px; font-size: 9px; white-space: nowrap; }
 .compact-check input { width: 14px; height: 14px; }
-.action-row { min-width: 0; display: grid; grid-template-columns: 145px minmax(130px, 1fr) repeat(4, minmax(72px, max-content)) 28px; gap: 6px; align-items: center; }
+.action-row { min-width: 0; display: grid; grid-template-columns: 145px minmax(130px, 1fr) repeat(4, minmax(72px, max-content)) max-content; gap: 6px; align-items: center; }
 .action-row__grow { min-width: 170px !important; }
+.action-row__controls { grid-column: -2 / -1; display: flex; gap: 3px; justify-content: flex-end; }
 .pipeline-list { padding: 0 17px 18px; }
 .pipeline-block { border-bottom: 1px solid #dfe5e2; }
 .pipeline-block:last-child { border-bottom: 0; }
@@ -666,15 +666,13 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
   .rule-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .config-layout { grid-template-columns: minmax(0, 1fr) 240px; }
   .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .matcher-row { grid-template-columns: 100px 135px minmax(120px, 1fr) 28px; }
-  .matcher-row > .icon-button { grid-column: 4; }
-  .matcher-row--simple { grid-template-columns: minmax(135px, 200px) minmax(120px, 1fr) 28px; }
-  .matcher-row--simple > .icon-button { grid-column: 3; }
+  .matcher-row { grid-template-columns: 100px 135px minmax(120px, 1fr) max-content; }
+  .matcher-row--simple { grid-template-columns: minmax(135px, 200px) minmax(120px, 1fr) max-content; }
   .action-row { display: flex; flex-wrap: wrap; }
   .action-row > select { flex: 0 1 118px; }
   .action-row > input { flex: 1 1 96px; }
   .action-row > .action-row__grow { flex: 4 1 220px; }
-  .action-row > .icon-button { margin-left: auto; }
+  .action-row__controls { margin-left: auto; }
   .ecs-editor__fields { grid-template-columns: repeat(3, minmax(100px, 1fr)); }
   .auth-status blockquote { font-size: 24px; }
 }
@@ -760,11 +758,11 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
   .selector-block__controls { grid-template-columns: 1fr; }
   .selector-block__conditions-title > div { align-items: flex-start; flex-direction: column; gap: 2px; }
   .matcher-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .matcher-row--simple { grid-template-columns: 110px minmax(0, 1fr) 28px; }
-  .matcher-row > .icon-button { grid-column: 2; justify-self: end; }
-  .matcher-row--simple > .icon-button { grid-column: 3; }
+  .matcher-row--simple { grid-template-columns: 110px minmax(0, 1fr) max-content; }
+  .matcher-row__controls { grid-column: 2; justify-self: end; }
+  .matcher-row--simple > .matcher-row__controls { grid-column: 3; }
   .action-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .action-row > .icon-button { grid-column: 2; justify-self: end; margin-left: 0; }
+  .action-row__controls { grid-column: 2; justify-self: end; margin-left: 0; }
   .action-row__grow { min-width: 0 !important; }
   .pipeline-body { padding-left: 0; }
   .rule-block > header { grid-template-columns: 24px minmax(0, 1fr); }

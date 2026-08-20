@@ -28,7 +28,7 @@ const previousIds = new WeakMap<PipelineConfig, string>()
 const customSelectors = ref(new Set<PipelineSelectConfig>())
 const customMatcherGroups = ref(new Set<MatcherConfig[]>())
 const collapsedRules = ref(new Set<RuleConfig>())
-const guidedPipeline = ref<PipelineConfig>()
+const guidedSession = ref<{ pipeline: PipelineConfig; rule?: RuleConfig; ruleIndex?: number }>()
 
 function selectorMode(selector: PipelineSelectConfig): PipelineSelectMode {
   return customSelectors.value.has(selector) ? 'custom' : inferPipelineSelectMode(selector)
@@ -134,12 +134,30 @@ function blockingRuleWarning(pipeline: PipelineConfig, ruleIndex: number): strin
   return `前面的 #${blocker.index + 1}“${blocker.name}”匹配任意请求并${outcome}，此规则按当前顺序不会执行`
 }
 
-function insertGuidedRule(rule: RuleConfig, index: number): void {
-  const pipeline = guidedPipeline.value
-  if (!pipeline) return
-  pipeline.rules.splice(index, 0, rule)
-  guidedPipeline.value = undefined
-  emit('notice', `规则“${rule.name}”已创建在 ${pipeline.id} 的第 ${index + 1} 条`)
+function openGuidedCreate(pipeline: PipelineConfig): void {
+  guidedSession.value = { pipeline }
+}
+
+function openGuidedEdit(pipeline: PipelineConfig, rule: RuleConfig, ruleIndex: number): void {
+  guidedSession.value = { pipeline, rule, ruleIndex }
+}
+
+function saveGuidedRule(rule: RuleConfig, index: number): void {
+  const session = guidedSession.value
+  if (!session) return
+  if (session.rule !== undefined && session.ruleIndex !== undefined) {
+    const wasCollapsed = collapsedRules.value.has(session.rule)
+    const nextCollapsedRules = new Set(collapsedRules.value)
+    nextCollapsedRules.delete(session.rule)
+    if (wasCollapsed) nextCollapsedRules.add(rule)
+    collapsedRules.value = nextCollapsedRules
+    session.pipeline.rules.splice(session.ruleIndex, 1, rule)
+    emit('notice', `规则“${rule.name}”已更新`)
+  } else {
+    session.pipeline.rules.splice(index, 0, rule)
+    emit('notice', `规则“${rule.name}”已创建在 ${session.pipeline.id} 的第 ${index + 1} 条`)
+  }
+  guidedSession.value = undefined
 }
 </script>
 
@@ -203,8 +221,8 @@ function insertGuidedRule(rule: RuleConfig, index: number): void {
             <div><strong>规则</strong><span>{{ pipeline.rules.length }}</span></div>
             <div class="rules-heading__actions">
               <button class="inline-command" type="button" :disabled="pipeline.rules.length === 0" @click="toggleAllRules(pipeline)"><UnfoldVertical v-if="allRulesCollapsed(pipeline)" :size="14" /><FoldVertical v-else :size="14" />{{ allRulesCollapsed(pipeline) ? '全部展开' : '全部收起' }}</button>
-              <button class="inline-command inline-command--primary" type="button" @click="guidedPipeline = pipeline"><Sparkles :size="14" />引导创建</button>
-              <button class="inline-command" type="button" @click="pipeline.rules.push(createRule(pipeline))"><Plus :size="14" />高级添加</button>
+              <button class="inline-command inline-command--primary" type="button" @click="openGuidedCreate(pipeline)"><Sparkles :size="14" />一键添加</button>
+              <button class="inline-command" type="button" @click="pipeline.rules.push(createRule(pipeline))"><Plus :size="14" />手动添加</button>
             </div>
           </div>
           <div class="rule-list">
@@ -213,6 +231,7 @@ function insertGuidedRule(rule: RuleConfig, index: number): void {
                 <span>{{ ruleIndex + 1 }}</span>
                 <input v-model="rule.name" type="text" :aria-label="`规则 ${ruleIndex + 1} 名称`" placeholder="规则名称">
                 <div class="rule-order-actions" role="group" :aria-label="`调整规则 ${rule.name || ruleIndex + 1} 的顺序`">
+                  <button class="icon-button icon-button--small" type="button" :title="`一键编辑规则 ${rule.name || ruleIndex + 1}`" :aria-label="`一键编辑规则 ${rule.name || ruleIndex + 1}`" @click="openGuidedEdit(pipeline, rule, ruleIndex)"><Sparkles :size="14" /></button>
                   <button class="icon-button icon-button--small rule-collapse-toggle" type="button" :title="`${ruleCollapsed(rule) ? '展开' : '收起'}规则 ${rule.name || ruleIndex + 1}`" :aria-label="`${ruleCollapsed(rule) ? '展开' : '收起'}规则 ${rule.name || ruleIndex + 1}`" @click="setRuleCollapsed(rule, !ruleCollapsed(rule))"><ChevronDown v-if="ruleCollapsed(rule)" :size="14" /><ChevronUp v-else :size="14" /></button>
                   <button class="icon-button icon-button--small" type="button" :disabled="ruleIndex === 0" :title="`置顶规则 ${rule.name || ruleIndex + 1}`" :aria-label="`置顶规则 ${rule.name || ruleIndex + 1}`" @click="moveRule(pipeline, ruleIndex, 0)"><ArrowUpToLine :size="14" /></button>
                   <button class="icon-button icon-button--small" type="button" :disabled="ruleIndex === 0" :title="`上移规则 ${rule.name || ruleIndex + 1}`" :aria-label="`上移规则 ${rule.name || ruleIndex + 1}`" @click="moveRule(pipeline, ruleIndex, ruleIndex - 1)"><ArrowUp :size="14" /></button>
@@ -266,10 +285,12 @@ function insertGuidedRule(rule: RuleConfig, index: number): void {
   </section>
 
   <RuleCreationGuide
-    v-if="guidedPipeline"
-    :pipeline="guidedPipeline"
+    v-if="guidedSession"
+    :pipeline="guidedSession.pipeline"
     :pipelines="config.pipelines"
-    @cancel="guidedPipeline = undefined"
-    @create="insertGuidedRule"
+    :rule="guidedSession.rule"
+    :rule-index="guidedSession.ruleIndex"
+    @cancel="guidedSession = undefined"
+    @save="saveGuidedRule"
   />
 </template>
