@@ -255,6 +255,17 @@ export interface DnsDiagnostic {
   elapsed_ms: number
   truncated: boolean
   answers: string[]
+  trace_supported: boolean
+  trace_truncated: boolean
+  trace: DnsTraceStep[]
+}
+
+export interface DnsTraceStep {
+  stage: string
+  status: string
+  label: string
+  detail: string | null
+  elapsed_ms: number
 }
 
 export interface UpdateInfo {

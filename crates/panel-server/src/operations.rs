@@ -50,6 +50,9 @@ pub struct DnsDiagnostic {
     pub elapsed_ms: u64,
     pub truncated: bool,
     pub answers: Vec<String>,
+    pub trace_supported: bool,
+    pub trace_truncated: bool,
+    pub trace: Vec<crate::control::DiagnosticTraceStep>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -298,6 +301,9 @@ impl Operations {
             elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
             truncated: response.metadata.truncation,
             answers: response.answers.iter().map(ToString::to_string).collect(),
+            trace_supported: false,
+            trace_truncated: false,
+            trace: Vec::new(),
         })
     }
 
