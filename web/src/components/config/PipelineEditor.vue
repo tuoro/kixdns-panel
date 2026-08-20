@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { AlertTriangle, GitBranch, Plus, Trash2 } from '@lucide/vue'
+import { AlertTriangle, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, GitBranch, Plus, Trash2 } from '@lucide/vue'
 import { computed, ref } from 'vue'
 import {
   createEcs,
@@ -10,6 +10,7 @@ import {
   applyPipelineSelectMode,
   inferMatcherMode,
   inferPipelineSelectMode,
+  moveRule,
   pipelineHasActionEcs,
   renamePipeline,
   ruleHasForward,
@@ -153,7 +154,17 @@ function responseEnabled(rule: RuleConfig): boolean {
           <div class="rules-heading"><div><strong>规则</strong><span>{{ pipeline.rules.length }}</span></div><button class="inline-command" type="button" @click="pipeline.rules.push(createRule(pipeline))"><Plus :size="14" />添加规则</button></div>
           <div class="rule-list">
             <section v-for="(rule, ruleIndex) in pipeline.rules" :key="ruleIndex" class="rule-block">
-              <header><span>{{ ruleIndex + 1 }}</span><input v-model="rule.name" type="text" :aria-label="`规则 ${ruleIndex + 1} 名称`" placeholder="规则名称"><button class="icon-button icon-button--small" type="button" title="删除规则" @click="removeRule(pipeline, ruleIndex)"><Trash2 :size="14" /></button></header>
+              <header>
+                <span>{{ ruleIndex + 1 }}</span>
+                <input v-model="rule.name" type="text" :aria-label="`规则 ${ruleIndex + 1} 名称`" placeholder="规则名称">
+                <div class="rule-order-actions" role="group" :aria-label="`调整规则 ${rule.name || ruleIndex + 1} 的顺序`">
+                  <button class="icon-button icon-button--small" type="button" :disabled="ruleIndex === 0" :title="`置顶规则 ${rule.name || ruleIndex + 1}`" :aria-label="`置顶规则 ${rule.name || ruleIndex + 1}`" @click="moveRule(pipeline, ruleIndex, 0)"><ArrowUpToLine :size="14" /></button>
+                  <button class="icon-button icon-button--small" type="button" :disabled="ruleIndex === 0" :title="`上移规则 ${rule.name || ruleIndex + 1}`" :aria-label="`上移规则 ${rule.name || ruleIndex + 1}`" @click="moveRule(pipeline, ruleIndex, ruleIndex - 1)"><ArrowUp :size="14" /></button>
+                  <button class="icon-button icon-button--small" type="button" :disabled="ruleIndex === pipeline.rules.length - 1" :title="`下移规则 ${rule.name || ruleIndex + 1}`" :aria-label="`下移规则 ${rule.name || ruleIndex + 1}`" @click="moveRule(pipeline, ruleIndex, ruleIndex + 1)"><ArrowDown :size="14" /></button>
+                  <button class="icon-button icon-button--small" type="button" :disabled="ruleIndex === pipeline.rules.length - 1" :title="`置底规则 ${rule.name || ruleIndex + 1}`" :aria-label="`置底规则 ${rule.name || ruleIndex + 1}`" @click="moveRule(pipeline, ruleIndex, pipeline.rules.length - 1)"><ArrowDownToLine :size="14" /></button>
+                  <button class="icon-button icon-button--small icon-button--danger" type="button" :title="`删除规则 ${rule.name || ruleIndex + 1}`" :aria-label="`删除规则 ${rule.name || ruleIndex + 1}`" @click="removeRule(pipeline, ruleIndex)"><Trash2 :size="14" /></button>
+                </div>
+              </header>
 
               <div class="rule-stage">
                 <div class="rule-stage__title">

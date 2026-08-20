@@ -8,6 +8,7 @@ import {
   applyMatcherMode,
   inferMatcherMode,
   inferPipelineSelectMode,
+  moveRule,
   normalizeConfig,
   parseConfigSource,
   renamePipeline,
@@ -17,6 +18,40 @@ import {
 } from './model'
 
 describe('结构化配置模型', () => {
+  it('只在当前 Pipeline 内按目标位置移动规则', () => {
+    const config = normalizeConfig({
+      pipelines: [{
+        id: 'default',
+        rules: [
+          { name: 'first' },
+          { name: 'second' },
+          { name: 'third' },
+        ],
+      }],
+    })
+    const pipeline = config.pipelines[0]!
+    const movedRule = pipeline.rules[1]
+
+    expect(moveRule(pipeline, 1, 0)).toBe(true)
+    expect(pipeline.rules.map((rule) => rule.name)).toEqual(['second', 'first', 'third'])
+    expect(pipeline.rules[0]).toBe(movedRule)
+
+    expect(moveRule(pipeline, 0, 2)).toBe(true)
+    expect(pipeline.rules.map((rule) => rule.name)).toEqual(['first', 'third', 'second'])
+  })
+
+  it('拒绝越界或没有产生变化的规则移动', () => {
+    const config = normalizeConfig({
+      pipelines: [{ id: 'default', rules: [{ name: 'only' }] }],
+    })
+    const pipeline = config.pipelines[0]!
+
+    expect(moveRule(pipeline, 0, 0)).toBe(false)
+    expect(moveRule(pipeline, -1, 0)).toBe(false)
+    expect(moveRule(pipeline, 0, 1)).toBe(false)
+    expect(pipeline.rules.map((rule) => rule.name)).toEqual(['only'])
+  })
+
   it('规范化必需集合且保留上游未知字段', () => {
     const config = normalizeConfig({
       future_option: { enabled: true },

@@ -144,6 +144,30 @@ test('处理流程仅在多条件时显示条件关系', async ({ page }) => {
   await expectNoPageOverflow(page)
 })
 
+test('规则支持在当前 Pipeline 内快捷调整执行顺序', async ({ page }) => {
+  await open(page, '/config')
+  const pipeline = page.locator('.pipeline-block').first()
+  await pipeline.scrollIntoViewIfNeeded()
+
+  await pipeline.getByRole('button', { name: '添加规则' }).click()
+  await pipeline.getByRole('button', { name: '添加规则' }).click()
+
+  const names = pipeline.locator('.rule-block > header > input')
+  await names.nth(1).fill('second')
+  await names.nth(2).fill('third')
+
+  await pipeline.getByRole('button', { name: '上移规则 third' }).click()
+  await expect.poll(() => names.evaluateAll((inputs) => inputs.map((input) => (input as HTMLInputElement).value)))
+    .toEqual(['secure-forward', 'third', 'second'])
+
+  await pipeline.getByRole('button', { name: '置顶规则 second' }).click()
+  await expect.poll(() => names.evaluateAll((inputs) => inputs.map((input) => (input as HTMLInputElement).value)))
+    .toEqual(['second', 'secure-forward', 'third'])
+  await expect(pipeline.getByRole('button', { name: '上移规则 second' })).toBeDisabled()
+  await expect(pipeline.getByRole('button', { name: '下移规则 third' })).toBeDisabled()
+  await expectNoPageOverflow(page)
+})
+
 test('转发动作支持不写入协议的自动传输模式', async ({ page }) => {
   await open(page, '/config')
   const transport = page.getByLabel(/动作 \d+ 传输协议/).first()
