@@ -25,6 +25,10 @@ function expectation(matcher: MatcherConfig, positive: string, negative: string)
   return matcher.expect === false ? negative : positive
 }
 
+function geoSiteValue(value: unknown): string {
+  return text(value).replace(/^geosite:/i, '')
+}
+
 export function summarizeMatcher(matcher: MatcherConfig, scope: MatcherScope): string {
   const value = text(matcher.value)
   const cidr = text(matcher.cidr)
@@ -38,8 +42,8 @@ export function summarizeMatcher(matcher: MatcherConfig, scope: MatcherScope): s
     case 'domain_regex': return `域名匹配正则 ${value}`
     case 'qclass': return `查询 QClass 为 ${value}`
     case 'edns_present': return expectation(matcher, '请求包含 EDNS', '请求不包含 EDNS')
-    case 'geo_site': return `域名属于 GeoSite ${value}`
-    case 'geo_site_not': return `域名不属于 GeoSite ${value}`
+    case 'geo_site': return `域名属于 GeoSite ${geoSiteValue(matcher.value)}`
+    case 'geo_site_not': return `域名不属于 GeoSite ${geoSiteValue(matcher.value)}`
     case 'geoip_country': return `客户端 GeoIP 国家为 ${countries}`
     case 'geoip_private': return expectation(matcher, '客户端 IP 为私网', '客户端 IP 不为私网')
     case 'qtype': return `查询类型为 ${value}`
@@ -54,8 +58,8 @@ export function summarizeMatcher(matcher: MatcherConfig, scope: MatcherScope): s
     case 'response_answer_ip': return `应答 IP 属于 ${cidr}`
     case 'response_answer_ip_geoip_country': return `应答 IP GeoIP 国家为 ${countries}`
     case 'response_answer_ip_geoip_private': return expectation(matcher, '应答 IP 为私网', '应答 IP 不为私网')
-    case 'response_request_domain_geosite': return `请求域名属于 GeoSite ${value}`
-    case 'response_request_domain_geosite_not': return `请求域名不属于 GeoSite ${value}`
+    case 'response_request_domain_geosite': return `请求域名属于 GeoSite ${geoSiteValue(matcher.value)}`
+    case 'response_request_domain_geosite_not': return `请求域名不属于 GeoSite ${geoSiteValue(matcher.value)}`
     case 'response_txt_content': return `TXT 内容以${matcher.mode === 'prefix' ? '前缀' : matcher.mode === 'regex' ? '正则' : '精确'}方式匹配 ${value}`
     default: return `${scope === 'response' ? '响应条件' : '请求条件'} ${matcher.type}`
   }

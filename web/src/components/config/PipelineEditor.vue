@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { AlertTriangle, ArrowDown, ArrowDownToLine, ArrowRight, ArrowUp, ArrowUpToLine, ChevronDown, ChevronUp, FoldVertical, GitBranch, Plus, Trash2, UnfoldVertical } from '@lucide/vue'
+import { AlertTriangle, ArrowDown, ArrowDownToLine, ArrowRight, ArrowUp, ArrowUpToLine, ChevronDown, ChevronUp, FoldVertical, GitBranch, Plus, Sparkles, Trash2, UnfoldVertical } from '@lucide/vue'
 import { computed, ref } from 'vue'
 import {
   createEcs,
@@ -19,6 +19,7 @@ import type { KixConfig, MatcherConfig, PipelineConfig, PipelineSelectConfig, Pi
 import { analyzeRuleFlow, findBlockingRule, summarizeRule } from '../../config-editor/summary'
 import ActionList from './ActionList.vue'
 import MatcherList from './MatcherList.vue'
+import RuleCreationGuide from './RuleCreationGuide.vue'
 
 const config = defineModel<KixConfig>({ required: true })
 const emit = defineEmits<{ notice: [message: string] }>()
@@ -27,6 +28,7 @@ const previousIds = new WeakMap<PipelineConfig, string>()
 const customSelectors = ref(new Set<PipelineSelectConfig>())
 const customMatcherGroups = ref(new Set<MatcherConfig[]>())
 const collapsedRules = ref(new Set<RuleConfig>())
+const guidedPipeline = ref<PipelineConfig>()
 
 function selectorMode(selector: PipelineSelectConfig): PipelineSelectMode {
   return customSelectors.value.has(selector) ? 'custom' : inferPipelineSelectMode(selector)
@@ -131,6 +133,14 @@ function blockingRuleWarning(pipeline: PipelineConfig, ruleIndex: number): strin
   const outcome = blockerFlow.kind === 'jump' ? '跳转' : '终止'
   return `前面的 #${blocker.index + 1}“${blocker.name}”匹配任意请求并${outcome}，此规则按当前顺序不会执行`
 }
+
+function insertGuidedRule(rule: RuleConfig, index: number): void {
+  const pipeline = guidedPipeline.value
+  if (!pipeline) return
+  pipeline.rules.splice(index, 0, rule)
+  guidedPipeline.value = undefined
+  emit('notice', `规则“${rule.name}”已创建在 ${pipeline.id} 的第 ${index + 1} 条`)
+}
 </script>
 
 <template>
@@ -193,7 +203,8 @@ function blockingRuleWarning(pipeline: PipelineConfig, ruleIndex: number): strin
             <div><strong>规则</strong><span>{{ pipeline.rules.length }}</span></div>
             <div class="rules-heading__actions">
               <button class="inline-command" type="button" :disabled="pipeline.rules.length === 0" @click="toggleAllRules(pipeline)"><UnfoldVertical v-if="allRulesCollapsed(pipeline)" :size="14" /><FoldVertical v-else :size="14" />{{ allRulesCollapsed(pipeline) ? '全部展开' : '全部收起' }}</button>
-              <button class="inline-command" type="button" @click="pipeline.rules.push(createRule(pipeline))"><Plus :size="14" />添加规则</button>
+              <button class="inline-command inline-command--primary" type="button" @click="guidedPipeline = pipeline"><Sparkles :size="14" />引导创建</button>
+              <button class="inline-command" type="button" @click="pipeline.rules.push(createRule(pipeline))"><Plus :size="14" />高级添加</button>
             </div>
           </div>
           <div class="rule-list">
@@ -253,4 +264,12 @@ function blockingRuleWarning(pipeline: PipelineConfig, ruleIndex: number): strin
       <p v-if="config.pipelines.length === 0" class="config-empty">尚未创建 Pipeline</p>
     </div>
   </section>
+
+  <RuleCreationGuide
+    v-if="guidedPipeline"
+    :pipeline="guidedPipeline"
+    :pipelines="config.pipelines"
+    @cancel="guidedPipeline = undefined"
+    @create="insertGuidedRule"
+  />
 </template>

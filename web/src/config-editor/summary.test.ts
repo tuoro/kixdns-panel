@@ -8,6 +8,9 @@ describe('规则语义摘要', () => {
       { type: 'geo_site', operator: 'and', value: 'cn' },
       { type: 'qtype', operator: 'and', value: 'A' },
     ], 'and', 'request')).toBe('域名属于 GeoSite cn 且 查询类型为 A')
+    expect(summarizeMatchers([
+      { type: 'geo_site', operator: 'and', value: 'geosite:cn' },
+    ], 'and', 'request')).toBe('域名属于 GeoSite cn')
   })
 
   it('保留任一满足和自定义否定关系', () => {
