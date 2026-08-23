@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ArrowDown, ArrowDownToLine, ArrowRight, ArrowUp, ArrowUpToLine, GitBranch, Pencil, Plus, Settings2, Sparkles, Trash2 } from '@lucide/vue'
 import { computed, ref } from 'vue'
-import { collectDnsSolutions, solutionInsertIndex, type DnsSolution, type SolutionDraft } from '../../config-editor/solution'
+import { collectDnsSolutions, materializeSolutionRules, solutionInsertIndex, type DnsSolution, type SolutionDraft } from '../../config-editor/solution'
 import { summarizeActions, summarizeMatchers } from '../../config-editor/summary'
 import type { KixConfig, PipelineConfig } from '../../config-editor/types'
 import SolutionGuide from './SolutionGuide.vue'
@@ -17,11 +17,13 @@ function clone<T>(value: T): T {
 }
 
 function solutionEntry(solution: DnsSolution): string {
+  if (solution.groupType === 'domain_mapping') return `${solution.mappingRows?.length ?? 0} 个源域名`
   if (!solution.selector) return '无入口分流'
   return summarizeMatchers(solution.selector.matchers, solution.selector.matcher_operator, 'selector')
 }
 
 function solutionAction(solution: DnsSolution): string {
+  if (solution.groupType === 'domain_mapping') return `${solution.mappingRows?.length ?? 0} 条 CNAME 映射`
   if (!solution.pipeline) return solution.reason ?? '目标 Pipeline 不存在'
   if (solution.kind !== 'simple' || !solution.rule) return solution.reason ?? '需要自由编辑'
   return summarizeActions(solution.rule.actions)
@@ -44,7 +46,7 @@ function removeSolution(solution: DnsSolution): void {
 
 function materializePipeline(draft: SolutionDraft): PipelineConfig {
   const pipeline = clone(draft.pipeline)
-  pipeline.rules = [clone(draft.rule)]
+  pipeline.rules = materializeSolutionRules(draft)
   return pipeline
 }
 
@@ -111,7 +113,7 @@ function openManual(): void {
     <div class="solution-list">
       <article v-for="(solution, cardIndex) in solutions" :key="solution.key" class="solution-card" :class="`solution-card--${solution.kind}`">
         <header>
-          <div class="solution-card__identity"><span><GitBranch :size="15" /></span><div><strong>{{ solution.kind === 'orphan' ? solution.pipeline?.id : `DNS 方案 #${(solution.selectorIndex ?? cardIndex) + 1}` }}</strong><small>{{ solution.kind === 'simple' ? '完整方案' : solution.kind === 'orphan' ? '未接入入口的 Pipeline' : '自定义方案' }}<template v-if="solution.referenceCount > 1"> · {{ solution.referenceCount }} 个方案共享 Pipeline</template></small></div></div>
+          <div class="solution-card__identity"><span><GitBranch :size="15" /></span><div><strong>{{ solution.kind === 'orphan' ? solution.pipeline?.id : `DNS 方案 #${(solution.selectorIndex ?? cardIndex) + 1}` }}</strong><small>{{ solution.kind === 'simple' ? '完整方案' : solution.kind === 'group' ? '映射组' : solution.kind === 'orphan' ? '未接入入口的 Pipeline' : '自定义方案' }}<template v-if="solution.referenceCount > 1"> · {{ solution.referenceCount }} 个方案共享 Pipeline</template></small></div></div>
           <div class="solution-card__tools">
             <template v-if="solution.selectorIndex !== undefined">
               <button class="icon-button icon-button--small" type="button" title="移到最前" :disabled="solution.selectorIndex === 0" @click="moveSelector(solution.selectorIndex, 0)"><ArrowUpToLine :size="14" /></button>
@@ -127,12 +129,16 @@ function openManual(): void {
           <div><span>处理流程</span><strong>{{ solution.pipeline?.id ?? solution.selector?.pipeline }}</strong></div><ArrowRight :size="15" />
           <div><span>执行动作</span><strong>{{ solutionAction(solution) }}</strong></div>
         </div>
+        <div v-if="solution.groupType === 'domain_mapping' && solution.mappingRows" class="solution-card__records">
+          <div v-for="(row, index) in solution.mappingRows.slice(0, 3)" :key="`${row.source}-${index}`"><strong>{{ row.source }}</strong><ArrowRight :size="12" /><span>{{ row.target }}</span><em>TTL {{ row.ttl }}</em></div>
+          <small v-if="solution.mappingRows.length > 3">另有 {{ solution.mappingRows.length - 3 }} 条，点击一键编辑查看全部</small>
+        </div>
         <div v-if="solution.kind === 'simple' && solution.rule && (solution.rule.response_matchers.length || solution.rule.response_actions_on_match.length || solution.rule.response_actions_on_miss.length)" class="solution-card__response">
           <span>响应处理</span><strong>{{ summarizeMatchers(solution.rule.response_matchers, solution.rule.response_matcher_operator, 'response') }}</strong><ArrowRight :size="13" /><span>成功：</span><strong>{{ summarizeActions(solution.rule.response_actions_on_match) }}</strong><span>失败：</span><strong>{{ summarizeActions(solution.rule.response_actions_on_miss) }}</strong>
         </div>
         <p v-if="solution.reason" class="solution-card__reason">{{ solution.reason }}。配置会原样保留，请在自由编辑中调整。</p>
         <footer>
-          <button v-if="solution.kind === 'simple'" class="button button--secondary" type="button" @click="session = solution"><Pencil :size="14" />一键编辑</button>
+          <button v-if="solution.kind === 'simple' || solution.kind === 'group'" class="button button--secondary" type="button" @click="session = solution"><Pencil :size="14" />一键编辑</button>
           <button v-else class="button button--secondary" type="button" @click="openManual"><Settings2 :size="14" />自由编辑</button>
           <button v-if="solution.selectorIndex !== undefined" class="button button--danger" type="button" @click="removeSolution(solution)"><Trash2 :size="14" />删除方案</button>
         </footer>
@@ -149,7 +155,7 @@ function openManual(): void {
 .solution-section__intro { padding: 0 20px 14px; color: var(--muted); font-size: 9px; line-height: 1.5; }
 .solution-list { display: grid; gap: 10px; padding: 0 20px 20px; }
 .solution-card { overflow: hidden; background: #fff; border: 1px solid var(--line); border-radius: 7px; }
-.solution-card--simple { border-left: 3px solid var(--green); }
+.solution-card--simple, .solution-card--group { border-left: 3px solid var(--green); }
 .solution-card--custom, .solution-card--orphan { border-left: 3px solid #bf8b36; }
 .solution-card > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px 12px; background: #fbfcfb; border-bottom: 1px solid var(--line); }
 .solution-card__identity { display: flex; align-items: center; gap: 8px; }
@@ -163,6 +169,10 @@ function openManual(): void {
 .solution-card__flow span, .solution-card__response span { color: var(--muted); font-size: 8px; }
 .solution-card__flow strong, .solution-card__response strong { min-width: 0; overflow-wrap: anywhere; color: #35413c; font-size: 9px; font-weight: 650; }
 .solution-card__response { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 0 12px 12px; padding: 9px; background: #f6faf8; border-left: 2px solid #8db7a3; }
+.solution-card__records { display: grid; gap: 5px; margin: 0 12px 12px; padding: 9px; background: #f6faf8; border-left: 2px solid #8db7a3; }
+.solution-card__records > div { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto; align-items: center; gap: 6px; font-size: 8px; }
+.solution-card__records strong, .solution-card__records span { min-width: 0; overflow-wrap: anywhere; }
+.solution-card__records em, .solution-card__records small { color: var(--muted); font-size: 8px; font-style: normal; }
 .solution-card__reason { margin: 0 12px 12px; padding: 8px 9px; color: #8a6329; background: #fff8ee; font-size: 9px; }
 .solution-card > footer { display: flex; justify-content: flex-end; gap: 7px; padding: 9px 12px; border-top: 1px solid var(--line); }
 .solution-list__add { min-height: 44px; display: flex; align-items: center; justify-content: center; gap: 6px; color: var(--green); background: #fff; border: 1px dashed #a9c8b9; border-radius: 6px; cursor: pointer; font-size: 10px; font-weight: 700; }

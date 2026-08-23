@@ -17,6 +17,7 @@ import { CONFIG_STATIC_CNAME_RESPONSE_V1 } from '../../config-editor/schema'
 import { summarizeActions, summarizeMatchers } from '../../config-editor/summary'
 import type { KixConfig, PipelineSelectMode } from '../../config-editor/types'
 import ActionList from './ActionList.vue'
+import DomainMappingTable from './DomainMappingTable.vue'
 import MatcherList from './MatcherList.vue'
 
 const props = defineProps<{ config: KixConfig; capabilities: string[]; solution?: DnsSolution }>()
@@ -25,9 +26,10 @@ const emit = defineEmits<{ cancel: []; save: [drafts: SolutionDraft[]] }>()
 const editing = computed(() => props.solution !== undefined)
 const initial = props.solution ? createDraftFromSolution(props.solution, props.config) : undefined
 const drafts = ref<SolutionDraft[]>(initial ? [initial] : createSolutionDrafts(props.config, 'domestic_global'))
-const selectedTemplate = ref<SolutionTemplateId>('domestic_global')
+const selectedTemplate = ref<SolutionTemplateId>(props.solution?.groupType ?? 'domestic_global')
 const activeIndex = ref(0)
 const draft = computed(() => drafts.value[activeIndex.value]!)
+const mappingMode = computed(() => draft.value.groupType === 'domain_mapping')
 const selectorMode = ref<PipelineSelectMode>('all')
 const responseMode = ref<PipelineSelectMode>('all')
 const responseEnabled = ref(false)
@@ -168,17 +170,23 @@ function save(): void {
             <button v-for="(item, index) in drafts" :key="item.pipeline.id" type="button" :class="{ 'is-selected': activeIndex === index }" @click="selectDraft(index)">{{ index === 0 ? '国内解析' : '全局兜底' }}</button>
           </nav>
 
-          <section class="solution-guide__step">
+          <section v-if="!mappingMode" class="solution-guide__step">
             <header><span>{{ editing ? 1 : 2 }}</span><div><strong>哪些请求进入这个方案？</strong><small>多个方案仍按页面中的顺序匹配，首个命中生效</small></div></header>
             <div class="solution-guide__stage-title"><strong>入口条件</strong><select v-if="draft.selector.matchers.length > 1" :value="selectorMode" aria-label="入口条件关系" @change="setMode('selector', $event)"><option value="all">全部满足</option><option value="any">任一满足</option><option value="custom">自定义组合</option></select></div>
             <MatcherList v-model="draft.selector.matchers" scope="selector" :operator-mode="draft.selector.matchers.length > 1 && selectorMode === 'custom' ? 'custom' : 'hidden'" />
+            <p v-if="selectedTemplate === 'domain_upstream' || selectedTemplate === 'ad_block' || selectedTemplate === 'client_network'" class="solution-guide__hint">多个条件使用同一处理方式时，直接继续添加条件并选择“任一满足”，仍只会创建一张方案卡片。</p>
             <p v-if="draft.selector.matchers.length === 0" class="solution-guide__hint">未添加入口条件时匹配任意请求，应放在全部方案的最后作为兜底。</p>
+          </section>
+
+          <section v-else class="solution-guide__step">
+            <header><span>{{ editing ? 1 : 2 }}</span><div><strong>维护域名映射表</strong><small>一张方案可以包含多条映射，面板会自动生成入口条件和内部规则</small></div></header>
+            <DomainMappingTable v-model="draft.mappingRows!" />
           </section>
 
           <section class="solution-guide__step">
             <header><span>{{ editing ? 2 : 3 }}</span><div><strong>进入哪个处理流程？</strong><small>默认创建独立 Pipeline；也可以明确复用现有流程</small></div></header>
-            <label v-if="!editing" class="solution-guide__field"><span>流程方式</span><select :value="draft.pipelineMode" aria-label="流程方式" @change="changePipelineMode"><option value="new">创建独立 Pipeline</option><option value="reuse">复用现有 Pipeline</option></select></label>
-            <label v-else-if="sharedEdit" class="solution-guide__field"><span>共享流程</span><select :value="draft.pipelineMode" aria-label="共享流程处理方式" @change="changePipelineMode"><option value="copy">复制为独立 Pipeline（推荐）</option><option value="shared">修改共享 Pipeline（影响其他方案）</option><option value="reuse">改用其他现有 Pipeline</option></select></label>
+            <label v-if="!editing && !mappingMode" class="solution-guide__field"><span>流程方式</span><select :value="draft.pipelineMode" aria-label="流程方式" @change="changePipelineMode"><option value="new">创建独立 Pipeline</option><option value="reuse">复用现有 Pipeline</option></select></label>
+            <label v-else-if="sharedEdit" class="solution-guide__field"><span>共享流程</span><select :value="draft.pipelineMode" aria-label="共享流程处理方式" @change="changePipelineMode"><option value="copy">复制为独立 Pipeline（推荐）</option><option value="shared">修改共享 Pipeline（影响其他方案）</option><option v-if="!mappingMode" value="reuse">改用其他现有 Pipeline</option></select></label>
             <p v-if="sharedEdit && draft.pipelineMode === 'shared'" class="solution-guide__warning">当前 Pipeline 被 {{ solution?.referenceCount }} 个方案共用，保存会同时改变它们。</p>
             <label v-if="draft.pipelineMode === 'reuse'" class="solution-guide__field"><span>现有 Pipeline</span><select :value="draft.selector.pipeline" aria-label="现有 Pipeline" @change="selectExistingPipeline"><option disabled value="">请选择</option><option v-for="item in config.pipelines" :key="item.id" :value="item.id">{{ item.id }}</option></select></label>
             <template v-else>
@@ -187,7 +195,7 @@ function save(): void {
             </template>
           </section>
 
-          <template v-if="draft.pipelineMode !== 'reuse'">
+          <template v-if="draft.pipelineMode !== 'reuse' && !mappingMode">
             <section class="solution-guide__step">
               <header><span>{{ editing ? 3 : 4 }}</span><div><strong>依次执行什么动作？</strong><small>动作严格按从上到下的顺序执行</small></div></header>
               <ActionList v-model="draft.rule.actions" :pipelines="pipelines" :current-pipeline-id="draft.pipeline.id" :capabilities="capabilities" />
@@ -207,7 +215,8 @@ function save(): void {
 
           <section class="solution-guide__step solution-guide__step--confirm">
             <header><span>{{ editing ? 5 : 6 }}</span><div><strong>确认完整路径</strong><small>{{ drafts.length > 1 ? `当前查看第 ${activeIndex + 1} 个，共 ${drafts.length} 个` : '保存后仍可一键编辑或进入自由编辑' }}</small></div></header>
-            <p class="solution-guide__preview"><strong>{{ preview.entry }}</strong><ArrowRight :size="14" /><strong>{{ draft.selector.pipeline }}</strong><ArrowRight :size="14" /><strong>{{ draft.pipelineMode === 'reuse' ? '复用该流程' : preview.action }}</strong></p>
+            <p v-if="mappingMode" class="solution-guide__preview"><strong>{{ draft.mappingRows?.length ?? 0 }} 条域名映射</strong><ArrowRight :size="14" /><strong>{{ draft.pipeline.id }}</strong><ArrowRight :size="14" /><strong>按源域名返回对应 CNAME</strong></p>
+            <p v-else class="solution-guide__preview"><strong>{{ preview.entry }}</strong><ArrowRight :size="14" /><strong>{{ draft.selector.pipeline }}</strong><ArrowRight :size="14" /><strong>{{ draft.pipelineMode === 'reuse' ? '复用该流程' : preview.action }}</strong></p>
             <p v-if="responseEnabled && draft.pipelineMode !== 'reuse'" class="solution-guide__preview"><span>响应：</span><strong>{{ preview.response }}</strong><ArrowRight :size="14" /><strong>{{ summarizeActions(draft.rule.response_actions_on_match) }}</strong><span>；否则</span><strong>{{ summarizeActions(draft.rule.response_actions_on_miss) }}</strong></p>
             <ul v-if="allErrors.length" class="solution-guide__errors"><li v-for="error in [...new Set(allErrors)]" :key="error">{{ error }}</li></ul>
           </section>

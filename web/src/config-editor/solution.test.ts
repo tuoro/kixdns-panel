@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
+  cloneSolutionDraft,
   collectDnsSolutions,
   createDraftFromSolution,
   createSolutionDrafts,
+  materializeSolutionRules,
   selectorMatchesEveryRequest,
   solutionInsertIndex,
   solutionValidationErrors,
@@ -41,6 +43,27 @@ describe('DNS 处理方案', () => {
     expect(mapping?.pipeline.id).toBe('domain_mapping')
     expect(mapping?.selector.matchers[0]).toMatchObject({ type: 'domain_suffix', value: 'alias.example' })
     expect(mapping?.rule.actions[0]).toEqual({ type: 'static_cname_response', target: 'origin.example.', ttl: 300 })
+    expect(mapping?.mappingRows).toEqual([{ source: 'alias.example', target: 'origin.example.', ttl: 300 }])
+  })
+
+  it('多条域名映射生成一个可往返编辑的映射组', () => {
+    const value = config()
+    const mapping = createSolutionDrafts(value, 'domain_mapping')[0]!
+    mapping.mappingRows!.push({ source: 'alias-two.example', target: 'origin-two.example.', ttl: 120 })
+    const saved = cloneSolutionDraft(mapping)
+    const rules = materializeSolutionRules(saved)
+    value.pipeline_select.push(saved.selector)
+    value.pipelines.push({ ...saved.pipeline, rules })
+
+    expect(saved.selector.matcher_operator).toBe('or')
+    expect(rules).toHaveLength(2)
+    expect(rules[1]?.matchers[0]).toMatchObject({ type: 'domain_suffix', value: 'alias-two.example' })
+    expect(rules[1]?.actions[0]).toMatchObject({ type: 'static_cname_response', target: 'origin-two.example.', ttl: 120 })
+
+    const [solution] = collectDnsSolutions(value)
+    expect(solution?.kind).toBe('group')
+    expect(solution?.mappingRows).toHaveLength(2)
+    expect(createDraftFromSolution(solution!, value)?.mappingRows).toEqual(saved.mappingRows)
   })
 
   it('一次生成国内解析、响应回退和全局兜底完整链路', () => {
@@ -66,6 +89,23 @@ describe('DNS 处理方案', () => {
     expect(solutions.map((item) => item.kind)).toEqual(['simple', 'custom', 'orphan'])
     expect(solutions[1]?.reason).toContain('2 条内部规则')
     expect(solutions[2]?.reason).toContain('没有入口分流')
+  })
+
+  it('带扩展字段的映射配置保持为自定义方案', () => {
+    const mapping = createSolutionDrafts(config(), 'domain_mapping')[0]!
+    const saved = cloneSolutionDraft(mapping)
+    const rules = materializeSolutionRules(saved)
+    rules[0]!.future_option = true
+    const value: KixConfig = {
+      settings: {},
+      pipeline_select: [saved.selector],
+      pipelines: [{ ...saved.pipeline, rules }],
+    }
+
+    const [solution] = collectDnsSolutions(value)
+
+    expect(solution?.kind).toBe('custom')
+    expect(solution?.reason).toContain('独立的请求匹配条件')
   })
 
   it('共享 Pipeline 默认复制成独立流程并保留扩展字段', () => {
