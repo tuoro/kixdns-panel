@@ -126,7 +126,6 @@ test('默认用完整方案创建并保留自由编辑入口', async ({ page }) 
 
 test('域名映射方案可配置 CNAME 目标和 TTL', async ({ page }) => {
   await open(page, '/config')
-  const before = await page.locator('.solution-card').count()
   await page.getByRole('button', { name: '一键添加方案', exact: true }).click()
 
   const guide = page.getByRole('dialog', { name: '一键添加 DNS 方案' })
@@ -137,8 +136,8 @@ test('域名映射方案可配置 CNAME 目标和 TTL', async ({ page }) => {
   await expect(guide.locator('.solution-guide__preview').first()).toContainText('将域名映射到 origin.example.')
   await guide.getByRole('button', { name: '创建方案', exact: true }).click()
 
-  await expect(page.locator('.solution-card')).toHaveCount(before + 1)
   const created = page.locator('.solution-card').filter({ hasText: 'alias.example' })
+  await expect(created).toHaveCount(1)
   await expect(created).toContainText('将域名映射到 origin.example.')
   await expectNoPageOverflow(page)
 })
