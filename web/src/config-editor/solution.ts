@@ -6,6 +6,13 @@ import type { KixConfig, MatcherConfig, PipelineConfig, PipelineSelectConfig, Ru
 
 export type SolutionTemplateId = 'domestic_global' | 'domain_upstream' | 'domain_mapping' | 'ad_block' | 'client_network' | 'blank'
 export type SolutionPipelineMode = 'new' | 'reuse' | 'owned' | 'copy' | 'shared'
+export type SolutionGroupType = 'domain_mapping'
+
+export interface DomainMappingRow {
+  source: string
+  target: string
+  ttl: number
+}
 
 export interface SolutionTemplate {
   id: SolutionTemplateId
@@ -20,6 +27,8 @@ export interface SolutionDraft {
   rule: RuleConfig
   pipelineMode: SolutionPipelineMode
   existingPipelineId?: string
+  groupType?: SolutionGroupType
+  mappingRows?: DomainMappingRow[]
 }
 
 export interface DnsSolution {
@@ -29,8 +38,10 @@ export interface DnsSolution {
   selector?: PipelineSelectConfig
   pipeline?: PipelineConfig
   rule?: RuleConfig
+  groupType?: SolutionGroupType
+  mappingRows?: DomainMappingRow[]
   referenceCount: number
-  kind: 'simple' | 'custom' | 'orphan'
+  kind: 'simple' | 'group' | 'custom' | 'orphan'
   reason?: string
 }
 
@@ -111,6 +122,8 @@ export function createSolutionDrafts(config: KixConfig, templateId: SolutionTemp
   } else if (templateId === 'domain_mapping') {
     draft.selector.matchers = [{ type: 'domain_suffix', operator: 'and', value: 'alias.example' }]
     draft.rule.actions = [{ type: 'static_cname_response', target: 'origin.example.', ttl: 300 }]
+    draft.groupType = 'domain_mapping'
+    draft.mappingRows = [{ source: 'alias.example', target: 'origin.example.', ttl: 300 }]
   } else if (templateId === 'ad_block') {
     draft.selector.matchers = [{ type: 'geo_site', operator: 'and', value: 'geosite:category-ads-all' }]
     draft.rule.actions = [{ type: 'deny' }]
@@ -128,13 +141,71 @@ export function createDraftFromSolution(solution: DnsSolution, config: KixConfig
   if (shared) pipeline.id = nextPipelineId(config, `${solution.pipeline.id}-copy`)
   const selector = clone(solution.selector)
   selector.pipeline = pipeline.id
-  return {
+  const draft: SolutionDraft = {
     selector,
     pipeline,
     rule: clone(solution.rule),
     pipelineMode: shared ? 'copy' : 'owned',
     existingPipelineId: solution.pipeline.id,
   }
+  if (solution.groupType === 'domain_mapping' && solution.mappingRows) {
+    draft.groupType = solution.groupType
+    draft.mappingRows = clone(solution.mappingRows)
+  }
+  return draft
+}
+
+function isPlainMappingRule(rule: RuleConfig): boolean {
+  const ruleKeys = new Set(['name', 'matchers', 'matcher_operator', 'actions', 'response_matchers', 'response_matcher_operator', 'response_actions_on_match', 'response_actions_on_miss'])
+  const action = rule.actions[0]
+  const matcher = rule.matchers[0]
+  return Object.keys(rule).every((key) => ruleKeys.has(key))
+    && rule.actions.length === 1
+    && rule.actions[0]?.type === 'static_cname_response'
+    && action !== undefined
+    && Object.keys(action).every((key) => ['type', 'target', 'ttl'].includes(key))
+    && rule.response_matchers.length === 0
+    && rule.response_actions_on_match.length === 0
+    && rule.response_actions_on_miss.length === 0
+    && (rule.matchers.length === 0 || (
+      rule.matchers.length === 1
+      && rule.matcher_operator === 'and'
+      && matcher?.type === 'domain_suffix'
+      && matcher.operator === 'and'
+      && typeof matcher.value === 'string'
+      && Object.keys(matcher).every((key) => ['type', 'operator', 'value'].includes(key))
+    ))
+}
+
+function collectMappingRows(selector: PipelineSelectConfig, pipeline: PipelineConfig): DomainMappingRow[] | undefined {
+  if (pipeline.rules.length === 0 || !pipeline.rules.every(isPlainMappingRule)) return undefined
+  if (!Object.keys(selector).every((key) => ['pipeline', 'matchers', 'matcher_operator'].includes(key))) return undefined
+  const selectorSources = selector.matchers.every((matcher) => (
+    matcher.type === 'domain_suffix'
+    && matcher.operator === 'and'
+    && typeof matcher.value === 'string'
+    && matcher.value.trim()
+    && Object.keys(matcher).every((key) => ['type', 'operator', 'value'].includes(key))
+  ))
+    ? selector.matchers.map((matcher) => matcher.value!.trim())
+    : []
+  if (selectorSources.length === 0) return undefined
+  if (selector.matcher_operator !== (selectorSources.length > 1 ? 'or' : 'and')) return undefined
+
+  if (pipeline.rules.length === 1 && pipeline.rules[0]?.matchers.length === 0) {
+    if (selectorSources.length !== 1) return undefined
+    const action = pipeline.rules[0].actions[0]!
+    return [{ source: selectorSources[0]!, target: String(action.target ?? ''), ttl: Number(action.ttl ?? 300) }]
+  }
+
+  const rows = pipeline.rules.map((rule) => {
+    const matcher = rule.matchers[0]!
+    const action = rule.actions[0]!
+    return { source: matcher.value!.trim(), target: String(action.target ?? ''), ttl: Number(action.ttl ?? 300) }
+  })
+  const expected = [...new Set(selectorSources)].sort()
+  const actual = [...new Set(rows.map((row) => row.source))].sort()
+  return expected.length === actual.length && expected.every((source, index) => source === actual[index]) ? rows : undefined
 }
 
 export function collectDnsSolutions(config: KixConfig): DnsSolution[] {
@@ -155,6 +226,21 @@ export function collectDnsSolutions(config: KixConfig): DnsSolution[] {
         referenceCount,
         kind: 'custom',
         reason: '目标 Pipeline 不存在',
+      }
+    }
+    const mappingRows = collectMappingRows(selector, pipeline)
+    if (mappingRows) {
+      return {
+        key: `selector-${selectorIndex}`,
+        selectorIndex,
+        pipelineIndex,
+        selector,
+        pipeline,
+        rule: pipeline.rules[0],
+        groupType: 'domain_mapping',
+        mappingRows,
+        referenceCount,
+        kind: 'group',
       }
     }
     if (pipeline.rules.length !== 1) {
@@ -230,7 +316,18 @@ export function solutionValidationErrors(
   additionalPipelineIds: readonly string[] = [],
 ): string[] {
   const errors: string[] = []
-  if (draft.selector.matchers.some(matcherMissingValue)) errors.push('请补全入口条件')
+  if (draft.groupType === 'domain_mapping') {
+    const rows = draft.mappingRows ?? []
+    if (rows.length === 0) errors.push('请至少添加一条域名映射')
+    if (rows.some((row) => !row.source.trim() || !row.target.trim())) errors.push('请补全域名映射')
+    const sources = rows.map((row) => row.source.trim()).filter(Boolean)
+    if (new Set(sources).size !== sources.length) errors.push('源域名不能重复')
+    const pipelineIds = [...config.pipelines.map((pipeline) => pipeline.id), draft.pipeline.id, ...additionalPipelineIds]
+    for (const [index, row] of rows.entries()) {
+      const rule = mappingRule(draft.pipeline, row, index)
+      errors.push(...guidedRuleValidationErrors(rule, draft.pipeline.id, pipelineIds))
+    }
+  } else if (draft.selector.matchers.some(matcherMissingValue)) errors.push('请补全入口条件')
   if (draft.pipelineMode === 'new' || draft.pipelineMode === 'copy') {
     if (!draft.pipeline.id.trim()) errors.push('请填写 Pipeline ID')
     if (config.pipelines.some((pipeline) => pipeline.id === draft.pipeline.id)) {
@@ -239,7 +336,7 @@ export function solutionValidationErrors(
   } else if (draft.pipelineMode === 'reuse' && !config.pipelines.some((pipeline) => pipeline.id === draft.selector.pipeline)) {
     errors.push('请选择现有 Pipeline')
   }
-  if (draft.pipelineMode !== 'reuse') {
+  if (draft.pipelineMode !== 'reuse' && draft.groupType !== 'domain_mapping') {
     const pipelineIds = [...config.pipelines.map((pipeline) => pipeline.id), draft.pipeline.id, ...additionalPipelineIds]
     errors.push(...guidedRuleValidationErrors(draft.rule, draft.pipeline.id, pipelineIds))
   }
@@ -257,5 +354,32 @@ export function solutionInsertIndex(config: KixConfig, selector: PipelineSelectC
 }
 
 export function cloneSolutionDraft(draft: SolutionDraft): SolutionDraft {
-  return clone(draft)
+  const result = clone(draft)
+  if (result.groupType === 'domain_mapping') syncMappingSelector(result)
+  return result
+}
+
+function mappingRule(pipeline: PipelineConfig, row: DomainMappingRow, index: number): RuleConfig {
+  const rule = makeRule(pipeline, `${pipeline.id}-mapping-${index + 1}`)
+  rule.matchers = [{ type: 'domain_suffix', operator: 'and', value: row.source.trim() }]
+  rule.actions = [{ type: 'static_cname_response', target: row.target.trim(), ttl: row.ttl }]
+  return rule
+}
+
+function syncMappingSelector(draft: SolutionDraft): void {
+  const rows = draft.mappingRows ?? []
+  draft.selector.pipeline = draft.pipeline.id
+  draft.selector.matchers = rows.map((row) => ({
+    type: 'domain_suffix',
+    operator: 'and',
+    value: row.source.trim(),
+  }))
+  draft.selector.matcher_operator = rows.length > 1 ? 'or' : 'and'
+}
+
+export function materializeSolutionRules(draft: SolutionDraft): RuleConfig[] {
+  if (draft.groupType === 'domain_mapping') {
+    return (draft.mappingRows ?? []).map((row, index) => mappingRule(draft.pipeline, row, index))
+  }
+  return [clone(draft.rule)]
 }
