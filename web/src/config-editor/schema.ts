@@ -19,6 +19,7 @@ export interface SettingField {
 }
 
 export const CONFIG_QUERY_STATS_V1 = 'config_query_stats_v1'
+export const CONFIG_STATIC_CNAME_RESPONSE_V1 = 'config_static_cname_response_v1'
 
 export interface SettingSection {
   id: string
@@ -30,6 +31,10 @@ export interface SettingSection {
 export interface SelectOption {
   value: string
   label: string
+}
+
+export interface ActionDefinition extends SelectOption {
+  requiresCapability?: string
 }
 
 export interface MatcherDefinition extends SelectOption {
@@ -171,10 +176,11 @@ export const MATCHER_DEFINITIONS: Record<MatcherScope, MatcherDefinition[]> = {
   response: RESPONSE_MATCHERS,
 }
 
-export const ACTION_TYPES: SelectOption[] = [
+export const ACTION_TYPES: ActionDefinition[] = [
   { value: 'log', label: '记录日志' },
   { value: 'static_response', label: '固定 RCode' },
   { value: 'static_ip_response', label: '固定 IP' },
+  { value: 'static_cname_response', label: '固定 CNAME', requiresCapability: CONFIG_STATIC_CNAME_RESPONSE_V1 },
   { value: 'static_txt_response', label: '固定 TXT' },
   { value: 'replace_txt_response', label: '替换 TXT' },
   { value: 'jump_to_pipeline', label: '跳转 Pipeline' },

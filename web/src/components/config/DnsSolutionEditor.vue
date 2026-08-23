@@ -7,6 +7,7 @@ import type { KixConfig, PipelineConfig } from '../../config-editor/types'
 import SolutionGuide from './SolutionGuide.vue'
 
 const config = defineModel<KixConfig>({ required: true })
+defineProps<{ capabilities: string[] }>()
 const emit = defineEmits<{ manual: []; notice: [message: string] }>()
 const session = ref<DnsSolution | 'create'>()
 const solutions = computed(() => collectDnsSolutions(config.value))
@@ -139,7 +140,7 @@ function openManual(): void {
       <button class="solution-list__add" type="button" @click="session = 'create'"><Plus :size="16" />一键添加 DNS 方案</button>
     </div>
 
-    <SolutionGuide v-if="session" :config="config" :solution="session === 'create' ? undefined : session" @cancel="session = undefined" @save="saveDrafts" />
+    <SolutionGuide v-if="session" :config="config" :solution="session === 'create' ? undefined : session" :capabilities="capabilities" @cancel="session = undefined" @save="saveDrafts" />
   </section>
 </template>
 

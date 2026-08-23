@@ -1,18 +1,20 @@
 import { createRule } from './model'
-import { MATCHER_DEFINITIONS } from './schema'
+import { CONFIG_STATIC_CNAME_RESPONSE_V1, MATCHER_DEFINITIONS } from './schema'
 import { analyzeRuleFlow, ruleMatchesEveryRequest } from './summary'
 import type { ActionConfig, MatcherConfig, MatcherScope, PipelineConfig, RuleConfig } from './types'
 
-export type GuidedRuleTemplateId = 'domain_upstream' | 'cn_split' | 'ad_block' | 'response_fallback' | 'blank'
+export type GuidedRuleTemplateId = 'domain_upstream' | 'domain_mapping' | 'cn_split' | 'ad_block' | 'response_fallback' | 'blank'
 
 export interface GuidedRuleTemplate {
   id: GuidedRuleTemplateId
   name: string
   description: string
+  requiresCapability?: string
 }
 
 export const GUIDED_RULE_TEMPLATES: GuidedRuleTemplate[] = [
   { id: 'domain_upstream', name: '指定域名上游', description: '指定域名交给单独的 DNS 解析' },
+  { id: 'domain_mapping', name: '域名映射', description: '把查询域名映射到另一个域名', requiresCapability: CONFIG_STATIC_CNAME_RESPONSE_V1 },
   { id: 'cn_split', name: '国内域名分流', description: 'GeoSite CN 使用国内 DNS' },
   { id: 'ad_block', name: '广告域名拒绝', description: '拒绝广告分类中的域名' },
   { id: 'response_fallback', name: '异常响应回退', description: '异常应答记录日志并切换流程' },
@@ -49,6 +51,9 @@ export function createGuidedRuleFromTemplate(
   if (templateId === 'domain_upstream') {
     rule.matchers = [{ type: 'domain_suffix', operator: 'and', value: 'example.com' }]
     rule.actions = [{ type: 'forward', upstream: '1.1.1.1:53', transport: '' }]
+  } else if (templateId === 'domain_mapping') {
+    rule.matchers = [{ type: 'domain_suffix', operator: 'and', value: 'alias.example' }]
+    rule.actions = [{ type: 'static_cname_response', target: 'origin.example.', ttl: 300 }]
   } else if (templateId === 'cn_split') {
     rule.matchers = [{ type: 'geo_site', operator: 'and', value: 'geosite:cn' }]
     rule.actions = [{ type: 'forward', upstream: '223.5.5.5:53', transport: '' }]
@@ -91,10 +96,19 @@ function missingActionValue(action: ActionConfig): boolean {
   if (action.type === 'forward') return !action.upstream?.trim()
   if (action.type === 'jump_to_pipeline') return !action.pipeline?.trim()
   if (action.type === 'static_ip_response') return !action.ip?.trim()
+  if (action.type === 'static_cname_response') return !action.target?.trim()
   if (action.type === 'static_txt_response' || action.type === 'replace_txt_response') {
     return Array.isArray(action.text) ? action.text.length === 0 : !action.text?.trim()
   }
   return false
+}
+
+function validDnsName(value: string): boolean {
+  const trimmed = value.trim()
+  if (!trimmed || /\s/.test(trimmed)) return false
+  const withoutRoot = trimmed.endsWith('.') ? trimmed.slice(0, -1) : trimmed
+  if (!withoutRoot || new TextEncoder().encode(withoutRoot).length > 253) return false
+  return withoutRoot.split('.').every((label) => label.length > 0 && new TextEncoder().encode(label).length <= 63)
 }
 
 export function guidedRuleValidationErrors(
@@ -110,6 +124,11 @@ export function guidedRuleValidationErrors(
   if (rule.response_matchers.some((matcher) => missingMatcherValue(matcher, 'response'))) errors.push('请补全响应条件')
   const responseActions = [...rule.response_actions_on_match, ...rule.response_actions_on_miss]
   if (responseActions.some(missingActionValue)) errors.push('请补全响应分支动作')
+  const cnameActions = [...rule.actions, ...responseActions].filter((action) => action.type === 'static_cname_response')
+  if (cnameActions.some((action) => action.target && !validDnsName(action.target))) errors.push('CNAME 目标域名格式无效')
+  if (cnameActions.some((action) => action.ttl !== undefined && (
+    !Number.isInteger(action.ttl) || action.ttl < 0 || action.ttl > 4_294_967_295
+  ))) errors.push('CNAME TTL 必须是 0 到 4294967295 的整数')
   if ([...rule.actions, ...responseActions].some((action) => action.type === 'jump_to_pipeline' && action.pipeline === currentPipelineId)) {
     errors.push('不能跳转到当前 Pipeline')
   }
@@ -122,6 +141,7 @@ export function guidedRuleValidationErrors(
 const TERMINAL_ACTION_TYPES = new Set([
   'static_response',
   'static_ip_response',
+  'static_cname_response',
   'static_txt_response',
   'replace_txt_response',
   'jump_to_pipeline',

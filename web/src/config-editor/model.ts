@@ -45,7 +45,7 @@ const RULE_KEYS = [
   'response_actions_on_miss',
 ]
 const MATCHER_KEYS = ['type', 'operator', 'value', 'cidr', 'expect', 'country_codes', 'mode']
-const ACTION_KEYS = ['type', 'level', 'rcode', 'ip', 'text', 'ttl', 'pipeline', 'upstream', 'transport', 'ecs']
+const ACTION_KEYS = ['type', 'level', 'rcode', 'ip', 'target', 'text', 'ttl', 'pipeline', 'upstream', 'transport', 'ecs']
 const ECS_KEYS = ['mode', 'prefix_v4', 'prefix_v6', 'ip', 'prefix']
 
 function orderFields(value: ConfigObject, keys: readonly string[]): ConfigObject {
@@ -227,6 +227,10 @@ export function resetAction(action: ActionConfig, type: string): ActionConfig {
   if (type === 'log') action.level = 'info'
   if (type === 'static_response') action.rcode = 'NXDOMAIN'
   if (type === 'static_ip_response') action.ip = '127.0.0.1'
+  if (type === 'static_cname_response') {
+    action.target = 'origin.example.'
+    action.ttl = 300
+  }
   if (type === 'static_txt_response') {
     action.text = ['v=spf1 ~all']
     action.ttl = 300

@@ -13,12 +13,13 @@ import {
   type SolutionTemplateId,
 } from '../../config-editor/solution'
 import { applyMatcherMode, createAction, createMatcher, inferMatcherMode, nextPipelineId } from '../../config-editor/model'
+import { CONFIG_STATIC_CNAME_RESPONSE_V1 } from '../../config-editor/schema'
 import { summarizeActions, summarizeMatchers } from '../../config-editor/summary'
 import type { KixConfig, PipelineSelectMode } from '../../config-editor/types'
 import ActionList from './ActionList.vue'
 import MatcherList from './MatcherList.vue'
 
-const props = defineProps<{ config: KixConfig; solution?: DnsSolution }>()
+const props = defineProps<{ config: KixConfig; capabilities: string[]; solution?: DnsSolution }>()
 const emit = defineEmits<{ cancel: []; save: [drafts: SolutionDraft[]] }>()
 
 const editing = computed(() => props.solution !== undefined)
@@ -30,6 +31,9 @@ const draft = computed(() => drafts.value[activeIndex.value]!)
 const selectorMode = ref<PipelineSelectMode>('all')
 const responseMode = ref<PipelineSelectMode>('all')
 const responseEnabled = ref(false)
+const templates = computed(() => SOLUTION_TEMPLATES.filter((template) => (
+  !template.requiresCapability || props.capabilities.includes(template.requiresCapability)
+)))
 
 function syncModes(): void {
   selectorMode.value = inferMatcherMode(draft.value.selector.matchers, draft.value.selector.matcher_operator)
@@ -55,7 +59,14 @@ const allErrors = computed(() => drafts.value.flatMap((item, index) => solutionV
   props.config,
   props.solution?.selectorIndex,
   drafts.value.filter((_, candidate) => candidate !== index).map((candidate) => candidate.pipeline.id),
-)))
+)).concat(drafts.value.some((item) => [
+  ...item.rule.actions,
+  ...item.rule.response_actions_on_match,
+  ...item.rule.response_actions_on_miss,
+].some((action) => action.type === 'static_cname_response'))
+  && !props.capabilities.includes(CONFIG_STATIC_CNAME_RESPONSE_V1)
+  ? ['当前 KixDNS 不支持固定 CNAME，请先更新或切换内核']
+  : []))
 const valid = computed(() => allErrors.value.length === 0)
 const preview = computed(() => ({
   entry: summarizeMatchers(draft.value.selector.matchers, draft.value.selector.matcher_operator, 'selector'),
@@ -149,7 +160,7 @@ function save(): void {
           <section v-if="!editing" class="solution-guide__step">
             <header><span>1</span><div><strong>选择常用方案</strong><small>模板只负责预填，下面每一项仍可修改</small></div></header>
             <div class="solution-guide__templates">
-              <button v-for="template in SOLUTION_TEMPLATES" :key="template.id" type="button" :class="{ 'is-selected': selectedTemplate === template.id }" @click="applyTemplate(template.id)"><strong>{{ template.name }}</strong><small>{{ template.description }}</small></button>
+              <button v-for="template in templates" :key="template.id" type="button" :class="{ 'is-selected': selectedTemplate === template.id }" @click="applyTemplate(template.id)"><strong>{{ template.name }}</strong><small>{{ template.description }}</small></button>
             </div>
           </section>
 
@@ -179,7 +190,7 @@ function save(): void {
           <template v-if="draft.pipelineMode !== 'reuse'">
             <section class="solution-guide__step">
               <header><span>{{ editing ? 3 : 4 }}</span><div><strong>依次执行什么动作？</strong><small>动作严格按从上到下的顺序执行</small></div></header>
-              <ActionList v-model="draft.rule.actions" :pipelines="pipelines" :current-pipeline-id="draft.pipeline.id" />
+              <ActionList v-model="draft.rule.actions" :pipelines="pipelines" :current-pipeline-id="draft.pipeline.id" :capabilities="capabilities" />
             </section>
 
             <section class="solution-guide__step">
@@ -188,8 +199,8 @@ function save(): void {
               <div v-if="responseEnabled" class="solution-guide__response">
                 <div class="solution-guide__stage-title"><strong>响应条件</strong><select v-if="draft.rule.response_matchers.length > 1" :value="responseMode" aria-label="响应条件关系" @change="setMode('response', $event)"><option value="all">全部满足</option><option value="any">任一满足</option><option value="custom">自定义组合</option></select></div>
                 <MatcherList v-model="draft.rule.response_matchers" scope="response" :operator-mode="draft.rule.response_matchers.length > 1 && responseMode === 'custom' ? 'custom' : 'hidden'" />
-                <div class="solution-guide__branch"><strong>匹配成功</strong><ActionList v-model="draft.rule.response_actions_on_match" :pipelines="pipelines" :current-pipeline-id="draft.pipeline.id" /></div>
-                <div class="solution-guide__branch"><strong>匹配失败</strong><ActionList v-model="draft.rule.response_actions_on_miss" :pipelines="pipelines" :current-pipeline-id="draft.pipeline.id" /></div>
+                <div class="solution-guide__branch"><strong>匹配成功</strong><ActionList v-model="draft.rule.response_actions_on_match" :pipelines="pipelines" :current-pipeline-id="draft.pipeline.id" :capabilities="capabilities" /></div>
+                <div class="solution-guide__branch"><strong>匹配失败</strong><ActionList v-model="draft.rule.response_actions_on_miss" :pipelines="pipelines" :current-pipeline-id="draft.pipeline.id" :capabilities="capabilities" /></div>
               </div>
             </section>
           </template>

@@ -98,6 +98,7 @@ export function summarizeAction(action: ActionConfig): string {
     case 'log': return `记录 ${text(action.level, 'info')} 日志`
     case 'static_response': return `返回 ${text(action.rcode)}`
     case 'static_ip_response': return `返回 IP ${text(action.ip)}`
+    case 'static_cname_response': return `将域名映射到 ${text(action.target)}`
     case 'static_txt_response': return `返回 TXT ${text(action.text)}`
     case 'replace_txt_response': return `替换 TXT 为 ${text(action.text)}`
     case 'jump_to_pipeline': return `跳转至 Pipeline ${text(action.pipeline, '未选择')}`

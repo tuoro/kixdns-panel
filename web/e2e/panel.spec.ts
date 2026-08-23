@@ -124,6 +124,25 @@ test('默认用完整方案创建并保留自由编辑入口', async ({ page }) 
   await expect(page.getByRole('heading', { name: '分流规则' })).toHaveCount(0)
 })
 
+test('域名映射方案可配置 CNAME 目标和 TTL', async ({ page }) => {
+  await open(page, '/config')
+  const before = await page.locator('.solution-card').count()
+  await page.getByRole('button', { name: '一键添加方案', exact: true }).click()
+
+  const guide = page.getByRole('dialog', { name: '一键添加 DNS 方案' })
+  await guide.getByRole('button', { name: /域名映射/ }).click()
+  await guide.getByLabel('条件 1 值').fill('alias.example')
+  await guide.getByLabel('动作 1 CNAME 目标').fill('origin.example.')
+  await guide.getByLabel('动作 1 CNAME TTL').fill('120')
+  await expect(guide.locator('.solution-guide__preview').first()).toContainText('将域名映射到 origin.example.')
+  await guide.getByRole('button', { name: '创建方案', exact: true }).click()
+
+  await expect(page.locator('.solution-card')).toHaveCount(before + 1)
+  const created = page.locator('.solution-card').filter({ hasText: 'alias.example' })
+  await expect(created).toContainText('将域名映射到 origin.example.')
+  await expectNoPageOverflow(page)
+})
+
 test('入口分流使用渐进式条件关系编辑', async ({ page }) => {
   await open(page, '/config')
   await openManualConfig(page)

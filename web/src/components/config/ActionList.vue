@@ -1,11 +1,27 @@
 <script setup lang="ts">
 import { ArrowDown, ArrowUp, Plus, X } from '@lucide/vue'
+import { computed } from 'vue'
 import { createAction, createEcs, resetAction } from '../../config-editor/model'
 import { ACTION_TYPES, TRANSPORT_OPTIONS } from '../../config-editor/schema'
 import type { ActionConfig, PipelineConfig } from '../../config-editor/types'
 
-defineProps<{ pipelines: PipelineConfig[]; currentPipelineId: string }>()
+const props = withDefaults(defineProps<{
+  pipelines: PipelineConfig[]
+  currentPipelineId: string
+  capabilities?: string[]
+}>(), {
+  capabilities: () => [],
+})
 const actions = defineModel<ActionConfig[]>({ required: true })
+const supportedActionTypes = computed(() => ACTION_TYPES.filter((option) => (
+  !option.requiresCapability || props.capabilities.includes(option.requiresCapability)
+)))
+
+function actionTypes(action: ActionConfig) {
+  if (supportedActionTypes.value.some((option) => option.value === action.type)) return supportedActionTypes.value
+  const current = ACTION_TYPES.find((option) => option.value === action.type)
+  return current ? [...supportedActionTypes.value, current] : supportedActionTypes.value
+}
 
 function changeType(action: ActionConfig, event: Event): void {
   resetAction(action, (event.currentTarget as HTMLSelectElement).value)
@@ -48,12 +64,16 @@ function move(index: number, offset: -1 | 1): void {
   <div class="action-list">
     <div v-for="(action, index) in actions" :key="index" class="action-row">
       <select :value="action.type" :aria-label="`动作 ${index + 1} 类型`" @change="changeType(action, $event)">
-        <option v-for="option in ACTION_TYPES" :key="option.value" :value="option.value">{{ option.label }}</option>
+        <option v-for="option in actionTypes(action)" :key="option.value" :value="option.value">{{ option.label }}</option>
       </select>
 
       <select v-if="action.type === 'log'" v-model="action.level" :aria-label="`动作 ${index + 1} 日志级别`"><option v-for="level in ['trace', 'debug', 'info', 'warn', 'error']" :key="level" :value="level">{{ level }}</option></select>
       <select v-else-if="action.type === 'static_response'" v-model="action.rcode" :aria-label="`动作 ${index + 1} RCode`"><option v-for="rcode in ['NOERROR', 'NXDOMAIN', 'SERVFAIL', 'REFUSED']" :key="rcode" :value="rcode">{{ rcode }}</option></select>
       <input v-else-if="action.type === 'static_ip_response'" v-model="action.ip" type="text" :aria-label="`动作 ${index + 1} IP`" placeholder="127.0.0.1">
+      <template v-else-if="action.type === 'static_cname_response'">
+        <input v-model="action.target" class="action-row__grow" type="text" :aria-label="`动作 ${index + 1} CNAME 目标`" placeholder="origin.example.">
+        <input type="number" :value="action.ttl" min="0" max="4294967295" :aria-label="`动作 ${index + 1} CNAME TTL`" placeholder="300" @input="setTtl(action, $event)">
+      </template>
       <select v-else-if="action.type === 'jump_to_pipeline'" v-model="action.pipeline" :aria-label="`动作 ${index + 1} 目标 Pipeline`"><option disabled value="">选择 Pipeline</option><option v-for="pipeline in pipelines" :key="pipeline.id" :value="pipeline.id" :disabled="pipeline.id === currentPipelineId">{{ pipeline.id }}</option></select>
 
       <template v-else-if="action.type === 'forward'">

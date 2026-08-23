@@ -32,6 +32,7 @@ export interface ActionConfig extends ConfigObject {
   level?: string
   rcode?: string
   ip?: string
+  target?: string
   text?: string | string[]
   ttl?: number
   pipeline?: string

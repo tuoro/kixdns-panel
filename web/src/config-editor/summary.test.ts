@@ -28,6 +28,8 @@ describe('规则语义摘要', () => {
   it('准确摘要主要动作并保留未知动作类型', () => {
     expect(summarizeAction({ type: 'forward', upstream: '1.1.1.1:53', transport: 'udp' }))
       .toBe('转发至 1.1.1.1:53（UDP）')
+    expect(summarizeAction({ type: 'static_cname_response', target: 'origin.example.' }))
+      .toBe('将域名映射到 origin.example.')
     expect(summarizeAction({ type: 'continue' })).toBe('继续匹配后续规则')
     expect(summarizeAction({ type: 'future_action' })).toBe('执行 future_action')
   })
@@ -61,6 +63,7 @@ describe('规则语义摘要', () => {
 
     expect(analyzeRuleFlow(makeRule([{ type: 'log' }, { type: 'continue' }])).kind).toBe('continue')
     expect(analyzeRuleFlow(makeRule([{ type: 'static_response', rcode: 'NXDOMAIN' }])).kind).toBe('terminate')
+    expect(analyzeRuleFlow(makeRule([{ type: 'static_cname_response', target: 'origin.example.' }])).kind).toBe('terminate')
     expect(analyzeRuleFlow(makeRule([{ type: 'jump_to_pipeline', pipeline: 'next' }])).kind).toBe('jump')
 
     const forwarding = makeRule([{ type: 'forward', upstream: '1.1.1.1:53' }])

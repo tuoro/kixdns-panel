@@ -15,6 +15,6 @@ defineEmits<{ notice: [message: string] }>()
       <label class="setting-field"><span>Version</span><input v-model="config.version" type="text" placeholder="1.0"></label>
     </section>
     <SettingsEditor v-model="config.settings" :capabilities="capabilities" />
-    <PipelineEditor v-model="config" @notice="$emit('notice', $event)" />
+    <PipelineEditor v-model="config" :capabilities="capabilities" @notice="$emit('notice', $event)" />
   </div>
 </template>
