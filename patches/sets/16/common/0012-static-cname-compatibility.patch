@@ -1,0 +1,43 @@
+diff --git a/src/engine/pipeline.rs b/src/engine/pipeline.rs
+index 36a6fc7..1f1fbaf 100644
+--- a/src/engine/pipeline.rs
++++ b/src/engine/pipeline.rs
+@@ -449,6 +449,7 @@ impl Engine {
+                                 request,
+                                 d.clone(),
+                                 include_ip,
++                                &matched_rule_names,
+                             );
+                             return d;
+                         }
+diff --git a/src/matcher/advanced_rule.rs b/src/matcher/advanced_rule.rs
+index 6304225..b796a6f 100644
+--- a/src/matcher/advanced_rule.rs
++++ b/src/matcher/advanced_rule.rs
+@@ -306,7 +306,7 @@ pub(crate) fn fast_static_match(
+                 }
+                 PrecomputedAction::StaticCname { target, ttl } => {
+                     let (rcode, answers) = make_static_cname_answer(qname, target, *ttl);
+-                    return Some(Decision::Static { rcode, answers });
++                    return Some((Decision::Static { rcode, answers }, rule.rule_name.clone()));
+                 }
+             }
+         } else {
+diff --git a/src/panel.rs b/src/panel.rs
+index 362116b..b5c1e87 100644
+--- a/src/panel.rs
++++ b/src/panel.rs
+@@ -582,7 +582,12 @@ impl PanelMetrics {
+             "started_at_unix": self.started_at_unix,
+             "uptime_seconds": self.uptime_seconds(),
+             "config_generation": active.generation,
+-            "capabilities": ["stats_top_v1", "config_query_stats_v1", "diagnostics_trace_v1"],
++            "capabilities": [
++                "stats_top_v1",
++                "config_query_stats_v1",
++                "diagnostics_trace_v1",
++                "config_static_cname_response_v1"
++            ],
+         })
+     }
+ 

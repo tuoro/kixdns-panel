@@ -23,6 +23,7 @@ import MatcherList from './MatcherList.vue'
 import RuleCreationGuide from './RuleCreationGuide.vue'
 
 const config = defineModel<KixConfig>({ required: true })
+defineProps<{ capabilities: string[] }>()
 const emit = defineEmits<{ notice: [message: string] }>()
 const pipelineIds = computed(() => config.value.pipelines.map((item) => item.id))
 const previousIds = new WeakMap<PipelineConfig, string>()
@@ -164,7 +165,7 @@ function saveGuidedRule(rule: RuleConfig, index: number): void {
 </script>
 
 <template>
-  <DnsSolutionEditor v-if="!manualMode" v-model="config" @manual="manualMode = true" @notice="emit('notice', $event)" />
+  <DnsSolutionEditor v-if="!manualMode" v-model="config" :capabilities="capabilities" @manual="manualMode = true" @notice="emit('notice', $event)" />
 
   <template v-if="manualMode">
   <section class="config-section">
@@ -270,7 +271,7 @@ function saveGuidedRule(rule: RuleConfig, index: number): void {
                   </div>
                   <MatcherList v-model="rule.matchers" scope="request" :operator-mode="rule.matchers.length > 1 && matcherMode(rule.matchers, rule.matcher_operator) === 'custom' ? 'custom' : 'hidden'" />
                 </div>
-                <div class="rule-stage"><div class="rule-stage__title"><strong>执行动作</strong></div><ActionList v-model="rule.actions" :pipelines="config.pipelines" :current-pipeline-id="pipeline.id" /></div>
+                <div class="rule-stage"><div class="rule-stage__title"><strong>执行动作</strong></div><ActionList v-model="rule.actions" :pipelines="config.pipelines" :current-pipeline-id="pipeline.id" :capabilities="capabilities" /></div>
 
                 <template v-if="responseEnabled(rule)">
                   <div class="rule-stage rule-stage--response">
@@ -281,8 +282,8 @@ function saveGuidedRule(rule: RuleConfig, index: number): void {
                     <MatcherList v-model="rule.response_matchers" scope="response" :operator-mode="rule.response_matchers.length > 1 && matcherMode(rule.response_matchers, rule.response_matcher_operator) === 'custom' ? 'custom' : 'hidden'" />
                   </div>
                   <div class="response-actions">
-                    <div class="rule-stage"><div class="rule-stage__title"><strong>匹配成功</strong></div><ActionList v-model="rule.response_actions_on_match" :pipelines="config.pipelines" :current-pipeline-id="pipeline.id" /></div>
-                    <div class="rule-stage"><div class="rule-stage__title"><strong>匹配失败</strong></div><ActionList v-model="rule.response_actions_on_miss" :pipelines="config.pipelines" :current-pipeline-id="pipeline.id" /></div>
+                    <div class="rule-stage"><div class="rule-stage__title"><strong>匹配成功</strong></div><ActionList v-model="rule.response_actions_on_match" :pipelines="config.pipelines" :current-pipeline-id="pipeline.id" :capabilities="capabilities" /></div>
+                    <div class="rule-stage"><div class="rule-stage__title"><strong>匹配失败</strong></div><ActionList v-model="rule.response_actions_on_miss" :pipelines="config.pipelines" :current-pipeline-id="pipeline.id" :capabilities="capabilities" /></div>
                   </div>
                 </template>
               </template>
@@ -301,6 +302,7 @@ function saveGuidedRule(rule: RuleConfig, index: number): void {
     :pipelines="config.pipelines"
     :rule="guidedSession.rule"
     :rule-index="guidedSession.ruleIndex"
+    :capabilities="capabilities"
     @cancel="guidedSession = undefined"
     @save="saveGuidedRule"
   />

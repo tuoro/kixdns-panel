@@ -35,6 +35,14 @@ function config(): KixConfig {
 }
 
 describe('DNS 处理方案', () => {
+  it('域名映射方案同时创建入口条件和固定 CNAME 动作', () => {
+    const [mapping] = createSolutionDrafts(config(), 'domain_mapping')
+
+    expect(mapping?.pipeline.id).toBe('domain_mapping')
+    expect(mapping?.selector.matchers[0]).toMatchObject({ type: 'domain_suffix', value: 'alias.example' })
+    expect(mapping?.rule.actions[0]).toEqual({ type: 'static_cname_response', target: 'origin.example.', ttl: 300 })
+  })
+
   it('一次生成国内解析、响应回退和全局兜底完整链路', () => {
     const drafts = createSolutionDrafts(config(), 'domestic_global')
 

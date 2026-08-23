@@ -1,16 +1,17 @@
 import { createRule, nextPipelineId } from './model'
 import { guidedRuleValidationErrors } from './guided-rule'
-import { MATCHER_DEFINITIONS } from './schema'
+import { CONFIG_STATIC_CNAME_RESPONSE_V1, MATCHER_DEFINITIONS } from './schema'
 import { ruleMatchesEveryRequest } from './summary'
 import type { KixConfig, MatcherConfig, PipelineConfig, PipelineSelectConfig, RuleConfig } from './types'
 
-export type SolutionTemplateId = 'domestic_global' | 'domain_upstream' | 'ad_block' | 'client_network' | 'blank'
+export type SolutionTemplateId = 'domestic_global' | 'domain_upstream' | 'domain_mapping' | 'ad_block' | 'client_network' | 'blank'
 export type SolutionPipelineMode = 'new' | 'reuse' | 'owned' | 'copy' | 'shared'
 
 export interface SolutionTemplate {
   id: SolutionTemplateId
   name: string
   description: string
+  requiresCapability?: string
 }
 
 export interface SolutionDraft {
@@ -36,6 +37,7 @@ export interface DnsSolution {
 export const SOLUTION_TEMPLATES: SolutionTemplate[] = [
   { id: 'domestic_global', name: '国内外 DNS 分流', description: '一次创建国内解析与全局兜底' },
   { id: 'domain_upstream', name: '指定域名上游', description: '指定域名使用独立 DNS' },
+  { id: 'domain_mapping', name: '域名映射', description: '把查询域名映射到另一个域名', requiresCapability: CONFIG_STATIC_CNAME_RESPONSE_V1 },
   { id: 'ad_block', name: '广告域名拒绝', description: '拒绝广告分类中的域名' },
   { id: 'client_network', name: '客户端网段分流', description: '指定客户端使用独立流程' },
   { id: 'blank', name: '空白方案', description: '从空白条件和动作开始' },
@@ -95,15 +97,20 @@ export function createSolutionDrafts(config: KixConfig, templateId: SolutionTemp
 
   const base = templateId === 'domain_upstream'
     ? 'domain_dns'
-    : templateId === 'ad_block'
-      ? 'ad_block'
-      : templateId === 'client_network'
-        ? 'client_dns'
-        : 'dns_solution'
+    : templateId === 'domain_mapping'
+      ? 'domain_mapping'
+      : templateId === 'ad_block'
+        ? 'ad_block'
+        : templateId === 'client_network'
+          ? 'client_dns'
+          : 'dns_solution'
   const draft = makeDraft(config, base)
   if (templateId === 'domain_upstream') {
     draft.selector.matchers = [{ type: 'domain_suffix', operator: 'and', value: 'example.com' }]
     draft.rule.actions = [{ type: 'forward', upstream: '1.1.1.1:53', transport: '' }]
+  } else if (templateId === 'domain_mapping') {
+    draft.selector.matchers = [{ type: 'domain_suffix', operator: 'and', value: 'alias.example' }]
+    draft.rule.actions = [{ type: 'static_cname_response', target: 'origin.example.', ttl: 300 }]
   } else if (templateId === 'ad_block') {
     draft.selector.matchers = [{ type: 'geo_site', operator: 'and', value: 'geosite:category-ads-all' }]
     draft.rule.actions = [{ type: 'deny' }]

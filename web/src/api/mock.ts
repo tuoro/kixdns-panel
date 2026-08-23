@@ -74,7 +74,7 @@ let config: ConfigDocument = {
     generation: 18,
     apply_state: 'active',
     pending_error: null,
-    declared_capabilities: ['config_query_stats_v1'],
+    declared_capabilities: ['config_query_stats_v1', 'config_static_cname_response_v1'],
   },
 }
 
@@ -133,7 +133,7 @@ const overview: Overview = {
     started_at_unix: now - 289420,
     uptime_seconds: 289420,
     config_generation: 18,
-    capabilities: ['stats_top_v1'],
+    capabilities: ['stats_top_v1', 'config_static_cname_response_v1'],
   },
   active_config: activeConfig,
   metrics: {
@@ -345,7 +345,7 @@ const releaseVersions: RemoteKixdnsVersion[] = [
   },
 ]
 const configCapabilitiesByArtifact = new Map<string, string[]>([
-  [actionVersions[0].artifact, ['config_query_stats_v1']],
+  [actionVersions[0].artifact, ['config_query_stats_v1', 'config_static_cname_response_v1']],
   [releaseVersions[0].artifact, ['config_query_stats_v1']],
 ])
 
@@ -581,7 +581,7 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
           generation: config.runtime.generation,
           apply_state: 'pending',
           pending_error: null,
-          declared_capabilities: ['config_query_stats_v1'],
+          declared_capabilities: ['config_query_stats_v1', 'config_static_cname_response_v1'],
         },
       }
       versions.versions.unshift({
@@ -609,7 +609,7 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
         generation: activeConfig.generation + 1,
         apply_state: 'active',
         pending_error: null,
-        declared_capabilities: ['config_query_stats_v1'],
+        declared_capabilities: ['config_query_stats_v1', 'config_static_cname_response_v1'],
       },
     }
     activeConfig.sha256 = nextSha
@@ -648,7 +648,7 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
         generation: activeConfig.generation + 1,
         apply_state: 'active',
         pending_error: null,
-        declared_capabilities: ['config_query_stats_v1'],
+        declared_capabilities: ['config_query_stats_v1', 'config_static_cname_response_v1'],
       },
     }
     activeConfig.sha256 = config.sha256

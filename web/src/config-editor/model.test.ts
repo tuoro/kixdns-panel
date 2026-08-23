@@ -163,6 +163,9 @@ describe('结构化配置模型', () => {
     action.ecs = createEcs('static')
     resetAction(action, 'static_response')
     expect(action).toEqual({ type: 'static_response', rcode: 'NXDOMAIN' })
+
+    resetAction(action, 'static_cname_response')
+    expect(action).toEqual({ type: 'static_cname_response', target: 'origin.example.', ttl: 300 })
   })
 
   it('JSON 往返保留嵌套 ECS 并拒绝非对象根节点', () => {

@@ -11,6 +11,7 @@ import {
   type GuidedRuleTemplateId,
 } from '../../config-editor/guided-rule'
 import { applyMatcherMode, createAction, createMatcher, inferMatcherMode } from '../../config-editor/model'
+import { CONFIG_STATIC_CNAME_RESPONSE_V1 } from '../../config-editor/schema'
 import { analyzeRuleFlow, findBlockingRule, ruleMatchesEveryRequest, summarizeActions, summarizeMatchers, summarizeRule } from '../../config-editor/summary'
 import type { PipelineConfig, PipelineSelectMode, RuleConfig } from '../../config-editor/types'
 import ActionList from './ActionList.vue'
@@ -19,6 +20,7 @@ import MatcherList from './MatcherList.vue'
 const props = defineProps<{
   pipeline: PipelineConfig
   pipelines: PipelineConfig[]
+  capabilities: string[]
   rule?: RuleConfig
   ruleIndex?: number
 }>()
@@ -41,6 +43,9 @@ const responseEnabled = ref(
   || initialRule.response_actions_on_match.length > 0
   || initialRule.response_actions_on_miss.length > 0,
 )
+const templates = computed(() => GUIDED_RULE_TEMPLATES.filter((template) => (
+  !template.requiresCapability || props.capabilities.includes(template.requiresCapability)
+)))
 
 const hasForward = computed(() => draft.value.actions.some((action) => action.type === 'forward'))
 const validationErrors = computed(() => {
@@ -51,6 +56,11 @@ const validationErrors = computed(() => {
   }
   const duplicate = props.pipeline.rules.some((rule, index) => rule.name === draft.value.name && index !== props.ruleIndex)
   if (duplicate) errors.push('规则名称已存在')
+  const actions = [draft.value.actions, draft.value.response_actions_on_match, draft.value.response_actions_on_miss].flat()
+  if (actions.some((action) => action.type === 'static_cname_response')
+    && !props.capabilities.includes(CONFIG_STATIC_CNAME_RESPONSE_V1)) {
+    errors.push('当前 KixDNS 不支持固定 CNAME，请先更新或切换内核')
+  }
   return [...new Set(errors)]
 })
 const preview = computed(() => summarizeRule(draft.value))
@@ -128,7 +138,7 @@ function save(): void {
           <section v-if="!editing" class="rule-guide__step">
             <header><span>1</span><div><strong>选择一个起点</strong><small>模板只负责预填，所有内容都能继续修改</small></div></header>
             <div class="rule-guide__templates">
-              <button v-for="template in GUIDED_RULE_TEMPLATES" :key="template.id" type="button" :class="{ 'is-selected': selectedTemplate === template.id }" @click="applyTemplate(template.id)"><strong>{{ template.name }}</strong><small>{{ template.description }}</small></button>
+              <button v-for="template in templates" :key="template.id" type="button" :class="{ 'is-selected': selectedTemplate === template.id }" @click="applyTemplate(template.id)"><strong>{{ template.name }}</strong><small>{{ template.description }}</small></button>
             </div>
           </section>
 
@@ -142,7 +152,7 @@ function save(): void {
 
           <section class="rule-guide__step">
             <header><span>{{ editing ? 2 : 3 }}</span><div><strong>命中后依次做什么？</strong><small>动作严格按从上到下的顺序执行</small></div></header>
-            <ActionList v-model="draft.actions" :pipelines="pipelines" :current-pipeline-id="pipeline.id" />
+            <ActionList v-model="draft.actions" :pipelines="pipelines" :current-pipeline-id="pipeline.id" :capabilities="capabilities" />
             <p v-if="actionWarning" class="rule-guide__warning"><AlertTriangle :size="14" />终止型动作之后还有 {{ actionWarning }} 个动作，不会被执行，请调整顺序。</p>
           </section>
 
@@ -155,8 +165,8 @@ function save(): void {
             <div v-if="responseEnabled" class="rule-guide__response">
               <div class="rule-guide__stage-title"><div><strong>响应条件</strong><small>无条件时任意响应都算匹配成功</small></div><select v-if="draft.response_matchers.length > 1" :value="responseMode" aria-label="一键响应条件关系" @change="setMatcherMode('response', $event)"><option value="all">全部满足</option><option value="any">任一满足</option><option value="custom">自定义组合</option></select></div>
               <MatcherList v-model="draft.response_matchers" scope="response" :operator-mode="draft.response_matchers.length > 1 && responseMode === 'custom' ? 'custom' : 'hidden'" />
-              <div class="rule-guide__branch"><header><strong>匹配成功</strong><small>{{ successActions }}</small></header><ActionList v-model="draft.response_actions_on_match" :pipelines="pipelines" :current-pipeline-id="pipeline.id" /><p v-if="successWarning" class="rule-guide__warning"><AlertTriangle :size="14" />终止型动作之后还有 {{ successWarning }} 个动作不会执行。</p></div>
-              <div class="rule-guide__branch"><header><strong>匹配失败</strong><small>{{ missActions }}</small></header><ActionList v-model="draft.response_actions_on_miss" :pipelines="pipelines" :current-pipeline-id="pipeline.id" /><p v-if="missWarning" class="rule-guide__warning"><AlertTriangle :size="14" />终止型动作之后还有 {{ missWarning }} 个动作不会执行。</p></div>
+              <div class="rule-guide__branch"><header><strong>匹配成功</strong><small>{{ successActions }}</small></header><ActionList v-model="draft.response_actions_on_match" :pipelines="pipelines" :current-pipeline-id="pipeline.id" :capabilities="capabilities" /><p v-if="successWarning" class="rule-guide__warning"><AlertTriangle :size="14" />终止型动作之后还有 {{ successWarning }} 个动作不会执行。</p></div>
+              <div class="rule-guide__branch"><header><strong>匹配失败</strong><small>{{ missActions }}</small></header><ActionList v-model="draft.response_actions_on_miss" :pipelines="pipelines" :current-pipeline-id="pipeline.id" :capabilities="capabilities" /><p v-if="missWarning" class="rule-guide__warning"><AlertTriangle :size="14" />终止型动作之后还有 {{ missWarning }} 个动作不会执行。</p></div>
             </div>
           </section>
 
