@@ -2,7 +2,6 @@ name: Track successful upstream versions
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
     - cron: "23 3 * * *"
   workflow_dispatch:
 
@@ -24,14 +23,7 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        track: >-
-          ${{ fromJSON(
-            github.event_name == 'workflow_dispatch'
-            && '["action","release"]'
-            || github.event.schedule == '23 3 * * *'
-            && '["release"]'
-            || '["action"]'
-          ) }}
+        track: [action, release]
     env:
       GH_TOKEN: ${{ github.token }}
       TRACK: ${{ matrix.track }}
