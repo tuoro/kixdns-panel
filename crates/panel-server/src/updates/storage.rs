@@ -10,9 +10,9 @@ use crate::auth::unix_timestamp;
 use crate::config_capabilities::validate_declared_capabilities;
 
 use super::validation::{
-    constant_hash_eq, persist, sha256, sync_directory, validate_build_identity, validate_commit,
-    validate_digest, validate_elf, validate_hex_digest, validate_manifest_build_identity,
-    validate_manifest_source, validate_slug, write_executable, write_private_file,
+    persist, sha256, sync_directory, validate_build_identity, validate_commit, validate_digest,
+    validate_elf, validate_hex_digest, validate_manifest_build_identity, validate_manifest_source,
+    validate_slug, write_executable, write_private_file,
 };
 use super::{
     ArtifactCapabilities, BuildIdentity, InstalledVersion, MANIFEST_SCHEMA_VERSION,
@@ -38,7 +38,7 @@ pub(super) fn store_version(
     validate_declared_capabilities(&manifest.config_capabilities)
         .map_err(UpdateError::Verification)?;
     validate_elf(binary)?;
-    if !constant_hash_eq(&manifest.binary_sha256, &sha256(binary)) {
+    if manifest.binary_sha256 != sha256(binary) {
         return Err(UpdateError::Verification(
             "版本清单二进制摘要不匹配".to_owned(),
         ));
@@ -110,7 +110,7 @@ pub(super) fn load_bundled_manifest(
     let declared_binary_digest = read_metadata_text(metadata_path, "KIXDNS_BINARY_SHA256", 128)?;
     validate_hex_digest(&declared_binary_digest)?;
     let binary_sha256 = sha256(binary);
-    if !constant_hash_eq(&declared_binary_digest, &binary_sha256) {
+    if declared_binary_digest != binary_sha256 {
         return Err(UpdateError::Verification(
             "当前 KixDNS 二进制与完整包身份不匹配".to_owned(),
         ));
@@ -251,7 +251,7 @@ pub(super) fn load_verified_version(
     }
     validate_elf(&binary)?;
     let actual = sha256(&binary);
-    if !constant_hash_eq(&manifest.binary_sha256, &actual) {
+    if manifest.binary_sha256 != actual {
         return Err(UpdateError::Verification(
             "本地版本二进制摘要不匹配".to_owned(),
         ));

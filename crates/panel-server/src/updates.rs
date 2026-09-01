@@ -23,10 +23,10 @@ use crate::operations::{Operations, ServiceAction};
 mod validation;
 
 use validation::{
-    artifact_coordinates, constant_hash_eq, parse_artifact_reference, parse_panel_release_version,
-    persist, sha256, sync_directory, validate_build_identity, validate_commit, validate_digest,
-    validate_elf, validate_hex_digest, validate_remote_build_identity, validate_slug,
-    wait_until_healthy, write_executable, write_private_file,
+    artifact_coordinates, parse_artifact_reference, parse_panel_release_version, persist, sha256,
+    sync_directory, validate_build_identity, validate_commit, validate_digest, validate_elf,
+    validate_hex_digest, validate_remote_build_identity, validate_slug, wait_until_healthy,
+    write_executable, write_private_file,
 };
 
 #[cfg(not(unix))]
@@ -1070,7 +1070,7 @@ impl UpdateManager {
         tokio::task::spawn_blocking(move || {
             let current = read_regular_file(&binary_path, "当前 KixDNS 二进制")?;
             match load_verified_version(&versions_path, &key) {
-                Ok((_, stored)) => Ok(constant_hash_eq(&sha256(&current), &sha256(&stored))),
+                Ok((_, stored)) => Ok(sha256(&current) == sha256(&stored)),
                 Err(UpdateError::Invalid(_)) => Ok(false),
                 Err(error) => Err(error),
             }
@@ -1428,7 +1428,7 @@ impl UpdateManager {
             .strip_prefix("sha256:")
             .ok_or_else(|| UpdateError::Verification("Artifact digest 格式无效".to_owned()))?;
         let actual = sha256(&bytes);
-        if !constant_hash_eq(expected, &actual) {
+        if expected != actual {
             return Err(UpdateError::Verification(format!(
                 "Artifact digest 不匹配：期望 {expected}，实际 {actual}"
             )));
@@ -1553,7 +1553,7 @@ impl UpdateManager {
             let binary = read_regular_file(&binary_path, "当前 KixDNS 二进制")?;
             validate_elf(&binary)?;
             if let Ok((_, stored)) = load_verified_version(&versions_path, &worker_key) {
-                if !constant_hash_eq(&sha256(&binary), &sha256(&stored)) {
+                if sha256(&binary) != sha256(&stored) {
                     return Err(UpdateError::Verification(
                         "活动版本记录与当前 KixDNS 二进制不一致".to_owned(),
                     ));
@@ -1690,12 +1690,6 @@ impl UpdateManager {
             .filter(|parent| !parent.as_os_str().is_empty())
             .ok_or_else(|| UpdateError::Install("目标二进制缺少父目录".to_owned()))?;
         let candidate = write_executable(parent, ".kixdns-candidate-", &binary)?;
-        if let Some(bytes) = current.as_deref() {
-            let backup_path = target.with_file_name("kixdns.previous");
-            let backup = write_executable(parent, ".kixdns-backup-", bytes)?;
-            persist(backup, &backup_path)?;
-        }
-
         operations
             .service_action(ServiceAction::Stop)
             .await
@@ -1996,7 +1990,7 @@ fn read_verified_zip_entry(
         .ok_or_else(|| UpdateError::Verification(format!("SHA256SUMS 缺少 {name}")))?;
     let bytes = read_zip_entry(archive, name, limit)?;
     let actual = sha256(&bytes);
-    if !constant_hash_eq(expected, &actual) {
+    if expected != &actual {
         return Err(UpdateError::Verification(format!(
             "{name} 摘要不匹配：期望 {expected}，实际 {actual}"
         )));

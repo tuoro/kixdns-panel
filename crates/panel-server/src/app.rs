@@ -944,10 +944,18 @@ async fn save_candidate(
 ) -> AppResult<ConfigApplyResponse> {
     let result = state
         .config
-        .save_pending(content.clone(), expected_sha256, message, actor.clone())
+        .save_pending(content.clone(), expected_sha256, message, actor)
         .await
         .map_err(map_config_error)?;
-    let Some(validation) = validate_candidate(state, &content, &result).await? else {
+    apply_pending_candidate(state, &content, result).await
+}
+
+async fn apply_pending_candidate(
+    state: &AppState,
+    content: &Value,
+    result: SaveResult,
+) -> AppResult<ConfigApplyResponse> {
+    let Some(validation) = validate_candidate(state, content, &result).await? else {
         return Ok(pending_response(result.version_id, result.sha256, None));
     };
     activate_candidate(state, result, validation).await
@@ -1011,7 +1019,13 @@ async fn activate_candidate(
     result: SaveResult,
     validation: ValidationResult,
 ) -> AppResult<ConfigApplyResponse> {
-    let previous = state.config.current().await.ok();
+    let previous = match state.config.current().await {
+        Ok(previous) => previous,
+        Err(error) => {
+            mark_candidate_failed(state, result.version_id, error.to_string()).await?;
+            return Err(map_config_error(error));
+        }
+    };
     let before_reload = match state.control.active_config().await {
         Ok(active) => active,
         Err(error) if should_defer_control(&error) => {
@@ -1047,13 +1061,11 @@ async fn activate_candidate(
     let active_config = match active_config {
         Ok(active) => active,
         Err(error) => {
-            if let Some(previous) = previous {
-                state
-                    .config
-                    .restore_formal(previous.content)
-                    .await
-                    .map_err(map_config_error)?;
-            }
+            state
+                .config
+                .restore_formal(previous.content)
+                .await
+                .map_err(map_config_error)?;
             mark_candidate_failed(state, result.version_id, error.to_string()).await?;
             return Err(AppError::Unprocessable(
                 "reload_failed",
@@ -1125,86 +1137,13 @@ async fn reconcile_pending(state: &AppState) -> anyhow::Result<()> {
     if pending.apply_state != CONFIG_APPLY_PENDING {
         return Ok(());
     }
-
-    let health = match state.control.health().await {
-        Ok(health) => health,
-        Err(error) if should_defer_control(&error) => return Ok(()),
-        Err(error) => {
-            state
-                .config
-                .mark_pending_failed(pending.id, error.to_string())
-                .await?;
-            return Ok(());
-        }
-    };
     let content = state.config.version(pending.id).await?.content;
-    if let Err(error) = ensure_config_supported(&content, &health.capabilities) {
-        state
-            .config
-            .mark_pending_failed(pending.id, error.to_string())
-            .await?;
-        return Ok(());
-    }
-    let validation = match state.control.validate(&content).await {
-        Ok(validation) => validation,
-        Err(error) if should_defer_control(&error) => return Ok(()),
-        Err(error) => {
-            state
-                .config
-                .mark_pending_failed(pending.id, error.to_string())
-                .await?;
-            return Ok(());
-        }
+    let result = SaveResult {
+        version_id: pending.id,
+        sha256: pending.sha256,
     };
-    if !validation.valid {
-        state
-            .config
-            .mark_pending_failed(pending.id, "KixDNS 拒绝该配置，请先修正校验错误".to_owned())
-            .await?;
-        return Ok(());
-    }
-    let Some(previous) = state.config.current().await.ok() else {
-        state
-            .config
-            .mark_pending_failed(pending.id, "正式配置文件不存在".to_owned())
-            .await?;
-        return Ok(());
-    };
-    let before_reload = match state.control.active_config().await {
-        Ok(active) => active,
-        Err(error) if should_defer_control(&error) => return Ok(()),
-        Err(error) => {
-            state
-                .config
-                .mark_pending_failed(pending.id, error.to_string())
-                .await?;
-            return Ok(());
-        }
-    };
-    state.config.write_pending(pending.id).await?;
-    let active = if before_reload.sha256 == pending.sha256 && before_reload.last_reload.success {
-        Ok(before_reload)
-    } else {
-        state
-            .control
-            .wait_for_config(
-                &pending.sha256,
-                before_reload.reload_sequence,
-                std::time::Duration::from_secs(5),
-            )
-            .await
-    };
-    match active {
-        Ok(_) => {
-            state.config.mark_applied(pending.id).await?;
-        }
-        Err(error) => {
-            state.config.restore_formal(previous.content).await?;
-            state
-                .config
-                .mark_pending_failed(pending.id, error.to_string())
-                .await?;
-        }
+    if let Err(error) = apply_pending_candidate(state, &content, result).await {
+        tracing::warn!(error = ?error, "待应用配置应用失败");
     }
     Ok(())
 }
