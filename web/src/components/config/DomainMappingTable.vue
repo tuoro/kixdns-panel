@@ -9,19 +9,32 @@ const bulkError = ref('')
 const showBulk = ref(false)
 
 function addRow(): void {
-  rows.value.push({ source: '', target: '', ttl: 300 })
+  rows.value = [...rows.value, { source: '', target: '', ttl: 300 }]
 }
 
 function move(index: number, offset: -1 | 1): void {
   const target = index + offset
   if (target < 0 || target >= rows.value.length) return
-  const [row] = rows.value.splice(index, 1)
-  if (row) rows.value.splice(target, 0, row)
+  const next = [...rows.value]
+  const [row] = next.splice(index, 1)
+  if (row) next.splice(target, 0, row)
+  rows.value = next
 }
 
-function setTtl(row: DomainMappingRow, event: Event): void {
+function updateText(index: number, key: 'source' | 'target', event: Event): void {
+  const value = (event.currentTarget as HTMLInputElement).value
+  rows.value = rows.value.map((row, rowIndex) => rowIndex === index ? { ...row, [key]: value } : row)
+}
+
+function setTtl(index: number, event: Event): void {
   const raw = (event.currentTarget as HTMLInputElement).value
-  row.ttl = raw === '' ? Number.NaN : Number(raw)
+  rows.value = rows.value.map((row, rowIndex) => (
+    rowIndex === index ? { ...row, ttl: raw === '' ? Number.NaN : Number(raw) } : row
+  ))
+}
+
+function remove(index: number): void {
+  rows.value = rows.value.filter((_, rowIndex) => rowIndex !== index)
 }
 
 function parseBulkLine(line: string): DomainMappingRow | undefined {
@@ -39,7 +52,7 @@ function importBulk(): void {
     bulkError.value = '每行请填写“源域名 目标域名”，可在末尾附加 TTL'
     return
   }
-  rows.value.push(...parsed as DomainMappingRow[])
+  rows.value = [...rows.value, ...parsed as DomainMappingRow[]]
   bulkSource.value = ''
   bulkError.value = ''
   showBulk.value = false
@@ -50,13 +63,13 @@ function importBulk(): void {
   <div class="mapping-editor">
     <div class="mapping-editor__head"><span>源域名</span><span>目标域名</span><span>TTL</span><span></span></div>
     <div v-for="(row, index) in rows" :key="index" class="mapping-editor__row">
-      <input v-model="row.source" type="text" :aria-label="`映射 ${index + 1} 源域名`" placeholder="alias.example">
-      <input v-model="row.target" type="text" :aria-label="`映射 ${index + 1} 目标域名`" placeholder="origin.example.">
-      <input type="number" :value="Number.isNaN(row.ttl) ? '' : row.ttl" min="0" max="4294967295" :aria-label="`映射 ${index + 1} TTL`" placeholder="300" @input="setTtl(row, $event)">
+      <input :value="row.source" type="text" :aria-label="`映射 ${index + 1} 源域名`" placeholder="alias.example" @input="updateText(index, 'source', $event)">
+      <input :value="row.target" type="text" :aria-label="`映射 ${index + 1} 目标域名`" placeholder="origin.example." @input="updateText(index, 'target', $event)">
+      <input type="number" :value="Number.isNaN(row.ttl) ? '' : row.ttl" min="0" max="4294967295" :aria-label="`映射 ${index + 1} TTL`" placeholder="300" @input="setTtl(index, $event)">
       <div>
         <button class="icon-button icon-button--small" type="button" :disabled="index === 0" :title="`上移映射 ${index + 1}`" @click="move(index, -1)"><ArrowUp :size="14" /></button>
         <button class="icon-button icon-button--small" type="button" :disabled="index === rows.length - 1" :title="`下移映射 ${index + 1}`" @click="move(index, 1)"><ArrowDown :size="14" /></button>
-        <button class="icon-button icon-button--small" type="button" :title="`删除映射 ${index + 1}`" @click="rows.splice(index, 1)"><X :size="14" /></button>
+        <button class="icon-button icon-button--small" type="button" :title="`删除映射 ${index + 1}`" @click="remove(index)"><X :size="14" /></button>
       </div>
     </div>
     <div class="mapping-editor__commands">

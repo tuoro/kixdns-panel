@@ -34,7 +34,8 @@ const selectorMode = ref<PipelineSelectMode>('all')
 const responseMode = ref<PipelineSelectMode>('all')
 const responseEnabled = ref(false)
 const templates = computed(() => SOLUTION_TEMPLATES.filter((template) => (
-  !template.requiresCapability || props.capabilities.includes(template.requiresCapability)
+  template.id !== 'domain_mapping'
+  && (!template.requiresCapability || props.capabilities.includes(template.requiresCapability))
 )))
 
 function syncModes(): void {

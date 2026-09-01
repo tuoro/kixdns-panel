@@ -1,12 +1,22 @@
 <script setup lang="ts">
 import { ArrowRight, CornerDownRight } from '@lucide/vue'
 import { computed } from 'vue'
-import { configRuleCount } from '../../config-editor/model'
+import { collectDnsSolutions } from '../../config-editor/solution'
 import { summarizeAction, summarizeMatchers } from '../../config-editor/summary'
 import type { ActionConfig, KixConfig } from '../../config-editor/types'
 
 const props = defineProps<{ config: KixConfig }>()
-const ruleCount = computed(() => configRuleCount(props.config))
+const mappingSolutions = computed(() => collectDnsSolutions(props.config)
+  .filter((solution) => solution.groupType === 'domain_mapping'))
+const mappingSelectorIndexes = computed(() => new Set(mappingSolutions.value
+  .flatMap((solution) => solution.selectorIndex === undefined ? [] : [solution.selectorIndex])))
+const mappingPipelineIds = computed(() => new Set(mappingSolutions.value
+  .flatMap((solution) => solution.pipeline ? [solution.pipeline.id] : [])))
+const selectors = computed(() => props.config.pipeline_select
+  .filter((_, index) => !mappingSelectorIndexes.value.has(index)))
+const pipelines = computed(() => props.config.pipelines
+  .filter((pipeline) => !mappingPipelineIds.value.has(pipeline.id)))
+const ruleCount = computed(() => pipelines.value.reduce((total, pipeline) => total + pipeline.rules.length, 0))
 
 function jumpActions(actions: ActionConfig[]): ActionConfig[] {
   return actions.filter((action) => action.type === 'jump_to_pipeline')
@@ -15,17 +25,17 @@ function jumpActions(actions: ActionConfig[]): ActionConfig[] {
 
 <template>
   <div class="flow-preview">
-    <header class="flow-summary"><div><strong>{{ config.pipelines.length }}</strong><span>Pipeline</span></div><div><strong>{{ ruleCount }}</strong><span>规则</span></div><div><strong>{{ config.pipeline_select.length }}</strong><span>入口分流</span></div></header>
+    <header class="flow-summary"><div><strong>{{ pipelines.length }}</strong><span>Pipeline</span></div><div><strong>{{ ruleCount }}</strong><span>规则</span></div><div><strong>{{ selectors.length }}</strong><span>入口分流</span></div></header>
 
-    <section v-if="config.pipeline_select.length" class="flow-routes">
+    <section v-if="selectors.length" class="flow-routes">
       <h3>入口路由</h3>
-      <div v-for="(selector, index) in config.pipeline_select" :key="index" class="flow-route">
+      <div v-for="(selector, index) in selectors" :key="index" class="flow-route">
         <span>#{{ index + 1 }}</span><code>{{ summarizeMatchers(selector.matchers, selector.matcher_operator, 'selector') }}</code><ArrowRight :size="16" /><strong>{{ selector.pipeline || '未选择' }}</strong>
       </div>
     </section>
 
     <div class="flow-pipelines">
-      <section v-for="pipeline in config.pipelines" :key="pipeline.id" class="flow-pipeline">
+      <section v-for="pipeline in pipelines" :key="pipeline.id" class="flow-pipeline">
         <header><div><strong>{{ pipeline.id || '未命名 Pipeline' }}</strong><span v-if="pipeline.ecs">ECS · {{ pipeline.ecs.mode }}</span></div><em>{{ pipeline.rules.length }} 条规则</em></header>
         <ol>
           <li v-for="(rule, index) in pipeline.rules" :key="index">
@@ -40,7 +50,7 @@ function jumpActions(actions: ActionConfig[]): ActionConfig[] {
         </ol>
         <p v-if="pipeline.rules.length === 0" class="config-empty">空 Pipeline</p>
       </section>
-      <p v-if="config.pipelines.length === 0" class="config-empty">没有可预览的 Pipeline</p>
+      <p v-if="pipelines.length === 0" class="config-empty">没有可预览的 Pipeline</p>
     </div>
   </div>
 </template>

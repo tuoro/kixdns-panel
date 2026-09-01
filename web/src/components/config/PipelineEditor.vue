@@ -15,6 +15,7 @@ import {
   renamePipeline,
   ruleHasForward,
 } from '../../config-editor/model'
+import { collectDnsSolutions } from '../../config-editor/solution'
 import type { KixConfig, MatcherConfig, PipelineConfig, PipelineSelectConfig, PipelineSelectMode, RuleConfig } from '../../config-editor/types'
 import { analyzeRuleFlow, findBlockingRule, summarizeRule } from '../../config-editor/summary'
 import ActionList from './ActionList.vue'
@@ -25,7 +26,19 @@ import RuleCreationGuide from './RuleCreationGuide.vue'
 const config = defineModel<KixConfig>({ required: true })
 defineProps<{ capabilities: string[] }>()
 const emit = defineEmits<{ notice: [message: string] }>()
-const pipelineIds = computed(() => config.value.pipelines.map((item) => item.id))
+const mappingSolutions = computed(() => collectDnsSolutions(config.value)
+  .filter((solution) => solution.groupType === 'domain_mapping'))
+const mappingSelectorIndexes = computed(() => new Set(mappingSolutions.value
+  .flatMap((solution) => solution.selectorIndex === undefined ? [] : [solution.selectorIndex])))
+const mappingPipelineIds = computed(() => new Set(mappingSolutions.value
+  .flatMap((solution) => solution.pipeline ? [solution.pipeline.id] : [])))
+const visibleSelectors = computed(() => config.value.pipeline_select
+  .map((selector, index) => ({ selector, index }))
+  .filter(({ index }) => !mappingSelectorIndexes.value.has(index)))
+const visiblePipelines = computed(() => config.value.pipelines
+  .map((pipeline, index) => ({ pipeline, index }))
+  .filter(({ pipeline }) => !mappingPipelineIds.value.has(pipeline.id)))
+const pipelineIds = computed(() => visiblePipelines.value.map(({ pipeline }) => pipeline.id))
 const previousIds = new WeakMap<PipelineConfig, string>()
 const customSelectors = ref(new Set<PipelineSelectConfig>())
 const customMatcherGroups = ref(new Set<MatcherConfig[]>())
@@ -176,15 +189,15 @@ function saveGuidedRule(rule: RuleConfig, index: number): void {
   </section>
   <section class="config-section">
     <header class="config-section__header config-section__header--actions">
-      <div><span class="section-mark section-mark--amber"></span><h3>分流规则</h3><em>{{ config.pipeline_select.length }}</em></div>
+      <div><span class="section-mark section-mark--amber"></span><h3>分流规则</h3><em>{{ visibleSelectors.length }}</em></div>
       <button class="button button--secondary" type="button" @click="config.pipeline_select.push(createPipelineSelect())"><Plus :size="15" />添加分流</button>
     </header>
     <div class="selector-list">
-      <article v-for="(selector, index) in config.pipeline_select" :key="index" class="selector-block">
+      <article v-for="({ selector, index }, visibleIndex) in visibleSelectors" :key="index" class="selector-block">
         <header class="selector-block__header">
           <div class="selector-block__identity">
             <span><GitBranch :size="15" /></span>
-            <div><strong>入口分流 #{{ index + 1 }}</strong><small>按顺序匹配，首个命中生效</small></div>
+            <div><strong>入口分流 #{{ visibleIndex + 1 }}</strong><small>按顺序匹配，首个命中生效</small></div>
           </div>
           <button class="icon-button icon-button--small" type="button" :title="`删除分流 ${index + 1}`" @click="config.pipeline_select.splice(index, 1)"><Trash2 :size="14" /></button>
         </header>
@@ -198,18 +211,18 @@ function saveGuidedRule(rule: RuleConfig, index: number): void {
           <p v-if="selector.matchers.length === 0" class="selector-block__warning"><AlertTriangle :size="14" />未添加条件，这条分流会匹配所有请求</p>
         </div>
       </article>
-      <p v-if="config.pipeline_select.length === 0" class="config-empty">未配置入口分流，将使用 KixDNS 默认选择行为</p>
+      <p v-if="visibleSelectors.length === 0" class="config-empty">未配置入口分流，将使用 KixDNS 默认选择行为</p>
     </div>
   </section>
 
   <section class="config-section pipeline-section">
     <header class="config-section__header config-section__header--actions">
-      <div><span class="section-mark section-mark--green"></span><h3>处理流程</h3><em>{{ config.pipelines.length }}</em></div>
+      <div><span class="section-mark section-mark--green"></span><h3>处理流程</h3><em>{{ visiblePipelines.length }}</em></div>
       <button class="button button--secondary" type="button" @click="config.pipelines.push(createPipeline(config))"><Plus :size="15" />添加 Pipeline</button>
     </header>
 
     <div class="pipeline-list">
-      <details v-for="(pipeline, pipelineIndex) in config.pipelines" :key="pipelineIndex" class="pipeline-block" :open="pipelineIndex === 0">
+      <details v-for="({ pipeline, index: pipelineIndex }, visibleIndex) in visiblePipelines" :key="pipelineIndex" class="pipeline-block" :open="visibleIndex === 0">
         <summary><span>{{ pipeline.id || '未命名 Pipeline' }}</span><em>{{ pipeline.rules.length }} 条规则</em></summary>
         <div class="pipeline-body">
           <div class="pipeline-identity">
@@ -292,7 +305,7 @@ function saveGuidedRule(rule: RuleConfig, index: number): void {
           </div>
         </div>
       </details>
-      <p v-if="config.pipelines.length === 0" class="config-empty">尚未创建 Pipeline</p>
+      <p v-if="visiblePipelines.length === 0" class="config-empty">尚未创建 Pipeline</p>
     </div>
   </section>
 

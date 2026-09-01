@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { CheckCircle2, Clock3, GitBranch, Network, Play, Server, ShieldCheck } from '@lucide/vue'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { apiRequest, jsonBody } from '../api/client'
 import type { DnsDiagnostic } from '../api/types'
 import { useToast } from '../composables/useToast'
@@ -23,6 +23,11 @@ const stageNames: Record<string, string> = {
   upstream: '上游',
   response_rule: '响应规则',
 }
+const matchedRules = computed(() => [...new Set((result.value?.trace ?? [])
+  .filter((step) => step.stage === 'rule' && step.status === 'matched')
+  .map((step) => step.label))])
+const selectedPipeline = computed(() => result.value?.trace
+  .find((step) => step.stage === 'pipeline' && step.status === 'selected')?.label)
 
 async function run(): Promise<void> {
   running.value = true
@@ -58,6 +63,11 @@ async function run(): Promise<void> {
         <div v-if="running" class="diagnostic-running"><span></span><strong>正在等待 DNS 响应</strong></div>
         <div v-else-if="result" class="diagnostic-result">
           <div class="diagnostic-stats"><div><Server :size="17" /><span>服务器</span><strong class="mono">{{ result.server }}</strong></div><div><Clock3 :size="17" /><span>耗时</span><strong>{{ result.elapsed_ms }} ms</strong></div><div><CheckCircle2 :size="17" /><span>截断</span><strong>{{ result.truncated ? '是' : '否' }}</strong></div></div>
+          <div v-if="result.trace_supported" class="diagnostic-match-summary">
+            <GitBranch :size="17" />
+            <div><span>命中规则</span><strong>{{ matchedRules.length ? matchedRules.join('、') : '未命中具体规则' }}</strong></div>
+            <small v-if="selectedPipeline">Pipeline · {{ selectedPipeline }}</small>
+          </div>
           <div class="answer-list"><h3>Answer</h3><code v-for="answer in result.answers" :key="answer">{{ answer }}</code><p v-if="result.answers.length === 0" class="empty-state">响应中没有 Answer 记录</p></div>
           <div v-if="result.trace_supported" class="trace-panel">
             <div class="trace-panel__header"><div><GitBranch :size="17" /><h3>规则执行路径</h3></div><span>{{ result.trace.length }} 步</span></div>

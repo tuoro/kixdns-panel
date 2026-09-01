@@ -184,7 +184,6 @@ function collectMappingRows(selector: PipelineSelectConfig, pipeline: PipelineCo
     matcher.type === 'domain_suffix'
     && matcher.operator === 'and'
     && typeof matcher.value === 'string'
-    && matcher.value.trim()
     && Object.keys(matcher).every((key) => ['type', 'operator', 'value'].includes(key))
   ))
     ? selector.matchers.map((matcher) => matcher.value!.trim())
@@ -293,6 +292,33 @@ export function collectDnsSolutions(config: KixConfig): DnsSolution[] {
     })
   }
   return solutions
+}
+
+export function collectDomainMappingRows(config: KixConfig): DomainMappingRow[] {
+  return collectDnsSolutions(config)
+    .filter((solution) => solution.groupType === 'domain_mapping')
+    .flatMap((solution) => clone(solution.mappingRows ?? []))
+}
+
+export function replaceDomainMappingRows(config: KixConfig, rows: DomainMappingRow[]): void {
+  const mappings = collectDnsSolutions(config).filter((solution) => solution.groupType === 'domain_mapping')
+  const selectorIndexes = mappings
+    .flatMap((solution) => solution.selectorIndex === undefined ? [] : [solution.selectorIndex])
+    .sort((left, right) => right - left)
+  const mappingPipelineIds = new Set(mappings.flatMap((solution) => solution.pipeline ? [solution.pipeline.id] : []))
+
+  for (const index of selectorIndexes) config.pipeline_select.splice(index, 1)
+  const retainedPipelineIds = new Set(config.pipeline_select.map((selector) => selector.pipeline))
+  config.pipelines = config.pipelines.filter((pipeline) => (
+    !mappingPipelineIds.has(pipeline.id) || retainedPipelineIds.has(pipeline.id)
+  ))
+  if (rows.length === 0) return
+
+  const draft = createSolutionDrafts(config, 'domain_mapping')[0]!
+  draft.mappingRows = clone(rows)
+  const materialized = cloneSolutionDraft(draft)
+  config.pipeline_select.unshift(materialized.selector)
+  config.pipelines.push({ ...materialized.pipeline, rules: materializeSolutionRules(materialized) })
 }
 
 export function selectorMatchesEveryRequest(selector: PipelineSelectConfig): boolean {

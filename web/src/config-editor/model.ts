@@ -48,6 +48,42 @@ const MATCHER_KEYS = ['type', 'operator', 'value', 'cidr', 'expect', 'country_co
 const ACTION_KEYS = ['type', 'level', 'rcode', 'ip', 'target', 'text', 'ttl', 'pipeline', 'upstream', 'transport', 'ecs']
 const ECS_KEYS = ['mode', 'prefix_v4', 'prefix_v6', 'ip', 'prefix']
 
+function isDomainMappingRule(value: unknown): boolean {
+  if (!isObject(value) || !Array.isArray(value.actions) || value.actions.length !== 1) return false
+  const action = value.actions[0]
+  if (!isObject(action) || action.type !== 'static_cname_response') return false
+  const matchers = Array.isArray(value.matchers) ? value.matchers : []
+  if (matchers.length > 1 || (matchers[0] && (!isObject(matchers[0]) || matchers[0].type !== 'domain_suffix'))) return false
+  return ['response_matchers', 'response_actions_on_match', 'response_actions_on_miss']
+    .every((key) => !Array.isArray(value[key]) || value[key].length === 0)
+}
+
+export function promoteDomainMappingSelectors(value: ConfigObject): void {
+  if (!Array.isArray(value.pipeline_select) || !Array.isArray(value.pipelines)) return
+  const mappingPipelineIds = new Set(value.pipelines.flatMap((pipeline) => (
+    isObject(pipeline)
+      && typeof pipeline.id === 'string'
+      && Array.isArray(pipeline.rules)
+      && pipeline.rules.length > 0
+      && pipeline.rules.every(isDomainMappingRule)
+      ? [pipeline.id]
+      : []
+  )))
+  const mappings: unknown[] = []
+  const remaining: unknown[] = []
+  for (const selector of value.pipeline_select) {
+    const matchers = isObject(selector) && Array.isArray(selector.matchers) ? selector.matchers : []
+    const isMapping = isObject(selector)
+      && typeof selector.pipeline === 'string'
+      && mappingPipelineIds.has(selector.pipeline)
+      && matchers.length > 0
+      && matchers.every((matcher) => isObject(matcher) && matcher.type === 'domain_suffix')
+    if (isMapping) mappings.push(selector)
+    else remaining.push(selector)
+  }
+  value.pipeline_select = [...mappings, ...remaining]
+}
+
 function orderFields(value: ConfigObject, keys: readonly string[]): ConfigObject {
   const ordered: ConfigObject = {}
   const known = new Set(keys)
@@ -110,6 +146,7 @@ function orderPipelineSelect(value: unknown, compactDefaults = false): unknown {
 }
 
 function orderConfig(value: ConfigObject, compactDefaults = false): KixConfig {
+  promoteDomainMappingSelectors(value)
   if (isObject(value.settings)) value.settings = orderFields(value.settings, SETTING_KEYS)
   if (Array.isArray(value.pipeline_select)) {
     value.pipeline_select = value.pipeline_select.map((item) => orderPipelineSelect(item, compactDefaults))

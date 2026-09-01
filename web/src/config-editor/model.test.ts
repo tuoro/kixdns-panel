@@ -315,4 +315,25 @@ describe('结构化配置模型', () => {
       { type: 'forward', upstream: '1.1.1.1:53', transport: 'tcp' },
     ])
   })
+
+  it('规范化和序列化时把域名映射提升到所有普通分流之前', () => {
+    const config = normalizeConfig({
+      settings: {},
+      pipeline_select: [
+        { pipeline: 'ordinary', matchers: [{ type: 'domain_suffix', value: 'example.com' }] },
+        { pipeline: 'domain_mapping', matchers: [{ type: 'domain_suffix', value: 'nas.home' }] },
+      ],
+      pipelines: [
+        { id: 'ordinary', rules: [{ name: 'ordinary', actions: [{ type: 'forward', upstream: '1.1.1.1:53' }] }] },
+        { id: 'domain_mapping', rules: [{ name: 'mapping', actions: [{ type: 'static_cname_response', target: 'storage.home.', ttl: 300 }] }] },
+      ],
+    })
+
+    expect(config.pipeline_select.map((selector) => selector.pipeline)).toEqual(['domain_mapping', 'ordinary'])
+    const serialized = JSON.parse(serializeConfig({
+      ...config,
+      pipeline_select: [...config.pipeline_select].reverse(),
+    })) as KixConfig
+    expect(serialized.pipeline_select.map((selector) => selector.pipeline)).toEqual(['domain_mapping', 'ordinary'])
+  })
 })

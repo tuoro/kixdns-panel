@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest'
 import {
   cloneSolutionDraft,
   collectDnsSolutions,
+  collectDomainMappingRows,
   createDraftFromSolution,
   createSolutionDrafts,
   materializeSolutionRules,
+  replaceDomainMappingRows,
   selectorMatchesEveryRequest,
   solutionInsertIndex,
   solutionValidationErrors,
@@ -64,6 +66,30 @@ describe('DNS 处理方案', () => {
     expect(solution?.kind).toBe('group')
     expect(solution?.mappingRows).toHaveLength(2)
     expect(createDraftFromSolution(solution!, value)?.mappingRows).toEqual(saved.mappingRows)
+  })
+
+  it('独立维护域名映射并始终放在入口分流最前', () => {
+    const value: KixConfig = {
+      settings: {},
+      pipeline_select: [selector('ordinary', [{ type: 'domain_suffix', operator: 'and', value: 'example.com' }])],
+      pipelines: [pipeline('ordinary')],
+    }
+
+    replaceDomainMappingRows(value, [
+      { source: 'nas.home', target: 'storage.home.', ttl: 300 },
+      { source: 'git.home', target: 'nas.home.', ttl: 120 },
+    ])
+
+    expect(value.pipeline_select[0]?.pipeline).toBe('domain_mapping')
+    expect(value.pipeline_select[1]?.pipeline).toBe('ordinary')
+    expect(collectDomainMappingRows(value)).toEqual([
+      { source: 'nas.home', target: 'storage.home.', ttl: 300 },
+      { source: 'git.home', target: 'nas.home.', ttl: 120 },
+    ])
+
+    replaceDomainMappingRows(value, [])
+    expect(value.pipeline_select.map((item) => item.pipeline)).toEqual(['ordinary'])
+    expect(value.pipelines.map((item) => item.id)).toEqual(['ordinary'])
   })
 
   it('一次生成国内解析、响应回退和全局兜底完整链路', () => {

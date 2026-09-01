@@ -15,6 +15,7 @@ import {
   Trash2,
   TriangleAlert,
   Workflow,
+  Zap,
 } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
@@ -33,11 +34,12 @@ import type {
   ValidationResult,
 } from '../api/types'
 import ConfigFlowPreview from '../components/config/ConfigFlowPreview.vue'
+import DomainMappingConfigEditor from '../components/config/DomainMappingConfigEditor.vue'
 import ConfigVersionDiffDialog from '../components/config/ConfigVersionDiffDialog.vue'
 import StructuredConfigEditor from '../components/config/StructuredConfigEditor.vue'
 import JsonEditor from '../components/JsonEditor.vue'
 import StatusBanner from '../components/StatusBanner.vue'
-import { normalizeConfig, serializeConfig } from '../config-editor/model'
+import { normalizeConfig, promoteDomainMappingSelectors, serializeConfig } from '../config-editor/model'
 import { SETTING_SECTIONS, settingSupported } from '../config-editor/schema'
 import type { ConfigEditorMode, KixConfig } from '../config-editor/types'
 import { useToast } from '../composables/useToast'
@@ -50,6 +52,7 @@ const source = ref('')
 const baseline = ref('')
 const message = ref('')
 const mode = ref<ConfigEditorMode>('structured')
+const section = ref<'pipeline' | 'mapping'>('pipeline')
 const fileInput = ref<HTMLInputElement | null>(null)
 const loading = ref(true)
 const validating = ref(false)
@@ -183,6 +186,7 @@ function parseSource(): Record<string, unknown> | null {
   try {
     const value: unknown = JSON.parse(source.value)
     if (value === null || Array.isArray(value) || typeof value !== 'object') throw new Error('配置根节点必须是 JSON 对象')
+    promoteDomainMappingSelectors(value as Record<string, unknown>)
     return value as Record<string, unknown>
   } catch (error) {
     parseError.value = errorMessage(error)
@@ -496,20 +500,28 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
         <p v-else>已只读保留：{{ unsupportedFields.join('、') }}。切换兼容版本后可保存为待应用版本。</p>
       </div>
     </div>
+    <nav class="config-section-tabs" aria-label="配置分类">
+      <button type="button" :class="{ active: section === 'pipeline' }" @click="section = 'pipeline'">Pipeline 配置</button>
+      <button type="button" :class="{ active: section === 'mapping' }" @click="section = 'mapping'">域名映射</button>
+    </nav>
     <div class="config-layout">
       <section class="editor-panel">
         <header class="editor-toolbar">
-          <div><strong>pipeline.json</strong><span v-if="changed" class="unsaved-dot">未保存</span></div>
+          <div v-if="section === 'pipeline'"><strong>pipeline.json</strong><span v-if="changed" class="unsaved-dot">未保存</span></div>
+          <div v-else class="mapping-toolbar-title">
+            <div><strong>域名映射</strong><span class="mapping-priority"><Zap :size="12" />最高优先级</span><span v-if="changed" class="unsaved-dot">未保存</span></div>
+            <small>命中后直接应答并跳过其他 Pipeline</small>
+          </div>
           <div class="editor-toolbar__actions">
             <input ref="fileInput" class="visually-hidden" type="file" accept=".json,application/json" @change="importFile">
-            <button class="icon-button" type="button" title="导入 JSON" :disabled="loading || saving" @click="fileInput?.click()"><FileUp :size="16" /></button>
-            <button class="icon-button" type="button" title="下载 JSON" :disabled="loading" @click="downloadJson"><Download :size="16" /></button>
+            <button v-if="section === 'pipeline'" class="icon-button" type="button" title="导入 JSON" :disabled="loading || saving" @click="fileInput?.click()"><FileUp :size="16" /></button>
+            <button v-if="section === 'pipeline'" class="icon-button" type="button" title="下载 JSON" :disabled="loading" @click="downloadJson"><Download :size="16" /></button>
             <button class="button button--secondary" type="button" :disabled="loading || validating || saving || restoring !== null || deleting !== null || bulkDeleting || deferSave" @click="validate"><ShieldCheck :size="16" />{{ validating ? '校验中' : (deferSave ? '运行后校验' : '校验') }}</button>
             <button class="button button--primary" type="button" :disabled="loading || validating || saving || restoring !== null || deleting !== null || bulkDeleting || !canSave" @click="save"><Save :size="16" />{{ saveLabel }}</button>
           </div>
         </header>
 
-        <nav class="config-mode-tabs" role="tablist" aria-label="配置编辑模式">
+        <nav v-if="section === 'pipeline'" class="config-mode-tabs" role="tablist" aria-label="配置编辑模式">
           <button type="button" role="tab" :aria-selected="mode === 'structured'" :class="{ active: mode === 'structured' }" @click="activateMode('structured')"><Settings2 :size="15" />表单</button>
           <button type="button" role="tab" :aria-selected="mode === 'json'" :class="{ active: mode === 'json' }" @click="activateMode('json')"><Braces :size="15" />JSON</button>
           <button type="button" role="tab" :aria-selected="mode === 'flow'" :class="{ active: mode === 'flow' }" @click="activateMode('flow')"><Workflow :size="15" />流程</button>
@@ -517,6 +529,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
 
         <div v-if="loading" class="editor-loading">正在读取配置…</div>
         <div v-else-if="!document" class="editor-loading">配置暂不可用</div>
+        <DomainMappingConfigEditor v-else-if="section === 'mapping' && config" v-model="config" :capabilities="runtimeCapabilities" />
         <StructuredConfigEditor v-else-if="mode === 'structured' && config" v-model="config" :capabilities="runtimeCapabilities" @notice="toast.info($event)" />
         <JsonEditor v-else-if="mode === 'json'" v-model="source" />
         <ConfigFlowPreview v-else-if="config" :config="config" />

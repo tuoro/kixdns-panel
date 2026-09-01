@@ -10,7 +10,8 @@ const config = defineModel<KixConfig>({ required: true })
 defineProps<{ capabilities: string[] }>()
 const emit = defineEmits<{ manual: []; notice: [message: string] }>()
 const session = ref<DnsSolution | 'create'>()
-const solutions = computed(() => collectDnsSolutions(config.value))
+const solutions = computed(() => collectDnsSolutions(config.value)
+  .filter((solution) => solution.groupType !== 'domain_mapping'))
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
