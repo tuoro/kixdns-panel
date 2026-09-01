@@ -252,11 +252,6 @@ pub(super) fn sha256(bytes: &[u8]) -> String {
     sha256_hex(bytes)
 }
 
-pub(super) fn constant_hash_eq(left: &str, right: &str) -> bool {
-    use subtle::ConstantTimeEq;
-    left.as_bytes().ct_eq(right.as_bytes()).unwrap_u8() == 1
-}
-
 pub(super) fn validate_elf(binary: &[u8]) -> Result<(), UpdateError> {
     if binary.len() < 20 || &binary[..4] != b"\x7fELF" || binary[5] != 1 {
         return Err(UpdateError::Verification(
@@ -338,18 +333,67 @@ pub(super) fn sync_directory(path: &Path) -> Result<(), UpdateError> {
 }
 
 pub(super) async fn wait_until_healthy(control: &ControlClient) -> Result<(), UpdateError> {
-    for _ in 0..40 {
-        if control.health().await.is_ok() {
-            return Ok(());
+    const TIMEOUT: Duration = Duration::from_secs(10);
+
+    wait_until_healthy_for(control, TIMEOUT).await
+}
+
+async fn wait_until_healthy_for(
+    control: &ControlClient,
+    timeout: Duration,
+) -> Result<(), UpdateError> {
+    const RETRY_INTERVAL: Duration = Duration::from_millis(250);
+
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut last_error = None;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
         }
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        match tokio::time::timeout(remaining, control.health()).await {
+            Ok(Ok(_)) => return Ok(()),
+            Ok(Err(error)) => last_error = Some(error.to_string()),
+            Err(_) => {
+                last_error = Some("等待控制接口响应超时".to_owned());
+                break;
+            }
+        }
+        tokio::time::sleep(
+            RETRY_INTERVAL.min(deadline.saturating_duration_since(tokio::time::Instant::now())),
+        )
+        .await;
     }
-    Err(UpdateError::Install(
-        "新版本在 10 秒内未通过健康检查".to_owned(),
-    ))
+    let cause = last_error.unwrap_or_else(|| "控制接口没有返回健康状态".to_owned());
+    Err(UpdateError::Install(format!(
+        "KixDNS 在 {} 秒内未通过健康检查：{cause}",
+        timeout.as_secs_f64()
+    )))
 }
 
 #[cfg(not(unix))]
 pub(super) fn ensure_update_platform() -> Result<(), UpdateError> {
     Err(UpdateError::Unsupported)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::time::Duration;
+
+    use tempfile::tempdir;
+
+    use super::wait_until_healthy_for;
+    use crate::control::ControlClient;
+
+    #[tokio::test]
+    async fn health_timeout_preserves_the_control_error() {
+        let directory = tempdir().unwrap();
+        let control = ControlClient::new(directory.path().join("missing.sock"));
+
+        let error = wait_until_healthy_for(&control, Duration::from_millis(10))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("增强控制接口不可用"));
+    }
 }

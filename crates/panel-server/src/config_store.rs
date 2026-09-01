@@ -140,7 +140,7 @@ impl ConfigStore {
     ) -> Result<SaveResult, ConfigError> {
         let _guard = self.write_lock.lock().await;
         let current = self.current().await?;
-        if !constant_hash_eq(&current.sha256, expected_sha256) {
+        if current.sha256 != expected_sha256 {
             return Err(ConfigError::Conflict);
         }
         self.save_locked(content, message, actor).await
@@ -156,7 +156,7 @@ impl ConfigStore {
     ) -> Result<SaveResult, ConfigError> {
         let _guard = self.write_lock.lock().await;
         let current = self.desired().await?;
-        if !constant_hash_eq(&current.sha256, expected_sha256) {
+        if current.sha256 != expected_sha256 {
             return Err(ConfigError::Conflict);
         }
         self.save_pending_locked(content, message, actor).await
@@ -278,7 +278,7 @@ impl ConfigStore {
 
         let _guard = self.write_lock.lock().await;
         let desired = self.desired().await?;
-        if !constant_hash_eq(&desired.sha256, expected_sha256) {
+        if desired.sha256 != expected_sha256 {
             return Err(ConfigError::Conflict);
         }
         let current_version_id = self
@@ -482,11 +482,6 @@ fn sync_parent(parent: &Path) -> anyhow::Result<()> {
 
 fn sha256(bytes: &[u8]) -> String {
     sha256_hex(bytes)
-}
-
-fn constant_hash_eq(left: &str, right: &str) -> bool {
-    use subtle::ConstantTimeEq;
-    left.as_bytes().ct_eq(right.as_bytes()).unwrap_u8() == 1
 }
 
 fn normalize_message(message: &str) -> String {
