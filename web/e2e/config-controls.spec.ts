@@ -139,11 +139,13 @@ test('设置行与 Geo 维护完整容纳操作按钮', async ({ page }) => {
   await page.getByRole('tab', { name: '远程链接', exact: true }).click()
   await page.getByRole('button', { name: '添加链接', exact: true }).click()
   const rows = page.locator('.setting-list__row:visible, .geo-maintenance:visible')
-  expect(await rows.count()).toBeGreaterThan(1)
-  for (const row of await rows.all()) {
-    const bounds = await row.boundingBox()
-    const button = await row.locator('.icon-button').boundingBox()
-    expect(button!.x + button!.width).toBeLessThanOrEqual(bounds!.x + bounds!.width + 1)
-  }
+  // 同一帧测量，避免 Vue 更新列表后逐个 nth 定位指向已移除的行。
+  await expect.poll(() => rows.evaluateAll((elements) => ({
+    multipleRows: elements.length > 1,
+    clippedRows: elements.filter((row) => {
+      const button = row.querySelector('.icon-button')
+      return !button || button.getBoundingClientRect().right > row.getBoundingClientRect().right + 1
+    }).length,
+  }))).toEqual({ multipleRows: true, clippedRows: 0 })
   await expectNoOverflow(page)
 })
