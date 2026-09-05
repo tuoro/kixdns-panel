@@ -15,10 +15,10 @@ const configFixture = {
   ],
 }
 
-async function openWorkbench(page: Page): Promise<void> {
+async function openWorkbench(page: Page, fixture: unknown = configFixture): Promise<void> {
   await page.goto('/config')
   await expect(page.getByLabel('解析编排工作台', { exact: true })).toBeVisible()
-  await page.locator('input[type=file]').setInputFiles({ name: 'workbench.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(configFixture)) })
+  await page.locator('input[type=file]').setInputFiles({ name: 'workbench.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(fixture)) })
   await expect(page.locator('.workbench-entry')).toHaveCount(2)
 }
 
@@ -30,6 +30,44 @@ async function downloadConfig(page: Page) {
   for await (const chunk of stream) chunks.push(chunk)
   return JSON.parse(Buffer.concat(chunks).toString('utf8'))
 }
+
+function configWithJumpReference() {
+  return {
+    ...configFixture,
+    pipelines: [...configFixture.pipelines, {
+      id: 'jump-source',
+      rules: [{ name: 'jump', matchers: [], matcher_operator: 'and', actions: [{ type: 'jump_to_pipeline', pipeline: 'domestic' }] }],
+    }],
+  }
+}
+
+test('删除入口保留被其他规则跳转引用的 Pipeline', async ({ page }) => {
+  await openWorkbench(page, configWithJumpReference())
+  await expect(page.locator('.workbench-entry').first()).toContainText('2 处引用')
+  await page.getByLabel('入口 01 操作', { exact: true }).click()
+  page.once('dialog', (dialog) => dialog.accept())
+  await page.getByRole('button', { name: '删除入口', exact: true }).first().click()
+  await expect(page.locator('.workbench-entry')).toHaveCount(1)
+  const result = await downloadConfig(page)
+  expect(result.pipeline_select.some((entry: { pipeline: string }) => entry.pipeline === 'domestic')).toBe(false)
+  expect(result.pipelines.find((pipeline: { id: string }) => pipeline.id === 'domestic')).toBeDefined()
+  expect(result.pipelines.find((pipeline: { id: string }) => pipeline.id === 'jump-source').rules[0].actions[0].pipeline).toBe('domestic')
+})
+
+test('被跳转引用的流程默认复制编辑，不影响原规则目标', async ({ page }) => {
+  await openWorkbench(page, configWithJumpReference())
+  await page.getByRole('button', { name: '编辑入口 01 domestic', exact: true }).click()
+  const inspector = page.locator('.workbench-inspector')
+  await expect(inspector.getByLabel('共享流程处理方式', { exact: true })).toHaveValue('copy')
+  await inspector.getByLabel('动作 1 上游', { exact: true }).fill('9.9.9.9:53')
+  await inspector.getByRole('button', { name: '应用到草稿', exact: true }).click()
+  const result = await downloadConfig(page)
+  const copiedId = result.pipeline_select[1].pipeline
+  expect(copiedId).not.toBe('domestic')
+  expect(result.pipelines.find((pipeline: { id: string }) => pipeline.id === copiedId).rules[0].actions[0].upstream).toBe('9.9.9.9:53')
+  expect(result.pipelines.find((pipeline: { id: string }) => pipeline.id === 'domestic').rules[0].actions[0].upstream).toBe('223.5.5.5:53')
+  expect(result.pipelines.find((pipeline: { id: string }) => pipeline.id === 'jump-source').rules[0].actions[0].pipeline).toBe('domestic')
+})
 
 test('工作台单独展示最高优先级映射，普通入口可搜索和调整顺序', async ({ page }) => {
   await openWorkbench(page)

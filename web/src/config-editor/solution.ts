@@ -3,7 +3,7 @@ import { guidedRuleValidationErrors } from './guided-rule'
 import { matcherFieldErrors } from './field-validation'
 import { CONFIG_STATIC_CNAME_RESPONSE_V1 } from './schema'
 import { ruleMatchesEveryRequest } from './summary'
-import type { KixConfig, PipelineConfig, PipelineSelectConfig, RuleConfig } from './types'
+import type { ConfigObject, KixConfig, PipelineConfig, PipelineSelectConfig, RuleConfig } from './types'
 
 export type SolutionTemplateId = 'domestic_global' | 'domain_upstream' | 'domain_mapping' | 'ad_block' | 'client_network' | 'blank'
 export type SolutionPipelineMode = 'new' | 'reuse' | 'owned' | 'copy' | 'shared'
@@ -208,11 +208,30 @@ function collectMappingRows(selector: PipelineSelectConfig, pipeline: PipelineCo
   return expected.length === actual.length && expected.every((source, index) => source === actual[index]) ? rows : undefined
 }
 
-export function collectDnsSolutions(config: KixConfig): DnsSolution[] {
+function collectPipelineReferences(config: KixConfig): Map<string, number> {
   const references = new Map<string, number>()
+  const addReference = (pipelineId: string) => references.set(pipelineId, (references.get(pipelineId) ?? 0) + 1)
   for (const selector of config.pipeline_select) {
-    references.set(selector.pipeline, (references.get(selector.pipeline) ?? 0) + 1)
+    addReference(selector.pipeline)
   }
+  const rules: ConfigObject[] = config.pipelines.flatMap((pipeline) => pipeline.rules)
+  const background = config.background_refresh_rule
+  // 后台规则按原始 JSON 保留，不依赖表单规范化后的动作数组。
+  if (background !== null && typeof background === 'object' && !Array.isArray(background)) rules.push(background as ConfigObject)
+  for (const rule of rules) {
+    for (const key of ['actions', 'response_actions_on_match', 'response_actions_on_miss']) {
+      const actions = rule[key]
+      if (!Array.isArray(actions)) continue
+      for (const action of actions) {
+        if (action?.type === 'jump_to_pipeline' && typeof action.pipeline === 'string') addReference(action.pipeline)
+      }
+    }
+  }
+  return references
+}
+
+export function collectDnsSolutions(config: KixConfig): DnsSolution[] {
+  const references = collectPipelineReferences(config)
 
   const solutions = config.pipeline_select.map((selector, selectorIndex): DnsSolution => {
     const pipelineIndex = config.pipelines.findIndex((pipeline) => pipeline.id === selector.pipeline)
@@ -281,13 +300,14 @@ export function collectDnsSolutions(config: KixConfig): DnsSolution[] {
     }
   })
 
+  const selectedPipelineIds = new Set(config.pipeline_select.map((selector) => selector.pipeline))
   for (const [pipelineIndex, pipeline] of config.pipelines.entries()) {
-    if ((references.get(pipeline.id) ?? 0) > 0) continue
+    if (selectedPipelineIds.has(pipeline.id)) continue
     solutions.push({
       key: `orphan-${pipelineIndex}`,
       pipelineIndex,
       pipeline,
-      referenceCount: 0,
+      referenceCount: references.get(pipeline.id) ?? 0,
       kind: 'orphan',
       reason: '没有入口分流指向此 Pipeline',
     })
@@ -309,9 +329,9 @@ export function replaceDomainMappingRows(config: KixConfig, rows: DomainMappingR
   const mappingPipelineIds = new Set(mappings.flatMap((solution) => solution.pipeline ? [solution.pipeline.id] : []))
 
   for (const index of selectorIndexes) config.pipeline_select.splice(index, 1)
-  const retainedPipelineIds = new Set(config.pipeline_select.map((selector) => selector.pipeline))
+  const references = collectPipelineReferences(config)
   config.pipelines = config.pipelines.filter((pipeline) => (
-    !mappingPipelineIds.has(pipeline.id) || retainedPipelineIds.has(pipeline.id)
+    !mappingPipelineIds.has(pipeline.id) || references.has(pipeline.id)
   ))
   if (rows.length === 0) return
 

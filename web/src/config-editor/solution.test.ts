@@ -168,6 +168,73 @@ describe('DNS 处理方案', () => {
     expect(solutionValidationErrors(draft, value, 0)).toContain('Pipeline ID 已存在')
   })
 
+  it.each(['actions', 'response_actions_on_match', 'response_actions_on_miss'] as const)(
+    '%s 中的跳转计入共享引用，编辑目标默认复制而不改变调用方', (actionsKey) => {
+      const caller = pipeline('caller')
+      caller.rules[0]![actionsKey] = [{ type: 'jump_to_pipeline', pipeline: 'shared' }]
+      const value: KixConfig = {
+        settings: {},
+        pipeline_select: [selector('shared'), selector('caller')],
+        pipelines: [pipeline('shared'), caller],
+      }
+      const before = JSON.stringify(value)
+      const shared = collectDnsSolutions(value)[0]!
+
+      expect(shared.referenceCount).toBe(2)
+      const draft = createDraftFromSolution(shared, value)!
+      expect(draft.pipelineMode).toBe('copy')
+      expect(draft.pipeline.id).not.toBe('shared')
+      draft.rule.actions[0]!.upstream = '9.9.9.9:53'
+      expect(JSON.stringify(value)).toBe(before)
+    },
+  )
+
+  it('后台刷新规则的跳转同样保护被引用的 Pipeline', () => {
+    const value: KixConfig = {
+      settings: {},
+      pipeline_select: [selector('shared')],
+      pipelines: [pipeline('shared')],
+      background_refresh_rule: { actions: [{ type: 'jump_to_pipeline', pipeline: 'shared' }] },
+    }
+
+    const shared = collectDnsSolutions(value)[0]!
+    expect(shared.referenceCount).toBe(2)
+    expect(createDraftFromSolution(shared, value)?.pipelineMode).toBe('copy')
+  })
+
+  it.each(['actions', 'response_actions_on_match', 'response_actions_on_miss'] as const)(
+    '删除映射入口时保留 %s 跳转目标，并继续展示无直接入口的流程', (actionsKey) => {
+      const value: KixConfig = { settings: {}, pipeline_select: [selector('caller')], pipelines: [pipeline('caller')] }
+      replaceDomainMappingRows(value, [{ source: 'alias.example', target: 'origin.example.', ttl: 300 }])
+      const mapping = collectDnsSolutions(value).find((solution) => solution.groupType === 'domain_mapping')!
+      const mappingId = mapping.pipeline!.id
+      value.pipelines[0]!.rules[0]![actionsKey] = [{ type: 'jump_to_pipeline', pipeline: mappingId }]
+      const originalMapping = JSON.stringify(mapping.pipeline)
+
+      replaceDomainMappingRows(value, [])
+
+      expect(value.pipeline_select.map((entry) => entry.pipeline)).toEqual(['caller'])
+      expect(JSON.stringify(value.pipelines.find((item) => item.id === mappingId))).toBe(originalMapping)
+      expect(collectDnsSolutions(value).find((solution) => solution.pipeline?.id === mappingId)).toMatchObject({
+        kind: 'orphan', referenceCount: 1,
+      })
+      expect(value.pipelines[0]!.rules[0]![actionsKey][0]!.pipeline).toBe(mappingId)
+    },
+  )
+
+  it('修改映射入口时保留被跳转的旧流程，新增映射使用独立 ID', () => {
+    const value: KixConfig = { settings: {}, pipeline_select: [selector('caller')], pipelines: [pipeline('caller')] }
+    replaceDomainMappingRows(value, [{ source: 'alias.example', target: 'origin.example.', ttl: 300 }])
+    const originalMappingId = value.pipeline_select[0]!.pipeline
+    value.pipelines[0]!.rules[0]!.response_actions_on_miss = [{ type: 'jump_to_pipeline', pipeline: originalMappingId }]
+
+    replaceDomainMappingRows(value, [{ source: 'new.example', target: 'new-origin.example.', ttl: 0 }])
+
+    expect(value.pipeline_select[0]!.pipeline).not.toBe(originalMappingId)
+    expect(value.pipelines.find((item) => item.id === originalMappingId)?.rules[0]?.actions[0]?.target).toBe('origin.example.')
+    expect(collectDomainMappingRows(value)).toEqual([{ source: 'new.example', target: 'new-origin.example.', ttl: 0 }])
+  })
+
   it('把具体方案插入兜底之前，并阻止创建第二个兜底', () => {
     const value: KixConfig = { settings: {}, pipeline_select: [selector('fallback')], pipelines: [pipeline('fallback')] }
     const specific = createSolutionDrafts(value, 'domain_upstream')[0]!
