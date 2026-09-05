@@ -1,7 +1,8 @@
 import { createRule } from './model'
-import { CONFIG_STATIC_CNAME_RESPONSE_V1, MATCHER_DEFINITIONS } from './schema'
+import { actionFieldErrors, matcherFieldErrors, REQUIRED_FIELD_ERROR } from './field-validation'
+import { CONFIG_STATIC_CNAME_RESPONSE_V1 } from './schema'
 import { analyzeRuleFlow, ruleMatchesEveryRequest } from './summary'
-import type { ActionConfig, MatcherConfig, MatcherScope, PipelineConfig, RuleConfig } from './types'
+import type { ActionConfig, PipelineConfig, RuleConfig } from './types'
 
 export type GuidedRuleTemplateId = 'domain_upstream' | 'domain_mapping' | 'cn_split' | 'ad_block' | 'response_fallback' | 'blank'
 
@@ -85,57 +86,25 @@ export function cloneGuidedRule(rule: RuleConfig): RuleConfig {
   return cloneRule(rule)
 }
 
-function missingMatcherValue(matcher: MatcherConfig, scope: MatcherScope): boolean {
-  const fields = MATCHER_DEFINITIONS[scope].find((item) => item.value === matcher.type)?.fields ?? []
-  if (fields.includes('value') && !matcher.value?.trim()) return true
-  if (fields.includes('cidr') && !matcher.cidr?.trim()) return true
-  return fields.includes('country_codes') && (!matcher.country_codes || matcher.country_codes.length === 0)
-}
-
-function missingActionValue(action: ActionConfig): boolean {
-  if (action.type === 'forward') return !action.upstream?.trim()
-  if (action.type === 'jump_to_pipeline') return !action.pipeline?.trim()
-  if (action.type === 'static_ip_response') return !action.ip?.trim()
-  if (action.type === 'static_cname_response') return !action.target?.trim()
-  if (action.type === 'static_txt_response' || action.type === 'replace_txt_response') {
-    return Array.isArray(action.text) ? action.text.length === 0 : !action.text?.trim()
-  }
-  return false
-}
-
-function validDnsName(value: string): boolean {
-  const trimmed = value.trim()
-  if (!trimmed || /\s/.test(trimmed)) return false
-  const withoutRoot = trimmed.endsWith('.') ? trimmed.slice(0, -1) : trimmed
-  if (!withoutRoot || new TextEncoder().encode(withoutRoot).length > 253) return false
-  return withoutRoot.split('.').every((label) => label.length > 0 && new TextEncoder().encode(label).length <= 63)
-}
-
 export function guidedRuleValidationErrors(
   rule: RuleConfig,
   currentPipelineId: string,
   pipelineIds: readonly string[] = [],
 ): string[] {
   const errors: string[] = []
+  const requestMatcherErrors = rule.matchers.flatMap((matcher) => Object.values(matcherFieldErrors(matcher, 'request')))
+  const responseMatcherErrors = rule.response_matchers.flatMap((matcher) => Object.values(matcherFieldErrors(matcher, 'response')))
+  const requestActionErrors = rule.actions.flatMap((action) => Object.values(actionFieldErrors(action, currentPipelineId, pipelineIds)))
+  const responseActionErrors = [...rule.response_actions_on_match, ...rule.response_actions_on_miss]
+    .flatMap((action) => Object.values(actionFieldErrors(action, currentPipelineId, pipelineIds)))
   if (!rule.name.trim()) errors.push('请填写规则名称')
-  if (rule.matchers.some((matcher) => missingMatcherValue(matcher, 'request'))) errors.push('请补全请求条件')
+  if (requestMatcherErrors.includes(REQUIRED_FIELD_ERROR)) errors.push('请补全请求条件')
   if (rule.actions.length === 0) errors.push('请至少添加一个执行动作')
-  if (rule.actions.some(missingActionValue)) errors.push('请补全执行动作')
-  if (rule.response_matchers.some((matcher) => missingMatcherValue(matcher, 'response'))) errors.push('请补全响应条件')
-  const responseActions = [...rule.response_actions_on_match, ...rule.response_actions_on_miss]
-  if (responseActions.some(missingActionValue)) errors.push('请补全响应分支动作')
-  const cnameActions = [...rule.actions, ...responseActions].filter((action) => action.type === 'static_cname_response')
-  if (cnameActions.some((action) => action.target && !validDnsName(action.target))) errors.push('CNAME 目标域名格式无效')
-  if (cnameActions.some((action) => action.ttl !== undefined && (
-    !Number.isInteger(action.ttl) || action.ttl < 0 || action.ttl > 4_294_967_295
-  ))) errors.push('CNAME TTL 必须是 0 到 4294967295 的整数')
-  if ([...rule.actions, ...responseActions].some((action) => action.type === 'jump_to_pipeline' && action.pipeline === currentPipelineId)) {
-    errors.push('不能跳转到当前 Pipeline')
-  }
-  if (pipelineIds.length > 0 && [...rule.actions, ...responseActions].some((action) => (
-    action.type === 'jump_to_pipeline' && action.pipeline && !pipelineIds.includes(action.pipeline)
-  ))) errors.push('目标 Pipeline 不存在')
-  return errors
+  if (requestActionErrors.includes(REQUIRED_FIELD_ERROR)) errors.push('请补全执行动作')
+  if (responseMatcherErrors.includes(REQUIRED_FIELD_ERROR)) errors.push('请补全响应条件')
+  if (responseActionErrors.includes(REQUIRED_FIELD_ERROR)) errors.push('请补全响应分支动作')
+  const fieldErrors = [...requestMatcherErrors, ...responseMatcherErrors, ...requestActionErrors, ...responseActionErrors]
+  return [...new Set([...errors, ...fieldErrors.filter((error) => error !== REQUIRED_FIELD_ERROR)])]
 }
 
 const TERMINAL_ACTION_TYPES = new Set([

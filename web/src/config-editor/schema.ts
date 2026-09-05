@@ -8,6 +8,7 @@ export interface SettingField {
   type: SettingFieldType
   placeholder?: string
   title?: string
+  unit?: string
   min?: number
   max?: number
   nullable?: boolean
@@ -24,6 +25,7 @@ export const CONFIG_STATIC_CNAME_RESPONSE_V1 = 'config_static_cname_response_v1'
 export interface SettingSection {
   id: string
   title: string
+  description: string
   tone: 'green' | 'amber' | 'red' | 'ink'
   fields: SettingField[]
 }
@@ -45,6 +47,7 @@ export const SETTING_SECTIONS: SettingSection[] = [
   {
     id: 'network',
     title: '基础与监听',
+    description: '监听地址、默认上游与请求超时',
     tone: 'green',
     fields: [
       { key: 'bind_udp', label: 'UDP 监听地址', type: 'text', placeholder: '0.0.0.0:5353' },
@@ -54,72 +57,77 @@ export const SETTING_SECTIONS: SettingSection[] = [
       { key: 'doh_tls_cert', label: 'DoH TLS 证书', type: 'text', placeholder: '/path/to/cert.pem', wide: true },
       { key: 'doh_tls_key', label: 'DoH TLS 私钥', type: 'text', placeholder: '/path/to/key.pem', wide: true },
       { key: 'default_upstream', label: '默认上游', type: 'text', placeholder: '1.1.1.1:53', wide: true },
-      { key: 'min_ttl', label: '最小 TTL', type: 'number', min: 0, placeholder: '0' },
-      { key: 'upstream_timeout_ms', label: '上游超时 (ms)', type: 'number', min: 1, placeholder: '2000' },
-      { key: 'request_timeout_ms', label: '整体请求超时 (ms)', type: 'number', min: 1, nullable: true, placeholder: '自动计算' },
-      { key: 'response_jump_limit', label: '响应跳转上限', type: 'number', min: 1, placeholder: '10' },
+      { key: 'min_ttl', label: '最小 TTL', type: 'number', min: 0, unit: '秒', placeholder: '0' },
+      { key: 'upstream_timeout_ms', label: '上游超时 (ms)', type: 'number', min: 1, unit: '毫秒', placeholder: '2000' },
+      { key: 'request_timeout_ms', label: '整体请求超时 (ms)', type: 'number', min: 1, unit: '毫秒', nullable: true, placeholder: '自动计算' },
+      { key: 'response_jump_limit', label: '响应跳转上限', type: 'number', min: 1, unit: '次', placeholder: '10' },
       { key: 'enable_tcp_fallback', label: 'TCP Fallback', type: 'boolean', title: 'UDP 失败后自动改用 TCP' },
     ],
   },
   {
     id: 'transport',
     title: '连接与传输',
+    description: '连接池、健康检查与连接保活',
     tone: 'ink',
     fields: [
-      { key: 'udp_pool_size', label: 'UDP 连接池', type: 'number', min: 1, placeholder: '64' },
-      { key: 'tcp_pool_size', label: 'TCP 连接池', type: 'number', min: 1, placeholder: '64' },
-      { key: 'doh_pool_size', label: 'DoH 连接池', type: 'number', min: 1, placeholder: '8' },
-      { key: 'dot_pool_size', label: 'DoT 连接池', type: 'number', min: 1, placeholder: '64' },
-      { key: 'doq_pool_size', label: 'DoQ 连接池', type: 'number', min: 1, placeholder: '16' },
-      { key: 'tcp_health_check_error_threshold', label: 'TCP 错误阈值', type: 'number', min: 0, placeholder: '3' },
-      { key: 'tcp_connection_max_age_seconds', label: 'TCP 最大存活 (s)', type: 'number', min: 0, placeholder: '300' },
-      { key: 'tcp_connection_idle_timeout_seconds', label: 'TCP 空闲超时 (s)', type: 'number', min: 0, placeholder: '60' },
-      { key: 'doq_connection_idle_timeout_seconds', label: 'DoQ 空闲超时 (s)', type: 'number', min: 0, placeholder: '60' },
-      { key: 'doq_keepalive_interval_ms', label: 'DoQ Keepalive (ms)', type: 'number', min: 0, placeholder: '15000' },
+      { key: 'udp_pool_size', label: 'UDP 连接池', type: 'number', min: 1, unit: '个连接', placeholder: '64' },
+      { key: 'tcp_pool_size', label: 'TCP 连接池', type: 'number', min: 1, unit: '个连接', placeholder: '64' },
+      { key: 'doh_pool_size', label: 'DoH 连接池', type: 'number', min: 1, unit: '个连接', placeholder: '8' },
+      { key: 'dot_pool_size', label: 'DoT 连接池', type: 'number', min: 1, unit: '个连接', placeholder: '64' },
+      { key: 'doq_pool_size', label: 'DoQ 连接池', type: 'number', min: 1, unit: '个连接', placeholder: '16' },
+      { key: 'tcp_health_check_error_threshold', label: 'TCP 错误阈值', type: 'number', min: 0, unit: '次', placeholder: '3' },
+      { key: 'tcp_connection_max_age_seconds', label: 'TCP 最大存活 (s)', type: 'number', min: 0, unit: '秒', placeholder: '300' },
+      { key: 'tcp_connection_idle_timeout_seconds', label: 'TCP 空闲超时 (s)', type: 'number', min: 0, unit: '秒', placeholder: '60' },
+      { key: 'doq_connection_idle_timeout_seconds', label: 'DoQ 空闲超时 (s)', type: 'number', min: 0, unit: '秒', placeholder: '60' },
+      { key: 'doq_keepalive_interval_ms', label: 'DoQ Keepalive (ms)', type: 'number', min: 0, unit: '毫秒', placeholder: '15000' },
       { key: 'doq_enable_0rtt', label: 'DoQ 0-RTT', type: 'boolean', title: '允许 DoQ 连接使用 0-RTT' },
     ],
   },
   {
     id: 'cache',
     title: '缓存与后台刷新',
+    description: '缓存容量、有效期与后台刷新策略',
     tone: 'amber',
     fields: [
-      { key: 'cache_capacity', label: '缓存容量', type: 'number', min: 1, placeholder: '10000' },
-      { key: 'cache_max_ttl', label: '缓存最大 TTL (s)', type: 'number', min: 1, placeholder: '86400' },
+      { key: 'cache_capacity', label: '缓存容量', type: 'number', min: 1, unit: '条', placeholder: '10000' },
+      { key: 'cache_max_ttl', label: '缓存最大 TTL (s)', type: 'number', min: 1, unit: '秒', placeholder: '86400' },
       { key: 'dashmap_shards', label: 'DashMap Shards', type: 'number', min: 0, placeholder: '0（自动）' },
-      { key: 'cache_background_refresh', label: '后台刷新', type: 'boolean' },
-      { key: 'cache_refresh_threshold_percent', label: '刷新阈值 (%)', type: 'number', min: 1, max: 90, placeholder: '10', visibleWhen: 'cache_background_refresh' },
-      { key: 'cache_refresh_min_ttl', label: '刷新最小 TTL (s)', type: 'number', min: 0, placeholder: '5', visibleWhen: 'cache_background_refresh' },
+      { key: 'cache_background_refresh', label: '后台刷新', type: 'boolean', title: '开启后可调整刷新阈值和最小 TTL；关闭时保留这些设置' },
+      { key: 'cache_refresh_threshold_percent', label: '刷新阈值 (%)', type: 'number', min: 1, max: 90, unit: '%', placeholder: '10', visibleWhen: 'cache_background_refresh' },
+      { key: 'cache_refresh_min_ttl', label: '刷新最小 TTL (s)', type: 'number', min: 0, unit: '秒', placeholder: '5', visibleWhen: 'cache_background_refresh' },
     ],
   },
   {
     id: 'stale',
     title: '过期缓存',
+    description: '过期响应的服务窗口与客户端等待时间',
     tone: 'red',
     fields: [
-      { key: 'serve_stale', label: '服务过期响应', type: 'boolean' },
-      { key: 'serve_stale_ttl', label: '回复 TTL (s)', type: 'number', min: 1, placeholder: '30', visibleWhen: 'serve_stale' },
-      { key: 'serve_stale_expire_ttl', label: '服务窗口 (s)', type: 'number', min: 0, placeholder: '86400', visibleWhen: 'serve_stale' },
+      { key: 'serve_stale', label: '服务过期响应', type: 'boolean', title: '开启后可调整过期缓存的服务策略；关闭时保留这些设置' },
+      { key: 'serve_stale_ttl', label: '回复 TTL (s)', type: 'number', min: 1, unit: '秒', placeholder: '30', visibleWhen: 'serve_stale' },
+      { key: 'serve_stale_expire_ttl', label: '服务窗口 (s)', type: 'number', min: 0, unit: '秒', placeholder: '86400', visibleWhen: 'serve_stale' },
       { key: 'serve_stale_ttl_reset', label: '重置过期 TTL', type: 'boolean', visibleWhen: 'serve_stale' },
-      { key: 'serve_stale_client_timeout_ms', label: '客户端等待 (ms)', type: 'number', min: 0, placeholder: '0', visibleWhen: 'serve_stale' },
+      { key: 'serve_stale_client_timeout_ms', label: '客户端等待 (ms)', type: 'number', min: 0, unit: '毫秒', placeholder: '0', visibleWhen: 'serve_stale' },
     ],
   },
   {
     id: 'flow-control',
     title: '自适应流量控制',
+    description: '并发许可数、延迟阈值与调整间隔',
     tone: 'green',
     fields: [
-      { key: 'flow_control_enabled', label: '启用流控', type: 'boolean' },
-      { key: 'flow_control_initial_permits', label: '初始许可数', type: 'number', min: 1, placeholder: '500', visibleWhen: 'flow_control_enabled' },
-      { key: 'flow_control_min_permits', label: '最小许可数', type: 'number', min: 1, placeholder: '100', visibleWhen: 'flow_control_enabled' },
-      { key: 'flow_control_max_permits', label: '最大许可数', type: 'number', min: 1, placeholder: '800', visibleWhen: 'flow_control_enabled' },
-      { key: 'flow_control_latency_threshold_ms', label: '延迟阈值 (ms)', type: 'number', min: 1, placeholder: '100', visibleWhen: 'flow_control_enabled' },
-      { key: 'flow_control_adjustment_interval_secs', label: '调整间隔 (s)', type: 'number', min: 1, placeholder: '5', visibleWhen: 'flow_control_enabled' },
+      { key: 'flow_control_enabled', label: '启用流控', type: 'boolean', title: '开启后可调整并发许可和延迟阈值；关闭时保留这些设置' },
+      { key: 'flow_control_initial_permits', label: '初始许可数', type: 'number', min: 1, unit: '个', placeholder: '500', visibleWhen: 'flow_control_enabled' },
+      { key: 'flow_control_min_permits', label: '最小许可数', type: 'number', min: 1, unit: '个', placeholder: '100', visibleWhen: 'flow_control_enabled' },
+      { key: 'flow_control_max_permits', label: '最大许可数', type: 'number', min: 1, unit: '个', placeholder: '800', visibleWhen: 'flow_control_enabled' },
+      { key: 'flow_control_latency_threshold_ms', label: '延迟阈值 (ms)', type: 'number', min: 1, unit: '毫秒', placeholder: '100', visibleWhen: 'flow_control_enabled' },
+      { key: 'flow_control_adjustment_interval_secs', label: '调整间隔 (s)', type: 'number', min: 1, unit: '秒', placeholder: '5', visibleWhen: 'flow_control_enabled' },
     ],
   },
   {
     id: 'statistics',
     title: '查询统计',
+    description: '查询排行与客户端隐私设置',
     tone: 'ink',
     fields: [
       { key: 'statistics_enabled', label: '启用查询排行', type: 'boolean', title: '在内存中统计客户端和请求域名排行', requiresCapability: CONFIG_QUERY_STATS_V1, legacyCapabilities: ['stats_top_v1'] },

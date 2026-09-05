@@ -14,7 +14,7 @@ export default defineConfig({
     : 'list',
   use: {
     baseURL: 'http://127.0.0.1:4185',
-    channel: isCi ? undefined : 'msedge',
+    channel: process.env.PLAYWRIGHT_CHANNEL || undefined,
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
   },

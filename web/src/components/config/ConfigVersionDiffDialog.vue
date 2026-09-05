@@ -74,25 +74,25 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 .config-diff-dialog { width: min(880px, 100%); max-height: min(820px, calc(100vh - 48px)); display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; overflow: hidden; color: #30383a; background: #fff; border: 1px solid #d9dfdc; border-radius: 7px; box-shadow: 0 24px 70px rgba(13, 20, 17, .24); }
 .config-diff-dialog__header { min-height: 68px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 16px 12px 18px; border-bottom: 1px solid var(--line); }
 .config-diff-dialog__header > div { min-width: 0; display: grid; gap: 3px; }
-.config-diff-dialog__header span { color: var(--green); font-size: 9px; font-weight: 700; }
+.config-diff-dialog__header span { color: var(--green); font-size: 12px; font-weight: 700; }
 .config-diff-dialog__header h2 { overflow: hidden; color: #28302e; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
-.config-diff-summary { min-height: 46px; display: flex; align-items: center; gap: 10px; padding: 9px 18px; color: #75807c; background: #f7f9f8; border-bottom: 1px solid var(--line); font-size: 9px; }
-.config-diff-summary strong { color: #36403c; font-size: 10px; }
+.config-diff-summary { min-height: 46px; display: flex; align-items: center; gap: 10px; padding: 9px 18px; color: #75807c; background: #f7f9f8; border-bottom: 1px solid var(--line); font-size: 12px; }
+.config-diff-summary strong { color: #36403c; font-size: 14px; }
 .config-diff-summary__warning { margin-left: auto; color: var(--amber); }
 .config-diff-list { min-height: 0; overflow: auto; }
 .config-diff-list article { padding: 13px 18px; border-bottom: 1px solid #e7ebe9; }
 .config-diff-list article:last-child { border-bottom: 0; }
 .config-diff-list article > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.config-diff-list code { min-width: 0; overflow-wrap: anywhere; color: #45514c; font-size: 9px; }
-.config-diff-list article > header span { padding: 2px 5px; border-radius: 3px; font-size: 8px; font-weight: 700; }
+.config-diff-list code { min-width: 0; overflow-wrap: anywhere; color: #45514c; font-size: 12px; }
+.config-diff-list article > header span { padding: 2px 5px; border-radius: 3px; font-size: 12px; font-weight: 700; }
 .config-diff-kind--added { color: #176d4d; background: var(--green-soft); }
 .config-diff-kind--removed { color: #9a3737; background: var(--red-soft); }
 .config-diff-kind--changed { color: #8b5b18; background: var(--amber-soft); }
 .config-diff-values { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 9px; }
 .config-diff-values > div { min-width: 0; }
-.config-diff-values small { display: block; margin-bottom: 4px; color: #8b9591; font-size: 8px; }
+.config-diff-values small { display: block; margin-bottom: 4px; color: #8b9591; font-size: 12px; }
 .config-diff-values pre { min-height: 34px; margin: 0; padding: 8px 9px; overflow: auto; color: #36403c; background: #f5f7f6; border: 1px solid #e2e7e4; border-radius: 4px; font: 9px/1.45 "SFMono-Regular", Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
-.config-diff-empty { min-height: 180px; display: grid; place-items: center; color: #8b9591; font-size: 10px; }
+.config-diff-empty { min-height: 180px; display: grid; place-items: center; color: #8b9591; font-size: 12px; }
 .config-diff-dialog > footer { min-height: 58px; display: flex; align-items: center; justify-content: flex-end; padding: 10px 16px; border-top: 1px solid var(--line); }
 @media (max-width: 640px) {
   .config-diff-backdrop { padding: 10px; }

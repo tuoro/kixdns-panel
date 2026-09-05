@@ -14,12 +14,24 @@ KixDNS 的非 Fork 增强发行版与管理面板。项目维护上游正式 Rel
 
 *截图来自本地演示环境，运行指标、构建版本与查询结果均为示例数据。*
 
+<details>
+<summary>移动端预览</summary>
+
+<p>
+  <img src="docs/images/dashboard-mobile.png" alt="移动端运行概览" width="320" />
+  <img src="docs/images/configuration-mobile.png" alt="移动端配置编辑" width="320" />
+</p>
+
+</details>
+
 ## 已实现能力
 
 - KixDNS 内部请求、并发、缓存、Pipeline、规则和上游指标
 - 带代次、SHA-256、重载序号与错误信息的结构化热加载回执
 - Argon2id 管理员认证、HttpOnly 会话、CSRF 防护和登录限流
 - 与上游编辑器功能对齐的结构化表单、原始 JSON、流程预览及导入导出
+- 配置工作台按解析编排、域名映射和基础设置分区，支持入口搜索排序、上下文编辑与未保存草稿保护
+- 交互式表单提供字段校验、已有上游回填、映射批量粘贴预览与逐行纠错
 - 独立域名映射编辑器，映射选择器固定优先于普通 Pipeline，底层 JSON 保持透明
 - GeoIP/GeoSite HTTPS 链接下载、内容摘要托管与本地路径兼容模式
 - KixDNS 编译校验、乐观锁保存、版本历史、回滚和失败自动恢复
@@ -32,7 +44,8 @@ KixDNS 的非 Fork 增强发行版与管理面板。项目维护上游正式 Rel
 - 上游 Releases/Actions 都由本仓库 Action 生成增强 Artifact，并通过 nightly.link 匿名下载
 - 系统页可选配置 GitHub Token，将元数据 API 配额从匿名 60 次/小时提升到认证配额；Token 不会发送到 nightly.link
 - 版本激活健康检查、失败自动恢复与最多 8 个本地版本的受控库存
-- Vue 3 响应式控制台，桌面侧栏与移动端底部导航
+- Vue 3 响应式控制台，桌面顶部导航、移动端底部导航与紧凑行式表单
+- 概览保留累计请求与 Pipeline 分布，诊断集中展示 DNS 应答、命中规则与可展开执行轨迹
 - 面板与两条增强内核轨道独立构建 x86_64/ARM64 Artifact，自动跟随并续期已验证上游
 - 发布前真实启动增强进程，验证 DNS 应答、内部指标与结构化热加载回执
 - 完整包在 Ubuntu 22.04 临时机执行安装、覆盖升级、面板联调、systemd 控制与卸载验收
@@ -76,7 +89,7 @@ curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one-click-install.sh \
-  | sudo bash -s -- --version v1.0.25
+  | sudo bash -s -- --version v2.0.0
 ```
 
 稳定版从面板 GitHub Release 下载；`main` 分支的 Action 仅用于持续验证和开发包构建：
@@ -84,7 +97,7 @@ curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one
 ```bash
 # x86_64；ARM64 将文件名中的 x86_64 改为 arm64
 curl -fL -o kixdns-panel.zip \
-  https://github.com/tuoro/kixdns-panel/releases/download/v1.0.25/kixdns-panel-linux-x86_64.zip
+  https://github.com/tuoro/kixdns-panel/releases/download/v2.0.0/kixdns-panel-linux-x86_64.zip
 mkdir kixdns-panel && unzip kixdns-panel.zip -d kixdns-panel
 cd kixdns-panel
 sudo bash ./scripts/install.sh
@@ -92,7 +105,7 @@ sudo bash ./scripts/install.sh
 
 如果主机已经存在 KixDNS，安装器会让你选择保留现有安装或迁移为 KixDNS Enhanced，不会默认替换。无人值守安装请显式使用 `--keep-existing` 或 `--replace-existing`；保留模式只接入受限面板，迁移模式会备份原 systemd unit 并保留原配置路径。
 
-面板 `v1.0.25` Release 提供 `kixdns-panel-linux-x86_64.zip` 与 `kixdns-panel-linux-arm64.zip`。正式包记录 Release 标签，面板只根据后续正式 Release 提示自身更新；普通 `main` 提交和临时 Action 包不会触发面板更新提示。发现新版后可在“系统”页直接在线更新，过程固定从 `tuoro/kixdns-panel` 最新正式 Release 下载当前架构包，并校验 GitHub 资产摘要与包内 `SHA256SUMS`；更新只替换 Panel Server、Web、helper 和部署脚本，KixDNS 二进制、配置及启停状态保持不变。
+面板 `v2.0.0` Release 提供 `kixdns-panel-linux-x86_64.zip` 与 `kixdns-panel-linux-arm64.zip`。本次大版本更新重设计管理界面，不更改现有配置格式或增强控制协议。正式包记录 Release 标签，面板只根据后续正式 Release 提示自身更新；普通 `main` 提交和临时 Action 包不会触发面板更新提示。发现新版后可在“系统”页直接在线更新，过程固定从 `tuoro/kixdns-panel` 最新正式 Release 下载当前架构包，并校验 GitHub 资产摘要与包内 `SHA256SUMS`；更新只替换 Panel Server、Web、helper 和部署脚本，KixDNS 二进制、配置及启停状态保持不变。
 
 公共仓库无需 Token 也能使用，但 GitHub 匿名 API 仅提供每个出口 IP 60 次/小时。若同一公网 IP 下有多台设备，建议在“系统”页配置只读的 Fine-grained PAT；面板先通过 GitHub `/rate_limit` 验证，再以 `0600` 保存到 `/var/lib/kixdns-panel/github-token`。接口只返回是否配置和剩余配额，不返回 Token 明文或片段；删除后立即恢复匿名模式。
 

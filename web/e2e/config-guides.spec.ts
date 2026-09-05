@@ -1,0 +1,112 @@
+import { expect, test, type Locator, type Page } from '@playwright/test'
+
+async function openConfig(page: Page): Promise<void> {
+  await page.goto('/config')
+  await expect(page.getByRole('region', { name: '解析编排工作台', exact: true })).toBeVisible()
+}
+
+async function showPreview(guide: Locator): Promise<void> {
+  const preview = guide.locator('.config-guide__preview')
+  if (await preview.getAttribute('open') === null) await preview.locator('summary').click()
+}
+
+async function downloadConfig(page: Page) {
+  const downloaded = page.waitForEvent('download')
+  await page.getByTitle('下载 JSON', { exact: true }).click()
+  const stream = await (await downloaded).createReadStream()
+  const chunks = []
+  for await (const chunk of stream) chunks.push(chunk)
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+}
+
+test('入口编辑保留效果预览与提交区，字段错误可见，取消后恢复焦点', async ({ page }, testInfo) => {
+  await openConfig(page)
+  const launcher = page.locator('.workbench-list-toolbar').getByRole('button', { name: '添加入口', exact: true })
+  await launcher.click()
+  const guide = page.getByRole('region', { name: '添加入口', exact: true })
+  await guide.getByRole('button', { name: /指定域名上游/ }).click()
+  await guide.getByLabel('条件 1 值', { exact: true }).fill('interactive.example')
+  const name = guide.getByLabel('方案规则名称')
+  await name.fill('')
+  await expect(name).toHaveAttribute('aria-invalid', 'true')
+  await expect(guide.locator('.field-error')).toContainText('请填写规则名称')
+  await expect(guide.getByRole('button', { name: '应用到草稿', exact: true })).toBeDisabled()
+  await expect(guide.locator('.config-guide__footer')).toBeInViewport()
+
+  await showPreview(guide)
+  await expect(guide.locator('.solution-guide__preview').first()).toContainText('interactive.example')
+  const summary = guide.locator('.config-guide__preview > summary')
+  await guide.locator('.config-guide__workspace').evaluate((element) => { element.scrollTop = element.scrollHeight })
+  await expect(guide.locator('.config-guide__footer')).toBeInViewport()
+  await summary.click()
+  await expect(guide.locator('.config-guide__preview')).not.toHaveAttribute('open')
+
+  await name.fill('interactive-rule')
+  await expect(name).toHaveAttribute('aria-invalid', 'false')
+  await expect(guide.getByRole('button', { name: '应用到草稿', exact: true })).toBeEnabled()
+  await guide.getByRole('button', { name: '关闭一键方案' }).focus()
+  await page.keyboard.press('Shift+Tab')
+  if (testInfo.project.name === 'mobile') expect(await guide.evaluate((element) => element.contains(document.activeElement))).toBe(true)
+  await guide.getByRole('button', { name: '关闭一键方案' }).focus()
+  page.once('dialog', (dialog) => dialog.accept())
+  await page.keyboard.press('Escape')
+  await expect(guide).toHaveCount(0)
+  await expect(launcher).toBeFocused()
+  await expect(page.locator('.unsaved-dot')).toHaveCount(0)
+})
+
+test('批量方案分别保留响应开关，关闭后忽略隐藏错误且提交与预览一致', async ({ page }) => {
+  await openConfig(page)
+  await page.locator('.workbench-list-toolbar').getByRole('button', { name: '添加入口', exact: true }).click()
+  const guide = page.getByRole('region', { name: '添加入口', exact: true })
+  const response = guide.locator('.solution-guide__response')
+  await response.getByLabel('条件 1 CIDR', { exact: true }).fill('')
+  await expect(guide.getByRole('button', { name: '应用到草稿', exact: true })).toBeDisabled()
+  await guide.getByLabel('启用方案响应处理').uncheck()
+  await guide.getByRole('button', { name: '全局兜底', exact: true }).click()
+  await guide.getByRole('button', { name: '添加条件', exact: true }).click()
+  await guide.getByLabel('条件 1 类型').selectOption('domain_suffix')
+  await guide.getByLabel('条件 1 值').fill('global.example')
+  await guide.getByRole('button', { name: '国内解析', exact: true }).click()
+  await guide.locator('.solution-guide__advanced > summary').click()
+  await expect(guide.getByLabel('启用方案响应处理')).not.toBeChecked()
+  await guide.getByLabel('启用方案响应处理').check()
+  await expect(response.getByLabel('条件 1 CIDR', { exact: true })).toHaveValue('')
+  await expect(guide.getByRole('button', { name: '应用到草稿', exact: true })).toBeDisabled()
+  await guide.getByLabel('启用方案响应处理').uncheck()
+  await showPreview(guide)
+  await expect(guide.locator('.solution-guide__preview--response')).toHaveCount(0)
+  await guide.getByRole('button', { name: '应用到草稿', exact: true }).click()
+
+  await page.getByRole('tab', { name: 'JSON', exact: true }).click()
+  const config = await downloadConfig(page)
+  const domestic = config.pipelines.find((pipeline: { id: string }) => pipeline.id === 'cn_doh').rules[0]
+  expect(domestic.response_matchers ?? []).toEqual([])
+  expect(domestic.response_actions_on_match ?? []).toEqual([])
+  expect(domestic.response_actions_on_miss ?? []).toEqual([])
+  expect(config.pipeline_select.map((selector: { pipeline: string }) => selector.pipeline).slice(0, 2)).toEqual(['cn_doh', 'global_doh'])
+})
+
+test('规则关闭响应处理后可保存，再次开启仍保留未完成草稿', async ({ page }) => {
+  await openConfig(page)
+  await page.locator('.workbench-list-footer').getByRole('button', { name: '自由编辑', exact: true }).click()
+  await page.locator('.pipeline-block').first().getByRole('button', { name: '一键添加', exact: true }).click()
+  const guide = page.getByRole('dialog', { name: '一键添加规则' })
+  await guide.getByLabel('一键规则名称').fill('response-switch')
+  await guide.getByLabel('响应处理设置').click()
+  await guide.getByLabel('启用响应处理').check()
+  const matcher = guide.locator('.rule-guide__response').getByLabel('条件 1 值', { exact: true })
+  await matcher.fill('')
+  await expect(guide.getByRole('button', { name: '创建规则', exact: true })).toBeDisabled()
+  await guide.getByLabel('启用响应处理').uncheck()
+  await expect(guide.getByRole('button', { name: '创建规则', exact: true })).toBeEnabled()
+  await guide.getByLabel('启用响应处理').check()
+  await expect(matcher).toHaveValue('')
+  await guide.getByLabel('启用响应处理').uncheck()
+  await guide.getByRole('button', { name: '创建规则', exact: true }).click()
+  await page.getByRole('tab', { name: 'JSON', exact: true }).click()
+  const config = await downloadConfig(page)
+  const rule = config.pipelines[0].rules.find((candidate: { name: string }) => candidate.name === 'response-switch')
+  expect(rule.response_matchers ?? []).toEqual([])
+  expect(rule.response_actions_on_match ?? []).toEqual([])
+})

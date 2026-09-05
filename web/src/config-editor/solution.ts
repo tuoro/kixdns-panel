@@ -1,8 +1,9 @@
 import { createRule, nextPipelineId } from './model'
 import { guidedRuleValidationErrors } from './guided-rule'
-import { CONFIG_STATIC_CNAME_RESPONSE_V1, MATCHER_DEFINITIONS } from './schema'
+import { matcherFieldErrors } from './field-validation'
+import { CONFIG_STATIC_CNAME_RESPONSE_V1 } from './schema'
 import { ruleMatchesEveryRequest } from './summary'
-import type { KixConfig, MatcherConfig, PipelineConfig, PipelineSelectConfig, RuleConfig } from './types'
+import type { KixConfig, PipelineConfig, PipelineSelectConfig, RuleConfig } from './types'
 
 export type SolutionTemplateId = 'domestic_global' | 'domain_upstream' | 'domain_mapping' | 'ad_block' | 'client_network' | 'blank'
 export type SolutionPipelineMode = 'new' | 'reuse' | 'owned' | 'copy' | 'shared'
@@ -297,7 +298,7 @@ export function collectDnsSolutions(config: KixConfig): DnsSolution[] {
 export function collectDomainMappingRows(config: KixConfig): DomainMappingRow[] {
   return collectDnsSolutions(config)
     .filter((solution) => solution.groupType === 'domain_mapping')
-    .flatMap((solution) => clone(solution.mappingRows ?? []))
+    .flatMap((solution) => (solution.mappingRows ?? []).map((row) => ({ ...row })))
 }
 
 export function replaceDomainMappingRows(config: KixConfig, rows: DomainMappingRow[]): void {
@@ -315,7 +316,7 @@ export function replaceDomainMappingRows(config: KixConfig, rows: DomainMappingR
   if (rows.length === 0) return
 
   const draft = createSolutionDrafts(config, 'domain_mapping')[0]!
-  draft.mappingRows = clone(rows)
+  draft.mappingRows = rows
   const materialized = cloneSolutionDraft(draft)
   config.pipeline_select.unshift(materialized.selector)
   config.pipelines.push({ ...materialized.pipeline, rules: materializeSolutionRules(materialized) })
@@ -328,11 +329,16 @@ export function selectorMatchesEveryRequest(selector: PipelineSelectConfig): boo
   return selector.matcher_operator === 'and' && selector.matchers.every((matcher) => matcher.type === 'any')
 }
 
-function matcherMissingValue(matcher: MatcherConfig): boolean {
-  const fields = MATCHER_DEFINITIONS.selector.find((item) => item.value === matcher.type)?.fields ?? []
-  if (fields.includes('value') && !matcher.value?.trim()) return true
-  if (fields.includes('cidr') && !matcher.cidr?.trim()) return true
-  return fields.includes('country_codes') && (!matcher.country_codes || matcher.country_codes.length === 0)
+export function solutionIdentityErrors(draft: SolutionDraft, config: KixConfig, additionalPipelineIds: readonly string[] = []): Record<string, string> {
+  const errors: Record<string, string> = {}
+  if (draft.pipelineMode === 'new' || draft.pipelineMode === 'copy') {
+    if (!draft.pipeline.id.trim()) errors.pipeline = '请填写 Pipeline ID'
+    else if (config.pipelines.some((pipeline) => pipeline.id === draft.pipeline.id) || additionalPipelineIds.includes(draft.pipeline.id)) errors.pipeline = 'Pipeline ID 已存在'
+  } else if (draft.pipelineMode === 'reuse' && !config.pipelines.some((pipeline) => pipeline.id === draft.selector.pipeline)) {
+    errors.pipeline = '请选择现有 Pipeline'
+  }
+  if (draft.pipelineMode !== 'reuse' && draft.groupType !== 'domain_mapping' && !draft.rule.name.trim()) errors.name = '请填写规则名称'
+  return errors
 }
 
 export function solutionValidationErrors(
@@ -353,15 +359,8 @@ export function solutionValidationErrors(
       const rule = mappingRule(draft.pipeline, row, index)
       errors.push(...guidedRuleValidationErrors(rule, draft.pipeline.id, pipelineIds))
     }
-  } else if (draft.selector.matchers.some(matcherMissingValue)) errors.push('请补全入口条件')
-  if (draft.pipelineMode === 'new' || draft.pipelineMode === 'copy') {
-    if (!draft.pipeline.id.trim()) errors.push('请填写 Pipeline ID')
-    if (config.pipelines.some((pipeline) => pipeline.id === draft.pipeline.id)) {
-      errors.push('Pipeline ID 已存在')
-    }
-  } else if (draft.pipelineMode === 'reuse' && !config.pipelines.some((pipeline) => pipeline.id === draft.selector.pipeline)) {
-    errors.push('请选择现有 Pipeline')
-  }
+  } else if (draft.selector.matchers.some((matcher) => Object.keys(matcherFieldErrors(matcher, 'selector')).length > 0)) errors.push('请补全入口条件')
+  errors.push(...Object.values(solutionIdentityErrors(draft, config, additionalPipelineIds)))
   if (draft.pipelineMode !== 'reuse' && draft.groupType !== 'domain_mapping') {
     const pipelineIds = [...config.pipelines.map((pipeline) => pipeline.id), draft.pipeline.id, ...additionalPipelineIds]
     errors.push(...guidedRuleValidationErrors(draft.rule, draft.pipeline.id, pipelineIds))
@@ -381,7 +380,11 @@ export function solutionInsertIndex(config: KixConfig, selector: PipelineSelectC
 
 export function cloneSolutionDraft(draft: SolutionDraft): SolutionDraft {
   const result = clone(draft)
-  if (result.groupType === 'domain_mapping') syncMappingSelector(result)
+  if (result.groupType === 'domain_mapping') {
+    // 编辑中的空 TTL 用 NaN 表示，JSON 克隆会将它变成 null 并误用默认值。
+    result.mappingRows = draft.mappingRows?.map((row) => ({ ...row }))
+    syncMappingSelector(result)
+  }
   return result
 }
 

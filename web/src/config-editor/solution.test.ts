@@ -39,6 +39,24 @@ function config(): KixConfig {
 }
 
 describe('DNS 处理方案', () => {
+  it('映射 TTL 清空后保持待补全状态，不被默认值覆盖', () => {
+    const value = config()
+    const rows = [{ source: 'nas.home', target: 'storage.home.', ttl: Number.NaN }]
+    replaceDomainMappingRows(value, rows)
+    const [actual] = collectDomainMappingRows(value)
+    expect(Number.isNaN(actual?.ttl)).toBe(true)
+    expect(Number.isNaN(rows[0]!.ttl)).toBe(true)
+    actual!.ttl = 0
+    replaceDomainMappingRows(value, [actual!])
+    expect(collectDomainMappingRows(value)[0]?.ttl).toBe(0)
+  })
+
+  it('一次创建多个方案时，流程名称不能相互冲突', () => {
+    const value = config()
+    const [draft] = createSolutionDrafts(value, 'domain_upstream')
+    expect(solutionValidationErrors(draft!, value, undefined, [draft!.pipeline.id])).toContain('Pipeline ID 已存在')
+  })
+
   it('域名映射方案同时创建入口条件和固定 CNAME 动作', () => {
     const [mapping] = createSolutionDrafts(config(), 'domain_mapping')
 

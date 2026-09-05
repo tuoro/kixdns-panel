@@ -24,7 +24,7 @@ import MatcherList from './MatcherList.vue'
 import RuleCreationGuide from './RuleCreationGuide.vue'
 
 const config = defineModel<KixConfig>({ required: true })
-defineProps<{ capabilities: string[] }>()
+withDefaults(defineProps<{ capabilities: string[]; manualOnly?: boolean }>(), { manualOnly: false })
 const emit = defineEmits<{ notice: [message: string] }>()
 const mappingSolutions = computed(() => collectDnsSolutions(config.value)
   .filter((solution) => solution.groupType === 'domain_mapping'))
@@ -178,10 +178,10 @@ function saveGuidedRule(rule: RuleConfig, index: number): void {
 </script>
 
 <template>
-  <DnsSolutionEditor v-if="!manualMode" v-model="config" :capabilities="capabilities" @manual="manualMode = true" @notice="emit('notice', $event)" />
+  <DnsSolutionEditor v-if="!manualMode && !manualOnly" v-model="config" :capabilities="capabilities" @manual="manualMode = true" @notice="emit('notice', $event)" />
 
-  <template v-if="manualMode">
-  <section class="config-section">
+  <template v-if="manualMode || manualOnly">
+  <section v-if="!manualOnly" class="config-section">
     <header class="config-section__header config-section__header--actions">
       <div><span class="section-mark section-mark--green"></span><h3>自由编辑</h3></div>
       <button class="button button--secondary" type="button" @click="manualMode = false"><ArrowLeft :size="15" />返回快捷编辑</button>

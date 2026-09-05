@@ -14,9 +14,9 @@ async function expectNoPageOverflow(page: Page): Promise<void> {
 }
 
 async function openManualConfig(page: Page): Promise<void> {
-  await page.locator('.solution-section__actions').getByRole('button', { name: '自由编辑', exact: true }).click()
-  await expect(page.getByRole('heading', { name: '快捷编辑' })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: '返回快捷编辑' })).toBeVisible()
+  await page.locator('.workbench-list-footer').getByRole('button', { name: '自由编辑', exact: true }).click()
+  await expect(page.getByRole('region', { name: '解析编排工作台', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '返回解析编排' })).toBeVisible()
 }
 
 test('首次未启动时保留完整概览布局', async ({ page }) => {
@@ -25,15 +25,16 @@ test('首次未启动时保留完整概览布局', async ({ page }) => {
 
   await expect(page.getByText('KixDNS 未启动', { exact: true })).toBeVisible()
   await expect(page.getByText('数据可能已过期')).toHaveCount(0)
-  await expect(page.locator('.metric')).toHaveCount(4)
-  await expect(page.locator('.metric').first().getByText('0', { exact: true })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Pipeline 命中' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: '运行时配置' })).toBeVisible()
+  await expect(page.locator('.overview-total-value')).toHaveText('0')
+  await expect(page.getByRole('heading', { name: '请求分布' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '当前运行配置' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '上游请求' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '清空内部缓存' })).toBeDisabled()
+  await page.getByRole('tab', { name: '查询排行', exact: true }).click()
   await expect(page.getByRole('heading', { name: '客户端排行' })).toBeVisible()
   await expect(page.getByRole('heading', { name: '请求域名排行' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: '上游请求' })).toBeVisible()
+  await page.getByRole('tab', { name: '规则命中', exact: true }).click()
   await expect(page.getByRole('heading', { name: '规则命中' })).toBeVisible()
-  await expect(page.getByRole('button', { name: '清空内部缓存' })).toBeDisabled()
 })
 
 test('首次未启动时保存配置会标记为待应用', async ({ page }) => {
@@ -41,11 +42,13 @@ test('首次未启动时保存配置会标记为待应用', async ({ page }) => 
   await open(page, '/config')
 
   await expect(page.getByText('KixDNS 未启动，无法确认当前 KixDNS 配置能力')).toBeVisible()
+  await page.getByRole('button', { name: '基础设置', exact: true }).click()
   await page.locator('.settings-grid .setting-field input').first().fill('0.0.0.0:54')
   await page.getByRole('button', { name: '保存为待应用' }).click()
 
   await expect(page.locator('.toast--info').filter({ hasText: '待应用' })).toBeVisible()
   await expect(page.getByText('配置已保存，当前处于待应用状态')).toBeVisible()
+  await page.getByRole('button', { name: '历史版本', exact: true }).click()
   await expect(page.locator('.history-item--pending')).toHaveCount(1)
 
   // 待应用候选存在时，删除历史版本仍应使用候选 SHA 完成并发校验。
@@ -55,11 +58,13 @@ test('首次未启动时保存配置会标记为待应用', async ({ page }) => 
   await expect(page.locator('.toast--success').filter({ hasText: '已删除' })).toBeVisible()
   await expect(history.locator('article')).toHaveCount(4)
   await expect(page.locator('.history-item--pending')).toHaveCount(0)
-  await expect(page.getByText('KixDNS 未启动', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '关闭版本历史', exact: true }).click()
+  await expect(page.locator('.document-meta').getByText('KixDNS 未启动', { exact: true })).toBeVisible()
 })
 
 test('配置历史支持差异、恢复和受保护删除', async ({ page }) => {
   await open(page, '/config')
+  await page.getByRole('button', { name: '历史版本', exact: true }).click()
   const history = page.locator('.history-list')
   await expect(history.locator('article')).toHaveCount(4)
 
@@ -68,6 +73,8 @@ test('配置历史支持差异、恢复和受保护删除', async ({ page }) => 
   await expect(diff).toBeVisible()
   await expect(diff.getByText(/处差异/)).toBeVisible()
   await diff.getByRole('button', { name: '关闭', exact: true }).click()
+
+  await page.getByRole('button', { name: '历史版本', exact: true }).click()
 
   page.once('dialog', (dialog) => dialog.accept())
   await history.getByTitle('恢复此版本').first().click()
@@ -83,6 +90,7 @@ test('配置历史支持差异、恢复和受保护删除', async ({ page }) => 
 
 test('Geo 维护结果离开页面后销毁', async ({ page }) => {
   await open(page, '/config')
+  await page.getByRole('button', { name: '基础设置', exact: true }).click()
   const geo = page.locator('.geo-data-section')
   await geo.scrollIntoViewIfNeeded()
   await geo.locator('.geo-schedule-control select').selectOption('24')
@@ -92,6 +100,7 @@ test('Geo 维护结果离开页面后销毁', async ({ page }) => {
 
   await page.goto('/logs')
   await page.goto('/config')
+  await page.getByRole('button', { name: '基础设置', exact: true }).click()
   await expect(page.locator('.geo-data-success')).toHaveCount(0)
 })
 
@@ -109,30 +118,31 @@ test('DNS 诊断在结果顶部显示实际命中的规则', async ({ page }) =>
 
 test('默认用完整方案创建并保留自由编辑入口', async ({ page }) => {
   await open(page, '/config')
-  await expect(page.getByRole('heading', { name: '快捷编辑' })).toBeVisible()
+  await expect(page.getByRole('region', { name: '解析编排工作台', exact: true })).toBeVisible()
   await expect(page.getByRole('heading', { name: '分流规则' })).toHaveCount(0)
 
-  const before = await page.locator('.solution-card').count()
-  await page.getByRole('button', { name: '一键添加方案', exact: true }).click()
-  const guide = page.getByRole('dialog', { name: '一键添加 DNS 方案' })
+  const before = await page.locator('.workbench-entry').count()
+  await page.locator('.workbench-list-toolbar').getByRole('button', { name: '添加入口', exact: true }).click()
+  const guide = page.getByRole('region', { name: '添加入口', exact: true })
   await guide.getByRole('button', { name: /指定域名上游/ }).click()
   await guide.getByLabel('条件 1 值').fill('example.net')
   await guide.getByLabel('动作 1 上游').fill('9.9.9.9:53')
+  await guide.locator('.config-guide__preview > summary').click()
   await expect(guide.locator('.solution-guide__preview').first()).toContainText('example.net')
-  await guide.getByRole('button', { name: '创建方案', exact: true }).click()
+  await guide.getByRole('button', { name: '应用到草稿', exact: true }).click()
 
-  await expect(page.locator('.solution-card')).toHaveCount(before + 1)
-  const created = page.locator('.solution-card').filter({ hasText: 'example.net' })
+  await expect(page.locator('.workbench-entry')).toHaveCount(before + 1)
+  const created = page.locator('.workbench-entry').filter({ hasText: 'example.net' })
   await expect(created).toContainText('9.9.9.9:53')
-  await created.getByRole('button', { name: '一键编辑' }).click()
-  await expect(page.getByRole('dialog', { name: '一键编辑 DNS 方案' })).toBeVisible()
+  await created.locator('.workbench-entry-select').click()
+  await expect(page.locator('.workbench-guide')).toBeVisible()
   await page.getByRole('button', { name: '关闭一键方案' }).click()
 
   await openManualConfig(page)
   await expect(page.getByRole('heading', { name: '分流规则' })).toBeVisible()
   await expect(page.getByRole('heading', { name: '处理流程' })).toBeVisible()
-  await page.getByRole('button', { name: '返回快捷编辑' }).click()
-  await expect(page.getByRole('heading', { name: '快捷编辑' })).toBeVisible()
+  await page.getByRole('button', { name: '返回解析编排' }).click()
+  await expect(page.getByRole('region', { name: '解析编排工作台', exact: true })).toBeVisible()
   await expect(page.getByRole('heading', { name: '分流规则' })).toHaveCount(0)
 })
 
@@ -150,8 +160,8 @@ test('域名映射独立维护、优先序列化且不在 Pipeline 页面重复�
   await page.getByLabel('映射 2 源域名').fill('alias-two.example')
   await page.getByLabel('映射 2 目标域名').fill('origin-two.example.')
 
-  await page.getByRole('button', { name: 'Pipeline 配置', exact: true }).click()
-  await expect(page.locator('.solution-card').filter({ hasText: 'alias.example' })).toHaveCount(0)
+  await page.getByRole('button', { name: '解析编排', exact: true }).click()
+  await expect(page.locator('.workbench-entry').filter({ hasText: 'alias.example' })).toHaveCount(0)
   await page.getByRole('tab', { name: 'JSON' }).click()
   const json = await page.locator('.cm-content').innerText()
   expect(json).toContain('alias.example')

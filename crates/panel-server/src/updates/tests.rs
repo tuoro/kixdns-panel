@@ -396,9 +396,11 @@ fn notifies_only_for_newer_panel_release_with_matching_asset() {
             digest: Some(format!("sha256:{}", "a".repeat(64))),
         }],
     };
-    let same = release("v1.0.25", panel_release_asset_name());
+    let current_version = env!("CARGO_PKG_VERSION");
+    let current_tag = format!("v{current_version}");
+    let same = release(&current_tag, panel_release_asset_name());
     assert!(
-        !to_panel_update_notice(None, Some("v1.0.25"), Some(&same))
+        !to_panel_update_notice(None, Some(&current_tag), Some(&same))
             .unwrap()
             .available
     );
@@ -415,28 +417,32 @@ fn notifies_only_for_newer_panel_release_with_matching_asset() {
             .available
     );
 
-    let wrong_asset = release("v1.0.25", "kixdns-panel-windows.zip");
+    let wrong_asset = release(&current_tag, "kixdns-panel-windows.zip");
     assert!(
         !to_panel_update_notice(None, None, Some(&wrong_asset))
             .unwrap()
             .available
     );
 
-    let newer = release("v1.0.25", panel_release_asset_name());
-    let notice = to_panel_update_notice(Some(TEST_BUILD_COMMIT), None, Some(&newer)).unwrap();
+    let notice = to_panel_update_notice(Some(TEST_BUILD_COMMIT), None, Some(&same)).unwrap();
     assert!(notice.available);
-    assert_eq!(notice.current_version, "1.0.25");
-    assert_eq!(notice.latest_version.as_deref(), Some("1.0.25"));
+    assert_eq!(notice.current_version, current_version);
+    assert_eq!(notice.latest_version.as_deref(), Some(current_version));
     assert_eq!(
         notice.download_url.as_deref(),
         Some(
             format!(
-                "https://github.com/tuoro/kixdns-panel/releases/download/v1.0.25/{}",
+                "https://github.com/tuoro/kixdns-panel/releases/download/{current_tag}/{}",
                 panel_release_asset_name()
             )
             .as_str()
         )
     );
+
+    let major_release = release("v2.0.0", panel_release_asset_name());
+    let major_update = to_panel_update_notice(None, Some("v1.0.25"), Some(&major_release)).unwrap();
+    assert!(major_update.available);
+    assert_eq!(major_update.latest_version.as_deref(), Some("2.0.0"));
 }
 
 #[test]

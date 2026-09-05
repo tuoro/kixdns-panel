@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {
+  ArrowLeft,
   Braces,
   Check,
   Clock3,
@@ -15,9 +16,10 @@ import {
   Trash2,
   TriangleAlert,
   Workflow,
+  X,
   Zap,
 } from '@lucide/vue'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
 import { ApiError, apiRequest, jsonBody } from '../api/client'
 import type {
@@ -35,6 +37,7 @@ import type {
 } from '../api/types'
 import ConfigFlowPreview from '../components/config/ConfigFlowPreview.vue'
 import DomainMappingConfigEditor from '../components/config/DomainMappingConfigEditor.vue'
+import DnsSolutionEditor from '../components/config/DnsSolutionEditor.vue'
 import ConfigVersionDiffDialog from '../components/config/ConfigVersionDiffDialog.vue'
 import StructuredConfigEditor from '../components/config/StructuredConfigEditor.vue'
 import JsonEditor from '../components/JsonEditor.vue'
@@ -52,7 +55,14 @@ const source = ref('')
 const baseline = ref('')
 const message = ref('')
 const mode = ref<ConfigEditorMode>('structured')
-const section = ref<'pipeline' | 'mapping'>('pipeline')
+const section = ref<'pipeline' | 'mapping' | 'settings'>('pipeline')
+const manualMode = ref(false)
+const localDraftDirty = ref(false)
+const focusedEditing = ref(false)
+const workspaceKey = ref(0)
+const solutionEditor = ref<InstanceType<typeof DnsSolutionEditor> | null>(null)
+const historyOpen = ref(false)
+const historyDialog = ref<HTMLDialogElement | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
 const loading = ref(true)
 const validating = ref(false)
@@ -120,7 +130,7 @@ const deferSave = computed(() => runtimeStopped.value
   || Boolean(capabilityError.value)
   || unsupportedFields.value.length > 0)
 const canApplyPending = computed(() => (hasPending.value || hasApplyFailure.value) && !deferSave.value)
-const canSave = computed(() => changed.value || canApplyPending.value)
+const canSave = computed(() => !localDraftDirty.value && (changed.value || canApplyPending.value))
 const saveLabel = computed(() => {
   if (saving.value) return canApplyPending.value ? '应用中' : (deferSave.value ? '保存中' : '应用中')
   if (hasApplyFailure.value && canApplyPending.value && !changed.value) return '重试应用'
@@ -145,17 +155,23 @@ watch(source, () => {
   parseError.value = ''
 })
 
+watch(historyOpen, async (open) => {
+  if (!open) return
+  await nextTick()
+  historyDialog.value?.showModal()
+})
+
 watch(config, (value) => {
   if (!value || syncingConfig) return
   source.value = serializeConfig(value)
 }, { deep: true, flush: 'sync' })
 
 function confirmDiscard(): boolean {
-  return !changed.value || window.confirm('当前配置尚未保存，确定离开？')
+  return (!changed.value && !localDraftDirty.value) || window.confirm('当前配置或入口修改尚未保存，确定放弃？')
 }
 
 function preventAccidentalClose(event: BeforeUnloadEvent): void {
-  if (!changed.value) return
+  if (!changed.value && !localDraftDirty.value) return
   event.preventDefault()
   event.returnValue = ''
 }
@@ -207,11 +223,45 @@ function syncStructuredFromSource(): boolean {
 
 function activateMode(nextMode: ConfigEditorMode): void {
   if (mode.value === nextMode) return
+  if (!confirmLocalDiscard()) return
   if (mode.value === 'json' && nextMode !== 'json' && !syncStructuredFromSource()) {
     toast.error('JSON 解析失败，修正后才能切换视图')
     return
   }
   mode.value = nextMode
+  resetLocalState()
+}
+
+function confirmLocalDiscard(): boolean {
+  return solutionEditor.value?.confirmDiscard() ?? true
+}
+
+function resetLocalState(): void {
+  localDraftDirty.value = false
+  focusedEditing.value = false
+  workspaceKey.value += 1
+}
+
+function activateSection(nextSection: typeof section.value): void {
+  if (section.value === nextSection && mode.value === 'structured') return
+  if (!confirmLocalDiscard()) return
+  if (mode.value === 'json' && !syncStructuredFromSource()) {
+    toast.error('JSON 解析失败，修正后才能切换分类')
+    return
+  }
+  resetLocalState()
+  section.value = nextSection
+  mode.value = 'structured'
+  manualMode.value = false
+}
+
+function openManual(): void {
+  manualMode.value = true
+  resetLocalState()
+}
+
+function reload(): void {
+  if (confirmDiscard()) void load()
 }
 
 function load(): Promise<void> {
@@ -249,6 +299,7 @@ function load(): Promise<void> {
     baseline.value = source.value
     syncingConfig = false
     validation.value = null
+    resetLocalState()
     previewVersion.value = null
     loadError.value = ''
   })().catch((error: unknown) => {
@@ -312,7 +363,7 @@ async function save(): Promise<void> {
 
 async function restore(version: ConfigVersion): Promise<void> {
   if (!document.value) return
-  const unsavedWarning = changed.value ? '\n\n编辑器中未保存的修改会丢失。' : ''
+  const unsavedWarning = changed.value || localDraftDirty.value ? '\n\n编辑器中未保存的修改会丢失。' : ''
   if (!window.confirm(`恢复配置版本 #${version.id}？${unsavedWarning}\n\n当前已保存配置仍会保留在历史记录中。`)) return
   restoring.value = version.id
   try {
@@ -410,6 +461,7 @@ async function openVersionDiff(version: ConfigVersion): Promise<void> {
   previewing.value = version.id
   try {
     previewVersion.value = await apiRequest<ConfigVersionDetail>(`/api/v1/config/versions/${version.id}`)
+    historyOpen.value = false
   } catch (error) {
     toast.error(errorMessage(error))
   } finally {
@@ -422,6 +474,7 @@ async function importFile(event: Event): Promise<void> {
   const file = input.files?.[0]
   if (!file) return
   try {
+    if (!confirmDiscard()) return
     if (file.size > 4 * 1024 * 1024) throw new Error('配置文件不能超过 4 MiB')
     source.value = await file.text()
     if (!syncStructuredFromSource()) {
@@ -429,6 +482,7 @@ async function importFile(event: Event): Promise<void> {
       throw new Error(parseError.value || 'JSON 解析失败')
     }
     mode.value = 'structured'
+    resetLocalState()
     toast.success(`已导入 ${file.name}`)
   } catch (error) {
     toast.error(errorMessage(error))
@@ -457,8 +511,9 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
 </script>
 
 <template>
-  <div class="page config-page">
-    <div class="page-actions">
+  <div class="page config-page workbench-page" :class="{ 'workbench-page--editing': focusedEditing }">
+    <header class="workbench-heading" :inert="focusedEditing">
+      <div class="workbench-heading-main"><h1 class="page-heading">配置</h1>
       <div v-if="document" class="document-meta" :title="document.runtime.active_sha256 ? `运行摘要 ${document.runtime.active_sha256}` : '无法读取 KixDNS 运行配置'">
         <span
           class="status-dot"
@@ -473,9 +528,18 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
         <span v-else-if="currentVersionId" class="document-meta__version">版本 #{{ currentVersionId }}</span>
         <code>{{ shortHash(document.sha256, 14) }}</code>
       </div>
-      <button class="button button--secondary" type="button" :disabled="loading || saving || restoring !== null || deleting !== null || bulkDeleting" @click="load"><RefreshCw :size="16" :class="{ spin: loading }" />重新读取</button>
-    </div>
-    <StatusBanner v-if="loadError" :message="loadError" :stale="Boolean(document)" :busy="loading" @retry="load" />
+      <span v-if="localDraftDirty" class="workbench-draft-state">入口待应用到草稿</span><span v-else-if="changed" class="unsaved-dot workbench-draft-state">草稿有修改</span>
+      </div>
+      <div class="workbench-heading-actions">
+        <button class="button button--secondary" type="button" @click="historyOpen = true"><History :size="16" />历史版本</button>
+        <div class="workbench-global-actions">
+          <span class="workbench-save-hint">{{ localDraftDirty ? '先将入口修改应用到草稿' : changed ? '草稿尚未保存' : runtimeLabel }}</span>
+          <button class="button button--secondary" type="button" :disabled="loading || validating || saving || restoring !== null || deleting !== null || bulkDeleting || deferSave || localDraftDirty" @click="validate"><ShieldCheck :size="16" />{{ validating ? '校验中' : (deferSave ? '运行后校验' : '校验') }}</button>
+          <button class="button button--primary" type="button" :disabled="loading || validating || saving || restoring !== null || deleting !== null || bulkDeleting || !canSave" @click="save"><Save :size="16" />{{ saveLabel }}</button>
+        </div>
+      </div>
+    </header>
+    <StatusBanner v-if="loadError" :message="loadError" :stale="Boolean(document)" :busy="loading" @retry="reload" />
     <div v-if="hasPending || hasApplyFailure || runtimeStopped || runtimeUnavailable || capabilityError || unsupportedFields.length" class="config-compatibility-banner">
       <TriangleAlert :size="18" />
       <div>
@@ -500,41 +564,39 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
         <p v-else>已只读保留：{{ unsupportedFields.join('、') }}。切换兼容版本后可保存为待应用版本。</p>
       </div>
     </div>
-    <nav class="config-section-tabs" aria-label="配置分类">
-      <button type="button" :class="{ active: section === 'pipeline' }" @click="section = 'pipeline'">Pipeline 配置</button>
-      <button type="button" :class="{ active: section === 'mapping' }" @click="section = 'mapping'">域名映射</button>
-    </nav>
-    <div class="config-layout">
-      <section class="editor-panel">
-        <header class="editor-toolbar">
-          <div v-if="section === 'pipeline'"><strong>pipeline.json</strong><span v-if="changed" class="unsaved-dot">未保存</span></div>
-          <div v-else class="mapping-toolbar-title">
-            <div><strong>域名映射</strong><span class="mapping-priority"><Zap :size="12" />最高优先级</span><span v-if="changed" class="unsaved-dot">未保存</span></div>
-            <small>命中后直接应答并跳过其他 Pipeline</small>
-          </div>
-          <div class="editor-toolbar__actions">
-            <input ref="fileInput" class="visually-hidden" type="file" accept=".json,application/json" @change="importFile">
-            <button v-if="section === 'pipeline'" class="icon-button" type="button" title="导入 JSON" :disabled="loading || saving" @click="fileInput?.click()"><FileUp :size="16" /></button>
-            <button v-if="section === 'pipeline'" class="icon-button" type="button" title="下载 JSON" :disabled="loading" @click="downloadJson"><Download :size="16" /></button>
-            <button class="button button--secondary" type="button" :disabled="loading || validating || saving || restoring !== null || deleting !== null || bulkDeleting || deferSave" @click="validate"><ShieldCheck :size="16" />{{ validating ? '校验中' : (deferSave ? '运行后校验' : '校验') }}</button>
-            <button class="button button--primary" type="button" :disabled="loading || validating || saving || restoring !== null || deleting !== null || bulkDeleting || !canSave" @click="save"><Save :size="16" />{{ saveLabel }}</button>
-          </div>
-        </header>
-
-        <nav v-if="section === 'pipeline'" class="config-mode-tabs" role="tablist" aria-label="配置编辑模式">
-          <button type="button" role="tab" :aria-selected="mode === 'structured'" :class="{ active: mode === 'structured' }" @click="activateMode('structured')"><Settings2 :size="15" />表单</button>
+    <div class="workbench-navigation" :inert="focusedEditing">
+      <nav class="workbench-section-tabs" aria-label="配置分类">
+        <button type="button" :aria-pressed="section === 'pipeline'" :class="{ active: section === 'pipeline' }" @click="activateSection('pipeline')">解析编排</button>
+        <button type="button" :aria-pressed="section === 'mapping'" :class="{ active: section === 'mapping' }" @click="activateSection('mapping')">域名映射</button>
+        <button type="button" :aria-pressed="section === 'settings'" :class="{ active: section === 'settings' }" @click="activateSection('settings')">基础设置</button>
+      </nav>
+      <div class="workbench-view-tools">
+        <nav class="workbench-mode-tabs" role="tablist" aria-label="配置编辑模式">
+          <button v-if="mode !== 'structured'" type="button" role="tab" :aria-selected="false" @click="activateMode('structured')"><Settings2 :size="15" />表单</button>
           <button type="button" role="tab" :aria-selected="mode === 'json'" :class="{ active: mode === 'json' }" @click="activateMode('json')"><Braces :size="15" />JSON</button>
-          <button type="button" role="tab" :aria-selected="mode === 'flow'" :class="{ active: mode === 'flow' }" @click="activateMode('flow')"><Workflow :size="15" />流程</button>
+          <button v-if="section === 'pipeline'" type="button" role="tab" :aria-selected="mode === 'flow'" :class="{ active: mode === 'flow' }" @click="activateMode('flow')"><Workflow :size="15" />流程</button>
         </nav>
+        <input ref="fileInput" class="visually-hidden" type="file" accept=".json,application/json" @change="importFile">
+        <button class="icon-button" type="button" title="导入 JSON" :disabled="loading || saving" @click="fileInput?.click()"><FileUp :size="16" /></button>
+        <button class="icon-button" type="button" title="下载 JSON" :disabled="loading" @click="downloadJson"><Download :size="16" /></button>
+        <button class="icon-button" type="button" title="重新读取配置" :disabled="loading || saving || restoring !== null || deleting !== null || bulkDeleting" @click="reload"><RefreshCw :size="16" :class="{ spin: loading }" /></button>
+      </div>
+    </div>
+    <div class="workbench-document">
+      <section class="editor-panel workbench-document-panel">
+        <header v-if="section === 'mapping' && mode === 'structured'" class="workbench-mapping-heading"><div><strong>域名映射</strong><span class="mapping-priority"><Zap :size="12" />最高优先级</span></div><p>命中后直接应答并跳过其他 Pipeline</p></header>
+        <header v-else-if="section === 'settings' && mode === 'structured'" class="workbench-settings-heading"><strong>基础设置</strong><p>监听服务、上游、缓存与 Geo 数据；修改将加入同一份配置草稿。</p></header>
+        <div v-if="section === 'pipeline' && mode === 'structured' && manualMode" class="workbench-manual-bar"><button class="button button--secondary" type="button" @click="manualMode = false"><ArrowLeft :size="15" />返回解析编排</button><span>自由编辑 · 保留完整 Pipeline 与规则结构</span></div>
 
         <div v-if="loading" class="editor-loading">正在读取配置…</div>
         <div v-else-if="!document" class="editor-loading">配置暂不可用</div>
-        <DomainMappingConfigEditor v-else-if="section === 'mapping' && config" v-model="config" :capabilities="runtimeCapabilities" />
-        <StructuredConfigEditor v-else-if="mode === 'structured' && config" v-model="config" :capabilities="runtimeCapabilities" @notice="toast.info($event)" />
         <JsonEditor v-else-if="mode === 'json'" v-model="source" />
-        <ConfigFlowPreview v-else-if="config" :config="config" />
+        <ConfigFlowPreview v-else-if="mode === 'flow' && config" :config="config" />
+        <DomainMappingConfigEditor v-else-if="section === 'mapping' && config" v-model="config" :capabilities="runtimeCapabilities" />
+        <StructuredConfigEditor v-else-if="config && (section === 'settings' || manualMode)" v-model="config" :section="section === 'settings' ? 'settings' : 'pipeline'" :capabilities="runtimeCapabilities" @notice="toast.info($event)" />
+        <DnsSolutionEditor v-else-if="config" :key="workspaceKey" ref="solutionEditor" v-model="config" :capabilities="runtimeCapabilities" @manual="openManual" @mapping="activateSection('mapping')" @notice="toast.info($event)" @dirty="localDraftDirty = $event" @editing="focusedEditing = $event" />
 
-        <footer class="editor-footer">
+        <footer class="editor-footer" :inert="focusedEditing">
           <div class="validation-state">
             <TriangleAlert v-if="parseError" :size="16" /><Check v-else-if="validation?.valid" :size="16" /><Clock3 v-else :size="16" />
             <span :class="{ 'text-danger': parseError }">{{ validationLabel }}</span>
@@ -543,8 +605,11 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
         </footer>
       </section>
 
-      <aside class="history-panel">
-        <header><div><History :size="18" /><h2>版本历史</h2></div><span title="自动保留最近 100 个版本">{{ versions.length }} / 100</span></header>
+    </div>
+
+      <dialog v-if="historyOpen" ref="historyDialog" class="workbench-history-overlay" aria-labelledby="workbench-history-title" @click.self="historyOpen = false" @cancel.prevent="historyOpen = false">
+      <aside class="history-panel workbench-history">
+        <header><div><History :size="18" /><h2 id="workbench-history-title">版本历史</h2></div><span title="自动保留最近 100 个版本">{{ versions.length }} / 100</span><button class="icon-button" type="button" aria-label="关闭版本历史" @click="historyOpen = false"><X :size="18" /></button></header>
         <div v-if="deletableVersionIds.length > 0" class="history-bulk-actions">
           <label>
             <input type="checkbox" :checked="allDeletableVersionsSelected" :disabled="bulkDeleting || deleting !== null || restoring !== null || saving || validating" @change="toggleAllDeletableVersions">
@@ -578,7 +643,76 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
           <p v-if="versions.length === 0" class="empty-state">暂无配置版本</p>
         </div>
       </aside>
-    </div>
+      </dialog>
     <ConfigVersionDiffDialog v-if="previewVersion && document" :current="document.content" :version="previewVersion" @close="previewVersion = null" />
   </div>
 </template>
+
+<style scoped>
+.workbench-page { gap: 0; }
+.workbench-heading { display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 0 0 23px; }
+.workbench-heading-main, .workbench-heading-actions, .workbench-global-actions { display: flex; align-items: center; gap: 12px; }
+.workbench-heading-main { flex-wrap: wrap; gap: 10px 18px; min-width: 0; }
+.workbench-heading-main h1 { margin: 0; padding-right: 20px; border-right: 1px solid var(--line); font-size: 28px; line-height: 1; }
+.workbench-heading-main .document-meta { min-width: 0; font-size: 12px; }
+.workbench-heading-main .document-meta code { display: none; }
+.workbench-draft-state { display: inline-flex; align-items: center; gap: 6px; color: #a96821; font-size: 12px; }
+.workbench-draft-state::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.workbench-save-hint { display: none; }
+.workbench-navigation { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; border: 1px solid var(--line); border-bottom: 0; background: var(--surface, #fff); }
+.workbench-section-tabs { display: flex; gap: 8px; align-self: stretch; padding-left: 16px; }
+.workbench-section-tabs button { display: flex; align-items: center; justify-content: center; min-height: 55px; padding: 0 16px; color: var(--muted); background: transparent; border: 0; border-bottom: 3px solid transparent; cursor: pointer; font-size: 14px; }
+.workbench-section-tabs button.active { color: var(--ink); border-bottom-color: var(--green); font-weight: 700; }
+.workbench-view-tools { display: flex; align-items: center; gap: 6px; padding-right: 12px; }
+.workbench-mode-tabs { display: flex; gap: 5px; }
+.workbench-mode-tabs button { display: flex; align-items: center; gap: 6px; min-height: 34px; padding: 7px 10px; color: var(--muted); border: 1px solid transparent; border-radius: 4px; background: transparent; font-size: 12px; cursor: pointer; }
+.workbench-mode-tabs button.active { color: var(--ink); border-color: var(--line); background: var(--canvas, #f5f6f4); }
+.workbench-document { display: block; min-width: 0; }
+.workbench-document-panel { min-width: 0; border-radius: 0; }
+.workbench-document-panel .editor-footer { min-height: 58px; gap: 12px; font-size: 12px; }
+.workbench-document-panel .validation-state { font-size: 12px; line-height: 1.5; }
+.workbench-document-panel .editor-footer > input { font-size: 12px; }
+.workbench-mapping-heading, .workbench-settings-heading { display: grid; gap: 9px; padding: 23px 24px; border-bottom: 1px solid var(--line); }
+.workbench-mapping-heading > div { display: flex; align-items: center; gap: 12px; }
+.workbench-mapping-heading strong, .workbench-settings-heading > strong { font-size: 18px; }
+.workbench-mapping-heading p, .workbench-settings-heading p { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.workbench-manual-bar { display: flex; align-items: center; gap: 15px; padding: 16px 20px; border-bottom: 1px solid var(--line); }
+.workbench-manual-bar > span { color: var(--muted); font-size: 12px; }
+.workbench-history-overlay { position: fixed; inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; background: transparent; overflow: hidden; }
+.workbench-history-overlay::backdrop { background: #08130d70; }
+.workbench-history { position: absolute; top: 0; right: 0; bottom: 0; width: min(460px, 100%); display: flex; flex-direction: column; border: 0; border-radius: 0; background: var(--surface, #fff); }
+.workbench-history > header { flex-shrink: 0; min-height: 70px; }
+.workbench-history > header h2 { font-size: 18px; }
+.workbench-history > header > span { margin-left: auto; }
+.workbench-history .history-list { flex: 1; min-height: 0; max-height: none; overflow-y: auto; }
+.workbench-history .history-item__top > strong { font-size: 14px; }
+.workbench-history :is(small, .history-item__identity, .history-bulk-actions, .history-bulk-actions span) { font-size: 12px; }
+@media (max-width: 1100px) {
+  .workbench-heading { align-items: flex-start; }
+  .workbench-heading-main { max-width: 58%; }
+  .workbench-heading-actions { flex-wrap: wrap; justify-content: flex-end; }
+}
+@media (max-width: 860px) {
+  .workbench-page { padding-bottom: 115px; }
+  .workbench-heading { align-items: flex-start; gap: 12px; padding-bottom: 16px; }
+  .workbench-heading-main { max-width: none; flex: 1; gap: 10px; }
+  .workbench-heading-main h1 { flex: 1 1 100%; padding: 0; border: 0; font-size: 20px; }
+  .workbench-heading-main .document-meta { flex-wrap: wrap; gap: 6px; font-size: 12px; }
+  .workbench-heading-actions > button { padding-inline: 10px; font-size: 12px; }
+  .workbench-heading-actions > button > svg { display: none; }
+  .workbench-global-actions { position: fixed; z-index: 45; bottom: calc(64px + env(safe-area-inset-bottom)); left: 0; right: 0; display: grid; grid-template-columns: 1fr 2fr; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--line); background: var(--surface, #fff); }
+  .workbench-save-hint { display: block; grid-column: 1 / -1; color: var(--muted); font-size: 12px; }
+  .workbench-global-actions button { min-height: 44px; justify-content: center; }
+  .workbench-page--editing .workbench-global-actions { display: none; }
+  .workbench-navigation { gap: 0; }
+  .workbench-section-tabs { width: 100%; padding: 0 8px; gap: 0; }
+  .workbench-section-tabs > button { flex: 1; min-height: 48px; padding: 0 10px; font-size: 14px; }
+  .workbench-view-tools { width: 100%; justify-content: flex-end; gap: 4px; padding: 5px 10px; border-top: 1px solid var(--line); }
+  .workbench-mode-tabs { margin-right: auto; }
+  .workbench-mode-tabs button { min-height: 44px; }
+  .workbench-document-panel .editor-footer { padding: 14px 16px; }
+  .workbench-manual-bar { flex-wrap: wrap; padding: 12px 16px; }
+  .workbench-mapping-heading, .workbench-settings-heading { padding: 18px 16px; }
+  .workbench-history { padding-bottom: env(safe-area-inset-bottom); }
+}
+</style>
