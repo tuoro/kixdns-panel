@@ -666,9 +666,9 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hickory-proto"
-version = "0.26.1"
+version = "0.26.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0bab31817bfb44672a252e97fe81cd0c18d1b2cf892108922f6818820df8c643"
+checksum = "7e2da0694c15b44c6f68a6b05e0233617008c54080e31d6eb848d858a9c5b38d"
 dependencies = [
  "data-encoding",
  "idna",
@@ -1067,7 +1067,7 @@ dependencies = [
  "time",
  "tokio",
  "tower",
- "tower-http 0.7.0",
+ "tower-http 0.7.1",
  "tracing",
  "tracing-subscriber",
  "zip",
@@ -2005,9 +2005,9 @@ dependencies = [
 
 [[package]]
 name = "tower-http"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b11f75e912b0c2be01b63d8cf8057b8c3f97cf34abb3d431a3a4c8675498e233"
+checksum = "08a05a66a4fdd61cbbe0a1d755ffe0ca6aba159dd4820936a0ff8a8278245b9c"
 dependencies = [
  "bitflags",
  "bytes",
