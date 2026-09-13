@@ -5,7 +5,8 @@ import { apiRequest } from '../api/client'
 import type { CacheFlushResult, Overview, QueryStatsSnapshot, ServiceStatus, StatsClearResult } from '../api/types'
 import StatusBanner from '../components/StatusBanner.vue'
 import { useToast } from '../composables/useToast'
-import { pipelineDistribution } from '../dashboard-presentation'
+import { cacheComposition, pipelineDistribution, rcodeDistribution, settledAttempts, upstreamHealth } from '../dashboard-presentation'
+import type { UpstreamHealth } from '../dashboard-presentation'
 import { dashboardRuntimeState, emptyOverview, emptyQueryStats, hasStaleDashboardData, supportsQueryStats } from '../dashboard-state'
 import { errorMessage, formatDuration, formatNumber, formatPercent, shortHash, upstreamSuccessRate } from '../utils'
 
@@ -59,6 +60,37 @@ const cacheHitRate = computed(() => {
   return (metrics.cache_hits_fresh + metrics.cache_hits_stale) / metrics.cache_lookups_total
 })
 const pipelines = computed(() => pipelineDistribution(displayOverview.value?.metrics.pipelines ?? []))
+const finishedTotal = computed(() => {
+  const finished = displayOverview.value?.metrics.requests_finished
+  return finished ? finished.completed + finished.failed + finished.cancelled : 0
+})
+const finishedShare = (value: number) => (finishedTotal.value ? value / finishedTotal.value : 0)
+const latencyKnown = computed(() => (displayOverview.value?.metrics.request_latency.samples ?? 0) > 0)
+const within100Share = computed(() => {
+  const latency = displayOverview.value?.metrics.request_latency
+  return latency?.samples ? latency.within_100ms / latency.samples : 0
+})
+const latencyHealth = computed<UpstreamHealth>(() => (within100Share.value >= 0.95 ? 'healthy' : within100Share.value >= 0.8 ? 'degraded' : 'unhealthy'))
+const staleShare = computed(() => {
+  const metrics = displayOverview.value?.metrics
+  const hits = metrics ? metrics.cache_hits_fresh + metrics.cache_hits_stale : 0
+  return hits ? metrics!.cache_hits_stale / hits : 0
+})
+const upstreamRows = computed(() => [...(displayOverview.value?.metrics.upstreams ?? [])]
+  .map((item) => ({ ...item, settled: settledAttempts(item), health: upstreamHealth(item) }))
+  .sort((left, right) => right.settled - left.settled))
+const healthyUpstreams = computed(() => upstreamRows.value.filter((item) => item.health === 'healthy').length)
+const worstUpstream = computed(() => upstreamRows.value.filter((item) => item.health !== 'healthy').sort((left, right) => upstreamSuccessRate(left) - upstreamSuccessRate(right))[0] ?? null)
+const rcodes = computed(() => rcodeDistribution(displayOverview.value?.metrics.upstreams ?? []))
+const cacheRows = computed(() => (displayOverview.value ? cacheComposition(displayOverview.value.metrics) : []))
+const rcodeColors: Record<string, string> = { NoError: 'var(--ink)', NXDomain: 'var(--muted)', ServFail: 'var(--red)', Refused: 'var(--amber)', other: '#b7bfbb' }
+const cacheColors: Record<string, string> = { fresh: 'var(--green)', expired: 'var(--muted)', client_timeout: 'var(--amber)', upstream_failure: 'var(--red)' }
+function formatLatency(value: number | null): string {
+  return value === null ? '—' : `${value < 10 ? value.toFixed(1) : Math.round(value)} ms`
+}
+function fallbackShare(item: { transport: string; settled: number; tcp_fallbacks: number }): string {
+  return item.transport === 'udp' && item.settled > 0 ? formatPercent(item.tcp_fallbacks / item.settled) : '—'
+}
 const rankingGroups = [
   {
     id: 'clients', title: '客户端排行',
@@ -221,20 +253,41 @@ onBeforeUnmount(() => {
     <div v-if="loading" class="overview-loading" role="status">正在读取运行数据…</div>
     <template v-else-if="displayOverview">
       <section id="overview-panel-runtime" v-show="activeView === 'runtime'" class="overview-view" role="tabpanel" aria-labelledby="overview-tab-runtime" tabindex="0">
-        <section class="overview-summary" aria-label="核心指标">
-          <div class="overview-total">
-            <span>累计请求</span>
+        <section class="overview-kpis" aria-label="核心指标">
+          <article class="overview-kpi">
+            <span class="overview-kpi-label">请求</span>
             <strong class="overview-total-value">{{ formatNumber(displayOverview.metrics.requests_total) }}</strong>
-            <small>自本次启动以来</small>
-          </div>
-          <dl class="overview-vitals">
-            <div class="overview-vital overview-vital--uptime"><dt>持续运行</dt><dd>{{ overview ? formatDuration(displayOverview.health.uptime_seconds) : '--' }}</dd></div>
-            <div class="overview-vital overview-vital--inflight"><dt>当前并发</dt><dd>{{ formatNumber(displayOverview.metrics.requests_inflight) }}</dd></div>
-            <div class="overview-vital overview-vital--cache">
-              <dt title="含新鲜与过期命中">缓存命中率</dt><dd>{{ formatPercent(cacheHitRate) }}<small class="overview-mobile-cache">{{ formatNumber(displayOverview.metrics.cache_entries) }} 条缓存</small></dd>
-            </div>
-            <div class="overview-vital overview-vital--entries"><dt>缓存条目</dt><dd>{{ formatNumber(displayOverview.metrics.cache_entries) }}</dd></div>
-          </dl>
+            <span class="overview-kpi-sub">持续运行 {{ overview ? formatDuration(displayOverview.health.uptime_seconds) : '--' }}</span>
+            <span v-if="finishedTotal" class="overview-kpi-sub overview-kpi-row overview-kpi-row--finished">
+              <span>完成 <b>{{ formatPercent(finishedShare(displayOverview.metrics.requests_finished.completed)) }}</b></span>
+              <span>失败 <b>{{ formatPercent(finishedShare(displayOverview.metrics.requests_finished.failed)) }}</b></span>
+              <span>被丢弃 <b>{{ formatPercent(finishedShare(displayOverview.metrics.requests_finished.cancelled)) }}</b></span>
+            </span>
+          </article>
+          <article class="overview-kpi">
+            <span class="overview-kpi-label">平均响应时间</span>
+            <span class="overview-kpi-value-row">
+              <strong class="overview-kpi-value">{{ latencyKnown ? Math.round(displayOverview.metrics.request_latency.avg_ms) : '—' }}</strong>
+              <span v-if="latencyKnown" class="overview-kpi-unit">ms</span>
+            </span>
+            <span v-if="latencyKnown" class="overview-kpi-sub overview-kpi-row"><i class="overview-dot" :class="`overview-dot--${latencyHealth}`" aria-hidden="true"></i><span><b>{{ formatPercent(within100Share) }}</b> 的请求在 100 ms 内返回</span></span>
+            <span v-else class="overview-kpi-sub">当前增强版不提供耗时统计</span>
+          </article>
+          <article class="overview-kpi">
+            <span class="overview-kpi-label" title="含新鲜与过期命中">缓存命中率</span>
+            <strong class="overview-kpi-value">{{ formatPercent(cacheHitRate) }}</strong>
+            <span class="overview-kpi-sub">{{ formatNumber(displayOverview.metrics.cache_entries) }} 条缓存<template v-if="staleShare"> · 过期命中占 {{ formatPercent(staleShare) }}</template></span>
+            <span v-if="displayOverview.metrics.cache_stale.upstream_failure" class="overview-badge">上游失败后用旧缓存 {{ formatNumber(displayOverview.metrics.cache_stale.upstream_failure) }} 次</span>
+          </article>
+          <article class="overview-kpi">
+            <span class="overview-kpi-label">上游健康</span>
+            <span class="overview-kpi-value-row">
+              <strong class="overview-kpi-value">{{ healthyUpstreams }}</strong>
+              <span class="overview-kpi-unit">/ {{ upstreamRows.length }}</span>
+            </span>
+            <span class="overview-kpi-sub overview-kpi-sub--rule">成功率 ≥ 99% 且平均耗时 &lt; 1 s 记为健康</span>
+            <span v-if="worstUpstream" class="overview-kpi-sub overview-kpi-row"><i class="overview-dot" :class="`overview-dot--${worstUpstream.health}`" aria-hidden="true"></i><span class="overview-mono">{{ worstUpstream.upstream }}</span><b :class="`overview-text--${worstUpstream.health}`">{{ formatPercent(upstreamSuccessRate(worstUpstream)) }} · 平均 {{ formatLatency(worstUpstream.avg_latency_ms) }}</b></span>
+          </article>
         </section>
 
         <section class="overview-section overview-distribution" aria-labelledby="overview-distribution-heading">
@@ -257,36 +310,54 @@ onBeforeUnmount(() => {
         </section>
 
         <section class="overview-section" aria-labelledby="overview-upstream-heading">
-          <header class="overview-section-heading"><div><h2 id="overview-upstream-heading">上游请求</h2><p>内部尝试、成功与异常计数；成功率不含并发竞争中被取消的尝试</p></div><span>{{ displayOverview.metrics.upstreams.length }} 个上游</span></header>
-          <template v-if="displayOverview.metrics.upstreams.length">
+          <header class="overview-section-heading"><div><h2 id="overview-upstream-heading">上游台账</h2><p>按响应次数排序；成功率不含并发竞争中被取消的尝试</p></div><span>{{ upstreamRows.length }} 个上游</span></header>
+          <template v-if="upstreamRows.length">
             <div class="overview-upstream-desktop">
               <table class="overview-table">
                 <caption class="overview-sr-only">各上游的运行时累计请求结果</caption>
-                <thead><tr><th scope="col">上游</th><th scope="col">传输</th><th scope="col">尝试</th><th scope="col">成功率</th><th scope="col">错误</th><th scope="col">拒绝</th><th scope="col" title="并发竞争中被更快的上游抢先应答而取消的尝试">竞争落败</th></tr></thead>
-                <tbody><tr v-for="item in displayOverview.metrics.upstreams" :key="`${item.upstream}:${item.transport}`">
+                <thead><tr><th scope="col">上游</th><th scope="col">传输</th><th scope="col">状态</th><th scope="col">响应次数</th><th scope="col">成功率</th><th scope="col">平均耗时</th><th scope="col">错误</th><th scope="col">拒绝</th><th scope="col" title="选定 UDP 但靠 TCP 兜底才拿到答案的占比">TCP 兜底</th></tr></thead>
+                <tbody><tr v-for="item in upstreamRows" :key="`${item.upstream}:${item.transport}`">
                   <th scope="row" class="overview-mono">{{ item.upstream }}</th><td><span class="overview-transport">{{ item.transport }}</span></td>
-                  <td>{{ formatNumber(item.attempts) }}</td><td>{{ formatPercent(upstreamSuccessRate(item)) }}</td>
-                  <td :class="{ 'overview-warning': item.errors > 0 }">{{ formatNumber(item.errors) }}</td><td>{{ formatNumber(item.rejected) }}</td><td>{{ formatNumber(item.aborted ?? 0) }}</td>
+                  <td><i class="overview-dot" :class="`overview-dot--${item.health}`" role="img" :aria-label="item.health === 'healthy' ? '健康' : item.health === 'degraded' ? '降级' : '异常'"></i></td>
+                  <td>{{ formatNumber(item.settled) }}</td><td :class="`overview-text--${item.health}`">{{ formatPercent(upstreamSuccessRate(item)) }}</td><td :class="`overview-text--${item.health}`">{{ formatLatency(item.avg_latency_ms) }}</td>
+                  <td :class="{ 'overview-warning': item.errors > 0 }">{{ formatNumber(item.errors) }}</td><td>{{ formatNumber(item.rejected) }}</td><td>{{ fallbackShare(item) }}</td>
                 </tr></tbody>
               </table>
             </div>
             <div class="overview-upstream-mobile">
-              <details v-for="item in displayOverview.metrics.upstreams" :key="`${item.upstream}:${item.transport}`" class="overview-upstream-detail">
+              <details v-for="item in upstreamRows" :key="`${item.upstream}:${item.transport}`" class="overview-upstream-detail">
                 <summary>
-                  <span class="overview-upstream-identity"><strong class="overview-mono">{{ item.upstream }}</strong><span class="overview-transport">{{ item.transport }}</span></span>
-                  <span class="overview-upstream-summary">尝试 {{ formatNumber(item.attempts) }} · 成功率 {{ formatPercent(upstreamSuccessRate(item)) }}</span>
+                  <span class="overview-upstream-identity"><i class="overview-dot" :class="`overview-dot--${item.health}`" aria-hidden="true"></i><strong class="overview-mono">{{ item.upstream }}</strong><span class="overview-transport">{{ item.transport }}</span></span>
+                  <span class="overview-upstream-summary">成功率 <b :class="`overview-text--${item.health}`">{{ formatPercent(upstreamSuccessRate(item)) }}</b> · 平均 {{ formatLatency(item.avg_latency_ms) }} · {{ formatNumber(item.settled) }} 次响应</span>
                   <ChevronRight :size="18" class="overview-disclosure-icon" />
                 </summary>
                 <dl class="overview-upstream-counts">
                   <div><dt>成功</dt><dd>{{ formatNumber(item.success) }}</dd></div>
                   <div><dt>错误</dt><dd :class="{ 'overview-warning': item.errors > 0 }">{{ formatNumber(item.errors) }}</dd></div>
                   <div><dt>拒绝</dt><dd>{{ formatNumber(item.rejected) }}</dd></div>
-                  <div><dt>竞争落败</dt><dd>{{ formatNumber(item.aborted ?? 0) }}</dd></div>
+                  <div><dt>TCP 兜底</dt><dd>{{ fallbackShare(item) }}</dd></div>
                 </dl>
               </details>
             </div>
           </template>
           <p v-else class="overview-empty">尚无上游请求数据</p>
+        </section>
+
+        <section v-if="rcodes.length || cacheRows.length" class="overview-section overview-breakdowns" aria-label="响应码与缓存构成">
+          <div v-if="rcodes.length" class="overview-breakdown">
+            <header class="overview-section-heading"><div><h2>响应码分布</h2><p>全部上游 · 已得到结果的请求</p></div></header>
+            <div class="overview-bar" aria-hidden="true"><span v-for="row in rcodes" :key="row.key" :style="{ width: `${row.share * 100}%`, backgroundColor: rcodeColors[row.key] }" :title="`${row.label} · ${formatPercent(row.share)}`"></span></div>
+            <ul class="overview-legend" aria-label="响应码分布">
+              <li v-for="row in rcodes" :key="row.key"><span><i :style="{ backgroundColor: rcodeColors[row.key] }" aria-hidden="true"></i>{{ row.label }}</span><span>{{ formatPercent(row.share) }}</span></li>
+            </ul>
+          </div>
+          <div v-if="cacheRows.length" class="overview-breakdown">
+            <header class="overview-section-heading"><div><h2>缓存构成</h2><p>命中按来源拆分</p></div></header>
+            <div class="overview-bar" aria-hidden="true"><span v-for="row in cacheRows" :key="row.key" :style="{ width: `${row.share * 100}%`, backgroundColor: cacheColors[row.key] }" :title="`${row.label} · ${formatPercent(row.share)}`"></span></div>
+            <ul class="overview-legend" aria-label="缓存构成">
+              <li v-for="row in cacheRows" :key="row.key"><span><i :style="{ backgroundColor: cacheColors[row.key] }" aria-hidden="true"></i>{{ row.label }}</span><span>{{ formatPercent(row.share) }}</span></li>
+            </ul>
+          </div>
         </section>
       </section>
 
@@ -373,17 +444,33 @@ onBeforeUnmount(() => {
 .overview-tabs button[aria-selected="true"] { color: var(--ink); font-weight: 600; }
 .overview-tabs button[aria-selected="true"]::after { position: absolute; right: 0; bottom: -1px; left: 0; height: 3px; background: var(--green); content: ''; }
 .overview-view { outline-offset: 5px; }
-.overview-summary { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); gap: 48px; padding-bottom: 26px; }
-.overview-total { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; min-width: 0; }
-.overview-total > span { font-size: 14px; }
-.overview-total-value { max-width: 100%; margin: 8px 0 2px; font-size: clamp(42px, 6.2vw, 88px); font-weight: 500; font-variant-numeric: tabular-nums; letter-spacing: -.055em; line-height: 1.15; overflow-wrap: anywhere; }
-.overview-total small { color: var(--muted); font-size: 12px; }
-.overview-vitals { margin: 0; }
-.overview-vital { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 42px; border-bottom: 1px solid var(--line); }
-.overview-vital:last-child { border-bottom: 0; }
-.overview-vital dt, .overview-vital dd { margin: 0; }
-.overview-vital dd { font-size: 17px; font-variant-numeric: tabular-nums; }
-.overview-mobile-cache { display: none; }
+.overview-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin-bottom: 28px; }
+.overview-kpi { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 18px 20px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); }
+.overview-kpi-label { color: var(--muted); font-size: 12px; }
+.overview-total-value, .overview-kpi-value { max-width: 100%; margin: 0; font-size: 40px; font-weight: 500; font-variant-numeric: tabular-nums; letter-spacing: -.045em; line-height: 1.1; overflow-wrap: anywhere; }
+.overview-kpi-value-row { display: flex; align-items: baseline; gap: 6px; }
+.overview-kpi-unit { color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }
+.overview-kpi-sub { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.overview-kpi-sub b { color: var(--ink); font-weight: 500; }
+.overview-kpi-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.overview-badge { align-self: flex-start; padding: 2px 8px; border-radius: 3px; color: var(--amber); background: var(--amber-soft); font-size: 12px; font-variant-numeric: tabular-nums; }
+.overview-dot { display: inline-block; flex: 0 0 8px; width: 8px; height: 8px; border-radius: 50%; vertical-align: middle; }
+.overview-dot--healthy { background: var(--green); }
+.overview-dot--degraded { background: var(--amber); }
+.overview-dot--unhealthy { background: var(--red); }
+.overview-text--healthy { color: inherit; }
+.overview-text--degraded { color: var(--amber); }
+.overview-text--unhealthy { color: var(--red); }
+.overview-breakdowns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 48px; }
+.overview-breakdown { min-width: 0; }
+.overview-breakdown .overview-section-heading { margin-bottom: 14px; }
+.overview-bar { display: flex; height: 28px; overflow: hidden; border-radius: 3px; background: var(--line); }
+.overview-bar > span { display: block; flex: 0 0 auto; min-width: 0; }
+.overview-legend { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 24px; margin: 14px 0 0; padding: 0; list-style: none; font-size: 13px; }
+.overview-legend li { display: flex; justify-content: space-between; gap: 8px; min-width: 0; }
+.overview-legend li > span:first-child { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.overview-legend li > span:last-child { font-variant-numeric: tabular-nums; }
+.overview-legend i { flex: 0 0 8px; width: 8px; height: 8px; border-radius: 1px; }
 .overview-section { padding: 22px 0 0; margin-bottom: 24px; border-top: 1px solid var(--line); }
 .overview-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 16px; }
 .overview-section-heading > div:first-child { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; min-width: 0; }
@@ -462,7 +549,8 @@ onBeforeUnmount(() => {
 .overview-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
 @media (max-width: 1000px) {
-  .overview-summary { gap: 28px; }
+  .overview-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .overview-breakdowns { grid-template-columns: minmax(0, 1fr); gap: 24px; }
   .overview-runtime-ledger { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .overview-table th, .overview-table td { padding: 12px 8px; font-size: 13px; }
   .overview-table tbody th { max-width: 230px; }
@@ -476,21 +564,14 @@ onBeforeUnmount(() => {
   .overview-heading > .overview-button { gap: 5px; }
   .overview-tabs { gap: 16px; min-height: 44px; margin-bottom: 16px; }
   .overview-tabs button { padding: 0 4px 9px; font-size: 14px; }
-  .overview-summary { grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 14px 16px; padding-bottom: 16px; }
-  .overview-total { grid-column: 1; grid-row: 1; justify-content: start; }
-  .overview-total > span { font-size: 12px; color: var(--muted); }
-  .overview-total-value { margin: 3px 0; font-size: clamp(28px, 8vw, 32px); letter-spacing: -.045em; }
-  .overview-total small { font-size: 12px; }
-  .overview-vitals { display: contents; }
-  .overview-vital { display: grid; align-content: start; justify-content: stretch; gap: 3px; min-height: 0; border: 0; }
-  .overview-vital dt { font-size: 12px; color: var(--muted); }
-  .overview-vital dd { font-size: 20px; line-height: 1.3; }
-  .overview-vital--uptime { grid-column: 2; grid-row: 1; padding-left: 12px; border-left: 1px solid var(--line); }
-  .overview-vital--uptime dd { margin-top: 7px; font-size: 14px; }
-  .overview-vital--cache { grid-column: 1; grid-row: 2; }
-  .overview-vital--inflight { grid-column: 2; grid-row: 2; padding-left: 12px; border-left: 1px solid var(--line); }
-  .overview-vital--entries { display: none; }
-  .overview-mobile-cache { display: block; color: var(--muted); font-size: 12px; }
+  .overview-kpis { gap: 10px; margin-bottom: 22px; }
+  .overview-kpi { gap: 6px; padding: 14px 14px 12px; }
+  .overview-total-value, .overview-kpi-value { font-size: 30px; }
+  .overview-kpi-row { gap: 4px 10px; }
+  .overview-kpi-row--finished > span:not(:first-child), .overview-kpi-sub--rule { display: none; }
+  .overview-breakdowns { gap: 18px; }
+  .overview-bar { height: 24px; }
+  .overview-legend { gap: 8px 20px; margin-top: 12px; }
   .overview-section { padding-top: 16px; margin-bottom: 18px; }
   .overview-section-heading { align-items: baseline; gap: 8px; margin-bottom: 10px; }
   .overview-section-heading h2 { font-size: 15px; }
@@ -511,13 +592,14 @@ onBeforeUnmount(() => {
   .overview-upstream-detail:last-child { border-bottom: 0; }
   .overview-upstream-detail summary { position: relative; display: grid; gap: 4px; min-height: 56px; padding: 11px 28px 11px 0; list-style: none; cursor: pointer; }
   .overview-upstream-detail summary::-webkit-details-marker { display: none; }
-  .overview-upstream-identity { display: flex; align-items: baseline; gap: 8px; min-width: 0; flex-wrap: wrap; }
+  .overview-upstream-identity { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
   .overview-upstream-identity strong { min-width: 0; overflow-wrap: anywhere; font-size: 14px; font-weight: 500; }
   .overview-transport { padding: 0 5px; font-size: 12px; }
   .overview-upstream-summary { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .overview-upstream-summary b { font-weight: 500; }
   .overview-disclosure-icon { position: absolute; top: 21px; right: 0; color: var(--muted); transition: transform .15s; }
   .overview-upstream-detail[open] .overview-disclosure-icon { transform: rotate(90deg); }
-  .overview-upstream-counts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0; padding: 3px 0 14px; }
+  .overview-upstream-counts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 0; padding: 3px 0 14px; }
   .overview-upstream-counts dt { color: var(--muted); font-size: 12px; }
   .overview-upstream-counts dd { margin: 3px 0 0; font-size: 12px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
   .overview-runtime { margin-top: 18px; padding: 12px 12px 0; }

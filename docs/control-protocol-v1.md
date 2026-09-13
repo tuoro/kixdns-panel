@@ -50,6 +50,15 @@ Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致
 - `kixdns_upstream_results_total{upstream,transport,result}`
 - `kixdns_config_reload_total{result}`
 
+增强版 p20 起追加以下序列；面板服务在缺少它们时把对应字段保持为默认值，不视为协议错误：
+
+- `kixdns_cache_stale_total{reason="expired|client_timeout|upstream_failure"}`：过期缓存命中的原因拆分，三者之和等于 `kixdns_cache_hits_total{kind="stale"}`。
+- `kixdns_requests_finished_total{status="completed|failed|cancelled"}`：请求完成状态，不含后台刷新。
+- `kixdns_request_latency_ms_bucket{le="10|50|100|500|1000|+Inf"}`、`kixdns_request_latency_ms_sum`、`kixdns_request_latency_ms_count`：端到端耗时直方图与累计值（毫秒，`_sum` 保留三位小数）。
+- `kixdns_upstream_latency_ms_sum{upstream,transport}`、`kixdns_upstream_latency_ms_count{upstream,transport}`：已得到结果的上游尝试累计耗时与次数，不含 `aborted`。
+- `kixdns_upstream_rcodes_total{upstream,rcode}`：上游应答的响应码计数，`rcode` 为 hickory 的变体名（`NoError`、`NXDomain`、`ServFail`、`Refused` 等）。
+- `kixdns_upstream_via_total{upstream,transport,via}`：`transport` 为该地址选定的传输，`via` 为实际带回答案的传输；`transport="udp"` 且 `via="tcp"` 即 TCP 兜底。
+
 标签值必须转义，且只能来自配置中有界的 Pipeline、规则和上游集合。
 
 ### `POST /v1/config/validate`
@@ -91,4 +100,5 @@ Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致
 - 规则命中表示匹配器链结果为真；`phase` 为 `request` 或 `response`。
 - 上游 attempt 表示一次已配置的上游操作，result 表示该操作最终结果，而不是规则中的 Forward 动作数。`tcp_udp` 的内部 TCP 回退属于同一次操作。
 - `result` 取值为 `success`、`error`、`rejected`、`aborted`，attempt 与 result 一一对应。`aborted` 表示多上游并发竞争中被更快的上游抢先应答而取消的尝试，它既不是成功也不是失败；计算上游成功率时应以 `attempts - aborted` 为分母，否则同一规则下的上游会按应答先后瓜分成功率。增强版 p19 之前不上报 `aborted`，落败的尝试没有任何 result。
-- 并发数覆盖进入异步处理至响应完成的请求，不包含已在同步快速路径返回的请求。
+- 并发数覆盖进入异步处理至响应完成的请求，不包含已在同步快速路径返回的请求。面板首页不再展示并发数，该序列仅保留给外部消费者。
+- 上游平均耗时以 `kixdns_upstream_latency_ms_sum / _count` 计算；面板以成功率 ≥ 99% 且平均耗时 < 1 s 记为健康，成功率 < 95% 或平均耗时 ≥ 2 s 记为异常，其余为降级。

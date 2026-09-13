@@ -28,7 +28,7 @@ test('首页展示精确分布，页签可用键盘切换且完整保留三个�
   await expect(page.locator('.overview-rule').filter({ hasText: 'accept-noerror' })).toContainText('响应')
   await page.keyboard.press('Home')
   await expect(runtimeTab).toHaveAttribute('aria-selected', 'true')
-  await expect(page.getByRole('heading', { name: '上游请求' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '上游台账' })).toBeVisible()
 })
 
 test('查询排行保留时间窗口与带确认的清理操作', async ({ page }) => {
