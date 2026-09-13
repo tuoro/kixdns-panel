@@ -158,9 +158,9 @@ const overview: Overview = {
       { pipeline: 'default', rule: 'accept-noerror', phase: 'response', count: 7_664_009 },
     ],
     upstreams: [
-      { upstream: '1.1.1.1:53', transport: 'udp', attempts: 5_932_118, success: 5_901_774, errors: 28_230, rejected: 2_114 },
-      { upstream: '223.5.5.5:53', transport: 'tcp_udp', attempts: 3_008_779, success: 2_991_664, errors: 15_909, rejected: 1_206 },
-      { upstream: 'dns.google/dns-query', transport: 'doh', attempts: 1_114_083, success: 1_102_572, errors: 10_780, rejected: 731 },
+      { upstream: '1.1.1.1:53', transport: 'udp', attempts: 5_932_118, success: 5_901_774, errors: 28_230, rejected: 2_114, aborted: 0 },
+      { upstream: '223.5.5.5:53', transport: 'tcp_udp', attempts: 3_008_779, success: 1_491_664, errors: 15_909, rejected: 1_206, aborted: 1_500_000 },
+      { upstream: 'dns.google/dns-query', transport: 'doh', attempts: 1_114_083, success: 1_102_572, errors: 10_780, rejected: 731, aborted: 0 },
     ],
   },
 }

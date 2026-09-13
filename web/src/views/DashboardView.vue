@@ -7,7 +7,7 @@ import StatusBanner from '../components/StatusBanner.vue'
 import { useToast } from '../composables/useToast'
 import { pipelineDistribution } from '../dashboard-presentation'
 import { dashboardRuntimeState, emptyOverview, emptyQueryStats, hasStaleDashboardData, supportsQueryStats } from '../dashboard-state'
-import { errorMessage, formatDuration, formatNumber, formatPercent, shortHash } from '../utils'
+import { errorMessage, formatDuration, formatNumber, formatPercent, shortHash, upstreamSuccessRate } from '../utils'
 
 const overview = ref<Overview | null>(null)
 const service = ref<ServiceStatus | null>(null)
@@ -257,16 +257,16 @@ onBeforeUnmount(() => {
         </section>
 
         <section class="overview-section" aria-labelledby="overview-upstream-heading">
-          <header class="overview-section-heading"><div><h2 id="overview-upstream-heading">上游请求</h2><p>内部尝试、成功与异常计数</p></div><span>{{ displayOverview.metrics.upstreams.length }} 个上游</span></header>
+          <header class="overview-section-heading"><div><h2 id="overview-upstream-heading">上游请求</h2><p>内部尝试、成功与异常计数；成功率不含并发竞争中被取消的尝试</p></div><span>{{ displayOverview.metrics.upstreams.length }} 个上游</span></header>
           <template v-if="displayOverview.metrics.upstreams.length">
             <div class="overview-upstream-desktop">
               <table class="overview-table">
                 <caption class="overview-sr-only">各上游的运行时累计请求结果</caption>
-                <thead><tr><th scope="col">上游</th><th scope="col">传输</th><th scope="col">尝试</th><th scope="col">成功率</th><th scope="col">错误</th><th scope="col">拒绝</th></tr></thead>
+                <thead><tr><th scope="col">上游</th><th scope="col">传输</th><th scope="col">尝试</th><th scope="col">成功率</th><th scope="col">错误</th><th scope="col">拒绝</th><th scope="col" title="并发竞争中被更快的上游抢先应答而取消的尝试">竞争落败</th></tr></thead>
                 <tbody><tr v-for="item in displayOverview.metrics.upstreams" :key="`${item.upstream}:${item.transport}`">
                   <th scope="row" class="overview-mono">{{ item.upstream }}</th><td><span class="overview-transport">{{ item.transport }}</span></td>
-                  <td>{{ formatNumber(item.attempts) }}</td><td>{{ formatPercent(item.attempts ? item.success / item.attempts : 0) }}</td>
-                  <td :class="{ 'overview-warning': item.errors > 0 }">{{ formatNumber(item.errors) }}</td><td>{{ formatNumber(item.rejected) }}</td>
+                  <td>{{ formatNumber(item.attempts) }}</td><td>{{ formatPercent(upstreamSuccessRate(item)) }}</td>
+                  <td :class="{ 'overview-warning': item.errors > 0 }">{{ formatNumber(item.errors) }}</td><td>{{ formatNumber(item.rejected) }}</td><td>{{ formatNumber(item.aborted ?? 0) }}</td>
                 </tr></tbody>
               </table>
             </div>
@@ -274,13 +274,14 @@ onBeforeUnmount(() => {
               <details v-for="item in displayOverview.metrics.upstreams" :key="`${item.upstream}:${item.transport}`" class="overview-upstream-detail">
                 <summary>
                   <span class="overview-upstream-identity"><strong class="overview-mono">{{ item.upstream }}</strong><span class="overview-transport">{{ item.transport }}</span></span>
-                  <span class="overview-upstream-summary">尝试 {{ formatNumber(item.attempts) }} · 成功率 {{ formatPercent(item.attempts ? item.success / item.attempts : 0) }}</span>
+                  <span class="overview-upstream-summary">尝试 {{ formatNumber(item.attempts) }} · 成功率 {{ formatPercent(upstreamSuccessRate(item)) }}</span>
                   <ChevronRight :size="18" class="overview-disclosure-icon" />
                 </summary>
                 <dl class="overview-upstream-counts">
                   <div><dt>成功</dt><dd>{{ formatNumber(item.success) }}</dd></div>
                   <div><dt>错误</dt><dd :class="{ 'overview-warning': item.errors > 0 }">{{ formatNumber(item.errors) }}</dd></div>
                   <div><dt>拒绝</dt><dd>{{ formatNumber(item.rejected) }}</dd></div>
+                  <div><dt>竞争落败</dt><dd>{{ formatNumber(item.aborted ?? 0) }}</dd></div>
                 </dl>
               </details>
             </div>

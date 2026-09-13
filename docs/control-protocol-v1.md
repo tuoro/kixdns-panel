@@ -90,4 +90,5 @@ Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致
 - Pipeline 命中表示一次请求选择或跳转进入该 Pipeline。
 - 规则命中表示匹配器链结果为真；`phase` 为 `request` 或 `response`。
 - 上游 attempt 表示一次已配置的上游操作，result 表示该操作最终结果，而不是规则中的 Forward 动作数。`tcp_udp` 的内部 TCP 回退属于同一次操作。
+- `result` 取值为 `success`、`error`、`rejected`、`aborted`，attempt 与 result 一一对应。`aborted` 表示多上游并发竞争中被更快的上游抢先应答而取消的尝试，它既不是成功也不是失败；计算上游成功率时应以 `attempts - aborted` 为分母，否则同一规则下的上游会按应答先后瓜分成功率。增强版 p19 之前不上报 `aborted`，落败的尝试没有任何 result。
 - 并发数覆盖进入异步处理至响应完成的请求，不包含已在同步快速路径返回的请求。

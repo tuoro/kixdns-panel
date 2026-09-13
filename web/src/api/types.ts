@@ -53,6 +53,8 @@ export interface UpstreamCount {
   success: number
   errors: number
   rejected: number
+  /** 并发竞争中被取消的尝试，不计入成功率分母。 */
+  aborted: number
 }
 
 export interface MetricsSnapshot {

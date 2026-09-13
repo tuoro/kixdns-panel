@@ -6,6 +6,16 @@ export function formatPercent(value: number): string {
   return `${(value * 100).toFixed(1)}%`
 }
 
+/**
+ * 上游成功率：成功次数除以真正得到结果的尝试数。
+ * 并发竞争里被取消的尝试（aborted）既不是成功也不是失败，不计入分母；
+ * 否则同一条规则下的几个上游会按"谁先应答"瓜分成功率。
+ */
+export function upstreamSuccessRate(item: { attempts: number; success: number; aborted?: number }): number {
+  const settled = item.attempts - (item.aborted ?? 0)
+  return settled > 0 ? Math.min(item.success / settled, 1) : 0
+}
+
 export function formatDate(timestamp: number): string {
   return new Intl.DateTimeFormat('zh-CN', {
     month: '2-digit',
