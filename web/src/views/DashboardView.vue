@@ -7,7 +7,7 @@ import StatusBanner from '../components/StatusBanner.vue'
 import { useToast } from '../composables/useToast'
 import { HEALTH_LABELS, MIN_HEALTH_SAMPLES, cacheComposition, pipelineDistribution, rcodeDistribution, settledAttempts, upstreamHealth } from '../dashboard-presentation'
 import type { UpstreamHealth } from '../dashboard-presentation'
-import { dashboardRuntimeState, emptyOverview, emptyQueryStats, hasStaleDashboardData, supportsQueryStats } from '../dashboard-state'
+import { dashboardRuntimeState, emptyOverview, emptyQueryStats, hasStaleDashboardData, supportsQueryStats, supportsUpstreamPrecision } from '../dashboard-state'
 import { errorMessage, formatDuration, formatNumber, formatPercent, shortHash, upstreamSuccessRate } from '../utils'
 
 const overview = ref<Overview | null>(null)
@@ -76,8 +76,9 @@ const staleShare = computed(() => {
   const hits = metrics ? metrics.cache_hits_fresh + metrics.cache_hits_stale : 0
   return hits ? metrics!.cache_hits_stale / hits : 0
 })
+const precisionSupported = computed(() => supportsUpstreamPrecision(displayOverview.value?.health.capabilities ?? []))
 const upstreamRows = computed(() => [...(displayOverview.value?.metrics.upstreams ?? [])]
-  .map((item) => ({ ...item, settled: settledAttempts(item), health: upstreamHealth(item) }))
+  .map((item) => ({ ...item, settled: settledAttempts(item), health: precisionSupported.value ? upstreamHealth(item) : 'pending' as UpstreamHealth }))
   .sort((left, right) => right.settled - left.settled))
 const healthCounts = computed(() => {
   const counts = { pending: 0, healthy: 0, degraded: 0, unhealthy: 0 }
@@ -292,13 +293,19 @@ onBeforeUnmount(() => {
           </article>
           <article class="overview-kpi">
             <span class="overview-kpi-label">上游健康</span>
-            <span class="overview-kpi-value-row">
-              <strong class="overview-kpi-value">{{ healthCounts.healthy }}</strong>
-              <span class="overview-kpi-unit">/ {{ assessedUpstreams }}</span>
-            </span>
-            <span class="overview-kpi-sub overview-kpi-sub--rule">成功率 ≥ 99% 且平均耗时 &lt; 1 s 记为健康</span>
-            <span v-if="healthSummary" class="overview-kpi-sub overview-kpi-row"><i class="overview-dot" :class="`overview-dot--${overallHealth}`" aria-hidden="true"></i><b :class="`overview-text--${overallHealth}`">{{ healthSummary }}</b></span>
-            <span v-if="healthCounts.pending" class="overview-kpi-sub">{{ healthCounts.pending }} 个上游观察中，响应不足 {{ MIN_HEALTH_SAMPLES }} 次</span>
+            <template v-if="precisionSupported">
+              <span class="overview-kpi-value-row">
+                <strong class="overview-kpi-value">{{ healthCounts.healthy }}</strong>
+                <span class="overview-kpi-unit">/ {{ assessedUpstreams }}</span>
+              </span>
+              <span class="overview-kpi-sub overview-kpi-sub--rule">成功率 ≥ 99% 且平均耗时 &lt; 1 s 记为健康</span>
+              <span v-if="healthSummary" class="overview-kpi-sub overview-kpi-row"><i class="overview-dot" :class="`overview-dot--${overallHealth}`" aria-hidden="true"></i><b :class="`overview-text--${overallHealth}`">{{ healthSummary }}</b></span>
+              <span v-if="healthCounts.pending" class="overview-kpi-sub">{{ healthCounts.pending }} 个上游观察中，响应不足 {{ MIN_HEALTH_SAMPLES }} 次</span>
+            </template>
+            <template v-else>
+              <strong class="overview-kpi-value">—</strong>
+              <span class="overview-kpi-sub">当前增强版不提供健康判定所需数据，更新增强版后显示</span>
+            </template>
           </article>
         </section>
 

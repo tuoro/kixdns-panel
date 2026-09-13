@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Overview, ServiceStatus } from './api/types'
-import { dashboardRuntimeState, emptyOverview, emptyQueryStats, hasStaleDashboardData, supportsQueryStats } from './dashboard-state'
+import { dashboardRuntimeState, emptyOverview, emptyQueryStats, hasStaleDashboardData, supportsQueryStats, supportsUpstreamPrecision } from './dashboard-state'
 
 const stoppedService: ServiceStatus = {
   unit: 'kixdns.service',
@@ -49,6 +49,8 @@ describe('概览运行状态', () => {
   it('仅在声明排行端点能力时启用查询统计', () => {
     expect(supportsQueryStats(['config_query_stats_v1'])).toBe(false)
     expect(supportsQueryStats(['stats_top_v1'])).toBe(true)
+    expect(supportsUpstreamPrecision(['stats_top_v1'])).toBe(false)
+    expect(supportsUpstreamPrecision(['metrics_upstream_precision_v1'])).toBe(true)
     expect(supportsQueryStats([])).toBe(false)
   })
 })
