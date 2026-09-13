@@ -49,12 +49,11 @@ sets/8/
 
 这种顺序把适配限制在候选版本：旧锁、旧目录和旧 Artifact 保持可复现，面板服务仅在控制协议确实变化时才需要联动修改。
 
-当前 `sets/8/common/` 补丁顺序：
+当前 `sets/19/common/` 补丁顺序（自 p19 起，增强逻辑通过上游的 `EngineObserver` 接口接入，不再修改 `src/engine`、`src/watcher.rs` 或配置加载器）：
 
-1. `0001-panel-observability.patch`：本机控制协议和内部指标。
-2. `0002-config-validation.patch`：复用 KixDNS 解析与运行时编译的候选配置校验。
+1. `0001-query-stats-config.patch`：查询排行的 `statistics_*` 配置字段及其缓存命名空间参与。
+2. `0002-panel-control-socket.patch`：`panel.rs` 以 `EngineObserver` 实现指标、查询排行、配置摘要与诊断轨迹，`panel_trace.rs` 从观察者事件重建轨迹，`main.rs` 通过 `Engine::builder` 注入观察者并启动本机控制 Socket。
 3. `0003-security-dependency-refresh.patch`：刷新存在 RustSec 公告的依赖，并迁移 MaxMind 与 PEM API。
-4. `0004-fast-path-rule-metrics.patch`：补齐编译静态规则与规则缓存快速路径的命中计数。
-5. `0005-runtime-safety.patch`：让热加载摘要绑定解析快照，并限制动态指标序列数量与标签长度。
-6. `0006-query-ranking.patch`：增加有界内存的客户端与域名排行、隐私配置和 `stats_top_v1` 控制接口。
-7. `0007-config-capabilities.patch`：为查询统计字段声明 `config_query_stats_v1` 配置能力。
+4. `0004-dependency-lock.patch`：用固定工具链重新解析的 `Cargo.lock`。
+
+p18 及更早的补丁集仍保持原有的十余个补丁结构，供旧锁复现。
