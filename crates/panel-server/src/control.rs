@@ -130,6 +130,37 @@ pub struct MetricsSnapshot {
     pub pipelines: Vec<NamedCount>,
     pub rules: Vec<RuleCount>,
     pub upstreams: Vec<UpstreamCount>,
+    /// 请求完成状态计数；增强版 p20 起提供，旧版本为 0。
+    #[serde(default)]
+    pub requests_finished: FinishedCounts,
+    /// 端到端耗时摘要；增强版 p20 起提供。
+    #[serde(default)]
+    pub request_latency: RequestLatency,
+    /// 过期缓存命中的原因拆分；增强版 p20 起提供。
+    #[serde(default)]
+    pub cache_stale: StaleBreakdown,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FinishedCounts {
+    pub completed: u64,
+    pub failed: u64,
+    pub cancelled: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RequestLatency {
+    pub samples: u64,
+    pub avg_ms: f64,
+    /// 100 ms 内返回的请求数，用于"绝大多数请求在 100 ms 内返回"。
+    pub within_100ms: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StaleBreakdown {
+    pub expired: u64,
+    pub client_timeout: u64,
+    pub upstream_failure: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,6 +188,15 @@ pub struct UpstreamCount {
     /// 并发竞争中被取消的尝试；增强版 p19 起上报，旧版本缺省为 0。
     #[serde(default)]
     pub aborted: u64,
+    /// 已结算尝试的平均耗时（毫秒）；增强版 p20 起提供。
+    #[serde(default)]
+    pub avg_latency_ms: Option<f64>,
+    /// 按响应码计数；增强版 p20 起提供。
+    #[serde(default)]
+    pub rcodes: Vec<NamedCount>,
+    /// 选定 UDP 但靠 TCP 兜底才拿到答案的次数；增强版 p20 起提供。
+    #[serde(default)]
+    pub tcp_fallbacks: u64,
 }
 
 const fn default_live() -> bool {
@@ -392,15 +432,39 @@ struct MetricsBuilder {
     pipelines: BTreeMap<String, u64>,
     rules: BTreeMap<(String, String, String), u64>,
     upstreams: BTreeMap<(String, String), UpstreamCount>,
+    upstream_latency: BTreeMap<(String, String), (f64, u64)>,
+    upstream_rcodes: BTreeMap<(String, String), u64>,
+    request_latency_sum_ms: f64,
     seen: BTreeSet<&'static str>,
 }
 
 impl MetricsBuilder {
     fn record(&mut self, sample: &Sample) {
+        if let Some(value) = float_value(&sample.value) {
+            match sample.metric.as_str() {
+                "kixdns_request_latency_ms_sum" => {
+                    self.request_latency_sum_ms = value;
+                    return;
+                }
+                "kixdns_upstream_latency_ms_sum" => {
+                    if let (Some(upstream), Some(transport)) = (
+                        sample.labels.get("upstream"),
+                        sample.labels.get("transport"),
+                    ) {
+                        self.upstream_latency
+                            .entry((upstream.to_owned(), transport.to_owned()))
+                            .or_default()
+                            .0 = value;
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
         let Some(value) = numeric_value(&sample.value) else {
             return;
         };
-        if self.record_scalar(&sample.metric, value) {
+        if self.record_scalar(&sample.metric, value) || self.record_extended(sample, value) {
             return;
         }
         match sample.metric.as_str() {
@@ -475,6 +539,69 @@ impl MetricsBuilder {
         }
     }
 
+    /// 增强版 p20 起新增的序列；旧版本没有这些行时保持默认值。
+    fn record_extended(&mut self, sample: &Sample, value: u64) -> bool {
+        match sample.metric.as_str() {
+            "kixdns_cache_stale_total" => match sample.labels.get("reason") {
+                Some("expired") => self.snapshot.cache_stale.expired = value,
+                Some("client_timeout") => self.snapshot.cache_stale.client_timeout = value,
+                Some("upstream_failure") => self.snapshot.cache_stale.upstream_failure = value,
+                _ => {}
+            },
+            "kixdns_requests_finished_total" => match sample.labels.get("status") {
+                Some("completed") => self.snapshot.requests_finished.completed = value,
+                Some("failed") => self.snapshot.requests_finished.failed = value,
+                Some("cancelled") => self.snapshot.requests_finished.cancelled = value,
+                _ => {}
+            },
+            "kixdns_request_latency_ms_bucket" => {
+                if sample.labels.get("le") == Some("100") {
+                    self.snapshot.request_latency.within_100ms = value;
+                }
+            }
+            "kixdns_request_latency_ms_count" => {
+                self.snapshot.request_latency.samples = value;
+            }
+            "kixdns_upstream_latency_ms_count" => {
+                if let (Some(upstream), Some(transport)) = (
+                    sample.labels.get("upstream"),
+                    sample.labels.get("transport"),
+                ) {
+                    self.upstream_latency
+                        .entry((upstream.to_owned(), transport.to_owned()))
+                        .or_default()
+                        .1 = value;
+                }
+            }
+            "kixdns_upstream_rcodes_total" => {
+                if let (Some(upstream), Some(rcode)) =
+                    (sample.labels.get("upstream"), sample.labels.get("rcode"))
+                {
+                    self.upstream_rcodes
+                        .insert((upstream.to_owned(), rcode.to_owned()), value);
+                }
+            }
+            "kixdns_upstream_via_total" => {
+                if let (Some(upstream), Some("udp"), Some("tcp")) = (
+                    sample.labels.get("upstream"),
+                    sample.labels.get("transport"),
+                    sample.labels.get("via"),
+                ) {
+                    self.upstreams
+                        .entry((upstream.to_owned(), "udp".to_owned()))
+                        .or_insert_with(|| UpstreamCount {
+                            upstream: upstream.to_owned(),
+                            transport: "udp".to_owned(),
+                            ..UpstreamCount::default()
+                        })
+                        .tcp_fallbacks = value;
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
     fn record_scalar(&mut self, metric: &str, value: u64) -> bool {
         let (target, key) = match metric {
             "kixdns_requests_total" => (&mut self.snapshot.requests_total, "kixdns_requests_total"),
@@ -530,7 +657,40 @@ impl MetricsBuilder {
                     count,
                 })
                 .collect();
-            self.snapshot.upstreams = self.upstreams.into_values().collect();
+            if let Some(avg) = average(
+                self.request_latency_sum_ms,
+                self.snapshot.request_latency.samples,
+            ) {
+                self.snapshot.request_latency.avg_ms = avg;
+            }
+            let upstream_latency = self.upstream_latency;
+            let upstream_rcodes = self.upstream_rcodes;
+            self.snapshot.upstreams = self
+                .upstreams
+                .into_values()
+                .map(|mut upstream| {
+                    let key = (upstream.upstream.clone(), upstream.transport.clone());
+                    upstream.avg_latency_ms = upstream_latency
+                        .get(&key)
+                        .and_then(|(sum, count)| average(*sum, *count));
+                    let mut rcodes = upstream_rcodes
+                        .iter()
+                        .filter(|((name, _), _)| *name == upstream.upstream)
+                        .map(|((_, rcode), count)| NamedCount {
+                            name: rcode.clone(),
+                            count: *count,
+                        })
+                        .collect::<Vec<_>>();
+                    rcodes.sort_by(|left, right| {
+                        right
+                            .count
+                            .cmp(&left.count)
+                            .then_with(|| left.name.cmp(&right.name))
+                    });
+                    upstream.rcodes = rcodes;
+                    upstream
+                })
+                .collect();
             Ok(self.snapshot)
         } else {
             Err(ControlError::Protocol(format!(
@@ -538,6 +698,23 @@ impl MetricsBuilder {
                 missing.join("、")
             )))
         }
+    }
+}
+
+/// 计数远小于 2^52，转换不会损失精度。/ Counts stay far below 2^52, so the cast is exact.
+#[allow(clippy::cast_precision_loss)]
+fn average(sum_ms: f64, count: u64) -> Option<f64> {
+    (count > 0).then(|| sum_ms / count as f64)
+}
+
+fn float_value(value: &MetricValue) -> Option<f64> {
+    match value {
+        MetricValue::Counter(value) | MetricValue::Gauge(value) | MetricValue::Untyped(value)
+            if value.is_finite() && *value >= 0.0 =>
+        {
+            Some(*value)
+        }
+        _ => None,
     }
 }
 
@@ -581,6 +758,26 @@ kixdns_upstream_results_total{upstream="1.1.1.1:53",transport="udp",result="succ
 kixdns_upstream_attempts_total{upstream="8.8.8.8:53",transport="udp"} 9
 kixdns_upstream_results_total{upstream="8.8.8.8:53",transport="udp",result="aborted"} 8
 kixdns_upstream_results_total{upstream="8.8.8.8:53",transport="udp",result="error"} 1
+kixdns_cache_stale_total{reason="expired"} 1
+kixdns_cache_stale_total{reason="client_timeout"} 0
+kixdns_cache_stale_total{reason="upstream_failure"} 0
+kixdns_requests_finished_total{status="completed"} 40
+kixdns_requests_finished_total{status="failed"} 1
+kixdns_requests_finished_total{status="cancelled"} 1
+kixdns_request_latency_ms_bucket{le="10"} 30
+kixdns_request_latency_ms_bucket{le="50"} 38
+kixdns_request_latency_ms_bucket{le="100"} 40
+kixdns_request_latency_ms_bucket{le="500"} 41
+kixdns_request_latency_ms_bucket{le="1000"} 42
+kixdns_request_latency_ms_bucket{le="+Inf"} 42
+kixdns_request_latency_ms_sum 588.000
+kixdns_request_latency_ms_count 42
+kixdns_upstream_latency_ms_sum{upstream="1.1.1.1:53",transport="udp"} 84.500
+kixdns_upstream_latency_ms_count{upstream="1.1.1.1:53",transport="udp"} 7
+kixdns_upstream_rcodes_total{upstream="1.1.1.1:53",rcode="NoError"} 6
+kixdns_upstream_rcodes_total{upstream="1.1.1.1:53",rcode="NXDomain"} 1
+kixdns_upstream_via_total{upstream="1.1.1.1:53",transport="udp",via="udp"} 5
+kixdns_upstream_via_total{upstream="1.1.1.1:53",transport="udp",via="tcp"} 2
 "#;
         let metrics = parse_metrics(text).unwrap();
         assert_eq!(metrics.requests_total, 42);
@@ -593,6 +790,44 @@ kixdns_upstream_results_total{upstream="8.8.8.8:53",transport="udp",result="erro
         assert_eq!(metrics.upstreams[1].attempts, 9);
         assert_eq!(metrics.upstreams[1].aborted, 8);
         assert_eq!(metrics.upstreams[1].errors, 1);
+        assert_eq!(metrics.cache_stale.expired, 1);
+        assert_eq!(metrics.requests_finished.completed, 40);
+        assert_eq!(metrics.requests_finished.cancelled, 1);
+        assert_eq!(metrics.request_latency.samples, 42);
+        assert_eq!(metrics.request_latency.within_100ms, 40);
+        assert!((metrics.request_latency.avg_ms - 14.0).abs() < 1e-9);
+        let first = &metrics.upstreams[0];
+        assert!((first.avg_latency_ms.unwrap() - 84.5 / 7.0).abs() < 1e-9);
+        assert_eq!(first.tcp_fallbacks, 2);
+        assert_eq!(first.rcodes[0].name, "NoError");
+        assert_eq!(first.rcodes[0].count, 6);
+        assert_eq!(first.rcodes[1].name, "NXDomain");
+        assert!(metrics.upstreams[1].avg_latency_ms.is_none());
+        assert!(metrics.upstreams[1].rcodes.is_empty());
+    }
+
+    #[test]
+    fn older_enhanced_builds_leave_extended_series_at_defaults() {
+        let text = r#"
+kixdns_requests_total 42
+kixdns_requests_inflight 2
+kixdns_cache_lookups_total 20
+kixdns_cache_hits_total{kind="fresh"} 8
+kixdns_cache_hits_total{kind="stale"} 1
+kixdns_cache_entries 7
+kixdns_config_generation 3
+kixdns_config_reload_total{result="success"} 2
+kixdns_config_reload_total{result="failure"} 0
+kixdns_upstream_attempts_total{upstream="1.1.1.1:53",transport="udp"} 9
+kixdns_upstream_results_total{upstream="1.1.1.1:53",transport="udp",result="success"} 7
+"#;
+        let metrics = parse_metrics(text).unwrap();
+        assert_eq!(metrics.request_latency.samples, 0);
+        assert!(metrics.request_latency.avg_ms.abs() < f64::EPSILON);
+        assert_eq!(metrics.requests_finished.completed, 0);
+        assert_eq!(metrics.cache_stale.expired, 0);
+        assert!(metrics.upstreams[0].avg_latency_ms.is_none());
+        assert_eq!(metrics.upstreams[0].tcp_fallbacks, 0);
     }
 
     #[test]
