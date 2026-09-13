@@ -28,7 +28,7 @@ test('首次未启动时保留完整概览布局', async ({ page }) => {
   await expect(page.locator('.overview-total-value')).toHaveText('0')
   await expect(page.getByRole('heading', { name: '请求分布' })).toBeVisible()
   await expect(page.getByRole('heading', { name: '当前运行配置' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: '上游请求' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '上游台账' })).toBeVisible()
   await expect(page.getByRole('button', { name: '清空内部缓存' })).toBeDisabled()
   await page.getByRole('tab', { name: '查询排行', exact: true }).click()
   await expect(page.getByRole('heading', { name: '客户端排行' })).toBeVisible()
