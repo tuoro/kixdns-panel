@@ -66,6 +66,9 @@ export function emptyOverview(): Overview {
       pipelines: [],
       rules: [],
       upstreams: [],
+      requests_finished: { completed: 0, failed: 0, cancelled: 0 },
+      request_latency: { samples: 0, avg_ms: 0, within_100ms: 0 },
+      cache_stale: { expired: 0, client_timeout: 0, upstream_failure: 0 },
     },
   }
 }
