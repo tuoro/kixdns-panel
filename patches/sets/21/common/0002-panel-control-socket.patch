@@ -272,10 +272,10 @@ index fd9f0df681a298b2b90b5684f11532d7c7d9d800..88c1ff1b63e3343bb0a789062409d92e
      use hickory_proto::rr::{Name, RecordType};
 diff --git a/src/panel.rs b/src/panel.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..01548ea2ee4b1347b30cd63493bfbcf95490165b
+index 0000000000000000000000000000000000000000..a81182fc0f8b1d24faf70ca0ea927fe539ebedb7
 --- /dev/null
 +++ b/src/panel.rs
-@@ -0,0 +1,1942 @@
+@@ -0,0 +1,1943 @@
 +use std::collections::HashMap;
 +use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 +use std::path::PathBuf;
@@ -965,7 +965,8 @@ index 0000000000000000000000000000000000000000..01548ea2ee4b1347b30cd63493bfbcf9
 +                "stats_top_v1",
 +                "config_query_stats_v1",
 +                "diagnostics_trace_v1",
-+                "config_static_cname_response_v1"
++                "config_static_cname_response_v1",
++                "metrics_upstream_precision_v1"
 +            ],
 +        })
 +    }
