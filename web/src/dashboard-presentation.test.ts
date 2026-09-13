@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cacheComposition, pipelineDistribution, rcodeDistribution, settledAttempts, upstreamHealth } from './dashboard-presentation'
+import { MIN_HEALTH_SAMPLES, cacheComposition, pipelineDistribution, rcodeDistribution, settledAttempts, upstreamHealth } from './dashboard-presentation'
 import { emptyOverview } from './dashboard-state'
 
 describe('概览 Pipeline 分布', () => {
@@ -46,9 +46,12 @@ describe('概览 Pipeline 分布', () => {
 describe('上游健康与分布', () => {
   const base = { upstream: '1.1.1.1:53', transport: 'udp', errors: 0, rejected: 0, rcodes: [], tcp_fallbacks: 0 }
 
-  it('按成功率与平均耗时分三档，竞争落败不计入', () => {
+  it('按成功率与平均耗时分三档，竞争落败不计入，样本不足时观察中', () => {
     expect(upstreamHealth({ ...base, attempts: 100, success: 100, aborted: 0, avg_latency_ms: 12 })).toBe('healthy')
-    expect(upstreamHealth({ ...base, attempts: 100, success: 0, aborted: 100, avg_latency_ms: null })).toBe('healthy')
+    expect(upstreamHealth({ ...base, attempts: 100, success: 0, aborted: 100, avg_latency_ms: null })).toBe('pending')
+    // 刚启动：45 次响应里 2 次连接建立失败，不能就此判降级
+    expect(upstreamHealth({ ...base, attempts: 45, success: 43, errors: 2, aborted: 0, avg_latency_ms: 295 })).toBe('pending')
+    expect(upstreamHealth({ ...base, attempts: MIN_HEALTH_SAMPLES, success: MIN_HEALTH_SAMPLES - 2, errors: 2, aborted: 0, avg_latency_ms: 295 })).toBe('degraded')
     expect(upstreamHealth({ ...base, attempts: 100, success: 97, aborted: 0, avg_latency_ms: 12 })).toBe('degraded')
     expect(upstreamHealth({ ...base, attempts: 100, success: 100, aborted: 0, avg_latency_ms: 1_500 })).toBe('degraded')
     expect(upstreamHealth({ ...base, attempts: 100, success: 90, aborted: 0, avg_latency_ms: 12 })).toBe('unhealthy')
