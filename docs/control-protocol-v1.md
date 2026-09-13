@@ -12,7 +12,7 @@ Linux 默认地址为 `/run/kixdns/admin.sock`。协议使用 Unix Socket 上的
 
 返回进程状态、上游提交、增强补丁版本、启动时间、当前配置代数和可选能力列表。当前增强版包含 `stats_top_v1`、`config_query_stats_v1` 和 `diagnostics_trace_v1`：分别声明查询排行、统计配置字段和规则执行轨迹。客户端只能在对应能力存在时使用端点或写入受控字段。
 
-运行时能力负责当前进程的配置门控。尚未启动的目标版本使用 Artifact 内经 SHA-256 校验的 `KIXDNS_CAPABILITIES.json` 预检，完整规则见[配置能力契约](config-capabilities.md)。
+`capabilities` 中除配置能力外，还包含面板功能门控：`stats_top_v1`（查询排行）、`diagnostics_trace_v1`（诊断轨迹）、`metrics_upstream_precision_v1`（增强版 p21 起，表示 `/v1/metrics` 提供 `aborted` 结果、上游耗时、响应码、实际传输、请求完成状态与过期缓存原因；面板只有看到它才计算上游健康并用剔除竞争落败的成功率公式，否则健康显示为未知）。运行时能力负责当前进程的配置门控。尚未启动的目标版本使用 Artifact 内经 SHA-256 校验的 `KIXDNS_CAPABILITIES.json` 预检，完整规则见[配置能力契约](config-capabilities.md)。
 
 ### `GET /v1/config/active`
 

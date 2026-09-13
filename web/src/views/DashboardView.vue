@@ -5,9 +5,9 @@ import { apiRequest } from '../api/client'
 import type { CacheFlushResult, Overview, QueryStatsSnapshot, ServiceStatus, StatsClearResult } from '../api/types'
 import StatusBanner from '../components/StatusBanner.vue'
 import { useToast } from '../composables/useToast'
-import { cacheComposition, pipelineDistribution, rcodeDistribution, settledAttempts, upstreamHealth } from '../dashboard-presentation'
+import { HEALTH_LABELS, MIN_HEALTH_SAMPLES, cacheComposition, pipelineDistribution, rcodeDistribution, settledAttempts, upstreamHealth } from '../dashboard-presentation'
 import type { UpstreamHealth } from '../dashboard-presentation'
-import { dashboardRuntimeState, emptyOverview, emptyQueryStats, hasStaleDashboardData, supportsQueryStats } from '../dashboard-state'
+import { dashboardRuntimeState, emptyOverview, emptyQueryStats, hasStaleDashboardData, supportsQueryStats, supportsUpstreamPrecision } from '../dashboard-state'
 import { errorMessage, formatDuration, formatNumber, formatPercent, shortHash, upstreamSuccessRate } from '../utils'
 
 const overview = ref<Overview | null>(null)
@@ -76,11 +76,23 @@ const staleShare = computed(() => {
   const hits = metrics ? metrics.cache_hits_fresh + metrics.cache_hits_stale : 0
   return hits ? metrics!.cache_hits_stale / hits : 0
 })
+const precisionSupported = computed(() => supportsUpstreamPrecision(displayOverview.value?.health.capabilities ?? []))
 const upstreamRows = computed(() => [...(displayOverview.value?.metrics.upstreams ?? [])]
-  .map((item) => ({ ...item, settled: settledAttempts(item), health: upstreamHealth(item) }))
+  .map((item) => ({ ...item, settled: settledAttempts(item), health: precisionSupported.value ? upstreamHealth(item) : 'pending' as UpstreamHealth }))
   .sort((left, right) => right.settled - left.settled))
-const healthyUpstreams = computed(() => upstreamRows.value.filter((item) => item.health === 'healthy').length)
-const worstUpstream = computed(() => upstreamRows.value.filter((item) => item.health !== 'healthy').sort((left, right) => upstreamSuccessRate(left) - upstreamSuccessRate(right))[0] ?? null)
+const healthCounts = computed(() => {
+  const counts = { pending: 0, healthy: 0, degraded: 0, unhealthy: 0 }
+  for (const item of upstreamRows.value) counts[item.health] += 1
+  return counts
+})
+const assessedUpstreams = computed(() => upstreamRows.value.length - healthCounts.value.pending)
+const healthSummary = computed(() => {
+  const parts: string[] = []
+  if (healthCounts.value.degraded) parts.push(`${healthCounts.value.degraded} 个降级`)
+  if (healthCounts.value.unhealthy) parts.push(`${healthCounts.value.unhealthy} 个异常`)
+  return parts.join(' · ')
+})
+const overallHealth = computed<UpstreamHealth>(() => (healthCounts.value.unhealthy ? 'unhealthy' : healthCounts.value.degraded ? 'degraded' : 'healthy'))
 const rcodes = computed(() => rcodeDistribution(displayOverview.value?.metrics.upstreams ?? []))
 const cacheRows = computed(() => (displayOverview.value ? cacheComposition(displayOverview.value.metrics) : []))
 const rcodeColors: Record<string, string> = { NoError: 'var(--ink)', NXDomain: 'var(--muted)', ServFail: 'var(--red)', Refused: 'var(--amber)', other: '#b7bfbb' }
@@ -281,12 +293,19 @@ onBeforeUnmount(() => {
           </article>
           <article class="overview-kpi">
             <span class="overview-kpi-label">上游健康</span>
-            <span class="overview-kpi-value-row">
-              <strong class="overview-kpi-value">{{ healthyUpstreams }}</strong>
-              <span class="overview-kpi-unit">/ {{ upstreamRows.length }}</span>
-            </span>
-            <span class="overview-kpi-sub overview-kpi-sub--rule">成功率 ≥ 99% 且平均耗时 &lt; 1 s 记为健康</span>
-            <span v-if="worstUpstream" class="overview-kpi-sub overview-kpi-row"><i class="overview-dot" :class="`overview-dot--${worstUpstream.health}`" aria-hidden="true"></i><span class="overview-mono">{{ worstUpstream.upstream }}</span><b :class="`overview-text--${worstUpstream.health}`">{{ formatPercent(upstreamSuccessRate(worstUpstream)) }} · 平均 {{ formatLatency(worstUpstream.avg_latency_ms) }}</b></span>
+            <template v-if="precisionSupported">
+              <span class="overview-kpi-value-row">
+                <strong class="overview-kpi-value">{{ healthCounts.healthy }}</strong>
+                <span class="overview-kpi-unit">/ {{ assessedUpstreams }}</span>
+              </span>
+              <span class="overview-kpi-sub overview-kpi-sub--rule">成功率 ≥ 99% 且平均耗时 &lt; 1 s 记为健康</span>
+              <span v-if="healthSummary" class="overview-kpi-sub overview-kpi-row"><i class="overview-dot" :class="`overview-dot--${overallHealth}`" aria-hidden="true"></i><b :class="`overview-text--${overallHealth}`">{{ healthSummary }}</b></span>
+              <span v-if="healthCounts.pending" class="overview-kpi-sub">{{ healthCounts.pending }} 个上游观察中，响应不足 {{ MIN_HEALTH_SAMPLES }} 次</span>
+            </template>
+            <template v-else>
+              <strong class="overview-kpi-value">—</strong>
+              <span class="overview-kpi-sub">当前增强版不提供健康判定所需数据，更新增强版后显示</span>
+            </template>
           </article>
         </section>
 
@@ -318,7 +337,7 @@ onBeforeUnmount(() => {
                 <thead><tr><th scope="col">上游</th><th scope="col">传输</th><th scope="col">状态</th><th scope="col">响应次数</th><th scope="col">成功率</th><th scope="col">平均耗时</th><th scope="col">错误</th><th scope="col">拒绝</th><th scope="col" title="选定 UDP 但靠 TCP 兜底才拿到答案的占比">TCP 兜底</th></tr></thead>
                 <tbody><tr v-for="item in upstreamRows" :key="`${item.upstream}:${item.transport}`">
                   <th scope="row" class="overview-mono">{{ item.upstream }}</th><td><span class="overview-transport">{{ item.transport }}</span></td>
-                  <td><i class="overview-dot" :class="`overview-dot--${item.health}`" role="img" :aria-label="item.health === 'healthy' ? '健康' : item.health === 'degraded' ? '降级' : '异常'"></i></td>
+                  <td><i class="overview-dot" :class="`overview-dot--${item.health}`" role="img" :aria-label="HEALTH_LABELS[item.health]" :title="HEALTH_LABELS[item.health]"></i></td>
                   <td>{{ formatNumber(item.settled) }}</td><td :class="`overview-text--${item.health}`">{{ formatPercent(upstreamSuccessRate(item)) }}</td><td :class="`overview-text--${item.health}`">{{ formatLatency(item.avg_latency_ms) }}</td>
                   <td :class="{ 'overview-warning': item.errors > 0 }">{{ formatNumber(item.errors) }}</td><td>{{ formatNumber(item.rejected) }}</td><td>{{ fallbackShare(item) }}</td>
                 </tr></tbody>
@@ -455,10 +474,11 @@ onBeforeUnmount(() => {
 .overview-kpi-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
 .overview-badge { align-self: flex-start; padding: 2px 8px; border-radius: 3px; color: var(--amber); background: var(--amber-soft); font-size: 12px; font-variant-numeric: tabular-nums; }
 .overview-dot { display: inline-block; flex: 0 0 8px; width: 8px; height: 8px; border-radius: 50%; vertical-align: middle; }
+.overview-dot--pending { background: #b7bfbb; }
 .overview-dot--healthy { background: var(--green); }
 .overview-dot--degraded { background: var(--amber); }
 .overview-dot--unhealthy { background: var(--red); }
-.overview-text--healthy { color: inherit; }
+.overview-text--pending, .overview-text--healthy { color: inherit; }
 .overview-text--degraded { color: var(--amber); }
 .overview-text--unhealthy { color: var(--red); }
 .overview-breakdowns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 48px; }

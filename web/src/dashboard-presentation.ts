@@ -13,17 +13,25 @@ export function pipelineDistribution(items: readonly NamedCount[]): PipelineShar
     .map((item) => ({ ...item, share: total > 0 ? item.count / total : 0 }))
 }
 
-export type UpstreamHealth = 'healthy' | 'degraded' | 'unhealthy'
+export type UpstreamHealth = 'pending' | 'healthy' | 'degraded' | 'unhealthy'
 
-/** 成功率 ≥ 99% 且平均耗时 < 1 s 记为健康；成功率 < 95% 或平均耗时 ≥ 2 s 记为异常；其余为降级。 */
+/** 响应少于这个数时不下结论，避免刚启动时几次连接建立失败就把上游判成降级。 */
+export const MIN_HEALTH_SAMPLES = 50
+
+/**
+ * 响应不足 50 次记为观察中；成功率 ≥ 99% 且平均耗时 < 1 s 记为健康；
+ * 成功率 < 95% 或平均耗时 ≥ 2 s 记为异常；其余为降级。
+ */
 export function upstreamHealth(item: UpstreamCount): UpstreamHealth {
   const rate = upstreamSuccessRate(item)
   const latency = item.avg_latency_ms ?? 0
-  if (item.attempts - item.aborted <= 0) return 'healthy'
+  if (settledAttempts(item) < MIN_HEALTH_SAMPLES) return 'pending'
   if (rate < 0.95 || latency >= 2_000) return 'unhealthy'
   if (rate >= 0.99 && latency < 1_000) return 'healthy'
   return 'degraded'
 }
+
+export const HEALTH_LABELS: Record<UpstreamHealth, string> = { pending: '观察中', healthy: '健康', degraded: '降级', unhealthy: '异常' }
 
 /** 已得到结果的尝试数：不含并发竞争中被取消的。 */
 export function settledAttempts(item: UpstreamCount): number {

@@ -133,7 +133,7 @@ const overview: Overview = {
     started_at_unix: now - 289420,
     uptime_seconds: 289420,
     config_generation: 18,
-    capabilities: ['stats_top_v1', 'config_static_cname_response_v1'],
+    capabilities: ['stats_top_v1', 'config_static_cname_response_v1', 'metrics_upstream_precision_v1'],
   },
   active_config: activeConfig,
   metrics: {

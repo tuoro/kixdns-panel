@@ -28,6 +28,11 @@ export function supportsQueryStats(capabilities: string[]): boolean {
   return capabilities.includes('stats_top_v1')
 }
 
+/** 增强版 p21 起上报竞争落败、耗时等序列；没有它时上游成功率与健康判定不可信。 */
+export function supportsUpstreamPrecision(capabilities: string[]): boolean {
+  return capabilities.includes('metrics_upstream_precision_v1')
+}
+
 export function emptyOverview(): Overview {
   return {
     live: false,
