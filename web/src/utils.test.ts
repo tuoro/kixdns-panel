@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { errorMessage, formatDuration, formatKixdnsVersion, formatPercent, shortHash } from './utils'
+import { errorMessage, formatDuration, formatKixdnsVersion, formatPercent, shortHash, upstreamSuccessRate } from './utils'
 
 describe('界面格式化工具', () => {
   it('生成稳定且紧凑的运行指标', () => {
@@ -22,5 +22,19 @@ describe('界面格式化工具', () => {
     expect(formatKixdnsVersion({ source: 'action', source_id: 2, run_id: 30235703570, release_tag: null })).toBe('Run #30235703570')
     expect(formatKixdnsVersion({ source: 'action', source_id: 8695590365, run_id: null, release_tag: null })).toBe('Artifact #8695590365')
     expect(formatKixdnsVersion(null)).toBe('未记录')
+  })
+})
+
+describe('上游成功率', () => {
+  it('并发竞争中被取消的尝试不计入分母', () => {
+    // 两个上游各尝试 20 次，1.1.1.1 每次胜出，8.8.8.8 每次落败但从未失败
+    expect(upstreamSuccessRate({ attempts: 20, success: 20, aborted: 0 })).toBe(1)
+    expect(upstreamSuccessRate({ attempts: 20, success: 0, aborted: 20 })).toBe(0)
+    expect(upstreamSuccessRate({ attempts: 20, success: 4, aborted: 15 })).toBeCloseTo(0.8)
+  })
+
+  it('旧增强版没有 aborted 字段时退化为成功除以尝试', () => {
+    expect(upstreamSuccessRate({ attempts: 10, success: 7 })).toBeCloseTo(0.7)
+    expect(upstreamSuccessRate({ attempts: 0, success: 0 })).toBe(0)
   })
 })

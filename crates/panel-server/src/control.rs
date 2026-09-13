@@ -154,6 +154,9 @@ pub struct UpstreamCount {
     pub success: u64,
     pub errors: u64,
     pub rejected: u64,
+    /// 并发竞争中被取消的尝试；增强版 p19 起上报，旧版本缺省为 0。
+    #[serde(default)]
+    pub aborted: u64,
 }
 
 const fn default_live() -> bool {
@@ -462,6 +465,7 @@ impl MetricsBuilder {
                             Some("success") => entry.success = value,
                             Some("error") => entry.errors = value,
                             Some("rejected") => entry.rejected = value,
+                            Some("aborted") => entry.aborted = value,
                             _ => {}
                         }
                     }
@@ -574,6 +578,9 @@ kixdns_pipeline_hits_total{pipeline="default"} 21
 kixdns_rule_matches_total{pipeline="default",rule="allow",phase="request"} 13
 kixdns_upstream_attempts_total{upstream="1.1.1.1:53",transport="udp"} 9
 kixdns_upstream_results_total{upstream="1.1.1.1:53",transport="udp",result="success"} 7
+kixdns_upstream_attempts_total{upstream="8.8.8.8:53",transport="udp"} 9
+kixdns_upstream_results_total{upstream="8.8.8.8:53",transport="udp",result="aborted"} 8
+kixdns_upstream_results_total{upstream="8.8.8.8:53",transport="udp",result="error"} 1
 "#;
         let metrics = parse_metrics(text).unwrap();
         assert_eq!(metrics.requests_total, 42);
@@ -581,6 +588,11 @@ kixdns_upstream_results_total{upstream="1.1.1.1:53",transport="udp",result="succ
         assert_eq!(metrics.pipelines[0].count, 21);
         assert_eq!(metrics.rules[0].rule, "allow");
         assert_eq!(metrics.upstreams[0].success, 7);
+        assert_eq!(metrics.upstreams[0].aborted, 0);
+        assert_eq!(metrics.upstreams[1].upstream, "8.8.8.8:53");
+        assert_eq!(metrics.upstreams[1].attempts, 9);
+        assert_eq!(metrics.upstreams[1].aborted, 8);
+        assert_eq!(metrics.upstreams[1].errors, 1);
     }
 
     #[test]
