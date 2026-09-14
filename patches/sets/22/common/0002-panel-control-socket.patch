@@ -1,0 +1,2404 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 283b2dfbd9d98acf3830817b12686e3166a9de4d..ef994b725a02a9f47ba0b487bf503881af9b34b1 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -16,6 +16,7 @@ tokio-util = { version = "0.7", features = ["rt", "io"] }
+ hickory-proto = "0.26"
+ serde = { version = "1", features = ["derive"] }
+ serde_json = "1"
++sha2 = "0.10"
+ arc-swap = "1.8"
+ tracing = "0.1"
+ tracing-subscriber = { version = "0.3", features = ["fmt", "json", "env-filter", "local-time"] }
+@@ -63,6 +64,9 @@ codegen-units = 1
+ panic = "abort"
+ strip = true
+ 
++# Keep the enhanced checkout independent when it lives below the panel workspace.
++[workspace]
++
+ # ============================================================================
+ # Cross-compilation Configuration
+ # 交叉编译配置
+diff --git a/src/lib.rs b/src/lib.rs
+index 6e9c89b0a69978a29fa390892131e63d6d374f93..e2e1501bc86ae01480a2af82fab6aa758157a427 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -7,6 +7,8 @@ pub mod error_utils;
+ pub mod lock;
+ pub mod matcher;
+ pub mod observe;
++pub mod panel;
++pub mod panel_trace;
+ pub mod proto_utils;
+ pub mod socket_utils;
+ pub mod watcher;
+diff --git a/src/main.rs b/src/main.rs
+index fd9f0df681a298b2b90b5684f11532d7c7d9d800..88c1ff1b63e3343bb0a789062409d92e59a076c9 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -13,7 +13,6 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberI
+ use kixdns::config::load_config_with_source;
+ use kixdns::engine::{Engine, FastPathResponse, PreParsedData, engine_helpers};
+ use kixdns::matcher::RuntimePipelineConfig;
+-use kixdns::observe::TracingObserver;
+ use kixdns::proto_utils::{is_standard_query_header, truncate_udp_response};
+ use kixdns::watcher;
+ 
+@@ -40,6 +39,9 @@ enum Commands {
+         /// UDP worker 数量（默认 CPU 核心数） / Number of UDP workers (defaults to CPU core count)
+         #[arg(long = "udp-workers", default_value_t = 0)]
+         udp_workers_count: usize,
++        /// 本机管理 Socket；不设置时禁用增强管理接口。 / Local panel control socket; disabled when omitted.
++        #[arg(long = "admin-socket")]
++        admin_socket: Option<PathBuf>,
+     },
+     /// Convert GeoIP .dat to MMDB format / 转换 GeoIP .dat 为 MMDB 格式
+     ConvertGeoIp {
+@@ -91,7 +93,17 @@ async fn main() -> anyhow::Result<()> {
+             listener_label,
+             debug,
+             udp_workers_count,
+-        }) => run_dns_server(config, listener_label, debug, udp_workers_count).await,
++            admin_socket,
++        }) => {
++            run_dns_server(
++                config,
++                listener_label,
++                debug,
++                udp_workers_count,
++                admin_socket,
++            )
++            .await
++        }
+         None => {
+             // No subcommand provided - run DNS server with defaults
+             run_dns_server(
+@@ -99,6 +111,7 @@ async fn main() -> anyhow::Result<()> {
+                 "default".to_string(),
+                 false,
+                 0,
++                None,
+             )
+             .await
+         }
+@@ -112,6 +125,7 @@ async fn run_dns_server(
+     listener_label: String,
+     debug: bool,
+     udp_workers_count: usize,
++    admin_socket: Option<PathBuf>,
+ ) -> anyhow::Result<()> {
+     // Run DNS server
+     init_tracing(debug);
+@@ -136,15 +150,15 @@ async fn run_dns_server(
+         .doh
+         .map(|doh| (doh.bind, doh.tls_cert, doh.tls_key, doh.path));
+ 
+-    // --debug installs the reference observer so engine events show up under
+-    // the kixdns::observe tracing target / --debug 安装参考观察者，引擎事件出现在 kixdns::observe 目标下
+-    let mut builder = Engine::builder(cfg)
++    // The enhanced build installs the panel observer in the single observer
++    // slot, replacing the --debug reference observer / 增强版在唯一的观察者槽位安装面板观察者，替代 --debug 参考观察者
++    let panel_metrics = Arc::new(kixdns::panel::PanelMetrics::default());
++    let engine = Engine::builder(cfg)
+         .listener_label(listener_label.clone())
+-        .config_source(&config, config_source);
+-    if debug {
+-        builder = builder.observer(Arc::new(TracingObserver));
+-    }
+-    let engine = builder.build().context("initialize DNS engine")?;
++        .config_source(&config, config_source)
++        .observer(panel_metrics.clone())
++        .build()
++        .context("initialize DNS engine")?;
+ 
+     watcher::spawn(config.clone(), engine.clone());
+ 
+@@ -161,6 +175,25 @@ async fn run_dns_server(
+ 
+     let mut all_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+ 
++    #[cfg(unix)]
++    if let Some(path) = admin_socket {
++        let engine = engine.clone();
++        let panel_metrics = Arc::clone(&panel_metrics);
++        all_handles.push(tokio::spawn(async move {
++            if let Err(err) = kixdns::panel::serve_admin(path, engine, panel_metrics).await {
++                error!(target = "panel", error = %err, "panel control socket exited");
++            }
++        }));
++    }
++
++    #[cfg(not(unix))]
++    if admin_socket.is_some() {
++        warn!(
++            target = "panel",
++            "admin-socket is not supported on this platform"
++        );
++    }
++
+     #[cfg(unix)]
+     {
+         // ✅ OpenBSD 兼容性方案：双 socket（IPv4 + IPv6）+ 零拷贝 recv_buf_from
+@@ -350,7 +383,7 @@ async fn run_dns_server(
+ fn init_tracing(debug: bool) {
+     // 默认仅保留错误日志以平衡性能与可观测性，除非显式指定
+     // Default to error-level logging to balance performance with observability unless explicitly enabled
+-    let fmt_layer = fmt::layer()
++    let format = fmt::format()
+         .with_timer(fmt::time::LocalTime::rfc_3339())
+         .with_target(false)
+         .with_ansi(false)
+@@ -358,10 +391,52 @@ fn init_tracing(debug: bool) {
+ 
+     let level = if debug { "debug" } else { "error" };
+     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
+-    tracing_subscriber::registry()
+-        .with(filter)
+-        .with(fmt_layer)
+-        .init();
++    let registry = tracing_subscriber::registry().with(filter);
++    if stdout_is_journald() {
++        registry
++            .with(fmt::layer().event_format(JournalPriority(format)))
++            .init();
++    } else {
++        registry.with(fmt::layer().event_format(format)).init();
++    }
++}
++
++/// systemd 把 stdout 接到 journald 时会设置 JOURNAL_STREAM。
++/// systemd sets JOURNAL_STREAM when stdout is connected to journald.
++fn stdout_is_journald() -> bool {
++    std::env::var_os("JOURNAL_STREAM").is_some()
++}
++
++/// 给每行日志加上 journald 识别的 `<N>` 优先级前缀，否则 journald 会把所有行都记为 info，
++/// 日志工具就无法按 warn / error 筛选。
++/// Prefix each line with the syslog priority journald parses; without it every line lands
++/// at priority 6 (info) and log viewers cannot filter warnings or errors.
++struct JournalPriority<F>(F);
++
++impl<S, N, F> fmt::FormatEvent<S, N> for JournalPriority<F>
++where
++    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
++    N: for<'a> fmt::FormatFields<'a> + 'static,
++    F: fmt::FormatEvent<S, N>,
++{
++    fn format_event(
++        &self,
++        ctx: &fmt::FmtContext<'_, S, N>,
++        mut writer: fmt::format::Writer<'_>,
++        event: &tracing::Event<'_>,
++    ) -> std::fmt::Result {
++        write!(writer, "<{}>", journal_priority(*event.metadata().level()))?;
++        self.0.format_event(ctx, writer, event)
++    }
++}
++
++fn journal_priority(level: tracing::Level) -> u8 {
++    match level {
++        tracing::Level::ERROR => 3,
++        tracing::Level::WARN => 4,
++        tracing::Level::INFO => 6,
++        _ => 7,
++    }
+ }
+ 
+ // 为 IPv4 地址创建并启动 UDP workers / Create and spawn UDP workers for IPv4 address
+@@ -1017,6 +1092,63 @@ async fn handle_tcp_conn(
+ 
+ #[cfg(test)]
+ mod tests {
++    use std::io::Write as _;
++    use std::sync::{Arc, Mutex};
++
++    #[derive(Clone, Default)]
++    struct SharedBuffer(Arc<Mutex<Vec<u8>>>);
++
++    impl std::io::Write for SharedBuffer {
++        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
++            self.0.lock().unwrap().extend_from_slice(bytes);
++            Ok(bytes.len())
++        }
++
++        fn flush(&mut self) -> std::io::Result<()> {
++            Ok(())
++        }
++    }
++
++    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedBuffer {
++        type Writer = SharedBuffer;
++
++        fn make_writer(&'a self) -> Self::Writer {
++            self.clone()
++        }
++    }
++
++    /// journald 前缀按级别映射到 syslog 优先级，每行恰好一个前缀。
++    #[test]
++    fn journal_priority_prefixes_each_line_by_level() {
++        use tracing_subscriber::layer::SubscriberExt;
++
++        let buffer = SharedBuffer::default();
++        let format = tracing_subscriber::fmt::format()
++            .without_time()
++            .with_target(false)
++            .with_ansi(false)
++            .with_level(false);
++        let subscriber = tracing_subscriber::registry().with(
++            tracing_subscriber::fmt::layer()
++                .event_format(super::JournalPriority(format))
++                .with_writer(buffer.clone()),
++        );
++        tracing::subscriber::with_default(subscriber, || {
++            tracing::error!("upstream exploded");
++            tracing::warn!(upstream = "1.1.1.1:53", "single upstream call failed");
++            tracing::info!("config reloaded");
++            tracing::debug!("noisy");
++        });
++        buffer.clone().flush().unwrap();
++        let output = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
++        let lines = output.lines().collect::<Vec<_>>();
++        assert_eq!(lines.len(), 4, "{output}");
++        assert!(lines[0].starts_with("<3>") && lines[0].contains("upstream exploded"));
++        assert!(lines[1].starts_with("<4>") && lines[1].contains("single upstream call failed"));
++        assert!(lines[2].starts_with("<6>") && lines[2].contains("config reloaded"));
++        assert!(lines[3].starts_with("<7>"));
++        assert_eq!(super::journal_priority(tracing::Level::TRACE), 7);
++    }
+     use super::*;
+     use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
+     use hickory_proto::rr::{Name, RecordType};
+diff --git a/src/panel.rs b/src/panel.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..a81182fc0f8b1d24faf70ca0ea927fe539ebedb7
+--- /dev/null
++++ b/src/panel.rs
+@@ -0,0 +1,1943 @@
++use std::collections::HashMap;
++use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
++use std::path::PathBuf;
++use std::sync::Arc;
++use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
++use std::time::{Instant, SystemTime, UNIX_EPOCH};
++
++#[cfg(unix)]
++use anyhow::Context;
++#[cfg(unix)]
++use bytes::Bytes;
++use dashmap::DashMap;
++use dashmap::mapref::entry::Entry;
++use dashmap::try_result::TryResult;
++#[cfg(unix)]
++use http_body_util::{BodyExt, Full, Limited};
++#[cfg(unix)]
++use hyper::body::Incoming;
++#[cfg(unix)]
++use hyper::header::{CACHE_CONTROL, CONTENT_TYPE, HeaderValue};
++#[cfg(unix)]
++use hyper::service::service_fn;
++#[cfg(unix)]
++use hyper::{Method, Request, Response, StatusCode};
++#[cfg(unix)]
++use hyper_util::rt::TokioIo;
++use parking_lot::{Mutex, RwLock};
++#[cfg(unix)]
++use serde::Deserialize;
++#[cfg(unix)]
++use serde_json::json;
++
++use crate::engine::Engine;
++use crate::observe::{
++    CacheHit, CacheHitKind, ConfigLoaded, ConfigReloadFailed, DecisionMade, EngineObserver,
++    RequestContext, RequestOutcome, RequestStatus, RuleCacheLookup, RuleEvaluated, RuleMatched,
++    RulePhase, UpstreamAttempt, UpstreamOutcome, UpstreamResult,
++};
++use crate::panel_trace;
++use sha2::{Digest, Sha256};
++
++#[cfg(unix)]
++const PROTOCOL_VERSION: u8 = 1;
++const MAX_ERROR_LENGTH: usize = 2_048;
++const MAX_METRIC_SERIES_PER_MAP: usize = 1_024;
++const MAX_METRIC_KEY_BYTES: usize = 512;
++#[cfg(unix)]
++const MAX_CONFIG_BODY: usize = 4 * 1024 * 1024;
++#[cfg(unix)]
++const MAX_DIAGNOSTIC_BODY: usize = 2 * 1024;
++const QUERY_STATS_BUCKET_SECONDS: u64 = 3_600;
++const QUERY_STATS_BUCKETS: usize = 24;
++const QUERY_STATS_SHARDS: usize = 16;
++const QUERY_STATS_DOMAIN_CAP: usize = 4_096;
++const QUERY_STATS_CLIENT_CAP: usize = 1_024;
++const QUERY_STATS_CONFIGURED: u8 = 0b100;
++const QUERY_STATS_ENABLED: u8 = 0b001;
++const QUERY_STATS_ANONYMIZED: u8 = 0b010;
++
++#[derive(Clone, Default)]
++struct ActiveConfig {
++    generation: u64,
++    sha256: String,
++    loaded_at_unix: u64,
++    last_reload_success: bool,
++    last_reload_error: Option<String>,
++}
++
++#[derive(Clone, Copy, Eq, Hash, PartialEq)]
++enum ClientKey {
++    V4(u32, bool),
++    V6(u64, u64, bool),
++}
++
++impl ClientKey {
++    fn new(address: IpAddr, anonymized: bool) -> Self {
++        match address {
++            IpAddr::V4(address) => {
++                let mut value = u32::from(address);
++                if anonymized {
++                    value &= u32::MAX << 8;
++                }
++                Self::V4(value, anonymized)
++            }
++            IpAddr::V6(address) => {
++                let value = u128::from(address);
++                let high = (value >> 64) as u64;
++                let low = if anonymized { 0 } else { value as u64 };
++                Self::V6(high, low, anonymized)
++            }
++        }
++    }
++
++    #[cfg_attr(not(unix), allow(dead_code))]
++    fn label(self) -> String {
++        match self {
++            Self::V4(value, anonymized) => {
++                let address = Ipv4Addr::from(value).to_string();
++                if anonymized {
++                    format!("{address}/24")
++                } else {
++                    address
++                }
++            }
++            Self::V6(high, low, anonymized) => {
++                let address = Ipv6Addr::from(((high as u128) << 64) | low as u128).to_string();
++                if anonymized {
++                    format!("{address}/64")
++                } else {
++                    address
++                }
++            }
++        }
++    }
++}
++
++struct QueryStatsBucket {
++    epoch: AtomicU64,
++    requests: AtomicU64,
++    dropped_updates: AtomicU64,
++    domain_entries: AtomicUsize,
++    client_entries: AtomicUsize,
++    rotate_lock: Mutex<()>,
++    domains: DashMap<Arc<str>, AtomicU64>,
++    clients: DashMap<ClientKey, AtomicU64>,
++}
++
++impl QueryStatsBucket {
++    fn new() -> Self {
++        Self {
++            epoch: AtomicU64::new(0),
++            requests: AtomicU64::new(0),
++            dropped_updates: AtomicU64::new(0),
++            domain_entries: AtomicUsize::new(0),
++            client_entries: AtomicUsize::new(0),
++            rotate_lock: Mutex::new(()),
++            domains: DashMap::with_shard_amount(QUERY_STATS_SHARDS),
++            clients: DashMap::with_shard_amount(QUERY_STATS_SHARDS),
++        }
++    }
++
++    fn prepare(&self, epoch: u64) -> bool {
++        if self.epoch.load(Ordering::Acquire) == epoch {
++            return true;
++        }
++        let Some(_guard) = self.rotate_lock.try_lock() else {
++            return false;
++        };
++        if self.epoch.load(Ordering::Relaxed) != epoch {
++            self.domains.clear();
++            self.clients.clear();
++            self.requests.store(0, Ordering::Relaxed);
++            self.dropped_updates.store(0, Ordering::Relaxed);
++            self.domain_entries.store(0, Ordering::Relaxed);
++            self.client_entries.store(0, Ordering::Relaxed);
++            self.epoch.store(epoch, Ordering::Release);
++        }
++        true
++    }
++
++    fn clear(&self) {
++        let _guard = self.rotate_lock.lock();
++        self.domains.clear();
++        self.clients.clear();
++        self.requests.store(0, Ordering::Relaxed);
++        self.dropped_updates.store(0, Ordering::Relaxed);
++        self.domain_entries.store(0, Ordering::Relaxed);
++        self.client_entries.store(0, Ordering::Relaxed);
++        self.epoch.store(0, Ordering::Release);
++    }
++
++    fn record_domain(&self, domain: &str) -> bool {
++        match self.domains.try_get(domain) {
++            TryResult::Present(counter) => {
++                counter.fetch_add(1, Ordering::Relaxed);
++                return true;
++            }
++            TryResult::Locked => return false,
++            TryResult::Absent => {}
++        }
++        let Some(entry) = self.domains.try_entry(Arc::from(domain)) else {
++            return false;
++        };
++        match entry {
++            Entry::Occupied(entry) => {
++                entry.get().fetch_add(1, Ordering::Relaxed);
++                true
++            }
++            Entry::Vacant(entry) => {
++                let index = self.domain_entries.fetch_add(1, Ordering::Relaxed);
++                if index >= QUERY_STATS_DOMAIN_CAP {
++                    self.domain_entries.fetch_sub(1, Ordering::Relaxed);
++                    return false;
++                }
++                entry.insert(AtomicU64::new(1));
++                true
++            }
++        }
++    }
++
++    fn record_client(&self, client: ClientKey) -> bool {
++        match self.clients.try_get(&client) {
++            TryResult::Present(counter) => {
++                counter.fetch_add(1, Ordering::Relaxed);
++                return true;
++            }
++            TryResult::Locked => return false,
++            TryResult::Absent => {}
++        }
++        let Some(entry) = self.clients.try_entry(client) else {
++            return false;
++        };
++        match entry {
++            Entry::Occupied(entry) => {
++                entry.get().fetch_add(1, Ordering::Relaxed);
++                true
++            }
++            Entry::Vacant(entry) => {
++                let index = self.client_entries.fetch_add(1, Ordering::Relaxed);
++                if index >= QUERY_STATS_CLIENT_CAP {
++                    self.client_entries.fetch_sub(1, Ordering::Relaxed);
++                    return false;
++                }
++                entry.insert(AtomicU64::new(1));
++                true
++            }
++        }
++    }
++}
++
++struct QueryStats {
++    settings: AtomicU8,
++    settings_lock: Mutex<()>,
++    buckets: Box<[QueryStatsBucket]>,
++}
++
++impl Default for QueryStats {
++    fn default() -> Self {
++        Self {
++            settings: AtomicU8::new(0),
++            settings_lock: Mutex::new(()),
++            buckets: (0..QUERY_STATS_BUCKETS)
++                .map(|_| QueryStatsBucket::new())
++                .collect(),
++        }
++    }
++}
++
++#[cfg_attr(not(unix), allow(dead_code))]
++struct TopStat {
++    name: String,
++    count: u64,
++}
++
++#[cfg_attr(not(unix), allow(dead_code))]
++struct QueryStatsSnapshot {
++    enabled: bool,
++    anonymized_clients: bool,
++    requests_observed: u64,
++    dropped_updates: u64,
++    clients: Vec<TopStat>,
++    domains: Vec<TopStat>,
++}
++
++impl QueryStats {
++    fn configure(&self, enabled: bool, anonymized: bool) {
++        let desired = QUERY_STATS_CONFIGURED
++            | (u8::from(enabled) * QUERY_STATS_ENABLED)
++            | (u8::from(anonymized) * QUERY_STATS_ANONYMIZED);
++        if self.settings.load(Ordering::Relaxed) == desired {
++            return;
++        }
++        let _guard = self.settings_lock.lock();
++        if self.settings.load(Ordering::Relaxed) != desired {
++            self.clear();
++            self.settings.store(desired, Ordering::Release);
++        }
++    }
++
++    fn clear(&self) {
++        for bucket in &self.buckets {
++            bucket.clear();
++        }
++    }
++
++    #[inline]
++    fn record(&self, domain: &str, client: IpAddr) {
++        let settings = self.settings.load(Ordering::Acquire);
++        if settings & QUERY_STATS_ENABLED == 0 {
++            return;
++        }
++        let anonymized = settings & QUERY_STATS_ANONYMIZED != 0;
++        self.record_at(domain, client, anonymized, unix_timestamp());
++    }
++
++    fn record_at(&self, domain: &str, client: IpAddr, anonymized: bool, now: u64) {
++        let epoch = now - now % QUERY_STATS_BUCKET_SECONDS;
++        let index = (epoch / QUERY_STATS_BUCKET_SECONDS) as usize % QUERY_STATS_BUCKETS;
++        let bucket = &self.buckets[index];
++        if !bucket.prepare(epoch) {
++            return;
++        }
++        bucket.requests.fetch_add(1, Ordering::Relaxed);
++        let domain_recorded = bucket.record_domain(domain);
++        let client_recorded = bucket.record_client(ClientKey::new(client, anonymized));
++        if !domain_recorded || !client_recorded {
++            bucket.dropped_updates.fetch_add(1, Ordering::Relaxed);
++        }
++    }
++
++    #[cfg_attr(not(unix), allow(dead_code))]
++    fn snapshot(&self, now: u64, window_seconds: u64, limit: usize) -> QueryStatsSnapshot {
++        let settings = self.settings.load(Ordering::Acquire);
++        let enabled = settings & QUERY_STATS_ENABLED != 0;
++        let anonymized_clients = settings & QUERY_STATS_ANONYMIZED != 0;
++        if !enabled {
++            return QueryStatsSnapshot {
++                enabled,
++                anonymized_clients,
++                requests_observed: 0,
++                dropped_updates: 0,
++                clients: Vec::new(),
++                domains: Vec::new(),
++            };
++        }
++
++        let oldest = now.saturating_sub(window_seconds);
++        let mut requests_observed = 0u64;
++        let mut dropped_updates = 0u64;
++        let mut domains = HashMap::<Arc<str>, u64>::new();
++        let mut clients = HashMap::<ClientKey, u64>::new();
++        for bucket in &self.buckets {
++            let epoch = bucket.epoch.load(Ordering::Acquire);
++            if epoch == 0
++                || epoch > now
++                || epoch.saturating_add(QUERY_STATS_BUCKET_SECONDS) <= oldest
++            {
++                continue;
++            }
++            requests_observed =
++                requests_observed.saturating_add(bucket.requests.load(Ordering::Relaxed));
++            dropped_updates =
++                dropped_updates.saturating_add(bucket.dropped_updates.load(Ordering::Relaxed));
++            for entry in &bucket.domains {
++                let total = domains.entry(Arc::clone(entry.key())).or_default();
++                *total = total.saturating_add(entry.value().load(Ordering::Relaxed));
++            }
++            for entry in &bucket.clients {
++                let total = clients.entry(*entry.key()).or_default();
++                *total = total.saturating_add(entry.value().load(Ordering::Relaxed));
++            }
++        }
++
++        let mut domains = domains
++            .into_iter()
++            .map(|(name, count)| TopStat {
++                name: name.to_string(),
++                count,
++            })
++            .collect::<Vec<_>>();
++        let mut clients = clients
++            .into_iter()
++            .map(|(client, count)| TopStat {
++                name: client.label(),
++                count,
++            })
++            .collect::<Vec<_>>();
++        sort_and_truncate(&mut domains, limit);
++        sort_and_truncate(&mut clients, limit);
++
++        QueryStatsSnapshot {
++            enabled,
++            anonymized_clients,
++            requests_observed,
++            dropped_updates,
++            clients,
++            domains,
++        }
++    }
++}
++
++#[cfg_attr(not(unix), allow(dead_code))]
++fn sort_and_truncate(rows: &mut Vec<TopStat>, limit: usize) {
++    rows.sort_unstable_by(|left, right| {
++        right
++            .count
++            .cmp(&left.count)
++            .then_with(|| left.name.cmp(&right.name))
++    });
++    rows.truncate(limit);
++}
++
++/// 请求端到端耗时的固定分桶上界（毫秒），最后一档为 +Inf。
++const REQUEST_LATENCY_BUCKETS_MS: [u64; 5] = [10, 50, 100, 500, 1_000];
++
++/// 累计耗时与次数，供面板计算平均值。/ Accumulated latency and count for averages.
++#[derive(Default)]
++struct LatencySum {
++    micros: AtomicU64,
++    count: AtomicU64,
++}
++
++impl LatencySum {
++    #[inline]
++    fn add(&self, latency: std::time::Duration) {
++        let micros = u64::try_from(latency.as_micros()).unwrap_or(u64::MAX);
++        self.micros.fetch_add(micros, Ordering::Relaxed);
++        self.count.fetch_add(1, Ordering::Relaxed);
++    }
++}
++
++/// 请求耗时直方图：固定分桶，零分配。/ Request latency histogram with fixed buckets.
++#[derive(Default)]
++struct RequestLatency {
++    total: LatencySum,
++    buckets: [AtomicU64; REQUEST_LATENCY_BUCKETS_MS.len() + 1],
++}
++
++impl RequestLatency {
++    #[inline]
++    fn observe(&self, latency: std::time::Duration) {
++        self.total.add(latency);
++        let millis = u64::try_from(latency.as_millis()).unwrap_or(u64::MAX);
++        let index = REQUEST_LATENCY_BUCKETS_MS
++            .iter()
++            .position(|bound| millis <= *bound)
++            .unwrap_or(REQUEST_LATENCY_BUCKETS_MS.len());
++        self.buckets[index].fetch_add(1, Ordering::Relaxed);
++    }
++}
++
++pub struct PanelMetrics {
++    #[cfg_attr(not(unix), allow(dead_code))]
++    started_at_unix: u64,
++    #[cfg_attr(not(unix), allow(dead_code))]
++    started_at: Instant,
++    requests_total: AtomicU64,
++    requests_inflight: AtomicUsize,
++    cache_lookups_total: AtomicU64,
++    cache_hits_fresh: AtomicU64,
++    cache_hits_stale: AtomicU64,
++    cache_stale_client_timeout: AtomicU64,
++    cache_stale_upstream_failure: AtomicU64,
++    requests_completed: AtomicU64,
++    requests_failed: AtomicU64,
++    requests_cancelled: AtomicU64,
++    request_latency: RequestLatency,
++    upstream_latency: DashMap<Arc<str>, LatencySum>,
++    upstream_rcodes: DashMap<Arc<str>, AtomicU64>,
++    upstream_via: DashMap<Arc<str>, AtomicU64>,
++    pipeline_hits: DashMap<Arc<str>, AtomicU64>,
++    rule_matches: DashMap<Arc<str>, AtomicU64>,
++    upstream_attempts: DashMap<Arc<str>, AtomicU64>,
++    upstream_results: DashMap<Arc<str>, AtomicU64>,
++    metric_series_insert_lock: Mutex<()>,
++    metric_series_dropped: AtomicU64,
++    reload_success: AtomicU64,
++    reload_failure: AtomicU64,
++    reload_sequence: AtomicU64,
++    active_config: RwLock<ActiveConfig>,
++    query_stats: QueryStats,
++}
++
++impl Default for PanelMetrics {
++    fn default() -> Self {
++        Self {
++            started_at_unix: unix_timestamp(),
++            started_at: Instant::now(),
++            requests_total: AtomicU64::new(0),
++            requests_inflight: AtomicUsize::new(0),
++            cache_lookups_total: AtomicU64::new(0),
++            cache_hits_fresh: AtomicU64::new(0),
++            cache_hits_stale: AtomicU64::new(0),
++            cache_stale_client_timeout: AtomicU64::new(0),
++            cache_stale_upstream_failure: AtomicU64::new(0),
++            requests_completed: AtomicU64::new(0),
++            requests_failed: AtomicU64::new(0),
++            requests_cancelled: AtomicU64::new(0),
++            request_latency: RequestLatency::default(),
++            upstream_latency: DashMap::new(),
++            upstream_rcodes: DashMap::new(),
++            upstream_via: DashMap::new(),
++            pipeline_hits: DashMap::new(),
++            rule_matches: DashMap::new(),
++            upstream_attempts: DashMap::new(),
++            upstream_results: DashMap::new(),
++            metric_series_insert_lock: Mutex::new(()),
++            metric_series_dropped: AtomicU64::new(0),
++            reload_success: AtomicU64::new(0),
++            reload_failure: AtomicU64::new(0),
++            reload_sequence: AtomicU64::new(0),
++            active_config: RwLock::new(ActiveConfig::default()),
++            query_stats: QueryStats::default(),
++        }
++    }
++}
++
++impl PanelMetrics {
++    #[cfg_attr(not(unix), allow(dead_code))]
++    #[inline]
++    fn uptime_seconds(&self) -> u64 {
++        self.started_at.elapsed().as_secs()
++    }
++
++    #[inline]
++    pub fn record_request(&self) {
++        self.requests_total.fetch_add(1, Ordering::Relaxed);
++    }
++
++    #[inline]
++    fn record_query(&self, domain: &str, client: IpAddr) {
++        self.query_stats.record(domain, client);
++    }
++
++    #[inline]
++    fn record_cache_lookup(&self) {
++        self.cache_lookups_total.fetch_add(1, Ordering::Relaxed);
++    }
++
++    #[inline]
++    fn record_cache_hit(&self, kind: CacheHitKind) {
++        match kind {
++            CacheHitKind::Fresh => {
++                self.cache_hits_fresh.fetch_add(1, Ordering::Relaxed);
++                return;
++            }
++            CacheHitKind::StaleClientTimeout => {
++                self.cache_stale_client_timeout
++                    .fetch_add(1, Ordering::Relaxed);
++            }
++            CacheHitKind::StaleUpstreamFailure => {
++                self.cache_stale_upstream_failure
++                    .fetch_add(1, Ordering::Relaxed);
++            }
++            _ => {}
++        }
++        self.cache_hits_stale.fetch_add(1, Ordering::Relaxed);
++    }
++
++    /// 累计一次上游耗时；序列数量与键长度受同一上限约束。
++    fn record_upstream_latency(&self, key: Arc<str>, latency: std::time::Duration) {
++        if let Some(entry) = self.upstream_latency.get(&key) {
++            entry.add(latency);
++            return;
++        }
++        if key.len() > MAX_METRIC_KEY_BYTES {
++            self.metric_series_dropped.fetch_add(1, Ordering::Relaxed);
++            return;
++        }
++        let _guard = self.metric_series_insert_lock.lock();
++        if let Some(entry) = self.upstream_latency.get(&key) {
++            entry.add(latency);
++        } else if self.upstream_latency.len() < MAX_METRIC_SERIES_PER_MAP {
++            let sum = LatencySum::default();
++            sum.add(latency);
++            self.upstream_latency.insert(key, sum);
++        } else {
++            self.metric_series_dropped.fetch_add(1, Ordering::Relaxed);
++        }
++    }
++
++    #[inline]
++    fn record_pipeline_hit(&self, pipeline: &str) {
++        self.increment(&self.pipeline_hits, Arc::from(pipeline));
++    }
++
++    #[inline]
++    fn record_rule_match(&self, pipeline: &str, rule: &str, phase: &str) {
++        self.increment(
++            &self.rule_matches,
++            Arc::from(format!("{pipeline}\0{rule}\0{phase}")),
++        );
++    }
++
++    #[inline]
++    fn record_upstream_attempt(&self, upstream: &str, transport: &str) {
++        self.increment(
++            &self.upstream_attempts,
++            Arc::from(format!("{upstream}\0{transport}")),
++        );
++    }
++
++    #[inline]
++    fn record_upstream_result(&self, upstream: &str, transport: &str, result: &str) {
++        self.increment(
++            &self.upstream_results,
++            Arc::from(format!("{upstream}\0{transport}\0{result}")),
++        );
++    }
++
++    fn record_initial_config(&self, sha256: String) {
++        let mut active = self.active_config.write();
++        active.generation = 1;
++        active.sha256 = sha256;
++        active.loaded_at_unix = unix_timestamp();
++        active.last_reload_success = true;
++        active.last_reload_error = None;
++    }
++
++    fn record_reload_success(&self, sha256: String) {
++        let mut active = self.active_config.write();
++        active.generation = active.generation.saturating_add(1).max(1);
++        active.sha256 = sha256;
++        active.loaded_at_unix = unix_timestamp();
++        active.last_reload_success = true;
++        active.last_reload_error = None;
++        self.reload_success.fetch_add(1, Ordering::Relaxed);
++        self.reload_sequence.fetch_add(1, Ordering::Release);
++    }
++
++    #[inline]
++    fn increment(&self, map: &DashMap<Arc<str>, AtomicU64>, key: Arc<str>) {
++        if let Some(counter) = map.get(&key) {
++            counter.fetch_add(1, Ordering::Relaxed);
++            return;
++        }
++        if key.len() > MAX_METRIC_KEY_BYTES {
++            self.metric_series_dropped.fetch_add(1, Ordering::Relaxed);
++            return;
++        }
++
++        let _guard = self.metric_series_insert_lock.lock();
++        if let Some(counter) = map.get(&key) {
++            counter.fetch_add(1, Ordering::Relaxed);
++        } else if map.len() < MAX_METRIC_SERIES_PER_MAP {
++            map.insert(key, AtomicU64::new(1));
++        } else {
++            self.metric_series_dropped.fetch_add(1, Ordering::Relaxed);
++        }
++    }
++
++    fn record_reload_failure(&self, error: &str) {
++        let mut active = self.active_config.write();
++        active.last_reload_success = false;
++        active.last_reload_error = Some(truncate(error, MAX_ERROR_LENGTH));
++        self.reload_failure.fetch_add(1, Ordering::Relaxed);
++        self.reload_sequence.fetch_add(1, Ordering::Release);
++    }
++
++    /// 从观察者收到的配置原文更新摘要与查询统计开关。/ Refresh digest and query-stats switches from the loaded source.
++    fn record_config_loaded(&self, source: &str) {
++        if let Ok(config) = crate::config::parse_config(source) {
++            self.query_stats.configure(
++                config.settings.statistics_enabled,
++                config.settings.statistics_anonymize_client_ip,
++            );
++        }
++        let sha256 = format!("{:x}", Sha256::digest(source.as_bytes()));
++        let initial = self.active_config.read().generation == 0;
++        if initial {
++            self.record_initial_config(sha256);
++        } else {
++            self.record_reload_success(sha256);
++        }
++    }
++
++    #[cfg(unix)]
++    fn config_json(&self) -> serde_json::Value {
++        let active = self.active_config.read().clone();
++        json!({
++            "protocol_version": PROTOCOL_VERSION,
++            "generation": active.generation,
++            "sha256": active.sha256,
++            "loaded_at_unix": active.loaded_at_unix,
++            "reload_sequence": self.reload_sequence.load(Ordering::Acquire),
++            "last_reload": {
++                "success": active.last_reload_success,
++                "error": active.last_reload_error,
++            }
++        })
++    }
++
++    #[cfg(unix)]
++    fn health_json(&self) -> serde_json::Value {
++        let active = self.active_config.read();
++        json!({
++            "protocol_version": PROTOCOL_VERSION,
++            "status": "ok",
++            "pid": std::process::id(),
++            "version": env!("CARGO_PKG_VERSION"),
++            "upstream_commit": option_env!("KIXDNS_UPSTREAM_COMMIT").unwrap_or("unknown"),
++            "patchset": option_env!("KIXDNS_PANEL_PATCHSET").unwrap_or("unknown"),
++            "started_at_unix": self.started_at_unix,
++            "uptime_seconds": self.uptime_seconds(),
++            "config_generation": active.generation,
++            "capabilities": [
++                "stats_top_v1",
++                "config_query_stats_v1",
++                "diagnostics_trace_v1",
++                "config_static_cname_response_v1",
++                "metrics_upstream_precision_v1"
++            ],
++        })
++    }
++
++    #[cfg(unix)]
++    fn stats_json(&self, engine: &Engine, window_seconds: u64, limit: usize) -> serde_json::Value {
++        let state = engine.state.load();
++        let enabled = state.pipeline.settings.statistics_enabled;
++        let anonymized = state.pipeline.settings.statistics_anonymize_client_ip;
++        self.query_stats.configure(enabled, anonymized);
++        let now = unix_timestamp();
++        let snapshot = self.query_stats.snapshot(now, window_seconds, limit);
++        let clients = snapshot
++            .clients
++            .into_iter()
++            .map(|row| json!({"name": row.name, "count": row.count}))
++            .collect::<Vec<_>>();
++        let domains = snapshot
++            .domains
++            .into_iter()
++            .map(|row| json!({"name": row.name, "count": row.count}))
++            .collect::<Vec<_>>();
++        json!({
++            "protocol_version": PROTOCOL_VERSION,
++            "enabled": snapshot.enabled,
++            "anonymized_clients": snapshot.anonymized_clients,
++            "window_seconds": window_seconds,
++            "retention_seconds": QUERY_STATS_BUCKET_SECONDS * QUERY_STATS_BUCKETS as u64,
++            "generated_at_unix": now,
++            "requests_observed": snapshot.requests_observed,
++            "dropped_updates": snapshot.dropped_updates,
++            "clients": clients,
++            "domains": domains,
++        })
++    }
++
++    #[cfg(unix)]
++    fn clear_stats(&self, engine: &Engine) {
++        let state = engine.state.load();
++        self.query_stats.configure(
++            state.pipeline.settings.statistics_enabled,
++            state.pipeline.settings.statistics_anonymize_client_ip,
++        );
++        self.query_stats.clear();
++    }
++
++    #[cfg(unix)]
++    fn render_prometheus(&self, engine: &Engine) -> String {
++        let mut output = String::with_capacity(8_192);
++        metric(
++            &mut output,
++            "kixdns_cache_entries",
++            engine.cache.entry_count(),
++        );
++        self.render_counters(&mut output);
++        output
++    }
++
++    /// 输出不依赖引擎状态的全部序列。/ Render every series that needs no engine state.
++    fn render_counters(&self, output: &mut String) {
++        metric(
++            output,
++            "kixdns_requests_total",
++            self.requests_total.load(Ordering::Relaxed),
++        );
++        metric(
++            output,
++            "kixdns_requests_inflight",
++            self.requests_inflight.load(Ordering::Relaxed),
++        );
++        metric(
++            output,
++            "kixdns_cache_lookups_total",
++            self.cache_lookups_total.load(Ordering::Relaxed),
++        );
++        labeled_metric(
++            output,
++            "kixdns_cache_hits_total",
++            &[("kind", "fresh")],
++            self.cache_hits_fresh.load(Ordering::Relaxed),
++        );
++        labeled_metric(
++            output,
++            "kixdns_cache_hits_total",
++            &[("kind", "stale")],
++            self.cache_hits_stale.load(Ordering::Relaxed),
++        );
++        append_map(
++            output,
++            "kixdns_pipeline_hits_total",
++            &self.pipeline_hits,
++            &["pipeline"],
++        );
++        append_map(
++            output,
++            "kixdns_rule_matches_total",
++            &self.rule_matches,
++            &["pipeline", "rule", "phase"],
++        );
++        append_map(
++            output,
++            "kixdns_upstream_attempts_total",
++            &self.upstream_attempts,
++            &["upstream", "transport"],
++        );
++        append_map(
++            output,
++            "kixdns_upstream_results_total",
++            &self.upstream_results,
++            &["upstream", "transport", "result"],
++        );
++        labeled_metric(
++            output,
++            "kixdns_config_reload_total",
++            &[("result", "success")],
++            self.reload_success.load(Ordering::Relaxed),
++        );
++        labeled_metric(
++            output,
++            "kixdns_config_reload_total",
++            &[("result", "failure")],
++            self.reload_failure.load(Ordering::Relaxed),
++        );
++        metric(
++            output,
++            "kixdns_config_generation",
++            self.active_config.read().generation,
++        );
++        labeled_metric(
++            output,
++            "kixdns_cache_stale_total",
++            &[("reason", "expired")],
++            self.cache_hits_stale
++                .load(Ordering::Relaxed)
++                .saturating_sub(self.cache_stale_client_timeout.load(Ordering::Relaxed))
++                .saturating_sub(self.cache_stale_upstream_failure.load(Ordering::Relaxed)),
++        );
++        labeled_metric(
++            output,
++            "kixdns_cache_stale_total",
++            &[("reason", "client_timeout")],
++            self.cache_stale_client_timeout.load(Ordering::Relaxed),
++        );
++        labeled_metric(
++            output,
++            "kixdns_cache_stale_total",
++            &[("reason", "upstream_failure")],
++            self.cache_stale_upstream_failure.load(Ordering::Relaxed),
++        );
++        for (status, counter) in [
++            ("completed", &self.requests_completed),
++            ("failed", &self.requests_failed),
++            ("cancelled", &self.requests_cancelled),
++        ] {
++            labeled_metric(
++                output,
++                "kixdns_requests_finished_total",
++                &[("status", status)],
++                counter.load(Ordering::Relaxed),
++            );
++        }
++        let mut cumulative = 0u64;
++        for (index, bound) in REQUEST_LATENCY_BUCKETS_MS.iter().enumerate() {
++            cumulative += self.request_latency.buckets[index].load(Ordering::Relaxed);
++            labeled_metric(
++                output,
++                "kixdns_request_latency_ms_bucket",
++                &[("le", &bound.to_string())],
++                cumulative,
++            );
++        }
++        cumulative +=
++            self.request_latency.buckets[REQUEST_LATENCY_BUCKETS_MS.len()].load(Ordering::Relaxed);
++        labeled_metric(
++            output,
++            "kixdns_request_latency_ms_bucket",
++            &[("le", "+Inf")],
++            cumulative,
++        );
++        metric(
++            output,
++            "kixdns_request_latency_ms_sum",
++            format_millis(self.request_latency.total.micros.load(Ordering::Relaxed)),
++        );
++        metric(
++            output,
++            "kixdns_request_latency_ms_count",
++            self.request_latency.total.count.load(Ordering::Relaxed),
++        );
++        append_latency_map(
++            output,
++            "kixdns_upstream_latency_ms",
++            &self.upstream_latency,
++            &["upstream", "transport"],
++        );
++        append_map(
++            output,
++            "kixdns_upstream_rcodes_total",
++            &self.upstream_rcodes,
++            &["upstream", "rcode"],
++        );
++        append_map(
++            output,
++            "kixdns_upstream_via_total",
++            &self.upstream_via,
++            &["upstream", "transport", "via"],
++        );
++        metric(
++            output,
++            "kixdns_panel_metric_series_dropped_total",
++            self.metric_series_dropped.load(Ordering::Relaxed),
++        );
++    }
++}
++
++fn transport_label(transport: crate::config::Transport) -> &'static str {
++    use crate::config::Transport;
++    match transport {
++        Transport::Udp => "udp",
++        Transport::Tcp => "tcp",
++        Transport::TcpUdp => "tcp_udp",
++        Transport::Doh => "doh",
++        Transport::Dot => "dot",
++        Transport::Doq => "doq",
++    }
++}
++
++impl EngineObserver for PanelMetrics {
++    fn request_started(&self, ctx: &RequestContext<'_>) {
++        if !ctx.background_refresh {
++            self.requests_total.fetch_add(1, Ordering::Relaxed);
++            self.requests_inflight.fetch_add(1, Ordering::Relaxed);
++            self.record_query(ctx.qname, ctx.client.ip());
++        }
++        panel_trace::record(
++            "request",
++            "parsed",
++            format!("{} {}", ctx.qtype, ctx.qname),
++            Some(format!(
++                "客户端：{}；监听器：{}",
++                ctx.client.ip(),
++                ctx.listener_label
++            )),
++        );
++    }
++
++    fn request_finished(&self, ctx: &RequestContext<'_>, outcome: &RequestOutcome) {
++        if ctx.background_refresh {
++            return;
++        }
++        self.requests_inflight.fetch_sub(1, Ordering::Relaxed);
++        let counter = match outcome.status {
++            RequestStatus::Completed => &self.requests_completed,
++            RequestStatus::Failed => &self.requests_failed,
++            _ => &self.requests_cancelled,
++        };
++        counter.fetch_add(1, Ordering::Relaxed);
++        self.request_latency.observe(outcome.latency);
++    }
++
++    fn pipeline_selected(&self, ctx: &RequestContext<'_>, pipeline: &str) {
++        if !ctx.background_refresh {
++            self.record_pipeline_hit(pipeline);
++        }
++        if let Some(previous) = panel_trace::current_pipeline()
++            && previous != pipeline
++        {
++            panel_trace::record(
++                "pipeline",
++                "jump",
++                format!("{previous} -> {pipeline}"),
++                None,
++            );
++        }
++        panel_trace::set_pipeline(pipeline);
++        panel_trace::record("pipeline", "selected", pipeline, None);
++    }
++
++    fn rule_matched(&self, _ctx: &RequestContext<'_>, event: &RuleMatched<'_>) {
++        let phase = match event.phase {
++            RulePhase::Request => "request",
++            _ => "response",
++        };
++        self.record_rule_match(event.pipeline, event.rule, phase);
++    }
++
++    fn rule_evaluated(&self, _ctx: &RequestContext<'_>, event: &RuleEvaluated<'_>) {
++        let status = if event.matched { "matched" } else { "missed" };
++        match event.phase {
++            RulePhase::Request => panel_trace::record(
++                "rule",
++                status,
++                event.rule,
++                Some(format!(
++                    "管线：{}；匹配器数：{}",
++                    event.pipeline, event.matchers
++                )),
++            ),
++            _ => panel_trace::record(
++                "response_rule",
++                status,
++                format!(
++                    "响应匹配器 {}",
++                    if event.matched { "命中" } else { "未命中" }
++                ),
++                Some(format!("匹配器数：{}", event.matchers)),
++            ),
++        }
++    }
++
++    fn rule_cache_lookup(&self, _ctx: &RequestContext<'_>, event: &RuleCacheLookup<'_>) {
++        if event.hit {
++            panel_trace::record(
++                "rule_cache",
++                "hit",
++                format!("命中管线 {} 的规则缓存", event.pipeline),
++                Some(format!("已匹配规则：{}", event.matched_rules)),
++            );
++        } else {
++            panel_trace::record(
++                "rule_cache",
++                "miss",
++                format!("管线 {} 的规则缓存未命中", event.pipeline),
++                None,
++            );
++        }
++    }
++
++    fn decision_made(&self, _ctx: &RequestContext<'_>, event: &DecisionMade<'_>) {
++        panel_trace::record_decision(event);
++    }
++
++    fn cache_lookup(&self, ctx: &RequestContext<'_>) {
++        if !ctx.background_refresh {
++            self.record_cache_lookup();
++        }
++    }
++
++    fn cache_miss(&self, _ctx: &RequestContext<'_>) {
++        let pipeline = panel_trace::current_pipeline();
++        panel_trace::record(
++            "response_cache",
++            "miss",
++            "响应缓存未命中",
++            pipeline.map(|pipeline| format!("管线：{pipeline}")),
++        );
++    }
++
++    fn cache_hit(&self, _ctx: &RequestContext<'_>, event: &CacheHit) {
++        self.record_cache_hit(event.kind);
++        let ttl = |value: Option<std::time::Duration>| value.map(|value| value.as_secs());
++        match event.kind {
++            CacheHitKind::Fresh => panel_trace::record(
++                "response_cache",
++                "fresh",
++                "命中新鲜响应缓存",
++                ttl(event.remaining_ttl).map(|seconds| format!("剩余 TTL：{seconds} 秒")),
++            ),
++            CacheHitKind::Stale => panel_trace::record(
++                "response_cache",
++                "stale",
++                "命中过期响应缓存",
++                ttl(event.original_ttl).map(|seconds| format!("原始 TTL：{seconds} 秒")),
++            ),
++            CacheHitKind::StaleClientTimeout => panel_trace::record(
++                "response_cache",
++                "stale",
++                "客户端等待超时，返回过期缓存",
++                None,
++            ),
++            _ => panel_trace::record("response_cache", "stale", "上游失败，返回过期缓存", None),
++        }
++    }
++
++    fn upstream_attempt(&self, _ctx: &RequestContext<'_>, event: &UpstreamAttempt<'_>) {
++        let transport = transport_label(event.transport);
++        self.record_upstream_attempt(event.upstream, transport);
++        let (rule, decided_transport) = panel_trace::current_decision();
++        panel_trace::record(
++            "upstream",
++            "started",
++            format!("准备转发到 {}", event.upstream),
++            Some(format!(
++                "规则：{}；传输：{}",
++                rule.as_deref().unwrap_or("default"),
++                decided_transport.as_deref().unwrap_or(transport)
++            )),
++        );
++    }
++
++    fn upstream_result(&self, _ctx: &RequestContext<'_>, event: &UpstreamResult<'_>) {
++        let transport = transport_label(event.transport);
++        let result = match event.outcome {
++            UpstreamOutcome::Success => "success",
++            UpstreamOutcome::Rejected => "rejected",
++            UpstreamOutcome::Aborted => "aborted",
++            _ => "error",
++        };
++        self.record_upstream_result(event.upstream, transport, result);
++        if !matches!(event.outcome, UpstreamOutcome::Aborted) {
++            self.record_upstream_latency(
++                Arc::from(format!("{}\0{}", event.upstream, transport)),
++                event.latency,
++            );
++            self.increment(
++                &self.upstream_via,
++                Arc::from(format!(
++                    "{}\0{}\0{}",
++                    event.upstream,
++                    transport,
++                    transport_label(event.via)
++                )),
++            );
++            if let Some(rcode) = event.rcode {
++                self.increment(
++                    &self.upstream_rcodes,
++                    Arc::from(format!("{}\0{:?}", event.upstream, rcode)),
++                );
++            }
++        }
++        match event.outcome {
++            UpstreamOutcome::Success => panel_trace::record(
++                "upstream",
++                "succeeded",
++                event.upstream,
++                Some(format!(
++                    "响应码：{}；耗时：{} ms；截断：{}",
++                    event
++                        .rcode
++                        .map_or_else(|| "unknown".to_owned(), |rcode| rcode.to_string()),
++                    event.latency.as_millis(),
++                    event.truncated.unwrap_or(false)
++                )),
++            ),
++            _ => panel_trace::record(
++                "upstream",
++                "failed",
++                event.upstream,
++                event.error.map(|error| format!("{error:#}")),
++            ),
++        }
++    }
++
++    fn config_loaded(&self, event: &ConfigLoaded<'_>) {
++        match event.source {
++            Some(source) => self.record_config_loaded(source),
++            None => {
++                let sha256 = self.active_config.read().sha256.clone();
++                self.record_reload_success(sha256);
++            }
++        }
++    }
++
++    fn config_reload_failed(&self, event: &ConfigReloadFailed<'_>) {
++        self.record_reload_failure(event.error);
++    }
++}
++
++#[cfg(unix)]
++pub async fn serve_admin(
++    path: PathBuf,
++    engine: Engine,
++    metrics: Arc<PanelMetrics>,
++) -> anyhow::Result<()> {
++    use std::os::unix::fs::{FileTypeExt, PermissionsExt};
++    use tokio::net::UnixListener;
++
++    if let Ok(metadata) = std::fs::symlink_metadata(&path) {
++        if !metadata.file_type().is_socket() {
++            anyhow::bail!("管理 Socket 路径已存在且不是 Socket：{}", path.display());
++        }
++        std::fs::remove_file(&path).context("删除遗留管理 Socket 失败")?;
++    }
++    if let Some(parent) = path.parent() {
++        std::fs::create_dir_all(parent).context("创建管理 Socket 目录失败")?;
++    }
++
++    let listener = UnixListener::bind(&path).context("绑定管理 Socket 失败")?;
++    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o660))
++        .context("设置管理 Socket 权限失败")?;
++    tracing::info!(target = "panel", path = %path.display(), "panel control socket started");
++
++    loop {
++        let (stream, _) = listener.accept().await?;
++        let engine = engine.clone();
++        let metrics = Arc::clone(&metrics);
++        tokio::spawn(async move {
++            let io = TokioIo::new(stream);
++            if let Err(error) = hyper::server::conn::http1::Builder::new()
++                .serve_connection(
++                    io,
++                    service_fn(move |request| {
++                        handle_request(request, engine.clone(), Arc::clone(&metrics))
++                    }),
++                )
++                .await
++            {
++                tracing::debug!(target = "panel", error = %error, "panel connection closed");
++            }
++        });
++    }
++}
++
++#[cfg(not(unix))]
++pub async fn serve_admin(
++    _path: PathBuf,
++    _engine: Engine,
++    _metrics: Arc<PanelMetrics>,
++) -> anyhow::Result<()> {
++    anyhow::bail!("当前平台暂不支持 Unix Socket 管理接口")
++}
++
++#[cfg(unix)]
++async fn handle_request(
++    request: Request<Incoming>,
++    engine: Engine,
++    metrics: Arc<PanelMetrics>,
++) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
++    let response = match (request.method(), request.uri().path()) {
++        (&Method::GET, "/v1/health") => json_response(StatusCode::OK, metrics.health_json()),
++        (&Method::GET, "/v1/config/active") => json_response(StatusCode::OK, metrics.config_json()),
++        (&Method::GET, "/v1/metrics") => text_response(
++            StatusCode::OK,
++            "text/plain; version=0.0.4; charset=utf-8",
++            metrics.render_prometheus(&engine),
++        ),
++        (&Method::GET, "/v1/stats/top") => match parse_stats_query(request.uri().query()) {
++            Ok((window_seconds, limit)) => json_response(
++                StatusCode::OK,
++                metrics.stats_json(&engine, window_seconds, limit),
++            ),
++            Err(message) => json_response(
++                StatusCode::BAD_REQUEST,
++                error_json("stats_query_invalid", message),
++            ),
++        },
++        (&Method::POST, "/v1/stats/clear") => {
++            metrics.clear_stats(&engine);
++            json_response(
++                StatusCode::OK,
++                json!({"protocol_version": PROTOCOL_VERSION, "cleared": true}),
++            )
++        }
++        (&Method::POST, "/v1/config/validate") => validate_config(request).await,
++        (&Method::POST, "/v1/diagnostics/trace") => diagnostic_trace(request, engine).await,
++        (&Method::POST, "/v1/cache/flush") => {
++            let response_entries_before = engine.cache.entry_count();
++            let rule_entries_before = engine.rule_cache.entry_count();
++            engine.cache.invalidate_all();
++            engine.rule_cache.invalidate_all();
++            engine.cache.run_pending_tasks();
++            engine.rule_cache.run_pending_tasks();
++            json_response(
++                StatusCode::OK,
++                json!({
++                    "protocol_version": PROTOCOL_VERSION,
++                    "response_entries_before": response_entries_before,
++                    "response_entries_after": engine.cache.entry_count(),
++                    "rule_entries_before": rule_entries_before,
++                    "rule_entries_after": engine.rule_cache.entry_count(),
++                }),
++            )
++        }
++        (&Method::GET | &Method::POST, _) => {
++            json_response(StatusCode::NOT_FOUND, error_json("not_found", "端点不存在"))
++        }
++        _ => json_response(
++            StatusCode::METHOD_NOT_ALLOWED,
++            error_json("method_not_allowed", "请求方法不受支持"),
++        ),
++    };
++    Ok(response)
++}
++
++#[cfg(unix)]
++#[derive(Deserialize)]
++#[serde(deny_unknown_fields)]
++struct DiagnosticRequest {
++    domain: String,
++    record_type: String,
++}
++
++#[cfg(unix)]
++async fn diagnostic_trace(request: Request<Incoming>, engine: Engine) -> Response<Full<Bytes>> {
++    use hickory_proto::op::{Message, MessageType, OpCode, Query};
++    use hickory_proto::rr::{Name, RecordType};
++    use std::str::FromStr;
++
++    let body = match Limited::new(request.into_body(), MAX_DIAGNOSTIC_BODY)
++        .collect()
++        .await
++    {
++        Ok(body) => body.to_bytes(),
++        Err(_) => {
++            return json_response(
++                StatusCode::PAYLOAD_TOO_LARGE,
++                error_json("diagnostic_body_invalid", "诊断请求不能超过 2 KiB"),
++            );
++        }
++    };
++    let request = match serde_json::from_slice::<DiagnosticRequest>(&body) {
++        Ok(request) => request,
++        Err(error) => {
++            return json_response(
++                StatusCode::BAD_REQUEST,
++                error_json(
++                    "diagnostic_request_invalid",
++                    &format!("诊断请求无效：{error}"),
++                ),
++            );
++        }
++    };
++    if request.domain.len() > 253 {
++        return json_response(
++            StatusCode::BAD_REQUEST,
++            error_json("diagnostic_domain_invalid", "域名过长"),
++        );
++    }
++    let name = match Name::from_ascii(&request.domain) {
++        Ok(name) => name,
++        Err(error) => {
++            return json_response(
++                StatusCode::BAD_REQUEST,
++                error_json("diagnostic_domain_invalid", &format!("域名无效：{error}")),
++            );
++        }
++    };
++    let record_type = request.record_type.trim().to_ascii_uppercase();
++    if !matches!(
++        record_type.as_str(),
++        "A" | "AAAA" | "CNAME" | "MX" | "NS" | "PTR" | "SOA" | "SRV" | "TXT"
++    ) {
++        return json_response(
++            StatusCode::BAD_REQUEST,
++            error_json("diagnostic_record_type_invalid", "不支持的 DNS 记录类型"),
++        );
++    }
++    let record_type = match RecordType::from_str(&record_type) {
++        Ok(record_type) => record_type,
++        Err(error) => {
++            return json_response(
++                StatusCode::BAD_REQUEST,
++                error_json(
++                    "diagnostic_record_type_invalid",
++                    &format!("记录类型无效：{error}"),
++                ),
++            );
++        }
++    };
++    let request_id = (unix_timestamp() as u16) ^ (std::process::id() as u16);
++    let mut message = Message::new(request_id, MessageType::Query, OpCode::Query);
++    message.metadata.recursion_desired = true;
++    message.add_query(Query::query(name, record_type));
++    let packet = match message.to_vec() {
++        Ok(packet) => packet,
++        Err(error) => {
++            return json_response(
++                StatusCode::INTERNAL_SERVER_ERROR,
++                error_json(
++                    "diagnostic_encode_failed",
++                    &format!("编码 DNS 请求失败：{error}"),
++                ),
++            );
++        }
++    };
++    let started = Instant::now();
++    let future = crate::panel_trace::capture(engine.handle_packet(
++        &packet,
++        "127.0.0.1:0".parse().expect("valid loopback address"),
++    ));
++    let (result, steps, trace_truncated) =
++        match tokio::time::timeout(std::time::Duration::from_secs(6), future).await {
++            Ok(result) => result,
++            Err(_) => {
++                return json_response(
++                    StatusCode::GATEWAY_TIMEOUT,
++                    error_json("diagnostic_timeout", "DNS 诊断超过 6 秒"),
++                );
++            }
++        };
++    let response = match result.and_then(|bytes| Message::from_vec(&bytes).map_err(Into::into)) {
++        Ok(response) => response,
++        Err(error) => {
++            return json_response(
++                StatusCode::BAD_GATEWAY,
++                error_json(
++                    "diagnostic_query_failed",
++                    &truncate(&format!("{error:#}"), MAX_ERROR_LENGTH),
++                ),
++            );
++        }
++    };
++    json_response(
++        StatusCode::OK,
++        json!({
++            "protocol_version": PROTOCOL_VERSION,
++            "domain": request.domain,
++            "record_type": record_type.to_string(),
++            "response_code": response.metadata.response_code.to_string(),
++            "elapsed_ms": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
++            "truncated": response.metadata.truncation,
++            "answers": response.answers.iter().map(ToString::to_string).collect::<Vec<_>>(),
++            "trace_truncated": trace_truncated,
++            "trace": steps,
++        }),
++    )
++}
++
++#[cfg(unix)]
++fn parse_stats_query(query: Option<&str>) -> Result<(u64, usize), &'static str> {
++    let mut window_seconds = 86_400;
++    let mut limit = 20usize;
++    for pair in query.into_iter().flat_map(|query| query.split('&')) {
++        if pair.is_empty() {
++            continue;
++        }
++        let Some((key, value)) = pair.split_once('=') else {
++            return Err("查询参数格式无效");
++        };
++        match key {
++            "window" => {
++                window_seconds = value.parse().map_err(|_| "统计窗口无效")?;
++                if !matches!(window_seconds, 3_600 | 21_600 | 86_400) {
++                    return Err("统计窗口仅支持 3600、21600 或 86400 秒");
++                }
++            }
++            "limit" => {
++                limit = value.parse().map_err(|_| "排行数量无效")?;
++                if !(1..=50).contains(&limit) {
++                    return Err("排行数量必须在 1 到 50 之间");
++                }
++            }
++            _ => return Err("包含不受支持的查询参数"),
++        }
++    }
++    Ok((window_seconds, limit))
++}
++
++#[cfg(unix)]
++async fn validate_config(request: Request<Incoming>) -> Response<Full<Bytes>> {
++    let body = match Limited::new(request.into_body(), MAX_CONFIG_BODY)
++        .collect()
++        .await
++    {
++        Ok(body) => body.to_bytes(),
++        Err(error) => {
++            let message = if error.is::<http_body_util::LengthLimitError>() {
++                "配置不能超过 4 MiB".to_owned()
++            } else {
++                "读取配置请求失败".to_owned()
++            };
++            return json_response(
++                StatusCode::PAYLOAD_TOO_LARGE,
++                error_json("config_body_invalid", &message),
++            );
++        }
++    };
++
++    // 与引擎启动完全相同的校验路径，含监听地址与 DoH 证书检查。
++    // The exact validation the engine runs at startup, listener and DoH checks included.
++    match crate::config::validate(std::str::from_utf8(&body).unwrap_or_default()) {
++        Ok(report) => json_response(
++            StatusCode::OK,
++            json!({
++                "protocol_version": PROTOCOL_VERSION,
++                "valid": true,
++                "pipeline_count": report.pipeline_count,
++                "rule_count": report.rule_count,
++            }),
++        ),
++        Err(error) => json_response(
++            StatusCode::UNPROCESSABLE_ENTITY,
++            error_json(
++                "config_invalid",
++                &truncate(&format!("{error:#}"), MAX_ERROR_LENGTH),
++            ),
++        ),
++    }
++}
++
++#[cfg(unix)]
++fn json_response(status: StatusCode, value: serde_json::Value) -> Response<Full<Bytes>> {
++    text_response(status, "application/json; charset=utf-8", value.to_string())
++}
++
++#[cfg(unix)]
++fn text_response(
++    status: StatusCode,
++    content_type: &'static str,
++    body: String,
++) -> Response<Full<Bytes>> {
++    let mut response = Response::new(Full::new(Bytes::from(body)));
++    *response.status_mut() = status;
++    response
++        .headers_mut()
++        .insert(CONTENT_TYPE, HeaderValue::from_static(content_type));
++    response
++        .headers_mut()
++        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
++    response.headers_mut().insert(
++        "x-content-type-options",
++        HeaderValue::from_static("nosniff"),
++    );
++    response
++}
++
++#[cfg(unix)]
++fn error_json(code: &str, message: &str) -> serde_json::Value {
++    json!({ "protocol_version": PROTOCOL_VERSION, "error": { "code": code, "message": message } })
++}
++
++fn append_map(
++    output: &mut String,
++    name: &str,
++    map: &DashMap<Arc<str>, AtomicU64>,
++    labels: &[&str],
++) {
++    let mut rows = map
++        .iter()
++        .map(|entry| {
++            (
++                entry.key().to_string(),
++                entry.value().load(Ordering::Relaxed),
++            )
++        })
++        .collect::<Vec<_>>();
++    rows.sort_by(|left, right| left.0.cmp(&right.0));
++    for (key, value) in rows {
++        let values = key.split('\0').collect::<Vec<_>>();
++        if values.len() != labels.len() {
++            continue;
++        }
++        let pairs = labels
++            .iter()
++            .zip(values)
++            .map(|(label, value)| (*label, value))
++            .collect::<Vec<_>>();
++        labeled_metric(output, name, &pairs, value);
++    }
++}
++
++fn append_latency_map(
++    output: &mut String,
++    name: &str,
++    map: &DashMap<Arc<str>, LatencySum>,
++    labels: &[&str],
++) {
++    let mut rows = map
++        .iter()
++        .map(|entry| {
++            (
++                entry.key().to_string(),
++                entry.value().micros.load(Ordering::Relaxed),
++                entry.value().count.load(Ordering::Relaxed),
++            )
++        })
++        .collect::<Vec<_>>();
++    rows.sort_by(|left, right| left.0.cmp(&right.0));
++    for (key, micros, count) in rows {
++        let values = key.split('\0').collect::<Vec<_>>();
++        if values.len() != labels.len() {
++            continue;
++        }
++        let pairs = labels
++            .iter()
++            .zip(values)
++            .map(|(label, value)| (*label, value))
++            .collect::<Vec<_>>();
++        labeled_metric(
++            output,
++            &format!("{name}_sum"),
++            &pairs,
++            format_millis(micros),
++        );
++        labeled_metric(output, &format!("{name}_count"), &pairs, count);
++    }
++}
++
++/// 微秒累计值以毫秒输出，保留三位小数。/ Render accumulated microseconds as milliseconds.
++fn format_millis(micros: u64) -> String {
++    format!("{}.{:03}", micros / 1_000, micros % 1_000)
++}
++
++fn metric(output: &mut String, name: &str, value: impl std::fmt::Display) {
++    use std::fmt::Write;
++    let _ = writeln!(output, "{name} {value}");
++}
++
++fn labeled_metric(
++    output: &mut String,
++    name: &str,
++    labels: &[(&str, &str)],
++    value: impl std::fmt::Display,
++) {
++    use std::fmt::Write;
++    let _ = write!(output, "{name}{{");
++    for (index, (label, label_value)) in labels.iter().enumerate() {
++        if index > 0 {
++            output.push(',');
++        }
++        let _ = write!(output, "{label}=\"{}\"", escape_label(label_value));
++    }
++    let _ = writeln!(output, "}} {value}");
++}
++
++fn escape_label(value: &str) -> String {
++    value
++        .replace('\\', "\\\\")
++        .replace('\n', "\\n")
++        .replace('"', "\\\"")
++}
++
++fn truncate(value: &str, max_length: usize) -> String {
++    value.chars().take(max_length).collect()
++}
++
++fn unix_timestamp() -> u64 {
++    SystemTime::now()
++        .duration_since(UNIX_EPOCH)
++        .map_or(0, |duration| duration.as_secs())
++}
++
++#[cfg(test)]
++mod tests {
++    use std::net::IpAddr;
++
++    use super::{MAX_METRIC_SERIES_PER_MAP, PanelMetrics, QUERY_STATS_DOMAIN_CAP, QueryStats};
++
++    #[test]
++    fn uptime_uses_monotonic_clock_after_wall_clock_rewind() {
++        let metrics = PanelMetrics {
++            started_at_unix: super::unix_timestamp().saturating_add(3_600),
++            started_at: std::time::Instant::now() - std::time::Duration::from_secs(61),
++            ..PanelMetrics::default()
++        };
++
++        assert!(metrics.uptime_seconds() >= 61);
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn escapes_prometheus_labels() {
++        assert_eq!(super::escape_label("a\\b\n\"c"), "a\\\\b\\n\\\"c");
++    }
++
++    #[test]
++    fn caps_metric_keys_and_counts_dropped_series() {
++        let metrics = PanelMetrics::default();
++        for index in 0..MAX_METRIC_SERIES_PER_MAP + 10 {
++            metrics.record_pipeline_hit(&format!("pipeline-{index}"));
++        }
++        metrics.record_pipeline_hit("pipeline-0");
++
++        assert_eq!(metrics.pipeline_hits.len(), MAX_METRIC_SERIES_PER_MAP);
++        assert_eq!(
++            metrics.metric_series_dropped.load(super::Ordering::Relaxed),
++            10
++        );
++        assert_eq!(
++            metrics
++                .pipeline_hits
++                .get("pipeline-0")
++                .unwrap()
++                .load(super::Ordering::Relaxed),
++            2
++        );
++    }
++
++    #[test]
++    fn observer_events_drive_counters_and_config_state() {
++        use crate::observe::{
++            ConfigLoaded, ConfigReloadFailed, DecisionKind, EngineObserver, RequestContext,
++            RequestOutcome, RequestStatus, RuleMatched, RulePhase,
++        };
++        use hickory_proto::rr::{DNSClass, RecordType};
++
++        let metrics = PanelMetrics::default();
++        let source = r#"{"settings":{"statistics_enabled":true}}"#;
++        metrics.config_loaded(&ConfigLoaded {
++            path: Some(std::path::Path::new("pipeline.json")),
++            generation: 1,
++            source: Some(source),
++        });
++        {
++            let active = metrics.active_config.read();
++            assert_eq!(active.generation, 1);
++            assert_eq!(active.sha256.len(), 64);
++            assert!(active.last_reload_success);
++        }
++        assert_eq!(metrics.reload_success.load(super::Ordering::Relaxed), 0);
++
++        let ctx = RequestContext {
++            request_id: 1,
++            listener_label: "default",
++            client: "192.168.1.9:5353".parse().unwrap(),
++            qname: "example.com",
++            qtype: RecordType::A,
++            qclass: DNSClass::IN,
++            background_refresh: false,
++        };
++        metrics.request_started(&ctx);
++        metrics.pipeline_selected(&ctx, "main");
++        metrics.cache_lookup(&ctx);
++        metrics.rule_matched(
++            &ctx,
++            &RuleMatched {
++                pipeline: "main",
++                rule: "forward-all",
++                phase: RulePhase::Request,
++                decision: DecisionKind::Forward,
++                fast_path: false,
++            },
++        );
++        assert_eq!(metrics.requests_inflight.load(super::Ordering::Relaxed), 1);
++        metrics.request_finished(
++            &ctx,
++            &RequestOutcome {
++                latency: std::time::Duration::from_millis(1),
++                status: RequestStatus::Completed,
++            },
++        );
++
++        let background = RequestContext {
++            background_refresh: true,
++            ..ctx
++        };
++        metrics.request_started(&background);
++        metrics.pipeline_selected(&background, "main");
++        metrics.cache_lookup(&background);
++
++        assert_eq!(metrics.requests_total.load(super::Ordering::Relaxed), 1);
++        assert_eq!(metrics.requests_inflight.load(super::Ordering::Relaxed), 0);
++        assert_eq!(
++            metrics.cache_lookups_total.load(super::Ordering::Relaxed),
++            1
++        );
++        assert_eq!(
++            metrics
++                .pipeline_hits
++                .get("main")
++                .unwrap()
++                .load(super::Ordering::Relaxed),
++            1
++        );
++        assert_eq!(
++            metrics
++                .rule_matches
++                .get("main\0forward-all\0request")
++                .unwrap()
++                .load(super::Ordering::Relaxed),
++            1
++        );
++        let now = super::unix_timestamp();
++        let snapshot = metrics.query_stats.snapshot(now, 3_600, 20);
++        assert!(snapshot.enabled);
++        assert_eq!(snapshot.requests_observed, 1);
++        assert_eq!(snapshot.domains[0].name, "example.com");
++
++        metrics.config_reload_failed(&ConfigReloadFailed {
++            path: std::path::Path::new("pipeline.json"),
++            error: "broken",
++        });
++        metrics.config_loaded(&ConfigLoaded {
++            path: Some(std::path::Path::new("pipeline.json")),
++            generation: 2,
++            source: Some("{}"),
++        });
++        let active = metrics.active_config.read();
++        assert_eq!(active.generation, 2);
++        assert_eq!(metrics.reload_failure.load(super::Ordering::Relaxed), 1);
++        assert_eq!(metrics.reload_success.load(super::Ordering::Relaxed), 1);
++        assert!(!metrics.query_stats.snapshot(now, 3_600, 20).enabled);
++    }
++
++    #[test]
++    fn latency_rcode_via_and_stale_reason_series_render() {
++        use crate::config::Transport;
++        use crate::observe::{
++            CacheHit, CacheHitKind, EngineObserver, RequestContext, RequestOutcome, RequestStatus,
++            UpstreamOutcome, UpstreamResult,
++        };
++        use hickory_proto::op::ResponseCode;
++        use hickory_proto::rr::{DNSClass, RecordType};
++        use std::time::Duration;
++
++        let metrics = PanelMetrics::default();
++        let ctx = RequestContext {
++            request_id: 1,
++            listener_label: "default",
++            client: "127.0.0.1:5353".parse().unwrap(),
++            qname: "example.com",
++            qtype: RecordType::A,
++            qclass: DNSClass::IN,
++            background_refresh: false,
++        };
++        let result = |outcome, via, rcode, millis| UpstreamResult {
++            upstream: "1.1.1.1:53",
++            transport: Transport::Udp,
++            outcome,
++            via,
++            latency: Duration::from_millis(millis),
++            rcode,
++            truncated: Some(false),
++            error: None,
++        };
++        metrics.upstream_result(
++            &ctx,
++            &result(
++                UpstreamOutcome::Success,
++                Transport::Udp,
++                Some(ResponseCode::NoError),
++                12,
++            ),
++        );
++        metrics.upstream_result(
++            &ctx,
++            &result(
++                UpstreamOutcome::Success,
++                Transport::Tcp,
++                Some(ResponseCode::NXDomain),
++                30,
++            ),
++        );
++        // 竞争落败不计入耗时、响应码和传输 / aborted attempts never reach latency, rcode or via
++        metrics.upstream_result(
++            &ctx,
++            &result(UpstreamOutcome::Aborted, Transport::Udp, None, 500),
++        );
++
++        for (kind, remaining) in [
++            (CacheHitKind::Fresh, Some(Duration::from_secs(30))),
++            (CacheHitKind::Stale, None),
++            (CacheHitKind::StaleClientTimeout, None),
++            (CacheHitKind::StaleUpstreamFailure, None),
++        ] {
++            metrics.cache_hit(
++                &ctx,
++                &CacheHit {
++                    kind,
++                    remaining_ttl: remaining,
++                    original_ttl: None,
++                },
++            );
++        }
++
++        metrics.request_started(&ctx);
++        metrics.request_finished(
++            &ctx,
++            &RequestOutcome {
++                latency: Duration::from_millis(7),
++                status: RequestStatus::Completed,
++            },
++        );
++        metrics.request_started(&ctx);
++        metrics.request_finished(
++            &ctx,
++            &RequestOutcome {
++                latency: Duration::from_millis(1_500),
++                status: RequestStatus::Cancelled,
++            },
++        );
++
++        let mut output = String::new();
++        metrics.render_counters(&mut output);
++        let has = |line: &str| output.lines().any(|candidate| candidate == line);
++        assert!(has("kixdns_cache_hits_total{kind=\"stale\"} 3"));
++        assert!(has("kixdns_cache_stale_total{reason=\"expired\"} 1"));
++        assert!(has("kixdns_cache_stale_total{reason=\"client_timeout\"} 1"));
++        assert!(has(
++            "kixdns_cache_stale_total{reason=\"upstream_failure\"} 1"
++        ));
++        assert!(has(
++            "kixdns_requests_finished_total{status=\"completed\"} 1"
++        ));
++        assert!(has(
++            "kixdns_requests_finished_total{status=\"cancelled\"} 1"
++        ));
++        assert!(has("kixdns_request_latency_ms_bucket{le=\"10\"} 1"));
++        assert!(has("kixdns_request_latency_ms_bucket{le=\"1000\"} 1"));
++        assert!(has("kixdns_request_latency_ms_bucket{le=\"+Inf\"} 2"));
++        assert!(has("kixdns_request_latency_ms_sum 1507.000"));
++        assert!(has("kixdns_request_latency_ms_count 2"));
++        assert!(has(
++            "kixdns_upstream_latency_ms_sum{upstream=\"1.1.1.1:53\",transport=\"udp\"} 42.000"
++        ));
++        assert!(has(
++            "kixdns_upstream_latency_ms_count{upstream=\"1.1.1.1:53\",transport=\"udp\"} 2"
++        ));
++        assert!(has(
++            "kixdns_upstream_rcodes_total{upstream=\"1.1.1.1:53\",rcode=\"NoError\"} 1"
++        ));
++        assert!(has(
++            "kixdns_upstream_rcodes_total{upstream=\"1.1.1.1:53\",rcode=\"NXDomain\"} 1"
++        ));
++        assert!(has(
++            "kixdns_upstream_via_total{upstream=\"1.1.1.1:53\",transport=\"udp\",via=\"tcp\"} 1"
++        ));
++        assert!(has(
++            "kixdns_upstream_results_total{upstream=\"1.1.1.1:53\",transport=\"udp\",result=\"aborted\"} 1"
++        ));
++        assert_eq!(super::format_millis(1_234_567), "1234.567");
++    }
++
++    #[test]
++    fn ranks_domains_and_clients_with_anonymization() {
++        let stats = QueryStats::default();
++        stats.configure(true, true);
++        let now = 100 * super::QUERY_STATS_BUCKET_SECONDS + 120;
++        for _ in 0..3 {
++            stats.record_at("example.com", "192.168.1.42".parse().unwrap(), true, now);
++        }
++        stats.record_at("other.test", "192.168.2.9".parse().unwrap(), true, now);
++
++        let snapshot = stats.snapshot(now, 3_600, 20);
++        assert!(snapshot.enabled);
++        assert!(snapshot.anonymized_clients);
++        assert_eq!(snapshot.requests_observed, 4);
++        assert_eq!(snapshot.domains[0].name, "example.com");
++        assert_eq!(snapshot.domains[0].count, 3);
++        assert_eq!(snapshot.clients[0].name, "192.168.1.0/24");
++        assert_eq!(snapshot.clients[0].count, 3);
++    }
++
++    #[test]
++    fn clears_rankings_when_collection_is_disabled() {
++        let stats = QueryStats::default();
++        let client: IpAddr = "127.0.0.1".parse().unwrap();
++        stats.configure(true, false);
++        stats.record_at("example.com", client, false, 3_600);
++        assert_eq!(stats.snapshot(3_600, 3_600, 20).requests_observed, 1);
++
++        stats.configure(false, false);
++        let snapshot = stats.snapshot(3_600, 3_600, 20);
++        assert!(!snapshot.enabled);
++        assert!(snapshot.domains.is_empty());
++        assert!(snapshot.clients.is_empty());
++    }
++
++    #[test]
++    fn caps_unique_domains_and_reports_dropped_updates() {
++        let stats = QueryStats::default();
++        stats.configure(true, false);
++        let client: IpAddr = "127.0.0.1".parse().unwrap();
++        for index in 0..QUERY_STATS_DOMAIN_CAP + 8 {
++            stats.record_at(&format!("{index}.example"), client, false, 3_600);
++        }
++
++        let snapshot = stats.snapshot(3_600, 3_600, QUERY_STATS_DOMAIN_CAP + 8);
++        assert_eq!(snapshot.domains.len(), QUERY_STATS_DOMAIN_CAP);
++        assert_eq!(snapshot.dropped_updates, 8);
++    }
++}
+diff --git a/src/panel_trace.rs b/src/panel_trace.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..3ae4bf7fe58bd1e1730d021845d8d2947d9d8084
+--- /dev/null
++++ b/src/panel_trace.rs
+@@ -0,0 +1,177 @@
++use std::cell::RefCell;
++use std::future::Future;
++use std::time::Instant;
++
++use serde::Serialize;
++
++use crate::observe::{DecisionDetail, DecisionMade};
++
++const MAX_STEPS: usize = 128;
++const MAX_LABEL_BYTES: usize = 256;
++const MAX_DETAIL_BYTES: usize = 1_024;
++
++#[derive(Clone, Debug, Serialize)]
++pub struct TraceStep {
++    pub stage: &'static str,
++    pub status: &'static str,
++    pub label: String,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub detail: Option<String>,
++    pub elapsed_ms: u64,
++}
++
++struct Collector {
++    started: Instant,
++    steps: Vec<TraceStep>,
++    truncated: bool,
++    pipeline: Option<String>,
++    decision_rule: Option<String>,
++    decision_transport: Option<String>,
++}
++
++tokio::task_local! {
++    static TRACE: RefCell<Collector>;
++}
++
++pub async fn capture<F>(future: F) -> (F::Output, Vec<TraceStep>, bool)
++where
++    F: Future,
++{
++    TRACE
++        .scope(
++            RefCell::new(Collector {
++                started: Instant::now(),
++                steps: Vec::new(),
++                truncated: false,
++                pipeline: None,
++                decision_rule: None,
++                decision_transport: None,
++            }),
++            async move {
++                let output = future.await;
++                let (steps, truncated) = TRACE.with(|trace| {
++                    let mut trace = trace.borrow_mut();
++                    (std::mem::take(&mut trace.steps), trace.truncated)
++                });
++                (output, steps, truncated)
++            },
++        )
++        .await
++}
++
++pub fn record(
++    stage: &'static str,
++    status: &'static str,
++    label: impl Into<String>,
++    detail: Option<String>,
++) {
++    let _ = TRACE.try_with(|trace| {
++        let mut trace = trace.borrow_mut();
++        if trace.steps.len() >= MAX_STEPS {
++            trace.truncated = true;
++            return;
++        }
++        let elapsed_ms = u64::try_from(trace.started.elapsed().as_millis()).unwrap_or(u64::MAX);
++        trace.steps.push(TraceStep {
++            stage,
++            status,
++            label: truncate(label.into(), MAX_LABEL_BYTES),
++            detail: detail.map(|value| truncate(value, MAX_DETAIL_BYTES)),
++            elapsed_ms,
++        });
++    });
++}
++
++pub fn record_decision(event: &DecisionMade<'_>) {
++    match event.detail {
++        DecisionDetail::Static { rcode, answers } => record(
++            "decision",
++            "selected",
++            format!("静态响应 {rcode}"),
++            Some(format!("答案记录数：{answers}")),
++        ),
++        DecisionDetail::Forward {
++            upstream,
++            transport,
++        } => {
++            let rule = event.rule.unwrap_or("default");
++            let _ = TRACE.try_with(|trace| {
++                let mut trace = trace.borrow_mut();
++                trace.decision_rule = Some(rule.to_owned());
++                trace.decision_transport = Some(format!("{transport:?}"));
++            });
++            record(
++                "decision",
++                "selected",
++                format!("规则 {rule} 转发"),
++                Some(format!("目标：{upstream}；传输：{transport:?}")),
++            )
++        }
++        DecisionDetail::Jump { pipeline } => record(
++            "decision",
++            "selected",
++            format!("跳转到管线 {pipeline}"),
++            None,
++        ),
++    }
++}
++
++/// 记录当前请求最近选中的管线，供缺少管线上下文的事件补充明细。
++pub fn set_pipeline(pipeline: &str) {
++    let _ = TRACE.try_with(|trace| {
++        trace.borrow_mut().pipeline = Some(pipeline.to_owned());
++    });
++}
++
++/// 最近一次转发决策的规则名与传输描述，供上游步骤补充明细。
++pub fn current_decision() -> (Option<String>, Option<String>) {
++    TRACE
++        .try_with(|trace| {
++            let trace = trace.borrow();
++            (
++                trace.decision_rule.clone(),
++                trace.decision_transport.clone(),
++            )
++        })
++        .unwrap_or((None, None))
++}
++
++pub fn current_pipeline() -> Option<String> {
++    TRACE
++        .try_with(|trace| trace.borrow().pipeline.clone())
++        .ok()
++        .flatten()
++}
++
++fn truncate(mut value: String, limit: usize) -> String {
++    if value.len() <= limit {
++        return value;
++    }
++    let mut boundary = limit.saturating_sub(3);
++    while !value.is_char_boundary(boundary) {
++        boundary = boundary.saturating_sub(1);
++    }
++    value.truncate(boundary);
++    value.push_str("...");
++    value
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{MAX_STEPS, capture, record};
++
++    #[tokio::test]
++    async fn captures_bounded_steps_only_inside_scope() {
++        record("outside", "ignored", "ignored", None);
++        let (value, steps, truncated) = capture(async {
++            for index in 0..=MAX_STEPS {
++                record("rule", "checked", format!("rule-{index}"), None);
++            }
++            7
++        })
++        .await;
++        assert_eq!(value, 7);
++        assert_eq!(steps.len(), MAX_STEPS);
++        assert!(truncated);
++    }
++}
