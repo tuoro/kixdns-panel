@@ -104,7 +104,7 @@ test('Geo 维护结果离开页面后销毁', async ({ page }) => {
   await expect(page.locator('.geo-data-success')).toHaveCount(0)
 })
 
-test('DNS 诊断在结果顶部显示实际命中的规则', async ({ page }) => {
+test('DNS 诊断在结果顶部显示实际命中的规则 @responsive', async ({ page }) => {
   await open(page, '/diagnostics')
   await page.getByRole('button', { name: '执行查询' }).click()
 
@@ -146,7 +146,7 @@ test('默认用完整方案创建并保留自由编辑入口', async ({ page }) 
   await expect(page.getByRole('heading', { name: '分流规则' })).toHaveCount(0)
 })
 
-test('域名映射独立维护、优先序列化且不在 Pipeline 页面重复展示', async ({ page }) => {
+test('域名映射独立维护、优先序列化且不在 Pipeline 页面重复展示 @responsive', async ({ page }) => {
   await open(page, '/config')
   await page.getByRole('button', { name: '域名映射', exact: true }).click()
   await expect(page.getByText('最高优先级')).toBeVisible()
@@ -200,7 +200,7 @@ test('入口分流使用渐进式条件关系编辑', async ({ page }) => {
   await expect(selector.getByText('任一条件成立时分流')).toBeVisible()
 })
 
-test('处理流程仅在多条件时显示条件关系', async ({ page }) => {
+test('处理流程仅在多条件时显示条件关系 @responsive', async ({ page }) => {
   await open(page, '/config')
   await openManualConfig(page)
   const rule = page.locator('.rule-block').first()
@@ -227,7 +227,7 @@ test('处理流程仅在多条件时显示条件关系', async ({ page }) => {
   await expectNoPageOverflow(page)
 })
 
-test('一键规则支持模板、组合条件、双响应分支和再次编辑', async ({ page }) => {
+test('一键规则支持模板、组合条件、双响应分支和再次编辑 @responsive', async ({ page }) => {
   await open(page, '/config')
   await openManualConfig(page)
   await page.getByRole('button', { name: '添加 Pipeline', exact: true }).click()
@@ -295,7 +295,7 @@ test('一键规则支持模板、组合条件、双响应分支和再次编辑',
   await expectNoPageOverflow(page)
 })
 
-test('规则支持单条和当前 Pipeline 批量收起展开', async ({ page }) => {
+test('规则支持单条和当前 Pipeline 批量收起展开 @responsive', async ({ page }) => {
   await open(page, '/config')
   await openManualConfig(page)
   const pipeline = page.locator('.pipeline-block').first()
@@ -316,7 +316,7 @@ test('规则支持单条和当前 Pipeline 批量收起展开', async ({ page })
   await expectNoPageOverflow(page)
 })
 
-test('规则显示控制流并提示被前方兜底规则遮挡', async ({ page }) => {
+test('规则显示控制流并提示被前方兜底规则遮挡 @responsive', async ({ page }) => {
   await open(page, '/config')
   await openManualConfig(page)
   const pipeline = page.locator('.pipeline-block').first()
@@ -336,7 +336,7 @@ test('规则显示控制流并提示被前方兜底规则遮挡', async ({ page 
   await expectNoPageOverflow(page)
 })
 
-test('规则支持在当前 Pipeline 内快捷调整执行顺序', async ({ page }) => {
+test('规则支持在当前 Pipeline 内快捷调整执行顺序 @responsive', async ({ page }) => {
   await open(page, '/config')
   await openManualConfig(page)
   const pipeline = page.locator('.pipeline-block').first()
@@ -413,7 +413,7 @@ test('操作审计可按动作筛选', async ({ page }) => {
   await expect(page.locator('.audit-line')).toContainText('config.geo_data.schedule.apply')
 })
 
-test('主页面不会产生视口级横向溢出', async ({ page }) => {
+test('主页面不会产生视口级横向溢出 @responsive', async ({ page }) => {
   for (const path of ['/', '/config', '/logs', '/diagnostics', '/system']) {
     await open(page, path)
     await expectNoPageOverflow(page)

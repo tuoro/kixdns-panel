@@ -1,14 +1,28 @@
 import { expect, test, type Page } from '@playwright/test'
 
+/**
+ * 请求总数在窄屏缩写成万/亿，宽屏给完整数字。
+ * 九位数在手机上即使不断行也会挤掉旁边的单位，所以这是有意的差异，
+ * 断言跟着视口走而不是写死一个字符串。
+ * The request total is abbreviated on narrow viewports and written out in
+ * full on wide ones. Nine digits squeeze out the adjacent unit on a phone
+ * even without wrapping, so the difference is deliberate and the assertion
+ * follows the viewport instead of hardcoding one string.
+ */
+function expectedTotal(page: Page): string {
+  const width = page.viewportSize()?.width ?? 0
+  return width <= 700 ? '1,284.7 万' : '12,847,392'
+}
+
 async function openOverview(page: Page): Promise<void> {
   await page.goto('/')
   await expect(page.getByRole('heading', { name: '运行概览', exact: true })).toBeVisible()
   await expect(page.locator('.overview-total-value')).toBeVisible()
 }
 
-test('首页展示精确分布，页签可用键盘切换且完整保留三个视图', async ({ page }) => {
+test('首页展示精确分布，页签可用键盘切换且完整保留三个视图 @responsive', async ({ page }) => {
   await openOverview(page)
-  await expect(page.locator('.overview-total-value')).toHaveText('12,847,392')
+  await expect(page.locator('.overview-total-value')).toHaveText(expectedTotal(page))
   await expect(page.locator('.overview-pipeline-list li')).toHaveCount(3)
   const shares = await page.locator('.overview-distribution-segment').evaluateAll((segments) =>
     segments.map((segment) => Number.parseFloat((segment as HTMLElement).style.width)),
@@ -76,7 +90,7 @@ test('首次未启动保留空态视图但禁止运行时操作', async ({ page 
 })
 
 for (const stopped of [true, false]) {
-  test(`${stopped ? '已停止' : '实时不可用'}快照保留数据并禁用运行时操作`, async ({ page }) => {
+  test(`${stopped ? '已停止' : '实时不可用'}快照保留数据并禁用运行时操作 @responsive`, async ({ page }) => {
     await openOverview(page)
     // 仅调整演示端点的内存快照，再重新挂载概览模拟服务返回的状态。
     await page.evaluate(async (isStopped) => {
@@ -91,7 +105,7 @@ for (const stopped of [true, false]) {
     await page.getByRole('link', { name: '概览', exact: true }).click()
 
     await expect(page.getByText(stopped ? 'KixDNS 已停止' : '实时数据暂不可用', { exact: true })).toBeVisible()
-    await expect(page.locator('.overview-total-value')).toHaveText('12,847,392')
+    await expect(page.locator('.overview-total-value')).toHaveText(expectedTotal(page))
     await expect(page.locator('.overview-config-state')).toHaveText('运行快照')
     await expect(page.getByRole('heading', { name: '最后运行配置', exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: '清空内部缓存', exact: true })).toBeDisabled()
@@ -101,7 +115,7 @@ for (const stopped of [true, false]) {
   })
 }
 
-test('手机上游逐级展开，桌面保留完整台账且无页面溢出', async ({ page }, testInfo) => {
+test('手机上游逐级展开，桌面保留完整台账且无页面溢出 @responsive', async ({ page }, testInfo) => {
   await openOverview(page)
   if (testInfo.project.name === 'mobile') {
     await expect(page.locator('.overview-upstream-desktop')).toBeHidden()

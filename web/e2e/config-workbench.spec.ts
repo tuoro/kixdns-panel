@@ -69,7 +69,7 @@ test('被跳转引用的流程默认复制编辑，不影响原规则目标', as
   expect(result.pipelines.find((pipeline: { id: string }) => pipeline.id === 'jump-source').rules[0].actions[0].pipeline).toBe('domestic')
 })
 
-test('工作台单独展示最高优先级映射，普通入口可搜索和调整顺序', async ({ page }) => {
+test('工作台单独展示最高优先级映射，普通入口可搜索和调整顺序 @responsive', async ({ page }) => {
   await openWorkbench(page)
   await expect(page.locator('.workbench-priority')).toContainText('1 条 CNAME · 最高优先级')
   await expect(page.locator('.workbench-priority')).toContainText('首个匹配生效')
@@ -85,7 +85,7 @@ test('工作台单独展示最高优先级映射，普通入口可搜索和调�
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
 })
 
-test('检查器取消保护局部修改，关闭恢复条目焦点并保持配置草稿不变', async ({ page }) => {
+test('检查器取消保护局部修改，关闭恢复条目焦点并保持配置草稿不变 @responsive', async ({ page }) => {
   await openWorkbench(page)
   const before = await downloadConfig(page)
   const launcher = page.getByRole('button', { name: '编辑入口 01 domestic', exact: true })
@@ -128,7 +128,7 @@ test('应用到草稿后才改写同一配置，设置与 JSON 可往返', async
   await expect(page.locator('.workbench-priority')).toContainText('1 条 CNAME')
 })
 
-test('未应用的入口修改在导航、模式切换和重新读取时可保留', async ({ page }, testInfo) => {
+test('未应用的入口修改在导航、模式切换和重新读取时可保留 @responsive', async ({ page }, testInfo) => {
   await openWorkbench(page)
   await page.getByRole('button', { name: '编辑入口 01 domestic', exact: true }).click()
   const inspector = page.locator('.workbench-inspector')

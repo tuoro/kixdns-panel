@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 
-test('共享导航在桌面和手机均能到达所有页面', async ({ page }, testInfo) => {
+test('共享导航在桌面和手机均能到达所有页面 @responsive', async ({ page }, testInfo) => {
   await page.goto('/')
   const mobile = testInfo.project.name === 'mobile'
   const navigation = page.getByRole('navigation', { name: mobile ? '移动端导航' : '主导航', exact: true })
@@ -44,7 +44,7 @@ test('键盘跳至内容时标题不被固定导航遮挡', async ({ page }) => 
   expect(heading!.y).toBeGreaterThanOrEqual(header!.y + header!.height)
 })
 
-test('不同屏宽无页面横向溢出，手机标题与点击区域保持合适尺寸', async ({ page }, testInfo) => {
+test('不同屏宽无页面横向溢出，手机标题与点击区域保持合适尺寸 @responsive', async ({ page }, testInfo) => {
   const widths = testInfo.project.name === 'mobile' ? [360, 390, 768] : [1024, 1440]
   for (const width of widths) {
     await page.setViewportSize({ width, height: 900 })

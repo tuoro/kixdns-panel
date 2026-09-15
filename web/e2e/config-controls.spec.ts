@@ -13,7 +13,7 @@ async function expectNoOverflow(page: Page): Promise<void> {
   expect(scrollWidth).toBeLessThanOrEqual(clientWidth)
 }
 
-test('设置搜索呈现前置开关，关闭功能保留值，清除搜索恢复原折叠状态', async ({ page }) => {
+test('设置搜索呈现前置开关，关闭功能保留值，清除搜索恢复原折叠状态 @responsive', async ({ page }) => {
   await openConfig(page)
   await page.getByRole('button', { name: '基础设置', exact: true }).click()
   const cacheSection = page.getByRole('button', { name: '缓存与后台刷新', exact: true })
@@ -52,7 +52,7 @@ test('设置搜索呈现前置开关，关闭功能保留值，清除搜索恢�
   await expectNoOverflow(page)
 })
 
-test('已有上游回填地址与协议，ECS 折叠和重新编辑均保留固定子网', async ({ page }) => {
+test('已有上游回填地址与协议，ECS 折叠和重新编辑均保留固定子网 @responsive', async ({ page }) => {
   await openConfig(page)
   await page.locator('.workbench-list-toolbar').getByRole('button', { name: '添加入口', exact: true }).click()
   const guide = page.getByRole('region', { name: '添加入口', exact: true })
@@ -90,7 +90,7 @@ test('已有上游回填地址与协议，ECS 折叠和重新编辑均保留固�
   await expectNoOverflow(page)
 })
 
-test('域名映射批量导入先预览并定位错误行，全部修正后追加且保留 TTL 0', async ({ page }) => {
+test('域名映射批量导入先预览并定位错误行，全部修正后追加且保留 TTL 0 @responsive', async ({ page }) => {
   await openConfig(page)
   await page.getByRole('button', { name: '域名映射', exact: true }).click()
   await page.getByRole('button', { name: '添加映射', exact: true }).click()
@@ -133,7 +133,7 @@ test('域名映射批量导入先预览并定位错误行，全部修正后追�
   await expectNoOverflow(page)
 })
 
-test('设置行与 Geo 维护完整容纳操作按钮', async ({ page }) => {
+test('设置行与 Geo 维护完整容纳操作按钮 @responsive', async ({ page }) => {
   await openConfig(page)
   await page.getByRole('button', { name: '基础设置', exact: true }).click()
   await page.getByRole('tab', { name: '远程链接', exact: true }).click()

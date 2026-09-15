@@ -8,7 +8,7 @@ import { useToast } from '../composables/useToast'
 import { HEALTH_LABELS, MIN_HEALTH_SAMPLES, cacheComposition, pipelineDistribution, rcodeDistribution, settledAttempts, upstreamHealth } from '../dashboard-presentation'
 import type { UpstreamHealth } from '../dashboard-presentation'
 import { dashboardRuntimeState, emptyOverview, emptyQueryStats, hasStaleDashboardData, supportsQueryStats, supportsUpstreamPrecision } from '../dashboard-state'
-import { errorMessage, formatDuration, formatNumber, formatPercent, shortHash, upstreamSuccessRate } from '../utils'
+import { errorMessage, formatCompactNumber, formatDuration, formatNumber, formatPercent, shortHash, upstreamSuccessRate } from '../utils'
 
 const overview = ref<Overview | null>(null)
 const service = ref<ServiceStatus | null>(null)
@@ -219,13 +219,38 @@ async function flushCache(): Promise<void> {
   }
 }
 
+/**
+ * 窄屏判断跟随样式表里的同一个断点，避免 CSS 和脚本各定一套阈值。
+ * 用 matchMedia 而不是监听 resize：只在跨越断点时触发一次。
+ * The narrow-screen test follows the same breakpoint the stylesheet uses, so
+ * CSS and script cannot drift apart. matchMedia fires once on crossing rather
+ * than on every resize.
+ */
+const NARROW_QUERY = '(max-width: 700px)'
+const narrow = ref(false)
+let narrowMedia: MediaQueryList | undefined
+const syncNarrow = (event: MediaQueryListEvent | MediaQueryList) => {
+  narrow.value = event.matches
+}
+
+/** 窄屏用万/亿缩写，宽屏给完整数字 / Abbreviated on narrow screens, full otherwise */
+const compactTotal = computed(() => {
+  const total = displayOverview.value?.metrics.requests_total
+  if (total == null) return '--'
+  return narrow.value ? formatCompactNumber(total) : formatNumber(total)
+})
+
 onMounted(async () => {
+  narrowMedia = window.matchMedia(NARROW_QUERY)
+  syncNarrow(narrowMedia)
+  narrowMedia.addEventListener('change', syncNarrow)
   await load()
   await loadStats()
   timer = window.setInterval(() => void load(true), 15000)
   statsTimer = window.setInterval(() => void loadStats(true), 60000)
 })
 onBeforeUnmount(() => {
+  narrowMedia?.removeEventListener('change', syncNarrow)
   window.clearInterval(timer)
   window.clearInterval(statsTimer)
 })
@@ -268,7 +293,7 @@ onBeforeUnmount(() => {
         <section class="overview-kpis" aria-label="核心指标">
           <article class="overview-kpi">
             <span class="overview-kpi-label">请求</span>
-            <strong class="overview-total-value">{{ formatNumber(displayOverview.metrics.requests_total) }}</strong>
+            <strong class="overview-total-value">{{ compactTotal }}</strong>
             <span class="overview-kpi-sub">持续运行 {{ overview ? formatDuration(displayOverview.health.uptime_seconds) : '--' }}</span>
             <span v-if="finishedTotal" class="overview-kpi-sub overview-kpi-row overview-kpi-row--finished">
               <span>完成 <b>{{ formatPercent(finishedShare(displayOverview.metrics.requests_finished.completed)) }}</b></span>
@@ -466,7 +491,14 @@ onBeforeUnmount(() => {
 .overview-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin-bottom: 28px; }
 .overview-kpi { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 18px 20px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); }
 .overview-kpi-label { color: var(--muted); font-size: 12px; }
-.overview-total-value, .overview-kpi-value { max-width: 100%; margin: 0; font-size: 40px; font-weight: 500; font-variant-numeric: tabular-nums; letter-spacing: -.045em; line-height: 1.1; overflow-wrap: anywhere; }
+/* 不允许在数字中间断行。overflow-wrap: anywhere 是为了防溢出加的，
+   但它对大数字是错的药：375 宽下 12,847,392 会被折成 12,847,39 / 2。
+   窄屏另有缩写（见 compactTotal），所以这里不需要靠断行来兜底。
+   Never break inside a number. overflow-wrap: anywhere was added to stop
+   overflow but is the wrong remedy here: at 375px it folds 12,847,392 into
+   12,847,39 and 2. Narrow screens abbreviate instead (see compactTotal), so
+   wrapping is not needed as a fallback. */
+.overview-total-value, .overview-kpi-value { max-width: 100%; margin: 0; font-size: 40px; font-weight: 500; font-variant-numeric: tabular-nums; letter-spacing: -.045em; line-height: 1.1; white-space: nowrap; }
 .overview-kpi-value-row { display: flex; align-items: baseline; gap: 6px; }
 .overview-kpi-unit { color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }
 .overview-kpi-sub { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }

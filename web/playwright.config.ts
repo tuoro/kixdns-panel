@@ -24,7 +24,10 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 1000 } },
     },
     {
+      // 手机视口只跑带 @responsive 标记的用例：其余用例在两个视口里断言完全相同，
+      // 重跑一遍只是复制桌面结果。新增依赖视口的断言时记得给标题加上这个标记。
       name: 'mobile',
+      grep: /@responsive/,
       use: { ...devices['Desktop Chrome'], viewport: { width: 390, height: 844 } },
     },
   ],
