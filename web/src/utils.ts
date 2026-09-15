@@ -2,6 +2,35 @@ export function formatNumber(value: number): string {
   return new Intl.NumberFormat('zh-CN').format(value)
 }
 
+/**
+ * 紧凑数字：万、亿。窄屏用。
+ *
+ * 九位数在 375 宽下即使不断行，也会把旁边的单位挤掉，所以窄屏必须缩写，
+ * 光靠 white-space: nowrap 不够。保留一位小数，让 12,847,392 读作
+ * 1,284.7 万而不是失真的 1,285 万。
+ *
+ * Compact notation in the Chinese myriad scale, for narrow screens. Nine
+ * digits squeeze out the adjacent unit at 375px even when they do not wrap,
+ * so nowrap alone is not enough. One decimal keeps 12,847,392 readable as
+ * 1,284.7 万 rather than a lossy 1,285 万.
+ */
+export function formatCompactNumber(value: number): string {
+  const abs = Math.abs(value)
+  if (abs < 10_000) return formatNumber(value)
+  const [divisor, unit] = abs < 100_000_000 ? [10_000, '万'] : [100_000_000, '亿']
+  const scaled = value / divisor
+  // 小数位随量级递减：1,284.7 万有信息量，9,999.0 万的那位小数已经没有。
+  // 阈值取 5000：再往上一位小数相对整数部分不足万分之一，读者不会用到。
+  // Fewer decimals as the magnitude grows: the tenth in 1,284.7 万 carries
+  // information while the one in 9,999.0 万 does not. Past 5000 the decimal
+  // is under one part in ten thousand of the integer part, so it is dropped.
+  const digits = Math.abs(scaled) < 5000 ? 1 : 0
+  return `${new Intl.NumberFormat('zh-CN', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  }).format(scaled)} ${unit}`
+}
+
 export function formatPercent(value: number): string {
   return `${(value * 100).toFixed(1)}%`
 }
