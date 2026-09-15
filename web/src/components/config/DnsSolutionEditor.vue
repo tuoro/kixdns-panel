@@ -193,15 +193,23 @@ defineExpose({ confirmDiscard })
 <template>
   <section class="workbench" :data-config-editing="focused ? 'true' : undefined" aria-label="解析编排工作台">
     <div class="workbench-routes" :inert="focused && isMobile">
-      <div class="workbench-priority" aria-label="DNS 解析顺序">
-        <div class="workbench-priority-lane">
-          <span class="workbench-request">DNS 请求</span><ArrowRight :size="18" />
-          <button class="workbench-mapping-node" type="button" @click="openMapping"><strong><Zap :size="15" />域名映射</strong><span>{{ mappingCount }} 条 CNAME · 最高优先级</span></button>
-          <ArrowRight :size="18" /><span class="workbench-response">命中即返回 CNAME</span>
-        </div>
-        <div class="workbench-priority-next"><ArrowDown :size="16" /><span>未命中</span></div>
-        <p>入口选择 · 自上而下，首个匹配生效</p>
-      </div>
+      <!-- 压成一条可读的状态带：标出每段的实际条数，当前所在段用深色填充。
+           它现在是导航而不是装饰——原来那张占了四行的示意图既点不动，
+           也没说出每段有多少条。
+           A single readable strip carrying each stage's real count, with the
+           current one filled. It is navigation now rather than decoration: the
+           four-row diagram it replaces could not be clicked and never said how
+           much sat in each stage. -->
+      <nav class="workbench-priority" aria-label="DNS 解析顺序">
+        <span class="workbench-request">DNS 请求</span>
+        <span class="workbench-flow-arrow" aria-hidden="true"><ArrowRight :size="15" /></span>
+        <button class="workbench-mapping-node" type="button" @click="openMapping"><Zap :size="13" />域名映射<b>{{ mappingCount }} 条 CNAME</b></button>
+        <span class="workbench-flow-arrow" aria-hidden="true"><ArrowRight :size="15" /></span>
+        <span class="workbench-flow-node is-current">入口匹配<b>{{ entries.length }} 个</b></span>
+        <span class="workbench-flow-arrow" aria-hidden="true"><ArrowRight :size="15" /></span>
+        <span class="workbench-response">Pipeline 处理</span>
+        <p class="workbench-priority-hint">域名映射最高优先级，命中即返回 CNAME；其余按入口自上而下，首个匹配生效</p>
+      </nav>
       <header class="workbench-list-toolbar">
         <label class="workbench-search"><Search :size="16" /><input v-model="query" type="search" aria-label="搜索入口或 Pipeline" placeholder="搜索入口、Pipeline"></label>
         <span>{{ entries.length }} 个入口</span>
@@ -242,15 +250,24 @@ defineExpose({ confirmDiscard })
 <style scoped>
 .workbench { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(370px, 1fr); min-height: 620px; height: min(880px, calc(100dvh - 238px)); color: var(--ink); background: var(--surface, #fff); }
 .workbench-routes { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--line); }
-.workbench-priority { flex: 0 0 auto; padding: 28px 24px 22px; background-image: radial-gradient(var(--line) .6px, transparent .6px); background-size: 16px 16px; text-align: center; border-bottom: 1px solid var(--line); }
-.workbench-priority-lane { display: grid; grid-template-columns: auto minmax(14px, 1fr) minmax(150px, 1.35fr) minmax(14px, 1fr) auto; align-items: center; gap: 9px; }
-.workbench-priority-lane > svg { width: 100%; color: var(--muted); }
-.workbench-request, .workbench-response { padding: 12px; border: 1px solid var(--line); background: var(--surface, #fff); border-radius: 5px; font-size: 12px; white-space: nowrap; }
-.workbench-mapping-node { display: grid; gap: 7px; padding: 14px 10px; color: var(--ink); background: var(--surface, #fff); border: 1px solid var(--ink); border-radius: 6px; cursor: pointer; }
-.workbench-mapping-node strong { display: flex; justify-content: center; align-items: center; gap: 5px; font-size: 14px; }
-.workbench-mapping-node span { font-size: 12px; line-height: 1.5; }
-.workbench-priority-next { display: flex; align-items: center; justify-content: center; gap: 7px; height: 37px; font-size: 12px; color: var(--muted); }
-.workbench-priority > p { font-size: 14px; font-weight: 600; }
+.workbench-priority { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+/* 类名挂在外层 span 上：lucide 组件会用自己的 class 覆盖掉传进去的那个，
+   直接写在 <ArrowRight class="..."> 上不会生效，而且不会报错。
+   The class goes on a wrapping span: the lucide component replaces whatever
+   class is passed to it, so writing it on <ArrowRight> has no effect and no
+   error either. */
+.workbench-flow-arrow { display: inline-flex; flex: 0 0 auto; color: var(--line); }
+.workbench-request, .workbench-response, .workbench-flow-node, .workbench-mapping-node { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 5px; background: var(--canvas); color: var(--muted); font-size: 12px; white-space: nowrap; border: 0; }
+.workbench-flow-node b, .workbench-mapping-node b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+/* 条数跟随所在节点的前景色：非当前节点是浅底深字，当前节点是深底反白。
+   写死颜色会让它在当前态变成黑压黑。
+   The count inherits its node's foreground: an inactive node is dark on light
+   and the current one light on dark. A fixed colour turns it black on black. */
+.workbench-flow-node.is-current { background: var(--ink); color: var(--d-ink); }
+.workbench-flow-node.is-current b { color: var(--d-ink); }
+.workbench-mapping-node { cursor: pointer; }
+.workbench-mapping-node:hover { color: var(--ink); background: var(--line); }
+.workbench-priority-hint { flex-basis: 100%; margin: 2px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .workbench-list-toolbar { display: flex; align-items: center; flex: 0 0 auto; gap: 12px; padding: 17px 20px; border-bottom: 1px solid var(--line); }
 .workbench-list-toolbar > span { white-space: nowrap; margin-left: auto; color: var(--muted); font-size: 12px; }
 .workbench-search { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 290px; padding: 0 10px; border: 1px solid var(--line); border-radius: 5px; }
@@ -297,9 +314,18 @@ defineExpose({ confirmDiscard })
 .workbench-custom-tag { padding: 5px 9px; background: #fff6e6; color: #89622a; border-radius: 4px; font-size: 12px; }
 @media (max-width: 1150px) and (min-width: 861px) {
   .workbench { grid-template-columns: minmax(0, 1fr) 380px; }
-  .workbench-priority { padding: 22px 16px 18px; }
-  .workbench-priority-lane { grid-template-columns: auto 16px minmax(0, 1fr); }
-  .workbench-priority-lane > svg:last-of-type, .workbench-response { display: none; }
+  .workbench-priority { padding: 10px 12px; gap: 5px 6px; }
+  /* 窄屏收掉首尾两个说明节点，连它们各自那支箭头一起——
+     只藏节点会在两端留下指向空处的箭头。
+     用相邻选择器而不是 :first-of-type：后者按元素类型数，
+     箭头恰好是这里唯一的 svg，改动标记就会静默失配。
+     Narrow screens drop the opening and closing labels along with each one's
+     arrow: hiding only the nodes leaves arrows pointing at nothing. Sibling
+     selectors rather than :first-of-type, which counts by element type and
+     silently stops matching the moment the markup gains another svg. */
+  .workbench-request, .workbench-response { display: none; }
+  .workbench-request + .workbench-flow-arrow { display: none; }
+  .workbench-flow-arrow:has(+ .workbench-response) { display: none; }
   .workbench-entry-select { grid-template-columns: 26px minmax(0, 1fr) minmax(0, .8fr); }
   .workbench-entry-arrow, .workbench-entry-action { display: none; }
   .workbench-column-labels { grid-template-columns: 1fr .8fr; padding-right: 50px; }
@@ -310,13 +336,12 @@ defineExpose({ confirmDiscard })
 @media (max-width: 860px) {
   .workbench { display: block; height: auto; min-height: 0; }
   .workbench-routes { border-right: 0; }
-  .workbench-priority { padding: 16px; }
-  .workbench-priority-lane { grid-template-columns: minmax(0, 1fr); gap: 0; }
-  .workbench-request, .workbench-response, .workbench-priority-lane > svg, .workbench-priority-next { display: none; }
-  .workbench-mapping-node { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px; border-color: var(--line); }
-  .workbench-mapping-node strong { font-size: 14px; }
-  .workbench-mapping-node span { font-size: 12px; }
-  .workbench-priority > p { padding-top: 12px; font-size: 12px; }
+  .workbench-priority { padding: 12px; gap: 5px 6px; }
+  /* 首尾两个说明节点连同各自那支箭头一起收掉；只藏节点会在两端留下指向空处的箭头。 */
+  .workbench-request, .workbench-response { display: none; }
+  .workbench-request + .workbench-flow-arrow { display: none; }
+  .workbench-flow-arrow:has(+ .workbench-response) { display: none; }
+  .workbench-priority-hint { font-size: 12px; }
   .workbench-list-toolbar { flex-wrap: wrap; gap: 10px; padding: 12px 16px; }
   .workbench-search { max-width: none; flex: 1 1 100%; }
   .workbench-list-toolbar > span { margin-left: 0; margin-right: auto; }

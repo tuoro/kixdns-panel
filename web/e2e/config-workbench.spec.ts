@@ -71,8 +71,11 @@ test('被跳转引用的流程默认复制编辑，不影响原规则目标', as
 
 test('工作台单独展示最高优先级映射，普通入口可搜索和调整顺序 @responsive', async ({ page }) => {
   await openWorkbench(page)
-  await expect(page.locator('.workbench-priority')).toContainText('1 条 CNAME · 最高优先级')
-  await expect(page.locator('.workbench-priority')).toContainText('首个匹配生效')
+  // 流程带压成一行后，每段带自己的实际条数，优先级说明落在下方那句提示里。
+  await expect(page.locator('.workbench-priority')).toContainText('1 条 CNAME')
+  await expect(page.locator('.workbench-priority .workbench-flow-node.is-current')).toContainText('2 个')
+  await expect(page.locator('.workbench-priority-hint')).toContainText('最高优先级')
+  await expect(page.locator('.workbench-priority-hint')).toContainText('首个匹配生效')
   const search = page.getByLabel('搜索入口或 Pipeline')
   await search.fill('domestic')
   await expect(page.locator('.workbench-entry')).toHaveCount(1)
