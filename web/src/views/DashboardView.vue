@@ -9,7 +9,7 @@ import { HEALTH_LABELS, MIN_HEALTH_SAMPLES, cacheComposition, pipelineDistributi
 import type { UpstreamHealth } from '../dashboard-presentation'
 import { dashboardRuntimeState, emptyOverview, emptyQueryStats, hasStaleDashboardData, supportsQueryStats, supportsUpstreamPrecision } from '../dashboard-state'
 import { sparkline } from '../trend'
-import { errorMessage, formatCompactNumber, formatDuration, formatNumber, formatPercent, formatSmallPercent, shortHash, upstreamSuccessRate } from '../utils'
+import { errorMessage, formatDuration, formatNumber, formatPercent, formatSmallPercent, shortHash, upstreamSuccessRate } from '../utils'
 
 const overview = ref<Overview | null>(null)
 const service = ref<ServiceStatus | null>(null)
@@ -217,24 +217,10 @@ async function flushCache(): Promise<void> {
   }
 }
 
-/**
- * 窄屏判断跟随样式表里的同一个断点，避免 CSS 和脚本各定一套阈值。
- * 用 matchMedia 而不是监听 resize：只在跨越断点时触发一次。
- * The narrow-screen test follows the same breakpoint the stylesheet uses, so
- * CSS and script cannot drift apart. matchMedia fires once on crossing rather
- * than on every resize.
- */
 const expandedUpstream = ref<string | null>(null)
 const upstreamKey = (item: { upstream: string; transport: string }) => `${item.upstream}:${item.transport}`
 function toggleUpstream(item: { upstream: string; transport: string }): void {
   expandedUpstream.value = expandedUpstream.value === upstreamKey(item) ? null : upstreamKey(item)
-}
-
-const NARROW_QUERY = '(max-width: 700px)'
-const narrow = ref(false)
-let narrowMedia: MediaQueryList | undefined
-const syncNarrow = (event: MediaQueryListEvent | MediaQueryList) => {
-  narrow.value = event.matches
 }
 
 const SPARK_WIDTH = 260
@@ -272,11 +258,20 @@ const signalTotal = computed(() => {
   return displayOverview.value?.metrics.requests_total ?? null
 })
 
-/** 窄屏用万/亿缩写，宽屏给完整数字 / Abbreviated on narrow screens, full otherwise */
+/**
+ * 信号带把这个数字独占一行，375 宽下十位数实测 137px、可用 311px，
+ * 所以不再缩写成万/亿。缩写是为旧版那种两列窄卡加的，版式一变就成了多余的一层
+ * 转换——读者拿到的应该是配置和日志里能对得上的那个数。
+ *
+ * The signal band gives this figure a line of its own: at 375 a ten-digit
+ * number measures 137px against 311px available, so it is no longer abbreviated.
+ * The abbreviation existed for the old two-up narrow cards; with that layout
+ * gone it is a conversion standing between the reader and the number they can
+ * match against the config and the logs.
+ */
 const compactTotal = computed(() => {
   const total = signalTotal.value
-  if (total == null) return '--'
-  return narrow.value ? formatCompactNumber(total) : formatNumber(total)
+  return total == null ? '--' : formatNumber(total)
 })
 
 /** 兜底次数占请求总数的比例；请求数为 0 时不显示，避免除以零后写出 0.0% */
@@ -287,16 +282,12 @@ const fallbackOfRequests = computed(() => {
 })
 
 onMounted(async () => {
-  narrowMedia = window.matchMedia(NARROW_QUERY)
-  syncNarrow(narrowMedia)
-  narrowMedia.addEventListener('change', syncNarrow)
   await load()
   await loadStats()
   timer = window.setInterval(() => void load(true), 15000)
   statsTimer = window.setInterval(() => void loadStats(true), 60000)
 })
 onBeforeUnmount(() => {
-  narrowMedia?.removeEventListener('change', syncNarrow)
   window.clearInterval(timer)
   window.clearInterval(statsTimer)
 })

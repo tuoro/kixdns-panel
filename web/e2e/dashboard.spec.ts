@@ -5,19 +5,17 @@ import { expect, test, type Page } from '@playwright/test'
  * 标题写的是「近 24 小时请求」，配累计总数就是文不对题。演示数据的 24 个整点桶
  * 合计 383.5 万，是按演示里的运行时长和累计请求折算出来的日均量。
  *
- * 窄屏缩写成万/亿：九位数在手机上即使不断行也会挤掉旁边的单位，所以断言跟着
- * 视口走而不是写死一个字符串。
+ * 两个视口显示同一个字符串：信号带让这个数字独占一行，375 宽下放得下完整数字，
+ * 不再缩写成万/亿。
  *
  * The figure on the signal band is the request count over the period the trend
  * covers, not the cumulative total since start: the label reads "last 24 hours",
  * and pairing that with a lifetime total would not be the same statement. The
  * demo's 24 hourly buckets sum to 3,835,000, derived from its own uptime and
- * cumulative request count.
+ * cumulative request count. Both viewports show the same string: the band gives
+ * the figure a line of its own, which fits in full at 375.
  */
-function expectedTotal(page: Page): string {
-  const width = page.viewportSize()?.width ?? 0
-  return width <= 700 ? '383.5 万' : '3,835,000'
-}
+const EXPECTED_TOTAL = '3,835,000'
 
 async function openOverview(page: Page): Promise<void> {
   await page.goto('/')
@@ -27,7 +25,7 @@ async function openOverview(page: Page): Promise<void> {
 
 test('首页展示精确分布，页签可用键盘切换且完整保留三个视图 @responsive', async ({ page }) => {
   await openOverview(page)
-  await expect(page.locator('.overview-total-value')).toHaveText(expectedTotal(page))
+  await expect(page.locator('.overview-total-value')).toHaveText(EXPECTED_TOTAL)
   // 堆叠条换成「主项做大、小项列表」：占比最高的那条独占一行，其余进列表。
   await expect(page.locator('.overview-distribution .overview-dist-share')).toHaveText('69.4%')
   await expect(page.locator('.overview-distribution .overview-dist-name')).toHaveText('default')
@@ -112,7 +110,7 @@ for (const stopped of [true, false]) {
     await page.getByRole('link', { name: '概览', exact: true }).click()
 
     await expect(page.getByText(stopped ? 'KixDNS 已停止' : '实时数据暂不可用', { exact: true })).toBeVisible()
-    await expect(page.locator('.overview-total-value')).toHaveText(expectedTotal(page))
+    await expect(page.locator('.overview-total-value')).toHaveText(EXPECTED_TOTAL)
     await expect(page.locator('.overview-config-state')).toHaveText('运行快照')
     await expect(page.getByRole('heading', { name: '最后运行配置', exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: '清空内部缓存', exact: true })).toBeDisabled()

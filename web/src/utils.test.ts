@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { errorMessage, formatCompactNumber, formatDuration, formatKixdnsVersion, formatPercent, formatSmallPercent, shortHash, upstreamSuccessRate } from './utils'
+import { errorMessage, formatDuration, formatKixdnsVersion, formatPercent, formatSmallPercent, shortHash, upstreamSuccessRate } from './utils'
 
 describe('界面格式化工具', () => {
   it('生成稳定且紧凑的运行指标', () => {
@@ -36,29 +36,6 @@ describe('上游成功率', () => {
   it('旧增强版没有 aborted 字段时退化为成功除以尝试', () => {
     expect(upstreamSuccessRate({ attempts: 10, success: 7 })).toBeCloseTo(0.7)
     expect(upstreamSuccessRate({ attempts: 0, success: 0 })).toBe(0)
-  })
-})
-
-describe('formatCompactNumber', () => {
-  it('万位以下保持原样，不做无谓缩写', () => {
-    expect(formatCompactNumber(0)).toBe('0')
-    expect(formatCompactNumber(9_999)).toBe('9,999')
-  })
-
-  it('万位起缩写并保留一位小数，避免失真', () => {
-    // 概览页那个真实数值：断行前是 12,847,39 / 2，缩写后一行放得下
-    expect(formatCompactNumber(12_847_392)).toBe('1,284.7 万')
-    expect(formatCompactNumber(10_000)).toBe('1.0 万')
-  })
-
-  it('量级足够大时不再保留小数', () => {
-    expect(formatCompactNumber(123_456_789_0)).toBe('12.3 亿')
-    // 9,999 万那位小数相对整数部分不足万分之一，读者用不上
-    expect(formatCompactNumber(99_990_000)).toBe('9,999 万')
-  })
-
-  it('负数按绝对值选择量级', () => {
-    expect(formatCompactNumber(-12_847_392)).toBe('-1,284.7 万')
   })
 })
 
