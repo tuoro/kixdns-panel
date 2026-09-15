@@ -23,7 +23,17 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        track: [action, release]
+        # 定时只跑 action 轨道。release 轨道的血脉还停在 v0.1.1 / 补丁集 9，
+        # 把它重放到任何新版本都会跨过 observer API 重构而冲突，于是每晚都开
+        # 一条适配告警——那是已知且刻意搁置的状态，不是每天都要看一眼的新信息。
+        # 手动触发时两条都跑，将来做血脉切换正是靠它验证。
+        # The schedule runs the action track only. The release track's lineage is
+        # still v0.1.1 on patchset 9, so replaying it onto any newer version
+        # crosses the observer API refactor and conflicts, filing a compatibility
+        # alert every night for a state that is known and deliberately parked.
+        # A manual dispatch still runs both, which is how the eventual lineage
+        # switch gets verified.
+        track: ${{ github.event_name == 'schedule' && fromJSON('["action"]') || fromJSON('["action", "release"]') }}
     env:
       GH_TOKEN: ${{ github.token }}
       TRACK: ${{ matrix.track }}
