@@ -4,6 +4,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { apiRequest } from '../api/client'
 import type { CacheFlushResult, Overview, QueryStatsSnapshot, ServiceStatus, StatsClearResult } from '../api/types'
 import StatusBanner from '../components/StatusBanner.vue'
+import { useConfirm } from '../composables/useConfirm'
 import { useToast } from '../composables/useToast'
 import { HEALTH_LABELS, MIN_HEALTH_SAMPLES, cacheComposition, pipelineDistribution, rcodeDistribution, settledAttempts, upstreamHealth } from '../dashboard-presentation'
 import type { UpstreamHealth } from '../dashboard-presentation'
@@ -25,6 +26,7 @@ const overviewError = ref('')
 const serviceError = ref('')
 const statsError = ref('')
 const toast = useToast()
+const confirm = useConfirm()
 const activeView = ref('runtime')
 const views = [
   { id: 'runtime', label: '运行情况' },
@@ -190,7 +192,12 @@ async function setStatsWindow(windowSeconds: number): Promise<void> {
 }
 
 async function clearQueryStats(): Promise<void> {
-  if (!window.confirm('清空全部客户端和请求域名排行？')) return
+  // 排行是统计数据，清掉之后重新累计即可，不是不可逆的破坏，所以不用红色。
+  if (!await confirm.ask({
+    title: '清空查询排行',
+    body: '当前窗口的客户端和请求域名统计会被清零，之后重新累计。解析行为和缓存都不受影响。',
+    confirmLabel: '清空排行',
+  })) return
   statsClearing.value = true
   try {
     await apiRequest<StatsClearResult>('/api/v1/stats/clear', { method: 'POST' })
@@ -204,7 +211,11 @@ async function clearQueryStats(): Promise<void> {
 }
 
 async function flushCache(): Promise<void> {
-  if (!window.confirm('清空 KixDNS 响应缓存和规则缓存？')) return
+  if (!await confirm.ask({
+    title: '清空内部缓存',
+    body: `${formatNumber(displayOverview.value?.metrics.cache_entries ?? 0)} 条缓存条目会被丢弃。接下来一小段时间里这些域名要重新向上游查询，响应会变慢；解析结果本身不受影响。`,
+    confirmLabel: '清空缓存',
+  })) return
   flushing.value = true
   try {
     const result = await apiRequest<CacheFlushResult>('/api/v1/cache/flush', { method: 'POST' })

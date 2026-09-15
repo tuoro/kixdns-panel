@@ -112,6 +112,13 @@ code, .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monosp
 .button--primary:hover:not(:disabled) { background: #29332e; border-color: #29332e; }
 .button--secondary { color: #3e4749; background: #fff; border-color: #d5dcda; }
 .button--secondary:hover:not(:disabled), .button--active { color: var(--green-dark); background: #f3f8f5; border-color: #a9cdbb; }
+/* 实心红只给不可撤销的确认：红色在这个面板里表示「回不去了」，
+   可回退的操作用普通主按钮，别把这个信号用掉。
+   Solid red is reserved for irreversible confirmations: red here means "there
+   is no going back", and reversible actions use the ordinary primary button so
+   the signal is not spent. */
+.button--danger { color: var(--d-ink); background: var(--red); border-color: var(--red); font-weight: 650; }
+.button--danger:hover:not(:disabled) { background: var(--err-l-deep); border-color: var(--err-l-deep); }
 .button--danger-quiet { color: var(--red); background: #fff; border-color: #ebcaca; }
 .button--danger-quiet:hover:not(:disabled) { background: var(--red-soft); border-color: #dca9a9; }
 .button--full { width: 100%; }

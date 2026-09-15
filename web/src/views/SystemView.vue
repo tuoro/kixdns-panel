@@ -33,6 +33,7 @@ import type {
   ServiceStatus,
 } from '../api/types'
 import StatusBanner from '../components/StatusBanner.vue'
+import { useConfirm } from '../composables/useConfirm'
 import { useToast } from '../composables/useToast'
 import { useUpdateStatus } from '../composables/useUpdateStatus'
 import { errorMessage, formatDate, formatKixdnsVersion, shortHash } from '../utils'
@@ -61,6 +62,7 @@ const githubTokenVisible = ref(false)
 const githubTokenBusy = ref(false)
 const githubTokenError = ref('')
 const toast = useToast()
+const confirm = useConfirm()
 const {
   status: updateStatus,
   checking: checkingUpdates,
@@ -175,7 +177,12 @@ async function saveGithubToken(): Promise<void> {
 
 async function deleteGithubToken(): Promise<void> {
   if (!githubTokenStatus.value?.configured || githubTokenBusy.value
-    || !window.confirm('删除 GitHub Token 并恢复匿名 API 配额？')) return
+    || !await confirm.ask({
+      title: '删除 GitHub Token',
+      body: '版本与更新检查会退回匿名访问，受更严格的速率限制。随时可以重新填一个新的。',
+      confirmLabel: '删除 Token',
+      destructive: true,
+    })) return
   githubTokenBusy.value = true
   try {
     githubTokenStatus.value = await apiRequest<GithubTokenStatus>('/api/v1/settings/github-token', { method: 'DELETE' })
@@ -250,7 +257,11 @@ async function loadPanelUpdateStatus(): Promise<void> {
 
 async function startPanelUpdate(): Promise<void> {
   const version = updateStatus.value?.panel.latest_version
-  if (!version || !window.confirm(`在线更新面板到 v${version}？\n\n面板会短暂重启，KixDNS 服务、配置和当前运行状态保持不变。`)) return
+  if (!version || !await confirm.ask({
+    title: `在线更新面板到 v${version}`,
+    body: '面板会短暂重启，这期间控制台暂时打不开。KixDNS 服务、配置和当前运行状态都保持不变。',
+    confirmLabel: `更新到 v${version}`,
+  })) return
   startingPanelUpdate.value = true
   try {
     const previous = await apiRequest<PanelUpdateStatus>('/api/v1/panel-update')
@@ -325,7 +336,14 @@ async function refreshAll(): Promise<void> {
 
 async function control(action: ServiceAction): Promise<void> {
   const names: Record<ServiceAction, string> = { start: '启动', stop: '停止', restart: '重启' }
-  if ((action === 'stop' || action === 'restart') && !window.confirm(`${names[action]} KixDNS 服务？`)) return
+  if ((action === 'stop' || action === 'restart') && !await confirm.ask({
+    title: `${names[action]} KixDNS 服务`,
+    body: action === 'stop'
+      ? '停止期间这台机器上的 DNS 解析会中断，直到重新启动。配置和缓存都保留。'
+      : '服务会短暂中断，随后按当前运行配置重新提供解析。配置不受影响。',
+    confirmLabel: `${names[action]}服务`,
+    destructive: action === 'stop',
+  })) return
   serviceAction.value = action
   try {
     service.value = await apiRequest<ServiceStatus>(`/api/v1/service/${action}`, { method: 'POST' })
@@ -368,7 +386,13 @@ async function activateVersion(version: InstalledKixdnsVersion | RemoteKixdnsVer
 }
 
 async function deleteVersion(version: InstalledKixdnsVersion): Promise<void> {
-  if (version.active || !window.confirm(`删除本地版本 ${formatKixdnsVersion(version)}？已删除的版本需要重新下载。`)) return
+  if (version.active) return
+  if (!await confirm.ask({
+    title: `删除本地版本 ${formatKixdnsVersion(version)}`,
+    body: '这份构建会从本地库存移除，之后要用得重新下载。当前正在运行的版本不受影响。',
+    confirmLabel: '删除这个版本',
+    destructive: true,
+  })) return
   const source = version.source ?? 'action'
   const identity = version.source_id ?? version.commit
   versionAction.value = { identity: versionIdentity(version), kind: 'delete' }

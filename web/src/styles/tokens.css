@@ -106,6 +106,7 @@
   --warn-d:      #d5a253;
 
   --err-l:      #b03f32;
+  --err-l-deep: #a03333;  /* 浅底：红色主按钮的悬停态 */
   --err-tint-l: #fcf0ee;
   --err-d:      #d97a6b;
 

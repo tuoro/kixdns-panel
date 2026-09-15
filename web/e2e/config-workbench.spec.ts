@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { acceptConfirm, cancelConfirm } from './confirm'
 
 const configFixture = {
   version: '1.0',
@@ -45,8 +46,8 @@ test('删除入口保留被其他规则跳转引用的 Pipeline', async ({ page 
   await openWorkbench(page, configWithJumpReference())
   await expect(page.locator('.workbench-entry').first()).toContainText('2 处引用')
   await page.getByLabel('入口 01 操作', { exact: true }).click()
-  page.once('dialog', (dialog) => dialog.accept())
   await page.getByRole('button', { name: '删除入口', exact: true }).first().click()
+  await acceptConfirm(page)
   await expect(page.locator('.workbench-entry')).toHaveCount(1)
   const result = await downloadConfig(page)
   expect(result.pipeline_select.some((entry: { pipeline: string }) => entry.pipeline === 'domestic')).toBe(false)
@@ -103,11 +104,11 @@ test('检查器取消保护局部修改，关闭恢复条目焦点并保持配�
     expect(label!.y + label!.height).toBeLessThanOrEqual(input!.y + input!.height)
   }
   await expect(page.getByRole('button', { name: '保存并热加载', exact: true, includeHidden: true })).toBeDisabled()
-  page.once('dialog', (dialog) => dialog.dismiss())
   await inspector.getByRole('button', { name: '取消', exact: true }).click()
+  await cancelConfirm(page)
   await expect(inspector.getByLabel('动作 1 上游', { exact: true })).toHaveValue('9.9.9.9:53')
-  page.once('dialog', (dialog) => dialog.accept())
   await page.keyboard.press('Escape')
+  await acceptConfirm(page)
   await expect(launcher).toBeFocused()
   expect(await downloadConfig(page)).toEqual(before)
 })
@@ -137,17 +138,17 @@ test('未应用的入口修改在导航、模式切换和重新读取时可保�
   const inspector = page.locator('.workbench-inspector')
   await inspector.getByLabel('动作 1 上游', { exact: true }).fill('9.9.9.9:53')
   if (testInfo.project.name === 'mobile') {
-    page.once('dialog', (dialog) => dialog.dismiss())
     await page.getByRole('link', { name: 'KixDNS 首页', exact: true }).click()
+    await cancelConfirm(page)
     await expect(page).toHaveURL(/\/config$/)
     await expect(inspector.getByLabel('动作 1 上游', { exact: true })).toHaveValue('9.9.9.9:53')
     return
   }
-  page.once('dialog', (dialog) => dialog.dismiss())
   await page.getByRole('tab', { name: 'JSON', exact: true }).click()
+  await cancelConfirm(page)
   await expect(inspector.getByLabel('动作 1 上游', { exact: true })).toHaveValue('9.9.9.9:53')
-  page.once('dialog', (dialog) => dialog.dismiss())
   await page.getByTitle('重新读取配置', { exact: true }).click()
+  await cancelConfirm(page)
   await expect(inspector.getByLabel('动作 1 上游', { exact: true })).toHaveValue('9.9.9.9:53')
 })
 
@@ -158,10 +159,10 @@ test('导入可撤销，失败的提示不会自己溜走', async ({ page }) => 
   // 导入整份替换草稿，所以那条提示右侧是撤销而不是叉。
   // 草稿此时已是脏的，配置页自己的放弃确认会先拦一道。
   const imported = { ...configFixture, pipeline_select: [configFixture.pipeline_select[1]] }
-  page.once('dialog', (dialog) => dialog.accept())
   await page.locator('input[type=file]').setInputFiles({
     name: 'replace.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(imported)),
   })
+  await acceptConfirm(page)
   await expect(page.locator('.workbench-entry')).toHaveCount(1)
   // openWorkbench 的那次导入也留了一条撤销（窗口 8 秒），所以取最新那条。
   const undo = page.locator('.toast-undo').last()
@@ -170,10 +171,10 @@ test('导入可撤销，失败的提示不会自己溜走', async ({ page }) => 
   await expect(page.locator('.workbench-entry')).toHaveCount(2)
 
   // 失败的提示不自动消失：一条没人看见就溜走的错误等于没报过。
-  page.once('dialog', (dialog) => dialog.accept())
   await page.locator('input[type=file]').setInputFiles({
     name: 'broken.json', mimeType: 'application/json', buffer: Buffer.from('{ not json'),
   })
+  await acceptConfirm(page)
   const failure = page.locator('.toast--error')
   await expect(failure).toBeVisible()
   await page.waitForTimeout(6000)

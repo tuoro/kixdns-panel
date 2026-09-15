@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { acceptConfirm } from './confirm'
 
 const configFixture = {
   version: '1.0',
@@ -64,7 +65,7 @@ test('会话过期后选择退出登录才离开当前页', async ({ page }) => 
   await expect(page.getByRole('dialog', { name: '登录状态已过期' })).toBeVisible()
   // 退出是这个框里唯一真会丢东西的选项，所以它必须是用户主动选的——
   // 而且配置页自己的离开守卫还会再问一次未保存的改动，这一层也要过。
-  page.once('dialog', (dialog) => dialog.accept())
   await page.getByRole('button', { name: '退出登录', exact: true }).click()
+  await acceptConfirm(page)
   await expect(page).toHaveURL(/\/login\?redirect=/)
 })

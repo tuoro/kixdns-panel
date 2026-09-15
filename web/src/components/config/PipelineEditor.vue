@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { AlertTriangle, ArrowDown, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUp, ArrowUpToLine, ChevronDown, ChevronUp, FoldVertical, GitBranch, Plus, Sparkles, Trash2, UnfoldVertical } from '@lucide/vue'
 import { computed, ref } from 'vue'
+import { useConfirm } from '../../composables/useConfirm'
 import {
   createEcs,
   createPipeline,
@@ -23,6 +24,7 @@ import DnsSolutionEditor from './DnsSolutionEditor.vue'
 import MatcherList from './MatcherList.vue'
 import RuleCreationGuide from './RuleCreationGuide.vue'
 
+const confirm = useConfirm()
 const config = defineModel<KixConfig>({ required: true })
 withDefaults(defineProps<{ capabilities: string[]; manualOnly?: boolean }>(), { manualOnly: false })
 const emit = defineEmits<{ notice: [message: string] }>()
@@ -98,15 +100,28 @@ function setEcsNumber(pipeline: PipelineConfig, key: string, event: Event): void
   else pipeline.ecs[key] = Number(raw)
 }
 
-function removePipeline(index: number): void {
+async function removePipeline(index: number): Promise<void> {
   const pipeline = config.value.pipelines[index]
-  if (!pipeline || !window.confirm(`删除 Pipeline “${pipeline.id}”？`)) return
+  if (!pipeline) return
+  if (!await confirm.ask({
+    title: `删除 Pipeline ${pipeline.id}`,
+    body: '这条 Pipeline 和它下面的规则会从草稿里移除。保存配置后才会真正生效，在此之前可以放弃草稿撤回。',
+    items: pipeline.rules?.length ? pipeline.rules.map((item, order) => item.name || `规则 ${order + 1}`) : undefined,
+    confirmLabel: '删除这条 Pipeline',
+    destructive: true,
+  })) return
   config.value.pipelines.splice(index, 1)
 }
 
-function removeRule(pipeline: PipelineConfig, index: number): void {
+async function removeRule(pipeline: PipelineConfig, index: number): Promise<void> {
   const rule = pipeline.rules[index]
-  if (!rule || !window.confirm(`删除规则“${rule.name || index + 1}”？`)) return
+  if (!rule) return
+  if (!await confirm.ask({
+    title: `删除规则 ${rule.name || index + 1}`,
+    body: '这条规则会从草稿里移除，同一 Pipeline 下的其他规则顺次前移。保存配置后才会真正生效。',
+    confirmLabel: '删除这条规则',
+    destructive: true,
+  })) return
   const nextCollapsedRules = new Set(collapsedRules.value)
   nextCollapsedRules.delete(rule)
   collapsedRules.value = nextCollapsedRules
