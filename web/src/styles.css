@@ -543,43 +543,29 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
    one job, anything else competes with it, and these in particular were things
    to withhold. */
 .auth-page { position: relative; min-height: 100vh; min-height: 100dvh; display: grid; place-content: center; justify-items: center; padding: 32px 16px; overflow: hidden; color: var(--l-ink); background: var(--l-canvas); }
-/* 网点底纹，从中心向外淡入：表单所在的那块保持干净，边缘才有细节。
-   这套网点是产品自己的——旧版配置页的流程区用的就是它，不是新造一种纹理。
-   遮罩挂在伪元素上而不是 .auth-page 本身，否则表单会跟着一起被遮。
+/* 同心等高线从中心向外扩散——一次查询向外发散的形状，取自产品本身而不是
+   借来的图案。圆形而非椭圆：整屏要同时应付 1280×900 和 375×812，圆在两种比例
+   下都读作环，椭圆会在竖屏上被压成一团。
 
-   A dot field that fades in away from the centre: the area the form occupies
-   stays clean and the detail lives at the edges. The dots are the product's own
-   texture, carried over from the old config page's flow area rather than being
-   a newly invented one. The mask sits on the pseudo-element rather than on
-   .auth-page itself, which would fade the form along with it. */
+   表单落在一层半透明磨砂卡上，等高线透出来一点点，正文区仍然干净。
+
+   Concentric contours spreading outward — the shape a query makes as it fans
+   out, taken from the product itself rather than borrowed ornament. Circles
+   rather than ellipses: the full screen has to cope with both 1280×900 and
+   375×812, and circles read as rings in either proportion while ellipses
+   flatten into a smear in portrait.
+
+   The form sits on a translucent frosted card: the contours show faintly
+   through while the reading area stays clean. */
 .auth-page::before {
   content: '';
   position: absolute;
   inset: 0;
-  /* 两层不同疏密的网点叠在一起：单一网格铺开是一张印上去的图案，
-     叠一层更疏更大的点之后才有远近，场地才像有纵深而不是贴了张纸。
-     Two dot layers at different scales: one grid alone reads as a pattern
-     stamped on, while a sparser, larger second layer gives the field depth
-     instead of the look of paper applied to it. */
-  background-image:
-    radial-gradient(var(--l-texture) 1.2px, transparent 1.2px),
-    radial-gradient(var(--l-hair) 2.6px, transparent 2.6px);
-  background-size: 22px 22px, 66px 66px;
-  background-position: 0 0, 11px 11px;
-  -webkit-mask-image: radial-gradient(58% 52% at 50% 46%, transparent 26%, #000 80%);
-  mask-image: radial-gradient(58% 52% at 50% 46%, transparent 26%, #000 80%);
+  background: no-repeat center / cover
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 800 800' fill='none' stroke='%230f1413' stroke-opacity='.07' stroke-width='1.2'%3E%3Ccircle cx='400' cy='400' r='72'/%3E%3Ccircle cx='400' cy='400' r='124'/%3E%3Ccircle cx='400' cy='400' r='182'/%3E%3Ccircle cx='400' cy='400' r='246'/%3E%3Ccircle cx='400' cy='400' r='316'/%3E%3Ccircle cx='400' cy='400' r='392'/%3E%3Ccircle cx='400' cy='400' r='474'/%3E%3Ccircle cx='400' cy='400' r='562'/%3E%3C/svg%3E");
   pointer-events: none;
 }
-/* 场地四角再压一道极弱的暗角，中间因此显得亮一点，视线自然落到表单上。 */
-.auth-page::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: radial-gradient(120% 90% at 50% 45%, transparent 55%, rgba(15, 20, 19, .05));
-  pointer-events: none;
-}
-.auth-panel { position: relative; }
-.auth-panel { width: min(100%, 420px); padding: 0; }
+.auth-panel { position: relative; width: min(100%, 420px); padding: 32px 30px; background: rgba(245, 247, 243, .88); backdrop-filter: blur(7px); border-radius: var(--r-3); box-shadow: 0 0 0 1px var(--l-hair), 0 24px 56px -30px rgba(15, 20, 19, .35); }
 .auth-brand { display: flex; align-items: center; gap: 10px; margin-bottom: 34px; }
 .auth-brand span { width: 36px; height: 36px; display: grid; place-items: center; color: #e8fff2; background: var(--ink); border-radius: 6px; }
 .auth-brand strong { font-size: 17px; }
