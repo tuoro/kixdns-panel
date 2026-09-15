@@ -2,21 +2,32 @@ import { expect, test, type Page } from '@playwright/test'
 import { acceptConfirm, cancelConfirm } from './confirm'
 
 /**
- * 信号带上的大数字是「趋势覆盖的那段时间的请求数」，不是自启动以来的累计值——
- * 标题写的是「近 24 小时请求」，配累计总数就是文不对题。演示数据的 24 个整点桶
- * 合计 383.5 万，是按演示里的运行时长和累计请求折算出来的日均量。
+ * 信号带上的大数字是自启动以来的累计请求数——它和紧挨着的完成率、平均耗时、
+ * 运行时长算的是同一段账。曲线另说：它自带「近 24 小时 X 次」的说明，只替自己
+ * 说话。两个数字都断言，因为让大数字跟着曲线走过一次，结果「近 1 小时请求」
+ * 底下紧跟着一行按累计算出来的完成率，两个口径挤在同一处，读者看不出来。
  *
- * 两个视口显示同一个字符串：信号带让这个数字独占一行，375 宽下放得下完整数字，
+ * 演示数据的 24 个整点桶合计 383.5 万，是按演示里的运行时长和累计请求折算出来的
+ * 日均量，所以两个数放在一起怎么除都对得上。
+ *
+ * 两个视口显示同一个字符串：信号带让累计值独占一行，375 宽下放得下完整数字，
  * 不再缩写成万/亿。
  *
- * The figure on the signal band is the request count over the period the trend
- * covers, not the cumulative total since start: the label reads "last 24 hours",
- * and pairing that with a lifetime total would not be the same statement. The
- * demo's 24 hourly buckets sum to 3,835,000, derived from its own uptime and
- * cumulative request count. Both viewports show the same string: the band gives
- * the figure a line of its own, which fits in full at 375.
+ * The headline figure on the signal band is the cumulative request count since
+ * start — the same period as the completion rate, average latency and uptime
+ * beside it. The curve is separate: it carries its own "last 24 hours, N
+ * requests" caption and speaks only for itself. Both are asserted because the
+ * headline followed the curve once, which put "requests in the last hour"
+ * directly above a completion rate computed over the whole run — two periods in
+ * one place, with nothing to tell the reader they differ.
+ *
+ * The demo's 24 hourly buckets sum to 3,835,000, derived from its own uptime and
+ * cumulative request count, so the two figures survive any division a reader
+ * tries. Both viewports show the same string: the band gives the lifetime figure
+ * a line of its own, which fits in full at 375.
  */
-const EXPECTED_TOTAL = '3,835,000'
+const EXPECTED_TOTAL = '12,847,392'
+const EXPECTED_TREND = '近 24 小时 3,835,000 次'
 
 async function openOverview(page: Page): Promise<void> {
   await page.goto('/')
@@ -27,6 +38,7 @@ async function openOverview(page: Page): Promise<void> {
 test('首页展示精确分布，页签可用键盘切换且完整保留三个视图 @responsive', async ({ page }) => {
   await openOverview(page)
   await expect(page.locator('.overview-total-value')).toHaveText(EXPECTED_TOTAL)
+  await expect(page.locator('.overview-trend-label')).toHaveText(EXPECTED_TREND)
   // 堆叠条换成「主项做大、小项列表」：占比最高的那条独占一行，其余进列表。
   await expect(page.locator('.overview-distribution .overview-dist-share')).toHaveText('69.4%')
   await expect(page.locator('.overview-distribution .overview-dist-name')).toHaveText('default')
@@ -124,6 +136,7 @@ for (const stopped of [true, false]) {
 
     await expect(page.getByText(stopped ? 'KixDNS 已停止' : '实时数据暂不可用', { exact: true })).toBeVisible()
     await expect(page.locator('.overview-total-value')).toHaveText(EXPECTED_TOTAL)
+    await expect(page.locator('.overview-trend-label')).toHaveText(EXPECTED_TREND)
     await expect(page.locator('.overview-config-state')).toHaveText('运行快照')
     await expect(page.getByRole('heading', { name: '最后运行配置', exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: '清空内部缓存', exact: true })).toBeDisabled()

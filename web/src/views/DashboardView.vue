@@ -238,40 +238,37 @@ const SPARK_WIDTH = 260
 const SPARK_HEIGHT = 74
 
 /**
- * 采样覆盖多久就说多久。写死「近 24 小时」而实际只攒了三小时，
- * 是把「还没攒够」说成了「这就是一天的量」。
+ * 曲线覆盖多久就说多久，而且这句话只替曲线说。写死「近 24 小时」而实际只攒了
+ * 三小时，是把「还没攒够」说成了「这就是一天的量」。
  *
- * The label states the period the samples actually cover. Writing "last 24
- * hours" while only three hours have been collected would present "not enough
- * data yet" as a full day's volume.
+ * 旁边那个大数字不归它管。那是累计总数，和它下面的完成率、平均耗时、运行时长
+ * 算的是同一段账。我曾让大数字跟着曲线走，于是「近 1 小时请求」底下紧跟着一行
+ * 按累计算出来的完成率——两个口径挤在同一处，读者没有任何线索能看出来。
+ *
+ * The caption states the period the curve actually covers, and it speaks only
+ * for the curve. Writing "last 24 hours" while three hours have been collected
+ * would present "not enough data yet" as a full day's volume.
+ *
+ * The headline figure beside it is not its business: that is the lifetime total,
+ * on the same clock as the completion rate, average latency and uptime beneath
+ * it. Making the headline follow the curve put "requests in the last hour"
+ * directly above a completion rate computed over the entire run — two different
+ * periods in one place, with nothing to tell the reader they differ.
  */
-const trendLabel = computed(() => {
+const trendWindow = computed(() => {
   const trend = displayOverview.value?.trend
-  if (!trend || trend.points.length === 0) return '请求总数'
+  if (!trend || trend.points.length === 0) return ''
   const seconds = trend.points.length * (trend.bucket_seconds || 3600)
-  if (seconds >= 24 * 3600) return '近 24 小时请求'
+  if (seconds >= 24 * 3600) return '近 24 小时'
   // 不满一小时就按分钟说。四舍五入到小时会把 25 分钟说成「近 0 小时」，
   // 或者更糟，说成「近 1 小时」——把刚开机说成已经跑满一小时。
-  // Below an hour the label counts minutes: rounding to hours would render 25
+  // Below an hour the caption counts minutes: rounding to hours would render 25
   // minutes as "last 0 hours" or, worse, "last 1 hour", presenting a panel just
   // started as one that has run a full hour.
-  if (seconds < 3600) return `近 ${Math.max(1, Math.round(seconds / 60))} 分钟请求`
-  return `近 ${Math.round(seconds / 3600)} 小时请求`
+  if (seconds < 3600) return `近 ${Math.max(1, Math.round(seconds / 60))} 分钟`
+  return `近 ${Math.round(seconds / 3600)} 小时`
 })
 
-/**
- * 画不出趋势时说明缺的到底是什么。
- *
- * 原来一律写「趋势需要至少两次采样」，而面板跑满半小时已经采了三十次——
- * 缺的从来不是采样次数，是还没攒够能连成线的时间。把「还要等多久」说出来，
- * 比重复一句不成立的条件有用。
- *
- * Says what is actually missing when no curve can be drawn. The old text always
- * read "the trend needs at least two samples", but half an hour in there are
- * thirty of them: what is missing is not samples but enough elapsed time to
- * form a line. Saying how much longer to wait beats repeating a condition that
- * is already met.
- */
 const trendPending = computed(() => {
   const trend = displayOverview.value?.trend
   if (!trend || trend.points.length === 0) return '面板刚开始采样，一两分钟后显示请求量趋势'
@@ -286,16 +283,6 @@ const spark = computed(() => {
 })
 
 /**
- * 信号带上的大数字：有趋势就报趋势覆盖的那段，没有就退回累计总数。
- * 两者含义不同，所以标题跟着一起换。
- */
-const signalTotal = computed(() => {
-  const trend = displayOverview.value?.trend
-  if (trend && trend.points.length > 0) return trend.total
-  return displayOverview.value?.metrics.requests_total ?? null
-})
-
-/**
  * 信号带把这个数字独占一行，375 宽下十位数实测 137px、可用 311px，
  * 所以不再缩写成万/亿。缩写是为旧版那种两列窄卡加的，版式一变就成了多余的一层
  * 转换——读者拿到的应该是配置和日志里能对得上的那个数。
@@ -307,7 +294,7 @@ const signalTotal = computed(() => {
  * match against the config and the logs.
  */
 const compactTotal = computed(() => {
-  const total = signalTotal.value
+  const total = displayOverview.value?.metrics.requests_total
   return total == null ? '--' : formatNumber(total)
 })
 
@@ -375,7 +362,7 @@ onBeforeUnmount(() => {
              在变好还是变坏。 -->
         <section class="overview-signal" aria-label="请求量">
           <div class="overview-signal-main">
-            <span class="overview-signal-label">{{ trendLabel }}</span>
+            <span class="overview-signal-label">请求总数</span>
             <strong class="overview-total-value">{{ compactTotal }}</strong>
             <span class="overview-signal-sub">
               <span v-if="finishedTotal">完成 <b>{{ formatPercent(finishedShare(displayOverview.metrics.requests_finished.completed)) }}</b></span>
@@ -384,12 +371,15 @@ onBeforeUnmount(() => {
               <span>持续运行 {{ overview ? formatDuration(displayOverview.health.uptime_seconds) : '--' }}</span>
             </span>
           </div>
-          <svg v-if="spark" class="overview-spark" :viewBox="`0 0 ${SPARK_WIDTH} ${SPARK_HEIGHT}`" preserveAspectRatio="none" role="img" :aria-label="trendLabel + '趋势'">
-            <path class="overview-spark-area" :d="spark.area" />
-            <path class="overview-spark-line" :d="spark.line" />
-            <circle class="overview-spark-end" :cx="spark.lastX" :cy="spark.lastY" r="3" />
-          </svg>
-          <!-- 采样不足两点时画不出趋势。说清楚是「还没攒够」，不是「没有流量」。 -->
+          <!-- 曲线自带时段说明。这句话只说明曲线，不去动旁边那个累计数字。 -->
+          <div v-if="spark" class="overview-trend">
+            <span class="overview-trend-label">{{ trendWindow }} <b>{{ formatNumber(displayOverview.trend.total) }}</b> 次</span>
+            <svg class="overview-spark" :viewBox="`0 0 ${SPARK_WIDTH} ${SPARK_HEIGHT}`" preserveAspectRatio="none" role="img" :aria-label="trendWindow + '请求量趋势'">
+              <path class="overview-spark-area" :d="spark.area" />
+              <path class="overview-spark-line" :d="spark.line" />
+              <circle class="overview-spark-end" :cx="spark.lastX" :cy="spark.lastY" r="3" />
+            </svg>
+          </div>
           <!-- 说清楚缺的是什么。之前写「需要至少两次采样」，可面板跑了半小时
                已经采了三十次——缺的从来不是采样次数，是还没攒够能连成线的时间。 -->
           <p v-else class="overview-spark-pending">{{ trendPending }}</p>
@@ -622,6 +612,9 @@ onBeforeUnmount(() => {
 .overview-signal-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; color: var(--d-ink-2); font-size: var(--t-1); font-variant-numeric: tabular-nums; }
 .overview-signal-sub b { color: var(--d-ink); font-weight: 500; }
 /* 趋势线和大数字同色：它们说的是同一件事，分开配色会读成两条信息。 */
+.overview-trend { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.overview-trend-label { color: var(--d-ink-2); font-size: var(--t-1); font-variant-numeric: tabular-nums; }
+.overview-trend-label b { color: var(--d-ink); font-weight: 500; }
 .overview-spark { width: 100%; height: 74px; overflow: visible; }
 .overview-spark-line { fill: none; stroke: var(--d-ink); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .overview-spark-area { fill: rgba(255, 255, 255, .13); stroke: none; }

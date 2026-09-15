@@ -126,16 +126,15 @@ const session: AuthSession = {
  * 和真实住宅网络的 DNS 负载形状一致。
  *
  * 合计 383.5 万，是按「运行 289420 秒、累计 1284.7 万次」折算出来的日均量。
- * 这两个数必须对得上：信号带把趋势合计当成「近 24 小时请求」显示，而旁边就写着
- * 运行时长和累计值，对不上的话一眼就能算出矛盾。
+ * 这两个数必须对得上：曲线旁写着「近 24 小时 X 次」，而同一条带子上就是累计值和
+ * 运行时长，对不上的话一眼就能算出矛盾。
  *
  * The demo's 24-hour curve: a small-hours trough, a daytime rise and an evening
  * peak, the shape a real residential network's DNS load takes. It sums to
  * 3,835,000, derived from the demo's own 289,420 seconds of uptime and
- * 12,847,392 cumulative requests. The two have to agree: the signal band shows
- * the trend total as "requests in the last 24 hours" with the uptime and the
- * lifetime total right beside it, so a mismatch is one division away from being
- * obvious.
+ * 12,847,392 cumulative requests. The two have to agree: the curve is captioned
+ * with its own 24-hour total on the same band as the lifetime figure and the
+ * uptime, so a mismatch is one division away from being obvious.
  */
 const trendShape = [
   89, 69, 56, 49, 46, 51, 73, 111, 149, 173, 183, 190, 199, 194, 187, 191, 203,
