@@ -109,7 +109,8 @@ test('DNS 诊断在结果顶部显示实际命中的规则 @responsive', async (
   await page.getByRole('button', { name: '执行查询' }).click()
 
   const result = page.locator('.diagnostic-result')
-  await expect(result.locator('.diagnostic-match-summary')).toContainText('命中规则')
+  // 「命中规则」现在是明细表的字段名，规则本身在对应的值里。
+  await expect(result.locator('.diag-kv')).toContainText('命中规则')
   await expect(result.locator('.diagnostic-match-summary')).toContainText('geosite-global')
   await expect(result.locator('.diagnostic-match-summary')).toContainText('Pipeline · default')
   await expect(result.getByRole('heading', { name: '规则执行路径' })).toBeVisible()
