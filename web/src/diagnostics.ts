@@ -24,7 +24,7 @@ export const traceStageNames: Record<string, string> = {
 
 export const traceStatusNames: Record<string, string> = {
   parsed: '已解析', selected: '已选择', matched: '命中', missed: '未命中', miss: '未命中',
-  hit: '命中', fresh: '缓存命中', stale: '过期缓存', succeeded: '成功', failed: '失败', error: '错误',
+  hit: '命中', fresh: '缓存命中', stale: '续用旧结果', succeeded: '成功', failed: '失败', error: '错误',
   skipped: '已跳过', rejected: '已拒绝',
 }
 

@@ -352,9 +352,9 @@ onBeforeUnmount(() => {
 
         <section class="overview-stats-row" aria-label="运行统计">
           <article class="overview-stat">
-            <span class="overview-stat-label" title="含新鲜与过期命中">缓存命中率</span>
+            <span class="overview-stat-label" title="未过期的命中与续用旧结果都算命中">缓存命中率</span>
             <strong class="overview-kpi-value">{{ formatPercent(cacheHitRate) }}</strong>
-            <span class="overview-stat-note">{{ formatNumber(displayOverview.metrics.cache_entries) }} 条缓存<template v-if="staleShare"> · 过期命中 {{ formatPercent(staleShare) }}</template></span>
+            <span class="overview-stat-note">{{ formatNumber(displayOverview.metrics.cache_entries) }} 条缓存<template v-if="staleShare"> · 续用旧结果 {{ formatPercent(staleShare) }}</template></span>
           </article>
           <article class="overview-stat">
             <span class="overview-stat-label">上游健康</span>
