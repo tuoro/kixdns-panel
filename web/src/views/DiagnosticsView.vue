@@ -55,10 +55,10 @@ async function run(): Promise<void> {
 
     <!-- 等待时给骨架而不是转圈：骨架的分块和结果一致，数据到达时版面不跳。 -->
     <div v-if="running" class="diag-skeleton" role="status" aria-label="正在等待 DNS 响应">
-      <div class="diag-skeleton-verdict"></div>
+      <div class="sk diag-skeleton-verdict"></div>
       <div class="diag-skeleton-trace">
-        <div class="diag-skeleton-rail"><i v-for="n in 5" :key="n"></i></div>
-        <div class="diag-skeleton-detail"></div>
+        <div class="diag-skeleton-rail"><i v-for="n in 5" :key="n" class="sk"></i></div>
+        <div class="sk diag-skeleton-detail"></div>
       </div>
     </div>
     <div v-else-if="queryError" class="diag-error" role="alert"><TriangleAlert :size="20" /><div><h2>查询失败</h2><p>{{ queryError }}</p><small>检查域名或服务状态后可重新查询。</small></div></div>
@@ -143,8 +143,7 @@ async function run(): Promise<void> {
    The blocks in the result area share one radius, declared once here rather
    than repeated in every rule. */
 .diag-status, .diag-kv, .diag-answer-ledger, .diag-empty-answers,
-.diag-trace-unavailable, .diag-skeleton-verdict, .diag-skeleton-rail i,
-.diag-skeleton-detail { border-radius: 4px; }
+.diag-trace-unavailable { border-radius: 4px; }
 
 /* 结论带：一行回答「成了没有、走了谁、多久」，这页最先要看到的东西。 */
 .diag-status { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; padding: 14px 18px; background: var(--green-soft); box-shadow: inset 3px 0 var(--green); font-size: 14px; }
@@ -219,13 +218,6 @@ async function run(): Promise<void> {
 .diag-skeleton-rail { display: grid; gap: 14px; align-content: start; }
 .diag-skeleton-rail i { height: 44px; }
 .diag-skeleton-detail { min-height: 260px; }
-.diag-skeleton-verdict, .diag-skeleton-rail i, .diag-skeleton-detail { position: relative; overflow: hidden; background: var(--surface); }
-.diag-skeleton-verdict::after, .diag-skeleton-rail i::after, .diag-skeleton-detail::after {
-  content: ''; position: absolute; inset: 0; transform: translateX(-100%);
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .72), transparent);
-  animation: diag-sweep 1.5s infinite;
-}
-@keyframes diag-sweep { to { transform: translateX(100%); } }
 
 .diag-raw-response { border-bottom: 1px solid var(--line); }
 .diag-raw-response summary { display: flex; align-items: center; gap: 12px; min-height: 52px; cursor: pointer; list-style: none; font-size: 14px; }

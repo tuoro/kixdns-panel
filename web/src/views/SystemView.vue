@@ -428,7 +428,7 @@ onBeforeUnmount(() => {
     <!-- 按「要不要现在动手」排：服务状态在最上且只有一行，
          有更新时更新块紧随其后，不需要动手的安装信息和凭据降到下面。 -->
     <section class="panel service-panel">
-      <div v-if="loadingService && !service" class="inline-loading">读取服务状态…</div>
+      <div v-if="loadingService && !service" class="sk sys-skeleton-line" role="status" aria-label="读取服务状态"></div>
       <template v-else-if="service">
         <div class="service-line">
           <span :class="running ? 'service-dot' : 'service-dot service-dot--stopped'"></span>
@@ -450,8 +450,8 @@ onBeforeUnmount(() => {
         <div><h2>可用更新</h2><p>KixDNS 增强包与面板正式版</p></div>
         <button class="icon-button" type="button" title="检查更新" aria-label="检查更新" :disabled="checkingUpdates" @click="refreshUpdatesWithQuota"><RefreshCw :size="18" :class="{ spin: checkingUpdates }" /></button>
       </header>
-      <div v-if="checkingUpdates && !updateStatus" class="inline-loading update-loading">正在检查更新…</div>
-      <div v-else-if="updateStatus" class="update-rows">
+      <div v-if="checkingUpdates && !updateStatus" class="sys-skeleton-rows" role="status" aria-label="正在检查更新"><i v-for="n in 2" :key="n" class="sk"></i></div>
+      <div v-else-if="updateStatus" class="update-rows" :class="{ 'is-refreshing': checkingUpdates }">
         <!-- 每项真正有用的只有「从哪到哪」和一个按钮，压成一行。 -->
         <article class="update-row" :class="{ 'update-row--ready': updateStatus.kixdns.available }">
           <span class="update-row__mark"><GitBranch :size="17" /></span>
@@ -501,7 +501,7 @@ onBeforeUnmount(() => {
     <div class="system-layout">
     <section class="panel runtime-panel">
       <header class="panel__header"><div><h2>安装状态</h2><p>增强版运行时</p></div><Package :size="20" /></header>
-      <div v-if="loadingVersions && !catalog" class="inline-loading">读取安装状态…</div>
+      <div v-if="loadingVersions && !catalog" class="sk sys-skeleton-panel" role="status" aria-label="读取安装状态"></div>
       <template v-else-if="catalog">
         <div :class="installed ? 'runtime-state' : 'runtime-state runtime-state--missing'">
           <span><ShieldCheck v-if="!managed" :size="22" /><HardDrive v-else :size="22" /></span>
@@ -559,7 +559,7 @@ onBeforeUnmount(() => {
           <button class="icon-button" type="button" title="刷新版本" :disabled="loadingVersions || versionAction !== null" @click="loadVersions()"><RefreshCw :size="18" :class="{ spin: loadingVersions }" /></button>
         </div>
       </header>
-      <div v-if="loadingVersions && (!catalog || catalog.source !== versionSource)" class="version-loading">正在读取可用构建…</div>
+      <div v-if="loadingVersions && (!catalog || catalog.source !== versionSource)" class="sys-skeleton-rows" role="status" aria-label="正在读取可用构建"><i v-for="n in 3" :key="n" class="sk"></i></div>
       <div v-else-if="catalog && !catalog.management_enabled" class="external-mode-notice">
         <span><ShieldCheck :size="20" /></span>
         <div><strong>现有 KixDNS 保持原样</strong><p>面板不会下载、替换或删除其二进制。需要迁移时，请重新运行安装程序并明确选择“迁移替换”。</p></div>
