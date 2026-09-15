@@ -542,30 +542,46 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
    update channel to every visitor who had not authenticated yet. This page has
    one job, anything else competes with it, and these in particular were things
    to withhold. */
-.auth-page { position: relative; min-height: 100vh; min-height: 100dvh; display: grid; place-content: center; justify-items: center; padding: 32px 16px; overflow: hidden; color: var(--l-ink); background: var(--l-canvas); }
-/* 同心等高线从中心向外扩散——一次查询向外发散的形状，取自产品本身而不是
-   借来的图案。圆形而非椭圆：整屏要同时应付 1280×900 和 375×812，圆在两种比例
-   下都读作环，椭圆会在竖屏上被压成一团。
+.auth-page { position: relative; min-height: 100vh; min-height: 100dvh; display: grid; place-content: center; justify-items: center; padding: 32px 16px; overflow: hidden; color: var(--l-ink); background: var(--auth-ground); }
+/* 满幅柔光底 + 素白卡：性格全在背景，卡片一点修饰都没有。
+   这是 Microsoft 和 Stripe 那条路——四家巨头里唯一真正解决「单调」的做法。
 
-   表单落在一层半透明磨砂卡上，等高线透出来一点点，正文区仍然干净。
+   上一版用同心等高线，间距均匀、圆心固定，读起来像示意图不像氛围。柔光是
+   四团大小不一、位置错开的光晕互相叠加，没有可辨认的规律，所以不会被看成图案。
+   再压两道极淡的曲线作为解析路径的意象——曲线是有机的，不像正圆那样机械。
 
-   Concentric contours spreading outward — the shape a query makes as it fans
-   out, taken from the product itself rather than borrowed ornament. Circles
-   rather than ellipses: the full screen has to cope with both 1280×900 and
-   375×812, and circles read as rings in either proportion while ellipses
-   flatten into a smear in portrait.
+   A full-bleed soft ground with a plain white card: all the character sits in
+   the background and the card carries none. This is the Microsoft and Stripe
+   route, the only one among the four giants that actually answers "too plain".
 
-   The form sits on a translucent frosted card: the contours show faintly
-   through while the reading area stays clean. */
+   The previous version used concentric contours, evenly spaced around a fixed
+   centre, which reads as a diagram rather than atmosphere. This is four pools
+   of light at different sizes and offsets overlapping with no discernible
+   regularity, so it is not seen as a pattern. Two very faint curves sit on top
+   as the resolution-path motif: curves are organic where perfect circles are
+   mechanical. */
 .auth-page::before {
   content: '';
   position: absolute;
-  inset: 0;
-  background: no-repeat center / cover
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 800 800' fill='none' stroke='%230f1413' stroke-opacity='.07' stroke-width='1.2'%3E%3Ccircle cx='400' cy='400' r='72'/%3E%3Ccircle cx='400' cy='400' r='124'/%3E%3Ccircle cx='400' cy='400' r='182'/%3E%3Ccircle cx='400' cy='400' r='246'/%3E%3Ccircle cx='400' cy='400' r='316'/%3E%3Ccircle cx='400' cy='400' r='392'/%3E%3Ccircle cx='400' cy='400' r='474'/%3E%3Ccircle cx='400' cy='400' r='562'/%3E%3C/svg%3E");
+  inset: -12%;
+  background:
+    radial-gradient(42% 50% at 14% 16%, var(--auth-glow), transparent 66%),
+    radial-gradient(48% 44% at 88% 12%, var(--auth-shade), transparent 66%),
+    radial-gradient(58% 56% at 82% 92%, var(--auth-glow), transparent 64%),
+    radial-gradient(46% 50% at 18% 94%, var(--auth-shade-2), transparent 66%),
+    radial-gradient(34% 38% at 54% 46%, rgba(255, 255, 255, .7), transparent 70%);
+  filter: blur(6px);
   pointer-events: none;
 }
-.auth-panel { position: relative; width: min(100%, 420px); padding: 32px 30px; background: rgba(245, 247, 243, .88); backdrop-filter: blur(7px); border-radius: var(--r-3); box-shadow: 0 0 0 1px var(--l-hair), 0 24px 56px -30px rgba(15, 20, 19, .35); }
+.auth-page::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: no-repeat center / 132% auto
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 600 400' fill='none' stroke='%23ffffff' stroke-opacity='.62' stroke-width='1.3'%3E%3Cpath d='M-20 246 C 140 246 168 86 322 86 S 472 208 620 208'/%3E%3Cpath d='M-20 292 C 152 292 182 142 322 142 S 458 252 620 252' stroke-opacity='.38'/%3E%3Cpath d='M-20 198 C 128 198 158 38 322 38 S 486 174 620 174' stroke-opacity='.26'/%3E%3C/svg%3E");
+  pointer-events: none;
+}
+.auth-panel { position: relative; width: min(100%, 420px); padding: 32px 30px; background: var(--l-surface); border-radius: var(--r-2); box-shadow: 0 22px 52px -22px rgba(20, 26, 30, .32); }
 .auth-brand { display: flex; align-items: center; gap: 10px; margin-bottom: 34px; }
 .auth-brand span { width: 36px; height: 36px; display: grid; place-items: center; color: #e8fff2; background: var(--ink); border-radius: 6px; }
 .auth-brand strong { font-size: 17px; }
