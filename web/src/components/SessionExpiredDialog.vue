@@ -45,15 +45,16 @@ function leave(): void {
     盖在当前页之上，不跳转。背后的页面一直挂载着，配置草稿原样留着，
     验证通过后人还在刚才那一屏。跳回登录页会把那一切一起卸载掉。
 
-    贴顶而不是贴底：这一屏有输入框，手机软键盘弹出来会把贴底的对话框整个盖住。
-    同一类组件在不同场合摆法不同，依据是「这一屏有没有键盘」，不是外观统一。
+    桌面居中，窄屏才贴顶。贴顶是为了避开手机软键盘——桌面没有软键盘，
+    照搬过去只会让框莫名其妙地吊在上面。
 
     Covers the current page instead of navigating. The page stays mounted behind
     it with its config draft intact, and a successful sign-in leaves you exactly
     where you were; redirecting to the login page would unmount all of it.
 
-    Anchored to the top rather than the bottom: this one has an input, and a
-    phone's software keyboard would cover a bottom-anchored dialog entirely.
+    Centred on desktop and top-anchored only on narrow screens: the anchoring
+    exists to dodge a phone's software keyboard, and carrying it onto a desktop
+    where no such keyboard exists just leaves the dialog hanging near the top.
   -->
   <div v-if="session.expired.value" class="session-expired" role="presentation">
     <section
@@ -97,7 +98,7 @@ function leave(): void {
 </template>
 
 <style scoped>
-.session-expired { position: fixed; inset: 0; z-index: 120; display: grid; align-content: start; justify-items: center; padding: 64px 16px 16px; overflow-y: auto; background: rgba(15, 20, 19, .58); }
+.session-expired { position: fixed; inset: 0; z-index: 120; display: grid; align-content: center; justify-items: center; padding: 24px 16px; overflow-y: auto; background: rgba(15, 20, 19, .58); }
 .session-expired__dialog { width: min(420px, 100%); display: flex; flex-direction: column; gap: 14px; padding: 22px 24px; border-radius: var(--r-2); background: var(--surface); box-shadow: 0 34px 76px -32px rgba(0, 0, 0, .6); }
 .session-expired__dialog h2 { margin: 0; font-size: var(--t-4); font-weight: 600; }
 .session-expired__dialog p { margin: 0; color: var(--muted); font-size: var(--t-2); line-height: 1.6; }
@@ -111,7 +112,8 @@ function leave(): void {
 .session-expired__leave { justify-content: center; }
 
 @media (max-width: 700px) {
-  .session-expired { padding: 20px 12px 12px; }
+  /* 窄屏改贴顶：软键盘弹出来会占掉下半屏，居中的框会被压到看不见。 */
+  .session-expired { align-content: start; padding: 20px 12px 12px; }
   .session-expired__dialog { padding: 18px; gap: 12px; }
 }
 </style>
