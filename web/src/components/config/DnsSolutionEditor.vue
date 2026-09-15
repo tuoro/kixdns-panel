@@ -261,13 +261,13 @@ defineExpose({ confirmDiscard })
 .workbench-column-labels { display: grid; grid-template-columns: 1.4fr .8fr 1fr; padding: 12px 62px 12px 26px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--line); }
 .workbench-entry-list { display: grid; gap: 5px; padding: 8px 12px; }
 .workbench-entry { position: relative; display: flex; min-width: 0; align-items: center; border: 1px solid transparent; border-left: 3px solid transparent; border-radius: 5px; }
-.workbench-entry.is-selected { color: #fff; border-left-color: var(--lime); background: var(--ink); }
+.workbench-entry.is-selected { color: #fff; border-left-color: var(--d-ink); background: var(--ink); }
 .workbench-entry-select { display: grid; grid-template-columns: 28px minmax(0, 1.25fr) 16px minmax(0, .8fr) 16px minmax(0, 1fr); align-items: center; flex: 1; min-width: 0; gap: 10px; padding: 18px 10px; color: inherit; border: 0; background: transparent; cursor: pointer; text-align: left; }
 .workbench-entry-select strong, .workbench-entry-select > span { font-size: 14px; font-weight: 500; line-height: 1.5; overflow-wrap: anywhere; }
 .workbench-entry-select > .workbench-entry-number { color: var(--green); font-size: 16px; font-variant-numeric: tabular-nums; }
 .workbench-entry-condition, .workbench-entry-pipeline { display: grid; gap: 4px; min-width: 0; }
 .workbench-entry-select small { color: var(--muted); font-size: 12px; }
-.workbench-entry.is-selected .workbench-entry-number, .workbench-entry.is-selected .workbench-entry-arrow { color: var(--lime); }
+.workbench-entry.is-selected .workbench-entry-number, .workbench-entry.is-selected .workbench-entry-arrow { color: var(--d-ink); }
 .workbench-entry.is-selected small { color: #c4ccc6; }
 .workbench-entry-arrow { color: var(--muted); }
 .workbench-entry-chevron { display: none; }
