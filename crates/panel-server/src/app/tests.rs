@@ -13,7 +13,7 @@ use tower::ServiceExt;
 
 use super::{
     AppSettings, MetricSample, TrustedProxies, build_app, build_request_trend,
-    ensure_validation_accepted,
+    ensure_validation_accepted, trend_bucket_seconds,
 };
 use crate::control::ValidationResult;
 
@@ -900,8 +900,10 @@ fn sample(minutes_ago: i64, started_at: i64, requests_total: i64) -> MetricSampl
 }
 
 #[test]
-fn folds_consecutive_samples_into_the_bucket_that_holds_them() {
-    // 三次采样都落在最后一个整点桶里，增量 100 + 150 应当合并成一格 250。
+fn accumulates_consecutive_deltas_without_losing_any() {
+    // 连续三次采样的两段增量 100 + 150 应当一次不差地进到结果里。
+    // 桶宽跟着覆盖时长走，所以这里不再断言落进几个桶——那正是写死一小时
+    // 留下的毛病；要守住的是「摊派不丢数」。
     let samples = [
         sample(30, 1, 1_000),
         sample(20, 1, 1_100),
@@ -909,10 +911,13 @@ fn folds_consecutive_samples_into_the_bucket_that_holds_them() {
     ];
     let trend = build_request_trend(&samples, NOW);
 
-    assert_eq!(trend.bucket_seconds, 3_600);
-    assert_eq!(trend.points.len(), 1, "三次采样只跨了一个桶");
-    assert_eq!(trend.points[0].requests, 250);
-    assert_eq!(trend.total, 250);
+    assert_eq!(trend.total, 250, "两段增量一次不差");
+    assert_eq!(
+        trend.points.iter().map(|point| point.requests).sum::<u64>(),
+        250,
+        "各格之和等于合计",
+    );
+    assert!(trend.points.len() >= 2, "半小时的覆盖应当画得出曲线");
 }
 
 #[test]
@@ -997,4 +1002,49 @@ fn ignores_samples_that_did_not_advance_in_time() {
 
     assert_eq!(trend.total, 0);
     assert!(trend.points.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// 桶宽跟着已采到的时长走
+// The bucket width follows the period actually collected
+// ---------------------------------------------------------------------------
+
+#[test]
+fn draws_a_curve_within_the_first_half_hour() {
+    // 面板刚跑 25 分钟、每分钟一次采样。桶宽写死一小时的话这 26 个样本全落进
+    // 同一个桶，只剩一个点连不成线，页面于是一直说「趋势需要至少两次采样」。
+    let samples: Vec<MetricSample> = (0..=25)
+        .map(|minute| sample(25 - minute, 1, 1_000 + minute * 40))
+        .collect();
+    let trend = build_request_trend(&samples, NOW);
+
+    assert!(
+        trend.points.len() >= 2,
+        "跑了 25 分钟就该画得出曲线，实际只有 {} 个点",
+        trend.points.len()
+    );
+    assert!(trend.bucket_seconds < 3_600, "桶宽应当小于一小时");
+    assert_eq!(trend.total, 1_000, "25 段每段 40 次");
+}
+
+#[test]
+fn keeps_hourly_buckets_once_a_full_day_is_collected() {
+    // 攒满 24 小时之后回到一小时一格，也就是设计稿里那张图。
+    let samples = [sample(24 * 60, 1, 0), sample(0, 1, 240_000)];
+    let trend = build_request_trend(&samples, NOW);
+    assert_eq!(trend.bucket_seconds, 3_600);
+}
+
+#[test]
+fn never_goes_finer_than_the_sampling_interval() {
+    // 比采样间隔还细的桶里没有第二个数据点可填，只会画出锯齿。
+    assert_eq!(trend_bucket_seconds(60), 60);
+    assert_eq!(trend_bucket_seconds(5), 60);
+    assert_eq!(trend_bucket_seconds(0), 60);
+}
+
+#[test]
+fn caps_the_bucket_at_an_hour_however_long_it_has_run() {
+    // 跑了一周也不会变成一天一格：窗口固定看最近的一段，不是全部历史。
+    assert_eq!(trend_bucket_seconds(7 * 24 * 3_600), 3_600);
 }

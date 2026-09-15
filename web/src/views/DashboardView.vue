@@ -248,8 +248,34 @@ const SPARK_HEIGHT = 74
 const trendLabel = computed(() => {
   const trend = displayOverview.value?.trend
   if (!trend || trend.points.length === 0) return '请求总数'
-  const hours = Math.round((trend.points.length * (trend.bucket_seconds || 3600)) / 3600)
-  return hours >= 24 ? '近 24 小时请求' : `近 ${hours} 小时请求`
+  const seconds = trend.points.length * (trend.bucket_seconds || 3600)
+  if (seconds >= 24 * 3600) return '近 24 小时请求'
+  // 不满一小时就按分钟说。四舍五入到小时会把 25 分钟说成「近 0 小时」，
+  // 或者更糟，说成「近 1 小时」——把刚开机说成已经跑满一小时。
+  // Below an hour the label counts minutes: rounding to hours would render 25
+  // minutes as "last 0 hours" or, worse, "last 1 hour", presenting a panel just
+  // started as one that has run a full hour.
+  if (seconds < 3600) return `近 ${Math.max(1, Math.round(seconds / 60))} 分钟请求`
+  return `近 ${Math.round(seconds / 3600)} 小时请求`
+})
+
+/**
+ * 画不出趋势时说明缺的到底是什么。
+ *
+ * 原来一律写「趋势需要至少两次采样」，而面板跑满半小时已经采了三十次——
+ * 缺的从来不是采样次数，是还没攒够能连成线的时间。把「还要等多久」说出来，
+ * 比重复一句不成立的条件有用。
+ *
+ * Says what is actually missing when no curve can be drawn. The old text always
+ * read "the trend needs at least two samples", but half an hour in there are
+ * thirty of them: what is missing is not samples but enough elapsed time to
+ * form a line. Saying how much longer to wait beats repeating a condition that
+ * is already met.
+ */
+const trendPending = computed(() => {
+  const trend = displayOverview.value?.trend
+  if (!trend || trend.points.length === 0) return '面板刚开始采样，一两分钟后显示请求量趋势'
+  return '再过一会儿就能画出趋势，面板每分钟采样一次'
 })
 
 const spark = computed(() => {
@@ -364,7 +390,9 @@ onBeforeUnmount(() => {
             <circle class="overview-spark-end" :cx="spark.lastX" :cy="spark.lastY" r="3" />
           </svg>
           <!-- 采样不足两点时画不出趋势。说清楚是「还没攒够」，不是「没有流量」。 -->
-          <p v-else class="overview-spark-pending">趋势需要至少两次采样，面板每分钟采一次</p>
+          <!-- 说清楚缺的是什么。之前写「需要至少两次采样」，可面板跑了半小时
+               已经采了三十次——缺的从来不是采样次数，是还没攒够能连成线的时间。 -->
+          <p v-else class="overview-spark-pending">{{ trendPending }}</p>
         </section>
 
         <section class="overview-stats-row" aria-label="运行统计">

@@ -1151,8 +1151,32 @@ fn should_defer_control(error: &ControlError) -> bool {
 /// The sampling interval: once a minute, about 1440 rows a day, aggregated
 /// into hourly buckets for the trend.
 const METRIC_SAMPLE_INTERVAL_SECONDS: u64 = 60;
-const TREND_BUCKET_SECONDS: i64 = 60 * 60;
+/// 趋势最多给 24 个点；桶宽跟着已经采到的时长走，不写死。
+///
+/// 写死一小时一格是错的：面板刚跑 25 分钟时全部采样落进同一个桶，只有一个点，
+/// 连不成线，页面于是一直说「趋势需要至少两次采样」——而采样其实有二十几次，
+/// 缺的是第二个桶。桶宽随时长自适应之后，跑满一小时之前也画得出曲线。
+///
+/// At most 24 points, with the bucket width following the period actually
+/// collected rather than being fixed. A fixed hour is wrong: 25 minutes after
+/// start every sample lands in one bucket, leaving a single point that cannot
+/// form a line, so the page keeps saying the trend needs two samples — when
+/// there are two dozen and what is missing is a second bucket. Adapting the
+/// width draws a curve well before the first hour is up.
 const TREND_BUCKETS: i64 = 24;
+/// 桶宽下限就是采样间隔：再细也没有第二个数据点可填。
+const MIN_TREND_BUCKET_SECONDS: i64 = METRIC_SAMPLE_INTERVAL_SECONDS.cast_signed();
+/// 桶宽上限一小时，对应攒满 24 小时之后的那张图。
+const MAX_TREND_BUCKET_SECONDS: i64 = 60 * 60;
+
+/// 按采样覆盖的时长挑一个桶宽，目标是刚好铺满 24 格。
+fn trend_bucket_seconds(covered_seconds: i64) -> i64 {
+    if covered_seconds <= 0 {
+        return MIN_TREND_BUCKET_SECONDS;
+    }
+    let ideal = (covered_seconds + TREND_BUCKETS - 1) / TREND_BUCKETS;
+    ideal.clamp(MIN_TREND_BUCKET_SECONDS, MAX_TREND_BUCKET_SECONDS)
+}
 
 fn spawn_metrics_sampler(state: AppState) {
     tokio::spawn(async move {
@@ -1186,15 +1210,16 @@ async fn sample_metrics(state: &AppState) -> anyhow::Result<()> {
 
 async fn load_request_trend(state: &AppState) -> RequestTrend {
     let now = unix_timestamp();
-    let window_start = now - TREND_BUCKET_SECONDS * TREND_BUCKETS;
-    // 多读一格：窗口左端那个桶需要一个更早的样本才能求差。
-    // Read one bucket further back: the leftmost bucket needs an earlier sample
-    // to take a difference against.
-    match state
-        .database
-        .metric_samples_since(window_start - TREND_BUCKET_SECONDS)
-        .await
-    {
+    // 桶宽要等读到采样才定得下来，所以这里按最宽的情况取数：24 个一小时的桶，
+    // 外加左端多读一格——窗口左端那个桶需要一个更早的样本才能求差。多读的部分
+    // 落在窗口外时不会产生数据点。
+    //
+    // The bucket width cannot be known before the samples are read, so this
+    // fetches for the widest case — 24 hourly buckets — plus one bucket further
+    // back, because the leftmost bucket needs an earlier sample to take a
+    // difference against. Anything outside the window yields no point.
+    let widest = MAX_TREND_BUCKET_SECONDS * (TREND_BUCKETS + 1);
+    match state.database.metric_samples_since(now - widest).await {
         Ok(samples) => build_request_trend(&samples, now),
         Err(error) => {
             tracing::warn!(%error, "无法读取指标采样，趋势留空");
@@ -1222,9 +1247,15 @@ async fn load_request_trend(state: &AppState) -> RequestTrend {
 /// proportion to the time covered rather than charged to the closing bucket,
 /// which would invent a spike.
 fn build_request_trend(samples: &[MetricSample], now: i64) -> RequestTrend {
-    let window_start = now - TREND_BUCKET_SECONDS * TREND_BUCKETS;
+    // 覆盖时长从最早那次采样算到现在。第一次采样本身不产生增量，所以真正
+    // 能画出来的那段从它开始。
+    // The covered period runs from the earliest sample to now. That first sample
+    // yields no delta of its own, so the drawable span begins there.
+    let covered = samples.first().map_or(0, |first| now - first.captured_at);
+    let bucket_seconds = trend_bucket_seconds(covered);
+    let window_start = now - bucket_seconds * TREND_BUCKETS;
     let mut buckets = vec![0u64; usize::try_from(TREND_BUCKETS).unwrap_or_default()];
-    let mut covered = vec![false; buckets.len()];
+    let mut covered_buckets = vec![false; buckets.len()];
 
     for pair in samples.windows(2) {
         let (previous, current) = (pair[0], pair[1]);
@@ -1237,23 +1268,24 @@ fn build_request_trend(samples: &[MetricSample], now: i64) -> RequestTrend {
             previous.captured_at,
             current.captured_at,
             window_start,
+            bucket_seconds,
             &mut buckets,
-            &mut covered,
+            &mut covered_buckets,
         );
     }
 
     let points: Vec<TrendPoint> = buckets
         .iter()
         .enumerate()
-        .filter(|(index, _)| covered[*index])
+        .filter(|(index, _)| covered_buckets[*index])
         .map(|(index, requests)| TrendPoint {
-            start_unix: window_start + TREND_BUCKET_SECONDS * i64::try_from(index).unwrap_or(0),
+            start_unix: window_start + bucket_seconds * i64::try_from(index).unwrap_or(0),
             requests: *requests,
         })
         .collect();
     let total = points.iter().map(|point| point.requests).sum();
     RequestTrend {
-        bucket_seconds: TREND_BUCKET_SECONDS,
+        bucket_seconds,
         points,
         total,
     }
@@ -1279,33 +1311,49 @@ fn spread_interval(
     start: i64,
     end: i64,
     window_start: i64,
+    bucket_seconds: i64,
     buckets: &mut [u64],
     covered: &mut [bool],
 ) {
     let span = end - start;
+    if span <= 0 {
+        return;
+    }
     for (index, bucket) in buckets.iter_mut().enumerate() {
-        let offset = TREND_BUCKET_SECONDS * i64::try_from(index).unwrap_or(0);
+        let offset = bucket_seconds * i64::try_from(index).unwrap_or(0);
         let bucket_start = window_start + offset;
-        let bucket_end = bucket_start + TREND_BUCKET_SECONDS;
-        let overlap = end.min(bucket_end) - start.max(bucket_start);
-        if overlap <= 0 {
+        let bucket_end = bucket_start + bucket_seconds;
+        let from = start.max(bucket_start);
+        let to = end.min(bucket_end);
+        if to <= from {
             continue;
         }
         covered[index] = true;
-        let share = if overlap == span {
-            // 常见情况：一分钟的采样间隔整个落在一个桶里，不必做除法。
-            // The common case: a one-minute interval sits entirely inside one
-            // bucket, so no division is needed.
-            delta
-        } else {
-            u64::try_from(
-                u128::from(delta) * u128::try_from(overlap).unwrap_or_default()
-                    / u128::try_from(span).unwrap_or(1),
-            )
-            .unwrap_or_default()
-        };
+        // 按「到这一格为止的累计份额」相减，而不是各算各的再取整。
+        //
+        // 每格单独 floor(delta * overlap / span) 会各丢一点零头，桶一多就积成
+        // 可观的缺口：一段 120 次的增量摊到 16 个格里，每格 7.5 取整成 7，
+        // 合计只剩 112。用累计值相减，零头自然落到下一格，合计始终等于 delta。
+        //
+        // Each bucket's share is the difference of two running totals rather
+        // than its own independently floored quotient. Flooring per bucket
+        // loses a fraction each time, and with many buckets that accumulates
+        // into a visible shortfall: a delta of 120 spread over 16 buckets gives
+        // 7.5 each, floors to 7, and totals 112. Taking differences carries the
+        // remainder into the next bucket, so the parts always sum to delta.
+        let share = scaled(delta, to - start, span) - scaled(delta, from - start, span);
         *bucket = bucket.saturating_add(share);
     }
+}
+
+/// `delta * position / span`，用 128 位算避免中途溢出。
+fn scaled(delta: u64, position: i64, span: i64) -> u64 {
+    let position = position.clamp(0, span);
+    u64::try_from(
+        u128::from(delta) * u128::try_from(position).unwrap_or_default()
+            / u128::try_from(span).unwrap_or(1),
+    )
+    .unwrap_or_default()
 }
 
 fn spawn_config_reconciler(state: AppState) {
