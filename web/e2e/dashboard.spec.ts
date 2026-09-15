@@ -106,7 +106,19 @@ for (const stopped of [true, false]) {
       snapshot.service_active = isStopped ? false : null
       if (isStopped) await mockRequest('/api/v1/service/stop', { method: 'POST' })
     }, stopped)
+    // 这一趟离开再回来是为了让概览重新挂载——演示端点交回的是同一个对象，
+    // 上面那次改写不会触发响应式更新，只有重新挂载才会重新读一遍。
+    // 必须等日志页真的渲染出来再点回去：两次点击连着发，路由可能还没换，
+    // 概览就根本没卸载过，断言等的是一个永远不会出现的横幅。
+    //
+    // The round trip exists to remount the overview: the demo endpoint hands
+    // back the same object, so the mutation above triggers no reactive update
+    // and only a remount re-reads it. Waiting for the logs page to actually
+    // render is what makes that happen — two clicks back to back can land
+    // before the route changes, leaving the overview never unmounted and the
+    // assertion waiting on a banner that will never appear.
     await page.getByRole('link', { name: '日志', exact: true }).click()
+    await expect(page.getByRole('heading', { name: '运行日志', exact: true })).toBeVisible()
     await page.getByRole('link', { name: '概览', exact: true }).click()
 
     await expect(page.getByText(stopped ? 'KixDNS 已停止' : '实时数据暂不可用', { exact: true })).toBeVisible()
