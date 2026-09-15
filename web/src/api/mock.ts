@@ -368,8 +368,20 @@ const releaseVersions: RemoteKixdnsVersion[] = [
     active: false,
   },
 ]
+// 能力表要覆盖到「装着的」那个版本：面板是按当前运行版本的能力来开关功能的，
+// 只给未安装的最新构建登记能力，演示里的功能门控就等于没有依据。
+// 最新构建比在装的多一项，更新之后才拿得到——这也让「有更新」这件事有意义。
+//
+// The capability table has to cover the version actually installed: the panel
+// gates features on what the running version declares, so registering
+// capabilities only for an uninstalled build leaves the demo's gating with
+// nothing behind it. The newest build declares one more than the installed one,
+// gained only by updating, which is what makes the available update mean
+// something.
 const configCapabilitiesByArtifact = new Map<string, string[]>([
   [actionVersions[0].artifact, ['config_query_stats_v1', 'config_static_cname_response_v1']],
+  [actionVersions[1].artifact, ['config_query_stats_v1']],
+  [actionVersions[2].artifact, ['config_query_stats_v1']],
   [releaseVersions[0].artifact, ['config_query_stats_v1']],
 ])
 
@@ -378,10 +390,20 @@ const demoRemoteVersions: Record<KixdnsVersionSource, RemoteKixdnsVersion[]> = {
   release: releaseVersions,
 }
 const kixdnsVersionKey = (version: Pick<RemoteKixdnsVersion, 'source' | 'source_id' | 'commit'>): string => `${version.source}:${version.source_id}:${version.commit}`
-let activeKixdnsVersion = kixdnsVersionKey(actionVersions[0])
+// 演示状态要自洽：装着的是次新那个构建，最新那个还没装，所以「有更新」成立，
+// 系统页的「从哪到哪」两端才会是不同的值。
+// 原来这两条用的是同一个键，后一条把前一条覆盖掉，结果最新构建既是已安装又是
+// 「可更新到」的目标，页面上就出现了 Run #X → Run #X。
+//
+// The demo state has to be self-consistent: the second-newest build is
+// installed and the newest is not, so "update available" holds and the system
+// page's from → to has two different ends. Both entries used to share one key,
+// the second overwriting the first, which left the newest build simultaneously
+// installed and the target to update to — rendering as Run #X → Run #X.
+let activeKixdnsVersion = kixdnsVersionKey(actionVersions[1])
 const installedKixdnsVersions = new Map<string, RemoteKixdnsVersion>([
   [activeKixdnsVersion, actionVersions[1]],
-  [kixdnsVersionKey(actionVersions[0]), actionVersions[0]],
+  [kixdnsVersionKey(actionVersions[2]), actionVersions[2]],
 ])
 
 function demoVersionCatalog(source: KixdnsVersionSource): KixdnsVersionCatalog {
@@ -758,8 +780,8 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
         management_enabled: true,
         available: true,
         source: 'action',
-        current_commit: panelBuildCommit,
-        latest_commit: panelBuildCommit,
+        current_commit: actionVersions[1].commit,
+        latest_commit: actionVersions[0].commit,
         source_id: actionVersions[0].source_id,
         run_id: actionVersions[0].run_id,
         release_tag: null,
