@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { errorMessage, formatCompactNumber, formatDuration, formatKixdnsVersion, formatPercent, shortHash, upstreamSuccessRate } from './utils'
+import { errorMessage, formatCompactNumber, formatDuration, formatKixdnsVersion, formatPercent, formatSmallPercent, shortHash, upstreamSuccessRate } from './utils'
 
 describe('界面格式化工具', () => {
   it('生成稳定且紧凑的运行指标', () => {
@@ -59,5 +59,25 @@ describe('formatCompactNumber', () => {
 
   it('负数按绝对值选择量级', () => {
     expect(formatCompactNumber(-12_847_392)).toBe('-1,284.7 万')
+  })
+})
+
+describe('极小占比', () => {
+  it('发生过但四舍五入到 0.0% 时写成「低于 0.1%」', () => {
+    // 1,204 次 / 1,284.7 万次 = 0.0094%，直接格式化会写成 0.0%。
+    expect(formatSmallPercent(1_204 / 12_847_392)).toBe('低于 0.1%')
+  })
+
+  it('真正为零时仍然写 0.0%，不和「极小」混为一谈', () => {
+    expect(formatSmallPercent(0)).toBe('0.0%')
+  })
+
+  it('刚好到得了一位小数就照常显示', () => {
+    expect(formatSmallPercent(0.001)).toBe('0.1%')
+    expect(formatSmallPercent(0.0005)).toBe('0.1%')
+  })
+
+  it('负值不当作极小值处理', () => {
+    expect(formatSmallPercent(-0.0001)).toBe('-0.0%')
   })
 })

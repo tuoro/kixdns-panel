@@ -8,7 +8,8 @@ import { useToast } from '../composables/useToast'
 import { HEALTH_LABELS, MIN_HEALTH_SAMPLES, cacheComposition, pipelineDistribution, rcodeDistribution, settledAttempts, upstreamHealth } from '../dashboard-presentation'
 import type { UpstreamHealth } from '../dashboard-presentation'
 import { dashboardRuntimeState, emptyOverview, emptyQueryStats, hasStaleDashboardData, supportsQueryStats, supportsUpstreamPrecision } from '../dashboard-state'
-import { errorMessage, formatCompactNumber, formatDuration, formatNumber, formatPercent, shortHash, upstreamSuccessRate } from '../utils'
+import { sparkline } from '../trend'
+import { errorMessage, formatCompactNumber, formatDuration, formatNumber, formatPercent, formatSmallPercent, shortHash, upstreamSuccessRate } from '../utils'
 
 const overview = ref<Overview | null>(null)
 const service = ref<ServiceStatus | null>(null)
@@ -30,7 +31,6 @@ const views = [
   { id: 'stats', label: '查询排行' },
   { id: 'rules', label: '规则命中' },
 ]
-const pipelineColors = ['var(--ink)', 'var(--green)', 'var(--muted)']
 let timer: number | undefined
 let statsTimer: number | undefined
 let pendingLoad: Promise<void> | null = null
@@ -95,8 +95,6 @@ const healthSummary = computed(() => {
 const overallHealth = computed<UpstreamHealth>(() => (healthCounts.value.unhealthy ? 'unhealthy' : healthCounts.value.degraded ? 'degraded' : 'healthy'))
 const rcodes = computed(() => rcodeDistribution(displayOverview.value?.metrics.upstreams ?? []))
 const cacheRows = computed(() => (displayOverview.value ? cacheComposition(displayOverview.value.metrics) : []))
-const rcodeColors: Record<string, string> = { NoError: 'var(--ink)', NXDomain: 'var(--muted)', ServFail: 'var(--red)', Refused: 'var(--amber)', other: '#b7bfbb' }
-const cacheColors: Record<string, string> = { fresh: 'var(--green)', expired: 'var(--muted)', client_timeout: 'var(--amber)', upstream_failure: 'var(--red)' }
 function formatLatency(value: number | null): string {
   return value === null ? '—' : `${value < 10 ? value.toFixed(1) : Math.round(value)} ms`
 }
@@ -226,6 +224,12 @@ async function flushCache(): Promise<void> {
  * CSS and script cannot drift apart. matchMedia fires once on crossing rather
  * than on every resize.
  */
+const expandedUpstream = ref<string | null>(null)
+const upstreamKey = (item: { upstream: string; transport: string }) => `${item.upstream}:${item.transport}`
+function toggleUpstream(item: { upstream: string; transport: string }): void {
+  expandedUpstream.value = expandedUpstream.value === upstreamKey(item) ? null : upstreamKey(item)
+}
+
 const NARROW_QUERY = '(max-width: 700px)'
 const narrow = ref(false)
 let narrowMedia: MediaQueryList | undefined
@@ -233,11 +237,53 @@ const syncNarrow = (event: MediaQueryListEvent | MediaQueryList) => {
   narrow.value = event.matches
 }
 
+const SPARK_WIDTH = 260
+const SPARK_HEIGHT = 74
+
+/**
+ * 采样覆盖多久就说多久。写死「近 24 小时」而实际只攒了三小时，
+ * 是把「还没攒够」说成了「这就是一天的量」。
+ *
+ * The label states the period the samples actually cover. Writing "last 24
+ * hours" while only three hours have been collected would present "not enough
+ * data yet" as a full day's volume.
+ */
+const trendLabel = computed(() => {
+  const trend = displayOverview.value?.trend
+  if (!trend || trend.points.length === 0) return '请求总数'
+  const hours = Math.round((trend.points.length * (trend.bucket_seconds || 3600)) / 3600)
+  return hours >= 24 ? '近 24 小时请求' : `近 ${hours} 小时请求`
+})
+
+const spark = computed(() => {
+  const points = displayOverview.value?.trend.points ?? []
+  // 一个点连不成线，交回 null 让模板去说明原因。
+  if (points.length < 2) return null
+  return sparkline(points.map((point) => point.requests), SPARK_WIDTH, SPARK_HEIGHT)
+})
+
+/**
+ * 信号带上的大数字：有趋势就报趋势覆盖的那段，没有就退回累计总数。
+ * 两者含义不同，所以标题跟着一起换。
+ */
+const signalTotal = computed(() => {
+  const trend = displayOverview.value?.trend
+  if (trend && trend.points.length > 0) return trend.total
+  return displayOverview.value?.metrics.requests_total ?? null
+})
+
 /** 窄屏用万/亿缩写，宽屏给完整数字 / Abbreviated on narrow screens, full otherwise */
 const compactTotal = computed(() => {
-  const total = displayOverview.value?.metrics.requests_total
+  const total = signalTotal.value
   if (total == null) return '--'
   return narrow.value ? formatCompactNumber(total) : formatNumber(total)
+})
+
+/** 兜底次数占请求总数的比例；请求数为 0 时不显示，避免除以零后写出 0.0% */
+const fallbackOfRequests = computed(() => {
+  const metrics = displayOverview.value?.metrics
+  if (!metrics?.requests_total) return ''
+  return formatSmallPercent(metrics.cache_stale.upstream_failure / metrics.requests_total)
 })
 
 onMounted(async () => {
@@ -290,61 +336,72 @@ onBeforeUnmount(() => {
     <div v-if="loading" class="overview-loading" role="status">正在读取运行数据…</div>
     <template v-else-if="displayOverview">
       <section id="overview-panel-runtime" v-show="activeView === 'runtime'" class="overview-view" role="tabpanel" aria-labelledby="overview-tab-runtime" tabindex="0">
-        <section class="overview-kpis" aria-label="核心指标">
-          <article class="overview-kpi">
-            <span class="overview-kpi-label">请求</span>
+        <!-- 最重要的数字独占一处并带趋势，其余三项降为平级。
+             四张等宽卡片让读者自己找重点，而这页第一眼该回答的只有一个问题：
+             在变好还是变坏。 -->
+        <section class="overview-signal" aria-label="请求量">
+          <div class="overview-signal-main">
+            <span class="overview-signal-label">{{ trendLabel }}</span>
             <strong class="overview-total-value">{{ compactTotal }}</strong>
-            <span class="overview-kpi-sub">持续运行 {{ overview ? formatDuration(displayOverview.health.uptime_seconds) : '--' }}</span>
-            <span v-if="finishedTotal" class="overview-kpi-sub overview-kpi-row overview-kpi-row--finished">
-              <span>完成 <b>{{ formatPercent(finishedShare(displayOverview.metrics.requests_finished.completed)) }}</b></span>
-              <span>失败 <b>{{ formatPercent(finishedShare(displayOverview.metrics.requests_finished.failed)) }}</b></span>
-              <span>被丢弃 <b>{{ formatPercent(finishedShare(displayOverview.metrics.requests_finished.cancelled)) }}</b></span>
+            <span class="overview-signal-sub">
+              <span v-if="finishedTotal">完成 <b>{{ formatPercent(finishedShare(displayOverview.metrics.requests_finished.completed)) }}</b></span>
+              <span v-if="latencyKnown">平均 <b>{{ Math.round(displayOverview.metrics.request_latency.avg_ms) }} ms</b></span>
+              <span v-if="latencyKnown"><i class="overview-dot" :class="`overview-dot--${latencyHealth}`" aria-hidden="true"></i><b>{{ formatPercent(within100Share) }}</b> 在 100 ms 内返回</span>
+              <span>持续运行 {{ overview ? formatDuration(displayOverview.health.uptime_seconds) : '--' }}</span>
             </span>
-          </article>
-          <article class="overview-kpi">
-            <span class="overview-kpi-label">平均响应时间</span>
-            <span class="overview-kpi-value-row">
-              <strong class="overview-kpi-value">{{ latencyKnown ? Math.round(displayOverview.metrics.request_latency.avg_ms) : '—' }}</strong>
-              <span v-if="latencyKnown" class="overview-kpi-unit">ms</span>
-            </span>
-            <span v-if="latencyKnown" class="overview-kpi-sub overview-kpi-row"><i class="overview-dot" :class="`overview-dot--${latencyHealth}`" aria-hidden="true"></i><span><b>{{ formatPercent(within100Share) }}</b> 的请求在 100 ms 内返回</span></span>
-            <span v-else class="overview-kpi-sub">当前增强版不提供耗时统计</span>
-          </article>
-          <article class="overview-kpi">
-            <span class="overview-kpi-label" title="含新鲜与过期命中">缓存命中率</span>
+          </div>
+          <svg v-if="spark" class="overview-spark" :viewBox="`0 0 ${SPARK_WIDTH} ${SPARK_HEIGHT}`" preserveAspectRatio="none" role="img" :aria-label="trendLabel + '趋势'">
+            <path class="overview-spark-area" :d="spark.area" />
+            <path class="overview-spark-line" :d="spark.line" />
+            <circle class="overview-spark-end" :cx="spark.lastX" :cy="spark.lastY" r="3" />
+          </svg>
+          <!-- 采样不足两点时画不出趋势。说清楚是「还没攒够」，不是「没有流量」。 -->
+          <p v-else class="overview-spark-pending">趋势需要至少两次采样，面板每分钟采一次</p>
+        </section>
+
+        <section class="overview-stats-row" aria-label="运行统计">
+          <article class="overview-stat">
+            <span class="overview-stat-label" title="含新鲜与过期命中">缓存命中率</span>
             <strong class="overview-kpi-value">{{ formatPercent(cacheHitRate) }}</strong>
-            <span class="overview-kpi-sub">{{ formatNumber(displayOverview.metrics.cache_entries) }} 条缓存<template v-if="staleShare"> · 过期命中占 {{ formatPercent(staleShare) }}</template></span>
-            <span v-if="displayOverview.metrics.cache_stale.upstream_failure" class="overview-badge">上游失败后用旧缓存 {{ formatNumber(displayOverview.metrics.cache_stale.upstream_failure) }} 次</span>
+            <span class="overview-stat-note">{{ formatNumber(displayOverview.metrics.cache_entries) }} 条缓存<template v-if="staleShare"> · 过期命中 {{ formatPercent(staleShare) }}</template></span>
           </article>
-          <article class="overview-kpi">
-            <span class="overview-kpi-label">上游健康</span>
+          <article class="overview-stat">
+            <span class="overview-stat-label">上游健康</span>
             <template v-if="precisionSupported">
               <span class="overview-kpi-value-row">
                 <strong class="overview-kpi-value">{{ healthCounts.healthy }}</strong>
                 <span class="overview-kpi-unit">/ {{ assessedUpstreams }}</span>
               </span>
-              <span class="overview-kpi-sub overview-kpi-sub--rule">成功率 ≥ 99% 且平均耗时 &lt; 1 s 记为健康</span>
-              <span v-if="healthSummary" class="overview-kpi-sub overview-kpi-row"><i class="overview-dot" :class="`overview-dot--${overallHealth}`" aria-hidden="true"></i><b :class="`overview-text--${overallHealth}`">{{ healthSummary }}</b></span>
-              <span v-if="healthCounts.pending" class="overview-kpi-sub">{{ healthCounts.pending }} 个上游观察中，响应不足 {{ MIN_HEALTH_SAMPLES }} 次</span>
+              <span class="overview-stat-note"><b v-if="healthSummary" :class="`overview-text--${overallHealth}`">{{ healthSummary }}</b><template v-if="healthSummary"> · </template>成功率 ≥ 99% 且平均耗时 &lt; 1 s 记为健康</span>
+              <span v-if="healthCounts.pending" class="overview-stat-note">{{ healthCounts.pending }} 个上游观察中，响应不足 {{ MIN_HEALTH_SAMPLES }} 次</span>
             </template>
             <template v-else>
               <strong class="overview-kpi-value">—</strong>
-              <span class="overview-kpi-sub">当前增强版不提供健康判定所需数据，更新增强版后显示</span>
+              <span class="overview-stat-note">当前增强版不提供健康判定所需数据，更新增强版后显示</span>
             </template>
+          </article>
+          <article class="overview-stat">
+            <span class="overview-stat-label">兜底使用</span>
+            <span class="overview-kpi-value-row">
+              <strong class="overview-kpi-value">{{ formatNumber(displayOverview.metrics.cache_stale.upstream_failure) }}</strong>
+              <span class="overview-kpi-unit">次</span>
+            </span>
+            <span class="overview-stat-note">上游失败后返回旧缓存<template v-if="fallbackOfRequests"> · 占请求 {{ fallbackOfRequests }}</template></span>
           </article>
         </section>
 
+        <!-- 主项做大、小项列表。90% 对 9% 这种分布用堆叠条读不出任何信息，
+             而且给每一段配一个颜色会把绿色用成装饰——绿在这个面板里只表示健康。
+             A leading figure with the rest as a list. A 90/9 split tells you
+             nothing as a stacked bar, and colouring each segment spends green
+             on decoration when green here means only "healthy". -->
         <section class="overview-section overview-distribution" aria-labelledby="overview-distribution-heading">
           <header class="overview-section-heading"><h2 id="overview-distribution-heading">请求分布</h2><p>按 Pipeline 累计命中</p></header>
           <template v-if="pipelines.length">
-            <div class="overview-distribution-track" aria-hidden="true">
-              <span v-for="(pipeline, index) in pipelines" :key="pipeline.name" class="overview-distribution-segment"
-                :style="{ width: `${pipeline.share * 100}%`, backgroundColor: pipelineColors[index % pipelineColors.length] }"
-                :title="`${pipeline.name} · ${formatPercent(pipeline.share)}`"><span>{{ pipeline.name }}</span></span>
-            </div>
+            <p class="overview-dist-main"><span class="overview-dist-share">{{ formatPercent(pipelines[0].share) }}</span><span class="overview-dist-name">{{ pipelines[0].name }}</span><span class="overview-dist-count">{{ formatNumber(pipelines[0].count) }} 次</span></p>
             <ul class="overview-pipeline-list" aria-label="Pipeline 命中分布">
-              <li v-for="(pipeline, index) in pipelines" :key="pipeline.name">
-                <span class="overview-pipeline-name"><i :style="{ backgroundColor: pipelineColors[index % pipelineColors.length] }" aria-hidden="true"></i><strong>{{ pipeline.name }}</strong></span>
+              <li v-for="pipeline in pipelines.slice(1)" :key="pipeline.name">
+                <span class="overview-pipeline-name"><strong>{{ pipeline.name }}</strong></span>
                 <span class="overview-pipeline-count">{{ formatNumber(pipeline.count) }}</span>
                 <span class="overview-pipeline-share">{{ formatPercent(pipeline.share) }}</span>
               </li>
@@ -357,15 +414,47 @@ onBeforeUnmount(() => {
           <header class="overview-section-heading"><div><h2 id="overview-upstream-heading">上游台账</h2><p>按响应次数排序；成功率不含并发竞争中被取消的尝试</p></div><span>{{ upstreamRows.length }} 个上游</span></header>
           <template v-if="upstreamRows.length">
             <div class="overview-upstream-desktop">
+              <!-- 九列收成四列：身份、成功率、耗时、响应次数。
+                   错误、拒绝、TCP 兜底收进每行的展开里——它们是排查时才看的数，
+                   平时每行都摆出来只会稀释真正要扫的那两列。诊断页的执行步骤
+                   不能藏是因为那是那一页的产出；这里恰恰相反，藏起来的是次要项。
+                   一行里只允许一个告警色：成功率和耗时同时染红，
+                   读者分不出到底是哪一项出了问题。 -->
               <table class="overview-table">
                 <caption class="overview-sr-only">各上游的运行时累计请求结果</caption>
-                <thead><tr><th scope="col">上游</th><th scope="col">传输</th><th scope="col">状态</th><th scope="col">响应次数</th><th scope="col">成功率</th><th scope="col">平均耗时</th><th scope="col">错误</th><th scope="col">拒绝</th><th scope="col" title="选定 UDP 但靠 TCP 兜底才拿到答案的占比">TCP 兜底</th></tr></thead>
-                <tbody><tr v-for="item in upstreamRows" :key="`${item.upstream}:${item.transport}`">
-                  <th scope="row" class="overview-mono">{{ item.upstream }}</th><td><span class="overview-transport">{{ item.transport }}</span></td>
-                  <td><i class="overview-dot" :class="`overview-dot--${item.health}`" role="img" :aria-label="HEALTH_LABELS[item.health]" :title="HEALTH_LABELS[item.health]"></i></td>
-                  <td>{{ formatNumber(item.settled) }}</td><td :class="`overview-text--${item.health}`">{{ formatPercent(upstreamSuccessRate(item)) }}</td><td :class="`overview-text--${item.health}`">{{ formatLatency(item.avg_latency_ms) }}</td>
-                  <td :class="{ 'overview-warning': item.errors > 0 }">{{ formatNumber(item.errors) }}</td><td>{{ formatNumber(item.rejected) }}</td><td>{{ fallbackShare(item) }}</td>
-                </tr></tbody>
+                <thead><tr><th scope="col">上游</th><th scope="col">成功率</th><th scope="col">平均耗时</th><th scope="col">响应次数</th><th scope="col"><span class="overview-sr-only">明细</span></th></tr></thead>
+                <tbody><template v-for="item in upstreamRows" :key="upstreamKey(item)"><tr>
+                  <th scope="row">
+                    <span class="overview-upstream-cell">
+                      <i class="overview-dot" :class="`overview-dot--${item.health}`" role="img" :aria-label="HEALTH_LABELS[item.health]" :title="HEALTH_LABELS[item.health]"></i>
+                      <span class="overview-mono">{{ item.upstream }}</span>
+                      <span class="overview-transport">{{ item.transport }}</span>
+                    </span>
+                  </th>
+                  <td>
+                    <span class="overview-rate-cell">
+                      <span :class="`overview-text--${item.health}`">{{ formatPercent(upstreamSuccessRate(item)) }}</span>
+                      <span class="overview-rate-bar" aria-hidden="true"><i :class="`overview-rate-bar--${item.health}`" :style="{ width: `${upstreamSuccessRate(item) * 100}%` }"></i></span>
+                    </span>
+                  </td>
+                  <td>{{ formatLatency(item.avg_latency_ms) }}</td>
+                  <td>{{ formatNumber(item.settled) }}</td>
+                  <td class="overview-expand-cell">
+                    <button type="button" class="overview-expand" :aria-expanded="expandedUpstream === upstreamKey(item)" :aria-label="`${item.upstream} 的错误与兜底明细`" @click="toggleUpstream(item)">
+                      <ChevronRight :size="15" :class="{ 'overview-expand--open': expandedUpstream === upstreamKey(item) }" />
+                    </button>
+                  </td>
+                </tr>
+                <tr v-if="expandedUpstream === upstreamKey(item)" :key="`${upstreamKey(item)}:detail`" class="overview-table-detail">
+                  <td colspan="5">
+                    <dl class="overview-upstream-counts">
+                      <div><dt>成功</dt><dd>{{ formatNumber(item.success) }}</dd></div>
+                      <div><dt>错误</dt><dd :class="{ 'overview-warning': item.errors > 0 }">{{ formatNumber(item.errors) }}</dd></div>
+                      <div><dt>拒绝</dt><dd>{{ formatNumber(item.rejected) }}</dd></div>
+                      <div><dt>TCP 兜底</dt><dd>{{ fallbackShare(item) }}</dd></div>
+                    </dl>
+                  </td>
+                </tr></template></tbody>
               </table>
             </div>
             <div class="overview-upstream-mobile">
@@ -390,16 +479,16 @@ onBeforeUnmount(() => {
         <section v-if="rcodes.length || cacheRows.length" class="overview-section overview-breakdowns" aria-label="响应码与缓存构成">
           <div v-if="rcodes.length" class="overview-breakdown">
             <header class="overview-section-heading"><div><h2>响应码分布</h2><p>全部上游 · 已得到结果的请求</p></div></header>
-            <div class="overview-bar" aria-hidden="true"><span v-for="row in rcodes" :key="row.key" :style="{ width: `${row.share * 100}%`, backgroundColor: rcodeColors[row.key] }" :title="`${row.label} · ${formatPercent(row.share)}`"></span></div>
+            <p class="overview-dist-main"><span class="overview-dist-share">{{ formatPercent(rcodes[0].share) }}</span><span class="overview-dist-name">{{ rcodes[0].label }}</span></p>
             <ul class="overview-legend" aria-label="响应码分布">
-              <li v-for="row in rcodes" :key="row.key"><span><i :style="{ backgroundColor: rcodeColors[row.key] }" aria-hidden="true"></i>{{ row.label }}</span><span>{{ formatPercent(row.share) }}</span></li>
+              <li v-for="row in rcodes.slice(1)" :key="row.key"><span>{{ row.label }}</span><span>{{ formatPercent(row.share) }}</span></li>
             </ul>
           </div>
           <div v-if="cacheRows.length" class="overview-breakdown">
             <header class="overview-section-heading"><div><h2>缓存构成</h2><p>命中按来源拆分</p></div></header>
-            <div class="overview-bar" aria-hidden="true"><span v-for="row in cacheRows" :key="row.key" :style="{ width: `${row.share * 100}%`, backgroundColor: cacheColors[row.key] }" :title="`${row.label} · ${formatPercent(row.share)}`"></span></div>
+            <p class="overview-dist-main"><span class="overview-dist-share">{{ formatPercent(cacheRows[0].share) }}</span><span class="overview-dist-name">{{ cacheRows[0].label }}</span></p>
             <ul class="overview-legend" aria-label="缓存构成">
-              <li v-for="row in cacheRows" :key="row.key"><span><i :style="{ backgroundColor: cacheColors[row.key] }" aria-hidden="true"></i>{{ row.label }}</span><span>{{ formatPercent(row.share) }}</span></li>
+              <li v-for="row in cacheRows.slice(1)" :key="row.key"><span>{{ row.label }}</span><span>{{ formatPercent(row.share) }}</span></li>
             </ul>
           </div>
         </section>
@@ -488,9 +577,26 @@ onBeforeUnmount(() => {
 .overview-tabs button[aria-selected="true"] { color: var(--ink); font-weight: 600; }
 .overview-tabs button[aria-selected="true"]::after { position: absolute; right: 0; bottom: -1px; left: 0; height: 3px; background: var(--green); content: ''; }
 .overview-view { outline-offset: 5px; }
-.overview-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin-bottom: 28px; }
-.overview-kpi { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 18px 20px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); }
-.overview-kpi-label { color: var(--muted); font-size: 12px; }
+/* 信号带：整页唯一一处深底，最重要的数字独占其中并带趋势。
+   The signal band is the page's one dark surface: the number that matters most
+   sits alone on it with its trend. */
+.overview-signal { display: grid; grid-template-columns: minmax(0, 1fr) 260px; align-items: center; gap: 28px; margin-bottom: 20px; padding: 22px 24px; border-radius: 4px; color: var(--d-ink); background: var(--ink); }
+.overview-signal-main { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.overview-signal-label { color: var(--d-ink-2); font-size: var(--t-1); }
+.overview-signal-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; color: var(--d-ink-2); font-size: var(--t-1); font-variant-numeric: tabular-nums; }
+.overview-signal-sub b { color: var(--d-ink); font-weight: 500; }
+/* 趋势线和大数字同色：它们说的是同一件事，分开配色会读成两条信息。 */
+.overview-spark { width: 100%; height: 74px; overflow: visible; }
+.overview-spark-line { fill: none; stroke: var(--d-ink); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.overview-spark-area { fill: rgba(255, 255, 255, .13); stroke: none; }
+.overview-spark-end { fill: var(--d-ink); }
+.overview-spark-pending { color: var(--d-ink-2); font-size: var(--t-1); line-height: 1.6; }
+
+.overview-stats-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 28px; }
+.overview-stat { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 16px 18px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); }
+.overview-stat-label { color: var(--muted); font-size: var(--t-1); }
+.overview-stat-note { color: var(--muted); font-size: var(--t-1); line-height: 1.55; font-variant-numeric: tabular-nums; }
+.overview-stat-note b { font-weight: 500; }
 /* 不允许在数字中间断行。overflow-wrap: anywhere 是为了防溢出加的，
    但它对大数字是错的药：375 宽下 12,847,392 会被折成 12,847,39 / 2。
    窄屏另有缩写（见 compactTotal），所以这里不需要靠断行来兜底。
@@ -501,10 +607,6 @@ onBeforeUnmount(() => {
 .overview-total-value, .overview-kpi-value { max-width: 100%; margin: 0; font-size: 40px; font-weight: 500; font-variant-numeric: tabular-nums; letter-spacing: -.045em; line-height: 1.1; white-space: nowrap; }
 .overview-kpi-value-row { display: flex; align-items: baseline; gap: 6px; }
 .overview-kpi-unit { color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }
-.overview-kpi-sub { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
-.overview-kpi-sub b { color: var(--ink); font-weight: 500; }
-.overview-kpi-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
-.overview-badge { align-self: flex-start; padding: 2px 8px; border-radius: 3px; color: var(--amber); background: var(--amber-soft); font-size: 12px; font-variant-numeric: tabular-nums; }
 .overview-dot { display: inline-block; flex: 0 0 8px; width: 8px; height: 8px; border-radius: 50%; vertical-align: middle; }
 .overview-dot--pending { background: #b7bfbb; }
 .overview-dot--healthy { background: var(--green); }
@@ -516,26 +618,47 @@ onBeforeUnmount(() => {
 .overview-breakdowns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 48px; }
 .overview-breakdown { min-width: 0; }
 .overview-breakdown .overview-section-heading { margin-bottom: 14px; }
-.overview-bar { display: flex; height: 28px; overflow: hidden; border-radius: 3px; background: var(--line); }
-.overview-bar > span { display: block; flex: 0 0 auto; min-width: 0; }
-.overview-legend { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 24px; margin: 14px 0 0; padding: 0; list-style: none; font-size: 13px; }
-.overview-legend li { display: flex; justify-content: space-between; gap: 8px; min-width: 0; }
-.overview-legend li > span:first-child { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* 主项做大、小项列表。取代原来的堆叠条。 */
+.overview-dist-main { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; margin: 0 0 10px; }
+.overview-dist-share { font-size: 30px; font-weight: 500; font-variant-numeric: tabular-nums; letter-spacing: -.035em; line-height: 1.1; }
+.overview-dist-name { min-width: 0; font-size: var(--t-3); overflow-wrap: anywhere; }
+.overview-dist-count { margin-left: auto; color: var(--muted); font-size: var(--t-1); font-variant-numeric: tabular-nums; }
+.overview-legend { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; font-size: 13px; }
+.overview-legend li { display: flex; justify-content: space-between; gap: 8px; min-width: 0; color: var(--muted); }
 .overview-legend li > span:last-child { font-variant-numeric: tabular-nums; }
-.overview-legend i { flex: 0 0 8px; width: 8px; height: 8px; border-radius: 1px; }
+/* 成功率配一根小条形：纯数字要逐个比对，条形一眼看得出哪个矮。
+   一行里只允许一个告警色，所以耗时列不再跟着染色。 */
+/* 布局放进单元格里的容器，不要直接把 td/th 变成 flex 或 grid：
+   那样会让表格的自动列宽算错，上游列占掉一半宽度而「响应次数」被压到竖着断字。
+   Layout goes in a wrapper inside the cell rather than turning the td/th itself
+   into a flex or grid container: doing that throws off the table's automatic
+   column widths, leaving the upstream column half the table and squeezing the
+   count column until its header breaks one character per line. */
+.overview-table thead th:first-child { width: 42%; }
+.overview-table thead th:nth-child(2) { width: 130px; }
+.overview-table thead th:nth-child(3), .overview-table thead th:nth-child(4) { width: 110px; }
+.overview-upstream-cell { display: flex; align-items: center; gap: 8px; min-width: 0; font-weight: 400; }
+.overview-upstream-cell .overview-mono { min-width: 0; overflow-wrap: anywhere; }
+.overview-rate-cell { display: grid; gap: 4px; }
+.overview-rate-bar { display: block; height: 3px; border-radius: 2px; background: var(--line); }
+.overview-rate-bar > i { display: block; height: 100%; border-radius: 2px; background: var(--ink); }
+.overview-rate-bar--degraded { background: var(--amber) !important; }
+.overview-rate-bar--unhealthy { background: var(--red) !important; }
+.overview-expand-cell { width: 36px; text-align: right; }
+.overview-expand { display: inline-flex; padding: 4px; color: var(--muted); background: none; border: 0; border-radius: 3px; cursor: pointer; }
+.overview-expand:hover { color: var(--ink); background: var(--canvas); }
+.overview-expand--open { transform: rotate(90deg); }
+.overview-table-detail > td { padding-top: 0; }
+
 .overview-section { padding: 22px 0 0; margin-bottom: 24px; border-top: 1px solid var(--line); }
 .overview-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 16px; }
 .overview-section-heading > div:first-child { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; min-width: 0; }
 .overview-section-heading h2, .overview-runtime h2 { margin: 0; font-size: 17px; font-weight: 600; line-height: 1.4; }
 .overview-section-heading p, .overview-section-heading > span { margin: 0; color: var(--muted); font-size: 12px; }
-.overview-distribution-track { display: flex; height: 40px; overflow: hidden; border-radius: 3px; background: var(--line); }
-.overview-distribution-segment { display: flex; flex: 0 0 auto; min-width: 0; align-items: center; justify-content: center; overflow: hidden; color: var(--surface); }
-.overview-distribution-segment > span { min-width: 0; padding: 0 8px; overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-.overview-pipeline-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px 24px; margin: 12px 0 0; padding: 0; list-style: none; }
-.overview-pipeline-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; min-width: 0; }
-.overview-pipeline-name { display: flex; grid-column: 1 / -1; align-items: baseline; gap: 8px; min-width: 0; }
-.overview-pipeline-name i { flex: 0 0 8px; width: 8px; height: 8px; border-radius: 1px; }
-.overview-pipeline-name strong { font-weight: 500; overflow-wrap: anywhere; }
+.overview-pipeline-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.overview-pipeline-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; align-items: baseline; min-width: 0; color: var(--muted); font-size: var(--t-2); }
+.overview-pipeline-name { min-width: 0; }
+.overview-pipeline-name strong { font-weight: 400; overflow-wrap: anywhere; }
 .overview-pipeline-count { font-variant-numeric: tabular-nums; }
 .overview-pipeline-share { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
 .overview-table { width: 100%; border-collapse: collapse; font-size: 14px; }
@@ -601,7 +724,8 @@ onBeforeUnmount(() => {
 .overview-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
 @media (max-width: 1000px) {
-  .overview-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .overview-signal { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .overview-stats-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .overview-breakdowns { grid-template-columns: minmax(0, 1fr); gap: 24px; }
   .overview-runtime-ledger { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .overview-table th, .overview-table td { padding: 12px 8px; font-size: 13px; }
@@ -616,27 +740,25 @@ onBeforeUnmount(() => {
   .overview-heading > .overview-button { gap: 5px; }
   .overview-tabs { gap: 16px; min-height: 44px; margin-bottom: 16px; }
   .overview-tabs button { padding: 0 4px 9px; font-size: 14px; }
-  .overview-kpis { gap: 10px; margin-bottom: 22px; }
-  .overview-kpi { gap: 6px; padding: 14px 14px 12px; }
+  .overview-signal { padding: 16px 16px 14px; margin-bottom: 14px; gap: 12px; }
+  .overview-signal-sub { gap: 4px 12px; }
+  .overview-spark { height: 52px; }
+  .overview-stats-row { grid-template-columns: minmax(0, 1fr); gap: 10px; margin-bottom: 22px; }
+  .overview-stat { gap: 4px; padding: 13px 14px; }
   .overview-total-value, .overview-kpi-value { font-size: 30px; }
-  .overview-kpi-row { gap: 4px 10px; }
-  .overview-kpi-row--finished > span:not(:first-child), .overview-kpi-sub--rule { display: none; }
+  .overview-dist-share { font-size: 24px; }
   .overview-breakdowns { gap: 18px; }
-  .overview-bar { height: 24px; }
-  .overview-legend { gap: 8px 20px; margin-top: 12px; }
+  .overview-legend { gap: 6px; }
   .overview-section { padding-top: 16px; margin-bottom: 18px; }
   .overview-section-heading { align-items: baseline; gap: 8px; margin-bottom: 10px; }
   .overview-section-heading h2 { font-size: 15px; }
   .overview-section-heading > div:first-child { display: block; }
   .overview-section-heading > div > p { display: none; }
   .overview-section-heading > p, .overview-section-heading > span { font-size: 12px; }
-  .overview-distribution-track { height: 7px; border-radius: 2px; }
-  .overview-distribution-segment > span { display: none; }
   .overview-pipeline-list { display: block; margin-top: 5px; }
   .overview-pipeline-list li { grid-template-columns: minmax(0, 1fr) auto 49px; gap: 8px; align-items: center; min-height: 34px; border-bottom: 1px solid var(--line); font-size: 14px; }
   .overview-pipeline-list li:last-child { border-bottom: 0; }
-  .overview-pipeline-name { grid-column: auto; gap: 7px; }
-  .overview-pipeline-name i { flex-basis: 7px; width: 7px; height: 7px; }
+  .overview-pipeline-name { grid-column: auto; }
   .overview-pipeline-share { font-size: 12px; text-align: right; }
   .overview-upstream-desktop { display: none; }
   .overview-upstream-mobile { display: block; }
