@@ -335,7 +335,13 @@ onBeforeUnmount(() => {
         @click="activeView = view.id" @keydown="moveViewFocus($event, index)">{{ view.label }}</button>
     </div>
 
-    <div v-if="loading" class="overview-loading" role="status">正在读取运行数据…</div>
+    <!-- 骨架的分块照抄结果版式：信号带、三项统计、一段表格。
+         尺寸对不上，数据到达时整页会跳。 -->
+    <div v-if="loading" class="overview-skeleton" role="status" aria-label="正在读取运行数据">
+      <div class="sk overview-skeleton-signal"></div>
+      <div class="overview-skeleton-stats"><i v-for="n in 3" :key="n" class="sk"></i></div>
+      <div class="sk overview-skeleton-block"></div>
+    </div>
     <template v-else-if="displayOverview">
       <section id="overview-panel-runtime" v-show="activeView === 'runtime'" class="overview-view" role="tabpanel" aria-labelledby="overview-tab-runtime" tabindex="0">
         <!-- 最重要的数字独占一处并带趋势，其余三项降为平级。
@@ -397,7 +403,7 @@ onBeforeUnmount(() => {
              A leading figure with the rest as a list. A 90/9 split tells you
              nothing as a stacked bar, and colouring each segment spends green
              on decoration when green here means only "healthy". -->
-        <section class="overview-section overview-distribution" aria-labelledby="overview-distribution-heading">
+        <section class="overview-section overview-distribution" :class="{ 'is-refreshing': requesting && !loading }" aria-labelledby="overview-distribution-heading">
           <header class="overview-section-heading"><h2 id="overview-distribution-heading">请求分布</h2><p>按 Pipeline 累计命中</p></header>
           <template v-if="pipelines.length">
             <p class="overview-dist-main"><span class="overview-dist-share">{{ formatPercent(pipelines[0].share) }}</span><span class="overview-dist-name">{{ pipelines[0].name }}</span><span class="overview-dist-count">{{ formatNumber(pipelines[0].count) }} 次</span></p>
@@ -412,7 +418,7 @@ onBeforeUnmount(() => {
           <p v-else class="overview-empty">尚无 Pipeline 命中数据</p>
         </section>
 
-        <section class="overview-section" aria-labelledby="overview-upstream-heading">
+        <section class="overview-section" :class="{ 'is-refreshing': requesting && !loading }" aria-labelledby="overview-upstream-heading">
           <header class="overview-section-heading"><div><h2 id="overview-upstream-heading">上游台账</h2><p>按响应次数排序；成功率不含并发竞争中被取消的尝试</p></div><span>{{ upstreamRows.length }} 个上游</span></header>
           <template v-if="upstreamRows.length">
             <div class="overview-upstream-desktop">
@@ -720,6 +726,11 @@ onBeforeUnmount(() => {
 .overview-phase { justify-self: start; padding: 2px 7px; border: 1px solid var(--line); border-radius: 3px; color: var(--green); font-size: 12px; }
 .overview-phase--response { color: var(--muted); }
 .overview-empty, .overview-loading { padding: 28px 0; color: var(--muted); font-size: 13px; }
+.overview-skeleton { display: grid; gap: 20px; }
+.overview-skeleton-signal { height: 138px; }
+.overview-skeleton-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.overview-skeleton-stats i { height: 92px; }
+.overview-skeleton-block { height: 220px; }
 .overview-stats-disabled > * { display: block; margin: 0 0 8px; }
 .overview-stats-disabled .overview-button { display: inline-flex; margin-top: 8px; }
 .overview-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
@@ -746,6 +757,8 @@ onBeforeUnmount(() => {
   .overview-signal-sub { gap: 4px 12px; }
   .overview-spark { height: 52px; }
   .overview-stats-row { grid-template-columns: minmax(0, 1fr); gap: 10px; margin-bottom: 22px; }
+  .overview-skeleton-stats { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .overview-skeleton-signal { height: 190px; }
   .overview-stat { gap: 4px; padding: 13px 14px; }
   .overview-total-value, .overview-kpi-value { font-size: 30px; }
   .overview-dist-share { font-size: 24px; }

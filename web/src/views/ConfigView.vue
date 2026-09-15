@@ -626,8 +626,15 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
         <header v-else-if="section === 'settings' && mode === 'structured'" class="workbench-settings-heading"><strong>基础设置</strong><p>监听服务、上游、缓存与 Geo 数据；修改将加入同一份配置草稿。</p></header>
         <div v-if="section === 'pipeline' && mode === 'structured' && manualMode" class="workbench-manual-bar"><button class="button button--secondary" type="button" @click="manualMode = false"><ArrowLeft :size="15" />返回解析编排</button><span>自由编辑 · 保留完整 Pipeline 与规则结构</span></div>
 
-        <div v-if="loading" class="editor-loading">正在读取配置…</div>
-        <div v-else-if="!document" class="editor-loading">配置暂不可用</div>
+        <div v-if="!loading && !document" class="editor-loading">配置暂不可用</div>
+        <!-- 骨架照抄工作台版式：顶上流程带，左边入口列表，右边检查器。 -->
+        <div v-else-if="loading" class="config-skeleton" role="status" aria-label="正在读取配置">
+          <div class="sk config-skeleton-flow"></div>
+          <div class="config-skeleton-body">
+            <div class="config-skeleton-list"><i v-for="n in 4" :key="n" class="sk"></i></div>
+            <div class="sk config-skeleton-inspector"></div>
+          </div>
+        </div>
         <JsonEditor v-else-if="mode === 'json'" v-model="source" />
         <ConfigFlowPreview v-else-if="mode === 'flow' && config" :config="config" />
         <DomainMappingConfigEditor v-else-if="section === 'mapping' && config" v-model="config" :capabilities="runtimeCapabilities" />

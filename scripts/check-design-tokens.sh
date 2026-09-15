@@ -13,7 +13,7 @@ root="$(git rev-parse --show-toplevel)"
 cd "$root"
 
 # 基线：随迁移进度下调，永不上调 / Baseline: lower it as migration proceeds, never raise it
-BASELINE_COLOR=521
+BASELINE_COLOR=519
 BASELINE_SIZE=424
 BASELINE_RADIUS=122
 

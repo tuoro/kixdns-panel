@@ -169,7 +169,19 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .json-editor .cm-cursor { border-left-color: #8bd4ae; }
 .json-editor .cm-selectionBackground { background: #2e5442 !important; }
 .json-editor .cm-content { padding: 10px 0; caret-color: #8bd4ae; }
-.editor-loading { min-height: 440px; display: grid; place-items: center; color: #858f8c; background: #171c1e; font-size: 12px; }
+/* 「配置暂不可用」原来是深底浅字，那是日志页还是深色终端时留下的配色；
+   日志收回浅色体系之后这一处就成了孤零零的一块深色。
+   This read as light-on-dark, left over from when the log view was still a dark
+   terminal; once that returned to the light system this was the only dark patch
+   left. */
+.editor-loading { min-height: 440px; display: grid; place-items: center; color: var(--muted); background: var(--canvas); font-size: 12px; }
+.config-skeleton { display: grid; gap: 14px; padding: 16px; }
+.config-skeleton-flow { height: 56px; }
+.config-skeleton-body { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 14px; }
+.config-skeleton-list { display: grid; gap: 8px; align-content: start; }
+.config-skeleton-list i { height: 62px; }
+.config-skeleton-inspector { min-height: 300px; }
+@media (max-width: 860px) { .config-skeleton-body { grid-template-columns: minmax(0, 1fr); } }
 .editor-footer { min-height: 54px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 9px 13px 9px 17px; border-top: 1px solid var(--line); }
 .validation-state { min-width: 0; display: flex; align-items: center; gap: 7px; color: #6c7672; font-size: 12px; }
 .validation-state svg { flex: 0 0 auto; color: var(--green); }
@@ -463,6 +475,13 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .credential-panel .github-credential { grid-template-columns: minmax(0, 1fr); padding: 0; background: none; border-top: 0; }
 .credential-panel .github-credential__meta { grid-column: 1; }
 
+/* 系统页四处骨架，尺寸照抄各自替代的那块真实内容。
+   SystemView 没有 scoped 样式块，它的样式一直在这里。 */
+.sys-skeleton-line { height: 44px; margin: 16px 18px; }
+.sys-skeleton-panel { height: 128px; margin: 0 18px 16px; }
+.sys-skeleton-rows { display: grid; gap: 8px; padding: 14px 18px; }
+.sys-skeleton-rows .sk { height: 58px; }
+
 .system-layout { display: grid; gap: 14px; align-items: start; }
 .auth-panel label { display: grid; gap: 7px; color: #4c5557; font-size: 14px; font-weight: 650; }
 .auth-panel input { width: 100%; height: 40px; padding: 0 11px; color: #272e30; background: #fff; border: 1px solid #d5dcda; border-radius: 5px; outline: 0; font-size: 12px; }
@@ -617,6 +636,57 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .toast--info > svg { color: var(--amber); }
 .toast-undo { padding: 4px 10px; color: var(--ink); background: transparent; border: 0; border-radius: var(--r-1); font-size: var(--t-2); font-weight: 600; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
 .toast-undo:hover { background: var(--canvas); }
+/* 骨架：块的尺寸照抄真实元素，不是通用灰条——尺寸对不上，数据到达时整页会跳。
+   放在全局是因为四个页面都要用；诊断页那套是同一个做法的第一处实例。
+
+   Skeletons whose blocks copy the geometry of the real elements rather than
+   being generic grey bars: if they do not match, the page jumps when the data
+   lands. They live in the global sheet because four pages need them; the
+   diagnostics page was the first instance of the same approach. */
+/* 骨架块用分隔线那一档灰：它在白色面板和浅灰工作区上都看得见。
+   用 --surface 的话，落在白色面板里的骨架就是白底白块，等于什么都没显示——
+   诊断页那一处能看见只是因为它恰好落在浅灰工作区上。
+   Skeleton blocks take the hairline grey, which reads on both a white panel and
+   the light-grey workspace. With --surface they are white on white inside a
+   panel and show nothing at all; the diagnostics one was only visible because
+   it happened to sit on the workspace. */
+/* display: block 是必须的。骨架块有不少写成 <i>，而 <i> 默认是行内元素，
+   行内元素上的 height 根本不生效——块高会算成 0，肉眼看就是「骨架没出现」。
+   display: block is required. Several skeleton blocks are written as <i>, which
+   is inline by default, and height does not apply to inline elements: the block
+   computes to zero height and reads as the skeleton simply not appearing. */
+.sk { display: block; position: relative; overflow: hidden; background: var(--l-hair); border-radius: var(--r-1); }
+.sk::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .72), transparent);
+  animation: sk-sweep 1.5s infinite;
+}
+@keyframes sk-sweep { to { transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) { .sk::after { animation: none; } }
+
+/* 区块刷新时数据留在原地，只在顶边跑一条发丝。旧数据还准确，清空它是倒退。
+   A refreshing section keeps its data and grows one hairline along its top edge:
+   the old numbers are still accurate, and blanking them is a regression. */
+.is-refreshing { position: relative; }
+.is-refreshing::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  border-radius: var(--r-full);
+  background-image: linear-gradient(90deg, transparent, var(--muted), transparent);
+  background-size: 38% 100%;
+  background-repeat: no-repeat;
+  animation: sk-slide 1.3s infinite;
+}
+@keyframes sk-slide { from { background-position: -38% 0 } to { background-position: 138% 0 } }
+@media (prefers-reduced-motion: reduce) { .is-refreshing::before { animation: none; } }
+
 .empty-state { padding: 22px; color: #929b98; font-size: 12px; text-align: center; }
 .status-banner { min-height: 54px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; margin-bottom: 14px; padding: 9px 11px; color: #8e3131; background: #fff7f7; border: 1px solid #e8c7c7; border-radius: 6px; }
 .status-banner > svg { color: var(--red); }
