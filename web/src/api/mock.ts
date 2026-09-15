@@ -19,6 +19,7 @@ import type {
   KixdnsVersionCatalog,
   KixdnsVersionSource,
   RemoteKixdnsVersion,
+  RequestTrend,
   ServiceStatus,
   UpdateInfo,
   UpdateNotifications,
@@ -119,10 +120,30 @@ const session: AuthSession = {
   expires_at: now + 36000,
 }
 
+/**
+ * 演示用的 24 小时请求曲线：凌晨低谷、白天抬升、晚间见顶，
+ * 和真实住宅网络的 DNS 负载形状一致。合计约 383 万，
+ * 与演示数据里「运行 3.3 天、累计 1284 万次」自洽。
+ */
+const trendShape = [
+  62, 48, 39, 34, 32, 36, 51, 78, 104, 121, 128, 133, 139, 136, 131, 134, 142,
+  158, 176, 189, 196, 181, 142, 94,
+]
+
+const requestTrend: RequestTrend = {
+  bucket_seconds: 3600,
+  points: trendShape.map((weight, index) => ({
+    start_unix: now - (trendShape.length - index) * 3600,
+    requests: weight * 1000,
+  })),
+  total: trendShape.reduce((sum, weight) => sum + weight, 0) * 1000,
+}
+
 const overview: Overview = {
   live: true,
   service_active: true,
   captured_at_unix: now,
+  trend: requestTrend,
   health: {
     protocol_version: 1,
     status: 'ok',
