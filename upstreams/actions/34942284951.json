@@ -2,9 +2,9 @@
   "repository": "olicesx/kixdns",
   "source": "action",
   "branch": "main",
-  "commit": "e521751c5a16e5e776d719e2d209eaac051ad9d4",
-  "official_run_id": 31484882504,
+  "commit": "681183cb25c745cfe42eb380bf9dda886683eaa7",
+  "official_run_id": 34942284951,
   "official_workflow": "build.yml",
-  "patchset": 13,
+  "patchset": 22,
   "control_protocol": 1
 }
