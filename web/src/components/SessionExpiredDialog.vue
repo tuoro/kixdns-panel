@@ -45,16 +45,19 @@ function leave(): void {
     盖在当前页之上，不跳转。背后的页面一直挂载着，配置草稿原样留着，
     验证通过后人还在刚才那一屏。跳回登录页会把那一切一起卸载掉。
 
-    桌面居中，窄屏才贴顶。贴顶是为了避开手机软键盘——桌面没有软键盘，
-    照搬过去只会让框莫名其妙地吊在上面。
+    两个视口都居中。躲软键盘不该靠把框往上挪——那只是把它从一个尴尬的位置
+    换到另一个。容器用 100dvh 跟随动态视口，键盘弹出来时容器一起缩，框自己
+    就重新居中；框比可用高度还高时整块可滚动。
 
     Covers the current page instead of navigating. The page stays mounted behind
     it with its config draft intact, and a successful sign-in leaves you exactly
     where you were; redirecting to the login page would unmount all of it.
 
-    Centred on desktop and top-anchored only on narrow screens: the anchoring
-    exists to dodge a phone's software keyboard, and carrying it onto a desktop
-    where no such keyboard exists just leaves the dialog hanging near the top.
+    Centred on every viewport. Dodging the software keyboard by shoving the
+    dialog upwards only trades one awkward position for another; the container
+    tracks the dynamic viewport with 100dvh instead, so it shrinks with the
+    keyboard and the dialog re-centres itself, scrolling as a whole if it ever
+    exceeds the height available.
   -->
   <div v-if="session.expired.value" class="session-expired" role="presentation">
     <section
@@ -98,8 +101,13 @@ function leave(): void {
 </template>
 
 <style scoped>
-.session-expired { position: fixed; inset: 0; z-index: 120; display: grid; align-content: center; justify-items: center; padding: 24px 16px; overflow-y: auto; background: rgba(15, 20, 19, .58); }
-.session-expired__dialog { width: min(420px, 100%); display: flex; flex-direction: column; gap: 14px; padding: 22px 24px; border-radius: var(--r-2); background: var(--surface); box-shadow: 0 34px 76px -32px rgba(0, 0, 0, .6); }
+/* flex + 子元素 margin:auto 是安全的居中写法：内容超高时从顶部开始滚，
+   而不像 align-content:center 那样把上半截裁掉够不着。
+   flex with margin:auto on the child is the safe centring: when the content
+   outgrows the box it scrolls from the top instead of having its upper half
+   clipped out of reach, which align-content:center would do. */
+.session-expired { position: fixed; inset: 0; height: 100dvh; z-index: 120; display: flex; padding: 24px 16px; overflow-y: auto; background: rgba(15, 20, 19, .58); }
+.session-expired__dialog { width: min(420px, 100%); margin: auto; display: flex; flex-direction: column; gap: 14px; padding: 22px 24px; border-radius: var(--r-2); background: var(--surface); box-shadow: 0 34px 76px -32px rgba(0, 0, 0, .6); }
 .session-expired__dialog h2 { margin: 0; font-size: var(--t-4); font-weight: 600; }
 .session-expired__dialog p { margin: 0; color: var(--muted); font-size: var(--t-2); line-height: 1.6; }
 .session-expired__dialog p strong { color: var(--ink); font-weight: 600; }
@@ -112,8 +120,7 @@ function leave(): void {
 .session-expired__leave { justify-content: center; }
 
 @media (max-width: 700px) {
-  /* 窄屏改贴顶：软键盘弹出来会占掉下半屏，居中的框会被压到看不见。 */
-  .session-expired { align-content: start; padding: 20px 12px 12px; }
+  .session-expired { padding: 16px 12px; }
   .session-expired__dialog { padding: 18px; gap: 12px; }
 }
 </style>
