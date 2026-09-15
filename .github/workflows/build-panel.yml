@@ -111,13 +111,31 @@ jobs:
           npm test
           npm run build
 
+      - name: Resolve Playwright version
+        id: playwright
+        working-directory: web
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browser
+        id: playwright-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+
       - name: Install browser for web acceptance tests
         working-directory: web
-        run: npx playwright install --with-deps chromium
+        run: |
+          if [[ "${{ steps.playwright-cache.outputs.cache-hit }}" == "true" ]]; then
+            npx playwright install-deps chromium
+          else
+            npx playwright install --with-deps chromium
+          fi
 
+      # 推送到 main 的提交绝大多数来自已经跑过完整矩阵的 PR，这里只补桌面视口。
       - name: Verify web workflows
         working-directory: web
-        run: npm run test:e2e
+        run: npm run test:e2e ${{ github.event_name == 'push' && '-- --project=desktop' || '' }}
 
       - name: Upload web acceptance report
         if: failure()

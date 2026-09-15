@@ -19,7 +19,7 @@ async function downloadConfig(page: Page) {
   return JSON.parse(Buffer.concat(chunks).toString('utf8'))
 }
 
-test('入口编辑保留效果预览与提交区，字段错误可见，取消后恢复焦点', async ({ page }, testInfo) => {
+test('入口编辑保留效果预览与提交区，字段错误可见，取消后恢复焦点 @responsive', async ({ page }, testInfo) => {
   await openConfig(page)
   const launcher = page.locator('.workbench-list-toolbar').getByRole('button', { name: '添加入口', exact: true })
   await launcher.click()

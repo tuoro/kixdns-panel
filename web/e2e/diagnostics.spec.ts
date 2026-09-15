@@ -48,7 +48,7 @@ test('诊断应答台账、规则摘要和服务器来源保持真实', async ({
   await noOverflow(page)
 })
 
-test('执行步骤可选择和键盘折叠，缓存未命中不是故障', async ({ page }) => {
+test('执行步骤可选择和键盘折叠，缓存未命中不是故障 @responsive', async ({ page }) => {
   await query(page)
   const steps = page.locator('.diag-step')
   await expect(steps).toHaveCount(6)
@@ -66,7 +66,7 @@ test('执行步骤可选择和键盘折叠，缓存未命中不是故障', async
   await noOverflow(page)
 })
 
-test('原始应答原样保留，重新查询不沿用旧步骤状态', async ({ page }) => {
+test('原始应答原样保留，重新查询不沿用旧步骤状态 @responsive', async ({ page }) => {
   await query(page, '  example.net  ')
   const raw = page.locator('.diag-raw-response')
   await raw.locator('summary').click()
@@ -78,7 +78,7 @@ test('原始应答原样保留，重新查询不沿用旧步骤状态', async ({
   await expect(page.locator('.diag-step').first()).toContainText('example.org')
 })
 
-test('窄屏查询同行且标题、命中名不再海报化', async ({ page }) => {
+test('窄屏查询同行且标题、命中名不再海报化 @responsive', async ({ page }) => {
   // 两个项目都使用 Desktop Chrome，按真实 viewport 而非设备标志判断响应式分支。
   await query(page)
   if ((page.viewportSize()?.width ?? 1440) > 700) return
