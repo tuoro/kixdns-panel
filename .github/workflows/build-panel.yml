@@ -100,6 +100,9 @@ jobs:
           cargo install cargo-audit --version 0.22.2 --locked
           cargo audit --deny warnings
 
+      - name: Verify design tokens
+        run: bash scripts/check-design-tokens.sh
+
       - name: Verify web console
         working-directory: web
         run: |

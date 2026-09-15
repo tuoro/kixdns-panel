@@ -1,0 +1,102 @@
+/* ============================================================
+   KixDNS Panel · 设计 token
+   唯一事实来源。组件里不允许出现字面量色值、字号、圆角、间距。
+   The single source of truth. No literal colours, sizes, radii or
+   spacing in components.
+   ============================================================ */
+
+
+/* 这一层只定义变量，不作用到任何元素。
+   配套的工具类（等宽数字、大数字不断行）与 prefers-reduced-motion
+   随各页改版时一并引入，避免在纯 token 落地这一步改变现有视觉。
+   This layer only declares variables and styles nothing. The matching
+   utility classes and the reduced-motion rule land with each page's
+   redesign, so introducing tokens changes no pixels. */
+:root {
+  /* ---------- 字号：七档，基准 14px ----------
+     数据密集界面用 14 做正文，16 会让表格过于松散。
+     A data-dense interface sets body at 14; 16 makes tables loose. */
+  --t-1: 0.75rem;    /* 12 · 注释、表格次要、图例 */
+  --t-2: 0.8125rem;  /* 13 · 标签、副文本 */
+  --t-3: 0.875rem;   /* 14 · 正文基准 */
+  --t-4: 1.0625rem;  /* 17 · 区块小标题 */
+  --t-5: 1.375rem;   /* 22 · 页标题 */
+  --t-6: 1.875rem;   /* 30 · 区块主数值 */
+  --t-7: 3rem;       /* 48 · 信号带主数值，全站仅此一处 */
+
+  /* 行高只有三档：紧凑用于数值，标准用于正文，宽松用于长段落 */
+  --lh-tight: 1.15;
+  --lh-base: 1.55;
+  --lh-loose: 1.75;
+
+  /* 字重只有三档 */
+  --w-normal: 400;
+  --w-medium: 500;
+  --w-bold: 600;
+
+  /* 中文相对西文的字面补偿：同一行里让汉字与数字视觉等高 */
+  --cjk-scale: 1.04;
+
+  /* ---------- 间距：4px 基准 ---------- */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+  --s-7: 48px;
+  --s-8: 64px;
+
+  /* ---------- 圆角：三档加一个全圆 ---------- */
+  --r-1: 3px;    /* 标记、代码片段 */
+  --r-2: 6px;    /* 控件、列表行 */
+  --r-3: 10px;   /* 面板、卡片 */
+  --r-full: 999px;
+
+  /* ---------- 中性色：浅色面 ---------- */
+  --l-canvas:  #f5f7f3;  /* 工作区底 */
+  --l-surface: #ffffff;  /* 面板 */
+  --l-sunk:    #eceee8;  /* 下沉块、悬停底 */
+  --l-hair:    #e2e6df;  /* 分隔线 */
+  --l-ink:     #0f1413;  /* 主文字 */
+  --l-ink-2:   #45514d;  /* 次要文字 */
+  --l-ink-3:   #79847f;  /* 注释文字 */
+
+  /* ---------- 中性色：深色面 ----------
+     深色壳用于顶栏、信号带、认证页。 */
+  --d-shell:   #0f1413;  /* 壳底 */
+  --d-raise:   #171d1c;  /* 壳上抬一层：输入框、头像 */
+  --d-raise-2: #1f2726;  /* 再抬一层 */
+  --d-hair:    #2a3331;  /* 深色面分隔线 */
+  --d-ink:     #ffffff;  /* 深底主文字，也是深底上的主操作填充 */
+  --d-ink-2:   #9aa5a1;  /* 深底次要文字 */
+  --d-ink-3:   #6d7a76;  /* 深底注释文字 */
+
+  /* ---------- 语义色 ----------
+     同一语义在深浅两种底上取值不同，因此分开命名。
+     用同一个名字装两个值是陷阱，不要那样做。
+     The same meaning needs different values on light and dark
+     grounds, so they get different names. One name holding two
+     values is the trap. */
+  --ok-l:      #15503a;  /* 浅底：健康、成功的文字与填充 */
+  --ok-mark-l: #2f7d5c;  /* 浅底：健康状态点、进度条 */
+  --ok-tint-l: #e9f2ed;  /* 浅底：成功区块底色 */
+  --ok-d:      #4fae86;  /* 深底：健康 */
+
+  --warn-l:      #b8791f;
+  --warn-tint-l: #fdf8ee;
+  --warn-d:      #d5a253;
+
+  --err-l:      #b03f32;
+  --err-tint-l: #fcf0ee;
+  --err-d:      #d97a6b;
+
+  /* ---------- 字体 ---------- */
+  --f-display: Archivo, system-ui, sans-serif;           /* 标题与数值 */
+  --f-body: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  /* ---------- 动效：两档 ---------- */
+  --e-fast: 160ms cubic-bezier(.22,.8,.3,1);   /* 悬停、底色变化 */
+  --e-enter: 1100ms cubic-bezier(.22,.8,.3,1); /* 入场，一次性 */
+}

@@ -1,3 +1,5 @@
+@import "./styles/tokens.css";
+
 :root {
   color: #202628;
   background: #fafbf9;
