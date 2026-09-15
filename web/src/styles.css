@@ -534,10 +534,56 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .local-version-actions { position: absolute; top: 27px; right: 4px; display: flex; gap: 6px; }
 .version-empty { min-height: 112px; display: grid; place-items: center; color: #929b98; font-size: 12px; text-align: center; }
 
-.auth-page { min-height: 100vh; min-height: 100dvh; display: grid; grid-template-columns: minmax(420px, 46%) 1fr; color: #202628; background: #f5f7f6; }
-.auth-panel { width: min(100%, 480px); align-self: center; justify-self: center; padding: 54px 48px; }
-.auth-brand { display: flex; align-items: center; gap: 10px; margin-bottom: 70px; }
-.auth-brand span { width: 36px; height: 36px; display: grid; place-items: center; color: #e8fff2; background: var(--green); border-radius: 6px; }
+/* 单栏居中。原来右栏那块「Enhanced Control」不只是装饰——它把控制协议版本、
+   会话保护方式和更新通道写给了每一个还没通过认证的访客。登录页只有一个职责，
+   多放任何东西都在跟它抢，而这些恰好还是不该提前给出去的东西。
+   A single centred column. The old right-hand panel was not merely decorative:
+   it handed the control-protocol version, the session-protection scheme and the
+   update channel to every visitor who had not authenticated yet. This page has
+   one job, anything else competes with it, and these in particular were things
+   to withhold. */
+.auth-page { position: relative; min-height: 100vh; min-height: 100dvh; display: grid; place-content: center; justify-items: center; padding: 32px 16px; overflow: hidden; color: var(--l-ink); background: var(--auth-ground); }
+/* 满幅柔光底 + 素白卡：性格全在背景，卡片一点修饰都没有。
+   这是 Microsoft 和 Stripe 那条路——四家巨头里唯一真正解决「单调」的做法。
+
+   上一版用同心等高线，间距均匀、圆心固定，读起来像示意图不像氛围。柔光是
+   四团大小不一、位置错开的光晕互相叠加，没有可辨认的规律，所以不会被看成图案。
+   再压两道极淡的曲线作为解析路径的意象——曲线是有机的，不像正圆那样机械。
+
+   A full-bleed soft ground with a plain white card: all the character sits in
+   the background and the card carries none. This is the Microsoft and Stripe
+   route, the only one among the four giants that actually answers "too plain".
+
+   The previous version used concentric contours, evenly spaced around a fixed
+   centre, which reads as a diagram rather than atmosphere. This is four pools
+   of light at different sizes and offsets overlapping with no discernible
+   regularity, so it is not seen as a pattern. Two very faint curves sit on top
+   as the resolution-path motif: curves are organic where perfect circles are
+   mechanical. */
+.auth-page::before {
+  content: '';
+  position: absolute;
+  inset: -12%;
+  background:
+    radial-gradient(42% 50% at 14% 16%, var(--auth-glow), transparent 66%),
+    radial-gradient(48% 44% at 88% 12%, var(--auth-shade), transparent 66%),
+    radial-gradient(58% 56% at 82% 92%, var(--auth-glow), transparent 64%),
+    radial-gradient(46% 50% at 18% 94%, var(--auth-shade-2), transparent 66%),
+    radial-gradient(34% 38% at 54% 46%, rgba(255, 255, 255, .7), transparent 70%);
+  filter: blur(6px);
+  pointer-events: none;
+}
+.auth-page::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: no-repeat center / 132% auto
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 600 400' fill='none' stroke='%23ffffff' stroke-opacity='.62' stroke-width='1.3'%3E%3Cpath d='M-20 246 C 140 246 168 86 322 86 S 472 208 620 208'/%3E%3Cpath d='M-20 292 C 152 292 182 142 322 142 S 458 252 620 252' stroke-opacity='.38'/%3E%3Cpath d='M-20 198 C 128 198 158 38 322 38 S 486 174 620 174' stroke-opacity='.26'/%3E%3C/svg%3E");
+  pointer-events: none;
+}
+.auth-panel { position: relative; width: min(100%, 420px); padding: 32px 30px; background: var(--l-surface); border-radius: var(--r-2); box-shadow: 0 22px 52px -22px rgba(20, 26, 30, .32); }
+.auth-brand { display: flex; align-items: center; gap: 10px; margin-bottom: 34px; }
+.auth-brand span { width: 36px; height: 36px; display: grid; place-items: center; color: #e8fff2; background: var(--ink); border-radius: 6px; }
 .auth-brand strong { font-size: 17px; }
 .auth-heading { margin-bottom: 30px; }
 .auth-heading h1 { margin-bottom: 9px; color: #1d2425; font-size: 27px; line-height: 1.2; }
@@ -549,15 +595,10 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .auth-submit { min-height: 42px; justify-content: space-between; margin-top: 3px; padding-inline: 14px; }
 .form-error { padding: 10px; color: #a73535; background: var(--red-soft); border: 1px solid #efcccc; border-radius: 5px; font-size: 12px; line-height: 1.4; }
 .auth-security { display: flex; align-items: flex-start; gap: 8px; margin-top: 20px; color: #818b87; font-size: 12px; line-height: 1.5; }
-.auth-security svg { flex: 0 0 auto; color: var(--green); }
-.auth-status { display: flex; flex-direction: column; justify-content: center; padding: 11%; color: #e9efec; background: #171c1e; }
-.auth-status__signal { display: flex; align-items: center; gap: 8px; margin-bottom: 36px; color: #91a09a; font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; text-transform: uppercase; }
-.auth-status__signal i { width: 8px; height: 8px; background: #52bd81; border-radius: 50%; box-shadow: 0 0 0 4px rgba(82, 189, 129, .12); }
-.auth-status blockquote { max-width: 620px; margin: 0; color: #f0f4f2; font-size: 29px; font-weight: 620; line-height: 1.45; }
-.auth-status dl { max-width: 620px; display: grid; grid-template-columns: repeat(3, 1fr); margin: 64px 0 0; border-top: 1px solid #333a3c; }
-.auth-status dl div { padding: 17px 12px 0 0; }
-.auth-status dt { color: #71807a; font-size: 12px; }
-.auth-status dd { margin: 5px 0 0; color: #b9c5c0; font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; }
+.auth-security svg { flex: 0 0 auto; color: var(--muted); }
+/* 首次运行时说明接下来两步并写明不会覆盖已有配置。静态文案，不含机器状态。 */
+.auth-next { display: grid; gap: 7px; margin: 20px 0 0; padding: 14px 16px 14px 32px; background: #fff; border: 1px solid #e3e8e6; border-radius: 5px; color: #5c6664; font-size: 12px; line-height: 1.55; }
+.auth-next__promise { list-style: none; margin-left: -18px; padding-top: 7px; border-top: 1px solid #eef1ef; color: var(--ink); font-weight: 600; }
 
 .toast-stack { position: fixed; z-index: 100; top: 18px; right: 18px; width: min(360px, calc(100vw - 36px)); display: grid; gap: 8px; }
 .toast { min-height: 46px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 9px; padding: 8px 9px 8px 12px; color: #2e3637; background: #fff; border: 1px solid #d9dfdc; border-left: 3px solid #75817c; border-radius: 6px; box-shadow: 0 12px 30px rgba(26, 34, 31, .14); font-size: 14px; line-height: 1.4; }
@@ -588,7 +629,6 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
   .action-row > .action-row__grow { flex: 4 1 220px; }
   .action-row__controls { margin-left: auto; }
   .ecs-editor__fields { grid-template-columns: repeat(3, minmax(100px, 1fr)); }
-  .auth-status blockquote { font-size: 24px; }
 }
 
 @media (max-width: 1000px) {
@@ -625,10 +665,8 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
   .system-layout { grid-template-columns: 1fr; }
   .update-grid { grid-template-columns: 1fr; }
   .update-channel + .update-channel { border-top: 1px solid var(--line); border-left: 0; }
-  .auth-page { grid-template-columns: minmax(0, 1fr); }
-  .auth-panel { padding: 38px; }
+  .auth-page { padding: 24px 16px; }
   .auth-brand { margin-bottom: 48px; }
-  .auth-status { display: none; }
 }
 
 @media (max-width: 640px) {
@@ -719,7 +757,7 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
   .version-list { padding-inline: 13px; }
   .version-row { grid-template-columns: 1fr; gap: 10px; padding-block: 14px; }
   .version-action { width: 100%; }
-  .auth-panel { width: 100%; padding: 26px 22px; }
+  .auth-panel { width: 100%; }
   .auth-brand { margin-bottom: 42px; }
   .auth-heading h1 { font-size: 24px; }
   .toast-stack { top: 10px; right: 10px; width: calc(100vw - 20px); }

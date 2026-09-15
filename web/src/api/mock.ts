@@ -1,3 +1,4 @@
+import { ApiError } from './client'
 import type {
   ActiveConfig,
   AuditPage,
@@ -464,8 +465,21 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
   const method = init?.method ?? 'GET'
   const url = new URL(path, 'http://panel.local')
   const pathname = url.pathname
-  if (path === '/api/v1/setup' && method === 'GET') return { required: false } as T
-  if (path === '/api/v1/auth/session') return session as T
+  // 同上：让初始化页也能在演示里看到，否则它的用例只能永远跳过。
+  if (path === '/api/v1/setup' && method === 'GET') {
+    const required = typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-setup-required') === 'true'
+    return { required } as T
+  }
+  // 演示模式默认已登录。置上这个标记可以看到认证页本身，
+  // 和 kixdns:demo-empty-first-install 是同一套做法。
+  // The demo is signed in by default; this flag exposes the auth pages
+  // themselves, mirroring how kixdns:demo-empty-first-install works.
+  if (path === '/api/v1/auth/session') {
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-signed-out') === 'true') {
+      throw new ApiError('会话已失效', 401, 'unauthorized')
+    }
+    return session as T
+  }
   if (path === '/api/v1/auth/login' || path === '/api/v1/setup') return session as T
   if (path === '/api/v1/auth/logout') return { ok: true } as T
   const emptyFirstInstall = typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-empty-first-install') === 'true'

@@ -58,6 +58,24 @@
   --l-surface: #ffffff;  /* 面板 */
   --l-sunk:    #eceee8;  /* 下沉块、悬停底 */
   --l-hair:    #e2e6df;  /* 分隔线 */
+  /* 底纹网点。比分隔线深一档：分隔线是一条连续的线，看得见；
+     网点是离散的小点，同样的明度铺开之后几乎消失，需要再压一档才成立。
+     Texture dots, a step darker than the hairline: a hairline is a continuous
+     stroke and reads at that value, while discrete dots at the same value all
+     but vanish once spread out, so they need one more step of contrast. */
+  --l-texture: #ccd5d0;
+
+  /* ---------- 认证页的柔光底 ----------
+     只有登录和初始化两页用。四团大小不一、位置错开的光池互相叠加，
+     明暗差要拉得开才成立——差得太小就退回成一块平底，那正是原来单调的原因。
+     Only the login and setup pages use these. Four pools of light at different
+     sizes and offsets overlap, and the range between them has to be wide enough
+     to register: too narrow and it collapses back into a flat slab, which is
+     what made the page plain in the first place. */
+  --auth-ground:  #e7ece7;  /* 基色 */
+  --auth-glow:    #ffffff;  /* 亮池 */
+  --auth-shade:   #b9c9bd;  /* 暗池 */
+  --auth-shade-2: #a8bcae;  /* 最深的那一团 */
   --l-ink:     #0f1413;  /* 主文字 */
   --l-ink-2:   #45514d;  /* 次要文字 */
   --l-ink-3:   #79847f;  /* 注释文字 */

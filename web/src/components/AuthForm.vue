@@ -50,22 +50,30 @@ async function submit(): Promise<void> {
         <label>用户名<input v-model.trim="username" name="username" autocomplete="username" minlength="3" maxlength="64" required autofocus /></label>
         <label>密码
           <span class="password-field">
-            <input v-model="password" name="password" :type="visible ? 'text' : 'password'" :autocomplete="isSetup ? 'new-password' : 'current-password'" :minlength="isSetup ? 12 : 1" maxlength="256" required />
+            <!-- 首次运行时把长度规则写进占位符：规则前置，而不是等提交后才报错。 -->
+            <input v-model="password" name="password" :type="visible ? 'text' : 'password'" :placeholder="isSetup ? '至少 12 位' : undefined" :autocomplete="isSetup ? 'new-password' : 'current-password'" :minlength="isSetup ? 12 : 1" maxlength="256" required />
             <button type="button" :title="visible ? '隐藏密码' : '显示密码'" @click="visible = !visible"><EyeOff v-if="visible" :size="18" /><Eye v-else :size="18" /></button>
           </span>
         </label>
-        <label v-if="isSetup">确认密码<input v-model="confirmation" name="confirmation" type="password" autocomplete="new-password" minlength="12" maxlength="256" required /></label>
+        <label v-if="isSetup">确认密码<input v-model="confirmation" name="confirmation" type="password" placeholder="再输入一次" autocomplete="new-password" minlength="12" maxlength="256" required /></label>
         <p v-if="error" class="form-error" role="alert">{{ error }}</p>
         <button class="button button--primary auth-submit" type="submit" :disabled="submitting">
           <span>{{ submitting ? '正在验证' : isSetup ? '创建并进入' : '登录' }}</span><ArrowRight :size="18" />
         </button>
       </form>
-      <div class="auth-security"><ShieldCheck :size="17" /><span>凭据使用 Argon2id 哈希保护，会话仅保存在 HttpOnly Cookie</span></div>
+      <!-- 首次运行的人心里有个没被回答的问题：我填完这个表，它会对我的 DNS 做什么。
+           这块是静态文案，不含任何机器状态，所以不存在登录页那个暴露问题。 -->
+      <ol v-if="isSetup" class="auth-next">
+        <li>创建账号后进入控制台，此时 KixDNS 还未被改动。</li>
+        <li>在配置页编排解析规则，确认无误再应用到运行配置。</li>
+        <li class="auth-next__promise">面板不会覆盖你已有的 KixDNS 配置。</li>
+      </ol>
+      <div class="auth-security">
+        <ShieldCheck :size="17" />
+        <span>
+          凭据使用 Argon2id 哈希保护，会话仅保存在 HttpOnly Cookie。<template v-if="!isSetup">面板不提供密码找回，忘记后需在宿主机上重置。</template>
+        </span>
+      </div>
     </section>
-    <aside class="auth-status">
-      <div class="auth-status__signal"><i></i><span>Enhanced Control</span></div>
-      <blockquote>把运行状态、配置变更与二进制更新放在同一个可审计的控制面。</blockquote>
-      <dl><div><dt>控制协议</dt><dd>v1</dd></div><div><dt>会话保护</dt><dd>CSRF + SameSite</dd></div><div><dt>更新通道</dt><dd>Verified Action</dd></div></dl>
-    </aside>
   </main>
 </template>
