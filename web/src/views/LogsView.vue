@@ -218,8 +218,18 @@ onBeforeUnmount(() => window.clearInterval(timer))
         <div class="log-seg" role="group" aria-label="日志级别">
           <button v-for="option in levelOptions" :key="option.value" type="button" :class="{ 'is-on': level === option.value }" :aria-pressed="level === option.value" @click="level = option.value">{{ option.label }}</button>
         </div>
+        <!-- 运行日志没有单独的刷新键。实时开着时它每 5 秒就刷一次，按一下最多早
+             拿到 5 秒的日志；实时停着时按它更糟——load() 会丢掉已经翻出来的历史、
+             把视图弹回顶部，却不恢复实时，等于把你正在读的位置作废还什么也没换来。
+             要最新的就按「已暂停」恢复实时，那一下本来就会立刻取一次。
+
+             The runtime log has no separate refresh. With live on it already
+             refreshes every five seconds, so pressing it buys at most five
+             seconds; with live off it is worse than useless — load() discards
+             the history paged in, snaps the view back to the top and does not
+             resume live, throwing away the reader's place for nothing. Resuming
+             live is the way to get the newest lines, and it fetches at once. -->
         <button class="button button--secondary" type="button" :class="{ 'button--active': live }" :disabled="requesting" @click="toggleLive"><Pause v-if="live" :size="16" /><Play v-else :size="16" />{{ live ? '实时' : '已暂停' }}</button>
-        <button class="icon-button" type="button" title="刷新日志" :disabled="requesting" @click="load()"><RefreshCw :size="18" :class="{ spin: loading }" /></button>
         <button class="icon-button" type="button" title="下载筛选结果" :disabled="filtered.length === 0" @click="download"><Download :size="18" /></button>
       </header>
       <header v-else class="log-toolbar">

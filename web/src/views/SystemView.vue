@@ -9,7 +9,6 @@ import {
   ExternalLink,
   GitBranch,
   HardDrive,
-  KeyRound,
   Package,
   Play,
   RefreshCw,
@@ -129,14 +128,30 @@ const panelUpdateRunning = computed(() => (
   panelUpdate.value?.state === 'checking' || panelUpdate.value?.state === 'downloading'
 ))
 
+/**
+ * 配额未知时整行换一句话，而不是给两个标签各配一句话。
+ *
+ * 原来写的是「API 配额 等待下次 GitHub API 请求  重置时间 尚未获取」：两个
+ * 「标签 + 值」的槽位里塞的都是句子，挤在一行读成一句不知所云的长句，而且两句
+ * 说的是同一件事——面板还没问过 GitHub。数值槽位就该放数值。
+ *
+ * When the quota is unknown the whole line becomes one sentence instead of
+ * giving each label a sentence of its own. It used to read "API quota waiting
+ * for the next GitHub API request  reset time not yet retrieved": two
+ * label-and-value slots each filled with prose, running together into one
+ * baffling line, and both saying the same thing — the panel has not asked GitHub
+ * yet. A slot for a figure should hold a figure.
+ */
+const githubRate = computed(() => githubTokenStatus.value?.rate_limit ?? null)
+
 const githubQuota = computed(() => {
-  const rate = githubTokenStatus.value?.rate_limit
-  return rate ? `${rate.remaining.toLocaleString()} / ${rate.limit.toLocaleString()}` : '等待下次 GitHub API 请求'
+  const rate = githubRate.value
+  return rate ? `${rate.remaining.toLocaleString()} / ${rate.limit.toLocaleString()}` : ''
 })
 
 function githubRateReset(): string {
-  const reset = githubTokenStatus.value?.rate_limit?.reset_at
-  return reset ? formatDate(reset) : '尚未获取'
+  const reset = githubRate.value?.reset_at
+  return reset ? formatDate(reset) : ''
 }
 
 async function loadGithubTokenStatus(): Promise<void> {
@@ -523,25 +538,44 @@ onBeforeUnmount(() => {
       </template>
     </section>
 
+      <!-- 状态标签上提到面板抬头。原来抬头写「凭据 / 用于版本与更新检查」，下面
+           紧跟着一行「GitHub API 凭据 / 用于版本与更新检查，不会发送到
+           nightly.link」，连图标都是同一把钥匙——一块面板把自己的标题说了两遍。
+           375 宽下正是这一行重复占掉的宽度，让标题和状态标签互相挤。
+
+           The state tag moves up into the panel heading. The heading read
+           "Credentials / for version and update checks" with a row directly
+           beneath it reading "GitHub API credential / for version and update
+           checks, never sent to nightly.link", down to the same key icon: a
+           panel stating its own title twice. At 375 it was that repetition
+           taking the width the title and the tag were fighting over. -->
       <section class="panel credential-panel">
-        <header class="panel__header"><div><h2>凭据</h2><p>用于版本与更新检查</p></div><KeyRound :size="20" /></header>
+        <header class="panel__header">
+          <div><h2>GitHub 凭据</h2><p>用于版本与更新检查，不会发送到 nightly.link</p></div>
+          <span class="tag" :class="{ 'tag--muted': !githubTokenStatus?.configured }">{{ githubTokenStatus?.configured ? '已配置' : '匿名' }}</span>
+        </header>
       <div class="github-credential">
-        <div class="github-credential__summary">
-          <span><KeyRound :size="18" /></span>
-          <div><strong>GitHub API 凭据</strong><p>用于版本与更新检查，不会发送到 nightly.link</p></div>
-          <span :class="githubTokenStatus?.configured ? 'tag tag--success' : 'tag tag--muted'">{{ githubTokenStatus?.configured ? '已配置' : '匿名' }}</span>
-        </div>
         <div class="github-credential__form">
+          <!-- 占位符按 375 下量出来的可用宽度写：那里输入框内只剩 149px，而
+               「github_pat_… 或 ghp_…」要 176px，会在词中间被切掉。占位符是提示
+               不是契约，后端两种前缀都收，给一个写得下的例子就够了。
+               The placeholder is sized to the width measured at 375, where the
+               field leaves 149px and "github_pat_… 或 ghp_…" needs 176, cutting
+               off mid-token. A placeholder is a hint, not a contract: the server
+               takes either prefix, so one example that fits is enough. -->
           <label class="github-token-input">
-            <input v-model="githubToken" :type="githubTokenVisible ? 'text' : 'password'" :placeholder="githubTokenStatus?.configured ? '输入新 Token 以替换' : 'github_pat_… 或 ghp_…'" autocomplete="new-password" maxlength="256" :disabled="githubTokenBusy" @keyup.enter="saveGithubToken">
+            <input v-model="githubToken" :type="githubTokenVisible ? 'text' : 'password'" :placeholder="githubTokenStatus?.configured ? '输入新 Token' : 'github_pat_…'" autocomplete="new-password" maxlength="256" :disabled="githubTokenBusy" @keyup.enter="saveGithubToken">
             <button type="button" :title="githubTokenVisible ? '隐藏 Token' : '显示 Token'" :aria-label="githubTokenVisible ? '隐藏 Token' : '显示 Token'" @click="githubTokenVisible = !githubTokenVisible"><EyeOff v-if="githubTokenVisible" :size="15" /><Eye v-else :size="15" /></button>
           </label>
           <button class="button button--primary" type="button" :disabled="!githubToken || githubTokenBusy" @click="saveGithubToken">{{ githubTokenBusy ? '处理中' : (githubTokenStatus?.configured ? '替换' : '保存') }}</button>
           <button class="icon-button icon-button--danger" type="button" title="删除 Token" aria-label="删除 Token" :disabled="!githubTokenStatus?.configured || githubTokenBusy" @click="deleteGithubToken"><Trash2 :size="16" /></button>
         </div>
         <div class="github-credential__meta">
-          <span>API 配额 <strong class="mono">{{ githubQuota }}</strong></span>
-          <span>重置时间 <strong>{{ githubRateReset() }}</strong></span>
+          <template v-if="githubRate">
+            <span>API 配额 <strong class="mono">{{ githubQuota }}</strong></span>
+            <span>重置时间 <strong>{{ githubRateReset() }}</strong></span>
+          </template>
+          <span v-else>面板还没向 GitHub 请求过，配额未知</span>
           <span v-if="githubTokenError" class="github-credential__error">{{ githubTokenError }}</span>
         </div>
       </div>

@@ -57,6 +57,49 @@ test('不同屏宽无页面横向溢出，手机标题与点击区域保持合�
         heading: parseFloat(getComputedStyle(document.querySelector('main h1')!).fontSize),
       }))
       expect(layout.scroll, `${path} at ${width}px`).toBeLessThanOrEqual(layout.width)
+      /*
+       * 页面级不溢出挡不住「控件从自己那一格里挤出去」。凭据块的删除按钮就是这么
+       * 漏过去的：那一格写死 34px，而 .icon-button 是 40px、窄屏还要满足 44px 的
+       * 触控下限，按钮于是比格子宽，右边缘压出去。没有谁裁剪它，整页也没被撑宽，
+       * 上面那条断言一路绿灯。
+       *
+       * 所以这里量的是每个控件对它「自己那一格」的关系——父元素的内容盒，padding
+       * 以内。绝对定位的控件（显示/隐藏 Token 的眼睛）按设计就贴在定位父元素的边上，
+       * 跳过。
+       *
+       * A page that does not scroll sideways can still have controls squeezed out
+       * of the slot holding them. That is how the credential block's delete button
+       * slipped through: its track was a fixed 34px while .icon-button is 40px and
+       * rises to the 44px touch minimum on narrow screens, so the button outgrew
+       * its track and its right edge pushed past it. Nothing clipped it and the
+       * page never widened, so the assertion above stayed green.
+       *
+       * What is measured here is therefore each control against its own slot — its
+       * parent's content box, inside the padding. Absolutely positioned controls
+       * (the eye that reveals the token) sit on their containing block's edge by
+       * design and are skipped.
+       */
+      const escaped = await page.evaluate(() => {
+        const out: string[] = []
+        for (const panel of document.querySelectorAll('.panel')) {
+          for (const control of panel.querySelectorAll('button, input, select, textarea')) {
+            const box = control.getBoundingClientRect()
+            if (box.width === 0 && box.height === 0) continue
+            if (getComputedStyle(control).position === 'absolute') continue
+            const slot = control.parentElement
+            if (!slot) continue
+            const slotBox = slot.getBoundingClientRect()
+            const style = getComputedStyle(slot)
+            const left = slotBox.left + slot.clientLeft + parseFloat(style.paddingLeft)
+            const right = left + slot.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)
+            if (box.left < left - 0.5 || box.right > right + 0.5) {
+              out.push(`${control.className || control.tagName} 挤出 ${slot.className || slot.tagName}`)
+            }
+          }
+        }
+        return out
+      })
+      expect(escaped, `${path} at ${width}px`).toEqual([])
       if (width <= 700) expect(layout.heading, `${path} at ${width}px`).toBeLessThanOrEqual(22)
       if (width <= 860) {
         const target = await page.locator('.mobile-nav a').first().boundingBox()
