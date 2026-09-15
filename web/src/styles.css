@@ -422,6 +422,40 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .audit-load-more, .runtime-load-more { width: 100%; min-height: 42px; display: flex; align-items: center; justify-content: center; gap: 6px; color: var(--ink); background: transparent; border: 0; border-top: 1px solid var(--line); font-size: 12px; }
 .audit-load-more:hover:not(:disabled), .runtime-load-more:hover:not(:disabled) { background: var(--canvas); }
 
+/* 服务状态压成一行：这页最上面的东西只需要回答「在不在跑」和「要不要动它」。
+   The service line is one row: the top of this page only has to answer whether
+   it is running and whether you need to touch it. */
+.service-line { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 16px 18px; }
+.service-dot { flex: 0 0 auto; width: 10px; height: 10px; border-radius: 50%; background: var(--green); }
+.service-dot--stopped { background: var(--muted); }
+.service-line > strong { font-size: 14px; }
+.service-line__state { font-size: 14px; }
+.service-line__meta { color: var(--muted); font-size: 12px; }
+.service-line .service-actions { margin-left: auto; padding: 0; }
+
+/* 每项更新真正有用的只有「从哪到哪」和一个按钮。 */
+.update-rows { display: flex; flex-direction: column; }
+.update-row { display: flex; align-items: center; gap: 12px; padding: 14px 18px; }
+.update-row + .update-row { border-top: 1px solid var(--line); }
+.update-row__mark { flex: 0 0 auto; width: 34px; height: 34px; display: grid; place-items: center; color: var(--muted); background: var(--canvas); border-radius: 6px; }
+/* 有更新才是需要动手的那一项，用填充把它和「已是最新」区分开。 */
+.update-row--ready .update-row__mark { color: var(--d-ink); background: var(--ink); }
+.update-row__body { min-width: 0; flex: 1; display: grid; gap: 2px; }
+.update-row__body strong { font-size: 14px; }
+.update-row__from-to { color: var(--ink); font-size: 13px; overflow-wrap: anywhere; }
+.update-row__note { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.update-row__note--aside { flex: 0 0 auto; max-width: 180px; text-align: right; }
+.update-row__actions { flex: 0 0 auto; display: flex; gap: 8px; }
+.update-row__actions .button { text-decoration: none; }
+
+/* 凭据块原来横跨「可用更新」的整宽，两列排得下；现在它自己是半栏面板，
+   那套 220px + 300px 的最小宽度会把页面撑出横向滚动条。这里改回一列。
+   The credential block used to span the full width of the update panel, where
+   two columns fitted. Now that it is its own half-width panel, that 220px +
+   300px minimum pushes the page into a horizontal scrollbar, so it stacks. */
+.credential-panel .github-credential { grid-template-columns: minmax(0, 1fr); padding: 0; background: none; border-top: 0; }
+.credential-panel .github-credential__meta { grid-column: 1; }
+
 .system-layout { display: grid; gap: 14px; align-items: start; }
 .auth-panel label { display: grid; gap: 7px; color: #4c5557; font-size: 14px; font-weight: 650; }
 .auth-panel input { width: 100%; height: 40px; padding: 0 11px; color: #272e30; background: #fff; border: 1px solid #d5dcda; border-radius: 5px; outline: 0; font-size: 12px; }
@@ -429,14 +463,6 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 
 .system-layout { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
 .service-panel, .runtime-panel { display: flex; flex-direction: column; }
-.service-state { display: flex; align-items: center; gap: 14px; padding: 22px 18px; }
-.service-state__icon { width: 46px; height: 46px; display: grid; place-items: center; flex: 0 0 auto; color: var(--green); background: var(--green-soft); border-radius: 7px; }
-.service-state__icon--stopped { color: #7c8582; background: #eef0ef; }
-.service-state > div { min-width: 0; display: grid; gap: 4px; }
-.service-state small { color: #8b9491; font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; }
-.service-state strong { color: #252c2e; font-size: 17px; }
-.service-state p { overflow: hidden; color: #78817e; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.service-details { padding-top: 0; padding-bottom: 8px; }
 .service-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: auto; padding: 0 18px 18px; }
 .inline-loading { min-height: 170px; display: grid; place-items: center; color: #8c9592; font-size: 14px; }
 .runtime-state { min-height: 78px; display: flex; align-items: center; gap: 12px; margin: 17px 17px 5px; padding: 13px; background: var(--green-soft); border: 1px solid #cae1d5; border-radius: 5px; }
@@ -449,25 +475,6 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .runtime-details { padding-top: 3px; padding-bottom: 14px; }
 .runtime-details a, .version-identity a, .local-version a { display: inline-flex; align-items: center; gap: 4px; color: var(--green); text-decoration: none; }
 .update-panel { margin-top: 14px; }
-.update-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.update-channel { min-width: 0; display: flex; flex-direction: column; padding: 18px; }
-.update-channel + .update-channel { border-left: 1px solid var(--line); }
-.update-channel__heading { min-width: 0; display: flex; align-items: center; gap: 10px; }
-.update-channel__heading > div { min-width: 0; display: grid; gap: 2px; }
-.update-channel__heading small { color: #8a9490; font-size: 12px; font-weight: 750; }
-.update-channel__heading h3 { overflow: hidden; color: #30383a; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.update-channel__heading > .tag { flex: 0 0 auto; margin-left: auto; }
-.update-channel__icon { width: 38px; height: 38px; display: grid; place-items: center; flex: 0 0 auto; color: var(--green); background: var(--green-soft); border-radius: 6px; }
-.update-channel__icon--panel { color: var(--amber); background: var(--amber-soft); }
-.update-channel__status { margin-top: 15px; color: #27302d; font-size: 14px; }
-.update-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 14px 0 17px; border: 1px solid #e3e8e6; border-radius: 5px; }
-.update-facts div { min-width: 0; padding: 10px; border-right: 1px solid #e3e8e6; }
-.update-facts div:last-child { border-right: 0; }
-.update-facts dt { color: #89928f; font-size: 12px; }
-.update-facts dd { margin: 5px 0 0; overflow-wrap: anywhere; color: #46504d; font-size: 12px; line-height: 1.35; }
-.update-channel__actions { display: grid; grid-template-columns: repeat(2, minmax(0, max-content)); gap: 8px; margin-top: auto; }
-.update-channel__actions .button { min-width: 0; text-decoration: none; }
-.update-channel__placeholder { min-height: 36px; display: flex; align-items: center; margin-top: auto; color: #8b9491; font-size: 12px; }
 .update-loading { min-height: 236px; }
 .update-check-failed { min-height: 118px; display: flex; align-items: center; justify-content: center; gap: 12px; padding: 18px; color: #7c8582; font-size: 12px; }
 .update-check-failed span { overflow-wrap: anywhere; }
@@ -692,6 +699,17 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
   .update-facts div:last-child { border-bottom: 0; }
   .update-facts dd { max-width: 68%; margin: 0; text-align: right; }
   .update-channel__actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* 一行三块在 375 下挤成竖着断字的窄柱，改成上下两段。
+     Three blocks in a row collapse into a narrow column that breaks mid-token
+     at 375, so the row stacks instead. */
+  .update-row { flex-wrap: wrap; padding: 13px; gap: 10px; }
+  .update-row__body { flex-basis: calc(100% - 46px); }
+  .update-row__actions { width: 100%; }
+  .update-row__actions .button { flex: 1; justify-content: center; }
+  .update-row__note--aside { max-width: none; width: 100%; text-align: left; }
+  .service-line { padding: 13px; gap: 8px 10px; }
+  .service-line .service-actions { width: 100%; margin-left: 0; }
+  .service-line .service-actions .button { flex: 1; justify-content: center; }
   .github-credential { grid-template-columns: 1fr; padding: 12px 13px; }
   .github-credential__meta { grid-column: 1; }
   .version-panel { margin-top: 9px; }
