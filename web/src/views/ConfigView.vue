@@ -476,14 +476,26 @@ async function importFile(event: Event): Promise<void> {
   try {
     if (!confirmDiscard()) return
     if (file.size > 4 * 1024 * 1024) throw new Error('配置文件不能超过 4 MiB')
+    // 导入会整份替换掉草稿。它纯粹是本地状态，所以撤销是真能撤的——
+    // 版本删除那类的「撤销」在服务端根本回不去，给了就是骗人。
+    // The import replaces the whole draft. Being purely local state it really
+    // can be undone, unlike something like deleting a version, where the server
+    // cannot go back and offering "undo" would be a lie.
+    const previous = source.value
     source.value = await file.text()
     if (!syncStructuredFromSource()) {
       mode.value = 'json'
+      source.value = previous
+      syncStructuredFromSource()
       throw new Error(parseError.value || 'JSON 解析失败')
     }
     mode.value = 'structured'
     resetLocalState()
-    toast.success(`已导入 ${file.name}`)
+    toast.undoable(`已导入 ${file.name}`, () => {
+      source.value = previous
+      syncStructuredFromSource()
+      resetLocalState()
+    })
   } catch (error) {
     toast.error(errorMessage(error))
   } finally {

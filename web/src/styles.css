@@ -608,6 +608,8 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .toast--error { border-left-color: var(--red); }
 .toast--error > svg { color: var(--red); }
 .toast--info > svg { color: var(--amber); }
+.toast-undo { padding: 4px 10px; color: var(--ink); background: transparent; border: 0; border-radius: var(--r-1); font-size: var(--t-2); font-weight: 600; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.toast-undo:hover { background: var(--canvas); }
 .empty-state { padding: 22px; color: #929b98; font-size: 12px; text-align: center; }
 .status-banner { min-height: 54px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; margin-bottom: 14px; padding: 9px 11px; color: #8e3131; background: #fff7f7; border: 1px solid #e8c7c7; border-radius: 6px; }
 .status-banner > svg { color: var(--red); }

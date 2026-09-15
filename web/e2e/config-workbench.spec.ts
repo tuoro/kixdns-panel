@@ -150,3 +150,34 @@ test('未应用的入口修改在导航、模式切换和重新读取时可保�
   await page.getByTitle('重新读取配置', { exact: true }).click()
   await expect(inspector.getByLabel('动作 1 上游', { exact: true })).toHaveValue('9.9.9.9:53')
 })
+
+test('导入可撤销，失败的提示不会自己溜走', async ({ page }) => {
+  await openWorkbench(page)
+  await expect(page.locator('.workbench-entry')).toHaveCount(2)
+
+  // 导入整份替换草稿，所以那条提示右侧是撤销而不是叉。
+  // 草稿此时已是脏的，配置页自己的放弃确认会先拦一道。
+  const imported = { ...configFixture, pipeline_select: [configFixture.pipeline_select[1]] }
+  page.once('dialog', (dialog) => dialog.accept())
+  await page.locator('input[type=file]').setInputFiles({
+    name: 'replace.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(imported)),
+  })
+  await expect(page.locator('.workbench-entry')).toHaveCount(1)
+  // openWorkbench 的那次导入也留了一条撤销（窗口 8 秒），所以取最新那条。
+  const undo = page.locator('.toast-undo').last()
+  await expect(undo).toBeVisible()
+  await undo.click()
+  await expect(page.locator('.workbench-entry')).toHaveCount(2)
+
+  // 失败的提示不自动消失：一条没人看见就溜走的错误等于没报过。
+  page.once('dialog', (dialog) => dialog.accept())
+  await page.locator('input[type=file]').setInputFiles({
+    name: 'broken.json', mimeType: 'application/json', buffer: Buffer.from('{ not json'),
+  })
+  const failure = page.locator('.toast--error')
+  await expect(failure).toBeVisible()
+  await page.waitForTimeout(6000)
+  await expect(failure).toBeVisible()
+  // 同一时刻成功提示早已自己消失，只剩这条错误。
+  await expect(page.locator('.toast--success')).toHaveCount(0)
+})
