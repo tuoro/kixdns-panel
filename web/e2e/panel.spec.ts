@@ -373,6 +373,29 @@ test('转发动作支持不写入协议的自动传输模式', async ({ page }) 
   await expect(transport).toHaveValue('')
 })
 
+test('系统页按「要不要现在动手」排序，更新项压成一行 @responsive', async ({ page }) => {
+  await open(page, '/system')
+
+  // 服务状态在最上且只有一行：它回答「在不在跑」和「要不要动它」。
+  const order = await page.evaluate(() => [...document.querySelectorAll('main section.panel')]
+    .map((panel) => panel.className.split(' ').find((name) => name.endsWith('-panel'))))
+  expect(order).toEqual(['service-panel', 'update-panel', 'runtime-panel', 'credential-panel', 'version-panel'])
+
+  const line = page.locator('.service-line')
+  await expect(line).toHaveCount(1)
+  await expect(line).toContainText('kixdns.service')
+  await expect(line).toContainText('正在运行')
+
+  // 每项更新只保留「从哪到哪」和按钮，不再是一张带三格事实表的大卡。
+  const rows = page.locator('.update-row')
+  await expect(rows).toHaveCount(2)
+  await expect(rows.first().locator('.update-row__from-to')).toContainText('→')
+  await expect(rows.nth(1).locator('.update-row__from-to')).toContainText('v1.0.0 → v1.0.1')
+  await expect(page.locator('.update-facts')).toHaveCount(0)
+
+  await expectNoPageOverflow(page)
+})
+
 test('增强版本可安装、切换并删除非活动库存', async ({ page }) => {
   await open(page, '/system')
   const panel = page.locator('.version-panel')
