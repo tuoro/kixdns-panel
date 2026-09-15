@@ -41,7 +41,12 @@ type VersionAction = { identity: string; kind: 'install' | 'activate' | 'delete'
 
 const service = ref<ServiceStatus | null>(null)
 const catalog = ref<KixdnsVersionCatalog | null>(null)
-const versionSource = ref<KixdnsVersionSource>('release')
+// 默认停在 action 轨道：面板实际装的就是 action 打包出来的增强版，
+// release 轨道要等上游打新 tag 才会前进，开箱看到的应该是常用的那一条。
+// The action track is the default: what the panel actually installs is the
+// enhanced build packaged from actions, while the release track only advances
+// when upstream tags a new version. The one in daily use is the one to open on.
+const versionSource = ref<KixdnsVersionSource>('action')
 const loadingService = ref(true)
 const loadingVersions = ref(true)
 const serviceAction = ref<ServiceAction | null>(null)
@@ -309,7 +314,7 @@ function selectVersionSource(source: KixdnsVersionSource): void {
 }
 
 async function viewKixdnsVersions(): Promise<void> {
-  selectVersionSource(updateStatus.value?.kixdns.source ?? 'release')
+  selectVersionSource(updateStatus.value?.kixdns.source ?? 'action')
   await nextTick()
   versionPanel.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
@@ -524,8 +529,8 @@ onBeforeUnmount(() => {
         <div><h2>KixDNS 版本</h2><p>{{ managed ? '远端版本源与本地版本库存' : '外部安装未纳入面板版本管理' }}</p></div>
         <div v-if="managed" class="version-panel__tools">
           <div class="version-source-tabs" role="tablist" aria-label="版本源">
-            <button type="button" role="tab" :aria-selected="versionSource === 'release'" :class="{ 'version-source-tab--active': versionSource === 'release' }" @click="selectVersionSource('release')"><TagIcon :size="14" />Releases</button>
             <button type="button" role="tab" :aria-selected="versionSource === 'action'" :class="{ 'version-source-tab--active': versionSource === 'action' }" @click="selectVersionSource('action')"><GitBranch :size="14" />Actions</button>
+            <button type="button" role="tab" :aria-selected="versionSource === 'release'" :class="{ 'version-source-tab--active': versionSource === 'release' }" @click="selectVersionSource('release')"><TagIcon :size="14" />Releases</button>
           </div>
           <button class="icon-button" type="button" title="刷新版本" :disabled="loadingVersions || versionAction !== null" @click="loadVersions()"><RefreshCw :size="18" :class="{ spin: loadingVersions }" /></button>
         </div>

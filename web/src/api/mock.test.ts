@@ -186,13 +186,14 @@ describe('演示 API', () => {
     expect(catalog.remote_versions[0].source_url).toContain('olicesx/kixdns/actions/runs/30235703570')
     expect(catalog.remote_versions[0].build_url).toContain('tuoro/kixdns-panel/actions/runs/30565639501')
     expect(catalog.remote_versions[0].artifact).toBe('kixdns-enhanced-action-30235703570-p8-46ac788fc96c-linux-x86_64')
-    expect(
-      catalog.installed_versions.find((version) => version.source_id === catalog.remote_versions[0].source_id)?.config_capabilities,
-    ).toContain('config_query_stats_v1')
+    // 最新那个构建按演示状态是「还没装」的，所以能力要从真正装着的版本上取。
+    expect(catalog.installed_versions).not.toHaveLength(0)
+    expect(catalog.installed_versions[0].config_capabilities).toContain('config_query_stats_v1')
+    expect(catalog.remote_versions[0].installed).toBe(false)
     expect(catalog.remote_versions.every((version) => /^sha256:[a-f0-9]{64}$/.test(version.artifact_digest))).toBe(true)
     expect(new Set(catalog.remote_versions.map((version) => version.run_id)).size).toBe(4)
     expect(catalog.installed_versions.every((version) => version.commit !== version.upstream_commit)).toBe(true)
-    expect(catalog.installed_versions.some((version) => version.upstream_commit === '374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25')).toBe(true)
+    expect(catalog.installed_versions.some((version) => version.upstream_commit === '647c5b1d2af6963176d7f8da6c3ed031e6b58497')).toBe(true)
   })
 
   it('按来源与 Artifact 身份隔离本地库存', async () => {
@@ -203,9 +204,12 @@ describe('演示 API', () => {
     expect(releases.source).toBe('release')
     expect(actions.source).toBe('action')
     expect(release.release_tag).toBe('v0.1.1')
-    expect(actions.remote_versions[0].installed).toBe(true)
-    expect(actions.remote_versions[0].active).toBe(false)
-    expect(actions.installed_versions.some((version) => version.source === 'action' && version.source_id === actions.remote_versions[0].source_id)).toBe(true)
+    // 装着的是次新那个；最新那个是「可更新到」的目标，不该同时算作已安装。
+    expect(actions.remote_versions[0].installed).toBe(false)
+    expect(actions.remote_versions[1].installed).toBe(true)
+    // 刚装上的 release 接管了「当前」，所以这条 action 只是已安装，不是活动版本。
+    expect(actions.remote_versions[1].active).toBe(false)
+    expect(actions.installed_versions.some((version) => version.source === 'action' && version.source_id === actions.remote_versions[1].source_id)).toBe(true)
     expect(actions.installed_versions.some((version) => version.source === 'release' && version.source_id === release.source_id)).toBe(true)
   })
 
