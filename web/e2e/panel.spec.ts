@@ -407,7 +407,7 @@ test('操作审计可按动作筛选', async ({ page }) => {
   await open(page, '/logs')
   await page.locator('.log-view-tabs button').nth(1).click()
   await expect(page.locator('.audit-line')).toHaveCount(7)
-  await page.locator('.log-toolbar select').selectOption('config.')
+  await page.getByRole('group', { name: '审计动作类别' }).getByRole('button', { name: '配置', exact: true }).click()
   await expect(page.locator('.audit-line')).toHaveCount(3)
   await page.getByLabel('筛选操作审计').fill('schedule')
   await expect(page.locator('.audit-line')).toHaveCount(1)

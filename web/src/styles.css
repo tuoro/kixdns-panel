@@ -376,35 +376,51 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .flow-actions em { color: #9aa29f; font-size: 12px; font-style: normal; }
 .flow-jump { display: flex; align-items: center; gap: 4px; color: #9a5b0f; font-size: 12px; }
 
-.log-console { overflow: hidden; background: #171c1e; border: 1px solid #2c3335; border-radius: 7px; }
-.log-view-tabs { height: 42px; display: grid; grid-template-columns: repeat(2, minmax(130px, 180px)); align-items: stretch; padding: 5px 12px 0; background: #171c1e; border-bottom: 1px solid #303739; }
-.log-view-tabs button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; color: #7f8a86; background: transparent; border: 0; border-bottom: 2px solid transparent; font-size: 12px; font-weight: 650; }
-.log-view-tabs button:hover { color: #c2cbc8; }
-.log-view-tabs button.active { color: #9cdeb9; border-bottom-color: #4c9a73; }
-.log-toolbar { min-height: 58px; display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: #202628; border-bottom: 1px solid #303739; }
-.search-field { min-width: 180px; max-width: 420px; flex: 1; height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 10px; color: #7f8a86; background: #171c1e; border: 1px solid #384043; border-radius: 5px; }
-.search-field:focus-within { border-color: #4e886d; }
-.search-field input { min-width: 0; flex: 1; color: #dce4e1; background: transparent; border: 0; outline: 0; font-size: 14px; }
-.log-toolbar select { height: 36px; padding: 0 28px 0 10px; color: #c4cdca; background: #171c1e; border: 1px solid #384043; border-radius: 5px; outline: 0; font-size: 14px; }
-.log-toolbar .button, .log-toolbar .icon-button { color: #b7c0bd; background: #262d2f; border-color: #40484a; }
-.log-toolbar .button--active { color: #9cdeb9; border-color: #3e775c; }
-.log-summary { height: 34px; display: flex; align-items: center; justify-content: space-between; padding: 0 13px; color: #7b8582; background: #191f21; border-bottom: 1px solid #2a3032; font-size: 12px; }
+/* 日志收回浅色体系。等宽字体保留，但不再整块反白——
+   深色终端把这一页从产品里割了出去，读起来像两个软件。
+   The log view returns to the light system. The monospace stays, the inverted
+   block does not: a dark terminal cut this page out of the product and made it
+   read like a second piece of software. */
+.log-console { overflow: hidden; background: var(--surface); border: 1px solid var(--line); border-radius: 7px; }
+.log-view-tabs { height: 42px; display: grid; grid-template-columns: repeat(2, minmax(130px, 180px)); align-items: stretch; padding: 5px 12px 0; border-bottom: 1px solid var(--line); }
+.log-view-tabs button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; color: var(--muted); background: transparent; border: 0; border-bottom: 2px solid transparent; font-size: 12px; font-weight: 650; }
+.log-view-tabs button:hover { color: var(--ink); }
+.log-view-tabs button.active { color: var(--ink); border-bottom-color: var(--ink); }
+/* 工具栏里的两个控件共用同一个圆角，声明一次。 */
+.search-field, .log-seg { border-radius: 5px; }
+.log-toolbar { min-height: 58px; display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: var(--canvas); border-bottom: 1px solid var(--line); }
+.search-field { min-width: 180px; max-width: 420px; flex: 1; height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 10px; color: var(--muted); background: var(--surface); border: 1px solid var(--line); }
+.search-field:focus-within { border-color: var(--ink); }
+.search-field input { min-width: 0; flex: 1; color: var(--ink); background: transparent; border: 0; outline: 0; font-size: 14px; }
+
+/* 选项只有三四个，下拉是多余的一次点击。 */
+.log-seg { display: flex; gap: 2px; padding: 2px; background: var(--surface); border: 1px solid var(--line); }
+.log-seg button { min-height: 30px; padding: 0 11px; color: var(--muted); background: transparent; border: 0; border-radius: 3px; font-size: 13px; }
+.log-seg button:hover { color: var(--ink); }
+.log-seg button.is-on { color: var(--d-ink); background: var(--ink); font-weight: 600; }
+
+.log-summary { height: 34px; display: flex; align-items: center; justify-content: space-between; padding: 0 13px; color: var(--muted); background: var(--canvas); border-bottom: 1px solid var(--line); font-size: 12px; }
 .log-summary span { display: flex; align-items: center; gap: 7px; }
-.log-stream { height: calc(100vh - 276px); min-height: 420px; overflow: auto; padding: 5px 0 14px; font-family: "SFMono-Regular", Consolas, monospace; }
-.log-line { min-width: 720px; display: grid; grid-template-columns: 90px 42px 88px minmax(0, 1fr); gap: 10px; align-items: baseline; padding: 5px 13px; color: #b6c0bc; font-size: 12px; line-height: 1.45; }
-.log-line:hover { background: #202729; }
-.log-line time { color: #68736f; }
-.log-line strong { overflow: hidden; color: #82bd9c; font-size: 12px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
-.log-line p { color: #b9c1be; overflow-wrap: anywhere; }
+.log-stream { height: calc(100vh - 276px); min-height: 420px; overflow: auto; padding: 5px 0 14px; font-family: var(--mono); }
+.log-line { min-width: 720px; display: grid; grid-template-columns: 90px 88px minmax(0, 1fr); gap: 10px; align-items: baseline; padding: 5px 13px 5px 10px; border-left: 3px solid transparent; color: var(--ink); font-size: 12px; line-height: 1.45; }
+.log-line:hover { background: var(--canvas); }
+.log-line time { color: var(--muted); }
+.log-line strong { overflow: hidden; color: var(--muted); font-size: 12px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+.log-line p { color: var(--muted); overflow-wrap: anywhere; }
+/* 正文里键名和其余文字降一档，值保持主文字色，这样一行里也有层级。 */
+.log-line p em { color: var(--ink); font-style: normal; font-weight: 600; }
+/* 级别是行的属性，不是行里的一枚徽章。 */
+.log-line--warning { border-left-color: var(--amber); background: var(--amber-soft); }
+.log-line--error { border-left-color: var(--red); background: var(--red-soft); }
+.log-line--warning p, .log-line--error p { color: var(--ink); }
+.log-line--warning:hover { background: var(--amber-soft); }
+.log-line--error:hover { background: var(--red-soft); }
+.log-sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .audit-line { grid-template-columns: 126px 74px 190px minmax(0, 1fr); }
 .audit-line time { white-space: nowrap; }
-.audit-line code { overflow: hidden; color: #d2b277; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.audit-load-more, .runtime-load-more { width: 100%; min-height: 42px; display: flex; align-items: center; justify-content: center; gap: 6px; color: #8dc4a7; background: transparent; border: 0; border-top: 1px solid #293133; font-size: 12px; }
-.audit-load-more:hover:not(:disabled), .runtime-load-more:hover:not(:disabled) { background: #202729; }
-.log-level { padding: 2px 3px; border-radius: 2px; font-size: 12px; text-align: center; }
-.log-level--error { color: #ffb0b0; background: #512727; }
-.log-level--warning { color: #f0ca86; background: #49371d; }
-.log-level--info { color: #8dbca2; background: #233a2f; }
+.audit-line code { overflow: hidden; color: var(--ink); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.audit-load-more, .runtime-load-more { width: 100%; min-height: 42px; display: flex; align-items: center; justify-content: center; gap: 6px; color: var(--ink); background: transparent; border: 0; border-top: 1px solid var(--line); font-size: 12px; }
+.audit-load-more:hover:not(:disabled), .runtime-load-more:hover:not(:disabled) { background: var(--canvas); }
 
 .system-layout { display: grid; gap: 14px; align-items: start; }
 .auth-panel label { display: grid; gap: 7px; color: #4c5557; font-size: 14px; font-weight: 650; }
@@ -656,11 +672,13 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
   .log-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; }
   .log-view-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); padding-inline: 8px; }
   .search-field { max-width: none; grid-column: 1 / -1; }
-  .log-toolbar select { min-width: 0; }
   .log-toolbar .button { min-width: 78px; }
   .log-stream { height: calc(100vh - 336px); min-height: 350px; }
-  .log-line { min-width: 0; grid-template-columns: 90px 42px minmax(0, 1fr); gap: 4px 8px; padding-block: 9px; }
+  .log-line { min-width: 0; grid-template-columns: 90px minmax(0, 1fr); gap: 4px 8px; padding-block: 9px; }
   .log-line p { grid-column: 1 / -1; }
+  .log-seg { width: 100%; overflow-x: auto; scrollbar-width: none; }
+  .log-seg::-webkit-scrollbar { display: none; }
+  .log-seg button { flex: none; padding-inline: 13px; }
   .audit-line { min-width: 0; grid-template-columns: 104px minmax(0, 1fr); gap: 4px 8px; padding-block: 8px; }
   .audit-line strong { text-align: right; }
   .audit-line code, .audit-line p { grid-column: 1 / -1; }
