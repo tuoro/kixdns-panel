@@ -1,18 +1,21 @@
 import { expect, test, type Page } from '@playwright/test'
 
 /**
- * 请求总数在窄屏缩写成万/亿，宽屏给完整数字。
- * 九位数在手机上即使不断行也会挤掉旁边的单位，所以这是有意的差异，
- * 断言跟着视口走而不是写死一个字符串。
- * The request total is abbreviated on narrow viewports and written out in
- * full on wide ones. Nine digits squeeze out the adjacent unit on a phone
- * even without wrapping, so the difference is deliberate and the assertion
- * follows the viewport instead of hardcoding one string.
+ * 信号带上的大数字是「趋势覆盖的那段时间的请求数」，不是自启动以来的累计值——
+ * 标题写的是「近 24 小时请求」，配累计总数就是文不对题。演示数据的 24 个整点桶
+ * 合计 383.5 万，是按演示里的运行时长和累计请求折算出来的日均量。
+ *
+ * 两个视口显示同一个字符串：信号带让这个数字独占一行，375 宽下放得下完整数字，
+ * 不再缩写成万/亿。
+ *
+ * The figure on the signal band is the request count over the period the trend
+ * covers, not the cumulative total since start: the label reads "last 24 hours",
+ * and pairing that with a lifetime total would not be the same statement. The
+ * demo's 24 hourly buckets sum to 3,835,000, derived from its own uptime and
+ * cumulative request count. Both viewports show the same string: the band gives
+ * the figure a line of its own, which fits in full at 375.
  */
-function expectedTotal(page: Page): string {
-  const width = page.viewportSize()?.width ?? 0
-  return width <= 700 ? '1,284.7 万' : '12,847,392'
-}
+const EXPECTED_TOTAL = '3,835,000'
 
 async function openOverview(page: Page): Promise<void> {
   await page.goto('/')
@@ -22,13 +25,15 @@ async function openOverview(page: Page): Promise<void> {
 
 test('首页展示精确分布，页签可用键盘切换且完整保留三个视图 @responsive', async ({ page }) => {
   await openOverview(page)
-  await expect(page.locator('.overview-total-value')).toHaveText(expectedTotal(page))
-  await expect(page.locator('.overview-pipeline-list li')).toHaveCount(3)
-  const shares = await page.locator('.overview-distribution-segment').evaluateAll((segments) =>
-    segments.map((segment) => Number.parseFloat((segment as HTMLElement).style.width)),
-  )
-  expect(shares[0]).toBeCloseTo(8_914_380 / 12_847_392 * 100, 4)
-  expect(shares.reduce((sum, share) => sum + share, 0)).toBeCloseTo(100, 3)
+  await expect(page.locator('.overview-total-value')).toHaveText(EXPECTED_TOTAL)
+  // 堆叠条换成「主项做大、小项列表」：占比最高的那条独占一行，其余进列表。
+  await expect(page.locator('.overview-distribution .overview-dist-share')).toHaveText('69.4%')
+  await expect(page.locator('.overview-distribution .overview-dist-name')).toHaveText('default')
+  await expect(page.locator('.overview-pipeline-list li')).toHaveCount(2)
+  await expect(page.locator('.overview-pipeline-list li').first()).toContainText('domestic')
+  // 趋势线画得出来，且不是一条 NaN 路径。
+  const path = await page.locator('.overview-spark-line').getAttribute('d')
+  expect(path).toMatch(/^M[\d.]+,[\d.]+( L[\d.]+,[\d.]+){23}$/)
 
   const runtimeTab = page.getByRole('tab', { name: '运行情况' })
   await runtimeTab.focus()
@@ -105,7 +110,7 @@ for (const stopped of [true, false]) {
     await page.getByRole('link', { name: '概览', exact: true }).click()
 
     await expect(page.getByText(stopped ? 'KixDNS 已停止' : '实时数据暂不可用', { exact: true })).toBeVisible()
-    await expect(page.locator('.overview-total-value')).toHaveText(expectedTotal(page))
+    await expect(page.locator('.overview-total-value')).toHaveText(EXPECTED_TOTAL)
     await expect(page.locator('.overview-config-state')).toHaveText('运行快照')
     await expect(page.getByRole('heading', { name: '最后运行配置', exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: '清空内部缓存', exact: true })).toBeDisabled()
@@ -131,7 +136,13 @@ test('手机上游逐级展开，桌面保留完整台账且无页面溢出 @res
   } else {
     await expect(page.locator('.overview-upstream-mobile')).toBeHidden()
     await expect(page.locator('.overview-table tbody tr')).toHaveCount(3)
-    await expect(page.locator('.overview-table')).toContainText('28,230')
+    // 台账收成四列用于扫读，错误 / 拒绝 / TCP 兜底收进每行的展开里。
+    // 「完整台账」仍然成立，只是次要的三列要点开——它们是排查时才看的数。
+    await expect(page.locator('.overview-table')).not.toContainText('28,230')
+    await page.locator('.overview-expand').first().click()
+    await expect(page.locator('.overview-table-detail')).toHaveCount(1)
+    await expect(page.locator('.overview-table-detail')).toContainText('28,230')
+    await expect(page.locator('.overview-table-detail')).toContainText('2,114')
   }
   const sizes = await page.evaluate(() => ({ client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }))
   expect(sizes.scroll).toBeLessThanOrEqual(sizes.client)

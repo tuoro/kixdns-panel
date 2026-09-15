@@ -64,14 +64,26 @@ export function rcodeDistribution(upstreams: readonly UpstreamCount[]): ShareRow
     .map((key) => ({ key, label: RCODE_LABELS[key] ?? '其他', count: totals.get(key) ?? 0, share: (totals.get(key) ?? 0) / total }))
 }
 
-/** 缓存命中按来源拆分：新鲜、过期直出、等待上游超时后用旧、上游失败后用旧。 */
+/**
+ * 缓存命中按来源拆分。
+ *
+ * 「过期」说的是条目本身，不是这次命中的结果——TTL 到了但 KixDNS 照样把旧答案
+ * 发了出去，请求因此没有变慢也没有失败。叫「过期命中」会读成「命中了不该命中的
+ * 东西」，把一次成功的兜底说成了故障，所以措辞落在「续用旧结果」上。
+ *
+ * Cache hits split by origin. "Expired" describes the entry, not the outcome:
+ * the TTL lapsed but KixDNS served the old answer anyway, so the request
+ * neither slowed down nor failed. Calling that an "expired hit" reads as
+ * having hit something one should not have, turning a successful fallback into
+ * a fault, so the wording says the answer was reused instead.
+ */
 export function cacheComposition(metrics: MetricsSnapshot): ShareRow[] {
   const stale = metrics.cache_stale
   const rows = [
-    { key: 'fresh', label: '新鲜命中', count: metrics.cache_hits_fresh },
-    { key: 'expired', label: '过期直出', count: stale.expired },
-    { key: 'client_timeout', label: '等待上游超时后用旧', count: stale.client_timeout },
-    { key: 'upstream_failure', label: '上游失败后用旧', count: stale.upstream_failure },
+    { key: 'fresh', label: '未过期直接命中', count: metrics.cache_hits_fresh },
+    { key: 'expired', label: '直接续用旧结果', count: stale.expired },
+    { key: 'client_timeout', label: '等上游超时后续用', count: stale.client_timeout },
+    { key: 'upstream_failure', label: '上游失败后续用', count: stale.upstream_failure },
   ]
   const total = rows.reduce((sum, row) => sum + row.count, 0)
   if (total === 0) return []

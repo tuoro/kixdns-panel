@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { errorMessage, formatCompactNumber, formatDuration, formatKixdnsVersion, formatPercent, shortHash, upstreamSuccessRate } from './utils'
+import { errorMessage, formatDuration, formatKixdnsVersion, formatPercent, formatSmallPercent, shortHash, upstreamSuccessRate } from './utils'
 
 describe('界面格式化工具', () => {
   it('生成稳定且紧凑的运行指标', () => {
@@ -39,25 +39,22 @@ describe('上游成功率', () => {
   })
 })
 
-describe('formatCompactNumber', () => {
-  it('万位以下保持原样，不做无谓缩写', () => {
-    expect(formatCompactNumber(0)).toBe('0')
-    expect(formatCompactNumber(9_999)).toBe('9,999')
+describe('极小占比', () => {
+  it('发生过但四舍五入到 0.0% 时写成「低于 0.1%」', () => {
+    // 1,204 次 / 1,284.7 万次 = 0.0094%，直接格式化会写成 0.0%。
+    expect(formatSmallPercent(1_204 / 12_847_392)).toBe('低于 0.1%')
   })
 
-  it('万位起缩写并保留一位小数，避免失真', () => {
-    // 概览页那个真实数值：断行前是 12,847,39 / 2，缩写后一行放得下
-    expect(formatCompactNumber(12_847_392)).toBe('1,284.7 万')
-    expect(formatCompactNumber(10_000)).toBe('1.0 万')
+  it('真正为零时仍然写 0.0%，不和「极小」混为一谈', () => {
+    expect(formatSmallPercent(0)).toBe('0.0%')
   })
 
-  it('量级足够大时不再保留小数', () => {
-    expect(formatCompactNumber(123_456_789_0)).toBe('12.3 亿')
-    // 9,999 万那位小数相对整数部分不足万分之一，读者用不上
-    expect(formatCompactNumber(99_990_000)).toBe('9,999 万')
+  it('刚好到得了一位小数就照常显示', () => {
+    expect(formatSmallPercent(0.001)).toBe('0.1%')
+    expect(formatSmallPercent(0.0005)).toBe('0.1%')
   })
 
-  it('负数按绝对值选择量级', () => {
-    expect(formatCompactNumber(-12_847_392)).toBe('-1,284.7 万')
+  it('负值不当作极小值处理', () => {
+    expect(formatSmallPercent(-0.0001)).toBe('-0.0%')
   })
 })
