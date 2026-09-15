@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { acceptConfirm, cancelConfirm } from './confirm'
 
 /**
  * 信号带上的大数字是「趋势覆盖的那段时间的请求数」，不是自启动以来的累计值——
@@ -57,11 +58,11 @@ test('查询排行保留时间窗口与带确认的清理操作', async ({ page 
   await page.getByRole('button', { name: '1 小时', exact: true }).click()
   await expect(page.getByRole('button', { name: '1 小时', exact: true })).toHaveAttribute('aria-pressed', 'true')
 
-  page.once('dialog', (dialog) => dialog.dismiss())
   await page.getByRole('button', { name: '清空查询排行', exact: true }).click()
+  await cancelConfirm(page)
   await expect(page.locator('.overview-ranking-list li')).toHaveCount(10)
-  page.once('dialog', (dialog) => dialog.accept())
   await page.getByRole('button', { name: '清空查询排行', exact: true }).click()
+  await acceptConfirm(page)
   await expect(page.getByText('查询排行已清空', { exact: true })).toBeVisible()
   await expect(page.getByText('当前窗口暂无客户端数据', { exact: true })).toBeVisible()
   await expect(page.getByText('当前窗口暂无域名数据', { exact: true })).toBeVisible()
@@ -72,8 +73,8 @@ test('运行配置与缓存清理保持可用', async ({ page }) => {
   await expect(page.locator('.overview-runtime-ledger')).toContainText('#18')
   await expect(page.locator('.overview-runtime-ledger')).toContainText('#24')
   await expect(page.locator('.overview-config-state')).toHaveText('已生效')
-  page.once('dialog', (dialog) => dialog.accept())
   await page.getByRole('button', { name: '清空内部缓存', exact: true }).click()
+  await acceptConfirm(page)
   await expect(page.getByText('已清理 19,354 个缓存条目', { exact: true })).toBeVisible()
 })
 

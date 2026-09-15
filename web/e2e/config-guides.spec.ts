@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
+import { acceptConfirm } from './confirm'
 
 async function openConfig(page: Page): Promise<void> {
   await page.goto('/config')
@@ -48,8 +49,8 @@ test('入口编辑保留效果预览与提交区，字段错误可见，取消�
   await page.keyboard.press('Shift+Tab')
   if (testInfo.project.name === 'mobile') expect(await guide.evaluate((element) => element.contains(document.activeElement))).toBe(true)
   await guide.getByRole('button', { name: '关闭一键方案' }).focus()
-  page.once('dialog', (dialog) => dialog.accept())
   await page.keyboard.press('Escape')
+  await acceptConfirm(page)
   await expect(guide).toHaveCount(0)
   await expect(launcher).toBeFocused()
   await expect(page.locator('.unsaved-dot')).toHaveCount(0)

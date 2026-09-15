@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { acceptConfirm } from './confirm'
 
 async function open(page: Page, path: string): Promise<void> {
   await page.goto(path)
@@ -53,8 +54,8 @@ test('首次未启动时保存配置会标记为待应用', async ({ page }) => 
 
   // 待应用候选存在时，删除历史版本仍应使用候选 SHA 完成并发校验。
   const history = page.locator('.history-list')
-  page.once('dialog', (dialog) => dialog.accept())
   await history.getByTitle('删除此版本').first().click()
+  await acceptConfirm(page)
   await expect(page.locator('.toast--success').filter({ hasText: '已删除' })).toBeVisible()
   await expect(history.locator('article')).toHaveCount(4)
   await expect(page.locator('.history-item--pending')).toHaveCount(0)
@@ -76,14 +77,14 @@ test('配置历史支持差异、恢复和受保护删除', async ({ page }) => 
 
   await page.getByRole('button', { name: '历史版本', exact: true }).click()
 
-  page.once('dialog', (dialog) => dialog.accept())
   await history.getByTitle('恢复此版本').first().click()
+  await acceptConfirm(page)
   await expect(page.locator('.toast--success')).toContainText('已恢复')
   await expect(history.locator('article')).toHaveCount(5)
   await expect(history.locator('.history-item--current').getByTitle('删除此版本')).toHaveCount(0)
 
-  page.once('dialog', (dialog) => dialog.accept())
   await history.getByTitle('删除此版本').first().click()
+  await acceptConfirm(page)
   await expect(page.locator('.toast--success').filter({ hasText: '已删除' })).toBeVisible()
   await expect(history.locator('article')).toHaveCount(4)
 })
@@ -406,8 +407,8 @@ test('增强版本可安装、切换并删除非活动库存', async ({ page }) 
   await panel.getByTitle('切换到此版本').first().click()
   await expect(page.locator('.toast--success').filter({ hasText: '已切换' })).toBeVisible()
 
-  page.once('dialog', (dialog) => dialog.accept())
   await panel.getByRole('button', { name: '删除本地版本' }).first().click()
+  await acceptConfirm(page)
   await expect(page.locator('.toast--success').filter({ hasText: '已删除' })).toBeVisible()
 })
 

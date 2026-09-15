@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ArrowDown, ArrowDownToLine, ArrowRight, ArrowUp, ArrowUpToLine, ChevronRight, GitBranch, MoreHorizontal, Plus, Search, Settings2, Trash2, Zap } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useConfirm } from '../../composables/useConfirm'
 import { collectDnsSolutions, collectDomainMappingRows, materializeSolutionRules, solutionInsertIndex, type DnsSolution, type SolutionDraft } from '../../config-editor/solution'
 import { summarizeActions, summarizeMatchers } from '../../config-editor/summary'
 import type { KixConfig, PipelineConfig } from '../../config-editor/types'
@@ -8,6 +9,7 @@ import SolutionGuide from './SolutionGuide.vue'
 
 const config = defineModel<KixConfig>({ required: true })
 defineProps<{ capabilities: string[] }>()
+const confirm = useConfirm()
 const emit = defineEmits<{ manual: []; mapping: []; notice: [message: string]; dirty: [value: boolean]; editing: [value: boolean] }>()
 const solutions = computed(() => collectDnsSolutions(config.value).filter((solution) => solution.groupType !== 'domain_mapping'))
 const entries = computed(() => solutions.value.filter((solution) => solution.selectorIndex !== undefined))
@@ -77,8 +79,15 @@ function entryNumber(solution: DnsSolution): string {
   return String(entries.value.findIndex((entry) => entry.selectorIndex === solution.selectorIndex) + 1).padStart(2, '0')
 }
 
-function confirmDiscard(): boolean {
-  return !localDirty.value || window.confirm('当前入口的修改尚未应用到草稿，确定放弃？')
+async function confirmDiscard(): Promise<boolean> {
+  if (!localDirty.value) return true
+  return confirm.ask({
+    title: '放弃这个入口的修改',
+    body: '当前入口还没有应用到配置草稿，离开后这些改动会丢失。草稿里已经应用过的内容不受影响。',
+    confirmLabel: '放弃修改',
+    cancelLabel: '继续编辑',
+    destructive: true,
+  })
 }
 
 function resetSession(next?: DnsSolution | 'create', focus = false): void {
@@ -90,25 +99,25 @@ function resetSession(next?: DnsSolution | 'create', focus = false): void {
   if (restoreFocus) void nextTick(() => returnFocus?.isConnected && returnFocus.focus({ preventScroll: true }))
 }
 
-function selectSolution(solution: DnsSolution | 'create'): void {
+async function selectSolution(solution: DnsSolution | 'create'): Promise<void> {
   if (solution !== 'create' && selectedSolution.value?.key === solution.key) {
     focused.value = true
     returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
     void focusInspector()
     return
   }
-  if (!confirmDiscard()) return
+  if (!await confirmDiscard()) return
   returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
   resetSession(solution, true)
   void focusInspector()
 }
 
-function cancel(): void {
-  if (confirmDiscard()) resetSession()
+async function cancel(): Promise<void> {
+  if (await confirmDiscard()) resetSession()
 }
 
-function moveSolution(solution: DnsSolution, direction: -1 | 1 | 'first' | 'last'): void {
-  if (solution.selectorIndex === undefined || !confirmDiscard()) return
+async function moveSolution(solution: DnsSolution, direction: -1 | 1 | 'first' | 'last'): Promise<void> {
+  if (solution.selectorIndex === undefined || !await confirmDiscard()) return
   const position = entries.value.findIndex((entry) => entry.selectorIndex === solution.selectorIndex)
   const targetPosition = direction === 'first' ? 0 : direction === 'last' ? entries.value.length - 1 : position + direction
   const targetIndex = entries.value[targetPosition]?.selectorIndex
@@ -119,9 +128,16 @@ function moveSolution(solution: DnsSolution, direction: -1 | 1 | 'first' | 'last
   emit('notice', '入口顺序已更新到草稿，保存配置后生效')
 }
 
-function removeSolution(solution: DnsSolution): void {
-  if (solution.selectorIndex === undefined || !solution.selector || !confirmDiscard()) return
-  if (!window.confirm(`删除入口“${solution.selector.pipeline}”？`)) return
+async function removeSolution(solution: DnsSolution): Promise<void> {
+  if (solution.selectorIndex === undefined || !solution.selector || !await confirmDiscard()) return
+  if (!await confirm.ask({
+    title: `删除入口 ${solution.selector.pipeline}`,
+    body: solution.referenceCount === 1
+      ? '这条入口和它独占的 Pipeline 会一起从草稿里移除。保存配置后才会真正生效，在此之前可以放弃草稿撤回。'
+      : '这条入口会从草稿里移除；它指向的 Pipeline 还有其他入口在用，会保留下来。保存配置后才会真正生效。',
+    confirmLabel: '删除这条入口',
+    destructive: true,
+  })) return
   const pipelineId = solution.selector.pipeline
   config.value.pipeline_select.splice(solution.selectorIndex, 1)
   if (solution.referenceCount === 1 && solution.pipelineIndex !== undefined) config.value.pipelines.splice(solution.pipelineIndex, 1)
@@ -175,14 +191,14 @@ function saveDrafts(drafts: SolutionDraft[]): void {
   emit('notice', draft.pipelineMode === 'shared' ? '共享流程的修改已应用到草稿，保存配置后生效' : '入口修改已应用到草稿，保存配置后生效')
 }
 
-function openManual(): void {
-  if (!confirmDiscard()) return
+async function openManual(): Promise<void> {
+  if (!await confirmDiscard()) return
   resetSession()
   emit('manual')
 }
 
-function openMapping(): void {
-  if (!confirmDiscard()) return
+async function openMapping(): Promise<void> {
+  if (!await confirmDiscard()) return
   resetSession()
   emit('mapping')
 }

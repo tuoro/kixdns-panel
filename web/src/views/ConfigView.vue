@@ -45,6 +45,7 @@ import StatusBanner from '../components/StatusBanner.vue'
 import { normalizeConfig, promoteDomainMappingSelectors, serializeConfig } from '../config-editor/model'
 import { SETTING_SECTIONS, settingSupported } from '../config-editor/schema'
 import type { ConfigEditorMode, KixConfig } from '../config-editor/types'
+import { useConfirm } from '../composables/useConfirm'
 import { useToast } from '../composables/useToast'
 import { errorMessage, formatDate, shortHash } from '../utils'
 
@@ -80,6 +81,7 @@ const capabilityError = ref('')
 const runtimeStopped = ref(false)
 const runtimeCapabilities = ref<string[]>([])
 const toast = useToast()
+const confirm = useConfirm()
 const changed = computed(() => source.value !== baseline.value)
 const runtimeApplyState = computed<ConfigRuntimeApplyState | undefined>(() => document.value?.runtime.apply_state)
 const hasApplyFailure = computed(() => runtimeApplyState.value === 'failed'
@@ -166,8 +168,15 @@ watch(config, (value) => {
   source.value = serializeConfig(value)
 }, { deep: true, flush: 'sync' })
 
-function confirmDiscard(): boolean {
-  return (!changed.value && !localDraftDirty.value) || window.confirm('当前配置或入口修改尚未保存，确定放弃？')
+async function confirmDiscard(): Promise<boolean> {
+  if (!changed.value && !localDraftDirty.value) return true
+  return confirm.ask({
+    title: '放弃未保存的修改',
+    body: '当前的配置草稿和入口修改会被丢弃，回到上次保存的状态。已保存的历史版本不受影响。',
+    confirmLabel: '放弃修改',
+    cancelLabel: '继续编辑',
+    destructive: true,
+  })
 }
 
 function preventAccidentalClose(event: BeforeUnloadEvent): void {
@@ -221,9 +230,9 @@ function syncStructuredFromSource(): boolean {
   return true
 }
 
-function activateMode(nextMode: ConfigEditorMode): void {
+async function activateMode(nextMode: ConfigEditorMode): Promise<void> {
   if (mode.value === nextMode) return
-  if (!confirmLocalDiscard()) return
+  if (!await confirmLocalDiscard()) return
   if (mode.value === 'json' && nextMode !== 'json' && !syncStructuredFromSource()) {
     toast.error('JSON 解析失败，修正后才能切换视图')
     return
@@ -232,7 +241,7 @@ function activateMode(nextMode: ConfigEditorMode): void {
   resetLocalState()
 }
 
-function confirmLocalDiscard(): boolean {
+async function confirmLocalDiscard(): Promise<boolean> {
   return solutionEditor.value?.confirmDiscard() ?? true
 }
 
@@ -242,9 +251,9 @@ function resetLocalState(): void {
   workspaceKey.value += 1
 }
 
-function activateSection(nextSection: typeof section.value): void {
+async function activateSection(nextSection: typeof section.value): Promise<void> {
   if (section.value === nextSection && mode.value === 'structured') return
-  if (!confirmLocalDiscard()) return
+  if (!await confirmLocalDiscard()) return
   if (mode.value === 'json' && !syncStructuredFromSource()) {
     toast.error('JSON 解析失败，修正后才能切换分类')
     return
@@ -260,8 +269,8 @@ function openManual(): void {
   resetLocalState()
 }
 
-function reload(): void {
-  if (confirmDiscard()) void load()
+async function reload(): Promise<void> {
+  if (await confirmDiscard()) void load()
 }
 
 function load(): Promise<void> {
@@ -363,8 +372,13 @@ async function save(): Promise<void> {
 
 async function restore(version: ConfigVersion): Promise<void> {
   if (!document.value) return
-  const unsavedWarning = changed.value || localDraftDirty.value ? '\n\n编辑器中未保存的修改会丢失。' : ''
-  if (!window.confirm(`恢复配置版本 #${version.id}？${unsavedWarning}\n\n当前已保存配置仍会保留在历史记录中。`)) return
+  const unsaved = changed.value || localDraftDirty.value
+  // 恢复是可回退的：当前配置仍留在历史里。所以不用红色主按钮。
+  if (!await confirm.ask({
+    title: `恢复到配置版本 #${version.id}`,
+    body: `${unsaved ? '编辑器中未保存的修改会丢失。\n' : ''}当前已保存的配置仍会保留在历史记录中，随时可以再恢复回来。`,
+    confirmLabel: `恢复 #${version.id}`,
+  })) return
   restoring.value = version.id
   try {
     const result = await apiRequest<ConfigApplyResult>(`/api/v1/config/versions/${version.id}/restore`, {
@@ -390,7 +404,13 @@ async function deleteVersion(version: ConfigVersion): Promise<void> {
     toast.error('当前生效版本不能删除，请先恢复其他版本')
     return
   }
-  if (!window.confirm(`删除配置版本 #${version.id}？此操作无法撤销。`)) return
+  if (!await confirm.ask({
+    title: `删除配置版本 #${version.id}`,
+    body: '这份配置的完整内容会被移除，之后无法恢复或对比。当前生效的版本和编辑器里的草稿都不受影响。',
+    items: [`#${version.id} · ${version.message || '未填写备注'}`],
+    confirmLabel: '删除这个版本',
+    destructive: true,
+  })) return
   deleting.value = version.id
   try {
     const removesDesired = version.id === pendingVersionId.value
@@ -431,7 +451,13 @@ function toggleAllDeletableVersions(): void {
 async function deleteSelectedVersions(): Promise<void> {
   if (!document.value || selectedVersionIds.value.length === 0) return
   const ids = [...selectedVersionIds.value]
-  if (!window.confirm(`删除选中的 ${ids.length} 个配置版本？此操作无法撤销。`)) return
+  if (!await confirm.ask({
+    title: `删除 ${ids.length} 个历史版本`,
+    body: '这些配置的完整内容会被移除，之后无法恢复或对比。当前生效的版本和编辑器里的草稿都不受影响。',
+    items: versions.value.filter((item) => ids.includes(item.id)).map((item) => `#${item.id} · ${item.message || '未填写备注'}`),
+    confirmLabel: `删除 ${ids.length} 个版本`,
+    destructive: true,
+  })) return
   bulkDeleting.value = true
   try {
     const removesDesired = versions.value.some((version) => ids.includes(version.id)
@@ -474,7 +500,7 @@ async function importFile(event: Event): Promise<void> {
   const file = input.files?.[0]
   if (!file) return
   try {
-    if (!confirmDiscard()) return
+    if (!await confirmDiscard()) return
     if (file.size > 4 * 1024 * 1024) throw new Error('配置文件不能超过 4 MiB')
     // 导入会整份替换掉草稿。它纯粹是本地状态，所以撤销是真能撤的——
     // 版本删除那类的「撤销」在服务端根本回不去，给了就是骗人。
