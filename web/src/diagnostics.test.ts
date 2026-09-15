@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { DnsTraceStep } from './api/types'
-import { isDnsSuccess, parseDnsAnswer, summarizeTrace, traceTone } from './diagnostics'
+import { describeResolution, isDnsSuccess, parseDnsAnswer, summarizeTrace, traceTone } from './diagnostics'
 
 describe('DNS 应答台账', () => {
   it.each([
@@ -26,13 +26,13 @@ describe('DNS 应答台账', () => {
 const step = (stage: string, status: string, label: string): DnsTraceStep => ({ stage, status, label, detail: null, elapsed_ms: 0 })
 
 describe('诊断轨迹摘要', () => {
-  it('不假定六步，保留多个命中规则并定位首个命中', () => {
+  it('不假定六步，保留多个命中规则', () => {
     const trace = [step('pipeline', 'selected', 'default'), step('rule', 'matched', 'first'), step('rule', 'matched', 'second'), step('rule', 'matched', 'first')]
-    expect(summarizeTrace(trace)).toMatchObject({ matchedRules: ['first', 'second'], pipelines: ['default'], initialStep: 1 })
+    expect(summarizeTrace(trace)).toMatchObject({ matchedRules: ['first', 'second'], pipelines: ['default'] })
   })
 
   it('响应缓存命中但没有规则时不编造规则', () => {
-    expect(summarizeTrace([step('response_cache', 'fresh', 'cached')])).toMatchObject({ matchedRules: [], emptyMatchLabel: '响应缓存命中，未记录规则匹配', initialStep: 0 })
+    expect(summarizeTrace([step('response_cache', 'fresh', 'cached')])).toMatchObject({ matchedRules: [], emptyMatchLabel: '响应缓存命中，未记录规则匹配' })
   })
 
   it('规则缓存命中不等同于应答由缓存直接返回', () => {
@@ -40,11 +40,38 @@ describe('诊断轨迹摘要', () => {
   })
 
   it('空轨迹不选择不存在的步骤', () => {
-    expect(summarizeTrace([])).toMatchObject({ matchedRules: [], pipelines: [], initialStep: null })
+    expect(summarizeTrace([])).toMatchObject({ matchedRules: [], pipelines: [], upstreams: [] })
   })
 
   it.each(['miss', 'missed', 'unknown'])('%s 不是故障', (status) => expect(traceTone(status)).toBe('neutral'))
   it('明确失败才用故障状态', () => expect(traceTone('failed')).toBe('danger'))
   it.each(['No Error', 'NOERROR'])('识别响应码 %s', (code) => expect(isDnsSuccess(code)).toBe(true))
   it('不把 NXDOMAIN 画成成功应答', () => expect(isDnsSuccess('NXDOMAIN')).toBe(false))
+})
+
+describe('结论带的那句话', () => {
+  const summarize = (...steps: DnsTraceStep[]) => summarizeTrace(steps)
+
+  it('同时说清走了哪条规则和由谁应答', () => {
+    const summary = summarize(step('pipeline', 'selected', 'domestic'), step('rule', 'matched', 'cn-direct'), step('upstream', 'succeeded', '223.5.5.5:53'))
+    expect(describeResolution(summary)).toBe('命中 domestic 的 cn-direct，由 223.5.5.5:53 应答')
+  })
+
+  it('没有管线时只说规则，不硬凑「的」', () => {
+    expect(describeResolution(summarize(step('rule', 'matched', 'cn-direct')))).toBe('命中 cn-direct')
+  })
+
+  it('缓存直接应答时不提上游，因为本次根本没走', () => {
+    expect(describeResolution(summarize(step('response_cache', 'fresh', '响应缓存命中')))).toBe('响应缓存命中')
+  })
+
+  it('上游失败不算「由它应答」', () => {
+    const summary = summarize(step('rule', 'matched', 'cn-direct'), step('upstream', 'failed', '8.8.8.8:53'))
+    expect(describeResolution(summary)).toBe('命中 cn-direct')
+  })
+
+  it('什么都没记下来时交回空串，让结论带只写响应码', () => {
+    expect(describeResolution(summarize())).toBe('')
+    expect(describeResolution(summarize(step('request', 'parsed', 'A example.com')))).toBe('')
+  })
 })

@@ -39,13 +39,40 @@ export function summarizeTrace(steps: DnsTraceStep[]) {
   const matchedRules = [...new Set(steps.filter((step) => step.stage === 'rule' && step.status === 'matched').map((step) => step.label))]
   const pipelines = [...new Set(steps.filter((step) => step.stage === 'pipeline' && step.status === 'selected').map((step) => step.label))]
   const responseCacheHit = steps.some((step) => step.stage === 'response_cache' && ['hit', 'fresh', 'stale'].includes(step.status))
-  const firstMatch = steps.findIndex((step) => step.stage === 'rule' && step.status === 'matched')
+  const upstreams = [...new Set(steps.filter((step) => step.stage === 'upstream' && step.status === 'succeeded').map((step) => step.label))]
   return {
     matchedRules,
     pipelines,
+    upstreams,
+    responseCacheHit,
     emptyMatchLabel: responseCacheHit ? '响应缓存命中，未记录规则匹配' : '未记录规则匹配',
-    initialStep: firstMatch >= 0 ? firstMatch : steps.length ? steps.length - 1 : null,
   }
+}
+
+export type TraceSummary = ReturnType<typeof summarizeTrace>
+
+/**
+ * 结论带上那句话：响应码之外还要回答「走了谁」。
+ *
+ * 没有轨迹、或轨迹里既没有命中规则也没有上游时返回空串——
+ * 这时结论带只写响应码和耗时，不编一句听起来像知道内情的话。
+ *
+ * The sentence on the verdict strip: besides the response code, it answers
+ * which path the query took. Returns an empty string when there is no trace, or
+ * when the trace records neither a matched rule nor an upstream: the strip then
+ * carries only the code and the elapsed time rather than inventing a sentence
+ * that sounds better informed than the data is.
+ */
+export function describeResolution(summary: TraceSummary): string {
+  const parts: string[] = []
+  if (summary.matchedRules.length) {
+    const rules = summary.matchedRules.join('、')
+    parts.push(summary.pipelines.length ? `命中 ${summary.pipelines.join('、')} 的 ${rules}` : `命中 ${rules}`)
+  } else if (summary.responseCacheHit) {
+    parts.push('响应缓存命中')
+  }
+  if (summary.upstreams.length) parts.push(`由 ${summary.upstreams.join('、')} 应答`)
+  return parts.join('，')
 }
 
 export function isDnsSuccess(code: string): boolean {

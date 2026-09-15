@@ -13,9 +13,9 @@ root="$(git rev-parse --show-toplevel)"
 cd "$root"
 
 # 基线：随迁移进度下调，永不上调 / Baseline: lower it as migration proceeds, never raise it
-BASELINE_COLOR=600
-BASELINE_SIZE=447
-BASELINE_RADIUS=129
+BASELINE_COLOR=584
+BASELINE_SIZE=439
+BASELINE_RADIUS=127
 
 scan() {
   # tokens.css 是唯一允许出现字面量的文件 / tokens.css is the one file allowed literals

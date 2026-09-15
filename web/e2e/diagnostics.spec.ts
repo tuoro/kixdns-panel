@@ -48,34 +48,30 @@ test('诊断应答台账、规则摘要和服务器来源保持真实', async ({
   await noOverflow(page)
 })
 
-test('执行步骤可选择和键盘折叠，缓存未命中不是故障 @responsive', async ({ page }) => {
+test('每一步的细节直接摊开，缓存未命中不是故障 @responsive', async ({ page }) => {
   await query(page)
   const steps = page.locator('.diag-step')
   await expect(steps).toHaveCount(6)
-  await expect(steps.nth(3)).toHaveAttribute('aria-expanded', (page.viewportSize()?.width ?? 1440) <= 700 ? 'false' : 'true')
-  await steps.nth(5).click()
-  const detail = page.locator('.diag-step-detail:visible')
-  await expect(detail).toHaveCount(1)
-  await expect(detail).toContainText('https://1.1.1.1/dns-query')
-  await expect(detail).toContainText('不表示该阶段的独立耗时')
-  await steps.nth(5).press('Enter')
-  await expect(detail).toHaveCount(0)
-  await steps.nth(2).click()
+  // 不点任何东西：六步的标签和细节应当已经全部可读。
+  await expect(steps.nth(5)).toContainText('https://1.1.1.1/dns-query')
+  await expect(steps.nth(5)).toContainText('响应码：No Error')
+  await expect(steps.nth(0)).toContainText('客户端：127.0.0.1')
+  await expect(page.locator('.diag-time-note')).toContainText('不表示该阶段的独立耗时')
+  // 未命中是中性状态，不画成故障。
   await expect(steps.nth(2)).toHaveClass(/diag-step--neutral/)
-  await expect(detail).toContainText('未命中')
+  await expect(steps.nth(2)).toContainText('未命中')
   await noOverflow(page)
 })
 
-test('原始应答原样保留，重新查询不沿用旧步骤状态 @responsive', async ({ page }) => {
+test('原始应答原样保留，重新查询换掉整份结果 @responsive', async ({ page }) => {
   await query(page, '  example.net  ')
   const raw = page.locator('.diag-raw-response')
   await raw.locator('summary').click()
   await expect(raw.locator('pre').first()).toHaveText('example.net. 300 IN A 104.18.26.120')
-  await page.locator('.diag-step').first().click()
   await page.getByLabel('域名', { exact: true }).fill('example.org')
   await page.getByRole('button', { name: '执行查询', exact: true }).click()
-  await expect(page.locator('.diag-step').nth(3)).toHaveAttribute('aria-expanded', (page.viewportSize()?.width ?? 1440) <= 700 ? 'false' : 'true')
   await expect(page.locator('.diag-step').first()).toContainText('example.org')
+  await expect(page.locator('.diag-kv')).toContainText('example.org')
 })
 
 test('窄屏查询同行且标题、命中名不再海报化 @responsive', async ({ page }) => {
@@ -125,8 +121,7 @@ test('多个命中与长轨迹不被固定六阶段裁掉', async ({ page }) => 
   await expect(page.locator('.diag-match li')).toHaveCount(10)
   await expect(page.locator('.diag-step')).toHaveCount(11)
   await expect(page.locator('.diag-trace-warning')).toContainText('不代表完整解析路径')
-  await page.locator('.diag-step').last().click()
-  await expect(page.locator('.diag-step-detail:visible')).toContainText('future_stage')
+  await expect(page.locator('.diag-step').last()).toContainText('future_stage')
   await noOverflow(page)
 })
 
