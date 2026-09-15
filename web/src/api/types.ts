@@ -119,6 +119,23 @@ export interface StatsClearResult {
   cleared: boolean
 }
 
+/** 一个整点桶内的请求数。 */
+export interface TrendPoint {
+  start_unix: number
+  requests: number
+}
+
+export interface RequestTrend {
+  bucket_seconds: number
+  /**
+   * 只包含采样真正覆盖到的桶，按时间升序。面板刚装上时这里比 24 条短——
+   * 补零会把「还没有数据」画成「那时没有请求」。
+   */
+  points: TrendPoint[]
+  /** 上列各桶之和。 */
+  total: number
+}
+
 export interface Overview {
   health: Health
   active_config: ActiveConfig
@@ -126,6 +143,7 @@ export interface Overview {
   live: boolean
   service_active: boolean | null
   captured_at_unix: number
+  trend: RequestTrend
 }
 
 export interface ServiceStatus {

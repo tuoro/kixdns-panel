@@ -11,7 +11,10 @@ use serde_json::Value;
 use tempfile::{TempDir, tempdir};
 use tower::ServiceExt;
 
-use super::{AppSettings, TrustedProxies, build_app, ensure_validation_accepted};
+use super::{
+    AppSettings, MetricSample, TrustedProxies, build_app, build_request_trend,
+    ensure_validation_accepted,
+};
 use crate::control::ValidationResult;
 
 struct AuthenticatedApp {
@@ -877,4 +880,121 @@ async fn version_delete_requires_authentication_and_csrf() {
         .await
         .unwrap();
     assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+}
+
+// ---------------------------------------------------------------------------
+// 请求量趋势：累计计数器 → 每小时请求数
+// The request trend: cumulative counters folded into per-hour request counts
+// ---------------------------------------------------------------------------
+
+/// 基准时刻取整点，让桶边界可以直接用小时算清楚。
+/// A round hour as the reference point, so bucket edges are plain arithmetic.
+const NOW: i64 = 1_800_000_000;
+
+fn sample(minutes_ago: i64, started_at: i64, requests_total: i64) -> MetricSample {
+    MetricSample {
+        captured_at: NOW - minutes_ago * 60,
+        kernel_started_at: started_at,
+        requests_total,
+    }
+}
+
+#[test]
+fn folds_consecutive_samples_into_the_bucket_that_holds_them() {
+    // 三次采样都落在最后一个整点桶里，增量 100 + 150 应当合并成一格 250。
+    let samples = [
+        sample(30, 1, 1_000),
+        sample(20, 1, 1_100),
+        sample(10, 1, 1_250),
+    ];
+    let trend = build_request_trend(&samples, NOW);
+
+    assert_eq!(trend.bucket_seconds, 3_600);
+    assert_eq!(trend.points.len(), 1, "三次采样只跨了一个桶");
+    assert_eq!(trend.points[0].requests, 250);
+    assert_eq!(trend.total, 250);
+}
+
+#[test]
+fn counts_only_the_post_restart_total_when_the_kernel_restarted() {
+    // 内核重启后计数器归零：8_000 → 120。
+    // 单纯做减法会得到负数（饱和成 0），把重启后真实发生的 120 次请求丢掉。
+    let samples = [sample(30, 1, 8_000), sample(10, 2, 120)];
+    let trend = build_request_trend(&samples, NOW);
+
+    assert_eq!(trend.total, 120, "重启后的累计值就是这一段能知道的全部");
+}
+
+#[test]
+fn treats_a_restart_as_a_reset_even_when_the_counter_moved_forward() {
+    // 重启后内核又跑满了，累计值比重启前还高（8_000 → 9_500）。
+    // 计数器单调递增的假设在这里失效：两值相减得到 1_500，
+    // 而重启后真正发生的是 9_500 次。只看数值大小的实现会安静地少算。
+    let samples = [sample(30, 1, 8_000), sample(10, 2, 9_500)];
+    let trend = build_request_trend(&samples, NOW);
+
+    assert_eq!(trend.total, 9_500);
+}
+
+#[test]
+fn spreads_an_interval_that_spans_several_buckets_across_all_of_them() {
+    // 面板停了三小时，恢复后第一次采样带来 3_000 的增量。
+    // 全算在结束的那个桶里会在图上凭空造出一根尖峰。
+    let samples = [sample(200, 1, 1_000), sample(20, 1, 4_000)];
+    let trend = build_request_trend(&samples, NOW);
+
+    assert!(trend.points.len() >= 3, "这一段跨过了至少三个桶");
+    let peak = trend
+        .points
+        .iter()
+        .map(|point| point.requests)
+        .max()
+        .unwrap();
+    assert!(
+        peak < 3_000,
+        "增量应当摊到各桶，而不是全部堆在一个桶里，实际最高一格 {peak}"
+    );
+    assert!(
+        trend.total.abs_diff(3_000) <= trend.points.len() as u64,
+        "摊派只允许整除带来的零头误差，实际合计 {}",
+        trend.total
+    );
+}
+
+#[test]
+fn omits_buckets_no_sample_covers() {
+    // 面板刚装上两小时，只有两个桶有数据。
+    // 补齐 24 格会把「那时还没开始采」画成「那时没有请求」。
+    let samples = [sample(110, 1, 100), sample(50, 1, 400), sample(5, 1, 900)];
+    let trend = build_request_trend(&samples, NOW);
+
+    assert!(
+        trend.points.len() < 24,
+        "没有采样覆盖的桶不出现在结果里，实际 {} 格",
+        trend.points.len()
+    );
+    assert_eq!(trend.total, 800);
+}
+
+#[test]
+fn drops_samples_that_fall_before_the_window() {
+    // 窗口左边界之外的采样只用来给第一个桶提供减法基准，本身不产生数据点。
+    let samples = [sample(24 * 60 + 90, 1, 500), sample(10, 1, 900)];
+    let trend = build_request_trend(&samples, NOW);
+
+    let earliest = trend.points.first().expect("窗口内应当有数据点");
+    assert!(
+        earliest.start_unix >= NOW - 24 * 3_600,
+        "数据点不能落在 24 小时窗口之前"
+    );
+}
+
+#[test]
+fn ignores_samples_that_did_not_advance_in_time() {
+    // 同一秒重复写入时不应当产生除零。
+    let samples = [sample(10, 1, 100), sample(10, 1, 100)];
+    let trend = build_request_trend(&samples, NOW);
+
+    assert_eq!(trend.total, 0);
+    assert!(trend.points.is_empty());
 }

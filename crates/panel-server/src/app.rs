@@ -47,7 +47,7 @@ use crate::control::{
 };
 use crate::db::{
     CONFIG_APPLY_APPLIED, CONFIG_APPLY_FAILED, CONFIG_APPLY_PENDING, ConfigVersionSummary,
-    Database, SessionRecord, UserRecord, ensure_database_parent,
+    Database, MetricSample, SessionRecord, UserRecord, ensure_database_parent,
 };
 use crate::error::{AppError, AppResult};
 use crate::geo_data::{GeoDataError, GeoDataManager};
@@ -199,6 +199,39 @@ struct OverviewResponse {
     #[serde(default)]
     service_active: Option<bool>,
     captured_at_unix: u64,
+    /// 请求量趋势。快照里也会带上一份，但读取时总是用当前采样覆盖——
+    /// 内核不可用时计数器停在原地，采样库却仍然是最新的。
+    ///
+    /// The request trend. A copy lands in the snapshot as well, but a read
+    /// always overwrites it from the sample store: when the kernel is
+    /// unreachable its counters are frozen while the samples are still current.
+    #[serde(default)]
+    trend: RequestTrend,
+}
+
+/// 一个整点桶内的请求数。
+///
+/// The number of requests inside one hourly bucket.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TrendPoint {
+    start_unix: i64,
+    requests: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct RequestTrend {
+    bucket_seconds: i64,
+    /// 只包含采样真正覆盖到的桶，按时间升序。面板刚装上时这里比 24 条短，
+    /// 补零会把「还没有数据」画成「那时没有请求」。
+    ///
+    /// Only the buckets the samples actually cover, oldest first. This is
+    /// shorter than 24 entries on a freshly installed panel: padding with
+    /// zeros would draw "no data yet" as "no requests then".
+    points: Vec<TrendPoint>,
+    /// 上列各桶之和，也就是覆盖到的那段时间里的请求总数。
+    ///
+    /// The sum of the buckets above: requests over the covered period.
+    total: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -301,6 +334,7 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
     };
     spawn_geo_scheduler(state.clone());
     spawn_config_reconciler(state.clone());
+    spawn_metrics_sampler(state.clone());
     let api = api_router(state);
 
     let index_file = settings.web_root.join("index.html");
@@ -594,6 +628,7 @@ async fn overview(
                 live: true,
                 service_active: Some(true),
                 captured_at_unix: u64::try_from(unix_timestamp()).unwrap_or_default(),
+                trend: load_request_trend(&state).await,
             };
             if let Ok(serialized) = serde_json::to_string(&snapshot)
                 && let Err(error) = state
@@ -616,6 +651,7 @@ async fn overview(
                             .await
                             .ok()
                             .map(|status| status.active_state == "active");
+                        snapshot.trend = load_request_trend(&state).await;
                         return Ok(Json(snapshot));
                     }
                     Err(error) => tracing::warn!(%error, "忽略损坏的概览运行快照"),
@@ -1108,6 +1144,168 @@ fn should_defer_control(error: &ControlError) -> bool {
         error,
         ControlError::Unavailable(_) | ControlError::Unsupported(_)
     )
+}
+
+/// 采样间隔。一分钟一次，24 小时约 1440 行，按整点聚合成趋势。
+///
+/// The sampling interval: once a minute, about 1440 rows a day, aggregated
+/// into hourly buckets for the trend.
+const METRIC_SAMPLE_INTERVAL_SECONDS: u64 = 60;
+const TREND_BUCKET_SECONDS: i64 = 60 * 60;
+const TREND_BUCKETS: i64 = 24;
+
+fn spawn_metrics_sampler(state: AppState) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(
+            METRIC_SAMPLE_INTERVAL_SECONDS,
+        ));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            if let Err(error) = sample_metrics(&state).await {
+                // 内核没在跑的时候这里每分钟都会失败，用 debug 免得刷满日志。
+                // This fails once a minute while the kernel is down; debug keeps
+                // it out of the log.
+                tracing::debug!(error = ?error, "指标采样跳过");
+            }
+        }
+    });
+}
+
+async fn sample_metrics(state: &AppState) -> anyhow::Result<()> {
+    let (health, metrics) = tokio::try_join!(state.control.health(), state.control.metrics())?;
+    state
+        .database
+        .record_metric_sample(MetricSample {
+            captured_at: unix_timestamp(),
+            kernel_started_at: i64::try_from(health.started_at_unix).unwrap_or(i64::MAX),
+            requests_total: i64::try_from(metrics.requests_total).unwrap_or(i64::MAX),
+        })
+        .await
+}
+
+async fn load_request_trend(state: &AppState) -> RequestTrend {
+    let now = unix_timestamp();
+    let window_start = now - TREND_BUCKET_SECONDS * TREND_BUCKETS;
+    // 多读一格：窗口左端那个桶需要一个更早的样本才能求差。
+    // Read one bucket further back: the leftmost bucket needs an earlier sample
+    // to take a difference against.
+    match state
+        .database
+        .metric_samples_since(window_start - TREND_BUCKET_SECONDS)
+        .await
+    {
+        Ok(samples) => build_request_trend(&samples, now),
+        Err(error) => {
+            tracing::warn!(%error, "无法读取指标采样，趋势留空");
+            RequestTrend::default()
+        }
+    }
+}
+
+/// 把累计计数器折算成每个整点桶的请求数。
+///
+/// 两处必须照顾到，否则画出来的曲线会骗人：
+/// 一是内核重启会让计数器归零，靠 `kernel_started_at` 变化识别，
+/// 这时只能拿重启后的累计值当本段增量，重启前那一截无从得知；
+/// 二是面板自己停过一段时间的话，两次采样之间会跨过好几个桶，
+/// 增量按覆盖时长摊到每个桶上，而不是全算在结束的那个桶里——
+/// 后者会在图上凭空造出一根尖峰。
+///
+/// Folds the cumulative counter into per-hour request counts.
+///
+/// Two cases have to be handled or the curve lies. A kernel restart resets the
+/// counter; it is identified by a change in `kernel_started_at`, and the only
+/// available estimate for that interval is the post-restart total, with the
+/// pre-restart tail unknowable. And when the panel itself was down, one
+/// interval spans several buckets; its delta is spread across them in
+/// proportion to the time covered rather than charged to the closing bucket,
+/// which would invent a spike.
+fn build_request_trend(samples: &[MetricSample], now: i64) -> RequestTrend {
+    let window_start = now - TREND_BUCKET_SECONDS * TREND_BUCKETS;
+    let mut buckets = vec![0u64; usize::try_from(TREND_BUCKETS).unwrap_or_default()];
+    let mut covered = vec![false; buckets.len()];
+
+    for pair in samples.windows(2) {
+        let (previous, current) = (pair[0], pair[1]);
+        if current.captured_at <= previous.captured_at {
+            continue;
+        }
+        let delta = interval_delta(previous, current);
+        spread_interval(
+            delta,
+            previous.captured_at,
+            current.captured_at,
+            window_start,
+            &mut buckets,
+            &mut covered,
+        );
+    }
+
+    let points: Vec<TrendPoint> = buckets
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| covered[*index])
+        .map(|(index, requests)| TrendPoint {
+            start_unix: window_start + TREND_BUCKET_SECONDS * i64::try_from(index).unwrap_or(0),
+            requests: *requests,
+        })
+        .collect();
+    let total = points.iter().map(|point| point.requests).sum();
+    RequestTrend {
+        bucket_seconds: TREND_BUCKET_SECONDS,
+        points,
+        total,
+    }
+}
+
+fn interval_delta(previous: MetricSample, current: MetricSample) -> u64 {
+    if current.kernel_started_at != previous.kernel_started_at {
+        // 内核重启过，计数器从零重新开始；重启前那一截丢了，只能报重启后的部分。
+        // The kernel restarted and the counter began again from zero; the tail
+        // before the restart is lost, so only the part after it is reported.
+        return u64::try_from(current.requests_total).unwrap_or_default();
+    }
+    u64::try_from(
+        current
+            .requests_total
+            .saturating_sub(previous.requests_total),
+    )
+    .unwrap_or_default()
+}
+
+fn spread_interval(
+    delta: u64,
+    start: i64,
+    end: i64,
+    window_start: i64,
+    buckets: &mut [u64],
+    covered: &mut [bool],
+) {
+    let span = end - start;
+    for (index, bucket) in buckets.iter_mut().enumerate() {
+        let offset = TREND_BUCKET_SECONDS * i64::try_from(index).unwrap_or(0);
+        let bucket_start = window_start + offset;
+        let bucket_end = bucket_start + TREND_BUCKET_SECONDS;
+        let overlap = end.min(bucket_end) - start.max(bucket_start);
+        if overlap <= 0 {
+            continue;
+        }
+        covered[index] = true;
+        let share = if overlap == span {
+            // 常见情况：一分钟的采样间隔整个落在一个桶里，不必做除法。
+            // The common case: a one-minute interval sits entirely inside one
+            // bucket, so no division is needed.
+            delta
+        } else {
+            u64::try_from(
+                u128::from(delta) * u128::try_from(overlap).unwrap_or_default()
+                    / u128::try_from(span).unwrap_or(1),
+            )
+            .unwrap_or_default()
+        };
+        *bucket = bucket.saturating_add(share);
+    }
 }
 
 fn spawn_config_reconciler(state: AppState) {

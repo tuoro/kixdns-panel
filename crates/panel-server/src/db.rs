@@ -10,7 +10,13 @@ use serde::Serialize;
 
 const MAX_CONFIG_VERSIONS: i64 = 100;
 const MAX_AUDIT_EVENTS: i64 = 10_000;
-const CURRENT_SCHEMA_VERSION: i64 = 4;
+const CURRENT_SCHEMA_VERSION: i64 = 5;
+/// 采样保留 25 小时：比 24 小时的展示窗口多留一格，
+/// 让窗口左端始终能找到一个更早的样本来求差。
+/// Samples are kept for 25 hours — one bucket more than the 24-hour display
+/// window — so the left edge of the window always has an earlier sample to
+/// take a difference against.
+const METRIC_SAMPLE_RETENTION_SECONDS: i64 = 25 * 60 * 60;
 
 pub const CONFIG_APPLY_APPLIED: &str = "applied";
 pub const CONFIG_APPLY_PENDING: &str = "pending";
@@ -27,6 +33,19 @@ pub struct UserRecord {
     pub id: i64,
     pub username: String,
     pub password_hash: String,
+}
+
+/// 一次指标采样。计数器是自内核启动以来的累计值，
+/// `kernel_started_at` 用来识别内核重启——那一刻计数器归零。
+///
+/// One metrics sample. The counter is cumulative since the kernel started, and
+/// `kernel_started_at` is what identifies a kernel restart — the moment the
+/// counter goes back to zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MetricSample {
+    pub captured_at: i64,
+    pub kernel_started_at: i64,
+    pub requests_total: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -600,6 +619,60 @@ impl Database {
         .await
     }
 
+    /// 写入一次采样并顺手裁掉过期行。
+    /// 存的是内核给出的累计值原样，不是差值——重启和停机怎么算留到读取时决定，
+    /// 这样以后改判断规则不必丢掉已经采到的数据。
+    ///
+    /// Records one sample and prunes expired rows. What is stored is the
+    /// kernel's cumulative counter verbatim, never a difference: how restarts
+    /// and outages are accounted for is decided at read time, so revising that
+    /// rule later does not throw away samples already taken.
+    pub async fn record_metric_sample(&self, sample: MetricSample) -> anyhow::Result<()> {
+        self.call(move |connection| {
+            connection.execute(
+                "INSERT INTO metric_samples(captured_at, kernel_started_at, requests_total) \
+                 VALUES(?1, ?2, ?3) \
+                 ON CONFLICT(captured_at) DO UPDATE SET \
+                 kernel_started_at = excluded.kernel_started_at, \
+                 requests_total = excluded.requests_total",
+                params![
+                    sample.captured_at,
+                    sample.kernel_started_at,
+                    sample.requests_total
+                ],
+            )?;
+            connection.execute(
+                "DELETE FROM metric_samples WHERE captured_at < ?1",
+                [sample.captured_at - METRIC_SAMPLE_RETENTION_SECONDS],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// 按时间升序读回 `since` 之后的采样。
+    ///
+    /// Reads samples taken at or after `since`, oldest first.
+    pub async fn metric_samples_since(&self, since: i64) -> anyhow::Result<Vec<MetricSample>> {
+        self.call(move |connection| {
+            let mut statement = connection.prepare(
+                "SELECT captured_at, kernel_started_at, requests_total FROM metric_samples \
+                 WHERE captured_at >= ?1 ORDER BY captured_at ASC",
+            )?;
+            let samples = statement
+                .query_map([since], |row| {
+                    Ok(MetricSample {
+                        captured_at: row.get(0)?,
+                        kernel_started_at: row.get(1)?,
+                        requests_total: row.get(2)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(samples)
+        })
+        .await
+    }
+
     pub async fn get_setting(&self, key: &'static str) -> anyhow::Result<Option<String>> {
         self.call(move |connection| {
             connection
@@ -652,6 +725,20 @@ fn initialize_database(
     }
 
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    apply_migrations(&transaction, version)?;
+    transaction.commit()?;
+    prune_config_versions(connection)?;
+    prune_audit_events(connection)?;
+    Ok(())
+}
+
+/// 逐级补齐缺失的 schema 版本。每一段只负责把版本从 n-1 推到 n，
+/// 已经是最新的数据库一段都不会执行。
+///
+/// Brings a database up one schema version at a time. Each block moves the
+/// version from n-1 to n only; a database already at the latest version runs
+/// none of them.
+fn apply_migrations(transaction: &rusqlite::Transaction<'_>, version: i64) -> rusqlite::Result<()> {
     if version < 1 {
         transaction.execute_batch(
             r"
@@ -727,9 +814,18 @@ fn initialize_database(
             ",
         )?;
     }
-    transaction.commit()?;
-    prune_config_versions(connection)?;
-    prune_audit_events(connection)?;
+    if version < 5 {
+        transaction.execute_batch(
+            r"
+            CREATE TABLE IF NOT EXISTS metric_samples (
+                captured_at       INTEGER PRIMARY KEY,
+                kernel_started_at INTEGER NOT NULL,
+                requests_total    INTEGER NOT NULL
+            );
+            PRAGMA user_version = 5;
+            ",
+        )?;
+    }
     Ok(())
 }
 
@@ -856,7 +952,7 @@ mod tests {
 
     use super::{
         CURRENT_SCHEMA_VERSION, Database, MAX_AUDIT_EVENTS, MAX_CONFIG_VERSIONS,
-        prune_audit_events, prune_config_versions,
+        METRIC_SAMPLE_RETENTION_SECONDS, MetricSample, prune_audit_events, prune_config_versions,
     };
 
     #[test]
@@ -1082,5 +1178,67 @@ mod tests {
             .map(|entry| entry.path())
             .filter(|path| path.extension().is_some_and(|extension| extension == "bak"))
             .collect()
+    }
+
+    #[tokio::test]
+    async fn keeps_metric_samples_in_order_and_drops_expired_ones() {
+        let directory = tempdir().unwrap();
+        let database = Database::open(directory.path().join("panel.db"))
+            .await
+            .unwrap();
+        let now = 1_800_000_000;
+        // 第一条明显早于保留期，写入后面那条时应当被裁掉。
+        // 故意不取边界值：一条正好落在保留期端点上的样本留不留，
+        // 不是这个用例想固定下来的语义。
+        //
+        // The first is well beyond the retention window and the later write
+        // prunes it. The boundary itself is deliberately avoided: whether a
+        // sample landing exactly on the retention edge survives is not the
+        // semantic this test means to pin down.
+        for (captured_at, requests_total) in [
+            (now - METRIC_SAMPLE_RETENTION_SECONDS - 3_600, 10),
+            (now - 120, 200),
+            (now - 60, 260),
+        ] {
+            database
+                .record_metric_sample(MetricSample {
+                    captured_at,
+                    kernel_started_at: 1,
+                    requests_total,
+                })
+                .await
+                .unwrap();
+        }
+
+        let samples = database.metric_samples_since(0).await.unwrap();
+        assert_eq!(samples.len(), 2, "过期样本应当已被裁掉");
+        assert_eq!(samples[0].captured_at, now - 120, "结果按时间升序");
+        assert_eq!(samples[1].requests_total, 260);
+
+        let recent = database.metric_samples_since(now - 90).await.unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].captured_at, now - 60);
+    }
+
+    #[tokio::test]
+    async fn overwrites_a_metric_sample_taken_within_the_same_second() {
+        let directory = tempdir().unwrap();
+        let database = Database::open(directory.path().join("panel.db"))
+            .await
+            .unwrap();
+        for requests_total in [100, 140] {
+            database
+                .record_metric_sample(MetricSample {
+                    captured_at: 1_800_000_000,
+                    kernel_started_at: 1,
+                    requests_total,
+                })
+                .await
+                .unwrap();
+        }
+
+        let samples = database.metric_samples_since(0).await.unwrap();
+        assert_eq!(samples.len(), 1, "同一秒只保留一条，而不是写入失败");
+        assert_eq!(samples[0].requests_total, 140, "后写的覆盖先写的");
     }
 }
