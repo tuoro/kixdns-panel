@@ -151,7 +151,7 @@ onBeforeUnmount(() => {
 .workbench-guide-back { display: none; }
 .workbench-guide-overview { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; min-width: 0; padding: 12px 20px; color: #fff; background: var(--ink); font-size: 12px; }
 .workbench-guide-overview :deep(span), .workbench-guide-overview :deep(strong) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
-.workbench-guide-overview :deep(svg) { flex: 0 0 auto; color: var(--lime); }
+.workbench-guide-overview :deep(svg) { flex: 0 0 auto; color: var(--d-ink); }
 @media (min-width: 861px) {
   .config-guide__preview > summary { pointer-events: none; }
   .config-guide__preview > summary > svg { display: none; }

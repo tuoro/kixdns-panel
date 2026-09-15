@@ -125,7 +125,6 @@ async function run(): Promise<void> {
 .diag-query input, .diag-query select { width: 100%; height: 44px; padding: 0 12px; border: 1px solid var(--line); border-radius: 4px; color: var(--ink); background: var(--surface); font: inherit; font-size: 15px; }
 .diag-query :is(input, select, button):focus-visible, .diag-step:focus-visible, .diag-raw-response summary:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
 .diag-run { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 0 12px; border: 0; border-radius: 4px; background: var(--ink); color: #fff; font-weight: 650; font-size: 14px; cursor: pointer; }
-.diag-run svg { color: var(--lime); }
 .diag-run:disabled { cursor: wait; opacity: .65; }
 .diag-run-mobile { display: none; }
 .diag-scope { grid-column: 1 / -1; color: var(--muted); font-size: 12px; }
@@ -133,7 +132,6 @@ async function run(): Promise<void> {
 .diag-outcome { overflow: hidden; color: #fff; background: var(--ink); border-radius: 4px; }
 .diag-status { display: flex; align-items: center; gap: 16px; padding: 20px 28px 0; font-size: 14px; }
 .diag-status-label { display: flex; align-items: center; gap: 6px; }
-.diag-status-label svg { color: var(--lime); }
 .diag-status--notice .diag-status-label svg { color: #e8b566; }
 .diag-query-label { color: #bcc4bf; overflow-wrap: anywhere; }
 .diag-status > strong { margin-left: auto; font-weight: 500; }
@@ -157,7 +155,7 @@ async function run(): Promise<void> {
 .diag-match-main > span, .diag-match small { color: #bcc4bf; font-size: 13px; white-space: normal; }
 .diag-match ul { display: grid; gap: 10px; padding: 0; margin: 0; list-style: none; }
 .diag-match li { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
-.diag-match i { flex: 0 0 auto; width: 0; height: 0; border-top: 6px solid transparent; border-bottom: 6px solid transparent; border-left: 9px solid var(--lime); }
+.diag-match i { flex: 0 0 auto; width: 0; height: 0; border-top: 6px solid transparent; border-bottom: 6px solid transparent; border-left: 9px solid var(--d-ink); }
 .diag-match strong { min-width: 0; color: #fff; font: 600 clamp(19px, 2vw, 28px)/1.4 var(--mono); overflow-wrap: anywhere; }
 .diag-match strong.diag-no-match { font-family: inherit; font-size: 17px; font-weight: 500; }
 .diag-trace { margin-top: 24px; }
@@ -172,7 +170,7 @@ async function run(): Promise<void> {
 .diag-step-stage { max-width: 100%; overflow-wrap: anywhere; font-size: 14px; font-weight: 600; }
 .diag-step-label { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12px/1.4 var(--mono); }
 .diag-step--active { border-bottom-color: var(--green); }
-.diag-step--active .diag-step-index, .diag-step--matched .diag-step-index { color: var(--lime); background: var(--green); border-color: var(--green); }
+.diag-step--active .diag-step-index, .diag-step--matched .diag-step-index { color: var(--d-ink); background: var(--green); border-color: var(--green); }
 .diag-step--danger .diag-step-index { color: #b23c36; background: #fff4f2; border-color: #b23c36; }
 .diag-step-chevron { display: none; }
 .diag-step-detail { order: 1; grid-column: 1 / -1; min-width: 0; padding: 20px 24px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
