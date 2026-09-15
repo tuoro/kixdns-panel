@@ -542,7 +542,43 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
    update channel to every visitor who had not authenticated yet. This page has
    one job, anything else competes with it, and these in particular were things
    to withhold. */
-.auth-page { min-height: 100vh; min-height: 100dvh; display: grid; place-content: center; justify-items: center; padding: 32px 16px; color: #202628; background: #f5f7f6; }
+.auth-page { position: relative; min-height: 100vh; min-height: 100dvh; display: grid; place-content: center; justify-items: center; padding: 32px 16px; overflow: hidden; color: var(--l-ink); background: var(--l-canvas); }
+/* 网点底纹，从中心向外淡入：表单所在的那块保持干净，边缘才有细节。
+   这套网点是产品自己的——旧版配置页的流程区用的就是它，不是新造一种纹理。
+   遮罩挂在伪元素上而不是 .auth-page 本身，否则表单会跟着一起被遮。
+
+   A dot field that fades in away from the centre: the area the form occupies
+   stays clean and the detail lives at the edges. The dots are the product's own
+   texture, carried over from the old config page's flow area rather than being
+   a newly invented one. The mask sits on the pseudo-element rather than on
+   .auth-page itself, which would fade the form along with it. */
+.auth-page::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  /* 两层不同疏密的网点叠在一起：单一网格铺开是一张印上去的图案，
+     叠一层更疏更大的点之后才有远近，场地才像有纵深而不是贴了张纸。
+     Two dot layers at different scales: one grid alone reads as a pattern
+     stamped on, while a sparser, larger second layer gives the field depth
+     instead of the look of paper applied to it. */
+  background-image:
+    radial-gradient(var(--l-texture) 1.2px, transparent 1.2px),
+    radial-gradient(var(--l-hair) 2.6px, transparent 2.6px);
+  background-size: 22px 22px, 66px 66px;
+  background-position: 0 0, 11px 11px;
+  -webkit-mask-image: radial-gradient(58% 52% at 50% 46%, transparent 26%, #000 80%);
+  mask-image: radial-gradient(58% 52% at 50% 46%, transparent 26%, #000 80%);
+  pointer-events: none;
+}
+/* 场地四角再压一道极弱的暗角，中间因此显得亮一点，视线自然落到表单上。 */
+.auth-page::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(120% 90% at 50% 45%, transparent 55%, rgba(15, 20, 19, .05));
+  pointer-events: none;
+}
+.auth-panel { position: relative; }
 .auth-panel { width: min(100%, 420px); padding: 0; }
 .auth-brand { display: flex; align-items: center; gap: 10px; margin-bottom: 34px; }
 .auth-brand span { width: 36px; height: 36px; display: grid; place-items: center; color: #e8fff2; background: var(--ink); border-radius: 6px; }

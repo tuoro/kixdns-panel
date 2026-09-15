@@ -58,6 +58,12 @@
   --l-surface: #ffffff;  /* 面板 */
   --l-sunk:    #eceee8;  /* 下沉块、悬停底 */
   --l-hair:    #e2e6df;  /* 分隔线 */
+  /* 底纹网点。比分隔线深一档：分隔线是一条连续的线，看得见；
+     网点是离散的小点，同样的明度铺开之后几乎消失，需要再压一档才成立。
+     Texture dots, a step darker than the hairline: a hairline is a continuous
+     stroke and reads at that value, while discrete dots at the same value all
+     but vanish once spread out, so they need one more step of contrast. */
+  --l-texture: #ccd5d0;
   --l-ink:     #0f1413;  /* 主文字 */
   --l-ink-2:   #45514d;  /* 次要文字 */
   --l-ink-3:   #79847f;  /* 注释文字 */
