@@ -4,7 +4,7 @@
 
 首个生产目标为带 systemd 的 Linux x86_64/ARM64。官方 GNU 二进制以 GLIBC 2.35 为最高兼容基线，可运行于 Ubuntu 22.04、Debian 12 及使用更新 GLIBC 的发行版。安装需要 `systemctl`、`sha256sum` 和 `getent`；下载示例还使用 `curl`、`unzip` 与 `jq`。
 
-完整安装包由 `Build KixDNS Panel` Action 生成，并在面板 GitHub Release 中发布；当前正式版本为 `v2.0.0`。KixDNS Enhanced 的上游 Action 与正式 Release 轨道仍只发布为本仓库 Actions Artifact。面板工作流复用上游身份、补丁集和架构完全匹配的已校验 Action 轨道 Artifact，不会因面板修改而重新编译数据面。完整包包含 KixDNS Enhanced、Panel Server、Vue 静态资源、服务单元和安装脚本。
+完整安装包由 `Build KixDNS Panel` Action 生成，并在面板 GitHub Release 中发布。KixDNS Enhanced 的上游 Action 与正式 Release 轨道仍只发布为本仓库 Actions Artifact。面板工作流复用上游身份、补丁集和架构完全匹配的已校验 Action 轨道 Artifact，不会因面板修改而重新编译数据面。完整包包含 KixDNS Enhanced、Panel Server、Vue 静态资源、服务单元和安装脚本。
 
 ## 一键安装
 
@@ -18,7 +18,7 @@ curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one-click-install.sh \
-  | sudo bash -s -- --version v2.0.0
+  | sudo bash -s -- --version v3.0.1
 ```
 
 一键脚本需要 `curl`、`jq`、`unzip` 和 `sha256sum`。安装器检测到已有 KixDNS 时会在终端交互询问“仅安装面板”或“安装 KixDNS Enhanced 并由面板管理”；无人值守环境仍须显式使用 `--keep-existing` 或 `--replace-existing`。
@@ -87,7 +87,7 @@ sudo bash ./scripts/install.sh --replace-existing
 | --- | --- |
 | `/etc/kixdns/pipeline.json` | 配置事实来源，面板原子写入 |
 | `/etc/kixdns-panel/panel.env` | 面板启动参数 |
-| `/var/lib/kixdns-panel/panel.db` | 用户、会话、版本与审计数据 |
+| `/var/lib/kixdns-panel/panel.db` | 用户、会话、版本、审计与请求量采样数据 |
 | `/var/lib/kixdns-panel/bin/kixdns` | 可自动更新的数据面二进制 |
 | `/var/lib/kixdns-panel/github-token` | 可选 GitHub API Token，仅面板用户和 root 可读（`0600`） |
 | `/var/lib/kixdns-panel/versions/<source>-<artifact-id>-<commit>/` | 按 Artifact 身份隔离的 KixDNS 二进制与版本清单 |
@@ -154,7 +154,7 @@ sudo systemctl restart kixdns-panel.service
 
 已下载版本可直接切换，无需重复联网。面板最多保留 8 个本地版本，清理时始终保留当前版本。完整安装包自带的 KixDNS 会在面板启动时校验二进制 SHA-256，并离线收录完整 Artifact、上游和补丁身份；GitHub 暂时不可达时本地安装信息仍会显示。Actions Artifact 保留 90 天；每周任务会提前 7 天续建，已过期的远端包不会出现在可安装列表，本地已校验库存不受影响。
 
-SQLite 中配置历史最多保留 100 条，审计事件最多保留 10,000 条；每次写入与清理处于同一事务，服务启动时也会整理旧数据库，避免长期运行造成无界增长。
+SQLite 中配置历史最多保留 100 条，审计事件最多保留 10,000 条；每次写入与清理处于同一事务，服务启动时也会整理旧数据库，避免长期运行造成无界增长。概览的请求量趋势由面板每 60 秒采一次 `/v1/metrics` 的累计计数得来，只保留最近 25 小时的样本，同样在写入时顺带清理；采样只读取内核既有指标，不改变 KixDNS 行为，内核停止期间不产生样本。
 
 ## GeoIP 与 GeoSite 数据
 
@@ -166,9 +166,9 @@ Panel Server 与 Web 可以在“系统”页在线更新，也可以手动下�
 
 系统页保存 Token 前会调用 GitHub `/rate_limit` 验证，支持 Fine-grained PAT 与 Classic PAT。Token 独立存放于 `/var/lib/kixdns-panel/github-token`，不写入 SQLite、`panel.env`、审计详情或 API 响应；版本缓存会在配置或删除后立即失效。Token 只附加到 `https://api.github.com` 请求，nightly.link 和 Release 资产下载不携带认证头。在线更新器和已安装的一键安装器通过临时 `0600` curl 配置复用同一 Token，避免凭据出现在进程参数中。
 
-完整包使用 `PANEL_BUILD_COMMIT` 标识管理面构建，使用 `KIXDNS_BUILD_COMMIT` 标识被复用的数据面构建，并分别写入 `KIXDNS_PANEL_INSTALLED_COMMIT` 与 `KIXDNS_INSTALLED_COMMIT`。正式包携带 `PANEL_RELEASE` 并写入 `KIXDNS_PANEL_INSTALLED_RELEASE`；当前正式版本为 `v2.0.0`，后续版本仍通过正式 GitHub Release 发布。日常 Action 构建不会触发面板正式版更新。旧版默认工作流名会迁移到 `build-kixdns.yml`，缺少的 `KIXDNS_UPDATE_RELEASE_WORKFLOW` 会补为 `build-kixdns-release.yml`，已有自定义 KixDNS 更新源保持不变。
+完整包使用 `PANEL_BUILD_COMMIT` 标识管理面构建，使用 `KIXDNS_BUILD_COMMIT` 标识被复用的数据面构建，并分别写入 `KIXDNS_PANEL_INSTALLED_COMMIT` 与 `KIXDNS_INSTALLED_COMMIT`。正式包携带 `PANEL_RELEASE` 并写入 `KIXDNS_PANEL_INSTALLED_RELEASE`，版本通过正式 GitHub Release 发布。日常 Action 构建不会触发面板正式版更新。旧版默认工作流名会迁移到 `build-kixdns.yml`，缺少的 `KIXDNS_UPDATE_RELEASE_WORKFLOW` 会补为 `build-kixdns-release.yml`，已有自定义 KixDNS 更新源保持不变。
 
-从 v1.x 升级到 v2.0.0 无需转换配置：配置文件的 `version` 仍为 `1.0`，增强控制协议仍为 v1。全站导航与配置编辑流程已重新设计；局部修改先“应用到草稿”，再由配置页统一保存并确认热加载结果。
+升级不需要转换配置：至今每个面板版本的配置文件 `version` 都是 `1.0`，增强控制协议都是 v1，从任意旧版直接覆盖安装即可。变化只在管理端——2.0 重做了全站导航与配置编辑流程，局部修改先“应用到草稿”再由配置页统一保存并确认热加载结果；3.0 重做了五个页面的版式。
 
 服务生命周期只支持启动、停止和重启。首次受管安装保持 `inactive + disabled`；面板“启动”同时启用开机启动，“停止”同时禁用开机启动，“重启”不改变开机策略，因此宿主机重启后会保持用户最后选择的启停状态。覆盖升级会分别保留安装前的运行状态和启用状态。KixDNS 从未启动且没有快照时，概览继续渲染完整的运行指标、Pipeline、运行配置、查询排行、上游和规则区域，以零值或 `--` 表示暂无数据，且不把浏览器占位值写入后端快照；已有快照的停止状态继续展示最后一次成功数据，并明确提示数据停止更新。配置页在停止状态显示“未启动，无法确认当前 KixDNS 配置能力”，受能力约束的已有字段只读保留。
 

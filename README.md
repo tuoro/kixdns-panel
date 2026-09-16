@@ -108,7 +108,9 @@ sudo bash ./scripts/install.sh
 
 如果主机已经存在 KixDNS，安装器会让你选择保留现有安装或迁移为 KixDNS Enhanced，不会默认替换。无人值守安装请显式使用 `--keep-existing` 或 `--replace-existing`；保留模式只接入受限面板，迁移模式会备份原 systemd unit 并保留原配置路径。
 
-面板 `v3.0.1` Release 提供 `kixdns-panel-linux-x86_64.zip` 与 `kixdns-panel-linux-arm64.zip`。本次修掉 v3.0.0 的四处显示错误：请求量趋势的桶宽跟随已采集时长，开机二十来分钟就画得出曲线，不再一直提示「需要至少两次采样」；分摊增量时改按累计份额相减，合计不再少于实际请求数；概览首屏的大数字回到累计请求总数，与紧邻的完成率、平均耗时、持续运行同口径，时段说明移到曲线上；运行日志去掉与实时开关重复的刷新键，凭据块的控件不再越出面板，配额未知时改为一句话说明。配置格式与增强控制协议保持不变，从 2.x 与 3.0.0 升级均无需任何操作。正式包记录 Release 标签，面板只根据后续正式 Release 提示自身更新；普通 `main` 提交和临时 Action 包不会触发面板更新提示。发现新版后可在“系统”页直接在线更新，过程固定从 `tuoro/kixdns-panel` 最新正式 Release 下载当前架构包，并校验 GitHub 资产摘要与包内 `SHA256SUMS`；更新只替换 Panel Server、Web、helper 和部署脚本，KixDNS 二进制、配置及启停状态保持不变。
+面板 Release 提供 `kixdns-panel-linux-x86_64.zip` 与 `kixdns-panel-linux-arm64.zip`，每个版本改了什么见对应 Release 说明。配置格式与增强控制协议至今保持不变，从任意旧版升级都无需转换配置。
+
+正式包记录 Release 标签，面板只根据后续正式 Release 提示自身更新；普通 `main` 提交和临时 Action 包不会触发面板更新提示。发现新版后可在“系统”页直接在线更新，过程固定从 `tuoro/kixdns-panel` 最新正式 Release 下载当前架构包，并校验 GitHub 资产摘要与包内 `SHA256SUMS`；更新只替换 Panel Server、Web、helper 和部署脚本，KixDNS 二进制、配置及启停状态保持不变。
 
 公共仓库无需 Token 也能使用，但 GitHub 匿名 API 仅提供每个出口 IP 60 次/小时。若同一公网 IP 下有多台设备，建议在“系统”页配置只读的 Fine-grained PAT；面板先通过 GitHub `/rate_limit` 验证，再以 `0600` 保存到 `/var/lib/kixdns-panel/github-token`。接口只返回是否配置和剩余配额，不返回 Token 明文或片段；删除后立即恢复匿名模式。
 
