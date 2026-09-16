@@ -1,14 +1,12 @@
 # KixDNS Panel 架构
 
-## 产品边界
+## 组成
 
-KixDNS Panel 是一个基于上游 KixDNS 源码自动构建的增强发行版，而不是上游仓库的 Fork。上游源码不进入本仓库历史；当前锁位于 `upstream.lock.json` 和 `upstream.release.lock.json`，可切换目录位于 `upstreams/actions` 和 `upstreams/releases`。构建任务检出目录中的已验证提交，应用 `patches/` 后生成增强版二进制。
+KixDNS Panel 是基于上游 KixDNS 源码自动构建的增强发行版，不是 Fork：上游源码不进本仓库历史，构建时检出锁定的提交再应用 `patches/`。
 
-系统由三个相互隔离的部分组成：
-
-1. **KixDNS Enhanced**：保留上游 DNS 数据面，增加本机管理 Socket、指标和结构化配置状态。
-2. **Panel Server**：负责认证、配置版本、原子保存、服务控制、KixDNS 版本库存、日志和诊断。
-3. **Panel Web**：只调用 Panel Server API，不直接访问 KixDNS 管理 Socket 或宿主机文件。
+1. **KixDNS Enhanced**：上游 DNS 数据面，加上本机控制 Socket、指标和配置状态
+2. **Panel Server**：认证、配置版本与原子保存、服务控制、版本库存、日志、诊断
+3. **Panel Web**：只调用 Panel Server API，不直接碰控制 Socket 或宿主机文件
 
 ~~~text
 Browser
@@ -19,11 +17,11 @@ Panel Web ---- Panel Server ---- SQLite
                     +---- config/pipeline.json
                     +---- versions/<source>-<artifact-id>-<commit>/
                     +---- geo/<kind>-<sha256>.<ext>
-                    +---- systemd / Windows Service
-                    +---- GitHub metadata / artifact provider
+                    +---- systemd（经 root helper）
+                    +---- GitHub API / nightly.link
                     |
                     v
-             local control socket
+             /run/kixdns/admin.sock
                     |
                     v
               KixDNS Enhanced
@@ -32,59 +30,72 @@ Panel Web ---- Panel Server ---- SQLite
              UDP / TCP / DoH
 ~~~
 
-## 兼容性策略
+面板只依赖版本化的[控制协议](control-protocol-v1.md)，不导入上游 crate，所以上游适配不会迫使管理端跟着改。原始 JSON 是配置的事实来源，表单只改已知字段、保留未知字段；字段支持与否由[配置能力契约](config-capabilities.md)决定，不按版本号猜。
 
-- 面板只依赖版本化的控制协议，不导入上游 KixDNS crate。
-- 原始 JSON 是配置事实来源；可视化表单只修改已知字段并保留未知字段。
-- 配置字段通过[配置能力契约](config-capabilities.md)门控；当前进程读取 health，目标版本读取经摘要校验的 Artifact 清单，缺失声明时保守视为不支持。
-- Action 轨道追加官方 `main` 分支最近成功 Action，最多保留 10 个已验证候选；Release 轨道从 `v0.1.1` 增强基线起追加正式发布，不设固定数量上限。
-- 只有补丁应用、编译、测试和 DNS 冒烟测试均成功时，候选版本才可发布。
-- DNS 冒烟测试使用隔离端口和 Unix Socket，验证静态应答、快速路径规则计数、配置摘要及热加载序号。
-- Action 与 Release 独立验证；一条轨道失败不会阻塞另一条轨道推进。
-- 当前补丁精确应用失败或锁文件未通过 RustSec 审计时，工作流将补丁重建为临时 Git overlay，自动重基到候选提交并导出更高编号的不可变补丁集；`Cargo.lock` 不参与重基，而是在新源码树上重新解析并作为最后一层补丁导出。
-- 自动重基存在代码冲突或完整验证失败时，工作流才按轨道创建或更新唯一的 GitHub Issue；基础设施失败只让工作流失败，不产生误导性的兼容告警。验证恢复后自动关闭已有告警。
-- 每个锁绑定 `patches/sets/<patchset>/` 中的不可变补丁集；自动或人工适配都只能新增更高编号，已发布版本继续使用原集合。
-- 面板和增强版使用各自的锁文件；两者必须通过 RustSec 审计，安全依赖迁移以可重放的清单变更和自动解析的锁文件维护。
+## 上游跟随
 
-自动同步分别读取上游官方 `build.yml` 最近一次成功运行和最新正式 Release。两条轨道串行且相互隔离；当前补丁不能精确重放时，机器人先自动重基 overlay、重新解析依赖并生成新密封补丁集。候选通过测试、Clippy、RustSec 审计和 DNS 冒烟测试后，机器人为对应轨道创建审计 PR，更新当前锁并追加版本目录。只有自动重基冲突或验证失败时，工作流才更新该轨道的 `[compat]` Issue，附候选身份、提交、日志摘要和完整运行链接；主分支、另一条轨道与现有 Artifact 都保持不变。锁文件固定已验证提交以保证构建可复现，但自动同步会持续推进这些固定点。面板 Web/Server 只依赖控制协议版本，因此上游适配不会迫使管理端同步修改。
+两条轨道各自一个锁文件，互相独立，一条失败不阻塞另一条：
 
-## 构建边界
+| 轨道 | 锁文件 | 版本目录 | 跟随 | 保留 |
+| --- | --- | --- | --- | --- |
+| Action | `upstream.lock.json` | `upstreams/actions/` | 上游 `main` 最近成功的 `build.yml` | 最近 10 个 |
+| Release | `upstream.release.lock.json` | `upstreams/releases/` | 上游正式 Release | 从 `v0.1.1` 起只增不减 |
 
-面板和增强内核使用独立工作流，避免把面板提交误认为新的 KixDNS 版本：
+每个锁指向 `patches/sets/<编号>/` 下一个不可变补丁集。补丁集进入主分支即封印，CI 拒绝修改已有编号，适配只能新增更高编号——已发布的版本因此始终可复现。
 
-- `build-kixdns.yml` 监听 Action 目录，`build-kixdns-release.yml` 监听 Release 目录；两者复用 `build-kixdns-track.yml` 的库存检查、验证和打包步骤。
-- Artifact 名称为 `kixdns-enhanced-<来源>-<上游身份>-p<补丁集>-<输入指纹>-linux-<架构>`。输入指纹只覆盖锁文件选择的补丁集、`prepare` 构建路径、工作流和 Rust 工具链；仅用于自动重基的 `overlay.rs` 不进入可变指纹。新增更高补丁集或修改该维护逻辑不会改变历史版本指纹，目录新增版本时只补建缺失项。
-- 每个 Artifact 携带 `KIXDNS_CAPABILITIES.json`，并与二进制、上游锁和构建提交共同写入 `SHA256SUMS`；能力清单也是输入指纹的一部分。
-- 构建库存会校验全部锁的补丁集引用。拉取请求和直接推送均不得修改主分支已有集合，只能新增高于当前最大值的编号。
-- 每周库存检查会续建缺失或将在 7 天内过期的上游包；这些 Artifact 仍使用 GitHub 的 90 天保留期，不创建上游 KixDNS Release。面板自身通过 GitHub Release 发布完整安装包。
-- `build-panel.yml` 只监听 Panel Server、Web、部署脚本和面板依赖。它从最近成功的内核工作流复用上游身份完全匹配的 Artifact，经包内 SHA-256 和 ELF 架构校验后生成完整安装包，不重新编译 KixDNS。
-- 发布构建固定在 Ubuntu 22.04 容器中完成，并拒绝包含高于 `GLIBC_2.35` 符号的 KixDNS 或 Panel Server，避免 GitHub Runner 升级悄然抬高发行版要求。
-- PR 只执行对应边界的验证 Job，不上传可安装 Artifact；README、截图等纯文档变化不触发打包工作流。
+自动同步发现上游新版本时：
 
-完整包分别保存 `PANEL_BUILD_COMMIT` 和 `KIXDNS_BUILD_COMMIT`，同时携带增强 Artifact ID、名称、摘要、二进制 SHA-256、能力清单与上游身份。Panel Server 启动时离线验证这些只读元数据，并以当前二进制摘要纠正旧数据库中的活动版本记录。`KIXDNS_SOURCE_RUN_ID` 保留被复用内核的 Action Run；Artifact digest 用于验证 ZIP 传输内容，二进制 SHA-256 才是 KixDNS 内容身份。
+1. 先尝试直接应用当前补丁集
+2. 应用失败或依赖未通过 RustSec 审计，就把补丁重建为临时 Git 提交链，rebase 到新上游（`Cargo.lock` 不参与 rebase，之后重新解析），导出更高编号的补丁集
+3. 候选通过测试、Clippy、RustSec 和 DNS 冒烟测试后，自动提交审计 PR 更新锁和版本目录
+4. 只有代码冲突或验证失败才开 `[compat]` Issue（每条轨道最多一个），附候选身份和日志；恢复后自动关闭。基础设施故障只让工作流失败，不开 Issue
+
+DNS 冒烟测试用隔离端口和 Unix Socket 真实启动增强进程，验证静态应答、规则计数、配置摘要和热加载序号。人工处理流程见[补丁说明](../patches/README.md)。
+
+## 构建与发布
+
+面板和内核用独立工作流，面板提交不会被误当成新的 KixDNS 版本：
+
+- **内核**：`build-kixdns.yml`（Action 轨道）和 `build-kixdns-release.yml`（Release 轨道）共用 `build-kixdns-track.yml`。产物只作为本仓库 Actions Artifact，通过 nightly.link 下载，每周任务提前 7 天续建即将过期的包
+- **面板**：`build-panel.yml` 只监听 Panel Server、Web、部署脚本和面板依赖。它复用上游身份完全匹配的内核 Artifact（校验摘要和 ELF 架构），不重新编译 KixDNS。正式版通过面板 GitHub Release 发布
+- 发布构建在 Ubuntu 22.04 容器中完成，拒绝依赖高于 `GLIBC_2.35` 符号的二进制；完整包还要在 Ubuntu 22.04 临时机上跑安装、覆盖升级、面板联调、systemd 控制和卸载验收
+- PR 只跑对应边界的验证，不上传可安装包；纯文档变更不触发打包
+
+内核 Artifact 命名为 `kixdns-enhanced-<来源>-<上游身份>-p<补丁集>-<输入指纹>-linux-<架构>`。输入指纹覆盖所选补丁集、构建路径、工作流、Rust 工具链和能力清单，所以新增补丁集不会改变历史版本的指纹，也不会触发重新构建。每个包携带 `KIXDNS_CAPABILITIES.json`，与二进制、上游锁和构建提交一起写入 `SHA256SUMS`。
+
+完整安装包分别记录 `PANEL_BUILD_COMMIT`、`KIXDNS_BUILD_COMMIT` 和正式版标签 `PANEL_RELEASE`，安装时写入 `KIXDNS_PANEL_INSTALLED_COMMIT`、`KIXDNS_INSTALLED_COMMIT`、`KIXDNS_PANEL_INSTALLED_RELEASE`。面板只按正式版标签提示自身更新。Panel Server 启动时离线校验安装包自带 KixDNS 的元数据，并以二进制实际摘要纠正数据库中的活动版本记录——GitHub 不可达时本地版本信息照常显示。本地库存以 `source + artifact_id + commit` 为键，因为同一次工作流可能构建多个上游基线。
 
 ## 安全边界
 
-- 管理通道默认使用 Unix Socket，权限为 `0660`；不监听公网管理端口。
-- Panel Server 不接受任意命令和 Shell 片段，服务控制使用固定参数适配器。
-- 配置通过同目录临时文件、刷新和原子替换落盘，并保留可回滚版本。
-- 浏览器会话使用 HttpOnly、SameSite Cookie；所有写操作要求 CSRF 令牌。
-- 密码使用 Argon2id，数据库不保存明文会话令牌。
-- 指标禁止域名、客户端 IP 等高基数或敏感标签。
-- Panel Server 以独立非 root 账号运行；systemd 控制经 root helper 的专属 Unix Socket 转发。Socket 文件权限和 `SO_PEERCRED` 都固定调用方 UID，helper 对 KixDNS 只接受安装时确定的 unit 与 `start`、`stop`、`restart`，面板更新只接受固定的 `panel-update` 并启动 root 所有的固定更新器。
-- 面板更新源固定为项目最新正式 Release，API 和浏览器不能指定 URL、路径或版本；下载经过 Release 资产摘要和包内摘要双重校验，安装器的面板专用事务不修改 KixDNS 二进制、配置、身份或启停状态。
-- 安装器对既有 KixDNS 要求用户选择“仅安装面板”或“安装并管理增强版”；外部模式由 `KIXDNS_MANAGEMENT_ENABLED=false` 和后端版本写操作保护共同强制，前端隐藏不可执行的版本库存操作。
-- 迁移会保存原 systemd unit、启用状态和运行状态；卸载时优先恢复该备份，避免把用户原有服务当作面板资产删除。
-- 卸载器交互选择是否保留面板管理的 KixDNS，以及是否删除面板配置、数据库、版本库和 Geo 数据；外部 KixDNS 始终不会被卸载器删除。
-- KixDNS 版本源只接受固定仓库、两条工作流、分支和按规则解析的 Artifact 名称；安装请求只携带来源类型和 GitHub Artifact ID，前端不能指定 URL 或文件路径。
-- Geo 数据源只接受 HTTPS，逐次固定公网 DNS 解析并重新校验重定向，限制下载体积与文件数量；内容寻址文件保持历史配置可回滚，面板专用 URL 元数据不进入 KixDNS 配置。
-- 后端从 Artifact 名称解析上游官方 Run 或 Release 标签，再校验包内 `source`、上游身份、提交、补丁集、控制协议和本仓库构建提交。两条轨道使用独立远端缓存与 `source + artifact_id + commit` 本地库存键，同一次工作流可安全暴露多个版本。
-- 安装前校验外层和包内 SHA-256、ELF 与架构，激活前再次校验本地清单与二进制摘要；替换后必须通过健康检查，否则恢复原状态。
-- 配置保存、恢复和版本激活共用后端能力注册表；不兼容版本在停止服务前被拒绝，面板不自动删除或降级用户字段。
-- 服务动作白名单只有 `start`、`stop`、`restart`。配置文件监听产生的结构化热加载回执属于增强控制协议，不是 systemd 服务重载能力。
-- 受管服务的启动映射为 `systemctl enable --now`，停止映射为 `disable --now`，重启不改变 enable 状态；首次安装默认停止，覆盖安装保持原运行与启用状态。
-- 最后一次成功的增强概览和排行按窗口持久化到 SQLite；控制接口不可用时只读返回快照，并独立读取 systemd 状态区分真实停止和短暂故障。
+**进程与权限**
+
+- Panel Server 以独立非 root 账号运行；systemd 单元启用只读系统目录、私有临时目录、能力边界和地址族限制
+- 启停和自更新经 root helper 转发：专属 Unix Socket（`0600`）+ `SO_PEERCRED` 校验 UID；只接受安装时确定的 unit 与 `start`、`stop`、`restart`，以及固定的 `panel-update`
+- 不接受任意命令或 Shell 片段；KixDNS 没有重载动作，面板也不提供
+- 控制协议只走本机 Unix Socket（`0660`），不监听网络端口
+
+**会话与数据**
+
+- 密码 Argon2id；数据库不存明文会话令牌；HttpOnly、SameSite Cookie；所有写操作要求 CSRF 令牌
+- 登录前页面不显示任何机器状态
+- 指标不带域名、客户端 IP 等高基数或敏感标签
+- 配置经同目录临时文件原子替换，写入后必须收到匹配的热加载回执，否则回滚
+- GitHub Token 只发往 `api.github.com`；在线更新器和一键安装器通过临时 `0600` curl 配置复用它，不出现在进程参数里
+
+**下载与安装**
+
+- 版本源只接受固定仓库、固定工作流和按规则解析的 Artifact 名称；前端只能提交来源类型和 Artifact ID，不能给 URL 或路径
+- 从 Artifact 名称解析上游身份后，再与包内 `source`、上游身份、提交、补丁集、控制协议和构建提交逐项核对
+- 安装前校验外层与包内 SHA-256、ELF 与架构；激活前再校验一次；替换后必须通过健康检查，否则恢复
+- 配置保存、历史恢复和版本激活共用后端能力注册表；不兼容的版本在停服务之前就被拒绝，面板不自动删除或降级用户字段
+- 面板自更新只认本项目最新正式 Release，校验资产摘要和包内摘要，事务不改 KixDNS 的二进制、配置、身份和启停状态
+- Geo 数据只接受 HTTPS，每次解析和重定向都固定公网地址并重新检查，限制体积和文件数；文件以 `0640` 内容寻址存放，`kixdns` 通过同组只读
+
+**与既有安装共存**
+
+- 发现非本面板管理的 KixDNS 时要求用户明确选择；「仅安装面板」模式由 `KIXDNS_MANAGEMENT_ENABLED=false` 和后端写保护共同强制
+- 迁移会备份原 unit 和启停状态，卸载时优先恢复；外部 KixDNS 永远不会被卸载器删除
 
 ## 运行平台
 
-首个生产目标为 Linux x86_64/ARM64，支持 systemd 与 Unix Socket。Panel Server 保持跨平台编译；Windows 服务和命名管道作为同一接口的适配实现。
+生产目标为带 systemd 的 Linux x86_64/ARM64。Panel Server 保持跨平台编译，Windows 服务与命名管道可作为同一接口的适配实现。

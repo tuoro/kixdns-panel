@@ -49,11 +49,10 @@ sets/22/
 
 这种顺序把适配限制在候选版本：旧锁、旧目录和旧 Artifact 保持可复现，面板服务仅在控制协议确实变化时才需要联动修改。
 
-当前 `sets/19/common/` 补丁顺序（自 p19 起，增强逻辑通过上游的 `EngineObserver` 接口接入，不再修改 `src/engine`、`src/watcher.rs` 或配置加载器）：
+当前 `sets/22/common/` 的补丁（自 p19 起，增强逻辑通过上游的 `EngineObserver` 接口接入，不再修改 `src/engine`、`src/watcher.rs` 或配置加载器）：
 
 1. `0001-query-stats-config.patch`：查询排行的 `statistics_*` 配置字段及其缓存命名空间参与。
 2. `0002-panel-control-socket.patch`：`panel.rs` 以 `EngineObserver` 实现指标、查询排行、配置摘要与诊断轨迹，`panel_trace.rs` 从观察者事件重建轨迹，`main.rs` 通过 `Engine::builder` 注入观察者并启动本机控制 Socket。
-3. `0003-security-dependency-refresh.patch`：刷新存在 RustSec 公告的依赖，并迁移 MaxMind 与 PEM API。
-4. `0004-dependency-lock.patch`：用固定工具链重新解析的 `Cargo.lock`。
+3. `0004-dependency-lock.patch`：用固定工具链重新解析的 `Cargo.lock`。
 
-p18 及更早的补丁集仍保持原有的十余个补丁结构，供旧锁复现。
+原先的 `0003-security-dependency-refresh.patch` 已被上游吸收，因此编号不连续。p18 及更早的补丁集保持原有结构，供旧锁复现。
