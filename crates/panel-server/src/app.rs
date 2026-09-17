@@ -1582,7 +1582,13 @@ async fn not_found() -> AppError {
 
 async fn security_headers(request: Request<Body>, next: Next) -> Response {
     let is_api = request.uri().path().starts_with("/api/");
+    let is_asset = request.uri().path().starts_with("/assets/");
     let mut response = next.run(request).await;
+    let is_html = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/html"));
     let headers = response.headers_mut();
     headers.insert(
         "x-content-type-options",
@@ -1598,6 +1604,24 @@ async fn security_headers(request: Request<Body>, next: Next) -> Response {
     );
     if is_api {
         headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    } else if is_asset && !is_html {
+        // Vite 输出到 assets/ 的文件名带内容哈希，内容一变名字就变，可以永久缓存。
+        // Vite names everything under assets/ by content hash, so a changed file
+        // gets a new name and the old one can be cached for good.
+        headers.insert(
+            CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=31536000, immutable"),
+        );
+    } else {
+        // index.html 和 SPA 回退每次都要回服务端确认。更新会整目录换掉静态文件，
+        // 旧分块随之删除；缓存住的旧 index.html 会让页面去加载已不存在的分块。
+        // assets/ 下找不到的文件也走到这里：回退给的是 index.html，不能当成资源长期缓存。
+        // index.html and the SPA fallback are revalidated on every load. An
+        // update swaps the whole static directory and deletes the old chunks, so
+        // a cached old index.html would send the page after chunks that are gone.
+        // A missing file under assets/ lands here too: the fallback answers with
+        // index.html, which must not be cached as though it were the asset.
+        headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     }
     response
 }

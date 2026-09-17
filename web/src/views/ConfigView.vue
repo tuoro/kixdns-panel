@@ -73,6 +73,10 @@ const deleting = ref<number | null>(null)
 const bulkDeleting = ref(false)
 const selectedVersionIds = ref<number[]>([])
 const previewing = ref<number | null>(null)
+// 取版本详情期间按钮是禁用的，浏览器会把焦点从禁用的按钮上移走，所以要在点击那一刻记下来。
+// The button is disabled while the version loads and the browser moves focus
+// off a disabled button, so the trigger is recorded at the moment of the click.
+const previewTrigger = ref<HTMLElement | null>(null)
 const previewVersion = ref<ConfigVersionDetail | null>(null)
 const validation = ref<ValidationResult | null>(null)
 const parseError = ref('')
@@ -483,11 +487,14 @@ async function deleteSelectedVersions(): Promise<void> {
   }
 }
 
-async function openVersionDiff(version: ConfigVersion): Promise<void> {
+async function openVersionDiff(version: ConfigVersion, event: MouseEvent): Promise<void> {
+  previewTrigger.value = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
   previewing.value = version.id
   try {
+    // 版本历史保持打开：差异框叠在它上面，关掉后回到原来那个按钮，接着比较下一个版本。
+    // The history stays open: the diff stacks on top, and closing it returns to
+    // the same button, ready to compare the next version.
     previewVersion.value = await apiRequest<ConfigVersionDetail>(`/api/v1/config/versions/${version.id}`)
-    historyOpen.value = false
   } catch (error) {
     toast.error(errorMessage(error))
   } finally {
@@ -675,7 +682,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
                 <span v-else-if="version.id === pendingVersionId || version.apply_state === 'pending'" class="tag tag--warning">待应用</span>
                 <span v-else-if="version.apply_state === 'superseded'" class="tag tag--muted">已替代</span>
                 <template v-if="version.id !== currentVersionId">
-                  <button class="icon-button icon-button--small" type="button" title="比较此版本" :disabled="previewing !== null" @click="openVersionDiff(version)"><GitCompare :size="15" :class="{ spin: previewing === version.id }" /></button>
+                  <button class="icon-button icon-button--small" type="button" title="比较此版本" :disabled="previewing !== null" @click="openVersionDiff(version, $event)"><GitCompare :size="15" :class="{ spin: previewing === version.id }" /></button>
                   <button class="icon-button icon-button--small" type="button" title="恢复此版本" :disabled="restoring !== null || deleting !== null || bulkDeleting || saving || validating" @click="restore(version)"><RotateCcw :size="15" :class="{ spin: restoring === version.id }" /></button>
                   <button class="icon-button icon-button--small icon-button--danger" type="button" title="删除此版本" :disabled="restoring !== null || deleting !== null || bulkDeleting || saving || validating" @click="deleteVersion(version)"><Trash2 :size="15" :class="{ spin: deleting === version.id }" /></button>
                 </template>
@@ -689,7 +696,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
         </div>
       </aside>
       </dialog>
-    <ConfigVersionDiffDialog v-if="previewVersion && document" :current="document.content" :version="previewVersion" @close="previewVersion = null" />
+    <ConfigVersionDiffDialog v-if="previewVersion && document" :current="document.content" :version="previewVersion" :return-focus="previewTrigger" @close="previewVersion = null" />
   </div>
 </template>
 

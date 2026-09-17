@@ -74,8 +74,8 @@ test('配置历史支持差异、恢复和受保护删除', async ({ page }) => 
   await expect(diff).toBeVisible()
   await expect(diff.getByText(/处差异/)).toBeVisible()
   await diff.getByRole('button', { name: '关闭', exact: true }).click()
-
-  await page.getByRole('button', { name: '历史版本', exact: true }).click()
+  // 差异框叠在版本历史上，关掉后历史仍然开着。/ The diff stacks on the history, which stays open after it closes.
+  await expect(diff).toHaveCount(0)
 
   await history.getByTitle('恢复此版本').first().click()
   await acceptConfirm(page)
