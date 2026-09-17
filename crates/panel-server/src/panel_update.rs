@@ -49,6 +49,13 @@ impl PanelUpdateStatus {
             self.state = PanelUpdateState::Failed;
             "上次在线更新未正常结束，请重新发起更新".clone_into(&mut self.message);
         }
+        // 失败状态只由下一次在线更新重写；改用安装包升级到（或越过）目标版本后，那次失败已经
+        // 不成立，继续显示只会误导。
+        // A failed status is only rewritten by the next online update; once the panel reached (or
+        // passed) the target some other way, that failure no longer holds and showing it misleads.
+        if self.state == PanelUpdateState::Failed && target_reached(&self.target_version) {
+            return Ok(idle_status());
+        }
         Ok(self)
     }
 }
@@ -87,6 +94,18 @@ fn idle_status() -> PanelUpdateStatus {
         target_version: String::new(),
         updated_at: 0,
     }
+}
+
+fn target_reached(target_version: &str) -> bool {
+    let (Some(target), Ok(running)) = (
+        target_version
+            .strip_prefix('v')
+            .and_then(|version| semver::Version::parse(version).ok()),
+        semver::Version::parse(env!("CARGO_PKG_VERSION")),
+    ) else {
+        return false;
+    };
+    running >= target
 }
 
 fn valid_release(value: &str) -> bool {
@@ -128,6 +147,39 @@ mod tests {
         assert!(!valid_release("1.0.3"));
         assert!(!valid_release("v1.0.3-rc.1"));
         assert!(!valid_release("v1.0"));
+    }
+
+    fn failed_status(target_version: &str) -> PanelUpdateStatus {
+        PanelUpdateStatus {
+            state: PanelUpdateState::Failed,
+            message: "在线更新失败：安装失败：下载超时".to_owned(),
+            target_version: target_version.to_owned(),
+            updated_at: 1,
+        }
+    }
+
+    #[test]
+    fn failure_is_cleared_once_the_panel_reaches_its_target() {
+        // 回归：在线更新失败后改用安装包升级成功，状态文件没人重写，系统页一直挂着那次失败。
+        // Regression: after a failed online update the panel was upgraded from a package; nothing
+        // rewrote the status file, so the system page kept showing that failure.
+        let running = concat!("v", env!("CARGO_PKG_VERSION"));
+        let status = failed_status(running).validate().unwrap();
+        assert_eq!(status.state, PanelUpdateState::Idle);
+        assert!(status.message.is_empty());
+
+        let older = failed_status("v0.0.1").validate().unwrap();
+        assert_eq!(older.state, PanelUpdateState::Idle);
+
+        // 目标仍比运行中的面板新：失败还没解决，原因要留着。
+        // The target is still newer than the running panel: the failure stands and keeps its reason.
+        let pending = failed_status("v999.0.0").validate().unwrap();
+        assert_eq!(pending.state, PanelUpdateState::Failed);
+        assert_eq!(pending.message, "在线更新失败：安装失败：下载超时");
+        // 没有目标版本的失败（例如还没查到最新版就出错）无从判断是否已解决，保留给用户看。
+        // A failure with no target (e.g. before the latest release was known) cannot be judged resolved; keep it.
+        let unknown = failed_status("").validate().unwrap();
+        assert_eq!(unknown.state, PanelUpdateState::Failed);
     }
 
     #[test]

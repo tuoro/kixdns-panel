@@ -18,6 +18,9 @@ KIXDNS_SERVICE_HELPER_SOCKET="/run/kixdns-panel/control.sock"
 PANEL_ENV=/etc/kixdns-panel/panel.env
 PANEL_SERVER_BINARY=/usr/local/bin/kixdns-panel-server
 GITHUB_TOKEN_FILE=/var/lib/kixdns-panel/github-token
+# 与 uninstall.sh 相同的固定位置：面板 unit 只允许写 /var/lib/kixdns-panel。
+# The same fixed location uninstall.sh uses: the panel unit may only write /var/lib/kixdns-panel.
+PANEL_DATABASE=/var/lib/kixdns-panel/panel.db
 SYSTEMD_UNIT_DIRECTORY=/etc/systemd/system
 EXISTING_PANEL=false
 EXISTING_KIXDNS=false
@@ -828,9 +831,42 @@ restore_path() {
   fi
 }
 
+# 新面板启动时会把数据库迁移到自己的 schema，而面板拒绝打开比自己新的库（db.rs）。
+# 回滚只换回旧程序、留着迁移过的库，旧面板就会一直崩溃重启。所以在面板停下、不再写入之后，
+# 连同 WAL 和共享内存文件一起备份；标记文件说明备份已完成，回滚只在它存在时才放回。
+# On start the new panel migrates the database to its schema, and the panel refuses a database newer
+# than itself (db.rs). A rollback that swaps the binary back but keeps the migrated database leaves the
+# old panel crash-looping. So back it up, with its WAL and shared-memory files, once the panel has
+# stopped writing; the marker says the backup is complete, and rollback restores only when it exists.
+backup_panel_database() {
+  backup_path "${PANEL_DATABASE}" panel-database
+  backup_path "${PANEL_DATABASE}-wal" panel-database-wal
+  backup_path "${PANEL_DATABASE}-shm" panel-database-shm
+  : > "${BACKUP_ROOT}/panel-database.saved"
+}
+
+restore_panel_database() {
+  local file
+  [[ -f ${BACKUP_ROOT}/panel-database.saved ]] || return 0
+  # 三个文件必须成套放回：留下新面板的 WAL 会被 SQLite 重放到旧库上。
+  # The three files go back as a set: a WAL left by the new panel would be replayed onto the old database.
+  restore_path "${PANEL_DATABASE}" panel-database
+  restore_path "${PANEL_DATABASE}-wal" panel-database-wal
+  restore_path "${PANEL_DATABASE}-shm" panel-database-shm
+  for file in "${PANEL_DATABASE}" "${PANEL_DATABASE}-wal" "${PANEL_DATABASE}-shm"; do
+    [[ -e ${file} ]] || continue
+    chown "${PANEL_USER}:${KIXDNS_GROUP}" -- "${file}"
+    chmod 0600 -- "${file}"
+  done
+}
+
 rollback_install() {
   local status=$1
   local reason=${2:-failed}
+  local outcome=安装未完成
+  local panel_running=true
+  local host
+  local port
   trap - ERR
   # 回滚途中再按 Ctrl-C 或断线不能半途而废，否则主机停在比中断前更糟的状态。
   # A second Ctrl-C or hangup must not abort the rollback half way and leave the host worse off.
@@ -861,6 +897,7 @@ rollback_install() {
   restore_path /etc/systemd/system/kixdns-panel-helper.service panel-helper-service
   restore_path /etc/polkit-1/rules.d/50-kixdns-panel.rules polkit-rule
   restore_path "${PANEL_ENV}" panel-env
+  restore_panel_database
   [[ ${RESOLVED_CHANGED} == false ]] || restore_resolved_stub
   systemctl daemon-reload
   [[ ${EXISTING_PANEL} == false ]] || systemctl restart kixdns-panel-helper.service 2>/dev/null
@@ -881,12 +918,21 @@ rollback_install() {
   elif kixdns_replaced; then
     restore_managed_service_state
   fi
-  [[ ${EXISTING_PANEL} == false ]] || systemctl restart kixdns-panel.service
+  if [[ ${EXISTING_PANEL} == true ]]; then
+    systemctl restart kixdns-panel.service
+    # 旧面板可能因为数据库或环境不兼容而起不来；不确认就说「已恢复」会把人引向错误的方向。
+    # The old panel may still fail on an incompatible database or environment; claiming "restored"
+    # without checking sends the user the wrong way.
+    read -r host port < <(panel_probe_address)
+    wait_for_service_stable kixdns-panel.service "${host}" "${port}" || panel_running=false
+  fi
   rm -rf -- "${BACKUP_ROOT}"
-  if [[ ${reason} == interrupted ]]; then
-    printf '安装被中断，已恢复原有程序和服务。\n' >&2
+  [[ ${reason} != interrupted ]] || outcome=安装被中断
+  if [[ ${panel_running} == true ]]; then
+    printf '%s，已恢复原有程序和服务。\n' "${outcome}" >&2
   else
-    printf '安装未完成，已恢复原有程序和服务。\n' >&2
+    printf '%s，已放回原有程序和数据库，但原面板没有恢复运行。\n查看原因：journalctl -u kixdns-panel.service -n 50 --no-pager\n' \
+      "${outcome}" >&2
   fi
   exit "${status}"
 }
@@ -1360,6 +1406,7 @@ main() {
   prepare_rollback
   preserve_external_install
   systemctl stop kixdns-panel.service 2>/dev/null || true
+  backup_panel_database
   systemctl stop kixdns-panel-helper.service 2>/dev/null || true
   if [[ ${INSTALL_KIND} == panel-only ]]; then
     KIXDNS_BUILD_COMMIT="$(environment_value KIXDNS_INSTALLED_COMMIT || true)"

@@ -655,11 +655,8 @@ impl UpdateManager {
             .filter(|parent| !parent.as_os_str().is_empty())
             .ok_or_else(|| UpdateError::Invalid("KixDNS 二进制缺少父目录".to_owned()))?;
         ensure_directory(binary_parent)?;
-        let client = reqwest::Client::builder()
-            .user_agent(concat!("kixdns-panel/", env!("CARGO_PKG_VERSION")))
-            .timeout(Duration::from_secs(20))
-            .build()
-            .map_err(|error| UpdateError::Invalid(error.to_string()))?;
+        let client =
+            Self::http_client(Self::API_TIMEOUT, Self::CONNECT_TIMEOUT, Self::READ_TIMEOUT)?;
         let github_token = read_github_token(&github_token_path)?;
         Ok(Self {
             client,
@@ -1348,15 +1345,59 @@ impl UpdateManager {
             .map_err(|error| UpdateError::Network(format!("GitHub API request failed: {error}")))
     }
 
-    async fn download(&self, version: &ResolvedVersion) -> Result<Vec<u8>, UpdateError> {
-        let response = self
-            .client
-            .get(&version.remote.download_url)
+    // API JSON 请求很小，20 秒总超时足够；4 MB 以上的产物在国内到 GitHub、nightly.link 的慢链路上
+    // 常要几分钟，共用这个总超时会让低于约 200 KB/s 的安装必然失败。所以客户端只限定连接和
+    // 两次收到数据之间的间隔，下载请求再单独给一个宽松的总时限。
+    // API JSON is small and 20 s total is plenty, but a 4 MB+ artifact over a slow mainland-China link to
+    // GitHub or nightly.link takes minutes; sharing that total made every install below ~200 KB/s fail.
+    // The client therefore bounds only connecting and the gap between received data, and the download
+    // request gets its own generous total limit.
+    const API_TIMEOUT: Duration = Duration::from_secs(20);
+    const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+    const READ_TIMEOUT: Duration = Duration::from_secs(30);
+    const DOWNLOAD_TIMEOUT: Duration = Duration::from_mins(5);
+
+    fn http_client(
+        api_timeout: Duration,
+        connect_timeout: Duration,
+        read_timeout: Duration,
+    ) -> Result<reqwest::Client, UpdateError> {
+        reqwest::Client::builder()
+            .user_agent(concat!("kixdns-panel/", env!("CARGO_PKG_VERSION")))
+            .timeout(api_timeout)
+            .connect_timeout(connect_timeout)
+            .read_timeout(read_timeout)
+            .build()
+            .map_err(|error| UpdateError::Invalid(error.to_string()))
+    }
+
+    async fn fetch_artifact(
+        client: &reqwest::Client,
+        url: &str,
+        timeout: Duration,
+    ) -> Result<Vec<u8>, UpdateError> {
+        // reqwest 把读超时和总超时都报成一句 "error decoding response body"，用户看不出是网太慢。
+        // reqwest reports both read and total timeouts as "error decoding response body", which does
+        // not tell the user the link was too slow.
+        let network = |error: reqwest::Error| {
+            if error.is_timeout() {
+                UpdateError::Network(format!(
+                    "下载 KixDNS 产物超时：网络过慢或连接中断，请检查到 GitHub 的网络后重试（{error}）"
+                ))
+            } else {
+                UpdateError::Network(error.to_string())
+            }
+        };
+        // 请求级时限覆盖客户端的 20 秒总超时，只作用于这次下载。
+        // The per-request limit overrides the client's 20 s total, for this download only.
+        let response = client
+            .get(url)
+            .timeout(timeout)
             .send()
             .await
-            .map_err(|error| UpdateError::Network(error.to_string()))?
+            .map_err(network)?
             .error_for_status()
-            .map_err(|error| UpdateError::Network(error.to_string()))?;
+            .map_err(network)?;
         if response
             .content_length()
             .is_some_and(|length| length > MAX_ARTIFACT_BYTES as u64)
@@ -1368,7 +1409,7 @@ impl UpdateManager {
         let mut stream = response.bytes_stream();
         let mut bytes = Vec::new();
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|error| UpdateError::Network(error.to_string()))?;
+            let chunk = chunk.map_err(network)?;
             if bytes.len().saturating_add(chunk.len()) > MAX_ARTIFACT_BYTES {
                 return Err(UpdateError::Verification(
                     "Artifact 超过 128 MiB".to_owned(),
@@ -1376,6 +1417,16 @@ impl UpdateManager {
             }
             bytes.extend_from_slice(&chunk);
         }
+        Ok(bytes)
+    }
+
+    async fn download(&self, version: &ResolvedVersion) -> Result<Vec<u8>, UpdateError> {
+        let bytes = Self::fetch_artifact(
+            &self.client,
+            &version.remote.download_url,
+            Self::DOWNLOAD_TIMEOUT,
+        )
+        .await?;
         let expected = version
             .remote
             .artifact_digest
@@ -1990,3 +2041,7 @@ use storage::{
 #[cfg(test)]
 #[path = "updates/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "updates/download_tests.rs"]
+mod download_tests;

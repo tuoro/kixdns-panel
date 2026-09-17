@@ -73,6 +73,11 @@ let versionsRequest = 0
 let panelUpdateTimer: ReturnType<typeof setTimeout> | null = null
 let panelUpdateDeadline = 0
 let panelUpdateBaseline = ''
+// 在线更新失败的原因一直留在状态文件里，直到下一次更新重写；「知道了」只在这个浏览器里记下看过的那一次。
+// A failed online update stays in the status file until the next update rewrites it; "知道了" only
+// remembers, in this browser, which failure was already seen.
+const PANEL_UPDATE_DISMISSED_KEY = 'kixdns:panel-update-failure-dismissed'
+const dismissedPanelUpdateFailure = ref(readDismissedPanelUpdateFailure())
 
 const running = computed(() => service.value?.active_state === 'active')
 const installed = computed(() => catalog.value?.binary_present === true)
@@ -113,7 +118,6 @@ function panelUpdateLabel(): string {
   if (panelUpdate.value?.state === 'checking' || panelUpdate.value?.state === 'downloading') {
     return panelUpdate.value.message || '面板正在在线更新'
   }
-  if (panelUpdate.value?.state === 'failed') return panelUpdate.value.message
   const notice = updateStatus.value?.panel
   if (!notice?.latest_version) return '正式版通道尚未发布'
   if (notice.available) return '发现正式版更新'
@@ -125,6 +129,38 @@ function panelUpdateLabel(): string {
 const panelUpdateRunning = computed(() => (
   panelUpdate.value?.state === 'checking' || panelUpdate.value?.state === 'downloading'
 ))
+
+function panelUpdateIdentity(status: PanelUpdateStatus): string {
+  return `${status.state}:${status.target_version}:${status.updated_at}`
+}
+
+function readDismissedPanelUpdateFailure(): string {
+  try {
+    return window.localStorage.getItem(PANEL_UPDATE_DISMISSED_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+// 失败原因单独占一行：有可用更新时标题行显示版本变化，原来混在标题里的失败在那时根本看不到。
+// The failure reason gets its own line: with an update available the title line shows the version
+// change, and a failure folded into the title was never visible then.
+const panelUpdateFailure = computed(() => {
+  const status = panelUpdate.value
+  if (status?.state !== 'failed') return ''
+  if (panelUpdateIdentity(status) === dismissedPanelUpdateFailure.value) return ''
+  return status.message || '面板在线更新失败，详情见 journalctl -u kixdns-panel-update.service'
+})
+
+function dismissPanelUpdateFailure(): void {
+  if (!panelUpdate.value) return
+  dismissedPanelUpdateFailure.value = panelUpdateIdentity(panelUpdate.value)
+  try {
+    window.localStorage.setItem(PANEL_UPDATE_DISMISSED_KEY, dismissedPanelUpdateFailure.value)
+  } catch {
+    // 本地存储不可用时，只在当前页面内隐藏。/ Without local storage, hide it for this page only.
+  }
+}
 
 /**
  * 配额未知时整行换一句话，而不是给两个标签各配一句话。
@@ -229,7 +265,7 @@ async function panelServerHealthy(): Promise<boolean> {
 async function pollPanelUpdate(): Promise<void> {
   try {
     const next = await apiRequest<PanelUpdateStatus>('/api/v1/panel-update')
-    const statusIdentity = `${next.state}:${next.target_version}:${next.updated_at}`
+    const statusIdentity = panelUpdateIdentity(next)
     if (panelUpdateBaseline && statusIdentity === panelUpdateBaseline) {
       schedulePanelUpdatePoll()
       return
@@ -252,7 +288,7 @@ async function pollPanelUpdate(): Promise<void> {
   if (Date.now() < panelUpdateDeadline) {
     schedulePanelUpdatePoll()
   } else {
-    toast.error('无法确认在线更新结果，请查看 kixdns-panel-update.service 日志')
+    toast.error('无法确认在线更新结果，请执行 journalctl -u kixdns-panel-update.service 查看')
   }
 }
 
@@ -278,7 +314,7 @@ async function startPanelUpdate(): Promise<void> {
   startingPanelUpdate.value = true
   try {
     const previous = await apiRequest<PanelUpdateStatus>('/api/v1/panel-update')
-    panelUpdateBaseline = `${previous.state}:${previous.target_version}:${previous.updated_at}`
+    panelUpdateBaseline = panelUpdateIdentity(previous)
     const result = await apiRequest<PanelUpdateStartResponse>('/api/v1/panel-update', { method: 'POST' })
     panelUpdate.value = {
       state: 'checking',
@@ -490,6 +526,10 @@ onBeforeUnmount(() => {
             <p class="update-row__from-to">
               <template v-if="updateStatus.panel.available"><span class="mono">{{ updateStatus.panel.current_release ?? `v${updateStatus.panel.current_version}` }}</span> → <span class="mono">v{{ updateStatus.panel.latest_version }}</span></template>
               <template v-else>{{ panelUpdateLabel() }}</template>
+            </p>
+            <p v-if="panelUpdateFailure" class="update-row__note update-row__failure" role="alert">
+              <span>{{ panelUpdateFailure }}</span>
+              <button class="button button--secondary" type="button" @click="dismissPanelUpdateFailure">知道了</button>
             </p>
             <p class="update-row__note">RELEASE 轨道<template v-if="updateStatus.panel.published_at"> · 发布于 {{ buildTime(updateStatus.panel.published_at) }}</template></p>
           </div>
