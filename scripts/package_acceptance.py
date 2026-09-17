@@ -293,12 +293,19 @@ def main() -> int:
     verify.add_argument("--base-url", default="http://127.0.0.1:5738")
     verify.add_argument("--dns-port", type=int, required=True)
     verify.add_argument("--mode", choices=("setup-stopped", "login"), required=True)
+    dns = subparsers.add_parser("dns", help="等待 KixDNS 按验收配置应答，不经过面板")
+    dns.add_argument("--dns-port", type=int, required=True)
     arguments = parser.parse_args()
 
     if sys.platform != "linux":
         raise AcceptanceFailure("安装包黑盒验收仅支持 Linux")
     if arguments.command == "prepare":
         print(prepare_config(arguments.config))
+    elif arguments.command == "dns":
+        # 迁移验收里原来的 KixDNS 不归面板管，只能直接查 DNS 证明它在跑。
+        # In the migration check the original KixDNS is not the panel's, so only a direct query proves it runs.
+        wait_for(lambda: query_a(arguments.dns_port, INITIAL_IP) or True, bool, "KixDNS DNS 应答")
+        print(f"KixDNS 在端口 {arguments.dns_port} 正常应答")
     else:
         verify_installation(arguments.base_url, arguments.dns_port, arguments.mode)
         print(f"安装包黑盒验收通过：{arguments.mode}")

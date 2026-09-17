@@ -7,7 +7,11 @@ PANEL_ENV=/etc/kixdns-panel/panel.env
 ACCEPTANCE_PY="${PACKAGE_ROOT}/scripts/package_acceptance.py"
 INSTALLER="${PACKAGE_ROOT}/scripts/install.sh"
 UNINSTALLER="${PACKAGE_ROOT}/scripts/uninstall.sh"
+MIGRATION_ROOT=/opt/kixdns-acceptance-external
+MIGRATION_UNIT=/etc/systemd/system/kixdns.service
 installed=false
+migration_fixture=false
+install_log="$(mktemp)"
 
 fail() {
   printf '::error file=scripts/test-package-acceptance.sh::%s\n' "$*" >&2
@@ -62,6 +66,16 @@ show_failure_logs() {
   journalctl -u kixdns-panel-helper.service --no-pager -n 120 >&2 || true
 }
 
+remove_migration_fixture() {
+  systemctl disable --now kixdns.service >/dev/null 2>&1 || true
+  rm -f -- "${MIGRATION_UNIT}"
+  rm -rf -- "${MIGRATION_ROOT}" /etc/kixdns
+  systemctl daemon-reload
+  systemctl reset-failed kixdns.service >/dev/null 2>&1 || true
+  userdel kixdns >/dev/null 2>&1 || true
+  groupdel kixdns >/dev/null 2>&1 || true
+}
+
 cleanup() {
   local status=$?
   trap - EXIT
@@ -69,7 +83,26 @@ cleanup() {
   if [[ ${installed} == true || -f ${PANEL_ENV} ]]; then
     bash "${UNINSTALLER}" --purge >/dev/null 2>&1 || true
   fi
+  [[ ${migration_fixture} == false ]] || remove_migration_fixture
+  rm -f -- "${install_log}"
   exit "${status}"
+}
+
+# 安装器的输出同时给 CI 日志和断言用。/ The installer output goes both to the CI log and to assertions.
+run_installer() {
+  bash "${INSTALLER}" "$@" 2>&1 | tee "${install_log}"
+  return "${PIPESTATUS[0]}"
+}
+
+require_output() {
+  grep -Fq -- "$1" "${install_log}" || fail "$2"
+}
+
+unit_main_executable() {
+  local pid
+  pid="$(systemctl show --property=MainPID --value "$1")"
+  [[ ${pid} =~ ^[1-9][0-9]*$ ]] || return 1
+  readlink -f "/proc/${pid}/exe"
 }
 
 verify_removed() {
@@ -112,8 +145,11 @@ trap cleanup EXIT
 dns_port="$(python3 "${ACCEPTANCE_PY}" prepare --config "${CONFIG_PATH}")"
 [[ ${dns_port} =~ ^[0-9]+$ ]] || fail "没有获得有效 DNS 端口"
 
-bash "${INSTALLER}" --replace-existing
+run_installer
 installed=true
+require_output "安装完成：KixDNS Panel" "首次安装没有说明安装了哪个版本"
+require_output "下一步：" "首次安装没有给出下一步"
+require_output "KixDNS：已安装，尚未启动" "首次安装没有说明 KixDNS 未启动"
 ! systemctl is-active --quiet kixdns.service || fail "首次安装不应自动启动 KixDNS"
 ! systemctl is-enabled --quiet kixdns.service || fail "首次安装不应启用 KixDNS 开机启动"
 grep -Fxq 'KIXDNS_PANEL_BIND=0.0.0.0:5738' "${PANEL_ENV}" ||
@@ -183,7 +219,14 @@ bundle_digest_before="$(find /var/lib/kixdns-panel/bundle -type f -print0 | sort
   xargs -0 sha256sum | sha256sum | awk '{ print $1 }')"
 kixdns_commit_before="$(awk -F= '$1 == "KIXDNS_INSTALLED_COMMIT" { print $2 }' "${PANEL_ENV}")"
 kixdns_source_before="$(awk -F= '$1 == "KIXDNS_INSTALLED_SOURCE_ID" { print $2 }' "${PANEL_ENV}")"
-bash "${INSTALLER}" --panel-only-update
+# 同一个包再运行一次不应改动任何东西，也不应打断 DNS。
+# Running the same package again must change nothing and must not interrupt DNS.
+run_installer
+require_output "已安装，未作任何修改" "同一版本再次运行没有直接退出"
+[[ $(systemctl show --property=MainPID --value kixdns.service) == "${kixdns_pid}" ]] ||
+  fail "同一版本再次运行重启了 KixDNS"
+run_installer --panel-only-update --reinstall
+require_output "KixDNS：未替换，配置与运行状态保持不变" "仅更新面板没有说明 KixDNS 未动"
 systemctl is-active --quiet kixdns.service || fail "仅更新面板改变了 KixDNS 运行状态"
 systemctl is-enabled --quiet kixdns.service || fail "仅更新面板改变了 KixDNS 开机状态"
 [[ $(sha256sum /var/lib/kixdns-panel/bin/kixdns | awk '{ print $1 }') == "${kixdns_digest_before}" ]] ||
@@ -197,8 +240,15 @@ systemctl is-enabled --quiet kixdns.service || fail "仅更新面板改变了 Ki
 [[ $(awk -F= '$1 == "KIXDNS_INSTALLED_SOURCE_ID" { print $2 }' "${PANEL_ENV}") == "${kixdns_source_before}" ]] ||
   fail "仅更新面板改写了 KixDNS Artifact 身份"
 
-# 同一完整包再次安装，验证数据库、配置历史和管理员数据均被保留。
-bash "${INSTALLER}" --replace-existing
+# 同一完整包用 --reinstall 修复安装，验证数据库、配置历史和管理员数据均被保留；
+# KixDNS 程序与 unit 都没变，所以不能被重启。
+# Repair-install the same package with --reinstall: database, config history and the admin survive,
+# and since neither the KixDNS binary nor its unit changed, KixDNS must not be restarted.
+kixdns_pid="$(systemctl show --property=MainPID --value kixdns.service)"
+run_installer --reinstall
+require_output "KixDNS：未变（运行中）" "修复安装没有说明 KixDNS 未变"
+[[ $(systemctl show --property=MainPID --value kixdns.service) == "${kixdns_pid}" ]] ||
+  fail "KixDNS 没有变化，修复安装却重启了它"
 systemctl is-active --quiet kixdns.service || fail "覆盖安装没有保持 KixDNS 运行状态"
 systemctl is-enabled --quiet kixdns.service || fail "覆盖安装没有保持 KixDNS 开机启动状态"
 python3 "${ACCEPTANCE_PY}" verify --dns-port "${dns_port}" --mode login
@@ -216,5 +266,57 @@ fi
 rm -f -- "${uninstall_log}"
 installed=false
 verify_removed
+
+# 迁移：主机上已有一个运行中且开机自启的外部 KixDNS。用包里的程序和另一个空闲端口让它真的跑起来。
+# Migration: the host already has an external KixDNS, running and enabled. Use the package's own
+# binary on another free port so it really runs.
+migration_port="$(python3 "${ACCEPTANCE_PY}" prepare --config "${CONFIG_PATH}")"
+[[ ${migration_port} =~ ^[0-9]+$ ]] || fail "没有获得迁移验收的 DNS 端口"
+migration_fixture=true
+install -d -m 0755 "${MIGRATION_ROOT}"
+install -m 0755 "${PACKAGE_ROOT}/bin/kixdns" "${MIGRATION_ROOT}/kixdns"
+cat > "${MIGRATION_UNIT}" <<EOF
+[Unit]
+Description=验收用的外部 KixDNS
+
+[Service]
+ExecStart=${MIGRATION_ROOT}/kixdns run --config ${CONFIG_PATH} --admin-socket /run/kixdns/admin.sock
+RuntimeDirectory=kixdns
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOF
+cp -- "${MIGRATION_UNIT}" "${MIGRATION_ROOT}/original.service"
+systemctl daemon-reload
+systemctl enable --now kixdns.service
+python3 "${ACCEPTANCE_PY}" dns --dns-port "${migration_port}"
+[[ $(unit_main_executable kixdns.service) == "${MIGRATION_ROOT}/kixdns" ]] ||
+  fail "外部 KixDNS 没有运行验收准备的程序"
+
+run_installer --replace-existing
+installed=true
+require_output "KixDNS：已迁移为增强版，保持原来的运行状态（运行中）" "迁移结果没有说明保持运行状态"
+systemctl is-active --quiet kixdns.service || fail "迁移后 KixDNS 没有保持运行"
+systemctl is-enabled --quiet kixdns.service || fail "迁移后 KixDNS 没有保持开机自启"
+[[ $(unit_main_executable kixdns.service) == /var/lib/kixdns-panel/bin/kixdns ]] ||
+  fail "迁移后运行的不是增强版程序"
+python3 "${ACCEPTANCE_PY}" dns --dns-port "${migration_port}"
+[[ -f /var/lib/kixdns-panel/external-backup/install.env ]] || fail "迁移没有备份原 unit 与运行状态"
+
+bash "${UNINSTALLER}" --remove-kixdns --remove-config --yes
+installed=false
+systemctl daemon-reload
+cmp -s -- "${MIGRATION_UNIT}" "${MIGRATION_ROOT}/original.service" || fail "卸载没有放回原来的 unit"
+systemctl is-active --quiet kixdns.service || fail "卸载后原来的 KixDNS 没有恢复运行"
+systemctl is-enabled --quiet kixdns.service || fail "卸载后原来的 KixDNS 没有恢复开机自启"
+[[ $(unit_main_executable kixdns.service) == "${MIGRATION_ROOT}/kixdns" ]] ||
+  fail "卸载后运行的不是原来的程序"
+python3 "${ACCEPTANCE_PY}" dns --dns-port "${migration_port}"
+! systemctl is-active --quiet kixdns-panel.service || fail "卸载后面板服务仍在运行"
+remove_migration_fixture
+migration_fixture=false
+
+rm -f -- "${install_log}"
 trap - EXIT
-printf '完整包安装、覆盖升级、运行联调与卸载验收通过。\n'
+printf '完整包安装、同版本重跑、修复安装、运行联调、迁移与卸载验收通过。\n'
