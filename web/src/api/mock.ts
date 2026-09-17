@@ -739,16 +739,56 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
   if (path === '/api/v1/cache/flush') {
     return { protocol_version: 1, response_entries_before: 18642, response_entries_after: 0, rule_entries_before: 712, rule_entries_after: 0 } as T
   }
-  if (path.startsWith('/api/v1/logs')) {
-    const entries = Array.from({ length: 80 }, (_, index) => ({
-      timestamp_unix_micros: (now - index * 18) * 1_000_000,
-      priority: index % 17 === 0 ? 4 : 6,
-      source: 'kixdns',
-      message: index % 17 === 0
-        ? 'upstream request timed out, continuing with next configured resolver'
-        : `request completed pipeline=default transport=udp elapsed_ms=${8 + (index % 14)}`,
-    }))
-    return { entries, next_cursor: null } as LogsResponse as T
+  if (pathname === '/api/v1/logs') {
+    // 级别筛选和真实后端一样在「服务端」做：journalctl 的 --priority 桶是
+    // <=3 错误、==4 警告、>=5 信息。演示里若忽略这个参数，筛选器看起来就是坏的。
+    // The level filter runs "server-side" as the real backend does: journalctl's
+    // --priority buckets are <=3 error, ==4 warning, >=5 info. Ignoring the
+    // parameter here would make the filter look broken in the demo.
+    const level = url.searchParams.get('level')
+    const inLevel = (priority: number): boolean =>
+      level === null || (level === 'error' ? priority <= 3 : level === 'warning' ? priority === 4 : priority >= 5)
+    // 分页且响应慢，只在置上这个标记时演示：e2e 用它复现「切级别时旧游标翻页」
+    // 的竞态——带 before 的请求 300ms 回来，带 level 的 1500ms，让首屏还在飞时
+    // 旧级别的翻页已经落地。游标和 journalctl 的一样是最后一行在日志里的位置，
+    // 与级别无关：拿「全部」的游标去翻「警告」，翻出来的正是警告首屏已经有的行。
+    // Paged and slow, only under this flag: the e2e uses it to reproduce the
+    // "older page with a stale cursor after a level switch" race — requests
+    // with `before` answer in 300ms, requests with `level` in 1500ms, so the
+    // stale older page lands while the new first page is still in flight. The
+    // cursor is, like journalctl's, the last line's position in the journal and
+    // independent of the level: paging "warning" with the "all" cursor returns
+    // lines the warning first page already holds.
+    const pagedSlow = typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-log-paged-slow') === 'true'
+    if (pagedSlow) {
+      await new Promise((resolve) => setTimeout(resolve, url.searchParams.has('level') ? 1500 : url.searchParams.has('before') ? 300 : 0))
+    }
+    const total = pagedSlow ? 120 : 80
+    const pageSize = 80
+    const before = Number(url.searchParams.get('before'))
+    const after = Number.isFinite(before) && url.searchParams.has('before') ? before : -1
+    const matching = Array.from({ length: total }, (_, position) => ({
+      position,
+      entry: {
+        timestamp_unix_micros: (now - position * 18) * 1_000_000,
+        priority: position % 17 === 0 ? 4 : 6,
+        source: 'kixdns',
+        message: position % 17 === 0
+          ? 'upstream request timed out, continuing with next configured resolver'
+          : `request completed pipeline=default transport=udp elapsed_ms=${8 + (position % 14)}`,
+      },
+    })).filter(({ position, entry }) => position > after && inLevel(entry.priority))
+    const pageItems = matching.slice(0, pageSize)
+    const entries = pageItems.map(({ entry }) => entry)
+    const nextCursor = matching.length > pageSize ? String(pageItems.at(-1)?.position ?? 0) : null
+    // 输出被改到 journald 之外的 unit 只在置上这个标记时演示，和 kixdns:demo-empty-first-install 是同一套做法。
+    // 句子由服务端拼好，这里给的就是它会给的那一句。
+    // A unit whose output bypasses journald is shown only under this flag, mirroring kixdns:demo-empty-first-install.
+    // The sentence is composed server-side; this is the one it would send.
+    const notice = typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-log-output-redirected') === 'true'
+      ? '这个 unit 的输出没有送到 journald（StandardOutput=append:/var/log/kixdns.log），这里只会看到 systemd 自己的启停记录'
+      : null
+    return { entries, next_cursor: nextCursor, notice } as LogsResponse as T
   }
   if (pathname === '/api/v1/audit' && method === 'GET') {
     const limit = Math.max(1, Math.min(100, Number(url.searchParams.get('limit')) || 50))

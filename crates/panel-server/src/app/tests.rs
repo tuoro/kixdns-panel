@@ -535,6 +535,47 @@ async fn audit_api_requires_auth_and_uses_stable_cursor_pagination() {
     assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
 }
 
+// 只测被拒的一侧：合法级别会真的去跑 journalctl，测试机上未必有那个 unit。
+// Only the rejected side is tested here: a valid level really runs journalctl,
+// and the test host need not have the unit.
+#[tokio::test]
+async fn logs_api_rejects_levels_outside_the_three_buckets() {
+    let context = authenticated_app().await;
+    let unauthorized = context
+        .app
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/logs?level=error")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+    for level in ["debug", "warn", "ERROR", "", "4..4"] {
+        let invalid = context
+            .app
+            .clone()
+            .oneshot(
+                Request::get(format!("/api/v1/logs?level={level}"))
+                    .header(COOKIE, context.cookies.clone())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST, "level={level:?}");
+        let payload: Value =
+            serde_json::from_slice(&to_bytes(invalid.into_body(), 64 * 1024).await.unwrap())
+                .unwrap();
+        assert_eq!(
+            payload["error"]["code"], "log_level_invalid",
+            "level={level:?}"
+        );
+    }
+}
+
 #[test]
 fn rejected_validation_cannot_reach_config_write() {
     let validation = ValidationResult {

@@ -243,6 +243,37 @@ mod linux {
             assert!(validate_socket_path(Path::new("/run/kixdns-panel/control.sock")).is_ok());
             assert!(validate_socket_path(Path::new("relative.sock")).is_err());
         }
+
+        /// 与 panel-server 的 `Operations::new` 和 scripts/test-unit-name-rule.sh
+        /// 共用同一份名单：helper 是 unit 名的第二个 Rust 校验点，不能自己漂走。
+        /// Shares one fixture list with panel-server's `Operations::new` and
+        /// scripts/test-unit-name-rule.sh: the helper is the second Rust site
+        /// validating the unit name and must not drift on its own.
+        #[test]
+        fn unit_name_rule_matches_the_installer_fixtures() {
+            for unit in [
+                "kixdns.service",
+                "kixdns@x.service",
+                "k.service",
+                "0k.service",
+                "a-b_c.d.service",
+            ] {
+                assert!(validate_unit(unit).is_ok(), "should accept {unit}");
+            }
+            let too_long = format!("{}.service", "k".repeat(121));
+            for unit in [
+                "_kixdns.service",
+                "-x.service",
+                ".hidden.service",
+                "@inst.service",
+                "a..b.service",
+                "kixdns",
+                "",
+                too_long.as_str(),
+            ] {
+                assert!(validate_unit(unit).is_err(), "should reject {unit:?}");
+            }
+        }
     }
 }
 

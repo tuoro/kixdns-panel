@@ -39,6 +39,52 @@ pub struct LogEntry {
 pub struct LogPage {
     pub entries: Vec<LogEntry>,
     pub next_cursor: Option<String>,
+    /// journald 看不到这个 unit 的输出时，给读者的完整一句话：unit 在 systemd
+    /// 里不存在，或者它把 StandardOutput/StandardError 改到了 journald 之外。
+    /// 两种情况下 `journalctl --unit` 都只剩 systemd 自己的启停记录，日志页看着
+    /// 正常却一条 `KixDNS` 的输出都没有。句子在服务端拼好，前端原样展示；
+    /// None 表示 journald 能看到。
+    /// The complete sentence for the reader when journald cannot see this
+    /// unit's output: the unit does not exist in systemd, or it sends
+    /// StandardOutput/StandardError somewhere other than journald. Either way
+    /// `journalctl --unit` holds only systemd's own start/stop lines and the
+    /// page looks fine while showing nothing from `KixDNS`. Composed here and
+    /// rendered verbatim by the frontend; None means journald sees the output.
+    pub notice: Option<String>,
+}
+
+/// 日志级别桶。三段范围必须和前端 `label()/levelClass()` 的分桶完全一致
+/// （<=3 错误、==4 警告、>=5 信息），否则筛「警告」会漏掉或混进别的行。
+/// The level buckets. The three ranges must equal the frontend's
+/// `label()/levelClass()` buckets (<=3 error, ==4 warning, >=5 info), or a
+/// "warning" filter drops or admits the wrong lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogLevel {
+    Error,
+    Warning,
+    Info,
+}
+
+impl LogLevel {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "error" => Some(Self::Error),
+            "warning" => Some(Self::Warning),
+            "info" => Some(Self::Info),
+            _ => None,
+        }
+    }
+
+    /// journalctl 的 `--priority=FROM..TO` 取值；两端都闭区间，顺序无关。
+    /// The `--priority=FROM..TO` range for journalctl; inclusive on both ends.
+    #[cfg(any(unix, test))]
+    const fn journal_priority_range(self) -> &'static str {
+        match self {
+            Self::Error => "0..3",
+            Self::Warning => "4..4",
+            Self::Info => "5..7",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -212,25 +258,36 @@ impl Operations {
         &self,
         limit: usize,
         before_cursor: Option<&str>,
+        level: Option<LogLevel>,
     ) -> Result<LogPage, OperationError> {
         let limit = limit.clamp(1, 500);
-        let requested_lines = limit.saturating_add(usize::from(before_cursor.is_some()) + 1);
-        let requested_lines = requested_lines.to_string();
-        let mut arguments = vec![
-            "--unit",
+        let arguments = journal_arguments(self.service_unit.as_ref(), limit, before_cursor, level);
+        let arguments = arguments.iter().map(String::as_str).collect::<Vec<_>>();
+        // unit 状态和日志本身并行查：多一次 systemctl 不该让日志页慢一倍。
+        // 一起要 LoadState：unit 不存在时 systemctl show 照样退出 0，只是打印
+        // StandardOutput=inherit，不看 LoadState 会把「找不到 unit」说成「输出被改了去向」。
+        // systemctl 失败只是少了提示，不能把整页日志一起拖垮，所以吞掉错误。
+        // The unit's state is queried alongside the journal so the extra
+        // systemctl call does not double the page's latency. LoadState comes
+        // with it: for a missing unit `systemctl show` still exits 0 and prints
+        // StandardOutput=inherit, so without LoadState "unit not found" would be
+        // reported as "output redirected". A failing systemctl only loses the
+        // notice; it must not fail the log request.
+        let show_arguments = [
+            "show",
             self.service_unit.as_ref(),
             "--no-pager",
-            "--output=json",
-            "--output-fields=__CURSOR,__REALTIME_TIMESTAMP,PRIORITY,SYSLOG_IDENTIFIER,MESSAGE",
-            "--reverse",
-            "--lines",
-            &requested_lines,
+            "--property=LoadState,StandardOutput,StandardError",
         ];
-        if let Some(cursor) = before_cursor {
-            arguments.extend(["--cursor", cursor]);
-        }
-        let output = run_command("journalctl", &arguments, Duration::from_secs(10)).await?;
-        Ok(parse_journal_page(&output, before_cursor, limit))
+        let (journal, unit_state) = tokio::join!(
+            run_command("journalctl", &arguments, Duration::from_secs(10)),
+            run_command("systemctl", &show_arguments, Duration::from_secs(10))
+        );
+        let mut page = parse_journal_page(&journal?, before_cursor, limit);
+        page.notice = unit_state
+            .ok()
+            .and_then(|output| unit_log_notice(self.service_unit.as_ref(), &output));
+        Ok(page)
     }
 
     #[cfg(not(unix))]
@@ -239,6 +296,7 @@ impl Operations {
         &self,
         _limit: usize,
         _before_cursor: Option<&str>,
+        _level: Option<LogLevel>,
     ) -> Result<LogPage, OperationError> {
         Err(OperationError::Unsupported)
     }
@@ -384,6 +442,89 @@ fn parse_service_status(unit: &str, output: &str) -> Result<ServiceStatus, Opera
     })
 }
 
+/// 级别筛选交给 journalctl 而不是浏览器：浏览器只看得到已经翻出来的几页，
+/// 一条老错误在读者滚到它之前都是隐身的，计数也只是「已加载里的几条」。
+/// The level filter runs in journalctl, not the browser: the browser only sees
+/// the pages already loaded, so an old error stays hidden until the reader
+/// scrolls to it and the count means "of what happens to be loaded".
+#[cfg(any(unix, test))]
+fn journal_arguments(
+    unit: &str,
+    limit: usize,
+    before_cursor: Option<&str>,
+    level: Option<LogLevel>,
+) -> Vec<String> {
+    let requested_lines = limit.saturating_add(usize::from(before_cursor.is_some()) + 1);
+    let mut arguments = vec![
+        "--unit".to_owned(),
+        unit.to_owned(),
+        "--no-pager".to_owned(),
+        "--output=json".to_owned(),
+        "--output-fields=__CURSOR,__REALTIME_TIMESTAMP,PRIORITY,SYSLOG_IDENTIFIER,MESSAGE"
+            .to_owned(),
+        "--reverse".to_owned(),
+        "--lines".to_owned(),
+        requested_lines.to_string(),
+    ];
+    if let Some(level) = level {
+        arguments.push(format!("--priority={}", level.journal_priority_range()));
+    }
+    if let Some(cursor) = before_cursor {
+        arguments.extend(["--cursor".to_owned(), cursor.to_owned()]);
+    }
+    arguments
+}
+
+/// 读 `systemctl show --property=LoadState,StandardOutput,StandardError` 的输出，
+/// 拼出日志页顶部那句提示；journald 能看到 unit 的输出时返回 None。
+/// 先看 LoadState：unit 不存在时 systemctl show 仍然退出 0，只是每个属性都打印
+/// 默认值（StandardOutput=inherit），不先看它就会把「找不到 unit」说成「输出被
+/// 改了去向」。再看输出去向：stdout 只有 journal 和 journal+console 算到；stderr
+/// 多一个 inherit（默认值，跟随 stdout）。只重定向了 stderr 也要报：panic 和致命
+/// 错误走的正是 stderr。缺字段时视为看得到——猜不准就不吓人。
+/// Reads `systemctl show --property=LoadState,StandardOutput,StandardError`
+/// and composes the notice shown above the log page; None when journald sees
+/// the unit's output. `LoadState` is checked first: for a missing unit
+/// `systemctl show` still exits 0 and prints every property's default
+/// (StandardOutput=inherit), so without it "unit not found" would read as
+/// "output redirected". Then the destinations: stdout counts only as journal
+/// or journal+console; stderr additionally as inherit (the default, which
+/// follows stdout). A redirected stderr alone is still reported: panics and
+/// fatal errors go there. Missing fields count as visible; when unsure, do
+/// not alarm.
+#[cfg(any(unix, test))]
+fn unit_log_notice(unit: &str, output: &str) -> Option<String> {
+    let mut load_state = None;
+    let mut redirected = Vec::new();
+    for (key, value) in output.lines().filter_map(|line| line.split_once('=')) {
+        let value = value.trim();
+        let reaches_journal = match key {
+            "LoadState" => {
+                load_state = Some(value);
+                continue;
+            }
+            "StandardOutput" => matches!(value, "journal" | "journal+console"),
+            "StandardError" => matches!(value, "inherit" | "journal" | "journal+console"),
+            _ => continue,
+        };
+        if !reaches_journal {
+            redirected.push(format!("{key}={}", truncate(value, 256)));
+        }
+    }
+    if let Some(state) = load_state.filter(|state| *state != "loaded") {
+        return Some(format!(
+            "systemd 里找不到 unit {unit}（LoadState={}），日志页读不到它的输出",
+            truncate(state, 64)
+        ));
+    }
+    (!redirected.is_empty()).then(|| {
+        format!(
+            "这个 unit 的输出没有送到 journald（{}），这里只会看到 systemd 自己的启停记录",
+            redirected.join("，")
+        )
+    })
+}
+
 #[cfg(any(unix, test))]
 fn parse_journal_page(output: &str, before_cursor: Option<&str>, limit: usize) -> LogPage {
     let mut entries = output
@@ -421,6 +562,7 @@ fn parse_journal_page(output: &str, before_cursor: Option<&str>, limit: usize) -
     LogPage {
         entries,
         next_cursor,
+        notice: None,
     }
 }
 
@@ -440,7 +582,133 @@ mod tests {
     use serde_json::json;
     use tokio::net::UdpSocket;
 
-    use super::{Operations, ServiceAction, parse_journal_page, parse_record_type};
+    use super::{
+        LogLevel, OperationError, Operations, ServiceAction, journal_arguments, parse_journal_page,
+        parse_record_type, unit_log_notice,
+    };
+
+    fn operations(unit: &str) -> Result<Operations, OperationError> {
+        Operations::new(
+            unit.to_owned(),
+            "/run/kixdns-panel/control.sock".into(),
+            "127.0.0.1:53".parse().unwrap(),
+        )
+    }
+
+    /// 这份名单和 scripts/test-unit-name-rule.sh 里的一字不差：Rust 与 bash 各自
+    /// 校验同一个 unit 名，一边放行另一边拒绝，面板就会在启动时整个拒绝工作。
+    /// The same list as scripts/test-unit-name-rule.sh, verbatim: Rust and bash
+    /// each validate the unit name, and if one admits what the other rejects
+    /// the whole panel refuses to start.
+    #[test]
+    fn unit_name_rule_matches_the_installer_fixtures() {
+        for unit in [
+            "kixdns.service",
+            "kixdns@x.service",
+            "k.service",
+            "0k.service",
+            "a-b_c.d.service",
+        ] {
+            assert!(operations(unit).is_ok(), "should accept {unit}");
+        }
+        let longest = format!("{}.service", "k".repeat(120));
+        assert_eq!(longest.len(), 128);
+        assert!(operations(&longest).is_ok());
+
+        let too_long = format!("{}.service", "k".repeat(121));
+        assert_eq!(too_long.len(), 129);
+        for unit in [
+            "_kixdns.service",
+            "-x.service",
+            ".hidden.service",
+            "@inst.service",
+            "a..b.service",
+            "kixdns",
+            "",
+            too_long.as_str(),
+        ] {
+            assert!(operations(unit).is_err(), "should reject {unit:?}");
+        }
+    }
+
+    #[test]
+    fn level_filter_maps_to_the_frontend_priority_buckets() {
+        assert_eq!(LogLevel::parse("error"), Some(LogLevel::Error));
+        assert_eq!(LogLevel::parse("warning"), Some(LogLevel::Warning));
+        assert_eq!(LogLevel::parse("info"), Some(LogLevel::Info));
+        assert_eq!(LogLevel::parse("warn"), None);
+        assert_eq!(LogLevel::parse("ERROR"), None);
+        assert_eq!(LogLevel::parse(""), None);
+
+        let without = journal_arguments("kixdns.service", 500, None, None);
+        assert!(
+            !without
+                .iter()
+                .any(|argument| argument.starts_with("--priority"))
+        );
+        assert_eq!(without[7], "501");
+
+        let priority = |level| {
+            journal_arguments("kixdns.service", 500, Some("c9"), Some(level))
+                .into_iter()
+                .find(|argument| argument.starts_with("--priority="))
+                .unwrap()
+        };
+        assert_eq!(priority(LogLevel::Error), "--priority=0..3");
+        assert_eq!(priority(LogLevel::Warning), "--priority=4..4");
+        assert_eq!(priority(LogLevel::Info), "--priority=5..7");
+        let paged = journal_arguments("kixdns.service", 500, Some("c9"), Some(LogLevel::Info));
+        assert_eq!(paged[7], "502");
+        assert_eq!(&paged[9..], ["--cursor", "c9"]);
+    }
+
+    #[test]
+    fn log_notice_only_when_journald_cannot_see_the_unit() {
+        let notice = |output: &str| unit_log_notice("kixdns.service", output);
+        assert_eq!(
+            notice("LoadState=loaded\nStandardOutput=journal\nStandardError=inherit\n"),
+            None
+        );
+        assert_eq!(
+            notice("LoadState=loaded\nStandardOutput=journal+console\nStandardError=journal\n"),
+            None
+        );
+        // unit 不存在：systemctl show 退出 0 并打印 StandardOutput=inherit，
+        // 这句必须说「找不到」而不是「输出被改了去向」。
+        // Missing unit: systemctl show exits 0 and prints StandardOutput=inherit;
+        // the sentence must say "not found", not "output redirected".
+        assert_eq!(
+            notice("LoadState=not-found\nStandardOutput=inherit\nStandardError=inherit\n")
+                .as_deref(),
+            Some(
+                "systemd 里找不到 unit kixdns.service（LoadState=not-found），日志页读不到它的输出"
+            )
+        );
+        assert_eq!(
+            notice(
+                "LoadState=loaded\nStandardOutput=file:/var/log/kixdns.log\nStandardError=inherit\n"
+            )
+            .as_deref(),
+            Some(
+                "这个 unit 的输出没有送到 journald（StandardOutput=file:/var/log/kixdns.log），这里只会看到 systemd 自己的启停记录"
+            )
+        );
+        assert_eq!(
+            notice("StandardOutput=journal\nStandardError=null\n").as_deref(),
+            Some(
+                "这个 unit 的输出没有送到 journald（StandardError=null），这里只会看到 systemd 自己的启停记录"
+            )
+        );
+        assert_eq!(
+            notice(
+                "LoadState=loaded\nStandardOutput=append:/var/log/kixdns.log\nStandardError=truncate:/var/log/kixdns.err\n"
+            )
+            .as_deref(),
+            Some("这个 unit 的输出没有送到 journald（StandardOutput=append:/var/log/kixdns.log，StandardError=truncate:/var/log/kixdns.err），这里只会看到 systemd 自己的启停记录")
+        );
+        assert_eq!(notice(""), None);
+        assert_eq!(notice("ActiveState=active\n"), None);
+    }
 
     #[test]
     fn rejects_commands_and_unlisted_record_types() {

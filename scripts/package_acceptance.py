@@ -212,7 +212,14 @@ def exercise_panel(client: PanelClient, dns_port: int) -> None:
     verify_runtime(client, dns_port, RELOADED_IP)
 
     logs = client.request("/api/v1/logs?limit=20")
-    require(bool(logs.get("entries")), "面板没有读取到 KixDNS journal 日志")
+    # systemd 自己的「Started kixdns.service」也算一条，只看非空证明不了读到了
+    # KixDNS 的输出；要有 SYSLOG_IDENTIFIER 是 kixdns 的行才算。
+    # systemd's own "Started kixdns.service" line counts as an entry, so a
+    # non-empty list proves nothing about KixDNS's output; require a line whose
+    # SYSLOG_IDENTIFIER is kixdns.
+    require(any(entry.get("source") == "kixdns" for entry in logs.get("entries", [])),
+            "面板没有读取到 KixDNS 进程自己写入 journal 的日志")
+    require(logs.get("notice") is None, f"日志页对 KixDNS unit 给出了提示：{logs.get('notice')}")
     audit = client.request("/api/v1/audit?limit=50")
     actions = {event.get("action") for event in audit.get("events", [])}
     require(
