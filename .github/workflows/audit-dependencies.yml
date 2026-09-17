@@ -1,0 +1,59 @@
+name: Audit dependencies
+
+# 依赖审计原本只在改到代码的 PR 或发版时顺带跑，新公布的 RustSec / npm 漏洞可能几周都没人看到，
+# 等到一个无关的 PR 突然变红才发现。这里每周按当前 main 的锁文件查一次；失败的运行本身就是提醒，
+# 不自动开 issue。
+# Dependency audits used to run only on PRs touching code or at release time, so a newly published
+# RustSec or npm advisory could sit unseen for weeks until an unrelated PR turned red. This checks the
+# lock files on main once a week; a failed run is the signal, no issue is opened automatically.
+
+on:
+  schedule:
+    - cron: "41 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Audit locked dependencies
+    runs-on: ubuntu-24.04
+    # 两项审计只读锁文件、不编译，正常一分钟内结束；卡住时尽快放弃，免得白耗分钟数。
+    # Both audits read lock files without compiling and finish within a minute; give up quickly if stuck.
+    timeout-minutes: 5
+    steps:
+      - name: Checkout panel repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install dependency auditor
+        uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
+        with:
+          tool: cargo-audit@0.22.2
+          fallback: none
+
+      # 审计只读 Cargo.lock，但要靠 `cargo -V` 找到 crates.io 索引来查被撤回的版本（找不到只警告、不失败）。
+      # 用运行器自带的 stable，免得 rustup 按 rust-toolchain.toml 先下载整套 1.97.1。
+      # The audit only reads Cargo.lock but needs `cargo -V` to locate the crates.io index for the yanked
+      # check (without it that check is skipped with a mere warning). Use the runner's preinstalled stable
+      # so rustup does not first download the whole 1.97.1 toolchain from rust-toolchain.toml.
+      - name: Audit panel Rust dependencies
+        env:
+          RUSTUP_TOOLCHAIN: stable
+        run: cargo audit --deny warnings
+
+      - name: Install Node.js
+        if: ${{ !cancelled() }}
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.12.0
+
+      # 只看随面板发布的运行时依赖；开发依赖不进安装包。Rust 审计失败时这一步照样跑，一次运行看全两边。
+      # Only runtime dependencies ship in the package; dev dependencies do not. This still runs when the
+      # Rust audit failed so one run reports both sides.
+      - name: Audit web runtime dependencies
+        if: ${{ !cancelled() }}
+        working-directory: web
+        run: npm audit --omit=dev --audit-level=high
