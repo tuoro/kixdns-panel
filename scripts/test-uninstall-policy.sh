@@ -335,6 +335,84 @@ assert_contains "${output}" "CONFIG-REMOVED" "删除配置时 panel.env 所在�
 assert_contains "${output}" "DATABASE-REMOVED" "删除配置时面板数据库应被删除"
 assert_contains "${output}" "这次同样保留" "要求移除却只能保留时必须说明原因"
 
+# 回归：v3.1.1 的重复卸载删掉了保留的程序却留下 unit。这样的主机再卸载时不能把 unit 当成保留的 KixDNS，
+# 否则删除配置时报「找不到需要保留的 KixDNS 二进制」而失败。面板创建的 unit 随面板移除，别人的 unit 原样保留。
+# Regression: v3.1.1's repeated uninstall deleted the kept binary but left the unit. Uninstalling such a host
+# must not treat the unit as a kept KixDNS, or removing the config fails on the missing binary. A panel-created
+# unit goes with the panel; anyone else's unit stays.
+dead_unit_uninstall() {
+  local kind=$1
+  local work
+  work="$(mktemp -d)"
+  (
+    PANEL_CONFIG_DIRECTORY="${work}/etc/kixdns-panel"
+    PANEL_STATE_DIRECTORY="${work}/var/lib/kixdns-panel"
+    SYSTEMD_UNIT_DIRECTORY="${work}/etc/systemd/system"
+    PANEL_ENV="${PANEL_CONFIG_DIRECTORY}/panel.env"
+    EXTERNAL_BACKUP="${PANEL_STATE_DIRECTORY}/external-backup"
+    RESOLVED_STATE="${PANEL_STATE_DIRECTORY}/resolved-stub"
+    mkdir -p "${SYSTEMD_UNIT_DIRECTORY}"
+    case ${kind} in
+      panel-documentation)
+        printf '[Unit]\nDocumentation=https://github.com/tuoro/kixdns-panel\n[Service]\nExecStart=%s run --config /etc/kixdns/custom.json\n' \
+          "${PANEL_STATE_DIRECTORY}/bin/kixdns" > "${SYSTEMD_UNIT_DIRECTORY}/kixdns.service"
+        ;;
+      panel-execstart)
+        printf '[Service]\nExecStart=%s run --config /etc/kixdns/pipeline.json --admin-socket /run/kixdns/admin.sock\n' \
+          "${PANEL_STATE_DIRECTORY}/bin/kixdns" > "${SYSTEMD_UNIT_DIRECTORY}/kixdns.service"
+        ;;
+      foreign)
+        printf '[Unit]\nDocumentation=https://example.com/my-dns\n[Service]\nExecStart=%s run -c /opt/dns.json\n' \
+          "${PANEL_STATE_DIRECTORY}/bin/kixdns" > "${SYSTEMD_UNIT_DIRECTORY}/kixdns.service"
+        ;;
+    esac
+    systemctl() {
+      [[ $1 != is-active ]] || return 1
+      printf 'systemctl %s\n' "$*"
+    }
+    getent() { return 2; }
+    chown() { :; }
+    remove_panel_components() { :; }
+    (
+      KIXDNS_MANAGED=false
+      KIXDNS_KEPT_EARLIER=false
+      KIXDNS_SERVICE_UNIT=kixdns.service
+      KIXDNS_ACTION=auto
+      CONFIG_ACTION=auto
+      ASSUME_YES=false
+      PURGE=false
+      HAS_EXTERNAL_BACKUP=false
+      RESTORED_EXTERNAL=false
+      parse_arguments --keep-kixdns --remove-config --yes
+      run_uninstall
+    ) || printf 'RUN-FAILED\n'
+    [[ -f ${SYSTEMD_UNIT_DIRECTORY}/kixdns.service ]] && printf 'UNIT-LEFT\n'
+    true
+  )
+  rm -rf -- "${work}"
+}
+for kind in panel-documentation panel-execstart; do
+  output="$(dead_unit_uninstall "${kind}" 2>&1)"
+  [[ ${output} != *RUN-FAILED* && ${output} != *UNIT-LEFT* ]] || {
+    printf '断言失败：程序已不存在的面板 unit（%s）应随面板移除且卸载成功\n%s\n' "${kind}" "${output}" >&2
+    exit 1
+  }
+  assert_contains "${output}" "systemctl disable --now kixdns.service" "移除失效的面板 unit 前应先停用它"
+  assert_contains "${output}" "该 unit 由面板创建，将随面板一起移除" "移除失效的面板 unit 时必须说明原因"
+  assert_contains "${output}" "没有可保留的 KixDNS" "程序不在时不能声称 KixDNS 已保留"
+done
+output="$(dead_unit_uninstall foreign 2>&1)"
+[[ ${output} != *RUN-FAILED* ]] || {
+  printf '断言失败：程序已不存在的外部 unit 不应让卸载失败\n%s\n' "${output}" >&2
+  exit 1
+}
+assert_contains "${output}" "UNIT-LEFT" "不是面板创建的 unit 必须原样保留"
+assert_contains "${output}" "该 unit 不是面板创建的，保留不动" "保留失效的外部 unit 时必须说明"
+[[ ${output} != *"systemctl disable --now kixdns.service"* ]] || {
+  printf '断言失败：不是面板创建的 unit 不应被停用\n%s\n' "${output}" >&2
+  exit 1
+}
+
 one_click_help="$(bash "${PACKAGE_ROOT}/scripts/one-click-install.sh" --help)"
 [[ ${one_click_help} == *"--version"* ]]
 [[ -f "${PACKAGE_ROOT}/scripts/panel-online-update.sh" ]]
