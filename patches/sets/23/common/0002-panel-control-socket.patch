@@ -427,10 +427,10 @@ index e1b6cccdff0fae7ed28ecd0704f088605086d1d0..09122bd1f6298f7c3f6405762054d042
      use hickory_proto::rr::{Name, RecordType};
 diff --git a/src/panel.rs b/src/panel.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..c33bf388bc7e485f78fe59b8d1782b35291cd48a
+index 0000000000000000000000000000000000000000..7fb4c6d347d70bfb3df0bd3bb237cf603b9975a9
 --- /dev/null
 +++ b/src/panel.rs
-@@ -0,0 +1,2075 @@
+@@ -0,0 +1,2192 @@
 +use std::collections::HashMap;
 +use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 +use std::path::PathBuf;
@@ -2131,10 +2131,40 @@ index 0000000000000000000000000000000000000000..c33bf388bc7e485f78fe59b8d1782b35
 +        }
 +    }
 +
-+    /// 在带目标名的 tracing 订阅者下驱动观察者，返回它写出的全部日志文本。
-+    /// Drives the observer under a target-printing tracing subscriber and returns everything it logged.
++    /// `EngineObserver` 的全部 14 个方法，与 `TracingObserver` 写出的 `event` 字段值一一对应；
++    /// 少转发任何一个，`--debug` 就会悄悄丢掉那一类事件日志。
++    /// All 14 `EngineObserver` methods, paired with the `event` field value `TracingObserver`
++    /// writes for each; dropping any single forward silently loses that event kind under `--debug`.
++    const OBSERVER_EVENT_NAMES: [&str; 14] = [
++        "request_started",
++        "request_finished",
++        "pipeline_selected",
++        "rule_matched",
++        "rule_evaluated",
++        "rule_cache_lookup",
++        "decision_made",
++        "cache_lookup",
++        "cache_miss",
++        "cache_hit",
++        "upstream_attempt",
++        "upstream_result",
++        "config_loaded",
++        "config_reload_failed",
++    ];
++
++    /// 在带目标名的 tracing 订阅者下把 14 个观察者方法各驱动一次，返回它写出的全部日志文本。
++    /// Drives each of the 14 observer methods once under a target-printing tracing subscriber
++    /// and returns everything it logged.
 +    fn captured_observer_output(metrics: &PanelMetrics) -> String {
-+        use crate::observe::{ConfigLoaded, EngineObserver, RequestContext};
++        use crate::config::Transport;
++        use crate::observe::{
++            CacheHit, CacheHitKind, ConfigLoaded, ConfigReloadFailed, DecisionDetail, DecisionKind,
++            DecisionMade, EngineObserver, RequestContext, RequestOutcome, RequestStatus,
++            RuleCacheLookup, RuleEvaluated, RuleMatched, RulePhase, UpstreamAttempt,
++            UpstreamOutcome, UpstreamResult,
++        };
++        use hickory_proto::op::ResponseCode;
++        use std::time::Duration;
 +        use tracing_subscriber::layer::SubscriberExt;
 +
 +        let buffer = SharedBuffer::default();
@@ -2156,25 +2186,112 @@ index 0000000000000000000000000000000000000000..c33bf388bc7e485f78fe59b8d1782b35
 +        };
 +        tracing::subscriber::with_default(subscriber, || {
 +            metrics.request_started(&ctx);
++            metrics.pipeline_selected(&ctx, "main");
++            metrics.rule_cache_lookup(
++                &ctx,
++                &RuleCacheLookup {
++                    pipeline: "main",
++                    hit: false,
++                    matched_rules: 0,
++                },
++            );
++            metrics.rule_evaluated(
++                &ctx,
++                &RuleEvaluated {
++                    pipeline: "main",
++                    rule: "forward-all",
++                    phase: RulePhase::Request,
++                    matched: true,
++                    matchers: 1,
++                },
++            );
++            metrics.rule_matched(
++                &ctx,
++                &RuleMatched {
++                    pipeline: "main",
++                    rule: "forward-all",
++                    phase: RulePhase::Request,
++                    decision: DecisionKind::Forward,
++                    fast_path: false,
++                },
++            );
++            metrics.decision_made(
++                &ctx,
++                &DecisionMade {
++                    pipeline: "main",
++                    rule: Some("forward-all"),
++                    detail: DecisionDetail::Forward {
++                        upstream: "1.1.1.1:53",
++                        transport: Some(Transport::Udp),
++                    },
++                },
++            );
 +            metrics.cache_lookup(&ctx);
++            metrics.cache_miss(&ctx);
++            metrics.cache_hit(
++                &ctx,
++                &CacheHit {
++                    kind: CacheHitKind::Fresh,
++                    remaining_ttl: Some(Duration::from_secs(30)),
++                    original_ttl: Some(Duration::from_secs(60)),
++                },
++            );
++            metrics.upstream_attempt(
++                &ctx,
++                &UpstreamAttempt {
++                    upstream: "1.1.1.1:53",
++                    transport: Transport::Udp,
++                },
++            );
++            metrics.upstream_result(
++                &ctx,
++                &UpstreamResult {
++                    upstream: "1.1.1.1:53",
++                    transport: Transport::Udp,
++                    via: Transport::Udp,
++                    outcome: UpstreamOutcome::Success,
++                    latency: Duration::from_millis(12),
++                    rcode: Some(ResponseCode::NoError),
++                    truncated: Some(false),
++                    error: None,
++                },
++            );
++            metrics.request_finished(
++                &ctx,
++                &RequestOutcome {
++                    latency: Duration::from_millis(13),
++                    status: RequestStatus::Completed,
++                },
++            );
 +            metrics.config_loaded(&ConfigLoaded {
 +                path: None,
 +                generation: 1,
 +                source: Some("{}"),
++            });
++            metrics.config_reload_failed(&ConfigReloadFailed {
++                path: std::path::Path::new("pipeline.json"),
++                error: "broken",
 +            });
 +        });
 +        let bytes = buffer.0.lock().unwrap().clone();
 +        String::from_utf8(bytes).unwrap()
 +    }
 +
-+    /// `--debug` 必须把引擎事件（含后台刷新）转发给上游参考观察者；不带 `--debug` 时一条都不该出现。
++    /// `--debug` 必须把 14 个引擎事件（含后台刷新）逐一转发给上游参考观察者；
++    /// 不带 `--debug` 时一条都不该出现。
++    /// `--debug` must forward every one of the 14 engine events (background refresh included)
++    /// to the upstream reference observer; without `--debug` none may appear.
 +    #[test]
 +    fn debug_forwards_engine_events_to_tracing_observer() {
 +        let output = captured_observer_output(&PanelMetrics::new(true));
 +        assert!(output.contains("kixdns::observe"), "{output}");
-+        assert!(output.contains("event=\"request_started\""), "{output}");
-+        assert!(output.contains("event=\"cache_lookup\""), "{output}");
-+        assert!(output.contains("event=\"config_loaded\""), "{output}");
++        for name in OBSERVER_EVENT_NAMES {
++            let marker = format!("event=\"{name}\"");
++            assert!(
++                output.contains(&marker),
++                "missing {marker} in --debug output:\n{output}"
++            );
++        }
 +
 +        let silent = captured_observer_output(&PanelMetrics::new(false));
 +        assert!(silent.is_empty(), "{silent}");
