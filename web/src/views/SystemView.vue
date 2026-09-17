@@ -35,6 +35,7 @@ import { useConfirm } from '../composables/useConfirm'
 import { useToast } from '../composables/useToast'
 import { useUpdateStatus } from '../composables/useUpdateStatus'
 import { errorMessage, formatDate, formatKixdnsVersion, shortHash } from '../utils'
+import { switchConfirmBody, switchedMessage } from '../version-switch'
 
 type VersionAction = { identity: string; kind: 'install' | 'activate' | 'delete' }
 
@@ -405,46 +406,17 @@ async function control(action: ServiceAction): Promise<void> {
   }
 }
 
-/**
- * 切换前说清会发生什么。服务端按切换那一刻的状态决定：在运行就重启一次，
- * 停着就只换程序、不启动，两种情况都不改开机自启。这里按页面已读到的服务
- * 状态提前告诉用户是哪一种；状态未知时两种都说。
- *
- * Say what a switch will do before it happens. The server decides from the
- * state at switch time: a running service restarts once, a stopped one only
- * gets the new binary and is not started, and neither changes boot behaviour.
- * The page tells the user which one from the service state it already has,
- * and names both when that state is unknown.
- */
-function switchConfirmBody(): string {
-  const effect = !service.value
-    ? 'KixDNS 正在运行则用新版本重启，DNS 短暂中断；已停止则只替换程序，不会启动。'
-    : running.value
-      ? 'KixDNS 会用新版本重启，DNS 解析短暂中断；健康检查不通过会自动换回当前版本。'
-      : 'KixDNS 当前已停止，这次只替换程序，不会启动服务，下次启动时使用新版本。'
-  return `${effect}开机自启设置保持不变。`
-}
-
-function switchedMessage(done: string): string {
-  // 切换后重新读过服务状态：服务在跑说明新版本已通过健康检查，停着说明还没生效。
-  // The service state is re-read after the switch: running means the new
-  // version passed its health check, stopped means it is not in effect yet.
-  return running.value
-    ? `KixDNS ${done}并通过健康检查`
-    : `KixDNS ${done}，服务仍停止，下次启动时生效`
-}
-
 async function installVersion(version: RemoteKixdnsVersion): Promise<void> {
   if (!await confirm.ask({
     title: `安装并切换到 ${formatKixdnsVersion(version)}`,
-    body: `先下载并校验这个构建。${switchConfirmBody()}`,
+    body: `先下载并校验这个构建。${switchConfirmBody(service.value)}`,
     confirmLabel: '安装并切换',
   })) return
   versionAction.value = { identity: versionIdentity(version), kind: 'install' }
   try {
     await apiRequest<InstalledKixdnsVersion>(`/api/v1/kixdns/versions/${version.source}/${version.source_id}/install`, { method: 'POST' })
     await Promise.all([loadVersions(true), loadService(true), refreshUpdates()])
-    toast.success(switchedMessage('已安装'))
+    toast.success(switchedMessage(service.value, '已安装'))
   } catch (error) {
     toast.error(errorMessage(error))
   } finally {
@@ -456,7 +428,7 @@ async function activateVersion(version: InstalledKixdnsVersion | RemoteKixdnsVer
   if (version.active) return
   if (!await confirm.ask({
     title: `切换到 ${formatKixdnsVersion(version)}`,
-    body: switchConfirmBody(),
+    body: switchConfirmBody(service.value),
     confirmLabel: '切换版本',
   })) return
   const source = version.source ?? 'action'
@@ -465,7 +437,7 @@ async function activateVersion(version: InstalledKixdnsVersion | RemoteKixdnsVer
   try {
     await apiRequest<InstalledKixdnsVersion>(`/api/v1/kixdns/versions/${source}/${identity}/activate`, { method: 'POST' })
     await Promise.all([loadVersions(true), loadService(true), refreshUpdates()])
-    toast.success(switchedMessage('版本已切换'))
+    toast.success(switchedMessage(service.value, '版本已切换'))
   } catch (error) {
     toast.error(errorMessage(error))
   } finally {

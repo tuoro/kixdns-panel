@@ -217,6 +217,8 @@ impl LiveServiceHost {
 }
 
 impl ServiceHost for LiveServiceHost {
+    // 这组状态与 web/src/version-switch.ts 的 serviceRunsForSwitch 保持一致。
+    // Keep this set in step with serviceRunsForSwitch in web/src/version-switch.ts.
     fn service_running(&self) -> BoxFuture<'_, Result<bool, UpdateError>> {
         Box::pin(async move {
             let status = self
