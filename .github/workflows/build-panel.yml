@@ -16,6 +16,7 @@ on:
       - scripts/one-click-install.sh
       - scripts/panel-online-update.sh
       - scripts/package_acceptance.py
+      - scripts/test-one-click-install.sh
       - scripts/test-install-policy.sh
       - scripts/test-uninstall-policy.sh
       - scripts/test-unit-name-rule.sh
@@ -38,6 +39,7 @@ on:
       - scripts/one-click-install.sh
       - scripts/panel-online-update.sh
       - scripts/package_acceptance.py
+      - scripts/test-one-click-install.sh
       - scripts/test-install-policy.sh
       - scripts/test-uninstall-policy.sh
       - scripts/test-unit-name-rule.sh
@@ -157,6 +159,10 @@ jobs:
       - name: Verify installation policy
         shell: bash
         run: bash scripts/test-install-policy.sh
+
+      - name: Verify one-click installer policy
+        shell: bash
+        run: bash scripts/test-one-click-install.sh
 
       - name: Verify uninstallation policy
         shell: bash
