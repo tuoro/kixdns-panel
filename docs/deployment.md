@@ -270,6 +270,7 @@ sudo kixdns-panel-uninstall
 - 迁移安装的主机选择移除增强版，会先恢复迁移前的 unit 和启停状态
 - 选择移除 KixDNS 时，安装器关闭过的 systemd-resolved 本机监听和 `/etc/resolv.conf` 一并恢复
 - 早期「仅安装面板」模式的主机，卸载器始终保留原来的 KixDNS
+- 上次卸载保留了 KixDNS 并删除了配置，再次运行卸载器时 KixDNS 仍然保留，即使指定 `--remove-kixdns`
 
 无人值守：
 
