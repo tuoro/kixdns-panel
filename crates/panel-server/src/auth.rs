@@ -70,28 +70,35 @@ impl TrustedProxies {
         if !self.contains(peer) {
             return peer;
         }
-        let mut forwarded = Vec::new();
-        for value in headers.get_all("x-forwarded-for") {
+        // 从右往左走：右边是可信代理追加的，左边是客户端自己能写的。遇到第一个
+        // 不可信的合法地址就停，它左边的内容一律不解析，否则客户端只要在左边
+        // 塞一项垃圾，就会被算成代理本身，连错几次锁住所有经代理登录的人。
+        // Walk right to left: the right end is appended by trusted proxies,
+        // the left end is whatever the client wrote. Stop at the first valid
+        // untrusted address and never parse anything to its left; otherwise a
+        // client prepending one junk entry is counted as the proxy itself and
+        // a few failures lock out everyone who logs in through it.
+        let mut walked = 0;
+        let mut leftmost_trusted = None;
+        for value in headers.get_all("x-forwarded-for").iter().rev() {
             let Ok(value) = value.to_str() else {
                 return peer;
             };
-            for address in value.split(',').map(str::trim) {
-                if forwarded.len() == MAX_FORWARDED_HOPS || address.is_empty() {
+            for address in value.rsplit(',').map(str::trim) {
+                if walked == MAX_FORWARDED_HOPS {
                     return peer;
                 }
-                let Ok(address) = address.parse() else {
+                walked += 1;
+                let Ok(address) = address.parse::<IpAddr>() else {
                     return peer;
                 };
-                forwarded.push(address);
+                if !self.contains(address) {
+                    return address;
+                }
+                leftmost_trusted = Some(address);
             }
         }
-        forwarded
-            .iter()
-            .rev()
-            .copied()
-            .find(|address| !self.contains(*address))
-            .or_else(|| forwarded.first().copied())
-            .unwrap_or(peer)
+        leftmost_trusted.unwrap_or(peer)
     }
 
     fn contains(&self, address: IpAddr) -> bool {
@@ -358,5 +365,45 @@ mod tests {
             proxies.client_ip(Ipv4Addr::LOCALHOST.into(), &headers),
             IpAddr::V4(Ipv4Addr::LOCALHOST)
         );
+    }
+
+    #[test]
+    fn junk_left_of_the_real_client_does_not_resolve_to_the_proxy() {
+        let proxies: TrustedProxies = "127.0.0.1/32,10.0.0.0/8".parse().unwrap();
+        let peer = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let client = "198.51.100.7".parse::<IpAddr>().unwrap();
+        let resolve = |value: &str| {
+            let mut headers = HeaderMap::new();
+            headers.insert("x-forwarded-for", HeaderValue::from_str(value).unwrap());
+            proxies.client_ip(peer, &headers)
+        };
+
+        // nginx 的 $proxy_add_x_forwarded_for 把真实地址追加在客户端自带的值右边。
+        // nginx's $proxy_add_x_forwarded_for appends the real address to
+        // whatever the client sent.
+        assert_eq!(resolve("garbage, 198.51.100.7"), client);
+        assert_eq!(resolve(", 198.51.100.7"), client);
+        assert_eq!(resolve("x, 198.51.100.7, 10.0.0.1"), client);
+        assert_eq!(resolve("198.51.100.7, 10.0.0.1"), client);
+        let padded = format!("{}198.51.100.7", "203.0.113.1, ".repeat(40));
+        assert_eq!(resolve(&padded), client);
+
+        // 整条链都可信时仍取最左边一项；链上可信项之间夹着垃圾时退回对端。
+        // An all-trusted chain still resolves to its leftmost entry; junk met
+        // before any untrusted address falls back to the peer.
+        assert_eq!(
+            resolve("10.0.0.2, 10.0.0.1"),
+            "10.0.0.2".parse::<IpAddr>().unwrap()
+        );
+        assert_eq!(resolve("198.51.100.7, junk, 10.0.0.1"), peer);
+        let trusted_chain = format!("198.51.100.7, {}", "10.0.0.1, ".repeat(32));
+        assert_eq!(resolve(trusted_chain.trim_end_matches(", ")), peer);
+
+        // 多个头按出现顺序拼接，右边的头离面板最近。
+        // Multiple headers concatenate in order; the last is nearest the panel.
+        let mut headers = HeaderMap::new();
+        headers.append("x-forwarded-for", HeaderValue::from_static("junk"));
+        headers.append("x-forwarded-for", HeaderValue::from_static("198.51.100.7"));
+        assert_eq!(proxies.client_ip(peer, &headers), client);
     }
 }
