@@ -48,7 +48,6 @@ async fn test_app() -> (TempDir, Router) {
         installed_source_id: None,
         panel_installed_commit: None,
         panel_installed_release: None,
-        kixdns_management_enabled: true,
         kixdns_binary: directory.path().join("kixdns"),
         kixdns_versions: directory.path().join("versions"),
         bundled_metadata: directory.path().join("bundle"),

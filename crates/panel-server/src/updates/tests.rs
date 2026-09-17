@@ -210,7 +210,6 @@ async fn reads_capabilities_from_unmaterialized_bundled_version() {
             installed_source_id: Some(42),
             panel_installed_commit: None,
             panel_installed_release: None,
-            management_enabled: true,
             binary_path: binary_path.clone(),
             versions_path,
             bundled_metadata,
@@ -249,7 +248,6 @@ async fn bundled_binary_identity_replaces_stale_database_state() {
             installed_source_id: Some(42),
             panel_installed_commit: None,
             panel_installed_release: None,
-            management_enabled: true,
             binary_path: binary_path.clone(),
             versions_path: versions_path.clone(),
             bundled_metadata,
@@ -685,7 +683,6 @@ async fn treats_empty_panel_release_as_unset() {
             installed_source_id: None,
             panel_installed_commit: None,
             panel_installed_release: Some(String::new()),
-            management_enabled: true,
             binary_path: directory.path().join("bin/kixdns"),
             versions_path: directory.path().join("versions"),
             bundled_metadata: directory.path().join("bundle"),
@@ -717,7 +714,6 @@ async fn refuses_to_delete_the_active_version() {
             installed_source_id: None,
             panel_installed_commit: None,
             panel_installed_release: None,
-            management_enabled: true,
             binary_path: binary_path.clone(),
             versions_path: versions_path.clone(),
             bundled_metadata: directory.path().join("bundle"),
@@ -742,48 +738,6 @@ async fn refuses_to_delete_the_active_version() {
 
     assert!(matches!(error, UpdateError::Invalid(_)));
     assert!(versions_path.join(key.directory_name()).is_dir());
-}
-
-#[tokio::test]
-async fn external_mode_never_manages_kixdns_versions() {
-    let directory = tempdir().unwrap();
-    let binary_path = directory.path().join("bin/kixdns");
-    std::fs::create_dir_all(binary_path.parent().unwrap()).unwrap();
-    std::fs::write(&binary_path, test_elf()).unwrap();
-    let manager = UpdateManager::new(
-        Database::open(directory.path().join("panel.db"))
-            .await
-            .unwrap(),
-        UpdateSettings {
-            repository: "tuoro/kixdns-panel".to_owned(),
-            workflow: "build-kixdns.yml".to_owned(),
-            release_workflow: "build-kixdns-release.yml".to_owned(),
-            branch: "main".to_owned(),
-            artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
-            installed_commit: None,
-            installed_source_id: None,
-            panel_installed_commit: None,
-            panel_installed_release: None,
-            management_enabled: false,
-            binary_path,
-            versions_path: directory.path().join("versions"),
-            bundled_metadata: directory.path().join("bundle"),
-            github_token_path: directory.path().join("github-token"),
-        },
-    )
-    .unwrap();
-
-    let catalog = manager.catalog(VersionSource::Release).await.unwrap();
-    assert!(!catalog.management_enabled);
-    assert!(catalog.binary_present);
-    assert!(catalog.remote_versions.is_empty());
-    assert!(catalog.installed_versions.is_empty());
-    assert!(matches!(
-        manager
-            .delete_version(VersionSource::Action, TEST_BUILD_COMMIT)
-            .await,
-        Err(UpdateError::Invalid(message)) if message.contains("外部 KixDNS")
-    ));
 }
 
 #[test]
