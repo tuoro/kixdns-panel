@@ -546,8 +546,9 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
       return version as T
     }
     if (!remote) throw new Error('演示版本操作无效')
+    // 与服务端一致：切换版本保持原来的启停状态，停着的服务不会被启动。
+    // Matches the server: a switch keeps the running state, so a stopped service stays stopped.
     activeKixdnsVersion = kixdnsVersionKey(remote)
-    serviceRunning = true
     const version = demoVersionCatalog(source).installed_versions.find((item) => item.source === source && item.commit === remote.commit)
     return version as T
   }

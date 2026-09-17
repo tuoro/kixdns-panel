@@ -9,11 +9,15 @@ use crate::auth::{authenticate, unix_timestamp, verify_csrf};
 use crate::error::{AppError, AppResult};
 use crate::panel_update::{PanelUpdateStatus, read_status as read_panel_update_status};
 use crate::updates::{
-    GithubTokenStatus, InstalledVersion, UpdateInfo, UpdateNotifications, VersionCatalog,
-    VersionSource,
+    GithubTokenStatus, InstalledVersion, LiveServiceHost, UpdateInfo, UpdateNotifications,
+    VersionCatalog, VersionSource,
 };
 
 use super::{AppState, map_config_error, map_operation_error, map_update_error};
+
+fn live_host(state: &AppState) -> LiveServiceHost {
+    LiveServiceHost::new(state.operations.clone(), state.control.clone())
+}
 
 #[derive(Debug, Serialize)]
 struct PanelUpdateStartResponse {
@@ -224,7 +228,7 @@ async fn apply_update(
     let config = state.config.current().await.map_err(map_config_error)?;
     let result = state
         .updates
-        .apply(&config.content, &state.operations, &state.control)
+        .apply(&config.content, &live_host(&state))
         .await
         .map_err(map_update_error)?;
     state
@@ -266,13 +270,7 @@ async fn install_kixdns_version(
     let config = state.config.current().await.map_err(map_config_error)?;
     let result = state
         .updates
-        .install_version(
-            source,
-            source_id,
-            &config.content,
-            &state.operations,
-            &state.control,
-        )
+        .install_version(source, source_id, &config.content, &live_host(&state))
         .await
         .map_err(map_update_error)?;
     state
@@ -300,13 +298,7 @@ async fn activate_kixdns_version(
     let config = state.config.current().await.map_err(map_config_error)?;
     let result = state
         .updates
-        .activate_version(
-            source,
-            &commit,
-            &config.content,
-            &state.operations,
-            &state.control,
-        )
+        .activate_version(source, &commit, &config.content, &live_host(&state))
         .await
         .map_err(map_update_error)?;
     state

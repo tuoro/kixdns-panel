@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
+use futures_util::future::BoxFuture;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -176,6 +177,82 @@ fn remove_github_token(path: &Path) -> Result<(), UpdateError> {
         )),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
         Err(error) => Err(UpdateError::Install(error.to_string())),
+    }
+}
+
+/// 版本切换对宿主机的全部要求。抽成 trait 让切换流程能用假宿主测试：
+/// 测试据此断言切换只发 Restart（systemd 的 restart 不改开机策略），
+/// 从不发会顺带 enable/disable 的 Start/Stop。
+/// Everything a version switch needs from the host. As a trait the switch can
+/// run against a fake host, which is how tests assert that a switch only ever
+/// sends Restart (systemd's restart keeps enablement) and never the Start/Stop
+/// that also enable/disable the unit.
+pub trait ServiceHost: Send + Sync {
+    /// 服务当前是否在运行（含正在启动、重载）。
+    /// Whether the service currently runs (including activating or reloading).
+    fn service_running(&self) -> BoxFuture<'_, Result<bool, UpdateError>>;
+    fn service_action(&self, action: ServiceAction) -> BoxFuture<'_, Result<(), UpdateError>>;
+    fn wait_until_healthy(&self) -> BoxFuture<'_, Result<(), UpdateError>>;
+    fn runtime_capabilities(&self) -> BoxFuture<'_, Result<Vec<String>, UpdateError>>;
+}
+
+/// 真实宿主：systemctl 读状态、root helper 重启、控制通道做健康检查。
+/// 持有克隆而不是引用，这样整个切换可以交给独立任务跑完。
+/// The real host: systemctl for state, the root helper for restart and the
+/// control socket for health. It owns clones rather than references so a
+/// whole switch can be handed to its own task.
+#[derive(Clone)]
+pub struct LiveServiceHost {
+    operations: Operations,
+    control: ControlClient,
+}
+
+impl LiveServiceHost {
+    pub fn new(operations: Operations, control: ControlClient) -> Self {
+        Self {
+            operations,
+            control,
+        }
+    }
+}
+
+impl ServiceHost for LiveServiceHost {
+    fn service_running(&self) -> BoxFuture<'_, Result<bool, UpdateError>> {
+        Box::pin(async move {
+            let status = self
+                .operations
+                .service_status()
+                .await
+                .map_err(|error| UpdateError::Install(format!("读取服务状态失败：{error}")))?;
+            Ok(matches!(
+                status.active_state.as_str(),
+                "active" | "activating" | "reloading"
+            ))
+        })
+    }
+
+    fn service_action(&self, action: ServiceAction) -> BoxFuture<'_, Result<(), UpdateError>> {
+        Box::pin(async move {
+            self.operations
+                .service_action(action)
+                .await
+                .map(|_| ())
+                .map_err(|error| UpdateError::Install(error.to_string()))
+        })
+    }
+
+    fn wait_until_healthy(&self) -> BoxFuture<'_, Result<(), UpdateError>> {
+        Box::pin(wait_until_healthy(&self.control))
+    }
+
+    fn runtime_capabilities(&self) -> BoxFuture<'_, Result<Vec<String>, UpdateError>> {
+        Box::pin(async move {
+            self.control
+                .health()
+                .await
+                .map(|health| health.capabilities)
+                .map_err(|error| UpdateError::Install(error.to_string()))
+        })
     }
 }
 
@@ -922,8 +999,7 @@ impl UpdateManager {
     pub async fn apply(
         &self,
         config: &Value,
-        operations: &Operations,
-        control: &ControlClient,
+        host: &dyn ServiceHost,
     ) -> Result<UpdateInfo, UpdateError> {
         let _guard = self.apply_lock.lock().await;
         let active_version = self.active_version().await?;
@@ -939,8 +1015,7 @@ impl UpdateManager {
         let key = VersionKey::remote(&resolved.remote)?;
         if active_version.as_ref() != Some(&key) {
             self.install_resolved(&resolved, config).await?;
-            self.activate_locked(&key, config, operations, control)
-                .await?;
+            self.activate_locked(&key, config, host).await?;
         }
         Ok(to_update_info(resolved, Some(&key)))
     }
@@ -950,15 +1025,13 @@ impl UpdateManager {
         source: VersionSource,
         source_id: u64,
         config: &Value,
-        operations: &Operations,
-        control: &ControlClient,
+        host: &dyn ServiceHost,
     ) -> Result<InstalledVersion, UpdateError> {
         let _guard = self.apply_lock.lock().await;
         let resolved = self.resolve_remote(source, source_id).await?;
         let key = VersionKey::remote(&resolved.remote)?;
         self.install_resolved(&resolved, config).await?;
-        self.activate_locked(&key, config, operations, control)
-            .await
+        self.activate_locked(&key, config, host).await
     }
 
     pub async fn activate_version(
@@ -966,16 +1039,14 @@ impl UpdateManager {
         source: VersionSource,
         version: &str,
         config: &Value,
-        operations: &Operations,
-        control: &ControlClient,
+        host: &dyn ServiceHost,
     ) -> Result<InstalledVersion, UpdateError> {
         let _guard = self.apply_lock.lock().await;
         let key = match version.parse::<u64>() {
             Ok(source_id) if source_id > 0 => self.installed_key(source, source_id).await?,
             _ => VersionKey::new(source, version)?,
         };
-        self.activate_locked(&key, config, operations, control)
-            .await
+        self.activate_locked(&key, config, host).await
     }
 
     pub async fn delete_version(
@@ -1552,14 +1623,13 @@ impl UpdateManager {
         &self,
         key: &VersionKey,
         config: &Value,
-        operations: &Operations,
-        control: &ControlClient,
+        host: &dyn ServiceHost,
     ) -> Result<InstalledVersion, UpdateError> {
         if regular_file_exists(self.binary_path.as_ref())?
             && let Some(active) = self.active_version().await?
         {
             self.adopt_active_version(&active).await?;
-            if let Err(error) = self.capture_active_capabilities(&active, control).await {
+            if let Err(error) = self.capture_active_capabilities(&active, host).await {
                 tracing::warn!(%error, "无法记录当前 KixDNS 的配置能力");
             }
         }
@@ -1571,14 +1641,14 @@ impl UpdateManager {
                 .map_err(|error| UpdateError::Install(error.to_string()))??;
         ensure_config_supported(config, &manifest.config_capabilities)
             .map_err(|error| UpdateError::IncompatibleConfig(error.to_string()))?;
-        let previous = self.activate_binary(binary, operations, control).await?;
+        let (previous, running) = self.activate_binary(binary, host).await?;
         if let Err(error) = self
             .database
             .set_setting(ACTIVE_VERSION_KEY, key.encoded(), unix_timestamp())
             .await
         {
             if let Err(rollback) = self
-                .restore_previous(previous.as_deref(), operations, control)
+                .restore_previous(previous.as_deref(), host, running)
                 .await
             {
                 return Err(UpdateError::Install(format!(
@@ -1661,15 +1731,9 @@ impl UpdateManager {
     async fn capture_active_capabilities(
         &self,
         key: &VersionKey,
-        control: &ControlClient,
+        host: &dyn ServiceHost,
     ) -> Result<(), UpdateError> {
-        let capabilities = canonical_runtime_capabilities(
-            &control
-                .health()
-                .await
-                .map_err(|error| UpdateError::Install(error.to_string()))?
-                .capabilities,
-        );
+        let capabilities = canonical_runtime_capabilities(&host.runtime_capabilities().await?);
         let versions_path = Arc::clone(&self.versions_path);
         let key = key.clone();
         tokio::task::spawn_blocking(move || {
@@ -1720,9 +1784,8 @@ impl UpdateManager {
     async fn activate_binary(
         &self,
         binary: Vec<u8>,
-        operations: &Operations,
-        control: &ControlClient,
-    ) -> Result<Option<Vec<u8>>, UpdateError> {
+        host: &dyn ServiceHost,
+    ) -> Result<(Option<Vec<u8>>, bool), UpdateError> {
         #[cfg(not(unix))]
         ensure_update_platform()?;
         validate_elf(&binary)?;
@@ -1747,17 +1810,28 @@ impl UpdateManager {
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .ok_or_else(|| UpdateError::Install("目标二进制缺少父目录".to_owned()))?;
+        // 先读状态再动文件：切换保持服务原来的启停，而 helper 的 start/stop
+        // 会顺带 enable/disable。运行中只发一次 restart（不改开机策略，停机
+        // 窗口也最短）；没运行就只换程序，下次启动时生效，不让 DNS 意外开始
+        // 监听 53 端口（原版 Ubuntu 上这个端口可能还被 systemd-resolved 占着）。
+        // Read the state before touching files: a switch keeps the service's
+        // running state, and the helper's start/stop also enable/disable. A
+        // running service gets one restart (enablement kept, shortest outage);
+        // a stopped one only gets the new binary, effective at next start, so
+        // DNS never starts listening on port 53 unexpectedly (on stock Ubuntu
+        // systemd-resolved may still hold that port).
+        let running = host.service_running().await?;
         let candidate = write_executable(parent, ".kixdns-candidate-", &binary)?;
-        operations
-            .service_action(ServiceAction::Stop)
-            .await
-            .map_err(|error| UpdateError::Install(error.to_string()))?;
-        if let Err(error) = persist(candidate, target) {
-            let _ = operations.service_action(ServiceAction::Start).await;
-            return Err(error);
+        // 旧进程运行时 rename 替换文件是安全的：进程持有的是旧 inode。
+        // Renaming over the file while the old process runs is safe: the
+        // process holds the old inode.
+        persist(candidate, target)?;
+        if !running {
+            sync_directory(parent)?;
+            return Ok((current, false));
         }
-        if let Err(error) = operations.service_action(ServiceAction::Start).await {
-            self.restore_previous(current.as_deref(), operations, control)
+        if let Err(error) = host.service_action(ServiceAction::Restart).await {
+            self.restore_previous(current.as_deref(), host, true)
                 .await
                 .map_err(|rollback| {
                     UpdateError::Install(format!("新版本启动失败：{error}；{rollback}"))
@@ -1766,43 +1840,56 @@ impl UpdateManager {
                 "新版本启动失败，已恢复原状态：{error}"
             )));
         }
-        if let Err(error) = wait_until_healthy(control).await {
-            self.restore_previous(current.as_deref(), operations, control)
+        if let Err(error) = host.wait_until_healthy().await {
+            self.restore_previous(current.as_deref(), host, true)
                 .await
                 .map_err(|rollback| UpdateError::Install(format!("{error}；{rollback}")))?;
             return Err(UpdateError::Install(format!("{error}；已恢复原状态")));
         }
         sync_directory(parent)?;
-        Ok(current)
+        Ok((current, true))
     }
 
+    /// 放回旧程序；只有切换前服务在运行时才重启，恢复的同样是原来的启停状态。
+    /// Put the previous binary back; restart only when the service was running
+    /// before the switch, so the restored state is the original one as well.
     async fn restore_previous(
         &self,
         previous: Option<&[u8]>,
-        operations: &Operations,
-        control: &ControlClient,
+        host: &dyn ServiceHost,
+        running: bool,
     ) -> Result<(), UpdateError> {
-        let _ = operations.service_action(ServiceAction::Stop).await;
         let target = self.binary_path.as_ref();
         let parent = target
             .parent()
             .ok_or_else(|| UpdateError::Install("目标二进制缺少父目录".to_owned()))?;
-        let Some(previous) = previous else {
-            match fs::remove_file(target) {
+        match previous {
+            Some(previous) => {
+                let temporary = write_executable(parent, ".kixdns-rollback-", previous)?;
+                persist(temporary, target)?;
+            }
+            None => match fs::remove_file(target) {
                 Ok(()) => {}
                 Err(error) if error.kind() == ErrorKind::NotFound => {}
                 Err(error) => return Err(UpdateError::Install(error.to_string())),
-            }
-            sync_directory(parent)?;
+            },
+        }
+        sync_directory(parent)?;
+        if !running {
             return Ok(());
-        };
-        let temporary = write_executable(parent, ".kixdns-rollback-", previous)?;
-        persist(temporary, target)?;
-        operations
-            .service_action(ServiceAction::Start)
+        }
+        // 没有旧程序时也重启一次：unit 的 ConditionFileIsExecutable 不再满足，
+        // 服务随之停下，而不是把没通过检查的新版本留在运行。
+        // Restart even without a previous binary: the unit's
+        // ConditionFileIsExecutable no longer holds, so the service stops
+        // instead of leaving the failed new version running.
+        host.service_action(ServiceAction::Restart)
             .await
             .map_err(|error| UpdateError::Install(format!("恢复旧版本后启动失败：{error}")))?;
-        wait_until_healthy(control)
+        if previous.is_none() {
+            return Ok(());
+        }
+        host.wait_until_healthy()
             .await
             .map_err(|error| UpdateError::Install(format!("恢复旧版本后健康检查失败：{error}")))?;
         Ok(())

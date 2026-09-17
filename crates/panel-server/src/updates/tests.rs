@@ -1,7 +1,11 @@
 use std::io::{Cursor, Write};
+use std::sync::Mutex as StdMutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+use futures_util::future::BoxFuture;
 use tempfile::tempdir;
 
+use super::ServiceHost;
 use super::validation::ParsedArtifactReference;
 use super::{
     ARTIFACT_PAGE_SIZE, BuildIdentity, GithubRelease, MANIFEST_SCHEMA_VERSION, MAX_ARTIFACT_PAGES,
@@ -14,6 +18,7 @@ use super::{
     validate_remote_build_identity, validate_slug, write_github_token,
 };
 use crate::db::Database;
+use crate::operations::ServiceAction;
 
 const TEST_BUILD_COMMIT: &str = "4e8002d08a56afc08be335d0d5ed337c7690f9af";
 
@@ -925,5 +930,226 @@ fn catalogue_keeps_only_this_repository_push_schedule_and_dispatch_runs() {
     assert_eq!(
         kept.iter().map(|run| run.id).collect::<Vec<_>>(),
         vec![7, 6, 5]
+    );
+}
+
+/// 记录切换期间对宿主机做了什么的假宿主。
+/// A fake host that records what a switch did to the host.
+struct FakeHost {
+    running: bool,
+    failed_health_checks: AtomicUsize,
+    calls: StdMutex<Vec<String>>,
+}
+
+impl FakeHost {
+    fn new(running: bool) -> Self {
+        Self {
+            running,
+            failed_health_checks: AtomicUsize::new(0),
+            calls: StdMutex::new(Vec::new()),
+        }
+    }
+
+    fn failing_first_health_check(running: bool) -> Self {
+        let host = Self::new(running);
+        host.failed_health_checks.store(1, Ordering::SeqCst);
+        host
+    }
+
+    fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+impl ServiceHost for FakeHost {
+    fn service_running(&self) -> BoxFuture<'_, Result<bool, UpdateError>> {
+        Box::pin(async move { Ok(self.running) })
+    }
+
+    fn service_action(&self, action: ServiceAction) -> BoxFuture<'_, Result<(), UpdateError>> {
+        Box::pin(async move {
+            self.calls.lock().unwrap().push(format!("{action:?}"));
+            Ok(())
+        })
+    }
+
+    fn wait_until_healthy(&self) -> BoxFuture<'_, Result<(), UpdateError>> {
+        Box::pin(async move {
+            self.calls.lock().unwrap().push("Health".to_owned());
+            let failing = self
+                .failed_health_checks
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                    left.checked_sub(1)
+                })
+                .is_ok();
+            if failing {
+                return Err(UpdateError::Install("健康检查失败".to_owned()));
+            }
+            Ok(())
+        })
+    }
+
+    fn runtime_capabilities(&self) -> BoxFuture<'_, Result<Vec<String>, UpdateError>> {
+        Box::pin(async move { Ok(Vec::new()) })
+    }
+}
+
+struct SwitchFixture {
+    _directory: tempfile::TempDir,
+    manager: UpdateManager,
+    database: Database,
+    binary_path: std::path::PathBuf,
+    current: Vec<u8>,
+    target: Vec<u8>,
+    target_key: VersionKey,
+}
+
+/// 当前运行 Artifact 42，本地另存了一个可切换的 Artifact 43。
+/// Artifact 42 is active and Artifact 43 is stored locally, ready to switch to.
+async fn switch_fixture() -> SwitchFixture {
+    let directory = tempdir().unwrap();
+    let database = Database::open(directory.path().join("panel.db"))
+        .await
+        .unwrap();
+    let binary_path = directory.path().join("bin/kixdns");
+    let versions_path = directory.path().join("versions");
+    let manager = UpdateManager::new(
+        database.clone(),
+        UpdateSettings {
+            repository: "tuoro/kixdns-panel".to_owned(),
+            workflow: "build-kixdns.yml".to_owned(),
+            release_workflow: "build-kixdns-release.yml".to_owned(),
+            branch: "main".to_owned(),
+            artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
+            installed_commit: None,
+            installed_source_id: None,
+            panel_installed_commit: None,
+            panel_installed_release: None,
+            binary_path: binary_path.clone(),
+            versions_path: versions_path.clone(),
+            bundled_metadata: directory.path().join("bundle"),
+            github_token_path: directory.path().join("github-token"),
+        },
+    )
+    .unwrap();
+    let current = test_elf();
+    let mut target = test_elf();
+    target[31] = 7;
+    let current_commit = "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25";
+    let current_key = VersionKey::tracked(VersionSource::Action, 42, current_commit).unwrap();
+    let target_key = VersionKey::tracked(VersionSource::Action, 43, TEST_BUILD_COMMIT).unwrap();
+    std::fs::write(&binary_path, &current).unwrap();
+    store_version(
+        &versions_path,
+        &test_manifest(42, current_commit, &current),
+        &current,
+    )
+    .unwrap();
+    store_version(
+        &versions_path,
+        &test_manifest(43, TEST_BUILD_COMMIT, &target),
+        &target,
+    )
+    .unwrap();
+    database
+        .set_setting(super::ACTIVE_VERSION_KEY, current_key.encoded(), 42)
+        .await
+        .unwrap();
+    SwitchFixture {
+        _directory: directory,
+        manager,
+        database,
+        binary_path,
+        current,
+        target,
+        target_key,
+    }
+}
+
+async fn active_setting(database: &Database) -> Option<String> {
+    database
+        .get_setting(super::ACTIVE_VERSION_KEY)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn switching_a_running_service_restarts_once_without_stop_or_start() {
+    let fixture = switch_fixture().await;
+    let host = FakeHost::new(true);
+
+    fixture
+        .manager
+        .activate_version(
+            VersionSource::Action,
+            "43",
+            &serde_json::json!({"pipelines": []}),
+            &host,
+        )
+        .await
+        .unwrap();
+
+    // Start/Stop 经 helper 会 enable/disable，切换版本不能改开机策略。
+    // Start/Stop through the helper enable/disable; a switch must not change boot behaviour.
+    assert_eq!(host.calls(), ["Restart", "Health"]);
+    assert_eq!(std::fs::read(&fixture.binary_path).unwrap(), fixture.target);
+    assert_eq!(
+        active_setting(&fixture.database).await,
+        Some(fixture.target_key.encoded())
+    );
+}
+
+#[tokio::test]
+async fn switching_a_stopped_service_only_replaces_the_binary() {
+    let fixture = switch_fixture().await;
+    let host = FakeHost::new(false);
+
+    fixture
+        .manager
+        .activate_version(
+            VersionSource::Action,
+            "43",
+            &serde_json::json!({"pipelines": []}),
+            &host,
+        )
+        .await
+        .unwrap();
+
+    // 停着的服务不能因为切换版本就启动：DNS 不该意外开始监听 53 端口。
+    // A stopped service must not start because of a switch: DNS must not
+    // unexpectedly begin listening on port 53.
+    assert!(host.calls().is_empty(), "{:?}", host.calls());
+    assert_eq!(std::fs::read(&fixture.binary_path).unwrap(), fixture.target);
+    assert_eq!(
+        active_setting(&fixture.database).await,
+        Some(fixture.target_key.encoded())
+    );
+}
+
+#[tokio::test]
+async fn unhealthy_switch_restores_the_previous_binary_with_restart_only() {
+    let fixture = switch_fixture().await;
+    let host = FakeHost::failing_first_health_check(true);
+
+    let error = fixture
+        .manager
+        .activate_version(
+            VersionSource::Action,
+            "43",
+            &serde_json::json!({"pipelines": []}),
+            &host,
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, UpdateError::Install(_)), "{error}");
+    assert_eq!(host.calls(), ["Restart", "Health", "Restart", "Health"]);
+    assert_eq!(
+        std::fs::read(&fixture.binary_path).unwrap(),
+        fixture.current
+    );
+    assert_ne!(
+        active_setting(&fixture.database).await,
+        Some(fixture.target_key.encoded())
     );
 }

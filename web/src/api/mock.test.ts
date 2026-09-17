@@ -177,6 +177,24 @@ describe('演示 API', () => {
     expect(switched.active_source).toBe(previousSource)
   })
 
+  it('切换版本保持服务原来的启停状态', async () => {
+    const catalog = await mockRequest<KixdnsVersionCatalog>('/api/v1/kixdns/versions?source=action')
+    const target = catalog.installed_versions.find((version) => !version.active)
+    expect(target).toBeDefined()
+    const original = `/api/v1/kixdns/versions/${catalog.active_source}/${catalog.active_commit}/activate`
+    await mockRequest('/api/v1/service/stop', { method: 'POST' })
+    try {
+      await mockRequest(`/api/v1/kixdns/versions/${target?.source}/${target?.source_id}/activate`, { method: 'POST' })
+      const stopped = await mockRequest<ServiceStatus>('/api/v1/service')
+      expect(stopped.active_state).toBe('inactive')
+    } finally {
+      await mockRequest('/api/v1/service/start', { method: 'POST' })
+    }
+    await mockRequest(original, { method: 'POST' })
+    const running = await mockRequest<ServiceStatus>('/api/v1/service')
+    expect(running.active_state).toBe('active')
+  })
+
   it('展示上游官方 Action 与增强构建的独立身份', async () => {
     const catalog = await mockRequest<KixdnsVersionCatalog>('/api/v1/kixdns/versions?source=action')
     expect(catalog.remote_versions).toHaveLength(4)
