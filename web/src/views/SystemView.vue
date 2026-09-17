@@ -35,6 +35,7 @@ import { useConfirm } from '../composables/useConfirm'
 import { useToast } from '../composables/useToast'
 import { useUpdateStatus } from '../composables/useUpdateStatus'
 import { errorMessage, formatDate, formatKixdnsVersion, shortHash } from '../utils'
+import { switchConfirmBody, switchedMessage } from '../version-switch'
 
 type VersionAction = { identity: string; kind: 'install' | 'activate' | 'delete' }
 
@@ -406,11 +407,16 @@ async function control(action: ServiceAction): Promise<void> {
 }
 
 async function installVersion(version: RemoteKixdnsVersion): Promise<void> {
+  if (!await confirm.ask({
+    title: `安装并切换到 ${formatKixdnsVersion(version)}`,
+    body: `先下载并校验这个构建。${switchConfirmBody(service.value)}`,
+    confirmLabel: '安装并切换',
+  })) return
   versionAction.value = { identity: versionIdentity(version), kind: 'install' }
   try {
     await apiRequest<InstalledKixdnsVersion>(`/api/v1/kixdns/versions/${version.source}/${version.source_id}/install`, { method: 'POST' })
-    toast.success('KixDNS 已安装并通过健康检查')
     await Promise.all([loadVersions(true), loadService(true), refreshUpdates()])
+    toast.success(switchedMessage(service.value, '已安装'))
   } catch (error) {
     toast.error(errorMessage(error))
   } finally {
@@ -420,13 +426,18 @@ async function installVersion(version: RemoteKixdnsVersion): Promise<void> {
 
 async function activateVersion(version: InstalledKixdnsVersion | RemoteKixdnsVersion): Promise<void> {
   if (version.active) return
+  if (!await confirm.ask({
+    title: `切换到 ${formatKixdnsVersion(version)}`,
+    body: switchConfirmBody(service.value),
+    confirmLabel: '切换版本',
+  })) return
   const source = version.source ?? 'action'
   const identity = version.source_id ?? version.commit
   versionAction.value = { identity: versionIdentity(version), kind: 'activate' }
   try {
     await apiRequest<InstalledKixdnsVersion>(`/api/v1/kixdns/versions/${source}/${identity}/activate`, { method: 'POST' })
-    toast.success('KixDNS 版本已切换并通过健康检查')
     await Promise.all([loadVersions(true), loadService(true), refreshUpdates()])
+    toast.success(switchedMessage(service.value, '版本已切换'))
   } catch (error) {
     toast.error(errorMessage(error))
   } finally {
@@ -635,7 +646,7 @@ onBeforeUnmount(() => {
               </div>
               <button v-if="version.active" class="button button--secondary version-action" type="button" disabled><CircleCheck :size="15" />当前版本</button>
               <button v-else-if="version.installed" class="button button--secondary version-action" type="button" :disabled="versionAction !== null" @click="activateVersion(version)"><RotateCw :size="15" :class="{ spin: actionBusy(version) }" />{{ actionBusy(version) ? '切换中' : '切换' }}</button>
-              <button v-else class="button button--primary version-action" type="button" :disabled="versionAction !== null" @click="installVersion(version)"><Download :size="15" />{{ actionBusy(version) ? '安装中' : '安装并启用' }}</button>
+              <button v-else class="button button--primary version-action" type="button" :disabled="versionAction !== null" @click="installVersion(version)"><Download :size="15" />{{ actionBusy(version) ? '安装中' : '安装并切换' }}</button>
             </article>
             <div v-if="catalog.remote_error" class="version-empty">远端版本暂不可用，本地安装信息不受影响：{{ catalog.remote_error }}</div>
             <div v-else-if="catalog.remote_versions.length === 0" class="version-empty">{{ versionSource === 'release' ? '尚无可用 Release' : '没有可用的成功构建' }}</div>

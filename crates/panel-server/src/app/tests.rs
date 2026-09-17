@@ -7,6 +7,7 @@ use axum::http::header::{
     CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE, SET_COOKIE,
 };
 use axum::http::{Request, StatusCode};
+use futures_util::future::BoxFuture;
 use serde_json::Value;
 use tempfile::{TempDir, tempdir};
 use tower::ServiceExt;
@@ -147,6 +148,108 @@ async fn login_rejects_invalid_credentials_without_session_cookie() {
         assert_eq!(payload["error"]["code"], "invalid_credentials");
         assert_eq!(payload["error"]["message"], "用户名或密码错误");
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn parallel_wrong_logins_cannot_outrun_the_rate_limit() {
+    let context = authenticated_app().await;
+    let mut attempts = tokio::task::JoinSet::new();
+    for _ in 0..40 {
+        let app = context.app.clone();
+        attempts.spawn(async move {
+            let mut request = Request::post("/api/v1/auth/login")
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"username":"admin","password":"wrong-password"}"#,
+                ))
+                .unwrap();
+            request
+                .extensions_mut()
+                .insert(ConnectInfo(SocketAddr::from((Ipv4Addr::LOCALHOST, 42_002))));
+            app.oneshot(request).await.unwrap().status()
+        });
+    }
+    let mut verified = 0;
+    let mut limited = 0;
+    while let Some(status) = attempts.join_next().await {
+        match status.unwrap() {
+            StatusCode::UNAUTHORIZED => verified += 1,
+            StatusCode::TOO_MANY_REQUESTS => limited += 1,
+            other => panic!("unexpected status {other}"),
+        }
+    }
+
+    // 五次预算必须在进入密码校验前就占住，并发请求不能一起挤过检查。
+    // The five-attempt budget is reserved before password verification, so
+    // parallel requests cannot all slip past the check together.
+    assert_eq!(
+        verified, 5,
+        "{verified} guesses reached password verification"
+    );
+    assert_eq!(limited, 35);
+}
+
+#[tokio::test]
+async fn ipv6_clients_in_one_slash_64_share_one_login_budget() {
+    let context = authenticated_app().await;
+    let mut statuses = Vec::new();
+    for host in 1..=6_u16 {
+        let mut request = Request::post("/api/v1/auth/login")
+            .header(CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"username":"admin","password":"wrong-password"}"#,
+            ))
+            .unwrap();
+        let address = std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 1, 0, 0, 0, host);
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from((address, 42_003))));
+        statuses.push(context.app.clone().oneshot(request).await.unwrap().status());
+    }
+
+    assert_eq!(statuses[..5], [StatusCode::UNAUTHORIZED; 5]);
+    assert_eq!(statuses[5], StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn a_username_spray_from_one_address_does_not_lock_out_the_admin() {
+    let context = authenticated_app().await;
+    let login = |username: String, password: &str, octet: u8| {
+        let mut request = Request::post("/api/v1/auth/login")
+            .header(CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({"username": username, "password": password}).to_string(),
+            ))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from((
+                Ipv4Addr::new(203, 0, 113, octet),
+                42_004,
+            ))));
+        context.app.clone().oneshot(request)
+    };
+
+    let mut statuses = Vec::new();
+    for index in 0..21 {
+        statuses.push(
+            login(format!("guess-{index}"), "wrong-password", 9)
+                .await
+                .unwrap()
+                .status(),
+        );
+    }
+    // 喷洒的那个地址用完自己的用户名预算后被拒绝。
+    // The spraying address is refused once its username budget is spent.
+    assert_eq!(statuses[..20], [StatusCode::UNAUTHORIZED; 20]);
+    assert_eq!(statuses[20], StatusCode::TOO_MANY_REQUESTS);
+
+    // 别的地址上的管理员照常登录。
+    // The admin on another address still logs in.
+    let response = login("admin".to_owned(), "a-secure-password", 10)
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 #[tokio::test]
@@ -1250,6 +1353,102 @@ fn never_goes_finer_than_the_sampling_interval() {
     assert_eq!(trend_bucket_seconds(60), 60);
     assert_eq!(trend_bucket_seconds(5), 60);
     assert_eq!(trend_bucket_seconds(0), 60);
+}
+
+/// 健康检查处停住的宿主：测试据此在切换进行到一半时断开「请求」。
+/// A host that halts at the health check, so the test can drop the "request"
+/// while the switch is half-way through.
+struct GatedHost {
+    reached_health_check: tokio::sync::Notify,
+    release_health_check: tokio::sync::Notify,
+    calls: std::sync::Mutex<Vec<String>>,
+}
+
+impl crate::updates::ServiceHost for GatedHost {
+    fn service_running(&self) -> BoxFuture<'_, Result<bool, crate::updates::UpdateError>> {
+        Box::pin(async move { Ok(true) })
+    }
+
+    fn service_action(
+        &self,
+        action: crate::operations::ServiceAction,
+    ) -> BoxFuture<'_, Result<(), crate::updates::UpdateError>> {
+        Box::pin(async move {
+            self.calls.lock().unwrap().push(format!("{action:?}"));
+            Ok(())
+        })
+    }
+
+    fn wait_until_healthy(&self) -> BoxFuture<'_, Result<(), crate::updates::UpdateError>> {
+        Box::pin(async move {
+            self.reached_health_check.notify_one();
+            self.release_health_check.notified().await;
+            Ok(())
+        })
+    }
+
+    fn runtime_capabilities(
+        &self,
+    ) -> BoxFuture<'_, Result<Vec<String>, crate::updates::UpdateError>> {
+        Box::pin(async move { Ok(Vec::new()) })
+    }
+}
+
+#[tokio::test]
+async fn a_dropped_request_does_not_cancel_a_version_switch() {
+    use crate::updates::VersionSource;
+    use crate::updates::tests::{active_setting, switch_fixture};
+
+    let fixture = switch_fixture().await;
+    let host = std::sync::Arc::new(GatedHost {
+        reached_health_check: tokio::sync::Notify::new(),
+        release_health_check: tokio::sync::Notify::new(),
+        calls: std::sync::Mutex::new(Vec::new()),
+    });
+    let manager = fixture.manager.clone();
+    let worker_host = std::sync::Arc::clone(&host);
+    // 外层任务扮演 hyper 为这次请求驱动的处理函数。
+    // The outer task stands in for the handler hyper drives for the request.
+    let request = tokio::spawn(super::updates::run_detached(async move {
+        manager
+            .activate_version(
+                VersionSource::Action,
+                "43",
+                &serde_json::json!({"pipelines": []}),
+                &*worker_host,
+            )
+            .await
+            .map_err(|error| crate::error::AppError::Internal(error.into()))
+    }));
+    host.reached_health_check.notified().await;
+
+    // 浏览器断开：处理函数的 future 被丢弃。
+    // The browser disconnects: the handler future is dropped.
+    request.abort();
+    assert!(request.await.unwrap_err().is_cancelled());
+    host.release_health_check.notify_one();
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while active_setting(&fixture.database).await != Some(fixture.target_setting()) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "切换在请求断开后停在了半路：活动版本没有记录"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(std::fs::read(&fixture.binary_path).unwrap(), fixture.target);
+    assert_eq!(host.calls.lock().unwrap().as_slice(), ["Restart"]);
+}
+
+#[tokio::test]
+async fn a_panicking_version_switch_becomes_an_internal_error() {
+    let result = super::updates::run_detached(async {
+        assert!(!std::hint::black_box(true), "切换任务故意 panic");
+        Ok(())
+    })
+    .await;
+
+    assert!(matches!(result, Err(crate::error::AppError::Internal(_))));
 }
 
 #[test]

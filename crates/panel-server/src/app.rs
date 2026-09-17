@@ -460,7 +460,10 @@ async fn login(
     Json(request): Json<Credentials>,
 ) -> AppResult<(CookieJar, Json<AuthResponse>)> {
     let client_ip = state.trusted_proxies.client_ip(address.ip(), &headers);
-    state.login_limiter.check(client_ip, &request.username)?;
+    // 进入密码校验之前就占住一次尝试；失败时不归还，成功时下面的 clear 归还。
+    // Take one attempt before password verification; a failure keeps it and a
+    // success returns it through clear below.
+    state.login_limiter.reserve(client_ip, &request.username)?;
     let username = validate_username(&request.username).ok();
     let user = match username {
         Some(username) => state
@@ -489,9 +492,6 @@ async fn login(
         .await
         .map_err(AppError::Internal)?;
     let Some(user) = user.filter(|_| password_valid && password_allowed) else {
-        state
-            .login_limiter
-            .record_failure(client_ip, &request.username);
         return Err(AppError::InvalidCredentials);
     };
     state.login_limiter.clear(client_ip, &user.username);

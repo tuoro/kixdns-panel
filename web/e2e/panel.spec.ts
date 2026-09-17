@@ -397,15 +397,28 @@ test('系统页按「要不要现在动手」排序，更新项压成一行 @res
   await expectNoPageOverflow(page)
 })
 
-test('增强版本可安装、切换并删除非活动库存', async ({ page }) => {
+test('增强版本可安装、切换并删除非活动库存 @responsive', async ({ page }) => {
   await open(page, '/system')
   const panel = page.locator('.version-panel')
   await expect(panel.locator('.remote-versions .version-row')).not.toHaveCount(0)
-  await panel.locator('.remote-versions .version-row').first().getByRole('button', { name: '安装并启用' }).click()
-  await expect(page.locator('.toast--success').filter({ hasText: '已安装' })).toBeVisible()
+  // 切换前先确认，并按当前服务状态说清是短暂重启还是什么都不启动。
+  // Every switch asks first and says, from the service state, whether DNS restarts briefly or nothing starts.
+  await panel.locator('.remote-versions .version-row').first().getByRole('button', { name: '安装并切换' }).click()
+  await expect(page.getByRole('alertdialog')).toContainText('DNS 解析短暂中断')
+  await expect(page.getByRole('alertdialog')).toContainText('开机自启设置保持不变')
+  await expectNoPageOverflow(page)
+  await acceptConfirm(page)
+  await expect(page.locator('.toast--success').filter({ hasText: '已安装并通过健康检查' })).toBeVisible()
+
+  await page.locator('.service-line').getByRole('button', { name: '停止' }).click()
+  await acceptConfirm(page)
+  await expect(page.locator('.service-line')).toContainText('已停止')
 
   await panel.getByTitle('切换到此版本').first().click()
-  await expect(page.locator('.toast--success').filter({ hasText: '已切换' })).toBeVisible()
+  await expect(page.getByRole('alertdialog')).toContainText('不会启动服务')
+  await acceptConfirm(page)
+  await expect(page.locator('.toast--success').filter({ hasText: '服务仍停止，下次启动时生效' })).toBeVisible()
+  await expect(page.locator('.service-line')).toContainText('已停止')
 
   await panel.getByRole('button', { name: '删除本地版本' }).first().click()
   await acceptConfirm(page)

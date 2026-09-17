@@ -1,18 +1,24 @@
 use std::io::{Cursor, Write};
+use std::sync::Mutex as StdMutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+use futures_util::future::BoxFuture;
 use tempfile::tempdir;
 
+use super::ServiceHost;
 use super::validation::ParsedArtifactReference;
 use super::{
     ARTIFACT_PAGE_SIZE, BuildIdentity, GithubRelease, MANIFEST_SCHEMA_VERSION, MAX_ARTIFACT_PAGES,
     ReleaseAsset, RemoteVersion, TrackReference, UpdateError, UpdateManager, UpdateSettings,
-    VersionKey, VersionManifest, VersionSource, artifact_page_count, delete_stored_version,
-    extract_artifact, load_bundled_manifest, load_verified_version, panel_release_asset_name,
-    parse_artifact_reference, sha256, store_version, to_kixdns_update_notice,
-    to_panel_update_notice, update_stored_capabilities, validate_commit, validate_digest,
-    validate_github_token, validate_remote_build_identity, validate_slug, write_github_token,
+    VersionKey, VersionManifest, VersionSource, WorkflowRuns, artifact_page_count,
+    delete_stored_version, extract_artifact, load_bundled_manifest, load_verified_version,
+    panel_release_asset_name, parse_artifact_reference, sha256, store_version,
+    to_kixdns_update_notice, to_panel_update_notice, trusted_workflow_runs,
+    update_stored_capabilities, validate_commit, validate_digest, validate_github_token,
+    validate_remote_build_identity, validate_slug, workflow_runs_url, write_github_token,
 };
 use crate::db::Database;
+use crate::operations::ServiceAction;
 
 const TEST_BUILD_COMMIT: &str = "4e8002d08a56afc08be335d0d5ed337c7690f9af";
 
@@ -882,4 +888,317 @@ fn verifies_package_identity_against_selected_track() {
     wrong_track.run_id = None;
     wrong_track.release_tag = Some("v0.1.1".to_owned());
     assert!(validate_remote_build_identity(&wrong_track, &identity).is_err());
+}
+
+#[test]
+fn catalogue_keeps_only_this_repository_push_schedule_and_dispatch_runs() {
+    let commit = "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25";
+    let run = |id: u64, event: &str, branch: &str, repository: &str| {
+        serde_json::json!({
+            "id": id,
+            "head_sha": commit,
+            "created_at": "2026-09-01T00:00:00Z",
+            "html_url": format!("https://github.com/tuoro/kixdns-panel/actions/runs/{id}"),
+            "event": event,
+            "head_branch": branch,
+            "head_repository": {"full_name": repository},
+        })
+    };
+    let mut missing_event = run(8, "push", "main", "tuoro/kixdns-panel");
+    missing_event.as_object_mut().unwrap().remove("event");
+    let mut null_repository = run(9, "push", "main", "tuoro/kixdns-panel");
+    null_repository["head_repository"] = serde_json::Value::Null;
+    // 最新的是 fork 从自己的 main 发来的 pull request，它必须被排除。
+    // The newest run is a pull request from a fork's own main; it must go.
+    let fixture = serde_json::json!({
+        "workflow_runs": [
+            run(14, "pull_request", "main", "attacker/kixdns-panel"),
+            run(13, "pull_request_target", "main", "tuoro/kixdns-panel"),
+            run(12, "push", "main", "attacker/kixdns-panel"),
+            run(11, "push", "feature", "tuoro/kixdns-panel"),
+            missing_event,
+            null_repository,
+            run(7, "push", "main", "Tuoro/KixDNS-Panel"),
+            run(6, "schedule", "main", "tuoro/kixdns-panel"),
+            run(5, "workflow_dispatch", "main", "tuoro/kixdns-panel"),
+        ]
+    });
+    let runs: WorkflowRuns = serde_json::from_value(fixture).unwrap();
+
+    let kept = trusted_workflow_runs(runs.workflow_runs, "tuoro/kixdns-panel", "main", 30);
+
+    assert_eq!(
+        kept.iter().map(|run| run.id).collect::<Vec<_>>(),
+        vec![7, 6, 5]
+    );
+}
+
+#[test]
+fn untrusted_runs_at_the_top_do_not_crowd_trusted_ones_out_of_the_page() {
+    let commit = "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25";
+    // 最新的 40 次是 fork 的 pull request，比面板要的 30 条还多。
+    // The newest 40 runs are fork pull requests, more than the 30 the panel asks for.
+    let all_runs = (0..100_u64)
+        .map(|index| {
+            let untrusted = index < 40;
+            serde_json::json!({
+                "id": 1_000 - index,
+                "head_sha": commit,
+                "created_at": "2026-09-01T00:00:00Z",
+                "html_url": "https://github.com/tuoro/kixdns-panel/actions/runs/1",
+                "event": if untrusted { "pull_request" } else { "push" },
+                "head_branch": "main",
+                "head_repository": {
+                    "full_name": if untrusted { "attacker/kixdns-panel" } else { "tuoro/kixdns-panel" }
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    let url = workflow_runs_url("tuoro/kixdns-panel", "build-kixdns.yml", "main");
+    let per_page = url
+        .split(['?', '&'])
+        .find_map(|pair| pair.strip_prefix("per_page="))
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    // GitHub 按 per_page 返回最新的若干条。
+    // GitHub returns the newest per_page runs.
+    let served: WorkflowRuns = serde_json::from_value(serde_json::json!({
+        "workflow_runs": all_runs.into_iter().take(per_page).collect::<Vec<_>>(),
+    }))
+    .unwrap();
+
+    let kept = trusted_workflow_runs(served.workflow_runs, "tuoro/kixdns-panel", "main", 30);
+
+    assert_eq!(kept.len(), 30);
+    assert_eq!(kept.first().map(|run| run.id), Some(960));
+}
+
+/// 记录切换期间对宿主机做了什么的假宿主。
+/// A fake host that records what a switch did to the host.
+struct FakeHost {
+    running: bool,
+    failed_health_checks: AtomicUsize,
+    calls: StdMutex<Vec<String>>,
+}
+
+impl FakeHost {
+    fn new(running: bool) -> Self {
+        Self {
+            running,
+            failed_health_checks: AtomicUsize::new(0),
+            calls: StdMutex::new(Vec::new()),
+        }
+    }
+
+    fn failing_first_health_check(running: bool) -> Self {
+        let host = Self::new(running);
+        host.failed_health_checks.store(1, Ordering::SeqCst);
+        host
+    }
+
+    fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+impl ServiceHost for FakeHost {
+    fn service_running(&self) -> BoxFuture<'_, Result<bool, UpdateError>> {
+        Box::pin(async move { Ok(self.running) })
+    }
+
+    fn service_action(&self, action: ServiceAction) -> BoxFuture<'_, Result<(), UpdateError>> {
+        Box::pin(async move {
+            self.calls.lock().unwrap().push(format!("{action:?}"));
+            Ok(())
+        })
+    }
+
+    fn wait_until_healthy(&self) -> BoxFuture<'_, Result<(), UpdateError>> {
+        Box::pin(async move {
+            self.calls.lock().unwrap().push("Health".to_owned());
+            let failing = self
+                .failed_health_checks
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                    left.checked_sub(1)
+                })
+                .is_ok();
+            if failing {
+                return Err(UpdateError::Install("健康检查失败".to_owned()));
+            }
+            Ok(())
+        })
+    }
+
+    fn runtime_capabilities(&self) -> BoxFuture<'_, Result<Vec<String>, UpdateError>> {
+        Box::pin(async move { Ok(Vec::new()) })
+    }
+}
+
+pub(crate) struct SwitchFixture {
+    _directory: tempfile::TempDir,
+    pub(crate) manager: UpdateManager,
+    pub(crate) database: Database,
+    pub(crate) binary_path: std::path::PathBuf,
+    pub(crate) current: Vec<u8>,
+    pub(crate) target: Vec<u8>,
+    target_key: VersionKey,
+}
+
+impl SwitchFixture {
+    /// 切换成功后数据库里应记录的活动版本。
+    /// The active version the database should record after a successful switch.
+    pub(crate) fn target_setting(&self) -> String {
+        self.target_key.encoded()
+    }
+}
+
+/// 当前运行 Artifact 42，本地另存了一个可切换的 Artifact 43。
+/// Artifact 42 is active and Artifact 43 is stored locally, ready to switch to.
+pub(crate) async fn switch_fixture() -> SwitchFixture {
+    let directory = tempdir().unwrap();
+    let database = Database::open(directory.path().join("panel.db"))
+        .await
+        .unwrap();
+    let binary_path = directory.path().join("bin/kixdns");
+    let versions_path = directory.path().join("versions");
+    let manager = UpdateManager::new(
+        database.clone(),
+        UpdateSettings {
+            repository: "tuoro/kixdns-panel".to_owned(),
+            workflow: "build-kixdns.yml".to_owned(),
+            release_workflow: "build-kixdns-release.yml".to_owned(),
+            branch: "main".to_owned(),
+            artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
+            installed_commit: None,
+            installed_source_id: None,
+            panel_installed_commit: None,
+            panel_installed_release: None,
+            binary_path: binary_path.clone(),
+            versions_path: versions_path.clone(),
+            bundled_metadata: directory.path().join("bundle"),
+            github_token_path: directory.path().join("github-token"),
+        },
+    )
+    .unwrap();
+    let current = test_elf();
+    let mut target = test_elf();
+    target[31] = 7;
+    let current_commit = "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25";
+    let current_key = VersionKey::tracked(VersionSource::Action, 42, current_commit).unwrap();
+    let target_key = VersionKey::tracked(VersionSource::Action, 43, TEST_BUILD_COMMIT).unwrap();
+    std::fs::write(&binary_path, &current).unwrap();
+    store_version(
+        &versions_path,
+        &test_manifest(42, current_commit, &current),
+        &current,
+    )
+    .unwrap();
+    store_version(
+        &versions_path,
+        &test_manifest(43, TEST_BUILD_COMMIT, &target),
+        &target,
+    )
+    .unwrap();
+    database
+        .set_setting(super::ACTIVE_VERSION_KEY, current_key.encoded(), 42)
+        .await
+        .unwrap();
+    SwitchFixture {
+        _directory: directory,
+        manager,
+        database,
+        binary_path,
+        current,
+        target,
+        target_key,
+    }
+}
+
+pub(crate) async fn active_setting(database: &Database) -> Option<String> {
+    database
+        .get_setting(super::ACTIVE_VERSION_KEY)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn switching_a_running_service_restarts_once_without_stop_or_start() {
+    let fixture = switch_fixture().await;
+    let host = FakeHost::new(true);
+
+    fixture
+        .manager
+        .activate_version(
+            VersionSource::Action,
+            "43",
+            &serde_json::json!({"pipelines": []}),
+            &host,
+        )
+        .await
+        .unwrap();
+
+    // Start/Stop 经 helper 会 enable/disable，切换版本不能改开机策略。
+    // Start/Stop through the helper enable/disable; a switch must not change boot behaviour.
+    assert_eq!(host.calls(), ["Restart", "Health"]);
+    assert_eq!(std::fs::read(&fixture.binary_path).unwrap(), fixture.target);
+    assert_eq!(
+        active_setting(&fixture.database).await,
+        Some(fixture.target_key.encoded())
+    );
+}
+
+#[tokio::test]
+async fn switching_a_stopped_service_only_replaces_the_binary() {
+    let fixture = switch_fixture().await;
+    let host = FakeHost::new(false);
+
+    fixture
+        .manager
+        .activate_version(
+            VersionSource::Action,
+            "43",
+            &serde_json::json!({"pipelines": []}),
+            &host,
+        )
+        .await
+        .unwrap();
+
+    // 停着的服务不能因为切换版本就启动：DNS 不该意外开始监听 53 端口。
+    // A stopped service must not start because of a switch: DNS must not
+    // unexpectedly begin listening on port 53.
+    assert!(host.calls().is_empty(), "{:?}", host.calls());
+    assert_eq!(std::fs::read(&fixture.binary_path).unwrap(), fixture.target);
+    assert_eq!(
+        active_setting(&fixture.database).await,
+        Some(fixture.target_key.encoded())
+    );
+}
+
+#[tokio::test]
+async fn unhealthy_switch_restores_the_previous_binary_with_restart_only() {
+    let fixture = switch_fixture().await;
+    let host = FakeHost::failing_first_health_check(true);
+
+    let error = fixture
+        .manager
+        .activate_version(
+            VersionSource::Action,
+            "43",
+            &serde_json::json!({"pipelines": []}),
+            &host,
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, UpdateError::Install(_)), "{error}");
+    assert_eq!(host.calls(), ["Restart", "Health", "Restart", "Health"]);
+    assert_eq!(
+        std::fs::read(&fixture.binary_path).unwrap(),
+        fixture.current
+    );
+    assert_ne!(
+        active_setting(&fixture.database).await,
+        Some(fixture.target_key.encoded())
+    );
 }

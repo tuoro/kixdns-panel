@@ -83,9 +83,10 @@ REPOSITORY=tuoro/kixdns-panel
 WORKFLOW=build-panel.yml
 ARTIFACT=kixdns-panel-linux-x86_64   # 或 kixdns-panel-linux-arm64
 
+# 只取本仓库自己 push 触发的运行：fork 发来的 PR 也可能出现在 branch=main 的结果里
 RUN_ID="$(curl -fsSL \
-  "https://api.github.com/repos/${REPOSITORY}/actions/workflows/${WORKFLOW}/runs?branch=main&status=success&per_page=1" \
-  | jq -r '.workflow_runs[0].id')"
+  "https://api.github.com/repos/${REPOSITORY}/actions/workflows/${WORKFLOW}/runs?branch=main&status=success&event=push&per_page=20" \
+  | jq -r --arg repo "$REPOSITORY" '[.workflow_runs[] | select(.head_repository.full_name == $repo)][0].id')"
 DIGEST="$(curl -fsSL \
   "https://api.github.com/repos/${REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
   | jq -r --arg name "$ARTIFACT" '.artifacts[] | select(.name == $name and .expired == false) | .digest')"
@@ -188,7 +189,7 @@ sudo systemctl restart kixdns-panel.service
 
 - 只有启动、停止、重启三个动作；没有「重载」
 - **启动**同时启用开机自启，**停止**同时禁用，**重启**不改变开机策略——宿主机重启后保持你最后的选择
-- 首次安装为停止且未启用；迁移与覆盖升级保留原有启停与开机状态
+- 首次安装为停止且未启用；迁移、覆盖升级和「系统」页切换版本都保留原有启停与开机状态
 - KixDNS 停止后，概览和查询排行继续显示最后一次数据并标明已停止更新
 
 配置保存不重启服务，而是走 KixDNS 的文件监听热加载：写入前由 KixDNS 校验，写入后必须等到新的 `reload_sequence` 且摘要一致，否则面板恢复旧配置。
@@ -205,7 +206,8 @@ sudo systemctl restart kixdns-panel.service
 1. 只接受来源类型和 Artifact ID，在固定工作流的最近 30 次成功运行里重新查找，不接受前端给的 URL 或路径
 2. 校验 Artifact digest、包内 `SHA256SUMS`、上游身份、补丁集、控制协议、ELF 格式与 CPU 架构
 3. 用包内能力清单预检当前配置，不兼容就返回 `422 unsupported_config_fields`，不停服务、不改配置
-4. 激活时再次校验，停服务 → 替换二进制 → 启动 → 等待健康检查；失败则恢复原状态
+4. 激活时再次校验并替换二进制，保持服务原来的启停状态：运行中的服务重启一次并等待健康检查，失败则换回原版本再重启；已停止的服务不会被启动，新版本在下次启动时生效。切换从不改变开机自启
+5. 切换在独立的后台任务里执行，浏览器中途断开不会让它停在半路
 
 已下载的版本可离线切换，本地最多保留 8 个（始终保留当前版本）。Actions Artifact 在 GitHub 上保留 90 天，每周任务会提前 7 天续建；远端过期不影响本地已下载的版本。
 
@@ -270,6 +272,8 @@ sudo kixdns-panel-uninstall
 - 迁移安装的主机选择移除增强版，会先恢复迁移前的 unit 和启停状态
 - 选择移除 KixDNS 时，安装器关闭过的 systemd-resolved 本机监听和 `/etc/resolv.conf` 一并恢复
 - 早期「仅安装面板」模式的主机，卸载器始终保留原来的 KixDNS
+- 上次卸载保留了 KixDNS 并删除了配置，再次运行卸载器时 KixDNS 仍然保留，即使指定 `--remove-kixdns`
+- 保留的程序已经不在、只剩 unit 时（v3.1.1 重复卸载留下的状态），面板创建的 unit 随面板移除，其他 unit 原样保留并给出提示
 
 无人值守：
 

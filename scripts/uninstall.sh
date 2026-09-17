@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+PANEL_CONFIG_DIRECTORY=/etc/kixdns-panel
+PANEL_STATE_DIRECTORY=/var/lib/kixdns-panel
+SYSTEMD_UNIT_DIRECTORY=/etc/systemd/system
 PANEL_ENV=/etc/kixdns-panel/panel.env
 EXTERNAL_BACKUP=/var/lib/kixdns-panel/external-backup
 # 安装器关闭 systemd-resolved 本机监听时留下的记录；移除 KixDNS 时据此恢复。
@@ -19,6 +22,11 @@ ORIGINAL_UNIT=""
 ORIGINAL_ENABLED=false
 ORIGINAL_ACTIVE=false
 RESTORED_EXTERNAL=false
+KIXDNS_KEPT_EARLIER=false
+# 指向面板目录里、但程序已经不在的 unit：前者由面板创建、随面板移除，后者不是面板创建的、原样保留。
+# Units pointing at the panel's kixdns after the binary is gone: panel-created ones go with the panel, others stay.
+DEAD_PANEL_UNITS=()
+DEAD_FOREIGN_UNITS=()
 
 fail() {
   printf '卸载失败：%s\n' "$*" >&2
@@ -111,6 +119,79 @@ backup_value() {
   awk -F= -v key="${key}" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "${file}"
 }
 
+unit_runs_managed_binary() {
+  local file=$1
+  [[ -f ${file} && ! -L ${file} ]] || return 1
+  awk -v binary="${PANEL_STATE_DIRECTORY}/bin/kixdns" '
+    /^[[:space:]]*ExecStart[[:space:]]*=/ && index($0, binary) { found = 1 }
+    END { exit !found }
+  ' "${file}"
+}
+
+# 保留只对真实存在的程序有意义：普通文件、不是符号链接、可执行。
+# Keeping only means something for a binary that is really there: a regular, non-symlink, executable file.
+managed_binary_present() {
+  local binary=${PANEL_STATE_DIRECTORY}/bin/kixdns
+  [[ -f ${binary} && ! -L ${binary} && -x ${binary} ]]
+}
+
+# 面板写出的 unit 带面板的 Documentation= 行，或者是安装器渲染的 ExecStart 形状。
+# A unit the panel wrote carries the panel's Documentation= line or the ExecStart shape the installer renders.
+unit_created_by_panel() {
+  local file=$1
+  awk -v binary="${PANEL_STATE_DIRECTORY}/bin/kixdns" '
+    /^Documentation=https:\/\/github\.com\/tuoro\/kixdns-panel[[:space:]]*$/ { found = 1 }
+    $1 == "ExecStart=" binary && $2 == "run" && $3 == "--config" && $4 ~ /^\// &&
+      $5 == "--admin-socket" && $6 ~ /^\// && NF == 6 { found = 1 }
+    END { exit !found }
+  ' "${file}"
+}
+
+# 还有 unit 在运行面板目录里的 kixdns 时，就不能整个删掉状态目录。
+# While any unit still runs the kixdns inside the panel's state directory, that directory must not be removed wholesale.
+managed_binary_in_use() {
+  local file
+  managed_binary_present || return 1
+  for file in "${SYSTEMD_UNIT_DIRECTORY}"/*.service; do
+    unit_runs_managed_binary "${file}" && return 0
+  done
+  return 1
+}
+
+detect_kept_kixdns() {
+  local file
+  local unit
+  # 上一次卸载选择保留 KixDNS 并删除配置时，panel.env 已经没了，但 unit 仍在运行面板目录里的程序。
+  # 这时按「面板管理、已选择保留」处理；否则第二次卸载会把保留的程序连同状态目录删掉，重启后主机没有 DNS。
+  # When an earlier uninstall kept KixDNS and removed the config, panel.env is gone but a unit still
+  # runs the binary in the panel's directory. Treat it as panel-managed and kept; otherwise a second run
+  # deletes the kept binary with the state directory and the host has no DNS after the next reboot.
+  # 程序已经不在（v3.1.1 的重复卸载会删掉它、留下 unit）时没有可保留的东西：不能强制保留，否则删除配置时找不到二进制而失败。
+  # When the binary is gone (v3.1.1's repeated uninstall deleted it and left the unit) there is nothing to keep:
+  # forcing keep would make removing the config fail on the missing binary.
+  for file in "${SYSTEMD_UNIT_DIRECTORY}"/*.service; do
+    unit_runs_managed_binary "${file}" || continue
+    unit=${file##*/}
+    case ${unit} in
+      kixdns-panel.service | kixdns-panel-helper.service | kixdns-panel-update.service) continue ;;
+    esac
+    if ! managed_binary_present; then
+      if unit_created_by_panel "${file}"; then
+        DEAD_PANEL_UNITS+=("${unit}")
+        printf '%s 指向的 KixDNS 程序已不存在；该 unit 由面板创建，将随面板一起移除。\n' "${unit}"
+      else
+        DEAD_FOREIGN_UNITS+=("${unit}")
+        printf '%s 指向的 KixDNS 程序已不存在；该 unit 不是面板创建的，保留不动，请自行处理。\n' "${unit}"
+      fi
+      continue
+    fi
+    KIXDNS_SERVICE_UNIT=${unit}
+    KIXDNS_MANAGED=true
+    KIXDNS_KEPT_EARLIER=true
+    return 0
+  done
+}
+
 load_settings() {
   local value
   if [[ -f ${PANEL_ENV} ]]; then
@@ -124,6 +205,8 @@ load_settings() {
     [[ ${value} == false ]] || KIXDNS_MANAGED=true
     value="$(environment_value KIXDNS_SERVICE_UNIT || true)"
     [[ -z ${value} ]] || KIXDNS_SERVICE_UNIT=${value}
+  else
+    detect_kept_kixdns
   fi
   # 规则以 panel-server 的 Operations::new 为准（scripts/test-unit-name-rule.sh 校对）。
   # The rule is panel-server's Operations::new (checked by scripts/test-unit-name-rule.sh).
@@ -147,8 +230,15 @@ close_terminal() {
 
 choose_kixdns_action() {
   local choice=""
-  if [[ ${KIXDNS_MANAGED} != true ]]; then
+  if [[ ${KIXDNS_KEPT_EARLIER} == true ]]; then
     if [[ ${KIXDNS_ACTION} == remove ]]; then
+      printf '上次卸载保留了 KixDNS（%s），面板配置已删除，无法确认如何安全移除；这次同样保留。\n' "${KIXDNS_SERVICE_UNIT}"
+    fi
+    KIXDNS_ACTION=keep
+    return
+  fi
+  if [[ ${KIXDNS_MANAGED} != true ]]; then
+    if [[ ${KIXDNS_ACTION} == remove && ${#DEAD_PANEL_UNITS[@]} -eq 0 && ${#DEAD_FOREIGN_UNITS[@]} -eq 0 ]]; then
       printf '当前使用外部 KixDNS；为防止误删，卸载器只移除面板并保留外部 KixDNS。\n'
     fi
     KIXDNS_ACTION=keep
@@ -234,10 +324,10 @@ load_external_backup() {
 
 validate_removal_targets() {
   [[ ${CONFIG_ACTION} == remove ]] || return 0
-  [[ ! -L /etc/kixdns-panel && ! -L /var/lib/kixdns-panel ]] ||
+  [[ ! -L ${PANEL_CONFIG_DIRECTORY} && ! -L ${PANEL_STATE_DIRECTORY} ]] ||
     fail "配置目录不能是符号链接"
   if [[ ${KIXDNS_MANAGED} == true && ${KIXDNS_ACTION} == keep ]]; then
-    [[ -f /var/lib/kixdns-panel/bin/kixdns && ! -L /var/lib/kixdns-panel/bin/kixdns ]] ||
+    [[ -f ${PANEL_STATE_DIRECTORY}/bin/kixdns && ! -L ${PANEL_STATE_DIRECTORY}/bin/kixdns ]] ||
       fail "找不到需要保留的 KixDNS 二进制"
   fi
 }
@@ -306,12 +396,21 @@ remove_panel_components() {
   rm -rf -- /var/lib/kixdns-panel-update
 }
 
+remove_dead_kixdns_units() {
+  local unit
+  for unit in "${DEAD_PANEL_UNITS[@]}"; do
+    stop_unit "${unit}"
+    wait_for_unit_inactive "${unit}"
+    rm -f -- "${SYSTEMD_UNIT_DIRECTORY}/${unit}"
+  done
+}
+
 remove_managed_kixdns() {
   [[ ${KIXDNS_MANAGED} == true && ${KIXDNS_ACTION} == remove ]] || return 0
   stop_unit "${KIXDNS_SERVICE_UNIT}"
   wait_for_unit_inactive "${KIXDNS_SERVICE_UNIT}"
-  rm -f -- "/etc/systemd/system/${KIXDNS_SERVICE_UNIT}"
-  rm -f -- /var/lib/kixdns-panel/bin/kixdns /var/lib/kixdns-panel/bin/.kixdns.new
+  rm -f -- "${SYSTEMD_UNIT_DIRECTORY}/${KIXDNS_SERVICE_UNIT}"
+  rm -f -- "${PANEL_STATE_DIRECTORY}/bin/kixdns" "${PANEL_STATE_DIRECTORY}/bin/.kixdns.new"
   rm -rf -- /run/kixdns
   if [[ ${HAS_EXTERNAL_BACKUP} == true ]]; then
     if [[ -f ${EXTERNAL_BACKUP}/kixdns.service ]]; then
@@ -324,19 +423,20 @@ remove_managed_kixdns() {
 
 remove_panel_state() {
   [[ ${CONFIG_ACTION} == remove ]] || return 0
-  rm -rf -- /etc/kixdns-panel
-  rm -f -- /var/lib/kixdns-panel/github-token
-  if [[ ${KIXDNS_MANAGED} == true && ${KIXDNS_ACTION} == keep ]]; then
-    rm -f -- /var/lib/kixdns-panel/panel.db /var/lib/kixdns-panel/panel.db-shm \
-      /var/lib/kixdns-panel/panel.db-wal
-    rm -rf -- /var/lib/kixdns-panel/versions /var/lib/kixdns-panel/geo \
-      /var/lib/kixdns-panel/external-backup
-    chown kixdns:kixdns -- /var/lib/kixdns-panel /var/lib/kixdns-panel/bin \
-      /var/lib/kixdns-panel/bin/kixdns
-    chmod 0750 -- /var/lib/kixdns-panel /var/lib/kixdns-panel/bin
-    chmod 0755 -- /var/lib/kixdns-panel/bin/kixdns
+  local state=${PANEL_STATE_DIRECTORY}
+  rm -f -- "${state}/github-token"
+  # 保留的 KixDNS 就在状态目录里：只要还有 unit 指向它，就只删面板自己的数据，绝不整个删目录。
+  # The kept KixDNS lives in the state directory: while any unit points at it, remove only the panel's data, never the whole directory.
+  if [[ ${KIXDNS_MANAGED} == true && ${KIXDNS_ACTION} == keep ]] || managed_binary_in_use; then
+    rm -f -- "${state}/panel.db" "${state}/panel.db-shm" "${state}/panel.db-wal"
+    rm -rf -- "${state}/versions" "${state}/geo" "${state}/external-backup"
+    if [[ -f ${state}/bin/kixdns ]]; then
+      chown kixdns:kixdns -- "${state}" "${state}/bin" "${state}/bin/kixdns"
+      chmod 0750 -- "${state}" "${state}/bin"
+      chmod 0755 -- "${state}/bin/kixdns"
+    fi
   else
-    rm -rf -- /var/lib/kixdns-panel
+    rm -rf -- "${state}"
   fi
   remove_account kixdns-panel
   if [[ ${KIXDNS_MANAGED} == true && ${KIXDNS_ACTION} == remove && \
@@ -345,6 +445,9 @@ remove_panel_state() {
     remove_account kixdns
     groupdel kixdns 2>/dev/null || true
   fi
+  # panel.env 是判断 KixDNS 归属的依据，最后才删：中途失败后重跑仍能认出面板管理的 KixDNS。
+  # panel.env is how ownership is decided, so it goes last: a rerun after a mid-way failure still recognises the managed KixDNS.
+  rm -rf -- "${PANEL_CONFIG_DIRECTORY}"
 }
 
 state_value() {
@@ -411,7 +514,9 @@ restore_external_state() {
 
 print_result() {
   printf 'KixDNS Panel 已卸载。\n'
-  if [[ ${KIXDNS_ACTION} == keep ]]; then
+  if [[ ${#DEAD_PANEL_UNITS[@]} -gt 0 || ${#DEAD_FOREIGN_UNITS[@]} -gt 0 ]]; then
+    printf '面板目录里的 KixDNS 程序已不存在，没有可保留的 KixDNS。\n'
+  elif [[ ${KIXDNS_ACTION} == keep ]]; then
     printf 'KixDNS 已保留并继续独立运行。\n'
   elif [[ ${RESTORED_EXTERNAL} == false ]]; then
     printf '面板管理的 KixDNS 已移除。\n'
@@ -427,6 +532,12 @@ main() {
   parse_arguments "$@"
   [[ ${EUID} -eq 0 ]] || fail "请使用 root 权限运行"
   command -v systemctl >/dev/null 2>&1 || fail "系统未安装 systemd"
+  run_uninstall
+}
+
+# 权限检查之后的全部步骤；拆出来是为了策略测试能在临时目录里把整个流程连跑两次。
+# Every step after the privilege checks; split out so the policy test can run the whole flow twice in a temporary tree.
+run_uninstall() {
   load_settings
   validate_non_interactive
   choose_kixdns_action
@@ -437,6 +548,7 @@ main() {
   fi
   validate_removal_targets
   remove_panel_components
+  remove_dead_kixdns_units
   remove_managed_kixdns
   restore_resolved_stub
   remove_panel_state

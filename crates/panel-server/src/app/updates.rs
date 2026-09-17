@@ -9,11 +9,36 @@ use crate::auth::{authenticate, unix_timestamp, verify_csrf};
 use crate::error::{AppError, AppResult};
 use crate::panel_update::{PanelUpdateStatus, read_status as read_panel_update_status};
 use crate::updates::{
-    GithubTokenStatus, InstalledVersion, UpdateInfo, UpdateNotifications, VersionCatalog,
-    VersionSource,
+    GithubTokenStatus, InstalledVersion, LiveServiceHost, UpdateInfo, UpdateNotifications,
+    VersionCatalog, VersionSource,
 };
 
 use super::{AppState, map_config_error, map_operation_error, map_update_error};
+
+fn live_host(state: &AppState) -> LiveServiceHost {
+    LiveServiceHost::new(state.operations.clone(), state.control.clone())
+}
+
+/// 在独立任务里跑完持锁的版本切换，处理函数只负责等结果。
+/// 浏览器断开时 hyper 会丢弃处理函数的 future；切换若直接在里面 await，
+/// 就会停在「服务已重启、活动版本未记录、审计未写」这样的半路上。放进
+/// `tokio::spawn` 后，丢弃的只是等待，切换本身照常完成或回滚。任务 panic
+/// 时转成内部错误。
+/// Run the lock-held version switch on its own task and let the handler only
+/// wait for it. When the browser disconnects hyper drops the handler future;
+/// awaiting the switch inline would stop it half-way, with the service
+/// restarted but the active version and audit unrecorded. Under `tokio::spawn`
+/// only the waiting is dropped and the switch completes or rolls back. A
+/// panicking task becomes an internal error.
+pub(super) async fn run_detached<T, F>(work: F) -> AppResult<T>
+where
+    F: Future<Output = AppResult<T>> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::spawn(work).await.map_err(|error| {
+        AppError::Internal(anyhow::anyhow!("KixDNS 版本切换任务异常结束：{error}"))
+    })?
+}
 
 #[derive(Debug, Serialize)]
 struct PanelUpdateStartResponse {
@@ -220,24 +245,27 @@ async fn apply_update(
 ) -> AppResult<Json<UpdateInfo>> {
     let session = authenticate(&state.database, &jar).await?;
     verify_csrf(&session, &jar, &headers)?;
-    let _apply_guard = state.config_apply_lock.lock().await;
-    let config = state.config.current().await.map_err(map_config_error)?;
-    let result = state
-        .updates
-        .apply(&config.content, &state.operations, &state.control)
-        .await
-        .map_err(map_update_error)?;
-    state
-        .database
-        .audit(
-            Some(session.username),
-            "update.apply".to_owned(),
-            format!("安装增强构建 {}", result.latest_commit),
-            unix_timestamp(),
-        )
-        .await
-        .map_err(AppError::Internal)?;
-    Ok(Json(result))
+    run_detached(async move {
+        let _apply_guard = state.config_apply_lock.lock().await;
+        let config = state.config.current().await.map_err(map_config_error)?;
+        let result = state
+            .updates
+            .apply(&config.content, &live_host(&state))
+            .await
+            .map_err(map_update_error)?;
+        state
+            .database
+            .audit(
+                Some(session.username),
+                "update.apply".to_owned(),
+                format!("安装增强构建 {}", result.latest_commit),
+                unix_timestamp(),
+            )
+            .await
+            .map_err(AppError::Internal)?;
+        Ok(Json(result))
+    })
+    .await
 }
 
 async fn kixdns_versions(
@@ -262,30 +290,27 @@ async fn install_kixdns_version(
 ) -> AppResult<Json<InstalledVersion>> {
     let session = authenticate(&state.database, &jar).await?;
     verify_csrf(&session, &jar, &headers)?;
-    let _apply_guard = state.config_apply_lock.lock().await;
-    let config = state.config.current().await.map_err(map_config_error)?;
-    let result = state
-        .updates
-        .install_version(
-            source,
-            source_id,
-            &config.content,
-            &state.operations,
-            &state.control,
-        )
-        .await
-        .map_err(map_update_error)?;
-    state
-        .database
-        .audit(
-            Some(session.username),
-            "kixdns.version.install".to_owned(),
-            format!("从 {source:?} 安装并激活增强构建 {}", result.commit),
-            unix_timestamp(),
-        )
-        .await
-        .map_err(AppError::Internal)?;
-    Ok(Json(result))
+    run_detached(async move {
+        let _apply_guard = state.config_apply_lock.lock().await;
+        let config = state.config.current().await.map_err(map_config_error)?;
+        let result = state
+            .updates
+            .install_version(source, source_id, &config.content, &live_host(&state))
+            .await
+            .map_err(map_update_error)?;
+        state
+            .database
+            .audit(
+                Some(session.username),
+                "kixdns.version.install".to_owned(),
+                format!("从 {source:?} 安装并激活增强构建 {}", result.commit),
+                unix_timestamp(),
+            )
+            .await
+            .map_err(AppError::Internal)?;
+        Ok(Json(result))
+    })
+    .await
 }
 
 async fn activate_kixdns_version(
@@ -296,30 +321,27 @@ async fn activate_kixdns_version(
 ) -> AppResult<Json<InstalledVersion>> {
     let session = authenticate(&state.database, &jar).await?;
     verify_csrf(&session, &jar, &headers)?;
-    let _apply_guard = state.config_apply_lock.lock().await;
-    let config = state.config.current().await.map_err(map_config_error)?;
-    let result = state
-        .updates
-        .activate_version(
-            source,
-            &commit,
-            &config.content,
-            &state.operations,
-            &state.control,
-        )
-        .await
-        .map_err(map_update_error)?;
-    state
-        .database
-        .audit(
-            Some(session.username),
-            "kixdns.version.activate".to_owned(),
-            format!("切换增强构建 {}", result.commit),
-            unix_timestamp(),
-        )
-        .await
-        .map_err(AppError::Internal)?;
-    Ok(Json(result))
+    run_detached(async move {
+        let _apply_guard = state.config_apply_lock.lock().await;
+        let config = state.config.current().await.map_err(map_config_error)?;
+        let result = state
+            .updates
+            .activate_version(source, &commit, &config.content, &live_host(&state))
+            .await
+            .map_err(map_update_error)?;
+        state
+            .database
+            .audit(
+                Some(session.username),
+                "kixdns.version.activate".to_owned(),
+                format!("切换增强构建 {}", result.commit),
+                unix_timestamp(),
+            )
+            .await
+            .map_err(AppError::Internal)?;
+        Ok(Json(result))
+    })
+    .await
 }
 
 async fn delete_kixdns_version(
