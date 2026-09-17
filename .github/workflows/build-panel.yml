@@ -99,10 +99,18 @@ jobs:
           cargo test --workspace --locked
           cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      # 这里平时靠 rust-cache 里的 ~/.cargo/bin 跳过编译，Cargo.lock 一变缓存失效就要重编约 2 分 45 秒；
+      # 预编译包让两种情况都只需几秒，版本不变并校验 SHA-256。
+      # rust-cache's ~/.cargo/bin usually skips the build here, but any Cargo.lock change misses the cache
+      # and recompiles for ~2m45s; the prebuilt binary takes seconds either way, same version, SHA-256 checked.
+      - name: Install dependency auditor
+        uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
+        with:
+          tool: cargo-audit@0.22.2
+          fallback: none
+
       - name: Audit panel dependencies
-        run: |
-          cargo install cargo-audit --version 0.22.2 --locked
-          cargo audit --deny warnings
+        run: cargo audit --deny warnings
 
       - name: Verify design tokens
         run: bash scripts/check-design-tokens.sh

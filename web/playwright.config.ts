@@ -26,9 +26,11 @@ export default defineConfig({
     {
       // 手机视口只跑带 @responsive 标记的用例：其余用例在两个视口里断言完全相同，
       // 重跑一遍只是复制桌面结果。新增依赖视口的断言时记得给标题加上这个标记。
+      // 设计目标是 375px 宽；按 390 跑会让只在 375 才挤出来的布局问题一路绿灯。
+      // The design target is 375px wide; running at 390 let layout breaks that appear only at 375 pass.
       name: 'mobile',
       grep: /@responsive/,
-      use: { ...devices['Desktop Chrome'], viewport: { width: 390, height: 844 } },
+      use: { ...devices['Desktop Chrome'], viewport: { width: 375, height: 812 } },
     },
   ],
   webServer: {

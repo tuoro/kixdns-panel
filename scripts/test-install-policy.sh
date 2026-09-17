@@ -161,7 +161,12 @@ for signal_name in INT TERM HUP; do
     PANEL_ONLY_UPDATE=false
     prepare_rollback
     printf 'READY\n'
-    sleep 20
+    # TERM/HUP 只发给 bash 本身，bash 要等前台的 sleep 结束才执行 trap；一整段 sleep 20 让每个信号白等 20 秒。
+    # 切成 0.1 秒一段，trap 在下一段前就会运行，最长等待仍是 20 秒，没回滚时照样会打印 NOT-INTERRUPTED。
+    # TERM/HUP reach only bash, which runs the trap after its foreground sleep ends; one sleep 20 cost
+    # 20 s per signal. Slices of 0.1 s let the trap run at the next slice while keeping the 20 s bound,
+    # so a missing rollback still prints NOT-INTERRUPTED.
+    for _ in {1..200}; do sleep 0.1; done
     printf 'NOT-INTERRUPTED\n'
   " READY "${signal_name}")"
   assert_contains "${output}" "安装被中断" "${signal_name} 后必须回滚并说明安装被中断"
@@ -791,6 +796,10 @@ swap_line="$(grep -n 'kixdns-panel-server.new' <<< "${main_body}" | head -n 1 | 
 # 启动后校验 / Post-start verification
 # ---------------------------------------------------------------------------
 
+# 等待循环按轮数计时（每轮 sleep 0.5）；下面把 sleep 换成空操作，因为断言只看各轮之间 PID 与端口的变化，
+# 不看墙钟，原来这一节每次都要真等十几秒。
+# The wait loop counts rounds (sleep 0.5 each); the stubs below make sleep a no-op because the assertions
+# depend on PID and port changes across rounds, not wall time, and this section used to wait over ten seconds.
 SERVICE_WAIT_SECONDS=3
 SERVICE_STABLE_SECONDS=1
 pid_counter="${WORK}/pid-counter"
@@ -799,6 +808,7 @@ service_probe() {
   local port_ok=$2
   (
     printf '0\n' > "${pid_counter}"
+    sleep() { :; }
     systemctl() {
       local count
       count=$(<"${pid_counter}")
@@ -830,6 +840,7 @@ assert_equals "$(service_probe stable false)" "unstable" "端口不接受连接�
 
 output="$(
   (
+    sleep() { :; }
     systemctl() {
       case "$4" in
         kixdns-panel.service)
@@ -852,6 +863,7 @@ assert_contains "${output}" "journalctl -u kixdns.service -n 50 --no-pager" "失
 assert_not_contains "${output}" "CONTINUED" "KixDNS 没起来时不能报告安装完成"
 output="$(
   (
+    sleep() { :; }
     systemctl() { [[ $2 == --property=ActiveState ]] && printf 'failed\n' || printf '0\n'; }
     environment_value() { printf '0.0.0.0:5738\n'; }
     abort_install() { printf 'ABORT %s\n' "$*"; exit 3; }
