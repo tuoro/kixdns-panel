@@ -38,6 +38,30 @@ sudo bash ./scripts/install.sh
 
 安装脚本会校验包内 `SHA256SUMS`。首次安装不会自动启动 KixDNS。
 
+所有需要你决定的问题（迁移已有 KixDNS、关闭 systemd-resolved 的 53 端口监听）都在改动主机之前问完。之后的安装要么全部完成，要么全部回滚：中途失败、按 Ctrl-C、SSH 断线都会恢复原有程序和服务。服务启动后安装器会等面板稳定运行并接受连接（迁移或升级时重启过的 KixDNS 也要保持运行），否则同样回滚，并给出查看日志的命令。
+
+### 安装参数
+
+| 参数 | 用途 |
+| --- | --- |
+| `--replace-existing` | 同意把已有的 KixDNS 迁移为增强版；无人值守安装遇到已有 KixDNS 时必需 |
+| `--reinstall` | 已安装同一版本时仍重新安装，用来修复被改动或损坏的安装 |
+| `--panel-only-update` | 只更新面板，等同「系统与更新」页的面板更新；不停止也不替换 KixDNS |
+| `--kixdns-unit`、`--kixdns-config`、`--kixdns-binary`、`--control-socket` | 已有 KixDNS 不在默认位置、又无法从 unit 自动检测时手动指定 |
+
+一键安装把参数放在 `bash -s --` 之后：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one-click-install.sh \
+  | sudo bash -s -- --replace-existing
+```
+
+### 重复运行与升级
+
+- 已安装的面板与安装包是同一版本（正式包比较 Release 标签，开发构建比较构建提交）时，安装器只提示「已安装，未作任何修改」并退出；要修复安装就加 `--reinstall`
+- 覆盖安装或升级只在 KixDNS 程序或 unit 确实变化时才停止并按原状态重启它，否则 DNS 不中断；会停止时安装器会先说明
+- 结果第一行是装好的版本，随后是面板地址和 KixDNS 的实际状态，构建提交在最后一行
+
 ### 开发构建
 
 `main` 分支的 Action 包只用于验证和开发，通过 nightly.link 匿名下载。下面的示例额外核对 GitHub 记录的 Artifact digest：
@@ -63,26 +87,27 @@ printf '%s  %s\n' "${DIGEST#sha256:}" kixdns-panel.zip | sha256sum --check -
 
 ### 主机上已有 KixDNS
 
-安装脚本不会默认替换非本面板管理的 KixDNS，交互终端会让你选择：
+安装器发现不是本面板安装的 KixDNS 时，会列出检测到的 unit、配置、程序和运行状态，说明迁移会做什么，再问「迁移为增强版？[y/N]」。默认不迁移，回答 `n` 或直接回车会取消安装，主机不作任何修改。
 
-| 选项 | 效果 |
-| --- | --- |
-| `1` 仅安装面板 | 保留原 KixDNS；面板可控制其启停，但不下载、替换或删除二进制，版本管理停用。原版不具备增强指标时对应页面显示不可用；原 unit 若把 `StandardOutput`/`StandardError` 改到了 journald 之外（文件、`null` 等），或事后被删掉，日志页只能看到 systemd 自己的启停记录，并会常驻提示说明原因 |
-| `2` 迁移为增强版 | 保留原配置路径（写入 `panel.env`），替换二进制和 unit；原 unit 与启停状态备份到 `/var/lib/kixdns-panel/external-backup/`，卸载时可恢复 |
-| `3` 取消 | — |
+迁移会：
 
-无人值守安装必须显式选择：
+- 配置文件留在原位置（路径写入 `panel.env`），改由面板管理
+- 用增强版替换 KixDNS 程序和 systemd unit
+- 把原 unit 与运行、开机状态备份到 `/var/lib/kixdns-panel/external-backup/`
+- 保持原来的运行状态：运行中的迁移后继续运行，已停止的保持停止；增强版起不来时整个安装回滚到迁移前
+- 卸载面板时选择移除增强版，放回原 unit 并恢复原来的运行状态
 
-```bash
-sudo bash ./scripts/install.sh --keep-existing \
-  --kixdns-unit kixdns.service \
-  --kixdns-config /etc/kixdns/pipeline.json \
-  --kixdns-binary /usr/local/bin/kixdns
+无人值守安装（没有终端，或经 `curl | sudo bash`）必须加 `--replace-existing` 才会迁移，否则直接退出并给出命令。
 
-sudo bash ./scripts/install.sh --replace-existing
-```
+早期版本的「仅安装面板」模式已经移除：它装出的面板无法启动。`--keep-existing` 会被拒绝；装过这种模式的主机请先运行 `sudo kixdns-panel-uninstall`（原来的 KixDNS 保持不变），再重新安装并选择迁移。
 
-从「仅安装面板」改为迁移，需要重新运行安装脚本并选择迁移。
+### 端口 53
+
+KixDNS 默认监听 `0.0.0.0:53`。安装器在改动主机之前按配置里的 `bind_udp`/`bind_tcp` 检查端口：
+
+- **被 systemd-resolved 占用**（Ubuntu 默认的 `127.0.0.53`）：有终端时询问是否关闭它的本机监听，默认不关。同意后安装器写入 `/etc/systemd/resolved.conf.d/kixdns-panel.conf`（`DNSStubListener=no`），在 `/etc/resolv.conf` 指向本机缓存时把它改指向 `/run/systemd/resolve/resolv.conf`，重启 systemd-resolved，并确认端口已空出、本机域名解析仍正常；任何一步失败都会回滚。原来的 `resolv.conf` 记录在 `/var/lib/kixdns-panel/resolved-stub/`，卸载时选择移除 KixDNS 会恢复原样（保留 KixDNS 时只给出恢复命令，因为它还在用这个端口）
+- **不同意或无人值守**：什么都不改，安装结果里给出手动执行的命令
+- **被其他程序占用**：报告进程名和 PID，从不动它；这次安装若要重启一个原本在运行的 KixDNS，会在改动主机之前停下
 
 ## 首次访问
 
@@ -151,7 +176,7 @@ sudo systemctl restart kixdns-panel.service
 
 - 只有启动、停止、重启三个动作；没有「重载」
 - **启动**同时启用开机自启，**停止**同时禁用，**重启**不改变开机策略——宿主机重启后保持你最后的选择
-- 首次安装为停止且未启用；覆盖升级保留原有启停与开机状态
+- 首次安装为停止且未启用；迁移与覆盖升级保留原有启停与开机状态
 - KixDNS 停止后，概览和查询排行继续显示最后一次数据并标明已停止更新
 
 配置保存不重启服务，而是走 KixDNS 的文件监听热加载：写入前由 KixDNS 校验，写入后必须等到新的 `reload_sequence` 且摘要一致，否则面板恢复旧配置。
@@ -183,7 +208,7 @@ sudo systemctl restart kixdns-panel.service
 
 ## 面板更新
 
-「系统」页可在线更新到 `tuoro/kixdns-panel` 最新正式 Release，也可以下载完整包重新运行 `install.sh`。
+「系统与更新」页可在线更新到 `tuoro/kixdns-panel` 最新正式 Release；命令行的等价做法是用新版本的包运行 `install.sh --panel-only-update`。也可以下载完整包直接重新运行 `install.sh` 升级，KixDNS 只在程序或 unit 变化时按原状态重启。
 
 - 只更新 Panel Server、前端、helper、安装与卸载脚本和面板 unit；**KixDNS 二进制、配置、数据库和启停状态都不动**
 - 浏览器不能指定 URL、路径或版本；下载后先校验 GitHub 资产摘要，再校验包内 `SHA256SUMS`
@@ -213,7 +238,7 @@ sudo systemctl restart kixdns-panel.service
 
 | 现象 | 排查 |
 | --- | --- |
-| `address already in use` | 宿主机已有服务占用 53 端口，先停用或调整 |
+| `address already in use` | 53 端口被占用，见[端口 53](#端口-53)；`ss -lnptu 'sport = :53'` 查看占用者 |
 | 控制接口不可用 | 检查 `/run/kixdns/admin.sock`、两个账号的 `kixdns` 组关系和 KixDNS 日志 |
 | 服务控制被拒绝 | 检查 `kixdns-panel-helper.service` 与 `/run/kixdns-panel/control.sock` 权限 |
 | 在线更新失败 | `systemctl status kixdns-panel-update.service`；失败不会动 KixDNS |
@@ -228,8 +253,9 @@ sudo kixdns-panel-uninstall
 
 卸载器会问两件事：是否保留 KixDNS，是否保留面板配置、数据库、版本库和 Geo 数据。删除配置不可恢复，先备份 `pipeline.json` 和 `panel.db`。
 
-- 「仅安装面板」模式下，原 KixDNS 的二进制、unit、配置和账号始终保留
-- 迁移模式下选择移除增强版，会先恢复迁移前的 unit 和启停状态
+- 迁移安装的主机选择移除增强版，会先恢复迁移前的 unit 和启停状态
+- 选择移除 KixDNS 时，安装器关闭过的 systemd-resolved 本机监听和 `/etc/resolv.conf` 一并恢复
+- 早期「仅安装面板」模式的主机，卸载器始终保留原来的 KixDNS
 
 无人值守：
 
