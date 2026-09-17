@@ -206,17 +206,17 @@ function save(): void {
 <style scoped>
 .rule-guide__step { min-width: 0; display: grid; gap: 13px; padding: 17px 20px; border-bottom: 1px solid var(--line); }
 .rule-guide__step > header, .rule-guide__response-details > summary { display: flex; align-items: center; gap: 9px; }
-.rule-guide__step > header > span, .rule-guide__step-number { width: 24px; height: 24px; display: grid; flex: 0 0 auto; place-items: center; color: #fff; background: var(--green); border-radius: 50%; font-size: 12px; font-weight: 750; }
+.rule-guide__step > header > span, .rule-guide__step-number { width: 24px; height: 24px; display: grid; flex: 0 0 auto; place-items: center; color: var(--d-ink); background: var(--ink); border-radius: 50%; font-size: 12px; font-weight: 750; }
 .rule-guide__step > header > div, .rule-guide__response-details > summary > div { display: grid; gap: 2px; }
 .rule-guide__step > header strong, .rule-guide__branch header strong, .rule-guide__response-details > summary strong { font-size: 12px; }
 .rule-guide__step > header small, .rule-guide__branch header small, .rule-guide__response-details > summary small { color: var(--muted); font-size: 12px; line-height: 1.5; }
 .rule-guide__step--templates { padding: 14px 20px; border-bottom: 0; }
 .rule-guide__templates { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 7px; }
 .rule-guide__templates button { display: grid; gap: 3px; padding: 10px; text-align: left; color: inherit; background: #fff; border: 1px solid var(--line); border-radius: 5px; cursor: pointer; }
-.rule-guide__templates button:hover { border-color: #8db7a3; }
-.rule-guide__templates button.is-selected { border-color: #8db7a3; background: var(--green-soft); }
+.rule-guide__templates button:hover { border-color: var(--l-ink-3); }
+.rule-guide__templates button.is-selected { border-color: var(--ink); background: var(--l-sunk); }
 .rule-guide__templates strong { display: flex; justify-content: space-between; align-items: center; gap: 4px; font-size: 14px; }
-.rule-guide__templates strong > svg { flex-shrink: 0; color: var(--green); }
+.rule-guide__templates strong > svg { flex-shrink: 0; color: var(--l-ink-2); }
 .rule-guide__templates small { color: var(--muted); font-size: 12px; line-height: 1.45; }
 .rule-guide__name { display: grid; gap: 5px; }
 .rule-guide__name > span { color: #59635f; font-size: 14px; font-weight: 650; }
@@ -251,7 +251,7 @@ function save(): void {
 .rule-guide__inspector-title > div { display: grid; gap: 3px; }
 .rule-guide__inspector-title strong { font-size: 12px; }
 .rule-guide__inspector-title small, .rule-guide__inspector-section > small { color: var(--muted); font-size: 12px; line-height: 1.5; }
-.rule-guide__inspector-title > span { max-width: 45%; overflow-wrap: anywhere; padding: 3px 6px; color: #397257; background: var(--green-soft); border-radius: 4px; font-size: 12px; }
+.rule-guide__inspector-title > span { max-width: 45%; overflow-wrap: anywhere; padding: 3px 6px; color: var(--l-ink-2); background: var(--l-sunk); border-radius: 4px; font-size: 12px; }
 .rule-guide__preview { display: grid; gap: 6px; padding: 14px; color: #68716d; background: #fff; border: 1px solid var(--line); border-radius: 7px; font-size: 12px; }
 .rule-guide__preview strong { color: #35413c; font-size: 14px; font-weight: 650; line-height: 1.6; overflow-wrap: anywhere; }
 .rule-guide__preview > svg { transform: rotate(90deg); color: #83a694; }

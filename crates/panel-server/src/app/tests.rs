@@ -257,6 +257,63 @@ async fn setup_issues_session_and_write_requires_csrf() {
 }
 
 #[tokio::test]
+async fn index_is_revalidated_while_hashed_assets_stay_cached() {
+    // 更新会整目录换掉静态文件，旧的带哈希分块随之消失。index.html 被缓存的话，
+    // 开着的标签页会继续引用已经不存在的分块，下一次切换页面就加载失败。
+    // An update swaps the whole static directory and the old hashed chunks go
+    // with it. A cached index.html keeps an open tab pointing at chunks that no
+    // longer exist, and its next route change fails to load.
+    let (directory, app) = test_app().await;
+    let assets = directory.path().join("web/assets");
+    std::fs::create_dir(&assets).unwrap();
+    std::fs::write(assets.join("index-3f9a1c.js"), "export {}").unwrap();
+
+    for path in ["/", "/index.html", "/config"] {
+        let response = app
+            .clone()
+            .oneshot(Request::get(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert_eq!(
+            response.headers().get(CACHE_CONTROL).unwrap(),
+            "no-cache",
+            "{path} 每次都要向服务端确认 / must be revalidated every time"
+        );
+    }
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::get("/assets/index-3f9a1c.js")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    // 文件名带内容哈希，内容变了名字就变，可以长期缓存。
+    // The name carries a content hash and changes with the content, so it may be cached for good.
+    assert_eq!(
+        response.headers().get(CACHE_CONTROL).unwrap(),
+        "public, max-age=31536000, immutable"
+    );
+
+    // 已被删掉的分块落到 SPA 回退上拿到的是 index.html，绝不能被当成资源长期缓存。
+    // A deleted chunk falls through to the SPA fallback and gets index.html,
+    // which must never be cached as if it were the asset.
+    let response = app
+        .oneshot(
+            Request::get("/assets/index-0ld000.js")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.headers().get(CACHE_CONTROL).unwrap(), "no-cache");
+}
+
+#[tokio::test]
 async fn github_token_settings_require_authentication_and_csrf() {
     let context = authenticated_app().await;
     let unauthorized = context

@@ -108,7 +108,7 @@ onBeforeUnmount(() => {
 .config-guide__header > div { display: grid; gap: 4px; }
 .config-guide__header h2 { font-size: 18px; }
 .config-guide__header p { color: var(--muted); font-size: 11px; }
-.config-guide__kicker { display: flex; align-items: center; gap: 5px; color: var(--green); font-size: 10px; font-weight: 700; }
+.config-guide__kicker { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 10px; font-weight: 700; }
 .config-guide__form { display: flex; flex: 1; flex-direction: column; min-height: 0; }
 .config-guide__templates { flex: 0 0 auto; max-height: 26%; overflow: auto; border-bottom: 1px solid var(--line); }
 .config-guide__workspace { display: grid; grid-template-columns: minmax(0, 1fr) 310px; flex: 1; min-height: 0; }
@@ -124,7 +124,9 @@ onBeforeUnmount(() => {
 .config-guide__preview-body { display: flex; flex-direction: column; gap: 14px; padding-top: 22px; }
 .config-guide__disclaimer { color: var(--muted); font-size: 10px; line-height: 1.6; }
 .config-guide__footer { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 20px; border-top: 1px solid var(--line); background: #fff; }
-.config-guide__status { display: flex; gap: 8px; align-items: center; color: var(--green); min-width: 0; }
+/* 补全了就是常态，用正文色；只有还缺东西时才用橙色提醒。
+   Complete is the normal state and takes the body ink; only a gap still to fill gets amber. */
+.config-guide__status { display: flex; gap: 8px; align-items: center; color: var(--ink); min-width: 0; }
 .config-guide__status > svg { flex-shrink: 0; }
 .config-guide__status > div { display: grid; gap: 3px; min-width: 0; }
 .config-guide__status strong { font-size: 11px; }
