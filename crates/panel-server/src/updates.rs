@@ -2180,7 +2180,7 @@ use storage::{
 
 #[cfg(test)]
 #[path = "updates/tests.rs"]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(test)]
 #[path = "updates/download_tests.rs"]

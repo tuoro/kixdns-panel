@@ -994,19 +994,27 @@ impl ServiceHost for FakeHost {
     }
 }
 
-struct SwitchFixture {
+pub(crate) struct SwitchFixture {
     _directory: tempfile::TempDir,
-    manager: UpdateManager,
-    database: Database,
-    binary_path: std::path::PathBuf,
-    current: Vec<u8>,
-    target: Vec<u8>,
+    pub(crate) manager: UpdateManager,
+    pub(crate) database: Database,
+    pub(crate) binary_path: std::path::PathBuf,
+    pub(crate) current: Vec<u8>,
+    pub(crate) target: Vec<u8>,
     target_key: VersionKey,
+}
+
+impl SwitchFixture {
+    /// 切换成功后数据库里应记录的活动版本。
+    /// The active version the database should record after a successful switch.
+    pub(crate) fn target_setting(&self) -> String {
+        self.target_key.encoded()
+    }
 }
 
 /// 当前运行 Artifact 42，本地另存了一个可切换的 Artifact 43。
 /// Artifact 42 is active and Artifact 43 is stored locally, ready to switch to.
-async fn switch_fixture() -> SwitchFixture {
+pub(crate) async fn switch_fixture() -> SwitchFixture {
     let directory = tempdir().unwrap();
     let database = Database::open(directory.path().join("panel.db"))
         .await
@@ -1066,7 +1074,7 @@ async fn switch_fixture() -> SwitchFixture {
     }
 }
 
-async fn active_setting(database: &Database) -> Option<String> {
+pub(crate) async fn active_setting(database: &Database) -> Option<String> {
     database
         .get_setting(super::ACTIVE_VERSION_KEY)
         .await

@@ -7,6 +7,7 @@ use axum::http::header::{
     CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, COOKIE, SET_COOKIE,
 };
 use axum::http::{Request, StatusCode};
+use futures_util::future::BoxFuture;
 use serde_json::Value;
 use tempfile::{TempDir, tempdir};
 use tower::ServiceExt;
@@ -1254,6 +1255,102 @@ fn never_goes_finer_than_the_sampling_interval() {
     assert_eq!(trend_bucket_seconds(60), 60);
     assert_eq!(trend_bucket_seconds(5), 60);
     assert_eq!(trend_bucket_seconds(0), 60);
+}
+
+/// 健康检查处停住的宿主：测试据此在切换进行到一半时断开「请求」。
+/// A host that halts at the health check, so the test can drop the "request"
+/// while the switch is half-way through.
+struct GatedHost {
+    reached_health_check: tokio::sync::Notify,
+    release_health_check: tokio::sync::Notify,
+    calls: std::sync::Mutex<Vec<String>>,
+}
+
+impl crate::updates::ServiceHost for GatedHost {
+    fn service_running(&self) -> BoxFuture<'_, Result<bool, crate::updates::UpdateError>> {
+        Box::pin(async move { Ok(true) })
+    }
+
+    fn service_action(
+        &self,
+        action: crate::operations::ServiceAction,
+    ) -> BoxFuture<'_, Result<(), crate::updates::UpdateError>> {
+        Box::pin(async move {
+            self.calls.lock().unwrap().push(format!("{action:?}"));
+            Ok(())
+        })
+    }
+
+    fn wait_until_healthy(&self) -> BoxFuture<'_, Result<(), crate::updates::UpdateError>> {
+        Box::pin(async move {
+            self.reached_health_check.notify_one();
+            self.release_health_check.notified().await;
+            Ok(())
+        })
+    }
+
+    fn runtime_capabilities(
+        &self,
+    ) -> BoxFuture<'_, Result<Vec<String>, crate::updates::UpdateError>> {
+        Box::pin(async move { Ok(Vec::new()) })
+    }
+}
+
+#[tokio::test]
+async fn a_dropped_request_does_not_cancel_a_version_switch() {
+    use crate::updates::VersionSource;
+    use crate::updates::tests::{active_setting, switch_fixture};
+
+    let fixture = switch_fixture().await;
+    let host = std::sync::Arc::new(GatedHost {
+        reached_health_check: tokio::sync::Notify::new(),
+        release_health_check: tokio::sync::Notify::new(),
+        calls: std::sync::Mutex::new(Vec::new()),
+    });
+    let manager = fixture.manager.clone();
+    let worker_host = std::sync::Arc::clone(&host);
+    // 外层任务扮演 hyper 为这次请求驱动的处理函数。
+    // The outer task stands in for the handler hyper drives for the request.
+    let request = tokio::spawn(super::updates::run_detached(async move {
+        manager
+            .activate_version(
+                VersionSource::Action,
+                "43",
+                &serde_json::json!({"pipelines": []}),
+                &*worker_host,
+            )
+            .await
+            .map_err(|error| crate::error::AppError::Internal(error.into()))
+    }));
+    host.reached_health_check.notified().await;
+
+    // 浏览器断开：处理函数的 future 被丢弃。
+    // The browser disconnects: the handler future is dropped.
+    request.abort();
+    assert!(request.await.unwrap_err().is_cancelled());
+    host.release_health_check.notify_one();
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while active_setting(&fixture.database).await != Some(fixture.target_setting()) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "切换在请求断开后停在了半路：活动版本没有记录"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(std::fs::read(&fixture.binary_path).unwrap(), fixture.target);
+    assert_eq!(host.calls.lock().unwrap().as_slice(), ["Restart"]);
+}
+
+#[tokio::test]
+async fn a_panicking_version_switch_becomes_an_internal_error() {
+    let result = super::updates::run_detached(async {
+        assert!(!std::hint::black_box(true), "切换任务故意 panic");
+        Ok(())
+    })
+    .await;
+
+    assert!(matches!(result, Err(crate::error::AppError::Internal(_))));
 }
 
 #[test]
