@@ -484,6 +484,59 @@ struct WorkflowRun {
     head_sha: String,
     created_at: String,
     html_url: String,
+    // 这三项决定一次运行能不能进版本目录，所以都是 Option：GitHub 少给一项时
+    // 这次运行被丢弃，而不是反序列化失败把整个目录拖垮。
+    // These three decide whether a run may enter the catalogue, so all are
+    // Option: a run GitHub describes without one is dropped instead of failing
+    // deserialisation of the whole list.
+    #[serde(default)]
+    event: Option<String>,
+    #[serde(default)]
+    head_branch: Option<String>,
+    #[serde(default)]
+    head_repository: Option<WorkflowRunRepository>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct WorkflowRunRepository {
+    #[serde(default)]
+    full_name: Option<String>,
+}
+
+/// 只保留本仓库自己在目标分支上由 push、定时或手动触发的成功运行。
+/// `branch=` 查询按 `head_branch` 匹配，fork 的 `main` 发来的 pull request
+/// 同样叫 `main`，而且 `pull_request` 运行执行的是 PR 自带的工作流文件，
+/// 可以去掉上传 Artifact 的守卫；这类运行一旦排在最前，面板就会把 fork
+/// 构造的二进制当作最新版本安装。
+/// Keep only successful runs of this repository's own branch triggered by
+/// push, schedule or manual dispatch. The `branch=` query matches `head_branch`,
+/// and a pull request from a fork's `main` is also called `main`; a
+/// `pull_request` run executes the PR's own workflow file, which can drop the
+/// guard around the artifact upload. Without this filter the newest such run
+/// would be installed as the latest version.
+fn trusted_workflow_runs(
+    runs: Vec<WorkflowRun>,
+    repository: &str,
+    branch: &str,
+    limit: usize,
+) -> Vec<WorkflowRun> {
+    runs.into_iter()
+        .filter(|run| validate_commit(&run.head_sha).is_ok())
+        .filter(|run| {
+            matches!(
+                run.event.as_deref(),
+                Some("push" | "schedule" | "workflow_dispatch")
+            )
+        })
+        .filter(|run| run.head_branch.as_deref() == Some(branch))
+        .filter(|run| {
+            run.head_repository
+                .as_ref()
+                .and_then(|head| head.full_name.as_deref())
+                .is_some_and(|name| name.eq_ignore_ascii_case(repository))
+        })
+        .take(limit)
+        .collect()
 }
 
 #[derive(Debug, Deserialize)]
@@ -1050,16 +1103,16 @@ impl UpdateManager {
     ) -> Result<Vec<WorkflowRun>, UpdateError> {
         let limit = limit.clamp(1, 30);
         let runs_url = format!(
-            "https://api.github.com/repos/{}/actions/workflows/{}/runs?branch={}&status=success&per_page={limit}",
+            "https://api.github.com/repos/{}/actions/workflows/{}/runs?branch={}&status=success&exclude_pull_requests=true&per_page={limit}",
             self.repository, workflow, self.branch
         );
         let runs = self.get_json::<WorkflowRuns>(&runs_url).await?;
-        Ok(runs
-            .workflow_runs
-            .into_iter()
-            .filter(|run| validate_commit(&run.head_sha).is_ok())
-            .take(limit)
-            .collect())
+        Ok(trusted_workflow_runs(
+            runs.workflow_runs,
+            &self.repository,
+            &self.branch,
+            limit,
+        ))
     }
 
     pub async fn panel_update_notice(&self) -> Result<PanelUpdateNotice, UpdateError> {

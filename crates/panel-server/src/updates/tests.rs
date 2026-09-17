@@ -6,11 +6,12 @@ use super::validation::ParsedArtifactReference;
 use super::{
     ARTIFACT_PAGE_SIZE, BuildIdentity, GithubRelease, MANIFEST_SCHEMA_VERSION, MAX_ARTIFACT_PAGES,
     ReleaseAsset, RemoteVersion, TrackReference, UpdateError, UpdateManager, UpdateSettings,
-    VersionKey, VersionManifest, VersionSource, artifact_page_count, delete_stored_version,
-    extract_artifact, load_bundled_manifest, load_verified_version, panel_release_asset_name,
-    parse_artifact_reference, sha256, store_version, to_kixdns_update_notice,
-    to_panel_update_notice, update_stored_capabilities, validate_commit, validate_digest,
-    validate_github_token, validate_remote_build_identity, validate_slug, write_github_token,
+    VersionKey, VersionManifest, VersionSource, WorkflowRuns, artifact_page_count,
+    delete_stored_version, extract_artifact, load_bundled_manifest, load_verified_version,
+    panel_release_asset_name, parse_artifact_reference, sha256, store_version,
+    to_kixdns_update_notice, to_panel_update_notice, trusted_workflow_runs,
+    update_stored_capabilities, validate_commit, validate_digest, validate_github_token,
+    validate_remote_build_identity, validate_slug, write_github_token,
 };
 use crate::db::Database;
 
@@ -882,4 +883,47 @@ fn verifies_package_identity_against_selected_track() {
     wrong_track.run_id = None;
     wrong_track.release_tag = Some("v0.1.1".to_owned());
     assert!(validate_remote_build_identity(&wrong_track, &identity).is_err());
+}
+
+#[test]
+fn catalogue_keeps_only_this_repository_push_schedule_and_dispatch_runs() {
+    let commit = "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25";
+    let run = |id: u64, event: &str, branch: &str, repository: &str| {
+        serde_json::json!({
+            "id": id,
+            "head_sha": commit,
+            "created_at": "2026-09-01T00:00:00Z",
+            "html_url": format!("https://github.com/tuoro/kixdns-panel/actions/runs/{id}"),
+            "event": event,
+            "head_branch": branch,
+            "head_repository": {"full_name": repository},
+        })
+    };
+    let mut missing_event = run(8, "push", "main", "tuoro/kixdns-panel");
+    missing_event.as_object_mut().unwrap().remove("event");
+    let mut null_repository = run(9, "push", "main", "tuoro/kixdns-panel");
+    null_repository["head_repository"] = serde_json::Value::Null;
+    // 最新的是 fork 从自己的 main 发来的 pull request，它必须被排除。
+    // The newest run is a pull request from a fork's own main; it must go.
+    let fixture = serde_json::json!({
+        "workflow_runs": [
+            run(14, "pull_request", "main", "attacker/kixdns-panel"),
+            run(13, "pull_request_target", "main", "tuoro/kixdns-panel"),
+            run(12, "push", "main", "attacker/kixdns-panel"),
+            run(11, "push", "feature", "tuoro/kixdns-panel"),
+            missing_event,
+            null_repository,
+            run(7, "push", "main", "Tuoro/KixDNS-Panel"),
+            run(6, "schedule", "main", "tuoro/kixdns-panel"),
+            run(5, "workflow_dispatch", "main", "tuoro/kixdns-panel"),
+        ]
+    });
+    let runs: WorkflowRuns = serde_json::from_value(fixture).unwrap();
+
+    let kept = trusted_workflow_runs(runs.workflow_runs, "tuoro/kixdns-panel", "main", 30);
+
+    assert_eq!(
+        kept.iter().map(|run| run.id).collect::<Vec<_>>(),
+        vec![7, 6, 5]
+    );
 }
