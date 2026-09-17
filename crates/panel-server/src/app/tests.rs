@@ -149,6 +149,67 @@ async fn login_rejects_invalid_credentials_without_session_cookie() {
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn parallel_wrong_logins_cannot_outrun_the_rate_limit() {
+    let context = authenticated_app().await;
+    let mut attempts = tokio::task::JoinSet::new();
+    for _ in 0..40 {
+        let app = context.app.clone();
+        attempts.spawn(async move {
+            let mut request = Request::post("/api/v1/auth/login")
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"username":"admin","password":"wrong-password"}"#,
+                ))
+                .unwrap();
+            request
+                .extensions_mut()
+                .insert(ConnectInfo(SocketAddr::from((Ipv4Addr::LOCALHOST, 42_002))));
+            app.oneshot(request).await.unwrap().status()
+        });
+    }
+    let mut verified = 0;
+    let mut limited = 0;
+    while let Some(status) = attempts.join_next().await {
+        match status.unwrap() {
+            StatusCode::UNAUTHORIZED => verified += 1,
+            StatusCode::TOO_MANY_REQUESTS => limited += 1,
+            other => panic!("unexpected status {other}"),
+        }
+    }
+
+    // 五次预算必须在进入密码校验前就占住，并发请求不能一起挤过检查。
+    // The five-attempt budget is reserved before password verification, so
+    // parallel requests cannot all slip past the check together.
+    assert_eq!(
+        verified, 5,
+        "{verified} guesses reached password verification"
+    );
+    assert_eq!(limited, 35);
+}
+
+#[tokio::test]
+async fn ipv6_clients_in_one_slash_64_share_one_login_budget() {
+    let context = authenticated_app().await;
+    let mut statuses = Vec::new();
+    for host in 1..=6_u16 {
+        let mut request = Request::post("/api/v1/auth/login")
+            .header(CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"username":"admin","password":"wrong-password"}"#,
+            ))
+            .unwrap();
+        let address = std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 1, 0, 0, 0, host);
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from((address, 42_003))));
+        statuses.push(context.app.clone().oneshot(request).await.unwrap().status());
+    }
+
+    assert_eq!(statuses[..5], [StatusCode::UNAUTHORIZED; 5]);
+    assert_eq!(statuses[5], StatusCode::TOO_MANY_REQUESTS);
+}
+
 #[tokio::test]
 async fn setup_issues_session_and_write_requires_csrf() {
     let context = authenticated_app().await;

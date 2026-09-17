@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 use std::str::FromStr;
 use std::sync::Mutex;
 use std::time::{Duration as StdDuration, Instant, SystemTime, UNIX_EPOCH};
@@ -27,6 +27,7 @@ pub const SESSION_SECONDS: i64 = 12 * 60 * 60;
 const MAX_ATTEMPTS: u32 = 5;
 const ATTEMPT_WINDOW: StdDuration = StdDuration::from_mins(15);
 const MAX_FORWARDED_HOPS: usize = 32;
+const MAX_TRACKED_LOGIN_KEYS: usize = 10_000;
 
 #[derive(Debug, Clone)]
 pub struct TrustedProxies(Vec<IpNet>);
@@ -122,9 +123,27 @@ impl LoginKey {
     fn new(address: IpAddr, username: &str) -> Self {
         let normalized = username.trim().to_ascii_lowercase();
         Self {
-            address,
+            address: address_bucket(address),
             username_hash: Sha256::digest(normalized.as_bytes()).into(),
         }
+    }
+}
+
+/// IPv6 按 /64 计数：一台主机通常分到整个 /64，逐个换地址就能每次拿到新的
+/// 五次预算。IPv4 映射地址还原成 IPv4，和直连的同一地址共用预算。
+/// IPv6 is counted per /64: a host usually owns a whole /64 and could get a
+/// fresh five-attempt budget per address. IPv4-mapped addresses fold back to
+/// IPv4 so they share the budget of the same address reached directly.
+fn address_bucket(address: IpAddr) -> IpAddr {
+    match address {
+        IpAddr::V4(_) => address,
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or_else(
+            || {
+                let prefix = u128::from(v6) & !u128::from(u64::MAX);
+                IpAddr::V6(Ipv6Addr::from(prefix))
+            },
+            IpAddr::V4,
+        ),
     }
 }
 
@@ -134,6 +153,8 @@ pub struct LoginLimiter {
 }
 
 impl LoginLimiter {
+    /// 只读检查，给不消耗登录预算的初始化接口用。
+    /// Read-only check for setup, which does not spend the login budget.
     pub fn check(&self, address: IpAddr, username: &str) -> AppResult<()> {
         let key = LoginKey::new(address, username);
         let mut attempts = self
@@ -150,18 +171,41 @@ impl LoginLimiter {
         Ok(())
     }
 
-    pub fn record_failure(&self, address: IpAddr, username: &str) {
+    /// 在同一把锁里检查并占用一次尝试。密码校验在 4 个槽位后面排队，
+    /// 先检查、校验失败后再记数会让并发请求一起挤过检查（200 个并发错误
+    /// 登录实测 135 次进入校验）。成功登录由 clear 归还预算，失败保留占用。
+    /// 追踪的键超过上限时拒绝新键，而不是让伪造来源撑大内存。
+    /// Check and take one attempt under the same lock. Password verification
+    /// queues behind four slots, so checking first and counting after a
+    /// failed verify let parallel requests slip past together (200 parallel
+    /// bad logins produced 135 verifications). A successful login returns the
+    /// budget through clear; a failed one keeps its reservation. Beyond the
+    /// key cap new keys are rejected instead of growing the map.
+    pub fn reserve(&self, address: IpAddr, username: &str) -> AppResult<()> {
         let key = LoginKey::new(address, username);
         let mut attempts = self
             .attempts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         attempts.retain(|_, state| state.started_at.elapsed() < ATTEMPT_WINDOW);
-        let state = attempts.entry(key).or_insert_with(|| AttemptState {
-            failures: 0,
-            started_at: Instant::now(),
-        });
-        state.failures = state.failures.saturating_add(1);
+        if let Some(state) = attempts.get_mut(&key) {
+            if state.failures >= MAX_ATTEMPTS {
+                return Err(AppError::TooManyRequests);
+            }
+            state.failures += 1;
+            return Ok(());
+        }
+        if attempts.len() >= MAX_TRACKED_LOGIN_KEYS {
+            return Err(AppError::TooManyRequests);
+        }
+        attempts.insert(
+            key,
+            AttemptState {
+                failures: 1,
+                started_at: Instant::now(),
+            },
+        );
+        Ok(())
     }
 
     pub fn clear(&self, address: IpAddr, username: &str) {
@@ -333,15 +377,42 @@ mod tests {
         let limiter = LoginLimiter::default();
         let address = IpAddr::V4(Ipv4Addr::LOCALHOST);
         for _ in 0..5 {
-            limiter.record_failure(address, "admin");
+            limiter.reserve(address, "admin").unwrap();
         }
         assert!(matches!(
             limiter.check(address, "ADMIN"),
             Err(AppError::TooManyRequests)
         ));
+        assert!(matches!(
+            limiter.reserve(address, "ADMIN"),
+            Err(AppError::TooManyRequests)
+        ));
         assert!(limiter.check(address, "other-admin").is_ok());
         limiter.clear(address, "admin");
         assert!(limiter.check(address, "admin").is_ok());
+    }
+
+    #[test]
+    fn rejects_new_login_keys_beyond_the_tracking_cap() {
+        let limiter = LoginLimiter::default();
+        for index in 0..super::MAX_TRACKED_LOGIN_KEYS {
+            let offset = u32::try_from(index).unwrap();
+            let address = IpAddr::V4(Ipv4Addr::from(0x0a00_0000_u32 + offset));
+            limiter.reserve(address, "admin").unwrap();
+        }
+        let newcomer = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7));
+
+        assert!(matches!(
+            limiter.reserve(newcomer, "admin"),
+            Err(AppError::TooManyRequests)
+        ));
+        // 已追踪的键不受影响，照常消耗自己的预算。
+        // Keys already tracked keep spending their own budget.
+        assert!(
+            limiter
+                .reserve(IpAddr::V4(Ipv4Addr::from(0x0a00_0000_u32)), "admin")
+                .is_ok()
+        );
     }
 
     #[test]
