@@ -109,8 +109,16 @@ jobs:
           toolchain: 1.97.1
           components: rustfmt, clippy
 
+      # 从源码编译 cargo-audit 每次约 2 分 45 秒，且早于缓存恢复、从不命中；改装 RustSec 发布的预编译包，
+      # 版本不变并校验 SHA-256。fallback: none 让预编译包缺失时直接失败，而不是悄悄退回源码编译。
+      # Compiling cargo-audit took ~2m45s on every run, before any cache restore; install RustSec's
+      # prebuilt release at the same version with its SHA-256 checked. fallback: none fails loudly
+      # instead of silently compiling from source again when no prebuilt binary exists.
       - name: Install dependency auditor
-        run: cargo install cargo-audit --version 0.22.2 --locked
+        uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
+        with:
+          tool: cargo-audit@0.22.2
+          fallback: none
 
       - name: Cache enhanced build
         uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2

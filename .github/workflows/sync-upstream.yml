@@ -140,9 +140,15 @@ jobs:
           toolchain: 1.97.1
           components: rustfmt, clippy
 
+      # 预编译包替代约 2 分 45 秒的源码编译，版本不变并校验 SHA-256；缺预编译包时直接失败。
+      # A prebuilt binary replaces the ~2m45s source build at the same version with its SHA-256 checked;
+      # a missing prebuilt fails instead of falling back to compiling.
       - name: Install dependency auditor
         if: steps.upstream.outputs.changed == 'true'
-        run: cargo install cargo-audit --version 0.22.2 --locked
+        uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
+        with:
+          tool: cargo-audit@0.22.2
+          fallback: none
 
       - name: Fetch RustSec advisory database
         if: steps.upstream.outputs.changed == 'true'
