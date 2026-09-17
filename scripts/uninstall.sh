@@ -109,7 +109,9 @@ load_settings() {
   fi
   [[ ${KIXDNS_MANAGEMENT_ENABLED} =~ ^(true|false)$ ]] ||
     fail "panel.env 中的 KixDNS 管理模式无效"
-  [[ ${KIXDNS_SERVICE_UNIT} =~ ^[A-Za-z0-9_.@-]{1,120}\.service$ ]] ||
+  # 规则以 panel-server 的 Operations::new 为准（scripts/test-unit-name-rule.sh 校对）。
+  # The rule is panel-server's Operations::new (checked by scripts/test-unit-name-rule.sh).
+  [[ ${KIXDNS_SERVICE_UNIT} =~ ^[A-Za-z0-9][A-Za-z0-9_.@-]{0,119}\.service$ && ${KIXDNS_SERVICE_UNIT} != *..* ]] ||
     fail "panel.env 中的 KixDNS unit 名称无效"
   if [[ -f ${EXTERNAL_BACKUP}/install.env ]]; then
     HAS_EXTERNAL_BACKUP=true
@@ -204,7 +206,9 @@ load_external_backup() {
   ORIGINAL_UNIT="$(backup_value KIXDNS_SERVICE_UNIT || true)"
   ORIGINAL_ENABLED="$(backup_value KIXDNS_WAS_ENABLED || true)"
   ORIGINAL_ACTIVE="$(backup_value KIXDNS_WAS_ACTIVE || true)"
-  [[ ${ORIGINAL_UNIT} =~ ^[A-Za-z0-9_.@-]{1,120}\.service$ ]] ||
+  # 规则以 panel-server 的 Operations::new 为准（scripts/test-unit-name-rule.sh 校对）。
+  # The rule is panel-server's Operations::new (checked by scripts/test-unit-name-rule.sh).
+  [[ ${ORIGINAL_UNIT} =~ ^[A-Za-z0-9][A-Za-z0-9_.@-]{0,119}\.service$ && ${ORIGINAL_UNIT} != *..* ]] ||
     fail "外部 KixDNS 备份中的 unit 名称无效"
   [[ ${ORIGINAL_ENABLED} =~ ^(true|false)$ && ${ORIGINAL_ACTIVE} =~ ^(true|false)$ ]] ||
     fail "外部 KixDNS 备份中的服务状态无效"

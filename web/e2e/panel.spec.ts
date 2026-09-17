@@ -438,6 +438,40 @@ test('操作审计可按动作筛选', async ({ page }) => {
   await expect(page.locator('.audit-line')).toContainText('config.geo_data.schedule.apply')
 })
 
+test('运行日志的级别筛选由服务端执行', async ({ page }) => {
+  await open(page, '/logs')
+  await expect(page.locator('.log-line')).toHaveCount(80)
+  await expect(page.locator('.log-summary')).toContainText('80 / 80 条')
+
+  // 切到「警告」后只剩服务端按级别返回的行；计数分母也跟着变，说明不是浏览器在过滤已加载的 80 条。
+  // After switching to warning only the lines the server returned for that level remain;
+  // the denominator changes too, proving the browser is not filtering the 80 loaded lines.
+  await page.getByRole('group', { name: '日志级别' }).getByRole('button', { name: '警告', exact: true }).click()
+  await expect(page.locator('.log-line')).toHaveCount(5)
+  await expect(page.locator('.log-line--warning')).toHaveCount(5)
+  await expect(page.locator('.log-line--info')).toHaveCount(0)
+  await expect(page.locator('.log-summary')).toContainText('5 / 5 条')
+
+  await page.getByRole('group', { name: '日志级别' }).getByRole('button', { name: '全部', exact: true }).click()
+  await expect(page.locator('.log-line')).toHaveCount(80)
+})
+
+test('unit 输出未送到 journald 时运行日志显示常驻提示 @responsive', async ({ page }) => {
+  await open(page, '/logs')
+  await expect(page.locator('.log-notice')).toHaveCount(0)
+
+  await page.addInitScript(() => localStorage.setItem('kixdns:demo-log-output-redirected', 'true'))
+  await open(page, '/logs')
+  const notice = page.locator('.log-notice')
+  await expect(notice).toContainText('这个 unit 的输出没有送到 journald')
+  await expect(notice).toContainText('StandardOutput=append:/var/log/kixdns.log')
+  await expect(page.locator('.status-banner')).toHaveCount(0)
+  await expectNoPageOverflow(page)
+
+  await page.locator('.log-view-tabs button').nth(1).click()
+  await expect(notice).toHaveCount(0)
+})
+
 test('主页面不会产生视口级横向溢出 @responsive', async ({ page }) => {
   for (const path of ['/', '/config', '/logs', '/diagnostics', '/system']) {
     await open(page, path)

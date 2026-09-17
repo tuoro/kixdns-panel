@@ -8,7 +8,7 @@ use serde::Deserialize;
 use crate::auth::{authenticate, unix_timestamp, verify_csrf};
 use crate::db::AuditPage;
 use crate::error::{AppError, AppResult};
-use crate::operations::{DnsDiagnostic, LogPage, ServiceAction, ServiceStatus};
+use crate::operations::{DnsDiagnostic, LogLevel, LogPage, ServiceAction, ServiceStatus};
 
 use super::{
     AppState, map_config_error, map_control_error, map_operation_error, reconcile_pending,
@@ -21,6 +21,7 @@ struct LogsQuery {
     #[serde(default = "default_log_limit")]
     limit: usize,
     before: Option<String>,
+    level: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -111,9 +112,20 @@ async fn logs(
             "日志游标无效".to_owned(),
         ));
     }
+    // 级别在这里就拒绝，不让任意字符串走到 journalctl 的 --priority 上。
+    // Reject the level here so no arbitrary string reaches journalctl's --priority.
+    let level = match query.level.as_deref() {
+        None => None,
+        Some(value) => Some(LogLevel::parse(value).ok_or_else(|| {
+            AppError::BadRequest(
+                "log_level_invalid",
+                "日志级别只允许 error、warning 或 info".to_owned(),
+            )
+        })?),
+    };
     state
         .operations
-        .logs(query.limit, query.before.as_deref())
+        .logs(query.limit, query.before.as_deref(), level)
         .await
         .map(Json)
         .map_err(map_operation_error)

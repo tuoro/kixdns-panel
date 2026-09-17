@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ClipboardList, Download, Pause, Play, RefreshCw, Search, Terminal } from '@lucide/vue'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { apiRequest } from '../api/client'
 import type { AuditEvent, AuditPage, LogEntry, LogsResponse } from '../api/types'
 import StatusBanner from '../components/StatusBanner.vue'
@@ -25,13 +25,20 @@ const auditCursor = ref<number | null>(null)
 const runtimeCursor = ref<string | null>(null)
 const runtimeStream = ref<HTMLDivElement | null>(null)
 const loadingOlder = ref(false)
+const outputRedirected = ref<string | null>(null)
 let timer: number | undefined
 let pendingLoad: Promise<void> | null = null
 
+// 级别筛选在 journalctl 里做，不在浏览器里：浏览器只看得到已经翻出来的几页，
+// 一条老错误在读者滚到它之前都是隐身的，计数也只是「已加载里的几条」。
+// 这里只剩文本筛选，它本来就只对已加载的行有意义。
+// The level filter runs in journalctl, not here: the browser only sees the
+// pages already loaded, so an old error stays hidden until the reader scrolls
+// to it and the count means "of what happens to be loaded". Only the text
+// filter stays client-side; it only ever meant "of the loaded lines".
 const filtered = computed(() => entries.value.filter((entry) => {
-  const matchesLevel = level.value === 'all' || (level.value === 'error' ? entry.priority <= 3 : level.value === 'warning' ? entry.priority === 4 : entry.priority >= 5)
   const needle = query.value.toLowerCase()
-  return matchesLevel && (!needle || entry.message.toLowerCase().includes(needle) || entry.source.toLowerCase().includes(needle))
+  return !needle || entry.message.toLowerCase().includes(needle) || entry.source.toLowerCase().includes(needle)
 }))
 const filteredAudit = computed(() => {
   const needle = auditQuery.value.trim().toLowerCase()
@@ -95,10 +102,16 @@ function load(silent = false): Promise<void> {
   if (pendingLoad) return pendingLoad
   if (!silent) loading.value = true
   requesting.value = true
+  // 请求发出后级别又被切了的话，回来的这页属于旧级别，丢掉；watch 会紧接着再取一次。
+  // If the level changes while this request is in flight, the page that comes
+  // back belongs to the old level: drop it, the watcher fetches again right after.
+  const requestedLevel = level.value
   pendingLoad = (async () => {
-    const page = await apiRequest<LogsResponse>('/api/v1/logs?limit=500')
+    const page = await apiRequest<LogsResponse>(`/api/v1/logs?${logsParameters()}`)
+    if (requestedLevel !== level.value) return
     entries.value = page.entries
     runtimeCursor.value = page.next_cursor
+    outputRedirected.value = page.output_redirected
     loadError.value = ''
     await nextTick()
     if (runtimeStream.value) runtimeStream.value.scrollTop = 0
@@ -112,17 +125,22 @@ function load(silent = false): Promise<void> {
   return pendingLoad
 }
 
+function logsParameters(before?: string): URLSearchParams {
+  const parameters = new URLSearchParams({ limit: '500' })
+  if (before !== undefined) parameters.set('before', before)
+  if (level.value !== 'all') parameters.set('level', level.value)
+  return parameters
+}
+
 async function loadOlder(): Promise<void> {
   if (requesting.value || runtimeCursor.value === null) return
   requesting.value = true
   loadingOlder.value = true
   live.value = false
+  const requestedLevel = level.value
   try {
-    const parameters = new URLSearchParams({
-      limit: '500',
-      before: runtimeCursor.value,
-    })
-    const page = await apiRequest<LogsResponse>(`/api/v1/logs?${parameters}`)
+    const page = await apiRequest<LogsResponse>(`/api/v1/logs?${logsParameters(runtimeCursor.value)}`)
+    if (requestedLevel !== level.value) return
     entries.value = [...entries.value, ...page.entries]
     runtimeCursor.value = page.next_cursor
     loadError.value = ''
@@ -133,6 +151,15 @@ async function loadOlder(): Promise<void> {
     loadingOlder.value = false
   }
 }
+
+// 切级别就是换一个 journalctl 查询，已加载的行和游标都作废，从头取。
+// 正在飞的那次请求先让它落地，否则 load() 的去重会把这次切换吞掉。
+// Switching level means a different journalctl query: the loaded lines and the
+// cursor are void, fetch from the top. Let an in-flight request land first, or
+// load()'s de-duplication would swallow this switch.
+watch(level, () => {
+  void (pendingLoad ?? Promise.resolve()).then(() => load())
+})
 
 function handleRuntimeScroll(event: Event): void {
   const stream = event.currentTarget as HTMLDivElement
@@ -242,6 +269,12 @@ onBeforeUnmount(() => window.clearInterval(timer))
       </header>
       <div v-if="mode === 'runtime'" class="log-summary"><span>{{ filtered.length }} / {{ entries.length }} 条{{ runtimeCursor !== null ? '，向下滚动加载更早日志' : '' }}</span><span><i :class="live ? 'status-dot' : 'status-dot status-dot--muted'"></i>{{ live ? '最新日志在顶部，每 5 秒刷新' : '浏览历史时自动暂停' }}</span></div>
       <div v-else class="log-summary"><span>{{ filteredAudit.length }} / {{ auditEvents.length }} 条</span><span>最多保留 10,000 条操作记录</span></div>
+      <!-- 常驻、不是错误：日志页本身没坏，是这个 unit 的输出没送到 journald。
+           不提示的话页面看着一切正常，只是永远没有 KixDNS 自己的一行。
+           Persistent and not an error: the page is not broken, this unit's output
+           simply never reaches journald. Without the notice the page looks fine
+           and just never shows a line from KixDNS itself. -->
+      <p v-if="mode === 'runtime' && outputRedirected !== null" class="log-notice" role="status"><strong>这个 unit 的输出没有送到 journald</strong>（{{ outputRedirected }}），这里只会出现 systemd 自己的启动、停止记录，看不到 KixDNS 的日志。</p>
       <div v-if="mode === 'runtime'" ref="runtimeStream" class="log-stream" @scroll="handleRuntimeScroll">
         <div v-for="({ entry, segments }, index) in lines" :key="`${entry.timestamp_unix_micros}-${index}`" class="log-line" :class="levelClass(entry.priority)">
           <time>{{ timestamp(entry.timestamp_unix_micros) }}</time>

@@ -18,6 +18,7 @@ on:
       - scripts/package_acceptance.py
       - scripts/test-install-policy.sh
       - scripts/test-uninstall-policy.sh
+      - scripts/test-unit-name-rule.sh
       - scripts/test-package-acceptance.sh
       - scripts/verify-glibc-baseline.sh
       - scripts/uninstall.sh
@@ -39,6 +40,7 @@ on:
       - scripts/package_acceptance.py
       - scripts/test-install-policy.sh
       - scripts/test-uninstall-policy.sh
+      - scripts/test-unit-name-rule.sh
       - scripts/test-package-acceptance.sh
       - scripts/verify-glibc-baseline.sh
       - scripts/uninstall.sh
@@ -159,6 +161,10 @@ jobs:
       - name: Verify uninstallation policy
         shell: bash
         run: bash scripts/test-uninstall-policy.sh
+
+      - name: Verify systemd unit-name rule matches panel-server
+        shell: bash
+        run: bash scripts/test-unit-name-rule.sh
 
       - name: Verify upstream lock catalogs
         shell: bash

@@ -739,7 +739,15 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
   if (path === '/api/v1/cache/flush') {
     return { protocol_version: 1, response_entries_before: 18642, response_entries_after: 0, rule_entries_before: 712, rule_entries_after: 0 } as T
   }
-  if (path.startsWith('/api/v1/logs')) {
+  if (pathname === '/api/v1/logs') {
+    // 级别筛选和真实后端一样在「服务端」做：journalctl 的 --priority 桶是
+    // <=3 错误、==4 警告、>=5 信息。演示里若忽略这个参数，筛选器看起来就是坏的。
+    // The level filter runs "server-side" as the real backend does: journalctl's
+    // --priority buckets are <=3 error, ==4 warning, >=5 info. Ignoring the
+    // parameter here would make the filter look broken in the demo.
+    const level = url.searchParams.get('level')
+    const inLevel = (priority: number): boolean =>
+      level === null || (level === 'error' ? priority <= 3 : level === 'warning' ? priority === 4 : priority >= 5)
     const entries = Array.from({ length: 80 }, (_, index) => ({
       timestamp_unix_micros: (now - index * 18) * 1_000_000,
       priority: index % 17 === 0 ? 4 : 6,
@@ -747,8 +755,13 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
       message: index % 17 === 0
         ? 'upstream request timed out, continuing with next configured resolver'
         : `request completed pipeline=default transport=udp elapsed_ms=${8 + (index % 14)}`,
-    }))
-    return { entries, next_cursor: null } as LogsResponse as T
+    })).filter((entry) => inLevel(entry.priority))
+    // 输出被改到 journald 之外的 unit 只在置上这个标记时演示，和 kixdns:demo-empty-first-install 是同一套做法。
+    // A unit whose output bypasses journald is shown only under this flag, mirroring kixdns:demo-empty-first-install.
+    const outputRedirected = typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-log-output-redirected') === 'true'
+      ? 'StandardOutput=append:/var/log/kixdns.log'
+      : null
+    return { entries, next_cursor: null, output_redirected: outputRedirected } as LogsResponse as T
   }
   if (pathname === '/api/v1/audit' && method === 'GET') {
     const limit = Math.max(1, Math.min(100, Number(url.searchParams.get('limit')) || 50))
