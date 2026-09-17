@@ -83,9 +83,10 @@ REPOSITORY=tuoro/kixdns-panel
 WORKFLOW=build-panel.yml
 ARTIFACT=kixdns-panel-linux-x86_64   # 或 kixdns-panel-linux-arm64
 
+# 只取本仓库自己 push 触发的运行：fork 发来的 PR 也可能出现在 branch=main 的结果里
 RUN_ID="$(curl -fsSL \
-  "https://api.github.com/repos/${REPOSITORY}/actions/workflows/${WORKFLOW}/runs?branch=main&status=success&per_page=1" \
-  | jq -r '.workflow_runs[0].id')"
+  "https://api.github.com/repos/${REPOSITORY}/actions/workflows/${WORKFLOW}/runs?branch=main&status=success&event=push&per_page=20" \
+  | jq -r --arg repo "$REPOSITORY" '[.workflow_runs[] | select(.head_repository.full_name == $repo)][0].id')"
 DIGEST="$(curl -fsSL \
   "https://api.github.com/repos/${REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
   | jq -r --arg name "$ARTIFACT" '.artifacts[] | select(.name == $name and .expired == false) | .digest')"
@@ -207,6 +208,7 @@ sudo systemctl restart kixdns-panel.service
 3. 用包内能力清单预检当前配置，不兼容就返回 `422 unsupported_config_fields`，不停服务、不改配置
 4. 激活时再次校验并替换二进制，保持服务原来的启停状态：运行中的服务重启一次并等待健康检查，失败则换回原版本再重启；已停止的服务不会被启动，新版本在下次启动时生效。切换从不改变开机自启
 5. 切换在独立的后台任务里执行，浏览器中途断开不会让它停在半路
+
 已下载的版本可离线切换，本地最多保留 8 个（始终保留当前版本）。Actions Artifact 在 GitHub 上保留 90 天，每周任务会提前 7 天续建；远端过期不影响本地已下载的版本。
 
 新配置字段的兼容规则见[配置能力契约](config-capabilities.md)。
