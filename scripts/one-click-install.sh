@@ -201,7 +201,9 @@ panel_env_value() {
 }
 
 # 同版本重跑时在下载前结束，省下整包下载，也不打扰正在运行的 KixDNS。
+# 这里只看文件和版本；面板是否在运行由 panel_running 另行判断，没运行就转为修复性重装。
 # Stop a same-version re-run before the download: saves the transfer and leaves KixDNS alone.
+# This checks files and the release only; panel_running decides separately, and a stopped panel means a repair install.
 already_installed() {
   local tag=$1
   local argument
@@ -215,6 +217,10 @@ already_installed() {
     [[ ${argument} != -h && ${argument} != --help ]] || return 1
   done
   return 0
+}
+
+panel_running() {
+  systemctl is-active --quiet kixdns-panel.service
 }
 
 print_already_installed() {
@@ -341,8 +347,14 @@ main() {
   [[ -z ${VERSION} || ${tag} == "${VERSION}" ]] || fail "Release 标签与请求版本不一致"
 
   if already_installed "${tag}"; then
-    print_already_installed "${tag}"
-    return 0
+    if panel_running; then
+      print_already_installed "${tag}"
+      return 0
+    fi
+    # 版本对得上但面板没在运行，说明上次安装或运行出了问题，按 --reinstall 处理。
+    # The release matches but the panel is down, so something broke; treat it as --reinstall.
+    printf '已安装 KixDNS Panel %s，但面板未在运行，将进行修复性重装\n' "${tag}"
+    REINSTALL=true
   fi
 
   asset_record="$(jq -er --arg name "${asset_name}" '

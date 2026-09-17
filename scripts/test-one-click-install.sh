@@ -217,10 +217,16 @@ jq -n --arg tag v3.1.0 --arg asset "${asset}" --arg digest "sha256:${digest}" '{
 STUB_CALLS="${WORK}/curl-calls"
 STUB_ARCHIVE="${WORK}/${asset}"
 
+STUB_ARGV="${WORK}/curl-argv"
+# 桩 curl 写在单独文件里，终端下的进度条检查要在 script 分配的伪终端中另起 bash 加载它。
+# The curl stub lives in its own file so the terminal progress check can load it in a bash started under script's pty.
+cat > "${WORK}/curl-stub.sh" <<'STUB'
+# shellcheck disable=SC2317,SC2329
 curl() {
   local output=""
   local url="${*: -1}"
   local write_out=""
+  printf '%s\n' "$*" >> "${STUB_ARGV}"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --output) output=$2; shift ;;
@@ -236,12 +242,22 @@ curl() {
     cp -- "${STUB_ARCHIVE}" "${output}"
   fi
 }
+STUB
+source "${WORK}/curl-stub.sh"
+# 面板是否在运行由桩 systemctl 决定，并记下查询了哪个 unit。
+# The stubbed systemctl decides whether the panel runs and records which unit was queried.
+STUB_PANEL_ACTIVE=true
+SYSTEMCTL_CALLS="${WORK}/systemctl-calls"
+systemctl() {
+  printf '%s\n' "$*" >> "${SYSTEMCTL_CALLS}"
+  [[ $* == "is-active --quiet kixdns-panel.service" && ${STUB_PANEL_ACTIVE} == true ]]
+}
 require_root() { :; }
 TEMP_PARENT="${WORK}"
 export RECORD_FILE="${WORK}/installer-arguments"
 
 run_main() {
-  rm -f -- "${STUB_CALLS}" "${RECORD_FILE}"
+  rm -f -- "${STUB_CALLS}" "${STUB_ARGV}" "${SYSTEMCTL_CALLS}" "${RECORD_FILE}"
   VERSION="" REINSTALL=false INSTALLER_ARGUMENTS=() FINAL_INSTALLER_ARGUMENTS=()
   (main "$@") 2>&1
 }
@@ -253,6 +269,11 @@ assert_contains "${output}" "正在下载 ${asset}（38.4 MB）…" "应在下�
 assert_contains "${output}" "校验通过。" "校验后应提示"
 assert_contains "${output}" "准备安装 KixDNS Panel v3.1.0（${architecture}）" "应保留准备安装提示"
 assert_equals "$(tr '\n' ' ' < "${RECORD_FILE}")" "--replace-existing " "安装器应收到透传参数"
+# 命令替换里 stderr 不是终端：下载不应输出进度条。
+# stderr is not a terminal inside command substitution, so the download must stay silent.
+download_argv="$(grep -F -- "/releases/download/" "${STUB_ARGV}")"
+assert_contains " ${download_argv} " " --silent " "非终端下载应使用 --silent"
+assert_not_contains "${download_argv}" "--progress-bar" "非终端下载不应显示进度条"
 
 printf 'KIXDNS_MANAGEMENT_ENABLED=true\nKIXDNS_PANEL_INSTALLED_RELEASE=v3.1.0\n' > "${PANEL_ENV}"
 output="$(run_main)"
@@ -260,6 +281,18 @@ assert_contains "${output}" "已安装 KixDNS Panel v3.1.0，无需重复安装"
 assert_contains "${output}" "bash -s -- --reinstall" "短路提示应给出修复性重装命令"
 assert_equals "$(wc -l < "${STUB_CALLS}")" 1 "同版本短路不应下载安装包"
 [[ ! -e ${RECORD_FILE} ]] || { printf '断言失败：同版本短路不应运行安装器\n' >&2; exit 1; }
+assert_equals "$(cat -- "${SYSTEMCTL_CALLS}")" "is-active --quiet kixdns-panel.service" "短路前应确认面板服务在运行"
+
+# 同版本但面板没在运行：不能短路，要提示并转为修复性重装。
+# Same release but the panel is not running: do not skip; say so and repair.
+STUB_PANEL_ACTIVE=false
+output="$(run_main)"
+assert_contains "${output}" "已安装 KixDNS Panel v3.1.0，但面板未在运行，将进行修复性重装" "面板未运行时应说明将修复"
+assert_not_contains "${output}" "无需重复安装" "面板未运行时不应短路"
+assert_equals "$(wc -l < "${STUB_CALLS}")" 2 "面板未运行时应下载安装包"
+assert_contains "${output}" "准备安装 KixDNS Panel v3.1.0" "面板未运行时应继续安装"
+assert_equals "$(wc -c < "${RECORD_FILE}")" 1 "旧安装包不认识 --reinstall，修复时也不应转交"
+STUB_PANEL_ACTIVE=true
 
 output="$(run_main --version v3.1.0 --reinstall)"
 assert_contains "${output}" "正在读取版本 v3.1.0 信息…" "指定版本时应提示版本号"
@@ -283,5 +316,21 @@ fi
 assert_contains "${output}" "请不要安装" "摘要不一致时应明确不要安装"
 [[ ! -e ${RECORD_FILE} ]] || { printf '断言失败：摘要不一致不应运行安装器\n' >&2; exit 1; }
 STUB_ARCHIVE="${WORK}/${asset}"
+
+# ---- 终端下显示进度条 / progress bar on a terminal ----
+# script 给子进程分配伪终端，stderr 因而是终端；--version 一行确认桩确实跑过。
+# script gives the child a pty so stderr is a terminal; the argv file proves the stub actually ran.
+rm -f -- "${STUB_ARGV}"
+cat > "${WORK}/tty-download.sh" <<EOF
+source "${ONE_CLICK}"
+source "${WORK}/curl-stub.sh"
+download_archive "https://github.com/tuoro/kixdns-panel/releases/download/v3.1.0/${asset}" "${WORK}/tty.zip"
+EOF
+STUB_ARGV="${STUB_ARGV}" STUB_CALLS="${STUB_CALLS}" STUB_RELEASE="${STUB_RELEASE}" STUB_ARCHIVE="${STUB_ARCHIVE}" \
+  script -qec "bash ${WORK}/tty-download.sh" /dev/null > "${WORK}/tty-output" </dev/null
+[[ -s ${STUB_ARGV} ]] || { printf '断言失败：伪终端里的下载没有调用 curl（输出：%s）\n' "$(cat -- "${WORK}/tty-output")" >&2; exit 1; }
+download_argv="$(cat -- "${STUB_ARGV}")"
+assert_contains "${download_argv}" "--progress-bar" "终端下载应显示进度条"
+assert_not_contains " ${download_argv} " " --silent " "终端下载不应使用 --silent"
 
 printf '一键安装策略检查通过。\n'
