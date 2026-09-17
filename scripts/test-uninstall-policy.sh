@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC1090,SC1091,SC2034
+# shellcheck disable=SC1090,SC1091,SC2034,SC2317,SC2329
 set -Eeuo pipefail
 
 PACKAGE_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -73,11 +73,15 @@ assert_contains() {
 # Regression: stderr must not stay swallowed after the tty prompt, or the cancel message vanishes.
 output="$(run_in_pty "
   source '${UNINSTALLER}'
-  KIXDNS_MANAGEMENT_ENABLED=true
+  KIXDNS_MANAGED=true
   KIXDNS_ACTION=auto
   choose_kixdns_action
 " ']：' 3)"
 assert_contains "${output}" "已取消卸载" "终端里取消卸载必须看得到取消提示"
+[[ ${output} != *"卸载失败"* ]] || {
+  printf '断言失败：取消是用户的选择，不应带卸载失败前缀\n%s\n' "${output}" >&2
+  exit 1
+}
 
 help="$(bash "${UNINSTALLER}" --help)"
 [[ ${help} == *"--keep-kixdns"* ]]
@@ -88,11 +92,37 @@ source "${UNINSTALLER}"
 
 PANEL_ENV="${PACKAGE_ROOT}/.missing-panel.env"
 EXTERNAL_BACKUP="${PACKAGE_ROOT}/.missing-external-backup"
-KIXDNS_MANAGEMENT_ENABLED=false
+KIXDNS_MANAGED=false
 KIXDNS_SERVICE_UNIT=kixdns.service
 HAS_EXTERNAL_BACKUP=false
 load_settings
 assert_equals "${HAS_EXTERNAL_BACKUP}" false "没有迁移备份时设置加载也应成功"
+
+# 新安装的 panel.env 不再写管理模式开关；没有这个键必须按面板管理的 KixDNS 处理，否则 --remove-kixdns 会被悄悄改成保留。
+# New panel.env files no longer carry the management switch; its absence must mean a panel-managed KixDNS,
+# or --remove-kixdns would silently turn into keep.
+fixture_env="$(mktemp)"
+printf 'KIXDNS_SERVICE_UNIT=kixdns.service\n' > "${fixture_env}"
+output="$(
+  PANEL_ENV=${fixture_env}
+  KIXDNS_ACTION=remove
+  load_settings
+  choose_kixdns_action
+  printf 'ACTION=%s\n' "${KIXDNS_ACTION}"
+)"
+assert_equals "${output}" "ACTION=remove" "没有管理模式开关的新 panel.env 应允许移除 KixDNS"
+# 旧「仅安装面板」主机的 KixDNS 从来不归面板管，卸载器必须保留它。
+# On a legacy panel-only host the KixDNS was never the panel's, so the uninstaller must keep it.
+printf 'KIXDNS_MANAGEMENT_ENABLED=false\n' >> "${fixture_env}"
+output="$(
+  PANEL_ENV=${fixture_env}
+  KIXDNS_ACTION=remove
+  load_settings
+  choose_kixdns_action
+  printf 'ACTION=%s\n' "${KIXDNS_ACTION}"
+)"
+assert_contains "${output}" "ACTION=keep" "旧「仅安装面板」主机的 KixDNS 必须保留"
+rm -f -- "${fixture_env}"
 
 KIXDNS_ACTION=auto
 CONFIG_ACTION=auto
@@ -107,7 +137,7 @@ choose_config_action
 
 HAS_EXTERNAL_BACKUP=false
 CONFIG_ACTION=keep
-KIXDNS_MANAGEMENT_ENABLED=false
+KIXDNS_MANAGED=false
 KIXDNS_ACTION=keep
 RESTORED_EXTERNAL=false
 load_external_backup
@@ -135,7 +165,7 @@ assert_equals "${KIXDNS_ACTION}" remove "--purge 应移除面板管理的 KixDNS
 assert_equals "${CONFIG_ACTION}" remove "--purge 应删除面板配置"
 assert_equals "${ASSUME_YES}" true "--purge 应跳过交互确认"
 
-KIXDNS_MANAGEMENT_ENABLED=false
+KIXDNS_MANAGED=false
 KIXDNS_ACTION=auto
 HAS_EXTERNAL_BACKUP=false
 choose_kixdns_action
@@ -162,6 +192,43 @@ wait_for_unit_inactive kixdns-panel.service
 [[ ${UNIT_CALLS} == *"kill --kill-who=all kixdns-panel.service"* ]]
 [[ ${UNIT_CALLS} == *"reset-failed kixdns-panel.service"* ]]
 unset -f systemctl
+
+# 安装器关闭过 systemd-resolved 的本机监听：移除 KixDNS 时恢复原样，保留 KixDNS 时只给出恢复命令。
+# The installer turned systemd-resolved's stub off: removing KixDNS restores it, keeping KixDNS only prints the commands.
+resolved_uninstall() {
+  local action=$1
+  local work
+  work="$(mktemp -d)"
+  (
+    RESOLVED_STATE="${work}/state"
+    RESOLVED_DROPIN="${work}/resolved.conf.d/kixdns-panel.conf"
+    RESOLV_CONF="${work}/resolv.conf"
+    mkdir -p "${RESOLVED_STATE}" "$(dirname -- "${RESOLVED_DROPIN}")"
+    printf '[Resolve]\nDNSStubListener=no\n' > "${RESOLVED_DROPIN}"
+    ln -s /run/systemd/resolve/resolv.conf "${RESOLV_CONF}"
+    printf '%s\n' RESOLVED_DROPIN_DIRECTORY_CREATED=true RESOLV_CONF_KIND=symlink \
+      RESOLV_CONF_TARGET=../run/systemd/resolve/stub-resolv.conf > "${RESOLVED_STATE}/install.env"
+    systemctl() { printf 'systemctl %s\n' "$*"; }
+    KIXDNS_ACTION=${action}
+    restore_resolved_stub
+    printf 'LINK=%s\n' "$(readlink "${RESOLV_CONF}")"
+    [[ ! -e ${RESOLVED_DROPIN} ]] || printf 'DROPIN-LEFT\n'
+    [[ ! -e $(dirname -- "${RESOLVED_DROPIN}") ]] || printf 'DIRECTORY-LEFT\n'
+    [[ ! -e ${RESOLVED_STATE} ]] || printf 'STATE-LEFT\n'
+  )
+  rm -rf -- "${work}"
+}
+output="$(resolved_uninstall remove)"
+assert_contains "${output}" "LINK=../run/systemd/resolve/stub-resolv.conf" "移除 KixDNS 时应还原 resolv.conf 原来的指向"
+assert_contains "${output}" "systemctl restart systemd-resolved.service" "移除 KixDNS 时应重启 systemd-resolved"
+[[ ${output} != *LEFT* ]] || {
+  printf '断言失败：恢复后不应残留 drop-in、目录或记录\n%s\n' "${output}" >&2
+  exit 1
+}
+output="$(resolved_uninstall keep)"
+assert_contains "${output}" "LINK=/run/systemd/resolve/resolv.conf" "保留 KixDNS 时不能改回 resolv.conf"
+assert_contains "${output}" "DROPIN-LEFT" "保留 KixDNS 时不能删掉关闭监听的 drop-in"
+assert_contains "${output}" "sudo ln -sfn ../run/systemd/resolve/stub-resolv.conf" "保留 KixDNS 时应给出恢复命令"
 
 one_click_help="$(bash "${PACKAGE_ROOT}/scripts/one-click-install.sh" --help)"
 [[ ${one_click_help} == *"--version"* ]]

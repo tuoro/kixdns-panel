@@ -3,7 +3,12 @@ set -Eeuo pipefail
 
 PANEL_ENV=/etc/kixdns-panel/panel.env
 EXTERNAL_BACKUP=/var/lib/kixdns-panel/external-backup
-KIXDNS_MANAGEMENT_ENABLED=false
+# 安装器关闭 systemd-resolved 本机监听时留下的记录；移除 KixDNS 时据此恢复。
+# The record the installer leaves when it turns systemd-resolved's stub off; removing KixDNS restores from it.
+RESOLVED_STATE=/var/lib/kixdns-panel/resolved-stub
+RESOLVED_DROPIN=/etc/systemd/resolved.conf.d/kixdns-panel.conf
+RESOLV_CONF=/etc/resolv.conf
+KIXDNS_MANAGED=false
 KIXDNS_SERVICE_UNIT=kixdns.service
 KIXDNS_ACTION=auto
 CONFIG_ACTION=auto
@@ -17,6 +22,13 @@ RESTORED_EXTERNAL=false
 
 fail() {
   printf '卸载失败：%s\n' "$*" >&2
+  exit 1
+}
+
+cancel_uninstall() {
+  # 取消是用户的选择，不是失败，所以不带「卸载失败」前缀。
+  # Cancelling is the user's choice, not a failure, so it carries no failure prefix.
+  printf '已取消卸载，未作任何修改。\n' >&2
   exit 1
 }
 
@@ -102,13 +114,17 @@ backup_value() {
 load_settings() {
   local value
   if [[ -f ${PANEL_ENV} ]]; then
+    # 现在的安装器不再写 KIXDNS_MANAGEMENT_ENABLED；只有已移除的「仅安装面板」模式留下的 false
+    # 表示 KixDNS 不归面板管。没有 panel.env 时无法确认归属，同样按不归面板管处理，宁可保留。
+    # Current installers no longer write KIXDNS_MANAGEMENT_ENABLED; only the false left by the removed
+    # panel-only mode means the KixDNS is not the panel's. Without panel.env ownership is unknown, so keep it.
     value="$(environment_value KIXDNS_MANAGEMENT_ENABLED || true)"
-    [[ -z ${value} ]] || KIXDNS_MANAGEMENT_ENABLED=${value}
+    [[ -z ${value} || ${value} =~ ^(true|false)$ ]] ||
+      fail "panel.env 中的 KixDNS 管理模式无效"
+    [[ ${value} == false ]] || KIXDNS_MANAGED=true
     value="$(environment_value KIXDNS_SERVICE_UNIT || true)"
     [[ -z ${value} ]] || KIXDNS_SERVICE_UNIT=${value}
   fi
-  [[ ${KIXDNS_MANAGEMENT_ENABLED} =~ ^(true|false)$ ]] ||
-    fail "panel.env 中的 KixDNS 管理模式无效"
   # 规则以 panel-server 的 Operations::new 为准（scripts/test-unit-name-rule.sh 校对）。
   # The rule is panel-server's Operations::new (checked by scripts/test-unit-name-rule.sh).
   [[ ${KIXDNS_SERVICE_UNIT} =~ ^[A-Za-z0-9][A-Za-z0-9_.@-]{0,119}\.service$ && ${KIXDNS_SERVICE_UNIT} != *..* ]] ||
@@ -131,7 +147,7 @@ close_terminal() {
 
 choose_kixdns_action() {
   local choice=""
-  if [[ ${KIXDNS_MANAGEMENT_ENABLED} != true ]]; then
+  if [[ ${KIXDNS_MANAGED} != true ]]; then
     if [[ ${KIXDNS_ACTION} == remove ]]; then
       printf '当前使用外部 KixDNS；为防止误删，卸载器只移除面板并保留外部 KixDNS。\n'
     fi
@@ -154,7 +170,7 @@ choose_kixdns_action() {
   case ${choice} in
     1) KIXDNS_ACTION=keep ;;
     2) KIXDNS_ACTION=remove ;;
-    *) fail "已取消卸载" ;;
+    *) cancel_uninstall ;;
   esac
 }
 
@@ -172,7 +188,7 @@ choose_config_action() {
   case ${choice} in
     1) CONFIG_ACTION=keep ;;
     2) CONFIG_ACTION=remove ;;
-    *) fail "已取消卸载" ;;
+    *) cancel_uninstall ;;
   esac
 }
 
@@ -194,7 +210,7 @@ confirm_uninstall() {
   printf '确认继续？[y/N]：' >&3
   IFS= read -r answer <&3 || true
   close_terminal
-  [[ ${answer} =~ ^([yY]|[yY][eE][sS])$ ]] || fail "已取消卸载"
+  [[ ${answer} =~ ^([yY]|[yY][eE][sS])$ ]] || cancel_uninstall
 }
 
 validate_non_interactive() {
@@ -220,7 +236,7 @@ validate_removal_targets() {
   [[ ${CONFIG_ACTION} == remove ]] || return 0
   [[ ! -L /etc/kixdns-panel && ! -L /var/lib/kixdns-panel ]] ||
     fail "配置目录不能是符号链接"
-  if [[ ${KIXDNS_MANAGEMENT_ENABLED} == true && ${KIXDNS_ACTION} == keep ]]; then
+  if [[ ${KIXDNS_MANAGED} == true && ${KIXDNS_ACTION} == keep ]]; then
     [[ -f /var/lib/kixdns-panel/bin/kixdns && ! -L /var/lib/kixdns-panel/bin/kixdns ]] ||
       fail "找不到需要保留的 KixDNS 二进制"
   fi
@@ -291,7 +307,7 @@ remove_panel_components() {
 }
 
 remove_managed_kixdns() {
-  [[ ${KIXDNS_MANAGEMENT_ENABLED} == true && ${KIXDNS_ACTION} == remove ]] || return 0
+  [[ ${KIXDNS_MANAGED} == true && ${KIXDNS_ACTION} == remove ]] || return 0
   stop_unit "${KIXDNS_SERVICE_UNIT}"
   wait_for_unit_inactive "${KIXDNS_SERVICE_UNIT}"
   rm -f -- "/etc/systemd/system/${KIXDNS_SERVICE_UNIT}"
@@ -310,7 +326,7 @@ remove_panel_state() {
   [[ ${CONFIG_ACTION} == remove ]] || return 0
   rm -rf -- /etc/kixdns-panel
   rm -f -- /var/lib/kixdns-panel/github-token
-  if [[ ${KIXDNS_MANAGEMENT_ENABLED} == true && ${KIXDNS_ACTION} == keep ]]; then
+  if [[ ${KIXDNS_MANAGED} == true && ${KIXDNS_ACTION} == keep ]]; then
     rm -f -- /var/lib/kixdns-panel/panel.db /var/lib/kixdns-panel/panel.db-shm \
       /var/lib/kixdns-panel/panel.db-wal
     rm -rf -- /var/lib/kixdns-panel/versions /var/lib/kixdns-panel/geo \
@@ -323,7 +339,7 @@ remove_panel_state() {
     rm -rf -- /var/lib/kixdns-panel
   fi
   remove_account kixdns-panel
-  if [[ ${KIXDNS_MANAGEMENT_ENABLED} == true && ${KIXDNS_ACTION} == remove && \
+  if [[ ${KIXDNS_MANAGED} == true && ${KIXDNS_ACTION} == remove && \
     ${HAS_EXTERNAL_BACKUP} == false ]]; then
     rm -rf -- /etc/kixdns
     remove_account kixdns
@@ -331,10 +347,53 @@ remove_panel_state() {
   fi
 }
 
+state_value() {
+  local file=$1
+  local key=$2
+  [[ -f ${file} ]] || return 1
+  awk -F= -v key="${key}" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "${file}"
+}
+
+# 与 install.sh 的 restore_resolved_stub 保持一致：卸载器单独分发，不能 source 安装器。
+# Mirrors install.sh's restore_resolved_stub: the uninstaller ships on its own and cannot source the installer.
+restore_resolved_stub() {
+  local state=${RESOLVED_STATE}/install.env
+  local kind
+  local target
+  [[ -f ${state} ]] || return 0
+  kind="$(state_value "${state}" RESOLV_CONF_KIND || true)"
+  target="$(state_value "${state}" RESOLV_CONF_TARGET || true)"
+  if [[ ${KIXDNS_ACTION} == keep ]]; then
+    # 保留的 KixDNS 还在用这个端口，恢复 resolved 的监听会让它下次启动失败。
+    # The kept KixDNS still uses the port; restoring resolved's stub would break its next start.
+    printf 'systemd-resolved 的本机监听保持关闭，保留的 KixDNS 继续使用 53 端口。以后要恢复：\n'
+    printf '  sudo rm %s\n' "${RESOLVED_DROPIN}"
+    if [[ ${kind} == symlink && -n ${target} ]]; then
+      printf '  sudo ln -sfn %s %s\n' "${target}" "${RESOLV_CONF}"
+    fi
+    printf '  sudo systemctl restart systemd-resolved\n'
+    return 0
+  fi
+  rm -f -- "${RESOLVED_DROPIN}"
+  if [[ $(state_value "${state}" RESOLVED_DROPIN_DIRECTORY_CREATED || true) == true ]]; then
+    rmdir -- "$(dirname -- "${RESOLVED_DROPIN}")" 2>/dev/null || true
+  fi
+  case ${kind} in
+    symlink) [[ -z ${target} ]] || ln -sfn -- "${target}" "${RESOLV_CONF}" ;;
+    file)
+      rm -f -- "${RESOLV_CONF}"
+      cp -a -- "${RESOLVED_STATE}/resolv.conf" "${RESOLV_CONF}"
+      ;;
+  esac
+  systemctl restart systemd-resolved.service || true
+  rm -rf -- "${RESOLVED_STATE}"
+  printf 'systemd-resolved 的本机监听与 %s 已恢复原样。\n' "${RESOLV_CONF}"
+}
+
 restore_external_state() {
   [[ ${RESTORED_EXTERNAL} == true ]] || return 0
   if [[ ${ORIGINAL_ENABLED} == true ]]; then
-    systemctl enable "${ORIGINAL_UNIT}"
+    systemctl enable "${ORIGINAL_UNIT}" --quiet
   else
     systemctl disable "${ORIGINAL_UNIT}" 2>/dev/null || true
   fi
@@ -375,6 +434,7 @@ main() {
   validate_removal_targets
   remove_panel_components
   remove_managed_kixdns
+  restore_resolved_stub
   remove_panel_state
   systemctl daemon-reload
   restore_external_state
