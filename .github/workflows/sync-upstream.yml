@@ -231,6 +231,7 @@ jobs:
             cd "$upstream_dir"
             cargo fmt --check
             cargo test --offline --lib --locked
+            cargo test --offline --bin kixdns --locked
             cargo clippy --offline --all-targets --all-features --locked -- -D warnings
             cargo audit --db "$ADVISORY_DB" --no-fetch --deny warnings
             cargo build --offline --locked

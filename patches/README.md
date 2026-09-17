@@ -18,7 +18,7 @@ sets/22/
 2. 使用指向新编号的候选锁准备 `.upstream/kixdns-<source>-<commit>-p<patchset>`，并在检出源码中完成修改。
 3. 对新增文件执行 `git add -N <file>`，使用 `git diff --binary --output=<新补丁路径>` 重新生成新集合中受影响的补丁。
 4. 新增配置字段时同步更新 `capabilities.json`、增强 health 声明和面板的集中能力注册表；不要根据版本号推断字段支持。
-5. 在干净检出中运行 `cargo xtask prepare --lock <候选锁>`，再执行格式、测试、Clippy、RustSec 和 DNS 冒烟检查。
+5. 在干净检出中运行 `cargo xtask prepare --lock <候选锁>`，再执行格式、测试（`cargo test --lib` 与 `cargo test --bin kixdns`，`main.rs` 里的测试只在后者执行）、Clippy、RustSec 和 DNS 冒烟检查。
 6. 同一拉取请求提交新补丁集、候选锁和对应版本目录；旧锁和旧补丁集保持不变。
 
 补丁不是手工维护的源码副本。修改增强功能时应编辑检出源码并重新生成补丁，避免补丁内容与已验证代码不一致。
@@ -32,7 +32,7 @@ sets/22/
 3. 把临时提交链 rebase 到候选上游；已经被上游吸收的空提交会被丢弃，Release 专用补丁会映射到新标签。
 4. 删除候选锁文件并使用固定 Rust 工具链重新解析依赖，把结果作为通用层最后一个补丁。
 5. 复制能力清单、导出更高编号的暂存补丁集，通过密封校验后才同时启用新补丁集和候选锁。
-6. 对新源码树运行格式、测试、Clippy、RustSec、构建和 DNS 冒烟；全部成功后才提交审计 PR 并自动合并。
+6. 对新源码树运行格式、测试（库与 `kixdns` 二进制）、Clippy、RustSec、构建和 DNS 冒烟；全部成功后才提交审计 PR 并自动合并。
 
 整个生成过程使用暂存目录；失败时不会写入半个补丁集或切换当前锁。基础设施或工具错误只会让 Action 失败，不创建兼容性告警。只有 Git rebase 报告代码冲突、依赖无法解析或完整验证失败时，工作流才创建或更新对应的 `[compat]` Issue；同一轨道只保留一个开放告警。失败候选不会进入 `upstreams/`，另一条轨道和已发布 Artifact 不受影响。
 
@@ -44,15 +44,15 @@ sets/22/
 2. 从 Issue 的冲突文件或验证日志确认失败属于上游 API 变化、依赖约束冲突还是增强语义变化；普通上下文漂移应由自动重基处理。
 3. 创建新的补丁集编号。仅有版本结构差异时，在新集合的 `compatibility/<名称>/` 增加前置兼容补丁，并给候选锁设置新 `patchset` 和 `compatibility`。
 4. 增强逻辑确需适配新 API 时，只修改新集合中的通用补丁。控制协议字段或语义发生不兼容变化时才提升协议版本。
-5. 使用候选锁运行 `cargo xtask prepare`，并执行格式、测试、Clippy、RustSec、构建和 DNS 冒烟检查。
+5. 使用候选锁运行 `cargo xtask prepare`，并执行格式、测试（库与 `kixdns` 二进制）、Clippy、RustSec、构建和 DNS 冒烟检查。
 6. 通过拉取请求同时提交补丁、候选锁和对应版本目录。Action、Release 构建工作流会在合并前再次验证；主分支匹配上游候选后，兼容性 Issue 会在下次同步时自动关闭。
 
 这种顺序把适配限制在候选版本：旧锁、旧目录和旧 Artifact 保持可复现，面板服务仅在控制协议确实变化时才需要联动修改。
 
-当前 `sets/22/common/` 的补丁（自 p19 起，增强逻辑通过上游的 `EngineObserver` 接口接入，不再修改 `src/engine`、`src/watcher.rs` 或配置加载器）：
+当前 Action 轨道补丁集的通用补丁（编号以 `upstream.lock.json` 的 `patchset` 为准；自 p19 起，增强逻辑通过上游的 `EngineObserver` 接口接入，不再修改 `src/engine`、`src/watcher.rs` 或配置加载器）：
 
 1. `0001-query-stats-config.patch`：查询排行的 `statistics_*` 配置字段及其缓存命名空间参与。
-2. `0002-panel-control-socket.patch`：`panel.rs` 以 `EngineObserver` 实现指标、查询排行、配置摘要与诊断轨迹，`panel_trace.rs` 从观察者事件重建轨迹，`main.rs` 通过 `Engine::builder` 注入观察者并启动本机控制 Socket。
+2. `0002-panel-control-socket.patch`：`panel.rs` 以 `EngineObserver` 实现指标、查询排行、配置摘要与诊断轨迹，`panel_trace.rs` 从观察者事件重建轨迹，`main.rs` 通过 `Engine::builder` 注入观察者并启动本机控制 Socket；`--debug` 时 `panel.rs` 把每个引擎事件转发给上游的 `TracingObserver`，使 `kixdns::observe` 事件日志在增强版中仍然可用；`main.rs` 在 journald 下把致命错误压成单行 `<3>fatal: …`、把 panic 压成单行 `<2>panicked at …`，让面板的错误过滤器能看到启动失败的原因。
 3. `0004-dependency-lock.patch`：用固定工具链重新解析的 `Cargo.lock`。
 
 原先的 `0003-security-dependency-refresh.patch` 已被上游吸收，因此编号不连续。p18 及更早的补丁集保持原有结构，供旧锁复现。

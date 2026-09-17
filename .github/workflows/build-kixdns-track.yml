@@ -137,6 +137,7 @@ jobs:
           cd "$UPSTREAM_DIR"
           cargo fmt --check
           cargo test --lib --locked
+          cargo test --bin kixdns --locked
           cargo clippy --all-targets --all-features --locked -- -D warnings
           cargo audit --deny warnings
 
