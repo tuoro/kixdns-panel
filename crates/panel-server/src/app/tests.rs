@@ -212,6 +212,47 @@ async fn ipv6_clients_in_one_slash_64_share_one_login_budget() {
 }
 
 #[tokio::test]
+async fn a_username_spray_from_one_address_does_not_lock_out_the_admin() {
+    let context = authenticated_app().await;
+    let login = |username: String, password: &str, octet: u8| {
+        let mut request = Request::post("/api/v1/auth/login")
+            .header(CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({"username": username, "password": password}).to_string(),
+            ))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from((
+                Ipv4Addr::new(203, 0, 113, octet),
+                42_004,
+            ))));
+        context.app.clone().oneshot(request)
+    };
+
+    let mut statuses = Vec::new();
+    for index in 0..21 {
+        statuses.push(
+            login(format!("guess-{index}"), "wrong-password", 9)
+                .await
+                .unwrap()
+                .status(),
+        );
+    }
+    // 喷洒的那个地址用完自己的用户名预算后被拒绝。
+    // The spraying address is refused once its username budget is spent.
+    assert_eq!(statuses[..20], [StatusCode::UNAUTHORIZED; 20]);
+    assert_eq!(statuses[20], StatusCode::TOO_MANY_REQUESTS);
+
+    // 别的地址上的管理员照常登录。
+    // The admin on another address still logs in.
+    let response = login("admin".to_owned(), "a-secure-password", 10)
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn setup_issues_session_and_write_requires_csrf() {
     let context = authenticated_app().await;
 

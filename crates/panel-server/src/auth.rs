@@ -28,6 +28,7 @@ const MAX_ATTEMPTS: u32 = 5;
 const ATTEMPT_WINDOW: StdDuration = StdDuration::from_mins(15);
 const MAX_FORWARDED_HOPS: usize = 32;
 const MAX_TRACKED_LOGIN_KEYS: usize = 10_000;
+const MAX_USERNAMES_PER_BUCKET: usize = 20;
 
 #[derive(Debug, Clone)]
 pub struct TrustedProxies(Vec<IpNet>);
@@ -147,9 +148,62 @@ fn address_bucket(address: IpAddr) -> IpAddr {
     }
 }
 
+/// 追踪表：按键记录尝试，另按地址段记下各段占了几个键，淘汰时一起维护。
+/// The tracking table: attempts per key, plus how many keys each address
+/// bucket holds, kept in step on every insert and eviction.
+#[derive(Default)]
+struct AttemptTable {
+    keys: HashMap<LoginKey, AttemptState>,
+    per_bucket: HashMap<IpAddr, usize>,
+}
+
+impl AttemptTable {
+    fn prune(&mut self) {
+        let before = self.keys.len();
+        self.keys
+            .retain(|_, state| state.started_at.elapsed() < ATTEMPT_WINDOW);
+        if self.keys.len() != before {
+            self.recount();
+        }
+    }
+
+    fn recount(&mut self) {
+        self.per_bucket.clear();
+        for key in self.keys.keys() {
+            *self.per_bucket.entry(key.address).or_default() += 1;
+        }
+    }
+
+    fn remove(&mut self, key: &LoginKey) {
+        if self.keys.remove(key).is_none() {
+            return;
+        }
+        if let Some(count) = self.per_bucket.get_mut(&key.address) {
+            *count -= 1;
+            if *count == 0 {
+                self.per_bucket.remove(&key.address);
+            }
+        }
+    }
+
+    /// 最早出现的一项让位。过期项已经由 prune 清掉，剩下的都在窗口内。
+    /// The entry seen first makes room. prune already dropped expired ones,
+    /// so everything left is inside the window.
+    fn evict_oldest(&mut self) {
+        let oldest = self
+            .keys
+            .iter()
+            .min_by_key(|(_, state)| state.started_at)
+            .map(|(key, _)| *key);
+        if let Some(key) = oldest {
+            self.remove(&key);
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct LoginLimiter {
-    attempts: Mutex<HashMap<LoginKey, AttemptState>>,
+    attempts: Mutex<AttemptTable>,
 }
 
 impl LoginLimiter {
@@ -161,8 +215,9 @@ impl LoginLimiter {
             .attempts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        attempts.retain(|_, state| state.started_at.elapsed() < ATTEMPT_WINDOW);
+        attempts.prune();
         if attempts
+            .keys
             .get(&key)
             .is_some_and(|state| state.failures >= MAX_ATTEMPTS)
         {
@@ -174,37 +229,44 @@ impl LoginLimiter {
     /// 在同一把锁里检查并占用一次尝试。密码校验在 4 个槽位后面排队，
     /// 先检查、校验失败后再记数会让并发请求一起挤过检查（200 个并发错误
     /// 登录实测 135 次进入校验）。成功登录由 clear 归还预算，失败保留占用。
-    /// 追踪的键超过上限时拒绝新键，而不是让伪造来源撑大内存。
+    /// 一个地址段在窗口内最多占 `MAX_USERNAMES_PER_BUCKET` 个用户名，超出只拒绝
+    /// 这一段；总表满了就淘汰最早的一项，绝不因为别人把表占满而拒绝新来的段。
     /// Check and take one attempt under the same lock. Password verification
     /// queues behind four slots, so checking first and counting after a
     /// failed verify let parallel requests slip past together (200 parallel
     /// bad logins produced 135 verifications). A successful login returns the
-    /// budget through clear; a failed one keeps its reservation. Beyond the
-    /// key cap new keys are rejected instead of growing the map.
+    /// budget through clear; a failed one keeps its reservation. One address
+    /// bucket may hold at most `MAX_USERNAMES_PER_BUCKET` usernames per window
+    /// and only that bucket is refused beyond it; a full table evicts its
+    /// oldest entry, so nobody filling it can lock out a newcomer.
     pub fn reserve(&self, address: IpAddr, username: &str) -> AppResult<()> {
         let key = LoginKey::new(address, username);
         let mut attempts = self
             .attempts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        attempts.retain(|_, state| state.started_at.elapsed() < ATTEMPT_WINDOW);
-        if let Some(state) = attempts.get_mut(&key) {
+        attempts.prune();
+        if let Some(state) = attempts.keys.get_mut(&key) {
             if state.failures >= MAX_ATTEMPTS {
                 return Err(AppError::TooManyRequests);
             }
             state.failures += 1;
             return Ok(());
         }
-        if attempts.len() >= MAX_TRACKED_LOGIN_KEYS {
+        if attempts.per_bucket.get(&key.address).copied().unwrap_or(0) >= MAX_USERNAMES_PER_BUCKET {
             return Err(AppError::TooManyRequests);
         }
-        attempts.insert(
+        while attempts.keys.len() >= MAX_TRACKED_LOGIN_KEYS {
+            attempts.evict_oldest();
+        }
+        attempts.keys.insert(
             key,
             AttemptState {
                 failures: 1,
                 started_at: Instant::now(),
             },
         );
+        *attempts.per_bucket.entry(key.address).or_default() += 1;
         Ok(())
     }
 
@@ -213,6 +275,15 @@ impl LoginLimiter {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&LoginKey::new(address, username));
+    }
+
+    #[cfg(test)]
+    fn tracked(&self) -> usize {
+        self.attempts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys
+            .len()
     }
 }
 
@@ -393,7 +464,30 @@ mod tests {
     }
 
     #[test]
-    fn rejects_new_login_keys_beyond_the_tracking_cap() {
+    fn a_username_spray_exhausts_only_its_own_bucket() {
+        let limiter = LoginLimiter::default();
+        let sprayer = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9));
+        for index in 0..super::MAX_USERNAMES_PER_BUCKET {
+            limiter.reserve(sprayer, &format!("guess-{index}")).unwrap();
+        }
+
+        // 同一段再换用户名：拒绝的是这一段。
+        // A further username from the same bucket is refused for that bucket.
+        assert!(matches!(
+            limiter.reserve(sprayer, "guess-next"),
+            Err(AppError::TooManyRequests)
+        ));
+        // 已经在窗口里的用户名照常消耗自己的五次。
+        // A username already tracked keeps spending its own five attempts.
+        assert!(limiter.reserve(sprayer, "guess-0").is_ok());
+        // 别的地址上的管理员不受影响，照常进入密码校验。
+        // The admin on another address still reaches password verification.
+        let admin = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7));
+        assert!(limiter.reserve(admin, "admin").is_ok());
+    }
+
+    #[test]
+    fn a_full_tracking_table_still_admits_a_fresh_bucket() {
         let limiter = LoginLimiter::default();
         for index in 0..super::MAX_TRACKED_LOGIN_KEYS {
             let offset = u32::try_from(index).unwrap();
@@ -402,17 +496,17 @@ mod tests {
         }
         let newcomer = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7));
 
+        assert!(limiter.reserve(newcomer, "admin").is_ok());
+        // 内存仍有上限：最早的一项让了位。
+        // Memory stays bounded: the oldest entry made room.
+        assert_eq!(limiter.tracked(), super::MAX_TRACKED_LOGIN_KEYS);
+        for _ in 1..5 {
+            limiter.reserve(newcomer, "admin").unwrap();
+        }
         assert!(matches!(
             limiter.reserve(newcomer, "admin"),
             Err(AppError::TooManyRequests)
         ));
-        // 已追踪的键不受影响，照常消耗自己的预算。
-        // Keys already tracked keep spending their own budget.
-        assert!(
-            limiter
-                .reserve(IpAddr::V4(Ipv4Addr::from(0x0a00_0000_u32)), "admin")
-                .is_ok()
-        );
     }
 
     #[test]
