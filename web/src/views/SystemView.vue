@@ -525,12 +525,6 @@ onBeforeUnmount(() => {
           <div><dt>安装来源</dt><dd><a v-if="activeVersion?.source_url" :href="activeVersion.source_url" target="_blank" rel="noopener noreferrer">上游详情<ExternalLink :size="13" /></a><span v-else>未记录</span></dd></div>
           <div><dt>二进制摘要</dt><dd class="mono">{{ shortHash(activeVersion?.binary_sha256, 14) }}</dd></div>
         </dl>
-        <dl v-else class="detail-list runtime-details">
-          <div><dt>部署模式</dt><dd>外部安装</dd></div>
-          <div><dt>版本管理</dt><dd>已禁用</dd></div>
-          <div><dt>服务控制</dt><dd>按权限提供</dd></div>
-          <div><dt>增强协议</dt><dd>按运行版本提供</dd></div>
-        </dl>
       </template>
     </section>
 
