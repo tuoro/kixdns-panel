@@ -748,20 +748,47 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
     const level = url.searchParams.get('level')
     const inLevel = (priority: number): boolean =>
       level === null || (level === 'error' ? priority <= 3 : level === 'warning' ? priority === 4 : priority >= 5)
-    const entries = Array.from({ length: 80 }, (_, index) => ({
-      timestamp_unix_micros: (now - index * 18) * 1_000_000,
-      priority: index % 17 === 0 ? 4 : 6,
-      source: 'kixdns',
-      message: index % 17 === 0
-        ? 'upstream request timed out, continuing with next configured resolver'
-        : `request completed pipeline=default transport=udp elapsed_ms=${8 + (index % 14)}`,
-    })).filter((entry) => inLevel(entry.priority))
+    // 分页且响应慢，只在置上这个标记时演示：e2e 用它复现「切级别时旧游标翻页」
+    // 的竞态——带 before 的请求 300ms 回来，带 level 的 1500ms，让首屏还在飞时
+    // 旧级别的翻页已经落地。游标和 journalctl 的一样是最后一行在日志里的位置，
+    // 与级别无关：拿「全部」的游标去翻「警告」，翻出来的正是警告首屏已经有的行。
+    // Paged and slow, only under this flag: the e2e uses it to reproduce the
+    // "older page with a stale cursor after a level switch" race — requests
+    // with `before` answer in 300ms, requests with `level` in 1500ms, so the
+    // stale older page lands while the new first page is still in flight. The
+    // cursor is, like journalctl's, the last line's position in the journal and
+    // independent of the level: paging "warning" with the "all" cursor returns
+    // lines the warning first page already holds.
+    const pagedSlow = typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-log-paged-slow') === 'true'
+    if (pagedSlow) {
+      await new Promise((resolve) => setTimeout(resolve, url.searchParams.has('level') ? 1500 : url.searchParams.has('before') ? 300 : 0))
+    }
+    const total = pagedSlow ? 120 : 80
+    const pageSize = 80
+    const before = Number(url.searchParams.get('before'))
+    const after = Number.isFinite(before) && url.searchParams.has('before') ? before : -1
+    const matching = Array.from({ length: total }, (_, position) => ({
+      position,
+      entry: {
+        timestamp_unix_micros: (now - position * 18) * 1_000_000,
+        priority: position % 17 === 0 ? 4 : 6,
+        source: 'kixdns',
+        message: position % 17 === 0
+          ? 'upstream request timed out, continuing with next configured resolver'
+          : `request completed pipeline=default transport=udp elapsed_ms=${8 + (position % 14)}`,
+      },
+    })).filter(({ position, entry }) => position > after && inLevel(entry.priority))
+    const pageItems = matching.slice(0, pageSize)
+    const entries = pageItems.map(({ entry }) => entry)
+    const nextCursor = matching.length > pageSize ? String(pageItems.at(-1)?.position ?? 0) : null
     // 输出被改到 journald 之外的 unit 只在置上这个标记时演示，和 kixdns:demo-empty-first-install 是同一套做法。
+    // 句子由服务端拼好，这里给的就是它会给的那一句。
     // A unit whose output bypasses journald is shown only under this flag, mirroring kixdns:demo-empty-first-install.
-    const outputRedirected = typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-log-output-redirected') === 'true'
-      ? 'StandardOutput=append:/var/log/kixdns.log'
+    // The sentence is composed server-side; this is the one it would send.
+    const notice = typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-log-output-redirected') === 'true'
+      ? '这个 unit 的输出没有送到 journald（StandardOutput=append:/var/log/kixdns.log），这里只会看到 systemd 自己的启停记录'
       : null
-    return { entries, next_cursor: null, output_redirected: outputRedirected } as LogsResponse as T
+    return { entries, next_cursor: nextCursor, notice } as LogsResponse as T
   }
   if (pathname === '/api/v1/audit' && method === 'GET') {
     const limit = Math.max(1, Math.min(100, Number(url.searchParams.get('limit')) || 50))

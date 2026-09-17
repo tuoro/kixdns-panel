@@ -25,7 +25,7 @@ const auditCursor = ref<number | null>(null)
 const runtimeCursor = ref<string | null>(null)
 const runtimeStream = ref<HTMLDivElement | null>(null)
 const loadingOlder = ref(false)
-const outputRedirected = ref<string | null>(null)
+const notice = ref<string | null>(null)
 let timer: number | undefined
 let pendingLoad: Promise<void> | null = null
 
@@ -111,7 +111,7 @@ function load(silent = false): Promise<void> {
     if (requestedLevel !== level.value) return
     entries.value = page.entries
     runtimeCursor.value = page.next_cursor
-    outputRedirected.value = page.output_redirected
+    notice.value = page.notice
     loadError.value = ''
     await nextTick()
     if (runtimeStream.value) runtimeStream.value.scrollTop = 0
@@ -133,7 +133,12 @@ function logsParameters(before?: string): URLSearchParams {
 }
 
 async function loadOlder(): Promise<void> {
-  if (requesting.value || runtimeCursor.value === null) return
+  // 首屏还在飞就不翻页：旧一页被丢弃时 finally 已经把 requesting 放开了，
+  // 只看它会拿着旧级别的游标去翻新级别的页。
+  // No older page while a first page is in flight: a discarded stale page has
+  // already released `requesting` in its finally, and that guard alone would
+  // let a scroll page the new level with the old level's cursor.
+  if (requesting.value || pendingLoad !== null || runtimeCursor.value === null) return
   requesting.value = true
   loadingOlder.value = true
   live.value = false
@@ -153,11 +158,15 @@ async function loadOlder(): Promise<void> {
 }
 
 // 切级别就是换一个 journalctl 查询，已加载的行和游标都作废，从头取。
+// 游标当场清掉：新首屏回来之前它属于旧级别，留着会被滚动翻页拿去用。
 // 正在飞的那次请求先让它落地，否则 load() 的去重会把这次切换吞掉。
 // Switching level means a different journalctl query: the loaded lines and the
-// cursor are void, fetch from the top. Let an in-flight request land first, or
-// load()'s de-duplication would swallow this switch.
+// cursor are void, fetch from the top. The cursor is cleared right here: until
+// the new first page lands it belongs to the old level, and a scroll would page
+// with it. Let an in-flight request land first, or load()'s de-duplication
+// would swallow this switch.
 watch(level, () => {
+  runtimeCursor.value = null
   void (pendingLoad ?? Promise.resolve()).then(() => load())
 })
 
@@ -269,12 +278,15 @@ onBeforeUnmount(() => window.clearInterval(timer))
       </header>
       <div v-if="mode === 'runtime'" class="log-summary"><span>{{ filtered.length }} / {{ entries.length }} 条{{ runtimeCursor !== null ? '，向下滚动加载更早日志' : '' }}</span><span><i :class="live ? 'status-dot' : 'status-dot status-dot--muted'"></i>{{ live ? '最新日志在顶部，每 5 秒刷新' : '浏览历史时自动暂停' }}</span></div>
       <div v-else class="log-summary"><span>{{ filteredAudit.length }} / {{ auditEvents.length }} 条</span><span>最多保留 10,000 条操作记录</span></div>
-      <!-- 常驻、不是错误：日志页本身没坏，是这个 unit 的输出没送到 journald。
+      <!-- 常驻、不是错误：日志页本身没坏，是 journald 看不到这个 unit 的输出——
+           unit 不存在，或它的输出没送到 journald。句子由服务端拼好，原样展示；
            不提示的话页面看着一切正常，只是永远没有 KixDNS 自己的一行。
-           Persistent and not an error: the page is not broken, this unit's output
-           simply never reaches journald. Without the notice the page looks fine
-           and just never shows a line from KixDNS itself. -->
-      <p v-if="mode === 'runtime' && outputRedirected !== null" class="log-notice" role="status"><strong>这个 unit 的输出没有送到 journald</strong>（{{ outputRedirected }}），这里只会出现 systemd 自己的启动、停止记录，看不到 KixDNS 的日志。</p>
+           Persistent and not an error: the page is not broken, journald simply
+           cannot see this unit's output — the unit is missing, or its output
+           never reaches journald. The sentence is composed server-side and shown
+           verbatim; without it the page looks fine and just never shows a line
+           from KixDNS itself. -->
+      <p v-if="mode === 'runtime' && notice !== null" class="log-notice" role="status">{{ notice }}</p>
       <div v-if="mode === 'runtime'" ref="runtimeStream" class="log-stream" @scroll="handleRuntimeScroll">
         <div v-for="({ entry, segments }, index) in lines" :key="`${entry.timestamp_unix_micros}-${index}`" class="log-line" :class="levelClass(entry.priority)">
           <time>{{ timestamp(entry.timestamp_unix_micros) }}</time>

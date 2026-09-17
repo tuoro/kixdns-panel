@@ -463,13 +463,58 @@ test('unit 输出未送到 journald 时运行日志显示常驻提示 @responsiv
   await page.addInitScript(() => localStorage.setItem('kixdns:demo-log-output-redirected', 'true'))
   await open(page, '/logs')
   const notice = page.locator('.log-notice')
-  await expect(notice).toContainText('这个 unit 的输出没有送到 journald')
-  await expect(notice).toContainText('StandardOutput=append:/var/log/kixdns.log')
+  // 句子由服务端拼好，页面原样展示，不在浏览器里再拼一遍。
+  // The sentence is composed server-side and shown verbatim, not re-assembled in the browser.
+  await expect(notice).toHaveText('这个 unit 的输出没有送到 journald（StandardOutput=append:/var/log/kixdns.log），这里只会看到 systemd 自己的启停记录')
   await expect(page.locator('.status-banner')).toHaveCount(0)
   await expectNoPageOverflow(page)
 
   await page.locator('.log-view-tabs button').nth(1).click()
   await expect(notice).toHaveCount(0)
+})
+
+test('切换级别后不会拿旧级别的游标翻页', async ({ page }) => {
+  // mock 在这个标记下分页（120 行，每页 80）且响应慢：带 before 的 300ms，带 level 的 1500ms。
+  // 顺序：翻页（全部）在飞 → 切到警告 → 旧翻页落地被丢弃 → 滚到底。修复前这一滚会拿着
+  // 「全部」的游标 79 去请求警告级别，落地时把 79 之后的三行警告再追加一遍：8 行变 11 行。
+  // Under this flag the mock pages (120 lines, 80 per page) and answers slowly: 300ms with
+  // `before`, 1500ms with `level`. Sequence: older page (all) in flight → switch to warning →
+  // the stale older page lands and is dropped → scroll to the bottom. Before the fix that
+  // scroll requests the warning level with the "all" cursor 79, and when it lands the three
+  // warning lines after 79 are appended again: 8 lines become 11.
+  await page.addInitScript(() => localStorage.setItem('kixdns:demo-log-paged-slow', 'true'))
+  await open(page, '/logs')
+  const lines = page.locator('.log-line')
+  const loadMore = page.locator('.runtime-load-more')
+  // 翻页走滚动处理器而不是点按钮：Playwright 点之前会把按钮滚进视口，那一滚本身就触发翻页。
+  // 事件显式派发一次，不依赖视口高度够不够让流真的滚起来。
+  // Page via the scroll handler, not the button: Playwright scrolls the button into view before
+  // clicking and that scroll already triggers a page. Dispatch the event explicitly so the test
+  // does not depend on the viewport being short enough for the stream to actually scroll.
+  const scrollToBottom = () => page.locator('.log-stream').evaluate((stream) => {
+    stream.scrollTop = stream.scrollHeight
+    stream.dispatchEvent(new Event('scroll'))
+  })
+  await expect(lines).toHaveCount(80)
+  await expect(loadMore).toBeEnabled()
+
+  await scrollToBottom()
+  await expect(loadMore).toContainText('正在加载')
+  await page.getByRole('group', { name: '日志级别' }).getByRole('button', { name: '警告', exact: true }).click()
+  // 旧翻页落地（300ms）：修复后按钮已随游标一起消失，修复前它重新可点。
+  // The stale older page lands (300ms): fixed, the button is gone with the cursor; unfixed, it is clickable again.
+  await expect(loadMore.filter({ hasText: '正在加载' })).toHaveCount(0)
+  await scrollToBottom()
+
+  // 警告首屏（1500ms）：120 行里 index % 17 === 0 的 8 行，一页放得下，没有游标。
+  // The warning first page (1500ms): the 8 lines with index % 17 === 0 out of 120, one page, no cursor.
+  await expect(lines).toHaveCount(8)
+  await expect(loadMore).toHaveCount(0)
+  // 等够一次带 level 的翻页（1500ms）落地的时间：修复前它会把 index 85/102/119 再追加一遍。
+  // Wait long enough for a level-bearing older page (1500ms) to land: unfixed, it appends index 85/102/119 again.
+  await page.waitForTimeout(1800)
+  await expect(lines).toHaveCount(8)
+  await expect(page.locator('.log-summary')).toContainText('8 / 8 条')
 })
 
 test('主页面不会产生视口级横向溢出 @responsive', async ({ page }) => {

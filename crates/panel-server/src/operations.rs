@@ -39,14 +39,18 @@ pub struct LogEntry {
 pub struct LogPage {
     pub entries: Vec<LogEntry>,
     pub next_cursor: Option<String>,
-    /// unit 把 StandardOutput/StandardError 改到了 journald 之外时的描述。
-    /// 那种情况下 `journalctl --unit` 只剩 systemd 自己的启停记录，日志页看着
-    /// 正常却一条 `KixDNS` 的输出都没有，必须告诉读者。None 表示 journald 能看到。
-    /// Set when the unit sends StandardOutput/StandardError somewhere other
-    /// than journald: `journalctl --unit` then holds only systemd's own
-    /// start/stop lines and the page looks fine while showing nothing from
-    /// `KixDNS`. None means journald sees the output.
-    pub output_redirected: Option<String>,
+    /// journald 看不到这个 unit 的输出时，给读者的完整一句话：unit 在 systemd
+    /// 里不存在，或者它把 StandardOutput/StandardError 改到了 journald 之外。
+    /// 两种情况下 `journalctl --unit` 都只剩 systemd 自己的启停记录，日志页看着
+    /// 正常却一条 `KixDNS` 的输出都没有。句子在服务端拼好，前端原样展示；
+    /// None 表示 journald 能看到。
+    /// The complete sentence for the reader when journald cannot see this
+    /// unit's output: the unit does not exist in systemd, or it sends
+    /// StandardOutput/StandardError somewhere other than journald. Either way
+    /// `journalctl --unit` holds only systemd's own start/stop lines and the
+    /// page looks fine while showing nothing from `KixDNS`. Composed here and
+    /// rendered verbatim by the frontend; None means journald sees the output.
+    pub notice: Option<String>,
 }
 
 /// 日志级别桶。三段范围必须和前端 `label()/levelClass()` 的分桶完全一致
@@ -259,25 +263,30 @@ impl Operations {
         let limit = limit.clamp(1, 500);
         let arguments = journal_arguments(self.service_unit.as_ref(), limit, before_cursor, level);
         let arguments = arguments.iter().map(String::as_str).collect::<Vec<_>>();
-        // 输出去向和日志本身并行查：多一次 systemctl 不该让日志页慢一倍。
+        // unit 状态和日志本身并行查：多一次 systemctl 不该让日志页慢一倍。
+        // 一起要 LoadState：unit 不存在时 systemctl show 照样退出 0，只是打印
+        // StandardOutput=inherit，不看 LoadState 会把「找不到 unit」说成「输出被改了去向」。
         // systemctl 失败只是少了提示，不能把整页日志一起拖垮，所以吞掉错误。
-        // The output destination is queried alongside the journal so the extra
-        // systemctl call does not double the page's latency. A failing
-        // systemctl only loses the notice; it must not fail the log request.
+        // The unit's state is queried alongside the journal so the extra
+        // systemctl call does not double the page's latency. LoadState comes
+        // with it: for a missing unit `systemctl show` still exits 0 and prints
+        // StandardOutput=inherit, so without LoadState "unit not found" would be
+        // reported as "output redirected". A failing systemctl only loses the
+        // notice; it must not fail the log request.
         let show_arguments = [
             "show",
             self.service_unit.as_ref(),
             "--no-pager",
-            "--property=StandardOutput,StandardError",
+            "--property=LoadState,StandardOutput,StandardError",
         ];
-        let (journal, unit_output) = tokio::join!(
+        let (journal, unit_state) = tokio::join!(
             run_command("journalctl", &arguments, Duration::from_secs(10)),
             run_command("systemctl", &show_arguments, Duration::from_secs(10))
         );
         let mut page = parse_journal_page(&journal?, before_cursor, limit);
-        page.output_redirected = unit_output
+        page.notice = unit_state
             .ok()
-            .and_then(|output| parse_output_redirect(&output));
+            .and_then(|output| unit_log_notice(self.service_unit.as_ref(), &output));
         Ok(page)
     }
 
@@ -466,22 +475,34 @@ fn journal_arguments(
     arguments
 }
 
-/// 读 `systemctl show --property=StandardOutput,StandardError` 的输出，判断 unit
-/// 的输出还到不到 journald。stdout 只有 journal 和 journal+console 算到；stderr
-/// 多一个 inherit（默认值，跟随 stdout）。只重定向了 stderr 也要报：panic 和
-/// 致命错误走的正是 stderr。缺字段时视为看得到——猜不准就不吓人。
-/// Reads `systemctl show --property=StandardOutput,StandardError` and decides
-/// whether journald still sees the unit's output. stdout counts only as
-/// journal or journal+console; stderr additionally as inherit (the default,
-/// which follows stdout). A redirected stderr alone is still reported: panics
-/// and fatal errors go there. Missing fields count as visible; when unsure,
-/// do not alarm.
+/// 读 `systemctl show --property=LoadState,StandardOutput,StandardError` 的输出，
+/// 拼出日志页顶部那句提示；journald 能看到 unit 的输出时返回 None。
+/// 先看 LoadState：unit 不存在时 systemctl show 仍然退出 0，只是每个属性都打印
+/// 默认值（StandardOutput=inherit），不先看它就会把「找不到 unit」说成「输出被
+/// 改了去向」。再看输出去向：stdout 只有 journal 和 journal+console 算到；stderr
+/// 多一个 inherit（默认值，跟随 stdout）。只重定向了 stderr 也要报：panic 和致命
+/// 错误走的正是 stderr。缺字段时视为看得到——猜不准就不吓人。
+/// Reads `systemctl show --property=LoadState,StandardOutput,StandardError`
+/// and composes the notice shown above the log page; None when journald sees
+/// the unit's output. `LoadState` is checked first: for a missing unit
+/// `systemctl show` still exits 0 and prints every property's default
+/// (StandardOutput=inherit), so without it "unit not found" would read as
+/// "output redirected". Then the destinations: stdout counts only as journal
+/// or journal+console; stderr additionally as inherit (the default, which
+/// follows stdout). A redirected stderr alone is still reported: panics and
+/// fatal errors go there. Missing fields count as visible; when unsure, do
+/// not alarm.
 #[cfg(any(unix, test))]
-fn parse_output_redirect(output: &str) -> Option<String> {
+fn unit_log_notice(unit: &str, output: &str) -> Option<String> {
+    let mut load_state = None;
     let mut redirected = Vec::new();
     for (key, value) in output.lines().filter_map(|line| line.split_once('=')) {
         let value = value.trim();
         let reaches_journal = match key {
+            "LoadState" => {
+                load_state = Some(value);
+                continue;
+            }
             "StandardOutput" => matches!(value, "journal" | "journal+console"),
             "StandardError" => matches!(value, "inherit" | "journal" | "journal+console"),
             _ => continue,
@@ -490,7 +511,18 @@ fn parse_output_redirect(output: &str) -> Option<String> {
             redirected.push(format!("{key}={}", truncate(value, 256)));
         }
     }
-    (!redirected.is_empty()).then(|| redirected.join("，"))
+    if let Some(state) = load_state.filter(|state| *state != "loaded") {
+        return Some(format!(
+            "systemd 里找不到 unit {unit}（LoadState={}），日志页读不到它的输出",
+            truncate(state, 64)
+        ));
+    }
+    (!redirected.is_empty()).then(|| {
+        format!(
+            "这个 unit 的输出没有送到 journald（{}），这里只会看到 systemd 自己的启停记录",
+            redirected.join("，")
+        )
+    })
 }
 
 #[cfg(any(unix, test))]
@@ -530,7 +562,7 @@ fn parse_journal_page(output: &str, before_cursor: Option<&str>, limit: usize) -
     LogPage {
         entries,
         next_cursor,
-        output_redirected: None,
+        notice: None,
     }
 }
 
@@ -552,7 +584,7 @@ mod tests {
 
     use super::{
         LogLevel, OperationError, Operations, ServiceAction, journal_arguments, parse_journal_page,
-        parse_output_redirect, parse_record_type,
+        parse_record_type, unit_log_notice,
     };
 
     fn operations(unit: &str) -> Result<Operations, OperationError> {
@@ -631,35 +663,51 @@ mod tests {
     }
 
     #[test]
-    fn output_redirect_notice_only_when_journald_cannot_see_the_unit() {
+    fn log_notice_only_when_journald_cannot_see_the_unit() {
+        let notice = |output: &str| unit_log_notice("kixdns.service", output);
         assert_eq!(
-            parse_output_redirect("StandardOutput=journal\nStandardError=inherit\n"),
+            notice("LoadState=loaded\nStandardOutput=journal\nStandardError=inherit\n"),
             None
         );
         assert_eq!(
-            parse_output_redirect("StandardOutput=journal+console\nStandardError=journal\n"),
+            notice("LoadState=loaded\nStandardOutput=journal+console\nStandardError=journal\n"),
             None
         );
+        // unit 不存在：systemctl show 退出 0 并打印 StandardOutput=inherit，
+        // 这句必须说「找不到」而不是「输出被改了去向」。
+        // Missing unit: systemctl show exits 0 and prints StandardOutput=inherit;
+        // the sentence must say "not found", not "output redirected".
         assert_eq!(
-            parse_output_redirect(
-                "StandardOutput=file:/var/log/kixdns.log\nStandardError=inherit\n"
+            notice("LoadState=not-found\nStandardOutput=inherit\nStandardError=inherit\n")
+                .as_deref(),
+            Some(
+                "systemd 里找不到 unit kixdns.service（LoadState=not-found），日志页读不到它的输出"
+            )
+        );
+        assert_eq!(
+            notice(
+                "LoadState=loaded\nStandardOutput=file:/var/log/kixdns.log\nStandardError=inherit\n"
             )
             .as_deref(),
-            Some("StandardOutput=file:/var/log/kixdns.log")
+            Some(
+                "这个 unit 的输出没有送到 journald（StandardOutput=file:/var/log/kixdns.log），这里只会看到 systemd 自己的启停记录"
+            )
         );
         assert_eq!(
-            parse_output_redirect("StandardOutput=journal\nStandardError=null\n").as_deref(),
-            Some("StandardError=null")
+            notice("StandardOutput=journal\nStandardError=null\n").as_deref(),
+            Some(
+                "这个 unit 的输出没有送到 journald（StandardError=null），这里只会看到 systemd 自己的启停记录"
+            )
         );
         assert_eq!(
-            parse_output_redirect(
-                "StandardOutput=append:/var/log/kixdns.log\nStandardError=truncate:/var/log/kixdns.err\n"
+            notice(
+                "LoadState=loaded\nStandardOutput=append:/var/log/kixdns.log\nStandardError=truncate:/var/log/kixdns.err\n"
             )
             .as_deref(),
-            Some("StandardOutput=append:/var/log/kixdns.log，StandardError=truncate:/var/log/kixdns.err")
+            Some("这个 unit 的输出没有送到 journald（StandardOutput=append:/var/log/kixdns.log，StandardError=truncate:/var/log/kixdns.err），这里只会看到 systemd 自己的启停记录")
         );
-        assert_eq!(parse_output_redirect(""), None);
-        assert_eq!(parse_output_redirect("ActiveState=active\n"), None);
+        assert_eq!(notice(""), None);
+        assert_eq!(notice("ActiveState=active\n"), None);
     }
 
     #[test]

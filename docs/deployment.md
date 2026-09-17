@@ -67,7 +67,7 @@ printf '%s  %s\n' "${DIGEST#sha256:}" kixdns-panel.zip | sha256sum --check -
 
 | 选项 | 效果 |
 | --- | --- |
-| `1` 仅安装面板 | 保留原 KixDNS；面板可控制其启停，但不下载、替换或删除二进制，版本管理停用。原版不具备增强指标时对应页面显示不可用；原 unit 若把 `StandardOutput`/`StandardError` 改到了 journald 之外（文件、`null` 等），日志页只能看到 systemd 自己的启停记录，并会常驻提示 |
+| `1` 仅安装面板 | 保留原 KixDNS；面板可控制其启停，但不下载、替换或删除二进制，版本管理停用。原版不具备增强指标时对应页面显示不可用；原 unit 若把 `StandardOutput`/`StandardError` 改到了 journald 之外（文件、`null` 等），或事后被删掉，日志页只能看到 systemd 自己的启停记录，并会常驻提示说明原因 |
 | `2` 迁移为增强版 | 保留原配置路径（写入 `panel.env`），替换二进制和 unit；原 unit 与启停状态备份到 `/var/lib/kixdns-panel/external-backup/`，卸载时可恢复 |
 | `3` 取消 | — |
 

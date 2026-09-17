@@ -219,7 +219,7 @@ def exercise_panel(client: PanelClient, dns_port: int) -> None:
     # SYSLOG_IDENTIFIER is kixdns.
     require(any(entry.get("source") == "kixdns" for entry in logs.get("entries", [])),
             "面板没有读取到 KixDNS 进程自己写入 journal 的日志")
-    require(logs.get("output_redirected") is None, f"KixDNS unit 的输出未送到 journald：{logs.get('output_redirected')}")
+    require(logs.get("notice") is None, f"日志页对 KixDNS unit 给出了提示：{logs.get('notice')}")
     audit = client.request("/api/v1/audit?limit=50")
     actions = {event.get("action") for event in audit.get("events", [])}
     require(

@@ -279,9 +279,12 @@ export interface LogEntry {
 export interface LogsResponse {
   entries: LogEntry[]
   next_cursor: string | null
-  /** unit 的 StandardOutput/StandardError 没送到 journald 时的描述；null 表示能看到。
-   *  Set when the unit's StandardOutput/StandardError bypass journald; null means visible. */
-  output_redirected: string | null
+  /** journald 看不到这个 unit 的输出时（unit 不存在，或 StandardOutput/StandardError
+   *  被改到 journald 之外），服务端拼好的完整一句提示，原样展示；null 表示能看到。
+   *  The complete sentence composed server-side when journald cannot see the
+   *  unit's output (unit missing, or StandardOutput/StandardError redirected),
+   *  rendered verbatim; null means visible. */
+  notice: string | null
 }
 
 export interface AuditEvent {
