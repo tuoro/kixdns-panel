@@ -13,7 +13,6 @@ import {
   Play,
   RefreshCw,
   RotateCw,
-  ShieldCheck,
   Square,
   Tag as TagIcon,
   Trash2,
@@ -77,7 +76,6 @@ let panelUpdateBaseline = ''
 
 const running = computed(() => service.value?.active_state === 'active')
 const installed = computed(() => catalog.value?.binary_present === true)
-const managed = computed(() => catalog.value?.management_enabled !== false)
 const activeVersion = computed(() => catalog.value?.installed_versions.find((item) => item.active) ?? null)
 const loadError = computed(() => [serviceError.value, versionsError.value].filter(Boolean).join('；'))
 
@@ -106,7 +104,7 @@ function versionIdentity(version: InstalledKixdnsVersion | RemoteKixdnsVersion):
 
 function latestKixdnsVersion(): string {
   const notice = updateStatus.value?.kixdns
-  if (!notice?.management_enabled || notice.source_id === null) return '未检查'
+  if (!notice || notice.source_id === null) return '未检查'
   if (notice.source === 'release') return notice.release_tag ?? `Release #${notice.source_id}`
   return notice.run_id ? `Run #${notice.run_id}` : `Artifact #${notice.source_id}`
 }
@@ -473,18 +471,16 @@ onBeforeUnmount(() => {
           <div class="update-row__body">
             <strong>KixDNS 增强包</strong>
             <p class="update-row__from-to">
-              <template v-if="updateStatus.kixdns.management_enabled && updateStatus.kixdns.available"><span class="mono">{{ formatKixdnsVersion(activeVersion) }}</span> → <span class="mono">{{ latestKixdnsVersion() }}</span></template>
-              <template v-else-if="!updateStatus.kixdns.management_enabled">版本管理由用户保留，面板不替换二进制</template>
+              <template v-if="updateStatus.kixdns.available"><span class="mono">{{ formatKixdnsVersion(activeVersion) }}</span> → <span class="mono">{{ latestKixdnsVersion() }}</span></template>
               <template v-else-if="updateStatus.kixdns.current_commit">当前轨道已是最新 · <span class="mono">{{ formatKixdnsVersion(activeVersion) }}</span></template>
               <template v-else>尚未安装，选择一个构建开始</template>
             </p>
             <p class="update-row__note">{{ updateStatus.kixdns.source === 'release' ? 'RELEASES' : 'ACTIONS' }} 轨道<template v-if="updateStatus.kixdns.created_at"> · 构建于 {{ buildTime(updateStatus.kixdns.created_at) }}</template></p>
           </div>
-          <div v-if="updateStatus.kixdns.management_enabled" class="update-row__actions">
+          <div class="update-row__actions">
             <button class="button button--primary" type="button" @click="viewKixdnsVersions"><Download :size="15" />查看版本</button>
             <a v-if="updateStatus.kixdns.build_url" class="button button--secondary" :href="updateStatus.kixdns.build_url" target="_blank" rel="noopener noreferrer">构建详情<ExternalLink :size="14" /></a>
           </div>
-          <span v-else class="update-row__note update-row__note--aside">迁移需重新运行安装程序</span>
         </article>
 
         <article class="update-row" :class="{ 'update-row--ready': updateStatus.panel.available }">
@@ -519,21 +515,15 @@ onBeforeUnmount(() => {
       <div v-if="loadingVersions && !catalog" class="sk sys-skeleton-panel" role="status" aria-label="读取安装状态"></div>
       <template v-else-if="catalog">
         <div :class="installed ? 'runtime-state' : 'runtime-state runtime-state--missing'">
-          <span><ShieldCheck v-if="!managed" :size="22" /><HardDrive v-else :size="22" /></span>
-          <div><strong>{{ !managed ? '外部 KixDNS 已保留' : (installed ? 'KixDNS 已安装' : 'KixDNS 尚未安装') }}</strong><p class="mono">{{ !managed ? '面板未接管二进制和版本' : (installed ? (activeVersion?.upstream_commit ? `${formatKixdnsVersion(activeVersion)} · 上游 ${shortHash(activeVersion.upstream_commit, 12)} · p${activeVersion.patchset}` : '构建身份未记录') : '选择下方构建进行安装') }}</p></div>
+          <span><HardDrive :size="22" /></span>
+          <div><strong>{{ installed ? 'KixDNS 已安装' : 'KixDNS 尚未安装' }}</strong><p class="mono">{{ installed ? (activeVersion?.upstream_commit ? `${formatKixdnsVersion(activeVersion)} · 上游 ${shortHash(activeVersion.upstream_commit, 12)} · p${activeVersion.patchset}` : '构建身份未记录') : '选择下方构建进行安装' }}</p></div>
         </div>
-        <dl v-if="managed" class="detail-list runtime-details">
+        <dl class="detail-list runtime-details">
           <div><dt>当前版本</dt><dd class="mono">{{ formatKixdnsVersion(activeVersion) }}</dd></div>
           <div><dt>增强构建</dt><dd class="mono">{{ shortHash(activeVersion?.commit ?? catalog.active_commit, 12) }}</dd></div>
           <div><dt>控制协议</dt><dd>{{ activeVersion?.control_protocol ? `v${activeVersion.control_protocol}` : '未记录' }}</dd></div>
           <div><dt>安装来源</dt><dd><a v-if="activeVersion?.source_url" :href="activeVersion.source_url" target="_blank" rel="noopener noreferrer">上游详情<ExternalLink :size="13" /></a><span v-else>未记录</span></dd></div>
           <div><dt>二进制摘要</dt><dd class="mono">{{ shortHash(activeVersion?.binary_sha256, 14) }}</dd></div>
-        </dl>
-        <dl v-else class="detail-list runtime-details">
-          <div><dt>部署模式</dt><dd>外部安装</dd></div>
-          <div><dt>版本管理</dt><dd>已禁用</dd></div>
-          <div><dt>服务控制</dt><dd>按权限提供</dd></div>
-          <div><dt>增强协议</dt><dd>按运行版本提供</dd></div>
         </dl>
       </template>
     </section>
@@ -584,8 +574,8 @@ onBeforeUnmount(() => {
 
     <section ref="versionPanel" class="panel version-panel">
       <header class="panel__header version-panel__header">
-        <div><h2>KixDNS 版本</h2><p>{{ managed ? '远端版本源与本地版本库存' : '外部安装未纳入面板版本管理' }}</p></div>
-        <div v-if="managed" class="version-panel__tools">
+        <div><h2>KixDNS 版本</h2><p>远端版本源与本地版本库存</p></div>
+        <div class="version-panel__tools">
           <div class="version-source-tabs" role="tablist" aria-label="版本源">
             <button type="button" role="tab" :aria-selected="versionSource === 'action'" :class="{ 'version-source-tab--active': versionSource === 'action' }" @click="selectVersionSource('action')"><GitBranch :size="14" />Actions</button>
             <button type="button" role="tab" :aria-selected="versionSource === 'release'" :class="{ 'version-source-tab--active': versionSource === 'release' }" @click="selectVersionSource('release')"><TagIcon :size="14" />Releases</button>
@@ -594,10 +584,6 @@ onBeforeUnmount(() => {
         </div>
       </header>
       <div v-if="loadingVersions && (!catalog || catalog.source !== versionSource)" class="sys-skeleton-rows" role="status" aria-label="正在读取可用构建"><i v-for="n in 3" :key="n" class="sk"></i></div>
-      <div v-else-if="catalog && !catalog.management_enabled" class="external-mode-notice">
-        <span><ShieldCheck :size="20" /></span>
-        <div><strong>现有 KixDNS 保持原样</strong><p>面板不会下载、替换或删除其二进制。需要迁移时，请重新运行安装程序并明确选择“迁移替换”。</p></div>
-      </div>
       <div v-else-if="catalog && catalog.source === versionSource" class="version-columns">
         <div class="remote-versions">
           <div class="version-section-title"><div><Download :size="16" /><strong>{{ versionSource === 'release' ? '可用发布' : '可用构建' }}</strong></div><span>{{ catalog.remote_versions.length }} 个</span></div>

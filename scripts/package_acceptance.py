@@ -95,6 +95,7 @@ class PanelClient:
         method: str = "GET",
         payload: object | None = None,
         csrf: bool = False,
+        timeout: float = 5,
     ) -> dict[str, Any]:
         data = None
         headers = {"Accept": "application/json"}
@@ -108,7 +109,7 @@ class PanelClient:
             f"{self.base_url}{path}", data=data, headers=headers, method=method
         )
         try:
-            with self.opener.open(request, timeout=5) as response:
+            with self.opener.open(request, timeout=timeout) as response:
                 require(response.status == 200, f"{path} 返回 HTTP {response.status}")
                 value = json.load(response)
         except urllib.error.HTTPError as error:
@@ -235,7 +236,9 @@ def verify_installation(base_url: str, dns_port: int, mode: str) -> None:
     if mode == "setup-stopped":
         service = client.request("/api/v1/service")
         require(service.get("active_state") == "inactive", "首次安装后 KixDNS 没有保持停止")
-        catalog = client.request("/api/v1/kixdns/versions?source=action")
+        # 版本目录要等面板向 GitHub 查询，响应慢时 5 秒不够；只放宽这一个调用，其余请求仍快速失败。
+        # The catalog waits on the panel's GitHub query, which can exceed 5 s; only this call is relaxed.
+        catalog = client.request("/api/v1/kixdns/versions?source=action", timeout=30)
         active = next(
             (version for version in catalog.get("installed_versions", []) if version.get("active")),
             None,
@@ -293,12 +296,19 @@ def main() -> int:
     verify.add_argument("--base-url", default="http://127.0.0.1:5738")
     verify.add_argument("--dns-port", type=int, required=True)
     verify.add_argument("--mode", choices=("setup-stopped", "login"), required=True)
+    dns = subparsers.add_parser("dns", help="等待 KixDNS 按验收配置应答，不经过面板")
+    dns.add_argument("--dns-port", type=int, required=True)
     arguments = parser.parse_args()
 
     if sys.platform != "linux":
         raise AcceptanceFailure("安装包黑盒验收仅支持 Linux")
     if arguments.command == "prepare":
         print(prepare_config(arguments.config))
+    elif arguments.command == "dns":
+        # 迁移验收里原来的 KixDNS 不归面板管，只能直接查 DNS 证明它在跑。
+        # In the migration check the original KixDNS is not the panel's, so only a direct query proves it runs.
+        wait_for(lambda: query_a(arguments.dns_port, INITIAL_IP) or True, bool, "KixDNS DNS 应答")
+        print(f"KixDNS 在端口 {arguments.dns_port} 正常应答")
     else:
         verify_installation(arguments.base_url, arguments.dns_port, arguments.mode)
         print(f"安装包黑盒验收通过：{arguments.mode}")

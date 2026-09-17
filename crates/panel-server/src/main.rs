@@ -83,7 +83,7 @@ struct Args {
 
     /// 当前完整安装包自带增强 Artifact 的 GitHub ID。
     #[arg(long, env = "KIXDNS_INSTALLED_SOURCE_ID")]
-    installed_source_id: Option<u64>,
+    installed_source_id: Option<String>,
 
     /// 当前完整安装包对应的面板提交，由安装脚本填写。
     #[arg(long, env = "KIXDNS_PANEL_INSTALLED_COMMIT")]
@@ -92,10 +92,6 @@ struct Args {
     /// 当前正式面板安装包的 Release 标签；开发构建为空。
     #[arg(long, env = "KIXDNS_PANEL_INSTALLED_RELEASE")]
     panel_installed_release: Option<String>,
-
-    /// 是否允许面板替换、安装和切换 `KixDNS` 二进制。
-    #[arg(long, env = "KIXDNS_MANAGEMENT_ENABLED", default_value_t = true)]
-    kixdns_management_enabled: bool,
 
     /// 自动更新替换的 `KixDNS Enhanced` 二进制路径。
     #[arg(long, env = "KIXDNS_BINARY", default_value = "/usr/local/bin/kixdns")]
@@ -150,6 +146,46 @@ struct Args {
     trusted_proxies: TrustedProxies,
 }
 
+impl Args {
+    fn into_settings(self) -> anyhow::Result<AppSettings> {
+        let args = self;
+        // 旧安装器会把没有值的安装身份写成 `KEY=`，clap 把它当作已提供的空值；
+        // 空值一律按「未设置」处理，否则面板在 systemd 里反复崩溃。
+        // Older installers wrote identity keys as `KEY=` and clap sees that as a
+        // provided empty value; treat blank as unset instead of crash-looping.
+        let installed_source_id = present(args.installed_source_id)
+            .map(|value| value.parse::<u64>())
+            .transpose()
+            .context("KIXDNS_INSTALLED_SOURCE_ID 必须是正整数")?;
+        Ok(AppSettings {
+            bind: args.bind,
+            database_path: args.database,
+            config_path: args.config,
+            control_socket: args.control_socket,
+            service_unit: args.service_unit,
+            service_helper_socket: args.service_helper_socket,
+            diagnostic_server: args.diagnostic_server,
+            update_repository: args.update_repository,
+            update_workflow: args.update_workflow,
+            update_release_workflow: args.update_release_workflow,
+            update_branch: args.update_branch,
+            update_artifact: args.update_artifact,
+            installed_commit: present(args.installed_commit),
+            installed_source_id,
+            panel_installed_commit: present(args.panel_installed_commit),
+            panel_installed_release: present(args.panel_installed_release),
+            kixdns_binary: args.kixdns_binary,
+            kixdns_versions: args.kixdns_versions,
+            bundled_metadata: args.bundled_metadata,
+            github_token_path: args.github_token_path,
+            geo_data_path: args.geo_data,
+            web_root: args.web_root,
+            secure_cookie: args.secure_cookie,
+            trusted_proxies: args.trusted_proxies,
+        })
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -158,41 +194,55 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let args = Args::parse();
-    run(AppSettings {
-        bind: args.bind,
-        database_path: args.database,
-        config_path: args.config,
-        control_socket: args.control_socket,
-        service_unit: args.service_unit,
-        service_helper_socket: args.service_helper_socket,
-        diagnostic_server: args.diagnostic_server,
-        update_repository: args.update_repository,
-        update_workflow: args.update_workflow,
-        update_release_workflow: args.update_release_workflow,
-        update_branch: args.update_branch,
-        update_artifact: args.update_artifact,
-        installed_commit: args.installed_commit,
-        installed_source_id: args.installed_source_id,
-        panel_installed_commit: args.panel_installed_commit,
-        panel_installed_release: args.panel_installed_release,
-        kixdns_management_enabled: args.kixdns_management_enabled,
-        kixdns_binary: args.kixdns_binary,
-        kixdns_versions: args.kixdns_versions,
-        bundled_metadata: args.bundled_metadata,
-        github_token_path: args.github_token_path,
-        geo_data_path: args.geo_data,
-        web_root: args.web_root,
-        secure_cookie: args.secure_cookie,
-        trusted_proxies: args.trusted_proxies,
-    })
-    .await
-    .context("面板服务异常退出")
+    run(Args::parse().into_settings()?)
+        .await
+        .context("面板服务异常退出")
+}
+
+fn present(value: Option<String>) -> Option<String> {
+    value.filter(|value| !value.trim().is_empty())
 }
 
 fn default_artifact() -> String {
     match std::env::consts::ARCH {
         "aarch64" => "kixdns-enhanced-linux-arm64".to_owned(),
         _ => "kixdns-enhanced-linux-x86_64".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blank_installed_identity_is_treated_as_absent() {
+        // 旧版「仅安装面板」模式把这些键写成空值；面板必须照常启动。
+        // The removed panel-only mode wrote these keys empty; the panel must still start.
+        let settings = Args::try_parse_from([
+            "kixdns-panel-server",
+            "--installed-commit",
+            "",
+            "--installed-source-id",
+            "",
+            "--panel-installed-commit",
+            " ",
+            "--panel-installed-release",
+            "",
+        ])
+        .expect("空的安装身份不应让参数解析失败")
+        .into_settings()
+        .unwrap();
+        assert_eq!(settings.installed_commit, None);
+        assert_eq!(settings.installed_source_id, None);
+        assert_eq!(settings.panel_installed_commit, None);
+        assert_eq!(settings.panel_installed_release, None);
+    }
+
+    #[test]
+    fn malformed_installed_source_id_is_still_rejected() {
+        let result = Args::try_parse_from(["kixdns-panel-server", "--installed-source-id", "abc"])
+            .map_err(anyhow::Error::from)
+            .and_then(Args::into_settings);
+        assert!(result.is_err());
     }
 }
