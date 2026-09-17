@@ -15,7 +15,7 @@ use super::{
     panel_release_asset_name, parse_artifact_reference, sha256, store_version,
     to_kixdns_update_notice, to_panel_update_notice, trusted_workflow_runs,
     update_stored_capabilities, validate_commit, validate_digest, validate_github_token,
-    validate_remote_build_identity, validate_slug, write_github_token,
+    validate_remote_build_identity, validate_slug, workflow_runs_url, write_github_token,
 };
 use crate::db::Database;
 use crate::operations::ServiceAction;
@@ -931,6 +931,47 @@ fn catalogue_keeps_only_this_repository_push_schedule_and_dispatch_runs() {
         kept.iter().map(|run| run.id).collect::<Vec<_>>(),
         vec![7, 6, 5]
     );
+}
+
+#[test]
+fn untrusted_runs_at_the_top_do_not_crowd_trusted_ones_out_of_the_page() {
+    let commit = "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25";
+    // 最新的 40 次是 fork 的 pull request，比面板要的 30 条还多。
+    // The newest 40 runs are fork pull requests, more than the 30 the panel asks for.
+    let all_runs = (0..100_u64)
+        .map(|index| {
+            let untrusted = index < 40;
+            serde_json::json!({
+                "id": 1_000 - index,
+                "head_sha": commit,
+                "created_at": "2026-09-01T00:00:00Z",
+                "html_url": "https://github.com/tuoro/kixdns-panel/actions/runs/1",
+                "event": if untrusted { "pull_request" } else { "push" },
+                "head_branch": "main",
+                "head_repository": {
+                    "full_name": if untrusted { "attacker/kixdns-panel" } else { "tuoro/kixdns-panel" }
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    let url = workflow_runs_url("tuoro/kixdns-panel", "build-kixdns.yml", "main");
+    let per_page = url
+        .split(['?', '&'])
+        .find_map(|pair| pair.strip_prefix("per_page="))
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    // GitHub 按 per_page 返回最新的若干条。
+    // GitHub returns the newest per_page runs.
+    let served: WorkflowRuns = serde_json::from_value(serde_json::json!({
+        "workflow_runs": all_runs.into_iter().take(per_page).collect::<Vec<_>>(),
+    }))
+    .unwrap();
+
+    let kept = trusted_workflow_runs(served.workflow_runs, "tuoro/kixdns-panel", "main", 30);
+
+    assert_eq!(kept.len(), 30);
+    assert_eq!(kept.first().map(|run| run.id), Some(960));
 }
 
 /// 记录切换期间对宿主机做了什么的假宿主。

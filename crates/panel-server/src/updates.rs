@@ -616,6 +616,19 @@ fn trusted_workflow_runs(
         .collect()
 }
 
+/// 一次取满一页再过滤：按 limit 取，排在前面的不可信运行（fork 的 pull request
+/// 等）会把可信运行挤出这一页，版本目录就少了甚至空了。
+/// Fetch a full page and filter afterwards: fetching only `limit` runs lets
+/// untrusted runs at the top (fork pull requests and the like) crowd trusted
+/// ones out of the page, shrinking or emptying the catalogue.
+const WORKFLOW_RUN_PAGE_SIZE: usize = 100;
+
+fn workflow_runs_url(repository: &str, workflow: &str, branch: &str) -> String {
+    format!(
+        "https://api.github.com/repos/{repository}/actions/workflows/{workflow}/runs?branch={branch}&status=success&exclude_pull_requests=true&per_page={WORKFLOW_RUN_PAGE_SIZE}"
+    )
+}
+
 #[derive(Debug, Deserialize)]
 struct ArtifactList {
     total_count: usize,
@@ -1173,10 +1186,7 @@ impl UpdateManager {
         limit: usize,
     ) -> Result<Vec<WorkflowRun>, UpdateError> {
         let limit = limit.clamp(1, 30);
-        let runs_url = format!(
-            "https://api.github.com/repos/{}/actions/workflows/{}/runs?branch={}&status=success&exclude_pull_requests=true&per_page={limit}",
-            self.repository, workflow, self.branch
-        );
+        let runs_url = workflow_runs_url(&self.repository, workflow, &self.branch);
         let runs = self.get_json::<WorkflowRuns>(&runs_url).await?;
         Ok(trusted_workflow_runs(
             runs.workflow_runs,
