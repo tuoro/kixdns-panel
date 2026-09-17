@@ -244,14 +244,14 @@ function save(): void {
 <style scoped>
 .solution-guide__step { display: grid; min-width: 0; gap: 14px; padding: 20px; border-bottom: 1px solid var(--line); }
 .solution-guide__step > header { display: flex; align-items: center; gap: 9px; }
-.solution-guide__step > header > span { display: grid; flex-shrink: 0; place-items: center; width: 24px; height: 24px; border-radius: 50%; color: var(--d-ink); background: var(--ink); font-size: 11px; }
+.solution-guide__step > header > span { display: grid; flex-shrink: 0; place-items: center; width: 24px; height: 24px; border-radius: 50%; color: #fff; background: var(--green); font-size: 11px; }
 .solution-guide__step > header > div { display: grid; gap: 3px; }
 .solution-guide__step strong { font-size: 12px; }
 .solution-guide__step small, small { color: var(--muted); font-size: 10px; line-height: 1.5; }
 .solution-guide__templates { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 7px; padding: 14px 20px; }
 .solution-guide__templates button { display: grid; gap: 4px; padding: 10px; text-align: left; color: inherit; background: #fff; border: 1px solid var(--line); border-radius: 5px; cursor: pointer; }
 .solution-guide__templates strong { font-size: 11px; }
-.solution-guide__templates button.is-selected, .solution-guide__tabs button.is-selected, .solution-guide__mode button[aria-pressed="true"] { border-color: var(--ink); color: var(--ink); background: var(--l-sunk); }
+.solution-guide__templates button.is-selected, .solution-guide__tabs button.is-selected, .solution-guide__mode button[aria-pressed="true"] { border-color: #8db7a3; color: var(--green-dark); background: var(--green-soft); }
 .solution-guide__tabs { display: flex; gap: 7px; padding: 12px 20px; border-bottom: 1px solid var(--line); }
 .solution-guide__tabs button, .solution-guide__mode button { display: flex; flex-wrap: wrap; gap: 5px; padding: 8px 12px; color: inherit; background: #fff; border: 1px solid var(--line); border-radius: 5px; cursor: pointer; font-size: 11px; }
 .solution-guide__tabs em { font-size: 10px; font-style: normal; color: #996425; }

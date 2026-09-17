@@ -714,7 +714,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', preventAccident
 .workbench-navigation { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; border: 1px solid var(--line); border-bottom: 0; background: var(--surface, #fff); }
 .workbench-section-tabs { display: flex; gap: 8px; align-self: stretch; padding-left: 16px; }
 .workbench-section-tabs button { display: flex; align-items: center; justify-content: center; min-height: 55px; padding: 0 16px; color: var(--muted); background: transparent; border: 0; border-bottom: 3px solid transparent; cursor: pointer; font-size: 14px; }
-.workbench-section-tabs button.active { color: var(--ink); border-bottom-color: var(--ink); font-weight: 700; }
+.workbench-section-tabs button.active { color: var(--ink); border-bottom-color: var(--green); font-weight: 700; }
 .workbench-view-tools { display: flex; align-items: center; gap: 6px; padding-right: 12px; }
 .workbench-mode-tabs { display: flex; gap: 5px; }
 .workbench-mode-tabs button { display: flex; align-items: center; gap: 6px; min-height: 34px; padding: 7px 10px; color: var(--muted); border: 1px solid transparent; border-radius: 4px; background: transparent; font-size: 12px; cursor: pointer; }

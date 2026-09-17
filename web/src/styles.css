@@ -65,7 +65,7 @@ code, .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monosp
 .page-heading p { margin-top: 6px; color: var(--muted); font-size: 13px; }
 .page-tabs { display: flex; gap: 24px; margin-bottom: 24px; border-bottom: 1px solid var(--line); }
 .page-tabs button { min-height: 44px; padding: 8px 2px; color: var(--muted); background: transparent; border: 0; border-bottom: 2px solid transparent; font-size: 14px; }
-.page-tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--ink); }
+.page-tabs button[aria-selected="true"] { color: var(--green); border-bottom-color: var(--green); }
 .mobile-nav { display: none; }
 
 .notification-center { position: relative; z-index: 45; }
@@ -77,16 +77,14 @@ code, .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monosp
 .notification-popover__header strong { color: #27302d; font-size: 12px; }
 .notification-popover__header span { color: #8a9390; font-size: 12px; }
 .notification-popover__header > div:last-child { display: flex; align-items: center; gap: 7px; }
-.notification-mark-all { height: 28px; display: inline-flex; align-items: center; gap: 4px; padding: 0 7px; color: var(--ink); background: transparent; border: 0; font-size: 12px; font-weight: 650; }
-.notification-mark-all:hover { color: var(--ink); background: var(--l-sunk); border-radius: 4px; }
+.notification-mark-all { height: 28px; display: inline-flex; align-items: center; gap: 4px; padding: 0 7px; color: var(--green); background: transparent; border: 0; font-size: 12px; font-weight: 650; }
+.notification-mark-all:hover { color: var(--green-dark); background: var(--green-soft); border-radius: 4px; }
 .notification-list { max-height: min(420px, calc(100vh - 180px)); overflow-y: auto; }
 .notification-item { min-width: 0; display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 10px; padding: 13px 14px; border-bottom: 1px solid #e8ecea; }
 .notification-item:last-child { border-bottom: 0; }
 .notification-item--unread { background: #f8fbf9; }
-/* 图标形状已经区分了通知来源，颜色不再承担这件事：绿和橙只留给健康与降级。
-   The icon shape already tells the sources apart, so colour does not: green and
-   amber stay reserved for healthy and degraded. */
-.notification-item__icon { width: 34px; height: 34px; display: grid; place-items: center; color: var(--l-ink-2); background: var(--l-sunk); border-radius: 5px; }
+.notification-item__icon { width: 34px; height: 34px; display: grid; place-items: center; color: var(--green); background: var(--green-soft); border-radius: 5px; }
+.notification-item__icon--panel { color: var(--amber); background: var(--amber-soft); }
 .notification-item__body { min-width: 0; }
 .notification-item__title { display: flex; align-items: center; gap: 7px; }
 .notification-item__title strong { overflow: hidden; color: #303936; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
@@ -94,9 +92,9 @@ code, .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monosp
 .notification-item__body p { margin-top: 3px; color: #5e6865; font-size: 12px; }
 .notification-item__body small { display: block; margin-top: 4px; overflow: hidden; color: #929b98; font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .notification-item__actions { min-height: 24px; display: flex; align-items: center; gap: 12px; margin-top: 8px; }
-.notification-item__actions a, .notification-item__actions button, .notification-item__actions span { display: inline-flex; align-items: center; gap: 3px; color: var(--ink); background: transparent; border: 0; font-size: 12px; text-decoration: none; }
+.notification-item__actions a, .notification-item__actions button, .notification-item__actions span { display: inline-flex; align-items: center; gap: 3px; color: var(--green); background: transparent; border: 0; font-size: 12px; text-decoration: none; }
 .notification-item__actions button { padding: 3px 0; }
-.notification-item__actions a:hover, .notification-item__actions button:hover { color: var(--ink); text-decoration: underline; }
+.notification-item__actions a:hover, .notification-item__actions button:hover { color: var(--green-dark); text-decoration: underline; }
 .notification-item__actions span { color: #929b98; }
 .notification-empty { min-height: 112px; display: grid; place-items: center; color: #929b98; font-size: 12px; }
 .notification-error { padding: 8px 13px; overflow-wrap: anywhere; color: #8e5d1d; background: #fffaf1; border-top: 1px solid #ead9bb; font-size: 12px; }
@@ -113,7 +111,7 @@ code, .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monosp
 .button--primary { color: #fff; background: var(--ink); border-color: var(--ink); }
 .button--primary:hover:not(:disabled) { background: #29332e; border-color: #29332e; }
 .button--secondary { color: #3e4749; background: #fff; border-color: #d5dcda; }
-.button--secondary:hover:not(:disabled), .button--active { color: var(--ink); background: var(--l-sunk); border-color: var(--l-ink-3); }
+.button--secondary:hover:not(:disabled), .button--active { color: var(--green-dark); background: #f3f8f5; border-color: #a9cdbb; }
 /* 实心红只给不可撤销的确认：红色在这个面板里表示「回不去了」，
    可回退的操作用普通主按钮，别把这个信号用掉。
    Solid red is reserved for irreversible confirmations: red here means "there
@@ -125,7 +123,7 @@ code, .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monosp
 .button--danger-quiet:hover:not(:disabled) { background: var(--red-soft); border-color: #dca9a9; }
 .button--full { width: 100%; }
 .icon-button { width: 40px; height: 40px; display: inline-grid; place-items: center; flex: 0 0 auto; padding: 0; color: #596265; background: #fff; border: 1px solid #d8dddc; border-radius: 5px; }
-.icon-button:hover:not(:disabled) { color: var(--ink); border-color: var(--l-ink-3); background: var(--l-sunk); }
+.icon-button:hover:not(:disabled) { color: var(--green); border-color: #afcdbd; background: #f5faf7; }
 .icon-button--small { width: 32px; height: 32px; }
 .icon-button--danger:hover:not(:disabled) { color: var(--red); border-color: #dca9a9; background: var(--red-soft); }
 .spin { animation: spin .8s linear infinite; }
@@ -159,7 +157,7 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .config-compatibility-banner strong { color: #62451e; font-size: 14px; }
 .config-compatibility-banner p { font-size: 12px; line-height: 1.55; }
 .editor-panel { min-width: 0; overflow: hidden; background: #fff; border: 1px solid var(--line); border-radius: 7px; }
-.mapping-priority { display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px; color: var(--l-ink-2); background: var(--l-sunk); border-radius: 999px; font-size: 12px; font-weight: 700; }
+.mapping-priority { display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px; color: var(--green-dark); background: var(--green-soft); border-radius: 999px; font-size: 12px; font-weight: 700; }
 .unsaved-dot { display: inline-flex; align-items: center; gap: 5px; color: var(--amber); font-size: 12px; }
 .unsaved-dot::before { width: 6px; height: 6px; content: ""; background: #d98b28; border-radius: 50%; }
 .visually-hidden { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important; }
@@ -197,7 +195,7 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .history-panel > header > span { min-width: 24px; padding: 3px 5px; color: #69726f; background: #edf0ef; border-radius: 4px; font-size: 12px; text-align: center; }
 .history-bulk-actions { min-height: 43px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 10px 7px 14px; background: #fafbfa; border-bottom: 1px solid var(--line); }
 .history-bulk-actions label { min-width: 0; display: inline-flex; align-items: center; gap: 7px; color: #68716e; font-size: 12px; cursor: pointer; }
-.history-bulk-actions input, .history-item__checkbox { width: 14px; height: 14px; flex: 0 0 auto; margin: 0; accent-color: var(--ink); cursor: pointer; }
+.history-bulk-actions input, .history-item__checkbox { width: 14px; height: 14px; flex: 0 0 auto; margin: 0; accent-color: var(--green); cursor: pointer; }
 .history-bulk-actions input:disabled, .history-item__checkbox:disabled { cursor: not-allowed; }
 .history-bulk-actions .button { min-height: 29px; padding: 0 9px; font-size: 12px; }
 .history-list { max-height: calc(min(62vh, 720px) + 55px); overflow: auto; }
@@ -224,10 +222,10 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .config-section__header--actions > div { display: flex; align-items: center; gap: 9px; }
 .config-section__header em { min-width: 23px; padding: 3px 5px; color: #6b7571; background: #e9eeeb; border-radius: 4px; font-size: 12px; font-style: normal; text-align: center; }
 .section-mark { width: 4px; height: 18px; display: block; border-radius: 2px; background: #5e6864; }
-/* 区块标记只是分隔，不表示状态，四种色调一律中性。类名保留给已有的模板。
-   Section marks only separate blocks and carry no state, so every tone is
-   neutral. The class names stay for the templates that use them. */
-.section-mark--green, .section-mark--amber, .section-mark--red, .section-mark--ink { background: var(--l-ink-2); }
+.section-mark--green { background: var(--green); }
+.section-mark--amber { background: #ce8324; }
+.section-mark--red { background: #c94a4a; }
+.section-mark--ink { background: #4f5b5f; }
 .config-version { display: grid; grid-template-columns: 180px minmax(180px, 320px); align-items: center; padding-right: 17px; }
 .config-version .config-section__header { border-bottom: 0; }
 .settings-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding: 15px 17px 18px; }
@@ -242,7 +240,7 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .setting-toggle input { position: absolute; opacity: 0; pointer-events: none; }
 .setting-toggle i { position: relative; grid-column: 2; width: 32px; height: 18px; background: #bec7c3; border-radius: 9px; transition: background .15s; }
 .setting-toggle i::after { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; content: ""; background: #fff; border-radius: 50%; box-shadow: 0 1px 2px rgba(20, 28, 25, .22); transition: transform .15s; }
-.setting-toggle input:checked + i { background: var(--ink); }
+.setting-toggle input:checked + i { background: var(--green); }
 .setting-toggle input:checked + i::after { transform: translateX(14px); }
 .setting-toggle:has(input:focus-visible) { outline: 2px solid #279367; outline-offset: 2px; }
 .setting-toggle--unsupported { grid-template-rows: auto 22px auto; background: #f4f6f5; border-style: dashed; }
@@ -251,15 +249,15 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .setting-compatibility svg { flex: 0 0 auto; }
 .setting-list { align-content: start; }
 .setting-list__row { display: grid; grid-template-columns: minmax(0, 1fr) max-content; gap: 6px; }
-.inline-command { width: max-content; min-height: 28px; display: inline-flex; align-items: center; gap: 5px; padding: 3px 6px; color: var(--ink); background: transparent; border: 0; border-radius: 4px; font-size: 12px; font-weight: 650; }
-.inline-command:hover { background: var(--l-sunk); }
-.inline-command--primary { padding-inline: 8px; color: var(--d-ink); background: var(--ink); }
-.inline-command--primary:hover { background: var(--l-ink-2); }
+.inline-command { width: max-content; min-height: 28px; display: inline-flex; align-items: center; gap: 5px; padding: 3px 6px; color: var(--green-dark); background: transparent; border: 0; border-radius: 4px; font-size: 12px; font-weight: 650; }
+.inline-command:hover { background: var(--green-soft); }
+.inline-command--primary { padding-inline: 8px; color: #fff; background: var(--green); }
+.inline-command--primary:hover { background: var(--green-dark); }
 .geo-mode-tabs { display: inline-grid !important; grid-template-columns: repeat(2, minmax(108px, 1fr)); overflow: hidden; border: 1px solid #d8dedc; border-radius: 5px; }
 .geo-mode-tabs button { min-height: 30px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 4px 9px; color: #69736f; background: #fff; border: 0; border-right: 1px solid #dfe4e2; font-size: 12px; font-weight: 650; }
 .geo-mode-tabs button:last-child { border-right: 0; }
 .geo-mode-tabs button:hover { color: #3c4843; background: #f6f8f7; }
-.geo-mode-tabs button.active { color: var(--ink); background: var(--l-sunk); }
+.geo-mode-tabs button.active { color: var(--green-dark); background: var(--green-soft); }
 .geo-data-editor { padding: 15px 17px 12px; }
 .geo-resource-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .geo-resource-field--wide { grid-column: 1 / -1; }
@@ -269,7 +267,7 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .geo-resource-commands { min-height: 36px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .geo-maintenance { min-height: 40px; display: grid; grid-template-columns: auto minmax(0, 1fr) max-content; align-items: center; gap: 10px; padding-top: 9px; border-top: 1px solid #e7ebe9; }
 .geo-schedule-control { display: inline-flex; align-items: center; gap: 6px; color: #66716c; font-size: 12px; font-weight: 650; white-space: nowrap; }
-.geo-schedule-control svg { color: var(--muted); }
+.geo-schedule-control svg { color: var(--green); }
 .geo-schedule-control select { height: 28px; padding: 0 24px 0 8px; color: #3f4945; background: #fff; border: 1px solid #d9dfdd; border-radius: 4px; outline: 0; font-size: 12px; }
 .geo-schedule-control select:focus { border-color: #7fb89a; box-shadow: 0 0 0 3px rgba(20, 125, 85, .08); }
 .geo-maintenance__status { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 10px; overflow: hidden; color: #818b87; font-size: 12px; white-space: nowrap; }
@@ -349,10 +347,9 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .rule-summary > svg { flex: 0 0 auto; color: #92a09a; }
 .rule-summary > em { padding: 2px 5px; color: #8a651f; background: var(--amber-soft); border-radius: 3px; font-style: normal; white-space: nowrap; }
 .rule-flow { margin-left: auto; padding: 2px 5px; color: #52605a; background: #e9eeec; border-radius: 3px; font-size: 12px; font-weight: 700; white-space: nowrap; }
-/* 继续、跳转、条件是控制流的种类，不是好坏，标签文字已经说明，颜色保持中性。
-   Continue, jump and conditional are kinds of control flow, not good or bad;
-   the label says which, and the colour stays neutral. */
-.rule-flow--continue, .rule-flow--jump, .rule-flow--conditional, .rule-flow--unknown { color: var(--l-ink-2); background: var(--l-sunk); }
+.rule-flow--continue { color: #256849; background: var(--green-soft); }
+.rule-flow--jump, .rule-flow--conditional { color: #8a651f; background: var(--amber-soft); }
+.rule-flow--unknown { color: #765f36; background: #f3efe7; }
 .rule-order-warning { display: flex; align-items: flex-start; gap: 6px; margin-top: 7px; padding: 7px 8px; color: #8b4f1d; background: #fff8ed; border: 1px solid #ead8ba; border-radius: 4px; font-size: 12px; line-height: 1.45; }
 .rule-order-warning > svg { flex: 0 0 auto; margin-top: 1px; }
 .rule-stage { min-width: 0; padding: 10px 0; }
@@ -379,7 +376,7 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .flow-route > span { color: #7b8581; font-size: 12px; }
 .flow-route code { overflow: hidden; color: #596562; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .flow-route svg { color: #96a19c; }
-.flow-route strong { color: var(--ink); font-size: 12px; }
+.flow-route strong { color: var(--green-dark); font-size: 12px; }
 .flow-pipelines { display: grid; gap: 12px; }
 .flow-pipeline { overflow: hidden; background: #fff; border: 1px solid var(--line); border-radius: 6px; }
 .flow-pipeline > header { min-height: 52px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 14px; background: #f8faf9; border-bottom: 1px solid var(--line); }
@@ -389,7 +386,7 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .flow-pipeline ol { margin: 0; padding: 0; list-style: none; }
 .flow-pipeline li { min-height: 76px; display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 10px; padding: 12px 14px; border-bottom: 1px solid #e9edeb; }
 .flow-pipeline li:last-child { border-bottom: 0; }
-.flow-step { width: 25px; height: 25px; display: grid; place-items: center; color: var(--d-ink); background: var(--ink); border-radius: 50%; font-size: 12px; font-weight: 700; }
+.flow-step { width: 25px; height: 25px; display: grid; place-items: center; color: #eafff2; background: var(--green); border-radius: 50%; font-size: 12px; font-weight: 700; }
 .flow-rule { min-width: 0; display: grid; gap: 5px; }
 .flow-rule > strong { color: #36403c; font-size: 12px; }
 .flow-rule > code { overflow: hidden; color: #7a8580; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
@@ -509,9 +506,7 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .runtime-state strong { color: #2c3632; font-size: 12px; }
 .runtime-state p { overflow: hidden; color: #6e7975; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .runtime-details { padding-top: 3px; padding-bottom: 14px; }
-/* 链接用正文墨色加下划线表明可点，而不是借用健康色。
-   Links show they are clickable with an underline in ink, not by borrowing the health colour. */
-.runtime-details a, .version-identity a, .local-version a { display: inline-flex; align-items: center; gap: 4px; color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
+.runtime-details a, .version-identity a, .local-version a { display: inline-flex; align-items: center; gap: 4px; color: var(--green); text-decoration: none; }
 .update-panel { margin-top: 14px; }
 .update-loading { min-height: 236px; }
 .update-check-failed { min-height: 118px; display: flex; align-items: center; justify-content: center; gap: 12px; padding: 18px; color: #7c8582; font-size: 12px; }
@@ -737,7 +732,7 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
   .page-tabs { gap: 20px; margin-bottom: 20px; }
   .mobile-nav { position: fixed; inset: auto 0 0; z-index: 30; min-height: var(--mobile-nav-height); display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); padding: 4px max(4px, env(safe-area-inset-right)) calc(4px + env(safe-area-inset-bottom)) max(4px, env(safe-area-inset-left)); background: #fff; border-top: 1px solid var(--line); }
   .mobile-nav a { position: relative; min-height: 52px; min-width: 0; display: grid; place-items: center; align-content: center; gap: 3px; color: #69736d; text-decoration: none; font-size: 12px; }
-  .mobile-nav a.router-link-exact-active { color: var(--ink); }
+  .mobile-nav a.router-link-exact-active { color: var(--green); }
   .mobile-nav a.router-link-exact-active::after { position: absolute; right: 25%; bottom: -4px; left: 25%; height: 2px; content: ''; background: var(--d-ink); }
   .app-shell:has([data-config-editing="true"]) .mobile-nav { display: none; }
   .app-shell:has([data-config-editing="true"]) .workspace__main { padding-bottom: 16px; }

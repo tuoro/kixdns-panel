@@ -124,7 +124,7 @@ onBeforeUnmount(() => {
 
       <div v-if="result.entries.length" class="config-diff-list">
         <article v-for="entry in result.entries" :key="entry.path">
-          <header><code>{{ entry.path }}</code><span>{{ kindLabels[entry.kind] }}</span></header>
+          <header><code>{{ entry.path }}</code><span :class="`config-diff-kind--${entry.kind}`">{{ kindLabels[entry.kind] }}</span></header>
           <div class="config-diff-values">
             <div><small>当前文件</small><pre>{{ formatValue(entry.current) }}</pre></div>
             <div><small>所选版本</small><pre>{{ formatValue(entry.selected) }}</pre></div>
@@ -141,11 +141,11 @@ onBeforeUnmount(() => {
 <style scoped>
 .config-diff { width: 100%; max-width: 100vw; height: 100dvh; max-height: 100dvh; margin: 0; padding: 24px; display: flex; overflow: hidden; border: 0; background: transparent; }
 .config-diff:not([open]) { display: none; }
-.config-diff::backdrop { background: rgba(15, 20, 19, .58); }
+.config-diff::backdrop { background: rgba(18, 24, 22, .55); }
 .config-diff-dialog { width: min(880px, 100%); margin: auto; max-height: min(820px, calc(100vh - 48px)); display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; overflow: hidden; color: #30383a; background: #fff; border: 1px solid #d9dfdc; border-radius: 7px; box-shadow: 0 24px 70px rgba(13, 20, 17, .24); }
 .config-diff-dialog__header { min-height: 68px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 16px 12px 18px; border-bottom: 1px solid var(--line); }
 .config-diff-dialog__header > div { min-width: 0; display: grid; gap: 3px; }
-.config-diff-dialog__header span { color: var(--muted); font-size: 12px; font-weight: 700; }
+.config-diff-dialog__header span { color: var(--green); font-size: 12px; font-weight: 700; }
 .config-diff-dialog__header h2 { overflow: hidden; color: #28302e; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
 .config-diff-summary { min-height: 46px; display: flex; align-items: center; gap: 10px; padding: 9px 18px; color: #75807c; background: #f7f9f8; border-bottom: 1px solid var(--line); font-size: 12px; }
 .config-diff-summary strong { color: #36403c; font-size: 14px; }
@@ -155,10 +155,10 @@ onBeforeUnmount(() => {
 .config-diff-list article:last-child { border-bottom: 0; }
 .config-diff-list article > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .config-diff-list code { min-width: 0; overflow-wrap: anywhere; color: #45514c; font-size: 12px; }
-/* 新增、删除、修改是差异的种类，不是健康状态，所以不用绿橙红；文字本身已经说清楚了。
-   Added, removed and changed are kinds of difference, not health, so they do
-   not borrow green, amber and red; the words already say which is which. */
-.config-diff-list article > header span { padding: 2px 5px; color: var(--l-ink-2); background: var(--l-sunk); border-radius: var(--r-1); font-size: 12px; font-weight: 700; }
+.config-diff-list article > header span { padding: 2px 5px; border-radius: 3px; font-size: 12px; font-weight: 700; }
+.config-diff-kind--added { color: #176d4d; background: var(--green-soft); }
+.config-diff-kind--removed { color: #9a3737; background: var(--red-soft); }
+.config-diff-kind--changed { color: #8b5b18; background: var(--amber-soft); }
 .config-diff-values { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 9px; }
 .config-diff-values > div { min-width: 0; }
 .config-diff-values small { display: block; margin-bottom: 4px; color: #8b9591; font-size: 12px; }
