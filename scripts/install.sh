@@ -173,7 +173,9 @@ choose_install_mode() {
     return
   fi
   [[ ${INSTALL_MODE} == "auto" ]] || return 0
-  if ! exec 3<>/dev/tty 2>/dev/null; then
+  # 裸 exec 上的重定向会永久生效：写成 `exec 3<>/dev/tty 2>/dev/null` 会让之后所有错误和回滚信息消失。
+  # A redirection on a bare exec is permanent: `exec 3<>/dev/tty 2>/dev/null` would hide every later error and rollback message.
+  if ! { exec 3<>/dev/tty; } 2>/dev/null; then
     fail "检测到既有 KixDNS；无人值守安装必须指定 --keep-existing 或 --replace-existing"
   fi
   printf '\n检测到现有 KixDNS，请选择安装方式：\n' >&3
@@ -364,7 +366,11 @@ restore_path() {
 
 rollback_install() {
   local status=$1
+  local reason=${2:-failed}
   trap - ERR
+  # 回滚途中再按 Ctrl-C 或断线不能半途而废，否则主机停在比中断前更糟的状态。
+  # A second Ctrl-C or hangup must not abort the rollback half way and leave the host worse off.
+  trap '' INT TERM HUP
   set +e
   if [[ ${INSTALL_MODE} == "managed" && ${PANEL_ONLY_UPDATE} == false ]]; then
     restore_path /var/lib/kixdns-panel/bin/kixdns kixdns
@@ -403,7 +409,11 @@ rollback_install() {
     systemctl restart kixdns-panel.service
   fi
   rm -rf -- "${BACKUP_ROOT}"
-  printf '安装未完成，已恢复原有程序和服务。\n' >&2
+  if [[ ${reason} == interrupted ]]; then
+    printf '安装被中断，已恢复原有程序和服务。\n' >&2
+  else
+    printf '安装未完成，已恢复原有程序和服务。\n' >&2
+  fi
   exit "${status}"
 }
 
@@ -486,6 +496,9 @@ prepare_rollback() {
     backup_managed_config
   fi
   trap 'rollback_install $?' ERR
+  # 只挂 ERR 时，Ctrl-C、SIGTERM 或 SSH 断线会直接杀掉 bash，已停掉的服务不会恢复。
+  # With only ERR trapped, Ctrl-C, SIGTERM or an SSH hangup kill bash and stopped services stay stopped.
+  trap 'rollback_install 130 interrupted' INT TERM HUP
 }
 
 install_web() {
@@ -803,7 +816,7 @@ main() {
       "${kixdns_source_id}"
   fi
   install_services
-  trap - ERR
+  trap - ERR INT TERM HUP
   rm -rf -- "${BACKUP_ROOT}"
 
   if [[ ${PANEL_ONLY_UPDATE} == true ]]; then

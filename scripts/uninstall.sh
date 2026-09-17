@@ -119,7 +119,9 @@ load_settings() {
 }
 
 open_terminal() {
-  exec 3<>/dev/tty 2>/dev/null ||
+  # 裸 exec 上的重定向会永久生效：写成 `exec 3<>/dev/tty 2>/dev/null` 会让之后所有错误信息消失。
+  # A redirection on a bare exec is permanent: `exec 3<>/dev/tty 2>/dev/null` would hide every later error.
+  { exec 3<>/dev/tty; } 2>/dev/null ||
     fail "当前没有交互终端；请明确指定 KixDNS 与配置处理选项，并使用 --yes"
 }
 

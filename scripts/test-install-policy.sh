@@ -15,6 +15,101 @@ assert_equals() {
   }
 }
 
+# 在伪终端里运行一段脚本：真实用户看到的是终端，/dev/tty 提示、stderr 与 Ctrl-C 都只有在 pty 里才测得出来。
+# 参数：脚本，然后成对的「等待出现的文本」「要做的事（输入文本，或 INT/TERM/HUP）」。输出末尾追加 EXIT=<退出码>。
+# Run a script inside a pseudo terminal: /dev/tty prompts, stderr and Ctrl-C only behave like a
+# user's session there. Arguments: the script, then pairs of "text to wait for" and "action"
+# (text to type, or INT/TERM/HUP). The output ends with EXIT=<status>.
+run_in_pty() {
+  python3 - "$@" <<'PY'
+import os, pty, select, signal, sys, time
+
+script, steps = sys.argv[1], sys.argv[2:]
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp("bash", ["bash", "-c", script])
+output = b""
+deadline = time.monotonic() + 30
+while time.monotonic() < deadline:
+    if steps and steps[0].encode() in output:
+        action = steps[1]
+        steps = steps[2:]
+        if action == "INT":
+            os.write(fd, b"\x03")
+        elif action in ("TERM", "HUP"):
+            os.kill(pid, getattr(signal, "SIG" + action))
+        else:
+            os.write(fd, action.encode() + b"\n")
+    ready, _, _ = select.select([fd], [], [], 0.1)
+    if not ready:
+        continue
+    try:
+        chunk = os.read(fd, 4096)
+    except OSError:
+        break
+    if not chunk:
+        break
+    output += chunk
+else:
+    os.kill(pid, signal.SIGKILL)
+_, status = os.waitpid(pid, 0)
+code = os.waitstatus_to_exitcode(status)
+sys.stdout.write(output.decode(errors="replace").replace("\r\n", "\n"))
+sys.stdout.write(f"\nEXIT={code}\n")
+PY
+}
+
+assert_contains() {
+  local haystack=$1
+  local needle=$2
+  local message=$3
+  [[ ${haystack} == *"${needle}"* ]] || {
+    printf '断言失败：%s\n实际输出：\n%s\n' "${message}" "${haystack}" >&2
+    exit 1
+  }
+}
+
+assert_not_contains() {
+  local haystack=$1
+  local needle=$2
+  local message=$3
+  [[ ${haystack} != *"${needle}"* ]] || {
+    printf '断言失败：%s\n实际输出：\n%s\n' "${message}" "${haystack}" >&2
+    exit 1
+  }
+}
+
+# 回归：终端提示之后 stderr 不能被永久吞掉，否则取消与失败信息用户都看不到。
+# Regression: stderr must not stay swallowed after the tty prompt, or cancel and failure messages vanish.
+output="$(run_in_pty "
+  source '${INSTALLER}'
+  systemctl() { return 1; }
+  INSTALL_MODE=auto
+  EXISTING_KIXDNS=true
+  choose_install_mode
+" ']：' n)"
+assert_contains "${output}" "已取消安装，现有 KixDNS 未作修改" "终端里取消安装必须看得到取消提示"
+
+# 回归：Ctrl-C、SIGTERM、SSH 断线都必须触发回滚，不能留下被停掉的服务。
+# Regression: Ctrl-C, SIGTERM and an SSH hangup must all roll back instead of leaving services stopped.
+for signal_name in INT TERM HUP; do
+  output="$(run_in_pty "
+    source '${INSTALLER}'
+    backup_path() { :; }
+    restore_path() { :; }
+    restore_managed_config() { :; }
+    systemctl() { :; }
+    INSTALL_MODE=managed
+    PANEL_ONLY_UPDATE=false
+    prepare_rollback
+    printf 'READY\n'
+    sleep 20
+    printf 'NOT-INTERRUPTED\n'
+  " READY "${signal_name}")"
+  assert_contains "${output}" "安装被中断" "${signal_name} 后必须回滚并说明安装被中断"
+  assert_not_contains "${output}" "NOT-INTERRUPTED" "${signal_name} 后不能继续安装"
+done
+
 help="$(bash "${INSTALLER}" --help)"
 [[ ${help} == *"--keep-existing"* ]]
 [[ ${help} == *"--replace-existing"* ]]
