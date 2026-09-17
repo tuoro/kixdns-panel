@@ -197,6 +197,7 @@ unset -f systemctl
 # The installer turned systemd-resolved's stub off: removing KixDNS restores it, keeping KixDNS only prints the commands.
 resolved_uninstall() {
   local action=$1
+  local kind=${2:-symlink}
   local work
   work="$(mktemp -d)"
   (
@@ -206,12 +207,22 @@ resolved_uninstall() {
     mkdir -p "${RESOLVED_STATE}" "$(dirname -- "${RESOLVED_DROPIN}")"
     printf '[Resolve]\nDNSStubListener=no\n' > "${RESOLVED_DROPIN}"
     ln -s /run/systemd/resolve/resolv.conf "${RESOLV_CONF}"
-    printf '%s\n' RESOLVED_DROPIN_DIRECTORY_CREATED=true RESOLV_CONF_KIND=symlink \
-      RESOLV_CONF_TARGET=../run/systemd/resolve/stub-resolv.conf > "${RESOLVED_STATE}/install.env"
+    if [[ ${kind} == symlink ]]; then
+      printf '%s\n' RESOLVED_DROPIN_DIRECTORY_CREATED=true RESOLV_CONF_KIND=symlink \
+        RESOLV_CONF_TARGET=../run/systemd/resolve/stub-resolv.conf > "${RESOLVED_STATE}/install.env"
+    else
+      printf '# 手写\nnameserver 127.0.0.53\n' > "${RESOLVED_STATE}/resolv.conf"
+      printf '%s\n' RESOLVED_DROPIN_DIRECTORY_CREATED=true RESOLV_CONF_KIND=file > "${RESOLVED_STATE}/install.env"
+    fi
+    printf 'STATE=%s\n' "${RESOLVED_STATE}"
     systemctl() { printf 'systemctl %s\n' "$*"; }
     KIXDNS_ACTION=${action}
     restore_resolved_stub
-    printf 'LINK=%s\n' "$(readlink "${RESOLV_CONF}")"
+    if [[ -L ${RESOLV_CONF} ]]; then
+      printf 'LINK=%s\n' "$(readlink "${RESOLV_CONF}")"
+    else
+      printf 'FILE=%s\n' "$(tr '\n' ' ' < "${RESOLV_CONF}")"
+    fi
     [[ ! -e ${RESOLVED_DROPIN} ]] || printf 'DROPIN-LEFT\n'
     [[ ! -e $(dirname -- "${RESOLVED_DROPIN}") ]] || printf 'DIRECTORY-LEFT\n'
     [[ ! -e ${RESOLVED_STATE} ]] || printf 'STATE-LEFT\n'
@@ -229,6 +240,18 @@ output="$(resolved_uninstall keep)"
 assert_contains "${output}" "LINK=/run/systemd/resolve/resolv.conf" "保留 KixDNS 时不能改回 resolv.conf"
 assert_contains "${output}" "DROPIN-LEFT" "保留 KixDNS 时不能删掉关闭监听的 drop-in"
 assert_contains "${output}" "sudo ln -sfn ../run/systemd/resolve/stub-resolv.conf" "保留 KixDNS 时应给出恢复命令"
+# 原来的 resolv.conf 是普通文件时，恢复命令必须把它放回去，否则照做之后 resolv.conf 仍指向上游列表。
+# When the original resolv.conf was a plain file the commands must put it back, or following them leaves the uplink link in place.
+output="$(resolved_uninstall keep file)"
+state_directory="$(sed -n 's/^STATE=//p' <<< "${output}")"
+assert_contains "${output}" "LINK=/run/systemd/resolve/resolv.conf" "保留 KixDNS 时不能改回普通文件"
+assert_contains "${output}" "sudo cp -a --remove-destination ${state_directory}/resolv.conf " "原来是普通文件时应给出放回文件的命令"
+output="$(resolved_uninstall remove file)"
+assert_contains "${output}" "FILE=# 手写 nameserver 127.0.0.53 " "移除 KixDNS 时应放回原来的普通文件"
+[[ ${output} != *LEFT* ]] || {
+  printf '断言失败：恢复普通文件后不应残留\n%s\n' "${output}" >&2
+  exit 1
+}
 
 one_click_help="$(bash "${PACKAGE_ROOT}/scripts/one-click-install.sh" --help)"
 [[ ${one_click_help} == *"--version"* ]]

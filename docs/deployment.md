@@ -58,7 +58,7 @@ curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one
 
 ### 重复运行与升级
 
-- 已安装的面板与安装包是同一版本（正式包比较 Release 标签，开发构建比较构建提交）时，安装器只提示「已安装，未作任何修改」并退出；要修复安装就加 `--reinstall`
+- 已安装的面板与安装包是同一版本（正式包比较 Release 标签，开发构建比较构建提交）且面板在运行时，安装器只提示「已安装，未作任何修改」并退出；要修复安装就加 `--reinstall`。面板没在运行时安装器会说明原因，并自动按 `--reinstall` 重新安装
 - 覆盖安装或升级只在 KixDNS 程序或 unit 确实变化时才停止并按原状态重启它，否则 DNS 不中断；会停止时安装器会先说明
 - 结果第一行是装好的版本，随后是面板地址和 KixDNS 的实际状态，构建提交在最后一行
 
@@ -99,7 +99,7 @@ printf '%s  %s\n' "${DIGEST#sha256:}" kixdns-panel.zip | sha256sum --check -
 
 无人值守安装（没有终端，或经 `curl | sudo bash`）必须加 `--replace-existing` 才会迁移，否则直接退出并给出命令。
 
-早期版本的「仅安装面板」模式已经移除：它装出的面板无法启动。`--keep-existing` 会被拒绝；装过这种模式的主机请先运行 `sudo kixdns-panel-uninstall`（原来的 KixDNS 保持不变），再重新安装并选择迁移。
+早期版本的「仅安装面板」模式已经移除：它装出的面板无法启动。`--keep-existing` 会被拒绝；装过这种模式的主机请先运行 `sudo kixdns-panel-uninstall`（原来的 KixDNS 保持不变），再重新安装并选择迁移。卸载时保留了配置也可以直接重新安装，残留的旧设置会被清掉。
 
 ### 端口 53
 

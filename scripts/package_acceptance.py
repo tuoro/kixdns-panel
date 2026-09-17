@@ -95,6 +95,7 @@ class PanelClient:
         method: str = "GET",
         payload: object | None = None,
         csrf: bool = False,
+        timeout: float = 5,
     ) -> dict[str, Any]:
         data = None
         headers = {"Accept": "application/json"}
@@ -108,7 +109,7 @@ class PanelClient:
             f"{self.base_url}{path}", data=data, headers=headers, method=method
         )
         try:
-            with self.opener.open(request, timeout=5) as response:
+            with self.opener.open(request, timeout=timeout) as response:
                 require(response.status == 200, f"{path} 返回 HTTP {response.status}")
                 value = json.load(response)
         except urllib.error.HTTPError as error:
@@ -235,7 +236,9 @@ def verify_installation(base_url: str, dns_port: int, mode: str) -> None:
     if mode == "setup-stopped":
         service = client.request("/api/v1/service")
         require(service.get("active_state") == "inactive", "首次安装后 KixDNS 没有保持停止")
-        catalog = client.request("/api/v1/kixdns/versions?source=action")
+        # 版本目录要等面板向 GitHub 查询，响应慢时 5 秒不够；只放宽这一个调用，其余请求仍快速失败。
+        # The catalog waits on the panel's GitHub query, which can exceed 5 s; only this call is relaxed.
+        catalog = client.request("/api/v1/kixdns/versions?source=action", timeout=30)
         active = next(
             (version for version in catalog.get("installed_versions", []) if version.get("active")),
             None,

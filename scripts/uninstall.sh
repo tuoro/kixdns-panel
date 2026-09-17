@@ -370,6 +370,10 @@ restore_resolved_stub() {
     printf '  sudo rm %s\n' "${RESOLVED_DROPIN}"
     if [[ ${kind} == symlink && -n ${target} ]]; then
       printf '  sudo ln -sfn %s %s\n' "${target}" "${RESOLV_CONF}"
+    elif [[ ${kind} == file ]]; then
+      # 现在的 resolv.conf 是指向上游列表的链接；不加 --remove-destination，cp 会顺着链接改写上游列表。
+      # resolv.conf is now a link to the uplink list; without --remove-destination cp would write through it.
+      printf '  sudo cp -a --remove-destination %s/resolv.conf %s\n' "${RESOLVED_STATE}" "${RESOLV_CONF}"
     fi
     printf '  sudo systemctl restart systemd-resolved\n'
     return 0

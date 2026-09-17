@@ -223,6 +223,8 @@ KIXDNS_SERVICE_UNIT=kixdns.service
 # ---------------------------------------------------------------------------
 
 PANEL_ENV="${WORK}/panel.env"
+PANEL_SERVER_BINARY="${WORK}/kixdns-panel-server"
+: > "${PANEL_SERVER_BINARY}"
 printf 'KIXDNS_MANAGEMENT_ENABLED=false\n' > "${PANEL_ENV}"
 output="$( (refuse_legacy_panel) 2>&1 || true)"
 assert_contains "${output}" "已移除的「仅安装面板」模式" "旧模式主机应被拒绝"
@@ -232,19 +234,29 @@ printf 'KIXDNS_MANAGEMENT_ENABLED=true\n' > "${PANEL_ENV}"
 refuse_legacy_panel
 : > "${PANEL_ENV}"
 refuse_legacy_panel
+# 回归：按提示卸载面板并保留配置后，只剩 panel.env 而没有面板程序；这时再拒绝就再也装不上了。
+# Regression: after uninstalling as advised and keeping the config, only panel.env remains without the
+# panel program; refusing then would block the install forever.
+rm -f -- "${PANEL_SERVER_BINARY}"
+printf 'KIXDNS_MANAGEMENT_ENABLED=false\n' > "${PANEL_ENV}"
+output="$( (refuse_legacy_panel; printf 'CONTINUED\n') 2>&1 || true)"
+assert_contains "${output}" "CONTINUED" "只剩旧 panel.env、面板程序已卸载时应允许重新安装"
+assert_not_contains "${output}" "已移除的「仅安装面板」模式" "面板程序已卸载时不应再拒绝"
 
 # ---------------------------------------------------------------------------
 # 同一版本 / Same version
 # ---------------------------------------------------------------------------
 
 same_version_output() {
+  local panel_active=${5:-true}
   (
     EXISTING_PANEL=$1
     PANEL_RELEASE=$2
     PANEL_BUILD_COMMIT=$3
     REINSTALL=$4
+    systemctl() { [[ $1 == is-active && ${panel_active} == true ]]; }
     skip_if_already_installed
-    printf 'CONTINUED\n'
+    printf 'CONTINUED REINSTALL=%s\n' "${REINSTALL}"
   ) 2>&1
 }
 commit_a=$(printf 'a%.0s' {1..40})
@@ -256,6 +268,12 @@ assert_contains "${output}" "--reinstall" "同一版本提示应说明如何修�
 assert_not_contains "${output}" "CONTINUED" "同一 Release 不应继续安装"
 output="$(same_version_output true v3.1.1 "${commit_b}" true)"
 assert_contains "${output}" "CONTINUED" "--reinstall 应继续安装"
+# 同一版本但面板没在运行：说「未作任何修改」就是把坏掉的安装当成好的，应按 --reinstall 修复。
+# Same version but the panel is not running: "nothing changed" would pass off a broken install as fine; repair as --reinstall.
+output="$(same_version_output true v3.1.1 "${commit_b}" false false)"
+assert_contains "${output}" "KixDNS Panel v3.1.1 已安装，但面板没有在运行" "同版本面板未运行时应说明原因"
+assert_not_contains "${output}" "未作任何修改" "面板未运行时不能说未作修改"
+assert_contains "${output}" "CONTINUED REINSTALL=true" "面板未运行时应按 --reinstall 继续修复安装"
 output="$(same_version_output true v3.1.2 "${commit_a}" false)"
 assert_contains "${output}" "CONTINUED" "不同 Release 应继续安装"
 output="$(same_version_output false v3.1.1 "${commit_a}" false)"
@@ -470,6 +488,39 @@ assert_not_contains "${output}" "LEFT" "恢复后不应残留 drop-in、目录�
 output="$(resolved_round_trip file)"
 assert_contains "${output}" "RESTORED=file:# 手写 nameserver 127.0.0.53 " "恢复时应还原原来的普通文件内容"
 assert_not_contains "${output}" "LEFT" "恢复普通文件后不应残留"
+# 假的 getent：记下调用次数，前 GETENT_FAILURES 次失败；GETENT_BROKEN_WHEN 指向的文件存在时一直失败。
+# A fake getent: counts calls and fails the first GETENT_FAILURES; always fails while GETENT_BROKEN_WHEN exists.
+getent_stub="${WORK}/getent-stub"
+mkdir -p "${getent_stub}"
+cat > "${getent_stub}/getent" <<'SH'
+#!/bin/sh
+count=$(cat "${GETENT_COUNTER}" 2>/dev/null || echo 0)
+count=$((count + 1))
+echo "${count}" > "${GETENT_COUNTER}"
+if [ -n "${GETENT_BROKEN_WHEN:-}" ] && [ -e "${GETENT_BROKEN_WHEN}" ]; then
+  exit 2
+fi
+[ "${count}" -gt "${GETENT_FAILURES:-0}" ]
+SH
+chmod +x "${getent_stub}/getent"
+resolution_of() {
+  (
+    PATH="${getent_stub}:${PATH}"
+    export GETENT_COUNTER="${WORK}/getent-count" GETENT_FAILURES=$1
+    rm -f -- "${GETENT_COUNTER}"
+    sleep() { :; }
+    if name_resolution_works; then
+      printf 'ok %s\n' "$(<"${GETENT_COUNTER}")"
+    else
+      printf 'failed %s\n' "$(<"${GETENT_COUNTER}")"
+    fi
+  )
+}
+# 回归：glibc 第一台服务器超时 5 秒，丢一个 UDP 包单次查询就失败，安装会被误判回滚。
+# Regression: glibc's first-server timeout is 5 s, so one lost UDP packet failed a single lookup and rolled the install back.
+assert_equals "$(resolution_of 2)" "ok 3" "解析前两次失败、第三次成功时应视为可用"
+assert_equals "$(resolution_of 0)" "ok 1" "第一次成功时不应再重试"
+assert_equals "$(resolution_of 99)" "failed 3" "一直失败时最多试三次后判定不可用"
 output="$(
   (
     RESOLVED_DROPIN="${WORK}/broken/resolved.conf.d/kixdns-panel.conf"
@@ -479,11 +530,10 @@ output="$(
     printf 'nameserver 192.0.2.53\n' > "${RESOLV_CONF}"
     systemctl() { :; }
     find_port_conflict() { PORT_CONFLICT=none; }
-    RESOLVE_CALLS=0
-    name_resolution_works() {
-      [[ -e ${RESOLVED_DROPIN} ]] && return 1
-      return 0
-    }
+    sleep() { :; }
+    PATH="${getent_stub}:${PATH}"
+    export GETENT_COUNTER="${WORK}/getent-count" GETENT_FAILURES=0 GETENT_BROKEN_WHEN=${RESOLVED_DROPIN}
+    rm -f -- "${GETENT_COUNTER}"
     abort_install() { printf 'ABORT %s\n' "$*"; exit 3; }
     RESOLVED_ACTION=disable-stub
     disable_resolved_stub
@@ -493,9 +543,74 @@ output="$(
 assert_contains "${output}" "ABORT 关闭 systemd-resolved 的本机监听后，本机域名解析不可用" "改动后解析失败应中止并回滚"
 assert_not_contains "${output}" "CONTINUED" "改动后解析失败不能继续安装"
 
+# 关闭监听之后安装失败：回滚必须放回 resolv.conf、删掉 drop-in 与它的目录和记录。
+# A failure after the stub was turned off: rollback must put resolv.conf back and remove the drop-in, its directory and the record.
+resolved_rollback() {
+  local kind=$1
+  local root="${WORK}/rollback-resolved"
+  rm -rf -- "${root}"
+  mkdir -p "${root}/backup"
+  (
+    RESOLVED_DROPIN="${root}/resolved.conf.d/kixdns-panel.conf"
+    RESOLV_CONF="${root}/resolv.conf"
+    RESOLVED_UPLINK_RESOLV_CONF="${resolv_fixture}/run/resolv.conf"
+    RESOLVED_STATE="${root}/state"
+    if [[ ${kind} == symlink ]]; then
+      ln -s ../run/systemd/resolve/stub-resolv.conf "${RESOLV_CONF}"
+    else
+      printf '# 手写\nnameserver 127.0.0.53\n' > "${RESOLV_CONF}"
+    fi
+    systemctl() { :; }
+    ss() { :; }
+    name_resolution_works() { return 0; }
+    restore_path() { :; }
+    restore_managed_config() { :; }
+    KIXDNS_CONFIG_PATH=${config_fixture}
+    BACKUP_ROOT="${root}/backup"
+    INSTALL_MODE=managed
+    INSTALL_KIND=fresh
+    EXISTING_PANEL=false
+    CREATED_EXTERNAL_BACKUP=false
+    KIXDNS_BINARY_CHANGED=false
+    KIXDNS_UNIT_CHANGED=false
+    PORT_CONFLICT=resolved
+    PORT_CONFLICT_PORT=53
+    RESOLVED_ACTION=disable-stub
+    disable_resolved_stub
+    rollback_install 1
+  ) > /dev/null 2>&1 || true
+  if [[ -L ${root}/resolv.conf ]]; then
+    printf 'RESTORED=link:%s\n' "$(readlink "${root}/resolv.conf")"
+  else
+    printf 'RESTORED=file:%s\n' "$(tr '\n' ' ' < "${root}/resolv.conf")"
+  fi
+  [[ ! -e ${root}/resolved.conf.d/kixdns-panel.conf ]] || printf 'DROPIN-LEFT\n'
+  [[ ! -e ${root}/resolved.conf.d ]] || printf 'DROPIN-DIRECTORY-LEFT\n'
+  [[ ! -e ${root}/state ]] || printf 'STATE-LEFT\n'
+}
+output="$(resolved_rollback symlink)"
+assert_contains "${output}" "RESTORED=link:../run/systemd/resolve/stub-resolv.conf" "回滚应还原 resolv.conf 原来的符号链接"
+assert_not_contains "${output}" "LEFT" "回滚后不应残留 drop-in、目录或记录"
+output="$(resolved_rollback file)"
+assert_contains "${output}" "RESTORED=file:# 手写 nameserver 127.0.0.53 " "回滚应还原 resolv.conf 原来的普通文件"
+assert_not_contains "${output}" "LEFT" "回滚普通文件后不应残留"
+
 # ---------------------------------------------------------------------------
 # 服务状态 / Service state
 # ---------------------------------------------------------------------------
+
+# 回归：v3.1.0 以 `systemctl is-enabled … && KIXDNS_WAS_ENABLED=true` 结尾，从未启用过的 KixDNS
+# 让函数返回非零，set -e 直接无声退出，重装和升级都半途停下。
+# Regression: v3.1.0 ended with `systemctl is-enabled … && KIXDNS_WAS_ENABLED=true`; a never-enabled
+# KixDNS made the function return non-zero and set -e silently killed reinstalls and upgrades.
+output="$(bash -c "
+  source '${INSTALLER}'
+  systemctl() { return 1; }
+  EXISTING_PANEL=true
+  detect_existing_kixdns
+  printf 'CONTINUED active=%s enabled=%s\n' \"\${KIXDNS_WAS_ACTIVE}\" \"\${KIXDNS_WAS_ENABLED}\"
+" 2>&1 || true)"
+assert_contains "${output}" "CONTINUED active=false enabled=false" "KixDNS 未运行且未启用时记录状态不能让安装退出"
 
 SYSTEMCTL_CALLS=""
 systemctl() {

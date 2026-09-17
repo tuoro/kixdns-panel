@@ -16,6 +16,7 @@ EXISTING_KIXDNS_BINARY_PATH=""
 KIXDNS_CONTROL_SOCKET="/run/kixdns/admin.sock"
 KIXDNS_SERVICE_HELPER_SOCKET="/run/kixdns-panel/control.sock"
 PANEL_ENV=/etc/kixdns-panel/panel.env
+PANEL_SERVER_BINARY=/usr/local/bin/kixdns-panel-server
 SYSTEMD_UNIT_DIRECTORY=/etc/systemd/system
 EXISTING_PANEL=false
 EXISTING_KIXDNS=false
@@ -71,7 +72,8 @@ usage() {
 必须带 --replace-existing。迁移保留配置和运行状态，原 unit 会备份，卸载面板时选择
 移除增强版即可恢复原来的 KixDNS。
 
-同一版本再次运行不会改动任何东西；KixDNS 只在程序或 unit 确实变化时才会重启。
+同一版本再次运行且面板在运行时不会改动任何东西；面板没在运行时会自动重新安装修复。
+KixDNS 只在程序或 unit 确实变化时才会重启。
 EOF
 }
 
@@ -167,6 +169,10 @@ abort_install() {
 refuse_legacy_panel() {
   # 旧的「仅安装面板」主机从未跑起来过；在它上面升级只会得到另一个无法管理的面板。
   # Hosts from the removed panel-only mode never ran; upgrading in place would only yield another unmanageable panel.
+  # 只剩 panel.env 而面板程序已卸载时不拒绝：那是按提示卸载并保留了配置，重新安装会删掉这个旧键。
+  # A leftover panel.env without the panel program is not refused: that is an uninstall that kept the
+  # config as advised, and a fresh install strips the stale key.
+  [[ -e ${PANEL_SERVER_BINARY} ]] || return 0
   [[ $(environment_value KIXDNS_MANAGEMENT_ENABLED || true) == false ]] || return 0
   fail "这台主机装的是已移除的「仅安装面板」模式，不能直接升级或更新。
 请先运行 sudo kixdns-panel-uninstall 卸载面板（原来的 KixDNS 保持不变），
@@ -175,7 +181,7 @@ refuse_legacy_panel() {
 
 load_existing_panel_settings() {
   local value
-  [[ -x /usr/local/bin/kixdns-panel-server && -f ${PANEL_ENV} ]] || return 0
+  [[ -x ${PANEL_SERVER_BINARY} && -f ${PANEL_ENV} ]] || return 0
   EXISTING_PANEL=true
   INSTALL_MODE="managed"
   value="$(environment_value KIXDNS_SERVICE_UNIT || true)"
@@ -236,6 +242,13 @@ same_panel_version_installed() {
 skip_if_already_installed() {
   [[ ${REINSTALL} == false ]] || return 0
   same_panel_version_installed || return 0
+  # 版本相同但面板没在运行，说明安装坏了；直接退出等于把它当成好的，改按 --reinstall 修复。
+  # Same version but the panel is not running means a broken install; exiting would pass it off as fine, so repair as --reinstall.
+  if ! systemctl is-active --quiet kixdns-panel.service 2>/dev/null; then
+    printf 'KixDNS Panel %s 已安装，但面板没有在运行，现在按 --reinstall 重新安装以修复。\n' "$(package_panel_label)"
+    REINSTALL=true
+    return 0
+  fi
   printf 'KixDNS Panel %s 已安装，未作任何修改。\n' "$(package_panel_label)"
   printf '需要修复安装时，加 --reinstall 重新运行。\n'
   exit 0
@@ -254,6 +267,20 @@ detect_service_argument() {
   fi
 }
 
+# 迁移和升级都要恢复原来的运行状态，所以在任何改动之前记下。必须写成 if：v3.1.0 以
+# `systemctl is-enabled … && KIXDNS_WAS_ENABLED=true` 结尾，未启用的 KixDNS 让函数返回非零，set -e 无声退出。
+# Migration and upgrade both restore the original running state, so record it before any change. Keep the
+# ifs: v3.1.0 ended with `systemctl is-enabled … && KIXDNS_WAS_ENABLED=true`, and a never-enabled KixDNS
+# made the function return non-zero so set -e exited silently.
+capture_managed_service_state() {
+  if systemctl is-active --quiet "${KIXDNS_SERVICE_UNIT}" 2>/dev/null; then
+    KIXDNS_WAS_ACTIVE=true
+  fi
+  if systemctl is-enabled --quiet "${KIXDNS_SERVICE_UNIT}" 2>/dev/null; then
+    KIXDNS_WAS_ENABLED=true
+  fi
+}
+
 detect_existing_kixdns() {
   local detected
   if systemctl cat "${KIXDNS_SERVICE_UNIT}" >/dev/null 2>&1; then
@@ -263,14 +290,7 @@ detect_existing_kixdns() {
     [[ -e /usr/local/bin/kixdns || -e ${MANAGED_KIXDNS_BINARY} ]]; then
     EXISTING_KIXDNS=true
   fi
-  # 迁移和升级都要恢复原来的运行状态，所以在任何改动之前记下。
-  # Migration and upgrade both restore the original running state, so record it before any change.
-  if systemctl is-active --quiet "${KIXDNS_SERVICE_UNIT}" 2>/dev/null; then
-    KIXDNS_WAS_ACTIVE=true
-  fi
-  if systemctl is-enabled --quiet "${KIXDNS_SERVICE_UNIT}" 2>/dev/null; then
-    KIXDNS_WAS_ENABLED=true
-  fi
+  capture_managed_service_state
   [[ ${EXISTING_PANEL} == false ]] || return 0
   detected="$(detect_service_argument config || true)"
   [[ -z ${detected} ]] || KIXDNS_CONFIG_PATH=${detected}
@@ -579,8 +599,17 @@ $(resolved_manual_commands)"
   fail "端口 ${PORT_CONFLICT_PORT} 被 $(holder_text)占用，替换后的 KixDNS 无法启动；请先停用该程序，或把配置里的 bind_udp/bind_tcp 改到其他端口，然后重新运行。"
 }
 
+# glibc 对第一台 DNS 服务器的超时就是 5 秒，丢一个 UDP 包单次查询就会失败；最多试三次，
+# 每次 8 秒，任一次成功即可，总共不超过约 26 秒。
+# glibc's first-server timeout is 5 s, so one lost UDP packet fails a single lookup; try up to three
+# times at 8 s each and accept the first success, about 26 s at most.
 name_resolution_works() {
-  timeout 5 getent hosts github.com >/dev/null 2>&1
+  local attempt
+  for ((attempt = 1; attempt <= 3; attempt++)); do
+    timeout 8 getent hosts github.com >/dev/null 2>&1 && return 0
+    ((attempt == 3)) || sleep 1
+  done
+  return 1
 }
 
 disable_resolved_stub() {
@@ -811,7 +840,7 @@ rollback_install() {
     restore_path /var/lib/kixdns-panel/bundle bundled-metadata
     restore_managed_config
   fi
-  restore_path /usr/local/bin/kixdns-panel-server panel-server
+  restore_path "${PANEL_SERVER_BINARY}" panel-server
   restore_path /usr/local/bin/kixdns-panel-uninstall panel-uninstall
   restore_path /usr/local/libexec/kixdns-panel-one-click-install panel-one-click-install
   restore_path /usr/local/libexec/kixdns-panel-online-update panel-online-update
@@ -912,7 +941,7 @@ prepare_rollback() {
     backup_path "${SYSTEMD_UNIT_DIRECTORY}/${KIXDNS_SERVICE_UNIT}" kixdns-service
     backup_managed_config
   fi
-  backup_path /usr/local/bin/kixdns-panel-server panel-server
+  backup_path "${PANEL_SERVER_BINARY}" panel-server
   backup_path /usr/local/bin/kixdns-panel-uninstall panel-uninstall
   backup_path /usr/local/libexec/kixdns-panel-one-click-install panel-one-click-install
   backup_path /usr/local/libexec/kixdns-panel-online-update panel-online-update
@@ -1312,7 +1341,7 @@ main() {
   if [[ ${INSTALL_KIND} != panel-only ]]; then
     [[ ! -L ${MANAGED_KIXDNS_BINARY} ]] || fail "KixDNS 二进制目标不能是符号链接"
   fi
-  [[ ! -L /usr/local/bin/kixdns-panel-server ]] || fail "面板二进制目标不能是符号链接"
+  [[ ! -L ${PANEL_SERVER_BINARY} ]] || fail "面板二进制目标不能是符号链接"
   [[ ! -L /usr/local/bin/kixdns-panel-uninstall ]] || fail "卸载命令目标不能是符号链接"
   [[ ! -L /usr/local/libexec/kixdns-panel-one-click-install ]] || fail "一键安装器目标不能是符号链接"
   [[ ! -L /usr/local/libexec/kixdns-panel-online-update ]] || fail "在线更新器目标不能是符号链接"
@@ -1336,7 +1365,7 @@ main() {
   fi
   disable_resolved_stub
   install -o root -g root -m 0755 "${PACKAGE_ROOT}/bin/kixdns-panel-server" /usr/local/bin/.kixdns-panel-server.new
-  mv -fT -- /usr/local/bin/.kixdns-panel-server.new /usr/local/bin/kixdns-panel-server
+  mv -fT -- /usr/local/bin/.kixdns-panel-server.new "${PANEL_SERVER_BINARY}"
   install -o root -g root -m 0755 "${PACKAGE_ROOT}/scripts/uninstall.sh" /usr/local/bin/.kixdns-panel-uninstall.new
   mv -fT -- /usr/local/bin/.kixdns-panel-uninstall.new /usr/local/bin/kixdns-panel-uninstall
   install -o root -g root -m 0755 "${PACKAGE_ROOT}/scripts/one-click-install.sh" /usr/local/libexec/.kixdns-panel-one-click-install.new
