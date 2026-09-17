@@ -295,12 +295,22 @@ function removeConfigVersions(ids: number[], unavailable: boolean): void {
 
 let serviceRunning = true
 let updateAvailable = true
-let panelUpdateStatus: PanelUpdateStatus = {
-  state: 'idle',
-  message: '',
-  target_version: '',
-  updated_at: 0,
-}
+// 在线更新失败只在置上这个标记时演示，和 kixdns:demo-empty-first-install 是同一套做法。
+// A failed online update is shown only under this flag, mirroring kixdns:demo-empty-first-install.
+let panelUpdateStatus: PanelUpdateStatus = typeof localStorage !== 'undefined'
+  && localStorage.getItem('kixdns:demo-panel-update-failed') === 'true'
+  ? {
+      state: 'failed',
+      message: '在线更新失败：一键安装失败：下载 kixdns-panel-linux-x86_64.zip 超时',
+      target_version: 'v1.0.1',
+      updated_at: 1_789_000_000,
+    }
+  : {
+      state: 'idle',
+      message: '',
+      target_version: '',
+      updated_at: 0,
+    }
 let githubTokenConfigured = false
 const panelBuildCommit = '82c88791869153884f361b1ea3cf123b727fadee'
 const legacyBuildCommit = '05f51503219e77849517596b7392cff919437c8b'

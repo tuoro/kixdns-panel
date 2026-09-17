@@ -215,17 +215,19 @@ sudo systemctl restart kixdns-panel.service
 
 配置页支持两种模式：
 
-- **远程链接**：只接受 HTTPS 直链。面板下载后按 SHA-256 存入 `/var/lib/kixdns-panel/geo/`，把本地路径写进配置；链接本身只存在面板数据库。单文件上限 128 MiB，GeoSite 最多 8 个。拒绝指向本机、私网和保留地址的链接，每次重定向都重新检查。旧文件不自动清理，以便回滚历史配置
+- **远程链接**：只接受 HTTPS 直链。面板下载后按 SHA-256 存入 `/var/lib/kixdns-panel/geo/`，把本地路径写进配置；链接本身只存在面板数据库。单文件上限 128 MiB，GeoSite 最多 8 个。拒绝指向本机、私网和保留地址的链接，每次重定向都重新检查。定时更新成功后自动删除当前清单和所有保留配置版本都不再引用的旧文件，回滚到任一保留版本时文件都还在；删除历史版本后留下的文件，可在配置页手动清理
 - **本地路径**：直接使用已有文件，不迁移、不覆盖
 
 ## 面板更新
 
 「系统与更新」页可在线更新到 `tuoro/kixdns-panel` 最新正式 Release；命令行的等价做法是用新版本的包运行 `install.sh --panel-only-update`。也可以下载完整包直接重新运行 `install.sh` 升级，KixDNS 只在程序或 unit 变化时按原状态重启。
 
-- 只更新 Panel Server、前端、helper、安装与卸载脚本和面板 unit；**KixDNS 二进制、配置、数据库和启停状态都不动**
+- 只更新 Panel Server、前端、helper、安装与卸载脚本和面板 unit；**KixDNS 二进制、配置和启停状态都不动**。新面板启动时可能把 `panel.db` 升级到新结构
 - 浏览器不能指定 URL、路径或版本；下载后先校验 GitHub 资产摘要，再校验包内 `SHA256SUMS`
-- 失败自动恢复旧面板；更新期间面板短暂重启，页面重连后自动刷新
-- 失败详情：`journalctl -u kixdns-panel-update.service`
+- 失败自动恢复旧面板和更新前的 `panel.db`（连同 `-wal`、`-shm`），并确认旧面板重新稳定运行；旧面板仍起不来时安装器会明说，并给出 `journalctl -u kixdns-panel.service -n 50 --no-pager`
+- 更新期间面板短暂重启，页面重连后自动刷新
+- 失败时系统页显示具体原因（安装器或 GitHub 请求报出的那一行），点「知道了」收起；下次发起更新，或面板以其他方式升级到目标版本后，失败提示自动消失
+- 完整输出：`journalctl -u kixdns-panel-update.service -n 200 --no-pager`。更新器以 `systemd-run --collect` 临时 unit 运行，结束后 unit 即被回收，`systemctl status` 查不到它，日志仍在
 
 升级从不需要转换配置：配置文件 `version` 一直是 `1.0`，控制协议一直是 v1，任意旧版可以直接覆盖安装。
 
@@ -253,7 +255,7 @@ sudo systemctl restart kixdns-panel.service
 | `address already in use` | 53 端口被占用，见[端口 53](#端口-53)；`ss -lnptu 'sport = :53'` 查看占用者 |
 | 控制接口不可用 | 检查 `/run/kixdns/admin.sock`、两个账号的 `kixdns` 组关系和 KixDNS 日志 |
 | 服务控制被拒绝 | 检查 `kixdns-panel-helper.service` 与 `/run/kixdns-panel/control.sock` 权限 |
-| 在线更新失败 | `systemctl status kixdns-panel-update.service`；失败不会动 KixDNS |
+| 在线更新失败 | 系统页显示原因；完整输出用 `journalctl -u kixdns-panel-update.service -n 200 --no-pager`（临时 unit 结束即回收，`systemctl status` 查不到）；失败不会动 KixDNS |
 | 日志读取失败 | 确认 `kixdns-panel` 在 `systemd-journal` 组，重启面板使组关系生效 |
 | Geo 数据下载失败 | 确认是 HTTPS 直链，且不会重定向到登录页、私网或超过 128 MiB 的文件 |
 

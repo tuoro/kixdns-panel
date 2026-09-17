@@ -398,6 +398,118 @@ async fn geo_cleanup_requires_csrf_and_removes_unreferenced_files() {
     assert!(!removable.exists());
 }
 
+/// 直接组装 `AppState`：定时 Geo 更新不经过 HTTP 路由，测试需要拿到状态本身。
+/// Assemble an `AppState` directly: scheduled Geo updates bypass the HTTP routes, so the test needs the state.
+async fn test_state(directory: &TempDir) -> super::AppState {
+    use std::sync::Arc;
+
+    let database = crate::db::Database::open(directory.path().join("panel.db"))
+        .await
+        .unwrap();
+    let config = crate::config_store::ConfigStore::new(
+        directory.path().join("pipeline.json"),
+        database.clone(),
+    );
+    config.initialize_history().await.unwrap();
+    let updates = crate::updates::UpdateManager::new(
+        database.clone(),
+        crate::updates::UpdateSettings {
+            repository: "tuoro/kixdns-panel".to_owned(),
+            workflow: "build-kixdns.yml".to_owned(),
+            release_workflow: "build-kixdns-release.yml".to_owned(),
+            branch: "main".to_owned(),
+            artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
+            installed_commit: None,
+            installed_source_id: None,
+            panel_installed_commit: None,
+            panel_installed_release: None,
+            binary_path: directory.path().join("kixdns"),
+            versions_path: directory.path().join("versions"),
+            bundled_metadata: directory.path().join("bundle"),
+            github_token_path: directory.path().join("github-token"),
+        },
+    )
+    .unwrap();
+    let geo_data =
+        crate::geo_data::GeoDataManager::new(database.clone(), &directory.path().join("geo"))
+            .unwrap();
+    super::AppState {
+        database,
+        config,
+        control: crate::control::ControlClient::new(directory.path().join("admin.sock")),
+        operations: crate::operations::Operations::new(
+            "kixdns.service".to_owned(),
+            "/run/kixdns-panel/control.sock".into(),
+            "127.0.0.1:53".parse().unwrap(),
+        )
+        .unwrap(),
+        updates,
+        geo_data,
+        secure_cookie: false,
+        trusted_proxies: TrustedProxies::default(),
+        login_limiter: Arc::new(crate::auth::LoginLimiter::default()),
+        password_slots: Arc::new(tokio::sync::Semaphore::new(1)),
+        config_apply_lock: Arc::new(tokio::sync::Mutex::new(())),
+        dummy_password_hash: Arc::from("unused"),
+    }
+}
+
+#[tokio::test]
+async fn scheduled_geo_update_removes_unreferenced_files_and_keeps_rollback_targets() {
+    // 回归：定时更新每次下载到新的内容寻址文件，却只有手动清理会删旧文件，磁盘只增不减。
+    // Regression: every scheduled run downloads new content-addressed files, but only the manual
+    // cleanup deleted old ones, so the disk only ever grew.
+    let directory = tempdir().unwrap();
+    let geo_root = directory.path().join("geo");
+    std::fs::create_dir(&geo_root).unwrap();
+    let geo_root = std::fs::canonicalize(geo_root).unwrap();
+    let previous = geo_root.join(format!("geoip-mmdb-{}.mmdb", "a".repeat(64)));
+    let current = geo_root.join(format!("geoip-mmdb-{}.mmdb", "b".repeat(64)));
+    let orphan = geo_root.join(format!("geosite-{}.dat", "c".repeat(64)));
+    for path in [&previous, &current, &orphan] {
+        std::fs::write(path, b"geo").unwrap();
+    }
+    std::fs::write(
+        directory.path().join("pipeline.json"),
+        serde_json::json!({
+            "pipelines": [],
+            "settings": { "geoip_db_path": previous.to_string_lossy() },
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let state = test_state(&directory).await;
+    let manifest = crate::geo_data::GeoDataManifest {
+        geoip_mmdb: Some(crate::geo_data::GeoDataResource {
+            url: "https://example.com/geo.mmdb".to_owned(),
+            path: current.to_string_lossy().into_owned(),
+            sha256: "b".repeat(64),
+            size: 3,
+            downloaded_at: 1,
+        }),
+        geoip_dat: None,
+        geosite: Vec::new(),
+    };
+
+    super::geo::apply_synced_geo_data(&state, &manifest)
+        .await
+        .unwrap();
+
+    assert!(current.exists(), "新配置引用的文件必须保留");
+    assert!(previous.exists(), "历史版本引用的文件必须保留，回滚才能用");
+    assert!(!orphan.exists(), "没有任何版本引用的旧文件应被清理");
+
+    // 源文件没变、配置无需改写的那次运行也要清理，否则此前积下的旧文件永远留着。
+    // A run whose sources did not change and left the config alone still cleans up, or files
+    // left over from earlier runs would stay forever.
+    std::fs::write(&orphan, b"geo").unwrap();
+    super::geo::apply_synced_geo_data(&state, &manifest)
+        .await
+        .unwrap();
+    assert!(current.exists() && previous.exists());
+    assert!(!orphan.exists(), "配置未变的定时更新也应清理未引用的旧文件");
+}
+
 #[tokio::test]
 async fn geo_schedule_requires_sources_before_enabling() {
     let context = authenticated_app().await;

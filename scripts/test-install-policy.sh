@@ -704,6 +704,89 @@ assert_contains "${output}" "restart kixdns.service" "迁移失败应恢复运�
   exit 1
 }
 
+# 回滚放回面板数据库：新面板启动时可能已把库迁移到更高的 schema，旧面板会拒绝打开它，一直起不来。
+# Rollback puts the panel database back: the new panel may have migrated it to a higher schema on start,
+# which the old panel refuses to open, leaving it crash-looping.
+database_rollback() {
+  local stable=$1
+  local take_backup=$2
+  local root="${WORK}/rollback-database"
+  rm -rf -- "${root}"
+  mkdir -p "${root}/data" "${root}/backup"
+  (
+    PANEL_DATABASE="${root}/data/panel.db"
+    BACKUP_ROOT="${root}/backup"
+    printf 'schema-5\n' > "${PANEL_DATABASE}"
+    printf 'wal-5\n' > "${PANEL_DATABASE}-wal"
+    [[ ${take_backup} == false ]] || backup_panel_database
+    # 新面板启动后迁移了数据库，并留下自己的 WAL 与共享内存文件。
+    # The new panel migrated the database on start and left its own WAL and shared-memory files.
+    printf 'schema-6\n' > "${PANEL_DATABASE}"
+    printf 'wal-6\n' > "${PANEL_DATABASE}-wal"
+    printf 'shm-6\n' > "${PANEL_DATABASE}-shm"
+    eval "real_restore_path() $(declare -f restore_path | tail -n +2)"
+    restore_path() {
+      [[ $1 != "${root}"/* ]] || real_restore_path "$@"
+    }
+    restore_managed_config() { :; }
+    # 记下面板停下和重启那一刻数据库的内容，钉住「先停再放回、放回后才重启」的顺序。
+    # Record the database at the moment the panel stops and restarts, pinning stop, then restore, then restart.
+    systemctl() {
+      printf 'systemctl %s\n' "$*"
+      [[ $* != *kixdns-panel.service* ]] ||
+        printf '%s-SEES=%s\n' "$1" "$(cat "${PANEL_DATABASE}" 2>/dev/null || printf 'missing')"
+    }
+    chown() { printf 'chown %s\n' "$*"; }
+    chmod() { printf 'chmod %s\n' "$*"; }
+    environment_value() { printf '0.0.0.0:5738\n'; }
+    wait_for_service_stable() { printf 'wait %s\n' "$*"; [[ ${stable} == true ]]; }
+    INSTALL_MODE=managed
+    INSTALL_KIND=upgrade
+    EXISTING_PANEL=true
+    CREATED_EXTERNAL_BACKUP=false
+    KIXDNS_BINARY_CHANGED=false
+    KIXDNS_UNIT_CHANGED=false
+    RESOLVED_CHANGED=false
+    rollback_install 1
+  ) 2>&1 || true
+  printf 'DB=%s\n' "$(cat "${root}/data/panel.db" 2>/dev/null || printf 'missing')"
+  printf 'WAL=%s\n' "$(cat "${root}/data/panel.db-wal" 2>/dev/null || printf 'missing')"
+  printf 'SHM=%s\n' "$(cat "${root}/data/panel.db-shm" 2>/dev/null || printf 'missing')"
+}
+output="$(database_rollback true true)"
+assert_contains "${output}" "DB=schema-5" "回滚应放回安装前的面板数据库"
+assert_contains "${output}" "WAL=wal-5" "回滚应放回安装前的 WAL"
+assert_contains "${output}" "SHM=missing" "安装前没有的共享内存文件回滚后不应残留"
+assert_contains "${output}" "chown kixdns-panel:kixdns -- ${WORK}/rollback-database/data/panel.db" "放回的数据库应归面板账号所有"
+assert_contains "${output}" "chmod 0600 -- ${WORK}/rollback-database/data/panel.db" "放回的数据库应为 0600"
+assert_contains "${output}" "wait kixdns-panel.service 127.0.0.1 5738" "回滚后应确认原面板稳定运行"
+assert_contains "${output}" "安装未完成，已恢复原有程序和服务。" "原面板恢复运行时说明已恢复"
+assert_contains "${output}" "stop-SEES=schema-6" "放回数据库前必须先停掉面板"
+assert_contains "${output}" "restart-SEES=schema-5" "重启原面板时数据库必须已经放回"
+
+output="$(database_rollback false true)"
+assert_contains "${output}" "原面板没有恢复运行" "原面板起不来时不能说已恢复"
+assert_contains "${output}" "journalctl -u kixdns-panel.service -n 50 --no-pager" "原面板起不来时应给出日志命令"
+assert_not_contains "${output}" "已恢复原有程序和服务" "原面板起不来时不能打印成功"
+
+# 数据库还没备份就回滚（例如备份前被中断）：不能按「备份里没有」把正在用的数据库删掉。
+# Rolling back before the database was backed up (e.g. interrupted first): must not delete the live
+# database because the backup lacks it.
+output="$(database_rollback true false)"
+assert_contains "${output}" "DB=schema-6" "没有备份数据库时回滚不应动数据库"
+
+# 备份必须在停掉面板之后（数据库不再写入）、替换程序之前。
+# The backup must come after the panel stops (no more writes) and before the binaries are swapped.
+main_body="$(declare -f main)"
+stop_line="$(grep -n 'systemctl stop kixdns-panel.service' <<< "${main_body}" | head -n 1 | cut -d: -f1)"
+backup_line="$(grep -n 'backup_panel_database' <<< "${main_body}" | head -n 1 | cut -d: -f1)"
+swap_line="$(grep -n 'kixdns-panel-server.new' <<< "${main_body}" | head -n 1 | cut -d: -f1)"
+[[ -n ${backup_line} && ${stop_line} -lt ${backup_line} && ${backup_line} -lt ${swap_line} ]] || {
+  printf '断言失败：面板数据库应在停掉面板后、替换程序前备份（stop=%s backup=%s swap=%s）\n' \
+    "${stop_line}" "${backup_line}" "${swap_line}" >&2
+  exit 1
+}
+
 # ---------------------------------------------------------------------------
 # 启动后校验 / Post-start verification
 # ---------------------------------------------------------------------------
@@ -891,5 +974,64 @@ assert_contains "${output}" "端口 53：已关闭 systemd-resolved 的本机监
 output="$(summary_of panel-only true false false none false 'v3.1.0')"
 assert_equals "$(sed -n 2p <<< "${output}")" "面板更新完成：KixDNS Panel v3.1.1" "仅更新面板的结果第一行"
 assert_contains "${output}" "KixDNS：未替换，配置与运行状态保持不变" "仅更新面板应说明 KixDNS 未动"
+
+# ---------------------------------------------------------------------------
+# 面板在线更新的失败原因 / Online panel update failure reasons
+# ---------------------------------------------------------------------------
+
+# 把更新器里写死的系统路径换到临时目录，其余逻辑原样运行。
+# Point the updater's hardcoded system paths at a scratch directory and run the rest unchanged.
+online_update_root="${WORK}/online-update"
+mkdir -p "${online_update_root}/status"
+sed -e "s|/var/lib/kixdns-panel-update|${online_update_root}/status|g" \
+  -e "s|/etc/kixdns-panel/panel.env|${online_update_root}/panel.env|" \
+  -e "s|/usr/local/libexec/kixdns-panel-one-click-install|${online_update_root}/one-click|" \
+  -e "s|/usr/local/bin/kixdns-panel-server|${online_update_root}/server|" \
+  -e "s|/var/lib/kixdns-panel/github-token|${online_update_root}/github-token|" \
+  -e "s|/run/kixdns-panel-update.lock|${online_update_root}/lock|" \
+  "${PACKAGE_ROOT}/scripts/panel-online-update.sh" > "${online_update_root}/updater.sh"
+printf '#!/usr/bin/env bash\nprintf "kixdns-panel-server 3.1.1\\n"\n' > "${online_update_root}/server"
+printf 'KIXDNS_PANEL_INSTALLED_RELEASE=v3.1.1\n' > "${online_update_root}/panel.env"
+chmod 0755 "${online_update_root}/server"
+
+# 参数：一键安装器的脚本正文，curl 替身的函数体。输出状态文件里的 state 与 message。
+# Arguments: the one-click installer's body and a function body standing in for curl.
+# Prints the status file's state and message.
+online_update_status() {
+  printf '#!/usr/bin/env bash\n%s\n' "$1" > "${online_update_root}/one-click"
+  chmod 0755 "${online_update_root}/one-click"
+  rm -f -- "${online_update_root}/status/status.json"
+  bash -c "
+    source '${online_update_root}/updater.sh'
+    chown() { :; }
+    sleep() { :; }
+    trusted_root_executable() { [[ -x \$1 ]]; }
+    curl() { $2; }
+    main
+  " > /dev/null 2>&1 || true
+  jq -r '.state + " " + .message' "${online_update_root}/status/status.json"
+}
+latest_release='printf "{\"tag_name\":\"v3.1.2\"}\n"'
+
+# 回归：失败只写「请查看日志」，系统页看不到原因。安装器最后一行是回滚收尾，真正的原因在「失败：」那一行。
+# Regression: a failure only said "see the log" and the system page showed no reason. The installer's
+# last line is the rollback epilogue; the real reason is on the line carrying "失败：".
+output="$(online_update_status "printf '正在安装文件与服务…\n'
+printf '安装失败：kixdns-panel.service 启动后没有保持运行（15 秒内没有稳定运行并接受 5738 端口连接）。\n查看原因：journalctl -u kixdns-panel.service -n 50 --no-pager\n' >&2
+printf '安装未完成，已恢复原有程序和服务。\n' >&2
+exit 1" "${latest_release}")"
+assert_contains "${output}" "failed 在线更新失败：安装失败：kixdns-panel.service 启动后没有保持运行" \
+  "安装器失败时状态应带上安装器给出的原因"
+
+output="$(online_update_status "exit 0" "printf 'curl: (6) Could not resolve host: api.github.com\n' >&2; return 6")"
+assert_contains "${output}" "failed 在线更新失败：curl: (6) Could not resolve host: api.github.com" \
+  "查询最新版失败时状态应带上 curl 的错误"
+
+online_update_status "printf '一键安装失败：%s\n' \"\$(printf 'x%.0s' {1..400})\" >&2; exit 1" "${latest_release}" > /dev/null
+assert_equals "$(jq -r '.message | length' "${online_update_root}/status/status.json")" "300" \
+  "过长的原因应截断到面板接受的 300 字"
+
+output="$(online_update_status "exit 0" "${latest_release}")"
+assert_equals "${output}" "complete 面板已更新到 v3.1.2" "安装器成功时状态应为完成"
 
 printf '安装策略检查通过。\n'

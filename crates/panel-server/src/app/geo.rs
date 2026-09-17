@@ -75,16 +75,7 @@ pub(super) async fn cleanup_geo_data(
 ) -> AppResult<Json<GeoDataCleanupResult>> {
     let session = authenticate(&state.database, &jar).await?;
     verify_csrf(&session, &jar, &headers)?;
-    let retained = state
-        .config
-        .retained_contents()
-        .await
-        .map_err(map_config_error)?;
-    let result = state
-        .geo_data
-        .cleanup(&retained)
-        .await
-        .map_err(map_geo_data_error)?;
+    let result = remove_unreferenced_geo_data(&state).await?;
     state
         .database
         .audit(
@@ -189,7 +180,55 @@ async fn apply_scheduled_geo_update(state: &AppState) -> anyhow::Result<()> {
         anyhow::bail!("没有可用于自动更新的远程 Geo 数据源");
     }
     let updated = state.geo_data.sync(request).await?;
+    apply_synced_geo_data(state, &updated).await
+}
+
+/// 删除当前清单和所有保留配置版本都不引用的 Geo 文件；回滚到任一保留版本时，它引用的文件都还在。
+/// Delete Geo files that neither the current manifest nor any retained config version references;
+/// rolling back to any retained version still finds every file it points at.
+async fn remove_unreferenced_geo_data(state: &AppState) -> AppResult<GeoDataCleanupResult> {
+    let retained = state
+        .config
+        .retained_contents()
+        .await
+        .map_err(map_config_error)?;
+    state
+        .geo_data
+        .cleanup(&retained)
+        .await
+        .map_err(map_geo_data_error)
+}
+
+/// 把刚同步好的 Geo 清单写进配置，再清掉不再被引用的旧文件。
+/// Write a freshly synced Geo manifest into the config, then remove old files nothing references.
+pub(super) async fn apply_synced_geo_data(
+    state: &AppState,
+    updated: &GeoDataManifest,
+) -> anyhow::Result<()> {
+    // 清理与写配置同在一把锁里，免得清理读到的保留版本和刚保存的版本错开。
+    // Cleanup runs under the same lock as the config write, so the retained versions it reads
+    // cannot miss the version just saved.
     let _apply_guard = state.config_apply_lock.lock().await;
+    write_synced_geo_config(state, updated).await?;
+    // 每次定时更新都会下载新的内容寻址文件；不在这里清理，旧文件只会越积越多。
+    // 清理失败不影响已生效的更新，只记日志，下次运行会再试。
+    // Every scheduled run downloads new content-addressed files; without cleaning here the old
+    // ones only pile up. A failed cleanup does not undo an applied update: log it and retry next run.
+    match remove_unreferenced_geo_data(state).await {
+        Ok(result) => tracing::info!(
+            removed_files = result.removed_files,
+            reclaimed_bytes = result.reclaimed_bytes,
+            "Geo 定时更新后清理未引用的旧文件"
+        ),
+        Err(error) => tracing::warn!(error = ?error, "Geo 定时更新后清理旧文件失败"),
+    }
+    Ok(())
+}
+
+async fn write_synced_geo_config(
+    state: &AppState,
+    updated: &GeoDataManifest,
+) -> anyhow::Result<()> {
     let runtime = state.control.active_config().await;
     let previous = if matches!(&runtime, Err(ControlError::Unavailable(_))) {
         state.config.desired().await?
@@ -197,7 +236,7 @@ async fn apply_scheduled_geo_update(state: &AppState) -> anyhow::Result<()> {
         state.config.current().await?
     };
     let mut candidate = previous.content.clone();
-    if !apply_manifest_paths(&mut candidate, &updated)? {
+    if !apply_manifest_paths(&mut candidate, updated)? {
         return Ok(());
     }
 

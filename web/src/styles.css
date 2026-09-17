@@ -468,6 +468,9 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .update-row__from-to { color: var(--ink); font-size: 13px; overflow-wrap: anywhere; }
 .update-row__note { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .update-row__note--aside { flex: 0 0 auto; max-width: 180px; text-align: right; }
+/* 在线更新失败的原因：红色只表示出错。/ An online update failure: red means error and nothing else. */
+.update-row__failure { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-1) var(--s-2); color: var(--red); }
+.update-row__failure .button { min-height: var(--s-6); padding: 0 var(--s-2); font-size: var(--t-1); }
 .update-row__actions { flex: 0 0 auto; display: flex; gap: 8px; }
 .update-row__actions .button { text-decoration: none; }
 
