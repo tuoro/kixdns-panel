@@ -143,7 +143,11 @@ assert_equals "$(tr '\n' ' ' <<< "${old_flags}")" \
   "--keep-existing --replace-existing --kixdns-unit --kixdns-config --kixdns-binary --control-socket --panel-only-update -h --help " \
   "应读出安装器 case 标签里的全部参数"
 repo_flags="$(installer_flags "${PACKAGE_ROOT}/scripts/install.sh")"
-for flag in --replace-existing --panel-only-update --help; do
+# 一键安装器和安装包一起发布：仓库内 install.sh 的每个参数都必须能被读到，否则会被当成拼写错误挡掉。
+# The one-click installer ships with the package: every flag in the repository install.sh must be
+# discoverable, or it would be rejected as a typo.
+for flag in --replace-existing --reinstall --panel-only-update --kixdns-unit --kixdns-config \
+  --kixdns-binary --control-socket -h --help; do
   installer_supports_flag "${repo_flags}" "${flag}" || {
     printf '断言失败：应从仓库内 install.sh 读出 %s；安装器参数解析写法变了吗？\n' "${flag}" >&2
     exit 1

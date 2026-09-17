@@ -17,6 +17,7 @@ KIXDNS_CONTROL_SOCKET="/run/kixdns/admin.sock"
 KIXDNS_SERVICE_HELPER_SOCKET="/run/kixdns-panel/control.sock"
 PANEL_ENV=/etc/kixdns-panel/panel.env
 PANEL_SERVER_BINARY=/usr/local/bin/kixdns-panel-server
+GITHUB_TOKEN_FILE=/var/lib/kixdns-panel/github-token
 SYSTEMD_UNIT_DIRECTORY=/etc/systemd/system
 EXISTING_PANEL=false
 EXISTING_KIXDNS=false
@@ -177,6 +178,16 @@ refuse_legacy_panel() {
   fail "这台主机装的是已移除的「仅安装面板」模式，不能直接升级或更新。
 请先运行 sudo kixdns-panel-uninstall 卸载面板（原来的 KixDNS 保持不变），
 再重新安装，并在提示时选择迁移为增强版。"
+}
+
+# 一键安装遇到 GitHub 限流时，让用户先用 sudo 写入 Token；面板以 kixdns-panel 运行，读不了 root 的 0600 文件。
+# 符号链接不跟随，留给面板报告路径不安全。
+# One-click install tells rate-limited users to write the token with sudo; the panel runs as kixdns-panel
+# and cannot read a root-owned 0600 file. Symlinks are not followed; the panel reports them as unsafe.
+adopt_github_token() {
+  [[ -f ${GITHUB_TOKEN_FILE} && ! -L ${GITHUB_TOKEN_FILE} ]] || return 0
+  chown -h "${PANEL_USER}:${KIXDNS_GROUP}" -- "${GITHUB_TOKEN_FILE}"
+  chmod 0600 -- "${GITHUB_TOKEN_FILE}"
 }
 
 load_existing_panel_settings() {
@@ -1336,6 +1347,7 @@ main() {
   install -d -o "${PANEL_USER}" -g "${KIXDNS_GROUP}" -m 0750 \
     /var/lib/kixdns-panel /var/lib/kixdns-panel/bin /var/lib/kixdns-panel/versions \
     /var/lib/kixdns-panel/geo
+  adopt_github_token
   [[ ! -L /var/lib/kixdns-panel-update ]] || fail "在线更新状态目录不能是符号链接"
   install -d -o root -g "${KIXDNS_GROUP}" -m 0750 /var/lib/kixdns-panel-update
   if [[ ${INSTALL_KIND} != panel-only ]]; then

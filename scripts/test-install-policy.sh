@@ -244,6 +244,38 @@ assert_contains "${output}" "CONTINUED" "只剩旧 panel.env、面板程序已�
 assert_not_contains "${output}" "已移除的「仅安装面板」模式" "面板程序已卸载时不应再拒绝"
 
 # ---------------------------------------------------------------------------
+# 安装前以 root 写入的 GitHub Token / A GitHub token written by root before installing
+# ---------------------------------------------------------------------------
+
+# 一键安装遇到限流时让用户先用 sudo 写入 Token；面板以 kixdns-panel 运行，读不了 root 的 0600 文件。
+# One-click install tells rate-limited users to write the token with sudo; the panel runs as
+# kixdns-panel and cannot read a root-owned 0600 file.
+token_adoption() {
+  (
+    GITHUB_TOKEN_FILE="${WORK}/github-token"
+    chown() { printf 'chown %s\n' "$*"; }
+    chmod() { printf 'chmod %s\n' "$*"; }
+    adopt_github_token
+    printf 'CONTINUED\n'
+  ) 2>&1 || true
+}
+rm -f -- "${WORK}/github-token"
+printf 'ghp_example\n' > "${WORK}/github-token"
+output="$(token_adoption)"
+assert_contains "${output}" "chown -h kixdns-panel:kixdns -- ${WORK}/github-token" "安装前写入的 Token 应归面板账号所有"
+assert_contains "${output}" "chmod 0600 -- ${WORK}/github-token" "安装前写入的 Token 应为 0600"
+assert_contains "${output}" "CONTINUED" "收归 Token 后应继续安装"
+rm -f -- "${WORK}/github-token"
+output="$(token_adoption)"
+assert_not_contains "${output}" "chown" "没有 Token 文件时不应改动任何文件"
+assert_contains "${output}" "CONTINUED" "没有 Token 文件时应继续安装"
+ln -s /etc/passwd "${WORK}/github-token"
+output="$(token_adoption)"
+assert_not_contains "${output}" "chown" "Token 路径是符号链接时不应改动所有者"
+assert_contains "${output}" "CONTINUED" "Token 路径是符号链接时交给面板报告"
+rm -f -- "${WORK}/github-token"
+
+# ---------------------------------------------------------------------------
 # 同一版本 / Same version
 # ---------------------------------------------------------------------------
 

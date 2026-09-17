@@ -25,6 +25,18 @@ curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one
   | sudo bash -s -- --version v3.1.0
 ```
 
+- [安装参数](#安装参数)同样写在 `| sudo bash -s --` 之后
+- 已装同一版本且面板在运行时，读完 Release 信息就结束，不下载安装包；加 `--reinstall` 强制修复性重装。面板没在运行时自动按修复性重装处理
+- 读取 Release 用的是 GitHub API，匿名每个出口 IP 每小时 60 次。提示 HTTP 403/429 时稍后重试，或写入只读 Token 后重跑（安装时会交给面板账号，之后「系统」页也能用）：
+
+  ```bash
+  sudo install -d -m 0755 /var/lib/kixdns-panel
+  read -rsp 'GitHub Token: ' token && printf '%s\n' "$token" \
+    | sudo install -m 0600 /dev/stdin /var/lib/kixdns-panel/github-token; unset token
+  ```
+
+  也可以改用下面的手动安装，Release 下载不经过 API。
+
 ### 手动安装
 
 ```bash
@@ -49,7 +61,7 @@ sudo bash ./scripts/install.sh
 | `--panel-only-update` | 只更新面板，等同「系统与更新」页的面板更新；不停止也不替换 KixDNS |
 | `--kixdns-unit`、`--kixdns-config`、`--kixdns-binary`、`--control-socket` | 已有 KixDNS 不在默认位置、又无法从 unit 自动检测时手动指定 |
 
-一键安装把参数放在 `bash -s --` 之后：
+一键安装把参数放在 `bash -s --` 之后；运行安装器前会先检查，拼错的参数不会改动主机：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tuoro/kixdns-panel/main/scripts/one-click-install.sh \
