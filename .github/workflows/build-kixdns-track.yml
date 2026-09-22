@@ -38,6 +38,9 @@ jobs:
       - name: Verify patchset sealing rules
         run: bash scripts/test-verify-patchsets.sh
 
+      - name: Verify kernel build alerts
+        run: bash scripts/test-report-kernel-build.sh
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
@@ -97,6 +100,12 @@ jobs:
     if: needs.inventory.outputs.count != '0'
     needs: inventory
     runs-on: ubuntu-24.04
+    # 面板只从结论为成功的构建里取包：一个版本验证失败若让整次构建失败，同批构建成功的包
+    # 也会被忽略。主分支上单个版本的失败由 report 作业开告警；PR 上照常失败。
+    # The panel only takes packages from runs that concluded successfully, so one failing
+    # version must not fail the whole run and hide every good package built alongside it.
+    # On main a single failure is reported by the report job; on pull requests it still fails.
+    continue-on-error: ${{ github.event_name != 'pull_request' }}
     strategy:
       fail-fast: false
       max-parallel: 3
@@ -194,6 +203,10 @@ jobs:
       needs.inventory.outputs.count != '0'
     needs: [inventory, verify]
     runs-on: ${{ matrix.platform.runner }}
+    # 同上：一个版本构建失败不拖垮整次构建，由 report 作业开告警。PR 上不运行构建。
+    # As above: one version failing to build does not fail the run; the report job
+    # raises the alert. Builds never run on pull requests.
+    continue-on-error: true
     container:
       image: ubuntu:22.04
     # 容器里的 run 步骤默认用 sh，不认 [[ ]] 和 ${var//x/y}；整个构建作业统一用 bash。
@@ -331,3 +344,26 @@ jobs:
           path: dist/${{ steps.identity.outputs.artifact_name }}
           if-no-files-found: error
           retention-days: 90
+
+  report:
+    name: Report failed versions
+    if: >-
+      !cancelled() &&
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/main' &&
+      needs.inventory.result == 'success'
+    needs: [inventory, verify, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout panel repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Report failed versions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRACK_LABEL: ${{ inputs.catalog_directory == 'upstreams/releases' && 'Release' || 'Action' }}
+        run: bash scripts/report-kernel-build.sh

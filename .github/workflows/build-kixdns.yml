@@ -18,6 +18,8 @@ on:
       - scripts/kixdns-artifact-identity.sh
       - scripts/test-kixdns-artifact-identity.sh
       - scripts/test-verify-patchsets.sh
+      - scripts/report-kernel-build.sh
+      - scripts/test-report-kernel-build.sh
       - scripts/select-kixdns-action-run.sh
       - scripts/test-select-kixdns-action-run.sh
       - upstreams/actions/**
@@ -37,6 +39,8 @@ on:
       - scripts/kixdns-artifact-identity.sh
       - scripts/test-kixdns-artifact-identity.sh
       - scripts/test-verify-patchsets.sh
+      - scripts/report-kernel-build.sh
+      - scripts/test-report-kernel-build.sh
       - scripts/select-kixdns-action-run.sh
       - scripts/test-select-kixdns-action-run.sh
       - upstreams/actions/**
@@ -60,6 +64,12 @@ concurrency:
 
 jobs:
   build:
+    # 只有 report 作业用到 issues: write，用来开关构建失败告警。
+    # Only the report job uses issues: write, to open and close the build failure alert.
+    permissions:
+      actions: read
+      contents: read
+      issues: write
     uses: ./.github/workflows/build-kixdns-track.yml
     with:
       catalog_directory: upstreams/actions
