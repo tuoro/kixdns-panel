@@ -32,6 +32,38 @@ maintenance_identity="$(identity)"
   exit 1
 }
 
+printf '\n// artifact identity maintenance-only regression\n' >> "$copy/tools/xtask/src/refresh.rs"
+refresh_identity="$(identity)"
+[[ "$refresh_identity" == "$baseline" ]] || {
+  echo '修改依赖刷新代码不应使 KixDNS artifact 失效' >&2
+  exit 1
+}
+
+revised_identity() {
+  (
+    cd "$copy"
+    bash scripts/kixdns-artifact-identity.sh revised.lock.json x86_64
+  )
+}
+jq '.dependency_revision = 1' "$copy/upstream.lock.json" > "$copy/revised.lock.json"
+if revised_identity >/dev/null 2>&1; then
+  echo '锁引用的依赖修订不存在时必须拒绝生成身份' >&2
+  exit 1
+fi
+revision_file="$copy/patches/dependencies/$(jq -r .source "$copy/upstream.lock.json")/$(jq -r .official_run_id "$copy/upstream.lock.json")/p$(jq -r .patchset "$copy/upstream.lock.json")-r1.patch"
+mkdir -p "$(dirname "$revision_file")"
+printf 'diff --git a/Cargo.lock b/Cargo.lock\n' > "$revision_file"
+revised="$(revised_identity)"
+[[ "$revised" != "$baseline" && "${revised%-*-linux-x86_64}" == "${baseline%-*-linux-x86_64}" ]] || {
+  echo '依赖修订必须只改变 artifact 指纹，不改变名称格式' >&2
+  exit 1
+}
+printf '+changed\n' >> "$revision_file"
+[[ "$(revised_identity)" != "$revised" ]] || {
+  echo '依赖修订内容变化必须使 KixDNS artifact 失效' >&2
+  exit 1
+}
+
 printf '\n// artifact identity build-input regression\n' >> "$copy/tools/xtask/src/main.rs"
 build_identity="$(identity)"
 [[ "$build_identity" != "$baseline" ]] || {

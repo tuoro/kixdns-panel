@@ -1,6 +1,6 @@
 # 增强补丁
 
-`sets/<编号>/` 保存不可变的版本化补丁集，锁文件中的 `patchset` 只读取对应编号。上游源码不进入本仓库；`cargo xtask prepare` 会检出到 `.upstream/kixdns-<source>-<commit>-p<patchset>`，并以 `git apply` 重放所选集合中的补丁。工具使用来源、补丁版本和内容 SHA-256 标记完整补丁集，支持幂等执行并拒绝混用不同内容。
+`sets/<编号>/` 保存不可变的版本化补丁集，锁文件中的 `patchset` 只读取对应编号。上游源码不进入本仓库；`cargo xtask prepare` 会检出到 `.upstream/kixdns-<source>-<commit>-p<patchset>`（有依赖修订时再加 `-r<修订号>`，可用 `cargo xtask checkout-dir` 查询），以 `git apply` 重放所选集合中的补丁，最后应用锁文件指定的依赖修订。工具使用来源、补丁版本和内容 SHA-256 标记完整补丁集，支持幂等执行并拒绝混用不同内容。
 
 ~~~text
 sets/22/
@@ -10,7 +10,7 @@ sets/22/
   release/<tag>/                  # 对应正式版的可选前置补丁
 ~~~
 
-补丁按“兼容层、Release 专用层、通用层”的顺序应用。补丁集一旦进入主分支即被封印；CI 会拒绝修改或删除已有编号，只允许新增更高编号。新增补丁集不会进入旧锁的输入指纹，因此不会重新构建历史增强版。
+补丁按“兼容层、Release 专用层、通用层”的顺序应用。补丁集一旦进入主分支即被封印：CI 拒绝修改已有编号，只允许新增更高编号。没有任何锁引用的补丁集可以删除（Git 历史保留），但编号不回退，最高编号要等更高的补丁集出现后才能删。新增补丁集不会进入旧锁的输入指纹，因此不会重新构建历史增强版。
 
 手工修改增强功能时的补丁更新流程：
 
@@ -25,7 +25,7 @@ sets/22/
 
 ## 上游自动重基
 
-同步任务按 Action、Release 两条轨道独立验证。当前补丁集不能精确应用或其锁文件未通过 RustSec 审计时，工作流执行 `cargo xtask rebase --lock <候选锁> --base-commit <当前提交>`：
+同步任务按 Action、Release 两条轨道独立验证。新 Release 从上游 `main` 切出，先试 Action 轨道的补丁集，再试 Release 自己的。当前补丁集不能精确应用或其锁文件未通过 RustSec 审计时，工作流执行 `cargo xtask rebase --lock <候选锁> --base-commit <当前提交>`：
 
 1. 从版本目录找到当前提交及其补丁集，把兼容层、Release 专用层和通用层依次重建为临时 Git 提交链。
 2. 重建提交时排除所有 `Cargo.lock` 差异，避免依赖锁文件的行号和版本变化制造无意义冲突。
@@ -35,6 +35,22 @@ sets/22/
 6. 对新源码树运行格式、测试（库与 `kixdns` 二进制）、Clippy、RustSec、构建和 DNS 冒烟；全部成功后才提交审计 PR 并自动合并。
 
 整个生成过程使用暂存目录；失败时不会写入半个补丁集或切换当前锁。基础设施或工具错误只会让 Action 失败，不创建兼容性告警。只有 Git rebase 报告代码冲突、依赖无法解析或完整验证失败时，工作流才创建或更新对应的 `[compat]` Issue；同一轨道只保留一个开放告警。失败候选不会进入 `upstreams/`，另一条轨道和已发布 Artifact 不受影响。
+
+## 依赖修订
+
+上游不动时，已锁定版本的依赖也可能出现 RustSec 公告。依赖修订在补丁集之后再调整 `Cargo.lock`，不用新建补丁集，也不用等上游：
+
+~~~text
+dependencies/<source>/<上游身份>/p<补丁集>-r<修订号>.patch
+~~~
+
+- 锁文件用可选的 `dependency_revision` 选择修订。修订是相对补丁集应用后那份 `Cargo.lock` 的差异，只能改 `Cargo.lock`。每个修订都从补丁集的锁算起，同一时间只应用一个。
+- 修订进入 Artifact 输入指纹，名称格式不变，已安装的面板照常解析。
+- 修订合并即封印，新修订编号必须更高。不再被锁引用的修订随版本目录清理删除。
+
+`cargo xtask refresh-dependencies --lock <锁文件> --advisory-db <RustSec 数据库>` 生成下一个修订。公告给出修复版本时，精确升到兼容范围内最低的那一版，必需的传递依赖随之抬高；撤回的版本升到最新兼容版。之后重新审计，仍不通过就报错，从不忽略公告。`cargo xtask audit` 只审计，发现问题时退出码为 3。
+
+同步任务每天审计两条轨道的当前版本。未通过就生成修订，完整验证后自动合并并触发构建。修不了时创建或更新 `[security]` Issue，审计恢复后自动关闭。当前版本以外审计不过的旧版本移出版本目录，已发布的产物到期前仍可安装。
 
 ## 需要人工处理的上游不兼容
 
@@ -55,4 +71,4 @@ sets/22/
 2. `0002-panel-control-socket.patch`：`panel.rs` 以 `EngineObserver` 实现指标、查询排行、配置摘要与诊断轨迹，`panel_trace.rs` 从观察者事件重建轨迹，`main.rs` 通过 `Engine::builder` 注入观察者并启动本机控制 Socket；`--debug` 时 `panel.rs` 把每个引擎事件转发给上游的 `TracingObserver`，使 `kixdns::observe` 事件日志在增强版中仍然可用；`main.rs` 在 journald 下把致命错误压成单行 `<3>fatal: …`、把 panic 压成单行 `<2>panicked at …`，让面板的错误过滤器能看到启动失败的原因。
 3. `0004-dependency-lock.patch`：用固定工具链重新解析的 `Cargo.lock`。
 
-原先的 `0003-security-dependency-refresh.patch` 已被上游吸收，因此编号不连续。p18 及更早的补丁集保持原有结构，供旧锁复现。
+原先的 `0003-security-dependency-refresh.patch` 已被上游吸收，因此编号不连续。Release 轨道的 p24 是 p23 在 `v0.2.0` 上的重基：`main.rs` 保留 p23 的 panic 钩子和致命错误输出，运行时仍按 `v0.2.0` 的方式构建，依赖锁补丁编号为 `0003`。p9 保持旧结构，供 `v0.1.1` 复现。

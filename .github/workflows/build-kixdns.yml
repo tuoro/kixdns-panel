@@ -17,6 +17,7 @@ on:
       - Cargo.lock
       - scripts/kixdns-artifact-identity.sh
       - scripts/test-kixdns-artifact-identity.sh
+      - scripts/test-verify-patchsets.sh
       - scripts/select-kixdns-action-run.sh
       - scripts/test-select-kixdns-action-run.sh
       - upstreams/actions/**
@@ -35,6 +36,7 @@ on:
       - Cargo.lock
       - scripts/kixdns-artifact-identity.sh
       - scripts/test-kixdns-artifact-identity.sh
+      - scripts/test-verify-patchsets.sh
       - scripts/select-kixdns-action-run.sh
       - scripts/test-select-kixdns-action-run.sh
       - upstreams/actions/**

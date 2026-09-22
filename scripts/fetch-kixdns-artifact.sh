@@ -46,7 +46,7 @@ workflow_is_pending() {
 }
 
 artifact_identity() {
-  jq -ceS '{repository, source, commit, official_run_id, release_id, release_tag, compatibility, patchset, control_protocol}' "$1"
+  jq -ceS '{repository, source, commit, official_run_id, release_id, release_tag, compatibility, patchset, control_protocol, dependency_revision}' "$1"
 }
 
 tracked_artifact() {

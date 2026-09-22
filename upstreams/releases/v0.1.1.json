@@ -7,5 +7,6 @@
   "release_tag": "v0.1.1",
   "compatibility": "pre-local-time",
   "patchset": 9,
-  "control_protocol": 1
+  "control_protocol": 1,
+  "dependency_revision": 1
 }

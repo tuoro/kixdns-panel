@@ -38,17 +38,19 @@ Panel Web ---- Panel Server ---- SQLite
 
 | 轨道 | 锁文件 | 版本目录 | 跟随 | 保留 |
 | --- | --- | --- | --- | --- |
-| Action | `upstream.lock.json` | `upstreams/actions/` | 上游 `main` 最近成功的 `build.yml` | 最近 10 个 |
-| Release | `upstream.release.lock.json` | `upstreams/releases/` | 上游正式 Release | 从 `v0.1.1` 起只增不减 |
+| Action | `upstream.lock.json` | `upstreams/actions/` | 上游 `main` 最近成功的 `build.yml` | 最近 10 个中审计能通过的 |
+| Release | `upstream.release.lock.json` | `upstreams/releases/` | 上游正式 Release | 审计能通过的 |
 
-每个锁指向 `patches/sets/<编号>/` 下一个不可变补丁集。补丁集进入主分支即封印，CI 拒绝修改已有编号，适配只能新增更高编号——已发布的版本因此始终可复现。
+每个锁指向 `patches/sets/<编号>/` 下一个不可变补丁集。补丁集进入主分支即封印，CI 拒绝修改已有编号，适配只能新增更高编号——已发布的版本因此始终可复现。锁还可以指定一个依赖修订（`patches/dependencies/`），只调整 `Cargo.lock`，用来在上游不动时修复依赖漏洞。
 
 自动同步发现上游新版本时：
 
-1. 先尝试直接应用当前补丁集
+1. 先尝试直接应用当前补丁集（新 Release 先试 Action 轨道的补丁集）
 2. 应用失败或依赖未通过 RustSec 审计，就把补丁重建为临时 Git 提交链，rebase 到新上游（`Cargo.lock` 不参与 rebase，之后重新解析），导出更高编号的补丁集
 3. 候选通过测试、Clippy、RustSec 和 DNS 冒烟测试后，自动提交审计 PR 更新锁和版本目录
 4. 只有代码冲突或验证失败才开 `[compat]` Issue（每条轨道最多一个），附候选身份和日志；恢复后自动关闭。基础设施故障只让工作流失败，不开 Issue
+
+上游没有新版本时照样审计当前版本：未通过就生成依赖修订，验证后自动合并；修不了开 `[security]` Issue。审计不过的旧版本移出版本目录，当前版本始终保留。
 
 DNS 冒烟测试用隔离端口和 Unix Socket 真实启动增强进程，验证静态应答、规则计数、配置摘要和热加载序号。人工处理流程见[补丁说明](../patches/README.md)。
 
@@ -61,7 +63,7 @@ DNS 冒烟测试用隔离端口和 Unix Socket 真实启动增强进程，验证
 - 发布构建在 Ubuntu 22.04 容器中完成，拒绝依赖高于 `GLIBC_2.35` 符号的二进制；完整包还要在 Ubuntu 22.04 临时机上跑安装、覆盖升级、面板联调、systemd 控制和卸载验收
 - PR 只跑对应边界的验证，不上传可安装包；纯文档变更不触发打包
 
-内核 Artifact 命名为 `kixdns-enhanced-<来源>-<上游身份>-p<补丁集>-<输入指纹>-linux-<架构>`。输入指纹覆盖所选补丁集、构建路径、工作流、Rust 工具链和能力清单，所以新增补丁集不会改变历史版本的指纹，也不会触发重新构建。每个包携带 `KIXDNS_CAPABILITIES.json`，与二进制、上游锁和构建提交一起写入 `SHA256SUMS`。
+内核 Artifact 命名为 `kixdns-enhanced-<来源>-<上游身份>-p<补丁集>-<输入指纹>-linux-<架构>`。输入指纹覆盖所选补丁集、依赖修订、构建路径、工作流、Rust 工具链和能力清单，所以新增补丁集不会改变历史版本的指纹，也不会触发重新构建。每个包携带 `KIXDNS_CAPABILITIES.json`，与二进制、上游锁和构建提交一起写入 `SHA256SUMS`。
 
 完整安装包分别记录 `PANEL_BUILD_COMMIT`、`KIXDNS_BUILD_COMMIT` 和正式版标签 `PANEL_RELEASE`，安装时写入 `KIXDNS_PANEL_INSTALLED_COMMIT`、`KIXDNS_INSTALLED_COMMIT`、`KIXDNS_PANEL_INSTALLED_RELEASE`。面板只按正式版标签提示自身更新。Panel Server 启动时离线校验安装包自带 KixDNS 的元数据，并以二进制实际摘要纠正数据库中的活动版本记录——GitHub 不可达时本地版本信息照常显示。本地库存以 `source + artifact_id + commit` 为键，因为同一次工作流可能构建多个上游基线。
 

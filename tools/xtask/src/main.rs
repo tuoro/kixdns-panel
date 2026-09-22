@@ -11,8 +11,10 @@ use sha2::{Digest, Sha256};
 use tempfile::{Builder, TempDir};
 
 mod overlay;
+mod refresh;
 
 const PATCH_STAMP: &str = ".kixdns-panel-patches";
+const AUDIT_FINDINGS_EXIT_CODE: i32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -45,6 +47,11 @@ pub(crate) struct UpstreamLock {
     pub(crate) compatibility: Option<String>,
     pub(crate) patchset: u32,
     pub(crate) control_protocol: u32,
+    /// 依赖修订：补丁集之后再调整 Cargo.lock，用于不跟随上游的安全刷新。
+    /// A dependency revision adjusts Cargo.lock after the patchset, so a security
+    /// refresh does not have to wait for upstream.
+    #[serde(default)]
+    pub(crate) dependency_revision: Option<u32>,
 }
 
 fn main() -> Result<()> {
@@ -53,12 +60,31 @@ fn main() -> Result<()> {
     let root = workspace_root()?;
 
     match command.as_str() {
-        "prepare" => prepare(&root, &parse_lock_argument(arguments)?),
+        "prepare" => prepare(&root, &parse_lock_argument(arguments)?).map(drop),
         "rebase" => {
             let options = overlay::Options::parse(arguments)?;
             overlay::rebase_patchset(&root, &options)
         }
         "info" => print_info(&root, &parse_lock_argument(arguments)?),
+        "checkout-dir" => {
+            let lock = load_lock(&root, &parse_lock_argument(arguments)?)?;
+            validate_lock(&lock)?;
+            println!("{}", checkout_directory(&lock).display());
+            Ok(())
+        }
+        "audit" => {
+            let options = refresh::Options::parse(arguments)?;
+            if !refresh::audit_lock(&root, &options)? {
+                // 与执行失败（退出码 1）区分：只有确实审计出问题时才返回 3。
+                // Kept apart from a failed run (exit 1): 3 means the audit found problems.
+                std::process::exit(AUDIT_FINDINGS_EXIT_CODE);
+            }
+            Ok(())
+        }
+        "refresh-dependencies" => {
+            let options = refresh::Options::parse(arguments)?;
+            refresh::refresh_dependencies(&root, &options)
+        }
         "help" | "-h" | "--help" => {
             print_help();
             Ok(())
@@ -121,17 +147,28 @@ pub(crate) fn load_lock(root: &Path, lock_file: &Path) -> Result<UpstreamLock> {
     serde_json::from_str(&raw).with_context(|| format!("解析 {} 失败", lock_file.display()))
 }
 
-fn prepare(root: &Path, lock_file: &Path) -> Result<()> {
-    let lock = load_lock(root, lock_file)?;
-    validate_lock(&lock)?;
-
-    let source_root = root.join(".upstream");
-    let checkout = source_root.join(format!(
+/// 检出目录按锁的完整构建输入区分，依赖修订不能复用未修订的目录。
+/// The checkout directory is keyed on every build input of the lock, so a
+/// dependency revision never reuses a directory prepared without it.
+pub(crate) fn checkout_directory(lock: &UpstreamLock) -> PathBuf {
+    let mut name = format!(
         "kixdns-{}-{}-p{}",
         lock.source.as_str(),
         &lock.commit[..12],
         lock.patchset
-    ));
+    );
+    if let Some(revision) = lock.dependency_revision {
+        write!(name, "-r{revision}").expect("写入 String 不会失败");
+    }
+    Path::new(".upstream").join(name)
+}
+
+pub(crate) fn prepare(root: &Path, lock_file: &Path) -> Result<PathBuf> {
+    let lock = load_lock(root, lock_file)?;
+    validate_lock(&lock)?;
+
+    let source_root = root.join(".upstream");
+    let checkout = root.join(checkout_directory(&lock));
     fs::create_dir_all(&source_root).context("创建 .upstream 目录失败")?;
 
     if !checkout.join(".git").is_dir() {
@@ -149,7 +186,7 @@ fn prepare(root: &Path, lock_file: &Path) -> Result<()> {
 
     apply_patches(root, &checkout, &lock)?;
     println!("上游增强源码已准备：{}", checkout.display());
-    Ok(())
+    Ok(checkout)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,6 +208,14 @@ fn initialize_checkout(
         .prefix(&prefix)
         .tempdir_in(source_root)
         .context("创建上游临时检出目录失败")?;
+    clone_upstream(root, staging.path(), lock)?;
+    activate_checkout(staging, checkout, placeholder)
+}
+
+/// 只取锁定提交，检出为分离头指针；`HEAD` 即上游原样源码。
+/// Fetches only the locked commit and detaches onto it, so `HEAD` is upstream's
+/// pristine tree.
+pub(crate) fn clone_upstream(root: &Path, destination: &Path, lock: &UpstreamLock) -> Result<()> {
     let url = format!("https://github.com/{}.git", lock.repository);
     run(
         root,
@@ -180,21 +225,19 @@ fn initialize_checkout(
             OsStr::new("--filter=blob:none"),
             OsStr::new("--no-checkout"),
             OsStr::new(&url),
-            staging.path().as_os_str(),
+            destination.as_os_str(),
         ],
     )?;
     run(
-        staging.path(),
+        destination,
         "git",
         ["fetch", "--depth", "1", "origin", lock.commit.as_str()],
     )?;
     run(
-        staging.path(),
+        destination,
         "git",
         ["checkout", "--detach", lock.commit.as_str()],
-    )?;
-
-    activate_checkout(staging, checkout, placeholder)
+    )
 }
 
 fn activate_checkout(
@@ -242,8 +285,8 @@ fn inspect_checkout_placeholder(checkout: &Path) -> Result<CheckoutPlaceholder> 
 }
 
 fn apply_patches(root: &Path, checkout: &Path, lock: &UpstreamLock) -> Result<()> {
-    let patches = patches_for_lock(root, lock)?;
-    let expected_stamp = patch_stamp(lock.patchset, lock.source, &patches)?;
+    let series = patch_series(root, lock)?;
+    let expected_stamp = patch_stamp(lock.patchset, lock.source, &series)?;
     let stamp_path = checkout.join(PATCH_STAMP);
     if fs::read_to_string(&stamp_path).is_ok_and(|stamp| stamp == expected_stamp) {
         println!("补丁集已应用：v{}", lock.patchset);
@@ -256,17 +299,92 @@ fn apply_patches(root: &Path, checkout: &Path, lock: &UpstreamLock) -> Result<()
         );
     }
 
-    for patch in patches {
-        let patch_arg = patch.as_os_str().to_string_lossy();
-        run(checkout, "git", ["apply", "--check", &patch_arg])
-            .with_context(|| format!("补丁与上游不兼容：{}", patch.display()))?;
-        run(checkout, "git", ["apply", &patch_arg])
-            .with_context(|| format!("应用补丁失败：{}", patch.display()))?;
-        println!("已应用补丁：{}", patch.display());
-    }
+    apply_patch_series(checkout, &series)?;
     fs::write(&stamp_path, expected_stamp)
         .with_context(|| format!("写入补丁集标记失败：{}", stamp_path.display()))?;
     Ok(())
+}
+
+/// 一个锁要应用的全部补丁：补丁集本身，以及可选的依赖修订。
+/// Everything a lock applies: the patchset itself plus an optional dependency revision.
+pub(crate) struct PatchSeries {
+    pub(crate) patches: Vec<PathBuf>,
+    pub(crate) revision: Option<(u32, PathBuf)>,
+}
+
+pub(crate) fn patch_series(root: &Path, lock: &UpstreamLock) -> Result<PatchSeries> {
+    let patches = patches_for_lock(root, lock)?;
+    let revision = match lock.dependency_revision {
+        None => None,
+        Some(revision) => {
+            let path = dependency_revision_path(root, lock, revision)?;
+            if !path.is_file() {
+                bail!("依赖修订不存在：{}", path.display());
+            }
+            Some((revision, path))
+        }
+    };
+    Ok(PatchSeries { patches, revision })
+}
+
+/// 依赖修订是相对补丁集应用后那份 Cargo.lock 的差异，最后应用；每个修订都从补丁集
+/// 的锁算起，所以同一时间只应用一个修订，不会层层叠加。
+/// A dependency revision is a diff from the Cargo.lock the patchset produces and is
+/// applied last. Every revision is taken from the patchset's lock, so exactly one
+/// applies at a time and revisions never stack.
+pub(crate) fn apply_patch_series(checkout: &Path, series: &PatchSeries) -> Result<()> {
+    let revision = series.revision.as_ref().map(|(_, path)| path);
+    for patch in series.patches.iter().chain(revision) {
+        apply_patch(checkout, patch)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn apply_patch(checkout: &Path, patch: &Path) -> Result<()> {
+    let patch_arg = patch.as_os_str();
+    run(
+        checkout,
+        "git",
+        [OsStr::new("apply"), OsStr::new("--check"), patch_arg],
+    )
+    .with_context(|| format!("补丁与上游不兼容：{}", patch.display()))?;
+    run(checkout, "git", [OsStr::new("apply"), patch_arg])
+        .with_context(|| format!("应用补丁失败：{}", patch.display()))?;
+    println!("已应用补丁：{}", patch.display());
+    Ok(())
+}
+
+pub(crate) fn source_reference(lock: &UpstreamLock) -> Result<String> {
+    match lock.source {
+        UpstreamSource::Action => lock
+            .official_run_id
+            .map(|run_id| run_id.to_string())
+            .context("Action 锁缺少 official_run_id"),
+        UpstreamSource::Release => lock
+            .release_tag
+            .clone()
+            .context("Release 锁缺少 release_tag"),
+    }
+}
+
+pub(crate) fn dependency_revision_directory(root: &Path, lock: &UpstreamLock) -> Result<PathBuf> {
+    Ok(root
+        .join("patches/dependencies")
+        .join(lock.source.as_str())
+        .join(source_reference(lock)?))
+}
+
+pub(crate) fn dependency_revision_file_name(patchset: u32, revision: u32) -> String {
+    format!("p{patchset}-r{revision}.patch")
+}
+
+pub(crate) fn dependency_revision_path(
+    root: &Path,
+    lock: &UpstreamLock,
+    revision: u32,
+) -> Result<PathBuf> {
+    Ok(dependency_revision_directory(root, lock)?
+        .join(dependency_revision_file_name(lock.patchset, revision)))
 }
 
 pub(crate) fn patches_for_lock(root: &Path, lock: &UpstreamLock) -> Result<Vec<PathBuf>> {
@@ -325,9 +443,10 @@ fn read_patches(directory: &Path) -> Result<Vec<PathBuf>> {
     Ok(patches)
 }
 
-fn patch_stamp(patchset: u32, source: UpstreamSource, patches: &[PathBuf]) -> Result<String> {
+fn patch_stamp(patchset: u32, source: UpstreamSource, series: &PatchSeries) -> Result<String> {
     let mut digest = Sha256::new();
-    for patch in patches {
+    let revision_patch = series.revision.as_ref().map(|(_, path)| path);
+    for patch in series.patches.iter().chain(revision_patch) {
         let name = patch
             .file_name()
             .context("补丁路径缺少文件名")?
@@ -339,11 +458,12 @@ fn patch_stamp(patchset: u32, source: UpstreamSource, patches: &[PathBuf]) -> Re
         digest.update(content.len().to_le_bytes());
         digest.update(content);
     }
-    Ok(format!(
-        "source={}\npatchset={patchset}\nsha256={}\n",
-        source.as_str(),
-        encode_hex(digest.finalize())
-    ))
+    let mut stamp = format!("source={}\npatchset={patchset}\n", source.as_str());
+    if let Some((revision, _)) = &series.revision {
+        writeln!(stamp, "dependency_revision={revision}").expect("写入 String 不会失败");
+    }
+    writeln!(stamp, "sha256={}", encode_hex(digest.finalize())).expect("写入 String 不会失败");
+    Ok(stamp)
 }
 
 fn encode_hex(bytes: impl AsRef<[u8]>) -> String {
@@ -369,13 +489,16 @@ fn print_info(root: &Path, lock_file: &Path) -> Result<()> {
     );
     println!("提交：{}", lock.commit);
     println!("补丁集：{}", lock.patchset);
+    if let Some(revision) = lock.dependency_revision {
+        println!("依赖修订：r{revision}");
+    }
     println!("控制协议：v{}", lock.control_protocol);
     Ok(())
 }
 
 pub(crate) fn validate_lock(lock: &UpstreamLock) -> Result<()> {
     validate_commit(&lock.commit)?;
-    if lock.patchset == 0 || lock.control_protocol == 0 {
+    if lock.patchset == 0 || lock.control_protocol == 0 || lock.dependency_revision == Some(0) {
         bail!("upstream.lock.json 中的版本号必须大于 0");
     }
     if lock
@@ -453,6 +576,11 @@ fn print_help() {
     println!("  cargo xtask info [--lock <锁文件>]     显示锁定的上游版本");
     println!("  cargo xtask prepare [--lock <锁文件>]  检出上游并应用增强补丁");
     println!("  cargo xtask rebase --lock <锁文件> --base-commit <SHA>  自动重基增强补丁");
+    println!("  cargo xtask checkout-dir [--lock <锁文件>]  输出增强源码检出目录");
+    println!("  cargo xtask audit --lock <锁文件> --advisory-db <目录>  审计增强源码的依赖");
+    println!(
+        "  cargo xtask refresh-dependencies --lock <锁文件> --advisory-db <目录>  生成依赖修订"
+    );
 }
 
 #[cfg(test)]
@@ -463,10 +591,190 @@ mod tests {
     use tempfile::{tempdir, tempdir_in};
 
     use super::{
-        CheckoutPlaceholder, UpstreamLock, UpstreamSource, activate_checkout,
-        inspect_checkout_placeholder, patches_for_lock, valid_lock_path, validate_commit,
-        validate_lock,
+        CheckoutPlaceholder, PatchSeries, UpstreamLock, UpstreamSource, activate_checkout,
+        apply_patch_series, checkout_directory, inspect_checkout_placeholder, patch_series,
+        patch_stamp, patches_for_lock, run, valid_lock_path, validate_commit, validate_lock,
     };
+
+    fn release_lock(revision: Option<u32>) -> UpstreamLock {
+        UpstreamLock {
+            repository: "olicesx/kixdns".to_owned(),
+            source: UpstreamSource::Release,
+            commit: "647c5b1d2af6963176d7f8da6c3ed031e6b58497".to_owned(),
+            official_run_id: None,
+            release_id: Some(360_191_918),
+            release_tag: Some("v0.1.1".to_owned()),
+            compatibility: None,
+            patchset: 9,
+            control_protocol: 1,
+            dependency_revision: revision,
+        }
+    }
+
+    fn git(directory: &Path, arguments: &[&str]) {
+        run(directory, "git", arguments).unwrap();
+    }
+
+    /// 以 `before` 为基准（暂存进索引），返回改成 `after` 的差异，然后还原工作区。
+    /// Stages `before` as the base, returns the diff to `after`, then resets the tree.
+    fn diff_between(directory: &Path, before: &[(&str, &str)], after: &[(&str, &str)]) -> String {
+        for (file, content) in before {
+            fs::write(directory.join(file), content).unwrap();
+        }
+        git(directory, &["add", "--all"]);
+        for (file, content) in after {
+            fs::write(directory.join(file), content).unwrap();
+        }
+        let diff = super::output(directory, "git", ["diff", "--full-index"]).unwrap();
+        git(directory, &["reset", "--quiet", "--hard"]);
+        diff
+    }
+
+    #[test]
+    fn keeps_revisioned_checkouts_apart() {
+        assert_eq!(
+            checkout_directory(&release_lock(None)),
+            Path::new(".upstream/kixdns-release-647c5b1d2af6-p9")
+        );
+        assert_eq!(
+            checkout_directory(&release_lock(Some(2))),
+            Path::new(".upstream/kixdns-release-647c5b1d2af6-p9-r2")
+        );
+    }
+
+    #[test]
+    fn rejects_revision_zero() {
+        assert!(validate_lock(&release_lock(Some(1))).is_ok());
+        assert!(validate_lock(&release_lock(Some(0))).is_err());
+    }
+
+    #[test]
+    fn requires_the_referenced_revision_file() {
+        let root = tempdir().unwrap();
+        let common = root.path().join("patches/sets/9/common");
+        fs::create_dir_all(&common).unwrap();
+        fs::write(common.join("0001-common.patch"), "common").unwrap();
+
+        let error = patch_series(root.path(), &release_lock(Some(1)))
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("依赖修订不存在"));
+
+        let revisions = root.path().join("patches/dependencies/release/v0.1.1");
+        fs::create_dir_all(&revisions).unwrap();
+        fs::write(revisions.join("p9-r1.patch"), "revision").unwrap();
+        let series = patch_series(root.path(), &release_lock(Some(1))).unwrap();
+        assert_eq!(series.revision.unwrap().1, revisions.join("p9-r1.patch"));
+    }
+
+    #[test]
+    fn stamps_without_revision_keep_their_original_form() {
+        let root = tempdir().unwrap();
+        let patch = root.path().join("0001-common.patch");
+        fs::write(&patch, "common").unwrap();
+        let revision = root.path().join("p9-r1.patch");
+        fs::write(&revision, "revision").unwrap();
+
+        let plain = PatchSeries {
+            patches: vec![patch.clone()],
+            revision: None,
+        };
+        let stamp = patch_stamp(9, UpstreamSource::Release, &plain).unwrap();
+        let lines = stamp.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[..2], ["source=release", "patchset=9"]);
+        assert!(lines[2].starts_with("sha256="));
+
+        let revised = PatchSeries {
+            patches: vec![patch],
+            revision: Some((1, revision)),
+        };
+        let revised_stamp = patch_stamp(9, UpstreamSource::Release, &revised).unwrap();
+        assert!(revised_stamp.contains("dependency_revision=1\n"));
+        assert_ne!(revised_stamp.lines().last(), stamp.lines().last());
+    }
+
+    #[test]
+    fn revision_applies_last_on_top_of_the_patchset_lock() {
+        let upstream = tempdir().unwrap();
+        let tree = upstream.path();
+        git(tree, &["init", "--quiet"]);
+        git(tree, &["config", "core.autocrlf", "false"]);
+        fs::write(tree.join("Cargo.lock"), "pristine\n").unwrap();
+        fs::write(tree.join("source.rs"), "old\n").unwrap();
+        git(tree, &["add", "--all"]);
+        git(
+            tree,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.com",
+                "commit",
+                "--quiet",
+                "-m",
+                "upstream",
+            ],
+        );
+
+        // 一个同时改锁和源码的补丁、一个只改锁的补丁，以及从补丁集结果算起的修订。
+        // One patch touching both the lock and the code, one lock-only patch, and a
+        // revision taken from the lock the patchset produces.
+        let patches = tempdir().unwrap();
+        let mixed = patches.path().join("0001-mixed.patch");
+        fs::write(
+            &mixed,
+            diff_between(
+                tree,
+                &[],
+                &[("Cargo.lock", "mixed\n"), ("source.rs", "new\n")],
+            ),
+        )
+        .unwrap();
+        let lock_only = patches.path().join("0002-dependency-lock.patch");
+        fs::write(
+            &lock_only,
+            diff_between(
+                tree,
+                &[("Cargo.lock", "mixed\n")],
+                &[("Cargo.lock", "set-lock\n")],
+            ),
+        )
+        .unwrap();
+        let revision = patches.path().join("p9-r1.patch");
+        fs::write(
+            &revision,
+            diff_between(
+                tree,
+                &[("Cargo.lock", "set-lock\n")],
+                &[("Cargo.lock", "refreshed\n")],
+            ),
+        )
+        .unwrap();
+
+        let revised = PatchSeries {
+            patches: vec![mixed.clone(), lock_only.clone()],
+            revision: Some((1, revision)),
+        };
+        apply_patch_series(tree, &revised).unwrap();
+        assert_eq!(
+            fs::read_to_string(tree.join("Cargo.lock")).unwrap(),
+            "refreshed\n"
+        );
+        assert_eq!(fs::read_to_string(tree.join("source.rs")).unwrap(), "new\n");
+
+        git(tree, &["checkout", "--", "."]);
+        let unrevised = PatchSeries {
+            patches: vec![mixed, lock_only],
+            revision: None,
+        };
+        apply_patch_series(tree, &unrevised).unwrap();
+        assert_eq!(
+            fs::read_to_string(tree.join("Cargo.lock")).unwrap(),
+            "set-lock\n"
+        );
+        assert_eq!(fs::read_to_string(tree.join("source.rs")).unwrap(), "new\n");
+    }
 
     #[test]
     fn accepts_full_commit_sha() {
@@ -491,6 +799,7 @@ mod tests {
             compatibility: None,
             patchset: 5,
             control_protocol: 1,
+            dependency_revision: None,
         };
         assert!(validate_lock(&lock).is_err());
     }
@@ -528,6 +837,7 @@ mod tests {
             compatibility: Some("pre-local-time".to_owned()),
             patchset: 5,
             control_protocol: 1,
+            dependency_revision: None,
         };
 
         let patches = patches_for_lock(root.path(), &lock).unwrap();
@@ -560,6 +870,7 @@ mod tests {
             compatibility: Some("missing".to_owned()),
             patchset: 5,
             control_protocol: 1,
+            dependency_revision: None,
         };
 
         let error = patches_for_lock(root.path(), &lock).unwrap_err();

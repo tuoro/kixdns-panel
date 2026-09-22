@@ -35,6 +35,9 @@ jobs:
           PATCHSET_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: bash scripts/verify-patchsets.sh "$PATCHSET_BASE_SHA"
 
+      - name: Verify patchset sealing rules
+        run: bash scripts/test-verify-patchsets.sh
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
@@ -138,7 +141,8 @@ jobs:
           LOCK_FILE: ${{ matrix.lock_file }}
         run: |
           cargo xtask prepare --lock "$LOCK_FILE"
-          echo "UPSTREAM_DIR=.upstream/kixdns-$(jq -r .source "$LOCK_FILE")-$(jq -r .commit "$LOCK_FILE" | cut -c1-12)-p$(jq -r .patchset "$LOCK_FILE")" >> "$GITHUB_ENV"
+          upstream_dir="$(cargo xtask checkout-dir --lock "$LOCK_FILE")"
+          echo "UPSTREAM_DIR=${upstream_dir}" >> "$GITHUB_ENV"
 
       - name: Verify enhanced source
         run: |
@@ -268,7 +272,8 @@ jobs:
           LOCK_FILE: ${{ matrix.lock_file }}
         run: |
           cargo xtask prepare --lock "$LOCK_FILE"
-          echo "UPSTREAM_DIR=.upstream/kixdns-$(jq -r .source "$LOCK_FILE")-$(jq -r .commit "$LOCK_FILE" | cut -c1-12)-p$(jq -r .patchset "$LOCK_FILE")" >> "$GITHUB_ENV"
+          upstream_dir="$(cargo xtask checkout-dir --lock "$LOCK_FILE")"
+          echo "UPSTREAM_DIR=${upstream_dir}" >> "$GITHUB_ENV"
 
       - name: Export build identity
         id: identity

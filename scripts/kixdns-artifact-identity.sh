@@ -113,6 +113,22 @@ while IFS= read -r file; do files+=("$file"); done < <(find "$patchset_directory
   echo "补丁集 p${patchset} 缺少通用补丁" >&2
   exit 1
 }
+# 依赖修订只进指纹，不改名称格式：已安装的面板按固定格式解析 artifact 名。
+# A dependency revision enters the fingerprint only and never the name format,
+# which installed panels parse strictly.
+dependency_revision="$(jq -r '.dependency_revision // empty' "$lock_file")"
+if [[ -n "$dependency_revision" ]]; then
+  [[ "$dependency_revision" =~ ^[1-9][0-9]*$ ]] || {
+    echo '依赖修订编号无效' >&2
+    exit 1
+  }
+  revision_file="patches/dependencies/${source}/${reference}/p${patchset}-r${dependency_revision}.patch"
+  [[ -f "$revision_file" ]] || {
+    echo "依赖修订不存在：${revision_file}" >&2
+    exit 1
+  }
+  files+=("$revision_file")
+fi
 
 fingerprint="$({
   [[ -f "$lock_file" ]] || { echo "构建输入不存在：$lock_file" >&2; exit 1; }
@@ -121,12 +137,18 @@ fingerprint="$({
   for file in "${files[@]}"; do
     [[ -f "$file" ]] || { echo "构建输入不存在：$file" >&2; exit 1; }
     digest="$(sha256sum "$file" | cut -d ' ' -f1)"
-    # overlay.rs 只实现自动重基，不参与 prepare 或最终二进制构建。
+    # overlay.rs 只实现自动重基，refresh.rs 只生成依赖修订，都不参与 prepare 或最终二进制构建。
     # 固定首次纳入指纹时的摘要，既保留现有 artifact 名，也避免维护逻辑变化重建历史版本。
     # 任何会影响 prepare 的共享逻辑必须保留在未固定摘要的构建输入中。
+    # overlay.rs only rebases and refresh.rs only generates dependency revisions; neither
+    # runs during prepare or the binary build, so both keep the digest they had when first
+    # fingerprinted. Shared logic that affects prepare must stay in an unpinned input.
     case "$file" in
       tools/xtask/src/overlay.rs)
         digest='2c0ae44101f843199141cb514a80e546a2a868ad339c8058735fc099220be498'
+        ;;
+      tools/xtask/src/refresh.rs)
+        digest='058529c2313bb7a4112393893eb143a06a26153ade337d52d3e44b1841419c10'
         ;;
     esac
     if [[ "$legacy_build_inputs" == true ]]; then
