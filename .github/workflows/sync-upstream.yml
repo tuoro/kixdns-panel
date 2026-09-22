@@ -23,25 +23,23 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        # 定时只跑 action 轨道。release 轨道的血脉还停在 v0.1.1 / 补丁集 9，
-        # 把它重放到任何新版本都会跨过 observer API 重构而冲突，于是每晚都开
-        # 一条适配告警——那是已知且刻意搁置的状态，不是每天都要看一眼的新信息。
-        # 手动触发时两条都跑，将来做血脉切换正是靠它验证。
-        # The schedule runs the action track only. The release track's lineage is
-        # still v0.1.1 on patchset 9, so replaying it onto any newer version
-        # crosses the observer API refactor and conflicts, filing a compatibility
-        # alert every night for a state that is known and deliberately parked.
-        # A manual dispatch still runs both, which is how the eventual lineage
-        # switch gets verified.
-        track: ${{ github.event_name == 'schedule' && fromJSON('["action"]') || fromJSON('["action", "release"]') }}
+        track: [action, release]
     env:
       GH_TOKEN: ${{ github.token }}
       TRACK: ${{ matrix.track }}
     steps:
+      # 取分支最新提交而不是触发时的提交：两条轨道依次运行，后一条要看到前一条刚合并的变更。
+      # Check out the branch tip rather than the triggering commit: the tracks run one after
+      # the other, and the second must see what the first just merged.
       - name: Checkout panel repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.ref }}
           fetch-depth: 0
+
+      - name: Record checked-out commit
+        shell: bash
+        run: echo "BASE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       - name: Verify patchset catalog
         run: bash scripts/verify-patchsets.sh
@@ -116,25 +114,27 @@ jobs:
           CANDIDATE_REFERENCE: ${{ steps.upstream.outputs.reference }}
           RELEASE_ID: ${{ steps.upstream.outputs.release_id }}
         shell: bash
+        # 依赖修订属于旧版本，新候选先用补丁集自己的 Cargo.lock。
+        # A dependency revision belongs to the old version; a new candidate starts
+        # from the patchset's own Cargo.lock.
         run: |
           case "$TRACK" in
             action)
               jq --arg commit "$CANDIDATE_COMMIT" --argjson run_id "$CANDIDATE_REFERENCE" \
-                '.commit = $commit | .official_run_id = $run_id' \
+                '.commit = $commit | .official_run_id = $run_id | del(.dependency_revision)' \
                 upstream.lock.json > upstream.lock.json.new
               mv upstream.lock.json.new upstream.lock.json
               ;;
             release)
               jq --arg commit "$CANDIDATE_COMMIT" --argjson release_id "$RELEASE_ID" \
                 --arg tag "$CANDIDATE_REFERENCE" \
-                '.commit = $commit | .release_id = $release_id | .release_tag = $tag' \
+                '.commit = $commit | .release_id = $release_id | .release_tag = $tag | del(.dependency_revision)' \
                 upstream.release.lock.json > upstream.release.lock.json.new
               mv upstream.release.lock.json.new upstream.release.lock.json
               ;;
           esac
 
       - name: Install Rust
-        if: steps.upstream.outputs.changed == 'true'
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           toolchain: 1.97.1
@@ -144,14 +144,12 @@ jobs:
       # A prebuilt binary replaces the ~2m45s source build at the same version with its SHA-256 checked;
       # a missing prebuilt fails instead of falling back to compiling.
       - name: Install dependency auditor
-        if: steps.upstream.outputs.changed == 'true'
         uses: taiki-e/install-action@9114bf4d891761788c546334fd37538eae1bf8b3 # v2.87.16
         with:
           tool: cargo-audit@0.22.2
           fallback: none
 
       - name: Fetch RustSec advisory database
-        if: steps.upstream.outputs.changed == 'true'
         shell: bash
         run: |
           advisory_db="$RUNNER_TEMP/rustsec-advisory-db"
@@ -167,14 +165,39 @@ jobs:
         shell: bash
         run: |
           validation_log="$RUNNER_TEMP/kixdns-compatibility-validation.log"
-          (
-            set -euo pipefail
-            cargo xtask prepare --lock "$LOCK_FILE"
-            upstream_dir=".upstream/kixdns-$(jq -r .source "$LOCK_FILE")-$(jq -r .commit "$LOCK_FILE" | cut -c1-12)-p$(jq -r .patchset "$LOCK_FILE")"
-            cd "$upstream_dir"
-            cargo audit --db "$ADVISORY_DB" --no-fetch --deny warnings
-          ) 2>&1 | tee "$validation_log"
-          exit "${PIPESTATUS[0]}"
+          : > "$validation_log"
+          # 用 && 串联而不是 set -e：放在 if 条件里调用时 bash 会忽略 set -e。
+          # Chained with && rather than set -e, which bash ignores inside an if condition.
+          attempt() {
+            (
+              cargo xtask prepare --lock "$LOCK_FILE" &&
+                upstream_dir="$(cargo xtask checkout-dir --lock "$LOCK_FILE")" &&
+                cd "$upstream_dir" &&
+                cargo audit --db "$ADVISORY_DB" --no-fetch --deny warnings
+            ) 2>&1 | tee -a "$validation_log"
+            return "${PIPESTATUS[0]}"
+          }
+          # 新 Release 从上游 main 切出，而 Action 轨道天天跟着 main，它的补丁集离新版本最近，先试它。
+          # 不成再用 Release 自己的补丁集，最后才交给自动重基。
+          # A new release is cut from upstream main, which the action track follows daily, so its
+          # patchset is the closest to the new version and goes first. The release's own patchset
+          # comes next, and the automatic rebase last.
+          if [[ "$TRACK" == release ]]; then
+            own_lock="$RUNNER_TEMP/release-candidate.json"
+            cp "$LOCK_FILE" "$own_lock"
+            jq --slurpfile action upstream.lock.json '
+              .patchset = $action[0].patchset
+              | if $action[0].compatibility then .compatibility = $action[0].compatibility
+                else del(.compatibility) end
+            ' "$own_lock" > "$LOCK_FILE"
+            if ! cmp -s "$own_lock" "$LOCK_FILE"; then
+              if attempt; then
+                exit 0
+              fi
+              cp "$own_lock" "$LOCK_FILE"
+            fi
+          fi
+          attempt
 
       - name: Rebase overlay automatically
         id: rebase
@@ -192,7 +215,7 @@ jobs:
             set -euo pipefail
             cargo xtask rebase --lock "$LOCK_FILE" --base-commit "$BASE_COMMIT"
             cargo xtask prepare --lock "$LOCK_FILE"
-            bash scripts/verify-patchsets.sh "$GITHUB_SHA"
+            bash scripts/verify-patchsets.sh "$BASE_SHA"
             git diff --check
           ) 2>&1 | tee -a "$validation_log"
           status=${PIPESTATUS[0]}
@@ -207,33 +230,87 @@ jobs:
           fi
           echo 'generated=true' >> "$GITHUB_OUTPUT"
 
-      - name: Prefetch candidate dependencies
-        if: >-
-          steps.upstream.outputs.changed == 'true' &&
-          (steps.prepare.outcome == 'success' || steps.rebase.outcome == 'success')
+      # 上游没动时照样审计当前版本：新公告随时会出，修复不必等上游。
+      # With upstream unchanged the current version is still audited: advisories land at any
+      # time, and the fix does not have to wait for upstream.
+      - name: Audit current version
+        id: audit
+        if: steps.upstream.outputs.changed == 'false'
         env:
           LOCK_FILE: ${{ steps.upstream.outputs.lock_file }}
         shell: bash
         run: |
-          upstream_dir=".upstream/kixdns-$(jq -r .source "$LOCK_FILE")-$(jq -r .commit "$LOCK_FILE" | cut -c1-12)-p$(jq -r .patchset "$LOCK_FILE")"
+          set +e
+          cargo xtask audit --lock "$LOCK_FILE" --advisory-db "$ADVISORY_DB"
+          status=$?
+          set -e
+          case "$status" in
+            0) echo 'refresh=false' >> "$GITHUB_OUTPUT" ;;
+            3) echo 'refresh=true' >> "$GITHUB_OUTPUT" ;;
+            *) exit "$status" ;;
+          esac
+
+      - name: Refresh dependencies
+        id: refresh
+        if: steps.audit.outputs.refresh == 'true'
+        env:
+          LOCK_FILE: ${{ steps.upstream.outputs.lock_file }}
+        shell: bash
+        run: |
+          validation_log="$RUNNER_TEMP/kixdns-security-validation.log"
+          set +e
+          (
+            set -euo pipefail
+            cargo xtask refresh-dependencies --lock "$LOCK_FILE" --advisory-db "$ADVISORY_DB"
+            git diff --quiet -- "$LOCK_FILE" && {
+              echo '依赖刷新没有生成新的修订' >&2
+              exit 1
+            }
+            cargo xtask prepare --lock "$LOCK_FILE"
+            bash scripts/verify-patchsets.sh "$BASE_SHA"
+            git diff --check
+          ) 2>&1 | tee "$validation_log"
+          status=${PIPESTATUS[0]}
+          set -e
+          if ((status != 0)); then
+            if grep -q '依赖无法在兼容版本内修复' "$validation_log"; then
+              echo 'failure_kind=advisory' >> "$GITHUB_OUTPUT"
+            fi
+            exit "$status"
+          fi
+          echo 'generated=true' >> "$GITHUB_OUTPUT"
+          echo "revision=$(jq -r .dependency_revision "$LOCK_FILE")" >> "$GITHUB_OUTPUT"
+
+      - name: Prefetch candidate dependencies
+        if: >-
+          (steps.upstream.outputs.changed == 'true' &&
+           (steps.prepare.outcome == 'success' || steps.rebase.outcome == 'success')) ||
+          steps.refresh.outputs.generated == 'true'
+        env:
+          LOCK_FILE: ${{ steps.upstream.outputs.lock_file }}
+        shell: bash
+        run: |
+          upstream_dir="$(cargo xtask checkout-dir --lock "$LOCK_FILE")"
           cd "$upstream_dir"
           cargo fetch --locked
 
       - name: Validate enhanced candidate
         id: validate
         if: >-
-          steps.upstream.outputs.changed == 'true' &&
-          (steps.prepare.outcome == 'success' || steps.rebase.outcome == 'success')
+          (steps.upstream.outputs.changed == 'true' &&
+           (steps.prepare.outcome == 'success' || steps.rebase.outcome == 'success')) ||
+          steps.refresh.outputs.generated == 'true'
         env:
           LOCK_FILE: ${{ steps.upstream.outputs.lock_file }}
+          VALIDATION_LOG: ${{ steps.refresh.outputs.generated == 'true' && 'kixdns-security-validation.log' || 'kixdns-compatibility-validation.log' }}
         shell: bash
         run: |
-          validation_log="$RUNNER_TEMP/kixdns-compatibility-validation.log"
-          validation_report="$RUNNER_TEMP/kixdns-compatibility-report.md"
+          validation_log="$RUNNER_TEMP/$VALIDATION_LOG"
+          validation_report="$RUNNER_TEMP/kixdns-validation-report.md"
           set +e
           (
             set -euo pipefail
-            upstream_dir=".upstream/kixdns-$(jq -r .source "$LOCK_FILE")-$(jq -r .commit "$LOCK_FILE" | cut -c1-12)-p$(jq -r .patchset "$LOCK_FILE")"
+            upstream_dir="$(cargo xtask checkout-dir --lock "$LOCK_FILE")"
             cd "$upstream_dir"
             cargo fmt --check
             cargo test --offline --lib --locked
@@ -258,67 +335,141 @@ jobs:
           fi
 
       - name: Add validated version to catalog
-        if: steps.upstream.outputs.changed == 'true'
+        if: >-
+          steps.upstream.outputs.changed == 'true' ||
+          steps.refresh.outputs.generated == 'true'
         env:
-          CANDIDATE_REFERENCE: ${{ steps.upstream.outputs.reference }}
+          LOCK_FILE: ${{ steps.upstream.outputs.lock_file }}
+          CHANGED: ${{ steps.upstream.outputs.changed }}
+        shell: bash
+        run: |
+          reference="$(jq -r 'if .source == "action" then .official_run_id else .release_tag end' "$LOCK_FILE")"
+          [[ "$reference" =~ ^[A-Za-z0-9._-]+$ ]] || {
+            echo "锁文件上游身份无效：$reference" >&2
+            exit 1
+          }
+          mkdir -p "upstreams/${TRACK}s"
+          cp "$LOCK_FILE" "upstreams/${TRACK}s/${reference}.json"
+          if [[ "$TRACK" == action && "$CHANGED" == true ]]; then
+            mapfile -t catalog < <(find upstreams/actions -maxdepth 1 -type f -name '*.json' -print | sort -r)
+            for file in "${catalog[@]:10}"; do rm -f -- "$file"; done
+          fi
+
+      # 旧版本只保留还能通过审计的：它们的产物到期后要能重建。当前版本不参与，
+      # 它由上面的依赖刷新负责，轨道因此永远至少留一个版本。
+      # Older versions stay only while they pass the audit, because their artifacts must
+      # be rebuildable after expiry. The current version is exempt; the dependency refresh
+      # above looks after it, so a track never loses its last entry.
+      - name: Prune versions that fail the audit
+        id: prune
+        env:
           LOCK_FILE: ${{ steps.upstream.outputs.lock_file }}
         shell: bash
         run: |
-          case "$TRACK" in
-            action)
-              mkdir -p upstreams/actions
-              cp "$LOCK_FILE" "upstreams/actions/${CANDIDATE_REFERENCE}.json"
-              mapfile -t catalog < <(find upstreams/actions -maxdepth 1 -type f -name '*.json' -print | sort -r)
-              for file in "${catalog[@]:10}"; do rm -f -- "$file"; done
-              ;;
-            release)
-              mkdir -p upstreams/releases
-              cp "$LOCK_FILE" "upstreams/releases/${CANDIDATE_REFERENCE}.json"
-              ;;
-          esac
+          current="$(jq -r 'if .source == "action" then .official_run_id else .release_tag end' "$LOCK_FILE")"
+          pruned=()
+          while IFS= read -r entry; do
+            [[ "$(basename "$entry" .json)" == "$current" ]] && continue
+            set +e
+            cargo xtask audit --lock "$entry" --advisory-db "$ADVISORY_DB"
+            status=$?
+            set -e
+            case "$status" in
+              0) ;;
+              3)
+                rm -f -- "$entry"
+                pruned+=("$(basename "$entry" .json)")
+                ;;
+              *) echo "::warning::无法审计 ${entry}，本次保留" ;;
+            esac
+          done < <(find "upstreams/${TRACK}s" -maxdepth 1 -type f -name '*.json' -print | sort)
+          echo "pruned=${pruned[*]}" >> "$GITHUB_OUTPUT"
+
+      # 不再被任何锁引用的补丁集和依赖修订随之删除；最高编号的补丁集保留，编号不回退。
+      # Patchsets and dependency revisions no lock references any more go with them; the
+      # highest-numbered patchset stays so numbers never go backwards.
+      - name: Remove unreferenced patch data
+        shell: bash
+        run: |
+          bash scripts/remove-unreferenced-patch-data.sh
+          bash scripts/verify-patchsets.sh "$BASE_SHA"
 
       - name: Merge validated upstream update
         id: merge
-        if: steps.upstream.outputs.changed == 'true'
         env:
           CANDIDATE_COMMIT: ${{ steps.upstream.outputs.commit }}
           CANDIDATE_REFERENCE: ${{ steps.upstream.outputs.reference }}
+          CHANGED: ${{ steps.upstream.outputs.changed }}
           LOCK_FILE: ${{ steps.upstream.outputs.lock_file }}
+          PRUNED: ${{ steps.prune.outputs.pruned }}
+          REBASED: ${{ steps.rebase.outputs.generated }}
+          REFRESHED: ${{ steps.refresh.outputs.generated }}
+          REVISION: ${{ steps.refresh.outputs.revision }}
           SOURCE_LABEL: ${{ steps.upstream.outputs.label }}
           SOURCE_URL: ${{ steps.upstream.outputs.source_url }}
         shell: bash
         run: |
-          branch="automation/upstream-${TRACK}-${CANDIDATE_COMMIT:0:12}"
+          git add --all -- "$LOCK_FILE" "upstreams/${TRACK}s" patches
+          if git diff --cached --quiet; then
+            echo '没有需要合并的变更'
+            exit 0
+          fi
+          reference="$(jq -r 'if .source == "action" then .official_run_id else .release_tag end' "$LOCK_FILE")"
+          if [[ "$CHANGED" == true ]]; then
+            branch="automation/upstream-${TRACK}-${CANDIDATE_COMMIT:0:12}"
+            title="chore: track verified upstream ${TRACK}"
+          elif [[ "$REFRESHED" == true ]]; then
+            branch="automation/dependencies-${TRACK}-${reference}-r${REVISION}"
+            title="chore: refresh ${TRACK} dependencies"
+          else
+            branch="automation/catalog-${TRACK}-$(date -u +%Y%m%d)"
+            title="chore: prune ${TRACK} catalog"
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$branch"
-          git add "$LOCK_FILE" "upstreams/${TRACK}s" patches/sets
-          git commit -m "chore: track verified upstream ${TRACK}"
+          git commit -m "$title"
           git push --force origin "HEAD:refs/heads/${branch}"
           pull_request="$(gh pr list --head "$branch" --state open --json url --jq '.[0].url // empty')"
           if [[ -z "$pull_request" ]]; then
             body_file="$RUNNER_TEMP/upstream-pull-request.md"
             {
-              echo "同步已验证的 KixDNS ${SOURCE_LABEL} 上游版本。"
-              echo
-              echo "- 上游身份：\`${CANDIDATE_REFERENCE}\`"
-              echo "- 上游提交：\`${CANDIDATE_COMMIT}\`"
-              echo "- 上游来源：${SOURCE_URL}"
-              if [[ "${{ steps.rebase.outputs.generated }}" == 'true' ]]; then
-                echo "- 补丁处理：已自动重基为 p$(jq -r .patchset "$LOCK_FILE")"
+              if [[ "$CHANGED" == true ]]; then
+                echo "同步已验证的 KixDNS ${SOURCE_LABEL} 上游版本。"
+                echo
+                echo "- 上游身份：\`${CANDIDATE_REFERENCE}\`"
+                echo "- 上游提交：\`${CANDIDATE_COMMIT}\`"
+                echo "- 上游来源：${SOURCE_URL}"
+                if [[ "$REBASED" == true ]]; then
+                  echo "- 补丁处理：已自动重基为 p$(jq -r .patchset "$LOCK_FILE")"
+                fi
+                echo '- 验证：增强补丁、测试、Clippy、RustSec 与 DNS 冒烟均已通过'
+              elif [[ "$REFRESHED" == true ]]; then
+                echo "KixDNS ${SOURCE_LABEL} 当前版本的依赖未通过 RustSec 审计，已生成依赖修订。"
+                echo
+                echo "- 上游身份：\`${reference}\`"
+                echo "- 依赖修订：p$(jq -r .patchset "$LOCK_FILE")-r${REVISION}"
+                echo '- 验证：测试、Clippy、RustSec 与 DNS 冒烟均已通过'
+              else
+                echo "KixDNS ${SOURCE_LABEL} 版本目录清理。"
               fi
-              echo '- 验证：增强补丁、测试、Clippy、RustSec 与 DNS 冒烟均已通过'
+              if [[ -n "$PRUNED" ]]; then
+                echo
+                echo "未通过 RustSec 审计、移出版本目录的旧版本：\`${PRUNED// /\`、\`}\`。它们已发布的产物到期前仍可安装。"
+              fi
             } > "$body_file"
             pull_request="$(gh pr create --base main --head "$branch" \
-              --title "chore: track verified upstream ${TRACK}" --body-file "$body_file")"
+              --title "$title" --body-file "$body_file")"
           fi
           gh pr merge "$pull_request" --squash --delete-branch
           [[ "$(gh pr view "$pull_request" --json state --jq .state)" == 'MERGED' ]]
+          echo 'merged=true' >> "$GITHUB_OUTPUT"
 
       - name: Trigger enhanced build
-        if: steps.upstream.outputs.changed == 'true'
+        if: >-
+          steps.merge.outputs.merged == 'true' &&
+          (steps.upstream.outputs.changed == 'true' || steps.refresh.outputs.generated == 'true')
         env:
-          CANDIDATE_COMMIT: ${{ steps.upstream.outputs.commit }}
           LOCK_FILE: ${{ steps.upstream.outputs.lock_file }}
         shell: bash
         run: |
@@ -328,19 +479,20 @@ jobs:
             *) echo "不支持的上游轨道：$TRACK" >&2; exit 1 ;;
           esac
 
+          expected="$(jq -cS . "$LOCK_FILE")"
           for attempt in {1..10}; do
-            lock_commit="$({
+            published="$({
               gh api "repos/${GITHUB_REPOSITORY}/contents/${LOCK_FILE}?ref=main" --jq .content |
                 tr -d '\n' | base64 --decode 2>/dev/null || true
-            } | jq -r '.commit // empty' 2>/dev/null)"
-            if [[ "$lock_commit" == "$CANDIDATE_COMMIT" ]]; then
+            } | jq -cS . 2>/dev/null || true)"
+            if [[ "$published" == "$expected" ]]; then
               echo "main 锁文件已在第 ${attempt} 次检查可见"
               break
             fi
             sleep 2
           done
 
-          [[ "$lock_commit" == "$CANDIDATE_COMMIT" ]] || {
+          [[ "$published" == "$expected" ]] || {
             echo "main 尚未发布候选锁文件：$LOCK_FILE" >&2
             exit 1
           }
@@ -351,7 +503,7 @@ jobs:
           always() &&
           (steps.upstream.outputs.failure_kind == 'source' ||
            steps.rebase.outputs.failure_kind == 'conflict' ||
-           steps.validate.outcome == 'failure')
+           (steps.upstream.outputs.changed == 'true' && steps.validate.outcome == 'failure'))
         env:
           CANDIDATE_COMMIT: ${{ steps.upstream.outputs.commit }}
           CANDIDATE_REFERENCE: ${{ steps.upstream.outputs.reference }}
@@ -363,7 +515,7 @@ jobs:
           marker="<!-- kixdns-upstream-compatibility:${TRACK} -->"
           workflow_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           body_file="$RUNNER_TEMP/kixdns-compatibility-issue.md"
-          report_file="$RUNNER_TEMP/kixdns-compatibility-report.md"
+          report_file="$RUNNER_TEMP/kixdns-validation-report.md"
           {
             echo "$marker"
             echo '## 上游兼容性验证失败'
@@ -397,11 +549,60 @@ jobs:
             gh issue create --title "$title" --body-file "$body_file"
           fi
 
+      # 当前版本的漏洞无法在兼容版本内修复，或刷新后验证不过：需要人工处理，绝不自动忽略公告。
+      # The current version's advisory cannot be fixed within compatible versions, or the
+      # refreshed version fails validation: a human decides, and no advisory is ever ignored
+      # automatically.
+      - name: Report security failure
+        if: >-
+          always() &&
+          (steps.refresh.outputs.failure_kind == 'advisory' ||
+           (steps.refresh.outputs.generated == 'true' && steps.validate.outcome == 'failure'))
+        env:
+          LOCK_FILE: ${{ steps.upstream.outputs.lock_file }}
+          SOURCE_LABEL: ${{ steps.upstream.outputs.label }}
+        shell: bash
+        run: |
+          title="[security] KixDNS ${SOURCE_LABEL} 依赖需要人工处理"
+          marker="<!-- kixdns-dependency-security:${TRACK} -->"
+          workflow_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          body_file="$RUNNER_TEMP/kixdns-security-issue.md"
+          report_file="$RUNNER_TEMP/kixdns-validation-report.md"
+          reference="$(git show "HEAD:${LOCK_FILE}" | jq -r 'if .source == "action" then .official_run_id else .release_tag end')"
+          {
+            echo "$marker"
+            echo '## 当前版本的依赖未通过 RustSec 审计，自动刷新没有解决'
+            echo
+            echo "- 轨道：${SOURCE_LABEL}"
+            echo "- 上游身份：\`${reference}\`"
+            echo "- 完整日志：${workflow_url}"
+            echo
+            echo '修复需要跨不兼容版本升级或改动代码。已发布的产物不受影响，但到期后无法重建。'
+            echo
+            if [[ -f "$report_file" ]]; then
+              cat "$report_file"
+            else
+              echo '### 失败日志末尾'
+              echo
+              echo '```text'
+              tail -n 100 "$RUNNER_TEMP/kixdns-security-validation.log"
+              echo '```'
+            fi
+          } > "$body_file"
+
+          issue="$(gh issue list --state open --limit 100 --json number,title | \
+            jq -r --arg title "$title" '.[] | select(.title == $title) | .number' | head -n 1)"
+          if [[ -n "$issue" ]]; then
+            gh issue edit "$issue" --title "$title" --body-file "$body_file"
+          else
+            gh issue create --title "$title" --body-file "$body_file"
+          fi
+
       - name: Close resolved compatibility alert
         if: >-
           success() &&
           steps.upstream.outputs.changed == 'true' &&
-          steps.merge.outcome == 'success'
+          steps.merge.outputs.merged == 'true'
         env:
           SOURCE_LABEL: ${{ steps.upstream.outputs.label }}
         shell: bash
@@ -411,4 +612,20 @@ jobs:
             jq -r --arg title "$title" '.[] | select(.title == $title) | .number' | head -n 1)"
           if [[ -n "$issue" ]]; then
             gh issue close "$issue" --comment '对应轨道已通过兼容性验证，告警自动关闭。'
+          fi
+
+      - name: Close resolved security alert
+        if: >-
+          success() &&
+          (steps.audit.outputs.refresh == 'false' ||
+           steps.merge.outputs.merged == 'true')
+        env:
+          SOURCE_LABEL: ${{ steps.upstream.outputs.label }}
+        shell: bash
+        run: |
+          title="[security] KixDNS ${SOURCE_LABEL} 依赖需要人工处理"
+          issue="$(gh issue list --state open --limit 100 --json number,title | \
+            jq -r --arg title "$title" '.[] | select(.title == $title) | .number' | head -n 1)"
+          if [[ -n "$issue" ]]; then
+            gh issue close "$issue" --comment '当前版本已通过 RustSec 审计，告警自动关闭。'
           fi
