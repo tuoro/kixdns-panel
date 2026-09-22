@@ -11,21 +11,21 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
-    "@codemirror/commands": "^6.11.0",
+    "@codemirror/commands": "^6.11.1",
     "@codemirror/lang-json": "^6.0.2",
-    "@codemirror/state": "^6.7.4",
-    "@codemirror/view": "^6.43.11",
-    "@lucide/vue": "^1.45.0",
-    "vue": "^3.5.42",
+    "@codemirror/state": "^6.7.5",
+    "@codemirror/view": "^6.43.12",
+    "@lucide/vue": "^1.47.0",
+    "vue": "^3.5.43",
     "vue-router": "^4.5.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
-    "@types/node": "^22.20.2",
+    "@types/node": "^22.20.4",
     "@vitejs/plugin-vue": "^5.2.1",
     "typescript": "~5.9.3",
     "vite": "^6.0.7",
-    "vitest": "^5.0.0",
+    "vitest": "^5.0.1",
     "vue-tsc": "^3.3.11"
   }
 }
