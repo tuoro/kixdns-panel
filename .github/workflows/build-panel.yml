@@ -104,7 +104,7 @@ jobs:
       # rust-cache's ~/.cargo/bin usually skips the build here, but any Cargo.lock change misses the cache
       # and recompiles for ~2m45s; the prebuilt binary takes seconds either way, same version, SHA-256 checked.
       - name: Install dependency auditor
-        uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
+        uses: taiki-e/install-action@9114bf4d891761788c546334fd37538eae1bf8b3 # v2.87.16
         with:
           tool: cargo-audit@0.22.2
           fallback: none
