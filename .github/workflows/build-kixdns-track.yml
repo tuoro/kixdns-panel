@@ -155,9 +155,39 @@ jobs:
           cargo build --locked
           python3 "$GITHUB_WORKSPACE/scripts/dns_smoke.py" target/debug/kixdns
 
+      # 每个版本各自留一个「已验证」标记，构建只认自己那一版的标记。
+      # build 对 verify 矩阵的 needs 是整体的：只要一个版本验证失败，所有版本的构建都会被跳过，
+      # 一个带新公告的旧版本就能让当前版本也建不出来。标记把这种连带拆开。
+      # Each catalog entry leaves its own "verified" marker and each build only trusts its own.
+      # needs on the verify matrix is all-or-nothing: one failing entry skips every build, so a
+      # single old entry hit by a new advisory would stop the current one from being built too.
+      - name: Record verified entry
+        id: marker
+        env:
+          LOCK_FILE: ${{ matrix.lock_file }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/verified"
+          sha256sum "$LOCK_FILE" > "$RUNNER_TEMP/verified/lock.sha256"
+          echo "name=kernel-verified-${LOCK_FILE//\//-}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload verified marker
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.marker.outputs.name }}
+          path: ${{ runner.temp }}/verified/lock.sha256
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
+
   build:
     name: Build ${{ matrix.lock_file }} / ${{ matrix.platform.arch }}
-    if: github.event_name != 'pull_request' && needs.inventory.outputs.count != '0'
+    # 不随整个 verify 矩阵的成败决定：每个版本在下面核对自己的验证标记。
+    # Not gated on the verify matrix as a whole: each entry checks its own marker below.
+    if: >-
+      !cancelled() &&
+      github.event_name != 'pull_request' &&
+      needs.inventory.result == 'success' &&
+      needs.inventory.outputs.count != '0'
     needs: [inventory, verify]
     runs-on: ${{ matrix.platform.runner }}
     container:
@@ -187,6 +217,32 @@ jobs:
 
       - name: Checkout panel repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Locate verified marker
+        id: marker
+        env:
+          LOCK_FILE: ${{ matrix.lock_file }}
+        run: echo "name=kernel-verified-${LOCK_FILE//\//-}" >> "$GITHUB_OUTPUT"
+
+      # 这个版本没有通过验证时标记不存在，下载失败，只有这一版的构建失败。
+      # Without a passing verification the marker does not exist, the download fails,
+      # and only this entry's build fails.
+      - name: Require this entry to be verified
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ steps.marker.outputs.name }}
+          path: ${{ runner.temp }}/verified
+
+      - name: Check verified lock
+        env:
+          LOCK_FILE: ${{ matrix.lock_file }}
+        run: |
+          expected="$(cut -d ' ' -f1 "$RUNNER_TEMP/verified/lock.sha256")"
+          actual="$(sha256sum "$LOCK_FILE" | cut -d ' ' -f1)"
+          [[ -n "$expected" && "$expected" == "$actual" ]] || {
+            echo "验证标记与锁文件不一致：$LOCK_FILE" >&2
+            exit 1
+          }
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
