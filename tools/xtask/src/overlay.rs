@@ -475,6 +475,10 @@ fn persist_patchset(
     } else {
         object.remove("compatibility");
     }
+    // 依赖修订属于旧补丁集；新补丁集自带重新解析的 Cargo.lock。
+    // A dependency revision belongs to the old patchset; the new one carries a freshly
+    // resolved Cargo.lock.
+    object.remove("dependency_revision");
 
     let parent = lock_path.parent().context("候选锁文件缺少父目录")?;
     let mut lock_staging = Builder::new()
@@ -531,7 +535,7 @@ fn patch_changes_non_lock(path: &Path) -> Result<bool> {
     Ok(false)
 }
 
-fn cargo_network_failure(stderr: &[u8]) -> bool {
+pub(crate) fn cargo_network_failure(stderr: &[u8]) -> bool {
     let stderr = String::from_utf8_lossy(stderr).to_ascii_lowercase();
     [
         "spurious network error",
