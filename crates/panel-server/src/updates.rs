@@ -1,4 +1,4 @@
-use std::cmp::Reverse;
+use std::cmp::{Ordering, Reverse};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Cursor, ErrorKind, Read};
@@ -921,8 +921,10 @@ impl UpdateManager {
             .into_iter()
             .next()
             .ok_or_else(|| UpdateError::Network("没有可安装的成功增强构建".to_owned()))?;
+        let installed = self.installed_versions(active.as_ref()).await?;
+        let current = installed.iter().find(|version| version.active);
         Ok(UpdateNotifications {
-            kixdns: to_kixdns_update_notice(&latest.remote, active.as_ref()),
+            kixdns: to_kixdns_update_notice(&latest.remote, active.as_ref(), current),
             panel: self.panel_update_notice().await?,
         })
     }
@@ -1301,15 +1303,7 @@ impl UpdateManager {
                 });
             }
         }
-        versions.sort_by(|left, right| {
-            right.build_run_id.cmp(&left.build_run_id).then_with(|| {
-                right
-                    .remote
-                    .run_id
-                    .cmp(&left.remote.run_id)
-                    .then_with(|| right.remote.release_tag.cmp(&left.remote.release_tag))
-            })
-        });
+        sort_newest_upstream_first(&mut versions);
         versions.truncate(30);
         Ok(versions)
     }
@@ -1949,14 +1943,80 @@ fn to_update_info(version: ResolvedVersion, active: Option<&VersionKey>) -> Upda
     }
 }
 
+/// 上游先后：Action 按上游运行编号，Release 按版本号。Action 是 Release 的预览，越晚的
+/// 运行越接近甚至超过当前 Release；我们什么时候重新打包不参与比较。
+/// Upstream order: action runs by upstream run id, releases by version number. The
+/// action track previews the next release, so a later run is closer to it or beyond it;
+/// when we happened to repackage a version never takes part.
+fn upstream_order(
+    run_id: Option<u64>,
+    release_tag: Option<&str>,
+) -> (Option<u64>, Option<semver::Version>, Option<&str>) {
+    (
+        run_id,
+        release_tag
+            .and_then(|tag| semver::Version::parse(tag.strip_prefix('v').unwrap_or(tag)).ok()),
+        release_tag,
+    )
+}
+
+/// 最新的上游版本排最前；同一上游版本只剩最新一次构建，所以构建时间只在完全相同时兜底。
+/// The newest upstream version comes first. Each upstream version keeps only its latest
+/// build, so build time only breaks exact ties.
+fn sort_newest_upstream_first(versions: &mut [ResolvedVersion]) {
+    versions.sort_by(|left, right| {
+        let left_order = upstream_order(left.remote.run_id, left.remote.release_tag.as_deref());
+        let right_order = upstream_order(right.remote.run_id, right.remote.release_tag.as_deref());
+        right_order
+            .cmp(&left_order)
+            .then_with(|| right.build_run_id.cmp(&left.build_run_id))
+    });
+}
+
+/// 只有更新的上游版本、或同一上游版本的更高补丁集才算更新；同一版本重新打包不算，
+/// 更旧的上游版本也不会被当成更新。
+/// Only a newer upstream version, or a higher patchset of the same upstream version,
+/// counts as an update. Repackaging the same version does not, and an older upstream
+/// version is never offered as one.
+fn is_newer_upstream_build(version: &RemoteVersion, current: &InstalledVersion) -> bool {
+    let latest = upstream_order(version.run_id, version.release_tag.as_deref());
+    let installed = upstream_order(current.run_id, current.release_tag.as_deref());
+    match latest.cmp(&installed) {
+        Ordering::Greater => true,
+        Ordering::Equal => matches!(
+            (version.patchset, current.patchset),
+            (Some(latest), Some(installed)) if latest > installed
+        ),
+        Ordering::Less => false,
+    }
+}
+
+fn has_upstream_identity(version: &InstalledVersion, source: VersionSource) -> bool {
+    match source {
+        VersionSource::Action => version.run_id.is_some(),
+        VersionSource::Release => version.release_tag.is_some(),
+    }
+}
+
 fn to_kixdns_update_notice(
     version: &RemoteVersion,
     active: Option<&VersionKey>,
+    current: Option<&InstalledVersion>,
 ) -> KixdnsUpdateNotice {
     let available = active.is_some_and(|active| {
-        active.source != version.source
-            || !active.commit.eq_ignore_ascii_case(&version.commit)
-            || active.source_id != Some(version.source_id)
+        if active.source != version.source {
+            return true;
+        }
+        match current.filter(|current| has_upstream_identity(current, version.source)) {
+            Some(current) => is_newer_upstream_build(version, current),
+            // 早期安装没有记录上游身份，只能按构建身份比较。
+            // Early installs recorded no upstream identity, so only the build identity
+            // can be compared.
+            None => {
+                !active.commit.eq_ignore_ascii_case(&version.commit)
+                    || active.source_id != Some(version.source_id)
+            }
+        }
     });
     KixdnsUpdateNotice {
         available,

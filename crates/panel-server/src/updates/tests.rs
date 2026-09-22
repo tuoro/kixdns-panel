@@ -8,14 +8,15 @@ use tempfile::tempdir;
 use super::ServiceHost;
 use super::validation::ParsedArtifactReference;
 use super::{
-    ARTIFACT_PAGE_SIZE, BuildIdentity, GithubRelease, MANIFEST_SCHEMA_VERSION, MAX_ARTIFACT_PAGES,
-    ReleaseAsset, RemoteVersion, TrackReference, UpdateError, UpdateManager, UpdateSettings,
-    VersionKey, VersionManifest, VersionSource, WorkflowRuns, artifact_page_count,
-    delete_stored_version, extract_artifact, load_bundled_manifest, load_verified_version,
-    panel_release_asset_name, parse_artifact_reference, sha256, store_version,
-    to_kixdns_update_notice, to_panel_update_notice, trusted_workflow_runs,
-    update_stored_capabilities, validate_commit, validate_digest, validate_github_token,
-    validate_remote_build_identity, validate_slug, workflow_runs_url, write_github_token,
+    ARTIFACT_PAGE_SIZE, BuildIdentity, GithubRelease, InstalledVersion, MANIFEST_SCHEMA_VERSION,
+    MAX_ARTIFACT_PAGES, ReleaseAsset, RemoteVersion, ResolvedVersion, TrackReference, UpdateError,
+    UpdateManager, UpdateSettings, VersionKey, VersionManifest, VersionSource, WorkflowRuns,
+    artifact_page_count, delete_stored_version, extract_artifact, load_bundled_manifest,
+    load_verified_version, panel_release_asset_name, parse_artifact_reference, sha256,
+    sort_newest_upstream_first, store_version, to_kixdns_update_notice, to_panel_update_notice,
+    trusted_workflow_runs, update_stored_capabilities, validate_commit, validate_digest,
+    validate_github_token, validate_remote_build_identity, validate_slug, workflow_runs_url,
+    write_github_token,
 };
 use crate::db::Database;
 use crate::operations::ServiceAction;
@@ -468,10 +469,139 @@ fn legacy_kixdns_identity_is_not_treated_as_exact_build() {
         active: false,
     };
     let legacy = VersionKey::new(VersionSource::Action, TEST_BUILD_COMMIT).unwrap();
-    assert!(to_kixdns_update_notice(&remote, Some(&legacy)).available);
+    assert!(to_kixdns_update_notice(&remote, Some(&legacy), None).available);
 
     let exact = VersionKey::tracked(VersionSource::Action, 42, TEST_BUILD_COMMIT).unwrap();
-    assert!(!to_kixdns_update_notice(&remote, Some(&exact)).available);
+    assert!(!to_kixdns_update_notice(&remote, Some(&exact), None).available);
+}
+
+const REBUILD_COMMIT: &str = "9c1e5b7d3f2a4c6e8b0d1f3a5c7e9b2d4f6a8c0e";
+
+fn remote_build(run_id: Option<u64>, release_tag: Option<&str>, patchset: u32) -> RemoteVersion {
+    let source = if release_tag.is_some() {
+        VersionSource::Release
+    } else {
+        VersionSource::Action
+    };
+    RemoteVersion {
+        source,
+        source_id: 1000 + u64::from(patchset),
+        commit: REBUILD_COMMIT.to_owned(),
+        run_id,
+        release_tag: release_tag.map(str::to_owned),
+        patchset: Some(patchset),
+        created_at: "2026-09-22T00:00:00Z".to_owned(),
+        source_url: "https://github.com/olicesx/kixdns".to_owned(),
+        build_url: "https://github.com/tuoro/kixdns-panel/actions/runs/1".to_owned(),
+        artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
+        artifact_digest: format!("sha256:{}", "a".repeat(64)),
+        download_url: "https://nightly.link/example.zip".to_owned(),
+        installed: false,
+        active: false,
+    }
+}
+
+fn installed_build(
+    run_id: Option<u64>,
+    release_tag: Option<&str>,
+    patchset: u32,
+) -> (VersionKey, InstalledVersion) {
+    let source = if release_tag.is_some() {
+        VersionSource::Release
+    } else {
+        VersionSource::Action
+    };
+    let manifest = VersionManifest {
+        schema_version: MANIFEST_SCHEMA_VERSION,
+        source: Some(source),
+        source_id: Some(7),
+        commit: TEST_BUILD_COMMIT.to_owned(),
+        run_id,
+        release_tag: release_tag.map(str::to_owned),
+        created_at: None,
+        source_url: None,
+        build_url: None,
+        artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
+        artifact_digest: None,
+        upstream_repository: None,
+        upstream_commit: None,
+        patchset: Some(patchset),
+        control_protocol: Some(1),
+        config_capabilities: Vec::new(),
+        binary_sha256: "b".repeat(64),
+        installed_at: 1,
+    };
+    let key = VersionKey::tracked(source, 7, TEST_BUILD_COMMIT).unwrap();
+    (key, manifest.into_installed(true))
+}
+
+#[test]
+fn catalogue_follows_upstream_order_not_rebuild_time() {
+    // 每周续建只重建快过期的旧版本；它的构建更新，但上游更旧，不能排到前面。
+    // The weekly refresh rebuilds only versions about to expire. Their build is newer but
+    // their upstream is older, so they must not move ahead.
+    let resolved = |run_id: u64, build_run_id: u64| ResolvedVersion {
+        remote: remote_build(Some(run_id), None, 23),
+        build_run_id,
+    };
+    let mut versions = vec![resolved(90, 60), resolved(80, 40), resolved(100, 50)];
+    sort_newest_upstream_first(&mut versions);
+    let order = versions
+        .iter()
+        .map(|version| version.remote.run_id)
+        .collect::<Vec<_>>();
+    assert_eq!(order, [Some(100), Some(90), Some(80)]);
+}
+
+#[test]
+fn release_catalogue_follows_version_numbers() {
+    let resolved = |tag: &str, build_run_id: u64| ResolvedVersion {
+        remote: remote_build(None, Some(tag), 24),
+        build_run_id,
+    };
+    let mut versions = vec![
+        resolved("v0.9.0", 5),
+        resolved("v0.1.1", 9),
+        resolved("v0.10.0", 5),
+        resolved("v0.2.0", 5),
+    ];
+    sort_newest_upstream_first(&mut versions);
+    let order = versions
+        .iter()
+        .map(|version| version.remote.release_tag.as_deref().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(order, ["v0.10.0", "v0.9.0", "v0.2.0", "v0.1.1"]);
+}
+
+#[test]
+fn kixdns_notice_follows_upstream_versions() {
+    let (active, current) = installed_build(Some(90), None, 22);
+    let notice = |remote: RemoteVersion| {
+        to_kixdns_update_notice(&remote, Some(&active), Some(&current)).available
+    };
+    assert!(
+        !notice(remote_build(Some(90), None, 22)),
+        "a rebuild of the installed version is not an update"
+    );
+    assert!(notice(remote_build(Some(100), None, 22)));
+    assert!(
+        !notice(remote_build(Some(80), None, 23)),
+        "an older upstream run is never offered as an update"
+    );
+    assert!(notice(remote_build(Some(90), None, 23)));
+
+    let (active, current) = installed_build(None, Some("v0.2.0"), 24);
+    let notice = |tag: &str| {
+        to_kixdns_update_notice(
+            &remote_build(None, Some(tag), 24),
+            Some(&active),
+            Some(&current),
+        )
+        .available
+    };
+    assert!(notice("v0.10.0"));
+    assert!(!notice("v0.2.0"));
+    assert!(!notice("v0.1.1"));
 }
 
 #[test]
