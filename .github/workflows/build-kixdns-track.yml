@@ -192,6 +192,12 @@ jobs:
     runs-on: ${{ matrix.platform.runner }}
     container:
       image: ubuntu:22.04
+    # 容器里的 run 步骤默认用 sh，不认 [[ ]] 和 ${var//x/y}；整个构建作业统一用 bash。
+    # Inside a container, run steps default to sh, which rejects [[ ]] and ${var//x/y};
+    # the whole build job uses bash instead.
+    defaults:
+      run:
+        shell: bash
     env:
       GLIBC_BASELINE: "2.35"
     strategy:
