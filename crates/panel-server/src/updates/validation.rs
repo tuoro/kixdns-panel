@@ -133,6 +133,9 @@ pub(super) fn validate_build_identity(identity: &BuildIdentity) -> Result<(), Up
     if identity.patchset == 0 {
         return Err(UpdateError::Verification("增强补丁集版本无效".to_owned()));
     }
+    if identity.dependency_revision == Some(0) {
+        return Err(UpdateError::Verification("依赖修订编号无效".to_owned()));
+    }
     if identity.control_protocol != CONTROL_PROTOCOL_VERSION {
         return Err(UpdateError::Verification(format!(
             "控制协议不兼容：需要 v{CONTROL_PROTOCOL_VERSION}，产物为 v{}",

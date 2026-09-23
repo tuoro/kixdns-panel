@@ -13,6 +13,8 @@ const status: UpdateNotifications = {
     release_tag: null,
     created_at: '2026-07-30T00:00:00Z',
     build_url: 'https://github.com/tuoro/kixdns-panel/actions/runs/100',
+    security_update: false,
+    dependency_revision: null,
   },
   panel: {
     available: true,
@@ -34,6 +36,15 @@ describe('更新通知', () => {
     expect(notices.map((notice) => notice.id)).toEqual(['kixdns:action:42', 'panel:1.0.1'])
     expect(notices[0]).toMatchObject({ external: false, target: '/system' })
     expect(notices[1]).toMatchObject({ external: true, meta: 'Release · v1.0.1' })
+  })
+
+  it('同一版本的依赖修订提示为依赖安全升级', () => {
+    const [notice] = buildUpdateNotices({
+      kixdns: { ...status.kixdns, security_update: true, dependency_revision: 1 },
+      panel: { ...status.panel, available: false },
+    })
+    expect(notice).toMatchObject({ detail: '依赖安全升级可用', meta: 'Action · Run #99 · r1' })
+    expect(buildUpdateNotices(status)[0]).toMatchObject({ detail: '新的增强构建可用', meta: 'Action · Run #99' })
   })
 
   it('只展示当前仍可用的更新', () => {

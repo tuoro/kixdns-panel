@@ -343,6 +343,9 @@ export interface KixdnsUpdateNotice {
   release_tag: string | null
   created_at: string | null
   build_url: string | null
+  /** 同一版本换上修补过的依赖重新构建。 / The same version rebuilt with patched dependencies. */
+  security_update: boolean
+  dependency_revision: number | null
 }
 
 export interface PanelUpdateNotice {
@@ -421,6 +424,7 @@ export interface InstalledKixdnsVersion {
   upstream_repository: string | null
   upstream_commit: string | null
   patchset: number | null
+  dependency_revision: number | null
   control_protocol: number | null
   config_capabilities: string[]
   binary_sha256: string
