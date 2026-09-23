@@ -47,6 +47,9 @@ jobs:
       - name: Verify upstream Action selection
         run: bash scripts/test-select-kixdns-action-run.sh
 
+      - name: Verify sync workflow steps
+        run: python3 scripts/test-sync-upstream.py
+
       - name: Read latest upstream track
         id: upstream
         shell: bash

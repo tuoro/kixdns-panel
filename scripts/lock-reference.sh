@@ -9,14 +9,17 @@
 set -euo pipefail
 
 lock_file="${1:?缺少锁文件}"
-source="$(jq -r '.source // empty' "$lock_file")"
+# 只读一次：调用方可能传进进程替换，那种文件第二次读是空的。
+# Read once: callers may pass a process substitution, which is empty on a second read.
+lock="$(cat -- "$lock_file")"
+source="$(jq -r '.source // empty' <<< "$lock")"
 case "$source" in
   action)
-    reference="$(jq -r '.official_run_id // empty' "$lock_file")"
+    reference="$(jq -r '.official_run_id // empty' <<< "$lock")"
     pattern='^[1-9][0-9]*$'
     ;;
   release)
-    reference="$(jq -r '.release_tag // empty' "$lock_file")"
+    reference="$(jq -r '.release_tag // empty' <<< "$lock")"
     pattern='^[A-Za-z0-9._-]{1,100}$'
     ;;
   *)
