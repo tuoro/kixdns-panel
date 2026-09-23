@@ -63,7 +63,7 @@ trap 'rm -f "$body_file"' EXIT
   echo "- 构建记录：${run_url}"
   echo
   echo '其余版本已正常构建，面板照常可见。下面的版本这次没有产出新包；旧包到期后会从面板列表消失。'
-  echo '审计不过的旧版本会在每日同步时移出版本目录；当前版本审计不过时，同步会另开 `[security]` 告警。'
+  echo "审计不过的旧版本会在每日同步时移出版本目录；当前版本审计不过时，同步会另开 \`[security]\` 告警。"
   if ((${#verify_failures[@]} > 0)); then
     echo
     echo '### 验证失败'

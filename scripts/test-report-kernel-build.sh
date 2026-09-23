@@ -98,30 +98,35 @@ run_report() {
     bash "$workspace/scripts/report-kernel-build.sh" > /dev/null
   cat "$STUB_LOG"
 }
-check() {
-  local name=$1 condition=$2
-  if ! eval "$condition"; then
-    printf '场景失败：%s\n%s\n' "$name" "$log" >&2
-    failures=$((failures + 1))
-  fi
+# 断言直接比较，不用 eval：条件写成字符串既难读，也躲过了 shellcheck。
+# Assertions compare directly rather than through eval: conditions written as strings
+# are hard to read and hide from shellcheck.
+fail_case() {
+  printf '场景失败：%s\n%s\n' "$1" "$log" >&2
+  failures=$((failures + 1))
 }
+contains() { [[ "$log" == *"$2"* ]] || fail_case "$1"; }
+lacks() { [[ "$log" != *"$2"* ]] || fail_case "$1"; }
+first_line_is() { [[ "$(head -n 1 <<< "$log")" == "$2" ]] || fail_case "$1"; }
+equals() { [[ "$log" == "$2" ]] || fail_case "$1"; }
 
 log="$(run_report "$failing" "$no_issue")"
-check 'failures open a new alert' '[[ "$(head -n 1 <<< "$log")" == create ]]'
-check 'the other track alert is left alone' '[[ "$log" != *"#13"* ]]'
-check 'failed verification is listed' '[[ "$log" == *"\`upstreams/actions/31574175882.json\`：[验证失败]"* ]]'
-check 'its missing-marker builds are not listed again' '[[ "$log" != *"31574175882.json\` / "* ]]'
-check 'a verified entry that failed to build is listed' '[[ "$log" == *"\`upstreams/actions/34942284951.json\` / arm64：[构建失败]"* ]]'
-check 'successful entries are not listed' '[[ "$log" != *34876540113* && "$log" != *"34942284951.json\` / x86_64"* ]]'
+first_line_is 'failures open a new alert' create
+lacks 'the other track alert is left alone' '#13'
+contains 'failed verification is listed' "\`upstreams/actions/31574175882.json\`：[验证失败]"
+lacks 'its missing-marker builds are not listed again' "31574175882.json\` / "
+contains 'a verified entry that failed to build is listed' "\`upstreams/actions/34942284951.json\` / arm64：[构建失败]"
+lacks 'successful entries are not listed' 34876540113
+lacks 'successful builds are not listed' "34942284951.json\` / x86_64"
 
 log="$(run_report "$failing" "$open_issue")"
-check 'failures update the open alert' '[[ "$(head -n 1 <<< "$log")" == "edit #12" ]]'
+first_line_is 'failures update the open alert' 'edit #12'
 
 log="$(run_report "$passing" "$open_issue")"
-check 'a clean run closes the alert' '[[ "$log" == "close #12" ]]'
+equals 'a clean run closes the alert' 'close #12'
 
 log="$(run_report "$passing" "$no_issue")"
-check 'a clean run without an alert does nothing' '[[ -z "$log" ]]'
+equals 'a clean run without an alert does nothing' ''
 
 ((failures == 0)) || exit 1
 echo '内核构建告警校验通过'

@@ -1,0 +1,31 @@
+name: Lint shell scripts
+
+# 面板和内核工作流只在各自的文件变化时运行，只被同步任务用到的脚本（以及 #124 新增的
+# 内核构建告警脚本）因此从来没有在 PR 上经过 shellcheck。任何脚本变化都在这里检查一遍。
+# The panel and kernel workflows only run when their own files change, so scripts used
+# elsewhere (the sync job's helpers, the kernel build alert added in #124) never went
+# through shellcheck on a pull request. Any script change is checked here.
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/**
+      - .github/workflows/lint-scripts.yml
+  pull_request:
+    paths:
+      - scripts/**
+      - .github/workflows/lint-scripts.yml
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: Shellcheck scripts
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout panel repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Lint every script
+        run: shellcheck scripts/*.sh
