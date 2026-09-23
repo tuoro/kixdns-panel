@@ -1451,3 +1451,26 @@ fn reads_the_dependency_revision_a_build_used() {
     plain.encoding = "utf-8".to_owned();
     assert!(build_lock_revision(&plain, &remote).is_err());
 }
+
+#[test]
+fn downloads_from_github_first_only_when_a_token_is_configured() {
+    let remote = remote_build(Some(90), None, 22);
+    let anonymous = super::artifact_sources("tuoro/kixdns-panel", &remote, None);
+    assert_eq!(anonymous.len(), 1);
+    assert_eq!(anonymous[0].url, remote.download_url);
+    assert!(anonymous[0].token.is_none());
+
+    let token = secrecy::SecretString::from("secret-token".to_owned());
+    let with_token = super::artifact_sources("tuoro/kixdns-panel", &remote, Some(&token));
+    assert_eq!(with_token.len(), 2);
+    assert_eq!(
+        with_token[0].url,
+        format!(
+            "https://api.github.com/repos/tuoro/kixdns-panel/actions/artifacts/{}/zip",
+            remote.source_id
+        )
+    );
+    assert!(with_token[0].token.is_some());
+    assert_eq!(with_token[1].url, remote.download_url);
+    assert!(with_token[1].token.is_none(), "nightly.link 不能收到 Token");
+}

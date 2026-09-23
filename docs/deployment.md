@@ -244,6 +244,7 @@ sudo systemctl restart kixdns-panel.service
 - 保存前先调用 GitHub `/rate_limit` 验证
 - 单独存放在 `/var/lib/kixdns-panel/github-token`（`0600`），不进数据库、`panel.env`、审计记录或 API 响应
 - 只附加到 `api.github.com` 请求，nightly.link 和 Release 下载不带认证
+- 系统页下载内核包时，先带着 Token 直接从 GitHub 下载，不经过 nightly.link。GitHub 要求 Token 有下载 Actions 产物的权限：Fine-grained 需要 Actions 读取，Classic 需要 `repo` 范围。只读 Token 通常没有，这时自动改用 nightly.link，不影响检查版本；不必为此放宽 Token 权限
 - 删除后立即恢复匿名
 
 ## 运维

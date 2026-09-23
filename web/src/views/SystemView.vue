@@ -593,7 +593,7 @@ onBeforeUnmount(() => {
            taking the width the title and the tag were fighting over. -->
       <section class="panel credential-panel">
         <header class="panel__header">
-          <div><h2>GitHub 凭据</h2><p>用于版本与更新检查，不会发送到 nightly.link</p></div>
+          <div><h2>GitHub 凭据</h2><p>用于版本检查和内核下载，不会发送到 nightly.link</p></div>
           <span class="tag" :class="{ 'tag--muted': !githubTokenStatus?.configured }">{{ githubTokenStatus?.configured ? '已配置' : '匿名' }}</span>
         </header>
       <div class="github-credential">
