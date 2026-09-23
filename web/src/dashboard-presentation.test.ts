@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MIN_HEALTH_SAMPLES, cacheComposition, pipelineDistribution, rcodeDistribution, settledAttempts, upstreamHealth } from './dashboard-presentation'
+import { MIN_HEALTH_SAMPLES, cacheComposition, pipelineDistribution, rcodeDistribution, settledAttempts, upstreamBasis, upstreamHealth, upstreamWindowLabel } from './dashboard-presentation'
 import { emptyOverview } from './dashboard-state'
 
 describe('概览 Pipeline 分布', () => {
@@ -44,7 +44,8 @@ describe('概览 Pipeline 分布', () => {
 })
 
 describe('上游健康与分布', () => {
-  const base = { upstream: '1.1.1.1:53', transport: 'udp', errors: 0, rejected: 0, rcodes: [], tcp_fallbacks: 0 }
+  const base = { upstream: '1.1.1.1:53', transport: 'udp', errors: 0, rejected: 0, rcodes: [], tcp_fallbacks: 0, recent: null }
+  const tally = { errors: 0, rejected: 0, aborted: 0, tcp_fallbacks: 0 }
 
   it('按成功率与平均耗时分三档，竞争落败不计入，样本不足时观察中', () => {
     expect(upstreamHealth({ ...base, attempts: 100, success: 100, aborted: 0, avg_latency_ms: 12 })).toBe('healthy')
@@ -52,11 +53,46 @@ describe('上游健康与分布', () => {
     // 刚启动：45 次响应里 2 次连接建立失败，不能就此判降级
     expect(upstreamHealth({ ...base, attempts: 45, success: 43, errors: 2, aborted: 0, avg_latency_ms: 295 })).toBe('pending')
     expect(upstreamHealth({ ...base, attempts: MIN_HEALTH_SAMPLES, success: MIN_HEALTH_SAMPLES - 2, errors: 2, aborted: 0, avg_latency_ms: 295 })).toBe('degraded')
-    expect(upstreamHealth({ ...base, attempts: 100, success: 97, aborted: 0, avg_latency_ms: 12 })).toBe('degraded')
+    expect(upstreamHealth({ ...base, attempts: 100, success: 97, errors: 3, aborted: 0, avg_latency_ms: 12 })).toBe('degraded')
     expect(upstreamHealth({ ...base, attempts: 100, success: 100, aborted: 0, avg_latency_ms: 1_500 })).toBe('degraded')
-    expect(upstreamHealth({ ...base, attempts: 100, success: 90, aborted: 0, avg_latency_ms: 12 })).toBe('unhealthy')
+    expect(upstreamHealth({ ...base, attempts: 100, success: 90, errors: 10, aborted: 0, avg_latency_ms: 12 })).toBe('unhealthy')
     expect(upstreamHealth({ ...base, attempts: 100, success: 100, aborted: 0, avg_latency_ms: 2_400 })).toBe('unhealthy')
-    expect(settledAttempts({ ...base, attempts: 100, success: 40, aborted: 60, avg_latency_ms: null })).toBe(40)
+    expect(settledAttempts({ attempts: 100, aborted: 60 })).toBe(40)
+  })
+
+  it('SERVFAIL、REFUSED 不算上游失败', () => {
+    // 四成查询上游如实回了 SERVFAIL：上游在正常工作，出问题的是那些域名
+    expect(upstreamHealth({ ...base, attempts: 100, success: 60, rejected: 40, aborted: 0, avg_latency_ms: 20 })).toBe('healthy')
+  })
+
+  it('最近一小时响应够多时只看最近一小时', () => {
+    // 几天前断过一阵，累计成功率只有 90%；最近一小时一次没错
+    const recovered = { ...base, attempts: 10_000, success: 9_000, errors: 1_000, aborted: 0, avg_latency_ms: 30, recent: { ...tally, attempts: 600, success: 600, avg_latency_ms: 12 } }
+    expect(upstreamBasis(recovered)).toEqual({ tally: recovered.recent, recent: true })
+    expect(upstreamHealth(recovered)).toBe('healthy')
+    // 累计一直很好，最近一小时开始超时
+    const failingNow = { ...base, attempts: 100_000, success: 99_900, errors: 100, aborted: 0, avg_latency_ms: 12, recent: { ...tally, attempts: 200, success: 150, errors: 50, avg_latency_ms: 800 } }
+    expect(upstreamHealth(failingNow)).toBe('unhealthy')
+  })
+
+  it('最近一小时可判断的响应不足 50 次时退回启动以来的累计', () => {
+    // 备用上游这一小时只用了 12 次，3 次超时不足以判异常
+    const quiet = { ...base, attempts: 5_000, success: 4_990, errors: 10, aborted: 0, avg_latency_ms: 25, recent: { ...tally, attempts: 12, success: 9, errors: 3, avg_latency_ms: 40 } }
+    expect(upstreamBasis(quiet)).toEqual({ tally: quiet, recent: false })
+    expect(upstreamHealth(quiet)).toBe('healthy')
+    // 120 次尝试里 90 次是 SERVFAIL：可判断的只有 30 次，同样不够
+    const mostlyServfail = { ...quiet, recent: { ...tally, attempts: 120, success: 28, errors: 2, rejected: 90, avg_latency_ms: 40 } }
+    expect(upstreamBasis(mostlyServfail).recent).toBe(false)
+  })
+
+  it('台账标题写出实际依据的时间段', () => {
+    expect(upstreamWindowLabel(null)).toBe('启动以来')
+    expect(upstreamWindowLabel(3_600)).toBe('最近一小时')
+    // 每分钟采样一次，正常时窗口是 59 到 60 分钟
+    expect(upstreamWindowLabel(3_541)).toBe('最近一小时')
+    // KixDNS 20 分钟前重启
+    expect(upstreamWindowLabel(1_200)).toBe('最近 20 分钟')
+    expect(upstreamWindowLabel(20)).toBe('最近 1 分钟')
   })
 
   it('响应码分布合并所有上游并把少见响应码归为其他', () => {

@@ -27,9 +27,13 @@ export function formatSmallPercent(value: number): string {
  * 并发竞争里被取消的尝试（aborted）既不是成功也不是失败，不计入分母；
  * 否则同一条规则下的几个上游会按"谁先应答"瓜分成功率。
  */
-export function upstreamSuccessRate(item: { attempts: number; success: number; aborted?: number }): number {
-  const settled = item.attempts - (item.aborted ?? 0)
-  return settled > 0 ? Math.min(item.success / settled, 1) : 0
+/**
+ * 成功率只看超时和连接错误。SERVFAIL、REFUSED 也算拿到了响应（坏掉的域名所有上游都会这样回），
+ * 在响应码分布里看；并发竞争中被取消的尝试既不算成功也不算失败。
+ */
+export function upstreamSuccessRate(item: { success: number; errors: number }): number {
+  const judged = item.success + item.errors
+  return judged > 0 ? item.success / judged : 0
 }
 
 export function formatDate(timestamp: number): string {

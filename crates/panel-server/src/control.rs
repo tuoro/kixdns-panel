@@ -139,6 +139,11 @@ pub struct MetricsSnapshot {
     /// 过期缓存命中的原因拆分；增强版 p20 起提供。
     #[serde(default)]
     pub cache_stale: StaleBreakdown,
+    /// 各上游 `recent` 实际覆盖的秒数，最长一小时；还没有可比的采样时为空。
+    /// Seconds actually covered by each upstream's `recent`, at most an hour; empty
+    /// until there is a sample to compare against.
+    #[serde(default)]
+    pub upstream_window_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -197,6 +202,30 @@ pub struct UpstreamCount {
     /// 选定 UDP 但靠 TCP 兜底才拿到答案的次数；增强版 p20 起提供。
     #[serde(default)]
     pub tcp_fallbacks: u64,
+    /// 最近一段时间（最长一小时）的计数，由面板每分钟的采样做差得到。
+    /// Counts over the recent window (at most an hour), taken as the difference
+    /// against the panel's per-minute samples.
+    #[serde(default)]
+    pub recent: Option<UpstreamTally>,
+    /// 算平均耗时用的累计耗时与次数，只在进程内用来求窗口差，不下发。
+    /// The latency sum and count behind `avg_latency_ms`, kept in process for
+    /// window differences and never sent out.
+    #[serde(skip)]
+    pub latency_sum_ms: f64,
+    #[serde(skip)]
+    pub latency_samples: u64,
+}
+
+/// 一段时间内某个上游的计数。 / One upstream's counts over a period.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct UpstreamTally {
+    pub attempts: u64,
+    pub success: u64,
+    pub errors: u64,
+    pub rejected: u64,
+    pub aborted: u64,
+    pub tcp_fallbacks: u64,
+    pub avg_latency_ms: Option<f64>,
 }
 
 const fn default_live() -> bool {
@@ -433,12 +462,33 @@ struct MetricsBuilder {
     rules: BTreeMap<(String, String, String), u64>,
     upstreams: BTreeMap<(String, String), UpstreamCount>,
     upstream_latency: BTreeMap<(String, String), (f64, u64)>,
+    upstream_response_latency: BTreeMap<(String, String), (f64, u64)>,
     upstream_rcodes: BTreeMap<(String, String), u64>,
     request_latency_sum_ms: f64,
     seen: BTreeSet<&'static str>,
 }
 
 impl MetricsBuilder {
+    /// 上游耗时的累计值与次数：`kixdns_upstream_response_latency_ms_*` 只算拿到响应的
+    /// 尝试，`kixdns_upstream_latency_ms_*` 含超时。
+    /// The latency sum and count for an upstream: the response series counts replies
+    /// only, the plain series includes timeouts.
+    fn upstream_latency_entry(&mut self, sample: &Sample) -> Option<&mut (f64, u64)> {
+        let key = (
+            sample.labels.get("upstream")?.to_owned(),
+            sample.labels.get("transport")?.to_owned(),
+        );
+        let map = if sample
+            .metric
+            .starts_with("kixdns_upstream_response_latency_ms")
+        {
+            &mut self.upstream_response_latency
+        } else {
+            &mut self.upstream_latency
+        };
+        Some(map.entry(key).or_default())
+    }
+
     fn record(&mut self, sample: &Sample) {
         if let Some(value) = float_value(&sample.value) {
             match sample.metric.as_str() {
@@ -446,15 +496,9 @@ impl MetricsBuilder {
                     self.request_latency_sum_ms = value;
                     return;
                 }
-                "kixdns_upstream_latency_ms_sum" => {
-                    if let (Some(upstream), Some(transport)) = (
-                        sample.labels.get("upstream"),
-                        sample.labels.get("transport"),
-                    ) {
-                        self.upstream_latency
-                            .entry((upstream.to_owned(), transport.to_owned()))
-                            .or_default()
-                            .0 = value;
+                "kixdns_upstream_latency_ms_sum" | "kixdns_upstream_response_latency_ms_sum" => {
+                    if let Some(entry) = self.upstream_latency_entry(sample) {
+                        entry.0 = value;
                     }
                     return;
                 }
@@ -562,15 +606,9 @@ impl MetricsBuilder {
             "kixdns_request_latency_ms_count" => {
                 self.snapshot.request_latency.samples = value;
             }
-            "kixdns_upstream_latency_ms_count" => {
-                if let (Some(upstream), Some(transport)) = (
-                    sample.labels.get("upstream"),
-                    sample.labels.get("transport"),
-                ) {
-                    self.upstream_latency
-                        .entry((upstream.to_owned(), transport.to_owned()))
-                        .or_default()
-                        .1 = value;
+            "kixdns_upstream_latency_ms_count" | "kixdns_upstream_response_latency_ms_count" => {
+                if let Some(entry) = self.upstream_latency_entry(sample) {
+                    entry.1 = value;
                 }
             }
             "kixdns_upstream_rcodes_total" => {
@@ -664,15 +702,25 @@ impl MetricsBuilder {
                 self.snapshot.request_latency.avg_ms = avg;
             }
             let upstream_latency = self.upstream_latency;
+            let upstream_response_latency = self.upstream_response_latency;
             let upstream_rcodes = self.upstream_rcodes;
             self.snapshot.upstreams = self
                 .upstreams
                 .into_values()
                 .map(|mut upstream| {
                     let key = (upstream.upstream.clone(), upstream.transport.clone());
-                    upstream.avg_latency_ms = upstream_latency
+                    // 增强版 p25 起有只算拿到响应的耗时，超时不再把平均耗时拉高；
+                    // 更早的版本只能用含超时的已结算耗时。
+                    // From enhanced p25 there is a latency over replies only, so timeouts no
+                    // longer inflate the average; older builds only have the settled one.
+                    if let Some((sum, count)) = upstream_response_latency
                         .get(&key)
-                        .and_then(|(sum, count)| average(*sum, *count));
+                        .or_else(|| upstream_latency.get(&key))
+                    {
+                        upstream.latency_sum_ms = *sum;
+                        upstream.latency_samples = *count;
+                        upstream.avg_latency_ms = average(*sum, *count);
+                    }
                     let mut rcodes = upstream_rcodes
                         .iter()
                         .filter(|((name, _), _)| *name == upstream.upstream)
@@ -828,6 +876,46 @@ kixdns_upstream_results_total{upstream="1.1.1.1:53",transport="udp",result="succ
         assert_eq!(metrics.cache_stale.expired, 0);
         assert!(metrics.upstreams[0].avg_latency_ms.is_none());
         assert_eq!(metrics.upstreams[0].tcp_fallbacks, 0);
+    }
+
+    #[test]
+    fn average_latency_counts_only_replies_when_the_kernel_reports_them() {
+        let text = r#"
+kixdns_requests_total 42
+kixdns_requests_inflight 2
+kixdns_cache_lookups_total 20
+kixdns_cache_hits_total{kind="fresh"} 8
+kixdns_cache_hits_total{kind="stale"} 1
+kixdns_cache_entries 7
+kixdns_config_generation 3
+kixdns_config_reload_total{result="success"} 2
+kixdns_config_reload_total{result="failure"} 0
+kixdns_upstream_attempts_total{upstream="1.1.1.1:53",transport="udp"} 3
+kixdns_upstream_results_total{upstream="1.1.1.1:53",transport="udp",result="success"} 2
+kixdns_upstream_results_total{upstream="1.1.1.1:53",transport="udp",result="error"} 1
+kixdns_upstream_attempts_total{upstream="8.8.8.8:53",transport="udp"} 2
+kixdns_upstream_results_total{upstream="8.8.8.8:53",transport="udp",result="success"} 2
+kixdns_upstream_latency_ms_sum{upstream="1.1.1.1:53",transport="udp"} 9040.000
+kixdns_upstream_latency_ms_count{upstream="1.1.1.1:53",transport="udp"} 3
+kixdns_upstream_response_latency_ms_sum{upstream="1.1.1.1:53",transport="udp"} 40.000
+kixdns_upstream_response_latency_ms_count{upstream="1.1.1.1:53",transport="udp"} 2
+kixdns_upstream_latency_ms_sum{upstream="8.8.8.8:53",transport="udp"} 60.000
+kixdns_upstream_latency_ms_count{upstream="8.8.8.8:53",transport="udp"} 2
+"#;
+        let metrics = parse_metrics(text).unwrap();
+        // p25 起：一次 9 秒超时不再把平均耗时拉到 3 秒。
+        // From p25: one 9-second timeout no longer drags the average up to 3 seconds.
+        let replied = &metrics.upstreams[0];
+        assert!((replied.avg_latency_ms.unwrap() - 20.0).abs() < 1e-9);
+        assert!((replied.latency_sum_ms - 40.0).abs() < 1e-9);
+        assert_eq!(replied.latency_samples, 2);
+        // 旧内核没有这个序列，退回含超时的已结算耗时。
+        // Older kernels lack the series and fall back to the settled latency.
+        let legacy = &metrics.upstreams[1];
+        assert!((legacy.avg_latency_ms.unwrap() - 30.0).abs() < 1e-9);
+        assert_eq!(legacy.latency_samples, 2);
+        assert!(metrics.upstream_window_seconds.is_none());
+        assert!(replied.recent.is_none());
     }
 
     #[test]

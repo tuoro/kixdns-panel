@@ -55,12 +55,25 @@ export interface UpstreamCount {
   rejected: number
   /** 并发竞争中被取消的尝试，不计入成功率分母。 */
   aborted: number
-  /** 已结算尝试的平均耗时（毫秒）；旧增强版为 null。 */
+  /** 平均耗时（毫秒）：增强版 p25 起只算拿到响应的尝试，更早的含超时；旧增强版为 null。 */
   avg_latency_ms: number | null
   /** 按响应码计数，按次数降序。 */
   rcodes: NamedCount[]
   /** 选定 UDP 但靠 TCP 兜底才拿到答案的次数。 */
   tcp_fallbacks: number
+  /** 最近一段时间（最长一小时）的计数；面板还没有可比的采样时为 null。 */
+  recent: UpstreamTally | null
+}
+
+/** 一段时间内某个上游的计数。 */
+export interface UpstreamTally {
+  attempts: number
+  success: number
+  errors: number
+  rejected: number
+  aborted: number
+  tcp_fallbacks: number
+  avg_latency_ms: number | null
 }
 
 export interface FinishedCounts {
@@ -97,6 +110,8 @@ export interface MetricsSnapshot {
   requests_finished: FinishedCounts
   request_latency: RequestLatency
   cache_stale: StaleBreakdown
+  /** 各上游 `recent` 实际覆盖的秒数，最长一小时；面板还没有可比的采样时为 null。 */
+  upstream_window_seconds: number | null
 }
 
 export interface QueryStatsSnapshot {

@@ -53,6 +53,7 @@ use crate::error::{AppError, AppResult};
 use crate::geo_data::{GeoDataError, GeoDataManager};
 use crate::operations::{OperationError, Operations};
 use crate::updates::{UpdateError, UpdateManager, UpdateSettings};
+use crate::upstream_window::UpstreamHistory;
 
 #[derive(Debug, Clone)]
 pub struct AppSettings {
@@ -96,6 +97,7 @@ pub struct AppState {
     password_slots: Arc<Semaphore>,
     config_apply_lock: Arc<Mutex<()>>,
     dummy_password_hash: Arc<str>,
+    upstream_history: Arc<std::sync::Mutex<UpstreamHistory>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -329,6 +331,7 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         password_slots: Arc::new(Semaphore::new(4)),
         config_apply_lock: Arc::new(Mutex::new(())),
         dummy_password_hash: Arc::from(dummy_password_hash),
+        upstream_history: Arc::default(),
     };
     spawn_geo_scheduler(state.clone());
     spawn_config_reconciler(state.clone());
@@ -618,7 +621,16 @@ async fn overview(
         state.control.metrics(),
     );
     match results {
-        (Ok(health), Ok(active_config), Ok(metrics)) => {
+        (Ok(health), Ok(active_config), Ok(mut metrics)) => {
+            state
+                .upstream_history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .attach(
+                    &mut metrics,
+                    unix_timestamp(),
+                    i64::try_from(health.started_at_unix).unwrap_or(i64::MAX),
+                );
             let snapshot = OverviewResponse {
                 health,
                 active_config,
@@ -1196,11 +1208,18 @@ fn spawn_metrics_sampler(state: AppState) {
 
 async fn sample_metrics(state: &AppState) -> anyhow::Result<()> {
     let (health, metrics) = tokio::try_join!(state.control.health(), state.control.metrics())?;
+    let captured_at = unix_timestamp();
+    let kernel_started_at = i64::try_from(health.started_at_unix).unwrap_or(i64::MAX);
+    state
+        .upstream_history
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .record(captured_at, kernel_started_at, &metrics.upstreams);
     state
         .database
         .record_metric_sample(MetricSample {
-            captured_at: unix_timestamp(),
-            kernel_started_at: i64::try_from(health.started_at_unix).unwrap_or(i64::MAX),
+            captured_at,
+            kernel_started_at,
             requests_total: i64::try_from(metrics.requests_total).unwrap_or(i64::MAX),
         })
         .await
