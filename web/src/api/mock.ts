@@ -195,9 +195,10 @@ const overview: Overview = {
       { upstream: 'dns.google/dns-query', transport: 'doh', attempts: 1_114_083, success: 1_104_572, errors: 8_780, rejected: 731, aborted: 0, avg_latency_ms: 28.6, rcodes: [{ name: 'NoError', count: 1_060_120 }, { name: 'NXDomain', count: 42_452 }, { name: 'Refused', count: 731 }], tcp_fallbacks: 0, recent: { attempts: 34, success: 32, errors: 1, rejected: 1, aborted: 0, tcp_fallbacks: 0, avg_latency_ms: 31.2 } },
     ],
     requests_finished: { completed: 12_796_002, failed: 38_541, cancelled: 12_849 },
-    request_latency: { samples: 12_847_392, avg_ms: 13.8, within_100ms: 12_501_318 },
+    request_latency: { samples: 12_847_392, avg_ms: 13.8, within_10ms: 10_021_000, within_100ms: 12_501_318, within_1s: 12_790_000 },
+    request_latency_recent: { samples: 58_210, avg_ms: 12.6, within_10ms: 47_558, within_100ms: 56_406, within_1s: 57_978 },
     cache_stale: { expired: 128_904, client_timeout: 9_314, upstream_failure: 1_204 },
-    upstream_window_seconds: 3_540,
+    recent_window_seconds: 3_540,
   },
 }
 

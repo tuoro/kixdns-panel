@@ -139,11 +139,18 @@ pub struct MetricsSnapshot {
     /// 过期缓存命中的原因拆分；增强版 p20 起提供。
     #[serde(default)]
     pub cache_stale: StaleBreakdown,
-    /// 各上游 `recent` 实际覆盖的秒数，最长一小时；还没有可比的采样时为空。
-    /// Seconds actually covered by each upstream's `recent`, at most an hour; empty
-    /// until there is a sample to compare against.
+    /// 最近一段时间的端到端耗时，与 `recent_window_seconds` 同一个窗口；没有窗口时为空。
+    /// End-to-end latency over the same window as `recent_window_seconds`; empty
+    /// without a window.
     #[serde(default)]
-    pub upstream_window_seconds: Option<u64>,
+    pub request_latency_recent: Option<RequestLatency>,
+    /// 各上游 `recent` 与 `request_latency_recent` 实际覆盖的秒数，最长一小时；还没有
+    /// 可比的采样时为空。
+    /// Seconds actually covered by each upstream's `recent` and by
+    /// `request_latency_recent`, at most an hour; empty until there is a sample to
+    /// compare against.
+    #[serde(default)]
+    pub recent_window_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -157,8 +164,17 @@ pub struct FinishedCounts {
 pub struct RequestLatency {
     pub samples: u64,
     pub avg_ms: f64,
+    /// 10 ms 内返回的请求数。 / Requests answered within 10 ms.
+    #[serde(default)]
+    pub within_10ms: u64,
     /// 100 ms 内返回的请求数，用于"绝大多数请求在 100 ms 内返回"。
     pub within_100ms: u64,
+    /// 1 s 内返回的请求数。 / Requests answered within 1 s.
+    #[serde(default)]
+    pub within_1s: u64,
+    /// 耗时累计值，只给窗口相减用。 / The latency total, kept only for window arithmetic.
+    #[serde(skip)]
+    pub sum_ms: f64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -599,8 +615,12 @@ impl MetricsBuilder {
                 _ => {}
             },
             "kixdns_request_latency_ms_bucket" => {
-                if sample.labels.get("le") == Some("100") {
-                    self.snapshot.request_latency.within_100ms = value;
+                let latency = &mut self.snapshot.request_latency;
+                match sample.labels.get("le") {
+                    Some("10") => latency.within_10ms = value,
+                    Some("100") => latency.within_100ms = value,
+                    Some("1000") => latency.within_1s = value,
+                    _ => {}
                 }
             }
             "kixdns_request_latency_ms_count" => {
@@ -701,6 +721,7 @@ impl MetricsBuilder {
             ) {
                 self.snapshot.request_latency.avg_ms = avg;
             }
+            self.snapshot.request_latency.sum_ms = self.request_latency_sum_ms;
             let upstream_latency = self.upstream_latency;
             let upstream_response_latency = self.upstream_response_latency;
             let upstream_rcodes = self.upstream_rcodes;
@@ -842,8 +863,11 @@ kixdns_upstream_via_total{upstream="1.1.1.1:53",transport="udp",via="tcp"} 2
         assert_eq!(metrics.requests_finished.completed, 40);
         assert_eq!(metrics.requests_finished.cancelled, 1);
         assert_eq!(metrics.request_latency.samples, 42);
+        assert_eq!(metrics.request_latency.within_10ms, 30);
         assert_eq!(metrics.request_latency.within_100ms, 40);
+        assert_eq!(metrics.request_latency.within_1s, 42);
         assert!((metrics.request_latency.avg_ms - 14.0).abs() < 1e-9);
+        assert!((metrics.request_latency.sum_ms - 588.0).abs() < 1e-9);
         let first = &metrics.upstreams[0];
         assert!((first.avg_latency_ms.unwrap() - 84.5 / 7.0).abs() < 1e-9);
         assert_eq!(first.tcp_fallbacks, 2);
@@ -914,7 +938,8 @@ kixdns_upstream_latency_ms_count{upstream="8.8.8.8:53",transport="udp"} 2
         let legacy = &metrics.upstreams[1];
         assert!((legacy.avg_latency_ms.unwrap() - 30.0).abs() < 1e-9);
         assert_eq!(legacy.latency_samples, 2);
-        assert!(metrics.upstream_window_seconds.is_none());
+        assert!(metrics.recent_window_seconds.is_none());
+        assert!(metrics.request_latency_recent.is_none());
         assert!(replied.recent.is_none());
     }
 

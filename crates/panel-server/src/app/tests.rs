@@ -611,7 +611,7 @@ async fn test_state(directory: &TempDir) -> super::AppState {
         password_slots: Arc::new(tokio::sync::Semaphore::new(1)),
         config_apply_lock: Arc::new(tokio::sync::Mutex::new(())),
         dummy_password_hash: Arc::from("unused"),
-        upstream_history: Arc::default(),
+        recent_history: Arc::default(),
     }
 }
 

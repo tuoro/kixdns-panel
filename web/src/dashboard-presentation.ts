@@ -1,4 +1,4 @@
-import type { MetricsSnapshot, NamedCount, UpstreamCount, UpstreamTally } from './api/types'
+import type { MetricsSnapshot, NamedCount, RequestLatency, UpstreamCount, UpstreamTally } from './api/types'
 import { upstreamSuccessRate } from './utils'
 
 export interface PipelineShare extends NamedCount {
@@ -53,13 +53,51 @@ export function upstreamHealth(item: UpstreamCount): UpstreamHealth {
 }
 
 /**
- * 上游台账依据的时间段。面板每分钟采样一次，正常时窗口在 59 到 60 分钟之间，都叫一小时；
- * KixDNS 一小时内重启过时窗口从它启动算起；面板还没采到样本时没有窗口，只有累计。
+ * 上游台账和响应速度依据的时间段。面板每分钟采样一次，正常时窗口在 59 到 60 分钟之间，
+ * 都叫一小时；KixDNS 一小时内重启过时窗口从它启动算起；面板还没采到样本时没有窗口，只有累计。
  */
-export function upstreamWindowLabel(seconds: number | null): string {
+export function recentWindowLabel(seconds: number | null): string {
   if (seconds === null) return '启动以来'
   if (seconds >= 55 * 60) return '最近一小时'
   return `最近 ${Math.max(1, Math.round(seconds / 60))} 分钟`
+}
+
+export interface LatencyBasis {
+  latency: RequestLatency
+  /** true 表示最近一小时，false 表示 KixDNS 启动以来的累计。 */
+  recent: boolean
+}
+
+/** 最近一小时有 50 次以上请求就看最近一小时；夜里几乎没人用时退回启动以来的累计。 */
+export function latencyBasis(metrics: MetricsSnapshot): LatencyBasis {
+  const recent = metrics.request_latency_recent
+  if (recent && recent.samples >= MIN_HEALTH_SAMPLES) return { latency: recent, recent: true }
+  return { latency: metrics.request_latency, recent: false }
+}
+
+/**
+ * 耗时分成互不重叠的四段。内核上报的是累计桶（10 ms 内、100 ms 内……），直接列出来
+ * 「100 ms 内 97%」会和「10 ms 内 82%」重叠，读者会把两个数加起来。
+ */
+export function latencyBands(latency: RequestLatency): ShareRow[] {
+  if (latency.samples === 0) return []
+  const rows = [
+    { key: 'within-10ms', label: '10 ms 内', count: latency.within_10ms },
+    { key: 'within-100ms', label: '10–100 ms', count: latency.within_100ms - latency.within_10ms },
+    { key: 'within-1s', label: '100 ms–1 s', count: latency.within_1s - latency.within_100ms },
+    { key: 'slower', label: '1 s 以上', count: latency.samples - latency.within_1s },
+  ]
+  return rows.map((row) => {
+    const count = Math.max(0, row.count)
+    return { ...row, count, share: count / latency.samples }
+  })
+}
+
+/** 100 ms 内返回 ≥ 95% 记为健康，≥ 80% 记为降级，其余为异常；没有请求时观察中。 */
+export function latencyHealth(latency: RequestLatency): UpstreamHealth {
+  if (latency.samples === 0) return 'pending'
+  const share = latency.within_100ms / latency.samples
+  return share >= 0.95 ? 'healthy' : share >= 0.8 ? 'degraded' : 'unhealthy'
 }
 
 export const HEALTH_LABELS: Record<UpstreamHealth, string> = { pending: '观察中', healthy: '健康', degraded: '降级', unhealthy: '异常' }
