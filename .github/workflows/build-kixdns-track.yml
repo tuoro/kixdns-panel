@@ -154,13 +154,19 @@ jobs:
           echo "UPSTREAM_DIR=${upstream_dir}" >> "$GITHUB_ENV"
 
       - name: Verify enhanced source
+        env:
+          LOCK_FILE: ${{ matrix.lock_file }}
         run: |
           cd "$UPSTREAM_DIR"
           cargo fmt --check
           cargo test --lib --locked
           cargo test --bin kixdns --locked
           cargo clippy --all-targets --all-features --locked -- -D warnings
-          cargo audit --deny warnings
+          # 与每日同步用同一套审计规则：漏洞、不健全、已撤回阻断，无人维护只告警。
+          # The same audit rules as the daily sync: vulnerabilities, unsound and yanked
+          # block; unmaintained is only reported.
+          cd "$GITHUB_WORKSPACE"
+          cargo xtask audit --lock "$LOCK_FILE"
 
       - name: Verify enhanced runtime contract
         run: |

@@ -166,15 +166,11 @@ jobs:
         run: |
           validation_log="$RUNNER_TEMP/kixdns-compatibility-validation.log"
           : > "$validation_log"
-          # 用 && 串联而不是 set -e：放在 if 条件里调用时 bash 会忽略 set -e。
-          # Chained with && rather than set -e, which bash ignores inside an if condition.
           attempt() {
-            (
-              cargo xtask prepare --lock "$LOCK_FILE" &&
-                upstream_dir="$(cargo xtask checkout-dir --lock "$LOCK_FILE")" &&
-                cd "$upstream_dir" &&
-                cargo audit --db "$ADVISORY_DB" --no-fetch --deny warnings
-            ) 2>&1 | tee -a "$validation_log"
+            # xtask audit 先准备增强源码，再按统一规则审计。
+            # xtask audit prepares the enhanced source, then audits it under the shared rules.
+            cargo xtask audit --lock "$LOCK_FILE" --advisory-db "$ADVISORY_DB" 2>&1 |
+              tee -a "$validation_log"
             return "${PIPESTATUS[0]}"
           }
           # 新 Release 从上游 main 切出，而 Action 轨道天天跟着 main，它的补丁集离新版本最近，先试它。
@@ -316,7 +312,7 @@ jobs:
             cargo test --offline --lib --locked
             cargo test --offline --bin kixdns --locked
             cargo clippy --offline --all-targets --all-features --locked -- -D warnings
-            cargo audit --db "$ADVISORY_DB" --no-fetch --deny warnings
+            (cd "$GITHUB_WORKSPACE" && cargo xtask audit --lock "$LOCK_FILE" --advisory-db "$ADVISORY_DB")
             cargo build --offline --locked
             python3 "$GITHUB_WORKSPACE/scripts/dns_smoke.py" target/debug/kixdns
           ) 2>&1 | tee -a "$validation_log"
@@ -343,7 +339,7 @@ jobs:
           CHANGED: ${{ steps.upstream.outputs.changed }}
         shell: bash
         run: |
-          reference="$(jq -r 'if .source == "action" then .official_run_id else .release_tag end' "$LOCK_FILE")"
+          reference="$(bash scripts/lock-reference.sh "$LOCK_FILE")"
           [[ "$reference" =~ ^[A-Za-z0-9._-]+$ ]] || {
             echo "锁文件上游身份无效：$reference" >&2
             exit 1
@@ -366,7 +362,7 @@ jobs:
           LOCK_FILE: ${{ steps.upstream.outputs.lock_file }}
         shell: bash
         run: |
-          current="$(jq -r 'if .source == "action" then .official_run_id else .release_tag end' "$LOCK_FILE")"
+          current="$(bash scripts/lock-reference.sh "$LOCK_FILE")"
           pruned=()
           while IFS= read -r entry; do
             [[ "$(basename "$entry" .json)" == "$current" ]] && continue
@@ -414,7 +410,7 @@ jobs:
             echo '没有需要合并的变更'
             exit 0
           fi
-          reference="$(jq -r 'if .source == "action" then .official_run_id else .release_tag end' "$LOCK_FILE")"
+          reference="$(bash scripts/lock-reference.sh "$LOCK_FILE")"
           if [[ "$CHANGED" == true ]]; then
             branch="automation/upstream-${TRACK}-${CANDIDATE_COMMIT:0:12}"
             title="chore: track verified upstream ${TRACK}"
@@ -568,7 +564,7 @@ jobs:
           workflow_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           body_file="$RUNNER_TEMP/kixdns-security-issue.md"
           report_file="$RUNNER_TEMP/kixdns-validation-report.md"
-          reference="$(git show "HEAD:${LOCK_FILE}" | jq -r 'if .source == "action" then .official_run_id else .release_tag end')"
+          reference="$(bash scripts/lock-reference.sh <(git show "HEAD:${LOCK_FILE}"))"
           {
             echo "$marker"
             echo '## 当前版本的依赖未通过 RustSec 审计，自动刷新没有解决'
@@ -628,4 +624,44 @@ jobs:
             jq -r --arg title "$title" '.[] | select(.title == $title) | .number' | head -n 1)"
           if [[ -n "$issue" ]]; then
             gh issue close "$issue" --comment '当前版本已通过 RustSec 审计，告警自动关闭。'
+          fi
+
+      # 无人维护或提示类公告不阻断构建，但要让人知道：列在一个 Issue 里，消失后自动关闭。
+      # Unmaintained and informational advisories never block a build, but someone should
+      # know: they are listed in one issue, which closes once they are gone.
+      - name: Report dependency notices
+        if: success()
+        env:
+          LOCK_FILE: ${{ steps.upstream.outputs.lock_file }}
+          SOURCE_LABEL: ${{ steps.upstream.outputs.label }}
+        shell: bash
+        run: |
+          notices="$RUNNER_TEMP/kixdns-dependency-notices.md"
+          cargo xtask audit --lock "$LOCK_FILE" --advisory-db "$ADVISORY_DB" --notices "$notices"
+          title="[notice] KixDNS ${SOURCE_LABEL} 依赖提示"
+          issue="$(gh issue list --state open --limit 100 --json number,title | \
+            jq -r --arg title "$title" '.[] | select(.title == $title) | .number' | head -n 1)"
+          if [[ ! -s "$notices" ]]; then
+            if [[ -n "$issue" ]]; then
+              gh issue close "$issue" --comment '当前版本已没有无人维护或提示类依赖公告，告警自动关闭。'
+            fi
+            exit 0
+          fi
+          reference="$(bash scripts/lock-reference.sh "$LOCK_FILE")"
+          body_file="$RUNNER_TEMP/kixdns-notice-issue.md"
+          {
+            echo "<!-- kixdns-dependency-notice:${TRACK} -->"
+            echo '## 当前版本有依赖被标为无人维护或有提示'
+            echo
+            echo "- 轨道：${SOURCE_LABEL}"
+            echo "- 上游身份：\`${reference}\`"
+            echo
+            echo "这些公告没有修复版本，不阻断构建；长期需要上游换掉这些库。出现真正的漏洞时会另开 \`[security]\` 告警。"
+            echo
+            cat "$notices"
+          } > "$body_file"
+          if [[ -n "$issue" ]]; then
+            gh issue edit "$issue" --title "$title" --body-file "$body_file"
+          else
+            gh issue create --title "$title" --body-file "$body_file"
           fi

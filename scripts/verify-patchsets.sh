@@ -30,22 +30,16 @@ validate_lock() {
   fi
 
   source="$(jq -r '.source // empty' "$lock_file")"
-  if [[ "$source" == release ]]; then
-    reference="$(jq -r '.release_tag // empty' "$lock_file")"
-    if [[ -d "$patchset_directory/release/$reference" ]]; then
-      has_patches "$patchset_directory/release/$reference" || \
-        fail "$lock_file 对应的 p${patchset} Release 补丁目录为空"
-    fi
-  elif [[ "$source" == action ]]; then
-    reference="$(jq -r '.official_run_id // empty' "$lock_file")"
-  else
-    fail "$lock_file 的 source 无效"
+  [[ "$source" == action || "$source" == release ]] || fail "$lock_file 的 source 无效"
+  reference="$(bash scripts/lock-reference.sh "$lock_file")" || fail "$lock_file 的上游身份无效"
+  if [[ "$source" == release && -d "$patchset_directory/release/$reference" ]]; then
+    has_patches "$patchset_directory/release/$reference" || \
+      fail "$lock_file 对应的 p${patchset} Release 补丁目录为空"
   fi
 
   revision="$(jq -r '.dependency_revision // empty' "$lock_file")"
   if [[ -n "$revision" ]]; then
     [[ "$revision" =~ ^[1-9][0-9]*$ ]] || fail "$lock_file 的 dependency_revision 无效"
-    [[ "$reference" =~ ^[A-Za-z0-9._-]+$ ]] || fail "$lock_file 的上游身份无效"
     revision_file="patches/dependencies/${source}/${reference}/p${patchset}-r${revision}.patch"
     [[ -f "$revision_file" ]] || fail "$lock_file 引用的依赖修订不存在：$revision_file"
   fi

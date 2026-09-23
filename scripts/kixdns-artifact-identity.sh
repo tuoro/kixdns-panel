@@ -7,14 +7,11 @@ architecture="${2:?缺少目标架构}"
 [[ -f "$lock_file" ]] || { echo "锁文件不存在：$lock_file" >&2; exit 1; }
 [[ "$architecture" =~ ^(x86_64|arm64)$ ]] || { echo "目标架构无效：$architecture" >&2; exit 1; }
 
+script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source="$(jq -r .source "$lock_file")"
 patchset="$(jq -r .patchset "$lock_file")"
-case "$source" in
-  action) reference="$(jq -r .official_run_id "$lock_file")" ;;
-  release) reference="$(jq -r .release_tag "$lock_file")" ;;
-  *) echo "未知上游来源：$source" >&2; exit 1 ;;
-esac
-[[ "$reference" =~ ^[A-Za-z0-9._-]+$ && "$patchset" =~ ^[1-9][0-9]*$ ]] || {
+reference="$(bash "$script_directory/lock-reference.sh" "$lock_file")"
+[[ "$patchset" =~ ^[1-9][0-9]*$ ]] || {
   echo '上游构建身份无效' >&2
   exit 1
 }
