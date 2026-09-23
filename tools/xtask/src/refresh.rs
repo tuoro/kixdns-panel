@@ -31,15 +31,30 @@ use crate::{
 const UNFIXABLE: &str = "依赖无法在兼容版本内修复";
 const LOCK_FILE: &str = "Cargo.lock";
 
+/// 只告警、不挡构建的警告种类。“无人维护”和提示类公告都没有修复版本，唯一的解法是
+/// 上游换掉那个库，拿它挡构建会让整条轨道停摆。漏洞、不健全的代码、已撤回的版本，
+/// 以及以后新出现的种类，仍然阻断。
+/// Warning kinds that are reported but never block a build. Unmaintained and
+/// informational notices have no fixed version; the only remedy is upstream replacing
+/// the crate, and blocking on them would stall the whole track. Vulnerabilities,
+/// unsound code, yanked versions and any kind added later still block.
+const NON_BLOCKING_WARNINGS: [&str; 2] = ["unmaintained", "notice"];
+
 pub(crate) struct Options {
     pub(crate) lock_file: PathBuf,
-    pub(crate) advisory_db: PathBuf,
+    /// 预先取好的 `RustSec` 数据库；不给时由 cargo audit 自行获取。
+    /// A pre-fetched `RustSec` database; without one cargo audit fetches its own.
+    pub(crate) advisory_db: Option<PathBuf>,
+    /// 把不阻断的提示写进这个文件，供每日同步开告警。
+    /// Writes the non-blocking notices here for the daily sync to raise an alert.
+    pub(crate) notices: Option<PathBuf>,
 }
 
 impl Options {
     pub(crate) fn parse(mut arguments: impl Iterator<Item = String>) -> Result<Self> {
         let mut lock_file = None;
         let mut advisory_db = None;
+        let mut notices = None;
 
         while let Some(flag) = arguments.next() {
             let value = arguments
@@ -50,7 +65,8 @@ impl Options {
                 "--advisory-db" if advisory_db.is_none() => {
                     advisory_db = Some(PathBuf::from(value));
                 }
-                "--lock" | "--advisory-db" => bail!("重复的参数：{flag}"),
+                "--notices" if notices.is_none() => notices = Some(PathBuf::from(value)),
+                "--lock" | "--advisory-db" | "--notices" => bail!("重复的参数：{flag}"),
                 _ => bail!("未知的依赖审计参数：{flag}"),
             }
         }
@@ -59,15 +75,20 @@ impl Options {
         if !valid_lock_path(&lock_file) {
             bail!("--lock 必须是受支持的上游锁文件");
         }
-        let advisory_db = advisory_db.context("需要 --advisory-db")?;
-        let advisory_db = fs::canonicalize(&advisory_db)
-            .with_context(|| format!("RustSec 数据库不存在：{}", advisory_db.display()))?;
-        if !advisory_db.is_dir() {
-            bail!("RustSec 数据库不是目录：{}", advisory_db.display());
-        }
+        let advisory_db = advisory_db
+            .map(|database| {
+                let database = fs::canonicalize(&database)
+                    .with_context(|| format!("RustSec 数据库不存在：{}", database.display()))?;
+                if !database.is_dir() {
+                    bail!("RustSec 数据库不是目录：{}", database.display());
+                }
+                Ok(database)
+            })
+            .transpose()?;
         Ok(Self {
             lock_file,
             advisory_db,
+            notices,
         })
     }
 }
@@ -111,7 +132,7 @@ struct Package {
 }
 
 impl AuditReport {
-    fn findings(&self) -> impl Iterator<Item = (&str, &Finding)> {
+    fn all(&self) -> impl Iterator<Item = (&str, &Finding)> {
         self.vulnerabilities
             .list
             .iter()
@@ -121,14 +142,56 @@ impl AuditReport {
             }))
     }
 
+    /// 挡住构建的发现。 / Findings that block a build.
+    fn findings(&self) -> impl Iterator<Item = (&str, &Finding)> {
+        self.all()
+            .filter(|(kind, _)| !NON_BLOCKING_WARNINGS.contains(kind))
+    }
+
+    /// 只告警的提示。 / Notices that are reported only.
+    fn notices(&self) -> impl Iterator<Item = (&str, &Finding)> {
+        self.all()
+            .filter(|(kind, _)| NON_BLOCKING_WARNINGS.contains(kind))
+    }
+
+    /// 告警 Issue 用的 Markdown 清单。 / The Markdown list used by the alert issue.
+    fn notice_markdown(&self) -> String {
+        let mut lines = self
+            .notices()
+            .map(|(kind, finding)| {
+                let label = if kind == "unmaintained" {
+                    "无人维护"
+                } else {
+                    "提示"
+                };
+                let advisory = finding
+                    .advisory
+                    .as_ref()
+                    .map_or_else(String::new, |advisory| {
+                        format!(
+                            "：[{id}](https://rustsec.org/advisories/{id}.html)",
+                            id = advisory.id
+                        )
+                    });
+                format!(
+                    "- `{}` {} {label}{advisory}",
+                    finding.package.name, finding.package.version
+                )
+            })
+            .collect::<Vec<_>>();
+        lines.sort();
+        lines.dedup();
+        lines.join("\n")
+    }
+
     fn is_clean(&self) -> bool {
         self.findings().next().is_none()
     }
 
-    /// 被 `--deny warnings` 拒绝的每个包版本都要换掉，包括已撤回的版本。
+    /// 挡住构建的每个包版本都要换掉，包括已撤回的版本。
     /// 有公告给出修复版本时取兼容范围内最低的那个；同一个包命中多条公告时取其中最高的。
-    /// Every package version that `--deny warnings` rejects has to move, yanked
-    /// versions included. When an advisory names a patched version, the lowest
+    /// Every package version that blocks the build has to move, yanked versions
+    /// included. When an advisory names a patched version, the lowest
     /// compatible one is the target; a package hit by several advisories takes the
     /// highest of those targets.
     fn packages(&self) -> BTreeMap<(String, String), Option<Version>> {
@@ -220,12 +283,19 @@ fn parse_report(stdout: &[u8]) -> Result<AuditReport> {
     serde_json::from_slice(stdout).context("cargo audit 没有输出可解析的 JSON 报告")
 }
 
-fn run_audit(checkout: &Path, advisory_db: &Path) -> Result<AuditReport> {
-    let output = Command::new("cargo")
-        .arg("audit")
-        .arg("--db")
-        .arg(advisory_db)
-        .args(["--no-fetch", "--deny", "warnings", "--json"])
+/// 所有审计都走这里，同一套规则：是否阻断由 [`NON_BLOCKING_WARNINGS`] 决定，
+/// 而不是 cargo audit 的退出码。没有漏洞时 cargo audit 仍然失败，说明它自己出了错。
+/// Every audit goes through here with one set of rules: whether something blocks is
+/// decided by [`NON_BLOCKING_WARNINGS`], not by cargo audit's exit code. A failing
+/// cargo audit without vulnerabilities means cargo audit itself went wrong.
+fn run_audit(checkout: &Path, advisory_db: Option<&Path>) -> Result<AuditReport> {
+    let mut command = Command::new("cargo");
+    command.arg("audit");
+    if let Some(database) = advisory_db {
+        command.arg("--db").arg(database).arg("--no-fetch");
+    }
+    let output = command
+        .arg("--json")
         .current_dir(checkout)
         .stdin(Stdio::null())
         .output()
@@ -233,7 +303,7 @@ fn run_audit(checkout: &Path, advisory_db: &Path) -> Result<AuditReport> {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let report = parse_report(&output.stdout)
         .with_context(|| format!("cargo audit 失败：{}\n{stderr}", output.status))?;
-    if !output.status.success() && report.is_clean() {
+    if !output.status.success() && report.vulnerabilities.list.is_empty() {
         bail!(
             "cargo audit 失败但报告没有发现：{}\n{stderr}",
             output.status
@@ -246,7 +316,20 @@ fn run_audit(checkout: &Path, advisory_db: &Path) -> Result<AuditReport> {
 /// Returns whether the audit passed; findings are printed and the caller picks the exit code.
 pub(crate) fn audit_lock(root: &Path, options: &Options) -> Result<bool> {
     let checkout = prepare(root, &options.lock_file)?;
-    let report = run_audit(&checkout, &options.advisory_db)?;
+    let report = run_audit(&checkout, options.advisory_db.as_deref())?;
+    let notices = report.notice_markdown();
+    if !notices.is_empty() {
+        eprintln!("依赖提示（不阻断构建）：\n{notices}");
+    }
+    if let Some(path) = options.notices.as_deref() {
+        let content = if notices.is_empty() {
+            String::new()
+        } else {
+            format!("{notices}\n")
+        };
+        fs::write(path, content)
+            .with_context(|| format!("写入依赖提示失败：{}", path.display()))?;
+    }
     if report.is_clean() {
         println!("依赖审计通过：{}", options.lock_file.display());
         return Ok(true);
@@ -260,6 +343,9 @@ pub(crate) fn audit_lock(root: &Path, options: &Options) -> Result<bool> {
 }
 
 pub(crate) fn refresh_dependencies(root: &Path, options: &Options) -> Result<()> {
+    if options.notices.is_some() {
+        bail!("refresh-dependencies 不输出依赖提示，请用 audit --notices");
+    }
     let lock = load_lock(root, &options.lock_file)?;
     validate_lock(&lock)?;
     let series = patch_series(root, &lock)?;
@@ -282,7 +368,7 @@ pub(crate) fn refresh_dependencies(root: &Path, options: &Options) -> Result<()>
         apply_patch(staging.path(), revision)?;
     }
 
-    let before = run_audit(staging.path(), &options.advisory_db)?;
+    let before = run_audit(staging.path(), options.advisory_db.as_deref())?;
     if before.is_clean() {
         println!(
             "依赖审计通过，无需依赖修订：{}",
@@ -296,7 +382,7 @@ pub(crate) fn refresh_dependencies(root: &Path, options: &Options) -> Result<()>
         update_package(staging.path(), &name, &version, target)?;
     }
 
-    let after = run_audit(staging.path(), &options.advisory_db)?;
+    let after = run_audit(staging.path(), options.advisory_db.as_deref())?;
     if !after.is_clean() {
         bail!("{UNFIXABLE}：\n{}", after.describe());
     }
@@ -664,16 +750,40 @@ mod tests {
         );
     }
 
-    #[test]
-    fn treats_any_warning_kind_as_a_finding() {
-        let report = parse_report(
-            br#"{"vulnerabilities": {"found": false, "count": 0, "list": []},
-                "warnings": {"unmaintained": [{"kind": "unmaintained",
-                  "advisory": {"id": "RUSTSEC-2026-0001"},
-                  "package": {"name": "old", "version": "1.0.0"}}]}}"#,
+    fn warnings_report(kind: &str) -> String {
+        format!(
+            r#"{{"vulnerabilities": {{"found": false, "count": 0, "list": []}},
+                "warnings": {{"{kind}": [{{"kind": "{kind}",
+                  "advisory": {{"id": "RUSTSEC-2026-0001"}},
+                  "package": {{"name": "old", "version": "1.0.0"}}}}]}}}}"#
         )
-        .unwrap();
-        assert!(!report.is_clean());
+    }
+
+    #[test]
+    fn unmaintained_and_notices_are_reported_without_blocking() {
+        // 用户决定（2026-09-23）：“无人维护”没有修复版本，只告警、不阻断。
+        // User decision (2026-09-23): unmaintained has no fixed version, so it is
+        // reported but never blocks.
+        for kind in ["unmaintained", "notice"] {
+            let report = parse_report(warnings_report(kind).as_bytes()).unwrap();
+            assert!(report.is_clean(), "{kind} must not block");
+            assert!(report.packages().is_empty(), "{kind} must not be refreshed");
+            assert!(report.notice_markdown().contains("`old` 1.0.0 "));
+        }
+        let unmaintained = parse_report(warnings_report("unmaintained").as_bytes()).unwrap();
+        assert_eq!(
+            unmaintained.notice_markdown(),
+            "- `old` 1.0.0 无人维护：[RUSTSEC-2026-0001](https://rustsec.org/advisories/RUSTSEC-2026-0001.html)"
+        );
+    }
+
+    #[test]
+    fn unsound_yanked_and_unknown_warnings_still_block() {
+        for kind in ["unsound", "yanked", "a-kind-added-later"] {
+            let report = parse_report(warnings_report(kind).as_bytes()).unwrap();
+            assert!(!report.is_clean(), "{kind} must block");
+            assert!(report.notice_markdown().is_empty());
+        }
     }
 
     #[test]
@@ -752,6 +862,18 @@ mod tests {
             persist_revision(root.path(), lock_file, &action_lock(None), 1, b"x").is_err(),
             "an existing revision must never be overwritten"
         );
+    }
+
+    #[test]
+    fn advisory_database_is_optional_but_must_exist_when_given() {
+        let options = Options::parse(
+            ["--lock", "upstream.lock.json", "--notices", "notices.md"]
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .unwrap();
+        assert!(options.advisory_db.is_none());
+        assert_eq!(options.notices, Some(PathBuf::from("notices.md")));
     }
 
     #[test]

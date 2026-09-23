@@ -12,6 +12,7 @@ on:
       - deploy/**
       - scripts/fetch-kixdns-artifact.sh
       - scripts/kixdns-artifact-identity.sh
+      - scripts/lock-reference.sh
       - scripts/install.sh
       - scripts/one-click-install.sh
       - scripts/panel-online-update.sh
@@ -35,6 +36,7 @@ on:
       - deploy/**
       - scripts/fetch-kixdns-artifact.sh
       - scripts/kixdns-artifact-identity.sh
+      - scripts/lock-reference.sh
       - scripts/install.sh
       - scripts/one-click-install.sh
       - scripts/panel-online-update.sh

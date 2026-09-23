@@ -14,6 +14,7 @@ on:
       - tools/xtask/**
       - Cargo.lock
       - scripts/kixdns-artifact-identity.sh
+      - scripts/lock-reference.sh
       - scripts/test-kixdns-artifact-identity.sh
       - scripts/test-verify-patchsets.sh
       - scripts/report-kernel-build.sh
@@ -31,6 +32,7 @@ on:
       - tools/xtask/**
       - Cargo.lock
       - scripts/kixdns-artifact-identity.sh
+      - scripts/lock-reference.sh
       - scripts/test-kixdns-artifact-identity.sh
       - scripts/test-verify-patchsets.sh
       - scripts/report-kernel-build.sh

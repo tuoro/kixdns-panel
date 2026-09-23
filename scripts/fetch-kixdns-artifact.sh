@@ -45,8 +45,11 @@ workflow_is_pending() {
   )] | length > 0' <<< "${response}" >/dev/null
 }
 
+# 包里的上游锁就是构建时的锁文件原样复制，整份比较；逐项列字段会在锁新增字段时悄悄放宽。
+# The package carries the build's lock file verbatim, so compare all of it; listing
+# fields one by one silently loosens the check whenever the lock gains a field.
 artifact_identity() {
-  jq -ceS '{repository, source, commit, official_run_id, release_id, release_tag, compatibility, patchset, control_protocol, dependency_revision}' "$1"
+  jq -ceS . "$1"
 }
 
 tracked_artifact() {

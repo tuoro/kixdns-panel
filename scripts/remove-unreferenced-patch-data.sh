@@ -28,7 +28,7 @@ for lock_file in "${locks[@]}"; do
   revision="$(jq -r '.dependency_revision // empty' "$lock_file")"
   if [[ -n "$revision" ]]; then
     source="$(jq -r .source "$lock_file")"
-    reference="$(jq -r 'if .source == "action" then .official_run_id else .release_tag end' "$lock_file")"
+    reference="$(bash scripts/lock-reference.sh "$lock_file")"
     referenced_revisions["patches/dependencies/${source}/${reference}/p${patchset}-r${revision}.patch"]=1
   fi
 done

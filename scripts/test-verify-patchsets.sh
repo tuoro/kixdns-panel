@@ -10,7 +10,7 @@ trap 'rm -rf "$temporary"' EXIT
 
 fixture="$temporary/fixture"
 mkdir -p "$fixture/scripts"
-cp "$workspace/scripts/verify-patchsets.sh" "$fixture/scripts/"
+cp "$workspace/scripts/verify-patchsets.sh" "$workspace/scripts/lock-reference.sh" "$fixture/scripts/"
 
 lock() {
   local source=$1 reference=$2 patchset=$3
@@ -99,6 +99,10 @@ scenario 'revision touching source' fail '只能修改 Cargo.lock' '
   { revision old new; printf "diff --git a/src/lib.rs b/src/lib.rs\n"; } > patches/dependencies/action/11/p2-r3.patch'
 scenario 'revision at an invalid path' fail '依赖修订路径无效' '
   revision old new > patches/dependencies/action/11/r3.patch'
+scenario 'action lock without a run id' fail '上游身份无效' '
+  jq "del(.official_run_id)" upstream.lock.json > lock.new && mv lock.new upstream.lock.json'
+scenario 'release lock with an unsafe tag' fail '上游身份无效' '
+  jq ".release_tag = \"../v1\"" upstream.release.lock.json > lock.new && mv lock.new upstream.release.lock.json'
 scenario 'lock references a missing revision' fail '引用的依赖修订不存在' '
   jq ".dependency_revision = 9" upstream.lock.json > lock.new && mv lock.new upstream.lock.json'
 scenario 'delete the highest patchset' fail '最高编号补丁集 p4 不能删除' 'git rm --quiet -r patches/sets/4'
