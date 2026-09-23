@@ -1,7 +1,6 @@
 {
   "repository": "olicesx/kixdns",
   "source": "release",
-  "branch": "main",
   "commit": "98522846d060fc9b59fb0764cea2d734f26634d8",
   "release_id": 388450345,
   "release_tag": "v0.2.0",

@@ -64,6 +64,34 @@ printf '+changed\n' >> "$revision_file"
   exit 1
 }
 
+expect_unchanged() {
+  [[ "$(identity)" == "$baseline" ]] || {
+    echo "$1" >&2
+    exit 1
+  }
+}
+expect_changed() {
+  local current
+  current="$(identity)"
+  [[ "$current" != "$baseline" ]] || {
+    echo "$1" >&2
+    exit 1
+  }
+  baseline=$current
+}
+
+printf '\n# xtask dependency bump\n' >> "$copy/tools/xtask/Cargo.toml"
+# 真实改动 xtask 依赖闭包里一个库的版本。 / A real version change inside xtask's dependency closure.
+sed -i '/^name = "anyhow"$/{n;s/^version = .*/version = "1.0.0"/}' "$copy/Cargo.lock"
+expect_unchanged 'xtask 自己的依赖变化不应使 KixDNS artifact 失效'
+printf '\n# build workflow change\n' >> "$copy/.github/workflows/build-kixdns-track.yml"
+printf '\n# identity script change\n' >> "$copy/scripts/kixdns-artifact-identity.sh"
+expect_unchanged '工作流和指纹脚本的改动不应使 KixDNS artifact 失效'
+printf '// prepare helper\n' > "$copy/tools/xtask/src/prepare_helper.rs"
+expect_changed '新增的 xtask 模块默认参与 prepare，必须使 KixDNS artifact 失效'
+printf '\n# stricter smoke test\n' >> "$copy/scripts/dns_smoke.py"
+expect_changed '验证脚本变化必须使 KixDNS artifact 失效'
+
 printf '\n// artifact identity build-input regression\n' >> "$copy/tools/xtask/src/main.rs"
 build_identity="$(identity)"
 [[ "$build_identity" != "$baseline" ]] || {

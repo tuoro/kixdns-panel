@@ -16,67 +16,62 @@ reference="$(bash "$script_directory/lock-reference.sh" "$lock_file")"
   exit 1
 }
 
-command -v cargo >/dev/null || { echo '缺少命令：cargo' >&2; exit 1; }
-
-# 只记录 xtask 在 Linux 构建主机上的精确依赖，隔离面板专属依赖变化。
-xtask_dependencies="$(
-  cargo metadata --locked --format-version 1 --filter-platform x86_64-unknown-linux-gnu |
-    jq -ceS '
-      . as $metadata
-      | def direct_dependencies($ids):
-          [$metadata.resolve.nodes[]
-            | select(.id as $id | $ids | index($id))
-            | .deps[].pkg]
-          | unique;
-        def dependency_closure($ids):
-          (($ids + direct_dependencies($ids)) | unique) as $next
-          | if ($next | length) == ($ids | length)
-            then $next
-            else dependency_closure($next)
-            end;
-        ([$metadata.packages[]
-          | select(.name == "xtask" and (.manifest_path | gsub("\\\\"; "/") | endswith("/tools/xtask/Cargo.toml")))
-          | .id] | first) as $root
-      | if $root == null then error("找不到 xtask package") else $root end
-      | dependency_closure([.]) as $ids
-      | [$metadata.packages[]
-          | select(.id as $id | $ids | index($id))
-          | {name, version, source}]
-      | sort_by(.name, .version, .source)
-    '
-)" || { echo '无法解析 xtask 依赖闭包' >&2; exit 1; }
-
+# 指纹只由下面明确列出的输入决定：会改变内核二进制，或改变它必须通过的验证的文件。
+#   - 锁文件：上游提交、补丁集、兼容层、依赖修订号
+#   - 所选补丁：兼容层、Release 专用层、通用层，以及依赖修订
+#   - 能力清单：随包发布
+#   - Rust 工具链
+#   - xtask 源码：prepare 的逻辑；只做维护的模块明确排除，见 maintenance_modules
+#   - 验证脚本：DNS 冒烟与 GLIBC 基线，它们变严时历史版本要重新验证
+# 不包括 xtask 自己的依赖（只影响工具，不影响内核）、工作流和本脚本；改了构建方式
+# 需要手动强制重建。
+# The fingerprint depends only on the inputs listed here: files that change the kernel
+# binary or the checks it must pass. xtask's own dependencies (they affect the tool, not
+# the kernel), the workflows and this script are deliberately left out; a change to how
+# kernels are built needs a manual forced rebuild.
+maintenance_modules=(
+  tools/xtask/src/overlay.rs # 自动重基，只生成新补丁集 / automatic rebase, only writes new patchsets
+  tools/xtask/src/refresh.rs # 审计与依赖刷新，只生成修订 / audit and refresh, only writes revisions
+)
 files=(
   rust-toolchain.toml
-  tools/xtask/Cargo.toml
   scripts/dns_smoke.py
   scripts/verify-glibc-baseline.sh
-  scripts/kixdns-artifact-identity.sh
-  .github/workflows/build-kixdns-track.yml
 )
-while IFS= read -r file; do files+=("$file"); done < <(find tools/xtask/src -type f -print | sort)
+while IFS= read -r file; do
+  [[ " ${maintenance_modules[*]} " == *" $file "* ]] || files+=("$file")
+done < <(find tools/xtask/src -type f -name '*.rs' -print | sort)
+
 patchset_directory="patches/sets/${patchset}"
 [[ -d "$patchset_directory/common" ]] || {
   echo "补丁集 p${patchset} 缺少通用补丁目录" >&2
   exit 1
 }
 capabilities_file="${patchset_directory}/capabilities.json"
-legacy_build_inputs=false
-if [[ -f "$capabilities_file" ]]; then
-  jq -e '
-    .schema_version == 1 and
-    (.config_capabilities | type == "array") and
-    ([.config_capabilities[] | type == "string" and test("^[a-z][a-z0-9_]{0,63}$")] | all) and
-    ((.config_capabilities | unique | length) == (.config_capabilities | length))
-  ' "$capabilities_file" >/dev/null || {
-    echo "补丁集 p${patchset} 的能力清单无效" >&2
+[[ -f "$capabilities_file" ]] || {
+  echo "补丁集 p${patchset} 缺少能力清单" >&2
+  exit 1
+}
+jq -e '
+  .schema_version == 1 and
+  (.config_capabilities | type == "array") and
+  ([.config_capabilities[] | type == "string" and test("^[a-z][a-z0-9_]{0,63}$")] | all) and
+  ((.config_capabilities | unique | length) == (.config_capabilities | length))
+' "$capabilities_file" >/dev/null || {
+  echo "补丁集 p${patchset} 的能力清单无效" >&2
+  exit 1
+}
+files+=("$capabilities_file")
+
+add_patches() {
+  local directory=$1 empty_message=$2
+  local selected_count=${#files[@]}
+  while IFS= read -r file; do files+=("$file"); done < <(find "$directory" -maxdepth 1 -type f -name '*.patch' -print | sort)
+  ((${#files[@]} > selected_count)) || {
+    echo "$empty_message" >&2
     exit 1
   }
-  files+=("$capabilities_file")
-else
-  # 没有能力清单的封印补丁集继续使用引入能力契约前的构建输入摘要。
-  legacy_build_inputs=true
-fi
+}
 compatibility="$(jq -r '.compatibility // empty' "$lock_file")"
 if [[ -n "$compatibility" ]]; then
   [[ "$compatibility" =~ ^[A-Za-z0-9._-]+$ ]] || {
@@ -88,28 +83,13 @@ if [[ -n "$compatibility" ]]; then
     echo "补丁集 p${patchset} 缺少兼容层 ${compatibility}" >&2
     exit 1
   }
-  selected_count=${#files[@]}
-  while IFS= read -r file; do files+=("$file"); done < <(find "$compatibility_directory" -maxdepth 1 -type f -name '*.patch' -print | sort)
-  ((${#files[@]} > selected_count)) || {
-    echo "补丁集 p${patchset} 的兼容层 ${compatibility} 为空" >&2
-    exit 1
-  }
+  add_patches "$compatibility_directory" "补丁集 p${patchset} 的兼容层 ${compatibility} 为空"
 fi
 release_directory="${patchset_directory}/release/${reference}"
 if [[ "$source" == release && -d "$release_directory" ]]; then
-  selected_count=${#files[@]}
-  while IFS= read -r file; do files+=("$file"); done < <(find "$release_directory" -maxdepth 1 -type f -name '*.patch' -print | sort)
-  ((${#files[@]} > selected_count)) || {
-    echo "补丁集 p${patchset} 的 Release 目录 ${reference} 为空" >&2
-    exit 1
-  }
+  add_patches "$release_directory" "补丁集 p${patchset} 的 Release 目录 ${reference} 为空"
 fi
-selected_count=${#files[@]}
-while IFS= read -r file; do files+=("$file"); done < <(find "$patchset_directory/common" -maxdepth 1 -type f -name '*.patch' -print | sort)
-((${#files[@]} > selected_count)) || {
-  echo "补丁集 p${patchset} 缺少通用补丁" >&2
-  exit 1
-}
+add_patches "$patchset_directory/common" "补丁集 p${patchset} 缺少通用补丁"
 # 依赖修订只进指纹，不改名称格式：已安装的面板按固定格式解析 artifact 名。
 # A dependency revision enters the fingerprint only and never the name format,
 # which installed panels parse strictly.
@@ -128,47 +108,12 @@ if [[ -n "$dependency_revision" ]]; then
 fi
 
 fingerprint="$({
-  [[ -f "$lock_file" ]] || { echo "构建输入不存在：$lock_file" >&2; exit 1; }
+  # 规则本身变了就换版本号，让所有身份一起变。 / Bump when the rules change.
+  printf 'identity-rules\0%s\n' 2
   printf 'upstream.lock.json\0%s\n' "$(sha256sum "$lock_file" | cut -d ' ' -f1)"
-  printf 'tools/xtask/dependencies\0%s\n' "$(printf '%s' "$xtask_dependencies" | sha256sum | cut -d ' ' -f1)"
   for file in "${files[@]}"; do
     [[ -f "$file" ]] || { echo "构建输入不存在：$file" >&2; exit 1; }
-    digest="$(sha256sum "$file" | cut -d ' ' -f1)"
-    # overlay.rs 只实现自动重基，refresh.rs 只生成依赖修订，都不参与 prepare 或最终二进制构建。
-    # 固定首次纳入指纹时的摘要，既保留现有 artifact 名，也避免维护逻辑变化重建历史版本。
-    # 任何会影响 prepare 的共享逻辑必须保留在未固定摘要的构建输入中。
-    # overlay.rs only rebases and refresh.rs only generates dependency revisions; neither
-    # runs during prepare or the binary build, so both keep the digest they had when first
-    # fingerprinted. Shared logic that affects prepare must stay in an unpinned input.
-    case "$file" in
-      tools/xtask/src/overlay.rs)
-        digest='2c0ae44101f843199141cb514a80e546a2a868ad339c8058735fc099220be498'
-        ;;
-      tools/xtask/src/refresh.rs)
-        digest='058529c2313bb7a4112393893eb143a06a26153ade337d52d3e44b1841419c10'
-        ;;
-    esac
-    if [[ "$legacy_build_inputs" == true ]]; then
-      case "$file" in
-        scripts/kixdns-artifact-identity.sh)
-          digest='d47a150c73f952c32f55d33ec1e4d8b37502fd34a02b747c356e91bafed6c7fd'
-          ;;
-        .github/workflows/build-kixdns-track.yml)
-          digest='1cb570b8c0a1d9b793738bfdd16c683f261f619467c777a2fc102e60eced0fe4'
-          ;;
-      esac
-    else
-      # 能力清单 v1 固定到首次发布的打包契约；实际能力内容仍单独进入指纹。
-      case "$file" in
-        scripts/kixdns-artifact-identity.sh)
-          digest='fe2c4173d9078208205f9c9dedfbda93d4c045b162dd267edf138bd02adb5f05'
-          ;;
-        .github/workflows/build-kixdns-track.yml)
-          digest='8ffe7e141b09552ad44cab40d4863826b70f50268fc4ba571c4e2287f8654d55'
-          ;;
-      esac
-    fi
-    printf '%s\0%s\n' "$file" "$digest"
+    printf '%s\0%s\n' "$file" "$(sha256sum "$file" | cut -d ' ' -f1)"
   done
 } | sha256sum | cut -c1-12)"
 
