@@ -38,8 +38,12 @@ revision() {
     mkdir -p "patches/sets/$patchset/common"
     printf 'diff --git a/src/lib.rs b/src/lib.rs\n' > "patches/sets/$patchset/common/0001-source.patch"
   done
+  # Action 用 p2 的 split 兼容层；Release 在后面的场景里加一个新兼容层来沿用 p2。
+  # The action lock uses p2's split layer; a scenario below adds a new layer for the release.
+  mkdir -p patches/sets/2/compatibility/split
+  printf 'diff --git a/src/main.rs b/src/main.rs\n' > patches/sets/2/compatibility/split/0001-entry.patch
   mkdir -p upstreams/actions upstreams/releases patches/dependencies/action/11
-  lock action 11 2 > upstream.lock.json
+  lock action 11 2 | jq '.compatibility = "split"' > upstream.lock.json
   lock release v1 2 > upstream.release.lock.json
   cp upstream.lock.json upstreams/actions/11.json
   cp upstream.release.lock.json upstreams/releases/v1.json
@@ -92,6 +96,11 @@ scenario 'replace the highest patchset with a newer one' pass '' '
   git rm --quiet -r patches/sets/4
   mkdir -p patches/sets/5/common
   printf "diff --git a/src/lib.rs b/src/lib.rs\n" > patches/sets/5/common/0001-source.patch'
+scenario 'release joins a sealed patchset through a new compatibility layer' pass '' '
+  mkdir -p patches/sets/2/compatibility/tokio
+  printf "diff --git a/src/main.rs b/src/main.rs\n" > patches/sets/2/compatibility/tokio/0001-entry.patch
+  jq ".compatibility = \"tokio\"" upstream.release.lock.json > lock.new && mv lock.new upstream.release.lock.json
+  cp upstream.release.lock.json upstreams/releases/v1.json'
 
 scenario 'edit a sealed revision' fail '已封印' 'revision old changed > patches/dependencies/action/11/p2-r2.patch'
 scenario 'new revision below the sealed one' fail '必须高于' 'revision old other > patches/dependencies/action/11/p2-r1.patch'
@@ -108,6 +117,17 @@ scenario 'lock references a missing revision' fail '引用的依赖修订不存�
 scenario 'delete the highest patchset' fail '最高编号补丁集 p4 不能删除' 'git rm --quiet -r patches/sets/4'
 scenario 'delete a referenced patchset' fail '缺少通用补丁' 'git rm --quiet -r patches/sets/2'
 scenario 'edit a sealed patchset' fail '已封印' 'printf "changed\n" >> patches/sets/1/common/0001-source.patch'
+scenario 'add a patch to an existing compatibility layer' fail '已封印' '
+  printf "diff --git a/src/lib.rs b/src/lib.rs\n" > patches/sets/2/compatibility/split/0002-more.patch'
+scenario 'add a common patch to a sealed patchset' fail '已封印' '
+  printf "diff --git a/src/lib.rs b/src/lib.rs\n" > patches/sets/1/common/0002-more.patch'
+scenario 'add a release layer to a sealed patchset' fail '已封印' '
+  mkdir -p patches/sets/2/release/v1
+  printf "diff --git a/src/lib.rs b/src/lib.rs\n" > patches/sets/2/release/v1/0001-release.patch'
+scenario 'delete a compatibility layer from a sealed patchset' fail '已封印' '
+  git rm --quiet -r patches/sets/2/compatibility/split
+  jq "del(.compatibility)" upstream.lock.json > lock.new && mv lock.new upstream.lock.json
+  cp upstream.lock.json upstreams/actions/11.json'
 scenario 'new patchset below the highest' fail '新补丁集 p3 必须高于当前最高编号 p4' '
   mkdir -p patches/sets/3/common
   printf "diff --git a/src/lib.rs b/src/lib.rs\n" > patches/sets/3/common/0001-source.patch'
