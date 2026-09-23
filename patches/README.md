@@ -68,7 +68,7 @@ dependencies/<source>/<上游身份>/p<补丁集>-r<修订号>.patch
 当前 Action 轨道补丁集的通用补丁（编号以 `upstream.lock.json` 的 `patchset` 为准；自 p19 起，增强逻辑通过上游的 `EngineObserver` 接口接入，不再修改 `src/engine`、`src/watcher.rs` 或配置加载器）：
 
 1. `0001-query-stats-config.patch`：查询排行的 `statistics_*` 配置字段及其缓存命名空间参与。
-2. `0002-panel-control-socket.patch`：`panel.rs` 以 `EngineObserver` 实现指标、查询排行、配置摘要与诊断轨迹，`panel_trace.rs` 从观察者事件重建轨迹，`main.rs` 通过 `Engine::builder` 注入观察者并启动本机控制 Socket；`--debug` 时 `panel.rs` 把每个引擎事件转发给上游的 `TracingObserver`，使 `kixdns::observe` 事件日志在增强版中仍然可用；`main.rs` 在 journald 下把致命错误压成单行 `<3>fatal: …`、把 panic 压成单行 `<2>panicked at …`，让面板的错误过滤器能看到启动失败的原因。
+2. `0002-panel-control-socket.patch`：`panel.rs` 以 `EngineObserver` 实现指标（上游耗时另有只算拿到响应的一份）、查询排行、配置摘要与诊断轨迹，`panel_trace.rs` 从观察者事件重建轨迹，`main.rs` 通过 `Engine::builder` 注入观察者并启动本机控制 Socket；`--debug` 时 `panel.rs` 把每个引擎事件转发给上游的 `TracingObserver`，使 `kixdns::observe` 事件日志在增强版中仍然可用；`main.rs` 在 journald 下把致命错误压成单行 `<3>fatal: …`、把 panic 压成单行 `<2>panicked at …`，让面板的错误过滤器能看到启动失败的原因。
 3. `0004-dependency-lock.patch`：用固定工具链重新解析的 `Cargo.lock`。
 
-原先的 `0003-security-dependency-refresh.patch` 已被上游吸收，因此编号不连续。Release 轨道的 p24 是 p23 在 `v0.2.0` 上的重基：`main.rs` 保留 p23 的 panic 钩子和致命错误输出，运行时仍按 `v0.2.0` 的方式构建，依赖锁补丁编号为 `0003`。p9 保持旧结构，供 `v0.1.1` 复现。
+原先的 `0003-security-dependency-refresh.patch` 已被上游吸收，因此编号不连续。Release 轨道的 p26 与 Action 轨道的 p25 增强内容相同，只是重基到 `v0.2.0`：`main.rs` 保留 panic 钩子和致命错误输出，运行时仍按 `v0.2.0` 的方式构建，依赖锁补丁编号为 `0003`。p9 保持旧结构，供 `v0.1.1` 复现。

@@ -34,7 +34,7 @@ index 6e9c89b0a69978a29fa390892131e63d6d374f93..e2e1501bc86ae01480a2af82fab6aa75
  pub mod socket_utils;
  pub mod watcher;
 diff --git a/src/main.rs b/src/main.rs
-index fd9f0df681a298b2b90b5684f11532d7c7d9d800..5142c60e471b5c974699ada3d84d55cebbabcac8 100644
+index e1b6cccdff0fae7ed28ecd0704f088605086d1d0..09122bd1f6298f7c3f6405762054d042934751a9 100644
 --- a/src/main.rs
 +++ b/src/main.rs
 @@ -1,3 +1,5 @@
@@ -61,10 +61,11 @@ index fd9f0df681a298b2b90b5684f11532d7c7d9d800..5142c60e471b5c974699ada3d84d55ce
      },
      /// Convert GeoIP .dat to MMDB format / 转换 GeoIP .dat 为 MMDB 格式
      ConvertGeoIp {
-@@ -55,8 +59,23 @@ enum Commands {
+@@ -55,7 +59,22 @@ enum Commands {
      },
  }
  
+-fn main() -> anyhow::Result<()> {
 +fn main() {
 +    // 先装 panic 钩子再做任何事：journald 只按每行开头的 `<N>` 定优先级，而默认 panic 输出和
 +    // `Termination` 打印的 `Error: …` 都没有前缀，会被记成 info（6），面板只看 ≤3 的错误过滤器
@@ -80,13 +81,11 @@ index fd9f0df681a298b2b90b5684f11532d7c7d9d800..5142c60e471b5c974699ada3d84d55ce
 +    }
 +}
 +
- #[tokio::main]
--async fn main() -> anyhow::Result<()> {
-+async fn real_main() -> anyhow::Result<()> {
-     let args = Args::parse();
- 
-     match args.command {
-@@ -91,7 +110,17 @@ async fn main() -> anyhow::Result<()> {
++fn real_main() -> anyhow::Result<()> {
+     // 防御性关闭启动链遗传的 fd：OPNsense boot 时序的 daemon/configd 链可能遗传数万个
+     // 构建/部署 fd（2026-08-30 事故：fd 水位 90%，28180 个已删除构建产物文件的句柄被遗传且持有 3 天）。
+     // Defensively close fds inherited from the startup chain: the OPNsense boot sequence
+@@ -114,7 +133,17 @@ async fn async_main() -> anyhow::Result<()> {
              listener_label,
              debug,
              udp_workers_count,
@@ -105,7 +104,7 @@ index fd9f0df681a298b2b90b5684f11532d7c7d9d800..5142c60e471b5c974699ada3d84d55ce
          None => {
              // No subcommand provided - run DNS server with defaults
              run_dns_server(
-@@ -99,6 +128,7 @@ async fn main() -> anyhow::Result<()> {
+@@ -122,6 +151,7 @@ async fn async_main() -> anyhow::Result<()> {
                  "default".to_string(),
                  false,
                  0,
@@ -113,7 +112,7 @@ index fd9f0df681a298b2b90b5684f11532d7c7d9d800..5142c60e471b5c974699ada3d84d55ce
              )
              .await
          }
-@@ -112,6 +142,7 @@ async fn run_dns_server(
+@@ -135,6 +165,7 @@ async fn run_dns_server(
      listener_label: String,
      debug: bool,
      udp_workers_count: usize,
@@ -121,7 +120,7 @@ index fd9f0df681a298b2b90b5684f11532d7c7d9d800..5142c60e471b5c974699ada3d84d55ce
  ) -> anyhow::Result<()> {
      // Run DNS server
      init_tracing(debug);
-@@ -136,15 +167,15 @@ async fn run_dns_server(
+@@ -159,15 +190,15 @@ async fn run_dns_server(
          .doh
          .map(|doh| (doh.bind, doh.tls_cert, doh.tls_key, doh.path));
  
@@ -145,7 +144,7 @@ index fd9f0df681a298b2b90b5684f11532d7c7d9d800..5142c60e471b5c974699ada3d84d55ce
  
      watcher::spawn(config.clone(), engine.clone());
  
-@@ -161,6 +192,25 @@ async fn run_dns_server(
+@@ -184,6 +215,25 @@ async fn run_dns_server(
  
      let mut all_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
  
@@ -171,7 +170,7 @@ index fd9f0df681a298b2b90b5684f11532d7c7d9d800..5142c60e471b5c974699ada3d84d55ce
      #[cfg(unix)]
      {
          // ✅ OpenBSD 兼容性方案：双 socket（IPv4 + IPv6）+ 零拷贝 recv_buf_from
-@@ -350,7 +400,7 @@ async fn run_dns_server(
+@@ -373,7 +423,7 @@ async fn run_dns_server(
  fn init_tracing(debug: bool) {
      // 默认仅保留错误日志以平衡性能与可观测性，除非显式指定
      // Default to error-level logging to balance performance with observability unless explicitly enabled
@@ -180,7 +179,7 @@ index fd9f0df681a298b2b90b5684f11532d7c7d9d800..5142c60e471b5c974699ada3d84d55ce
          .with_timer(fmt::time::LocalTime::rfc_3339())
          .with_target(false)
          .with_ansi(false)
-@@ -358,10 +408,127 @@ fn init_tracing(debug: bool) {
+@@ -381,10 +431,127 @@ fn init_tracing(debug: bool) {
  
      let level = if debug { "debug" } else { "error" };
      let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
@@ -312,7 +311,7 @@ index fd9f0df681a298b2b90b5684f11532d7c7d9d800..5142c60e471b5c974699ada3d84d55ce
  }
  
  // 为 IPv4 地址创建并启动 UDP workers / Create and spawn UDP workers for IPv4 address
-@@ -1017,6 +1184,113 @@ async fn handle_tcp_conn(
+@@ -1066,6 +1233,113 @@ async fn handle_tcp_conn(
  
  #[cfg(test)]
  mod tests {
@@ -428,10 +427,10 @@ index fd9f0df681a298b2b90b5684f11532d7c7d9d800..5142c60e471b5c974699ada3d84d55ce
      use hickory_proto::rr::{Name, RecordType};
 diff --git a/src/panel.rs b/src/panel.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..7fb4c6d347d70bfb3df0bd3bb237cf603b9975a9
+index 0000000000000000000000000000000000000000..c8c20f2791c7f4d80f17cd2211fbb6beff889621
 --- /dev/null
 +++ b/src/panel.rs
-@@ -0,0 +1,2192 @@
+@@ -0,0 +1,2278 @@
 +use std::collections::HashMap;
 +use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 +use std::path::PathBuf;
@@ -880,6 +879,10 @@ index 0000000000000000000000000000000000000000..7fb4c6d347d70bfb3df0bd3bb237cf60
 +    requests_cancelled: AtomicU64,
 +    request_latency: RequestLatency,
 +    upstream_latency: DashMap<Arc<str>, LatencySum>,
++    /// 只算拿到响应的尝试（成功或被拒绝），超时与连接错误不计入。
++    /// Only attempts that received a response (success or rejected); timeouts and
++    /// connection errors are left out.
++    upstream_response_latency: DashMap<Arc<str>, LatencySum>,
 +    upstream_rcodes: DashMap<Arc<str>, AtomicU64>,
 +    upstream_via: DashMap<Arc<str>, AtomicU64>,
 +    pipeline_hits: DashMap<Arc<str>, AtomicU64>,
@@ -918,6 +921,7 @@ index 0000000000000000000000000000000000000000..7fb4c6d347d70bfb3df0bd3bb237cf60
 +            requests_cancelled: AtomicU64::new(0),
 +            request_latency: RequestLatency::default(),
 +            upstream_latency: DashMap::new(),
++            upstream_response_latency: DashMap::new(),
 +            upstream_rcodes: DashMap::new(),
 +            upstream_via: DashMap::new(),
 +            pipeline_hits: DashMap::new(),
@@ -989,8 +993,13 @@ index 0000000000000000000000000000000000000000..7fb4c6d347d70bfb3df0bd3bb237cf60
 +    }
 +
 +    /// 累计一次上游耗时；序列数量与键长度受同一上限约束。
-+    fn record_upstream_latency(&self, key: Arc<str>, latency: std::time::Duration) {
-+        if let Some(entry) = self.upstream_latency.get(&key) {
++    fn record_upstream_latency(
++        &self,
++        map: &DashMap<Arc<str>, LatencySum>,
++        key: Arc<str>,
++        latency: std::time::Duration,
++    ) {
++        if let Some(entry) = map.get(&key) {
 +            entry.add(latency);
 +            return;
 +        }
@@ -999,12 +1008,12 @@ index 0000000000000000000000000000000000000000..7fb4c6d347d70bfb3df0bd3bb237cf60
 +            return;
 +        }
 +        let _guard = self.metric_series_insert_lock.lock();
-+        if let Some(entry) = self.upstream_latency.get(&key) {
++        if let Some(entry) = map.get(&key) {
 +            entry.add(latency);
-+        } else if self.upstream_latency.len() < MAX_METRIC_SERIES_PER_MAP {
++        } else if map.len() < MAX_METRIC_SERIES_PER_MAP {
 +            let sum = LatencySum::default();
 +            sum.add(latency);
-+            self.upstream_latency.insert(key, sum);
++            map.insert(key, sum);
 +        } else {
 +            self.metric_series_dropped.fetch_add(1, Ordering::Relaxed);
 +        }
@@ -1139,7 +1148,8 @@ index 0000000000000000000000000000000000000000..7fb4c6d347d70bfb3df0bd3bb237cf60
 +                "config_query_stats_v1",
 +                "diagnostics_trace_v1",
 +                "config_static_cname_response_v1",
-+                "metrics_upstream_precision_v1"
++                "metrics_upstream_precision_v1",
++                "metrics_upstream_response_latency_v1"
 +            ],
 +        })
 +    }
@@ -1333,6 +1343,12 @@ index 0000000000000000000000000000000000000000..7fb4c6d347d70bfb3df0bd3bb237cf60
 +            output,
 +            "kixdns_upstream_latency_ms",
 +            &self.upstream_latency,
++            &["upstream", "transport"],
++        );
++        append_latency_map(
++            output,
++            "kixdns_upstream_response_latency_ms",
++            &self.upstream_response_latency,
 +            &["upstream", "transport"],
 +        );
 +        append_map(
@@ -1576,10 +1592,21 @@ index 0000000000000000000000000000000000000000..7fb4c6d347d70bfb3df0bd3bb237cf60
 +        };
 +        self.record_upstream_result(event.upstream, transport, result);
 +        if !matches!(event.outcome, UpstreamOutcome::Aborted) {
-+            self.record_upstream_latency(
-+                Arc::from(format!("{}\0{}", event.upstream, transport)),
-+                event.latency,
-+            );
++            let key: Arc<str> = Arc::from(format!("{}\0{}", event.upstream, transport));
++            // 超时会把整段超时时长计入平均耗时；响应耗时只看真正回了包的尝试。
++            // A timeout adds its whole timeout to the average; the response latency
++            // only looks at attempts that actually got a reply.
++            if matches!(
++                event.outcome,
++                UpstreamOutcome::Success | UpstreamOutcome::Rejected
++            ) {
++                self.record_upstream_latency(
++                    &self.upstream_response_latency,
++                    Arc::clone(&key),
++                    event.latency,
++                );
++            }
++            self.record_upstream_latency(&self.upstream_latency, key, event.latency);
 +            self.increment(
 +                &self.upstream_via,
 +                Arc::from(format!(
@@ -2444,6 +2471,64 @@ index 0000000000000000000000000000000000000000..7fb4c6d347d70bfb3df0bd3bb237cf60
 +        assert_eq!(metrics.reload_failure.load(super::Ordering::Relaxed), 1);
 +        assert_eq!(metrics.reload_success.load(super::Ordering::Relaxed), 1);
 +        assert!(!metrics.query_stats.snapshot(now, 3_600, 20).enabled);
++    }
++
++    #[test]
++    fn response_latency_counts_only_attempts_that_got_a_reply() {
++        use crate::config::Transport;
++        use crate::observe::{EngineObserver, RequestContext, UpstreamOutcome, UpstreamResult};
++        use hickory_proto::op::ResponseCode;
++        use hickory_proto::rr::{DNSClass, RecordType};
++        use std::time::Duration;
++
++        let metrics = PanelMetrics::default();
++        let ctx = RequestContext {
++            request_id: 1,
++            listener_label: "default",
++            client: "127.0.0.1:5353".parse().unwrap(),
++            qname: "example.com",
++            qtype: RecordType::A,
++            qclass: DNSClass::IN,
++            background_refresh: false,
++        };
++        let result = |outcome, rcode, millis| UpstreamResult {
++            upstream: "1.1.1.1:53",
++            transport: Transport::Udp,
++            outcome,
++            via: Transport::Udp,
++            latency: Duration::from_millis(millis),
++            rcode,
++            truncated: Some(false),
++            error: None,
++        };
++        metrics.upstream_result(
++            &ctx,
++            &result(UpstreamOutcome::Success, Some(ResponseCode::NoError), 12),
++        );
++        metrics.upstream_result(
++            &ctx,
++            &result(UpstreamOutcome::Rejected, Some(ResponseCode::ServFail), 20),
++        );
++        // 超时：整段超时计入已结算耗时，但不计入响应耗时。
++        // A timeout: the whole timeout counts toward the settled latency only.
++        metrics.upstream_result(&ctx, &result(UpstreamOutcome::Error, None, 9_000));
++        metrics.upstream_result(&ctx, &result(UpstreamOutcome::Aborted, None, 500));
++
++        let mut output = String::new();
++        metrics.render_counters(&mut output);
++        let has = |line: &str| output.lines().any(|candidate| candidate == line);
++        assert!(has(
++            "kixdns_upstream_latency_ms_sum{upstream=\"1.1.1.1:53\",transport=\"udp\"} 9032.000"
++        ));
++        assert!(has(
++            "kixdns_upstream_latency_ms_count{upstream=\"1.1.1.1:53\",transport=\"udp\"} 3"
++        ));
++        assert!(has(
++            "kixdns_upstream_response_latency_ms_sum{upstream=\"1.1.1.1:53\",transport=\"udp\"} 32.000"
++        ));
++        assert!(has(
++            "kixdns_upstream_response_latency_ms_count{upstream=\"1.1.1.1:53\",transport=\"udp\"} 2"
++        ));
 +    }
 +
 +    #[test]

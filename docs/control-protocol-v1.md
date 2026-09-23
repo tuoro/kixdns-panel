@@ -12,7 +12,7 @@ Linux 默认地址为 `/run/kixdns/admin.sock`。协议使用 Unix Socket 上的
 
 返回进程状态、上游提交、增强补丁版本、启动时间、当前配置代数和可选能力列表。当前增强版包含 `stats_top_v1`、`config_query_stats_v1` 和 `diagnostics_trace_v1`：分别声明查询排行、统计配置字段和规则执行轨迹。客户端只能在对应能力存在时使用端点或写入受控字段。
 
-`capabilities` 中除配置能力外，还包含面板功能门控：`stats_top_v1`（查询排行）、`diagnostics_trace_v1`（诊断轨迹）、`metrics_upstream_precision_v1`（增强版 p21 起，表示 `/v1/metrics` 提供 `aborted` 结果、上游耗时、响应码、实际传输、请求完成状态与过期缓存原因；面板只有看到它才计算上游健康并用剔除竞争落败的成功率公式，否则健康显示为未知）。运行时能力负责当前进程的配置门控。尚未启动的目标版本使用 Artifact 内经 SHA-256 校验的 `KIXDNS_CAPABILITIES.json` 预检，完整规则见[配置能力契约](config-capabilities.md)。
+`capabilities` 中除配置能力外，还包含面板功能门控：`stats_top_v1`（查询排行）、`diagnostics_trace_v1`（诊断轨迹）、`metrics_upstream_precision_v1`（增强版 p21 起，表示 `/v1/metrics` 提供 `aborted` 结果、上游耗时、响应码、实际传输、请求完成状态与过期缓存原因；面板只有看到它才计算上游健康并用剔除竞争落败的成功率公式，否则健康显示为未知）、`metrics_upstream_response_latency_v1`（增强版 p25 起，表示 `/v1/metrics` 另外提供只算拿到响应的上游耗时，面板用它计算平均耗时）。运行时能力负责当前进程的配置门控。尚未启动的目标版本使用 Artifact 内经 SHA-256 校验的 `KIXDNS_CAPABILITIES.json` 预检，完整规则见[配置能力契约](config-capabilities.md)。
 
 ### `GET /v1/config/active`
 
@@ -56,6 +56,7 @@ Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致
 - `kixdns_requests_finished_total{status="completed|failed|cancelled"}`：请求完成状态，不含后台刷新。
 - `kixdns_request_latency_ms_bucket{le="10|50|100|500|1000|+Inf"}`、`kixdns_request_latency_ms_sum`、`kixdns_request_latency_ms_count`：端到端耗时直方图与累计值（毫秒，`_sum` 保留三位小数）。
 - `kixdns_upstream_latency_ms_sum{upstream,transport}`、`kixdns_upstream_latency_ms_count{upstream,transport}`：已得到结果的上游尝试累计耗时与次数，不含 `aborted`。
+- `kixdns_upstream_response_latency_ms_sum{upstream,transport}`、`kixdns_upstream_response_latency_ms_count{upstream,transport}`：只算拿到响应的尝试，即 `success` 与 `rejected`；超时和连接错误的 `error` 不计入，否则一次超时就把整段超时时长加进平均耗时。
 - `kixdns_upstream_rcodes_total{upstream,rcode}`：上游应答的响应码计数，`rcode` 为 hickory 的变体名（`NoError`、`NXDomain`、`ServFail`、`Refused` 等）。
 - `kixdns_upstream_via_total{upstream,transport,via}`：`transport` 为该地址选定的传输，`via` 为实际带回答案的传输；`transport="udp"` 且 `via="tcp"` 即 TCP 兜底。
 
