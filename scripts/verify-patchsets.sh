@@ -105,8 +105,21 @@ if [[ -n "$base_sha" ]]; then
         fail "最高编号补丁集 p${patchset} 不能删除"
       continue
     fi
-    git diff --quiet "$base_sha" HEAD -- "patches/sets/$patchset" || \
-      fail "补丁集 p${patchset} 已封印；请新增更高编号的补丁集"
+    # 已封印的集合只允许新增一个全新名字的兼容层目录：已有的锁不会选中新名字，已有构建
+    # 不受影响，另一份上游因此能沿用同一个编号。往已有兼容层里加文件、新增 release/<tag>/
+    # （按标签自动选中）或任何修改、删除都会改变已有构建，只能新增更高编号的补丁集。
+    # A sealed patchset only accepts a compatibility directory under a new name: no existing
+    # lock selects a new name, so no existing build changes, and another upstream can share
+    # the number. Adding to an existing layer, adding release/<tag>/ (selected by tag) or any
+    # edit or deletion changes an existing build and needs a new, higher patchset.
+    while IFS=$'\t' read -r status path; do
+      [[ -n "$status" ]] || continue
+      layer="${path#"patches/sets/$patchset/"}"
+      if [[ "$status" != A || ! "$layer" =~ ^compatibility/([A-Za-z0-9._-]+)/[^/]+\.patch$ ]] ||
+        git cat-file -e "${base_sha}:patches/sets/$patchset/compatibility/${BASH_REMATCH[1]}" 2>/dev/null; then
+        fail "补丁集 p${patchset} 已封印（${layer}）；只能新增名字未用过的兼容层，其余改动请新增更高编号的补丁集"
+      fi
+    done < <(git diff --name-status --no-renames "$base_sha" HEAD -- "patches/sets/$patchset")
   done
 
   # 依赖修订同样封印：已有的不能修改，同一版本同一补丁集的新修订必须编号更高。
