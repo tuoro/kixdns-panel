@@ -75,9 +75,10 @@ export function emptyOverview(): Overview {
       rules: [],
       upstreams: [],
       requests_finished: { completed: 0, failed: 0, cancelled: 0 },
-      request_latency: { samples: 0, avg_ms: 0, within_100ms: 0 },
+      request_latency: { samples: 0, avg_ms: 0, within_10ms: 0, within_100ms: 0, within_1s: 0 },
+      request_latency_recent: null,
       cache_stale: { expired: 0, client_timeout: 0, upstream_failure: 0 },
-      upstream_window_seconds: null,
+      recent_window_seconds: null,
     },
   }
 }

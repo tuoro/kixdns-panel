@@ -52,8 +52,8 @@ use crate::db::{
 use crate::error::{AppError, AppResult};
 use crate::geo_data::{GeoDataError, GeoDataManager};
 use crate::operations::{OperationError, Operations};
+use crate::recent_window::RecentHistory;
 use crate::updates::{UpdateError, UpdateManager, UpdateSettings};
-use crate::upstream_window::UpstreamHistory;
 
 #[derive(Debug, Clone)]
 pub struct AppSettings {
@@ -97,7 +97,7 @@ pub struct AppState {
     password_slots: Arc<Semaphore>,
     config_apply_lock: Arc<Mutex<()>>,
     dummy_password_hash: Arc<str>,
-    upstream_history: Arc<std::sync::Mutex<UpstreamHistory>>,
+    recent_history: Arc<std::sync::Mutex<RecentHistory>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -331,7 +331,7 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         password_slots: Arc::new(Semaphore::new(4)),
         config_apply_lock: Arc::new(Mutex::new(())),
         dummy_password_hash: Arc::from(dummy_password_hash),
-        upstream_history: Arc::default(),
+        recent_history: Arc::default(),
     };
     spawn_geo_scheduler(state.clone());
     spawn_config_reconciler(state.clone());
@@ -623,7 +623,7 @@ async fn overview(
     match results {
         (Ok(health), Ok(active_config), Ok(mut metrics)) => {
             state
-                .upstream_history
+                .recent_history
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .attach(
@@ -1211,10 +1211,10 @@ async fn sample_metrics(state: &AppState) -> anyhow::Result<()> {
     let captured_at = unix_timestamp();
     let kernel_started_at = i64::try_from(health.started_at_unix).unwrap_or(i64::MAX);
     state
-        .upstream_history
+        .recent_history
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .record(captured_at, kernel_started_at, &metrics.upstreams);
+        .record(captured_at, kernel_started_at, &metrics);
     state
         .database
         .record_metric_sample(MetricSample {

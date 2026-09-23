@@ -9,8 +9,8 @@ mod error;
 mod geo_data;
 mod operations;
 mod panel_update;
+mod recent_window;
 mod updates;
-mod upstream_window;
 
 pub use app::{AppSettings, build_app, run};
 pub use auth::TrustedProxies;

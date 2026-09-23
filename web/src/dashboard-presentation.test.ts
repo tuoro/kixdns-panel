@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { MIN_HEALTH_SAMPLES, cacheComposition, pipelineDistribution, rcodeDistribution, settledAttempts, upstreamBasis, upstreamHealth, upstreamWindowLabel } from './dashboard-presentation'
+import type { RequestLatency } from './api/types'
+import { MIN_HEALTH_SAMPLES, cacheComposition, latencyBands, latencyBasis, latencyHealth, pipelineDistribution, rcodeDistribution, recentWindowLabel, settledAttempts, upstreamBasis, upstreamHealth } from './dashboard-presentation'
 import { emptyOverview } from './dashboard-state'
 
 describe('概览 Pipeline 分布', () => {
@@ -86,13 +87,13 @@ describe('上游健康与分布', () => {
   })
 
   it('台账标题写出实际依据的时间段', () => {
-    expect(upstreamWindowLabel(null)).toBe('启动以来')
-    expect(upstreamWindowLabel(3_600)).toBe('最近一小时')
+    expect(recentWindowLabel(null)).toBe('启动以来')
+    expect(recentWindowLabel(3_600)).toBe('最近一小时')
     // 每分钟采样一次，正常时窗口是 59 到 60 分钟
-    expect(upstreamWindowLabel(3_541)).toBe('最近一小时')
+    expect(recentWindowLabel(3_541)).toBe('最近一小时')
     // KixDNS 20 分钟前重启
-    expect(upstreamWindowLabel(1_200)).toBe('最近 20 分钟')
-    expect(upstreamWindowLabel(20)).toBe('最近 1 分钟')
+    expect(recentWindowLabel(1_200)).toBe('最近 20 分钟')
+    expect(recentWindowLabel(20)).toBe('最近 1 分钟')
   })
 
   it('响应码分布合并所有上游并把少见响应码归为其他', () => {
@@ -114,5 +115,36 @@ describe('上游健康与分布', () => {
     expect(rows.map((row) => row.key)).toEqual(['fresh', 'expired', 'client_timeout', 'upstream_failure'])
     expect(rows[0].share).toBeCloseTo(0.9)
     expect(rows[3].count).toBe(1)
+  })
+})
+
+describe('响应速度', () => {
+  const lifetime: RequestLatency = { samples: 1_000_000, avg_ms: 40, within_10ms: 600_000, within_100ms: 900_000, within_1s: 990_000 }
+  const withRecent = (recent: RequestLatency | null) => ({ ...emptyOverview().metrics, request_latency: lifetime, request_latency_recent: recent })
+
+  it('耗时分成互不重叠的四段，合计是全部请求', () => {
+    // 内核给的是累计桶：10 ms 内 817 次、100 ms 内 969 次、1 s 内 996 次
+    const bands = latencyBands({ samples: 1_000, avg_ms: 12, within_10ms: 817, within_100ms: 969, within_1s: 996 })
+    expect(bands.map((band) => [band.label, band.count])).toEqual([['10 ms 内', 817], ['10–100 ms', 152], ['100 ms–1 s', 27], ['1 s 以上', 4]])
+    expect(bands.reduce((sum, band) => sum + band.share, 0)).toBeCloseTo(1)
+    expect(latencyBands({ samples: 0, avg_ms: 0, within_10ms: 0, within_100ms: 0, within_1s: 0 })).toEqual([])
+  })
+
+  it('最近一小时请求够多时看最近一小时，不够时退回启动以来的累计', () => {
+    const recent: RequestLatency = { samples: 600, avg_ms: 8, within_10ms: 500, within_100ms: 598, within_1s: 600 }
+    expect(latencyBasis(withRecent(recent))).toEqual({ latency: recent, recent: true })
+    // 夜里一小时只有 49 次请求，几次慢请求不该决定整张卡
+    const quiet = { ...recent, samples: MIN_HEALTH_SAMPLES - 1 }
+    expect(latencyBasis(withRecent(quiet))).toEqual({ latency: lifetime, recent: false })
+    expect(latencyBasis(withRecent(null)).recent).toBe(false)
+  })
+
+  it('按 100 ms 内返回的占比判断，没有请求时观察中', () => {
+    const at = (within100: number) => latencyHealth({ samples: 100, avg_ms: 10, within_10ms: 0, within_100ms: within100, within_1s: 100 })
+    expect(at(95)).toBe('healthy')
+    expect(at(94)).toBe('degraded')
+    expect(at(80)).toBe('degraded')
+    expect(at(79)).toBe('unhealthy')
+    expect(latencyHealth({ samples: 0, avg_ms: 0, within_10ms: 0, within_100ms: 0, within_1s: 0 })).toBe('pending')
   })
 })

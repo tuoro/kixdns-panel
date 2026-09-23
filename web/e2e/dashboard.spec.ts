@@ -2,8 +2,9 @@ import { expect, test, type Page } from '@playwright/test'
 import { acceptConfirm, cancelConfirm } from './confirm'
 
 /**
- * 信号带上的大数字是自启动以来的累计请求数——它和紧挨着的完成率、平均耗时、
- * 运行时长算的是同一段账。曲线另说：它自带「近 24 小时 X 次」的说明，只替自己
+ * 信号带上的大数字是自启动以来的累计请求数——它和紧挨着的完成率、运行时长
+ * 算的是同一段账。耗时不在这里：它挪进了「响应速度」卡，那张卡看最近一小时，
+ * 标题写明时段，不和信号带的累计数挤在一处。曲线另说：它自带「近 24 小时 X 次」的说明，只替自己
  * 说话。两个数字都断言，因为让大数字跟着曲线走过一次，结果「近 1 小时请求」
  * 底下紧跟着一行按累计算出来的完成率，两个口径挤在同一处，读者看不出来。
  *
@@ -14,8 +15,10 @@ import { acceptConfirm, cancelConfirm } from './confirm'
  * 不再缩写成万/亿。
  *
  * The headline figure on the signal band is the cumulative request count since
- * start — the same period as the completion rate, average latency and uptime
- * beside it. The curve is separate: it carries its own "last 24 hours, N
+ * start — the same period as the completion rate and uptime beside it. Latency
+ * is not here: it moved to the response-speed tile, which covers the last hour
+ * and names that period in its title rather than sitting beside a lifetime
+ * figure. The curve is separate: it carries its own "last 24 hours, N
  * requests" caption and speaks only for itself. Both are asserted because the
  * headline followed the curve once, which put "requests in the last hour"
  * directly above a completion rate computed over the whole run — two periods in
@@ -39,6 +42,16 @@ test('首页展示精确分布，页签可用键盘切换且完整保留三个�
   await openOverview(page)
   await expect(page.locator('.overview-total-value')).toHaveText(EXPECTED_TOTAL)
   await expect(page.locator('.overview-trend-label')).toHaveText(EXPECTED_TREND)
+  await expect(page.locator('.overview-signal-sub')).not.toContainText('ms')
+  // 第三张卡是最近一小时的响应速度：平均 12.6 ms 按台账的写法取整，分布是四段不重叠的区间
+  await expect(page.getByText('兜底使用')).toHaveCount(0)
+  const speed = page.locator('.overview-stat').filter({ hasText: '响应速度' })
+  await expect(speed.locator('.overview-stat-label')).toHaveText('响应速度 · 最近一小时')
+  await expect(speed.locator('.overview-kpi-value')).toHaveText('13')
+  for (const band of ['10 ms 内 81.7%', '10–100 ms 15.2%', '100 ms–1 s 2.7%', '1 s 以上 0.4%']) {
+    await expect(speed.locator('.overview-latency-legend')).toContainText(band)
+  }
+  await expect(speed).toContainText('96.9% 在 100 ms 内返回')
   // 堆叠条换成「主项做大、小项列表」：占比最高的那条独占一行，其余进列表。
   await expect(page.locator('.overview-distribution .overview-dist-share')).toHaveText('69.4%')
   await expect(page.locator('.overview-distribution .overview-dist-name')).toHaveText('default')

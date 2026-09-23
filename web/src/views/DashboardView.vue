@@ -6,7 +6,7 @@ import type { CacheFlushResult, Overview, QueryStatsSnapshot, ServiceStatus, Sta
 import StatusBanner from '../components/StatusBanner.vue'
 import { useConfirm } from '../composables/useConfirm'
 import { useToast } from '../composables/useToast'
-import { HEALTH_LABELS, MIN_HEALTH_SAMPLES, cacheComposition, pipelineDistribution, rcodeDistribution, settledAttempts, upstreamBasis, upstreamHealth, upstreamWindowLabel } from '../dashboard-presentation'
+import { HEALTH_LABELS, MIN_HEALTH_SAMPLES, cacheComposition, pipelineDistribution, rcodeDistribution, latencyBands, latencyBasis, latencyHealth, recentWindowLabel, settledAttempts, upstreamBasis, upstreamHealth } from '../dashboard-presentation'
 import type { UpstreamHealth } from '../dashboard-presentation'
 import { dashboardRuntimeState, emptyOverview, emptyQueryStats, hasStaleDashboardData, supportsQueryStats, supportsUpstreamPrecision } from '../dashboard-state'
 import { sparkline } from '../trend'
@@ -67,19 +67,27 @@ const finishedTotal = computed(() => {
   return finished ? finished.completed + finished.failed + finished.cancelled : 0
 })
 const finishedShare = (value: number) => (finishedTotal.value ? value / finishedTotal.value : 0)
-const latencyKnown = computed(() => (displayOverview.value?.metrics.request_latency.samples ?? 0) > 0)
-const within100Share = computed(() => {
-  const latency = displayOverview.value?.metrics.request_latency
-  return latency?.samples ? latency.within_100ms / latency.samples : 0
-})
-const latencyHealth = computed<UpstreamHealth>(() => (within100Share.value >= 0.95 ? 'healthy' : within100Share.value >= 0.8 ? 'degraded' : 'unhealthy'))
 const staleShare = computed(() => {
   const metrics = displayOverview.value?.metrics
   const hits = metrics ? metrics.cache_hits_fresh + metrics.cache_hits_stale : 0
   return hits ? metrics!.cache_hits_stale / hits : 0
 })
 const precisionSupported = computed(() => supportsUpstreamPrecision(displayOverview.value?.health.capabilities ?? []))
-const upstreamWindow = computed(() => displayOverview.value?.metrics.upstream_window_seconds ?? null)
+const recentWindow = computed(() => displayOverview.value?.metrics.recent_window_seconds ?? null)
+// 响应速度和上游台账一样看最近一小时；这一小时请求不够时退回启动以来的累计，标题照实写。
+const speed = computed(() => {
+  const metrics = displayOverview.value?.metrics
+  if (!metrics) return null
+  const basis = latencyBasis(metrics)
+  const { latency } = basis
+  return {
+    latency,
+    period: basis.recent ? recentWindowLabel(recentWindow.value) : '启动以来',
+    bands: latencyBands(latency),
+    health: latencyHealth(latency),
+    within100: latency.samples ? latency.within_100ms / latency.samples : 0,
+  }
+})
 // 每行的成功率、耗时、次数和明细都取同一个依据：最近一小时，响应不够时是启动以来的累计。
 // 整张表都没有窗口时标题已经写了“启动以来”，行上不再重复。
 // 排序始终按累计响应次数，免得表格随窗口来回跳。
@@ -87,7 +95,7 @@ const upstreamRows = computed(() => [...(displayOverview.value?.metrics.upstream
   .sort((left, right) => settledAttempts(right) - settledAttempts(left))
   .map((item) => {
     const basis = upstreamBasis(item)
-    return { ...item, shown: basis.tally, sinceStart: !basis.recent && upstreamWindow.value !== null, settled: settledAttempts(basis.tally), health: precisionSupported.value ? upstreamHealth(item) : 'pending' as UpstreamHealth }
+    return { ...item, shown: basis.tally, sinceStart: !basis.recent && recentWindow.value !== null, settled: settledAttempts(basis.tally), health: precisionSupported.value ? upstreamHealth(item) : 'pending' as UpstreamHealth }
   }))
 const healthCounts = computed(() => {
   const counts = { pending: 0, healthy: 0, degraded: 0, unhealthy: 0 }
@@ -104,8 +112,11 @@ const healthSummary = computed(() => {
 const overallHealth = computed<UpstreamHealth>(() => (healthCounts.value.unhealthy ? 'unhealthy' : healthCounts.value.degraded ? 'degraded' : 'healthy'))
 const rcodes = computed(() => rcodeDistribution(displayOverview.value?.metrics.upstreams ?? []))
 const cacheRows = computed(() => (displayOverview.value ? cacheComposition(displayOverview.value.metrics) : []))
+function latencyFigure(value: number): string {
+  return value < 10 ? value.toFixed(1) : String(Math.round(value))
+}
 function formatLatency(value: number | null): string {
-  return value === null ? '—' : `${value < 10 ? value.toFixed(1) : Math.round(value)} ms`
+  return value === null ? '—' : `${latencyFigure(value)} ms`
 }
 function fallbackShare(item: { transport: string; settled: number; shown: { tcp_fallbacks: number } }): string {
   return item.transport === 'udp' && item.settled > 0 ? formatPercent(item.shown.tcp_fallbacks / item.settled) : '—'
@@ -305,12 +316,6 @@ const compactTotal = computed(() => {
   return total == null ? '--' : formatNumber(total)
 })
 
-/** 兜底次数占请求总数的比例；请求数为 0 时不显示，避免除以零后写出 0.0% */
-const fallbackOfRequests = computed(() => {
-  const metrics = displayOverview.value?.metrics
-  if (!metrics?.requests_total) return ''
-  return formatSmallPercent(metrics.cache_stale.upstream_failure / metrics.requests_total)
-})
 
 onMounted(async () => {
   await load()
@@ -373,8 +378,6 @@ onBeforeUnmount(() => {
             <strong class="overview-total-value">{{ compactTotal }}</strong>
             <span class="overview-signal-sub">
               <span v-if="finishedTotal">完成 <b>{{ formatPercent(finishedShare(displayOverview.metrics.requests_finished.completed)) }}</b></span>
-              <span v-if="latencyKnown">平均 <b>{{ Math.round(displayOverview.metrics.request_latency.avg_ms) }} ms</b></span>
-              <span v-if="latencyKnown"><i class="overview-dot" :class="`overview-dot--${latencyHealth}`" aria-hidden="true"></i><b>{{ formatPercent(within100Share) }}</b> 在 100 ms 内返回</span>
               <span>持续运行 {{ overview ? formatDuration(displayOverview.health.uptime_seconds) : '--' }}</span>
             </span>
           </div>
@@ -413,13 +416,23 @@ onBeforeUnmount(() => {
               <span class="overview-stat-note">当前增强版不提供健康判定所需数据，更新增强版后显示</span>
             </template>
           </article>
-          <article class="overview-stat">
-            <span class="overview-stat-label">兜底使用</span>
-            <span class="overview-kpi-value-row">
-              <strong class="overview-kpi-value">{{ formatNumber(displayOverview.metrics.cache_stale.upstream_failure) }}</strong>
-              <span class="overview-kpi-unit">次</span>
-            </span>
-            <span class="overview-stat-note">上游失败后返回旧缓存<template v-if="fallbackOfRequests"> · 占请求 {{ fallbackOfRequests }}</template></span>
+          <!-- 耗时从信号带挪到这里：信号带只讲启动以来的量，这张卡讲最近一小时快不快。
+               分布是四段互不重叠的区间，不是百分位数。 -->
+          <article v-if="speed" class="overview-stat">
+            <span class="overview-stat-label">响应速度 · {{ speed.period }}</span>
+            <template v-if="speed.bands.length">
+              <span class="overview-kpi-value-row">
+                <strong class="overview-kpi-value">{{ latencyFigure(speed.latency.avg_ms) }}</strong>
+                <span class="overview-kpi-unit">ms 平均</span>
+              </span>
+              <span class="overview-latency-bar" aria-hidden="true"><i v-for="band in speed.bands" :key="band.key" :class="`overview-latency-bar--${band.key}`" :style="{ width: `${band.share * 100}%` }"></i></span>
+              <span class="overview-stat-note overview-latency-legend"><span v-for="band in speed.bands" :key="band.key">{{ band.label }} <b>{{ formatSmallPercent(band.share) }}</b></span></span>
+              <span class="overview-stat-note"><i class="overview-dot" :class="`overview-dot--${speed.health}`" aria-hidden="true"></i> {{ formatPercent(speed.within100) }} 在 100 ms 内返回</span>
+            </template>
+            <template v-else>
+              <strong class="overview-kpi-value">—</strong>
+              <span class="overview-stat-note">{{ precisionSupported ? '还没有请求' : '当前增强版不提供耗时数据，更新增强版后显示' }}</span>
+            </template>
           </article>
         </section>
 
@@ -444,7 +457,7 @@ onBeforeUnmount(() => {
         </section>
 
         <section class="overview-section" :class="{ 'is-refreshing': requesting && !loading }" aria-labelledby="overview-upstream-heading">
-          <header class="overview-section-heading"><div><h2 id="overview-upstream-heading">上游台账</h2><p>{{ upstreamWindowLabel(upstreamWindow) }}；成功率只算超时和连接错误</p></div><span><span class="overview-window-mobile">{{ upstreamWindowLabel(upstreamWindow) }} · </span>{{ upstreamRows.length }} 个上游</span></header>
+          <header class="overview-section-heading"><div><h2 id="overview-upstream-heading">上游台账</h2><p>{{ recentWindowLabel(recentWindow) }}；成功率只算超时和连接错误</p></div><span><span class="overview-window-mobile">{{ recentWindowLabel(recentWindow) }} · </span>{{ upstreamRows.length }} 个上游</span></header>
           <template v-if="upstreamRows.length">
             <div class="overview-upstream-desktop">
               <!-- 九列收成四列：身份、成功率、耗时、响应次数。
@@ -633,6 +646,13 @@ onBeforeUnmount(() => {
 .overview-stat-label { color: var(--muted); font-size: var(--t-1); }
 .overview-stat-note { color: var(--muted); font-size: var(--t-1); line-height: 1.55; font-variant-numeric: tabular-nums; }
 .overview-stat-note b { font-weight: 500; }
+.overview-latency-bar { display: flex; height: 6px; margin-top: 6px; overflow: hidden; border-radius: var(--r-1); background: var(--line); }
+.overview-latency-bar > i { display: block; height: 100%; }
+.overview-latency-bar--within-10ms { background: var(--ink); }
+.overview-latency-bar--within-100ms { background: color-mix(in srgb, var(--ink) 55%, transparent); }
+.overview-latency-bar--within-1s { background: color-mix(in srgb, var(--ink) 30%, transparent); }
+.overview-latency-bar--slower { background: color-mix(in srgb, var(--ink) 15%, transparent); }
+.overview-latency-legend { display: flex; flex-wrap: wrap; gap: 2px 12px; }
 /* 不允许在数字中间断行。overflow-wrap: anywhere 是为了防溢出加的，
    但它对大数字是错的药：375 宽下 12,847,392 会被折成 12,847,39 / 2。
    窄屏另有缩写（见 compactTotal），所以这里不需要靠断行来兜底。

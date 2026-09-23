@@ -85,7 +85,9 @@ export interface FinishedCounts {
 export interface RequestLatency {
   samples: number
   avg_ms: number
+  within_10ms: number
   within_100ms: number
+  within_1s: number
 }
 
 export interface StaleBreakdown {
@@ -110,8 +112,10 @@ export interface MetricsSnapshot {
   requests_finished: FinishedCounts
   request_latency: RequestLatency
   cache_stale: StaleBreakdown
-  /** 各上游 `recent` 实际覆盖的秒数，最长一小时；面板还没有可比的采样时为 null。 */
-  upstream_window_seconds: number | null
+  /** 最近一段时间的端到端耗时，与 `recent_window_seconds` 同一个窗口；没有窗口时为 null。 */
+  request_latency_recent: RequestLatency | null
+  /** 各上游 `recent` 与 `request_latency_recent` 实际覆盖的秒数，最长一小时；面板还没有可比的采样时为 null。 */
+  recent_window_seconds: number | null
 }
 
 export interface QueryStatsSnapshot {
