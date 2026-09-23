@@ -1,4 +1,4 @@
-import type { MetricsSnapshot, NamedCount, UpstreamCount } from './api/types'
+import type { MetricsSnapshot, NamedCount, UpstreamCount, UpstreamTally } from './api/types'
 import { upstreamSuccessRate } from './utils'
 
 export interface PipelineShare extends NamedCount {
@@ -18,23 +18,54 @@ export type UpstreamHealth = 'pending' | 'healthy' | 'degraded' | 'unhealthy'
 /** 响应少于这个数时不下结论，避免刚启动时几次连接建立失败就把上游判成降级。 */
 export const MIN_HEALTH_SAMPLES = 50
 
+/** 成功率的分母：成功与超时、连接错误的次数。 */
+export function judgedAttempts(tally: Pick<UpstreamTally, 'success' | 'errors'>): number {
+  return tally.success + tally.errors
+}
+
+export interface UpstreamBasis {
+  tally: UpstreamTally
+  /** true 表示最近一小时，false 表示 KixDNS 启动以来的累计。 */
+  recent: boolean
+}
+
 /**
- * 响应不足 50 次记为观察中；成功率 ≥ 99% 且平均耗时 < 1 s 记为健康；
+ * 最近一小时有 50 次以上可判断的响应就看最近一小时；不够的话（面板刚重启、备用上游平时
+ * 很少用到）退回启动以来的累计，免得几次偶然的失败决定判断。
+ */
+export function upstreamBasis(item: UpstreamCount): UpstreamBasis {
+  if (item.recent && judgedAttempts(item.recent) >= MIN_HEALTH_SAMPLES) return { tally: item.recent, recent: true }
+  return { tally: item, recent: false }
+}
+
+/**
+ * 可判断的响应不足 50 次记为观察中；成功率 ≥ 99% 且平均耗时 < 1 s 记为健康；
  * 成功率 < 95% 或平均耗时 ≥ 2 s 记为异常；其余为降级。
  */
 export function upstreamHealth(item: UpstreamCount): UpstreamHealth {
-  const rate = upstreamSuccessRate(item)
-  const latency = item.avg_latency_ms ?? 0
-  if (settledAttempts(item) < MIN_HEALTH_SAMPLES) return 'pending'
+  const { tally } = upstreamBasis(item)
+  if (judgedAttempts(tally) < MIN_HEALTH_SAMPLES) return 'pending'
+  const rate = upstreamSuccessRate(tally)
+  const latency = tally.avg_latency_ms ?? 0
   if (rate < 0.95 || latency >= 2_000) return 'unhealthy'
   if (rate >= 0.99 && latency < 1_000) return 'healthy'
   return 'degraded'
 }
 
+/**
+ * 上游台账依据的时间段。面板每分钟采样一次，正常时窗口在 59 到 60 分钟之间，都叫一小时；
+ * KixDNS 一小时内重启过时窗口从它启动算起；面板还没采到样本时没有窗口，只有累计。
+ */
+export function upstreamWindowLabel(seconds: number | null): string {
+  if (seconds === null) return '启动以来'
+  if (seconds >= 55 * 60) return '最近一小时'
+  return `最近 ${Math.max(1, Math.round(seconds / 60))} 分钟`
+}
+
 export const HEALTH_LABELS: Record<UpstreamHealth, string> = { pending: '观察中', healthy: '健康', degraded: '降级', unhealthy: '异常' }
 
 /** 已得到结果的尝试数：不含并发竞争中被取消的。 */
-export function settledAttempts(item: UpstreamCount): number {
+export function settledAttempts(item: Pick<UpstreamTally, 'attempts' | 'aborted'>): number {
   return Math.max(0, item.attempts - item.aborted)
 }
 

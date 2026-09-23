@@ -6,7 +6,7 @@ import type { CacheFlushResult, Overview, QueryStatsSnapshot, ServiceStatus, Sta
 import StatusBanner from '../components/StatusBanner.vue'
 import { useConfirm } from '../composables/useConfirm'
 import { useToast } from '../composables/useToast'
-import { HEALTH_LABELS, MIN_HEALTH_SAMPLES, cacheComposition, pipelineDistribution, rcodeDistribution, settledAttempts, upstreamHealth } from '../dashboard-presentation'
+import { HEALTH_LABELS, MIN_HEALTH_SAMPLES, cacheComposition, pipelineDistribution, rcodeDistribution, settledAttempts, upstreamBasis, upstreamHealth, upstreamWindowLabel } from '../dashboard-presentation'
 import type { UpstreamHealth } from '../dashboard-presentation'
 import { dashboardRuntimeState, emptyOverview, emptyQueryStats, hasStaleDashboardData, supportsQueryStats, supportsUpstreamPrecision } from '../dashboard-state'
 import { sparkline } from '../trend'
@@ -79,9 +79,16 @@ const staleShare = computed(() => {
   return hits ? metrics!.cache_hits_stale / hits : 0
 })
 const precisionSupported = computed(() => supportsUpstreamPrecision(displayOverview.value?.health.capabilities ?? []))
+const upstreamWindow = computed(() => displayOverview.value?.metrics.upstream_window_seconds ?? null)
+// 每行的成功率、耗时、次数和明细都取同一个依据：最近一小时，响应不够时是启动以来的累计。
+// 整张表都没有窗口时标题已经写了“启动以来”，行上不再重复。
+// 排序始终按累计响应次数，免得表格随窗口来回跳。
 const upstreamRows = computed(() => [...(displayOverview.value?.metrics.upstreams ?? [])]
-  .map((item) => ({ ...item, settled: settledAttempts(item), health: precisionSupported.value ? upstreamHealth(item) : 'pending' as UpstreamHealth }))
-  .sort((left, right) => right.settled - left.settled))
+  .sort((left, right) => settledAttempts(right) - settledAttempts(left))
+  .map((item) => {
+    const basis = upstreamBasis(item)
+    return { ...item, shown: basis.tally, sinceStart: !basis.recent && upstreamWindow.value !== null, settled: settledAttempts(basis.tally), health: precisionSupported.value ? upstreamHealth(item) : 'pending' as UpstreamHealth }
+  }))
 const healthCounts = computed(() => {
   const counts = { pending: 0, healthy: 0, degraded: 0, unhealthy: 0 }
   for (const item of upstreamRows.value) counts[item.health] += 1
@@ -100,8 +107,8 @@ const cacheRows = computed(() => (displayOverview.value ? cacheComposition(displ
 function formatLatency(value: number | null): string {
   return value === null ? '—' : `${value < 10 ? value.toFixed(1) : Math.round(value)} ms`
 }
-function fallbackShare(item: { transport: string; settled: number; tcp_fallbacks: number }): string {
-  return item.transport === 'udp' && item.settled > 0 ? formatPercent(item.tcp_fallbacks / item.settled) : '—'
+function fallbackShare(item: { transport: string; settled: number; shown: { tcp_fallbacks: number } }): string {
+  return item.transport === 'udp' && item.settled > 0 ? formatPercent(item.shown.tcp_fallbacks / item.settled) : '—'
 }
 const rankingGroups = [
   {
@@ -437,7 +444,7 @@ onBeforeUnmount(() => {
         </section>
 
         <section class="overview-section" :class="{ 'is-refreshing': requesting && !loading }" aria-labelledby="overview-upstream-heading">
-          <header class="overview-section-heading"><div><h2 id="overview-upstream-heading">上游台账</h2><p>按响应次数排序；成功率不含并发竞争中被取消的尝试</p></div><span>{{ upstreamRows.length }} 个上游</span></header>
+          <header class="overview-section-heading"><div><h2 id="overview-upstream-heading">上游台账</h2><p>{{ upstreamWindowLabel(upstreamWindow) }}；成功率只算超时和连接错误</p></div><span><span class="overview-window-mobile">{{ upstreamWindowLabel(upstreamWindow) }} · </span>{{ upstreamRows.length }} 个上游</span></header>
           <template v-if="upstreamRows.length">
             <div class="overview-upstream-desktop">
               <!-- 九列收成四列：身份、成功率、耗时、响应次数。
@@ -447,7 +454,7 @@ onBeforeUnmount(() => {
                    一行里只允许一个告警色：成功率和耗时同时染红，
                    读者分不出到底是哪一项出了问题。 -->
               <table class="overview-table">
-                <caption class="overview-sr-only">各上游的运行时累计请求结果</caption>
+                <caption class="overview-sr-only">各上游最近一小时的请求结果，响应不足时为启动以来的累计</caption>
                 <thead><tr><th scope="col">上游</th><th scope="col">成功率</th><th scope="col">平均耗时</th><th scope="col">响应次数</th><th scope="col"><span class="overview-sr-only">明细</span></th></tr></thead>
                 <tbody><template v-for="item in upstreamRows" :key="upstreamKey(item)"><tr>
                   <th scope="row">
@@ -459,12 +466,12 @@ onBeforeUnmount(() => {
                   </th>
                   <td>
                     <span class="overview-rate-cell">
-                      <span :class="`overview-text--${item.health}`">{{ formatPercent(upstreamSuccessRate(item)) }}</span>
-                      <span class="overview-rate-bar" aria-hidden="true"><i :class="`overview-rate-bar--${item.health}`" :style="{ width: `${upstreamSuccessRate(item) * 100}%` }"></i></span>
+                      <span :class="`overview-text--${item.health}`">{{ formatPercent(upstreamSuccessRate(item.shown)) }}</span>
+                      <span class="overview-rate-bar" aria-hidden="true"><i :class="`overview-rate-bar--${item.health}`" :style="{ width: `${upstreamSuccessRate(item.shown) * 100}%` }"></i></span>
                     </span>
                   </td>
-                  <td>{{ formatLatency(item.avg_latency_ms) }}</td>
-                  <td>{{ formatNumber(item.settled) }}</td>
+                  <td>{{ formatLatency(item.shown.avg_latency_ms) }}</td>
+                  <td>{{ formatNumber(item.settled) }}<span v-if="item.sinceStart" class="overview-basis">启动以来</span></td>
                   <td class="overview-expand-cell">
                     <button type="button" class="overview-expand" :aria-expanded="expandedUpstream === upstreamKey(item)" :aria-label="`${item.upstream} 的错误与兜底明细`" @click="toggleUpstream(item)">
                       <ChevronRight :size="15" :class="{ 'overview-expand--open': expandedUpstream === upstreamKey(item) }" />
@@ -474,9 +481,9 @@ onBeforeUnmount(() => {
                 <tr v-if="expandedUpstream === upstreamKey(item)" :key="`${upstreamKey(item)}:detail`" class="overview-table-detail">
                   <td colspan="5">
                     <dl class="overview-upstream-counts">
-                      <div><dt>成功</dt><dd>{{ formatNumber(item.success) }}</dd></div>
-                      <div><dt>错误</dt><dd :class="{ 'overview-warning': item.errors > 0 }">{{ formatNumber(item.errors) }}</dd></div>
-                      <div><dt>拒绝</dt><dd>{{ formatNumber(item.rejected) }}</dd></div>
+                      <div><dt>成功</dt><dd>{{ formatNumber(item.shown.success) }}</dd></div>
+                      <div><dt>错误</dt><dd :class="{ 'overview-warning': item.shown.errors > 0 }">{{ formatNumber(item.shown.errors) }}</dd></div>
+                      <div><dt>拒绝</dt><dd>{{ formatNumber(item.shown.rejected) }}</dd></div>
                       <div><dt>TCP 兜底</dt><dd>{{ fallbackShare(item) }}</dd></div>
                     </dl>
                   </td>
@@ -487,13 +494,13 @@ onBeforeUnmount(() => {
               <details v-for="item in upstreamRows" :key="`${item.upstream}:${item.transport}`" class="overview-upstream-detail">
                 <summary>
                   <span class="overview-upstream-identity"><i class="overview-dot" :class="`overview-dot--${item.health}`" aria-hidden="true"></i><strong class="overview-mono">{{ item.upstream }}</strong><span class="overview-transport">{{ item.transport }}</span></span>
-                  <span class="overview-upstream-summary">成功率 <b :class="`overview-text--${item.health}`">{{ formatPercent(upstreamSuccessRate(item)) }}</b> · 平均 {{ formatLatency(item.avg_latency_ms) }} · {{ formatNumber(item.settled) }} 次响应</span>
+                  <span class="overview-upstream-summary">成功率 <b :class="`overview-text--${item.health}`">{{ formatPercent(upstreamSuccessRate(item.shown)) }}</b> · 平均 {{ formatLatency(item.shown.avg_latency_ms) }} · {{ formatNumber(item.settled) }} 次响应<template v-if="item.sinceStart"> · 启动以来</template></span>
                   <ChevronRight :size="18" class="overview-disclosure-icon" />
                 </summary>
                 <dl class="overview-upstream-counts">
-                  <div><dt>成功</dt><dd>{{ formatNumber(item.success) }}</dd></div>
-                  <div><dt>错误</dt><dd :class="{ 'overview-warning': item.errors > 0 }">{{ formatNumber(item.errors) }}</dd></div>
-                  <div><dt>拒绝</dt><dd>{{ formatNumber(item.rejected) }}</dd></div>
+                  <div><dt>成功</dt><dd>{{ formatNumber(item.shown.success) }}</dd></div>
+                  <div><dt>错误</dt><dd :class="{ 'overview-warning': item.shown.errors > 0 }">{{ formatNumber(item.shown.errors) }}</dd></div>
+                  <div><dt>拒绝</dt><dd>{{ formatNumber(item.shown.rejected) }}</dd></div>
                   <div><dt>TCP 兜底</dt><dd>{{ fallbackShare(item) }}</dd></div>
                 </dl>
               </details>
@@ -669,6 +676,9 @@ onBeforeUnmount(() => {
 .overview-upstream-cell { display: flex; align-items: center; gap: 8px; min-width: 0; font-weight: 400; }
 .overview-upstream-cell .overview-mono { min-width: 0; overflow-wrap: anywhere; }
 .overview-rate-cell { display: grid; gap: 4px; }
+.overview-basis { display: block; margin-top: 2px; color: var(--muted); font-size: var(--t-1); }
+/* 手机上各区块的副标题都收起了，但台账的时间段决定了每个数字的含义，挪到右侧的计数前面。 */
+.overview-window-mobile { display: none; }
 .overview-rate-bar { display: block; height: 3px; border-radius: 2px; background: var(--line); }
 .overview-rate-bar > i { display: block; height: 100%; border-radius: 2px; background: var(--ink); }
 .overview-rate-bar--degraded { background: var(--amber) !important; }
@@ -790,6 +800,7 @@ onBeforeUnmount(() => {
   .overview-section-heading h2 { font-size: 15px; }
   .overview-section-heading > div:first-child { display: block; }
   .overview-section-heading > div > p { display: none; }
+  .overview-window-mobile { display: inline; }
   .overview-section-heading > p, .overview-section-heading > span { font-size: 12px; }
   .overview-pipeline-list { display: block; margin-top: 5px; }
   .overview-pipeline-list li { grid-template-columns: minmax(0, 1fr) auto 49px; gap: 8px; align-items: center; min-height: 34px; border-bottom: 1px solid var(--line); font-size: 14px; }

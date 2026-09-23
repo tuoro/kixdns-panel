@@ -100,6 +100,8 @@ Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致
 - Pipeline 命中表示一次请求选择或跳转进入该 Pipeline。
 - 规则命中表示匹配器链结果为真；`phase` 为 `request` 或 `response`。
 - 上游 attempt 表示一次已配置的上游操作，result 表示该操作最终结果，而不是规则中的 Forward 动作数。`tcp_udp` 的内部 TCP 回退属于同一次操作。
-- `result` 取值为 `success`、`error`、`rejected`、`aborted`，attempt 与 result 一一对应。`aborted` 表示多上游并发竞争中被更快的上游抢先应答而取消的尝试，它既不是成功也不是失败；计算上游成功率时应以 `attempts - aborted` 为分母，否则同一规则下的上游会按应答先后瓜分成功率。增强版 p19 之前不上报 `aborted`，落败的尝试没有任何 result。
+- `result` 取值为 `success`、`error`、`rejected`、`aborted`，attempt 与 result 一一对应。`aborted` 表示多上游并发竞争中被更快的上游抢先应答而取消的尝试，它既不是成功也不是失败；`rejected` 表示上游回了 SERVFAIL 或 REFUSED、结果被丢弃，上游本身在正常应答，这些响应码已经计入响应码分布。因此面板的上游成功率是 `success / (success + error)`：只有超时和连接错误算失败，竞争落败和被拒绝的应答都不进分母——把 `aborted` 算进去会让同一规则下的上游按应答先后瓜分成功率，把 `rejected` 算进去则会让上游替它解析不了的域名背锅。增强版 p19 之前不上报 `aborted`，落败的尝试没有任何 result。
 - 并发数覆盖进入异步处理至响应完成的请求，不包含已在同步快速路径返回的请求。面板首页不再展示并发数，该序列仅保留给外部消费者。
-- 上游平均耗时以 `kixdns_upstream_latency_ms_sum / _count` 计算；面板以成功率 ≥ 99% 且平均耗时 < 1 s 记为健康，成功率 < 95% 或平均耗时 ≥ 2 s 记为异常，其余为降级。
+- 上游平均耗时以 `kixdns_upstream_response_latency_ms_sum / _count` 计算，只算拿到响应的尝试；增强版 p25 之前没有这组序列，退回 `kixdns_upstream_latency_ms_sum / _count`，其中含超时时长。
+- 以上计数都从 KixDNS 启动起累加。面板每分钟采样一次，存在内存里，概览用当前值减去一小时内最早的采样，得到最近一小时的计数（`/api/v1/overview` 中每个上游的 `recent` 与 `metrics.upstream_window_seconds`）；KixDNS 一小时内重启过时直接用它启动以来的计数。面板重启后前几分钟没有窗口，退回累计值。
+- 健康按最近一小时判断；某个上游最近一小时可判断的响应（`success + error`）不足 50 次时退回启动以来的累计，累计也不足 50 次记为观察中。成功率 ≥ 99% 且平均耗时 < 1 s 记为健康，成功率 < 95% 或平均耗时 ≥ 2 s 记为异常，其余为降级。

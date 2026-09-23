@@ -10,6 +10,7 @@ mod geo_data;
 mod operations;
 mod panel_update;
 mod updates;
+mod upstream_window;
 
 pub use app::{AppSettings, build_app, run};
 pub use auth::TrustedProxies;

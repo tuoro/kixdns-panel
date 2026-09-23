@@ -26,16 +26,20 @@ describe('界面格式化工具', () => {
 })
 
 describe('上游成功率', () => {
-  it('并发竞争中被取消的尝试不计入分母', () => {
-    // 两个上游各尝试 20 次，1.1.1.1 每次胜出，8.8.8.8 每次落败但从未失败
-    expect(upstreamSuccessRate({ attempts: 20, success: 20, aborted: 0 })).toBe(1)
-    expect(upstreamSuccessRate({ attempts: 20, success: 0, aborted: 20 })).toBe(0)
-    expect(upstreamSuccessRate({ attempts: 20, success: 4, aborted: 15 })).toBeCloseTo(0.8)
+  it('只把超时和连接错误算作失败', () => {
+    expect(upstreamSuccessRate({ success: 95, errors: 5 })).toBeCloseTo(0.95)
+    // 上游如实回了 SERVFAIL / REFUSED：那是域名或上游策略的问题，归在响应码分布里，不拖成功率
+    const answeredWithServfail = { attempts: 70, success: 20, errors: 0, rejected: 30, aborted: 20 }
+    expect(upstreamSuccessRate(answeredWithServfail)).toBe(1)
   })
 
-  it('旧增强版没有 aborted 字段时退化为成功除以尝试', () => {
-    expect(upstreamSuccessRate({ attempts: 10, success: 7 })).toBeCloseTo(0.7)
-    expect(upstreamSuccessRate({ attempts: 0, success: 0 })).toBe(0)
+  it('并发竞争中被取消的尝试不计入分母', () => {
+    const lostMostRaces = { attempts: 20, success: 4, errors: 1, rejected: 0, aborted: 15 }
+    expect(upstreamSuccessRate(lostMostRaces)).toBeCloseTo(0.8)
+  })
+
+  it('没有可判断的响应时为 0', () => {
+    expect(upstreamSuccessRate({ success: 0, errors: 0 })).toBe(0)
   })
 })
 

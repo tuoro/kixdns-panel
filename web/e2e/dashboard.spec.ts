@@ -154,21 +154,31 @@ test('手机上游逐级展开，桌面保留完整台账且无页面溢出 @res
     await expect(details).toHaveCount(3)
     await expect(details.first().locator('.overview-upstream-counts')).toBeHidden()
     await details.first().locator('summary').click()
-    await expect(details.first().locator('.overview-upstream-counts')).toContainText('28,230')
-    await expect(details.first().locator('.overview-upstream-counts')).toContainText('2,114')
+    // 明细跟随这一行的依据：1.1.1.1 最近一小时 52 次错误、28 次拒绝，不是启动以来的 28,230 / 2,114
+    await expect(details.first().locator('.overview-upstream-counts')).toContainText('错误52')
+    await expect(details.first().locator('.overview-upstream-counts')).toContainText('拒绝28')
+    // 手机收起了副标题，时间段挪到右侧计数前；最近一小时响应不够的上游标明退回了累计
+    await expect(page.locator('.overview-window-mobile')).toBeVisible()
+    await expect(page.locator('.overview-window-mobile')).toContainText('最近一小时')
+    await expect(details.first().locator('summary')).not.toContainText('启动以来')
+    await expect(details.nth(2).locator('summary')).toContainText('启动以来')
     const typeScale = await page.locator('.overview-total-value').evaluate((element) => Number.parseFloat(getComputedStyle(element).fontSize))
     expect(typeScale).toBeGreaterThanOrEqual(28)
     expect(typeScale).toBeLessThanOrEqual(32)
   } else {
     await expect(page.locator('.overview-upstream-mobile')).toBeHidden()
+    // 桌面的副标题已经写了时间段，右侧计数前不再重复
+    await expect(page.locator('.overview-window-mobile')).toBeHidden()
     await expect(page.locator('.overview-table tbody tr')).toHaveCount(3)
     // 台账收成四列用于扫读，错误 / 拒绝 / TCP 兜底收进每行的展开里。
     // 「完整台账」仍然成立，只是次要的三列要点开——它们是排查时才看的数。
-    await expect(page.locator('.overview-table')).not.toContainText('28,230')
+    await expect(page.locator('.overview-table')).not.toContainText('52')
+    await expect(page.locator('.overview-table tbody tr').first()).not.toContainText('启动以来')
+    await expect(page.locator('.overview-table tbody tr').nth(2)).toContainText('启动以来')
     await page.locator('.overview-expand').first().click()
     await expect(page.locator('.overview-table-detail')).toHaveCount(1)
-    await expect(page.locator('.overview-table-detail')).toContainText('28,230')
-    await expect(page.locator('.overview-table-detail')).toContainText('2,114')
+    await expect(page.locator('.overview-table-detail')).toContainText('错误52')
+    await expect(page.locator('.overview-table-detail')).toContainText('拒绝28')
   }
   const sizes = await page.evaluate(() => ({ client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }))
   expect(sizes.scroll).toBeLessThanOrEqual(sizes.client)
