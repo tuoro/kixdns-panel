@@ -1,4 +1,4 @@
-name: Lint shell scripts
+name: Check automation scripts
 
 # 面板和内核工作流只在各自的文件变化时运行，只被同步任务用到的脚本（以及 #124 新增的
 # 内核构建告警脚本）因此从来没有在 PR 上经过 shellcheck。任何脚本变化都在这里检查一遍。
@@ -11,10 +11,12 @@ on:
     paths:
       - scripts/**
       - .github/workflows/lint-scripts.yml
+      - .github/workflows/sync-upstream.yml
   pull_request:
     paths:
       - scripts/**
       - .github/workflows/lint-scripts.yml
+      - .github/workflows/sync-upstream.yml
 
 permissions:
   contents: read
@@ -29,3 +31,16 @@ jobs:
 
       - name: Lint every script
         run: shellcheck scripts/*.sh
+
+  sync-workflow:
+    name: Test sync workflow
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout panel repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # 每日同步的刷新、合并、告警路径平时很少运行，这里用临时仓库和假命令逐条跑一遍。
+      # The daily sync's refresh, merge and alert paths rarely run for real; this walks
+      # through each of them in a scratch repository with stub commands.
+      - name: Run sync workflow scenarios
+        run: python3 scripts/test-sync-upstream.py
