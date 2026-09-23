@@ -22,12 +22,14 @@ export function buildUpdateNotices(status: UpdateNotifications | null): UpdateNo
     const version = status.kixdns.source === 'release'
       ? status.kixdns.release_tag ?? `Release #${status.kixdns.source_id}`
       : status.kixdns.run_id ? `Run #${status.kixdns.run_id}` : `Artifact #${status.kixdns.source_id}`
+    const security = status.kixdns.security_update
+    const revision = security && status.kixdns.dependency_revision ? ` · r${status.kixdns.dependency_revision}` : ''
     notices.push({
       id: `kixdns:${status.kixdns.source}:${status.kixdns.source_id}`,
       kind: 'kixdns',
       title: 'KixDNS 增强包',
-      detail: '新的增强构建可用',
-      meta: `${status.kixdns.source === 'release' ? 'Release' : 'Action'} · ${version}`,
+      detail: security ? '依赖安全升级可用' : '新的增强构建可用',
+      meta: `${status.kixdns.source === 'release' ? 'Release' : 'Action'} · ${version}${revision}`,
       target: '/system',
       external: false,
     })

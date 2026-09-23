@@ -518,7 +518,8 @@ onBeforeUnmount(() => {
           <div class="update-row__body">
             <strong>KixDNS 增强包</strong>
             <p class="update-row__from-to">
-              <template v-if="updateStatus.kixdns.available"><span class="mono">{{ formatKixdnsVersion(activeVersion) }}</span> → <span class="mono">{{ latestKixdnsVersion() }}</span></template>
+              <template v-if="updateStatus.kixdns.available && updateStatus.kixdns.security_update"><span class="mono">{{ formatKixdnsVersion(activeVersion) }}</span> 依赖安全升级<template v-if="updateStatus.kixdns.dependency_revision"> · <span class="mono">r{{ updateStatus.kixdns.dependency_revision }}</span></template></template>
+              <template v-else-if="updateStatus.kixdns.available"><span class="mono">{{ formatKixdnsVersion(activeVersion) }}</span> → <span class="mono">{{ latestKixdnsVersion() }}</span></template>
               <template v-else-if="updateStatus.kixdns.current_commit">当前轨道已是最新 · <span class="mono">{{ formatKixdnsVersion(activeVersion) }}</span></template>
               <template v-else>尚未安装，选择一个构建开始</template>
             </p>
@@ -567,7 +568,7 @@ onBeforeUnmount(() => {
       <template v-else-if="catalog">
         <div :class="installed ? 'runtime-state' : 'runtime-state runtime-state--missing'">
           <span><HardDrive :size="22" /></span>
-          <div><strong>{{ installed ? 'KixDNS 已安装' : 'KixDNS 尚未安装' }}</strong><p class="mono">{{ installed ? (activeVersion?.upstream_commit ? `${formatKixdnsVersion(activeVersion)} · 上游 ${shortHash(activeVersion.upstream_commit, 12)} · p${activeVersion.patchset}` : '构建身份未记录') : '选择下方构建进行安装' }}</p></div>
+          <div><strong>{{ installed ? 'KixDNS 已安装' : 'KixDNS 尚未安装' }}</strong><p class="mono">{{ installed ? (activeVersion?.upstream_commit ? `${formatKixdnsVersion(activeVersion)} · 上游 ${shortHash(activeVersion.upstream_commit, 12)} · p${activeVersion.patchset}${activeVersion.dependency_revision ? `-r${activeVersion.dependency_revision}` : ''}` : '构建身份未记录') : '选择下方构建进行安装' }}</p></div>
         </div>
         <dl class="detail-list runtime-details">
           <div><dt>当前版本</dt><dd class="mono">{{ formatKixdnsVersion(activeVersion) }}</dd></div>
@@ -658,7 +659,7 @@ onBeforeUnmount(() => {
           <div class="local-version-list">
             <article v-for="version in catalog.installed_versions" :key="versionIdentity(version)" :class="version.active ? 'local-version local-version--active' : 'local-version'">
               <div><span class="identity-label">{{ version.source === 'release' ? 'Release' : 'Action' }}</span><code>{{ formatKixdnsVersion(version) }}</code><span v-if="version.active" class="tag tag--success">当前</span></div>
-              <p v-if="version.upstream_commit"><span class="mono">上游 {{ shortHash(version.upstream_commit, 9) }}</span><span>p{{ version.patchset }}</span><span>{{ artifactArchitecture(version.artifact) }}</span><a v-if="version.source_url" :href="version.source_url" target="_blank" rel="noopener noreferrer">上游详情</a><a v-if="version.build_url" :href="version.build_url" target="_blank" rel="noopener noreferrer">增强 Action</a></p>
+              <p v-if="version.upstream_commit"><span class="mono">上游 {{ shortHash(version.upstream_commit, 9) }}</span><span>p{{ version.patchset }}<template v-if="version.dependency_revision">-r{{ version.dependency_revision }}</template></span><span>{{ artifactArchitecture(version.artifact) }}</span><a v-if="version.source_url" :href="version.source_url" target="_blank" rel="noopener noreferrer">上游详情</a><a v-if="version.build_url" :href="version.build_url" target="_blank" rel="noopener noreferrer">增强 Action</a></p>
               <p v-else>构建身份未记录</p>
               <p><span class="mono">增强 {{ shortHash(version.commit, 9) }}</span><span class="mono">二进制 {{ shortHash(version.binary_sha256, 12) }}</span><span>{{ formatDate(version.installed_at) }}</span></p>
               <div v-if="!version.active" class="local-version-actions">

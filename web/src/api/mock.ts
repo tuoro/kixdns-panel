@@ -458,6 +458,7 @@ function demoVersionCatalog(source: KixdnsVersionSource): KixdnsVersionCatalog {
           ? releaseUpstreamCommit
           : actionUpstreamCommits[remote.run_id ?? 0] ?? null,
         patchset: remote.patchset,
+        dependency_revision: null,
         control_protocol: 1,
         config_capabilities: [...(configCapabilitiesByArtifact.get(remote.artifact) ?? [])],
         binary_sha256: binarySha256[remote.source],
@@ -860,6 +861,8 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
         release_tag: null,
         created_at: actionVersions[0].created_at,
         build_url: actionVersions[0].build_url,
+        security_update: false,
+        dependency_revision: null,
       },
       panel: {
         available: true,

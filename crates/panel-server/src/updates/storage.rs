@@ -165,6 +165,7 @@ pub(super) fn load_bundled_manifest(
         upstream_repository: Some(identity.repository),
         upstream_commit: Some(identity.commit),
         patchset: Some(identity.patchset),
+        dependency_revision: identity.dependency_revision,
         control_protocol: Some(identity.control_protocol),
         config_capabilities: capabilities.config_capabilities,
         binary_sha256,

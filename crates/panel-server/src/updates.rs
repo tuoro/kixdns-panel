@@ -278,6 +278,9 @@ pub struct UpdateManager {
     artifact_cache: Arc<RwLock<Option<CachedArtifacts>>>,
     remote_cache: Arc<RwLock<HashMap<VersionSource, CachedRemoteVersions>>>,
     panel_cache: Arc<RwLock<Option<CachedPanelUpdate>>>,
+    /// 按 Artifact ID 缓存构建所用的依赖修订；一次构建的锁文件永远不变。
+    /// Dependency revision of each build by artifact id; a build's lock never changes.
+    dependency_revisions: Arc<RwLock<HashMap<u64, Option<u32>>>>,
     github_token_path: Arc<PathBuf>,
     github_token: Arc<RwLock<Option<SecretString>>>,
     github_rate_limit: Arc<RwLock<Option<GithubRateLimit>>>,
@@ -370,6 +373,11 @@ pub struct KixdnsUpdateNotice {
     pub release_tag: Option<String>,
     pub created_at: Option<String>,
     pub build_url: Option<String>,
+    /// 同一版本换上修补过的依赖重新构建：提示依赖安全升级，而不是新版本。
+    /// The same version rebuilt with patched dependencies: shown as a dependency
+    /// security upgrade rather than a new version.
+    pub security_update: bool,
+    pub dependency_revision: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -512,6 +520,7 @@ pub struct InstalledVersion {
     pub upstream_repository: Option<String>,
     pub upstream_commit: Option<String>,
     pub patchset: Option<u32>,
+    pub dependency_revision: Option<u32>,
     pub control_protocol: Option<u32>,
     pub config_capabilities: Vec<String>,
     pub binary_sha256: String,
@@ -544,6 +553,8 @@ struct VersionManifest {
     upstream_commit: Option<String>,
     #[serde(default)]
     patchset: Option<u32>,
+    #[serde(default)]
+    dependency_revision: Option<u32>,
     #[serde(default)]
     control_protocol: Option<u32>,
     #[serde(default)]
@@ -691,6 +702,8 @@ struct BuildIdentity {
     #[serde(default)]
     release_tag: Option<String>,
     patchset: u32,
+    #[serde(default)]
+    dependency_revision: Option<u32>,
     control_protocol: u32,
 }
 
@@ -699,6 +712,14 @@ struct ExtractedArtifact {
     identity: BuildIdentity,
     build_commit: String,
     config_capabilities: Vec<String>,
+}
+
+/// GitHub contents 接口返回的仓库文件。
+/// A repository file as returned by the GitHub contents API.
+#[derive(Debug, Deserialize)]
+struct RepositoryFile {
+    encoding: String,
+    content: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -823,6 +844,7 @@ impl UpdateManager {
             artifact_cache: Arc::new(RwLock::new(None)),
             remote_cache: Arc::new(RwLock::new(HashMap::new())),
             panel_cache: Arc::new(RwLock::new(None)),
+            dependency_revisions: Arc::new(RwLock::new(HashMap::new())),
             github_token_path: Arc::new(github_token_path),
             github_token: Arc::new(RwLock::new(github_token)),
             github_rate_limit: Arc::new(RwLock::new(None)),
@@ -923,8 +945,25 @@ impl UpdateManager {
             .ok_or_else(|| UpdateError::Network("没有可安装的成功增强构建".to_owned()))?;
         let installed = self.installed_versions(active.as_ref()).await?;
         let current = installed.iter().find(|version| version.active);
+        let latest_revision = match current {
+            Some(current) if same_version_rebuilt(&latest.remote, current) => {
+                match self.build_dependency_revision(&latest.remote).await {
+                    Ok(revision) => revision,
+                    Err(error) => {
+                        tracing::warn!(%error, "无法读取新构建的依赖修订");
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
         Ok(UpdateNotifications {
-            kixdns: to_kixdns_update_notice(&latest.remote, active.as_ref(), current),
+            kixdns: to_kixdns_update_notice(
+                &latest.remote,
+                active.as_ref(),
+                current,
+                latest_revision,
+            ),
             panel: self.panel_update_notice().await?,
         })
     }
@@ -1235,6 +1274,49 @@ impl UpdateManager {
             .take(limit)
             .map(|version| version.remote)
             .collect())
+    }
+
+    /// 读出一次构建实际使用的锁文件里的依赖修订：取构建提交上的版本目录文件，
+    /// 它正是构建时的输入。包名里放不下修订号，这是唯一的来源。
+    /// Reads the dependency revision from the lock a build actually used: the catalogue
+    /// file at the build commit is exactly what the build consumed. The artifact name
+    /// cannot carry the revision, so this is the only source.
+    async fn build_dependency_revision(
+        &self,
+        version: &RemoteVersion,
+    ) -> Result<Option<u32>, UpdateError> {
+        if let Some(revision) = self
+            .dependency_revisions
+            .read()
+            .await
+            .get(&version.source_id)
+        {
+            return Ok(*revision);
+        }
+        let path = match (
+            version.source,
+            version.run_id,
+            version.release_tag.as_deref(),
+        ) {
+            (VersionSource::Action, Some(run_id), _) => format!("upstreams/actions/{run_id}.json"),
+            (VersionSource::Release, _, Some(tag)) => format!("upstreams/releases/{tag}.json"),
+            _ => return Ok(None),
+        };
+        validate_commit(&version.commit)?;
+        let url = format!(
+            "https://api.github.com/repos/{}/contents/{path}?ref={}",
+            self.repository, version.commit
+        );
+        let revision = match self.get_json_optional::<RepositoryFile>(&url).await? {
+            Some(file) => build_lock_revision(&file, version)?,
+            None => None,
+        };
+        let mut cache = self.dependency_revisions.write().await;
+        if cache.len() >= REMOTE_VERSION_LIMIT {
+            cache.clear();
+        }
+        cache.insert(version.source_id, revision);
+        Ok(revision)
     }
 
     async fn resolved_remote_versions(
@@ -1611,6 +1693,7 @@ impl UpdateManager {
             upstream_repository: Some(extracted.identity.repository),
             upstream_commit: Some(extracted.identity.commit),
             patchset: Some(extracted.identity.patchset),
+            dependency_revision: extracted.identity.dependency_revision,
             control_protocol: Some(extracted.identity.control_protocol),
             config_capabilities: extracted.config_capabilities,
             binary_sha256: sha256(&extracted.binary),
@@ -1718,6 +1801,7 @@ impl UpdateManager {
                         upstream_repository: None,
                         upstream_commit: None,
                         patchset: None,
+                        dependency_revision: None,
                         control_protocol: None,
                         config_capabilities: Vec::new(),
                         binary_sha256: sha256(&binary),
@@ -1918,6 +2002,7 @@ impl VersionManifest {
             upstream_repository: self.upstream_repository,
             upstream_commit: self.upstream_commit,
             patchset: self.patchset,
+            dependency_revision: self.dependency_revision,
             control_protocol: self.control_protocol,
             config_capabilities: self.config_capabilities,
             binary_sha256: self.binary_sha256,
@@ -1991,6 +2076,59 @@ fn is_newer_upstream_build(version: &RemoteVersion, current: &InstalledVersion) 
     }
 }
 
+/// 同一上游版本、同一补丁集，但不是同一个包：只有这种情况才需要去查依赖修订。
+/// Same upstream version and patchset but a different package: the only case where the
+/// dependency revision has to be looked up.
+fn same_version_rebuilt(version: &RemoteVersion, current: &InstalledVersion) -> bool {
+    has_upstream_identity(current, version.source)
+        && upstream_order(version.run_id, version.release_tag.as_deref())
+            == upstream_order(current.run_id, current.release_tag.as_deref())
+        && version.patchset.is_some()
+        && version.patchset == current.patchset
+        && version.artifact != current.artifact
+}
+
+/// 新构建的依赖修订高于已安装的，就是依赖安全升级。早期记录没有修订号，按 0 算；
+/// 同一个包名意味着同一份构建输入，不会被误判。
+/// A newer build with a higher dependency revision than the installed one is a
+/// dependency security upgrade. Older records carry no revision and count as 0; an
+/// identical package name means identical build inputs, so it is never misread.
+fn is_dependency_security_update(
+    version: &RemoteVersion,
+    current: &InstalledVersion,
+    latest_revision: Option<u32>,
+) -> bool {
+    same_version_rebuilt(version, current)
+        && latest_revision.is_some_and(|latest| latest > current.dependency_revision.unwrap_or(0))
+}
+
+fn build_lock_revision(
+    file: &RepositoryFile,
+    version: &RemoteVersion,
+) -> Result<Option<u32>, UpdateError> {
+    use base64::Engine;
+
+    if file.encoding != "base64" {
+        return Err(UpdateError::Verification("构建锁文件编码无效".to_owned()));
+    }
+    let encoded = file
+        .content
+        .chars()
+        .filter(|character| !character.is_ascii_whitespace())
+        .collect::<String>();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|_| UpdateError::Verification("构建锁文件编码无效".to_owned()))?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_BUILD_IDENTITY_BYTES {
+        return Err(UpdateError::Verification("构建锁文件过大".to_owned()));
+    }
+    let identity: BuildIdentity = serde_json::from_slice(&bytes)
+        .map_err(|error| UpdateError::Verification(format!("构建锁文件无效：{error}")))?;
+    validate_build_identity(&identity)?;
+    validate_remote_build_identity(version, &identity)?;
+    Ok(identity.dependency_revision)
+}
+
 fn has_upstream_identity(version: &InstalledVersion, source: VersionSource) -> bool {
     match source {
         VersionSource::Action => version.run_id.is_some(),
@@ -2002,22 +2140,29 @@ fn to_kixdns_update_notice(
     version: &RemoteVersion,
     active: Option<&VersionKey>,
     current: Option<&InstalledVersion>,
+    latest_revision: Option<u32>,
 ) -> KixdnsUpdateNotice {
-    let available = active.is_some_and(|active| {
-        if active.source != version.source {
-            return true;
-        }
-        match current.filter(|current| has_upstream_identity(current, version.source)) {
-            Some(current) => is_newer_upstream_build(version, current),
-            // 早期安装没有记录上游身份，只能按构建身份比较。
-            // Early installs recorded no upstream identity, so only the build identity
-            // can be compared.
-            None => {
-                !active.commit.eq_ignore_ascii_case(&version.commit)
-                    || active.source_id != Some(version.source_id)
+    let current = current.filter(|current| has_upstream_identity(current, version.source));
+    let security_update = active.is_some_and(|active| active.source == version.source)
+        && current.is_some_and(|current| {
+            is_dependency_security_update(version, current, latest_revision)
+        });
+    let available = security_update
+        || active.is_some_and(|active| {
+            if active.source != version.source {
+                return true;
             }
-        }
-    });
+            match current {
+                Some(current) => is_newer_upstream_build(version, current),
+                // 早期安装没有记录上游身份，只能按构建身份比较。
+                // Early installs recorded no upstream identity, so only the build identity
+                // can be compared.
+                None => {
+                    !active.commit.eq_ignore_ascii_case(&version.commit)
+                        || active.source_id != Some(version.source_id)
+                }
+            }
+        });
     KixdnsUpdateNotice {
         available,
         source: version.source,
@@ -2028,6 +2173,8 @@ fn to_kixdns_update_notice(
         release_tag: version.release_tag.clone(),
         created_at: Some(version.created_at.clone()),
         build_url: Some(version.build_url.clone()),
+        security_update,
+        dependency_revision: latest_revision.filter(|_| security_update),
     }
 }
 

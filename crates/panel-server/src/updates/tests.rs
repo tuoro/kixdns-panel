@@ -9,14 +9,14 @@ use super::ServiceHost;
 use super::validation::ParsedArtifactReference;
 use super::{
     ARTIFACT_PAGE_SIZE, BuildIdentity, GithubRelease, InstalledVersion, MANIFEST_SCHEMA_VERSION,
-    MAX_ARTIFACT_PAGES, ReleaseAsset, RemoteVersion, ResolvedVersion, TrackReference, UpdateError,
-    UpdateManager, UpdateSettings, VersionKey, VersionManifest, VersionSource, WorkflowRuns,
-    artifact_page_count, delete_stored_version, extract_artifact, load_bundled_manifest,
-    load_verified_version, panel_release_asset_name, parse_artifact_reference, sha256,
-    sort_newest_upstream_first, store_version, to_kixdns_update_notice, to_panel_update_notice,
-    trusted_workflow_runs, update_stored_capabilities, validate_commit, validate_digest,
-    validate_github_token, validate_remote_build_identity, validate_slug, workflow_runs_url,
-    write_github_token,
+    MAX_ARTIFACT_PAGES, ReleaseAsset, RemoteVersion, RepositoryFile, ResolvedVersion,
+    TrackReference, UpdateError, UpdateManager, UpdateSettings, VersionKey, VersionManifest,
+    VersionSource, WorkflowRuns, artifact_page_count, build_lock_revision, delete_stored_version,
+    extract_artifact, load_bundled_manifest, load_verified_version, panel_release_asset_name,
+    parse_artifact_reference, sha256, sort_newest_upstream_first, store_version,
+    to_kixdns_update_notice, to_panel_update_notice, trusted_workflow_runs,
+    update_stored_capabilities, validate_commit, validate_digest, validate_github_token,
+    validate_remote_build_identity, validate_slug, workflow_runs_url, write_github_token,
 };
 use crate::db::Database;
 use crate::operations::ServiceAction;
@@ -117,6 +117,7 @@ fn test_manifest(source_id: u64, commit: &str, binary: &[u8]) -> VersionManifest
         upstream_repository: Some("olicesx/kixdns".to_owned()),
         upstream_commit: Some("374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25".to_owned()),
         patchset: Some(5),
+        dependency_revision: None,
         control_protocol: Some(1),
         config_capabilities: Vec::new(),
         binary_sha256: sha256(binary),
@@ -175,6 +176,31 @@ fn imports_verified_bundled_build_identity() {
         manifest.build_url.as_deref(),
         Some("https://github.com/tuoro/kixdns-panel/actions/runs/99")
     );
+}
+
+#[test]
+fn bundled_build_records_its_dependency_revision() {
+    let directory = tempdir().unwrap();
+    let binary = test_elf();
+    write_bundle_metadata(directory.path(), &binary);
+    let key = VersionKey::tracked(VersionSource::Action, 42, TEST_BUILD_COMMIT).unwrap();
+    assert_eq!(
+        load_bundled_manifest(directory.path(), &key, &binary)
+            .unwrap()
+            .dependency_revision,
+        None
+    );
+
+    let mut identity: serde_json::Value = serde_json::from_str(TEST_IDENTITY).unwrap();
+    identity["dependency_revision"] = 1.into();
+    std::fs::write(
+        directory.path().join("upstream.lock.json"),
+        format!("{identity}\n"),
+    )
+    .unwrap();
+    let manifest = load_bundled_manifest(directory.path(), &key, &binary).unwrap();
+    assert_eq!(manifest.dependency_revision, Some(1));
+    assert_eq!(manifest.into_installed(true).dependency_revision, Some(1));
 }
 
 #[test]
@@ -469,10 +495,10 @@ fn legacy_kixdns_identity_is_not_treated_as_exact_build() {
         active: false,
     };
     let legacy = VersionKey::new(VersionSource::Action, TEST_BUILD_COMMIT).unwrap();
-    assert!(to_kixdns_update_notice(&remote, Some(&legacy), None).available);
+    assert!(to_kixdns_update_notice(&remote, Some(&legacy), None, None).available);
 
     let exact = VersionKey::tracked(VersionSource::Action, 42, TEST_BUILD_COMMIT).unwrap();
-    assert!(!to_kixdns_update_notice(&remote, Some(&exact), None).available);
+    assert!(!to_kixdns_update_notice(&remote, Some(&exact), None, None).available);
 }
 
 const REBUILD_COMMIT: &str = "9c1e5b7d3f2a4c6e8b0d1f3a5c7e9b2d4f6a8c0e";
@@ -526,6 +552,7 @@ fn installed_build(
         upstream_repository: None,
         upstream_commit: None,
         patchset: Some(patchset),
+        dependency_revision: None,
         control_protocol: Some(1),
         config_capabilities: Vec::new(),
         binary_sha256: "b".repeat(64),
@@ -577,7 +604,7 @@ fn release_catalogue_follows_version_numbers() {
 fn kixdns_notice_follows_upstream_versions() {
     let (active, current) = installed_build(Some(90), None, 22);
     let notice = |remote: RemoteVersion| {
-        to_kixdns_update_notice(&remote, Some(&active), Some(&current)).available
+        to_kixdns_update_notice(&remote, Some(&active), Some(&current), None).available
     };
     assert!(
         !notice(remote_build(Some(90), None, 22)),
@@ -596,6 +623,7 @@ fn kixdns_notice_follows_upstream_versions() {
             &remote_build(None, Some(tag), 24),
             Some(&active),
             Some(&current),
+            None,
         )
         .available
     };
@@ -711,6 +739,7 @@ fn stores_and_revalidates_local_versions() {
         upstream_repository: Some("olicesx/kixdns".to_owned()),
         upstream_commit: Some(commit.to_owned()),
         patchset: Some(5),
+        dependency_revision: None,
         control_protocol: Some(1),
         config_capabilities: Vec::new(),
         binary_sha256: sha256(&binary),
@@ -896,6 +925,7 @@ fn reads_legacy_manifest_without_build_identity() {
         upstream_repository: None,
         upstream_commit: None,
         patchset: None,
+        dependency_revision: None,
         control_protocol: None,
         config_capabilities: Vec::new(),
         binary_sha256: sha256(&binary),
@@ -935,6 +965,7 @@ fn keeps_tracked_builds_with_the_same_commit_separate() {
         upstream_repository: Some("olicesx/kixdns".to_owned()),
         upstream_commit: Some("374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25".to_owned()),
         patchset: Some(5),
+        dependency_revision: None,
         control_protocol: Some(1),
         config_capabilities: Vec::new(),
         binary_sha256: sha256(&binary),
@@ -1331,4 +1362,92 @@ async fn unhealthy_switch_restores_the_previous_binary_with_restart_only() {
         active_setting(&fixture.database).await,
         Some(fixture.target_key.encoded())
     );
+}
+
+#[test]
+fn kixdns_notice_offers_dependency_security_upgrades() {
+    let (active, current) = installed_build(Some(90), None, 22);
+    let rebuilt = || {
+        let mut remote = remote_build(Some(90), None, 22);
+        remote.artifact = "kixdns-enhanced-action-90-p22-0123456789ab-linux-x86_64".to_owned();
+        remote
+    };
+    let notice = |remote: &RemoteVersion, current: &InstalledVersion, revision: Option<u32>| {
+        to_kixdns_update_notice(remote, Some(&active), Some(current), revision)
+    };
+
+    let upgrade = notice(&rebuilt(), &current, Some(1));
+    assert!(upgrade.available);
+    assert!(upgrade.security_update);
+    assert_eq!(upgrade.dependency_revision, Some(1));
+
+    assert!(
+        !notice(&rebuilt(), &current, None).available,
+        "a rebuild without a dependency revision is not an update"
+    );
+
+    let mut refreshed = current.clone();
+    refreshed.dependency_revision = Some(1);
+    assert!(!notice(&rebuilt(), &refreshed, Some(1)).available);
+    assert!(notice(&rebuilt(), &refreshed, Some(2)).security_update);
+
+    // 早期记录没有修订号，但包名相同就是同一份构建输入，不算升级。
+    // Older records carry no revision, but an identical package name means identical
+    // build inputs, so it is not an upgrade.
+    let mut same_package = rebuilt();
+    same_package.artifact.clone_from(&current.artifact);
+    assert!(!notice(&same_package, &current, Some(1)).available);
+
+    let newer = notice(&remote_build(Some(100), None, 22), &current, Some(3));
+    assert!(newer.available);
+    assert!(
+        !newer.security_update,
+        "a newer upstream version is a normal update"
+    );
+    assert_eq!(newer.dependency_revision, None);
+}
+
+fn lock_file(identity: &serde_json::Value) -> RepositoryFile {
+    use base64::Engine;
+
+    let encoded = base64::engine::general_purpose::STANDARD.encode(identity.to_string());
+    // GitHub 每 60 个字符换一行。 / GitHub wraps the content every 60 characters.
+    let wrapped = encoded
+        .as_bytes()
+        .chunks(60)
+        .map(|chunk| std::str::from_utf8(chunk).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
+    RepositoryFile {
+        encoding: "base64".to_owned(),
+        content: wrapped,
+    }
+}
+
+#[test]
+fn reads_the_dependency_revision_a_build_used() {
+    let remote = remote_build(Some(30_235_703_570), None, 5);
+    let mut identity: serde_json::Value = serde_json::from_str(TEST_IDENTITY).unwrap();
+    assert_eq!(
+        build_lock_revision(&lock_file(&identity), &remote).unwrap(),
+        None
+    );
+
+    identity["dependency_revision"] = 2.into();
+    assert_eq!(
+        build_lock_revision(&lock_file(&identity), &remote).unwrap(),
+        Some(2)
+    );
+
+    let other_run = remote_build(Some(1), None, 5);
+    assert!(build_lock_revision(&lock_file(&identity), &other_run).is_err());
+    let other_patchset = remote_build(Some(30_235_703_570), None, 6);
+    assert!(build_lock_revision(&lock_file(&identity), &other_patchset).is_err());
+
+    identity["dependency_revision"] = 0.into();
+    assert!(build_lock_revision(&lock_file(&identity), &remote).is_err());
+
+    let mut plain = lock_file(&identity);
+    plain.encoding = "utf-8".to_owned();
+    assert!(build_lock_revision(&plain, &remote).is_err());
 }
