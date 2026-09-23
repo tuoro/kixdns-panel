@@ -396,6 +396,25 @@ onBeforeUnmount(() => {
         </section>
 
         <section class="overview-stats-row" aria-label="运行统计">
+          <!-- 耗时从信号带挪到这里：信号带只讲启动以来的量，这张卡讲最近一小时快不快。
+               分布是四段互不重叠的区间，不是百分位数。信息最密，放在最前面；
+               两列布局下独占一行，免得三张卡里落单一张。 -->
+          <article v-if="speed" class="overview-stat">
+            <span class="overview-stat-label">响应速度 · {{ speed.period }}</span>
+            <template v-if="speed.bands.length">
+              <span class="overview-kpi-value-row">
+                <strong class="overview-kpi-value">{{ latencyFigure(speed.latency.avg_ms) }}</strong>
+                <span class="overview-kpi-unit">ms 平均</span>
+              </span>
+              <span class="overview-latency-bar" aria-hidden="true"><i v-for="band in speed.bands" :key="band.key" :class="`overview-latency-bar--${band.key}`" :style="{ width: `${band.share * 100}%` }"></i></span>
+              <span class="overview-stat-note overview-latency-legend"><span v-for="band in speed.bands" :key="band.key">{{ band.label }} <b>{{ formatSmallPercent(band.share) }}</b></span></span>
+              <span class="overview-stat-note"><i class="overview-dot" :class="`overview-dot--${speed.health}`" aria-hidden="true"></i> {{ formatPercent(speed.within100) }} 在 100 ms 内返回</span>
+            </template>
+            <template v-else>
+              <strong class="overview-kpi-value">—</strong>
+              <span class="overview-stat-note">{{ precisionSupported ? '还没有请求' : '当前增强版不提供耗时数据，更新增强版后显示' }}</span>
+            </template>
+          </article>
           <article class="overview-stat">
             <span class="overview-stat-label" title="未过期的命中与续用旧结果都算命中">缓存命中率</span>
             <strong class="overview-kpi-value">{{ formatPercent(cacheHitRate) }}</strong>
@@ -414,24 +433,6 @@ onBeforeUnmount(() => {
             <template v-else>
               <strong class="overview-kpi-value">—</strong>
               <span class="overview-stat-note">当前增强版不提供健康判定所需数据，更新增强版后显示</span>
-            </template>
-          </article>
-          <!-- 耗时从信号带挪到这里：信号带只讲启动以来的量，这张卡讲最近一小时快不快。
-               分布是四段互不重叠的区间，不是百分位数。 -->
-          <article v-if="speed" class="overview-stat">
-            <span class="overview-stat-label">响应速度 · {{ speed.period }}</span>
-            <template v-if="speed.bands.length">
-              <span class="overview-kpi-value-row">
-                <strong class="overview-kpi-value">{{ latencyFigure(speed.latency.avg_ms) }}</strong>
-                <span class="overview-kpi-unit">ms 平均</span>
-              </span>
-              <span class="overview-latency-bar" aria-hidden="true"><i v-for="band in speed.bands" :key="band.key" :class="`overview-latency-bar--${band.key}`" :style="{ width: `${band.share * 100}%` }"></i></span>
-              <span class="overview-stat-note overview-latency-legend"><span v-for="band in speed.bands" :key="band.key">{{ band.label }} <b>{{ formatSmallPercent(band.share) }}</b></span></span>
-              <span class="overview-stat-note"><i class="overview-dot" :class="`overview-dot--${speed.health}`" aria-hidden="true"></i> {{ formatPercent(speed.within100) }} 在 100 ms 内返回</span>
-            </template>
-            <template v-else>
-              <strong class="overview-kpi-value">—</strong>
-              <span class="overview-stat-note">{{ precisionSupported ? '还没有请求' : '当前增强版不提供耗时数据，更新增强版后显示' }}</span>
             </template>
           </article>
         </section>
@@ -790,6 +791,7 @@ onBeforeUnmount(() => {
 @media (max-width: 1000px) {
   .overview-signal { grid-template-columns: minmax(0, 1fr); gap: 16px; }
   .overview-stats-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .overview-stats-row > .overview-stat:first-child { grid-column: 1 / -1; }
   .overview-breakdowns { grid-template-columns: minmax(0, 1fr); gap: 24px; }
   .overview-runtime-ledger { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .overview-table th, .overview-table td { padding: 12px 8px; font-size: 13px; }

@@ -46,6 +46,8 @@ test('首页展示精确分布，页签可用键盘切换且完整保留三个�
   // 第三张卡是最近一小时的响应速度：平均 12.6 ms 按台账的写法取整，分布是四段不重叠的区间
   await expect(page.getByText('兜底使用')).toHaveCount(0)
   const speed = page.locator('.overview-stat').filter({ hasText: '响应速度' })
+  // 信息最密的一张放在最前面，后面两张是单个数字
+  await expect(page.locator('.overview-stat').first()).toContainText('响应速度')
   await expect(speed.locator('.overview-stat-label')).toHaveText('响应速度 · 最近一小时')
   await expect(speed.locator('.overview-kpi-value')).toHaveText('13')
   for (const band of ['10 ms 内 81.7%', '10–100 ms 15.2%', '100 ms–1 s 2.7%', '1 s 以上 0.4%']) {
