@@ -67,7 +67,7 @@ async fn slow_artifact_download_outlives_the_api_timeout() {
     )
     .unwrap();
 
-    let bytes = UpdateManager::fetch_artifact(&client, &url, Duration::from_secs(5))
+    let bytes = UpdateManager::fetch_artifact(&client, &url, None, Duration::from_secs(5))
         .await
         .unwrap();
 
@@ -88,7 +88,7 @@ async fn stalled_artifact_download_fails_on_the_read_timeout() {
     let started = Instant::now();
 
     let message = timeout_message(
-        UpdateManager::fetch_artifact(&client, &url, Duration::from_secs(20)).await,
+        UpdateManager::fetch_artifact(&client, &url, None, Duration::from_secs(20)).await,
     );
 
     assert!(
@@ -113,7 +113,7 @@ async fn endless_artifact_download_fails_on_the_download_timeout() {
     let started = Instant::now();
 
     let message = timeout_message(
-        UpdateManager::fetch_artifact(&client, &url, Duration::from_millis(500)).await,
+        UpdateManager::fetch_artifact(&client, &url, None, Duration::from_millis(500)).await,
     );
 
     assert!(
@@ -122,4 +122,160 @@ async fn endless_artifact_download_fails_on_the_download_timeout() {
         started.elapsed()
     );
     assert!(message.contains("下载 KixDNS 产物超时"), "{message}");
+}
+
+/// 对每个连接依次回一个固定响应，并记下请求头（小写）。返回基址和记录。
+/// Answers each connection with the next canned response and records the request
+/// headers, lowercased. Returns the base URL and the record.
+async fn recording_server(
+    responses: Vec<Vec<u8>>,
+) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = std::sync::Arc::clone(&requests);
+    tokio::spawn(async move {
+        for response in responses {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = socket.read(&mut buffer).await.unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+            }
+            recorded
+                .lock()
+                .unwrap()
+                .push(String::from_utf8_lossy(&request).to_lowercase());
+            let _ = socket.write_all(&response).await;
+        }
+    });
+    (format!("http://{address}"), requests)
+}
+
+fn response(status: &str, headers: &str, body: &[u8]) -> Vec<u8> {
+    let mut response = format!(
+        "HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    response.extend_from_slice(body);
+    response
+}
+
+fn source(url: String, token: Option<&str>) -> super::ArtifactSource {
+    super::ArtifactSource {
+        url,
+        token: token.map(|token| secrecy::SecretString::from(token.to_owned())),
+        label: "test",
+    }
+}
+
+fn digest_of(bytes: &[u8]) -> String {
+    format!("sha256:{}", super::sha256(bytes))
+}
+
+fn test_client() -> reqwest::Client {
+    UpdateManager::http_client(
+        Duration::from_secs(5),
+        Duration::from_secs(1),
+        Duration::from_secs(1),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn token_reaches_github_but_never_the_storage_it_redirects_to() {
+    let (blob, blob_requests) = recording_server(vec![response("200 OK", "", b"package")]).await;
+    let redirect = format!("Location: {blob}/artifact.zip\r\n");
+    let (github, github_requests) =
+        recording_server(vec![response("302 Found", &redirect, b"")]).await;
+
+    let bytes = UpdateManager::fetch_first_verified(
+        &test_client(),
+        &[source(format!("{github}/zip"), Some("secret-token"))],
+        &digest_of(b"package"),
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(bytes, b"package");
+    assert!(github_requests.lock().unwrap()[0].contains("authorization: bearer secret-token"));
+    let blob_request = blob_requests.lock().unwrap()[0].clone();
+    assert!(
+        !blob_request.contains("authorization") && !blob_request.contains("secret-token"),
+        "Token 不能跟着跳转发给存储服务：{blob_request}"
+    );
+}
+
+#[tokio::test]
+async fn falls_back_to_nightly_link_when_github_refuses_the_token() {
+    let (github, _) = recording_server(vec![response("401 Unauthorized", "", b"{}")]).await;
+    let (nightly, nightly_requests) =
+        recording_server(vec![response("200 OK", "", b"package")]).await;
+
+    let bytes = UpdateManager::fetch_first_verified(
+        &test_client(),
+        &[
+            source(format!("{github}/zip"), Some("secret-token")),
+            source(format!("{nightly}/artifact.zip"), None),
+        ],
+        &digest_of(b"package"),
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(bytes, b"package");
+    assert!(
+        !nightly_requests.lock().unwrap()[0].contains("authorization"),
+        "nightly.link 不能收到 Token"
+    );
+}
+
+#[tokio::test]
+async fn falls_back_when_the_first_package_fails_the_digest() {
+    let (github, _) = recording_server(vec![response("200 OK", "", b"tampered")]).await;
+    let (nightly, _) = recording_server(vec![response("200 OK", "", b"package")]).await;
+
+    let bytes = UpdateManager::fetch_first_verified(
+        &test_client(),
+        &[
+            source(format!("{github}/zip"), Some("secret-token")),
+            source(format!("{nightly}/artifact.zip"), None),
+        ],
+        &digest_of(b"package"),
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(bytes, b"package");
+}
+
+#[tokio::test]
+async fn reports_the_last_failure_when_every_source_fails() {
+    let (github, _) = recording_server(vec![response("401 Unauthorized", "", b"{}")]).await;
+    let (nightly, _) = recording_server(vec![response("200 OK", "", b"tampered")]).await;
+
+    let error = UpdateManager::fetch_first_verified(
+        &test_client(),
+        &[
+            source(format!("{github}/zip"), Some("secret-token")),
+            source(format!("{nightly}/artifact.zip"), None),
+        ],
+        &digest_of(b"package"),
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        matches!(error, UpdateError::Verification(ref message) if message.contains("digest 不匹配")),
+        "{error:?}"
+    );
 }

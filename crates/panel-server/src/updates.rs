@@ -714,6 +714,43 @@ struct ExtractedArtifact {
     config_capabilities: Vec<String>,
 }
 
+/// 内核包的一个下载来源。 / One place a kernel package can be downloaded from.
+struct ArtifactSource {
+    url: String,
+    token: Option<SecretString>,
+    label: &'static str,
+}
+
+/// 按顺序尝试的下载来源。Actions 产物即使在公开仓库也要登录才能下载，匿名只能走
+/// nightly.link；配了 Token 时先直接从 GitHub 下载，Token 权限不够或下载失败再回退。
+/// Download sources in the order they are tried. Actions artifacts need a login even in
+/// a public repository, so anonymous downloads can only go through nightly.link. With a
+/// token configured GitHub is tried first, falling back when the token lacks the
+/// permission or the download fails.
+fn artifact_sources(
+    repository: &str,
+    version: &RemoteVersion,
+    token: Option<&SecretString>,
+) -> Vec<ArtifactSource> {
+    let mut sources = Vec::new();
+    if let Some(token) = token {
+        sources.push(ArtifactSource {
+            url: format!(
+                "https://api.github.com/repos/{repository}/actions/artifacts/{}/zip",
+                version.source_id
+            ),
+            token: Some(token.clone()),
+            label: "GitHub",
+        });
+    }
+    sources.push(ArtifactSource {
+        url: version.download_url.clone(),
+        token: None,
+        label: "nightly.link",
+    });
+    sources
+}
+
 /// GitHub contents 接口返回的仓库文件。
 /// A repository file as returned by the GitHub contents API.
 #[derive(Debug, Deserialize)]
@@ -1586,6 +1623,7 @@ impl UpdateManager {
     async fn fetch_artifact(
         client: &reqwest::Client,
         url: &str,
+        token: Option<&SecretString>,
         timeout: Duration,
     ) -> Result<Vec<u8>, UpdateError> {
         // reqwest 把读超时和总超时都报成一句 "error decoding response body"，用户看不出是网太慢。
@@ -1602,9 +1640,14 @@ impl UpdateManager {
         };
         // 请求级时限覆盖客户端的 20 秒总超时，只作用于这次下载。
         // The per-request limit overrides the client's 20 s total, for this download only.
-        let response = client
-            .get(url)
-            .timeout(timeout)
+        let mut request = client.get(url).timeout(timeout);
+        if let Some(token) = token {
+            // GitHub 回应的是跳转到存储服务的地址；换了主机时 reqwest 会去掉认证头，Token 不会跟过去。
+            // GitHub answers with a redirect to blob storage; reqwest drops the auth header when
+            // the host changes, so the token never follows it.
+            request = request.bearer_auth(token.expose_secret());
+        }
+        let response = request
             .send()
             .await
             .map_err(network)?
@@ -1633,24 +1676,54 @@ impl UpdateManager {
     }
 
     async fn download(&self, version: &ResolvedVersion) -> Result<Vec<u8>, UpdateError> {
-        let bytes = Self::fetch_artifact(
+        let token = self.github_token.read().await.clone();
+        let sources = artifact_sources(&self.repository, &version.remote, token.as_ref());
+        Self::fetch_first_verified(
             &self.client,
-            &version.remote.download_url,
+            &sources,
+            &version.remote.artifact_digest,
             Self::DOWNLOAD_TIMEOUT,
         )
-        .await?;
-        let expected = version
-            .remote
-            .artifact_digest
+        .await
+    }
+
+    /// 依次尝试每个来源，返回第一个通过摘要校验的包；都失败时报最后一个来源的错误。
+    /// Tries each source in turn and returns the first package that passes the digest
+    /// check; when all fail, reports the last source's error.
+    async fn fetch_first_verified(
+        client: &reqwest::Client,
+        sources: &[ArtifactSource],
+        digest: &str,
+        timeout: Duration,
+    ) -> Result<Vec<u8>, UpdateError> {
+        let expected = digest
             .strip_prefix("sha256:")
             .ok_or_else(|| UpdateError::Verification("Artifact digest 格式无效".to_owned()))?;
-        let actual = sha256(&bytes);
-        if expected != actual {
-            return Err(UpdateError::Verification(format!(
-                "Artifact digest 不匹配：期望 {expected}，实际 {actual}"
-            )));
+        let mut last_error = None;
+        for (index, source) in sources.iter().enumerate() {
+            let result = Self::fetch_artifact(client, &source.url, source.token.as_ref(), timeout)
+                .await
+                .and_then(|bytes| {
+                    let actual = sha256(&bytes);
+                    if actual == expected {
+                        Ok(bytes)
+                    } else {
+                        Err(UpdateError::Verification(format!(
+                            "Artifact digest 不匹配：期望 {expected}，实际 {actual}"
+                        )))
+                    }
+                });
+            match result {
+                Ok(bytes) => return Ok(bytes),
+                Err(error) => {
+                    if index + 1 < sources.len() {
+                        tracing::warn!(%error, source = source.label, "内核包下载失败，改用下一个来源");
+                    }
+                    last_error = Some(error);
+                }
+            }
         }
-        Ok(bytes)
+        Err(last_error.unwrap_or_else(|| UpdateError::Network("没有可用的下载来源".to_owned())))
     }
 
     async fn install_resolved(
