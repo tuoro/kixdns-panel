@@ -105,20 +105,33 @@ if [[ -n "$base_sha" ]]; then
         fail "最高编号补丁集 p${patchset} 不能删除"
       continue
     fi
-    # 已封印的集合只允许新增一个全新名字的兼容层目录：已有的锁不会选中新名字，已有构建
-    # 不受影响，另一份上游因此能沿用同一个编号。往已有兼容层里加文件、新增 release/<tag>/
-    # （按标签自动选中）或任何修改、删除都会改变已有构建，只能新增更高编号的补丁集。
-    # A sealed patchset only accepts a compatibility directory under a new name: no existing
-    # lock selects a new name, so no existing build changes, and another upstream can share
-    # the number. Adding to an existing layer, adding release/<tag>/ (selected by tag) or any
-    # edit or deletion changes an existing build and needs a new, higher patchset.
+    # 已封印的集合只接受两种改动，都以整个兼容层目录为单位：
+    #   - 新增一个名字未用过的兼容层。已有的锁不会选中新名字，已有构建不受影响，另一份
+    #     上游因此能沿用同一个编号。
+    #   - 整个删除一个兼容层。仍有锁在用时上面的锁校验会报缺失，所以只有没人用的能删。
+    # 往已有兼容层里增删改文件、新增 release/<tag>/（按标签自动选中）或改动其余任何文件，
+    # 都会改变已有构建，只能新增更高编号的补丁集。
+    # A sealed patchset accepts two changes, each a whole compatibility directory:
+    #   - a layer under a name never used: no existing lock selects it, so no existing
+    #     build changes, and another upstream can share the number;
+    #   - removing a layer outright: the lock checks above report it missing while any lock
+    #     still uses it, so only unused ones can go.
+    # Adding, removing or editing a file inside an existing layer, adding release/<tag>/
+    # (selected by tag) or touching anything else changes an existing build and needs a
+    # new, higher patchset.
     while IFS=$'\t' read -r status path; do
       [[ -n "$status" ]] || continue
       layer="${path#"patches/sets/$patchset/"}"
-      if [[ "$status" != A || ! "$layer" =~ ^compatibility/([A-Za-z0-9._-]+)/[^/]+\.patch$ ]] ||
-        git cat-file -e "${base_sha}:patches/sets/$patchset/compatibility/${BASH_REMATCH[1]}" 2>/dev/null; then
-        fail "补丁集 p${patchset} 已封印（${layer}）；只能新增名字未用过的兼容层，其余改动请新增更高编号的补丁集"
+      if [[ "$layer" =~ ^compatibility/([A-Za-z0-9._-]+)/[^/]+\.patch$ ]]; then
+        directory="patches/sets/$patchset/compatibility/${BASH_REMATCH[1]}"
+        existed=false
+        git cat-file -e "${base_sha}:${directory}" 2>/dev/null && existed=true
+        remains=false
+        git cat-file -e "HEAD:${directory}" 2>/dev/null && remains=true
+        [[ "$status" == A && "$existed" == false ]] && continue
+        [[ "$status" == D && "$existed" == true && "$remains" == false ]] && continue
       fi
+      fail "补丁集 p${patchset} 已封印（${layer}）；只能整个新增名字未用过的兼容层或整个删除没人用的兼容层，其余改动请新增更高编号的补丁集"
     done < <(git diff --name-status --no-renames "$base_sha" HEAD -- "patches/sets/$patchset")
   done
 
