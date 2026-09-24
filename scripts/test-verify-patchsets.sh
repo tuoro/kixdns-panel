@@ -42,6 +42,7 @@ revision() {
   # The action lock uses p2's split layer; a scenario below adds a new layer for the release.
   mkdir -p patches/sets/2/compatibility/split
   printf 'diff --git a/src/main.rs b/src/main.rs\n' > patches/sets/2/compatibility/split/0001-entry.patch
+  printf 'diff --git a/Cargo.lock b/Cargo.lock\n' > patches/sets/2/compatibility/split/0002-dependency-lock.patch
   mkdir -p upstreams/actions upstreams/releases patches/dependencies/action/11
   lock action 11 2 | jq '.compatibility = "split"' > upstream.lock.json
   lock release v1 2 > upstream.release.lock.json
@@ -96,6 +97,10 @@ scenario 'replace the highest patchset with a newer one' pass '' '
   git rm --quiet -r patches/sets/4
   mkdir -p patches/sets/5/common
   printf "diff --git a/src/lib.rs b/src/lib.rs\n" > patches/sets/5/common/0001-source.patch'
+scenario 'delete a compatibility layer no lock uses any more' pass '' '
+  git rm --quiet -r patches/sets/2/compatibility/split
+  jq "del(.compatibility)" upstream.lock.json > lock.new && mv lock.new upstream.lock.json
+  cp upstream.lock.json upstreams/actions/11.json'
 scenario 'release joins a sealed patchset through a new compatibility layer' pass '' '
   mkdir -p patches/sets/2/compatibility/tokio
   printf "diff --git a/src/main.rs b/src/main.rs\n" > patches/sets/2/compatibility/tokio/0001-entry.patch
@@ -124,10 +129,10 @@ scenario 'add a common patch to a sealed patchset' fail '已封印' '
 scenario 'add a release layer to a sealed patchset' fail '已封印' '
   mkdir -p patches/sets/2/release/v1
   printf "diff --git a/src/lib.rs b/src/lib.rs\n" > patches/sets/2/release/v1/0001-release.patch'
-scenario 'delete a compatibility layer from a sealed patchset' fail '已封印' '
-  git rm --quiet -r patches/sets/2/compatibility/split
-  jq "del(.compatibility)" upstream.lock.json > lock.new && mv lock.new upstream.lock.json
-  cp upstream.lock.json upstreams/actions/11.json'
+scenario 'delete one file from a compatibility layer' fail '已封印' '
+  git rm --quiet patches/sets/2/compatibility/split/0002-dependency-lock.patch'
+scenario 'delete a compatibility layer a lock still uses' fail '兼容层 split 不存在或为空' '
+  git rm --quiet -r patches/sets/2/compatibility/split'
 scenario 'new patchset below the highest' fail '新补丁集 p3 必须高于当前最高编号 p4' '
   mkdir -p patches/sets/3/common
   printf "diff --git a/src/lib.rs b/src/lib.rs\n" > patches/sets/3/common/0001-source.patch'

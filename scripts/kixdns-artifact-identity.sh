@@ -30,7 +30,7 @@ reference="$(bash "$script_directory/lock-reference.sh" "$lock_file")"
 # the kernel), the workflows and this script are deliberately left out; a change to how
 # kernels are built needs a manual forced rebuild.
 maintenance_modules=(
-  tools/xtask/src/overlay.rs # 自动重基，只生成新补丁集 / automatic rebase, only writes new patchsets
+  tools/xtask/src/overlay.rs # 自动重基与并入，只生成新补丁集或新兼容层 / rebase and join, only write new patchsets or layers
   tools/xtask/src/refresh.rs # 审计与依赖刷新，只生成修订 / audit and refresh, only writes revisions
 )
 files=(

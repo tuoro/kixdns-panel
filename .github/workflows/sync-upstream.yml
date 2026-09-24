@@ -176,25 +176,19 @@ jobs:
               tee -a "$validation_log"
             return "${PIPESTATUS[0]}"
           }
-          # 新 Release 从上游 main 切出，而 Action 轨道天天跟着 main，它的补丁集离新版本最近，先试它。
-          # 不成再用 Release 自己的补丁集，最后才交给自动重基。
-          # A new release is cut from upstream main, which the action track follows daily, so its
-          # patchset is the closest to the new version and goes first. The release's own patchset
-          # comes next, and the automatic rebase last.
+          # 新 Release 一律从 Action 当前的补丁集出发：Action 是 Release 的先行版，Release 跟上时
+          # 拿的是 Action 已有的增强，编号与 Action 相同，从不退回 Release 自己的旧补丁集。
+          # A new release always starts from the action track's current patchset: the action
+          # track runs ahead of releases, so a release catching up takes the enhancements the
+          # action track already has, under the same number, and never falls back to its own
+          # older patchset.
           if [[ "$TRACK" == release ]]; then
-            own_lock="$RUNNER_TEMP/release-candidate.json"
-            cp "$LOCK_FILE" "$own_lock"
             jq --slurpfile action upstream.lock.json '
               .patchset = $action[0].patchset
               | if $action[0].compatibility then .compatibility = $action[0].compatibility
                 else del(.compatibility) end
-            ' "$own_lock" > "$LOCK_FILE"
-            if ! cmp -s "$own_lock" "$LOCK_FILE"; then
-              if attempt; then
-                exit 0
-              fi
-              cp "$own_lock" "$LOCK_FILE"
-            fi
+            ' "$LOCK_FILE" > "$LOCK_FILE.new"
+            mv "$LOCK_FILE.new" "$LOCK_FILE"
           fi
           attempt
 
@@ -207,12 +201,31 @@ jobs:
           BASE_COMMIT: ${{ steps.upstream.outputs.current }}
           LOCK_FILE: ${{ steps.upstream.outputs.lock_file }}
         shell: bash
+        # 先并入：只给当前补丁集新增一个兼容层，编号不变。Action 并不进去说明通用补丁也要改，
+        # 才领新编号；Release 只并入 Action 的补丁集，并不进去就交给人工，绝不领一个比 Action
+        # 还大的号。失败类型只按最后一次尝试的输出判断，前一次预料之中的并入失败不算。
+        # Join first: add one compatibility layer to the current patchset and keep the number.
+        # When the action track cannot join, the common patches need changing and a new number
+        # is taken. A release only ever joins the action track's patchset; if it cannot, a human
+        # takes over, and it never takes a number above the action track's. The failure kind
+        # comes from the last attempt alone; an expected join failure before it does not count.
         run: |
           validation_log="$RUNNER_TEMP/kixdns-compatibility-validation.log"
+          attempt_log="$RUNNER_TEMP/kixdns-rebase-attempt.log"
+          patchset_before="$(jq -r .patchset "$LOCK_FILE")"
+          rebase() {
+            cargo xtask rebase --lock "$LOCK_FILE" "$@" 2>&1 | tee "$attempt_log"
+            return "${PIPESTATUS[0]}"
+          }
           set +e
           (
             set -euo pipefail
-            cargo xtask rebase --lock "$LOCK_FILE" --base-commit "$BASE_COMMIT"
+            if [[ "$TRACK" == release ]]; then
+              rebase --base-commit "$(jq -r .commit upstream.lock.json)" --base-source action --join
+            elif ! rebase --base-commit "$BASE_COMMIT" --join; then
+              echo "并入 p${patchset_before} 未成功，改为自动重基到新编号"
+              rebase --base-commit "$BASE_COMMIT"
+            fi
             cargo xtask prepare --lock "$LOCK_FILE"
             bash scripts/verify-patchsets.sh "$BASE_SHA"
             git diff --check
@@ -220,7 +233,7 @@ jobs:
           status=${PIPESTATUS[0]}
           set -e
           if ((status != 0)); then
-            if grep -Eq 'overlay 自动重基存在代码冲突|重新解析 Cargo.lock 失败' "$validation_log"; then
+            if grep -Eq 'overlay 自动重基存在代码冲突|重新解析 Cargo.lock 失败|并入失败' "$attempt_log"; then
               echo 'failure_kind=conflict' >> "$GITHUB_OUTPUT"
             else
               echo 'failure_kind=infrastructure' >> "$GITHUB_OUTPUT"
@@ -228,6 +241,11 @@ jobs:
             exit "$status"
           fi
           echo 'generated=true' >> "$GITHUB_OUTPUT"
+          if [[ "$(jq -r .patchset "$LOCK_FILE")" == "$patchset_before" ]]; then
+            echo 'mode=join' >> "$GITHUB_OUTPUT"
+          else
+            echo 'mode=rebase' >> "$GITHUB_OUTPUT"
+          fi
 
       # 上游没动时照样审计当前版本：新公告随时会出，修复不必等上游。
       # With upstream unchanged the current version is still audited: advisories land at any
@@ -402,6 +420,7 @@ jobs:
           LOCK_FILE: ${{ steps.upstream.outputs.lock_file }}
           PRUNED: ${{ steps.prune.outputs.pruned }}
           REBASED: ${{ steps.rebase.outputs.generated }}
+          REBASE_MODE: ${{ steps.rebase.outputs.mode }}
           REFRESHED: ${{ steps.refresh.outputs.generated }}
           REVISION: ${{ steps.refresh.outputs.revision }}
           SOURCE_LABEL: ${{ steps.upstream.outputs.label }}
@@ -439,7 +458,9 @@ jobs:
                 echo "- 上游身份：\`${CANDIDATE_REFERENCE}\`"
                 echo "- 上游提交：\`${CANDIDATE_COMMIT}\`"
                 echo "- 上游来源：${SOURCE_URL}"
-                if [[ "$REBASED" == true ]]; then
+                if [[ "$REBASED" == true && "$REBASE_MODE" == join ]]; then
+                  echo "- 补丁处理：并入 p$(jq -r .patchset "$LOCK_FILE")，新增兼容层 \`$(jq -r .compatibility "$LOCK_FILE")\`，编号不变"
+                elif [[ "$REBASED" == true ]]; then
                   echo "- 补丁处理：已自动重基为 p$(jq -r .patchset "$LOCK_FILE")"
                 fi
                 echo '- 验证：增强补丁、测试、Clippy、RustSec 与 DNS 冒烟均已通过'
@@ -526,6 +547,10 @@ jobs:
             echo "- 完整日志：${workflow_url}"
             echo
             echo '该候选不会写入版本目录，现有可安装版本和 Artifact 不受影响。'
+            if [[ "$TRACK" == release ]]; then
+              echo
+              echo '新 Release 只从 Action 当前的补丁集出发，不退回 Release 自己的旧补丁集。它并不进 Action 的补丁集，Release 轨道会停在当前版本，直到人工把它并入（在该补丁集里新增一个兼容层），见 `patches/README.md`。'
+            fi
             echo
             if [[ -f "$report_file" ]]; then
               cat "$report_file"
