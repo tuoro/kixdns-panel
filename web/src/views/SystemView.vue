@@ -669,7 +669,7 @@ onBeforeUnmount(() => {
 
           <div class="local-versions">
             <p class="version-heading">本地版本</p>
-            <article v-for="version in catalog.installed_versions" :key="versionIdentity(version)" class="ui-rec local-version" :class="{ 'ui-rec--current': version.active }">
+            <article v-for="version in catalog.installed_versions" :key="versionIdentity(version)" class="ui-rec local-version">
               <div>
                 <div class="ui-rec__name"><a v-if="version.source_url" class="ui-mono version-name version-link" :href="version.source_url" target="_blank" rel="noopener noreferrer" title="在 GitHub 打开上游构建">{{ formatKixdnsVersion(version) }}</a><span v-else class="ui-mono version-name">{{ formatKixdnsVersion(version) }}</span><span v-if="version.active" class="ui-tag ui-tag--ok">当前</span></div>
                 <div v-if="version.upstream_commit" class="ui-rec__meta"><span class="ui-mono">上游 {{ shortHash(version.upstream_commit, 9) }}</span><span class="ui-mono">p{{ version.patchset }}<template v-if="version.dependency_revision">-r{{ version.dependency_revision }}</template></span><span class="ui-mono">{{ artifactArchitecture(version.artifact) }}</span></div>
