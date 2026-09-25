@@ -1,15 +1,11 @@
 <script setup lang="ts">
 import {
-  Archive,
   Bell,
-  CircleCheck,
-  Download,
   Eye,
   EyeOff,
   ExternalLink,
   GitBranch,
-  HardDrive,
-  Package,
+  KeyRound,
   Play,
   RefreshCw,
   RotateCw,
@@ -31,6 +27,10 @@ import type {
   ServiceStatus,
 } from '../api/types'
 import StatusBanner from '../components/StatusBanner.vue'
+import UiCard from '../components/ui/UiCard.vue'
+import UiPageHeader from '../components/ui/UiPageHeader.vue'
+import UiTabs from '../components/ui/UiTabs.vue'
+import UiTask, { type UiTaskState } from '../components/ui/UiTask.vue'
 import { useConfirm } from '../composables/useConfirm'
 import { useToast } from '../composables/useToast'
 import { useUpdateStatus } from '../composables/useUpdateStatus'
@@ -69,6 +69,14 @@ const {
   refresh: refreshUpdates,
 } = useUpdateStatus()
 const versionPanel = ref<HTMLElement | null>(null)
+const versionSources = [
+  { value: 'action', label: 'Actions', icon: GitBranch },
+  { value: 'release', label: 'Releases', icon: TagIcon },
+] as const
+// 在线更新从这一页开始时才知道起点，已用时间只在那时显示；刷新进来遇到正在进行的更新就不猜。
+// The start of an online update is only known when this page began it, so the
+// elapsed time shows only then; an update already running on reload is not guessed at.
+const panelUpdateStartedAt = ref<number | null>(null)
 let pendingService: Promise<void> | null = null
 let versionsRequest = 0
 let panelUpdateTimer: ReturnType<typeof setTimeout> | null = null
@@ -81,6 +89,14 @@ const PANEL_UPDATE_DISMISSED_KEY = 'kixdns:panel-update-failure-dismissed'
 const dismissedPanelUpdateFailure = ref(readDismissedPanelUpdateFailure())
 
 const running = computed(() => service.value?.active_state === 'active')
+// 「正在运行 · active/running」「已停止 · inactive/dead」是同一件事说两遍；只有启动中、
+// 自动重启这类不寻常的状态，systemd 的原始写法才多带了信息。
+// "正在运行 · active/running" and "已停止 · inactive/dead" say one thing twice; only
+// unusual states such as activating or auto-restart carry information in systemd's own words.
+const unusualServiceState = computed(() => {
+  const state = service.value ? `${service.value.active_state}/${service.value.sub_state}` : ''
+  return state && !['active/running', 'inactive/dead'].includes(state) ? state : ''
+})
 const installed = computed(() => catalog.value?.binary_present === true)
 const activeVersion = computed(() => catalog.value?.installed_versions.find((item) => item.active) ?? null)
 const loadError = computed(() => [serviceError.value, versionsError.value].filter(Boolean).join('；'))
@@ -98,10 +114,6 @@ function buildTime(value: string | null): string {
 
 function artifactArchitecture(artifact: string): string {
   return artifact.match(/-(x86_64|arm64|aarch64)$/)?.[1] ?? artifact
-}
-
-function artifactDigest(digest: string | null | undefined): string {
-  return shortHash(digest?.replace(/^sha256:/, ''), 12)
 }
 
 function versionIdentity(version: InstalledKixdnsVersion | RemoteKixdnsVersion): string {
@@ -151,6 +163,12 @@ const panelUpdateFailure = computed(() => {
   if (status?.state !== 'failed') return ''
   if (panelUpdateIdentity(status) === dismissedPanelUpdateFailure.value) return ''
   return status.message || '面板在线更新失败，详情见 journalctl -u kixdns-panel-update.service'
+})
+
+const panelTaskState = computed<UiTaskState>(() => {
+  if (panelUpdateRunning.value) return 'run'
+  if (panelUpdateFailure.value) return 'fail'
+  return 'idle'
 })
 
 function dismissPanelUpdateFailure(): void {
@@ -324,6 +342,7 @@ async function startPanelUpdate(): Promise<void> {
       updated_at: Math.floor(Date.now() / 1_000),
     }
     panelUpdateDeadline = Date.now() + 30 * 60_000
+    panelUpdateStartedAt.value = Date.now()
     toast.info('在线更新已开始，面板将短暂重启')
     schedulePanelUpdatePoll(1_000)
   } catch (error) {
@@ -485,193 +504,191 @@ onBeforeUnmount(() => {
 <template>
   <div class="page system-page">
     <StatusBanner v-if="loadError" :message="loadError" :stale="Boolean(service || catalog)" :busy="loadingService || loadingVersions" @retry="refreshAll" />
-    <!-- 按「要不要现在动手」排：服务状态在最上且只有一行，
-         有更新时更新块紧随其后，不需要动手的安装信息和凭据降到下面。 -->
-    <section class="panel service-panel">
-      <div v-if="loadingService && !service" class="sk sys-skeleton-line" role="status" aria-label="读取服务状态"></div>
-      <template v-else-if="service">
-        <div class="service-line">
-          <span :class="running ? 'service-dot' : 'service-dot service-dot--stopped'"></span>
-          <strong class="mono">{{ service.unit }}</strong>
-          <span class="service-line__state">{{ running ? '正在运行' : '已停止' }}</span>
-          <span class="service-line__meta mono">{{ service.main_pid ? `PID ${service.main_pid} · ` : '' }}{{ service.active_state }}/{{ service.sub_state }}</span>
-          <div class="service-actions">
-            <button class="button button--secondary" type="button" :disabled="!installed || running || serviceAction !== null" @click="control('start')"><Play :size="16" />启动</button>
-            <button class="button button--secondary" type="button" :disabled="!installed || !running || serviceAction !== null" @click="control('restart')"><RotateCw :size="16" :class="{ spin: serviceAction === 'restart' }" />重启</button>
-            <button class="button button--danger-quiet" type="button" :disabled="!running || serviceAction !== null" @click="control('stop')"><Square :size="15" />停止</button>
-          </div>
-        </div>
+    <!-- 按「要不要现在动手」排：服务状态就在页头，一行说清在不在跑、要不要动它；
+         有更新时更新紧随其后，不需要动手的安装信息和凭据降到下面。整页没有黑按钮：
+         这一页是看状态、偶尔操作，列表里每行的操作一律用次要按钮。
+         Ordered by whether you need to act now: the service state lives in the
+         page header, one line saying whether it runs and whether to touch it;
+         updates follow, and what needs no action sits lower. There is no black
+         button on this page: it is read and occasionally acted on, and every row
+         action is a secondary button. -->
+    <UiPageHeader class="service-line" title="系统" stack>
+      <template #meta>
+        <template v-if="service">
+          <span class="ui-dot" :class="{ 'ui-dot--off': !running }"></span>
+          <span class="ui-mono">{{ service.unit }}</span>
+          <span>{{ running ? '正在运行' : '已停止' }}</span>
+          <template v-if="service.main_pid"><span class="ui-sep">·</span><span>PID <span class="ui-mono">{{ service.main_pid }}</span></span></template>
+          <template v-if="unusualServiceState"><span class="ui-sep">·</span><span class="ui-mono">{{ unusualServiceState }}</span></template>
+        </template>
+        <span v-else-if="loadingService" class="sk system-skeleton-meta" role="status" aria-label="读取服务状态"></span>
+        <span v-else>服务状态暂不可用</span>
       </template>
-      <div v-else class="inline-loading">服务状态暂不可用</div>
-    </section>
+      <template v-if="service" #actions>
+        <button v-if="!running" class="ui-btn ui-btn--secondary" type="button" :disabled="!installed || serviceAction !== null" @click="control('start')"><Play :size="16" />启动</button>
+        <template v-else>
+          <button class="ui-btn ui-btn--secondary" type="button" :disabled="!installed || serviceAction !== null" @click="control('restart')"><RotateCw :size="16" :class="{ spin: serviceAction === 'restart' }" />重启</button>
+          <button class="ui-btn ui-btn--danger" type="button" :disabled="serviceAction !== null" @click="control('stop')"><Square :size="15" />停止</button>
+        </template>
+      </template>
+    </UiPageHeader>
 
-    <section class="panel update-panel">
-      <header class="panel__header">
-        <div><h2>可用更新</h2><p>KixDNS 增强包与面板正式版</p></div>
-        <button class="icon-button" type="button" title="检查更新" aria-label="检查更新" :disabled="checkingUpdates" @click="refreshUpdatesWithQuota"><RefreshCw :size="18" :class="{ spin: checkingUpdates }" /></button>
-      </header>
-      <div v-if="checkingUpdates && !updateStatus" class="sys-skeleton-rows" role="status" aria-label="正在检查更新"><i v-for="n in 2" :key="n" class="sk"></i></div>
-      <div v-else-if="updateStatus" class="update-rows" :class="{ 'is-refreshing': checkingUpdates }">
-        <!-- 每项真正有用的只有「从哪到哪」和一个按钮，压成一行。 -->
-        <article class="update-row" :class="{ 'update-row--ready': updateStatus.kixdns.available }">
-          <span class="update-row__mark"><GitBranch :size="17" /></span>
-          <div class="update-row__body">
-            <strong>KixDNS 增强包</strong>
-            <p class="update-row__from-to">
-              <template v-if="updateStatus.kixdns.available && updateStatus.kixdns.security_update"><span class="mono">{{ formatKixdnsVersion(activeVersion) }}</span> 依赖安全升级<template v-if="updateStatus.kixdns.dependency_revision"> · <span class="mono">r{{ updateStatus.kixdns.dependency_revision }}</span></template></template>
-              <template v-else-if="updateStatus.kixdns.available"><span class="mono">{{ formatKixdnsVersion(activeVersion) }}</span> → <span class="mono">{{ latestKixdnsVersion() }}</span></template>
-              <template v-else-if="updateStatus.kixdns.current_commit">当前轨道已是最新 · <span class="mono">{{ formatKixdnsVersion(activeVersion) }}</span></template>
+    <UiCard class="update-panel" title="可用更新">
+      <template #actions>
+        <button class="ui-icon-btn" type="button" title="检查更新" aria-label="检查更新" :disabled="checkingUpdates" @click="refreshUpdatesWithQuota"><RefreshCw :size="18" :class="{ spin: checkingUpdates }" /></button>
+      </template>
+      <div v-if="checkingUpdates && !updateStatus" class="system-skeleton-rows" role="status" aria-label="正在检查更新"><i v-for="n in 2" :key="n" class="sk"></i></div>
+      <div v-else-if="updateStatus" :class="{ 'is-refreshing': checkingUpdates }">
+        <UiTask class="update-row" state="idle" title="KixDNS 增强包">
+          <template #icon><GitBranch :size="15" /></template>
+          <template #title><span class="ui-tag">{{ updateStatus.kixdns.source === 'release' ? 'Release 轨道' : 'Action 轨道' }}</span><span v-if="updateStatus.kixdns.available" class="ui-tag ui-tag--strong">{{ updateStatus.kixdns.security_update ? '安全更新' : '有新版本' }}</span></template>
+          <template #meta>
+            <span class="update-row__from-to">
+              <template v-if="updateStatus.kixdns.available && updateStatus.kixdns.security_update"><span class="ui-mono">{{ formatKixdnsVersion(activeVersion) }}</span> 依赖安全升级<template v-if="updateStatus.kixdns.dependency_revision"> · <span class="ui-mono">r{{ updateStatus.kixdns.dependency_revision }}</span></template></template>
+              <template v-else-if="updateStatus.kixdns.available"><span class="ui-mono">{{ formatKixdnsVersion(activeVersion) }}</span> → <span class="ui-mono">{{ latestKixdnsVersion() }}</span></template>
+              <template v-else-if="updateStatus.kixdns.current_commit">当前轨道已是最新 · <span class="ui-mono">{{ formatKixdnsVersion(activeVersion) }}</span></template>
               <template v-else>尚未安装，选择一个构建开始</template>
-            </p>
-            <p class="update-row__note">{{ updateStatus.kixdns.source === 'release' ? 'RELEASES' : 'ACTIONS' }} 轨道<template v-if="updateStatus.kixdns.created_at"> · 构建于 {{ buildTime(updateStatus.kixdns.created_at) }}</template></p>
-          </div>
-          <div class="update-row__actions">
-            <button class="button button--primary" type="button" @click="viewKixdnsVersions"><Download :size="15" />查看版本</button>
-            <a v-if="updateStatus.kixdns.build_url" class="button button--secondary" :href="updateStatus.kixdns.build_url" target="_blank" rel="noopener noreferrer">构建详情<ExternalLink :size="14" /></a>
-          </div>
-        </article>
+            </span>
+            <span v-if="updateStatus.kixdns.created_at">构建于 {{ buildTime(updateStatus.kixdns.created_at) }}</span>
+          </template>
+          <template #actions>
+            <a v-if="updateStatus.kixdns.build_url" class="ui-link" :href="updateStatus.kixdns.build_url" target="_blank" rel="noopener noreferrer">构建详情<ExternalLink :size="12" /></a>
+            <button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" @click="viewKixdnsVersions">查看版本</button>
+          </template>
+        </UiTask>
 
-        <article class="update-row" :class="{ 'update-row--ready': updateStatus.panel.available }">
-          <span class="update-row__mark"><Bell :size="17" /></span>
-          <div class="update-row__body">
-            <strong>KixDNS Panel</strong>
-            <p class="update-row__from-to">
-              <template v-if="updateStatus.panel.available"><span class="mono">{{ updateStatus.panel.current_release ?? `v${updateStatus.panel.current_version}` }}</span> → <span class="mono">v{{ updateStatus.panel.latest_version }}</span></template>
+        <UiTask class="update-row" :state="panelTaskState" title="KixDNS Panel" :started-at="panelUpdateStartedAt">
+          <template #icon><Bell :size="15" /></template>
+          <template #title><span class="ui-tag">Release 轨道</span><span v-if="updateStatus.panel.available" class="ui-tag ui-tag--strong">有新版本</span></template>
+          <template #meta>
+            <span class="update-row__from-to">
+              <template v-if="panelUpdateRunning">{{ panelUpdateLabel() }}</template>
+              <template v-else-if="updateStatus.panel.available"><span class="ui-mono">{{ updateStatus.panel.current_release ?? `v${updateStatus.panel.current_version}` }}</span> → <span class="ui-mono">v{{ updateStatus.panel.latest_version }}</span></template>
               <template v-else>{{ panelUpdateLabel() }}</template>
-            </p>
-            <p v-if="panelUpdateFailure" class="update-row__note update-row__failure" role="alert">
+            </span>
+            <span v-if="updateStatus.panel.published_at">发布于 {{ buildTime(updateStatus.panel.published_at) }}</span>
+            <span v-if="!updateStatus.panel.release_url">首个正式 Release 发布后显示</span>
+            <p v-if="panelUpdateFailure" class="ui-task__error update-row__failure" role="alert">
               <span>{{ panelUpdateFailure }}</span>
-              <button class="button button--secondary" type="button" @click="dismissPanelUpdateFailure">知道了</button>
+              <button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" @click="dismissPanelUpdateFailure">知道了</button>
             </p>
-            <p class="update-row__note">RELEASE 轨道<template v-if="updateStatus.panel.published_at"> · 发布于 {{ buildTime(updateStatus.panel.published_at) }}</template></p>
-          </div>
-          <div v-if="updateStatus.panel.release_url" class="update-row__actions">
-            <button v-if="updateStatus.panel.available" class="button button--primary" type="button" :disabled="startingPanelUpdate || panelUpdateRunning" @click="startPanelUpdate"><RefreshCw :size="15" :class="{ spin: startingPanelUpdate || panelUpdateRunning }" />{{ panelUpdateRunning ? '更新中' : '在线更新' }}</button>
-            <a class="button button--secondary" :href="updateStatus.panel.release_url" target="_blank" rel="noopener noreferrer">发布说明<ExternalLink :size="14" /></a>
-          </div>
-          <span v-else class="update-row__note update-row__note--aside">首个正式 Release 发布后显示</span>
-        </article>
+          </template>
+          <template v-if="updateStatus.panel.release_url" #actions>
+            <a class="ui-link" :href="updateStatus.panel.release_url" target="_blank" rel="noopener noreferrer">发布说明<ExternalLink :size="12" /></a>
+            <button v-if="updateStatus.panel.available" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" :disabled="startingPanelUpdate || panelUpdateRunning" @click="startPanelUpdate">{{ panelUpdateRunning ? '更新中' : '在线更新' }}</button>
+          </template>
+        </UiTask>
       </div>
-      <div v-else class="update-check-failed">
+      <div v-else class="system-check-failed">
         <span>{{ updateError ? `检查失败：${updateError}` : '更新状态暂不可用' }}</span>
-        <button class="button button--secondary" type="button" :disabled="checkingUpdates" @click="refreshUpdatesWithQuota">重新检查</button>
+        <button class="ui-btn ui-btn--secondary" type="button" :disabled="checkingUpdates" @click="refreshUpdatesWithQuota">重新检查</button>
       </div>
-      <div v-if="updateError && updateStatus" class="update-stale">最近一次检查失败，当前显示上次结果：{{ updateError }}</div>
-    </section>
-
+      <template v-if="updateError && updateStatus" #foot><span class="system-stale">最近一次检查失败，当前显示上次结果：{{ updateError }}</span></template>
+    </UiCard>
 
     <!-- 不需要现在动手的两块：当前装的是什么，和查更新用的凭据。 -->
-    <div class="system-layout">
-    <section class="panel runtime-panel">
-      <header class="panel__header"><div><h2>安装状态</h2><p>增强版运行时</p></div><Package :size="20" /></header>
-      <div v-if="loadingVersions && !catalog" class="sk sys-skeleton-panel" role="status" aria-label="读取安装状态"></div>
-      <template v-else-if="catalog">
-        <div :class="installed ? 'runtime-state' : 'runtime-state runtime-state--missing'">
-          <span><HardDrive :size="22" /></span>
-          <div><strong>{{ installed ? 'KixDNS 已安装' : 'KixDNS 尚未安装' }}</strong><p class="mono">{{ installed ? (activeVersion?.upstream_commit ? `${formatKixdnsVersion(activeVersion)} · 上游 ${shortHash(activeVersion.upstream_commit, 12)} · p${activeVersion.patchset}${activeVersion.dependency_revision ? `-r${activeVersion.dependency_revision}` : ''}` : '构建身份未记录') : '选择下方构建进行安装' }}</p></div>
-        </div>
-        <dl class="detail-list runtime-details">
-          <div><dt>当前版本</dt><dd class="mono">{{ formatKixdnsVersion(activeVersion) }}</dd></div>
-          <div><dt>增强构建</dt><dd class="mono">{{ shortHash(activeVersion?.commit ?? catalog.active_commit, 12) }}</dd></div>
-          <div><dt>控制协议</dt><dd>{{ activeVersion?.control_protocol ? `v${activeVersion.control_protocol}` : '未记录' }}</dd></div>
-          <div><dt>安装来源</dt><dd><a v-if="activeVersion?.source_url" :href="activeVersion.source_url" target="_blank" rel="noopener noreferrer">上游详情<ExternalLink :size="13" /></a><span v-else>未记录</span></dd></div>
-          <div><dt>二进制摘要</dt><dd class="mono">{{ shortHash(activeVersion?.binary_sha256, 14) }}</dd></div>
-        </dl>
-      </template>
-    </section>
+    <div class="system-pair">
+      <!-- 「装的是哪个版本」是这张卡唯一常看的事，做主角；补丁集和控制协议是这个版本的附注；
+           三个哈希只在排查时看，收成细线下面的一行。原来七行一样轻重，读起来像一张表。
+           Which version is installed is the one thing read here, so it leads; the
+           patchset and control protocol qualify it; the three hashes matter only
+           when troubleshooting and share one row under a hairline. Seven rows of
+           equal weight used to read as a table. -->
+      <UiCard class="runtime-panel" title="当前安装" desc="增强版运行时">
+        <template v-if="catalog" #actions><span class="ui-tag" :class="installed ? 'ui-tag--ok' : 'ui-tag--warn'">{{ installed ? '已安装' : '尚未安装' }}</span></template>
+        <div v-if="loadingVersions && !catalog" class="sk system-skeleton-panel" role="status" aria-label="读取安装状态"></div>
+        <template v-else-if="catalog">
+          <p class="install-version">{{ installed ? formatKixdnsVersion(activeVersion) : '尚未安装' }}</p>
+          <p v-if="installed" class="install-meta">
+            <span>{{ activeVersion?.source === 'release' ? 'Release 轨道' : 'Action 轨道' }}</span>
+            <span class="ui-sep">·</span><span>补丁集 <span class="ui-mono">{{ activeVersion?.patchset ? `p${activeVersion.patchset}${activeVersion.dependency_revision ? `-r${activeVersion.dependency_revision}` : ''}` : '未记录' }}</span></span>
+            <span class="ui-sep">·</span><span>控制协议 <span class="ui-mono">{{ activeVersion?.control_protocol ? `v${activeVersion.control_protocol}` : '未记录' }}</span></span>
+          </p>
+          <p v-else class="install-meta">选择下方构建进行安装</p>
+          <dl class="ui-strip install-hashes">
+            <div><dt>上游提交</dt><dd class="ui-mono">{{ activeVersion?.upstream_commit ? shortHash(activeVersion.upstream_commit, 12) : '未记录' }}</dd></div>
+            <div><dt>增强构建</dt><dd class="ui-mono">{{ shortHash(activeVersion?.commit ?? catalog.active_commit, 12) }}</dd></div>
+            <div><dt>二进制摘要</dt><dd class="ui-mono">{{ shortHash(activeVersion?.binary_sha256, 14) }}</dd></div>
+          </dl>
+        </template>
+        <template v-if="catalog && installed" #foot>
+          <span>{{ activeVersion?.source === 'release' ? '从 GitHub Release 安装' : '从 GitHub Actions 构建安装' }}</span>
+          <a v-if="activeVersion?.source_url" class="ui-link" :href="activeVersion.source_url" target="_blank" rel="noopener noreferrer">上游详情<ExternalLink :size="12" /></a>
+          <span v-else>来源未记录</span>
+        </template>
+      </UiCard>
 
-      <!-- 状态标签上提到面板抬头。原来抬头写「凭据 / 用于版本与更新检查」，下面
-           紧跟着一行「GitHub API 凭据 / 用于版本与更新检查，不会发送到
-           nightly.link」，连图标都是同一把钥匙——一块面板把自己的标题说了两遍。
-           375 宽下正是这一行重复占掉的宽度，让标题和状态标签互相挤。
-
-           The state tag moves up into the panel heading. The heading read
-           "Credentials / for version and update checks" with a row directly
-           beneath it reading "GitHub API credential / for version and update
-           checks, never sent to nightly.link", down to the same key icon: a
-           panel stating its own title twice. At 375 it was that repetition
-           taking the width the title and the tag were fighting over. -->
-      <section class="panel credential-panel">
-        <header class="panel__header">
-          <div><h2>GitHub 凭据</h2><p>用于版本检查和内核下载，不会发送到 nightly.link</p></div>
-          <span class="tag" :class="{ 'tag--muted': !githubTokenStatus?.configured }">{{ githubTokenStatus?.configured ? '已配置' : '匿名' }}</span>
-        </header>
-      <div class="github-credential">
-        <div class="github-credential__form">
-          <!-- 占位符按 375 下量出来的可用宽度写：那里输入框内只剩 149px，而
-               「github_pat_… 或 ghp_…」要 176px，会在词中间被切掉。占位符是提示
-               不是契约，后端两种前缀都收，给一个写得下的例子就够了。
-               The placeholder is sized to the width measured at 375, where the
-               field leaves 149px and "github_pat_… 或 ghp_…" needs 176, cutting
-               off mid-token. A placeholder is a hint, not a contract: the server
-               takes either prefix, so one example that fits is enough. -->
-          <label class="github-token-input">
-            <input v-model="githubToken" :type="githubTokenVisible ? 'text' : 'password'" :placeholder="githubTokenStatus?.configured ? '输入新 Token' : 'github_pat_…'" autocomplete="new-password" maxlength="256" :disabled="githubTokenBusy" @keyup.enter="saveGithubToken">
-            <button type="button" :title="githubTokenVisible ? '隐藏 Token' : '显示 Token'" :aria-label="githubTokenVisible ? '隐藏 Token' : '显示 Token'" @click="githubTokenVisible = !githubTokenVisible"><EyeOff v-if="githubTokenVisible" :size="15" /><Eye v-else :size="15" /></button>
+      <UiCard class="credential-panel" title="GitHub 凭据" desc="用于版本检查和内核下载，不会发送到 nightly.link">
+        <template #actions><span class="ui-tag" :class="{ 'ui-tag--ok': githubTokenStatus?.configured }">{{ githubTokenStatus?.configured ? '已配置' : '匿名' }}</span></template>
+        <div class="credential-form">
+          <!-- 占位符按 375 下量出来的可用宽度写：「github_pat_… 或 ghp_…」放不下，给一个写得下的例子就够了。
+               The placeholder fits the width measured at 375; one example that fits is enough. -->
+          <label class="ui-input credential-input">
+            <KeyRound :size="16" aria-hidden="true" />
+            <input v-model="githubToken" :type="githubTokenVisible ? 'text' : 'password'" :placeholder="githubTokenStatus?.configured ? '输入新 Token' : 'github_pat_…'" autocomplete="new-password" maxlength="256" aria-label="GitHub Token" :disabled="githubTokenBusy" @keyup.enter="saveGithubToken">
+            <button class="credential-eye" type="button" :title="githubTokenVisible ? '隐藏 Token' : '显示 Token'" :aria-label="githubTokenVisible ? '隐藏 Token' : '显示 Token'" @click="githubTokenVisible = !githubTokenVisible"><EyeOff v-if="githubTokenVisible" :size="15" /><Eye v-else :size="15" /></button>
           </label>
-          <button class="button button--primary" type="button" :disabled="!githubToken || githubTokenBusy" @click="saveGithubToken">{{ githubTokenBusy ? '处理中' : (githubTokenStatus?.configured ? '替换' : '保存') }}</button>
-          <button class="icon-button icon-button--danger" type="button" title="删除 Token" aria-label="删除 Token" :disabled="!githubTokenStatus?.configured || githubTokenBusy" @click="deleteGithubToken"><Trash2 :size="16" /></button>
+          <button class="ui-btn ui-btn--secondary" type="button" :disabled="!githubToken || githubTokenBusy" @click="saveGithubToken">{{ githubTokenBusy ? '处理中' : (githubTokenStatus?.configured ? '替换' : '保存') }}</button>
+          <button class="ui-icon-btn ui-icon-btn--danger" type="button" title="删除 Token" aria-label="删除 Token" :disabled="!githubTokenStatus?.configured || githubTokenBusy" @click="deleteGithubToken"><Trash2 :size="16" /></button>
         </div>
-        <div class="github-credential__meta">
-          <template v-if="githubRate">
-            <span>API 配额 <strong class="mono">{{ githubQuota }}</strong></span>
-            <span>重置时间 <strong>{{ githubRateReset() }}</strong></span>
-          </template>
+        <!-- 没配置时说清为什么要填：GitHub 对匿名请求每小时只给 60 次，带 Token 是 5000 次。
+             Without a token, say why one helps: GitHub allows 60 anonymous requests an hour, 5,000 with a token. -->
+        <p v-if="!githubTokenStatus?.configured" class="credential-hint"><span>匿名访问 GitHub 每小时只有 60 次请求，检查版本和下载内核容易被限速。</span><span>填一个 Token 后是每小时 5000 次。</span></p>
+        <template #foot>
+          <span v-if="githubRate">API 配额 <span class="ui-mono">{{ githubQuota }}</span> · 重置于 {{ githubRateReset() }}</span>
           <span v-else>面板还没向 GitHub 请求过，配额未知</span>
-          <span v-if="githubTokenError" class="github-credential__error">{{ githubTokenError }}</span>
-        </div>
-      </div>
-      </section>
+          <span v-if="githubTokenError" class="system-error">{{ githubTokenError }}</span>
+        </template>
+      </UiCard>
     </div>
 
-    <section ref="versionPanel" class="panel version-panel">
-      <header class="panel__header version-panel__header">
-        <div><h2>KixDNS 版本</h2><p>远端版本源与本地版本库存</p></div>
-        <div class="version-panel__tools">
-          <div class="version-source-tabs" role="tablist" aria-label="版本源">
-            <button type="button" role="tab" :aria-selected="versionSource === 'action'" :class="{ 'version-source-tab--active': versionSource === 'action' }" @click="selectVersionSource('action')"><GitBranch :size="14" />Actions</button>
-            <button type="button" role="tab" :aria-selected="versionSource === 'release'" :class="{ 'version-source-tab--active': versionSource === 'release' }" @click="selectVersionSource('release')"><TagIcon :size="14" />Releases</button>
-          </div>
-          <button class="icon-button" type="button" title="刷新版本" :disabled="loadingVersions || versionAction !== null" @click="loadVersions()"><RefreshCw :size="18" :class="{ spin: loadingVersions }" /></button>
-        </div>
-      </header>
-      <div v-if="loadingVersions && (!catalog || catalog.source !== versionSource)" class="sys-skeleton-rows" role="status" aria-label="正在读取可用构建"><i v-for="n in 3" :key="n" class="sk"></i></div>
-      <div v-else-if="catalog && catalog.source === versionSource" class="version-columns">
-        <div class="remote-versions">
-          <div class="version-section-title"><div><Download :size="16" /><strong>{{ versionSource === 'release' ? '可用发布' : '可用构建' }}</strong></div><span>{{ catalog.remote_versions.length }} 个</span></div>
-          <div class="version-list">
-            <article v-for="(version, index) in catalog.remote_versions" :key="`${version.source}-${version.source_id}`" class="version-row">
-              <div class="version-identity">
-                <div><span class="identity-label">{{ version.source === 'release' ? 'Release' : 'Action' }}</span><code>{{ formatKixdnsVersion(version) }}</code><span v-if="index === 0" class="tag tag--success">{{ version.source === 'release' ? '最新发布' : '最新' }}</span><span v-if="version.active" class="tag tag--success">当前</span><span v-else-if="version.installed" class="tag tag--muted">本地</span></div>
-                <p><span class="mono">增强 {{ shortHash(version.commit, 9) }}</span><span>{{ artifactArchitecture(version.artifact) }}</span><span v-if="version.patchset">p{{ version.patchset }}</span><a :href="version.source_url" target="_blank" rel="noopener noreferrer">上游详情<ExternalLink :size="12" /></a><a :href="version.build_url" target="_blank" rel="noopener noreferrer">增强 Action<ExternalLink :size="12" /></a><span class="mono">包 {{ artifactDigest(version.artifact_digest) }}</span><span>{{ buildTime(version.created_at) }}</span></p>
+    <div ref="versionPanel">
+      <UiCard class="version-panel" title="KixDNS 版本" desc="远端构建与本地保存的版本；本地最多保留 8 个" flush stack>
+        <template #actions>
+          <UiTabs :model-value="versionSource" :items="versionSources" label="版本源" variant="segment" @update:model-value="selectVersionSource($event as KixdnsVersionSource)" />
+          <button class="ui-icon-btn" type="button" title="刷新版本" aria-label="刷新版本" :disabled="loadingVersions || versionAction !== null" @click="loadVersions()"><RefreshCw :size="18" :class="{ spin: loadingVersions }" /></button>
+        </template>
+        <div v-if="loadingVersions && (!catalog || catalog.source !== versionSource)" class="system-skeleton-rows" role="status" aria-label="正在读取可用构建"><i v-for="n in 3" :key="n" class="sk"></i></div>
+        <div v-else-if="catalog && catalog.source === versionSource" class="version-columns">
+          <div class="remote-versions">
+            <p class="version-heading">{{ versionSource === 'release' ? '可用发布' : '可用构建' }}</p>
+            <article v-for="(version, index) in catalog.remote_versions" :key="`${version.source}-${version.source_id}`" class="ui-rec version-row">
+              <div>
+                <!-- 编号本身就是去上游构建的链接，「增强」哈希是去增强构建的链接：每行不再挂两个绿色文字链接。
+                     The number itself links to the upstream build and the enhancement hash to the
+                     enhanced build, so no row carries two green text links any more. -->
+                <div class="ui-rec__name"><a class="ui-mono version-name version-link" :href="version.source_url" target="_blank" rel="noopener noreferrer" title="在 GitHub 打开上游构建">{{ formatKixdnsVersion(version) }}</a><span v-if="index === 0" class="ui-tag ui-tag--ok">{{ version.source === 'release' ? '最新发布' : '最新' }}</span><span v-if="version.active" class="ui-tag ui-tag--ok">当前</span><span v-else-if="version.installed" class="ui-tag">本地</span></div>
+                <div class="ui-rec__meta"><a class="ui-mono version-link" :href="version.build_url" target="_blank" rel="noopener noreferrer" title="在 GitHub 打开增强构建">增强 {{ shortHash(version.commit, 9) }}</a><span class="ui-mono">{{ artifactArchitecture(version.artifact) }}</span><span v-if="version.patchset" class="ui-mono">p{{ version.patchset }}</span><span>{{ buildTime(version.created_at) }}</span></div>
               </div>
-              <button v-if="version.active" class="button button--secondary version-action" type="button" disabled><CircleCheck :size="15" />当前版本</button>
-              <button v-else-if="version.installed" class="button button--secondary version-action" type="button" :disabled="versionAction !== null" @click="activateVersion(version)"><RotateCw :size="15" :class="{ spin: actionBusy(version) }" />{{ actionBusy(version) ? '切换中' : '切换' }}</button>
-              <button v-else class="button button--primary version-action" type="button" :disabled="versionAction !== null" @click="installVersion(version)"><Download :size="15" />{{ actionBusy(version) ? '安装中' : '安装并切换' }}</button>
+              <div class="ui-rec__act">
+                <span v-if="version.active" class="version-current">正在使用</span>
+                <button v-else-if="version.installed" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" :disabled="versionAction !== null" @click="activateVersion(version)"><RotateCw v-if="actionBusy(version)" :size="14" class="spin" />{{ actionBusy(version) ? '切换中' : '切换' }}</button>
+                <button v-else class="ui-btn ui-btn--secondary ui-btn--sm" type="button" :disabled="versionAction !== null" @click="installVersion(version)"><RefreshCw v-if="actionBusy(version)" :size="14" class="spin" />{{ actionBusy(version) ? '安装中' : '安装并切换' }}</button>
+              </div>
             </article>
-            <div v-if="catalog.remote_error" class="version-empty">远端版本暂不可用，本地安装信息不受影响：{{ catalog.remote_error }}</div>
-            <div v-else-if="catalog.remote_versions.length === 0" class="version-empty">{{ versionSource === 'release' ? '尚无可用 Release' : '没有可用的成功构建' }}</div>
+            <p v-if="catalog.remote_error" class="version-empty">远端版本暂不可用，本地安装信息不受影响：{{ catalog.remote_error }}</p>
+            <p v-else-if="catalog.remote_versions.length === 0" class="version-empty">{{ versionSource === 'release' ? '尚无可用 Release' : '没有可用的成功构建' }}</p>
           </div>
-        </div>
 
-        <aside class="local-versions">
-          <div class="version-section-title"><div><Archive :size="16" /><strong>本地版本</strong></div><span>最多保留 8 个</span></div>
-          <div class="local-version-list">
-            <article v-for="version in catalog.installed_versions" :key="versionIdentity(version)" :class="version.active ? 'local-version local-version--active' : 'local-version'">
-              <div><span class="identity-label">{{ version.source === 'release' ? 'Release' : 'Action' }}</span><code>{{ formatKixdnsVersion(version) }}</code><span v-if="version.active" class="tag tag--success">当前</span></div>
-              <p v-if="version.upstream_commit"><span class="mono">上游 {{ shortHash(version.upstream_commit, 9) }}</span><span>p{{ version.patchset }}<template v-if="version.dependency_revision">-r{{ version.dependency_revision }}</template></span><span>{{ artifactArchitecture(version.artifact) }}</span><a v-if="version.source_url" :href="version.source_url" target="_blank" rel="noopener noreferrer">上游详情</a><a v-if="version.build_url" :href="version.build_url" target="_blank" rel="noopener noreferrer">增强 Action</a></p>
-              <p v-else>构建身份未记录</p>
-              <p><span class="mono">增强 {{ shortHash(version.commit, 9) }}</span><span class="mono">二进制 {{ shortHash(version.binary_sha256, 12) }}</span><span>{{ formatDate(version.installed_at) }}</span></p>
-              <div v-if="!version.active" class="local-version-actions">
-                <button class="icon-button icon-button--small" type="button" title="切换到此版本" aria-label="切换到此版本" :disabled="versionAction !== null" @click="activateVersion(version)"><RotateCw :size="14" :class="{ spin: actionBusy(version, 'activate') }" /></button>
-                <button class="icon-button icon-button--small icon-button--danger" type="button" :title="actionBusy(version, 'delete') ? '正在删除' : '删除本地版本'" aria-label="删除本地版本" :disabled="versionAction !== null" @click="deleteVersion(version)"><RefreshCw v-if="actionBusy(version, 'delete')" :size="14" class="spin" /><Trash2 v-else :size="14" /></button>
+          <div class="local-versions">
+            <p class="version-heading">本地版本</p>
+            <article v-for="version in catalog.installed_versions" :key="versionIdentity(version)" class="ui-rec local-version">
+              <div>
+                <div class="ui-rec__name"><a v-if="version.source_url" class="ui-mono version-name version-link" :href="version.source_url" target="_blank" rel="noopener noreferrer" title="在 GitHub 打开上游构建">{{ formatKixdnsVersion(version) }}</a><span v-else class="ui-mono version-name">{{ formatKixdnsVersion(version) }}</span><span v-if="version.active" class="ui-tag ui-tag--ok">当前</span></div>
+                <div v-if="version.upstream_commit" class="ui-rec__meta"><span class="ui-mono">上游 {{ shortHash(version.upstream_commit, 9) }}</span><span class="ui-mono">p{{ version.patchset }}<template v-if="version.dependency_revision">-r{{ version.dependency_revision }}</template></span><span class="ui-mono">{{ artifactArchitecture(version.artifact) }}</span></div>
+                <div v-else class="ui-rec__meta">构建身份未记录</div>
+                <div class="ui-rec__meta"><a v-if="version.build_url" class="ui-mono version-link" :href="version.build_url" target="_blank" rel="noopener noreferrer" title="在 GitHub 打开增强构建">增强 {{ shortHash(version.commit, 9) }}</a><span v-else class="ui-mono">增强 {{ shortHash(version.commit, 9) }}</span><span class="ui-mono">二进制 {{ shortHash(version.binary_sha256, 12) }}</span><span>{{ formatDate(version.installed_at) }}</span></div>
+              </div>
+              <div v-if="!version.active" class="ui-rec__act">
+                <button class="ui-icon-btn ui-icon-btn--sm" type="button" title="切换到此版本" aria-label="切换到此版本" :disabled="versionAction !== null" @click="activateVersion(version)"><RotateCw :size="15" :class="{ spin: actionBusy(version, 'activate') }" /></button>
+                <button class="ui-icon-btn ui-icon-btn--sm ui-icon-btn--danger" type="button" :title="actionBusy(version, 'delete') ? '正在删除' : '删除本地版本'" aria-label="删除本地版本" :disabled="versionAction !== null" @click="deleteVersion(version)"><RefreshCw v-if="actionBusy(version, 'delete')" :size="15" class="spin" /><Trash2 v-else :size="15" /></button>
               </div>
             </article>
-            <div v-if="catalog.installed_versions.length === 0" class="version-empty">尚无本地版本</div>
+            <p v-if="catalog.installed_versions.length === 0" class="version-empty">尚无本地版本</p>
           </div>
-        </aside>
-      </div>
-      <div v-else class="version-empty">版本目录暂不可用</div>
-    </section>
+        </div>
+        <p v-else class="version-empty">版本目录暂不可用</p>
+      </UiCard>
+    </div>
   </div>
 </template>

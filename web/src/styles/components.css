@@ -46,6 +46,7 @@
 .ui-icon-btn:hover:not(:disabled) { color: var(--l-ink); background: var(--l-sunk); }
 .ui-icon-btn:disabled { cursor: not-allowed; opacity: .42; }
 .ui-icon-btn--sm { width: var(--h-sm); height: var(--h-sm); }
+.ui-icon-btn--danger:hover:not(:disabled) { color: var(--err-l); background: var(--err-tint-l); }
 .ui-link { display: inline-flex; align-items: center; gap: var(--s-1); color: var(--ok-l); font-size: var(--t-2); text-decoration: none; white-space: nowrap; }
 .ui-link:hover { color: var(--ok-l-deep); text-decoration: underline; text-underline-offset: 3px; }
 
@@ -70,7 +71,11 @@
 .ui-seg__ind { position: absolute; top: 2px; bottom: 2px; left: 0; width: 0; border-radius: var(--r-1); background: var(--l-surface); box-shadow: var(--shadow-raise); pointer-events: none; transition: transform var(--m-base) var(--ease-out), width var(--m-base) var(--ease-out); }
 
 /* ---------- 卡片：只给能作为一个整体操作的东西；卡片不套卡片 ---------- */
-.ui-card { min-width: 0; background: var(--l-surface); border: 1px solid var(--l-hair); border-radius: var(--r-3); }
+/* 竖排：并排的卡片被拉成一样高时，内容区吃掉多出来的高度，底栏贴底。
+   A column, so that when side-by-side cards stretch to one height the body
+   takes the extra and the footer stays at the bottom. */
+.ui-card { min-width: 0; display: flex; flex-direction: column; background: var(--l-surface); border: 1px solid var(--l-hair); border-radius: var(--r-3); }
+.ui-card > div { flex: 1 1 auto; min-width: 0; }
 .ui-card__head { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-3); align-items: center; padding: var(--s-4) var(--s-5); }
 .ui-card__title { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); margin: 0; color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-bold); line-height: var(--lh-base); }
 .ui-card__desc { margin: var(--s-1) 0 0; color: var(--l-ink-3); font-size: var(--t-2); }
@@ -84,10 +89,14 @@
 .ui-section__title { margin: 0; color: var(--l-ink); font-size: var(--t-4); font-weight: var(--w-bold); }
 .ui-section__aside { color: var(--l-ink-3); font-size: var(--t-2); }
 
-/* ---------- 键值行（名称在左、值在右）与数据条（五个以内的短值横排） ---------- */
-.ui-kv { display: grid; margin: 0; }
-.ui-kv > div { display: grid; grid-template-columns: minmax(0, auto) minmax(0, 1fr); gap: var(--s-4); align-items: baseline; padding: var(--s-2) 0; border-bottom: 1px solid var(--l-hair); }
-.ui-kv > div:last-child { border-bottom: 0; }
+/* ---------- 键值行与数据条（五个以内的短值横排） ----------
+   键值行：名称在左，值靠右对齐，行与行只靠间距分开，不画逐行横线——七条线会把一张
+   卡片切成七条，比数据还显眼。
+   A key-value list: names on the left, values right-aligned, rows separated by
+   space alone. No rule per row: seven rules slice a card into seven strips
+   louder than the data. */
+.ui-kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--s-3) var(--s-5); align-items: baseline; margin: 0; }
+.ui-kv > div { display: contents; }
 .ui-kv dt { color: var(--l-ink-3); font-size: var(--t-2); }
 .ui-kv dd { margin: 0; color: var(--l-ink); font-size: var(--t-3); text-align: right; overflow-wrap: anywhere; }
 .ui-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: var(--s-3) var(--s-5); margin: 0; }
@@ -101,6 +110,12 @@
 .ui-tag--ok { color: var(--ok-l); background: var(--ok-tint-l); border-color: var(--ok-line-l); }
 .ui-tag--warn { color: var(--warn-l); background: var(--warn-tint-l); border-color: var(--warn-line-l); }
 .ui-tag--err { color: var(--err-l); background: var(--err-tint-l); border-color: var(--err-line-l); }
+/* 需要动手的提示（有新版本）：白底墨色边框加粗字。它不是健康、慢或失败，所以不用语义色；
+   实底黑块两个并排时太重。
+   A call to act (an update is available): ink border and bold type on white.
+   It is not health, slowness or failure, so it takes no semantic colour; two
+   solid black blocks side by side were too heavy. */
+.ui-tag--strong { color: var(--l-ink); background: var(--l-surface); border-color: var(--l-ink); font-weight: var(--w-bold); }
 
 /* ---------- 记录行：名称和标签在左，数字列右对齐，操作在最右；手机上两行 ---------- */
 .ui-rec, .ui-rec-head { display: grid; grid-template-columns: var(--rec-cols, minmax(0, 1fr) auto); gap: var(--s-4); align-items: center; }
@@ -123,7 +138,8 @@
 .ui-task[data-state="fail"] .ui-task__icon { background: var(--err-tint-l); color: var(--err-l); }
 .ui-task__title { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-1) var(--s-2); color: var(--l-ink); font-weight: var(--w-bold); }
 .ui-task__meta { display: flex; flex-wrap: wrap; gap: 2px var(--s-3); margin-top: 2px; color: var(--l-ink-3); font-size: var(--t-1); }
-.ui-task[data-state="fail"] .ui-task__meta { color: var(--err-l); }
+/* 失败只把原因那一行标红，版本号之类的事实保持原色 / Only the reason turns red on failure; facts such as versions keep their colour */
+.ui-task__error { display: flex; flex-wrap: wrap; flex-basis: 100%; align-items: center; gap: var(--s-1) var(--s-2); margin: 0; color: var(--err-l); overflow-wrap: anywhere; }
 .ui-task__actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--s-2); }
 .ui-task__bar { grid-column: 2 / -1; height: var(--s-1); overflow: hidden; border-radius: var(--r-full); background: var(--l-sunk); }
 .ui-task__bar > i { display: block; width: 0; height: 100%; background: var(--l-ink); transition: width var(--m-slow) linear; }
@@ -175,6 +191,8 @@
      not add the frame's 2px border on top of the buttons beside it. */
   .app-shell .ui-input input:not([type="checkbox"]):not([type="radio"]) { min-height: 0; }
   .ui-card__head { padding: var(--s-3) var(--s-4); }
+  .ui-card--stack .ui-card__head { grid-template-columns: minmax(0, 1fr); }
+  .ui-card--stack .ui-card__actions > .ui-seg { flex: 1; }
   .ui-card__body { padding: 0 var(--s-4) var(--s-3); }
   .ui-card__foot { padding: var(--s-3) var(--s-4); }
   .ui-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }

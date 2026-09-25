@@ -377,10 +377,15 @@ test('转发动作支持不写入协议的自动传输模式', async ({ page }) 
 test('系统页按「要不要现在动手」排序，更新项压成一行 @responsive', async ({ page }) => {
   await open(page, '/system')
 
-  // 服务状态在最上且只有一行：它回答「在不在跑」和「要不要动它」。
-  const order = await page.evaluate(() => [...document.querySelectorAll('main section.panel')]
-    .map((panel) => panel.className.split(' ').find((name) => name.endsWith('-panel'))))
-  expect(order).toEqual(['service-panel', 'update-panel', 'runtime-panel', 'credential-panel', 'version-panel'])
+  // 服务状态在页头，只有一行：它回答「在不在跑」和「要不要动它」；后面依次是更新、安装、凭据、版本。
+  // The service state sits in the page header, one line answering whether it runs and whether to
+  // touch it; updates, the installation, credentials and versions follow in that order.
+  const order = await page.evaluate(() => [...document.querySelectorAll('main .service-line, main section.ui-card')]
+    .map((block) => block.className.split(' ').find((name) => name === 'service-line' || name.endsWith('-panel'))))
+  expect(order).toEqual(['service-line', 'update-panel', 'runtime-panel', 'credential-panel', 'version-panel'])
+  // 这一页是看状态、偶尔操作，没有黑色主按钮；列表里每行的操作都是次要按钮。
+  // A page read and occasionally acted on has no black primary button; row actions are secondary.
+  await expect(page.locator('main .ui-btn--primary, main .button--primary')).toHaveCount(0)
 
   const line = page.locator('.service-line')
   await expect(line).toHaveCount(1)
