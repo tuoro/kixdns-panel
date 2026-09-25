@@ -43,7 +43,7 @@ test('诊断应答台账、规则摘要和服务器来源保持真实', async ({
   await expect(page.locator('.diag-ttl').first()).toHaveText('300')
   // 结论带一句话说清走了哪条管线的哪条规则、由谁应答。
   // The verdict says, in one sentence, which pipeline's rule matched and who answered.
-  await expect(page.locator('.diagnostic-match-summary')).toContainText('命中 default 的 geosite-global')
+  await expect(page.locator('.diagnostic-match-summary')).toContainText('命中 default 的规则 geosite-global')
   await expect(page.locator('.diag-answers .diag-server')).toContainText('KixDNS 内部执行链')
   await expect(page.locator('.diag-elapsed')).toHaveText('12 ms')
   // 宽屏上两张卡并排且等高，脚落在同一条线上；窄屏一列不比。

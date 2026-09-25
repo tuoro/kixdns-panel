@@ -54,11 +54,11 @@ describe('结论带的那句话', () => {
 
   it('同时说清走了哪条规则和由谁应答', () => {
     const summary = summarize(step('pipeline', 'selected', 'domestic'), step('rule', 'matched', 'cn-direct'), step('upstream', 'succeeded', '223.5.5.5:53'))
-    expect(describeResolution(summary)).toBe('命中 domestic 的 cn-direct，由 223.5.5.5:53 应答')
+    expect(describeResolution(summary)).toBe('命中 domestic 的规则 cn-direct，由 223.5.5.5:53 应答')
   })
 
   it('没有管线时只说规则，不硬凑「的」', () => {
-    expect(describeResolution(summarize(step('rule', 'matched', 'cn-direct')))).toBe('命中 cn-direct')
+    expect(describeResolution(summarize(step('rule', 'matched', 'cn-direct')))).toBe('命中规则 cn-direct')
   })
 
   it('缓存直接应答时不提上游，因为本次根本没走', () => {
@@ -67,7 +67,7 @@ describe('结论带的那句话', () => {
 
   it('上游失败不算「由它应答」', () => {
     const summary = summarize(step('rule', 'matched', 'cn-direct'), step('upstream', 'failed', '8.8.8.8:53'))
-    expect(describeResolution(summary)).toBe('命中 cn-direct')
+    expect(describeResolution(summary)).toBe('命中规则 cn-direct')
   })
 
   it('命中很多条时只点前三条，说明一共几条', () => {

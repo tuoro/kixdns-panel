@@ -63,19 +63,25 @@ export type TraceSummary = ReturnType<typeof summarizeTrace>
  * carries only the code and the elapsed time rather than inventing a sentence
  * that sounds better informed than the data is.
  */
-export function describeResolution(summary: TraceSummary): string {
-  const parts: string[] = []
+export function resolutionParts(summary: TraceSummary): TextPart[] {
+  const parts: TextPart[] = []
+  const names = (items: string[]) => items.flatMap((name, index) => (index ? [t('、'), m(name)] : [m(name)]))
   if (summary.matchedRules.length) {
     // 结论带是一行话：命中很多条时只点前三条，其余在执行路径里逐条可见。
     // The verdict is one line: with many matches it names the first three, and the path lists them all.
-    const named = summary.matchedRules.slice(0, 3).join('、')
-    const rules = summary.matchedRules.length > 3 ? `${named} 等 ${summary.matchedRules.length} 条规则` : named
-    parts.push(summary.pipelines.length ? `命中 ${summary.pipelines.join('、')} 的 ${rules}` : `命中 ${rules}`)
+    const many = summary.matchedRules.length > 3
+    const rules = [...(many ? [] : [t('规则 ')]), ...names(summary.matchedRules.slice(0, 3)), ...(many ? [t(` 等 ${summary.matchedRules.length} 条规则`)] : [])]
+    if (summary.pipelines.length) parts.push(t('命中 '), ...names(summary.pipelines), t(' 的'), ...(many ? [t(' ')] : []), ...rules)
+    else parts.push(t('命中'), ...(many ? [t(' ')] : []), ...rules)
   } else if (summary.responseCacheHit) {
-    parts.push('响应缓存命中')
+    parts.push(t('响应缓存命中'))
   }
-  if (summary.upstreams.length) parts.push(`由 ${summary.upstreams.join('、')} 应答`)
-  return parts.join('，')
+  if (summary.upstreams.length) parts.push(...(parts.length ? [t('，')] : []), t('由 '), ...names(summary.upstreams), t(' 应答'))
+  return parts
+}
+
+export function describeResolution(summary: TraceSummary): string {
+  return resolutionParts(summary).map((part) => part.text).join('')
 }
 
 export function isDnsSuccess(code: string): boolean {

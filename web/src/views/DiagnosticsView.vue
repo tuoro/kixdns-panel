@@ -7,7 +7,7 @@ import UiCard from '../components/ui/UiCard.vue'
 import UiEmpty from '../components/ui/UiEmpty.vue'
 import UiPageHeader from '../components/ui/UiPageHeader.vue'
 import { useToast } from '../composables/useToast'
-import { describeResolution, describeStep, groupTrace, isDnsSuccess, parseDnsAnswer, responseCodeName, summarizeTrace, traceTone, type TextPart } from '../diagnostics'
+import { describeStep, groupTrace, isDnsSuccess, parseDnsAnswer, responseCodeName, resolutionParts, summarizeTrace, traceTone, type TextPart } from '../diagnostics'
 import { errorMessage } from '../utils'
 
 const domain = ref('example.com')
@@ -19,7 +19,7 @@ const toast = useToast()
 const types = ['A', 'AAAA', 'CNAME', 'MX', 'NS', 'TXT', 'SOA', 'PTR']
 const steps = computed(() => result.value?.trace_supported ? result.value.trace : [])
 const traceSummary = computed(() => summarizeTrace(steps.value))
-const resolution = computed(() => describeResolution(traceSummary.value))
+const resolution = computed(() => resolutionParts(traceSummary.value))
 const answers = computed(() => result.value?.answers.map((raw) => ({ raw, fields: parseDnsAnswer(raw) })) ?? [])
 const successful = computed(() => result.value !== null && isDnsSuccess(result.value.response_code))
 const codeName = computed(() => (result.value ? responseCodeName(result.value.response_code) : ''))
@@ -28,11 +28,11 @@ const codeName = computed(() => (result.value ? responseCodeName(result.value.re
 // The verdict: which rule, which upstream; when the trace recorded no matched
 // rule it says so rather than inventing one. That caveat used to sit in the
 // detail table below, which repeated the verdict and is gone.
-const verdict = computed(() => {
-  if (!result.value) return ''
+const verdict = computed<TextPart[]>(() => {
+  if (!result.value) return []
   const caveat = result.value.trace_supported && traceSummary.value.matchedRules.length === 0 ? '未记录规则匹配' : ''
-  const sentence = [resolution.value, caveat].filter(Boolean).join('，')
-  return sentence || `${result.value.domain} · ${result.value.record_type}`
+  if (!resolution.value.length) return caveat ? [{ text: caveat }] : [{ text: result.value.domain, mono: true }, { text: ' · ' }, { text: result.value.record_type, mono: true }]
+  return caveat ? [...resolution.value, { text: '，' + caveat }] : resolution.value
 })
 const stepIdle = (status: string) => ['miss', 'missed', 'skipped'].includes(status)
 // 执行路径的每一行：一句话、一行细节、语气和时刻。连着的未命中规则并成一行。
@@ -87,7 +87,7 @@ async function run(): Promise<void> {
       <!-- 结论带一行回答「成了没有、走了谁、多久」，这是这页最先要看到的东西。 -->
       <p class="diag-status" role="status" :class="{ 'diag-status--notice': !successful }">
         <span class="ui-tag" :class="successful ? 'ui-tag--ok' : 'ui-tag--warn'">{{ codeName }}</span>
-        <span class="diag-resolution diagnostic-match-summary">{{ verdict }}</span>
+        <span class="diag-resolution diagnostic-match-summary"><template v-for="(part, at) in verdict" :key="at"><code v-if="part.mono">{{ part.text }}</code><template v-else>{{ part.text }}</template></template></span>
         <span class="diag-elapsed">{{ result.elapsed_ms }} ms</span>
       </p>
 
@@ -153,6 +153,8 @@ async function run(): Promise<void> {
 .diag-status--notice { background: var(--warn-tint-l); }
 .diag-status .ui-tag { font-family: var(--mono); }
 .diag-resolution { min-width: 0; flex: 1; font-size: var(--t-3); overflow-wrap: anywhere; }
+/* 结论里的名字和地址用等宽，和执行路径一致 / Names and addresses in the verdict are mono, as in the path */
+.diag-resolution code { font-family: var(--mono); }
 .diag-elapsed { margin-left: auto; color: var(--l-ink-2); font-family: var(--mono); font-size: var(--t-2); }
 
 .diag-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--s-4); }

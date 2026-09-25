@@ -112,7 +112,7 @@ test('DNS 诊断在结果顶部显示实际命中的规则 @responsive', async (
   const result = page.locator('.diagnostic-result')
   // 命中的管线和规则写在结论带那句话里，执行路径逐步列出。
   // The matched pipeline and rule are in the verdict sentence; the path lists each step.
-  await expect(result.locator('.diagnostic-match-summary')).toContainText('命中 default 的 geosite-global')
+  await expect(result.locator('.diagnostic-match-summary')).toContainText('命中 default 的规则 geosite-global')
   await expect(result.getByRole('heading', { name: '执行路径' })).toBeVisible()
   await expectNoPageOverflow(page)
 })
