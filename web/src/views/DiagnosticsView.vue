@@ -110,7 +110,9 @@ async function run(): Promise<void> {
           <p v-else class="diag-empty-answers">响应中没有 Answer 记录</p>
           <details class="diag-raw-response"><summary><span>原始响应</span><ChevronDown :size="16" aria-hidden="true" /></summary><div><p v-if="!answers.length">没有 Answer 记录。</p><pre v-for="(answer, index) in result.answers" :key="index">{{ answer }}</pre></div></details>
         </UiCard>
-        <UiCard v-if="result.trace_supported" class="diag-trace" title="执行路径" desc="这一次请求在内核里实际走过的步骤">
+        <!-- 时间的说明写在卡片说明里：读数字之前先知道它是累计时刻；也省掉底栏那条线。
+             The note on the times is in the card description, read before the numbers, which also drops the foot and its line. -->
+        <UiCard v-if="result.trace_supported" class="diag-trace" title="执行路径" :desc="steps.length ? '这一次请求在内核里实际走过的步骤。左边的时间从请求开始累计，不表示该阶段的独立耗时。' : '这一次请求在内核里实际走过的步骤'">
           <!-- 每步的细节直接摊开：要点开才看得到的信息，等于没有显示。
                未命中的步骤灰掉但仍然占位——「没走缓存」本身就是信息。 -->
           <!-- 每一步是一句话，名字用等宽；以前是「阶段名 + 内核标签」，标签本身是句子时就说两遍。
@@ -127,7 +129,6 @@ async function run(): Promise<void> {
           </ol>
           <p v-else class="diag-note">本次查询没有返回执行轨迹。</p>
           <p v-if="result.trace_truncated" class="diag-trace-warning">执行轨迹已截断；当前展示的是部分阶段，不代表完整解析路径。</p>
-          <template v-if="steps.length" #foot><span class="diag-time-note">左边的时间是从请求开始累计的时刻，不表示该阶段的独立耗时。</span></template>
         </UiCard>
         <UiCard v-else class="diag-trace-unavailable">
           <UiEmpty :icon="Network" title="当前内核仅支持基础查询" desc="升级到包含 diagnostics_trace_v1 的增强版后，可查看规则命中与上游路径。" />

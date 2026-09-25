@@ -86,7 +86,8 @@ test('每一步的细节直接摊开，缓存未命中不是故障 @responsive',
   await expect(page.locator('.diag-trace')).not.toContainText('Some(')
   await expect(page.locator('.diag-trace')).not.toContainText('false')
   await expect(steps.nth(0)).toContainText('客户端 127.0.0.1')
-  await expect(page.locator('.diag-time-note')).toContainText('不表示该阶段的独立耗时')
+  await expect(page.locator('.diag-trace > header')).toContainText('不表示该阶段的独立耗时')
+  await expect(page.locator('.diag-trace .ui-card__foot')).toHaveCount(0)
   // 未命中是中性状态，不画成故障。
   await expect(steps.nth(2)).toHaveClass(/diag-step--neutral/)
   await expect(steps.nth(2)).toContainText('未命中')
