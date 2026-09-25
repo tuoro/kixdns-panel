@@ -469,6 +469,51 @@ test('运行日志的级别筛选由服务端执行', async ({ page }) => {
   await expect(page.locator('.log-line')).toHaveCount(80)
 })
 
+test('运行日志停在顶部时直接显示新日志，读历史时攒进提示条 @responsive', async ({ page }) => {
+  // mock 在这个标记下每取一次首屏就多出三行更新的日志。时钟由测试往前拨，不等真实的 5 秒。
+  // Under this flag the mock adds three newer lines on every first-page fetch.
+  // The test moves the clock forward instead of waiting five real seconds.
+  await page.clock.install()
+  await page.addInitScript(() => localStorage.setItem('kixdns:demo-log-growing', 'true'))
+  await open(page, '/logs')
+  const lines = page.locator('.log-line')
+  const banner = page.locator('.log-new-lines')
+  const summary = page.locator('.log-summary')
+  await expect(lines.first()).toContainText('transport=tcp')
+  // 没有实时开关了。/ There is no live switch any more.
+  await expect(page.getByRole('button', { name: /实时|已暂停/ })).toHaveCount(0)
+
+  // 停在顶部：下一次取数直接换上，不出提示条。
+  // At the top: the next fetch goes straight into the list, no banner.
+  const newestAtTop = await lines.first().textContent()
+  await page.clock.fastForward(5_000)
+  await expect(lines.first()).not.toHaveText(newestAtTop!)
+  await expect(banner).toHaveCount(0)
+  await expect(summary).toContainText('最新日志在顶部，每 5 秒刷新')
+
+  // 往下读历史：下一次取数不动列表，只在上方出提示条，数目是新来的三行。
+  // Reading history: the next fetch leaves the list alone and only raises the
+  // banner, counting the three lines that arrived.
+  await page.locator('.log-stream').evaluate((stream) => {
+    stream.scrollTop = 400
+    stream.dispatchEvent(new Event('scroll'))
+  })
+  await expect(summary).toContainText('浏览历史时，新日志在上方提示')
+  const newestWhileReading = await lines.first().textContent()
+  await page.clock.fastForward(5_000)
+  await expect(banner).toHaveText('有 3 条新日志，点击显示')
+  await expect(lines.first()).toHaveText(newestWhileReading!)
+  await expectNoPageOverflow(page)
+
+  // 点提示条：新日志进来，回到顶部，提示条消失。
+  // Pressing the banner brings the new lines in, back at the top, and it goes away.
+  await banner.click()
+  await expect(banner).toHaveCount(0)
+  await expect(lines.first()).not.toHaveText(newestWhileReading!)
+  await expect(summary).toContainText('最新日志在顶部，每 5 秒刷新')
+  expect(await page.locator('.log-stream').evaluate((stream) => stream.scrollTop)).toBe(0)
+})
+
 test('unit 输出未送到 journald 时运行日志显示常驻提示 @responsive', async ({ page }) => {
   await open(page, '/logs')
   await expect(page.locator('.log-notice')).toHaveCount(0)
