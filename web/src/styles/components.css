@@ -110,10 +110,12 @@
 .ui-tag--ok { color: var(--ok-l); background: var(--ok-tint-l); border-color: var(--ok-line-l); }
 .ui-tag--warn { color: var(--warn-l); background: var(--warn-tint-l); border-color: var(--warn-line-l); }
 .ui-tag--err { color: var(--err-l); background: var(--err-tint-l); border-color: var(--err-line-l); }
-/* 需要动手的提示（有新版本）：墨色实底。它不是健康、慢或失败，所以不用语义色。
-   A call to act (an update is available): solid ink. It is not health, slowness
-   or failure, so it takes no semantic colour. */
-.ui-tag--strong { color: var(--d-ink); background: var(--l-ink); border-color: var(--l-ink); }
+/* 需要动手的提示（有新版本）：白底墨色边框加粗字。它不是健康、慢或失败，所以不用语义色；
+   实底黑块两个并排时太重。
+   A call to act (an update is available): ink border and bold type on white.
+   It is not health, slowness or failure, so it takes no semantic colour; two
+   solid black blocks side by side were too heavy. */
+.ui-tag--strong { color: var(--l-ink); background: var(--l-surface); border-color: var(--l-ink); font-weight: var(--w-bold); }
 
 /* ---------- 记录行：名称和标签在左，数字列右对齐，操作在最右；手机上两行 ---------- */
 .ui-rec, .ui-rec-head { display: grid; grid-template-columns: var(--rec-cols, minmax(0, 1fr) auto); gap: var(--s-4); align-items: center; }
