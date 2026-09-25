@@ -108,10 +108,6 @@ function artifactArchitecture(artifact: string): string {
   return artifact.match(/-(x86_64|arm64|aarch64)$/)?.[1] ?? artifact
 }
 
-function artifactDigest(digest: string | null | undefined): string {
-  return shortHash(digest?.replace(/^sha256:/, ''), 12)
-}
-
 function versionIdentity(version: InstalledKixdnsVersion | RemoteKixdnsVersion): string {
   return `${version.source ?? 'action'}:${version.source_id ?? version.commit}`
 }
@@ -647,8 +643,11 @@ onBeforeUnmount(() => {
             <p class="version-heading">{{ versionSource === 'release' ? '可用发布' : '可用构建' }}</p>
             <article v-for="(version, index) in catalog.remote_versions" :key="`${version.source}-${version.source_id}`" class="ui-rec version-row">
               <div>
-                <div class="ui-rec__name"><span class="ui-mono version-name">{{ formatKixdnsVersion(version) }}</span><span v-if="index === 0" class="ui-tag ui-tag--ok">{{ version.source === 'release' ? '最新发布' : '最新' }}</span><span v-if="version.active" class="ui-tag ui-tag--ok">当前</span><span v-else-if="version.installed" class="ui-tag">本地</span></div>
-                <div class="ui-rec__meta"><span class="ui-mono">增强 {{ shortHash(version.commit, 9) }}</span><span class="ui-mono">{{ artifactArchitecture(version.artifact) }}</span><span v-if="version.patchset" class="ui-mono">p{{ version.patchset }}</span><span class="ui-mono">包 {{ artifactDigest(version.artifact_digest) }}</span><span>{{ buildTime(version.created_at) }}</span><a class="ui-link" :href="version.source_url" target="_blank" rel="noopener noreferrer">上游<ExternalLink :size="12" /></a><a class="ui-link" :href="version.build_url" target="_blank" rel="noopener noreferrer">增强 Action<ExternalLink :size="12" /></a></div>
+                <!-- 编号本身就是去上游构建的链接，「增强」哈希是去增强构建的链接：每行不再挂两个绿色文字链接。
+                     The number itself links to the upstream build and the enhancement hash to the
+                     enhanced build, so no row carries two green text links any more. -->
+                <div class="ui-rec__name"><a class="ui-mono version-name version-link" :href="version.source_url" target="_blank" rel="noopener noreferrer" title="在 GitHub 打开上游构建">{{ formatKixdnsVersion(version) }}</a><span v-if="index === 0" class="ui-tag ui-tag--ok">{{ version.source === 'release' ? '最新发布' : '最新' }}</span><span v-if="version.active" class="ui-tag ui-tag--ok">当前</span><span v-else-if="version.installed" class="ui-tag">本地</span></div>
+                <div class="ui-rec__meta"><a class="ui-mono version-link" :href="version.build_url" target="_blank" rel="noopener noreferrer" title="在 GitHub 打开增强构建">增强 {{ shortHash(version.commit, 9) }}</a><span class="ui-mono">{{ artifactArchitecture(version.artifact) }}</span><span v-if="version.patchset" class="ui-mono">p{{ version.patchset }}</span><span>{{ buildTime(version.created_at) }}</span></div>
               </div>
               <div class="ui-rec__act">
                 <span v-if="version.active" class="version-current">正在使用</span>
@@ -664,10 +663,10 @@ onBeforeUnmount(() => {
             <p class="version-heading">本地版本</p>
             <article v-for="version in catalog.installed_versions" :key="versionIdentity(version)" class="ui-rec local-version" :class="{ 'ui-rec--current': version.active }">
               <div>
-                <div class="ui-rec__name"><span class="ui-mono version-name">{{ formatKixdnsVersion(version) }}</span><span v-if="version.active" class="ui-tag ui-tag--ok">当前</span></div>
-                <div v-if="version.upstream_commit" class="ui-rec__meta"><span class="ui-mono">上游 {{ shortHash(version.upstream_commit, 9) }}</span><span class="ui-mono">p{{ version.patchset }}<template v-if="version.dependency_revision">-r{{ version.dependency_revision }}</template></span><span class="ui-mono">{{ artifactArchitecture(version.artifact) }}</span><a v-if="version.source_url" class="ui-link" :href="version.source_url" target="_blank" rel="noopener noreferrer">上游详情</a><a v-if="version.build_url" class="ui-link" :href="version.build_url" target="_blank" rel="noopener noreferrer">增强 Action</a></div>
+                <div class="ui-rec__name"><a v-if="version.source_url" class="ui-mono version-name version-link" :href="version.source_url" target="_blank" rel="noopener noreferrer" title="在 GitHub 打开上游构建">{{ formatKixdnsVersion(version) }}</a><span v-else class="ui-mono version-name">{{ formatKixdnsVersion(version) }}</span><span v-if="version.active" class="ui-tag ui-tag--ok">当前</span></div>
+                <div v-if="version.upstream_commit" class="ui-rec__meta"><span class="ui-mono">上游 {{ shortHash(version.upstream_commit, 9) }}</span><span class="ui-mono">p{{ version.patchset }}<template v-if="version.dependency_revision">-r{{ version.dependency_revision }}</template></span><span class="ui-mono">{{ artifactArchitecture(version.artifact) }}</span></div>
                 <div v-else class="ui-rec__meta">构建身份未记录</div>
-                <div class="ui-rec__meta"><span class="ui-mono">增强 {{ shortHash(version.commit, 9) }}</span><span class="ui-mono">二进制 {{ shortHash(version.binary_sha256, 12) }}</span><span>{{ formatDate(version.installed_at) }}</span></div>
+                <div class="ui-rec__meta"><a v-if="version.build_url" class="ui-mono version-link" :href="version.build_url" target="_blank" rel="noopener noreferrer" title="在 GitHub 打开增强构建">增强 {{ shortHash(version.commit, 9) }}</a><span v-else class="ui-mono">增强 {{ shortHash(version.commit, 9) }}</span><span class="ui-mono">二进制 {{ shortHash(version.binary_sha256, 12) }}</span><span>{{ formatDate(version.installed_at) }}</span></div>
               </div>
               <div v-if="!version.active" class="ui-rec__act">
                 <button class="ui-icon-btn ui-icon-btn--sm" type="button" title="切换到此版本" aria-label="切换到此版本" :disabled="versionAction !== null" @click="activateVersion(version)"><RotateCw :size="15" :class="{ spin: actionBusy(version, 'activate') }" /></button>
