@@ -97,20 +97,15 @@ async function run(): Promise<void> {
            often than how. The cards no longer sit side by side, so there is no short
            card left with a block of empty space. -->
       <div class="diag-cards">
-        <UiCard class="diag-answers" title="应答" :desc="`${answers.length} 条记录 · ${result.truncated ? '已截断' : '未截断'}`">
+        <UiCard class="diag-answers" title="应答" :desc="`${answers.length} 条记录 · ${result.truncated ? '已截断' : '未截断'} · 服务器 ${result.server}`">
           <template v-if="answers.length">
-            <div class="ui-rec-head diag-answer-columns" aria-hidden="true"><span>记录</span><span>类型</span><span>TTL</span></div>
             <div v-for="(answer, index) in answers" :key="index" class="ui-rec diag-answer-row" :class="{ 'diag-answer-row--raw': !answer.fields }">
-              <template v-if="answer.fields"><code :title="answer.fields.owner + ' · ' + answer.fields.dnsClass">{{ answer.fields.data }}</code><span class="ui-tag ui-tag--mono diag-answer-type">{{ answer.fields.type }}</span><span class="diag-ttl-cell"><span class="diag-ttl">{{ answer.fields.ttl }}</span> 秒</span></template>
+              <template v-if="answer.fields"><code :title="answer.fields.owner + ' · ' + answer.fields.dnsClass">{{ answer.fields.data }}</code><span class="ui-tag ui-tag--mono diag-answer-type">{{ answer.fields.type }}</span><span class="diag-ttl-cell">TTL <span class="diag-ttl">{{ answer.fields.ttl }}</span> 秒</span></template>
               <template v-else><code>{{ answer.raw }}</code><span class="diag-raw-label">原始记录</span></template>
             </div>
           </template>
           <p v-else class="diag-empty-answers">响应中没有 Answer 记录</p>
           <details class="diag-raw-response"><summary><span>原始响应</span><span class="diag-raw-count">{{ answers.length }} 条 DNS 记录</span><ChevronDown :size="16" aria-hidden="true" /></summary><div><p v-if="!answers.length">没有 Answer 记录。</p><pre v-for="(answer, index) in result.answers" :key="index">{{ answer }}</pre></div></details>
-          <!-- 谁应答的写在应答卡的脚上：两张卡等高，两条脚落在同一条线上。
-               Who answered sits in the answer card's foot: the two cards are equal
-               height and their feet share one line. -->
-          <template #foot><span class="diag-server">服务器 <code>{{ result.server }}</code></span></template>
         </UiCard>
         <UiCard v-if="result.trace_supported" class="diag-trace" title="执行路径" desc="这一次请求在内核里实际走过的步骤">
           <!-- 每步的细节直接摊开：要点开才看得到的信息，等于没有显示。
@@ -191,8 +186,11 @@ async function run(): Promise<void> {
 .diag-note, .diag-trace-warning { margin: 0; color: var(--l-ink-3); font-size: var(--t-2); }
 .diag-trace-warning { margin-top: var(--s-2); color: var(--warn-l); }
 
-.diag-answer-row, .diag-answer-columns { --rec-cols: minmax(0, 1fr) auto 72px; }
-.diag-answer-row { min-height: var(--h-md); }
+.diag-answer-row { --rec-cols: minmax(0, 1fr) auto auto; }
+/* 应答卡里只留一条线（原始响应上面）：去掉表头行、行与行之间的线和底栏。两条记录原来配了五条横线。
+   The answer card keeps one line, above the raw response: no header row, no rules
+   between records, no foot. Two records used to come with five horizontal lines. */
+.diag-answer-row { min-height: var(--h-md); border-bottom: 0; }
 .diag-answer-row code { min-width: 0; color: var(--l-ink); font-family: var(--mono); font-size: var(--t-3); white-space: pre-wrap; overflow-wrap: anywhere; }
 .diag-answer-row--raw { --rec-cols: minmax(0, 1fr) auto; }
 .diag-ttl-cell { color: var(--l-ink-3); font-size: var(--t-1); text-align: right; white-space: nowrap; }
@@ -207,8 +205,6 @@ async function run(): Promise<void> {
 .diag-raw-count { margin-left: auto; color: var(--l-ink-3); font-size: var(--t-1); }
 .diag-raw-response pre { margin: 0 0 var(--s-2); padding: var(--s-2) var(--s-3); border-radius: var(--r-2); background: var(--l-canvas); color: var(--l-ink); font-family: var(--mono); font-size: var(--t-2); white-space: pre-wrap; overflow-wrap: anywhere; }
 
-.diag-server { min-width: 0; overflow-wrap: anywhere; }
-.diag-server code { margin-left: var(--s-1); color: var(--l-ink-2); font-family: var(--mono); }
 .diag-result { display: grid; gap: var(--s-4); }
 
 .diag-error { display: flex; align-items: flex-start; gap: var(--s-3); padding: var(--s-4) var(--s-5); border: 1px solid var(--err-line-l); border-radius: var(--r-3); background: var(--err-tint-l); color: var(--err-l); }
@@ -232,7 +228,6 @@ async function run(): Promise<void> {
      A wide screen gives each step one row (sentence | detail); a phone puts the detail back underneath. */
   .diag-step-body { grid-template-columns: minmax(0, 1fr); }
   /* 组件库在窄屏把记录行收成两栏；应答行三格都要留在一行 / The kit folds rows to two columns on a phone; an answer keeps all three */
-  .diag-answer-row { --rec-cols: minmax(0, 1fr) auto auto; }
   .diag-answer-row--raw { --rec-cols: minmax(0, 1fr) auto; }
 }
 </style>

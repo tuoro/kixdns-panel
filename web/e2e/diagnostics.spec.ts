@@ -44,7 +44,12 @@ test('诊断应答台账、规则摘要和服务器来源保持真实', async ({
   // 结论带一句话说清走了哪条管线的哪条规则、由谁应答。
   // The verdict says, in one sentence, which pipeline's rule matched and who answered.
   await expect(page.locator('.diagnostic-match-summary')).toContainText('命中 default 的规则 geosite-global')
-  await expect(page.locator('.diag-answers .diag-server')).toContainText('KixDNS 内部执行链')
+  await expect(page.locator('.diag-answers > header')).toContainText('服务器 KixDNS 内部执行链')
+  // 两条记录之间、记录和原始响应之间都不画线；整张卡只有原始响应上面那一条。
+  // No rule between the records or under the last one; the card's only line is above the raw response.
+  for (const row of await page.locator('.diag-answer-row').all()) expect(await row.evaluate((el) => getComputedStyle(el).borderBottomWidth)).toBe('0px')
+  await expect(page.locator('.diag-answers .ui-rec-head')).toHaveCount(0)
+  await expect(page.locator('.diag-answers .ui-card__foot')).toHaveCount(0)
   await expect(page.locator('.diag-elapsed')).toHaveText('12 ms')
   // 宽窄屏都是应答在上、执行路径在下，同宽：不再并排，也就没有短卡片留下的大块空白。
   // At every width the answer sits above the path at the same width: no side-by-side pair, so no short card with a block of empty space.
