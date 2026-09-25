@@ -80,7 +80,7 @@ async function run(): Promise<void> {
     <!-- 等待时给骨架而不是转圈：骨架的分块和结果一致，数据到达时版面不跳。 -->
     <div v-if="running" class="diag-skeleton" role="status" aria-label="正在等待 DNS 响应">
       <div class="sk diag-skeleton-verdict"></div>
-      <div class="diag-columns"><div class="sk diag-skeleton-card"></div><div class="sk diag-skeleton-card"></div></div>
+      <div class="diag-cards"><div class="sk diag-skeleton-card"></div><div class="sk diag-skeleton-card"></div></div>
     </div>
     <div v-else-if="queryError" class="diag-error" role="alert"><TriangleAlert :size="20" /><div><h2>查询失败</h2><p>{{ queryError }}</p><small>检查域名或服务状态后可重新查询。</small></div></div>
     <div v-else-if="result" class="diagnostic-result diag-result">
@@ -91,30 +91,12 @@ async function run(): Promise<void> {
         <span class="diag-elapsed">{{ result.elapsed_ms }} ms</span>
       </p>
 
-      <div class="diag-columns">
-        <UiCard v-if="result.trace_supported" class="diag-trace" title="执行路径" desc="这一次请求在内核里实际走过的步骤">
-          <!-- 每步的细节直接摊开：要点开才看得到的信息，等于没有显示。
-               未命中的步骤灰掉但仍然占位——「没走缓存」本身就是信息。 -->
-          <!-- 每一步是一句话，名字用等宽；以前是「阶段名 + 内核标签」，标签本身是句子时就说两遍。
-               Each step is one sentence with names in mono; "stage + kernel label" said things twice when the label was already a sentence. -->
-          <ol v-if="rows.length" class="diag-steps">
-            <li v-for="(row, index) in rows" :key="index" class="diag-step" :class="['diag-step--' + row.tone, { 'diag-step--idle': row.idle }]">
-              <span class="diag-step-mark" aria-hidden="true"><Check v-if="row.tone === 'success'" :size="12" /><X v-else-if="row.tone === 'danger'" :size="12" /><i v-else></i></span>
-              <div class="diag-step-body">
-                <p class="diag-step-what"><template v-for="(part, at) in row.lead" :key="at"><code v-if="part.mono">{{ part.text }}</code><template v-else>{{ part.text }}</template></template></p>
-                <p v-if="row.note.length" class="diag-step-why"><template v-for="(part, at) in row.note" :key="at"><code v-if="part.mono">{{ part.text }}</code><template v-else>{{ part.text }}</template></template></p>
-              </div>
-              <span class="diag-step-time">{{ row.elapsed }} ms</span>
-            </li>
-          </ol>
-          <p v-else class="diag-note">本次查询没有返回执行轨迹。</p>
-          <p v-if="result.trace_truncated" class="diag-trace-warning">执行轨迹已截断；当前展示的是部分阶段，不代表完整解析路径。</p>
-          <template v-if="steps.length" #foot><span class="diag-time-note">右边的时间是从请求开始累计的时刻，不表示该阶段的独立耗时。</span></template>
-        </UiCard>
-        <UiCard v-else class="diag-trace-unavailable">
-          <UiEmpty :icon="Network" title="当前内核仅支持基础查询" desc="升级到包含 diagnostics_trace_v1 的增强版后，可查看规则命中与上游路径。" />
-        </UiCard>
-
+      <!-- 应答在上、执行路径在下，宽窄屏同一个顺序：「解析到了什么」比「怎么走的」更常被查。
+           两张卡不再并排，也就没有一张短一张长、短的那张留一大块空白。
+           Answer above, path below, at every width: what resolved is looked up more
+           often than how. The cards no longer sit side by side, so there is no short
+           card left with a block of empty space. -->
+      <div class="diag-cards">
         <UiCard class="diag-answers" title="应答" :desc="`${answers.length} 条记录 · ${result.truncated ? '已截断' : '未截断'}`">
           <template v-if="answers.length">
             <div class="ui-rec-head diag-answer-columns" aria-hidden="true"><span>记录</span><span>类型</span><span>TTL</span></div>
@@ -130,6 +112,29 @@ async function run(): Promise<void> {
                height and their feet share one line. -->
           <template #foot><span class="diag-server">服务器 <code>{{ result.server }}</code></span></template>
         </UiCard>
+        <UiCard v-if="result.trace_supported" class="diag-trace" title="执行路径" desc="这一次请求在内核里实际走过的步骤">
+          <!-- 每步的细节直接摊开：要点开才看得到的信息，等于没有显示。
+               未命中的步骤灰掉但仍然占位——「没走缓存」本身就是信息。 -->
+          <!-- 每一步是一句话，名字用等宽；以前是「阶段名 + 内核标签」，标签本身是句子时就说两遍。
+               Each step is one sentence with names in mono; "stage + kernel label" said things twice when the label was already a sentence. -->
+          <ol v-if="rows.length" class="diag-steps">
+            <li v-for="(row, index) in rows" :key="index" class="diag-step" :class="['diag-step--' + row.tone, { 'diag-step--idle': row.idle }]">
+              <span class="diag-step-time">{{ row.elapsed }} ms</span>
+              <span class="diag-step-mark" aria-hidden="true"><Check v-if="row.tone === 'success'" :size="12" /><X v-else-if="row.tone === 'danger'" :size="12" /><i v-else></i></span>
+              <div class="diag-step-body">
+                <p class="diag-step-what"><template v-for="(part, at) in row.lead" :key="at"><code v-if="part.mono">{{ part.text }}</code><template v-else>{{ part.text }}</template></template></p>
+                <p v-if="row.note.length" class="diag-step-why"><template v-for="(part, at) in row.note" :key="at"><code v-if="part.mono">{{ part.text }}</code><template v-else>{{ part.text }}</template></template></p>
+              </div>
+            </li>
+          </ol>
+          <p v-else class="diag-note">本次查询没有返回执行轨迹。</p>
+          <p v-if="result.trace_truncated" class="diag-trace-warning">执行轨迹已截断；当前展示的是部分阶段，不代表完整解析路径。</p>
+          <template v-if="steps.length" #foot><span class="diag-time-note">左边的时间是从请求开始累计的时刻，不表示该阶段的独立耗时。</span></template>
+        </UiCard>
+        <UiCard v-else class="diag-trace-unavailable">
+          <UiEmpty :icon="Network" title="当前内核仅支持基础查询" desc="升级到包含 diagnostics_trace_v1 的增强版后，可查看规则命中与上游路径。" />
+        </UiCard>
+
       </div>
     </div>
     <UiCard v-else class="diag-placeholder"><UiEmpty :icon="Network" title="从一次查询开始" desc="查看应答、命中规则与实际执行路径。" /></UiCard>
@@ -157,26 +162,32 @@ async function run(): Promise<void> {
 .diag-resolution code { font-family: var(--mono); }
 .diag-elapsed { margin-left: auto; color: var(--l-ink-2); font-family: var(--mono); font-size: var(--t-2); }
 
-.diag-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--s-4); }
+.diag-cards { display: grid; gap: var(--s-4); }
 
 .diag-steps { display: grid; margin: 0; padding: 0; list-style: none; }
-.diag-step { position: relative; display: grid; grid-template-columns: var(--s-5) minmax(0, 1fr) auto; gap: var(--s-3); padding: var(--s-2) 0; }
-.diag-step::before { position: absolute; top: calc(var(--s-2) + var(--s-5)); bottom: calc(var(--s-2) * -1); left: calc(var(--s-5) / 2); border-left: 1px solid var(--l-hair); content: ''; }
+.diag-step { --time-w: calc(var(--s-7) + var(--s-2)); position: relative; display: grid; grid-template-columns: var(--time-w) var(--s-5) minmax(0, 1fr); gap: var(--s-3); padding: var(--s-2) 0; }
+/* 时刻在左、像日志的时间戳；竖线穿过圆点那一栏 / Time on the left like a log timestamp; the rail runs through the mark column */
+.diag-step::before { position: absolute; top: calc(var(--s-2) + var(--s-5)); bottom: calc(var(--s-2) * -1); left: calc(var(--time-w) + var(--s-3) + var(--s-5) / 2); border-left: 1px solid var(--l-hair); content: ''; }
 .diag-step:last-child::before { display: none; }
 .diag-step-mark { position: relative; z-index: 1; width: var(--s-5); height: var(--s-5); display: grid; place-items: center; border-radius: var(--r-full); background: var(--l-sunk); color: var(--l-ink-3); }
 .diag-step-mark i { width: var(--size-dot); height: var(--size-dot); border-radius: var(--r-full); background: var(--l-ink-3); }
 .diag-step--success .diag-step-mark { background: var(--ok-tint-l); color: var(--ok-l); }
 .diag-step--danger .diag-step-mark { background: var(--err-tint-l); color: var(--err-l); }
 .diag-step--warning .diag-step-mark i { background: var(--warn-l); }
-.diag-step-body { min-width: 0; display: grid; gap: 2px; }
+.diag-step-body { min-width: 0; display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 2px var(--s-5); align-items: baseline; }
 .diag-step-what { margin: 0; color: var(--l-ink); font-size: var(--t-2); font-weight: var(--w-medium); overflow-wrap: anywhere; }
 .diag-step-why { margin: 0; color: var(--l-ink-3); font-size: var(--t-1); white-space: pre-wrap; overflow-wrap: anywhere; }
 .diag-step-what code, .diag-step-why code { font-family: var(--mono); font-weight: var(--w-normal); }
+/* 名字是一个整体：放不下就整个换到下一行，比一行还长才从中间断，不在连字符处拆开 lan-hosts。
+   A name moves as a whole: it wraps to the next line when it does not fit and
+   only breaks inside when longer than a line, so lan-hosts is not split at the hyphen. */
+.diag-step-what code, .diag-step-why code, .diag-resolution code { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
 .diag-step-why code { color: var(--l-ink-2); }
 .diag-step--idle .diag-step-what { color: var(--l-ink-3); font-weight: var(--w-normal); }
 .diag-step--danger .diag-step-what { color: var(--err-l); }
 .diag-step--warning .diag-step-what { color: var(--warn-l); }
-.diag-step-time { color: var(--l-ink-3); font-family: var(--mono); font-size: var(--t-1); white-space: nowrap; }
+.diag-step-time, .diag-step-body { align-self: baseline; }
+.diag-step-time { color: var(--l-ink-3); font-family: var(--mono); font-size: var(--t-1); text-align: right; white-space: nowrap; }
 .diag-note, .diag-trace-warning { margin: 0; color: var(--l-ink-3); font-size: var(--t-2); }
 .diag-trace-warning { margin-top: var(--s-2); color: var(--warn-l); }
 
@@ -217,11 +228,9 @@ async function run(): Promise<void> {
   .diag-run-mobile { display: inline; }
   .diag-status { padding: var(--s-3); font-size: var(--t-2); }
   .diag-resolution { flex-basis: 100%; order: 3; font-size: var(--t-2); }
-  /* 窄屏一列：应答排在执行路径之前，因为「解析到了什么」比「怎么走的」更常被查。
-     The single narrow column puts the answer above the path: what resolved is
-     looked up more often than how it got there. */
-  .diag-columns { grid-template-columns: minmax(0, 1fr); }
-  .diag-answers { order: -1; }
+  /* 宽屏上一步一行（这句话 | 细节），手机上细节回到下一行。
+     A wide screen gives each step one row (sentence | detail); a phone puts the detail back underneath. */
+  .diag-step-body { grid-template-columns: minmax(0, 1fr); }
   /* 组件库在窄屏把记录行收成两栏；应答行三格都要留在一行 / The kit folds rows to two columns on a phone; an answer keeps all three */
   .diag-answer-row { --rec-cols: minmax(0, 1fr) auto auto; }
   .diag-answer-row--raw { --rec-cols: minmax(0, 1fr) auto; }
