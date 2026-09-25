@@ -533,7 +533,7 @@ onBeforeUnmount(() => {
       <div v-else-if="updateStatus" :class="{ 'is-refreshing': checkingUpdates }">
         <UiTask class="update-row" state="idle" title="KixDNS 增强包">
           <template #icon><GitBranch :size="15" /></template>
-          <template #title><span class="ui-tag">{{ updateStatus.kixdns.source === 'release' ? 'Release 轨道' : 'Action 轨道' }}</span></template>
+          <template #title><span class="ui-tag">{{ updateStatus.kixdns.source === 'release' ? 'Release 轨道' : 'Action 轨道' }}</span><span v-if="updateStatus.kixdns.available" class="ui-tag ui-tag--strong">{{ updateStatus.kixdns.security_update ? '安全更新' : '有新版本' }}</span></template>
           <template #meta>
             <span class="update-row__from-to">
               <template v-if="updateStatus.kixdns.available && updateStatus.kixdns.security_update"><span class="ui-mono">{{ formatKixdnsVersion(activeVersion) }}</span> 依赖安全升级<template v-if="updateStatus.kixdns.dependency_revision"> · <span class="ui-mono">r{{ updateStatus.kixdns.dependency_revision }}</span></template></template>
@@ -551,7 +551,7 @@ onBeforeUnmount(() => {
 
         <UiTask class="update-row" :state="panelTaskState" title="KixDNS Panel" :started-at="panelUpdateStartedAt">
           <template #icon><Bell :size="15" /></template>
-          <template #title><span class="ui-tag">Release 轨道</span></template>
+          <template #title><span class="ui-tag">Release 轨道</span><span v-if="updateStatus.panel.available" class="ui-tag ui-tag--strong">有新版本</span></template>
           <template #meta>
             <span class="update-row__from-to">
               <template v-if="panelUpdateRunning">{{ panelUpdateLabel() }}</template>
