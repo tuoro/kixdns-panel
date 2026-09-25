@@ -81,7 +81,7 @@ export function resolutionParts(summary: TraceSummary): TextPart[] {
 }
 
 export function describeResolution(summary: TraceSummary): string {
-  return resolutionParts(summary).map((part) => part.text).join('')
+  return resolutionParts(summary).map((part) => (part.label ? part.label + ' ' : '') + part.text).join('')
 }
 
 export function isDnsSuccess(code: string): boolean {
@@ -134,8 +134,12 @@ export function humanizeTraceDetail(detail: string): string {
     .replace(/(\d) ms\b/g, '$1\u00a0ms')
 }
 
-/** 一句话里的一段；mono 是机器值（名字、地址、响应码），用等宽。 / One run of a sentence; mono marks machine values. */
-export interface TextPart { text: string; mono?: boolean }
+/**
+ * 一句话里的一段；mono 是机器值（名字、地址、响应码），用等宽。带 label 的是一对「键 值」，排版时整对一起换行。
+ * One run of a sentence; mono marks machine values. A part with a label is a
+ * "key value" pair that wraps as one unit.
+ */
+export interface TextPart { text: string; mono?: boolean; label?: string }
 
 export interface StepView {
   /** 这一步做了什么，一句话。 / What the step did, in one sentence. */
@@ -163,7 +167,9 @@ export function detailParts(detail: string | null | undefined, skip: string[] = 
     if (rest.length && skip.includes(key!.trim())) continue
     if (parts.length) parts.push(t(' · '))
     if (!rest.length) parts.push(t(fragment))
-    else parts.push(t(key!.trim() + ' '), ASCII_ONLY.test(value) ? m(value) : t(value))
+    // 键和值是一对，整对换行：窄屏上「监听器」和「default」曾被折到两行。
+    // Key and value are one pair that wraps whole: a phone once split 监听器 and default across lines.
+    else parts.push({ label: key!.trim(), text: value, mono: ASCII_ONLY.test(value) })
   }
   return parts
 }
@@ -202,7 +208,7 @@ export function describeStep(step: DnsTraceStep): StepView {
   if (stage === 'rule' && ['missed', 'miss'].includes(status)) return { lead: [t('规则 '), m(label), t(' 未命中')], note: detailParts(detail, ['管线']) }
   if (stage === 'decision') {
     const target = detailValue(detail, '目标')
-    if ((match = /^规则 (.+) 转发$/.exec(label)) && target) return { lead: [t('决定转发给 '), m(target)], note: [t('规则 '), m(match[1]!), ...prefixed(detailParts(detail, ['目标']))] }
+    if ((match = /^规则 (.+) 转发$/.exec(label)) && target) return { lead: [t('决定转发给 '), m(target)], note: [{ label: '规则', text: match[1]!, mono: true }, ...prefixed(detailParts(detail, ['目标']))] }
     if ((match = /^静态响应 (.+)$/.exec(label))) return { lead: [t('直接返回 '), m(responseCodeName(match[1]!))], note }
     if ((match = /^跳转到管线 (.+)$/.exec(label))) return { lead: [t('跳转到管线 '), m(match[1]!)], note }
   }

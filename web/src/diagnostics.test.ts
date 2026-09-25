@@ -99,7 +99,7 @@ describe('把轨迹里的程序写法翻成人话', () => {
   it.each([['No Error', 'NOERROR'], ['Non-Existent Domain', 'NXDOMAIN'], ['NXDOMAIN', 'NXDOMAIN'], ['Query Refused', 'REFUSED'], ['BADVERS', 'BADVERS']])('响应码 %s 写成 %s', (code, name) => expect(responseCodeName(code)).toBe(name))
 })
 
-const plain = (parts: TextPart[]) => parts.map((part) => part.text).join('')
+const plain = (parts: TextPart[]) => parts.map((part) => (part.label ? part.label + ' ' : '') + part.text).join('')
 const monos = (parts: TextPart[]) => parts.filter((part) => part.mono).map((part) => part.text)
 const kstep = (stage: string, status: string, label: string, detail: string | null = null): DnsTraceStep => ({ stage, status, label, detail, elapsed_ms: 0 })
 
@@ -145,5 +145,11 @@ describe('连着的未命中规则并成一行', () => {
   it('两条以上才并，命中那条单独一行', () => {
     const rows = groupTrace([kstep('pipeline', 'selected', 'default'), kstep('rule', 'missed', 'a'), kstep('rule', 'missed', 'b'), kstep('rule', 'missed', 'c'), kstep('rule', 'matched', 'd'), kstep('rule', 'missed', 'e')])
     expect(rows.map((row) => (row.kind === 'step' ? row.step.label : row.steps.map((item) => item.label).join('+')))).toEqual(['default', 'a+b+c', 'd', 'e'])
+  })
+})
+
+describe('细节里的一对键值不拆开', () => {
+  it('一对「键 值」是一段，排版时整对换行', () => {
+    expect(detailParts('客户端：192.168.1.23；监听器：default')).toEqual([{ label: '客户端', text: '192.168.1.23', mono: true }, { text: ' · ' }, { label: '监听器', text: 'default', mono: true }])
   })
 })

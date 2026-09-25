@@ -48,6 +48,14 @@ test('诊断应答台账、规则摘要和服务器来源保持真实', async ({
   // 两条记录之间、记录和原始响应之间都不画线；整张卡只有原始响应上面那一条。
   // No rule between the records or under the last one; the card's only line is above the raw response.
   for (const row of await page.locator('.diag-answer-row').all()) expect(await row.evaluate((el) => getComputedStyle(el).borderBottomWidth)).toBe('0px')
+  // 宽屏上类型紧跟记录，不被推到卡片最右边；两行的类型标签上下对齐。
+  // On a wide screen the type follows the record rather than the card's far edge, and the two type tags line up.
+  if ((page.viewportSize()?.width ?? 1440) > 700) {
+    const record = await page.locator('.diag-answer-row code').first().boundingBox()
+    const types = await Promise.all((await page.locator('.diag-answer-type').all()).map((tag) => tag.boundingBox()))
+    expect(types[0]!.x - (record!.x + record!.width)).toBeLessThanOrEqual(24)
+    expect(types[1]!.x).toBe(types[0]!.x)
+  }
   await expect(page.locator('.diag-answers .ui-rec-head')).toHaveCount(0)
   await expect(page.locator('.diag-answers .ui-card__foot')).toHaveCount(0)
   await expect(page.locator('.diag-elapsed')).toHaveText('12 ms')
