@@ -46,6 +46,7 @@
 .ui-icon-btn:hover:not(:disabled) { color: var(--l-ink); background: var(--l-sunk); }
 .ui-icon-btn:disabled { cursor: not-allowed; opacity: .42; }
 .ui-icon-btn--sm { width: var(--h-sm); height: var(--h-sm); }
+.ui-icon-btn--danger:hover:not(:disabled) { color: var(--err-l); background: var(--err-tint-l); }
 .ui-link { display: inline-flex; align-items: center; gap: var(--s-1); color: var(--ok-l); font-size: var(--t-2); text-decoration: none; white-space: nowrap; }
 .ui-link:hover { color: var(--ok-l-deep); text-decoration: underline; text-underline-offset: 3px; }
 
@@ -70,7 +71,11 @@
 .ui-seg__ind { position: absolute; top: 2px; bottom: 2px; left: 0; width: 0; border-radius: var(--r-1); background: var(--l-surface); box-shadow: var(--shadow-raise); pointer-events: none; transition: transform var(--m-base) var(--ease-out), width var(--m-base) var(--ease-out); }
 
 /* ---------- 卡片：只给能作为一个整体操作的东西；卡片不套卡片 ---------- */
-.ui-card { min-width: 0; background: var(--l-surface); border: 1px solid var(--l-hair); border-radius: var(--r-3); }
+/* 竖排：并排的卡片被拉成一样高时，内容区吃掉多出来的高度，底栏贴底。
+   A column, so that when side-by-side cards stretch to one height the body
+   takes the extra and the footer stays at the bottom. */
+.ui-card { min-width: 0; display: flex; flex-direction: column; background: var(--l-surface); border: 1px solid var(--l-hair); border-radius: var(--r-3); }
+.ui-card > div { flex: 1 1 auto; min-width: 0; }
 .ui-card__head { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-3); align-items: center; padding: var(--s-4) var(--s-5); }
 .ui-card__title { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); margin: 0; color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-bold); line-height: var(--lh-base); }
 .ui-card__desc { margin: var(--s-1) 0 0; color: var(--l-ink-3); font-size: var(--t-2); }
@@ -123,7 +128,8 @@
 .ui-task[data-state="fail"] .ui-task__icon { background: var(--err-tint-l); color: var(--err-l); }
 .ui-task__title { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-1) var(--s-2); color: var(--l-ink); font-weight: var(--w-bold); }
 .ui-task__meta { display: flex; flex-wrap: wrap; gap: 2px var(--s-3); margin-top: 2px; color: var(--l-ink-3); font-size: var(--t-1); }
-.ui-task[data-state="fail"] .ui-task__meta { color: var(--err-l); }
+/* 失败只把原因那一行标红，版本号之类的事实保持原色 / Only the reason turns red on failure; facts such as versions keep their colour */
+.ui-task__error { display: flex; flex-wrap: wrap; flex-basis: 100%; align-items: center; gap: var(--s-1) var(--s-2); margin: 0; color: var(--err-l); overflow-wrap: anywhere; }
 .ui-task__actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--s-2); }
 .ui-task__bar { grid-column: 2 / -1; height: var(--s-1); overflow: hidden; border-radius: var(--r-full); background: var(--l-sunk); }
 .ui-task__bar > i { display: block; width: 0; height: 100%; background: var(--l-ink); transition: width var(--m-slow) linear; }
@@ -175,6 +181,8 @@
      not add the frame's 2px border on top of the buttons beside it. */
   .app-shell .ui-input input:not([type="checkbox"]):not([type="radio"]) { min-height: 0; }
   .ui-card__head { padding: var(--s-3) var(--s-4); }
+  .ui-card--stack .ui-card__head { grid-template-columns: minmax(0, 1fr); }
+  .ui-card--stack .ui-card__actions > .ui-seg { flex: 1; }
   .ui-card__body { padding: 0 var(--s-4) var(--s-3); }
   .ui-card__foot { padding: var(--s-3) var(--s-4); }
   .ui-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }

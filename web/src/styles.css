@@ -39,7 +39,6 @@ a { color: inherit; }
 h1, h2, h3, p { margin: 0; }
 code, .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; letter-spacing: 0; }
 
-
 .app-shell { min-height: 100dvh; background: var(--canvas); }
 .skip-link { position: fixed; top: 8px; left: 16px; z-index: 100; padding: 10px 16px; color: var(--d-ink); background: var(--ink); transform: translateY(-180%); }
 .skip-link:focus { transform: none; }
@@ -134,22 +133,11 @@ code, .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monosp
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .panel { min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 4px; }
-.panel__header { min-height: 66px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px 17px; border-bottom: 1px solid #e7eae9; }
-.panel__header h2 { color: #242a2c; font-size: 14px; font-weight: 720; }
-.panel__header p { margin-top: 4px; color: #838c89; font-size: 12px; }
-.panel__header > svg { color: #7a8481; }
 .tag { max-width: 160px; display: inline-flex; align-items: center; padding: 4px 7px; overflow: hidden; color: #626b68; background: #f0f2f1; border: 1px solid #e2e6e4; border-radius: 4px; font-size: 12px; font-style: normal; line-height: 1; text-overflow: ellipsis; white-space: nowrap; }
 .tag--success { color: #14704e; background: var(--green-soft); border-color: #cbe4d7; }
 .tag--warning { color: #8b5b18; background: var(--amber-soft); border-color: #edd8b0; }
 .tag--danger { color: #a53232; background: var(--red-soft); border-color: #efcccc; }
 .tag--muted { font-family: "SFMono-Regular", Consolas, monospace; }
-.runtime-panel { display: flex; flex-direction: column; }
-.detail-list { margin: 0; padding: 9px 17px; }
-.detail-list > div { min-height: 36px; display: flex; align-items: center; justify-content: space-between; gap: 18px; border-bottom: 1px solid #eef0ef; }
-.detail-list > div:last-child { border-bottom: 0; }
-.detail-list dt { color: #75807c; font-size: 12px; }
-.detail-list dd { min-width: 0; margin: 0; overflow: hidden; color: #333b3d; font-size: 14px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
-.runtime-panel > .button { width: auto; margin: auto 17px 17px; }
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th { padding: 10px 16px; color: #78817e; background: #fafbfa; font-size: 12px; font-weight: 680; text-align: left; text-transform: uppercase; }
 td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-space: nowrap; }
@@ -466,123 +454,9 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
    disabled rule or the lines underneath show through. */
 .log-new-lines:disabled { cursor: progress; opacity: 1; }
 
-/* 服务状态压成一行：这页最上面的东西只需要回答「在不在跑」和「要不要动它」。
-   The service line is one row: the top of this page only has to answer whether
-   it is running and whether you need to touch it. */
-.service-line { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 16px 18px; }
-.service-dot { flex: 0 0 auto; width: 10px; height: 10px; border-radius: 50%; background: var(--green); }
-.service-dot--stopped { background: var(--muted); }
-.service-line > strong { font-size: 14px; }
-.service-line__state { font-size: 14px; }
-.service-line__meta { color: var(--muted); font-size: 12px; }
-.service-line .service-actions { margin-left: auto; padding: 0; }
-
-/* 每项更新真正有用的只有「从哪到哪」和一个按钮。 */
-.update-rows { display: flex; flex-direction: column; }
-.update-row { display: flex; align-items: center; gap: 12px; padding: 14px 18px; }
-.update-row + .update-row { border-top: 1px solid var(--line); }
-.update-row__mark { flex: 0 0 auto; width: 34px; height: 34px; display: grid; place-items: center; color: var(--muted); background: var(--canvas); border-radius: 6px; }
-/* 有更新才是需要动手的那一项，用填充把它和「已是最新」区分开。 */
-.update-row--ready .update-row__mark { color: var(--d-ink); background: var(--ink); }
-.update-row__body { min-width: 0; flex: 1; display: grid; gap: 2px; }
-.update-row__body strong { font-size: 14px; }
-.update-row__from-to { color: var(--ink); font-size: 13px; overflow-wrap: anywhere; }
-.update-row__note { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
-.update-row__note--aside { flex: 0 0 auto; max-width: 180px; text-align: right; }
-/* 在线更新失败的原因：红色只表示出错。/ An online update failure: red means error and nothing else. */
-.update-row__failure { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-1) var(--s-2); color: var(--red); }
-.update-row__failure .button { min-height: var(--s-6); padding: 0 var(--s-2); font-size: var(--t-1); }
-.update-row__actions { flex: 0 0 auto; display: flex; gap: 8px; }
-.update-row__actions .button { text-decoration: none; }
-
-/* 凭据块原来横跨「可用更新」的整宽，两列排得下；现在它自己是半栏面板，
-   那套 220px + 300px 的最小宽度会把页面撑出横向滚动条。这里改回一列。
-   The credential block used to span the full width of the update panel, where
-   two columns fitted. Now that it is its own half-width panel, that 220px +
-   300px minimum pushes the page into a horizontal scrollbar, so it stacks. */
-.credential-panel .github-credential { grid-template-columns: minmax(0, 1fr); background: none; border-top: 0; }
-.credential-panel .github-credential__meta { grid-column: 1; }
-
-/* 系统页四处骨架，尺寸照抄各自替代的那块真实内容。
-   SystemView 没有 scoped 样式块，它的样式一直在这里。 */
-.sys-skeleton-line { height: 44px; margin: 16px 18px; }
-.sys-skeleton-panel { height: 128px; margin: 0 18px 16px; }
-.sys-skeleton-rows { display: grid; gap: 8px; padding: 14px 18px; }
-.sys-skeleton-rows .sk { height: 58px; }
-
-.system-layout { display: grid; gap: 14px; align-items: start; }
 .auth-panel label { display: grid; gap: 7px; color: #4c5557; font-size: 14px; font-weight: 650; }
 .auth-panel input { width: 100%; height: 40px; padding: 0 11px; color: #272e30; background: #fff; border: 1px solid #d5dcda; border-radius: 5px; outline: 0; font-size: 12px; }
 .auth-panel input:focus { border-color: #6cae8b; box-shadow: 0 0 0 3px rgba(20, 125, 85, .09); }
-
-.system-layout { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
-.service-panel, .runtime-panel { display: flex; flex-direction: column; }
-.service-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: auto; padding: 0 18px 18px; }
-.inline-loading { min-height: 170px; display: grid; place-items: center; color: #8c9592; font-size: 14px; }
-.runtime-state { min-height: 78px; display: flex; align-items: center; gap: 12px; margin: 17px 17px 5px; padding: 13px; background: var(--green-soft); border: 1px solid #cae1d5; border-radius: 5px; }
-.runtime-state--missing { background: var(--amber-soft); border-color: #ecd7b5; }
-.runtime-state > span { width: 38px; height: 38px; display: grid; place-items: center; flex: 0 0 auto; color: var(--green); background: #fff; border-radius: 5px; }
-.runtime-state--missing > span { color: var(--amber); }
-.runtime-state > div { min-width: 0; display: grid; gap: 4px; }
-.runtime-state strong { color: #2c3632; font-size: 12px; }
-.runtime-state p { overflow: hidden; color: #6e7975; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.runtime-details { padding-top: 3px; padding-bottom: 14px; }
-.runtime-details a, .version-identity a, .local-version a { display: inline-flex; align-items: center; gap: 4px; color: var(--green); text-decoration: none; }
-.update-panel { margin-top: 14px; }
-.update-loading { min-height: 236px; }
-.update-check-failed { min-height: 118px; display: flex; align-items: center; justify-content: center; gap: 12px; padding: 18px; color: #7c8582; font-size: 12px; }
-.update-check-failed span { overflow-wrap: anywhere; }
-.update-stale { padding: 9px 17px; overflow-wrap: anywhere; color: #8e5d1d; background: #fffaf1; border-top: 1px solid #ead9bb; font-size: 12px; }
-.github-credential { display: grid; grid-template-columns: minmax(220px, .8fr) minmax(300px, 1.2fr); gap: 10px 18px; align-items: center; padding: 13px 17px; background: #fafbfa; border-top: 1px solid var(--line); }
-/* 删除按钮那一格写死 34px，可 .icon-button 本身就是 40px，窄屏上还要满足 44px
-   的触控下限——按钮于是比格子宽，右边缘越过面板边框露在外面（桌面溢出 5px，
-   375 下 10px）。格子交回 auto，由按钮自己说了算。
-   The delete button's track was a fixed 34px while .icon-button is 40px and
-   rises to the 44px touch minimum on narrow screens, so the button outgrew its
-   track and its right edge crossed the panel border — 5px over on the desktop,
-   10px at 375. The track is auto now and the button sizes itself. */
-.github-credential__form { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 7px; }
-.github-token-input { position: relative; min-width: 0; }
-.github-token-input input { width: 100%; height: 34px; padding: 0 38px 0 10px; color: #31393b; background: #fff; border: 1px solid #d9dfdd; border-radius: 4px; outline: 0; font-size: 12px; }
-.github-token-input input:focus { border-color: #7fb89a; box-shadow: 0 0 0 3px rgba(20, 125, 85, .08); }
-.github-token-input button { position: absolute; inset: 0 0 0 auto; width: 34px; display: grid; place-items: center; color: #7d8783; background: transparent; border: 0; }
-.github-credential__meta { grid-column: 2; display: flex; align-items: center; flex-wrap: wrap; gap: 5px 16px; color: #7e8884; font-size: 12px; }
-.github-credential__meta strong { color: #505b57; font-size: 12px; }
-.github-credential__error { flex-basis: 100%; overflow-wrap: anywhere; color: #a14b4b; }
-.version-panel { margin-top: 14px; }
-.version-panel__header { border-bottom: 1px solid var(--line); }
-.version-panel__tools { display: flex; align-items: center; gap: 8px; }
-.version-source-tabs { height: 36px; display: grid; grid-template-columns: repeat(2, minmax(92px, 1fr)); gap: 2px; padding: 3px; background: #edf0ef; border: 1px solid #dde2e0; border-radius: 6px; }
-.version-source-tabs button { min-width: 0; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 10px; color: #707a76; background: transparent; border: 0; border-radius: 4px; font-size: 12px; font-weight: 650; }
-.version-source-tabs button:hover { color: #35403c; }
-.version-source-tabs .version-source-tab--active { color: #176b4d; background: #fff; box-shadow: 0 1px 2px rgba(28, 39, 34, .09); }
-.version-loading { min-height: 300px; display: grid; place-items: center; color: #8c9592; font-size: 14px; }
-.version-columns { min-width: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.remote-versions, .local-versions { min-width: 0; }
-.local-versions { border-left: 1px solid var(--line); }
-.version-section-title { min-height: 46px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 16px; color: #6c7773; background: #f8faf9; border-bottom: 1px solid var(--line); }
-.version-section-title > div { display: flex; align-items: center; gap: 8px; }
-.version-section-title strong { color: #3d4743; font-size: 12px; }
-.version-section-title span { color: #87918d; font-size: 12px; }
-.version-list { padding: 0 16px; }
-.version-row { min-height: 76px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 18px; border-bottom: 1px solid #e8ecea; }
-.version-row:last-child { border-bottom: 0; }
-.version-identity { min-width: 0; display: grid; gap: 7px; }
-.version-identity > div { min-width: 0; display: flex; align-items: center; gap: 8px; }
-.identity-label { flex: 0 0 auto; color: #8a9490; font-size: 12px; }
-.version-identity code { overflow: hidden; color: #293330; font-size: 14px; font-weight: 700; text-overflow: ellipsis; }
-.version-identity p { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; color: #828c88; font-size: 12px; }
-.version-identity p > * + *::before, .local-version p > * + *::before { margin-right: 5px; color: #bdc4c1; content: "·"; }
-.version-action { min-width: 116px; }
-.local-version-list { padding: 2px 15px 10px; }
-.local-version { position: relative; min-height: 82px; display: grid; align-content: center; gap: 6px; padding: 10px 74px 10px 10px; border-bottom: 1px solid #e8ecea; }
-.local-version:last-child { border-bottom: 0; }
-.local-version--active { margin-inline: -15px; padding-inline: 25px; background: #f1f7f4; border-left: 3px solid var(--green); }
-.local-version > div:not(.local-version-actions) { min-width: 0; display: flex; align-items: center; gap: 7px; }
-.local-version code { overflow: hidden; color: #36413d; font-size: 12px; font-weight: 700; text-overflow: ellipsis; }
-.local-version p { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; color: #89928f; font-size: 12px; }
-.local-version-actions { position: absolute; top: 27px; right: 4px; display: flex; gap: 6px; }
-.version-empty { min-height: 112px; display: grid; place-items: center; color: #929b98; font-size: 12px; text-align: center; }
 
 /* 单栏居中。原来右栏那块「Enhanced Control」不只是装饰——它把控制协议版本、
    会话保护方式和更新通道写给了每一个还没通过认证的访客。登录页只有一个职责，
@@ -735,8 +609,6 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 }
 
 @media (max-width: 1000px) {
-  .version-columns { grid-template-columns: 1fr; }
-  .local-versions { border-top: 1px solid var(--line); border-left: 0; }
 }
 
 @media (max-width: 860px) {
@@ -765,7 +637,6 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
   .structured-editor, .flow-preview { max-height: none; }
   .history-panel { order: 2; }
   .history-list { max-height: 340px; }
-  .system-layout { grid-template-columns: 1fr; }
   .update-grid { grid-template-columns: 1fr; }
   .update-channel + .update-channel { border-top: 1px solid var(--line); border-left: 0; }
   .auth-page { padding: 24px 16px; }
@@ -776,7 +647,6 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
   .page-actions { min-height: 34px; margin-bottom: 12px; }
   .notification-popover { position: fixed; top: 60px; right: 10px; left: 10px; width: auto; max-height: calc(100dvh - 138px); }
   .notification-list { max-height: calc(100dvh - 252px); }
-  .panel__header { min-height: 61px; padding: 12px 13px; }
   th, td { padding-inline: 12px; }
   .structured-editor, .flow-preview { min-height: 0; }
   .config-version { grid-template-columns: 1fr; padding: 0 13px 13px; }
@@ -845,9 +715,6 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
   .audit-line strong { text-align: right; }
   .audit-line code, .audit-line p { grid-column: 1 / -1; }
   .audit-line code { overflow: visible; overflow-wrap: anywhere; text-overflow: clip; white-space: normal; }
-  .service-actions { grid-template-columns: 1fr 1fr; }
-  .service-actions .button:last-child { grid-column: 1 / -1; }
-  .update-panel { margin-top: 9px; }
   .update-channel { padding: 14px 13px; }
   .update-facts { grid-template-columns: 1fr; }
   .update-facts div { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding: 8px 10px; border-right: 0; border-bottom: 1px solid #e3e8e6; }
@@ -857,23 +724,6 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
   /* 一行三块在 375 下挤成竖着断字的窄柱，改成上下两段。
      Three blocks in a row collapse into a narrow column that breaks mid-token
      at 375, so the row stacks instead. */
-  .update-row { flex-wrap: wrap; padding: 13px; gap: 10px; }
-  .update-row__body { flex-basis: calc(100% - 46px); }
-  .update-row__actions { width: 100%; }
-  .update-row__actions .button { flex: 1; justify-content: center; }
-  .update-row__note--aside { max-width: none; width: 100%; text-align: left; }
-  .service-line { padding: 13px; gap: 8px 10px; }
-  .service-line .service-actions { width: 100%; margin-left: 0; }
-  .service-line .service-actions .button { flex: 1; justify-content: center; }
-  .github-credential { grid-template-columns: 1fr; padding: 12px 13px; }
-  .github-credential__meta { grid-column: 1; }
-  .version-panel { margin-top: 9px; }
-  .version-panel__header { align-items: flex-start; flex-wrap: wrap; }
-  .version-panel__tools { width: 100%; }
-  .version-source-tabs { flex: 1 1 auto; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .version-list { padding-inline: 13px; }
-  .version-row { grid-template-columns: 1fr; gap: 10px; padding-block: 14px; }
-  .version-action { width: 100%; }
   .auth-panel { width: 100%; }
   .auth-brand { margin-bottom: 42px; }
   .auth-heading h1 { font-size: 24px; }
@@ -882,4 +732,38 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}
+
+/* 系统页：「安静的账本」改版后的排版，只引用 tokens.css 的变量。
+   服务状态在页头，其余都是 components.css 的零件，这里只管它们怎么排。
+   The system page after the redesign, tokens only. The service state lives in
+   the page header and everything else is a part from components.css; this
+   only lays them out. */
+.system-page { display: grid; gap: var(--s-5); align-content: start; }
+.system-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-4); align-items: stretch; }
+.system-skeleton-meta { display: inline-block; width: min(260px, 100%); height: var(--s-4); }
+.system-skeleton-rows { display: grid; gap: var(--s-2); padding-bottom: var(--s-2); }
+.system-skeleton-rows .sk { height: var(--s-7); }
+.system-skeleton-panel { height: calc(var(--s-8) * 2); }
+.system-check-failed { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-3); padding-bottom: var(--s-1); color: var(--l-ink-3); font-size: var(--t-2); overflow-wrap: anywhere; }
+.system-stale { color: var(--warn-l); overflow-wrap: anywhere; }
+.system-note { margin: 0 0 var(--s-2); color: var(--l-ink-3); font-size: var(--t-2); }
+.system-error { flex-basis: 100%; color: var(--err-l); overflow-wrap: anywhere; }
+.credential-form { display: flex; align-items: center; gap: var(--s-2); }
+.credential-input { flex: 1; }
+.credential-eye { width: var(--h-sm); height: var(--h-sm); flex: 0 0 auto; display: grid; place-items: center; margin-right: calc(var(--s-2) * -1); padding: 0; border: 0; border-radius: var(--r-1); background: transparent; color: var(--l-ink-3); cursor: pointer; }
+.credential-eye:hover { color: var(--l-ink); background: var(--l-sunk); }
+.version-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: 1px solid var(--l-hair); }
+.version-columns > div { min-width: 0; padding: 0 var(--s-5) var(--s-3); }
+.local-versions { border-left: 1px solid var(--l-hair); }
+.version-heading { margin: 0; padding: var(--s-3) 0 var(--s-1); color: var(--l-ink-3); font-size: var(--t-1); }
+.version-name { color: var(--l-ink); font-weight: var(--w-bold); }
+.version-current { color: var(--l-ink-3); font-size: var(--t-2); white-space: nowrap; }
+.version-empty { margin: 0; padding: var(--s-5) 0; color: var(--l-ink-3); font-size: var(--t-2); text-align: center; overflow-wrap: anywhere; }
+@media (max-width: 860px) {
+  .system-pair, .version-columns { grid-template-columns: minmax(0, 1fr); }
+  .local-versions { border-top: 1px solid var(--l-hair); border-left: 0; }
+}
+@media (max-width: 640px) {
+  .version-columns > div { padding: 0 var(--s-4) var(--s-3); }
 }

@@ -2,11 +2,14 @@
 // 卡片只给能作为一个整体操作的东西（有自己的按钮或状态）；只是展示的数据用 UiSection。卡片不套卡片。
 // A card is for something acted on as a whole (it has its own actions or
 // state); data that is only shown goes in a UiSection. Cards never nest.
-defineProps<{ title?: string; desc?: string; flush?: boolean }>()
+// stack：头部操作较宽（比如分段加刷新）时，手机上换到标题下面一行，免得把说明挤成竖条。
+// stack: when the head actions are wide (a segmented control plus refresh), a
+// phone moves them under the title so the description is not squeezed into a column.
+defineProps<{ title?: string; desc?: string; flush?: boolean; stack?: boolean }>()
 </script>
 
 <template>
-  <section class="ui-card">
+  <section class="ui-card" :class="{ 'ui-card--stack': stack }">
     <header v-if="title || $slots.title || $slots.actions" class="ui-card__head">
       <div>
         <h2 class="ui-card__title">{{ title }}<slot name="title" /></h2>

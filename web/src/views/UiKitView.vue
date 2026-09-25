@@ -155,7 +155,7 @@ function showNew(): void {
       <UiTask :state="taskState" title="Run #30235703570" :started-at="taskStarted" :progress="taskProgress">
         <template #icon><Download :size="15" /></template>
         <template #title><span class="ui-tag ui-tag--ok">最新</span></template>
-        <template #meta><span>{{ taskNote }}</span></template>
+        <template #meta><p v-if="taskState === 'fail'" class="ui-task__error">{{ taskNote }}</p><span v-else>{{ taskNote }}</span></template>
         <template #actions>
           <button v-if="taskState === 'idle'" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" @click="install">安装并切换</button>
           <button v-if="taskState === 'idle'" class="ui-btn ui-btn--text ui-btn--sm" type="button" @click="fail">演示失败</button>

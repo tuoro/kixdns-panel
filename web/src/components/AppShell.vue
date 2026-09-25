@@ -20,7 +20,7 @@ const notificationButton = ref<HTMLButtonElement | null>(null)
 const accountButton = ref<HTMLButtonElement | null>(null)
 const signingOut = ref(false)
 const title = computed(() => route.meta.title ?? 'KixDNS Panel')
-const hasPageHeading = computed(() => ['dashboard', 'config', 'diagnostics'].includes(String(route.name)))
+const hasPageHeading = computed(() => ['dashboard', 'config', 'diagnostics', 'system', 'ui-kit'].includes(String(route.name)))
 
 const navigation = [
   { to: '/', label: '概览', icon: LayoutGrid },
