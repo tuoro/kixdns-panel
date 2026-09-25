@@ -452,18 +452,20 @@ test('操作审计可按动作筛选', async ({ page }) => {
 })
 
 test('运行日志的级别筛选由服务端执行', async ({ page }) => {
+  // 分页的演示：日志共 120 行，首屏只加载 80 行，其中 5 行是警告，全部 120 行里有 8 行。
+  // The paged demo: 120 lines in all, 80 loaded on the first page; 5 of those are
+  // warnings, 8 of the full 120 are.
+  await page.addInitScript(() => localStorage.setItem('kixdns:demo-log-paged-slow', 'true'))
   await open(page, '/logs')
   await expect(page.locator('.log-line')).toHaveCount(80)
-  await expect(page.locator('.log-summary')).toContainText('80 / 80 条')
 
-  // 切到「警告」后只剩服务端按级别返回的行；计数分母也跟着变，说明不是浏览器在过滤已加载的 80 条。
-  // After switching to warning only the lines the server returned for that level remain;
-  // the denominator changes too, proving the browser is not filtering the 80 loaded lines.
+  // 切到「警告」后是 8 行：浏览器只过滤已加载的 80 行最多找到 5 行，多出来的 3 行只能来自服务端。
+  // Warning shows 8 lines: filtering the 80 loaded lines in the browser finds at
+  // most 5, so the other 3 can only have come from the server.
   await page.getByRole('group', { name: '日志级别' }).getByRole('button', { name: '警告', exact: true }).click()
-  await expect(page.locator('.log-line')).toHaveCount(5)
-  await expect(page.locator('.log-line--warning')).toHaveCount(5)
+  await expect(page.locator('.log-line')).toHaveCount(8)
+  await expect(page.locator('.log-line--warning')).toHaveCount(8)
   await expect(page.locator('.log-line--info')).toHaveCount(0)
-  await expect(page.locator('.log-summary')).toContainText('5 / 5 条')
 
   await page.getByRole('group', { name: '日志级别' }).getByRole('button', { name: '全部', exact: true }).click()
   await expect(page.locator('.log-line')).toHaveCount(80)
@@ -478,10 +480,14 @@ test('运行日志停在顶部时直接显示新日志，读历史时攒进提�
   await open(page, '/logs')
   const lines = page.locator('.log-line')
   const banner = page.locator('.log-new-lines')
-  const summary = page.locator('.log-summary')
   await expect(lines.first()).toContainText('transport=tcp')
   // 没有实时开关了。/ There is no live switch any more.
   await expect(page.getByRole('button', { name: /实时|已暂停/ })).toHaveCount(0)
+  // 滚动只在列表里发生，整页不出纵向滚动条：每行的读屏标签曾经逃出列表的裁剪，
+  // 把页面撑出一大段空白。
+  // Scrolling happens inside the list only, never the whole page: the per-line
+  // screen-reader labels once escaped the list's clipping and stretched the page.
+  expect(await page.evaluate(() => document.documentElement.scrollHeight - window.innerHeight)).toBeLessThanOrEqual(0)
 
   // 停在顶部：下一次取数直接换上，不出提示条。
   // At the top: the next fetch goes straight into the list, no banner.
@@ -489,7 +495,6 @@ test('运行日志停在顶部时直接显示新日志，读历史时攒进提�
   await page.clock.fastForward(5_000)
   await expect(lines.first()).not.toHaveText(newestAtTop!)
   await expect(banner).toHaveCount(0)
-  await expect(summary).toContainText('最新日志在顶部，每 5 秒刷新')
 
   // 往下读历史：下一次取数不动列表，只在上方出提示条，数目是新来的三行。
   // Reading history: the next fetch leaves the list alone and only raises the
@@ -498,7 +503,6 @@ test('运行日志停在顶部时直接显示新日志，读历史时攒进提�
     stream.scrollTop = 400
     stream.dispatchEvent(new Event('scroll'))
   })
-  await expect(summary).toContainText('浏览历史时，新日志在上方提示')
   const newestWhileReading = await lines.first().textContent()
   await page.clock.fastForward(5_000)
   await expect(banner).toHaveText('有 3 条新日志，点击显示')
@@ -510,7 +514,6 @@ test('运行日志停在顶部时直接显示新日志，读历史时攒进提�
   await banner.click()
   await expect(banner).toHaveCount(0)
   await expect(lines.first()).not.toHaveText(newestWhileReading!)
-  await expect(summary).toContainText('最新日志在顶部，每 5 秒刷新')
   expect(await page.locator('.log-stream').evaluate((stream) => stream.scrollTop)).toBe(0)
 })
 
@@ -572,7 +575,6 @@ test('切换级别后不会拿旧级别的游标翻页', async ({ page }) => {
   // Wait long enough for a level-bearing older page (1500ms) to land: unfixed, it appends index 85/102/119 again.
   await page.waitForTimeout(1800)
   await expect(lines).toHaveCount(8)
-  await expect(page.locator('.log-summary')).toContainText('8 / 8 条')
 })
 
 test('主页面不会产生视口级横向溢出 @responsive', async ({ page }) => {

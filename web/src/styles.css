@@ -418,13 +418,16 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .log-seg button:hover { color: var(--ink); }
 .log-seg button.is-on { color: var(--d-ink); background: var(--ink); font-weight: 600; }
 
-.log-summary { height: 34px; display: flex; align-items: center; justify-content: space-between; padding: 0 13px; color: var(--muted); background: var(--canvas); border-bottom: 1px solid var(--line); font-size: 12px; }
-.log-summary span { display: flex; align-items: center; gap: 7px; }
 /* 常驻提示，和摘要行同一套底色与文字色：它说明的是一种状态，不是一个错误。
    A persistent notice in the summary row's own colours: it describes a state,
    not an error. */
 .log-notice { margin: 0; padding: var(--s-2) var(--s-3); color: var(--muted); background: var(--canvas); border-bottom: 1px solid var(--line); font-size: var(--t-1); line-height: var(--lh-base); overflow-wrap: anywhere; }
-.log-stream { height: calc(100vh - 276px); min-height: 420px; overflow: auto; padding: 5px 0 14px; font-family: var(--mono); }
+/* position 让列表成为行内读屏标签（.log-sr-only 是绝对定位）的包含块：不然那些
+   标签不受列表的滚动裁剪，按各自在长列表里的位置把整页撑出一大段空白。
+   position makes the list the containing block of the per-line screen-reader
+   labels (.log-sr-only is absolutely positioned); otherwise they escape the
+   list's scroll clipping and stretch the page by the length of the whole list. */
+.log-stream { position: relative; height: calc(100vh - 299px); min-height: 420px; overflow: auto; padding: 5px 0 14px; font-family: var(--mono); }
 .log-line { min-width: 720px; display: grid; grid-template-columns: 90px 88px minmax(0, 1fr); gap: 10px; align-items: baseline; padding: 5px 13px 5px 10px; border-left: 3px solid transparent; color: var(--ink); font-size: 12px; line-height: 1.45; }
 .log-line:hover { background: var(--canvas); }
 .log-line time { color: var(--muted); }
@@ -822,12 +825,8 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
      placeholder fits whole at 375. */
   .search-field { max-width: none; gap: 6px; padding-inline: 8px; }
   .search-field input { padding-inline: 0; }
-  .log-stream { height: calc(100vh - 336px); min-height: 350px; }
+  .log-stream { height: calc(100vh - 369px); min-height: 350px; }
   .log-new-lines { min-height: 44px; }
-  /* 窄屏上两段说明各自折成两行，行高跟着内容走，不再固定 34px 把第二行挤出去。
-     On a narrow screen both halves wrap to two lines, so the row grows with
-     them instead of a fixed 34px pushing the second line out. */
-  .log-summary { height: auto; min-height: 34px; gap: var(--s-3); padding-block: var(--s-1); }
   .log-line { min-width: 0; grid-template-columns: 90px minmax(0, 1fr); gap: 4px 8px; padding-block: 9px; }
   .log-line p { grid-column: 1 / -1; }
   /* 等宽格子，放不下就换行，绝不横向滚动：藏起滚动条的横向滚动会把「信息」「认证」

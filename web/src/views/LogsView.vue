@@ -319,8 +319,6 @@ onBeforeUnmount(() => window.clearInterval(timer))
         <button class="icon-button" type="button" title="刷新审计记录" :disabled="auditRequesting" @click="loadAudit()"><RefreshCw :size="18" :class="{ spin: auditLoading }" /></button>
         <button class="icon-button" type="button" title="下载筛选结果" :disabled="filteredAudit.length === 0" @click="download"><Download :size="18" /></button>
       </header>
-      <div v-if="mode === 'runtime'" class="log-summary"><span>{{ filtered.length }} / {{ entries.length }} 条{{ runtimeCursor !== null ? '，向下滚动加载更早日志' : '' }}</span><span><i :class="atTop ? 'status-dot' : 'status-dot status-dot--muted'"></i>{{ atTop ? '最新日志在顶部，每 5 秒刷新' : '浏览历史时，新日志在上方提示' }}</span></div>
-      <div v-else class="log-summary"><span>{{ filteredAudit.length }} / {{ auditEvents.length }} 条</span><span>最多保留 10,000 条操作记录</span></div>
       <!-- 常驻、不是错误：日志页本身没坏，是 journald 看不到这个 unit 的输出——
            unit 不存在，或它的输出没送到 journald。句子由服务端拼好，原样展示；
            不提示的话页面看着一切正常，只是永远没有 KixDNS 自己的一行。
