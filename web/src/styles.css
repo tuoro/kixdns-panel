@@ -749,6 +749,8 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .system-stale { color: var(--warn-l); overflow-wrap: anywhere; }
 .system-note { margin: 0 0 var(--s-2); color: var(--l-ink-3); font-size: var(--t-2); }
 .system-error { flex-basis: 100%; color: var(--err-l); overflow-wrap: anywhere; }
+/* 版本号不在中间断开：窄屏上只在箭头和空格处换行 / A version never breaks mid-number: narrow screens wrap at the arrow */
+.update-row__from-to .ui-mono { white-space: nowrap; }
 .install-version { margin: 0; color: var(--l-ink); font-family: var(--mono); font-size: var(--t-5); font-weight: var(--w-bold); line-height: var(--lh-tight); overflow-wrap: anywhere; }
 .install-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-1) var(--s-2); margin: var(--s-2) 0 0; color: var(--l-ink-2); font-size: var(--t-2); }
 .install-hashes { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: var(--s-4); padding-top: var(--s-3); border-top: 1px solid var(--l-hair); }
