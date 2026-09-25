@@ -163,6 +163,14 @@ export interface Overview {
   service_active: boolean | null
   captured_at_unix: number
   trend: RequestTrend
+  /** 运行配置的过期缓存策略；找不到内核正在运行的那份配置时为 null。 */
+  stale_policy: StalePolicy | null
+}
+
+/** 服务过期响应开没开，以及客户端等待多少毫秒：决定哪几种续用旧结果可能出现。 */
+export interface StalePolicy {
+  enabled: boolean
+  client_timeout_ms: number
 }
 
 export interface ServiceStatus {

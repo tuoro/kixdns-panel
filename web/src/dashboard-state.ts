@@ -41,6 +41,7 @@ export function emptyOverview(): Overview {
     // 空态不补零点：一条全是 0 的曲线会被读成「那段时间没有请求」，
     // 而这里的实情是还没有采到任何数据。
     trend: { bucket_seconds: 3600, points: [], total: 0 },
+    stale_policy: null,
     health: {
       protocol_version: 0,
       status: 'stopped',

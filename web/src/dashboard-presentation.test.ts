@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { RequestLatency } from './api/types'
+import type { RequestLatency, StalePolicy } from './api/types'
 import { MIN_HEALTH_SAMPLES, cacheComposition, latencyBands, latencyBasis, latencyHealth, pipelineDistribution, rcodeDistribution, recentWindowLabel, settledAttempts, upstreamBasis, upstreamHealth } from './dashboard-presentation'
 import { emptyOverview } from './dashboard-state'
 
@@ -104,6 +104,22 @@ describe('上游健康与分布', () => {
     expect(rows.map((row) => [row.label, row.count])).toEqual([['NOERROR', 65], ['NXDOMAIN', 30], ['其他', 5]])
     expect(rows[0].share).toBeCloseTo(0.65)
     expect(rcodeDistribution([])).toEqual([])
+  })
+
+  it('当前配置下不会发生的续用来源不列出，已经发生过的照常列出', () => {
+    const metrics = { ...emptyOverview().metrics, cache_hits_fresh: 90, cache_stale: { expired: 0, client_timeout: 0, upstream_failure: 0 } }
+    const keys = (policy: StalePolicy | null) => cacheComposition(metrics, policy).map((row) => row.key)
+    // 不知道运行配置时不猜，全部列出
+    expect(keys(null)).toEqual(['fresh', 'expired', 'client_timeout', 'upstream_failure'])
+    expect(keys({ enabled: false, client_timeout_ms: 0 })).toEqual(['fresh'])
+    // 客户端等待为 0：过期条目立刻返回，不会去等上游
+    expect(keys({ enabled: true, client_timeout_ms: 0 })).toEqual(['fresh', 'expired'])
+    // 客户端等待大于 0：先问上游，不会直接续用
+    expect(keys({ enabled: true, client_timeout_ms: 300 })).toEqual(['fresh', 'client_timeout', 'upstream_failure'])
+    // 开过又关了：累计里留下的次数不能凭空消失
+    const history = { ...metrics, cache_stale: { expired: 6, client_timeout: 0, upstream_failure: 0 } }
+    expect(cacheComposition(history, { enabled: false, client_timeout_ms: 0 }).map((row) => [row.key, row.count]))
+      .toEqual([['fresh', 90], ['expired', 6]])
   })
 
   it('缓存构成按来源拆分，无命中时为空', () => {

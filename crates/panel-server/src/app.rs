@@ -208,6 +208,64 @@ struct OverviewResponse {
     /// unreachable its counters are frozen while the samples are still current.
     #[serde(default)]
     trend: RequestTrend,
+    /// 运行配置的过期缓存策略；找不到内核正在运行的那份配置时为空，页面照常列出全部来源。
+    /// The running config's serve-stale policy; empty when the config the kernel runs cannot
+    /// be found, in which case the page lists every source as before.
+    #[serde(default)]
+    stale_policy: Option<StalePolicy>,
+}
+
+/// 过期缓存策略决定哪几种“续用旧结果”可能出现：关闭时一种都不会有；客户端等待为 0 时
+/// 过期条目立刻返回，只会有“直接续用”；大于 0 时先问上游，只会有“等上游超时后”和
+/// “上游失败后”两种。
+///
+/// The serve-stale policy decides which kinds of stale answers can happen: none when it is
+/// off; with a zero client wait expired entries are served at once, so only the direct
+/// kind; with a positive wait upstream is asked first, so only the timeout and failure
+/// kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct StalePolicy {
+    enabled: bool,
+    client_timeout_ms: u64,
+}
+
+impl StalePolicy {
+    /// 缺省值与 `KixDNS` 一致：关闭，客户端等待 0。
+    /// Defaults match `KixDNS`: off, with a zero client wait.
+    fn of(config: &Value) -> Self {
+        let setting = |key: &str| {
+            config
+                .get("settings")
+                .and_then(|settings| settings.get(key))
+        };
+        Self {
+            enabled: setting("serve_stale")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            client_timeout_ms: setting("serve_stale_client_timeout_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+        }
+    }
+}
+
+/// 找到内核正在运行的那份配置：磁盘上的摘要对得上就用它，否则按摘要查历史版本。
+/// Finds the config the kernel runs: the file on disk when its digest matches, otherwise
+/// the saved version with that digest.
+async fn running_stale_policy(state: &AppState, sha256: &str) -> Option<StalePolicy> {
+    if let Ok(current) = state.config.current().await
+        && current.sha256 == sha256
+    {
+        return Some(StalePolicy::of(&current.content));
+    }
+    let version = state
+        .database
+        .latest_config_version_id_by_sha256(sha256.to_owned())
+        .await
+        .ok()
+        .flatten()?;
+    let content = state.config.version_content(version).await.ok()?;
+    Some(StalePolicy::of(&content))
 }
 
 /// 一个整点桶内的请求数。
@@ -631,6 +689,7 @@ async fn overview(
                     unix_timestamp(),
                     i64::try_from(health.started_at_unix).unwrap_or(i64::MAX),
                 );
+            let stale_policy = running_stale_policy(&state, &active_config.sha256).await;
             let snapshot = OverviewResponse {
                 health,
                 active_config,
@@ -639,6 +698,7 @@ async fn overview(
                 service_active: Some(true),
                 captured_at_unix: u64::try_from(unix_timestamp()).unwrap_or_default(),
                 trend: load_request_trend(&state).await,
+                stale_policy,
             };
             if let Ok(serialized) = serde_json::to_string(&snapshot)
                 && let Err(error) = state

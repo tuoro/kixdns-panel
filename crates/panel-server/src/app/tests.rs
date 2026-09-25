@@ -616,6 +616,68 @@ async fn test_state(directory: &TempDir) -> super::AppState {
 }
 
 #[tokio::test]
+async fn stale_policy_follows_the_config_the_kernel_is_running() {
+    use super::{StalePolicy, running_stale_policy};
+
+    let directory = tempdir().unwrap();
+    std::fs::write(
+        directory.path().join("pipeline.json"),
+        r#"{"pipelines":[]}"#,
+    )
+    .unwrap();
+    let state = test_state(&directory).await;
+    let imported = state.config.current().await.unwrap();
+    // 没写就是 KixDNS 的缺省：关闭，客户端等待 0。
+    // Nothing set means KixDNS defaults: off, with a zero client wait.
+    assert_eq!(
+        running_stale_policy(&state, &imported.sha256).await,
+        Some(StalePolicy {
+            enabled: false,
+            client_timeout_ms: 0
+        })
+    );
+
+    let running = state
+        .config
+        .save(
+            serde_json::json!({"settings": {"serve_stale": true, "serve_stale_client_timeout_ms": 300}, "pipelines": []}),
+            &imported.sha256,
+            "stale on".to_owned(),
+            "test".to_owned(),
+        )
+        .await
+        .unwrap();
+    let on = Some(StalePolicy {
+        enabled: true,
+        client_timeout_ms: 300,
+    });
+    assert_eq!(running_stale_policy(&state, &running.sha256).await, on);
+
+    // 磁盘上已经换成新配置、内核还在跑旧的：按摘要从历史版本里找。
+    // The file on disk moved on while the kernel still runs the old one: find it by digest.
+    let saved = state
+        .config
+        .save(
+            serde_json::json!({"settings": {"serve_stale": false}, "pipelines": []}),
+            &running.sha256,
+            "stale off".to_owned(),
+            "test".to_owned(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(running_stale_policy(&state, &running.sha256).await, on);
+    assert_eq!(
+        running_stale_policy(&state, &saved.sha256).await,
+        Some(StalePolicy {
+            enabled: false,
+            client_timeout_ms: 0
+        })
+    );
+    // 找不到就不猜。 / Unknown means no guess.
+    assert_eq!(running_stale_policy(&state, &"0".repeat(64)).await, None);
+}
+
+#[tokio::test]
 async fn scheduled_geo_update_removes_unreferenced_files_and_keeps_rollback_targets() {
     // 回归：定时更新每次下载到新的内容寻址文件，却只有手动清理会删旧文件，磁盘只增不减。
     // Regression: every scheduled run downloads new content-addressed files, but only the manual

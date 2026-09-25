@@ -1,4 +1,4 @@
-import type { MetricsSnapshot, NamedCount, RequestLatency, UpstreamCount, UpstreamTally } from './api/types'
+import type { MetricsSnapshot, NamedCount, RequestLatency, StalePolicy, UpstreamCount, UpstreamTally } from './api/types'
 import { upstreamSuccessRate } from './utils'
 
 export interface PipelineShare extends NamedCount {
@@ -146,14 +146,22 @@ export function rcodeDistribution(upstreams: readonly UpstreamCount[]): ShareRow
  * having hit something one should not have, turning a successful fallback into
  * a fault, so the wording says the answer was reused instead.
  */
-export function cacheComposition(metrics: MetricsSnapshot): ShareRow[] {
+export function cacheComposition(metrics: MetricsSnapshot, policy: StalePolicy | null = null): ShareRow[] {
   const stale = metrics.cache_stale
+  // 当前配置下根本不会发生的来源不列出来，免得摆一行永远是 0 的数：没开服务过期响应时
+  // 三种续用都不会有；客户端等待为 0 时过期条目立刻返回，只会直接续用；大于 0 时先问
+  // 上游，只会等上游超时或上游失败后续用。已经发生过的（开过又关了，累计里还有数）照常
+  // 列出；不知道运行配置时全部列出。
+  const possible = (direct: boolean) => policy === null
+    || (policy.enabled && (policy.client_timeout_ms === 0) === direct)
   const rows = [
-    { key: 'fresh', label: '未过期直接命中', count: metrics.cache_hits_fresh },
-    { key: 'expired', label: '直接续用旧结果', count: stale.expired },
-    { key: 'client_timeout', label: '等上游超时后续用', count: stale.client_timeout },
-    { key: 'upstream_failure', label: '上游失败后续用', count: stale.upstream_failure },
+    { key: 'fresh', label: '未过期直接命中', count: metrics.cache_hits_fresh, possible: true },
+    { key: 'expired', label: '直接续用旧结果', count: stale.expired, possible: possible(true) },
+    { key: 'client_timeout', label: '等上游超时后续用', count: stale.client_timeout, possible: possible(false) },
+    { key: 'upstream_failure', label: '上游失败后续用', count: stale.upstream_failure, possible: possible(false) },
   ]
+    .filter((row) => row.possible || row.count > 0)
+    .map(({ key, label, count }) => ({ key, label, count }))
   const total = rows.reduce((sum, row) => sum + row.count, 0)
   if (total === 0) return []
   return rows.map((row) => ({ ...row, share: row.count / total }))

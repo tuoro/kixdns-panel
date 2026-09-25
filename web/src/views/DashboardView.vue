@@ -111,7 +111,7 @@ const healthSummary = computed(() => {
 })
 const overallHealth = computed<UpstreamHealth>(() => (healthCounts.value.unhealthy ? 'unhealthy' : healthCounts.value.degraded ? 'degraded' : 'healthy'))
 const rcodes = computed(() => rcodeDistribution(displayOverview.value?.metrics.upstreams ?? []))
-const cacheRows = computed(() => (displayOverview.value ? cacheComposition(displayOverview.value.metrics) : []))
+const cacheRows = computed(() => (displayOverview.value ? cacheComposition(displayOverview.value.metrics, displayOverview.value.stale_policy ?? null) : []))
 function latencyFigure(value: number): string {
   return value < 10 ? value.toFixed(1) : String(Math.round(value))
 }

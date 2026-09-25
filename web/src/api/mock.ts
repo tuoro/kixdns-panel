@@ -155,6 +155,7 @@ const overview: Overview = {
   service_active: true,
   captured_at_unix: now,
   trend: requestTrend,
+  stale_policy: { enabled: true, client_timeout_ms: 0 },
   health: {
     protocol_version: 1,
     status: 'ok',

@@ -122,6 +122,28 @@ test('首次未启动保留空态视图但禁止运行时操作', async ({ page 
   await expect(page.getByText('尚无规则命中数据', { exact: true })).toBeVisible()
 })
 
+test('没开服务过期响应时缓存构成不列续用旧结果 @responsive', async ({ page }) => {
+  await openOverview(page)
+  const cache = page.locator('.overview-breakdown').filter({ has: page.getByRole('heading', { name: '缓存构成' }) })
+  // 演示配置开着服务过期响应，三种续用都有数，全部列出
+  await expect(cache).toContainText('直接续用旧结果')
+  await page.evaluate(async () => {
+    const moduleUrl = '/src/api/mock.ts'
+    const { mockRequest } = await import(moduleUrl)
+    const snapshot = await mockRequest('/api/v1/overview')
+    snapshot.stale_policy = { enabled: false, client_timeout_ms: 0 }
+    snapshot.metrics.cache_hits_stale = 0
+    snapshot.metrics.cache_stale = { expired: 0, client_timeout: 0, upstream_failure: 0 }
+  })
+  // 离开再回来让概览重新挂载，原因见下面快照测试的说明。
+  // The round trip remounts the overview; the snapshot tests below explain why.
+  await page.getByRole('link', { name: '日志', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '运行日志', exact: true })).toBeVisible()
+  await page.getByRole('link', { name: '概览', exact: true }).click()
+  await expect(cache).toContainText('未过期直接命中')
+  await expect(cache).not.toContainText('续用')
+})
+
 for (const stopped of [true, false]) {
   test(`${stopped ? '已停止' : '实时不可用'}快照保留数据并禁用运行时操作 @responsive`, async ({ page }) => {
     await openOverview(page)
