@@ -633,7 +633,7 @@ onBeforeUnmount(() => {
         </div>
         <!-- 没配置时说清为什么要填：GitHub 对匿名请求每小时只给 60 次，带 Token 是 5000 次。
              Without a token, say why one helps: GitHub allows 60 anonymous requests an hour, 5,000 with a token. -->
-        <p v-if="!githubTokenStatus?.configured" class="credential-hint">匿名访问 GitHub 每小时只有 60 次请求，检查版本和下载内核容易被限速；填一个 Token 后是每小时 5000 次。</p>
+        <p v-if="!githubTokenStatus?.configured" class="credential-hint"><span>匿名访问 GitHub 每小时只有 60 次请求，检查版本和下载内核容易被限速。</span><span>填一个 Token 后是每小时 5000 次。</span></p>
         <template #foot>
           <span v-if="githubRate">API 配额 <span class="ui-mono">{{ githubQuota }}</span> · 重置于 {{ githubRateReset() }}</span>
           <span v-else>面板还没向 GitHub 请求过，配额未知</span>
