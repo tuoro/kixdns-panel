@@ -90,18 +90,15 @@
 .ui-section__aside { color: var(--l-ink-3); font-size: var(--t-2); }
 
 /* ---------- 键值行与数据条（五个以内的短值横排） ----------
-   键值行像一张规格表：名称占一栏固定宽度，值紧跟在后面左对齐，行与行只靠间距分开。
-   值要是贴到卡片最右边，名称和值中间隔着大半个卡片，就得靠一条条横线才对得上行——
-   那些线比数据还显眼。挨在一起就不需要线。
-   A key-value list reads like a spec sheet: the names take a fixed column, each
-   value follows left-aligned, and rows are separated by space alone. Values pushed
-   to the card's right edge leave half a card between name and value, and only a
-   rule per row keeps them paired — rules louder than the data. Kept close, no
-   rule is needed. */
-.ui-kv { display: grid; grid-template-columns: minmax(6em, max-content) minmax(0, 1fr); gap: var(--s-2) var(--s-5); align-items: baseline; margin: 0; }
+   键值行：名称在左，值靠右对齐，行与行只靠间距分开，不画逐行横线——七条线会把一张
+   卡片切成七条，比数据还显眼。
+   A key-value list: names on the left, values right-aligned, rows separated by
+   space alone. No rule per row: seven rules slice a card into seven strips
+   louder than the data. */
+.ui-kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--s-3) var(--s-5); align-items: baseline; margin: 0; }
 .ui-kv > div { display: contents; }
 .ui-kv dt { color: var(--l-ink-3); font-size: var(--t-2); }
-.ui-kv dd { margin: 0; color: var(--l-ink); font-size: var(--t-3); overflow-wrap: anywhere; }
+.ui-kv dd { margin: 0; color: var(--l-ink); font-size: var(--t-3); text-align: right; overflow-wrap: anywhere; }
 .ui-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: var(--s-3) var(--s-5); margin: 0; }
 .ui-strip dt { color: var(--l-ink-3); font-size: var(--t-1); }
 .ui-strip dd { margin: var(--s-1) 0 0; color: var(--l-ink); font-size: var(--t-3); overflow-wrap: anywhere; }
