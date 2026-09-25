@@ -6,18 +6,21 @@
   font-family: Inter, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --ink: #111615;
-  --muted: #697276;
-  --line: #dfe4e2;
-  --surface: #ffffff;
-  --canvas: #fafbf9;
-  --green: #17663e;
-  --green-dark: #104a2c;
-  --green-soft: #e8f3ed;
-  --amber: #b26b0c;
-  --amber-soft: #fbf0de;
-  --red: #b43a3a;
-  --red-soft: #faeaea;
+  /* 旧名字，只是 tokens.css 的别名：页面改版时换成右边的名字，棘轮只许引用变少。
+     Old names, now only aliases of tokens.css: pages switch to the names on
+     the right as they are redesigned, and the ratchet only lets them shrink. */
+  --ink: var(--l-ink);
+  --muted: var(--l-ink-3);
+  --line: var(--l-hair);
+  --surface: var(--l-surface);
+  --canvas: var(--l-canvas);
+  --green: var(--ok-l);
+  --green-dark: var(--ok-l-deep);
+  --green-soft: var(--ok-tint-l);
+  --amber: var(--warn-l);
+  --amber-soft: var(--warn-tint-l);
+  --red: var(--err-l);
+  --red-soft: var(--err-tint-l);
   --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   --app-header-height: 64px;
   --mobile-nav-height: calc(64px + env(safe-area-inset-bottom));
