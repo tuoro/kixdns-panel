@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { DnsTraceStep } from './api/types'
-import { describeResolution, isDnsSuccess, parseDnsAnswer, summarizeTrace, traceTone } from './diagnostics'
+import { describeResolution, humanizeTraceDetail, isDnsSuccess, parseDnsAnswer, responseCodeName, summarizeTrace, traceStepLabel, traceTone } from './diagnostics'
 
 describe('DNS 应答台账', () => {
   it.each([
@@ -70,8 +70,42 @@ describe('结论带的那句话', () => {
     expect(describeResolution(summary)).toBe('命中 cn-direct')
   })
 
+  it('命中很多条时只点前三条，说明一共几条', () => {
+    const summary = summarize(...['a', 'b', 'c', 'd', 'e'].map((name) => step('rule', 'matched', name)))
+    expect(describeResolution(summary)).toBe('命中 a、b、c 等 5 条规则')
+  })
+
   it('什么都没记下来时交回空串，让结论带只写响应码', () => {
     expect(describeResolution(summarize())).toBe('')
     expect(describeResolution(summarize(step('request', 'parsed', 'A example.com')))).toBe('')
   })
+})
+
+describe('把轨迹里的程序写法翻成人话', () => {
+  it.each([
+    ['目标：https://1.1.1.1/dns-query；传输：Some(Https)', '目标：https://1.1.1.1/dns-query；传输：DoH'],
+    ['传输：Some(Udp)', '传输：UDP'],
+    ['传输：Some(TcpUdp)', '传输：TCP+UDP'],
+    ['传输：None', '传输：自动'],
+    ['响应码：No Error；耗时：12 ms；截断：false', '响应码：NOERROR；耗时：12\u00a0ms；未截断'],
+    ['响应码：Server Failure；截断：true', '响应码：SERVFAIL；已截断'],
+  ])('%s', (raw, words) => expect(humanizeTraceDetail(raw)).toBe(words))
+
+  it('认不出的片段原样保留，不猜', () => {
+    expect(humanizeTraceDetail('传输：Some(Carrier)；客户端：127.0.0.1')).toBe('传输：Some(Carrier)；客户端：127.0.0.1')
+    expect(humanizeTraceDetail('保留原始说明')).toBe('保留原始说明')
+  })
+
+  it.each([['No Error', 'NOERROR'], ['Non-Existent Domain', 'NXDOMAIN'], ['NXDOMAIN', 'NXDOMAIN'], ['Query Refused', 'REFUSED'], ['BADVERS', 'BADVERS']])('响应码 %s 写成 %s', (code, name) => expect(responseCodeName(code)).toBe(name))
+})
+
+describe('步骤标题不把阶段名说两遍', () => {
+  it.each([
+    ['response_cache', '响应缓存未命中', ''],
+    ['response_cache', '响应缓存命中', ''],
+    ['rule_cache', '规则缓存', ''],
+    ['rule_cache', '规则缓存命中 geosite-cn', '规则缓存命中 geosite-cn'],
+    ['decision', '规则 geosite-global 转发', '规则 geosite-global 转发'],
+    ['future_stage', 'future_stage', 'future_stage'],
+  ])('%s · %s', (stage, label, shown) => expect(traceStepLabel({ stage, label })).toBe(shown))
 })

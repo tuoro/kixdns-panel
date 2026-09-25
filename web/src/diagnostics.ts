@@ -66,7 +66,10 @@ export type TraceSummary = ReturnType<typeof summarizeTrace>
 export function describeResolution(summary: TraceSummary): string {
   const parts: string[] = []
   if (summary.matchedRules.length) {
-    const rules = summary.matchedRules.join('、')
+    // 结论带是一行话：命中很多条时只点前三条，其余在执行路径里逐条可见。
+    // The verdict is one line: with many matches it names the first three, and the path lists them all.
+    const named = summary.matchedRules.slice(0, 3).join('、')
+    const rules = summary.matchedRules.length > 3 ? `${named} 等 ${summary.matchedRules.length} 条规则` : named
     parts.push(summary.pipelines.length ? `命中 ${summary.pipelines.join('、')} 的 ${rules}` : `命中 ${rules}`)
   } else if (summary.responseCacheHit) {
     parts.push('响应缓存命中')
@@ -77,4 +80,67 @@ export function describeResolution(summary: TraceSummary): string {
 
 export function isDnsSuccess(code: string): boolean {
   return code.replace(/\s/g, '').toUpperCase() === 'NOERROR'
+}
+
+// 内核用 hickory 的 Display 写响应码（「No Error」「Server Failure」）；面板其余地方
+// 都用 DNS 的写法（NOERROR、SERVFAIL），这里统一过来。不认识的原样交还。
+// The kernel writes response codes with hickory's Display ("No Error", "Server
+// Failure"); the rest of the panel uses the DNS mnemonics (NOERROR, SERVFAIL),
+// so this aligns them. Anything unknown is returned as it came.
+const RESPONSE_CODE_NAMES: Record<string, string> = {
+  noerror: 'NOERROR', formerror: 'FORMERR', formerr: 'FORMERR',
+  serverfailure: 'SERVFAIL', servfail: 'SERVFAIL',
+  nonexistentdomain: 'NXDOMAIN', nxdomain: 'NXDOMAIN',
+  notimplemented: 'NOTIMP', notimp: 'NOTIMP',
+  queryrefused: 'REFUSED', refused: 'REFUSED',
+}
+
+export function responseCodeName(code: string): string {
+  return RESPONSE_CODE_NAMES[code.replace(/[\s-]/g, '').toLowerCase()] ?? code
+}
+
+const TRANSPORT_NAMES: Record<string, string> = {
+  Udp: 'UDP', Tcp: 'TCP', TcpUdp: 'TCP+UDP', Doh: 'DoH', Https: 'DoH', Dot: 'DoT', Tls: 'DoT', Doq: 'DoQ', Quic: 'DoQ',
+}
+
+/**
+ * 把执行轨迹细节里程序内部的写法翻成人话，其余一字不动。
+ *
+ * 轨迹细节由内核补丁拼出来，有几处是 Rust 值的原样输出：传输写成
+ * 「Some(Https)」「None」，截断写成「false」，响应码是 hickory 的 Display。
+ * 只替换这几种认得出的片段；认不出的照原样显示，不猜。
+ *
+ * Turns the program-internal spellings in a trace detail into words and
+ * leaves the rest untouched. The kernel patch builds these details, and a few
+ * are raw Rust values: the transport as "Some(Https)" or "None", truncation as
+ * "false", the response code as hickory's Display. Only those recognisable
+ * fragments are replaced; anything else is shown as it came, never guessed at.
+ */
+export function humanizeTraceDetail(detail: string): string {
+  return detail
+    .replace(/传输：Some\((\w+)\)/g, (whole, name: string) => (TRANSPORT_NAMES[name] ? `传输：${TRANSPORT_NAMES[name]}` : whole))
+    .replace(/传输：None/g, '传输：自动')
+    .replace(/截断：false/g, '未截断')
+    .replace(/截断：true/g, '已截断')
+    .replace(/响应码：([^；;]+)/g, (_, code: string) => `响应码：${responseCodeName(code.trim())}`)
+    // 数字和单位之间换成不断行空格：窄屏上「12」和「ms」曾被折到两行。
+    // A no-break space between a number and its unit: a phone once folded "12" and "ms" onto two lines.
+    .replace(/(\d) ms\b/g, '$1\u00a0ms')
+}
+
+const STATUS_WORDS = new Set(Object.values(traceStatusNames))
+
+/**
+ * 步骤标题里的标签：内核给缓存一类步骤的标签常常是「阶段名 + 结果词」（响应缓存未命中），
+ * 和前面的阶段名、下面的结果行各重复一次，这种情况只留阶段名；多出别的内容就照原样留着。
+ * The label in a step's title: the kernel often labels cache-like steps as
+ * stage name plus outcome word ("响应缓存未命中"), repeating both the stage
+ * name before it and the outcome line below; then only the stage name stays.
+ * A label that carries anything more is kept as it came.
+ */
+export function traceStepLabel(step: Pick<DnsTraceStep, 'stage' | 'label'>): string {
+  const stage = traceStageNames[step.stage]
+  if (!stage || !step.label.startsWith(stage)) return step.label
+  const rest = step.label.slice(stage.length).trim()
+  return rest === '' || STATUS_WORDS.has(rest) ? '' : step.label
 }

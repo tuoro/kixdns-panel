@@ -186,10 +186,10 @@
   .ui-input--sm { min-height: var(--h-md); }
   /* 全局给手机上的输入框设了 44 的最小高度（和 16px 字号，防 iPhone 放大）；
      这里外框已经是 44，里面的输入框再撑 44 会比同一行的按钮高出边框那 2 像素。
-     The global mobile rule gives inputs a 44 minimum height (and 16px type to
-     stop iPhone zoom); the frame here is already 44, so the inner input must
-     not add the frame's 2px border on top of the buttons beside it. */
-  .app-shell .ui-input input:not([type="checkbox"]):not([type="radio"]) { min-height: 0; }
+     The global mobile rule gives inputs and selects a 44 minimum height (and
+     16px type to stop iPhone zoom); the frame here is already 44, so the inner
+     control must not add the frame's 2px border on top of the buttons beside it. */
+  .app-shell .ui-input :is(input, select):not([type="checkbox"]):not([type="radio"]) { min-height: 0; }
   .ui-card__head { padding: var(--s-3) var(--s-4); }
   .ui-card--stack .ui-card__head { grid-template-columns: minmax(0, 1fr); }
   .ui-card--stack .ui-card__actions > .ui-seg { flex: 1; }
