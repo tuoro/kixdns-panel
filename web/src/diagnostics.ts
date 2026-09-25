@@ -25,7 +25,7 @@ export const traceStageNames: Record<string, string> = {
 export const traceStatusNames: Record<string, string> = {
   parsed: '已解析', selected: '已选择', matched: '命中', missed: '未命中', miss: '未命中',
   hit: '命中', fresh: '缓存命中', stale: '续用旧结果', succeeded: '成功', failed: '失败', error: '错误',
-  skipped: '已跳过', rejected: '已拒绝',
+  skipped: '已跳过', rejected: '已拒绝', started: '已发出', jump: '跳转',
 }
 
 export function traceTone(status: string): 'success' | 'warning' | 'danger' | 'neutral' {
@@ -128,19 +128,113 @@ export function humanizeTraceDetail(detail: string): string {
     .replace(/(\d) ms\b/g, '$1\u00a0ms')
 }
 
-const STATUS_WORDS = new Set(Object.values(traceStatusNames))
+/** 一句话里的一段；mono 是机器值（名字、地址、响应码），用等宽。 / One run of a sentence; mono marks machine values. */
+export interface TextPart { text: string; mono?: boolean }
+
+export interface StepView {
+  /** 这一步做了什么，一句话。 / What the step did, in one sentence. */
+  lead: TextPart[]
+  /** 补充的细节，一行，可以为空。 / Supporting detail on one line, possibly empty. */
+  note: TextPart[]
+}
+
+const t = (text: string): TextPart => ({ text })
+const m = (text: string): TextPart => ({ text, mono: true })
+const ASCII_ONLY = /^[\x20-\x7e\u00a0]+$/
 
 /**
- * 步骤标题里的标签：内核给缓存一类步骤的标签常常是「阶段名 + 结果词」（响应缓存未命中），
- * 和前面的阶段名、下面的结果行各重复一次，这种情况只留阶段名；多出别的内容就照原样留着。
- * The label in a step's title: the kernel often labels cache-like steps as
- * stage name plus outcome word ("响应缓存未命中"), repeating both the stage
- * name before it and the outcome line below; then only the stage name stays.
- * A label that carries anything more is kept as it came.
+ * 细节里的「键：值；键：值」写成「键 值 · 键 值」，纯 ASCII 的值用等宽；没有键的片段照原样。
+ * 先经过 humanizeTraceDetail，所以 Some(Https)、false 这类写法已经翻过。
+ * "key：value；key：value" becomes "key value · key value", ASCII values in mono;
+ * fragments without a key stay as they are. humanizeTraceDetail runs first.
  */
-export function traceStepLabel(step: Pick<DnsTraceStep, 'stage' | 'label'>): string {
-  const stage = traceStageNames[step.stage]
-  if (!stage || !step.label.startsWith(stage)) return step.label
-  const rest = step.label.slice(stage.length).trim()
-  return rest === '' || STATUS_WORDS.has(rest) ? '' : step.label
+export function detailParts(detail: string | null | undefined, skip: string[] = []): TextPart[] {
+  if (!detail) return []
+  const parts: TextPart[] = []
+  for (const fragment of humanizeTraceDetail(detail).split(/[；;]/).map((item) => item.trim()).filter(Boolean)) {
+    const [key, ...rest] = fragment.split('：')
+    const value = rest.join('：').trim()
+    if (rest.length && skip.includes(key!.trim())) continue
+    if (parts.length) parts.push(t(' · '))
+    if (!rest.length) parts.push(t(fragment))
+    else parts.push(t(key!.trim() + ' '), ASCII_ONLY.test(value) ? m(value) : t(value))
+  }
+  return parts
+}
+
+function detailValue(detail: string | null | undefined, key: string): string | null {
+  const match = new RegExp(`${key}：([^；;]+)`).exec(humanizeTraceDetail(detail ?? ''))
+  return match ? match[1]!.trim() : null
+}
+
+/**
+ * 把内核的一步写成一句人话，名字单独用等宽。内核的标签有的是名字（default、geosite-global），
+ * 有的已经是一句话（准备转发到 X、管线 X 的规则缓存未命中）；以前在前面再加阶段名，就成了
+ * 「上游 准备转发到 X」。认不出的写法退回「阶段名 标签」，不猜。
+ * Writes one kernel step as a sentence with names in mono. Kernel labels are
+ * sometimes a name and sometimes already a sentence; prefixing the stage name
+ * produced stutters like "上游 准备转发到 X". Anything unrecognised falls back
+ * to "stage label" rather than a guess.
+ */
+export function describeStep(step: DnsTraceStep): StepView {
+  const { stage, status, label, detail } = step
+  const note = detailParts(detail)
+  let match: RegExpExecArray | null
+  if (stage === 'request' && status === 'parsed') return { lead: [t('请求 '), m(label)], note }
+  if (stage === 'pipeline' && status === 'selected') return { lead: [t('选中管线 '), m(label)], note }
+  if (stage === 'pipeline' && status === 'jump' && (match = /^(.+?) -> (.+)$/.exec(label))) return { lead: [t('从管线 '), m(match[1]!), t(' 跳到 '), m(match[2]!)], note }
+  if (stage === 'response_cache') {
+    if (['miss', 'missed'].includes(status)) return { lead: [t('响应缓存未命中')], note }
+    if (['fresh', 'hit'].includes(status)) return { lead: [t('命中响应缓存')], note }
+    return { lead: [t(label)], note }
+  }
+  if (stage === 'rule_cache') {
+    if ((match = /^命中管线 (.+) 的规则缓存$/.exec(label))) return { lead: [t('命中管线 '), m(match[1]!), t(' 的规则缓存')], note }
+    if ((match = /^管线 (.+) 的规则缓存未命中$/.exec(label))) return { lead: [t('管线 '), m(match[1]!), t(' 的规则缓存未命中')], note }
+  }
+  if (stage === 'rule' && status === 'matched') return { lead: [t('命中规则 '), m(label)], note: detailParts(detail, ['管线']) }
+  if (stage === 'rule' && ['missed', 'miss'].includes(status)) return { lead: [t('规则 '), m(label), t(' 未命中')], note: detailParts(detail, ['管线']) }
+  if (stage === 'decision') {
+    const target = detailValue(detail, '目标')
+    if ((match = /^规则 (.+) 转发$/.exec(label)) && target) return { lead: [t('决定转发给 '), m(target)], note: [t('规则 '), m(match[1]!), ...prefixed(detailParts(detail, ['目标']))] }
+    if ((match = /^静态响应 (.+)$/.exec(label))) return { lead: [t('直接返回 '), m(responseCodeName(match[1]!))], note }
+    if ((match = /^跳转到管线 (.+)$/.exec(label))) return { lead: [t('跳转到管线 '), m(match[1]!)], note }
+  }
+  if (stage === 'upstream') {
+    if (status === 'started' && (match = /^准备转发到 (.+)$/.exec(label))) return { lead: [t('发往 '), m(match[1]!)], note: detailParts(detail, ['规则']) }
+    const code = detailValue(detail, '响应码')
+    if (status === 'succeeded' && code) return { lead: [m(label), t(' 应答 '), m(code)], note: detailParts(detail, ['响应码']) }
+    if (status === 'failed') return { lead: [m(label), t(' 没有应答')], note: detail ? [t(detail)] : [] }
+  }
+  const stageName = traceStageNames[stage]
+  // 不认识的阶段把阶段标识原样写上：新内核多出来的一步不能悄悄消失。
+  // An unknown stage shows its raw id: a step a newer kernel adds must not vanish quietly.
+  return { lead: stageName ? [t(stageName + ' '), m(label)] : [m(stage), t(' '), m(label)], note: status in traceStatusNames ? [t(traceStatusNames[status]!), ...prefixed(note)] : note }
+}
+
+function prefixed(parts: TextPart[]): TextPart[] {
+  return parts.length ? [t(' · '), ...parts] : []
+}
+
+export type TraceRow =
+  | { kind: 'step'; step: DnsTraceStep }
+  | { kind: 'missed-rules'; steps: DnsTraceStep[] }
+
+/**
+ * 连着的两条以上未命中规则并成一行：「3 条规则未命中」，名字都写在细节里，一个不少。
+ * 真实轨迹里命中之前的规则逐条记一行，灰的一长串把命中那一步挤出第一屏。
+ * Two or more consecutive missed rules fold into one row with every name in its
+ * detail. Real traces log each rule tried before the match, and that grey run
+ * pushed the matching step off the first screen.
+ */
+export function groupTrace(steps: DnsTraceStep[]): TraceRow[] {
+  const rows: TraceRow[] = []
+  for (const step of steps) {
+    const missed = step.stage === 'rule' && ['missed', 'miss'].includes(step.status)
+    const last = rows[rows.length - 1]
+    if (missed && last?.kind === 'missed-rules') last.steps.push(step)
+    else if (missed && last?.kind === 'step' && last.step.stage === 'rule' && ['missed', 'miss'].includes(last.step.status)) rows[rows.length - 1] = { kind: 'missed-rules', steps: [last.step, step] }
+    else rows.push({ kind: 'step', step })
+  }
+  return rows
 }

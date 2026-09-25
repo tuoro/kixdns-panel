@@ -7,7 +7,7 @@ import UiCard from '../components/ui/UiCard.vue'
 import UiEmpty from '../components/ui/UiEmpty.vue'
 import UiPageHeader from '../components/ui/UiPageHeader.vue'
 import { useToast } from '../composables/useToast'
-import { describeResolution, humanizeTraceDetail, isDnsSuccess, parseDnsAnswer, responseCodeName, summarizeTrace, traceStageNames, traceStatusNames, traceStepLabel, traceTone } from '../diagnostics'
+import { describeResolution, describeStep, groupTrace, isDnsSuccess, parseDnsAnswer, responseCodeName, summarizeTrace, traceTone, type TextPart } from '../diagnostics'
 import { errorMessage } from '../utils'
 
 const domain = ref('example.com')
@@ -35,6 +35,13 @@ const verdict = computed(() => {
   return sentence || `${result.value.domain} · ${result.value.record_type}`
 })
 const stepIdle = (status: string) => ['miss', 'missed', 'skipped'].includes(status)
+// 执行路径的每一行：一句话、一行细节、语气和时刻。连着的未命中规则并成一行。
+// Each row of the path: a sentence, a detail line, a tone and a time. Consecutive missed rules share one row.
+const rows = computed(() => groupTrace(steps.value).map((row) => {
+  if (row.kind === 'step') return { ...describeStep(row.step), tone: traceTone(row.step.status), idle: stepIdle(row.step.status), elapsed: row.step.elapsed_ms }
+  const names: TextPart[] = row.steps.flatMap((step, index) => (index ? [{ text: '、' }, { text: step.label, mono: true }] : [{ text: step.label, mono: true }]))
+  return { lead: [{ text: `${row.steps.length} 条规则未命中` }], note: names, tone: 'neutral' as const, idle: true, elapsed: row.steps[row.steps.length - 1]!.elapsed_ms }
+}))
 
 async function run(): Promise<void> {
   if (running.value) return
@@ -88,14 +95,16 @@ async function run(): Promise<void> {
         <UiCard v-if="result.trace_supported" class="diag-trace" title="执行路径" desc="这一次请求在内核里实际走过的步骤">
           <!-- 每步的细节直接摊开：要点开才看得到的信息，等于没有显示。
                未命中的步骤灰掉但仍然占位——「没走缓存」本身就是信息。 -->
-          <ol v-if="steps.length" class="diag-steps">
-            <li v-for="(step, index) in steps" :key="index" class="diag-step" :class="['diag-step--' + traceTone(step.status), { 'diag-step--idle': stepIdle(step.status) }]">
-              <span class="diag-step-mark" aria-hidden="true"><Check v-if="traceTone(step.status) === 'success'" :size="12" /><X v-else-if="traceTone(step.status) === 'danger'" :size="12" /><i v-else></i></span>
+          <!-- 每一步是一句话，名字用等宽；以前是「阶段名 + 内核标签」，标签本身是句子时就说两遍。
+               Each step is one sentence with names in mono; "stage + kernel label" said things twice when the label was already a sentence. -->
+          <ol v-if="rows.length" class="diag-steps">
+            <li v-for="(row, index) in rows" :key="index" class="diag-step" :class="['diag-step--' + row.tone, { 'diag-step--idle': row.idle }]">
+              <span class="diag-step-mark" aria-hidden="true"><Check v-if="row.tone === 'success'" :size="12" /><X v-else-if="row.tone === 'danger'" :size="12" /><i v-else></i></span>
               <div class="diag-step-body">
-                <p class="diag-step-what"><span class="diag-step-stage">{{ traceStageNames[step.stage] ?? step.stage }}</span><span v-if="traceStepLabel(step)" class="diag-step-label">{{ traceStepLabel(step) }}</span></p>
-                <p class="diag-step-why"><span class="diag-step-status">{{ traceStatusNames[step.status] ?? step.status }}</span><span v-if="step.detail" class="diag-step-detail">{{ humanizeTraceDetail(step.detail) }}</span></p>
+                <p class="diag-step-what"><template v-for="(part, at) in row.lead" :key="at"><code v-if="part.mono">{{ part.text }}</code><template v-else>{{ part.text }}</template></template></p>
+                <p v-if="row.note.length" class="diag-step-why"><template v-for="(part, at) in row.note" :key="at"><code v-if="part.mono">{{ part.text }}</code><template v-else>{{ part.text }}</template></template></p>
               </div>
-              <span class="diag-step-time">{{ step.elapsed_ms }} ms</span>
+              <span class="diag-step-time">{{ row.elapsed }} ms</span>
             </li>
           </ol>
           <p v-else class="diag-note">本次查询没有返回执行轨迹。</p>
@@ -158,19 +167,13 @@ async function run(): Promise<void> {
 .diag-step--danger .diag-step-mark { background: var(--err-tint-l); color: var(--err-l); }
 .diag-step--warning .diag-step-mark i { background: var(--warn-l); }
 .diag-step-body { min-width: 0; display: grid; gap: 2px; }
-.diag-step-what { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-1) var(--s-2); margin: 0; }
-.diag-step-stage { color: var(--l-ink); font-size: var(--t-2); font-weight: var(--w-bold); }
-.diag-step-label { min-width: 0; color: var(--l-ink); font-family: var(--mono); font-size: var(--t-2); overflow-wrap: anywhere; }
-.diag-step--idle .diag-step-stage, .diag-step--idle .diag-step-label { color: var(--l-ink-3); font-weight: var(--w-medium); }
-.diag-step-why { margin: 0; color: var(--l-ink-3); font-size: var(--t-1); overflow-wrap: anywhere; }
-/* 结果词和细节是同一行字，中间一个间隔点；不用弹性换行，免得有的步骤折成两行、有的不折。
-   The outcome word and the detail are one run of text with a middle dot, not
-   flex items, so steps do not fold differently from one another. */
-.diag-step-status { color: var(--l-ink-2); font-weight: var(--w-medium); }
-.diag-step-status + .diag-step-detail::before { margin: 0 var(--s-1); color: var(--l-ink-3); content: '·'; }
-.diag-step--danger .diag-step-status { color: var(--err-l); }
-.diag-step--warning .diag-step-status { color: var(--warn-l); }
-.diag-step-detail { white-space: pre-wrap; overflow-wrap: anywhere; }
+.diag-step-what { margin: 0; color: var(--l-ink); font-size: var(--t-2); font-weight: var(--w-medium); overflow-wrap: anywhere; }
+.diag-step-why { margin: 0; color: var(--l-ink-3); font-size: var(--t-1); white-space: pre-wrap; overflow-wrap: anywhere; }
+.diag-step-what code, .diag-step-why code { font-family: var(--mono); font-weight: var(--w-normal); }
+.diag-step-why code { color: var(--l-ink-2); }
+.diag-step--idle .diag-step-what { color: var(--l-ink-3); font-weight: var(--w-normal); }
+.diag-step--danger .diag-step-what { color: var(--err-l); }
+.diag-step--warning .diag-step-what { color: var(--warn-l); }
 .diag-step-time { color: var(--l-ink-3); font-family: var(--mono); font-size: var(--t-1); white-space: nowrap; }
 .diag-note, .diag-trace-warning { margin: 0; color: var(--l-ink-3); font-size: var(--t-2); }
 .diag-trace-warning { margin-top: var(--s-2); color: var(--warn-l); }

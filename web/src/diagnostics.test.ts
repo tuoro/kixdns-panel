@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { DnsTraceStep } from './api/types'
-import { describeResolution, humanizeTraceDetail, isDnsSuccess, parseDnsAnswer, responseCodeName, summarizeTrace, traceStepLabel, traceTone } from './diagnostics'
+import { describeResolution, humanizeTraceDetail, isDnsSuccess, parseDnsAnswer, responseCodeName, summarizeTrace, traceTone, describeStep, detailParts, groupTrace, type TextPart } from './diagnostics'
 
 describe('DNS 应答台账', () => {
   it.each([
@@ -99,13 +99,51 @@ describe('把轨迹里的程序写法翻成人话', () => {
   it.each([['No Error', 'NOERROR'], ['Non-Existent Domain', 'NXDOMAIN'], ['NXDOMAIN', 'NXDOMAIN'], ['Query Refused', 'REFUSED'], ['BADVERS', 'BADVERS']])('响应码 %s 写成 %s', (code, name) => expect(responseCodeName(code)).toBe(name))
 })
 
-describe('步骤标题不把阶段名说两遍', () => {
+const plain = (parts: TextPart[]) => parts.map((part) => part.text).join('')
+const monos = (parts: TextPart[]) => parts.filter((part) => part.mono).map((part) => part.text)
+const kstep = (stage: string, status: string, label: string, detail: string | null = null): DnsTraceStep => ({ stage, status, label, detail, elapsed_ms: 0 })
+
+describe('执行路径每一步写成一句话', () => {
+  // 标签和细节照 p27 内核补丁的原样写法。 / Labels and details exactly as the p27 kernel patch writes them.
   it.each([
-    ['response_cache', '响应缓存未命中', ''],
-    ['response_cache', '响应缓存命中', ''],
-    ['rule_cache', '规则缓存', ''],
-    ['rule_cache', '规则缓存命中 geosite-cn', '规则缓存命中 geosite-cn'],
-    ['decision', '规则 geosite-global 转发', '规则 geosite-global 转发'],
-    ['future_stage', 'future_stage', 'future_stage'],
-  ])('%s · %s', (stage, label, shown) => expect(traceStepLabel({ stage, label })).toBe(shown))
+    [kstep('request', 'parsed', 'A example.com', '客户端：192.168.1.23；监听器：default'), '请求 A example.com', '客户端 192.168.1.23 · 监听器 default'],
+    [kstep('pipeline', 'selected', 'default'), '选中管线 default', ''],
+    [kstep('pipeline', 'jump', 'default -> cn'), '从管线 default 跳到 cn', ''],
+    [kstep('response_cache', 'miss', '响应缓存未命中', '管线：default'), '响应缓存未命中', '管线 default'],
+    [kstep('response_cache', 'fresh', '命中新鲜响应缓存', '剩余 TTL：120 秒'), '命中响应缓存', '剩余 TTL 120 秒'],
+    [kstep('response_cache', 'stale', '上游失败，返回过期缓存'), '上游失败，返回过期缓存', ''],
+    [kstep('rule_cache', 'miss', '管线 default 的规则缓存未命中'), '管线 default 的规则缓存未命中', ''],
+    [kstep('rule_cache', 'hit', '命中管线 default 的规则缓存', '已匹配规则：geosite-global'), '命中管线 default 的规则缓存', '已匹配规则 geosite-global'],
+    [kstep('rule', 'matched', 'geosite-global', '管线：default；匹配器数：1'), '命中规则 geosite-global', '匹配器数 1'],
+    [kstep('rule', 'missed', 'block-ads', '管线：default；匹配器数：2'), '规则 block-ads 未命中', '匹配器数 2'],
+    [kstep('decision', 'selected', '规则 geosite-global 转发', '目标：https://1.1.1.1/dns-query；传输：Some(Https)'), '决定转发给 https://1.1.1.1/dns-query', '规则 geosite-global · 传输 DoH'],
+    [kstep('decision', 'selected', '静态响应 Non-Existent Domain', '答案记录数：0'), '直接返回 NXDOMAIN', '答案记录数 0'],
+    [kstep('decision', 'selected', '跳转到管线 cn'), '跳转到管线 cn', ''],
+    [kstep('upstream', 'started', '准备转发到 https://1.1.1.1/dns-query', '规则：geosite-global；传输：Some(Https)'), '发往 https://1.1.1.1/dns-query', '传输 DoH'],
+    [kstep('upstream', 'succeeded', 'https://1.1.1.1/dns-query', '响应码：No Error；耗时：11 ms；截断：false'), 'https://1.1.1.1/dns-query 应答 NOERROR', '耗时 11\u00a0ms · 未截断'],
+    [kstep('upstream', 'failed', '8.8.8.8:53', 'request timed out'), '8.8.8.8:53 没有应答', 'request timed out'],
+  ])('%#', (input, lead, note) => {
+    const view = describeStep(input)
+    expect(plain(view.lead)).toBe(lead)
+    expect(plain(view.note)).toBe(note)
+  })
+
+  it('名字、地址和响应码用等宽，中文不用', () => {
+    expect(monos(describeStep(kstep('upstream', 'succeeded', 'https://1.1.1.1/dns-query', '响应码：No Error；耗时：11 ms；截断：false')).lead)).toEqual(['https://1.1.1.1/dns-query', 'NOERROR'])
+    expect(monos(detailParts('剩余 TTL：120 秒'))).toEqual([])
+  })
+
+  it('认不出的阶段和写法退回「阶段名 标签」，状态照翻', () => {
+    const view = describeStep(kstep('future_stage', 'matched', 'rule-0', '保留原始说明'))
+    expect(plain(view.lead)).toBe('future_stage rule-0')
+    expect(plain(view.note)).toBe('命中 · 保留原始说明')
+    expect(plain(describeStep(kstep('decision', 'selected', '以后的新动作')).lead)).toBe('动作 以后的新动作')
+  })
+})
+
+describe('连着的未命中规则并成一行', () => {
+  it('两条以上才并，命中那条单独一行', () => {
+    const rows = groupTrace([kstep('pipeline', 'selected', 'default'), kstep('rule', 'missed', 'a'), kstep('rule', 'missed', 'b'), kstep('rule', 'missed', 'c'), kstep('rule', 'matched', 'd'), kstep('rule', 'missed', 'e')])
+    expect(rows.map((row) => (row.kind === 'step' ? row.step.label : row.steps.map((item) => item.label).join('+')))).toEqual(['default', 'a+b+c', 'd', 'e'])
+  })
 })
