@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ClipboardList, Download, Pause, Play, RefreshCw, Search, Terminal } from '@lucide/vue'
+import { ArrowUp, ClipboardList, Download, RefreshCw, Search, Terminal } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { apiRequest } from '../api/client'
 import type { AuditEvent, AuditPage, LogEntry, LogsResponse } from '../api/types'
@@ -18,7 +18,11 @@ const loading = ref(false)
 const requesting = ref(false)
 const auditLoading = ref(false)
 const auditRequesting = ref(false)
-const live = ref(true)
+// 读者停在顶部时新日志直接进列表；往下读历史时先攒在 fresh 里，由提示条放进来。
+// While the reader sits at the top new lines go straight into the list; once
+// they scroll into history the newest page waits in `fresh` behind the banner.
+const atTop = ref(true)
+const fresh = ref<LogsResponse | null>(null)
 const loadError = ref('')
 const auditError = ref('')
 const auditCursor = ref<number | null>(null)
@@ -28,6 +32,8 @@ const loadingOlder = ref(false)
 const notice = ref<string | null>(null)
 let timer: number | undefined
 let pendingLoad: Promise<void> | null = null
+let polling = false
+const PAGE_SIZE = 500
 
 // 级别筛选在 journalctl 里做，不在浏览器里：浏览器只看得到已经翻出来的几页，
 // 一条老错误在读者滚到它之前都是隐身的，计数也只是「已加载里的几条」。
@@ -54,6 +60,28 @@ const lines = computed(() => filtered.value.map((entry) => ({ entry, segments: s
 const activeError = computed(() => mode.value === 'runtime' ? loadError.value : auditError.value)
 const activeRequesting = computed(() => mode.value === 'runtime' ? requesting.value : auditRequesting.value)
 const activeCount = computed(() => mode.value === 'runtime' ? entries.value.length : auditEvents.value.length)
+
+function sameEntry(left: LogEntry, right: LogEntry): boolean {
+  return left.timestamp_unix_micros === right.timestamp_unix_micros
+    && left.priority === right.priority
+    && left.source === right.source
+    && left.message === right.message
+}
+
+// 新行数 = 最新一页里排在当前第一行之前的那些。当前第一行不在这一页里，说明
+// 新来的超过一整页（或日志被轮转掉了），这时不假装知道确切数目。
+// New lines are those in the newest page ahead of the current first line. If
+// that line is not in the page, more than a page has arrived (or the journal
+// rotated it away), and the banner does not pretend to know the exact count.
+const newLinesLabel = computed(() => {
+  const page = fresh.value
+  if (page === null) return null
+  const first = entries.value[0]
+  const index = first === undefined ? page.entries.length : page.entries.findIndex((entry) => sameEntry(entry, first))
+  if (index === 0) return null
+  if (index > 0) return `有 ${index} 条新日志，点击显示`
+  return page.entries.length >= PAGE_SIZE ? `有 ${PAGE_SIZE} 条以上新日志，点击显示` : '有新日志，点击显示'
+})
 
 const auditOptions = [
   { value: 'all', label: '全部' },
@@ -112,6 +140,7 @@ function load(silent = false): Promise<void> {
     entries.value = page.entries
     runtimeCursor.value = page.next_cursor
     notice.value = page.notice
+    fresh.value = null
     loadError.value = ''
     await nextTick()
     if (runtimeStream.value) runtimeStream.value.scrollTop = 0
@@ -126,7 +155,7 @@ function load(silent = false): Promise<void> {
 }
 
 function logsParameters(before?: string): URLSearchParams {
-  const parameters = new URLSearchParams({ limit: '500' })
+  const parameters = new URLSearchParams({ limit: String(PAGE_SIZE) })
   if (before !== undefined) parameters.set('before', before)
   if (level.value !== 'all') parameters.set('level', level.value)
   return parameters
@@ -141,7 +170,6 @@ async function loadOlder(): Promise<void> {
   if (requesting.value || pendingLoad !== null || runtimeCursor.value === null) return
   requesting.value = true
   loadingOlder.value = true
-  live.value = false
   const requestedLevel = level.value
   try {
     const page = await apiRequest<LogsResponse>(`/api/v1/logs?${logsParameters(runtimeCursor.value)}`)
@@ -167,22 +195,41 @@ async function loadOlder(): Promise<void> {
 // would swallow this switch.
 watch(level, () => {
   runtimeCursor.value = null
+  fresh.value = null
   void (pendingLoad ?? Promise.resolve()).then(() => load())
 })
 
 function handleRuntimeScroll(event: Event): void {
   const stream = event.currentTarget as HTMLDivElement
-  if (stream.scrollTop > 24 && live.value) live.value = false
+  atTop.value = stream.scrollTop <= 24
   const remaining = stream.scrollHeight - stream.scrollTop - stream.clientHeight
   if (remaining <= 96 && runtimeCursor.value !== null && !requesting.value) void loadOlder()
 }
 
-function toggleLive(): void {
-  if (live.value) {
-    live.value = false
+// 每 5 秒取一次最新一页。停在顶部就直接换上；在读历史就只留着，不动读者眼前
+// 的列表，也不丢掉已经翻出来的更早日志。
+// Every five seconds, fetch the newest page. At the top it replaces the list;
+// in history it is only kept, so neither the lines in front of the reader nor
+// the older pages already loaded are disturbed.
+async function poll(): Promise<void> {
+  if (mode.value !== 'runtime' || polling || requesting.value || pendingLoad !== null) return
+  if (atTop.value) {
+    await load(true)
     return
   }
-  live.value = true
+  polling = true
+  const requestedLevel = level.value
+  try {
+    const page = await apiRequest<LogsResponse>(`/api/v1/logs?${logsParameters()}`)
+    if (requestedLevel === level.value) fresh.value = page
+  } catch (error) {
+    loadError.value = errorMessage(error)
+  } finally {
+    polling = false
+  }
+}
+
+function showNewLines(): void {
   void load()
 }
 
@@ -236,7 +283,7 @@ function download(): void {
 
 onMounted(async () => {
   await load()
-  timer = window.setInterval(() => { if (mode.value === 'runtime' && live.value) void load(true) }, 5000)
+  timer = window.setInterval(() => { void poll() }, 5000)
 })
 onBeforeUnmount(() => window.clearInterval(timer))
 </script>
@@ -254,18 +301,14 @@ onBeforeUnmount(() => window.clearInterval(timer))
         <div class="log-seg" role="group" aria-label="日志级别">
           <button v-for="option in levelOptions" :key="option.value" type="button" :class="{ 'is-on': level === option.value }" :aria-pressed="level === option.value" @click="level = option.value">{{ option.label }}</button>
         </div>
-        <!-- 运行日志没有单独的刷新键。实时开着时它每 5 秒就刷一次，按一下最多早
-             拿到 5 秒的日志；实时停着时按它更糟——load() 会丢掉已经翻出来的历史、
-             把视图弹回顶部，却不恢复实时，等于把你正在读的位置作废还什么也没换来。
-             要最新的就按「已暂停」恢复实时，那一下本来就会立刻取一次。
+        <!-- 运行日志没有刷新键，也没有实时开关。停在顶部时新日志每 5 秒自己进来；
+             往下读历史时它们攒在列表上方的提示条里，点一下才放进来并回到顶部。
+             刷新键在这两种情况下都换不来任何东西。
 
-             The runtime log has no separate refresh. With live on it already
-             refreshes every five seconds, so pressing it buys at most five
-             seconds; with live off it is worse than useless — load() discards
-             the history paged in, snaps the view back to the top and does not
-             resume live, throwing away the reader's place for nothing. Resuming
-             live is the way to get the newest lines, and it fetches at once. -->
-        <button class="button button--secondary" type="button" :class="{ 'button--active': live }" :disabled="requesting" @click="toggleLive"><Pause v-if="live" :size="16" /><Play v-else :size="16" />{{ live ? '实时' : '已暂停' }}</button>
+             The runtime log has neither a refresh button nor a live switch. At
+             the top new lines arrive on their own every five seconds; in history
+             they wait in the banner above the list and come in, back at the top,
+             when it is pressed. A refresh button would buy nothing in either case. -->
         <button class="icon-button" type="button" title="下载筛选结果" :disabled="filtered.length === 0" @click="download"><Download :size="18" /></button>
       </header>
       <header v-else class="log-toolbar">
@@ -276,8 +319,6 @@ onBeforeUnmount(() => window.clearInterval(timer))
         <button class="icon-button" type="button" title="刷新审计记录" :disabled="auditRequesting" @click="loadAudit()"><RefreshCw :size="18" :class="{ spin: auditLoading }" /></button>
         <button class="icon-button" type="button" title="下载筛选结果" :disabled="filteredAudit.length === 0" @click="download"><Download :size="18" /></button>
       </header>
-      <div v-if="mode === 'runtime'" class="log-summary"><span>{{ filtered.length }} / {{ entries.length }} 条{{ runtimeCursor !== null ? '，向下滚动加载更早日志' : '' }}</span><span><i :class="live ? 'status-dot' : 'status-dot status-dot--muted'"></i>{{ live ? '最新日志在顶部，每 5 秒刷新' : '浏览历史时自动暂停' }}</span></div>
-      <div v-else class="log-summary"><span>{{ filteredAudit.length }} / {{ auditEvents.length }} 条</span><span>最多保留 10,000 条操作记录</span></div>
       <!-- 常驻、不是错误：日志页本身没坏，是 journald 看不到这个 unit 的输出——
            unit 不存在，或它的输出没送到 journald。句子由服务端拼好，原样展示；
            不提示的话页面看着一切正常，只是永远没有 KixDNS 自己的一行。
@@ -288,6 +329,7 @@ onBeforeUnmount(() => window.clearInterval(timer))
            from KixDNS itself. -->
       <p v-if="mode === 'runtime' && notice !== null" class="log-notice" role="status">{{ notice }}</p>
       <div v-if="mode === 'runtime'" ref="runtimeStream" class="log-stream" @scroll="handleRuntimeScroll">
+        <button v-if="newLinesLabel !== null" class="log-new-lines" type="button" :disabled="requesting" @click="showNewLines"><RefreshCw v-if="loading" :size="14" class="spin" /><ArrowUp v-else :size="14" />{{ loading ? '正在加载' : newLinesLabel }}</button>
         <div v-for="({ entry, segments }, index) in lines" :key="`${entry.timestamp_unix_micros}-${index}`" class="log-line" :class="levelClass(entry.priority)">
           <time>{{ timestamp(entry.timestamp_unix_micros) }}</time>
           <span class="log-sr-only">{{ label(entry.priority) }}</span>

@@ -111,7 +111,7 @@ code, .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monosp
 .button--primary { color: #fff; background: var(--ink); border-color: var(--ink); }
 .button--primary:hover:not(:disabled) { background: #29332e; border-color: #29332e; }
 .button--secondary { color: #3e4749; background: #fff; border-color: #d5dcda; }
-.button--secondary:hover:not(:disabled), .button--active { color: var(--green-dark); background: #f3f8f5; border-color: #a9cdbb; }
+.button--secondary:hover:not(:disabled) { color: var(--green-dark); background: #f3f8f5; border-color: #a9cdbb; }
 /* 实心红只给不可撤销的确认：红色在这个面板里表示「回不去了」，
    可回退的操作用普通主按钮，别把这个信号用掉。
    Solid red is reserved for irreversible confirmations: red here means "there
@@ -418,13 +418,16 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .log-seg button:hover { color: var(--ink); }
 .log-seg button.is-on { color: var(--d-ink); background: var(--ink); font-weight: 600; }
 
-.log-summary { height: 34px; display: flex; align-items: center; justify-content: space-between; padding: 0 13px; color: var(--muted); background: var(--canvas); border-bottom: 1px solid var(--line); font-size: 12px; }
-.log-summary span { display: flex; align-items: center; gap: 7px; }
 /* 常驻提示，和摘要行同一套底色与文字色：它说明的是一种状态，不是一个错误。
    A persistent notice in the summary row's own colours: it describes a state,
    not an error. */
 .log-notice { margin: 0; padding: var(--s-2) var(--s-3); color: var(--muted); background: var(--canvas); border-bottom: 1px solid var(--line); font-size: var(--t-1); line-height: var(--lh-base); overflow-wrap: anywhere; }
-.log-stream { height: calc(100vh - 276px); min-height: 420px; overflow: auto; padding: 5px 0 14px; font-family: var(--mono); }
+/* position 让列表成为行内读屏标签（.log-sr-only 是绝对定位）的包含块：不然那些
+   标签不受列表的滚动裁剪，按各自在长列表里的位置把整页撑出一大段空白。
+   position makes the list the containing block of the per-line screen-reader
+   labels (.log-sr-only is absolutely positioned); otherwise they escape the
+   list's scroll clipping and stretch the page by the length of the whole list. */
+.log-stream { position: relative; height: calc(100vh - 299px); min-height: 420px; overflow: auto; padding: 5px 0 14px; font-family: var(--mono); }
 .log-line { min-width: 720px; display: grid; grid-template-columns: 90px 88px minmax(0, 1fr); gap: 10px; align-items: baseline; padding: 5px 13px 5px 10px; border-left: 3px solid transparent; color: var(--ink); font-size: 12px; line-height: 1.45; }
 .log-line:hover { background: var(--canvas); }
 .log-line time { color: var(--muted); }
@@ -444,6 +447,20 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .audit-line code { overflow: hidden; color: var(--ink); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .audit-load-more, .runtime-load-more { width: 100%; min-height: 42px; display: flex; align-items: center; justify-content: center; gap: 6px; color: var(--ink); background: transparent; border: 0; border-top: 1px solid var(--line); font-size: 12px; }
 .audit-load-more:hover:not(:disabled), .runtime-load-more:hover:not(:disabled) { background: var(--canvas); }
+/* 新日志提示条和底部的「加载更早日志」上下对称：同样通栏、同样的字，吸在列表顶端，
+   读者往下读多远都看得到。
+   The new-lines banner mirrors the load-older band at the bottom: full width,
+   the same type, stuck to the top of the list so it stays in view however far
+   down the reader is. top 抵掉 .log-stream 的 5px 上内边距：sticky 按内边距
+   里侧吸附，不抵掉的话会有一条日志从它上面露出来。
+   top cancels .log-stream's 5px top padding: sticky holds inside the padding,
+   and without it a sliver of a line shows above the banner. */
+.log-new-lines { position: sticky; top: -5px; left: 0; z-index: 1; width: 100%; min-height: var(--s-6); display: flex; align-items: center; justify-content: center; gap: var(--s-1); color: var(--ink); background: var(--surface); border: 0; border-bottom: 1px solid var(--line); font-family: var(--f-body); font-size: var(--t-1); font-weight: var(--w-bold); }
+.log-new-lines:hover:not(:disabled) { background: var(--canvas); }
+/* 它盖在日志行上面，禁用时不能跟着全局规则变半透明，否则底下的行会透出来。
+   It sits over the log lines, so it must not turn translucent with the global
+   disabled rule or the lines underneath show through. */
+.log-new-lines:disabled { cursor: progress; opacity: 1; }
 
 /* 服务状态压成一行：这页最上面的东西只需要回答「在不在跑」和「要不要动它」。
    The service line is one row: the top of this page only has to answer whether
@@ -796,18 +813,20 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
   .editor-footer { align-items: stretch; flex-direction: column; gap: 8px; }
   .validation-state span { white-space: normal; }
   .editor-footer input { width: 100%; }
-  /* 搜索框和两个操作键同一行，分段控件独占第二行。两个页签恰好都是两个键。
-     Search and the two actions share the first row and the segmented control
-     gets the second to itself. Both tabs happen to carry exactly two actions. */
+  /* 搜索框和操作键同一行，分段控件独占第二行。审计有两个键，运行日志只有下载一个。
+     Search and the actions share the first row and the segmented control gets
+     the second to itself. The audit tab carries two actions, the runtime tab
+     only the download. */
   .log-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px; padding-inline: 10px; }
+  .log-toolbar:not(:has(> :nth-child(4))) { grid-template-columns: minmax(0, 1fr) auto; }
   .log-view-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); padding-inline: 8px; }
   /* 收紧工具栏、搜索框和输入框的内边距，让审计页最长的占位提示在 375 下完整显示。
      Tighter toolbar, field and input padding so the audit tab's longest
      placeholder fits whole at 375. */
   .search-field { max-width: none; gap: 6px; padding-inline: 8px; }
   .search-field input { padding-inline: 0; }
-  .log-toolbar .button { min-width: 78px; }
-  .log-stream { height: calc(100vh - 336px); min-height: 350px; }
+  .log-stream { height: calc(100vh - 369px); min-height: 350px; }
+  .log-new-lines { min-height: 44px; }
   .log-line { min-width: 0; grid-template-columns: 90px minmax(0, 1fr); gap: 4px 8px; padding-block: 9px; }
   .log-line p { grid-column: 1 / -1; }
   /* 等宽格子，放不下就换行，绝不横向滚动：藏起滚动条的横向滚动会把「信息」「认证」

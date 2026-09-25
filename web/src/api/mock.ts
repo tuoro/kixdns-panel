@@ -30,6 +30,9 @@ import type {
 } from './types'
 
 const now = Math.floor(Date.now() / 1000)
+// 演示里已经「到来」的新日志行数，只在 kixdns:demo-log-growing 下增长。
+// New log lines that have "arrived" in the demo; grows only under kixdns:demo-log-growing.
+let demoLogArrivals = 0
 const auditEvents = [
   { id: 18, actor: 'admin', action: 'config.save', detail: '保存配置版本 #18', created_at: now - 430 },
   { id: 17, actor: 'admin', action: 'config.geo_data.sync', detail: '同步 Geo 数据：MMDB 1，GeoIP 0，GeoSite 1 个', created_at: now - 7200 },
@@ -776,19 +779,28 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
     if (pagedSlow) {
       await new Promise((resolve) => setTimeout(resolve, url.searchParams.has('level') ? 1500 : url.searchParams.has('before') ? 300 : 0))
     }
+    // 新日志持续到来，只在置上这个标记时演示：每取一次首屏就多出三行更新的日志，
+    // 位置记成负数，排在最新的一行之前。e2e 用它验证读历史时新日志先攒进提示条。
+    // Lines keep arriving only under this flag: every first-page fetch adds three
+    // newer lines at negative positions, ahead of the newest one. The e2e uses it
+    // to check that new lines wait in the banner while the reader is in history.
+    const growing = typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-log-growing') === 'true'
+    if (growing && !url.searchParams.has('before')) demoLogArrivals += 3
     const total = pagedSlow ? 120 : 80
     const pageSize = 80
     const before = Number(url.searchParams.get('before'))
-    const after = Number.isFinite(before) && url.searchParams.has('before') ? before : -1
-    const matching = Array.from({ length: total }, (_, position) => ({
+    const after = Number.isFinite(before) && url.searchParams.has('before') ? before : -Infinity
+    const matching = Array.from({ length: total + demoLogArrivals }, (_, index) => index - demoLogArrivals).map((position) => ({
       position,
       entry: {
         timestamp_unix_micros: (now - position * 18) * 1_000_000,
-        priority: position % 17 === 0 ? 4 : 6,
+        priority: position >= 0 && position % 17 === 0 ? 4 : 6,
         source: 'kixdns',
-        message: position % 17 === 0
-          ? 'upstream request timed out, continuing with next configured resolver'
-          : `request completed pipeline=default transport=udp elapsed_ms=${8 + (position % 14)}`,
+        message: position < 0
+          ? `request completed pipeline=default transport=tcp elapsed_ms=${6 + (-position % 5)}`
+          : position % 17 === 0
+            ? 'upstream request timed out, continuing with next configured resolver'
+            : `request completed pipeline=default transport=udp elapsed_ms=${8 + (position % 14)}`,
       },
     })).filter(({ position, entry }) => position > after && inLevel(entry.priority))
     const pageItems = matching.slice(0, pageSize)
