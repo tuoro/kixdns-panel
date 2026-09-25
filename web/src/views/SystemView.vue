@@ -89,6 +89,14 @@ const PANEL_UPDATE_DISMISSED_KEY = 'kixdns:panel-update-failure-dismissed'
 const dismissedPanelUpdateFailure = ref(readDismissedPanelUpdateFailure())
 
 const running = computed(() => service.value?.active_state === 'active')
+// 「正在运行 · active/running」「已停止 · inactive/dead」是同一件事说两遍；只有启动中、
+// 自动重启这类不寻常的状态，systemd 的原始写法才多带了信息。
+// "正在运行 · active/running" and "已停止 · inactive/dead" say one thing twice; only
+// unusual states such as activating or auto-restart carry information in systemd's own words.
+const unusualServiceState = computed(() => {
+  const state = service.value ? `${service.value.active_state}/${service.value.sub_state}` : ''
+  return state && !['active/running', 'inactive/dead'].includes(state) ? state : ''
+})
 const installed = computed(() => catalog.value?.binary_present === true)
 const activeVersion = computed(() => catalog.value?.installed_versions.find((item) => item.active) ?? null)
 const loadError = computed(() => [serviceError.value, versionsError.value].filter(Boolean).join('；'))
@@ -511,7 +519,7 @@ onBeforeUnmount(() => {
           <span class="ui-mono">{{ service.unit }}</span>
           <span>{{ running ? '正在运行' : '已停止' }}</span>
           <template v-if="service.main_pid"><span class="ui-sep">·</span><span>PID <span class="ui-mono">{{ service.main_pid }}</span></span></template>
-          <span class="ui-sep">·</span><span class="ui-mono">{{ service.active_state }}/{{ service.sub_state }}</span>
+          <template v-if="unusualServiceState"><span class="ui-sep">·</span><span class="ui-mono">{{ unusualServiceState }}</span></template>
         </template>
         <span v-else-if="loadingService" class="sk system-skeleton-meta" role="status" aria-label="读取服务状态"></span>
         <span v-else>服务状态暂不可用</span>
