@@ -756,6 +756,7 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .install-hashes { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: var(--s-4); padding-top: var(--s-3); border-top: 1px solid var(--l-hair); }
 .credential-form { display: flex; align-items: center; gap: var(--s-2); }
 .credential-input { flex: 1; }
+.credential-hint { max-width: 36em; margin: var(--s-3) 0 0; color: var(--l-ink-3); font-size: var(--t-2); line-height: var(--lh-base); }
 .credential-eye { width: var(--h-sm); height: var(--h-sm); flex: 0 0 auto; display: grid; place-items: center; margin-right: calc(var(--s-2) * -1); padding: 0; border: 0; border-radius: var(--r-1); background: transparent; color: var(--l-ink-3); cursor: pointer; }
 .credential-eye:hover { color: var(--l-ink); background: var(--l-sunk); }
 .version-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: 1px solid var(--l-hair); }
