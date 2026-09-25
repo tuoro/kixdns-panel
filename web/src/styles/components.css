@@ -1,0 +1,198 @@
+/* ============================================================
+   「安静的账本」组件
+   一样东西只有一种画法：页面改版时只用这里的零件拼，零件不够先补零件。
+   这里只许引用 tokens.css 的变量，棘轮会数出任何字面量。
+   One drawing per concept: redesigned pages are assembled from these parts
+   only, and a missing part is added here first. Only tokens.css variables
+   are allowed here; the ratchet counts any literal.
+   ============================================================ */
+
+/* ---------- 页头：标题就是导航名，下面一行事实，右边最多一个主操作 ---------- */
+.ui-ph { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-4); align-items: center; }
+.ui-ph__title { margin: 0; color: var(--l-ink); font-size: var(--t-5); font-weight: var(--w-bold); line-height: var(--lh-tight); }
+.ui-ph__meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-1) var(--s-2); margin-top: var(--s-2); color: var(--l-ink-2); font-size: var(--t-2); }
+.ui-ph__meta:empty { display: none; }
+.ui-ph__actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--s-2); }
+.ui-sep { color: var(--l-line-strong); }
+
+/* ---------- 状态点 ---------- */
+.ui-dot { width: var(--size-dot); height: var(--size-dot); flex: 0 0 auto; display: inline-block; border-radius: var(--r-full); background: var(--ok-mark-l); }
+.ui-dot--warn { background: var(--warn-l); }
+.ui-dot--err { background: var(--err-l); }
+.ui-dot--off { background: var(--l-ink-3); }
+
+/* ---------- 控件高度：同一行里的控件一样高 ----------
+   页头、工具栏、表单里的按钮、图标按钮、分段、输入框都是 36（手机 44）；
+   列表行和状态胶囊里的都是 30（手机 36），用 --sm。同一行里不混两种。
+   Control height: every control in a row is the same height. Page headers,
+   toolbars and forms use 36 (44 on a phone) for buttons, icon buttons,
+   segmented controls and inputs alike; list rows and status capsules use 30
+   (36 on a phone) through the --sm variants. A row never mixes the two. */
+
+/* ---------- 按钮：主要、次要、文字、危险 ---------- */
+.ui-btn { min-height: var(--h-md); display: inline-flex; align-items: center; justify-content: center; gap: var(--s-2); padding: 0 var(--s-3); border: 1px solid transparent; border-radius: var(--r-2); font-size: var(--t-3); font-weight: var(--w-bold); line-height: var(--lh-tight); white-space: nowrap; cursor: pointer; transition: background-color var(--m-quick) var(--ease-out), border-color var(--m-quick) var(--ease-out), color var(--m-quick) var(--ease-out), transform var(--m-quick) var(--ease-out); }
+.ui-btn:active:not(:disabled) { transform: scale(.98); }
+.ui-btn:disabled { cursor: not-allowed; opacity: .42; }
+.ui-btn--primary { color: var(--d-ink); background: var(--l-ink); }
+.ui-btn--primary:hover:not(:disabled) { background: var(--d-raise-2); }
+.ui-btn--secondary { color: var(--l-ink); background: var(--l-surface); border-color: var(--l-line-strong); }
+.ui-btn--secondary:hover:not(:disabled) { background: var(--l-canvas); }
+.ui-btn--text { padding-inline: var(--s-2); color: var(--l-ink-2); background: transparent; font-weight: var(--w-medium); }
+.ui-btn--text:hover:not(:disabled) { color: var(--l-ink); background: var(--l-sunk); }
+.ui-btn--danger { color: var(--err-l); background: var(--l-surface); border-color: var(--err-line-l); }
+.ui-btn--danger:hover:not(:disabled) { background: var(--err-tint-l); }
+.ui-btn--sm { min-height: var(--h-sm); padding-inline: var(--s-3); font-size: var(--t-2); }
+.ui-icon-btn { width: var(--h-md); height: var(--h-md); flex: 0 0 auto; display: inline-grid; place-items: center; padding: 0; border: 0; border-radius: var(--r-2); background: transparent; color: var(--l-ink-2); cursor: pointer; transition: background-color var(--m-quick) var(--ease-out), color var(--m-quick) var(--ease-out); }
+.ui-icon-btn:hover:not(:disabled) { color: var(--l-ink); background: var(--l-sunk); }
+.ui-icon-btn:disabled { cursor: not-allowed; opacity: .42; }
+.ui-icon-btn--sm { width: var(--h-sm); height: var(--h-sm); }
+.ui-link { display: inline-flex; align-items: center; gap: var(--s-1); color: var(--ok-l); font-size: var(--t-2); text-decoration: none; white-space: nowrap; }
+.ui-link:hover { color: var(--ok-l-deep); text-decoration: underline; text-underline-offset: 3px; }
+
+/* ---------- 输入框：和同一行的按钮一样高 ---------- */
+.ui-input { min-height: var(--h-md); display: flex; align-items: center; gap: var(--s-2); min-width: 0; padding: 0 var(--s-3); border: 1px solid var(--l-line-strong); border-radius: var(--r-2); background: var(--l-surface); color: var(--l-ink-3); }
+.ui-input:focus-within { border-color: var(--l-ink); }
+.ui-input input { min-width: 0; flex: 1; padding: 0; border: 0; outline: 0; background: transparent; color: var(--l-ink); font-size: var(--t-3); }
+.ui-input--sm { min-height: var(--h-sm); }
+
+/* ---------- 区块页签（下划线）与筛选分段（下沉轨道 + 凸起块）：指示块滑过去 ---------- */
+.ui-tabs { position: relative; display: flex; gap: var(--s-6); border-bottom: 1px solid var(--l-hair); }
+.ui-tabs__tab { position: relative; padding: 0 0 var(--s-3); border: 0; background: transparent; color: var(--l-ink-2); font-size: var(--t-3); font-weight: var(--w-medium); white-space: nowrap; cursor: pointer; transition: color var(--m-quick) var(--ease-out); }
+.ui-tabs__tab:hover, .ui-tabs__tab[aria-selected="true"] { color: var(--l-ink); }
+.ui-tabs__tab[aria-selected="true"] { font-weight: var(--w-bold); }
+.ui-tabs__ind { position: absolute; bottom: -1px; left: 0; width: 0; height: 0; border-top: 2px solid var(--ok-l); pointer-events: none; transition: transform var(--m-base) var(--ease-out), width var(--m-base) var(--ease-out); }
+.ui-seg { position: relative; display: inline-flex; padding: 2px; border-radius: var(--r-2); background: var(--l-sunk); }
+.ui-seg__opt { position: relative; z-index: 1; min-height: calc(var(--h-md) - 4px); display: inline-flex; align-items: center; justify-content: center; gap: var(--s-1); padding: 0 var(--s-3); border: 0; border-radius: var(--r-1); background: transparent; color: var(--l-ink-2); font-size: var(--t-2); font-weight: var(--w-medium); white-space: nowrap; cursor: pointer; transition: color var(--m-quick) var(--ease-out); }
+.ui-seg__opt:hover, .ui-seg__opt[aria-pressed="true"] { color: var(--l-ink); }
+.ui-seg__opt[aria-pressed="true"] { font-weight: var(--w-bold); }
+.ui-seg__opt:disabled { cursor: not-allowed; opacity: .42; }
+.ui-seg--sm .ui-seg__opt { min-height: calc(var(--h-sm) - 4px); padding-inline: var(--s-2); }
+.ui-seg__ind { position: absolute; top: 2px; bottom: 2px; left: 0; width: 0; border-radius: var(--r-1); background: var(--l-surface); box-shadow: var(--shadow-raise); pointer-events: none; transition: transform var(--m-base) var(--ease-out), width var(--m-base) var(--ease-out); }
+
+/* ---------- 卡片：只给能作为一个整体操作的东西；卡片不套卡片 ---------- */
+.ui-card { min-width: 0; background: var(--l-surface); border: 1px solid var(--l-hair); border-radius: var(--r-3); }
+.ui-card__head { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-3); align-items: center; padding: var(--s-4) var(--s-5); }
+.ui-card__title { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); margin: 0; color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-bold); line-height: var(--lh-base); }
+.ui-card__desc { margin: var(--s-1) 0 0; color: var(--l-ink-3); font-size: var(--t-2); }
+.ui-card__actions { display: flex; align-items: center; gap: var(--s-2); }
+.ui-card__body { padding: 0 var(--s-5) var(--s-4); }
+.ui-card__foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-2) var(--s-4); padding: var(--s-3) var(--s-5); border-top: 1px solid var(--l-hair); border-radius: 0 0 var(--r-3) var(--r-3); background: var(--l-canvas); color: var(--l-ink-3); font-size: var(--t-2); }
+
+/* ---------- 区块：只是展示的数据，标题行加一条细线，没有边框和底色 ---------- */
+.ui-section { display: grid; gap: var(--s-3); padding-top: var(--s-5); border-top: 1px solid var(--l-hair); }
+.ui-section__head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--s-1) var(--s-4); }
+.ui-section__title { margin: 0; color: var(--l-ink); font-size: var(--t-4); font-weight: var(--w-bold); }
+.ui-section__aside { color: var(--l-ink-3); font-size: var(--t-2); }
+
+/* ---------- 键值行（名称在左、值在右）与数据条（五个以内的短值横排） ---------- */
+.ui-kv { display: grid; margin: 0; }
+.ui-kv > div { display: grid; grid-template-columns: minmax(0, auto) minmax(0, 1fr); gap: var(--s-4); align-items: baseline; padding: var(--s-2) 0; border-bottom: 1px solid var(--l-hair); }
+.ui-kv > div:last-child { border-bottom: 0; }
+.ui-kv dt { color: var(--l-ink-3); font-size: var(--t-2); }
+.ui-kv dd { margin: 0; color: var(--l-ink); font-size: var(--t-3); text-align: right; overflow-wrap: anywhere; }
+.ui-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: var(--s-3) var(--s-5); margin: 0; }
+.ui-strip dt { color: var(--l-ink-3); font-size: var(--t-1); }
+.ui-strip dd { margin: var(--s-1) 0 0; color: var(--l-ink); font-size: var(--t-3); overflow-wrap: anywhere; }
+.ui-mono { font-family: var(--mono); font-size: var(--t-2); letter-spacing: 0; }
+
+/* ---------- 标签：一种样子；只有表达状态的才带底色 ---------- */
+.ui-tag { min-height: var(--h-tag); display: inline-flex; align-items: center; padding: 0 var(--s-2); border: 1px solid var(--l-hair); border-radius: var(--r-1); color: var(--l-ink-2); font-size: var(--t-1); font-weight: var(--w-medium); line-height: var(--lh-tight); white-space: nowrap; }
+.ui-tag--mono { font-family: var(--mono); }
+.ui-tag--ok { color: var(--ok-l); background: var(--ok-tint-l); border-color: var(--ok-line-l); }
+.ui-tag--warn { color: var(--warn-l); background: var(--warn-tint-l); border-color: var(--warn-line-l); }
+.ui-tag--err { color: var(--err-l); background: var(--err-tint-l); border-color: var(--err-line-l); }
+
+/* ---------- 记录行：名称和标签在左，数字列右对齐，操作在最右；手机上两行 ---------- */
+.ui-rec, .ui-rec-head { display: grid; grid-template-columns: var(--rec-cols, minmax(0, 1fr) auto); gap: var(--s-4); align-items: center; }
+.ui-rec { min-height: var(--h-touch); padding: var(--s-2) 0; border-bottom: 1px solid var(--l-hair); }
+.ui-rec:last-child { border-bottom: 0; }
+.ui-rec-head { padding-bottom: var(--s-2); border-bottom: 1px solid var(--l-hair); color: var(--l-ink-3); font-size: var(--t-1); }
+.ui-rec-head > :not(:first-child), .ui-rec__n { text-align: right; font-variant-numeric: tabular-nums; }
+.ui-rec__name { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-1) var(--s-2); min-width: 0; }
+.ui-rec__meta { display: flex; flex-wrap: wrap; gap: 2px var(--s-3); margin-top: 2px; color: var(--l-ink-3); font-size: var(--t-1); }
+.ui-rec__act { display: flex; align-items: center; justify-content: flex-end; gap: var(--s-1); }
+.ui-rec__phone { display: none; }
+.ui-rec--current { margin-inline: calc(var(--s-5) * -1); padding-inline: calc(var(--s-5) - 3px) var(--s-5); background: var(--ok-tint-l); box-shadow: var(--shadow-mark-ok); }
+
+/* ---------- 状态胶囊：要等几秒的操作 ---------- */
+.ui-task { display: grid; grid-template-columns: var(--h-sm) minmax(0, 1fr) auto; gap: var(--s-3); align-items: center; padding: var(--s-3) 0; border-bottom: 1px solid var(--l-hair); }
+.ui-task:last-child { border-bottom: 0; }
+.ui-task__icon { width: var(--h-sm); height: var(--h-sm); display: grid; place-items: center; border-radius: var(--r-full); background: var(--l-sunk); color: var(--l-ink-2); }
+.ui-task[data-state="run"] .ui-task__icon { background: var(--l-surface); box-shadow: var(--shadow-ring); }
+.ui-task[data-state="done"] .ui-task__icon { background: var(--ok-tint-l); color: var(--ok-l); }
+.ui-task[data-state="fail"] .ui-task__icon { background: var(--err-tint-l); color: var(--err-l); }
+.ui-task__title { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-1) var(--s-2); color: var(--l-ink); font-weight: var(--w-bold); }
+.ui-task__meta { display: flex; flex-wrap: wrap; gap: 2px var(--s-3); margin-top: 2px; color: var(--l-ink-3); font-size: var(--t-1); }
+.ui-task[data-state="fail"] .ui-task__meta { color: var(--err-l); }
+.ui-task__actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--s-2); }
+.ui-task__bar { grid-column: 2 / -1; height: var(--s-1); overflow: hidden; border-radius: var(--r-full); background: var(--l-sunk); }
+.ui-task__bar > i { display: block; width: 0; height: 100%; background: var(--l-ink); transition: width var(--m-slow) linear; }
+.ui-spin { width: var(--s-4); height: var(--s-4); border: 2px solid var(--l-hair); border-top-color: var(--l-ink); border-radius: var(--r-full); animation: ui-spin var(--m-spin) linear infinite; }
+@keyframes ui-spin { to { transform: rotate(360deg); } }
+.ui-check path { stroke-dasharray: 20; stroke-dashoffset: 20; animation: ui-draw var(--m-emph) var(--ease-out) forwards; }
+@keyframes ui-draw { to { stroke-dashoffset: 0; } }
+.ui-swap { display: inline-block; animation: ui-swap var(--m-quick) var(--ease-out); }
+@keyframes ui-swap { from { opacity: 0; transform: translateY(var(--move-1)); } }
+
+/* ---------- 数字：变化时只有变了的那几位弹入 ---------- */
+.ui-num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ui-num__digit { display: inline-block; }
+.ui-num__digit--pop { animation: ui-pop var(--m-emph) var(--ease-pop); }
+@keyframes ui-pop { from { opacity: 0; transform: translateY(var(--move-2)); } }
+
+/* ---------- 新数据提示条：吸在列表顶端，点了才放进来 ---------- */
+.ui-banner { position: sticky; top: 0; left: 0; z-index: 1; width: 100%; min-height: var(--h-md); display: flex; align-items: center; justify-content: center; gap: var(--s-1); padding: 0 var(--s-3); border: 0; border-bottom: 1px solid var(--l-hair); background: var(--l-surface); color: var(--l-ink); font-family: var(--f-body); font-size: var(--t-1); font-weight: var(--w-bold); cursor: pointer; animation: ui-drop var(--m-base) var(--ease-out); }
+.ui-banner:hover:not(:disabled) { background: var(--l-canvas); }
+.ui-banner:disabled { cursor: progress; }
+@keyframes ui-drop { from { opacity: 0; transform: translateY(calc(var(--move-2) * -1)); } }
+
+/* ---------- 空状态：一个图标、一句标题、一句说明、最多一个次要按钮 ---------- */
+.ui-empty { display: grid; justify-items: center; gap: var(--s-2); padding: var(--s-7) var(--s-4); text-align: center; }
+.ui-empty__icon { width: var(--s-7); height: var(--s-7); display: grid; place-items: center; margin-bottom: var(--s-1); border-radius: var(--r-full); background: var(--l-sunk); color: var(--l-ink-2); }
+.ui-empty__title { margin: 0; color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-bold); }
+.ui-empty__desc { max-width: 28em; margin: 0; color: var(--l-ink-3); font-size: var(--t-2); line-height: var(--lh-base); }
+
+/* ---------- 手机：能点的东西至少 44，宽表格变两行，页头操作换行 ---------- */
+@media (max-width: 640px) {
+  .ui-ph--stack { grid-template-columns: minmax(0, 1fr); }
+  .ui-ph--stack .ui-ph__actions { justify-content: stretch; }
+  .ui-ph--stack .ui-ph__actions > * { flex: 1; }
+  .ui-btn { min-height: var(--h-touch); }
+  .ui-btn--sm { min-height: var(--h-md); }
+  .ui-icon-btn { width: var(--h-touch); height: var(--h-touch); }
+  .ui-icon-btn--sm { width: var(--h-md); height: var(--h-md); }
+  .ui-tabs { gap: 0; }
+  .ui-tabs__tab { flex: 1; min-height: var(--h-touch); padding-bottom: 0; text-align: center; }
+  .ui-seg { display: flex; }
+  .ui-seg__opt { flex: 1; min-height: calc(var(--h-touch) - 4px); padding-inline: var(--s-1); }
+  .ui-seg--sm .ui-seg__opt { min-height: calc(var(--h-md) - 4px); }
+  .ui-input { min-height: var(--h-touch); }
+  .ui-input--sm { min-height: var(--h-md); }
+  /* 全局给手机上的输入框设了 44 的最小高度（和 16px 字号，防 iPhone 放大）；
+     这里外框已经是 44，里面的输入框再撑 44 会比同一行的按钮高出边框那 2 像素。
+     The global mobile rule gives inputs a 44 minimum height (and 16px type to
+     stop iPhone zoom); the frame here is already 44, so the inner input must
+     not add the frame's 2px border on top of the buttons beside it. */
+  .app-shell .ui-input input:not([type="checkbox"]):not([type="radio"]) { min-height: 0; }
+  .ui-card__head { padding: var(--s-3) var(--s-4); }
+  .ui-card__body { padding: 0 var(--s-4) var(--s-3); }
+  .ui-card__foot { padding: var(--s-3) var(--s-4); }
+  .ui-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ui-rec, .ui-rec-head { --rec-cols: minmax(0, 1fr) auto; }
+  .ui-rec-head, .ui-rec__n { display: none; }
+  .ui-rec__phone { display: flex; grid-column: 1 / -1; }
+  .ui-rec--current { margin-inline: calc(var(--s-4) * -1); padding-inline: calc(var(--s-4) - 3px) var(--s-4); }
+  .ui-task { grid-template-columns: var(--h-sm) minmax(0, 1fr); }
+  .ui-task__actions { grid-column: 2; justify-content: flex-start; }
+  .ui-banner { min-height: var(--h-touch); }
+}
+
+/* 系统开了「减少动态效果」：去掉位移和缩放，只留颜色和透明度
+   Reduced motion: no travel or scale, only colour and opacity change */
+@media (prefers-reduced-motion: reduce) {
+  .ui-tabs__ind, .ui-seg__ind { transition: none; }
+  .ui-btn:active:not(:disabled) { transform: none; }
+  .ui-num__digit--pop, .ui-banner, .ui-swap { animation: none; }
+  .ui-check path { animation: none; stroke-dashoffset: 0; }
+  .ui-spin { animation-duration: calc(var(--m-spin) * 3); }
+}

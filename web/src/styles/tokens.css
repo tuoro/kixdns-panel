@@ -66,6 +66,7 @@
   --l-surface: #ffffff;  /* 面板 */
   --l-sunk:    #eceee8;  /* 下沉块、悬停底 */
   --l-hair:    #dfe4e2;  /* 分隔线 */
+  --l-line-strong: #d5dcda;  /* 控件边框：输入框、次要按钮 */
   /* 底纹网点。比分隔线深一档：分隔线是一条连续的线，看得见；
      网点是离散的小点，同样的明度铺开之后几乎消失，需要再压一档才成立。
      Texture dots, a step darker than the hairline: a hairline is a continuous
@@ -108,15 +109,18 @@
   --ok-l-deep: #104a2c;  /* 浅底：绿色文字的悬停态 */
   --ok-mark-l: #2f7d5c;  /* 浅底：健康状态点、进度条 */
   --ok-tint-l: #e8f3ed;  /* 浅底：成功区块底色 */
+  --ok-line-l: #cbe4d7;  /* 浅底：状态标签的边框 */
   --ok-d:      #4fae86;  /* 深底：健康 */
 
   --warn-l:      #b26b0c;
   --warn-tint-l: #fbf0de;
+  --warn-line-l: #edd8b0;
   --warn-d:      #d5a253;
 
   --err-l:      #b43a3a;
   --err-l-deep: #a03333;  /* 浅底：红色主按钮的悬停态 */
   --err-tint-l: #faeaea;
+  --err-line-l:  #ebcaca;  /* 浅底：危险按钮与状态标签的边框 */
   --err-d:      #d97a6b;
 
   /* ---------- 字体 ---------- */
@@ -130,12 +134,16 @@
   --h-sm: 30px;
   --h-md: 36px;
   --h-touch: 44px;
+  --h-tag: 20px;     /* 标签 / tag */
+  --size-dot: 7px;   /* 状态点 / status dot */
 
   /* ---------- 阴影：两档 ----------
      凸起：分段控件里选中的那一块。浮起：对话框、弹出层。
      Raise: the selected cell of a segmented control. Float: dialogs, popovers. */
   --shadow-raise: 0 1px 2px rgba(15, 20, 19, .12), 0 0 0 .5px rgba(15, 20, 19, .06);
   --shadow-float: 0 24px 70px rgba(13, 20, 17, .24);
+  --shadow-ring: inset 0 0 0 1px var(--l-hair);     /* 进行中的图标位 / icon slot while running */
+  --shadow-mark-ok: inset 3px 0 var(--ok-mark-l);    /* 当前那一行的左边线 / left rule of the current row */
 
   /* ---------- 动效刻度 ----------
      四档时长、三条曲线、三档位移，全站只用这些。关闭比打开快；回弹只给出现；
@@ -148,6 +156,7 @@
   --m-base: 250ms;   /* 打开、页签指示块、图标切换 / open, tab indicator, icon swap */
   --m-slow: 400ms;   /* 展开一行、骨架换内容 / expanding a row, skeleton to content */
   --m-emph: 500ms;   /* 数字弹入、完成对勾 / number pop-in, completion check */
+  --m-spin: 800ms;   /* 加载圈转一圈，不是界面过渡 / one spinner turn, not a transition */
   --ease-out: cubic-bezier(.22, 1, .36, 1);      /* 开合与位移 / opening, closing, moving */
   --ease-in-out: cubic-bezier(.65, 0, .35, 1);   /* 原地切换 / swapping in place */
   --ease-pop: cubic-bezier(.34, 1.36, .64, 1);   /* 只给出现 / entrances only */
