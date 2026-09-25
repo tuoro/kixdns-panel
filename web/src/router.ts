@@ -25,6 +25,9 @@ const router = createRouter({
         { path: 'logs', name: 'logs', component: () => import('./views/LogsView.vue'), meta: { auth: true, title: '运行日志' } },
         { path: 'diagnostics', name: 'diagnostics', component: () => import('./views/DiagnosticsView.vue'), meta: { auth: true, title: 'DNS 诊断' } },
         { path: 'system', name: 'system', component: () => import('./views/SystemView.vue'), meta: { auth: true, title: '系统与更新' } },
+        // 组件清单只在开发服务器里有，正式构建里这一项整个被摇掉
+        // The component sheet exists on the dev server only; the production build drops it
+        ...(import.meta.env.DEV ? [{ path: 'ui', name: 'ui-kit', component: () => import('./views/UiKitView.vue'), meta: { auth: true, title: '组件' } }] : []),
       ],
     },
     { path: '/:pathMatch(.*)*', redirect: '/' },
