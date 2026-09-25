@@ -749,6 +749,9 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .system-stale { color: var(--warn-l); overflow-wrap: anywhere; }
 .system-note { margin: 0 0 var(--s-2); color: var(--l-ink-3); font-size: var(--t-2); }
 .system-error { flex-basis: 100%; color: var(--err-l); overflow-wrap: anywhere; }
+.install-version { margin: 0; color: var(--l-ink); font-family: var(--mono); font-size: var(--t-5); font-weight: var(--w-bold); line-height: var(--lh-tight); overflow-wrap: anywhere; }
+.install-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-1) var(--s-2); margin: var(--s-2) 0 0; color: var(--l-ink-2); font-size: var(--t-2); }
+.install-hashes { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: var(--s-4); padding-top: var(--s-3); border-top: 1px solid var(--l-hair); }
 .credential-form { display: flex; align-items: center; gap: var(--s-2); }
 .credential-input { flex: 1; }
 .credential-eye { width: var(--h-sm); height: var(--h-sm); flex: 0 0 auto; display: grid; place-items: center; margin-right: calc(var(--s-2) * -1); padding: 0; border: 0; border-radius: var(--r-1); background: transparent; color: var(--l-ink-3); cursor: pointer; }
@@ -766,4 +769,8 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 }
 @media (max-width: 640px) {
   .version-columns > div { padding: 0 var(--s-4) var(--s-3); }
+  /* 手机上三个哈希竖排，名称在左、值靠右 / On a phone the three hashes stack, name left, value right */
+  .install-hashes { grid-template-columns: minmax(0, 1fr); gap: var(--s-2); }
+  .install-hashes > div { display: flex; justify-content: space-between; gap: var(--s-3); }
+  .install-hashes dd { margin: 0; }
 }

@@ -584,20 +584,33 @@ onBeforeUnmount(() => {
 
     <!-- 不需要现在动手的两块：当前装的是什么，和查更新用的凭据。 -->
     <div class="system-pair">
+      <!-- 「装的是哪个版本」是这张卡唯一常看的事，做主角；补丁集和控制协议是这个版本的附注；
+           三个哈希只在排查时看，收成细线下面的一行。原来七行一样轻重，读起来像一张表。
+           Which version is installed is the one thing read here, so it leads; the
+           patchset and control protocol qualify it; the three hashes matter only
+           when troubleshooting and share one row under a hairline. Seven rows of
+           equal weight used to read as a table. -->
       <UiCard class="runtime-panel" title="当前安装" desc="增强版运行时">
         <template v-if="catalog" #actions><span class="ui-tag" :class="installed ? 'ui-tag--ok' : 'ui-tag--warn'">{{ installed ? '已安装' : '尚未安装' }}</span></template>
         <div v-if="loadingVersions && !catalog" class="sk system-skeleton-panel" role="status" aria-label="读取安装状态"></div>
         <template v-else-if="catalog">
-          <p v-if="!installed" class="system-note">选择下方构建进行安装。</p>
-          <dl class="ui-kv">
-            <div><dt>当前版本</dt><dd class="ui-mono">{{ formatKixdnsVersion(activeVersion) }}</dd></div>
+          <p class="install-version">{{ installed ? formatKixdnsVersion(activeVersion) : '尚未安装' }}</p>
+          <p v-if="installed" class="install-meta">
+            <span>{{ activeVersion?.source === 'release' ? 'Release 轨道' : 'Action 轨道' }}</span>
+            <span class="ui-sep">·</span><span>补丁集 <span class="ui-mono">{{ activeVersion?.patchset ? `p${activeVersion.patchset}${activeVersion.dependency_revision ? `-r${activeVersion.dependency_revision}` : ''}` : '未记录' }}</span></span>
+            <span class="ui-sep">·</span><span>控制协议 <span class="ui-mono">{{ activeVersion?.control_protocol ? `v${activeVersion.control_protocol}` : '未记录' }}</span></span>
+          </p>
+          <p v-else class="install-meta">选择下方构建进行安装</p>
+          <dl class="ui-strip install-hashes">
             <div><dt>上游提交</dt><dd class="ui-mono">{{ activeVersion?.upstream_commit ? shortHash(activeVersion.upstream_commit, 12) : '未记录' }}</dd></div>
-            <div><dt>补丁集</dt><dd class="ui-mono">{{ activeVersion?.patchset ? `p${activeVersion.patchset}${activeVersion.dependency_revision ? `-r${activeVersion.dependency_revision}` : ''}` : '未记录' }}</dd></div>
             <div><dt>增强构建</dt><dd class="ui-mono">{{ shortHash(activeVersion?.commit ?? catalog.active_commit, 12) }}</dd></div>
-            <div><dt>控制协议</dt><dd class="ui-mono">{{ activeVersion?.control_protocol ? `v${activeVersion.control_protocol}` : '未记录' }}</dd></div>
             <div><dt>二进制摘要</dt><dd class="ui-mono">{{ shortHash(activeVersion?.binary_sha256, 14) }}</dd></div>
-            <div><dt>安装来源</dt><dd><a v-if="activeVersion?.source_url" class="ui-link" :href="activeVersion.source_url" target="_blank" rel="noopener noreferrer">上游详情<ExternalLink :size="12" /></a><span v-else>未记录</span></dd></div>
           </dl>
+        </template>
+        <template v-if="catalog && installed" #foot>
+          <span>{{ activeVersion?.source === 'release' ? '从 GitHub Release 安装' : '从 GitHub Actions 构建安装' }}</span>
+          <a v-if="activeVersion?.source_url" class="ui-link" :href="activeVersion.source_url" target="_blank" rel="noopener noreferrer">上游详情<ExternalLink :size="12" /></a>
+          <span v-else>来源未记录</span>
         </template>
       </UiCard>
 
