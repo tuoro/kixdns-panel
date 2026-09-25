@@ -3,6 +3,14 @@
    唯一事实来源。组件里不允许出现字面量色值、字号、圆角、间距。
    The single source of truth. No literal colours, sizes, radii or
    spacing in components.
+
+   2026-09 起颜色取已发布界面实际渲染的值：旧的短名字（--ink、--line、
+   --canvas…）在 styles.css 里改成指向这里的别名，页面改版时逐个换成这里
+   的名字，棘轮只许旧名字的引用变少。
+   From 2026-09 the colours are the values the released interface actually
+   renders. The old short names (--ink, --line, --canvas…) became aliases in
+   styles.css that point here; pages move to these names as they are
+   redesigned, and the ratchet only lets references to the old names shrink.
    ============================================================ */
 
 
@@ -54,10 +62,10 @@
   --r-full: 999px;
 
   /* ---------- 中性色：浅色面 ---------- */
-  --l-canvas:  #f5f7f3;  /* 工作区底 */
+  --l-canvas:  #fafbf9;  /* 工作区底 */
   --l-surface: #ffffff;  /* 面板 */
   --l-sunk:    #eceee8;  /* 下沉块、悬停底 */
-  --l-hair:    #e2e6df;  /* 分隔线 */
+  --l-hair:    #dfe4e2;  /* 分隔线 */
   /* 底纹网点。比分隔线深一档：分隔线是一条连续的线，看得见；
      网点是离散的小点，同样的明度铺开之后几乎消失，需要再压一档才成立。
      Texture dots, a step darker than the hairline: a hairline is a continuous
@@ -76,13 +84,13 @@
   --auth-glow:    #ffffff;  /* 亮池 */
   --auth-shade:   #b9c9bd;  /* 暗池 */
   --auth-shade-2: #a8bcae;  /* 最深的那一团 */
-  --l-ink:     #0f1413;  /* 主文字 */
+  --l-ink:     #111615;  /* 主文字 */
   --l-ink-2:   #45514d;  /* 次要文字 */
-  --l-ink-3:   #79847f;  /* 注释文字 */
+  --l-ink-3:   #697276;  /* 注释文字、次要说明 */
 
   /* ---------- 中性色：深色面 ----------
      深色壳用于顶栏、信号带、认证页。 */
-  --d-shell:   #0f1413;  /* 壳底 */
+  --d-shell:   #111615;  /* 壳底 */
   --d-raise:   #171d1c;  /* 壳上抬一层：输入框、头像 */
   --d-raise-2: #1f2726;  /* 再抬一层 */
   --d-hair:    #2a3331;  /* 深色面分隔线 */
@@ -96,18 +104,19 @@
      The same meaning needs different values on light and dark
      grounds, so they get different names. One name holding two
      values is the trap. */
-  --ok-l:      #15503a;  /* 浅底：健康、成功的文字与填充 */
+  --ok-l:      #17663e;  /* 浅底：健康、成功的文字与填充 */
+  --ok-l-deep: #104a2c;  /* 浅底：绿色文字的悬停态 */
   --ok-mark-l: #2f7d5c;  /* 浅底：健康状态点、进度条 */
-  --ok-tint-l: #e9f2ed;  /* 浅底：成功区块底色 */
+  --ok-tint-l: #e8f3ed;  /* 浅底：成功区块底色 */
   --ok-d:      #4fae86;  /* 深底：健康 */
 
-  --warn-l:      #b8791f;
-  --warn-tint-l: #fdf8ee;
+  --warn-l:      #b26b0c;
+  --warn-tint-l: #fbf0de;
   --warn-d:      #d5a253;
 
-  --err-l:      #b03f32;
+  --err-l:      #b43a3a;
   --err-l-deep: #a03333;  /* 浅底：红色主按钮的悬停态 */
-  --err-tint-l: #fcf0ee;
+  --err-tint-l: #faeaea;
   --err-d:      #d97a6b;
 
   /* ---------- 字体 ---------- */
@@ -115,7 +124,34 @@
   --f-body: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
   --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
 
-  /* ---------- 动效：两档 ---------- */
-  --e-fast: 160ms cubic-bezier(.22,.8,.3,1);   /* 悬停、底色变化 */
-  --e-enter: 1100ms cubic-bezier(.22,.8,.3,1); /* 入场，一次性 */
+  /* ---------- 控件高度 ----------
+     桌面常规 36，行内紧凑 30，手机上能点的东西至少 44。
+     36 on desktop, 30 inline, and at least 44 for anything tapped on a phone. */
+  --h-sm: 30px;
+  --h-md: 36px;
+  --h-touch: 44px;
+
+  /* ---------- 阴影：两档 ----------
+     凸起：分段控件里选中的那一块。浮起：对话框、弹出层。
+     Raise: the selected cell of a segmented control. Float: dialogs, popovers. */
+  --shadow-raise: 0 1px 2px rgba(15, 20, 19, .12), 0 0 0 .5px rgba(15, 20, 19, .06);
+  --shadow-float: 0 24px 70px rgba(13, 20, 17, .24);
+
+  /* ---------- 动效刻度 ----------
+     四档时长、三条曲线、三档位移，全站只用这些。关闭比打开快；回弹只给出现；
+     感觉慢就缩短时长，不加延迟。系统开了「减少动态效果」时只留颜色和透明度。
+     Four durations, three curves, three distances, and nothing else. Closing
+     is faster than opening; overshoot is for entrances only; if it feels slow,
+     shorten it rather than delay it. Under reduced motion only colour and
+     opacity change. */
+  --m-quick: 150ms;  /* 关闭、文字切换、悬停与按下 / close, text swap, hover and press */
+  --m-base: 250ms;   /* 打开、页签指示块、图标切换 / open, tab indicator, icon swap */
+  --m-slow: 400ms;   /* 展开一行、骨架换内容 / expanding a row, skeleton to content */
+  --m-emph: 500ms;   /* 数字弹入、完成对勾 / number pop-in, completion check */
+  --ease-out: cubic-bezier(.22, 1, .36, 1);      /* 开合与位移 / opening, closing, moving */
+  --ease-in-out: cubic-bezier(.65, 0, .35, 1);   /* 原地切换 / swapping in place */
+  --ease-pop: cubic-bezier(.34, 1.36, .64, 1);   /* 只给出现 / entrances only */
+  --move-1: 4px;   /* 文字切换 / text swap */
+  --move-2: 8px;   /* 数字、提示条、出错抖动 / numbers, banners, error shake */
+  --move-3: 12px;  /* 展开的内容 / expanding content */
 }
