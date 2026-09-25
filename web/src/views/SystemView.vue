@@ -533,7 +533,7 @@ onBeforeUnmount(() => {
       </template>
     </UiPageHeader>
 
-    <UiCard class="update-panel" title="可用更新" desc="KixDNS 增强包与面板正式版">
+    <UiCard class="update-panel" title="可用更新">
       <template #actions>
         <button class="ui-icon-btn" type="button" title="检查更新" aria-label="检查更新" :disabled="checkingUpdates" @click="refreshUpdatesWithQuota"><RefreshCw :size="18" :class="{ spin: checkingUpdates }" /></button>
       </template>
