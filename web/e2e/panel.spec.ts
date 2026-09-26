@@ -110,11 +110,10 @@ test('DNS 诊断在结果顶部显示实际命中的规则 @responsive', async (
   await page.getByRole('button', { name: '执行查询' }).click()
 
   const result = page.locator('.diagnostic-result')
-  // 「命中规则」现在是明细表的字段名，规则本身在对应的值里。
-  await expect(result.locator('.diag-kv')).toContainText('命中规则')
-  await expect(result.locator('.diagnostic-match-summary')).toContainText('geosite-global')
-  await expect(result.locator('.diagnostic-match-summary')).toContainText('Pipeline · default')
-  await expect(result.getByRole('heading', { name: '规则执行路径' })).toBeVisible()
+  // 命中的规则在执行路径里那一行，结果栏不复述。
+  // The matched rule is its own row in the path; the result bar does not repeat it.
+  await expect(result.locator('.diag-step', { hasText: '命中规则 geosite-global' })).toBeVisible()
+  await expect(result.getByRole('heading', { name: '执行路径' })).toBeVisible()
   await expectNoPageOverflow(page)
 })
 

@@ -25,7 +25,7 @@ async function diagnosticFixture(page: Page, result: DnsDiagnostic, failOnce = f
 
 async function query(page: Page, domain = 'example.com'): Promise<void> {
   await page.goto('/diagnostics')
-  await expect(page.getByRole('heading', { name: 'DNS 诊断', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '诊断', exact: true })).toBeVisible()
   await page.getByLabel('域名', { exact: true }).fill(domain)
   await page.getByRole('button', { name: '执行查询', exact: true }).click()
   await expect(page.locator('.diagnostic-result')).toBeVisible()
@@ -35,16 +35,31 @@ async function noOverflow(page: Page): Promise<void> {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
 }
 
-test('诊断应答台账、规则摘要和服务器来源保持真实', async ({ page }) => {
+test('结果栏只说结果：记录、响应码、耗时和服务器，不复述执行路径', async ({ page }) => {
   await query(page)
+  const outcome = page.locator('.diag-outcome')
   await expect(page.locator('.diag-answer-row')).toHaveCount(2)
   await expect(page.locator('.diag-answer-row').first()).toContainText('104.18.26.120')
   await expect(page.locator('.diag-answer-row').last()).toContainText('104.18.27.120')
-  await expect(page.locator('.diag-ttl').first()).toHaveText('300')
-  await expect(page.locator('.diagnostic-match-summary')).toContainText('geosite-global')
-  await expect(page.locator('.diagnostic-match-summary')).toContainText('Pipeline · default')
-  await expect(page.locator('.diag-result-footer')).toContainText('KixDNS 内部执行链')
+  // 类型和 TTL 都一样，只写一次。 / One shared type and TTL, stated once.
+  await expect(page.locator('.diag-outcome-facts')).toHaveText('A · TTL 300 秒 · 未截断 · 服务器 KixDNS 内部执行链')
   await expect(page.locator('.diag-elapsed')).toHaveText('12 ms')
+  // 命中哪条规则、由谁应答写在执行路径里（带绿色对勾），结果栏不再说一遍。
+  // Which rule matched and who answered live in the path, with a green check; the bar does not repeat them.
+  await expect(outcome).not.toContainText('geosite-global')
+  await expect(outcome).not.toContainText('1.1.1.1')
+  await expect(page.locator('.diag-step', { hasText: '命中规则 geosite-global' })).toHaveClass(/diag-step--success/)
+  // 没有单独的应答卡：只有结果栏和执行路径两块，上下同宽。
+  // No separate answer card: just the bar and the path, stacked at the same width.
+  await expect(page.locator('.diag-answers')).toHaveCount(0)
+  const bar = await outcome.boundingBox()
+  const trace = await page.locator('.diag-trace').boundingBox()
+  expect(bar!.y + bar!.height).toBeLessThan(trace!.y)
+  expect(bar?.width).toBe(trace?.width)
+  // 时刻在圆点左边，像日志的时间戳。 / The time sits left of the mark, like a log timestamp.
+  const time = await page.locator('.diag-step-time').first().boundingBox()
+  const mark = await page.locator('.diag-step-mark').first().boundingBox()
+  expect(time!.x + time!.width).toBeLessThanOrEqual(mark!.x)
   await noOverflow(page)
 })
 
@@ -53,38 +68,62 @@ test('每一步的细节直接摊开，缓存未命中不是故障 @responsive',
   const steps = page.locator('.diag-step')
   await expect(steps).toHaveCount(6)
   // 不点任何东西：六步的标签和细节应当已经全部可读。
-  await expect(steps.nth(5)).toContainText('https://1.1.1.1/dns-query')
-  await expect(steps.nth(5)).toContainText('响应码：No Error')
-  await expect(steps.nth(0)).toContainText('客户端：127.0.0.1')
-  await expect(page.locator('.diag-time-note')).toContainText('不表示该阶段的独立耗时')
+  await expect(steps.nth(4)).toContainText('https://1.1.1.1/dns-query')
+  // 程序内部的写法翻成人话：不出现 Some(Https)、false 和 hickory 的「No Error」。
+  // Program-internal spellings become words: no Some(Https), false or hickory's "No Error".
+  await expect(steps.nth(5).locator('.diag-step-what')).toHaveText('应答 NOERROR')
+  await expect(steps.nth(5)).toContainText('未截断')
+  await expect(steps.nth(4)).toContainText('传输 DoH')
+  await expect(page.locator('.diag-trace')).not.toContainText('Some(')
+  await expect(page.locator('.diag-trace')).not.toContainText('false')
+  await expect(steps.nth(0)).toContainText('客户端 127.0.0.1')
+  await expect(page.locator('.diag-trace > header')).toContainText('不表示该阶段的独立耗时')
+  await expect(page.locator('.diag-trace .ui-card__foot')).toHaveCount(0)
   // 未命中是中性状态，不画成故障。
   await expect(steps.nth(2)).toHaveClass(/diag-step--neutral/)
   await expect(steps.nth(2)).toContainText('未命中')
+  // 每步一句话，不再是「阶段名 + 内核标签」把同一件事说两遍。
+  // One sentence per step, no longer "stage + kernel label" saying the same thing twice.
+  await expect(steps.nth(2).locator('.diag-step-what')).toHaveText('响应缓存未命中')
+  await expect(steps.nth(4).locator('.diag-step-what')).toHaveText('转发给 https://1.1.1.1/dns-query')
   await noOverflow(page)
 })
 
 test('原始应答原样保留，重新查询换掉整份结果 @responsive', async ({ page }) => {
   await query(page, '  example.net  ')
-  const raw = page.locator('.diag-raw-response')
-  await raw.locator('summary').click()
-  await expect(raw.locator('pre').first()).toHaveText('example.net. 300 IN A 104.18.26.120')
+  const toggle = page.getByRole('button', { name: '原始响应' })
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  await toggle.click()
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+  await expect(page.locator('.diag-raw-response pre').first()).toHaveText('example.net. 300 IN A 104.18.26.120')
   await page.getByLabel('域名', { exact: true }).fill('example.org')
   await page.getByRole('button', { name: '执行查询', exact: true }).click()
   await expect(page.locator('.diag-step').first()).toContainText('example.org')
-  await expect(page.locator('.diag-kv')).toContainText('example.org')
+  // 新结果回到收起：上一次展开的原始响应不跟着留下。 / A new result starts collapsed.
+  await expect(page.locator('.diag-raw-response')).toHaveCount(0)
+  await toggle.click()
+  await expect(page.locator('.diag-raw-response pre').first()).toContainText('example.org')
 })
 
 test('窄屏查询同行且标题、命中名不再海报化 @responsive', async ({ page }) => {
   // 两个项目都使用 Desktop Chrome，按真实 viewport 而非设备标志判断响应式分支。
   await query(page)
   if ((page.viewportSize()?.width ?? 1440) > 700) return
-  const input = await page.getByLabel('域名', { exact: true }).boundingBox()
-  const type = await page.getByLabel('记录类型', { exact: true }).boundingBox()
+  // 量用户看得见的框：输入框和下拉框的边框画在外面那层上，三样的顶边和高度都一样。
+  // Measure the visible frames: the field and the select draw their border on the
+  // outer label, and all three share one top edge and one height.
+  const input = await page.locator('.diag-domain').boundingBox()
+  const type = await page.locator('.diag-record-type').boundingBox()
   const submit = await page.getByRole('button', { name: '执行查询' }).boundingBox()
   expect(input?.y).toBe(type?.y)
   expect(input?.y).toBe(submit?.y)
+  expect(input?.height).toBe(submit?.height)
+  expect(type?.height).toBe(submit?.height)
+  // 正好是触控高度 44：手机上全局给下拉框的 44 最小高度曾把外框撑到 46，整行跟着变高。
+  // Exactly the 44 touch height: the global 44 minimum on selects once pushed the frame to 46 and the whole row with it.
+  expect(submit?.height).toBe(44)
   expect(await page.locator('.diag-heading h1').evaluate((el) => parseFloat(getComputedStyle(el).fontSize))).toBeLessThanOrEqual(22)
-  expect(await page.locator('.diag-match strong').first().evaluate((el) => parseFloat(getComputedStyle(el).fontSize))).toBeLessThanOrEqual(16)
+  expect(await page.locator('.diag-answer-row code').first().evaluate((el) => parseFloat(getComputedStyle(el).fontSize))).toBeLessThanOrEqual(18)
   await noOverflow(page)
 })
 
@@ -105,10 +144,43 @@ test('缓存命中不显示伪规则，空 Answer 与截断状态仍清楚', asy
     { stage: 'response_cache', status: 'fresh', label: '响应缓存命中', detail: null, elapsed_ms: 0 },
   ] })
   await query(page)
-  await expect(page.locator('.diag-match')).toContainText('响应缓存命中，未记录规则匹配')
   await expect(page.locator('.diag-empty-answers')).toBeVisible()
-  await expect(page.locator('.diag-answers > header')).toContainText('已截断')
+  await expect(page.locator('.diag-outcome-facts')).toContainText('已截断')
   await expect(page.locator('.diag-step')).toHaveCount(1)
+  await expect(page.locator('.diag-step').first()).toContainText('命中响应缓存')
+  await expect(page.locator('.diagnostic-result')).not.toContainText('命中规则')
+  await noOverflow(page)
+})
+
+test('真实内核轨迹：未命中的规则并成一行，「准备转发」不带英文状态、不说两遍', async ({ page }) => {
+  // 照 p27 内核补丁的写法：命中之前每条规则各记一行，上游先记一次「准备转发到」。
+  // As the p27 kernel patch writes it: one row per rule tried before the match, and an upstream "准备转发到" step first.
+  const trace: DnsTraceStep[] = [
+    { stage: 'pipeline', status: 'selected', label: 'default', detail: null, elapsed_ms: 0 },
+    { stage: 'rule_cache', status: 'miss', label: '管线 default 的规则缓存未命中', detail: null, elapsed_ms: 0 },
+    ...['block-ads', 'geosite-cn', 'lan-hosts'].map((label) => ({ stage: 'rule', status: 'missed', label, detail: '管线：default；匹配器数：1', elapsed_ms: 0 })),
+    { stage: 'rule', status: 'matched', label: 'geosite-global', detail: '管线：default；匹配器数：1', elapsed_ms: 1 },
+    { stage: 'decision', status: 'selected', label: '规则 geosite-global 转发', detail: '目标：https://1.1.1.1/dns-query；传输：Some(Https)', elapsed_ms: 1 },
+    { stage: 'upstream', status: 'started', label: '准备转发到 https://1.1.1.1/dns-query', detail: '规则：geosite-global；传输：Some(Https)', elapsed_ms: 2 },
+    { stage: 'upstream', status: 'succeeded', label: 'https://1.1.1.1/dns-query', detail: '响应码：No Error；耗时：1203 ms；截断：false', elapsed_ms: 1205 },
+  ]
+  await diagnosticFixture(page, { ...answerFixture, trace })
+  await query(page)
+  const steps = page.locator('.diag-step')
+  // 决定转发和真的发出去是同一件事，并成一行；应答那一行不再重复地址。
+  // Deciding to forward and sending are one event on one row; the reply row does not repeat the address.
+  await expect(steps).toHaveCount(6)
+  await expect(steps.nth(1).locator('.diag-step-what')).toHaveText('管线 default 的规则缓存未命中')
+  await expect(steps.nth(2)).toHaveClass(/diag-step--idle/)
+  await expect(steps.nth(2).locator('.diag-step-what')).toHaveText('3 条规则未命中')
+  await expect(steps.nth(2).locator('.diag-step-why')).toHaveText('block-ads、geosite-cn、lan-hosts')
+  await expect(steps.nth(4).locator('.diag-step-what')).toHaveText('转发给 https://1.1.1.1/dns-query')
+  await expect(steps.nth(4).locator('.diag-step-time')).toHaveText('2 ms')
+  await expect(steps.nth(5).locator('.diag-step-what')).toHaveText('应答 NOERROR')
+  // 超过一秒写成秒。 / Past a second, the time is in seconds.
+  await expect(steps.nth(5).locator('.diag-step-time')).toHaveText('1.2 s')
+  await expect(page.locator('.diag-trace')).not.toContainText('started')
+  await expect(page.locator('.diag-trace')).not.toContainText('发往')
   await noOverflow(page)
 })
 
@@ -118,7 +190,8 @@ test('多个命中与长轨迹不被固定六阶段裁掉', async ({ page }) => 
   }))
   await diagnosticFixture(page, { ...answerFixture, trace, trace_truncated: true })
   await query(page)
-  await expect(page.locator('.diag-match li')).toHaveCount(10)
+  // 结论带只点前三条并说明一共几条；执行路径里十一步一步不少。
+  // The verdict names the first three and the total; the path keeps every one of the eleven steps.
   await expect(page.locator('.diag-step')).toHaveCount(11)
   await expect(page.locator('.diag-trace-warning')).toContainText('不代表完整解析路径')
   await expect(page.locator('.diag-step').last()).toContainText('future_stage')
