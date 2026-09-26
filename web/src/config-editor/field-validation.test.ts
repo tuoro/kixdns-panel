@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { actionFieldErrors, matcherFieldErrors, REQUIRED_FIELD_ERROR, validDnsName } from './field-validation'
+import { actionFieldErrors, GEOSITE_PREFIX_ERROR, matcherFieldErrors, REQUIRED_FIELD_ERROR, validDnsName } from './field-validation'
 import { createGuidedRuleFromTemplate, guidedRuleValidationErrors } from './guided-rule'
 import type { ActionConfig, PipelineConfig } from './types'
 
@@ -13,6 +13,27 @@ describe('配置字段共享校验', () => {
       .toEqual({ country_codes: REQUIRED_FIELD_ERROR })
     expect(matcherFieldErrors({ type: 'edns_present', operator: 'and', expect: false }, 'request')).toEqual({})
     expect(matcherFieldErrors({ type: 'future_matcher', operator: 'and' }, 'request')).toEqual({})
+  })
+
+  it('GeoSite 分类带 geosite: 前缀时报错：内核按原样查标签，匹配不上', () => {
+    for (const type of ['geo_site', 'geo_site_not']) {
+      expect(matcherFieldErrors({ type, operator: 'and', value: 'geosite:cn' }, 'selector')).toEqual({ value: GEOSITE_PREFIX_ERROR })
+      expect(matcherFieldErrors({ type, operator: 'and', value: 'GeoSite:category-ads-all' }, 'request')).toEqual({ value: GEOSITE_PREFIX_ERROR })
+      expect(matcherFieldErrors({ type, operator: 'and', value: 'cn' }, 'request')).toEqual({})
+    }
+    for (const type of ['response_request_domain_geosite', 'response_request_domain_geosite_not']) {
+      expect(matcherFieldErrors({ type, operator: 'and', value: 'geosite:cn' }, 'response')).toEqual({ value: GEOSITE_PREFIX_ERROR })
+    }
+    // 别的条件里的 geosite: 字样不算 / geosite: in any other condition is left alone
+    expect(matcherFieldErrors({ type: 'domain_suffix', operator: 'and', value: 'geosite:cn' }, 'request')).toEqual({})
+  })
+
+  it('每个模板写出来的规则都能直接通过校验', () => {
+    const current: PipelineConfig = { id: 'default', rules: [] }
+    for (const template of ['domain_upstream', 'cn_split', 'ad_block', 'response_fallback'] as const) {
+      const rule = createGuidedRuleFromTemplate(current, template, 'global_doh')
+      for (const matcher of rule.matchers) expect(matcherFieldErrors(matcher, 'request'), template).toEqual({})
+    }
   })
 
   it('缺失 CNAME 目标只报告必填错误，非法目标报告格式错误', () => {

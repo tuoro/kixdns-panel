@@ -6,7 +6,7 @@ const configFixture = {
   settings: { bind_addr: '0.0.0.0:53', default_upstream: '1.1.1.1:53' },
   pipeline_select: [
     { pipeline: 'mapping', matcher_operator: 'and', matchers: [{ type: 'domain_suffix', operator: 'and', value: 'alias.example' }] },
-    { pipeline: 'domestic', matcher_operator: 'and', matchers: [{ type: 'geo_site', operator: 'and', value: 'geosite:cn' }] },
+    { pipeline: 'domestic', matcher_operator: 'and', matchers: [{ type: 'geo_site', operator: 'and', value: 'cn' }] },
     { pipeline: 'fallback', matcher_operator: 'and', matchers: [] },
   ],
   pipelines: [

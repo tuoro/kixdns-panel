@@ -11,12 +11,22 @@ export function validDnsName(value: string): boolean {
   return withoutRoot.split('.').every((label) => label.length > 0 && new TextEncoder().encode(label).length <= 63)
 }
 
+// GeoSite 条件的值是分类名本身：内核把它原样当标签去查，写成 geosite:cn 永远匹配不上。
+// A GeoSite condition's value is the bare category: the kernel looks it up as the tag exactly as written, so geosite:cn never matches.
+const GEOSITE_MATCHERS = new Set(['geo_site', 'geo_site_not', 'response_request_domain_geosite', 'response_request_domain_geosite_not'])
+export const GEOSITE_PREFIX_ERROR = '只写分类名，去掉 geosite: 前缀'
+
+export function isGeoSiteMatcher(matcher: MatcherConfig): boolean {
+  return GEOSITE_MATCHERS.has(matcher.type)
+}
+
 export function matcherFieldErrors(matcher: MatcherConfig, scope: MatcherScope): Record<string, string> {
   const errors: Record<string, string> = {}
   const fields = MATCHER_DEFINITIONS[scope].find((item) => item.value === matcher.type)?.fields ?? []
   for (const field of ['value', 'cidr'] as const) {
     if (fields.includes(field) && !matcher[field]?.trim()) errors[field] = REQUIRED_FIELD_ERROR
   }
+  if (!errors.value && isGeoSiteMatcher(matcher) && /^geosite:/i.test(matcher.value?.trim() ?? '')) errors.value = GEOSITE_PREFIX_ERROR
   if (fields.includes('country_codes') && !matcher.country_codes?.some((code) => code.trim())) {
     errors.country_codes = REQUIRED_FIELD_ERROR
   }

@@ -5,7 +5,7 @@ const configFixture = {
   version: '1.0',
   settings: { bind_addr: '0.0.0.0:53', default_upstream: '1.1.1.1:53' },
   pipeline_select: [
-    { pipeline: 'domestic', matcher_operator: 'and', matchers: [{ type: 'geo_site', operator: 'and', value: 'geosite:cn' }] },
+    { pipeline: 'domestic', matcher_operator: 'and', matchers: [{ type: 'geo_site', operator: 'and', value: 'cn' }] },
   ],
   pipelines: [
     { id: 'domestic', rules: [{ name: 'domestic-rule', matchers: [], matcher_operator: 'and', actions: [{ type: 'forward', upstream: '223.5.5.5:53', transport: '' }] }] },

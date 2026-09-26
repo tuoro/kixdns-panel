@@ -56,13 +56,13 @@ export function createGuidedRuleFromTemplate(
     rule.matchers = [{ type: 'domain_suffix', operator: 'and', value: 'alias.example' }]
     rule.actions = [{ type: 'static_cname_response', target: 'origin.example.', ttl: 300 }]
   } else if (templateId === 'cn_split') {
-    rule.matchers = [{ type: 'geo_site', operator: 'and', value: 'geosite:cn' }]
+    rule.matchers = [{ type: 'geo_site', operator: 'and', value: 'cn' }]
     rule.actions = [{ type: 'forward', upstream: '223.5.5.5:53', transport: '' }]
   } else if (templateId === 'ad_block') {
-    rule.matchers = [{ type: 'geo_site', operator: 'and', value: 'geosite:category-ads-all' }]
+    rule.matchers = [{ type: 'geo_site', operator: 'and', value: 'category-ads-all' }]
     rule.actions = [{ type: 'deny' }]
   } else {
-    rule.matchers = [{ type: 'geo_site', operator: 'and', value: 'geosite:cn' }]
+    rule.matchers = [{ type: 'geo_site', operator: 'and', value: 'cn' }]
     rule.actions = [{
       type: 'forward',
       upstream: 'https://doh.pub/dns-query, https://dns.alidns.com/dns-query',
