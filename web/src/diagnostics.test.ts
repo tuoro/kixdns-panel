@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { DnsTraceStep } from './api/types'
-import { describeResolution, humanizeTraceDetail, isDnsSuccess, parseDnsAnswer, responseCodeName, summarizeTrace, traceTone, describeStep, detailParts, groupTrace, type TextPart } from './diagnostics'
+import { humanizeTraceDetail, isDnsSuccess, parseDnsAnswer, responseCodeName, traceTone, describeStep, detailParts, formatElapsed, forwardTarget, groupTrace, type TextPart } from './diagnostics'
 
 describe('DNS 应答台账', () => {
   it.each([
@@ -23,62 +23,11 @@ describe('DNS 应答台账', () => {
   })
 })
 
-const step = (stage: string, status: string, label: string): DnsTraceStep => ({ stage, status, label, detail: null, elapsed_ms: 0 })
-
-describe('诊断轨迹摘要', () => {
-  it('不假定六步，保留多个命中规则', () => {
-    const trace = [step('pipeline', 'selected', 'default'), step('rule', 'matched', 'first'), step('rule', 'matched', 'second'), step('rule', 'matched', 'first')]
-    expect(summarizeTrace(trace)).toMatchObject({ matchedRules: ['first', 'second'], pipelines: ['default'] })
-  })
-
-  it('响应缓存命中但没有规则时不编造规则', () => {
-    expect(summarizeTrace([step('response_cache', 'fresh', 'cached')])).toMatchObject({ matchedRules: [], emptyMatchLabel: '响应缓存命中，未记录规则匹配' })
-  })
-
-  it('规则缓存命中不等同于应答由缓存直接返回', () => {
-    expect(summarizeTrace([step('rule_cache', 'hit', 'cached')]).emptyMatchLabel).toBe('未记录规则匹配')
-  })
-
-  it('空轨迹不选择不存在的步骤', () => {
-    expect(summarizeTrace([])).toMatchObject({ matchedRules: [], pipelines: [], upstreams: [] })
-  })
-
+describe('轨迹语气与响应码', () => {
   it.each(['miss', 'missed', 'unknown'])('%s 不是故障', (status) => expect(traceTone(status)).toBe('neutral'))
   it('明确失败才用故障状态', () => expect(traceTone('failed')).toBe('danger'))
   it.each(['No Error', 'NOERROR'])('识别响应码 %s', (code) => expect(isDnsSuccess(code)).toBe(true))
   it('不把 NXDOMAIN 画成成功应答', () => expect(isDnsSuccess('NXDOMAIN')).toBe(false))
-})
-
-describe('结论带的那句话', () => {
-  const summarize = (...steps: DnsTraceStep[]) => summarizeTrace(steps)
-
-  it('同时说清走了哪条规则和由谁应答', () => {
-    const summary = summarize(step('pipeline', 'selected', 'domestic'), step('rule', 'matched', 'cn-direct'), step('upstream', 'succeeded', '223.5.5.5:53'))
-    expect(describeResolution(summary)).toBe('命中 domestic 的规则 cn-direct，由 223.5.5.5:53 应答')
-  })
-
-  it('没有管线时只说规则，不硬凑「的」', () => {
-    expect(describeResolution(summarize(step('rule', 'matched', 'cn-direct')))).toBe('命中规则 cn-direct')
-  })
-
-  it('缓存直接应答时不提上游，因为本次根本没走', () => {
-    expect(describeResolution(summarize(step('response_cache', 'fresh', '响应缓存命中')))).toBe('响应缓存命中')
-  })
-
-  it('上游失败不算「由它应答」', () => {
-    const summary = summarize(step('rule', 'matched', 'cn-direct'), step('upstream', 'failed', '8.8.8.8:53'))
-    expect(describeResolution(summary)).toBe('命中规则 cn-direct')
-  })
-
-  it('命中很多条时只点前三条，说明一共几条', () => {
-    const summary = summarize(...['a', 'b', 'c', 'd', 'e'].map((name) => step('rule', 'matched', name)))
-    expect(describeResolution(summary)).toBe('命中 a、b、c 等 5 条规则')
-  })
-
-  it('什么都没记下来时交回空串，让结论带只写响应码', () => {
-    expect(describeResolution(summarize())).toBe('')
-    expect(describeResolution(summarize(step('request', 'parsed', 'A example.com')))).toBe('')
-  })
 })
 
 describe('把轨迹里的程序写法翻成人话', () => {
@@ -116,7 +65,7 @@ describe('执行路径每一步写成一句话', () => {
     [kstep('rule_cache', 'hit', '命中管线 default 的规则缓存', '已匹配规则：geosite-global'), '命中管线 default 的规则缓存', '已匹配规则 geosite-global'],
     [kstep('rule', 'matched', 'geosite-global', '管线：default；匹配器数：1'), '命中规则 geosite-global', '匹配器数 1'],
     [kstep('rule', 'missed', 'block-ads', '管线：default；匹配器数：2'), '规则 block-ads 未命中', '匹配器数 2'],
-    [kstep('decision', 'selected', '规则 geosite-global 转发', '目标：https://1.1.1.1/dns-query；传输：Some(Https)'), '决定转发给 https://1.1.1.1/dns-query', '规则 geosite-global · 传输 DoH'],
+    [kstep('decision', 'selected', '规则 geosite-global 转发', '目标：https://1.1.1.1/dns-query；传输：Some(Https)'), '转发给 https://1.1.1.1/dns-query', '规则 geosite-global · 传输 DoH'],
     [kstep('decision', 'selected', '静态响应 Non-Existent Domain', '答案记录数：0'), '直接返回 NXDOMAIN', '答案记录数 0'],
     [kstep('decision', 'selected', '跳转到管线 cn'), '跳转到管线 cn', ''],
     [kstep('upstream', 'started', '准备转发到 https://1.1.1.1/dns-query', '规则：geosite-global；传输：Some(Https)'), '发往 https://1.1.1.1/dns-query', '传输 DoH'],
@@ -152,4 +101,33 @@ describe('细节里的一对键值不拆开', () => {
   it('一对「键 值」是一段，排版时整对换行', () => {
     expect(detailParts('客户端：192.168.1.23；监听器：default')).toEqual([{ label: '客户端', text: '192.168.1.23', mono: true }, { text: ' · ' }, { label: '监听器', text: 'default', mono: true }])
   })
+})
+
+describe('转发和应答不把同一个地址说三遍', () => {
+  const decision = kstep('decision', 'selected', '规则 geosite-global 转发', '目标：https://1.1.1.1/dns-query；传输：Some(Https)')
+  const sent = kstep('upstream', 'started', '准备转发到 https://1.1.1.1/dns-query', '规则：geosite-global；传输：Some(Https)')
+  const reply = kstep('upstream', 'succeeded', 'https://1.1.1.1/dns-query', '响应码：No Error；耗时：11 ms；截断：false')
+
+  it('规则决定转给 X、紧接着发往 X，并成一行', () => {
+    const rows = groupTrace([decision, sent, reply])
+    expect(rows).toHaveLength(2)
+    expect(rows[0]).toMatchObject({ kind: 'step', step: decision, sent })
+  })
+
+  it('发往的不是规则定的那个（比如故障切换）就不并', () => {
+    const other = kstep('upstream', 'started', '准备转发到 8.8.8.8:53', null)
+    expect(groupTrace([decision, other])).toHaveLength(2)
+  })
+
+  it('应答来自刚转给的那个上游时只写「应答 NOERROR」，换了上游就照写地址', () => {
+    expect(forwardTarget(decision)).toBe('https://1.1.1.1/dns-query')
+    expect(forwardTarget(sent)).toBe('https://1.1.1.1/dns-query')
+    expect(plain(describeStep(reply, { target: 'https://1.1.1.1/dns-query' }).lead)).toBe('应答 NOERROR')
+    expect(plain(describeStep(reply, { target: '8.8.8.8:53' }).lead)).toBe('https://1.1.1.1/dns-query 应答 NOERROR')
+    expect(plain(describeStep(kstep('upstream', 'failed', 'https://1.1.1.1/dns-query', '超时'), { target: 'https://1.1.1.1/dns-query' }).lead)).toBe('没有应答')
+  })
+})
+
+describe('耗时的写法', () => {
+  it.each([[0, '0 ms'], [12, '12 ms'], [999, '999 ms'], [1000, '1.0 s'], [5003, '5.0 s']])('%i → %s', (ms, text) => expect(formatElapsed(ms)).toBe(text))
 })

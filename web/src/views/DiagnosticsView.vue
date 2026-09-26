@@ -7,7 +7,7 @@ import UiCard from '../components/ui/UiCard.vue'
 import UiEmpty from '../components/ui/UiEmpty.vue'
 import UiPageHeader from '../components/ui/UiPageHeader.vue'
 import { useToast } from '../composables/useToast'
-import { describeStep, groupTrace, isDnsSuccess, parseDnsAnswer, responseCodeName, resolutionParts, summarizeTrace, traceTone, type TextPart } from '../diagnostics'
+import { describeStep, formatElapsed, forwardTarget, groupTrace, isDnsSuccess, parseDnsAnswer, responseCodeName, traceTone, type TextPart } from '../diagnostics'
 import { errorMessage } from '../utils'
 
 const domain = ref('example.com')
@@ -18,35 +18,44 @@ const queryError = ref('')
 const toast = useToast()
 const types = ['A', 'AAAA', 'CNAME', 'MX', 'NS', 'TXT', 'SOA', 'PTR']
 const steps = computed(() => result.value?.trace_supported ? result.value.trace : [])
-const traceSummary = computed(() => summarizeTrace(steps.value))
-const resolution = computed(() => resolutionParts(traceSummary.value))
 const answers = computed(() => result.value?.answers.map((raw) => ({ raw, fields: parseDnsAnswer(raw) })) ?? [])
 const successful = computed(() => result.value !== null && isDnsSuccess(result.value.response_code))
 const codeName = computed(() => (result.value ? responseCodeName(result.value.response_code) : ''))
-// 结论带那句话：走了哪条规则、由谁应答；轨迹里没记下命中的规则时照实说「未记录规则匹配」，
-// 不编一条。原来这句提醒在下面那块明细表里，明细表和结论重复，去掉了。
-// The verdict: which rule, which upstream; when the trace recorded no matched
-// rule it says so rather than inventing one. That caveat used to sit in the
-// detail table below, which repeated the verdict and is gone.
-const verdict = computed<TextPart[]>(() => {
-  if (!result.value) return []
-  const caveat = result.value.trace_supported && traceSummary.value.matchedRules.length === 0 ? '未记录规则匹配' : ''
-  if (!resolution.value.length) return caveat ? [{ text: caveat }] : [{ text: result.value.domain, mono: true }, { text: ' · ' }, { text: result.value.record_type, mono: true }]
-  return caveat ? [...resolution.value, { text: '，' + caveat }] : resolution.value
+const rawOpen = ref(false)
+// 记录都同一类型、同一 TTL 时只写一次，否则跟在每条后面。
+// When every record shares one type and TTL it is stated once; otherwise after each record.
+const uniformMeta = computed(() => {
+  const fields = answers.value.map((answer) => answer.fields)
+  if (!fields.length || fields.some((field) => !field)) return ''
+  const types = new Set(fields.map((field) => field!.type))
+  const ttls = new Set(fields.map((field) => field!.ttl))
+  return types.size === 1 && ttls.size === 1 ? `${[...types][0]} · TTL ${[...ttls][0]} 秒` : ''
 })
+// 值都不长时横排成大字；有长 TXT 或认不出的原串时竖排、正常字号。
+// Short values flow in large type; a long TXT or an unparsed record stacks at normal size.
+const leadMode = computed(() => answers.value.every((answer) => answer.fields && answer.fields.data.length <= 45))
 const stepIdle = (status: string) => ['miss', 'missed', 'skipped'].includes(status)
 // 执行路径的每一行：一句话、一行细节、语气和时刻。连着的未命中规则并成一行。
 // Each row of the path: a sentence, a detail line, a tone and a time. Consecutive missed rules share one row.
-const rows = computed(() => groupTrace(steps.value).map((row) => {
-  if (row.kind === 'step') return { ...describeStep(row.step), tone: traceTone(row.step.status), idle: stepIdle(row.step.status), elapsed: row.step.elapsed_ms }
+const rows = computed(() => {
+  // 记着上一次转给了谁，上游应答时就不用再写一遍地址。 / Remember the last forward target so the reply need not repeat the address.
+  let target: string | null = null
+  return groupTrace(steps.value).map((row) => {
+  if (row.kind === 'step') {
+    const view = { ...describeStep(row.step, { target }), tone: traceTone(row.step.status), idle: stepIdle(row.step.status), elapsed: (row.sent ?? row.step).elapsed_ms }
+    target = forwardTarget(row.sent ?? row.step) ?? target
+    return view
+  }
   const names: TextPart[] = row.steps.flatMap((step, index) => (index ? [{ text: '、' }, { text: step.label, mono: true }] : [{ text: step.label, mono: true }]))
   return { lead: [{ text: `${row.steps.length} 条规则未命中` }], note: names, tone: 'neutral' as const, idle: true, elapsed: row.steps[row.steps.length - 1]!.elapsed_ms }
-}))
+  })
+})
 
 async function run(): Promise<void> {
   if (running.value) return
   running.value = true
   result.value = null
+  rawOpen.value = false
   queryError.value = ''
   try {
     result.value = await apiRequest<DnsDiagnostic>('/api/v1/diagnostics/dns', {
@@ -84,32 +93,30 @@ async function run(): Promise<void> {
     </div>
     <div v-else-if="queryError" class="diag-error" role="alert"><TriangleAlert :size="20" /><div><h2>查询失败</h2><p>{{ queryError }}</p><small>检查域名或服务状态后可重新查询。</small></div></div>
     <div v-else-if="result" class="diagnostic-result diag-result">
-      <!-- 结论带一行回答「成了没有、走了谁、多久」，这是这页最先要看到的东西。 -->
-      <p class="diag-status" role="status" :class="{ 'diag-status--notice': !successful }">
-        <span class="ui-tag" :class="successful ? 'ui-tag--ok' : 'ui-tag--warn'">{{ codeName }}</span>
-        <span class="diag-resolution diagnostic-match-summary"><template v-for="(part, at) in verdict" :key="at"><code v-if="part.mono">{{ part.text }}</code><template v-else>{{ part.text }}</template></template></span>
-        <span class="diag-elapsed">{{ result.elapsed_ms }} ms</span>
-      </p>
-
-      <!-- 应答在上、执行路径在下，宽窄屏同一个顺序：「解析到了什么」比「怎么走的」更常被查。
-           两张卡不再并排，也就没有一张短一张长、短的那张留一大块空白。
-           Answer above, path below, at every width: what resolved is looked up more
-           often than how. The cards no longer sit side by side, so there is no short
-           card left with a block of empty space. -->
-      <div class="diag-cards">
-        <UiCard class="diag-answers" title="应答" :desc="`${answers.length} 条记录 · ${result.truncated ? '已截断' : '未截断'} · 服务器 ${result.server}`">
-          <!-- 所有记录共用一张网格：类型和 TTL 紧跟在最长那条记录后面并上下对齐，不被推到卡片最右边。
-               All records share one grid: type and TTL sit right after the longest record,
-               aligned down the rows, instead of being pushed to the card's far edge. -->
-          <div v-if="answers.length" class="diag-answer-list">
-            <div v-for="(answer, index) in answers" :key="index" class="diag-answer-row" :class="{ 'diag-answer-row--raw': !answer.fields }">
-              <template v-if="answer.fields"><code :title="answer.fields.owner + ' · ' + answer.fields.dnsClass">{{ answer.fields.data }}</code><span class="ui-tag ui-tag--mono diag-answer-type">{{ answer.fields.type }}</span><span class="diag-ttl-cell">TTL <span class="diag-ttl">{{ answer.fields.ttl }}</span> 秒</span></template>
-              <template v-else><code>{{ answer.raw }}</code><span class="diag-raw-label">原始记录</span></template>
-            </div>
+      <!-- 每一块只回答一个问题：上面的结果栏回答「结果是什么」——响应码、耗时、解析出的记录；
+           下面的执行路径回答「怎么走的」。原来结果栏里那句「命中哪条规则、由谁应答」和执行路径重复，去掉了；
+           命中的规则和应答的上游在路径里带绿色对勾。
+           Each block answers one question: the result bar says what came back (code, time,
+           records); the path below says how. The bar's old "matched rule X, answered by Y"
+           sentence repeated the path and is gone; the path marks both with a green check. -->
+      <section class="diag-outcome" :class="{ 'diag-outcome--notice': !successful }" aria-label="查询结果">
+        <div class="diag-outcome-row">
+          <p class="diag-status" role="status"><span class="ui-tag" :class="successful ? 'ui-tag--ok' : 'ui-tag--warn'">{{ codeName }}</span><span class="diag-elapsed">{{ formatElapsed(result.elapsed_ms) }}</span></p>
+          <div v-if="answers.length" class="diag-records" :class="{ 'diag-records--stack': !leadMode }">
+            <span v-for="(answer, index) in answers" :key="index" class="diag-answer-row">
+              <code :title="answer.fields ? answer.fields.owner + ' · ' + answer.fields.dnsClass : undefined">{{ answer.fields?.data ?? answer.raw }}</code>
+              <span v-if="answer.fields && !uniformMeta" class="diag-record-meta">{{ answer.fields.type }} · TTL {{ answer.fields.ttl }} 秒</span>
+              <span v-else-if="!answer.fields" class="diag-record-meta">原始记录</span>
+            </span>
           </div>
-          <p v-else class="diag-empty-answers">响应中没有 Answer 记录</p>
-          <details class="diag-raw-response"><summary><span>原始响应</span><ChevronDown :size="16" aria-hidden="true" /></summary><div><p v-if="!answers.length">没有 Answer 记录。</p><pre v-for="(answer, index) in result.answers" :key="index">{{ answer }}</pre></div></details>
-        </UiCard>
+          <p v-else class="diag-empty-answers">没有 Answer 记录</p>
+          <p class="diag-outcome-facts">{{ uniformMeta ? uniformMeta + ' · ' : '' }}{{ result.truncated ? '已截断' : '未截断' }} · 服务器 {{ result.server }}</p>
+          <button type="button" class="diag-raw-toggle" :aria-expanded="rawOpen" aria-controls="diag-raw" @click="rawOpen = !rawOpen">原始响应<ChevronDown :size="16" aria-hidden="true" /></button>
+        </div>
+        <div v-if="rawOpen" id="diag-raw" class="diag-raw-response"><p v-if="!answers.length">没有 Answer 记录。</p><pre v-for="(answer, index) in result.answers" :key="index">{{ answer }}</pre></div>
+      </section>
+
+      <div class="diag-cards">
         <!-- 时间的说明写在卡片说明里：读数字之前先知道它是累计时刻；也省掉底栏那条线。
              The note on the times is in the card description, read before the numbers, which also drops the foot and its line. -->
         <UiCard v-if="result.trace_supported" class="diag-trace" title="执行路径" :desc="steps.length ? '这一次请求在内核里实际走过的步骤。左边的时间从请求开始累计，不表示该阶段的独立耗时。' : '这一次请求在内核里实际走过的步骤'">
@@ -119,7 +126,7 @@ async function run(): Promise<void> {
                Each step is one sentence with names in mono; "stage + kernel label" said things twice when the label was already a sentence. -->
           <ol v-if="rows.length" class="diag-steps">
             <li v-for="(row, index) in rows" :key="index" class="diag-step" :class="['diag-step--' + row.tone, { 'diag-step--idle': row.idle }]">
-              <span class="diag-step-time">{{ row.elapsed }} ms</span>
+              <span class="diag-step-time">{{ formatElapsed(row.elapsed) }}</span>
               <span class="diag-step-mark" aria-hidden="true"><Check v-if="row.tone === 'success'" :size="12" /><X v-else-if="row.tone === 'danger'" :size="12" /><i v-else></i></span>
               <div class="diag-step-body">
                 <p class="diag-step-what"><template v-for="(part, at) in row.lead" :key="at"><code v-if="part.mono">{{ part.text }}</code><template v-else>{{ part.text }}</template></template></p>
@@ -153,13 +160,22 @@ async function run(): Promise<void> {
 .diag-spinner { animation: ui-spin var(--m-spin) linear infinite; }
 .diag-sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
-.diag-status { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2) var(--s-3); margin: 0; padding: var(--s-3) var(--s-4); border-radius: var(--r-3); background: var(--ok-tint-l); color: var(--l-ink); font-size: var(--t-3); }
-.diag-status--notice { background: var(--warn-tint-l); }
+.diag-outcome { display: grid; gap: var(--s-3); padding: var(--s-3) var(--s-4); border-radius: var(--r-3); background: var(--ok-tint-l); }
+.diag-outcome--notice { background: var(--warn-tint-l); }
+.diag-outcome-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2) var(--s-5); }
+.diag-status { display: flex; align-items: center; gap: var(--s-2); margin: 0; }
 .diag-status .ui-tag { font-family: var(--mono); }
-.diag-resolution { min-width: 0; flex: 1; font-size: var(--t-3); overflow-wrap: anywhere; }
-/* 结论里的名字和地址用等宽，和执行路径一致 / Names and addresses in the verdict are mono, as in the path */
-.diag-resolution code { font-family: var(--mono); }
-.diag-elapsed { margin-left: auto; color: var(--l-ink-2); font-family: var(--mono); font-size: var(--t-2); }
+/* 解析出的记录是这一栏的主角：大一号的等宽字 / The records lead the bar, in a size-up mono */
+.diag-records { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-1) var(--s-4); min-width: 0; }
+.diag-records--stack { flex-basis: 100%; flex-direction: column; order: 5; }
+.diag-answer-row { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--s-2); min-width: 0; }
+.diag-records code { max-width: 100%; color: var(--l-ink); font-family: var(--mono); font-size: var(--t-4); font-weight: var(--w-medium); white-space: pre-wrap; overflow-wrap: anywhere; }
+.diag-records--stack code { font-size: var(--t-3); font-weight: var(--w-normal); }
+.diag-record-meta, .diag-outcome-facts { margin: 0; color: var(--l-ink-3); font-size: var(--t-2); }
+.diag-raw-toggle { display: inline-flex; align-items: center; gap: var(--s-1); min-height: var(--h-sm); margin-left: auto; padding: 0; border: 0; background: none; color: var(--l-ink-2); font: inherit; font-size: var(--t-2); cursor: pointer; }
+.diag-raw-toggle svg { color: var(--l-ink-3); transition: transform var(--m-base) var(--ease-out); }
+.diag-raw-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
+.diag-elapsed { color: var(--l-ink-2); font-family: var(--mono); font-size: var(--t-2); }
 
 .diag-cards { display: grid; gap: var(--s-4); }
 
@@ -192,23 +208,13 @@ async function run(): Promise<void> {
 .diag-note, .diag-trace-warning { margin: 0; color: var(--l-ink-3); font-size: var(--t-2); }
 .diag-trace-warning { margin-top: var(--s-2); color: var(--warn-l); }
 
-.diag-answer-list { display: grid; grid-template-columns: fit-content(60%) auto auto; grid-auto-rows: minmax(var(--h-md), auto); justify-content: start; align-items: center; gap: 0 var(--s-4); }
-.diag-answer-row { display: contents; }
-.diag-answer-row--raw code { grid-column: 1 / 3; }
 /* 应答卡里只留一条线（原始响应上面）：去掉表头行、行与行之间的线和底栏。两条记录原来配了五条横线。
    The answer card keeps one line, above the raw response: no header row, no rules
    between records, no foot. Two records used to come with five horizontal lines. */
-.diag-answer-row code { min-width: 0; color: var(--l-ink); font-family: var(--mono); font-size: var(--t-3); white-space: pre-wrap; overflow-wrap: anywhere; }
-.diag-ttl-cell { color: var(--l-ink-3); font-size: var(--t-1); white-space: nowrap; }
-.diag-ttl { color: var(--l-ink-2); font-family: var(--mono); font-size: var(--t-2); }
-.diag-raw-label { color: var(--l-ink-3); font-size: var(--t-1); }
-.diag-empty-answers { margin: 0; padding: var(--s-3) 0; color: var(--l-ink-3); font-size: var(--t-2); }
-.diag-raw-response { margin-top: var(--s-2); border-top: 1px solid var(--l-hair); }
-.diag-raw-response summary { width: fit-content; min-height: var(--h-touch); display: flex; align-items: center; gap: var(--s-1); color: var(--l-ink); font-size: var(--t-3); list-style: none; cursor: pointer; }
-.diag-raw-response summary::-webkit-details-marker { display: none; }
-.diag-raw-response summary > svg { color: var(--l-ink-3); transition: transform var(--m-base) var(--ease-out); }
-.diag-raw-response[open] summary > svg { transform: rotate(180deg); }
-.diag-raw-response pre { margin: 0 0 var(--s-2); padding: var(--s-2) var(--s-3); border-radius: var(--r-2); background: var(--l-canvas); color: var(--l-ink); font-family: var(--mono); font-size: var(--t-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.diag-empty-answers { margin: 0; color: var(--l-ink-2); font-size: var(--t-3); }
+.diag-raw-response { display: grid; gap: var(--s-1); }
+.diag-raw-response p { margin: 0; color: var(--l-ink-3); font-size: var(--t-2); }
+.diag-raw-response pre { margin: 0; padding: var(--s-2) var(--s-3); border-radius: var(--r-2); background: var(--l-surface); color: var(--l-ink); font-family: var(--mono); font-size: var(--t-2); white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .diag-result { display: grid; gap: var(--s-4); }
 
@@ -227,13 +233,13 @@ async function run(): Promise<void> {
   .diag-run { padding-inline: var(--s-3); }
   .diag-run-desktop { display: none; }
   .diag-run-mobile { display: inline; }
-  .diag-status { padding: var(--s-3); font-size: var(--t-2); }
-  .diag-resolution { flex-basis: 100%; order: 3; font-size: var(--t-2); }
+  .diag-outcome { padding: var(--s-3) var(--s-4) var(--s-1); }
   /* 宽屏上一步一行（这句话 | 细节），手机上细节回到下一行。
      A wide screen gives each step one row (sentence | detail); a phone puts the detail back underneath. */
   .diag-step-body { grid-template-columns: minmax(0, 1fr); }
   /* 组件库在窄屏把记录行收成两栏；应答行三格都要留在一行 / The kit folds rows to two columns on a phone; an answer keeps all three */
-  /* 手机上宽度本来就窄：记录吃掉剩下的宽度，类型和 TTL 靠右 / A phone is narrow anyway: the record takes the rest, type and TTL sit right */
-  .diag-answer-list { grid-template-columns: minmax(0, 1fr) auto auto; grid-auto-rows: minmax(var(--h-touch), auto); }
+  /* 手机：记录独占一行，原始响应的开关回到左边 / A phone: records take their own line, the raw toggle returns to the left */
+  .diag-records { flex-basis: 100%; }
+  .diag-raw-toggle { min-height: var(--h-touch); margin-left: 0; }
 }
 </style>

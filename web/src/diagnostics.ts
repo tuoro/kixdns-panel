@@ -35,55 +35,6 @@ export function traceTone(status: string): 'success' | 'warning' | 'danger' | 'n
   return 'neutral'
 }
 
-export function summarizeTrace(steps: DnsTraceStep[]) {
-  const matchedRules = [...new Set(steps.filter((step) => step.stage === 'rule' && step.status === 'matched').map((step) => step.label))]
-  const pipelines = [...new Set(steps.filter((step) => step.stage === 'pipeline' && step.status === 'selected').map((step) => step.label))]
-  const responseCacheHit = steps.some((step) => step.stage === 'response_cache' && ['hit', 'fresh', 'stale'].includes(step.status))
-  const upstreams = [...new Set(steps.filter((step) => step.stage === 'upstream' && step.status === 'succeeded').map((step) => step.label))]
-  return {
-    matchedRules,
-    pipelines,
-    upstreams,
-    responseCacheHit,
-    emptyMatchLabel: responseCacheHit ? '响应缓存命中，未记录规则匹配' : '未记录规则匹配',
-  }
-}
-
-export type TraceSummary = ReturnType<typeof summarizeTrace>
-
-/**
- * 结论带上那句话：响应码之外还要回答「走了谁」。
- *
- * 没有轨迹、或轨迹里既没有命中规则也没有上游时返回空串——
- * 这时结论带只写响应码和耗时，不编一句听起来像知道内情的话。
- *
- * The sentence on the verdict strip: besides the response code, it answers
- * which path the query took. Returns an empty string when there is no trace, or
- * when the trace records neither a matched rule nor an upstream: the strip then
- * carries only the code and the elapsed time rather than inventing a sentence
- * that sounds better informed than the data is.
- */
-export function resolutionParts(summary: TraceSummary): TextPart[] {
-  const parts: TextPart[] = []
-  const names = (items: string[]) => items.flatMap((name, index) => (index ? [t('、'), m(name)] : [m(name)]))
-  if (summary.matchedRules.length) {
-    // 结论带是一行话：命中很多条时只点前三条，其余在执行路径里逐条可见。
-    // The verdict is one line: with many matches it names the first three, and the path lists them all.
-    const many = summary.matchedRules.length > 3
-    const rules = [...(many ? [] : [t('规则 ')]), ...names(summary.matchedRules.slice(0, 3)), ...(many ? [t(` 等 ${summary.matchedRules.length} 条规则`)] : [])]
-    if (summary.pipelines.length) parts.push(t('命中 '), ...names(summary.pipelines), t(' 的'), ...(many ? [t(' ')] : []), ...rules)
-    else parts.push(t('命中'), ...(many ? [t(' ')] : []), ...rules)
-  } else if (summary.responseCacheHit) {
-    parts.push(t('响应缓存命中'))
-  }
-  if (summary.upstreams.length) parts.push(...(parts.length ? [t('，')] : []), t('由 '), ...names(summary.upstreams), t(' 应答'))
-  return parts
-}
-
-export function describeResolution(summary: TraceSummary): string {
-  return resolutionParts(summary).map((part) => (part.label ? part.label + ' ' : '') + part.text).join('')
-}
-
 export function isDnsSuccess(code: string): boolean {
   return code.replace(/\s/g, '').toUpperCase() === 'NOERROR'
 }
@@ -188,7 +139,18 @@ function detailValue(detail: string | null | undefined, key: string): string | n
  * produced stutters like "上游 准备转发到 X". Anything unrecognised falls back
  * to "stage label" rather than a guess.
  */
-export function describeStep(step: DnsTraceStep): StepView {
+/** 这一步把查询转给了谁：动作里的「目标」或「准备转发到 X」；别的步骤返回 null。 / Where this step sends the query, if anywhere. */
+export function forwardTarget(step: DnsTraceStep): string | null {
+  if (step.stage === 'decision' && /^规则 .+ 转发$/.test(step.label)) return detailValue(step.detail, '目标')
+  if (step.stage === 'upstream' && step.status === 'started') return /^准备转发到 (.+)$/.exec(step.label)?.[1] ?? null
+  return null
+}
+
+/**
+ * context.target 是上一次转发的目标：上游应答的正是它时不再重复地址，只写「应答 NOERROR」。
+ * context.target is the last forward target: when the reply comes from it, the address is not repeated.
+ */
+export function describeStep(step: DnsTraceStep, context: { target?: string | null } = {}): StepView {
   const { stage, status, label, detail } = step
   const note = detailParts(detail)
   let match: RegExpExecArray | null
@@ -208,15 +170,16 @@ export function describeStep(step: DnsTraceStep): StepView {
   if (stage === 'rule' && ['missed', 'miss'].includes(status)) return { lead: [t('规则 '), m(label), t(' 未命中')], note: detailParts(detail, ['管线']) }
   if (stage === 'decision') {
     const target = detailValue(detail, '目标')
-    if ((match = /^规则 (.+) 转发$/.exec(label)) && target) return { lead: [t('决定转发给 '), m(target)], note: [{ label: '规则', text: match[1]!, mono: true }, ...prefixed(detailParts(detail, ['目标']))] }
+    if ((match = /^规则 (.+) 转发$/.exec(label)) && target) return { lead: [t('转发给 '), m(target)], note: [{ label: '规则', text: match[1]!, mono: true }, ...prefixed(detailParts(detail, ['目标']))] }
     if ((match = /^静态响应 (.+)$/.exec(label))) return { lead: [t('直接返回 '), m(responseCodeName(match[1]!))], note }
     if ((match = /^跳转到管线 (.+)$/.exec(label))) return { lead: [t('跳转到管线 '), m(match[1]!)], note }
   }
   if (stage === 'upstream') {
     if (status === 'started' && (match = /^准备转发到 (.+)$/.exec(label))) return { lead: [t('发往 '), m(match[1]!)], note: detailParts(detail, ['规则']) }
     const code = detailValue(detail, '响应码')
-    if (status === 'succeeded' && code) return { lead: [m(label), t(' 应答 '), m(code)], note: detailParts(detail, ['响应码']) }
-    if (status === 'failed') return { lead: [m(label), t(' 没有应答')], note: detail ? [t(detail)] : [] }
+    const same = context.target === label
+    if (status === 'succeeded' && code) return { lead: same ? [t('应答 '), m(code)] : [m(label), t(' 应答 '), m(code)], note: detailParts(detail, ['响应码']) }
+    if (status === 'failed') return { lead: same ? [t('没有应答')] : [m(label), t(' 没有应答')], note: detail ? [t(detail)] : [] }
   }
   const stageName = traceStageNames[stage]
   // 不认识的阶段把阶段标识原样写上：新内核多出来的一步不能悄悄消失。
@@ -229,7 +192,7 @@ function prefixed(parts: TextPart[]): TextPart[] {
 }
 
 export type TraceRow =
-  | { kind: 'step'; step: DnsTraceStep }
+  | { kind: 'step'; step: DnsTraceStep; sent?: DnsTraceStep }
   | { kind: 'missed-rules'; steps: DnsTraceStep[] }
 
 /**
@@ -244,9 +207,17 @@ export function groupTrace(steps: DnsTraceStep[]): TraceRow[] {
   for (const step of steps) {
     const missed = step.stage === 'rule' && ['missed', 'miss'].includes(step.status)
     const last = rows[rows.length - 1]
-    if (missed && last?.kind === 'missed-rules') last.steps.push(step)
+    // 规则决定转给 X、紧接着真的发往 X，是同一件事说两遍：并成一行，时刻取真正发出的那一刻。
+    // A rule deciding to forward to X straight followed by the send to X is one event told twice: one row, timed at the send.
+    if (step.stage === 'upstream' && step.status === 'started' && last?.kind === 'step' && !last.sent && last.step.stage === 'decision' && forwardTarget(last.step) === forwardTarget(step)) last.sent = step
+    else if (missed && last?.kind === 'missed-rules') last.steps.push(step)
     else if (missed && last?.kind === 'step' && last.step.stage === 'rule' && ['missed', 'miss'].includes(last.step.status)) rows[rows.length - 1] = { kind: 'missed-rules', steps: [last.step, step] }
     else rows.push({ kind: 'step', step })
   }
   return rows
+}
+
+/** 一秒以内写毫秒，超过一秒写到一位小数的秒：5003 ms 读起来不如 5.0 s。 / Milliseconds under a second, seconds to one decimal above. */
+export function formatElapsed(ms: number): string {
+  return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`
 }
