@@ -609,7 +609,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .overview-page { color: var(--ink); font-size: 14px; line-height: 1.5; }
 .overview-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
-.overview-heading h1 { margin: 0; font-size: 28px; font-weight: 650; letter-spacing: -.04em; line-height: 1.25; }
+.overview-heading h1 { margin: 0; font-family: var(--f-display); font-size: 28px; font-weight: 650; letter-spacing: -.04em; line-height: 1.25; }
 .overview-heading-context { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
 .overview-button { min-height: 40px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 8px 13px; border: 1px solid var(--line); border-radius: 4px; color: var(--ink); background: var(--surface); font: inherit; font-size: 13px; text-decoration: none; cursor: pointer; }
 .overview-button:hover:not(:disabled) { border-color: var(--ink); }
@@ -661,7 +661,7 @@ onBeforeUnmount(() => {
    overflow but is the wrong remedy here: at 375px it folds 12,847,392 into
    12,847,39 and 2. Narrow screens abbreviate instead (see compactTotal), so
    wrapping is not needed as a fallback. */
-.overview-total-value, .overview-kpi-value { max-width: 100%; margin: 0; font-size: 40px; font-weight: 500; font-variant-numeric: tabular-nums; letter-spacing: -.045em; line-height: 1.1; white-space: nowrap; }
+.overview-total-value, .overview-kpi-value { max-width: 100%; margin: 0; font-family: var(--f-display); font-size: 40px; font-weight: 500; font-variant-numeric: tabular-nums; letter-spacing: -.045em; line-height: 1.1; white-space: nowrap; }
 .overview-kpi-value-row { display: flex; align-items: baseline; gap: 6px; }
 .overview-kpi-unit { color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }
 .overview-dot { display: inline-block; flex: 0 0 8px; width: 8px; height: 8px; border-radius: 50%; vertical-align: middle; }
@@ -677,7 +677,7 @@ onBeforeUnmount(() => {
 .overview-breakdown .overview-section-heading { margin-bottom: 14px; }
 /* 主项做大、小项列表。取代原来的堆叠条。 */
 .overview-dist-main { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; margin: 0 0 10px; }
-.overview-dist-share { font-size: 30px; font-weight: 500; font-variant-numeric: tabular-nums; letter-spacing: -.035em; line-height: 1.1; }
+.overview-dist-share { font-family: var(--f-display); font-size: 30px; font-weight: 500; font-variant-numeric: tabular-nums; letter-spacing: -.035em; line-height: 1.1; }
 .overview-dist-name { min-width: 0; font-size: var(--t-3); overflow-wrap: anywhere; }
 .overview-dist-count { margin-left: auto; color: var(--muted); font-size: var(--t-1); font-variant-numeric: tabular-nums; }
 .overview-legend { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; font-size: 13px; }
@@ -785,7 +785,7 @@ onBeforeUnmount(() => {
 .overview-skeleton-block { height: 220px; }
 .overview-stats-disabled > * { display: block; margin: 0 0 8px; }
 .overview-stats-disabled .overview-button { display: inline-flex; margin-top: 8px; }
-.overview-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.overview-mono { font-family: var(--f-mono); }
 .overview-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
 @media (max-width: 1000px) {

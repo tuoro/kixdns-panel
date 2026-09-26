@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # 设计 token 棘轮：前端样式里的字面量色值、字号、圆角、字重、阴影、高度、动画时长，
-# 以及旧颜色名的引用，只允许减少，不允许增加。
+# 以及旧颜色名的引用，只允许减少，不允许增加。字面量字体栈保持为零。
 # A ratchet for design tokens: literal colours, font sizes, radii, weights,
 # shadows, heights and animation durations in the frontend, and references to
-# the old colour names, may only go down, never up.
+# the old colour names, may only go down, never up. Literal font stacks are held
+# at zero.
 #
 # 新代码一律用 web/src/styles/tokens.css 里的变量。旧代码随各页改版逐步换掉，
 # 这个脚本保证在那之前债不会继续长。
@@ -23,10 +24,15 @@ BASELINE_SHADOW=25
 BASELINE_HEIGHT=151
 BASELINE_DURATION=12
 BASELINE_OLD_NAME=342
+BASELINE_FAMILY=0
 
 styles() {
-  # tokens.css 是唯一允许出现字面量的文件 / tokens.css is the one file allowed literals
-  find web/src -type f \( -name '*.css' -o -name '*.vue' \) ! -path 'web/src/styles/tokens.css' -print0
+  # tokens.css 是唯一允许出现字面量的文件 / tokens.css is the one file allowed literals.
+  # fonts.css 只有 @font-face 描述符：字重写的是「这个文件是哪一档」，描述符里用不了 var()。
+  # fonts.css holds only @font-face descriptors: each weight names which file serves
+  # that weight, and descriptors cannot use var().
+  find web/src -type f \( -name '*.css' -o -name '*.vue' \) \
+    ! -path 'web/src/styles/tokens.css' ! -path 'web/src/styles/fonts.css' -print0
 }
 
 scan() {
@@ -49,6 +55,11 @@ shadow=$(scan 'box-shadow:[[:space:]]*[^vn;[:space:]][^;}]*')
 # height、min-height、max-height；排除 line-height / excludes line-height
 height=$(scan '(^|[^a-z-])((min|max)-)?height:[[:space:]]*[0-9.]+px')
 duration=$(scan_durations)
+# 字体只从 --f-* 来：font-family 或 font 简写里直接写字体名就算一处；inherit 与 var(...) 不算。
+# Fonts come only from the --f-* tokens: naming a face in font-family or the font
+# shorthand counts once; inherit and var(...) do not.
+family=$(styles | xargs -0 grep -ohE '(^|[^a-z-])font(-family)?:[^;}]*' 2>/dev/null \
+  | awk '!/:[[:space:]]*inherit/ && !/var\(/ { n++ } END { print n + 0 }')
 # 旧颜色名现在只是 tokens.css 的别名 / The old colour names are now aliases of tokens.css
 old_name=$(scan 'var\(--(ink|muted|line|surface|canvas|green|green-dark|green-soft|amber|amber-soft|red|red-soft)\)')
 
@@ -73,5 +84,6 @@ report '字面量阴影' "$shadow" "$BASELINE_SHADOW"
 report '字面量高度' "$height" "$BASELINE_HEIGHT"
 report '字面量动画时长' "$duration" "$BASELINE_DURATION"
 report '旧颜色名引用' "$old_name" "$BASELINE_OLD_NAME"
+report '字面量字体栈' "$family" "$BASELINE_FAMILY"
 
 exit "$status"
