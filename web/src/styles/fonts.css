@@ -1,0 +1,81 @@
+/* 打包进面板的两种拉丁字体：Archivo 负责界面里所有的拉丁字母和数字（正文、标题、大数字），
+   IBM Plex Mono 负责机器值（地址、哈希、日志）。中文照旧用各平台的中文字体，排在 Archivo 后面。
+   只收拉丁子集和用得到的字重，woff2 一共约 100 KB；unicode-range 让中文字符从不触发下载。
+   Archivo 的范围里特意去掉了弯引号 U+2018–201F：界面文案里的“”都在中文句子里，
+   交给中文字体才是全角的样子，用拉丁引号会挤在汉字中间。
+   文件打进 assets/，和面板一起离线可用，不从外网加载。Vite 把字体输出成带哈希的文件：
+   服务端的 CSP 是 default-src 'self'，内联成 data: 的字体会被挡掉，vite.config.ts 里因此禁止内联字体。
+
+   Two Latin faces bundled with the panel: Archivo sets every Latin letter and
+   digit in the interface (body, headings, large figures); IBM Plex Mono sets
+   machine values (addresses, hashes, logs). Chinese keeps each platform's CJK
+   font, listed after Archivo. Only the Latin subset and the weights in use are
+   shipped, about 100 KB of woff2; unicode-range keeps Chinese text from ever
+   triggering a download. Archivo's range deliberately leaves out the curly
+   quotes U+2018–201F: every “” in the copy sits inside a Chinese sentence and
+   belongs to the CJK font. The files land in assets/ and work offline with the
+   panel. Vite must emit them as hashed files: the server's CSP is
+   default-src 'self', which blocks data: fonts, so vite.config.ts never inlines them. */
+
+@font-face {
+  font-family: "Archivo";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("@fontsource/archivo/files/archivo-latin-400-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-2017, U+2020-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Archivo";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("@fontsource/archivo/files/archivo-latin-500-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-2017, U+2020-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Archivo";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("@fontsource/archivo/files/archivo-latin-600-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-2017, U+2020-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Archivo";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("@fontsource/archivo/files/archivo-latin-700-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-2017, U+2020-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-400-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-500-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-600-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
