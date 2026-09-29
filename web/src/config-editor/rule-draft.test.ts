@@ -7,7 +7,8 @@ const pipeline: PipelineConfig = { id: 'default', rules: [] }
 
 describe('响应处理编辑状态', () => {
   it('关闭响应后忽略未补全的隐藏字段，再开启恢复原有草稿', () => {
-    const draft = createGuidedRuleFromTemplate(pipeline, 'response_fallback', 'missing')
+    const draft = createGuidedRuleFromTemplate(pipeline, 'response_fallback')
+    draft.response_actions_on_match[1]!.pipeline = 'missing'
     draft.response_matchers[0]!.cidr = ''
     const original = structuredClone(draft)
     const enabled = withResponseState(draft, true)
@@ -35,11 +36,11 @@ describe('响应处理编辑状态', () => {
     const rule = createGuidedRuleFromTemplate(pipeline, 'ad_block')
     expect(responseValidationErrors(rule, true)).toEqual([
       '响应处理需要先添加转发动作',
-      '请至少配置一个响应分支动作',
+      '匹配成功或匹配失败至少要一个动作',
     ])
     expect(responseValidationErrors(rule, false)).toEqual([])
     rule.actions = [{ type: 'forward', upstream: '1.1.1.1:53' }]
-    expect(responseValidationErrors(rule, true)).toEqual(['请至少配置一个响应分支动作'])
+    expect(responseValidationErrors(rule, true)).toEqual(['匹配成功或匹配失败至少要一个动作'])
     rule.response_actions_on_match = [{ type: 'log', level: 'warn' }]
     expect(responseValidationErrors(rule, true)).toEqual([])
   })

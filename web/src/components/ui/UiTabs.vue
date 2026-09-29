@@ -86,7 +86,7 @@ onBeforeUnmount(() => observer?.disconnect())
   </div>
   <div v-else ref="root" class="ui-seg" :class="{ 'ui-seg--sm': size === 'sm' }" role="group" :aria-label="label">
     <button v-for="item in items" :key="item.value" type="button" class="ui-seg__opt" :aria-pressed="modelValue === item.value"
-      :disabled="item.disabled" @click="select(item.value)"><component :is="item.icon" v-if="item.icon" :size="14" aria-hidden="true" />{{ item.label }}</button>
+      :disabled="item.disabled" @click="select(item.value)"><component :is="item.icon" v-if="item.icon" :size="size === 'sm' ? 14 : 16" aria-hidden="true" />{{ item.label }}</button>
     <i ref="indicator" class="ui-seg__ind" aria-hidden="true"></i>
   </div>
 </template>

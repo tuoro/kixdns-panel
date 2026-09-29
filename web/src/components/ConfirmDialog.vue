@@ -116,7 +116,7 @@ watch(() => confirm.pending.value, (request) => {
 /* 原生 <dialog> 默认带边框和 auto 宽高，全部去掉；遮罩交给 ::backdrop。 */
 .confirm { max-width: 100vw; max-height: 100dvh; width: 100%; height: 100dvh; margin: 0; padding: 24px 16px; border: 0; background: transparent; overflow-y: auto; display: flex; }
 .confirm:not([open]) { display: none; }
-.confirm::backdrop { background: rgba(15, 20, 19, .58); }
+.confirm::backdrop { background: var(--scrim); }
 .confirm__dialog { width: min(460px, 100%); margin: auto; display: flex; flex-direction: column; gap: 12px; padding: 22px 24px; border-radius: var(--r-2); background: var(--surface); box-shadow: 0 34px 76px -32px rgba(0, 0, 0, .6); }
 .confirm__dialog h2 { margin: 0; font-size: var(--t-4); font-weight: 600; }
 .confirm__dialog p { margin: 0; color: var(--muted); font-size: var(--t-2); line-height: 1.65; white-space: pre-line; }

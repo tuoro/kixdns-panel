@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { errorMessage, formatDuration, formatKixdnsVersion, formatPercent, formatSmallPercent, shortHash, upstreamSuccessRate } from './utils'
+import { errorMessage, formatAgo, formatDuration, formatKixdnsVersion, formatPercent, formatSmallPercent, formatVersionTime, shortHash, upstreamSuccessRate } from './utils'
 
 describe('界面格式化工具', () => {
   it('生成稳定且紧凑的运行指标', () => {
@@ -60,5 +60,32 @@ describe('极小占比', () => {
 
   it('负值不当作极小值处理', () => {
     expect(formatSmallPercent(-0.0001)).toBe('-0.0%')
+  })
+})
+
+describe('formatVersionTime', () => {
+  // 以本地时间 2026-09-26 12:00 为「现在」 / "Now" is 2026-09-26 12:00 local time
+  const now = new Date(2026, 8, 26, 12, 0).getTime()
+  const at = (...parts: [number, number, number, number, number]) => new Date(...parts).getTime() / 1000
+
+  it('今天和昨天写字，不写秒', () => {
+    expect(formatVersionTime(at(2026, 8, 26, 0, 5), now)).toBe('今天 00:05')
+    expect(formatVersionTime(at(2026, 8, 25, 18, 46), now)).toBe('昨天 18:46')
+    expect(formatVersionTime(at(2026, 8, 25, 0, 0), now)).toBe('昨天 00:00')
+  })
+
+  it('今年更早的只写月日和时间，往年写年月日', () => {
+    expect(formatVersionTime(at(2026, 8, 24, 18, 46), now)).toBe('09/24 18:46')
+    expect(formatVersionTime(at(2025, 11, 31, 23, 59), now)).toBe('2025/12/31')
+  })
+})
+
+describe('formatAgo', () => {
+  const now = 1_790_000_000_000
+  it('按分钟、小时、天往上走，不写秒', () => {
+    expect(formatAgo(now / 1000 - 20, now)).toBe('刚刚')
+    expect(formatAgo(now / 1000 - 5 * 60, now)).toBe('5 分钟前')
+    expect(formatAgo(now / 1000 - 3 * 3600, now)).toBe('3 小时前')
+    expect(formatAgo(now / 1000 - 3 * 86_400 - 60, now)).toBe('3 天前')
   })
 })

@@ -228,8 +228,14 @@ export function parseConfigSource(source: string): KixConfig {
   return normalizeConfig(value)
 }
 
+// 地址框（UiUrlField）为了换行在框里放了零宽字符；复制、剪切、拖出去时会去掉，但 Linux 的中键粘贴绕得过去。
+// 写出配置时统一去掉，这两种字符在配置里没有任何用处。
+// The URL field puts zero-width characters in the box for line breaks; copy, cut and drag strip them, but a Linux
+// middle-click paste gets around that. Strip them when writing the config; neither has any use in it.
+const ZERO_WIDTH = /[\u200b\u2060]/g
+
 export function serializeConfig(config: KixConfig): string {
-  return JSON.stringify(orderConfig(cloneObject(config), true), null, 2)
+  return JSON.stringify(orderConfig(cloneObject(config), true), (_key, value: unknown) => (typeof value === 'string' ? value.replace(ZERO_WIDTH, '') : value), 2)
 }
 
 export function createMatcher(scope: MatcherScope): MatcherConfig {

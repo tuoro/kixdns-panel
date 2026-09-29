@@ -53,7 +53,7 @@ function runUndo(id: number): void {
   dismiss(id)
 }
 
-function push(message: string, kind: ToastMessage['kind'] = 'info', undo?: () => void): void {
+function push(message: string, kind: ToastMessage['kind'] = 'info', undo?: () => void): number {
   const id = ++sequence
   messages.value.push({ id, kind, message, undo })
 
@@ -70,6 +70,7 @@ function push(message: string, kind: ToastMessage['kind'] = 'info', undo?: () =>
   // Bare setTimeout rather than window.setTimeout: this module needs no DOM,
   // and reaching for window only makes it untestable outside a browser.
   if (timeout !== null) setTimeout(() => dismiss(id), timeout)
+  return id
 }
 
 export function useToast() {
@@ -77,6 +78,8 @@ export function useToast() {
     messages: readonly(messages),
     dismiss,
     runUndo,
+    // 返回这一条的 id：发出提示的页面可以在它过时的时候自己收起（比如草稿已经保存）。
+    // Returns the id so the page that raised a message can clear it once stale (a draft that has been saved).
     success: (message: string) => push(message, 'success'),
     error: (message: string) => push(message, 'error'),
     info: (message: string) => push(message, 'info'),

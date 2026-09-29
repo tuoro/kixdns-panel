@@ -65,6 +65,27 @@ export function summarizeMatcher(matcher: MatcherConfig, scope: MatcherScope): s
   }
 }
 
+/**
+ * 同一种条件用「或」连起来时并成一句：「应答 IP 属于 A、B 或 C」，不把「应答 IP 属于」念三遍（审计 D21）。
+ * 返回共同的前半句和每一项的值；认不出这个形状就返回 null。
+ * Conditions of one type joined by OR read as one sentence, 「应答 IP 属于 A、B 或 C」, instead of repeating
+ * 「应答 IP 属于」 three times (audit D21). Returns the shared lead and each item's value, or null when the shape differs.
+ */
+export function sameTypeAlternatives(matchers: MatcherConfig[], matcherOperator: string, scope: MatcherScope): { lead: string; values: string[] } | null {
+  if (matchers.length < 2 || matcherOperator !== 'or') return null
+  const type = matchers[0]!.type
+  // 否定的类型不并：「不属于 A 或 B」读起来是两个都不属于，内核算的却是「不属于 A」或「不属于 B」
+  // Negated types never merge: 「不属于 A 或 B」 reads as outside both, but the kernel evaluates (not A) or (not B)
+  if (type.endsWith('_not')) return null
+  if (!matchers.every((matcher) => matcher.type === type && matcher.operator === 'and')) return null
+  const values = matchers.map((matcher) => text(matcher.cidr, '') || text(matcher.country_codes, '') || (type.includes('geosite') || type.startsWith('geo_site') ? geoSiteValue(matcher.value) : text(matcher.value, '')))
+  if (values.some((value) => !value)) return null
+  const summaries = matchers.map((matcher) => summarizeMatcher(matcher, scope))
+  const lead = summaries[0]!.slice(0, summaries[0]!.length - values[0]!.length)
+  if (!lead || summaries.some((summary, index) => summary !== `${lead}${values[index]}`)) return null
+  return { lead, values }
+}
+
 export function summarizeMatchers(
   matchers: MatcherConfig[],
   matcherOperator: string,
@@ -73,6 +94,8 @@ export function summarizeMatchers(
   if (matchers.length === 0) return scope === 'response' ? '任意响应' : '任意请求'
   const summaries = matchers.map((matcher) => summarizeMatcher(matcher, scope))
   if (summaries.length === 1) return summaries[0]!
+  const alternatives = sameTypeAlternatives(matchers, matcherOperator, scope)
+  if (alternatives) return `${alternatives.lead}${alternatives.values.slice(0, -1).join('、')} 或 ${alternatives.values.at(-1)}`
   if (matchers.every((matcher) => matcher.operator === 'and')) {
     return summaries.join(matcherOperator === 'or' ? ' 或 ' : ' 且 ')
   }
@@ -93,6 +116,14 @@ export function summarizeMatchers(
   }, '')
 }
 
+// 传输方式按人的叫法写：tcp_udp、doh 是配置里的键值，不是给人读的。认不出的照旧转大写。
+// Transports as people say them: tcp_udp and doh are config values, not words. Unknown ones are uppercased as before.
+const TRANSPORT_LABELS: Record<string, string> = { udp: 'UDP', tcp: 'TCP', tcp_udp: 'TCP+UDP', doh: 'DoH', dot: 'DoT', doq: 'DoQ' }
+
+export function transportLabel(transport: string): string {
+  return TRANSPORT_LABELS[transport.toLowerCase()] ?? transport.toUpperCase()
+}
+
 export function summarizeAction(action: ActionConfig): string {
   switch (action.type) {
     case 'log': return `记录 ${text(action.level, 'info')} 日志`
@@ -101,21 +132,29 @@ export function summarizeAction(action: ActionConfig): string {
     case 'static_cname_response': return `将域名映射到 ${text(action.target)}`
     case 'static_txt_response': return `返回 TXT ${text(action.text)}`
     case 'replace_txt_response': return `替换 TXT 为 ${text(action.text)}`
-    case 'jump_to_pipeline': return `跳转至 Pipeline ${text(action.pipeline, '未选择')}`
+    // 还没选目标时写成缺什么，不占 ID 那个位置：否则读起来像跳去一个叫「未选择」的 Pipeline（审计第八轮 D1）
+    // With no target yet, say what is missing instead of filling the ID slot, which read as a Pipeline named 未选择 (audit round 8, D1)
+    case 'jump_to_pipeline': return action.pipeline?.trim() ? `跳转至 Pipeline ${action.pipeline.trim()}` : '跳转至 Pipeline（还没选）'
     case 'allow': return '允许当前结果'
     case 'deny': return '拒绝请求'
     case 'forward': {
+      // 几个上游用顿号隔开；协议名是英文，用半角括号贴在地址后面（中文排版里英文内容用半角标点）
+      // Several upstreams are separated by 、; the protocol is an English term, so it follows the address in half-width brackets
       const transport = text(action.transport, '')
-      return `转发至 ${text(action.upstream, '默认上游')}${transport ? `（${transport.toUpperCase()}）` : ''}`
+      const upstreams = (typeof action.upstream === 'string' ? action.upstream.split(',') : Array.isArray(action.upstream) ? action.upstream : [])
+        .filter((item): item is string => typeof item === 'string' && Boolean(item.trim()))
+        .map((item) => item.trim())
+      return `转发至 ${upstreams.length ? upstreams.join('、') : '默认上游'}${transport ? ` (${transportLabel(transport)})` : ''}`
     }
     case 'continue': return '继续匹配后续规则'
     default: return `执行 ${action.type}`
   }
 }
 
+// 「然后」后面紧跟动词，中文和中文之间不空格 / 然后 is followed straight by the verb: no space between Chinese words
 export function summarizeActions(actions: ActionConfig[]): string {
   if (actions.length === 0) return '未配置动作'
-  return actions.map(summarizeAction).join('，然后 ')
+  return actions.map(summarizeAction).join('，然后')
 }
 
 export function summarizeRule(rule: RuleConfig): { condition: string; action: string } {

@@ -22,7 +22,7 @@ export function responseValidationErrors(rule: RuleConfig, enabled: boolean): st
   const errors: string[] = []
   if (!rule.actions.some((action) => action.type === 'forward')) errors.push('响应处理需要先添加转发动作')
   if (rule.response_actions_on_match.length + rule.response_actions_on_miss.length === 0) {
-    errors.push('请至少配置一个响应分支动作')
+    errors.push('匹配成功或匹配失败至少要一个动作')
   }
   return errors
 }

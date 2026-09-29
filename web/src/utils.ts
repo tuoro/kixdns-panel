@@ -47,6 +47,30 @@ export function formatDate(timestamp: number): string {
   }).format(new Date(timestamp * 1000))
 }
 
+// 历史版本的时间：今天、昨天写字，今年只写月日，更早的写年月日；都不写秒。
+// A version's time: 今天 and 昨天 in words, month and day within the year, the full date before that; never seconds.
+export function formatVersionTime(timestamp: number, now: number = Date.now()): string {
+  const date = new Date(timestamp * 1000)
+  const today = new Date(now)
+  const pad = (value: number) => String(value).padStart(2, '0')
+  const time = `${pad(date.getHours())}:${pad(date.getMinutes())}`
+  const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime()
+  const day = 86_400_000
+  if (date.getTime() >= startOfToday && date.getTime() < startOfToday + day) return `今天 ${time}`
+  if (date.getTime() >= startOfToday - day && date.getTime() < startOfToday) return `昨天 ${time}`
+  if (date.getFullYear() === today.getFullYear()) return `${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${time}`
+  return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())}`
+}
+
+// 多久以前：刚刚、N 分钟前、N 小时前、N 天前（Geo 文件下载时间用） / How long ago, for Geo file download times
+export function formatAgo(timestamp: number, now: number = Date.now()): string {
+  const seconds = Math.max(0, Math.floor(now / 1000 - timestamp))
+  if (seconds < 60) return '刚刚'
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`
+  if (seconds < 86_400) return `${Math.floor(seconds / 3600)} 小时前`
+  return `${Math.floor(seconds / 86_400)} 天前`
+}
+
 export function formatDuration(seconds: number): string {
   if (seconds < 60) return `${Math.max(0, Math.floor(seconds))} 秒`
   const days = Math.floor(seconds / 86400)

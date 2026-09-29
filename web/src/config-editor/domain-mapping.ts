@@ -23,9 +23,11 @@ export function domainMappingFieldErrors(row: DomainMappingRow): DomainMappingFi
   const errors: DomainMappingFieldErrors = {}
   if (!row.source.trim()) errors.source = '请填写源域名'
   else if (!validDnsName(row.source)) errors.source = '源域名格式无效'
+  // 借用固定 CNAME 动作的校验，但用这一页的叫法：这里的字段叫「目标域名」「TTL」，不提 CNAME（审计第四轮 M3）
+  // Borrows the fixed-CNAME action's checks in this tab's words: the fields here are 目标域名 and TTL, and CNAME is never mentioned (audit round 4, M3)
   const actionErrors = actionFieldErrors({ type: 'static_cname_response', target: row.target, ttl: row.ttl }, '')
-  if (actionErrors.target) errors.target = actionErrors.target
-  if (actionErrors.ttl) errors.ttl = actionErrors.ttl
+  if (actionErrors.target) errors.target = row.target.trim() ? '目标域名格式无效' : '请填写目标域名'
+  if (actionErrors.ttl) errors.ttl = 'TTL 必须是 0 到 4294967295 的整数'
   return errors
 }
 

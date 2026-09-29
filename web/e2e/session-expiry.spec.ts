@@ -22,7 +22,7 @@ async function openDirtyConfig(page: Page): Promise<void> {
     buffer: Buffer.from(JSON.stringify(configFixture)),
   })
   await expect(page.locator('.workbench-entry')).toHaveCount(1)
-  await expect(page.locator('.workbench-draft-state')).toContainText('草稿有修改')
+  await expect(page.locator('.config-save-state')).toContainText(/已修改 \d+ 处/)
 }
 
 /** 模拟一次受保护接口返回 401：直接派发 client 在 401 时派发的那个事件。 */
@@ -43,7 +43,7 @@ test('会话过期不跳转，配置草稿在重新验证后原样还在 @respon
   expect(new URL(page.url()).pathname).toBe('/config')
   await expect(page.getByLabel('解析编排工作台', { exact: true })).toBeVisible()
   await expect(page.locator('.workbench-entry')).toHaveCount(1)
-  await expect(page.locator('.workbench-draft-state')).toContainText('草稿有修改')
+  await expect(page.locator('.config-save-state')).toContainText(/已修改 \d+ 处/)
 
   // 明确告诉用户改动还在——看到这个框的人第一反应就是担心这个。
   await expect(page.getByRole('dialog')).toContainText('你在本页的改动都还在')
@@ -55,7 +55,7 @@ test('会话过期不跳转，配置草稿在重新验证后原样还在 @respon
   await expect(page.getByRole('dialog', { name: '登录状态已过期' })).toHaveCount(0)
   expect(new URL(page.url()).pathname).toBe('/config')
   await expect(page.locator('.workbench-entry')).toHaveCount(1)
-  await expect(page.locator('.workbench-draft-state')).toContainText('草稿有修改')
+  await expect(page.locator('.config-save-state')).toContainText(/已修改 \d+ 处/)
 })
 
 test('会话过期后选择退出登录才离开当前页', async ({ page }) => {

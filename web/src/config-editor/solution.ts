@@ -1,8 +1,8 @@
 import { createRule, nextPipelineId } from './model'
-import { guidedRuleValidationErrors } from './guided-rule'
+import { SHARED_TEMPLATE_COPY, guidedRuleValidationErrors } from './guided-rule'
 import { matcherFieldErrors } from './field-validation'
 import { CONFIG_STATIC_CNAME_RESPONSE_V1 } from './schema'
-import { ruleMatchesEveryRequest } from './summary'
+import { ruleMatchesEveryRequest, summarizeMatchers } from './summary'
 import type { ConfigObject, KixConfig, PipelineConfig, PipelineSelectConfig, RuleConfig } from './types'
 
 export type SolutionTemplateId = 'domestic_global' | 'domain_upstream' | 'domain_mapping' | 'ad_block' | 'client_network' | 'blank'
@@ -48,11 +48,11 @@ export interface DnsSolution {
 
 export const SOLUTION_TEMPLATES: SolutionTemplate[] = [
   { id: 'domestic_global', name: '国内外 DNS 分流', description: '一次创建国内解析与全局兜底' },
-  { id: 'domain_upstream', name: '指定域名上游', description: '指定域名使用独立 DNS' },
-  { id: 'domain_mapping', name: '域名映射', description: '把查询域名映射到另一个域名', requiresCapability: CONFIG_STATIC_CNAME_RESPONSE_V1 },
-  { id: 'ad_block', name: '广告域名拒绝', description: '拒绝广告分类中的域名' },
+  { id: 'domain_upstream', ...SHARED_TEMPLATE_COPY.domain_upstream },
+  { id: 'domain_mapping', ...SHARED_TEMPLATE_COPY.domain_mapping, requiresCapability: CONFIG_STATIC_CNAME_RESPONSE_V1 },
+  { id: 'ad_block', ...SHARED_TEMPLATE_COPY.ad_block },
   { id: 'client_network', name: '客户端网段分流', description: '指定客户端使用独立流程' },
-  { id: 'blank', name: '空白方案', description: '从空白条件和动作开始' },
+  { id: 'blank', ...SHARED_TEMPLATE_COPY.blank },
 ]
 
 function clone<T>(value: T): T {
@@ -75,11 +75,40 @@ function makeDraft(config: KixConfig, id: string): SolutionDraft {
   }
 }
 
+/**
+ * 能沿用的兜底入口：第一个匹配所有请求的入口，且它指向的 Pipeline 真的存在。指向不存在的 Pipeline 的兜底不能沿用，
+ * 跳过去就是一个坏掉的跳转（审计第三轮 C3）。
+ * The catch-all that can be reused: the first entry matching every request, and only when its Pipeline exists. A
+ * catch-all pointing at a missing Pipeline cannot be reused; jumping there would be a broken jump (audit round 3, C3).
+ */
+export function reusableCatchAll(config: KixConfig): PipelineSelectConfig | undefined {
+  const first = config.pipeline_select.find(selectorMatchesEveryRequest)
+  return first && config.pipelines.some((pipeline) => pipeline.id === first.pipeline) ? first : undefined
+}
+
+/**
+ * 起点的说明按这份配置写：已经有兜底入口时，国内外分流只建国内解析，说明不能再说「一次创建国内解析与全局兜底」（审计第三轮 B8）。
+ * 兜底入口用它的名字称呼，不用编号：新入口插在它前面，它的编号会变，选完以后放置那一句里的编号说的是新入口。
+ * A start's description follows this config: with a catch-all already there the split start creates only 国内解析, so it must
+ * not promise 「一次创建国内解析与全局兜底」 (audit round 3, B8). The catch-all is named by its summary, not its number: the new
+ * entry goes in front of it and shifts that number, and the placement line's number then means the new entry.
+ */
+export function solutionTemplateDescription(config: KixConfig, template: SolutionTemplate): string {
+  if (template.id !== 'domestic_global') return template.description
+  const fallback = reusableCatchAll(config)
+  if (!fallback) return template.description
+  return `创建国内解析，其余请求仍由「${summarizeMatchers(fallback.matchers, fallback.matcher_operator, 'selector')}」兜底`
+}
+
 export function createSolutionDrafts(config: KixConfig, templateId: SolutionTemplateId): SolutionDraft[] {
   if (templateId === 'domestic_global') {
     const domestic = makeDraft(config, 'cn_doh')
     const withDomestic = { ...config, pipelines: [...config.pipelines, domestic.pipeline] }
     const global = makeDraft(withDomestic, 'global_doh')
+    // 已经有接住所有请求的入口时，全局兜底就用它：只建国内解析，异常响应跳到那个入口的流程，不再另建一个永远轮不到的兜底（审计第二轮 B2）
+    // With a catch-all entry already there, it is the global fallback: only 国内解析 is created and a bad response jumps to that
+    // entry's flow, instead of adding a second fallback that could never be reached (audit round 2, B2)
+    const fallback = reusableCatchAll(config)
     // 分类名本身：内核按原样查 GeoSite 标签，写成 geosite:cn 永远匹配不上 / The bare category: the kernel looks the tag up as written, so geosite:cn never matches
     domestic.selector.matchers = [{ type: 'geo_site', operator: 'and', value: 'cn' }]
     domestic.rule.name = 'cn-doh'
@@ -96,8 +125,9 @@ export function createSolutionDrafts(config: KixConfig, templateId: SolutionTemp
     domestic.rule.response_matcher_operator = 'or'
     domestic.rule.response_actions_on_match = [
       { type: 'log', level: 'warn' },
-      { type: 'jump_to_pipeline', pipeline: global.pipeline.id },
+      { type: 'jump_to_pipeline', pipeline: fallback?.pipeline ?? global.pipeline.id },
     ]
+    if (fallback) return [domestic]
     global.selector.matchers = []
     global.rule.name = 'global-doh'
     global.rule.actions = [{
@@ -118,14 +148,17 @@ export function createSolutionDrafts(config: KixConfig, templateId: SolutionTemp
           ? 'client_dns'
           : 'dns_solution'
   const draft = makeDraft(config, base)
+  // 要用户自己填的值（域名、映射）留空，示例只在占位符里：模板不会一键加进 example.com 这种假数据（审计第二轮 B1）
+  // Values only the user can supply (domains, mappings) start empty with the example in the placeholder, so a start never
+  // adds fake data such as example.com in one click (audit round 2, B1)
   if (templateId === 'domain_upstream') {
-    draft.selector.matchers = [{ type: 'domain_suffix', operator: 'and', value: 'example.com' }]
+    draft.selector.matchers = [{ type: 'domain_suffix', operator: 'and', value: '' }]
     draft.rule.actions = [{ type: 'forward', upstream: '1.1.1.1:53', transport: '' }]
   } else if (templateId === 'domain_mapping') {
-    draft.selector.matchers = [{ type: 'domain_suffix', operator: 'and', value: 'alias.example' }]
-    draft.rule.actions = [{ type: 'static_cname_response', target: 'origin.example.', ttl: 300 }]
+    draft.selector.matchers = [{ type: 'domain_suffix', operator: 'and', value: '' }]
+    draft.rule.actions = [{ type: 'static_cname_response', target: '', ttl: 300 }]
     draft.groupType = 'domain_mapping'
-    draft.mappingRows = [{ source: 'alias.example', target: 'origin.example.', ttl: 300 }]
+    draft.mappingRows = [{ source: '', target: '', ttl: 300 }]
   } else if (templateId === 'ad_block') {
     draft.selector.matchers = [{ type: 'geo_site', operator: 'and', value: 'category-ads-all' }]
     draft.rule.actions = [{ type: 'deny' }]
@@ -229,6 +262,29 @@ function collectPipelineReferences(config: KixConfig): Map<string, number> {
     }
   }
   return references
+}
+
+// 三处（工作台列表、自由编辑、流程视图）同一句话说同一件事（审计 V17） / One sentence per fact across the list, 自由编辑 and the flow view (audit V17)
+export const ENTRY_ORDER_NOTE = '从上往下匹配，第一个命中的生效。'
+export const RULE_ORDER_NOTE = '每个 Pipeline 里的规则也从上往下执行。'
+
+/**
+ * Pipeline 是怎么被用到的，工作台列表、浏览检查器和流程视图用同一个说法（审计 V11）：配置里第一个 Pipeline 在
+ * 没有兜底入口时「接住其余请求」（内核 select_pipeline 的退路）；有入口指向的不另说；其余的「由规则跳转进来」或「未被引用」。
+ * How a Pipeline gets used, worded the same in the workbench list, the browse inspector and the flow view (audit V11):
+ * the first Pipeline catches the rest when no entry catches everything (the kernel's select_pipeline fallback); one
+ * with an entry needs no note; the rest are reached by a rule's jump or referenced by nothing.
+ */
+// first：它是不是第一个 Pipeline。平时按 ID 看；改名途中 ID 已经是新打的字，调用方按对象另外告诉它（审计第六轮 C2）
+// first: whether it is the first Pipeline. Usually judged by ID; mid-rename the ID already holds the typed text, so the caller says so by object (audit round 6, C2)
+export function pipelineRole(
+  config: KixConfig,
+  pipelineId: string,
+  first = config.pipelines[0]?.id === pipelineId,
+): '接住其余请求' | '由规则跳转进来' | '未被引用' | undefined {
+  if (first && !config.pipeline_select.some(selectorMatchesEveryRequest)) return '接住其余请求'
+  if (config.pipeline_select.some((selector) => selector.pipeline === pipelineId)) return undefined
+  return (collectPipelineReferences(config).get(pipelineId) ?? 0) > 0 ? '由规则跳转进来' : '未被引用'
 }
 
 export function collectDnsSolutions(config: KixConfig): DnsSolution[] {
@@ -382,7 +438,7 @@ export function solutionValidationErrors(
   const errors: string[] = []
   if (draft.groupType === 'domain_mapping') {
     const rows = draft.mappingRows ?? []
-    if (rows.length === 0) errors.push('请至少添加一条域名映射')
+    if (rows.length === 0) errors.push('至少要一条域名映射')
     if (rows.some((row) => !row.source.trim() || !row.target.trim())) errors.push('请补全域名映射')
     const sources = rows.map((row) => row.source.trim()).filter(Boolean)
     if (new Set(sources).size !== sources.length) errors.push('源域名不能重复')
@@ -397,9 +453,11 @@ export function solutionValidationErrors(
     const pipelineIds = [...config.pipelines.map((pipeline) => pipeline.id), draft.pipeline.id, ...additionalPipelineIds]
     errors.push(...guidedRuleValidationErrors(draft.rule, draft.pipeline.id, pipelineIds))
   }
-  if (sourceSelectorIndex === undefined && selectorMatchesEveryRequest(draft.selector)) {
-    const fallbackExists = config.pipeline_select.some(selectorMatchesEveryRequest)
-    if (fallbackExists) errors.push('已经存在任意请求兜底方案')
+  // 编辑时也查：把一个入口的条件删光，它就和已有的兜底抢同一批请求，其中一个永远轮不到（审计第三轮）
+  // Editing is checked too: removing an entry's last condition makes it compete with the existing catch-all, and one of the two would never be reached (audit round 3)
+  if (selectorMatchesEveryRequest(draft.selector)
+    && config.pipeline_select.some((selector, index) => index !== sourceSelectorIndex && selectorMatchesEveryRequest(selector))) {
+    errors.push('已经存在任意请求兜底方案')
   }
   return [...new Set(errors)]
 }
@@ -408,6 +466,56 @@ export function solutionInsertIndex(config: KixConfig, selector: PipelineSelectC
   if (selectorMatchesEveryRequest(selector)) return config.pipeline_select.length
   const fallbackIndex = config.pipeline_select.findIndex(selectorMatchesEveryRequest)
   return fallbackIndex < 0 ? config.pipeline_select.length : fallbackIndex
+}
+
+/**
+ * 新入口会排在第几个，按工作台列表的编号数（不算域名映射，从 1 数），以及排到它后面的那个入口（兜底入口）。
+ * Where a new entry lands, numbered as the workbench list numbers entries (domain mappings excluded, 1-based),
+ * and the entry that ends up after it (the catch-all).
+ */
+export function entryPlacement(config: KixConfig, selector: PipelineSelectConfig): { number: number; next?: PipelineSelectConfig } {
+  const index = solutionInsertIndex(config, selector)
+  const mappings = mappingSelectorIndexes(config)
+  const counted = (at: number): boolean => !mappings.has(at)
+  let number = 1
+  for (let at = 0; at < index; at += 1) if (counted(at)) number += 1
+  const nextIndex = config.pipeline_select.findIndex((_, at) => at >= index && counted(at))
+  return nextIndex < 0 ? { number } : { number, next: config.pipeline_select[nextIndex] }
+}
+
+/**
+ * 已经在列表里的入口排第几、后面紧跟哪个入口、一共几个入口；编号和工作台列表一样，不算域名映射。
+ * 一次建好几段的起点先把每一段都放进去再问，每一段说的位置才都是真的（审计第三轮 B1）。
+ * Where an entry already in the list stands, the entry right after it and how many entries there are, numbered as the workbench
+ * list numbers them (domain mappings excluded). A start that adds several parts inserts all of them first, so every part states a
+ * true position (audit round 3, B1).
+ */
+export function entryPosition(config: KixConfig, index: number): { number: number; next?: PipelineSelectConfig; total: number } {
+  const mappings = mappingSelectorIndexes(config)
+  const counted = (at: number): boolean => !mappings.has(at)
+  const nextIndex = config.pipeline_select.findIndex((_, at) => at > index && counted(at))
+  return {
+    number: entryNumberAt(config, index, mappings),
+    next: nextIndex < 0 ? undefined : config.pipeline_select[nextIndex],
+    total: config.pipeline_select.filter((_, at) => counted(at)).length,
+  }
+}
+
+function mappingSelectorIndexes(config: KixConfig): Set<number | undefined> {
+  return new Set(collectDnsSolutions(config).filter((solution) => solution.groupType === 'domain_mapping').map((solution) => solution.selectorIndex))
+}
+
+/** 第 index 个选择器在工作台列表里的编号（不算域名映射，从 1 数） / The workbench number of selector index (mappings excluded, 1-based) */
+export function entryNumberAt(config: KixConfig, index: number, mappings = mappingSelectorIndexes(config)): number {
+  let number = 1
+  for (let at = 0; at < index; at += 1) if (!mappings.has(at)) number += 1
+  return number
+}
+
+/** 已有的兜底入口在工作台列表里的编号 / The existing catch-all's number in the workbench list */
+export function catchAllEntryNumber(config: KixConfig): number | undefined {
+  const index = config.pipeline_select.findIndex(selectorMatchesEveryRequest)
+  return index < 0 ? undefined : entryNumberAt(config, index)
 }
 
 export function cloneSolutionDraft(draft: SolutionDraft): SolutionDraft {

@@ -13,10 +13,12 @@
   "dependencies": {
     "@codemirror/commands": "^6.11.1",
     "@codemirror/lang-json": "^6.0.2",
+    "@codemirror/language": "^6.12.4",
     "@codemirror/state": "^6.7.5",
     "@codemirror/view": "^6.43.12",
     "@fontsource/archivo": "^5.3.0",
     "@fontsource/ibm-plex-mono": "^5.3.0",
+    "@lezer/highlight": "^1.2.4",
     "@lucide/vue": "^1.47.0",
     "vue": "^3.5.43",
     "vue-router": "^4.5.0"

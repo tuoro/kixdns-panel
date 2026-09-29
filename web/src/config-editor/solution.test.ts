@@ -5,10 +5,14 @@ import {
   collectDomainMappingRows,
   createDraftFromSolution,
   createSolutionDrafts,
+  entryPosition,
   materializeSolutionRules,
   replaceDomainMappingRows,
+  reusableCatchAll,
+  SOLUTION_TEMPLATES,
   selectorMatchesEveryRequest,
   solutionInsertIndex,
+  solutionTemplateDescription,
   solutionValidationErrors,
 } from './solution'
 import type { KixConfig, PipelineConfig, PipelineSelectConfig, RuleConfig } from './types'
@@ -57,18 +61,29 @@ describe('DNS 处理方案', () => {
     expect(solutionValidationErrors(draft!, value, undefined, [draft!.pipeline.id])).toContain('Pipeline ID 已存在')
   })
 
-  it('域名映射方案同时创建入口条件和固定 CNAME 动作', () => {
-    const [mapping] = createSolutionDrafts(config(), 'domain_mapping')
+  // 映射的源和目标留空等用户填，示例只在占位符里（审计第二轮 B1） / Source and target start empty for the user to fill; the example lives in the placeholder (audit round 2, B1)
+  it('域名映射方案同时创建入口条件和固定 CNAME 动作，域名留给用户填', () => {
+    const value = config()
+    const [mapping] = createSolutionDrafts(value, 'domain_mapping')
 
     expect(mapping?.pipeline.id).toBe('domain_mapping')
-    expect(mapping?.selector.matchers[0]).toMatchObject({ type: 'domain_suffix', value: 'alias.example' })
-    expect(mapping?.rule.actions[0]).toEqual({ type: 'static_cname_response', target: 'origin.example.', ttl: 300 })
-    expect(mapping?.mappingRows).toEqual([{ source: 'alias.example', target: 'origin.example.', ttl: 300 }])
+    expect(mapping?.selector.matchers[0]).toMatchObject({ type: 'domain_suffix', value: '' })
+    expect(mapping?.rule.actions[0]).toEqual({ type: 'static_cname_response', target: '', ttl: 300 })
+    expect(mapping?.mappingRows).toEqual([{ source: '', target: '', ttl: 300 }])
+    expect(solutionValidationErrors(mapping!, value)).toContain('请补全域名映射')
+  })
+
+  it('指定域名上游方案的域名留给用户填', () => {
+    const value = config()
+    const [draft] = createSolutionDrafts(value, 'domain_upstream')
+    expect(draft?.selector.matchers[0]).toMatchObject({ type: 'domain_suffix', value: '' })
+    expect(solutionValidationErrors(draft!, value).length).toBeGreaterThan(0)
   })
 
   it('多条域名映射生成一个可往返编辑的映射组', () => {
     const value = config()
     const mapping = createSolutionDrafts(value, 'domain_mapping')[0]!
+    mapping.mappingRows![0] = { source: 'alias.example', target: 'origin.example.', ttl: 300 }
     mapping.mappingRows!.push({ source: 'alias-two.example', target: 'origin-two.example.', ttl: 120 })
     const saved = cloneSolutionDraft(mapping)
     const rules = materializeSolutionRules(saved)
@@ -141,6 +156,19 @@ describe('DNS 处理方案', () => {
     expect(selectorMatchesEveryRequest(drafts[1]!.selector)).toBe(true)
   })
 
+  // 已有兜底入口时不再另建一个永远轮不到的兜底：只建国内解析，异常响应跳到已有兜底的流程（审计第二轮 B2）
+  // With a catch-all already there, no unreachable second fallback: only 国内解析, whose bad responses jump to the existing fallback's flow (audit round 2, B2)
+  it('已有兜底入口时，国内外分流只建国内解析并沿用它', () => {
+    const value: KixConfig = { settings: {}, pipeline_select: [selector('default')], pipelines: [pipeline('default')] }
+    const drafts = createSolutionDrafts(value, 'domestic_global')
+
+    expect(drafts).toHaveLength(1)
+    expect(drafts[0]?.selector.matchers[0]).toEqual({ type: 'geo_site', operator: 'and', value: 'cn' })
+    expect(drafts[0]?.rule.response_actions_on_match.at(-1)).toEqual({ type: 'jump_to_pipeline', pipeline: 'default' })
+    expect(solutionValidationErrors(drafts[0]!, value)).toEqual([])
+    expect(solutionInsertIndex(value, drafts[0]!.selector)).toBe(0)
+  })
+
   it('区分完整方案、自定义方案和孤立 Pipeline', () => {
     const value: KixConfig = {
       settings: {},
@@ -157,6 +185,7 @@ describe('DNS 处理方案', () => {
 
   it('带扩展字段的映射配置保持为自定义方案', () => {
     const mapping = createSolutionDrafts(config(), 'domain_mapping')[0]!
+    mapping.mappingRows![0] = { source: 'alias.example', target: 'origin.example.', ttl: 300 }
     const saved = cloneSolutionDraft(mapping)
     const rules = materializeSolutionRules(saved)
     rules[0]!.future_option = true
@@ -263,5 +292,55 @@ describe('DNS 处理方案', () => {
     expect(solutionInsertIndex(value, specific.selector)).toBe(0)
     expect(solutionInsertIndex(value, fallback.selector)).toBe(1)
     expect(solutionValidationErrors(fallback, value)).toContain('已经存在任意请求兜底方案')
+  })
+
+  // 编辑时把一个入口的条件删光，它就和已有的兜底抢同一批请求；兜底自己改动不算冲突（审计第三轮）
+  // Clearing an entry's conditions while editing competes with the existing catch-all; editing the catch-all itself is no conflict (audit round 3)
+  it('编辑时删光条件也不能和已有的兜底并存', () => {
+    const value: KixConfig = {
+      settings: {},
+      pipeline_select: [selector('specific', [{ type: 'domain_suffix', operator: 'and', value: 'a.example' }]), selector('fallback')],
+      pipelines: [pipeline('specific'), pipeline('fallback')],
+    }
+    const [specific, fallback] = collectDnsSolutions(value)
+    const cleared = createDraftFromSolution(specific!, value)!
+    cleared.selector.matchers = []
+    const unchanged = createDraftFromSolution(fallback!, value)!
+
+    expect(solutionValidationErrors(cleared, value, 0)).toContain('已经存在任意请求兜底方案')
+    expect(solutionValidationErrors(unchanged, value, 1)).not.toContain('已经存在任意请求兜底方案')
+  })
+
+  // 指向不存在的 Pipeline 的兜底不能沿用：跳过去是一个坏掉的跳转，分流照常建两段，冲突报在全局兜底那一段（审计第三轮 C3）
+  // A catch-all pointing at a missing Pipeline is not reused: jumping there would break, so the split still builds two parts and the conflict lands on 全局兜底 (audit round 3, C3)
+  it('兜底入口的 Pipeline 不存在时，国内外分流不沿用它', () => {
+    const value: KixConfig = { settings: {}, pipeline_select: [selector('multi', [{ type: 'domain_suffix', operator: 'and', value: 'a.example' }]), selector('ghost')], pipelines: [pipeline('multi')] }
+    const drafts = createSolutionDrafts(value, 'domestic_global')
+
+    expect(reusableCatchAll(value)).toBeUndefined()
+    expect(drafts).toHaveLength(2)
+    expect(drafts[0]?.rule.response_actions_on_match.at(-1)).toEqual({ type: 'jump_to_pipeline', pipeline: drafts[1]?.pipeline.id })
+    expect(solutionValidationErrors(drafts[1]!, value)).toContain('已经存在任意请求兜底方案')
+  })
+
+  // 起点的说明按这份配置写：有能沿用的兜底时不再说「一次创建国内解析与全局兜底」（审计第三轮 B8）
+  // A start's description follows the config: with a reusable catch-all it no longer promises both parts (audit round 3, B8)
+  it('有能沿用的兜底时，国内外分流的说明写明只建国内解析', () => {
+    const split = SOLUTION_TEMPLATES.find((template) => template.id === 'domestic_global')!
+    const withFallback: KixConfig = { settings: {}, pipeline_select: [selector('a', [{ type: 'domain_suffix', operator: 'and', value: 'a.example' }]), selector('default')], pipelines: [pipeline('a'), pipeline('default')] }
+
+    expect(solutionTemplateDescription(config(), split)).toBe('一次创建国内解析与全局兜底')
+    expect(solutionTemplateDescription(withFallback, split)).toBe('创建国内解析，其余请求仍由「任意请求」兜底')
+  })
+
+  // 一次建两段时先都放进去再问位置：国内解析在前、全局兜底在最后，编号和列表一样不算域名映射（审计第三轮 B1）
+  // With both parts inserted first: 国内解析 ahead, 全局兜底 last, numbered like the list without mappings (audit round 3, B1)
+  it('已经放进列表的入口能说出自己排第几、后面是谁、一共几个', () => {
+    const [domestic, global] = createSolutionDrafts(config(), 'domestic_global')
+    const pending: KixConfig = { settings: {}, pipeline_select: [], pipelines: [] }
+    for (const draft of [domestic!, global!]) pending.pipeline_select.splice(solutionInsertIndex(pending, draft.selector), 0, draft.selector)
+
+    expect(entryPosition(pending, 0)).toEqual({ number: 1, next: global!.selector, total: 2 })
+    expect(entryPosition(pending, 1)).toEqual({ number: 2, next: undefined, total: 2 })
   })
 })

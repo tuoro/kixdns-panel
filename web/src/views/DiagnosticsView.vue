@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { Check, ChevronDown, LoaderCircle, Network, Play, TriangleAlert, X } from '@lucide/vue'
+import { Check, ChevronDown, LoaderCircle, Network, TriangleAlert, X } from '@lucide/vue'
 import { computed, ref } from 'vue'
 import { apiRequest, jsonBody } from '../api/client'
 import type { DnsDiagnostic } from '../api/types'
 import UiCard from '../components/ui/UiCard.vue'
 import UiEmpty from '../components/ui/UiEmpty.vue'
 import UiPageHeader from '../components/ui/UiPageHeader.vue'
+import UiSelect from '../components/ui/UiSelect.vue'
 import { useToast } from '../composables/useToast'
 import { describeStep, formatElapsed, forwardTarget, groupTrace, isDnsSuccess, parseDnsAnswer, responseCodeName, traceTone, type TextPart } from '../diagnostics'
 import { errorMessage } from '../utils'
@@ -17,6 +18,8 @@ const result = ref<DnsDiagnostic | null>(null)
 const queryError = ref('')
 const toast = useToast()
 const types = ['A', 'AAAA', 'CNAME', 'MX', 'NS', 'TXT', 'SOA', 'PTR']
+// 记录类型用组件库的下拉框，和配置页同一个（规范 2.3） / The record type uses the kit select, the same as the config page (spec 2.3)
+const typeOptions = types.map((type) => ({ value: type, label: type }))
 const steps = computed(() => result.value?.trace_supported ? result.value.trace : [])
 const answers = computed(() => result.value?.answers.map((raw) => ({ raw, fields: parseDnsAnswer(raw) })) ?? [])
 const successful = computed(() => result.value !== null && isDnsSuccess(result.value.response_code))
@@ -82,8 +85,8 @@ async function run(): Promise<void> {
          three controls still share one row and the button just says 查询. -->
     <form class="diag-query" aria-label="DNS 查询" @submit.prevent="run">
       <label class="ui-input diag-domain"><span class="diag-sr-only">域名</span><input v-model="domain" type="text" inputmode="url" maxlength="253" required placeholder="example.com" autocapitalize="none" :spellcheck="false" /></label>
-      <label class="ui-input diag-record-type"><span class="diag-sr-only">记录类型</span><select v-model="recordType" aria-label="记录类型"><option v-for="type in types" :key="type" :value="type">{{ type }}</option></select><ChevronDown :size="16" aria-hidden="true" /></label>
-      <button class="ui-btn ui-btn--primary diag-run" type="submit" :disabled="running" :aria-label="running ? '正在查询' : '执行查询'"><LoaderCircle v-if="running" class="diag-spinner" :size="16" /><Play v-else :size="15" /><span class="diag-run-desktop">{{ running ? '正在查询…' : '执行查询' }}</span><span class="diag-run-mobile" aria-hidden="true">{{ running ? '查询中' : '查询' }}</span></button>
+      <UiSelect v-model="recordType" class="diag-record-type" :options="typeOptions" label="记录类型" />
+      <button class="ui-btn ui-btn--primary diag-run" type="submit" :disabled="running" :aria-label="running ? '正在查询' : '执行查询'"><LoaderCircle v-if="running" class="diag-spinner" :size="16" aria-hidden="true" /><span class="diag-run-desktop">{{ running ? '正在查询…' : '执行查询' }}</span><span class="diag-run-mobile" aria-hidden="true">{{ running ? '查询中' : '查询' }}</span></button>
     </form>
 
     <!-- 等待时给骨架而不是转圈：骨架的分块和结果一致，数据到达时版面不跳。 -->
@@ -153,9 +156,6 @@ async function run(): Promise<void> {
 .diag-page { min-width: 0; display: grid; gap: var(--s-5); align-content: start; }
 .diag-query { display: grid; grid-template-columns: minmax(0, 1fr) 112px auto; gap: var(--s-2); }
 .diag-query input { font-family: var(--mono); }
-.diag-record-type select { min-width: 0; flex: 1; padding: 0; border: 0; outline: 0; background: transparent; color: var(--l-ink); font-size: var(--t-3); appearance: none; cursor: pointer; }
-.diag-record-type { position: relative; }
-.diag-record-type:focus-within { border-color: var(--l-ink); }
 .diag-run-mobile { display: none; }
 .diag-spinner { animation: ui-spin var(--m-spin) linear infinite; }
 .diag-sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
@@ -228,8 +228,10 @@ async function run(): Promise<void> {
 .diag-skeleton-card { min-height: calc(var(--s-8) * 4); }
 
 @media (max-width: 640px) {
-  .diag-query { grid-template-columns: minmax(0, 1fr) 76px auto; }
-  .diag-record-type { padding-inline: var(--s-2); }
+  .diag-query { grid-template-columns: minmax(0, 1fr) 84px auto; }
+  /* 窄格子里收一收左右留白，AAAA、CNAME 放得下 / Tighter padding in the narrow cell so AAAA and CNAME fit */
+  .diag-record-type :deep(select) { padding-inline: var(--s-2) calc(var(--s-2) + var(--size-icon)); }
+  .diag-record-type :deep(svg) { right: var(--s-2); }
   .diag-run { padding-inline: var(--s-3); }
   .diag-run-desktop { display: none; }
   .diag-run-mobile { display: inline; }
