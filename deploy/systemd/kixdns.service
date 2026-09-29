@@ -11,7 +11,11 @@ Type=simple
 User=kixdns
 Group=kixdns
 UMask=0027
-Environment=RUST_LOG=info
+# 逐请求的应答记录（dns_response、dns_request_finished）不进系统日志：每个查询一行会淹没运行日志页，
+# 还会把客户端 IP 和域名绕过查询统计的脱敏留在日志里。要看逐条请求用面板的查询日志。
+# Per-request response records (dns_response, dns_request_finished) stay out of the journal: one line per
+# query buries the runtime log page and keeps client IPs and names there, bypassing the statistics anonymization.
+Environment=RUST_LOG=info,kixdns::engine::phases=warn
 ExecStart=/var/lib/kixdns-panel/bin/kixdns run --config /etc/kixdns/pipeline.json --admin-socket /run/kixdns/admin.sock
 Restart=on-failure
 RestartSec=3s

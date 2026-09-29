@@ -371,6 +371,14 @@ printf '# 手工改动\n' >> "${WORK}/units/kixdns.service"
 assert_equals "$(plan_of upgrade true)" "binary=false unit=true restart=true" "unit 变化时重启运行中的 KixDNS"
 assert_equals "$(plan_of panel-only true)" "binary=false unit=false restart=false" "仅更新面板从不动 KixDNS"
 
+# 逐请求的应答记录不进系统日志；只写 RUST_LOG=info 的旧 unit 在升级时被替换并重启，已有安装也跟着生效
+# Per-request response records stay out of the journal; an old unit with a bare RUST_LOG=info is replaced and
+# restarted on upgrade, so existing installs pick the filter up too
+rendered_unit=$(PACKAGE_ROOT=${package_fixture}; render_kixdns_unit)
+assert_equals "$(grep '^Environment=RUST_LOG=' <<<"${rendered_unit}")" "Environment=RUST_LOG=info,kixdns::engine::phases=warn" "KixDNS 的日志级别不记逐请求的应答"
+printf '%s\n' "${rendered_unit/Environment=RUST_LOG=info,kixdns::engine::phases=warn/Environment=RUST_LOG=info}" > "${WORK}/units/kixdns.service"
+assert_equals "$(plan_of upgrade true)" "binary=false unit=true restart=true" "旧的 RUST_LOG=info unit 升级时要替换并重启"
+
 # ---------------------------------------------------------------------------
 # 端口 53 / Port 53
 # ---------------------------------------------------------------------------
