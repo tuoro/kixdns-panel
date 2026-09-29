@@ -44,7 +44,6 @@ test('首页展示精确分布，页签可用键盘切换且完整保留三个�
   await expect(page.locator('.overview-signal-label')).toHaveText('启动以来请求')
   await expect(page.locator('.overview-trend-label')).toHaveText(EXPECTED_TREND)
   await expect(page.locator('.overview-signal-sub')).not.toContainText('ms')
-  await expect(page.getByText('兜底使用')).toHaveCount(0)
   // 三张体征卡，名称都写时段：速度看最近一小时，缓存命中是启动以来（审计：每个数字都写明时段）
   // Three vital tiles, each naming its period: speed covers the last hour, cache hits the whole run
   const vitals = page.locator('.overview-vital')
@@ -65,6 +64,7 @@ test('首页展示精确分布，页签可用键盘切换且完整保留三个�
   await expect(distribution.locator('.overview-lead-name')).toHaveText('default')
   await expect(distribution.locator('.overview-shares li')).toHaveCount(2)
   await expect(distribution.locator('.overview-shares li').first()).toContainText('domestic')
+  await expect(page.locator('.overview-distribution .ui-section__aside')).toHaveCount(3)
   for (const aside of await page.locator('.overview-distribution .ui-section__aside').allTextContents()) expect(aside).toMatch(/^启动以来 · /)
   // 趋势线画得出来，且不是一条 NaN 路径。
   const path = await page.locator('.overview-spark-line').getAttribute('d')
@@ -165,7 +165,8 @@ for (const stopped of [true, false]) {
     await expect(page.locator('.overview-total-value')).toHaveText(EXPECTED_TOTAL)
     await expect(page.locator('.overview-trend-label')).toHaveText(EXPECTED_TREND)
     await expect(page.locator('.overview-config-state')).toHaveText('运行快照')
-    await expect(page.getByRole('heading', { name: '最后运行配置', exact: true })).toBeVisible()
+    // 已停止才叫「最后运行配置」；服务还在跑、只是读不到实时数据时仍是「当前运行配置」
+    await expect(page.getByRole('heading', { name: stopped ? '最后运行配置' : '当前运行配置', exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: '清空内部缓存', exact: true })).toBeDisabled()
     await page.getByRole('tab', { name: '查询排行' }).click()
     await expect(page.getByRole('button', { name: '1 小时', exact: true })).toBeDisabled()
@@ -260,7 +261,7 @@ test('页级提示一次只出一条：刷新失败时读取错误写进同一�
   await page.getByRole('button', { name: '刷新', exact: true }).click()
   const notice = page.locator('.ui-notice:visible')
   await expect(notice).toHaveCount(1)
-  await expect(notice).toContainText('数据可能已过期')
+  await expect(notice).toContainText('实时数据暂不可用')
   await expect(notice).toContainText('连接增强控制通道超时')
   await expect(notice.getByRole('button', { name: '重试', exact: true })).toBeVisible()
   // 旧数据还在 / The old data stays
@@ -279,7 +280,7 @@ test('上游健康的分母是全部上游：观察中的也算，注脚先说�
     const third = snapshot.metrics.upstreams[2]
     Object.assign(third, { attempts: 20, success: 19, errors: 1, rejected: 0, aborted: 0 })
     third.recent = { ...third.recent, attempts: 12, success: 12, errors: 0, rejected: 0, aborted: 0 }
-    // 第二个上游耗时 2.48 秒：降级，耗时按秒写 / Second upstream at 2.48 s: degraded, latency written in seconds
+    // 第二个上游耗时 2.48 秒：2 秒以上判为异常，耗时按秒写 / Second upstream at 2.48 s: 2 s or more is unhealthy, latency written in seconds
     snapshot.metrics.upstreams[1].recent.avg_latency_ms = 2480
   })
   await remountOverview(page)
@@ -291,4 +292,120 @@ test('上游健康的分母是全部上游：观察中的也算，注脚先说�
   expect(foot!.indexOf('异常')).toBeLessThan(foot!.indexOf('观察中'))
   await expect(page.locator('.overview-upstream').filter({ hasText: '2.5 s' })).toHaveCount(1)
   await expect(page.getByText('2480 ms')).toHaveCount(0)
+})
+
+test('查询排行的时段跟着手上的数据走：定时刷新还在路上时切窗口，旧结果回来也不会盖掉新窗口', async ({ page }) => {
+  // 按窗口给出不同的数据；打开 __slowStats 之后，24 小时那档的请求要 1.5 秒才回来（页面时钟）
+  // Different data per window; once __slowStats is set, the 24-hour request takes 1.5 s of page time to return
+  await page.route(/\/src\/api\/client\.ts(?:\?.*)?$/, async (route) => {
+    if (route.request().url().includes('window-original')) return route.continue()
+    await route.fulfill({ contentType: 'application/javascript', body: `
+      export * from '/src/api/client.ts?window-original';
+      import { apiRequest as original } from '/src/api/client.ts?window-original';
+      export async function apiRequest(path, init) {
+        if (!path.startsWith('/api/v1/stats/top')) return original(path, init);
+        const seconds = Number(new URL(path, location.origin).searchParams.get('window'));
+        const result = await original(path, init);
+        if (seconds === 86400 && globalThis.__slowStats) await new Promise((resolve) => setTimeout(resolve, 1500));
+        return { ...result, window_seconds: seconds, requests_observed: seconds / 36 };
+      }
+    ` })
+  })
+  await page.clock.install()
+  await openOverview(page)
+  await page.getByRole('tab', { name: '查询排行', exact: true }).click()
+  const line = page.locator('.overview-toolbar p').first()
+  await expect(line).toContainText('近 24 小时')
+  await expect(line).toContainText('已观察 2,400 次请求')
+  // 60 秒一次的定时刷新发出一个慢的 24 小时请求；它还在路上，就切到 1 小时
+  await page.evaluate(() => { (globalThis as { __slowStats?: boolean }).__slowStats = true })
+  await page.clock.runFor(60_000)
+  await page.getByRole('button', { name: '1 小时', exact: true }).click()
+  await expect(line).toContainText('近 1 小时')
+  await expect(line).toContainText('已观察 100 次请求')
+  // 旧的 24 小时结果回来了，也不能盖掉 / The old 24-hour result arrives and must not overwrite anything
+  await page.clock.runFor(2_000)
+  await expect(line).toContainText('近 1 小时')
+  await expect(line).toContainText('已观察 100 次请求')
+  await expect(page.getByRole('button', { name: '1 小时', exact: true })).toHaveAttribute('aria-pressed', 'true')
+})
+
+test('耗时慢了：注脚换成 100 ms 内和 1 s 以上，染色的是数值；台账里 999.6 ms 写成 1.0 s', async ({ page }) => {
+  await openOverview(page)
+  await page.evaluate(async () => {
+    const { mockRequest } = await import('/src/api/mock.ts')
+    const snapshot = await mockRequest('/api/v1/overview')
+    snapshot.metrics.request_latency_recent = { samples: 1000, avg_ms: 212.4, within_10ms: 250, within_100ms: 700, within_1s: 900 }
+    snapshot.metrics.upstreams[0].recent.avg_latency_ms = 999.6
+  })
+  await remountOverview(page)
+  const foot = page.locator('.overview-vital').first().locator('.overview-vital-foot')
+  await expect(foot).toContainText('100 ms 内 70.0%')
+  await expect(foot).toContainText('1 s 以上 10.0%')
+  // 70% 在 100 ms 内是异常，数值本身染红 / 70% within 100 ms is unhealthy, and the value itself turns red
+  const colour = await foot.locator('b').first().evaluate((element) => getComputedStyle(element).color)
+  const red = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--err-l').trim())
+  expect(colour).toBe(await page.evaluate((hex) => { const probe = document.createElement('i'); probe.style.color = hex; document.body.append(probe); const value = getComputedStyle(probe).color; probe.remove(); return value }, red))
+  await expect(page.locator('.overview-upstream').first()).toContainText('1.0 s')
+  await expect(page.getByText('1000 ms')).toHaveCount(0)
+})
+
+test('配置重载失败提到页顶：旧配置照常服务，是降级，给出去配置页的动作', async ({ page }) => {
+  await openOverview(page)
+  await page.evaluate(async () => {
+    const { mockRequest } = await import('/src/api/mock.ts')
+    const snapshot = await mockRequest('/api/v1/overview')
+    snapshot.active_config.last_reload = { success: false, error: 'pipeline "cdn" references unknown upstream group "fast"' }
+  })
+  await remountOverview(page)
+  const notice = page.locator('.ui-notice:visible')
+  await expect(notice).toHaveCount(1)
+  await expect(notice).toContainText('配置重载失败')
+  await expect(notice).toContainText('仍按配置代次 #18 运行')
+  await expect(notice.getByRole('link', { name: '管理配置', exact: true })).toBeVisible()
+  await expect(page.locator('.overview-config-state')).toHaveText('重载失败')
+  await expect(page.locator('.overview-reload-error')).toContainText('unknown upstream group')
+})
+
+test('服务启动失败时，页级提示和页头说同一件事，不说「已停止」', async ({ page }) => {
+  await page.route(/\/src\/api\/client\.ts(?:\?.*)?$/, async (route) => {
+    if (route.request().url().includes('failed-original')) return route.continue()
+    await route.fulfill({ contentType: 'application/javascript', body: `
+      export * from '/src/api/client.ts?failed-original';
+      import { apiRequest as original } from '/src/api/client.ts?failed-original';
+      export async function apiRequest(path, init) {
+        const result = await original(path, init);
+        if (path === '/api/v1/service') return { ...result, active_state: 'failed', sub_state: 'failed', main_pid: 0 };
+        if (path === '/api/v1/overview') return { ...result, live: false, service_active: false };
+        return result;
+      }
+    ` })
+  })
+  await page.goto('/')
+  await expect(page.locator('.overview-total-value')).toBeVisible()
+  await expect(page.locator('.overview-heading .ui-ph__meta')).toContainText('启动失败')
+  const notice = page.locator('.ui-notice:visible')
+  await expect(notice).toHaveCount(1)
+  await expect(notice).toContainText('KixDNS 启动失败')
+  await expect(notice).not.toContainText('已停止')
+  await expect(notice).toHaveClass(/ui-notice--err/)
+})
+
+test('旧增强版不提供精确数据：两张卡写「—」，状态点读作「不支持判定」，没有耗时这一列', async ({ page }) => {
+  await openOverview(page)
+  await page.evaluate(async () => {
+    const { mockRequest } = await import('/src/api/mock.ts')
+    const snapshot = await mockRequest('/api/v1/overview')
+    snapshot.health.capabilities = snapshot.health.capabilities.filter((item: string) => item !== 'metrics_upstream_precision_v1')
+    snapshot.metrics.request_latency_recent = null
+    snapshot.metrics.request_latency = { samples: 0, avg_ms: 0, within_10ms: 0, within_100ms: 0, within_1s: 0 }
+    for (const upstream of snapshot.metrics.upstreams) { upstream.recent = null; upstream.avg_latency_ms = null }
+  })
+  await remountOverview(page)
+  const vitals = page.locator('.overview-vital')
+  await expect(vitals.nth(0).locator('.overview-vital-figure')).toHaveText('—')
+  await expect(vitals.nth(2).locator('.overview-vital-figure')).toHaveText('—')
+  await expect(vitals.nth(0).locator('.overview-vital-foot')).toContainText('当前增强版不提供耗时数据')
+  await expect(page.locator('.overview-upstream .overview-dot').first()).toHaveAttribute('aria-label', '不支持判定')
+  await expect(page.locator('.overview-ledger .ui-rec-head')).not.toContainText('平均耗时')
 })

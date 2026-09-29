@@ -61,7 +61,8 @@ test('首次未启动时保留完整概览布局', async ({ page }) => {
   await expect(page.getByText('数据可能已过期')).toHaveCount(0)
   await expect(page.locator('.overview-total-value')).toHaveText('0')
   await expect(page.getByRole('heading', { name: '请求分布' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: '当前运行配置' })).toBeVisible()
+  // 没运行过：卡片叫「运行配置」，标签写「未运行」，不自相矛盾 / Never run: the card is 运行配置 with the tag 未运行, not a contradiction
+  await expect(page.getByRole('heading', { name: '运行配置', exact: true })).toBeVisible()
   await expect(page.getByRole('heading', { name: '上游台账' })).toBeVisible()
   await expect(page.getByRole('button', { name: '清空内部缓存' })).toBeDisabled()
   await page.getByRole('tab', { name: '查询排行', exact: true }).click()
