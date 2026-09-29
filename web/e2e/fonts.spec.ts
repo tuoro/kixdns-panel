@@ -10,9 +10,9 @@ test('打包的字体从本站加载，拉丁文字、机器值各用各的字�
   })
 
   await page.goto('/')
-  await expect(page.getByRole('heading', { level: 1, name: '运行概览' })).toBeVisible()
+  await expect(page.getByRole('heading', { level: 1, name: '概览' })).toBeVisible()
   // 标题先于数据出现；等一个看得见的机器值（上游地址）渲染出来再读它的字体。
-  const machineValue = page.locator('.overview-mono:visible').first()
+  const machineValue = page.locator('.overview-address .ui-mono:visible').first()
   await expect(machineValue).toBeVisible()
 
   const family = (element: Element) => getComputedStyle(element).fontFamily.split(',')[0].replace(/"/g, '').trim()

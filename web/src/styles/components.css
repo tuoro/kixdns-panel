@@ -34,6 +34,8 @@
 
 /* ---------- 按钮：主要、次要、文字、危险 ---------- */
 .ui-btn { min-height: var(--h-md); display: inline-flex; align-items: center; justify-content: center; gap: var(--s-2); padding: 0 var(--s-3); border: 1px solid transparent; border-radius: var(--r-2); font-size: var(--t-3); font-weight: var(--w-medium); line-height: var(--lh-tight); white-space: nowrap; cursor: pointer; transition: background-color var(--m-quick) var(--ease-out), border-color var(--m-quick) var(--ease-out), color var(--m-quick) var(--ease-out), transform var(--m-quick) var(--ease-out); }
+/* 按钮也可以是链接（站内跳转），样子不变，不带下划线 / A button may be a link (in-app navigation); it looks the same, with no underline */
+a.ui-btn { text-decoration: none; }
 .ui-btn:active:not(:disabled) { transform: scale(.98); }
 .ui-btn:disabled { cursor: not-allowed; opacity: .42; }
 .ui-btn--primary { color: var(--d-ink); background: var(--l-ink); }

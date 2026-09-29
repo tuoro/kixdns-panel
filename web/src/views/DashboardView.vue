@@ -1,15 +1,21 @@
 <script setup lang="ts">
-import { ArrowUpRight, ChevronRight, CircleAlert, Eraser, RefreshCw } from '@lucide/vue'
+import { ChartColumn, ChevronRight, CircleAlert, CircleX, Eraser, Power, RefreshCw } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { apiRequest } from '../api/client'
 import type { CacheFlushResult, Overview, QueryStatsSnapshot, ServiceStatus, StatsClearResult } from '../api/types'
-import StatusBanner from '../components/StatusBanner.vue'
+import UiCard from '../components/ui/UiCard.vue'
+import UiEmpty from '../components/ui/UiEmpty.vue'
+import UiNumber from '../components/ui/UiNumber.vue'
+import UiPageHeader from '../components/ui/UiPageHeader.vue'
+import UiSection from '../components/ui/UiSection.vue'
+import UiTabs from '../components/ui/UiTabs.vue'
 import { useConfirm } from '../composables/useConfirm'
 import { useToast } from '../composables/useToast'
 import { HEALTH_LABELS, MIN_HEALTH_SAMPLES, cacheComposition, pipelineDistribution, rcodeDistribution, latencyBands, latencyBasis, latencyHealth, recentWindowLabel, settledAttempts, upstreamBasis, upstreamHealth } from '../dashboard-presentation'
 import type { UpstreamHealth } from '../dashboard-presentation'
 import { dashboardRuntimeState, emptyOverview, emptyQueryStats, hasStaleDashboardData, supportsQueryStats, supportsUpstreamPrecision } from '../dashboard-state'
 import { sparkline } from '../trend'
+import { softBreakOffsets } from '../ui/soft-breaks'
 import { errorMessage, formatDuration, formatNumber, formatPercent, formatSmallPercent, shortHash, upstreamSuccessRate } from '../utils'
 
 const overview = ref<Overview | null>(null)
@@ -25,13 +31,16 @@ const statsWindow = ref(86_400)
 const overviewError = ref('')
 const serviceError = ref('')
 const statsError = ref('')
+// 最近一次读到运行数据的时刻：页头的「更新于」和没有采集时刻的快照都用它
+// When runtime data was last read: the header's 更新于, and snapshots that carry no capture time
+const loadedAt = ref<number | null>(null)
 const toast = useToast()
 const confirm = useConfirm()
 const activeView = ref('runtime')
 const views = [
-  { id: 'runtime', label: '运行情况' },
-  { id: 'stats', label: '查询排行' },
-  { id: 'rules', label: '规则命中' },
+  { value: 'runtime', label: '运行情况' },
+  { value: 'stats', label: '查询排行' },
+  { value: 'rules', label: '规则命中' },
 ]
 let timer: number | undefined
 let statsTimer: number | undefined
@@ -45,8 +54,6 @@ const statsWindows = [
 ]
 
 const runtimeState = computed(() => dashboardRuntimeState(overview.value, service.value))
-const overviewDisplayError = computed(() => runtimeState.value === 'stopped-empty' ? '' : overviewError.value)
-const loadError = computed(() => [overviewDisplayError.value, serviceError.value, statsError.value].filter(Boolean).join('；'))
 const statsSupported = computed(() => supportsQueryStats(overview.value?.health.capabilities ?? []))
 const runtimeUnavailable = computed(() => hasStaleDashboardData(runtimeState.value))
 const runtimeControlsDisabled = computed(() => runtimeState.value !== 'live')
@@ -56,41 +63,125 @@ const displayStats = computed(() => stats.value ?? (runtimeState.value === 'stop
 const maxClient = computed(() => Math.max(1, ...(stats.value?.clients.map((item) => item.count) ?? [])))
 const maxDomain = computed(() => Math.max(1, ...(stats.value?.domains.map((item) => item.count) ?? [])))
 
-const cacheHitRate = computed(() => {
-  const metrics = displayOverview.value?.metrics
-  if (!metrics?.cache_lookups_total) return 0
-  return (metrics.cache_hits_fresh + metrics.cache_hits_stale) / metrics.cache_lookups_total
+// ---------- 页头：按服务状态写事实，和系统页同一种写法 ----------
+// ---------- Header: facts by service state, written as on the system page ----------
+type Tone = 'ok' | 'warn' | 'err' | 'off'
+const serviceTone = computed<Tone>(() => {
+  const current = service.value
+  if (!current) return 'off'
+  if (current.active_state === 'active') return 'ok'
+  if (current.active_state === 'failed') return 'err'
+  if (['activating', 'reloading', 'deactivating'].includes(current.active_state) || current.sub_state === 'auto-restart') return 'warn'
+  return 'off'
 })
-const pipelines = computed(() => pipelineDistribution(displayOverview.value?.metrics.pipelines ?? []))
+const serviceLabel = computed(() => {
+  const current = service.value
+  if (current?.active_state === 'deactivating') return '正在停止'
+  return { ok: '运行中', warn: '正在启动', err: '启动失败', off: '已停止' }[serviceTone.value]
+})
+// 「运行中 · active/running」是同一件事说两遍；只有不寻常的状态，systemd 的原始写法才多带了信息（同系统页）。
+// "运行中 · active/running" says one thing twice; only unusual states carry information in systemd's own words (as on the system page).
+const unusualServiceState = computed(() => {
+  const current = service.value
+  const state = current ? `${current.active_state}/${current.sub_state}` : ''
+  return state && !['active/running', 'inactive/dead'].includes(state) ? state : ''
+})
+function clock(ms: number, seconds: boolean): string {
+  const date = new Date(ms)
+  const time = date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', ...(seconds ? { second: '2-digit' } : {}), hour12: false })
+  if (date.toDateString() === new Date().toDateString()) return time
+  return `${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')} ${time}`
+}
+const snapshotLabel = computed(() => {
+  const captured = overview.value?.captured_at_unix ? overview.value.captured_at_unix * 1000 : loadedAt.value
+  return captured ? clock(captured, false) : ''
+})
+const updatedLabel = computed(() => (loadedAt.value ? clock(loadedAt.value, true) : ''))
+
+// ---------- 页级提示：一次只出一条，读取错误写进原因行 ----------
+// ---------- Page notice: one at a time, a read error goes in its reason line ----------
+interface PageNotice { tone: 'warn' | 'err' | 'off'; icon: typeof CircleAlert; title: string; reason: string; retry: boolean }
+const notice = computed<PageNotice | null>(() => {
+  if (loading.value) return null
+  const snapshot = snapshotLabel.value ? ` ${snapshotLabel.value} ` : ''
+  switch (runtimeState.value) {
+    case 'stopped-empty':
+      return { tone: 'off', icon: Power, title: 'KixDNS 未启动', reason: '当前尚无运行数据，启动 KixDNS 后概览会自动更新。', retry: false }
+    case 'stopped-snapshot':
+      return { tone: 'off', icon: Power, title: 'KixDNS 已停止', reason: `显示停止前${snapshot}的快照，数据不再更新。`, retry: false }
+    case 'unavailable-snapshot':
+      return { tone: 'warn', icon: CircleAlert, title: '实时数据暂不可用', reason: overviewError.value || `显示${snapshot}的快照，恢复后会自动更新。`, retry: true }
+    case 'unavailable':
+      return { tone: 'err', icon: CircleX, title: '读取失败', reason: [overviewError.value, serviceError.value].filter(Boolean).join('；') || '运行数据暂不可用，请检查增强控制通道。', retry: true }
+    default:
+      // 手上的数据还标着实时，但最近一次刷新失败了：数据可能已过期
+      // The data in hand is still marked live, but the latest refresh failed: it may be out of date
+      if (overviewError.value) return { tone: 'warn', icon: CircleAlert, title: '数据可能已过期', reason: overviewError.value, retry: true }
+      return serviceError.value ? { tone: 'warn', icon: CircleAlert, title: '服务状态读取失败', reason: serviceError.value, retry: true } : null
+  }
+})
+
+// ---------- 信号带 ----------
 const finishedTotal = computed(() => {
   const finished = displayOverview.value?.metrics.requests_finished
   return finished ? finished.completed + finished.failed + finished.cancelled : 0
 })
 const finishedShare = (value: number) => (finishedTotal.value ? value / finishedTotal.value : 0)
-const staleShare = computed(() => {
-  const metrics = displayOverview.value?.metrics
-  const hits = metrics ? metrics.cache_hits_fresh + metrics.cache_hits_stale : 0
-  return hits ? metrics!.cache_hits_stale / hits : 0
-})
+
+// ---------- 三项体征 ----------
 const precisionSupported = computed(() => supportsUpstreamPrecision(displayOverview.value?.health.capabilities ?? []))
 const recentWindow = computed(() => displayOverview.value?.metrics.recent_window_seconds ?? null)
-// 响应速度和上游台账一样看最近一小时；这一小时请求不够时退回启动以来的累计，标题照实写。
+function latencyParts(value: number): { figure: string; unit: string } {
+  // 1 秒以上写秒：「2480 ms」要读者自己换算，「2.5 s」一眼就是慢
+  // A second or more is written in seconds: 2480 ms makes the reader convert, 2.5 s reads as slow at once
+  if (value >= 1000) return { figure: (value / 1000).toFixed(1), unit: 's' }
+  return { figure: value < 10 ? value.toFixed(1) : String(Math.round(value)), unit: 'ms' }
+}
+function formatLatency(value: number | null): string {
+  if (value === null) return '—'
+  const parts = latencyParts(value)
+  return `${parts.figure} ${parts.unit}`
+}
+// 响应速度和上游台账一样看最近一小时；这一小时请求不够时退回启动以来的累计，名称照实写。
+// Speed covers the last hour like the ledger; with too few requests it falls back to the lifetime total, and the name says so.
 const speed = computed(() => {
   const metrics = displayOverview.value?.metrics
   if (!metrics) return null
   const basis = latencyBasis(metrics)
   const { latency } = basis
+  const bands = latencyBands(latency)
+  const share = (count: number) => (latency.samples ? count / latency.samples : 0)
   return {
-    latency,
     period: basis.recent ? recentWindowLabel(recentWindow.value) : '启动以来',
-    bands: latencyBands(latency),
+    average: latencyParts(latency.avg_ms),
+    bands,
     health: latencyHealth(latency),
-    within100: latency.samples ? latency.within_100ms / latency.samples : 0,
+    within10: share(latency.within_10ms),
+    within100: share(latency.within_100ms),
+    slower: bands.find((band) => band.key === 'slower')?.share ?? 0,
+    // 四档明细写进细条的读屏名称；触屏看不到 title，所以不慢时注脚写两档累计，慢时换成最慢那档
+    // The four bands go in the bar's accessible name; touch screens never see a title, so the footnote gives two cumulative
+    // figures normally and switches to the slowest band when latency is not healthy
+    spoken: bands.map((band) => `${band.label} ${formatSmallPercent(band.share)}`).join('，'),
   }
 })
+const cacheLookups = computed(() => displayOverview.value?.metrics.cache_lookups_total ?? 0)
+const cacheHitRate = computed(() => {
+  const metrics = displayOverview.value?.metrics
+  return metrics && cacheLookups.value ? (metrics.cache_hits_fresh + metrics.cache_hits_stale) / cacheLookups.value : 0
+})
+const cacheFreshShare = computed(() => (cacheLookups.value ? (displayOverview.value?.metrics.cache_hits_fresh ?? 0) / cacheLookups.value : 0))
+const cacheStaleShare = computed(() => (cacheLookups.value ? (displayOverview.value?.metrics.cache_hits_stale ?? 0) / cacheLookups.value : 0))
+const staleShare = computed(() => {
+  const metrics = displayOverview.value?.metrics
+  const hits = metrics ? metrics.cache_hits_fresh + metrics.cache_hits_stale : 0
+  return hits ? metrics!.cache_hits_stale / hits : 0
+})
+
 // 每行的成功率、耗时、次数和明细都取同一个依据：最近一小时，响应不够时是启动以来的累计。
-// 整张表都没有窗口时标题已经写了“启动以来”，行上不再重复。
 // 排序始终按累计响应次数，免得表格随窗口来回跳。
+// Every figure in a row comes from one basis: the last hour, or the lifetime total when there were too few responses.
+// Rows always sort by lifetime responses, so the list does not reshuffle as the window moves.
 const upstreamRows = computed(() => [...(displayOverview.value?.metrics.upstreams ?? [])]
   .sort((left, right) => settledAttempts(right) - settledAttempts(left))
   .map((item) => {
@@ -102,52 +193,73 @@ const healthCounts = computed(() => {
   for (const item of upstreamRows.value) counts[item.health] += 1
   return counts
 })
-const assessedUpstreams = computed(() => upstreamRows.value.length - healthCounts.value.pending)
-const healthSummary = computed(() => {
-  const parts: string[] = []
-  if (healthCounts.value.degraded) parts.push(`${healthCounts.value.degraded} 个降级`)
-  if (healthCounts.value.unhealthy) parts.push(`${healthCounts.value.unhealthy} 个异常`)
-  return parts.join(' · ')
+const judgedUpstreams = computed(() => upstreamRows.value.length - healthCounts.value.pending)
+// 细条按上游逐个分段，顺序固定：健康、降级、异常、观察中
+// The bar has one segment per upstream in a fixed order: healthy, degraded, unhealthy, pending
+const healthSegments = computed(() => (['healthy', 'degraded', 'unhealthy', 'pending'] as const)
+  .map((key) => ({ key, share: upstreamRows.value.length ? healthCounts.value[key] / upstreamRows.value.length : 0 }))
+  .filter((segment) => segment.share > 0))
+// 注脚最多两项，按要紧程度：有问题的上游（带状态色）、观察中的上游、判定标准
+// At most two footnote items, most urgent first: upstreams in trouble (in their status colour), upstreams still observed, the criteria
+const healthFoot = computed(() => {
+  const { degraded, unhealthy, pending } = healthCounts.value
+  const parts: { text: string; tone?: UpstreamHealth }[] = []
+  const trouble = [degraded ? `${degraded} 个降级` : '', unhealthy ? `${unhealthy} 个异常` : ''].filter(Boolean).join(' · ')
+  if (trouble) parts.push({ text: trouble, tone: unhealthy ? 'unhealthy' : 'degraded' })
+  if (pending) parts.push({ text: `${pending} 个观察中，响应不足 ${MIN_HEALTH_SAMPLES} 次` })
+  if (parts.length < 2) parts.push({ text: '成功率 ≥ 99% 且平均 < 1 s' })
+  return parts.slice(0, 2)
 })
-const overallHealth = computed<UpstreamHealth>(() => (healthCounts.value.unhealthy ? 'unhealthy' : healthCounts.value.degraded ? 'degraded' : 'healthy'))
-const rcodes = computed(() => rcodeDistribution(displayOverview.value?.metrics.upstreams ?? []))
-const cacheRows = computed(() => (displayOverview.value ? cacheComposition(displayOverview.value.metrics) : []))
-function latencyFigure(value: number): string {
-  return value < 10 ? value.toFixed(1) : String(Math.round(value))
+const expandedUpstream = ref<string | null>(null)
+const upstreamKey = (item: { upstream: string; transport: string }) => `${item.upstream}:${item.transport}`
+function toggleUpstream(item: { upstream: string; transport: string }): void {
+  expandedUpstream.value = expandedUpstream.value === upstreamKey(item) ? null : upstreamKey(item)
 }
-function formatLatency(value: number | null): string {
-  return value === null ? '—' : `${latencyFigure(value)} ms`
+function healthLabel(health: UpstreamHealth): string {
+  return precisionSupported.value ? HEALTH_LABELS[health] : '不支持判定'
 }
 function fallbackShare(item: { transport: string; settled: number; shown: { tcp_fallbacks: number } }): string {
   return item.transport === 'udp' && item.settled > 0 ? formatPercent(item.shown.tcp_fallbacks / item.settled) : '—'
 }
-const rankingGroups = [
-  {
-    id: 'clients', title: '客户端排行',
-    description: '按来源地址聚合',
-  },
-  {
-    id: 'domains', title: '请求域名排行', description: '按查询次数降序排列',
-  },
-] as const
-const configStateLabel = computed(() => {
-  if (!overview.value) return '未运行'
-  if (runtimeUnavailable.value) return '运行快照'
-  return overview.value.active_config.last_reload.success ? '已生效' : '重载失败'
+// 长地址只在目录边界的「/」后面断行（同 JSON 视图的规矩），不从词中间断开
+// Long addresses break only after a directory 「/」 (the JSON view's rule), never inside a word
+function breakable(text: string): string[] {
+  const parts: string[] = []
+  let at = 0
+  for (const offset of softBreakOffsets(text)) {
+    parts.push(text.slice(at, offset))
+    at = offset
+  }
+  parts.push(text.slice(at))
+  return parts
+}
+
+// ---------- 三栏分布：全是启动以来的累计 ----------
+const pipelines = computed(() => pipelineDistribution(displayOverview.value?.metrics.pipelines ?? []))
+const rcodes = computed(() => rcodeDistribution(displayOverview.value?.metrics.upstreams ?? []))
+const cacheRows = computed(() => (displayOverview.value ? cacheComposition(displayOverview.value.metrics) : []))
+
+// ---------- 规则命中：按执行次数降序 ----------
+const rules = computed(() => [...(displayOverview.value?.metrics.rules ?? [])].sort((left, right) => right.count - left.count))
+
+// ---------- 当前运行配置 ----------
+const configTag = computed(() => {
+  if (!overview.value) return { label: '未运行', tone: '' }
+  if (runtimeUnavailable.value) return { label: '运行快照', tone: '' }
+  return overview.value.active_config.last_reload.success ? { label: '已生效', tone: 'ok' } : { label: '重载失败', tone: 'warn' }
 })
 
-function moveViewFocus(event: KeyboardEvent, index: number): void {
-  let next = index
-  if (event.key === 'ArrowRight') next = (index + 1) % views.length
-  else if (event.key === 'ArrowLeft') next = (index + views.length - 1) % views.length
-  else if (event.key === 'Home') next = 0
-  else if (event.key === 'End') next = views.length - 1
-  else return
-  event.preventDefault()
-  activeView.value = views[next]!.id
-  const tab = event.currentTarget as HTMLButtonElement
-  tab.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus()
-}
+// ---------- 查询排行 ----------
+const statsWindowKey = computed({
+  get: () => String(statsWindow.value),
+  set: (value: string) => { void setStatsWindow(Number(value)) },
+})
+const statsWindowItems = computed(() => statsWindows.map((item) => ({ value: String(item.value), label: item.label, disabled: statsLoading.value || runtimeControlsDisabled.value })))
+const statsWindowLabel = computed(() => `近 ${statsWindows.find((item) => item.value === statsWindow.value)?.label ?? ''}`)
+const rankingGroups = [
+  { id: 'clients', title: '客户端排行', description: '按来源地址聚合', empty: '当前窗口暂无客户端数据' },
+  { id: 'domains', title: '请求域名排行', description: '按查询次数', empty: '当前窗口暂无域名数据' },
+] as const
 
 function load(silent = false): Promise<void> {
   if (pendingLoad) return pendingLoad
@@ -161,6 +273,7 @@ function load(silent = false): Promise<void> {
     if (overviewResult.status === 'fulfilled') {
       overview.value = overviewResult.value
       overviewError.value = ''
+      loadedAt.value = Date.now()
     } else overviewError.value = `运行数据：${errorMessage(overviewResult.reason)}`
     if (serviceResult.status === 'fulfilled') {
       service.value = serviceResult.value
@@ -189,7 +302,7 @@ function loadStats(silent = false): Promise<void> {
       statsError.value = ''
     })
     .catch((error: unknown) => {
-      statsError.value = `查询排行：${errorMessage(error)}`
+      statsError.value = errorMessage(error)
     })
     .finally(() => {
       statsLoading.value = false
@@ -246,12 +359,6 @@ async function flushCache(): Promise<void> {
   }
 }
 
-const expandedUpstream = ref<string | null>(null)
-const upstreamKey = (item: { upstream: string; transport: string }) => `${item.upstream}:${item.transport}`
-function toggleUpstream(item: { upstream: string; transport: string }): void {
-  expandedUpstream.value = expandedUpstream.value === upstreamKey(item) ? null : upstreamKey(item)
-}
-
 const SPARK_WIDTH = 260
 const SPARK_HEIGHT = 74
 
@@ -259,7 +366,7 @@ const SPARK_HEIGHT = 74
  * 曲线覆盖多久就说多久，而且这句话只替曲线说。写死「近 24 小时」而实际只攒了
  * 三小时，是把「还没攒够」说成了「这就是一天的量」。
  *
- * 旁边那个大数字不归它管。那是累计总数，和它下面的完成率、平均耗时、运行时长
+ * 旁边那个大数字不归它管。那是启动以来的累计，名称写明了「启动以来」，和它下面的完成率
  * 算的是同一段账。我曾让大数字跟着曲线走，于是「近 1 小时请求」底下紧跟着一行
  * 按累计算出来的完成率——两个口径挤在同一处，读者没有任何线索能看出来。
  *
@@ -267,11 +374,11 @@ const SPARK_HEIGHT = 74
  * for the curve. Writing "last 24 hours" while three hours have been collected
  * would present "not enough data yet" as a full day's volume.
  *
- * The headline figure beside it is not its business: that is the lifetime total,
- * on the same clock as the completion rate, average latency and uptime beneath
- * it. Making the headline follow the curve put "requests in the last hour"
- * directly above a completion rate computed over the entire run — two different
- * periods in one place, with nothing to tell the reader they differ.
+ * The headline figure beside it is not its business: it is the lifetime total,
+ * named 启动以来, on the same clock as the completion rate beneath it. Making the
+ * headline follow the curve once put "requests in the last hour" directly above a
+ * completion rate computed over the entire run — two different periods in one
+ * place, with nothing to tell the reader they differ.
  */
 const trendWindow = computed(() => {
   const trend = displayOverview.value?.trend
@@ -288,6 +395,8 @@ const trendWindow = computed(() => {
 })
 
 const trendPending = computed(() => {
+  // 没启动就没有采样可说：说清楚要等的是 KixDNS，不是面板 / Not started means no sampling at all: say it waits on KixDNS, not the panel
+  if (!overview.value) return '启动 KixDNS 后显示请求量趋势'
   const trend = displayOverview.value?.trend
   if (!trend || trend.points.length === 0) return '面板刚开始采样，一两分钟后显示请求量趋势'
   return '再过一会儿就能画出趋势，面板每分钟采样一次'
@@ -300,22 +409,13 @@ const spark = computed(() => {
   return sparkline(points.map((point) => point.requests), SPARK_WIDTH, SPARK_HEIGHT)
 })
 
-/**
- * 信号带把这个数字独占一行，375 宽下十位数实测 137px、可用 311px，
- * 所以不再缩写成万/亿。缩写是为旧版那种两列窄卡加的，版式一变就成了多余的一层
- * 转换——读者拿到的应该是配置和日志里能对得上的那个数。
- *
- * The signal band gives this figure a line of its own: at 375 a ten-digit
- * number measures 137px against 311px available, so it is no longer abbreviated.
- * The abbreviation existed for the old two-up narrow cards; with that layout
- * gone it is a conversion standing between the reader and the number they can
- * match against the config and the logs.
- */
+// 信号带让这个数字独占一行，完整写出，不缩写成万/亿：读者拿到的应该是配置和日志里能对得上的那个数。
+// The signal band gives this figure a line of its own and writes it in full, never as 万/亿: the reader
+// should get the number they can match against the config and the logs.
 const compactTotal = computed(() => {
   const total = displayOverview.value?.metrics.requests_total
   return total == null ? '--' : formatNumber(total)
 })
-
 
 onMounted(async () => {
   await load()
@@ -331,549 +431,432 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="page overview-page">
-    <header class="page-heading overview-heading">
-      <div>
-        <h1>运行概览</h1>
-        <p class="overview-heading-context">{{ service?.unit ?? 'kixdns.service' }} · {{ service?.sub_state ?? '读取中' }}</p>
-      </div>
-      <button class="overview-button" type="button" :disabled="requesting || statsLoading" @click="refreshAll">
-        <RefreshCw :size="16" :class="{ spin: refreshing || statsLoading }" /><span>刷新</span>
-      </button>
-    </header>
+    <UiPageHeader class="overview-heading" title="概览">
+      <template #meta>
+        <template v-if="service">
+          <span class="ui-dot" :class="{ 'ui-dot--warn': serviceTone === 'warn', 'ui-dot--err': serviceTone === 'err', 'ui-dot--off': serviceTone === 'off' }" aria-hidden="true"></span>
+          <span class="ui-mono">{{ service.unit }}</span>
+          <span>{{ serviceLabel }}</span>
+          <template v-if="unusualServiceState"><span class="ui-sep">·</span><span class="ui-mono">{{ unusualServiceState }}</span></template>
+          <template v-if="runtimeState === 'live' && overview">
+            <span class="ui-sep">·</span><span>已运行 {{ formatDuration(overview.health.uptime_seconds) }}</span>
+            <span class="ui-sep overview-meta-time">·</span><span class="overview-meta-time">更新于 <span class="ui-mono">{{ updatedLabel }}</span></span>
+          </template>
+          <template v-else-if="runtimeUnavailable && snapshotLabel"><span class="ui-sep">·</span><span>快照 <span class="ui-mono">{{ snapshotLabel }}</span></span></template>
+        </template>
+        <span v-else-if="loading" class="sk overview-skeleton-meta" role="status" aria-label="读取服务状态"></span>
+        <span v-else>服务状态暂不可用</span>
+      </template>
+      <template #actions>
+        <button class="ui-icon-btn" type="button" title="刷新" aria-label="刷新" :disabled="requesting || statsLoading" @click="refreshAll">
+          <RefreshCw :size="16" :class="{ spin: refreshing || statsLoading }" aria-hidden="true" />
+        </button>
+      </template>
+    </UiPageHeader>
 
-    <StatusBanner v-if="loadError" class="overview-notice" :message="loadError" :stale="hasStaleDashboardData(runtimeState)" :busy="requesting || statsLoading" @retry="refreshAll" />
-    <section v-if="!loading && runtimeState === 'stopped-empty'" class="overview-notice overview-notice--paused" role="status">
-      <CircleAlert :size="18" />
-      <div><strong>KixDNS 未启动</strong><p>当前尚无运行数据，启动 KixDNS 后概览将自动更新。</p></div>
-    </section>
-    <section v-if="runtimeUnavailable" class="overview-notice overview-notice--paused" role="status">
-      <CircleAlert :size="18" />
-      <div>
-        <strong>{{ runtimeState === 'stopped-snapshot' ? 'KixDNS 已停止' : '实时数据暂不可用' }}</strong>
-        <p>{{ runtimeState === 'stopped-snapshot' ? '当前显示最后一次运行快照，数据已停止更新。' : '当前显示最近一次成功快照，实时数据恢复后会自动更新。' }}</p>
-      </div>
-    </section>
-
-    <div class="overview-tabs" role="tablist" aria-label="概览视图">
-      <button v-for="(view, index) in views" :id="`overview-tab-${view.id}`" :key="view.id" type="button" role="tab"
-        :aria-selected="activeView === view.id" :aria-controls="`overview-panel-${view.id}`" :tabindex="activeView === view.id ? 0 : -1"
-        @click="activeView = view.id" @keydown="moveViewFocus($event, index)">{{ view.label }}</button>
+    <!-- 页级提示一次只一条：结论、原因（读取错误写在这里）、最多一个动作 -->
+    <div v-if="notice" class="ui-notice overview-notice" :class="notice.tone === 'warn' ? '' : `ui-notice--${notice.tone}`" :role="notice.tone === 'err' ? 'alert' : 'status'">
+      <component :is="notice.icon" :size="16" aria-hidden="true" />
+      <span>{{ notice.title }}</span>
+      <small>{{ notice.reason }}</small>
+      <button v-if="notice.retry" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="requesting" @click="refreshAll">重试</button>
     </div>
 
-    <!-- 骨架的分块照抄结果版式：信号带、三项统计、一段表格。
-         尺寸对不上，数据到达时整页会跳。 -->
+    <!-- 读取失败又没有任何数据时不出页签：下面没有可切换的东西 / No tabs when reading failed with no data at all: there is nothing to switch between -->
+    <UiTabs v-if="loading || displayOverview" v-model="activeView" class="overview-tabs" :items="views" label="概览视图" id-prefix="overview" />
+
+    <!-- 骨架的分块照抄结果版式：信号带、三张体征卡、几行台账。尺寸对不上，数据到达时整页会跳。
+         The skeleton copies the result's blocks: the signal band, three vital tiles, a few ledger rows. Mismatched sizes make the page jump when data arrives. -->
     <div v-if="loading" class="overview-skeleton" role="status" aria-label="正在读取运行数据">
       <div class="sk overview-skeleton-signal"></div>
-      <div class="overview-skeleton-stats"><i v-for="n in 3" :key="n" class="sk"></i></div>
-      <div class="sk overview-skeleton-block"></div>
+      <div class="overview-skeleton-vitals"><i v-for="n in 3" :key="n" class="sk"></i></div>
+      <div class="overview-skeleton-rows"><i v-for="n in 4" :key="n" class="sk"></i></div>
     </div>
     <template v-else-if="displayOverview">
       <section id="overview-panel-runtime" v-show="activeView === 'runtime'" class="overview-view" role="tabpanel" aria-labelledby="overview-tab-runtime" tabindex="0">
-        <!-- 最重要的数字独占一处并带趋势，其余三项降为平级。
-             四张等宽卡片让读者自己找重点，而这页第一眼该回答的只有一个问题：
-             在变好还是变坏。 -->
+        <!-- 最重要的数字独占一处并带趋势。这一页第一眼该回答的只有一个问题：在变好还是变坏。
+             The number that matters most sits alone with its trend: the page's first question is whether things are getting better or worse. -->
         <section class="overview-signal" aria-label="请求量">
           <div class="overview-signal-main">
-            <span class="overview-signal-label">请求总数</span>
-            <strong class="overview-total-value">{{ compactTotal }}</strong>
+            <span class="overview-signal-label">启动以来请求</span>
+            <strong class="overview-total-value"><UiNumber :value="compactTotal" /></strong>
             <span class="overview-signal-sub">
               <span v-if="finishedTotal">完成 <b>{{ formatPercent(finishedShare(displayOverview.metrics.requests_finished.completed)) }}</b></span>
-              <span>持续运行 {{ overview ? formatDuration(displayOverview.health.uptime_seconds) : '--' }}</span>
             </span>
           </div>
           <!-- 曲线自带时段说明。这句话只说明曲线，不去动旁边那个累计数字。 -->
           <div v-if="spark" class="overview-trend">
             <span class="overview-trend-label">{{ trendWindow }} <b>{{ formatNumber(displayOverview.trend.total) }}</b> 次</span>
-            <svg class="overview-spark" :viewBox="`0 0 ${SPARK_WIDTH} ${SPARK_HEIGHT}`" preserveAspectRatio="none" role="img" :aria-label="trendWindow + '请求量趋势'">
-              <path class="overview-spark-area" :d="spark.area" />
-              <path class="overview-spark-line" :d="spark.line" />
-              <circle class="overview-spark-end" :cx="spark.lastX" :cy="spark.lastY" r="3" />
-            </svg>
+            <!-- 曲线随宽度拉伸；末端圆点放在 SVG 外面按百分比定位，不跟着被拉成椭圆
+                 The curve stretches with the width; the end dot sits outside the SVG, placed by percentage, so it never becomes an ellipse -->
+            <div class="overview-spark-box">
+              <svg class="overview-spark" :viewBox="`0 0 ${SPARK_WIDTH} ${SPARK_HEIGHT}`" preserveAspectRatio="none" role="img" :aria-label="trendWindow + '请求量趋势'">
+                <path class="overview-spark-area" :d="spark.area" />
+                <path class="overview-spark-line" :d="spark.line" />
+              </svg>
+              <i class="overview-spark-end" :style="{ left: `${spark.lastX / SPARK_WIDTH * 100}%`, top: `${spark.lastY / SPARK_HEIGHT * 100}%` }" aria-hidden="true"></i>
+            </div>
           </div>
-          <!-- 说清楚缺的是什么。之前写「需要至少两次采样」，可面板跑了半小时
-               已经采了三十次——缺的从来不是采样次数，是还没攒够能连成线的时间。 -->
+          <!-- 说清楚缺的是什么：缺的从来不是采样次数，是还没攒够能连成线的时间。 -->
           <p v-else class="overview-spark-pending">{{ trendPending }}</p>
         </section>
 
-        <section class="overview-stats-row" aria-label="运行统计">
-          <!-- 耗时从信号带挪到这里：信号带只讲启动以来的量，这张卡讲最近一小时快不快。
-               分布是四段互不重叠的区间，不是百分位数。信息最密，放在最前面；
-               两列布局下独占一行，免得三张卡里落单一张。 -->
-          <article v-if="speed" class="overview-stat">
-            <span class="overview-stat-label">响应速度 · {{ speed.period }}</span>
+        <!-- 三张卡共用四行（名称、大数、细条、注脚）：注脚折行时三根细条也在一条线上。
+             每张卡的名称都写时段：速度和健康看最近一小时，缓存命中是启动以来。
+             The three tiles share four rows (name, figure, bar, footnote), so the bars stay level when a footnote wraps.
+             Each tile names its period: speed and health cover the last hour, cache hits the whole run. -->
+        <section class="overview-vitals" aria-label="运行体征">
+          <article v-if="speed" class="overview-vital overview-vital--speed">
+            <h2 class="overview-vital-label">响应速度 · {{ speed.period }}</h2>
             <template v-if="speed.bands.length">
-              <span class="overview-kpi-value-row">
-                <strong class="overview-kpi-value">{{ latencyFigure(speed.latency.avg_ms) }}</strong>
-                <span class="overview-kpi-unit">ms 平均</span>
+              <p class="overview-vital-figure"><strong><UiNumber :value="speed.average.figure" /></strong><span>{{ speed.average.unit }} 平均</span></p>
+              <span class="overview-meter" role="img" :aria-label="`耗时分布：${speed.spoken}`">
+                <i v-for="band in speed.bands" :key="band.key" :class="`overview-meter--${band.key}`" :style="{ width: `${band.share * 100}%` }"></i>
               </span>
-              <span class="overview-latency-bar" aria-hidden="true"><i v-for="band in speed.bands" :key="band.key" :class="`overview-latency-bar--${band.key}`" :style="{ width: `${band.share * 100}%` }"></i></span>
-              <span class="overview-stat-note overview-latency-legend"><span v-for="band in speed.bands" :key="band.key">{{ band.label }} <b>{{ formatSmallPercent(band.share) }}</b></span></span>
-              <span class="overview-stat-note"><i class="overview-dot" :class="`overview-dot--${speed.health}`" aria-hidden="true"></i> {{ formatPercent(speed.within100) }} 在 100 ms 内返回</span>
+              <p v-if="speed.health === 'healthy'" class="overview-vital-foot"><span>10 ms 内 <b>{{ formatPercent(speed.within10) }}</b></span><span class="ui-sep">·</span><span>100 ms 内 <b>{{ formatPercent(speed.within100) }}</b></span></p>
+              <p v-else class="overview-vital-foot"><span :class="`overview-text--${speed.health}`">100 ms 内 <b>{{ formatPercent(speed.within100) }}</b></span><span class="ui-sep">·</span><span>1 s 以上 <b>{{ formatSmallPercent(speed.slower) }}</b></span></p>
             </template>
             <template v-else>
-              <strong class="overview-kpi-value">—</strong>
-              <span class="overview-stat-note">{{ precisionSupported ? '还没有请求' : '当前增强版不提供耗时数据，更新增强版后显示' }}</span>
+              <p class="overview-vital-figure"><strong>—</strong></p>
+              <span class="overview-meter" aria-hidden="true"></span>
+              <p class="overview-vital-foot">{{ !overview ? '尚无数据' : precisionSupported ? '还没有请求' : '当前增强版不提供耗时数据' }}</p>
             </template>
           </article>
-          <article class="overview-stat">
-            <span class="overview-stat-label" title="未过期的命中与续用旧结果都算命中">缓存命中率</span>
-            <strong class="overview-kpi-value">{{ formatPercent(cacheHitRate) }}</strong>
-            <span class="overview-stat-note">{{ formatNumber(displayOverview.metrics.cache_entries) }} 条缓存<template v-if="staleShare"> · 续用旧结果 {{ formatPercent(staleShare) }}</template></span>
+          <article class="overview-vital">
+            <h2 class="overview-vital-label" title="未过期的命中与续用旧结果都算命中">缓存命中率 · 启动以来</h2>
+            <p class="overview-vital-figure"><strong><UiNumber v-if="cacheLookups" :value="formatPercent(cacheHitRate)" /><template v-else>—</template></strong></p>
+            <span class="overview-meter" role="img" :aria-label="`未过期命中 ${formatPercent(cacheFreshShare)}，续用旧结果 ${formatPercent(cacheStaleShare)}`">
+              <i class="overview-meter--fresh" :style="{ width: `${cacheFreshShare * 100}%` }"></i><i class="overview-meter--stale" :style="{ width: `${cacheStaleShare * 100}%` }"></i>
+            </span>
+            <p class="overview-vital-foot"><span>{{ formatNumber(displayOverview.metrics.cache_entries) }} 条缓存</span><template v-if="staleShare"><span class="ui-sep">·</span><span>续用旧结果 {{ formatPercent(staleShare) }}</span></template></p>
           </article>
-          <article class="overview-stat">
-            <span class="overview-stat-label">上游健康</span>
-            <template v-if="precisionSupported">
-              <span class="overview-kpi-value-row">
-                <strong class="overview-kpi-value">{{ healthCounts.healthy }}</strong>
-                <span class="overview-kpi-unit">/ {{ assessedUpstreams }}</span>
+          <article class="overview-vital">
+            <h2 class="overview-vital-label">上游健康 · {{ recentWindowLabel(recentWindow) }}</h2>
+            <template v-if="precisionSupported && judgedUpstreams">
+              <p class="overview-vital-figure"><strong><UiNumber :value="String(healthCounts.healthy)" /></strong><span>/ {{ upstreamRows.length }} 健康</span></p>
+              <span class="overview-meter overview-meter--health" role="img" :aria-label="`健康 ${healthCounts.healthy} 个，降级 ${healthCounts.degraded} 个，异常 ${healthCounts.unhealthy} 个，观察中 ${healthCounts.pending} 个`">
+                <i v-for="segment in healthSegments" :key="segment.key" :class="`overview-meter--${segment.key}`" :style="{ width: `${segment.share * 100}%` }"></i>
               </span>
-              <span class="overview-stat-note"><b v-if="healthSummary" :class="`overview-text--${overallHealth}`">{{ healthSummary }}</b><template v-if="healthSummary"> · </template>成功率 ≥ 99% 且平均耗时 &lt; 1 s 记为健康</span>
-              <span v-if="healthCounts.pending" class="overview-stat-note">{{ healthCounts.pending }} 个上游观察中，响应不足 {{ MIN_HEALTH_SAMPLES }} 次</span>
+              <p class="overview-vital-foot"><template v-for="(part, index) in healthFoot" :key="part.text"><span v-if="index" class="ui-sep">·</span><span :class="part.tone ? `overview-text--${part.tone}` : ''">{{ part.text }}</span></template></p>
             </template>
             <template v-else>
-              <strong class="overview-kpi-value">—</strong>
-              <span class="overview-stat-note">当前增强版不提供健康判定所需数据，更新增强版后显示</span>
+              <p class="overview-vital-figure"><strong>—</strong></p>
+              <span class="overview-meter" aria-hidden="true"></span>
+              <p class="overview-vital-foot">{{ !overview ? '尚无数据' : !precisionSupported ? '当前增强版不提供健康判定数据' : upstreamRows.length ? `${upstreamRows.length} 个上游观察中，响应不足 ${MIN_HEALTH_SAMPLES} 次` : '尚无上游请求数据' }}</p>
             </template>
           </article>
         </section>
 
-        <!-- 主项做大、小项列表。90% 对 9% 这种分布用堆叠条读不出任何信息，
-             而且给每一段配一个颜色会把绿色用成装饰——绿在这个面板里只表示健康。
-             A leading figure with the rest as a list. A 90/9 split tells you
-             nothing as a stacked bar, and colouring each segment spends green
-             on decoration when green here means only "healthy". -->
-        <section class="overview-section overview-distribution" :class="{ 'is-refreshing': requesting && !loading }" aria-labelledby="overview-distribution-heading">
-          <header class="overview-section-heading"><h2 id="overview-distribution-heading">请求分布</h2><p>按 Pipeline 累计命中</p></header>
-          <template v-if="pipelines.length">
-            <p class="overview-dist-main"><span class="overview-dist-share">{{ formatPercent(pipelines[0].share) }}</span><span class="overview-dist-name">{{ pipelines[0].name }}</span><span class="overview-dist-count">{{ formatNumber(pipelines[0].count) }} 次</span></p>
-            <ul class="overview-pipeline-list" aria-label="Pipeline 命中分布">
-              <li v-for="pipeline in pipelines.slice(1)" :key="pipeline.name">
-                <span class="overview-pipeline-name"><strong>{{ pipeline.name }}</strong></span>
-                <span class="overview-pipeline-count">{{ formatNumber(pipeline.count) }}</span>
-                <span class="overview-pipeline-share">{{ formatPercent(pipeline.share) }}</span>
-              </li>
-            </ul>
-          </template>
-          <p v-else class="overview-empty">尚无 Pipeline 命中数据</p>
-        </section>
-
-        <section class="overview-section" :class="{ 'is-refreshing': requesting && !loading }" aria-labelledby="overview-upstream-heading">
-          <header class="overview-section-heading"><div><h2 id="overview-upstream-heading">上游台账</h2><p>{{ recentWindowLabel(recentWindow) }}；成功率只算超时和连接错误</p></div><span><span class="overview-window-mobile">{{ recentWindowLabel(recentWindow) }} · </span>{{ upstreamRows.length }} 个上游</span></header>
-          <template v-if="upstreamRows.length">
-            <div class="overview-upstream-desktop">
-              <!-- 九列收成四列：身份、成功率、耗时、响应次数。
-                   错误、拒绝、TCP 兜底收进每行的展开里——它们是排查时才看的数，
-                   平时每行都摆出来只会稀释真正要扫的那两列。诊断页的执行步骤
-                   不能藏是因为那是那一页的产出；这里恰恰相反，藏起来的是次要项。
-                   一行里只允许一个告警色：成功率和耗时同时染红，
-                   读者分不出到底是哪一项出了问题。 -->
-              <table class="overview-table">
-                <caption class="overview-sr-only">各上游最近一小时的请求结果，响应不足时为启动以来的累计</caption>
-                <thead><tr><th scope="col">上游</th><th scope="col">成功率</th><th scope="col">平均耗时</th><th scope="col">响应次数</th><th scope="col"><span class="overview-sr-only">明细</span></th></tr></thead>
-                <tbody><template v-for="item in upstreamRows" :key="upstreamKey(item)"><tr>
-                  <th scope="row">
-                    <span class="overview-upstream-cell">
-                      <i class="overview-dot" :class="`overview-dot--${item.health}`" role="img" :aria-label="HEALTH_LABELS[item.health]" :title="HEALTH_LABELS[item.health]"></i>
-                      <span class="overview-mono">{{ item.upstream }}</span>
-                      <span class="overview-transport">{{ item.transport }}</span>
-                    </span>
-                  </th>
-                  <td>
-                    <span class="overview-rate-cell">
-                      <span :class="`overview-text--${item.health}`">{{ formatPercent(upstreamSuccessRate(item.shown)) }}</span>
-                      <span class="overview-rate-bar" aria-hidden="true"><i :class="`overview-rate-bar--${item.health}`" :style="{ width: `${upstreamSuccessRate(item.shown) * 100}%` }"></i></span>
-                    </span>
-                  </td>
-                  <td>{{ formatLatency(item.shown.avg_latency_ms) }}</td>
-                  <td>{{ formatNumber(item.settled) }}<span v-if="item.sinceStart" class="overview-basis">启动以来</span></td>
-                  <td class="overview-expand-cell">
-                    <button type="button" class="overview-expand" :aria-expanded="expandedUpstream === upstreamKey(item)" :aria-label="`${item.upstream} 的错误与兜底明细`" @click="toggleUpstream(item)">
-                      <ChevronRight :size="15" :class="{ 'overview-expand--open': expandedUpstream === upstreamKey(item) }" />
-                    </button>
-                  </td>
-                </tr>
-                <tr v-if="expandedUpstream === upstreamKey(item)" :key="`${upstreamKey(item)}:detail`" class="overview-table-detail">
-                  <td colspan="5">
-                    <dl class="overview-upstream-counts">
-                      <div><dt>成功</dt><dd>{{ formatNumber(item.shown.success) }}</dd></div>
-                      <div><dt>错误</dt><dd :class="{ 'overview-warning': item.shown.errors > 0 }">{{ formatNumber(item.shown.errors) }}</dd></div>
-                      <div><dt>拒绝</dt><dd>{{ formatNumber(item.shown.rejected) }}</dd></div>
-                      <div><dt>TCP 兜底</dt><dd>{{ fallbackShare(item) }}</dd></div>
-                    </dl>
-                  </td>
-                </tr></template></tbody>
-              </table>
-            </div>
-            <div class="overview-upstream-mobile">
-              <details v-for="item in upstreamRows" :key="`${item.upstream}:${item.transport}`" class="overview-upstream-detail">
-                <summary>
-                  <span class="overview-upstream-identity"><i class="overview-dot" :class="`overview-dot--${item.health}`" aria-hidden="true"></i><strong class="overview-mono">{{ item.upstream }}</strong><span class="overview-transport">{{ item.transport }}</span></span>
-                  <span class="overview-upstream-summary">成功率 <b :class="`overview-text--${item.health}`">{{ formatPercent(upstreamSuccessRate(item.shown)) }}</b> · 平均 {{ formatLatency(item.shown.avg_latency_ms) }} · {{ formatNumber(item.settled) }} 次响应<template v-if="item.sinceStart"> · 启动以来</template></span>
-                  <ChevronRight :size="18" class="overview-disclosure-icon" />
-                </summary>
-                <dl class="overview-upstream-counts">
-                  <div><dt>成功</dt><dd>{{ formatNumber(item.shown.success) }}</dd></div>
-                  <div><dt>错误</dt><dd :class="{ 'overview-warning': item.shown.errors > 0 }">{{ formatNumber(item.shown.errors) }}</dd></div>
-                  <div><dt>拒绝</dt><dd>{{ formatNumber(item.shown.rejected) }}</dd></div>
-                  <div><dt>TCP 兜底</dt><dd>{{ fallbackShare(item) }}</dd></div>
-                </dl>
-              </details>
-            </div>
-          </template>
+        <UiSection class="overview-ledger" :class="{ 'is-refreshing': requesting && !loading }" title="上游台账" :aside="`${recentWindowLabel(recentWindow)} · 成功率只算超时和连接错误`">
+          <!-- 四列用于扫读：成功率、耗时、次数。错误、拒绝、TCP 兜底收进每行的展开里，是排查时才看的数。
+               一行里只允许一个告警色：成功率和耗时同时染红，读者分不出到底是哪一项出了问题。
+               Four columns to scan: success rate, latency, responses. Errors, refusals and TCP fallback live in each row's
+               expansion — figures for troubleshooting. One warning colour per row: colouring both the rate and the latency
+               leaves the reader unable to tell which one went wrong. -->
+          <div v-if="upstreamRows.length" class="overview-ledger-list">
+            <div class="ui-rec-head"><span>上游</span><span>成功率</span><span>平均耗时</span><span>响应次数</span><span><span class="overview-sr-only">明细</span></span></div>
+            <template v-for="item in upstreamRows" :key="upstreamKey(item)">
+              <div class="ui-rec overview-upstream" :class="{ 'is-open': expandedUpstream === upstreamKey(item) }">
+                <div class="overview-upstream-id">
+                  <!-- 状态点和地址块并排；地址过长时在块里折行，传输标签跟在地址末尾，不会把点单独留在一行
+                       The dot sits beside an address block; a long address wraps inside the block with the transport tag
+                       following it, so the dot is never left alone on a line -->
+                  <span class="overview-upstream-name">
+                    <i class="ui-dot overview-dot" :class="`overview-dot--${item.health}`" role="img" :aria-label="healthLabel(item.health)" :title="healthLabel(item.health)"></i>
+                    <span class="overview-address"><span class="ui-mono"><template v-for="(part, index) in breakable(item.upstream)" :key="index"><wbr v-if="index" />{{ part }}</template></span> <span class="ui-tag ui-tag--mono">{{ item.transport }}</span></span>
+                  </span>
+                  <span v-if="item.sinceStart" class="ui-rec__meta overview-basis">启动以来的累计</span>
+                </div>
+                <span class="ui-rec__n" :class="`overview-text--${item.health}`">{{ formatPercent(upstreamSuccessRate(item.shown)) }}</span>
+                <span class="ui-rec__n">{{ formatLatency(item.shown.avg_latency_ms) }}</span>
+                <span class="ui-rec__n">{{ formatNumber(item.settled) }}</span>
+                <span class="ui-rec__act">
+                  <button type="button" class="ui-icon-btn ui-icon-btn--sm overview-expand" :aria-expanded="expandedUpstream === upstreamKey(item)" :aria-label="`${item.upstream} 的错误与兜底明细`" @click="toggleUpstream(item)">
+                    <ChevronRight :size="16" aria-hidden="true" />
+                  </button>
+                </span>
+                <p class="ui-rec__phone overview-upstream-line"><span>成功率 <b :class="`overview-text--${item.health}`">{{ formatPercent(upstreamSuccessRate(item.shown)) }}</b></span><span class="ui-sep">·</span><span>平均 {{ formatLatency(item.shown.avg_latency_ms) }}</span><span class="ui-sep">·</span><span>{{ formatNumber(item.settled) }} 次响应</span><template v-if="item.sinceStart"><span class="ui-sep">·</span><span>启动以来</span></template></p>
+              </div>
+              <dl v-if="expandedUpstream === upstreamKey(item)" class="ui-strip overview-upstream-counts ui-rise">
+                <div><dt>成功</dt><dd>{{ formatNumber(item.shown.success) }}</dd></div>
+                <div><dt>错误</dt><dd :class="{ 'overview-text--degraded': item.shown.errors > 0 }">{{ formatNumber(item.shown.errors) }}</dd></div>
+                <div><dt>拒绝</dt><dd>{{ formatNumber(item.shown.rejected) }}</dd></div>
+                <div><dt>TCP 兜底</dt><dd>{{ fallbackShare(item) }}</dd></div>
+              </dl>
+            </template>
+          </div>
           <p v-else class="overview-empty">尚无上游请求数据</p>
-        </section>
+        </UiSection>
 
-        <section v-if="rcodes.length || cacheRows.length" class="overview-section overview-breakdowns" aria-label="响应码与缓存构成">
-          <div v-if="rcodes.length" class="overview-breakdown">
-            <header class="overview-section-heading"><div><h2>响应码分布</h2><p>全部上游 · 已得到结果的请求</p></div></header>
-            <p class="overview-dist-main"><span class="overview-dist-share">{{ formatPercent(rcodes[0].share) }}</span><span class="overview-dist-name">{{ rcodes[0].label }}</span></p>
-            <ul class="overview-legend" aria-label="响应码分布">
+        <!-- 三块同一种东西（主项做大、其余列表），并成一行三栏；都是启动以来的累计。
+             Three blocks of one kind (the leading figure large, the rest listed) share one row; all are lifetime totals. -->
+        <div class="overview-distributions">
+          <UiSection class="overview-distribution" title="请求分布" aside="启动以来 · 按 Pipeline">
+            <template v-if="pipelines.length">
+              <p class="overview-lead"><span class="overview-lead-share">{{ formatPercent(pipelines[0].share) }}</span><span class="overview-lead-name ui-mono">{{ pipelines[0].name }}</span><span class="overview-lead-count">{{ formatNumber(pipelines[0].count) }} 次</span></p>
+              <ul v-if="pipelines.length > 1" class="overview-shares" aria-label="Pipeline 命中分布">
+                <li v-for="pipeline in pipelines.slice(1)" :key="pipeline.name"><span class="ui-mono">{{ pipeline.name }}</span><span class="overview-share-count">{{ formatNumber(pipeline.count) }}</span><span>{{ formatPercent(pipeline.share) }}</span></li>
+              </ul>
+            </template>
+            <p v-else class="overview-empty">尚无 Pipeline 命中数据</p>
+          </UiSection>
+          <UiSection v-if="rcodes.length" class="overview-distribution" title="响应码分布" aside="启动以来 · 已得到结果的请求">
+            <p class="overview-lead"><span class="overview-lead-share">{{ formatPercent(rcodes[0].share) }}</span><span class="overview-lead-name">{{ rcodes[0].label }}</span></p>
+            <ul class="overview-shares" aria-label="响应码分布">
               <li v-for="row in rcodes.slice(1)" :key="row.key"><span>{{ row.label }}</span><span>{{ formatPercent(row.share) }}</span></li>
             </ul>
-          </div>
-          <div v-if="cacheRows.length" class="overview-breakdown">
-            <header class="overview-section-heading"><div><h2>缓存构成</h2><p>命中按来源拆分</p></div></header>
-            <p class="overview-dist-main"><span class="overview-dist-share">{{ formatPercent(cacheRows[0].share) }}</span><span class="overview-dist-name">{{ cacheRows[0].label }}</span></p>
-            <ul class="overview-legend" aria-label="缓存构成">
+          </UiSection>
+          <UiSection v-if="cacheRows.length" class="overview-distribution" title="缓存构成" aside="启动以来 · 命中按来源">
+            <p class="overview-lead"><span class="overview-lead-share">{{ formatPercent(cacheRows[0].share) }}</span><span class="overview-lead-name">{{ cacheRows[0].label }}</span></p>
+            <ul class="overview-shares" aria-label="缓存构成">
               <li v-for="row in cacheRows.slice(1)" :key="row.key"><span>{{ row.label }}</span><span>{{ formatPercent(row.share) }}</span></li>
             </ul>
-          </div>
-        </section>
+          </UiSection>
+        </div>
       </section>
 
       <section id="overview-panel-stats" v-show="activeView === 'stats'" class="overview-view" role="tabpanel" aria-labelledby="overview-tab-stats" tabindex="0">
-        <header class="overview-section-heading overview-stats-heading">
-          <div><h2>查询排行</h2><p v-if="displayStats">已观察 {{ formatNumber(displayStats.requests_observed) }} 次请求<span v-if="displayStats.dropped_updates"> · 丢弃 {{ formatNumber(displayStats.dropped_updates) }} 次统计更新</span></p><p v-else>客户端与请求域名</p></div>
-          <div class="overview-stats-tools">
-            <div class="overview-windows" role="group" aria-label="统计窗口">
-              <button v-for="option in statsWindows" :key="option.value" type="button" :aria-pressed="statsWindow === option.value" :disabled="statsLoading || runtimeControlsDisabled" @click="setStatsWindow(option.value)">{{ option.label }}</button>
-            </div>
-            <button v-if="stats?.enabled" class="overview-button overview-icon-button" type="button" title="清空查询排行" aria-label="清空查询排行" :disabled="statsClearing || runtimeControlsDisabled" @click="clearQueryStats"><Eraser :size="16" /></button>
+        <!-- 页签已经写了「查询排行」，这里不再重复标题：这一行只说时段和总量，右边是窗口和清空。
+             The tab already says 查询排行, so no repeated title: this line gives the period and the volume, with the window and clearing on the right. -->
+        <!-- 统计没启用、内核不支持时，时段、总量和窗口都无从说起，整行不出 / With statistics off or unsupported there is no period, volume or window to speak of, so the line is omitted -->
+        <div v-if="showStatsSection && displayStats?.enabled !== false" class="overview-toolbar">
+          <p><template v-if="displayStats"><span>{{ statsWindowLabel }}</span><span class="ui-sep">·</span><span>已观察 {{ formatNumber(displayStats.requests_observed) }} 次请求</span><template v-if="displayStats.dropped_updates"><span class="ui-sep">·</span><span>丢弃 {{ formatNumber(displayStats.dropped_updates) }} 次统计更新</span></template></template><span v-else>客户端与请求域名</span></p>
+          <div class="overview-toolbar-tools">
+            <UiTabs v-model="statsWindowKey" variant="segment" size="sm" :items="statsWindowItems" label="统计窗口" />
+            <button v-if="stats?.enabled" class="ui-icon-btn" type="button" title="清空查询排行" aria-label="清空查询排行" :disabled="statsClearing || runtimeControlsDisabled" @click="clearQueryStats"><Eraser :size="16" aria-hidden="true" /></button>
           </div>
-        </header>
-        <p v-if="!showStatsSection" class="overview-empty">当前 KixDNS 未提供查询排行能力。</p>
-        <div v-else-if="displayStats?.enabled" class="overview-rankings">
+        </div>
+        <div v-if="statsError" class="ui-notice ui-notice--err overview-notice" role="alert">
+          <CircleX :size="16" aria-hidden="true" />
+          <span>查询排行读取失败</span>
+          <small>{{ statsError }}</small>
+          <button class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="statsLoading" @click="loadStats()">重试</button>
+        </div>
+        <UiEmpty v-if="!showStatsSection" :icon="ChartColumn" title="当前 KixDNS 不提供查询排行" desc="更新增强版后可以按客户端和域名查看请求量。" />
+        <div v-else-if="displayStats?.enabled" class="overview-rankings" :class="{ 'is-loading': statsLoading }">
           <section v-for="group in rankingGroups" :key="group.id" class="overview-ranking">
-            <header><h3>{{ group.title }}</h3><p>{{ group.id === 'clients' && displayStats.anonymized_clients ? '按脱敏网段聚合' : group.description }}</p></header>
+            <header><h2>{{ group.title }}</h2><p>{{ group.id === 'clients' && displayStats.anonymized_clients ? '按脱敏网段聚合' : group.description }}</p></header>
             <ol v-if="displayStats[group.id].length" class="overview-ranking-list">
               <li v-for="(item, index) in displayStats[group.id]" :key="item.name">
                 <span class="overview-rank">{{ String(index + 1).padStart(2, '0') }}</span>
-                <strong class="overview-mono" :title="item.name">{{ item.name }}</strong><span>{{ formatNumber(item.count) }}</span>
+                <strong class="ui-mono"><template v-for="(part, partIndex) in breakable(item.name)" :key="partIndex"><wbr v-if="partIndex" />{{ part }}</template></strong><span class="overview-rank-count">{{ formatNumber(item.count) }}</span>
                 <i aria-hidden="true"><span :style="{ width: `${item.count / (group.id === 'clients' ? maxClient : maxDomain) * 100}%` }"></span></i>
               </li>
             </ol>
-            <p v-else class="overview-empty">{{ group.id === 'clients' ? '当前窗口暂无客户端数据' : '当前窗口暂无域名数据' }}</p>
+            <p v-else class="overview-empty">{{ group.empty }}</p>
           </section>
         </div>
-        <div v-else-if="stats" class="overview-empty overview-stats-disabled"><strong>查询统计未启用</strong><p>当前没有收集客户端地址和请求域名。</p><RouterLink class="overview-button" to="/config">打开配置<ArrowUpRight :size="16" /></RouterLink></div>
-        <p v-else class="overview-empty">{{ statsLoading ? '正在读取查询排行' : '查询排行暂不可用' }}</p>
+        <UiEmpty v-else-if="stats" :icon="ChartColumn" title="查询统计未启用" desc="当前没有收集客户端地址和请求域名。">
+          <RouterLink class="ui-btn ui-btn--secondary ui-btn--sm" to="/config">打开配置</RouterLink>
+        </UiEmpty>
+        <p v-else-if="!statsError" class="overview-empty">{{ statsLoading ? '正在读取查询排行' : '查询排行暂不可用' }}</p>
       </section>
 
       <section id="overview-panel-rules" v-show="activeView === 'rules'" class="overview-view" role="tabpanel" aria-labelledby="overview-tab-rules" tabindex="0">
-        <header class="overview-section-heading"><div><h2>规则命中</h2><p>请求与响应阶段的累计执行次数</p></div><span>{{ displayOverview.metrics.rules.length }} 项</span></header>
-        <div v-if="displayOverview.metrics.rules.length" class="overview-rules">
-          <div class="overview-rule-head" aria-hidden="true"><span>阶段</span><span>Pipeline</span><span>规则</span><span>执行次数</span></div>
-          <ul>
-            <li v-for="rule in displayOverview.metrics.rules" :key="`${rule.pipeline}:${rule.phase}:${rule.rule}`" class="overview-rule">
-              <span class="overview-phase" :class="{ 'overview-phase--response': rule.phase === 'response' }">{{ rule.phase === 'request' ? '请求' : '响应' }}</span>
-              <span class="overview-rule-pipeline overview-mono">{{ rule.pipeline }}</span><strong class="overview-rule-name overview-mono">{{ rule.rule }}</strong><span class="overview-rule-count">{{ formatNumber(rule.count) }}</span>
-            </li>
-          </ul>
+        <div class="overview-toolbar"><p><span>启动以来</span><span class="ui-sep">·</span><span>请求与响应阶段的累计执行次数</span></p></div>
+        <div v-if="rules.length" class="overview-rules">
+          <div class="ui-rec-head"><span>阶段</span><span>规则</span><span>Pipeline</span><span>执行次数</span></div>
+          <div v-for="rule in rules" :key="`${rule.pipeline}:${rule.phase}:${rule.rule}`" class="ui-rec overview-rule">
+            <span class="overview-rule-phase"><span class="ui-tag" :class="{ 'overview-phase--request': rule.phase === 'request' }">{{ rule.phase === 'request' ? '请求' : '响应' }}</span></span>
+            <strong class="overview-rule-name ui-mono">{{ rule.rule }}</strong>
+            <span class="overview-rule-pipeline ui-mono">{{ rule.pipeline }}</span>
+            <span class="overview-rule-count">{{ formatNumber(rule.count) }}</span>
+            <p class="ui-rec__phone overview-rule-line"><span class="ui-tag" :class="{ 'overview-phase--request': rule.phase === 'request' }">{{ rule.phase === 'request' ? '请求' : '响应' }}</span><span class="ui-mono">{{ rule.pipeline }}</span></p>
+          </div>
         </div>
         <p v-else class="overview-empty">尚无规则命中数据</p>
       </section>
 
-      <section class="overview-runtime" aria-labelledby="overview-runtime-heading">
-        <header class="overview-runtime-heading">
-          <div><h2 id="overview-runtime-heading">{{ runtimeUnavailable ? '最后运行配置' : '当前运行配置' }}</h2><span class="overview-config-state" :class="{ 'overview-config-state--active': runtimeState === 'live' && displayOverview.active_config.last_reload.success, 'overview-warning': overview && !displayOverview.active_config.last_reload.success }">{{ configStateLabel }}</span></div>
-          <RouterLink class="overview-button" to="/config">管理配置<ArrowUpRight :size="16" /></RouterLink>
-        </header>
-        <dl class="overview-runtime-ledger">
-          <div><dt>配置代次</dt><dd>{{ overview ? `#${displayOverview.active_config.generation}` : '--' }}</dd></div>
-          <div><dt>重载序号</dt><dd>{{ overview ? `#${displayOverview.active_config.reload_sequence}` : '--' }}</dd></div>
-          <div><dt>配置摘要</dt><dd class="overview-mono" :title="overview ? displayOverview.active_config.sha256 : undefined">{{ overview ? shortHash(displayOverview.active_config.sha256, 14) : '--' }}</dd></div>
-          <div><dt>上游提交</dt><dd class="overview-mono">{{ overview ? shortHash(displayOverview.health.upstream_commit, 12) : '--' }}</dd></div>
-          <div><dt>补丁集</dt><dd>{{ overview ? `v${displayOverview.health.patchset}` : '--' }}</dd></div>
-        </dl>
+      <UiCard class="overview-runtime" :title="runtimeUnavailable ? '最后运行配置' : '当前运行配置'">
+        <template #actions><span class="ui-tag overview-config-state" :class="configTag.tone ? `ui-tag--${configTag.tone}` : ''">{{ configTag.label }}</span></template>
+        <!-- 读者来这里确认的是「现在跑的是哪一代配置」：代次做主项，重载序号和补丁集是附注，两个摘要收成一条（同系统页「当前安装」）。
+             What the reader checks here is which generation is running: that leads, the reload sequence and patchset qualify it,
+             and the two digests share one strip (as on the system page's 当前安装). -->
+        <div class="overview-config-id">
+        <p class="overview-config-lead">配置代次 <span class="ui-mono">{{ overview ? `#${displayOverview.active_config.generation}` : '—' }}</span></p>
+        <p class="overview-config-meta"><span>重载 <span class="ui-mono">{{ overview ? `#${displayOverview.active_config.reload_sequence}` : '—' }}</span></span><span class="ui-sep">·</span><span>补丁集 <span class="ui-mono">{{ overview && displayOverview.health.patchset ? `p${displayOverview.health.patchset}` : '—' }}</span></span></p>
         <p v-if="overview && !displayOverview.active_config.last_reload.success && displayOverview.active_config.last_reload.error" class="overview-reload-error">{{ displayOverview.active_config.last_reload.error }}</p>
-        <footer class="overview-runtime-footer">
-          <p>PID {{ overview ? displayOverview.health.pid : '--' }}<span> · 统计为运行时累计值</span></p>
-          <button class="overview-button overview-cache-button" type="button" :disabled="flushing || runtimeControlsDisabled" @click="flushCache"><Eraser :size="15" />{{ flushing ? '正在清理' : '清空内部缓存' }}</button>
-        </footer>
-      </section>
+        </div>
+        <dl class="ui-strip overview-config-hashes">
+          <div><dt>配置摘要</dt><dd class="ui-mono" :title="overview ? displayOverview.active_config.sha256 : undefined">{{ overview ? shortHash(displayOverview.active_config.sha256, 14) : '—' }}</dd></div>
+          <div><dt>上游提交</dt><dd class="ui-mono">{{ overview ? shortHash(displayOverview.health.upstream_commit, 12) : '—' }}</dd></div>
+        </dl>
+        <template #foot>
+          <span class="overview-runtime-note"><span>PID <span class="ui-mono">{{ overview ? displayOverview.health.pid : '—' }}</span></span><span class="ui-sep">·</span><span>统计为运行时累计值</span></span>
+          <span class="overview-runtime-actions">
+            <RouterLink class="ui-btn ui-btn--secondary ui-btn--sm" to="/config">管理配置</RouterLink>
+            <button class="ui-btn ui-btn--danger ui-btn--sm" type="button" :disabled="flushing || runtimeControlsDisabled" @click="flushCache"><Eraser :size="14" aria-hidden="true" />{{ flushing ? '正在清理' : '清空内部缓存' }}</button>
+          </span>
+        </template>
+      </UiCard>
     </template>
-    <p v-else class="overview-empty">运行数据暂不可用，请检查增强控制通道。</p>
   </div>
 </template>
 
 <style scoped>
-.overview-page { color: var(--ink); font-size: 14px; line-height: 1.5; }
-.overview-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
-.overview-heading h1 { margin: 0; font-family: var(--f-display); font-size: 28px; font-weight: 650; letter-spacing: -.04em; line-height: 1.25; }
-.overview-heading-context { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
-.overview-button { min-height: 40px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 8px 13px; border: 1px solid var(--line); border-radius: 4px; color: var(--ink); background: var(--surface); font: inherit; font-size: 13px; text-decoration: none; cursor: pointer; }
-.overview-button:hover:not(:disabled) { border-color: var(--ink); }
-.overview-button:disabled { opacity: .45; cursor: not-allowed; }
-.overview-button:focus-visible, .overview-tabs button:focus-visible, .overview-windows button:focus-visible, .overview-upstream-detail summary:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
-.overview-notice { margin-bottom: 16px; }
-.overview-notice--paused { display: flex; align-items: flex-start; gap: 10px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); }
-.overview-notice--paused > svg { flex: 0 0 auto; margin-top: 2px; color: var(--muted); }
-.overview-notice p { margin: 3px 0 0; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
-.overview-tabs { display: flex; gap: 28px; min-height: 46px; margin-bottom: 24px; border-bottom: 1px solid var(--line); }
-.overview-tabs button { position: relative; padding: 0 8px 12px; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 14px; cursor: pointer; }
-.overview-tabs button[aria-selected="true"] { color: var(--ink); font-weight: 600; }
-.overview-tabs button[aria-selected="true"]::after { position: absolute; right: 0; bottom: -1px; left: 0; height: 3px; background: var(--green); content: ''; }
-.overview-view { outline-offset: 5px; }
+.overview-page { display: grid; gap: var(--s-5); color: var(--l-ink); }
+.overview-page > * { min-width: 0; }
+.overview-skeleton-meta { width: 16rem; height: var(--t-2); }
+.overview-tabs { margin-bottom: calc(var(--s-1) * -1); }
+.overview-view { display: grid; gap: var(--s-6); outline-offset: var(--s-1); }
+.overview-view:focus { outline: none; }
+
 /* 信号带：整页唯一一处深底，最重要的数字独占其中并带趋势。
-   The signal band is the page's one dark surface: the number that matters most
-   sits alone on it with its trend. */
-.overview-signal { display: grid; grid-template-columns: minmax(0, 1fr) 260px; align-items: center; gap: 28px; margin-bottom: 20px; padding: 22px 24px; border-radius: 4px; color: var(--d-ink); background: var(--ink); }
-.overview-signal-main { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
-.overview-signal-label { color: var(--d-ink-2); font-size: var(--t-1); }
-.overview-signal-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; color: var(--d-ink-2); font-size: var(--t-1); font-variant-numeric: tabular-nums; }
-.overview-signal-sub b { color: var(--d-ink); font-weight: 500; }
+   The signal band is the page's one dark surface: the number that matters most sits alone on it with its trend. */
+/* 曲线占满大数右边的全部宽度：24 个小时桶挤在窄条里看不出起伏，中间还空出一大块深色。
+   The curve takes all the width right of the figure: 24 hourly buckets squeezed into a narrow strip show no shape, and left a dark gulf in the middle. */
+.overview-signal { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: var(--s-7); padding: var(--s-5); border-radius: var(--r-3); color: var(--d-ink); background: var(--d-shell); }
+.overview-signal-main { min-width: 0; display: grid; gap: var(--s-2); }
+.overview-signal-label, .overview-trend-label, .overview-signal-sub { color: var(--d-ink-2); font-size: var(--t-2); font-variant-numeric: tabular-nums; }
+.overview-signal-sub b, .overview-trend-label b { color: var(--d-ink); font-weight: var(--w-medium); }
+/* 不在数字中间断行：十位数完整写出，手机上换小一档字号而不是折行。
+   Never break inside a number: ten digits are written in full, and phones take one size down rather than wrapping. */
+.overview-total-value { font-family: var(--f-display); font-size: var(--t-7); font-weight: var(--w-medium); letter-spacing: -.04em; line-height: var(--lh-tight); white-space: nowrap; }
+.overview-trend { min-width: 0; display: grid; gap: var(--s-2); justify-self: stretch; }
+.overview-spark { display: block; width: 100%; height: var(--s-8); overflow: visible; }
 /* 趋势线和大数字同色：它们说的是同一件事，分开配色会读成两条信息。 */
-.overview-trend { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
-.overview-trend-label { color: var(--d-ink-2); font-size: var(--t-1); font-variant-numeric: tabular-nums; }
-.overview-trend-label b { color: var(--d-ink); font-weight: 500; }
-.overview-spark { width: 100%; height: 74px; overflow: visible; }
 .overview-spark-line { fill: none; stroke: var(--d-ink); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
-.overview-spark-area { fill: rgba(255, 255, 255, .13); stroke: none; }
-.overview-spark-end { fill: var(--d-ink); }
-.overview-spark-pending { color: var(--d-ink-2); font-size: var(--t-1); line-height: 1.6; }
+.overview-spark-area { fill: color-mix(in srgb, var(--d-ink) 13%, transparent); stroke: none; }
+.overview-spark-box { position: relative; }
+.overview-spark-end { position: absolute; width: calc(var(--size-dot) - 1px); height: calc(var(--size-dot) - 1px); border-radius: var(--r-full); background: var(--d-ink); transform: translate(-50%, -50%); }
+.overview-spark-pending { margin: 0; color: var(--d-ink-2); font-size: var(--t-2); line-height: var(--lh-base); }
 
-.overview-stats-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 28px; }
-.overview-stat { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 16px 18px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); }
-.overview-stat-label { color: var(--muted); font-size: var(--t-1); }
-.overview-stat-note { color: var(--muted); font-size: var(--t-1); line-height: 1.55; font-variant-numeric: tabular-nums; }
-.overview-stat-note b { font-weight: 500; }
-.overview-latency-bar { display: flex; height: 6px; margin-top: 6px; overflow: hidden; border-radius: var(--r-1); background: var(--line); }
-.overview-latency-bar > i { display: block; height: 100%; }
-.overview-latency-bar--within-10ms { background: var(--ink); }
-.overview-latency-bar--within-100ms { background: color-mix(in srgb, var(--ink) 55%, transparent); }
-.overview-latency-bar--within-1s { background: color-mix(in srgb, var(--ink) 30%, transparent); }
-.overview-latency-bar--slower { background: color-mix(in srgb, var(--ink) 15%, transparent); }
-.overview-latency-legend { display: flex; flex-wrap: wrap; gap: 2px 12px; }
-/* 不允许在数字中间断行。overflow-wrap: anywhere 是为了防溢出加的，
-   但它对大数字是错的药：375 宽下 12,847,392 会被折成 12,847,39 / 2。
-   窄屏另有缩写（见 compactTotal），所以这里不需要靠断行来兜底。
-   Never break inside a number. overflow-wrap: anywhere was added to stop
-   overflow but is the wrong remedy here: at 375px it folds 12,847,392 into
-   12,847,39 and 2. Narrow screens abbreviate instead (see compactTotal), so
-   wrapping is not needed as a fallback. */
-.overview-total-value, .overview-kpi-value { max-width: 100%; margin: 0; font-family: var(--f-display); font-size: 40px; font-weight: 500; font-variant-numeric: tabular-nums; letter-spacing: -.045em; line-height: 1.1; white-space: nowrap; }
-.overview-kpi-value-row { display: flex; align-items: baseline; gap: 6px; }
-.overview-kpi-unit { color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }
-.overview-dot { display: inline-block; flex: 0 0 8px; width: 8px; height: 8px; border-radius: 50%; vertical-align: middle; }
-.overview-dot--pending { background: #b7bfbb; }
-.overview-dot--healthy { background: var(--green); }
-.overview-dot--degraded { background: var(--amber); }
-.overview-dot--unhealthy { background: var(--red); }
-.overview-text--pending, .overview-text--healthy { color: inherit; }
-.overview-text--degraded { color: var(--amber); }
-.overview-text--unhealthy { color: var(--red); }
-.overview-breakdowns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 48px; }
-.overview-breakdown { min-width: 0; }
-.overview-breakdown .overview-section-heading { margin-bottom: 14px; }
-/* 主项做大、小项列表。取代原来的堆叠条。 */
-.overview-dist-main { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; margin: 0 0 10px; }
-.overview-dist-share { font-family: var(--f-display); font-size: 30px; font-weight: 500; font-variant-numeric: tabular-nums; letter-spacing: -.035em; line-height: 1.1; }
-.overview-dist-name { min-width: 0; font-size: var(--t-3); overflow-wrap: anywhere; }
-.overview-dist-count { margin-left: auto; color: var(--muted); font-size: var(--t-1); font-variant-numeric: tabular-nums; }
-.overview-legend { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; font-size: 13px; }
-.overview-legend li { display: flex; justify-content: space-between; gap: 8px; min-width: 0; color: var(--muted); }
-.overview-legend li > span:last-child { font-variant-numeric: tabular-nums; }
-/* 成功率配一根小条形：纯数字要逐个比对，条形一眼看得出哪个矮。
-   一行里只允许一个告警色，所以耗时列不再跟着染色。 */
-/* 布局放进单元格里的容器，不要直接把 td/th 变成 flex 或 grid：
-   那样会让表格的自动列宽算错，上游列占掉一半宽度而「响应次数」被压到竖着断字。
-   Layout goes in a wrapper inside the cell rather than turning the td/th itself
-   into a flex or grid container: doing that throws off the table's automatic
-   column widths, leaving the upstream column half the table and squeezing the
-   count column until its header breaks one character per line. */
-.overview-table thead th:first-child { width: 42%; }
-.overview-table thead th:nth-child(2) { width: 130px; }
-.overview-table thead th:nth-child(3), .overview-table thead th:nth-child(4) { width: 110px; }
-.overview-upstream-cell { display: flex; align-items: center; gap: 8px; min-width: 0; font-weight: 400; }
-.overview-upstream-cell .overview-mono { min-width: 0; overflow-wrap: anywhere; }
-.overview-rate-cell { display: grid; gap: 4px; }
-.overview-basis { display: block; margin-top: 2px; color: var(--muted); font-size: var(--t-1); }
-/* 手机上各区块的副标题都收起了，但台账的时间段决定了每个数字的含义，挪到右侧的计数前面。 */
-.overview-window-mobile { display: none; }
-.overview-rate-bar { display: block; height: 3px; border-radius: 2px; background: var(--line); }
-.overview-rate-bar > i { display: block; height: 100%; border-radius: 2px; background: var(--ink); }
-.overview-rate-bar--degraded { background: var(--amber) !important; }
-.overview-rate-bar--unhealthy { background: var(--red) !important; }
-.overview-expand-cell { width: 36px; text-align: right; }
-.overview-expand { display: inline-flex; padding: 4px; color: var(--muted); background: none; border: 0; border-radius: 3px; cursor: pointer; }
-.overview-expand:hover { color: var(--ink); background: var(--canvas); }
-.overview-expand--open { transform: rotate(90deg); }
-.overview-table-detail > td { padding-top: 0; }
+/* 三张体征卡共用四行：名称、大数、细条、注脚。 / The three vital tiles share four rows: name, figure, bar, footnote. */
+.overview-vitals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s-2) var(--s-4); }
+.overview-vital { grid-row: span 4; display: grid; grid-template-rows: subgrid; row-gap: var(--s-2); min-width: 0; padding: var(--s-4) var(--s-5); border: 1px solid var(--l-hair); border-radius: var(--r-3); background: var(--l-surface); }
+.overview-vital-label { margin: 0; color: var(--l-ink-2); font-size: var(--t-2); font-weight: var(--w-normal); }
+.overview-vital-figure { display: flex; align-items: baseline; gap: var(--s-1) var(--s-2); margin: 0; color: var(--l-ink-3); font-size: var(--t-3); font-variant-numeric: tabular-nums; }
+.overview-vital-figure strong { color: var(--l-ink); font-family: var(--f-display); font-size: var(--t-6); font-weight: var(--w-medium); letter-spacing: -.035em; line-height: var(--lh-tight); white-space: nowrap; }
+.overview-vital-foot { align-self: start; display: flex; flex-wrap: wrap; gap: 0 var(--s-2); margin: 0; color: var(--l-ink-3); font-size: var(--t-2); line-height: var(--lh-base); font-variant-numeric: tabular-nums; }
+.overview-vital-foot b { color: var(--l-ink-2); font-weight: var(--w-medium); }
+/* 细条：一个零件，分段画。耗时是墨色深浅四档；缓存是两段墨色，空白就是未命中；健康按上游状态上色，只有它有颜色。
+   The bar is one part drawn in segments: latency in four ink shades; cache in two, the gap being misses; health coloured
+   by upstream status, the only bar with colour. */
+.overview-meter { align-self: center; display: flex; gap: 2px; height: var(--s-1); overflow: hidden; border-radius: var(--r-full); background: var(--l-sunk); }
+.overview-meter > i { display: block; height: 100%; }
+.overview-meter--within-10ms, .overview-meter--fresh { background: var(--l-ink); }
+.overview-meter--within-100ms { background: color-mix(in srgb, var(--l-ink) 55%, transparent); }
+.overview-meter--within-1s, .overview-meter--stale { background: color-mix(in srgb, var(--l-ink) 30%, transparent); }
+.overview-meter--slower { background: color-mix(in srgb, var(--l-ink) 15%, transparent); }
+.overview-meter--health { background: transparent; }
+.overview-meter--healthy { background: var(--ok-mark-l); }
+.overview-meter--degraded { background: var(--warn-l); }
+.overview-meter--unhealthy { background: var(--err-l); }
+.overview-meter--pending { background: var(--l-hair); }
+.overview-text--degraded { color: var(--warn-l); }
+.overview-text--unhealthy { color: var(--err-l); }
 
-.overview-section { padding: 22px 0 0; margin-bottom: 24px; border-top: 1px solid var(--line); }
-.overview-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 16px; }
-.overview-section-heading > div:first-child { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; min-width: 0; }
-.overview-section-heading h2, .overview-runtime h2 { margin: 0; font-size: 17px; font-weight: 600; line-height: 1.4; }
-.overview-section-heading p, .overview-section-heading > span { margin: 0; color: var(--muted); font-size: 12px; }
-.overview-pipeline-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
-.overview-pipeline-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; align-items: baseline; min-width: 0; color: var(--muted); font-size: var(--t-2); }
-.overview-pipeline-name { min-width: 0; }
-.overview-pipeline-name strong { font-weight: 400; overflow-wrap: anywhere; }
-.overview-pipeline-count { font-variant-numeric: tabular-nums; }
-.overview-pipeline-share { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
-.overview-table { width: 100%; border-collapse: collapse; font-size: 14px; }
-.overview-table th, .overview-table td { padding: 13px 12px; border-top: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: right; white-space: normal; text-transform: none; font-variant-numeric: tabular-nums; }
-.overview-table tr:last-child th, .overview-table tr:last-child td { border-bottom: 0; }
-.overview-table thead th { color: var(--muted); font-size: 12px; font-weight: 500; }
-.overview-table th:first-child, .overview-table td:nth-child(2), .overview-table th:nth-child(2) { text-align: left; }
-.overview-table th:first-child { padding-left: 0; font-weight: 500; overflow-wrap: anywhere; }
-.overview-table td:last-child, .overview-table th:last-child { padding-right: 0; }
-.overview-table tbody th { max-width: 320px; color: var(--ink); font-size: 14px; }
-.overview-transport { display: inline-block; padding: 2px 6px; border: 1px solid var(--line); border-radius: 3px; color: var(--ink); font: inherit; font-size: 12px; white-space: nowrap; }
-.overview-warning { color: #a56118; }
-.overview-upstream-mobile { display: none; }
-.overview-runtime { margin-top: 24px; padding: 18px 20px 0; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); }
-.overview-runtime-heading, .overview-runtime-heading > div { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 16px; }
-.overview-runtime-heading { margin-bottom: 18px; }
-.overview-runtime-heading h2 { font-size: 15px; }
-.overview-config-state { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
-.overview-config-state::before { width: 7px; height: 7px; border-radius: 50%; background: currentColor; content: ''; }
-.overview-config-state--active { color: var(--green); }
-.overview-runtime-ledger { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 16px; margin: 0 0 18px; }
-.overview-runtime-ledger > div { min-width: 0; padding-right: 10px; border-right: 1px solid var(--line); }
-.overview-runtime-ledger > div:last-child { border: 0; }
-.overview-runtime-ledger dt { margin-bottom: 4px; color: var(--muted); font-size: 12px; }
-.overview-runtime-ledger dd { margin: 0; overflow-wrap: anywhere; font-size: 13px; }
-.overview-runtime-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 54px; border-top: 1px solid var(--line); }
-.overview-runtime-footer p { margin: 0; color: var(--muted); font-size: 12px; }
-.overview-cache-button { border-color: transparent; background: transparent; color: var(--muted); font-size: 12px; }
-.overview-reload-error { color: #a56118; overflow-wrap: anywhere; font-size: 12px; }
-.overview-stats-heading { align-items: flex-start; margin-bottom: 24px; }
-.overview-stats-heading > div:first-child { display: block; }
-.overview-stats-heading p { margin-top: 4px; }
-.overview-stats-tools { display: flex; align-items: center; gap: 8px; }
-.overview-windows { display: flex; }
-.overview-windows button { min-height: 40px; padding: 7px 12px; border: 1px solid var(--line); border-right: 0; color: var(--muted); background: var(--surface); font: inherit; font-size: 12px; cursor: pointer; }
-.overview-windows button:first-child { border-radius: 4px 0 0 4px; }
-.overview-windows button:last-child { border-right: 1px solid var(--line); border-radius: 0 4px 4px 0; }
-.overview-windows button[aria-pressed="true"] { color: var(--green); background: var(--canvas); box-shadow: inset 0 -2px var(--green); }
-.overview-windows button:disabled { opacity: .45; cursor: not-allowed; }
-.overview-icon-button { width: 40px; padding: 0; }
-.overview-rankings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 36px; }
+/* 上游台账：组件库的记录行。 / The upstream ledger uses the kit's record rows. */
+/* 数字列按比例分宽：名字和数字之间不空出一大片，三列数字均匀排开 / Number columns take shares of the width, so no gulf opens between names and figures */
+.overview-ledger .ui-rec, .overview-ledger .ui-rec-head { --rec-cols: minmax(0, 2fr) repeat(3, minmax(6.5rem, 1fr)) var(--h-sm); }
+.overview-ledger.is-refreshing .overview-ledger-list { opacity: .72; transition: opacity var(--m-quick) var(--ease-out); }
+.overview-upstream-id { min-width: 0; display: grid; gap: 2px; }
+.overview-upstream-name { display: flex; align-items: baseline; gap: var(--s-2); min-width: 0; }
+.overview-address { min-width: 0; font-size: var(--t-3); line-height: var(--lh-base); }
+.overview-address .ui-tag { margin-left: var(--s-1); vertical-align: 1px; }
+.overview-dot { flex: 0 0 auto; transform: translateY(-1px); }
+.overview-dot--healthy { background: var(--ok-mark-l); }
+.overview-dot--degraded { background: var(--warn-l); }
+.overview-dot--unhealthy { background: var(--err-l); }
+.overview-dot--pending { background: var(--l-hair); }
+.overview-basis { margin-top: 0; padding-left: calc(var(--size-dot) + var(--s-2)); }
+.overview-expand svg { transition: transform var(--m-slow) var(--ease-out); }
+.overview-expand[aria-expanded="true"] svg { transform: rotate(90deg); }
+.overview-upstream.is-open { border-bottom-color: transparent; }
+.overview-upstream-counts { grid-template-columns: repeat(4, minmax(0, 1fr)); padding: 0 0 var(--s-3) calc(var(--size-dot) + var(--s-2)); border-bottom: 1px solid var(--l-hair); font-variant-numeric: tabular-nums; }
+.overview-upstream-line { flex-wrap: wrap; align-items: baseline; gap: 0 var(--s-2); margin: 0; color: var(--l-ink-3); font-size: var(--t-2); font-variant-numeric: tabular-nums; }
+.overview-upstream-line b { color: var(--l-ink-2); font-weight: var(--w-medium); }
+
+/* 三栏分布：顶端对齐，列表最宽 32rem。 / Three distributions, top-aligned; lists at most 32rem wide. */
+.overview-distributions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s-6); align-items: start; }
+.overview-distribution { align-content: start; }
+.overview-lead { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-1) var(--s-2); margin: 0; }
+.overview-lead-share { font-family: var(--f-display); font-size: var(--t-6); font-weight: var(--w-medium); font-variant-numeric: tabular-nums; letter-spacing: -.035em; line-height: var(--lh-tight); }
+.overview-lead-name { min-width: 0; font-size: var(--t-3); font-weight: var(--w-medium); overflow-wrap: anywhere; }
+.overview-lead-count { color: var(--l-ink-3); font-size: var(--t-2); font-variant-numeric: tabular-nums; }
+.overview-shares { display: grid; gap: var(--s-1); max-width: 32rem; margin: 0; padding: 0; list-style: none; color: var(--l-ink-2); font-size: var(--t-2); }
+.overview-shares li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-3); align-items: baseline; }
+.overview-shares li:has(.overview-share-count) { grid-template-columns: minmax(0, 1fr) auto 3.5rem; }
+.overview-shares li > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.overview-shares li > span:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
+.overview-share-count { color: var(--l-ink-3); }
+
+/* 查询排行、规则命中：页签下一行说明，右边工具。 / Stats and rules: a line under the tabs, tools on the right. */
+.overview-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-2) var(--s-4); }
+.overview-toolbar p, .overview-config-meta, .overview-runtime-note { display: flex; flex-wrap: wrap; gap: 0 var(--s-2); margin: 0; color: var(--l-ink-3); font-size: var(--t-2); font-variant-numeric: tabular-nums; }
+.overview-toolbar-tools { display: flex; align-items: center; gap: var(--s-2); }
+.overview-rankings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-6); transition: opacity var(--m-quick) var(--ease-out); }
+.overview-rankings.is-loading { opacity: .5; }
 .overview-ranking { min-width: 0; }
-.overview-ranking h3 { margin: 0; font-size: 15px; font-weight: 600; }
-.overview-ranking header p { margin: 3px 0 14px; color: var(--muted); font-size: 12px; }
-.overview-ranking-list, .overview-rules ul { margin: 0; padding: 0; list-style: none; }
-.overview-ranking-list li { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 6px 8px; padding: 13px 0; border-bottom: 1px solid var(--line); }
-.overview-rank { color: var(--muted); font-size: 12px; }
-.overview-ranking-list strong { min-width: 0; font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
-.overview-ranking-list li > span:last-of-type { font-size: 13px; font-variant-numeric: tabular-nums; }
-.overview-ranking-list li > i { grid-column: 2 / -1; height: 3px; background: var(--line); }
-.overview-ranking-list i > span { display: block; height: 100%; background: var(--green); }
-.overview-rule, .overview-rule-head { display: grid; grid-template-columns: 72px minmax(100px, 1fr) minmax(160px, 2fr) 110px; gap: 16px; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--line); }
-.overview-rule-head { color: var(--muted); font-size: 12px; }
-.overview-rule-head > span:last-child, .overview-rule-count { text-align: right; font-variant-numeric: tabular-nums; }
-.overview-rule-name { min-width: 0; font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
-.overview-rule-pipeline { color: var(--muted); overflow-wrap: anywhere; font-size: 13px; }
-.overview-phase { justify-self: start; padding: 2px 7px; border: 1px solid var(--line); border-radius: 3px; color: var(--green); font-size: 12px; }
-.overview-phase--response { color: var(--muted); }
-.overview-empty, .overview-loading { padding: 28px 0; color: var(--muted); font-size: 13px; }
-.overview-skeleton { display: grid; gap: 20px; }
-.overview-skeleton-signal { height: 138px; }
-.overview-skeleton-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
-.overview-skeleton-stats i { height: 92px; }
-.overview-skeleton-block { height: 220px; }
-.overview-stats-disabled > * { display: block; margin: 0 0 8px; }
-.overview-stats-disabled .overview-button { display: inline-flex; margin-top: 8px; }
-.overview-mono { font-family: var(--f-mono); }
+.overview-ranking h2 { margin: 0; font-family: var(--f-display); font-size: var(--t-4); font-weight: var(--w-bold); }
+.overview-ranking header p { margin: var(--s-1) 0 var(--s-3); color: var(--l-ink-3); font-size: var(--t-2); }
+.overview-ranking-list { margin: 0; padding: 0; list-style: none; }
+.overview-ranking-list li { display: grid; grid-template-columns: var(--s-5) minmax(0, 1fr) auto; gap: var(--s-1) var(--s-2); align-items: baseline; padding: var(--s-3) 0; border-bottom: 1px solid var(--l-hair); }
+.overview-ranking-list li:last-child { border-bottom: 0; }
+.overview-rank { color: var(--l-ink-3); font-family: var(--f-mono); font-size: var(--t-1); }
+.overview-ranking-list strong { min-width: 0; font-size: var(--t-3); font-weight: var(--w-medium); }
+.overview-rank-count { font-size: var(--t-2); font-variant-numeric: tabular-nums; }
+.overview-ranking-list li > i { grid-column: 2 / -1; height: 3px; background: var(--l-hair); }
+.overview-ranking-list i > span { display: block; height: 100%; background: var(--ok-mark-l); }
+
+.overview-rules { --rec-cols: 3.5rem minmax(0, 1.4fr) minmax(0, 1fr) 8rem; }
+.overview-rules .ui-rec, .overview-rules .ui-rec-head { --rec-cols: 3.5rem minmax(0, 1.4fr) minmax(0, 1fr) 8rem; }
+.overview-rule-name { min-width: 0; font-size: var(--t-3); font-weight: var(--w-medium); overflow-wrap: anywhere; }
+.overview-rule-pipeline { min-width: 0; color: var(--l-ink-3); font-size: var(--t-2); overflow-wrap: anywhere; }
+.overview-rule-count { text-align: right; font-variant-numeric: tabular-nums; }
+/* 「请求」阶段标签用已发布的绿，保留。 / The 请求 phase tag keeps its released green. */
+.overview-phase--request { color: var(--ok-l); border-color: var(--ok-line-l); }
+.overview-rule-line { align-items: center; gap: var(--s-2); margin: 0; color: var(--l-ink-3); font-size: var(--t-2); }
+
+/* 宽屏上左边是「哪一代配置」，右边是两个摘要；整宽的卡片不再右边空着一大半。
+   On wide screens the generation sits left and the two digests right, so the full-width card is not half empty. */
+.overview-runtime :deep(.ui-card__body) { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--s-3) var(--s-6); align-items: start; }
+.overview-config-id { display: grid; gap: var(--s-1); min-width: 0; }
+.overview-config-lead { margin: 0; color: var(--l-ink-2); font-size: var(--t-3); }
+.overview-config-lead .ui-mono { color: var(--l-ink); font-family: var(--f-display); font-size: var(--t-6); font-weight: var(--w-medium); letter-spacing: -.035em; }
+.overview-reload-error { margin: var(--s-1) 0 0; color: var(--warn-l); font-size: var(--t-2); overflow-wrap: anywhere; }
+.overview-config-hashes { grid-template-columns: repeat(2, minmax(0, 1fr)); align-self: end; }
+.overview-runtime-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); }
+
+.overview-empty { margin: 0; padding: var(--s-5) 0; color: var(--l-ink-3); font-size: var(--t-2); }
+.overview-skeleton { display: grid; gap: var(--s-5); }
+.overview-skeleton-signal { height: calc(var(--s-8) * 2 + var(--s-2)); border-radius: var(--r-3); }
+.overview-skeleton-vitals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s-4); }
+.overview-skeleton-vitals i { height: calc(var(--s-8) + var(--s-7)); border-radius: var(--r-3); }
+.overview-skeleton-rows { display: grid; gap: var(--s-2); }
+.overview-skeleton-rows i { height: var(--h-touch); }
 .overview-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
-@media (max-width: 1000px) {
-  .overview-signal { grid-template-columns: minmax(0, 1fr); gap: 16px; }
-  .overview-stats-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .overview-stats-row > .overview-stat:first-child { grid-column: 1 / -1; }
-  .overview-breakdowns { grid-template-columns: minmax(0, 1fr); gap: 24px; }
-  .overview-runtime-ledger { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .overview-table th, .overview-table td { padding: 12px 8px; font-size: 13px; }
-  .overview-table tbody th { max-width: 230px; }
+@media (max-width: 900px) {
+  .overview-distributions { grid-template-columns: minmax(0, 1fr); }
+  .overview-runtime :deep(.ui-card__body) { grid-template-columns: minmax(0, 1fr); }
+  .overview-config-hashes { padding-top: var(--s-3); border-top: 1px solid var(--l-hair); }
 }
 
-@media (max-width: 700px) {
-  .overview-heading { margin-bottom: 8px; }
-  .overview-heading h1 { font-size: 20px; letter-spacing: -.025em; }
-  .overview-heading-context { display: none; }
-  .overview-button { min-height: 44px; padding: 8px 10px; font-size: 12px; }
-  .overview-heading > .overview-button { gap: 5px; }
-  .overview-tabs { gap: 16px; min-height: 44px; margin-bottom: 16px; }
-  .overview-tabs button { padding: 0 4px 9px; font-size: 14px; }
-  .overview-signal { padding: 16px 16px 14px; margin-bottom: 14px; gap: 12px; }
-  .overview-signal-sub { gap: 4px 12px; }
-  .overview-spark { height: 52px; }
-  .overview-stats-row { grid-template-columns: minmax(0, 1fr); gap: 10px; margin-bottom: 22px; }
-  .overview-skeleton-stats { grid-template-columns: minmax(0, 1fr); gap: 10px; }
-  .overview-skeleton-signal { height: 190px; }
-  .overview-stat { gap: 4px; padding: 13px 14px; }
-  .overview-total-value, .overview-kpi-value { font-size: 30px; }
-  .overview-dist-share { font-size: 24px; }
-  .overview-breakdowns { gap: 18px; }
-  .overview-legend { gap: 6px; }
-  .overview-section { padding-top: 16px; margin-bottom: 18px; }
-  .overview-section-heading { align-items: baseline; gap: 8px; margin-bottom: 10px; }
-  .overview-section-heading h2 { font-size: 15px; }
-  .overview-section-heading > div:first-child { display: block; }
-  .overview-section-heading > div > p { display: none; }
-  .overview-window-mobile { display: inline; }
-  .overview-section-heading > p, .overview-section-heading > span { font-size: 12px; }
-  .overview-pipeline-list { display: block; margin-top: 5px; }
-  .overview-pipeline-list li { grid-template-columns: minmax(0, 1fr) auto 49px; gap: 8px; align-items: center; min-height: 34px; border-bottom: 1px solid var(--line); font-size: 14px; }
-  .overview-pipeline-list li:last-child { border-bottom: 0; }
-  .overview-pipeline-name { grid-column: auto; }
-  .overview-pipeline-share { font-size: 12px; text-align: right; }
-  .overview-upstream-desktop { display: none; }
-  .overview-upstream-mobile { display: block; }
-  .overview-upstream-detail { border-bottom: 1px solid var(--line); }
-  .overview-upstream-detail:last-child { border-bottom: 0; }
-  .overview-upstream-detail summary { position: relative; display: grid; gap: 4px; min-height: 56px; padding: 11px 28px 11px 0; list-style: none; cursor: pointer; }
-  .overview-upstream-detail summary::-webkit-details-marker { display: none; }
-  .overview-upstream-identity { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
-  .overview-upstream-identity strong { min-width: 0; overflow-wrap: anywhere; font-size: 14px; font-weight: 500; }
-  .overview-transport { padding: 0 5px; font-size: 12px; }
-  .overview-upstream-summary { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
-  .overview-upstream-summary b { font-weight: 500; }
-  .overview-disclosure-icon { position: absolute; top: 21px; right: 0; color: var(--muted); transition: transform .15s; }
-  .overview-upstream-detail[open] .overview-disclosure-icon { transform: rotate(90deg); }
-  .overview-upstream-counts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 0; padding: 3px 0 14px; }
-  .overview-upstream-counts dt { color: var(--muted); font-size: 12px; }
-  .overview-upstream-counts dd { margin: 3px 0 0; font-size: 12px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-  .overview-runtime { margin-top: 18px; padding: 12px 12px 0; }
-  .overview-runtime-heading { margin-bottom: 12px; }
-  .overview-runtime-heading > div { gap: 8px; }
-  .overview-runtime-heading h2 { font-size: 14px; }
-  .overview-runtime-heading > .overview-button { min-height: 44px; padding: 4px 7px; font-size: 12px; }
-  .overview-config-state { gap: 4px; font-size: 12px; }
-  .overview-config-state::before { width: 6px; height: 6px; }
-  .overview-runtime-ledger { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; margin-bottom: 12px; }
-  .overview-runtime-ledger > div { border: 0; padding: 0; }
-  .overview-runtime-ledger dt { margin-bottom: 2px; font-size: 12px; }
-  .overview-runtime-ledger dd { font-size: 12px; }
-  .overview-runtime-footer { gap: 6px; min-height: 48px; }
-  .overview-runtime-footer p { font-size: 12px; }
-  .overview-runtime-footer p span { display: none; }
-  .overview-cache-button { padding-right: 0; font-size: 12px; }
-  .overview-stats-heading { flex-direction: column; gap: 14px; margin-bottom: 18px; }
-  .overview-stats-heading > div > p { display: block; font-size: 12px; }
-  .overview-stats-tools { width: 100%; justify-content: space-between; gap: 10px; }
-  .overview-windows button { min-height: 44px; padding: 8px 13px; font-size: 12px; }
-  .overview-icon-button { width: 44px; }
-  .overview-rankings { grid-template-columns: minmax(0, 1fr); gap: 24px; }
-  .overview-ranking-list li { grid-template-columns: 21px minmax(0, 1fr) auto; gap: 5px 7px; padding: 11px 0; }
-  .overview-ranking-list strong, .overview-ranking-list li > span:last-of-type { font-size: 14px; }
-  .overview-rule-head { display: none; }
-  .overview-rule { grid-template-columns: minmax(0, 1fr) auto; gap: 5px 10px; padding: 12px 0; }
-  .overview-phase { grid-column: 1; grid-row: 1; font-size: 12px; }
-  .overview-rule-count { grid-column: 2; grid-row: 1 / 4; align-self: center; font-size: 14px; }
-  .overview-rule-name { grid-column: 1; grid-row: 2; font-size: 13px; }
-  .overview-rule-pipeline { grid-column: 1; grid-row: 3; font-size: 12px; }
-  .overview-notice--paused { padding: 12px; }
+@media (max-width: 640px) {
+  .overview-page { gap: var(--s-4); }
+  .overview-meta-time { display: none; }
+  .overview-view { gap: var(--s-5); }
+  .overview-signal { grid-template-columns: minmax(0, 1fr); gap: var(--s-3); padding: var(--s-4); }
+  .overview-total-value { font-size: var(--t-6); }
+  .overview-spark { height: var(--s-7); }
+  .overview-vitals { grid-template-columns: minmax(0, 1fr); }
+  .overview-vital { padding: var(--s-3) var(--s-4); }
+  .overview-ledger .ui-rec, .overview-ledger .ui-rec-head { --rec-cols: minmax(0, 1fr) var(--h-touch); }
+  .overview-upstream { row-gap: var(--s-1); }
+  .overview-upstream-counts { grid-template-columns: repeat(2, minmax(0, 1fr)); padding-left: 0; }
+  .overview-basis { display: none; }
+  .overview-expand { width: var(--h-touch); height: var(--h-touch); }
+  .overview-toolbar { align-items: stretch; }
+  .overview-toolbar-tools { width: 100%; justify-content: space-between; }
+  /* 手机上窗口分段撑到 44，好按 / On a phone the window segment grows to 44 so it is easy to press */
+  .overview-toolbar :deep(.ui-seg__opt) { min-height: calc(var(--h-touch) - 4px); padding-inline: var(--s-3); }
+  .overview-toolbar .ui-icon-btn { width: var(--h-touch); height: var(--h-touch); }
+  .overview-rankings { grid-template-columns: minmax(0, 1fr); gap: var(--s-5); }
+  .overview-rules .ui-rec, .overview-rules .ui-rec-head { --rec-cols: minmax(0, 1fr) auto; }
+  .overview-rule { row-gap: var(--s-1); }
+  .overview-rule-phase, .overview-rule-pipeline { display: none; }
+  .overview-runtime-actions { width: 100%; }
+  .overview-runtime-actions > * { flex: 1 1 0; }
 }
 </style>

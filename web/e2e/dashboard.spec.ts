@@ -2,8 +2,8 @@ import { expect, test, type Page } from '@playwright/test'
 import { acceptConfirm, cancelConfirm } from './confirm'
 
 /**
- * 信号带上的大数字是自启动以来的累计请求数——它和紧挨着的完成率、运行时长
- * 算的是同一段账。耗时不在这里：它挪进了「响应速度」卡，那张卡看最近一小时，
+ * 信号带上的大数字是自启动以来的累计请求数，名称写明「启动以来请求」——它和紧挨着的完成率
+ * 算的是同一段账（运行时长挪进了页头）。耗时不在这里：它挪进了「响应速度」卡，那张卡看最近一小时，
  * 标题写明时段，不和信号带的累计数挤在一处。曲线另说：它自带「近 24 小时 X 次」的说明，只替自己
  * 说话。两个数字都断言，因为让大数字跟着曲线走过一次，结果「近 1 小时请求」
  * 底下紧跟着一行按累计算出来的完成率，两个口径挤在同一处，读者看不出来。
@@ -34,31 +34,38 @@ const EXPECTED_TREND = '近 24 小时 3,835,000 次'
 
 async function openOverview(page: Page): Promise<void> {
   await page.goto('/')
-  await expect(page.getByRole('heading', { name: '运行概览', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '概览', exact: true })).toBeVisible()
   await expect(page.locator('.overview-total-value')).toBeVisible()
 }
 
 test('首页展示精确分布，页签可用键盘切换且完整保留三个视图 @responsive', async ({ page }) => {
   await openOverview(page)
   await expect(page.locator('.overview-total-value')).toHaveText(EXPECTED_TOTAL)
+  await expect(page.locator('.overview-signal-label')).toHaveText('启动以来请求')
   await expect(page.locator('.overview-trend-label')).toHaveText(EXPECTED_TREND)
   await expect(page.locator('.overview-signal-sub')).not.toContainText('ms')
-  // 第三张卡是最近一小时的响应速度：平均 12.6 ms 按台账的写法取整，分布是四段不重叠的区间
   await expect(page.getByText('兜底使用')).toHaveCount(0)
-  const speed = page.locator('.overview-stat').filter({ hasText: '响应速度' })
-  // 信息最密的一张放在最前面，后面两张是单个数字
-  await expect(page.locator('.overview-stat').first()).toContainText('响应速度')
-  await expect(speed.locator('.overview-stat-label')).toHaveText('响应速度 · 最近一小时')
-  await expect(speed.locator('.overview-kpi-value')).toHaveText('13')
-  for (const band of ['10 ms 内 81.7%', '10–100 ms 15.2%', '100 ms–1 s 2.7%', '1 s 以上 0.4%']) {
-    await expect(speed.locator('.overview-latency-legend')).toContainText(band)
-  }
-  await expect(speed).toContainText('96.9% 在 100 ms 内返回')
-  // 堆叠条换成「主项做大、小项列表」：占比最高的那条独占一行，其余进列表。
-  await expect(page.locator('.overview-distribution .overview-dist-share')).toHaveText('69.4%')
-  await expect(page.locator('.overview-distribution .overview-dist-name')).toHaveText('default')
-  await expect(page.locator('.overview-pipeline-list li')).toHaveCount(2)
-  await expect(page.locator('.overview-pipeline-list li').first()).toContainText('domestic')
+  // 三张体征卡，名称都写时段：速度看最近一小时，缓存命中是启动以来（审计：每个数字都写明时段）
+  // Three vital tiles, each naming its period: speed covers the last hour, cache hits the whole run
+  const vitals = page.locator('.overview-vital')
+  await expect(vitals).toHaveCount(3)
+  await expect(vitals.nth(0).locator('.overview-vital-label')).toHaveText('响应速度 · 最近一小时')
+  await expect(vitals.nth(1).locator('.overview-vital-label')).toHaveText('缓存命中率 · 启动以来')
+  await expect(vitals.nth(2).locator('.overview-vital-label')).toHaveText('上游健康 · 最近一小时')
+  const speed = vitals.nth(0)
+  // 平均 12.6 ms 按台账的写法取整；四段不重叠的区间写在细条的读屏名称里，触屏也读得到
+  await expect(speed.locator('.overview-vital-figure strong')).toHaveText('13')
+  const bands = await speed.locator('.overview-meter').getAttribute('aria-label')
+  for (const band of ['10 ms 内 81.7%', '10–100 ms 15.2%', '100 ms–1 s 2.7%', '1 s 以上 0.4%']) expect(bands).toContain(band)
+  await expect(speed.locator('.overview-vital-foot')).toContainText('10 ms 内 81.7%')
+  await expect(speed.locator('.overview-vital-foot')).toContainText('100 ms 内 96.9%')
+  // 主项做大、其余列表：占比最高的那条独占一行，其余进列表；三栏都写「启动以来」
+  const distribution = page.locator('.overview-distribution').first()
+  await expect(distribution.locator('.overview-lead-share')).toHaveText('69.4%')
+  await expect(distribution.locator('.overview-lead-name')).toHaveText('default')
+  await expect(distribution.locator('.overview-shares li')).toHaveCount(2)
+  await expect(distribution.locator('.overview-shares li').first()).toContainText('domestic')
+  for (const aside of await page.locator('.overview-distribution .ui-section__aside').allTextContents()) expect(aside).toMatch(/^启动以来 · /)
   // 趋势线画得出来，且不是一条 NaN 路径。
   const path = await page.locator('.overview-spark-line').getAttribute('d')
   expect(path).toMatch(/^M[\d.]+,[\d.]+( L[\d.]+,[\d.]+){23}$/)
@@ -73,6 +80,9 @@ test('首页展示精确分布，页签可用键盘切换且完整保留三个�
   await expect(page.getByRole('tab', { name: '规则命中' })).toBeFocused()
   await expect(page.locator('.overview-rule')).toHaveCount(4)
   await expect(page.locator('.overview-rule').filter({ hasText: 'accept-noerror' })).toContainText('响应')
+  // 按执行次数降序 / Sorted by count, highest first
+  const counts = (await page.locator('.overview-rule-count').allTextContents()).map((text) => Number(text.replace(/,/g, '')))
+  expect(counts).toEqual([...counts].sort((left, right) => right - left))
   await page.keyboard.press('Home')
   await expect(runtimeTab).toHaveAttribute('aria-selected', 'true')
   await expect(page.getByRole('heading', { name: '上游台账' })).toBeVisible()
@@ -97,8 +107,10 @@ test('查询排行保留时间窗口与带确认的清理操作', async ({ page 
 
 test('运行配置与缓存清理保持可用', async ({ page }) => {
   await openOverview(page)
-  await expect(page.locator('.overview-runtime-ledger')).toContainText('#18')
-  await expect(page.locator('.overview-runtime-ledger')).toContainText('#24')
+  await expect(page.locator('.overview-config-lead')).toContainText('#18')
+  await expect(page.locator('.overview-config-meta')).toContainText('#24')
+  // 补丁集按 pN 写，和系统页一致 / The patchset reads pN, as on the system page
+  await expect(page.locator('.overview-config-meta')).toContainText(/补丁集 p\d+/)
   await expect(page.locator('.overview-config-state')).toHaveText('已生效')
   await page.getByRole('button', { name: '清空内部缓存', exact: true }).click()
   await acceptConfirm(page)
@@ -161,40 +173,122 @@ for (const stopped of [true, false]) {
   })
 }
 
-test('手机上游逐级展开，桌面保留完整台账且无页面溢出 @responsive', async ({ page }, testInfo) => {
+test('台账逐行展开，明细跟着这一行的时段，桌面和手机同一套行且无页面溢出 @responsive', async ({ page }, testInfo) => {
   await openOverview(page)
+  const rows = page.locator('.overview-upstream')
+  await expect(rows).toHaveCount(3)
+  // 台账说明写时段，两种宽度都看得见 / The ledger's note names its period at both widths
+  await expect(page.locator('.overview-ledger .ui-section__aside')).toContainText('最近一小时')
+  await expect(page.locator('.overview-upstream-counts')).toHaveCount(0)
+  // 错误、拒绝、TCP 兜底收进每行的展开里，平时不摆出来
+  await expect(rows.first()).not.toContainText('52')
+  await rows.first().locator('.overview-expand').click()
+  // 明细跟随这一行的依据：1.1.1.1 最近一小时 52 次错误、28 次拒绝，不是启动以来的 28,230 / 2,114
+  await expect(page.locator('.overview-upstream-counts')).toHaveCount(1)
+  await expect(page.locator('.overview-upstream-counts')).toContainText('错误52')
+  await expect(page.locator('.overview-upstream-counts')).toContainText('拒绝28')
   if (testInfo.project.name === 'mobile') {
-    await expect(page.locator('.overview-upstream-desktop')).toBeHidden()
-    const details = page.locator('.overview-upstream-detail')
-    await expect(details).toHaveCount(3)
-    await expect(details.first().locator('.overview-upstream-counts')).toBeHidden()
-    await details.first().locator('summary').click()
-    // 明细跟随这一行的依据：1.1.1.1 最近一小时 52 次错误、28 次拒绝，不是启动以来的 28,230 / 2,114
-    await expect(details.first().locator('.overview-upstream-counts')).toContainText('错误52')
-    await expect(details.first().locator('.overview-upstream-counts')).toContainText('拒绝28')
-    // 手机收起了副标题，时间段挪到右侧计数前；最近一小时响应不够的上游标明退回了累计
-    await expect(page.locator('.overview-window-mobile')).toBeVisible()
-    await expect(page.locator('.overview-window-mobile')).toContainText('最近一小时')
-    await expect(details.first().locator('summary')).not.toContainText('启动以来')
-    await expect(details.nth(2).locator('summary')).toContainText('启动以来')
+    // 手机上每行两行：第二行写数字，最近一小时响应不够的上游标明退回了累计
+    await expect(rows.first().locator('.overview-upstream-line')).toBeVisible()
+    await expect(rows.first().locator('.overview-upstream-line')).not.toContainText('启动以来')
+    await expect(rows.nth(2).locator('.overview-upstream-line')).toContainText('启动以来')
+    await expect(page.locator('.ui-rec-head').first()).toBeHidden()
+    // 展开按钮手机上 44 / The expand button is 44 on a phone
+    const box = await rows.first().locator('.overview-expand').boundingBox()
+    expect(Math.round(box!.height)).toBeGreaterThanOrEqual(44)
     const typeScale = await page.locator('.overview-total-value').evaluate((element) => Number.parseFloat(getComputedStyle(element).fontSize))
     expect(typeScale).toBeGreaterThanOrEqual(28)
     expect(typeScale).toBeLessThanOrEqual(32)
   } else {
-    await expect(page.locator('.overview-upstream-mobile')).toBeHidden()
-    // 桌面的副标题已经写了时间段，右侧计数前不再重复
-    await expect(page.locator('.overview-window-mobile')).toBeHidden()
-    await expect(page.locator('.overview-table tbody tr')).toHaveCount(3)
-    // 台账收成四列用于扫读，错误 / 拒绝 / TCP 兜底收进每行的展开里。
-    // 「完整台账」仍然成立，只是次要的三列要点开——它们是排查时才看的数。
-    await expect(page.locator('.overview-table')).not.toContainText('52')
-    await expect(page.locator('.overview-table tbody tr').first()).not.toContainText('启动以来')
-    await expect(page.locator('.overview-table tbody tr').nth(2)).toContainText('启动以来')
-    await page.locator('.overview-expand').first().click()
-    await expect(page.locator('.overview-table-detail')).toHaveCount(1)
-    await expect(page.locator('.overview-table-detail')).toContainText('错误52')
-    await expect(page.locator('.overview-table-detail')).toContainText('拒绝28')
+    await expect(rows.first().locator('.overview-upstream-line')).toBeHidden()
+    // 退回累计的那一行，地址下面写明整行都是启动以来的累计（原来只挂在次数下面）
+    await expect(rows.first().locator('.overview-basis')).toHaveCount(0)
+    await expect(rows.nth(2).locator('.overview-basis')).toHaveText('启动以来的累计')
   }
   const sizes = await page.evaluate(() => ({ client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }))
   expect(sizes.scroll).toBeLessThanOrEqual(sizes.client)
+})
+
+// 概览的演示端点交回的是同一个对象：改完它，离开再回来让概览重新挂载、重新读一遍
+// The overview's demo endpoint hands back one shared object: after changing it, leave and come back so the overview remounts and re-reads
+async function remountOverview(page: Page): Promise<void> {
+  await page.getByRole('link', { name: '日志', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '运行日志', exact: true })).toBeVisible()
+  await page.getByRole('link', { name: '概览', exact: true }).click()
+  await expect(page.locator('.overview-total-value')).toBeVisible()
+}
+
+test('页头按服务状态写事实：运行中写运行时长和更新时刻，停止后只写快照时刻', async ({ page }) => {
+  await openOverview(page)
+  const meta = page.locator('.overview-heading .ui-ph__meta')
+  await expect(meta).toContainText('运行中')
+  await expect(meta).toContainText('已运行')
+  await expect(meta).toContainText(/更新于 \d{2}:\d{2}:\d{2}/)
+  await expect(meta).not.toContainText('running')
+  await page.evaluate(async () => {
+    const { mockRequest } = await import('/src/api/mock.ts')
+    const snapshot = await mockRequest('/api/v1/overview')
+    snapshot.live = false
+    snapshot.service_active = false
+    await mockRequest('/api/v1/service/stop', { method: 'POST' })
+  })
+  await remountOverview(page)
+  await expect(meta).toContainText('已停止')
+  await expect(meta).toContainText(/快照 \S+/)
+  // 停了就没有「已运行」「更新于」可言 / Once stopped there is no uptime or refresh time to report
+  await expect(meta).not.toContainText('已运行')
+  await expect(meta).not.toContainText('更新于')
+})
+
+test('页级提示一次只出一条：刷新失败时读取错误写进同一条的原因里，旧数据留着', async ({ page }) => {
+  // 只在测试里替换 API 模块边界：打开 __failOverview 之后，读运行数据会失败
+  // Swap the API module boundary in the test only: once __failOverview is set, reading runtime data fails
+  await page.route(/\/src\/api\/client\.ts(?:\?.*)?$/, async (route) => {
+    if (route.request().url().includes('notice-original')) return route.continue()
+    await route.fulfill({ contentType: 'application/javascript', body: `
+      export * from '/src/api/client.ts?notice-original';
+      import { apiRequest as original } from '/src/api/client.ts?notice-original';
+      export async function apiRequest(path, init) {
+        if (path === '/api/v1/overview' && globalThis.__failOverview) throw new Error('连接增强控制通道超时（5 秒）');
+        return original(path, init);
+      }
+    ` })
+  })
+  await openOverview(page)
+  await expect(page.locator('.ui-notice:visible')).toHaveCount(0)
+  await page.evaluate(() => { (globalThis as { __failOverview?: boolean }).__failOverview = true })
+  await page.getByRole('button', { name: '刷新', exact: true }).click()
+  const notice = page.locator('.ui-notice:visible')
+  await expect(notice).toHaveCount(1)
+  await expect(notice).toContainText('数据可能已过期')
+  await expect(notice).toContainText('连接增强控制通道超时')
+  await expect(notice.getByRole('button', { name: '重试', exact: true })).toBeVisible()
+  // 旧数据还在 / The old data stays
+  await expect(page.locator('.overview-total-value')).toHaveText(EXPECTED_TOTAL)
+  await page.evaluate(() => { (globalThis as { __failOverview?: boolean }).__failOverview = false })
+  await notice.getByRole('button', { name: '重试', exact: true }).click()
+  await expect(page.locator('.ui-notice:visible')).toHaveCount(0)
+})
+
+test('上游健康的分母是全部上游：观察中的也算，注脚先说有问题的再说观察中的', async ({ page }) => {
+  await openOverview(page)
+  await page.evaluate(async () => {
+    const { mockRequest } = await import('/src/api/mock.ts')
+    const snapshot = await mockRequest('/api/v1/overview')
+    // 第三个上游：最近一小时和启动以来都不到 50 次可判断的响应 / Third upstream: under 50 judged responses in both periods
+    const third = snapshot.metrics.upstreams[2]
+    Object.assign(third, { attempts: 20, success: 19, errors: 1, rejected: 0, aborted: 0 })
+    third.recent = { ...third.recent, attempts: 12, success: 12, errors: 0, rejected: 0, aborted: 0 }
+    // 第二个上游耗时 2.48 秒：降级，耗时按秒写 / Second upstream at 2.48 s: degraded, latency written in seconds
+    snapshot.metrics.upstreams[1].recent.avg_latency_ms = 2480
+  })
+  await remountOverview(page)
+  const health = page.locator('.overview-vital').nth(2)
+  await expect(health.locator('.overview-vital-figure')).toContainText('/ 3 健康')
+  await expect(health.locator('.overview-vital-foot')).toContainText('1 个异常')
+  await expect(health.locator('.overview-vital-foot')).toContainText('1 个观察中')
+  const foot = await health.locator('.overview-vital-foot').textContent()
+  expect(foot!.indexOf('异常')).toBeLessThan(foot!.indexOf('观察中'))
+  await expect(page.locator('.overview-upstream').filter({ hasText: '2.5 s' })).toHaveCount(1)
+  await expect(page.getByText('2480 ms')).toHaveCount(0)
 })
