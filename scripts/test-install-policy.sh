@@ -376,7 +376,7 @@ assert_equals "$(plan_of panel-only true)" "binary=false unit=false restart=fals
 # restarted on upgrade, so existing installs pick the filter up too
 rendered_unit=$(PACKAGE_ROOT=${package_fixture}; render_kixdns_unit)
 assert_equals "$(grep '^Environment=RUST_LOG=' <<<"${rendered_unit}")" "Environment=RUST_LOG=info,kixdns::engine::phases=warn" "KixDNS 的日志级别不记逐请求的应答"
-sed 's/^Environment=RUST_LOG=.*/Environment=RUST_LOG=info/' <<<"${rendered_unit}" > "${WORK}/units/kixdns.service"
+printf '%s\n' "${rendered_unit/Environment=RUST_LOG=info,kixdns::engine::phases=warn/Environment=RUST_LOG=info}" > "${WORK}/units/kixdns.service"
 assert_equals "$(plan_of upgrade true)" "binary=false unit=true restart=true" "旧的 RUST_LOG=info unit 升级时要替换并重启"
 
 # ---------------------------------------------------------------------------
