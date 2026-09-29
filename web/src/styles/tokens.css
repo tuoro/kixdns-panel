@@ -31,6 +31,7 @@
   --t-5: 1.375rem;   /* 22 · 页标题 */
   --t-6: 1.875rem;   /* 30 · 区块主数值 */
   --t-7: 3rem;       /* 48 · 信号带主数值，全站仅此一处 */
+  --t-touch: 1rem;   /* 16 · 只给手机上输入框里的字：小于 16 时 iOS 聚焦会放大整页（规范 1.8） / phone field text only: below 16 iOS zooms the page on focus (spec 1.8) */
 
   /* 行高只有三档：紧凑用于数值，标准用于正文，宽松用于长段落 */
   --lh-tight: 1.15;
@@ -146,14 +147,35 @@
   --h-touch: 44px;
   --h-tag: 20px;     /* 标签 / tag */
   --size-dot: 7px;   /* 状态点 / status dot */
+  --size-icon: 16px;     /* 常规控件、行首、提示里的图标 / icons in regular controls, row leads, notices */
+  --size-icon-sm: 14px;  /* 紧凑控件和 12–13 号字旁边的图标 / icons in compact controls and beside 12–13px text */
+  --size-check: 16px;    /* 复选框 / checkbox */
 
-  /* ---------- 阴影：两档 ----------
-     凸起：分段控件里选中的那一块。浮起：对话框、弹出层。
-     Raise: the selected cell of a segmented control. Float: dialogs, popovers. */
+  /* ---------- 子项行的列宽 ----------
+     条件、动作这类能重复的子项：类型一列、枚举参数一列、数字参数一列、自定义组合时的运算一列。
+     Column widths for repeated sub-items (conditions, actions): the type, an enum
+     parameter, a numeric parameter, and the operator in a custom combination. */
+  --w-field: 8rem;
+  --w-num: 6rem;
+  --w-op: 7rem;
+
+  /* ---------- 焦点环和遮罩 ----------
+     焦点环全站一种绿。开关和复选框的原生 input 是透明的，环画在它后面画出来的那个形状上。
+     遮罩是对话框、抽屉和手机底部弹层后面那层暗底，全站一种深浅。
+     One focus-ring green everywhere; switches and checkboxes draw it on their painted shape
+     because the native input is transparent. The scrim is the dimmed layer behind dialogs,
+     drawers and phone sheets, one depth everywhere. */
+  --focus: #279367;
+  --scrim: rgba(15, 20, 19, .5);
+
+  /* ---------- 阴影：三档 ----------
+     凸起：分段控件里选中的那一块。弹出：菜单，贴着按钮，影子要短。浮起：对话框和抽屉。
+     Raise: the selected cell of a segmented control. Pop: menus, which sit against their
+     button and need a short shadow. Float: dialogs and drawers. */
   --shadow-raise: 0 1px 2px rgba(15, 20, 19, .12), 0 0 0 .5px rgba(15, 20, 19, .06);
+  --shadow-pop: 0 6px 18px rgba(13, 20, 17, .12), 0 1px 3px rgba(13, 20, 17, .08);
   --shadow-float: 0 24px 70px rgba(13, 20, 17, .24);
   --shadow-ring: inset 0 0 0 1px var(--l-hair);     /* 进行中的图标位 / icon slot while running */
-  --shadow-mark-ok: inset 3px 0 var(--ok-mark-l);    /* 当前那一行的左边线 / left rule of the current row */
 
   /* ---------- 动效刻度 ----------
      四档时长、三条曲线、三档位移，全站只用这些。关闭比打开快；回弹只给出现；

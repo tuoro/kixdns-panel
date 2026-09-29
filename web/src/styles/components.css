@@ -20,54 +20,111 @@
 .ui-dot--warn { background: var(--warn-l); }
 .ui-dot--err { background: var(--err-l); }
 .ui-dot--off { background: var(--l-ink-3); }
+/* 草稿里改过的东西：墨色，不用状态色（规范 8.1） / Something the draft changed: ink, never a status colour (spec 8.1) */
+.ui-dot--ink { background: var(--l-ink); }
 
 /* ---------- 控件高度：同一行里的控件一样高 ----------
-   页头、工具栏、表单里的按钮、图标按钮、分段、输入框都是 36（手机 44）；
-   列表行和状态胶囊里的都是 30（手机 36），用 --sm。同一行里不混两种。
+   页头、工具栏、表单里的按钮、图标按钮、分段、输入框都是 36；列表行和状态胶囊里的是 30，用 --sm。
+   同一行里不混两种。手机上（≤640）能点的东西一律 44，--sm 也一样：手指不会因为控件在列表里就变细。
    Control height: every control in a row is the same height. Page headers,
-   toolbars and forms use 36 (44 on a phone) for buttons, icon buttons,
-   segmented controls and inputs alike; list rows and status capsules use 30
-   (36 on a phone) through the --sm variants. A row never mixes the two. */
+   toolbars and forms use 36 for buttons, icon buttons, segmented controls and
+   inputs alike; list rows and status capsules use 30 through the --sm variants.
+   A row never mixes the two. On a phone (≤640) everything tapped is 44, --sm
+   included: a finger is no thinner because the control sits in a list. */
 
 /* ---------- 按钮：主要、次要、文字、危险 ---------- */
-.ui-btn { min-height: var(--h-md); display: inline-flex; align-items: center; justify-content: center; gap: var(--s-2); padding: 0 var(--s-3); border: 1px solid transparent; border-radius: var(--r-2); font-size: var(--t-3); font-weight: var(--w-bold); line-height: var(--lh-tight); white-space: nowrap; cursor: pointer; transition: background-color var(--m-quick) var(--ease-out), border-color var(--m-quick) var(--ease-out), color var(--m-quick) var(--ease-out), transform var(--m-quick) var(--ease-out); }
+.ui-btn { min-height: var(--h-md); display: inline-flex; align-items: center; justify-content: center; gap: var(--s-2); padding: 0 var(--s-3); border: 1px solid transparent; border-radius: var(--r-2); font-size: var(--t-3); font-weight: var(--w-medium); line-height: var(--lh-tight); white-space: nowrap; cursor: pointer; transition: background-color var(--m-quick) var(--ease-out), border-color var(--m-quick) var(--ease-out), color var(--m-quick) var(--ease-out), transform var(--m-quick) var(--ease-out); }
 .ui-btn:active:not(:disabled) { transform: scale(.98); }
 .ui-btn:disabled { cursor: not-allowed; opacity: .42; }
 .ui-btn--primary { color: var(--d-ink); background: var(--l-ink); }
-.ui-btn--primary:hover:not(:disabled) { background: var(--d-raise-2); }
 .ui-btn--secondary { color: var(--l-ink); background: var(--l-surface); border-color: var(--l-line-strong); }
-.ui-btn--secondary:hover:not(:disabled) { background: var(--l-canvas); }
 .ui-btn--text { padding-inline: var(--s-2); color: var(--l-ink-2); background: transparent; font-weight: var(--w-medium); }
-.ui-btn--text:hover:not(:disabled) { color: var(--l-ink); background: var(--l-sunk); }
+/* 展开类的文字按钮（批量粘贴、备注、ECS）：字后面一个 ⌄，展开时转过来、字变墨色，看得出它开着、再点一次收起。
+   不画底色：这些按钮常往回收半格，让字落在上下的列线上，底色会压到列线外面（审计第二轮 M8、第六轮 M1）
+   Disclosure text buttons (批量粘贴, 备注, ECS): a ⌄ after the label turns over while open and the label turns ink, so it reads as open
+   and as the way to close it. No fill: these buttons are often pulled back so their text sits on a column line, and a fill would spill
+   past that line (audit round 2 M8, round 6 M1) */
+.ui-btn--text[aria-expanded="true"] { color: var(--l-ink); }
+.ui-btn__chev { flex: 0 0 auto; transition: transform var(--m-base) var(--ease-out); }
+[aria-expanded="true"] > .ui-btn__chev { transform: rotate(180deg); }
 .ui-btn--danger { color: var(--err-l); background: var(--l-surface); border-color: var(--err-line-l); }
-.ui-btn--danger:hover:not(:disabled) { background: var(--err-tint-l); }
 .ui-btn--sm { min-height: var(--h-sm); padding-inline: var(--s-3); font-size: var(--t-2); }
 .ui-icon-btn { width: var(--h-md); height: var(--h-md); flex: 0 0 auto; display: inline-grid; place-items: center; padding: 0; border: 0; border-radius: var(--r-2); background: transparent; color: var(--l-ink-2); cursor: pointer; transition: background-color var(--m-quick) var(--ease-out), color var(--m-quick) var(--ease-out); }
-.ui-icon-btn:hover:not(:disabled) { color: var(--l-ink); background: var(--l-sunk); }
 .ui-icon-btn:disabled { cursor: not-allowed; opacity: .42; }
 .ui-icon-btn--sm { width: var(--h-sm); height: var(--h-sm); }
-.ui-icon-btn--danger:hover:not(:disabled) { color: var(--err-l); background: var(--err-tint-l); }
 .ui-link { display: inline-flex; align-items: center; gap: var(--s-1); color: var(--ok-l); font-size: var(--t-2); text-decoration: none; white-space: nowrap; }
-.ui-link:hover { color: var(--ok-l-deep); text-decoration: underline; text-underline-offset: 3px; }
 
 /* ---------- 输入框：和同一行的按钮一样高 ---------- */
 .ui-input { min-height: var(--h-md); display: flex; align-items: center; gap: var(--s-2); min-width: 0; padding: 0 var(--s-3); border: 1px solid var(--l-line-strong); border-radius: var(--r-2); background: var(--l-surface); color: var(--l-ink-3); }
 .ui-input:focus-within { border-color: var(--l-ink); }
 .ui-input input { min-width: 0; flex: 1; padding: 0; border: 0; outline: 0; background: transparent; color: var(--l-ink); font-size: var(--t-3); }
+/* 值可以是等宽，占位说明是人话，用正文字体：等宽的中文字距会拉开。 / Values may be mono; a placeholder is words, in the body face, since mono spreads Chinese apart. */
+.ui-input input::placeholder { color: var(--l-ink-3); font-family: var(--f-body); }
+/* 数字框不要浏览器自带的上下箭头：单位已经写在框里，箭头只会挤到它 / No native spinner on numbers: the unit sits in the box and the arrows only crowd it */
+/* 数量用界面字、数字等宽对齐，不用等宽字体：TTL、前缀长度、超时都是数量，不是机器值（规范 1.5，审计 T13、第五轮 M1）
+   Quantities take the UI font with tabular digits, not the mono face: TTLs, prefix lengths and timeouts are quantities, not machine values (spec 1.5, audit T13, round 5 M1) */
+.ui-input input[type="number"] { appearance: textfield; font-variant-numeric: tabular-nums; }
+/* 搜索框不用浏览器自带的蓝色 ×：页面自己放一个同一套图标的清除按钮 / No native blue × in search fields; the page adds its own clear button from the same icon set */
+.ui-input input[type="search"]::-webkit-search-cancel-button { appearance: none; }
+.ui-input input[type="number"]::-webkit-inner-spin-button, .ui-input input[type="number"]::-webkit-outer-spin-button { margin: 0; appearance: none; }
 .ui-input--sm { min-height: var(--h-sm); }
+/* 字段里的字一律正文字重：放进加粗的标题行里也不跟着变粗。 / Field text is always body weight, even inside a bold heading row. */
+.ui-input :is(input, select, textarea) { font-weight: var(--w-normal); }
+/* 出错：框变红，字写在框下面，替换那条提示；离开字段或提交时才出现。
+   Invalid: a red frame and the message under the field, replacing its hint; shown on blur or submit only. */
+.ui-input:has([aria-invalid="true"]) { border-color: var(--err-l); }
+.ui-field-error { margin: 0; color: var(--err-l); font-size: var(--t-1); }
+
+/* ---------- 下拉框：输入框的外框 + 原生 select + 自画箭头 ----------
+   系统弹层和手机滚轮选择器保留；外框、高度、圆角和输入框一样，同一行分不出高矮。
+   Select: the input frame around a native select with a drawn chevron. The system popup
+   and phone pickers stay; frame, height and radius match the input exactly. */
+.ui-select { position: relative; padding: 0; }
+.ui-select select { width: 100%; min-width: 0; min-height: calc(var(--h-md) - 2px); padding: 0 calc(var(--s-3) + var(--size-icon) + var(--s-1)) 0 var(--s-3); border: 0; border-radius: inherit; background: transparent; color: var(--l-ink); font: inherit; font-size: var(--t-3); font-weight: var(--w-normal); appearance: none; cursor: pointer; outline: 0; }
+.ui-select > svg { position: absolute; right: var(--s-3); color: var(--l-ink-3); pointer-events: none; }
+.ui-select--mono select { font-family: var(--f-mono); }
+/* 输入框右端的小按钮（例如「选用已有上游」）：箭头和下拉框的箭头落在同一条竖线上
+   A small button at the right end of an input (e.g. pick an existing upstream); its chevron lines up with a select's */
+.ui-input__affix { width: var(--h-sm); height: var(--h-sm); flex: 0 0 auto; display: inline-grid; place-items: center; margin-right: calc(var(--s-2) * -1); padding: 0; border: 0; border-radius: var(--r-1); background: none; color: var(--l-ink-3); cursor: pointer; transition: background-color var(--m-quick) var(--ease-out), color var(--m-quick) var(--ease-out); }
+.ui-input__affix[aria-expanded="true"] { background: var(--l-sunk); color: var(--l-ink); }
+/* 常规框里的按钮图标和框里别的图标一样是 16：放大镜和清除的 × 不一大一小（规范 5.1，审计第五轮 T3）
+   A button inside a regular field draws a 16 icon like the field's other icons, so the magnifier and the clear × match (spec 5.1, audit round 5, T3) */
+.ui-input:not(.ui-input--sm) .ui-input__affix > svg { width: var(--size-icon); height: var(--size-icon); }
+.ui-select.ui-input--sm select { min-height: calc(var(--h-sm) - 2px); font-size: var(--t-2); }
+/* 能换行的框（UiUrlField）：网址、上游这类长机器值，放不下就换行、框跟着长高；一行时和普通输入框一样高，右端的 ▾ 对着第一行
+   A wrapping field (UiUrlField) for long machine values such as URLs and upstreams: it wraps and grows when needed, is as
+   tall as a plain input on one line, and the ▾ at its end faces the first line */
+.ui-input--area { align-items: flex-start; padding-block: calc((var(--h-md) - 2px - 1lh) / 2); font-size: var(--t-3); line-height: var(--lh-base); }
+.ui-input--area textarea { flex: 1; min-width: 0; min-height: 1lh; padding: 0; border: 0; outline: 0; background: transparent; color: var(--l-ink); font-family: var(--f-mono); font-size: inherit; line-height: inherit; overflow: hidden; overflow-wrap: anywhere; resize: none; }
+.ui-input--area textarea::placeholder { color: var(--l-ink-3); font-family: var(--f-body); }
+.ui-input--area .ui-input__affix { margin-block: calc((1lh - var(--h-sm)) / 2); }
+.ui-select.ui-input--sm > svg { right: var(--s-2); }
+.ui-select select:disabled { cursor: not-allowed; }
+
+/* ---------- 复选框：只用在多选里 ---------- */
+.ui-checkbox { position: relative; display: inline-flex; align-items: center; gap: var(--s-2); color: var(--l-ink-2); font-size: var(--t-2); cursor: pointer; }
+.ui-checkbox input { position: absolute; width: var(--size-check); height: var(--size-check); margin: 0; opacity: 0; cursor: pointer; }
+.ui-checkbox i { width: var(--size-check); height: var(--size-check); flex: 0 0 auto; display: grid; place-items: center; border: 1px solid var(--l-line-strong); border-radius: var(--r-1); background: var(--l-surface); transition: background var(--m-quick) var(--ease-out), border-color var(--m-quick) var(--ease-out); }
+.ui-checkbox input:checked + i { border-color: var(--l-ink); background: var(--l-ink); }
+.ui-checkbox input:checked + i::after { content: ""; width: var(--s-2); height: var(--s-1); border: solid var(--d-ink); border-width: 0 0 2px 2px; transform: translateY(-1px) rotate(-45deg); }
+/* 原生 input 透明，焦点环画在方框上 / The native input is transparent, so the ring goes on the box */
+.ui-checkbox input:focus-visible + i { outline: 2px solid var(--focus); outline-offset: 2px; }
 
 /* ---------- 区块页签（下划线）与筛选分段（下沉轨道 + 凸起块）：指示块滑过去 ---------- */
 .ui-tabs { position: relative; display: flex; gap: var(--s-6); border-bottom: 1px solid var(--l-hair); }
 .ui-tabs__tab { position: relative; padding: 0 0 var(--s-3); border: 0; background: transparent; color: var(--l-ink-2); font-size: var(--t-3); font-weight: var(--w-medium); white-space: nowrap; cursor: pointer; transition: color var(--m-quick) var(--ease-out); }
-.ui-tabs__tab:hover, .ui-tabs__tab[aria-selected="true"] { color: var(--l-ink); }
-.ui-tabs__tab[aria-selected="true"] { font-weight: var(--w-bold); }
+.ui-tabs__tab[aria-selected="true"] { color: var(--l-ink); }
 .ui-tabs__ind { position: absolute; bottom: -1px; left: 0; width: 0; height: 0; border-top: 2px solid var(--ok-l); pointer-events: none; transition: transform var(--m-base) var(--ease-out), width var(--m-base) var(--ease-out); }
 .ui-seg { position: relative; display: inline-flex; padding: 2px; border-radius: var(--r-2); background: var(--l-sunk); }
-.ui-seg__opt { position: relative; z-index: 1; min-height: calc(var(--h-md) - 4px); display: inline-flex; align-items: center; justify-content: center; gap: var(--s-1); padding: 0 var(--s-3); border: 0; border-radius: var(--r-1); background: transparent; color: var(--l-ink-2); font-size: var(--t-2); font-weight: var(--w-medium); white-space: nowrap; cursor: pointer; transition: color var(--m-quick) var(--ease-out); }
-.ui-seg__opt:hover, .ui-seg__opt[aria-pressed="true"] { color: var(--l-ink); }
-.ui-seg__opt[aria-pressed="true"] { font-weight: var(--w-bold); }
+/* 常规分段是 36 高的控件，字用控件角色的 14；13 只给小号（规范第 1 节、5.1，审计第三轮 S4）
+   A regular segment is a 36 control, so its labels take the control role's 14; 13 is for the small variant only (spec section 1, 5.1, audit round 3, S4) */
+.ui-seg__opt { position: relative; z-index: 1; min-height: calc(var(--h-md) - 4px); display: inline-flex; align-items: center; justify-content: center; gap: var(--s-1); padding: 0 var(--s-3); border: 0; border-radius: var(--r-1); background: transparent; color: var(--l-ink-2); font-size: var(--t-3); font-weight: var(--w-medium); white-space: nowrap; cursor: pointer; transition: color var(--m-quick) var(--ease-out); }
+.ui-seg__opt[aria-pressed="true"] { color: var(--l-ink); }
 .ui-seg__opt:disabled { cursor: not-allowed; opacity: .42; }
-.ui-seg--sm .ui-seg__opt { min-height: calc(var(--h-sm) - 4px); padding-inline: var(--s-2); }
+.ui-seg--sm .ui-seg__opt { min-height: calc(var(--h-sm) - 4px); padding-inline: var(--s-2); font-size: var(--t-2); }
+/* 没有滑块的分段（按钮自己带 aria-pressed，例如条件里的「有 / 没有」）：选中的那一格自己画成凸起的白块
+   A segment without the sliding indicator (plain aria-pressed buttons, e.g. a condition's yes/no): the pressed cell draws its own raised block */
+.ui-seg:not(:has(> .ui-seg__ind)) > .ui-seg__opt[aria-pressed="true"] { background: var(--l-surface); box-shadow: var(--shadow-raise); }
 .ui-seg__ind { position: absolute; top: 2px; bottom: 2px; left: 0; width: 0; border-radius: var(--r-1); background: var(--l-surface); box-shadow: var(--shadow-raise); pointer-events: none; transition: transform var(--m-base) var(--ease-out), width var(--m-base) var(--ease-out); }
 
 /* ---------- 卡片：只给能作为一个整体操作的东西；卡片不套卡片 ---------- */
@@ -115,7 +172,8 @@
    A call to act (an update is available): ink border and bold type on white.
    It is not health, slowness or failure, so it takes no semantic colour; two
    solid black blocks side by side were too heavy. */
-.ui-tag--strong { color: var(--l-ink); background: var(--l-surface); border-color: var(--l-ink); font-weight: var(--w-bold); }
+/* 强调只靠墨色的框，字重和别的标签一样 500（规范 1.1 的「标签」，审计第三轮 B11） / Emphasis comes from the ink outline alone; the weight stays the tag's 500 (spec 1.1, audit round 3, B11) */
+.ui-tag--strong { color: var(--l-ink); background: var(--l-surface); border-color: var(--l-ink); }
 
 /* ---------- 记录行：名称和标签在左，数字列右对齐，操作在最右；手机上两行 ---------- */
 .ui-rec, .ui-rec-head { display: grid; grid-template-columns: var(--rec-cols, minmax(0, 1fr) auto); gap: var(--s-4); align-items: center; }
@@ -127,7 +185,6 @@
 .ui-rec__meta { display: flex; flex-wrap: wrap; gap: 2px var(--s-3); margin-top: 2px; color: var(--l-ink-3); font-size: var(--t-1); }
 .ui-rec__act { display: flex; align-items: center; justify-content: flex-end; gap: var(--s-1); }
 .ui-rec__phone { display: none; }
-.ui-rec--current { margin-inline: calc(var(--s-5) * -1); padding-inline: calc(var(--s-5) - 3px) var(--s-5); background: var(--ok-tint-l); box-shadow: var(--shadow-mark-ok); }
 
 /* ---------- 状态胶囊：要等几秒的操作 ---------- */
 .ui-task { display: grid; grid-template-columns: var(--h-sm) minmax(0, 1fr) auto; gap: var(--s-3); align-items: center; padding: var(--s-3) 0; border-bottom: 1px solid var(--l-hair); }
@@ -144,21 +201,40 @@
 .ui-task__bar { grid-column: 2 / -1; height: var(--s-1); overflow: hidden; border-radius: var(--r-full); background: var(--l-sunk); }
 .ui-task__bar > i { display: block; width: 0; height: 100%; background: var(--l-ink); transition: width var(--m-slow) linear; }
 .ui-spin { width: var(--s-4); height: var(--s-4); border: 2px solid var(--l-hair); border-top-color: var(--l-ink); border-radius: var(--r-full); animation: ui-spin var(--m-spin) linear infinite; }
+/* 墨色按钮里的加载圈：轨道用深底的注释灰，才看得出是一个圈 / On an ink button the track takes the dark-ground note grey so it still reads as a ring */
+.ui-btn--primary .ui-spin { border-color: var(--d-ink-3); border-top-color: var(--d-ink); }
 @keyframes ui-spin { to { transform: rotate(360deg); } }
 .ui-check path { stroke-dasharray: 20; stroke-dashoffset: 20; animation: ui-draw var(--m-emph) var(--ease-out) forwards; }
 @keyframes ui-draw { to { stroke-dashoffset: 0; } }
 .ui-swap { display: inline-block; animation: ui-swap var(--m-quick) var(--ease-out); }
 @keyframes ui-swap { from { opacity: 0; transform: translateY(var(--move-1)); } }
 
+/* ---------- 动效：换内容、展开一行、出错抖一下 ----------
+   换内容（检查器换了一个入口、设置换了一组）从下方 4 像素淡入；展开一行长到自身高度，收起更快；
+   失败抖一下只给出错的那一处。系统开了「减少动态效果」时都只留颜色和透明度。
+   Motion: swapped content (another entry in the inspector, another settings group) rises 4px as it
+   fades in; an expanding row grows to its height and closes faster; a failure shakes only the part
+   that failed. Under reduced motion only colour and opacity remain. */
+@keyframes ui-rise { from { opacity: 0; transform: translateY(var(--move-1)); } }
+@keyframes ui-fade { from { opacity: 0; } }
+@keyframes ui-shake { 25% { transform: translateX(var(--move-1)); } 50% { transform: translateX(calc(var(--move-1) * -1)); } 75% { transform: translateX(calc(var(--move-1) / 2)); } }
+.ui-rise { animation: ui-rise var(--m-base) var(--ease-out); }
+.ui-fade { animation: ui-fade var(--m-base) var(--ease-out); }
+.ui-shake { animation: ui-shake var(--m-base) var(--ease-out); }
+.ui-expand { interpolate-size: allow-keywords; }
+/* 只在纵向裁剪（给高度动画用），横向放开：挂在左边内边距里的序号按钮不能被裁掉
+   Clip vertically only (for the height animation) and leave the horizontal free, so ordinals hanging in the left padding are never cut */
+.ui-expand::details-content { block-size: 0; overflow-x: visible; overflow-y: clip; transition: block-size var(--m-quick) var(--ease-out), content-visibility var(--m-quick) allow-discrete; }
+.ui-expand[open]::details-content { block-size: auto; transition-duration: var(--m-slow); }
+
 /* ---------- 数字：变化时只有变了的那几位弹入 ---------- */
 .ui-num { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .ui-num__digit { display: inline-block; }
 .ui-num__digit--pop { animation: ui-pop var(--m-emph) var(--ease-pop); }
-@keyframes ui-pop { from { opacity: 0; transform: translateY(var(--move-2)); } }
+@keyframes ui-pop { from { opacity: 0; transform: translateY(var(--pop, var(--move-2))); } }
 
 /* ---------- 新数据提示条：吸在列表顶端，点了才放进来 ---------- */
 .ui-banner { position: sticky; top: 0; left: 0; z-index: 1; width: 100%; min-height: var(--h-md); display: flex; align-items: center; justify-content: center; gap: var(--s-1); padding: 0 var(--s-3); border: 0; border-bottom: 1px solid var(--l-hair); background: var(--l-surface); color: var(--l-ink); font-family: var(--f-body); font-size: var(--t-1); font-weight: var(--w-bold); cursor: pointer; animation: ui-drop var(--m-base) var(--ease-out); }
-.ui-banner:hover:not(:disabled) { background: var(--l-canvas); }
 .ui-banner:disabled { cursor: progress; }
 @keyframes ui-drop { from { opacity: 0; transform: translateY(calc(var(--move-2) * -1)); } }
 
@@ -169,27 +245,359 @@
 .ui-empty__desc { max-width: 28em; margin: 0; color: var(--l-ink-3); font-size: var(--t-2); line-height: var(--lh-base); }
 
 /* ---------- 手机：能点的东西至少 44，宽表格变两行，页头操作换行 ---------- */
+/* 设置行：一个设置一行，左边名字和一句说明，右边控件；开关行的控件靠右。行与行之间只用留白。
+   Setting row: one setting per row, name and a one-line note on the left, the control on the right;
+   a toggle row puts its switch at the end. Rows are separated by spacing only. */
+/* 两栏定宽：名字那栏 260，控件那栏最宽 480；所有控件（包括开关）从同一条竖线起，名字和控件不隔半个屏幕。
+   Fixed columns: 260 for the name, up to 480 for the control; every control, switches included, starts on one
+   vertical line so a name is never half a screen away from its control. */
+.ui-setrow { display: grid; grid-template-columns: minmax(0, 260px) minmax(0, 480px); justify-content: start; align-items: start; gap: var(--s-2) var(--s-6); min-height: var(--h-touch); padding: var(--s-2) 0; }
+.ui-setrow--toggle .ui-switch { justify-self: start; }
+/* 名字和控件的第一行在同一条中线上：名字下面有说明时，说明往下挂，不把名字顶上去（审计第二轮 T1）
+   The name sits on its control's first line: a note under the name hangs below instead of lifting the name (audit round 2, T1) */
+.ui-setrow__label { min-width: 0; display: grid; align-content: start; gap: 2px; padding-top: calc((var(--h-md) - 1lh) / 2); }
+/* 开关占满名字对齐的那个 36 的格子：开关行和输入框行一样高，行距处处一样（审计第三轮 T1）
+   The switch takes the whole 36 slot the name is centred on, so a toggle row is as tall as a field row and the pitch is even (audit round 3, T1) */
+.ui-setrow--toggle .ui-switch { margin-block: calc((var(--h-md) - var(--s-5)) / 2); }
+/* 字段名是「名称」角色：14 · 500 · ink（规范第 1 节）。Archivo 的 P 和后面的空格有字偶距，「GeoIP MMDB」「UDP 连接池」会挤成一团，
+   和旁边的「DoH 连接池」隔得不一样：这里关掉字偶距、空格补 1 像素（审计第四轮 T2）
+   Field names take the name role: 14 · 500 · ink (spec section 1). Archivo kerns P against a following space, so 「GeoIP MMDB」 and 「UDP 连接池」
+   run together and look unlike 「DoH 连接池」 beside them: kerning is off here and a space gains 1px (audit round 4, T2) */
+.ui-setrow__label > span { color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-medium); }
+.ui-setrow__label small { color: var(--l-ink-3); font-size: var(--t-1); line-height: var(--lh-base); overflow-wrap: anywhere; }
+.ui-setrow__control { min-width: 0; }
+/* 数量用界面字、数字等宽对齐；地址和路径这类机器值自己带 .mono（规范 1.5，审计 T13）
+   Quantities take the UI font with tabular digits; machine values such as addresses and paths carry .mono themselves (spec 1.5, audit T13) */
+.ui-setrow__control input[type="number"] { font-variant-numeric: tabular-nums; }
+.ui-setrow__unit { flex-shrink: 0; color: var(--l-ink-3); font-size: var(--t-2); font-style: normal; }
+.ui-setrow--off .ui-setrow__label > span { color: var(--l-ink-3); }
+.ui-setrow--off .ui-input { background: var(--l-canvas); }
+/* 开关：开是墨色，关是下沉的灰。 / The switch: ink when on, sunk grey when off. */
+.ui-switch { position: relative; display: inline-flex; align-items: center; gap: var(--s-2); }
+.ui-switch small { order: 2; color: var(--l-ink-3); font-size: var(--t-1); }
+/* 透明的原生 input 叠在画出来的轨道上面：点哪儿都是点在它身上 / The transparent native input sits above the painted track, so every click lands on it */
+.ui-switch input { position: absolute; z-index: 1; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+.ui-switch i { position: relative; width: calc(var(--s-6) + var(--s-1)); height: var(--s-5); flex: 0 0 auto; border-radius: var(--r-full); background: var(--l-line-strong); transition: background var(--m-quick) var(--ease-out); }
+.ui-switch i::after { position: absolute; top: var(--switch-inset, 3px); left: var(--switch-inset, 3px); width: calc(var(--s-5) - 2 * var(--switch-inset, 3px)); height: calc(var(--s-5) - 2 * var(--switch-inset, 3px)); border-radius: var(--r-full); background: var(--l-surface); box-shadow: var(--shadow-raise); transition: transform var(--m-quick) var(--ease-out); content: ''; }
+.ui-switch input:checked + i { background: var(--l-ink); }
+/* 圆点走完整段：轨道宽减轨道高，开着时离右端和关着时离左端一样远（审计第三轮 T1） / The knob travels the whole track, its width less its height, so on it sits as far from the right end as off from the left (audit round 3, T1) */
+.ui-switch input:checked + i::after { transform: translateX(calc(var(--s-6) + var(--s-1) - var(--s-5))); }
+.ui-switch input:focus-visible + i { outline: 2px solid var(--focus); outline-offset: 2px; }
+.ui-switch input:disabled { cursor: not-allowed; }
+.ui-switch input:disabled + i { opacity: .42; }
+
+
+/* 设置窗格窄于 38rem（900 宽的双栏、平板竖放）时每一行上下排：名字在上、控件撑满，开关仍在行尾（审计 T3）。
+   窗格自己声明 container: setrows。
+   A settings pane narrower than 38rem (the split view at 900, a portrait tablet) stacks each row: the name above, the
+   control full width, a switch still at the row's end (audit T3). The pane declares container: setrows. */
+@container setrows (max-width: 38rem) {
+  .ui-setrow { grid-template-columns: minmax(0, 1fr); }
+  /* 上下排时名字在控件上面，不用再往下推；开关一行仍是上对齐：开关对着名字那一行，说明往下挂（审计第三轮 T3）
+     Stacked, the name sits above its control and needs no push; a toggle row stays top-aligned, the switch on the name's line and the note hanging below (audit round 3, T3) */
+  .ui-setrow__label { padding-top: 0; }
+  .ui-setrow--toggle { grid-template-columns: minmax(0, 1fr) auto; }
+  .ui-setrow--toggle .ui-switch { margin-block: calc((1lh - var(--s-5)) / 2) 0; }
+  .ui-setrow--toggle .ui-switch { justify-self: end; }
+  /* 「默认」写在开关前面：所有开关都停在右边线上（审计 T6） / 默认 sits before the switch, so every switch ends on the right edge (audit T6) */
+  .ui-setrow--toggle .ui-switch small { order: 0; }
+  /* 只有名字一行时，名字和开关在这一行里上下居中：上对齐会在 44 高的行里下面多出一截（审计第三轮 T3 复查）
+     With only the name's line, the name and switch centre in the row: top alignment would leave a slab under them in a 44-tall row (audit round 3, T3 re-check) */
+  .ui-setrow--toggle:not(:has(.ui-setrow__label > :nth-child(2))) { align-items: center; }
+  .ui-setrow--toggle:not(:has(.ui-setrow__label > :nth-child(2))) .ui-switch { margin-block: 0; }
+}
+
+/* ---------- 子项行：条件、动作、响应条件 ----------
+   一行一个，四格：[运算][类型][参数][×]。运算列只在「自定义组合」出现。参数格按 schema 顺序排：地址和列表撑满，
+   枚举 8rem，数字 6rem 带单位，布尔是「有 / 没有」分段，没有参数的类型写一句灰字。字段名不每行重复，
+   类型自己的占位符和无障碍名称说明它。行尾只有 ×，所以一块面板里所有组的竖线都对得齐。
+   顺序有意义时（动作两个以上、自定义组合），序号挂在面板左边的内边距里，它同时是「调整顺序」菜单的按钮：
+   平时是数字，指到或聚焦这一行时换成 ↕；触屏上一直是 ↕。上移、下移在菜单里，不占行尾的宽度。
+   Sub-item rows (conditions, actions, response conditions): [operator][type][params][×]. The operator
+   column appears only in a custom combination. Params follow the schema: addresses and lists stretch,
+   enums take 8rem, numbers 6rem with their unit, booleans a yes/no segment, a parameterless type says
+   so in grey. Field names are not repeated per row. Rows end with × alone, so every group in a panel
+   shares the same column lines. When order matters the ordinal hangs in the panel's left padding and
+   doubles as the reorder menu's button: a number at rest, ↕ on hover or focus, always ↕ on touch.
+   Move up and down live in that menu instead of taking width at the row's end. */
+.ui-rows-host { container-type: inline-size; --rows-handle: var(--h-md); --rows-act: var(--h-md); }
+.ui-rows { display: grid; gap: var(--s-2); }
+.ui-rows__row { position: relative; display: grid; grid-template-columns: var(--w-field) minmax(0, 1fr) auto; gap: var(--s-2); align-items: start; }
+.ui-rows--op .ui-rows__row { grid-template-columns: var(--w-op) var(--w-field) minmax(0, 1fr) auto; }
+/* 宽容器里 lead 只是一个分组：序号、运算、类型各占自己的格；窄容器里它变成一行 / On wide layouts the lead is only a grouping; in a narrow container it becomes one line */
+.ui-rows__lead { display: contents; }
+.ui-rows__row .ui-rows__ord { position: absolute; top: 0; left: calc(var(--s-5) * -1); width: var(--s-5); }
+.ui-rows__handle { width: 100%; height: var(--rows-handle); display: grid; place-items: center; padding: 0; border: 0; border-radius: var(--r-1); background: none; color: var(--l-ink-3); font-family: var(--f-mono); font-size: var(--t-1); font-variant-numeric: tabular-nums; cursor: pointer; transition: background-color var(--m-quick) var(--ease-out), color var(--m-quick) var(--ease-out); }
+.ui-rows__handle[aria-expanded="true"] { background: var(--l-sunk); color: var(--l-ink); }
+.ui-rows__grip { display: none; }
+/* 序号按钮在子项行里，也可以在别的能调整顺序的行里（加 .ui-reorder，例如映射表） / The ordinal button lives in sub-item rows or any reorderable row marked .ui-reorder (e.g. the mapping table) */
+@media (hover: hover) {
+  /* 指到这一行、键盘聚焦到序号或菜单开着时才换成 ↕；正在这一行里填字段时序号留着（审计第三轮 M3）
+     The ↕ replaces the number on hover, keyboard focus on the handle or an open menu; while a field in the row is being filled the number stays (audit round 3, M3) */
+  :is(.ui-rows__row, .ui-reorder):is(:hover, :has(.ui-rows__handle:is(:focus-visible, [aria-expanded="true"]))) .ui-rows__num { display: none; }
+  :is(.ui-rows__row, .ui-reorder):is(:hover, :has(.ui-rows__handle:is(:focus-visible, [aria-expanded="true"]))) .ui-rows__grip { display: block; }
+}
+@media (hover: none) {
+  .ui-rows__num { display: none; }
+  .ui-rows__grip { display: block; }
+}
+.ui-rows__params { min-width: 0; display: flex; flex-wrap: wrap; gap: var(--s-2); }
+.ui-rows__params > .ui-input { flex: 1 1 10rem; min-width: 0; }
+.ui-rows__params > .ui-input.is-enum { flex: 0 0 var(--w-field); }
+.ui-rows__params > .ui-input.is-num { flex: 0 0 var(--w-num); }
+.ui-rows__params > .ui-seg { align-self: center; }
+.ui-rows__plabel { display: none; }
+/* 「匹配所有请求」「首个条件」是次要文字（13 · ink-2），不是第十一种样式（规范 1.1，审计第三轮 V8） / 匹配所有请求 and 首个条件 take the secondary role (13 · ink-2), not an eleventh style (spec 1.1, audit round 3, V8) */
+.ui-rows__none { min-height: var(--h-md); display: flex; align-items: center; color: var(--l-ink-2); font-size: var(--t-2); }
+.ui-rows__act { min-height: var(--h-md); display: flex; align-items: center; }
+/* 次一级的参数（转发的协议、已有上游、ECS）在参数格下面一行，用小号控件 / Secondary params sit on a line below the params cell, in the small size */
+.ui-rows__sub { grid-column: 2 / -2; display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); }
+.ui-rows--op .ui-rows__sub { grid-column: 3 / -2; }
+.ui-rows__error { grid-column: 2 / -2; }
+.ui-rows--op .ui-rows__error { grid-column: 3 / -2; }
+/* 「添加条件」往回收一格：图标落在类型那一列的竖线上（规范 6.5） / 添加条件 is pulled back by its padding so its icon lands on the type column's line (spec 6.5) */
+.ui-rows__add { justify-self: start; margin-inline-start: calc(var(--s-3) * -1); }
+/* 上下都往回收：按钮看不见的上下留白不算进间距，字离上面的列表 12（列表和按钮之间的 12 由外面那层给），下一组从字下面 24 开始；
+   列表是空的就不占地方，按钮离组标题也是 12（规范 6.2，审计第二轮 A8、第三轮 B3、B5）
+   Pulled back above and below: the button's invisible padding does not count, so its text sits 12 under the list (the 12 comes from the
+   wrapper) and the next group starts 24 below the text; an empty list takes no room, so the button also sits 12 under the group title
+   (spec 6.2, audit round 2 A8, round 3 B3 and B5) */
+.ui-rows__add { margin-block: calc((1lh - var(--h-sm)) / 2); }
+.ui-rows:empty { display: none; }
+/* 窄容器：一条子项变成一组。第一行是序号、运算和类型，× 只在第一行，放不下时类型换到下一行；
+   下面是「字段名在左、控件在右」，长的值字段名单独一行、控件撑满；没有字段名的参数（「匹配所有请求」）直接撑满。
+   组间 24，组内 8，不画线。切换点按一行放得下的最窄宽度定：普通子项要 类型 8 + 模式 8 + 值至少 10 + × 和间距，
+   约 30rem，取 31rem（1100 宽的检查器 520 还是表格，1024 宽的 479 变成一组组，两边都留了余量）；
+   自定义组合多一列 7rem 的运算，取 37.5rem（1280 宽的 619 还是表格）。
+   In a narrow container each sub-item becomes a group: ordinal, operator and type lead with × on that
+   line only, the type wrapping below when they do not fit; below, labels left and controls right, long
+   values on their own line, a param with no label spanning the width. 24 between groups, 8 within, no
+   rules. The switch is the narrowest width at which a row still fits: type 8 + mode 8 + a value of at
+   least 10 + × and gaps is about 30rem, so 31rem (the inspector's 520 at 1100 stays a table, 479 at 1024
+   stacks, with margin both ways); a custom combination adds a 7rem operator column, so 37.5rem (619 at
+   1280 stays a table). */
+@container (max-width: 31rem) {
+  .ui-rows { gap: var(--s-5); }
+  .ui-rows .ui-rows__row { grid-template-columns: minmax(0, 1fr) auto; row-gap: var(--s-2); }
+  .ui-rows .ui-rows__lead { grid-row: 1; grid-column: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); }
+  .ui-rows .ui-rows__lead > .ui-input { flex: 1 1 8rem; min-width: 0; }
+  .ui-rows .ui-rows__lead > .ui-rows__op { flex: 0 0 var(--w-op); }
+  .ui-rows .ui-rows__lead > .ui-rows__none { display: none; }
+  .ui-rows .ui-rows__row .ui-rows__ord { position: static; flex: 0 0 auto; width: var(--rows-handle); }
+  .ui-rows .ui-rows__act { grid-row: 1; grid-column: 2; }
+  /* 下面几行也让出 × 那一列：一组里所有控件在同一条右边线结束（审计 B20） / The lines below also leave the × column free, so every control in a group ends on one line (audit B20) */
+  .ui-rows .ui-rows__params { grid-column: 1; display: grid; grid-template-columns: minmax(0, 1fr); align-items: center; gap: var(--s-1) var(--s-2); }
+  .ui-rows .ui-rows__params:has(> .ui-rows__plabel) { grid-template-columns: 5.5rem minmax(0, 1fr); }
+  .ui-rows .ui-rows__plabel { display: block; color: var(--l-ink-2); font-size: var(--t-2); }
+  .ui-rows :is(.ui-rows__plabel.is-top, .ui-rows__params > .is-long) { grid-column: 1 / -1; }
+  /* 自由填写的值（域名、网段、地址）都算长的：字段名单独一行、框撑满，不在 88 的字段名后面挤成半截（审计 V16、M3）；
+     定宽的枚举、数字和分段仍然字段名在左 / Free-text values (domains, CIDRs, addresses) count as long: label on its own line and a full-width
+     box rather than half a box behind an 88px label (audits V16, M3); fixed-width enums, numbers and segments keep the label beside them */
+  .ui-rows .ui-rows__params > .ui-input:not(.is-enum, .is-num) { grid-column: 1 / -1; }
+  .ui-rows .ui-rows__plabel:has(+ .ui-input:not(.is-enum, .is-num)) { grid-column: 1 / -1; }
+  .ui-rows .ui-rows__params > .ui-seg { justify-self: start; }
+  .ui-rows :is(.ui-rows__sub, .ui-rows__error) { grid-column: 1; }
+  /* 上下排时字段名到自己的控件约 8，一个字段到下一个字段约 12，量的是字，不是行框：字段名的行框上下各多出几像素，
+     所以字段名到框只隔 4，上一个框到下一个字段名隔 12（规范 6.3，审计第二轮 M4、第三轮 M1）
+     Stacked: about 8 from a label to its control and 12 from one field to the next, measured to the glyphs rather than the
+     line box. The label's line box adds a few pixels above and below, so a label sits 4 above its box and 12 below the
+     box before it (spec 6.3, audit round 2 M4, round 3 M1) */
+  .ui-rows :is(.ui-rows__params, .ui-rows__sub) { margin-top: var(--s-1); }
+  .ui-rows .ui-rows__params:empty { display: none; }
+  /* 上下排时它只是一行字，不再撑成 36 高的一格：离上面的类型也是 12（审计第三轮 V7） / Stacked it is just a line of text, not a 36 cell, so it too sits 12 under the type (audit round 3, V7) */
+  .ui-rows .ui-rows__params > .ui-rows__none { min-height: 0; }
+  .ui-rows .ui-rows__params > .ui-rows__plabel:not(:first-child),
+  .ui-rows .ui-rows__params > .ui-rows__plabel:not(:first-child) + :is(.is-enum, .is-num, .ui-seg) { margin-top: var(--s-2); }
+  /* 触屏上序号在一组的第一行，有地方：序号和 ↕ 都写，序号说第几条、↕ 说能点；挂在左边内边距里的序号只有 24 宽，仍只画 ↕（审计第二轮 M3）
+     On touch the ordinal leads the group's first line and has room: show the number and the ↕, one saying which item, the other that it
+     can be tapped; the ordinal hanging in the left padding is only 24 wide and keeps the ↕ alone (audit round 2, M3) */
+  @media (hover: none) {
+    /* 按钮往回收自己的内边距：「1」落在字段的左边线上，点按区域仍是 44（审计第三轮 M2） / Pulled back by its padding so 「1」 sits on the fields' left edge; the tap area stays 44 (audit round 3, M2) */
+    .ui-rows .ui-rows__row .ui-rows__ord { width: auto; min-width: var(--rows-handle); margin-inline-start: calc(var(--s-2) * -1); }
+    .ui-rows .ui-rows__row .ui-rows__handle { grid-auto-flow: column; gap: var(--s-1); padding-inline: var(--s-2); }
+    .ui-rows .ui-rows__row .ui-rows__num { display: inline; }
+    .ui-rows .ui-rows__row .ui-rows__grip { width: var(--size-icon); height: var(--size-icon); }
+  }
+}
+@container (max-width: 37.5rem) {
+  .ui-rows.ui-rows--op { gap: var(--s-5); }
+  .ui-rows.ui-rows--op .ui-rows__row { grid-template-columns: minmax(0, 1fr) auto; row-gap: var(--s-2); }
+  .ui-rows.ui-rows--op .ui-rows__lead { grid-row: 1; grid-column: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); }
+  .ui-rows.ui-rows--op .ui-rows__lead > .ui-input { flex: 1 1 8rem; min-width: 0; }
+  .ui-rows.ui-rows--op .ui-rows__lead > .ui-rows__op { flex: 0 0 var(--w-op); }
+  .ui-rows.ui-rows--op .ui-rows__lead > .ui-rows__none { display: none; }
+  .ui-rows.ui-rows--op .ui-rows__row .ui-rows__ord { position: static; flex: 0 0 auto; width: var(--rows-handle); }
+  .ui-rows.ui-rows--op .ui-rows__act { grid-row: 1; grid-column: 2; }
+  .ui-rows.ui-rows--op .ui-rows__params { grid-column: 1; display: grid; grid-template-columns: minmax(0, 1fr); align-items: center; gap: var(--s-1) var(--s-2); }
+  .ui-rows.ui-rows--op .ui-rows__params:has(> .ui-rows__plabel) { grid-template-columns: 5.5rem minmax(0, 1fr); }
+  .ui-rows.ui-rows--op .ui-rows__plabel { display: block; color: var(--l-ink-2); font-size: var(--t-2); }
+  .ui-rows.ui-rows--op :is(.ui-rows__plabel.is-top, .ui-rows__params > .is-long) { grid-column: 1 / -1; }
+  .ui-rows.ui-rows--op .ui-rows__params > .ui-input:not(.is-enum, .is-num) { grid-column: 1 / -1; }
+  .ui-rows.ui-rows--op .ui-rows__plabel:has(+ .ui-input:not(.is-enum, .is-num)) { grid-column: 1 / -1; }
+  .ui-rows.ui-rows--op .ui-rows__params > .ui-seg { justify-self: start; }
+  .ui-rows.ui-rows--op :is(.ui-rows__sub, .ui-rows__error) { grid-column: 1; }
+  .ui-rows.ui-rows--op :is(.ui-rows__params, .ui-rows__sub) { margin-top: var(--s-1); }
+  .ui-rows.ui-rows--op .ui-rows__params:empty { display: none; }
+  .ui-rows.ui-rows--op .ui-rows__params > .ui-rows__none { min-height: 0; }
+  .ui-rows.ui-rows--op .ui-rows__params > .ui-rows__plabel:not(:first-child),
+  .ui-rows.ui-rows--op .ui-rows__params > .ui-rows__plabel:not(:first-child) + :is(.is-enum, .is-num, .ui-seg) { margin-top: var(--s-2); }
+  @media (hover: none) {
+    .ui-rows.ui-rows--op .ui-rows__row .ui-rows__ord { width: auto; min-width: var(--rows-handle); margin-inline-start: calc(var(--s-2) * -1); }
+    .ui-rows.ui-rows--op .ui-rows__row .ui-rows__handle { grid-auto-flow: column; gap: var(--s-1); padding-inline: var(--s-2); }
+    .ui-rows.ui-rows--op .ui-rows__row .ui-rows__num { display: inline; }
+    .ui-rows.ui-rows--op .ui-rows__row .ui-rows__grip { width: var(--size-icon); height: var(--size-icon); }
+  }
+}
+
+/* ---------- 保存栏：只管草稿 ----------
+   只在有东西要提交时出现（草稿有修改、正在保存、刚保存完）；系统的动作不放这里。出现时上升 8 淡入，收起只淡出。
+   Save bar: the draft only. It appears when there is something to commit (changes, saving, just saved);
+   system actions never live here. It rises 8px as it fades in and only fades on the way out. */
+.ui-savebar { display: flex; align-items: center; gap: var(--s-2); padding: var(--s-3) var(--s-5); border: 1px solid var(--l-hair); border-radius: var(--r-3); background: var(--l-surface); box-shadow: var(--shadow-raise); }
+/* 状态那一格至少和按钮一样高：刚保存完按钮收起时，栏不会矮下去 2 像素 / The status cell is at least a button tall, so the bar keeps its height when the buttons leave after a save */
+.ui-savebar__status { flex: 1 1 auto; min-width: 0; min-height: var(--h-md); display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-1) var(--s-2); color: var(--l-ink); font-size: var(--t-3); }
+.ui-savebar__status small { color: var(--l-ink-2); font-size: var(--t-2); }
+.ui-savebar__count { font-weight: var(--w-bold); --pop: var(--move-1); }
+.ui-savebar__detail { min-width: 0; overflow-wrap: anywhere; }
+/* 13 号的「已用 1.0 秒」夹在 14 号的一行里，按自己的行高对齐会把这一行撑高半个像素，保存栏跟着动：它只占字那么高（审计第六轮 C6）
+   The 13px 已用 1.0 秒 inside a 14px line would grow the line by half a pixel on its own line height, moving the save bar: it takes only its glyph height (audit round 6, C6) */
+.ui-savebar__elapsed { color: var(--l-ink-2); font-size: var(--t-2); font-variant-numeric: tabular-nums; line-height: 1; }
+.ui-savebar__note { width: 14rem; }
+.ui-savebar--err .ui-savebar__verdict { color: var(--err-l); font-weight: var(--w-bold); }
+.ui-savebar--enter { animation: ui-savebar-in var(--m-base) var(--ease-out); }
+@keyframes ui-savebar-in { from { opacity: 0; transform: translateY(var(--move-2)); } }
+@keyframes ui-sheet-in { from { opacity: 0; transform: translateY(var(--move-2)); } }
+
+/* ---------- 指向出错对象的链接：等宽，点了跳过去 ---------- */
+.ui-objlink { padding: 0; border: 0; background: none; color: var(--l-ink); font-family: var(--f-mono); font-size: inherit; white-space: nowrap; text-decoration: underline; text-decoration-color: var(--l-line-strong); text-underline-offset: 3px; cursor: pointer; }
+/* 链接文字是中文（「第 7 行第 5 列」）时用界面字 / Use the UI font when the link text is Chinese (第 7 行第 5 列) */
+.ui-objlink--plain { font-family: inherit; }
+
+/* ---------- 页级提示：一次只一条；一句结论、一行原因、可选一个动作 ----------
+   （.ui-banner 是日志的「新数据提示条」，这是另一个东西。）
+   Page notice: one at a time; a verdict, a reason line, optionally one action. */
+/* 中文只在标点和空格处换行：「之前」不会拆成「之」「前」两行（审计第二轮 B12） / Chinese breaks only at punctuation and spaces, so 之前 never splits across lines (audit round 2, B12) */
+.ui-notice { display: grid; grid-template-columns: var(--size-icon) minmax(0, 1fr) auto; gap: var(--s-1) var(--s-2); align-items: start; padding: var(--s-3) var(--s-3) var(--s-3) var(--s-4); border-radius: var(--r-2); background: var(--warn-tint-l); color: var(--l-ink); font-size: var(--t-3); word-break: keep-all; overflow-wrap: anywhere; }
+.ui-notice > svg { margin-top: 3px; color: var(--warn-l); }
+.ui-notice__action { grid-row: 1 / span 2; grid-column: 3; align-self: center; }
+/* 结论和原因各占一行时，按钮在右边竖着居中；手机上见下面，按钮换到字下面 / The action centres beside a two-line notice; on a phone (below) it moves under the text */
+.ui-notice small { grid-column: 2; color: var(--l-ink-2); font-size: var(--t-2); overflow-wrap: anywhere; }
+.ui-notice code { color: var(--l-ink); font-size: var(--t-2); }
+.ui-notice--err { background: var(--err-tint-l); }
+.ui-notice--err > svg { color: var(--err-l); }
+.ui-notice--off { background: var(--l-sunk); }
+.ui-notice--off > svg { color: var(--l-ink-2); }
+
+/* ---------- 菜单：「…」和子项的「调整顺序」共用 ----------
+   弹层在顶层（popover），位置由脚本按按钮算好写进 --menu-x / --menu-y；下面放不下就往上翻。
+   浏览器默认把 popover 居中、加边框和内边距，这里全部改掉；关着的时候一定是 display: none。
+   Menus: the "…" and a sub-item's reorder menu. The list sits in the top layer; the script places it
+   against the trigger through --menu-x / --menu-y and flips it up when there is no room below. The
+   browser centres popovers and gives them a border and padding by default; all of that is replaced,
+   and a closed one is always display: none. */
+.ui-menu { min-width: 11rem; display: grid; padding: var(--s-1); border: 1px solid var(--l-hair); border-radius: var(--r-2); background: var(--l-surface); color: var(--l-ink); box-shadow: var(--shadow-pop); }
+.ui-menu__title { display: none; }
+.ui-menu__item { min-height: var(--h-sm); display: flex; align-items: center; gap: var(--s-2); padding: 0 var(--s-2); border: 0; border-radius: var(--r-1); background: none; color: var(--l-ink); font: inherit; font-size: var(--t-2); text-align: left; cursor: pointer; }
+.ui-menu__item:focus-visible { background: var(--l-sunk); outline: 0; }
+.ui-menu__item:disabled { color: var(--l-ink-3); cursor: default; }
+/* 菜单项的图标跟着字的颜色，不单独调浅；只有禁用和危险项的颜色跟着变（规范 5.2，审计第六轮 D6）
+   A menu item's icon takes its text colour rather than a lighter one of its own; only disabled and danger items change it (spec 5.2, audit round 6, D6) */
+.ui-menu__item:disabled > svg { color: var(--l-ink-3); }
+.ui-menu__item--danger, .ui-menu__item--danger > svg { color: var(--err-l); }
+.ui-menu__item--mono { font-family: var(--f-mono); }
+.ui-menu__sep { margin: var(--s-1) 0; border-top: 1px solid var(--l-hair); }
+.ui-menu-host { position: relative; display: inline-flex; }
+.ui-menu--pop { position: fixed; inset: auto; top: var(--menu-y, 0); left: var(--menu-x, 0); margin: 0; overflow: visible; }
+.ui-menu--pop:not(:popover-open) { display: none; }
+.ui-menu--pop:popover-open { animation: ui-fade var(--m-quick) var(--ease-out); }
+.ui-menu--pop:focus { outline: 0; }
+
+/* ---------- 起点选择：选之前是一列单选行，选之后收成一行 ---------- */
+/* 列表往外拉出一格内边距：单选圆点落在标题那条竖线上，悬停底色伸进面板的内边距里
+   The list is pulled out by its row padding so the radios sit on the title line and the hover fill reaches into the panel padding */
+.ui-pick { display: grid; gap: 2px; margin-inline: calc(var(--s-3) * -1); }
+.ui-pick__opt { display: grid; grid-template-columns: var(--size-icon) minmax(0, 1fr); gap: 2px var(--s-2); padding: var(--s-2) var(--s-3); border-radius: var(--r-2); cursor: pointer; }
+/* 单选圈照组件库画：细的线色边框，选中时框变墨色、中间一个墨点；不用浏览器自己那个深灰的圈（审计第四轮 D10）
+   The radio is drawn by the kit: a thin line-colour ring that turns ink with an ink dot when checked, not the browser's own dark grey ring (audit round 4, D10) */
+.ui-pick__opt input { width: var(--size-icon); height: var(--size-icon); margin: 3px 0 0; display: grid; place-items: center; border: 1px solid var(--l-line-strong); border-radius: var(--r-full); background: var(--l-surface); appearance: none; cursor: pointer; }
+.ui-pick__opt input::before { width: calc(var(--size-icon) / 2); height: calc(var(--size-icon) / 2); border-radius: var(--r-full); background: var(--l-ink); transform: scale(0); transition: transform var(--m-quick) var(--ease-out); content: ''; }
+.ui-pick__opt input:checked { border-color: var(--l-ink); }
+.ui-pick__opt input:checked::before { transform: scale(1); }
+.ui-pick__opt input:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.ui-pick__opt b { font-weight: var(--w-medium); }
+.ui-pick__opt small { grid-column: 2; color: var(--l-ink-3); font-size: var(--t-1); }
+.ui-picked { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); color: var(--l-ink-2); font-size: var(--t-2); }
+.ui-picked b { color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-medium); }
+/* 「更换」上下往回收：按钮看不见的留白不撑高这一行，起点那一行只有字那么高，下面的注释贴着它（审计第三轮 B2）
+   更换 is pulled back above and below: the button's invisible padding does not heighten the row, so the start line is one text line tall and the note under it hangs close (audit round 3, B2) */
+.ui-picked__change { margin-left: auto; margin-block: calc((1lh - var(--h-sm)) / 2); }
+
+/* ---------- 版本比较：不用红绿，用左边的 − / + ----------
+   删掉的一行变浅、划掉；加上的一行在凹槽底上；机器值等宽内联，中文不用等宽。
+   Version diff: no red or green. Removed lines fade and strike through; added lines sit on the sunk ground. */
+.ui-diff { display: grid; font-size: var(--t-2); line-height: var(--lh-base); }
+.ui-diff > div { display: grid; grid-template-columns: 1.25rem minmax(0, 1fr); padding: 0 var(--s-2); border-radius: var(--r-1); }
+.ui-diff__mark { color: var(--l-ink-3); font-family: var(--f-mono); font-style: normal; }
+.ui-diff__text { overflow-wrap: anywhere; }
+.ui-diff code { font-size: var(--t-2); }
+.ui-diff .is-del { color: var(--l-ink-3); }
+/* 划掉用字下面的一条浅线，不用删除线：删除线画在字上面，会抹掉连字符、「+」的横和数字的腰，值读成别的值（审计第四轮 D2）
+   The strike is a light line under the glyphs, not line-through: line-through paints over them and erases hyphens, the bar of 「+」
+   and the waists of digits, so a value reads as a different one (audit round 4, D2) */
+/* 线画在里面那一段行内文字上：每一行只划到字的末尾，高度按字算，不按整格算 / The line is drawn on the inline text inside, so each line is struck only to its last glyph, at the glyphs' height rather than the cell's */
+.ui-diff .is-del .ui-diff__text > * { background: linear-gradient(var(--l-line-strong), var(--l-line-strong)) 0 58% / 100% 1px no-repeat; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+.ui-diff .is-add { background: var(--l-sunk); color: var(--l-ink); }
+
+/* 悬停的底色只给能悬停的设备：触屏上点一下，:hover 会一直粘在那里，看起来像被选中了。
+   Hover fills only on devices that hover: on touch a tap leaves :hover stuck, which reads as selected. */
+@media (hover: hover) {
+  .ui-btn--primary:hover:not(:disabled) { background: var(--d-raise-2); }
+  .ui-btn--secondary:hover:not(:disabled) { background: var(--l-canvas); }
+  .ui-btn--text:hover:not(:disabled) { color: var(--l-ink); background: var(--l-sunk); }
+  .ui-btn--danger:hover:not(:disabled) { background: var(--err-tint-l); }
+  .ui-icon-btn:hover:not(:disabled) { color: var(--l-ink); background: var(--l-sunk); }
+  .ui-icon-btn--danger:hover:not(:disabled) { color: var(--err-l); background: var(--err-tint-l); }
+  .ui-link:hover { color: var(--ok-l-deep); text-decoration: underline; text-underline-offset: 3px; }
+  .ui-input__affix:hover { background: var(--l-sunk); color: var(--l-ink); }
+  .ui-tabs__tab:hover, .ui-seg__opt:hover { color: var(--l-ink); }
+  .ui-banner:hover:not(:disabled) { background: var(--l-canvas); }
+  .ui-rows__handle:hover { background: var(--l-sunk); color: var(--l-ink); }
+  .ui-objlink:hover { text-decoration-color: var(--l-ink); }
+  .ui-menu__item:hover:not(:disabled) { background: var(--l-sunk); }
+  /* 起点列表的悬停用画布色：下沉色留给「选中」 / The picker hovers in the canvas tint; sunk is kept for selected */
+  .ui-pick__opt:hover { background: var(--l-canvas); }
+}
+
 @media (max-width: 640px) {
+  .ui-setrow { grid-template-columns: minmax(0, 1fr); }
+  .ui-setrow__label { padding-top: 0; }
+  .ui-setrow--toggle { grid-template-columns: minmax(0, 1fr) auto; }
+  .ui-setrow--toggle .ui-switch { justify-self: end; margin-block: calc((1lh - var(--s-5)) / 2) 0; }
+  .ui-setrow--toggle .ui-switch small { order: 0; }
+  .ui-setrow--toggle:not(:has(.ui-setrow__label > :nth-child(2))) { align-items: center; }
+  .ui-setrow--toggle:not(:has(.ui-setrow__label > :nth-child(2))) .ui-switch { margin-block: 0; }
   .ui-ph--stack { grid-template-columns: minmax(0, 1fr); }
   .ui-ph--stack .ui-ph__actions { justify-content: stretch; }
   .ui-ph--stack .ui-ph__actions > * { flex: 1; }
-  .ui-btn { min-height: var(--h-touch); }
-  .ui-btn--sm { min-height: var(--h-md); }
-  .ui-icon-btn { width: var(--h-touch); height: var(--h-touch); }
-  .ui-icon-btn--sm { width: var(--h-md); height: var(--h-md); }
+  .ui-btn, .ui-btn--sm { min-height: var(--h-touch); }
+  .ui-btn--sm { font-size: var(--t-3); }
+  .ui-icon-btn, .ui-icon-btn--sm { width: var(--h-touch); height: var(--h-touch); }
   .ui-tabs { gap: 0; }
   .ui-tabs__tab { flex: 1; min-height: var(--h-touch); padding-bottom: 0; text-align: center; }
   .ui-seg { display: flex; }
-  .ui-seg__opt { flex: 1; min-height: calc(var(--h-touch) - 4px); padding-inline: var(--s-1); }
-  .ui-seg--sm .ui-seg__opt { min-height: calc(var(--h-md) - 4px); }
-  .ui-input { min-height: var(--h-touch); }
-  .ui-input--sm { min-height: var(--h-md); }
+  .ui-seg__opt, .ui-seg--sm .ui-seg__opt { flex: 1; min-height: calc(var(--h-touch) - 4px); padding-inline: var(--s-1); }
+  .ui-input, .ui-input--sm { min-height: var(--h-touch); }
+  /* 框里的字 16：小号框也一样，否则 iOS 聚焦时放大整页 / Field text is 16, small fields included, or iOS zooms the page on focus */
+  .app-shell .ui-input :is(input, select, textarea) { font-size: var(--t-touch); }
+  .ui-input--area { padding-block: calc((var(--h-touch) - 2px - 1lh) / 2); font-size: var(--t-touch); }
+  /* 下拉框撑满外框里面的高度，整块都点得到 / The select fills the frame's inner height so the whole box is tappable */
+  .app-shell .ui-select select { min-height: calc(var(--h-touch) - 2px); }
   /* 全局给手机上的输入框设了 44 的最小高度（和 16px 字号，防 iPhone 放大）；
      这里外框已经是 44，里面的输入框再撑 44 会比同一行的按钮高出边框那 2 像素。
      The global mobile rule gives inputs and selects a 44 minimum height (and
      16px type to stop iPhone zoom); the frame here is already 44, so the inner
      control must not add the frame's 2px border on top of the buttons beside it. */
-  .app-shell .ui-input :is(input, select):not([type="checkbox"]):not([type="radio"]) { min-height: 0; }
+  .app-shell .ui-input input:not([type="checkbox"]):not([type="radio"]) { min-height: 0; }
   .ui-card__head { padding: var(--s-3) var(--s-4); }
   .ui-card--stack .ui-card__head { grid-template-columns: minmax(0, 1fr); }
   .ui-card--stack .ui-card__actions > .ui-seg { flex: 1; }
@@ -199,18 +607,69 @@
   .ui-rec, .ui-rec-head { --rec-cols: minmax(0, 1fr) auto; }
   .ui-rec-head, .ui-rec__n { display: none; }
   .ui-rec__phone { display: flex; grid-column: 1 / -1; }
-  .ui-rec--current { margin-inline: calc(var(--s-4) * -1); padding-inline: calc(var(--s-4) - 3px) var(--s-4); }
   .ui-task { grid-template-columns: var(--h-sm) minmax(0, 1fr); }
   .ui-task__actions { grid-column: 2; justify-content: flex-start; }
   .ui-banner { min-height: var(--h-touch); }
+  /* 手机上菜单是贴着底边的弹层：标题是菜单的名字，每项 44 高，留出底部安全区 */
+  /* On a phone the menu is a bottom sheet titled with its name, 44px items, clear of the home indicator */
+  .ui-rows-host { --rows-handle: var(--h-touch); --rows-act: var(--h-touch); }
+  /* 按钮的行高是 1.15，44 的格子在字上下各多出 14：少收 2，和上面的框、下一组的 44 格子挨着不叠，字往下挪 2（规范 2.1，审计第六轮 A4）
+     A button's line height is 1.15, so a 44 cell reaches 14 past its text on each side: pulled back 2 less, it touches the box above and the
+     next group's 44 cell without overlapping, and the text moves down 2 (spec 2.1, audit round 6, A4) */
+  .ui-rows__add { margin-block: calc((1lh - var(--h-touch)) / 2 + 2px); }
+  /* 手机上 × 那一格是 44，图标往里缩 4：「更换」的字也往里收 4，行尾还在同一条竖线上（审计第四轮 D8）
+     On a phone the × cell is 44 and insets its icon 4 more, so 更换 comes in by 4 too and row ends stay on one line (audit round 4, D8) */
+  .ui-picked__change { margin-block: calc((1lh - var(--h-touch)) / 2); margin-inline-end: calc((var(--h-touch) - var(--h-md)) / 2); }
+  /* 起点那一行下面换行出来的分段离它 12：「更换」的 44 格子碰不到分段（规范 2.1，审计第六轮扫查）
+     A segment wrapping under the start line sits 12 below it, so 更换's 44 cell never reaches it (spec 2.1, round-6 sweep) */
+  .ui-picked { row-gap: var(--s-3); }
+  /* 手机上小号按钮也是 44 高、14 号字，配 16 的图标（规范 5.1，审计第三轮 M4） / On a phone a small button is 44 tall with 14px text, so it takes a 16 icon (spec 5.1, audit round 3, M4) */
+  .ui-btn--sm > svg { width: var(--size-icon); height: var(--size-icon); }
+  /* 小号下拉框、小号图标按钮和框里的按钮在手机上都是 44 高，图标也用 16：一行里的箭头和 × 一样大（规范 5.1，审计第四轮 V6、T3）
+     Small selects, small icon buttons and in-field buttons are 44 tall on a phone, so their icons are 16 too and every chevron and × on a line matches (spec 5.1, audit round 4, V6, T3) */
+  .ui-select.ui-input--sm > svg { width: var(--size-icon); height: var(--size-icon); right: var(--s-3); }
+  .ui-icon-btn--sm > svg, .ui-input__affix > svg { width: var(--size-icon); height: var(--size-icon); }
+  /* 能点的标签（「还差 1 项」）看起来还是 20 高，点按区域上下补到 44（规范 2.1，审计第二轮 B4）
+     A tappable tag (还差 1 项) still looks 20 tall, with its hit area grown to 44 above and below (spec 2.1, audit round 2, B4) */
+  button.ui-tag { position: relative; }
+  button.ui-tag::before { position: absolute; inset: calc((var(--h-touch) - var(--h-tag)) / -2) 0; content: ''; }
+  /* 原因里指向对象的链接是去那里的唯一入口：看起来还是一行字，点按区域上下补到 44（审计第三轮 S2-4） / A link to an object in a reason is the only way there: it still looks like a line of text, with its hit area grown to 44 (audit round 3, S2-4) */
+  .ui-objlink { position: relative; }
+  .ui-objlink::before { position: absolute; inset: calc((var(--h-touch) - 1lh) / -2) 0; content: ''; }
+  /* 框里的按钮（清除、选用已有上游）是 44 宽、和框里面一样高的点按格，往回收到图标落在字段的右边线上，框不会因为它长高（审计第三轮 T5）
+     A button inside a field (clear, pick an existing upstream) is a 44-wide cell as tall as the field's inside, pulled back so its icon
+     lands on the field's right edge; the field never grows because of it (audit round 3, T5) */
+  /* 左边也往回收掉框里的 8：44 宽的格子左边本来就空着 14，字和图标之间仍有这么远，字段不因为它变窄（网址框在 375 上多出 8，放得下 https://dns.alidns.com/）
+     Pulled back over the field's 8 gap on the left too: the 44 cell already leaves 14 blank there, so text and icon stay that far apart and the field loses no width (the URL box at 375 keeps the 8 it needs for https://dns.alidns.com/) */
+  .ui-input__affix { width: var(--h-touch); height: calc(var(--h-touch) - 2px); margin-inline: calc(var(--s-2) * -1) calc((var(--size-icon) - var(--h-touch)) / 2); }
+  .ui-input--area .ui-input__affix { margin-block: calc((1lh - var(--h-touch) + 2px) / 2); }
+  /* 标题、图标和分隔线都从 16 开始，和页面的边距同一条竖线（审计第二轮 D10） / Title, icons and divider all start at 16, the page's gutter (audit round 2, D10) */
+  .ui-menu--pop { top: auto; right: 0; bottom: 0; left: 0; width: 100%; padding: var(--s-2) var(--s-1) calc(var(--s-2) + env(safe-area-inset-bottom)); border-width: 1px 0 0; border-radius: var(--r-3) var(--r-3) 0 0; }
+  .ui-menu--pop .ui-menu__sep { margin-inline: var(--s-3); }
+  .ui-menu--pop:popover-open { animation: ui-sheet-in var(--m-base) var(--ease-out); }
+  .ui-menu--pop::backdrop { background: var(--scrim); }
+  .ui-menu__title { display: block; margin: 0; overflow: hidden; padding: var(--s-2) var(--s-3) var(--s-1); color: var(--l-ink-2); font-size: var(--t-2); text-overflow: ellipsis; white-space: nowrap; }
+  .ui-menu__item { min-height: var(--h-touch); padding-inline: var(--s-3); font-size: var(--t-3); }
+  .ui-savebar { flex-wrap: wrap; padding-inline: var(--s-4); }
+  /* 提示里的动作换到字下面：两行字用满整个宽度，不被按钮挤成五行（审计 B5） / The notice's action moves under the text so the two lines use the full width instead of squeezing into five (audit B5) */
+  .ui-notice__action { grid-row: auto; grid-column: 2; justify-self: start; margin-top: var(--s-1); }
+  .ui-menu__item > svg { width: var(--size-icon); height: var(--size-icon); }
+  /* 状态独占一行时不再撑到按钮那么高：上下内边距一样 12（审计第二轮 T9） / On its own line the status no longer stretches to a button's height, so the insets match at 12 (audit round 2, T9) */
+  .ui-savebar__status { flex-basis: 100%; min-height: 0; }
+  .ui-savebar__note { width: 100%; }
 }
 
 /* 系统开了「减少动态效果」：去掉位移和缩放，只留颜色和透明度
    Reduced motion: no travel or scale, only colour and opacity change */
 @media (prefers-reduced-motion: reduce) {
+  .ui-switch i, .ui-switch i::after { transition: none; }
+  .ui-pick__opt input::before { transition: none; }
   .ui-tabs__ind, .ui-seg__ind { transition: none; }
   .ui-btn:active:not(:disabled) { transform: none; }
-  .ui-num__digit--pop, .ui-banner, .ui-swap { animation: none; }
+  .ui-btn__chev { transition: none; }
+  .ui-num__digit--pop, .ui-banner, .ui-swap, .ui-shake { animation: none; }
+  .ui-rise, .ui-fade, .ui-savebar--enter, .ui-menu--pop:popover-open { animation: ui-fade var(--m-quick) var(--ease-out); }
+  .ui-expand::details-content { transition: none; }
   .ui-check path { animation: none; stroke-dashoffset: 0; }
   .ui-spin { animation-duration: calc(var(--m-spin) * 3); }
 }

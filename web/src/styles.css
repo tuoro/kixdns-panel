@@ -8,6 +8,11 @@
   font-family: var(--f-body);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
+  /* 不做字距调整：Archivo 把「P」「T」和后面的空格收得几乎没有，中英混排时「客户端 IP 属于」读成「IP属于」。
+     界面上的拉丁字多是短词，少了字距对不出什么差别（审计第四轮 T2、第六轮 V3）
+     No kerning: Archivo tucks a space after 「P」 or 「T」 to almost nothing, so in mixed text 客户端 IP 属于 reads as IP属于.
+     The Latin in this UI is short words, which lose next to nothing without it (audit round 4 T2, round 6 V3) */
+  font-kerning: none;
   /* 旧名字，只是 tokens.css 的别名：页面改版时换成右边的名字，棘轮只许引用变少。
      Old names, now only aliases of tokens.css: pages switch to the names on
      the right as they are redesigned, and the ratchet only lets them shrink. */
@@ -35,7 +40,10 @@ button, input, select, textarea { font: inherit; letter-spacing: 0; }
 button, a { -webkit-tap-highlight-color: transparent; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .52; }
-:focus-visible { outline: 2px solid #279367; outline-offset: 2px; }
+/* 字重只有 400、500、600：strong 和 b 默认的 700 统一成 600（规范 1.2）。中文 600 和 700 画出来一样，这条改的是拉丁字母和数字。
+   Weights are 400, 500 and 600 only: strong and b drop their default 700 to 600 (spec 1.2); CJK renders 600 and 700 alike, so this changes Latin and digits. */
+b, strong { font-weight: var(--w-bold); }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 a { color: inherit; }
 h1, h2, h3, p { margin: 0; }
 code, .mono { font-family: var(--f-mono); letter-spacing: 0; }
@@ -64,6 +72,9 @@ code, .mono { font-family: var(--f-mono); letter-spacing: 0; }
 .workspace { min-height: calc(100dvh - var(--app-header-height)); }
 .workspace__main { width: 100%; max-width: 1760px; margin: 0 auto; padding: 28px 28px 44px; scroll-margin-top: var(--app-header-height); }
 .workspace__main:focus { outline: none; }
+/* 配置页的工作台正好填满视口：底边留 24，和两侧的页边距差不多，整页不再滚那一点点
+   The config workbench fills the viewport exactly: 24 below it, close to the side margins, so the page never scrolls a sliver */
+@media (min-width: 861px) { .workspace__main:has(> .config-page) { padding-bottom: var(--s-5); } }
 .page-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 24px; }
 .page-heading h1 { color: var(--ink); font-family: var(--f-display); font-size: 28px; line-height: 1.2; letter-spacing: -.6px; }
 .page-heading p { margin-top: 6px; color: var(--muted); font-size: 13px; }
@@ -144,37 +155,45 @@ th { padding: 10px 16px; color: #78817e; background: #fafbfa; font-size: 12px; f
 td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-space: nowrap; }
 .text-danger { color: var(--red) !important; }
 
-.config-compatibility-banner { display: flex; align-items: flex-start; gap: 9px; margin-bottom: 12px; padding: 10px 12px; color: #76521f; background: #fff9ed; border: 1px solid #eddbb9; border-radius: 5px; }
-.config-compatibility-banner > svg { flex: 0 0 auto; margin-top: 1px; color: #b26f18; }
-.config-compatibility-banner > div { min-width: 0; display: grid; gap: 3px; }
-.config-compatibility-banner strong { color: #62451e; font-size: 14px; }
-.config-compatibility-banner p { font-size: 12px; line-height: 1.55; }
 .editor-panel { min-width: 0; overflow: hidden; background: #fff; border: 1px solid var(--line); border-radius: 7px; }
 .mapping-priority { display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px; color: var(--green-dark); background: var(--green-soft); border-radius: 999px; font-size: 12px; font-weight: 700; }
 .unsaved-dot { display: inline-flex; align-items: center; gap: 5px; color: var(--amber); font-size: 12px; }
 .unsaved-dot::before { width: 6px; height: 6px; content: ""; background: #d98b28; border-radius: 50%; }
 .visually-hidden { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important; }
-.json-editor { height: min(62vh, 720px); min-height: 440px; overflow: hidden; background: #171c1e; }
-.json-editor .cm-editor { height: 100%; color: #dce5e1; background: #171c1e; font-family: var(--f-mono); font-size: 12px; }
-.json-editor .cm-scroller { overflow: auto; }
-.json-editor .cm-gutters { color: #65706c; background: #171c1e; border-right: 1px solid #2c3335; }
-.json-editor .cm-activeLine, .json-editor .cm-activeLineGutter { background: #202729; }
-.json-editor .cm-cursor { border-left-color: #8bd4ae; }
-.json-editor .cm-selectionBackground { background: #2e5442 !important; }
-.json-editor .cm-content { padding: 10px 0; caret-color: #8bd4ae; }
+/* JSON 视图就是面板本身：白底、墨色字，13 号等宽；行号列用页面底色、ink-3。不再是页面里唯一的深色块（规范 3.9）。
+   The JSON view is the panel itself: white, ink, 13px mono; the line-number column on the page ground in ink-3.
+   No longer the one dark block on the page (spec 3.9). */
+.json-editor { height: min(62vh, 720px); min-height: 440px; overflow: hidden; background: var(--l-surface); }
+.json-editor .cm-editor { height: 100%; color: var(--l-ink); background: var(--l-surface); font-family: var(--f-mono); font-size: var(--t-2); }
+.json-editor .cm-editor.cm-focused { outline: 0; }
+.json-editor .cm-scroller { overflow: auto; font-family: var(--f-mono); line-height: var(--lh-base); }
+.json-editor .cm-gutters { color: var(--l-ink-3); background: var(--l-canvas); border-right: 1px solid var(--l-hair); }
+.json-editor .cm-focused .cm-activeLine { background: var(--l-canvas); }
+.json-editor .cm-focused .cm-activeLineGutter { background: var(--l-sunk); color: var(--l-ink-2); }
+/* 没聚焦时不画当前行：看上去像第 1 行被选中了（审计 V20） / No current-line band while unfocused; it read as line 1 being selected (audit V20) */
+.json-editor .cm-editor:not(.cm-focused) :is(.cm-activeLine, .cm-activeLineGutter) { background: transparent; }
+.json-editor .cm-json-key { font-weight: var(--w-medium); }
+.json-editor .cm-line.cm-hang { padding-left: calc(6px + var(--hang)); text-indent: calc(var(--hang) * -1); }
+.json-editor .cm-lead { white-space: pre; }
+.json-editor .cm-cursor { border-left-color: var(--l-ink); }
+.json-editor .cm-selectionBackground, .json-editor .cm-focused .cm-selectionBackground { background: var(--l-line-strong) !important; }
+.json-editor .cm-content { padding: var(--s-3) 0; caret-color: var(--l-ink); }
+/* 右边的 8 放在每一行上，不放在内容上：字照样离框 8 折行，当前行的底色一直铺到框边，右端不留白口子（审计第三轮 V10）
+   The right 8 sits on each line rather than the content: text still wraps 8 from the frame, and the active line's tint reaches the frame with no white notch (audit round 3, V10) */
+.json-editor .cm-content .cm-line { padding-right: var(--s-2); }
+/* 解析出错的那一行：红色波浪线从第一个字画到行尾，不画在缩进的空格下面；行号变红
+   The line that fails to parse: a red wavy underline from its first character to its end, never under the indent; a red line number */
+.json-editor .cm-error-text { text-decoration: underline wavy var(--err-l); text-decoration-skip-ink: none; text-underline-offset: 4px; }
+.json-editor .cm-error-gutter { color: var(--err-l); font-weight: var(--w-bold); }
+/* 出错那一行常常就是光标所在的那一行：行号的红色压过「当前行」的颜色（规范 3.9，审计第二轮 V4）
+   The error line is usually the caret's line too, so its red number beats the active line's colour (spec 3.9, audit round 2, V4) */
+.json-editor .cm-focused .cm-activeLineGutter.cm-error-gutter { color: var(--err-l); }
 /* 「配置暂不可用」原来是深底浅字，那是日志页还是深色终端时留下的配色；
    日志收回浅色体系之后这一处就成了孤零零的一块深色。
    This read as light-on-dark, left over from when the log view was still a dark
    terminal; once that returned to the light system this was the only dark patch
    left. */
 .editor-loading { min-height: 440px; display: grid; place-items: center; color: var(--muted); background: var(--canvas); font-size: 12px; }
-.config-skeleton { display: grid; gap: 14px; padding: 16px; }
-.config-skeleton-flow { height: 56px; }
-.config-skeleton-body { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 14px; }
-.config-skeleton-list { display: grid; gap: 8px; align-content: start; }
-.config-skeleton-list i { height: 62px; }
-.config-skeleton-inspector { min-height: 300px; }
-@media (max-width: 860px) { .config-skeleton-body { grid-template-columns: minmax(0, 1fr); } }
 .editor-footer { min-height: 54px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 9px 13px 9px 17px; border-top: 1px solid var(--line); }
 .validation-state { min-width: 0; display: flex; align-items: center; gap: 7px; color: #6c7672; font-size: 12px; }
 .validation-state svg { flex: 0 0 auto; color: var(--green); }
@@ -206,187 +225,7 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .history-list small { display: block; margin-top: 7px; color: #939b98; font-size: 12px; }
 .history-list small.history-item__error { margin-top: 5px; overflow-wrap: anywhere; color: var(--red); line-height: 1.45; }
 
-.structured-editor, .flow-preview { min-height: 520px; max-height: min(72vh, 900px); overflow: auto; background: #f7f9f8; }
-.config-section { background: #fff; border-bottom: 1px solid var(--line); }
-.config-section:last-child { border-bottom: 0; }
-.config-section__header { min-height: 48px; display: flex; align-items: center; gap: 9px; padding: 0 17px; background: #fafbfa; border-bottom: 1px solid #edf0ef; }
-.config-section__header h3 { color: #303739; font-size: 12px; font-weight: 720; }
-.config-section__header--actions { justify-content: space-between; padding-block: 7px; }
-.config-section__header--actions > div { display: flex; align-items: center; gap: 9px; }
-.config-section__header em { min-width: 23px; padding: 3px 5px; color: #6b7571; background: #e9eeeb; border-radius: 4px; font-size: 12px; font-style: normal; text-align: center; }
-.section-mark { width: 4px; height: 18px; display: block; border-radius: 2px; background: #5e6864; }
-.section-mark--green { background: var(--green); }
-.section-mark--amber { background: #ce8324; }
-.section-mark--red { background: #c94a4a; }
-.section-mark--ink { background: #4f5b5f; }
-.config-version { display: grid; grid-template-columns: 180px minmax(180px, 320px); align-items: center; padding-right: 17px; }
-.config-version .config-section__header { border-bottom: 0; }
-.settings-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding: 15px 17px 18px; }
-.setting-field { min-width: 0; display: grid; align-content: start; gap: 6px; }
-.setting-field--wide { grid-column: span 2; }
-.setting-field > span, .setting-toggle > span, .pipeline-identity label > span, .ecs-editor label > span { color: #67716d; font-size: 12px; font-weight: 650; }
-.setting-field input, .setting-field select, .selector-block select, .pipeline-identity input, .ecs-editor input, .ecs-editor select, .matcher-row input, .matcher-row select, .action-row input, .action-row select, .rule-block > header input, .rule-stage__title select { width: 100%; min-width: 0; height: 34px; padding: 0 9px; color: #31393b; background: #fff; border: 1px solid #d9dfdd; border-radius: 4px; outline: 0; font-size: 12px; }
-.setting-field input:focus, .setting-field select:focus, .selector-block select:focus, .pipeline-identity input:focus, .ecs-editor input:focus, .ecs-editor select:focus, .matcher-row input:focus, .matcher-row select:focus, .action-row input:focus, .action-row select:focus, .rule-block > header input:focus, .rule-stage__title select:focus { border-color: #7fb89a; box-shadow: 0 0 0 3px rgba(20, 125, 85, .08); }
-.setting-field--unsupported input:disabled { color: #77807d; background: #f4f6f5; border-style: dashed; }
-.setting-toggle { min-height: 54px; display: grid; grid-template-columns: 1fr 34px; grid-template-rows: auto 22px; align-items: center; gap: 4px 10px; padding: 8px 10px; background: #f7f9f8; border: 1px solid #e1e6e4; border-radius: 5px; }
-.setting-toggle > span { grid-column: 1 / -1; }
-.setting-toggle input { position: absolute; opacity: 0; pointer-events: none; }
-.setting-toggle i { position: relative; grid-column: 2; width: 32px; height: 18px; background: #bec7c3; border-radius: 9px; transition: background .15s; }
-.setting-toggle i::after { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; content: ""; background: #fff; border-radius: 50%; box-shadow: 0 1px 2px rgba(20, 28, 25, .22); transition: transform .15s; }
-.setting-toggle input:checked + i { background: var(--green); }
-.setting-toggle input:checked + i::after { transform: translateX(14px); }
-.setting-toggle:has(input:focus-visible) { outline: 2px solid #279367; outline-offset: 2px; }
-.setting-toggle--unsupported { grid-template-rows: auto 22px auto; background: #f4f6f5; border-style: dashed; }
-.setting-toggle--unsupported i { opacity: .58; }
-.setting-compatibility { min-width: 0; display: flex; grid-column: 1 / -1; align-items: center; gap: 4px; color: #9a641d; font-size: 12px; font-weight: 600; line-height: 1.35; }
-.setting-compatibility svg { flex: 0 0 auto; }
-.setting-list { align-content: start; }
-.setting-list__row { display: grid; grid-template-columns: minmax(0, 1fr) max-content; gap: 6px; }
-.inline-command { width: max-content; min-height: 28px; display: inline-flex; align-items: center; gap: 5px; padding: 3px 6px; color: var(--green-dark); background: transparent; border: 0; border-radius: 4px; font-size: 12px; font-weight: 650; }
-.inline-command:hover { background: var(--green-soft); }
-.inline-command--primary { padding-inline: 8px; color: #fff; background: var(--green); }
-.inline-command--primary:hover { background: var(--green-dark); }
-.geo-mode-tabs { display: inline-grid !important; grid-template-columns: repeat(2, minmax(108px, 1fr)); overflow: hidden; border: 1px solid #d8dedc; border-radius: 5px; }
-.geo-mode-tabs button { min-height: 30px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 4px 9px; color: #69736f; background: #fff; border: 0; border-right: 1px solid #dfe4e2; font-size: 12px; font-weight: 650; }
-.geo-mode-tabs button:last-child { border-right: 0; }
-.geo-mode-tabs button:hover { color: #3c4843; background: #f6f8f7; }
-.geo-mode-tabs button.active { color: var(--green-dark); background: var(--green-soft); }
-.geo-data-editor { padding: 15px 17px 12px; }
-.geo-resource-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.geo-resource-field--wide { grid-column: 1 / -1; }
-.geo-resource-field small { min-height: 16px; display: flex; align-items: center; gap: 5px; overflow: hidden; color: #72807a; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.geo-resource-field small svg { flex: 0 0 auto; color: var(--green); }
-.geo-resource-field .setting-list__row > div { min-width: 0; display: grid; gap: 4px; }
-.geo-resource-commands { min-height: 36px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.geo-maintenance { min-height: 40px; display: grid; grid-template-columns: auto minmax(0, 1fr) max-content; align-items: center; gap: 10px; padding-top: 9px; border-top: 1px solid #e7ebe9; }
-.geo-schedule-control { display: inline-flex; align-items: center; gap: 6px; color: #66716c; font-size: 12px; font-weight: 650; white-space: nowrap; }
-.geo-schedule-control svg { color: var(--green); }
-.geo-schedule-control select { height: 28px; padding: 0 24px 0 8px; color: #3f4945; background: #fff; border: 1px solid #d9dfdd; border-radius: 4px; outline: 0; font-size: 12px; }
-.geo-schedule-control select:focus { border-color: #7fb89a; box-shadow: 0 0 0 3px rgba(20, 125, 85, .08); }
-.geo-maintenance__status { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 10px; overflow: hidden; color: #818b87; font-size: 12px; white-space: nowrap; }
-.geo-data-error { min-width: 0; display: flex; align-items: center; gap: 6px; color: var(--red); font-size: 12px; line-height: 1.4; }
-.geo-data-error svg { flex: 0 0 auto; }
-.geo-data-error--local { margin-top: 10px; }
-.geo-data-success { min-width: 0; display: flex; align-items: center; gap: 6px; color: var(--green); font-size: 12px; line-height: 1.4; }
-.geo-data-success svg { flex: 0 0 auto; }
-.geo-options { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(220px, 2fr); align-items: end; gap: 12px; padding: 0 17px 18px; }
-.selector-list { display: grid; gap: 10px; padding: 13px 17px 16px; }
-.selector-block { overflow: hidden; background: #fff; border: 1px solid #dfe5e2; border-radius: 6px; box-shadow: 0 1px 2px rgba(28, 41, 35, .025); }
-.selector-block__header { min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 10px 7px 12px; background: #f8faf9; border-bottom: 1px solid #e8ecea; }
-.selector-block__identity { min-width: 0; display: flex; align-items: center; gap: 9px; }
-.selector-block__identity > span { width: 28px; height: 28px; display: grid; place-items: center; flex: 0 0 auto; color: #9a641d; background: #fff6e7; border: 1px solid #f0dfc1; border-radius: 5px; }
-.selector-block__identity > div { min-width: 0; display: grid; gap: 2px; }
-.selector-block__identity strong { color: #35403c; font-size: 12px; }
-.selector-block__identity small { color: #89938f; font-size: 12px; }
-.selector-block__controls { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(150px, 220px); gap: 10px; padding: 12px; border-bottom: 1px solid #edf0ef; }
-.selector-block__controls--single { grid-template-columns: minmax(180px, 1fr); }
-.selector-block__controls label { min-width: 0; display: grid; gap: 5px; }
-.selector-block__controls label > span { color: #67716d; font-size: 12px; font-weight: 650; }
-.selector-block__conditions { display: grid; gap: 7px; padding: 11px 12px 12px; }
-.selector-block__conditions-title { min-height: 28px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.selector-block__conditions-title > div { min-width: 0; display: flex; align-items: baseline; gap: 8px; }
-.selector-block__conditions-title strong { color: #46504c; font-size: 12px; }
-.selector-block__conditions-title small { color: #8b9491; font-size: 12px; }
-.selector-block__conditions-title em { min-width: 22px; padding: 3px 5px; color: #6b7571; background: #edf1ef; border-radius: 4px; font-size: 12px; font-style: normal; text-align: center; }
-.selector-block__warning { display: flex; align-items: center; gap: 6px; padding: 8px 9px; color: #94631f; background: #fff9ef; border: 1px solid #f1dfbf; border-radius: 4px; font-size: 12px; }
-.selector-block__warning svg { flex: 0 0 auto; }
-.matcher-list, .action-list { min-width: 0; display: grid; gap: 6px; }
-.matcher-row { min-width: 0; display: grid; grid-template-columns: 105px 145px repeat(3, minmax(110px, 1fr)) max-content; gap: 6px; align-items: center; }
-.matcher-row--simple { grid-template-columns: minmax(145px, 220px) minmax(180px, 1fr) max-content; }
-.matcher-seed { min-height: 34px; display: grid; place-items: center; color: #77817d; background: #f4f6f5; border: 1px solid #dfe4e2; border-radius: 4px; font-size: 12px; font-weight: 650; }
-.matcher-row__controls { grid-column: -2 / -1; display: flex; gap: 3px; justify-content: flex-end; }
-.compact-check { min-height: 34px; display: inline-flex; align-items: center; gap: 6px; padding: 0 9px; color: #5f6965; background: #f7f9f8; border: 1px solid #dce2df; border-radius: 4px; font-size: 12px; white-space: nowrap; }
-.compact-check input { width: 14px; height: 14px; }
-.action-row { min-width: 0; display: grid; grid-template-columns: 145px minmax(130px, 1fr) repeat(4, minmax(72px, max-content)) max-content; gap: 6px; align-items: center; }
-.action-row__grow { min-width: 170px !important; }
-.action-row__controls { grid-column: -2 / -1; display: flex; gap: 3px; justify-content: flex-end; }
-.pipeline-list { padding: 0 17px 18px; }
-.pipeline-block { border-bottom: 1px solid #dfe5e2; }
-.pipeline-block:last-child { border-bottom: 0; }
-.pipeline-block > summary { min-height: 52px; display: flex; align-items: center; gap: 9px; color: #30383a; cursor: pointer; list-style: none; }
-.pipeline-block > summary::-webkit-details-marker { display: none; }
-.pipeline-block > summary::before { content: "+"; width: 18px; color: #7b8681; font-size: 16px; text-align: center; }
-.pipeline-block[open] > summary::before { content: "−"; }
-.pipeline-block > summary span { font-size: 12px; font-weight: 720; }
-.pipeline-block > summary em { padding: 3px 6px; color: #6e7874; background: #eef1f0; border-radius: 4px; font-size: 12px; font-style: normal; }
-.pipeline-body { padding: 0 0 18px 27px; }
-.pipeline-identity { display: grid; grid-template-columns: minmax(220px, 1fr) auto; align-items: end; gap: 10px; margin-bottom: 12px; }
-.pipeline-identity label, .ecs-editor label { min-width: 0; display: grid; gap: 5px; }
-.ecs-editor { margin-bottom: 14px; padding: 12px; background: #f4f8f6; border-left: 3px solid #77ad91; }
-.ecs-editor > header { min-height: 28px; display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 9px; }
-.ecs-editor > header > div { display: grid; gap: 2px; }
-.ecs-editor > header strong { color: #34413b; font-size: 14px; }
-.ecs-editor > header span { color: #7c8782; font-size: 12px; }
-.ecs-editor > header .tag { display: inline-flex; align-items: center; gap: 4px; }
-.ecs-editor__fields { display: grid; grid-template-columns: repeat(5, minmax(100px, 1fr)); gap: 8px; }
-.inline-warning { display: flex; align-items: center; gap: 6px; margin-top: 9px; color: var(--red); font-size: 12px; }
-.rules-heading { min-height: 36px; display: flex; align-items: center; justify-content: space-between; gap: 10px; border-bottom: 1px solid #dfe4e2; }
-.rules-heading > div { display: flex; align-items: center; gap: 7px; }
-.rules-heading strong { color: #3d4547; font-size: 14px; }
-.rules-heading span { color: #7b8581; font-size: 12px; }
-.rules-heading__actions { display: flex; align-items: center; gap: 10px !important; }
-.rules-heading__actions .inline-command:disabled { color: #aeb7b3; cursor: default; }
-.rule-block { padding: 14px 0; border-bottom: 1px solid #e2e7e5; }
-.rule-block--collapsed { padding-bottom: 10px; }
-.rule-block:last-child { border-bottom: 0; }
-.rule-block > header { display: grid; grid-template-columns: 24px minmax(160px, 320px) auto; align-items: center; gap: 7px; margin-bottom: 11px; }
-.rule-block > header > span { width: 22px; height: 22px; display: grid; place-items: center; color: #fff; background: #596663; border-radius: 4px; font-size: 12px; }
-.rule-order-actions { display: flex; align-items: center; gap: 5px; }
-.rule-collapse-toggle { margin-right: 3px; }
-.rule-order-actions .icon-button:disabled { color: #b7bfbc; background: #f5f7f6; border-color: #e4e8e6; }
-.rule-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; min-height: 30px; padding: 6px 8px; color: #697470; background: #f7f9f8; border: 1px solid #e2e7e5; border-radius: 4px; font-size: 12px; line-height: 1.45; }
-.rule-summary > span { color: #89938f; }
-.rule-summary > strong { color: #3f4b46; font-weight: 650; }
-.rule-summary > svg { flex: 0 0 auto; color: #92a09a; }
-.rule-summary > em { padding: 2px 5px; color: #8a651f; background: var(--amber-soft); border-radius: 3px; font-style: normal; white-space: nowrap; }
-.rule-flow { margin-left: auto; padding: 2px 5px; color: #52605a; background: #e9eeec; border-radius: 3px; font-size: 12px; font-weight: 700; white-space: nowrap; }
-.rule-flow--continue { color: #256849; background: var(--green-soft); }
-.rule-flow--jump, .rule-flow--conditional { color: #8a651f; background: var(--amber-soft); }
-.rule-flow--unknown { color: #765f36; background: #f3efe7; }
-.rule-order-warning { display: flex; align-items: flex-start; gap: 6px; margin-top: 7px; padding: 7px 8px; color: #8b4f1d; background: #fff8ed; border: 1px solid #ead8ba; border-radius: 4px; font-size: 12px; line-height: 1.45; }
-.rule-order-warning > svg { flex: 0 0 auto; margin-top: 1px; }
-.rule-stage { min-width: 0; padding: 10px 0; }
-.rule-stage + .rule-stage { border-top: 1px dashed #e2e7e5; }
-.rule-stage__title { min-height: 30px; display: flex; align-items: center; gap: 8px; }
-.rule-stage__title > div { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-.rule-stage__title strong { color: #5d6864; font-size: 12px; text-transform: uppercase; white-space: nowrap; }
-.rule-stage__title small { color: #939d99; font-size: 12px; }
-.rule-stage__title select { width: 105px; height: 27px; margin-left: auto; }
-.rule-stage--response { margin-top: 5px; padding: 10px; background: #f7faf8; border-left: 2px solid #86b79e; }
-.response-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.response-actions > .rule-stage { padding: 10px; background: #fafbfa; border: 1px solid #e3e8e5; }
-.config-empty { padding: 18px 0; color: #8b9491; font-size: 12px; text-align: center; }
 
-.flow-preview { padding: 17px; }
-.flow-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-bottom: 14px; background: #fff; border: 1px solid var(--line); border-radius: 6px; }
-.flow-summary div { display: grid; gap: 2px; padding: 12px 15px; border-right: 1px solid var(--line); }
-.flow-summary div:last-child { border-right: 0; }
-.flow-summary strong { color: #26302c; font-size: 16px; }
-.flow-summary span { color: #818b87; font-size: 12px; }
-.flow-routes { margin-bottom: 14px; padding: 13px 15px; background: #fff; border: 1px solid var(--line); border-radius: 6px; }
-.flow-routes h3 { margin-bottom: 10px; color: #3d4648; font-size: 14px; }
-.flow-route { min-width: 0; display: grid; grid-template-columns: 28px minmax(0, 1fr) 18px minmax(100px, auto); align-items: center; gap: 8px; min-height: 34px; border-top: 1px solid #edf0ef; }
-.flow-route > span { color: #7b8581; font-size: 12px; }
-.flow-route code { overflow: hidden; color: #596562; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.flow-route svg { color: #96a19c; }
-.flow-route strong { color: var(--green-dark); font-size: 12px; }
-.flow-pipelines { display: grid; gap: 12px; }
-.flow-pipeline { overflow: hidden; background: #fff; border: 1px solid var(--line); border-radius: 6px; }
-.flow-pipeline > header { min-height: 52px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 14px; background: #f8faf9; border-bottom: 1px solid var(--line); }
-.flow-pipeline > header > div { display: grid; gap: 3px; }
-.flow-pipeline > header strong { color: #2f3935; font-size: 12px; }
-.flow-pipeline > header span, .flow-pipeline > header em { color: #7a8580; font-size: 12px; font-style: normal; }
-.flow-pipeline ol { margin: 0; padding: 0; list-style: none; }
-.flow-pipeline li { min-height: 76px; display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 10px; padding: 12px 14px; border-bottom: 1px solid #e9edeb; }
-.flow-pipeline li:last-child { border-bottom: 0; }
-.flow-step { width: 25px; height: 25px; display: grid; place-items: center; color: #eafff2; background: var(--green); border-radius: 50%; font-size: 12px; font-weight: 700; }
-.flow-rule { min-width: 0; display: grid; gap: 5px; }
-.flow-rule > strong { color: #36403c; font-size: 12px; }
-.flow-rule > code { overflow: hidden; color: #7a8580; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.flow-actions { display: flex; flex-wrap: wrap; gap: 5px; }
-.flow-actions span { padding: 3px 5px; color: #50605a; background: #edf2ef; border-radius: 3px; font-size: 12px; }
-.flow-actions em { color: #9aa29f; font-size: 12px; font-style: normal; }
-.flow-jump { display: flex; align-items: center; gap: 4px; color: #9a5b0f; font-size: 12px; }
 
 /* 日志收回浅色体系。等宽字体保留，但不再整块反白——
    深色终端把这一页从产品里割了出去，读起来像两个软件。
@@ -600,20 +439,7 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .status-banner--paused > svg { color: #a27616; }
 .status-banner--paused p { color: #776746; }
 
-@media (max-width: 1120px) {
-  .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .matcher-row { grid-template-columns: 100px 135px minmax(120px, 1fr) max-content; }
-  .matcher-row--simple { grid-template-columns: minmax(135px, 200px) minmax(120px, 1fr) max-content; }
-  .action-row { display: flex; flex-wrap: wrap; }
-  .action-row > select { flex: 0 1 118px; }
-  .action-row > input { flex: 1 1 96px; }
-  .action-row > .action-row__grow { flex: 4 1 220px; }
-  .action-row__controls { margin-left: auto; }
-  .ecs-editor__fields { grid-template-columns: repeat(3, minmax(100px, 1fr)); }
-}
 
-@media (max-width: 1000px) {
-}
 
 @media (max-width: 860px) {
   :root { --app-header-height: 52px; }
@@ -633,12 +459,7 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
   .mobile-nav a.router-link-exact-active::after { position: absolute; right: 25%; bottom: -4px; left: 25%; height: 2px; content: ''; background: var(--d-ink); }
   .app-shell:has([data-config-editing="true"]) .mobile-nav { display: none; }
   .app-shell:has([data-config-editing="true"]) .workspace__main { padding-bottom: 16px; }
-  .app-shell .button, .app-shell .icon-button, .app-shell .inline-command { min-height: 44px; }
-  .app-shell .icon-button { min-width: 44px; }
-  .app-shell input:not([type="checkbox"]):not([type="radio"]), .app-shell select { min-height: 44px; font-size: 16px; }
-  .app-shell .button { font-size: 14px; }
 
-  .structured-editor, .flow-preview { max-height: none; }
   .history-panel { order: 2; }
   .history-list { max-height: 340px; }
   .update-grid { grid-template-columns: 1fr; }
@@ -649,45 +470,30 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 
 @media (max-width: 640px) {
   .page-actions { min-height: 34px; margin-bottom: 12px; }
+  /* 触控尺寸只有一个断点：和组件库一样在 ≤640。以前这几条在 ≤860，641–860 之间同一行里输入框 44、按钮 36。
+     输入框 16 号字防止 iPhone 聚焦时放大整页。
+     Touch sizing has one breakpoint, ≤640, matching the kit; at ≤860 these rules made inputs 44 next to
+     36px buttons between 641 and 860. The 16px input text stops iPhone from zooming on focus. */
+  .app-shell .button, .app-shell .icon-button, .app-shell .inline-command { min-height: 44px; }
+  .app-shell .icon-button { min-width: 44px; }
+  .app-shell input:not([type="checkbox"]):not([type="radio"]), .app-shell select { min-height: 44px; }
+  .app-shell :is(input:not([type="checkbox"]):not([type="radio"]), select, textarea) { font-size: var(--t-touch); }
+  .app-shell .button { font-size: 14px; }
   .notification-popover { position: fixed; top: 60px; right: 10px; left: 10px; width: auto; max-height: calc(100dvh - 138px); }
   .notification-list { max-height: calc(100dvh - 252px); }
   th, td { padding-inline: 12px; }
-  .structured-editor, .flow-preview { min-height: 0; }
-  .config-version { grid-template-columns: 1fr; padding: 0 13px 13px; }
-  .config-version .config-section__header { padding-inline: 0; }
-  .settings-grid { grid-template-columns: 1fr; gap: 9px; padding: 12px 13px 15px; }
-  .setting-field--wide { grid-column: span 1; }
-  .config-section__header { padding-inline: 13px; }
-  .config-section__header--actions { align-items: flex-start; flex-direction: column; }
-  .config-section__header--actions > .button { width: 100%; }
-  .geo-mode-tabs { width: 100%; }
-  .geo-data-editor { padding: 12px 13px 10px; }
-  .geo-resource-grid, .geo-options { grid-template-columns: 1fr; }
-  .geo-options { padding: 0 13px 15px; }
-  .geo-resource-commands { align-items: stretch; flex-direction: column; gap: 4px; }
-  .geo-resource-commands .button { width: 100%; }
-  .geo-maintenance { grid-template-columns: minmax(0, 1fr) max-content; }
-  .geo-maintenance__status { grid-column: 1 / -1; grid-row: 2; justify-content: flex-start; flex-wrap: wrap; white-space: normal; }
-  .selector-list, .pipeline-list { padding-inline: 13px; }
-  .selector-block__controls { grid-template-columns: 1fr; }
-  .selector-block__conditions-title > div { align-items: flex-start; flex-direction: column; gap: 2px; }
-  .matcher-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .matcher-row--simple { grid-template-columns: 110px minmax(0, 1fr) max-content; }
-  .matcher-row__controls { grid-column: 2; justify-self: end; }
-  .matcher-row--simple > .matcher-row__controls { grid-column: 3; }
-  .action-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .action-row__controls { grid-column: 2; justify-self: end; margin-left: 0; }
-  .action-row__grow { min-width: 0 !important; }
-  .pipeline-body { padding-left: 0; }
-  .rule-block > header { grid-template-columns: 24px minmax(0, 1fr); }
-  .rule-order-actions { grid-column: 1 / -1; justify-content: flex-end; }
-  .pipeline-identity { grid-template-columns: 1fr; }
-  .ecs-editor__fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .response-actions { grid-template-columns: 1fr; gap: 8px; }
-  .flow-preview { padding: 12px; }
-  .flow-route { grid-template-columns: 24px minmax(0, 1fr) 16px; }
-  .flow-route strong { grid-column: 2 / -1; padding-bottom: 6px; }
   .json-editor { height: 58vh; min-height: 390px; }
+  /* 编辑器里的字 16：它是一个输入框，小于 16 时 iOS 聚焦会放大整页（规范 1.8） / 16px text: it is a field, and below 16 iOS zooms the page on focus (spec 1.8) */
+  .json-editor .cm-editor { font-size: var(--t-touch); }
+  /* 行号不是输入框，仍是 13；行高跟着正文的 16 号行，数字和那一行对齐 / Line numbers are not a field and stay 13, with the 16px text's line height so they line up with their row */
+  .json-editor .cm-gutters { font-size: var(--t-2); }
+  .json-editor .cm-gutterElement { line-height: calc(var(--t-touch) * var(--lh-base)); }
+  /* 13 号的行号和 16 号的正文放在同样高的行里，基线会差 2：每个行号前面放一个 16 号的零宽字符撑出正文那一行的基线，数字落在上面；
+     格子本身不动，当前行的底色和正文那一行上下对齐（审计第七轮 V2、第八轮 V1）
+     A 13px number and 16px text in rows of one height put their baselines 2 apart: a 16px zero-width character before each number sets the
+     text line's baseline and the digits sit on it, while the row itself stays put, so the active band lines up with the code line (audit
+     round 7 V2, round 8 V1) */
+  .json-editor .cm-lineNumbers .cm-gutterElement::before { content: '\200b'; font-size: var(--t-touch); }
   .editor-footer { align-items: stretch; flex-direction: column; gap: 8px; }
   .validation-state span { white-space: normal; }
   .editor-footer input { width: 100%; }
@@ -788,3 +594,4 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
   .install-hashes > div { display: flex; justify-content: space-between; gap: var(--s-3); }
   .install-hashes dd { margin: 0; }
 }
+

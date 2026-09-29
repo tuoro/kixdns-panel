@@ -1,18 +1,30 @@
 <script setup lang="ts">
-import { ArrowDown, ArrowUp, Plus, X } from '@lucide/vue'
-import { computed, useId } from 'vue'
+import { ArrowUpDown, ChevronDown, Plus, X } from '@lucide/vue'
+import { computed, reactive, ref, toRaw, useId } from 'vue'
+import UiMenu from '../ui/UiMenu.vue'
+import UiSelect from '../ui/UiSelect.vue'
+import UiUrlField from '../ui/UiUrlField.vue'
+import { moveItems, moveTarget, useRowFocus } from './row-list'
 import { actionFieldErrors } from '../../config-editor/field-validation'
 import { createAction, createEcs, resetAction } from '../../config-editor/model'
 import { ACTION_TYPES, TRANSPORT_OPTIONS } from '../../config-editor/schema'
-import { summarizeAction } from '../../config-editor/summary'
+import { transportLabel } from '../../config-editor/summary'
 import type { ActionConfig, PipelineConfig } from '../../config-editor/types'
 
+// 动作列表：和条件同一种子项行（规范 3.4）。动作按顺序执行，所以两个以上时编号，序号兼「调整顺序」菜单。
+// 转发的上游独占参数格，右端的 ▾ 选用已有上游；协议和 ECS 是次一级的，放在下面一行（规范 3.4b）。
+// Actions use the same sub-item row as conditions (spec 3.4). Actions run in order, so with two or
+// more they are numbered and the ordinal doubles as the reorder menu. A forward's upstream has the
+// params cell to itself, with a ▾ at its end for upstreams used elsewhere; transport and ECS are
+// secondary and sit on the line below (spec 3.4b).
 const props = withDefaults(defineProps<{
   pipelines: PipelineConfig[]
   currentPipelineId: string
   capabilities?: string[]
+  showErrors?: boolean
 }>(), {
   capabilities: () => [],
+  showErrors: false,
 })
 const actions = defineModel<ActionConfig[]>({ required: true })
 const supportedActionTypes = computed(() => ACTION_TYPES.filter((option) => (
@@ -21,7 +33,11 @@ const supportedActionTypes = computed(() => ACTION_TYPES.filter((option) => (
 const errors = computed(() => actions.value.map((action) => actionFieldErrors(
   action, props.currentPipelineId, props.pipelines.map((pipeline) => pipeline.id),
 )))
+const ordered = computed(() => actions.value.length > 1)
 const instanceId = useId()
+const touched = reactive(new Set<string>())
+const root = ref<HTMLElement | null>(null)
+const { focusRow } = useRowFocus(root)
 const logLevels = ['trace', 'debug', 'info', 'warn', 'error']
 const responseCodes = ['NOERROR', 'NXDOMAIN', 'SERVFAIL', 'REFUSED']
 const existingUpstreams = computed(() => {
@@ -39,31 +55,83 @@ const existingUpstreams = computed(() => {
   return [...upstreams.values()]
 })
 
-function fieldId(index: number, field: string): string {
-  return `${instanceId}-action-${index}-${field}`
+function upstreamLabel(upstream: { upstream: string; transport: string }): string {
+  return `${upstream.upstream}${upstream.transport ? ` (${transportLabel(upstream.transport)})` : ''}`
 }
 
-function fieldErrorId(index: number, field: string): string | undefined {
-  return errors.value[index]?.[field] ? fieldId(index, `${field}-error`) : undefined
-}
+// 已经在别处用过的上游：上游输入框右端的 ▾ 打开，选中同时填上游和协议
+// Upstreams already used elsewhere: the ▾ at the end of the upstream field opens them; picking one fills upstream and transport
+const existingItems = computed(() => existingUpstreams.value.map((upstream, index) => ({ value: String(index), label: upstreamLabel(upstream), mono: true })))
 
-function useUpstream(action: ActionConfig, upstream: { upstream: string; transport: string }): void {
+function useUpstream(action: ActionConfig, index: string): void {
+  const upstream = existingUpstreams.value[Number(index)]
+  if (!upstream) return
   action.upstream = upstream.upstream
   action.transport = upstream.transport
 }
 
-function actionTypes(action: ActionConfig) {
-  if (supportedActionTypes.value.some((option) => option.value === action.type)) return supportedActionTypes.value
+function typeOptions(action: ActionConfig) {
+  const known = supportedActionTypes.value.map((option) => ({ value: option.value, label: option.label }))
+  if (known.some((option) => option.value === action.type)) return known
   const current = ACTION_TYPES.find((option) => option.value === action.type)
-  return [...supportedActionTypes.value, current ?? { value: action.type, label: action.type }]
+  return [...known, { value: action.type, label: current?.label ?? action.type }]
 }
 
-function changeType(action: ActionConfig, event: Event): void {
-  resetAction(action, (event.currentTarget as HTMLSelectElement).value)
+function enumOptions(values: readonly string[], current: string | undefined) {
+  const options = values.map((value) => ({ value, label: value }))
+  return current && !values.includes(current) ? [{ value: current, label: current }, ...options] : options
 }
 
-function changeEcs(action: ActionConfig, event: Event): void {
-  action.ecs = createEcs((event.currentTarget as HTMLSelectElement).value)
+function transportOptions(action: ActionConfig) {
+  // 放在次一行、没有字段名，所以默认项自己说明它是什么 / On the secondary line with no label, so the default names itself
+  const options = [{ value: '', label: '自动识别协议' }, ...TRANSPORT_OPTIONS.map((transport) => ({ value: transport, label: transportLabel(transport) }))]
+  return action.transport && !TRANSPORT_OPTIONS.includes(action.transport) ? [...options, { value: action.transport, label: action.transport }] : options
+}
+
+function pipelineOptions(action: ActionConfig) {
+  const options = [{ value: '', label: '选择 Pipeline', disabled: true }, ...props.pipelines.map((pipeline) => ({ value: pipeline.id, label: pipeline.id, disabled: pipeline.id === props.currentPipelineId }))]
+  return action.pipeline && !props.pipelines.some((pipeline) => pipeline.id === action.pipeline) ? [...options, { value: action.pipeline, label: `${action.pipeline}（不存在）` }] : options
+}
+
+// ECS 默认收起、设置过就展开；点一下切换。按动作对象记，挪动顺序时跟着动作走。
+// ECS starts collapsed, or open when set; a click toggles it. Kept per action object so it follows reordering.
+const ecsToggled = reactive(new WeakMap<object, boolean>())
+function ecsOpen(action: ActionConfig): boolean {
+  return ecsToggled.get(toRaw(action)) ?? Boolean(action.ecs)
+}
+function toggleEcs(action: ActionConfig): void {
+  ecsToggled.set(toRaw(action), !ecsOpen(action))
+}
+const ecsOptions = [
+  { value: '', label: '不单独设置' },
+  { value: 'clear', label: '清除 ECS' },
+  { value: 'from_client_ip', label: '使用客户端 IP' },
+  { value: 'static', label: '固定子网' },
+]
+
+function fieldId(index: number, field: string): string {
+  return `${instanceId}-action-${index}-${field}`
+}
+
+function touch(index: number, field: string): void {
+  touched.add(`${index}:${field}`)
+}
+
+function visibleError(index: number, field: string): string | undefined {
+  const error = errors.value[index]?.[field]
+  return error && (props.showErrors || touched.has(`${index}:${field}`)) ? error : undefined
+}
+
+function errorId(index: number, field: string): string | undefined {
+  return visibleError(index, field) ? fieldId(index, `${field}-error`) : undefined
+}
+
+function changeType(action: ActionConfig, type: string): void {
+  resetAction(action, type)
+}
+
+function changeEcs(action: ActionConfig, mode: string): void {
+  action.ecs = createEcs(mode)
 }
 
 function setEcsNumber(action: ActionConfig, key: string, event: Event): void {
@@ -87,154 +155,117 @@ function setTtl(action: ActionConfig, event: Event): void {
   else action.ttl = Number(raw)
 }
 
-function move(index: number, offset: -1 | 1): void {
-  const target = index + offset
-  if (target < 0 || target >= actions.value.length) return
+function add(): void {
+  actions.value.push(createAction())
+  void focusRow(actions.value.length - 1, 'type')
+}
+
+function remove(index: number): void {
+  actions.value.splice(index, 1)
+  touched.clear()
+  void focusRow(index, 'type')
+}
+
+function move(index: number, direction: string): void {
+  const target = moveTarget(index, actions.value.length, direction)
+  if (target === undefined) return
   const [action] = actions.value.splice(index, 1)
   if (action) actions.value.splice(target, 0, action)
+  touched.clear()
+  void focusRow(target, 'handle')
 }
 </script>
 
 <template>
-  <div class="action-list">
-    <div v-for="(action, index) in actions" :key="index" class="action-row">
-      <header class="action-card__header">
-        <span>动作 {{ index + 1 }}</span>
-        <div class="action-row__controls">
-          <button class="icon-button icon-button--small" type="button" :disabled="index === 0" :title="`上移动作 ${index + 1}`" @click="move(index, -1)"><ArrowUp :size="14" /></button>
-          <button class="icon-button icon-button--small" type="button" :disabled="index === actions.length - 1" :title="`下移动作 ${index + 1}`" @click="move(index, 1)"><ArrowDown :size="14" /></button>
-          <button class="icon-button icon-button--small" type="button" :title="`删除动作 ${index + 1}`" @click="actions.splice(index, 1)"><X :size="14" /></button>
-        </div>
-      </header>
-      <div class="action-card__fields">
-        <label class="action-field">
-          <span>执行方式</span>
-          <select :value="action.type" :aria-label="`动作 ${index + 1} 类型`" @change="changeType(action, $event)">
-            <option v-for="option in actionTypes(action)" :key="option.value" :value="option.value">{{ option.label }}</option>
-          </select>
-        </label>
-        <label v-if="action.type === 'log'" class="action-field">
-          <span>日志级别</span>
-          <select v-model="action.level" :aria-label="`动作 ${index + 1} 日志级别`">
-            <option v-if="action.level && !logLevels.includes(action.level)" :value="action.level">{{ action.level }}</option>
-            <option v-for="level in logLevels" :key="level" :value="level">{{ level }}</option>
-          </select>
-        </label>
-        <label v-else-if="action.type === 'static_response'" class="action-field">
-          <span>返回响应码</span>
-          <select v-model="action.rcode" :aria-label="`动作 ${index + 1} RCode`">
-            <option v-if="action.rcode && !responseCodes.includes(action.rcode)" :value="action.rcode">{{ action.rcode }}</option>
-            <option v-for="rcode in responseCodes" :key="rcode" :value="rcode">{{ rcode }}</option>
-          </select>
-        </label>
-        <label v-else-if="action.type === 'static_ip_response'" class="action-field">
-          <span>返回 IP 地址</span>
-          <input v-model="action.ip" type="text" :aria-label="`动作 ${index + 1} IP`" placeholder="例如 192.168.1.10" :aria-invalid="Boolean(errors[index]?.ip)" :aria-describedby="fieldErrorId(index, 'ip')">
-          <small v-if="errors[index]?.ip" :id="fieldErrorId(index, 'ip')" class="action-field__error">{{ errors[index]?.ip }}</small>
-        </label>
-        <template v-else-if="action.type === 'static_cname_response'">
-          <label class="action-field">
-            <span>CNAME 目标域名</span>
-            <input v-model="action.target" type="text" :aria-label="`动作 ${index + 1} CNAME 目标`" placeholder="origin.example." :aria-invalid="Boolean(errors[index]?.target)" :aria-describedby="fieldErrorId(index, 'target')">
-            <small v-if="errors[index]?.target" :id="fieldErrorId(index, 'target')" class="action-field__error">{{ errors[index]?.target }}</small>
-          </label>
-          <label class="action-field">
-            <span>缓存时间 TTL（秒）</span>
-            <input type="number" :value="action.ttl" min="0" max="4294967295" :aria-label="`动作 ${index + 1} CNAME TTL`" placeholder="300" :aria-invalid="Boolean(errors[index]?.ttl)" :aria-describedby="fieldErrorId(index, 'ttl')" @input="setTtl(action, $event)">
-            <small v-if="errors[index]?.ttl" :id="fieldErrorId(index, 'ttl')" class="action-field__error">{{ errors[index]?.ttl }}</small>
-          </label>
-        </template>
-        <label v-else-if="action.type === 'jump_to_pipeline'" class="action-field">
-          <span>接着执行哪个 Pipeline</span>
-          <select v-model="action.pipeline" :aria-label="`动作 ${index + 1} 目标 Pipeline`" :aria-invalid="Boolean(errors[index]?.pipeline)" :aria-describedby="fieldErrorId(index, 'pipeline')">
-            <option disabled value="">选择 Pipeline</option>
-            <option v-if="action.pipeline && !pipelines.some((pipeline) => pipeline.id === action.pipeline)" :value="action.pipeline">{{ action.pipeline }}（不存在）</option>
-            <option v-for="pipeline in pipelines" :key="pipeline.id" :value="pipeline.id" :disabled="pipeline.id === currentPipelineId">{{ pipeline.id }}</option>
-          </select>
-          <small v-if="errors[index]?.pipeline" :id="fieldErrorId(index, 'pipeline')" class="action-field__error">{{ errors[index]?.pipeline }}</small>
-        </label>
-        <template v-else-if="action.type === 'forward'">
-          <label class="action-field">
-            <span>传输协议</span>
-            <select v-model="action.transport" :aria-label="`动作 ${index + 1} 传输协议`">
-              <option value="">自动（按上游）</option>
-              <option v-if="action.transport && !TRANSPORT_OPTIONS.includes(action.transport)" :value="action.transport">{{ action.transport }}</option>
-              <option v-for="transport in TRANSPORT_OPTIONS" :key="transport" :value="transport">{{ transport.toUpperCase() }}</option>
-            </select>
-          </label>
-          <label class="action-field action-field--wide">
-            <span>交给这些上游解析</span>
-            <input v-model="action.upstream" type="text" :aria-label="`动作 ${index + 1} 上游`" placeholder="192.168.1.1:53, https://dns.example/dns-query" :aria-invalid="Boolean(errors[index]?.upstream)" :aria-describedby="[fieldId(index, 'upstream-help'), fieldErrorId(index, 'upstream')].filter(Boolean).join(' ')">
-            <small :id="fieldId(index, 'upstream-help')" class="action-field__help">多个地址用逗号分隔，也可以选用当前配置中的上游。</small>
-            <small v-if="errors[index]?.upstream" :id="fieldErrorId(index, 'upstream')" class="action-field__error">{{ errors[index]?.upstream }}</small>
-          </label>
-        </template>
-        <template v-else-if="action.type === 'static_txt_response' || action.type === 'replace_txt_response'">
-          <label class="action-field">
-            <span>TXT 文本内容</span>
-            <input type="text" :value="textValue(action)" :aria-label="`动作 ${index + 1} TXT 内容`" placeholder="逗号分隔多个 TXT 值" :aria-invalid="Boolean(errors[index]?.text)" :aria-describedby="fieldErrorId(index, 'text')" @input="setText(action, $event)">
-            <small v-if="errors[index]?.text" :id="fieldErrorId(index, 'text')" class="action-field__error">{{ errors[index]?.text }}</small>
-          </label>
-          <label v-if="action.type === 'static_txt_response'" class="action-field">
-            <span>缓存时间 TTL（秒）</span>
-            <input type="number" :value="action.ttl" min="1" :aria-label="`动作 ${index + 1} TTL`" placeholder="300" @input="setTtl(action, $event)">
-          </label>
-        </template>
-      </div>
-      <div v-if="action.type === 'forward' && existingUpstreams.length" class="existing-upstreams">
-        <span>已有上游</span>
-        <div class="existing-upstreams__options">
-          <button v-for="upstream in existingUpstreams" :key="JSON.stringify(upstream)" type="button" :aria-label="`使用已有上游 ${upstream.upstream}${upstream.transport ? `（${upstream.transport.toUpperCase()}）` : ''}`" :aria-pressed="action.upstream === upstream.upstream && (action.transport ?? '') === upstream.transport" @click="useUpstream(action, upstream)">
-            {{ upstream.upstream }}<small v-if="upstream.transport">{{ upstream.transport.toUpperCase() }}</small>
-          </button>
-        </div>
-      </div>
-      <details v-if="action.type === 'forward'" class="action-advanced" :open="Boolean(action.ecs)">
-        <summary>高级选项 · ECS <small>{{ action.ecs ? '已配置' : '未单独设置' }}</small></summary>
-        <div class="action-card__fields">
-          <label class="action-field action-field--wide">
-            <span>客户端子网信息</span>
-            <select :value="action.ecs?.mode ?? ''" :aria-label="`动作 ${index + 1} ECS 模式`" @change="changeEcs(action, $event)">
-              <option value="">不单独设置</option><option value="clear">清除 ECS（Clear）</option><option value="from_client_ip">使用客户端 IP</option><option value="static">固定子网</option>
-            </select>
-          </label>
-          <template v-if="action.ecs?.mode === 'from_client_ip'">
-            <label class="action-field"><span>IPv4 前缀长度</span><input type="number" :value="action.ecs.prefix_v4" min="0" max="32" aria-label="ECS IPv4 前缀" placeholder="24" @input="setEcsNumber(action, 'prefix_v4', $event)"></label>
-            <label class="action-field"><span>IPv6 前缀长度</span><input type="number" :value="action.ecs.prefix_v6" min="0" max="128" aria-label="ECS IPv6 前缀" placeholder="56" @input="setEcsNumber(action, 'prefix_v6', $event)"></label>
+  <div ref="root" class="action-list ui-rows-host">
+    <div class="ui-rows">
+      <div v-for="(action, index) in actions" :key="index" class="ui-rows__row action-row">
+        <span class="ui-rows__lead">
+          <UiMenu v-if="ordered" class="ui-rows__ord" trigger-class="ui-rows__handle" align="start" :label="`调整动作 ${index + 1} 的顺序`" :items="moveItems(index, actions.length)" @select="move(index, $event)"><span class="ui-rows__num">{{ index + 1 }}</span><ArrowUpDown class="ui-rows__grip" :size="14" aria-hidden="true" /></UiMenu>
+          <UiSelect class="ui-rows__type" :model-value="action.type" :options="typeOptions(action)" :label="`动作 ${index + 1} 类型`" @update:model-value="changeType(action, $event)" />
+        </span>
+        <div class="ui-rows__params">
+          <template v-if="action.type === 'log'">
+            <span class="ui-rows__plabel">级别</span>
+            <UiSelect v-model="action.level" class="is-enum" :options="enumOptions(logLevels, action.level)" :label="`动作 ${index + 1} 日志级别`" />
           </template>
-          <template v-if="action.ecs?.mode === 'static'">
-            <label class="action-field"><span>固定 IP 地址</span><input v-model="action.ecs.ip" type="text" aria-label="ECS 固定 IP" placeholder="192.168.1.0"></label>
-            <label class="action-field"><span>前缀长度</span><input type="number" :value="action.ecs.prefix" min="0" max="128" aria-label="ECS 固定前缀" placeholder="24" @input="setEcsNumber(action, 'prefix', $event)"></label>
+          <template v-else-if="action.type === 'static_response'">
+            <span class="ui-rows__plabel">响应码</span>
+            <UiSelect v-model="action.rcode" class="is-enum" :options="enumOptions(responseCodes, action.rcode)" :label="`动作 ${index + 1} RCode`" />
+          </template>
+          <template v-else-if="action.type === 'static_ip_response'">
+            <span class="ui-rows__plabel">IP</span>
+            <label class="ui-input"><input v-model="action.ip" class="mono" type="text" :aria-label="`动作 ${index + 1} IP`" placeholder="192.168.1.10" :aria-invalid="Boolean(visibleError(index, 'ip')) || undefined" :aria-describedby="errorId(index, 'ip')" @blur="touch(index, 'ip')"></label>
+          </template>
+          <template v-else-if="action.type === 'static_cname_response'">
+            <span class="ui-rows__plabel">目标</span>
+            <label class="ui-input"><input v-model="action.target" class="mono" type="text" :aria-label="`动作 ${index + 1} CNAME 目标`" placeholder="origin.example" :aria-invalid="Boolean(visibleError(index, 'target')) || undefined" :aria-describedby="errorId(index, 'target')" @blur="touch(index, 'target')"></label>
+            <span class="ui-rows__plabel">TTL</span>
+            <label class="ui-input is-num"><input type="number" :value="action.ttl" min="0" max="4294967295" :aria-label="`动作 ${index + 1} CNAME TTL`" placeholder="300" :aria-invalid="Boolean(visibleError(index, 'ttl')) || undefined" :aria-describedby="errorId(index, 'ttl')" @input="setTtl(action, $event)" @blur="touch(index, 'ttl')"><em class="ui-setrow__unit">秒</em></label>
+          </template>
+          <template v-else-if="action.type === 'jump_to_pipeline'">
+            <span class="ui-rows__plabel">Pipeline</span>
+            <UiSelect v-model="action.pipeline" mono :options="pipelineOptions(action)" :label="`动作 ${index + 1} 目标 Pipeline`" :invalid="Boolean(visibleError(index, 'pipeline'))" />
+          </template>
+          <template v-else-if="action.type === 'forward'">
+            <span class="ui-rows__plabel is-top">上游</span>
+            <!-- 上游可能是一串网址：框会换行、长高，只在「/」「,」后面断，几个上游和很长的地址都看得全（审计 B4、V16）
+                 An upstream may be a list of URLs: the field wraps and grows, breaking only after "/" and ",", so several upstreams and long addresses stay readable (audits B4, V16) -->
+            <label class="ui-input ui-input--area is-long"><UiUrlField v-model="action.upstream" :label="`动作 ${index + 1} 上游`" placeholder="192.168.1.1:53, https://dns.example/dns-query" :invalid="Boolean(visibleError(index, 'upstream'))" :describedby="errorId(index, 'upstream')" @blur="touch(index, 'upstream')" /><UiMenu v-if="existingItems.length" trigger-class="ui-input__affix" :label="`动作 ${index + 1} 选用已有上游`" :items="existingItems" @select="useUpstream(action, $event)"><ChevronDown :size="16" aria-hidden="true" /></UiMenu></label>
+          </template>
+          <template v-else-if="action.type === 'static_txt_response' || action.type === 'replace_txt_response'">
+            <span class="ui-rows__plabel">文本</span>
+            <label class="ui-input"><input class="mono" type="text" :value="textValue(action)" :aria-label="`动作 ${index + 1} TXT 内容`" placeholder="多个值用逗号分隔" :aria-invalid="Boolean(visibleError(index, 'text')) || undefined" :aria-describedby="errorId(index, 'text')" @input="setText(action, $event)" @blur="touch(index, 'text')"></label>
+            <template v-if="action.type === 'static_txt_response'">
+              <span class="ui-rows__plabel">TTL</span>
+              <label class="ui-input is-num"><input type="number" :value="action.ttl" min="1" :aria-label="`动作 ${index + 1} TTL`" placeholder="300" @input="setTtl(action, $event)"><em class="ui-setrow__unit">秒</em></label>
+            </template>
           </template>
         </div>
-      </details>
-      <p class="action-card__summary">{{ summarizeAction(action) }}</p>
+        <span class="ui-rows__act"><button class="ui-icon-btn" type="button" :title="`删除动作 ${index + 1}`" :aria-label="`删除动作 ${index + 1}`" @click="remove(index)"><X :size="16" /></button></span>
+        <template v-for="field in ['ip', 'target', 'ttl', 'pipeline', 'upstream', 'text']" :key="field">
+          <p v-if="visibleError(index, field)" :id="fieldId(index, `${field}-error`)" class="ui-field-error ui-rows__error">{{ visibleError(index, field) }}</p>
+        </template>
+        <div v-if="action.type === 'forward'" class="ui-rows__sub">
+          <UiSelect v-model="action.transport" size="sm" class="action-transport" :options="transportOptions(action)" :label="`动作 ${index + 1} 传输协议`" />
+          <button class="ui-btn ui-btn--text ui-btn--sm action-ecs-toggle" type="button" :aria-expanded="ecsOpen(action)" :aria-controls="fieldId(index, 'ecs')" @click="toggleEcs(action)">ECS {{ action.ecs ? '已设置' : '未设置' }}<ChevronDown class="ui-btn__chev" :size="14" aria-hidden="true" /></button>
+          <div v-if="ecsOpen(action)" :id="fieldId(index, 'ecs')" class="action-ecs ui-rise">
+            <UiSelect :model-value="action.ecs?.mode ?? ''" :options="ecsOptions" :label="`动作 ${index + 1} ECS 模式`" @update:model-value="changeEcs(action, $event)" />
+            <template v-if="action.ecs?.mode === 'from_client_ip'">
+              <label class="ui-input is-num"><input type="number" :value="action.ecs.prefix_v4" min="0" max="32" aria-label="ECS IPv4 前缀" placeholder="24" @input="setEcsNumber(action, 'prefix_v4', $event)"><em class="ui-setrow__unit">IPv4</em></label>
+              <label class="ui-input is-num"><input type="number" :value="action.ecs.prefix_v6" min="0" max="128" aria-label="ECS IPv6 前缀" placeholder="56" @input="setEcsNumber(action, 'prefix_v6', $event)"><em class="ui-setrow__unit">IPv6</em></label>
+            </template>
+            <template v-if="action.ecs?.mode === 'static'">
+              <label class="ui-input"><input v-model="action.ecs.ip" class="mono" type="text" aria-label="ECS 固定 IP" placeholder="192.168.1.0"></label>
+              <label class="ui-input is-num"><input type="number" :value="action.ecs.prefix" min="0" max="128" aria-label="ECS 固定前缀" placeholder="24" @input="setEcsNumber(action, 'prefix', $event)"><em class="ui-setrow__unit">位</em></label>
+            </template>
+          </div>
+        </div>
+      </div>
     </div>
-    <button class="inline-command" type="button" @click="actions.push(createAction())"><Plus :size="14" />添加动作</button>
+    <button class="ui-btn ui-btn--text ui-btn--sm ui-rows__add" type="button" @click="add"><Plus :size="14" />添加动作</button>
   </div>
 </template>
 
 <style scoped>
-.action-list { display: grid; gap: 10px; }
-.action-list .action-row { display: flex; flex-direction: column; align-items: stretch; gap: 12px; padding: 12px; border: 1px solid #e0e7e3; border-radius: 7px; background: #fff; }
-.action-card__header { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #506159; font-size: 14px; font-weight: 600; }
-.action-card__header .action-row__controls { margin: 0; }
-.action-card__fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 10px 12px; }
-.action-field { display: grid; min-width: 0; gap: 5px; color: #606b65; font-size: 14px; }
-.action-field--wide { grid-column: 1 / -1; }
-.action-field input, .action-field select { font-size: 14px; }
-.action-field [aria-invalid="true"] { border-color: #d48370; background: #fffaf8; }
-.action-field__error { color: #ae4d36; font-size: 12px; }
-.action-field__help { color: #7a857e; font-size: 12px; line-height: 1.6; }
-.existing-upstreams { display: grid; min-width: 0; gap: 6px; color: #7a857e; font-size: 14px; }
-.existing-upstreams__options { display: flex; min-width: 0; flex-wrap: wrap; gap: 6px; max-height: 120px; overflow: auto; }
-.existing-upstreams button { min-width: 0; max-width: 100%; padding: 6px 8px; color: #53675a; text-align: left; overflow-wrap: anywhere; border: 1px solid #dce6df; border-radius: 5px; background: #f8faf9; font-size: 14px; line-height: 1.5; }
-.existing-upstreams button[aria-pressed="true"] { color: #147d55; border-color: #89b9a0; background: #edf6f0; }
-.existing-upstreams button small { margin-left: 5px; font-size: 12px; }
-.action-advanced { min-width: 0; padding: 10px; border: 1px solid #e9edea; border-radius: 5px; background: #fbfcfb; }
-.action-advanced summary { color: #617066; cursor: pointer; font-size: 14px; }
-.action-advanced summary small { margin-left: 8px; color: #829087; font-size: 12px; }
-.action-advanced[open] > summary { margin-bottom: 12px; }
-.action-card__summary { margin: 0; color: #397653; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
-@media (max-width: 600px) { .action-card__fields { grid-template-columns: minmax(0, 1fr); } }
+/* 列表和「添加动作」之间 12：按钮上下往回收以后，字离最后一个字段 12（审计第三轮 B3） / 12 between the list and 添加动作: with the button pulled back its text sits 12 under the last field (audit round 3, B3) */
+.action-list { display: grid; gap: var(--s-3); }
+/* 协议下拉框按最长的选项定宽：手机上 16 号字时「自动识别协议」也放得下；ECS 是文字按钮，展开后字段换到下一行
+   The transport select sizes to its longest option, so 自动识别协议 fits even at a phone's 16px; ECS is a text button whose fields wrap onto the next line */
+.action-transport { flex: 0 0 auto; min-width: 8rem; }
+.action-ecs { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: var(--s-2); }
+.action-ecs > .ui-select { flex: 0 0 11rem; }
+.action-ecs > .ui-input:not(.is-num) { flex: 1 1 10rem; }
+.action-ecs > .ui-input.is-num { flex: 0 0 var(--w-num); }
+/* 手机上协议和 ECS 各占一行，和组里别的字段一样一行一个；ECS 往回收一格，字从竖线开始，不会在窄处掉到下一行又缩进（审计第二轮 V6）
+   On a phone the transport and ECS take a line each like every other field in the group; ECS is pulled back so its text starts on the
+   column line, instead of wrapping onto an indented second line where the row is narrow (audit round 2, V6) */
+@media (max-width: 640px) {
+  .ui-rows__sub { flex-direction: column; align-items: flex-start; gap: var(--s-3); }
+  /* ECS 的 44 高按钮往上收：字离协议框 12，和组里别的字段一样；下边不收，它的点按区域不和下面的「添加动作」叠在一起（审计第三轮 A4、B3）
+     The 44-tall ECS button is pulled up so its text sits 12 under the transport box like any field; not below, so its hit area never overlaps 添加动作 under it (audit round 3, A4, B3) */
+  /* 少收 2：44 的格子和上面的协议框挨着不叠（审计第六轮 A4） / Pulled back 2 less, so its 44 cell touches the transport box above without overlapping (audit round 6, A4) */
+  .action-ecs-toggle { margin-inline-start: calc(var(--s-3) * -1); margin-block-start: calc((1lh - var(--h-touch)) / 2 + 2px); }
+  .action-ecs { flex-basis: auto; align-self: stretch; }
+}
 </style>

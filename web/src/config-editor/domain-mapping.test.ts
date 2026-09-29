@@ -24,7 +24,7 @@ describe('域名映射批量预览', () => {
     expect(preview.validCount).toBe(1)
     expect(preview.errorCount).toBe(1)
     expect(preview.lines[1]?.lineNumber).toBe(2)
-    expect(preview.lines[1]?.errors).toContain('CNAME TTL 必须是 0 到 4294967295 的整数')
+    expect(preview.lines[1]?.errors).toContain('TTL 必须是 0 到 4294967295 的整数')
     expect(preview.rows).toEqual([])
   })
 
@@ -32,7 +32,7 @@ describe('域名映射批量预览', () => {
     const preview = parseDomainMappingBulk('bad..example target.example\nvalid.example target..example')
     expect(preview.validCount).toBe(0)
     expect(preview.lines[0]?.errors).toContain('源域名格式无效')
-    expect(preview.lines[1]?.errors).toContain('CNAME 目标域名格式无效')
+    expect(preview.lines[1]?.errors).toContain('目标域名格式无效')
   })
 
   it('空输入不产生可导入数据', () => {

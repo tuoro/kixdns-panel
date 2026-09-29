@@ -1,7 +1,16 @@
+import { matcherHint } from './matcher-hints'
 import { MATCHER_DEFINITIONS } from './schema'
 import type { ActionConfig, MatcherConfig, MatcherScope } from './types'
 
-export const REQUIRED_FIELD_ERROR = '请填写此项'
+// 必填的格子空着时，错误说出它叫什么，和这一行写的字段名一样：「请填写域名」「请选择 Pipeline」（审计第五轮 B3）
+// An empty required field is named in its error as its row labels it: 请填写域名, 请选择 Pipeline (audit round 5, B3)
+export function requiredFieldError(label: string, choose = false): string {
+  return `${choose ? '请选择' : '请填写'}${/^[A-Za-z0-9]/.test(label) ? ' ' : ''}${label}`
+}
+
+export function isRequiredFieldError(message: string): boolean {
+  return /^请(?:填写|选择)/.test(message)
+}
 
 export function validDnsName(value: string): boolean {
   const trimmed = value.trim()
@@ -23,14 +32,24 @@ export function isGeoSiteMatcher(matcher: MatcherConfig): boolean {
 export function matcherFieldErrors(matcher: MatcherConfig, scope: MatcherScope): Record<string, string> {
   const errors: Record<string, string> = {}
   const fields = MATCHER_DEFINITIONS[scope].find((item) => item.value === matcher.type)?.fields ?? []
+  const required = requiredFieldError(matcherHint(matcher).label, matcher.type === 'qtype')
   for (const field of ['value', 'cidr'] as const) {
-    if (fields.includes(field) && !matcher[field]?.trim()) errors[field] = REQUIRED_FIELD_ERROR
+    if (fields.includes(field) && !matcher[field]?.trim()) errors[field] = required
   }
   if (!errors.value && isGeoSiteMatcher(matcher) && /^geosite:/i.test(matcher.value?.trim() ?? '')) errors.value = GEOSITE_PREFIX_ERROR
   if (fields.includes('country_codes') && !matcher.country_codes?.some((code) => code.trim())) {
-    errors.country_codes = REQUIRED_FIELD_ERROR
+    errors.country_codes = required
   }
   return errors
+}
+
+// 动作参数的名字和动作列表里写的一样；CNAME 的「目标」在这里说全，和域名映射页一样叫「目标域名」
+// Action parameters are named as the action list labels them; the CNAME 目标 is spelled out as 目标域名, as the mapping tab calls it
+const ACTION_REQUIRED = {
+  upstream: requiredFieldError('上游'),
+  pipeline: requiredFieldError('Pipeline', true),
+  ip: requiredFieldError('IP'),
+  target: requiredFieldError('目标域名'),
 }
 
 export function actionFieldErrors(
@@ -46,10 +65,10 @@ export function actionFieldErrors(
     static_cname_response: 'target',
   }
   const requiredField = requiredFields[action.type]
-  if (requiredField && !action[requiredField]?.trim()) errors[requiredField] = REQUIRED_FIELD_ERROR
+  if (requiredField && !action[requiredField]?.trim()) errors[requiredField] = ACTION_REQUIRED[requiredField]
   if (action.type === 'static_txt_response' || action.type === 'replace_txt_response') {
     const values = Array.isArray(action.text) ? action.text : [action.text ?? '']
-    if (!values.some((value) => value.trim())) errors.text = REQUIRED_FIELD_ERROR
+    if (!values.some((value) => value.trim())) errors.text = requiredFieldError('文本')
   }
   if (action.type === 'static_cname_response') {
     if (!errors.target && !validDnsName(action.target ?? '')) errors.target = 'CNAME 目标域名格式无效'

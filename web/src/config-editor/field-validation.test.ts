@@ -1,16 +1,18 @@
 import { describe, expect, it } from 'vitest'
-import { actionFieldErrors, GEOSITE_PREFIX_ERROR, matcherFieldErrors, REQUIRED_FIELD_ERROR, validDnsName } from './field-validation'
+import { actionFieldErrors, GEOSITE_PREFIX_ERROR, isRequiredFieldError, matcherFieldErrors, validDnsName } from './field-validation'
 import { createGuidedRuleFromTemplate, guidedRuleValidationErrors } from './guided-rule'
 import type { ActionConfig, PipelineConfig } from './types'
 
 describe('配置字段共享校验', () => {
-  it('按条件的实际字段检查必填值，并保留未知类型', () => {
+  it('按条件的实际字段检查必填值，错误说出字段名，并保留未知类型', () => {
     expect(matcherFieldErrors({ type: 'domain_suffix', operator: 'and', value: '  ' }, 'request'))
-      .toEqual({ value: REQUIRED_FIELD_ERROR })
+      .toEqual({ value: '请填写域名' })
     expect(matcherFieldErrors({ type: 'response_answer_ip', operator: 'and' }, 'response'))
-      .toEqual({ cidr: REQUIRED_FIELD_ERROR })
+      .toEqual({ cidr: '请填写网段' })
     expect(matcherFieldErrors({ type: 'geoip_country', operator: 'and', country_codes: [' '] }, 'selector'))
-      .toEqual({ country_codes: REQUIRED_FIELD_ERROR })
+      .toEqual({ country_codes: '请填写国家' })
+    expect(matcherFieldErrors({ type: 'geo_site', operator: 'and', value: '' }, 'selector')).toEqual({ value: '请填写分类' })
+    expect(matcherFieldErrors({ type: 'qtype', operator: 'and', value: '' }, 'request')).toEqual({ value: '请选择类型' })
     expect(matcherFieldErrors({ type: 'edns_present', operator: 'and', expect: false }, 'request')).toEqual({})
     expect(matcherFieldErrors({ type: 'future_matcher', operator: 'and' }, 'request')).toEqual({})
   })
@@ -30,17 +32,29 @@ describe('配置字段共享校验', () => {
 
   it('每个模板写出来的规则都能直接通过校验', () => {
     const current: PipelineConfig = { id: 'default', rules: [] }
-    for (const template of ['domain_upstream', 'cn_split', 'ad_block', 'response_fallback'] as const) {
-      const rule = createGuidedRuleFromTemplate(current, template, 'global_doh')
+    for (const template of ['cn_split', 'ad_block', 'response_fallback'] as const) {
+      const rule = createGuidedRuleFromTemplate(current, template)
       for (const matcher of rule.matchers) expect(matcherFieldErrors(matcher, 'request'), template).toEqual({})
     }
+    // 指定域名上游的域名留给用户填（审计第二轮 B1）：只差这一项必填，写进去的值本身没有错
+    // 指定域名上游 leaves its domain for the user (audit round 2, B1): the only error is that one required field, never a wrong value
+    const upstream = createGuidedRuleFromTemplate(current, 'domain_upstream')
+    expect(upstream.matchers.map((matcher) => matcherFieldErrors(matcher, 'request'))).toEqual([{ value: '请填写域名' }])
   })
 
   it('缺失 CNAME 目标只报告必填错误，非法目标报告格式错误', () => {
     expect(actionFieldErrors({ type: 'static_cname_response', target: ' ' }, 'default'))
-      .toEqual({ target: REQUIRED_FIELD_ERROR })
+      .toEqual({ target: '请填写目标域名' })
     expect(actionFieldErrors({ type: 'static_cname_response', target: 'bad target' }, 'default'))
       .toEqual({ target: 'CNAME 目标域名格式无效' })
+  })
+
+  it('动作的必填参数按动作列表里的字段名报错，拉丁字母前留一个空格（审计第五轮 B3）', () => {
+    expect(actionFieldErrors({ type: 'forward', upstream: '' }, 'default')).toEqual({ upstream: '请填写上游' })
+    expect(actionFieldErrors({ type: 'static_ip_response', ip: ' ' }, 'default')).toEqual({ ip: '请填写 IP' })
+    // 必填错误靠开头的「请填写」「请选择」认出来，别的错误不算 / Required errors are told by their 请填写 / 请选择 opening; no other error is
+    expect(['请填写域名', '请选择 Pipeline'].every(isRequiredFieldError)).toBe(true)
+    expect([GEOSITE_PREFIX_ERROR, 'CNAME 目标域名格式无效', '不能跳转到当前 Pipeline', '目标 Pipeline 不存在'].some(isRequiredFieldError)).toBe(false)
   })
 
   it('DNS 名称按 UTF-8 字节检查标签与总长度，支持结尾根点', () => {
@@ -66,7 +80,7 @@ describe('配置字段共享校验', () => {
 
   it('区分未选择、自跳转、目标不存在；省略列表时不猜测目标是否存在', () => {
     expect(actionFieldErrors({ type: 'jump_to_pipeline', pipeline: '' }, 'default', ['default']))
-      .toEqual({ pipeline: REQUIRED_FIELD_ERROR })
+      .toEqual({ pipeline: '请选择 Pipeline' })
     expect(actionFieldErrors({ type: 'jump_to_pipeline', pipeline: 'default' }, 'default', ['default']))
       .toEqual({ pipeline: '不能跳转到当前 Pipeline' })
     expect(actionFieldErrors({ type: 'jump_to_pipeline', pipeline: 'removed' }, 'default', ['default']))
@@ -76,7 +90,7 @@ describe('配置字段共享校验', () => {
 
   it('TXT 必须包含有效文本，未知动作不被前端误判', () => {
     expect(actionFieldErrors({ type: 'static_txt_response', text: [' ', ''] }, 'default'))
-      .toEqual({ text: REQUIRED_FIELD_ERROR })
+      .toEqual({ text: '请填写文本' })
     expect(actionFieldErrors({ type: 'replace_txt_response', text: 'v=spf1' }, 'default')).toEqual({})
     expect(actionFieldErrors({ type: 'future_action', future_field: 'keep' }, 'default')).toEqual({})
   })

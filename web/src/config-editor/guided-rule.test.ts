@@ -29,10 +29,14 @@ describe('一键添加规则', () => {
     const current = pipeline()
     const mapping = createGuidedRuleFromTemplate(current, 'domain_mapping')
 
+    // 源域名和目标留空，填好之前不能创建（审计第二轮 B1） / Source and target start empty and block creation until filled (audit round 2, B1)
     expect(mapping).toMatchObject({
-      matchers: [{ type: 'domain_suffix', value: 'alias.example' }],
-      actions: [{ type: 'static_cname_response', target: 'origin.example.', ttl: 300 }],
+      matchers: [{ type: 'domain_suffix', value: '' }],
+      actions: [{ type: 'static_cname_response', target: '', ttl: 300 }],
     })
+    expect(guidedRuleValidationErrors(mapping, current.id)).not.toEqual([])
+    mapping.matchers[0]!.value = 'alias.example'
+    mapping.actions[0]!.target = 'origin.example.'
     expect(guidedRuleValidationErrors(mapping, current.id)).toEqual([])
     expect(ignoredActionsAfterTerminal([...mapping.actions, { type: 'log' }])).toBe(1)
 
@@ -46,7 +50,7 @@ describe('一键添加规则', () => {
 
   it('常用模板生成可继续编辑的完整标准规则', () => {
     const current = pipeline()
-    const fallback = createGuidedRuleFromTemplate(current, 'response_fallback', 'global_doh')
+    const fallback = createGuidedRuleFromTemplate(current, 'response_fallback')
 
     expect(fallback).toMatchObject({
       name: 'response-fallback',
@@ -55,10 +59,11 @@ describe('一键添加规则', () => {
       response_matcher_operator: 'or',
       response_actions_on_match: [
         { type: 'log', level: 'warn' },
-        { type: 'jump_to_pipeline', pipeline: 'global_doh' },
+        { type: 'jump_to_pipeline', pipeline: '' },
       ],
     })
-    expect(guidedRuleValidationErrors(fallback, current.id)).toEqual([])
+    // 跳去哪个 Pipeline 留给人选，模板不替人猜（审计第六轮 D3） / Where to jump is left for the user to choose; the template never guesses (audit round 6, D3)
+    expect(guidedRuleValidationErrors(fallback, current.id)).toEqual(['请补全响应分支动作'])
     expect(guidedRuleInsertIndexForRule(current, fallback)).toBe(0)
   })
 

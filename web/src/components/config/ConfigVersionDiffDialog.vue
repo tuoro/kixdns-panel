@@ -2,7 +2,11 @@
 import { X } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { ConfigVersionDetail } from '../../api/types'
-import { diffConfig, type ConfigDiffKind } from '../../config-editor/diff'
+import { diffByIdentity, lineSegments, type ChangeGroup, type ChangeKind } from '../../config-editor/changes'
+import { normalizeConfig } from '../../config-editor/model'
+import type { PhraseSegment } from '../../config-editor/phrase'
+import { shortHash } from '../../utils'
+import PhraseText from './PhraseText.vue'
 
 const props = defineProps<{
   current: Record<string, unknown>
@@ -10,20 +14,39 @@ const props = defineProps<{
   /** 关闭后接回焦点的元素，缺省时取打开那一刻的焦点。/ Where focus goes on close; defaults to whatever held it on open. */
   returnFocus?: HTMLElement | null
 }>()
-const emit = defineEmits<{ close: [] }>()
+const emit = defineEmits<{ close: []; restore: [] }>()
 const dialog = ref<HTMLDialogElement | null>(null)
 const closeButton = ref<HTMLButtonElement | null>(null)
-const result = computed(() => diffConfig(props.current, props.version.content))
+// 比较的方向固定（评审 N11）：从当前配置到这个版本，也就是「恢复它会对当前配置做什么」。
+// − 是恢复会去掉的，+ 是恢复会加上的。按身份对齐（规范第 9 节），入口和它独占的 Pipeline 并成一块。
+// The direction is fixed (review N11): from the current config to this version, i.e. what restoring
+// it would do. − is what restoring removes, + what it adds. Aligned by identity (spec section 9), with
+// an entry and the Pipeline only it uses merged into one block.
+const result = computed(() => diffByIdentity(normalizeConfig(props.current), normalizeConfig(props.version.content)))
+const blocks = computed(() => {
+  const units = new Map<string, ChangeGroup[]>()
+  for (const group of result.value.groups) units.set(group.unit, [...(units.get(group.unit) ?? []), group])
+  return [...units.values()]
+})
 
-const kindLabels: Record<ConfigDiffKind, string> = {
-  added: '新增',
-  removed: '删除',
-  changed: '修改',
+// 和图例同一套词：恢复会「去掉」「加上」「改了」「移动」 / The legend's words: restoring removes, adds, changes, moves
+const kindLabels: Record<ChangeKind, string> = {
+  added: '加上',
+  removed: '去掉',
+  changed: '改了',
+  moved: '移动',
 }
 
-function formatValue(value: unknown): string {
-  if (value === undefined) return '不存在'
-  return JSON.stringify(value, null, 2) ?? String(value)
+// 标题里的 Pipeline ID 和源域名是机器值，和下面那几行一样等宽（审计 D5） / Pipeline IDs and source domains in titles are machine values, mono like the lines below (audit D5)
+function titleSegments(group: ChangeGroup): PhraseSegment[] {
+  const found = /^(Pipeline |映射 )(.+)$/.exec(group.title)
+  return found && (group.subject === 'pipeline' || group.subject === 'mapping')
+    ? [{ text: found[1]!, code: false }, { text: found[2]!, code: true }]
+    : [{ text: group.title, code: false }]
+}
+
+function moveNote(group: ChangeGroup): string {
+  return group.from !== undefined && group.to !== undefined ? `从第 ${group.from} 位移到第 ${group.to} 位` : ''
 }
 
 /**
@@ -110,65 +133,90 @@ onBeforeUnmount(() => {
     <section class="config-diff-dialog">
       <header class="config-diff-dialog__header">
         <div>
-          <span>配置版本 #{{ version.id }}</span>
-          <h2 id="config-diff-title">{{ version.message || '未填写备注' }}</h2>
+          <h2 id="config-diff-title">#{{ version.id }}&nbsp;· {{ version.message || '未填写备注' }}</h2>
+          <p>{{ result.count ? `和当前比，${result.count} 处不同` : '和当前一样' }}&nbsp;· {{ version.actor }}&nbsp;· <code>{{ shortHash(version.sha256, 8) }}</code></p>
         </div>
-        <button ref="closeButton" class="icon-button" type="button" title="关闭差异预览" @click="$emit('close')"><X :size="17" /></button>
+        <button ref="closeButton" class="ui-icon-btn" type="button" aria-label="关闭" title="关闭比较" @click="$emit('close')"><X :size="16" /></button>
       </header>
 
-      <div class="config-diff-summary">
-        <strong>{{ result.entries.length }} 处差异</strong>
-        <span>所选版本与当前文件的字段级比较</span>
-        <span v-if="result.truncated" class="config-diff-summary__warning">仅显示前 200 处</span>
-      </div>
-
-      <div v-if="result.entries.length" class="config-diff-list">
-        <article v-for="entry in result.entries" :key="entry.path">
-          <header><code>{{ entry.path }}</code><span :class="`config-diff-kind--${entry.kind}`">{{ kindLabels[entry.kind] }}</span></header>
-          <div class="config-diff-values">
-            <div><small>当前文件</small><pre>{{ formatValue(entry.current) }}</pre></div>
-            <div><small>所选版本</small><pre>{{ formatValue(entry.selected) }}</pre></div>
-          </div>
+      <!-- 一件东西一块：标题是它的身份和怎么变了，下面是 − / + 行；机器值等宽。不用红绿，用左边的记号。
+           One block per thing: its identity and how it changed, then − / + lines, machine values in mono.
+           No red or green; the mark on the left carries it. -->
+      <div v-if="blocks.length" class="config-diff-list">
+        <p class="config-diff-legend">恢复这个版本：<span><i class="ui-diff__mark">−</i>去掉</span><span><i class="ui-diff__mark">+</i>加上</span></p>
+        <article v-for="block in blocks" :key="block[0]!.unit" class="config-diff-block">
+          <!-- 只属于这个入口的 Pipeline 缩进挂在入口下面，标题写「连同」：一块只有一个主标题（审计 D24）
+               A Pipeline only this entry uses hangs indented under the entry, titled 「连同」: one block, one main title (audit D24) -->
+          <section v-for="(group, index) in block" :key="group.key" class="config-diff-group" :class="{ 'is-sub': index > 0 }">
+            <header><span class="config-diff-block__title"><template v-if="index > 0">连同 </template><PhraseText :phrase="titleSegments(group)" /></span><span class="config-diff-block__kind">{{ kindLabels[group.kind] }}<template v-if="moveNote(group)">&nbsp;· {{ moveNote(group) }}</template></span></header>
+            <!-- 每行按「·」分段、机器值整块换行：手机上「300」和「秒」、「→」和目标不会分在两行（审计 D2）
+                 Lines split into runs at 「·」 with machine values whole, so on a phone 「300」 and 「秒」 or 「→」 and its target never part (audit D2) -->
+            <div v-if="group.lines.length" class="ui-diff">
+              <div v-for="(line, lineIndex) in group.lines" :key="lineIndex" :class="line.mark === '-' ? 'is-del' : 'is-add'">
+                <i class="ui-diff__mark" :aria-label="line.mark === '-' ? '去掉' : '加上'">{{ line.mark === '-' ? '−' : '+' }}</i>
+                <span class="ui-diff__text"><PhraseText :phrase="lineSegments(line)" /></span>
+              </div>
+            </div>
+          </section>
         </article>
       </div>
-      <div v-else class="config-diff-empty">该版本与当前文件内容一致</div>
+      <div v-else class="config-diff-empty">这个版本和当前的配置一样，恢复它不会改变什么。</div>
 
-      <footer><button class="button button--secondary" type="button" @click="$emit('close')">关闭</button></footer>
+      <footer v-if="blocks.length" class="config-diff-dialog__footer">
+        <button class="ui-btn ui-btn--primary" type="button" @click="$emit('restore')">恢复为版本 #{{ version.id }}</button>
+      </footer>
     </section>
   </dialog>
 </template>
 
 <style scoped>
-.config-diff { width: 100%; max-width: 100vw; height: 100dvh; max-height: 100dvh; margin: 0; padding: 24px; display: flex; overflow: hidden; border: 0; background: transparent; }
+/* 版本比较只用 tokens.css 的变量；关闭只有右上角一个。 / Tokens only; one close control at the top right. */
+.config-diff { width: 100%; max-width: 100vw; height: 100dvh; max-height: 100dvh; margin: 0; padding: var(--s-5); display: flex; overflow: hidden; border: 0; background: transparent; }
 .config-diff:not([open]) { display: none; }
-.config-diff::backdrop { background: rgba(18, 24, 22, .55); }
-.config-diff-dialog { width: min(880px, 100%); margin: auto; max-height: min(820px, calc(100vh - 48px)); display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; overflow: hidden; color: #30383a; background: #fff; border: 1px solid #d9dfdc; border-radius: 7px; box-shadow: 0 24px 70px rgba(13, 20, 17, .24); }
-.config-diff-dialog__header { min-height: 68px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 16px 12px 18px; border-bottom: 1px solid var(--line); }
-.config-diff-dialog__header > div { min-width: 0; display: grid; gap: 3px; }
-.config-diff-dialog__header span { color: var(--green); font-size: 12px; font-weight: 700; }
-.config-diff-dialog__header h2 { overflow: hidden; color: #28302e; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
-.config-diff-summary { min-height: 46px; display: flex; align-items: center; gap: 10px; padding: 9px 18px; color: #75807c; background: #f7f9f8; border-bottom: 1px solid var(--line); font-size: 12px; }
-.config-diff-summary strong { color: #36403c; font-size: 14px; }
-.config-diff-summary__warning { margin-left: auto; color: var(--amber); }
-.config-diff-list { min-height: 0; overflow: auto; }
-.config-diff-list article { padding: 13px 18px; border-bottom: 1px solid #e7ebe9; }
-.config-diff-list article:last-child { border-bottom: 0; }
-.config-diff-list article > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.config-diff-list code { min-width: 0; overflow-wrap: anywhere; color: #45514c; font-size: 12px; }
-.config-diff-list article > header span { padding: 2px 5px; border-radius: 3px; font-size: 12px; font-weight: 700; }
-.config-diff-kind--added { color: #176d4d; background: var(--green-soft); }
-.config-diff-kind--removed { color: #9a3737; background: var(--red-soft); }
-.config-diff-kind--changed { color: #8b5b18; background: var(--amber-soft); }
-.config-diff-values { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 9px; }
-.config-diff-values > div { min-width: 0; }
-.config-diff-values small { display: block; margin-bottom: 4px; color: #8b9591; font-size: 12px; }
-.config-diff-values pre { min-height: 34px; margin: 0; padding: 8px 9px; overflow: auto; color: #36403c; background: #f5f7f6; border: 1px solid #e2e7e4; border-radius: 4px; font: 9px/1.45 var(--f-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
-.config-diff-empty { min-height: 180px; display: grid; place-items: center; color: #8b9591; font-size: 12px; }
-.config-diff-dialog > footer { min-height: 58px; display: flex; align-items: center; justify-content: flex-end; padding: 10px 16px; border-top: 1px solid var(--line); }
+.config-diff::backdrop { background: var(--scrim); }
+.config-diff-dialog { width: min(46rem, 100%); max-height: min(820px, calc(100dvh - var(--s-7))); margin: auto; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; border-radius: var(--r-3); background: var(--l-surface); color: var(--l-ink); box-shadow: var(--shadow-float); }
+.config-diff-dialog__header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s-4); padding: var(--s-4) var(--s-5); border-bottom: 1px solid var(--l-hair); }
+.config-diff-dialog__header > div { min-width: 0; display: grid; gap: var(--s-1); }
+.config-diff-dialog__header h2 { margin: 0; font-family: var(--f-display); font-size: var(--t-4); font-weight: var(--w-bold); line-height: var(--lh-tight); overflow-wrap: anywhere; }
+.config-diff-dialog__header code { font-family: var(--f-mono); }
+.config-diff-dialog__header p { margin: 0; color: var(--l-ink-2); font-size: var(--t-2); }
+/* 行里等宽的摘要只占字那么高，这一行还是 1lh（审计第六轮扫查） / The mono hash in the line takes only its glyph height, so the line stays 1lh (round-6 sweep) */
+.config-diff-dialog__header p code { line-height: 1; }
+/* 关闭按钮的中线对着标题那一行，和别的层一样，不对着标题加副标题的整块（审计第四轮 D5）
+   The close button centres on the title's line, as in every other layer, not on the title-plus-subtitle block (audit round 4, D5) */
+.config-diff-dialog__header > .ui-icon-btn { margin-block: calc((var(--t-4) * var(--lh-tight) - var(--h-md)) / 2); }
+/* 四边 24，和一键添加的对话框一样；手机上 16（规范 6.4，审计第四轮 D6） / 24 on every side like the rule dialog; 16 on a phone (spec 6.4, audit round 4, D6) */
+.config-diff-list { min-height: 0; overflow: auto; display: grid; align-content: start; gap: var(--s-5); padding: var(--s-5); overscroll-behavior: contain; }
+/* 全角冒号收成半角宽：冒号后面和两个记号之间一样隔 12（审计第二轮 D14） / The full-width colon set half width, so the gap after it matches the 12 between the keys (audit round 2, D14) */
+.config-diff-legend { display: flex; gap: var(--s-3); margin: 0; color: var(--l-ink-3); font-size: var(--t-1); font-feature-settings: "halt"; }
+.config-diff-legend span { font-variant-numeric: tabular-nums; }
+/* 图例里的 − / + 就是下面每一行用的那个记号，一样大；等宽字的数学轴比中文的中线低，往上提 0.125em 才落在「去掉」「加上」的中线上（审计第七轮 D2）
+   The legend's − / + are the very marks the lines use, the same size; the mono math axis sits below the Chinese centre, so they rise 0.125em onto the labels' centre line (audit round 7, D2) */
+.config-diff-legend .ui-diff__mark { position: relative; top: -0.125em; margin-inline-end: var(--s-1); font-size: var(--t-2); line-height: 1; }
+.config-diff-block { display: grid; gap: var(--s-3); }
+.config-diff-group { display: grid; gap: var(--s-2); }
+.config-diff-group > header { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-1) var(--s-2); }
+/* 缩进和 − / + 那一列一样宽：「连同」那一块的标题和字对着上面几行的正文 / Indented by the − / + column, so the 「连同」 block's title lines up with the text above */
+.config-diff-group.is-sub { padding-left: calc(var(--s-2) + 1.25rem); }
+.config-diff-block__title { color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-medium); }
+.config-diff-group.is-sub .config-diff-block__title { color: var(--l-ink-2); }
+/* 划掉的线是整行的背景，画在字下面，行内块照样压在线上面，不用再单独划（审计第四轮 D2）
+   The strike is the line's background, drawn under the glyphs, so inline blocks sit on it too and need no strike of their own (audit round 4, D2) */
+/* 全角括号收成半宽：删除线不会拖到「）」外面半个字（审计 D12） / Full-width brackets set half-width, so the strike never runs half a character past 「）」 (audit D12) */
+.ui-diff__text { font-feature-settings: "halt"; }
+.config-diff-block__kind { color: var(--l-ink-2); font-size: var(--t-2); }
+.config-diff-block code { font-family: var(--f-mono); }
+.config-diff-empty { min-height: calc(var(--s-8) * 3); display: grid; place-items: center; padding: var(--s-5); color: var(--l-ink-2); font-size: var(--t-3); text-align: center; }
+.config-diff-dialog__footer { display: flex; justify-content: flex-end; padding: var(--s-3) var(--s-5); border-top: 1px solid var(--l-hair); }
 @media (max-width: 640px) {
-  .config-diff { padding: 10px; }
-  .config-diff-dialog { max-height: calc(100vh - 20px); }
-  .config-diff-values { grid-template-columns: 1fr; }
-  .config-diff-summary > span:not(.config-diff-summary__warning) { display: none; }
+  .config-diff { padding: 0; }
+  .config-diff-dialog { width: 100%; max-height: none; height: 100dvh; border-radius: 0; }
+  /* 手机上整层的左右都是 16（审计 D16） / On a phone the whole layer is inset 16 on both sides (audit D16) */
+  .config-diff-dialog__header, .config-diff-list { padding-inline: var(--s-4); }
+  .config-diff-dialog__header { padding-block: var(--s-3); }
+  .config-diff-dialog__header > .ui-icon-btn { margin-block: calc((var(--t-4) * var(--lh-tight) - var(--h-touch)) / 2); }
+  .config-diff-list { padding-block: var(--s-4); }
+  .config-diff-dialog__footer { padding: var(--s-3) var(--s-4) calc(var(--s-3) + env(safe-area-inset-bottom)); }
+  .config-diff-dialog__footer .ui-btn { flex: 1; }
 }
 </style>

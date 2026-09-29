@@ -6,6 +6,12 @@ export interface SettingField {
   key: string
   label: string
   type: SettingFieldType
+  // 内核的默认值（锁定的内核提交里 config.rs 的 default_*）：没写这一项时内核按它跑。开关没写时按它画，占位写「默认 …」。
+  // The kernel's default (config.rs default_* at the locked commit), what the kernel runs with when the key is absent.
+  // An unset switch is drawn in this position and the placeholder says 「默认 …」.
+  default?: boolean | number | string
+  // 没有默认值时给的一个例子，占位写「如 …」 / An example for a field without a default; the placeholder says 「如 …」
+  example?: string
   placeholder?: string
   title?: string
   unit?: string
@@ -50,18 +56,18 @@ export const SETTING_SECTIONS: SettingSection[] = [
     description: '监听地址、默认上游与请求超时',
     tone: 'green',
     fields: [
-      { key: 'bind_udp', label: 'UDP 监听地址', type: 'text', placeholder: '0.0.0.0:5353' },
-      { key: 'bind_tcp', label: 'TCP 监听地址', type: 'text', placeholder: '0.0.0.0:5353' },
+      { key: 'bind_udp', label: 'UDP 监听地址', type: 'text', default: '0.0.0.0:5353' },
+      { key: 'bind_tcp', label: 'TCP 监听地址', type: 'text', default: '0.0.0.0:5353' },
       { key: 'bind_doh', label: 'DoH 监听地址', type: 'text', placeholder: '留空禁用 DoH' },
-      { key: 'doh_path', label: 'DoH 查询路径', type: 'text', placeholder: '/dns-query' },
-      { key: 'doh_tls_cert', label: 'DoH TLS 证书', type: 'text', placeholder: '/path/to/cert.pem', wide: true },
-      { key: 'doh_tls_key', label: 'DoH TLS 私钥', type: 'text', placeholder: '/path/to/key.pem', wide: true },
-      { key: 'default_upstream', label: '默认上游', type: 'text', placeholder: '1.1.1.1:53', wide: true },
-      { key: 'min_ttl', label: '最小 TTL', type: 'number', min: 0, unit: '秒', placeholder: '0' },
-      { key: 'upstream_timeout_ms', label: '上游超时 (ms)', type: 'number', min: 1, unit: '毫秒', placeholder: '2000' },
+      { key: 'doh_path', label: 'DoH 查询路径', type: 'text', default: '/dns-query' },
+      { key: 'doh_tls_cert', label: 'DoH TLS 证书', type: 'text', example: '/path/to/cert.pem', wide: true },
+      { key: 'doh_tls_key', label: 'DoH TLS 私钥', type: 'text', example: '/path/to/key.pem', wide: true },
+      { key: 'default_upstream', label: '默认上游', type: 'text', default: '1.1.1.1:53', wide: true },
+      { key: 'min_ttl', label: '最小 TTL', type: 'number', min: 0, unit: '秒', default: 0 },
+      { key: 'upstream_timeout_ms', label: '上游超时 (ms)', type: 'number', min: 1, unit: '毫秒', default: 9000 },
       { key: 'request_timeout_ms', label: '整体请求超时 (ms)', type: 'number', min: 1, unit: '毫秒', nullable: true, placeholder: '自动计算' },
-      { key: 'response_jump_limit', label: '响应跳转上限', type: 'number', min: 1, unit: '次', placeholder: '10' },
-      { key: 'enable_tcp_fallback', label: 'TCP Fallback', type: 'boolean', title: 'UDP 失败后自动改用 TCP' },
+      { key: 'response_jump_limit', label: '响应跳转上限', type: 'number', min: 1, unit: '次', default: 10 },
+      { key: 'enable_tcp_fallback', label: 'UDP 失败改用 TCP', type: 'boolean', default: true },
     ],
   },
   {
@@ -70,17 +76,17 @@ export const SETTING_SECTIONS: SettingSection[] = [
     description: '连接池、健康检查与连接保活',
     tone: 'ink',
     fields: [
-      { key: 'udp_pool_size', label: 'UDP 连接池', type: 'number', min: 1, unit: '个连接', placeholder: '64' },
-      { key: 'tcp_pool_size', label: 'TCP 连接池', type: 'number', min: 1, unit: '个连接', placeholder: '64' },
-      { key: 'doh_pool_size', label: 'DoH 连接池', type: 'number', min: 1, unit: '个连接', placeholder: '8' },
-      { key: 'dot_pool_size', label: 'DoT 连接池', type: 'number', min: 1, unit: '个连接', placeholder: '64' },
-      { key: 'doq_pool_size', label: 'DoQ 连接池', type: 'number', min: 1, unit: '个连接', placeholder: '16' },
-      { key: 'tcp_health_check_error_threshold', label: 'TCP 错误阈值', type: 'number', min: 0, unit: '次', placeholder: '3' },
-      { key: 'tcp_connection_max_age_seconds', label: 'TCP 最大存活 (s)', type: 'number', min: 0, unit: '秒', placeholder: '300' },
-      { key: 'tcp_connection_idle_timeout_seconds', label: 'TCP 空闲超时 (s)', type: 'number', min: 0, unit: '秒', placeholder: '60' },
-      { key: 'doq_connection_idle_timeout_seconds', label: 'DoQ 空闲超时 (s)', type: 'number', min: 0, unit: '秒', placeholder: '60' },
-      { key: 'doq_keepalive_interval_ms', label: 'DoQ Keepalive (ms)', type: 'number', min: 0, unit: '毫秒', placeholder: '15000' },
-      { key: 'doq_enable_0rtt', label: 'DoQ 0-RTT', type: 'boolean', title: '允许 DoQ 连接使用 0-RTT' },
+      { key: 'udp_pool_size', label: 'UDP 连接池', type: 'number', min: 1, unit: '个连接', default: 64 },
+      { key: 'tcp_pool_size', label: 'TCP 连接池', type: 'number', min: 1, unit: '个连接', default: 64 },
+      { key: 'doh_pool_size', label: 'DoH 连接池', type: 'number', min: 1, unit: '个连接', default: 8 },
+      { key: 'dot_pool_size', label: 'DoT 连接池', type: 'number', min: 1, unit: '个连接', default: 64 },
+      { key: 'doq_pool_size', label: 'DoQ 连接池', type: 'number', min: 1, unit: '个连接', default: 16 },
+      { key: 'tcp_health_check_error_threshold', label: 'TCP 错误阈值', type: 'number', min: 0, unit: '次', default: 3 },
+      { key: 'tcp_connection_max_age_seconds', label: 'TCP 最大存活 (s)', type: 'number', min: 0, unit: '秒', default: 300 },
+      { key: 'tcp_connection_idle_timeout_seconds', label: 'TCP 空闲超时 (s)', type: 'number', min: 0, unit: '秒', default: 60 },
+      { key: 'doq_connection_idle_timeout_seconds', label: 'DoQ 空闲超时 (s)', type: 'number', min: 0, unit: '秒', default: 60 },
+      { key: 'doq_keepalive_interval_ms', label: 'DoQ 保活间隔 (ms)', type: 'number', min: 0, unit: '毫秒', default: 15000 },
+      { key: 'doq_enable_0rtt', label: 'DoQ 0-RTT', type: 'boolean', default: true },
     ],
   },
   {
@@ -89,12 +95,12 @@ export const SETTING_SECTIONS: SettingSection[] = [
     description: '缓存容量、有效期与后台刷新策略',
     tone: 'amber',
     fields: [
-      { key: 'cache_capacity', label: '缓存容量', type: 'number', min: 1, unit: '条', placeholder: '10000' },
-      { key: 'cache_max_ttl', label: '缓存最大 TTL (s)', type: 'number', min: 1, unit: '秒', placeholder: '86400' },
-      { key: 'dashmap_shards', label: 'DashMap Shards', type: 'number', min: 0, placeholder: '0（自动）' },
-      { key: 'cache_background_refresh', label: '后台刷新', type: 'boolean', title: '开启后可调整刷新阈值和最小 TTL；关闭时保留这些设置' },
-      { key: 'cache_refresh_threshold_percent', label: '刷新阈值 (%)', type: 'number', min: 1, max: 90, unit: '%', placeholder: '10', visibleWhen: 'cache_background_refresh' },
-      { key: 'cache_refresh_min_ttl', label: '刷新最小 TTL (s)', type: 'number', min: 0, unit: '秒', placeholder: '5', visibleWhen: 'cache_background_refresh' },
+      { key: 'cache_capacity', label: '缓存容量', type: 'number', min: 1, unit: '条', default: 10000 },
+      { key: 'cache_max_ttl', label: '缓存最大 TTL (s)', type: 'number', min: 1, unit: '秒', default: 86400 },
+      { key: 'dashmap_shards', label: '缓存分片数', type: 'number', min: 0, placeholder: '自动' },
+      { key: 'cache_background_refresh', label: '后台刷新', type: 'boolean', default: false },
+      { key: 'cache_refresh_threshold_percent', label: '刷新阈值 (%)', type: 'number', min: 1, max: 90, unit: '%', default: 10, visibleWhen: 'cache_background_refresh' },
+      { key: 'cache_refresh_min_ttl', label: '刷新最小 TTL (s)', type: 'number', min: 0, unit: '秒', default: 5, visibleWhen: 'cache_background_refresh' },
     ],
   },
   {
@@ -103,11 +109,11 @@ export const SETTING_SECTIONS: SettingSection[] = [
     description: '过期响应的服务窗口与客户端等待时间',
     tone: 'red',
     fields: [
-      { key: 'serve_stale', label: '服务过期响应', type: 'boolean', title: '开启后可调整过期缓存的服务策略；关闭时保留这些设置' },
-      { key: 'serve_stale_ttl', label: '回复 TTL (s)', type: 'number', min: 1, unit: '秒', placeholder: '30', visibleWhen: 'serve_stale' },
-      { key: 'serve_stale_expire_ttl', label: '服务窗口 (s)', type: 'number', min: 0, unit: '秒', placeholder: '86400', visibleWhen: 'serve_stale' },
-      { key: 'serve_stale_ttl_reset', label: '重置过期 TTL', type: 'boolean', visibleWhen: 'serve_stale' },
-      { key: 'serve_stale_client_timeout_ms', label: '客户端等待 (ms)', type: 'number', min: 0, unit: '毫秒', placeholder: '0', visibleWhen: 'serve_stale' },
+      { key: 'serve_stale', label: '服务过期响应', type: 'boolean', default: false },
+      { key: 'serve_stale_ttl', label: '回复 TTL (s)', type: 'number', min: 1, unit: '秒', default: 30, visibleWhen: 'serve_stale' },
+      { key: 'serve_stale_expire_ttl', label: '服务窗口 (s)', type: 'number', min: 0, unit: '秒', default: 86400, visibleWhen: 'serve_stale' },
+      { key: 'serve_stale_ttl_reset', label: '重置过期 TTL', type: 'boolean', default: true, visibleWhen: 'serve_stale' },
+      { key: 'serve_stale_client_timeout_ms', label: '客户端等待 (ms)', type: 'number', min: 0, unit: '毫秒', default: 0, visibleWhen: 'serve_stale' },
     ],
   },
   {
@@ -116,12 +122,12 @@ export const SETTING_SECTIONS: SettingSection[] = [
     description: '并发许可数、延迟阈值与调整间隔',
     tone: 'green',
     fields: [
-      { key: 'flow_control_enabled', label: '启用流控', type: 'boolean', title: '开启后可调整并发许可和延迟阈值；关闭时保留这些设置' },
-      { key: 'flow_control_initial_permits', label: '初始许可数', type: 'number', min: 1, unit: '个', placeholder: '500', visibleWhen: 'flow_control_enabled' },
-      { key: 'flow_control_min_permits', label: '最小许可数', type: 'number', min: 1, unit: '个', placeholder: '100', visibleWhen: 'flow_control_enabled' },
-      { key: 'flow_control_max_permits', label: '最大许可数', type: 'number', min: 1, unit: '个', placeholder: '800', visibleWhen: 'flow_control_enabled' },
-      { key: 'flow_control_latency_threshold_ms', label: '延迟阈值 (ms)', type: 'number', min: 1, unit: '毫秒', placeholder: '100', visibleWhen: 'flow_control_enabled' },
-      { key: 'flow_control_adjustment_interval_secs', label: '调整间隔 (s)', type: 'number', min: 1, unit: '秒', placeholder: '5', visibleWhen: 'flow_control_enabled' },
+      { key: 'flow_control_enabled', label: '启用流控', type: 'boolean', default: false },
+      { key: 'flow_control_initial_permits', label: '初始许可数', type: 'number', min: 1, unit: '个', default: 500, visibleWhen: 'flow_control_enabled' },
+      { key: 'flow_control_min_permits', label: '最小许可数', type: 'number', min: 1, unit: '个', default: 100, visibleWhen: 'flow_control_enabled' },
+      { key: 'flow_control_max_permits', label: '最大许可数', type: 'number', min: 1, unit: '个', default: 800, visibleWhen: 'flow_control_enabled' },
+      { key: 'flow_control_latency_threshold_ms', label: '延迟阈值 (ms)', type: 'number', min: 1, unit: '毫秒', default: 100, visibleWhen: 'flow_control_enabled' },
+      { key: 'flow_control_adjustment_interval_secs', label: '调整间隔 (s)', type: 'number', min: 1, unit: '秒', default: 5, visibleWhen: 'flow_control_enabled' },
     ],
   },
   {
@@ -130,8 +136,8 @@ export const SETTING_SECTIONS: SettingSection[] = [
     description: '查询排行与客户端隐私设置',
     tone: 'ink',
     fields: [
-      { key: 'statistics_enabled', label: '启用查询排行', type: 'boolean', title: '在内存中统计客户端和请求域名排行', requiresCapability: CONFIG_QUERY_STATS_V1, legacyCapabilities: ['stats_top_v1'] },
-      { key: 'statistics_anonymize_client_ip', label: '客户端 IP 脱敏', type: 'boolean', title: 'IPv4 按 /24、IPv6 按 /64 聚合', visibleWhen: 'statistics_enabled', requiresCapability: CONFIG_QUERY_STATS_V1, legacyCapabilities: ['stats_top_v1'] },
+      { key: 'statistics_enabled', label: '启用查询排行', type: 'boolean', default: false, title: '在内存中统计客户端和请求域名排行', requiresCapability: CONFIG_QUERY_STATS_V1, legacyCapabilities: ['stats_top_v1'] },
+      { key: 'statistics_anonymize_client_ip', label: '客户端 IP 脱敏', type: 'boolean', default: false, title: 'IPv4 按 /24、IPv6 按 /64 聚合', visibleWhen: 'statistics_enabled', requiresCapability: CONFIG_QUERY_STATS_V1, legacyCapabilities: ['stats_top_v1'] },
     ],
   },
 ]
@@ -201,9 +207,16 @@ export const ACTION_TYPES: ActionDefinition[] = [
 export const QTYPE_OPTIONS = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'PTR', 'SOA', 'SRV', 'OPT']
 export const TRANSPORT_OPTIONS = ['udp', 'tcp', 'tcp_udp', 'doh', 'dot', 'doq']
 
+const FIELD_DEFAULTS = new Map(SETTING_SECTIONS.flatMap((section) => section.fields).map((field) => [field.key, field.default]))
+
+/** 这一项现在的值：配置里没写就是内核的默认值 / The setting's current value: the kernel default when the config omits it */
+export function settingValue(settings: GlobalSettings, key: string): unknown {
+  return settings[key] ?? FIELD_DEFAULTS.get(key)
+}
+
 export function settingVisible(field: SettingField, settings: GlobalSettings): boolean {
-  if (field.visibleWhen && !settings[field.visibleWhen]) return false
-  if (field.visibleWhenAny && !field.visibleWhenAny.some((key) => Boolean(settings[key]))) return false
+  if (field.visibleWhen && !settingValue(settings, field.visibleWhen)) return false
+  if (field.visibleWhenAny && !field.visibleWhenAny.some((key) => Boolean(settingValue(settings, key)))) return false
   return true
 }
 
