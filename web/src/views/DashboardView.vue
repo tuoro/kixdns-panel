@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ChartColumn, ChevronRight, CircleAlert, CircleX, Eraser, Power, RefreshCw } from '@lucide/vue'
+import { ChartColumn, ChevronRight, CircleAlert, CircleX, Eraser, ListChecks, Power, RefreshCw } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { apiRequest } from '../api/client'
 import type { CacheFlushResult, Overview, QueryStatsSnapshot, ServiceStatus, StatsClearResult } from '../api/types'
@@ -103,7 +103,7 @@ const updatedLabel = computed(() => (loadedAt.value ? clock(loadedAt.value, true
 interface PageNotice { tone: 'warn' | 'err' | 'off'; icon: typeof CircleAlert; title: string; reason: string; action?: 'retry' | 'config' }
 // 原因行把几条读取错误和一句「接下来会怎样」连成一段 / The reason line joins the read errors and one sentence on what happens next
 function reasonOf(...parts: string[]): string {
-  return parts.filter(Boolean).map((part) => part.replace(/[。；;]$/, '')).join('；') + '。'
+  return parts.filter(Boolean).map((part) => part.replace(/[。；;.]$/, '')).join('；') + '。'
 }
 const notice = computed<PageNotice | null>(() => {
   if (loading.value) return null
@@ -111,25 +111,33 @@ const notice = computed<PageNotice | null>(() => {
   const errors = [overviewError.value, serviceError.value]
   // 服务不是干净地停着（启动失败、正在启动），提示和页头说同一件事 / When the service is not cleanly stopped (failed, starting), the notice says what the header says
   const serviceTitle = serviceTone.value === 'err' ? 'KixDNS 启动失败' : serviceTone.value === 'warn' ? `KixDNS ${serviceLabel.value}` : ''
+  // 启动失败、正在启动的服务，提示照服务说；正在启动时数据马上会来，不说「不再更新」
+  // A failed or starting service is what the notice reports; while starting, data is about to arrive, so it never says 不再更新
+  const serviceNotice = (reason: string): PageNotice => serviceTone.value === 'err'
+    ? { tone: 'err', icon: CircleX, title: serviceTitle, reason }
+    : { tone: 'warn', icon: CircleAlert, title: serviceTitle, reason: reasonOf(snapshot.trim() ? `显示${snapshot}的快照` : '当前尚无运行数据', 'KixDNS 运行后概览会自动更新') }
   switch (runtimeState.value) {
     case 'stopped-empty':
       return serviceTitle
-        ? { tone: serviceTone.value === 'err' ? 'err' : 'warn', icon: serviceTone.value === 'err' ? CircleX : CircleAlert, title: serviceTitle, reason: '当前尚无运行数据，KixDNS 运行后概览会自动更新。' }
+        ? serviceNotice('当前尚无运行数据，KixDNS 运行后概览会自动更新。')
         : { tone: 'off', icon: Power, title: 'KixDNS 未启动', reason: '当前尚无运行数据，启动 KixDNS 后概览会自动更新。' }
     case 'stopped-snapshot':
       return serviceTitle
-        ? { tone: serviceTone.value === 'err' ? 'err' : 'warn', icon: serviceTone.value === 'err' ? CircleX : CircleAlert, title: serviceTitle, reason: `显示停止前${snapshot}的快照，数据不再更新。` }
+        ? serviceNotice(`显示停止前${snapshot}的快照，数据不再更新。`)
         : { tone: 'off', icon: Power, title: 'KixDNS 已停止', reason: `显示停止前${snapshot}的快照，数据不再更新。` }
     case 'unavailable-snapshot':
-      return { tone: 'warn', icon: CircleAlert, title: '实时数据暂不可用', reason: reasonOf(...errors, `显示${snapshot}的快照，恢复后会自动更新`), action: 'retry' }
+      return { tone: 'warn', icon: CircleAlert, title: '实时数据暂不可用', reason: reasonOf(...(errors.some(Boolean) ? errors : ['控制通道暂时没有应答']), `显示${snapshot}的快照，恢复后会自动更新`), action: 'retry' }
     case 'unavailable':
+      // 服务没在正常运行（第一次启动就失败、刚点了启动），读不到数据的原因就是它，照服务说
+      // When the service is not running normally (failed on first start, just started), that is why there is no data, and the notice says so
+      if (serviceTitle) return serviceNotice(reasonOf('当前尚无运行数据', '查看日志页了解原因，KixDNS 运行后概览会自动更新'))
       return { tone: 'err', icon: CircleX, title: '读不到运行数据', reason: reasonOf(...errors, '页面每 15 秒自动重试'), action: 'retry' }
     default:
       // 手上的数据还标着实时，但最近一次刷新失败了：和上面同一件事，写法一样
       // The data in hand is still marked live but the latest refresh failed: the same situation as above, written the same way
       if (overviewError.value) return { tone: 'warn', icon: CircleAlert, title: '实时数据暂不可用', reason: reasonOf(...errors, `显示 ${updatedLabel.value} 读到的数据，恢复后会自动更新`), action: 'retry' }
       if (overview.value && !overview.value.active_config.last_reload.success) {
-        return { tone: 'warn', icon: CircleAlert, title: '配置重载失败', reason: `新配置没有生效，仍按配置代次 #${overview.value.active_config.generation} 运行。`, action: 'config' }
+        return { tone: 'warn', icon: CircleAlert, title: '配置重载失败', reason: `新配置没有生效，仍按配置代次 #${overview.value.active_config.generation} 运行；失败原因见下方「当前运行配置」。`, action: 'config' }
       }
       return serviceError.value ? { tone: 'warn', icon: CircleAlert, title: '服务状态读取失败', reason: reasonOf(serviceError.value), action: 'retry' } : null
   }
@@ -150,9 +158,11 @@ function latencyParts(value: number): { figure: string; unit: string } {
   // A second or more is written in seconds: 2480 ms makes the reader convert, 2.5 s reads as slow at once
   // 先取整再定单位：999.6 ms 取整是 1000，要写成 1.0 s，不写「1000 ms」
   // Round before choosing the unit: 999.6 ms rounds to 1000, which is written 1.0 s, never 1000 ms
-  const rounded = value < 10 ? Math.round(value * 10) / 10 : Math.round(value)
+  const tenths = Math.round(value * 10) / 10
+  if (tenths < 10) return { figure: tenths.toFixed(1), unit: 'ms' }
+  const rounded = Math.round(value)
   if (rounded >= 1000) return { figure: (value / 1000).toFixed(1), unit: 's' }
-  return { figure: value < 10 ? rounded.toFixed(1) : String(rounded), unit: 'ms' }
+  return { figure: String(rounded), unit: 'ms' }
 }
 function formatLatency(value: number | null): string {
   if (value === null) return '—'
@@ -223,8 +233,6 @@ const hasLatency = computed(() => upstreamRows.value.some((item) => item.shown.a
 const healthSegments = computed(() => (['healthy', 'degraded', 'unhealthy', 'pending'] as const)
   .map((key) => ({ key, share: upstreamRows.value.length ? healthCounts.value[key] / upstreamRows.value.length : 0 }))
   .filter((segment) => segment.share > 0))
-// 注脚最多两项，按要紧程度：有问题的上游（带状态色）、观察中的上游、判定标准
-// At most two footnote items, most urgent first: upstreams in trouble (in their status colour), upstreams still observed, the criteria
 // 降级、异常各带各的颜色，不拼成一段用最坏的那个颜色；后面最多再跟一项：观察中的、按启动以来判定的，都没有才写判定标准
 // Degraded and unhealthy each keep their own colour rather than sharing the worse one; at most one more item follows —
 // upstreams still observed or judged on the lifetime total — and the criteria only when neither applies
@@ -332,8 +340,12 @@ function load(silent = false): Promise<void> {
 let statsRequest = 0
 function loadStats(silent = false, fresh = false): Promise<void> {
   if (!statsSupported.value) {
+    // 能力没了（换回了旧内核）：在路上的请求一并作废 / The capability is gone (an older kernel): requests in flight are void too
+    statsRequest += 1
     stats.value = null
     statsError.value = ''
+    statsLoading.value = false
+    pendingStatsLoad = null
     return Promise.resolve()
   }
   if (pendingStatsLoad && !fresh) return pendingStatsLoad
@@ -459,8 +471,9 @@ const spark = computed(() => {
 // The signal band gives this figure a line of its own and writes it in full, never as 万/亿: the reader
 // should get the number they can match against the config and the logs.
 const compactTotal = computed(() => {
-  const total = displayOverview.value?.metrics.requests_total
-  return total == null ? '--' : formatNumber(total)
+  // 从没启动过就没有「启动以来」可数：写「—」，和下面三张卡一致 / Never started means nothing to count since start: —, as on the tiles below
+  if (!overview.value) return '—'
+  return formatNumber(overview.value.metrics.requests_total)
 })
 
 // 第一次读取还没结束就离开页面时，不能再装上定时器 / Leaving before the first read finishes must not install the timers afterwards
@@ -558,7 +571,7 @@ onBeforeUnmount(() => {
              Each tile names its period: speed and health cover the last hour, cache hits the whole run. -->
         <section class="overview-vitals" aria-label="运行体征">
           <article v-if="speed" class="overview-vital overview-vital--speed">
-            <h2 class="overview-vital-label">响应速度 · {{ speed.period }}</h2>
+            <h2 class="overview-vital-label">响应速度<template v-if="speed.bands.length"> · {{ speed.period }}</template></h2>
             <template v-if="speed.bands.length">
               <p class="overview-vital-figure"><strong><UiNumber :value="speed.average.figure" /></strong><span>{{ speed.average.unit }} 平均</span></p>
               <span class="overview-meter" role="img" :aria-label="`耗时分布：${speed.spoken}`">
@@ -574,7 +587,7 @@ onBeforeUnmount(() => {
             </template>
           </article>
           <article class="overview-vital">
-            <h2 class="overview-vital-label" title="未过期的命中与续用旧结果都算命中">缓存命中率 · 启动以来</h2>
+            <h2 class="overview-vital-label" title="未过期的命中与续用旧结果都算命中">缓存命中率<template v-if="cacheLookups"> · 启动以来</template></h2>
             <p class="overview-vital-figure"><strong><UiNumber v-if="cacheLookups" :value="formatPercent(cacheHitRate)" /><template v-else>—</template></strong></p>
             <span class="overview-meter" :class="{ 'is-empty': !cacheLookups }" role="img" :aria-label="`未过期命中 ${formatPercent(cacheFreshShare)}，续用旧结果 ${formatPercent(cacheStaleShare)}`">
               <i class="overview-meter--fresh" :style="{ width: `${cacheFreshShare * 100}%` }"></i><i class="overview-meter--stale" :style="{ width: `${cacheStaleShare * 100}%` }"></i>
@@ -583,7 +596,7 @@ onBeforeUnmount(() => {
             <p v-else class="overview-vital-foot"><span>{{ formatNumber(displayOverview.metrics.cache_entries) }} 条缓存</span><template v-if="staleShare"><span class="ui-sep">·</span><span>续用旧结果 {{ formatPercent(staleShare) }}</span></template></p>
           </article>
           <article class="overview-vital">
-            <h2 class="overview-vital-label">上游健康 · {{ ledgerPeriod }}</h2>
+            <h2 class="overview-vital-label">上游健康<template v-if="precisionSupported && judgedUpstreams"> · {{ ledgerPeriod }}</template></h2>
             <template v-if="precisionSupported && judgedUpstreams">
               <p class="overview-vital-figure"><strong><UiNumber :value="String(healthCounts.healthy)" /></strong><span>/ {{ upstreamRows.length }} 健康</span></p>
               <span class="overview-meter overview-meter--health" role="img" :aria-label="`健康 ${healthCounts.healthy} 个，降级 ${healthCounts.degraded} 个，异常 ${healthCounts.unhealthy} 个，观察中 ${healthCounts.pending} 个`">
@@ -594,7 +607,7 @@ onBeforeUnmount(() => {
             <template v-else>
               <p class="overview-vital-figure"><strong>—</strong></p>
               <span class="overview-meter is-empty" aria-hidden="true"></span>
-              <p class="overview-vital-foot">{{ !overview ? '尚无数据' : !precisionSupported ? '当前增强版不提供健康判定数据，更新增强版后显示' : upstreamRows.length ? `${upstreamRows.length} 个上游都在观察中，各满 ${MIN_HEALTH_SAMPLES} 次响应后判定` : '尚无上游请求数据' }}</p>
+              <p class="overview-vital-foot">{{ !overview ? '尚无数据' : !precisionSupported ? '当前增强版不提供健康判定数据，更新增强版后显示' : upstreamRows.length ? `${upstreamRows.length} 个上游都在观察中，各满 ${MIN_HEALTH_SAMPLES} 次响应后判定` : '还没有上游应答过请求' }}</p>
             </template>
           </article>
         </section>
@@ -630,22 +643,24 @@ onBeforeUnmount(() => {
                     <ChevronRight :size="16" aria-hidden="true" />
                   </button>
                 </span>
-                <p class="ui-rec__phone overview-upstream-line" aria-hidden="true"><span>成功率 <b :class="`overview-text--${item.health}`">{{ formatPercent(upstreamSuccessRate(item.shown)) }}</b></span><template v-if="hasLatency"><span class="ui-sep">·</span><span>平均 {{ formatLatency(item.shown.avg_latency_ms) }}</span></template><span class="ui-sep">·</span><span>{{ formatNumber(item.settled) }} 次响应</span><template v-if="item.sinceStart && !allSinceStart"><span class="ui-sep">·</span><span>启动以来</span></template></p>
+                <p class="ui-rec__phone overview-upstream-line"><span>成功率 <b :class="`overview-text--${item.health}`">{{ formatPercent(upstreamSuccessRate(item.shown)) }}</b></span><template v-if="hasLatency"><span class="ui-sep">·</span><span>平均 {{ formatLatency(item.shown.avg_latency_ms) }}</span></template><span class="ui-sep">·</span><span>{{ formatNumber(item.settled) }} 次响应</span><template v-if="item.sinceStart && !allSinceStart"><span class="ui-sep">·</span><span>启动以来</span></template></p>
               </div>
-              <dl v-if="expandedUpstream === upstreamKey(item)" class="ui-strip overview-upstream-counts ui-rise">
-                <div><dt>成功</dt><dd>{{ formatNumber(item.shown.success) }}</dd></div>
-                <div><dt>错误</dt><dd :class="{ 'overview-text--degraded': item.shown.errors > 0 }">{{ formatNumber(item.shown.errors) }}</dd></div>
-                <div><dt>拒绝</dt><dd>{{ formatNumber(item.shown.rejected) }}</dd></div>
-                <div><dt>TCP 兜底</dt><dd>{{ fallbackShare(item) }}</dd></div>
-              </dl>
+              <div v-if="expandedUpstream === upstreamKey(item)" class="overview-upstream-detail ui-rise">
+                <dl class="ui-strip overview-upstream-counts">
+                  <div><dt>成功</dt><dd>{{ formatNumber(item.shown.success) }}</dd></div>
+                  <div><dt>错误</dt><dd :class="{ 'overview-text--degraded': item.shown.errors > 0 }">{{ formatNumber(item.shown.errors) }}</dd></div>
+                  <div><dt>拒绝</dt><dd>{{ formatNumber(item.shown.rejected) }}</dd></div>
+                  <div><dt>TCP 兜底</dt><dd>{{ fallbackShare(item) }}</dd></div>
+                </dl>
+              </div>
             </template>
           </div>
-          <p v-else class="overview-empty">尚无上游请求数据</p>
+          <p v-else class="overview-empty">还没有请求转发到上游，转发后在这里按上游列出。</p>
         </UiSection>
 
         <!-- 三块同一种东西（主项做大、其余列表），并成一行三栏；都是启动以来的累计。
              Three blocks of one kind (the leading figure large, the rest listed) share one row; all are lifetime totals. -->
-        <div class="overview-distributions">
+        <div class="overview-distributions" :class="{ 'is-first-empty': !pipelines.length }">
           <UiSection class="overview-distribution" title="请求分布" aside="启动以来 · 按 Pipeline">
             <template v-if="pipelines.length">
               <p class="overview-lead"><span class="overview-lead-share">{{ formatPercent(pipelines[0].share) }}</span><span class="overview-lead-name ui-mono">{{ pipelines[0].name }}</span><span class="overview-lead-count">{{ formatNumber(pipelines[0].count) }} 次</span></p>
@@ -653,7 +668,7 @@ onBeforeUnmount(() => {
                 <li v-for="pipeline in pipelines.slice(1)" :key="pipeline.name"><span class="ui-mono">{{ pipeline.name }}</span><span class="overview-share-count">{{ formatNumber(pipeline.count) }}</span><span>{{ formatPercent(pipeline.share) }}</span></li>
               </ul>
             </template>
-            <p v-else class="overview-empty">尚无 Pipeline 命中数据</p>
+            <p v-else class="overview-empty">还没有请求命中 Pipeline，命中后在这里按 Pipeline 列出。</p>
           </UiSection>
           <UiSection v-if="rcodes.length" class="overview-distribution" title="响应码分布" aside="启动以来 · 已得到结果的请求">
             <p class="overview-lead"><span class="overview-lead-share">{{ formatPercent(rcodes[0].share) }}</span><span class="overview-lead-name">{{ rcodes[0].label }}</span></p>
@@ -703,14 +718,14 @@ onBeforeUnmount(() => {
             <p v-else class="overview-empty">{{ group.empty }}</p>
           </section>
         </div>
-        <UiEmpty v-else-if="stats" :icon="ChartColumn" title="查询统计未启用" desc="当前没有收集客户端地址和请求域名。">
-          <RouterLink class="ui-btn ui-btn--secondary ui-btn--sm" to="/config">打开配置</RouterLink>
-        </UiEmpty>
+        <!-- 下方配置卡已有「管理配置」，这里只说开关在哪，不再放第二个去同一处的按钮
+             The config card below already links to the config page; this says where the switch is instead of adding a second link -->
+        <UiEmpty v-else-if="stats" :icon="ChartColumn" title="查询统计未启用" desc="在配置页「基础设置 › 查询统计」打开「启用查询排行」后，这里按客户端和域名列出请求量。" />
         <p v-else-if="!statsError" class="overview-empty">{{ statsLoading ? '正在读取查询排行' : '查询排行暂不可用' }}</p>
       </section>
 
       <section id="overview-panel-rules" v-show="activeView === 'rules'" class="overview-view" role="tabpanel" aria-labelledby="overview-tab-rules" tabindex="0">
-        <div class="overview-toolbar"><p><span>启动以来</span><span class="ui-sep">·</span><span>请求与响应阶段的累计执行次数</span></p></div>
+        <div v-if="rules.length" class="overview-toolbar"><p><span>启动以来</span><span class="ui-sep">·</span><span>请求与响应阶段的累计执行次数</span></p></div>
         <div v-if="rules.length" class="overview-rules">
           <div class="ui-rec-head"><span>阶段</span><span>规则</span><span>Pipeline</span><span>执行次数</span></div>
           <div v-for="rule in rules" :key="`${rule.pipeline}:${rule.phase}:${rule.rule}`" class="ui-rec overview-rule">
@@ -721,7 +736,7 @@ onBeforeUnmount(() => {
             <p class="ui-rec__phone overview-rule-line"><span class="ui-tag" :class="{ 'overview-phase--request': rule.phase === 'request' }">{{ rule.phase === 'request' ? '请求' : '响应' }}</span><span class="ui-mono">{{ rule.pipeline }}</span></p>
           </div>
         </div>
-        <p v-else class="overview-empty">尚无规则命中数据</p>
+        <UiEmpty v-else :icon="ListChecks" title="还没有规则执行过" desc="请求经过 Pipeline 里的规则后，这里按执行次数列出每条规则。" />
       </section>
 
       <UiCard class="overview-runtime" :title="runtimeState === 'stopped-snapshot' ? '最后运行配置' : overview ? '当前运行配置' : '运行配置'">
@@ -757,7 +772,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .overview-page { display: grid; gap: var(--s-5); color: var(--l-ink); }
 .overview-page > * { min-width: 0; }
-.overview-skeleton-meta { width: 16rem; height: var(--t-2); }
+.overview-skeleton-meta { width: 16rem; height: calc(var(--t-2) * var(--lh-base)); }
 .overview-tabs { margin-bottom: calc(var(--s-1) * -1); }
 .overview-view { display: grid; gap: var(--s-6); outline-offset: var(--s-1); }
 /* 鼠标点进面板不画框，键盘进来照常显示焦点 / No ring when a panel is clicked; keyboard focus still shows */
@@ -817,8 +832,8 @@ onBeforeUnmount(() => {
 /* 地址列拿走剩下的宽度；数字列有下限也有上限：窄屏不挤地址，宽屏不把数字推到最右边。
    The address column takes what is left; number columns have a floor and a ceiling, so narrow screens do not squeeze the
    address and wide ones do not push the figures to the far edge. */
-.overview-ledger .ui-rec, .overview-ledger .ui-rec-head { --rec-cols: minmax(0, 1fr) repeat(3, minmax(6.5rem, 10rem)) var(--h-sm); }
-.overview-ledger-list--no-latency .ui-rec, .overview-ledger-list--no-latency .ui-rec-head { --rec-cols: minmax(0, 1fr) repeat(2, minmax(6.5rem, 10rem)) var(--h-sm); }
+.overview-ledger .ui-rec, .overview-ledger .ui-rec-head { --rec-cols: minmax(18rem, 2fr) repeat(3, minmax(6.5rem, 1fr)) var(--h-sm); }
+.overview-ledger-list--no-latency .ui-rec, .overview-ledger-list--no-latency .ui-rec-head { --rec-cols: minmax(18rem, 2fr) repeat(2, minmax(6.5rem, 1fr)) var(--h-sm); }
 .overview-ledger.is-refreshing .overview-ledger-list { opacity: .72; transition: opacity var(--m-quick) var(--ease-out); }
 .overview-upstream-id { min-width: 0; display: grid; gap: 2px; }
 .overview-upstream-name { display: flex; align-items: baseline; gap: var(--s-2); min-width: 0; }
@@ -833,8 +848,10 @@ onBeforeUnmount(() => {
 .overview-expand svg { transition: transform var(--m-slow) var(--ease-out); }
 .overview-expand[aria-expanded="true"] svg { transform: rotate(90deg); }
 .overview-upstream.is-open { border-bottom-color: transparent; }
-/* 展开条限在地址那一列的宽度里，不落到右边的数字列下面 / The expansion stays within the address column, never under the number columns */
-.overview-upstream-counts { grid-template-columns: repeat(4, minmax(0, 1fr)); max-width: 36rem; padding: 0 0 var(--s-3) calc(var(--size-dot) + var(--s-2)); border-bottom: 1px solid var(--l-hair); font-variant-numeric: tabular-nums; }
+/* 展开条：分隔线画满整行，四项限在地址那一列的宽度里，不落到右边的数字列下面
+   The expansion: its rule spans the row while the four figures stay within the address column, never under the number columns */
+.overview-upstream-detail { padding: 0 0 var(--s-3) calc(var(--size-dot) + var(--s-2)); border-bottom: 1px solid var(--l-hair); }
+.overview-upstream-counts { grid-template-columns: repeat(4, minmax(0, 9rem)); font-variant-numeric: tabular-nums; }
 .overview-upstream-line { flex-wrap: wrap; align-items: baseline; gap: 0 var(--s-2); margin: 0; color: var(--l-ink-3); font-size: var(--t-2); font-variant-numeric: tabular-nums; }
 .overview-upstream-line b { color: var(--l-ink-2); font-weight: var(--w-medium); }
 
@@ -842,13 +859,16 @@ onBeforeUnmount(() => {
    Distributions: from 1200 up they share a row, the first (long Pipeline names) wider; an empty block is not rendered and the
    rest fill the row. Below that, one block per row, each capped in width so the note stays near its content. */
 .overview-distributions { display: grid; grid-auto-flow: column; grid-template-columns: minmax(0, 1.6fr); grid-auto-columns: minmax(0, 1fr); gap: var(--s-6); align-items: start; }
+.overview-distributions.is-first-empty { grid-template-columns: minmax(0, 1fr); }
 .overview-distribution { align-content: start; }
 .overview-lead { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-1) var(--s-2); margin: 0; }
 .overview-lead-share { font-family: var(--f-display); font-size: var(--t-6); font-weight: var(--w-medium); font-variant-numeric: tabular-nums; letter-spacing: -.035em; line-height: var(--lh-tight); }
 .overview-lead-name { min-width: 0; font-size: var(--t-3); font-weight: var(--w-medium); overflow-wrap: anywhere; }
 .overview-lead-count { color: var(--l-ink-3); font-size: var(--t-2); font-variant-numeric: tabular-nums; }
 .overview-shares { display: grid; gap: var(--s-1); margin: 0; padding: 0; list-style: none; color: var(--l-ink-2); font-size: var(--t-2); }
-.overview-shares li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-3); align-items: baseline; }
+/* 各栏行高一致：等宽字和正文字的行各按自己的字体量高，三栏会逐行错开 / One row height across the columns: mono and body rows would each take their own font's height and drift apart */
+.overview-shares li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-3); align-items: baseline; min-height: calc(var(--t-2) * var(--lh-base)); line-height: var(--lh-base); }
+.overview-shares li > * { line-height: inherit; }
 .overview-shares li:has(.overview-share-count) { grid-template-columns: minmax(0, 1fr) auto 3.5rem; }
 .overview-shares li > span:first-child { min-width: 0; overflow-wrap: anywhere; }
 .overview-shares li > span:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
@@ -877,7 +897,7 @@ onBeforeUnmount(() => {
    Head and rows share one set of columns: the rule column fits its content, Pipeline follows right after, the count sits right.
    The kit right-aligns every heading after the first; here only the count is numeric, so the rule and Pipeline headings align left. */
 .overview-rules { display: grid; grid-template-columns: 3.5rem fit-content(45%) minmax(0, 1fr) auto; column-gap: var(--s-6); }
-.overview-rules .ui-rec, .overview-rules .ui-rec-head { grid-column: 1 / -1; grid-template-columns: subgrid; }
+.overview-rules .ui-rec, .overview-rules .ui-rec-head { grid-column: 1 / -1; grid-template-columns: subgrid; column-gap: inherit; }
 .overview-rules .ui-rec-head > :nth-child(2), .overview-rules .ui-rec-head > :nth-child(3) { text-align: left; }
 .overview-rule { align-items: baseline; }
 .overview-rule-name { min-width: 0; font-size: var(--t-3); font-weight: var(--w-medium); overflow-wrap: anywhere; }
@@ -893,23 +913,39 @@ onBeforeUnmount(() => {
 .overview-config-lead { margin: 0; color: var(--l-ink-2); font-size: var(--t-3); }
 .overview-config-lead .ui-mono { color: var(--l-ink); font-family: var(--f-display); font-size: var(--t-6); font-weight: var(--w-medium); letter-spacing: -.035em; }
 .overview-reload-error { margin: var(--s-1) 0 0; color: var(--warn-l); font-size: var(--t-2); overflow-wrap: anywhere; }
-.overview-config-hashes { grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 36rem; margin-top: var(--s-3); padding-top: var(--s-3); border-top: 1px solid var(--l-hair); }
+/* 细线画满卡片，两项限宽 / The rule spans the card; the two items are capped */
+.overview-config-hashes { grid-template-columns: repeat(2, minmax(0, 18rem)); margin-top: var(--s-3); padding-top: var(--s-3); border-top: 1px solid var(--l-hair); }
 .overview-runtime-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); }
 
 .overview-empty { margin: 0; padding: var(--s-5) 0; color: var(--l-ink-3); font-size: var(--t-2); }
 .overview-skeleton { display: grid; gap: var(--s-5); }
-/* 骨架按结果的实际尺寸画：信号带、三张卡、台账标题和几根细行 / The skeleton follows the result's real sizes: band, three tiles, the ledger title and thin rows */
-.overview-skeleton-signal { height: calc(var(--s-8) * 2 + var(--s-5) + var(--s-1)); border-radius: var(--r-3); }
+/* 骨架按结果实测的尺寸画（1280：信号带 158、卡 136；641–1023：卡 156；375：信号带 209、卡 128），间距同 .overview-view
+   The skeleton uses the result's measured sizes (1280: band 158, tiles 136; 641–1023: tiles 156; 375: band 209, tiles 128), spaced as .overview-view */
+.overview-skeleton { gap: var(--s-6); }
+.overview-skeleton-signal { height: calc(var(--s-8) * 2 + var(--s-5) + 6px); border-radius: var(--r-3); }
 .overview-skeleton-vitals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s-4); }
-.overview-skeleton-vitals i { height: calc(var(--s-8) * 2 + var(--s-1) + 2px); border-radius: var(--r-3); }
-.overview-skeleton-rows { display: grid; gap: var(--s-6); padding-top: var(--s-5); }
+.overview-skeleton-vitals i { height: calc(var(--s-8) * 2 + var(--s-2)); border-radius: var(--r-3); }
+.overview-skeleton-rows { display: grid; gap: var(--s-6); }
 .overview-skeleton-rows i { width: 60%; height: var(--s-3); }
 .overview-skeleton-rows i:first-child { width: 8rem; height: var(--t-4); }
 .overview-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
+/* 900–1199：左边请求分布，右边上下叠放响应码和缓存构成 / 900–1199: request distribution left, response codes and cache stacked right */
 @media (max-width: 1199px) {
-  .overview-distributions { grid-auto-flow: row; grid-template-columns: minmax(0, 1fr); }
-  .overview-distribution { max-width: 40rem; }
+  .overview-distributions, .overview-distributions.is-first-empty { grid-auto-flow: row; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); }
+  .overview-distribution:first-child { grid-row: span 2; }
+}
+/* 900 以下：台账换成两行式（四列挤不下）；分布一块一行，标题满宽，内容限宽，数字不离名字太远
+   Below 900: the ledger turns to two-line rows (four columns no longer fit); distributions stack, headings full width, content
+   capped so figures stay near their names */
+@media (max-width: 900px) {
+  .overview-ledger .ui-rec, .overview-ledger-list--no-latency .ui-rec { --rec-cols: minmax(0, 1fr) var(--h-touch); row-gap: var(--s-1); }
+  .overview-ledger .ui-rec-head, .overview-ledger .ui-rec__n, .overview-basis { display: none; }
+  .overview-ledger .ui-rec__phone { display: flex; grid-column: 1; }
+  .overview-upstream .ui-rec__act { grid-row: 1 / span 2; grid-column: 2; }
+  .overview-distributions, .overview-distributions.is-first-empty { grid-template-columns: minmax(0, 1fr); }
+  .overview-distribution:first-child { grid-row: auto; }
+  .overview-lead, .overview-shares { max-width: 40rem; }
 }
 
 @media (max-width: 640px) {
@@ -920,16 +956,11 @@ onBeforeUnmount(() => {
   .overview-total-value { font-size: var(--t-6); }
   .overview-spark { height: var(--s-7); }
   .overview-vitals, .overview-skeleton-vitals { grid-template-columns: minmax(0, 1fr); }
-  .overview-skeleton-signal { height: calc(var(--s-8) * 3 + var(--s-4)); }
-  .overview-skeleton-vitals i { height: calc(var(--s-8) + var(--s-7)); }
+  .overview-skeleton-signal { height: calc(var(--s-8) * 3 + var(--s-4) + 1px); }
+  .overview-skeleton-vitals i { height: calc(var(--s-8) * 2); }
+  .overview-skeleton-meta { height: calc(var(--t-2) * var(--lh-base) * 2 + 2px); }
   .overview-vital { padding: var(--s-3) var(--s-4); }
-  .overview-ledger .ui-rec, .overview-ledger .ui-rec-head { --rec-cols: minmax(0, 1fr) var(--h-touch); }
-  .overview-upstream { row-gap: var(--s-1); }
   .overview-upstream-counts { grid-template-columns: repeat(2, minmax(0, 1fr)); padding-left: 0; }
-  .overview-basis { display: none; }
-  /* 44 的展开按钮跨两行居中，不把第一行撑高 / The 44 expand button spans both lines, centred, instead of stretching the first */
-  .overview-upstream .ui-rec__act { grid-row: 1 / span 2; grid-column: 2; }
-  .overview-upstream .ui-rec__phone { grid-column: 1; }
   .overview-toolbar { align-items: stretch; }
   .overview-toolbar-tools { width: 100%; justify-content: space-between; }
   .overview-rankings { grid-template-columns: minmax(0, 1fr); gap: var(--s-5); }

@@ -78,7 +78,8 @@ export function formatDuration(seconds: number): string {
   const minutes = Math.floor((seconds % 3600) / 60)
   // 零的单位不写：「0 小时 21 分钟」读成「21 分钟」 / Zero units are left out: 0 小时 21 分钟 reads 21 分钟
   if (days > 0) return hours ? `${days} 天 ${hours} 小时` : `${days} 天`
-  return hours ? `${hours} 小时 ${minutes} 分钟` : `${minutes} 分钟`
+  if (!hours) return `${minutes} 分钟`
+  return minutes ? `${hours} 小时 ${minutes} 分钟` : `${hours} 小时`
 }
 
 export function shortHash(value: string | null | undefined, length = 10): string {

@@ -122,16 +122,19 @@ test('首次未启动保留空态视图但禁止运行时操作', async ({ page 
   await openOverview(page)
   await expect(page.getByText('KixDNS 未启动', { exact: true })).toBeVisible()
   await expect(page.getByText('数据可能已过期')).toHaveCount(0)
-  await expect(page.locator('.overview-total-value')).toHaveText('0')
-  await expect(page.getByText('尚无 Pipeline 命中数据', { exact: true })).toBeVisible()
-  await expect(page.getByText('尚无上游请求数据', { exact: true })).toBeVisible()
+  // 从没启动过就没有「启动以来」可数，大数字和下面三张卡一样写「—」 / Never started: nothing counted since start, so the figure reads — like the tiles
+  await expect(page.locator('.overview-total-value')).toHaveText('—')
+  await expect(page.getByText('还没有请求命中 Pipeline，命中后在这里按 Pipeline 列出。', { exact: true })).toBeVisible()
+  await expect(page.getByText('还没有请求转发到上游，转发后在这里按上游列出。', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: '清空内部缓存', exact: true })).toBeDisabled()
   await expect(page.locator('.overview-config-state')).toHaveText('未运行')
   await page.getByRole('tab', { name: '查询排行' }).click()
   await expect(page.getByText('当前窗口暂无客户端数据', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: '1 小时', exact: true })).toBeDisabled()
   await page.getByRole('tab', { name: '规则命中' }).click()
-  await expect(page.getByText('尚无规则命中数据', { exact: true })).toBeVisible()
+  await expect(page.getByText('还没有规则执行过', { exact: true })).toBeVisible()
+  // 空表不带「累计执行次数」那行说明 / An empty table carries no caption about execution counts
+  await expect(page.getByText('请求与响应阶段的累计执行次数')).toHaveCount(0)
 })
 
 for (const stopped of [true, false]) {
@@ -162,6 +165,9 @@ for (const stopped of [true, false]) {
     await page.getByRole('link', { name: '概览', exact: true }).click()
 
     await expect(page.getByText(stopped ? 'KixDNS 已停止' : '实时数据暂不可用', { exact: true })).toBeVisible()
+    // 服务还在跑却没有错误文字时，原因照样说出发生了什么，不只剩「显示快照」
+    // With the service up and no error text, the reason still says what happened, not only that a snapshot is shown
+    if (!stopped) await expect(page.locator('.overview-notice small')).toHaveText(/^控制通道暂时没有应答；显示 \d{2}:\d{2} 的快照，恢复后会自动更新。$/)
     await expect(page.locator('.overview-total-value')).toHaveText(EXPECTED_TOTAL)
     await expect(page.locator('.overview-trend-label')).toHaveText(EXPECTED_TREND)
     await expect(page.locator('.overview-config-state')).toHaveText('运行快照')
@@ -208,6 +214,35 @@ test('台账逐行展开，明细跟着这一行的时段，桌面和手机同�
   }
   const sizes = await page.evaluate(() => ({ client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }))
   expect(sizes.scroll).toBeLessThanOrEqual(sizes.client)
+})
+
+test('台账在中等宽度不挤地址：四列的最窄处 901 地址列至少 18rem，900 以下换成两行式', async ({ page }) => {
+  await page.setViewportSize({ width: 901, height: 900 })
+  await openOverview(page)
+  const rows = page.locator('.overview-upstream')
+  await expect(page.locator('.overview-ledger .ui-rec-head')).toBeVisible()
+  const address = await rows.first().locator('.overview-address').evaluate((element) => element.parentElement!.getBoundingClientRect().width)
+  expect(address).toBeGreaterThanOrEqual(288)
+  await page.setViewportSize({ width: 768, height: 900 })
+  await expect(page.locator('.overview-ledger .ui-rec-head')).toBeHidden()
+  await expect(rows.first().locator('.overview-upstream-line')).toBeVisible()
+  const sizes = await page.evaluate(() => ({ client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }))
+  expect(sizes.scroll).toBeLessThanOrEqual(sizes.client)
+})
+
+test('手机上窗口分段每格可点满 44：外框的内边距也算这一格 @responsive', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'mobile', '只量手机宽度 / Phone width only')
+  await openOverview(page)
+  await page.getByRole('tab', { name: '查询排行' }).click()
+  const option = page.getByRole('button', { name: '1 小时', exact: true })
+  const hits = await option.evaluate((element) => {
+    const frame = element.parentElement!.getBoundingClientRect()
+    const box = element.getBoundingClientRect()
+    const x = box.left + box.width / 2
+    return { height: frame.height, top: element.contains(document.elementFromPoint(x, frame.top + 0.5)), bottom: element.contains(document.elementFromPoint(x, frame.bottom - 0.5)) }
+  })
+  expect(hits.height).toBeGreaterThanOrEqual(44)
+  expect(hits).toMatchObject({ top: true, bottom: true })
 })
 
 // 概览的演示端点交回的是同一个对象：改完它，离开再回来让概览重新挂载、重新读一遍
@@ -408,4 +443,26 @@ test('旧增强版不提供精确数据：两张卡写「—」，状态点读�
   await expect(vitals.nth(0).locator('.overview-vital-foot')).toContainText('当前增强版不提供耗时数据')
   await expect(page.locator('.overview-upstream .overview-dot').first()).toHaveAttribute('aria-label', '不支持判定')
   await expect(page.locator('.overview-ledger .ui-rec-head')).not.toContainText('平均耗时')
+})
+
+test('第一次启动就失败、还没有任何数据：提示说启动失败，不说读不到数据', async ({ page }) => {
+  await page.route(/\/src\/api\/client\.ts(?:\?.*)?$/, async (route) => {
+    if (route.request().url().includes('first-failed-original')) return route.continue()
+    await route.fulfill({ contentType: 'application/javascript', body: `
+      export * from '/src/api/client.ts?first-failed-original';
+      import { apiRequest as original } from '/src/api/client.ts?first-failed-original';
+      export async function apiRequest(path, init) {
+        if (path === '/api/v1/overview') throw new Error('控制通道没有应答');
+        const result = await original(path, init);
+        if (path === '/api/v1/service') return { ...result, active_state: 'failed', sub_state: 'failed', main_pid: 0 };
+        return result;
+      }
+    ` })
+  })
+  await page.goto('/')
+  const notice = page.locator('.ui-notice:visible')
+  await expect(notice).toHaveCount(1)
+  await expect(notice).toContainText('KixDNS 启动失败')
+  await expect(notice).not.toContainText('读不到运行数据')
+  await expect(page.locator('.overview-heading .ui-ph__meta')).toContainText('启动失败')
 })

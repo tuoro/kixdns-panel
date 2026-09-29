@@ -59,7 +59,7 @@ test('首次未启动时保留完整概览布局', async ({ page }) => {
 
   await expect(page.getByText('KixDNS 未启动', { exact: true })).toBeVisible()
   await expect(page.getByText('数据可能已过期')).toHaveCount(0)
-  await expect(page.locator('.overview-total-value')).toHaveText('0')
+  await expect(page.locator('.overview-total-value')).toHaveText('—')
   await expect(page.getByRole('heading', { name: '请求分布' })).toBeVisible()
   // 没运行过：卡片叫「运行配置」，标签写「未运行」，不自相矛盾 / Never run: the card is 运行配置 with the tag 未运行, not a contradiction
   await expect(page.getByRole('heading', { name: '运行配置', exact: true })).toBeVisible()
@@ -71,7 +71,7 @@ test('首次未启动时保留完整概览布局', async ({ page }) => {
   // 页签已经写了「规则命中」，下面不再重复同名标题；页签内容照样在 / The tab names 规则命中, so no repeated heading below; the panel is still there
   await page.getByRole('tab', { name: '规则命中', exact: true }).click()
   await expect(page.getByRole('tabpanel', { name: '规则命中' })).toBeVisible()
-  await expect(page.getByText('尚无规则命中数据', { exact: true })).toBeVisible()
+  await expect(page.getByText('还没有规则执行过', { exact: true })).toBeVisible()
 })
 
 test('首次未启动时保存配置会标记为待应用', async ({ page }) => {
