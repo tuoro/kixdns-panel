@@ -12,7 +12,8 @@
 {
   "schema_version": 1,
   "config_capabilities": [
-    "config_query_stats_v1"
+    "config_query_stats_v1",
+    "config_static_cname_response_v1"
   ]
 }
 ```
@@ -24,6 +25,9 @@
 | 配置能力 | 受控字段 | 运行时兼容别名 |
 | --- | --- | --- |
 | `config_query_stats_v1` | `settings.statistics_enabled`、`settings.statistics_anonymize_client_ip` | `stats_top_v1` |
+| `config_static_cname_response_v1` | 任一规则动作列表（`actions`、`response_actions_on_match`、`response_actions_on_miss`，含 `background_refresh_rule`）中的 `static_cname_response` | 无 |
+
+`static_cname_response` 是上游 KixDNS 自带的动作（固定 CNAME 应答），能力只声明这个二进制认得它；面板的域名映射和「固定 CNAME」动作都依赖它。不支持时，这个动作和域名映射模板不出现；已有的映射原样保留，域名映射页提示先更新或切换内核。字段类能力按 JSON Pointer 检查，动作类能力按动作的 `type` 检查。
 
 兼容别名只用于识别已经运行的旧增强版。目标版本切换预检只信任经摘要校验的 Artifact 能力或本地版本清单。
 
@@ -41,7 +45,7 @@ KixDNS 自身的 `/v1/config/validate` 仍是能力检查后的最终编译校�
 
 1. 为新上游候选创建更高编号的不可变补丁集，不修改历史集合。
 2. 在新集合的 `capabilities.json` 增加稳定的 `config_<功能>_vN` 名称，并让增强版 health 返回同名能力。
-3. 在 `config_capabilities.rs` 的集中注册表中绑定 JSON Pointer、展示字段名和能力。
+3. 在 `config_capabilities.rs` 的集中注册表中绑定 JSON Pointer、展示字段名和能力；新增的是动作时按动作 `type` 检查。
 4. 在前端字段 schema 中声明 `requiresCapability`；仅在确有旧运行时等价信号时设置 `legacyCapabilities`。
 5. 补充后端拒绝/接受测试、前端隐藏/只读测试及增强运行契约测试。
 6. 只把新候选锁切换到新补丁集。旧锁、旧 Artifact 和已安装二进制保持原身份。

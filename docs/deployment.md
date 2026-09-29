@@ -58,7 +58,7 @@ sudo bash ./scripts/install.sh
 | --- | --- |
 | `--replace-existing` | 同意把已有的 KixDNS 迁移为增强版；无人值守安装遇到已有 KixDNS 时必需 |
 | `--reinstall` | 已安装同一版本时仍重新安装，用来修复被改动或损坏的安装 |
-| `--panel-only-update` | 只更新面板，等同「系统与更新」页的面板更新；不停止也不替换 KixDNS |
+| `--panel-only-update` | 只更新面板，等同「系统」页的面板更新；不停止也不替换 KixDNS |
 | `--kixdns-unit`、`--kixdns-config`、`--kixdns-binary`、`--control-socket` | 已有 KixDNS 不在默认位置、又无法从 unit 自动检测时手动指定 |
 
 一键安装把参数放在 `bash -s --` 之后；运行安装器前会先检查，拼错的参数不会改动主机：
@@ -226,7 +226,7 @@ sudo systemctl restart kixdns-panel.service
 
 ## 面板更新
 
-「系统与更新」页可在线更新到 `tuoro/kixdns-panel` 最新正式 Release；命令行的等价做法是用新版本的包运行 `install.sh --panel-only-update`。也可以下载完整包直接重新运行 `install.sh` 升级，KixDNS 只在程序或 unit 变化时按原状态重启。
+「系统」页可在线更新到 `tuoro/kixdns-panel` 最新正式 Release；命令行的等价做法是用新版本的包运行 `install.sh --panel-only-update`。也可以下载完整包直接重新运行 `install.sh` 升级，KixDNS 只在程序或 unit 变化时按原状态重启。
 
 - 只更新 Panel Server、前端、helper、安装与卸载脚本和面板 unit；**KixDNS 二进制、配置和启停状态都不动**。新面板启动时可能把 `panel.db` 升级到新结构
 - 浏览器不能指定 URL、路径或版本；下载后先校验 GitHub 资产摘要，再校验包内 `SHA256SUMS`
@@ -255,6 +255,13 @@ journalctl -u kixdns.service -n 200 --no-pager
 journalctl -u kixdns-panel.service -n 200 --no-pager
 journalctl -u kixdns-panel-helper.service -n 200 --no-pager
 sudo systemctl restart kixdns-panel.service
+```
+
+KixDNS 的 unit 以 `RUST_LOG=info,kixdns::engine::phases=warn` 运行：启动、重载、告警照常进 journal，逐请求的应答记录（`dns_response`、`dns_request_finished`）不进。每个查询一行会淹没日志页，还会把客户端 IP 和域名留在 journal 里，绕过查询统计的脱敏。临时排查需要逐条记录时，用 `sudo systemctl edit kixdns.service` 写入下面两行再重启 KixDNS；这个覆盖在 unit 之外，升级不会动它，查完记得再用同一命令删掉并重启：
+
+```ini
+[Service]
+Environment=RUST_LOG=info
 ```
 
 | 现象 | 排查 |

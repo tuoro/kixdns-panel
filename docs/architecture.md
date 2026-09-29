@@ -45,10 +45,11 @@ Panel Web ---- Panel Server ---- SQLite
 
 自动同步发现上游新版本时：
 
-1. 先尝试直接应用当前补丁集（新 Release 先试 Action 轨道的补丁集）
-2. 应用失败或依赖未通过 RustSec 审计，就把补丁重建为临时 Git 提交链，rebase 到新上游（`Cargo.lock` 不参与 rebase，之后重新解析），导出更高编号的补丁集
-3. 候选通过测试、Clippy、RustSec 和 DNS 冒烟测试后，自动提交审计 PR 更新锁和版本目录
-4. 只有代码冲突或验证失败才开 `[compat]` Issue（每条轨道最多一个），附候选身份和日志；恢复后自动关闭。基础设施故障只让工作流失败，不开 Issue
+1. 先原样套用当前补丁集并审计依赖；新 Release 一律套用 Action 轨道当前的补丁集
+2. 套不上或依赖未通过 RustSec 审计，先**并入**：给当前补丁集新增一个兼容层，编号不变
+3. Action 并入不了，说明通用补丁也要改，才完整重基：把补丁重建为临时 Git 提交链，rebase 到新上游（`Cargo.lock` 不参与 rebase，之后重新解析），导出更高编号的补丁集。Release 只并入 Action 的补丁集，并入不了就停在当前版本等人工处理，从不退回自己的旧补丁集，编号也不会超过 Action
+4. 候选通过测试、Clippy、RustSec 和 DNS 冒烟测试后，自动提交审计 PR 更新锁和版本目录，正文写明是并入还是重基
+5. 只有代码冲突、并入失败或验证失败才开 `[compat]` Issue（每条轨道最多一个），附候选身份和日志；恢复后自动关闭。基础设施故障只让工作流失败，不开 Issue
 
 上游没有新版本时照样审计当前版本：未通过就生成依赖修订，验证后自动合并；修不了开 `[security]` Issue。审计不过的旧版本移出版本目录，当前版本始终保留。
 
@@ -58,7 +59,7 @@ DNS 冒烟测试用隔离端口和 Unix Socket 真实启动增强进程，验证
 
 面板和内核用独立工作流，面板提交不会被误当成新的 KixDNS 版本：
 
-- **内核**：`build-kixdns.yml`（Action 轨道）和 `build-kixdns-release.yml`（Release 轨道）共用 `build-kixdns-track.yml`。产物只作为本仓库 Actions Artifact，通过 nightly.link 下载，每周任务提前 7 天续建即将过期的包
+- **内核**：`build-kixdns.yml`（Action 轨道）和 `build-kixdns-release.yml`（Release 轨道）共用 `build-kixdns-track.yml`。产物只作为本仓库 Actions Artifact：面板配了有下载权限的 GitHub Token 时直接从 GitHub 下载，否则经 nightly.link；每周任务提前 7 天续建即将过期的包
 - **面板**：`build-panel.yml` 只监听 Panel Server、Web、部署脚本和面板依赖。它复用上游身份完全匹配的内核 Artifact（校验摘要和 ELF 架构），不重新编译 KixDNS。正式版通过面板 GitHub Release 发布
 - 发布构建在 Ubuntu 22.04 容器中完成，拒绝依赖高于 `GLIBC_2.35` 符号的二进制；完整包还要在 Ubuntu 22.04 临时机上跑安装、覆盖升级、面板联调、systemd 控制和卸载验收
 - PR 只跑对应边界的验证，不上传可安装包；纯文档变更不触发打包
