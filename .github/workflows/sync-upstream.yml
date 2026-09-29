@@ -147,7 +147,7 @@ jobs:
       # A prebuilt binary replaces the ~2m45s source build at the same version with its SHA-256 checked;
       # a missing prebuilt fails instead of falling back to compiling.
       - name: Install dependency auditor
-        uses: taiki-e/install-action@9114bf4d891761788c546334fd37538eae1bf8b3 # v2.87.16
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
         with:
           tool: cargo-audit@0.22.2
           fallback: none
