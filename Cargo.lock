@@ -1030,7 +1030,7 @@ dependencies = [
 
 [[package]]
 name = "kixdns-panel-helper"
-version = "3.2.0"
+version = "3.3.0"
 dependencies = [
  "clap",
  "rustix",
@@ -1038,7 +1038,7 @@ dependencies = [
 
 [[package]]
 name = "kixdns-panel-server"
-version = "3.2.0"
+version = "3.3.0"
 dependencies = [
  "anyhow",
  "argon2",
