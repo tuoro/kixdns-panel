@@ -162,7 +162,7 @@ onBeforeUnmount(() => {
 .config-diff-values { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 9px; }
 .config-diff-values > div { min-width: 0; }
 .config-diff-values small { display: block; margin-bottom: 4px; color: #8b9591; font-size: 12px; }
-.config-diff-values pre { min-height: 34px; margin: 0; padding: 8px 9px; overflow: auto; color: #36403c; background: #f5f7f6; border: 1px solid #e2e7e4; border-radius: 4px; font: 9px/1.45 "SFMono-Regular", Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.config-diff-values pre { min-height: 34px; margin: 0; padding: 8px 9px; overflow: auto; color: #36403c; background: #f5f7f6; border: 1px solid #e2e7e4; border-radius: 4px; font: 9px/1.45 var(--f-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .config-diff-empty { min-height: 180px; display: grid; place-items: center; color: #8b9591; font-size: 12px; }
 .config-diff-dialog > footer { min-height: 58px; display: flex; align-items: center; justify-content: flex-end; padding: 10px 16px; border-top: 1px solid var(--line); }
 @media (max-width: 640px) {

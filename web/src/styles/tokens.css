@@ -124,9 +124,19 @@
   --err-d:      #d97a6b;
 
   /* ---------- 字体 ---------- */
-  --f-display: Archivo, system-ui, sans-serif;           /* 标题与数值 */
-  --f-body: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
-  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  /* 拉丁字母和数字一律用打包的 Archivo（见 fonts.css），中文往后落到各平台的中文字体：苹方、冬青黑、雅黑、思源。
+     正文和标题是同一串，靠字号、字重、字距分角色；--f-display 单独留名，标出哪些地方是标题和大数字。
+     机器值（地址、哈希、日志）用打包的 IBM Plex Mono，里面的中文同样落到这几款中文字体。
+     Every Latin letter and digit uses the bundled Archivo (see fonts.css); Chinese
+     falls through to each platform's CJK face: PingFang, Hiragino, YaHei, Noto/Source Han.
+     Body and display share one stack and differ by size, weight and tracking;
+     --f-display keeps its own name to mark headings and large figures. Machine
+     values (addresses, hashes, logs) use the bundled IBM Plex Mono, and Chinese
+     inside them falls through to the same CJK faces. */
+  --f-cjk: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC";
+  --f-body: "Archivo", var(--f-cjk), sans-serif;
+  --f-display: var(--f-body);                              /* 标题与大数字 / headings and large figures */
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", var(--f-cjk), monospace;
 
   /* ---------- 控件高度 ----------
      桌面常规 36，行内紧凑 30，手机上能点的东西至少 44。

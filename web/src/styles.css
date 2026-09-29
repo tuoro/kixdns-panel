@@ -1,10 +1,11 @@
+@import "./styles/fonts.css";
 @import "./styles/tokens.css";
 @import "./styles/components.css";
 
 :root {
   color: #202628;
   background: #fafbf9;
-  font-family: Inter, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: var(--f-body);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   /* 旧名字，只是 tokens.css 的别名：页面改版时换成右边的名字，棘轮只许引用变少。
@@ -22,7 +23,7 @@
   --amber-soft: var(--warn-tint-l);
   --red: var(--err-l);
   --red-soft: var(--err-tint-l);
-  --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --mono: var(--f-mono);
   --app-header-height: 64px;
   --mobile-nav-height: calc(64px + env(safe-area-inset-bottom));
 }
@@ -37,14 +38,14 @@ button:disabled { cursor: not-allowed; opacity: .52; }
 :focus-visible { outline: 2px solid #279367; outline-offset: 2px; }
 a { color: inherit; }
 h1, h2, h3, p { margin: 0; }
-code, .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; letter-spacing: 0; }
+code, .mono { font-family: var(--f-mono); letter-spacing: 0; }
 
 .app-shell { min-height: 100dvh; background: var(--canvas); }
 .skip-link { position: fixed; top: 8px; left: 16px; z-index: 100; padding: 10px 16px; color: var(--d-ink); background: var(--ink); transform: translateY(-180%); }
 .skip-link:focus { transform: none; }
 .app-header { position: sticky; top: 0; z-index: 40; min-height: var(--app-header-height); display: grid; grid-template-columns: minmax(140px, 1fr) auto minmax(140px, 1fr); align-items: center; padding-inline: 28px; color: #f5f7f5; background: var(--ink); border-bottom: 1px solid #2b332f; }
 .app-brand { width: max-content; min-height: 44px; display: inline-flex; align-items: center; gap: 10px; text-decoration: none; }
-.app-brand strong { font-size: 22px; font-weight: 720; letter-spacing: -.5px; }
+.app-brand strong { font-family: var(--f-display); font-size: 22px; font-weight: 700; letter-spacing: -.5px; }
 .app-brand svg { flex: 0 0 auto; }
 .desktop-nav { display: flex; align-self: stretch; gap: 28px; }
 .desktop-nav a { position: relative; min-width: 58px; display: grid; place-items: center; color: #bfc6c2; text-decoration: none; font-size: 15px; font-weight: 550; }
@@ -64,7 +65,7 @@ code, .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monosp
 .workspace__main { width: 100%; max-width: 1760px; margin: 0 auto; padding: 28px 28px 44px; scroll-margin-top: var(--app-header-height); }
 .workspace__main:focus { outline: none; }
 .page-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 24px; }
-.page-heading h1 { color: var(--ink); font-size: 28px; line-height: 1.2; letter-spacing: -.6px; }
+.page-heading h1 { color: var(--ink); font-family: var(--f-display); font-size: 28px; line-height: 1.2; letter-spacing: -.6px; }
 .page-heading p { margin-top: 6px; color: var(--muted); font-size: 13px; }
 .page-tabs { display: flex; gap: 24px; margin-bottom: 24px; border-bottom: 1px solid var(--line); }
 .page-tabs button { min-height: 44px; padding: 8px 2px; color: var(--muted); background: transparent; border: 0; border-bottom: 2px solid transparent; font-size: 14px; }
@@ -93,7 +94,7 @@ code, .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monosp
 .notification-item__title strong { overflow: hidden; color: #303936; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
 .notification-item__title i { width: 6px; height: 6px; flex: 0 0 auto; background: var(--red); border-radius: 50%; }
 .notification-item__body p { margin-top: 3px; color: #5e6865; font-size: 12px; }
-.notification-item__body small { display: block; margin-top: 4px; overflow: hidden; color: #929b98; font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.notification-item__body small { display: block; margin-top: 4px; overflow: hidden; color: #929b98; font-family: var(--f-mono); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .notification-item__actions { min-height: 24px; display: flex; align-items: center; gap: 12px; margin-top: 8px; }
 .notification-item__actions a, .notification-item__actions button, .notification-item__actions span { display: inline-flex; align-items: center; gap: 3px; color: var(--green); background: transparent; border: 0; font-size: 12px; text-decoration: none; }
 .notification-item__actions button { padding: 3px 0; }
@@ -137,7 +138,7 @@ code, .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monosp
 .tag--success { color: #14704e; background: var(--green-soft); border-color: #cbe4d7; }
 .tag--warning { color: #8b5b18; background: var(--amber-soft); border-color: #edd8b0; }
 .tag--danger { color: #a53232; background: var(--red-soft); border-color: #efcccc; }
-.tag--muted { font-family: "SFMono-Regular", Consolas, monospace; }
+.tag--muted { font-family: var(--f-mono); }
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th { padding: 10px 16px; color: #78817e; background: #fafbfa; font-size: 12px; font-weight: 680; text-align: left; text-transform: uppercase; }
 td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-space: nowrap; }
@@ -154,7 +155,7 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .unsaved-dot::before { width: 6px; height: 6px; content: ""; background: #d98b28; border-radius: 50%; }
 .visually-hidden { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important; }
 .json-editor { height: min(62vh, 720px); min-height: 440px; overflow: hidden; background: #171c1e; }
-.json-editor .cm-editor { height: 100%; color: #dce5e1; background: #171c1e; font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; }
+.json-editor .cm-editor { height: 100%; color: #dce5e1; background: #171c1e; font-family: var(--f-mono); font-size: 12px; }
 .json-editor .cm-scroller { overflow: auto; }
 .json-editor .cm-gutters { color: #65706c; background: #171c1e; border-right: 1px solid #2c3335; }
 .json-editor .cm-activeLine, .json-editor .cm-activeLineGutter { background: #202729; }
@@ -455,7 +456,10 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .log-new-lines:disabled { cursor: progress; opacity: 1; }
 
 .auth-panel label { display: grid; gap: 7px; color: #4c5557; font-size: 14px; font-weight: 650; }
-.auth-panel input { width: 100%; height: 40px; padding: 0 11px; color: #272e30; background: #fff; border: 1px solid #d5dcda; border-radius: 5px; outline: 0; font-size: 12px; }
+/* 输入框包在 label 里，会继承 label 的粗体；输入的内容和占位符都该是正文字重。
+   The input sits inside the label and would inherit its bold weight; typed text
+   and the placeholder are body weight. */
+.auth-panel input { width: 100%; height: 40px; padding: 0 11px; color: #272e30; background: #fff; border: 1px solid #d5dcda; border-radius: 5px; outline: 0; font-size: 12px; font-weight: var(--w-normal); }
 .auth-panel input:focus { border-color: #6cae8b; box-shadow: 0 0 0 3px rgba(20, 125, 85, .09); }
 
 /* 单栏居中。原来右栏那块「Enhanced Control」不只是装饰——它把控制协议版本、
@@ -510,7 +514,7 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .auth-brand span { width: 36px; height: 36px; display: grid; place-items: center; color: #e8fff2; background: var(--ink); border-radius: 6px; }
 .auth-brand strong { font-size: 17px; }
 .auth-heading { margin-bottom: 30px; }
-.auth-heading h1 { margin-bottom: 9px; color: #1d2425; font-size: 27px; line-height: 1.2; }
+.auth-heading h1 { margin-bottom: 9px; color: #1d2425; font-family: var(--f-display); font-size: 27px; line-height: 1.2; }
 .auth-heading > p:last-child { color: #7b8582; font-size: 14px; }
 .auth-panel form { display: grid; gap: 16px; }
 .password-field { position: relative; display: block; }

@@ -9,7 +9,7 @@
 
 /* ---------- 页头：标题就是导航名，下面一行事实，右边最多一个主操作 ---------- */
 .ui-ph { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-4); align-items: center; }
-.ui-ph__title { margin: 0; color: var(--l-ink); font-size: var(--t-5); font-weight: var(--w-bold); line-height: var(--lh-tight); }
+.ui-ph__title { margin: 0; color: var(--l-ink); font-family: var(--f-display); font-size: var(--t-5); font-weight: var(--w-bold); line-height: var(--lh-tight); }
 .ui-ph__meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-1) var(--s-2); margin-top: var(--s-2); color: var(--l-ink-2); font-size: var(--t-2); }
 .ui-ph__meta:empty { display: none; }
 .ui-ph__actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--s-2); }
@@ -77,7 +77,7 @@
 .ui-card { min-width: 0; display: flex; flex-direction: column; background: var(--l-surface); border: 1px solid var(--l-hair); border-radius: var(--r-3); }
 .ui-card > div { flex: 1 1 auto; min-width: 0; }
 .ui-card__head { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-3); align-items: center; padding: var(--s-4) var(--s-5); }
-.ui-card__title { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); margin: 0; color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-bold); line-height: var(--lh-base); }
+.ui-card__title { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); margin: 0; color: var(--l-ink); font-family: var(--f-display); font-size: var(--t-3); font-weight: var(--w-bold); line-height: var(--lh-base); }
 .ui-card__desc { margin: var(--s-1) 0 0; color: var(--l-ink-3); font-size: var(--t-2); }
 .ui-card__actions { display: flex; align-items: center; gap: var(--s-2); }
 .ui-card__body { padding: 0 var(--s-5) var(--s-4); }
@@ -86,7 +86,7 @@
 /* ---------- 区块：只是展示的数据，标题行加一条细线，没有边框和底色 ---------- */
 .ui-section { display: grid; gap: var(--s-3); padding-top: var(--s-5); border-top: 1px solid var(--l-hair); }
 .ui-section__head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--s-1) var(--s-4); }
-.ui-section__title { margin: 0; color: var(--l-ink); font-size: var(--t-4); font-weight: var(--w-bold); }
+.ui-section__title { margin: 0; color: var(--l-ink); font-family: var(--f-display); font-size: var(--t-4); font-weight: var(--w-bold); }
 .ui-section__aside { color: var(--l-ink-3); font-size: var(--t-2); }
 
 /* ---------- 键值行与数据条（五个以内的短值横排） ----------
