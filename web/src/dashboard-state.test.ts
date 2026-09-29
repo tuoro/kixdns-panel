@@ -33,6 +33,13 @@ describe('概览运行状态', () => {
     expect(dashboardRuntimeState({ ...snapshot, service_active: null }, null)).toBe('unavailable-snapshot')
   })
 
+  it('没有数据时，启动失败、正在启动、正在停止都按未运行保留完整布局；服务在跑却读不到才算读取失败', () => {
+    for (const active_state of ['failed', 'activating', 'deactivating']) {
+      expect(dashboardRuntimeState(null, { ...stoppedService, active_state })).toBe('stopped-empty')
+    }
+    expect(dashboardRuntimeState(null, { ...stoppedService, active_state: 'active', sub_state: 'running' })).toBe('unavailable')
+  })
+
   it('为首次未启动状态提供完整但不伪造数据的展示模型', () => {
     const overview = emptyOverview()
     const stats = emptyQueryStats(86_400)

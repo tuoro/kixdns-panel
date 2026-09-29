@@ -135,7 +135,7 @@ function showNew(): void {
       </UiCard>
     </div>
 
-    <UiSection title="上游台账" aside="最近一小时">
+    <UiSection title="上游状态" aside="最近一小时">
       <div class="ui-kit__ledger">
         <div class="ui-rec-head"><span>上游</span><span>成功率</span><span>平均耗时</span><span>响应次数</span></div>
         <div class="ui-rec">

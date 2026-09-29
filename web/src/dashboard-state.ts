@@ -11,12 +11,20 @@ function serviceStopped(overview: Overview | null, service: ServiceStatus | null
   return service?.active_state === 'inactive' || overview?.service_active === false
 }
 
+// 启动失败、正在启动、正在停止：服务没在正常运行，读不到数据是因为它，不是面板和内核之间断了
+// Failed, starting or stopping: the service is not running normally, which is why there is no data — not a broken link to the kernel
+function serviceNotRunning(service: ServiceStatus | null): boolean {
+  return ['failed', 'activating', 'deactivating'].includes(service?.active_state ?? '')
+}
+
 export function dashboardRuntimeState(
   overview: Overview | null,
   service: ServiceStatus | null,
 ): DashboardRuntimeState {
   if (overview?.live) return 'live'
-  if (!overview) return serviceStopped(overview, service) ? 'stopped-empty' : 'unavailable'
+  // 没有任何数据时，服务没在正常运行也按「未运行」保留完整布局（同首次安装），而不是只剩一条读取失败
+  // With no data at all, a service that is not running normally keeps the full layout as never-run (as on first install), not a lone read error
+  if (!overview) return serviceStopped(overview, service) || serviceNotRunning(service) ? 'stopped-empty' : 'unavailable'
   return serviceStopped(overview, service) ? 'stopped-snapshot' : 'unavailable-snapshot'
 }
 
