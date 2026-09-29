@@ -327,6 +327,12 @@ export function replaceDomainMappingRows(config: KixConfig, rows: DomainMappingR
     .flatMap((solution) => solution.selectorIndex === undefined ? [] : [solution.selectorIndex])
     .sort((left, right) => right - left)
   const mappingPipelineIds = new Set(mappings.flatMap((solution) => solution.pipeline ? [solution.pipeline.id] : []))
+  // 映射 Pipeline 原来在哪，改完放回哪：没有入口命中时内核交给第一个 Pipeline，
+  // 挪到末尾会悄悄换掉这个兜底。
+  // Put the mapping Pipeline back where it was: with no entry matching, the kernel hands
+  // the request to the first Pipeline, and moving this one to the end silently swaps it.
+  const originalIndex = config.pipelines.findIndex((pipeline) => mappingPipelineIds.has(pipeline.id))
+  const originalId = originalIndex >= 0 ? config.pipelines[originalIndex]!.id : undefined
 
   for (const index of selectorIndexes) config.pipeline_select.splice(index, 1)
   const references = collectPipelineReferences(config)
@@ -339,7 +345,12 @@ export function replaceDomainMappingRows(config: KixConfig, rows: DomainMappingR
   draft.mappingRows = rows
   const materialized = cloneSolutionDraft(draft)
   config.pipeline_select.unshift(materialized.selector)
-  config.pipelines.push({ ...materialized.pipeline, rules: materializeSolutionRules(materialized) })
+  const pipeline = { ...materialized.pipeline, rules: materializeSolutionRules(materialized) }
+  // 旧的还被跳转引用、没有删掉时，新的只能加在末尾，不能插到它前面去。
+  // If the old one is still referenced by a jump and stayed, the new one goes last rather than ahead of it.
+  const removed = originalId !== undefined && !config.pipelines.some((item) => item.id === originalId)
+  if (removed) config.pipelines.splice(originalIndex, 0, pipeline)
+  else config.pipelines.push(pipeline)
 }
 
 export function selectorMatchesEveryRequest(selector: PipelineSelectConfig): boolean {

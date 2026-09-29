@@ -110,6 +110,25 @@ describe('DNS 处理方案', () => {
     expect(value.pipelines.map((item) => item.id)).toEqual(['ordinary'])
   })
 
+  it('改映射时映射 Pipeline 留在原位：第一个 Pipeline 是内核的兜底，不能被悄悄换掉', () => {
+    const value: KixConfig = { settings: {}, pipeline_select: [selector('default')], pipelines: [pipeline('default')] }
+    replaceDomainMappingRows(value, [{ source: 'nas.home', target: 'storage.home.', ttl: 300 }])
+    const mappingId = value.pipeline_select[0]!.pipeline
+    // 新建的映射 Pipeline 加在末尾，第一个仍是 default。
+    expect(value.pipelines.map((item) => item.id)).toEqual(['default', mappingId])
+
+    // 映射 Pipeline 排在第一位（先建了映射、后加的其他 Pipeline）：再改映射也不挪它。
+    value.pipelines = [value.pipelines[1]!, value.pipelines[0]!, pipeline('domestic')]
+    replaceDomainMappingRows(value, [...collectDomainMappingRows(value), { source: 'git.home', target: 'nas.home.', ttl: 120 }])
+    expect(value.pipelines.map((item) => item.id)).toEqual([mappingId, 'default', 'domestic'])
+
+    // 排在中间也一样。
+    value.pipelines = [value.pipelines[1]!, value.pipelines[0]!, value.pipelines[2]!]
+    replaceDomainMappingRows(value, collectDomainMappingRows(value).slice(0, 1))
+    expect(value.pipelines.map((item) => item.id)).toEqual(['default', mappingId, 'domestic'])
+    expect(collectDomainMappingRows(value)).toEqual([{ source: 'nas.home', target: 'storage.home.', ttl: 300 }])
+  })
+
   it('一次生成国内解析、响应回退和全局兜底完整链路', () => {
     const drafts = createSolutionDrafts(config(), 'domestic_global')
 
