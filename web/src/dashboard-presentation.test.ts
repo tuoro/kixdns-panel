@@ -86,7 +86,7 @@ describe('上游健康与分布', () => {
     expect(upstreamBasis(mostlyServfail).recent).toBe(false)
   })
 
-  it('台账标题写出实际依据的时间段', () => {
+  it('上游状态标题写出实际依据的时间段', () => {
     expect(recentWindowLabel(null)).toBe('启动以来')
     expect(recentWindowLabel(3_600)).toBe('最近一小时')
     // 每分钟采样一次，正常时窗口是 59 到 60 分钟

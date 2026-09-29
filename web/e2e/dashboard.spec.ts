@@ -52,7 +52,7 @@ test('首页展示精确分布，页签可用键盘切换且完整保留三个�
   await expect(vitals.nth(1).locator('.overview-vital-label')).toHaveText('缓存命中率 · 启动以来')
   await expect(vitals.nth(2).locator('.overview-vital-label')).toHaveText('上游健康 · 最近一小时')
   const speed = vitals.nth(0)
-  // 平均 12.6 ms 按台账的写法取整；四段不重叠的区间写在细条的读屏名称里，触屏也读得到
+  // 平均 12.6 ms 按上游状态的写法取整；四段不重叠的区间写在细条的读屏名称里，触屏也读得到
   await expect(speed.locator('.overview-vital-figure strong')).toHaveText('13')
   const bands = await speed.locator('.overview-meter').getAttribute('aria-label')
   for (const band of ['10 ms 内 81.7%', '10–100 ms 15.2%', '100 ms–1 s 2.7%', '1 s 以上 0.4%']) expect(bands).toContain(band)
@@ -85,7 +85,7 @@ test('首页展示精确分布，页签可用键盘切换且完整保留三个�
   expect(counts).toEqual([...counts].sort((left, right) => right - left))
   await page.keyboard.press('Home')
   await expect(runtimeTab).toHaveAttribute('aria-selected', 'true')
-  await expect(page.getByRole('heading', { name: '上游台账' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '上游状态' })).toBeVisible()
 })
 
 test('查询排行保留时间窗口与带确认的清理操作', async ({ page }) => {
@@ -180,11 +180,11 @@ for (const stopped of [true, false]) {
   })
 }
 
-test('台账逐行展开，明细跟着这一行的时段，桌面和手机同一套行且无页面溢出 @responsive', async ({ page }, testInfo) => {
+test('上游状态逐行展开，明细跟着这一行的时段，桌面和手机同一套行且无页面溢出 @responsive', async ({ page }, testInfo) => {
   await openOverview(page)
   const rows = page.locator('.overview-upstream')
   await expect(rows).toHaveCount(3)
-  // 台账说明写时段，两种宽度都看得见 / The ledger's note names its period at both widths
+  // 上游状态说明写时段，两种宽度都看得见 / Upstream status's note names its period at both widths
   await expect(page.locator('.overview-ledger .ui-section__aside')).toContainText('最近一小时')
   await expect(page.locator('.overview-upstream-counts')).toHaveCount(0)
   // 错误、拒绝、TCP 兜底收进每行的展开里，平时不摆出来
@@ -216,7 +216,7 @@ test('台账逐行展开，明细跟着这一行的时段，桌面和手机同�
   expect(sizes.scroll).toBeLessThanOrEqual(sizes.client)
 })
 
-test('台账在中等宽度不挤地址：四列的最窄处 901 地址列至少 18rem，900 以下换成两行式', async ({ page }) => {
+test('上游状态在中等宽度不挤地址：四列的最窄处 901 地址列至少 18rem，900 以下换成两行式', async ({ page }) => {
   await page.setViewportSize({ width: 901, height: 900 })
   await openOverview(page)
   const rows = page.locator('.overview-upstream')
@@ -365,7 +365,7 @@ test('查询排行的时段跟着手上的数据走：定时刷新还在路上�
   await expect(page.getByRole('button', { name: '1 小时', exact: true })).toHaveAttribute('aria-pressed', 'true')
 })
 
-test('耗时慢了：注脚换成 100 ms 内和 1 s 以上，染色的是数值；台账里 999.6 ms 写成 1.0 s', async ({ page }) => {
+test('耗时慢了：注脚换成 100 ms 内和 1 s 以上，染色的是数值；上游状态里 999.6 ms 写成 1.0 s', async ({ page }) => {
   await openOverview(page)
   await page.evaluate(async () => {
     const { mockRequest } = await import('/src/api/mock.ts')

@@ -169,8 +169,8 @@ function formatLatency(value: number | null): string {
   const parts = latencyParts(value)
   return `${parts.figure} ${parts.unit}`
 }
-// 响应速度和上游台账一样看最近一小时；这一小时请求不够时退回启动以来的累计，名称照实写。
-// Speed covers the last hour like the ledger; with too few requests it falls back to the lifetime total, and the name says so.
+// 响应速度和上游状态一样看最近一小时；这一小时请求不够时退回启动以来的累计，名称照实写。
+// Speed covers the last hour like upstream status; with too few requests it falls back to the lifetime total, and the name says so.
 const speed = computed(() => {
   const metrics = displayOverview.value?.metrics
   if (!metrics) return null
@@ -221,12 +221,12 @@ const healthCounts = computed(() => {
   return counts
 })
 const judgedUpstreams = computed(() => upstreamRows.value.length - healthCounts.value.pending)
-// 每一行都退回了累计时，整张台账（和健康卡）说的就是启动以来，不再逐行标注
-// When every row fell back to the lifetime total, the whole ledger (and the health tile) speaks for the whole run; rows are not marked one by one
+// 每一行都退回了累计时，整个上游状态（和健康卡）说的就是启动以来，不再逐行标注
+// When every row fell back to the lifetime total, the whole upstream status section (and the health tile) speaks for the whole run; rows are not marked one by one
 const allSinceStart = computed(() => upstreamRows.value.length > 0 && upstreamRows.value.every((item) => item.sinceStart))
 const someSinceStart = computed(() => upstreamRows.value.filter((item) => item.sinceStart).length)
 const ledgerPeriod = computed(() => (allSinceStart.value ? '启动以来' : recentWindowLabel(recentWindow.value)))
-// 台账里有没有耗时：旧增强版整列都没有，就不画这一列 / Whether the ledger has latency at all: old enhanced builds have none, and the column is not drawn
+// 上游状态里有没有耗时：旧增强版整列都没有，就不画这一列 / Whether upstream status has latency at all: old enhanced builds have none, and the column is not drawn
 const hasLatency = computed(() => upstreamRows.value.some((item) => item.shown.avg_latency_ms !== null))
 // 细条按上游逐个分段，顺序固定：健康、降级、异常、观察中
 // The bar has one segment per upstream in a fixed order: healthy, degraded, unhealthy, pending
@@ -529,8 +529,8 @@ onBeforeUnmount(() => {
     <!-- 读取失败又没有任何数据时不出页签：下面没有可切换的东西 / No tabs when reading failed with no data at all: there is nothing to switch between -->
     <UiTabs v-if="loading || displayOverview" v-model="activeView" class="overview-tabs" :items="views" label="概览视图" id-prefix="overview" />
 
-    <!-- 骨架的分块照抄结果版式：信号带、三张体征卡、几行台账。尺寸对不上，数据到达时整页会跳。
-         The skeleton copies the result's blocks: the signal band, three vital tiles, a few ledger rows. Mismatched sizes make the page jump when data arrives. -->
+    <!-- 骨架的分块照抄结果版式：信号带、三张体征卡、几行上游状态。尺寸对不上，数据到达时整页会跳。
+         The skeleton copies the result's blocks: the signal band, three vital tiles, a few upstream rows. Mismatched sizes make the page jump when data arrives. -->
     <div v-if="loading" class="overview-skeleton" role="status" aria-label="正在读取运行数据">
       <div class="sk overview-skeleton-signal"></div>
       <div class="overview-skeleton-vitals"><i v-for="n in 3" :key="n" class="sk"></i></div>
@@ -612,8 +612,8 @@ onBeforeUnmount(() => {
           </article>
         </section>
 
-        <!-- 手动刷新时台账变淡；每 15 秒的定时刷新数据不动（全站约定） / The ledger fades on a manual refresh only; timed refreshes leave the data still (site convention) -->
-        <UiSection class="overview-ledger" :class="{ 'is-refreshing': refreshing }" title="上游台账" :aside="`${ledgerPeriod} · 成功率只算超时和连接错误`">
+        <!-- 手动刷新时上游状态变淡；每 15 秒的定时刷新数据不动（全站约定） / Upstream status fades on a manual refresh only; timed refreshes leave the data still (site convention) -->
+        <UiSection class="overview-ledger" :class="{ 'is-refreshing': refreshing }" title="上游状态" :aside="`${ledgerPeriod} · 成功率只算超时和连接错误`">
           <!-- 四列用于扫读：成功率、耗时、次数。错误、拒绝、TCP 兜底收进每行的展开里，是排查时才看的数。
                一行里只允许一个告警色：成功率和耗时同时染红，读者分不出到底是哪一项出了问题。
                Four columns to scan: success rate, latency, responses. Errors, refusals and TCP fallback live in each row's
@@ -828,7 +828,7 @@ onBeforeUnmount(() => {
 .overview-upstream-line b.overview-text--degraded { color: var(--warn-l); }
 .overview-upstream-line b.overview-text--unhealthy { color: var(--err-l); }
 
-/* 上游台账：组件库的记录行。 / The upstream ledger uses the kit's record rows. */
+/* 上游状态：组件库的记录行。 / Upstream status uses the kit's record rows. */
 /* 地址列拿走剩下的宽度；数字列有下限也有上限：窄屏不挤地址，宽屏不把数字推到最右边。
    The address column takes what is left; number columns have a floor and a ceiling, so narrow screens do not squeeze the
    address and wide ones do not push the figures to the far edge. */
@@ -935,8 +935,8 @@ onBeforeUnmount(() => {
   .overview-distributions, .overview-distributions.is-first-empty { grid-auto-flow: row; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); }
   .overview-distribution:first-child { grid-row: span 2; }
 }
-/* 900 以下：台账换成两行式（四列挤不下）；分布一块一行，标题满宽，内容限宽，数字不离名字太远
-   Below 900: the ledger turns to two-line rows (four columns no longer fit); distributions stack, headings full width, content
+/* 900 以下：上游状态换成两行式（四列挤不下）；分布一块一行，标题满宽，内容限宽，数字不离名字太远
+   Below 900: upstream status turns to two-line rows (four columns no longer fit); distributions stack, headings full width, content
    capped so figures stay near their names */
 @media (max-width: 900px) {
   .overview-ledger .ui-rec, .overview-ledger-list--no-latency .ui-rec { --rec-cols: minmax(0, 1fr) var(--h-touch); row-gap: var(--s-1); }

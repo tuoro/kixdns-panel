@@ -53,7 +53,7 @@ export function upstreamHealth(item: UpstreamCount): UpstreamHealth {
 }
 
 /**
- * 上游台账和响应速度依据的时间段。面板每分钟采样一次，正常时窗口在 59 到 60 分钟之间，
+ * 上游状态和响应速度依据的时间段。面板每分钟采样一次，正常时窗口在 59 到 60 分钟之间，
  * 都叫一小时；KixDNS 一小时内重启过时窗口从它启动算起；面板还没采到样本时没有窗口，只有累计。
  */
 export function recentWindowLabel(seconds: number | null): string {
