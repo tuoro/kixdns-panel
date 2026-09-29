@@ -97,10 +97,12 @@ const snapshotLabel = computed(() => {
   return captured ? clock(captured, false) : ''
 })
 const updatedLabel = computed(() => (loadedAt.value ? clock(loadedAt.value, true) : ''))
+// 页头服务状态后面还跟什么：实时写运行时长和更新时刻，读不到实时数据写快照时刻 / What follows the service state: uptime and update time when live, the snapshot time otherwise
+const metaTail = computed<'live' | 'snapshot' | ''>(() => (runtimeState.value === 'live' && overview.value ? 'live' : runtimeUnavailable.value && snapshotLabel.value ? 'snapshot' : ''))
 
 // ---------- 页级提示：一次只出一条，读取错误写进原因行 ----------
 // ---------- Page notice: one at a time, a read error goes in its reason line ----------
-interface PageNotice { tone: 'warn' | 'err' | 'off'; icon: typeof CircleAlert; title: string; reason: string; action?: 'retry' | 'config' }
+interface PageNotice { tone: 'warn' | 'err' | 'off'; icon: typeof CircleAlert; title: string; reason: string; action?: 'retry' | 'config' | 'logs' }
 // 原因行把几条读取错误和一句「接下来会怎样」连成一段 / The reason line joins the read errors and one sentence on what happens next
 function reasonOf(...parts: string[]): string {
   return parts.filter(Boolean).map((part) => part.replace(/[。；;.]$/, '')).join('；') + '。'
@@ -108,38 +110,42 @@ function reasonOf(...parts: string[]): string {
 const notice = computed<PageNotice | null>(() => {
   if (loading.value) return null
   const snapshot = snapshotLabel.value ? ` ${snapshotLabel.value} ` : ''
-  const errors = [overviewError.value, serviceError.value]
-  // 服务不是干净地停着（启动失败、正在启动），提示和页头说同一件事 / When the service is not cleanly stopped (failed, starting), the notice says what the header says
-  const serviceTitle = serviceTone.value === 'err' ? 'KixDNS 启动失败' : serviceTone.value === 'warn' ? `KixDNS ${serviceLabel.value}` : ''
-  // 启动失败、正在启动的服务，提示照服务说；正在启动时数据马上会来，不说「不再更新」
-  // A failed or starting service is what the notice reports; while starting, data is about to arrive, so it never says 不再更新
-  const serviceNotice = (reason: string): PageNotice => serviceTone.value === 'err'
-    ? { tone: 'err', icon: CircleX, title: serviceTitle, reason }
-    : { tone: 'warn', icon: CircleAlert, title: serviceTitle, reason: reasonOf(snapshot.trim() ? `显示${snapshot}的快照` : '当前尚无运行数据', 'KixDNS 运行后概览会自动更新') }
+  // 运行数据的错误不带前缀（标题已经说了是运行数据）；服务状态的错误带「服务状态：」，和它分得开
+  // A runtime-data error goes unprefixed (the title already says so); a service error carries 服务状态： to tell the two apart
+  const serviceErrorPart = serviceError.value ? `服务状态：${serviceError.value}` : ''
+  // 服务不是干净地停着（启动失败、正在启动、正在停止），提示和页头说同一件事
+  // When the service is not cleanly stopped (failed, starting, stopping), the notice says what the header says
+  const tone = serviceTone.value
+  const serviceTitle = tone === 'err' ? 'KixDNS 启动失败' : tone === 'warn' ? `KixDNS ${serviceLabel.value}` : ''
+  // 原因按状态说接下来会怎样：启动失败指去日志；正在启动说完成后自动更新；正在停止不许诺什么
+  // The reason says what comes next by state: a failure points to the logs, a start updates on completion, a stop promises nothing
+  const serviceNotice = (shown: string): PageNotice => tone === 'err'
+    ? { tone: 'err', icon: CircleX, title: serviceTitle, reason: reasonOf(shown, '查看日志了解启动失败的原因'), action: 'logs' }
+    : { tone: 'warn', icon: CircleAlert, title: serviceTitle, reason: reasonOf(shown, service.value?.active_state === 'activating' ? '启动完成后概览会自动更新' : '') }
   switch (runtimeState.value) {
     case 'stopped-empty':
       return serviceTitle
-        ? serviceNotice('当前尚无运行数据，KixDNS 运行后概览会自动更新。')
-        : { tone: 'off', icon: Power, title: 'KixDNS 未启动', reason: '当前尚无运行数据，启动 KixDNS 后概览会自动更新。' }
+        ? serviceNotice('还没有运行数据')
+        : { tone: 'off', icon: Power, title: 'KixDNS 已停止', reason: reasonOf('还没有运行数据', '启动 KixDNS 后概览会自动更新') }
     case 'stopped-snapshot':
       return serviceTitle
-        ? serviceNotice(`显示停止前${snapshot}的快照，数据不再更新。`)
-        : { tone: 'off', icon: Power, title: 'KixDNS 已停止', reason: `显示停止前${snapshot}的快照，数据不再更新。` }
+        ? serviceNotice(`显示停止前${snapshot}的快照`)
+        : { tone: 'off', icon: Power, title: 'KixDNS 已停止', reason: reasonOf(`显示停止前${snapshot}的快照`, '启动 KixDNS 后概览会自动更新') }
     case 'unavailable-snapshot':
-      return { tone: 'warn', icon: CircleAlert, title: '实时数据暂不可用', reason: reasonOf(...(errors.some(Boolean) ? errors : ['控制通道暂时没有应答']), `显示${snapshot}的快照，恢复后会自动更新`), action: 'retry' }
+      return { tone: 'warn', icon: CircleAlert, title: '实时数据暂不可用', reason: reasonOf(overviewError.value || 'KixDNS 暂时没有应答', serviceErrorPart, `显示${snapshot}的快照，恢复后会自动更新`), action: 'retry' }
     case 'unavailable':
-      // 服务没在正常运行（第一次启动就失败、刚点了启动），读不到数据的原因就是它，照服务说
-      // When the service is not running normally (failed on first start, just started), that is why there is no data, and the notice says so
-      if (serviceTitle) return serviceNotice(reasonOf('当前尚无运行数据', '查看日志页了解原因，KixDNS 运行后概览会自动更新'))
-      return { tone: 'err', icon: CircleX, title: '读不到运行数据', reason: reasonOf(...errors, '页面每 15 秒自动重试'), action: 'retry' }
-    default:
+      return { tone: 'err', icon: CircleX, title: '读不到运行数据', reason: reasonOf(overviewError.value, serviceErrorPart, '页面每 15 秒自动重试'), action: 'retry' }
+    default: {
       // 手上的数据还标着实时，但最近一次刷新失败了：和上面同一件事，写法一样
       // The data in hand is still marked live but the latest refresh failed: the same situation as above, written the same way
-      if (overviewError.value) return { tone: 'warn', icon: CircleAlert, title: '实时数据暂不可用', reason: reasonOf(...errors, `显示 ${updatedLabel.value} 读到的数据，恢复后会自动更新`), action: 'retry' }
-      if (overview.value && !overview.value.active_config.last_reload.success) {
-        return { tone: 'warn', icon: CircleAlert, title: '配置重载失败', reason: `新配置没有生效，仍按配置代次 #${overview.value.active_config.generation} 运行；失败原因见下方「当前运行配置」。`, action: 'config' }
+      if (overviewError.value) return { tone: 'warn', icon: CircleAlert, title: '实时数据暂不可用', reason: reasonOf(overviewError.value, serviceErrorPart, `显示 ${updatedLabel.value} 读到的数据，恢复后会自动更新`), action: 'retry' }
+      const reload = overview.value?.active_config.last_reload
+      if (overview.value && reload && !reload.success) {
+        // 卡片里有失败原文时才指过去 / Point to the card only when it actually shows the failure text
+        return { tone: 'warn', icon: CircleAlert, title: '配置重载失败', reason: reasonOf(`新配置没有生效，仍按配置代次 #${overview.value.active_config.generation} 运行`, reload.error ? '失败原因见下方「当前运行配置」' : ''), action: 'config' }
       }
       return serviceError.value ? { tone: 'warn', icon: CircleAlert, title: '服务状态读取失败', reason: reasonOf(serviceError.value), action: 'retry' } : null
+    }
   }
 })
 
@@ -293,7 +299,7 @@ const statsWindowKey = computed({
   get: () => String(statsWindow.value),
   set: (value: string) => { void setStatsWindow(Number(value)) },
 })
-const statsWindowItems = computed(() => statsWindows.map((item) => ({ value: String(item.value), label: item.label, disabled: statsLoading.value || runtimeControlsDisabled.value })))
+const statsWindowItems = computed(() => statsWindows.map((item) => ({ value: String(item.value), label: item.label, disabled: runtimeControlsDisabled.value })))
 // 时段跟着手上这份数据的窗口写，不跟着刚点的那一档：新窗口的数据到了才换
 // The period follows the window of the data in hand, not the option just pressed: it changes when the new window's data arrives
 const statsWindowLabel = computed(() => {
@@ -318,11 +324,11 @@ function load(silent = false): Promise<void> {
       overview.value = overviewResult.value
       overviewError.value = ''
       loadedAt.value = Date.now()
-    } else overviewError.value = `运行数据：${errorMessage(overviewResult.reason)}`
+    } else overviewError.value = errorMessage(overviewResult.reason)
     if (serviceResult.status === 'fulfilled') {
       service.value = serviceResult.value
       serviceError.value = ''
-    } else serviceError.value = `服务状态：${errorMessage(serviceResult.reason)}`
+    } else serviceError.value = errorMessage(serviceResult.reason)
   })().finally(() => {
     loading.value = false
     refreshing.value = false
@@ -453,8 +459,9 @@ const trendWindow = computed(() => {
 })
 
 const trendPending = computed(() => {
-  // 没启动就没有采样可说：说清楚要等的是 KixDNS，不是面板 / Not started means no sampling at all: say it waits on KixDNS, not the panel
-  if (!overview.value) return '启动 KixDNS 后显示请求量趋势'
+  // 没运行过就没有采样可说；「启动后会怎样」页顶提示已经说了，这里和三张卡一样只写「尚无数据」
+  // Never run means nothing sampled; the page notice already says what starting will do, so this reads 尚无数据 like the tiles
+  if (!overview.value) return '尚无数据'
   const trend = displayOverview.value?.trend
   if (!trend || trend.points.length === 0) return '面板刚开始采样，一两分钟后显示请求量趋势'
   return '再过一会儿就能画出趋势，面板每分钟采样一次'
@@ -499,13 +506,15 @@ onBeforeUnmount(() => {
         <template v-if="service">
           <span class="ui-dot" :class="{ 'ui-dot--warn': serviceTone === 'warn', 'ui-dot--err': serviceTone === 'err', 'ui-dot--off': serviceTone === 'off' }" aria-hidden="true"></span>
           <span class="ui-mono">{{ service.unit }}</span>
-          <span>{{ serviceLabel }}</span>
-          <template v-if="unusualServiceState"><span class="ui-sep">·</span><span class="ui-mono">{{ unusualServiceState }}</span></template>
-          <template v-if="runtimeState === 'live' && overview">
-            <span class="ui-sep">·</span><span>已运行 {{ formatDuration(overview.health.uptime_seconds) }}</span>
-            <span class="ui-sep overview-meta-time">·</span><span class="overview-meta-time">更新于 <span class="ui-mono">{{ updatedLabel }}</span></span>
+          <!-- 「·」收在前一段的末尾：折行只会发生在它后面，它可以在行尾，不会出现在行首（GB/T 15834）
+               The 「·」 closes the segment before it, so a wrap can only fall after it: it may end a line, never start one (GB/T 15834) -->
+          <span>{{ serviceLabel }}<span v-if="unusualServiceState || metaTail" class="ui-sep">·</span></span>
+          <span v-if="unusualServiceState"><span class="ui-mono">{{ unusualServiceState }}</span><span v-if="metaTail" class="ui-sep">·</span></span>
+          <template v-if="metaTail === 'live' && overview">
+            <span>已运行 {{ formatDuration(overview.health.uptime_seconds) }}<span class="ui-sep overview-meta-time">·</span></span>
+            <span class="overview-meta-time">更新于 <span class="ui-mono">{{ updatedLabel }}</span></span>
           </template>
-          <template v-else-if="runtimeUnavailable && snapshotLabel"><span class="ui-sep">·</span><span>快照 <span class="ui-mono">{{ snapshotLabel }}</span></span></template>
+          <span v-else-if="metaTail === 'snapshot'">快照 <span class="ui-mono">{{ snapshotLabel }}</span></span>
         </template>
         <span v-else-if="loading" class="sk overview-skeleton-meta" role="status" aria-label="读取服务状态"></span>
         <span v-else>服务状态暂不可用</span>
@@ -524,6 +533,7 @@ onBeforeUnmount(() => {
       <small>{{ notice.reason }}</small>
       <button v-if="notice.action === 'retry'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="requesting" @click="refreshAll">重试</button>
       <RouterLink v-else-if="notice.action === 'config'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" to="/config">管理配置</RouterLink>
+      <RouterLink v-else-if="notice.action === 'logs'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" to="/logs">查看日志</RouterLink>
     </div>
 
     <!-- 读取失败又没有任何数据时不出页签：下面没有可切换的东西 / No tabs when reading failed with no data at all: there is nothing to switch between -->
@@ -569,7 +579,7 @@ onBeforeUnmount(() => {
              每张卡的名称都写时段：速度和健康看最近一小时，缓存命中是启动以来。
              The three tiles share four rows (name, figure, bar, footnote), so the bars stay level when a footnote wraps.
              Each tile names its period: speed and health cover the last hour, cache hits the whole run. -->
-        <section class="overview-vitals" aria-label="运行体征">
+        <section class="overview-vitals" aria-label="关键指标">
           <article v-if="speed" class="overview-vital overview-vital--speed">
             <h2 class="overview-vital-label">响应速度<template v-if="speed.bands.length"> · {{ speed.period }}</template></h2>
             <template v-if="speed.bands.length">
@@ -577,13 +587,13 @@ onBeforeUnmount(() => {
               <span class="overview-meter" role="img" :aria-label="`耗时分布：${speed.spoken}`">
                 <i v-for="band in speed.bands" :key="band.key" :class="`overview-meter--${band.key}`" :style="{ width: `${band.share * 100}%` }"></i>
               </span>
-              <p v-if="speed.health === 'healthy'" class="overview-vital-foot"><span>10 ms 内 <b>{{ formatPercent(speed.within10) }}</b></span><span class="ui-sep">·</span><span>100 ms 内 <b>{{ formatPercent(speed.within100) }}</b></span></p>
-              <p v-else class="overview-vital-foot"><span :class="`overview-text--${speed.health}`">100 ms 内 <b>{{ formatPercent(speed.within100) }}</b></span><span class="ui-sep">·</span><span>1 s 以上 <b>{{ formatSmallPercent(speed.slower) }}</b></span></p>
+              <p v-if="speed.health === 'healthy'" class="overview-vital-foot"><span>10 ms 内 <b>{{ formatPercent(speed.within10) }}</b><span class="ui-sep">·</span></span><span>100 ms 内 <b>{{ formatPercent(speed.within100) }}</b></span></p>
+              <p v-else class="overview-vital-foot"><span :class="`overview-text--${speed.health}`">100 ms 内 <b>{{ formatPercent(speed.within100) }}</b><span class="ui-sep">·</span></span><span>1 s 以上 <b>{{ formatSmallPercent(speed.slower) }}</b></span></p>
             </template>
             <template v-else>
               <p class="overview-vital-figure"><strong>—</strong></p>
               <span class="overview-meter is-empty" aria-hidden="true"></span>
-              <p class="overview-vital-foot">{{ !overview ? '尚无数据' : precisionSupported ? '还没有请求' : '当前增强版不提供耗时数据，更新增强版后显示' }}</p>
+              <p class="overview-vital-foot">{{ !overview ? '尚无数据' : precisionSupported ? '还没有请求' : '更新增强版后显示耗时' }}</p>
             </template>
           </article>
           <article class="overview-vital">
@@ -593,7 +603,7 @@ onBeforeUnmount(() => {
               <i class="overview-meter--fresh" :style="{ width: `${cacheFreshShare * 100}%` }"></i><i class="overview-meter--stale" :style="{ width: `${cacheStaleShare * 100}%` }"></i>
             </span>
             <p v-if="!cacheLookups" class="overview-vital-foot">{{ overview ? '还没有查询过缓存' : '尚无数据' }}</p>
-            <p v-else class="overview-vital-foot"><span>{{ formatNumber(displayOverview.metrics.cache_entries) }} 条缓存</span><template v-if="staleShare"><span class="ui-sep">·</span><span>续用旧结果 {{ formatPercent(staleShare) }}</span></template></p>
+            <p v-else class="overview-vital-foot"><span>{{ formatNumber(displayOverview.metrics.cache_entries) }} 条缓存<span v-if="staleShare" class="ui-sep">·</span></span><span v-if="staleShare">续用旧结果 {{ formatPercent(staleShare) }}</span></p>
           </article>
           <article class="overview-vital">
             <h2 class="overview-vital-label">上游健康<template v-if="precisionSupported && judgedUpstreams"> · {{ ledgerPeriod }}</template></h2>
@@ -602,18 +612,18 @@ onBeforeUnmount(() => {
               <span class="overview-meter overview-meter--health" role="img" :aria-label="`健康 ${healthCounts.healthy} 个，降级 ${healthCounts.degraded} 个，异常 ${healthCounts.unhealthy} 个，观察中 ${healthCounts.pending} 个`">
                 <i v-for="segment in healthSegments" :key="segment.key" :class="`overview-meter--${segment.key}`" :style="{ width: `${segment.share * 100}%` }"></i>
               </span>
-              <p class="overview-vital-foot"><template v-for="(part, index) in healthFoot" :key="part.text"><span v-if="index" class="ui-sep">·</span><span :class="part.tone ? `overview-text--${part.tone}` : ''">{{ part.text }}</span></template></p>
+              <p class="overview-vital-foot"><span v-for="(part, index) in healthFoot" :key="part.text" :class="part.tone ? `overview-text--${part.tone}` : ''">{{ part.text }}<span v-if="index < healthFoot.length - 1" class="ui-sep">·</span></span></p>
             </template>
             <template v-else>
               <p class="overview-vital-figure"><strong>—</strong></p>
               <span class="overview-meter is-empty" aria-hidden="true"></span>
-              <p class="overview-vital-foot">{{ !overview ? '尚无数据' : !precisionSupported ? '当前增强版不提供健康判定数据，更新增强版后显示' : upstreamRows.length ? `${upstreamRows.length} 个上游都在观察中，各满 ${MIN_HEALTH_SAMPLES} 次响应后判定` : '还没有上游应答过请求' }}</p>
+              <p class="overview-vital-foot">{{ !overview ? '尚无数据' : !precisionSupported ? '更新增强版后显示健康判定' : upstreamRows.length ? `${upstreamRows.length} 个上游都在观察中，各满 ${MIN_HEALTH_SAMPLES} 次响应后判定` : '还没有上游应答过请求' }}</p>
             </template>
           </article>
         </section>
 
         <!-- 手动刷新时上游状态变淡；每 15 秒的定时刷新数据不动（全站约定） / Upstream status fades on a manual refresh only; timed refreshes leave the data still (site convention) -->
-        <UiSection class="overview-ledger" :class="{ 'is-refreshing': refreshing }" title="上游状态" :aside="`${ledgerPeriod} · 成功率只算超时和连接错误`">
+        <UiSection class="overview-ledger" :class="{ 'is-refreshing': refreshing }" title="上游状态" :aside="upstreamRows.length ? `${ledgerPeriod} · 成功率只算超时和连接错误` : undefined">
           <!-- 四列用于扫读：成功率、耗时、次数。错误、拒绝、TCP 兜底收进每行的展开里，是排查时才看的数。
                一行里只允许一个告警色：成功率和耗时同时染红，读者分不出到底是哪一项出了问题。
                Four columns to scan: success rate, latency, responses. Errors, refusals and TCP fallback live in each row's
@@ -643,12 +653,12 @@ onBeforeUnmount(() => {
                     <ChevronRight :size="16" aria-hidden="true" />
                   </button>
                 </span>
-                <p class="ui-rec__phone overview-upstream-line"><span>成功率 <b :class="`overview-text--${item.health}`">{{ formatPercent(upstreamSuccessRate(item.shown)) }}</b></span><template v-if="hasLatency"><span class="ui-sep">·</span><span>平均 {{ formatLatency(item.shown.avg_latency_ms) }}</span></template><span class="ui-sep">·</span><span>{{ formatNumber(item.settled) }} 次响应</span><template v-if="item.sinceStart && !allSinceStart"><span class="ui-sep">·</span><span>启动以来</span></template></p>
+                <p class="ui-rec__phone overview-upstream-line"><span>成功率 <b :class="`overview-text--${item.health}`">{{ formatPercent(upstreamSuccessRate(item.shown)) }}</b><span class="ui-sep">·</span></span><span v-if="hasLatency">平均 {{ formatLatency(item.shown.avg_latency_ms) }}<span class="ui-sep">·</span></span><span>{{ formatNumber(item.settled) }} 次响应<span v-if="item.sinceStart && !allSinceStart" class="ui-sep">·</span></span><span v-if="item.sinceStart && !allSinceStart">启动以来</span></p>
               </div>
               <div v-if="expandedUpstream === upstreamKey(item)" class="overview-upstream-detail ui-rise">
                 <dl class="ui-strip overview-upstream-counts">
                   <div><dt>成功</dt><dd>{{ formatNumber(item.shown.success) }}</dd></div>
-                  <div><dt>错误</dt><dd :class="{ 'overview-text--degraded': item.shown.errors > 0 }">{{ formatNumber(item.shown.errors) }}</dd></div>
+                  <div><dt>错误</dt><dd>{{ formatNumber(item.shown.errors) }}</dd></div>
                   <div><dt>拒绝</dt><dd>{{ formatNumber(item.shown.rejected) }}</dd></div>
                   <div><dt>TCP 兜底</dt><dd>{{ fallbackShare(item) }}</dd></div>
                 </dl>
@@ -661,7 +671,8 @@ onBeforeUnmount(() => {
         <!-- 三块同一种东西（主项做大、其余列表），并成一行三栏；都是启动以来的累计。
              Three blocks of one kind (the leading figure large, the rest listed) share one row; all are lifetime totals. -->
         <div class="overview-distributions" :class="{ 'is-first-empty': !pipelines.length }">
-          <UiSection class="overview-distribution" title="请求分布" aside="启动以来 · 按 Pipeline">
+          <!-- 区块空着时不写时段和口径：说明的是一张不存在的表 / An empty block drops its period note: it would describe a table that is not there -->
+          <UiSection class="overview-distribution" title="请求分布" :aside="pipelines.length ? '启动以来 · 按 Pipeline' : undefined">
             <template v-if="pipelines.length">
               <p class="overview-lead"><span class="overview-lead-share">{{ formatPercent(pipelines[0].share) }}</span><span class="overview-lead-name ui-mono">{{ pipelines[0].name }}</span><span class="overview-lead-count">{{ formatNumber(pipelines[0].count) }} 次</span></p>
               <ul v-if="pipelines.length > 1" class="overview-shares" aria-label="Pipeline 命中分布">
@@ -689,8 +700,10 @@ onBeforeUnmount(() => {
         <!-- 页签已经写了「查询排行」，这里不再重复标题：这一行只说时段和总量，右边是窗口和清空。
              The tab already says 查询排行, so no repeated title: this line gives the period and the volume, with the window and clearing on the right. -->
         <!-- 统计没启用、内核不支持时，时段、总量和窗口都无从说起，整行不出 / With statistics off or unsupported there is no period, volume or window to speak of, so the line is omitted -->
-        <div v-if="showStatsSection && displayStats?.enabled !== false" class="overview-toolbar">
-          <p><span>{{ statsWindowLabel }}</span><template v-if="displayStats"><span class="ui-sep">·</span><span>已观察 {{ formatNumber(displayStats.requests_observed) }} 次请求</span><template v-if="displayStats.dropped_updates"><span class="ui-sep">·</span><span>丢弃 {{ formatNumber(displayStats.dropped_updates) }} 次统计更新</span></template></template></p>
+        <!-- 没运行过：没有窗口、没有总量可说，工具行不出；两张表照样留着（首次安装保留完整布局），各写「尚无数据」
+             Never run: no window or volume to speak of, so no toolbar; both tables stay (first install keeps the full layout), each reading 尚无数据 -->
+        <div v-if="runtimeState !== 'stopped-empty' && showStatsSection && displayStats?.enabled !== false" class="overview-toolbar">
+          <p><span>{{ statsWindowLabel }}<span v-if="displayStats" class="ui-sep">·</span></span><template v-if="displayStats"><span>已观察 {{ formatNumber(displayStats.requests_observed) }} 次请求<span v-if="displayStats.dropped_updates" class="ui-sep">·</span></span><span v-if="displayStats.dropped_updates">丢弃 {{ formatNumber(displayStats.dropped_updates) }} 次统计更新</span></template></p>
           <div class="overview-toolbar-tools">
             <UiTabs v-model="statsWindowKey" variant="segment" size="sm" :items="statsWindowItems" label="统计窗口" />
             <!-- 清空按钮一直在，没东西可清、读不到排行时置灰：分段不会因为它出现消失而左右跳
@@ -698,7 +711,7 @@ onBeforeUnmount(() => {
             <button class="ui-icon-btn ui-icon-btn--sm" type="button" title="清空查询排行" aria-label="清空查询排行" :disabled="statsClearing || runtimeControlsDisabled || !stats?.enabled || !stats.requests_observed" @click="clearQueryStats"><Eraser :size="16" aria-hidden="true" /></button>
           </div>
         </div>
-        <div v-if="statsError" class="ui-notice ui-notice--err overview-notice" role="alert">
+        <div v-if="statsError && runtimeState !== 'stopped-empty'" class="ui-notice ui-notice--err overview-notice" role="alert">
           <CircleX :size="16" aria-hidden="true" />
           <span>查询排行读取失败</span>
           <small>{{ statsError }}</small>
@@ -715,7 +728,7 @@ onBeforeUnmount(() => {
                 <i aria-hidden="true"><span :style="{ width: `${item.count / (group.id === 'clients' ? maxClient : maxDomain) * 100}%` }"></span></i>
               </li>
             </ol>
-            <p v-else class="overview-empty">{{ group.empty }}</p>
+            <p v-else class="overview-empty">{{ runtimeState === 'stopped-empty' ? '尚无数据' : group.empty }}</p>
           </section>
         </div>
         <!-- 下方配置卡已有「管理配置」，这里只说开关在哪，不再放第二个去同一处的按钮
@@ -725,7 +738,7 @@ onBeforeUnmount(() => {
       </section>
 
       <section id="overview-panel-rules" v-show="activeView === 'rules'" class="overview-view" role="tabpanel" aria-labelledby="overview-tab-rules" tabindex="0">
-        <div v-if="rules.length" class="overview-toolbar"><p><span>启动以来</span><span class="ui-sep">·</span><span>请求与响应阶段的累计执行次数</span></p></div>
+        <div v-if="rules.length" class="overview-toolbar"><p><span>启动以来<span class="ui-sep">·</span></span><span>请求与响应阶段的累计执行次数</span></p></div>
         <div v-if="rules.length" class="overview-rules">
           <div class="ui-rec-head"><span>阶段</span><span>规则</span><span>Pipeline</span><span>执行次数</span></div>
           <div v-for="rule in rules" :key="`${rule.pipeline}:${rule.phase}:${rule.rule}`" class="ui-rec overview-rule">
@@ -746,7 +759,7 @@ onBeforeUnmount(() => {
              and the two digests share one strip (as on the system page's 当前安装). -->
         <template v-if="overview">
           <p class="overview-config-lead">配置代次 <span class="ui-mono">#{{ overview.active_config.generation }}</span></p>
-          <p class="overview-config-meta"><span>重载 <span class="ui-mono">#{{ overview.active_config.reload_sequence }}</span></span><span class="ui-sep">·</span><span>补丁集 <span class="ui-mono">{{ overview.health.patchset ? `p${overview.health.patchset}` : '未记录' }}</span></span></p>
+          <p class="overview-config-meta"><span>重载 <span class="ui-mono">#{{ overview.active_config.reload_sequence }}</span><span class="ui-sep">·</span></span><span>补丁集 <span class="ui-mono">{{ overview.health.patchset ? `p${overview.health.patchset}` : '未记录' }}</span></span></p>
           <p v-if="!overview.active_config.last_reload.success && overview.active_config.last_reload.error" class="overview-reload-error ui-mono">{{ overview.active_config.last_reload.error }}</p>
           <dl class="ui-strip overview-config-hashes">
             <div><dt>配置摘要</dt><dd class="ui-mono" :title="overview.active_config.sha256">{{ shortHash(overview.active_config.sha256, 14) }}</dd></div>
@@ -757,8 +770,10 @@ onBeforeUnmount(() => {
         <p v-else class="overview-config-empty">KixDNS 启动后显示正在运行的配置。</p>
         <template #foot>
           <!-- 按钮不能按时，左边写原因 / When the buttons cannot be used, the left side says why -->
-          <span v-if="runtimeState === 'live' && overview" class="overview-runtime-note"><span>PID <span class="ui-mono">{{ overview.health.pid }}</span></span><span class="ui-sep">·</span><span>统计为运行时累计值</span></span>
-          <span v-else class="overview-runtime-note">{{ runtimeState === 'unavailable-snapshot' ? '控制通道暂时没有应答，不能清空缓存' : 'KixDNS 未运行，不能清空缓存' }}</span>
+          <!-- 各块的数字已经各自写了时段，这里不再总括一句；按钮不能按时只说什么时候能按，状态由页顶提示说
+               Each block names its own period, so no blanket statement here; when the button is unavailable this says when it will be, the page notice says why -->
+          <span v-if="runtimeState === 'live' && overview" class="overview-runtime-note"><span>PID <span class="ui-mono">{{ overview.health.pid }}</span></span></span>
+          <span v-else class="overview-runtime-note">{{ runtimeState === 'unavailable-snapshot' ? '实时数据恢复后才能清空缓存' : 'KixDNS 运行后才能清空缓存' }}</span>
           <span class="overview-runtime-actions">
             <RouterLink class="ui-btn ui-btn--secondary ui-btn--sm" to="/config">管理配置</RouterLink>
             <button class="ui-btn ui-btn--danger ui-btn--sm" type="button" :disabled="flushing || runtimeControlsDisabled" @click="flushCache"><Eraser :size="14" aria-hidden="true" />{{ flushing ? '正在清理' : '清空内部缓存' }}</button>
@@ -772,6 +787,9 @@ onBeforeUnmount(() => {
 <style scoped>
 .overview-page { display: grid; gap: var(--s-5); color: var(--l-ink); }
 .overview-page > * { min-width: 0; }
+/* 「·」收在前一段里，和前一段隔开的距离由它自己补上（段与段之间的 gap 在它后面）
+   The 「·」 lives inside the segment before it and supplies its own space from that segment (the gap between segments follows it) */
+.overview-page .ui-sep { margin-inline-start: var(--s-2); }
 .overview-skeleton-meta { width: 16rem; height: calc(var(--t-2) * var(--lh-base)); }
 .overview-tabs { margin-bottom: calc(var(--s-1) * -1); }
 .overview-view { display: grid; gap: var(--s-6); outline-offset: var(--s-1); }
@@ -825,15 +843,18 @@ onBeforeUnmount(() => {
 .overview-text--unhealthy { color: var(--err-l); }
 /* 染色的那一项里，数值跟着染色（组件里的 b 默认是次要墨色）/ Inside a coloured item the value takes the colour too (b is otherwise the secondary ink) */
 .overview-vital-foot .overview-text--degraded b, .overview-vital-foot .overview-text--unhealthy b { color: inherit; }
+/* 中文只在标点和空格处折行，不把「数据」「判定」这类词拆开；实在放不下再任意断
+   Chinese wraps at punctuation and spaces only, never splitting a word such as 数据; anywhere is the fallback when nothing fits */
+.overview-vital-foot, .overview-view :deep(.ui-empty__desc) { word-break: keep-all; overflow-wrap: anywhere; }
 .overview-upstream-line b.overview-text--degraded { color: var(--warn-l); }
 .overview-upstream-line b.overview-text--unhealthy { color: var(--err-l); }
 
 /* 上游状态：组件库的记录行。 / Upstream status uses the kit's record rows. */
-/* 地址列拿走剩下的宽度；数字列有下限也有上限：窄屏不挤地址，宽屏不把数字推到最右边。
-   The address column takes what is left; number columns have a floor and a ceiling, so narrow screens do not squeeze the
-   address and wide ones do not push the figures to the far edge. */
-.overview-ledger .ui-rec, .overview-ledger .ui-rec-head { --rec-cols: minmax(18rem, 2fr) repeat(3, minmax(6.5rem, 1fr)) var(--h-sm); }
-.overview-ledger-list--no-latency .ui-rec, .overview-ledger-list--no-latency .ui-rec-head { --rec-cols: minmax(18rem, 2fr) repeat(2, minmax(6.5rem, 1fr)) var(--h-sm); }
+/* 地址列至少 18rem、占两份，数字列各占一份：地址不被挤窄，数字也不会被推到最右边。展开条用同一套列。
+   The address column gets at least 18rem and two shares, each number column one, so the address is never squeezed and the
+   figures never pushed to the far edge. The expansion uses the same columns. */
+.overview-ledger .ui-rec, .overview-ledger .ui-rec-head, .overview-upstream-detail { --rec-cols: minmax(18rem, 2fr) repeat(3, minmax(6.5rem, 1fr)) var(--h-sm); }
+.overview-ledger-list--no-latency :is(.ui-rec, .ui-rec-head, .overview-upstream-detail) { --rec-cols: minmax(18rem, 2fr) repeat(2, minmax(6.5rem, 1fr)) var(--h-sm); }
 .overview-ledger.is-refreshing .overview-ledger-list { opacity: .72; transition: opacity var(--m-quick) var(--ease-out); }
 .overview-upstream-id { min-width: 0; display: grid; gap: 2px; }
 .overview-upstream-name { display: flex; align-items: baseline; gap: var(--s-2); min-width: 0; }
@@ -848,16 +869,18 @@ onBeforeUnmount(() => {
 .overview-expand svg { transition: transform var(--m-slow) var(--ease-out); }
 .overview-expand[aria-expanded="true"] svg { transform: rotate(90deg); }
 .overview-upstream.is-open { border-bottom-color: transparent; }
-/* 展开条：分隔线画满整行，四项限在地址那一列的宽度里，不落到右边的数字列下面
-   The expansion: its rule spans the row while the four figures stay within the address column, never under the number columns */
-.overview-upstream-detail { padding: 0 0 var(--s-3) calc(var(--size-dot) + var(--s-2)); border-bottom: 1px solid var(--l-hair); }
-.overview-upstream-counts { grid-template-columns: repeat(4, minmax(0, 9rem)); font-variant-numeric: tabular-nums; }
+/* 展开条：分隔线画满整行；四项排成 2×2 放在地址那一列里、和地址左边对齐，不落到右边的数字列下面（十位数的累计一行放不下四项）
+   The expansion: its rule spans the row; the four figures sit 2×2 in the address column, aligned with the address, never under
+   the number columns (four ten-digit totals do not fit on one line) */
+.overview-upstream-detail { display: grid; grid-template-columns: var(--rec-cols); column-gap: var(--s-4); padding-bottom: var(--s-3); border-bottom: 1px solid var(--l-hair); }
+.overview-upstream-detail:last-child { border-bottom: 0; }
+.overview-upstream-counts { grid-column: 1; grid-template-columns: repeat(2, minmax(0, 1fr)); padding-left: calc(var(--size-dot) + var(--s-2)); font-variant-numeric: tabular-nums; }
 .overview-upstream-line { flex-wrap: wrap; align-items: baseline; gap: 0 var(--s-2); margin: 0; color: var(--l-ink-3); font-size: var(--t-2); font-variant-numeric: tabular-nums; }
 .overview-upstream-line b { color: var(--l-ink-2); font-weight: var(--w-medium); }
 
-/* 分布：1200 以上并成一行，第一栏（Pipeline 名长）宽一些；空的那块不渲染，剩下的铺满。以下一块一行，整块限宽，说明不离内容太远。
-   Distributions: from 1200 up they share a row, the first (long Pipeline names) wider; an empty block is not rendered and the
-   rest fill the row. Below that, one block per row, each capped in width so the note stays near its content. */
+/* 分布：1200 以上并成一行，第一栏（Pipeline 名长）宽一些；响应码、缓存为空时不渲染，剩下的铺满。900–1199 和 900 以下见下面的媒体查询。
+   Distributions: from 1200 up they share a row, the first (long Pipeline names) wider; empty response-code or cache blocks are
+   not rendered and the rest fill the row. 900–1199 and below 900 are in the media queries further down. */
 .overview-distributions { display: grid; grid-auto-flow: column; grid-template-columns: minmax(0, 1.6fr); grid-auto-columns: minmax(0, 1fr); gap: var(--s-6); align-items: start; }
 .overview-distributions.is-first-empty { grid-template-columns: minmax(0, 1fr); }
 .overview-distribution { align-content: start; }
@@ -896,7 +919,7 @@ onBeforeUnmount(() => {
    组件库把首列以外的表头都右对齐，这里只有次数是数字列，规则和 Pipeline 的表头改回左对齐。
    Head and rows share one set of columns: the rule column fits its content, Pipeline follows right after, the count sits right.
    The kit right-aligns every heading after the first; here only the count is numeric, so the rule and Pipeline headings align left. */
-.overview-rules { display: grid; grid-template-columns: 3.5rem fit-content(45%) minmax(0, 1fr) auto; column-gap: var(--s-6); }
+.overview-rules { display: grid; grid-template-columns: auto fit-content(45%) minmax(0, 1fr) auto; column-gap: var(--s-6); }
 .overview-rules .ui-rec, .overview-rules .ui-rec-head { grid-column: 1 / -1; grid-template-columns: subgrid; column-gap: inherit; }
 .overview-rules .ui-rec-head > :nth-child(2), .overview-rules .ui-rec-head > :nth-child(3) { text-align: left; }
 .overview-rule { align-items: baseline; }
@@ -918,34 +941,44 @@ onBeforeUnmount(() => {
 .overview-runtime-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); }
 
 .overview-empty { margin: 0; padding: var(--s-5) 0; color: var(--l-ink-3); font-size: var(--t-2); }
-.overview-skeleton { display: grid; gap: var(--s-5); }
-/* 骨架按结果实测的尺寸画（1280：信号带 158、卡 136；641–1023：卡 156；375：信号带 209、卡 128），间距同 .overview-view
-   The skeleton uses the result's measured sizes (1280: band 158, tiles 136; 641–1023: tiles 156; 375: band 209, tiles 128), spaced as .overview-view */
-.overview-skeleton { gap: var(--s-6); }
+/* 骨架按结果实测的尺寸画（1280：信号带 158、卡 136；641–899：卡 156；375：信号带 209、卡 128），间距同 .overview-view
+   The skeleton uses the result's measured sizes (1280: band 158, tiles 136; 641–899: tiles 156; 375: band 209, tiles 128), spaced as .overview-view */
+.overview-skeleton { display: grid; gap: var(--s-6); }
 .overview-skeleton-signal { height: calc(var(--s-8) * 2 + var(--s-5) + 6px); border-radius: var(--r-3); }
 .overview-skeleton-vitals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s-4); }
 .overview-skeleton-vitals i { height: calc(var(--s-8) * 2 + var(--s-2)); border-radius: var(--r-3); }
-.overview-skeleton-rows { display: grid; gap: var(--s-6); }
+/* 和 UiSection 一样从细线下开始 / Starts under a hairline, as UiSection does */
+.overview-skeleton-rows { display: grid; gap: var(--s-6); padding-top: var(--s-5); border-top: 1px solid var(--l-hair); }
 .overview-skeleton-rows i { width: 60%; height: var(--s-3); }
 .overview-skeleton-rows i:first-child { width: 8rem; height: var(--t-4); }
 .overview-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
-/* 900–1199：左边请求分布，右边上下叠放响应码和缓存构成 / 900–1199: request distribution left, response codes and cache stacked right */
+/* 900–1199：请求分布独占一行（内容限宽，数字不离名字太远），下面响应码和缓存构成两栏等宽；只剩一块时铺满
+   900–1199: the request distribution takes its own row (content capped so figures stay near names), response codes and cache
+   share the row below in equal halves; a block left alone fills the row */
 @media (max-width: 1199px) {
-  .overview-distributions, .overview-distributions.is-first-empty { grid-auto-flow: row; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); }
-  .overview-distribution:first-child { grid-row: span 2; }
+  .overview-distributions, .overview-distributions.is-first-empty { grid-auto-flow: row; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .overview-distribution:first-child, .overview-distribution:nth-child(2):last-child { grid-column: 1 / -1; }
+  .overview-distribution:first-child :is(.overview-lead, .overview-shares) { max-width: 40rem; }
 }
-/* 900 以下：上游状态换成两行式（四列挤不下）；分布一块一行，标题满宽，内容限宽，数字不离名字太远
-   Below 900: upstream status turns to two-line rows (four columns no longer fit); distributions stack, headings full width, content
-   capped so figures stay near their names */
-@media (max-width: 900px) {
-  .overview-ledger .ui-rec, .overview-ledger-list--no-latency .ui-rec { --rec-cols: minmax(0, 1fr) var(--h-touch); row-gap: var(--s-1); }
+/* 900 以下：上游状态和规则换成两行式（四列挤不下），第二行和展开条都和地址对齐；分布一块一行，标题满宽，内容限宽
+   Below 900: upstream status and rules turn to two-line rows (four columns no longer fit), with the second line and the expansion
+   aligned to the address; distributions stack, headings full width, content capped */
+@media (max-width: 899px) {
+  .overview-ledger .ui-rec, .overview-ledger-list--no-latency :is(.ui-rec, .overview-upstream-detail), .overview-upstream-detail { --rec-cols: minmax(0, 1fr) var(--h-touch); }
+  .overview-ledger .ui-rec { row-gap: var(--s-1); }
   .overview-ledger .ui-rec-head, .overview-ledger .ui-rec__n, .overview-basis { display: none; }
-  .overview-ledger .ui-rec__phone { display: flex; grid-column: 1; }
+  .overview-ledger .ui-rec__phone { display: flex; grid-column: 1; padding-left: calc(var(--size-dot) + var(--s-2)); }
   .overview-upstream .ui-rec__act { grid-row: 1 / span 2; grid-column: 2; }
   .overview-distributions, .overview-distributions.is-first-empty { grid-template-columns: minmax(0, 1fr); }
-  .overview-distribution:first-child { grid-row: auto; }
   .overview-lead, .overview-shares { max-width: 40rem; }
+  .overview-rules { grid-template-columns: minmax(0, 1fr) auto; column-gap: var(--s-4); }
+  .overview-rules .ui-rec-head, .overview-rule-phase, .overview-rule-pipeline { display: none; }
+  .overview-rules .ui-rec__phone { display: flex; grid-column: 1 / -1; }
+  .overview-rule { row-gap: var(--s-1); }
+}
+@media (min-width: 641px) and (max-width: 899px) {
+  .overview-skeleton-vitals i { height: calc(var(--s-8) * 2 + var(--s-2) + 20px); }
 }
 
 @media (max-width: 640px) {
@@ -959,15 +992,13 @@ onBeforeUnmount(() => {
   .overview-skeleton-signal { height: calc(var(--s-8) * 3 + var(--s-4) + 1px); }
   .overview-skeleton-vitals i { height: calc(var(--s-8) * 2); }
   .overview-skeleton-meta { height: calc(var(--t-2) * var(--lh-base) * 2 + 2px); }
+  .overview-skeleton { gap: var(--s-5); }
+  .overview-skeleton-vitals { gap: var(--s-2); }
   .overview-vital { padding: var(--s-3) var(--s-4); }
-  .overview-upstream-counts { grid-template-columns: repeat(2, minmax(0, 1fr)); padding-left: 0; }
   .overview-toolbar { align-items: stretch; }
   .overview-toolbar-tools { width: 100%; justify-content: space-between; }
   .overview-rankings { grid-template-columns: minmax(0, 1fr); gap: var(--s-5); }
-  .overview-rules { grid-template-columns: minmax(0, 1fr) auto; column-gap: var(--s-4); }
-  .overview-rule { row-gap: var(--s-1); }
   .overview-toolbar-tools > .ui-seg { flex: 1; }
-  .overview-rule-phase, .overview-rule-pipeline { display: none; }
   .overview-runtime-actions { width: 100%; }
   .overview-runtime-actions > * { flex: 1 1 0; }
 }

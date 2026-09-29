@@ -57,7 +57,7 @@ test('首次未启动时保留完整概览布局', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('kixdns:demo-empty-first-install', 'true'))
   await open(page, '/')
 
-  await expect(page.getByText('KixDNS 未启动', { exact: true })).toBeVisible()
+  await expect(page.getByText('KixDNS 已停止', { exact: true })).toBeVisible()
   await expect(page.getByText('数据可能已过期')).toHaveCount(0)
   await expect(page.locator('.overview-total-value')).toHaveText('—')
   await expect(page.getByRole('heading', { name: '请求分布' })).toBeVisible()

@@ -120,8 +120,16 @@ test('运行配置与缓存清理保持可用', async ({ page }) => {
 test('首次未启动保留空态视图但禁止运行时操作', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('kixdns:demo-empty-first-install', 'true'))
   await openOverview(page)
-  await expect(page.getByText('KixDNS 未启动', { exact: true })).toBeVisible()
+  // 页头写「已停止」，提示也说「已停止」：面板确认不了「从没启动过」这段历史 / Header and notice both say 已停止: the panel cannot confirm a never-started history
+  await expect(page.getByText('KixDNS 已停止', { exact: true })).toBeVisible()
+  await expect(page.locator('.overview-notice small')).toHaveText('还没有运行数据；启动 KixDNS 后概览会自动更新。')
   await expect(page.getByText('数据可能已过期')).toHaveCount(0)
+  // 三张卡没有数，名称不带时段；空区块也不写时段和口径 / With no figures the tiles carry no period; empty blocks drop their period notes too
+  await expect(page.locator('.overview-vital-label')).toHaveText(['响应速度', '缓存命中率', '上游健康'])
+  await expect(page.locator('.overview-ledger .ui-section__aside')).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: '请求分布' }).locator('xpath=..').locator('.ui-section__aside')).toHaveCount(0)
+  await expect(page.locator('.overview-spark-pending')).toHaveText('尚无数据')
+  await expect(page.locator('.overview-runtime-note')).toHaveText('KixDNS 运行后才能清空缓存')
   // 从没启动过就没有「启动以来」可数，大数字和下面三张卡一样写「—」 / Never started: nothing counted since start, so the figure reads — like the tiles
   await expect(page.locator('.overview-total-value')).toHaveText('—')
   await expect(page.getByText('还没有请求命中 Pipeline，命中后在这里按 Pipeline 列出。', { exact: true })).toBeVisible()
@@ -129,8 +137,9 @@ test('首次未启动保留空态视图但禁止运行时操作', async ({ page 
   await expect(page.getByRole('button', { name: '清空内部缓存', exact: true })).toBeDisabled()
   await expect(page.locator('.overview-config-state')).toHaveText('未运行')
   await page.getByRole('tab', { name: '查询排行' }).click()
-  await expect(page.getByText('当前窗口暂无客户端数据', { exact: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: '1 小时', exact: true })).toBeDisabled()
+  // 两张表留着，各写「尚无数据」；没有窗口和总量可说，工具行不出 / Both tables stay, each reading 尚无数据; no window or volume to state, so no toolbar
+  await expect(page.locator('.overview-ranking .overview-empty')).toHaveText(['尚无数据', '尚无数据'])
+  await expect(page.locator('#overview-panel-stats .overview-toolbar')).toHaveCount(0)
   await page.getByRole('tab', { name: '规则命中' }).click()
   await expect(page.getByText('还没有规则执行过', { exact: true })).toBeVisible()
   // 空表不带「累计执行次数」那行说明 / An empty table carries no caption about execution counts
@@ -167,7 +176,12 @@ for (const stopped of [true, false]) {
     await expect(page.getByText(stopped ? 'KixDNS 已停止' : '实时数据暂不可用', { exact: true })).toBeVisible()
     // 服务还在跑却没有错误文字时，原因照样说出发生了什么，不只剩「显示快照」
     // With the service up and no error text, the reason still says what happened, not only that a snapshot is shown
-    if (!stopped) await expect(page.locator('.overview-notice small')).toHaveText(/^控制通道暂时没有应答；显示 \d{2}:\d{2} 的快照，恢复后会自动更新。$/)
+    // 已停止也说接下来会怎样，不说「不再更新」 / Stopped also says what comes next, never 不再更新
+    await expect(page.locator('.overview-notice small')).toHaveText(stopped
+      ? /^显示停止前 \d{2}:\d{2} 的快照；启动 KixDNS 后概览会自动更新。$/
+      : /^KixDNS 暂时没有应答；显示 \d{2}:\d{2} 的快照，恢复后会自动更新。$/)
+    // 底栏只说按钮什么时候能用，不再复述状态 / The foot says only when the button becomes usable, without restating the state
+    await expect(page.locator('.overview-runtime-note')).toHaveText(stopped ? 'KixDNS 运行后才能清空缓存' : '实时数据恢复后才能清空缓存')
     await expect(page.locator('.overview-total-value')).toHaveText(EXPECTED_TOTAL)
     await expect(page.locator('.overview-trend-label')).toHaveText(EXPECTED_TREND)
     await expect(page.locator('.overview-config-state')).toHaveText('运行快照')
@@ -194,6 +208,8 @@ test('上游状态逐行展开，明细跟着这一行的时段，桌面和手�
   await expect(page.locator('.overview-upstream-counts')).toHaveCount(1)
   await expect(page.locator('.overview-upstream-counts')).toContainText('错误52')
   await expect(page.locator('.overview-upstream-counts')).toContainText('拒绝28')
+  // 展开条不染色：这一行好不好，状态点和成功率已经说了 / The expansion is not coloured: the dot and the success rate already say how the row is doing
+  await expect(page.locator('.overview-upstream-counts [class*="overview-text--"]')).toHaveCount(0)
   if (testInfo.project.name === 'mobile') {
     // 手机上每行两行：第二行写数字，最近一小时响应不够的上游标明退回了累计
     await expect(rows.first().locator('.overview-upstream-line')).toBeVisible()
@@ -216,16 +232,33 @@ test('上游状态逐行展开，明细跟着这一行的时段，桌面和手�
   expect(sizes.scroll).toBeLessThanOrEqual(sizes.client)
 })
 
-test('上游状态在中等宽度不挤地址：四列的最窄处 901 地址列至少 18rem，900 以下换成两行式', async ({ page }) => {
-  await page.setViewportSize({ width: 901, height: 900 })
+test('上游状态在中等宽度不挤地址：四列的最窄处 900 地址列至少 18rem、展开条不落到数字列下面，900 以下换成两行式且左边对齐', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 900 })
   await openOverview(page)
   const rows = page.locator('.overview-upstream')
   await expect(page.locator('.overview-ledger .ui-rec-head')).toBeVisible()
   const address = await rows.first().locator('.overview-address').evaluate((element) => element.parentElement!.getBoundingClientRect().width)
   expect(address).toBeGreaterThanOrEqual(288)
-  await page.setViewportSize({ width: 768, height: 900 })
+  await rows.first().locator('.overview-expand').click()
+  const edges = await page.evaluate(() => ({
+    counts: document.querySelector('.overview-upstream-counts')!.getBoundingClientRect().right,
+    address: document.querySelector('.overview-upstream-id')!.getBoundingClientRect().right,
+  }))
+  expect(edges.counts).toBeLessThanOrEqual(edges.address + 0.5)
+  await page.setViewportSize({ width: 899, height: 900 })
   await expect(page.locator('.overview-ledger .ui-rec-head')).toBeHidden()
   await expect(rows.first().locator('.overview-upstream-line')).toBeVisible()
+  // 两行式里地址、第二行、展开条三者左边对齐 / In two-line rows the address, the second line and the expansion share one left edge
+  const lefts = await page.evaluate(() => [
+    document.querySelector('.overview-address')!.getBoundingClientRect().left,
+    document.querySelector('.overview-upstream-line')!.getBoundingClientRect().left + Number.parseFloat(getComputedStyle(document.querySelector('.overview-upstream-line')!).paddingLeft),
+    document.querySelector('.overview-upstream-counts')!.getBoundingClientRect().left + Number.parseFloat(getComputedStyle(document.querySelector('.overview-upstream-counts')!).paddingLeft),
+  ].map(Math.round))
+  expect(new Set(lefts).size).toBe(1)
+  // 规则表同一个断点换成两行式 / The rules table switches at the same breakpoint
+  await page.getByRole('tab', { name: '规则命中', exact: true }).click()
+  await expect(page.locator('.overview-rules .ui-rec-head')).toBeHidden()
+  await expect(page.locator('.overview-rule-line').first()).toBeVisible()
   const sizes = await page.evaluate(() => ({ client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }))
   expect(sizes.scroll).toBeLessThanOrEqual(sizes.client)
 })
@@ -243,6 +276,44 @@ test('手机上窗口分段每格可点满 44：外框的内边距也算这一�
   })
   expect(hits.height).toBeGreaterThanOrEqual(44)
   expect(hits).toMatchObject({ top: true, bottom: true })
+})
+
+test('「·」可以在行尾，不会出现在行首：每个分隔点都和它前面那个字在同一行（GB/T 15834）', async ({ page }) => {
+  await openOverview(page)
+  // 每种版式取它最宽的视口，把页面逐像素收窄到这种版式最窄时的宽度，扫过每一处折行点
+  // For each layout take its widest viewport and narrow the page pixel by pixel down to that layout's narrowest width, passing every wrap point
+  for (const [widest, narrowest] of [[640, 320], [899, 641], [1280, 900]]) {
+    await page.setViewportSize({ width: widest, height: 900 })
+    await expect(page.locator('.overview-total-value')).toBeVisible()
+    const stranded = await page.evaluate(([viewport, floor]) => {
+      const root = document.querySelector<HTMLElement>('.overview-page')!
+      const gutter = viewport - root.getBoundingClientRect().width
+      const found = new Set<string>()
+      for (let size = viewport - gutter; size >= floor - gutter; size -= 1) {
+        root.style.maxWidth = `${size}px`
+        for (const sep of document.querySelectorAll('.overview-page .ui-sep')) {
+          if (!sep.getClientRects().length) continue
+          const walker = document.createTreeWalker(sep.parentElement!.closest('p, .ui-ph__meta') ?? sep.parentElement!, NodeFilter.SHOW_TEXT)
+          let last: Text | null = null
+          for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
+            if (sep.contains(node)) break
+            if (node.textContent!.trim()) last = node
+          }
+          if (!last) continue
+          const text = last.textContent!.replace(/\s+$/, '')
+          const range = document.createRange()
+          range.setStart(last, text.length - 1)
+          range.setEnd(last, text.length)
+          const before = range.getBoundingClientRect()
+          const mark = sep.getBoundingClientRect()
+          if (Math.abs(before.top - mark.top) >= 4 || mark.left <= before.left) found.add(`${size}px ${sep.parentElement!.textContent}`)
+        }
+      }
+      root.style.maxWidth = ''
+      return [...found]
+    }, [widest, narrowest])
+    expect(stranded, `视口 ${narrowest}–${widest}`).toEqual([])
+  }
 })
 
 // 概览的演示端点交回的是同一个对象：改完它，离开再回来让概览重新挂载、重新读一遍
@@ -298,6 +369,8 @@ test('页级提示一次只出一条：刷新失败时读取错误写进同一�
   await expect(notice).toHaveCount(1)
   await expect(notice).toContainText('实时数据暂不可用')
   await expect(notice).toContainText('连接增强控制通道超时')
+  // 标题已经说了是实时数据，原因行不再以「运行数据：」开头 / The title already names the data, so the reason does not start with 运行数据：
+  await expect(notice.locator('small')).not.toContainText('运行数据：')
   await expect(notice.getByRole('button', { name: '重试', exact: true })).toBeVisible()
   // 旧数据还在 / The old data stays
   await expect(page.locator('.overview-total-value')).toHaveText(EXPECTED_TOTAL)
@@ -424,6 +497,30 @@ test('服务启动失败时，页级提示和页头说同一件事，不说「�
   await expect(notice).toContainText('KixDNS 启动失败')
   await expect(notice).not.toContainText('已停止')
   await expect(notice).toHaveClass(/ui-notice--err/)
+  // 启动失败指去日志，并给出去日志页的动作 / A failure points to the logs and offers the way there
+  await expect(notice.locator('small')).toHaveText(/^显示停止前 \d{2}:\d{2} 的快照；查看日志了解启动失败的原因。$/)
+  await expect(notice.getByRole('link', { name: '查看日志', exact: true })).toHaveAttribute('href', '/logs')
+})
+
+test('快照期间服务正在停止：提示照实说正在停止，不许诺「运行后会自动更新」', async ({ page }) => {
+  await page.route(/\/src\/api\/client\.ts(?:\?.*)?$/, async (route) => {
+    if (route.request().url().includes('stopping-original')) return route.continue()
+    await route.fulfill({ contentType: 'application/javascript', body: `
+      export * from '/src/api/client.ts?stopping-original';
+      import { apiRequest as original } from '/src/api/client.ts?stopping-original';
+      export async function apiRequest(path, init) {
+        const result = await original(path, init);
+        if (path === '/api/v1/service') return { ...result, active_state: 'deactivating', sub_state: 'stop-sigterm' };
+        if (path === '/api/v1/overview') return { ...result, live: false, service_active: false };
+        return result;
+      }
+    ` })
+  })
+  await page.goto('/')
+  const notice = page.locator('.ui-notice:visible')
+  await expect(notice).toHaveCount(1)
+  await expect(notice.locator('span').first()).toHaveText('KixDNS 正在停止')
+  await expect(notice.locator('small')).toHaveText(/^显示停止前 \d{2}:\d{2} 的快照。$/)
 })
 
 test('旧增强版不提供精确数据：两张卡写「—」，状态点读作「不支持判定」，没有耗时这一列', async ({ page }) => {
@@ -440,7 +537,8 @@ test('旧增强版不提供精确数据：两张卡写「—」，状态点读�
   const vitals = page.locator('.overview-vital')
   await expect(vitals.nth(0).locator('.overview-vital-figure')).toHaveText('—')
   await expect(vitals.nth(2).locator('.overview-vital-figure')).toHaveText('—')
-  await expect(vitals.nth(0).locator('.overview-vital-foot')).toContainText('当前增强版不提供耗时数据')
+  await expect(vitals.nth(0).locator('.overview-vital-foot')).toHaveText('更新增强版后显示耗时')
+  await expect(vitals.nth(2).locator('.overview-vital-foot')).toHaveText('更新增强版后显示健康判定')
   await expect(page.locator('.overview-upstream .overview-dot').first()).toHaveAttribute('aria-label', '不支持判定')
   await expect(page.locator('.overview-ledger .ui-rec-head')).not.toContainText('平均耗时')
 })
@@ -465,4 +563,11 @@ test('第一次启动就失败、还没有任何数据：提示说启动失败�
   await expect(notice).toContainText('KixDNS 启动失败')
   await expect(notice).not.toContainText('读不到运行数据')
   await expect(page.locator('.overview-heading .ui-ph__meta')).toContainText('启动失败')
+  // 和首次安装一样保留完整布局：页签、配置卡和去配置页的入口都在，提示给出去日志页的动作
+  // The full layout stays as on first install: tabs, the config card and its way to the config page, plus a way to the logs in the notice
+  await expect(notice.locator('small')).toHaveText('还没有运行数据；查看日志了解启动失败的原因。')
+  await expect(notice.getByRole('link', { name: '查看日志', exact: true })).toBeVisible()
+  await expect(page.getByRole('tab', { name: '运行情况', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '运行配置', exact: true })).toBeVisible()
+  await expect(page.getByRole('link', { name: '管理配置', exact: true })).toBeVisible()
 })
