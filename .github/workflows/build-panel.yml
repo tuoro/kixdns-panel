@@ -125,12 +125,35 @@ jobs:
           npm test
           npm run build
 
+      # 前端 e2e 只在 PR 改了 web/ 或这个 workflow 时跑；发布和手动触发照跑全套。
+      # 推到 main 的提交在 PR 上已经按合并后的结果测过，不再重跑；只改 Rust、脚本、锁文件的 PR 也不跑。
+      # 用变量接住 git diff 再判断：管道接 grep -q 时，文件名多到写满管道缓冲，git 会被 SIGPIPE 打断，pipefail 下误判成没改。
+      - name: Decide whether web acceptance tests run
+        id: acceptance
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          case "$EVENT" in
+            release|workflow_dispatch) run=true ;;
+            pull_request)
+              git fetch --no-tags --depth=1 origin "$BASE_SHA"
+              changed="$(git diff --name-only "$BASE_SHA" HEAD -- web .github/workflows/build-panel.yml)"
+              if [[ -n "$changed" ]]; then run=true; else run=false; fi
+              ;;
+            *) run=false ;;
+          esac
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "Web acceptance tests: $run"
+
       - name: Resolve Playwright version
+        if: steps.acceptance.outputs.run == 'true'
         id: playwright
         working-directory: web
         run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
 
       - name: Cache Playwright browser
+        if: steps.acceptance.outputs.run == 'true'
         id: playwright-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -138,6 +161,7 @@ jobs:
           key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
 
       - name: Install browser for web acceptance tests
+        if: steps.acceptance.outputs.run == 'true'
         working-directory: web
         run: |
           if [[ "${{ steps.playwright-cache.outputs.cache-hit }}" == "true" ]]; then
@@ -146,10 +170,10 @@ jobs:
             npx playwright install --with-deps chromium
           fi
 
-      # 推送到 main 的提交绝大多数来自已经跑过完整矩阵的 PR，这里只补桌面视口。
       - name: Verify web workflows
+        if: steps.acceptance.outputs.run == 'true'
         working-directory: web
-        run: npm run test:e2e ${{ github.event_name == 'push' && '-- --project=desktop' || '' }}
+        run: npm run test:e2e
 
       - name: Upload web acceptance report
         if: failure()

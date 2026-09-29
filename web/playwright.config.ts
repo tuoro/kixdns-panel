@@ -8,7 +8,9 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: isCi,
   retries: isCi ? 1 : 0,
-  workers: isCi ? 2 : undefined,
+  // GitHub 的 ubuntu runner 有 4 核：开 4 个 worker，比 2 个快，本机照旧按核数定
+  // GitHub's ubuntu runners have 4 cores: 4 workers run faster than 2; locally the core count decides
+  workers: isCi ? 4 : undefined,
   reporter: isCi
     ? [['line'], ['html', { outputFolder: '../playwright-report', open: 'never' }]]
     : 'list',
