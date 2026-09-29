@@ -80,7 +80,8 @@ export function createSolutionDrafts(config: KixConfig, templateId: SolutionTemp
     const domestic = makeDraft(config, 'cn_doh')
     const withDomestic = { ...config, pipelines: [...config.pipelines, domestic.pipeline] }
     const global = makeDraft(withDomestic, 'global_doh')
-    domestic.selector.matchers = [{ type: 'geo_site', operator: 'and', value: 'geosite:cn' }]
+    // 分类名本身：内核按原样查 GeoSite 标签，写成 geosite:cn 永远匹配不上 / The bare category: the kernel looks the tag up as written, so geosite:cn never matches
+    domestic.selector.matchers = [{ type: 'geo_site', operator: 'and', value: 'cn' }]
     domestic.rule.name = 'cn-doh'
     domestic.rule.actions = [{
       type: 'forward',
@@ -126,7 +127,7 @@ export function createSolutionDrafts(config: KixConfig, templateId: SolutionTemp
     draft.groupType = 'domain_mapping'
     draft.mappingRows = [{ source: 'alias.example', target: 'origin.example.', ttl: 300 }]
   } else if (templateId === 'ad_block') {
-    draft.selector.matchers = [{ type: 'geo_site', operator: 'and', value: 'geosite:category-ads-all' }]
+    draft.selector.matchers = [{ type: 'geo_site', operator: 'and', value: 'category-ads-all' }]
     draft.rule.actions = [{ type: 'deny' }]
   } else if (templateId === 'client_network') {
     draft.selector.matchers = [{ type: 'client_ip', operator: 'and', cidr: '192.168.1.0/24' }]

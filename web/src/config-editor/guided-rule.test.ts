@@ -50,7 +50,7 @@ describe('一键添加规则', () => {
 
     expect(fallback).toMatchObject({
       name: 'response-fallback',
-      matchers: [{ type: 'geo_site', value: 'geosite:cn' }],
+      matchers: [{ type: 'geo_site', value: 'cn' }],
       actions: [{ type: 'forward' }],
       response_matcher_operator: 'or',
       response_actions_on_match: [

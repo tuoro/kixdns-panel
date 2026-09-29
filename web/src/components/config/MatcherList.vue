@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ArrowDown, ArrowUp, Plus, X } from '@lucide/vue'
 import { computed, useId } from 'vue'
-import { matcherFieldErrors } from '../../config-editor/field-validation'
+import { isGeoSiteMatcher, matcherFieldErrors } from '../../config-editor/field-validation'
 import { createMatcher, resetMatcher } from '../../config-editor/model'
 import { MATCHER_DEFINITIONS, MATCH_OPERATORS, QTYPE_OPTIONS } from '../../config-editor/schema'
 import type { MatcherConfig, MatcherScope } from '../../config-editor/types'
@@ -42,7 +42,7 @@ const matcherHelp: Record<string, { label: string; example: string; help: string
 
 function hint(matcher: MatcherConfig) {
   if (matcher.type.includes('geo_site') || matcher.type.includes('geosite')) {
-    return { label: 'GeoSite 分类', example: 'cn 或 geosite:cn', help: '填写已导入 GeoSite 数据中的分类名称。' }
+    return { label: 'GeoSite 分类', example: 'cn', help: '填写已导入 GeoSite 数据中的分类名称，不带 geosite: 前缀。' }
   }
   if (matcher.type.includes('geoip_country')) {
     return { label: '国家代码', example: 'CN, US 或 geoip:CN', help: '填写两位国家代码，多个国家用逗号分隔；需要对应的 GeoIP 数据。' }
@@ -69,6 +69,11 @@ function changeType(matcher: MatcherConfig, event: Event): void {
 function remove(index: number): void {
   matchers.value.splice(index, 1)
   if (props.operatorMode === 'custom' && matchers.value[0]) matchers.value[0].operator = 'and'
+}
+
+// 粘贴进来的 geosite:cn 离开输入框时去掉前缀，和国家代码去掉 geoip: 一样 / A pasted geosite:cn loses its prefix on blur, as country codes lose geoip:
+function dropGeoSitePrefix(matcher: MatcherConfig): void {
+  if (isGeoSiteMatcher(matcher) && typeof matcher.value === 'string') matcher.value = matcher.value.trim().replace(/^geosite:/i, '')
 }
 
 function countryCodesValue(matcher: MatcherConfig): string {
@@ -123,7 +128,7 @@ function move(index: number, offset: -1 | 1): void {
             <option v-if="matcher.value && !QTYPE_OPTIONS.includes(matcher.value)" :value="matcher.value">{{ matcher.value }}</option>
             <option v-for="qtype in QTYPE_OPTIONS" :key="qtype" :value="qtype">{{ qtype }}</option>
           </select>
-          <input v-else v-model="matcher.value" type="text" :aria-label="`条件 ${index + 1} 值`" :placeholder="hint(matcher).example" :aria-invalid="Boolean(errors[index]?.value)" :aria-describedby="fieldDescription(index, 'value')">
+          <input v-else v-model="matcher.value" type="text" :aria-label="`条件 ${index + 1} 值`" :placeholder="hint(matcher).example" :aria-invalid="Boolean(errors[index]?.value)" :aria-describedby="fieldDescription(index, 'value')" @blur="dropGeoSitePrefix(matcher)">
           <small v-if="errors[index]?.value" :id="fieldId(index, 'value-error')" class="matcher-field__error">{{ errors[index]?.value }}</small>
         </label>
         <label v-if="fields(matcher).includes('cidr')" class="matcher-field">

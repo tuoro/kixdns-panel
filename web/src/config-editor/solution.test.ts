@@ -133,7 +133,8 @@ describe('DNS 处理方案', () => {
     const drafts = createSolutionDrafts(config(), 'domestic_global')
 
     expect(drafts).toHaveLength(2)
-    expect(drafts[0]?.selector.matchers[0]).toMatchObject({ type: 'geo_site', value: 'geosite:cn' })
+    // 分类名本身，不带 geosite: 前缀：内核按原样查标签 / The bare category without geosite:, since the kernel looks the tag up as written
+    expect(drafts[0]?.selector.matchers[0]).toEqual({ type: 'geo_site', operator: 'and', value: 'cn' })
     expect(drafts[0]?.rule.actions[0]).toMatchObject({ type: 'forward' })
     expect(drafts[0]?.rule.response_matcher_operator).toBe('or')
     expect(drafts[0]?.rule.response_actions_on_match.at(-1)).toMatchObject({ type: 'jump_to_pipeline', pipeline: drafts[1]?.pipeline.id })
