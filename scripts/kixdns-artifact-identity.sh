@@ -18,7 +18,7 @@ reference="$(bash "$script_directory/lock-reference.sh" "$lock_file")"
 
 # 指纹只由下面明确列出的输入决定：会改变内核二进制，或改变它必须通过的验证的文件。
 #   - 锁文件：上游提交、补丁集、兼容层、依赖修订号
-#   - 所选补丁：兼容层、Release 专用层、通用层，以及依赖修订
+#   - 所选补丁：兼容层、通用层，以及依赖修订
 #   - 能力清单：随包发布
 #   - Rust 工具链
 #   - xtask 源码：prepare 的逻辑；只做维护的模块明确排除，见 maintenance_modules
@@ -84,10 +84,6 @@ if [[ -n "$compatibility" ]]; then
     exit 1
   }
   add_patches "$compatibility_directory" "补丁集 p${patchset} 的兼容层 ${compatibility} 为空"
-fi
-release_directory="${patchset_directory}/release/${reference}"
-if [[ "$source" == release && -d "$release_directory" ]]; then
-  add_patches "$release_directory" "补丁集 p${patchset} 的 Release 目录 ${reference} 为空"
 fi
 add_patches "$patchset_directory/common" "补丁集 p${patchset} 缺少通用补丁"
 # 依赖修订只进指纹，不改名称格式：已安装的面板按固定格式解析 artifact 名。

@@ -61,7 +61,7 @@ jobs:
           FORCE_BUILD: ${{ inputs.force }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          [[ "$CATALOG_DIRECTORY" =~ ^upstreams/(actions|releases)$ ]] || {
+          [[ "$CATALOG_DIRECTORY" == upstreams/actions ]] || {
             echo "版本目录无效：$CATALOG_DIRECTORY" >&2
             exit 1
           }
@@ -386,5 +386,5 @@ jobs:
       - name: Report failed versions
         env:
           GH_TOKEN: ${{ github.token }}
-          TRACK_LABEL: ${{ inputs.catalog_directory == 'upstreams/releases' && 'Release' || 'Action' }}
+          TRACK_LABEL: Action
         run: bash scripts/report-kernel-build.sh

@@ -416,7 +416,7 @@ if command == "refresh-dependencies":
         print("Error: 依赖无法在兼容版本内修复：\n- vulnerability demo 1.0.0 RUSTSEC-2099-0001")
         sys.exit(1)
     data = json.load(open(lock))
-    reference = data["official_run_id"] if data["source"] == "action" else data["release_tag"]
+    reference = data["official_run_id"]
     directory = f"patches/dependencies/{data['source']}/{reference}"
     os.makedirs(directory, exist_ok=True)
     open(f"{directory}/p{data['patchset']}-r1.patch", "w").write(
@@ -441,7 +441,7 @@ if command == "rebase":
         print(f"Error: 并入失败：patches/sets/{data['patchset']}/common/0001-source.patch 不能原样应用到候选上游")
         sys.exit(1)
     if join:
-        name = f"run-{data['official_run_id']}" if data["source"] == "action" else data["release_tag"]
+        name = f"run-{data['official_run_id']}"
         layer = f"patches/sets/{data['patchset']}/compatibility/{name}"
         os.makedirs(layer)
         open(f"{layer}/0001-entry.patch", "w").write("diff --git a/src/main.rs b/src/main.rs\n")
@@ -475,25 +475,13 @@ def write_json(path: Path, value) -> None:
     path.write_text(json.dumps(value, indent=2) + "\n")
 
 
-def action_lock(run_id: int, patchset: int) -> dict:
+def action_lock(run_id: int, patchset: int, compatibility: str) -> dict:
     return {
         "repository": "olicesx/kixdns",
         "source": "action",
         "commit": f"{run_id:040d}",
         "official_run_id": run_id,
-        "patchset": patchset,
-        "control_protocol": 1,
-    }
-
-
-def release_lock(tag: str, patchset: int, commit: str) -> dict:
-    return {
-        "repository": "olicesx/kixdns",
-        "source": "release",
-        "commit": commit,
-        "release_id": 7,
-        "release_tag": tag,
-        "compatibility": "legacy",
+        "compatibility": compatibility,
         "patchset": patchset,
         "control_protocol": 1,
     }
@@ -523,7 +511,11 @@ class Fixture:
 
 
 def make_fixture(root: Path, audit: dict, refresh: str = "success", notices=None,
-                 issues=None, rebase=None) -> Fixture:
+                 issues=None, rebase=None, unreferenced_sets=()) -> Fixture:
+    """当前版本是 Action 运行 300，用 p3 和它的 split 兼容层；版本目录里只有它。
+    unreferenced_sets 额外放几个没有锁引用的旧补丁集。
+    The current version is Action run 300 on p3 with its split layer, the only catalogue
+    entry. unreferenced_sets adds older patchsets no lock references."""
     repository = root / "repository"
     origin = root / "origin.git"
     scripts = repository / "scripts"
@@ -531,20 +523,16 @@ def make_fixture(root: Path, audit: dict, refresh: str = "success", notices=None
     for name in ["lock-reference.sh", "verify-patchsets.sh", "remove-unreferenced-patch-data.sh"]:
         shutil.copy(WORKSPACE / "scripts" / name, scripts / name)
     (scripts / "dns_smoke.py").write_text("print('ok')\n")
-    for patchset in [1, 2, 3]:
+    for patchset in [*unreferenced_sets, 3]:
         common = repository / f"patches/sets/{patchset}/common"
         common.mkdir(parents=True)
         (common / "0001-source.patch").write_text("diff --git a/src/lib.rs b/src/lib.rs\n")
         write_json(common.parent / "capabilities.json", {"schema_version": 1, "config_capabilities": []})
-    legacy = repository / "patches/sets/2/compatibility/legacy"
-    legacy.mkdir(parents=True)
-    (legacy / "0000-legacy.patch").write_text("diff --git a/src/main.rs b/src/main.rs\n")
-    for run_id, patchset in [(100, 1), (200, 2), (300, 3)]:
-        write_json(repository / f"upstreams/actions/{run_id}.json", action_lock(run_id, patchset))
-    write_json(repository / "upstream.lock.json", action_lock(300, 3))
-    release = release_lock("v1", 2, "1" * 40)
-    write_json(repository / "upstreams/releases/v1.json", release)
-    write_json(repository / "upstream.release.lock.json", release)
+    split = repository / "patches/sets/3/compatibility/split"
+    split.mkdir(parents=True)
+    (split / "0001-entry.patch").write_text("diff --git a/src/main.rs b/src/main.rs\n")
+    write_json(repository / "upstreams/actions/300.json", action_lock(300, 3, "split"))
+    write_json(repository / "upstream.lock.json", action_lock(300, 3, "split"))
     subprocess.run(["git", "init", "--quiet", "-b", "main", str(repository)], check=True)
     git(repository, "config", "user.name", "sync-test")
     git(repository, "config", "user.email", "sync-test@example.com")
@@ -601,8 +589,6 @@ def unchanged_action() -> dict:
         "commit": f"{300:040d}",
         "current": f"{300:040d}",
         "reference": "300",
-        "lock_file": "upstream.lock.json",
-        "label": "Action",
         "source_url": "https://github.com/olicesx/kixdns/actions/runs/300",
     }
 
@@ -628,12 +614,11 @@ def scenario_refresh(steps: list[Step], root: Path) -> None:
     name = "当前版本审计不过，自动刷新并合并"
     fixture = make_fixture(
         root,
-        audit={"upstream.lock.json": 3, "upstreams/actions/100.json": 3,
-               "upstreams/actions/200.json": 0},
+        audit={"upstream.lock.json": 3},
         notices={"upstream.lock.json": "- `old` 1.0.0 无人维护\n"},
         issues=[{"number": 7, "title": "[security] KixDNS Action 依赖需要人工处理"}],
     )
-    result = run_job(steps, fixture.repository, {**fixture.env, "TRACK": "action"}, unchanged_action())
+    result = run_job(steps, fixture.repository, fixture.env, unchanged_action())
     context = result.context
     check(name, not context.failed, "作业应当成功", result)
     check(name, context.outputs.get("refresh", {}).get("revision") == "1", "应生成修订 r1", result)
@@ -644,16 +629,11 @@ def scenario_refresh(steps: list[Step], root: Path) -> None:
           "版本目录副本必须与当前锁一致", result)
     check(name, fixture.origin_file("patches/dependencies/action/300/p3-r1.patch") is not None,
           "修订文件应合并到 main", result)
-    check(name, fixture.origin_file("upstreams/actions/100.json") is None, "审计不过的旧版本应移出", result)
-    check(name, fixture.origin_file("upstreams/actions/200.json") is not None, "审计通过的旧版本应保留", result)
-    check(name, fixture.origin_file("patches/sets/1/common/0001-source.patch") is None,
-          "不再被引用的补丁集应删除", result)
     pull_requests = fixture.calls("pr")
     created = [call for call in pull_requests if call["pr"] == "create"]
     check(name, len(created) == 1 and created[0]["head"] == "automation/dependencies-action-300-r1"
           and created[0]["title"] == "chore: refresh action dependencies", f"PR 分支或标题不对：{created}", result)
-    check(name, bool(created) and "p3-r1" in created[0]["body"] and "`100`" in created[0]["body"],
-          "PR 正文应写明修订和移出的版本", result)
+    check(name, bool(created) and "p3-r1" in created[0]["body"], "PR 正文应写明修订", result)
     check(name, fixture.calls("workflow") == [{"workflow": "build-kixdns.yml"}], "应触发 Action 构建", result)
     issues = fixture.calls("issue")
     check(name, {"issue": "close", "number": 7, "comment": "当前版本已通过 RustSec 审计，告警自动关闭。"} in issues,
@@ -666,7 +646,7 @@ def scenario_refresh(steps: list[Step], root: Path) -> None:
 def scenario_unfixable(steps: list[Step], root: Path) -> None:
     name = "当前版本修不了，开安全告警"
     fixture = make_fixture(root, audit={"upstream.lock.json": 3}, refresh="unfixable")
-    result = run_job(steps, fixture.repository, {**fixture.env, "TRACK": "action"}, unchanged_action())
+    result = run_job(steps, fixture.repository, fixture.env, unchanged_action())
     check(name, result.context.failed, "作业应当失败", result)
     check(name, "Merge validated upstream update" not in result.ran, "修不了时不能合并任何东西", result)
     created = [call for call in fixture.calls("issue") if call["issue"] == "create"]
@@ -676,22 +656,25 @@ def scenario_unfixable(steps: list[Step], root: Path) -> None:
     check(name, fixture.calls("workflow") == [], "不应触发构建", result)
 
 
-def scenario_prune_only(steps: list[Step], root: Path) -> None:
-    name = "当前版本正常，只清理旧版本"
+def scenario_cleanup_only(steps: list[Step], root: Path) -> None:
+    name = "当前版本正常，只删除没人引用的补丁数据"
     fixture = make_fixture(
         root,
-        audit={"upstream.lock.json": 0, "upstreams/actions/100.json": 3,
-               "upstreams/actions/200.json": 0},
+        audit={"upstream.lock.json": 0},
         issues=[{"number": 8, "title": "[notice] KixDNS Action 依赖提示"}],
+        unreferenced_sets=(2,),
     )
-    result = run_job(steps, fixture.repository, {**fixture.env, "TRACK": "action"}, unchanged_action())
+    result = run_job(steps, fixture.repository, fixture.env, unchanged_action())
     check(name, not result.context.failed, "作业应当成功", result)
     check(name, "Refresh dependencies" not in result.ran, "审计通过时不应刷新", result)
     created = [call for call in fixture.calls("pr") if call["pr"] == "create"]
-    check(name, len(created) == 1 and created[0]["head"].startswith("automation/catalog-action-")
-          and created[0]["title"] == "chore: prune action catalog", f"PR 分支或标题不对：{created}", result)
-    check(name, fixture.origin_file("upstreams/actions/100.json") is None, "审计不过的旧版本应移出", result)
-    check(name, fixture.calls("workflow") == [], "只清理目录时不需要触发构建", result)
+    check(name, len(created) == 1 and created[0]["head"].startswith("automation/cleanup-action-")
+          and created[0]["title"] == "chore: remove unreferenced patch data", f"PR 分支或标题不对：{created}", result)
+    check(name, fixture.origin_file("patches/sets/2/common/0001-source.patch") is None,
+          "没人引用的 p2 应删除", result)
+    check(name, fixture.origin_file("patches/sets/3/common/0001-source.patch") is not None,
+          "当前版本在用的 p3 不能删", result)
+    check(name, fixture.calls("workflow") == [], "只清理补丁数据时不需要触发构建", result)
     check(name, {"issue": "close", "number": 8,
                  "comment": "当前版本已没有无人维护或提示类依赖公告，告警自动关闭。"} in fixture.calls("issue"),
           "提示告警应在没有提示时关闭", result)
@@ -700,47 +683,10 @@ def scenario_prune_only(steps: list[Step], root: Path) -> None:
 def scenario_quiet_day(steps: list[Step], root: Path) -> None:
     name = "什么都没变"
     fixture = make_fixture(root, audit={})
-    result = run_job(steps, fixture.repository, {**fixture.env, "TRACK": "action"}, unchanged_action())
+    result = run_job(steps, fixture.repository, fixture.env, unchanged_action())
     check(name, not result.context.failed, "作业应当成功", result)
     check(name, fixture.calls("pr") == [] and fixture.calls("workflow") == [], "不应开 PR 或触发构建", result)
     check(name, fixture.calls("issue") == [], "不应动任何告警", result)
-
-
-def new_release_outputs() -> dict:
-    return {
-        "changed": "true",
-        "commit": "2" * 40,
-        "current": "1" * 40,
-        "reference": "v2",
-        "release_id": "9",
-        "lock_file": "upstream.release.lock.json",
-        "label": "Release",
-        "source_url": "https://github.com/olicesx/kixdns/releases/tag/v2",
-    }
-
-
-def scenario_release_uses_action_patchset(steps: list[Step], root: Path) -> None:
-    name = "新 Release 先用 Action 轨道的补丁集"
-    fixture = make_fixture(
-        root,
-        audit={"upstream.release.lock.json": {"3": 0, "2": 1}, "upstreams/releases/v1.json": 0},
-        issues=[{"number": 9, "title": "[compat] KixDNS Release 需要适配"}],
-    )
-    result = run_job(steps, fixture.repository, {**fixture.env, "TRACK": "release"}, new_release_outputs())
-    check(name, not result.context.failed, "作业应当成功", result)
-    check(name, "Rebase overlay automatically" not in result.ran, "补丁集能直接用时不应重基", result)
-    lock = json.loads(fixture.origin_file("upstream.release.lock.json") or "{}")
-    check(name, lock.get("patchset") == 3 and "compatibility" not in lock and lock.get("release_tag") == "v2",
-          f"应采用 Action 的补丁集并去掉旧兼容层：{lock}", result)
-    check(name, fixture.origin_file("upstreams/releases/v2.json") == fixture.origin_file("upstream.release.lock.json"),
-          "新版本应写入版本目录", result)
-    check(name, fixture.origin_file("upstreams/releases/v1.json") is not None, "审计通过的旧 Release 应保留", result)
-    created = [call for call in fixture.calls("pr") if call["pr"] == "create"]
-    check(name, len(created) == 1 and created[0]["head"] == "automation/upstream-release-" + "2" * 12,
-          f"PR 分支不对：{created}", result)
-    check(name, fixture.calls("workflow") == [{"workflow": "build-kixdns-release.yml"}], "应触发 Release 构建", result)
-    check(name, any(call["issue"] == "close" and call["number"] == 9 for call in fixture.calls("issue")),
-          "适配告警应自动关闭", result)
 
 
 def rebase_calls(fixture: Fixture) -> list[dict]:
@@ -752,60 +698,12 @@ def created_pull_request(fixture: Fixture) -> dict:
     return created[0] if len(created) == 1 else {}
 
 
-def scenario_release_joins_action_patchset(steps: list[Step], root: Path) -> None:
-    name = "Action 补丁集不能原样用时，新 Release 并入它，编号与 Action 相同"
-    fixture = make_fixture(
-        root,
-        audit={"upstream.release.lock.json": {"3/v2": 0, "3": 1}, "upstreams/releases/v1.json": 0},
-    )
-    result = run_job(steps, fixture.repository, {**fixture.env, "TRACK": "release"}, new_release_outputs())
-    check(name, not result.context.failed, "作业应当成功", result)
-    rebases = rebase_calls(fixture)
-    check(name, len(rebases) == 1 and rebases[0]["join"] and rebases[0]["base_source"] == "action",
-          f"只应并入 Action 的补丁集，不领新编号：{rebases}", result)
-    lock = json.loads(fixture.origin_file("upstream.release.lock.json") or "{}")
-    check(name, lock.get("patchset") == 3 and lock.get("compatibility") == "v2" and lock.get("release_tag") == "v2",
-          f"应使用 Action 的编号和新兼容层：{lock}", result)
-    check(name, fixture.origin_file("patches/sets/3/compatibility/v2/0001-entry.patch") is not None,
-          "新兼容层应合并到 main", result)
-    check(name, fixture.origin_file("upstreams/releases/v2.json") == fixture.origin_file("upstream.release.lock.json"),
-          "新版本应写入版本目录", result)
-    check(name, "并入 p3，新增兼容层 `v2`，编号不变" in created_pull_request(fixture).get("body", ""),
-          "PR 正文应写明并入", result)
-    check(name, fixture.calls("workflow") == [{"workflow": "build-kixdns-release.yml"}], "应触发 Release 构建", result)
-
-
-def scenario_release_waits_when_join_fails(steps: list[Step], root: Path) -> None:
-    name = "新 Release 并不进 Action 的补丁集：停在原版本等人工，不退回旧补丁集"
-    fixture = make_fixture(
-        root,
-        # Release 自己的旧补丁集其实能过，但它带的是旧增强，不能拿来打包新版本。
-        # The release's own older patchset would pass, but it carries older enhancements.
-        audit={"upstream.release.lock.json": {"3": 1, "2": 0}, "upstreams/releases/v1.json": 0},
-        rebase={"join": "conflict", "full": "success"},
-    )
-    result = run_job(steps, fixture.repository, {**fixture.env, "TRACK": "release"}, new_release_outputs())
-    check(name, result.context.failed, "作业应当失败", result)
-    rebases = rebase_calls(fixture)
-    check(name, len(rebases) == 1 and rebases[0]["join"],
-          f"只试并入，不从旧补丁集重基出新编号：{rebases}", result)
-    lock = json.loads(fixture.origin_file("upstream.release.lock.json") or "{}")
-    check(name, lock.get("release_tag") == "v1" and lock.get("patchset") == 2,
-          f"Release 轨道应停在原版本：{lock}", result)
-    check(name, fixture.calls("pr") == [] and fixture.calls("workflow") == [], "不应合并或构建", result)
-    created = [call for call in fixture.calls("issue") if call["issue"] == "create"]
-    check(name, len(created) == 1 and created[0]["title"] == "[compat] KixDNS Release 需要适配"
-          and "Release 轨道会停在当前版本" in created[0]["body"], f"应开适配告警：{created}", result)
-
-
 def new_action_outputs() -> dict:
     return {
         "changed": "true",
         "commit": f"{400:040d}",
         "current": f"{300:040d}",
         "reference": "400",
-        "lock_file": "upstream.lock.json",
-        "label": "Action",
         "source_url": "https://github.com/olicesx/kixdns/actions/runs/400",
     }
 
@@ -813,7 +711,7 @@ def new_action_outputs() -> dict:
 def scenario_action_joins_current_patchset(steps: list[Step], root: Path) -> None:
     name = "新 Action 版本并入当前补丁集，编号不变"
     fixture = make_fixture(root, audit={"upstream.lock.json": {"3/run-400": 0, "3": 1}})
-    result = run_job(steps, fixture.repository, {**fixture.env, "TRACK": "action"}, new_action_outputs())
+    result = run_job(steps, fixture.repository, fixture.env, new_action_outputs())
     check(name, not result.context.failed, "作业应当成功", result)
     rebases = rebase_calls(fixture)
     check(name, len(rebases) == 1 and rebases[0]["join"] and rebases[0]["base_source"] is None,
@@ -823,6 +721,11 @@ def scenario_action_joins_current_patchset(steps: list[Step], root: Path) -> Non
           and lock.get("official_run_id") == 400, f"应保留编号并使用新兼容层：{lock}", result)
     check(name, fixture.origin_file("upstreams/actions/400.json") == fixture.origin_file("upstream.lock.json"),
           "新版本应写入版本目录", result)
+    check(name, fixture.origin_file("upstreams/actions/300.json") is None, "版本目录只留当前版本", result)
+    check(name, fixture.origin_file("patches/sets/3/compatibility/split/0001-entry.patch") is None,
+          "只有旧版本在用的 split 兼容层应删除", result)
+    check(name, fixture.origin_file("patches/sets/3/compatibility/run-400/0001-entry.patch") is not None,
+          "新兼容层应合并到 main", result)
     check(name, "并入 p3，新增兼容层 `run-400`，编号不变" in created_pull_request(fixture).get("body", ""),
           "PR 正文应写明并入", result)
     check(name, fixture.calls("workflow") == [{"workflow": "build-kixdns.yml"}], "应触发 Action 构建", result)
@@ -835,12 +738,17 @@ def scenario_action_rebases_when_join_fails(steps: list[Step], root: Path) -> No
         audit={"upstream.lock.json": {"4": 0, "3": 1}},
         rebase={"join": "shared", "full": "success"},
     )
-    result = run_job(steps, fixture.repository, {**fixture.env, "TRACK": "action"}, new_action_outputs())
+    result = run_job(steps, fixture.repository, fixture.env, new_action_outputs())
     check(name, not result.context.failed, "作业应当成功", result)
     rebases = rebase_calls(fixture)
     check(name, [call["join"] for call in rebases] == [True, False], f"应先并入，失败后再重基：{rebases}", result)
     lock = json.loads(fixture.origin_file("upstream.lock.json") or "{}")
     check(name, lock.get("patchset") == 4, f"应领新编号 p4：{lock}", result)
+    check(name, fixture.origin_file("upstreams/actions/300.json") is None
+          and fixture.origin_file("upstreams/actions/400.json") == fixture.origin_file("upstream.lock.json"),
+          "版本目录只留新版本", result)
+    check(name, fixture.origin_file("patches/sets/3/common/0001-source.patch") is None,
+          "旧版本移出后没人引用的 p3 应删除", result)
     check(name, "已自动重基为 p4" in created_pull_request(fixture).get("body", ""), "PR 正文应写明重基", result)
     check(name, [call for call in fixture.calls("issue") if call["issue"] == "create"] == [],
           "预料之中的并入失败不应开告警", result)
@@ -853,29 +761,12 @@ def scenario_action_rebase_infrastructure_failure(steps: list[Step], root: Path)
         audit={"upstream.lock.json": {"3": 1}},
         rebase={"join": "shared", "full": "infrastructure"},
     )
-    result = run_job(steps, fixture.repository, {**fixture.env, "TRACK": "action"}, new_action_outputs())
+    result = run_job(steps, fixture.repository, fixture.env, new_action_outputs())
     check(name, result.context.failed, "作业应当失败", result)
     check(name, result.context.outputs.get("rebase", {}).get("failure_kind") == "infrastructure",
           f"失败类型只看最后一次尝试：{result.context.outputs.get('rebase')}", result)
     check(name, [call for call in fixture.calls("issue") if call["issue"] == "create"] == [],
           "基础设施故障不应开适配告警", result)
-
-
-def scenario_unused_layer_removed(steps: list[Step], root: Path) -> None:
-    name = "旧版本移出后，只有它在用的兼容层一起删除"
-    fixture = make_fixture(
-        root,
-        audit={"upstream.release.lock.json": {"3/v2": 0, "3": 1}, "upstreams/releases/v1.json": 3},
-    )
-    result = run_job(steps, fixture.repository, {**fixture.env, "TRACK": "release"}, new_release_outputs())
-    check(name, not result.context.failed, "作业应当成功", result)
-    check(name, fixture.origin_file("upstreams/releases/v1.json") is None, "审计不过的 v1 应移出", result)
-    check(name, fixture.origin_file("patches/sets/2/compatibility/legacy/0000-legacy.patch") is None,
-          "只有 v1 在用的 legacy 兼容层应删除", result)
-    check(name, fixture.origin_file("patches/sets/2/common/0001-source.patch") is not None,
-          "p2 仍被 Action 旧版本使用，应保留", result)
-    check(name, fixture.origin_file("patches/sets/3/compatibility/v2/0001-entry.patch") is not None,
-          "正在使用的兼容层不能删", result)
 
 
 def main() -> int:
@@ -892,15 +783,11 @@ def main() -> int:
     scenarios = [
         scenario_refresh,
         scenario_unfixable,
-        scenario_prune_only,
+        scenario_cleanup_only,
         scenario_quiet_day,
-        scenario_release_uses_action_patchset,
-        scenario_release_joins_action_patchset,
-        scenario_release_waits_when_join_fails,
         scenario_action_joins_current_patchset,
         scenario_action_rebases_when_join_fails,
         scenario_action_rebase_infrastructure_failure,
-        scenario_unused_layer_removed,
     ]
     for scenario in scenarios:
         with tempfile.TemporaryDirectory() as directory:

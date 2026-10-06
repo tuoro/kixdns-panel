@@ -20,14 +20,12 @@ const AUDIT_FINDINGS_EXIT_CODE: i32 = 3;
 #[serde(rename_all = "lowercase")]
 pub(crate) enum UpstreamSource {
     Action,
-    Release,
 }
 
 impl UpstreamSource {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Action => "action",
-            Self::Release => "release",
         }
     }
 }
@@ -39,10 +37,6 @@ pub(crate) struct UpstreamLock {
     pub(crate) commit: String,
     #[serde(default)]
     pub(crate) official_run_id: Option<u64>,
-    #[serde(default)]
-    pub(crate) release_id: Option<u64>,
-    #[serde(default)]
-    pub(crate) release_tag: Option<String>,
     #[serde(default)]
     pub(crate) compatibility: Option<String>,
     pub(crate) patchset: u32,
@@ -100,16 +94,13 @@ fn parse_lock_argument(mut arguments: impl Iterator<Item = String>) -> Result<Pa
     let value = arguments.next().context("--lock 缺少锁文件名")?;
     let path = PathBuf::from(value);
     if flag != "--lock" || arguments.next().is_some() || !valid_lock_path(&path) {
-        bail!("锁文件必须是根目录当前锁，或 upstreams/actions、upstreams/releases 下的 JSON 文件");
+        bail!("锁文件必须是根目录当前锁，或 upstreams/actions 下的 JSON 文件");
     }
     Ok(path)
 }
 
 pub(crate) fn valid_lock_path(path: &Path) -> bool {
-    if matches!(
-        path.to_str(),
-        Some("upstream.lock.json" | "upstream.release.lock.json")
-    ) {
+    if path.to_str() == Some("upstream.lock.json") {
         return true;
     }
     let components = path.components().collect::<Vec<_>>();
@@ -121,7 +112,7 @@ pub(crate) fn valid_lock_path(path: &Path) -> bool {
     else {
         return false;
     };
-    if *root != OsStr::new("upstreams") || !matches!(track.to_str(), Some("actions" | "releases")) {
+    if *root != OsStr::new("upstreams") || *track != OsStr::new("actions") {
         return false;
     }
     let file = Path::new(file);
@@ -355,16 +346,9 @@ pub(crate) fn apply_patch(checkout: &Path, patch: &Path) -> Result<()> {
 }
 
 pub(crate) fn source_reference(lock: &UpstreamLock) -> Result<String> {
-    match lock.source {
-        UpstreamSource::Action => lock
-            .official_run_id
-            .map(|run_id| run_id.to_string())
-            .context("Action 锁缺少 official_run_id"),
-        UpstreamSource::Release => lock
-            .release_tag
-            .clone()
-            .context("Release 锁缺少 release_tag"),
-    }
+    lock.official_run_id
+        .map(|run_id| run_id.to_string())
+        .context("Action 锁缺少 official_run_id")
 }
 
 pub(crate) fn dependency_revision_directory(root: &Path, lock: &UpstreamLock) -> Result<PathBuf> {
@@ -404,20 +388,6 @@ pub(crate) fn patches_for_lock(root: &Path, lock: &UpstreamLock) -> Result<Vec<P
             bail!("补丁集 v{} 缺少兼容层 {compatibility}", lock.patchset);
         }
         patches.extend(selected);
-    }
-    if lock.source == UpstreamSource::Release {
-        let release_tag = lock.release_tag.as_deref().expect("已验证 Release 标签");
-        let directory = patchset_dir.join("release").join(release_tag);
-        if directory.is_dir() {
-            let selected = read_patches(&directory)?;
-            if selected.is_empty() {
-                bail!(
-                    "补丁集 v{} 的 Release 目录 {release_tag} 为空",
-                    lock.patchset
-                );
-            }
-            patches.extend(selected);
-        }
     }
 
     let common = read_patches(&patchset_dir.join("common"))?;
@@ -480,13 +450,7 @@ fn print_info(root: &Path, lock_file: &Path) -> Result<()> {
     validate_lock(&lock)?;
     println!("锁文件：{}", lock_file.display());
     println!("仓库：https://github.com/{}", lock.repository);
-    println!(
-        "来源：{}",
-        match lock.source {
-            UpstreamSource::Action => "Action",
-            UpstreamSource::Release => "Release",
-        }
-    );
+    println!("来源：Action");
     println!("提交：{}", lock.commit);
     println!("补丁集：{}", lock.patchset);
     if let Some(revision) = lock.dependency_revision {
@@ -508,16 +472,8 @@ pub(crate) fn validate_lock(lock: &UpstreamLock) -> Result<()> {
     {
         bail!("upstream.lock.json 中的 compatibility 无效");
     }
-    match lock.source {
-        UpstreamSource::Action
-            if lock.official_run_id.is_some_and(|run_id| run_id > 0)
-                && lock.release_id.is_none()
-                && lock.release_tag.is_none() => {}
-        UpstreamSource::Release
-            if lock.release_id.is_some_and(|release_id| release_id > 0)
-                && lock.release_tag.as_deref().is_some_and(valid_reference)
-                && lock.official_run_id.is_none() => {}
-        _ => bail!("upstream.lock.json 中的来源元数据不完整"),
+    if lock.official_run_id.is_none_or(|run_id| run_id == 0) {
+        bail!("upstream.lock.json 中的来源元数据不完整");
     }
     Ok(())
 }
@@ -596,14 +552,12 @@ mod tests {
         patch_stamp, patches_for_lock, run, valid_lock_path, validate_commit, validate_lock,
     };
 
-    fn release_lock(revision: Option<u32>) -> UpstreamLock {
+    fn action_lock(revision: Option<u32>) -> UpstreamLock {
         UpstreamLock {
             repository: "olicesx/kixdns".to_owned(),
-            source: UpstreamSource::Release,
+            source: UpstreamSource::Action,
             commit: "647c5b1d2af6963176d7f8da6c3ed031e6b58497".to_owned(),
-            official_run_id: None,
-            release_id: Some(360_191_918),
-            release_tag: Some("v0.1.1".to_owned()),
+            official_run_id: Some(36_374_613_990),
             compatibility: None,
             patchset: 9,
             control_protocol: 1,
@@ -633,19 +587,19 @@ mod tests {
     #[test]
     fn keeps_revisioned_checkouts_apart() {
         assert_eq!(
-            checkout_directory(&release_lock(None)),
-            Path::new(".upstream/kixdns-release-647c5b1d2af6-p9")
+            checkout_directory(&action_lock(None)),
+            Path::new(".upstream/kixdns-action-647c5b1d2af6-p9")
         );
         assert_eq!(
-            checkout_directory(&release_lock(Some(2))),
-            Path::new(".upstream/kixdns-release-647c5b1d2af6-p9-r2")
+            checkout_directory(&action_lock(Some(2))),
+            Path::new(".upstream/kixdns-action-647c5b1d2af6-p9-r2")
         );
     }
 
     #[test]
     fn rejects_revision_zero() {
-        assert!(validate_lock(&release_lock(Some(1))).is_ok());
-        assert!(validate_lock(&release_lock(Some(0))).is_err());
+        assert!(validate_lock(&action_lock(Some(1))).is_ok());
+        assert!(validate_lock(&action_lock(Some(0))).is_err());
     }
 
     #[test]
@@ -655,15 +609,15 @@ mod tests {
         fs::create_dir_all(&common).unwrap();
         fs::write(common.join("0001-common.patch"), "common").unwrap();
 
-        let error = patch_series(root.path(), &release_lock(Some(1)))
+        let error = patch_series(root.path(), &action_lock(Some(1)))
             .err()
             .unwrap();
         assert!(error.to_string().contains("依赖修订不存在"));
 
-        let revisions = root.path().join("patches/dependencies/release/v0.1.1");
+        let revisions = root.path().join("patches/dependencies/action/36374613990");
         fs::create_dir_all(&revisions).unwrap();
         fs::write(revisions.join("p9-r1.patch"), "revision").unwrap();
-        let series = patch_series(root.path(), &release_lock(Some(1))).unwrap();
+        let series = patch_series(root.path(), &action_lock(Some(1))).unwrap();
         assert_eq!(series.revision.unwrap().1, revisions.join("p9-r1.patch"));
     }
 
@@ -679,17 +633,17 @@ mod tests {
             patches: vec![patch.clone()],
             revision: None,
         };
-        let stamp = patch_stamp(9, UpstreamSource::Release, &plain).unwrap();
+        let stamp = patch_stamp(9, UpstreamSource::Action, &plain).unwrap();
         let lines = stamp.lines().collect::<Vec<_>>();
         assert_eq!(lines.len(), 3);
-        assert_eq!(lines[..2], ["source=release", "patchset=9"]);
+        assert_eq!(lines[..2], ["source=action", "patchset=9"]);
         assert!(lines[2].starts_with("sha256="));
 
         let revised = PatchSeries {
             patches: vec![patch],
             revision: Some((1, revision)),
         };
-        let revised_stamp = patch_stamp(9, UpstreamSource::Release, &revised).unwrap();
+        let revised_stamp = patch_stamp(9, UpstreamSource::Action, &revised).unwrap();
         assert!(revised_stamp.contains("dependency_revision=1\n"));
         assert_ne!(revised_stamp.lines().last(), stamp.lines().last());
     }
@@ -791,11 +745,9 @@ mod tests {
     fn rejects_incomplete_source_identity() {
         let lock = UpstreamLock {
             repository: "olicesx/kixdns".to_owned(),
-            source: UpstreamSource::Release,
+            source: UpstreamSource::Action,
             commit: "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25".to_owned(),
             official_run_id: None,
-            release_id: None,
-            release_tag: Some("v0.1.1".to_owned()),
             compatibility: None,
             patchset: 5,
             control_protocol: 1,
@@ -832,8 +784,6 @@ mod tests {
             source: UpstreamSource::Action,
             commit: "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25".to_owned(),
             official_run_id: Some(30_235_703_570),
-            release_id: None,
-            release_tag: None,
             compatibility: Some("pre-local-time".to_owned()),
             patchset: 5,
             control_protocol: 1,
@@ -865,8 +815,6 @@ mod tests {
             source: UpstreamSource::Action,
             commit: "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25".to_owned(),
             official_run_id: Some(30_235_703_570),
-            release_id: None,
-            release_tag: None,
             compatibility: Some("missing".to_owned()),
             patchset: 5,
             control_protocol: 1,
@@ -883,7 +831,10 @@ mod tests {
         assert!(valid_lock_path(Path::new(
             "upstreams/actions/30235703570.json"
         )));
-        assert!(valid_lock_path(Path::new("upstreams/releases/v0.1.1.json")));
+        assert!(!valid_lock_path(Path::new("upstream.release.lock.json")));
+        assert!(!valid_lock_path(Path::new(
+            "upstreams/releases/v0.1.1.json"
+        )));
         assert!(!valid_lock_path(Path::new("../upstream.lock.json")));
         assert!(!valid_lock_path(Path::new(
             "upstreams/actions/bad/name.json"

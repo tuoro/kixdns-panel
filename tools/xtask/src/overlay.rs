@@ -10,8 +10,8 @@ use serde_json::{Number, Value};
 use tempfile::Builder;
 
 use crate::{
-    UpstreamLock, UpstreamSource, apply_patch, load_lock, patches_for_lock, valid_lock_path,
-    validate_commit, validate_lock,
+    UpstreamLock, apply_patch, load_lock, patches_for_lock, valid_lock_path, validate_commit,
+    validate_lock,
 };
 
 const COMMIT_PREFIX: &str = "kixdns-overlay:";
@@ -20,10 +20,6 @@ const LOCK_FILE: &str = "Cargo.lock";
 pub(crate) struct Options {
     pub(crate) lock_file: PathBuf,
     pub(crate) base_commit: String,
-    /// 补丁基准所在的轨道，缺省与候选相同。新 Release 并入 Action 的补丁集时取 Action。
-    /// The track the base lock belongs to, the candidate's by default. A new release
-    /// joining the action track's patchset takes it from the action track.
-    pub(crate) base_source: Option<UpstreamSource>,
     /// 并入基准的补丁集：只新增一个兼容层，编号不变。
     /// Join the base patchset: add one compatibility layer and keep the number.
     pub(crate) join: bool,
@@ -33,7 +29,6 @@ impl Options {
     pub(crate) fn parse(mut arguments: impl Iterator<Item = String>) -> Result<Self> {
         let mut lock_file = None;
         let mut base_commit = None;
-        let mut base_source = None;
         let mut join = false;
 
         while let Some(flag) = arguments.next() {
@@ -50,14 +45,7 @@ impl Options {
             match flag.as_str() {
                 "--lock" if lock_file.is_none() => lock_file = Some(PathBuf::from(value)),
                 "--base-commit" if base_commit.is_none() => base_commit = Some(value),
-                "--base-source" if base_source.is_none() => {
-                    base_source = Some(match value.as_str() {
-                        "action" => UpstreamSource::Action,
-                        "release" => UpstreamSource::Release,
-                        _ => bail!("--base-source 只能是 action 或 release"),
-                    });
-                }
-                "--lock" | "--base-commit" | "--base-source" => bail!("重复的参数：{flag}"),
+                "--lock" | "--base-commit" => bail!("重复的参数：{flag}"),
                 _ => bail!("未知的 rebase 参数：{flag}"),
             }
         }
@@ -68,14 +56,10 @@ impl Options {
         }
         let base_commit = base_commit.context("rebase 需要 --base-commit")?;
         validate_commit(&base_commit)?;
-        if base_source.is_some() && !join {
-            bail!("--base-source 只能与 --join 一起使用：跨轨道只允许并入，不生成新补丁集");
-        }
 
         Ok(Self {
             lock_file,
             base_commit,
-            base_source,
             join,
         })
     }
@@ -88,8 +72,7 @@ pub(crate) fn rebase_patchset(root: &Path, options: &Options) -> Result<()> {
         bail!("候选提交与补丁基准相同，无需重基");
     }
 
-    let base_source = options.base_source.unwrap_or(candidate.source);
-    let base = find_base_lock(root, &candidate, &options.base_commit, base_source)?;
+    let base = find_base_lock(root, &candidate, &options.base_commit)?;
     let source_patches = patches_for_lock(root, &base)?;
     if options.join {
         return join_patchset(root, &options.lock_file, &base, &candidate, &source_patches);
@@ -108,12 +91,7 @@ pub(crate) fn rebase_patchset(root: &Path, options: &Options) -> Result<()> {
     Ok(())
 }
 
-fn find_base_lock(
-    root: &Path,
-    candidate: &UpstreamLock,
-    commit: &str,
-    source: UpstreamSource,
-) -> Result<UpstreamLock> {
+fn find_base_lock(root: &Path, candidate: &UpstreamLock, commit: &str) -> Result<UpstreamLock> {
     let mut matches = Vec::new();
     for path in lock_catalog_paths(root)? {
         let raw = fs::read_to_string(&path)
@@ -122,7 +100,7 @@ fn find_base_lock(
             .with_context(|| format!("解析补丁基准候选失败：{}", path.display()))?;
         if lock.commit == commit
             && lock.repository == candidate.repository
-            && lock.source == source
+            && lock.source == candidate.source
             && lock.patchset == candidate.patchset
         {
             validate_lock(&lock)?;
@@ -138,15 +116,9 @@ fn find_base_lock(
 }
 
 fn lock_catalog_paths(root: &Path) -> Result<Vec<PathBuf>> {
-    let mut paths = vec![
-        root.join("upstream.lock.json"),
-        root.join("upstream.release.lock.json"),
-    ];
-    for directory in ["upstreams/actions", "upstreams/releases"] {
-        let directory = root.join(directory);
-        if !directory.is_dir() {
-            continue;
-        }
+    let mut paths = vec![root.join("upstream.lock.json")];
+    let directory = root.join("upstreams/actions");
+    if directory.is_dir() {
         for entry in fs::read_dir(&directory)
             .with_context(|| format!("读取版本目录失败：{}", directory.display()))?
         {
@@ -437,7 +409,7 @@ fn export_overlay(
             .trim()
             .strip_prefix(COMMIT_PREFIX)
             .with_context(|| format!("重基提交缺少 overlay 身份：{commit}"))?;
-        let relative = remap_export_path(Path::new(relative), base, candidate)?;
+        let relative = remap_export_path(Path::new(relative), base)?;
         let normalized = normalized_relative(&relative)?;
         if !written.insert(normalized.clone()) {
             bail!("重基后生成了重复补丁：{normalized}");
@@ -472,11 +444,7 @@ fn export_overlay(
     })
 }
 
-fn remap_export_path(
-    relative: &Path,
-    base: &UpstreamLock,
-    candidate: &UpstreamLock,
-) -> Result<PathBuf> {
+fn remap_export_path(relative: &Path, base: &UpstreamLock) -> Result<PathBuf> {
     let components = normal_components(relative)?;
     match components.as_slice() {
         [category, file] if category == "common" => Ok(PathBuf::from(category).join(file)),
@@ -485,16 +453,6 @@ fn remap_export_path(
                 bail!("overlay 兼容层与基准锁文件不一致：{profile}");
             }
             Ok(PathBuf::from(category).join(profile).join(file))
-        }
-        [category, _, file] if category == "release" => {
-            if candidate.source != UpstreamSource::Release {
-                bail!("Action 轨道不能导出 Release 专用补丁");
-            }
-            let tag = candidate
-                .release_tag
-                .as_deref()
-                .context("候选 Release 缺少标签")?;
-            Ok(PathBuf::from(category).join(tag).join(file))
         }
         _ => bail!("不支持的 overlay 补丁路径：{}", relative.display()),
     }
@@ -595,13 +553,13 @@ fn enable_with_lock(
 /// 并入：把候选上游接进基准的补丁集，只新增一个兼容层，编号不变。
 ///
 /// 兼容层是这份上游独有的部分（入口写法和依赖锁），由基准的兼容层重基到候选上游得到；
-/// 通用层和 Release 专用层必须原样适用。不适用说明通用补丁也要改，那只能新建补丁集，
-/// 这里不做，由调用方决定。
+/// 通用层必须原样适用。不适用说明通用补丁也要改，那只能新建补丁集，这里不做，由调用方
+/// 决定。
 ///
 /// Join: attach the candidate upstream to the base patchset with one new compatibility
 /// layer and the same number. The layer holds what belongs to this upstream alone (the
-/// entry point and the lockfile), rebased from the base's layer; the common and release
-/// layers must apply unchanged. If they do not, the common patches need changing too,
+/// entry point and the lockfile), rebased from the base's layer; the common layer must
+/// apply unchanged. If they do not, the common patches need changing too,
 /// which takes a new patchset; that is the caller's call, not done here.
 fn join_patchset(
     root: &Path,
@@ -658,16 +616,13 @@ fn join_patchset(
     Ok(())
 }
 
-/// 新兼容层按上游身份命名：Action 用 run-<运行编号>，Release 用标签。
-/// A new layer is named after the upstream: run-<run id> for action, the tag for release.
+/// 新兼容层按上游身份命名：run-<运行编号>。
+/// A new layer is named after the upstream: run-<run id>.
 fn join_layer_name(candidate: &UpstreamLock) -> String {
-    match candidate.source {
-        UpstreamSource::Action => format!(
-            "run-{}",
-            candidate.official_run_id.expect("已验证 Action 运行编号")
-        ),
-        UpstreamSource::Release => candidate.release_tag.clone().expect("已验证 Release 标签"),
-    }
+    format!(
+        "run-{}",
+        candidate.official_run_id.expect("已验证 Action 运行编号")
+    )
 }
 
 /// 只导出兼容层的重基结果；通用层不导出，由 `verify_join` 检验它能否原样适用。
@@ -935,7 +890,7 @@ mod tests {
     }
 
     const ACTION_COMMIT: &str = "681183cb25c745cfe42eb380bf9dda886683eaa7";
-    const RELEASE_COMMIT: &str = "98522846d060fc9b59fb0764cea2d734f26634d8";
+    const CANDIDATE_COMMIT: &str = "42981abe52ce53271be50b430594e02601e8b615";
 
     fn action_lock(compatibility: Option<&str>) -> UpstreamLock {
         UpstreamLock {
@@ -943,8 +898,6 @@ mod tests {
             source: UpstreamSource::Action,
             commit: ACTION_COMMIT.to_owned(),
             official_run_id: Some(34_942_284_951),
-            release_id: None,
-            release_tag: None,
             compatibility: compatibility.map(str::to_owned),
             patchset: 27,
             control_protocol: 1,
@@ -952,18 +905,14 @@ mod tests {
         }
     }
 
-    fn release_candidate() -> UpstreamLock {
+    /// 同步写好的候选：上游换了运行和提交，补丁集和兼容层还是基准的。
+    /// The candidate the sync writes: a new upstream run and commit, with the base's
+    /// patchset and layer still in place.
+    fn action_candidate() -> UpstreamLock {
         UpstreamLock {
-            repository: "olicesx/kixdns".to_owned(),
-            source: UpstreamSource::Release,
-            commit: RELEASE_COMMIT.to_owned(),
-            official_run_id: None,
-            release_id: Some(9),
-            release_tag: Some("v0.3.0".to_owned()),
-            compatibility: Some("split-main".to_owned()),
-            patchset: 27,
-            control_protocol: 1,
-            dependency_revision: None,
+            commit: CANDIDATE_COMMIT.to_owned(),
+            official_run_id: Some(36_374_613_990),
+            ..action_lock(Some("split-main"))
         }
     }
 
@@ -984,7 +933,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_join_across_tracks() {
+    fn parses_join_options() {
         let arguments = |values: &[&str]| {
             values
                 .iter()
@@ -994,46 +943,28 @@ mod tests {
         };
         let options = Options::parse(arguments(&[
             "--join",
-            "--base-source",
-            "action",
             "--lock",
-            "upstream.release.lock.json",
+            "upstream.lock.json",
             "--base-commit",
             ACTION_COMMIT,
         ]))
         .unwrap();
         assert!(options.join);
-        assert_eq!(options.base_source, Some(UpstreamSource::Action));
 
-        // 跨轨道只允许并入：从别的轨道领新编号会让 Release 超过 Action。
-        // Crossing tracks is for joining only: a new number from the other track would put
-        // the release ahead of the action track.
+        // 只有一条轨道，跨轨道的 --base-source 已经不认。
+        // There is one track, so the cross-track --base-source is no longer accepted.
         let error = Options::parse(arguments(&[
+            "--join",
             "--base-source",
             "action",
             "--lock",
-            "upstream.release.lock.json",
+            "upstream.lock.json",
             "--base-commit",
             ACTION_COMMIT,
         ]))
         .err()
         .unwrap();
-        assert!(
-            error.to_string().contains("只能与 --join 一起使用"),
-            "{error}"
-        );
-        assert!(
-            Options::parse(arguments(&[
-                "--join",
-                "--base-source",
-                "nightly",
-                "--lock",
-                "upstream.lock.json",
-                "--base-commit",
-                ACTION_COMMIT,
-            ]))
-            .is_err()
-        );
+        assert!(error.to_string().contains("未知的 rebase 参数"), "{error}");
         assert!(
             Options::parse(arguments(&[
                 "--join",
@@ -1079,7 +1010,7 @@ mod tests {
     }
 
     #[test]
-    fn a_release_finds_its_base_on_the_action_track() {
+    fn finds_the_base_in_the_catalogue() {
         let root = tempdir().unwrap();
         let catalog = root.path().join("upstreams/actions");
         fs::create_dir_all(&catalog).unwrap();
@@ -1097,36 +1028,36 @@ mod tests {
             .to_string(),
         )
         .unwrap();
+        // 同步先把候选写进当前锁再重基，所以基准只能从版本目录里找到。
+        // The sync writes the candidate into the current lock before rebasing, so the base
+        // can only be found in the catalogue.
+        let candidate = action_candidate();
         fs::write(
             root.path().join("upstream.lock.json"),
-            fs::read_to_string(catalog.join("34942284951.json")).unwrap(),
-        )
-        .unwrap();
-        fs::write(
-            root.path().join("upstream.release.lock.json"),
-            fs::read_to_string(catalog.join("34942284951.json")).unwrap(),
+            serde_json::json!({
+                "repository": "olicesx/kixdns",
+                "source": "action",
+                "commit": CANDIDATE_COMMIT,
+                "official_run_id": 36_374_613_990_u64,
+                "compatibility": "split-main",
+                "patchset": 27,
+                "control_protocol": 1
+            })
+            .to_string(),
         )
         .unwrap();
 
-        let candidate = release_candidate();
-        let base = find_base_lock(
+        let base = find_base_lock(root.path(), &candidate, ACTION_COMMIT).unwrap();
+        assert_eq!(base.official_run_id, Some(34_942_284_951));
+        assert_eq!(base.compatibility.as_deref(), Some("split-main"));
+        let error = find_base_lock(
             root.path(),
             &candidate,
-            ACTION_COMMIT,
-            UpstreamSource::Action,
+            CANDIDATE_COMMIT.replace('4', "5").as_str(),
         )
+        .err()
         .unwrap();
-        assert_eq!(base.source, UpstreamSource::Action);
-        assert_eq!(base.compatibility.as_deref(), Some("split-main"));
-        assert!(
-            find_base_lock(
-                root.path(),
-                &candidate,
-                ACTION_COMMIT,
-                UpstreamSource::Release
-            )
-            .is_err()
-        );
+        assert!(error.to_string().contains("找不到补丁基准提交"), "{error}");
     }
 
     #[test]
@@ -1169,13 +1100,13 @@ mod tests {
         let entry = fs::read_to_string(staging.path().join("0001-panel-entry.patch")).unwrap();
         assert!(entry.contains("+entry"), "{entry}");
 
-        // Release 专用层按标签自动选中，不能靠并入带进一个已封印的补丁集。
-        // A release layer is selected by tag and cannot ride a join into a sealed set.
+        // 别的兼容层不属于这次并入，不能靠并入带进一个已封印的补丁集。
+        // Another layer is not part of this join and cannot ride it into a sealed set.
         commit_file(
             root.path(),
             "lib.rs",
-            "release\n",
-            "kixdns-overlay:release/v0.3.0/0001-release.patch",
+            "other\n",
+            "kixdns-overlay:compatibility/tokio-main/0001-entry.patch",
         );
         let error = export_join_layer(
             root.path(),
@@ -1233,13 +1164,13 @@ mod tests {
     #[test]
     fn enabling_a_layer_points_the_lock_at_it() {
         let root = tempdir().unwrap();
-        let lock_path = root.path().join("upstream.release.lock.json");
+        let lock_path = root.path().join("upstream.lock.json");
         fs::write(
             &lock_path,
             concat!(
-                "{\n  \"repository\": \"olicesx/kixdns\",\n  \"source\": \"release\",\n",
-                "  \"commit\": \"98522846d060fc9b59fb0764cea2d734f26634d8\",\n",
-                "  \"release_id\": 9,\n  \"release_tag\": \"v0.3.0\",\n",
+                "{\n  \"repository\": \"olicesx/kixdns\",\n  \"source\": \"action\",\n",
+                "  \"commit\": \"42981abe52ce53271be50b430594e02601e8b615\",\n",
+                "  \"official_run_id\": 36374613990,\n",
                 "  \"compatibility\": \"split-main\",\n  \"patchset\": 27,\n",
                 "  \"control_protocol\": 1,\n  \"dependency_revision\": 2\n}\n"
             ),
@@ -1247,15 +1178,22 @@ mod tests {
         .unwrap();
         let staging = tempfile::Builder::new().tempdir_in(root.path()).unwrap();
         fs::write(staging.path().join("0001-panel-entry.patch"), "patch").unwrap();
-        let destination = root.path().join("compatibility-v0.3.0");
+        let destination = root.path().join("compatibility-run-36374613990");
 
-        enable_with_lock(&lock_path, 27, Some("v0.3.0"), staging, &destination).unwrap();
+        enable_with_lock(
+            &lock_path,
+            27,
+            Some("run-36374613990"),
+            staging,
+            &destination,
+        )
+        .unwrap();
 
         assert!(destination.join("0001-panel-entry.patch").is_file());
         let lock = fs::read_to_string(&lock_path).unwrap();
         let value: serde_json::Value = serde_json::from_str(&lock).unwrap();
         assert_eq!(value["patchset"], 27);
-        assert_eq!(value["compatibility"], "v0.3.0");
+        assert_eq!(value["compatibility"], "run-36374613990");
         assert!(value.get("dependency_revision").is_none(), "{lock}");
         // 键的顺序不变，锁文件和版本目录才能逐字节比较。
         // Key order is kept so the lock and its catalogue copy compare byte for byte.
@@ -1266,8 +1204,7 @@ mod tests {
                 "repository",
                 "source",
                 "commit",
-                "release_id",
-                "release_tag",
+                "official_run_id",
                 "compatibility",
                 "patchset",
                 "control_protocol"
@@ -1278,9 +1215,11 @@ mod tests {
     #[test]
     fn a_join_refuses_before_touching_the_network() {
         let root = tempdir().unwrap();
-        let layer = root.path().join("patches/sets/27/compatibility/v0.3.0");
+        let layer = root
+            .path()
+            .join("patches/sets/27/compatibility/run-36374613990");
         fs::create_dir_all(&layer).unwrap();
-        let lock_file = PathBuf::from("upstream.release.lock.json");
+        let lock_file = PathBuf::from("upstream.lock.json");
 
         // 依赖锁还在通用层的旧补丁集没法共用。
         // An older patchset with the lockfile in its common layer cannot be shared.
@@ -1288,7 +1227,7 @@ mod tests {
             root.path(),
             &lock_file,
             &action_lock(None),
-            &release_candidate(),
+            &action_candidate(),
             &[],
         )
         .err()
@@ -1301,12 +1240,15 @@ mod tests {
             root.path(),
             &lock_file,
             &action_lock(Some("split-main")),
-            &release_candidate(),
+            &action_candidate(),
             &[],
         )
         .err()
         .unwrap();
-        assert!(error.to_string().contains("已有兼容层 v0.3.0"), "{error}");
+        assert!(
+            error.to_string().contains("已有兼容层 run-36374613990"),
+            "{error}"
+        );
     }
 
     #[test]
