@@ -462,12 +462,12 @@ test('转发动作支持不写入协议的自动传输模式', async ({ page }) 
 test('系统页按「要不要现在动手」排序，更新项压成一行 @responsive', async ({ page }) => {
   await open(page, '/system')
 
-  // 服务状态在页头，只有一行：它回答「在不在跑」和「要不要动它」；后面依次是更新、安装、凭据、版本。
+  // 服务状态在页头，只有一行：它回答「在不在跑」和「要不要动它」；后面依次是更新、安装、凭据。
   // The service state sits in the page header, one line answering whether it runs and whether to
-  // touch it; updates, the installation, credentials and versions follow in that order.
+  // touch it; updates, the installation and credentials follow in that order.
   const order = await page.evaluate(() => [...document.querySelectorAll('main .service-line, main section.ui-card')]
     .map((block) => block.className.split(' ').find((name) => name === 'service-line' || name.endsWith('-panel'))))
-  expect(order).toEqual(['service-line', 'update-panel', 'runtime-panel', 'credential-panel', 'version-panel'])
+  expect(order).toEqual(['service-line', 'update-panel', 'runtime-panel', 'credential-panel'])
   // 这一页是看状态、偶尔操作，没有黑色主按钮；列表里每行的操作都是次要按钮。
   // A page read and occasionally acted on has no black primary button; row actions are secondary.
   await expect(page.locator('main .ui-btn--primary, main .button--primary')).toHaveCount(0)
@@ -487,32 +487,50 @@ test('系统页按「要不要现在动手」排序，更新项压成一行 @res
   await expectNoPageOverflow(page)
 })
 
-test('增强版本可安装、切换并删除非活动库存 @responsive', async ({ page }) => {
+test('内核可更新到最新并回到上一个 @responsive', async ({ page }) => {
   await open(page, '/system')
-  const panel = page.locator('.version-panel')
-  await expect(panel.locator('.remote-versions .version-row')).not.toHaveCount(0)
-  // 切换前先确认，并按当前服务状态说清是短暂重启还是什么都不启动。
-  // Every switch asks first and says, from the service state, whether DNS restarts briefly or nothing starts.
-  await panel.locator('.remote-versions .version-row').first().getByRole('button', { name: '安装并切换' }).click()
+  const kernelRow = page.locator('.update-row').first()
+  const runtime = page.locator('.runtime-panel')
+  await expect(kernelRow.locator('.update-row__from-to')).toContainText('Run #30231271280 → Run #30235703570')
+  // 更新前先确认要装哪个构建，并按当前服务状态说清是短暂重启还是什么都不启动。
+  // An update first names the build and says, from the service state, whether DNS restarts briefly or nothing starts.
+  await kernelRow.getByRole('button', { name: '更新', exact: true }).click()
+  await expect(page.getByRole('alertdialog')).toContainText('Run #30235703570')
   await expect(page.getByRole('alertdialog')).toContainText('DNS 解析短暂中断')
   await expect(page.getByRole('alertdialog')).toContainText('开机自启设置保持不变')
   await expectNoPageOverflow(page)
   await acceptConfirm(page)
-  await expect(page.locator('.toast--success').filter({ hasText: '已安装并通过健康检查' })).toBeVisible()
+  await expect(page.locator('.toast--success').filter({ hasText: '内核已更新并通过健康检查' })).toBeVisible()
+  await expect(kernelRow.locator('.update-row__from-to')).toContainText('已是最新')
+  await expect(runtime.locator('.install-version')).toHaveText('Run #30235703570')
+  await expect(runtime.locator('.ui-card__foot')).toContainText('上一个版本 Run #30231271280')
 
   await page.locator('.service-line').getByRole('button', { name: '停止' }).click()
   await acceptConfirm(page)
   await expect(page.locator('.service-line')).toContainText('已停止')
 
-  await panel.getByTitle('切换到此版本').first().click()
+  await runtime.getByRole('button', { name: '回退', exact: true }).click()
+  await expect(page.getByRole('alertdialog')).toContainText('回退到 Run #30231271280')
   await expect(page.getByRole('alertdialog')).toContainText('不会启动服务')
   await acceptConfirm(page)
   await expect(page.locator('.toast--success').filter({ hasText: '服务仍停止，下次启动时生效' })).toBeVisible()
   await expect(page.locator('.service-line')).toContainText('已停止')
+  await expect(runtime.locator('.install-version')).toHaveText('Run #30231271280')
+  await expect(runtime.locator('.ui-card__foot')).toContainText('上一个版本 Run #30235703570')
+})
 
-  await panel.getByRole('button', { name: '删除本地版本' }).first().click()
-  await acceptConfirm(page)
-  await expect(page.locator('.toast--success').filter({ hasText: '已删除' })).toBeVisible()
+test('内核检查失败时面板更新照常提示 @responsive', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('kixdns:demo-kernel-check-failed', 'true'))
+  await open(page, '/system')
+  const [kernelRow, panelRow] = [page.locator('.update-row').first(), page.locator('.update-row').nth(1)]
+  await expect(kernelRow.locator('.update-row__from-to')).toContainText('检查失败：GitHub 匿名 API 配额已用尽')
+  await expect(kernelRow.getByRole('button')).toHaveCount(0)
+  await expect(panelRow.locator('.update-row__from-to')).toContainText('v1.0.0 → v1.0.1')
+  await expect(panelRow.getByRole('button', { name: '在线更新' })).toBeVisible()
+  // 回退只用本机的版本，读不到远端时照样能回。 / Rollback uses only local versions, so it still works offline.
+  await expect(page.locator('.runtime-panel').getByRole('button', { name: '回退', exact: true })).toBeEnabled()
+  await expect(page.locator('.topbar-update .notification-badge')).toHaveText('1')
+  await expectNoPageOverflow(page)
 })
 
 test('更新通知可标记已读并在刷新后保持', async ({ page }) => {

@@ -229,6 +229,16 @@ def exercise_panel(client: PanelClient, dns_port: int) -> None:
     )
 
 
+def require_bundled_kernel(kernel: dict[str, Any]) -> None:
+    """完整包自带的内核已经作为当前内核记进本机库存，带着完整的构建身份。"""
+    active = kernel.get("active")
+    require(isinstance(active, dict), "完整包 KixDNS 没有导入本地版本库存")
+    require(active.get("active") is True, "完整包 KixDNS 没有记为当前内核")
+    require(isinstance(active.get("source_id"), int), "完整包没有记录 Artifact ID")
+    require(active.get("upstream_repository") == "olicesx/kixdns", "完整包上游身份缺失")
+    require(active.get("control_protocol") == 1, "完整包控制协议身份缺失")
+
+
 def verify_installation(base_url: str, dns_port: int, mode: str) -> None:
     client = PanelClient(base_url)
     wait_for_panel(client)
@@ -236,17 +246,10 @@ def verify_installation(base_url: str, dns_port: int, mode: str) -> None:
     if mode == "setup-stopped":
         service = client.request("/api/v1/service")
         require(service.get("active_state") == "inactive", "首次安装后 KixDNS 没有保持停止")
-        # 版本目录要等面板向 GitHub 查询，响应慢时 5 秒不够；只放宽这一个调用，其余请求仍快速失败。
-        # The catalog waits on the panel's GitHub query, which can exceed 5 s; only this call is relaxed.
-        catalog = client.request("/api/v1/kixdns/versions?source=action", timeout=30)
-        active = next(
-            (version for version in catalog.get("installed_versions", []) if version.get("active")),
-            None,
-        )
-        require(isinstance(active, dict), "完整包 KixDNS 没有导入本地版本库存")
-        require(isinstance(active.get("source_id"), int), "完整包没有记录 Artifact ID")
-        require(active.get("upstream_repository") == "olicesx/kixdns", "完整包上游身份缺失")
-        require(active.get("control_protocol") == 1, "完整包控制协议身份缺失")
+        # 内核卡片要等面板向 GitHub 查最新构建，响应慢时 5 秒不够；只放宽这一个调用，其余请求仍快速失败。
+        # The kernel card waits on the panel's GitHub query for the newest build, which can exceed 5 s;
+        # only this call is relaxed.
+        require_bundled_kernel(client.request("/api/v1/kixdns/kernel", timeout=30))
         started = client.request("/api/v1/service/start", method="POST", csrf=True)
         require(started.get("active_state") == "active", "面板无法启动首次安装的 KixDNS")
         verify_runtime(client, dns_port, INITIAL_IP)

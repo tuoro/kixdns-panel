@@ -11,7 +11,7 @@ use crate::digest::sha256_hex;
 
 use super::{
     BuildIdentity, CONTROL_PROTOCOL_VERSION, RemoteVersion, SOURCE_MANIFEST_SCHEMA_VERSION,
-    TrackReference, UPSTREAM_REPOSITORY, UpdateError, VersionManifest, VersionSource,
+    UPSTREAM_REPOSITORY, UpdateError, VersionManifest, VersionSource,
 };
 
 pub(super) fn validate_slug(value: &str, repository: bool) -> Result<(), UpdateError> {
@@ -79,33 +79,30 @@ pub(super) fn artifact_coordinates(artifact: &str) -> Result<(&str, &str), Updat
     Ok((prefix, architecture))
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub(super) struct ParsedArtifactReference {
-    pub(super) reference: TrackReference,
+    pub(super) official_run_id: u64,
     pub(super) patchset: Option<u32>,
 }
 
+/// 从 `<前缀>-action-<上游 Run>[-p<补丁集>-<指纹>]-linux-<架构>` 里读出上游 Run 和补丁集。
+/// Reads the upstream run and patchset out of
+/// `<prefix>-action-<upstream run>[-p<patchset>-<fingerprint>]-linux-<arch>`.
 pub(super) fn parse_artifact_reference(
     base: &str,
-    source: VersionSource,
     artifact: &str,
 ) -> Option<ParsedArtifactReference> {
     let (prefix, architecture) = artifact_coordinates(base).ok()?;
-    let prefix = format!("{prefix}-{}-", source.as_str());
+    let prefix = format!("{prefix}-{}-", VersionSource::Action.as_str());
     let suffix = format!("-linux-{architecture}");
     let identity = artifact.strip_prefix(&prefix)?.strip_suffix(&suffix)?;
     let (reference, patchset) = parse_artifact_build_identity(identity)?;
-    let reference = match source {
-        VersionSource::Action => reference
-            .parse::<u64>()
-            .ok()
-            .filter(|run_id| *run_id > 0 && run_id.to_string() == reference)
-            .map(TrackReference::Action),
-        VersionSource::Release => validate_release_tag(reference)
-            .ok()
-            .map(|()| TrackReference::Release(reference.to_owned())),
-    }?;
+    let official_run_id = reference
+        .parse::<u64>()
+        .ok()
+        .filter(|run_id| *run_id > 0 && run_id.to_string() == reference)?;
     Some(ParsedArtifactReference {
-        reference,
+        official_run_id,
         patchset,
     })
 }
@@ -142,23 +139,15 @@ pub(super) fn validate_build_identity(identity: &BuildIdentity) -> Result<(), Up
             identity.control_protocol
         )));
     }
-    match identity.source {
-        VersionSource::Action
-            if identity.official_run_id.is_some_and(|run_id| run_id > 0)
-                && identity.release_id.is_none()
-                && identity.release_tag.is_none() => {}
-        VersionSource::Release
-            if identity.release_id.is_some_and(|release_id| release_id > 0)
-                && identity
-                    .release_tag
-                    .as_deref()
-                    .is_some_and(|tag| validate_release_tag(tag).is_ok())
-                && identity.official_run_id.is_none() => {}
-        _ => {
-            return Err(UpdateError::Verification(
-                "包内上游来源身份不完整".to_owned(),
-            ));
-        }
+    // 只有 Action 轨道还在构建；Release 内核只会是以前装下的，不会再从包里装进来。
+    // Only the Action track still builds; a Release kernel can only be one installed
+    // earlier, never one unpacked now.
+    if identity.source != VersionSource::Action
+        || identity.official_run_id.is_none_or(|run_id| run_id == 0)
+    {
+        return Err(UpdateError::Verification(
+            "包内上游来源不是有效的 Action 构建".to_owned(),
+        ));
     }
     Ok(())
 }
@@ -167,11 +156,6 @@ pub(super) fn validate_remote_build_identity(
     remote: &RemoteVersion,
     identity: &BuildIdentity,
 ) -> Result<(), UpdateError> {
-    if remote.source != identity.source {
-        return Err(UpdateError::Verification(
-            "包内上游来源与所选版本轨道不匹配".to_owned(),
-        ));
-    }
     if remote
         .patchset
         .is_some_and(|patchset| patchset != identity.patchset)
@@ -180,16 +164,12 @@ pub(super) fn validate_remote_build_identity(
             "包内补丁集与 Artifact 名称不匹配".to_owned(),
         ));
     }
-    match remote.source {
-        VersionSource::Action if remote.run_id == identity.official_run_id => Ok(()),
-        VersionSource::Release if remote.release_tag == identity.release_tag => Ok(()),
-        VersionSource::Action => Err(UpdateError::Verification(
+    if identity.official_run_id != Some(remote.run_id) {
+        return Err(UpdateError::Verification(
             "包内官方 Action Run 与 Artifact 名称不匹配".to_owned(),
-        )),
-        VersionSource::Release => Err(UpdateError::Verification(
-            "包内上游 Release 标签与 Artifact 名称不匹配".to_owned(),
-        )),
+        ));
     }
+    Ok(())
 }
 
 pub(super) fn validate_manifest_source(manifest: &VersionManifest) -> Result<(), UpdateError> {

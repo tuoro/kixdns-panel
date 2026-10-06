@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -29,8 +28,8 @@ use validation::ensure_update_platform;
 // 这些只有测试通过 `super::` 使用。 / Used only by the tests, through `super::`.
 #[cfg(test)]
 use catalog::{
-    build_lock_revision, panel_release_asset_name, sort_newest_upstream_first,
-    to_kixdns_update_notice, to_panel_update_notice,
+    build_lock_revision, newest_upstream_build, panel_release_asset_name, to_kixdns_update_notice,
+    to_panel_update_notice,
 };
 #[cfg(test)]
 use github::{
@@ -41,7 +40,7 @@ use github::{
 use install::{artifact_sources, extract_artifact};
 #[cfg(test)]
 use storage::{
-    delete_stored_version, load_bundled_manifest, load_verified_version, store_version,
+    load_bundled_manifest, load_verified_version, prune_versions, store_version,
     update_stored_capabilities,
 };
 #[cfg(test)]
@@ -51,14 +50,24 @@ use validation::{
 
 const ACTIVE_VERSION_KEY: &str = "installed_panel_version";
 const LEGACY_ACTIVE_COMMIT_KEY: &str = "installed_panel_commit";
+/// 上一个内核：回退的目标，也是本机除当前内核之外唯一留下的版本。
+/// The previous kernel: the rollback target, and the only version kept besides the
+/// current one.
+const PREVIOUS_VERSION_KEY: &str = "previous_kixdns_version";
+/// Release 内核被 Action 内核换下的时间。有这条记录，用户自己回退到 Release 内核后，
+/// 面板重启时不再替换一次。
+/// When a Release kernel was replaced by an Action kernel. With this recorded, a user
+/// who rolls back to the Release kernel is not replaced again when the panel restarts.
+const RELEASE_REPLACED_KEY: &str = "release_kernel_replaced_at";
 const UPSTREAM_REPOSITORY: &str = "olicesx/kixdns";
 const PANEL_REPOSITORY: &str = "tuoro/kixdns-panel";
 const MAX_ARTIFACT_BYTES: usize = 128 * 1024 * 1024;
 const MAX_BINARY_BYTES: u64 = 96 * 1024 * 1024;
 const ARTIFACT_PAGE_SIZE: usize = 100;
 const MAX_ARTIFACT_PAGES: usize = 25;
-const REMOTE_VERSION_LIMIT: usize = 12;
-const MAX_INSTALLED_VERSIONS: usize = 8;
+/// 在最近这么多次成功构建里找最新的上游版本。
+/// How many recent successful builds are searched for the newest upstream version.
+const WORKFLOW_RUN_WINDOW: usize = 30;
 const MANIFEST_SCHEMA_VERSION: u32 = 5;
 const SOURCE_MANIFEST_SCHEMA_VERSION: u32 = 4;
 const CONTROL_PROTOCOL_VERSION: u32 = 1;
@@ -152,7 +161,6 @@ pub struct UpdateManager {
     database: Database,
     repository: Arc<str>,
     workflow: Arc<str>,
-    release_workflow: Arc<str>,
     branch: Arc<str>,
     artifact: Arc<str>,
     initial_commit: Option<Arc<str>>,
@@ -164,11 +172,9 @@ pub struct UpdateManager {
     bundled_metadata: Arc<PathBuf>,
     apply_lock: Arc<Mutex<()>>,
     artifact_cache: Arc<RwLock<Option<CachedArtifacts>>>,
-    remote_cache: Arc<RwLock<HashMap<VersionSource, CachedRemoteVersions>>>,
+    latest_cache: Arc<RwLock<Option<CachedLatest>>>,
     panel_cache: Arc<RwLock<Option<CachedPanelUpdate>>>,
-    /// 按 Artifact ID 缓存构建所用的依赖修订；一次构建的锁文件永远不变。
-    /// Dependency revision of each build by artifact id; a build's lock never changes.
-    dependency_revisions: Arc<RwLock<HashMap<u64, Option<u32>>>>,
+    dependency_revision: Arc<RwLock<Option<CachedRevision>>>,
     github_token_path: Arc<PathBuf>,
     github_token: Arc<RwLock<Option<SecretString>>>,
     github_rate_limit: Arc<RwLock<Option<GithubRateLimit>>>,
@@ -177,7 +183,6 @@ pub struct UpdateManager {
 pub struct UpdateSettings {
     pub repository: String,
     pub workflow: String,
-    pub release_workflow: String,
     pub branch: String,
     pub artifact: String,
     pub installed_commit: Option<String>,
@@ -220,47 +225,38 @@ struct GithubRateLimitCore {
     reset: i64,
 }
 
+/// 系统页的内核卡片：当前、上一个和远端最新的内核。远端读不到时其余照常返回。
+/// The System page's kernel card: the current, the previous and the newest remote
+/// kernel. When the remote cannot be read the rest is still returned.
 #[derive(Debug, Clone, Serialize)]
-pub struct UpdateInfo {
-    pub installed_commit: Option<String>,
-    pub latest_commit: String,
-    pub run_id: u64,
-    pub created_at: String,
-    pub run_url: String,
-    pub artifact: String,
-    pub artifact_digest: String,
-    pub download_url: String,
-    pub available: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct VersionCatalog {
-    pub source: VersionSource,
-    pub active_source: Option<VersionSource>,
-    pub active_commit: Option<String>,
+pub struct KixdnsKernel {
     pub binary_present: bool,
+    pub active: Option<InstalledVersion>,
+    pub previous: Option<InstalledVersion>,
+    pub latest: Option<RemoteVersion>,
     pub remote_error: Option<String>,
-    pub remote_versions: Vec<RemoteVersion>,
-    pub installed_versions: Vec<InstalledVersion>,
 }
 
+/// 内核和面板的更新提示各查各的：一边查不到，另一边照样提示。
+/// Kernel and panel updates are checked separately: when one cannot be read, the other
+/// is still offered.
 #[derive(Debug, Clone, Serialize)]
 pub struct UpdateNotifications {
-    pub kixdns: KixdnsUpdateNotice,
-    pub panel: PanelUpdateNotice,
+    pub kixdns: Option<KixdnsUpdateNotice>,
+    pub kixdns_error: Option<String>,
+    pub panel: Option<PanelUpdateNotice>,
+    pub panel_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct KixdnsUpdateNotice {
     pub available: bool,
-    pub source: VersionSource,
     pub current_commit: Option<String>,
-    pub latest_commit: Option<String>,
-    pub source_id: Option<u64>,
-    pub run_id: Option<u64>,
-    pub release_tag: Option<String>,
-    pub created_at: Option<String>,
-    pub build_url: Option<String>,
+    pub latest_commit: String,
+    pub source_id: u64,
+    pub run_id: u64,
+    pub created_at: String,
+    pub build_url: String,
     /// 同一版本换上修补过的依赖重新构建：提示依赖安全升级，而不是新版本。
     /// The same version rebuilt with patched dependencies: shown as a dependency
     /// security upgrade rather than a new version.
@@ -282,6 +278,9 @@ pub struct PanelUpdateNotice {
     pub download_url: Option<String>,
 }
 
+/// 内核来自哪条构建轨道。远端只剩 Action 轨道；Release 只出现在以前装下的内核上。
+/// The build track a kernel came from. Only the Action track is offered remotely;
+/// Release appears only on kernels installed earlier.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum VersionSource {
@@ -380,8 +379,7 @@ pub struct RemoteVersion {
     pub source: VersionSource,
     pub source_id: u64,
     pub commit: String,
-    pub run_id: Option<u64>,
-    pub release_tag: Option<String>,
+    pub run_id: u64,
     pub patchset: Option<u32>,
     pub created_at: String,
     pub source_url: String,
@@ -389,8 +387,6 @@ pub struct RemoteVersion {
     pub artifact: String,
     pub artifact_digest: String,
     pub download_url: String,
-    pub installed: bool,
-    pub active: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -514,18 +510,12 @@ struct ReleaseAsset {
     digest: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum TrackReference {
-    Action(u64),
-    Release(String),
-}
-
 #[derive(Debug)]
 struct TrackArtifact {
     source_id: u64,
     name: String,
     digest: String,
-    reference: TrackReference,
+    official_run_id: u64,
     patchset: Option<u32>,
 }
 
@@ -536,10 +526,6 @@ struct BuildIdentity {
     commit: String,
     #[serde(default)]
     official_run_id: Option<u64>,
-    #[serde(default)]
-    release_id: Option<u64>,
-    #[serde(default)]
-    release_tag: Option<String>,
     patchset: u32,
     #[serde(default)]
     dependency_revision: Option<u32>,
@@ -581,9 +567,18 @@ struct ResolvedVersion {
     build_run_id: u64,
 }
 
-struct CachedRemoteVersions {
+struct CachedLatest {
     loaded_at: Instant,
-    versions: Vec<ResolvedVersion>,
+    version: ResolvedVersion,
+}
+
+/// 最新构建所用的依赖修订，按 Artifact ID 记；一次构建的锁文件永远不变。
+/// The dependency revision the latest build used, by artifact id; a build's lock never
+/// changes.
+#[derive(Clone, Copy)]
+struct CachedRevision {
+    source_id: u64,
+    revision: Option<u32>,
 }
 
 struct CachedArtifacts {
@@ -608,6 +603,11 @@ pub enum UpdateError {
     Install(String),
     #[error("目标版本与当前配置不兼容：{0}")]
     IncompatibleConfig(String),
+    /// 页面看到的状态已经过时，比如上游又出了新构建、本机没有上一个内核。
+    /// The state the page showed is out of date: upstream has a newer build, or there is
+    /// no previous kernel on this host.
+    #[error("{0}")]
+    Conflict(String),
     #[error("当前平台不支持自动更新")]
     Unsupported,
 }
@@ -617,7 +617,6 @@ impl UpdateManager {
         let UpdateSettings {
             repository,
             workflow,
-            release_workflow,
             branch,
             artifact,
             installed_commit,
@@ -633,7 +632,6 @@ impl UpdateManager {
             panel_installed_release.filter(|release| !release.trim().is_empty());
         validate_slug(&repository, true)?;
         validate_slug(&workflow, false)?;
-        validate_slug(&release_workflow, false)?;
         validate_slug(&branch, false)?;
         validate_slug(&artifact, false)?;
         artifact_coordinates(&artifact)?;
@@ -675,7 +673,6 @@ impl UpdateManager {
             database,
             repository: Arc::from(repository),
             workflow: Arc::from(workflow),
-            release_workflow: Arc::from(release_workflow),
             branch: Arc::from(branch),
             artifact: Arc::from(artifact),
             initial_commit: installed_commit.map(|commit| Arc::from(commit.to_ascii_lowercase())),
@@ -688,13 +685,26 @@ impl UpdateManager {
             bundled_metadata: Arc::new(bundled_metadata),
             apply_lock: Arc::new(Mutex::new(())),
             artifact_cache: Arc::new(RwLock::new(None)),
-            remote_cache: Arc::new(RwLock::new(HashMap::new())),
+            latest_cache: Arc::new(RwLock::new(None)),
             panel_cache: Arc::new(RwLock::new(None)),
-            dependency_revisions: Arc::new(RwLock::new(HashMap::new())),
+            dependency_revision: Arc::new(RwLock::new(None)),
             github_token_path: Arc::new(github_token_path),
             github_token: Arc::new(RwLock::new(github_token)),
             github_rate_limit: Arc::new(RwLock::new(None)),
         })
+    }
+}
+
+impl InstalledVersion {
+    /// 审计日志里对这个内核的称呼，和界面一致：上游 Run 或 Release 标签；早期安装只有构建提交。
+    /// How the audit log names this kernel, matching the page: the upstream run or Release
+    /// tag; early installs only have the build commit.
+    pub fn label(&self) -> String {
+        match (self.run_id, self.release_tag.as_deref()) {
+            (Some(run_id), _) => format!("Run #{run_id}"),
+            (None, Some(tag)) => format!("Release {tag}"),
+            (None, None) => format!("构建 {}", self.commit.get(..12).unwrap_or(&self.commit)),
+        }
     }
 }
 

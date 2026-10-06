@@ -61,14 +61,6 @@ struct Args {
     )]
     update_workflow: String,
 
-    /// 上游正式版增强构建工作流文件名。
-    #[arg(
-        long,
-        env = "KIXDNS_UPDATE_RELEASE_WORKFLOW",
-        default_value = "build-kixdns-release.yml"
-    )]
-    update_release_workflow: String,
-
     /// 下载 Artifact 的分支。
     #[arg(long, env = "KIXDNS_UPDATE_BRANCH", default_value = "main")]
     update_branch: String,
@@ -167,7 +159,6 @@ impl Args {
             diagnostic_server: args.diagnostic_server,
             update_repository: args.update_repository,
             update_workflow: args.update_workflow,
-            update_release_workflow: args.update_release_workflow,
             update_branch: args.update_branch,
             update_artifact: args.update_artifact,
             installed_commit: present(args.installed_commit),

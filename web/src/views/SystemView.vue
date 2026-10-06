@@ -10,26 +10,21 @@ import {
   RefreshCw,
   RotateCw,
   Square,
-  Tag as TagIcon,
   Trash2,
 } from '@lucide/vue'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { apiRequest, jsonBody } from '../api/client'
 import type {
   GithubTokenStatus,
-  InstalledKixdnsVersion,
-  KixdnsVersionCatalog,
-  KixdnsVersionSource,
+  KixdnsKernel,
   PanelUpdateStartResponse,
   PanelUpdateStatus,
-  RemoteKixdnsVersion,
   ServiceAction,
   ServiceStatus,
 } from '../api/types'
 import StatusBanner from '../components/StatusBanner.vue'
 import UiCard from '../components/ui/UiCard.vue'
 import UiPageHeader from '../components/ui/UiPageHeader.vue'
-import UiTabs from '../components/ui/UiTabs.vue'
 import UiTask, { type UiTaskState } from '../components/ui/UiTask.vue'
 import { useConfirm } from '../composables/useConfirm'
 import { useToast } from '../composables/useToast'
@@ -37,22 +32,19 @@ import { useUpdateStatus } from '../composables/useUpdateStatus'
 import { errorMessage, formatDate, formatKixdnsVersion, shortHash } from '../utils'
 import { switchConfirmBody, switchedMessage } from '../version-switch'
 
-type VersionAction = { identity: string; kind: 'install' | 'activate' | 'delete' }
+type KernelAction = 'update' | 'rollback'
 
 const service = ref<ServiceStatus | null>(null)
-const catalog = ref<KixdnsVersionCatalog | null>(null)
-// 默认停在 action 轨道：面板实际装的就是 action 打包出来的增强版，
-// release 轨道要等上游打新 tag 才会前进，开箱看到的应该是常用的那一条。
-// The action track is the default: what the panel actually installs is the
-// enhanced build packaged from actions, while the release track only advances
-// when upstream tags a new version. The one in daily use is the one to open on.
-const versionSource = ref<KixdnsVersionSource>('action')
+const kernel = ref<KixdnsKernel | null>(null)
 const loadingService = ref(true)
-const loadingVersions = ref(true)
+const loadingKernel = ref(true)
 const serviceAction = ref<ServiceAction | null>(null)
-const versionAction = ref<VersionAction | null>(null)
+const kernelAction = ref<KernelAction | null>(null)
+// 更新从这一页开始时才知道起点，已用时间只在那时显示。
+// An update's start is only known when this page began it, so the elapsed time shows only then.
+const kernelUpdateStartedAt = ref<number | null>(null)
 const serviceError = ref('')
-const versionsError = ref('')
+const kernelError = ref('')
 const panelUpdate = ref<PanelUpdateStatus | null>(null)
 const startingPanelUpdate = ref(false)
 const githubTokenStatus = ref<GithubTokenStatus | null>(null)
@@ -68,17 +60,12 @@ const {
   error: updateError,
   refresh: refreshUpdates,
 } = useUpdateStatus()
-const versionPanel = ref<HTMLElement | null>(null)
-const versionSources = [
-  { value: 'action', label: 'Actions', icon: GitBranch },
-  { value: 'release', label: 'Releases', icon: TagIcon },
-] as const
 // 在线更新从这一页开始时才知道起点，已用时间只在那时显示；刷新进来遇到正在进行的更新就不猜。
 // The start of an online update is only known when this page began it, so the
 // elapsed time shows only then; an update already running on reload is not guessed at.
 const panelUpdateStartedAt = ref<number | null>(null)
 let pendingService: Promise<void> | null = null
-let versionsRequest = 0
+let kernelRequest = 0
 let panelUpdateTimer: ReturnType<typeof setTimeout> | null = null
 let panelUpdateDeadline = 0
 let panelUpdateBaseline = ''
@@ -97,9 +84,9 @@ const unusualServiceState = computed(() => {
   const state = service.value ? `${service.value.active_state}/${service.value.sub_state}` : ''
   return state && !['active/running', 'inactive/dead'].includes(state) ? state : ''
 })
-const installed = computed(() => catalog.value?.binary_present === true)
-const activeVersion = computed(() => catalog.value?.installed_versions.find((item) => item.active) ?? null)
-const loadError = computed(() => [serviceError.value, versionsError.value].filter(Boolean).join('；'))
+const installed = computed(() => kernel.value?.binary_present === true)
+const activeVersion = computed(() => kernel.value?.active ?? null)
+const loadError = computed(() => [serviceError.value, kernelError.value].filter(Boolean).join('；'))
 
 function buildTime(value: string | null): string {
   if (!value) return '构建时间未记录'
@@ -112,26 +99,23 @@ function buildTime(value: string | null): string {
   }).format(new Date(value))
 }
 
-function artifactArchitecture(artifact: string): string {
-  return artifact.match(/-(x86_64|arm64|aarch64)$/)?.[1] ?? artifact
-}
-
-function versionIdentity(version: InstalledKixdnsVersion | RemoteKixdnsVersion): string {
-  return `${version.source ?? 'action'}:${version.source_id ?? version.commit}`
-}
+// 内核和面板的更新各查各的：一边为空时那一行写出原因，另一行照常。
+// Kernel and panel updates are checked separately: a missing side states its reason in its
+// own row while the other row carries on.
+const kixdnsNotice = computed(() => updateStatus.value?.kixdns ?? null)
+const panelNotice = computed(() => updateStatus.value?.panel ?? null)
 
 function latestKixdnsVersion(): string {
-  const notice = updateStatus.value?.kixdns
-  if (!notice || notice.source_id === null) return '未检查'
-  if (notice.source === 'release') return notice.release_tag ?? `Release #${notice.source_id}`
-  return notice.run_id ? `Run #${notice.run_id}` : `Artifact #${notice.source_id}`
+  return kixdnsNotice.value ? `Run #${kixdnsNotice.value.run_id}` : '未检查'
 }
+
+const kernelTaskState = computed<UiTaskState>(() => (kernelAction.value === 'update' ? 'run' : 'idle'))
 
 function panelUpdateLabel(): string {
   if (panelUpdate.value?.state === 'checking' || panelUpdate.value?.state === 'downloading') {
     return panelUpdate.value.message || '面板正在在线更新'
   }
-  const notice = updateStatus.value?.panel
+  const notice = panelNotice.value
   if (!notice?.latest_version) return '正式版通道尚未发布'
   if (notice.available) return '发现正式版更新'
   if (!notice.artifact) return '最新正式版暂无当前架构安装包'
@@ -233,7 +217,7 @@ async function saveGithubToken(): Promise<void> {
     githubTokenVisible.value = false
     githubTokenError.value = ''
     toast.success('GitHub Token 已验证并保存')
-    await Promise.all([loadVersions(true), refreshUpdates()])
+    await Promise.all([loadKernel(true), refreshUpdates()])
     await loadGithubTokenStatus()
   } catch (error) {
     githubTokenError.value = errorMessage(error)
@@ -257,7 +241,7 @@ async function deleteGithubToken(): Promise<void> {
     githubToken.value = ''
     githubTokenError.value = ''
     toast.success('GitHub Token 已删除')
-    await Promise.all([loadVersions(true), refreshUpdates()])
+    await Promise.all([loadKernel(true), refreshUpdates()])
     await loadGithubTokenStatus()
   } catch (error) {
     githubTokenError.value = errorMessage(error)
@@ -324,7 +308,7 @@ async function loadPanelUpdateStatus(): Promise<void> {
 }
 
 async function startPanelUpdate(): Promise<void> {
-  const version = updateStatus.value?.panel.latest_version
+  const version = panelNotice.value?.latest_version
   if (!version || !await confirm.ask({
     title: `在线更新面板到 v${version}`,
     body: '面板会短暂重启，这期间控制台暂时打不开。KixDNS 服务、配置和当前运行状态都保持不变。',
@@ -368,39 +352,26 @@ function loadService(silent = false): Promise<void> {
   return pendingService
 }
 
-function loadVersions(silent = false): Promise<void> {
-  const request = ++versionsRequest
-  const source = versionSource.value
-  loadingVersions.value = true
+function loadKernel(silent = false): Promise<void> {
+  const request = ++kernelRequest
+  loadingKernel.value = true
   return (async () => {
-    const next = await apiRequest<KixdnsVersionCatalog>(`/api/v1/kixdns/versions?source=${source}`)
-    if (request !== versionsRequest) return
-    catalog.value = next
-    versionsError.value = ''
+    const next = await apiRequest<KixdnsKernel>('/api/v1/kixdns/kernel')
+    if (request !== kernelRequest) return
+    kernel.value = next
+    kernelError.value = ''
   })().catch((error: unknown) => {
-    if (request !== versionsRequest) return
-    versionsError.value = `版本目录：${errorMessage(error)}`
-    if (!silent && catalog.value) toast.error(versionsError.value)
+    if (request !== kernelRequest) return
+    kernelError.value = `内核：${errorMessage(error)}`
+    if (!silent && kernel.value) toast.error(kernelError.value)
   }).finally(() => {
-    if (request !== versionsRequest) return
-    loadingVersions.value = false
+    if (request !== kernelRequest) return
+    loadingKernel.value = false
   })
 }
 
-function selectVersionSource(source: KixdnsVersionSource): void {
-  if (source === versionSource.value) return
-  versionSource.value = source
-  void loadVersions()
-}
-
-async function viewKixdnsVersions(): Promise<void> {
-  selectVersionSource(updateStatus.value?.kixdns.source ?? 'action')
-  await nextTick()
-  versionPanel.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-}
-
 async function refreshAll(): Promise<void> {
-  await Promise.all([loadService(true), loadVersions(true)])
+  await Promise.all([loadService(true), loadKernel(true)])
 }
 
 async function control(action: ServiceAction): Promise<void> {
@@ -425,70 +396,55 @@ async function control(action: ServiceAction): Promise<void> {
   }
 }
 
-async function installVersion(version: RemoteKixdnsVersion): Promise<void> {
+// 更新只装这一页看到的那个最新构建：确认框里写的版本就是要装的版本，期间上游又有新构建时服务端会拒绝。
+// An update installs only the newest build this page showed, so the version in the
+// confirmation is the one installed; the server refuses if upstream moved on meanwhile.
+async function updateKernel(): Promise<void> {
+  const latest = kernel.value?.latest
+  if (!latest || kernelAction.value) return
+  const verb = installed.value ? '更新' : '安装'
   if (!await confirm.ask({
-    title: `安装并切换到 ${formatKixdnsVersion(version)}`,
+    title: `${verb}内核到 ${formatKixdnsVersion(latest)}`,
     body: `先下载并校验这个构建。${switchConfirmBody(service.value)}`,
-    confirmLabel: '安装并切换',
+    confirmLabel: `${verb}内核`,
   })) return
-  versionAction.value = { identity: versionIdentity(version), kind: 'install' }
+  kernelAction.value = 'update'
+  kernelUpdateStartedAt.value = Date.now()
   try {
-    await apiRequest<InstalledKixdnsVersion>(`/api/v1/kixdns/versions/${version.source}/${version.source_id}/install`, { method: 'POST' })
-    await Promise.all([loadVersions(true), loadService(true), refreshUpdates()])
-    toast.success(switchedMessage(service.value, '已安装'))
+    kernel.value = await apiRequest<KixdnsKernel>('/api/v1/kixdns/kernel/update', {
+      method: 'POST',
+      ...jsonBody({ source_id: latest.source_id }),
+    })
+    await Promise.all([loadService(true), refreshUpdates()])
+    toast.success(switchedMessage(service.value, `内核已${verb}`))
   } catch (error) {
     toast.error(errorMessage(error))
+    await loadKernel(true)
   } finally {
-    versionAction.value = null
+    kernelAction.value = null
+    kernelUpdateStartedAt.value = null
   }
 }
 
-async function activateVersion(version: InstalledKixdnsVersion | RemoteKixdnsVersion): Promise<void> {
-  if (version.active) return
+async function rollbackKernel(): Promise<void> {
+  const previous = kernel.value?.previous
+  if (!previous || kernelAction.value) return
   if (!await confirm.ask({
-    title: `切换到 ${formatKixdnsVersion(version)}`,
+    title: `回退到 ${formatKixdnsVersion(previous)}`,
     body: switchConfirmBody(service.value),
-    confirmLabel: '切换版本',
+    confirmLabel: '回退内核',
   })) return
-  const source = version.source ?? 'action'
-  const identity = version.source_id ?? version.commit
-  versionAction.value = { identity: versionIdentity(version), kind: 'activate' }
+  kernelAction.value = 'rollback'
   try {
-    await apiRequest<InstalledKixdnsVersion>(`/api/v1/kixdns/versions/${source}/${identity}/activate`, { method: 'POST' })
-    await Promise.all([loadVersions(true), loadService(true), refreshUpdates()])
-    toast.success(switchedMessage(service.value, '版本已切换'))
+    kernel.value = await apiRequest<KixdnsKernel>('/api/v1/kixdns/kernel/rollback', { method: 'POST' })
+    await Promise.all([loadService(true), refreshUpdates()])
+    toast.success(switchedMessage(service.value, '已回退到上一个内核'))
   } catch (error) {
     toast.error(errorMessage(error))
+    await loadKernel(true)
   } finally {
-    versionAction.value = null
+    kernelAction.value = null
   }
-}
-
-async function deleteVersion(version: InstalledKixdnsVersion): Promise<void> {
-  if (version.active) return
-  if (!await confirm.ask({
-    title: `删除本地版本 ${formatKixdnsVersion(version)}`,
-    body: '这份构建会从本地库存移除，之后要用得重新下载。当前正在运行的版本不受影响。',
-    confirmLabel: '删除这个版本',
-    destructive: true,
-  })) return
-  const source = version.source ?? 'action'
-  const identity = version.source_id ?? version.commit
-  versionAction.value = { identity: versionIdentity(version), kind: 'delete' }
-  try {
-    await apiRequest<InstalledKixdnsVersion>(`/api/v1/kixdns/versions/${source}/${identity}/delete`, { method: 'POST' })
-    toast.success('本地 KixDNS 版本已删除')
-    await loadVersions(true)
-  } catch (error) {
-    toast.error(errorMessage(error))
-  } finally {
-    versionAction.value = null
-  }
-}
-
-function actionBusy(version: InstalledKixdnsVersion | RemoteKixdnsVersion, kind?: VersionAction['kind']): boolean {
-  return versionAction.value?.identity === versionIdentity(version)
-    && (!kind || versionAction.value.kind === kind)
 }
 
 onMounted(() => {
@@ -503,7 +459,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="page system-page">
-    <StatusBanner v-if="loadError" :message="loadError" :stale="Boolean(service || catalog)" :busy="loadingService || loadingVersions" @retry="refreshAll" />
+    <StatusBanner v-if="loadError" :message="loadError" :stale="Boolean(service || kernel)" :busy="loadingService || loadingKernel" @retry="refreshAll" />
     <!-- 按「要不要现在动手」排：服务状态就在页头，一行说清在不在跑、要不要动它；
          有更新时更新紧随其后，不需要动手的安装信息和凭据降到下面。整页没有黑按钮：
          这一页是看状态、偶尔操作，列表里每行的操作一律用次要按钮。
@@ -539,43 +495,46 @@ onBeforeUnmount(() => {
       </template>
       <div v-if="checkingUpdates && !updateStatus" class="system-skeleton-rows" role="status" aria-label="正在检查更新"><i v-for="n in 2" :key="n" class="sk"></i></div>
       <div v-else-if="updateStatus" :class="{ 'is-refreshing': checkingUpdates }">
-        <UiTask class="update-row" state="idle" title="KixDNS 增强包">
+        <UiTask class="update-row" :state="kernelTaskState" title="KixDNS 内核" :started-at="kernelUpdateStartedAt">
           <template #icon><GitBranch :size="15" /></template>
-          <template #title><span class="ui-tag">{{ updateStatus.kixdns.source === 'release' ? 'Release 轨道' : 'Action 轨道' }}</span><span v-if="updateStatus.kixdns.available" class="ui-tag ui-tag--strong">{{ updateStatus.kixdns.security_update ? '安全更新' : '有新版本' }}</span></template>
+          <template v-if="kixdnsNotice?.available" #title><span class="ui-tag ui-tag--strong">{{ kixdnsNotice.security_update ? '安全更新' : '有新版本' }}</span></template>
           <template #meta>
             <span class="update-row__from-to">
-              <template v-if="updateStatus.kixdns.available && updateStatus.kixdns.security_update"><span class="ui-mono">{{ formatKixdnsVersion(activeVersion) }}</span> 依赖安全升级<template v-if="updateStatus.kixdns.dependency_revision"> · <span class="ui-mono">r{{ updateStatus.kixdns.dependency_revision }}</span></template></template>
-              <template v-else-if="updateStatus.kixdns.available"><span class="ui-mono">{{ formatKixdnsVersion(activeVersion) }}</span> → <span class="ui-mono">{{ latestKixdnsVersion() }}</span></template>
-              <template v-else-if="updateStatus.kixdns.current_commit">当前轨道已是最新 · <span class="ui-mono">{{ formatKixdnsVersion(activeVersion) }}</span></template>
-              <template v-else>尚未安装，选择一个构建开始</template>
+              <template v-if="kernelAction === 'update'">正在下载、校验并切换内核</template>
+              <span v-else-if="!kixdnsNotice" class="system-stale">检查失败：{{ updateStatus.kixdns_error ?? '原因未知' }}</span>
+              <template v-else-if="kixdnsNotice.available && kixdnsNotice.security_update"><span class="ui-mono">{{ formatKixdnsVersion(activeVersion) }}</span> 依赖安全升级<template v-if="kixdnsNotice.dependency_revision"> · <span class="ui-mono">r{{ kixdnsNotice.dependency_revision }}</span></template></template>
+              <template v-else-if="kixdnsNotice.available"><span class="ui-mono">{{ formatKixdnsVersion(activeVersion) }}</span> → <span class="ui-mono">{{ latestKixdnsVersion() }}</span></template>
+              <template v-else-if="kixdnsNotice.current_commit">已是最新 · <span class="ui-mono">{{ formatKixdnsVersion(activeVersion) }}</span></template>
+              <template v-else>尚未安装</template>
             </span>
-            <span v-if="updateStatus.kixdns.created_at">构建于 {{ buildTime(updateStatus.kixdns.created_at) }}</span>
+            <span v-if="kixdnsNotice">构建于 {{ buildTime(kixdnsNotice.created_at) }}</span>
           </template>
-          <template #actions>
-            <a v-if="updateStatus.kixdns.build_url" class="ui-link" :href="updateStatus.kixdns.build_url" target="_blank" rel="noopener noreferrer">构建详情<ExternalLink :size="12" /></a>
-            <button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" @click="viewKixdnsVersions">查看版本</button>
+          <template v-if="kixdnsNotice || !installed" #actions>
+            <a v-if="kixdnsNotice" class="ui-link" :href="kixdnsNotice.build_url" target="_blank" rel="noopener noreferrer">构建详情<ExternalLink :size="12" /></a>
+            <button v-if="kixdnsNotice?.available || !installed" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" :disabled="!kernel?.latest || kernelAction !== null" @click="updateKernel">{{ kernelAction === 'update' ? '更新中' : (installed ? '更新' : '安装') }}</button>
           </template>
         </UiTask>
 
         <UiTask class="update-row" :state="panelTaskState" title="KixDNS Panel" :started-at="panelUpdateStartedAt">
           <template #icon><Bell :size="15" /></template>
-          <template #title><span class="ui-tag">Release 轨道</span><span v-if="updateStatus.panel.available" class="ui-tag ui-tag--strong">有新版本</span></template>
+          <template v-if="panelNotice?.available" #title><span class="ui-tag ui-tag--strong">有新版本</span></template>
           <template #meta>
             <span class="update-row__from-to">
               <template v-if="panelUpdateRunning">{{ panelUpdateLabel() }}</template>
-              <template v-else-if="updateStatus.panel.available"><span class="ui-mono">{{ updateStatus.panel.current_release ?? `v${updateStatus.panel.current_version}` }}</span> → <span class="ui-mono">v{{ updateStatus.panel.latest_version }}</span></template>
+              <span v-else-if="!panelNotice" class="system-stale">检查失败：{{ updateStatus.panel_error ?? '原因未知' }}</span>
+              <template v-else-if="panelNotice.available"><span class="ui-mono">{{ panelNotice.current_release ?? `v${panelNotice.current_version}` }}</span> → <span class="ui-mono">v{{ panelNotice.latest_version }}</span></template>
               <template v-else>{{ panelUpdateLabel() }}</template>
             </span>
-            <span v-if="updateStatus.panel.published_at">发布于 {{ buildTime(updateStatus.panel.published_at) }}</span>
-            <span v-if="!updateStatus.panel.release_url">首个正式 Release 发布后显示</span>
+            <span v-if="panelNotice?.published_at">发布于 {{ buildTime(panelNotice.published_at) }}</span>
+            <span v-if="panelNotice && !panelNotice.release_url">首个正式 Release 发布后显示</span>
             <p v-if="panelUpdateFailure" class="ui-task__error update-row__failure" role="alert">
               <span>{{ panelUpdateFailure }}</span>
               <button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" @click="dismissPanelUpdateFailure">知道了</button>
             </p>
           </template>
-          <template v-if="updateStatus.panel.release_url" #actions>
-            <a class="ui-link" :href="updateStatus.panel.release_url" target="_blank" rel="noopener noreferrer">发布说明<ExternalLink :size="12" /></a>
-            <button v-if="updateStatus.panel.available" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" :disabled="startingPanelUpdate || panelUpdateRunning" @click="startPanelUpdate">{{ panelUpdateRunning ? '更新中' : '在线更新' }}</button>
+          <template v-if="panelNotice?.release_url" #actions>
+            <a class="ui-link" :href="panelNotice.release_url" target="_blank" rel="noopener noreferrer">发布说明<ExternalLink :size="12" /></a>
+            <button v-if="panelNotice.available" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" :disabled="startingPanelUpdate || panelUpdateRunning" @click="startPanelUpdate">{{ panelUpdateRunning ? '更新中' : '在线更新' }}</button>
           </template>
         </UiTask>
       </div>
@@ -595,26 +554,28 @@ onBeforeUnmount(() => {
            when troubleshooting and share one row under a hairline. Seven rows of
            equal weight used to read as a table. -->
       <UiCard class="runtime-panel" title="当前安装" desc="增强版运行时">
-        <template v-if="catalog" #actions><span class="ui-tag" :class="installed ? 'ui-tag--ok' : 'ui-tag--warn'">{{ installed ? '已安装' : '尚未安装' }}</span></template>
-        <div v-if="loadingVersions && !catalog" class="sk system-skeleton-panel" role="status" aria-label="读取安装状态"></div>
-        <template v-else-if="catalog">
+        <template v-if="kernel" #actions><span class="ui-tag" :class="installed ? 'ui-tag--ok' : 'ui-tag--warn'">{{ installed ? '已安装' : '尚未安装' }}</span></template>
+        <div v-if="loadingKernel && !kernel" class="sk system-skeleton-panel" role="status" aria-label="读取安装状态"></div>
+        <template v-else-if="kernel">
           <p class="install-version">{{ installed ? formatKixdnsVersion(activeVersion) : '尚未安装' }}</p>
           <p v-if="installed" class="install-meta">
-            <span>{{ activeVersion?.source === 'release' ? 'Release 轨道' : 'Action 轨道' }}</span>
-            <span class="ui-sep">·</span><span>补丁集 <span class="ui-mono">{{ activeVersion?.patchset ? `p${activeVersion.patchset}${activeVersion.dependency_revision ? `-r${activeVersion.dependency_revision}` : ''}` : '未记录' }}</span></span>
+            <span>补丁集 <span class="ui-mono">{{ activeVersion?.patchset ? `p${activeVersion.patchset}${activeVersion.dependency_revision ? `-r${activeVersion.dependency_revision}` : ''}` : '未记录' }}</span></span>
             <span class="ui-sep">·</span><span>控制协议 <span class="ui-mono">{{ activeVersion?.control_protocol ? `v${activeVersion.control_protocol}` : '未记录' }}</span></span>
+            <template v-if="activeVersion?.source_url"><span class="ui-sep">·</span><a class="ui-link" :href="activeVersion.source_url" target="_blank" rel="noopener noreferrer">上游详情<ExternalLink :size="12" /></a></template>
           </p>
-          <p v-else class="install-meta">选择下方构建进行安装</p>
+          <p v-else class="install-meta">在上方「可用更新」里安装最新构建</p>
           <dl class="ui-strip install-hashes">
             <div><dt>上游提交</dt><dd class="ui-mono">{{ activeVersion?.upstream_commit ? shortHash(activeVersion.upstream_commit, 12) : '未记录' }}</dd></div>
-            <div><dt>增强构建</dt><dd class="ui-mono">{{ shortHash(activeVersion?.commit ?? catalog.active_commit, 12) }}</dd></div>
+            <div><dt>增强构建</dt><dd class="ui-mono">{{ shortHash(activeVersion?.commit, 12) }}</dd></div>
             <div><dt>二进制摘要</dt><dd class="ui-mono">{{ shortHash(activeVersion?.binary_sha256, 14) }}</dd></div>
           </dl>
         </template>
-        <template v-if="catalog && installed" #foot>
-          <span>{{ activeVersion?.source === 'release' ? '从 GitHub Release 安装' : '从 GitHub Actions 构建安装' }}</span>
-          <a v-if="activeVersion?.source_url" class="ui-link" :href="activeVersion.source_url" target="_blank" rel="noopener noreferrer">上游详情<ExternalLink :size="12" /></a>
-          <span v-else>来源未记录</span>
+        <!-- 本机只留当前和上一个内核：回退只有一步，就放在当前安装的下面。
+             Only the current and the previous kernel stay on this host, so a rollback is
+             one step and sits right under the installed version. -->
+        <template v-if="kernel?.previous" #foot>
+          <span>上一个版本 <span class="ui-mono">{{ formatKixdnsVersion(kernel.previous) }}</span></span>
+          <button class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" :disabled="kernelAction !== null" @click="rollbackKernel"><RotateCw v-if="kernelAction === 'rollback'" :size="14" class="spin" />{{ kernelAction === 'rollback' ? '回退中' : '回退' }}</button>
         </template>
       </UiCard>
 
@@ -642,53 +603,5 @@ onBeforeUnmount(() => {
       </UiCard>
     </div>
 
-    <div ref="versionPanel">
-      <UiCard class="version-panel" title="KixDNS 版本" desc="远端构建与本地保存的版本；本地最多保留 8 个" flush stack>
-        <template #actions>
-          <UiTabs :model-value="versionSource" :items="versionSources" label="版本源" variant="segment" @update:model-value="selectVersionSource($event as KixdnsVersionSource)" />
-          <button class="ui-icon-btn" type="button" title="刷新版本" aria-label="刷新版本" :disabled="loadingVersions || versionAction !== null" @click="loadVersions()"><RefreshCw :size="18" :class="{ spin: loadingVersions }" /></button>
-        </template>
-        <div v-if="loadingVersions && (!catalog || catalog.source !== versionSource)" class="system-skeleton-rows" role="status" aria-label="正在读取可用构建"><i v-for="n in 3" :key="n" class="sk"></i></div>
-        <div v-else-if="catalog && catalog.source === versionSource" class="version-columns">
-          <div class="remote-versions">
-            <p class="version-heading">{{ versionSource === 'release' ? '可用发布' : '可用构建' }}</p>
-            <article v-for="(version, index) in catalog.remote_versions" :key="`${version.source}-${version.source_id}`" class="ui-rec version-row">
-              <div>
-                <!-- 编号本身就是去上游构建的链接，「增强」哈希是去增强构建的链接：每行不再挂两个绿色文字链接。
-                     The number itself links to the upstream build and the enhancement hash to the
-                     enhanced build, so no row carries two green text links any more. -->
-                <div class="ui-rec__name"><a class="ui-mono version-name version-link" :href="version.source_url" target="_blank" rel="noopener noreferrer" title="在 GitHub 打开上游构建">{{ formatKixdnsVersion(version) }}</a><span v-if="index === 0" class="ui-tag ui-tag--ok">{{ version.source === 'release' ? '最新发布' : '最新' }}</span><span v-if="version.active" class="ui-tag ui-tag--ok">当前</span><span v-else-if="version.installed" class="ui-tag">本地</span></div>
-                <div class="ui-rec__meta"><a class="ui-mono version-link" :href="version.build_url" target="_blank" rel="noopener noreferrer" title="在 GitHub 打开增强构建">增强 {{ shortHash(version.commit, 9) }}</a><span class="ui-mono">{{ artifactArchitecture(version.artifact) }}</span><span v-if="version.patchset" class="ui-mono">p{{ version.patchset }}</span><span>{{ buildTime(version.created_at) }}</span></div>
-              </div>
-              <div class="ui-rec__act">
-                <span v-if="version.active" class="version-current">正在使用</span>
-                <button v-else-if="version.installed" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" :disabled="versionAction !== null" @click="activateVersion(version)"><RotateCw v-if="actionBusy(version)" :size="14" class="spin" />{{ actionBusy(version) ? '切换中' : '切换' }}</button>
-                <button v-else class="ui-btn ui-btn--secondary ui-btn--sm" type="button" :disabled="versionAction !== null" @click="installVersion(version)"><RefreshCw v-if="actionBusy(version)" :size="14" class="spin" />{{ actionBusy(version) ? '安装中' : '安装并切换' }}</button>
-              </div>
-            </article>
-            <p v-if="catalog.remote_error" class="version-empty">远端版本暂不可用，本地安装信息不受影响：{{ catalog.remote_error }}</p>
-            <p v-else-if="catalog.remote_versions.length === 0" class="version-empty">{{ versionSource === 'release' ? '尚无可用 Release' : '没有可用的成功构建' }}</p>
-          </div>
-
-          <div class="local-versions">
-            <p class="version-heading">本地版本</p>
-            <article v-for="version in catalog.installed_versions" :key="versionIdentity(version)" class="ui-rec local-version">
-              <div>
-                <div class="ui-rec__name"><a v-if="version.source_url" class="ui-mono version-name version-link" :href="version.source_url" target="_blank" rel="noopener noreferrer" title="在 GitHub 打开上游构建">{{ formatKixdnsVersion(version) }}</a><span v-else class="ui-mono version-name">{{ formatKixdnsVersion(version) }}</span><span v-if="version.active" class="ui-tag ui-tag--ok">当前</span></div>
-                <div v-if="version.upstream_commit" class="ui-rec__meta"><span class="ui-mono">上游 {{ shortHash(version.upstream_commit, 9) }}</span><span class="ui-mono">p{{ version.patchset }}<template v-if="version.dependency_revision">-r{{ version.dependency_revision }}</template></span><span class="ui-mono">{{ artifactArchitecture(version.artifact) }}</span></div>
-                <div v-else class="ui-rec__meta">构建身份未记录</div>
-                <div class="ui-rec__meta"><a v-if="version.build_url" class="ui-mono version-link" :href="version.build_url" target="_blank" rel="noopener noreferrer" title="在 GitHub 打开增强构建">增强 {{ shortHash(version.commit, 9) }}</a><span v-else class="ui-mono">增强 {{ shortHash(version.commit, 9) }}</span><span class="ui-mono">二进制 {{ shortHash(version.binary_sha256, 12) }}</span><span>{{ formatDate(version.installed_at) }}</span></div>
-              </div>
-              <div v-if="!version.active" class="ui-rec__act">
-                <button class="ui-icon-btn ui-icon-btn--sm" type="button" title="切换到此版本" aria-label="切换到此版本" :disabled="versionAction !== null" @click="activateVersion(version)"><RotateCw :size="15" :class="{ spin: actionBusy(version, 'activate') }" /></button>
-                <button class="ui-icon-btn ui-icon-btn--sm ui-icon-btn--danger" type="button" :title="actionBusy(version, 'delete') ? '正在删除' : '删除本地版本'" aria-label="删除本地版本" :disabled="versionAction !== null" @click="deleteVersion(version)"><RefreshCw v-if="actionBusy(version, 'delete')" :size="15" class="spin" /><Trash2 v-else :size="15" /></button>
-              </div>
-            </article>
-            <p v-if="catalog.installed_versions.length === 0" class="version-empty">尚无本地版本</p>
-          </div>
-        </div>
-        <p v-else class="version-empty">版本目录暂不可用</p>
-      </UiCard>
-    </div>
   </div>
 </template>

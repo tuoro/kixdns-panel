@@ -13,7 +13,6 @@ use super::MAX_GITHUB_TOKEN_BYTES;
 use super::REMOTE_CACHE_TTL;
 use super::UpdateError;
 use super::UpdateManager;
-use super::VersionSource;
 use super::WorkflowRun;
 use super::WorkflowRuns;
 use super::storage::ensure_directory;
@@ -285,24 +284,10 @@ impl UpdateManager {
 
     pub(super) async fn workflow_runs(
         &self,
-        source: VersionSource,
         limit: usize,
     ) -> Result<Vec<WorkflowRun>, UpdateError> {
         let limit = limit.clamp(1, 30);
-        let workflow = match source {
-            VersionSource::Action => &self.workflow,
-            VersionSource::Release => &self.release_workflow,
-        };
-        self.workflow_runs_for(workflow, limit).await
-    }
-
-    pub(super) async fn workflow_runs_for(
-        &self,
-        workflow: &str,
-        limit: usize,
-    ) -> Result<Vec<WorkflowRun>, UpdateError> {
-        let limit = limit.clamp(1, 30);
-        let runs_url = workflow_runs_url(&self.repository, workflow, &self.branch);
+        let runs_url = workflow_runs_url(&self.repository, &self.workflow, &self.branch);
         let runs = self.get_json::<WorkflowRuns>(&runs_url).await?;
         Ok(trusted_workflow_runs(
             runs.workflow_runs,

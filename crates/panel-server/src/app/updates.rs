@@ -1,4 +1,4 @@
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -8,10 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::auth::{authenticate, unix_timestamp, verify_csrf};
 use crate::error::{AppError, AppResult};
 use crate::panel_update::{PanelUpdateStatus, read_status as read_panel_update_status};
-use crate::updates::{
-    GithubTokenStatus, InstalledVersion, LiveServiceHost, UpdateInfo, UpdateNotifications,
-    VersionCatalog, VersionSource,
-};
+use crate::updates::{GithubTokenStatus, KixdnsKernel, LiveServiceHost, UpdateNotifications};
 
 use super::{AppState, map_config_error, map_operation_error, map_update_error};
 
@@ -51,15 +48,13 @@ struct GithubTokenRequest {
     token: String,
 }
 
-#[derive(Debug, Default, Deserialize)]
-struct KixdnsVersionsQuery {
-    #[serde(default)]
-    source: VersionSource,
+#[derive(Debug, Deserialize)]
+struct KernelUpdateRequest {
+    source_id: u64,
 }
 
 pub(super) fn routes() -> Router<AppState> {
     Router::new()
-        .route("/updates", get(check_updates))
         .route("/updates/status", get(update_notifications))
         .route(
             "/settings/github-token",
@@ -71,33 +66,58 @@ pub(super) fn routes() -> Router<AppState> {
             "/panel-update",
             get(panel_update_status).post(start_panel_update),
         )
-        .route("/updates/apply", post(apply_update))
-        .route("/kixdns/versions", get(kixdns_versions))
-        .route(
-            "/kixdns/versions/{source}/{source_id}/install",
-            post(install_kixdns_version),
-        )
-        .route(
-            "/kixdns/versions/{source}/{commit}/activate",
-            post(activate_kixdns_version),
-        )
-        .route(
-            "/kixdns/versions/{source}/{identity}/delete",
-            post(delete_kixdns_version),
-        )
+        .route("/kixdns/kernel", get(kixdns_kernel))
+        .route("/kixdns/kernel/update", post(update_kixdns_kernel))
+        .route("/kixdns/kernel/rollback", post(rollback_kixdns_kernel))
 }
 
-async fn check_updates(
-    State(state): State<AppState>,
-    jar: CookieJar,
-) -> AppResult<Json<UpdateInfo>> {
-    authenticate(&state.database, &jar).await?;
-    state
+/// Release 轨道已停止构建：新面板启动后在后台把 Release 内核换成最新的 Action 内核。
+/// 走和「更新」按钮同一套下载、校验、配置兼容检查、切换与失败回滚；哪一步失败都保持原样、
+/// 记进审计，下次启动再试，用户也可以在系统页手动更新。
+/// The Release track no longer builds, so after start-up a new panel replaces a Release
+/// kernel with the newest Action kernel in the background. It goes through the same
+/// download, verification, config compatibility check, switch and rollback as the update
+/// button; when any step fails nothing changes, the audit log says so, and the next start
+/// tries again while the user can still update from the System page.
+pub(super) fn spawn_release_kernel_replacement(state: AppState) {
+    tokio::spawn(async move {
+        if let Err(error) = replace_release_kernel(&state).await {
+            tracing::warn!(error = ?error, "自动替换 Release 内核没有完成");
+        }
+    });
+}
+
+async fn replace_release_kernel(state: &AppState) -> anyhow::Result<()> {
+    let Some(release) = state.updates.release_kernel_to_replace().await? else {
+        return Ok(());
+    };
+    let _apply_guard = state.config_apply_lock.lock().await;
+    let config = state.config.current().await?;
+    let (action, detail) = match state
         .updates
-        .check()
+        .update(None, &config.content, &live_host(state))
         .await
-        .map(Json)
-        .map_err(map_update_error)
+    {
+        Ok(installed) => (
+            "kixdns.kernel.replace_release",
+            format!(
+                "Release 轨道已停止构建，内核已从 {} 自动换成 {}",
+                release.label(),
+                installed.label()
+            ),
+        ),
+        Err(error) => (
+            "kixdns.kernel.replace_release_failed",
+            format!(
+                "没能把 Release 内核 {} 自动换成最新内核：{error}。下次启动面板时再试，也可以在系统页手动更新",
+                release.label()
+            ),
+        ),
+    };
+    state
+        .database
+        .audit(None, action.to_owned(), detail, unix_timestamp())
+        .await
 }
 
 async fn update_notifications(
@@ -105,12 +125,7 @@ async fn update_notifications(
     jar: CookieJar,
 ) -> AppResult<Json<UpdateNotifications>> {
     authenticate(&state.database, &jar).await?;
-    state
-        .updates
-        .notifications()
-        .await
-        .map(Json)
-        .map_err(map_update_error)
+    Ok(Json(state.updates.notifications().await))
 }
 
 async fn github_token_status(
@@ -238,134 +253,86 @@ async fn start_panel_update(
     }))
 }
 
-async fn apply_update(
+async fn kixdns_kernel(
     State(state): State<AppState>,
     jar: CookieJar,
-    headers: HeaderMap,
-) -> AppResult<Json<UpdateInfo>> {
-    let session = authenticate(&state.database, &jar).await?;
-    verify_csrf(&session, &jar, &headers)?;
-    run_detached(async move {
-        let _apply_guard = state.config_apply_lock.lock().await;
-        let config = state.config.current().await.map_err(map_config_error)?;
-        let result = state
-            .updates
-            .apply(&config.content, &live_host(&state))
-            .await
-            .map_err(map_update_error)?;
-        state
-            .database
-            .audit(
-                Some(session.username),
-                "update.apply".to_owned(),
-                format!("安装增强构建 {}", result.latest_commit),
-                unix_timestamp(),
-            )
-            .await
-            .map_err(AppError::Internal)?;
-        Ok(Json(result))
-    })
-    .await
-}
-
-async fn kixdns_versions(
-    State(state): State<AppState>,
-    Query(query): Query<KixdnsVersionsQuery>,
-    jar: CookieJar,
-) -> AppResult<Json<VersionCatalog>> {
+) -> AppResult<Json<KixdnsKernel>> {
     authenticate(&state.database, &jar).await?;
     state
         .updates
-        .catalog(query.source)
+        .kernel()
         .await
         .map(Json)
         .map_err(map_update_error)
 }
 
-async fn install_kixdns_version(
+async fn update_kixdns_kernel(
     State(state): State<AppState>,
-    Path((source, source_id)): Path<(VersionSource, u64)>,
     jar: CookieJar,
     headers: HeaderMap,
-) -> AppResult<Json<InstalledVersion>> {
+    Json(request): Json<KernelUpdateRequest>,
+) -> AppResult<Json<KixdnsKernel>> {
     let session = authenticate(&state.database, &jar).await?;
     verify_csrf(&session, &jar, &headers)?;
     run_detached(async move {
         let _apply_guard = state.config_apply_lock.lock().await;
         let config = state.config.current().await.map_err(map_config_error)?;
-        let result = state
+        let installed = state
             .updates
-            .install_version(source, source_id, &config.content, &live_host(&state))
+            .update(Some(request.source_id), &config.content, &live_host(&state))
             .await
             .map_err(map_update_error)?;
         state
             .database
             .audit(
                 Some(session.username),
-                "kixdns.version.install".to_owned(),
-                format!("从 {source:?} 安装并激活增强构建 {}", result.commit),
+                "kixdns.kernel.update".to_owned(),
+                format!("内核更新到 {}", installed.label()),
                 unix_timestamp(),
             )
             .await
             .map_err(AppError::Internal)?;
-        Ok(Json(result))
+        state
+            .updates
+            .kernel()
+            .await
+            .map(Json)
+            .map_err(map_update_error)
     })
     .await
 }
 
-async fn activate_kixdns_version(
+async fn rollback_kixdns_kernel(
     State(state): State<AppState>,
-    Path((source, commit)): Path<(VersionSource, String)>,
     jar: CookieJar,
     headers: HeaderMap,
-) -> AppResult<Json<InstalledVersion>> {
+) -> AppResult<Json<KixdnsKernel>> {
     let session = authenticate(&state.database, &jar).await?;
     verify_csrf(&session, &jar, &headers)?;
     run_detached(async move {
         let _apply_guard = state.config_apply_lock.lock().await;
         let config = state.config.current().await.map_err(map_config_error)?;
-        let result = state
+        let installed = state
             .updates
-            .activate_version(source, &commit, &config.content, &live_host(&state))
+            .rollback(&config.content, &live_host(&state))
             .await
             .map_err(map_update_error)?;
         state
             .database
             .audit(
                 Some(session.username),
-                "kixdns.version.activate".to_owned(),
-                format!("切换增强构建 {}", result.commit),
+                "kixdns.kernel.rollback".to_owned(),
+                format!("内核回退到 {}", installed.label()),
                 unix_timestamp(),
             )
             .await
             .map_err(AppError::Internal)?;
-        Ok(Json(result))
+        state
+            .updates
+            .kernel()
+            .await
+            .map(Json)
+            .map_err(map_update_error)
     })
     .await
-}
-
-async fn delete_kixdns_version(
-    State(state): State<AppState>,
-    Path((source, identity)): Path<(VersionSource, String)>,
-    jar: CookieJar,
-    headers: HeaderMap,
-) -> AppResult<Json<InstalledVersion>> {
-    let session = authenticate(&state.database, &jar).await?;
-    verify_csrf(&session, &jar, &headers)?;
-    let result = state
-        .updates
-        .delete_version(source, &identity)
-        .await
-        .map_err(map_update_error)?;
-    state
-        .database
-        .audit(
-            Some(session.username),
-            "kixdns.version.delete".to_owned(),
-            format!("删除本地增强构建 {}", result.commit),
-            unix_timestamp(),
-        )
-        .await
-        .map_err(AppError::Internal)?;
-    Ok(Json(result))
 }

@@ -26,11 +26,14 @@
 /* ---------- 控件高度：同一行里的控件一样高 ----------
    页头、工具栏、表单里的按钮、图标按钮、分段、输入框都是 36；列表行和状态胶囊里的是 30，用 --sm。
    同一行里不混两种。手机上（≤640）能点的东西一律 44，--sm 也一样：手指不会因为控件在列表里就变细。
+   跟在一行小字旁边的按钮加 --inline：看起来仍是 30，只把点按区域补到 44。
    Control height: every control in a row is the same height. Page headers,
    toolbars and forms use 36 for buttons, icon buttons, segmented controls and
    inputs alike; list rows and status capsules use 30 through the --sm variants.
    A row never mixes the two. On a phone (≤640) everything tapped is 44, --sm
-   included: a finger is no thinner because the control sits in a list. */
+   included: a finger is no thinner because the control sits in a list. A
+   button beside a line of small text adds --inline: it still looks 30 and only
+   its hit area grows to 44. */
 
 /* ---------- 按钮：主要、次要、文字、危险 ---------- */
 .ui-btn { min-height: var(--h-md); display: inline-flex; align-items: center; justify-content: center; gap: var(--s-2); padding: 0 var(--s-3); border: 1px solid transparent; border-radius: var(--r-2); font-size: var(--t-3); font-weight: var(--w-medium); line-height: var(--lh-tight); white-space: nowrap; cursor: pointer; transition: background-color var(--m-quick) var(--ease-out), border-color var(--m-quick) var(--ease-out), color var(--m-quick) var(--ease-out), transform var(--m-quick) var(--ease-out); }
@@ -612,7 +615,13 @@ a.ui-btn { text-decoration: none; }
   .ui-rec-head, .ui-rec__n { display: none; }
   .ui-rec__phone { display: flex; grid-column: 1 / -1; }
   .ui-task { grid-template-columns: var(--h-sm) minmax(0, 1fr); }
-  .ui-task__actions { grid-column: 2; justify-content: flex-start; }
+  /* 操作换到文字下面一行：链接留在左边，按钮贴右边，和卡片右上角的按钮、底栏的按钮在同一条竖线上；
+     图标对齐标题，不跟着下面几行字居中飘到第二行旁边
+     Actions wrap under the text: a link stays left and the button sits on the right edge, on one line with the
+     card's head button and foot button; the icon lines up with the title instead of centring on the lines below */
+  .ui-task__actions { grid-column: 2; justify-content: flex-end; }
+  .ui-task__actions > .ui-link { margin-right: auto; }
+  .ui-task__icon { align-self: start; }
   .ui-banner { min-height: var(--h-touch); }
   /* 手机上菜单是贴着底边的弹层：标题是菜单的名字，每项 44 高，留出底部安全区 */
   /* On a phone the menu is a bottom sheet titled with its name, 44px items, clear of the home indicator */
@@ -629,6 +638,12 @@ a.ui-btn { text-decoration: none; }
   .ui-picked { row-gap: var(--s-3); }
   /* 手机上小号按钮也是 44 高、14 号字，配 16 的图标（规范 5.1，审计第三轮 M4） / On a phone a small button is 44 tall with 14px text, so it takes a 16 icon (spec 5.1, audit round 3, M4) */
   .ui-btn--sm > svg { width: var(--size-icon); height: var(--size-icon); }
+  /* 跟在一行小字旁边的小按钮（「更新」「回退」）看起来还是 30 高、13 号字，点按区域上下补到 44：44 高的方块比它旁边那行字还重
+     A small button beside a line of small text (更新, 回退) still looks 30 tall with 13px text, its hit area grown to 44: a 44 block
+     outweighs the line it sits beside */
+  .ui-btn--inline { position: relative; min-height: var(--h-sm); font-size: var(--t-2); }
+  .ui-btn--inline > svg { width: var(--size-icon-sm); height: var(--size-icon-sm); }
+  .ui-btn--inline::before { position: absolute; inset: calc((var(--h-touch) - var(--h-sm)) / -2) 0; content: ''; }
   /* 小号下拉框、小号图标按钮和框里的按钮在手机上都是 44 高，图标也用 16：一行里的箭头和 × 一样大（规范 5.1，审计第四轮 V6、T3）
      Small selects, small icon buttons and in-field buttons are 44 tall on a phone, so their icons are 16 too and every chevron and × on a line matches (spec 5.1, audit round 4, V6, T3) */
   .ui-select.ui-input--sm > svg { width: var(--size-icon); height: var(--size-icon); right: var(--s-3); }

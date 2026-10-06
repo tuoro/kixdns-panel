@@ -66,7 +66,6 @@ pub struct AppSettings {
     pub diagnostic_server: SocketAddr,
     pub update_repository: String,
     pub update_workflow: String,
-    pub update_release_workflow: String,
     pub update_branch: String,
     pub update_artifact: String,
     pub installed_commit: Option<String>,
@@ -293,7 +292,6 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         UpdateSettings {
             repository: settings.update_repository,
             workflow: settings.update_workflow,
-            release_workflow: settings.update_release_workflow,
             branch: settings.update_branch,
             artifact: settings.update_artifact,
             installed_commit: settings.installed_commit,
@@ -336,6 +334,7 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
     spawn_geo_scheduler(state.clone());
     spawn_config_reconciler(state.clone());
     spawn_metrics_sampler(state.clone());
+    updates::spawn_release_kernel_replacement(state.clone());
     let api = api_router(state);
 
     let index_file = settings.web_root.join("index.html");
@@ -1589,6 +1588,7 @@ fn map_update_error(error: UpdateError) -> AppError {
         UpdateError::IncompatibleConfig(message) => {
             AppError::Unprocessable("unsupported_config_fields", message)
         }
+        UpdateError::Conflict(message) => AppError::Conflict("update_conflict", message),
         UpdateError::Unsupported => {
             AppError::ServiceUnavailable("update_unsupported", "当前平台不支持自动更新".to_owned())
         }

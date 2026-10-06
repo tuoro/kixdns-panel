@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Download, GitBranch, KeyRound, Plus, RefreshCw, RotateCcw, Save, Square, Trash2, Workflow } from '@lucide/vue'
+import { ExternalLink, FolderOpen, GitBranch, KeyRound, Link2, Plus, RefreshCw, RotateCcw, Save, Square, Trash2, Workflow } from '@lucide/vue'
 import { ref } from 'vue'
 import UiCard from '../components/ui/UiCard.vue'
 import UiEmpty from '../components/ui/UiEmpty.vue'
@@ -17,8 +17,8 @@ const view = ref('running')
 const views = [{ value: 'running', label: '运行情况' }, { value: 'ranking', label: '查询排行' }, { value: 'rules', label: '规则命中' }]
 const level = ref('all')
 const levels = [{ value: 'all', label: '全部' }, { value: 'error', label: '错误' }, { value: 'warning', label: '警告' }, { value: 'info', label: '信息' }]
-const track = ref('action')
-const tracks = [{ value: 'action', label: 'Actions', icon: GitBranch }, { value: 'release', label: 'Releases' }]
+const geoMode = ref('remote')
+const geoModes = [{ value: 'remote', label: '远程链接', icon: Link2 }, { value: 'local', label: '本地路径', icon: FolderOpen }]
 
 const total = ref(12_847_392)
 function refresh(): void { total.value += 180 + Math.floor(Math.random() * 900) }
@@ -26,7 +26,7 @@ function refresh(): void { total.value += 180 + Math.floor(Math.random() * 900) 
 const taskState = ref<UiTaskState>('idle')
 const taskStarted = ref<number | null>(null)
 const taskProgress = ref<number | null>(null)
-const taskNote = ref('增强 681d813a7 · x86_64 · p8 · 07/31 01:31')
+const taskNote = ref('Run #30231271280 → Run #30235703570 · 构建于 07/31 01:31')
 const wait = (ms: number) => new Promise((resolve) => { window.setTimeout(resolve, ms) })
 async function install(): Promise<void> {
   taskState.value = 'run'
@@ -37,10 +37,10 @@ async function install(): Promise<void> {
     await wait(260)
   }
   taskProgress.value = null
-  taskNote.value = '正在切换到新版本'
+  taskNote.value = '正在切换内核'
   await wait(900)
   taskState.value = 'done'
-  taskNote.value = '已切换到 Run #30235703570'
+  taskNote.value = '已更新到 Run #30235703570'
 }
 function fail(): void {
   taskState.value = 'fail'
@@ -49,7 +49,7 @@ function fail(): void {
 function reset(): void {
   taskState.value = 'idle'
   taskStarted.value = null
-  taskNote.value = '增强 681d813a7 · x86_64 · p8 · 07/31 01:31'
+  taskNote.value = 'Run #30231271280 → Run #30235703570 · 构建于 07/31 01:31'
 }
 
 const pending = ref(0)
@@ -78,7 +78,7 @@ function showNew(): void {
     <UiSection title="筛选分段" aside="下沉轨道里一个凸起的白块">
       <div class="ui-kit__row ui-kit__row--stack">
         <UiTabs v-model="level" :items="levels" label="日志级别" variant="segment" />
-        <UiTabs v-model="track" :items="tracks" label="版本源" variant="segment" />
+        <UiTabs v-model="geoMode" :items="geoModes" label="Geo 数据来源" variant="segment" />
       </div>
     </UiSection>
 
@@ -98,17 +98,22 @@ function showNew(): void {
         <button class="ui-icon-btn" type="button" title="删除凭据" aria-label="删除凭据"><Trash2 :size="18" /></button>
       </div>
       <div class="ui-kit__row">
-        <UiTabs v-model="track" :items="tracks" label="版本源（常规）" variant="segment" />
-        <button class="ui-icon-btn" type="button" title="刷新版本" aria-label="刷新版本"><RefreshCw :size="18" /></button>
+        <UiTabs v-model="geoMode" :items="geoModes" label="Geo 数据来源（常规）" variant="segment" />
+        <button class="ui-icon-btn" type="button" title="检查更新" aria-label="检查更新"><RefreshCw :size="18" /></button>
       </div>
-      <p class="ui-kit__label">行内：列表行、状态胶囊里。桌面 30，手机 36</p>
+      <p class="ui-kit__label">行内：列表行、状态胶囊里。桌面 30，手机 44</p>
       <div class="ui-kit__row">
-        <button class="ui-btn ui-btn--secondary ui-btn--sm" type="button">切换</button>
-        <button class="ui-btn ui-btn--secondary ui-btn--sm" type="button">安装并切换</button>
+        <button class="ui-btn ui-btn--secondary ui-btn--sm" type="button">管理配置</button>
+        <button class="ui-btn ui-btn--secondary ui-btn--sm" type="button">重新检查</button>
         <button class="ui-btn ui-btn--text ui-btn--sm" type="button">取消</button>
-        <button class="ui-icon-btn ui-icon-btn--sm" type="button" title="切换到这个版本" aria-label="切换到这个版本"><RotateCcw :size="16" /></button>
+        <button class="ui-icon-btn ui-icon-btn--sm" type="button" title="回退到上一个内核" aria-label="回退到上一个内核"><RotateCcw :size="16" /></button>
         <button class="ui-icon-btn ui-icon-btn--sm" type="button" title="删除" aria-label="删除"><Trash2 :size="16" /></button>
-        <UiTabs v-model="track" :items="tracks" label="版本源（行内）" variant="segment" size="sm" />
+        <UiTabs v-model="geoMode" :items="geoModes" label="Geo 数据来源（行内）" variant="segment" size="sm" />
+      </div>
+      <p class="ui-kit__label">跟在一行小字旁边：加 --inline，手机上看起来仍是 30，点按区域 44</p>
+      <div class="ui-kit__row">
+        <span class="ui-kit__note">上一个版本 <span class="ui-mono">Run #30229870401</span></span>
+        <button class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button">回退</button>
       </div>
     </UiSection>
 
@@ -151,15 +156,16 @@ function showNew(): void {
       </div>
     </UiSection>
 
-    <UiCard title="可用构建" desc="要等几秒的操作用状态胶囊">
-      <UiTask :state="taskState" title="Run #30235703570" :started-at="taskStarted" :progress="taskProgress">
-        <template #icon><Download :size="15" /></template>
-        <template #title><span class="ui-tag ui-tag--ok">最新</span></template>
+    <UiCard title="可用更新" desc="要等几秒的操作用状态胶囊">
+      <UiTask :state="taskState" title="KixDNS 内核" :started-at="taskStarted" :progress="taskProgress">
+        <template #icon><GitBranch :size="15" /></template>
+        <template #title><span class="ui-tag ui-tag--strong">有新版本</span></template>
         <template #meta><p v-if="taskState === 'fail'" class="ui-task__error">{{ taskNote }}</p><span v-else>{{ taskNote }}</span></template>
         <template #actions>
-          <button v-if="taskState === 'idle'" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" @click="install">安装并切换</button>
-          <button v-if="taskState === 'idle'" class="ui-btn ui-btn--text ui-btn--sm" type="button" @click="fail">演示失败</button>
-          <button v-if="taskState === 'done' || taskState === 'fail'" class="ui-btn ui-btn--text ui-btn--sm" type="button" @click="reset">复原</button>
+          <a class="ui-link" href="#">构建详情<ExternalLink :size="12" /></a>
+          <button v-if="taskState === 'idle'" class="ui-btn ui-btn--text ui-btn--sm ui-btn--inline" type="button" @click="fail">演示失败</button>
+          <button v-if="taskState === 'idle'" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" @click="install">更新</button>
+          <button v-if="taskState === 'done' || taskState === 'fail'" class="ui-btn ui-btn--text ui-btn--sm ui-btn--inline" type="button" @click="reset">复原</button>
         </template>
       </UiTask>
     </UiCard>
@@ -192,6 +198,7 @@ function showNew(): void {
 .ui-kit { display: grid; gap: var(--s-5); padding-block: var(--s-6); }
 .ui-kit__row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); }
 .ui-kit__label { margin: var(--s-2) 0 0; color: var(--l-ink-3); font-size: var(--t-1); }
+.ui-kit__note { color: var(--l-ink-3); font-size: var(--t-2); }
 .ui-kit__grow { flex: 1 1 160px; max-width: 420px; }
 .ui-kit__grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-4); align-items: start; }
 .ui-kit__ledger { --rec-cols: minmax(0, 1.6fr) repeat(3, minmax(0, .7fr)); }

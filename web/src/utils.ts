@@ -90,7 +90,7 @@ interface KixdnsVersionIdentity {
   source: 'action' | 'release' | null
   source_id: number | null
   run_id: number | null
-  release_tag: string | null
+  release_tag?: string | null
 }
 
 export function formatKixdnsVersion(version: KixdnsVersionIdentity | null | undefined): string {

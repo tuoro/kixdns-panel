@@ -15,20 +15,23 @@ export function serviceRunsForSwitch(service: ServiceStatus | null): boolean {
 /**
  * 切换前说清会发生什么。服务端按切换那一刻的状态决定：在运行就重启一次，
  * 停着就只换程序、不启动，两种情况都不改开机自启。这里按页面已读到的服务
- * 状态提前告诉用户是哪一种；状态未知时两种都说。
+ * 状态提前告诉用户是哪一种；状态未知时两种都说。更新和回退共用这段文案，
+ * 目标版本在确认框标题里，所以只说「这个版本」，不说新旧。
  *
  * Say what a switch will do before it happens. The server decides from the
  * state at switch time: a running service restarts once, a stopped one only
  * gets the new binary and is not started, and neither changes boot behaviour.
  * The page tells the user which one from the service state it already has,
- * and names both when that state is unknown.
+ * and names both when that state is unknown. Update and rollback share this
+ * wording and the confirmation title names the target, so it says "this
+ * version" rather than new or old.
  */
 export function switchConfirmBody(service: ServiceStatus | null): string {
   const effect = !service
-    ? 'KixDNS 正在运行则用新版本重启，DNS 短暂中断；已停止则只替换程序，不会启动。'
+    ? 'KixDNS 正在运行则用这个版本重启，DNS 短暂中断；已停止则只替换程序，不会启动。'
     : serviceRunsForSwitch(service)
-      ? 'KixDNS 会用新版本重启，DNS 解析短暂中断；健康检查不通过会自动换回当前版本。'
-      : 'KixDNS 当前已停止，这次只替换程序，不会启动服务，下次启动时使用新版本。'
+      ? 'KixDNS 会用这个版本重启，DNS 解析短暂中断；健康检查不通过会自动换回当前版本。'
+      : 'KixDNS 当前已停止，这次只替换程序，不会启动服务，下次启动时使用这个版本。'
   return `${effect}开机自启设置保持不变。`
 }
 

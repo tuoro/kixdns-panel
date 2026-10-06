@@ -1080,9 +1080,9 @@ render_panel_environment() {
       panel_release_found = 1
       next
     }
-    /^KIXDNS_UPDATE_RELEASE_WORKFLOW=/ {
-      release_workflow = 1
-    }
+    # 内核只跟随 Action 轨道，Release 工作流的设置已不再读取。
+    # The kernel follows only the Action track; the Release workflow setting is no longer read.
+    /^KIXDNS_UPDATE_RELEASE_WORKFLOW=/ { next }
     { print }
     END {
       if (!bind_found) print "KIXDNS_PANEL_BIND=0.0.0.0:5738"
@@ -1095,7 +1095,6 @@ render_panel_environment() {
       if (!source_id_found) print "KIXDNS_INSTALLED_SOURCE_ID=" kixdns_source_id
       if (!panel_found) print "KIXDNS_PANEL_INSTALLED_COMMIT=" panel_commit
       if (!panel_release_found && panel_release != "") print "KIXDNS_PANEL_INSTALLED_RELEASE=" panel_release
-      if (!release_workflow) print "KIXDNS_UPDATE_RELEASE_WORKFLOW=build-kixdns-release.yml"
     }
   ' "${source}" > "${output}"
 }

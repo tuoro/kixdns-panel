@@ -1,4 +1,3 @@
-use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::fs;
 use std::io::ErrorKind;
@@ -16,9 +15,9 @@ use super::validation::{
 };
 use super::{
     ArtifactCapabilities, BuildIdentity, InstalledVersion, MANIFEST_SCHEMA_VERSION,
-    MAX_BINARY_BYTES, MAX_BUILD_IDENTITY_BYTES, MAX_CAPABILITIES_BYTES, MAX_INSTALLED_VERSIONS,
-    PANEL_REPOSITORY, SOURCE_MANIFEST_SCHEMA_VERSION, UPSTREAM_REPOSITORY, UpdateError, VersionKey,
-    VersionManifest, VersionSource,
+    MAX_BINARY_BYTES, MAX_BUILD_IDENTITY_BYTES, MAX_CAPABILITIES_BYTES, PANEL_REPOSITORY,
+    SOURCE_MANIFEST_SCHEMA_VERSION, UPSTREAM_REPOSITORY, UpdateError, VersionKey, VersionManifest,
+    VersionSource,
 };
 
 pub(super) fn store_version(
@@ -312,46 +311,17 @@ pub(super) fn list_installed(
     Ok(versions)
 }
 
-pub(super) fn find_installed_key(
-    versions_path: &Path,
-    source: VersionSource,
-    source_id: u64,
-) -> Result<Option<VersionKey>, UpdateError> {
-    for entry in
-        fs::read_dir(versions_path).map_err(|error| UpdateError::Install(error.to_string()))?
-    {
-        let entry = entry.map_err(|error| UpdateError::Install(error.to_string()))?;
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
-        let Some(key) = parse_version_directory(&name) else {
-            continue;
-        };
-        let Ok((manifest, _)) = load_verified_version(versions_path, &key) else {
-            continue;
-        };
-        if manifest.source == Some(source) && manifest.source_id == Some(source_id) {
-            return Ok(Some(key));
-        }
-    }
-    Ok(None)
-}
-
+/// 本机只留当前内核和上一个，其余的删掉。损坏的版本目录列不出来，这里也不碰。
+/// Keeps only the current kernel and the previous one and removes the rest. Damaged
+/// version directories are not listed, so they are left alone here.
 pub(super) fn prune_versions(
     versions_path: &Path,
-    active_version: &VersionKey,
+    active: &VersionKey,
+    previous: Option<&VersionKey>,
 ) -> Result<(), UpdateError> {
-    let mut versions = list_installed(versions_path, Some(active_version))?;
-    versions.sort_by_key(|version| Reverse(version.installed_at));
-    let keep = versions
-        .iter()
-        .take(MAX_INSTALLED_VERSIONS)
-        .filter_map(|version| VersionKey::installed(version).ok())
-        .chain(std::iter::once(active_version.clone()))
-        .collect::<HashSet<_>>();
-    for version in versions {
+    for version in list_installed(versions_path, Some(active))? {
         let key = VersionKey::installed(&version)?;
-        if keep.contains(&key) {
+        if &key == active || previous == Some(&key) {
             continue;
         }
         let path = locate_version_directory(versions_path, &key)?;
@@ -363,24 +333,6 @@ pub(super) fn prune_versions(
         fs::remove_dir_all(path).map_err(|error| UpdateError::Install(error.to_string()))?;
     }
     sync_directory(versions_path)
-}
-
-pub(super) fn delete_stored_version(
-    versions_path: &Path,
-    key: &VersionKey,
-) -> Result<InstalledVersion, UpdateError> {
-    let (manifest, _) = load_verified_version(versions_path, key)?;
-    let path = locate_version_directory(versions_path, key)?;
-    let metadata =
-        fs::symlink_metadata(&path).map_err(|error| UpdateError::Install(error.to_string()))?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(UpdateError::Verification(
-            "待删除版本目录类型无效".to_owned(),
-        ));
-    }
-    fs::remove_dir_all(path).map_err(|error| UpdateError::Install(error.to_string()))?;
-    sync_directory(versions_path)?;
-    Ok(manifest.into_installed(false))
 }
 
 fn parse_version_directory(name: &str) -> Option<VersionKey> {

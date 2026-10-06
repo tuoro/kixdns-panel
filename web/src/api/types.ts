@@ -340,28 +340,14 @@ export interface DnsTraceStep {
   elapsed_ms: number
 }
 
-export interface UpdateInfo {
-  installed_commit: string | null
-  latest_commit: string
-  run_id: number
-  created_at: string
-  run_url: string
-  artifact: string
-  artifact_digest: string
-  download_url: string
-  available: boolean
-}
-
 export interface KixdnsUpdateNotice {
   available: boolean
-  source: KixdnsVersionSource
   current_commit: string | null
-  latest_commit: string | null
-  source_id: number | null
-  run_id: number | null
-  release_tag: string | null
-  created_at: string | null
-  build_url: string | null
+  latest_commit: string
+  source_id: number
+  run_id: number
+  created_at: string
+  build_url: string
   /** 同一版本换上修补过的依赖重新构建。 / The same version rebuilt with patched dependencies. */
   security_update: boolean
   dependency_revision: number | null
@@ -380,9 +366,16 @@ export interface PanelUpdateNotice {
   download_url: string | null
 }
 
+/**
+ * 内核和面板的更新各查各的：一边查不到时那一边为空、原因写在旁边，另一边照常提示。
+ * Kernel and panel updates are checked separately: when one cannot be read it is null
+ * with the reason beside it, and the other is still offered.
+ */
 export interface UpdateNotifications {
-  kixdns: KixdnsUpdateNotice
-  panel: PanelUpdateNotice
+  kixdns: KixdnsUpdateNotice | null
+  kixdns_error: string | null
+  panel: PanelUpdateNotice | null
+  panel_error: string | null
 }
 
 export interface GithubRateLimit {
@@ -410,14 +403,14 @@ export interface PanelUpdateStartResponse {
   target_version: string
 }
 
+/** 远端只有 Action 轨道；Release 只出现在以前装下的内核上。 / Only the Action track is offered remotely; Release appears only on kernels installed earlier. */
 export type KixdnsVersionSource = 'action' | 'release'
 
 export interface RemoteKixdnsVersion {
-  source: KixdnsVersionSource
+  source: 'action'
   source_id: number
   commit: string
-  run_id: number | null
-  release_tag: string | null
+  run_id: number
   patchset: number | null
   created_at: string
   source_url: string
@@ -425,8 +418,6 @@ export interface RemoteKixdnsVersion {
   artifact: string
   artifact_digest: string
   download_url: string
-  installed: boolean
-  active: boolean
 }
 
 export interface InstalledKixdnsVersion {
@@ -451,14 +442,17 @@ export interface InstalledKixdnsVersion {
   active: boolean
 }
 
-export interface KixdnsVersionCatalog {
-  source: KixdnsVersionSource
-  active_source: KixdnsVersionSource | null
-  active_commit: string | null
+/**
+ * 内核：正在用的、本机保存的上一个（可以回退），以及上游最新的增强构建。
+ * The kernel: the one in use, the previous one kept on this host (to roll back to),
+ * and the newest enhanced build upstream.
+ */
+export interface KixdnsKernel {
   binary_present: boolean
+  active: InstalledKixdnsVersion | null
+  previous: InstalledKixdnsVersion | null
+  latest: RemoteKixdnsVersion | null
   remote_error: string | null
-  remote_versions: RemoteKixdnsVersion[]
-  installed_versions: InstalledKixdnsVersion[]
 }
 
 export interface SetupStatus {

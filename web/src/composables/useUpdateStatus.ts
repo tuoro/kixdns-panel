@@ -10,7 +10,7 @@ let pending: Promise<void> | null = null
 
 const availableCount = computed(() => {
   if (!status.value) return 0
-  return Number(status.value.kixdns.available) + Number(status.value.panel.available)
+  return Number(status.value.kixdns?.available ?? false) + Number(status.value.panel?.available ?? false)
 })
 
 function refresh(): Promise<void> {

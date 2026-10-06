@@ -911,6 +911,10 @@ if grep -q 'KIXDNS_MANAGEMENT_ENABLED\|false：保留外部' "${environment_outp
   printf '断言失败：升级应删掉已移除的管理模式开关\n' >&2
   exit 1
 fi
+if grep -q 'KIXDNS_UPDATE_RELEASE_WORKFLOW' "${environment_output}"; then
+  printf '断言失败：升级应删掉不再读取的 Release 工作流设置\n' >&2
+  exit 1
+fi
 render_panel_environment "${environment_source}" "${environment_output}" \
   kixdns-commit panel-commit v1.0.0 42
 release_value="$(awk -F= '$1 == "KIXDNS_PANEL_INSTALLED_RELEASE" { print $2 }' "${environment_output}")"
@@ -921,8 +925,8 @@ bind_value="$(awk -F= '$1 == "KIXDNS_PANEL_BIND" { print $2 }' "${environment_ou
 assert_equals "${bind_value}" "0.0.0.0:5738" "旧版默认监听地址应迁移为内网可访问"
 source_id_value="$(awk -F= '$1 == "KIXDNS_INSTALLED_SOURCE_ID" { print $2 }' "${environment_output}")"
 assert_equals "${source_id_value}" "42" "面板环境应记录完整包 Artifact ID"
-if grep -q 'KIXDNS_MANAGEMENT_ENABLED' "${PACKAGE_ROOT}/deploy/panel.env.example"; then
-  printf '断言失败：面板环境模板不应再包含已移除的管理模式开关\n' >&2
+if grep -q 'KIXDNS_MANAGEMENT_ENABLED\|KIXDNS_UPDATE_RELEASE_WORKFLOW' "${PACKAGE_ROOT}/deploy/panel.env.example"; then
+  printf '断言失败：面板环境模板不应再包含已移除的设置\n' >&2
   exit 1
 fi
 
