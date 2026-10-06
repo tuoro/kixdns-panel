@@ -13,8 +13,8 @@ cd "$root"
 
 mapfile -t locks < <(
   {
-    printf '%s\n' upstream.lock.json upstream.release.lock.json
-    find upstreams/actions upstreams/releases -maxdepth 1 -type f -name '*.json' -print
+    printf '%s\n' upstream.lock.json
+    find upstreams/actions -maxdepth 1 -type f -name '*.json' -print
   } | sort -u
 )
 

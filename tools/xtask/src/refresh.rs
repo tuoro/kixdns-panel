@@ -636,8 +636,6 @@ mod tests {
             source: UpstreamSource::Action,
             commit: "681183cb25c745cfe42eb380bf9dda886683eaa7".to_owned(),
             official_run_id: Some(34_942_284_951),
-            release_id: None,
-            release_tag: None,
             compatibility: None,
             patchset: 23,
             control_protocol: 1,

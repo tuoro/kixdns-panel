@@ -30,12 +30,8 @@ validate_lock() {
   fi
 
   source="$(jq -r '.source // empty' "$lock_file")"
-  [[ "$source" == action || "$source" == release ]] || fail "$lock_file 的 source 无效"
+  [[ "$source" == action ]] || fail "$lock_file 的 source 无效：只跟随上游 Action 构建"
   reference="$(bash scripts/lock-reference.sh "$lock_file")" || fail "$lock_file 的上游身份无效"
-  if [[ "$source" == release && -d "$patchset_directory/release/$reference" ]]; then
-    has_patches "$patchset_directory/release/$reference" || \
-      fail "$lock_file 对应的 p${patchset} Release 补丁目录为空"
-  fi
 
   revision="$(jq -r '.dependency_revision // empty' "$lock_file")"
   if [[ -n "$revision" ]]; then
@@ -48,7 +44,7 @@ validate_lock() {
 # 依赖修订只能调整 Cargo.lock，路径编码上游身份、补丁集和修订号。
 # A dependency revision may only adjust Cargo.lock; its path encodes the upstream
 # version, the patchset and the revision number.
-revision_pattern='^patches/dependencies/(action|release)/[A-Za-z0-9._-]+/p[1-9][0-9]*-r[1-9][0-9]*\.patch$'
+revision_pattern='^patches/dependencies/action/[A-Za-z0-9._-]+/p[1-9][0-9]*-r[1-9][0-9]*\.patch$'
 revision_files=()
 if [[ -d patches/dependencies ]]; then
   mapfile -t revision_files < <(find patches/dependencies -type f -print | sort)
@@ -71,8 +67,8 @@ done
 
 mapfile -t locks < <(
   {
-    printf '%s\n' upstream.lock.json upstream.release.lock.json
-    find upstreams/actions upstreams/releases -maxdepth 1 -type f -name '*.json' -print
+    printf '%s\n' upstream.lock.json
+    find upstreams/actions -maxdepth 1 -type f -name '*.json' -print
   } | sort -u
 )
 for lock_file in "${locks[@]}"; do
@@ -109,16 +105,15 @@ if [[ -n "$base_sha" ]]; then
     #   - 新增一个名字未用过的兼容层。已有的锁不会选中新名字，已有构建不受影响，另一份
     #     上游因此能沿用同一个编号。
     #   - 整个删除一个兼容层。仍有锁在用时上面的锁校验会报缺失，所以只有没人用的能删。
-    # 往已有兼容层里增删改文件、新增 release/<tag>/（按标签自动选中）或改动其余任何文件，
-    # 都会改变已有构建，只能新增更高编号的补丁集。
+    # 往已有兼容层里增删改文件或改动其余任何文件，都会改变已有构建，只能新增更高编号的
+    # 补丁集。
     # A sealed patchset accepts two changes, each a whole compatibility directory:
     #   - a layer under a name never used: no existing lock selects it, so no existing
     #     build changes, and another upstream can share the number;
     #   - removing a layer outright: the lock checks above report it missing while any lock
     #     still uses it, so only unused ones can go.
-    # Adding, removing or editing a file inside an existing layer, adding release/<tag>/
-    # (selected by tag) or touching anything else changes an existing build and needs a
-    # new, higher patchset.
+    # Adding, removing or editing a file inside an existing layer, or touching anything
+    # else, changes an existing build and needs a new, higher patchset.
     while IFS=$'\t' read -r status path; do
       [[ -n "$status" ]] || continue
       layer="${path#"patches/sets/$patchset/"}"

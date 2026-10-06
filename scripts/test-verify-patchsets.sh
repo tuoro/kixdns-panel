@@ -13,14 +13,9 @@ mkdir -p "$fixture/scripts"
 cp "$workspace/scripts/verify-patchsets.sh" "$workspace/scripts/lock-reference.sh" "$fixture/scripts/"
 
 lock() {
-  local source=$1 reference=$2 patchset=$3
-  if [[ "$source" == action ]]; then
-    jq -n --argjson run "$reference" --argjson patchset "$patchset" \
-      '{repository: "olicesx/kixdns", source: "action", commit: ("a" * 40), official_run_id: $run, patchset: $patchset, control_protocol: 1}'
-  else
-    jq -n --arg tag "$reference" --argjson patchset "$patchset" \
-      '{repository: "olicesx/kixdns", source: "release", commit: ("b" * 40), release_id: 1, release_tag: $tag, patchset: $patchset, control_protocol: 1}'
-  fi
+  local run=$1 patchset=$2
+  jq -n --argjson run "$run" --argjson patchset "$patchset" \
+    '{repository: "olicesx/kixdns", source: "action", commit: ("a" * 40), official_run_id: $run, patchset: $patchset, control_protocol: 1}'
 }
 
 revision() {
@@ -38,16 +33,15 @@ revision() {
     mkdir -p "patches/sets/$patchset/common"
     printf 'diff --git a/src/lib.rs b/src/lib.rs\n' > "patches/sets/$patchset/common/0001-source.patch"
   done
-  # Action 用 p2 的 split 兼容层；Release 在后面的场景里加一个新兼容层来沿用 p2。
-  # The action lock uses p2's split layer; a scenario below adds a new layer for the release.
+  # 当前锁用 p2 的 split 兼容层；后面的场景会给另一个上游版本加一个新兼容层来沿用 p2。
+  # The current lock uses p2's split layer; a scenario below adds a new layer so another
+  # upstream version can share p2.
   mkdir -p patches/sets/2/compatibility/split
   printf 'diff --git a/src/main.rs b/src/main.rs\n' > patches/sets/2/compatibility/split/0001-entry.patch
   printf 'diff --git a/Cargo.lock b/Cargo.lock\n' > patches/sets/2/compatibility/split/0002-dependency-lock.patch
-  mkdir -p upstreams/actions upstreams/releases patches/dependencies/action/11
-  lock action 11 2 | jq '.compatibility = "split"' > upstream.lock.json
-  lock release v1 2 > upstream.release.lock.json
+  mkdir -p upstreams/actions patches/dependencies/action/11
+  lock 11 2 | jq '.compatibility = "split"' > upstream.lock.json
   cp upstream.lock.json upstreams/actions/11.json
-  cp upstream.release.lock.json upstreams/releases/v1.json
   revision old sealed > patches/dependencies/action/11/p2-r2.patch
   git add --all
   git commit --quiet -m base
@@ -87,10 +81,9 @@ scenario 'new revision above the sealed one' pass '' '
   jq ".dependency_revision = 3" upstream.lock.json > lock.new && mv lock.new upstream.lock.json
   cp upstream.lock.json upstreams/actions/11.json'
 scenario 'first revision of another version' pass '' '
-  mkdir -p patches/dependencies/release/v1
-  revision old new > patches/dependencies/release/v1/p2-r1.patch
-  jq ".dependency_revision = 1" upstream.release.lock.json > lock.new && mv lock.new upstream.release.lock.json
-  cp upstream.release.lock.json upstreams/releases/v1.json'
+  mkdir -p patches/dependencies/action/12
+  revision old new > patches/dependencies/action/12/p2-r1.patch
+  lock 12 2 | jq ".compatibility = \"split\" | .dependency_revision = 1" > upstreams/actions/12.json'
 scenario 'delete an unreferenced patchset' pass '' 'git rm --quiet -r patches/sets/1'
 scenario 'delete an unreferenced revision' pass '' 'git rm --quiet patches/dependencies/action/11/p2-r2.patch'
 scenario 'replace the highest patchset with a newer one' pass '' '
@@ -101,11 +94,10 @@ scenario 'delete a compatibility layer no lock uses any more' pass '' '
   git rm --quiet -r patches/sets/2/compatibility/split
   jq "del(.compatibility)" upstream.lock.json > lock.new && mv lock.new upstream.lock.json
   cp upstream.lock.json upstreams/actions/11.json'
-scenario 'release joins a sealed patchset through a new compatibility layer' pass '' '
-  mkdir -p patches/sets/2/compatibility/tokio
-  printf "diff --git a/src/main.rs b/src/main.rs\n" > patches/sets/2/compatibility/tokio/0001-entry.patch
-  jq ".compatibility = \"tokio\"" upstream.release.lock.json > lock.new && mv lock.new upstream.release.lock.json
-  cp upstream.release.lock.json upstreams/releases/v1.json'
+scenario 'another upstream joins a sealed patchset through a new compatibility layer' pass '' '
+  mkdir -p patches/sets/2/compatibility/run-12
+  printf "diff --git a/src/main.rs b/src/main.rs\n" > patches/sets/2/compatibility/run-12/0001-entry.patch
+  lock 12 2 | jq ".compatibility = \"run-12\"" > upstreams/actions/12.json'
 
 scenario 'edit a sealed revision' fail '已封印' 'revision old changed > patches/dependencies/action/11/p2-r2.patch'
 scenario 'new revision below the sealed one' fail '必须高于' 'revision old other > patches/dependencies/action/11/p2-r1.patch'
@@ -115,8 +107,8 @@ scenario 'revision at an invalid path' fail '依赖修订路径无效' '
   revision old new > patches/dependencies/action/11/r3.patch'
 scenario 'action lock without a run id' fail '上游身份无效' '
   jq "del(.official_run_id)" upstream.lock.json > lock.new && mv lock.new upstream.lock.json'
-scenario 'release lock with an unsafe tag' fail '上游身份无效' '
-  jq ".release_tag = \"../v1\"" upstream.release.lock.json > lock.new && mv lock.new upstream.release.lock.json'
+scenario 'release lock' fail 'source 无效' '
+  jq ".source = \"release\" | .release_id = 1 | .release_tag = \"v1\"" upstream.lock.json > lock.new && mv lock.new upstream.lock.json'
 scenario 'lock references a missing revision' fail '引用的依赖修订不存在' '
   jq ".dependency_revision = 9" upstream.lock.json > lock.new && mv lock.new upstream.lock.json'
 scenario 'delete the highest patchset' fail '最高编号补丁集 p4 不能删除' 'git rm --quiet -r patches/sets/4'
@@ -126,9 +118,9 @@ scenario 'add a patch to an existing compatibility layer' fail '已封印' '
   printf "diff --git a/src/lib.rs b/src/lib.rs\n" > patches/sets/2/compatibility/split/0002-more.patch'
 scenario 'add a common patch to a sealed patchset' fail '已封印' '
   printf "diff --git a/src/lib.rs b/src/lib.rs\n" > patches/sets/1/common/0002-more.patch'
-scenario 'add a release layer to a sealed patchset' fail '已封印' '
-  mkdir -p patches/sets/2/release/v1
-  printf "diff --git a/src/lib.rs b/src/lib.rs\n" > patches/sets/2/release/v1/0001-release.patch'
+scenario 'add a directory other than a layer to a sealed patchset' fail '已封印' '
+  mkdir -p patches/sets/2/extra
+  printf "diff --git a/src/lib.rs b/src/lib.rs\n" > patches/sets/2/extra/0001-extra.patch'
 scenario 'delete one file from a compatibility layer' fail '已封印' '
   git rm --quiet patches/sets/2/compatibility/split/0002-dependency-lock.patch'
 scenario 'delete a compatibility layer a lock still uses' fail '兼容层 split 不存在或为空' '
