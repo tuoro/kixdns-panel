@@ -34,24 +34,19 @@ Panel Web ---- Panel Server ---- SQLite
 
 ## 上游跟随
 
-两条轨道各自一个锁文件，互相独立，一条失败不阻塞另一条：
-
-| 轨道 | 锁文件 | 版本目录 | 跟随 | 保留 |
-| --- | --- | --- | --- | --- |
-| Action | `upstream.lock.json` | `upstreams/actions/` | 上游 `main` 最近成功的 `build.yml` | 最近 10 个中审计能通过的 |
-| Release | `upstream.release.lock.json` | `upstreams/releases/` | 上游正式 Release | 审计能通过的 |
+内核只跟随上游 `main` 最近成功的 `build.yml`。`upstream.lock.json` 是当前版本的锁，版本目录 `upstreams/actions/` 只留这一个版本：同步重基靠它找到补丁集的基准，已安装的面板靠它读出依赖修订。
 
 每个锁指向 `patches/sets/<编号>/` 下一个不可变补丁集。补丁集进入主分支即封印，CI 拒绝修改已有编号，适配只能新增更高编号——已发布的版本因此始终可复现。锁还可以指定一个依赖修订（`patches/dependencies/`），只调整 `Cargo.lock`，用来在上游不动时修复依赖漏洞。
 
 自动同步发现上游新版本时：
 
-1. 先原样套用当前补丁集并审计依赖；新 Release 一律套用 Action 轨道当前的补丁集
+1. 先原样套用当前补丁集并审计依赖
 2. 套不上或依赖未通过 RustSec 审计，先**并入**：给当前补丁集新增一个兼容层，编号不变
-3. Action 并入不了，说明通用补丁也要改，才完整重基：把补丁重建为临时 Git 提交链，rebase 到新上游（`Cargo.lock` 不参与 rebase，之后重新解析），导出更高编号的补丁集。Release 只并入 Action 的补丁集，并入不了就停在当前版本等人工处理，从不退回自己的旧补丁集，编号也不会超过 Action
+3. 并入不了，说明通用补丁也要改，才完整重基：把补丁重建为临时 Git 提交链，rebase 到新上游（`Cargo.lock` 不参与 rebase，之后重新解析），导出更高编号的补丁集
 4. 候选通过测试、Clippy、RustSec 和 DNS 冒烟测试后，自动提交审计 PR 更新锁和版本目录，正文写明是并入还是重基
-5. 只有代码冲突、并入失败或验证失败才开 `[compat]` Issue（每条轨道最多一个），附候选身份和日志；恢复后自动关闭。基础设施故障只让工作流失败，不开 Issue
+5. 只有代码冲突、并入失败或验证失败才开 `[compat]` Issue（同时最多一个），附候选身份和日志；恢复后自动关闭。基础设施故障只让工作流失败，不开 Issue
 
-上游没有新版本时照样审计当前版本：未通过就生成依赖修订，验证后自动合并；修不了开 `[security]` Issue。审计不过的旧版本移出版本目录，当前版本始终保留。
+上游没有新版本时照样审计当前版本：未通过就生成依赖修订，验证后自动合并；修不了开 `[security]` Issue。新版本进入版本目录后，只有旧版本在用的补丁集、兼容层和依赖修订随之删除。
 
 DNS 冒烟测试用隔离端口和 Unix Socket 真实启动增强进程，验证静态应答、规则计数、配置摘要和热加载序号。人工处理流程见[补丁说明](../patches/README.md)。
 
@@ -59,14 +54,14 @@ DNS 冒烟测试用隔离端口和 Unix Socket 真实启动增强进程，验证
 
 面板和内核用独立工作流，面板提交不会被误当成新的 KixDNS 版本：
 
-- **内核**：`build-kixdns.yml`（Action 轨道）和 `build-kixdns-release.yml`（Release 轨道）共用 `build-kixdns-track.yml`。产物只作为本仓库 Actions Artifact：面板配了有下载权限的 GitHub Token 时直接从 GitHub 下载，否则经 nightly.link；每周任务提前 7 天续建即将过期的包
+- **内核**：`build-kixdns.yml` 经 `build-kixdns-track.yml` 只构建当前版本。产物只作为本仓库 Actions Artifact：面板配了有下载权限的 GitHub Token 时直接从 GitHub 下载，否则经 nightly.link。已安装的面板只认这个工作流最近 30 次成功运行里的构建，所以每周任务在包 7 天内过期、或所在运行排到第 20 名之后时重建
 - **面板**：`build-panel.yml` 只监听 Panel Server、Web、部署脚本和面板依赖。它复用上游身份完全匹配的内核 Artifact（校验摘要和 ELF 架构），不重新编译 KixDNS。正式版通过面板 GitHub Release 发布
 - 发布构建在 Ubuntu 22.04 容器中完成，拒绝依赖高于 `GLIBC_2.35` 符号的二进制；完整包还要在 Ubuntu 22.04 临时机上跑安装、覆盖升级、面板联调、systemd 控制和卸载验收
 - PR 只跑对应边界的验证，不上传可安装包；纯文档变更不触发打包
 
-内核 Artifact 命名为 `kixdns-enhanced-<来源>-<上游身份>-p<补丁集>-<输入指纹>-linux-<架构>`。输入指纹只由明确列出的构建输入决定：锁文件、所选补丁和依赖修订、能力清单、Rust 工具链、xtask 里准备源码的代码，以及 DNS 冒烟和 GLIBC 基线两个验证脚本。xtask 自己的依赖、自动重基与依赖刷新这两个维护模块、工作流和指纹脚本都不参与，所以常规依赖升级不会触发重建；改了构建方式需要手动强制重建。新增补丁集同样不会改变历史版本的指纹。这个名称格式是已安装面板识别版本的接口：面板严格解析，多一段就会把这个版本悄悄丢掉，所以格式不能改。新信息只能进指纹，或放进包内的上游锁里，面板按需读取，依赖修订就是这样做的。每个包携带 `KIXDNS_CAPABILITIES.json`，与二进制、上游锁和构建提交一起写入 `SHA256SUMS`。
+内核 Artifact 命名为 `kixdns-enhanced-action-<上游 Run>-p<补丁集>-<输入指纹>-linux-<架构>`。输入指纹只由明确列出的构建输入决定：锁文件、所选补丁和依赖修订、能力清单、Rust 工具链、xtask 里准备源码的代码，以及 DNS 冒烟和 GLIBC 基线两个验证脚本。xtask 自己的依赖、自动重基与依赖刷新这两个维护模块、工作流和指纹脚本都不参与，所以常规依赖升级不会触发重建；改了构建方式需要手动强制重建。新增补丁集同样不会改变历史版本的指纹。这个名称格式是已安装面板识别版本的接口：面板严格解析，多一段就会把这个版本悄悄丢掉，所以格式不能改。新信息只能进指纹，或放进包内的上游锁里，面板按需读取，依赖修订就是这样做的。每个包携带 `KIXDNS_CAPABILITIES.json`，与二进制、上游锁和构建提交一起写入 `SHA256SUMS`。
 
-完整安装包分别记录 `PANEL_BUILD_COMMIT`、`KIXDNS_BUILD_COMMIT` 和正式版标签 `PANEL_RELEASE`，安装时写入 `KIXDNS_PANEL_INSTALLED_COMMIT`、`KIXDNS_INSTALLED_COMMIT`、`KIXDNS_PANEL_INSTALLED_RELEASE`。面板只按正式版标签提示自身更新。Panel Server 启动时离线校验安装包自带 KixDNS 的元数据，并以二进制实际摘要纠正数据库中的活动版本记录——GitHub 不可达时本地版本信息照常显示。本地库存以 `source + artifact_id + commit` 为键，因为同一次工作流可能构建多个上游基线。
+完整安装包分别记录 `PANEL_BUILD_COMMIT`、`KIXDNS_BUILD_COMMIT` 和正式版标签 `PANEL_RELEASE`，安装时写入 `KIXDNS_PANEL_INSTALLED_COMMIT`、`KIXDNS_INSTALLED_COMMIT`、`KIXDNS_PANEL_INSTALLED_RELEASE`。面板只按正式版标签提示自身更新。Panel Server 启动时离线校验安装包自带 KixDNS 的元数据，并以二进制实际摘要纠正数据库中的活动版本记录——GitHub 不可达时本地版本信息照常显示。本机只留当前内核和上一个，以 `source + artifact_id + commit` 为键，启动时和每次切换成功后清理其余版本。以前装下的 Release 内核在新面板启动后自动换成最新的 Action 内核；换下后用户自己回退到 Release 的，不再替换。
 
 ## 安全边界
 
@@ -87,7 +82,7 @@ DNS 冒烟测试用隔离端口和 Unix Socket 真实启动增强进程，验证
 
 **下载与安装**
 
-- 版本源只接受固定仓库、固定工作流和按规则解析的 Artifact 名称；前端只能提交来源类型和 Artifact ID，不能给 URL 或路径
+- 内核只取固定仓库、固定工作流里按规则解析出的最新 Artifact；前端只能提交页面上看到的 Artifact ID，与此刻的最新构建不符就拒绝，不能给 URL 或路径
 - 从 Artifact 名称解析上游身份后，再与包内 `source`、上游身份、提交、补丁集、控制协议和构建提交逐项核对
 - 安装前校验外层与包内 SHA-256、ELF 与架构；激活前再校验一次；替换后必须通过健康检查，否则恢复
 - 配置保存、历史恢复和版本激活共用后端能力注册表；不兼容的版本在停服务之前就被拒绝，面板不自动删除或降级用户字段
