@@ -69,6 +69,19 @@ jobs:
           ((${#catalog[@]} > 0)) || { echo '版本目录为空' >&2; exit 1; }
 
           threshold="$(date -u -d '+7 days' '+%Y-%m-%dT%H:%M:%SZ')"
+          # 已安装的面板只认这个工作流最近 30 次可信成功运行里的构建（main 上本仓库的
+          # push、定时或手动触发，取第一页 100 条再过滤）。构建所在的运行掉出前 20 就
+          # 重建，留 10 次余量，免得它在下次续期之前就从面板的版本列表里消失。
+          workflow_file="${GITHUB_WORKFLOW_REF%@*}"
+          workflow_file="${workflow_file##*/}"
+          recent_runs="$(gh api --method GET \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_file}/runs?branch=main&status=success&exclude_pull_requests=true&per_page=100" |
+            jq -c --arg repository "$GITHUB_REPOSITORY" '
+              [.workflow_runs[]
+                | select(.event == "push" or .event == "schedule" or .event == "workflow_dispatch")
+                | select(.head_branch == "main")
+                | select((.head_repository.full_name // "" | ascii_downcase) == ($repository | ascii_downcase))
+                | .id][:20]')"
           selected=()
           for lock_file in "${catalog[@]}"; do
             if [[ "$FORCE_BUILD" == true ]]; then
@@ -79,8 +92,10 @@ jobs:
             for architecture in x86_64 arm64; do
               artifact="$(bash scripts/kixdns-artifact-identity.sh "$lock_file" "$architecture")"
               response="$(gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${artifact}&per_page=10")"
-              if ! jq -e --arg threshold "$threshold" \
-                '[.artifacts[] | select(.expired == false and .expires_at > $threshold)] | length > 0' \
+              if ! jq -e --arg threshold "$threshold" --argjson runs "$recent_runs" \
+                '[.artifacts[]
+                  | select(.expired == false and .expires_at > $threshold)
+                  | select(.workflow_run.id as $run | any($runs[]; . == $run))] | length > 0' \
                 <<< "$response" >/dev/null; then
                 missing=true
                 break
