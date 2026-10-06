@@ -9,14 +9,14 @@ use super::ServiceHost;
 use super::validation::ParsedArtifactReference;
 use super::{
     ARTIFACT_PAGE_SIZE, BuildIdentity, GithubRelease, InstalledVersion, MANIFEST_SCHEMA_VERSION,
-    MAX_ARTIFACT_PAGES, ReleaseAsset, RemoteVersion, RepositoryFile, ResolvedVersion,
-    TrackReference, UpdateError, UpdateManager, UpdateSettings, VersionKey, VersionManifest,
-    VersionSource, WorkflowRuns, artifact_page_count, build_lock_revision, delete_stored_version,
-    extract_artifact, load_bundled_manifest, load_verified_version, panel_release_asset_name,
-    parse_artifact_reference, sha256, sort_newest_upstream_first, store_version,
-    to_kixdns_update_notice, to_panel_update_notice, trusted_workflow_runs,
-    update_stored_capabilities, validate_commit, validate_digest, validate_github_token,
-    validate_remote_build_identity, validate_slug, workflow_runs_url, write_github_token,
+    MAX_ARTIFACT_PAGES, ReleaseAsset, RemoteVersion, RepositoryFile, ResolvedVersion, UpdateError,
+    UpdateManager, UpdateSettings, VersionKey, VersionManifest, VersionSource, WorkflowRuns,
+    artifact_page_count, build_lock_revision, extract_artifact, load_bundled_manifest,
+    load_verified_version, newest_upstream_build, panel_release_asset_name,
+    parse_artifact_reference, prune_versions, sha256, store_version, to_kixdns_update_notice,
+    to_panel_update_notice, trusted_workflow_runs, update_stored_capabilities, validate_commit,
+    validate_digest, validate_github_token, validate_remote_build_identity, validate_slug,
+    workflow_runs_url, write_github_token,
 };
 use crate::db::Database;
 use crate::operations::ServiceAction;
@@ -236,7 +236,6 @@ async fn reads_capabilities_from_unmaterialized_bundled_version() {
         UpdateSettings {
             repository: "tuoro/kixdns-panel".to_owned(),
             workflow: "build-kixdns.yml".to_owned(),
-            release_workflow: "build-kixdns-release.yml".to_owned(),
             branch: "main".to_owned(),
             artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
             installed_commit: Some(TEST_BUILD_COMMIT.to_owned()),
@@ -274,7 +273,6 @@ async fn bundled_binary_identity_replaces_stale_database_state() {
         UpdateSettings {
             repository: "tuoro/kixdns-panel".to_owned(),
             workflow: "build-kixdns.yml".to_owned(),
-            release_workflow: "build-kixdns-release.yml".to_owned(),
             branch: "main".to_owned(),
             artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
             installed_commit: Some(TEST_BUILD_COMMIT.to_owned()),
@@ -346,47 +344,26 @@ fn validates_fixed_update_coordinates_and_digests() {
     )
     .unwrap();
     assert_eq!(VersionKey::parse(&tracked.encoded()).unwrap(), tracked);
-    assert!(matches!(
-        parse_artifact_reference(
-            "kixdns-enhanced-linux-x86_64",
-            VersionSource::Action,
-            "kixdns-enhanced-action-30235703570-linux-x86_64"
-        ),
+    let parse = |name| parse_artifact_reference("kixdns-enhanced-linux-x86_64", name);
+    assert_eq!(
+        parse("kixdns-enhanced-action-30235703570-linux-x86_64"),
         Some(ParsedArtifactReference {
-            reference: TrackReference::Action(30_235_703_570),
+            official_run_id: 30_235_703_570,
             patchset: None,
         })
-    ));
-    assert!(matches!(
-        parse_artifact_reference(
-            "kixdns-enhanced-linux-x86_64",
-            VersionSource::Release,
-            "kixdns-enhanced-release-v0.1.1-linux-x86_64"
-        ),
+    );
+    assert_eq!(
+        parse("kixdns-enhanced-action-30235703570-p5-44e7e6b02316-linux-x86_64"),
         Some(ParsedArtifactReference {
-            reference: TrackReference::Release(tag),
-            patchset: None,
-        }) if tag == "v0.1.1"
-    ));
-    assert!(matches!(
-        parse_artifact_reference(
-            "kixdns-enhanced-linux-x86_64",
-            VersionSource::Action,
-            "kixdns-enhanced-action-30235703570-p5-44e7e6b02316-linux-x86_64"
-        ),
-        Some(ParsedArtifactReference {
-            reference: TrackReference::Action(30_235_703_570),
+            official_run_id: 30_235_703_570,
             patchset: Some(5),
         })
-    ));
-    assert!(
-        parse_artifact_reference(
-            "kixdns-enhanced-linux-x86_64",
-            VersionSource::Release,
-            "kixdns-enhanced-release-../../bad-linux-x86_64"
-        )
-        .is_none()
     );
+    // Release 轨道已停止构建，它留下的包不再进入候选。
+    // The Release track no longer builds; packages it left behind are not candidates.
+    assert_eq!(parse("kixdns-enhanced-release-v0.1.1-linux-x86_64"), None);
+    assert_eq!(parse("kixdns-enhanced-action-../../bad-linux-x86_64"), None);
+    assert_eq!(parse("kixdns-enhanced-action-0042-linux-x86_64"), None);
 }
 
 #[test]
@@ -396,8 +373,7 @@ fn serializes_remote_artifact_identity() {
         source: VersionSource::Action,
         source_id: 42,
         commit: "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25".to_owned(),
-        run_id: Some(42),
-        release_tag: None,
+        run_id: 42,
         patchset: None,
         created_at: "2026-07-28T00:00:00Z".to_owned(),
         source_url: "https://github.com/olicesx/kixdns/actions/runs/42".to_owned(),
@@ -405,8 +381,6 @@ fn serializes_remote_artifact_identity() {
         artifact: "kixdns-enhanced-action-42-linux-x86_64".to_owned(),
         artifact_digest: artifact_digest.clone(),
         download_url: "https://nightly.link/example/actions/runs/42/artifact.zip".to_owned(),
-        installed: false,
-        active: false,
     };
 
     let serialized = serde_json::to_value(remote).unwrap();
@@ -482,8 +456,7 @@ fn legacy_kixdns_identity_is_not_treated_as_exact_build() {
         source: VersionSource::Action,
         source_id: 42,
         commit: TEST_BUILD_COMMIT.to_owned(),
-        run_id: Some(7),
-        release_tag: None,
+        run_id: 7,
         patchset: Some(5),
         created_at: "2026-07-30T00:00:00Z".to_owned(),
         source_url: "https://github.com/olicesx/kixdns/actions/runs/7".to_owned(),
@@ -491,8 +464,6 @@ fn legacy_kixdns_identity_is_not_treated_as_exact_build() {
         artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
         artifact_digest: format!("sha256:{}", "a".repeat(64)),
         download_url: "https://nightly.link/example.zip".to_owned(),
-        installed: false,
-        active: false,
     };
     let legacy = VersionKey::new(VersionSource::Action, TEST_BUILD_COMMIT).unwrap();
     assert!(to_kixdns_update_notice(&remote, Some(&legacy), None, None).available);
@@ -503,18 +474,12 @@ fn legacy_kixdns_identity_is_not_treated_as_exact_build() {
 
 const REBUILD_COMMIT: &str = "9c1e5b7d3f2a4c6e8b0d1f3a5c7e9b2d4f6a8c0e";
 
-fn remote_build(run_id: Option<u64>, release_tag: Option<&str>, patchset: u32) -> RemoteVersion {
-    let source = if release_tag.is_some() {
-        VersionSource::Release
-    } else {
-        VersionSource::Action
-    };
+fn remote_build(run_id: u64, patchset: u32) -> RemoteVersion {
     RemoteVersion {
-        source,
+        source: VersionSource::Action,
         source_id: 1000 + u64::from(patchset),
         commit: REBUILD_COMMIT.to_owned(),
         run_id,
-        release_tag: release_tag.map(str::to_owned),
         patchset: Some(patchset),
         created_at: "2026-09-22T00:00:00Z".to_owned(),
         source_url: "https://github.com/olicesx/kixdns".to_owned(),
@@ -522,8 +487,6 @@ fn remote_build(run_id: Option<u64>, release_tag: Option<&str>, patchset: u32) -
         artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
         artifact_digest: format!("sha256:{}", "a".repeat(64)),
         download_url: "https://nightly.link/example.zip".to_owned(),
-        installed: false,
-        active: false,
     }
 }
 
@@ -568,36 +531,23 @@ fn catalogue_follows_upstream_order_not_rebuild_time() {
     // The weekly refresh rebuilds only versions about to expire. Their build is newer but
     // their upstream is older, so they must not move ahead.
     let resolved = |run_id: u64, build_run_id: u64| ResolvedVersion {
-        remote: remote_build(Some(run_id), None, 23),
+        remote: remote_build(run_id, 23),
         build_run_id,
     };
-    let mut versions = vec![resolved(90, 60), resolved(80, 40), resolved(100, 50)];
-    sort_newest_upstream_first(&mut versions);
-    let order = versions
-        .iter()
-        .map(|version| version.remote.run_id)
-        .collect::<Vec<_>>();
-    assert_eq!(order, [Some(100), Some(90), Some(80)]);
-}
+    let newest =
+        newest_upstream_build([resolved(90, 60), resolved(80, 70), resolved(100, 50)]).unwrap();
+    assert_eq!(
+        (newest.remote.run_id, newest.build_run_id),
+        (100, 50),
+        "a rebuild of an older upstream version must not win"
+    );
 
-#[test]
-fn release_catalogue_follows_version_numbers() {
-    let resolved = |tag: &str, build_run_id: u64| ResolvedVersion {
-        remote: remote_build(None, Some(tag), 24),
-        build_run_id,
-    };
-    let mut versions = vec![
-        resolved("v0.9.0", 5),
-        resolved("v0.1.1", 9),
-        resolved("v0.10.0", 5),
-        resolved("v0.2.0", 5),
-    ];
-    sort_newest_upstream_first(&mut versions);
-    let order = versions
-        .iter()
-        .map(|version| version.remote.release_tag.as_deref().unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(order, ["v0.10.0", "v0.9.0", "v0.2.0", "v0.1.1"]);
+    // 同一上游版本取最新的那次构建：它带着当前的补丁集和依赖修订。
+    // Of one upstream version the latest build wins: it carries the current patchset and
+    // dependency revision.
+    let newest = newest_upstream_build([resolved(100, 50), resolved(100, 80)]).unwrap();
+    assert_eq!(newest.build_run_id, 80);
+    assert!(newest_upstream_build([]).is_none());
 }
 
 #[test]
@@ -607,29 +557,24 @@ fn kixdns_notice_follows_upstream_versions() {
         to_kixdns_update_notice(&remote, Some(&active), Some(&current), None).available
     };
     assert!(
-        !notice(remote_build(Some(90), None, 22)),
+        !notice(remote_build(90, 22)),
         "a rebuild of the installed version is not an update"
     );
-    assert!(notice(remote_build(Some(100), None, 22)));
+    assert!(notice(remote_build(100, 22)));
     assert!(
-        !notice(remote_build(Some(80), None, 23)),
+        !notice(remote_build(80, 23)),
         "an older upstream run is never offered as an update"
     );
-    assert!(notice(remote_build(Some(90), None, 23)));
+    assert!(notice(remote_build(90, 23)));
 
+    // Release 轨道已停止构建：装着 Release 内核时，最新的 Action 内核就是它的更新。
+    // The Release track no longer builds: with a Release kernel installed, the newest
+    // Action kernel is its update.
     let (active, current) = installed_build(None, Some("v0.2.0"), 24);
-    let notice = |tag: &str| {
-        to_kixdns_update_notice(
-            &remote_build(None, Some(tag), 24),
-            Some(&active),
-            Some(&current),
-            None,
-        )
-        .available
-    };
-    assert!(notice("v0.10.0"));
-    assert!(!notice("v0.2.0"));
-    assert!(!notice("v0.1.1"));
+    let release =
+        to_kixdns_update_notice(&remote_build(90, 22), Some(&active), Some(&current), None);
+    assert!(release.available);
+    assert!(!release.security_update);
 }
 
 #[test]
@@ -783,52 +728,50 @@ fn preserves_v4_source_identity_when_adding_capabilities() {
 }
 
 #[test]
-fn deletes_only_verified_local_version_directories() {
+fn prunes_everything_but_the_current_and_the_previous_kernel() {
     let directory = tempdir().unwrap();
-    let binary = test_elf();
-    let commit = "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25";
-    let key = VersionKey::tracked(VersionSource::Action, 42, commit).unwrap();
-    store_version(
-        directory.path(),
-        &test_manifest(42, commit, &binary),
-        &binary,
-    )
-    .unwrap();
+    let keys = (40..44)
+        .map(|source_id| store_stored_build(directory.path(), source_id, 10))
+        .collect::<Vec<_>>();
 
-    let deleted = delete_stored_version(directory.path(), &key).unwrap();
+    prune_versions(directory.path(), &keys[3], Some(&keys[1])).unwrap();
 
-    assert_eq!(deleted.source_id, Some(42));
-    assert!(!deleted.active);
-    assert!(!directory.path().join(key.directory_name()).exists());
+    let kept = keys
+        .iter()
+        .map(|key| directory.path().join(key.directory_name()).is_dir())
+        .collect::<Vec<_>>();
+    assert_eq!(kept, [false, true, false, true]);
 
-    std::fs::write(
-        directory.path().join(key.directory_name()),
-        b"not-a-directory",
-    )
-    .unwrap();
-    assert!(matches!(
-        delete_stored_version(directory.path(), &key),
-        Err(UpdateError::Verification(_))
-    ));
-    assert!(directory.path().join(key.directory_name()).is_file());
+    prune_versions(directory.path(), &keys[3], None).unwrap();
+    assert!(!directory.path().join(keys[1].directory_name()).exists());
+    assert!(directory.path().join(keys[3].directory_name()).is_dir());
 }
 
 #[cfg(unix)]
 #[test]
-fn rejects_symlinked_version_directory_when_deleting() {
+fn pruning_leaves_a_symlinked_version_directory_and_its_target_alone() {
     use std::os::unix::fs::symlink;
 
     let directory = tempdir().unwrap();
     let outside = tempdir().unwrap();
+    let active = store_stored_build(directory.path(), 43, 10);
     let commit = "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25";
-    let key = VersionKey::tracked(VersionSource::Action, 42, commit).unwrap();
-    symlink(outside.path(), directory.path().join(key.directory_name())).unwrap();
+    let linked = VersionKey::tracked(VersionSource::Action, 42, commit).unwrap();
+    symlink(
+        outside.path(),
+        directory.path().join(linked.directory_name()),
+    )
+    .unwrap();
 
-    assert!(matches!(
-        delete_stored_version(directory.path(), &key),
-        Err(UpdateError::Verification(_))
-    ));
+    prune_versions(directory.path(), &active, None).unwrap();
+
     assert!(outside.path().is_dir());
+    assert!(
+        std::fs::symlink_metadata(directory.path().join(linked.directory_name()))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
 }
 
 #[tokio::test]
@@ -841,7 +784,6 @@ async fn treats_empty_panel_release_as_unset() {
         UpdateSettings {
             repository: "tuoro/kixdns-panel".to_owned(),
             workflow: "build-kixdns.yml".to_owned(),
-            release_workflow: "build-kixdns-release.yml".to_owned(),
             branch: "main".to_owned(),
             artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
             installed_commit: None,
@@ -857,52 +799,6 @@ async fn treats_empty_panel_release_as_unset() {
     .unwrap();
 
     assert!(manager.panel_release.is_none());
-}
-
-#[tokio::test]
-async fn refuses_to_delete_the_active_version() {
-    let directory = tempdir().unwrap();
-    let database = Database::open(directory.path().join("panel.db"))
-        .await
-        .unwrap();
-    let binary_path = directory.path().join("bin/kixdns");
-    let versions_path = directory.path().join("versions");
-    let manager = UpdateManager::new(
-        database.clone(),
-        UpdateSettings {
-            repository: "tuoro/kixdns-panel".to_owned(),
-            workflow: "build-kixdns.yml".to_owned(),
-            release_workflow: "build-kixdns-release.yml".to_owned(),
-            branch: "main".to_owned(),
-            artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
-            installed_commit: None,
-            installed_source_id: None,
-            panel_installed_commit: None,
-            panel_installed_release: None,
-            binary_path: binary_path.clone(),
-            versions_path: versions_path.clone(),
-            bundled_metadata: directory.path().join("bundle"),
-            github_token_path: directory.path().join("github-token"),
-        },
-    )
-    .unwrap();
-    let binary = test_elf();
-    let commit = "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25";
-    let key = VersionKey::tracked(VersionSource::Action, 42, commit).unwrap();
-    std::fs::write(binary_path, &binary).unwrap();
-    store_version(&versions_path, &test_manifest(42, commit, &binary), &binary).unwrap();
-    database
-        .set_setting(super::ACTIVE_VERSION_KEY, key.encoded(), 42)
-        .await
-        .unwrap();
-
-    let error = manager
-        .delete_version(VersionSource::Action, "42")
-        .await
-        .unwrap_err();
-
-    assert!(matches!(error, UpdateError::Invalid(_)));
-    assert!(versions_path.join(key.directory_name()).is_dir());
 }
 
 #[test]
@@ -1025,30 +921,26 @@ fn keeps_tracked_builds_with_the_same_commit_separate() {
 }
 
 #[test]
-fn verifies_package_identity_against_selected_track() {
+fn verifies_package_identity_against_the_artifact_name() {
     let identity = serde_json::from_str::<BuildIdentity>(TEST_IDENTITY).unwrap();
-    let remote = RemoteVersion {
-        source: VersionSource::Action,
-        source_id: 99,
-        commit: TEST_BUILD_COMMIT.to_owned(),
-        run_id: Some(30_235_703_570),
-        release_tag: None,
-        patchset: Some(5),
-        created_at: "2026-07-28T00:00:00Z".to_owned(),
-        source_url: "https://github.com/olicesx/kixdns/actions/runs/30235703570".to_owned(),
-        build_url: "https://github.com/tuoro/kixdns-panel/actions/runs/99".to_owned(),
-        artifact: "kixdns-enhanced-action-30235703570-linux-x86_64".to_owned(),
-        artifact_digest: format!("sha256:{}", "a".repeat(64)),
-        download_url: "https://nightly.link/example/artifact.zip".to_owned(),
-        installed: false,
-        active: false,
-    };
+    let remote = remote_build(30_235_703_570, 5);
     assert!(validate_remote_build_identity(&remote, &identity).is_ok());
-    let mut wrong_track = remote;
-    wrong_track.source = VersionSource::Release;
-    wrong_track.run_id = None;
-    wrong_track.release_tag = Some("v0.1.1".to_owned());
-    assert!(validate_remote_build_identity(&wrong_track, &identity).is_err());
+    assert!(validate_remote_build_identity(&remote_build(1, 5), &identity).is_err());
+    assert!(validate_remote_build_identity(&remote_build(30_235_703_570, 6), &identity).is_err());
+
+    // Release 轨道已停止构建，包里的 Release 身份一律不认。
+    // The Release track no longer builds, so a Release identity in a package is refused.
+    let release = serde_json::json!({
+        "repository": "olicesx/kixdns",
+        "source": "release",
+        "commit": "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25",
+        "release_id": 7,
+        "release_tag": "v0.2.0",
+        "patchset": 5,
+        "control_protocol": 1,
+    });
+    let release = serde_json::from_value::<BuildIdentity>(release).unwrap();
+    assert!(super::validation::validate_build_identity(&release).is_err());
 }
 
 #[test]
@@ -1201,21 +1093,52 @@ pub(crate) struct SwitchFixture {
     pub(crate) manager: UpdateManager,
     pub(crate) database: Database,
     pub(crate) binary_path: std::path::PathBuf,
+    versions_path: std::path::PathBuf,
     pub(crate) current: Vec<u8>,
     pub(crate) target: Vec<u8>,
+    current_key: VersionKey,
     target_key: VersionKey,
 }
 
 impl SwitchFixture {
-    /// 切换成功后数据库里应记录的活动版本。
-    /// The active version the database should record after a successful switch.
+    /// 回退成功后数据库里应记录的活动版本。
+    /// The active version the database should record after a successful rollback.
     pub(crate) fn target_setting(&self) -> String {
         self.target_key.encoded()
     }
 }
 
-/// 当前运行 Artifact 42，本地另存了一个可切换的 Artifact 43。
-/// Artifact 42 is active and Artifact 43 is stored locally, ready to switch to.
+/// 远端最新构建正是本机已存的 Artifact 43：更新时不用下载。
+/// The newest remote build is the Artifact 43 already stored, so an update downloads nothing.
+fn target_build() -> ResolvedVersion {
+    let mut remote = remote_build(43, 5);
+    remote.source_id = 43;
+    remote.commit = TEST_BUILD_COMMIT.to_owned();
+    ResolvedVersion {
+        remote,
+        build_run_id: 99,
+    }
+}
+
+/// 存一个可切换的版本；二进制按 Artifact ID 区分，`installed_at` 决定装得早晚。
+/// Stores a version ready to switch to; binaries differ by artifact id, and
+/// `installed_at` says how recently it was installed.
+fn store_stored_build(
+    versions_path: &std::path::Path,
+    source_id: u64,
+    installed_at: i64,
+) -> VersionKey {
+    let mut binary = test_elf();
+    binary[31] = u8::try_from(source_id).unwrap();
+    let mut manifest = test_manifest(source_id, TEST_BUILD_COMMIT, &binary);
+    manifest.installed_at = installed_at;
+    store_version(versions_path, &manifest, &binary).unwrap();
+    VersionKey::tracked(VersionSource::Action, source_id, TEST_BUILD_COMMIT).unwrap()
+}
+
+/// 当前运行 Artifact 42，上一个内核 Artifact 43 留在本机，随时可以回退过去。
+/// Artifact 42 is active and the previous kernel, Artifact 43, is kept on this host, ready
+/// to roll back to.
 pub(crate) async fn switch_fixture() -> SwitchFixture {
     let directory = tempdir().unwrap();
     let database = Database::open(directory.path().join("panel.db"))
@@ -1228,7 +1151,6 @@ pub(crate) async fn switch_fixture() -> SwitchFixture {
         UpdateSettings {
             repository: "tuoro/kixdns-panel".to_owned(),
             workflow: "build-kixdns.yml".to_owned(),
-            release_workflow: "build-kixdns-release.yml".to_owned(),
             branch: "main".to_owned(),
             artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
             installed_commit: None,
@@ -1265,13 +1187,19 @@ pub(crate) async fn switch_fixture() -> SwitchFixture {
         .set_setting(super::ACTIVE_VERSION_KEY, current_key.encoded(), 42)
         .await
         .unwrap();
+    database
+        .set_setting(super::PREVIOUS_VERSION_KEY, target_key.encoded(), 42)
+        .await
+        .unwrap();
     SwitchFixture {
         _directory: directory,
         manager,
         database,
         binary_path,
+        versions_path,
         current,
         target,
+        current_key,
         target_key,
     }
 }
@@ -1283,6 +1211,17 @@ pub(crate) async fn active_setting(database: &Database) -> Option<String> {
         .unwrap()
 }
 
+async fn previous_setting(database: &Database) -> Option<String> {
+    database
+        .get_setting(super::PREVIOUS_VERSION_KEY)
+        .await
+        .unwrap()
+}
+
+fn empty_config() -> serde_json::Value {
+    serde_json::json!({"pipelines": []})
+}
+
 #[tokio::test]
 async fn switching_a_running_service_restarts_once_without_stop_or_start() {
     let fixture = switch_fixture().await;
@@ -1290,12 +1229,7 @@ async fn switching_a_running_service_restarts_once_without_stop_or_start() {
 
     fixture
         .manager
-        .activate_version(
-            VersionSource::Action,
-            "43",
-            &serde_json::json!({"pipelines": []}),
-            &host,
-        )
+        .rollback(&empty_config(), &host)
         .await
         .unwrap();
 
@@ -1316,12 +1250,7 @@ async fn switching_a_stopped_service_only_replaces_the_binary() {
 
     fixture
         .manager
-        .activate_version(
-            VersionSource::Action,
-            "43",
-            &serde_json::json!({"pipelines": []}),
-            &host,
-        )
+        .rollback(&empty_config(), &host)
         .await
         .unwrap();
 
@@ -1343,12 +1272,7 @@ async fn unhealthy_switch_restores_the_previous_binary_with_restart_only() {
 
     let error = fixture
         .manager
-        .activate_version(
-            VersionSource::Action,
-            "43",
-            &serde_json::json!({"pipelines": []}),
-            &host,
-        )
+        .rollback(&empty_config(), &host)
         .await
         .unwrap_err();
 
@@ -1358,9 +1282,250 @@ async fn unhealthy_switch_restores_the_previous_binary_with_restart_only() {
         std::fs::read(&fixture.binary_path).unwrap(),
         fixture.current
     );
-    assert_ne!(
+    assert_eq!(
         active_setting(&fixture.database).await,
+        Some(fixture.current_key.encoded())
+    );
+    // 没换成就不动回退目标。 / A switch that did not happen leaves the rollback target alone.
+    assert_eq!(
+        previous_setting(&fixture.database).await,
         Some(fixture.target_key.encoded())
+    );
+}
+
+#[tokio::test]
+async fn rolling_back_twice_returns_to_the_original_kernel() {
+    let fixture = switch_fixture().await;
+    let host = FakeHost::new(true);
+
+    let switched = fixture
+        .manager
+        .rollback(&empty_config(), &host)
+        .await
+        .unwrap();
+    assert_eq!(switched.source_id, Some(43));
+    assert!(switched.active);
+    assert_eq!(
+        previous_setting(&fixture.database).await,
+        Some(fixture.current_key.encoded())
+    );
+
+    let restored = fixture
+        .manager
+        .rollback(&empty_config(), &host)
+        .await
+        .unwrap();
+    assert_eq!(restored.source_id, Some(42));
+    assert_eq!(
+        std::fs::read(&fixture.binary_path).unwrap(),
+        fixture.current
+    );
+    assert_eq!(
+        previous_setting(&fixture.database).await,
+        Some(fixture.target_key.encoded())
+    );
+}
+
+#[tokio::test]
+async fn rollback_without_a_previous_kernel_is_a_conflict() {
+    let fixture = switch_fixture().await;
+    fixture
+        .database
+        .delete_setting(super::PREVIOUS_VERSION_KEY)
+        .await
+        .unwrap();
+    let host = FakeHost::new(true);
+
+    let error = fixture
+        .manager
+        .rollback(&empty_config(), &host)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, UpdateError::Conflict(_)), "{error}");
+    assert!(host.calls().is_empty());
+    assert_eq!(
+        std::fs::read(&fixture.binary_path).unwrap(),
+        fixture.current
+    );
+}
+
+#[tokio::test]
+async fn updating_keeps_the_replaced_kernel_as_the_only_other_version() {
+    let fixture = switch_fixture().await;
+    // 上一个原本是更早的 41；更新到 43 之后，上一个变成刚换下的 42，41 被清掉。
+    // The previous kernel was the older 41; after updating to 43 it becomes the 42 just
+    // replaced, and 41 is removed.
+    let older = store_stored_build(&fixture.versions_path, 41, 10);
+    fixture
+        .database
+        .set_setting(super::PREVIOUS_VERSION_KEY, older.encoded(), 42)
+        .await
+        .unwrap();
+    let host = FakeHost::new(true);
+
+    let installed = fixture
+        .manager
+        .update_locked(&target_build(), Some(43), &empty_config(), &host)
+        .await
+        .unwrap();
+
+    assert_eq!(installed.source_id, Some(43));
+    assert_eq!(std::fs::read(&fixture.binary_path).unwrap(), fixture.target);
+    assert_eq!(
+        previous_setting(&fixture.database).await,
+        Some(fixture.current_key.encoded())
+    );
+    assert!(!fixture.versions_path.join(older.directory_name()).exists());
+    assert!(
+        fixture
+            .versions_path
+            .join(fixture.current_key.directory_name())
+            .is_dir()
+    );
+}
+
+#[tokio::test]
+async fn update_refuses_a_build_other_than_the_one_the_page_showed() {
+    let fixture = switch_fixture().await;
+    let host = FakeHost::new(true);
+
+    let error = fixture
+        .manager
+        .update_locked(&target_build(), Some(44), &empty_config(), &host)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, UpdateError::Conflict(_)), "{error}");
+    assert!(host.calls().is_empty());
+    assert_eq!(
+        std::fs::read(&fixture.binary_path).unwrap(),
+        fixture.current
+    );
+}
+
+#[tokio::test]
+async fn start_up_keeps_the_current_kernel_and_one_previous() {
+    let fixture = switch_fixture().await;
+    // 旧面板留下的库存：没记过上一个，另有三个版本，装得最晚的是 41。
+    // Inventory left by an older panel: no previous recorded and three other versions,
+    // of which 41 was installed last.
+    fixture
+        .database
+        .delete_setting(super::PREVIOUS_VERSION_KEY)
+        .await
+        .unwrap();
+    let older = store_stored_build(&fixture.versions_path, 40, 1);
+    let newest = store_stored_build(&fixture.versions_path, 41, 1_000);
+
+    fixture
+        .manager
+        .initialize_installed_version()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        previous_setting(&fixture.database).await,
+        Some(newest.encoded())
+    );
+    let present = [&older, &newest, &fixture.target_key, &fixture.current_key]
+        .map(|key| fixture.versions_path.join(key.directory_name()).is_dir());
+    assert_eq!(present, [false, true, false, true]);
+
+    // 记过的上一个还在，就照记录留，不按装的早晚另挑。
+    // A recorded previous kernel that is still present is kept as recorded.
+    let recorded = store_stored_build(&fixture.versions_path, 39, 1);
+    fixture
+        .database
+        .set_setting(super::PREVIOUS_VERSION_KEY, recorded.encoded(), 42)
+        .await
+        .unwrap();
+    fixture
+        .manager
+        .initialize_installed_version()
+        .await
+        .unwrap();
+    assert_eq!(
+        previous_setting(&fixture.database).await,
+        Some(recorded.encoded())
+    );
+    assert!(!fixture.versions_path.join(newest.directory_name()).exists());
+}
+
+fn release_manifest(binary: &[u8]) -> VersionManifest {
+    let mut manifest = test_manifest(100, TEST_BUILD_COMMIT, binary);
+    manifest.source = Some(VersionSource::Release);
+    manifest.run_id = None;
+    manifest.release_tag = Some("v0.2.0".to_owned());
+    manifest.artifact = "kixdns-enhanced-release-v0.2.0-linux-x86_64".to_owned();
+    manifest
+}
+
+#[tokio::test]
+async fn a_release_kernel_is_replaced_once_and_left_alone_after_a_rollback() {
+    let fixture = switch_fixture().await;
+    let mut release_binary = test_elf();
+    release_binary[31] = 9;
+    store_version(
+        &fixture.versions_path,
+        &release_manifest(&release_binary),
+        &release_binary,
+    )
+    .unwrap();
+    let release_key = VersionKey::tracked(VersionSource::Release, 100, TEST_BUILD_COMMIT).unwrap();
+    std::fs::write(&fixture.binary_path, &release_binary).unwrap();
+    fixture
+        .database
+        .set_setting(super::ACTIVE_VERSION_KEY, release_key.encoded(), 42)
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture
+            .manager
+            .release_kernel_to_replace()
+            .await
+            .unwrap()
+            .and_then(|version| version.release_tag),
+        Some("v0.2.0".to_owned())
+    );
+
+    let host = FakeHost::new(true);
+    fixture
+        .manager
+        .update_locked(&target_build(), None, &empty_config(), &host)
+        .await
+        .unwrap();
+    assert!(
+        fixture
+            .manager
+            .release_kernel_to_replace()
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        previous_setting(&fixture.database).await,
+        Some(release_key.encoded())
+    );
+
+    // 用户自己回退到 Release 内核：面板重启时不再替换。
+    // The user rolls back to the Release kernel: a panel restart does not replace it again.
+    fixture
+        .manager
+        .rollback(&empty_config(), &host)
+        .await
+        .unwrap();
+    assert_eq!(
+        active_setting(&fixture.database).await,
+        Some(release_key.encoded())
+    );
+    assert!(
+        fixture
+            .manager
+            .release_kernel_to_replace()
+            .await
+            .unwrap()
+            .is_none()
     );
 }
 
@@ -1368,7 +1533,7 @@ async fn unhealthy_switch_restores_the_previous_binary_with_restart_only() {
 fn kixdns_notice_offers_dependency_security_upgrades() {
     let (active, current) = installed_build(Some(90), None, 22);
     let rebuilt = || {
-        let mut remote = remote_build(Some(90), None, 22);
+        let mut remote = remote_build(90, 22);
         remote.artifact = "kixdns-enhanced-action-90-p22-0123456789ab-linux-x86_64".to_owned();
         remote
     };
@@ -1398,7 +1563,7 @@ fn kixdns_notice_offers_dependency_security_upgrades() {
     same_package.artifact.clone_from(&current.artifact);
     assert!(!notice(&same_package, &current, Some(1)).available);
 
-    let newer = notice(&remote_build(Some(100), None, 22), &current, Some(3));
+    let newer = notice(&remote_build(100, 22), &current, Some(3));
     assert!(newer.available);
     assert!(
         !newer.security_update,
@@ -1426,7 +1591,7 @@ fn lock_file(identity: &serde_json::Value) -> RepositoryFile {
 
 #[test]
 fn reads_the_dependency_revision_a_build_used() {
-    let remote = remote_build(Some(30_235_703_570), None, 5);
+    let remote = remote_build(30_235_703_570, 5);
     let mut identity: serde_json::Value = serde_json::from_str(TEST_IDENTITY).unwrap();
     assert_eq!(
         build_lock_revision(&lock_file(&identity), &remote).unwrap(),
@@ -1439,9 +1604,9 @@ fn reads_the_dependency_revision_a_build_used() {
         Some(2)
     );
 
-    let other_run = remote_build(Some(1), None, 5);
+    let other_run = remote_build(1, 5);
     assert!(build_lock_revision(&lock_file(&identity), &other_run).is_err());
-    let other_patchset = remote_build(Some(30_235_703_570), None, 6);
+    let other_patchset = remote_build(30_235_703_570, 6);
     assert!(build_lock_revision(&lock_file(&identity), &other_patchset).is_err());
 
     identity["dependency_revision"] = 0.into();
@@ -1454,7 +1619,7 @@ fn reads_the_dependency_revision_a_build_used() {
 
 #[test]
 fn downloads_from_github_first_only_when_a_token_is_configured() {
-    let remote = remote_build(Some(90), None, 22);
+    let remote = remote_build(90, 22);
     let anonymous = super::artifact_sources("tuoro/kixdns-panel", &remote, None);
     assert_eq!(anonymous.len(), 1);
     assert_eq!(anonymous[0].url, remote.download_url);

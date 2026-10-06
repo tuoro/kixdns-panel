@@ -42,7 +42,6 @@ async fn test_app() -> (TempDir, Router) {
         diagnostic_server: "127.0.0.1:53".parse().unwrap(),
         update_repository: "tuoro/kixdns-panel".to_owned(),
         update_workflow: "build-kixdns.yml".to_owned(),
-        update_release_workflow: "build-kixdns-release.yml".to_owned(),
         update_branch: "main".to_owned(),
         update_artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
         installed_commit: None,
@@ -576,7 +575,6 @@ async fn test_state(directory: &TempDir) -> super::AppState {
         crate::updates::UpdateSettings {
             repository: "tuoro/kixdns-panel".to_owned(),
             workflow: "build-kixdns.yml".to_owned(),
-            release_workflow: "build-kixdns-release.yml".to_owned(),
             branch: "main".to_owned(),
             artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
             installed_commit: None,
@@ -1170,29 +1168,43 @@ async fn config_save_while_kixdns_is_stopped_creates_pending_version() {
 }
 
 #[tokio::test]
-async fn version_delete_requires_authentication_and_csrf() {
+async fn kernel_switches_require_authentication_and_csrf() {
     let context = authenticated_app().await;
-    let endpoint = "/api/v1/kixdns/versions/action/42/delete";
+    for (endpoint, body) in [
+        ("/api/v1/kixdns/kernel/update", r#"{"source_id":42}"#),
+        ("/api/v1/kixdns/kernel/rollback", ""),
+    ] {
+        let unauthorized = context
+            .app
+            .clone()
+            .oneshot(
+                Request::post(endpoint)
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            unauthorized.status(),
+            StatusCode::UNAUTHORIZED,
+            "{endpoint}"
+        );
 
-    let unauthorized = context
-        .app
-        .clone()
-        .oneshot(Request::post(endpoint).body(Body::empty()).unwrap())
-        .await
-        .unwrap();
-    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
-
-    let forbidden = context
-        .app
-        .oneshot(
-            Request::post(endpoint)
-                .header(COOKIE, context.cookies)
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+        let forbidden = context
+            .app
+            .clone()
+            .oneshot(
+                Request::post(endpoint)
+                    .header(COOKIE, context.cookies.clone())
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(forbidden.status(), StatusCode::FORBIDDEN, "{endpoint}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1397,7 +1409,6 @@ impl crate::updates::ServiceHost for GatedHost {
 
 #[tokio::test]
 async fn a_dropped_request_does_not_cancel_a_version_switch() {
-    use crate::updates::VersionSource;
     use crate::updates::tests::{active_setting, switch_fixture};
 
     let fixture = switch_fixture().await;
@@ -1412,12 +1423,7 @@ async fn a_dropped_request_does_not_cancel_a_version_switch() {
     // The outer task stands in for the handler hyper drives for the request.
     let request = tokio::spawn(super::updates::run_detached(async move {
         manager
-            .activate_version(
-                VersionSource::Action,
-                "43",
-                &serde_json::json!({"pipelines": []}),
-                &*worker_host,
-            )
+            .rollback(&serde_json::json!({"pipelines": []}), &*worker_host)
             .await
             .map_err(|error| crate::error::AppError::Internal(error.into()))
     }));

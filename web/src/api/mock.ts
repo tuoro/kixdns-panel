@@ -17,12 +17,11 @@ import type {
   GithubTokenStatus,
   LogsResponse,
   Overview,
-  KixdnsVersionCatalog,
-  KixdnsVersionSource,
+  InstalledKixdnsVersion,
+  KixdnsKernel,
   RemoteKixdnsVersion,
   RequestTrend,
   ServiceStatus,
-  UpdateInfo,
   UpdateNotifications,
   PanelUpdateStartResponse,
   PanelUpdateStatus,
@@ -36,7 +35,7 @@ let demoLogArrivals = 0
 const auditEvents = [
   { id: 18, actor: 'admin', action: 'config.save', detail: '保存配置版本 #18', created_at: now - 430 },
   { id: 17, actor: 'admin', action: 'config.geo_data.sync', detail: '同步 Geo 数据：MMDB 1，GeoIP 0，GeoSite 1 个', created_at: now - 7200 },
-  { id: 16, actor: 'admin', action: 'kixdns.version.activate', detail: '切换增强构建 45b9a1c0c7b5', created_at: now - 86400 },
+  { id: 16, actor: 'admin', action: 'kixdns.kernel.update', detail: '内核更新到 Run #30231271280', created_at: now - 86400 },
   { id: 15, actor: 'admin', action: 'service.restart', detail: '服务状态：active/running', created_at: now - 86520 },
   { id: 14, actor: 'admin', action: 'diagnostic.dns', detail: '执行 A 查询', created_at: now - 172800 },
   { id: 13, actor: 'admin', action: 'auth.login', detail: '登录成功', created_at: now - 173100 },
@@ -299,7 +298,6 @@ function removeConfigVersions(ids: number[], unavailable: boolean): void {
 }
 
 let serviceRunning = true
-let updateAvailable = true
 // 在线更新失败只在置上这个标记时演示，和 kixdns:demo-empty-first-install 是同一套做法。
 // A failed online update is shown only under this flag, mirroring kixdns:demo-empty-first-install.
 let panelUpdateStatus: PanelUpdateStatus = typeof localStorage !== 'undefined'
@@ -317,23 +315,17 @@ let panelUpdateStatus: PanelUpdateStatus = typeof localStorage !== 'undefined'
       updated_at: 0,
     }
 let githubTokenConfigured = false
-const panelBuildCommit = '82c88791869153884f361b1ea3cf123b727fadee'
 const legacyBuildCommit = '05f51503219e77849517596b7392cff919437c8b'
 const actionBuildCommit = '681d813a73f4525dfe97bf3123894b8b714d35d9'
 const actionBuildRunId = 30565639501
 const legacyActionBuildRunId = 30376438766
-const releaseBuildRunId = 30568119141
 const actionUpstreamCommits: Record<number, string> = {
   30235703570: '374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25',
   30231271280: '647c5b1d2af6963176d7f8da6c3ed031e6b58497',
   30229870401: 'f59d6f800a20228235d37324cdd8f9517ca27855',
   30228238557: '58dec64326fda73daf8b21f97a42c97248e9b42a',
 }
-const releaseUpstreamCommit = '647c5b1d2af6963176d7f8da6c3ed031e6b58497'
-const binarySha256: Record<KixdnsVersionSource, string> = {
-  action: '8943ba8bd01409a89ef3279b6ed06364d6867512c75ad693f75e52428718c1c6',
-  release: '5588a87a7331fea0feb6eb86c5d79b56cb925d42c4ddfcfeed6e95e61ee4fc29',
-}
+const binarySha256 = '8943ba8bd01409a89ef3279b6ed06364d6867512c75ad693f75e52428718c1c6'
 function actionVersion(
   sourceId: number,
   runId: number,
@@ -348,7 +340,6 @@ function actionVersion(
     source_id: sourceId,
     commit: buildCommit,
     run_id: runId,
-    release_tag: null,
     patchset,
     created_at: buildRunId === actionBuildRunId ? '2026-07-30T17:31:38Z' : '2026-07-28T16:03:48Z',
     source_url: `https://github.com/olicesx/kixdns/actions/runs/${runId}`,
@@ -356,8 +347,6 @@ function actionVersion(
     artifact: `kixdns-enhanced-action-${runId}-p${patchset}-${fingerprint}-linux-x86_64`,
     artifact_digest: digest,
     download_url: `https://nightly.link/tuoro/kixdns-panel/actions/runs/${buildRunId}/kixdns-enhanced-action-${runId}-p${patchset}-${fingerprint}-linux-x86_64.zip`,
-    installed: false,
-    active: false,
   }
 }
 
@@ -376,24 +365,6 @@ const actionVersions: RemoteKixdnsVersion[] = [
   actionVersion(8695686119, 30228238557, '584dd80d891b', 'sha256:a33ebe3cd7cdd175221ac751af082d434a848d3548a9ac4bb6eccfe56cc5080b'),
 ]
 
-const releaseVersions: RemoteKixdnsVersion[] = [
-  {
-    source: 'release',
-    source_id: 8769934664,
-    commit: panelBuildCommit,
-    run_id: null,
-    release_tag: 'v0.1.1',
-    patchset: 8,
-    created_at: '2026-07-30T18:05:21Z',
-    source_url: 'https://github.com/olicesx/kixdns/releases/tag/v0.1.1',
-    build_url: `https://github.com/tuoro/kixdns-panel/actions/runs/${releaseBuildRunId}`,
-    artifact: 'kixdns-enhanced-release-v0.1.1-p8-1598ba62c01f-linux-x86_64',
-    artifact_digest: 'sha256:135efadc330313f185a6b33ef53523e888b887ff0a5c2532b3e368d0bf6159fe',
-    download_url: `https://nightly.link/tuoro/kixdns-panel/actions/runs/${releaseBuildRunId}/kixdns-enhanced-release-v0.1.1-p8-1598ba62c01f-linux-x86_64.zip`,
-    installed: false,
-    active: false,
-  },
-]
 // 能力表要覆盖到「装着的」那个版本：面板是按当前运行版本的能力来开关功能的，
 // 只给未安装的最新构建登记能力，演示里的功能门控就等于没有依据。
 // 最新构建比在装的多一项，更新之后才拿得到——这也让「有更新」这件事有意义。
@@ -408,69 +379,60 @@ const configCapabilitiesByArtifact = new Map<string, string[]>([
   [actionVersions[0].artifact, ['config_query_stats_v1', 'config_static_cname_response_v1']],
   [actionVersions[1].artifact, ['config_query_stats_v1']],
   [actionVersions[2].artifact, ['config_query_stats_v1']],
-  [releaseVersions[0].artifact, ['config_query_stats_v1']],
 ])
 
-const demoRemoteVersions: Record<KixdnsVersionSource, RemoteKixdnsVersion[]> = {
-  action: actionVersions,
-  release: releaseVersions,
-}
-const kixdnsVersionKey = (version: Pick<RemoteKixdnsVersion, 'source' | 'source_id' | 'commit'>): string => `${version.source}:${version.source_id}:${version.commit}`
-// 演示状态要自洽：装着的是次新那个构建，最新那个还没装，所以「有更新」成立，
-// 系统页的「从哪到哪」两端才会是不同的值。
-// 原来这两条用的是同一个键，后一条把前一条覆盖掉，结果最新构建既是已安装又是
-// 「可更新到」的目标，页面上就出现了 Run #X → Run #X。
-//
-// The demo state has to be self-consistent: the second-newest build is
-// installed and the newest is not, so "update available" holds and the system
-// page's from → to has two different ends. Both entries used to share one key,
-// the second overwriting the first, which left the newest build simultaneously
-// installed and the target to update to — rendering as Run #X → Run #X.
-let activeKixdnsVersion = kixdnsVersionKey(actionVersions[1])
-const installedKixdnsVersions = new Map<string, RemoteKixdnsVersion>([
-  [activeKixdnsVersion, actionVersions[1]],
-  [kixdnsVersionKey(actionVersions[2]), actionVersions[2]],
-])
+// 演示状态要自洽：在用的是次新的构建，最新的还没装，所以「有更新」成立，系统页
+// 「从哪到哪」两端是不同的值；本机还留着更早的一个，回退才有去处。
+// The demo state has to be self-consistent: the second-newest build is in use and
+// the newest is not installed, so "update available" holds and the system page's
+// from → to has two different ends; an older build is kept on the host, so a
+// rollback has somewhere to go.
+const latestKixdnsVersion = actionVersions[0]
+let activeKixdnsVersion = actionVersions[1]
+let previousKixdnsVersion: RemoteKixdnsVersion | null = actionVersions[2]
 
-function demoVersionCatalog(source: KixdnsVersionSource): KixdnsVersionCatalog {
-  const remoteVersions = demoRemoteVersions[source]
-  const activeRemote = installedKixdnsVersions.get(activeKixdnsVersion)
+function installedKixdnsVersion(remote: RemoteKixdnsVersion, active: boolean, installedAt: number): InstalledKixdnsVersion {
   return {
-    source,
-    active_source: activeRemote?.source ?? null,
-    active_commit: activeRemote?.commit ?? null,
+    source: remote.source,
+    source_id: remote.source_id,
+    commit: remote.commit,
+    run_id: remote.run_id,
+    release_tag: null,
+    created_at: remote.created_at,
+    source_url: remote.source_url,
+    build_url: remote.build_url,
+    artifact: remote.artifact,
+    artifact_digest: remote.artifact_digest,
+    upstream_repository: 'olicesx/kixdns',
+    upstream_commit: actionUpstreamCommits[remote.run_id] ?? null,
+    patchset: remote.patchset,
+    dependency_revision: null,
+    control_protocol: 1,
+    config_capabilities: [...(configCapabilitiesByArtifact.get(remote.artifact) ?? [])],
+    binary_sha256: binarySha256,
+    installed_at: installedAt,
+    active,
+  }
+}
+
+// 内核检查失败只在置上这个标记时演示，和 kixdns:demo-empty-first-install 是同一套做法：
+// 匿名配额用完时读不到最新内核，面板的更新照样能查到。
+// A failed kernel check is shown only under this flag, mirroring kixdns:demo-empty-first-install:
+// with the anonymous quota spent the newest kernel cannot be read, while the panel update still can.
+const KERNEL_CHECK_ERROR = 'GitHub 匿名 API 配额已用尽，请在系统页配置 GitHub Token'
+
+function kernelCheckFails(): boolean {
+  return typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-kernel-check-failed') === 'true'
+}
+
+function demoKernel(): KixdnsKernel {
+  const failed = kernelCheckFails()
+  return {
     binary_present: true,
-    remote_error: null,
-    remote_versions: remoteVersions.map((version) => ({
-      ...version,
-      installed: installedKixdnsVersions.has(kixdnsVersionKey(version)),
-      active: kixdnsVersionKey(version) === activeKixdnsVersion,
-    })),
-    installed_versions: [...installedKixdnsVersions.values()].map((remote, index) => {
-      return {
-        source: remote.source,
-        source_id: remote.source_id,
-        commit: remote.commit,
-        run_id: remote.run_id,
-        release_tag: remote.release_tag,
-        created_at: remote.created_at,
-        source_url: remote.source_url,
-        build_url: remote.build_url,
-        artifact: remote.artifact,
-        artifact_digest: remote.artifact_digest,
-        upstream_repository: 'olicesx/kixdns',
-        upstream_commit: remote.source === 'release'
-          ? releaseUpstreamCommit
-          : actionUpstreamCommits[remote.run_id ?? 0] ?? null,
-        patchset: remote.patchset,
-        dependency_revision: null,
-        control_protocol: 1,
-        config_capabilities: [...(configCapabilitiesByArtifact.get(remote.artifact) ?? [])],
-        binary_sha256: binarySha256[remote.source],
-        installed_at: now - index * 86400,
-        active: kixdnsVersionKey(remote) === activeKixdnsVersion,
-      }
-    }),
+    active: installedKixdnsVersion(activeKixdnsVersion, true, now),
+    previous: previousKixdnsVersion ? installedKixdnsVersion(previousKixdnsVersion, false, now - 86_400) : null,
+    latest: failed ? null : latestKixdnsVersion,
+    remote_error: failed ? KERNEL_CHECK_ERROR : null,
   }
 }
 
@@ -519,44 +481,29 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
     serviceRunning = !path.endsWith('/stop')
     return { unit: 'kixdns.service', active_state: serviceRunning ? 'active' : 'inactive', sub_state: serviceRunning ? 'running' : 'dead', main_pid: serviceRunning ? 1428 : 0 } as T
   }
-  if (pathname === '/api/v1/kixdns/versions' && method === 'GET') {
-    const source = url.searchParams.get('source') === 'action' ? 'action' : 'release'
-    return demoVersionCatalog(source) as T
+  if (path === '/api/v1/kixdns/kernel' && method === 'GET') {
+    return demoKernel() as T
   }
-  if (pathname.startsWith('/api/v1/kixdns/versions/') && method === 'POST') {
-    const parts = pathname.split('/')
-    const source = parts[5] as KixdnsVersionSource
-    let remote: RemoteKixdnsVersion | undefined
-    if (pathname.endsWith('/install')) {
-      const sourceId = Number(parts[6])
-      remote = demoRemoteVersions[source]?.find((version) => version.source_id === sourceId)
-      if (!remote) throw new Error('演示版本来源不存在')
-      installedKixdnsVersions.set(kixdnsVersionKey(remote), remote)
-    } else if (pathname.endsWith('/activate')) {
-      const identity = parts[6]
-      remote = [...installedKixdnsVersions.values()].find((version) =>
-        version.source === source && (String(version.source_id) === identity || version.commit === identity),
-      )
-      if (!remote) throw new Error('演示版本尚未安装')
-    } else if (pathname.endsWith('/delete')) {
-      const identity = parts[6]
-      const entry = [...installedKixdnsVersions.entries()].find(([, version]) =>
-        version.source === source && (String(version.source_id) === identity || version.commit === identity),
-      )
-      if (!entry) throw new Error('演示版本尚未安装')
-      if (entry[0] === activeKixdnsVersion) throw new Error('当前运行版本不能删除，请先切换版本')
-      const version = demoVersionCatalog(source).installed_versions.find((item) =>
-        item.source === source && item.source_id === entry[1].source_id,
-      )
-      installedKixdnsVersions.delete(entry[0])
-      return version as T
+  // 与服务端一致：只装界面上看到的那个最新构建，换内核保持原来的启停状态。
+  // Matches the server: only the newest build the page showed is installed, and
+  // switching keeps the service's running state.
+  if (path === '/api/v1/kixdns/kernel/update' && method === 'POST') {
+    const body = JSON.parse(String(init?.body)) as { source_id: number }
+    if (body.source_id !== latestKixdnsVersion.source_id) {
+      throw new ApiError('上游又有了更新的构建，请刷新后再更新', 409, 'update_conflict')
     }
-    if (!remote) throw new Error('演示版本操作无效')
-    // 与服务端一致：切换版本保持原来的启停状态，停着的服务不会被启动。
-    // Matches the server: a switch keeps the running state, so a stopped service stays stopped.
-    activeKixdnsVersion = kixdnsVersionKey(remote)
-    const version = demoVersionCatalog(source).installed_versions.find((item) => item.source === source && item.commit === remote.commit)
-    return version as T
+    if (activeKixdnsVersion !== latestKixdnsVersion) {
+      previousKixdnsVersion = activeKixdnsVersion
+      activeKixdnsVersion = latestKixdnsVersion
+    }
+    return demoKernel() as T
+  }
+  if (path === '/api/v1/kixdns/kernel/rollback' && method === 'POST') {
+    if (!previousKixdnsVersion) throw new ApiError('本机没有上一个内核', 409, 'update_conflict')
+    const current = activeKixdnsVersion
+    activeKixdnsVersion = previousKixdnsVersion
+    previousKixdnsVersion = current
+    return demoKernel() as T
   }
   if (path === '/api/v1/config' && method === 'GET') return config as T
   if (path === '/api/v1/config/geo-data' && method === 'GET') return geoData as T
@@ -864,20 +811,20 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
     } as GithubTokenStatus as T
   }
   if (path === '/api/v1/updates/status') {
+    const kernelFailed = kernelCheckFails()
     return {
-      kixdns: {
-        available: true,
-        source: 'action',
-        current_commit: actionVersions[1].commit,
-        latest_commit: actionVersions[0].commit,
-        source_id: actionVersions[0].source_id,
-        run_id: actionVersions[0].run_id,
-        release_tag: null,
-        created_at: actionVersions[0].created_at,
-        build_url: actionVersions[0].build_url,
+      kixdns: kernelFailed ? null : {
+        available: activeKixdnsVersion !== latestKixdnsVersion,
+        current_commit: activeKixdnsVersion.commit,
+        latest_commit: latestKixdnsVersion.commit,
+        source_id: latestKixdnsVersion.source_id,
+        run_id: latestKixdnsVersion.run_id,
+        created_at: latestKixdnsVersion.created_at,
+        build_url: latestKixdnsVersion.build_url,
         security_update: false,
         dependency_revision: null,
       },
+      kixdns_error: kernelFailed ? KERNEL_CHECK_ERROR : null,
       panel: {
         available: true,
         current_version: '1.0.0',
@@ -890,7 +837,8 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
         artifact_digest: 'sha256:9280ba270e01d774e6944efdc435a685250e99f98c36a8cf406507a036c01ba4',
         download_url: 'https://github.com/tuoro/kixdns-panel/releases/download/v1.0.1/kixdns-panel-linux-x86_64.zip',
       },
-    } as UpdateNotifications as T
+      panel_error: null,
+    } satisfies UpdateNotifications as T
   }
   if (path === '/api/v1/panel-update' && method === 'GET') {
     return panelUpdateStatus as T
@@ -903,11 +851,6 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
       updated_at: now,
     }
     return { accepted: true, target_version: 'v1.0.1' } as PanelUpdateStartResponse as T
-  }
-  if (path === '/api/v1/updates/apply') updateAvailable = false
-  if (path === '/api/v1/updates' || path === '/api/v1/updates/apply') {
-    const latest = actionVersions[0]
-    return { installed_commit: updateAvailable ? installedKixdnsVersions.get(activeKixdnsVersion)?.commit ?? null : latest.commit, latest_commit: latest.commit, run_id: latest.source_id, created_at: latest.created_at, run_url: latest.source_url, artifact: latest.artifact, artifact_digest: latest.artifact_digest, download_url: latest.download_url, available: updateAvailable } as UpdateInfo as T
   }
   throw new Error(`未实现的演示接口：${method} ${path}`)
 }

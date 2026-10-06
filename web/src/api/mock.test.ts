@@ -10,7 +10,7 @@ import type {
   GeoDataCleanupResult,
   GeoDataManifest,
   GeoDataSchedule,
-  KixdnsVersionCatalog,
+  KixdnsKernel,
   PanelUpdateStartResponse,
   PanelUpdateStatus,
   QueryStatsSnapshot,
@@ -153,110 +153,75 @@ describe('演示 API', () => {
     expect(bulkDeleted.deleted_ids).toEqual([bulkRemovable?.id])
   })
 
-  it('安装并切换 KixDNS 构建', async () => {
-    const initial = await mockRequest<KixdnsVersionCatalog>('/api/v1/kixdns/versions?source=release')
-    const latest = initial.remote_versions[0]
-    expect(latest.active).toBe(false)
-    expect(latest.installed).toBe(false)
-    expect(latest.patchset).toBe(8)
-    expect(latest.build_url).toContain('tuoro/kixdns-panel/actions/runs/30568119141')
-    expect(latest.artifact).toBe('kixdns-enhanced-release-v0.1.1-p8-1598ba62c01f-linux-x86_64')
+  it('更新到最新内核后能回到上一个', async () => {
+    const initial = await mockRequest<KixdnsKernel>('/api/v1/kixdns/kernel')
+    const latest = initial.latest
+    expect(latest).not.toBeNull()
+    expect(initial.active?.source_id).not.toBe(latest?.source_id)
+    expect(initial.previous).not.toBeNull()
 
-    await mockRequest(`/api/v1/kixdns/versions/${latest.source}/${latest.source_id}/install`, { method: 'POST' })
-    const installed = await mockRequest<KixdnsVersionCatalog>('/api/v1/kixdns/versions?source=release')
-    expect(installed.active_commit).toBe(latest.commit)
-    expect(installed.active_source).toBe('release')
-    expect(installed.installed_versions.some((version) => version.source === 'release' && version.commit === latest.commit)).toBe(true)
-    expect(installed.installed_versions.find((version) => version.source_id === latest.source_id)?.config_capabilities).toContain('config_query_stats_v1')
+    // 只装界面上看到的那个构建：编号对不上说明上游又出了新的。
+    // Only the build the page showed is installed: a different id means upstream moved on.
+    await expect(mockRequest('/api/v1/kixdns/kernel/update', {
+      method: 'POST',
+      body: JSON.stringify({ source_id: initial.active?.source_id }),
+    })).rejects.toThrow('上游又有了更新的构建')
 
-    const previous = initial.active_commit as string
-    const previousSource = initial.active_source as string
-    await mockRequest(`/api/v1/kixdns/versions/${previousSource}/${previous}/activate`, { method: 'POST' })
-    const switched = await mockRequest<KixdnsVersionCatalog>('/api/v1/kixdns/versions?source=release')
-    expect(switched.active_commit).toBe(previous)
-    expect(switched.active_source).toBe(previousSource)
+    const updated = await mockRequest<KixdnsKernel>('/api/v1/kixdns/kernel/update', {
+      method: 'POST',
+      body: JSON.stringify({ source_id: latest?.source_id }),
+    })
+    expect(updated.active?.source_id).toBe(latest?.source_id)
+    expect(updated.active?.config_capabilities).toContain('config_static_cname_response_v1')
+    expect(updated.previous?.source_id).toBe(initial.active?.source_id)
+
+    const rolledBack = await mockRequest<KixdnsKernel>('/api/v1/kixdns/kernel/rollback', { method: 'POST' })
+    expect(rolledBack.active?.source_id).toBe(initial.active?.source_id)
+    expect(rolledBack.previous?.source_id).toBe(latest?.source_id)
   })
 
-  it('切换版本保持服务原来的启停状态', async () => {
-    const catalog = await mockRequest<KixdnsVersionCatalog>('/api/v1/kixdns/versions?source=action')
-    const target = catalog.installed_versions.find((version) => !version.active)
-    expect(target).toBeDefined()
-    const original = `/api/v1/kixdns/versions/${catalog.active_source}/${catalog.active_commit}/activate`
+  it('切换内核保持服务原来的启停状态', async () => {
     await mockRequest('/api/v1/service/stop', { method: 'POST' })
     try {
-      await mockRequest(`/api/v1/kixdns/versions/${target?.source}/${target?.source_id}/activate`, { method: 'POST' })
+      await mockRequest('/api/v1/kixdns/kernel/rollback', { method: 'POST' })
       const stopped = await mockRequest<ServiceStatus>('/api/v1/service')
       expect(stopped.active_state).toBe('inactive')
     } finally {
       await mockRequest('/api/v1/service/start', { method: 'POST' })
     }
-    await mockRequest(original, { method: 'POST' })
+    await mockRequest('/api/v1/kixdns/kernel/rollback', { method: 'POST' })
     const running = await mockRequest<ServiceStatus>('/api/v1/service')
     expect(running.active_state).toBe('active')
   })
 
   it('展示上游官方 Action 与增强构建的独立身份', async () => {
-    const catalog = await mockRequest<KixdnsVersionCatalog>('/api/v1/kixdns/versions?source=action')
-    expect(catalog.remote_versions).toHaveLength(4)
-    expect(catalog.remote_versions[0].run_id).toBe(30235703570)
-    expect(catalog.remote_versions[0].source_id).not.toBe(catalog.remote_versions[0].run_id)
-    expect(new Set(catalog.remote_versions.map((version) => version.source_id)).size).toBe(4)
-    expect(catalog.remote_versions[0].source_url).toContain('olicesx/kixdns/actions/runs/30235703570')
-    expect(catalog.remote_versions[0].build_url).toContain('tuoro/kixdns-panel/actions/runs/30565639501')
-    expect(catalog.remote_versions[0].artifact).toBe('kixdns-enhanced-action-30235703570-p8-46ac788fc96c-linux-x86_64')
-    // 最新那个构建按演示状态是「还没装」的，所以能力要从真正装着的版本上取。
-    expect(catalog.installed_versions).not.toHaveLength(0)
-    expect(catalog.installed_versions[0].config_capabilities).toContain('config_query_stats_v1')
-    expect(catalog.remote_versions[0].installed).toBe(false)
-    expect(catalog.remote_versions.every((version) => /^sha256:[a-f0-9]{64}$/.test(version.artifact_digest))).toBe(true)
-    expect(new Set(catalog.remote_versions.map((version) => version.run_id)).size).toBe(4)
-    expect(catalog.installed_versions.every((version) => version.commit !== version.upstream_commit)).toBe(true)
-    expect(catalog.installed_versions.some((version) => version.upstream_commit === '647c5b1d2af6963176d7f8da6c3ed031e6b58497')).toBe(true)
-  })
-
-  it('按来源与 Artifact 身份隔离本地库存', async () => {
-    const releases = await mockRequest<KixdnsVersionCatalog>('/api/v1/kixdns/versions?source=release')
-    const release = releases.remote_versions[0]
-    await mockRequest(`/api/v1/kixdns/versions/${release.source}/${release.source_id}/install`, { method: 'POST' })
-    const actions = await mockRequest<KixdnsVersionCatalog>('/api/v1/kixdns/versions?source=action')
-    expect(releases.source).toBe('release')
-    expect(actions.source).toBe('action')
-    expect(release.release_tag).toBe('v0.1.1')
-    // 装着的是次新那个；最新那个是「可更新到」的目标，不该同时算作已安装。
-    expect(actions.remote_versions[0].installed).toBe(false)
-    expect(actions.remote_versions[1].installed).toBe(true)
-    // 刚装上的 release 接管了「当前」，所以这条 action 只是已安装，不是活动版本。
-    expect(actions.remote_versions[1].active).toBe(false)
-    expect(actions.installed_versions.some((version) => version.source === 'action' && version.source_id === actions.remote_versions[1].source_id)).toBe(true)
-    expect(actions.installed_versions.some((version) => version.source === 'release' && version.source_id === release.source_id)).toBe(true)
-  })
-
-  it('删除非活动本地版本并拒绝删除当前版本', async () => {
-    const before = await mockRequest<KixdnsVersionCatalog>('/api/v1/kixdns/versions?source=action')
-    const removable = before.installed_versions.find((version) => !version.active)
-    const active = before.installed_versions.find((version) => version.active)
-    expect(removable).toBeDefined()
-    expect(active).toBeDefined()
-
-    const removableIdentity = removable?.source_id ?? removable?.commit
-    await mockRequest(`/api/v1/kixdns/versions/${removable?.source ?? 'action'}/${removableIdentity}/delete`, { method: 'POST' })
-    const after = await mockRequest<KixdnsVersionCatalog>('/api/v1/kixdns/versions?source=action')
-    expect(after.installed_versions).toHaveLength(before.installed_versions.length - 1)
-    expect(after.installed_versions.some((version) => version.source_id === removable?.source_id)).toBe(false)
-
-    const activeIdentity = active?.source_id ?? active?.commit
-    await expect(mockRequest(`/api/v1/kixdns/versions/${active?.source ?? 'action'}/${activeIdentity}/delete`, { method: 'POST' }))
-      .rejects.toThrow('当前运行版本不能删除')
+    const kernel = await mockRequest<KixdnsKernel>('/api/v1/kixdns/kernel')
+    const latest = kernel.latest
+    expect(latest?.source).toBe('action')
+    expect(latest?.run_id).toBe(30235703570)
+    expect(latest?.source_id).not.toBe(latest?.run_id)
+    expect(latest?.source_url).toContain('olicesx/kixdns/actions/runs/30235703570')
+    expect(latest?.build_url).toContain('tuoro/kixdns-panel/actions/runs/30565639501')
+    expect(latest?.artifact).toBe('kixdns-enhanced-action-30235703570-p8-46ac788fc96c-linux-x86_64')
+    expect(latest?.artifact_digest).toMatch(/^sha256:[a-f0-9]{64}$/)
+    // 最新那个构建按演示状态还没装，所以能力要从真正装着的版本上取。
+    // The newest build is not installed in the demo, so capabilities come from the one that is.
+    expect(kernel.active?.config_capabilities).toContain('config_query_stats_v1')
+    for (const version of [kernel.active, kernel.previous]) {
+      expect(version?.commit).not.toBe(version?.upstream_commit)
+    }
+    expect(kernel.active?.upstream_commit).toBe('647c5b1d2af6963176d7f8da6c3ed031e6b58497')
   })
 
   it('分别返回 KixDNS 与面板正式版更新', async () => {
     const updates = await mockRequest<UpdateNotifications>('/api/v1/updates/status')
-    expect(updates.kixdns.available).toBe(true)
-    expect(updates.kixdns.source).toBe('action')
-    expect(updates.panel.available).toBe(true)
-    expect(updates.panel.current_release).toBeNull()
-    expect(updates.panel.latest_version).toBe('1.0.1')
-    expect(updates.panel.download_url).toMatch(/releases\/download\/v1\.0\.1/)
+    expect(updates.kixdns?.available).toBe(true)
+    expect(updates.kixdns_error).toBeNull()
+    expect(updates.panel?.available).toBe(true)
+    expect(updates.panel?.current_release).toBeNull()
+    expect(updates.panel?.latest_version).toBe('1.0.1')
+    expect(updates.panel?.download_url).toMatch(/releases\/download\/v1\.0\.1/)
+    expect(updates.panel_error).toBeNull()
   })
 
   it('在面板内部启动在线更新并返回进度', async () => {

@@ -10,7 +10,7 @@ describe('版本切换文案', () => {
   // 服务端把 activating、reloading 也算作在运行并重启它，文案不能说「不会启动」。
   // The server counts activating and reloading as running and restarts the service.
   it.each(['active', 'activating', 'reloading'])('%s 的服务按在运行说明会重启', (state) => {
-    expect(switchConfirmBody(service(state))).toContain('会用新版本重启')
+    expect(switchConfirmBody(service(state))).toContain('会用这个版本重启')
     expect(switchedMessage(service(state), '版本已切换')).toBe('KixDNS 版本已切换并通过健康检查')
   })
 
@@ -20,6 +20,6 @@ describe('版本切换文案', () => {
   })
 
   it('状态未知时两种情况都说', () => {
-    expect(switchConfirmBody(null)).toContain('正在运行则用新版本重启')
+    expect(switchConfirmBody(null)).toContain('正在运行则用这个版本重启')
   })
 })

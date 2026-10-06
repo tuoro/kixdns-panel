@@ -703,6 +703,14 @@ impl Database {
         })
         .await
     }
+
+    pub async fn delete_setting(&self, key: &'static str) -> anyhow::Result<()> {
+        self.call(move |connection| {
+            connection.execute("DELETE FROM app_settings WHERE key = ?1", [key])?;
+            Ok(())
+        })
+        .await
+    }
 }
 
 fn initialize_database(

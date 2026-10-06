@@ -13,18 +13,16 @@ use super::MAX_ARTIFACT_BYTES;
 use super::MAX_BINARY_BYTES;
 use super::MAX_BUILD_IDENTITY_BYTES;
 use super::MAX_CAPABILITIES_BYTES;
+use super::PREVIOUS_VERSION_KEY;
+use super::RELEASE_REPLACED_KEY;
 use super::RemoteVersion;
 use super::ResolvedVersion;
 use super::ServiceHost;
 use super::UpdateError;
-use super::UpdateInfo;
 use super::UpdateManager;
 use super::VersionKey;
 use super::VersionManifest;
 use super::VersionSource;
-use super::catalog::to_update_info;
-use super::storage::delete_stored_version;
-use super::storage::find_installed_key;
 use super::storage::list_installed;
 use super::storage::load_bundled_manifest;
 use super::storage::load_verified_version;
@@ -233,9 +231,64 @@ pub(super) fn read_zip_entry(
 }
 
 impl UpdateManager {
+    /// 启动时把正在运行的内核记进本机库存，然后只留它和上一个。旧面板最多留过 8 个版本，
+    /// 也没记过上一个，这时把装得最晚的另一个当作上一个。清理失败不影响启动。
+    /// At start-up, record the running kernel in the local inventory and keep only it and
+    /// the previous one. Older panels kept up to eight versions and never recorded a
+    /// previous one; the most recently installed other version then becomes it. A failed
+    /// clean-up does not stop the start.
     pub async fn initialize_installed_version(&self) -> Result<(), UpdateError> {
-        if let Some(active) = self.active_version().await? {
-            self.adopt_active_version(&active).await?;
+        let Some(active) = self.active_version().await? else {
+            return Ok(());
+        };
+        self.adopt_active_version(&active).await?;
+        let recorded = self.previous_key(Some(&active)).await;
+        let versions_path = Arc::clone(&self.versions_path);
+        let worker_recorded = recorded.clone();
+        let settled = tokio::task::spawn_blocking(move || {
+            // 按清单里的身份认版本，和清理时一致；目录名在旧布局下可能少了 Artifact ID。
+            // Versions are identified by their manifests, as pruning does; under the old
+            // layout a directory name may lack the artifact id.
+            let others = list_installed(&versions_path, None)?
+                .into_iter()
+                .filter_map(|version| {
+                    let key = VersionKey::installed(&version).ok()?;
+                    (key != active).then_some((key, version.installed_at))
+                })
+                .collect::<Vec<_>>();
+            let previous = worker_recorded
+                .filter(|recorded| others.iter().any(|(key, _)| key == recorded))
+                .or_else(|| {
+                    others
+                        .iter()
+                        .max_by_key(|(_, installed_at)| *installed_at)
+                        .map(|(key, _)| key.clone())
+                });
+            prune_versions(&versions_path, &active, previous.as_ref())?;
+            Ok::<_, UpdateError>(previous)
+        })
+        .await
+        .map_err(|error| UpdateError::Install(error.to_string()))?;
+        let previous = match settled {
+            Ok(previous) => previous,
+            Err(error) => {
+                tracing::warn!(%error, "清理本机内核版本失败");
+                return Ok(());
+            }
+        };
+        if previous == recorded {
+            return Ok(());
+        }
+        let result = match previous {
+            Some(previous) => {
+                self.database
+                    .set_setting(PREVIOUS_VERSION_KEY, previous.encoded(), unix_timestamp())
+                    .await
+            }
+            None => self.database.delete_setting(PREVIOUS_VERSION_KEY).await,
+        };
+        if let Err(error) = result {
+            tracing::warn!(%error, "记录上一个内核失败");
         }
         Ok(())
     }
@@ -270,78 +323,117 @@ impl UpdateManager {
         .map_err(|error| UpdateError::Install(error.to_string()))?
     }
 
-    pub async fn apply(
+    /// 更新到最新内核。`expected` 是页面上显示的那个构建：上游之后又出了新构建就拒绝，
+    /// 确认框里写的版本就是装上的版本。启动时自动替换 Release 内核不经过页面，不传。
+    /// Updates to the newest kernel. `expected` is the build the page showed: if upstream
+    /// has built a newer one since, the update is refused, so the version named in the
+    /// confirmation is the one installed. The start-up replacement of a Release kernel
+    /// has no page and passes none.
+    pub async fn update(
         &self,
-        config: &Value,
-        host: &dyn ServiceHost,
-    ) -> Result<UpdateInfo, UpdateError> {
-        let _guard = self.apply_lock.lock().await;
-        let active_version = self.active_version().await?;
-        let candidate = self
-            .resolved_remote_versions(VersionSource::Action)
-            .await?
-            .into_iter()
-            .next()
-            .ok_or_else(|| UpdateError::Network("没有可安装的成功增强构建".to_owned()))?;
-        let resolved = self
-            .resolve_remote(VersionSource::Action, candidate.remote.source_id)
-            .await?;
-        let key = VersionKey::remote(&resolved.remote)?;
-        if active_version.as_ref() != Some(&key) {
-            self.install_resolved(&resolved, config).await?;
-            self.activate_locked(&key, config, host).await?;
-        }
-        Ok(to_update_info(resolved, Some(&key)))
-    }
-
-    pub async fn install_version(
-        &self,
-        source: VersionSource,
-        source_id: u64,
+        expected: Option<u64>,
         config: &Value,
         host: &dyn ServiceHost,
     ) -> Result<InstalledVersion, UpdateError> {
         let _guard = self.apply_lock.lock().await;
-        let resolved = self.resolve_remote(source, source_id).await?;
-        let key = VersionKey::remote(&resolved.remote)?;
-        self.install_resolved(&resolved, config).await?;
-        self.activate_locked(&key, config, host).await
+        let latest = self.fetch_latest().await?;
+        self.update_locked(&latest, expected, config, host).await
     }
 
-    pub async fn activate_version(
+    pub(super) async fn update_locked(
         &self,
-        source: VersionSource,
-        version: &str,
+        latest: &ResolvedVersion,
+        expected: Option<u64>,
         config: &Value,
         host: &dyn ServiceHost,
     ) -> Result<InstalledVersion, UpdateError> {
-        let _guard = self.apply_lock.lock().await;
-        let key = match version.parse::<u64>() {
-            Ok(source_id) if source_id > 0 => self.installed_key(source, source_id).await?,
-            _ => VersionKey::new(source, version)?,
-        };
-        self.activate_locked(&key, config, host).await
-    }
-
-    pub async fn delete_version(
-        &self,
-        source: VersionSource,
-        version: &str,
-    ) -> Result<InstalledVersion, UpdateError> {
-        let _guard = self.apply_lock.lock().await;
-        let key = match version.parse::<u64>() {
-            Ok(source_id) if source_id > 0 => self.installed_key(source, source_id).await?,
-            _ => VersionKey::new(source, version)?,
-        };
-        if self.active_version().await?.as_ref() == Some(&key) {
-            return Err(UpdateError::Invalid(
-                "当前运行版本不能删除，请先切换版本".to_owned(),
+        if expected.is_some_and(|expected| expected != latest.remote.source_id) {
+            return Err(UpdateError::Conflict(
+                "上游又有了更新的构建，请刷新后再更新".to_owned(),
             ));
         }
-        let versions_path = Arc::clone(&self.versions_path);
-        tokio::task::spawn_blocking(move || delete_stored_version(&versions_path, &key))
+        let key = VersionKey::remote(&latest.remote)?;
+        if self.active_version().await?.as_ref() == Some(&key) {
+            return self.installed_version(&key, true).await;
+        }
+        self.install_resolved(latest, config).await?;
+        self.activate_locked(&key, config, host).await
+    }
+
+    /// 回到上一个内核。切换成功后原来的内核成了上一个，再回退一次就换回来。
+    /// Goes back to the previous kernel. Once switched, the kernel it replaced becomes the
+    /// previous one, so rolling back again switches back.
+    pub async fn rollback(
+        &self,
+        config: &Value,
+        host: &dyn ServiceHost,
+    ) -> Result<InstalledVersion, UpdateError> {
+        let _guard = self.apply_lock.lock().await;
+        let active = self.active_version().await?;
+        let previous = self
+            .previous_key(active.as_ref())
             .await
-            .map_err(|error| UpdateError::Install(error.to_string()))?
+            .ok_or_else(|| UpdateError::Conflict("本机没有上一个内核".to_owned()))?;
+        self.activate_locked(&previous, config, host).await
+    }
+
+    /// 正在运行 Release 内核、而且它从没被换下过时返回它。Release 轨道已停止构建，新面板
+    /// 启动时把它换成最新的 Action 内核；换下后用户又自己回退到 Release 的，不再替换。
+    /// Returns the running kernel when it is a Release kernel that was never replaced. The
+    /// Release track no longer builds, so a new panel replaces it with the newest Action
+    /// kernel at start-up; a user who rolls back to it afterwards is left alone.
+    pub async fn release_kernel_to_replace(&self) -> Result<Option<InstalledVersion>, UpdateError> {
+        let Some(active) = self.active_version().await? else {
+            return Ok(None);
+        };
+        if active.source != VersionSource::Release {
+            return Ok(None);
+        }
+        let replaced = self
+            .database
+            .get_setting(RELEASE_REPLACED_KEY)
+            .await
+            .map_err(|error| UpdateError::Install(error.to_string()))?;
+        if replaced.is_some() {
+            return Ok(None);
+        }
+        self.installed_version(&active, true).await.map(Some)
+    }
+
+    /// 记下的上一个内核；没有记录、记录无效或正好是当前内核时为空。
+    /// The recorded previous kernel; none when nothing is recorded, the record is invalid
+    /// or it is the current kernel.
+    pub(super) async fn previous_key(&self, active: Option<&VersionKey>) -> Option<VersionKey> {
+        let stored = match self.database.get_setting(PREVIOUS_VERSION_KEY).await {
+            Ok(stored) => stored?,
+            Err(error) => {
+                tracing::warn!(%error, "读取上一个内核记录失败");
+                return None;
+            }
+        };
+        match VersionKey::parse(&stored) {
+            Ok(key) if active != Some(&key) => Some(key),
+            Ok(_) => None,
+            Err(error) => {
+                tracing::warn!(%error, "上一个内核的记录无效");
+                None
+            }
+        }
+    }
+
+    pub(super) async fn installed_version(
+        &self,
+        key: &VersionKey,
+        active: bool,
+    ) -> Result<InstalledVersion, UpdateError> {
+        let versions_path = Arc::clone(&self.versions_path);
+        let key = key.clone();
+        tokio::task::spawn_blocking(move || {
+            load_verified_version(&versions_path, &key)
+                .map(|(manifest, _)| manifest.into_installed(active))
+        })
+        .await
+        .map_err(|error| UpdateError::Install(error.to_string()))?
     }
 
     pub(super) async fn active_version(&self) -> Result<Option<VersionKey>, UpdateError> {
@@ -585,8 +677,8 @@ impl UpdateManager {
             source: Some(version.remote.source),
             source_id: Some(version.remote.source_id),
             commit: version.remote.commit.clone(),
-            run_id: version.remote.run_id,
-            release_tag: version.remote.release_tag.clone(),
+            run_id: Some(version.remote.run_id),
+            release_tag: None,
             created_at: Some(version.remote.created_at.clone()),
             source_url: Some(version.remote.source_url.clone()),
             build_url: Some(version.remote.build_url.clone()),
@@ -616,11 +708,10 @@ impl UpdateManager {
         config: &Value,
         host: &dyn ServiceHost,
     ) -> Result<InstalledVersion, UpdateError> {
-        if regular_file_exists(self.binary_path.as_ref())?
-            && let Some(active) = self.active_version().await?
-        {
-            self.adopt_active_version(&active).await?;
-            if let Err(error) = self.capture_active_capabilities(&active, host).await {
+        let replaced = self.active_version().await?;
+        if let Some(active) = replaced.as_ref() {
+            self.adopt_active_version(active).await?;
+            if let Err(error) = self.capture_active_capabilities(active, host).await {
                 tracing::warn!(%error, "无法记录当前 KixDNS 的配置能力");
             }
         }
@@ -650,14 +741,50 @@ impl UpdateManager {
                 "记录活动版本失败，已恢复原版本：{error}"
             )));
         }
+        let previous = match replaced.filter(|replaced| replaced != key) {
+            Some(replaced) => {
+                self.remember_replaced(&replaced, key).await;
+                Some(replaced)
+            }
+            None => self.previous_key(Some(key)).await,
+        };
         let versions_path = Arc::clone(&self.versions_path);
         let active = key.clone();
-        match tokio::task::spawn_blocking(move || prune_versions(&versions_path, &active)).await {
+        match tokio::task::spawn_blocking(move || {
+            prune_versions(&versions_path, &active, previous.as_ref())
+        })
+        .await
+        {
             Ok(Ok(())) => {}
             Ok(Err(error)) => tracing::warn!(%error, "活动版本已切换，但清理旧版本失败"),
             Err(error) => tracing::warn!(%error, "活动版本已切换，但清理任务异常结束"),
         }
         Ok(manifest.into_installed(true))
+    }
+
+    /// 切换成功后记下被换下的内核，它成了上一个；Release 内核被 Action 内核换下时另记一笔。
+    /// 写不进去只影响回退目标，切换本身已经完成，不撤销。
+    /// After a successful switch, record the replaced kernel as the previous one, and note
+    /// when a Release kernel gave way to an Action kernel. A failed write only affects the
+    /// rollback target; the switch itself is done and stays.
+    async fn remember_replaced(&self, replaced: &VersionKey, active: &VersionKey) {
+        let now = unix_timestamp();
+        if let Err(error) = self
+            .database
+            .set_setting(PREVIOUS_VERSION_KEY, replaced.encoded(), now)
+            .await
+        {
+            tracing::warn!(%error, "内核已切换，但没能记下上一个内核");
+        }
+        if replaced.source == VersionSource::Release
+            && active.source == VersionSource::Action
+            && let Err(error) = self
+                .database
+                .set_setting(RELEASE_REPLACED_KEY, now.to_string(), now)
+                .await
+        {
+            tracing::warn!(%error, "内核已切换，但没能记下 Release 内核已被替换");
+        }
     }
 
     pub(super) async fn adopt_active_version(&self, key: &VersionKey) -> Result<(), UpdateError> {
@@ -746,31 +873,6 @@ impl UpdateManager {
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
             Err(error) => Err(UpdateError::Install(error.to_string())),
         }
-    }
-
-    pub(super) async fn installed_versions(
-        &self,
-        active_version: Option<&VersionKey>,
-    ) -> Result<Vec<InstalledVersion>, UpdateError> {
-        let versions_path = Arc::clone(&self.versions_path);
-        let active_version = active_version.cloned();
-        tokio::task::spawn_blocking(move || list_installed(&versions_path, active_version.as_ref()))
-            .await
-            .map_err(|error| UpdateError::Install(error.to_string()))?
-    }
-
-    pub(super) async fn installed_key(
-        &self,
-        source: VersionSource,
-        source_id: u64,
-    ) -> Result<VersionKey, UpdateError> {
-        let versions_path = Arc::clone(&self.versions_path);
-        tokio::task::spawn_blocking(move || {
-            find_installed_key(&versions_path, source, source_id)?
-                .ok_or_else(|| UpdateError::Invalid("指定版本尚未安装或来源身份已失效".to_owned()))
-        })
-        .await
-        .map_err(|error| UpdateError::Install(error.to_string()))?
     }
 
     pub(super) async fn activate_binary(

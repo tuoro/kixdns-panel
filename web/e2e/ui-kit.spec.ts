@@ -93,13 +93,13 @@ test('状态胶囊：进行中写进度和已用时间，完成打勾，失败�
   await open(page)
   const task = page.locator('.ui-task')
   await expect(task).toHaveAttribute('data-state', 'idle')
-  await task.getByRole('button', { name: '安装并切换' }).click()
+  await task.getByRole('button', { name: '更新', exact: true }).click()
   await expect(task).toHaveAttribute('data-state', 'run')
   await expect(task.getByRole('progressbar')).toBeVisible()
   await expect(task.getByRole('status')).toContainText(/正在下载 .* MB/)
   await expect(task.getByRole('status')).toContainText(/已用 \d+ 秒/)
   await expect(task).toHaveAttribute('data-state', 'done', { timeout: 10_000 })
-  await expect(task.getByRole('status')).toHaveText('已切换到 Run #30235703570')
+  await expect(task.getByRole('status')).toHaveText('已更新到 Run #30235703570')
   await expect(task.getByRole('progressbar')).toHaveCount(0)
 
   await task.getByRole('button', { name: '复原' }).click()
@@ -124,7 +124,7 @@ test('新数据提示条：新日志先攒着，点了才放进列表 @responsiv
 
 test('同一行里的控件一样高：按钮、图标按钮、分段、输入框不混两种尺寸 @responsive', async ({ page }) => {
   await open(page)
-  await page.locator('.ui-task').getByRole('button', { name: '安装并切换' }).click()
+  await page.locator('.ui-task').getByRole('button', { name: '更新', exact: true }).click()
   const rows = await page.evaluate(() => {
     const containers = document.querySelectorAll<HTMLElement>('.ui-kit__row, .ui-ph__actions, .ui-card__actions, .ui-task__actions, .ui-rec__act')
     return [...containers].map((row) => ({
@@ -141,7 +141,16 @@ test('375 下能点的东西至少 44 像素，记录变两行，页面不横向
   await open(page)
   const phone = page.viewportSize()!.width <= 640
   const heights = await page.evaluate(() => {
-    const measure = (selector: string) => [...document.querySelectorAll<HTMLElement>(selector)].map((el) => el.getBoundingClientRect().height)
+    // 看起来小、点按区域往外补的控件（--inline）量补过之后的区域：手指按的是它。
+    // A control that looks small with its hit area grown outwards (--inline) is measured by the
+    // grown area, since that is what a finger presses.
+    const measure = (selector: string) => [...document.querySelectorAll<HTMLElement>(selector)].map((el) => {
+      const height = el.getBoundingClientRect().height
+      const grown = getComputedStyle(el, '::before')
+      return grown.content !== 'none' && grown.position === 'absolute'
+        ? height - parseFloat(grown.top) - parseFloat(grown.bottom)
+        : height
+    })
     return {
       regular: measure('.ui-btn:not(.ui-btn--sm)'),
       small: measure('.ui-btn--sm'),

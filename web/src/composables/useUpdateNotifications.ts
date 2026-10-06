@@ -18,31 +18,32 @@ export interface UpdateNoticeItem {
 export function buildUpdateNotices(status: UpdateNotifications | null): UpdateNoticeItem[] {
   if (!status) return []
   const notices: UpdateNoticeItem[] = []
-  if (status.kixdns.available && status.kixdns.source_id !== null) {
-    const version = status.kixdns.source === 'release'
-      ? status.kixdns.release_tag ?? `Release #${status.kixdns.source_id}`
-      : status.kixdns.run_id ? `Run #${status.kixdns.run_id}` : `Artifact #${status.kixdns.source_id}`
-    const security = status.kixdns.security_update
-    const revision = security && status.kixdns.dependency_revision ? ` · r${status.kixdns.dependency_revision}` : ''
+  const { kixdns, panel } = status
+  if (kixdns?.available) {
+    const security = kixdns.security_update
+    const revision = security && kixdns.dependency_revision ? ` · r${kixdns.dependency_revision}` : ''
     notices.push({
-      id: `kixdns:${status.kixdns.source}:${status.kixdns.source_id}`,
+      // 编号沿用有两条轨道时的写法：已读记录按它存，换了写法旧提示会重新冒出来。
+      // The id keeps the form from when there were two tracks: read state is stored by
+      // it, and a new form would bring old notices back.
+      id: `kixdns:action:${kixdns.source_id}`,
       kind: 'kixdns',
-      title: 'KixDNS 增强包',
-      detail: security ? '依赖安全升级可用' : '新的增强构建可用',
-      meta: `${status.kixdns.source === 'release' ? 'Release' : 'Action'} · ${version}${revision}`,
+      title: 'KixDNS 内核',
+      detail: security ? '依赖安全升级可用' : '新的内核构建可用',
+      meta: `Run #${kixdns.run_id}${revision}`,
       target: '/system',
       external: false,
     })
   }
-  if (status.panel.available) {
+  if (panel?.available) {
     notices.push({
-      id: `panel:${status.panel.latest_version ?? 'unknown'}`,
+      id: `panel:${panel.latest_version ?? 'unknown'}`,
       kind: 'panel',
       title: 'KixDNS Panel',
       detail: '新的面板正式版可用',
-      meta: status.panel.latest_version ? `Release · v${status.panel.latest_version}` : 'Release',
-      target: status.panel.release_url ?? '/system',
-      external: Boolean(status.panel.release_url),
+      meta: panel.latest_version ? `v${panel.latest_version}` : '',
+      target: panel.release_url ?? '/system',
+      external: Boolean(panel.release_url),
     })
   }
   return notices
