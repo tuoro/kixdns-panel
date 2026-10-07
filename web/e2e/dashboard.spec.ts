@@ -211,17 +211,17 @@ test('上游状态逐行展开，明细跟着这一行的时段，桌面和手�
   // 展开条不染色：这一行好不好，状态点和成功率已经说了 / The expansion is not coloured: the dot and the success rate already say how the row is doing
   await expect(page.locator('.overview-upstream-counts [class*="overview-text--"]')).toHaveCount(0)
   if (testInfo.project.name === 'mobile') {
-    // 手机上每行两行：第二行写数字；最近一小时响应不够的上游在数字下面另起一行写明退回了累计，不接在数字后面
+    // 手机上每行两行：第二行只写数字；退回累计的上游在手机上不另加注（桌面地址下面照写）
+    // On a phone each row has two lines, the second only figures; a row fallen back to lifetime totals carries no note there (desktop still notes it)
     await expect(rows.first().locator('.overview-upstream-line')).toBeVisible()
-    await expect(rows.first().locator('.overview-upstream-basis')).toHaveCount(0)
     await expect(rows.nth(2).locator('.overview-upstream-line')).not.toContainText('启动以来')
-    await expect(rows.nth(2).locator('.overview-upstream-basis')).toHaveText('启动以来的累计')
+    await expect(rows.nth(2).locator('.overview-basis')).toBeHidden()
     // 数字行用外边距对齐地址（裁掉行首的「·」要靠它），换了写法也不能错位
     // The figures line aligns with the address by margin (clipping the line-start 「·」 depends on it); it must not drift
     const line = await rows.nth(2).locator('.overview-upstream-line').boundingBox()
     const address = await rows.nth(2).locator('.overview-address').boundingBox()
     expect(Math.round(line!.x)).toBe(Math.round(address!.x))
-    // 三块分布叠起来时和整页一样隔 24，不另起一套间距 / Stacked distributions keep the page's own 24 gap
+    // 三块分布叠起来时和整页一样隔 16，不另起一套间距 / Stacked distributions keep the page's own 16 gap
     const gaps = await page.evaluate(() => [
       getComputedStyle(document.querySelector('.overview-view')!).rowGap,
       getComputedStyle(document.querySelector('.overview-distributions')!).rowGap,

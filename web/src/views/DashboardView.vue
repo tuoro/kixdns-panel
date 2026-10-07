@@ -655,7 +655,6 @@ onBeforeUnmount(() => {
                 </span>
                 <!-- 「·」由样式画在每项前面，行首那个被裁掉：折行后不会有点挂在行尾 / The 「·」 is drawn before each item and clipped at a line start, so a wrapped line never ends on one -->
                 <p class="ui-rec__phone overview-upstream-line"><span>成功率 <b :class="`overview-text--${item.health}`">{{ formatPercent(upstreamSuccessRate(item.shown)) }}</b></span><span v-if="hasLatency">平均 {{ formatLatency(item.shown.avg_latency_ms) }}</span><span>{{ formatNumber(item.settled) }} 次响应</span></p>
-                <p v-if="item.sinceStart && !allSinceStart" class="ui-rec__phone overview-upstream-basis">启动以来的累计</p>
               </div>
               <div v-if="expandedUpstream === upstreamKey(item)" class="overview-upstream-detail ui-rise">
                 <dl class="ui-strip overview-upstream-counts">
@@ -883,7 +882,6 @@ onBeforeUnmount(() => {
 .overview-upstream-line { --sep: calc(var(--s-2) * 2 + .3em); flex-wrap: wrap; align-items: baseline; column-gap: var(--sep); margin: 0; overflow: hidden; color: var(--l-ink-3); font-size: var(--t-2); font-variant-numeric: tabular-nums; }
 .overview-upstream-line > span::before { content: "·"; display: inline-block; width: var(--sep); margin-inline-start: calc(var(--sep) * -1); color: var(--l-line-strong); text-align: center; }
 .overview-upstream-line b { color: var(--l-ink-2); font-weight: var(--w-medium); }
-.overview-upstream-basis { margin: 0; color: var(--l-ink-3); font-size: var(--t-1); }
 
 /* 分布：1200 以上并成一行，第一栏（Pipeline 名长）宽一些；响应码、缓存为空时不渲染，剩下的铺满。900–1199 和 900 以下见下面的媒体查询。
    Distributions: from 1200 up they share a row, the first (long Pipeline names) wider; empty response-code or cache blocks are
@@ -993,7 +991,12 @@ onBeforeUnmount(() => {
 @media (max-width: 640px) {
   .overview-page { gap: var(--s-4); }
   .overview-meta-time { display: none; }
-  .overview-view { gap: var(--s-5); }
+  /* 小屏上块与块之间收紧：细线上下各 16（24/24 加上行高，一屏里空出近 60）
+     Tighter between blocks on a phone: 16 above and below each hairline (24/24 plus leading left nearly 60 empty) */
+  .overview-view { gap: var(--s-4); }
+  .overview-view .ui-section { padding-top: var(--s-4); }
+  /* 上游最后一行（或它的展开条）不再自带下内边距，和下面的块也只隔 16 / The last upstream row (or its expansion) drops its bottom padding, so it too sits 16 above the next block */
+  .overview-ledger-list > :last-child { padding-bottom: 0; }
   .overview-signal { grid-template-columns: minmax(0, 1fr); gap: var(--s-3); padding: var(--s-4); }
   .overview-total-value { font-size: var(--t-6); }
   .overview-spark { height: var(--s-7); }
@@ -1001,14 +1004,14 @@ onBeforeUnmount(() => {
   .overview-skeleton-signal { height: calc(var(--s-8) * 3 + var(--s-4) + 1px); }
   .overview-skeleton-vitals i { height: calc(var(--s-8) * 2); }
   .overview-skeleton-meta { height: calc(var(--t-2) * var(--lh-base) * 2 + 2px); }
-  .overview-skeleton { gap: var(--s-5); }
+  .overview-skeleton { gap: var(--s-4); }
   .overview-skeleton-vitals { gap: var(--s-2); }
   .overview-vital { padding: var(--s-3) var(--s-4); }
   .overview-toolbar { align-items: stretch; }
   .overview-toolbar-tools { width: 100%; justify-content: space-between; }
-  .overview-rankings { grid-template-columns: minmax(0, 1fr); gap: var(--s-5); }
-  /* 三块分布叠起来时和整页一样隔 24 / Stacked distributions keep the page's 24 rhythm */
-  .overview-distributions { gap: var(--s-5); }
+  .overview-rankings { grid-template-columns: minmax(0, 1fr); gap: var(--s-4); }
+  /* 三块分布叠起来时和整页一样隔 16 / Stacked distributions keep the page's 16 rhythm */
+  .overview-distributions { gap: var(--s-4); }
   .overview-toolbar-tools > .ui-seg { flex: 1; }
   .overview-runtime-actions { width: 100%; }
   .overview-runtime-actions > * { flex: 1 1 0; }
