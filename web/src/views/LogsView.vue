@@ -1,15 +1,19 @@
 <script setup lang="ts">
-import { ArrowUp, ClipboardList, Download, RefreshCw, Search, Terminal } from '@lucide/vue'
+import { Download, RefreshCw, Search } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { apiRequest } from '../api/client'
 import type { AuditEvent, AuditPage, LogEntry, LogsResponse } from '../api/types'
 import StatusBanner from '../components/StatusBanner.vue'
+import UiNewItemsBanner from '../components/ui/UiNewItemsBanner.vue'
+import UiPageHeader from '../components/ui/UiPageHeader.vue'
+import UiTabs from '../components/ui/UiTabs.vue'
 import { segmentLogMessage } from '../logs'
 import { errorMessage } from '../utils'
 
 const entries = ref<LogEntry[]>([])
 const auditEvents = ref<AuditEvent[]>([])
-const mode = ref<'runtime' | 'audit'>('runtime')
+type LogMode = 'runtime' | 'audit'
+const mode = ref<LogMode>('runtime')
 const query = ref('')
 const auditQuery = ref('')
 const level = ref('all')
@@ -91,6 +95,13 @@ const auditOptions = [
   { value: 'auth.', label: '认证' },
   { value: 'diagnostic.', label: '诊断' },
 ]
+
+const viewItems = [
+  { value: 'runtime', label: '运行日志' },
+  { value: 'audit', label: '操作审计' },
+]
+// 审计记录在取的时候类别不能切：切了也只会被正在回来的那页盖掉 / Categories cannot change while a page is being fetched: the page on its way would overwrite the switch
+const auditItems = computed(() => auditOptions.map((option) => ({ ...option, disabled: auditRequesting.value })))
 
 const levelOptions = [
   { value: 'all', label: '全部' },
@@ -253,7 +264,7 @@ async function loadAudit(reset = true): Promise<void> {
   }
 }
 
-function switchMode(next: 'runtime' | 'audit'): void {
+function switchMode(next: LogMode): void {
   mode.value = next
   if (next === 'audit' && auditEvents.value.length === 0) void loadAudit()
 }
@@ -290,17 +301,15 @@ onBeforeUnmount(() => window.clearInterval(timer))
 
 <template>
   <div class="page logs-page">
+    <UiPageHeader title="日志" />
+    <!-- 页签在卡片外面，和概览、配置同一种区块页签；查询日志做好后排在最前面
+         The tabs sit outside the card, the same section tabs as overview and config; the query log goes first once it exists -->
+    <UiTabs :model-value="mode" :items="viewItems" label="日志视图" id-prefix="logs" @update:model-value="switchMode($event as LogMode)" />
     <StatusBanner v-if="activeError" :message="activeError" :stale="activeCount > 0" :busy="activeRequesting" @retry="retry" />
-    <section class="log-console">
-      <nav class="log-view-tabs" aria-label="日志视图">
-        <button type="button" :class="{ active: mode === 'runtime' }" @click="switchMode('runtime')"><Terminal :size="14" />运行日志</button>
-        <button type="button" :class="{ active: mode === 'audit' }" @click="switchMode('audit')"><ClipboardList :size="14" />操作审计</button>
-      </nav>
+    <section :id="`logs-panel-${mode}`" class="log-console" role="tabpanel" :aria-labelledby="`logs-tab-${mode}`">
       <header v-if="mode === 'runtime'" class="log-toolbar">
-        <div class="search-field"><Search :size="16" /><input v-model="query" aria-label="筛选日志" placeholder="筛选消息或来源" /></div>
-        <div class="log-seg" role="group" aria-label="日志级别">
-          <button v-for="option in levelOptions" :key="option.value" type="button" :class="{ 'is-on': level === option.value }" :aria-pressed="level === option.value" @click="level = option.value">{{ option.label }}</button>
-        </div>
+        <label class="ui-input log-search"><Search :size="16" aria-hidden="true" /><input v-model="query" aria-label="筛选日志" placeholder="筛选消息或来源" /></label>
+        <UiTabs v-model="level" :items="levelOptions" label="日志级别" variant="segment" />
         <!-- 运行日志没有刷新键，也没有实时开关。停在顶部时新日志每 5 秒自己进来；
              往下读历史时它们攒在列表上方的提示条里，点一下才放进来并回到顶部。
              刷新键在这两种情况下都换不来任何东西。
@@ -309,15 +318,13 @@ onBeforeUnmount(() => window.clearInterval(timer))
              the top new lines arrive on their own every five seconds; in history
              they wait in the banner above the list and come in, back at the top,
              when it is pressed. A refresh button would buy nothing in either case. -->
-        <button class="icon-button" type="button" title="下载筛选结果" :disabled="filtered.length === 0" @click="download"><Download :size="18" /></button>
+        <button class="ui-icon-btn" type="button" title="下载筛选结果" aria-label="下载筛选结果" :disabled="filtered.length === 0" @click="download"><Download :size="18" aria-hidden="true" /></button>
       </header>
       <header v-else class="log-toolbar">
-        <div class="search-field"><Search :size="16" /><input v-model="auditQuery" aria-label="筛选操作审计" placeholder="筛选操作人、动作或详情" /></div>
-        <div class="log-seg" role="group" aria-label="审计动作类别">
-          <button v-for="option in auditOptions" :key="option.value" type="button" :class="{ 'is-on': auditCategory === option.value }" :aria-pressed="auditCategory === option.value" :disabled="auditRequesting" @click="selectAuditCategory(option.value)">{{ option.label }}</button>
-        </div>
-        <button class="icon-button" type="button" title="刷新审计记录" :disabled="auditRequesting" @click="loadAudit()"><RefreshCw :size="18" :class="{ spin: auditLoading }" /></button>
-        <button class="icon-button" type="button" title="下载筛选结果" :disabled="filteredAudit.length === 0" @click="download"><Download :size="18" /></button>
+        <label class="ui-input log-search"><Search :size="16" aria-hidden="true" /><input v-model="auditQuery" aria-label="筛选操作审计" placeholder="筛选操作人、动作或详情" /></label>
+        <UiTabs :model-value="auditCategory" :items="auditItems" label="审计动作类别" variant="segment" @update:model-value="selectAuditCategory" />
+        <button class="ui-icon-btn" type="button" title="刷新审计记录" aria-label="刷新审计记录" :disabled="auditRequesting" @click="loadAudit()"><RefreshCw :size="18" :class="{ spin: auditLoading }" aria-hidden="true" /></button>
+        <button class="ui-icon-btn" type="button" title="下载筛选结果" aria-label="下载筛选结果" :disabled="filteredAudit.length === 0" @click="download"><Download :size="18" aria-hidden="true" /></button>
       </header>
       <!-- 常驻、不是错误：日志页本身没坏，是 journald 看不到这个 unit 的输出——
            unit 不存在，或它的输出没送到 journald。句子由服务端拼好，原样展示；
@@ -329,22 +336,22 @@ onBeforeUnmount(() => window.clearInterval(timer))
            from KixDNS itself. -->
       <p v-if="mode === 'runtime' && notice !== null" class="log-notice" role="status">{{ notice }}</p>
       <div v-if="mode === 'runtime'" ref="runtimeStream" class="log-stream" @scroll="handleRuntimeScroll">
-        <button v-if="newLinesLabel !== null" class="log-new-lines" type="button" :disabled="requesting" @click="showNewLines"><RefreshCw v-if="loading" :size="14" class="spin" /><ArrowUp v-else :size="14" />{{ loading ? '正在加载' : newLinesLabel }}</button>
+        <UiNewItemsBanner v-if="newLinesLabel !== null" :label="newLinesLabel" :loading="loading" :disabled="requesting" @show="showNewLines" />
         <div v-for="({ entry, segments }, index) in lines" :key="`${entry.timestamp_unix_micros}-${index}`" class="log-line" :class="levelClass(entry.priority)">
           <time>{{ timestamp(entry.timestamp_unix_micros) }}</time>
           <span class="log-sr-only">{{ label(entry.priority) }}</span>
           <strong>{{ entry.source }}</strong>
           <p><template v-for="(segment, part) in segments" :key="part"><em v-if="segment.strong">{{ segment.text }}</em><template v-else>{{ segment.text }}</template></template></p>
         </div>
-        <button v-if="runtimeCursor !== null" class="runtime-load-more" type="button" :disabled="requesting" @click="loadOlder"><RefreshCw :size="14" :class="{ spin: loadingOlder }" />{{ loadingOlder ? '正在加载' : '加载更早日志' }}</button>
-        <p v-if="filtered.length === 0 && !loadError" class="empty-state">没有符合条件的日志</p>
+        <button v-if="runtimeCursor !== null" class="log-more" type="button" :disabled="requesting" @click="loadOlder"><RefreshCw :size="14" :class="{ spin: loadingOlder }" aria-hidden="true" />{{ loadingOlder ? '正在加载' : '加载更早日志' }}</button>
+        <p v-if="filtered.length === 0 && !loadError" class="log-empty">没有符合条件的日志</p>
       </div>
       <div v-else class="log-stream">
         <div v-for="event in filteredAudit" :key="event.id" class="log-line audit-line">
           <time>{{ auditTimestamp(event.created_at) }}</time><strong>{{ event.actor ?? 'system' }}</strong><code>{{ event.action }}</code><p>{{ event.detail }}</p>
         </div>
-        <button v-if="auditCursor !== null && !auditQuery" class="audit-load-more" type="button" :disabled="auditRequesting" @click="loadAudit(false)"><RefreshCw :size="14" :class="{ spin: auditLoading }" />加载更多</button>
-        <p v-if="filteredAudit.length === 0 && !auditError" class="empty-state">没有符合条件的审计记录</p>
+        <button v-if="auditCursor !== null && !auditQuery" class="log-more" type="button" :disabled="auditRequesting" @click="loadAudit(false)"><RefreshCw :size="14" :class="{ spin: auditLoading }" aria-hidden="true" />加载更多</button>
+        <p v-if="filteredAudit.length === 0 && !auditError" class="log-empty">没有符合条件的审计记录</p>
       </div>
     </section>
   </div>
