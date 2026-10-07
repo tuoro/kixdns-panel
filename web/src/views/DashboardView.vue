@@ -653,7 +653,9 @@ onBeforeUnmount(() => {
                     <ChevronRight :size="16" aria-hidden="true" />
                   </button>
                 </span>
-                <p class="ui-rec__phone overview-upstream-line"><span>成功率 <b :class="`overview-text--${item.health}`">{{ formatPercent(upstreamSuccessRate(item.shown)) }}</b><span class="ui-sep">·</span></span><span v-if="hasLatency">平均 {{ formatLatency(item.shown.avg_latency_ms) }}<span class="ui-sep">·</span></span><span>{{ formatNumber(item.settled) }} 次响应<span v-if="item.sinceStart && !allSinceStart" class="ui-sep">·</span></span><span v-if="item.sinceStart && !allSinceStart">启动以来</span></p>
+                <!-- 「·」由样式画在每项前面，行首那个被裁掉：折行后不会有点挂在行尾 / The 「·」 is drawn before each item and clipped at a line start, so a wrapped line never ends on one -->
+                <p class="ui-rec__phone overview-upstream-line"><span>成功率 <b :class="`overview-text--${item.health}`">{{ formatPercent(upstreamSuccessRate(item.shown)) }}</b></span><span v-if="hasLatency">平均 {{ formatLatency(item.shown.avg_latency_ms) }}</span><span>{{ formatNumber(item.settled) }} 次响应</span></p>
+                <p v-if="item.sinceStart && !allSinceStart" class="ui-rec__phone overview-upstream-basis">启动以来的累计</p>
               </div>
               <div v-if="expandedUpstream === upstreamKey(item)" class="overview-upstream-detail ui-rise">
                 <dl class="ui-strip overview-upstream-counts">
@@ -875,8 +877,13 @@ onBeforeUnmount(() => {
 .overview-upstream-detail { display: grid; grid-template-columns: var(--rec-cols); column-gap: var(--s-4); padding-bottom: var(--s-3); border-bottom: 1px solid var(--l-hair); }
 .overview-upstream-detail:last-child { border-bottom: 0; }
 .overview-upstream-counts { grid-column: 1; grid-template-columns: repeat(2, minmax(0, 1fr)); padding-left: calc(var(--size-dot) + var(--s-2)); font-variant-numeric: tabular-nums; }
-.overview-upstream-line { flex-wrap: wrap; align-items: baseline; gap: 0 var(--s-2); margin: 0; color: var(--l-ink-3); font-size: var(--t-2); font-variant-numeric: tabular-nums; }
+/* 每项的「·」占项与项之间的整段空隙（点两边各 8px），行首那项的点落在左边界外、被 overflow 裁掉
+   Each item's 「·」 fills the whole space between items (8px either side of the dot); the line-start item's dot falls outside
+   the left edge and is clipped by overflow */
+.overview-upstream-line { --sep: calc(var(--s-2) * 2 + .3em); flex-wrap: wrap; align-items: baseline; column-gap: var(--sep); margin: 0; overflow: hidden; color: var(--l-ink-3); font-size: var(--t-2); font-variant-numeric: tabular-nums; }
+.overview-upstream-line > span::before { content: "·"; display: inline-block; width: var(--sep); margin-inline-start: calc(var(--sep) * -1); color: var(--l-line-strong); text-align: center; }
 .overview-upstream-line b { color: var(--l-ink-2); font-weight: var(--w-medium); }
+.overview-upstream-basis { margin: 0; color: var(--l-ink-3); font-size: var(--t-1); }
 
 /* 分布：1200 以上并成一行，第一栏（Pipeline 名长）宽一些；响应码、缓存为空时不渲染，剩下的铺满。900–1199 和 900 以下见下面的媒体查询。
    Distributions: from 1200 up they share a row, the first (long Pipeline names) wider; empty response-code or cache blocks are
@@ -969,6 +976,8 @@ onBeforeUnmount(() => {
   .overview-ledger .ui-rec { row-gap: var(--s-1); }
   .overview-ledger .ui-rec-head, .overview-ledger .ui-rec__n, .overview-basis { display: none; }
   .overview-ledger .ui-rec__phone { display: flex; grid-column: 1; padding-left: calc(var(--size-dot) + var(--s-2)); }
+  /* 裁剪边界要落在文字起点：这一行用外边距对齐地址，不用内边距 / The clip edge must sit where the text starts, so this line aligns with a margin, not padding */
+  .overview-ledger .overview-upstream-line { margin-left: calc(var(--size-dot) + var(--s-2)); padding-left: 0; }
   .overview-upstream .ui-rec__act { grid-row: 1 / span 2; grid-column: 2; }
   .overview-distributions, .overview-distributions.is-first-empty { grid-template-columns: minmax(0, 1fr); }
   .overview-lead, .overview-shares { max-width: 40rem; }
@@ -998,6 +1007,8 @@ onBeforeUnmount(() => {
   .overview-toolbar { align-items: stretch; }
   .overview-toolbar-tools { width: 100%; justify-content: space-between; }
   .overview-rankings { grid-template-columns: minmax(0, 1fr); gap: var(--s-5); }
+  /* 三块分布叠起来时和整页一样隔 24 / Stacked distributions keep the page's 24 rhythm */
+  .overview-distributions { gap: var(--s-5); }
   .overview-toolbar-tools > .ui-seg { flex: 1; }
   .overview-runtime-actions { width: 100%; }
   .overview-runtime-actions > * { flex: 1 1 0; }
