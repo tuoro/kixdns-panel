@@ -72,7 +72,9 @@ async function checkUpdates(): Promise<void> {
   const fresh = notifications.unreadNotices.value.filter((notice) => !announcedUpdates.has(notice.id))
   const labels = fresh.map((notice) => notice.title)
   fresh.forEach((notice) => announcedUpdates.add(notice.id))
-  if (labels.length > 0) toast.info(`${labels.join('、')} ${labels.length > 1 ? '均有更新' : '有更新'}，请前往系统页面查看`)
+  // 人已经在系统页上，「可用更新」就在眼前，不再弹一条叫他去系统页的提示
+  // Already on the system page, where 可用更新 is in plain sight: no toast telling the reader to go there
+  if (labels.length > 0 && route.name !== 'system') toast.info(`${labels.join('、')} ${labels.length > 1 ? '均有更新' : '有更新'}，请前往系统页面查看`)
 }
 
 watch(() => route.fullPath, () => { activePopover.value = null })

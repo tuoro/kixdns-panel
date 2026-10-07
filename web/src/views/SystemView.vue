@@ -506,9 +506,10 @@ onBeforeUnmount(() => {
             <span class="update-row__from-to">
               <template v-if="kernelAction === 'update'">正在下载、校验并切换内核</template>
               <span v-else-if="!kixdnsNotice" class="system-stale">检查失败：{{ updateStatus.kixdns_error ?? '原因未知' }}</span>
-              <template v-else-if="kixdnsNotice.available && kixdnsNotice.security_update"><span class="ui-mono">{{ formatKixdnsVersion(activeVersion) }}</span> 依赖安全升级<template v-if="kixdnsNotice.dependency_revision"> · <span class="ui-mono">r{{ kixdnsNotice.dependency_revision }}</span></template></template>
-              <template v-else-if="kixdnsNotice.available"><span class="ui-mono">{{ formatKixdnsVersion(activeVersion) }}</span> → <span class="ui-mono">{{ latestKixdnsVersion() }}</span></template>
-              <template v-else-if="kixdnsNotice.current_commit">已是最新 · <span class="ui-mono">{{ formatKixdnsVersion(activeVersion) }}</span></template>
+              <!-- 只在新旧版本之间断行，「→」「·」跟着后一段走：不会挂在行尾 / Lines break only between the two versions, and 「→」/「·」 travel with what follows, so neither is left at a line end -->
+              <template v-else-if="kixdnsNotice.available && kixdnsNotice.security_update"><span class="ui-mono">{{ formatKixdnsVersion(activeVersion) }}</span> <span class="update-row__keep">依赖安全升级<template v-if="kixdnsNotice.dependency_revision"> · <span class="ui-mono">r{{ kixdnsNotice.dependency_revision }}</span></template></span></template>
+              <template v-else-if="kixdnsNotice.available"><span class="ui-mono">{{ formatKixdnsVersion(activeVersion) }}</span> <span class="update-row__keep">→ <span class="ui-mono">{{ latestKixdnsVersion() }}</span></span></template>
+              <template v-else-if="kixdnsNotice.current_commit"><span class="update-row__keep">已是最新 · <span class="ui-mono">{{ formatKixdnsVersion(activeVersion) }}</span></span></template>
               <template v-else>尚未安装</template>
             </span>
             <span v-if="kixdnsNotice">构建于 {{ buildTime(kixdnsNotice.created_at) }}</span>
@@ -526,7 +527,7 @@ onBeforeUnmount(() => {
             <span class="update-row__from-to">
               <template v-if="panelUpdateRunning">{{ panelUpdateLabel() }}</template>
               <span v-else-if="!panelNotice" class="system-stale">检查失败：{{ updateStatus.panel_error ?? '原因未知' }}</span>
-              <template v-else-if="panelNotice.available"><span class="ui-mono">{{ panelNotice.current_release ?? `v${panelNotice.current_version}` }}</span> → <span class="ui-mono">v{{ panelNotice.latest_version }}</span></template>
+              <template v-else-if="panelNotice.available"><span class="ui-mono">{{ panelNotice.current_release ?? `v${panelNotice.current_version}` }}</span> <span class="update-row__keep">→ <span class="ui-mono">v{{ panelNotice.latest_version }}</span></span></template>
               <template v-else>{{ panelUpdateLabel() }}</template>
             </span>
             <span v-if="panelNotice?.published_at">发布于 {{ buildTime(panelNotice.published_at) }}</span>
