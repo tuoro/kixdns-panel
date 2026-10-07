@@ -55,3 +55,8 @@ updates:
       - dependency-name: vue-router
         update-types:
           - version-update:semver-major
+      # vue-tsc 3.3.12 把 v-for 里组件静态属性中的「//」（占位提示里的网址）当成注释开头，
+      # 循环变量随之丢失，类型检查误报（vuejs/language-tools#6240）。只跳过这一版，修好的版本照常升。
+      - dependency-name: vue-tsc
+        versions:
+          - "3.3.12"
