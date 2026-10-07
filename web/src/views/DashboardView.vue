@@ -227,10 +227,10 @@ const healthCounts = computed(() => {
   return counts
 })
 const judgedUpstreams = computed(() => upstreamRows.value.length - healthCounts.value.pending)
-// 每一行都退回了累计时，整个上游状态（和健康卡）说的就是启动以来，不再逐行标注
-// When every row fell back to the lifetime total, the whole upstream status section (and the health tile) speaks for the whole run; rows are not marked one by one
+// 每一行都退回了累计时，整个上游状态（和健康卡）的时段改写成启动以来；只有部分退回时不逐行标注，也不在健康卡里计数
+// When every row fell back to the lifetime total, the upstream status section (and the health tile) names the whole run as
+// its period; when only some did, neither the rows nor the health tile mark them
 const allSinceStart = computed(() => upstreamRows.value.length > 0 && upstreamRows.value.every((item) => item.sinceStart))
-const someSinceStart = computed(() => upstreamRows.value.filter((item) => item.sinceStart).length)
 const ledgerPeriod = computed(() => (allSinceStart.value ? '启动以来' : recentWindowLabel(recentWindow.value)))
 // 上游状态里有没有耗时：旧增强版整列都没有，就不画这一列 / Whether upstream status has latency at all: old enhanced builds have none, and the column is not drawn
 const hasLatency = computed(() => upstreamRows.value.some((item) => item.shown.avg_latency_ms !== null))
@@ -239,18 +239,16 @@ const hasLatency = computed(() => upstreamRows.value.some((item) => item.shown.a
 const healthSegments = computed(() => (['healthy', 'degraded', 'unhealthy', 'pending'] as const)
   .map((key) => ({ key, share: upstreamRows.value.length ? healthCounts.value[key] / upstreamRows.value.length : 0 }))
   .filter((segment) => segment.share > 0))
-// 降级、异常各带各的颜色，不拼成一段用最坏的那个颜色；后面最多再跟一项：观察中的、按启动以来判定的，都没有才写判定标准
+// 降级、异常各带各的颜色，不拼成一段用最坏的那个颜色；后面最多再跟一项：有观察中的写观察中，没有才写判定标准
 // Degraded and unhealthy each keep their own colour rather than sharing the worse one; at most one more item follows —
-// upstreams still observed or judged on the lifetime total — and the criteria only when neither applies
+// the upstreams still observed, or the criteria when there are none
 interface FootPart { text: string; tone?: UpstreamHealth }
 const healthFoot = computed<FootPart[]>(() => {
   const { degraded, unhealthy, pending } = healthCounts.value
   const trouble: FootPart[] = []
   if (degraded) trouble.push({ text: `${degraded} 个降级`, tone: 'degraded' })
   if (unhealthy) trouble.push({ text: `${unhealthy} 个异常`, tone: 'unhealthy' })
-  const observed: FootPart | null = pending
-    ? { text: `${pending} 个观察中，响应不足 ${MIN_HEALTH_SAMPLES} 次` }
-    : someSinceStart.value && !allSinceStart.value ? { text: `${someSinceStart.value} 个按启动以来判定` } : null
+  const observed: FootPart | null = pending ? { text: `${pending} 个观察中，响应不足 ${MIN_HEALTH_SAMPLES} 次` } : null
   const criteria: FootPart = { text: '成功率 ≥ 99% 且平均 < 1 s' }
   if (trouble.length) return [...trouble, observed ?? criteria]
   return observed ? [observed, criteria] : [criteria]
@@ -643,7 +641,6 @@ onBeforeUnmount(() => {
                     <!-- 地址最后一段和传输标签绑在一起折行，标签不会单独落到下一行 / The address's last segment and the transport tag wrap together, so the tag never drops to a line of its own -->
                     <span class="overview-address"><template v-for="(part, index) in breakable(item.upstream).slice(0, -1)" :key="index"><span class="ui-mono">{{ part }}</span><wbr /></template><span class="overview-address-tail"><span class="ui-mono">{{ breakable(item.upstream).at(-1) }}</span><span class="ui-tag ui-tag--mono">{{ item.transport }}</span></span></span>
                   </span>
-                  <span v-if="item.sinceStart && !allSinceStart" class="ui-rec__meta overview-basis">启动以来的累计</span>
                 </div>
                 <span class="ui-rec__n" :class="`overview-text--${item.health}`"><span class="overview-sr-only">成功率 </span>{{ formatPercent(upstreamSuccessRate(item.shown)) }}</span>
                 <span v-if="hasLatency" class="ui-rec__n"><span class="overview-sr-only">平均耗时 </span>{{ formatLatency(item.shown.avg_latency_ms) }}</span>
@@ -866,7 +863,6 @@ onBeforeUnmount(() => {
 .overview-dot--degraded { background: var(--warn-l); }
 .overview-dot--unhealthy { background: var(--err-l); }
 .overview-dot--pending { background: var(--l-ink-3); }
-.overview-basis { margin-top: 0; padding-left: calc(var(--size-dot) + var(--s-2)); }
 .overview-expand svg { transition: transform var(--m-slow) var(--ease-out); }
 .overview-expand[aria-expanded="true"] svg { transform: rotate(90deg); }
 .overview-upstream.is-open { border-bottom-color: transparent; }
@@ -972,7 +968,7 @@ onBeforeUnmount(() => {
 @media (max-width: 899px) {
   .overview-ledger .ui-rec, .overview-ledger-list--no-latency :is(.ui-rec, .overview-upstream-detail), .overview-upstream-detail { --rec-cols: minmax(0, 1fr) var(--h-touch); }
   .overview-ledger .ui-rec { row-gap: var(--s-1); }
-  .overview-ledger .ui-rec-head, .overview-ledger .ui-rec__n, .overview-basis { display: none; }
+  .overview-ledger .ui-rec-head, .overview-ledger .ui-rec__n { display: none; }
   .overview-ledger .ui-rec__phone { display: flex; grid-column: 1; padding-left: calc(var(--size-dot) + var(--s-2)); }
   /* 裁剪边界要落在文字起点：这一行用外边距对齐地址，不用内边距 / The clip edge must sit where the text starts, so this line aligns with a margin, not padding */
   .overview-ledger .overview-upstream-line { margin-left: calc(var(--size-dot) + var(--s-2)); padding-left: 0; }
