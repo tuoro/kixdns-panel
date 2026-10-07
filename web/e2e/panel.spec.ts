@@ -487,6 +487,27 @@ test('系统页按「要不要现在动手」排序，更新项压成一行 @res
   await expectNoPageOverflow(page)
 })
 
+test('系统页上不弹「请前往系统页面查看」；版本换行时「→」跟着新版本走 @responsive', async ({ page }) => {
+  // 别的页面照常提示 / Other pages still announce the update
+  await open(page, '/')
+  await expect(page.locator('.toast').filter({ hasText: '请前往系统页面查看' })).toBeVisible()
+  // 直接打开系统页：「可用更新」就在眼前，不再弹 / Opening the system page directly: 可用更新 is in plain sight, so no toast
+  await open(page, '/system')
+  await expect(page.locator('.update-row').first()).toBeVisible()
+  await expect(page.locator('.toast')).toHaveCount(0)
+  // 两个版本放不下一行时，「→」和新版本在同一行，不挂在旧版本后面
+  // When both versions do not fit on one line, the 「→」 shares a line with the new version instead of trailing the old one
+  const fromTo = page.locator('.update-row').first().locator('.update-row__from-to')
+  const [arrow, latest] = await fromTo.evaluate((element) => {
+    const keep = element.querySelector('.update-row__keep')!
+    const range = document.createRange()
+    range.setStart(keep.firstChild!, 0)
+    range.setEnd(keep.firstChild!, 1)
+    return [range.getBoundingClientRect().top, keep.querySelector('.ui-mono')!.getBoundingClientRect().top]
+  })
+  expect(Math.abs(arrow - latest)).toBeLessThan(4)
+})
+
 test('内核可更新到最新并回到上一个 @responsive', async ({ page }) => {
   await open(page, '/system')
   const kernelRow = page.locator('.update-row').first()
