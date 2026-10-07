@@ -471,11 +471,15 @@ onBeforeUnmount(() => {
     <UiPageHeader class="service-line" title="系统" stack>
       <template #meta>
         <template v-if="service">
-          <span class="ui-dot" :class="{ 'ui-dot--off': !running }"></span>
-          <span class="ui-mono">{{ service.unit }}</span>
-          <span>{{ running ? '正在运行' : '已停止' }}</span>
-          <template v-if="service.main_pid"><span class="ui-sep">·</span><span>PID <span class="ui-mono">{{ service.main_pid }}</span></span></template>
-          <template v-if="unusualServiceState"><span class="ui-sep">·</span><span class="ui-mono">{{ unusualServiceState }}</span></template>
+          <span class="ui-dots">
+            <span class="ui-ph__lead">
+              <span class="ui-dot" :class="{ 'ui-dot--off': !running }"></span>
+              <span class="ui-mono">{{ service.unit }}</span>
+              <span>{{ running ? '正在运行' : '已停止' }}</span>
+            </span>
+            <span v-if="service.main_pid">PID <span class="ui-mono">{{ service.main_pid }}</span></span>
+            <span v-if="unusualServiceState"><span class="ui-mono">{{ unusualServiceState }}</span></span>
+          </span>
         </template>
         <span v-else-if="loadingService" class="sk system-skeleton-meta" role="status" aria-label="读取服务状态"></span>
         <span v-else>服务状态暂不可用</span>
@@ -558,10 +562,11 @@ onBeforeUnmount(() => {
         <div v-if="loadingKernel && !kernel" class="sk system-skeleton-panel" role="status" aria-label="读取安装状态"></div>
         <template v-else-if="kernel">
           <p class="install-version">{{ installed ? formatKixdnsVersion(activeVersion) : '尚未安装' }}</p>
-          <p v-if="installed" class="install-meta">
+          <p v-if="installed" class="ui-dots install-meta">
             <span>补丁集 <span class="ui-mono">{{ activeVersion?.patchset ? `p${activeVersion.patchset}${activeVersion.dependency_revision ? `-r${activeVersion.dependency_revision}` : ''}` : '未记录' }}</span></span>
-            <span class="ui-sep">·</span><span>控制协议 <span class="ui-mono">{{ activeVersion?.control_protocol ? `v${activeVersion.control_protocol}` : '未记录' }}</span></span>
-            <template v-if="activeVersion?.source_url"><span class="ui-sep">·</span><a class="ui-link" :href="activeVersion.source_url" target="_blank" rel="noopener noreferrer">上游详情<ExternalLink :size="12" /></a></template>
+            <span>控制协议 <span class="ui-mono">{{ activeVersion?.control_protocol ? `v${activeVersion.control_protocol}` : '未记录' }}</span></span>
+            <!-- 链接本身是 inline-flex，套一层再让 ui-dots 画点 / The link is inline-flex, so it is wrapped before ui-dots draws the dot -->
+            <span v-if="activeVersion?.source_url"><a class="ui-link" :href="activeVersion.source_url" target="_blank" rel="noopener noreferrer">上游详情<ExternalLink :size="12" /></a></span>
           </p>
           <p v-else class="install-meta">在上方「可用更新」里安装最新构建</p>
           <dl class="ui-strip install-hashes">

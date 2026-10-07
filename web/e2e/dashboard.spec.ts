@@ -289,8 +289,9 @@ test('手机上窗口分段每格可点满 44：外框的内边距也算这一�
   expect(hits).toMatchObject({ top: true, bottom: true })
 })
 
-test('「·」可以在行尾，不会出现在行首：每个分隔点都和它前面那个字在同一行（GB/T 15834）', async ({ page }) => {
+test('「·」不在行首，也不挂在行尾：折行处的点被裁掉，露出来的点前后两项都在同一行', async ({ page }) => {
   await openOverview(page)
+  await expect(page.locator('.ui-sep')).toHaveCount(0)
   // 每种版式取它最宽的视口，把页面逐像素收窄到这种版式最窄时的宽度，扫过每一处折行点
   // For each layout take its widest viewport and narrow the page pixel by pixel down to that layout's narrowest width, passing every wrap point
   for (const [widest, narrowest] of [[640, 320], [899, 641], [1280, 900]]) {
@@ -302,22 +303,23 @@ test('「·」可以在行尾，不会出现在行首：每个分隔点都和它
       const found = new Set<string>()
       for (let size = viewport - gutter; size >= floor - gutter; size -= 1) {
         root.style.maxWidth = `${size}px`
-        for (const sep of document.querySelectorAll('.overview-page .ui-sep')) {
-          if (!sep.getClientRects().length) continue
-          const walker = document.createTreeWalker(sep.parentElement!.closest('p, .ui-ph__meta') ?? sep.parentElement!, NodeFilter.SHOW_TEXT)
-          let last: Text | null = null
-          for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
-            if (sep.contains(node)) break
-            if (node.textContent!.trim()) last = node
-          }
-          if (!last) continue
-          const text = last.textContent!.replace(/\s+$/, '')
-          const range = document.createRange()
-          range.setStart(last, text.length - 1)
-          range.setEnd(last, text.length)
-          const before = range.getBoundingClientRect()
-          const mark = sep.getBoundingClientRect()
-          if (Math.abs(before.top - mark.top) >= 4 || mark.left <= before.left) found.add(`${size}px ${sep.parentElement!.textContent}`)
+        for (const run of document.querySelectorAll<HTMLElement>('.overview-page .ui-dots')) {
+          if (!run.getClientRects().length) continue
+          // 裁剪从左边界算起：左边有内边距或没有裁剪，行首的点就会露出来
+          // The clip starts at the left edge: left padding, or no clip at all, would expose a line-start dot
+          const style = getComputedStyle(run)
+          if (style.paddingLeft !== '0px' || style.clipPath === 'none') found.add(`裁剪 ${run.textContent}`)
+          const edge = run.getBoundingClientRect().left
+          const items = [...run.children].filter((item) => item.getClientRects().length)
+          items.forEach((item, index) => {
+            const box = item.getBoundingClientRect()
+            // 贴着左边界的项在行首，它的点在边界外、被裁掉 / An item flush with the left edge starts a line; its dot is outside the edge, clipped
+            if (box.left - edge < 1) return
+            // 其余项的点露在外面：前一项必须在同一行、在它左边，点才是夹在两项中间
+            // Any other item shows its dot, so the item before it must sit on the same line to its left, with the dot between them
+            const previous = items[index - 1]?.getBoundingClientRect()
+            if (!previous || previous.right > box.left + 1 || previous.bottom <= box.top || previous.top >= box.bottom) found.add(`${size}px ${run.textContent}`)
+          })
         }
       }
       root.style.maxWidth = ''
@@ -325,6 +327,24 @@ test('「·」可以在行尾，不会出现在行首：每个分隔点都和它
     }, [widest, narrowest])
     expect(stranded, `视口 ${narrowest}–${widest}`).toEqual([])
   }
+})
+
+test('宽屏上配置卡排成一行，规则命中的 Pipeline 从中线开始', async ({ page }) => {
+  await openOverview(page)
+  // 1440：代次、摘要、PID 和按钮从左到右在同一行，底栏不再单独占一条
+  // At 1440 the generation, the digests, and the PID with buttons run left to right on one row; the foot no longer has a band of its own
+  const card = page.locator('.overview-runtime')
+  const lead = await card.locator('.overview-config-lead').boundingBox()
+  const hashes = await card.locator('.overview-config-hashes').boundingBox()
+  const foot = await card.locator('.ui-card__foot').boundingBox()
+  expect(hashes!.x).toBeGreaterThan(lead!.x + lead!.width)
+  expect(foot!.x).toBeGreaterThan(hashes!.x + hashes!.width)
+  expect(foot!.y).toBeLessThan(hashes!.y + hashes!.height)
+  // 规则和 Pipeline 平分宽度：次数不再和规则名隔着一整段空白 / Rule and pipeline split the width, so no single long gap separates a rule from its count
+  await page.getByRole('tab', { name: '规则命中' }).click()
+  const table = await page.locator('.overview-rules').boundingBox()
+  const pipeline = await page.locator('.overview-rule-pipeline').first().boundingBox()
+  expect(pipeline!.x - table!.x).toBeGreaterThan(table!.width * 0.4)
 })
 
 // 概览的演示端点交回的是同一个对象：改完它，离开再回来让概览重新挂载、重新读一遍

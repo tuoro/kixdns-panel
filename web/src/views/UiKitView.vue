@@ -69,7 +69,7 @@ function showNew(): void {
 <template>
   <div class="page ui-kit">
     <UiPageHeader title="系统" stack>
-      <template #meta><span class="ui-dot"></span><span class="ui-mono">kixdns.service</span> 正在运行<span class="ui-sep">·</span>PID <span class="ui-mono">1428</span><span class="ui-sep">·</span>已运行 3 天 8 小时</template>
+      <template #meta><span class="ui-dots"><span class="ui-ph__lead"><span class="ui-dot"></span><span class="ui-mono">kixdns.service</span><span>正在运行</span></span><span>PID <span class="ui-mono">1428</span></span><span>已运行 3 天 8 小时</span></span></template>
       <template #actions><button class="ui-btn ui-btn--secondary" type="button"><RotateCcw :size="16" />重启</button><button class="ui-btn ui-btn--danger" type="button"><Square :size="16" />停止</button></template>
     </UiPageHeader>
 
