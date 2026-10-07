@@ -51,6 +51,8 @@ test('首页展示精确分布，页签可用键盘切换且完整保留三个�
   await expect(vitals.nth(0).locator('.overview-vital-label')).toHaveText('响应速度 · 最近一小时')
   await expect(vitals.nth(1).locator('.overview-vital-label')).toHaveText('缓存命中率 · 启动以来')
   await expect(vitals.nth(2).locator('.overview-vital-label')).toHaveText('上游健康 · 最近一小时')
+  // 有一个上游退回了累计，注脚也不为它计数，照写判定标准 / One upstream fell back to its lifetime total; the foot does not count it and states the criteria
+  await expect(vitals.nth(2).locator('.overview-vital-foot')).toHaveText('成功率 ≥ 99% 且平均 < 1 s')
   const speed = vitals.nth(0)
   // 平均 12.6 ms 按上游状态的写法取整；四段不重叠的区间写在细条的读屏名称里，触屏也读得到
   await expect(speed.locator('.overview-vital-figure strong')).toHaveText('13')
@@ -211,10 +213,19 @@ test('上游状态逐行展开，明细跟着这一行的时段，桌面和手�
   // 展开条不染色：这一行好不好，状态点和成功率已经说了 / The expansion is not coloured: the dot and the success rate already say how the row is doing
   await expect(page.locator('.overview-upstream-counts [class*="overview-text--"]')).toHaveCount(0)
   if (testInfo.project.name === 'mobile') {
-    // 手机上每行两行：第二行写数字，最近一小时响应不够的上游标明退回了累计
+    // 手机上每行两行：第二行只写数字 / On a phone each row has two lines, the second only figures
     await expect(rows.first().locator('.overview-upstream-line')).toBeVisible()
-    await expect(rows.first().locator('.overview-upstream-line')).not.toContainText('启动以来')
-    await expect(rows.nth(2).locator('.overview-upstream-line')).toContainText('启动以来')
+    // 数字行用外边距对齐地址（裁掉行首的「·」要靠它），换了写法也不能错位
+    // The figures line aligns with the address by margin (clipping the line-start 「·」 depends on it); it must not drift
+    const line = await rows.nth(2).locator('.overview-upstream-line').boundingBox()
+    const address = await rows.nth(2).locator('.overview-address').boundingBox()
+    expect(Math.round(line!.x)).toBe(Math.round(address!.x))
+    // 三块分布叠起来时和整页一样隔 12，不另起一套间距 / Stacked distributions keep the page's own 12 gap
+    const gaps = await page.evaluate(() => [
+      getComputedStyle(document.querySelector('.overview-view')!).rowGap,
+      getComputedStyle(document.querySelector('.overview-distributions')!).rowGap,
+    ])
+    expect(gaps[1]).toBe(gaps[0])
     await expect(page.locator('.ui-rec-head').first()).toBeHidden()
     // 展开按钮手机上 44 / The expand button is 44 on a phone
     const box = await rows.first().locator('.overview-expand').boundingBox()
@@ -224,10 +235,10 @@ test('上游状态逐行展开，明细跟着这一行的时段，桌面和手�
     expect(typeScale).toBeLessThanOrEqual(32)
   } else {
     await expect(rows.first().locator('.overview-upstream-line')).toBeHidden()
-    // 退回累计的那一行，地址下面写明整行都是启动以来的累计（原来只挂在次数下面）
-    await expect(rows.first().locator('.overview-basis')).toHaveCount(0)
-    await expect(rows.nth(2).locator('.overview-basis')).toHaveText('启动以来的累计')
   }
+  // dns.google 退回了累计（最近一小时响应不足），两种宽度都不逐行加注
+  // dns.google fell back to its lifetime total (too few responses in the last hour); neither width marks the row
+  await expect(rows.nth(2)).not.toContainText('启动以来')
   const sizes = await page.evaluate(() => ({ client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth }))
   expect(sizes.scroll).toBeLessThanOrEqual(sizes.client)
 })
