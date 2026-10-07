@@ -221,7 +221,7 @@ test('上游状态逐行展开，明细跟着这一行的时段，桌面和手�
     const line = await rows.nth(2).locator('.overview-upstream-line').boundingBox()
     const address = await rows.nth(2).locator('.overview-address').boundingBox()
     expect(Math.round(line!.x)).toBe(Math.round(address!.x))
-    // 三块分布叠起来时和整页一样隔 16，不另起一套间距 / Stacked distributions keep the page's own 16 gap
+    // 三块分布叠起来时和整页一样隔 12，不另起一套间距 / Stacked distributions keep the page's own 12 gap
     const gaps = await page.evaluate(() => [
       getComputedStyle(document.querySelector('.overview-view')!).rowGap,
       getComputedStyle(document.querySelector('.overview-distributions')!).rowGap,

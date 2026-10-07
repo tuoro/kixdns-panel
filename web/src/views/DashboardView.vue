@@ -991,11 +991,12 @@ onBeforeUnmount(() => {
 @media (max-width: 640px) {
   .overview-page { gap: var(--s-4); }
   .overview-meta-time { display: none; }
-  /* 小屏上块与块之间收紧：细线上下各 16（24/24 加上行高，一屏里空出近 60）
-     Tighter between blocks on a phone: 16 above and below each hairline (24/24 plus leading left nearly 60 empty) */
-  .overview-view { gap: var(--s-4); }
-  .overview-view .ui-section { padding-top: var(--s-4); }
-  /* 上游最后一行（或它的展开条）不再自带下内边距，和下面的块也只隔 16 / The last upstream row (or its expansion) drops its bottom padding, so it too sits 16 above the next block */
+  /* 小屏上块与块之间收紧：细线上下各 12（24/24 加上行高，一屏里空出近 60）。再紧到 8，标题就离上一块比离自己的数字还近
+     Tighter between blocks on a phone: 12 above and below each hairline (24/24 plus leading left nearly 60 empty). At 8 a
+     heading sits closer to the block above than to its own figure */
+  .overview-view { gap: var(--s-3); }
+  .overview-view .ui-section { padding-top: var(--s-3); }
+  /* 上游最后一行（或它的展开条）不再自带下内边距，和下面的块也只隔 12 / The last upstream row (or its expansion) drops its bottom padding, so it too sits 12 above the next block */
   .overview-ledger-list > :last-child { padding-bottom: 0; }
   .overview-signal { grid-template-columns: minmax(0, 1fr); gap: var(--s-3); padding: var(--s-4); }
   .overview-total-value { font-size: var(--t-6); }
@@ -1004,14 +1005,14 @@ onBeforeUnmount(() => {
   .overview-skeleton-signal { height: calc(var(--s-8) * 3 + var(--s-4) + 1px); }
   .overview-skeleton-vitals i { height: calc(var(--s-8) * 2); }
   .overview-skeleton-meta { height: calc(var(--t-2) * var(--lh-base) * 2 + 2px); }
-  .overview-skeleton { gap: var(--s-4); }
+  .overview-skeleton { gap: var(--s-3); }
   .overview-skeleton-vitals { gap: var(--s-2); }
   .overview-vital { padding: var(--s-3) var(--s-4); }
   .overview-toolbar { align-items: stretch; }
   .overview-toolbar-tools { width: 100%; justify-content: space-between; }
-  .overview-rankings { grid-template-columns: minmax(0, 1fr); gap: var(--s-4); }
-  /* 三块分布叠起来时和整页一样隔 16 / Stacked distributions keep the page's 16 rhythm */
-  .overview-distributions { gap: var(--s-4); }
+  .overview-rankings { grid-template-columns: minmax(0, 1fr); gap: var(--s-3); }
+  /* 三块分布叠起来时和整页一样隔 12 / Stacked distributions keep the page's 12 rhythm */
+  .overview-distributions { gap: var(--s-3); }
   .overview-toolbar-tools > .ui-seg { flex: 1; }
   .overview-runtime-actions { width: 100%; }
   .overview-runtime-actions > * { flex: 1 1 0; }
