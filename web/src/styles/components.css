@@ -12,8 +12,21 @@
 .ui-ph__title { margin: 0; color: var(--l-ink); font-family: var(--f-display); font-size: var(--t-5); font-weight: var(--w-bold); line-height: var(--lh-tight); }
 .ui-ph__meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-1) var(--s-2); margin-top: var(--s-2); color: var(--l-ink-2); font-size: var(--t-2); }
 .ui-ph__meta:empty { display: none; }
+/* 页头说明的第一段：状态点、服务名、状态 / The meta's leading segment: status dot, unit, state */
+.ui-ph__lead { display: inline-flex; align-items: baseline; gap: var(--s-2); }
+.ui-ph__lead > .ui-dot { align-self: center; }
+.ui-ph__meta > .ui-dots { row-gap: var(--s-1); }
 .ui-ph__actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--s-2); }
-.ui-sep { color: var(--l-line-strong); }
+/* 用「·」隔开的一串：点画在每一项前面，占满项与项之间的空隙（点两边各 8px）。折行后落到行首那项的点在左边界外，被裁掉，
+   所以点既不在行首，也不会挂在上一行末尾。容器左边不能有内边距（裁剪从左边界算起）；项本身别用 inline-flex，点会吃到它的 gap。
+   A run separated by 「·」: each item draws its dot in front, filling the space between items (8px either side). The dot of an
+   item wrapped to a line start falls outside the left edge and is clipped, so a dot neither starts a line nor ends the one
+   above. The container takes no left padding (the clip starts at its left edge); items should not be inline-flex, or the dot
+   picks up their gap. */
+.ui-dots { --dots-gap: calc(var(--s-2) * 2 + .3em); display: flex; flex-wrap: wrap; align-items: baseline; column-gap: var(--dots-gap); clip-path: inset(-.5em -1em -.5em calc(var(--s-1) * -1)); }
+.ui-dots > *::before { content: "·"; display: inline-block; width: var(--dots-gap); margin-inline-start: calc(var(--dots-gap) * -1); color: var(--l-line-strong); text-align: center; }
+/* 第一项总在第一行行首，用不着点；这样它可以是 inline-flex / The first item always starts the first line and needs no dot, so it may be inline-flex */
+.ui-dots > :first-child::before { content: none; }
 
 /* ---------- 状态点 ---------- */
 .ui-dot { width: var(--size-dot); height: var(--size-dot); flex: 0 0 auto; display: inline-block; border-radius: var(--r-full); background: var(--ok-mark-l); }

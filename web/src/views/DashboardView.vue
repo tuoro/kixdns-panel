@@ -502,17 +502,21 @@ onBeforeUnmount(() => {
     <UiPageHeader class="overview-heading" title="概览">
       <template #meta>
         <template v-if="service">
-          <span class="ui-dot" :class="{ 'ui-dot--warn': serviceTone === 'warn', 'ui-dot--err': serviceTone === 'err', 'ui-dot--off': serviceTone === 'off' }" aria-hidden="true"></span>
-          <span class="ui-mono">{{ service.unit }}</span>
-          <!-- 「·」收在前一段的末尾：折行只会发生在它后面，它可以在行尾，不会出现在行首（GB/T 15834）
-               The 「·」 closes the segment before it, so a wrap can only fall after it: it may end a line, never start one (GB/T 15834) -->
-          <span>{{ serviceLabel }}<span v-if="unusualServiceState || metaTail" class="ui-sep">·</span></span>
-          <span v-if="unusualServiceState"><span class="ui-mono">{{ unusualServiceState }}</span><span v-if="metaTail" class="ui-sep">·</span></span>
-          <template v-if="metaTail === 'live' && overview">
-            <span>已运行 {{ formatDuration(overview.health.uptime_seconds) }}<span class="ui-sep overview-meta-time">·</span></span>
-            <span class="overview-meta-time">更新于 <span class="ui-mono">{{ updatedLabel }}</span></span>
-          </template>
-          <span v-else-if="metaTail === 'snapshot'">快照 <span class="ui-mono">{{ snapshotLabel }}</span></span>
+          <!-- 「·」由 ui-dots 画在后一段前面，折行处的点被裁掉：既不在行首，也不挂在行尾
+               ui-dots draws the 「·」 before the following segment and clips it at a wrap: never at a line start, never left at a line end -->
+          <span class="ui-dots">
+            <span class="ui-ph__lead">
+              <span class="ui-dot" :class="{ 'ui-dot--warn': serviceTone === 'warn', 'ui-dot--err': serviceTone === 'err', 'ui-dot--off': serviceTone === 'off' }" aria-hidden="true"></span>
+              <span class="ui-mono">{{ service.unit }}</span>
+              <span>{{ serviceLabel }}</span>
+            </span>
+            <span v-if="unusualServiceState"><span class="ui-mono">{{ unusualServiceState }}</span></span>
+            <template v-if="metaTail === 'live' && overview">
+              <span>已运行 {{ formatDuration(overview.health.uptime_seconds) }}</span>
+              <span class="overview-meta-time">更新于 <span class="ui-mono">{{ updatedLabel }}</span></span>
+            </template>
+            <span v-else-if="metaTail === 'snapshot'">快照 <span class="ui-mono">{{ snapshotLabel }}</span></span>
+          </span>
         </template>
         <span v-else-if="loading" class="sk overview-skeleton-meta" role="status" aria-label="读取服务状态"></span>
         <span v-else>服务状态暂不可用</span>
@@ -585,8 +589,8 @@ onBeforeUnmount(() => {
               <span class="overview-meter" role="img" :aria-label="`耗时分布：${speed.spoken}`">
                 <i v-for="band in speed.bands" :key="band.key" :class="`overview-meter--${band.key}`" :style="{ width: `${band.share * 100}%` }"></i>
               </span>
-              <p v-if="speed.health === 'healthy'" class="overview-vital-foot"><span>10 ms 内 <b>{{ formatPercent(speed.within10) }}</b><span class="ui-sep">·</span></span><span>100 ms 内 <b>{{ formatPercent(speed.within100) }}</b></span></p>
-              <p v-else class="overview-vital-foot"><span :class="`overview-text--${speed.health}`">100 ms 内 <b>{{ formatPercent(speed.within100) }}</b><span class="ui-sep">·</span></span><span>1 s 以上 <b>{{ formatSmallPercent(speed.slower) }}</b></span></p>
+              <p v-if="speed.health === 'healthy'" class="ui-dots overview-vital-foot"><span>10 ms 内 <b>{{ formatPercent(speed.within10) }}</b></span><span>100 ms 内 <b>{{ formatPercent(speed.within100) }}</b></span></p>
+              <p v-else class="ui-dots overview-vital-foot"><span :class="`overview-text--${speed.health}`">100 ms 内 <b>{{ formatPercent(speed.within100) }}</b></span><span>1 s 以上 <b>{{ formatSmallPercent(speed.slower) }}</b></span></p>
             </template>
             <template v-else>
               <p class="overview-vital-figure"><strong>—</strong></p>
@@ -601,7 +605,7 @@ onBeforeUnmount(() => {
               <i class="overview-meter--fresh" :style="{ width: `${cacheFreshShare * 100}%` }"></i><i class="overview-meter--stale" :style="{ width: `${cacheStaleShare * 100}%` }"></i>
             </span>
             <p v-if="!cacheLookups" class="overview-vital-foot">{{ overview ? '还没有查询过缓存' : '尚无数据' }}</p>
-            <p v-else class="overview-vital-foot"><span>{{ formatNumber(displayOverview.metrics.cache_entries) }} 条缓存<span v-if="staleShare" class="ui-sep">·</span></span><span v-if="staleShare">续用旧结果 {{ formatPercent(staleShare) }}</span></p>
+            <p v-else class="ui-dots overview-vital-foot"><span>{{ formatNumber(displayOverview.metrics.cache_entries) }} 条缓存</span><span v-if="staleShare">续用旧结果 {{ formatPercent(staleShare) }}</span></p>
           </article>
           <article class="overview-vital">
             <h2 class="overview-vital-label">上游健康<template v-if="precisionSupported && judgedUpstreams"> · {{ ledgerPeriod }}</template></h2>
@@ -610,7 +614,7 @@ onBeforeUnmount(() => {
               <span class="overview-meter overview-meter--health" role="img" :aria-label="`健康 ${healthCounts.healthy} 个，降级 ${healthCounts.degraded} 个，异常 ${healthCounts.unhealthy} 个，观察中 ${healthCounts.pending} 个`">
                 <i v-for="segment in healthSegments" :key="segment.key" :class="`overview-meter--${segment.key}`" :style="{ width: `${segment.share * 100}%` }"></i>
               </span>
-              <p class="overview-vital-foot"><span v-for="(part, index) in healthFoot" :key="part.text" :class="part.tone ? `overview-text--${part.tone}` : ''">{{ part.text }}<span v-if="index < healthFoot.length - 1" class="ui-sep">·</span></span></p>
+              <p class="ui-dots overview-vital-foot"><span v-for="part in healthFoot" :key="part.text" :class="part.tone ? `overview-text--${part.tone}` : ''">{{ part.text }}</span></p>
             </template>
             <template v-else>
               <p class="overview-vital-figure"><strong>—</strong></p>
@@ -650,8 +654,7 @@ onBeforeUnmount(() => {
                     <ChevronRight :size="16" aria-hidden="true" />
                   </button>
                 </span>
-                <!-- 「·」由样式画在每项前面，行首那个被裁掉：折行后不会有点挂在行尾 / The 「·」 is drawn before each item and clipped at a line start, so a wrapped line never ends on one -->
-                <p class="ui-rec__phone overview-upstream-line"><span>成功率 <b :class="`overview-text--${item.health}`">{{ formatPercent(upstreamSuccessRate(item.shown)) }}</b></span><span v-if="hasLatency">平均 {{ formatLatency(item.shown.avg_latency_ms) }}</span><span>{{ formatNumber(item.settled) }} 次响应</span></p>
+                <p class="ui-rec__phone ui-dots overview-upstream-line"><span>成功率 <b :class="`overview-text--${item.health}`">{{ formatPercent(upstreamSuccessRate(item.shown)) }}</b></span><span v-if="hasLatency">平均 {{ formatLatency(item.shown.avg_latency_ms) }}</span><span>{{ formatNumber(item.settled) }} 次响应</span></p>
               </div>
               <div v-if="expandedUpstream === upstreamKey(item)" class="overview-upstream-detail ui-rise">
                 <dl class="ui-strip overview-upstream-counts">
@@ -701,7 +704,7 @@ onBeforeUnmount(() => {
         <!-- 没运行过：没有窗口、没有总量可说，工具行不出；两张表照样留着（首次安装保留完整布局），各写「尚无数据」
              Never run: no window or volume to speak of, so no toolbar; both tables stay (first install keeps the full layout), each reading 尚无数据 -->
         <div v-if="runtimeState !== 'stopped-empty' && showStatsSection && displayStats?.enabled !== false" class="overview-toolbar">
-          <p><span>{{ statsWindowLabel }}<span v-if="displayStats" class="ui-sep">·</span></span><template v-if="displayStats"><span>已观察 {{ formatNumber(displayStats.requests_observed) }} 次请求<span v-if="displayStats.dropped_updates" class="ui-sep">·</span></span><span v-if="displayStats.dropped_updates">丢弃 {{ formatNumber(displayStats.dropped_updates) }} 次统计更新</span></template></p>
+          <p class="ui-dots"><span>{{ statsWindowLabel }}</span><template v-if="displayStats"><span>已观察 {{ formatNumber(displayStats.requests_observed) }} 次请求</span><span v-if="displayStats.dropped_updates">丢弃 {{ formatNumber(displayStats.dropped_updates) }} 次统计更新</span></template></p>
           <div class="overview-toolbar-tools">
             <UiTabs v-model="statsWindowKey" variant="segment" size="sm" :items="statsWindowItems" label="统计窗口" />
             <!-- 清空按钮一直在，没东西可清、读不到排行时置灰：分段不会因为它出现消失而左右跳
@@ -736,7 +739,7 @@ onBeforeUnmount(() => {
       </section>
 
       <section id="overview-panel-rules" v-show="activeView === 'rules'" class="overview-view" role="tabpanel" aria-labelledby="overview-tab-rules" tabindex="0">
-        <div v-if="rules.length" class="overview-toolbar"><p><span>启动以来<span class="ui-sep">·</span></span><span>请求与响应阶段的累计执行次数</span></p></div>
+        <div v-if="rules.length" class="overview-toolbar"><p class="ui-dots"><span>启动以来</span><span>请求与响应阶段的累计执行次数</span></p></div>
         <div v-if="rules.length" class="overview-rules">
           <div class="ui-rec-head"><span>阶段</span><span>规则</span><span>Pipeline</span><span>执行次数</span></div>
           <div v-for="rule in rules" :key="`${rule.pipeline}:${rule.phase}:${rule.rule}`" class="ui-rec overview-rule">
@@ -757,7 +760,7 @@ onBeforeUnmount(() => {
              and the two digests share one strip (as on the system page's 当前安装). -->
         <template v-if="overview">
           <p class="overview-config-lead">配置代次 <span class="ui-mono">#{{ overview.active_config.generation }}</span></p>
-          <p class="overview-config-meta"><span>重载 <span class="ui-mono">#{{ overview.active_config.reload_sequence }}</span><span class="ui-sep">·</span></span><span>补丁集 <span class="ui-mono">{{ overview.health.patchset ? `p${overview.health.patchset}` : '未记录' }}</span></span></p>
+          <p class="ui-dots overview-config-meta"><span>重载 <span class="ui-mono">#{{ overview.active_config.reload_sequence }}</span></span><span>补丁集 <span class="ui-mono">{{ overview.health.patchset ? `p${overview.health.patchset}` : '未记录' }}</span></span></p>
           <p v-if="!overview.active_config.last_reload.success && overview.active_config.last_reload.error" class="overview-reload-error ui-mono">{{ overview.active_config.last_reload.error }}</p>
           <dl class="ui-strip overview-config-hashes">
             <div><dt>配置摘要</dt><dd class="ui-mono" :title="overview.active_config.sha256">{{ shortHash(overview.active_config.sha256, 14) }}</dd></div>
@@ -785,9 +788,6 @@ onBeforeUnmount(() => {
 <style scoped>
 .overview-page { display: grid; gap: var(--s-5); color: var(--l-ink); }
 .overview-page > * { min-width: 0; }
-/* 「·」收在前一段里，和前一段隔开的距离由它自己补上（段与段之间的 gap 在它后面）
-   The 「·」 lives inside the segment before it and supplies its own space from that segment (the gap between segments follows it) */
-.overview-page .ui-sep { margin-inline-start: var(--s-2); }
 .overview-skeleton-meta { width: 16rem; height: calc(var(--t-2) * var(--lh-base)); }
 .overview-tabs { margin-bottom: calc(var(--s-1) * -1); }
 .overview-view { display: grid; gap: var(--s-6); outline-offset: var(--s-1); }
@@ -820,7 +820,7 @@ onBeforeUnmount(() => {
 .overview-vital-label { margin: 0; color: var(--l-ink-2); font-size: var(--t-2); font-weight: var(--w-normal); }
 .overview-vital-figure { display: flex; align-items: baseline; gap: var(--s-1) var(--s-2); margin: 0; color: var(--l-ink-3); font-size: var(--t-3); font-variant-numeric: tabular-nums; }
 .overview-vital-figure strong { color: var(--l-ink); font-family: var(--f-display); font-size: var(--t-6); font-weight: var(--w-medium); letter-spacing: -.035em; line-height: var(--lh-tight); white-space: nowrap; }
-.overview-vital-foot { align-self: start; display: flex; flex-wrap: wrap; gap: 0 var(--s-2); margin: 0; color: var(--l-ink-3); font-size: var(--t-2); line-height: var(--lh-base); font-variant-numeric: tabular-nums; }
+.overview-vital-foot { align-self: start; margin: 0; color: var(--l-ink-3); font-size: var(--t-2); line-height: var(--lh-base); font-variant-numeric: tabular-nums; }
 .overview-vital-foot b { color: var(--l-ink-2); font-weight: var(--w-medium); }
 /* 细条：一个零件，分段画。耗时是墨色深浅四档；缓存是两段墨色，空白就是未命中；健康按上游状态上色，只有它有颜色。
    The bar is one part drawn in segments: latency in four ink shades; cache in two, the gap being misses; health coloured
@@ -872,11 +872,7 @@ onBeforeUnmount(() => {
 .overview-upstream-detail { display: grid; grid-template-columns: var(--rec-cols); column-gap: var(--s-4); padding-bottom: var(--s-3); border-bottom: 1px solid var(--l-hair); }
 .overview-upstream-detail:last-child { border-bottom: 0; }
 .overview-upstream-counts { grid-column: 1; grid-template-columns: repeat(2, minmax(0, 1fr)); padding-left: calc(var(--size-dot) + var(--s-2)); font-variant-numeric: tabular-nums; }
-/* 每项的「·」占项与项之间的整段空隙（点两边各 8px），行首那项的点落在左边界外、被 overflow 裁掉
-   Each item's 「·」 fills the whole space between items (8px either side of the dot); the line-start item's dot falls outside
-   the left edge and is clipped by overflow */
-.overview-upstream-line { --sep: calc(var(--s-2) * 2 + .3em); flex-wrap: wrap; align-items: baseline; column-gap: var(--sep); margin: 0; overflow: hidden; color: var(--l-ink-3); font-size: var(--t-2); font-variant-numeric: tabular-nums; }
-.overview-upstream-line > span::before { content: "·"; display: inline-block; width: var(--sep); margin-inline-start: calc(var(--sep) * -1); color: var(--l-line-strong); text-align: center; }
+.overview-upstream-line { margin: 0; color: var(--l-ink-3); font-size: var(--t-2); font-variant-numeric: tabular-nums; }
 .overview-upstream-line b { color: var(--l-ink-2); font-weight: var(--w-medium); }
 
 /* 分布：1200 以上并成一行，第一栏（Pipeline 名长）宽一些；响应码、缓存为空时不渲染，剩下的铺满。900–1199 和 900 以下见下面的媒体查询。
@@ -900,7 +896,7 @@ onBeforeUnmount(() => {
 
 /* 查询排行、规则命中：页签下一行说明，右边工具。 / Stats and rules: a line under the tabs, tools on the right. */
 .overview-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-2) var(--s-4); }
-.overview-toolbar p, .overview-config-meta, .overview-runtime-note { display: flex; flex-wrap: wrap; gap: 0 var(--s-2); margin: 0; color: var(--l-ink-3); font-size: var(--t-2); font-variant-numeric: tabular-nums; }
+.overview-toolbar p, .overview-config-meta, .overview-runtime-note { margin: 0; color: var(--l-ink-3); font-size: var(--t-2); font-variant-numeric: tabular-nums; }
 .overview-toolbar-tools { display: flex; align-items: center; gap: var(--s-2); }
 .overview-rankings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-6); transition: opacity var(--m-quick) var(--ease-out); }
 .overview-rankings.is-loading { opacity: .5; }
@@ -920,7 +916,10 @@ onBeforeUnmount(() => {
    组件库把首列以外的表头都右对齐，这里只有次数是数字列，规则和 Pipeline 的表头改回左对齐。
    Head and rows share one set of columns: the rule column fits its content, Pipeline follows right after, the count sits right.
    The kit right-aligns every heading after the first; here only the count is numeric, so the rule and Pipeline headings align left. */
-.overview-rules { display: grid; grid-template-columns: auto fit-content(45%) minmax(0, 1fr) auto; column-gap: var(--s-6); }
+/* 规则、Pipeline 两列平分剩下的宽度，Pipeline 从中线开始：宽屏上规则名和次数之间有一列垫着，不是一整段空白（同上游状态铺满整行）
+   Rule and pipeline split the spare width, so the pipeline starts at the middle: on a wide screen a column bridges the rule and
+   its count instead of one long gap (the table fills the row, as upstream status does) */
+.overview-rules { display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr) auto; column-gap: var(--s-6); }
 .overview-rules .ui-rec, .overview-rules .ui-rec-head { grid-column: 1 / -1; grid-template-columns: subgrid; column-gap: inherit; }
 .overview-rules .ui-rec-head > :nth-child(2), .overview-rules .ui-rec-head > :nth-child(3) { text-align: left; }
 .overview-rule { align-items: baseline; }
@@ -979,6 +978,18 @@ onBeforeUnmount(() => {
   .overview-rules .ui-rec-head, .overview-rule-phase, .overview-rule-pipeline { display: none; }
   .overview-rules .ui-rec__phone { display: flex; grid-column: 1 / -1; }
   .overview-rule { row-gap: var(--s-1); }
+}
+/* 1200 以上配置卡整张排成一行：代次和两个摘要在左，PID 和按钮在右，底栏不再单独占一条（卡片高度减半，右边不再空着）
+   From 1200 up the configuration card is one row: generation and digests on the left, PID and buttons on the right, and the
+   foot no longer takes a band of its own (half the height, no empty right side) */
+@media (min-width: 1200px) {
+  .overview-runtime { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+  .overview-runtime > :deep(.ui-card__head) { grid-column: 1 / -1; }
+  .overview-runtime > :deep(.ui-card__body) { grid-column: 1; grid-row: 2; grid-template-columns: auto auto minmax(0, 1fr); column-gap: var(--s-8); align-items: end; }
+  .overview-config-lead, .overview-config-meta { grid-column: 1; }
+  .overview-reload-error { grid-column: 1 / -1; }
+  .overview-config-hashes { grid-column: 2; grid-row: 1 / span 2; align-self: end; grid-template-columns: repeat(2, auto); column-gap: var(--s-7); margin-top: 0; padding-top: 0; border-top: 0; }
+  .overview-runtime > :deep(.ui-card__foot) { grid-column: 2; grid-row: 2; align-self: end; gap: var(--s-2) var(--s-5); padding: 0 var(--s-5) var(--s-4); border-top: 0; background: none; }
 }
 @media (min-width: 641px) and (max-width: 899px) {
   .overview-skeleton-vitals i { height: calc(var(--s-8) * 2 + var(--s-2) + 20px); }
