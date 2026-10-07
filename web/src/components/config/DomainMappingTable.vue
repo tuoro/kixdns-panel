@@ -5,6 +5,7 @@ import UiMenu from '../ui/UiMenu.vue'
 import { moveItems, moveTarget } from './row-list'
 import { DEFAULT_DOMAIN_MAPPING_TTL, domainMappingFieldErrors, duplicateDomainMappingSources, parseDomainMappingBulk } from '../../config-editor/domain-mapping'
 import type { DomainMappingRow } from '../../config-editor/solution'
+import { vLineDots } from '../../line-dots'
 
 const rows = defineModel<DomainMappingRow[]>({ required: true })
 // 父组件提交过一次后传 true：所有出错的字段都标出来；平时离开字段才报 / Parent passes true after a submit attempt; otherwise errors show on blur
@@ -144,7 +145,7 @@ function importBulk(): void {
         <li v-for="line in bulkPreview.lines" :key="line.lineNumber" :class="{ 'has-error': line.errors.length }">
           <button v-if="line.errors.length" type="button" class="ui-objlink ui-objlink--plain mapping-editor__line-number" :title="`定位到第 ${line.lineNumber} 行`" @click="focusBulkLine(line.lineNumber)">第 {{ line.lineNumber }} 行</button>
           <span v-else class="mapping-editor__line-number">第 {{ line.lineNumber }} 行</span>
-          <span v-if="!line.errors.length && line.row" class="mapping-editor__parsed"><code>{{ line.row.source }}</code> <span class="mapping-editor__nowrap"><ArrowRight class="mapping-editor__to" :size="14" aria-hidden="true" /><code>{{ line.row.target }}</code><small>&nbsp;·</small></span> <small class="mapping-editor__nowrap">{{ line.row.ttl }} 秒</small></span>
+          <span v-if="!line.errors.length && line.row" v-line-dots class="mapping-editor__parsed"><code>{{ line.row.source }}</code> <span class="mapping-editor__nowrap"><ArrowRight class="mapping-editor__to" :size="14" aria-hidden="true" /><code>{{ line.row.target }}</code><small data-line-dot>&nbsp;·</small></span> <small class="mapping-editor__nowrap">{{ line.row.ttl }} 秒</small></span>
           <span v-else class="mapping-editor__failed"><code>{{ line.input }}</code><span v-for="error in line.errors" :key="error" class="mapping-editor__error">{{ error }}</span></span>
         </li>
       </ol>
@@ -229,7 +230,8 @@ function importBulk(): void {
 .mapping-editor__parsed small { color: var(--l-ink-2); font-size: var(--t-2); }
 /* 和下面映射表同一个箭头（审计第二轮 M10） / The same arrow as the table below (audit round 2, M10) */
 .mapping-editor__to { margin-inline: var(--s-1); color: var(--l-ink-3); vertical-align: -2px; }
-/* 「→ 目标 ·」和「TTL」各是一块，换行只在块之间，「·」留在行尾（GB/T 15834 5.1.7） / 「→ target ·」 and 「TTL」 are units; lines break only between them and the 「·」 ends the line (GB/T 15834 5.1.7) */
+/* 「→ 目标 ·」和「TTL」各是一块，换行只在块之间；「·」不在行首，折行落在它后面时藏起来（line-dots.ts）
+   「→ target ·」 and 「TTL」 are units and lines break only between them; the 「·」 never starts a line and hides when a wrap falls right after it (line-dots.ts) */
 .mapping-editor__nowrap { white-space: nowrap; }
 .mapping-editor__failed { display: grid; gap: 2px; min-width: 0; }
 .mapping-editor__error { color: var(--err-l); font-size: var(--t-1); }

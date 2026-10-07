@@ -39,6 +39,7 @@ function watchWidth(element: Element, callback: () => void): () => void {
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { phraseSegments, type Phrase, type PhraseSegment } from '../../config-editor/phrase'
+import { vLineDots } from '../../line-dots'
 
 // 一句「正文 + 机器值」（config-editor/phrase.ts）怎么排：
 // · 机器值等宽，而且整块换行：地址连同后面的「(DoH)」是一个块，放不下就整个挪到下一行；网址只在「/」后面断，
@@ -46,7 +47,7 @@ import { phraseSegments, type Phrase, type PhraseSegment } from '../../config-ed
 //   （Pipeline、GeoSite）放进同一块，一起换行（审计第二轮 D9）。
 // · 句子按「 · 」分成几段。一段放得下一整行就整段换行，换行先落在两段之间；放不下一整行的长段
 //   （手机上带网址的一段）照常在空格处断。中文词不拆开：「转发至」不会断成「转发 / 至」（审计第二轮 D2）。
-// · 「·」跟着前一段走，留在行尾，不出现在一行之首（GB/T 15834—2011 5.1.7 间隔号；审计第二轮 S4）。
+// · 「·」跟着前一段走，不出现在一行之首（审计第二轮 S4）；折行正好落在它后面时藏起来，也不挂在行尾（line-dots.ts）。
 //   浏览器会在整块的前后断行，不换行空格粘不住它，所以前一段以块结尾时「·」写在那一块里面。
 // · 一段或一块比一整行还宽时，才在它里面断（手机上很长的网址）。
 // mono=false 时值只是整块换行、不换字体（入口的名字一句话一种字体）。trail 在最后再挂一个「·」，给后面接着写的字用。
@@ -57,9 +58,9 @@ import { phraseSegments, type Phrase, type PhraseSegment } from '../../config-ed
 // · The sentence splits at " · " into runs. A run that fits on a line wraps whole, so a wrap falls between runs first;
 //   a run longer than a whole line (one holding a URL, on a phone) breaks at its spaces as usual. Chinese words never
 //   split: 转发至 never becomes 转发 / 至 (audit round 2, D2).
-// · The "·" travels with the run before it, ending a line rather than starting one (GB/T 15834-2011 5.1.7, the
-//   interpunct never begins a line; audit round 2, S4). Browsers break before and after an atomic unit and a no-break
-//   space cannot hold it, so when the run ends in a unit the "·" is written inside that unit.
+// · The "·" travels with the run before it, so it never starts a line (audit round 2, S4); when a wrap falls right
+//   after it, it is hidden, so it never ends one either (line-dots.ts). Browsers break before and after an atomic unit
+//   and a no-break space cannot hold it, so when the run ends in a unit the "·" is written inside that unit.
 // · Only a run or unit wider than a whole line breaks inside (a long URL on a phone).
 // With mono=false values only wrap whole and keep the UI font (an entry name is one sentence, one font). trail hangs one
 // more "·" at the end, for text that follows the sentence.
@@ -234,7 +235,7 @@ function parts(item: UnitItem): string[] {
 </script>
 
 <template>
-  <span ref="root" class="phrase" :class="{ 'phrase--plain': !mono }"><template v-for="(run, runIndex) in runs" :key="runIndex"><template v-if="runIndex > 0">{{ ' ' }}</template><span class="phrase__run" :class="{ 'phrase__run--solid': solid(run) }"><template v-for="(item, index) in run" :key="index"><template v-if="item.kind === 'text'">{{ item.text }}<span v-if="item.dot" class="phrase__dot" :class="{ 'phrase__trail': item.dot === 'trail' }">&nbsp;·</span></template><template v-for="(chunk, part) in parts(item)" v-else :key="part"><template v-if="part === 0 && apart(item)">{{ leadText(item.lead.slice(0, apart(item))).trimEnd() }}{{ ' ' }}</template><wbr v-if="part > 0"><span class="phrase__unit"><template v-if="part === 0">{{ leadText(item.lead.slice(apart(item))) }}</template><code v-if="item.code">{{ chunk }}</code><template v-else>{{ chunk }}</template><template v-if="part === parts(item).length - 1">{{ item.tail }}<span v-if="item.dot" class="phrase__dot" :class="{ 'phrase__trail': item.dot === 'trail' }">&nbsp;·</span></template></span></template></template></span></template></span>
+  <span ref="root" v-line-dots class="phrase" :class="{ 'phrase--plain': !mono }"><template v-for="(run, runIndex) in runs" :key="runIndex"><template v-if="runIndex > 0">{{ ' ' }}</template><span class="phrase__run" :class="{ 'phrase__run--solid': solid(run) }"><template v-for="(item, index) in run" :key="index"><template v-if="item.kind === 'text'">{{ item.text }}<span v-if="item.dot" class="phrase__dot" :class="{ 'phrase__trail': item.dot === 'trail' }" data-line-dot>&nbsp;·</span></template><template v-for="(chunk, part) in parts(item)" v-else :key="part"><template v-if="part === 0 && apart(item)">{{ leadText(item.lead.slice(0, apart(item))).trimEnd() }}{{ ' ' }}</template><wbr v-if="part > 0"><span class="phrase__unit"><template v-if="part === 0">{{ leadText(item.lead.slice(apart(item))) }}</template><code v-if="item.code">{{ chunk }}</code><template v-else>{{ chunk }}</template><template v-if="part === parts(item).length - 1">{{ item.tail }}<span v-if="item.dot" class="phrase__dot" :class="{ 'phrase__trail': item.dot === 'trail' }" data-line-dot>&nbsp;·</span></template></span></template></template></span></template></span>
 </template>
 
 <style scoped>
@@ -247,9 +248,9 @@ function parts(item: UnitItem): string[] {
 .phrase code { line-height: 1; }
 .phrase--plain code { font-family: inherit; }
 /* 块是原子：放不下整块换行；比一行还宽才在里面断。纯文字的段和放得下一整行的段也整段换行；更长的段照常在空格处断。
-   「·」在前一段的末尾，只会留在行尾，不会出现在一行之首。
+   「·」在前一段的末尾，不会出现在一行之首；折行落在它后面时藏起来。
    Units are atomic: they wrap whole and break inside only when wider than a line. Plain-text runs and runs that fit on a
-   line wrap whole too; longer runs break at their spaces. The 「·」 ends the run before it, so it can end a line but never
-   start one. */
+   line wrap whole too; longer runs break at their spaces. The 「·」 ends the run before it, so it never starts a line, and it
+   hides when a wrap falls right after it. */
 .phrase__run--solid, .phrase__unit { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
 </style>

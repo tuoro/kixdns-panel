@@ -27,6 +27,8 @@
 .ui-dots > *::before { content: "·"; display: inline-block; width: var(--dots-gap); margin-inline-start: calc(var(--dots-gap) * -1); color: var(--l-line-strong); text-align: center; }
 /* 第一项总在第一行行首，用不着点；这样它可以是 inline-flex / The first item always starts the first line and needs no dot, so it may be inline-flex */
 .ui-dots > :first-child::before { content: none; }
+/* 句子里的「·」（line-dots.ts）：折行正好落在它后面时藏起来 / A 「·」 inside a sentence (line-dots.ts), hidden when a wrap falls right after it */
+[data-line-dot][data-line-end] { visibility: hidden; }
 
 /* ---------- 状态点 ---------- */
 .ui-dot { width: var(--size-dot); height: var(--size-dot); flex: 0 0 auto; display: inline-block; border-radius: var(--r-full); background: var(--ok-mark-l); }

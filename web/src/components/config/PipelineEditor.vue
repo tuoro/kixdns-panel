@@ -29,6 +29,8 @@ import RuleCreationGuide from './RuleCreationGuide.vue'
 import type { RuntimeTarget } from './RuntimeMessage.vue'
 import UiMenu, { type UiMenuItem } from '../ui/UiMenu.vue'
 import UiSelect from '../ui/UiSelect.vue'
+import UiDotText from '../ui/UiDotText.vue'
+import { vLineDots } from '../../line-dots'
 
 const confirm = useConfirm()
 const config = defineModel<KixConfig>({ required: true })
@@ -87,14 +89,14 @@ function setMatcherMode(rule: RuleConfig, stage: 'request' | 'response', value: 
   else rule.response_matcher_operator = operator
 }
 
-// Pipeline 标题后面的说明：先说它怎么被用到，再说规则数。每一段不拆开，只在「 · 」后面换行：
-// 手机上读成「fallback-check 未被引用 ·」「1 条规则」，不会把「规则」拆成两行（审计第五轮 V1）
-// The fact after a Pipeline's name: how it is used, then the rule count. Each piece stays whole and a line breaks only after 「 · 」,
-// so a phone reads 「fallback-check 未被引用 ·」 / 「1 条规则」 and never splits 规则 (audit round 5, V1)
+// Pipeline 标题后面的说明：先说它怎么被用到，再说规则数。每一段不拆开，只在「 · 」后面换行，不会把「规则」拆成两行
+// （审计第五轮 V1）；折行落在「·」后面时点藏起来，手机上读成「fallback-check 未被引用」「1 条规则」
+// The fact after a Pipeline's name: how it is used, then the rule count. Each piece stays whole and a line breaks only after
+// 「 · 」, never splitting 规则 (audit round 5, V1); a dot a wrap falls right after is hidden, so a phone reads
+// 「fallback-check 未被引用」 / 「1 条规则」
 function pipelineFacts(pipeline: PipelineConfig): string[] {
   const role = pipelineRole(config.value, previousIds.get(pipeline) ?? pipeline.id, config.value.pipelines[0] === pipeline)
-  const facts = [role, `${pipeline.rules.length} 条规则`].filter((fact): fact is string => Boolean(fact))
-  return facts.map((fact, index) => (index < facts.length - 1 ? `${fact}\u00a0·` : fact))
+  return [role, `${pipeline.rules.length} 条规则`].filter((fact): fact is string => Boolean(fact))
 }
 
 function rememberId(pipeline: PipelineConfig): void {
@@ -329,13 +331,13 @@ function onPipelineMenu(visibleIndex: number, value: string): void {
 
 // 响应处理默认收起，标题行写它的现状（规范 3.4c）
 // Response handling starts collapsed, its title line stating what is set (spec 3.4c)
-function responseSummary(rule: RuleConfig): string {
+function responseSummary(rule: RuleConfig): string[] {
   const parts = [
     rule.response_matchers.length ? `${rule.response_matchers.length} 个条件` : '',
     rule.response_actions_on_match.length ? `成功时 ${rule.response_actions_on_match.length} 个动作` : '',
     rule.response_actions_on_miss.length ? `失败时 ${rule.response_actions_on_miss.length} 个动作` : '',
   ].filter(Boolean)
-  return parts.length ? parts.join('\u00a0· ') : '未设置'
+  return parts.length ? parts : ['未设置']
 }
 
 const root = ref<HTMLElement | null>(null)
@@ -407,7 +409,7 @@ watch(() => props.focus, (target) => void revealFocus(target))
               <ChevronRight class="manual-pipeline__chev" :size="16" aria-hidden="true" />
               <!-- 名字和说明在同一个行框里，共用一条基线；说明和工作台同一句：先说它怎么被用到，再说规则数（审计第四轮 V1、V7）
                    Name and fact share one line box and baseline; the fact reads as on the workbench, how it is used, then the rule count (audit round 4, V1, V7) -->
-              <span class="manual-pipeline__title"><code>{{ pipeline.id || '未命名 Pipeline' }}</code>{{ ' ' }}<span><template v-for="(fact, factIndex) in pipelineFacts(pipeline)" :key="factIndex">{{ factIndex ? ' ' : '' }}<span class="manual-pipeline__fact">{{ fact }}</span></template></span></span>
+              <span class="manual-pipeline__title"><code>{{ pipeline.id || '未命名 Pipeline' }}</code>{{ ' ' }}<span v-line-dots><template v-for="(fact, factIndex) in pipelineFacts(pipeline)" :key="factIndex">{{ factIndex ? ' ' : '' }}<span class="manual-pipeline__fact">{{ fact }}<span v-if="factIndex < pipelineFacts(pipeline).length - 1" data-line-dot>&nbsp;·</span></span></template></span></span>
             </button>
             <UiMenu class="manual-reveal" size="md" :label="`Pipeline ${pipeline.id} 操作`" :title="`Pipeline ${pipeline.id}`" :items="pipelineMenu(visibleIndex)" @select="onPipelineMenu(visibleIndex, $event)" />
           </header>
@@ -463,7 +465,7 @@ watch(() => props.focus, (target) => void revealFocus(target))
                   </div>
                   <!-- 响应处理只在有转发时才有意义；默认收起，标题行写现状 / Response handling only means something with a forward; collapsed by default, its title stating what is set -->
                   <details v-if="responseEnabled(rule)" class="manual-stage manual-response ui-expand" :open="hasResponseProcessing(rule)">
-                    <summary class="manual-response__summary"><span>响应处理<small>{{ responseSummary(rule) }}</small></span><ChevronDown :size="16" aria-hidden="true" /></summary>
+                    <summary class="manual-response__summary"><span>响应处理<small><UiDotText :parts="responseSummary(rule)" /></small></span><ChevronDown :size="16" aria-hidden="true" /></summary>
                     <div class="manual-response__body">
                       <h6>响应条件<UiSelect v-if="rule.response_matchers.length > 1" :model-value="matcherMode(rule.response_matchers, rule.response_matcher_operator)" size="sm" class="manual-stage__relation" :options="relationOptions" label="响应条件关系" @update:model-value="setMatcherMode(rule, 'response', $event)" /></h6>
                       <MatcherList v-model="rule.response_matchers" scope="response" :operator-mode="rule.response_matchers.length > 1 && matcherMode(rule.response_matchers, rule.response_matcher_operator) === 'custom' ? 'custom' : 'hidden'" />

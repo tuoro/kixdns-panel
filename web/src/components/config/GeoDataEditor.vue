@@ -13,6 +13,7 @@ import {
 import UiSelect from '../ui/UiSelect.vue'
 import UiTabs from '../ui/UiTabs.vue'
 import UiUrlField from '../ui/UiUrlField.vue'
+import UiDotText from '../ui/UiDotText.vue'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { apiRequest, jsonBody } from '../../api/client'
 import type {
@@ -301,14 +302,14 @@ onBeforeUnmount(clearSyncNotice)
       <div class="ui-setrow geo-row">
         <span class="ui-setrow__label"><span>GeoIP MMDB<i v-if="changed?.has('geoip_db_path')" class="ui-dot ui-dot--ink geo-dot" aria-hidden="true"></i></span><small v-if="!mmdbUrl">国家数据库，GeoIP 条件用它</small></span>
         <span class="geo-item">
-          <span v-if="fileLine(manifest.geoip_mmdb, mmdbUrl)" class="geo-file"><span class="geo-file__main"><b>{{ fileLine(manifest.geoip_mmdb, mmdbUrl)!.name }}</b><span class="geo-file__meta">{{ fileLine(manifest.geoip_mmdb, mmdbUrl)!.meta.join(' · ') }}</span></span></span>
+          <span v-if="fileLine(manifest.geoip_mmdb, mmdbUrl)" class="geo-file"><span class="geo-file__main"><b>{{ fileLine(manifest.geoip_mmdb, mmdbUrl)!.name }}</b><span class="geo-file__meta"><UiDotText :parts="fileLine(manifest.geoip_mmdb, mmdbUrl)!.meta" /></span></span></span>
           <label class="ui-input ui-input--area geo-link"><UiUrlField :model-value="mmdbUrl" label="GeoIP MMDB 链接" placeholder="如 https://example.com/GeoLite2-Country.mmdb" :disabled="loading || syncing" @update:model-value="setRemoteUrl('mmdb', $event)" /></label>
         </span>
       </div>
       <div class="ui-setrow geo-row">
         <span class="ui-setrow__label"><span>GeoIP DAT<i v-if="changed?.has('geoip_dat_path')" class="ui-dot ui-dot--ink geo-dot" aria-hidden="true"></i></span><small v-if="!datUrl">和 MMDB 二选一即可</small></span>
         <span class="geo-item">
-          <span v-if="fileLine(manifest.geoip_dat, datUrl)" class="geo-file"><span class="geo-file__main"><b>{{ fileLine(manifest.geoip_dat, datUrl)!.name }}</b><span class="geo-file__meta">{{ fileLine(manifest.geoip_dat, datUrl)!.meta.join(' · ') }}</span></span></span>
+          <span v-if="fileLine(manifest.geoip_dat, datUrl)" class="geo-file"><span class="geo-file__main"><b>{{ fileLine(manifest.geoip_dat, datUrl)!.name }}</b><span class="geo-file__meta"><UiDotText :parts="fileLine(manifest.geoip_dat, datUrl)!.meta" /></span></span></span>
           <label class="ui-input ui-input--area geo-link"><UiUrlField :model-value="datUrl" label="GeoIP DAT 链接" placeholder="如 https://example.com/geoip.dat" :disabled="loading || syncing" @update:model-value="setRemoteUrl('dat', $event)" /></label>
         </span>
       </div>
@@ -317,7 +318,7 @@ onBeforeUnmount(clearSyncNotice)
         <span class="geo-list">
           <span v-for="(url, index) in geositeUrls" :key="index" class="geo-item">
             <span class="geo-file">
-              <span class="geo-file__main"><template v-if="fileLine(manifest.geosite[index], url)"><b>{{ fileLine(manifest.geosite[index], url)!.name }}</b><span class="geo-file__meta">{{ fileLine(manifest.geosite[index], url)!.meta.join(' · ') }}</span></template></span>
+              <span class="geo-file__main"><template v-if="fileLine(manifest.geosite[index], url)"><b>{{ fileLine(manifest.geosite[index], url)!.name }}</b><span class="geo-file__meta"><UiDotText :parts="fileLine(manifest.geosite[index], url)!.meta" /></span></template></span>
               <button class="ui-icon-btn ui-icon-btn--sm geo-file__remove" type="button" :title="`删除 GeoSite 链接 ${index + 1}`" :aria-label="`删除 GeoSite 链接 ${index + 1}`" :disabled="loading || syncing" @click="removeRemoteGeosite(index)"><X :size="14" /></button>
             </span>
             <label class="ui-input ui-input--area geo-link"><UiUrlField :model-value="url" :label="`GeoSite 链接 ${index + 1}`" placeholder="如 https://example.com/geosite.dat" :disabled="loading || syncing" @update:model-value="setRemoteGeosite(index, $event)" /></label>
@@ -338,7 +339,7 @@ onBeforeUnmount(clearSyncNotice)
         </span>
       </div>
       <div class="ui-setrow">
-        <span class="ui-setrow__label"><span>自动更新</span><small v-if="schedule.next_run_at || schedule.last_success_at">{{ [schedule.next_run_at ? `下次 ${formatVersionTime(schedule.next_run_at)}` : '', schedule.last_success_at ? `上次成功 ${formatVersionTime(schedule.last_success_at)}` : ''].filter(Boolean).join('\u00a0· ') }}</small><small v-else>定时按上面的链接重新下载</small></span>
+        <span class="ui-setrow__label"><span>自动更新</span><small v-if="schedule.next_run_at || schedule.last_success_at"><UiDotText :parts="[schedule.next_run_at ? `下次 ${formatVersionTime(schedule.next_run_at)}` : '', schedule.last_success_at ? `上次成功 ${formatVersionTime(schedule.last_success_at)}` : ''].filter(Boolean)" /></small><small v-else>定时按上面的链接重新下载</small></span>
         <span class="ui-setrow__control geo-schedule"><UiSelect :model-value="String(schedule.interval_hours ?? '')" :options="scheduleOptions" label="自动更新" :disabled="loading || scheduleSaving || syncing" @update:model-value="saveSchedule" /></span>
       </div>
       <p v-if="schedule.last_error" class="geo-note geo-note--err"><TriangleAlert :size="14" aria-hidden="true" />后台更新失败：{{ schedule.last_error }}</p>

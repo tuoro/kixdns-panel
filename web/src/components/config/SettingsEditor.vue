@@ -4,6 +4,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { SETTING_SECTIONS, settingShouldRender, settingSupported, settingValue, settingVisible, type SettingField, type SettingSection } from '../../config-editor/schema'
 import type { GlobalSettings } from '../../config-editor/types'
 import GeoDataEditor from './GeoDataEditor.vue'
+import UiDotText from '../ui/UiDotText.vue'
 
 const settings = defineModel<GlobalSettings>({ required: true })
 // 配置格式版本不在 settings 里；它只有一项，放在「基础与监听」最后，不单独成组。
@@ -51,7 +52,7 @@ function clearSearch(): void {
   searchInput.value?.focus()
 }
 
-function summary(section: SettingSection): string {
+function summary(section: SettingSection): string[] {
   const values = section.fields.filter((field) => settingVisible(field, settings.value) && Object.hasOwn(settings.value, field.key))
   const entries = values.slice(0, 2).map((field) => {
     const value = settings.value[field.key]
@@ -61,7 +62,7 @@ function summary(section: SettingSection): string {
     if (Array.isArray(value)) return `${label} ${value.length} 项`
     return `${label} ${value === '' ? '留空' : String(value)}${field.unit ? ` ${field.unit}` : ''}`
   })
-  return entries.join('\u00a0· ') || section.description
+  return entries.length ? entries : [section.description]
 }
 
 const GEO_GROUP = { id: 'geo', title: 'Geo 数据', description: 'GeoIP 与 GeoSite 数据的来源、自动更新和 MMDB 转换' }
@@ -91,9 +92,9 @@ const navSections = computed(() => SETTING_SECTIONS.map((section) => ({
 })).filter((section) => section.fields.length > 0))
 const currentSection = computed(() => navSections.value.find((section) => section.id === current.value))
 const paneSections = computed(() => (query.value ? visibleSections.value : currentSection.value ? [currentSection.value] : []))
-function geoSummary(): string {
+function geoSummary(): string[] {
   const sites = Array.isArray(settings.value.geosite_data_paths) ? settings.value.geosite_data_paths.length : 0
-  return [settings.value.geoip_db_path ? 'GeoIP 已配置' : 'GeoIP 未配置', `GeoSite ${sites} 个文件`].join('\u00a0· ')
+  return [settings.value.geoip_db_path ? 'GeoIP 已配置' : 'GeoIP 未配置', `GeoSite ${sites} 个文件`]
 }
 // 标签去掉括号里的单位（单位写进输入框里了）；说明只留真正有话说的：字段自己的说明和「要先打开谁」。
 // Labels drop the bracketed unit (it sits inside the input now); the note keeps only what matters:
@@ -210,7 +211,7 @@ function supported(field: SettingField): boolean {
       <label class="ui-input settings-search"><Search :size="16" aria-hidden="true" /><input ref="searchInput" v-model="search" type="search" aria-label="搜索基础设置" placeholder="搜索设置或配置 key" @keydown.esc.prevent="clearSearch"><button v-if="search" class="ui-input__affix" type="button" aria-label="清除设置搜索" title="清除设置搜索" @click.prevent="clearSearch"><X :size="14" aria-hidden="true" /></button></label>
       <button v-for="group in groups" :key="group.id" type="button" class="settings-nav__item" :aria-current="!query && current === group.id ? 'true' : undefined" :aria-description="group.changed ? '有修改' : undefined" @click="open(group.id)">
         <span class="settings-nav__title">{{ group.title }}<i v-if="group.changed" class="ui-dot ui-dot--ink settings-dot" aria-hidden="true"></i></span>
-        <small class="settings-nav__summary">{{ group.summary }}</small>
+        <small class="settings-nav__summary"><UiDotText :parts="group.summary" /></small>
         <ChevronRight class="settings-nav__chevron" :size="16" aria-hidden="true" />
       </button>
     </nav>

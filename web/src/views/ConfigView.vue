@@ -54,6 +54,8 @@ import type { ConfigEditorMode, KixConfig, MatcherConfig } from '../config-edito
 import { useConfirm } from '../composables/useConfirm'
 import { useToast } from '../composables/useToast'
 import { errorMessage, formatVersionTime } from '../utils'
+import UiDotText from '../components/ui/UiDotText.vue'
+import { vLineDots } from '../line-dots'
 
 const document = ref<ConfigDocument | null>(null)
 const config = ref<KixConfig | null>(null)
@@ -267,14 +269,15 @@ watch(saveRunning, async (running) => {
 // The header's status line says how KixDNS is now, with one action when there is one (spec section 8).
 // The version number is separate so it pops in when it changes. Unreachable and stopped get no notice of
 // their own: with changes, the save bar says what saving will do (review N9).
-interface HeaderStatus { tone: 'ok' | 'warn' | 'err' | 'off'; before: string; version?: number; after?: string }
+// lead：版本前面的状态（「运行中」），和后面用「·」隔开 / lead: the state before the version (运行中), separated from it by a 「·」
+interface HeaderStatus { tone: 'ok' | 'warn' | 'err' | 'off'; lead?: string; before: string; version?: number; after?: string }
 const headerStatus = computed<HeaderStatus>(() => {
   if (hasApplyFailure.value) return { tone: 'err', before: '配置应用失败' }
   if (hasPending.value) return pendingVersionId.value ? { tone: 'warn', before: '版本 #', version: pendingVersionId.value, after: ' 待应用' } : { tone: 'warn', before: '配置待应用' }
   // 服务确实停了就说停了：配置文件里记的运行状态可能还是上一次的。
   // If the service is actually stopped, say so: the runtime state recorded with the config may be stale.
   if (runtimeStopped.value) return { tone: 'off', before: 'KixDNS 未启动' }
-  if (document.value?.runtime.status === 'active') return currentVersionId.value ? { tone: 'ok', before: '运行中 · 版本 #', version: currentVersionId.value } : { tone: 'ok', before: '运行中' }
+  if (document.value?.runtime.status === 'active') return currentVersionId.value ? { tone: 'ok', lead: '运行中', before: '版本 #', version: currentVersionId.value } : { tone: 'ok', before: '运行中' }
   if (fileDiffers.value) return { tone: 'warn', before: '文件与运行配置不同' }
   return { tone: 'off', before: '运行状态不可用' }
 })
@@ -1000,9 +1003,9 @@ onBeforeUnmount(() => {
         <template v-if="document">
           <!-- 状态点和转圈共用一个 14 的格子：换成「应用中」时后面的字不挪（审计第三轮 S3） / The dot and the spinner share one 14 slot, so the words after it stay put when 应用中 starts (audit round 3, S3) -->
           <span class="config-head-mark" aria-hidden="true"><span v-if="applyBusy" class="ui-spin config-head-spin"></span><span v-else class="ui-dot" :class="headerLine.tone === 'ok' ? '' : `ui-dot--${headerLine.tone}`"></span></span>
-          <!-- 一整句：分隔点是句子里的字，跟着前一段，只会留在行尾（GB/T 15834 5.1.7，审计 S2、S11）
-               One run: the separator is text in the sentence and travels with the segment before it, so it can only end a line (GB/T 15834 5.1.7, audits S2, S11) -->
-          <span class="config-head-line" :role="applyBusy ? 'status' : undefined"><span class="config-head-seg">{{ headerLine.before }}<UiNumber v-if="headerLine.version" :value="String(headerLine.version)" />{{ headerLine.after }}<template v-if="(applyBusy && saveElapsed) || (headerAction && !applyBusy)">&nbsp;·</template></span><template v-if="applyBusy && saveElapsed">{{ ' ' }}<span class="config-head-seg">{{ saveElapsed }}</span></template><template v-else-if="headerAction && !applyBusy">{{ ' ' }}<span class="config-head-seg"><button class="config-head-action" type="button" :disabled="saveBusy || loading" @click="applyNow">{{ headerAction }}</button></span></template></span>
+          <!-- 一整句：分隔点跟着前一段，不会出现在行首（审计 S2、S11）；折行落在它后面时藏起来，也不挂在行尾（line-dots.ts）
+               One run: the separator travels with the segment before it, so it never starts a line (audits S2, S11); when a wrap falls right after it, it is hidden, so it never ends one either (line-dots.ts) -->
+          <span v-line-dots class="config-head-line" :role="applyBusy ? 'status' : undefined"><template v-if="headerLine.lead"><span class="config-head-seg">{{ headerLine.lead }}<span data-line-dot>&nbsp;·</span></span>{{ ' ' }}</template><span class="config-head-seg">{{ headerLine.before }}<UiNumber v-if="headerLine.version" :value="String(headerLine.version)" />{{ headerLine.after }}<span v-if="(applyBusy && saveElapsed) || (headerAction && !applyBusy)" data-line-dot>&nbsp;·</span></span><template v-if="applyBusy && saveElapsed">{{ ' ' }}<span class="config-head-seg">{{ saveElapsed }}</span></template><template v-else-if="headerAction && !applyBusy">{{ ' ' }}<span class="config-head-seg"><button class="config-head-action" type="button" :disabled="saveBusy || loading" @click="applyNow">{{ headerAction }}</button></span></template></span>
         </template>
         <i v-else-if="loading" class="sk config-head-sk" aria-hidden="true"></i>
       </template>
@@ -1094,16 +1097,17 @@ onBeforeUnmount(() => {
          The save bar speaks only for the draft: it rises with changes and is gone when idle (spec 8.2). -->
     <Transition name="config-savebar">
       <footer v-if="savebarVisible" class="ui-savebar config-savebar" :class="{ 'ui-savebar--err': saveStage === 'failed' || Boolean(jsonProblem), 'config-savebar--reason': saveStage === 'failed', 'config-savebar--done': saveStage === 'done' }" :inert="focusedEditing">
-        <p :key="saveStage === 'failed' ? `failed-${saveNote}` : 'state'" class="ui-savebar__status config-save-state" :class="{ 'ui-shake': saveStage === 'failed' }" :role="saveStage === 'failed' || jsonProblem ? 'alert' : 'status'">
+        <p :key="saveStage === 'failed' ? `failed-${saveNote}` : 'state'" v-line-dots class="ui-savebar__status config-save-state" :class="{ 'ui-shake': saveStage === 'failed' }" :role="saveStage === 'failed' || jsonProblem ? 'alert' : 'status'">
           <svg v-if="saveStage === 'done'" class="ui-check config-save-check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5" /></svg>
-          <template v-if="saveStage === 'done'"><span class="ui-savebar__detail">{{ saveNote }}</span></template>
+          <!-- 完成的说明是「已生效 · 版本 #12」这样的一句，按「·」分段 / The done note is a sentence such as 「已生效 · 版本 #12」, split at its 「·」 -->
+          <template v-if="saveStage === 'done'"><span class="ui-savebar__detail"><UiDotText :parts="saveNote.split('\u00a0· ')" /></span></template>
           <template v-else-if="saveStage === 'checking'"><span class="ui-savebar__detail">校验中</span></template>
-          <template v-else-if="saveStage === 'validating'"><span class="ui-savebar__detail">第 1 步&nbsp;· 校验<span v-if="saveElapsed" class="ui-savebar__elapsed">&nbsp;· {{ saveElapsed }}</span></span></template>
-          <template v-else-if="saveStage === 'applying'"><span class="ui-savebar__detail">{{ deferSave ? '存成待应用版本' : '第 2 步\u00a0· 写入并热加载' }}<span v-if="saveElapsed" class="ui-savebar__elapsed">&nbsp;· {{ saveElapsed }}</span></span></template>
+          <template v-else-if="saveStage === 'validating'"><span class="ui-savebar__detail">第 1 步<span data-line-dot>&nbsp;·</span> 校验<span v-if="saveElapsed" class="ui-savebar__elapsed"><span data-line-dot>&nbsp;·</span> {{ saveElapsed }}</span></span></template>
+          <template v-else-if="saveStage === 'applying'"><span class="ui-savebar__detail"><template v-if="deferSave">存成待应用版本</template><template v-else>第 2 步<span data-line-dot>&nbsp;·</span> 写入并热加载</template><span v-if="saveElapsed" class="ui-savebar__elapsed"><span data-line-dot>&nbsp;·</span> {{ saveElapsed }}</span></span></template>
           <template v-else-if="saveStage === 'failed'"><span class="ui-savebar__verdict">{{ saveVerdict }}</span><small><RuntimeMessage :text="saveNote" :config="config" @navigate="navigateTo" /></small></template>
           <template v-else-if="jsonProblem"><span class="ui-savebar__verdict">JSON 写错了</span><small><button v-if="parsePosition" class="ui-objlink ui-objlink--plain" type="button" @click="jsonEditor?.reveal(parsePosition.line, parsePosition.column)">第 {{ parsePosition.line }} 行第 {{ parsePosition.column }} 列</button><template v-if="parsePosition">：</template>{{ parseReason }}</small></template>
           <template v-else-if="localDraftDirty"><span class="ui-dot ui-dot--ink" aria-hidden="true"></span><span class="ui-savebar__detail"><template v-if="changeCount">已修改 <b class="ui-savebar__count"><UiNumber :value="String(changeCount)" /></b> 处</template><template v-else>有未保存的修改</template></span><small>入口的修改会一起保存</small></template>
-          <template v-else-if="validation?.valid"><span class="ui-dot ui-dot--ink" aria-hidden="true"></span><span class="ui-savebar__detail">校验通过&nbsp;· {{ validation.pipeline_count }} 个 Pipeline、{{ validation.rule_count }} 条规则</span></template>
+          <template v-else-if="validation?.valid"><span class="ui-dot ui-dot--ink" aria-hidden="true"></span><span class="ui-savebar__detail">校验通过<span data-line-dot>&nbsp;·</span> {{ validation.pipeline_count }} 个 Pipeline、{{ validation.rule_count }} 条规则</span></template>
           <template v-else><span class="ui-dot ui-dot--ink" aria-hidden="true"></span><span class="ui-savebar__detail"><template v-if="changeCount">已修改 <b class="ui-savebar__count"><UiNumber :value="String(changeCount)" /></b> 处</template><template v-else>有未保存的修改</template></span><small v-if="deferNote">{{ deferNote }}</small></template>
         </p>
         <template v-if="saveStage !== 'done' && (changed || localDraftDirty)">
@@ -1138,11 +1142,11 @@ onBeforeUnmount(() => {
             <span v-else-if="historySelecting" class="config-history__check" aria-hidden="true"></span>
             <label v-if="historySelecting && version.id !== currentVersionId" class="config-history__main" :for="`config-version-${version.id}`">
               <span class="config-history__note">{{ version.message || '未填写备注' }}</span>
-              <span class="config-history__meta">#{{ version.id }}&nbsp;· {{ formatVersionTime(version.created_at) }}</span>
+              <span v-line-dots class="config-history__meta">#{{ version.id }}<span data-line-dot>&nbsp;·</span> {{ formatVersionTime(version.created_at) }}</span>
             </label>
             <component :is="version.id === currentVersionId || historySelecting ? 'div' : 'button'" v-else class="config-history__main" :type="version.id === currentVersionId || historySelecting ? undefined : 'button'" :title="version.id === currentVersionId || historySelecting ? undefined : `比较版本 #${version.id} 和当前`" @click="version.id !== currentVersionId && !historySelecting && openVersionDiff(version, $event)">
               <span class="config-history__note">{{ version.message || '未填写备注' }}</span>
-              <span class="config-history__meta">#{{ version.id }}&nbsp;· {{ formatVersionTime(version.created_at) }}</span>
+              <span v-line-dots class="config-history__meta">#{{ version.id }}<span data-line-dot>&nbsp;·</span> {{ formatVersionTime(version.created_at) }}</span>
             </component>
             <!-- 行尾一格：标签和「…」放在一起，选择模式切换时「当前」不挪位置（审计 D25） / One end cell for the tag and …, so 当前 stays put when select mode toggles (audit D25) -->
             <span class="config-history__end">
@@ -1179,8 +1183,8 @@ onBeforeUnmount(() => {
 .config-head-mark { width: var(--size-icon-sm); height: var(--size-icon-sm); flex: 0 0 auto; display: inline-grid; place-items: center; translate: 0 -1px; }
 .config-head-spin { width: var(--size-icon-sm); height: var(--size-icon-sm); }
 .config-head-line { min-width: 0; font-variant-numeric: tabular-nums; }
-/* 句子只在「·」后面断行，一段话本身不拆开；「·」留在行尾，不出现在一行之首（GB/T 15834 5.1.7，审计第二轮 S2）
-   The line breaks only after a 「·」, never inside a segment; the 「·」 ends a line and never starts one (GB/T 15834 5.1.7, audit round 2, S2) */
+/* 句子只在「·」后面断行，一段话本身不拆开；「·」不在行首，折行落在它后面时藏起来（审计第二轮 S2，line-dots.ts）
+   The line breaks only after a 「·」, never inside a segment; the 「·」 never starts a line and hides when a wrap falls right after it (audit round 2, S2; line-dots.ts) */
 .config-head-seg { white-space: nowrap; }
 .config-head-sk { width: 8rem; height: var(--s-3); margin-block: calc((1lh - var(--s-3)) / 2); }
 .config-nav { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: var(--s-2) var(--s-4); border-bottom: 1px solid var(--l-hair); }

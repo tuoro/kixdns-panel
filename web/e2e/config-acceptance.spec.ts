@@ -287,6 +287,82 @@ test.describe('F 横线', () => {
   }
 })
 
+// 「·」不在行首，也不挂在行尾：点贴在前一段末尾，折行正好落在它后面时藏起来（line-dots.ts）。页面逐步收窄扫过各处折行点；
+// 每个点都要和它前面的字同一行，露着的点后面的字也在同一行，藏起来的点后面的字在下一行。配置页里的「·」都得走这套，不能是散字
+// A 「·」 never starts a line and is never left at a line end: it holds on to the run before it and hides when a wrap falls right after it
+// (line-dots.ts). The page narrows step by step past each wrap point; every dot shares a line with the character before it, a shown dot with
+// the character after it, and a hidden one sits before a wrap. Every 「·」 on the config page goes through this, none as loose text
+test.describe('「·」不在行首也不挂在行尾', () => {
+  for (const view of views) {
+    test(`${view.name} @responsive`, async ({ page }) => {
+      await openView(page, view)
+      const problems = await page.evaluate(async ({ scope, sweep }) => {
+        const found = new Set<string>()
+        const frames = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+        const charRect = (node: Text, index: number) => {
+          const range = document.createRange()
+          range.setStart(node, index)
+          range.setEnd(node, index + 1)
+          return range.getClientRects()[0] ?? null
+        }
+        const blockOf = (element: Element) => {
+          for (let box = element.parentElement; box; box = box.parentElement) {
+            const display = getComputedStyle(box).display
+            if (!display.startsWith('inline') && display !== 'contents') return box
+          }
+          return document.body
+        }
+        const check = (width: number) => {
+          for (const root of document.querySelectorAll(scope)) {
+            for (const dot of root.querySelectorAll<HTMLElement>('[data-line-dot]')) {
+              const rects = [...dot.getClientRects()]
+              if (!rects.length) continue
+              const mark = rects[rects.length - 1]!
+              const sameLine = (rect: DOMRect | null) => Boolean(rect && rect.bottom > mark.top + 2 && rect.top < mark.bottom - 2)
+              let before: DOMRect | null = null
+              let after: DOMRect | null = null
+              let passed = false
+              const walker = document.createTreeWalker(blockOf(dot), NodeFilter.SHOW_TEXT)
+              for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
+                if (dot.contains(node)) { passed = true; continue }
+                if (!node.parentElement?.getClientRects().length) continue
+                if (!passed) {
+                  const index = node.data.search(/\S\s*$/)
+                  if (index >= 0) before = charRect(node, index)
+                } else {
+                  const index = node.data.search(/\S/)
+                  if (index >= 0) { after = charRect(node, index); break }
+                }
+              }
+              const label = `${width}px ${dot.parentElement?.textContent?.trim().slice(0, 40)}`
+              if (!sameLine(before)) found.add(`行首 ${label}`)
+              const hidden = getComputedStyle(dot).visibility === 'hidden'
+              if (!hidden && !sameLine(after)) found.add(`行尾 ${label}`)
+              if (hidden && sameLine(after)) found.add(`藏错 ${label}`)
+            }
+            // 散字的「·」：不在 data-line-dot 里 / A loose 「·」 outside data-line-dot
+            const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+            for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
+              if (node.data.includes('·') && !node.parentElement?.closest('[data-line-dot]') && node.parentElement?.getClientRects().length) found.add(`散字 ${node.data.trim().slice(0, 40)}`)
+            }
+          }
+        }
+        const page = document.querySelector<HTMLElement>('.config-page')!
+        const start = page.getBoundingClientRect().width
+        const floor = sweep ? start - (window.innerWidth <= 640 ? window.innerWidth - 320 : 440) : start
+        for (let width = start; width >= floor; width -= window.innerWidth <= 640 ? 4 : 10) {
+          page.style.maxWidth = `${width}px`
+          await frames()
+          check(Math.round(width))
+        }
+        page.style.maxWidth = ''
+        return [...found]
+      }, { scope: SCOPE, sweep: !view.dialog })
+      expect(problems).toEqual([])
+    })
+  }
+})
+
 test('H 减少动态效果：出现、展开、菜单、抽屉都不位移 @responsive', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' })
   await openView(page, views[0]!)

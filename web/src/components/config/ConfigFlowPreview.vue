@@ -5,6 +5,7 @@ import { entryNamePhrase, rulePhrase } from '../../config-editor/phrase'
 import { ENTRY_ORDER_NOTE, RULE_ORDER_NOTE, collectDnsSolutions, collectDomainMappingRows, pipelineRole, selectorMatchesEveryRequest } from '../../config-editor/solution'
 import type { ActionConfig, KixConfig } from '../../config-editor/types'
 import PhraseText from './PhraseText.vue'
+import { vLineDots } from '../../line-dots'
 
 const props = defineProps<{ config: KixConfig }>()
 const mappingSolutions = computed(() => collectDnsSolutions(props.config)
@@ -41,7 +42,7 @@ function responseJumps(actions: ActionConfig[]): ActionConfig[] {
       <ol v-if="selectors.length || mappingCount" class="flow-list">
         <li v-if="mappingCount" class="flow-route">
           <span class="flow-num"><Zap :size="14" aria-hidden="true" /></span>
-          <span class="flow-body"><span>域名映射&nbsp;· {{ mappingCount }} 条</span><small>最先匹配，命中直接返回 CNAME</small></span>
+          <span class="flow-body"><span v-line-dots>域名映射<span data-line-dot>&nbsp;·</span> {{ mappingCount }} 条</span><small>最先匹配，命中直接返回 CNAME</small></span>
         </li>
         <li v-for="(selector, index) in selectors" :key="index" class="flow-route">
           <span class="flow-num">{{ String(index + 1).padStart(2, '0') }}</span>
@@ -59,7 +60,7 @@ function responseJumps(actions: ActionConfig[]): ActionConfig[] {
       <h3>Pipeline</h3>
       <p class="flow-note">{{ RULE_ORDER_NOTE }}</p>
       <div v-for="pipeline in pipelines" :key="pipeline.id" class="flow-pipeline">
-        <header><code>{{ pipeline.id || '未命名 Pipeline' }}</code><small v-if="pipelineRole(config, pipeline.id)">{{ pipelineRole(config, pipeline.id) }}</small><small v-if="pipeline.ecs">ECS&nbsp;· {{ pipeline.ecs.mode }}</small></header>
+        <header><code>{{ pipeline.id || '未命名 Pipeline' }}</code><small v-if="pipelineRole(config, pipeline.id)">{{ pipelineRole(config, pipeline.id) }}</small><small v-if="pipeline.ecs" v-line-dots>ECS<span data-line-dot>&nbsp;·</span> {{ pipeline.ecs.mode }}</small></header>
         <ol v-if="pipeline.rules.length" class="flow-list">
           <li v-for="(rule, index) in pipeline.rules" :key="index" class="flow-rule">
             <span class="flow-num">{{ String(index + 1).padStart(2, '0') }}</span>
