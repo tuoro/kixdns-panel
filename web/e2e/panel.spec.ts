@@ -550,7 +550,7 @@ test('更新通知可标记已读并在刷新后保持', async ({ page }) => {
 
 test('操作审计可按动作筛选', async ({ page }) => {
   await open(page, '/logs')
-  await page.locator('.log-view-tabs button').nth(1).click()
+  await page.getByRole('tab', { name: '操作审计', exact: true }).click()
   await expect(page.locator('.audit-line')).toHaveCount(7)
   await page.getByRole('group', { name: '审计动作类别' }).getByRole('button', { name: '配置', exact: true }).click()
   await expect(page.locator('.audit-line')).toHaveCount(3)
@@ -587,7 +587,7 @@ test('运行日志停在顶部时直接显示新日志，读历史时攒进提�
   await page.addInitScript(() => localStorage.setItem('kixdns:demo-log-growing', 'true'))
   await open(page, '/logs')
   const lines = page.locator('.log-line')
-  const banner = page.locator('.log-new-lines')
+  const banner = page.locator('.ui-banner')
   await expect(lines.first()).toContainText('transport=tcp')
   // 没有实时开关了。/ There is no live switch any more.
   await expect(page.getByRole('button', { name: /实时|已暂停/ })).toHaveCount(0)
@@ -638,7 +638,7 @@ test('unit 输出未送到 journald 时运行日志显示常驻提示 @responsiv
   await expect(page.locator('.status-banner')).toHaveCount(0)
   await expectNoPageOverflow(page)
 
-  await page.locator('.log-view-tabs button').nth(1).click()
+  await page.getByRole('tab', { name: '操作审计', exact: true }).click()
   await expect(notice).toHaveCount(0)
 })
 
@@ -654,7 +654,7 @@ test('切换级别后不会拿旧级别的游标翻页', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('kixdns:demo-log-paged-slow', 'true'))
   await open(page, '/logs')
   const lines = page.locator('.log-line')
-  const loadMore = page.locator('.runtime-load-more')
+  const loadMore = page.locator('.log-more')
   // 翻页走滚动处理器而不是点按钮：Playwright 点之前会把按钮滚进视口，那一滚本身就触发翻页。
   // 事件显式派发一次，不依赖视口高度够不够让流真的滚起来。
   // Page via the scroll handler, not the button: Playwright scrolls the button into view before

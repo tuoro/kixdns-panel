@@ -227,72 +227,49 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 
 
 
-/* 日志收回浅色体系。等宽字体保留，但不再整块反白——
-   深色终端把这一页从产品里割了出去，读起来像两个软件。
-   The log view returns to the light system. The monospace stays, the inverted
-   block does not: a dark terminal cut this page out of the product and made it
-   read like a second piece of software. */
-.log-console { overflow: hidden; background: var(--surface); border: 1px solid var(--line); border-radius: 7px; }
-.log-view-tabs { height: 42px; display: grid; grid-template-columns: repeat(2, minmax(130px, 180px)); align-items: stretch; padding: 5px 12px 0; border-bottom: 1px solid var(--line); }
-.log-view-tabs button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; color: var(--muted); background: transparent; border: 0; border-bottom: 2px solid transparent; font-size: 12px; font-weight: 650; }
-.log-view-tabs button:hover { color: var(--ink); }
-.log-view-tabs button.active { color: var(--ink); border-bottom-color: var(--ink); }
-/* 工具栏里的两个控件共用同一个圆角，声明一次。 */
-.search-field, .log-seg { border-radius: 5px; }
-.log-toolbar { min-height: 58px; display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: var(--canvas); border-bottom: 1px solid var(--line); }
-.search-field { min-width: 180px; max-width: 420px; flex: 1; height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 10px; color: var(--muted); background: var(--surface); border: 1px solid var(--line); }
-.search-field:focus-within { border-color: var(--ink); }
-.search-field input { min-width: 0; flex: 1; color: var(--ink); background: transparent; border: 0; outline: 0; font-size: 14px; }
-
-/* 选项只有三四个，下拉是多余的一次点击。 */
-.log-seg { display: flex; gap: 2px; padding: 2px; background: var(--surface); border: 1px solid var(--line); }
-.log-seg button { min-height: 30px; padding: 0 11px; color: var(--muted); background: transparent; border: 0; border-radius: 3px; font-size: 13px; }
-.log-seg button:hover { color: var(--ink); }
-.log-seg button.is-on { color: var(--d-ink); background: var(--ink); font-weight: 600; }
-
-/* 常驻提示，和摘要行同一套底色与文字色：它说明的是一种状态，不是一个错误。
-   A persistent notice in the summary row's own colours: it describes a state,
-   not an error. */
-.log-notice { margin: 0; padding: var(--s-2) var(--s-3); color: var(--muted); background: var(--canvas); border-bottom: 1px solid var(--line); font-size: var(--t-1); line-height: var(--lh-base); overflow-wrap: anywhere; }
+/* 日志：页头、卡片外的区块页签，卡片里一条工具栏加一张自己滚的列表，整页不滚。搜索框、筛选分段、图标按钮、
+   新日志提示条都是组件库的（设计语言方案「安静的账本」）。等宽字体保留，不整块反白：深色终端会把这一页从产品里割出去。
+   Logs: the page header and the section tabs outside the card; inside, one toolbar and a list that scrolls on its own, never
+   the page. The search field, filter segment, icon buttons and new-lines banner all come from the kit (the 安静的账本
+   design language). The mono face stays, never an inverted block: a dark terminal would cut this page out of the product. */
+.logs-page { display: grid; gap: var(--s-5); }
+.logs-page > * { min-width: 0; }
+.logs-page > .ui-tabs { margin-bottom: calc(var(--s-1) * -1); }
+.log-console { overflow: hidden; background: var(--l-surface); border: 1px solid var(--l-hair); border-radius: var(--r-3); }
+.log-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); padding: var(--s-3); background: var(--l-canvas); border-bottom: 1px solid var(--l-hair); }
+.log-search { flex: 1 1 14rem; max-width: 26rem; }
+/* 常驻提示，和工具栏同一套底色与文字色：它说明的是一种状态，不是一个错误。
+   A persistent notice in the toolbar's own colours: it describes a state, not an error. */
+.log-notice { margin: 0; padding: var(--s-2) var(--s-3); color: var(--l-ink-3); background: var(--l-canvas); border-bottom: 1px solid var(--l-hair); font-size: var(--t-1); line-height: var(--lh-base); overflow-wrap: anywhere; }
 /* position 让列表成为行内读屏标签（.log-sr-only 是绝对定位）的包含块：不然那些
    标签不受列表的滚动裁剪，按各自在长列表里的位置把整页撑出一大段空白。
+   高度扣掉列表上面的页头、页签和工具栏，整页正好不滚。
    position makes the list the containing block of the per-line screen-reader
    labels (.log-sr-only is absolutely positioned); otherwise they escape the
-   list's scroll clipping and stretch the page by the length of the whole list. */
-.log-stream { position: relative; height: calc(100vh - 299px); min-height: 420px; overflow: auto; padding: 5px 0 14px; font-family: var(--mono); }
-.log-line { min-width: 720px; display: grid; grid-template-columns: 90px 88px minmax(0, 1fr); gap: 10px; align-items: baseline; padding: 5px 13px 5px 10px; border-left: 3px solid transparent; color: var(--ink); font-size: 12px; line-height: 1.45; }
-.log-line:hover { background: var(--canvas); }
-.log-line time { color: var(--muted); }
-.log-line strong { overflow: hidden; color: var(--muted); font-size: 12px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
-.log-line p { color: var(--muted); overflow-wrap: anywhere; }
+   list's scroll clipping and stretch the page by the length of the whole list.
+   The height leaves room for the header, tabs and toolbar above it, so the page itself never scrolls. */
+.log-stream { --log-above: 302px; position: relative; height: calc(100dvh - var(--log-above)); min-height: 400px; overflow: auto; padding-bottom: var(--s-3); font-family: var(--f-mono); }
+.log-line { min-width: 720px; display: grid; grid-template-columns: 90px 88px minmax(0, 1fr); gap: 10px; align-items: baseline; padding: 5px 13px 5px 10px; border-left: 3px solid transparent; color: var(--l-ink); font-size: var(--t-1); line-height: 1.45; }
+.log-line:hover { background: var(--l-canvas); }
+.log-line time { color: var(--l-ink-3); }
+.log-line strong { overflow: hidden; color: var(--l-ink-3); font-size: var(--t-1); font-weight: var(--w-medium); text-overflow: ellipsis; white-space: nowrap; }
+.log-line p { color: var(--l-ink-3); overflow-wrap: anywhere; }
 /* 正文里键名和其余文字降一档，值保持主文字色，这样一行里也有层级。 */
-.log-line p em { color: var(--ink); font-style: normal; font-weight: 600; }
+.log-line p em { color: var(--l-ink); font-style: normal; font-weight: var(--w-bold); }
 /* 级别是行的属性，不是行里的一枚徽章。 */
-.log-line--warning { border-left-color: var(--amber); background: var(--amber-soft); }
-.log-line--error { border-left-color: var(--red); background: var(--red-soft); }
-.log-line--warning p, .log-line--error p { color: var(--ink); }
-.log-line--warning:hover { background: var(--amber-soft); }
-.log-line--error:hover { background: var(--red-soft); }
+.log-line--warning { border-left-color: var(--warn-l); background: var(--warn-tint-l); }
+.log-line--error { border-left-color: var(--err-l); background: var(--err-tint-l); }
+.log-line--warning p, .log-line--error p { color: var(--l-ink); }
+.log-line--warning:hover { background: var(--warn-tint-l); }
+.log-line--error:hover { background: var(--err-tint-l); }
 .log-sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .audit-line { grid-template-columns: 126px 74px 190px minmax(0, 1fr); }
 .audit-line time { white-space: nowrap; }
-.audit-line code { overflow: hidden; color: var(--ink); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.audit-load-more, .runtime-load-more { width: 100%; min-height: 42px; display: flex; align-items: center; justify-content: center; gap: 6px; color: var(--ink); background: transparent; border: 0; border-top: 1px solid var(--line); font-size: 12px; }
-.audit-load-more:hover:not(:disabled), .runtime-load-more:hover:not(:disabled) { background: var(--canvas); }
-/* 新日志提示条和底部的「加载更早日志」上下对称：同样通栏、同样的字，吸在列表顶端，
-   读者往下读多远都看得到。
-   The new-lines banner mirrors the load-older band at the bottom: full width,
-   the same type, stuck to the top of the list so it stays in view however far
-   down the reader is. top 抵掉 .log-stream 的 5px 上内边距：sticky 按内边距
-   里侧吸附，不抵掉的话会有一条日志从它上面露出来。
-   top cancels .log-stream's 5px top padding: sticky holds inside the padding,
-   and without it a sliver of a line shows above the banner. */
-.log-new-lines { position: sticky; top: -5px; left: 0; z-index: 1; width: 100%; min-height: var(--s-6); display: flex; align-items: center; justify-content: center; gap: var(--s-1); color: var(--ink); background: var(--surface); border: 0; border-bottom: 1px solid var(--line); font-family: var(--f-body); font-size: var(--t-1); font-weight: var(--w-bold); }
-.log-new-lines:hover:not(:disabled) { background: var(--canvas); }
-/* 它盖在日志行上面，禁用时不能跟着全局规则变半透明，否则底下的行会透出来。
-   It sits over the log lines, so it must not turn translucent with the global
-   disabled rule or the lines underneath show through. */
-.log-new-lines:disabled { cursor: progress; opacity: 1; }
+.audit-line code { overflow: hidden; color: var(--l-ink); font-size: var(--t-1); text-overflow: ellipsis; white-space: nowrap; }
+/* 列表底部的「加载更早」：通栏，和顶上的新日志提示条上下对称 / Load-older at the foot: full width, mirroring the new-lines banner on top */
+.log-more { width: 100%; min-height: var(--h-touch); display: flex; align-items: center; justify-content: center; gap: var(--s-1); color: var(--l-ink); background: transparent; border: 0; border-top: 1px solid var(--l-hair); font-family: var(--f-body); font-size: var(--t-1); }
+.log-more:hover:not(:disabled) { background: var(--l-canvas); }
+.log-empty { margin: 0; padding: var(--s-5); color: var(--l-ink-3); font-family: var(--f-body); font-size: var(--t-1); text-align: center; }
 
 .auth-panel label { display: grid; gap: 7px; color: #4c5557; font-size: 14px; font-weight: 650; }
 /* 输入框包在 label 里，会继承 label 的粗体；输入的内容和占位符都该是正文字重。
@@ -428,7 +405,6 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 @keyframes sk-slide { from { background-position: -38% 0 } to { background-position: 138% 0 } }
 @media (prefers-reduced-motion: reduce) { .is-refreshing::before { animation: none; } }
 
-.empty-state { padding: 22px; color: #929b98; font-size: 12px; text-align: center; }
 .status-banner { min-height: 54px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; margin-bottom: 14px; padding: 9px 11px; color: #8e3131; background: #fff7f7; border: 1px solid #e8c7c7; border-radius: 6px; }
 .status-banner > svg { color: var(--red); }
 .status-banner > div { min-width: 0; display: grid; gap: 2px; }
@@ -442,6 +418,8 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 
 
 @media (max-width: 860px) {
+  /* 底部导航占掉一截 / The bottom navigation takes its share */
+  .log-stream { --log-above: 326px; }
   :root { --app-header-height: 52px; }
   .app-header { grid-template-columns: minmax(0, 1fr) auto; padding-inline: 16px; }
   .app-brand { gap: 8px; }
@@ -497,30 +475,24 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
   .editor-footer { align-items: stretch; flex-direction: column; gap: 8px; }
   .validation-state span { white-space: normal; }
   .editor-footer input { width: 100%; }
-  /* 搜索框和操作键同一行，分段控件独占第二行。审计有两个键，运行日志只有下载一个。
-     Search and the actions share the first row and the segmented control gets
-     the second to itself. The audit tab carries two actions, the runtime tab
-     only the download. */
-  .log-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px; padding-inline: 10px; }
-  .log-toolbar:not(:has(> :nth-child(4))) { grid-template-columns: minmax(0, 1fr) auto; }
-  .log-view-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); padding-inline: 8px; }
-  /* 收紧工具栏、搜索框和输入框的内边距，让审计页最长的占位提示在 375 下完整显示。
-     Tighter toolbar, field and input padding so the audit tab's longest
-     placeholder fits whole at 375. */
-  .search-field { max-width: none; gap: 6px; padding-inline: 8px; }
-  .search-field input { padding-inline: 0; }
-  .log-stream { height: calc(100vh - 369px); min-height: 350px; }
-  .log-new-lines { min-height: 44px; }
+  /* 搜索框和图标键同一行，筛选分段独占第二行 / Search and the icon buttons share the first row, the filter segment takes the second */
+  .logs-page { gap: var(--s-4); }
+  .log-toolbar { padding: var(--s-2); }
+  /* 收紧搜索框的内边距，审计页最长的占位提示在 375 下才放得下（手机上框里的字是 16）
+     Tighter field padding so the audit tab's longest placeholder fits at 375 (field text is 16 on a phone) */
+  .log-search { flex: 1 1 0; max-width: none; padding-inline: var(--s-2); }
+  .log-toolbar > .ui-seg { order: 1; flex: 1 1 100%; }
+  /* 六个审计类别一行放不下（「KixDNS」会被挤出去），排成三列两行；两行时滑块没法跟着走，选中的那格自己画白块
+     The six audit categories do not fit one row (KixDNS would be pushed out), so they go three by two; across two rows the
+     sliding indicator cannot follow, so the pressed cell draws its own raised block */
+  .log-toolbar > .ui-seg:has(> :nth-child(6)) { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .log-toolbar > .ui-seg:has(> :nth-child(6)) > .ui-seg__ind { display: none; }
+  .log-toolbar > .ui-seg:has(> :nth-child(6)) > .ui-seg__opt[aria-pressed="true"] { background: var(--l-surface); box-shadow: var(--shadow-raise); }
+  /* 两行时上一行的可点区域没法借下一行的地方，每格自己就 44 高 / Across two rows the top row cannot borrow from the row below, so each cell is 44 itself */
+  .log-toolbar > .ui-seg:has(> :nth-child(6)) > .ui-seg__opt { min-height: var(--h-touch); }
+  .log-stream { --log-above: 373px; min-height: 350px; }
   .log-line { min-width: 0; grid-template-columns: 90px minmax(0, 1fr); gap: 4px 8px; padding-block: 9px; }
   .log-line p { grid-column: 1 / -1; }
-  /* 等宽格子，放不下就换行，绝不横向滚动：藏起滚动条的横向滚动会把「信息」「认证」
-     「诊断」直接裁掉，还看不出后面有东西。六个审计类别排成三列两行，比四加二整齐。
-     Equal cells that wrap, never a sideways scroller: with its scrollbar hidden a
-     scroller simply clips 信息, 认证 and 诊断 with no sign anything is there. The
-     six audit categories go three by two, which reads better than four and two. */
-  .log-seg { grid-row: 2; grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
-  .log-seg:has(> :nth-child(5)) { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .log-seg button { min-width: 0; min-height: 44px; padding-inline: 4px; }
   .audit-line { min-width: 0; grid-template-columns: 104px minmax(0, 1fr); gap: 4px 8px; padding-block: 8px; }
   .audit-line strong { text-align: right; }
   .audit-line code, .audit-line p { grid-column: 1 / -1; }

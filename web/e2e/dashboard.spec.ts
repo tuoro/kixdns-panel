@@ -172,7 +172,7 @@ for (const stopped of [true, false]) {
     // before the route changes, leaving the overview never unmounted and the
     // assertion waiting on a banner that will never appear.
     await page.getByRole('link', { name: '日志', exact: true }).click()
-    await expect(page.getByRole('heading', { name: '运行日志', exact: true })).toBeVisible()
+    await expect(page.getByRole('heading', { name: '日志', exact: true })).toBeVisible()
     await page.getByRole('link', { name: '概览', exact: true }).click()
 
     await expect(page.getByText(stopped ? 'KixDNS 已停止' : '实时数据暂不可用', { exact: true })).toBeVisible()
@@ -351,7 +351,7 @@ test('宽屏上配置卡排成一行，规则命中的 Pipeline 从中线开始'
 // The overview's demo endpoint hands back one shared object: after changing it, leave and come back so the overview remounts and re-reads
 async function remountOverview(page: Page): Promise<void> {
   await page.getByRole('link', { name: '日志', exact: true }).click()
-  await expect(page.getByRole('heading', { name: '运行日志', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '日志', exact: true })).toBeVisible()
   await page.getByRole('link', { name: '概览', exact: true }).click()
   await expect(page.locator('.overview-total-value')).toBeVisible()
 }
