@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { useConfirm } from '../composables/useConfirm'
+import UiDotText from './ui/UiDotText.vue'
 
 const confirm = useConfirm()
 const confirmButton = ref<HTMLButtonElement | null>(null)
@@ -91,7 +92,8 @@ watch(() => confirm.pending.value, (request) => {
       <h2 id="confirm-title">{{ confirm.pending.value.title }}</h2>
       <p id="confirm-body">{{ confirm.pending.value.body }}</p>
       <ul v-if="confirm.pending.value.items?.length" class="confirm__items">
-        <li v-for="item in confirm.pending.value.items" :key="item">{{ item }}</li>
+        <!-- 「#12 · 备注」这样的项按「·」分段：点不在行首，折行落在它后面时藏起来 / Items such as 「#12 · note」 split at their 「·」: never at a line start, hidden when a wrap falls right after it -->
+        <li v-for="item in confirm.pending.value.items" :key="item"><UiDotText :parts="item.split('\u00a0· ')" /></li>
       </ul>
       <div class="confirm__actions">
         <button class="button button--secondary" type="button" @click="confirm.settle(false)">

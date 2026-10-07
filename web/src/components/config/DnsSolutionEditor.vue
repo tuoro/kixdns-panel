@@ -10,6 +10,8 @@ import PhraseText from './PhraseText.vue'
 import { rememberListShape } from './list-shape'
 import SolutionGuide from './SolutionGuide.vue'
 import UiMenu, { type UiMenuItem } from '../ui/UiMenu.vue'
+import UiDotText from '../ui/UiDotText.vue'
+import { vLineDots } from '../../line-dots'
 
 const config = defineModel<KixConfig>({ required: true })
 // openKey：重建后先打开哪个入口（保存之后回到刚才那一个）；打开的入口变了就用 open 事件报出去。
@@ -196,26 +198,25 @@ function orphanRole(solution: DnsSolution): string {
 
 // 列表里的那一行：它是兜底时，列表最后一句已经写了「其余请求 → 它」，这里只写规则数，不重复。
 // In the list: when it is the fallback, the list's last line already says so; only the rule count here.
-function orphanListMeta(solution: DnsSolution): string {
+function orphanListMeta(solution: DnsSolution): string[] {
   const rules = `${solution.pipeline?.rules.length ?? 0} 条规则`
-  return solution.pipeline?.id === fallbackPipeline.value && !catchAll.value ? rules : `${orphanRole(solution)}\u00a0· ${rules}`
+  return solution.pipeline?.id === fallbackPipeline.value && !catchAll.value ? [rules] : [orphanRole(solution), rules]
 }
 
 // 和列表那一行同一个顺序：先说它怎么被用到（审计 A15）。规则数不写：下面就是编了号的规则，只在一条都没有时说一句（审计第七轮 A2）
 // Same order as the list row: how it is used first (audit A15). No rule count: the numbered rules follow right below, so only an empty
 // Pipeline says so (audit round 7, A2)
-function customMeta(solution: DnsSolution): string {
+// 几段由 UiDotText 用「·」连起来：点不在行首，折行落在它后面时藏起来 / UiDotText joins the parts with 「·」: never at a line start, hidden when a wrap falls right after it
+function customMeta(solution: DnsSolution): string[] {
   const rules = solution.pipeline?.rules.length ? '' : '还没有规则'
-  if (solution.kind === 'orphan') return [orphanRole(solution), rules].filter(Boolean).join('\u00a0· ')
+  if (solution.kind === 'orphan') return [orphanRole(solution), rules].filter(Boolean)
   const entry = `入口 ${entryNumber(solution)}`
-  if (!solution.pipeline) return `${entry}\u00a0· 目标 Pipeline 不存在`
-  // 「·」用不换行空格贴着前面的字：换行时它留在行尾，不出现在一行之首（GB/T 15834 5.1.7）
-  // The 「·」 is glued to the word before it by a no-break space: on a wrap it ends the line and never starts one (GB/T 15834 5.1.7)
-  return [entry, rules, solution.referenceCount > 1 ? `${solution.referenceCount} 处引用` : ''].filter(Boolean).join('\u00a0· ')
+  if (!solution.pipeline) return [entry, '目标 Pipeline 不存在']
+  return [entry, rules, solution.referenceCount > 1 ? `${solution.referenceCount} 处引用` : ''].filter(Boolean)
 }
 
-// 「·」用普通的分隔写法：PhraseText 把它放进前面那一块里，换行时留在上一行的行尾（审计第三轮 C1）
-// The ordinary separator: PhraseText puts the 「·」 inside the unit before it, so on a wrap it ends the line above (audit round 3, C1)
+// 「·」用普通的分隔写法：PhraseText 把它放进前面那一块里，不在行首；折行落在它后面时藏起来（审计第三轮 C1）
+// The ordinary separator: PhraseText puts the 「·」 inside the unit before it, never at a line start, and hides it when a wrap falls right after it (audit round 3, C1)
 function ruleSentence(rule: RuleConfig): Phrase {
   const response = rule.response_matchers.length || rule.response_actions_on_match.length || rule.response_actions_on_miss.length ? ' · 另有响应处理' : ''
   return join(rulePhrase(rule), response)
@@ -460,7 +461,7 @@ defineExpose({ confirmDiscard, applyPending, pendingConfig })
         <p v-if="entries.length && !query" class="workbench-order-note">{{ ENTRY_ORDER_NOTE }}</p>
         <button v-if="mappingCount && !query" class="workbench-row workbench-mapping-row" type="button" @click="openMapping">
           <span class="workbench-entry-number"><Zap :size="14" aria-hidden="true" /></span>
-          <span class="workbench-entry-body"><span class="workbench-entry-condition">域名映射&nbsp;· {{ mappingCount }} 条</span><span class="workbench-entry-route">最先匹配，命中直接返回 CNAME</span></span>
+          <span class="workbench-entry-body"><span v-line-dots class="workbench-entry-condition">域名映射<span data-line-dot>&nbsp;·</span> {{ mappingCount }} 条</span><span class="workbench-entry-route">最先匹配，命中直接返回 CNAME</span></span>
           <ChevronRight class="workbench-row-chevron" :size="16" aria-hidden="true" />
         </button>
         <ol v-if="filteredEntries.length" class="workbench-entry-list">
@@ -498,7 +499,7 @@ defineExpose({ confirmDiscard, applyPending, pendingConfig })
             <li v-for="solution in filteredOrphans" :key="solution.key" class="workbench-item workbench-orphan" :class="{ 'is-selected': selectedSolution?.key === solution.key }">
               <button class="workbench-entry-select" type="button" :aria-description="isChanged(solution) ? '已修改' : undefined" :aria-pressed="selectedSolution?.key === solution.key" @click="selectSolution(solution)">
                 <span class="workbench-entry-number"><GitBranch :size="14" aria-hidden="true" /></span>
-                <span class="workbench-entry-body"><code class="workbench-entry-condition">{{ solution.pipeline?.id }}</code><span class="workbench-entry-route">{{ orphanListMeta(solution) }}</span></span>
+                <span class="workbench-entry-body"><code class="workbench-entry-condition">{{ solution.pipeline?.id }}</code><span class="workbench-entry-route"><UiDotText :parts="orphanListMeta(solution)" /></span></span>
                 <span v-if="isChanged(solution)" class="ui-dot ui-dot--ink workbench-entry-dot" aria-hidden="true"></span>
               </button>
             </li>
@@ -517,7 +518,7 @@ defineExpose({ confirmDiscard, applyPending, pendingConfig })
           <button class="ui-icon-btn" type="button" aria-label="关闭" title="关闭" @click="cancel"><X :size="16" /></button>
         </header>
         <div class="workbench-custom__body">
-          <p class="workbench-custom__meta">{{ customMeta(selectedSolution) }}</p>
+          <p class="workbench-custom__meta"><UiDotText :parts="customMeta(selectedSolution)" /></p>
           <ol v-if="selectedSolution.pipeline?.rules.length" class="workbench-custom__rules">
             <li v-for="(rule, index) in selectedSolution.pipeline.rules" :key="index">
               <span class="workbench-entry-number">{{ String(index + 1).padStart(2, '0') }}</span>

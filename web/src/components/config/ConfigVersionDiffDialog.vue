@@ -3,6 +3,7 @@ import { X } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { ConfigVersionDetail } from '../../api/types'
 import { diffByIdentity, lineSegments, type ChangeGroup, type ChangeKind } from '../../config-editor/changes'
+import { vLineDots } from '../../line-dots'
 import { normalizeConfig } from '../../config-editor/model'
 import type { PhraseSegment } from '../../config-editor/phrase'
 import { shortHash } from '../../utils'
@@ -133,8 +134,8 @@ onBeforeUnmount(() => {
     <section class="config-diff-dialog">
       <header class="config-diff-dialog__header">
         <div>
-          <h2 id="config-diff-title">#{{ version.id }}&nbsp;· {{ version.message || '未填写备注' }}</h2>
-          <p>{{ result.count ? `和当前比，${result.count} 处不同` : '和当前一样' }}&nbsp;· {{ version.actor }}&nbsp;· <code>{{ shortHash(version.sha256, 8) }}</code></p>
+          <h2 v-line-dots id="config-diff-title">#{{ version.id }}<span data-line-dot>&nbsp;·</span> {{ version.message || '未填写备注' }}</h2>
+          <p v-line-dots>{{ result.count ? `和当前比，${result.count} 处不同` : '和当前一样' }}<span data-line-dot>&nbsp;·</span> {{ version.actor }}<span data-line-dot>&nbsp;·</span> <code>{{ shortHash(version.sha256, 8) }}</code></p>
         </div>
         <button ref="closeButton" class="ui-icon-btn" type="button" aria-label="关闭" title="关闭比较" @click="$emit('close')"><X :size="16" /></button>
       </header>
