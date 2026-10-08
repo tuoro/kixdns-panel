@@ -1407,8 +1407,8 @@ button.config-history__main:hover .config-history__note { text-decoration: under
   .config-savebar--reason .ui-savebar__status { flex-basis: 100%; min-height: 0; }
 }
 @media (max-width: 640px) {
-  .config-skeleton__search, .config-skeleton__button { height: var(--h-touch); }
-  .workbench-manual-bar { padding-top: calc(var(--s-4) - (var(--h-touch) - 1lh) / 2); }
+  .config-skeleton__search, .config-skeleton__button { height: var(--h-md); }
+  .workbench-manual-bar { padding-top: calc(var(--s-4) - (var(--h-md) - 1lh) / 2); }
   /* 页签单独一行、下面就是那条线，指示块落在线上；视图切换和文件操作在线下面一行（审计 V5、S6、A12）
      The tabs take a row with the rule right under them, so the indicator sits on it; the view switch and file
      actions go on the row below the rule (audits V5, S6, A12) */

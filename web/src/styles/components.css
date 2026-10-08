@@ -75,8 +75,10 @@ a.ui-btn { text-decoration: none; }
 .ui-link { display: inline-flex; align-items: center; gap: var(--s-1); color: var(--ok-l); font-size: var(--t-2); text-decoration: none; white-space: nowrap; }
 
 /* ---------- 输入框：和同一行的按钮一样高 ---------- */
-.ui-input { min-height: var(--h-md); display: flex; align-items: center; gap: var(--s-2); min-width: 0; padding: 0 var(--s-3); border: 1px solid var(--l-line-strong); border-radius: var(--r-2); background: var(--l-surface); color: var(--l-ink-3); }
-.ui-input:focus-within { border-color: var(--l-ink); }
+/* 框不描边，浅灰底认出是框；聚焦时变白，出一条浅边和一圈淡光。一屏的框多了也不会满屏线条。
+   No outline: the pale fill marks a field. On focus it turns white with a light edge and a faint halo, so a screen of fields is not a screen of lines. */
+.ui-input { min-height: var(--h-md); display: flex; align-items: center; gap: var(--s-2); min-width: 0; padding: 0 var(--s-3); border: 1px solid transparent; border-radius: var(--r-2); background: var(--l-field); color: var(--l-ink-3); transition: background-color var(--m-quick) var(--ease-out), border-color var(--m-quick) var(--ease-out), box-shadow var(--m-quick) var(--ease-out); }
+.ui-input:focus-within { border-color: var(--l-line-strong); background: var(--l-surface); box-shadow: var(--ring-field); }
 .ui-input input { min-width: 0; flex: 1; padding: 0; border: 0; outline: 0; background: transparent; color: var(--l-ink); font-size: var(--t-3); }
 /* 值可以是等宽，占位说明是人话，用正文字体：等宽的中文字距会拉开。 / Values may be mono; a placeholder is words, in the body face, since mono spreads Chinese apart. */
 .ui-input input::placeholder { color: var(--l-ink-3); font-family: var(--f-body); }
@@ -106,7 +108,7 @@ a.ui-btn { text-decoration: none; }
 /* 输入框右端的小按钮（例如「选用已有上游」）：箭头和下拉框的箭头落在同一条竖线上
    A small button at the right end of an input (e.g. pick an existing upstream); its chevron lines up with a select's */
 .ui-input__affix { width: var(--h-sm); height: var(--h-sm); flex: 0 0 auto; display: inline-grid; place-items: center; margin-right: calc(var(--s-2) * -1); padding: 0; border: 0; border-radius: var(--r-1); background: none; color: var(--l-ink-3); cursor: pointer; transition: background-color var(--m-quick) var(--ease-out), color var(--m-quick) var(--ease-out); }
-.ui-input__affix[aria-expanded="true"] { background: var(--l-sunk); color: var(--l-ink); }
+.ui-input__affix[aria-expanded="true"] { background: var(--l-hair); color: var(--l-ink); }
 /* 常规框里的按钮图标和框里别的图标一样是 16：放大镜和清除的 × 不一大一小（规范 5.1，审计第五轮 T3）
    A button inside a regular field draws a 16 icon like the field's other icons, so the magnifier and the clear × match (spec 5.1, audit round 5, T3) */
 .ui-input:not(.ui-input--sm) .ui-input__affix > svg { width: var(--size-icon); height: var(--size-icon); }
@@ -580,7 +582,9 @@ a.ui-btn { text-decoration: none; }
   .ui-icon-btn:hover:not(:disabled) { color: var(--l-ink); background: var(--l-sunk); }
   .ui-icon-btn--danger:hover:not(:disabled) { color: var(--err-l); background: var(--err-tint-l); }
   .ui-link:hover { color: var(--ok-l-deep); text-decoration: underline; text-underline-offset: 3px; }
-  .ui-input__affix:hover { background: var(--l-sunk); color: var(--l-ink); }
+  /* 框底已经是浅灰：悬停再深一档，框里的按钮悬停用分隔线的灰 / The field is already pale grey: hover goes one step darker, and a button inside it hovers in the hairline grey */
+  .ui-input:hover:not(:focus-within) { background: var(--l-sunk); }
+  .ui-input__affix:hover { background: var(--l-hair); color: var(--l-ink); }
   .ui-tabs__tab:hover, .ui-seg__opt:hover { color: var(--l-ink); }
   .ui-banner:hover:not(:disabled) { background: var(--l-canvas); }
   .ui-rows__handle:hover { background: var(--l-sunk); color: var(--l-ink); }
@@ -601,24 +605,29 @@ a.ui-btn { text-decoration: none; }
   .ui-ph--stack { grid-template-columns: minmax(0, 1fr); }
   .ui-ph--stack .ui-ph__actions { justify-content: stretch; }
   .ui-ph--stack .ui-ph__actions > * { flex: 1; }
-  .ui-btn, .ui-btn--sm { min-height: var(--h-touch); }
+  /* 按钮看起来和桌面一样 36，点按区域上下补到 44；小号按钮在手机上也是 36、14 号字 / A button looks 36 as on desktop with its tap area grown to 44; a small one is 36 with 14px text on a phone too */
+  .ui-btn, .ui-btn--sm { position: relative; min-height: var(--h-md); }
+  .ui-btn::before { position: absolute; inset: calc((var(--h-touch) - var(--h-md)) / -2) 0; content: ''; }
   .ui-btn--sm { font-size: var(--t-3); }
-  .ui-icon-btn, .ui-icon-btn--sm { width: var(--h-touch); height: var(--h-touch); }
+  /* 图标按钮也是 36，和同一行的框一样高，点按区域四边补到 44 / An icon button is 36 too, as tall as the fields on its line, with its tap area grown to 44 on every side */
+  .ui-icon-btn, .ui-icon-btn--sm { position: relative; width: var(--h-md); height: var(--h-md); }
+  .ui-icon-btn::before { position: absolute; inset: calc((var(--h-touch) - var(--h-md)) / -2); content: ''; }
   .ui-tabs { gap: 0; }
   .ui-tabs__tab { flex: 1; min-height: var(--h-touch); padding-bottom: 0; text-align: center; }
   .ui-seg { display: flex; }
-  .ui-seg__opt, .ui-seg--sm .ui-seg__opt { flex: 1; min-height: calc(var(--h-touch) - 4px); padding-inline: var(--s-1); }
-  .ui-input, .ui-input--sm { min-height: var(--h-touch); }
-  /* 框里的字 16：小号框也一样，否则 iOS 聚焦时放大整页 / Field text is 16, small fields included, or iOS zooms the page on focus */
-  .app-shell .ui-input :is(input, select, textarea) { font-size: var(--t-touch); }
-  .ui-input--area { padding-block: calc((var(--h-touch) - 2px - 1lh) / 2); font-size: var(--t-touch); }
+  .ui-seg__opt, .ui-seg--sm .ui-seg__opt { flex: 1; min-height: calc(var(--h-md) - 4px); padding-inline: var(--s-1); }
+  /* 分段的每一格看起来 32，点按区域越过外框上下各补 4，和按钮一样到 44 / Each segment cell looks 32; its tap area reaches past the frame by 4 above and below, 44 like a button */
+  .ui-seg__opt::after { inset: calc((var(--h-touch) - var(--h-md)) / -2 - 2px) 0; }
+  /* 框和桌面一样 36、14 号字，小号框在手机上也放大到 36（打字的框不能比手指还窄）。iPhone 聚焦放大由 main.ts 在 iPhone 上关掉，
+     不再靠 16 号字（规范 1.8 改版）
+     A field is 36 with 14px text as on desktop, and a small field grows to 36 on a phone (a typing box cannot be narrower than a finger).
+     iPhone focus zoom is switched off on iPhones by main.ts instead of by 16px text (spec 1.8, revised) */
+  .ui-input, .ui-input--sm { min-height: var(--h-md); }
+  .ui-input--sm :is(input, select) { font-size: var(--t-3); }
   /* 下拉框撑满外框里面的高度，整块都点得到 / The select fills the frame's inner height so the whole box is tappable */
-  .app-shell .ui-select select { min-height: calc(var(--h-touch) - 2px); }
-  /* 全局给手机上的输入框设了 44 的最小高度（和 16px 字号，防 iPhone 放大）；
-     这里外框已经是 44，里面的输入框再撑 44 会比同一行的按钮高出边框那 2 像素。
-     The global mobile rule gives inputs and selects a 44 minimum height (and
-     16px type to stop iPhone zoom); the frame here is already 44, so the inner
-     control must not add the frame's 2px border on top of the buttons beside it. */
+  .app-shell .ui-select select, .ui-select.ui-input--sm select { min-height: calc(var(--h-md) - 2px); }
+  /* 全局给手机上的输入框设了最小高度；外框已经是 36，里面的输入框再撑一次会比同一行的按钮高出边框那 2 像素。
+     The global mobile rule gives inputs a minimum height; the frame is already 36, so the inner control must not add the frame's 2px border on top of the buttons beside it. */
   .app-shell .ui-input input:not([type="checkbox"]):not([type="radio"]) { min-height: 0; }
   .ui-card__head { padding: var(--s-3) var(--s-4); }
   .ui-card--stack .ui-card__head { grid-template-columns: minmax(0, 1fr); }
@@ -640,18 +649,18 @@ a.ui-btn { text-decoration: none; }
   .ui-banner { min-height: var(--h-touch); }
   /* 手机上菜单是贴着底边的弹层：标题是菜单的名字，每项 44 高，留出底部安全区 */
   /* On a phone the menu is a bottom sheet titled with its name, 44px items, clear of the home indicator */
-  .ui-rows-host { --rows-handle: var(--h-touch); --rows-act: var(--h-touch); }
+  .ui-rows-host { --rows-handle: var(--h-md); --rows-act: var(--h-md); }
   /* 按钮的行高是 1.15，44 的格子在字上下各多出 14：少收 2，和上面的框、下一组的 44 格子挨着不叠，字往下挪 2（规范 2.1，审计第六轮 A4）
      A button's line height is 1.15, so a 44 cell reaches 14 past its text on each side: pulled back 2 less, it touches the box above and the
      next group's 44 cell without overlapping, and the text moves down 2 (spec 2.1, audit round 6, A4) */
-  .ui-rows__add { margin-block: calc((1lh - var(--h-touch)) / 2 + 2px); }
-  /* 手机上 × 那一格是 44，图标往里缩 4：「更换」的字也往里收 4，行尾还在同一条竖线上（审计第四轮 D8）
-     On a phone the × cell is 44 and insets its icon 4 more, so 更换 comes in by 4 too and row ends stay on one line (audit round 4, D8) */
-  .ui-picked__change { margin-block: calc((1lh - var(--h-touch)) / 2); margin-inline-end: calc((var(--h-touch) - var(--h-md)) / 2); }
+  .ui-rows__add { margin-block: calc((1lh - var(--h-md)) / 2); }
+  /* 「更换」和别的按钮一样 36 高，往回收掉上下多出来的部分，起点那一行只有一行字高（审计第四轮 D8）
+     更换 is 36 like any button and is pulled back above and below, so the start line is one text line tall (audit round 4, D8) */
+  .ui-picked__change { margin-block: calc((1lh - var(--h-md)) / 2); }
   /* 起点那一行下面换行出来的分段离它 12：「更换」的 44 格子碰不到分段（规范 2.1，审计第六轮扫查）
      A segment wrapping under the start line sits 12 below it, so 更换's 44 cell never reaches it (spec 2.1, round-6 sweep) */
   .ui-picked { row-gap: var(--s-3); }
-  /* 手机上小号按钮也是 44 高、14 号字，配 16 的图标（规范 5.1，审计第三轮 M4） / On a phone a small button is 44 tall with 14px text, so it takes a 16 icon (spec 5.1, audit round 3, M4) */
+  /* 手机上小号按钮也是 36 高、14 号字，配 16 的图标（规范 5.1，审计第三轮 M4） / On a phone a small button is 36 tall with 14px text, so it takes a 16 icon (spec 5.1, audit round 3, M4) */
   .ui-btn--sm > svg { width: var(--size-icon); height: var(--size-icon); }
   /* 跟在一行小字旁边的小按钮（「更新」「回退」）看起来还是 30 高、13 号字，点按区域上下补到 44：44 高的方块比它旁边那行字还重
      A small button beside a line of small text (更新, 回退) still looks 30 tall with 13px text, its hit area grown to 44: a 44 block
@@ -659,8 +668,8 @@ a.ui-btn { text-decoration: none; }
   .ui-btn--inline { position: relative; min-height: var(--h-sm); font-size: var(--t-2); }
   .ui-btn--inline > svg { width: var(--size-icon-sm); height: var(--size-icon-sm); }
   .ui-btn--inline::before { position: absolute; inset: calc((var(--h-touch) - var(--h-sm)) / -2) 0; content: ''; }
-  /* 小号下拉框、小号图标按钮和框里的按钮在手机上都是 44 高，图标也用 16：一行里的箭头和 × 一样大（规范 5.1，审计第四轮 V6、T3）
-     Small selects, small icon buttons and in-field buttons are 44 tall on a phone, so their icons are 16 too and every chevron and × on a line matches (spec 5.1, audit round 4, V6, T3) */
+  /* 手机上小号下拉框是 36、小号图标按钮是 44 的格子，框里的按钮跟框一样高，图标都用 16：一行里的箭头和 × 一样大（规范 5.1，审计第四轮 V6、T3）
+     On a phone a small select is 36, a small icon button a 44 cell and an in-field button as tall as its field; all take 16 icons so every chevron and × on a line matches (spec 5.1, audit round 4, V6, T3) */
   .ui-select.ui-input--sm > svg { width: var(--size-icon); height: var(--size-icon); right: var(--s-3); }
   .ui-icon-btn--sm > svg, .ui-input__affix > svg { width: var(--size-icon); height: var(--size-icon); }
   /* 能点的标签（「还差 1 项」）看起来还是 20 高，点按区域上下补到 44（规范 2.1，审计第二轮 B4）
@@ -675,8 +684,8 @@ a.ui-btn { text-decoration: none; }
      lands on the field's right edge; the field never grows because of it (audit round 3, T5) */
   /* 左边也往回收掉框里的 8：44 宽的格子左边本来就空着 14，字和图标之间仍有这么远，字段不因为它变窄（网址框在 375 上多出 8，放得下 https://dns.alidns.com/）
      Pulled back over the field's 8 gap on the left too: the 44 cell already leaves 14 blank there, so text and icon stay that far apart and the field loses no width (the URL box at 375 keeps the 8 it needs for https://dns.alidns.com/) */
-  .ui-input__affix { width: var(--h-touch); height: calc(var(--h-touch) - 2px); margin-inline: calc(var(--s-2) * -1) calc((var(--size-icon) - var(--h-touch)) / 2); }
-  .ui-input--area .ui-input__affix { margin-block: calc((1lh - var(--h-touch) + 2px) / 2); }
+  .ui-input__affix { width: var(--h-md); height: calc(var(--h-md) - 2px); margin-inline: calc(var(--s-2) * -1) calc((var(--size-icon) - var(--h-md)) / 2); }
+  .ui-input--area .ui-input__affix { margin-block: calc((1lh - var(--h-md) + 2px) / 2); }
   /* 标题、图标和分隔线都从 16 开始，和页面的边距同一条竖线（审计第二轮 D10） / Title, icons and divider all start at 16, the page's gutter (audit round 2, D10) */
   .ui-menu--pop { top: auto; right: 0; bottom: 0; left: 0; width: 100%; padding: var(--s-2) var(--s-1) calc(var(--s-2) + env(safe-area-inset-bottom)); border-width: 1px 0 0; border-radius: var(--r-3) var(--r-3) 0 0; }
   .ui-menu--pop .ui-menu__sep { margin-inline: var(--s-3); }

@@ -215,7 +215,7 @@ onBeforeUnmount(() => {
   /* 手机上整层的左右都是 16（审计 D16） / On a phone the whole layer is inset 16 on both sides (audit D16) */
   .config-diff-dialog__header, .config-diff-list { padding-inline: var(--s-4); }
   .config-diff-dialog__header { padding-block: var(--s-3); }
-  .config-diff-dialog__header > .ui-icon-btn { margin-block: calc((var(--t-4) * var(--lh-tight) - var(--h-touch)) / 2); }
+  .config-diff-dialog__header > .ui-icon-btn { margin-block: calc((var(--t-4) * var(--lh-tight) - var(--h-md)) / 2); }
   .config-diff-list { padding-block: var(--s-4); }
   .config-diff-dialog__footer { padding: var(--s-3) var(--s-4) calc(var(--s-3) + env(safe-area-inset-bottom)); }
   .config-diff-dialog__footer .ui-btn { flex: 1; }

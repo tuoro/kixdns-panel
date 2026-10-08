@@ -227,9 +227,12 @@ test('上游状态逐行展开，明细跟着这一行的时段，桌面和手�
     ])
     expect(gaps[1]).toBe(gaps[0])
     await expect(page.locator('.ui-rec-head').first()).toBeHidden()
-    // 展开按钮手机上 44 / The expand button is 44 on a phone
-    const box = await rows.first().locator('.overview-expand').boundingBox()
-    expect(Math.round(box!.height)).toBeGreaterThanOrEqual(44)
+    // 展开按钮手机上看起来 36，点按区域补到 44：量补过之后的区域 / The expand button looks 36 on a phone with its tap area grown to 44: measure the grown area
+    const reach = await rows.first().locator('.overview-expand').evaluate((element) => {
+      const grown = getComputedStyle(element, '::before')
+      return element.getBoundingClientRect().height - parseFloat(grown.top) - parseFloat(grown.bottom)
+    })
+    expect(Math.round(reach)).toBeGreaterThanOrEqual(44)
     const typeScale = await page.locator('.overview-total-value').evaluate((element) => Number.parseFloat(getComputedStyle(element).fontSize))
     expect(typeScale).toBeGreaterThanOrEqual(28)
     expect(typeScale).toBeLessThanOrEqual(32)
@@ -274,18 +277,19 @@ test('上游状态在中等宽度不挤地址：四列的最窄处 900 地址列
   expect(sizes.scroll).toBeLessThanOrEqual(sizes.client)
 })
 
-test('手机上窗口分段每格可点满 44：外框的内边距也算这一格 @responsive', async ({ page }, testInfo) => {
+test('手机上窗口分段每格可点满 44：点按区域越过外框上下补齐 @responsive', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'mobile', '只量手机宽度 / Phone width only')
   await openOverview(page)
   await page.getByRole('tab', { name: '查询排行' }).click()
   const option = page.getByRole('button', { name: '1 小时', exact: true })
+  // 外框看起来 36；手指落在外框上下各 4 的地方也算这一格 / The frame looks 36; a tap up to 4 past it above or below still lands on the option
   const hits = await option.evaluate((element) => {
     const frame = element.parentElement!.getBoundingClientRect()
     const box = element.getBoundingClientRect()
     const x = box.left + box.width / 2
-    return { height: frame.height, top: element.contains(document.elementFromPoint(x, frame.top + 0.5)), bottom: element.contains(document.elementFromPoint(x, frame.bottom - 0.5)) }
+    return { top: element.contains(document.elementFromPoint(x, frame.top - 3.5)), bottom: element.contains(document.elementFromPoint(x, frame.bottom + 3.5)), reach: frame.height + 8 }
   })
-  expect(hits.height).toBeGreaterThanOrEqual(44)
+  expect(hits.reach).toBeGreaterThanOrEqual(44)
   expect(hits).toMatchObject({ top: true, bottom: true })
 })
 

@@ -278,15 +278,13 @@ function importBulk(): void {
   }
 }
 @media (max-width: 640px) {
-  .mapping-editor { --rows-handle: var(--h-touch); --rows-act: var(--h-touch); }
+  .mapping-editor { --rows-handle: var(--h-md); --rows-act: var(--h-md); }
   /* 手机上先是命令，再是规则的说明，最后是列表：说明挨着它说的列表，「批量粘贴」落在内容左边线上、「添加映射」靠右，
      和解析编排的「自由编辑 · 添加入口」同一个排法（审计第五轮 M2）
      On a phone the commands come first, then the rule note, then the list: the note sits next to the list it describes, with 批量粘贴 on
      the content edge and 添加映射 on the right, the arrangement of 解析编排's 自由编辑 · 添加入口 (audit round 5, M2) */
   .mapping-editor__commands { order: -1; flex-basis: 100%; justify-content: space-between; margin-left: 0; }
   .mapping-editor__commands > .ui-btn--text { margin-inline-start: calc(var(--s-3) * -1); }
-  /* 批量框也是输入框：16 号字，免得 iOS 聚焦时放大整页（规范 1.8，审计 M4） / The bulk box is a field too: 16px, so iOS never zooms on focus (spec 1.8, audit M4) */
-  .mapping-editor__bulk textarea { font-size: var(--t-touch); }
   /* 手机上源域名单独一行，「→ 目标 · 300 秒」是第二行：箭头总在行首，不留左边距；秒数不会单独掉到第三行（审计第三轮 M5、第四轮 M1）
      On a phone the source takes a line of its own and 「→ target · 300 秒」 is the second: the arrow always starts it, with no margin before it,
      and the seconds never drop to a third line alone (audit round 3 M5, round 4 M1) */

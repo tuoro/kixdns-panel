@@ -119,9 +119,9 @@ test('窄屏查询同行且标题、命中名不再海报化 @responsive', async
   expect(input?.y).toBe(submit?.y)
   expect(input?.height).toBe(submit?.height)
   expect(type?.height).toBe(submit?.height)
-  // 正好是触控高度 44：手机上全局给下拉框的 44 最小高度曾把外框撑到 46，整行跟着变高。
-  // Exactly the 44 touch height: the global 44 minimum on selects once pushed the frame to 46 and the whole row with it.
-  expect(submit?.height).toBe(44)
+  // 正好是框的高度 36：手机上全局给下拉框的最小高度曾把外框多撑出边框那 2 像素，整行跟着变高。
+  // Exactly the 36 frame height: the global minimum on selects once pushed the frame 2px past it, and the whole row with it.
+  expect(submit?.height).toBe(36)
   expect(await page.locator('.diag-heading h1').evaluate((el) => parseFloat(getComputedStyle(el).fontSize))).toBeLessThanOrEqual(22)
   expect(await page.locator('.diag-answer-row code').first().evaluate((el) => parseFloat(getComputedStyle(el).fontSize))).toBeLessThanOrEqual(18)
   await noOverflow(page)

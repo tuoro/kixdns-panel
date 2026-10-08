@@ -4,8 +4,11 @@ import { SESSION_EXPIRED_EVENT } from './api/client'
 import { useSession } from './composables/useSession'
 import { useToast } from './composables/useToast'
 import router from './router'
+import { stopIosFocusZoom } from './ios-zoom'
 import { createStaleChunkRecovery } from './stale-chunk-recovery'
 import './styles.css'
+
+stopIosFocusZoom(document.querySelector<HTMLMetaElement>('meta[name="viewport"]'), navigator)
 
 const session = useSession()
 window.addEventListener(SESSION_EXPIRED_EVENT, () => {

@@ -417,22 +417,20 @@ onBeforeUnmount(clearSyncNotice)
   .geo-actions-row > .ui-setrow__label { display: none; }
   .geo-row .ui-setrow__label, .geo-row:has(.geo-file) .ui-setrow__label { padding-top: 0; }
   .geo-file { min-height: 0; align-items: start; }
-  /* 文件那一行是下面链接框的字段名，离框只有 4，放不下一个上下对称的 44 格子：× 的格子下沿正好落在自己的链接框上沿，
-     往上长，图标仍对着文件那一行；链接之间放宽到 19，格子碰不到上一个链接框（规范 2.1，审计第六轮扫查）
-     The file line labels the link box 4 below it, too close for a centred 44 cell: the ×'s cell ends right on its own link box and grows
-     upward with the icon still on the file line, and links sit 19 apart so the cell never reaches the link above (spec 2.1, round-6 sweep) */
-  .geo-list { gap: calc(var(--h-touch) - 1lh - var(--s-1)); }
-  .geo-file__remove { place-items: start center; margin-block: calc(1lh + var(--s-1) - var(--h-touch)) calc(var(--s-1) * -1); padding-top: calc(var(--h-touch) - var(--s-1) - 1lh / 2 - var(--size-icon) / 2); }
-  /* 手机上框里的字是 16，防止 iPhone 聚焦时放大整页（规范 1.8） / 16px text on a phone stops iPhone zooming (spec 1.8) */
-  .geo-link.ui-input--area { font-size: var(--t-touch); }
+  /* 文件那一行是下面链接框的字段名，离框只有 4，放不下一个上下对称的格子：× 的格子下沿正好落在自己的链接框上沿，
+     往上长，图标仍对着文件那一行；链接之间放宽，格子碰不到上一个链接框（规范 2.1，审计第六轮扫查）
+     The file line labels the link box 4 below it, too close for a centred cell: the ×'s cell ends right on its own link box and grows
+     upward with the icon still on the file line, and links sit far enough apart that the cell never reaches the link above (spec 2.1, round-6 sweep) */
+  .geo-list { gap: calc(var(--h-md) - 1lh - var(--s-1)); }
+  .geo-file__remove { place-items: start center; margin-block: calc(1lh + var(--s-1) - var(--h-md)) calc(var(--s-1) * -1); padding-top: calc(var(--h-md) - var(--s-1) - 1lh / 2 - var(--size-icon) / 2); }
   /* 下载和清理是一组：两个 44 的格子上下挨着不叠，清理的字离下载按钮 13 上下，比到下一项的 27 近（规范 6.2，审计第六轮 T1）
      下载 and 清理 are one group: their 44 cells touch without overlapping, so 清理's text sits about 13 under the button, nearer than the
      27 to the next item (spec 6.2, audit round 6, T1) */
   .geo-actions { display: grid; justify-items: stretch; row-gap: 0; }
-  .geo-list > .geo-list__add, .geo-clean { margin-bottom: calc((1lh - var(--h-touch)) / 2); }
-  /* 手机上「添加链接」的 44 格子比桌面的高 14：往上多收一半，字离最后一个链接框还是 16 上下，和桌面一样挨着自己的列表（审计第四轮 T4）
-     On a phone 添加链接's 44 cell is 14 taller than on desktop: half of that is pulled up too, so its text stays about 16 under the last link box and with its list (audit round 4, T4) */
-  .geo-list > .geo-list__add { margin-top: calc(var(--s-2) * -1 - (var(--h-touch) - var(--h-sm)) / 2); }
+  .geo-list > .geo-list__add, .geo-clean { margin-bottom: calc((1lh - var(--h-md)) / 2); }
+  /* 手机上「添加链接」是 36，比桌面的高 6：往上多收一半，字离最后一个链接框还是 16 上下，和桌面一样挨着自己的列表（审计第四轮 T4）
+     On a phone 添加链接 is 36, 6 taller than on desktop: half of that is pulled up too, so its text stays about 16 under the last link box and with its list (audit round 4, T4) */
+  .geo-list > .geo-list__add { margin-top: calc(var(--s-2) * -1 - (var(--h-md) - var(--h-sm)) / 2); }
   .geo-actions__main > .ui-btn--secondary { flex: 1; }
   .geo-schedule { max-width: none; }
 }
