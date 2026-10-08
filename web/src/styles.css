@@ -448,30 +448,18 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 
 @media (max-width: 640px) {
   .page-actions { min-height: 34px; margin-bottom: 12px; }
-  /* 触控尺寸只有一个断点：和组件库一样在 ≤640。以前这几条在 ≤860，641–860 之间同一行里输入框 44、按钮 36。
-     输入框 16 号字防止 iPhone 聚焦时放大整页。
-     Touch sizing has one breakpoint, ≤640, matching the kit; at ≤860 these rules made inputs 44 next to
-     36px buttons between 641 and 860. The 16px input text stops iPhone from zooming on focus. */
-  .app-shell .button, .app-shell .icon-button, .app-shell .inline-command { min-height: 44px; }
-  .app-shell .icon-button { min-width: 44px; }
-  .app-shell input:not([type="checkbox"]):not([type="radio"]), .app-shell select { min-height: 44px; }
-  .app-shell :is(input:not([type="checkbox"]):not([type="radio"]), select, textarea) { font-size: var(--t-touch); }
+  /* 触控尺寸只有一个断点：和组件库一样在 ≤640。看得见的框和按钮和桌面一样 36，没有外框的图标按钮是 44 的点按格。
+     iPhone 聚焦时放大整页由 main.ts 关掉，框里的字不用再撑到 16。
+     Touch sizing has one breakpoint, ≤640, matching the kit. Visible frames and buttons are 36 as on desktop, and a
+     frameless icon button is a 44 tap cell. main.ts stops iPhone's focus zoom, so field text no longer has to be 16. */
+  .app-shell .button, .app-shell .inline-command { min-height: var(--h-md); }
+  .app-shell .icon-button { min-width: var(--h-touch); min-height: var(--h-touch); }
+  .app-shell input:not([type="checkbox"]):not([type="radio"]), .app-shell select { min-height: var(--h-md); }
   .app-shell .button { font-size: 14px; }
   .notification-popover { position: fixed; top: 60px; right: 10px; left: 10px; width: auto; max-height: calc(100dvh - 138px); }
   .notification-list { max-height: calc(100dvh - 252px); }
   th, td { padding-inline: 12px; }
   .json-editor { height: 58vh; min-height: 390px; }
-  /* 编辑器里的字 16：它是一个输入框，小于 16 时 iOS 聚焦会放大整页（规范 1.8） / 16px text: it is a field, and below 16 iOS zooms the page on focus (spec 1.8) */
-  .json-editor .cm-editor { font-size: var(--t-touch); }
-  /* 行号不是输入框，仍是 13；行高跟着正文的 16 号行，数字和那一行对齐 / Line numbers are not a field and stay 13, with the 16px text's line height so they line up with their row */
-  .json-editor .cm-gutters { font-size: var(--t-2); }
-  .json-editor .cm-gutterElement { line-height: calc(var(--t-touch) * var(--lh-base)); }
-  /* 13 号的行号和 16 号的正文放在同样高的行里，基线会差 2：每个行号前面放一个 16 号的零宽字符撑出正文那一行的基线，数字落在上面；
-     格子本身不动，当前行的底色和正文那一行上下对齐（审计第七轮 V2、第八轮 V1）
-     A 13px number and 16px text in rows of one height put their baselines 2 apart: a 16px zero-width character before each number sets the
-     text line's baseline and the digits sit on it, while the row itself stays put, so the active band lines up with the code line (audit
-     round 7 V2, round 8 V1) */
-  .json-editor .cm-lineNumbers .cm-gutterElement::before { content: '\200b'; font-size: var(--t-touch); }
   .editor-footer { align-items: stretch; flex-direction: column; gap: 8px; }
   .validation-state span { white-space: normal; }
   .editor-footer input { width: 100%; }
@@ -488,8 +476,10 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
   .log-toolbar > .ui-seg:has(> :nth-child(6)) { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .log-toolbar > .ui-seg:has(> :nth-child(6)) > .ui-seg__ind { display: none; }
   .log-toolbar > .ui-seg:has(> :nth-child(6)) > .ui-seg__opt[aria-pressed="true"] { background: var(--l-surface); box-shadow: var(--shadow-raise); }
-  /* 两行时上一行的可点区域没法借下一行的地方，每格自己就 44 高 / Across two rows the top row cannot borrow from the row below, so each cell is 44 itself */
-  .log-toolbar > .ui-seg:has(> :nth-child(6)) > .ui-seg__opt { min-height: var(--h-touch); }
+  /* 两行时每格自己就是 36，像一排按钮：点按区域借不到格子外面 / Across two rows each cell is a 36 of its own, like a row of buttons, since the tap area cannot borrow past it */
+  .log-toolbar > .ui-seg:has(> :nth-child(6)) > .ui-seg__opt { min-height: var(--h-md); }
+  /* 两行时点按区域不越过外框：上一行往下补会盖住下一行 / Across two rows the tap area stays inside the frame: the top row reaching down would cover the row below */
+  .log-toolbar > .ui-seg:has(> :nth-child(6)) > .ui-seg__opt::after { inset: -2px 0; }
   .log-stream { --log-above: 373px; min-height: 350px; }
   .log-line { min-width: 0; grid-template-columns: 90px minmax(0, 1fr); gap: 4px 8px; padding-block: 9px; }
   .log-line p { grid-column: 1 / -1; }

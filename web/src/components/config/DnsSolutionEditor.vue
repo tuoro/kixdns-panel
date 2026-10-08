@@ -703,19 +703,19 @@ code.workbench-entry-condition { font-family: var(--f-mono); }
   .workbench[data-config-editing="true"] .workbench-inspector { position: fixed; z-index: 80; top: var(--app-header-height, 52px); right: 0; bottom: 0; left: 0; display: block; height: auto; background: var(--l-surface); }
 }
 @media (max-width: 640px) {
-  /* 手机上「…」是 44 的点按格，「›」和墨点的格子跟着 44 / On a phone the 「…」 is a 44 tap cell and the 「›」 and dot cells follow */
-  .workbench-row-chevron { margin-inline: calc((var(--h-touch) - var(--size-icon)) / 2); }
-  .workbench-orphan .workbench-entry-select:has(> .workbench-entry-dot) { grid-template-columns: var(--s-6) minmax(0, 1fr) var(--h-touch); }
-  .workbench-custom__edit { margin-block: calc((1lh - var(--h-touch)) / 2); }
+  /* 手机上「…」是 36 的格子（点按区域补到 44），「›」和墨点的格子跟着 36 / On a phone the 「…」 is a 36 cell (tap area grown to 44) and the 「›」 and dot cells follow */
+  .workbench-row-chevron { margin-inline: calc((var(--h-md) - var(--size-icon)) / 2); }
+  .workbench-orphan .workbench-entry-select:has(> .workbench-entry-dot) { grid-template-columns: var(--s-6) minmax(0, 1fr) var(--h-md); }
+  .workbench-custom__edit { margin-block: calc((1lh - var(--h-md)) / 2); }
 }
 @media (hover: hover) and (max-width: 640px) {
-  .workbench-entry .workbench-entry-dot { right: calc(var(--s-2) + (var(--h-touch) - var(--size-dot)) / 2); }
+  .workbench-entry .workbench-entry-dot { right: calc(var(--s-2) + (var(--h-md) - var(--size-dot)) / 2); }
 }
-/* 手机：墨点不另占一格，贴在 44 宽的「…」那一格左边上，离「…」和路线的字都还有空（审计第三轮 A3）
-   A phone: the dot takes no track and sits on the left edge of the 44-wide 「…」 cell, clear of both the 「…」 and the route text (audit round 3, A3) */
+/* 手机：墨点不另占一格，贴在「…」那一格左边上，离「…」和路线的字都还有空（审计第三轮 A3）
+   A phone: the dot takes no track and sits on the left edge of the 「…」 cell, clear of both the 「…」 and the route text (audit round 3, A3) */
 @media (hover: none) and (max-width: 640px) {
   .workbench-entry .workbench-entry-select:has(> .workbench-entry-dot) { grid-template-columns: var(--s-6) minmax(0, 1fr); }
-  .workbench-entry .workbench-entry-dot { position: absolute; top: 50%; right: calc(var(--s-2) + var(--h-touch) - var(--size-dot) / 2); translate: 0 -50%; }
+  .workbench-entry .workbench-entry-dot { position: absolute; top: 50%; right: calc(var(--s-2) + var(--h-md) - var(--size-dot) / 2); translate: 0 -50%; }
 }
 @media (prefers-reduced-motion: reduce) { .workbench-entry-dot { transition: none; } }
 

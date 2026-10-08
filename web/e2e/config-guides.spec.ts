@@ -253,9 +253,9 @@ test('上游框里放得下的主机名不和协议分开 @responsive', async ({
   expect(shown).not.toContain('://\u200b')
   // 两个地址的「://」后面都是不断行的连接符 / Both addresses carry a word joiner right after 「://」
   expect(shown.split('://\u2060')).toHaveLength(3)
-  // 手机上一个地址一行放不下，在主机名后的「/」处断，不在 dns-query 中间断：量宽的字体要对（审计第七轮 D1、B1）
-  // On a phone an address wider than the line breaks after the host's 「/」, never inside dns-query: the measuring font must be right (audit round 7, D1, B1)
-  if ((page.viewportSize()?.width ?? 1440) <= 640) expect(shown).toContain('doh.pub/\u200b')
+  // 手机上一行放不下的那个地址（较长的 dns.alidns.com）在主机名后的「/」处断，不在 dns-query 中间断：量宽的字体要对（审计第七轮 D1、B1）
+  // On a phone the address wider than the line (the longer dns.alidns.com) breaks after the host's 「/」, never inside dns-query: the measuring font must be right (audit round 7, D1, B1)
+  if ((page.viewportSize()?.width ?? 1440) <= 640) expect(shown).toContain('dns.alidns.com/\u200b')
 })
 
 // 几个上游一行放不下时一行一个：只在「,」后面断，放得下一行的地址里面不断。font 简写在不做字距调整时读出来是空的，

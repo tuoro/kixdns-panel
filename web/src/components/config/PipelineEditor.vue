@@ -639,14 +639,14 @@ watch(() => props.focus, (target) => void revealFocus(target))
   .manual-entry > .manual-body { margin-top: var(--s-4); }
   .manual-entry__head, .manual-entry__head:not(:has(.manual-head__relation)) { grid-template-columns: var(--s-6) auto minmax(0, 1fr) auto; }
   .manual-entry__head .manual-head__relation { grid-column: 2 / -2; grid-row: 2; }
-  /* 44 的按钮往回收半个按钮减半个图标：箭头落在面板内容的左边线上，和 Pipeline 的箭头对齐（审计第二轮 V3）
-     The 44 button pulls back by half itself less half the icon, so the chevron lands on the content edge under the Pipeline's (audit round 2, V3) */
-  .manual-rule .manual-head__toggle { position: static; margin-inline-start: calc((var(--size-icon) - var(--h-touch)) / 2); }
+  /* 按钮往回收半个按钮减半个图标：箭头落在面板内容的左边线上，和 Pipeline 的箭头对齐（审计第二轮 V3）
+     The button pulls back by half itself less half the icon, so the chevron lands on the content edge under the Pipeline's (audit round 2, V3) */
+  .manual-rule .manual-head__toggle { position: relative; margin-inline-start: calc((var(--size-icon) - var(--h-md)) / 2); }
   .manual-rule .manual-head { flex-wrap: nowrap; }
-  /* 手机上框里的字是 16，旁边 12 号的序号、13 号的「交给」按基线对齐，不按中线：居中会让它们比框里的字高 2（审计第七轮 V1）；
+  /* 框里的字比旁边 12 号的序号、13 号的「交给」大，按基线对齐，不按中线：居中会让它们比框里的字高（审计第七轮 V1）；
      按钮（收起、「…」）仍然上下居中
-     On a phone the field text is 16, so the 12px ordinal and 13px 交给 align on its baseline rather than its centre, which sat them 2 higher
-     (audit round 7, V1); the buttons (collapse, …) stay centred */
+     The field text is larger than the 12px ordinal and 13px 交给 beside it, so they align on its baseline rather than its centre, which
+     sat them higher (audit round 7, V1); the buttons (collapse, …) stay centred */
   .manual-entry__head, .manual-rule .manual-head { align-items: baseline; }
   :is(.manual-entry__head, .manual-rule .manual-head) > :is(.manual-head__toggle, .manual-head__tools, .manual-reveal, .ui-menu-host) { align-self: center; }
   .manual-rule__name { flex: 1 1 8rem; }
@@ -656,7 +656,7 @@ watch(() => props.focus, (target) => void revealFocus(target))
   .manual-rules-head .ui-btn:first-of-type { margin-inline-start: calc(var(--s-3) * -1); }
   /* Pipeline 自己的字段也让出 × 那一列，和规则里的字段在同一条右边线结束；字段之间 12、字段名到框 8（规范 6.3，审计第二轮 V5）
      The Pipeline's own fields leave the × column free too, ending on the rule fields' right edge; 12 between fields, 8 from a label to its box (spec 6.3, audit round 2, V5) */
-  .manual-fields { gap: var(--s-3); margin-inline-end: calc(var(--h-touch) + var(--s-2)); }
+  .manual-fields { gap: var(--s-3); margin-inline-end: calc(var(--h-md) + var(--s-2)); }
   /* 字段名到自己的框 4，字段和字段之间 12：和子项里上下排的字段一样（审计第三轮 M1、第四轮 V4） / 4 from a label to its box, 12 between fields, as in stacked sub-items (audit round 3 M1, round 4 V4) */
   .manual-field { grid-template-columns: minmax(0, 1fr); gap: var(--s-1); }
   .manual-field > .ui-input { max-width: none; }
@@ -672,8 +672,6 @@ watch(() => props.focus, (target) => void revealFocus(target))
   .manual-rule__body > .manual-response:last-child:not([open]) { margin-bottom: calc((1lh - var(--h-touch)) / 2); }
   /* 下拉框和上面的 Pipeline ID 一样宽，字段结束在同一条右边线上（审计第五轮 V4） / The select is as wide as Pipeline ID above, ending on the same right edge (audit round 5, V4) */
   .manual-field__controls > .ui-select { flex: 1 1 100%; }
-  /* 手机上「…」本身就是 44，不用往下挪 / On a phone the … is 44 itself and needs no offset */
-  .manual-pipeline__head > .manual-reveal { margin-top: 0; }
   /* 44 高的「添加 Pipeline」比标题那一行低，说明离按钮的下边至少 8（审计第五轮 V5） / The 44 添加 Pipeline hangs below the heading line, so the note keeps at least 8 below the button (audit round 5, V5) */
   .manual-section__note { margin-top: calc(var(--s-2) - var(--s-3)); }
 }

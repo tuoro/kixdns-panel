@@ -262,10 +262,10 @@ function move(index: number, direction: string): void {
    column line, instead of wrapping onto an indented second line where the row is narrow (audit round 2, V6) */
 @media (max-width: 640px) {
   .ui-rows__sub { flex-direction: column; align-items: flex-start; gap: var(--s-3); }
-  /* ECS 的 44 高按钮往上收：字离协议框 12，和组里别的字段一样；下边不收，它的点按区域不和下面的「添加动作」叠在一起（审计第三轮 A4、B3）
-     The 44-tall ECS button is pulled up so its text sits 12 under the transport box like any field; not below, so its hit area never overlaps 添加动作 under it (audit round 3, A4, B3) */
-  /* 少收 2：44 的格子和上面的协议框挨着不叠（审计第六轮 A4） / Pulled back 2 less, so its 44 cell touches the transport box above without overlapping (audit round 6, A4) */
-  .action-ecs-toggle { margin-inline-start: calc(var(--s-3) * -1); margin-block-start: calc((1lh - var(--h-touch)) / 2 + 2px); }
+  /* ECS 按钮往上收：字离协议框 12，和组里别的字段一样；下边不收，它的点按区域不和下面的「添加动作」叠在一起（审计第三轮 A4、B3）
+     The ECS button is pulled up so its text sits 12 under the transport box like any field; not below, so its hit area never overlaps 添加动作 under it (audit round 3, A4, B3) */
+  /* 少收 2：按钮的格子和上面的协议框挨着不叠（审计第六轮 A4） / Pulled back 2 less, so the button's cell touches the transport box above without overlapping (audit round 6, A4) */
+  .action-ecs-toggle { margin-inline-start: calc(var(--s-3) * -1); margin-block-start: calc((1lh - var(--h-md)) / 2 + 2px); }
   .action-ecs { flex-basis: auto; align-self: stretch; }
 }
 </style>

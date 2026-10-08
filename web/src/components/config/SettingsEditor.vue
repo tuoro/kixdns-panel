@@ -348,7 +348,7 @@ function supported(field: SettingField): boolean {
   .settings-back { display: inline-flex; margin: calc((1lh - var(--h-md)) / 2) 0 var(--s-2) calc(var(--s-2) * -1); }
 }
 @media (max-width: 640px) {
-  .settings-back { margin-top: calc((1lh - var(--h-touch)) / 2); }
+  .settings-back { margin-top: calc((1lh - var(--h-md)) / 2); }
   /* 只有名字一行的开关放在最后一行时，44 高的行比开关多出 2：收回来，卡片底边离它和离一个输入框一样远（审计第五轮 T1）
      A single-line switch row that ends the pane is 2 taller than its switch in the 44 row: taken back, so the card's bottom sits as far from it as from a field (audit round 5, T1) */
   .settings-rows > .ui-setrow--toggle:last-child:not(:has(.ui-setrow__label > :nth-child(2))) { margin-bottom: calc((var(--s-5) + var(--s-2) * 2 - var(--h-touch)) / 2); }

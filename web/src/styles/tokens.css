@@ -31,7 +31,6 @@
   --t-5: 1.375rem;   /* 22 · 页标题 */
   --t-6: 1.875rem;   /* 30 · 区块主数值 */
   --t-7: 3rem;       /* 48 · 信号带主数值，全站仅此一处 */
-  --t-touch: 1rem;   /* 16 · 只给手机上输入框里的字：小于 16 时 iOS 聚焦会放大整页（规范 1.8） / phone field text only: below 16 iOS zooms the page on focus (spec 1.8) */
 
   /* 行高只有三档：紧凑用于数值，标准用于正文，宽松用于长段落 */
   --lh-tight: 1.15;
@@ -67,7 +66,8 @@
   --l-surface: #ffffff;  /* 面板 */
   --l-sunk:    #eceee8;  /* 下沉块、悬停底 */
   --l-hair:    #dfe4e2;  /* 分隔线 */
-  --l-line-strong: #d5dcda;  /* 控件边框：输入框、次要按钮 */
+  --l-line-strong: #d5dcda;  /* 控件边框：次要按钮、聚焦的输入框 */
+  --l-field:   #eff1ec;  /* 输入框底：不描边，靠这层浅灰认出是框 / field fill: no outline, the pale fill is what marks a field */
   /* 底纹网点。比分隔线深一档：分隔线是一条连续的线，看得见；
      网点是离散的小点，同样的明度铺开之后几乎消失，需要再压一档才成立。
      Texture dots, a step darker than the hairline: a hairline is a continuous
@@ -140,8 +140,10 @@
   --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", var(--f-cjk), monospace;
 
   /* ---------- 控件高度 ----------
-     桌面常规 36，行内紧凑 30，手机上能点的东西至少 44。
-     36 on desktop, 30 inline, and at least 44 for anything tapped on a phone. */
+     看得见的框（输入框、下拉框、按钮、分段）手机和桌面一样：常规 36，行内紧凑 30。
+     44 是手机上的点按区域：按钮看起来 36，点按区域上下补到 44；没有外框的图标按钮本身就是 44 的格子。
+     Visible frames (fields, selects, buttons, segments) match on phone and desktop: 36 regular, 30 inline.
+     44 is the phone tap area: a button looks 36 with its tap area grown to 44; a frameless icon button is a 44 cell. */
   --h-sm: 30px;
   --h-md: 36px;
   --h-touch: 44px;
@@ -176,6 +178,7 @@
   --shadow-pop: 0 6px 18px rgba(13, 20, 17, .12), 0 1px 3px rgba(13, 20, 17, .08);
   --shadow-float: 0 24px 70px rgba(13, 20, 17, .24);
   --shadow-ring: inset 0 0 0 1px var(--l-hair);     /* 进行中的图标位 / icon slot while running */
+  --ring-field: 0 0 0 3px rgba(17, 22, 21, .06);     /* 聚焦的输入框外面那圈淡光 / the faint halo round a focused field */
 
   /* ---------- 动效刻度 ----------
      四档时长、三条曲线、三档位移，全站只用这些。关闭比打开快；回弹只给出现；

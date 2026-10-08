@@ -11,7 +11,7 @@ import { expect, test, type Locator, type Page } from '@playwright/test'
  * control is itself a sideways scroller with its scrollbar hidden, the page
  * width stays fine while clipped options are neither visible nor hinted at.
  */
-async function expectEveryOptionVisible(page: Page, group: Locator, labels: string[]): Promise<void> {
+async function expectEveryOptionVisible(page: Page, group: Locator, labels: string[], minHit = 43.5): Promise<void> {
   await expect(group).toBeVisible()
   const viewport = page.viewportSize()!
   const box = (await group.boundingBox())!
@@ -22,11 +22,11 @@ async function expectEveryOptionVisible(page: Page, group: Locator, labels: stri
     expect(option, label).not.toBeNull()
     expect(option!.x, `${label} 左边缘`).toBeGreaterThanOrEqual(Math.max(0, box.x) - 0.5)
     expect(option!.x + option!.width, `${label} 右边缘`).toBeLessThanOrEqual(Math.min(viewport.width, box.x + box.width) + 0.5)
-    // 可点的高度至少 44，手机上点得准。量的是手指点下去能落到这一格的范围，不是画出来的格子：组件库的分段格子画 40 高，
-    // 可点区域借外框 2px 内边距补到 44（.ui-seg__opt::after）；两行排开时上一行补不到下面，格子本身就得够高
+    // 可点的高度至少 44，手机上点得准。量的是手指点下去能落到这一格的范围，不是画出来的格子：组件库的分段格子画 32 高，
+    // 可点区域越过外框上下各补到 44（.ui-seg__opt::after）；两行排开时上一行往下补会盖住下一行，只能用到外框里面
     // At least 44px tappable so a thumb can hit it. This measures where a tap still lands on the option, not the drawn cell: the
-    // kit's segment cells are drawn 40 tall and the hit area borrows the frame's 2px padding to reach 44 (.ui-seg__opt::after);
-    // across two rows the top row cannot borrow from below, so the cell itself must be tall enough
+    // kit's segment cells are drawn 32 tall and the hit area reaches past the frame to 44 (.ui-seg__opt::after); across two rows
+    // the top row reaching down would cover the row below, so there it stays inside the frame
     const hit = await group.getByRole('button', { name: label, exact: true }).evaluate((element) => {
       const box = element.getBoundingClientRect()
       const x = box.left + box.width / 2
@@ -36,7 +36,7 @@ async function expectEveryOptionVisible(page: Page, group: Locator, labels: stri
       while (bottom < box.bottom + 8 && element.contains(document.elementFromPoint(x, bottom + 1))) bottom += 1
       return bottom - top + 1
     })
-    expect(hit, `${label} 可点高度`).toBeGreaterThanOrEqual(43.5)
+    expect(hit, `${label} 可点高度`).toBeGreaterThanOrEqual(minHit)
   }
   const pageOverflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
   expect(pageOverflow, '页面不应横向溢出').toBeLessThanOrEqual(0)
@@ -63,7 +63,8 @@ test('375 宽下日志级别和审计类别的每个选项都完整可见 @respo
 
   await page.getByRole('tab', { name: '操作审计', exact: true }).click()
   await expect(page.locator('.audit-line').first()).toBeVisible()
-  await expectEveryOptionVisible(page, page.getByRole('group', { name: '审计动作类别' }), ['全部', '配置', '服务', 'KixDNS', '认证', '诊断'])
+  // 两行排开的六格：每格自己 36 高，点按区域就是看得见的格子 / The six cells across two rows: each is 36 tall, its tap area the visible cell
+  await expectEveryOptionVisible(page, page.getByRole('group', { name: '审计动作类别' }), ['全部', '配置', '服务', 'KixDNS', '认证', '诊断'], 35.5)
   await expectPlaceholderFits(page)
   // 刷新和下载仍在视口内。/ Refresh and download still sit inside the viewport.
   for (const title of ['刷新审计记录', '下载筛选结果']) {
