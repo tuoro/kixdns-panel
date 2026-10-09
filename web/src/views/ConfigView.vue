@@ -19,7 +19,7 @@ import {
 } from '@lucide/vue'
 import type { Component } from 'vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { onBeforeRouteLeave } from 'vue-router'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { ApiError, apiRequest, jsonBody } from '../api/client'
 import type {
   ConfigApplyResult,
@@ -65,6 +65,32 @@ const baseline = ref('')
 const message = ref('')
 const mode = ref<ConfigEditorMode>('structured')
 const section = ref<'pipeline' | 'mapping' | 'settings'>('pipeline')
+// 侧栏的配置子项通过 ?section= 进来：规则、上游组都落在解析编排（配置页改版前没有这一层），域名映射、基础设置各是自己的分类。
+// 页内切换分类时把参数写回去，侧栏的当前项跟着走；进来时带的参数切不过去（本地修改没放弃）就改回当前分类。
+// The sidebar's config items arrive through ?section=: rules and upstream groups both land in 解析编排 (the config page
+// has no such layer until it is redone), mapping and settings are categories of their own. Switching a category in the page
+// writes the parameter back so the sidebar's current item follows; a parameter that cannot be honoured (local edits kept) is reset to the current category.
+const route = useRoute()
+const router = useRouter()
+const SECTION_OF_QUERY: Record<string, typeof section.value> = { rules: 'pipeline', upstreams: 'pipeline', mapping: 'mapping', settings: 'settings' }
+const querySection = computed(() => (typeof route.query.section === 'string' ? route.query.section : ''))
+function queryFor(value: typeof section.value): string | undefined {
+  if (value === 'pipeline') return querySection.value === 'upstreams' ? 'upstreams' : undefined
+  return value
+}
+function writeSectionQuery(): void {
+  const wanted = queryFor(section.value)
+  if ((querySection.value || undefined) === wanted) return
+  void router.replace({ query: { ...route.query, section: wanted } })
+}
+async function syncSectionFromQuery(): Promise<void> {
+  const wanted = SECTION_OF_QUERY[querySection.value || 'rules']
+  if (!wanted) return
+  if (wanted !== section.value) await activateSection(wanted)
+  if (SECTION_OF_QUERY[querySection.value || 'rules'] !== section.value) writeSectionQuery()
+}
+watch(querySection, () => void syncSectionFromQuery())
+onMounted(() => void syncSectionFromQuery())
 const manualMode = ref(false)
 const localDraftDirty = ref(false)
 const focusedEditing = ref(false)
@@ -479,6 +505,7 @@ async function activateSection(nextSection: typeof section.value): Promise<void>
   section.value = nextSection
   mode.value = 'structured'
   manualMode.value = false
+  writeSectionQuery()
 }
 
 function openManual(target?: string | RuntimeTarget): void {
@@ -1210,11 +1237,8 @@ onBeforeUnmount(() => {
    Settings scroll with the page rather than inside a box in the card; the group list is sticky. */
 .workbench-document-panel:has(.structured-editor--page) { overflow: visible; }
 .structured-editor--page { min-height: 0; max-height: none; overflow: visible; background: var(--l-surface); border-radius: var(--r-3); }
-/* 自由编辑的表单最宽 52rem：面板跟着收窄，边框贴着内容，右边不留一条空白（审计 V14）
-   自由编辑's form is at most 52rem wide, and the panel narrows with it so its border hugs the content instead of leaving a blank band (audit V14) */
-/* 域名映射也一样：两个域名框各一半就够放下域名，「→」不会被两块空框隔开（审计第二轮 M9）
-   The domain mapping too: half the width each is plenty for a domain, and the 「→」 is no longer stranded between two empty boxes (audit round 2, M9) */
-.workbench-document-panel:is(:has(.manual), :has(.domain-mapping-config)) { max-width: calc(52rem + var(--s-5) * 2 + 2px); }
+/* 自由编辑和域名映射的面板不再收到 52rem：页头、工具行和别的卡片都是整宽，这一张短一截就像被截掉了（商业版侧栏布局）
+   The 自由编辑 and domain-mapping panels are no longer capped at 52rem: the header, the tool row and every other card run the full width, and a shorter one reads as cut off (the commercial sidebar layout) */
 /* 自由编辑的位置：「← 解析编排 / 自由编辑」；斜杠两边一样宽，按钮只在自己那边留 8（审计 V18）
    Where 自由编辑 sits: ← 解析编排 / 自由编辑, with the slash centred: the button keeps only its own 8 on that side (audit V18) */
 /* 「←」的按钮往回收自己的内边距：箭头落在面板内容的左边线上（桌面 24，窄屏 16；审计第二轮 V10）
@@ -1306,10 +1330,16 @@ onBeforeUnmount(() => {
      --view-h is the workbench's content height, less its two 1px borders: the document takes the workbench's outer height, so the bar rests at exactly 24 (audit round 8, S1) */
   .workbench-page.has-savebar .workbench-document { min-height: calc(var(--view-h) + 2px); }
 }
-.config-savebar::after { position: absolute; right: -1px; bottom: calc(var(--s-5) * -1 - 1px); left: -1px; height: var(--s-5); background: var(--l-canvas); content: ''; }
-/* 结论和原因排在同一条基线上：13 号的原因不按中线对齐，否则比 14 号的结论高 1；整行还在 36 的格子里上下居中（审计第八轮 S2）
-   The verdict and reason share a baseline: centred, the 13px reason sat 1 above the 14px verdict; the line stays centred in its 36 cell (audit round 8, S2) */
-.config-save-state { margin: 0; align-items: baseline; align-content: center; }
+/* 垫条正好 24，不多出 1：保存栏现在没有边框，以前为边框多出的那 1 像素会让页面在桌面上多滚 1，保存失败时栏一长，粘住的位置就松开了
+   The strip is exactly 24, not 1 more: the bar has no border now, and the extra pixel once left for it made the desktop page scroll by 1,
+   which let the sticky bar come off its stop when a failed save made it taller */
+.config-savebar::after { position: absolute; right: 0; bottom: calc(var(--s-5) * -1); left: 0; height: var(--s-5); background: var(--l-canvas); content: ''; }
+/* 结论和原因在同一个 20 的整行高里上下居中：两种字号的行框一样高，中线对齐时基线只差不到半像素；按基线对齐会让这一行高出小数，
+   栏的高度带小数、取整后的留白就对不上，保存失败时按钮挪 1（审计第八轮 S2，字体换成 Inter 后重新量）
+   The verdict and reason are centred in one whole 20 line height: both sizes get the same line box, so centring leaves their baselines under
+   half a pixel apart, while baseline alignment made the row fractionally taller, the bar fractional and its rounded reserve wrong, moving the
+   button by 1 on a failed save (audit round 8, S2, measured again after the change to Inter) */
+.config-save-state { margin: 0; align-items: center; align-content: center; line-height: calc(var(--s-4) + var(--s-1)); }
 /* 墨点和对勾没有字的基线：它们还是上下居中，不掉到基线上（审计第八轮 A2） / The ink dot and the tick have no text baseline: they stay centred rather than dropping onto it (audit round 8, A2) */
 .config-save-state > :is(.ui-dot, svg) { align-self: center; }
 /* 失败原因里的机器值不拆开；原因最多折一次 / Machine values in the reason never split; the reason wraps at most once */

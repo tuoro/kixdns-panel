@@ -13,7 +13,8 @@ import viteConfig from '../../vite.config'
 const css = readFileSync(fileURLToPath(new URL('./fonts.css', import.meta.url)), 'utf8')
 const faces = [...css.matchAll(/@font-face\s*\{([^}]*)\}/g)].map(([, body]) => ({
   family: /font-family:\s*"([^"]+)"/.exec(body)?.[1],
-  weight: /font-weight:\s*(\d+)/.exec(body)?.[1],
+  // 可变字重写成「400 700」一段，固定字重是一个数 / A variable weight reads 「400 700」, a fixed one is a single number
+  weight: /font-weight:\s*(\d+(?: \d+)?)/.exec(body)?.[1],
   src: /src:\s*url\("([^"]+)"\)\s*format\("woff2"\)/.exec(body)?.[1],
   range: /unicode-range:\s*([^;]+);/.exec(body)?.[1] ?? '',
 }))
@@ -27,14 +28,17 @@ function covers(range: string, codePoint: number): boolean {
 }
 
 describe('打包字体', () => {
-  it('每个字重都指向一份存在的 woff2，只收用到的字重', () => {
+  it('每个字面都指向一份存在的 woff2：Inter 一份可变字重，Plex Mono 只收用到的字重', () => {
     expect(faces.map((face) => `${face.family} ${face.weight}`)).toEqual([
-      'Archivo 400', 'Archivo 500', 'Archivo 600', 'Archivo 700',
+      'Inter 400 700',
       'IBM Plex Mono 400', 'IBM Plex Mono 500', 'IBM Plex Mono 600',
     ])
     for (const face of faces) {
-      expect(face.src).toMatch(/^@fontsource\/[a-z-]+\/files\/[a-z-]+-latin-\d00-normal\.woff2$/)
-      expect(existsSync(fileURLToPath(new URL(`../../node_modules/${face.src}`, import.meta.url)))).toBe(true)
+      // Inter 放在 assets/fonts 里（谷歌字体的拉丁子集），Plex Mono 来自 @fontsource / Inter lives in assets/fonts (Google Fonts' Latin subset), Plex Mono comes from @fontsource
+      const src = face.src!
+      expect(src).toMatch(/^(@fontsource\/[a-z-]+\/files\/[a-z-]+-latin-\d00-normal|\.\.\/assets\/fonts\/inter-latin-wght-normal)\.woff2$/)
+      const file = src.startsWith('@fontsource/') ? new URL(`../../node_modules/${src}`, import.meta.url) : new URL(src, import.meta.url)
+      expect(existsSync(fileURLToPath(file))).toBe(true)
     }
   })
 
@@ -47,7 +51,7 @@ describe('打包字体', () => {
     expect(decide('icon.svg', Buffer.alloc(16))).toBeUndefined()
   })
 
-  it('中文和全角标点不落进拉丁字体；Archivo 把弯引号留给中文字体', () => {
+  it('中文和全角标点不落进拉丁字体；Inter 把弯引号留给中文字体', () => {
     for (const face of faces) {
       for (const char of ['中', '。', '，', '「', '·']) {
         const inLatin = covers(face.range, char.codePointAt(0)!)

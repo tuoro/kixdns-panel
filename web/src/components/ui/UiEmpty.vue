@@ -9,7 +9,7 @@ defineProps<{ icon: Component; title: string; desc?: string }>()
 
 <template>
   <div class="ui-empty">
-    <span class="ui-empty__icon" aria-hidden="true"><component :is="icon" :size="18" /></span>
+    <span class="ui-empty__icon" aria-hidden="true"><component :is="icon" :size="22" /></span>
     <p class="ui-empty__title">{{ title }}</p>
     <p v-if="desc" class="ui-empty__desc">{{ desc }}</p>
     <slot />

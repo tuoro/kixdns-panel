@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Activity, ArrowRight, Eye, EyeOff, ShieldCheck } from '@lucide/vue'
+import { Activity, Eye, EyeOff, ShieldCheck } from '@lucide/vue'
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useSession } from '../composables/useSession'
@@ -42,7 +42,6 @@ async function submit(): Promise<void> {
     <section class="auth-panel">
       <div class="auth-brand"><span><Activity :size="22" /></span><strong>KixDNS</strong></div>
       <div class="auth-heading">
-        <p class="eyebrow">{{ isSetup ? '首次运行' : '安全访问' }}</p>
         <h1>{{ isSetup ? '创建管理员' : '登录控制台' }}</h1>
         <p>{{ isSetup ? '此账号将拥有配置、服务与更新权限。' : '使用管理员凭据继续。' }}</p>
       </div>
@@ -57,8 +56,8 @@ async function submit(): Promise<void> {
         </label>
         <label v-if="isSetup">确认密码<input v-model="confirmation" name="confirmation" type="password" placeholder="再输入一次" autocomplete="new-password" minlength="12" maxlength="256" required /></label>
         <p v-if="error" class="form-error" role="alert">{{ error }}</p>
-        <button class="button button--primary auth-submit" type="submit" :disabled="submitting">
-          <span>{{ submitting ? '正在验证' : isSetup ? '创建并进入' : '登录' }}</span><ArrowRight :size="18" />
+        <button class="ui-btn ui-btn--primary auth-submit" type="submit" :disabled="submitting">
+          <span>{{ submitting ? '正在验证' : isSetup ? '创建并进入' : '登录' }}</span>
         </button>
       </form>
       <!-- 首次运行的人心里有个没被回答的问题：我填完这个表，它会对我的 DNS 做什么。
@@ -69,9 +68,9 @@ async function submit(): Promise<void> {
         <li class="auth-next__promise">面板不会覆盖你已有的 KixDNS 配置。</li>
       </ol>
       <div class="auth-security">
-        <ShieldCheck :size="17" />
+        <ShieldCheck :size="14" />
         <span>
-          凭据使用 Argon2id 哈希保护，会话仅保存在 HttpOnly Cookie。<template v-if="!isSetup">面板不提供密码找回，忘记后需在宿主机上重置。</template>
+          凭据用 Argon2id 哈希保护，会话只存在 HttpOnly Cookie。<template v-if="!isSetup">忘记密码只能在宿主机上<span class="nowrap">重置。</span></template>
         </span>
       </div>
     </section>

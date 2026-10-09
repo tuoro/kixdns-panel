@@ -487,13 +487,16 @@ test('系统页按「要不要现在动手」排序，更新项压成一行 @res
   await expectNoPageOverflow(page)
 })
 
-test('系统页上不弹「请前往系统页面查看」；版本换行时「→」跟着新版本走 @responsive', async ({ page }) => {
-  // 别的页面照常提示 / Other pages still announce the update
+test('有更新时只在铃铛上出角标，哪一页都不弹提示；版本换行时「→」跟着新版本走 @responsive', async ({ page }) => {
+  // 更新检查跑完的标志是角标上的数：等到它，再断言没有提示跟着弹出来（以前是一条「请前往系统页面查看」）
+  // The badge count is the sign that the update check has run: wait for it, then assert no toast followed (there used to be a 请前往系统页面查看 toast)
   await open(page, '/')
-  await expect(page.locator('.toast').filter({ hasText: '请前往系统页面查看' })).toBeVisible()
-  // 直接打开系统页：「可用更新」就在眼前，不再弹 / Opening the system page directly: 可用更新 is in plain sight, so no toast
+  await expect(page.locator('.topbar-update .notification-badge')).toHaveText('2')
+  await expect(page.locator('.toast')).toHaveCount(0)
+  // 系统页也一样：「可用更新」就在眼前 / The same on the system page: 可用更新 is in plain sight
   await open(page, '/system')
   await expect(page.locator('.update-row').first()).toBeVisible()
+  await expect(page.locator('.topbar-update .notification-badge')).toHaveText('2')
   await expect(page.locator('.toast')).toHaveCount(0)
   // 两个版本放不下一行时，「→」和新版本在同一行，不挂在旧版本后面
   // When both versions do not fit on one line, the 「→」 shares a line with the new version instead of trailing the old one
@@ -561,12 +564,22 @@ test('更新通知可标记已读并在刷新后保持', async ({ page }) => {
   await bell.dispatchEvent('click')
   const popover = page.locator('.notification-popover')
   await expect(popover).toBeVisible()
+  await expect(popover.locator('.notification-item--unread')).toHaveCount(2)
   await popover.getByRole('button', { name: '全部已读' }).click()
   await expect(bell.locator('.notification-badge')).toHaveCount(0)
-  await expect(popover).toContainText('已全部阅读')
+  // 读过之后两条通知还在，只是不再标未读；「全部已读」没东西可标就收起来，不另写一行「已全部阅读」
+  // After reading, both notices stay but lose their unread mark; 全部已读 goes away with nothing left to mark, and no 已全部阅读 line is added
+  await expect(popover.locator('.notification-item')).toHaveCount(2)
+  await expect(popover.locator('.notification-item--unread')).toHaveCount(0)
+  await expect(popover.locator('.notification-item__title i')).toHaveCount(0)
+  await expect(popover.getByRole('button', { name: '全部已读' })).toHaveCount(0)
 
   await page.reload()
-  await expect(bell.locator('.notification-badge')).toHaveCount(0)
+  await expect(page.locator('.app-shell')).toBeVisible()
+  await expect(page.locator('.topbar-update .notification-badge')).toHaveCount(0)
+  await page.locator('.topbar-update').dispatchEvent('click')
+  await expect(page.locator('.notification-popover .notification-item')).toHaveCount(2)
+  await expect(page.locator('.notification-popover .notification-item--unread')).toHaveCount(0)
 })
 
 test('操作审计可按动作筛选', async ({ page }) => {

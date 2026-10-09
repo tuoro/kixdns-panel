@@ -1,4 +1,4 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHashHistory, createWebHistory } from 'vue-router'
 import AppShell from './components/AppShell.vue'
 import { useSession } from './composables/useSession'
 
@@ -11,7 +11,9 @@ declare module 'vue-router' {
 }
 
 const router = createRouter({
-  history: createWebHistory(),
+  // 演示包（生产构建 + 演示数据）放在静态托管上，用 hash 路由，刷新和深链不落到不存在的路径；开发服务器照常用路径路由，截图脚本按 /logs 这样的路径打开
+  // The demo bundle (production build with demo data) sits on static hosting and uses hash routing, so reloads and deep links never hit a missing path; the dev server keeps path routing, which the screenshot scripts open by path
+  history: import.meta.env.VITE_DEMO_MODE === 'true' && import.meta.env.PROD ? createWebHashHistory() : createWebHistory(),
   routes: [
     { path: '/login', component: () => import('./views/LoginView.vue'), meta: { guest: true, title: '登录' } },
     { path: '/setup', component: () => import('./views/SetupView.vue'), meta: { guest: true, title: '初始化' } },

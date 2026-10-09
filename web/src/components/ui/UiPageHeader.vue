@@ -8,7 +8,7 @@ defineProps<{ title: string; stack?: boolean }>()
 </script>
 
 <template>
-  <header class="ui-ph" :class="{ 'ui-ph--stack': stack }">
+  <header class="ui-ph" :class="{ 'ui-ph--stack': stack, 'ui-ph--actions': $slots.actions }">
     <div>
       <h1 class="ui-ph__title">{{ title }}</h1>
       <div v-if="$slots.meta" class="ui-ph__meta"><slot name="meta" /></div>

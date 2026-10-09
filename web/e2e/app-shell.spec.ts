@@ -5,9 +5,13 @@ test('共享导航在桌面和手机均能到达所有页面 @responsive', async
   const mobile = testInfo.project.name === 'mobile'
   const navigation = page.getByRole('navigation', { name: mobile ? '移动端导航' : '主导航', exact: true })
   await expect(navigation).toBeVisible()
-  await expect(navigation.getByRole('link')).toHaveCount(5)
+  // 桌面侧栏分组：配置的四个子页各一项，规则是默认页不带参数 / The desktop sidebar's groups: one item per config sub-page, 规则 the default without a parameter
+  await expect(navigation.getByRole('link')).toHaveCount(mobile ? 5 : 8)
   await expect(page.locator('.sidebar')).toHaveCount(0)
-  for (const [name, path] of [['配置', '/config'], ['日志', '/logs'], ['诊断', '/diagnostics'], ['系统', '/system'], ['概览', '/']]) {
+  const pages = mobile
+    ? [['配置', '/config'], ['日志', '/logs'], ['诊断', '/diagnostics'], ['系统', '/system'], ['概览', '/']]
+    : [['规则', '/config'], ['上游组', '/config\\?section=upstreams'], ['域名映射', '/config\\?section=mapping'], ['基础设置', '/config\\?section=settings'], ['规则', '/config'], ['日志', '/logs'], ['诊断', '/diagnostics'], ['系统', '/system'], ['概览', '/']]
+  for (const [name, path] of pages) {
     await navigation.getByRole('link', { name, exact: true }).click()
     await expect(page).toHaveURL(new RegExp(`${path}$`))
     await expect(page.locator('main h1')).toHaveCount(1)
@@ -33,15 +37,36 @@ test('账户弹层支持 Escape 恢复焦点、外部关闭和退出登录', asy
   await expect(page.locator('.app-shell')).toHaveCount(0)
 })
 
-test('键盘跳至内容时标题不被固定导航遮挡', async ({ page }) => {
+test('键盘跳至内容后标题整个在视口里，不被侧栏或任何固定元素盖住', async ({ page }) => {
   await page.goto('/')
+  await expect(page.locator('main h1')).toBeVisible()
+  // 先滚到页底：跳至内容要把人带回标题，不是停在原地 / Scroll to the bottom first: the skip link must bring the reader back to the title, not leave them where they are
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight))
   const skip = page.getByRole('link', { name: '跳至内容', exact: true })
   await skip.focus()
   await skip.press('Enter')
   await expect(page.locator('main')).toBeFocused()
-  const header = await page.locator('.app-header').boundingBox()
-  const heading = await page.locator('main h1').boundingBox()
-  expect(heading!.y).toBeGreaterThanOrEqual(header!.y + header!.height)
+  // 桌面导航是整高的侧栏，没有「标题在顶栏下面」可量。要保证的是：标题整个在视口里，
+  // 它四角和中心点上最上层的元素都是标题自己——没有固定或粘性的东西压在上面。
+  // The desktop navigation is a full-height sidebar, so there is no bar for the title to sit below. What must hold:
+  // the heading is entirely inside the viewport, and the topmost element at its four corners and centre is the heading
+  // itself, with nothing fixed or sticky laid over it.
+  const check = await page.locator('main h1').evaluate((heading) => {
+    const box = heading.getBoundingClientRect()
+    const inside = box.top >= 0 && box.left >= 0 && box.bottom <= window.innerHeight && box.right <= window.innerWidth
+    const points: Array<[number, number]> = [
+      [box.left + 1, box.top + 1], [box.right - 1, box.top + 1],
+      [box.left + 1, box.bottom - 1], [box.right - 1, box.bottom - 1],
+      [box.left + box.width / 2, box.top + box.height / 2],
+    ]
+    const blockers = points
+      .map(([x, y]) => document.elementFromPoint(x, y))
+      .filter((element) => element && !heading.contains(element))
+      .map((element) => element!.className || element!.tagName)
+    return { inside, blockers }
+  })
+  expect(check.inside).toBe(true)
+  expect(check.blockers).toEqual([])
 })
 
 test('不同屏宽无页面横向溢出，手机标题与点击区域保持合适尺寸 @responsive', async ({ page }, testInfo) => {

@@ -89,21 +89,25 @@ function responseJumps(actions: ActionConfig[]): ActionConfig[] {
 .flow-route, .flow-rule { display: grid; grid-template-columns: var(--s-6) minmax(0, 1fr); gap: var(--s-2); padding: var(--s-2) 0; }
 .flow-num { padding-top: 2px; color: var(--l-ink-3); font-family: var(--f-mono); font-size: var(--t-1); font-variant-numeric: tabular-nums; }
 .flow-body { min-width: 0; display: grid; gap: 2px; }
-.flow-body > span { color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-medium); }
+/* 名字一行取整行高 20：两栏第一行的基线不随正文 1.5 倍行高的小数走（审计第八轮 V2） / Name lines take a whole 20 line height, so the two columns' first baselines do not ride the body's fractional 1.5 line (audit round 8, V2) */
+.flow-body > span { color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-medium); line-height: calc(var(--s-4) + var(--s-1)); }
 .flow-body small { display: block; color: var(--l-ink-2); font-size: var(--t-2); text-wrap: pretty; }
 .flow-body small > svg { margin-right: var(--s-1); color: var(--l-ink-3); vertical-align: -2px; }
 .flow-body code, .flow-pipeline header code { font-family: var(--f-mono); }
-.flow-rule__name { color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-medium); overflow-wrap: anywhere; }
+.flow-rule__name { color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-medium); line-height: calc(var(--s-4) + var(--s-1)); overflow-wrap: anywhere; }
 .flow-route--rest { padding-top: var(--s-1); }
 .flow-pipeline + .flow-pipeline { margin-top: var(--s-5); }
-/* 第一个 Pipeline 也离说明 8 多一截，和左栏第一行自己的上内边距一样：两栏的第一行落在同一条基线上（审计第五轮 V6）
-   The first Pipeline sits the same 8 further from the note as the left column's first row, whose own top padding sets it there, so both first lines share a baseline.
-   Padding, not margin: the note's bottom margin would swallow a margin (audit round 5, V6). 2 less than the row's 8: the mono name's line
-   puts its baseline 2 lower than the route name's (measured), so both first lines land on one baseline (audit round 8, V2) */
-.flow-note + .flow-pipeline { padding-top: calc(var(--s-2) - var(--s-1) / 2); }
+/* 第一个 Pipeline 也离说明 8 多一截，和左栏第一行自己的上内边距一样：两栏的第一行落在同一条基线上（审计第五轮 V6）。
+   用内边距不用外边距：说明的下外边距会把外边距吞掉。正好 8，不再减 2：Inter 和 Plex Mono 在同一行高里的基线位置一样（量过），
+   以前那 2 是旧字体的差，换字后留着反而差 2（审计第八轮 V2）
+   The first Pipeline sits the same 8 further from the note as the left column's first row, whose own top padding sets it there, so both first
+   lines share a baseline. Padding, not margin: the note's bottom margin would swallow a margin (audit round 5, V6). Exactly 8, no 2 taken off:
+   Inter and Plex Mono put the baseline at the same offset in one line height (measured); the old 2 was the previous fonts' difference and
+   kept the lines 2 apart after the change (audit round 8, V2) */
+.flow-note + .flow-pipeline { padding-top: var(--s-2); }
 /* 名字和说明隔 8，和自由编辑里同一个 Pipeline 的标题一样（审计第八轮 V3） / 8 between the name and its fact, as the same Pipeline's title in 自由编辑 (audit round 8, V3) */
 .flow-pipeline header { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-1) var(--s-2); margin-bottom: var(--s-1); }
-.flow-pipeline header code { color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-bold); }
+.flow-pipeline header code { color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-bold); line-height: calc(var(--s-4) + var(--s-1)); }
 /* 说明只占字那么高：带说明的标题和只有名字的一样高（审计第六轮 V2） / The fact takes only its glyph height, so a header with one is as tall as a bare name (audit round 6, V2) */
 .flow-pipeline header small { color: var(--l-ink-2); font-size: var(--t-2); line-height: 1; }
 .flow-empty { margin: 0; padding: var(--s-2) 0; color: var(--l-ink-2); font-size: var(--t-2); }
