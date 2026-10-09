@@ -162,10 +162,13 @@ test('DNS 诊断在结果顶部显示实际命中的规则 @responsive', async (
   await page.getByRole('button', { name: '执行查询' }).click()
 
   const result = page.locator('.diagnostic-result')
-  // 命中的规则在执行路径里那一行，结果栏不复述。
-  // The matched rule is its own row in the path; the result bar does not repeat it.
-  await expect(result.locator('.diag-step', { hasText: '命中规则 geosite-global' })).toBeVisible()
+  // 命中的规则在执行路径里那一行（组件库的「结果说明」行，带绿色对勾），结果栏不复述。
+  // The matched rule is its own row in the path (the kit's step row with a green check); the result bar does not repeat it.
+  const matched = result.locator('.ui-step', { hasText: '命中规则 geosite-global' })
+  await expect(matched).toBeVisible()
+  await expect(matched).toHaveClass(/ui-step--ok/)
   await expect(result.getByRole('heading', { name: '执行路径' })).toBeVisible()
+  await expect(result.locator('.diag-outcome')).not.toContainText('geosite-global')
   await expectNoPageOverflow(page)
 })
 
@@ -474,8 +477,17 @@ test('系统页按「要不要现在动手」排序，更新项压成一行 @res
 
   const line = page.locator('.service-line')
   await expect(line).toHaveCount(1)
-  await expect(line).toContainText('kixdns.service')
-  await expect(line).toContainText('正在运行')
+  // 页头的事实行：服务、PID、面板版本、内核。服务那一项由状态点说在不在跑，跑着时不多写一个字，停了才加「已停止」；
+  // 全称放在悬停标题里。重启、停止就在页头右边。
+  // The header's facts row: service, PID, panel version, kernel. The service fact's dot says whether it runs, with no
+  // extra word while running and 已停止 only when stopped; the full state sits in the hover title. Restart and stop are in the header.
+  await expect(line.locator('.ui-facts .ui-lbl')).toHaveText(['服务', 'PID', '面板版本', '内核'])
+  const serviceFact = line.locator('.ui-facts > div').filter({ hasText: 'kixdns.service' }).locator('b')
+  await expect(serviceFact).toHaveAttribute('title', '正在运行')
+  await expect(serviceFact.locator('.ui-dot')).not.toHaveClass(/ui-dot--off/)
+  await expect(serviceFact).not.toContainText('已停止')
+  await expect(line.getByRole('button', { name: '重启', exact: true })).toBeVisible()
+  await expect(line.getByRole('button', { name: '停止', exact: true })).toBeVisible()
 
   // 每项更新只保留「从哪到哪」和按钮，不再是一张带三格事实表的大卡。
   const rows = page.locator('.update-row')
@@ -498,15 +510,15 @@ test('有更新时只在铃铛上出角标，哪一页都不弹提示；版本�
   await expect(page.locator('.update-row').first()).toBeVisible()
   await expect(page.locator('.topbar-update .notification-badge')).toHaveText('2')
   await expect(page.locator('.toast')).toHaveCount(0)
-  // 两个版本放不下一行时，「→」和新版本在同一行，不挂在旧版本后面
-  // When both versions do not fit on one line, the 「→」 shares a line with the new version instead of trailing the old one
+  // 两个版本放不下一行时，「→」和新版本在同一行，不挂在旧版本后面（版本号现在是等宽数字的正文字体 .ui-num，不再是 .ui-mono）
+  // When both versions do not fit on one line, the 「→」 shares a line with the new version instead of trailing the old one (versions are now tabular body figures, .ui-num, no longer .ui-mono)
   const fromTo = page.locator('.update-row').first().locator('.update-row__from-to')
   const [arrow, latest] = await fromTo.evaluate((element) => {
     const keep = element.querySelector('.update-row__keep')!
     const range = document.createRange()
     range.setStart(keep.firstChild!, 0)
     range.setEnd(keep.firstChild!, 1)
-    return [range.getBoundingClientRect().top, keep.querySelector('.ui-mono')!.getBoundingClientRect().top]
+    return [range.getBoundingClientRect().top, keep.querySelector('.ui-num')!.getBoundingClientRect().top]
   })
   expect(Math.abs(arrow - latest)).toBeLessThan(4)
 })
@@ -527,7 +539,8 @@ test('内核可更新到最新并回到上一个 @responsive', async ({ page }) 
   await expect(page.locator('.toast--success').filter({ hasText: '内核已更新并通过健康检查' })).toBeVisible()
   await expect(kernelRow.locator('.update-row__from-to')).toContainText('已是最新')
   await expect(runtime.locator('.install-version')).toHaveText('Run #30235703570')
-  await expect(runtime.locator('.ui-card__foot')).toContainText('上一个版本 Run #30231271280')
+  // 上一个版本写在「当前安装」卡的底行，回退按钮就在它旁边 / The previous build sits on the installed card's bottom row, with the rollback button beside it
+  await expect(runtime.locator('.install-previous')).toContainText('上一个版本 Run #30231271280')
 
   await page.locator('.service-line').getByRole('button', { name: '停止' }).click()
   await acceptConfirm(page)
@@ -540,7 +553,7 @@ test('内核可更新到最新并回到上一个 @responsive', async ({ page }) 
   await expect(page.locator('.toast--success').filter({ hasText: '服务仍停止，下次启动时生效' })).toBeVisible()
   await expect(page.locator('.service-line')).toContainText('已停止')
   await expect(runtime.locator('.install-version')).toHaveText('Run #30231271280')
-  await expect(runtime.locator('.ui-card__foot')).toContainText('上一个版本 Run #30235703570')
+  await expect(runtime.locator('.install-previous')).toContainText('上一个版本 Run #30235703570')
 })
 
 test('内核检查失败时面板更新照常提示 @responsive', async ({ page }) => {
