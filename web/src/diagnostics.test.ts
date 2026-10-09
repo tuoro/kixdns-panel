@@ -77,8 +77,8 @@ describe('执行路径每一步写成一句话', () => {
     expect(plain(view.note)).toBe(note)
   })
 
-  it('名字、地址和响应码用等宽，中文不用', () => {
-    expect(monos(describeStep(kstep('upstream', 'succeeded', 'https://1.1.1.1/dns-query', '响应码：No Error；耗时：11 ms；截断：false')).lead)).toEqual(['https://1.1.1.1/dns-query', 'NOERROR'])
+  it('名字和地址用等宽；响应码是助记词，和中文一样用正文字体', () => {
+    expect(monos(describeStep(kstep('upstream', 'succeeded', 'https://1.1.1.1/dns-query', '响应码：No Error；耗时：11 ms；截断：false')).lead)).toEqual(['https://1.1.1.1/dns-query'])
     expect(monos(detailParts('剩余 TTL：120 秒'))).toEqual([])
   })
 
@@ -100,6 +100,10 @@ describe('连着的未命中规则并成一行', () => {
 describe('细节里的一对键值不拆开', () => {
   it('一对「键 值」是一段，排版时整对换行', () => {
     expect(detailParts('客户端：192.168.1.23；监听器：default')).toEqual([{ label: '客户端', text: '192.168.1.23', mono: true }, { text: ' · ' }, { label: '监听器', text: 'default', mono: true }])
+    // 耗时、计数和协议名是量和名称，不是要照抄的字面值 / Durations, counts and protocol names are quantities and names, not literals to copy
+    expect(monos(detailParts('耗时：12 ms；匹配器数：1；传输：DoH；协议：TCP+UDP'))).toEqual([])
+    expect(monos(detailParts('响应码：NXDOMAIN；回退：SERVFAIL'))).toEqual([])
+    expect(monos(detailParts('规则：geosite-global；目标：1.1.1.1:53'))).toEqual(['geosite-global', '1.1.1.1:53'])
   })
 })
 

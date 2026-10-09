@@ -41,4 +41,38 @@ describe('趋势折线', () => {
     const result = sparkline([0, 1, 2, 5, 3, 8, 13], 260, 74)!
     expect(result.line).not.toMatch(/\d\.\d{3}/)
   })
+
+  it('starts the vertical scale at zero so a trough is not drawn as no traffic', () => {
+    const result = sparkline([50, 100], 100, 40)!
+    expect(result.line).toBe('M0,20 L100,0')
+  })
+
+  it('平滑曲线穿过每个点，每段的控制点都不越出两端的高低', () => {
+    const values = [0, 1, 2, 5, 3, 8, 13, 13, 4]
+    const result = sparkline(values, 240, 60)!
+    const numbers = (text: string) => text.replace(/[MC]/g, ' ').trim().split(/[\s,]+/).map(Number)
+    const segments = result.curve.split(' C').slice(1).map(numbers)
+    const anchors = [numbers(result.curve.split(' C')[0]!), ...segments.map((segment) => segment.slice(4))]
+    const line = result.line.split(' ').map((step) => step.slice(1).split(',').map(Number))
+    expect(anchors).toEqual(line)
+    segments.forEach((segment, index) => {
+      const [from, to] = [anchors[index]![1]!, anchors[index + 1]![1]!]
+      for (const y of [segment[1]!, segment[3]!]) {
+        expect(y).toBeGreaterThanOrEqual(Math.min(from, to) - 0.01)
+        expect(y).toBeLessThanOrEqual(Math.max(from, to) + 0.01)
+      }
+    })
+  })
+
+  it('全平的序列平滑后还是一条平线', () => {
+    const result = sparkline([7, 7, 7, 7], 90, 40)!
+    expect(result.curve).toBe('M0,20 C10,20 20,20 30,20 C40,20 50,20 60,20 C70,20 80,20 90,20')
+    expect(result.curveArea).toBe(`${result.curve} L90,40 L0,40 Z`)
+  })
+
+  it('一两个点时平滑曲线和折线一样', () => {
+    expect(sparkline([42], 100, 40)!.curve).toBe('M50,20')
+    expect(sparkline([0, 10], 100, 40)!.curve).toBe('M0,40 L100,0')
+  })
 })
+

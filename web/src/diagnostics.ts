@@ -102,11 +102,16 @@ export interface StepView {
 const t = (text: string): TextPart => ({ text })
 const m = (text: string): TextPart => ({ text, mono: true })
 const ASCII_ONLY = /^[\x20-\x7e\u00a0]+$/
+// 量和协议名不是字面值：「12 ms」「1」「DoH」用正文字，和结果栏、时间列一样；地址、名字、键才用等宽
+// Quantities and protocol names are not literals: 「12 ms」, 「1」 and 「DoH」 use the body face like the result bar and time column; addresses, names and keys stay mono
+const MEASURE = /^\d+(\.\d+)?(\s*(ms|s|秒|个|条|次))?$/
+const PROTOCOL = /^(UDP|TCP|DoT|DoH|DoQ|DoH3|TLS|HTTPS)(\+(UDP|TCP))?$|^(NOERROR|NXDOMAIN|SERVFAIL|REFUSED|FORMERR|NOTIMP|NOTAUTH|NOTZONE|YXDOMAIN|YXRRSET|NXRRSET)$/i
+const isLiteral = (value: string) => ASCII_ONLY.test(value) && !MEASURE.test(value) && !PROTOCOL.test(value)
 
 /**
- * 细节里的「键：值；键：值」写成「键 值 · 键 值」，纯 ASCII 的值用等宽；没有键的片段照原样。
+ * 细节里的「键：值；键：值」写成「键 值 · 键 值」，纯 ASCII 的字面值用等宽（量和协议名不算）；没有键的片段照原样。
  * 先经过 humanizeTraceDetail，所以 Some(Https)、false 这类写法已经翻过。
- * "key：value；key：value" becomes "key value · key value", ASCII values in mono;
+ * "key：value；key：value" becomes "key value · key value", ASCII literals in mono (not quantities or protocol names);
  * fragments without a key stay as they are. humanizeTraceDetail runs first.
  */
 export function detailParts(detail: string | null | undefined, skip: string[] = []): TextPart[] {
@@ -120,7 +125,7 @@ export function detailParts(detail: string | null | undefined, skip: string[] = 
     if (!rest.length) parts.push(t(fragment))
     // 键和值是一对，整对换行：窄屏上「监听器」和「default」曾被折到两行。
     // Key and value are one pair that wraps whole: a phone once split 监听器 and default across lines.
-    else parts.push({ label: key!.trim(), text: value, mono: ASCII_ONLY.test(value) })
+    else parts.push({ label: key!.trim(), text: value, mono: isLiteral(value) })
   }
   return parts
 }
@@ -171,14 +176,16 @@ export function describeStep(step: DnsTraceStep, context: { target?: string | nu
   if (stage === 'decision') {
     const target = detailValue(detail, '目标')
     if ((match = /^规则 (.+) 转发$/.exec(label)) && target) return { lead: [t('转发给 '), m(target)], note: [{ label: '规则', text: match[1]!, mono: true }, ...prefixed(detailParts(detail, ['目标']))] }
-    if ((match = /^静态响应 (.+)$/.exec(label))) return { lead: [t('直接返回 '), m(responseCodeName(match[1]!))], note }
+    // 响应码和协议名一样是助记词，不是要照抄的字面值：正文字体，和概览的响应码分布一致
+    // Response codes are mnemonics like protocol names, not literals to copy: the body face, matching the overview's response-code distribution
+    if ((match = /^静态响应 (.+)$/.exec(label))) return { lead: [t('直接返回 '), t(responseCodeName(match[1]!))], note }
     if ((match = /^跳转到管线 (.+)$/.exec(label))) return { lead: [t('跳转到管线 '), m(match[1]!)], note }
   }
   if (stage === 'upstream') {
     if (status === 'started' && (match = /^准备转发到 (.+)$/.exec(label))) return { lead: [t('发往 '), m(match[1]!)], note: detailParts(detail, ['规则']) }
     const code = detailValue(detail, '响应码')
     const same = context.target === label
-    if (status === 'succeeded' && code) return { lead: same ? [t('应答 '), m(code)] : [m(label), t(' 应答 '), m(code)], note: detailParts(detail, ['响应码']) }
+    if (status === 'succeeded' && code) return { lead: same ? [t('应答 '), t(code)] : [m(label), t(' 应答 '), t(code)], note: detailParts(detail, ['响应码']) }
     if (status === 'failed') return { lead: same ? [t('没有应答')] : [m(label), t(' 没有应答')], note: detail ? [t(detail)] : [] }
   }
   const stageName = traceStageNames[stage]

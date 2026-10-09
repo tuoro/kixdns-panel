@@ -41,14 +41,16 @@ test('结果栏只说结果：记录、响应码、耗时和服务器，不复�
   await expect(page.locator('.diag-answer-row')).toHaveCount(2)
   await expect(page.locator('.diag-answer-row').first()).toContainText('104.18.26.120')
   await expect(page.locator('.diag-answer-row').last()).toContainText('104.18.27.120')
-  // 类型和 TTL 都一样，只写一次。 / One shared type and TTL, stated once.
-  await expect(page.locator('.diag-outcome-facts')).toHaveText('A · TTL 300 秒 · 未截断 · 服务器 KixDNS 内部执行链')
-  await expect(page.locator('.diag-elapsed')).toHaveText('12 ms')
+  // 事实行是组件库的分隔点列表：耗时打头，然后类型和 TTL（都一样，只写一次）、截断与否、服务器。逐项断言：
+  // 分隔点是 ::before 画的，拼起来的 textContent 里没有它。
+  // The facts line is the kit's dot list: elapsed first, then the type and TTL (shared, stated once), truncation and the server.
+  // Asserted item by item: the dots are drawn by ::before and never appear in the joined textContent.
+  await expect(page.locator('.diag-outcome-facts > span')).toHaveText(['12 ms', 'A', 'TTL 300 秒', '未截断', '服务器 KixDNS 内部执行链'])
   // 命中哪条规则、由谁应答写在执行路径里（带绿色对勾），结果栏不再说一遍。
   // Which rule matched and who answered live in the path, with a green check; the bar does not repeat them.
   await expect(outcome).not.toContainText('geosite-global')
   await expect(outcome).not.toContainText('1.1.1.1')
-  await expect(page.locator('.diag-step', { hasText: '命中规则 geosite-global' })).toHaveClass(/diag-step--success/)
+  await expect(page.locator('.diag-trace .ui-step', { hasText: '命中规则 geosite-global' })).toHaveClass(/ui-step--ok/)
   // 没有单独的应答卡：只有结果栏和执行路径两块，上下同宽。
   // No separate answer card: just the bar and the path, stacked at the same width.
   await expect(page.locator('.diag-answers')).toHaveCount(0)
@@ -56,36 +58,45 @@ test('结果栏只说结果：记录、响应码、耗时和服务器，不复�
   const trace = await page.locator('.diag-trace').boundingBox()
   expect(bar!.y + bar!.height).toBeLessThan(trace!.y)
   expect(bar?.width).toBe(trace?.width)
-  // 时刻在圆点左边，像日志的时间戳。 / The time sits left of the mark, like a log timestamp.
-  const time = await page.locator('.diag-step-time').first().boundingBox()
-  const mark = await page.locator('.diag-step-mark').first().boundingBox()
-  expect(time!.x + time!.width).toBeLessThanOrEqual(mark!.x)
+  // 第八轮改版（组件库）：时刻在行尾、右对齐到内容边，节点和竖线贴着内容左边，和规则测试的步骤同一个几何；不再在圆点左边
+  // Round 8 (kit): the time sits at the row end, right-aligned to the content edge, and the node and rail hug the content's left edge,
+  // the same geometry as the rule tester's steps; no longer left of the mark
+  const list = (await page.locator('.diag-trace .ui-steps').boundingBox())!
+  const time = (await page.locator('.diag-trace .ui-step__time').first().boundingBox())!
+  const mark = (await page.locator('.diag-trace .ui-step__mark').first().boundingBox())!
+  expect(Math.abs(mark.x - list.x), '节点贴着内容左边').toBeLessThanOrEqual(0.5)
+  expect(Math.abs(time.x + time.width - (list.x + list.width)), '时刻右对齐到内容边').toBeLessThanOrEqual(0.5)
+  expect(time.x).toBeGreaterThanOrEqual(mark.x + mark.width)
   await noOverflow(page)
 })
 
 test('每一步的细节直接摊开，缓存未命中不是故障 @responsive', async ({ page }) => {
   await query(page)
-  const steps = page.locator('.diag-step')
+  // 步骤是组件库的「结果说明」行（.ui-steps 里的 .ui-step），和配置页的测试域名同一套 / Steps are the kit's explanation rows (.ui-step inside .ui-steps), shared with the config page's tester
+  const steps = page.locator('.diag-trace .ui-steps > .ui-step')
   await expect(steps).toHaveCount(6)
   // 不点任何东西：六步的标签和细节应当已经全部可读。
   await expect(steps.nth(4)).toContainText('https://1.1.1.1/dns-query')
   // 程序内部的写法翻成人话：不出现 Some(Https)、false 和 hickory 的「No Error」。
   // Program-internal spellings become words: no Some(Https), false or hickory's "No Error".
-  await expect(steps.nth(5).locator('.diag-step-what')).toHaveText('应答 NOERROR')
+  await expect(steps.nth(5).locator('.ui-step__what')).toHaveText('应答 NOERROR')
   await expect(steps.nth(5)).toContainText('未截断')
   await expect(steps.nth(4)).toContainText('传输 DoH')
   await expect(page.locator('.diag-trace')).not.toContainText('Some(')
   await expect(page.locator('.diag-trace')).not.toContainText('false')
   await expect(steps.nth(0)).toContainText('客户端 127.0.0.1')
-  await expect(page.locator('.diag-trace > header')).toContainText('不表示该阶段的独立耗时')
+  // 读数字之前先知道时间是累计的：这句现在是卡片小标签下面的说明，不再是卡片头 / The times are cumulative, said before the numbers: now the note under the card label, no longer a card header
+  await expect(page.locator('.diag-trace > .diag-card-note')).toContainText('从请求开始累计')
   await expect(page.locator('.diag-trace .ui-card__foot')).toHaveCount(0)
-  // 未命中是中性状态，不画成故障。
-  await expect(steps.nth(2)).toHaveClass(/diag-step--neutral/)
+  // 未命中是中性状态，不画成故障：组件库里中性就是不带 ok / err / warn 任何一种标记，灰掉的是 idle。
+  // A miss is neutral, never drawn as a failure: in the kit neutral means none of the ok / err / warn marks, and the grey is idle.
+  await expect(steps.nth(2)).not.toHaveClass(/ui-step--(ok|err|warn)/)
+  await expect(steps.nth(2)).toHaveClass(/ui-step--idle/)
   await expect(steps.nth(2)).toContainText('未命中')
   // 每步一句话，不再是「阶段名 + 内核标签」把同一件事说两遍。
   // One sentence per step, no longer "stage + kernel label" saying the same thing twice.
-  await expect(steps.nth(2).locator('.diag-step-what')).toHaveText('响应缓存未命中')
-  await expect(steps.nth(4).locator('.diag-step-what')).toHaveText('转发给 https://1.1.1.1/dns-query')
+  await expect(steps.nth(2).locator('.ui-step__what')).toHaveText('响应缓存未命中')
+  await expect(steps.nth(4).locator('.ui-step__what')).toHaveText('转发给 https://1.1.1.1/dns-query')
   await noOverflow(page)
 })
 
@@ -98,7 +109,7 @@ test('原始应答原样保留，重新查询换掉整份结果 @responsive', as
   await expect(page.locator('.diag-raw-response pre').first()).toHaveText('example.net. 300 IN A 104.18.26.120')
   await page.getByLabel('域名', { exact: true }).fill('example.org')
   await page.getByRole('button', { name: '执行查询', exact: true }).click()
-  await expect(page.locator('.diag-step').first()).toContainText('example.org')
+  await expect(page.locator('.diag-trace .ui-step').first()).toContainText('example.org')
   // 新结果回到收起：上一次展开的原始响应不跟着留下。 / A new result starts collapsed.
   await expect(page.locator('.diag-raw-response')).toHaveCount(0)
   await toggle.click()
@@ -135,7 +146,7 @@ test('长 TXT 与未知记录原串可读，基础内核不虚构规则轨迹', 
   expect(await page.locator('.diag-answer-row code').first().textContent()).toBe(txt)
   expect(await page.locator('.diag-answer-row code').last().textContent()).toBe(raw)
   await expect(page.locator('.diag-trace-unavailable')).toContainText('当前内核仅支持基础查询')
-  await expect(page.locator('.diag-step')).toHaveCount(0)
+  await expect(page.locator('.diagnostic-result .ui-step')).toHaveCount(0)
   await noOverflow(page)
 })
 
@@ -146,8 +157,8 @@ test('缓存命中不显示伪规则，空 Answer 与截断状态仍清楚', asy
   await query(page)
   await expect(page.locator('.diag-empty-answers')).toBeVisible()
   await expect(page.locator('.diag-outcome-facts')).toContainText('已截断')
-  await expect(page.locator('.diag-step')).toHaveCount(1)
-  await expect(page.locator('.diag-step').first()).toContainText('命中响应缓存')
+  await expect(page.locator('.diag-trace .ui-step')).toHaveCount(1)
+  await expect(page.locator('.diag-trace .ui-step').first()).toContainText('命中响应缓存')
   await expect(page.locator('.diagnostic-result')).not.toContainText('命中规则')
   await noOverflow(page)
 })
@@ -166,19 +177,19 @@ test('真实内核轨迹：未命中的规则并成一行，「准备转发」�
   ]
   await diagnosticFixture(page, { ...answerFixture, trace })
   await query(page)
-  const steps = page.locator('.diag-step')
+  const steps = page.locator('.diag-trace .ui-steps > .ui-step')
   // 决定转发和真的发出去是同一件事，并成一行；应答那一行不再重复地址。
   // Deciding to forward and sending are one event on one row; the reply row does not repeat the address.
   await expect(steps).toHaveCount(6)
-  await expect(steps.nth(1).locator('.diag-step-what')).toHaveText('管线 default 的规则缓存未命中')
-  await expect(steps.nth(2)).toHaveClass(/diag-step--idle/)
-  await expect(steps.nth(2).locator('.diag-step-what')).toHaveText('3 条规则未命中')
-  await expect(steps.nth(2).locator('.diag-step-why')).toHaveText('block-ads、geosite-cn、lan-hosts')
-  await expect(steps.nth(4).locator('.diag-step-what')).toHaveText('转发给 https://1.1.1.1/dns-query')
-  await expect(steps.nth(4).locator('.diag-step-time')).toHaveText('2 ms')
-  await expect(steps.nth(5).locator('.diag-step-what')).toHaveText('应答 NOERROR')
+  await expect(steps.nth(1).locator('.ui-step__what')).toHaveText('管线 default 的规则缓存未命中')
+  await expect(steps.nth(2)).toHaveClass(/ui-step--idle/)
+  await expect(steps.nth(2).locator('.ui-step__what')).toHaveText('3 条规则未命中')
+  await expect(steps.nth(2).locator('.ui-step__why')).toHaveText('block-ads、geosite-cn、lan-hosts')
+  await expect(steps.nth(4).locator('.ui-step__what')).toHaveText('转发给 https://1.1.1.1/dns-query')
+  await expect(steps.nth(4).locator('.ui-step__time')).toHaveText('2 ms')
+  await expect(steps.nth(5).locator('.ui-step__what')).toHaveText('应答 NOERROR')
   // 超过一秒写成秒。 / Past a second, the time is in seconds.
-  await expect(steps.nth(5).locator('.diag-step-time')).toHaveText('1.2 s')
+  await expect(steps.nth(5).locator('.ui-step__time')).toHaveText('1.2 s')
   await expect(page.locator('.diag-trace')).not.toContainText('started')
   await expect(page.locator('.diag-trace')).not.toContainText('发往')
   await noOverflow(page)
@@ -192,9 +203,9 @@ test('多个命中与长轨迹不被固定六阶段裁掉', async ({ page }) => 
   await query(page)
   // 结论带只点前三条并说明一共几条；执行路径里十一步一步不少。
   // The verdict names the first three and the total; the path keeps every one of the eleven steps.
-  await expect(page.locator('.diag-step')).toHaveCount(11)
+  await expect(page.locator('.diag-trace .ui-step')).toHaveCount(11)
   await expect(page.locator('.diag-trace-warning')).toContainText('不代表完整解析路径')
-  await expect(page.locator('.diag-step').last()).toContainText('future_stage')
+  await expect(page.locator('.diag-trace .ui-step').last()).toContainText('future_stage')
   await noOverflow(page)
 })
 
