@@ -14,6 +14,8 @@ const props = defineProps<{
   title: string
   startedAt?: number | null
   progress?: number | null
+  // 进行中但不知道进度（内核更新没有阶段信息）：画一条来回扫的条 / Running with unknown progress (the kernel update has no stage data): a sweeping bar
+  indeterminate?: boolean
 }>()
 
 const now = ref(Date.now())
@@ -45,7 +47,8 @@ onBeforeUnmount(() => window.clearInterval(timer))
       <div class="ui-task__meta" role="status"><slot name="meta" /><span v-if="state === 'run' && elapsed !== null">已用 {{ elapsed }} 秒</span></div>
     </div>
     <div v-if="$slots.actions" class="ui-task__actions"><slot name="actions" /></div>
-    <div v-if="state === 'run' && progress != null" class="ui-task__bar" role="progressbar" :aria-valuenow="Math.round(progress * 100)" aria-valuemin="0" aria-valuemax="100">
+    <div v-if="state === 'run' && progress == null && indeterminate" class="ui-task__bar ui-task__bar--indeterminate" role="progressbar" aria-label="进行中，进度未知"><i></i></div>
+    <div v-else-if="state === 'run' && progress != null" class="ui-task__bar" role="progressbar" :aria-valuenow="Math.round(progress * 100)" aria-valuemin="0" aria-valuemax="100">
       <i :style="{ width: `${Math.round(progress * 100)}%` }"></i>
     </div>
   </div>

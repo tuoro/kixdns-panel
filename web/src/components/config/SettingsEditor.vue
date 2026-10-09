@@ -60,7 +60,8 @@ function summary(section: SettingSection): string[] {
     if (typeof value === 'boolean') return `${label} ${value ? '已开启' : '已关闭'}`
     if (value === null) return `${label} ${field.nullable ? '自动' : '未设置'}`
     if (Array.isArray(value)) return `${label} ${value.length} 项`
-    return `${label} ${value === '' ? '留空' : String(value)}${field.unit ? ` ${field.unit}` : ''}`
+    // 数字照全站的写法加千分位（20,000 条） / Numbers take the site-wide thousands separator (20,000 条)
+    return `${label} ${value === '' ? '留空' : typeof value === 'number' ? value.toLocaleString('en-US') : String(value)}${field.unit ? ` ${field.unit}` : ''}`
   })
   return entries.length ? entries : [section.description]
 }
@@ -211,7 +212,7 @@ function supported(field: SettingField): boolean {
       <label class="ui-input settings-search"><Search :size="16" aria-hidden="true" /><input ref="searchInput" v-model="search" type="search" aria-label="搜索基础设置" placeholder="搜索设置或配置 key" @keydown.esc.prevent="clearSearch"><button v-if="search" class="ui-input__affix" type="button" aria-label="清除设置搜索" title="清除设置搜索" @click.prevent="clearSearch"><X :size="14" aria-hidden="true" /></button></label>
       <button v-for="group in groups" :key="group.id" type="button" class="settings-nav__item" :aria-current="!query && current === group.id ? 'true' : undefined" :aria-description="group.changed ? '有修改' : undefined" @click="open(group.id)">
         <span class="settings-nav__title">{{ group.title }}<i v-if="group.changed" class="ui-dot ui-dot--ink settings-dot" aria-hidden="true"></i></span>
-        <small class="settings-nav__summary"><UiDotText :parts="group.summary" /></small>
+        <small class="settings-nav__summary"><UiDotText class="ui-dot-text--stats" :parts="group.summary" /></small>
         <ChevronRight class="settings-nav__chevron" :size="16" aria-hidden="true" />
       </button>
     </nav>
@@ -225,7 +226,7 @@ function supported(field: SettingField): boolean {
       <section v-for="section in paneSections" :key="section.id" class="settings-group" :class="{ 'ui-rise': !query }">
         <!-- 搜索结果里每组的标题也是区块标题，和平时一组的标题一样：和下面的设置名差了字号，不只差字重（规范 1.7，审计 T10）
              Each group heading in search results is a section title, as for a single group: it differs from the setting names in size, not only weight (spec 1.7, audit T10) -->
-        <header class="settings-group__head settings-group__head--lead"><h3>{{ section.title }}</h3></header>
+        <header class="settings-group__head settings-group__head--lead"><h3>{{ section.title }}</h3><p v-if="section.description" class="settings-group__desc">{{ section.description }}</p></header>
         <div class="settings-rows">
           <!-- 一个设置一行：左边名字和一句说明，右边控件。数字的单位写在输入框里，占位写默认值。
                One setting per row: name and a one-line note on the left, the control on the right; a number's unit sits in the input and the placeholder states the default. -->
@@ -260,7 +261,7 @@ function supported(field: SettingField): boolean {
       </section>
 
       <div v-if="!query && current === 'geo'" :key="current" class="ui-rise">
-        <header class="settings-group__head settings-group__head--lead"><h3>{{ currentGroup.title }}</h3></header>
+        <header class="settings-group__head settings-group__head--lead"><h3>{{ currentGroup.title }}</h3><p v-if="currentGroup.description" class="settings-group__desc">{{ currentGroup.description }}</p></header>
         <GeoDataEditor v-model="settings" :changed="changed" />
       </div>
     </div>
@@ -276,7 +277,10 @@ function supported(field: SettingField): boolean {
 .settings-pane { container: setrows / inline-size; }
 /* 四边都是 16：搜索框和选中那一项的底色离卡片边、离分隔线一样远，和工作台的列表一样（规范 6.4，审计第六轮 T2）
    16 on every side: the search box and the selected item's fill sit as far from the divider as from the card edge, as in the workbench list (spec 6.4, audit round 6, T2) */
-.settings-nav { position: sticky; top: calc(var(--app-header-height, 64px) + var(--s-4)); align-self: start; display: grid; gap: 2px; padding: var(--s-4); }
+.settings-nav { position: sticky; top: calc(var(--app-header-height, 64px) + var(--s-4)); align-self: start; display: grid; gap: 2px; padding: var(--s-5) var(--s-4) var(--s-5) var(--s-5); }
+/* 设置行里的分段控件和下面的下拉框一样占满控件列 / A segmented control in a setting row fills the control column like the selects below it */
+.settings-pane :deep(.ui-setrow__control > .ui-seg) { display: flex; }
+.settings-pane :deep(.ui-setrow__control > .ui-seg > .ui-seg__opt) { flex: 1 1 0; }
 .settings-search { margin-bottom: var(--s-3); }
 .settings-search > svg { flex-shrink: 0; color: var(--l-ink-3); }
 .settings-search input::-webkit-search-cancel-button { display: none; }
@@ -289,13 +293,15 @@ function supported(field: SettingField): boolean {
 /* 改过的设置：名字后面一个墨点，和工作台的一样（规范 8.1，审计第三轮 T8） / A changed setting: an ink dot after its name, as on the workbench (spec 8.1, audit round 3, T8) */
 .settings-dot { margin-inline-start: var(--s-2); vertical-align: .1em; }
 /* 下边 16 加最后一行自己的 8 是 24，和左右一样（规范 6.4，审计第二轮 T2） / 16 plus the last row's own 8 makes 24, the side inset (spec 6.4, audit round 2, T2) */
-.settings-pane { min-width: 0; padding: var(--s-4) var(--s-5); border-left: 1px solid var(--l-hair); }
+.settings-pane { min-width: 0; padding: var(--s-5); border-left: 1px solid var(--l-hair); }
 .settings-back { display: none; }
 .settings-group + .settings-group { margin-top: var(--s-6); }
 .settings-group__head { margin: 0 0 var(--s-2); }
 .settings-group__head h3 { margin: 0; color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-bold); }
 .settings-group__head--lead { margin-bottom: var(--s-4); }
 .settings-group__head--lead h3 { font-size: var(--t-4); }
+/* 组标题下一句说明：这一组管什么 / One line under the group title saying what the group covers */
+.settings-group__desc { margin: 2px 0 0; color: var(--l-ink-3); font-size: var(--t-2); }
 /* 导航在旁边时，窗格的第一个标题和导航的搜索框在同一条中线上；下面少留 4，第一个字段还和第一个导航项齐平（审计第七轮 T3）
    With the nav alongside, the pane's first title shares the nav search box's centre line; 4 less below keeps the first field level with the first nav item (audit round 7, T3) */
 @media (min-width: 861px) {
@@ -304,7 +310,9 @@ function supported(field: SettingField): boolean {
   .settings-search { margin-bottom: var(--s-4); }
   .settings-pane > :first-child .settings-group__head--lead h3 { padding-top: calc((var(--h-md) - 1lh) / 2); }
 }
-.settings-rows { display: grid; gap: 2px; }
+/* 设置行之间一条细线，和编辑页「其他」卡片同一种行 / A hairline between setting rows, the same row as the editor's 其他 card */
+.settings-rows { display: grid; gap: 0; }
+.settings-rows > .ui-setrow + .ui-setrow { border-top: 1px solid var(--l-hair); }
 /* 开关上下各补 6 凑成 36 的格子，只为行和行之间一样高；最后一行下面不补，卡片底边离它和离一个输入框一样远（审计第四轮 T1）
    The 6 above and below a switch makes the 36 slot only for the pitch between rows; not under the last row, so the card's bottom sits as far from it as from a field (audit round 4, T1) */
 .settings-rows > .ui-setrow--toggle:last-child :deep(.ui-switch) { margin-bottom: 0; }
@@ -331,8 +339,18 @@ function supported(field: SettingField): boolean {
   .settings-nav { position: static; padding: var(--s-4) var(--s-4) var(--s-3); }
   .settings-nav__item { min-height: var(--h-touch); grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto auto; }
   .settings-nav__summary { display: block; grid-column: 1; color: var(--l-ink-3); font-size: var(--t-1); font-weight: var(--w-normal); overflow-wrap: anywhere; }
-  .settings-nav__chevron { display: block; grid-column: 2; grid-row: 1 / 3; color: var(--l-ink-3); }
+  .settings-nav__chevron { display: block; grid-column: 2; grid-row: 1 / 3; margin-right: -6px; color: var(--l-ink-3); }
   .settings-nav__item[aria-current="true"] { background: transparent; }
+  /* 手机上是一张目录：每一项都是墨色标题，没有哪一项是「选中」 / On phones the list is a contents page: every title is ink, none is "selected" */
+  .settings-nav__item, .settings-nav__item[aria-current="true"] { color: var(--l-ink); }
+  /* 分组列表的字和搜索框左边对齐，行与行之间一条细线，和其他手机列表一样 / Group rows line up with the search box's left edge, with a hairline between rows like every other phone list */
+  /* 分组列表的分隔线贴到卡片两边，搜索框仍然左右各 16 / The group list's dividers reach the card edges; the search box keeps 16 on each side */
+  .settings-nav { gap: 0; padding-inline: 0; padding-bottom: var(--s-1); }
+  /* 搜索框下面直接是第一项，距离和项与项之间的细线到字一样 / The first item follows the search directly, as far below it as text sits below each hairline */
+  .settings-search { margin-inline: var(--s-4); margin-bottom: var(--s-1); }
+  .settings-nav__item { padding-inline: var(--s-4); border-radius: 0; font-weight: var(--w-medium); }
+  .settings-nav__item + .settings-nav__item { border-top: 1px solid var(--l-hair); }
+  .settings-nav__summary { font-size: var(--t-2); }
   /* 下边 8 加最后一行自己的 8 是 16，和左右一样（规范 6.4，审计第二轮 T2） / 8 plus the last row's own 8 makes 16, the side inset (spec 6.4, audit round 2, T2) */
   .settings-pane { display: none; padding: var(--s-4) var(--s-4) var(--s-2); border-left: 0; }
   /* 搜索时结果紧跟在搜索框下面：框下 12 加导航下边 12，第一组标题离框 24（审计第三轮 T7） / Search results follow the box: 12 under it plus the nav's 12 puts the first heading 24 below (audit round 3, T7) */
@@ -348,12 +366,12 @@ function supported(field: SettingField): boolean {
   .settings-back { display: inline-flex; margin: calc((1lh - var(--h-md)) / 2) 0 var(--s-2) calc(var(--s-2) * -1); }
 }
 @media (max-width: 640px) {
-  .settings-back { margin-top: calc((1lh - var(--h-touch)) / 2); }
+  .settings-back { margin-top: calc((1lh - var(--h-md)) / 2); }
   /* 只有名字一行的开关放在最后一行时，44 高的行比开关多出 2：收回来，卡片底边离它和离一个输入框一样远（审计第五轮 T1）
      A single-line switch row that ends the pane is 2 taller than its switch in the 44 row: taken back, so the card's bottom sits as far from it as from a field (audit round 5, T1) */
-  .settings-rows > .ui-setrow--toggle:last-child:not(:has(.ui-setrow__label > :nth-child(2))) { margin-bottom: calc((var(--s-5) + var(--s-2) * 2 - var(--h-touch)) / 2); }
+  .settings-rows > .ui-setrow--toggle:last-child:not(:has(.ui-setrow__label > :nth-child(2))) { margin-bottom: calc((var(--switch-h) + var(--s-2) * 2 - var(--h-touch)) / 2); }
 }
 @container setrows (max-width: 38rem) {
-  .settings-rows > .ui-setrow--toggle:last-child:not(:has(.ui-setrow__label > :nth-child(2))) { margin-bottom: calc((var(--s-5) + var(--s-2) * 2 - var(--h-touch)) / 2); }
+  .settings-rows > .ui-setrow--toggle:last-child:not(:has(.ui-setrow__label > :nth-child(2))) { margin-bottom: calc((var(--switch-h) + var(--s-2) * 2 - var(--h-touch)) / 2); }
 }
 </style>

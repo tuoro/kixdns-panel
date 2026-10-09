@@ -20,8 +20,9 @@ test('登录页在认证前不暴露任何机器状态 @responsive', async ({ pa
   }
   await expect(page.locator('.auth-status')).toHaveCount(0)
 
-  // 省掉一次徒劳的点击：面板根本没有找回功能，说清楚比让人去找强。
-  await expect(page.locator('.auth-security')).toContainText('面板不提供密码找回')
+  // 省掉一次徒劳的点击：面板里没有找回功能，直接说清只能在宿主机上重置，比让人去找强。
+  // Save a futile click: there is no recovery in the panel, so it says outright that a reset happens on the host.
+  await expect(page.locator('.auth-security')).toContainText('忘记密码只能在宿主机上重置')
 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
 })

@@ -69,11 +69,14 @@ async function revealEdited(editor: HTMLElement, active: HTMLElement): Promise<v
   const fitsView = (element: Element | null): element is HTMLElement => Boolean(element) && bottom(element!) - top(element!) <= view - 2 * pad
   const list = active.closest<HTMLElement>('.ui-rows-host:not(.config-guide__editor)')
   const row = active.closest<HTMLElement>('.ui-rows__row')
-  const target = fitsView(list) ? list : fitsView(row) ? row : active
-  const shows = (scroll: number): boolean => top(target) >= scroll + pad - 1 && bottom(target) <= scroll + view - pad + 1
+  // 能放下的几块从大到小排：最大的一块停不干净（比如整张列表只比视口矮几像素，两条边总切到东西）时，换下一块再找
+  // The blocks that fit, largest first: when the largest cannot settle cleanly (say the whole list is only a few pixels shorter than the
+  // view, so both edges always cut something), the next one is tried
+  const targets = [...new Set([list, row].filter(fitsView)), active]
+  const showsOf = (target: Element) => (scroll: number): boolean => top(target) >= scroll + pad - 1 && bottom(target) <= scroll + view - pad + 1
   const current = editor.scrollTop
-  if (shows(current)) return
-  let next = bottom(target) > current + view - pad ? bottom(target) - view + pad : top(target) - pad
+  if (showsOf(targets[0]!)(current)) return
+  const anchorOf = (target: Element): number => (bottom(target) > current + view - pad ? bottom(target) - view + pad : top(target) - pad)
   // 视口的上下沿不从一行字中间切过去，也不从一个按钮的点按格、一个框中间切过去：底栏那条线切着半行字像坏了；
   // 边上露出的一条空白要是还能点（手机上 44 的格子比字高出 12），点了就在看不见的地方加了东西；框里的字（上游框一行一个地址）也是字
   // （审计第六轮 A1、第七轮 A1、第八轮 C2–C4）。只算画出来的：收起的「流程设置」「响应处理」里的东西 Chrome 照样排版、给出位置（审计第七轮 C1）
@@ -126,53 +129,65 @@ async function revealEdited(editor: HTMLElement, active: HTMLElement): Promise<v
   const readable = (scroll: number): boolean => both(texts, scroll)
   const cuts = (edge: number): boolean => crosses(texts, edge) || crosses(taps, edge) || crosses(frames, edge)
   const limit = editor.scrollHeight - view
-  const nearest = (scrolls: number[]): number => scrolls.reduce((best, scroll) => (Math.abs(scroll - next) < Math.abs(best - next) ? scroll : best))
-  // 1. 上沿先停在各组的开头，以及上一条和它隔着 24 以上的子项（手机上一条子项是一组）。开头上面留出的空白从 24 往下试，
-  //    取上下两条边都干净、又露得出要看的那一块的最大的那个：手机上上一组的「添加条件」格子伸进这段空白，上沿就停在两个格子相接的地方
-  // 1. The top edge first tries each group's start, and sub-items at least 24 below the previous one (a stacked sub-item on a phone). The
-  //    space above a start is tried from 24 down, taking the largest whose two edges are both clean and which still shows the target: on a
-  //    phone the previous group's 添加条件 box reaches into that space, so the edge settles where the two boxes meet
-  const starts = [...(editor.firstElementChild?.children ?? [])].filter(drawn).map(top)
-  for (const item of editor.querySelectorAll('.ui-rows__row')) {
-    const previous = item.previousElementSibling
-    if (previous && drawn(item) && top(item) - bottom(previous) >= 23) starts.push(top(item))
+  // 给一个目标找停的位置：返回滚动位置和要补的高度；只剩「至少不切字」时返回 null，让下一个目标先试
+  // Finds where to settle for one target: the scroll and any height to add; returns null when only "cuts no text" is left, so the next target is tried first
+  const plan = (target: Element): { scroll: number; room: number } | null => {
+    const shows = showsOf(target)
+    const next = anchorOf(target)
+    const nearest = (scrolls: number[]): number => scrolls.reduce((best, scroll) => (Math.abs(scroll - next) < Math.abs(best - next) ? scroll : best))
+    // 1. 上沿先停在各组的开头，以及上一条和它隔着 24 以上的子项（手机上一条子项是一组）。开头上面留出的空白从 24 往下试，
+    //    取上下两条边都干净、又露得出要看的那一块的最大的那个：手机上上一组的「添加条件」格子伸进这段空白，上沿就停在两个格子相接的地方
+    // 1. The top edge first tries each group's start, and sub-items at least 24 below the previous one (a stacked sub-item on a phone). The
+    //    space above a start is tried from 24 down, taking the largest whose two edges are both clean and which still shows the target: on a
+    //    phone the previous group's 添加条件 box reaches into that space, so the edge settles where the two boxes meet
+    const starts = [...(editor.firstElementChild?.children ?? [])].filter(drawn).map(top)
+    for (const item of editor.querySelectorAll('.ui-rows__row')) {
+      const previous = item.previousElementSibling
+      if (previous && drawn(item) && top(item) - bottom(previous) >= 23) starts.push(top(item))
+    }
+    const spaces = [pad, 16, 12, 8].filter((space) => space <= pad)
+    const atStarts = starts.flatMap((start) => {
+      const scroll = spaces.map((space) => start - space).find((candidate) => candidate >= 0 && candidate <= limit && shows(candidate) && clean(candidate))
+      return scroll === undefined ? [] : [scroll]
+    })
+    // 2. 开头都不行时，在最少要滚到的位置附近逐像素找一个两条边都干净的位置 / 2. With no start, search pixel by pixel near the least scroll for a position whose two edges are clean
+    const around = (test: (scroll: number) => boolean): number[] => {
+      const found: number[] = []
+      const from = Math.max(0, Math.floor(next) - 160)
+      const to = Math.min(Math.floor(limit), Math.ceil(next) + 160)
+      for (let scroll = from; scroll <= to; scroll += 1) if (shows(scroll) && test(scroll)) found.push(scroll)
+      return found
+    }
+    // 3. 最近的一组开头只差一点滚不到，或者正在改的那一组的开头停不下：在表单末尾补上差的高度，下沿落在补上的空白里
+    // 3. The nearest start is just out of reach, or the edited group's own start cannot settle: add the missing height at the end of the form, so the lower edge falls in that blank
+    const reachable = starts.flatMap((start) => spaces.map((space) => start - space))
+      .filter((scroll) => scroll > limit && scroll - limit <= 2 * pad + 48 && shows(scroll) && !cuts(scroll))
+    const own = [...(editor.firstElementChild?.children ?? [])].find((group) => group.contains(active))
+    const ownStart = own ? spaces.map((space) => top(own) - space).find((scroll) => scroll > limit && shows(scroll) && !cuts(scroll)) : undefined
+    // 先后：开头；只差一点的开头（补一点高度）；附近任何干净的位置；正在改的那一组的开头（补高度）
+    // Order: a start; a start just out of reach (a little added height); any clean position nearby; the edited group's start (added height)
+    const clear = around(clean)
+    const neat = clear.length ? clear : around(tidy)
+    if (atStarts.length) return { scroll: nearest(atStarts), room: 0 }
+    if (reachable.length) { const scroll = nearest(reachable); return { scroll, room: Math.ceil(scroll - limit) } }
+    if (neat.length) return { scroll: nearest(neat), room: 0 }
+    if (ownStart !== undefined) return { scroll: ownStart, room: Math.ceil(ownStart - limit) }
+    return null
   }
-  const spaces = [pad, 16, 12, 8].filter((space) => space <= pad)
-  const atStarts = starts.flatMap((start) => {
-    const scroll = spaces.map((space) => start - space).find((candidate) => candidate >= 0 && candidate <= limit && shows(candidate) && clean(candidate))
-    return scroll === undefined ? [] : [scroll]
-  })
-  // 2. 开头都不行时，在最少要滚到的位置附近逐像素找一个两条边都干净的位置 / 2. With no start, search pixel by pixel near the least scroll for a position whose two edges are clean
-  const around = (test: (scroll: number) => boolean): number[] => {
-    const found: number[] = []
-    const from = Math.max(0, Math.floor(next) - 160)
-    const to = Math.min(Math.floor(limit), Math.ceil(next) + 160)
-    for (let scroll = from; scroll <= to; scroll += 1) if (shows(scroll) && test(scroll)) found.push(scroll)
-    return found
-  }
-  // 3. 最近的一组开头只差一点滚不到，或者正在改的那一组的开头停不下：在表单末尾补上差的高度，下沿落在补上的空白里
-  // 3. The nearest start is just out of reach, or the edited group's own start cannot settle: add the missing height at the end of the form, so the lower edge falls in that blank
-  const reachable = starts.flatMap((start) => spaces.map((space) => start - space))
-    .filter((scroll) => scroll > limit && scroll - limit <= 2 * pad + 48 && shows(scroll) && !cuts(scroll))
-  const own = [...(editor.firstElementChild?.children ?? [])].find((group) => group.contains(active))
-  const ownStart = own ? spaces.map((space) => top(own) - space).find((scroll) => scroll > limit && shows(scroll) && !cuts(scroll)) : undefined
-  // 先后：开头；只差一点的开头（补一点高度）；附近任何干净的位置；正在改的那一组的开头（补高度）；至少不切字的位置
-  // Order: a start; a start just out of reach (a little added height); any clean position nearby; the edited group's start (added height); a position that cuts no text
-  const clear = around(clean)
-  const neat = clear.length ? clear : around(tidy)
-  if (atStarts.length) next = nearest(atStarts)
-  else if (reachable.length) {
-    next = nearest(reachable)
-    room.value = Math.ceil(next - limit)
-    await nextTick()
-  } else if (neat.length) next = nearest(neat)
-  else if (ownStart !== undefined) {
-    next = ownStart
-    room.value = Math.ceil(next - limit)
-    await nextTick()
+  const found = targets.map(plan).find((settle) => settle !== null)
+  let next = anchorOf(targets[0]!)
+  if (found) {
+    next = found.scroll
+    if (found.room > 0) {
+      room.value = found.room
+      await nextTick()
+    }
   } else {
-    const soft = around(readable)
-    if (soft.length) next = nearest(soft)
+    // 哪一块都停不干净：最大的那一块，至少不切字 / No block settles cleanly: the largest one, cutting no text at least
+    const shows = showsOf(targets[0]!)
+    const soft: number[] = []
+    for (let scroll = Math.max(0, Math.floor(next) - 160); scroll <= Math.min(Math.floor(limit), Math.ceil(next) + 160); scroll += 1) if (shows(scroll) && readable(scroll)) soft.push(scroll)
+    if (soft.length) next = soft.reduce((best, scroll) => (Math.abs(scroll - next) < Math.abs(best - next) ? scroll : best))
   }
   editor.scrollTop = next
 }
@@ -302,7 +317,7 @@ onBeforeUnmount(() => {
 @media (max-width: 640px) {
   /* 手机上整屏：选起点那一步也是，max-height 不再按浮起的面板算（审计第二轮 D1） / Full screen on a phone, the start picker too: max-height no longer follows the floating panel (audit round 2, D1) */
   .config-guide:not(.workbench-guide) { width: 100vw; height: 100dvh; max-height: none; border-radius: 0; }
-  .config-guide { --rows-act: var(--h-touch); }
+  .config-guide { --rows-act: var(--h-md); }
   .config-guide__header { padding: var(--s-3) var(--s-4); }
   :is(.config-guide__footer, .config-guide__path > summary, .config-guide__path-body) { padding-inline: var(--s-4); }
   .config-guide__header h2 { min-height: var(--h-touch); }

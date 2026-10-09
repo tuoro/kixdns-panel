@@ -83,7 +83,7 @@ function showNew(): void {
     </UiSection>
 
     <UiSection title="按钮与控件高度" aside="一屏最多一个主按钮；同一行里的控件一样高">
-      <p class="ui-kit__label">常规：页头、工具栏、表单。桌面 36，手机 44</p>
+      <p class="ui-kit__label">常规：页头、工具栏、表单。桌面 30，手机 36，手机上点按区域补到 44</p>
       <div class="ui-kit__row">
         <button class="ui-btn ui-btn--primary" type="button">执行查询</button>
         <button class="ui-btn ui-btn--secondary" type="button">校验</button>
@@ -101,7 +101,7 @@ function showNew(): void {
         <UiTabs v-model="geoMode" :items="geoModes" label="Geo 数据来源（常规）" variant="segment" />
         <button class="ui-icon-btn" type="button" title="检查更新" aria-label="检查更新"><RefreshCw :size="18" /></button>
       </div>
-      <p class="ui-kit__label">行内：列表行、状态胶囊里。桌面 30，手机 44</p>
+      <p class="ui-kit__label">行内：列表行、状态胶囊里。桌面 26，手机 30</p>
       <div class="ui-kit__row">
         <button class="ui-btn ui-btn--secondary ui-btn--sm" type="button">管理配置</button>
         <button class="ui-btn ui-btn--secondary ui-btn--sm" type="button">重新检查</button>

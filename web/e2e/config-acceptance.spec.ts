@@ -107,7 +107,7 @@ const SCOPE = '.config-page, dialog[open], .ui-menu--pop:popover-open'
 
 test.describe('B 文字角色', () => {
   for (const view of views) {
-    test(`${view.name}：字号只有 12、13、14、17、22，字重只有 400、500、600，颜色都是令牌 @responsive`, async ({ page }) => {
+    test(`${view.name}：字号只有令牌那几档（桌面 11、12、13、15、24，手机 12、13、14、16、22），字重只有 400、500、600，页标题 700，颜色都是令牌 @responsive`, async ({ page }) => {
       await openView(page, view)
       const problems = await page.evaluate((scope) => {
         const probe = document.createElement('span')
@@ -122,6 +122,13 @@ test.describe('B 文字角色', () => {
         }))
         probe.remove()
         const phone = window.innerWidth <= 640
+        // 字阶就是 tokens.css 的 --t-0 到 --t-7：桌面 11/12/13/15/24，大数字 32/40，角标里的数字 10；手机整体放大一档 12/13/14/16/22，角标仍 10。
+        // 手机上输入框的 16 就是字阶里的 --t-4，不用再单独放行。24 和 700 只给页标题：别处出现就是用错了角色
+        // The scale is tokens.css's --t-0 to --t-7: desktop 11/12/13/15/24 with 32/40 for figures and 10 for the digit in a badge; phones one step
+        // up at 12/13/14/16/22, the badge still 10. A phone field's 16 is the scale's own --t-4, so it needs no exception. 24 and 700 belong
+        // to the page title alone: anywhere else they are the wrong role
+        const sizes = phone ? [10, 12, 13, 14, 16, 22] : [10, 11, 12, 13, 15, 24, 32, 40]
+        const weights = [400, 500, 600]
         const found: string[] = []
         const seen = new Set<Element>()
         let scanned = 0
@@ -135,13 +142,18 @@ test.describe('B 文字角色', () => {
             const field = element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement || Boolean(element.closest('[contenteditable="true"]'))
             if (!text && !field) continue
             if (!element.getClientRects().length || getComputedStyle(element).visibility === 'hidden') continue
-            scanned += 1
             const style = getComputedStyle(element)
+            // 看不见的控件没有文字角色：开关里透明的 checkbox、1 像素的文件输入框只接事件，字号是继承来的
+            // An invisible control has no text role: the switch's transparent checkbox and the 1px file input only take events, their size is inherited
+            const box = element.getBoundingClientRect()
+            if (field && (style.opacity === '0' || (box.width <= 1 && box.height <= 1))) continue
+            scanned += 1
             const size = Math.round(parseFloat(style.fontSize) * 100) / 100
             const weight = Number(style.fontWeight)
+            const title = element.matches('.ui-ph__title')
             const label = `${element.tagName.toLowerCase()}.${[...element.classList].join('.')}「${(text || (element as HTMLInputElement).value || '').slice(0, 16)}」`
-            if (![12, 13, 14, 17, 22].includes(size) && !(phone && field && size === 16)) found.push(`字号 ${size}：${label}`)
-            if (![400, 500, 600].includes(weight)) found.push(`字重 ${weight}：${label}`)
+            if (!sizes.includes(size) || (size === (phone ? 22 : 24) && !title)) found.push(`字号 ${size}：${label}`)
+            if (!weights.includes(weight) && !(weight === 700 && title)) found.push(`字重 ${weight}：${label}`)
             if (!field && !colors.has(style.color)) found.push(`颜色 ${style.color}：${label}`)
           }
         }
@@ -229,11 +241,13 @@ test.describe('D 说明文字预算', () => {
         const roots = [...document.querySelectorAll(scope)]
         const inScope = (element: Element) => roots.some((root) => root.contains(element))
         const parts: string[] = []
-        // 注释角色：12 号、400 的界面字（不是机器值、不是标签、不是出错信息） / The note role: 12px, 400, UI font (not machine values, tags or errors)
+        // 注释角色：--t-1（桌面 11、手机 12）、400 的界面字（不是机器值、不是标签、不是出错信息）
+        // The note role: --t-1 (11 on desktop, 12 on a phone), 400, UI font (not machine values, tags or errors)
+        const noteSize = window.innerWidth <= 640 ? 12 : 11
         for (const element of document.querySelectorAll<HTMLElement>('p, small, span, li')) {
           if (!inScope(element) || !element.getClientRects().length || element.closest('.cm-editor, code, .ui-tag, .ui-field-error, .ui-diff, .config-history, .workbench-entry-number, .ui-rows__num, .ui-menu__title')) continue
           const style = getComputedStyle(element)
-          if (parseFloat(style.fontSize) !== 12 || Number(style.fontWeight) !== 400 || /Plex Mono/i.test(style.fontFamily.split(',')[0] ?? '')) continue
+          if (parseFloat(style.fontSize) !== noteSize || Number(style.fontWeight) !== 400 || /Plex Mono/i.test(style.fontFamily.split(',')[0] ?? '')) continue
           const own = [...element.childNodes].filter((node) => node.nodeType === Node.TEXT_NODE).map((node) => node.textContent ?? '').join('')
           const cjk = own.match(/[一-鿿]/g)?.length ?? 0
           if (cjk) parts.push(`${cjk} 注释：${own.trim().slice(0, 24)}`)
@@ -257,10 +271,13 @@ test.describe('F 横线', () => {
   // 页签底线宽屏上画在整个导航行（config-nav）下，手机上画在页签（config-sections）自己下面，指示块落在线上。
   // The rules each view may show: panel edges, the tab underline, a header's bottom edge, a footer's top edge. Boxes (all four sides) are not rules.
   // The tab baseline runs under the whole nav row (config-nav) on wide screens and under the tabs themselves (config-sections) on a phone, so the indicator sits on it.
+  // 设置行（ui-setrow）之间、手机上设置分组目录（settings-nav__item）行与行之间各一条 1 像素的 --l-hair 细线：改版后的「细线分隔的设置行」，在 DOM 里核对过就是这一条边、没有别的
+  // Between setting rows (ui-setrow) and, on a phone, between the rows of the settings group list (settings-nav__item), one 1px --l-hair rule each:
+  // the redesign's hairline-separated rows, checked in the DOM to be that one border and nothing else
   const allowed = [
     'config-nav', 'config-sections', 'ui-tabs__ind', 'config-guide__header', 'config-guide__footer', 'config-guide__path', 'workbench-custom__head',
     'config-drawer__head', 'config-drawer__foot', 'ui-rec', 'config-diff-dialog__header', 'config-diff-dialog__footer',
-    'ui-menu__sep', 'cm-gutters', 'ui-savebar',
+    'ui-menu__sep', 'cm-gutters', 'ui-savebar', 'ui-setrow', 'settings-nav__item',
   ]
   for (const view of views) {
     test(`${view.name}：可见的横线只有允许的那几种 @responsive`, async ({ page }) => {

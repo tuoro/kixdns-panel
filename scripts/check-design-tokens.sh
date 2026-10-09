@@ -16,14 +16,14 @@ root="$(git rev-parse --show-toplevel)"
 cd "$root"
 
 # 基线：随迁移进度下调，永不上调 / Baseline: lower it as migration proceeds, never raise it
-BASELINE_COLOR=121
-BASELINE_SIZE=55
-BASELINE_RADIUS=25
-BASELINE_WEIGHT=15
-BASELINE_SHADOW=14
-BASELINE_HEIGHT=52
-BASELINE_DURATION=8
-BASELINE_OLD_NAME=90
+BASELINE_COLOR=82
+BASELINE_SIZE=41
+BASELINE_RADIUS=19
+BASELINE_WEIGHT=12
+BASELINE_SHADOW=6
+BASELINE_HEIGHT=35
+BASELINE_DURATION=4
+BASELINE_OLD_NAME=59
 BASELINE_FAMILY=0
 
 styles() {
@@ -51,7 +51,8 @@ size=$(scan 'font-size:[[:space:]]*[0-9.]+(px|rem|em)')
 radius=$(scan 'border-radius:[[:space:]]*[0-9.]+(px|rem|%)')
 weight=$(scan 'font-weight:[[:space:]]*[0-9]+')
 # var(...) 与 none 不算字面量 / var(...) and none are not literals
-shadow=$(scan 'box-shadow:[[:space:]]*[^vn;[:space:]][^;}]*')
+# 阴影只数带字面量颜色的：inset -1px 0 0 var(--l-hair) 这种落在 token 颜色上的偏移是几何，不算 / Only shadows with a literal colour count: an offset on a token colour such as inset -1px 0 0 var(--l-hair) is geometry
+shadow=$(scan 'box-shadow:[^;}]*(#[0-9a-fA-F]{3,8}|rgba?\()')
 # height、min-height、max-height；排除 line-height / excludes line-height
 height=$(scan '(^|[^a-z-])((min|max)-)?height:[[:space:]]*[0-9.]+px')
 duration=$(scan_durations)

@@ -137,33 +137,35 @@ test('同一行里的控件一样高：按钮、图标按钮、分段、输入�
   for (const row of rows) expect(new Set(row.heights).size, `${row.text}: ${row.heights.join(' / ')}`).toBe(1)
 })
 
-test('375 下能点的东西至少 44 像素，记录变两行，页面不横向溢出 @responsive', async ({ page }) => {
+test('375 下能点的东西点按区域至少 44、框 36（桌面 30），记录变两行，页面不横向溢出 @responsive', async ({ page }) => {
   await open(page)
   const phone = page.viewportSize()!.width <= 640
   const heights = await page.evaluate(() => {
-    // 看起来小、点按区域往外补的控件（--inline）量补过之后的区域：手指按的是它。
-    // A control that looks small with its hit area grown outwards (--inline) is measured by the
-    // grown area, since that is what a finger presses.
-    const measure = (selector: string) => [...document.querySelectorAll<HTMLElement>(selector)].map((el) => {
+    // 看起来比点按区域小、点按区域往外补的控件量补过之后的区域：手指按的是它。按钮补在 ::before，分段的格子和页签补在 ::after。
+    // A control that looks smaller than its hit area, grown outwards, is measured by the grown area, since that is what a
+    // finger presses. Buttons grow through ::before, segment cells and tabs through ::after.
+    const measure = (selector: string, pseudo = '::before') => [...document.querySelectorAll<HTMLElement>(selector)].map((el) => {
       const height = el.getBoundingClientRect().height
-      const grown = getComputedStyle(el, '::before')
+      const grown = getComputedStyle(el, pseudo)
       return grown.content !== 'none' && grown.position === 'absolute'
-        ? height - parseFloat(grown.top) - parseFloat(grown.bottom)
+        ? Math.max(height, height - parseFloat(grown.top) - parseFloat(grown.bottom))
         : height
     })
     return {
       regular: measure('.ui-btn:not(.ui-btn--sm)'),
       small: measure('.ui-btn--sm'),
       icon: measure('.ui-icon-btn:not(.ui-icon-btn--sm)'),
-      seg: measure('.ui-seg:not(.ui-seg--sm)'),
-      segSmall: measure('.ui-seg--sm'),
+      seg: measure('.ui-seg:not(.ui-seg--sm) > .ui-seg__opt', '::after'),
+      segSmall: measure('.ui-seg--sm > .ui-seg__opt', '::after'),
       input: measure('.ui-input:not(.ui-input--sm)'),
-      tab: measure('.ui-tabs__tab'),
+      tab: measure('.ui-tabs__tab', '::after'),
     }
   })
+  // 桌面控件 30（行内 26，macOS 的控件高度）；手机上输入框 36（看得见的框就是点按区域），按钮、图标按钮、分段和页签看起来 36，点按区域补到 44
+  // Desktop controls are 30 (26 inline, the macOS control height); on a phone a field is 36 (its visible frame is its hit area), and buttons, icon buttons, segments and tabs look 36 with hit areas grown to 44
   const floor = phone
-    ? { regular: 44, small: 36, icon: 44, seg: 44, segSmall: 36, input: 44, tab: 44 }
-    : { regular: 36, small: 30, icon: 36, seg: 36, segSmall: 30, input: 36, tab: 0 }
+    ? { regular: 44, small: 44, icon: 44, seg: 44, segSmall: 44, input: 36, tab: 44 }
+    : { regular: 30, small: 26, icon: 30, seg: 30, segSmall: 26, input: 30, tab: 0 }
   for (const [kind, values] of Object.entries(heights)) {
     expect(values.length, kind).toBeGreaterThan(0)
     for (const height of values) expect(height, kind).toBeGreaterThanOrEqual(floor[kind as keyof typeof floor] - 0.5)

@@ -78,9 +78,6 @@ code, .mono { font-family: var(--f-mono); letter-spacing: 0; }
 .page-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 24px; }
 .page-heading h1 { color: var(--ink); font-family: var(--f-display); font-size: 28px; line-height: 1.2; letter-spacing: -.6px; }
 .page-heading p { margin-top: 6px; color: var(--muted); font-size: 13px; }
-.page-tabs { display: flex; gap: 24px; margin-bottom: 24px; border-bottom: 1px solid var(--line); }
-.page-tabs button { min-height: 44px; padding: 8px 2px; color: var(--muted); background: transparent; border: 0; border-bottom: 2px solid transparent; font-size: 14px; }
-.page-tabs button[aria-selected="true"] { color: var(--green); border-bottom-color: var(--green); }
 .mobile-nav { display: none; }
 
 .notification-center { position: relative; z-index: 45; }
@@ -99,7 +96,6 @@ code, .mono { font-family: var(--f-mono); letter-spacing: 0; }
 .notification-item:last-child { border-bottom: 0; }
 .notification-item--unread { background: #f8fbf9; }
 .notification-item__icon { width: 34px; height: 34px; display: grid; place-items: center; color: var(--green); background: var(--green-soft); border-radius: 5px; }
-.notification-item__icon--panel { color: var(--amber); background: var(--amber-soft); }
 .notification-item__body { min-width: 0; }
 .notification-item__title { display: flex; align-items: center; gap: 7px; }
 .notification-item__title strong { overflow: hidden; color: #303936; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
@@ -114,15 +110,7 @@ code, .mono { font-family: var(--f-mono); letter-spacing: 0; }
 .notification-empty { min-height: 112px; display: grid; place-items: center; color: #929b98; font-size: 12px; }
 .notification-error { padding: 8px 13px; overflow-wrap: anywhere; color: #8e5d1d; background: #fffaf1; border-top: 1px solid #ead9bb; font-size: 12px; }
 .page { min-width: 0; }
-.page-actions { min-height: 36px; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
-.status-line, .document-meta { display: flex; align-items: center; gap: 8px; min-width: 0; color: #596266; font-size: 12px; }
-.document-meta code { max-width: 180px; overflow: hidden; text-overflow: ellipsis; color: #303638; }
-.status-dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 3px #17663e15; }
-.status-dot--danger { background: #d65454; box-shadow: 0 0 0 3px rgba(214, 84, 84, .12); }
-.status-dot--warning { background: #d69a3e; box-shadow: 0 0 0 3px rgba(214, 154, 62, .13); }
-.status-dot--muted { background: #9ba4a1; box-shadow: none; }
-.document-meta__version { padding-left: 8px; color: #75807c; border-left: 1px solid #d8dedb; }
-.button { min-height: 40px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 8px 14px; border: 1px solid transparent; border-radius: 4px; font-size: 14px; font-weight: 650; white-space: nowrap; transition: background .15s, border-color .15s, color .15s; }
+.button { min-height: 40px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 8px 14px; border: 1px solid transparent; border-radius: 4px; font-size: 14px; font-weight: 650; white-space: nowrap; transition: background var(--m-quick), border-color var(--m-quick), color var(--m-quick); }
 .button--primary { color: #fff; background: var(--ink); border-color: var(--ink); }
 .button--primary:hover:not(:disabled) { background: #29332e; border-color: #29332e; }
 .button--secondary { color: #3e4749; background: #fff; border-color: #d5dcda; }
@@ -132,16 +120,10 @@ code, .mono { font-family: var(--f-mono); letter-spacing: 0; }
    Solid red is reserved for irreversible confirmations: red here means "there
    is no going back", and reversible actions use the ordinary primary button so
    the signal is not spent. */
-.button--danger { color: var(--d-ink); background: var(--red); border-color: var(--red); font-weight: 650; }
-.button--danger:hover:not(:disabled) { background: var(--err-l-deep); border-color: var(--err-l-deep); }
-.button--danger-quiet { color: var(--red); background: #fff; border-color: #ebcaca; }
-.button--danger-quiet:hover:not(:disabled) { background: var(--red-soft); border-color: #dca9a9; }
-.button--full { width: 100%; }
 .icon-button { width: 40px; height: 40px; display: inline-grid; place-items: center; flex: 0 0 auto; padding: 0; color: #596265; background: #fff; border: 1px solid #d8dddc; border-radius: 5px; }
 .icon-button:hover:not(:disabled) { color: var(--green); border-color: #afcdbd; background: #f5faf7; }
 .icon-button--small { width: 32px; height: 32px; }
-.icon-button--danger:hover:not(:disabled) { color: var(--red); border-color: #dca9a9; background: var(--red-soft); }
-.spin { animation: spin .8s linear infinite; }
+.spin { animation: spin var(--m-spin) linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .panel { min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 4px; }
@@ -153,12 +135,8 @@ code, .mono { font-family: var(--f-mono); letter-spacing: 0; }
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th { padding: 10px 16px; color: #78817e; background: #fafbfa; font-size: 12px; font-weight: 680; text-align: left; text-transform: uppercase; }
 td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-space: nowrap; }
-.text-danger { color: var(--red) !important; }
 
 .editor-panel { min-width: 0; overflow: hidden; background: #fff; border: 1px solid var(--line); border-radius: 7px; }
-.mapping-priority { display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px; color: var(--green-dark); background: var(--green-soft); border-radius: 999px; font-size: 12px; font-weight: 700; }
-.unsaved-dot { display: inline-flex; align-items: center; gap: 5px; color: var(--amber); font-size: 12px; }
-.unsaved-dot::before { width: 6px; height: 6px; content: ""; background: #d98b28; border-radius: 50%; }
 .visually-hidden { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important; }
 /* JSON 视图就是面板本身：白底、墨色字，13 号等宽；行号列用页面底色、ink-3。不再是页面里唯一的深色块（规范 3.9）。
    The JSON view is the panel itself: white, ink, 13px mono; the line-number column on the page ground in ink-3.
@@ -193,37 +171,7 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
    This read as light-on-dark, left over from when the log view was still a dark
    terminal; once that returned to the light system this was the only dark patch
    left. */
-.editor-loading { min-height: 440px; display: grid; place-items: center; color: var(--muted); background: var(--canvas); font-size: 12px; }
-.editor-footer { min-height: 54px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 9px 13px 9px 17px; border-top: 1px solid var(--line); }
-.validation-state { min-width: 0; display: flex; align-items: center; gap: 7px; color: #6c7672; font-size: 12px; }
-.validation-state svg { flex: 0 0 auto; color: var(--green); }
-.validation-state span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.editor-footer input { width: min(42%, 310px); height: 34px; padding: 0 10px; color: #333a3c; background: #f8f9f8; border: 1px solid #dbe0de; border-radius: 4px; outline: 0; font-size: 12px; }
-.editor-footer input:focus { border-color: #7fb89a; box-shadow: 0 0 0 3px rgba(20, 125, 85, .08); }
-.history-panel { overflow: hidden; background: #fff; border: 1px solid var(--line); border-radius: 7px; }
-.history-panel > header { height: 58px; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; border-bottom: 1px solid var(--line); }
-.history-panel > header div { display: flex; align-items: center; gap: 8px; }
-.history-panel h2 { color: #303739; font-size: 12px; }
-.history-panel > header > span { min-width: 24px; padding: 3px 5px; color: #69726f; background: #edf0ef; border-radius: 4px; font-size: 12px; text-align: center; }
-.history-bulk-actions { min-height: 43px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 10px 7px 14px; background: #fafbfa; border-bottom: 1px solid var(--line); }
-.history-bulk-actions label { min-width: 0; display: inline-flex; align-items: center; gap: 7px; color: #68716e; font-size: 12px; cursor: pointer; }
-.history-bulk-actions input, .history-item__checkbox { width: 14px; height: 14px; flex: 0 0 auto; margin: 0; accent-color: var(--green); cursor: pointer; }
-.history-bulk-actions input:disabled, .history-item__checkbox:disabled { cursor: not-allowed; }
 .history-bulk-actions .button { min-height: 29px; padding: 0 9px; font-size: 12px; }
-.history-list { max-height: calc(min(62vh, 720px) + 55px); overflow: auto; }
-.history-list article { padding: 13px 14px; border-bottom: 1px solid #e8ecea; }
-.history-list article:last-child { border-bottom: 0; }
-.history-item--current { background: #f3f8f5; box-shadow: inset 3px 0 var(--green); }
-.history-item--pending { background: #fffaf1; box-shadow: inset 3px 0 var(--amber); }
-.history-item--failed { background: #fff7f7; box-shadow: inset 3px 0 var(--red); }
-.history-item__top { min-height: 28px; display: flex; align-items: center; gap: 7px; }
-.history-item__top > strong { min-width: 0; overflow: hidden; color: #303638; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
-.history-item__actions { margin-left: auto; display: flex; flex: 0 0 auto; align-items: center; gap: 5px; }
-.history-item__identity { display: flex; align-items: center; gap: 7px; margin-top: 6px; color: #77817d; font-size: 12px; }
-.history-item__identity span { color: #59635f; font-weight: 700; }
-.history-item__identity code { color: #77817d; font-size: 12px; }
-.history-list small { display: block; margin-top: 7px; color: #939b98; font-size: 12px; }
-.history-list small.history-item__error { margin-top: 5px; overflow-wrap: anywhere; color: var(--red); line-height: 1.45; }
 
 
 
@@ -269,7 +217,6 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 /* 列表底部的「加载更早」：通栏，和顶上的新日志提示条上下对称 / Load-older at the foot: full width, mirroring the new-lines banner on top */
 .log-more { width: 100%; min-height: var(--h-touch); display: flex; align-items: center; justify-content: center; gap: var(--s-1); color: var(--l-ink); background: transparent; border: 0; border-top: 1px solid var(--l-hair); font-family: var(--f-body); font-size: var(--t-1); }
 .log-more:hover:not(:disabled) { background: var(--l-canvas); }
-.log-empty { margin: 0; padding: var(--s-5); color: var(--l-ink-3); font-family: var(--f-body); font-size: var(--t-1); text-align: center; }
 
 .auth-panel label { display: grid; gap: 7px; color: #4c5557; font-size: 14px; font-weight: 650; }
 /* 输入框包在 label 里，会继承 label 的粗体；输入的内容和占位符都该是正文字重。
@@ -411,9 +358,6 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .status-banner strong { font-size: 14px; }
 .status-banner p { overflow-wrap: anywhere; color: #805f5f; font-size: 12px; line-height: 1.4; }
 .status-banner .icon-button { color: #8e4b4b; background: transparent; border-color: #dfbdbd; }
-.status-banner--paused { color: #70571f; background: #fffaf0; border-color: #e8d8ae; }
-.status-banner--paused > svg { color: #a27616; }
-.status-banner--paused p { color: #776746; }
 
 
 
@@ -424,13 +368,12 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
   .app-header { grid-template-columns: minmax(0, 1fr) auto; padding-inline: 16px; }
   .app-brand { gap: 8px; }
   .app-brand strong { font-size: 18px; }
-  .app-brand svg { width: 26px; height: 26px; }
+  .app-brand svg { width: var(--h-sm); height: var(--h-sm); }
   .desktop-nav { display: none; }
   .workspace__main { padding: 20px 16px calc(var(--mobile-nav-height) + 24px); }
   .page-heading { gap: 10px; margin-bottom: 20px; }
   .page-heading h1 { font-size: 20px; letter-spacing: -.3px; }
   .page-heading p { font-size: 12px; }
-  .page-tabs { gap: 20px; margin-bottom: 20px; }
   .mobile-nav { position: fixed; inset: auto 0 0; z-index: 30; min-height: var(--mobile-nav-height); display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); padding: 4px max(4px, env(safe-area-inset-right)) calc(4px + env(safe-area-inset-bottom)) max(4px, env(safe-area-inset-left)); background: #fff; border-top: 1px solid var(--line); }
   .mobile-nav a { position: relative; min-height: 52px; min-width: 0; display: grid; place-items: center; align-content: center; gap: 3px; color: #69736d; text-decoration: none; font-size: 12px; }
   .mobile-nav a.router-link-exact-active { color: var(--green); }
@@ -438,49 +381,29 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
   .app-shell:has([data-config-editing="true"]) .mobile-nav { display: none; }
   .app-shell:has([data-config-editing="true"]) .workspace__main { padding-bottom: 16px; }
 
-  .history-panel { order: 2; }
-  .history-list { max-height: 340px; }
-  .update-grid { grid-template-columns: 1fr; }
-  .update-channel + .update-channel { border-top: 1px solid var(--line); border-left: 0; }
   .auth-page { padding: 24px 16px; }
   .auth-brand { margin-bottom: 48px; }
 }
 
 @media (max-width: 640px) {
-  .page-actions { min-height: 34px; margin-bottom: 12px; }
-  /* 触控尺寸只有一个断点：和组件库一样在 ≤640。以前这几条在 ≤860，641–860 之间同一行里输入框 44、按钮 36。
-     输入框 16 号字防止 iPhone 聚焦时放大整页。
-     Touch sizing has one breakpoint, ≤640, matching the kit; at ≤860 these rules made inputs 44 next to
-     36px buttons between 641 and 860. The 16px input text stops iPhone from zooming on focus. */
-  .app-shell .button, .app-shell .icon-button, .app-shell .inline-command { min-height: 44px; }
-  .app-shell .icon-button { min-width: 44px; }
-  .app-shell input:not([type="checkbox"]):not([type="radio"]), .app-shell select { min-height: 44px; }
-  .app-shell :is(input:not([type="checkbox"]):not([type="radio"]), select, textarea) { font-size: var(--t-touch); }
+  /* 触控尺寸只有一个断点：和组件库一样在 ≤640。看得见的框和按钮和桌面一样 36，没有外框的图标按钮是 44 的点按格。
+     iPhone 聚焦时放大整页由 main.ts 关掉，框里的字不用再撑到 16。
+     Touch sizing has one breakpoint, ≤640, matching the kit. Visible frames and buttons are 36 as on desktop, and a
+     frameless icon button is a 44 tap cell. main.ts stops iPhone's focus zoom, so field text no longer has to be 16. */
+  .app-shell .button, .app-shell .inline-command { min-height: var(--h-md); }
+  .app-shell .icon-button { min-width: var(--h-touch); min-height: var(--h-touch); }
+  .app-shell input:not([type="checkbox"]):not([type="radio"]), .app-shell select { min-height: var(--h-md); }
   .app-shell .button { font-size: 14px; }
   .notification-popover { position: fixed; top: 60px; right: 10px; left: 10px; width: auto; max-height: calc(100dvh - 138px); }
   .notification-list { max-height: calc(100dvh - 252px); }
   th, td { padding-inline: 12px; }
   .json-editor { height: 58vh; min-height: 390px; }
-  /* 编辑器里的字 16：它是一个输入框，小于 16 时 iOS 聚焦会放大整页（规范 1.8） / 16px text: it is a field, and below 16 iOS zooms the page on focus (spec 1.8) */
-  .json-editor .cm-editor { font-size: var(--t-touch); }
-  /* 行号不是输入框，仍是 13；行高跟着正文的 16 号行，数字和那一行对齐 / Line numbers are not a field and stay 13, with the 16px text's line height so they line up with their row */
-  .json-editor .cm-gutters { font-size: var(--t-2); }
-  .json-editor .cm-gutterElement { line-height: calc(var(--t-touch) * var(--lh-base)); }
-  /* 13 号的行号和 16 号的正文放在同样高的行里，基线会差 2：每个行号前面放一个 16 号的零宽字符撑出正文那一行的基线，数字落在上面；
-     格子本身不动，当前行的底色和正文那一行上下对齐（审计第七轮 V2、第八轮 V1）
-     A 13px number and 16px text in rows of one height put their baselines 2 apart: a 16px zero-width character before each number sets the
-     text line's baseline and the digits sit on it, while the row itself stays put, so the active band lines up with the code line (audit
-     round 7 V2, round 8 V1) */
-  .json-editor .cm-lineNumbers .cm-gutterElement::before { content: '\200b'; font-size: var(--t-touch); }
-  .editor-footer { align-items: stretch; flex-direction: column; gap: 8px; }
-  .validation-state span { white-space: normal; }
-  .editor-footer input { width: 100%; }
   /* 搜索框和图标键同一行，筛选分段独占第二行 / Search and the icon buttons share the first row, the filter segment takes the second */
   .logs-page { gap: var(--s-4); }
   .log-toolbar { padding: var(--s-2); }
   /* 收紧搜索框的内边距，审计页最长的占位提示在 375 下才放得下（手机上框里的字是 16）
      Tighter field padding so the audit tab's longest placeholder fits at 375 (field text is 16 on a phone) */
-  .log-search { flex: 1 1 0; max-width: none; padding-inline: var(--s-2); }
+  .log-search { flex: 1 1 0; max-width: none; }
   .log-toolbar > .ui-seg { order: 1; flex: 1 1 100%; }
   /* 六个审计类别一行放不下（「KixDNS」会被挤出去），排成三列两行；两行时滑块没法跟着走，选中的那格自己画白块
      The six audit categories do not fit one row (KixDNS would be pushed out), so they go three by two; across two rows the
@@ -488,8 +411,10 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
   .log-toolbar > .ui-seg:has(> :nth-child(6)) { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .log-toolbar > .ui-seg:has(> :nth-child(6)) > .ui-seg__ind { display: none; }
   .log-toolbar > .ui-seg:has(> :nth-child(6)) > .ui-seg__opt[aria-pressed="true"] { background: var(--l-surface); box-shadow: var(--shadow-raise); }
-  /* 两行时上一行的可点区域没法借下一行的地方，每格自己就 44 高 / Across two rows the top row cannot borrow from the row below, so each cell is 44 itself */
-  .log-toolbar > .ui-seg:has(> :nth-child(6)) > .ui-seg__opt { min-height: var(--h-touch); }
+  /* 两行时每格自己就是 36，像一排按钮：点按区域借不到格子外面 / Across two rows each cell is a 36 of its own, like a row of buttons, since the tap area cannot borrow past it */
+  .log-toolbar > .ui-seg:has(> :nth-child(6)) > .ui-seg__opt { min-height: var(--h-md); }
+  /* 两行时点按区域不越过外框：上一行往下补会盖住下一行 / Across two rows the tap area stays inside the frame: the top row reaching down would cover the row below */
+  .log-toolbar > .ui-seg:has(> :nth-child(6)) > .ui-seg__opt::after { inset: -2px 0; }
   .log-stream { --log-above: 373px; min-height: 350px; }
   .log-line { min-width: 0; grid-template-columns: 90px minmax(0, 1fr); gap: 4px 8px; padding-block: 9px; }
   .log-line p { grid-column: 1 / -1; }
@@ -497,12 +422,6 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
   .audit-line strong { text-align: right; }
   .audit-line code, .audit-line p { grid-column: 1 / -1; }
   .audit-line code { overflow: visible; overflow-wrap: anywhere; text-overflow: clip; white-space: normal; }
-  .update-channel { padding: 14px 13px; }
-  .update-facts { grid-template-columns: 1fr; }
-  .update-facts div { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding: 8px 10px; border-right: 0; border-bottom: 1px solid #e3e8e6; }
-  .update-facts div:last-child { border-bottom: 0; }
-  .update-facts dd { max-width: 68%; margin: 0; text-align: right; }
-  .update-channel__actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   /* 一行三块在 375 下挤成竖着断字的窄柱，改成上下两段。
      Three blocks in a row collapse into a narrow column that breaks mid-token
      at 375, so the row stacks instead. */
@@ -529,7 +448,6 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
 .system-skeleton-panel { height: calc(var(--s-8) * 2); }
 .system-check-failed { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-3); padding-bottom: var(--s-1); color: var(--l-ink-3); font-size: var(--t-2); overflow-wrap: anywhere; }
 .system-stale { color: var(--warn-l); overflow-wrap: anywhere; }
-.system-note { margin: 0 0 var(--s-2); color: var(--l-ink-3); font-size: var(--t-2); }
 .system-error { flex-basis: 100%; color: var(--err-l); overflow-wrap: anywhere; }
 /* 版本号不在中间断开：窄屏上只在箭头和空格处换行 / A version never breaks mid-number: narrow screens wrap at the arrow */
 .update-row__from-to .ui-mono, .update-row__keep { white-space: nowrap; }
@@ -557,3 +475,486 @@ td { padding: 12px 16px; color: #4e5759; border-top: 1px solid #ecefee; white-sp
   .install-hashes dd { margin: 0; }
 }
 
+
+/* ============================================================================
+   v2 预览：外壳。顶栏改成白底细线，导航选中是墨色字加墨色下划线；底栏 56；
+   通知面板和提示条用和菜单同一套浮层：白底、细线、圆角 10、弹出影子，绿色只留给状态。
+   v2 preview: the shell. A white header with a hairline, ink text and an ink underline for the active nav item; a 56px tab bar;
+   the notification panel and toasts share the menus' surface (white, hairline, radius 10, pop shadow); green stays for status.
+   ============================================================================ */
+:root { --app-header-height: 56px; --mobile-nav-height: calc(56px + env(safe-area-inset-bottom)); }
+.app-header { color: var(--l-ink); background: var(--l-surface); border-bottom: 1px solid var(--l-hair); }
+.app-brand { color: var(--l-ink); }
+.app-brand strong { font-size: var(--t-5); font-weight: var(--w-bold); letter-spacing: -.3px; }
+.app-brand svg { width: var(--h-sm); height: var(--h-sm); }
+.desktop-nav { gap: var(--s-5); }
+.desktop-nav a { color: var(--l-ink-3); font-size: var(--t-3); font-weight: var(--w-medium); }
+.desktop-nav a:hover, .desktop-nav a.router-link-exact-active { color: var(--l-ink); }
+.desktop-nav a.router-link-exact-active::after { height: calc(var(--s-1) / 2); background: var(--l-ink); }
+.header-button { width: var(--h-md); height: var(--h-md); color: var(--l-ink-2); border-radius: var(--r-2); }
+.header-button:hover, .header-button[aria-expanded="true"] { color: var(--l-ink); background: var(--l-sunk); }
+.account-button > span { width: var(--size-avatar); height: var(--size-avatar); border-color: var(--l-line-strong); font-size: var(--t-2); font-weight: var(--w-medium); }
+.notification-badge { top: 1px; right: -1px; color: var(--l-surface); background: var(--l-ink); border-color: var(--l-surface); font-weight: var(--w-bold); }
+.account-popover, .notification-popover { border: 1px solid var(--l-hair); border-radius: var(--r-3); box-shadow: var(--shadow-pop); }
+.notification-popover { color: var(--l-ink); }
+@media (min-width: 861px) { .notification-popover { top: calc(100% + var(--s-2)); } }
+.notification-popover__header { min-height: 0; padding: var(--s-3) var(--s-3) var(--s-3) var(--s-4); border-color: var(--l-hair); }
+.notification-popover__header strong { color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-bold); }
+.notification-popover__header span { color: var(--l-ink-3); }
+.notification-mark-all { color: var(--l-ink-2); font-weight: var(--w-medium); }
+.notification-mark-all:hover { color: var(--l-ink); background: var(--l-sunk); }
+.notification-item { padding: var(--s-3) var(--s-4); border-color: var(--l-hair); }
+.notification-item--unread { background: transparent; }
+.notification-item__icon, .notification-item__icon--panel { width: var(--s-6); height: var(--s-6); color: var(--l-ink-2); background: var(--l-sunk); border-radius: var(--r-2); }
+.notification-item__title strong { color: var(--l-ink); font-weight: var(--w-bold); }
+.notification-item__title i { background: var(--l-ink); }
+.notification-item__body p { color: var(--l-ink-2); }
+.notification-item__body small { color: var(--l-ink-3); }
+.notification-item__actions a, .notification-item__actions button { color: var(--l-ink); text-decoration: underline; text-decoration-color: var(--l-edge-hover); text-underline-offset: 3px; }
+.notification-item__actions a:hover, .notification-item__actions button:hover { color: var(--l-ink); text-decoration-color: var(--l-ink); }
+.notification-item__actions span { color: var(--l-ink-3); }
+.toast { min-height: 0; padding: var(--s-3) var(--s-2) var(--s-3) var(--s-3); color: var(--l-ink); border: 1px solid var(--l-hair); border-radius: var(--r-3); box-shadow: var(--shadow-pop); }
+.toast--success, .toast--error { border-left-color: var(--l-hair); }
+.toast--success > svg { color: var(--ok-mark-l); }
+.toast--info > svg { color: var(--l-ink-2); }
+@media (max-width: 860px) {
+  :root { --app-header-height: 52px; }
+  .app-brand strong { font-size: var(--t-4); }
+  .app-brand svg { width: var(--s-5); height: var(--s-5); }
+  .mobile-nav { background: var(--l-surface); border-top: 1px solid var(--l-hair); }
+  .mobile-nav a { min-height: calc(var(--h-touch) + var(--s-1)); gap: 2px; color: var(--l-ink-3); font-size: var(--t-1); }
+  .mobile-nav a.router-link-exact-active { color: var(--l-ink); font-weight: var(--w-medium); }
+  .mobile-nav a.router-link-exact-active::after { display: none; }
+  .notification-popover { top: calc(var(--app-header-height) + var(--s-2)); }
+}
+/* 通知面板里的刷新和别处的图标按钮一样：没有外框，悬停才出灰底 / The panel's refresh button matches every other icon button: no frame, a grey fill on hover only */
+.notification-popover .icon-button { width: var(--h-md); min-width: var(--h-md); height: var(--h-md); min-height: var(--h-md); color: var(--l-ink-2); background: transparent; border: 0; border-radius: var(--r-2); box-shadow: none; }
+.notification-popover .icon-button:hover:not(:disabled) { color: var(--l-ink); background: var(--l-sunk); }
+
+/* 顶部导航选中是一块灰底、字加粗，不用下划线：下划线留给页面里的页签，两种选中不再长得一样
+   The active top-nav item is a grey pill with bolder text and no underline; the underline is left to the page's own tabs, so the two selections no longer look alike */
+.desktop-nav { align-items: center; gap: var(--s-1); }
+.desktop-nav a { min-width: 0; height: var(--h-sm); padding: 0 var(--s-3); border-radius: var(--r-2); }
+.desktop-nav a:hover { background: var(--l-canvas); }
+.desktop-nav a.router-link-exact-active { background: var(--l-sunk); font-weight: var(--w-bold); }
+.desktop-nav a.router-link-exact-active::after { display: none; }
+/* 头部的两个菜单离顶栏一样远；铃铛按下时角标的白圈换成按钮底色 / Both header menus sit the same distance below the bar; when the bell is pressed the badge ring takes the button's fill */
+@media (min-width: 861px) { .account-popover { top: calc(100% + var(--s-2)); } }
+.header-button:hover .notification-badge, .header-button[aria-expanded="true"] .notification-badge { border-color: var(--l-sunk); }
+/* 通知里「查看」是去别处，带下划线；「标为已读」是当场执行的命令，不带 / 查看 goes elsewhere and is underlined; 标为已读 acts in place and is not */
+.notification-item__actions button { text-decoration: none; color: var(--l-ink-2); }
+.notification-item__actions button:hover { color: var(--l-ink); text-decoration: none; }
+/* 审计：条目少时卡片跟着内容高，不再撑满一屏空白；动作列放宽；中文说明用正文字体，只有机器值用等宽
+   Audit: with few entries the card follows its content instead of filling a screen of white; the action column is wider; Chinese detail uses the body face, machine values stay mono */
+.audit-line p { font-family: var(--f-body); }
+
+/* 宽屏上内容最宽 1200，居中；顶栏的品牌和右侧按钮与内容左右对齐，整页是一个版心
+   On wide screens content is at most 1200 wide and centred; the header's brand and actions align with its edges, so the page has one measure */
+:root { --content-max: 1200px; --page-gutter: 32px; }
+@media (min-width: 861px) {
+  .app-header { padding-inline: max(var(--page-gutter), calc((100% - var(--content-max)) / 2)); }
+  .workspace__main { max-width: calc(var(--content-max) + 2 * var(--page-gutter)); padding: var(--s-6) var(--page-gutter) var(--s-7); }
+}
+
+/* ---------- v2 第一轮审查：外壳 / review round 1: the shell ---------- */
+/* 两个头部菜单都从顶栏下沿往下 8 处开始，不贴着细线 / Both header menus open 8px below the bar's bottom edge, never flush on the hairline */
+@media (min-width: 861px) {
+  .notification-popover, .account-popover { top: calc(100% + (var(--app-header-height) - var(--h-md)) / 2 + var(--s-2)); }
+}
+/* 头像：实心圆、不描边；悬停和打开时外面一圈灰环，不再在圆外面套一块方形灰底
+   The avatar is a filled circle with no border; hover and open draw a grey ring around it instead of a grey square behind it */
+.account-button { border-radius: var(--r-full); }
+.account-button:hover, .account-button[aria-expanded="true"] { background: transparent; }
+.account-button > span { width: var(--h-sm); height: var(--h-sm); color: var(--l-ink-2); background: var(--l-sunk); border: 0; transition: box-shadow var(--m-quick) var(--ease-out); }
+.account-button:hover > span, .account-button[aria-expanded="true"] > span { box-shadow: 0 0 0 3px var(--l-hair); }
+/* 通知：一条三行，动作在标题行右端；图标位 30 圆角方块，和系统页的任务行同一个形状
+   A notice is three lines with its actions at the end of the title line; the icon slot is the task rows' 30px rounded square */
+.notification-item { grid-template-columns: var(--h-sm) minmax(0, 1fr); gap: var(--s-3); }
+.notification-item__icon, .notification-item__icon--panel { width: var(--h-sm); height: var(--h-sm); }
+.notification-item__title { min-height: var(--s-5); }
+.notification-item__actions { min-height: 0; flex: 0 0 auto; gap: var(--s-1); margin: 0 0 0 auto; }
+.notification-item__actions a { font-size: var(--t-2); }
+.notification-item__actions .notification-item__read { color: var(--l-ink-3); }
+.notification-item__actions .notification-item__read:hover { color: var(--l-ink); background: var(--l-sunk); }
+.notification-item__body p { margin-top: 0; font-size: var(--t-2); }
+.notification-item__body small { margin-top: var(--s-1); }
+@media (max-width: 860px) {
+  /* 手机上通知面板和页面同一条边距 / On phones the notification panel keeps the page gutter */
+  .notification-popover { right: var(--s-4); left: var(--s-4); }
+  /* 底栏图标放大到 22，字 11 / Tab bar glyphs grow to 22 */
+  .mobile-nav a { gap: 3px; }
+}
+
+/* ---------- v2 第一轮审查：日志 / review round 1: logs ---------- */
+/* 两个页签共用一个框：卡片撑到视口底部，滚动只发生在列表里，换页签框不变高
+   Both tabs share one frame: the card reaches the bottom of the viewport, only the list scrolls, and switching tabs keeps its height */
+.logs-page { --logs-min: calc(var(--s-8) * 8 + var(--s-2)); display: flex; flex-direction: column; height: calc(100dvh - var(--app-header-height) - var(--s-6) - var(--s-7)); min-height: var(--logs-min); }
+.logs-page > .ui-tabs { margin-bottom: 0; }
+.log-console { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.log-console > .log-stream { flex: 1 1 auto; height: auto; min-height: 0; }
+/* 工具行和表格卡同一个内边距 16；图标按钮靠右 / The toolbar takes the table cards' 16 inset; icon buttons sit at the right end */
+.log-toolbar { padding: var(--s-3) var(--s-4); }
+.log-toolbar__end { margin-left: auto; }
+.log-line { padding: 5px var(--s-4) 5px calc(var(--s-4) - 3px); }
+@media (min-width: 641px) {
+  .audit-head, .audit-line { grid-template-columns: 128px 88px minmax(12rem, 1fr) minmax(0, 2fr); column-gap: var(--s-5); }
+  .audit-line { min-height: calc(var(--h-md) + var(--s-1)); align-content: center; padding-block: var(--s-2); border-bottom: 1px solid var(--l-hair); }
+  .audit-line p { color: var(--l-ink-2); font-size: var(--t-2); }
+}
+@media (max-width: 860px) {
+  .workspace__main { padding-top: var(--s-4); }
+  .logs-page { --logs-min: calc(var(--s-8) * 6 + var(--s-7) - var(--s-3)); height: calc(100dvh - var(--app-header-height) - var(--mobile-nav-height) - var(--s-4) - var(--s-5)); min-height: var(--logs-min); }
+}
+@media (max-width: 640px) {
+  .log-toolbar { flex-wrap: nowrap; padding: var(--s-3) var(--s-4); }
+  .log-toolbar > .ui-seg.log-category-seg, .log-toolbar > .ui-seg.log-category-seg:has(> :nth-child(6)) { display: none; }
+  /* 两个页签的工具行同一种排法：第一行搜索加图标按钮，第二行筛选占满 / Both tabs' toolbars share one layout: search and icon buttons first, the filter filling the second row */
+  .log-toolbar:has(.log-category-select) { flex-wrap: wrap; }
+  .log-toolbar:has(.log-category-select) .log-search { flex: 1 1 0; }
+  /* 运行日志的级别分段在手机上留在第二行，一行四个刚好 / The runtime level segments keep their own second row on a phone; four fit */
+  .log-toolbar:not(:has(.log-category-select)) { flex-wrap: wrap; }
+  .log-line { padding-inline: var(--s-4) calc(var(--s-4) - 3px); }
+  /* 审计一条两行：动作在左、时间在右；第二行「操作人 · 详情」 / An audit entry is two lines: action left, time right; then 「actor · detail」 */
+  .audit-line { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "code code time" "actor detail detail"; gap: var(--s-1) 0; padding: var(--s-3) var(--s-4) var(--s-3) calc(var(--s-4) - 3px); border-bottom: 1px solid var(--l-hair); }
+  .audit-line time { grid-area: time; padding-left: var(--s-3); font-size: var(--t-1); }
+  .audit-line code { grid-area: code; overflow: hidden; color: var(--l-ink); font-size: var(--t-2); font-weight: var(--w-medium); text-overflow: ellipsis; white-space: nowrap; }
+  .audit-line strong { grid-area: actor; color: var(--l-ink-3); font-family: var(--f-body); font-size: var(--t-2); font-weight: var(--w-normal); text-align: left; }
+  .audit-line strong::after { content: "·"; display: inline-block; width: calc(var(--s-2) * 2); color: var(--l-edge-hover); text-align: center; }
+  .audit-line p { grid-area: detail; color: var(--l-ink-2); font-size: var(--t-2); }
+}
+
+/* ---------- v2 第一轮审查：系统 / review round 1: system ---------- */
+/* 两行更新的按钮同宽，左边的链接对齐成一列 / The two update buttons share a width, so the links to their left line up */
+.update-row .ui-task__actions .ui-btn { min-width: 5.5rem; }
+/* 卡片右上角只有一个标签时，它对齐标题那一行，不对齐标题加说明的中线 / A lone tag at a card's top right aligns with the title line, not the middle of title plus description */
+.ui-card__head > .ui-card__actions:has(> .ui-tag:only-child) { align-self: start; margin-top: 1px; }
+.install-hashes > div { align-items: baseline; }
+@media (max-width: 640px) {
+  /* 两条更新同一种排法：第二行「从 → 到」不折行，第三行日期 / Both updates share one layout: line two 「from → to」 on one line, line three the date */
+  .update-row__from-to { flex-basis: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .update-row__from-to .ui-mono { font-size: var(--t-1); }
+}
+
+/* ---------- v2 第一轮审查：登录 / review round 1: sign-in ---------- */
+/* 背景不动；卡片换成和面板同一套零件：细边圆角 10、输入框 36、聚焦墨色、主按钮墨色居中
+   The ground stays; the card takes the panel's parts: hairline edge, radius 10, 36px fields, ink focus, an ink primary with a centred label */
+.auth-panel { width: min(100%, 400px); padding: var(--s-6); border: 1px solid var(--l-hair); border-radius: var(--r-3); box-shadow: var(--shadow-pop); }
+.auth-brand { gap: var(--s-2); margin-bottom: var(--s-6); }
+.auth-brand span { width: var(--h-sm); height: var(--h-sm); color: var(--d-ink); background: var(--l-ink); border-radius: var(--r-2); }
+.auth-brand span svg { width: var(--size-icon); height: var(--size-icon); }
+.auth-brand strong { font-size: var(--t-4); font-weight: var(--w-bold); }
+.auth-heading { margin-bottom: var(--s-5); }
+.auth-heading h1 { margin-bottom: var(--s-1); color: var(--l-ink); font-size: var(--t-5); font-weight: var(--w-bold); letter-spacing: -.01em; }
+.auth-heading > p:last-child { color: var(--l-ink-3); font-size: var(--t-2); }
+.auth-panel form { gap: var(--s-4); }
+.auth-panel label { gap: var(--s-2); color: var(--l-ink-2); font-size: var(--t-2); font-weight: var(--w-medium); }
+.auth-panel input { height: var(--h-md); padding: 0 var(--s-3); color: var(--l-ink); border-color: var(--l-line-strong); border-radius: var(--r-2); font-size: var(--t-3); transition: border-color var(--m-quick) var(--ease-out), box-shadow var(--m-quick) var(--ease-out); }
+@media (hover: hover) { .auth-panel input:hover:not(:focus) { border-color: var(--l-edge-hover); } }
+.auth-panel input:focus { border-color: var(--l-ink-3); box-shadow: var(--ring-field); }
+.auth-submit { width: 100%; min-height: var(--h-md); justify-content: center; margin-top: var(--s-1); }
+.auth-security { gap: var(--s-2); margin-top: var(--s-4); padding-top: var(--s-4); border-top: 1px solid var(--l-hair); color: var(--l-ink-3); font-size: var(--t-1); }
+.auth-security svg { margin-top: 2px; color: var(--l-ink-3); }
+@media (max-width: 640px) {
+  .auth-panel { padding: var(--s-5) var(--s-4); }
+  .auth-brand { margin-bottom: var(--s-5); }
+  .auth-heading h1 { font-size: var(--t-5); }
+}
+.password-field button { width: var(--h-md); color: var(--l-ink-3); border-radius: var(--r-2); }
+.password-field button svg { width: var(--size-icon); height: var(--size-icon); }
+
+/* 审计条目少时卡片跟着内容高；运行日志仍然占满到视口底部 / With few audit entries the card follows its content; the runtime log still reaches the viewport bottom */
+.log-console:has(.audit-line) { flex: 0 1 auto; }
+.log-console:has(.audit-line) > .log-stream { flex: 0 1 auto; }
+/* 日志里的值用中等字重，不再整屏粗黑 / Log values use medium weight instead of a screen of bold black */
+.log-line p em { font-weight: var(--w-medium); }
+@media (max-width: 640px) {
+  /* 手机运行日志：条目之间一条细线，条内时间和消息贴近；列表底部留白并淡出 / Phone runtime log: a hairline between entries, time close to its message; the list ends with room and a fade */
+  .log-line:not(.audit-line) { row-gap: 2px; padding-block: var(--s-2); border-bottom: 1px solid var(--l-hair); }
+  .log-stream:not(:has(.audit-line)) { padding-bottom: var(--s-3); mask-image: linear-gradient(black calc(100% - var(--s-4)), transparent); }
+  /* 审计：动作占满第一行，第二行「操作人 · 详情」，时间在第二行右端 / Audit: the action takes the first line; line two holds 「actor · detail」 with the time at its right end */
+  .audit-line { grid-template-areas: "code code code" "actor detail time"; }
+  .audit-line time { align-self: start; }
+}
+
+/* ---------- v2 第二轮审查：外壳 / review round 2: the shell ---------- */
+.popover-scrim { display: none; }
+@media (max-width: 860px) { .popover-scrim { position: fixed; inset: 0; display: block; background: var(--scrim); } }
+.notification-item__actions .notification-item__read { color: var(--l-ink-2); }
+.notification-popover__header { padding-right: var(--s-3); }
+.notification-item { padding-right: var(--s-3); }
+/* 账户菜单：分隔线上下留白一样，退出登录是一行 36 的菜单项 / Account menu: equal room above and below the divider; 退出登录 is one 36px item */
+.account-popover { padding: var(--s-3) var(--s-2) var(--s-2); }
+.account-popover > strong, .account-popover > small { padding-inline: var(--s-2); }
+.account-popover > button { position: relative; min-height: var(--h-md); margin-top: var(--s-4); padding: 0 var(--s-2); border-top: 0; border-radius: var(--r-2); }
+.account-popover > button::before { position: absolute; top: calc(var(--s-2) * -1); right: calc(var(--s-2) * -1); left: calc(var(--s-2) * -1); height: calc(var(--s-1) / 4); background: var(--l-hair); content: ''; }
+.account-popover > button:hover:not(:disabled) { background: var(--l-sunk); }
+/* 登录卡片的品牌和顶栏一样：不套黑底方块 / The sign-in brand matches the header: no black tile behind the mark */
+.auth-brand span { width: auto; height: auto; color: var(--l-ink); background: none; border-radius: 0; }
+.auth-brand span svg { width: var(--s-5); height: var(--s-5); }
+
+/* ---------- v2 第三轮审查 / review round 3 ---------- */
+/* 登录卡片在背景曲线之上，曲线不再穿过聚焦的输入框 / The sign-in card sits above the background curves, which no longer cross a focused field */
+.auth-panel { z-index: 1; }
+/* 通知里「标为已读」是 30 的方块，右边和页头的「全部已读」对齐 / 标为已读 is a 30px box whose right edge matches the header's 全部已读 */
+.notification-item__actions .notification-item__read { width: var(--h-sm); height: var(--h-sm); margin-right: calc(var(--s-1) * -1); }
+.notification-item__actions { gap: var(--s-2); }
+
+/* ---------- v2 第三轮桌面审查 / desktop review round 3 ---------- */
+/* 审计：最后一行不画底线，卡片底边就是结尾 / Audit: the last row drops its rule; the card's edge ends it */
+.log-console:has(.audit-line) > .log-stream { padding-bottom: 0; }
+.audit-line:last-child { border-bottom: 0; }
+/* 运行日志：行距取整 28；底部淡出；工具行白底 / Runtime log: an integer 28 pitch; a fade at the bottom; a white toolbar */
+.log-line:not(.audit-line) { line-height: calc(var(--s-4) + 2px); }
+.log-stream:not(:has(.audit-line)) { mask-image: linear-gradient(black calc(100% - var(--s-5)), transparent); }
+.log-toolbar { background: var(--l-surface); }
+/* 系统：卡片标题到第一行和行与行之间一样近 / System: the first row sits as close to the card title as rows sit to each other */
+.update-panel .ui-card__body > div > .ui-task:first-child { padding-top: 0; }
+/* 大号版本号用标题字体，等宽字的空格不再像两个空格 / The large version uses the display face, so the mono space no longer reads as a double space */
+.install-version { font-family: var(--f-display); font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+/* 铃铛角标挪到图形外侧，不盖住铃铛 / The bell's badge moves outside the glyph instead of covering it */
+.notification-badge { top: 3px; right: 1px; transform: translate(35%, -35%); }
+/* 确认框：宽 464；正文按行平衡，不留一个词的末行 / Confirm dialog: 464 wide; the body balances its lines instead of leaving a lone word */
+.confirm__dialog { width: min(464px, 100%); }
+.notification-badge { min-width: var(--size-badge); height: var(--size-badge); padding: 0 3px; border-radius: var(--r-full); font-size: var(--t-0); }
+
+/* ---------- v2 第四轮手机审查 / phone review round 4 ---------- */
+/* 压暗层只让打开的那个菜单和它的按钮浮在上面 / The scrim lets only the open menu and its trigger sit above it */
+.popover-scrim { z-index: 1; }
+.notification-center { z-index: auto; }
+.notification-center:has([aria-expanded="true"]), .account-center:has([aria-expanded="true"]) { z-index: 2; }
+/* 日志行的色条用内阴影画，不占宽度，文字和工具行同一条左边 / The log level bar is an inset shadow that takes no width, so text shares the toolbar's left edge */
+.log-line { border-left: 0; padding-left: var(--s-4); }
+.log-line--warning { box-shadow: inset 3px 0 0 var(--warn-l); }
+.log-line--error { box-shadow: inset 3px 0 0 var(--err-l); }
+@media (max-width: 640px) {
+  .log-line, .log-line:not(.audit-line) { padding-inline: var(--s-4); }
+  /* 审计：第一行动作和时间，第二行「操作人 · 详情」占满整行 / Audit: action and time on line one; 「actor · detail」 fills line two */
+  .audit-line { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "code code time" "actor detail detail"; padding-inline: var(--s-4); }
+  .audit-line time { align-self: baseline; }
+}
+
+/* ---------- v2 第四轮桌面审查 / desktop review round 4 ---------- */
+@media (min-width: 641px) {
+  /* 日志卡片和其他卡片同一个内边距 24 / The log card shares every other card's 24 inset */
+  .log-toolbar { padding: var(--s-3) var(--s-5); }
+  .log-line, .log-line:not(.audit-line) { padding-inline: var(--s-5); }
+}
+/* 上游行高固定、内容居中，等宽地址不再把某一行撑低 / Upstream rows have a fixed height with centred content, so a mono address cannot push one row lower */
+.overview-address { line-height: var(--lh-base); }
+/* 登录的字段名和其他表单一样 14/500 / Sign-in field labels match other forms at 14/500 */
+.auth-panel label { font-size: var(--t-3); }
+/* 铃铛角标收在按钮框里，2px 顶栏底色的环 / The bell badge stays inside the button box with a 2px ring in the header colour */
+.notification-badge { top: 4px; right: 3px; transform: none; border-width: 2px; font-weight: var(--w-bold); }
+.confirm__dialog { width: min(480px, 100%); }
+
+/* ---------- v2 第五轮手机审查 / phone review round 5 ---------- */
+@media (max-width: 860px) {
+  /* 通知面板右边：动作和页头都落在内容右边 / Notification panel: actions and header both end on the content edge */
+  .notification-item, .notification-popover__header { padding-right: var(--s-4); }
+}
+/* 上游地址的行高固定 20：等宽字的备用字形不会把某一行撑高 / Upstream addresses use a fixed 20 line height, so mono fallback glyphs cannot heighten one row */
+.overview-address, .overview-address .ui-mono, .overview-address .ui-tag { line-height: calc(var(--s-5) - var(--s-1)); }
+
+/* ---------- 打磨轮 / polish pass ---------- */
+/* 日志：消息墨色最重，键最淡，值次一级、正常字重；来源列按内容宽 / Logs: the message is darkest, keys the lightest, values one step down at normal weight; the source column fits its content */
+.log-line p { color: var(--l-ink); }
+.log-line p .log-key { color: var(--l-ink-3); font-style: normal; }
+.log-line p em { color: var(--l-ink-2); font-weight: var(--w-normal); }
+@media (min-width: 641px) {
+  .log-line:not(.audit-line) { grid-template-columns: 90px 4.5rem minmax(0, 1fr); column-gap: var(--s-4); }
+  /* 审计：表头 36、行 44；动作列放得下最长的动作名 / Audit: a 36 header and 44 rows; the action column fits the longest action name */
+  .audit-head, .audit-line { grid-template-columns: 128px 88px 14rem minmax(0, 1fr); }
+  .audit-line { min-height: var(--h-touch); }
+  /* 通知面板：左右各 16，右边和账户菜单一样对齐到版心右边 / Notification panel: 16 each side, its right edge on the page measure like the account menu */
+  .notification-popover { right: calc((var(--h-md) + var(--s-2)) * -1); }
+  .notification-item, .notification-popover__header { padding-inline: var(--s-4); }
+}
+/* 通知页头两个动作同一种：30 高的带边小按钮 / The notification header's two actions match: framed 30px compact buttons */
+.notification-mark-all { height: var(--h-sm); padding: 0 var(--s-2); color: var(--l-ink); background: var(--l-surface); border: 1px solid var(--l-line-strong); border-radius: var(--r-2); box-shadow: var(--shadow-xs); font-size: var(--t-2); }
+.notification-popover__header > div:last-child { display: flex; align-items: center; gap: var(--s-2); }
+/* 登录：字段之间 24 / Sign-in: 24 between fields */
+.auth-panel form { gap: var(--s-5); }
+.confirm__dialog { width: min(500px, 100%); }
+/* 分隔点后面紧跟括号时，括号用半宽字形，点两边一样宽 / Brackets next to a separator use half-width forms so the dot has equal room on both sides */
+.ui-dots { font-feature-settings: "halt"; }
+/* 禁用的次要按钮边框不变淡，只是整体变浅 / A disabled secondary button keeps its edge colour; the whole button fades */
+.ui-btn--secondary:disabled { border-color: var(--l-line-strong); }
+@media (max-width: 640px) {
+  .system-page, .diag-page { gap: var(--s-4); }
+}
+@media (min-width: 641px) {
+  /* 上游表每行 48 高，内容居中 / Upstream rows are 48 tall with centred content */
+}
+/* 小数行高改成整数 / fractional line heights become whole pixels */
+.ui-task__title { line-height: 20px; }
+.ui-task__meta { line-height: 18px; }
+@media (max-width: 640px) {
+  .overview-upstream-line, .overview-address { line-height: 20px; }
+  .audit-line p, .audit-line code, .audit-line strong, .audit-line time { line-height: 20px; }
+}
+@media (max-width: 640px) { .overview-upstream-name, .overview-upstream-id { line-height: 20px; } }
+@media (max-width: 640px) { .overview-upstream-id * { line-height: 20px; } }
+
+/* ---------- 第六轮 / round 6 ---------- */
+/* 顶栏：铃铛和头像的按下底色和导航块一样高 30；头像圆贴到版心右边 / Header: the bell and avatar pressed fills are 30 tall like the nav pills; the avatar circle reaches the page measure's right edge */
+@media (min-width: 861px) {
+  .header-button { width: var(--h-sm); height: var(--h-sm); }
+  .account-button { width: var(--h-sm); }
+  .app-header__actions { gap: var(--s-2); }
+  .notification-popover { right: calc((var(--h-sm) + var(--s-2)) * -1); }
+}
+/* 铃铛角标在图形右上角外面，带一圈顶栏底色 / The bell badge sits outside the glyph's top-right corner with a ring in the header colour */
+.notification-badge { top: -3px; right: -5px; min-width: var(--size-badge); height: var(--size-badge); border: 2px solid var(--l-surface); font-variant-numeric: tabular-nums; }
+@media (max-width: 860px) { .notification-badge { top: 2px; right: 0; } }
+/* 日志：工具行放在卡片外面，和配置页的规则、域名映射一样；卡片里只有列表 / Logs: the toolbar sits outside the card as on the config tabs; the card holds only the list */
+.log-console { overflow: visible; background: none; border: 0; border-radius: 0; gap: 0; }
+.log-console > .log-toolbar { padding: 0 0 var(--s-4); background: none; border-bottom: 0; }
+.log-console > .log-notice { margin-bottom: var(--s-3); border: 1px solid var(--l-hair); border-radius: var(--r-2); }
+.log-console > .log-stream { overflow: auto; background: var(--l-surface); border: 1px solid var(--l-hair); border-radius: var(--r-3); }
+/* 两个页签的列表结尾一样：底部 16 留白，滚动时淡出 / Both tabs' lists end alike: 16 of room at the bottom that fades when scrolling */
+/* 列表不做淡出：卡片的底边和圆角总是完整的 / No fade on the list: the card always keeps its bottom edge and corners */
+.log-stream, .log-stream:not(:has(.audit-line)) { padding-bottom: var(--s-4); mask-image: none; }
+.log-console:has(.audit-line) > .log-stream { padding-bottom: var(--s-4); }
+@media (max-width: 640px) {
+  .log-toolbar, .log-toolbar:has(.log-category-select) { padding: 0 0 var(--s-3); }
+  .audit-line strong::after { color: var(--l-ink-3); }
+  /* 账户菜单和通知面板离顶栏一样远 / The account menu sits as far below the header as the notification panel */
+  .account-popover { position: fixed; top: calc(var(--app-header-height) + var(--s-2)); right: var(--s-4); }
+}
+/* 系统：卡片最后一行下面不再叠一层内边距 / System: no extra padding stacked under a card's last row */
+.update-panel .ui-card__body > div > .ui-task:last-child { padding-bottom: 0; border-bottom: 0; }
+/* GitHub 凭据的说明是一段话 / The GitHub credential note is one paragraph */
+.credential-hint { display: block; }
+.credential-hint > span { display: inline; }
+
+/* ---------- 第七轮 / round 7 ---------- */
+/* 头像按下时的环画在圆里面，不越出版心右边 / The avatar's pressed ring is drawn inside the circle, never past the page measure */
+.account-button:hover > span, .account-button[aria-expanded="true"] > span { box-shadow: inset 0 0 0 1.5px var(--l-edge-hover); }
+/* 页面里卡片一层层叠起来都隔 16；页头下面多 8，和页签页的节奏一样 / Stacked cards on a page are 16 apart; 8 more under the page header, matching pages with tabs */
+.system-page, .diag-page { gap: var(--s-4); }
+.system-page > .ui-ph, .diag-page > .ui-ph { margin-bottom: var(--s-2); }
+/* 工具行的搜索框各页一样宽 / The toolbar search box is the same width on every page */
+.log-search { flex: 0 1 22rem; max-width: 22rem; }
+/* 日志列表顶上留 4，警告行的色条不会拐进圆角 / 4 at the top of the log list, so a warning row's bar never bends into the corner */
+.log-console > .log-stream { padding-top: var(--s-1); }
+@media (max-width: 640px) { .log-search { max-width: none; } }
+
+/* ---------- 第二阶段 / phase 2 ---------- */
+/* 头像按下：和铃铛一样是底色变深，不再画环 / A pressed avatar darkens its fill like the bell, no ring */
+.account-button:hover > span, .account-button[aria-expanded="true"] > span { box-shadow: none; background: var(--l-line-strong); }
+@media (max-width: 860px) { .account-button { width: var(--h-sm); } }
+
+/* ---------- 第八轮 / round 8 ---------- */
+/* 日志列表第一行贴着卡片上边，警告行的底色和色条跟着圆角裁 / The first log row meets the card's top edge; a warning row's tint and bar follow the corner */
+.log-console > .log-stream { padding-top: 0; }
+/* 宽屏审计卡片收在最后一行下边，最后一行和别的行一样高 / On wide screens the audit card ends at its last row, which is as tall as the others */
+@media (min-width: 641px) { .log-console:has(.audit-line) > .log-stream { padding-bottom: 0; } }
+/* 单行表格行都是 44：上游表和域名映射、审计一样 / Single-line table rows are all 44: the upstream table matches mapping and audit */
+@media (min-width: 641px) { .overview-ledger .overview-upstream { height: var(--h-touch); } }
+/* GitHub 凭据的说明和上面的输入框一样宽 / The GitHub credential note runs as wide as the field above it */
+.credential-hint { max-width: none; }
+/* 更新列表：细线上下的字一样远（上一项最后是小字，墨迹离行框底边更远，所以少留 3）
+   The update list: text sits equally far above and below the hairline (the item above ends in small text whose ink sits further from its line box, so 3 less) */
+@media (min-width: 641px) { .update-panel .ui-card__body > div > .ui-task:not(:last-child) { padding-bottom: calc(var(--s-3) - 3px); } }
+/* 手机：卡片底边离最后一个按钮 16，和卡片四边一样 / Phones: the card's bottom sits 16 below the last button, like its other insets */
+@media (max-width: 640px) { .update-panel > .ui-card__body { padding-bottom: var(--s-4); } }
+/* 铃铛角标：实心圆 16，外面一圈 2 的底色环，数字 11 / The bell badge: a 16 disc with a 2 ring of the header colour, numerals at 11 */
+.notification-badge { top: -5px; right: -4px; min-width: var(--size-badge); height: var(--size-badge); padding: 0 4px; border-radius: var(--r-full); font-size: var(--t-0); }
+@media (max-width: 860px) { .notification-badge { top: 0; right: -3px; } }
+/* 行首的全角开括号「（」去掉自带的半格空白，左边和别的行对齐 / A full-width opening bracket at a line start drops its built-in half blank, so the line's left edge matches the others */
+body { text-spacing-trim: trim-start; }
+/* 通知里的 Run 号和版本号用正文字体、等宽数字，和系统页一样 / Run numbers and versions in notifications use the body face with tabular figures, as on the system page */
+.notification-item__body small { font-family: var(--f-body); font-variant-numeric: tabular-nums; }
+/* 更新行的说明和别处的说明行一样用「·」隔开（行首的点被裁掉，同 ui-dots） / Update-row facts are separated by 「·」 like every other meta line (a dot at a line start is clipped, as in ui-dots) */
+.update-row .ui-task__meta { --dots-gap: calc(8px + .4em); display: flex; flex-wrap: wrap; align-items: baseline; column-gap: var(--dots-gap); clip-path: inset(-.5em -1em -.5em calc(var(--s-1) * -1)); }
+.update-row .ui-task__meta > :not(.ui-task__error)::before { content: "·"; display: inline-block; width: var(--dots-gap); margin-inline-start: calc(var(--dots-gap) * -1); color: var(--l-ink-3); text-align: center; }
+.update-row .ui-task__meta > :first-child::before { content: none; }
+.update-row .ui-task__meta > .ui-task__error { flex-basis: 100%; }
+/* 审计：时间和操作人是普通的读数，用正文字体、等宽数字，和详情同一字号；只有操作键是等宽 / Audit: time and operator are plain readings in the body face with tabular figures at the details' size; only the action key is mono */
+.audit-line time, .audit-line strong { font-family: var(--f-body); font-size: var(--t-2); font-variant-numeric: tabular-nums; }
+/* 第一行的左上角跟着卡片的圆角：警告行的底色和色条顺着角弯过去，不留一截被切的色条 / The first row's top-left corner follows the card's radius, so a warning row's tint and bar bend with it instead of leaving a clipped stub */
+.log-console > .log-stream > .log-line:first-child { border-top-left-radius: calc(var(--r-3) - 1px); border-top-right-radius: calc(var(--r-3) - 1px); }
+/* 第一行的色条是一根直条，从圆角下面才开始，不顺着角弯成一截细钩；底色照样跟着圆角 / The first row's stripe is a straight bar that starts below the corner radius instead of hooking around it; the tint still follows the corner */
+.log-console > .log-stream > .log-line--warning:first-child { box-shadow: none; background: linear-gradient(transparent var(--r-3), var(--warn-l) var(--r-3)) left top / 3px 100% no-repeat, var(--warn-tint-l); }
+.log-console > .log-stream > .log-line--error:first-child { box-shadow: none; background: linear-gradient(transparent var(--r-3), var(--err-l) var(--r-3)) left top / 3px 100% no-repeat, var(--err-tint-l); }
+/* 通知条目三行一个节奏：Run 号那一行不再多空 4 / A notification's three lines keep one rhythm: no extra 4 above the Run line */
+.notification-item__body small { margin-top: 0; }
+/* 铃铛角标收小：实心 14 加 2 的底色环，圆心在铃铛右上角，盖住的铃身少一些 / A smaller bell badge: a 14 disc in a 2 ring of the header colour, centred on the bell's top-right corner so it covers less of the bell */
+.notification-badge { top: -3px; right: -3px; min-width: var(--size-badge); height: var(--size-badge); padding: 0 3px; border-radius: var(--r-full); font-size: var(--t-0); }
+@media (max-width: 860px) { .notification-badge { top: 2px; right: 0; } }
+
+/* ---------- 第十一轮 / round 11 ---------- */
+/* 警告和错误行的色条每一行都一样：离行的上下各 4、两头圆，永远碰不到卡片的圆角，第一行和中间的行同一个样子
+   Warning and error bars are the same on every row: 4 in from the row's top and bottom with rounded ends, so they never meet the card's corner and the first row matches the rest */
+.log-line--warning, .log-line--error { position: relative; box-shadow: none; }
+.log-line--warning::before, .log-line--error::before { position: absolute; top: var(--s-1); bottom: var(--s-1); left: 0; width: 3px; border-radius: 0 2px 2px 0; content: ''; }
+.log-line--warning::before { background: var(--warn-l); }
+.log-line--error::before { background: var(--err-l); }
+.log-console > .log-stream > .log-line--warning:first-child { background: var(--warn-tint-l); }
+.log-console > .log-stream > .log-line--error:first-child { background: var(--err-tint-l); }
+/* 手机上游行：协议标签靠右（箭头左边），和上游组卡片一样先地址、标签在行尾 / Phone upstream rows: the protocol tag sits at the right before the chevron, address first and tag at the row end as in the group cards */
+@media (max-width: 640px) {
+  .overview-ledger .overview-address { display: flex; flex: 1 1 auto; min-width: 0; flex-wrap: wrap; align-items: baseline; }
+  .overview-ledger .overview-address-tail { display: flex; flex: 1 1 auto; align-items: baseline; gap: var(--s-2); }
+  .overview-ledger .overview-address-tail > .ui-tag { margin-left: auto; }
+}
+/* 手机日志：工具行到列表卡片 16，和其他列表页一样 / Phone logs: 16 from the toolbar to the list card, as on every other list page */
+@media (max-width: 640px) { .log-console > .log-toolbar, .log-toolbar:has(.log-category-select) { padding-bottom: var(--s-4); } }
+/* 停用的危险图标按钮和停用的普通按钮同一条边 / A disabled destructive icon button keeps the same edge as a disabled ordinary button */
+.ui-btn--danger.ui-btn--icon:disabled { border-color: var(--l-line-strong); }
+/* 没有标签页的页面：手机上页头到第一块内容 16，和别的页一样从副标题往下算 / Pages without tabs: on phones 16 from the header to the first block, measured from the subtitle like other pages */
+@media (max-width: 640px) { .system-page > .ui-ph, .diag-page > .ui-ph { margin-bottom: 0; } }
+
+/* ============================================================================
+   商业版（标杆 Surge）的壳：桌面左侧栏导航，内容区最宽 1280；手机仍是顶栏 + 底部页签。
+   侧栏：品牌、导航（图标 + 名字，选中是白块浮起、图标品牌色）、分组小标签、底部通知和账户。
+   The commercial shell (benchmark Surge): a left sidebar on desktop with the content at most 1280 wide; phones keep the top bar
+   and bottom tabs. Sidebar: brand, navigation (icon + name, the active one a raised white block with an accent icon), group
+   labels, notifications and account at the bottom.
+   ============================================================================ */
+:root { --side-w: 232px; }
+.app-shell { background: var(--l-canvas); }
+@media (min-width: 861px) {
+  .app-shell { display: grid; grid-template-columns: var(--side-w) minmax(0, 1fr); }
+  .app-header { position: sticky; top: 0; z-index: 40; height: 100dvh; min-height: 0; display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: var(--s-5) var(--s-3) var(--s-4); border-bottom: 0; border-right: 1px solid var(--l-hair); background: var(--l-canvas); }
+  .app-brand { min-height: 0; gap: 10px; margin-bottom: var(--s-4); padding: 0 var(--s-2); }
+  .app-brand strong { font-size: var(--t-4); font-weight: var(--w-heavy); letter-spacing: -.01em; }
+  .app-brand svg { box-sizing: border-box; width: var(--h-sm); height: var(--h-sm); padding: calc((var(--h-sm) - var(--size-icon)) / 2); border-radius: var(--r-2); color: var(--accent-ink); background: var(--accent); }
+  /* 导航项撑满侧栏宽度、靠左：老顶栏的 align-items: center 会把它们缩成居中的一小块 / Nav items fill the sidebar's width and sit left: the old top bar's align-items: center shrank them into centred chips */
+  .desktop-nav { display: flex; flex-direction: column; align-items: stretch; align-self: stretch; gap: 2px; }
+  .desktop-nav a, .desktop-nav .nav-label { width: auto; text-align: left; }
+  .desktop-nav a { min-width: 0; display: flex; align-items: center; justify-content: flex-start; gap: 10px; height: var(--h-md); padding: 0 var(--s-3); border-radius: var(--r-2); color: var(--l-ink-2); font-size: var(--t-3); font-weight: var(--w-medium); transition: background-color var(--m-quick) var(--ease-out), color var(--m-quick) var(--ease-out); }
+  .desktop-nav a svg { flex: 0 0 auto; color: var(--l-ink-3); }
+  .desktop-nav a:hover { color: var(--l-ink); background: var(--l-sunk); }
+  .desktop-nav a.router-link-exact-active, .desktop-nav a[aria-current="page"] { color: var(--l-ink); background: var(--l-surface); box-shadow: var(--shadow-raise); }
+  .desktop-nav a.router-link-exact-active svg, .desktop-nav a[aria-current="page"] svg { color: var(--accent); }
+  .desktop-nav a.router-link-exact-active::after { display: none; }
+  .desktop-nav .nav-label { padding: var(--s-4) var(--s-3) var(--s-1); color: var(--l-ink-3); font-size: var(--t-1); font-weight: var(--w-bold); letter-spacing: .06em; text-transform: uppercase; }
+  .desktop-nav a.nav-sub { height: var(--h-sm); padding-left: calc(var(--s-3) + var(--h-sm)); }
+  .app-header__actions { justify-self: auto; margin-top: auto; padding-top: var(--s-3); border-top: 1px solid var(--l-hair); }
+  .workspace { min-height: 100dvh; }
+  .workspace__main { max-width: calc(1280px + var(--s-6) * 2); margin: 0; padding: var(--s-6) var(--s-6) var(--s-7); scroll-margin-top: 0; }
+  /* 弹层从侧栏底部往右弹 / Popovers open to the right from the sidebar's foot */
+  .notification-popover, .account-popover { top: auto; right: auto; bottom: 0; left: calc(100% + var(--s-2)); }
+  .notification-popover { bottom: calc(var(--s-2) * -1); }
+}
+@media (max-width: 860px) {
+  .mobile-nav a.router-link-exact-active { color: var(--accent); }
+}
+/* 侧栏底部：左边版本（有更新时上面一行琥珀字），右边铃铛和账户；原型状态那颗胶囊独占上一行。手机上不显示版本
+   Sidebar foot: the version on the left (an amber update line above it when there is one), bell and account on the right; the prototype-state pill takes its own row above. Phones hide the version */
+@media (min-width: 861px) {
+  .app-header__actions { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: var(--s-2); }
+  .app-header__actions > .pstates { grid-column: 1 / -1; }
+  .app-version { min-width: 0; display: grid; gap: 2px; padding-left: var(--s-2); color: var(--l-ink-3); font-size: var(--t-1); line-height: var(--lh-base); }
+  .app-version > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .app-version__new { display: inline-flex; align-items: center; gap: var(--s-2); color: var(--warn-l); font-weight: var(--w-medium); }
+  .app-version__now { font-variant-numeric: tabular-nums; }
+}
+@media (max-width: 860px) { .app-version { display: none; } }
+/* 登录页的品牌：和侧栏一样的品牌色方块 / The auth page's brand mark: the same accent tile as the sidebar */
+.auth-brand span { width: var(--h-sm); height: var(--h-sm); display: grid; place-items: center; color: var(--accent-ink); background: var(--accent); border-radius: var(--r-2); }
+.auth-brand span svg { width: var(--size-icon); height: var(--size-icon); }
+/* ===== ② 之前的过渡：下面这些规则只有旧的概览 / 日志 / 诊断 / 系统页还在用，这四页重做（PR ②）时整块删掉
+   Transition until ②: the rules below are used only by the old overview / logs / diagnostics / system pages; PR ②, which redoes those four, deletes this whole block ===== */
+.log-empty { margin: 0; padding: var(--s-5); color: var(--l-ink-3); font-family: var(--f-body); font-size: var(--t-1); text-align: center; }

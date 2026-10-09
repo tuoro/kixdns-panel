@@ -8,7 +8,9 @@
    ============================================================ */
 
 /* ---------- 页头：标题就是导航名，下面一行事实，右边最多一个主操作 ---------- */
-.ui-ph { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-4); align-items: center; }
+/* 没有操作区的页头只有一列：否则空着的第二列仍占一个 16 的列距，标题和事实行在手机上少 16 / A header without actions is one column: otherwise the empty second column still costs a 16 column gap, and on a phone the title and facts lose 16 */
+.ui-ph { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-4); align-items: center; }
+.ui-ph--actions { grid-template-columns: minmax(0, 1fr) auto; }
 .ui-ph__title { margin: 0; color: var(--l-ink); font-family: var(--f-display); font-size: var(--t-5); font-weight: var(--w-bold); line-height: var(--lh-tight); }
 .ui-ph__meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-1) var(--s-2); margin-top: var(--s-2); color: var(--l-ink-2); font-size: var(--t-2); }
 .ui-ph__meta:empty { display: none; }
@@ -57,7 +59,7 @@ a.ui-btn { text-decoration: none; }
 .ui-btn:active:not(:disabled) { transform: scale(.98); }
 .ui-btn:disabled { cursor: not-allowed; opacity: .42; }
 .ui-btn--primary { color: var(--d-ink); background: var(--l-ink); }
-.ui-btn--secondary { color: var(--l-ink); background: var(--l-surface); border-color: var(--l-line-strong); }
+.ui-btn--secondary { color: var(--l-ink); background: var(--l-surface); border-color: var(--l-line-strong); box-shadow: var(--shadow-xs); }
 .ui-btn--text { padding-inline: var(--s-2); color: var(--l-ink-2); background: transparent; font-weight: var(--w-medium); }
 /* 展开类的文字按钮（批量粘贴、备注、ECS）：字后面一个 ⌄，展开时转过来、字变墨色，看得出它开着、再点一次收起。
    不画底色：这些按钮常往回收半格，让字落在上下的列线上，底色会压到列线外面（审计第二轮 M8、第六轮 M1）
@@ -72,11 +74,15 @@ a.ui-btn { text-decoration: none; }
 .ui-icon-btn { width: var(--h-md); height: var(--h-md); flex: 0 0 auto; display: inline-grid; place-items: center; padding: 0; border: 0; border-radius: var(--r-2); background: transparent; color: var(--l-ink-2); cursor: pointer; transition: background-color var(--m-quick) var(--ease-out), color var(--m-quick) var(--ease-out); }
 .ui-icon-btn:disabled { cursor: not-allowed; opacity: .42; }
 .ui-icon-btn--sm { width: var(--h-sm); height: var(--h-sm); }
-.ui-link { display: inline-flex; align-items: center; gap: var(--s-1); color: var(--ok-l); font-size: var(--t-2); text-decoration: none; white-space: nowrap; }
+/* 链接是墨色加一条浅下划线：绿色只表示「健康」，不再兼做「能点」 / A link is ink with a light underline: green means healthy only, never "clickable" */
+.ui-link { display: inline-flex; align-items: center; gap: var(--s-1); color: var(--l-ink); font-size: var(--t-2); text-decoration: underline; text-decoration-color: var(--l-line-strong); text-underline-offset: 3px; white-space: nowrap; }
 
 /* ---------- 输入框：和同一行的按钮一样高 ---------- */
-.ui-input { min-height: var(--h-md); display: flex; align-items: center; gap: var(--s-2); min-width: 0; padding: 0 var(--s-3); border: 1px solid var(--l-line-strong); border-radius: var(--r-2); background: var(--l-surface); color: var(--l-ink-3); }
-.ui-input:focus-within { border-color: var(--l-ink); }
+/* 能输入、能按的东西共用一条边：白底、浅灰细边，和次要按钮一样；悬停深一档，聚焦时边再深一档并出一圈淡光，不用黑框。
+   Anything you type into or press shares one edge: white with a light hairline, like a secondary button; hover darkens it a step,
+   focus darkens it once more and adds a faint halo instead of a black frame. */
+.ui-input { min-height: var(--h-md); display: flex; align-items: center; gap: var(--s-2); min-width: 0; padding: 0 var(--s-3); border: 1px solid var(--l-line-strong); border-radius: var(--r-2); background: var(--l-surface); color: var(--l-ink-3); transition: border-color var(--m-quick) var(--ease-out), box-shadow var(--m-quick) var(--ease-out); }
+.ui-input:focus-within { border-color: var(--l-ink-3); box-shadow: var(--ring-field); }
 .ui-input input { min-width: 0; flex: 1; padding: 0; border: 0; outline: 0; background: transparent; color: var(--l-ink); font-size: var(--t-3); }
 /* 值可以是等宽，占位说明是人话，用正文字体：等宽的中文字距会拉开。 / Values may be mono; a placeholder is words, in the body face, since mono spreads Chinese apart. */
 .ui-input input::placeholder { color: var(--l-ink-3); font-family: var(--f-body); }
@@ -106,7 +112,7 @@ a.ui-btn { text-decoration: none; }
 /* 输入框右端的小按钮（例如「选用已有上游」）：箭头和下拉框的箭头落在同一条竖线上
    A small button at the right end of an input (e.g. pick an existing upstream); its chevron lines up with a select's */
 .ui-input__affix { width: var(--h-sm); height: var(--h-sm); flex: 0 0 auto; display: inline-grid; place-items: center; margin-right: calc(var(--s-2) * -1); padding: 0; border: 0; border-radius: var(--r-1); background: none; color: var(--l-ink-3); cursor: pointer; transition: background-color var(--m-quick) var(--ease-out), color var(--m-quick) var(--ease-out); }
-.ui-input__affix[aria-expanded="true"] { background: var(--l-sunk); color: var(--l-ink); }
+.ui-input__affix[aria-expanded="true"] { background: var(--l-hair); color: var(--l-ink); }
 /* 常规框里的按钮图标和框里别的图标一样是 16：放大镜和清除的 × 不一大一小（规范 5.1，审计第五轮 T3）
    A button inside a regular field draws a 16 icon like the field's other icons, so the magnifier and the clear × match (spec 5.1, audit round 5, T3) */
 .ui-input:not(.ui-input--sm) .ui-input__affix > svg { width: var(--size-icon); height: var(--size-icon); }
@@ -134,7 +140,7 @@ a.ui-btn { text-decoration: none; }
 .ui-tabs { position: relative; display: flex; gap: var(--s-6); border-bottom: 1px solid var(--l-hair); }
 .ui-tabs__tab { position: relative; padding: 0 0 var(--s-3); border: 0; background: transparent; color: var(--l-ink-2); font-size: var(--t-3); font-weight: var(--w-medium); white-space: nowrap; cursor: pointer; transition: color var(--m-quick) var(--ease-out); }
 .ui-tabs__tab[aria-selected="true"] { color: var(--l-ink); }
-.ui-tabs__ind { position: absolute; bottom: -1px; left: 0; width: 0; height: 0; border-top: 2px solid var(--ok-l); pointer-events: none; transition: transform var(--m-base) var(--ease-out), width var(--m-base) var(--ease-out); }
+.ui-tabs__ind { position: absolute; bottom: -1px; left: 0; width: 0; height: 0; border-top: 2px solid var(--l-ink); pointer-events: none; transition: transform var(--m-base) var(--ease-out), width var(--m-base) var(--ease-out); }
 .ui-seg { position: relative; display: inline-flex; padding: 2px; border-radius: var(--r-2); background: var(--l-sunk); }
 /* 常规分段是 36 高的控件，字用控件角色的 14；13 只给小号（规范第 1 节、5.1，审计第三轮 S4）
    A regular segment is a 36 control, so its labels take the control role's 14; 13 is for the small variant only (spec section 1, 5.1, audit round 3, S4) */
@@ -184,18 +190,21 @@ a.ui-btn { text-decoration: none; }
 .ui-mono { font-family: var(--mono); font-size: var(--t-2); letter-spacing: 0; }
 
 /* ---------- 标签：一种样子；只有表达状态的才带底色 ---------- */
-.ui-tag { min-height: var(--h-tag); display: inline-flex; align-items: center; padding: 0 var(--s-2); border: 1px solid var(--l-hair); border-radius: var(--r-1); color: var(--l-ink-2); font-size: var(--t-1); font-weight: var(--w-medium); line-height: var(--lh-tight); white-space: nowrap; }
+/* 标签不描边：灰底是普通标签，浅绿、浅黄、浅红是状态；一行里的小方框不再一格一格地框起来 / Tags carry no outline: grey for plain, pale green, amber and red for status, so a row of tags is no longer a row of boxes */
+.ui-tag { min-height: var(--h-tag); display: inline-flex; align-items: center; padding: 0 var(--s-2); border: 0; border-radius: var(--r-1); background: var(--l-sunk); color: var(--l-ink-2); font-size: var(--t-1); font-weight: var(--w-medium); line-height: var(--lh-tight); white-space: nowrap; }
 .ui-tag--mono { font-family: var(--mono); }
-.ui-tag--ok { color: var(--ok-l); background: var(--ok-tint-l); border-color: var(--ok-line-l); }
-.ui-tag--warn { color: var(--warn-l); background: var(--warn-tint-l); border-color: var(--warn-line-l); }
-.ui-tag--err { color: var(--err-l); background: var(--err-tint-l); border-color: var(--err-line-l); }
+.ui-tag--ok { color: var(--ok-l); background: var(--ok-tint-l); }
+.ui-tag--warn { color: var(--warn-l); background: var(--warn-tint-l); }
+.ui-tag--err { color: var(--err-l); background: var(--err-tint-l); }
 /* 需要动手的提示（有新版本）：白底墨色边框加粗字。它不是健康、慢或失败，所以不用语义色；
    实底黑块两个并排时太重。
    A call to act (an update is available): ink border and bold type on white.
    It is not health, slowness or failure, so it takes no semantic colour; two
    solid black blocks side by side were too heavy. */
 /* 强调只靠墨色的框，字重和别的标签一样 500（规范 1.1 的「标签」，审计第三轮 B11） / Emphasis comes from the ink outline alone; the weight stays the tag's 500 (spec 1.1, audit round 3, B11) */
-.ui-tag--strong { color: var(--l-ink); background: var(--l-surface); border-color: var(--l-ink); }
+/* 需要动手的提示（有新版本）：灰底墨字加粗，不再是黑框 / A call to act (有新版本): ink bold text on the grey fill instead of a black outline */
+/* 需要动手的提示（有新版本、还差几项）用浅黄：它要人去处理，和「降级」同属「需要留意」 / A call to act (有新版本, 还差几项) is pale amber: it asks for attention, the same family as degraded */
+.ui-tag--strong { color: var(--warn-l); background: var(--warn-tint-l); }
 
 /* ---------- 记录行：名称和标签在左，数字列右对齐，操作在最右；手机上两行 ---------- */
 .ui-rec, .ui-rec-head { display: grid; grid-template-columns: var(--rec-cols, minmax(0, 1fr) auto); gap: var(--s-4); align-items: center; }
@@ -280,7 +289,7 @@ a.ui-btn { text-decoration: none; }
 .ui-setrow__label { min-width: 0; display: grid; align-content: start; gap: 2px; padding-top: calc((var(--h-md) - 1lh) / 2); }
 /* 开关占满名字对齐的那个 36 的格子：开关行和输入框行一样高，行距处处一样（审计第三轮 T1）
    The switch takes the whole 36 slot the name is centred on, so a toggle row is as tall as a field row and the pitch is even (audit round 3, T1) */
-.ui-setrow--toggle .ui-switch { margin-block: calc((var(--h-md) - var(--s-5)) / 2); }
+.ui-setrow--toggle .ui-switch { margin-block: calc((var(--h-md) - var(--switch-h)) / 2); }
 /* 字段名是「名称」角色：14 · 500 · ink（规范第 1 节）。Archivo 的 P 和后面的空格有字偶距，「GeoIP MMDB」「UDP 连接池」会挤成一团，
    和旁边的「DoH 连接池」隔得不一样：这里关掉字偶距、空格补 1 像素（审计第四轮 T2）
    Field names take the name role: 14 · 500 · ink (spec section 1). Archivo kerns P against a following space, so 「GeoIP MMDB」 and 「UDP 连接池」
@@ -299,11 +308,11 @@ a.ui-btn { text-decoration: none; }
 .ui-switch small { order: 2; color: var(--l-ink-3); font-size: var(--t-1); }
 /* 透明的原生 input 叠在画出来的轨道上面：点哪儿都是点在它身上 / The transparent native input sits above the painted track, so every click lands on it */
 .ui-switch input { position: absolute; z-index: 1; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
-.ui-switch i { position: relative; width: calc(var(--s-6) + var(--s-1)); height: var(--s-5); flex: 0 0 auto; border-radius: var(--r-full); background: var(--l-line-strong); transition: background var(--m-quick) var(--ease-out); }
-.ui-switch i::after { position: absolute; top: var(--switch-inset, 3px); left: var(--switch-inset, 3px); width: calc(var(--s-5) - 2 * var(--switch-inset, 3px)); height: calc(var(--s-5) - 2 * var(--switch-inset, 3px)); border-radius: var(--r-full); background: var(--l-surface); box-shadow: var(--shadow-raise); transition: transform var(--m-quick) var(--ease-out); content: ''; }
+.ui-switch i { position: relative; width: var(--switch-w); height: var(--switch-h); flex: 0 0 auto; border-radius: var(--r-full); background: var(--l-line-strong); transition: background var(--m-quick) var(--ease-out); }
+.ui-switch i::after { position: absolute; top: var(--switch-inset, 3px); left: var(--switch-inset, 3px); width: calc(var(--switch-h) - 2 * var(--switch-inset, 3px)); height: calc(var(--switch-h) - 2 * var(--switch-inset, 3px)); border-radius: var(--r-full); background: var(--l-surface); box-shadow: var(--shadow-raise); transition: transform var(--m-quick) var(--ease-out); content: ''; }
 .ui-switch input:checked + i { background: var(--l-ink); }
 /* 圆点走完整段：轨道宽减轨道高，开着时离右端和关着时离左端一样远（审计第三轮 T1） / The knob travels the whole track, its width less its height, so on it sits as far from the right end as off from the left (audit round 3, T1) */
-.ui-switch input:checked + i::after { transform: translateX(calc(var(--s-6) + var(--s-1) - var(--s-5))); }
+.ui-switch input:checked + i::after { transform: translateX(calc(var(--switch-w) - var(--switch-h))); }
 .ui-switch input:focus-visible + i { outline: 2px solid var(--focus); outline-offset: 2px; }
 .ui-switch input:disabled { cursor: not-allowed; }
 .ui-switch input:disabled + i { opacity: .42; }
@@ -319,7 +328,7 @@ a.ui-btn { text-decoration: none; }
      Stacked, the name sits above its control and needs no push; a toggle row stays top-aligned, the switch on the name's line and the note hanging below (audit round 3, T3) */
   .ui-setrow__label { padding-top: 0; }
   .ui-setrow--toggle { grid-template-columns: minmax(0, 1fr) auto; }
-  .ui-setrow--toggle .ui-switch { margin-block: calc((1lh - var(--s-5)) / 2) 0; }
+  .ui-setrow--toggle .ui-switch { margin-block: calc((1lh - var(--switch-h)) / 2) 0; }
   .ui-setrow--toggle .ui-switch { justify-self: end; }
   /* 「默认」写在开关前面：所有开关都停在右边线上（审计 T6） / 默认 sits before the switch, so every switch ends on the right edge (audit T6) */
   .ui-setrow--toggle .ui-switch small { order: 0; }
@@ -579,8 +588,11 @@ a.ui-btn { text-decoration: none; }
   .ui-btn--danger:hover:not(:disabled) { background: var(--err-tint-l); }
   .ui-icon-btn:hover:not(:disabled) { color: var(--l-ink); background: var(--l-sunk); }
   .ui-icon-btn--danger:hover:not(:disabled) { color: var(--err-l); background: var(--err-tint-l); }
-  .ui-link:hover { color: var(--ok-l-deep); text-decoration: underline; text-underline-offset: 3px; }
-  .ui-input__affix:hover { background: var(--l-sunk); color: var(--l-ink); }
+  .ui-link:hover { text-decoration-color: var(--l-ink); }
+  /* 框底已经是浅灰：悬停再深一档，框里的按钮悬停用分隔线的灰 / The field is already pale grey: hover goes one step darker, and a button inside it hovers in the hairline grey */
+  .ui-input:hover:not(:focus-within) { border-color: var(--l-edge-hover); }
+  .ui-btn--secondary:hover:not(:disabled) { border-color: var(--l-edge-hover); }
+  .ui-input__affix:hover { background: var(--l-hair); color: var(--l-ink); }
   .ui-tabs__tab:hover, .ui-seg__opt:hover { color: var(--l-ink); }
   .ui-banner:hover:not(:disabled) { background: var(--l-canvas); }
   .ui-rows__handle:hover { background: var(--l-sunk); color: var(--l-ink); }
@@ -594,31 +606,36 @@ a.ui-btn { text-decoration: none; }
   .ui-setrow { grid-template-columns: minmax(0, 1fr); }
   .ui-setrow__label { padding-top: 0; }
   .ui-setrow--toggle { grid-template-columns: minmax(0, 1fr) auto; }
-  .ui-setrow--toggle .ui-switch { justify-self: end; margin-block: calc((1lh - var(--s-5)) / 2) 0; }
+  .ui-setrow--toggle .ui-switch { justify-self: end; margin-block: calc((1lh - var(--switch-h)) / 2) 0; }
   .ui-setrow--toggle .ui-switch small { order: 0; }
   .ui-setrow--toggle:not(:has(.ui-setrow__label > :nth-child(2))) { align-items: center; }
   .ui-setrow--toggle:not(:has(.ui-setrow__label > :nth-child(2))) .ui-switch { margin-block: 0; }
   .ui-ph--stack { grid-template-columns: minmax(0, 1fr); }
   .ui-ph--stack .ui-ph__actions { justify-content: stretch; }
   .ui-ph--stack .ui-ph__actions > * { flex: 1; }
-  .ui-btn, .ui-btn--sm { min-height: var(--h-touch); }
+  /* 按钮看起来和桌面一样 36，点按区域上下补到 44；小号按钮在手机上也是 36、14 号字 / A button looks 36 as on desktop with its tap area grown to 44; a small one is 36 with 14px text on a phone too */
+  .ui-btn, .ui-btn--sm { position: relative; min-height: var(--h-md); }
+  .ui-btn::before { position: absolute; inset: calc((var(--h-touch) - var(--h-md)) / -2) 0; content: ''; }
   .ui-btn--sm { font-size: var(--t-3); }
-  .ui-icon-btn, .ui-icon-btn--sm { width: var(--h-touch); height: var(--h-touch); }
+  /* 图标按钮也是 36，和同一行的框一样高，点按区域四边补到 44 / An icon button is 36 too, as tall as the fields on its line, with its tap area grown to 44 on every side */
+  .ui-icon-btn, .ui-icon-btn--sm { position: relative; width: var(--h-md); height: var(--h-md); }
+  .ui-icon-btn::before { position: absolute; inset: calc((var(--h-touch) - var(--h-md)) / -2); content: ''; }
   .ui-tabs { gap: 0; }
   .ui-tabs__tab { flex: 1; min-height: var(--h-touch); padding-bottom: 0; text-align: center; }
   .ui-seg { display: flex; }
-  .ui-seg__opt, .ui-seg--sm .ui-seg__opt { flex: 1; min-height: calc(var(--h-touch) - 4px); padding-inline: var(--s-1); }
-  .ui-input, .ui-input--sm { min-height: var(--h-touch); }
-  /* 框里的字 16：小号框也一样，否则 iOS 聚焦时放大整页 / Field text is 16, small fields included, or iOS zooms the page on focus */
-  .app-shell .ui-input :is(input, select, textarea) { font-size: var(--t-touch); }
-  .ui-input--area { padding-block: calc((var(--h-touch) - 2px - 1lh) / 2); font-size: var(--t-touch); }
+  .ui-seg__opt, .ui-seg--sm .ui-seg__opt { flex: 1; min-height: calc(var(--h-md) - 4px); padding-inline: var(--s-1); }
+  /* 分段的每一格看起来 32，点按区域越过外框上下各补 4，和按钮一样到 44 / Each segment cell looks 32; its tap area reaches past the frame by 4 above and below, 44 like a button */
+  .ui-seg__opt::after { inset: calc((var(--h-touch) - var(--h-md)) / -2 - 2px) 0; }
+  /* 框和桌面一样 36、14 号字，小号框在手机上也放大到 36（打字的框不能比手指还窄）。iPhone 聚焦放大由 main.ts 在 iPhone 上关掉，
+     不再靠 16 号字（规范 1.8 改版）
+     A field is 36 with 14px text as on desktop, and a small field grows to 36 on a phone (a typing box cannot be narrower than a finger).
+     iPhone focus zoom is switched off on iPhones by main.ts instead of by 16px text (spec 1.8, revised) */
+  .ui-input, .ui-input--sm { min-height: var(--h-md); }
+  .ui-input--sm :is(input, select) { font-size: var(--t-3); }
   /* 下拉框撑满外框里面的高度，整块都点得到 / The select fills the frame's inner height so the whole box is tappable */
-  .app-shell .ui-select select { min-height: calc(var(--h-touch) - 2px); }
-  /* 全局给手机上的输入框设了 44 的最小高度（和 16px 字号，防 iPhone 放大）；
-     这里外框已经是 44，里面的输入框再撑 44 会比同一行的按钮高出边框那 2 像素。
-     The global mobile rule gives inputs and selects a 44 minimum height (and
-     16px type to stop iPhone zoom); the frame here is already 44, so the inner
-     control must not add the frame's 2px border on top of the buttons beside it. */
+  .app-shell .ui-select select, .ui-select.ui-input--sm select { min-height: calc(var(--h-md) - 2px); }
+  /* 全局给手机上的输入框设了最小高度；外框已经是 36，里面的输入框再撑一次会比同一行的按钮高出边框那 2 像素。
+     The global mobile rule gives inputs a minimum height; the frame is already 36, so the inner control must not add the frame's 2px border on top of the buttons beside it. */
   .app-shell .ui-input input:not([type="checkbox"]):not([type="radio"]) { min-height: 0; }
   .ui-card__head { padding: var(--s-3) var(--s-4); }
   .ui-card--stack .ui-card__head { grid-template-columns: minmax(0, 1fr); }
@@ -640,18 +657,18 @@ a.ui-btn { text-decoration: none; }
   .ui-banner { min-height: var(--h-touch); }
   /* 手机上菜单是贴着底边的弹层：标题是菜单的名字，每项 44 高，留出底部安全区 */
   /* On a phone the menu is a bottom sheet titled with its name, 44px items, clear of the home indicator */
-  .ui-rows-host { --rows-handle: var(--h-touch); --rows-act: var(--h-touch); }
+  .ui-rows-host { --rows-handle: var(--h-md); --rows-act: var(--h-md); }
   /* 按钮的行高是 1.15，44 的格子在字上下各多出 14：少收 2，和上面的框、下一组的 44 格子挨着不叠，字往下挪 2（规范 2.1，审计第六轮 A4）
      A button's line height is 1.15, so a 44 cell reaches 14 past its text on each side: pulled back 2 less, it touches the box above and the
      next group's 44 cell without overlapping, and the text moves down 2 (spec 2.1, audit round 6, A4) */
-  .ui-rows__add { margin-block: calc((1lh - var(--h-touch)) / 2 + 2px); }
-  /* 手机上 × 那一格是 44，图标往里缩 4：「更换」的字也往里收 4，行尾还在同一条竖线上（审计第四轮 D8）
-     On a phone the × cell is 44 and insets its icon 4 more, so 更换 comes in by 4 too and row ends stay on one line (audit round 4, D8) */
-  .ui-picked__change { margin-block: calc((1lh - var(--h-touch)) / 2); margin-inline-end: calc((var(--h-touch) - var(--h-md)) / 2); }
+  .ui-rows__add { margin-block: calc((1lh - var(--h-md)) / 2); }
+  /* 「更换」和别的按钮一样 36 高，往回收掉上下多出来的部分，起点那一行只有一行字高（审计第四轮 D8）
+     更换 is 36 like any button and is pulled back above and below, so the start line is one text line tall (audit round 4, D8) */
+  .ui-picked__change { margin-block: calc((1lh - var(--h-md)) / 2); }
   /* 起点那一行下面换行出来的分段离它 12：「更换」的 44 格子碰不到分段（规范 2.1，审计第六轮扫查）
      A segment wrapping under the start line sits 12 below it, so 更换's 44 cell never reaches it (spec 2.1, round-6 sweep) */
   .ui-picked { row-gap: var(--s-3); }
-  /* 手机上小号按钮也是 44 高、14 号字，配 16 的图标（规范 5.1，审计第三轮 M4） / On a phone a small button is 44 tall with 14px text, so it takes a 16 icon (spec 5.1, audit round 3, M4) */
+  /* 手机上小号按钮也是 36 高、14 号字，配 16 的图标（规范 5.1，审计第三轮 M4） / On a phone a small button is 36 tall with 14px text, so it takes a 16 icon (spec 5.1, audit round 3, M4) */
   .ui-btn--sm > svg { width: var(--size-icon); height: var(--size-icon); }
   /* 跟在一行小字旁边的小按钮（「更新」「回退」）看起来还是 30 高、13 号字，点按区域上下补到 44：44 高的方块比它旁边那行字还重
      A small button beside a line of small text (更新, 回退) still looks 30 tall with 13px text, its hit area grown to 44: a 44 block
@@ -659,8 +676,8 @@ a.ui-btn { text-decoration: none; }
   .ui-btn--inline { position: relative; min-height: var(--h-sm); font-size: var(--t-2); }
   .ui-btn--inline > svg { width: var(--size-icon-sm); height: var(--size-icon-sm); }
   .ui-btn--inline::before { position: absolute; inset: calc((var(--h-touch) - var(--h-sm)) / -2) 0; content: ''; }
-  /* 小号下拉框、小号图标按钮和框里的按钮在手机上都是 44 高，图标也用 16：一行里的箭头和 × 一样大（规范 5.1，审计第四轮 V6、T3）
-     Small selects, small icon buttons and in-field buttons are 44 tall on a phone, so their icons are 16 too and every chevron and × on a line matches (spec 5.1, audit round 4, V6, T3) */
+  /* 手机上小号下拉框是 36、小号图标按钮是 44 的格子，框里的按钮跟框一样高，图标都用 16：一行里的箭头和 × 一样大（规范 5.1，审计第四轮 V6、T3）
+     On a phone a small select is 36, a small icon button a 44 cell and an in-field button as tall as its field; all take 16 icons so every chevron and × on a line matches (spec 5.1, audit round 4, V6, T3) */
   .ui-select.ui-input--sm > svg { width: var(--size-icon); height: var(--size-icon); right: var(--s-3); }
   .ui-icon-btn--sm > svg, .ui-input__affix > svg { width: var(--size-icon); height: var(--size-icon); }
   /* 能点的标签（「还差 1 项」）看起来还是 20 高，点按区域上下补到 44（规范 2.1，审计第二轮 B4）
@@ -675,8 +692,8 @@ a.ui-btn { text-decoration: none; }
      lands on the field's right edge; the field never grows because of it (audit round 3, T5) */
   /* 左边也往回收掉框里的 8：44 宽的格子左边本来就空着 14，字和图标之间仍有这么远，字段不因为它变窄（网址框在 375 上多出 8，放得下 https://dns.alidns.com/）
      Pulled back over the field's 8 gap on the left too: the 44 cell already leaves 14 blank there, so text and icon stay that far apart and the field loses no width (the URL box at 375 keeps the 8 it needs for https://dns.alidns.com/) */
-  .ui-input__affix { width: var(--h-touch); height: calc(var(--h-touch) - 2px); margin-inline: calc(var(--s-2) * -1) calc((var(--size-icon) - var(--h-touch)) / 2); }
-  .ui-input--area .ui-input__affix { margin-block: calc((1lh - var(--h-touch) + 2px) / 2); }
+  .ui-input__affix { width: var(--h-md); height: calc(var(--h-md) - 2px); margin-inline: calc(var(--s-2) * -1) calc((var(--size-icon) - var(--h-md)) / 2); }
+  .ui-input--area .ui-input__affix { margin-block: calc((1lh - var(--h-md) + 2px) / 2); }
   /* 标题、图标和分隔线都从 16 开始，和页面的边距同一条竖线（审计第二轮 D10） / Title, icons and divider all start at 16, the page's gutter (audit round 2, D10) */
   .ui-menu--pop { top: auto; right: 0; bottom: 0; left: 0; width: 100%; padding: var(--s-2) var(--s-1) calc(var(--s-2) + env(safe-area-inset-bottom)); border-width: 1px 0 0; border-radius: var(--r-3) var(--r-3) 0 0; }
   .ui-menu--pop .ui-menu__sep { margin-inline: var(--s-3); }
@@ -707,3 +724,180 @@ a.ui-btn { text-decoration: none; }
   .ui-check path { animation: none; stroke-dashoffset: 0; }
   .ui-spin { animation-duration: calc(var(--m-spin) * 3); }
 }
+
+/* ============================================================================
+   v2 第一轮审查后的组件修正 / Kit corrections after review round 1
+   ============================================================================ */
+/* 不可撤销的确认：红底白字，只用在确认框里 / Irreversible confirmations: solid red, used only inside confirm dialogs */
+.ui-btn--critical { color: var(--d-ink); background: var(--err-l); }
+@media (hover: hover) { .ui-btn--critical:hover:not(:disabled) { background: var(--err-l-deep); } }
+/* 任务行的图标位和通知里同一个形状：30 的圆角方块 / The task icon slot takes the notifications' shape: a 30px rounded square */
+.ui-task__icon { border-radius: var(--r-2); }
+/* 说明文字不留单字孤行 / Descriptions never leave a single character alone on the last line */
+/* 行内分隔点看得见但不抢字：比细线深一档 / Separator dots visible without competing with the text: one step darker than a hairline */
+.ui-dots > *::before { color: var(--l-edge-hover); }
+/* 带边的方形图标按钮：工具行里挨着输入框、分段的图标动作都用它，和它们一样高、一样有边
+   The framed square icon button: icon actions in a toolbar next to fields or segments use it, matching their height and edge */
+.ui-btn--icon { width: var(--h-md); min-width: var(--h-md); padding: 0; }
+/* 去别处的文字动作都是链接的样子，按钮做的也一样 / Text actions that go elsewhere look like links, buttons included */
+button.ui-link { position: relative; min-height: 0; padding: 0; border: 0; background: none; font-family: inherit; cursor: pointer; }
+@media (max-width: 640px) { button.ui-link::before { position: absolute; inset: calc(var(--s-3) * -1) calc(var(--s-1) * -1); content: ''; } }
+/* 链接的下划线深一档，白底上一眼看得出是链接 / The link underline is one step darker, so it reads as a link at a glance on white */
+.ui-link { text-decoration-color: var(--l-edge-hover); }
+@media (max-width: 640px) { :root { --switch-w: 36px; --switch-h: 22px; } }
+/* 两种分隔点长一个样：同一个颜色，左右各约 6 / Both separator styles look alike: one colour, about 6 either side */
+.ui-dots { --dots-gap: calc(var(--s-2) + .4em); }
+.ui-dots > *::before, [data-line-dot] { color: var(--l-ink-3); }
+/* 说明文字按行平衡，不留一两个字的末行 / Descriptions balance their lines instead of leaving one or two characters on the last */
+/* 行首的全角括号、引号不缩进 / Full-width brackets and quotes at a line start do not indent */
+:root { text-spacing-trim: trim-start; }
+/* 卡片右上角只有一个标签时，它和标题同一行，说明在下面占满整宽，不被标签那一栏挤窄
+   With a lone tag at a card's top right, it shares the title's line and the description spans the full width below, not squeezed by the tag's column */
+.ui-card__head:has(> .ui-card__actions > .ui-tag:only-child) { grid-template-areas: "title tag" "desc desc"; row-gap: 2px; }
+.ui-card__head:has(> .ui-card__actions > .ui-tag:only-child) > div { display: contents; }
+.ui-card__head:has(> .ui-card__actions > .ui-tag:only-child) .ui-card__title { grid-area: title; align-self: center; }
+.ui-card__head:has(> .ui-card__actions > .ui-tag:only-child) .ui-card__desc { grid-area: desc; }
+.ui-card__head:has(> .ui-card__actions > .ui-tag:only-child) > .ui-card__actions { grid-area: tag; align-self: center; margin-top: 0; }
+
+/* 卡片头里的按钮不撑高标题行：标题离卡片上边永远是同一个距离 / Buttons in a card head do not heighten the title row, so the title always sits the same distance below the card's top */
+.ui-card__actions > .ui-icon-btn, .ui-card__actions > .ui-btn:not(.ui-btn--sm):not(.ui-btn--inline), .ui-card__actions > .ui-menu-host { margin-block: calc((var(--t-3) * var(--lh-base) - var(--h-md)) / 2); }
+.ui-card__actions > .ui-btn--sm, .ui-card__actions > .ui-btn--inline { margin-block: calc((var(--t-3) * var(--lh-base) - var(--h-sm)) / 2); }
+/* 页头里的图标按钮（「…」等）和旁边的按钮一样带边 / Icon buttons in a page header (such as 「…」) carry an edge like the buttons beside them */
+.ui-ph__actions .ui-menu-host > .ui-icon-btn { border: 1px solid var(--l-line-strong); background: var(--l-surface); box-shadow: var(--shadow-xs); }
+@media (hover: hover) { .ui-ph__actions .ui-menu-host > .ui-icon-btn:hover { border-color: var(--l-edge-hover); } }
+/* 统计片段整段不折行，数和单位不会被拆开 / A stat segment never wraps inside, so a number is never parted from its unit */
+.ui-dot-text--stats > span { white-space: nowrap; }
+/* 卡片标题 16：比字段名高一级，和区块标题同级 / Card titles at 16: a level above field labels, level with section titles */
+.ui-card__title { font-size: var(--t-4); }
+/* 宽屏设置行的开关放在控件列右端，和抽屉里一样 / On wide screens a setting row's switch sits at the right end of the control column, as in drawers */
+@media (min-width: 641px) { .ui-setrow--toggle .ui-switch { justify-self: end; } }
+/* 页头状态行的行高固定，等宽字不把它撑高一像素 / The page header's status line has a fixed line height, so mono text cannot add a pixel */
+.ui-ph__meta { line-height: calc(var(--t-2) * var(--lh-base)); }
+.ui-ph__meta .ui-mono { line-height: inherit; }
+/* 卡片头和弹层头里的图标动作：30 的带边小方块 / Icon actions in card and popover heads: a framed 30px square */
+.ui-btn--icon.ui-btn--compact { width: var(--h-sm); min-width: var(--h-sm); min-height: var(--h-sm); height: var(--h-sm); }
+.ui-card__actions > .ui-btn--compact { margin-block: calc((var(--t-3) * var(--lh-base) - var(--h-sm)) / 2); }
+/* 开关开着用次一级的墨色：一列开关不再是全页最重的颜色 / An on switch uses the second ink, so a column of switches is no longer the heaviest ink on the page */
+.ui-switch input:checked + i { background: var(--l-ink-2); }
+.ui-ph__actions .ui-menu-host > .ui-icon-btn { width: var(--h-md); height: var(--h-md); }
+.nowrap { white-space: nowrap; }
+/* 占位字比次要文字淡一档，不会被读成已经填好的值 / Placeholders are one step lighter than secondary text, so they never read as filled-in values */
+.ui-input input::placeholder, .ui-input--area textarea::placeholder { color: color-mix(in srgb, var(--l-ink-3) 72%, var(--l-surface)); }
+/* 禁用的次要、危险按钮：边还看得见，字变灰，不再整体褪成一块看不清的影子 / Disabled secondary and danger buttons keep a visible edge with grey text instead of fading into a faint shape */
+.ui-btn--secondary:disabled, .ui-btn--danger:disabled { opacity: 1; color: color-mix(in srgb, var(--l-ink-3) 70%, var(--l-surface)); background: var(--l-canvas); border-color: var(--l-hair); box-shadow: none; }
+.ui-btn--danger.ui-btn--icon:disabled { color: color-mix(in srgb, var(--l-ink-3) 70%, var(--l-surface)); }
+/* 页级提示：左右内边距和卡片一样 24（手机 16）/ Page notices: 24 inline padding like cards (16 on phones) */
+@media (min-width: 641px) { .ui-notice { padding-inline: var(--s-5) var(--s-4); } }
+
+/* ============================================================================
+   结果说明：一条请求为什么得到这个结果（诊断的执行路径、配置页的测试域名共用）
+   按 Surge「rule explain」的顺序：请求 → 命中哪条 → 交给谁、怎么交 → 结果
+   The explanation of why a request got its result (shared by the diagnostics path and the config tester), in the order of
+   Surge's rule explain: the request → which rule matched → who it went to and how → the result
+   ============================================================================ */
+.ui-result { display: grid; gap: var(--s-1); padding: var(--s-3) var(--s-5); border-radius: var(--r-3); background: var(--l-sunk); }
+.ui-steps { display: grid; margin: 0; padding: 0; list-style: none; }
+.ui-step { --time-w: calc(var(--s-7) + var(--s-2)); position: relative; display: grid; grid-template-columns: var(--s-5) minmax(0, 1fr); gap: var(--s-3); padding: var(--s-2) 0; }
+.ui-step:has(> .ui-step__time) { grid-template-columns: var(--time-w) var(--s-5) minmax(0, 1fr); }
+/* 竖线穿过圆点那一栏 / The rail runs through the mark column */
+.ui-step::before { position: absolute; top: calc(var(--s-2) + var(--s-5)); bottom: calc(var(--s-2) * -1); left: calc(var(--s-5) / 2); border-left: 1px solid var(--l-hair); content: ''; }
+.ui-step:has(> .ui-step__time)::before { left: calc(var(--time-w) + var(--s-3) + var(--s-5) / 2); }
+.ui-step:last-child::before { display: none; }
+.ui-step__time { align-self: baseline; color: var(--l-ink-3); font-size: var(--t-1); font-variant-numeric: tabular-nums; line-height: var(--s-5); text-align: right; white-space: nowrap; }
+.ui-step__mark { position: relative; z-index: 1; width: var(--s-5); height: var(--s-5); display: grid; place-items: center; border-radius: var(--r-full); background: var(--l-sunk); color: var(--l-ink-3); }
+.ui-step__mark i { width: var(--size-dot); height: var(--size-dot); border-radius: var(--r-full); background: var(--l-ink-3); }
+.ui-step--ok .ui-step__mark { background: var(--ok-tint-l); color: var(--ok-l); }
+.ui-step--err .ui-step__mark { background: var(--err-tint-l); color: var(--err-l); }
+.ui-step--warn .ui-step__mark i { background: var(--warn-l); }
+/* 宽屏上一步一行：这一步在前，细节紧跟在后面 / On wide screens a step is one line: the step first, its detail right after */
+.ui-step__body { min-width: 0; display: flex; flex-wrap: wrap; gap: 2px var(--s-3); align-items: baseline; }
+.ui-step__what { margin: 0; color: var(--l-ink); font-size: var(--t-2); font-weight: var(--w-medium); line-height: var(--s-5); overflow-wrap: anywhere; }
+.ui-step__why { margin: 0; color: var(--l-ink-3); font-size: var(--t-1); white-space: pre-wrap; overflow-wrap: anywhere; }
+.ui-step__what code, .ui-step__why code { display: inline-block; max-width: 100%; font-family: var(--f-mono); font-weight: var(--w-normal); overflow-wrap: anywhere; }
+.ui-step__why code { color: var(--l-ink-2); }
+/* 一对「键 值」整对换行 / A key-value pair wraps as one unit */
+.ui-step__pair { display: inline-block; max-width: 100%; }
+.ui-step--idle .ui-step__what { color: var(--l-ink-3); font-weight: var(--w-normal); }
+.ui-step--err .ui-step__what { color: var(--err-l); }
+.ui-step--warn .ui-step__what { color: var(--warn-l); }
+@media (max-width: 640px) {
+  /* 手机：圆点贴内边，时间放到这一步标题行的右端，细节换到下一行 / Phone: the mark at the inner edge, the time at the right end of the step's title line, the detail on the next line */
+  .ui-step:has(> .ui-step__time) { grid-template-columns: var(--s-5) minmax(0, 1fr) auto; grid-template-areas: "mark body time"; }
+  .ui-step:has(> .ui-step__time)::before { left: calc(var(--s-5) / 2); }
+  .ui-step:has(> .ui-step__time) .ui-step__mark { grid-area: mark; }
+  .ui-step:has(> .ui-step__time) .ui-step__body { grid-area: body; }
+  .ui-step__time { grid-area: time; align-self: start; }
+  .ui-step__body { flex-direction: column; flex-wrap: nowrap; }
+  .ui-result { padding: var(--s-3) var(--s-4); }
+}
+
+/* ---------- 第八轮 / round 8 ---------- */
+/* 步骤的时刻在行尾、右对齐到内容边，各宽度一样；节点和竖线贴着内容左边，和规则测试的步骤同一个几何
+   A step's time sits at the row end, right-aligned to the content edge, at every width; the node and rail sit on the content's left edge, the same geometry as the rule tester's steps */
+.ui-step:has(> .ui-step__time) { grid-template-columns: var(--s-5) minmax(0, 1fr) auto; grid-template-areas: "mark body time"; }
+.ui-step:has(> .ui-step__time)::before { left: calc(var(--s-5) / 2); }
+.ui-step:has(> .ui-step__time) .ui-step__mark { grid-area: mark; }
+.ui-step:has(> .ui-step__time) .ui-step__body { grid-area: body; }
+.ui-step__time { grid-area: time; align-self: start; }
+/* 节点里的勾和叉粗一点，结论那一步不比中间的灰点轻 / The check and cross in a node are heavier, so the deciding step never reads lighter than the grey dots */
+.ui-step__mark svg { width: var(--size-icon-sm); height: var(--size-icon-sm); stroke-width: 2.5; }
+/* 最后一步下面不再留步骤间距，卡片底边离它和离别的内容一样远 / No step gap under the last step, so the card's bottom sits as far from it as from any other content */
+.ui-steps > .ui-step:last-child { padding-bottom: 0; }
+/* 手机页签：看得见的高度 36（和别的控件一样），触控区往上补到 44；标题到列表的距离少 8 / Phone tabs: 36 visible like every other control, the touch area extended upwards to 44; 8 less from title to list */
+@media (max-width: 640px) {
+  .ui-tabs__tab { min-height: var(--h-md); }
+  .ui-tabs__tab::after { position: absolute; inset: calc(var(--h-md) - var(--h-touch)) 0 0; content: ''; }
+}
+/* 宽屏设置行上下各 12：控件不贴着行间细线 / Wide setting rows take 12 above and below, so controls never touch the hairline between rows */
+@media (min-width: 641px) { .settings-rows > .ui-setrow, .ecard .ui-setrow { padding-block: var(--s-3); } }
+/* 卡片头没有动作时不留动作那一列的间隔：说明一直排到内容右边 / A card head without actions keeps no gap for the actions column, so its description runs to the content edge */
+.ui-card__head:not(:has(.ui-card__actions > *)) { column-gap: 0; }
+/* 区块标题行里单独一个标签：和标题的字面中线对齐，不按基线（基线对齐时标签低 2–3） / A lone tag in a section head centres on the title's line instead of its baseline (baseline alignment left it 2–3 low) */
+.ui-section__aside:has(> .ui-tag:only-child) { align-self: center; }
+/* 卡片标题到说明一个距离：两行字的墨迹之间 10，和编辑页卡片一样 / One title-to-description distance for cards: 10 between the two lines' ink, as in the editor cards */
+.ui-card__desc { margin-top: -2px; }
+
+/* ============================================================================
+   商业版（标杆 Surge）：品牌色进场，卡片靠影子，控件 30，页标题 24
+   Commercial pass (benchmark Surge): the accent arrives, cards float by shadow, 30px controls, 24px page titles
+   ============================================================================ */
+.ui-btn--primary { color: var(--accent-ink); background: var(--accent); }
+.ui-btn--primary .ui-spin { border-color: var(--accent-soft); border-top-color: var(--accent-ink); }
+/* 文字按钮是「能点的字」：品牌色，悬停淡底 / A text button is clickable text: accent, with a tinted hover */
+.ui-btn--text { color: var(--accent); }
+.ui-btn--text[aria-expanded="true"] { color: var(--accent); }
+.ui-link { color: var(--accent); text-decoration-color: var(--accent-soft); }
+.ui-switch input:checked + i { background: var(--accent); }
+.ui-checkbox input:checked + i { border-color: var(--accent); background: var(--accent); }
+.ui-pick__opt input:checked { border-color: var(--accent); }
+.ui-pick__opt input::before { background: var(--accent); }
+.ui-tabs__tab[aria-selected="true"] { color: var(--accent); }
+.ui-tabs__ind { border-top-color: var(--accent); }
+.ui-input:focus-within { border-color: var(--accent); }
+.ui-card { border: 0; box-shadow: var(--shadow-card); }
+.ui-savebar { border: 0; box-shadow: var(--shadow-card); }
+.ui-notice { border-radius: var(--r-3); }
+.ui-menu { border-radius: var(--r-3); }
+.ui-menu__item { border-radius: calc(var(--r-2) - 2px); }
+.ui-seg__ind, .ui-seg:not(:has(> .ui-seg__ind)) > .ui-seg__opt[aria-pressed="true"] { border-radius: calc(var(--r-2) - 2px); }
+.ui-task__bar > i { background: var(--accent); }
+/* 页标题 24 · 700；下面一行事实：小标签在上、值在下，横排 / Page title 24 · 700; a facts row under it: small label above, value below, laid out in a row */
+.ui-ph__title { font-size: var(--t-5); font-weight: var(--w-heavy); letter-spacing: -.01em; }
+.ui-lbl { color: var(--l-ink-3); font-size: var(--t-1); font-weight: var(--w-bold); letter-spacing: .06em; text-transform: uppercase; }
+.ui-facts { display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-6); margin-top: var(--s-3); }
+.ui-facts > div { display: grid; gap: 2px; }
+.ui-facts b { display: inline-flex; align-items: center; gap: var(--s-2); color: var(--l-ink); font-size: var(--t-4); font-weight: var(--w-bold); font-variant-numeric: tabular-nums; }
+/* 卡片小标签：11 大写，和事实行的标签同一个 / The card's small label: 11 uppercase, the same as a fact's label */
+.ui-card__label { margin: 0; color: var(--l-ink-3); font-size: var(--t-1); font-weight: var(--w-bold); letter-spacing: .06em; text-transform: uppercase; }
+/* 选中的列表行：品牌色淡底，左边一条 3px 的品牌色 / A selected list row: accent tint with a 3px accent bar on the left */
+.ui-selected { position: relative; background: var(--accent-tint); }
+.ui-selected::before { position: absolute; top: 0; bottom: 0; left: 0; width: 3px; background: var(--accent); content: ''; }
+@media (hover: hover) {
+  .ui-btn--primary:hover:not(:disabled) { background: var(--accent-deep); }
+  .ui-btn--text:hover:not(:disabled) { color: var(--accent-deep); background: var(--accent-tint); }
+  .ui-link:hover { color: var(--accent-deep); text-decoration-color: var(--accent); }
+}
+/* 不定进度条：一段品牌色在轨道里来回扫，不说进度；减少动态效果时只留一段静止的淡条 / The indeterminate bar: a sweep of accent back and forth, no claim of progress; under reduced motion a still faint segment */
+.ui-task__bar--indeterminate > i { width: 40%; animation: ui-sweep calc(var(--m-spin) * 2) var(--ease-in-out) infinite alternate; }
+@keyframes ui-sweep { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+@media (prefers-reduced-motion: reduce) { .ui-task__bar--indeterminate > i { animation: none; width: 100%; opacity: .4; } }
