@@ -955,6 +955,3 @@ body { text-spacing-trim: trim-start; }
 /* 登录页的品牌：和侧栏一样的品牌色方块 / The auth page's brand mark: the same accent tile as the sidebar */
 .auth-brand span { width: var(--h-sm); height: var(--h-sm); display: grid; place-items: center; color: var(--accent-ink); background: var(--accent); border-radius: var(--r-2); }
 .auth-brand span svg { width: var(--size-icon); height: var(--size-icon); }
-/* ===== ② 之前的过渡：下面这些规则只有旧的概览 / 日志 / 诊断 / 系统页还在用，这四页重做（PR ②）时整块删掉
-   Transition until ②: the rules below are used only by the old overview / logs / diagnostics / system pages; PR ②, which redoes those four, deletes this whole block ===== */
-.log-empty { margin: 0; padding: var(--s-5); color: var(--l-ink-3); font-family: var(--f-body); font-size: var(--t-1); text-align: center; }
