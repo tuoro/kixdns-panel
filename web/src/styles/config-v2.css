@@ -1773,10 +1773,6 @@ body { background: var(--l-canvas); }
 .onboard__list dt { color: var(--l-ink-3); font-size: var(--t-1); font-weight: var(--w-bold); letter-spacing: .06em; text-transform: uppercase; }
 .onboard__pick .ui-pick__opt:has(input:checked) { border-color: var(--accent); }
 
-/* ---------- ③b：还没接上的页 / ③b: pages not wired yet ---------- */
-.cfg__pending { display: grid; justify-items: start; gap: var(--s-2); padding: var(--s-5); }
-.cfg__pending-title { margin: 0; font-size: var(--t-4); font-weight: var(--w-bold); }
-.cfg__pending-note { margin: 0 0 var(--s-2); color: var(--l-ink-2); font-size: var(--t-2); }
 
 /* ---------- ③b：侧栏布局里的保存条 / ③b: the save bar in the sidebar layout ---------- */
 @media (min-width: 861px) {
@@ -1797,4 +1793,27 @@ body { background: var(--l-canvas); }
   /* 右上角是页头的主按钮，提示叠上去容易误点「撤销」；配置页的提示改到右下、保存条上方（保存条高 = 按钮 30 + 上下 12）
      The top right holds the header's primary button, and a toast over it invites a wrong 撤销; on the config page toasts move to the bottom right above the save bar (bar height = the 30 button + 12 above and below) */
   body:has(.cfg) .toast-stack { top: auto; bottom: calc(var(--h-md) + var(--s-3) * 2 + var(--s-4)); right: var(--s-6); }
+}
+
+/* ---------- ③c：测试域名 / ③c: the domain tester ---------- */
+/* 一张卡：第一行输入（域名占满，类型 5.5rem，测试，收起），下面一句说明，再是结论条和路径；结论条和诊断页同一种底色
+   One card: the input row (the domain fills it, type 5.5rem, 测试, close), a hint line, then the verdict band and the path; the band shares the diagnostics page's tint */
+.tester { display: grid; gap: var(--s-3); padding: var(--s-4) var(--s-5); }
+.tester__inputs { display: flex; align-items: center; gap: var(--s-2); }
+.tester__domain { flex: 1 1 auto; min-width: 0; }
+.tester__qtype { flex: 0 0 5.5rem; }
+.tester__run { flex: 0 0 auto; }
+.tester__close { flex: 0 0 auto; }
+.tester__hint { margin: 0; color: var(--l-ink-3); font-size: var(--t-1); }
+.tester__error { margin: 0; }
+.tester__out { display: grid; gap: var(--s-3); }
+.tester__result { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-2) var(--s-4); padding: var(--s-3) var(--s-4); border-radius: var(--r-2); background: var(--ok-tint-l); }
+.tester__result.is-warn { background: var(--warn-tint-l); }
+.tester__verdict { min-width: 0; margin: 0; font-size: var(--t-3); font-weight: var(--w-bold); overflow-wrap: anywhere; }
+.tester__steps { margin: 0; }
+@media (max-width: 640px) {
+  .tester { padding: var(--s-3) var(--s-4); }
+  .tester__inputs { flex-wrap: wrap; }
+  .tester__domain { flex-basis: 100%; }
+  .tester__qtype { flex: 1 1 5.5rem; }
 }

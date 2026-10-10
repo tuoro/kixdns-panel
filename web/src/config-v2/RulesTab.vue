@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Braces, FileUp, ListFilter, Plus, Search, X } from '@lucide/vue'
+import { Braces, FileUp, FlaskConical, ListFilter, Plus, Search, X } from '@lucide/vue'
 import { computed, nextTick, reactive, ref, toRefs } from 'vue'
 import JsonEditor from '../components/JsonEditor.vue'
 import UiMenu from '../components/ui/UiMenu.vue'
@@ -9,6 +9,7 @@ import { GEOSITE_SUGGESTIONS } from '../config-model/condKinds'
 import { isCidr, isDomain, newRule, outcomeSentence, rawMatchersText, type Condition, type Outcome, type Rule, type RuleGroup, ruleTitle } from '../config-model/model'
 import { usePhone } from './phone'
 import RuleList from './RuleList.vue'
+import Tester from './Tester.vue'
 import { model, newId, ruleGroupUsers, ui } from './store'
 
 // 规则页：工具栏（搜索、按结果筛、新建）、快速添加、主列表、规则组、高级入口。第一次用时是起步引导。
@@ -20,8 +21,14 @@ const emit = defineEmits<{ open: [ruleId: number | null, groupId: string | null,
 const toast = useToast()
 const { query, kind } = toRefs(ui)
 const kinds = [{ value: '', label: '全部结果' }, { value: 'upstream', label: '交给上游组' }, { value: 'block', label: '拦截' }, { value: 'answer', label: '自定义回答' }, { value: 'group', label: '转到规则组' }, { value: 'continue', label: '继续往下' }]
-// 列表能标出命中和经过的规则；这里没有测试，标记都是空的 / The list can mark hit and passed rules; with no tester here the marks stay empty
-const NO_MARKS = new Map<number, 'hit' | 'pass'>()
+// 测试域名：问 KixDNS 正在用的配置；命中的规则（或域名映射）在列表里标出来 / 测试域名 asks the running config; the matched rule (or mapping) is marked in the list
+const testing = ref(false)
+const matchedRule = ref<number | null>(null)
+const matchedMapping = ref(false)
+const marks = computed(() => new Map<number, 'hit' | 'pass'>(matchedRule.value === null ? [] : [[matchedRule.value, 'hit']]))
+function onMatched(ruleId: number | null, mapping: boolean): void { matchedRule.value = ruleId; matchedMapping.value = mapping }
+function toggleTester(): void { testing.value = !testing.value; if (!testing.value) onMatched(null, false) }
+async function quickFromTester(domainName: string): Promise<void> { quick.text = domainName; quickOpen.value = true; await nextTick(); quickInput.value?.focus() }
 
 // 新建就是一条空白规则：主按钮只干一件事，带知识的预设在用得到的地方（「回答后检查」的常用、GeoSite 的候选）
 // New means a blank rule: the primary button does one thing, and the presets that carry know-how live where they apply (回答后检查's 常用, GeoSite suggestions)
@@ -206,11 +213,15 @@ function saveEntries(): void {
         <!-- 手机上筛选是一个图标按钮，点开是系统的选择列表；筛了以后按钮压下去 / On a phone the filter is an icon button opening the system picker; it looks pressed while filtering -->
         <label class="ui-btn ui-btn--secondary toolbar__filter" :class="{ 'is-pressed': kind }" :title="kinds.find((k) => k.value === kind)?.label"><ListFilter :size="16" aria-hidden="true" /><select v-model="kind" aria-label="按结果筛选"><option v-for="k in kinds" :key="k.value" :value="k.value">{{ k.label }}</option></select></label>
         <span class="toolbar__spacer"></span>
+        <button class="ui-btn ui-btn--secondary toolbar__icon" type="button" :aria-pressed="testing" :class="{ 'is-pressed': testing }" aria-label="测试域名" @click="toggleTester"><FlaskConical :size="16" aria-hidden="true" /></button>
         <button class="ui-btn ui-btn--secondary toolbar__icon" type="button" aria-label="新建规则" @click="emit('open', null, null)"><Plus :size="16" aria-hidden="true" /></button>
       </div>
       <Teleport v-else defer to="#cfg-actions">
+        <button class="ui-btn ui-btn--secondary" type="button" :aria-pressed="testing" :class="{ 'is-pressed': testing }" @click="toggleTester"><FlaskConical :size="16" aria-hidden="true" />测试域名</button>
         <button class="ui-btn ui-btn--primary" type="button" @click="emit('open', null, null)"><Plus :size="16" aria-hidden="true" />新建规则</button>
       </Teleport>
+
+      <Tester v-if="testing" @close="toggleTester" @matched="onMatched" @quick="quickFromTester" />
 
       <section class="ui-card rcard" aria-label="规则列表">
         <div v-if="!phone" class="rcard__tools">
@@ -228,7 +239,7 @@ function saveEntries(): void {
         </form>
         <p class="rcard__order">从上往下判断，第一条决定结果的规则生效。</p>
         <div v-if="!model.rules.length" class="rcard__empty"><ListFilter :size="16" aria-hidden="true" /><span>还没有规则，所有请求都按最下面的「其余请求」处理。用上面一行快速添加，或者「新建规则」。</span></div>
-        <RuleList :rules="model.rules" :owner="model" :in-group="false" :query="query" :kind="kind" :marks="NO_MARKS" :selected="selected" :rest-mark="false" :mapping-mark="false" @open="emit('open', $event, null)" @mappings="emit('tab', 'mapping')" />
+        <RuleList :rules="model.rules" :owner="model" :in-group="false" :query="query" :kind="kind" :marks="marks" :selected="selected" :rest-mark="false" :mapping-mark="matchedMapping" @open="emit('open', $event, null)" @mappings="emit('tab', 'mapping')" />
       </section>
 
       <section class="rgroups" aria-labelledby="rg-title">
@@ -256,7 +267,7 @@ function saveEntries(): void {
             <button class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline rcard__new" type="button" @click="emit('open', null, g.id)"><Plus :size="14" aria-hidden="true" />新建规则</button>
             <UiMenu :items="groupMenu(g)" :label="`规则组「${g.name}」的操作`" @select="groupAction(g, $event)" />
           </header>
-          <RuleList :rules="g.rules" :owner="g" :in-group="true" :query="query" :kind="kind" :marks="NO_MARKS" :selected="selected" :rest-mark="false" :mapping-mark="false" @open="emit('open', $event, g.id)" />
+          <RuleList :rules="g.rules" :owner="g" :in-group="true" :query="query" :kind="kind" :marks="marks" :selected="selected" :rest-mark="false" :mapping-mark="false" @open="emit('open', $event, g.id)" />
         </section>
       </section>
     </template>
