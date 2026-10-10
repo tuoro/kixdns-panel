@@ -64,7 +64,9 @@ function closeRule(): void {
 }
 function ruleSaved(rule: Rule, isNew: boolean): void {
   editor.value = null
-  toast.success(isNew ? `已添加「${ruleTitle(rule)}」` : `已更新「${ruleTitle(rule)}」`)
+  // 手机上编辑器占整页，完成时保存条还看不见：提示里说一句还要保存；桌面上保存条就在旁边，不重复
+  // On a phone the editor fills the page and the save bar is not in view at 完成, so the toast says a save is still due; on desktop the bar sits right there
+  toast.success(`${isNew ? '已添加' : '已更新'}「${ruleTitle(rule)}」${phone.value ? '，保存后生效' : ''}`)
   requestAnimationFrame(() => {
     const row = document.querySelector<HTMLElement>(`[data-rule="${rule.id}"]`)
     row?.scrollIntoView({ block: 'center' })

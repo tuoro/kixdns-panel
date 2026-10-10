@@ -1791,3 +1791,10 @@ body { background: var(--l-canvas); }
 .rrow__name { flex-wrap: nowrap; }
 .rrow__name b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rrow__name > :not(b) { flex: none; }
+
+/* ---------- ③b：配置页上的提示位置 / ③b: where toasts sit on the config page ---------- */
+@media (min-width: 861px) {
+  /* 右上角是页头的主按钮，提示叠上去容易误点「撤销」；配置页的提示改到右下、保存条上方（保存条高 = 按钮 30 + 上下 12）
+     The top right holds the header's primary button, and a toast over it invites a wrong 撤销; on the config page toasts move to the bottom right above the save bar (bar height = the 30 button + 12 above and below) */
+  body:has(.cfg) .toast-stack { top: auto; bottom: calc(var(--h-md) + var(--s-3) * 2 + var(--s-4)); right: var(--s-6); }
+}
