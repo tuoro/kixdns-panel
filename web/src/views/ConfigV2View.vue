@@ -29,9 +29,9 @@ import {
 } from '../config-v2/useConfigDocument'
 import '../styles/config-v2.css'
 
-// 新配置页（③）：侧栏里的「规则 · 上游组 · 域名映射 · 基础设置」各是一页，这个文件是它们共用的外壳——页头的事实行、通知条、
+// 配置页：侧栏里的「规则 · 上游组 · 域名映射 · 基础设置」各是一页，这个文件是它们共用的外壳——页头的事实行、通知条、
 // JSON 视图、导入导出、历史版本、保存条。草稿在 config-v2/store.ts，文件和运行状态在 config-v2/useConfigDocument.ts。
-// The new config page (③): the sidebar's 规则 · 上游组 · 域名映射 · 基础设置 are each a page, and this file is their shared shell — the
+// The config page: the sidebar's 规则 · 上游组 · 域名映射 · 基础设置 are each a page, and this file is their shared shell — the
 // header's facts row, the notice strip, the JSON view, import/export, the save bar. The draft lives in config-v2/store.ts, the file and
 // runtime in config-v2/useConfigDocument.ts.
 const route = useRoute()

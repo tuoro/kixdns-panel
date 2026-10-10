@@ -1530,7 +1530,7 @@ body { background: var(--l-canvas); }
 }
 /* 值标签的 × 大一号，深一档 / The value chip's × one size up and one grey darker */
 .chip__x { color: var(--l-ink-2); }
-.chip__x svg { width: calc(var(--size-icon-sm) - 2px); height: calc(var(--size-icon-sm) - 2px); }
+.chip__x svg { width: var(--size-icon-sm); height: var(--size-icon-sm); }
 /* 测试结论以「」收尾时，收回括号自带的半个字空白，后面的灰字不再离得特别远 / When the tester's verdict ends in 」, take back the bracket's built-in half blank so the grey facts after it are not pushed away */
 .ui-step__what.is-closing { margin-right: -0.5em; }
 /* 手机「域名映射」钉住行 44 高，和上面的快速添加行一样 / The phone 域名映射 pinned row is 44 tall, like the quick-add row above it */
@@ -1817,3 +1817,29 @@ body { background: var(--l-canvas); }
   .tester__domain { flex-basis: 100%; }
   .tester__qtype { flex: 1 1 5.5rem; }
 }
+
+/* ---------- ③d：高级规则的结构化编辑 / ③d: structured editing of advanced rules ---------- */
+.rawed { display: grid; gap: var(--s-4); }
+.rawed__rule { display: grid; gap: var(--s-3); padding: var(--s-3) 0 var(--s-4); border-bottom: 1px solid var(--l-hair); }
+.rawed__rule:last-of-type { border-bottom: 0; padding-bottom: 0; }
+.rawed__head { display: flex; align-items: center; gap: var(--s-2); }
+.rawed__name { flex: 1 1 auto; min-width: 0; max-width: 20rem; }
+.rawed__stage { display: grid; gap: var(--s-2); }
+.rawed__title { display: flex; align-items: center; gap: var(--s-2); margin: 0; font-size: var(--t-2); font-weight: var(--w-bold); color: var(--l-ink-2); }
+.rawed__relation { margin-left: auto; }
+.rawed__response > summary { display: flex; align-items: baseline; gap: var(--s-2); cursor: pointer; }
+.rawed__sum { color: var(--l-ink-3); font-weight: var(--w-normal); }
+.rawed__response[open] > summary { margin-bottom: var(--s-2); }
+.rawed__response .rawed__stage + .rawed__stage { margin-top: var(--s-3); }
+/* 内核规则那一节的标题行：左边标题和说明，右边「表单 / JSON」 / The kernel-rules section's header: title and note left, 表单 / JSON right */
+.ecard__head--raw { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s-3); }
+.ecard__rawmode { flex: 0 0 auto; }
+
+/* ---------- ③d：验收审计里的四处 / ③d: four findings from the acceptance audit ---------- */
+/* 空列表提示的图标不被挤扁 / The empty-list hint's icon keeps its size */
+.rcard__empty > svg { flex: 0 0 auto; }
+/* 条件行末的「去掉」和同一行的比较下拉框一样高（30），不再是 26 靠外边距居中；图标仍对齐内容右边
+   The row-end remove button matches the comparison select's height (30) instead of a 26 centred by margins; its glyph still lines up with the content's right edge */
+.cform__x { width: var(--h-md); height: var(--h-md); margin-top: 0; margin-right: calc((var(--h-md) - var(--size-icon)) / -2 - 3px); }
+/* 右栏里比较下拉框是小号（26），去掉按钮跟着 26；整页编辑器里两者都是 30 / In the inspector the comparison select is the small size (26) and the remove button follows; the full-page editor has both at 30 */
+.editor--inspector .cform__row > .cform__x { width: var(--h-sm); height: var(--h-sm); }

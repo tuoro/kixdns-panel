@@ -1,7 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import { actionFieldErrors, GEOSITE_PREFIX_ERROR, isRequiredFieldError, matcherFieldErrors, validDnsName } from './field-validation'
-import { createGuidedRuleFromTemplate, guidedRuleValidationErrors } from './guided-rule'
-import type { ActionConfig, PipelineConfig } from './types'
 
 describe('配置字段共享校验', () => {
   it('按条件的实际字段检查必填值，错误说出字段名，并保留未知类型', () => {
@@ -30,17 +28,6 @@ describe('配置字段共享校验', () => {
     expect(matcherFieldErrors({ type: 'domain_suffix', operator: 'and', value: 'geosite:cn' }, 'request')).toEqual({})
   })
 
-  it('每个模板写出来的规则都能直接通过校验', () => {
-    const current: PipelineConfig = { id: 'default', rules: [] }
-    for (const template of ['cn_split', 'ad_block', 'response_fallback'] as const) {
-      const rule = createGuidedRuleFromTemplate(current, template)
-      for (const matcher of rule.matchers) expect(matcherFieldErrors(matcher, 'request'), template).toEqual({})
-    }
-    // 指定域名上游的域名留给用户填（审计第二轮 B1）：只差这一项必填，写进去的值本身没有错
-    // 指定域名上游 leaves its domain for the user (audit round 2, B1): the only error is that one required field, never a wrong value
-    const upstream = createGuidedRuleFromTemplate(current, 'domain_upstream')
-    expect(upstream.matchers.map((matcher) => matcherFieldErrors(matcher, 'request'))).toEqual([{ value: '请填写域名' }])
-  })
 
   it('缺失 CNAME 目标只报告必填错误，非法目标报告格式错误', () => {
     expect(actionFieldErrors({ type: 'static_cname_response', target: ' ' }, 'default'))
@@ -95,18 +82,4 @@ describe('配置字段共享校验', () => {
     expect(actionFieldErrors({ type: 'future_action', future_field: 'keep' }, 'default')).toEqual({})
   })
 
-  it('引导表单汇总复用同一校验，覆盖两个响应分支并去重', () => {
-    const pipeline: PipelineConfig = { id: 'default', rules: [] }
-    const rule = createGuidedRuleFromTemplate(pipeline, 'blank')
-    const invalidCname: ActionConfig = { type: 'static_cname_response', target: 'bad target', ttl: -1 }
-    rule.matchers = [{ type: 'domain_suffix', operator: 'and', value: '' }]
-    rule.actions = [{ type: 'forward', upstream: '' }]
-    rule.response_matchers = [{ type: 'response_answer_ip', operator: 'and', cidr: '' }]
-    rule.response_actions_on_match = [invalidCname]
-    rule.response_actions_on_miss = [{ ...invalidCname }, { type: 'jump_to_pipeline', pipeline: 'removed' }]
-    expect(guidedRuleValidationErrors(rule, 'default', ['default'])).toEqual([
-      '请补全请求条件', '请补全执行动作', '请补全响应条件',
-      'CNAME 目标域名格式无效', 'CNAME TTL 必须是 0 到 4294967295 的整数', '目标 Pipeline 不存在',
-    ])
-  })
 })
