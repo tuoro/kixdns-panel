@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ChevronDown, ChevronRight, Plus, Trash2, X } from '@lucide/vue'
 import UiHelp from '../components/ui/UiHelp.vue'
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, ref, useId } from 'vue'
 import UiMenu from '../components/ui/UiMenu.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
@@ -38,6 +38,9 @@ const props = withDefaults(defineProps<{
   showErrors?: boolean
 }>(), { groups: true, nested: false, lead: () => ['满足以下', '条件时用这条规则'], empty: '没有条件，所有请求都会用这条规则。', showErrors: false })
 const emit = defineEmits<{ 'update:modelValue': [value: AnyTree] }>()
+// 错误提示的 id：读屏器读完输入框接着读它 / Error message ids, read after the field by screen readers
+const uid = useId()
+const errId = (i: number): string => `${uid}-err-${i}`
 const MATCHES = [{ value: 'all', label: '全部' }, { value: 'any', label: '任一' }]
 const GROUP = '__group'
 const phone = usePhone()
@@ -117,8 +120,8 @@ function addGroup(): void {
         <UiSelect v-if="def(item).ops.length > 1" class="cform__op" :model-value="op(item).value" :options="ops(item)" :label="`${def(item).label}怎么比`" @update:model-value="setOp(i, $event)" />
         <span v-else class="cform__label cform__op">{{ op(item).label }}</span>
         <div v-if="def(item).values" class="cform__ctl">
-          <ChipsInput :class="{ 'is-mono': def(item).mono }" :model-value="item.values" :label="def(item).label" :placeholder="def(item).placeholder" :suggestions="SUGGEST[item.field] ?? []" :upper="def(item).upper" :spaces="item.field === 'txt'" :valid="valid(item)" :invalid="Boolean(problem(item))" @update:model-value="patch(i, { values: $event })" />
-          <p v-if="problem(item)" class="ui-field-error">{{ problem(item) }}</p>
+          <ChipsInput :class="{ 'is-mono': def(item).mono }" :model-value="item.values" :describedby="problem(item) ? errId(i) : undefined" :label="def(item).label" :placeholder="def(item).placeholder" :suggestions="SUGGEST[item.field] ?? []" :upper="def(item).upper" :spaces="item.field === 'txt'" :valid="valid(item)" :invalid="Boolean(problem(item))" @update:model-value="patch(i, { values: $event })" />
+          <p v-if="problem(item)" :id="errId(i)" class="ui-field-error">{{ problem(item) }}</p>
         </div>
         <span v-else />
         <button class="ui-icon-btn ui-icon-btn--sm cform__x" type="button" :aria-label="`去掉「${def(item).label}」`" :title="`去掉「${def(item).label}」`" @click="remove(i)"><X :size="16" /></button>

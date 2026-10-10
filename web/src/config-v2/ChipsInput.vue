@@ -15,6 +15,8 @@ const props = withDefaults(defineProps<{
   spaces?: boolean
   upper?: boolean
   invalid?: boolean
+  /** 出错时指向错误提示的 id，读屏器读完名字接着读错误 / The error message's id while invalid, so a screen reader reads it after the name */
+  describedby?: string
 }>(), { placeholder: '', suggestions: () => [], valid: () => true, spaces: false, upper: false, invalid: false })
 const emit = defineEmits<{ 'update:modelValue': [value: string[]] }>()
 
@@ -64,7 +66,7 @@ function remove(index: number): void {
       <span class="chip__text">{{ value }}</span>
       <button class="chip__x" type="button" :aria-label="`去掉 ${value}`" @click="remove(index)"><X :size="14" aria-hidden="true" /></button>
     </span>
-    <input ref="input" v-model="text" :aria-label="label" :aria-invalid="invalid || undefined" :placeholder="modelValue.length ? '' : placeholder" :list="suggestions.length ? id : undefined" autocapitalize="off" autocomplete="off" spellcheck="false" @keydown="onKey" @input="onInput" @paste="onPaste" @blur="commit">
+    <input ref="input" v-model="text" :aria-label="label" :aria-invalid="invalid || undefined" :aria-describedby="describedby" :placeholder="modelValue.length ? '' : placeholder" :list="suggestions.length ? id : undefined" autocapitalize="off" autocomplete="off" spellcheck="false" @keydown="onKey" @input="onInput" @paste="onPaste" @blur="commit">
     <datalist v-if="suggestions.length" :id="id"><option v-for="s in suggestions.filter((x) => !modelValue.includes(x))" :key="s" :value="s"></option></datalist>
   </div>
 </template>

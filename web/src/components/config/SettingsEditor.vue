@@ -238,7 +238,7 @@ function supported(field: SettingField): boolean {
       <section v-for="section in paneSections" :key="section.id" class="settings-group" :class="{ 'ui-rise': !query }">
         <!-- 搜索结果里每组的标题也是区块标题，和平时一组的标题一样：和下面的设置名差了字号，不只差字重（规范 1.7，审计 T10）
              Each group heading in search results is a section title, as for a single group: it differs from the setting names in size, not only weight (spec 1.7, audit T10) -->
-        <header class="settings-group__head settings-group__head--lead"><h3>{{ section.title }}</h3><p v-if="section.description" class="settings-group__desc">{{ section.description }}</p></header>
+        <header class="settings-group__head settings-group__head--lead"><h2>{{ section.title }}</h2><p v-if="section.description" class="settings-group__desc">{{ section.description }}</p></header>
         <div class="settings-rows">
           <!-- 一个设置一行：左边名字和一句说明，右边控件。数字的单位写在输入框里，占位写默认值。
                One setting per row: name and a one-line note on the left, the control on the right; a number's unit sits in the input and the placeholder states the default. -->
@@ -273,11 +273,11 @@ function supported(field: SettingField): boolean {
       </section>
 
       <div v-if="!query && lead && current === lead.id" :key="current" class="ui-rise">
-        <header class="settings-group__head settings-group__head--lead"><h3>{{ lead.title }}<UiHelp v-if="lead.help" :topic="lead.help" /></h3><p v-if="lead.description" class="settings-group__desc">{{ lead.description }}</p></header>
+        <header class="settings-group__head settings-group__head--lead"><h2>{{ lead.title }}<UiHelp v-if="lead.help" :topic="lead.help" /></h2><p v-if="lead.description" class="settings-group__desc">{{ lead.description }}</p></header>
         <div class="settings-rows"><slot name="lead" /></div>
       </div>
       <div v-if="!query && current === 'geo'" :key="current" class="ui-rise">
-        <header class="settings-group__head settings-group__head--lead"><h3>{{ currentGroup.title }}</h3><p v-if="currentGroup.description" class="settings-group__desc">{{ currentGroup.description }}</p></header>
+        <header class="settings-group__head settings-group__head--lead"><h2>{{ currentGroup.title }}</h2><p v-if="currentGroup.description" class="settings-group__desc">{{ currentGroup.description }}</p></header>
         <GeoDataEditor v-model="settings" :changed="changed" />
       </div>
     </div>
@@ -313,9 +313,9 @@ function supported(field: SettingField): boolean {
 .settings-back { display: none; }
 .settings-group + .settings-group { margin-top: var(--s-6); }
 .settings-group__head { margin: 0 0 var(--s-2); }
-.settings-group__head h3 { margin: 0; color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-bold); }
+.settings-group__head h2 { margin: 0; color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-bold); }
 .settings-group__head--lead { margin-bottom: var(--s-4); }
-.settings-group__head--lead h3 { font-size: var(--t-4); }
+.settings-group__head--lead h2 { font-size: var(--t-4); }
 /* 组标题下一句说明：这一组管什么 / One line under the group title saying what the group covers */
 .settings-group__desc { margin: 2px 0 0; color: var(--l-ink-3); font-size: var(--t-2); }
 /* 导航在旁边时，窗格的第一个标题和导航的搜索框在同一条中线上；下面少留 4，第一个字段还和第一个导航项齐平（审计第七轮 T3）
@@ -324,7 +324,7 @@ function supported(field: SettingField): boolean {
   /* 每个标题下面都是 16：少的那 4 从导航的搜索框下面拿，第一个导航项和第一个字段还是齐平（审计第八轮 T2）
      16 under every heading: the 4 comes from under the nav search box instead, so the first nav item and the first field stay level (audit round 8, T2) */
   .settings-search { margin-bottom: var(--s-4); }
-  .settings-pane > :first-child .settings-group__head--lead h3 { padding-top: calc((var(--h-md) - 1lh) / 2); }
+  .settings-pane > :first-child .settings-group__head--lead h2 { padding-top: calc((var(--h-md) - 1lh) / 2); }
 }
 /* 设置行之间一条细线，和编辑页「其他」卡片同一种行 / A hairline between setting rows, the same row as the editor's 其他 card */
 .settings-rows { display: grid; gap: 0; }

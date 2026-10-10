@@ -1543,7 +1543,7 @@ body { background: var(--l-canvas); }
   .sets__card .settings .settings-nav__item[aria-current="true"] { background: var(--l-surface); box-shadow: var(--shadow-raise); color: var(--l-ink); font-weight: var(--w-medium); }
   .sets__card .settings .settings-pane { padding: var(--s-4) var(--s-5) var(--s-5); border-left: 0; }
   .sets__card .settings .settings-group__head--lead { margin-bottom: var(--s-2); }
-  .sets__card .settings .settings-group__head--lead h3 { color: var(--l-ink-3); font-size: var(--t-1); font-weight: var(--w-bold); letter-spacing: .06em; text-transform: uppercase; }
+  .sets__card .settings .settings-group__head--lead h2 { color: var(--l-ink-3); font-size: var(--t-1); font-weight: var(--w-bold); letter-spacing: .06em; text-transform: uppercase; }
 }
 @media (min-width: 861px) and (hover: hover) {
   .sets__card .settings .settings-nav__item:hover:not([aria-current="true"]) { background: var(--l-sunk); color: var(--l-ink); }
