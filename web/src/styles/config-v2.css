@@ -355,11 +355,12 @@ body { background: var(--l-canvas); }
 .cfg__json { display: grid; gap: var(--s-3); }
 .cfg__json-note { max-width: 52em; margin: 0; color: var(--l-ink-3); font-size: var(--t-2); }
 .cfg__json-editor { min-height: 60vh; }
-.cfg__skeleton { display: grid; gap: var(--s-4); }
-.cfg__sk-tools { display: flex; align-items: center; gap: var(--s-2); }
+/* 骨架的列要 minmax(0, 1fr)：auto 列会按工具行里几个定宽占位的总和撑开，641–860 时把文档撑出横向滚动 / The skeleton's column must be minmax(0, 1fr): an auto column grows to the sum of the toolbar's fixed-width placeholders and at 641–860 pushes the document into horizontal scroll */
+.cfg__skeleton { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-4); }
+.cfg__sk-tools { display: flex; align-items: center; gap: var(--s-2); min-width: 0; }
 .cfg__sk-tools > span { flex: 1; }
-.cfg__sk-tools .sk { width: 8rem; height: var(--h-md); border-radius: var(--r-2); }
-.cfg__sk-tools .sk:first-child { width: 22rem; }
+.cfg__sk-tools .sk { flex: 0 1 8rem; min-width: 0; height: var(--h-md); border-radius: var(--r-2); }
+.cfg__sk-tools .sk:first-child { flex-basis: 22rem; }
 .cfg__sk-list { padding: var(--s-2) var(--s-4); }
 .cfg__sk-row { display: grid; grid-template-columns: var(--s-6) minmax(0, 1.5fr) minmax(12rem, 1fr) var(--s-7); gap: var(--s-4); align-items: center; min-height: calc(var(--h-touch) + var(--s-4)); border-bottom: 1px solid var(--l-hair); }
 .cfg__sk-row:last-child { border-bottom: 0; }
@@ -612,7 +613,7 @@ body { background: var(--l-canvas); }
   .onboard { padding: var(--s-5) var(--s-4); }
   .cfg__sk-row { grid-template-columns: var(--s-5) minmax(0, 1fr) var(--s-7); }
   .cfg__sk-row > .sk:nth-child(3) { display: none; }
-  .cfg__sk-tools .sk:first-child { width: 100%; }
+  .cfg__sk-tools .sk:first-child { flex: 1 1 100%; }
   .cfg__sk-tools .sk:not(:first-child), .cfg__sk-tools > span { display: none; }
   .entries__list li { grid-template-columns: var(--s-5) minmax(0, 1fr); }
   .entries__to { grid-column: 2; white-space: normal; }
