@@ -38,11 +38,8 @@ const navigation = [
   { to: '/diagnostics', label: '诊断', icon: Stethoscope },
   { to: '/system', label: '系统', icon: Settings },
 ]
-// 桌面侧栏分组，和配置原型同一份：配置的四个子页从侧栏直达。配置页改版前，规则和上游组都落在「解析编排」里，
-// 侧栏用 ?section= 记住点的是哪一项；规则是默认页，不带参数
-// The desktop sidebar's groups, the same as the config prototype's: the four config sub-pages open from the sidebar.
-// Until the config page is redone, 规则 and 上游组 both land in 解析编排; the sidebar remembers which was clicked
-// through ?section=. 规则 is the default page and carries no parameter
+// 桌面侧栏分组：配置的四个子页从侧栏直达，?section= 说是哪一页；规则是默认页，不带参数
+// The desktop sidebar's groups: the four config sub-pages open from the sidebar, ?section= names the page; 规则 is the default and carries no parameter
 type NavItem = { to: string; label: string; icon: Component; section?: string }
 const navGroups: Array<{ label: string; items: NavItem[] }> = [
   { label: '', items: [{ to: '/', label: '概览', icon: LayoutGrid }] },
@@ -55,12 +52,7 @@ const navGroups: Array<{ label: string; items: NavItem[] }> = [
   { label: '观察', items: [{ to: '/logs', label: '日志', icon: FileText }, { to: '/diagnostics', label: '诊断', icon: Stethoscope }] },
   { label: '系统', items: [{ to: '/system', label: '系统', icon: Settings }] },
 ]
-// 新配置页（?v2=1）试用期间，配置子项的链接带着 v2，不会点一下就掉回旧页 / While the new config page (?v2=1) is on trial, the config items keep v2 so a click never drops back to the old page
-function navTarget(item: NavItem) {
-  const v2 = route.path === '/config' && typeof route.query.v2 === 'string' ? { v2: route.query.v2 } : {}
-  if (item.section) return { path: item.to, query: { ...v2, section: item.section } }
-  return item.to === '/config' && 'v2' in v2 ? { path: item.to, query: v2 } : item.to
-}
+function navTarget(item: NavItem) { return item.section ? { path: item.to, query: { section: item.section } } : item.to }
 function isCurrent(item: NavItem): boolean {
   if (route.path !== item.to) return false
   const section = typeof route.query.section === 'string' ? route.query.section : ''

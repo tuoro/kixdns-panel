@@ -62,7 +62,7 @@ function remove(index: number): void {
   <div class="chips ui-input" :class="{ 'chips--bad': invalid }" @click.self="input?.focus()">
     <span v-for="(value, index) in modelValue" :key="value" class="chip" :class="{ 'chip--bad': !valid(value) }" :title="valid(value) ? value : `${value}：写得不对`">
       <span class="chip__text">{{ value }}</span>
-      <button class="chip__x" type="button" :aria-label="`去掉 ${value}`" @click="remove(index)"><X :size="12" aria-hidden="true" /></button>
+      <button class="chip__x" type="button" :aria-label="`去掉 ${value}`" @click="remove(index)"><X :size="14" aria-hidden="true" /></button>
     </span>
     <input ref="input" v-model="text" :aria-label="label" :aria-invalid="invalid || undefined" :placeholder="modelValue.length ? '' : placeholder" :list="suggestions.length ? id : undefined" autocapitalize="off" autocomplete="off" spellcheck="false" @keydown="onKey" @input="onInput" @paste="onPaste" @blur="commit">
     <datalist v-if="suggestions.length" :id="id"><option v-for="s in suggestions.filter((x) => !modelValue.includes(x))" :key="s" :value="s"></option></datalist>

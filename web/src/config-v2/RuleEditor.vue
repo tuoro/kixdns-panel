@@ -7,8 +7,10 @@ import { useConfirm } from '../composables/useConfirm'
 import UiTabs from '../components/ui/UiTabs.vue'
 import { REQUEST_ORDER, RESPONSE_ORDER } from '../config-model/condKinds'
 import { toDnf, toTree, treeText, type CondTree } from '../config-model/condTree'
+import { actionFieldErrors, matcherFieldErrors } from '../config-editor/field-validation'
+import type { PipelineConfig, RuleConfig } from '../config-editor/types'
 import {
-  conditionText, ecsText, fallbackSentence, FIELD, kernelPreview, newRule, rawMatchersText, withShi, outcomeSentence, remedySentence, RESPONSE_FIELD, responseConditionText,
+  compile, conditionText, ecsText, fallbackSentence, FIELD, kernelPreview, mainPipelineId, newRule, ruleGroupPipelineId, rawMatchersText, withShi, outcomeSentence, remedySentence, RESPONSE_FIELD, responseConditionText,
   ruleProblems, type Ecs, type Outcome, type Remedy, type ResponseCondition, type Rule,
   ruleTitle,
 } from '../config-model/model'
@@ -16,7 +18,9 @@ import CondForm from './CondForm.vue'
 import OutcomeParams from './OutcomeParams.vue'
 import { usePhone } from './phone'
 import PhoneSheet from './PhoneSheet.vue'
+import RawRuleEditor from './RawRuleEditor.vue'
 import { hitsOf, listOf, model, newId } from './store'
+import { runtimeCapabilities } from './useConfigDocument'
 import { editedText, groupBrief } from './view'
 
 // 编辑一条规则：左边是「如果 / 那么 / 上游回答后 / 其他」，右边随时读出这条规则会做什么。
@@ -47,18 +51,45 @@ function onKey(event: KeyboardEvent): void {
 onMounted(() => window.addEventListener('keydown', onKey))
 onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 // 高级规则：直接改内核规则的 JSON / An advanced rule: edit the kernel rules' JSON directly
-const rawText = ref(draft.raw ? JSON.stringify(draft.raw, null, 2) : '')
+// 高级规则有两种改法：按内核字段的表单（RawRuleEditor，条件表 + 动作表）和 JSON；来回切换时同步，JSON 写错了切不回表单
+// An advanced rule is edited two ways: a form by the kernel's fields (RawRuleEditor: matcher and action lists) or JSON; the two sync on switching, and broken JSON cannot return to the form
+const asRuleConfig = (r: Record<string, unknown>): RuleConfig => ({ matchers: [], matcher_operator: 'and', actions: [], response_matchers: [], response_matcher_operator: 'and', response_actions_on_match: [], response_actions_on_miss: [], ...r, name: String(r.name ?? '') } as RuleConfig)
+const rawRules = reactive<RuleConfig[]>((draft.raw ?? []).map(asRuleConfig))
+const rawMode = ref<'form' | 'json'>('form')
+const rawModes = [{ value: 'form', label: '表单' }, { value: 'json', label: 'JSON' }]
+const rawText = ref('')
 const rawError = computed(() => {
-  if (!draft.raw) return ''
+  if (!draft.raw || rawMode.value !== 'json') return ''
   try {
     const v = JSON.parse(rawText.value) as unknown
     if (!Array.isArray(v) || !v.length || !v.every((r) => r && typeof r === 'object' && typeof (r as { name?: unknown }).name === 'string')) return '要写成内核规则的数组，每条都有 name'
     return ''
   } catch (e) { return (e as Error).message }
 })
+function setRawMode(next: string): void {
+  if (next === rawMode.value) return
+  if (next === 'json') { rawText.value = JSON.stringify(rawRules, null, 2); rawMode.value = 'json'; return }
+  if (rawError.value) return
+  rawRules.splice(0, rawRules.length, ...(JSON.parse(rawText.value) as Record<string, unknown>[]).map(asRuleConfig))
+  rawMode.value = 'form'
+}
+// 当前这一种写法里的内核规则 / The kernel rules as the active view holds them
+const currentRaw = (): Record<string, unknown>[] => (rawMode.value === 'form' ? JSON.parse(JSON.stringify(rawRules)) as Record<string, unknown>[] : JSON.parse(rawText.value) as Record<string, unknown>[])
+// 表单里写错的字段由条件表 / 动作表自己标红，这里只数出来给底栏 / The lists mark bad fields themselves; this only counts them for the footer
+const kernelPipelines = computed<PipelineConfig[]>(() => compile(model).pipelines.map((p) => ({ id: p.id, rules: [] })))
+const ownPipelineId = computed(() => { const g = props.groupId ?? (props.ruleId !== null ? listOf(props.ruleId).group?.id ?? null : null); return g ? ruleGroupPipelineId(model, g) : mainPipelineId(model) })
+const rawFieldProblems = computed(() => {
+  if (!draft.raw || rawMode.value !== 'form') return 0
+  const ids = kernelPipelines.value.map((p) => p.id)
+  return rawRules.reduce((n, r) => n
+    + r.matchers.filter((m) => Object.keys(matcherFieldErrors(m, 'request')).length).length
+    + r.response_matchers.filter((m) => Object.keys(matcherFieldErrors(m, 'response')).length).length
+    + [...r.actions, ...r.response_actions_on_match, ...r.response_actions_on_miss].filter((a) => Object.keys(actionFieldErrors(a, ownPipelineId.value, ids)).length).length
+    + (r.name.trim() ? 0 : 1), 0)
+})
 const position = ref(original ? list.value.indexOf(original) : list.value.length)
 const showErrors = ref(false)
-const problems = computed(() => [...ruleProblems(model, draft), ...(rawError.value ? [`内核规则写错了：${rawError.value}`] : [])])
+const problems = computed(() => [...ruleProblems(model, draft), ...(rawError.value ? [`内核规则写错了：${rawError.value}`] : []), ...(rawFieldProblems.value ? [`内核规则里有 ${rawFieldProblems.value} 处没填对（标红的那些）`] : [])])
 const nameInput = ref<HTMLInputElement | null>(null)
 onMounted(() => { if (!original) void nextTick(() => nameInput.value?.focus()) })
 
@@ -158,7 +189,7 @@ const positions = computed(() => {
 const reading = computed(() => {
   if (draft.raw) {
     try {
-      const list = JSON.parse(rawText.value) as { matchers?: Record<string, unknown>[]; matcher_operator?: string; actions?: { type: string }[] }[]
+      const list = currentRaw() as { matchers?: Record<string, unknown>[]; matcher_operator?: string; actions?: { type: string }[] }[]
       const ACT: Record<string, string> = { forward: '转发', allow: '交给默认上游', deny: '拒绝', static_response: '固定响应码', static_ip_response: '固定 IP', static_cname_response: '固定 CNAME', static_txt_response: '固定 TXT', replace_txt_response: '替换 TXT', jump_to_pipeline: '转到', log: '记录日志', continue: '继续往下' }
       return list.map((r, i) => ({ k: `第 ${i + 1} 条`, v: `${rawMatchersText(r.matchers, r.matcher_operator)} → ${(r.actions ?? []).map((a) => ACT[a.type] ?? a.type).join('、') || '没有动作'}` }))
     } catch { return [{ k: '内核规则', v: 'JSON 还没写对' }] }
@@ -204,7 +235,7 @@ function done(): void {
     revealProblem()
     return
   }
-  if (draft.raw) draft.raw = JSON.parse(rawText.value) as Record<string, unknown>[]
+  if (draft.raw) draft.raw = currentRaw()
   draft.conditions = draft.conditions.filter((g) => g.length).length ? draft.conditions.filter((g) => g.length) : [[]]
   draft.name = draft.name.trim()
   draft.edited = new Date().toISOString()
@@ -232,7 +263,7 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
       <span class="editor__sep" aria-hidden="true">/</span><span aria-current="page">{{ original ? '编辑规则' : '新建规则' }}</span>
     </nav>
     <div class="editor__title">
-      <button class="ui-icon-btn editor__back-icon" type="button" aria-label="回到规则列表" @click="leave"><ArrowLeft :size="18" /></button>
+      <button class="ui-icon-btn editor__back-icon" type="button" aria-label="回到规则列表" @click="leave"><ArrowLeft :size="16" /></button>
       <!-- 名字可以不填：不填就用条件当标题 / The name is optional: left empty, the condition becomes the title -->
       <input ref="nameInput" v-model="draft.name" class="editor__name" aria-label="规则名称，可以不填，不填就用条件当名字" title="名字可以不填，列表里用条件当标题" :placeholder="namePlaceholder" maxlength="40">
       <label class="ui-switch editor__enabled"><input v-model="draft.enabled" type="checkbox" aria-label="启用这条规则"><i></i><small>{{ draft.enabled ? '启用' : '已停用' }}</small></label>
@@ -246,8 +277,11 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
     <div class="editor__grid">
       <div class="editor__main">
         <section v-if="draft.raw" class="ecard" :class="{ 'ui-card': !inspector }" aria-labelledby="ec-raw">
-          <header class="ecard__head"><h2 id="ec-raw" class="ecard__title">内核规则</h2><p class="ecard__desc">这条规则放不进上面那些写法（比如回答阶段先记日志再接着匹配），原样保留。这里改的就是 KixDNS 直接读的规则，保存前会校验。</p></header>
-          <div class="ecard__body"><JsonEditor v-model="rawText" :error-line="undefined" /><p v-if="rawError" class="ui-field-error">{{ rawError }}</p></div>
+          <header class="ecard__head ecard__head--raw"><div><h2 id="ec-raw" class="ecard__title">内核规则</h2><p class="ecard__desc">这条规则放不进上面那些写法（比如回答阶段先记日志再接着匹配），原样保留。这里改的就是 KixDNS 直接读的规则，保存前会校验。</p></div><UiTabs class="ecard__rawmode" :model-value="rawMode" :items="rawModes" label="内核规则的写法" variant="segment" @update:model-value="setRawMode" /></header>
+          <div class="ecard__body">
+            <RawRuleEditor v-if="rawMode === 'form'" v-model="rawRules" :pipelines="kernelPipelines" :current-pipeline-id="ownPipelineId" :capabilities="runtimeCapabilities" :show-errors="showErrors" />
+            <template v-else><JsonEditor v-model="rawText" :error-line="undefined" /><p v-if="rawError" class="ui-field-error">{{ rawError }}</p></template>
+          </div>
         </section>
         <section v-if="!draft.raw" class="ecard" :class="{ 'ui-card': !inspector }" aria-labelledby="ec-if">
           <header class="ecard__head"><h2 id="ec-if" class="ecard__title">条件</h2></header>
