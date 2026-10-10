@@ -16,11 +16,11 @@ root="$(git rev-parse --show-toplevel)"
 cd "$root"
 
 # 基线：随迁移进度下调，永不上调 / Baseline: lower it as migration proceeds, never raise it
-BASELINE_COLOR=82
+BASELINE_COLOR=0
 BASELINE_SIZE=41
 BASELINE_RADIUS=19
 BASELINE_WEIGHT=12
-BASELINE_SHADOW=6
+BASELINE_SHADOW=0
 BASELINE_HEIGHT=33
 BASELINE_DURATION=4
 BASELINE_OLD_NAME=59
@@ -36,7 +36,8 @@ styles() {
 }
 
 scan() {
-  styles | xargs -0 grep -ohE "$1" 2>/dev/null | wc -l | tr -d ' '
+  # 一处都没有时 grep 退出 1、xargs 退出 123，pipefail 会把脚本带走：按 0 处计 / With no match grep exits 1 and xargs 123, fatal under pipefail: count it as 0
+  styles | { xargs -0 grep -ohE "$1" 2>/dev/null || true; } | wc -l | tr -d ' '
 }
 
 # 动画时长要先找到 transition / animation 声明，再数里面的时长。

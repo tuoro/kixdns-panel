@@ -106,8 +106,8 @@ function leave(): void {
    flex with margin:auto on the child is the safe centring: when the content
    outgrows the box it scrolls from the top instead of having its upper half
    clipped out of reach, which align-content:center would do. */
-.session-expired { position: fixed; inset: 0; height: 100dvh; z-index: 120; display: flex; padding: 24px 16px; overflow-y: auto; background: rgba(15, 20, 19, .58); }
-.session-expired__dialog { width: min(420px, 100%); margin: auto; display: flex; flex-direction: column; gap: 14px; padding: 22px 24px; border-radius: var(--r-2); background: var(--surface); box-shadow: 0 34px 76px -32px rgba(0, 0, 0, .6); }
+.session-expired { position: fixed; inset: 0; height: 100dvh; z-index: 120; display: flex; padding: 24px 16px; overflow-y: auto; background: var(--scrim); }
+.session-expired__dialog { width: min(420px, 100%); margin: auto; display: flex; flex-direction: column; gap: 14px; padding: 22px 24px; border-radius: var(--r-2); background: var(--surface); box-shadow: var(--shadow-float); }
 .session-expired__dialog h2 { margin: 0; font-size: var(--t-4); font-weight: 600; }
 .session-expired__dialog p { margin: 0; color: var(--muted); font-size: var(--t-2); line-height: 1.6; }
 .session-expired__dialog p strong { color: var(--ink); font-weight: 600; }

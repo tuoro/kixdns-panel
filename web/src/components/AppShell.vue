@@ -4,13 +4,16 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Compon
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { useSession } from '../composables/useSession'
 import { useToast } from '../composables/useToast'
+import { THEME_CHOICES, useTheme, type ThemeChoice } from '../composables/useTheme'
 import { useUpdateNotifications, type UpdateNoticeItem } from '../composables/useUpdateNotifications'
+import UiTabs from './ui/UiTabs.vue'
 import { errorMessage } from '../utils'
 
 const route = useRoute()
 const router = useRouter()
 const session = useSession()
 const toast = useToast()
+const theme = useTheme()
 const username = computed(() => session.user.value?.username ?? '')
 const notifications = useUpdateNotifications(username)
 const activePopover = ref<'notifications' | 'account' | null>(null)
@@ -182,6 +185,8 @@ onBeforeUnmount(() => {
           </button>
           <section v-if="activePopover === 'account'" id="account-popover" class="account-popover" role="dialog" aria-label="账户">
             <strong>{{ username }}</strong><small>管理员</small>
+            <!-- 外观：跟随系统 / 浅色 / 深色，记在本机 / Appearance: follow system, light, dark; kept on this device -->
+            <div class="account-theme"><span class="ui-lbl">外观</span><UiTabs :model-value="theme.choice.value" :items="THEME_CHOICES" label="外观" variant="segment" @update:model-value="theme.set($event as ThemeChoice)" /></div>
             <button type="button" :disabled="signingOut" @click="logout"><LogOut :size="16" />{{ signingOut ? '正在退出' : '退出登录' }}</button>
           </section>
         </div>

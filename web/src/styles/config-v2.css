@@ -1617,7 +1617,7 @@ body { background: var(--l-canvas); }
 .cfg__facts .cfg__head-action { margin-left: var(--s-2); }
 .rules-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-5); align-items: start; }
 @media (min-width: 1360px) {
-  .rules-split.is-open { grid-template-columns: minmax(0, 1fr) 27rem; }
+  .rules-split.is-open { grid-template-columns: minmax(0, 1fr) var(--inspector-w); }
   /* 面板开着时列表窄了：结果那一列最窄 9rem、命中 4rem，名字那一列才留得住 / With the inspector open the list is narrower: the result column bottoms at 9rem and hits at 4rem, so the name column keeps its room */
   .rules-split.is-open :is(.rlist, .rcard) { --rl-cols: var(--s-6) minmax(0, 1.5fr) minmax(9rem, 1fr) 4rem var(--s-7) var(--h-sm); }
   /* 面板跟着滚：顶部留页边距，太高时自己滚 / The inspector sticks: a page margin above, scrolling inside when taller than the viewport */
@@ -1627,7 +1627,8 @@ body { background: var(--l-canvas); }
 .rcard__tools { display: flex; align-items: center; gap: var(--s-2); padding: var(--s-3) var(--s-5); border-bottom: 1px solid var(--l-hair); }
 .rcard__search { flex: 0 1 18rem; }
 .rcard__kind { flex: 0 0 9rem; }
-.rcard__quick { padding-right: 0; }
+/* 文字贴列表右缘：按钮向右伸出自己的内边距，展开时的底色框才是对称的 / Text flush with the list's right edge: the button hangs out by its own padding, so the open-state tint box stays symmetric */
+.rcard__quick { margin-right: calc(var(--s-2) * -1); }
 .rcard__quick[aria-expanded="true"] { background: var(--accent-tint); }
 /* 选中的行：品牌色淡底、左边 3px 的品牌色，名字不再画悬停下划线 / The selected row: accent tint, a 3px accent bar on the left, no hover underline on the name */
 .rrow.ui-selected { background: var(--accent-tint); }
@@ -1787,12 +1788,6 @@ body { background: var(--l-canvas); }
 .rrow__name { flex-wrap: nowrap; }
 .rrow__name b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rrow__name > :not(b) { flex: none; }
-
-/* ---------- ③b：配置页上的提示位置 / ③b: where toasts sit on the config page ---------- */
-@media (min-width: 861px) {
-  /* 右上角是页头的主按钮，提示叠上去容易误点「撤销」；配置页的提示改到右下、保存条上方（保存条高 = 按钮 30 + 上下 12）
-     The top right holds the header's primary button, and a toast over it invites a wrong 撤销; on the config page toasts move to the bottom right above the save bar (bar height = the 30 button + 12 above and below) */
-  body:has(.cfg) .toast-stack { top: auto; bottom: calc(var(--h-md) + var(--s-3) * 2 + var(--s-4)); right: var(--s-6); }
 }
 
 /* ---------- ③c：测试域名 / ③c: the domain tester ---------- */

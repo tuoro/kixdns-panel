@@ -230,3 +230,109 @@
 @media (max-width: 640px) {
   :root { --t-1: 12px; --t-2: 13px; --t-3: 14px; --t-4: 16px; --t-5: 22px; --h-sm: 30px; --h-md: 36px; }
 }
+
+/* ============================================================
+   深色模式 / Dark mode
+   同一套名字换一套值：页面和组件只认名字，不用改。两种进入方式：
+   系统偏好深色且用户没有选浅色（跟随系统，默认），或用户在账户菜单里选了深色（<html data-theme="dark">）。
+   The same names take a second set of values: pages and components know only the names. Two ways in: the system prefers dark
+   and the user has not chosen light (follow system, the default), or the user picked dark in the account menu (<html data-theme="dark">).
+   ============================================================ */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    /* 中性色：浅色面的名字换成深色值；名字不变，页面不用改 / The light-surface names take dark values; nothing in the pages changes */
+    --l-canvas: #0f1117;
+    --l-surface: #171a22;
+    --l-sunk: #1f232d;
+    --l-hair: #262b36;
+    --l-line-strong: #353b48;
+    --l-edge-hover: #48505f;
+    --l-texture: #2a303b;
+    --l-ink: #e8eaf0;
+    --l-ink-2: #aab1c0;
+    --l-ink-3: #8e96a8;
+    /* 品牌色提亮两档、品牌色上的字改成墨色：深底上靛色既要当文字（链接、文字按钮）又要当主按钮的底，白字放不下 4.5:1，墨字放得下
+     The accent lifts two steps and the text on it turns ink: on dark ground the indigo is both text (links, text buttons) and the primary button's fill; white text cannot reach 4.5:1 there, ink text can */
+    --accent: #8c8cf0;
+    --accent-deep: #a3a3f5;
+    --accent-tint: #26274d;
+    --accent-soft: #46488a;
+    --accent-ink: #0f1117;
+    /* 语义色：深底上文字提亮、底色压深 / Semantic colours: text lifts, tints sink on dark ground */
+    --ok-l: #5fc493;
+    --ok-l-deep: #85d5ad;
+    --ok-mark-l: #4fae86;
+    --ok-tint-l: #14281f;
+    --ok-line-l: #1f4a36;
+    --warn-l: #e3aa58;
+    --warn-tint-l: #2c2415;
+    --warn-line-l: #4b3b1c;
+    --err-l: #f08080;
+    --err-l-deep: #f5a0a0;
+    --err-tint-l: #301b1b;
+    --err-line-l: #4f2727;
+    /* 认证页的光池：深底上是暗池加一点抬亮 / The auth page's light pools: on dark ground, shade plus a slight lift */
+    --auth-ground: #0f1117;
+    --auth-glow: #232737;
+    --auth-shade: #0a0b10;
+    --auth-shade-2: #06070b;
+    /* 阴影和遮罩：深底上影子要重才看得见 / Shadows and the scrim: heavier, or they vanish on dark ground */
+    --scrim: rgba(0, 0, 0, .6);
+    --shadow-raise: 0 1px 2px rgba(0, 0, 0, .5), 0 0 0 .5px rgba(255, 255, 255, .06);
+    --shadow-pop: 0 6px 18px rgba(0, 0, 0, .5), 0 1px 3px rgba(0, 0, 0, .4), 0 0 0 1px var(--l-hair);
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, .3), 0 6px 20px rgba(0, 0, 0, .35), 0 0 0 1px var(--l-hair);
+    --shadow-float: 0 24px 70px rgba(0, 0, 0, .6), 0 0 0 1px var(--l-hair);
+    --ring-field: 0 0 0 3px rgba(140, 140, 240, .3);
+    --shadow-bar-tint: rgba(0, 0, 0, .45);
+    --shadow-xs: 0 1px 2px rgba(0, 0, 0, .35);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  /* 中性色：浅色面的名字换成深色值；名字不变，页面不用改 / The light-surface names take dark values; nothing in the pages changes */
+  --l-canvas: #0f1117;
+  --l-surface: #171a22;
+  --l-sunk: #1f232d;
+  --l-hair: #262b36;
+  --l-line-strong: #353b48;
+  --l-edge-hover: #48505f;
+  --l-texture: #2a303b;
+  --l-ink: #e8eaf0;
+  --l-ink-2: #aab1c0;
+  --l-ink-3: #8e96a8;
+  /* 品牌色提亮两档、品牌色上的字改成墨色：深底上靛色既要当文字（链接、文字按钮）又要当主按钮的底，白字放不下 4.5:1，墨字放得下
+     The accent lifts two steps and the text on it turns ink: on dark ground the indigo is both text (links, text buttons) and the primary button's fill; white text cannot reach 4.5:1 there, ink text can */
+  --accent: #8c8cf0;
+  --accent-deep: #a3a3f5;
+  --accent-tint: #26274d;
+  --accent-soft: #46488a;
+  --accent-ink: #0f1117;
+  /* 语义色：深底上文字提亮、底色压深 / Semantic colours: text lifts, tints sink on dark ground */
+  --ok-l: #5fc493;
+  --ok-l-deep: #85d5ad;
+  --ok-mark-l: #4fae86;
+  --ok-tint-l: #14281f;
+  --ok-line-l: #1f4a36;
+  --warn-l: #e3aa58;
+  --warn-tint-l: #2c2415;
+  --warn-line-l: #4b3b1c;
+  --err-l: #f08080;
+  --err-l-deep: #f5a0a0;
+  --err-tint-l: #301b1b;
+  --err-line-l: #4f2727;
+  /* 认证页的光池：深底上是暗池加一点抬亮 / The auth page's light pools: on dark ground, shade plus a slight lift */
+  --auth-ground: #0f1117;
+  --auth-glow: #232737;
+  --auth-shade: #0a0b10;
+  --auth-shade-2: #06070b;
+  /* 阴影和遮罩：深底上影子要重才看得见 / Shadows and the scrim: heavier, or they vanish on dark ground */
+  --scrim: rgba(0, 0, 0, .6);
+  --shadow-raise: 0 1px 2px rgba(0, 0, 0, .5), 0 0 0 .5px rgba(255, 255, 255, .06);
+  --shadow-pop: 0 6px 18px rgba(0, 0, 0, .5), 0 1px 3px rgba(0, 0, 0, .4), 0 0 0 1px var(--l-hair);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, .3), 0 6px 20px rgba(0, 0, 0, .35), 0 0 0 1px var(--l-hair);
+  --shadow-float: 0 24px 70px rgba(0, 0, 0, .6), 0 0 0 1px var(--l-hair);
+  --ring-field: 0 0 0 3px rgba(140, 140, 240, .3);
+  --shadow-bar-tint: rgba(0, 0, 0, .45);
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, .35);
+  color-scheme: dark;
+}
