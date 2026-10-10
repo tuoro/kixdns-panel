@@ -1,10 +1,10 @@
 import { computed, ref } from 'vue'
 import { ApiError, apiRequest, jsonBody } from '../api/client'
-import type { ConfigApplyResult, ConfigDocument, ConfigRuntimeApplyState, ConfigVersion, ConfigVersions, Overview, ServiceStatus, ValidationResult } from '../api/types'
+import type { ConfigApplyResult, ConfigDocument, ConfigRuntimeApplyState, ConfigVersion, ConfigVersionDetail, ConfigVersions, DeleteConfigVersionResult, DeleteConfigVersionsResult, Overview, ServiceStatus, ValidationResult } from '../api/types'
 import { SETTING_SECTIONS, settingSupported } from '../config-editor/schema'
 import { exportConfig } from '../config-model/document'
 import { errorMessage } from '../utils'
-import { applyHits, dirty, importReport, importSource, loadContent, model, reportOpen } from './store'
+import { applyHits, applyUpstreamStats, dirty, importReport, importSource, loadContent, model, reportOpen } from './store'
 
 // 配置页和面板服务之间的事：读配置和历史、KixDNS 的运行状态和能力、校验、保存并热加载、现在应用。
 // 草稿本身在 store.ts；这里只管「文件」和「运行」。所有状态是模块级的，页面和保存条共用同一份。
@@ -151,6 +151,7 @@ export function load(options: { quiet?: boolean } = {}): Promise<void> {
       reportOpen.value = false
     }
     applyHits(overview?.metrics?.rules ?? [])
+    applyUpstreamStats(overview?.metrics?.upstreams ?? [])
     validation.value = null
     loadError.value = ''
   })().catch((error: unknown) => { loadError.value = errorMessage(error) }).finally(() => { loading.value = false; pendingLoad = null })
@@ -212,3 +213,49 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
   }
 }
 export const applyNow = () => void save('apply')
+
+// ---------- 历史版本 / history ----------
+export const restoring = ref<number | null>(null)
+export const deleting = ref<number | null>(null)
+export const bulkDeleting = ref(false)
+// 版本的完整内容（比较用） / A version's full content (for comparing)
+export const versionDetail = (id: number) => apiRequest<ConfigVersionDetail>(`/api/v1/config/versions/${id}`)
+// 恢复：用那个版本的内容生成一个新版本并应用；回来重读整页 / Restore: a new version from that content, applied; the page reloads after
+export async function restoreVersion(id: number): Promise<{ state: 'applied' | 'pending'; versionId: number }> {
+  if (!doc.value) throw new Error('配置还没读进来')
+  restoring.value = id
+  try {
+    const result = await apiRequest<ConfigApplyResult>(`/api/v1/config/versions/${id}/restore`, { method: 'POST', ...jsonBody({ expected_sha256: doc.value.sha256 }) })
+    await load({ quiet: true })
+    return { state: applyResultState(result), versionId: result.version_id }
+  } finally {
+    restoring.value = null
+  }
+}
+async function refreshVersions(removesDesired: boolean): Promise<void> {
+  if (removesDesired) { await load({ quiet: true }); return }
+  versions.value = (await apiRequest<ConfigVersions>('/api/v1/config/versions')).versions
+}
+const desired = (v: ConfigVersion) => v.id === pendingVersionId.value || v.apply_state === 'pending' || v.apply_state === 'failed'
+export async function deleteVersion(v: ConfigVersion): Promise<void> {
+  if (!doc.value) return
+  deleting.value = v.id
+  try {
+    await apiRequest<DeleteConfigVersionResult>(`/api/v1/config/versions/${v.id}`, { method: 'DELETE', ...jsonBody({ expected_sha256: doc.value.sha256 }) })
+    await refreshVersions(desired(v))
+  } finally {
+    deleting.value = null
+  }
+}
+export async function deleteVersions(ids: number[]): Promise<number> {
+  if (!doc.value) return 0
+  bulkDeleting.value = true
+  try {
+    const result = await apiRequest<DeleteConfigVersionsResult>('/api/v1/config/versions/bulk', { method: 'DELETE', ...jsonBody({ ids, expected_sha256: doc.value.sha256 }) })
+    await refreshVersions(versions.value.some((v) => ids.includes(v.id) && desired(v)))
+    return result.deleted_ids.length
+  } finally {
+    bulkDeleting.value = false
+  }
+}
+export { friendlyRuntimeError }

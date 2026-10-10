@@ -1,7 +1,8 @@
 import { computed, reactive, ref } from 'vue'
-import type { RuleCount } from '../api/types'
+import type { RuleCount, UpstreamCount } from '../api/types'
 import { readConfig, type ImportReport, type ReadResult } from '../config-model/document'
-import { mainPipelineId, nextId, ruleGroupPipelineId, type Model, type Outcome, type Rule, type RuleGroup } from '../config-model/model'
+import { normalizeAddress } from '../config-model/kernel'
+import { kernelAddress, mainPipelineId, nextId, ruleGroupPipelineId, type Model, type Outcome, type Rule, type RuleGroup, type UpstreamGroup } from '../config-model/model'
 
 // 配置页的草稿：一份模型加上「上次读进来 / 保存成功时」的那份，改动按两者比出来。运行状态、保存流程在 useConfigDocument.ts。
 // The config page's draft: one model plus the one last loaded or saved, with changes computed between them. Runtime state and the
@@ -92,6 +93,30 @@ export function applyHits(counts: RuleCount[]): void {
   hits.value = map
 }
 export const hitsOf = (rule: Rule): number => hits.value.get(rule.id) ?? 0
+
+// ---------- 上游组的健康 / group health ----------
+// 概览按每个上游地址计数；一个组的数字是它所有地址的合计：成功率按拿到结果的尝试算（取消的不算分母），延迟按次数加权，近一小时取 recent
+// The overview counts per upstream address; a group's figures sum its addresses: success over attempts that got a result (aborted ones leave the denominator), latency weighted by attempts, the last hour from recent
+export interface GroupHealth { success: number; latency: number | null; queries: number }
+export const groupHealth = ref<Map<string, GroupHealth>>(new Map())
+export function applyUpstreamStats(counts: UpstreamCount[]): void {
+  const map = new Map<string, GroupHealth>()
+  const key = (address: string, transport = 'udp') => normalizeAddress(address, transport)
+  for (const g of model.groups) {
+    const wanted = new Set(g.addresses.map((a) => key(kernelAddress(a))))
+    const rows = counts.filter((c) => wanted.has(key(c.upstream, c.transport)))
+    if (!rows.length) continue
+    const attempts = rows.reduce((n, c) => n + c.attempts - c.aborted, 0)
+    const success = rows.reduce((n, c) => n + c.success, 0)
+    const timed = rows.filter((c) => c.avg_latency_ms !== null)
+    const weight = timed.reduce((n, c) => n + c.attempts - c.aborted, 0)
+    const latency = weight ? Math.round(timed.reduce((n, c) => n + (c.avg_latency_ms ?? 0) * (c.attempts - c.aborted), 0) / weight) : null
+    const queries = rows.reduce((n, c) => n + (c.recent?.attempts ?? 0), 0)
+    if (attempts) map.set(g.id, { success: Math.round((success / attempts) * 1000) / 10, latency, queries })
+  }
+  groupHealth.value = map
+}
+export const healthOf = (group: UpstreamGroup): GroupHealth | undefined => groupHealth.value.get(group.id)
 
 // ---------- 视图 / view ----------
 export const ui = reactive({ query: '', kind: '', tab: 'rules', mode: 'form' as 'form' | 'json' })

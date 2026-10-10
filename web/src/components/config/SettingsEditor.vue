@@ -11,13 +11,23 @@ const settings = defineModel<GlobalSettings>({ required: true })
 // The config format version lives outside settings; being a single field it closes 基础与监听 rather than forming a group of its own.
 const version = defineModel<string | undefined>('version')
 // changed：草稿里改过的设置 key（格式版本是 version），那一行和它的分组画墨点 / changed: setting keys the draft changed (the format version is version); the row and its group get an ink dot
-const props = defineProps<{ capabilities: string[]; changed?: ReadonlySet<string> }>()
+// hiddenKeys：由别处接管的设置不在这里出现（新配置页里「默认上游」由「其余请求」决定）；
+// lead：排在最前面的一组，内容由使用方经 #lead 插槽给出。两样都可以不给。
+// hiddenKeys: settings owned elsewhere stay out of this list (in the new config page 其余请求 decides the default upstream);
+// lead: a group listed first whose rows the caller supplies through the #lead slot. Both are optional.
+const props = defineProps<{
+  capabilities: string[]
+  changed?: ReadonlySet<string>
+  hiddenKeys?: readonly string[]
+  lead?: { id: string; title: string; description: string; summary: string[]; changed?: boolean }
+}>()
+const shown = (field: SettingField) => !props.hiddenKeys?.includes(field.key)
 const search = ref('')
 const searchInput = ref<HTMLInputElement>()
 // 左边一列分组、右边一组设置，和解析编排的「左列表、右检查器」同一种版式；手机上先看分组列表，点进去看一组。
 // Groups on the left and one group's settings on the right, the same layout as 解析编排's list and
 // inspector; a phone shows the group list first and opens one group at a time.
-const current = ref('network')
+const current = ref(props.lead?.id ?? 'network')
 const mobileOpen = ref(false)
 const mobileViewport = window.matchMedia('(max-width: 860px)')
 const isMobile = ref(mobileViewport.matches)
@@ -28,7 +38,7 @@ const query = computed(() => search.value.trim().toLowerCase())
 const allFields = SETTING_SECTIONS.flatMap((section) => section.fields)
 
 const visibleSections = computed(() => SETTING_SECTIONS.map((section) => {
-  const available = section.fields.filter((field) => supported(field) || Object.hasOwn(settings.value, field.key))
+  const available = section.fields.filter((field) => shown(field) && (supported(field) || Object.hasOwn(settings.value, field.key)))
   const matches = available.filter((field) => `${section.title} ${field.label} ${field.key}`.toLowerCase().includes(query.value))
   const relatedKeys = new Set(matches.flatMap((field) => [field.key, ...dependencyKeys(field)]))
   const fields = query.value
@@ -72,6 +82,7 @@ function changedAny(keys: string[]): boolean {
   return keys.some((key) => props.changed?.has(key))
 }
 const groups = computed(() => [
+  ...(props.lead ? [{ ...props.lead, changed: props.lead.changed ?? false }] : []),
   // 分组列表不随搜索变：它是导航，搜索只影响右边。 / The group list ignores the search: it is navigation; search only changes the pane.
   ...navSections.value.map((section) => ({
     id: section.id,
@@ -89,7 +100,7 @@ const versionMatches = computed(() => !query.value || '格式版本 version 配�
 const currentGroup = computed(() => groups.value.find((group) => group.id === current.value) ?? groups.value[0]!)
 const navSections = computed(() => SETTING_SECTIONS.map((section) => ({
   ...section,
-  fields: section.fields.filter((field) => (supported(field) || Object.hasOwn(settings.value, field.key)) && settingShouldRender(field, settings.value, props.capabilities)),
+  fields: section.fields.filter((field) => shown(field) && (supported(field) || Object.hasOwn(settings.value, field.key)) && settingShouldRender(field, settings.value, props.capabilities)),
 })).filter((section) => section.fields.length > 0))
 const currentSection = computed(() => navSections.value.find((section) => section.id === current.value))
 const paneSections = computed(() => (query.value ? visibleSections.value : currentSection.value ? [currentSection.value] : []))
@@ -260,6 +271,10 @@ function supported(field: SettingField): boolean {
         </div>
       </section>
 
+      <div v-if="!query && lead && current === lead.id" :key="current" class="ui-rise">
+        <header class="settings-group__head settings-group__head--lead"><h3>{{ lead.title }}</h3><p v-if="lead.description" class="settings-group__desc">{{ lead.description }}</p></header>
+        <div class="settings-rows"><slot name="lead" /></div>
+      </div>
       <div v-if="!query && current === 'geo'" :key="current" class="ui-rise">
         <header class="settings-group__head settings-group__head--lead"><h3>{{ currentGroup.title }}</h3><p v-if="currentGroup.description" class="settings-group__desc">{{ currentGroup.description }}</p></header>
         <GeoDataEditor v-model="settings" :changed="changed" />

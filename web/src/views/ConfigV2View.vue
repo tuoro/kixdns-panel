@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Braces, Download, FileUp, RefreshCw, Settings2 } from '@lucide/vue'
+import { Braces, Download, FileUp, History, RefreshCw, Settings2 } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import JsonEditor from '../components/JsonEditor.vue'
@@ -12,11 +12,15 @@ import { useToast } from '../composables/useToast'
 import { exportConfig, readConfig } from '../config-model/document'
 import { compile, ruleTitle, type Model, type Rule, type UpstreamGroup } from '../config-model/model'
 import GroupEditor from '../config-v2/GroupEditor.vue'
+import HistoryDrawer from '../config-v2/HistoryDrawer.vue'
 import ImportReportDialog from '../config-v2/ImportReportDialog.vue'
+import MappingTab from '../config-v2/MappingTab.vue'
 import RuleEditor from '../config-v2/RuleEditor.vue'
 import RulesTab from '../config-v2/RulesTab.vue'
 import RuleText from '../config-v2/RuleText.vue'
 import SaveBar from '../config-v2/SaveBar.vue'
+import SettingsTab from '../config-v2/SettingsTab.vue'
+import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { usePhone, useWide } from '../config-v2/phone'
 import { dirty, importReport, importSource, model, replaceModel, reportOpen, ui } from '../config-v2/store'
 import {
@@ -26,7 +30,7 @@ import {
 import '../styles/config-v2.css'
 
 // 新配置页（③）：侧栏里的「规则 · 上游组 · 域名映射 · 基础设置」各是一页，这个文件是它们共用的外壳——页头的事实行、通知条、
-// JSON 视图、导入导出、保存条。草稿在 config-v2/store.ts，文件和运行状态在 config-v2/useConfigDocument.ts。
+// JSON 视图、导入导出、历史版本、保存条。草稿在 config-v2/store.ts，文件和运行状态在 config-v2/useConfigDocument.ts。
 // The new config page (③): the sidebar's 规则 · 上游组 · 域名映射 · 基础设置 are each a page, and this file is their shared shell — the
 // header's facts row, the notice strip, the JSON view, import/export, the save bar. The draft lives in config-v2/store.ts, the file and
 // runtime in config-v2/useConfigDocument.ts.
@@ -50,6 +54,13 @@ const firstRun = computed(() => ready.value && ui.mode === 'form' && !model.grou
 const editor = ref<{ ruleId: number | null; groupId: string | null; template?: Partial<Rule> } | null>(null)
 const inspector = computed(() => editor.value !== null && wide.value && section.value === 'rules' && ui.mode === 'form')
 const groupEditor = ref<{ id: string | null } | null>(null)
+const historyOpen = ref<{ compare: number | null } | null>(null)
+// 上游组卡片上的「N 处在用」：跳到规则页，按这个组筛 / A group card's 「N 处在用」: go to the rules page filtered by that group
+function showGroupRules(groupId: string): void {
+  ui.query = model.groups.find((g) => g.id === groupId)?.name ?? ''
+  ui.kind = 'upstream'
+  setTab('rules')
+}
 
 // ---------- 规则编辑 / editing rules ----------
 function openRule(ruleId: number | null, groupId: string | null, template?: Partial<Rule>): void {
@@ -156,13 +167,15 @@ function leaveJson(): boolean {
 function setMode(m: string): void { if (m === 'json') enterJson(); else leaveJson() }
 const modes = [{ value: 'form', label: '表单', icon: Settings2 }, { value: 'json', label: 'JSON', icon: Braces }]
 const moreItems = computed(() => [
+  { value: 'history', label: '历史版本', icon: History, disabled: !ready.value },
   { value: 'mode', label: ui.mode === 'json' ? '回到表单' : '查看 JSON', icon: ui.mode === 'json' ? Settings2 : Braces, disabled: !ready.value },
   { value: 'import', label: '导入 JSON', icon: FileUp, disabled: !ready.value },
   { value: 'download', label: '下载 JSON', icon: Download, disabled: !ready.value },
   { value: 'reload', label: '重新读取配置', icon: RefreshCw, disabled: loading.value },
 ])
 function pickMore(value: string): void {
-  if (value === 'mode') setMode(ui.mode === 'json' ? 'form' : 'json')
+  if (value === 'history') historyOpen.value = { compare: null }
+  else if (value === 'mode') setMode(ui.mode === 'json' ? 'form' : 'json')
   else if (value === 'import') fileInput.value?.click()
   else if (value === 'download') downloadJson()
   else void reload()
@@ -274,15 +287,13 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
         <RulesTab :selected="editor?.ruleId ?? null" @open="openRule" @tab="setTab" @edit-group="groupEditor = { id: $event }" @import="fileInput?.click()" />
         <RuleEditor v-if="inspector && editor" :key="`${editor.ruleId}-${editor.groupId}`" inspector :rule-id="editor.ruleId" :group-id="editor.groupId" :template="editor.template" @close="closeRule" @saved="ruleSaved" @deleted="ruleDeleted" @edit-group="groupEditor = { id: $event }" />
       </div>
-      <!-- 其余三页在 ③c 接上；这之前仍用现有配置页的对应分类 / The other three pages are wired in ③c; until then the current config page's categories serve -->
-      <div v-else class="ui-card cfg__pending">
-        <p class="cfg__pending-title">「{{ tabs.find((t) => t.value === section)?.label }}」还在接上新配置页</p>
-        <p class="cfg__pending-note">先用现有配置页改这部分，规则页已经可以用。</p>
-        <RouterLink class="ui-btn ui-btn--secondary" :to="{ path: '/config', query: { section: section === 'upstreams' ? undefined : section } }">打开现有配置页</RouterLink>
-      </div>
+      <UpstreamsTab v-else-if="section === 'upstreams'" @edit="groupEditor = { id: $event }" @rules="showGroupRules" />
+      <MappingTab v-else-if="section === 'mapping'" />
+      <SettingsTab v-else />
     </div>
     <SaveBar v-if="ready" :json-error="jsonError" @rule="openRule($event, null)" @group="groupEditor = { id: $event }" @reveal="(l: number, c: number) => jsonEditor?.reveal(l, c)" @reload="reload(false)" />
   </div>
   <GroupEditor v-if="groupEditor" :key="groupEditor.id ?? 'new'" :group-id="groupEditor.id" @close="groupEditor = null" @saved="groupSaved" @deleted="groupDeleted" />
+  <HistoryDrawer v-if="historyOpen" :compare-with="historyOpen.compare" @close="historyOpen = null" @rule="historyOpen = null; openRule($event, null)" />
   <ImportReportDialog v-if="reportOpen && importReport" @close="reportOpen = false" />
 </template>
