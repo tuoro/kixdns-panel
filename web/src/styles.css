@@ -956,9 +956,22 @@ body { text-spacing-trim: trim-start; }
 .auth-brand span { width: var(--h-sm); height: var(--h-sm); display: grid; place-items: center; color: var(--accent-ink); background: var(--accent); border-radius: var(--r-2); }
 .auth-brand span svg { width: var(--size-icon); height: var(--size-icon); }
 
-/* ---------- 外观切换：账户菜单里一行 / Appearance: one row in the account popover ---------- */
-.account-theme { display: grid; gap: var(--s-1); margin-top: var(--s-3); padding-top: var(--s-3); border-top: 1px solid var(--l-hair); }
-.account-theme > .ui-lbl { color: var(--l-ink-3); }
+/* ---------- 外观：铃铛旁一个图标，点开选三态 / Appearance: an icon beside the bell opens the three-way choice ---------- */
+.theme-center { position: relative; }
+.theme-center:has([aria-expanded="true"]) { z-index: 2; }
+.theme-popover { position: absolute; top: 50px; right: 0; width: 11.5rem; padding: var(--s-3) var(--s-2) var(--s-2); color: var(--l-ink); background: var(--l-surface); border: 1px solid var(--l-hair); border-radius: var(--r-3); box-shadow: var(--shadow-pop); }
+.theme-popover > .ui-lbl { display: block; padding-inline: var(--s-2); }
+.theme-popover__list { display: grid; margin-top: var(--s-2); }
+.theme-popover__list > button { min-height: var(--h-md); display: flex; align-items: center; gap: var(--s-2); padding: 0 var(--s-2); color: var(--l-ink); background: transparent; border: 0; border-radius: var(--r-2); font-size: var(--t-2); text-align: left; }
+.theme-popover__list > button > svg:first-child { color: var(--l-ink-3); }
+.theme-popover__list > button:hover { background: var(--l-sunk); }
+.theme-popover__list > button[aria-checked="true"] { font-weight: var(--w-medium); }
+.theme-popover__check { margin-left: auto; color: var(--accent); }
+@media (max-width: 860px) { .theme-popover { position: fixed; top: calc(var(--app-header-height) + var(--s-2)); right: var(--s-4); } }
+@media (min-width: 861px) {
+  .theme-popover { top: auto; right: auto; bottom: 0; left: calc(100% + var(--s-2)); }
+  .app-header__actions { grid-template-columns: minmax(0, 1fr) auto auto auto; }
+}
 
 /* ---------- 提示条的位置：全站一个规矩 / Where toasts sit: one rule for the whole site ----------
    桌面右下角，不盖页头和主按钮；页面底部有吸底的保存条时抬到它上面。手机在底部导航上方，保存条或整页编辑器的底栏在时再抬一层。
