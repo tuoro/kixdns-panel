@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { Activity, ArrowRightLeft, Bell, Check, Cpu, FileText, LayoutGrid, List, LogOut, PanelsTopLeft, RefreshCw, Server, Settings, SlidersHorizontal, Stethoscope } from '@lucide/vue'
+import { Activity, ArrowRightLeft, Bell, Check, Cpu, FileText, LayoutGrid, List, LogOut, Monitor, Moon, PanelsTopLeft, RefreshCw, Server, Settings, SlidersHorizontal, Stethoscope, Sun } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { useSession } from '../composables/useSession'
 import { useToast } from '../composables/useToast'
+import { THEME_CHOICES, useTheme, type ThemeChoice } from '../composables/useTheme'
 import { useUpdateNotifications, type UpdateNoticeItem } from '../composables/useUpdateNotifications'
 import { errorMessage } from '../utils'
 
@@ -11,13 +12,20 @@ const route = useRoute()
 const router = useRouter()
 const session = useSession()
 const toast = useToast()
+const theme = useTheme()
 const username = computed(() => session.user.value?.username ?? '')
 const notifications = useUpdateNotifications(username)
-const activePopover = ref<'notifications' | 'account' | null>(null)
+type PopoverKind = 'notifications' | 'account' | 'theme'
+const activePopover = ref<PopoverKind | null>(null)
 const notificationCenter = ref<HTMLElement | null>(null)
 const accountCenter = ref<HTMLElement | null>(null)
 const notificationButton = ref<HTMLButtonElement | null>(null)
 const accountButton = ref<HTMLButtonElement | null>(null)
+const themeCenter = ref<HTMLElement | null>(null)
+const themeButton = ref<HTMLButtonElement | null>(null)
+// 外观按钮的图标跟着当前选择走：显示器、太阳、月亮 / The appearance button's icon follows the current choice: monitor, sun, moon
+const THEME_ICONS: Record<ThemeChoice, Component> = { system: Monitor, light: Sun, dark: Moon }
+const themeIcon = computed(() => THEME_ICONS[theme.choice.value])
 const signingOut = ref(false)
 const title = computed(() => route.meta.title ?? 'KixDNS Panel')
 // 侧栏底部的版本行：面板版本，有更新时上面多一行 / The sidebar's version line: the panel version, with an update line above it when one is available
@@ -59,21 +67,28 @@ function isCurrent(item: NavItem): boolean {
   return item.section ? section === item.section : item.to !== '/config' || section === '' || section === 'rules'
 }
 
-function togglePopover(kind: 'notifications' | 'account'): void {
+function togglePopover(kind: PopoverKind): void {
   activePopover.value = activePopover.value === kind ? null : kind
 }
 
 function handleKeydown(event: KeyboardEvent): void {
   if (event.key !== 'Escape' || !activePopover.value) return
-  const trigger = activePopover.value === 'account' ? accountButton : notificationButton
+  const trigger = activePopover.value === 'account' ? accountButton : activePopover.value === 'theme' ? themeButton : notificationButton
   activePopover.value = null
   void nextTick(() => trigger.value?.focus())
 }
 
 function handleDocumentPointerDown(event: PointerEvent): void {
   const target = event.target as Node
-  if (notificationCenter.value?.contains(target) || accountCenter.value?.contains(target)) return
+  if (notificationCenter.value?.contains(target) || accountCenter.value?.contains(target) || themeCenter.value?.contains(target)) return
   activePopover.value = null
+}
+
+// 选完就收起，焦点回到按钮 / Picking closes the popover and returns focus to the button
+function pickTheme(value: ThemeChoice): void {
+  theme.set(value)
+  activePopover.value = null
+  void nextTick(() => themeButton.value?.focus())
 }
 
 async function openNotice(notice: UpdateNoticeItem): Promise<void> {
@@ -174,6 +189,20 @@ onBeforeUnmount(() => {
             </div>
             <div v-else class="notification-empty">{{ notifications.checking.value ? '正在检查更新…' : '暂无更新通知' }}</div>
             <p v-if="notifications.error.value" class="notification-error">检查失败：{{ notifications.error.value }}</p>
+          </section>
+        </div>
+        <!-- 外观：铃铛旁一个图标，点开选跟随系统 / 浅色 / 深色，记在本机 / Appearance: an icon beside the bell opens follow-system / light / dark; kept on this device -->
+        <div ref="themeCenter" class="theme-center">
+          <button ref="themeButton" class="header-button theme-button" type="button" :title="`外观：${theme.label.value}`" :aria-label="`外观：${theme.label.value}`" aria-haspopup="dialog" aria-controls="theme-popover" :aria-expanded="activePopover === 'theme'" @click="togglePopover('theme')">
+            <component :is="themeIcon" :size="18" aria-hidden="true" />
+          </button>
+          <section v-if="activePopover === 'theme'" id="theme-popover" class="theme-popover" role="dialog" aria-label="外观">
+            <span class="ui-lbl">外观</span>
+            <div class="theme-popover__list" role="radiogroup" aria-label="外观">
+              <button v-for="item in THEME_CHOICES" :key="item.value" type="button" role="radio" :aria-checked="theme.choice.value === item.value" @click="pickTheme(item.value)">
+                <component :is="THEME_ICONS[item.value]" :size="16" aria-hidden="true" /><span>{{ item.label }}</span><Check v-if="theme.choice.value === item.value" class="theme-popover__check" :size="14" aria-hidden="true" />
+              </button>
+            </div>
           </section>
         </div>
         <div ref="accountCenter" class="account-center">
