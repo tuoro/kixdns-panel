@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ChevronDown, ChevronRight, Plus, Trash2, X } from '@lucide/vue'
+import UiHelp from '../components/ui/UiHelp.vue'
 import { computed, nextTick, ref } from 'vue'
 import UiMenu from '../components/ui/UiMenu.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
@@ -112,7 +113,7 @@ function addGroup(): void {
         <CondForm nested :model-value="{ match: item.match, items: item.items }" :fields="fields" :order="order" :groups="false" :show-errors="showErrors" @update:model-value="patchGroup(i, $event)" />
       </div>
       <div v-else-if="!phone" class="cform__row">
-        <span class="cform__label">{{ def(item).label }}</span>
+        <span class="cform__label">{{ def(item).label }}<UiHelp v-if="item.field === 'geosite' || item.field === 'request_geosite'" topic="geosite" /></span>
         <UiSelect v-if="def(item).ops.length > 1" class="cform__op" :model-value="op(item).value" :options="ops(item)" :label="`${def(item).label}怎么比`" @update:model-value="setOp(i, $event)" />
         <span v-else class="cform__label cform__op">{{ op(item).label }}</span>
         <div v-if="def(item).values" class="cform__ctl">

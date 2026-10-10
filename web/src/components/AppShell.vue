@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { Activity, ArrowRightLeft, Bell, Check, Cpu, FileText, LayoutGrid, List, LogOut, Monitor, Moon, PanelsTopLeft, RefreshCw, Server, Settings, SlidersHorizontal, Stethoscope, Sun } from '@lucide/vue'
+import { Activity, ArrowRightLeft, Bell, Check, Cpu, FileText, Keyboard, LayoutGrid, List, LogOut, Monitor, Moon, PanelsTopLeft, RefreshCw, Server, Settings, SlidersHorizontal, Stethoscope, Sun } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
+import { useHelp } from '../composables/useHelp'
 import { useSession } from '../composables/useSession'
+import HelpDrawer from './HelpDrawer.vue'
+import type { HelpPage } from '../help/topics'
 import { useToast } from '../composables/useToast'
 import { THEME_CHOICES, useTheme, type ThemeChoice } from '../composables/useTheme'
 import { useUpdateNotifications, type UpdateNoticeItem } from '../composables/useUpdateNotifications'
@@ -13,6 +16,9 @@ const router = useRouter()
 const session = useSession()
 const toast = useToast()
 const theme = useTheme()
+const help = useHelp()
+// 当前页在帮助里叫什么 / Which help page the current route maps to
+const helpPage = computed<HelpPage>(() => (route.path.startsWith('/config') ? 'config' : route.path.startsWith('/logs') ? 'logs' : route.path.startsWith('/diagnostics') ? 'diagnostics' : route.path.startsWith('/system') ? 'system' : 'overview'))
 const username = computed(() => session.user.value?.username ?? '')
 const notifications = useUpdateNotifications(username)
 type PopoverKind = 'notifications' | 'account' | 'theme'
@@ -71,7 +77,10 @@ function togglePopover(kind: PopoverKind): void {
   activePopover.value = activePopover.value === kind ? null : kind
 }
 
+// ? 打开帮助抽屉（输入框里和弹层开着时不抢）/ ? opens the help drawer, not while typing or while a dialog is open
+function typing(event: KeyboardEvent): boolean { const t = event.target; return t instanceof HTMLElement && Boolean(t.closest('input, textarea, select, [contenteditable="true"]')) }
 function handleKeydown(event: KeyboardEvent): void {
+  if (event.key === '?' && !event.metaKey && !event.ctrlKey && !event.altKey && !typing(event) && !document.querySelector('dialog[open]')) { event.preventDefault(); activePopover.value = null; help.show(helpPage.value, 'shortcuts'); return }
   if (event.key !== 'Escape' || !activePopover.value) return
   const trigger = activePopover.value === 'account' ? accountButton : activePopover.value === 'theme' ? themeButton : notificationButton
   activePopover.value = null
@@ -211,6 +220,7 @@ onBeforeUnmount(() => {
           </button>
           <section v-if="activePopover === 'account'" id="account-popover" class="account-popover" role="dialog" aria-label="账户">
             <strong>{{ username }}</strong><small>管理员</small>
+            <button class="account-keys" type="button" @click="activePopover = null; help.show(helpPage, 'shortcuts')"><Keyboard :size="16" />键盘快捷键</button>
             <button type="button" :disabled="signingOut" @click="logout"><LogOut :size="16" />{{ signingOut ? '正在退出' : '退出登录' }}</button>
           </section>
         </div>
@@ -222,6 +232,7 @@ onBeforeUnmount(() => {
         <RouterView />
       </main>
     </div>
+    <HelpDrawer v-if="help.request.value" />
     <nav class="mobile-nav" aria-label="移动端导航">
       <RouterLink v-for="item in navigation" :key="item.to" :to="item.to"><component :is="item.icon" :size="22" /><span>{{ item.label }}</span></RouterLink>
     </nav>

@@ -901,3 +901,22 @@ button.ui-link { position: relative; min-height: 0; padding: 0; border: 0; backg
 .ui-task__bar--indeterminate > i { width: 40%; animation: ui-sweep calc(var(--m-spin) * 2) var(--ease-in-out) infinite alternate; }
 @keyframes ui-sweep { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
 @media (prefers-reduced-motion: reduce) { .ui-task__bar--indeterminate > i { animation: none; width: 100%; opacity: .4; } }
+
+/* ---------- 概念旁边的「?」：点开一个小弹层，三四句说清楚；底部一行直通帮助抽屉 / The 「?」 beside a concept: a small popover with three or four sentences; a line at the bottom opens the help drawer ---------- */
+.ui-help { display: inline-flex; vertical-align: middle; margin-left: var(--s-1); }
+.ui-help__btn { display: inline-grid; place-items: center; width: var(--h-tag); height: var(--h-tag); padding: 0; border: 0; border-radius: var(--r-full); background: transparent; color: var(--l-ink-3); cursor: pointer; }
+.ui-help__btn:hover, .ui-help__btn[aria-expanded="true"] { color: var(--l-ink); background: var(--l-sunk); }
+/* 顶层里的弹层：位置由脚本按按钮算好写进 --help-x / --help-y / In the top layer: the script writes the position from the button into --help-x / --help-y */
+.ui-help__pop { position: fixed; inset: auto; top: var(--help-y, 0); left: var(--help-x, 0); width: min(22rem, calc(100vw - var(--s-4) * 2)); margin: 0; padding: var(--s-3) var(--s-4) var(--s-2); overflow: visible; border: 1px solid var(--l-hair); border-radius: var(--r-3); background: var(--l-surface); box-shadow: var(--shadow-pop); color: var(--l-ink); font-family: var(--f-body); font-size: var(--t-2); font-weight: var(--w-normal); line-height: var(--lh-base); letter-spacing: normal; text-align: left; text-transform: none; white-space: normal; outline: 0; }
+.ui-help__pop:not(:popover-open) { display: none; }
+.ui-help__pop:popover-open { animation: ui-fade var(--m-quick) var(--ease-out); }
+.ui-help__title { display: block; margin-bottom: var(--s-1); font-size: var(--t-3); font-weight: var(--w-medium); }
+.ui-help__pop p { margin: 0 0 var(--s-2); color: var(--l-ink-2); }
+.ui-help__more { margin: 0 calc(var(--s-2) * -1); padding: var(--s-1) var(--s-2); border: 0; border-radius: var(--r-1); background: none; color: var(--accent); font: inherit; font-weight: var(--w-medium); cursor: pointer; }
+.ui-help__more:hover { background: var(--accent-tint); }
+/* 手机：和菜单一样从底部升起，后面压暗 / Phones: rises from the bottom like the menus, with the page dimmed behind */
+@media (max-width: 640px) {
+  .ui-help__pop { top: auto; right: 0; bottom: 0; left: 0; width: 100%; padding: var(--s-4) var(--s-4) calc(var(--s-3) + env(safe-area-inset-bottom)); border-width: 1px 0 0; border-radius: var(--r-3) var(--r-3) 0 0; }
+  .ui-help__pop:popover-open { animation: ui-sheet-in var(--m-base) var(--ease-out); }
+  .ui-help__pop::backdrop { background: var(--scrim); }
+}

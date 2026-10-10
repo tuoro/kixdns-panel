@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Braces, Download, FileUp, History, RefreshCw, Settings2 } from '@lucide/vue'
+import { Braces, CircleHelp, Download, FileUp, History, RefreshCw, Settings2 } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import JsonEditor from '../components/JsonEditor.vue'
@@ -27,6 +27,7 @@ import {
   applyBusy, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, friendlyRuntimeMessage, hasApplyFailure, headerAction, headerLine,
   load, loadError, loading, pendingVersionId, runtimeStopped, runtimeUnavailable, unsupportedFields,
 } from '../config-v2/useConfigDocument'
+import { useHelp } from '../composables/useHelp'
 import '../styles/config-v2.css'
 
 // 配置页：侧栏里的「规则 · 上游组 · 域名映射 · 基础设置」各是一页，这个文件是它们共用的外壳——页头的事实行、通知条、
@@ -35,6 +36,7 @@ import '../styles/config-v2.css'
 // header's facts row, the notice strip, the JSON view, import/export, the save bar. The draft lives in config-v2/store.ts, the file and
 // runtime in config-v2/useConfigDocument.ts.
 const route = useRoute()
+const help = useHelp()
 const router = useRouter()
 const toast = useToast()
 const confirm = useConfirm()
@@ -172,12 +174,14 @@ const moreItems = computed(() => [
   { value: 'import', label: '导入 JSON', icon: FileUp, disabled: !ready.value },
   { value: 'download', label: '下载 JSON', icon: Download, disabled: !ready.value },
   { value: 'reload', label: '重新读取配置', icon: RefreshCw, disabled: loading.value },
+  { value: 'help', label: '帮助', icon: CircleHelp },
 ])
 function pickMore(value: string): void {
   if (value === 'history') historyOpen.value = { compare: null }
   else if (value === 'mode') setMode(ui.mode === 'json' ? 'form' : 'json')
   else if (value === 'import') fileInput.value?.click()
   else if (value === 'download') downloadJson()
+  else if (value === 'help') help.show('config')
   else void reload()
 }
 

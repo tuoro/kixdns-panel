@@ -27,6 +27,7 @@ const restText = computed(() => (model.rest.type === 'upstream' ? `其余交给�
 const lead = computed(() => ({
   id: 'rules',
   title: '规则默认值',
+  help: 'defaults',
   description: '拦截怎么回应、其余请求交给谁',
   summary: [`拦截回 ${model.defaults.block === 'zero' ? '空地址' : model.defaults.block}`, restText.value],
 }))

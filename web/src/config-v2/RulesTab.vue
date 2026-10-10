@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Braces, FileUp, FlaskConical, ListFilter, Plus, Search, X } from '@lucide/vue'
-import { computed, nextTick, reactive, ref, toRefs } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, toRefs } from 'vue'
+import UiHelp from '../components/ui/UiHelp.vue'
 import JsonEditor from '../components/JsonEditor.vue'
 import UiMenu from '../components/ui/UiMenu.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
@@ -19,6 +20,18 @@ import { model, newId, ruleGroupUsers, ui } from './store'
 defineProps<{ selected: number | null }>()
 const emit = defineEmits<{ open: [ruleId: number | null, groupId: string | null, template?: Partial<Rule>]; tab: [name: string]; editGroup: [id: string | null]; import: [] }>()
 const toast = useToast()
+// 规则页快捷键：/ 聚焦搜索，n 新建规则；输入框里、按着修饰键、弹层开着时不抢 / Rules page shortcuts: / focuses the search, n starts a new rule; not while typing, with modifiers held, or while a dialog is open
+const searchInput = ref<HTMLInputElement | null>(null)
+function onPageKey(event: KeyboardEvent): void {
+  if (event.metaKey || event.ctrlKey || event.altKey) return
+  const t = event.target
+  if (t instanceof HTMLElement && t.closest('input, textarea, select, [contenteditable="true"]')) return
+  if (document.querySelector('dialog[open]')) return
+  if (event.key === '/') { event.preventDefault(); searchInput.value?.focus() }
+  else if (event.key === 'n') { event.preventDefault(); emit('open', null, null) }
+}
+onMounted(() => window.addEventListener('keydown', onPageKey))
+onBeforeUnmount(() => window.removeEventListener('keydown', onPageKey))
 const { query, kind } = toRefs(ui)
 const kinds = [{ value: '', label: '全部结果' }, { value: 'upstream', label: '交给上游组' }, { value: 'block', label: '拦截' }, { value: 'answer', label: '自定义回答' }, { value: 'group', label: '转到规则组' }, { value: 'continue', label: '继续往下' }]
 // 测试域名：问 KixDNS 正在用的配置；命中的规则（或域名映射）在列表里标出来 / 测试域名 asks the running config; the matched rule (or mapping) is marked in the list
@@ -225,7 +238,7 @@ function saveEntries(): void {
 
       <section class="ui-card rcard" aria-label="规则列表">
         <div v-if="!phone" class="rcard__tools">
-          <label class="ui-input rcard__search"><Search :size="16" aria-hidden="true" /><input v-model="query" type="search" aria-label="搜索规则" placeholder="搜索规则名、域名或 IP" @keydown.esc="query = ''"><button v-if="query" class="ui-input__affix" type="button" aria-label="清除搜索" @click="query = ''"><X :size="14" /></button></label>
+          <label class="ui-input rcard__search"><Search :size="16" aria-hidden="true" /><input ref="searchInput" v-model="query" type="search" aria-label="搜索规则" placeholder="搜索规则名、域名或 IP" @keydown.esc="query = ''"><button v-if="query" class="ui-input__affix" type="button" aria-label="清除搜索" @click="query = ''"><X :size="14" /></button></label>
           <UiSelect v-model="kind" class="rcard__kind" :options="kinds" label="按结果筛选" />
           <span class="toolbar__spacer"></span>
           <button class="ui-btn ui-btn--text rcard__quick" type="button" :aria-expanded="quickOpen" @click="toggleQuick"><Plus :size="16" aria-hidden="true" />快速添加</button>
@@ -244,7 +257,7 @@ function saveEntries(): void {
 
       <section class="rgroups" aria-labelledby="rg-title">
         <header class="rgroups__head">
-          <div><h2 id="rg-title" class="rgroups__title">规则组</h2><p class="rgroups__desc">一组单独的规则，由「转到规则组」带进来，也可以直接接住某个监听入口的请求。</p></div>
+          <div><h2 id="rg-title" class="rgroups__title">规则组<UiHelp topic="groups" /></h2><p class="rgroups__desc">一组单独的规则，由「转到规则组」带进来，也可以直接接住某个监听入口的请求。</p></div>
           <button class="ui-btn ui-btn--secondary" type="button" @click="openGroup(null)"><Plus :size="16" aria-hidden="true" />新建规则组</button>
         </header>
         <section v-if="model.entries?.length" class="ui-card rcard entries" aria-labelledby="ent-title">
