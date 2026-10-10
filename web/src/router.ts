@@ -23,7 +23,7 @@ const router = createRouter({
       meta: { auth: true },
       children: [
         { path: '', name: 'dashboard', component: () => import('./views/DashboardView.vue'), meta: { auth: true, title: '运行概览' } },
-        { path: 'config', name: 'config', component: () => import('./views/ConfigView.vue'), meta: { auth: true, title: '配置管理' } },
+        { path: 'config', name: 'config', component: () => import('./views/ConfigRoute.vue'), meta: { auth: true, title: '配置管理' } },
         { path: 'logs', name: 'logs', component: () => import('./views/LogsView.vue'), meta: { auth: true, title: '运行日志' } },
         { path: 'diagnostics', name: 'diagnostics', component: () => import('./views/DiagnosticsView.vue'), meta: { auth: true, title: 'DNS 诊断' } },
         { path: 'system', name: 'system', component: () => import('./views/SystemView.vue'), meta: { auth: true, title: '系统' } },

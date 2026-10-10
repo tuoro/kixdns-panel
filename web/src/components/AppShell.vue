@@ -55,7 +55,12 @@ const navGroups: Array<{ label: string; items: NavItem[] }> = [
   { label: '观察', items: [{ to: '/logs', label: '日志', icon: FileText }, { to: '/diagnostics', label: '诊断', icon: Stethoscope }] },
   { label: '系统', items: [{ to: '/system', label: '系统', icon: Settings }] },
 ]
-function navTarget(item: NavItem) { return item.section ? { path: item.to, query: { section: item.section } } : item.to }
+// 新配置页（?v2=1）试用期间，配置子项的链接带着 v2，不会点一下就掉回旧页 / While the new config page (?v2=1) is on trial, the config items keep v2 so a click never drops back to the old page
+function navTarget(item: NavItem) {
+  const v2 = route.path === '/config' && typeof route.query.v2 === 'string' ? { v2: route.query.v2 } : {}
+  if (item.section) return { path: item.to, query: { ...v2, section: item.section } }
+  return item.to === '/config' && 'v2' in v2 ? { path: item.to, query: v2 } : item.to
+}
 function isCurrent(item: NavItem): boolean {
   if (route.path !== item.to) return false
   const section = typeof route.query.section === 'string' ? route.query.section : ''
