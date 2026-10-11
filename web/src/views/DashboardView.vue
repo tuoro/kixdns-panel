@@ -115,7 +115,7 @@ const metaTail = computed<'live' | 'snapshot' | ''>(() => (runtimeState.value ==
 
 // ---------- 页级提示：一次只出一条，读取错误写进原因行 ----------
 // ---------- Page notice: one at a time, a read error goes in its reason line ----------
-interface PageNotice { tone: 'warn' | 'err' | 'off'; icon: typeof CircleAlert; title: string; reason: string; action?: 'retry' | 'config' | 'logs' | 'start' }
+interface PageNotice { tone: 'warn' | 'err' | 'off'; icon: typeof CircleAlert; title: string; reason: string; action?: 'retry' | 'config' | 'logs' | 'start'; phoneOnly?: boolean }
 // 原因行把几条读取错误和一句「接下来会怎样」连成一段 / The reason line joins the read errors and one sentence on what happens next
 function reasonOf(...parts: string[]): string {
   return parts.filter(Boolean).map((part) => part.replace(/[。；;.]$/, '')).join('；') + '。'
@@ -124,7 +124,8 @@ const notice = computed<PageNotice | null>(() => {
   // 连不上面板时顶上的横幅已经说了为什么、也有重试：这里只说手上的数是什么时候读到的，不再复述原因、不给第二个重试，也不给按了只会失败的「启动」
   // With the panel unreachable the banner above says why and offers the retry: this only says when the figures in hand were read, without restating the cause,
   // a second retry, or a 启动 that could only fail
-  if (panelDown.value) return loadedAt.value ? { tone: 'off', icon: Clock, title: `显示 ${updatedLabel.value} 读到的数据`, reason: '' } : { tone: 'off', icon: Clock, title: '连上面板后自动打开', reason: '' }
+  // 宽屏页头的「更新于」已经写了读到的时刻，这一行只给手机（手机页头没有这一项） / On wide screens the header's 更新于 already gives the read time, so this line is for phones only (their header lacks it)
+  if (panelDown.value) return loadedAt.value ? { tone: 'off', icon: Clock, title: `显示 ${updatedLabel.value} 读到的数据`, reason: '', phoneOnly: true } : { tone: 'off', icon: Clock, title: '连上面板后自动打开', reason: '' }
   if (loading.value) return null
   const snapshot = snapshotLabel.value ? ` ${snapshotLabel.value} ` : ''
   // 运行数据的错误不带前缀（标题已经说了是运行数据）；服务状态的错误带「服务状态：」，和它分得开
@@ -675,6 +676,7 @@ onBeforeUnmount(() => {
         <!-- 手机上一行说完：状态、已运行、配置版本，和配置页的页头一样 / On phones one line says it all: state, uptime, config version, as on the config page -->
         <span v-if="service || displayOverview" class="ui-ph__lead ui-ph__phone"><span class="ui-dot" :class="{ 'ui-dot--warn': headTone === 'warn', 'ui-dot--err': headTone === 'err', 'ui-dot--off': headTone === 'off' }" aria-hidden="true"></span><UiDotText :parts="[headLabel, ...(metaTail === 'live' && overview && !panelDown ? [`已运行 ${formatDuration(overview.health.uptime_seconds)}`] : metaTail === 'snapshot' ? [`快照 ${snapshotLabel}`] : []), ...(runningVersion !== null ? [`版本 #${runningVersion}`] : [])]" /></span>
         <span v-else-if="loading" class="sk overview-skeleton-meta" role="status" aria-label="读取服务状态"></span>
+        <span v-else-if="panelDown" class="ui-ph__lead"><span class="ui-dot ui-dot--off" aria-hidden="true"></span>状态未知</span>
         <span v-else>服务状态暂不可用</span>
       </template>
       <template #actions>
@@ -685,7 +687,7 @@ onBeforeUnmount(() => {
     </UiPageHeader>
 
     <!-- 页级提示一次只一条：结论、原因（读取错误写在这里）、最多一个动作 -->
-    <div v-if="notice" class="ui-notice overview-notice" :class="notice.tone === 'warn' ? '' : `ui-notice--${notice.tone}`" :role="notice.tone === 'err' ? 'alert' : 'status'">
+    <div v-if="notice" class="ui-notice overview-notice" :class="[notice.tone === 'warn' ? '' : `ui-notice--${notice.tone}`, { 'overview-notice--phone': notice.phoneOnly }]" :role="notice.tone === 'err' ? 'alert' : 'status'">
       <component :is="notice.icon" :size="16" aria-hidden="true" />
       <span>{{ notice.title }}</span>
       <small v-if="notice.reason">{{ notice.reason }}</small>
@@ -1004,6 +1006,7 @@ onBeforeUnmount(() => {
 .overview-bars-axis > span.is-start { transform: none; }
 .overview-bars-axis > span.is-end { transform: translateX(-100%); }
 
+@media (min-width: 641px) { .overview-notice--phone { display: none; } }
 /* ---------- 列表卡：一行一个名字、右对齐的数、一条细条 ---------- */
 .overview-card--upstreams.is-refreshing .overview-rows { opacity: .72; transition: opacity var(--m-quick) var(--ease-out); }
 .overview-rows { display: grid; margin-top: var(--s-1); }

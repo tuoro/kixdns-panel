@@ -246,7 +246,7 @@ async function run(): Promise<void> {
       <h2 class="ui-card__label">从一次查询开始</h2>
       <p class="diag-card-note">看回答、命中了哪条规则、问了哪个上游。可以先试一个例子：</p>
       <ul class="diag-tries">
-        <li v-for="example in examples" :key="example.domain + example.type"><button class="diag-try" type="button" @click="tryExample(example)"><span class="ui-mono">{{ example.domain }}</span><span class="diag-try__type">{{ example.type }}<ChevronRight :size="16" aria-hidden="true" /></span></button></li>
+        <li v-for="example in examples" :key="example.domain + example.type"><button class="diag-try" type="button" :disabled="panelDown" @click="tryExample(example)"><span class="ui-mono">{{ example.domain }}</span><span class="diag-try__type">{{ example.type }}<ChevronRight :size="16" aria-hidden="true" /></span></button></li>
       </ul>
     </section>
   </div>

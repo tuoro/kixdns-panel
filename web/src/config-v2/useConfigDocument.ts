@@ -63,7 +63,7 @@ export const blockedHint = computed(() => {
   const cname = settings.length < blockedFields.value.length
   if (!settings.length) return '当前内核不支持 CNAME 回答，先改成 IP 再保存'
   if (!cname) return `当前内核不支持：${settings.join('、')}，先关掉再保存`
-  return `当前内核不支持：${blockedFields.value.join('、')}。先关掉这些设置、CNAME 改成 IP，再保存`
+  return `当前内核不支持：${blockedFields.value.join('、')}。先关掉${settings.length > 1 ? '这些设置' : '这一项设置'}、CNAME 改成 IP，再保存`
 })
 export const canApplyNow = computed(() => (hasPending.value || hasApplyFailure.value || fileDiffers.value) && !deferSave.value && blockedFields.value.length === 0)
 export const canSave = computed(() => (dirty.value || canApplyNow.value) && blockedFields.value.length === 0)

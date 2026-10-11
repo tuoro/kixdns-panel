@@ -81,7 +81,8 @@ body { background: var(--l-canvas); }
   .toolbar__search { flex: 1 1 auto; min-width: 0; }
   .toolbar__kind { display: none; }
   .toolbar__filter { position: relative; width: var(--h-md); flex: 0 0 auto; display: inline-flex; padding: 0; }
-  .toolbar__filter select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+  /* 透明的下拉框就是这个图标按钮能点的范围：和别的图标按钮一样四边补到 44 / The transparent select is this icon button's hit area: grown to 44 on every side like other icon buttons */
+  .toolbar__filter select { position: absolute; inset: calc(min(0px, (100% - var(--h-touch)) / 2)); opacity: 0; cursor: pointer; }
   .toolbar .toolbar__icon { width: var(--h-md); padding: 0; }
   .toolbar__label { display: none; }
   .wide-only { display: none; }

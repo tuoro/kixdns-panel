@@ -58,15 +58,22 @@ test('连不上面板时打开的配置页和系统页，连上以后自己读�
 
 // 连不上面板时：横幅说原因、给重试；页面只说手上的数是什么时候读到的，不复述原因，按了只会失败的操作都停用
 // With the panel unreachable the banner gives the cause and the retry; the page only says when its figures were read, restates nothing, and disables anything that could only fail
-test('连不上面板时页面不复述横幅，按了只会失败的操作都停用 @responsive', async ({ page }) => {
+test('连不上面板时页面不复述横幅，按了只会失败的操作都停用 @responsive', async ({ page }, testInfo) => {
   await page.goto('/')
   await expect(page.locator('.overview-card--upstreams')).toBeVisible()
   await panelDown(page, true)
   await page.evaluate(() => window.dispatchEvent(new Event('kixdns:panel-unreachable')))
   await expect(banner(page)).toBeVisible()
+  // 读到的时刻：宽屏在页头的「更新于」里，手机在这一行里（手机页头没有这一项），不说两遍
+  // The read time: in the header's 更新于 on wide screens, in this line on phones (their header lacks it), never twice
   const notice = page.locator('.overview-notice')
-  await expect(notice).toHaveText(/^显示 .+ 读到的数据$/)
-  await expect(notice.getByRole('button')).toHaveCount(0)
+  if (testInfo.project.name === 'mobile') {
+    await expect(notice).toHaveText(/^显示 .+ 读到的数据$/)
+    await expect(notice.getByRole('button')).toHaveCount(0)
+  } else {
+    await expect(notice).toBeHidden()
+    await expect(page.locator('.overview-heading .ui-facts')).toContainText('更新于')
+  }
   await expect(page.getByRole('button', { name: '刷新' })).toBeDisabled()
 
   await page.getByRole('link', { name: '系统', exact: true }).first().click()
