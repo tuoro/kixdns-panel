@@ -10,6 +10,7 @@ import { compile, isIp } from '../config-model/model'
 import { traceNames } from '../config-model/trace-names'
 import { describeStep, forwardTarget, formatElapsed, groupTrace, hidePlumbing, isDnsSuccess, parseDnsAnswer, responseCodeName, ruleName, traceTone, type TextPart } from '../diagnostics'
 import { errorMessage } from '../utils'
+import { useConnection } from '../composables/useConnection'
 import { dirty, findRuleByName, model } from './store'
 import { runtimeCapabilities } from './useConfigDocument'
 
@@ -19,6 +20,8 @@ import { runtimeCapabilities } from './useConfigDocument'
 // 测试域名 runs a domain through KixDNS (the diagnostics API). From kernel p28 it can test the unsaved draft (a trial in a child process
 // that leaves the live config alone) and pretend to come from a client IP; on an older kernel neither shows and it tests the live config.
 // The result reads like the diagnostics page: a verdict, then the path actually taken; the matched rule is reported so the list can mark it.
+// 连不上面板时测试按了只会失败：先停用（同诊断页） / With the panel unreachable a test could only fail: disabled (as on the diagnostics page)
+const { down: panelDown } = useConnection()
 const emit = defineEmits<{ close: []; matched: [ruleId: number | null, mapping: boolean]; quick: [domain: string] }>()
 const domain = ref('')
 const qtype = ref('A')
@@ -102,7 +105,7 @@ const rows = computed(() => {
     <form class="tester__inputs" @submit.prevent="run">
       <label class="ui-input is-mono tester__domain"><input ref="domainInput" v-model="domain" aria-label="要测试的域名" placeholder="www.example.com" autocapitalize="off" spellcheck="false"></label>
       <UiSelect v-model="qtype" class="tester__qtype" :options="qtypes" label="查询类型" />
-      <button class="ui-btn ui-btn--secondary tester__run" type="submit" :disabled="!domain.trim() || running" :aria-busy="running || undefined"><span v-if="running" class="ui-spin" aria-hidden="true"></span>测试</button>
+      <button class="ui-btn ui-btn--secondary tester__run" type="submit" :disabled="!domain.trim() || running || panelDown" :aria-busy="running || undefined"><span v-if="running" class="ui-spin" aria-hidden="true"></span>测试</button>
       <UiHelp topic="tester" />
       <button class="ui-icon-btn tester__close" type="button" aria-label="收起测试" title="收起测试" @click="emit('close')"><X :size="16" /></button>
     </form>

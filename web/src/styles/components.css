@@ -25,7 +25,8 @@
    item wrapped to a line start falls outside the left edge and is clipped, so a dot neither starts a line nor ends the one
    above. The container takes no left padding (the clip starts at its left edge); items should not be inline-flex, or the dot
    picks up their gap. */
-.ui-dots { --dots-gap: calc(var(--s-2) * 2 + .3em); display: flex; flex-wrap: wrap; align-items: baseline; column-gap: var(--dots-gap); clip-path: inset(-.5em -1em -.5em calc(var(--s-1) * -1)); }
+/* 上下的裁切边放到半个触控高度：clip-path 也裁点按区域，里面的链接（「原版源码」）往外补的 ::before 不能被裁掉；左边那条才是藏行首「·」的 / The top and bottom clip edges sit half a touch height out: clip-path clips hit-testing too, so a link's ::before extension (原版源码) must not be cut; the left edge is the one hiding a line-start 「·」 */
+.ui-dots { --dots-gap: calc(var(--s-2) * 2 + .3em); display: flex; flex-wrap: wrap; align-items: baseline; column-gap: var(--dots-gap); clip-path: inset(calc(var(--h-touch) / -2) -1em calc(var(--h-touch) / -2) calc(var(--s-1) * -1)); }
 .ui-dots > *::before { content: "·"; display: inline-block; width: var(--dots-gap); margin-inline-start: calc(var(--dots-gap) * -1); color: var(--l-line-strong); text-align: center; }
 /* 第一项总在第一行行首，用不着点；这样它可以是 inline-flex / The first item always starts the first line and needs no dot, so it may be inline-flex */
 .ui-dots > :first-child::before { content: none; }
@@ -625,7 +626,7 @@ a.ui-btn { text-decoration: none; }
   .ui-btn--sm { font-size: var(--t-3); }
   /* 图标按钮也是 36，和同一行的框一样高，点按区域四边补到 44 / An icon button is 36 too, as tall as the fields on its line, with its tap area grown to 44 on every side */
   .ui-icon-btn, .ui-icon-btn--sm { position: relative; width: var(--h-md); height: var(--h-md); }
-  .ui-icon-btn::before { position: absolute; inset: calc((var(--h-touch) - var(--h-md)) / -2); content: ''; }
+  .ui-icon-btn::before { position: absolute; inset: calc(min(0px, (100% - var(--h-touch)) / 2)); content: ''; }
   .ui-tabs { gap: 0; }
   .ui-tabs__tab { flex: 1; min-height: var(--h-touch); padding-bottom: 0; text-align: center; }
   .ui-seg { display: flex; }
@@ -937,9 +938,10 @@ button.ui-link { position: relative; min-height: 0; padding: 0; border: 0; backg
   .ui-help__btn, a.ui-link, .ui-btn--icon { position: relative; }
   .ui-help__btn::before { position: absolute; inset: calc((var(--h-touch) - var(--h-tag)) / -2); content: ''; }
   a.ui-link::before { position: absolute; inset: calc(var(--s-3) * -1) calc(var(--s-1) * -1); content: ''; }
-  .ui-btn--icon::before { position: absolute; inset: calc(var(--s-1) * -1); content: ''; }
-  /* 开关本身 22 高，连着文字的整个 label 都能点 / The switch is 22 tall; the whole label with its text can be tapped */
-  .ui-switch::before { position: absolute; inset: calc(var(--s-3) * -1) 0; content: ''; }
+  /* 按内框的百分比算：有边框的图标按钮按 36 算只补到 42 / Counted from the inner box: a bordered icon button reached only 42 when counted from 36 */
+  .ui-btn--icon::before { position: absolute; inset: calc(min(0px, (100% - var(--h-touch)) / 2)); content: ''; }
+  /* 开关本身 22 高、36 宽，点按区域上下补到 46、左右补到 44；连着文字的整个 label 都能点 / The switch is 22 tall and 36 wide, its hit area grown to 46 tall and 44 wide; the whole label with its text can be tapped */
+  .ui-switch::before { position: absolute; inset: calc(var(--s-3) * -1) calc(min(0px, (100% - var(--h-touch)) / 2)); content: ''; }
 }
 
 /* 页头事实：宽屏是「标签 / 值」一排，手机上换成一行状态（和配置页一样），省下首屏的高度
@@ -949,3 +951,8 @@ button.ui-link { position: relative; min-height: 0; padding: 0; border: 0; backg
   .ui-ph__meta > .ui-facts { display: none; }
   .ui-ph__phone { display: inline-flex; }
 }
+
+/* 页面标题能接住焦点（焦点兜底落在这里）：框贴着标题的字，不拉成一整行像个空输入框 / The page title can take focus (the focus rescue lands here): its ring hugs the words instead of spanning the row like an empty field */
+.ui-ph__title { width: fit-content; max-width: 100%; }
+/* 只有一行字的提示条：按钮和那一行对齐，不再按两行的高度居中 / A one-line notice: the button lines up with that line instead of centring on two rows */
+.ui-notice:not(:has(> small)) > .ui-notice__action { grid-row: 1; }

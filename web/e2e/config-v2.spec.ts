@@ -110,7 +110,8 @@ test('页头的「启动」是小号次要按钮，不撑高那一行；连不�
   await page.addInitScript(() => localStorage.setItem('kixdns:demo-empty-first-install', 'true'))
   await page.goto('/config')
   const status = mobile ? page.locator('.ui-ph__lead') : page.locator('.cfg__facts > span').first()
-  await expect(status).toContainText('KixDNS 已停止')
+  // 手机写全「KixDNS 已停止」，宽屏「状态」标签下面只写「已停止」 / Phones say KixDNS 已停止 in full; under the wide 状态 label it reads 已停止
+  await expect(mobile ? status : status.locator('b')).toContainText(mobile ? 'KixDNS 已停止' : '已停止')
   const start = status.getByRole('button', { name: '启动', exact: true })
   await expect(start).toBeVisible()
   await expect(start).toHaveClass(/ui-btn--secondary/)
@@ -126,11 +127,13 @@ test('页头的「启动」是小号次要按钮，不撑高那一行；连不�
   }
   await context.setOffline(true)
   await expect(page.locator('.conn__inner')).toBeVisible()
-  await expect(status).toContainText('状态未知')
+  if (mobile) await expect(status).toContainText('状态未知')
+  else await expect(status.locator('b')).toHaveText('未知')
   await expect(start).toHaveCount(0)
   await context.setOffline(false)
   await expect(page.locator('.conn__inner')).toHaveCount(0)
-  await expect(status).toContainText('KixDNS 已停止')
+  // 手机写全「KixDNS 已停止」，宽屏「状态」标签下面只写「已停止」 / Phones say KixDNS 已停止 in full; under the wide 状态 label it reads 已停止
+  await expect(mobile ? status : status.locator('b')).toContainText(mobile ? 'KixDNS 已停止' : '已停止')
   await expect(start).toBeVisible()
 })
 
@@ -158,4 +161,133 @@ test('手机上「规则组」的说明在标题和按钮下面占满整行 @res
     return new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size
   })
   expect(phraseLines).toBe(1)
+})
+
+// KixDNS 停着、又有待应用的版本：页头先说停了，再说哪个版本在等，「启动」跟在后面读作启动 KixDNS
+// KixDNS stopped with a version waiting: the header first says it is stopped, then which version waits, so the 启动 after it reads as starting KixDNS
+test('KixDNS 停着时存成待应用：页头先说停了再说哪个版本在等（手机「KixDNS 已停止 · 版本 #N 待应用」） @responsive', async ({ page }, testInfo) => {
+  const mobile = testInfo.project.name === 'mobile'
+  await page.addInitScript(() => localStorage.setItem('kixdns:demo-empty-first-install', 'true'))
+  await page.goto('/config')
+  if (!mobile) await page.getByRole('button', { name: '快速添加', exact: true }).click()
+  const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+  await quick.fill('stopped.example.org')
+  await quick.press('Enter')
+  await page.getByRole('button', { name: '保存为待应用', exact: true }).click()
+  const status = mobile ? page.locator('.ui-ph__lead') : page.locator('.cfg__facts > span').first().locator('b')
+  // 宽屏的版本号在旁边的「配置版本」里，状态只写「已停止 · 待应用」，一排放得下 / On wide screens the version sits in the 配置版本 fact beside it, so the state reads 已停止 · 待应用 and the row fits
+  if (mobile) await expect(status).toContainText(/KixDNS 已停止\s*·?\s*版本 #\d+ 待应用/)
+  else {
+    await expect(status).toContainText(/^已停止\s*·?\s*待应用/)
+    await expect(page.locator('.cfg__facts')).toContainText(/配置版本\s*#\d+/)
+  }
+  await expect(status.getByRole('button', { name: '启动', exact: true })).toBeVisible()
+})
+
+// 「去基础设置」指名了出问题的那一组：手机上直接打开那一组，不停在目录上；只用这一次，下次进基础设置照常从目录开始
+// 去基础设置 names the group with the problem: on phones that group opens directly instead of the contents list; once only, so the next visit starts at the list as usual
+test('手机上「去基础设置」直接打开指名的那一组，只用一次 @responsive', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'mobile', '只看手机的目录')
+  await page.goto('/config')
+  await expect(page.locator('.rcard').first()).toBeVisible()
+  await page.evaluate(async () => {
+    const { ui } = await import('/src/config-v2/store.ts')
+    ui.settingsGroup = 'statistics'
+  })
+  await page.getByRole('tab', { name: '基础设置', exact: true }).click()
+  await expect(page.locator('.settings')).toHaveClass(/settings--open/)
+  await expect(page.getByRole('button', { name: '全部设置' })).toBeVisible()
+  await page.getByRole('tab', { name: '规则', exact: true }).click()
+  await page.getByRole('tab', { name: '基础设置', exact: true }).click()
+  await expect(page.locator('.settings')).not.toHaveClass(/settings--open/)
+})
+
+// 保存途中又加的规则不在这次保存里：保存落地后它的「撤销」照样留着；保存之前那条的撤销收起（撤回去会改掉刚保存的东西）
+// A rule added during a save is not part of it: its 撤销 stays after the save lands, while the earlier rule's undo goes (undoing would change what was just saved)
+test('保存途中又改的那一处，保存落地后「撤销」还在', async ({ page }) => {
+  await page.goto('/config')
+  await page.getByRole('button', { name: '快速添加', exact: true }).click()
+  const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+  await quick.fill('first.example.org')
+  await quick.press('Enter')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-save-slow', 'true'))
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  // 等保存真的发出去（写入那一步慢 1.5 秒）再改 / Edit only once the save is under way (the write step takes 1.5 s)
+  await expect(bar).toContainText('保存中')
+  await quick.fill('later.example.org')
+  await quick.press('Enter')
+  await expect(bar).toContainText('之后改的 1 处还没保存', { timeout: 10_000 })
+  await expect(page.locator('.toast', { hasText: 'later.example.org' }).getByRole('button', { name: '撤销' })).toBeVisible()
+  // 第一条的提示是「已添加规则」；合并进来的那条写的是「已加到「…」」 / The first rule's toast reads 已添加规则; the merged one reads 已加到「…」
+  await expect(page.locator('.toast', { hasText: '已添加规则' })).toHaveCount(0)
+})
+
+// 同一个上游，概览和上游组卡片用同一种算法：时段、成功率、次数都一样（以前上游组卡片用累计数和旧分母，同一个「最近一小时」写两个成功率）
+// One upstream, one rule on both pages: the overview and the group card show the same period, success rate and count (the card used lifetime counts and the old denominator, so one 最近一小时 carried two rates)
+test('上游组卡片和概览的上游状态写同一个成功率', async ({ page }) => {
+  await page.goto('/')
+  const row = page.locator('.overview-card--upstreams .overview-row', { hasText: '1.1.1.1:53' })
+  const overview = (await row.locator('.overview-row-sub').innerText()).replace(/\s+/g, ' ')
+  const rate = /成功率 ([\d.]+%)/.exec(overview)![1]
+  const count = /([\d,]+) 次响应/.exec(overview)![1]
+  await page.goto('/config?section=upstreams')
+  // 演示里「default」只有 1.1.1.1:53 一个地址 / In the demo, default has the single address 1.1.1.1:53
+  const card = page.locator('.gcard', { has: page.getByRole('button', { name: 'default', exact: true }) })
+  await expect(card.locator('.gcard__health')).toContainText(`成功率 ${rate}`)
+  await expect(card.locator('.gcard__health')).toContainText(`最近一小时 ${count}`)
+})
+
+// 手机保存条：「校验通过」不压到按钮；冲突时不留灰掉的保存和备注，「下载草稿」和上面的说明左对齐
+// Phone save bar: 校验通过 never runs under the buttons; a conflict keeps no greyed save or 备注, and 下载草稿 lines up with the text above
+test('手机保存条：校验通过不压按钮，冲突时只留下载和重新读取 @responsive', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'mobile', '只看手机的保存条')
+  await page.goto('/config')
+  const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+  await quick.fill('bar.example.org')
+  await quick.press('Enter')
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '校验', exact: true }).click()
+  await expect(bar.locator('.ui-savebar__status')).toContainText('校验通过')
+  // 量字本身占到哪里（元素自己的框在字溢出时不跟着变宽） / Measure where the words themselves reach (the element's own box does not grow when the text overflows)
+  const textRight = await bar.locator('.ui-savebar__detail').evaluate((el) => {
+    const range = document.createRange()
+    range.selectNodeContents(el)
+    return range.getBoundingClientRect().right
+  })
+  const firstButton = await bar.locator('.savebar__note-toggle').evaluate((el) => el.getBoundingClientRect().left)
+  expect(textRight).toBeLessThanOrEqual(firstButton)
+
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-save-conflict', 'true'))
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar).toContainText('这份配置在别处改过了')
+  await expect(bar.getByRole('button', { name: '保存并应用' })).toHaveCount(0)
+  await expect(bar.locator('.savebar__note-toggle')).toHaveCount(0)
+  const words = await bar.locator('.ui-savebar__status small').evaluate((el) => el.getBoundingClientRect().left)
+  const download = await bar.getByRole('button', { name: '下载草稿' }).evaluate((el) => {
+    const range = document.createRange()
+    range.selectNodeContents(el)
+    return range.getBoundingClientRect().left
+  })
+  expect(Math.abs(download - words)).toBeLessThanOrEqual(1)
+})
+
+// 内核不支持的开关按「关掉」以后，那一行先留着写「已关闭」，这一组不会一下子空掉；离开这一组再消失
+// After 关掉 on a switch the kernel lacks, its row stays reading 已关闭, so the group never empties at once; it goes once the group is left
+test('不支持的开关按「关掉」后那一行留着写「已关闭」，设置面板不变空白', async ({ page }) => {
+  await page.goto('/config')
+  await expect(page.locator('.rcard').first()).toBeVisible()
+  await page.evaluate(async () => {
+    const doc = await import('/src/config-v2/useConfigDocument.ts')
+    doc.runtimeCapabilities.value = []
+    const { ui } = await import('/src/config-v2/store.ts')
+    ui.settingsGroup = 'statistics'
+  })
+  await page.getByRole('link', { name: '基础设置', exact: true }).first().click()
+  const off = page.getByRole('button', { name: '关掉', exact: true })
+  await expect(off).toBeVisible()
+  await off.click()
+  await expect(off).toHaveCount(0)
+  await expect(page.locator('.settings-row__readonly').first()).toContainText('已关闭')
+  await expect(page.locator('.settings').getByRole('heading', { level: 2 }).first()).toBeVisible()
 })

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { jsonProblemText, jsonSyntaxProblem, type JsonProblem } from '../json-problem'
-import { Braces, CircleHelp, Download, FileUp, History, RefreshCw, Settings2, Undo2 } from '@lucide/vue'
+import { Braces, CircleHelp, Clock, Download, FileUp, History, RefreshCw, Settings2, Undo2 } from '@lucide/vue'
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import type JsonEditorType from '../components/JsonEditor.vue'
@@ -10,7 +10,7 @@ import UiPageHeader from '../components/ui/UiPageHeader.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
 import { useConfirm } from '../composables/useConfirm'
 import { useConnection } from '../composables/useConnection'
-import { useToast } from '../composables/useToast'
+import { dismissUndoable, useToast } from '../composables/useToast'
 import { exportConfig, readConfig } from '../config-model/document'
 import { compile, ruleTitle, type Model, type Rule, type UpstreamGroup } from '../config-model/model'
 import GroupEditor from '../config-v2/GroupEditor.vue'
@@ -25,7 +25,7 @@ import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, unsupportedSection } from '../config-v2/useConfigDocument'
+import { applyBusy, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, panelBack, save, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, unsupportedSection } from '../config-v2/useConfigDocument'
 import { useHelp } from '../composables/useHelp'
 import { useServiceStart } from '../composables/useServiceStart'
 import { registerLeaveGuard, takeAgreement } from '../composables/useLeaveGuard'
@@ -155,13 +155,18 @@ function groupDeleted(group: UpstreamGroup, index: number): void {
 
 // ---------- 通知条：一次只说一件事 / the notice strip: one thing at a time ----------
 const geoPrefixed = computed(() => [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].flatMap((r) => r.conditions.flat()).filter((c) => c.field === 'geosite' && c.values.some((v) => /^geosite:/i.test(v))).length)
-interface Notice { tone: 'err' | 'warn' | 'off'; text: string; detail?: string; action?: string; run?: () => void }
+interface Notice { tone: 'err' | 'warn' | 'off'; text: string; detail?: string; action?: string; run?: () => void | Promise<void> }
 const notice = computed<Notice | null>(() => {
-  if (loadError.value && doc.value) return { tone: 'err', text: '读取配置失败，下面是上一次读到的内容。', detail: loadError.value, action: '重试', run: () => void reload(true) }
+  // 连不上面板时由顶上的横幅说，这里不复述 / With the panel unreachable the banner says it; no second copy here
+  if (loadError.value && doc.value && !panelDown.value) return { tone: 'err', text: '读取配置失败，下面是上一次读到的内容。', detail: loadError.value, action: '重试', run: () => void reload(true) }
   if (hasApplyFailure.value) {
     const reason = doc.value?.runtime.pending_error || doc.value?.pending?.error || 'KixDNS 没有给出原因。'
     // 草稿有修改时不给「重试应用」：那时保存的是草稿，重试会把草稿当成失败的那个版本发出去 / No retry while the draft has changes: saving then sends the draft, not the version that failed
-    return { tone: 'err', text: pendingVersionId.value ? `版本 #${pendingVersionId.value} 没有生效，仍在用之前那份配置。` : '上次保存的版本没有生效，仍在用之前那份配置。', detail: failureCause(reason), action: canApplyNow.value && !unsaved.value ? '重试应用' : undefined, run: applyNow }
+    const retry = canApplyNow.value && !unsaved.value && !panelDown.value
+    // 挡住重试的是内核不支持的设置时，这一条也说清它和出路（不支持的那条提示排在后面，这时显示不出来） / When unsupported settings block the retry, this notice names them and the way out too (the unsupported notice ranks below and cannot show)
+    const blocked = !retry && unsupportedFields.value.length > 0
+    const cause = failureCause(reason).replace(/。$/, '')
+    return { tone: 'err', text: pendingVersionId.value ? `版本 #${pendingVersionId.value} 没有生效，仍在用之前那份配置。` : '上次保存的版本没有生效，仍在用之前那份配置。', detail: blocked ? `${cause}。当前内核不支持：${unsupportedFields.value.join('、')}，先在基础设置里关掉。` : cause, action: retry ? '重试应用' : blocked && section.value !== 'settings' ? '去基础设置' : undefined, run: retry ? () => save('apply') : goUnsupported }
   }
   if (applyError.value) { const [text, ...detail] = applyError.value.split('\n'); return { tone: 'err', text: `${text}。`, detail: detail.join('\n') } }
   // 警告排在说明前面：永远不命中的规则比导入说明要紧 / Warnings rank above information: a rule that never matches matters more than the import notes
@@ -169,10 +174,26 @@ const notice = computed<Notice | null>(() => {
   if (importReport.value && !reportOpen.value && importReport.value.stats.raw) return { tone: 'off', text: `这份配置是按内核格式读进来的，${importReport.value.stats.raw} 条规则原样保留为高级规则。`, action: '查看导入说明', run: () => { reportOpen.value = true } }
   // 没运行、连不上时页头已经说了，功能列表拿不到是它的结果，不另起一条 / When stopped or unreachable the header says so; the missing feature list follows from it
   if (capabilityError.value && !runtimeStopped.value && !runtimeUnavailable.value) return { tone: 'off', text: 'KixDNS 没有报告它支持哪些功能：新功能先按不支持处理，保存后先存成待应用版本。' }
-  if (!canCname.value && cnameInUse.value && !capabilityError.value) return { tone: 'warn', text: '当前内核不支持 CNAME 回答：KixDNS 不会接受带 CNAME 的配置。把回答域名的域名映射和规则改成 IP，或者更新内核。' }
+  // 说出有几处，域名映射里有的就给去那里的按钮 / Say how many places, with a button to the domain mappings when some are there
+  if (!canCname.value && cnameInUse.value && !capabilityError.value) {
+    const them = cnamePlaces.value.total > 1 ? '它们' : '它'
+    // 同时还有开着的不支持的设置：一条提示把两件事都说了，保存条说的「有 N 项」和这里对得上 / Unsupported settings switched on as well: one notice says both, so the bar's 「有 N 项」 matches it
+    if (unsupportedFields.value.length) return { tone: 'warn', text: `当前内核不支持：CNAME 回答、${unsupportedFields.value.join('、')}。有 ${cnamePlaces.value.total}\u00a0处回答写的是域名，要把${them}改成 IP；开着的设置要在基础设置里关掉。或者更新内核。`, action: section.value === 'settings' ? (cnamePlaces.value.mappings ? '去域名映射' : undefined) : '去基础设置', run: () => (section.value === 'settings' ? setTab('mapping') : goUnsupported()) }
+    return { tone: 'warn', text: `当前内核不支持 CNAME 回答：有 ${cnamePlaces.value.total}\u00a0处回答写的是域名，KixDNS 不会接受这份配置。把${them}改成 IP，或者更新内核。`, action: cnamePlaces.value.mappings && section.value !== 'mapping' ? '去域名映射' : undefined, run: () => setTab('mapping') }
+  }
   // KixDNS 不接受带着它不支持的设置的配置：说清这一点和两条出路，按钮直接去基础设置 / KixDNS refuses a config carrying settings it does not support: say so with the two ways out, the button going straight to the settings
-  if (unsupportedFields.value.length) { const these = unsupportedFields.value.length > 1 ? '这几项' : '这一项'; return { tone: 'warn', text: `当前内核不支持：${unsupportedFields.value.join('、')}。只要配置里写着${these}，KixDNS 就不接受：在基础设置里把${these}从配置里去掉，或者更新到支持它的内核。`, action: section.value === 'settings' ? undefined : '去基础设置', run: () => { ui.settingsGroup = unsupportedSection.value; setTab('settings') } } }
+  if (unsupportedFields.value.length) { const many = unsupportedFields.value.length > 1; return { tone: 'warn', text: `当前内核不支持：${unsupportedFields.value.join('、')}。${many ? '它们' : '这一项'}开着时这份配置存不了（这个内核没有这项功能，开着也不起作用）：在基础设置里点${many ? '每一项' : '它'}旁边的「关掉」，或者更新内核。`, action: section.value === 'settings' ? undefined : '去基础设置', run: goUnsupported } }
   return null
+})
+function goUnsupported(): void {
+  ui.settingsGroup = unsupportedSection.value
+  setTab('settings')
+}
+// 写成域名的回答有几处：域名映射和规则（含规则组）分开数 / How many answers are domains: mappings and rules (rule groups included) counted apart
+const cnamePlaces = computed(() => {
+  const mappings = model.mappings.filter((m) => m.enabled && !/^[\d.:a-f, ]+$/i.test(m.target)).length
+  const rules = [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].filter((r) => r.outcome.type === 'answer' && r.outcome.kind === 'cname').length
+  return { mappings, total: mappings + rules }
 })
 function stripPrefix(): void {
   let n = 0
@@ -326,7 +347,16 @@ const askLeave = async (): Promise<boolean> => {
   if (!dirty.value && !jsonDirty.value) return confirm.ask({ title: `放弃${editorEdited.value ? '这条规则' : [...dialogEdits.values()][0] ?? '这条规则'}的修改`, body: '刚才在这里改的内容不会写进草稿。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
   return confirm.ask({ title: '放弃未保存的修改', body: '当前的配置草稿会被丢弃，已经生效的配置不受影响。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
 }
-const releaseGuard = registerLeaveGuard(askLeave)
+const releaseGuard = registerLeaveGuard(askLeave, () => unsaved.value)
+// 提示条的按钮做事期间停用，焦点跟着掉到页面上：做完没人接住焦点时，回到这个按钮（还在的话），不在了就落在提示条上
+// The notice's button is disabled while it works and focus falls to the page: when nothing caught it afterwards, it returns to the button if still there, else to the notice
+async function runNotice(): Promise<void> {
+  await notice.value?.run?.()
+  await nextTick()
+  if (document.activeElement && document.activeElement !== document.body) return
+  const box = document.querySelector<HTMLElement>('.cfg__notice')
+  ;(box?.querySelector<HTMLElement>('.ui-notice__action:not(:disabled)') ?? box)?.focus()
+}
 onMounted(() => {
   ui.mode = 'form'
   // 刷新后编辑器不在了，地址里的 ?rule= 也去掉 / After a reload the editor is gone, so ?rule= leaves the address too
@@ -335,7 +365,8 @@ onMounted(() => {
   window.addEventListener('beforeunload', beforeUnload)
 })
 const beforeUnload = (e: BeforeUnloadEvent) => { if (unsaved.value) { e.preventDefault(); e.returnValue = '' } }
-onBeforeUnmount(() => { window.removeEventListener('beforeunload', beforeUnload); releaseGuard(); ui.mode = 'form'; jsonEdited.value = false })
+// 带「撤销」的提示只对这一页的草稿有用：离开时一起收起（会话过期跳到登录页时也不会留着） / Undo toasts only make sense for this page's draft: they go when it unmounts (including a jump to the login page on session expiry)
+onBeforeUnmount(() => { window.removeEventListener('beforeunload', beforeUnload); releaseGuard(); dismissUndoable(); ui.mode = 'form'; jsonEdited.value = false })
 onBeforeRouteLeave(async () => takeAgreement() || askLeave())
 // 换分区、或者从整页编辑按返回：规则编辑里没点「完成」的修改先问一句；同意了就关掉编辑
 // Switching section, or pressing back out of the full-page editor: first ask about rule edits not yet 完成; once agreed the editor closes
@@ -360,6 +391,8 @@ watch(section, () => { editor.value = null; void nextTick(() => window.scrollTo(
 const { starting, start } = useServiceStart()
 // 连不上面板时页头写「状态未知」，「启动」也收起：按了也只会失败 / While the panel is unreachable the header reads 状态未知 and 启动 is withdrawn: pressing it could only fail
 const { down: panelDown } = useConnection()
+// 连上面板后自己重读，不等人点重试 / Once the panel answers again the page re-reads by itself instead of waiting for 重试
+watch(panelDown, (now, before) => { if (before && !now) void panelBack() })
 async function startKixdns(): Promise<void> {
   if (!(await start())) return
   // 草稿有修改时只刷新运行状态，不重读文件，免得把草稿换掉 / With edits in the draft only the runtime state is refreshed, so the draft is not replaced
@@ -375,11 +408,14 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
       <template #meta>
         <span v-if="!ready && !loadError" class="cfg__status-sk"><i class="sk"></i></span>
         <!-- 宽屏：标题下一排事实（状态、配置版本、规则数、上游组数）；手机：一行状态 / Wide: a facts row under the title (state, config version, rule count, upstream groups); phones: one status line -->
+        <!-- 没读到配置时宽屏也是这一排，只写状态；版本、规则数、上游组数等读到再写 / Without a config read the wide header keeps this row with the state only; version, rule and group counts wait for the read -->
         <span v-else-if="!phone && !firstRun" class="ui-facts cfg__facts" :role="applyBusy ? 'status' : undefined">
-          <span><span class="ui-lbl">状态</span><b><span v-if="applyBusy" class="ui-spin cfg__spin" aria-hidden="true"></span><span v-else class="ui-dot" :class="headerLine.tone === 'ok' ? '' : `ui-dot--${headerLine.tone}`" aria-hidden="true"></span>{{ headerLine.lead ?? `${headerLine.before}${headerLine.version ?? ''}${headerLine.after ?? ''}` }}<button v-if="headerAction && ready" class="cfg__head-action" type="button" @click="applyNow">{{ headerAction }}</button><button v-else-if="runtimeStopped && ready && !panelDown" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline cfg__head-start" type="button" :disabled="starting" @click="startKixdns">启动</button></b></span>
+          <span><span class="ui-lbl">状态</span><b><span v-if="applyBusy" class="ui-spin cfg__spin" aria-hidden="true"></span><span v-else class="ui-dot" :class="headerLine.tone === 'ok' ? '' : `ui-dot--${headerLine.tone}`" aria-hidden="true"></span><UiDotText :parts="headerLine.wide ?? [headerLine.lead ?? `${headerLine.before}${headerLine.version ?? ''}${headerLine.after ?? ''}`]" /><button v-if="headerAction && ready" class="cfg__head-action" type="button" @click="applyNow">{{ headerAction }}</button><button v-else-if="runtimeStopped && ready && !panelDown" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline cfg__head-start" type="button" :disabled="starting" @click="startKixdns">启动</button></b></span>
+          <template v-if="doc">
           <span><span class="ui-lbl">配置版本</span><b>{{ versionLabel }}</b></span>
           <span><span class="ui-lbl">规则</span><b>{{ ruleCount }} 条</b></span>
-          <span><span class="ui-lbl">上游组</span><b>{{ model.groups.length }} 个</b></span>
+          <span class="cfg__fact-groups"><span class="ui-lbl">上游组</span><b>{{ model.groups.length }} 个</b></span>
+          </template>
         </span>
         <span v-else class="ui-ph__lead" :role="applyBusy ? 'status' : undefined">
           <span v-if="applyBusy" class="ui-spin cfg__spin" aria-hidden="true"></span>
@@ -397,11 +433,11 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
       </template>
     </UiPageHeader>
 
-    <div v-if="notice && ready" class="ui-notice cfg__notice" :class="notice.tone === 'err' ? 'ui-notice--err' : notice.tone === 'off' ? 'ui-notice--off' : ''" :role="notice.tone === 'err' ? 'alert' : 'status'">
+    <div v-if="notice && ready" class="ui-notice cfg__notice" tabindex="-1" :class="notice.tone === 'err' ? 'ui-notice--err' : notice.tone === 'off' ? 'ui-notice--off' : ''" :role="notice.tone === 'err' ? 'alert' : 'status'">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10" /><path d="M12 8v4M12 16h.01" /></svg>
       <span>{{ notice.text }}</span>
       <small v-if="notice.detail"><RuleText :text="notice.detail" @rule="openRule($event, null)" @group="groupEditor = { id: $event }" /></small>
-      <button v-if="notice.action" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="applyBusy" @click="notice.run?.()">{{ notice.action }}</button>
+      <button v-if="notice.action" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="applyBusy" @click="runNotice">{{ notice.action }}</button>
     </div>
 
     <input ref="fileInput" class="visually-hidden" type="file" accept=".json,application/json" @change="importFile">
@@ -416,6 +452,8 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
       <div class="cfg__sk-tools"><i class="sk"></i><i class="sk"></i><span></span><i class="sk"></i><i class="sk"></i></div>
       <div class="ui-card cfg__sk-list"><div v-for="n in 7" :key="n" class="cfg__sk-row"><i class="sk"></i><span><i class="sk"></i><i class="sk"></i></span><i class="sk"></i><i class="sk"></i></div></div>
     </div>
+    <!-- 连不上面板时什么都没读到：只写一句连上后会自己打开，原因和重试交给顶上的横幅 / Nothing read with the panel unreachable: one line saying it opens by itself once connected; the cause and the retry belong to the banner above -->
+    <p v-else-if="loadError && !doc && panelDown" class="ui-notice ui-notice--off cfg__wait" role="status"><Clock :size="16" aria-hidden="true" /><span>连上面板后自动打开</span></p>
     <div v-else-if="loadError && !doc" class="cfg__failed">
       <p class="cfg__failed-title">读取配置失败</p>
       <p class="cfg__failed-reason">{{ loadError }}</p>

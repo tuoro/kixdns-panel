@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 import SettingsEditor from '../components/config/SettingsEditor.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
@@ -12,6 +12,8 @@ import { runtimeCapabilities } from './useConfigDocument'
 // The settings tab is today's page (listeners, connections, cache, stale cache, flow control, stats, Geo data) with a 规则默认值
 // group in front. 默认上游 no longer appears on its own: 其余请求 decides it, written as that group's addresses.
 const capabilities = computed(() => runtimeCapabilities.value)
+// 指名的那一组只用这一次：下次打开基础设置照常从头开始 / The named group is used once: the next visit to the settings starts as usual
+onMounted(() => { ui.settingsGroup = '' })
 // 有高级规则时「默认上游」照原样留着、能改：高级规则里的「允许」还按它走 / With advanced rules 默认上游 stays visible and editable: their allow still uses it
 const hidden = computed(() => ([...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].some((r) => r.raw) || model.rawPipelines?.length ? [] : ['default_upstream']))
 const blockItems = [{ value: 'NXDOMAIN', label: 'NXDOMAIN' }, { value: 'REFUSED', label: 'REFUSED' }, { value: 'zero', label: '空地址' }]
@@ -38,13 +40,13 @@ const lead = computed(() => ({
     <SettingsEditor v-model="model.settings" v-model:version="model.format" :capabilities="capabilities" :changed="changedSettingKeys" :hidden-keys="hidden" :lead="lead" :initial-group="ui.settingsGroup">
       <template #lead>
         <div class="ui-setrow">
-          <span class="ui-setrow__label"><span>拦截时怎么回应</span><small>规则选「拦截 · 沿用默认」时用这个。{{ blockNote[model.defaults.block] }}</small></span>
+          <span class="ui-setrow__label"><span>拦截时怎么回应</span><small>规则选「拦截 · 沿用默认」时用这个。{{ blockNote[model.defaults.block] }}。</small></span>
           <div class="ui-setrow__control sets__stack">
             <UiTabs :model-value="model.defaults.block" :items="blockItems" label="拦截时怎么回应" variant="segment" @update:model-value="model.defaults.block = $event as typeof model.defaults.block" />
           </div>
         </div>
         <div class="ui-setrow">
-          <span class="ui-setrow__label"><span>其余请求</span><small>{{ hidden.length ? '一条规则都没命中的请求交给哪里。KixDNS 的默认上游也跟着它，和规则列表最下面那行是同一个设置' : '一条规则都没命中的请求交给哪里，和规则列表最下面那行是同一个设置。有高级规则时，KixDNS 的默认上游在「基础与监听」里单独设' }}</small></span>
+          <span class="ui-setrow__label"><span>其余请求</span><small>{{ hidden.length ? '一条规则都没命中的请求交给哪里。KixDNS 的默认上游也跟着它，和规则列表最下面那行是同一个设置。' : '一条规则都没命中的请求交给哪里，和规则列表最下面那行是同一个设置。有高级规则时，KixDNS 的默认上游在「基础与监听」里单独设。' }}</small></span>
           <div class="ui-setrow__control"><UiSelect :model-value="restValue" :options="restOptions" label="其余请求" @update:model-value="setRest" /></div>
         </div>
       </template>

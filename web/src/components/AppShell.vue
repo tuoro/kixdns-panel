@@ -66,7 +66,8 @@ const navGroups: Array<{ label: string; items: NavItem[] }> = [
     { to: '/config', label: '基础设置', icon: SlidersHorizontal, section: 'settings' },
   ] },
   { label: '观察', items: [{ to: '/logs', label: '日志', icon: FileText }, { to: '/diagnostics', label: '诊断', icon: Stethoscope }] },
-  { label: '系统', items: [{ to: '/system', label: '系统', icon: Settings }] },
+  // 只有一项的组不写组名：「系统 › 系统」是同一个词说两遍 / A one-item group has no heading: 系统 › 系统 says one word twice
+  { label: '', items: [{ to: '/system', label: '系统', icon: Settings }] },
 ]
 function navTarget(item: NavItem) { return item.section ? { path: item.to, query: { section: item.section } } : item.to }
 function isCurrent(item: NavItem): boolean {
@@ -158,8 +159,10 @@ onBeforeUnmount(() => {
       <div v-if="activePopover" class="popover-scrim" aria-hidden="true"></div>
       <RouterLink class="app-brand" to="/" aria-label="KixDNS 首页"><Activity :size="32" /><strong>KixDNS</strong></RouterLink>
       <nav class="desktop-nav" aria-label="主导航">
-        <template v-for="group in navGroups" :key="group.label || 'top'">
+        <template v-for="group in navGroups" :key="group.label || group.items[0].to">
           <span v-if="group.label" class="nav-label">{{ group.label }}</span>
+          <!-- 没有组名的组（只有一项）也和上一组隔开，不像是上一组的最后一项 / A group without a heading (a single item) still stands apart, never reading as the last item of the group above -->
+          <span v-else-if="group !== navGroups[0]" class="nav-gap" aria-hidden="true"></span>
           <!-- 自己写 a：配置的四项共用一条路由，RouterLink 的当前态分不出来 / Our own anchors: the four config items share one route, so RouterLink's current state cannot tell them apart -->
           <RouterLink v-for="item in group.items" :key="item.label" :to="navTarget(item)" custom v-slot="{ href, navigate }">
             <a :href="href" :aria-current="isCurrent(item) ? 'page' : undefined" @click="navigate"><component :is="item.icon" :size="16" aria-hidden="true" /><span>{{ item.label }}</span></a>

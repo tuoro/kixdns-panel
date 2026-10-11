@@ -8,7 +8,7 @@ describe('配置字段共享校验', () => {
     expect(matcherFieldErrors({ type: 'response_answer_ip', operator: 'and' }, 'response'))
       .toEqual({ cidr: '请填写网段' })
     expect(matcherFieldErrors({ type: 'geoip_country', operator: 'and', country_codes: [' '] }, 'selector'))
-      .toEqual({ country_codes: '请填写国家' })
+      .toEqual({ country_codes: '请填写地区代码' })
     expect(matcherFieldErrors({ type: 'geo_site', operator: 'and', value: '' }, 'selector')).toEqual({ value: '请填写分类' })
     expect(matcherFieldErrors({ type: 'qtype', operator: 'and', value: '' }, 'request')).toEqual({ value: '请选择类型' })
     expect(matcherFieldErrors({ type: 'edns_present', operator: 'and', expect: false }, 'request')).toEqual({})

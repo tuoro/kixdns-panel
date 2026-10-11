@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { useToast } from './useToast'
+import { dismissUndoable, toastMark, useToast } from './useToast'
 
 const toast = useToast()
 
@@ -70,5 +70,21 @@ describe('提示条的存活规则', () => {
     toast.error('三')
     toast.error('四')
     expect(toast.messages.value).toHaveLength(4)
+  })
+
+  it('保存落地只收起草稿定下来之前的撤销：保存途中又改的那条撤销还在', () => {
+    toast.undoable('已添加规则「a」', () => {})
+    const mark = toastMark()
+    toast.undoable('已删除规则「b」', () => {})
+    dismissUndoable(mark)
+    expect(toast.messages.value.map((item) => item.message)).toEqual(['已删除规则「b」'])
+    dismissUndoable()
+    expect(toast.messages.value).toEqual([])
+  })
+
+  it('同一句提示已经开着时不叠第二条', () => {
+    toast.info('当前内核不支持：启用查询排行，先关掉再保存')
+    toast.info('当前内核不支持：启用查询排行，先关掉再保存')
+    expect(toast.messages.value.filter((item) => item.message.startsWith('当前内核不支持'))).toHaveLength(1)
   })
 })

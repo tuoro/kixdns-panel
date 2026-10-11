@@ -1,0 +1,146 @@
+import { expect, test, type Page } from '@playwright/test'
+
+// kixdns:demo-panel-down 让演示面板不答话，和真的 fetch 失败走同一条路：横幅挂出，每 5 秒问一次，去掉开关后下一次就连上
+// kixdns:demo-panel-down makes the demo panel stop answering, the same path as a real fetch failure: the banner goes up, asks every 5 seconds, and reconnects on the next ask once the flag is gone
+const panelDown = (page: Page, down: boolean) => page.evaluate((on) => {
+  if (on) localStorage.setItem('kixdns:demo-panel-down', 'true')
+  else localStorage.removeItem('kixdns:demo-panel-down')
+}, down)
+const banner = (page: Page) => page.locator('.conn__inner')
+
+test('连不上面板时按了保存：连上以后保存条回到原样，不变成「保存为待应用」，也不怪 KixDNS @responsive', async ({ page }, testInfo) => {
+  await page.goto('/config')
+  if (testInfo.project.name !== 'mobile') await page.getByRole('button', { name: '快速添加', exact: true }).click()
+  const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+  await quick.fill('down.example.org')
+  await quick.press('Enter')
+  const bar = page.locator('.cfg__savebar')
+  await panelDown(page, true)
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar).toContainText('连不上面板')
+  await expect(banner(page)).toBeVisible()
+  await panelDown(page, false)
+  await expect(banner(page)).toHaveCount(0, { timeout: 10_000 })
+  // 连上以后：「连不上面板」收起，按钮还是「保存并应用」，没有「KixDNS 没有报告它支持哪些功能」 / Reconnected: the verdict goes, the button is still 保存并应用, and no 没有报告能力 notice
+  await expect(bar).not.toContainText('连不上面板')
+  await expect(bar.getByRole('button', { name: '保存并应用' })).toBeVisible()
+  await expect(page.getByText('KixDNS 没有报告它支持哪些功能', { exact: false })).toHaveCount(0)
+  await expect(page.locator('[data-rule]', { hasText: 'down.example.org' })).toBeVisible()
+  // 再按一次照常先校验再写入 / Pressed again it validates before writing as usual
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar).toContainText('已生效')
+})
+
+test('连不上面板时打开的配置页和系统页，连上以后自己读出来 @responsive', async ({ page }, testInfo) => {
+  const mobile = testInfo.project.name === 'mobile'
+  await page.goto('/logs')
+  await expect(page.locator('main h1')).toHaveText('日志')
+  await panelDown(page, true)
+  await page.getByRole('link', { name: mobile ? '配置' : '规则', exact: true }).first().click()
+  // 原因和重试交给顶上的横幅：页内只写一句连上后会自己打开 / The cause and the retry belong to the banner: the page only says it opens by itself once connected
+  await expect(page.locator('.cfg__wait')).toHaveText('连上面板后自动打开')
+  await expect(page.locator('.cfg__failed')).toHaveCount(0)
+  // 没读到配置时页头不写规则数、上游组数，只写状态 / Without a config read the header shows no rule or group counts, only the state
+  if (!mobile) {
+    await expect(page.locator('.cfg__facts')).toContainText('未知')
+    await expect(page.locator('.cfg__facts')).not.toContainText('规则')
+    await expect(page.locator('.cfg__facts')).not.toContainText('上游组')
+  }
+  await panelDown(page, false)
+  await expect(page.locator('.cfg__panel')).toBeVisible({ timeout: 10_000 })
+
+  await panelDown(page, true)
+  await page.getByRole('link', { name: '系统', exact: true }).first().click()
+  await expect(banner(page)).toBeVisible()
+  await expect(page.locator('.system-wait')).toHaveText('连上面板后自动打开')
+  // 什么都没读到时不画卡片：缓存的更新卡读不到内核会写成「还没安装」 / No cards while nothing is read: the cached update card would say 还没安装 without the kernel
+  await expect(page.locator('.update-panel')).toHaveCount(0)
+  await panelDown(page, false)
+  await expect(banner(page)).toHaveCount(0, { timeout: 10_000 })
+  await expect(page.locator('.system-heading')).toContainText(mobile ? '运行中' : 'kixdns.service')
+})
+
+// 连不上面板时：横幅说原因、给重试；页面只说手上的数是什么时候读到的，不复述原因，按了只会失败的操作都停用
+// With the panel unreachable the banner gives the cause and the retry; the page only says when its figures were read, restates nothing, and disables anything that could only fail
+test('连不上面板时页面不复述横幅，按了只会失败的操作都停用 @responsive', async ({ page }, testInfo) => {
+  await page.goto('/')
+  await expect(page.locator('.overview-card--upstreams')).toBeVisible()
+  await panelDown(page, true)
+  await page.evaluate(() => window.dispatchEvent(new Event('kixdns:panel-unreachable')))
+  await expect(banner(page)).toBeVisible()
+  // 读到的时刻：宽屏在页头的「更新于」里，手机在这一行里（手机页头没有这一项），不说两遍
+  // The read time: in the header's 更新于 on wide screens, in this line on phones (their header lacks it), never twice
+  const notice = page.locator('.overview-notice')
+  if (testInfo.project.name === 'mobile') {
+    await expect(notice).toHaveText(/^显示 .+ 读到的数据$/)
+    await expect(notice.getByRole('button')).toHaveCount(0)
+  } else {
+    await expect(notice).toBeHidden()
+    await expect(page.locator('.overview-heading .ui-facts')).toContainText('更新于')
+  }
+  await expect(page.getByRole('button', { name: '刷新' })).toBeDisabled()
+
+  await page.getByRole('link', { name: '系统', exact: true }).first().click()
+  await expect(page.locator('.system-wait')).toBeVisible()
+  await panelDown(page, false)
+  await expect(banner(page)).toHaveCount(0, { timeout: 10_000 })
+  await expect(page.getByRole('button', { name: '重启' })).toBeEnabled()
+  await panelDown(page, true)
+  await page.evaluate(() => window.dispatchEvent(new Event('kixdns:panel-unreachable')))
+  await expect(banner(page)).toBeVisible()
+  for (const name of ['重启', '停止']) await expect(page.getByRole('button', { name, exact: true })).toBeDisabled()
+  await expect(page.locator('.ui-notice--err')).toHaveCount(0)
+})
+
+// 写进去了、回应却丢了：再按保存时面板上已经是这份配置，说「已经保存过了」，不说「别处改过了」
+// Written but the answer was lost: pressed again, the panel already holds this config, so it says 已经保存过了 rather than 别处改过了
+test('保存的回应丢了：连上后再保存说「已经保存过了」，不是冲突', async ({ page }) => {
+  await page.goto('/config')
+  await page.getByRole('button', { name: '快速添加', exact: true }).click()
+  const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+  await quick.fill('lost.example.org')
+  await quick.press('Enter')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-put-answer-lost', 'true'))
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar).toContainText('连不上面板')
+  await expect(banner(page)).toHaveCount(0, { timeout: 10_000 })
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar).toContainText(/已经保存过了\s*·\s*版本 #\d+/)
+  await expect(bar).not.toContainText('别处改过了')
+})
+
+// 有没保存的修改时连不上面板、又读了一次配置：连上以后那条「读取配置失败」收起，不和「已重新连上面板」并排
+// Unsaved edits, the panel unreachable and the config re-read: once reconnected, 读取配置失败 goes instead of sitting beside 已重新连上面板
+test('有修改时断线读过一次配置：连上后「读取配置失败」收起', async ({ page }) => {
+  await page.goto('/config')
+  await page.getByRole('button', { name: '快速添加', exact: true }).click()
+  const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+  await quick.fill('keep.example.org')
+  await quick.press('Enter')
+  await panelDown(page, true)
+  await page.evaluate(async () => {
+    const { load } = await import('/src/config-v2/useConfigDocument.ts')
+    await load({ quiet: true, keepDraft: true })
+  })
+  await expect(banner(page)).toBeVisible()
+  await panelDown(page, false)
+  await expect(banner(page)).toHaveCount(0, { timeout: 10_000 })
+  await expect(page.locator('.cfg__notice', { hasText: '读取配置失败' })).toHaveCount(0)
+  await expect(page.locator('[data-rule]', { hasText: 'keep.example.org' })).toBeVisible()
+})
+
+// 日志页连上以后马上重读：操作审计不轮询，以前「读取失败」会在横幅收起后一直挂着
+// The logs page re-reads on reconnect: the audit tab does not poll, and its 读取失败 used to stay after the banner had gone
+test('日志页连上后马上重读，「读取失败」不留在横幅收起之后', async ({ page }) => {
+  await page.goto('/logs')
+  await page.getByRole('tab', { name: '操作审计' }).click()
+  await expect(page.locator('.audit-line').first()).toBeVisible()
+  await panelDown(page, true)
+  await page.getByRole('button', { name: '刷新审计记录' }).click()
+  await expect(banner(page)).toBeVisible()
+  await panelDown(page, false)
+  await expect(banner(page)).toHaveCount(0, { timeout: 10_000 })
+  await expect(page.locator('.logs-notice')).toHaveCount(0)
+  await expect(page.locator('.audit-line').first()).toBeVisible()
+})

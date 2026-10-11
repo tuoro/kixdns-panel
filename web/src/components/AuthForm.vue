@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Activity, Eye, EyeOff, ShieldCheck } from '@lucide/vue'
+import { Activity, Clock, Eye, EyeOff, ShieldCheck, TriangleAlert } from '@lucide/vue'
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useSession } from '../composables/useSession'
@@ -16,6 +16,11 @@ const visible = ref(false)
 const submitting = ref(false)
 const error = ref('')
 const isSetup = computed(() => props.mode === 'setup')
+// 会话过期被送回来时说为什么；配置页上有没保存的修改时照实说丢了 / Sent back by an expired session: say why, and say plainly when unsaved config edits were lost
+const expiredNote = computed(() => {
+  if (isSetup.value || !route.query.expired) return ''
+  return route.query.expired === 'draft' ? '刚才没保存的配置修改没有留下来。登录后回到刚才的页面。' : '登录后回到刚才的页面。'
+})
 
 async function submit(): Promise<void> {
   error.value = ''
@@ -45,6 +50,9 @@ async function submit(): Promise<void> {
         <h1>{{ isSetup ? '创建管理员' : '登录面板' }}</h1>
         <p v-if="isSetup">这个账号可以改配置、管服务、装更新。</p>
       </div>
+      <!-- 会话过期被送回来：一条提示条说清，丢了没保存的修改时是醒目的黄色（这是读者最关心的一句），只是过期时是灰色
+           Sent back by an expired session: a notice says so, amber when unsaved edits were lost (the sentence the reader cares about most), grey when it only expired -->
+      <p v-if="expiredNote" class="ui-notice auth-expired" :class="{ 'ui-notice--off': route.query.expired !== 'draft' }" role="status"><component :is="route.query.expired === 'draft' ? TriangleAlert : Clock" :size="16" aria-hidden="true" /><span>登录已过期</span><small>{{ expiredNote }}</small></p>
       <form @submit.prevent="submit">
         <label>用户名<input v-model.trim="username" name="username" autocomplete="username" minlength="3" maxlength="64" required autofocus /></label>
         <label>密码

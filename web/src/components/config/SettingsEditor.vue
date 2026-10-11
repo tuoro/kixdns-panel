@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ChevronLeft, ChevronRight, Plus, Search, X } from '@lucide/vue'
 import UiHelp from '../ui/UiHelp.vue'
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { SETTING_SECTIONS, settingShouldRender, settingSupported, settingValue, settingVisible, type SettingField, type SettingSection } from '../../config-editor/schema'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { SETTING_SECTIONS, settingShouldRender, settingSupported, settingValue, settingVisible, settingWritten, type SettingField, type SettingSection } from '../../config-editor/schema'
 import type { GlobalSettings } from '../../config-editor/types'
 import GeoDataEditor from './GeoDataEditor.vue'
 import UiDotText from '../ui/UiDotText.vue'
@@ -31,7 +31,12 @@ const searchInput = ref<HTMLInputElement>()
 // Groups on the left and one group's settings on the right, the same layout as 解析编排's list and
 // inspector; a phone shows the group list first and opens one group at a time.
 const current = ref(props.initialGroup || (props.lead?.id ?? 'network'))
-const mobileOpen = ref(false)
+// 刚按「关掉」的那几行先留着（写「已关闭」、按钮收起），离开这一组再消失：不然整组一下子空了，右边只剩白板
+// Rows just switched off with 关掉 stay (reading 已关闭, the button gone) until the group is left: otherwise the whole group vanishes at once and the pane goes blank
+const keptOff = reactive(new Set<string>())
+watch(current, () => keptOff.clear())
+// 从「去基础设置」过来时指名了一组：手机上直接打开那一组，不停在目录上 / Arriving from 去基础设置 names a group: on phones that group opens directly instead of the contents list
+const mobileOpen = ref(Boolean(props.initialGroup))
 const mobileViewport = window.matchMedia('(max-width: 860px)')
 const isMobile = ref(mobileViewport.matches)
 function resize(event: MediaQueryListEvent): void { isMobile.value = event.matches }
@@ -41,7 +46,7 @@ const query = computed(() => search.value.trim().toLowerCase())
 const allFields = SETTING_SECTIONS.flatMap((section) => section.fields)
 
 const visibleSections = computed(() => SETTING_SECTIONS.map((section) => {
-  const available = section.fields.filter((field) => shown(field) && (supported(field) || Object.hasOwn(settings.value, field.key)))
+  const available = section.fields.filter((field) => shown(field) && (supported(field) || settingWritten(field, settings.value) || keptOff.has(field.key)))
   const matches = available.filter((field) => `${section.title} ${field.label} ${field.key}`.toLowerCase().includes(query.value))
   const relatedKeys = new Set(matches.flatMap((field) => [field.key, ...dependencyKeys(field)]))
   const fields = query.value
@@ -103,7 +108,7 @@ const versionMatches = computed(() => !query.value || '格式版本 version 配�
 const currentGroup = computed(() => groups.value.find((group) => group.id === current.value) ?? groups.value[0]!)
 const navSections = computed(() => SETTING_SECTIONS.map((section) => ({
   ...section,
-  fields: section.fields.filter((field) => shown(field) && (supported(field) || Object.hasOwn(settings.value, field.key)) && settingShouldRender(field, settings.value, props.capabilities)),
+  fields: section.fields.filter((field) => shown(field) && (supported(field) || settingWritten(field, settings.value) || keptOff.has(field.key)) && settingShouldRender(field, settings.value, props.capabilities)),
 })).filter((section) => section.fields.length > 0))
 const currentSection = computed(() => navSections.value.find((section) => section.id === current.value))
 const paneSections = computed(() => (query.value ? visibleSections.value : currentSection.value ? [currentSection.value] : []))
@@ -155,12 +160,18 @@ function readonlyValue(field: SettingField): string {
 function setValue(key: string, value: unknown): void {
   settings.value = { ...settings.value, [key]: value }
 }
-// 内核不支持的设置只要写在配置里（哪怕是关着的）就会被拒；从配置里去掉这一项，草稿才保存得了
-// A setting the kernel does not support is refused whenever it is written in the config (even switched off); removing it lets the draft save
+// 内核不支持的设置开着时保存会被挡（开着也不起作用；关着的开关不写，见 settingWritten）；关掉或从配置里去掉，草稿才保存得了
+// A setting the kernel does not support blocks saving while it is on (it would do nothing; a switch that is off is not written, see settingWritten); switching it off or removing it lets the draft save
 function removeSetting(key: string): void {
   const next = { ...settings.value }
   delete next[key]
   settings.value = next
+}
+// 开关关掉就不写进配置（同上）；别的写法只能从配置里去掉 / A switch turned off is not written (as above); anything else has to come out of the config
+function turnOff(field: SettingField): void {
+  keptOff.add(field.key)
+  if (field.type === 'boolean') setValue(field.key, false)
+  else removeSetting(field.key)
 }
 
 function scalarValue(field: SettingField): string | number {
@@ -247,14 +258,14 @@ function supported(field: SettingField): boolean {
       <section v-for="section in paneSections" :key="section.id" class="settings-group" :class="{ 'ui-rise': !query }">
         <!-- 搜索结果里每组的标题也是区块标题，和平时一组的标题一样：和下面的设置名差了字号，不只差字重（规范 1.7，审计 T10）
              Each group heading in search results is a section title, as for a single group: it differs from the setting names in size, not only weight (spec 1.7, audit T10) -->
-        <header class="settings-group__head settings-group__head--lead"><h2>{{ section.title }}</h2><p v-if="section.description" class="settings-group__desc">{{ section.description }}</p></header>
+        <header class="settings-group__head settings-group__head--lead"><h2 tabindex="-1" data-focus-landing>{{ section.title }}</h2><p v-if="section.description" class="settings-group__desc">{{ section.description }}</p></header>
         <div class="settings-rows">
           <!-- 一个设置一行：左边名字和一句说明，右边控件。数字的单位写在输入框里，占位写默认值。
                One setting per row: name and a one-line note on the left, the control on the right; a number's unit sits in the input and the placeholder states the default. -->
           <template v-for="field in section.fields" :key="field.key">
             <div v-if="!supported(field)" class="ui-setrow ui-setrow--off">
               <span class="ui-setrow__label"><span>{{ labelFor(field) }}<i v-if="changed?.has(field.key)" class="ui-dot ui-dot--ink settings-dot" aria-hidden="true"></i></span><code v-if="query" class="settings-row__key">{{ field.key }}</code></span>
-              <span class="settings-row__readonly"><code>{{ readonlyValue(field) }}</code><span class="ui-tag">内核不支持</span><button v-if="Object.prototype.hasOwnProperty.call(settings, field.key)" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" @click="removeSetting(field.key)">从配置里去掉</button></span>
+              <span class="settings-row__readonly"><code>{{ readonlyValue(field) }}</code><span class="ui-tag">内核不支持</span><button v-if="settingWritten(field, settings)" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" @click="turnOff(field)">{{ field.type === 'boolean' ? '关掉' : '从配置里去掉' }}</button></span>
             </div>
             <label v-else-if="field.type === 'boolean'" class="ui-setrow ui-setrow--toggle" :class="{ 'ui-setrow--off': disabled(field) }">
               <span class="ui-setrow__label"><span>{{ labelFor(field) }}<i v-if="changed?.has(field.key)" class="ui-dot ui-dot--ink settings-dot" aria-hidden="true"></i></span><small v-if="noteFor(field)">{{ noteFor(field) }}</small><code v-if="query" class="settings-row__key">{{ field.key }}</code></span>
@@ -286,7 +297,7 @@ function supported(field: SettingField): boolean {
         <div class="settings-rows"><slot name="lead" /></div>
       </div>
       <div v-if="!query && current === 'geo'" :key="current" class="ui-rise">
-        <header class="settings-group__head settings-group__head--lead"><h2>{{ currentGroup.title }}</h2><p v-if="currentGroup.description" class="settings-group__desc">{{ currentGroup.description }}</p></header>
+        <header class="settings-group__head settings-group__head--lead"><h2 tabindex="-1" data-focus-landing>{{ currentGroup.title }}</h2><p v-if="currentGroup.description" class="settings-group__desc">{{ currentGroup.description }}</p></header>
         <GeoDataEditor v-model="settings" :changed="changed" />
       </div>
     </div>

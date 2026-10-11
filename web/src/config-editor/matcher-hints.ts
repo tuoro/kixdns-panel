@@ -26,6 +26,6 @@ const matcherHints: Record<string, MatcherHint> = {
 
 export function matcherHint(matcher: MatcherConfig): MatcherHint {
   if (matcher.type.includes('geo_site') || matcher.type.includes('geosite')) return { label: '分类', example: '分类名，如 cn' }
-  if (matcher.type.includes('geoip_country')) return { label: '国家', example: 'CN, US', help: '需要已导入的 GeoIP 数据' }
+  if (matcher.type.includes('geoip_country')) return { label: '地区代码', example: 'CN, US', help: '需要已导入的 GeoIP 数据' }
   return matcherHints[matcher.type] ?? { label: '值', example: '' }
 }

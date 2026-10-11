@@ -5,6 +5,7 @@ import { computed, nextTick, onMounted, ref } from 'vue'
 import type { ConfigVersion } from '../api/types'
 import UiMenu from '../components/ui/UiMenu.vue'
 import { useConfirm } from '../composables/useConfirm'
+import { useConnection } from '../composables/useConnection'
 import { useToast } from '../composables/useToast'
 import { diffModels, type DiffBlock } from '../config-model/diff'
 import DiffBlocks from './DiffBlocks.vue'
@@ -105,10 +106,12 @@ function toggle(v: ConfigVersion): void {
   if (isCurrent(v)) return
   picked.value = picked.value.includes(v.id) ? picked.value.filter((x) => x !== v.id) : [...picked.value, v.id]
 }
+// 连不上面板时比较、恢复、删除都要问面板，按了只会失败：先停用，横幅说为什么 / With the panel unreachable compare, restore and delete all need the panel and could only fail: disabled, the banner says why
+const { down: panelDown } = useConnection()
 const menu = () => [
-  { value: 'compare', label: '和当前比较' },
-  { value: 'restore', label: '恢复为这个版本', disabled: busy.value },
-  { value: 'delete', label: '删除这个版本', danger: true, disabled: busy.value },
+  { value: 'compare', label: '和当前比较', disabled: panelDown.value },
+  { value: 'restore', label: '恢复为这个版本', disabled: busy.value || panelDown.value },
+  { value: 'delete', label: '删除这个版本', danger: true, disabled: busy.value || panelDown.value },
 ]
 function act(v: ConfigVersion, value: string): void {
   if (value === 'compare') void openDiff(v)
@@ -128,7 +131,7 @@ function onRuleLink(id: number): void { dialog.value?.close(); emit('rule', id) 
       <ol v-if="versions.length" class="hist__list">
         <li v-for="v in versions" :key="v.id" class="hist__row" :class="{ 'is-picked': picked.includes(v.id), 'is-current': isCurrent(v) }">
           <label v-if="selecting" class="ui-checkbox hist__check" :class="{ 'is-hidden': isCurrent(v) }"><input type="checkbox" :checked="picked.includes(v.id)" :disabled="isCurrent(v)" :aria-label="`选择版本 #${v.id}`" @change="toggle(v)"><i></i></label>
-          <button class="hist__main" type="button" :disabled="isCurrent(v) && !selecting" @click="selecting ? toggle(v) : openDiff(v)">
+          <button class="hist__main" type="button" :disabled="(isCurrent(v) && !selecting) || panelDown" @click="selecting ? toggle(v) : openDiff(v)">
             <span class="hist__note" :class="{ 'is-empty': !v.message }">{{ v.message || '未填写备注' }}</span>
             <span class="hist__meta">#{{ v.id }} · {{ formatVersionTime(v.created_at) }} · {{ actorName(v.actor) }}</span>
           </button>

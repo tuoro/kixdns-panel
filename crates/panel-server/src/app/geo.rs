@@ -55,8 +55,10 @@ pub(super) async fn sync_geo_data(
         .audit(
             Some(session.username),
             "config.geo_data.sync".to_owned(),
+            // 不折行空格：一项里的名字、数字和「个」不拆开，只在「、」后面换行
+            // No-break spaces: a name, its number and 个 stay together, so the line breaks only after 、
             format!(
-                "GeoIP MMDB {} 个、GeoIP DAT {} 个、GeoSite {} 个",
+                "GeoIP\u{a0}MMDB\u{a0}{}\u{a0}个、GeoIP\u{a0}DAT\u{a0}{}\u{a0}个、GeoSite\u{a0}{}\u{a0}个",
                 usize::from(result.geoip_mmdb.is_some()),
                 usize::from(result.geoip_dat.is_some()),
                 result.geosite.len()

@@ -17,7 +17,7 @@ useBarHeight(inner, '--conn-h')
   <div class="conn" role="status">
     <div v-if="down && !booting" ref="inner" class="conn__inner">
       <WifiOff :size="16" aria-hidden="true" />
-      <p><strong>连不上面板</strong><span>网络断了，或者面板正在重启。连上后这条会自己消失。</span></p>
+      <p><strong>连不上面板</strong><span>网络断了，或者面板正在重启。<span class="conn__tail">连上后自动恢复。</span></span></p>
       <button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" :disabled="checking" @click="retry">{{ checking ? '正在重试' : '重试' }}</button>
     </div>
   </div>
@@ -27,6 +27,8 @@ useBarHeight(inner, '--conn-h')
 .conn { position: sticky; top: var(--app-header-height); z-index: 39; }
 .conn__inner { display: flex; align-items: center; gap: var(--s-3); padding: var(--s-2) var(--s-4); background: var(--warn-tint-l); border-bottom: 1px solid var(--l-hair); }
 .conn__inner > svg { flex: none; color: var(--warn-l); }
+/* 「连上后自动恢复。」不拆开：手机上不会只剩「恢复。」落在第二行 / 连上后自动恢复。 stays whole: on phones 恢复。 never drops to a line of its own */
+.conn__tail { white-space: nowrap; }
 /* 手机上说明折成两三行：图标对着第一行字，不跑到中间 / On a phone the note folds onto two or three lines: the icon lines up with the first one instead of drifting to the middle */
 @media (max-width: 640px) {
   .conn__inner > svg { align-self: flex-start; margin-top: calc((var(--t-2) * var(--lh-base) - var(--size-icon)) / 2); }

@@ -33,29 +33,32 @@ pub struct UnsupportedConfigFields {
     cname: bool,
 }
 
-// 每一类给一条做得到的出路：设置要从配置里去掉（写着就算，关着也不行），CNAME 要改成 IP
-// One remedy per kind that can actually be done: settings must be removed from the config (being written counts, even switched off); CNAME answers must become IPs
+// 每一类给一条做得到的出路：设置要关掉（关着的不需要这项能力），CNAME 要改成 IP
+// One remedy per kind that can actually be done: settings are switched off (off needs no capability); CNAME answers must become IPs
 impl fmt::Display for UnsupportedConfigFields {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut parts = Vec::new();
-        if !self.fields.is_empty() {
-            parts.push(format!(
-                "这个内核不支持配置里的：{}。在基础设置里把{}从配置里去掉，或者换用支持它的内核",
-                self.fields.join("、"),
-                if self.fields.len() > 1 {
-                    "它们"
-                } else {
-                    "这一项"
-                }
-            ));
+        let it = if self.fields.len() > 1 {
+            "它们"
+        } else {
+            "这一项"
+        };
+        let fields = self.fields.join("、");
+        // 两类都有时说一句：先列出来，再一起给出路，主语和出路各说一次
+        // Both kinds: one sentence that lists them, then the ways out together, subject and remedy each said once
+        match (self.fields.is_empty(), self.cname) {
+            (false, false) => write!(
+                formatter,
+                "这个内核不支持配置里的：{fields}。在基础设置里关掉{it}再保存，或者换用支持它的内核"
+            ),
+            (true, true) => formatter.write_str(
+                "这个内核不支持 CNAME 回答：把回答写成域名的映射和规则改成 IP，或者换用支持它的内核",
+            ),
+            (false, true) => write!(
+                formatter,
+                "这个内核不支持：{fields}、CNAME 回答。关掉{fields}、把写成域名的回答改成 IP，或者换用支持它们的内核"
+            ),
+            (true, false) => Ok(()),
         }
-        if self.cname {
-            parts.push(
-                "这个内核不支持 CNAME 回答：把回答域名的域名映射和规则改成 IP，或者换用支持它的内核"
-                    .to_owned(),
-            );
-        }
-        formatter.write_str(&parts.join("；"))
     }
 }
 
@@ -65,8 +68,15 @@ pub fn ensure_config_supported(
 ) -> Result<(), UnsupportedConfigFields> {
     let fields = FIELD_REQUIREMENTS
         .iter()
+        // 写着「关」（false）不算用到：内核缺省就是关，没有这项能力的内核会把不认识的键直接忽略，结果一样。
+        // 只有开着才需要这项能力（不然开了也不起作用）；安装包自带的配置就写着 false，不能因此挡住更新或回退
+        // Written as off (false) does not count as used: off is the kernel's default, and a kernel without the capability ignores the
+        // unknown key, with the same result. Only on needs the capability (otherwise it would silently do nothing); the shipped config
+        // writes false, which must not block an update or rollback
         .filter(|requirement| {
-            content.pointer(requirement.pointer).is_some()
+            content
+                .pointer(requirement.pointer)
+                .is_some_and(|value| value != &Value::Bool(false))
                 && !supports(capabilities, requirement.capability)
         })
         .map(|requirement| requirement.label)
@@ -174,9 +184,33 @@ mod tests {
     #[test]
     fn rejects_controlled_fields_without_capability() {
         let error =
-            ensure_config_supported(&json!({"settings": {"statistics_enabled": false}}), &[])
+            ensure_config_supported(&json!({"settings": {"statistics_enabled": true}}), &[])
                 .unwrap_err();
         assert!(error.to_string().contains("启用查询排行"));
+    }
+
+    // 关着的开关不需要能力：安装包自带的配置写着 false，更新或回退到没有统计的内核不该被挡
+    // A switch that is off needs no capability: the shipped config writes false, and updating or rolling back to a kernel without statistics must not be blocked
+    #[test]
+    fn accepts_controlled_switches_that_are_off() {
+        let content = json!({"settings": {"statistics_enabled": false, "statistics_anonymize_client_ip": false}});
+        assert!(ensure_config_supported(&content, &[]).is_ok());
+    }
+
+    // 两类都有时一句话：主语和出路各说一次 / Both kinds in one sentence: subject and remedy each said once
+    #[test]
+    fn both_kinds_read_as_one_sentence() {
+        let content = json!({
+            "settings": {"statistics_enabled": true},
+            "pipelines": [{"id": "default", "rules": [{"actions": [{"type": "static_cname_response", "target": "origin.example."}]}]}]
+        });
+        let message = ensure_config_supported(&content, &[])
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            message,
+            "这个内核不支持：启用查询排行、CNAME 回答。关掉启用查询排行、把写成域名的回答改成 IP，或者换用支持它们的内核"
+        );
     }
 
     #[test]

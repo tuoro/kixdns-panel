@@ -142,9 +142,11 @@ test('断网时内容区顶上挂出「连不上面板」，联网后自己收�
   await context.setOffline(true)
   await expect(banner).toBeVisible()
   await expect(banner).toContainText('连不上面板')
-  // 页头不再复述上次读到的「运行中」：点变灰，写「状态未知」 / The header stops repeating the last-read 运行中: a grey dot and 状态未知
+  // 页头不再复述上次读到的「运行中」：点变灰；手机写「状态未知」，宽屏「状态」标签下面只写「未知」
+  // The header stops repeating the last-read 运行中: a grey dot; phones read 状态未知, and under the wide 状态 label it reads 未知 only
   const state = page.locator('.overview-heading').locator(testInfo.project.name === 'mobile' ? '.ui-ph__phone' : '.ui-facts > div:first-child b')
-  await expect(state).toContainText('状态未知')
+  await expect(state).toContainText(testInfo.project.name === 'mobile' ? '状态未知' : '未知')
+  if (testInfo.project.name !== 'mobile') await expect(state).toHaveText('未知')
   await expect(state).not.toContainText('运行中')
   await expect(state.locator('.ui-dot')).toHaveClass(/ui-dot--off/)
   // 「已运行」也是上次读到的，不再写；配置版本和「更新于」照写；运行配置卡的「已生效」不上色
@@ -172,11 +174,12 @@ test('断网时内容区顶上挂出「连不上面板」，联网后自己收�
 test('连不上面板时配置页和系统页的页头也写「状态未知」，连上后恢复 @responsive', async ({ page, context }, testInfo) => {
   const mobile = testInfo.project.name === 'mobile'
   await page.goto('/config')
-  const config = mobile ? page.locator('.ui-ph__lead') : page.locator('.cfg__facts > span').first()
+  const config = mobile ? page.locator('.ui-ph__lead') : page.locator('.cfg__facts > span').first().locator('b')
   await expect(config).toContainText('运行中')
   await context.setOffline(true)
   await expect(page.locator('.conn__inner')).toBeVisible()
-  await expect(config).toContainText('状态未知')
+  if (mobile) await expect(config).toContainText('状态未知')
+  else await expect(config).toHaveText('未知')
   await expect(config).not.toContainText('运行中')
   await expect(config.locator('.ui-dot')).toHaveClass(/ui-dot--off/)
   await context.setOffline(false)

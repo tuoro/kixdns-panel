@@ -155,8 +155,8 @@ function move(index: number, direction: string): void {
             <label class="ui-input"><input v-model="matcher.cidr" class="mono" type="text" :aria-label="`条件 ${index + 1} CIDR`" :placeholder="hint(matcher).example" :aria-invalid="Boolean(visibleError(index, 'cidr')) || undefined" :aria-describedby="describedBy(index, 'cidr', matcher)" @blur="touch(index, 'cidr')"></label>
           </template>
           <template v-if="fields(matcher).includes('country_codes')">
-            <span class="ui-rows__plabel">国家</span>
-            <label class="ui-input"><input class="mono" type="text" :value="countryCodesValue(matcher)" :aria-label="`条件 ${index + 1} 国家代码`" :placeholder="hint(matcher).example" :aria-invalid="Boolean(visibleError(index, 'country_codes')) || undefined" :aria-describedby="describedBy(index, 'country_codes', matcher)" @input="setCountryCodes(matcher, $event)" @blur="touch(index, 'country_codes')"></label>
+            <span class="ui-rows__plabel">地区代码</span>
+            <label class="ui-input"><input class="mono" type="text" :value="countryCodesValue(matcher)" :aria-label="`条件 ${index + 1} 地区代码`" :placeholder="hint(matcher).example" :aria-invalid="Boolean(visibleError(index, 'country_codes')) || undefined" :aria-describedby="describedBy(index, 'country_codes', matcher)" @input="setCountryCodes(matcher, $event)" @blur="touch(index, 'country_codes')"></label>
           </template>
           <template v-if="fields(matcher).includes('expect')">
             <span class="ui-seg" role="group" :aria-label="`条件 ${index + 1} ${definitions.find((item) => item.value === matcher.type)?.label ?? ''}`">

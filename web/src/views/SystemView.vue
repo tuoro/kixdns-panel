@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {
+  Clock,
   Cpu,
   ExternalLink,
   Eye,
@@ -12,7 +13,7 @@ import {
   Square,
   Trash2,
 } from '@lucide/vue'
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { apiRequest, jsonBody } from '../api/client'
 import type {
   GithubTokenStatus,
@@ -88,6 +89,10 @@ const running = computed(() => service.value?.active_state === 'active')
 // 连不上面板时，上次读到的服务状态不能当真：点变灰，写「状态未知」，连上后恢复（同概览）
 // While the panel is unreachable the last service state read cannot be trusted: the dot turns grey and reads 状态未知, restored on reconnect (as on the overview)
 const { down: panelDown } = useConnection()
+// 接在汉字后面：Release 标签这类字母开头的名字前空一格（「到 v0.2.0」），「构建 #N」紧接（「到构建 #N」），和服务端同一个规则
+// After Chinese text: a name starting with a Latin letter or digit takes a space (到 v0.2.0), 构建 #N follows directly (到构建 #N), the server's rule
+const afterCjk = (name: string) => (/^[A-Za-z0-9]/.test(name) ? ` ${name}` : name)
+const waitingForPanel = computed(() => panelDown.value && !service.value && !kernel.value)
 // 「正在运行 · active/running」「已停止 · inactive/dead」是同一件事说两遍；只有启动中、
 // 自动重启这类不寻常的状态，systemd 的原始写法才多带了信息。
 // "正在运行 · active/running" and "已停止 · inactive/dead" say one thing twice; only
@@ -435,7 +440,7 @@ async function updateKernel(): Promise<void> {
   if (!latest || kernelAction.value) return
   const verb = installed.value ? '更新' : '安装'
   if (!await confirm.ask({
-    title: `${verb}内核到 ${formatKixdnsVersion(latest)}`,
+    title: `${verb}内核到${afterCjk(formatKixdnsVersion(latest))}`,
     body: `先下载并校验这个构建。${switchConfirmBody(service.value)}`,
     confirmLabel: `${verb}内核`,
   })) return
@@ -461,7 +466,7 @@ async function rollbackKernel(): Promise<void> {
   const previous = kernel.value?.previous
   if (!previous || kernelAction.value) return
   if (!await confirm.ask({
-    title: `回退到 ${formatKixdnsVersion(previous)}`,
+    title: `回退到${afterCjk(formatKixdnsVersion(previous))}`,
     body: switchConfirmBody(service.value),
     confirmLabel: '回退内核',
   })) return
@@ -478,10 +483,13 @@ async function rollbackKernel(): Promise<void> {
   }
 }
 
-onMounted(() => {
+function loadPage(): void {
   void Promise.all([refreshAll(), refreshUpdates()]).then(() => loadGithubTokenStatus())
   void loadPanelUpdateStatus()
-})
+}
+onMounted(loadPage)
+// 连上面板后整页重读一次，不用人去点重试 / Once the panel answers again the whole page re-reads, with nobody pressing 重试
+watch(panelDown, (now, before) => { if (before && !now) loadPage() })
 
 onBeforeUnmount(() => {
   if (panelUpdateTimer) clearTimeout(panelUpdateTimer)
@@ -490,7 +498,8 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="page system-page">
-    <StatusBanner v-if="loadError" :message="loadError" :stale="Boolean(service || kernel)" :busy="loadingService || loadingKernel" @retry="refreshAll" />
+    <!-- 连不上面板时顶上的横幅已经说了为什么、也有重试：这一页不再复述，什么都没读到时只写一句连上后会自己打开 / With the panel unreachable the banner says why and offers the retry: this page does not repeat it, and with nothing read it only says it opens by itself once connected -->
+    <StatusBanner v-if="loadError && !panelDown" :message="loadError" :stale="Boolean(service || kernel)" :busy="loadingService || loadingKernel" @retry="refreshAll" />
     <!-- 按「要不要现在动手」排：服务状态就在页头的事实行里，在不在跑、要不要动它一眼可知；
          有更新时更新紧随其后，不需要动手的安装信息和凭据降到下面。整页没有黑按钮：
          这一页是看状态、偶尔操作，列表里每行的操作一律用次要按钮。
@@ -517,19 +526,23 @@ onBeforeUnmount(() => {
         <span v-else>服务状态暂不可用</span>
       </template>
       <template v-if="service" #actions>
-        <button v-if="!running" class="ui-btn ui-btn--secondary" type="button" :disabled="!installed || serviceAction !== null" @click="control('start')"><Play :size="16" />启动</button>
+        <button v-if="!running" class="ui-btn ui-btn--secondary" type="button" :disabled="!installed || serviceAction !== null || panelDown" @click="control('start')"><Play :size="16" />启动</button>
         <template v-else>
-          <button class="ui-btn ui-btn--secondary" type="button" :disabled="!installed || serviceAction !== null" @click="control('restart')"><RotateCw :size="16" :class="{ spin: serviceAction === 'restart' }" />重启</button>
-          <button class="ui-btn ui-btn--danger" type="button" :disabled="serviceAction !== null" @click="control('stop')"><Square :size="16" />停止</button>
+          <button class="ui-btn ui-btn--secondary" type="button" :disabled="!installed || serviceAction !== null || panelDown" @click="control('restart')"><RotateCw :size="16" :class="{ spin: serviceAction === 'restart' }" />重启</button>
+          <button class="ui-btn ui-btn--danger" type="button" :disabled="serviceAction !== null || panelDown" @click="control('stop')"><Square :size="16" />停止</button>
         </template>
       </template>
     </UiPageHeader>
 
+    <!-- 什么都没读到就连不上了：标题下面一句，卡片先不画（缓存的更新卡读不到内核会写成「还没安装」，那是错的）
+         Nothing read before the panel went away: one line under the title and no cards yet (the cached update card, without the kernel, would say 还没安装, which is wrong) -->
+    <p v-if="waitingForPanel" class="ui-notice ui-notice--off system-wait" role="status"><Clock :size="16" aria-hidden="true" /><span>连上面板后自动打开</span></p>
+    <template v-else>
     <!-- 卡片都是概览那套：小标签一行，右端一个标签或按钮；内容是细线隔开的行 / Every card follows the overview: a small label line with a tag or button at its end; rows between hairlines -->
     <section class="ui-card system-card update-panel" aria-labelledby="system-updates-label">
       <div class="system-card__head">
         <h2 id="system-updates-label" class="ui-card__label">可用更新</h2>
-        <button class="ui-btn ui-btn--secondary ui-btn--icon ui-btn--compact" type="button" title="检查更新" aria-label="检查更新" :disabled="checkingUpdates" @click="refreshUpdatesWithQuota"><RefreshCw :size="14" :class="{ spin: checkingUpdates }" /></button>
+        <button class="ui-btn ui-btn--secondary ui-btn--icon ui-btn--compact" type="button" title="检查更新" aria-label="检查更新" :disabled="checkingUpdates || panelDown" @click="refreshUpdatesWithQuota"><RefreshCw :size="14" :class="{ spin: checkingUpdates }" /></button>
       </div>
       <div v-if="checkingUpdates && !updateStatus" class="system-skeleton-rows" role="status" aria-label="正在检查更新"><i v-for="n in 2" :key="n" class="sk"></i></div>
       <div v-else-if="updateStatus" class="system-tasks" :class="{ 'is-refreshing': checkingUpdates }">
@@ -553,7 +566,7 @@ onBeforeUnmount(() => {
           <template v-if="kixdnsNotice || !installed || needsToken(updateStatus.kixdns_error)" #actions>
             <button v-if="!kixdnsNotice && needsToken(updateStatus.kixdns_error)" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" @click="focusToken">填写 Token</button>
             <a v-if="kixdnsNotice" class="ui-link" :href="kixdnsNotice.build_url" target="_blank" rel="noopener noreferrer">构建详情<ExternalLink :size="12" /></a>
-            <button v-if="kixdnsNotice?.available || !installed" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" :disabled="!kernel?.latest || kernelAction !== null" @click="updateKernel">{{ kernelAction === 'update' ? '更新中' : (installed ? '更新' : '安装') }}</button>
+            <button v-if="kixdnsNotice?.available || !installed" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" :disabled="!kernel?.latest || kernelAction !== null || panelDown" @click="updateKernel">{{ kernelAction === 'update' ? '更新中' : (installed ? '更新' : '安装') }}</button>
           </template>
         </UiTask>
 
@@ -577,15 +590,15 @@ onBeforeUnmount(() => {
           <template v-if="panelNotice?.release_url || (!panelNotice && needsToken(updateStatus.panel_error))" #actions>
             <button v-if="!panelNotice && needsToken(updateStatus.panel_error)" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" @click="focusToken">填写 Token</button>
             <a v-if="panelNotice?.release_url" class="ui-link" :href="panelNotice.release_url" target="_blank" rel="noopener noreferrer">发布说明<ExternalLink :size="12" /></a>
-            <button v-if="panelNotice?.available" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" :disabled="startingPanelUpdate || panelUpdateRunning" @click="startPanelUpdate">{{ panelUpdateRunning ? '更新中' : '在线更新' }}</button>
+            <button v-if="panelNotice?.available" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" :disabled="startingPanelUpdate || panelUpdateRunning || panelDown" @click="startPanelUpdate">{{ panelUpdateRunning ? '更新中' : '在线更新' }}</button>
           </template>
         </UiTask>
       </div>
       <div v-else class="system-check-failed">
         <span>{{ updateError ? `检查失败：${updateError}` : '更新状态暂不可用' }}</span>
-        <button class="ui-btn ui-btn--secondary" type="button" :disabled="checkingUpdates" @click="refreshUpdatesWithQuota">重新检查</button>
+        <button class="ui-btn ui-btn--secondary" type="button" :disabled="checkingUpdates || panelDown" @click="refreshUpdatesWithQuota">重新检查</button>
       </div>
-      <p v-if="updateError && updateStatus" class="system-card__row system-stale">最近一次检查失败，当前显示上次结果：{{ updateError }}</p>
+      <p v-if="updateError && updateStatus && !panelDown" class="system-card__row system-stale">最近一次检查失败，当前显示上次结果：{{ updateError }}</p>
     </section>
 
     <!-- 不需要现在动手的两块：当前装的是什么，和查更新用的凭据。两张卡一样高，底下那行都贴着卡片底边。
@@ -626,7 +639,7 @@ onBeforeUnmount(() => {
         <div v-if="installed" class="system-card__row install-previous">
           <template v-if="kernel?.previous">
             <span>上一个版本 <span class="ui-num">{{ formatKixdnsVersion(kernel.previous) }}</span></span>
-            <button class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" :disabled="kernelAction !== null" @click="rollbackKernel"><RotateCw v-if="kernelAction === 'rollback'" :size="14" class="spin" />{{ kernelAction === 'rollback' ? '回退中' : '回退' }}</button>
+            <button class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" :disabled="kernelAction !== null || panelDown" @click="rollbackKernel"><RotateCw v-if="kernelAction === 'rollback'" :size="14" class="spin" />{{ kernelAction === 'rollback' ? '回退中' : '回退' }}</button>
           </template>
           <!-- 没有上一个版本时这一行照样在：卡片底部不留空，两张卡的底行对齐 / Without a previous build the row stays, so the card's bottom is never blank and the pair's bottom rows line up -->
           <span v-else class="install-previous__none">没有可回退的版本，更新一次后会留下上一个</span>
@@ -647,8 +660,8 @@ onBeforeUnmount(() => {
               <input ref="tokenInput" v-model="githubToken" :type="githubTokenVisible ? 'text' : 'password'" :placeholder="githubTokenStatus?.configured ? '输入新 Token' : 'github_pat_…'" autocomplete="new-password" maxlength="256" aria-label="GitHub Token" :disabled="githubTokenBusy" @keyup.enter="saveGithubToken">
               <button class="credential-eye" type="button" :title="githubTokenVisible ? '隐藏 Token' : '显示 Token'" :aria-label="githubTokenVisible ? '隐藏 Token' : '显示 Token'" @click="githubTokenVisible = !githubTokenVisible"><EyeOff v-if="githubTokenVisible" :size="16" /><Eye v-else :size="16" /></button>
             </label>
-            <button class="ui-btn ui-btn--secondary" type="button" :disabled="!githubToken || githubTokenBusy" @click="saveGithubToken">{{ githubTokenBusy ? '处理中' : (githubTokenStatus?.configured ? '替换' : '保存') }}</button>
-            <button class="ui-btn ui-btn--danger ui-btn--icon" type="button" title="删除 Token" aria-label="删除 Token" :disabled="!githubTokenStatus?.configured || githubTokenBusy" @click="deleteGithubToken"><Trash2 :size="16" /></button>
+            <button class="ui-btn ui-btn--secondary" type="button" :disabled="!githubToken || githubTokenBusy || panelDown" @click="saveGithubToken">{{ githubTokenBusy ? '处理中' : (githubTokenStatus?.configured ? '替换' : '保存') }}</button>
+            <button class="ui-btn ui-btn--danger ui-btn--icon" type="button" title="删除 Token" aria-label="删除 Token" :disabled="!githubTokenStatus?.configured || githubTokenBusy || panelDown" @click="deleteGithubToken"><Trash2 :size="16" /></button>
           </div>
           <!-- 先说它只用在哪、不去哪；没配置时再说清为什么要填：GitHub 对匿名请求每小时只给 60 次，带 Token 是 5000 次。
                First where it is used and where it never goes; without a token, also why one helps: GitHub allows 60 anonymous requests an hour, 5,000 with a token. -->
@@ -657,10 +670,11 @@ onBeforeUnmount(() => {
         <div class="system-card__row credential-quota">
           <span v-if="githubRate" class="ui-dots"><span>剩余次数 <span class="ui-num">{{ githubQuota }}</span></span><span>{{ githubRateReset() }} 重置</span></span>
           <span v-else>面板还没访问过 GitHub，剩余次数未知</span>
-          <span v-if="githubTokenError" class="system-error">{{ githubTokenError }}</span>
+          <span v-if="githubTokenError && !panelDown" class="system-error">{{ githubTokenError }}</span>
         </div>
       </section>
     </div>
+    </template>
 
   </div>
 </template>

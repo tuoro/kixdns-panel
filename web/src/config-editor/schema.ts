@@ -62,7 +62,8 @@ export const SETTING_SECTIONS: SettingSection[] = [
       { key: 'doh_path', label: 'DoH 查询路径', type: 'text', default: '/dns-query' },
       { key: 'doh_tls_cert', label: 'DoH TLS 证书', type: 'text', example: '/path/to/cert.pem', wide: true },
       { key: 'doh_tls_key', label: 'DoH TLS 私钥', type: 'text', example: '/path/to/key.pem', wide: true },
-      { key: 'default_upstream', label: '默认上游', type: 'text', default: '1.1.1.1:53', wide: true },
+      // 只有带高级规则时才显示（其余时候由「其余请求」决定）：说清它管的是哪些请求 / Shown only with advanced rules (otherwise 其余请求 decides it): say which requests it serves
+      { key: 'default_upstream', label: '默认上游', type: 'text', default: '1.1.1.1:53', wide: true, title: '高级规则里「交给默认上游」用这里的地址，多个用逗号隔开' },
       { key: 'min_ttl', label: '最小 TTL', type: 'number', min: 0, unit: '秒', default: 0 },
       { key: 'upstream_timeout_ms', label: '上游超时 (ms)', type: 'number', min: 1, unit: '毫秒', default: 9000 },
       { key: 'request_timeout_ms', label: '整体请求超时 (ms)', type: 'number', min: 1, unit: '毫秒', nullable: true, placeholder: '自动计算' },
@@ -220,6 +221,27 @@ export function settingVisible(field: SettingField, settings: GlobalSettings): b
   if (field.visibleWhen && !settingValue(settings, field.visibleWhen)) return false
   if (field.visibleWhenAny && !field.visibleWhenAny.some((key) => Boolean(settingValue(settings, key)))) return false
   return true
+}
+
+/**
+ * 这一项会不会写进给内核的配置。按内核能力开的开关关着时不写：内核缺省就是关，写着反而让不支持它的内核整份拒绝（更新、回退到那样的内核也会被挡）
+ * Whether this setting goes into the config the kernel reads. A capability-gated switch that is off is left out: the kernel's default is off, and
+ * writing it only makes a kernel without the capability refuse the whole config (and blocks an update or rollback to such a kernel)
+ */
+export function settingWritten(field: SettingField, settings: Readonly<Record<string, unknown>>): boolean {
+  if (!Object.prototype.hasOwnProperty.call(settings, field.key)) return false
+  if (!field.requiresCapability) return true
+  if (field.type === 'boolean' && settings[field.key] === false) return false
+  // 依附的上一级开关关着时也不写（比如排行关着时的「客户端 IP 脱敏」）：内核不看它，写着只会让没有这项能力的内核挡住、而这一行还藏着看不见
+  // Not written either while the switch it depends on is off (客户端 IP 脱敏 with rankings off): the kernel ignores it, and writing it only gets a
+  // kernel without the capability to refuse a setting whose row is hidden
+  return !field.visibleWhen || Boolean(settings[field.visibleWhen])
+}
+
+/** 实际写给内核的设置：去掉关着的、按能力开的开关 / The settings actually written for the kernel: capability-gated switches that are off are left out */
+export function writtenSettings(settings: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  const fields = new Map(SETTING_SECTIONS.flatMap((section) => section.fields).map((field) => [field.key, field]))
+  return Object.fromEntries(Object.entries(settings).filter(([key]) => { const field = fields.get(key); return !field || settingWritten(field, settings) }))
 }
 
 export function settingSupported(field: SettingField, capabilities: readonly string[]): boolean {

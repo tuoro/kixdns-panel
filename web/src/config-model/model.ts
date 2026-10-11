@@ -1,3 +1,4 @@
+import { writtenSettings } from '../config-editor/schema'
 import { toTree, treeText } from './condTree'
 // 配置页的数据模型：上游组配一次，规则引用组名；规则组、域名映射、默认值也在这里。compile() 把它落成内核配置，
 // importer.ts 把内核配置读回来，document.ts 负责和配置文件之间的存取。
@@ -520,7 +521,7 @@ export function compile(model: Model): KernelConfig {
   // 有高级规则或原样保留的 Pipeline 时不改：它们里面的「允许」还按原来的默认上游走 / Left alone when advanced rules or kept pipelines exist: their allow still means the original default
   const keepDefault = Boolean(model.rawPipelines?.length) || [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].some((r) => r.raw)
   const restGroup = !keepDefault && model.rest.type === 'upstream' ? model.groups.find((g) => g.id === (model.rest as { group: string }).group) : undefined
-  const settings = { ...model.settings, ...(restGroup?.addresses.length ? { default_upstream: restGroup.addresses.map(kernelAddress).join(', ') } : {}) }
+  const settings = { ...writtenSettings(model.settings), ...(restGroup?.addresses.length ? { default_upstream: restGroup.addresses.map(kernelAddress).join(', ') } : {}) }
   return { ...model.extra, version: model.format, settings, pipeline_select: select, pipelines }
 }
 

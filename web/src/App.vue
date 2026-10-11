@@ -3,7 +3,6 @@ import { onBeforeUnmount, onMounted } from 'vue'
 import { RouterView } from 'vue-router'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import ConnectionBoot from './components/ConnectionBoot.vue'
-import SessionExpiredDialog from './components/SessionExpiredDialog.vue'
 import ToastStack from './components/ToastStack.vue'
 import { startConnectionWatch, stopConnectionWatch } from './composables/useConnection'
 
@@ -16,6 +15,5 @@ onBeforeUnmount(stopConnectionWatch)
   <ConnectionBoot />
   <RouterView />
   <ConfirmDialog />
-  <SessionExpiredDialog />
   <ToastStack />
 </template>

@@ -1,5 +1,4 @@
 import { expect, test, type Page } from '@playwright/test'
-import { acceptConfirm } from './confirm'
 
 /** 在配置页快速添加一条规则，让草稿处于「有未保存修改」的状态。 */
 async function openDirtyConfig(page: Page, mobile: boolean): Promise<void> {
@@ -23,54 +22,95 @@ async function expireSession(page: Page): Promise<void> {
   })
 }
 
-test('会话过期不跳转，配置草稿在重新验证后原样还在 @responsive', async ({ page }, testInfo) => {
-  await openDirtyConfig(page, testInfo.project.name === 'mobile')
-
-  await expireSession(page)
-
-  // 不跳转：还在 /config，配置页仍然挂载着，快速添加的那条规则没有消失。
-  await expect(page.getByRole('dialog', { name: '登录状态已过期' })).toBeVisible()
-  expect(new URL(page.url()).pathname).toBe('/config')
-  await expect(page.locator('.cfg__panel')).toBeVisible()
-  await expect(page.locator('[data-rule]')).toHaveCount(1)
-  await expect(page.locator('.cfg__savebar')).toContainText(/已修改 \d+ 处/)
-
-  // 明确告诉用户改动还在——看到这个框的人第一反应就是担心这个。
-  await expect(page.getByRole('dialog')).toContainText('你在本页的改动都还在')
-
+async function signIn(page: Page): Promise<void> {
+  await page.getByLabel('用户名').fill('admin')
   await page.getByLabel('密码', { exact: true }).fill('demo-password')
-  await page.getByRole('button', { name: '继续', exact: true }).click()
+  await page.getByRole('button', { name: '登录', exact: true }).click()
+}
 
-  // 验证通过后框消失，人还在刚才那一屏，草稿一字未动。
-  await expect(page.getByRole('dialog', { name: '登录状态已过期' })).toHaveCount(0)
-  expect(new URL(page.url()).pathname).toBe('/config')
-  await expect(page.locator('[data-rule]')).toHaveCount(1)
-  await expect(page.locator('.cfg__savebar')).toContainText(/已修改 \d+ 处/)
-})
-
-test('会话过期后选择退出登录才离开当前页', async ({ page }) => {
-  await openDirtyConfig(page, false)
+// 会话过期就回登录页，不盖一层重新登录的框，也不问「放弃修改」：会话已经没了，留下也存不了
+// An expired session goes straight to the login page: no re-login dialog over the page and no 放弃修改 question, since with the session gone staying could save nothing
+test('会话过期直接回登录页；草稿丢了照实说，登录后回到原来那一页 @responsive', async ({ page }, testInfo) => {
+  await openDirtyConfig(page, testInfo.project.name === 'mobile')
   await expireSession(page)
 
-  await expect(page.getByRole('dialog', { name: '登录状态已过期' })).toBeVisible()
-  // 退出是这个框里唯一真会丢东西的选项，所以它必须是用户主动选的——
-  // 而且配置页自己的离开守卫还会再问一次未保存的改动，这一层也要过。
-  await page.getByRole('button', { name: '退出登录', exact: true }).click()
-  await acceptConfirm(page)
-  await expect(page).toHaveURL(/\/login\?redirect=/)
+  await expect(page).toHaveURL(/\/login\?/)
+  const url = new URL(page.url())
+  expect(url.searchParams.get('redirect')).toBe('/config')
+  expect(url.searchParams.get('expired')).toBe('draft')
+  await expect(page.getByRole('alertdialog')).toHaveCount(0)
+  await expect(page.locator('dialog[open]')).toHaveCount(0)
+  const note = page.locator('.auth-expired')
+  await expect(note.locator('span')).toHaveText('登录已过期')
+  await expect(note.locator('small')).toHaveText('刚才没保存的配置修改没有留下来。登录后回到刚才的页面。')
+  // 配置页的「撤销」提示随页面一起收起：草稿已经没了，撤销不了 / The config page's undo toast goes with the page: the draft is gone, nothing to undo
+  await expect(page.locator('.toast').filter({ hasText: '已添加规则' })).toHaveCount(0)
+
+  await signIn(page)
+  await expect(page).toHaveURL(/\/config$/)
+  await expect(page.locator('.cfg__panel')).toBeVisible()
 })
 
-test('抽屉开着时会话过期：重新登录的框在最上面，点得到、打得进字，抽屉里的修改还在 @responsive', async ({ page }) => {
+test('没有没保存的修改时，登录页只说过期，登录后回到原来那一页', async ({ page }) => {
+  await page.goto('/logs')
+  await expect(page.locator('main h1')).toHaveText('日志')
+  await expireSession(page)
+  await expect(page).toHaveURL(/\/login\?/)
+  expect(new URL(page.url()).searchParams.get('expired')).toBe('1')
+  await expect(page.locator('.auth-expired span')).toHaveText('登录已过期')
+  await expect(page.locator('.auth-expired small')).toHaveText('登录后回到刚才的页面。')
+  await signIn(page)
+  await expect(page).toHaveURL(/\/logs$/)
+})
+
+test('抽屉开着时会话过期：抽屉随页面一起关掉，直接到登录页', async ({ page }) => {
   await page.goto('/config?section=upstreams')
   await page.getByRole('button', { name: '新建上游组', exact: true }).first().click()
-  const drawer = page.locator('dialog.pdrawer[open]')
-  await drawer.getByLabel('名称', { exact: true }).fill('半成品')
+  await page.locator('dialog.pdrawer[open]').getByLabel('名称', { exact: true }).fill('半成品')
   await expireSession(page)
-  const relogin = page.getByRole('dialog', { name: '登录状态已过期' })
-  await expect(relogin).toBeVisible()
-  // 点击会做命中检测：以前框被抽屉的遮罩盖住、变成不可点，这一步会超时 / A click hit-tests: before, the drawer's scrim covered the prompt and made it inert, so this timed out
-  await relogin.getByLabel('密码').click({ timeout: 3000 })
-  await page.keyboard.type('secret')
-  await expect(relogin.getByLabel('密码')).toHaveValue('secret')
-  await expect(drawer.getByLabel('名称', { exact: true })).toHaveValue('半成品')
+  await expect(page).toHaveURL(/\/login\?/)
+  expect(new URL(page.url()).searchParams.get('expired')).toBe('draft')
+  await expect(page.locator('dialog[open]')).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: '登录面板', exact: true })).toBeVisible()
+})
+
+// 过期时放行的那一次只给那次换页：登录回来再改，离开照样要问
+// The pass given on expiry covers only that page change: back after signing in, a new edit still asks before leaving
+test('会话过期放行的那一次不会留到以后：登录回来再改，离开照样先问', async ({ page }) => {
+  for (const start of ['/config', '/logs']) {
+    await page.goto(start)
+    await expect(page.locator('main h1')).toBeVisible()
+    await expireSession(page)
+    await expect(page).toHaveURL(/\/login\?/)
+    await signIn(page)
+    await expect(page).toHaveURL(new RegExp(`${start}$`))
+    // 站内换页，不重新加载：放行标记要是留下来，就会留在这一页的内存里 / Navigate inside the app without a reload: a lingering pass would live in this page's memory
+    if (start !== '/config') await page.getByRole('link', { name: '规则', exact: true }).first().click()
+    await expect(page.locator('.cfg__panel')).toBeVisible()
+    await page.getByRole('button', { name: '快速添加', exact: true }).click()
+    const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+    await quick.fill(`again${start.slice(1)}.example.org`)
+    await quick.press('Enter')
+    await expect(page.locator('.cfg__savebar')).toContainText(/已修改 \d+ 处/)
+    await page.getByRole('link', { name: '日志' }).first().click()
+    await expect(page.getByRole('alertdialog', { name: '放弃未保存的修改' })).toBeVisible()
+    await page.getByRole('alertdialog').getByRole('button', { name: '放弃修改' }).click()
+    await expect(page).toHaveURL(/\/logs$/)
+  }
+})
+
+// 会话过期时开着的确认框不留在登录页上：按取消收掉，按了也不会带着失效的会话去停服务
+// A confirm open when the session expires does not stay over the login page: it is settled as cancelled, so nothing acts with the dead session
+test('会话过期时开着的确认框和帮助一起收起，不留在登录页上', async ({ page }) => {
+  await page.goto('/system')
+  await expect(page.locator('main h1')).toHaveText('系统')
+  await page.getByRole('button', { name: '停止', exact: true }).click()
+  await expect(page.getByRole('alertdialog')).toBeVisible()
+  await expireSession(page)
+  await expect(page).toHaveURL(/\/login\?/)
+  await expect(page.getByRole('alertdialog')).toHaveCount(0)
+  await expect(page.locator('dialog[open]')).toHaveCount(0)
+  await signIn(page)
+  await expect(page).toHaveURL(/\/system$/)
+  await expect(page.locator('.system-heading')).not.toContainText('已停止')
 })

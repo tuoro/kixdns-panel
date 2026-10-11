@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { useNarrowDesktop } from '../config-v2/phone'
-import { CircleAlert, Download, RefreshCw, ScrollText, Search } from '@lucide/vue'
+import { CircleAlert, Clock, Download, RefreshCw, ScrollText, Search } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { apiRequest } from '../api/client'
+import { useConnection } from '../composables/useConnection'
 import type { AuditEvent, AuditPage, LogEntry, LogsResponse } from '../api/types'
 import UiDotText from '../components/ui/UiDotText.vue'
 import UiEmpty from '../components/ui/UiEmpty.vue'
@@ -32,6 +33,7 @@ const auditRequesting = ref(false)
 const atTop = ref(true)
 const fresh = ref<LogsResponse | null>(null)
 const loadError = ref('')
+const { down: panelDown } = useConnection()
 const auditError = ref('')
 const auditCursor = ref<number | null>(null)
 const runtimeCursor = ref<string | null>(null)
@@ -392,6 +394,8 @@ onMounted(async () => {
   timer = window.setInterval(() => { void poll() }, 5000)
 })
 onBeforeUnmount(() => window.clearInterval(timer))
+// 连上面板后马上重读当前这一栏，不等下一次轮询（操作审计本来不轮询，以前红字会一直挂着） / Once the panel answers again re-read the current tab at once instead of waiting for the next poll (the audit tab does not poll, so its red notice used to stay)
+watch(panelDown, (now, before) => { if (before && !now) void (mode.value === 'audit' ? loadAudit() : load(true)) })
 </script>
 
 <template>
@@ -414,12 +418,15 @@ onBeforeUnmount(() => window.clearInterval(timer))
     <UiTabs :model-value="mode" :items="viewItems" label="日志视图" id-prefix="logs" @update:model-value="switchMode($event as LogMode)" />
     <!-- 读取失败：和概览一样一条提示——结论、原因、一个重试；已有行的话只说可能过期
          A load failure is one notice as on the overview: the verdict, the reason, one retry; with rows on screen it only says they may be stale -->
-    <div v-if="activeError" class="ui-notice ui-notice--err logs-notice" role="alert">
+    <!-- 连不上面板时由顶上的横幅说，这里不复述（每 5 秒照常再读，连上就恢复） / With the panel unreachable the banner says it; no second copy here (the 5-second poll carries on and recovers once connected) -->
+    <div v-if="activeError && !panelDown" class="ui-notice ui-notice--err logs-notice" role="alert">
       <CircleAlert :size="16" aria-hidden="true" />
       <span>{{ activeCount > 0 ? '数据可能已过期' : '读取失败' }}</span>
       <small>{{ activeError }}</small>
       <button class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="activeRequesting" @click="retry">重试</button>
     </div>
+    <!-- 什么都没读到就连不上了：和别的页一样只写一句 / Nothing read before the panel went away: one line, as on the other pages -->
+    <p v-else-if="activeError && panelDown && activeCount === 0" class="ui-notice ui-notice--off logs-notice" role="status"><Clock :size="16" aria-hidden="true" /><span>连上面板后自动打开</span></p>
     <!-- 一张白卡：第一行是工具行，下面是列名和自己滚动的行；整页不滚
          One white card: the toolbar is its first row, then the column names and the rows, which scroll on their own; the page never does -->
     <section :id="`logs-panel-${mode}`" class="log-console ui-card" :class="{ 'log-console--blank': blank }" role="tabpanel" :aria-labelledby="`logs-tab-${mode}`">
@@ -441,7 +448,7 @@ onBeforeUnmount(() => window.clearInterval(timer))
         </div>
       </header>
       <header v-else class="log-toolbar">
-        <label class="ui-input log-search"><Search :size="16" aria-hidden="true" /><input v-model="auditQuery" aria-label="筛选操作审计" :placeholder="narrow ? '筛选操作记录' : '筛选操作者、动作或详情'" /></label>
+        <label class="ui-input log-search"><Search :size="16" aria-hidden="true" /><input v-model="auditQuery" aria-label="筛选操作审计" :placeholder="narrow ? '筛选操作审计' : '筛选操作者、动作或详情'" /></label>
         <!-- 六个类别在手机上排成三列两行，和运行日志一样留在第二行 / The six categories go three by two on a phone, on the second row like the runtime levels -->
         <UiTabs class="log-category-seg" :model-value="auditCategory" :items="auditItems" label="审计动作类别" variant="segment" @update:model-value="selectAuditCategory" />
         <div class="log-toolbar__end">

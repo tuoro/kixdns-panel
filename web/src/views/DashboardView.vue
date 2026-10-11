@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ChartColumn, CircleAlert, CircleX, Eraser, ListChecks, Power, RefreshCw, SlidersHorizontal } from '@lucide/vue'
+import { ChartColumn, CircleAlert, CircleX, Clock, Eraser, ListChecks, Power, RefreshCw, SlidersHorizontal } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { apiRequest } from '../api/client'
 import type { CacheFlushResult, ConfigDocument, ConfigVersion, ConfigVersions, Overview, QueryStatsSnapshot, ServiceStatus, StatsClearResult } from '../api/types'
@@ -60,7 +60,8 @@ const statsWindows = [
 const runtimeState = computed(() => dashboardRuntimeState(overview.value, service.value))
 const statsSupported = computed(() => supportsQueryStats(overview.value?.health.capabilities ?? []))
 const runtimeUnavailable = computed(() => hasStaleDashboardData(runtimeState.value))
-const runtimeControlsDisabled = computed(() => runtimeState.value !== 'live')
+// 连不上面板时按了只会失败：和 KixDNS 没在跑一样停用 / With the panel unreachable a press could only fail: disabled as when KixDNS is not running
+const runtimeControlsDisabled = computed(() => runtimeState.value !== 'live' || panelDown.value)
 const displayOverview = computed(() => overview.value ?? (runtimeState.value === 'stopped-empty' ? emptyOverview() : null))
 const showStatsSection = computed(() => statsSupported.value || runtimeState.value === 'stopped-empty')
 const displayStats = computed(() => stats.value ?? (runtimeState.value === 'stopped-empty' ? emptyQueryStats(statsWindow.value) : null))
@@ -89,6 +90,7 @@ const serviceLabel = computed(() => {
 // dropped, restored on reconnect (the banner above says why); the config version and 更新于 stay, the latter saying when these figures were read
 const { down: panelDown } = useConnection()
 const headTone = computed<Tone>(() => (panelDown.value ? 'off' : serviceTone.value))
+// 宽屏「状态」标签下面只写「未知」（不说两遍「状态」）；手机没有标签，写「状态未知」 / Under the wide 状态 label it reads 未知 (not 状态 twice); phones have no label and read 状态未知
 const headLabel = computed(() => (panelDown.value ? '状态未知' : service.value ? serviceLabel.value : '暂不可用'))
 // 「运行中 · active/running」是同一件事说两遍；只有不寻常的状态，systemd 的原始写法才多带了信息（同系统页）。
 // "运行中 · active/running" says one thing twice; only unusual states carry information in systemd's own words (as on the system page).
@@ -113,12 +115,17 @@ const metaTail = computed<'live' | 'snapshot' | ''>(() => (runtimeState.value ==
 
 // ---------- 页级提示：一次只出一条，读取错误写进原因行 ----------
 // ---------- Page notice: one at a time, a read error goes in its reason line ----------
-interface PageNotice { tone: 'warn' | 'err' | 'off'; icon: typeof CircleAlert; title: string; reason: string; action?: 'retry' | 'config' | 'logs' | 'start' }
+interface PageNotice { tone: 'warn' | 'err' | 'off'; icon: typeof CircleAlert; title: string; reason: string; action?: 'retry' | 'config' | 'logs' | 'start'; phoneOnly?: boolean }
 // 原因行把几条读取错误和一句「接下来会怎样」连成一段 / The reason line joins the read errors and one sentence on what happens next
 function reasonOf(...parts: string[]): string {
   return parts.filter(Boolean).map((part) => part.replace(/[。；;.]$/, '')).join('；') + '。'
 }
 const notice = computed<PageNotice | null>(() => {
+  // 连不上面板时顶上的横幅已经说了为什么、也有重试：这里只说手上的数是什么时候读到的，不再复述原因、不给第二个重试，也不给按了只会失败的「启动」
+  // With the panel unreachable the banner above says why and offers the retry: this only says when the figures in hand were read, without restating the cause,
+  // a second retry, or a 启动 that could only fail
+  // 宽屏页头的「更新于」已经写了读到的时刻，这一行只给手机（手机页头没有这一项） / On wide screens the header's 更新于 already gives the read time, so this line is for phones only (their header lacks it)
+  if (panelDown.value) return loadedAt.value ? { tone: 'off', icon: Clock, title: `显示 ${updatedLabel.value} 读到的数据`, reason: '', phoneOnly: true } : { tone: 'off', icon: Clock, title: '连上面板后自动打开', reason: '' }
   if (loading.value) return null
   const snapshot = snapshotLabel.value ? ` ${snapshotLabel.value} ` : ''
   // 运行数据的错误不带前缀（标题已经说了是运行数据）；服务状态的错误带「服务状态：」，和它分得开
@@ -639,6 +646,8 @@ onMounted(async () => {
   timer = window.setInterval(() => void load(true), 15000)
   statsTimer = window.setInterval(() => void loadStats(true), 60000)
 })
+// 连上面板后马上重读，不等下一次 15 秒的定时刷新 / Once the panel answers again re-read at once instead of waiting for the next 15-second tick
+watch(panelDown, (now, before) => { if (before && !now && !unmounted) { void load(true); void loadStats(true) } })
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onViewportResize)
   unmounted = true
@@ -656,7 +665,7 @@ onBeforeUnmount(() => {
         <div v-if="service || displayOverview" class="ui-facts overview-facts">
           <div>
             <span class="ui-lbl">状态</span>
-            <b :title="service?.unit"><span class="ui-dot" :class="{ 'ui-dot--warn': headTone === 'warn', 'ui-dot--err': headTone === 'err', 'ui-dot--off': headTone === 'off' }" aria-hidden="true"></span>{{ headLabel }}<small v-if="unusualServiceState && !panelDown" class="ui-mono">{{ unusualServiceState }}</small></b>
+            <b :title="service?.unit"><span class="ui-dot" :class="{ 'ui-dot--warn': headTone === 'warn', 'ui-dot--err': headTone === 'err', 'ui-dot--off': headTone === 'off' }" aria-hidden="true"></span>{{ panelDown ? '未知' : headLabel }}<small v-if="unusualServiceState && !panelDown" class="ui-mono">{{ unusualServiceState }}</small></b>
           </div>
           <div v-if="metaTail === 'live' && overview && !panelDown"><span class="ui-lbl">已运行</span><b>{{ formatDuration(overview.health.uptime_seconds) }}</b></div>
           <div v-else-if="metaTail === 'snapshot'"><span class="ui-lbl">快照</span><b>{{ snapshotLabel }}</b></div>
@@ -667,20 +676,21 @@ onBeforeUnmount(() => {
         <!-- 手机上一行说完：状态、已运行、配置版本，和配置页的页头一样 / On phones one line says it all: state, uptime, config version, as on the config page -->
         <span v-if="service || displayOverview" class="ui-ph__lead ui-ph__phone"><span class="ui-dot" :class="{ 'ui-dot--warn': headTone === 'warn', 'ui-dot--err': headTone === 'err', 'ui-dot--off': headTone === 'off' }" aria-hidden="true"></span><UiDotText :parts="[headLabel, ...(metaTail === 'live' && overview && !panelDown ? [`已运行 ${formatDuration(overview.health.uptime_seconds)}`] : metaTail === 'snapshot' ? [`快照 ${snapshotLabel}`] : []), ...(runningVersion !== null ? [`版本 #${runningVersion}`] : [])]" /></span>
         <span v-else-if="loading" class="sk overview-skeleton-meta" role="status" aria-label="读取服务状态"></span>
+        <span v-else-if="panelDown" class="ui-ph__lead"><span class="ui-dot ui-dot--off" aria-hidden="true"></span>状态未知</span>
         <span v-else>服务状态暂不可用</span>
       </template>
       <template #actions>
-        <button class="ui-btn ui-btn--secondary ui-btn--icon" type="button" title="刷新" aria-label="刷新" :disabled="requesting || statsLoading" @click="refreshAll">
+        <button class="ui-btn ui-btn--secondary ui-btn--icon" type="button" title="刷新" aria-label="刷新" :disabled="requesting || statsLoading || panelDown" @click="refreshAll">
           <RefreshCw :size="16" :class="{ spin: refreshing || statsLoading }" aria-hidden="true" />
         </button>
       </template>
     </UiPageHeader>
 
     <!-- 页级提示一次只一条：结论、原因（读取错误写在这里）、最多一个动作 -->
-    <div v-if="notice" class="ui-notice overview-notice" :class="notice.tone === 'warn' ? '' : `ui-notice--${notice.tone}`" :role="notice.tone === 'err' ? 'alert' : 'status'">
+    <div v-if="notice" class="ui-notice overview-notice" :class="[notice.tone === 'warn' ? '' : `ui-notice--${notice.tone}`, { 'overview-notice--phone': notice.phoneOnly }]" :role="notice.tone === 'err' ? 'alert' : 'status'">
       <component :is="notice.icon" :size="16" aria-hidden="true" />
       <span>{{ notice.title }}</span>
-      <small>{{ notice.reason }}</small>
+      <small v-if="notice.reason">{{ notice.reason }}</small>
       <button v-if="notice.action === 'retry'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="requesting" @click="refreshAll">重试</button>
       <RouterLink v-else-if="notice.action === 'config'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" to="/config">管理配置</RouterLink>
       <RouterLink v-else-if="notice.action === 'logs'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" to="/logs">查看日志</RouterLink>
@@ -748,7 +758,7 @@ onBeforeUnmount(() => {
             </section>
           </div>
 
-          <div class="overview-col">
+          <div class="overview-col overview-col--side">
             <!-- 手动刷新时上游状态变淡；每 15 秒的定时刷新数据不动（全站约定） / Upstream status fades on a manual refresh only; timed refreshes leave the data still (site convention) -->
             <!-- 每个上游一行：状态点、地址、传输方式，右端是平均耗时，下面一行成功率和响应次数。不画耗时细条：耗时的数已经在右端，细条只是把它再画一遍。
                  一行里只允许一个告警色：成功率染色，耗时本身不染。
@@ -835,7 +845,7 @@ onBeforeUnmount(() => {
             <!-- 按钮不能按时只说什么时候能按，状态由页顶提示说；PID 在系统页页头里，这里不重复
                  When the buttons are unavailable this says when they will be, the page notice says why; the PID lives in the system page's header -->
             <div class="overview-runtime-foot">
-              <span v-if="runtimeState !== 'live' || !overview" class="overview-runtime-note">{{ runtimeState === 'unavailable-snapshot' ? '实时数据恢复后才能清空缓存' : 'KixDNS 运行后才能清空缓存' }}</span>
+              <span v-if="runtimeState !== 'live' || !overview || panelDown" class="overview-runtime-note">{{ panelDown ? '连上面板后才能清空缓存' : runtimeState === 'unavailable-snapshot' ? '实时数据恢复后才能清空缓存' : 'KixDNS 运行后才能清空缓存' }}</span>
               <span class="overview-runtime-actions">
                 <RouterLink class="ui-btn ui-btn--secondary" to="/config"><SlidersHorizontal :size="16" aria-hidden="true" />管理配置</RouterLink>
                 <button class="ui-btn ui-btn--danger" type="button" :disabled="flushing || runtimeControlsDisabled" @click="flushCache"><Eraser :size="16" aria-hidden="true" />{{ flushing ? '正在清空' : '清空缓存' }}</button>
@@ -860,13 +870,13 @@ onBeforeUnmount(() => {
             <button class="ui-btn ui-btn--danger overview-clear" type="button" title="清空查询排行" :disabled="statsClearing || runtimeControlsDisabled || !stats?.enabled || !stats.requests_observed" @click="clearQueryStats" aria-label="清空查询排行"><Eraser :size="16" aria-hidden="true" /><span class="overview-clear__label">清空</span></button>
           </div>
         </div>
-        <div v-if="statsError && runtimeState !== 'stopped-empty'" class="ui-notice ui-notice--err overview-notice" role="alert">
+        <div v-if="statsError && runtimeState !== 'stopped-empty' && !panelDown" class="ui-notice ui-notice--err overview-notice" role="alert">
           <CircleX :size="16" aria-hidden="true" />
           <span>查询排行读取失败</span>
           <small>{{ statsError }}</small>
           <button class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="statsLoading" @click="loadStats()">重试</button>
         </div>
-        <UiEmpty v-if="!showStatsSection" :icon="ChartColumn" title="当前 KixDNS 不提供查询排行" desc="更新内核后可以按客户端和域名查看请求量。" />
+        <UiEmpty v-if="!showStatsSection" :icon="ChartColumn" title="当前内核不支持查询排行" desc="更新内核后可以按客户端和域名查看请求量。" />
         <div v-else-if="displayStats?.enabled" class="overview-rankings" :class="{ 'is-loading': statsLoading }">
           <section v-for="group in rankingGroups" :key="group.id" class="ui-card overview-card overview-ranking">
             <div class="overview-card-head"><h2 class="ui-card__label">{{ group.title }}</h2><span class="overview-card-note">{{ group.id === 'clients' && displayStats.anonymized_clients ? '按脱敏网段聚合' : group.description }}</span></div>
@@ -934,6 +944,12 @@ onBeforeUnmount(() => {
    column's bottom: the bar chart on the left, request distribution on the right, so the two bottoms always meet. */
 .overview-grid { display: grid; grid-template-columns: minmax(0, 1fr) calc((100% - 2 * var(--ov-gap)) / 3); gap: var(--ov-gap); align-items: stretch; }
 .overview-col { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: var(--ov-gap); min-width: 0; }
+/* 右栏的富余给上游状态：请求分布按内容高、底边内距和别的卡一样，上游那几行在卡里均匀铺开（以前延迟细条撑着它，去掉以后富余落到了请求分布底下）
+   The right column's slack goes to upstream status: request distribution takes its content height with the usual bottom inset, and the upstream rows spread
+   evenly in their card (the latency bars used to fill it; without them the slack fell under request distribution) */
+.overview-col--side { grid-template-rows: minmax(0, 1fr) auto; }
+.overview-col--side > .overview-card--upstreams { display: flex; flex-direction: column; }
+.overview-col--side > .overview-card--upstreams > .overview-rows { flex: 1 1 auto; align-content: space-evenly; }
 /* 没运行过时卡里只有一句「尚无数据」，撑高只会撑出空白：两栏各按内容高，底边不强求齐平 / Never run, each card holds one line of 尚无数据 and stretching would only stretch blank: both columns take their content height and the bottoms are not forced level */
 .overview-grid.is-empty .overview-col { grid-template-rows: none; align-content: start; }
 .overview-trio { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--ov-gap); }
@@ -990,6 +1006,9 @@ onBeforeUnmount(() => {
 .overview-bars-axis > span.is-start { transform: none; }
 .overview-bars-axis > span.is-end { transform: translateX(-100%); }
 
+@media (min-width: 641px) { .overview-notice--phone { display: none; } }
+/* 手机上这一行是一句灰字，不是一个填色的框：少占首屏 / On phones this line is grey text, not a filled box: less of the first screen */
+.ui-notice.overview-notice--phone { padding: 0; background: transparent; color: var(--l-ink-2); font-size: var(--t-2); }
 /* ---------- 列表卡：一行一个名字、右对齐的数、一条细条 ---------- */
 .overview-card--upstreams.is-refreshing .overview-rows { opacity: .72; transition: opacity var(--m-quick) var(--ease-out); }
 .overview-rows { display: grid; margin-top: var(--s-1); }
@@ -1060,7 +1079,10 @@ onBeforeUnmount(() => {
 /* 卡里的表：表头就是卡的第一行，最后一行不画底线、不留下边距 / The table in its card: the column names are the card's first line; the last row has no bottom rule or padding */
 .overview-rules-card .ui-rec:last-child { min-height: 0; padding-bottom: 0; border-bottom: 0; }
 /* 手机上没有表头：第一行不留上边距，卡片上沿和别的卡一样 / Phones have no column head: the first row keeps no top padding, so the card's top inset matches the others */
-@media (max-width: 640px) { .overview-rules-card .ui-rec:first-of-type { padding-top: 0; } }
+/* 第一行紧跟在（窄屏藏起来的）表头后面：`:first-of-type` 匹配不到它，按「表头后面那一行」找 / The first row follows the (hidden on narrow screens) column head: `:first-of-type` never matched it, so it is found as the row after the head */
+@media (max-width: 899px) { .overview-rules-card .ui-rec-head + .ui-rec { padding-top: 0; } }
+/* 手机上工具行只有一行字时不撑到 36：说明和卡片之间不再空出一截 / On phones a one-line toolbar is not stretched to 36, so no gap opens between the caption and the card */
+@media (max-width: 640px) { .overview-toolbar { min-height: 0; } }
 .overview-rule-name { min-width: 0; font-size: var(--t-3); font-weight: var(--w-medium); overflow-wrap: anywhere; }
 .overview-rule-pipeline { min-width: 0; color: var(--l-ink-3); font-size: var(--t-2); overflow-wrap: anywhere; }
 .overview-rule-count { text-align: right; font-variant-numeric: tabular-nums; }
@@ -1109,6 +1131,15 @@ onBeforeUnmount(() => {
 @media (max-width: 1159px) {
   .overview-grid, .overview-col, .overview-trio, .overview-skeleton, .overview-skeleton-col { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
   .overview-trio > :last-child:nth-child(odd) { grid-column: auto; }
+}
+/* 768–860 和 960–1159：两张图卡照旧占满一行，下面的卡两两并排（上游状态挨着请求分布，响应码挨着缓存构成，运行配置占一整行），
+   不再一张张拉满整行，让右端的数字离名字很远；每对卡等高。861–959 有侧栏，并排的卡不到 320，上游地址会折行，照旧一张一行
+   768–860 and 960–1159: the two chart cards still take full rows, and the cards below pair up (upstream status beside request distribution, response codes
+   beside cache composition, the running config on a full row) instead of each stretching across the row and stranding its right-hand figures; each pair is one
+   height. At 861–959 the sidebar leaves paired cards under 320, where upstream addresses wrap, so the cards stay one per row */
+@media (min-width: 768px) and (max-width: 860px), (min-width: 960px) and (max-width: 1159px) {
+  .overview-col--side, .overview-trio, .overview-skeleton-col + .overview-skeleton-col { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .overview-trio > :last-child:nth-child(odd) { grid-column: 1 / -1; }
 }
 /* 900 以下：一栏到底，卡片按原来的顺序叠；规则换成两行式（四列挤不下）
    Below 900: a single column, the cards stacked in the same order; rules turn to two-line rows (four columns no longer fit) */

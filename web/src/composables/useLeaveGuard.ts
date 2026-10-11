@@ -5,11 +5,25 @@
 type Ask = () => Promise<boolean>
 
 let current: Ask | null = null
+let pending: (() => boolean) | null = null
 let agreed = false
 
-export function registerLeaveGuard(ask: Ask): () => void {
+/** hasPending 说现在有没有没保存的修改，不问人 / hasPending tells whether anything is unsaved right now, without asking */
+export function registerLeaveGuard(ask: Ask, hasPending: () => boolean): () => void {
   current = ask
-  return () => { if (current === ask) current = null }
+  pending = hasPending
+  return () => { if (current === ask) { current = null; pending = null } }
+}
+
+/**
+ * 不问就走（会话过期时用）：放行紧接着的那次换页，返回丢下的有没有没保存的修改。没有页面登记时什么都不记，免得「同意过」留到以后
+ * Leave without asking (on session expiry): lets the page change right after it pass, and returns whether unsaved work was left behind.
+ * With no page registered nothing is recorded, so no agreement lingers
+ */
+export function leaveWithoutAsking(): boolean {
+  if (!current) return false
+  agreed = true
+  return pending?.() ?? false
 }
 
 /** 先问登记过的页面；没有登记就直接放行。 / Ask the registered page first; pass straight through when none is registered. */

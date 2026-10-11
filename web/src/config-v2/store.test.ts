@@ -134,4 +134,17 @@ describe('内核给的英文原因', () => {
     expect(said).toContain('"fast"')
     expect(kernelWords('KixDNS 已停止')).toBe('KixDNS 已停止')
   })
+
+  // 按能力开的开关关掉：「改了哪些」读作「开 → 关」，不读作「去掉」；只算一处 / A capability-gated switch turned off reads as 开 → 关 in the review, not as removed, and counts once
+  it('按能力开的开关关掉读作「开 → 关」', () => {
+    const base = sampleModel()
+    base.settings = { ...base.settings, statistics_enabled: true }
+    resetTo(base)
+    model.settings = { ...model.settings, statistics_enabled: false }
+    expect(changeCount.value).toBe(1)
+    const blocks = diffModels(appliedModel.value, model)
+    const block = blocks.find((b) => b.title.includes('启用查询排行'))!
+    expect(block.kind).toBe('改了')
+    expect(block.lines.map((line) => line.sign)).toEqual(['-', '+'])
+  })
 })

@@ -76,11 +76,13 @@ body { background: var(--l-canvas); }
   /* 页头右边两个图标按钮：历史版本和「…」（表单/JSON、导入、下载、重新读取） / Two icon buttons on the header's right: history and 「…」 (form/JSON, import, download, reload) */
   .cfg .ui-ph__actions { gap: var(--s-2); }
   .cfg__more { display: inline-flex; }
-  .cfg__tabs { overflow-x: auto; scrollbar-width: none; }
+  /* 横向滚动的页签条会把页签往上补出的 8 一起裁掉：条子本身往上多占 8（外边距收回），点按区域才是 44 / A horizontally scrolling tab strip clips the 8 each tab extends upwards: the strip itself reaches 8 higher (taken back by its margin), so the hit area is 44 */
+  .cfg__tabs { overflow-x: auto; scrollbar-width: none; margin-top: calc(var(--h-md) - var(--h-touch)); padding-top: calc(var(--h-touch) - var(--h-md)); }
   .toolbar__search { flex: 1 1 auto; min-width: 0; }
   .toolbar__kind { display: none; }
   .toolbar__filter { position: relative; width: var(--h-md); flex: 0 0 auto; display: inline-flex; padding: 0; }
-  .toolbar__filter select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+  /* 透明的下拉框就是这个图标按钮能点的范围：和别的图标按钮一样四边补到 44 / The transparent select is this icon button's hit area: grown to 44 on every side like other icon buttons */
+  .toolbar__filter select { position: absolute; inset: calc(min(0px, (100% - var(--h-touch)) / 2)); opacity: 0; cursor: pointer; }
   .toolbar .toolbar__icon { width: var(--h-md); padding: 0; }
   .toolbar__label { display: none; }
   .wide-only { display: none; }
@@ -178,6 +180,8 @@ body { background: var(--l-canvas); }
    The header's 启动 is a small secondary button that takes no vertical room: taller than the text, it never heightens the line (the facts row keeps one height), and its label shares the baseline of KixDNS 已停止 */
 .cfg__head-start { margin-block: calc(var(--h-sm) / -2); }
 .cfg__facts .cfg__head-start { margin-left: var(--s-1); }
+/* 861–959 有侧栏、又有「启动」时一排放不下四项：「上游组」先收起（同系统页 960 以下收起 PID） / At 861–959, with the sidebar and 启动 present, four facts do not fit: 上游组 gives way first (as the system page drops PID below 960) */
+@media (min-width: 861px) and (max-width: 959px) { .cfg__facts:has(.cfg__head-start) .cfg__fact-groups { display: none; } }
 .rules-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-5); align-items: start; }
 @media (min-width: 1360px) {
   .rules-split.is-open { grid-template-columns: minmax(0, 1fr) var(--inspector-w); }
@@ -635,7 +639,8 @@ body { background: var(--l-canvas); }
   /* 手机「规则组」区块头：标题和「新建规则组」一行、上下居中，说明在下面占满整行（不再被按钮挤成三行、把「转到规则组」拆开）
      Phone 规则组 head: the title and 新建规则组 share a line, centred; the description runs full width below (no longer squeezed by the button into three lines that split 转到规则组) */
   .rgroups__head { display: grid; row-gap: 0; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "title btn" "desc desc"; align-items: center; }
-  .rgroups__desc { grid-area: desc; margin-top: 0; }
+  /* 说明和按钮下沿隔 8：按钮比标题高，说明不能贴着它 / 8 between the description and the button's bottom: the button is taller than the title, so the text must not touch it */
+  .rgroups__desc { grid-area: desc; margin-top: var(--s-1); }
   /* 测试卡和下面的规则卡隔 16，和别处的卡片间隔一样 / The tester card sits 16 above the rules card, the card gap used elsewhere */
   /* 手机规则组标题行：新建按钮离卡片上边 12，标题仍落在 16 的墨迹线上 / Phone rule-group head: the 新建 button box sits 12 below the card's top, the title still on the 16 ink line */
   /* 规则组标题：离卡片上边和别的卡片一样（字的墨迹 16），按钮和「…」对准标题那一行，两行说明同一个灰
@@ -1349,7 +1354,9 @@ body { background: var(--l-canvas); }
 /* 标题行：组名 15/600，标签贴在名字后面；「N 处在用」、编辑、「…」靠右端 / Title row: the name at 15/600 with its tag beside it; 「N 处在用」, 编辑 and 「…」 at the right end */
 .gcard__head { display: flex; align-items: center; gap: var(--s-2); min-height: var(--h-sm); margin: 0; }
 /* 卡片名字和其他卡片标题一样 16 / Card names match every other card title at 16 */
-.gcard__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0; border: 0; background: none; color: var(--l-ink); font-family: var(--f-display); cursor: pointer; font-size: var(--t-4); font-weight: var(--w-bold); line-height: var(--lh-tight); }
+/* 省略号在名字那一段上：按钮本身不裁切，手机上往外补的点按区域（::before）才不会被裁掉 / The ellipsis lives on the name span: the button itself does not clip, so its phone hit area (::before) is not clipped away */
+.gcard__name { display: inline-flex; align-items: center; min-width: 0; padding: 0; border: 0; background: none; color: var(--l-ink); font-family: var(--f-display); cursor: pointer; font-size: var(--t-4); font-weight: var(--w-bold); line-height: var(--lh-tight); }
+.gcard__name-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gcard__spacer { flex: 1 1 auto; }
 /* 上游组卡片：「几处在用」宽屏在状态行、手机在标题行；「…」总在标题行最右 / Group cards: 「N 处在用」 on the status line on wide screens and in the title row on phones; 「…」 always at the title row's right end */
 /* ============================================================================
@@ -1704,6 +1711,8 @@ body { background: var(--l-canvas); }
 .hist__menu .ui-icon-btn { margin-right: calc((var(--h-sm) - var(--size-icon)) / -2 - 3px); }
 @media (max-width: 640px) {
   .hist__foot .hist__bulk { flex: 0 0 auto; }
+  /* 「批量删除」是没有底色的文字按钮：手机上点按区域照样补到 44（底栏上下各有 12 的内边距，不会压到列表） / 批量删除 is a text button without a fill: on phones its hit area still grows to 44 (the footer's 12 padding keeps it off the list) */
+  .hist__bulk::before { inset: calc(min(0px, (100% - var(--h-touch)) / 2)) calc(var(--s-2) * -1); content: ''; }
 }
 /* 状态标签不撑高历史版本的行 / Status tags do not heighten history rows */
 .hist__tags .ui-tag { margin-block: -2px; }
@@ -1769,7 +1778,7 @@ body { background: var(--l-canvas); }
 /* 手机上的小目标：映射的域名格、上游组名、只有一行的规则名，点击范围撑到 40 以上 / Small phone targets: a mapping's domain cell, a group name, a one-line rule name, hit areas past 40 */
 @media (max-width: 640px) {
   .rw__d, .gcard__name, .rrow__main { position: relative; }
-  .rw__d::before, .gcard__name::before { position: absolute; inset: calc(var(--s-3) * -1) calc(var(--s-1) * -1); content: ''; }
+  .rw__d::before, .gcard__name::before { position: absolute; inset: calc(min(0px, (100% - var(--h-touch)) / 2)) calc(var(--s-1) * -1); content: ''; }
   .rrow__main::before { position: absolute; inset: calc(var(--s-2) * -1) 0; content: ''; }
 }
 
@@ -1861,11 +1870,16 @@ body { background: var(--l-canvas); }
 
 /* 保存完又有之后的修改：状态一句话单独一行，按钮在下一行，不再压在一起（手机） / A save landed with later edits: the status takes its own line and the buttons the next, no longer overlapping (phones) */
 @media (max-width: 860px) {
-  .cfg__savebar.savebar--wrap { flex-wrap: wrap; }
-  .cfg__savebar.savebar--wrap .ui-savebar__status { flex: 1 1 100%; flex-wrap: wrap; }
+  /* 按钮和失败时一样靠右；对勾留在第一行字前面，字在它右边折行，不让对勾单独占一行 / Buttons right-aligned as in the failed state; the check stays before the first line and the text wraps beside it, never leaving the check alone on a line */
+  .cfg__savebar.savebar--wrap { flex-wrap: wrap; justify-content: flex-end; }
+  .cfg__savebar.savebar--wrap .ui-savebar__status { flex: 1 1 100%; flex-wrap: nowrap; align-items: flex-start; }
+  .cfg__savebar.savebar--wrap .ui-savebar__status > .ui-check { flex: 0 0 auto; margin-top: calc((var(--t-3) * var(--lh-base) - var(--size-icon)) / 2); }
+  .cfg__savebar.savebar--wrap .ui-savebar__detail { flex: 1 1 auto; }
 }
 @media (max-width: 640px) {
   .cfg__savebar.savebar--wrap .ui-savebar__detail, .cfg__savebar.ui-savebar--err .ui-savebar__detail { white-space: normal; }
+  /* 冲突时「下载草稿」「重新读取」在手机上自成一行：退回小号文字按钮 12 的内边距，字和上面的说明对齐 / In a conflict on phones 下载草稿 and 重新读取 take a line of their own: the small text buttons' 12 padding is pulled back so their words line up with the text above */
+  .cfg__savebar .savebar__acts { margin-left: calc(var(--s-3) * -1); }
 }
 .cfg__savebar .ui-savebar__status:focus { outline: none; }
 

@@ -11,7 +11,7 @@ describe('版本切换文案', () => {
   // The server counts activating and reloading as running and restarts the service.
   it.each(['active', 'activating', 'reloading'])('%s 的服务按在运行说明会重启', (state) => {
     expect(switchConfirmBody(service(state))).toContain('会用这个版本重启')
-    expect(switchedMessage(service(state), '版本已切换')).toBe('KixDNS 版本已切换并通过健康检查')
+    expect(switchedMessage(service(state), '版本已切换')).toBe('KixDNS 版本已切换，正在运行')
   })
 
   it.each(['inactive', 'failed', 'deactivating'])('%s 的服务按已停止说明只替换程序', (state) => {

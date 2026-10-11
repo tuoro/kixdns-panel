@@ -1277,6 +1277,8 @@ async fn unhealthy_switch_restores_the_previous_binary_with_restart_only() {
         .unwrap_err();
 
     assert!(matches!(error, UpdateError::Install(_)), "{error}");
+    // 回退的目标比当前旧：失败的说法按构建号称呼两边，不说「新内核」 / A rollback target is older than the current kernel: the failure names both by build, never 新内核
+    assert_eq!(error.reason(), "构建 #43 健康检查失败，已换回构建 #42");
     assert_eq!(host.calls(), ["Restart", "Health", "Restart", "Health"]);
     assert_eq!(
         std::fs::read(&fixture.binary_path).unwrap(),
@@ -1290,6 +1292,25 @@ async fn unhealthy_switch_restores_the_previous_binary_with_restart_only() {
     assert_eq!(
         previous_setting(&fixture.database).await,
         Some(fixture.target_key.encoded())
+    );
+}
+
+#[tokio::test]
+async fn a_switch_that_cannot_go_back_says_both_builds_and_the_next_step() {
+    let fixture = switch_fixture().await;
+    let host = FakeHost::new(true);
+    host.failed_health_checks.store(2, Ordering::SeqCst);
+
+    let error = fixture
+        .manager
+        .rollback(&empty_config(), &host)
+        .await
+        .unwrap_err();
+
+    // 两边都没起来：各说一次是谁、为什么，最后给一步能做的 / Neither came up: each named once with its cause, ending with one thing to do
+    assert_eq!(
+        error.reason(),
+        "构建 #43 健康检查失败；换回构建 #42 也没有启动起来。KixDNS 现在停着，点「启动」再试"
     );
 }
 
