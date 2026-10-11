@@ -121,9 +121,10 @@ export const headerStatus = computed<HeaderStatus>(() => {
     if (!runtimeStopped.value) return { tone: 'warn', ...waiting }
     // KixDNS 停着时先说停了，再说哪个版本在等：后面的「启动」读作启动 KixDNS，不是启动这个版本
     // With KixDNS stopped, say so first and then which version waits: the 启动 after it reads as starting KixDNS, not this version
-    return { tone: 'off', lead: 'KixDNS 已停止', ...waiting, wide: ['KixDNS 已停止', pendingVersionId.value ? `版本 #${pendingVersionId.value} 待应用` : '配置待应用'] }
+    return { tone: 'off', lead: 'KixDNS 已停止', ...waiting, wide: ['已停止', pendingVersionId.value ? `版本 #${pendingVersionId.value} 待应用` : '配置待应用'] }
   }
-  if (runtimeStopped.value) return { tone: 'off', before: 'KixDNS 已停止' }
+  // 宽屏「状态」标签下面写「已停止」，和「运行中」「未知」一样不带主语，900 宽左右那一排才放得下 / Under the wide 状态 label it reads 已停止, without a subject like 运行中 and 未知, so the row fits around 900
+  if (runtimeStopped.value) return { tone: 'off', before: 'KixDNS 已停止', wide: ['已停止'] }
   if (doc.value?.runtime.status === 'active') return currentVersionId.value ? { tone: 'ok', lead: '运行中', before: '版本 #', version: currentVersionId.value } : { tone: 'ok', before: '运行中' }
   if (fileDiffers.value) return { tone: 'warn', before: '文件与运行配置不同' }
   return { tone: 'off', before: '运行状态不可用' }
@@ -209,7 +210,7 @@ export async function refreshRuntime(): Promise<void> {
   applyRuntime(nextDoc, overview, service)
   if (doc.value) doc.value = { ...doc.value, runtime: nextDoc.runtime, pending: nextDoc.pending }
   applyHits(overview?.metrics?.rules ?? [])
-  applyUpstreamStats(overview?.metrics?.upstreams ?? [])
+  applyUpstreamStats(overview?.metrics?.upstreams ?? [], overview?.metrics?.recent_window_seconds ?? null)
 }
 
 let pendingLoad: Promise<void> | null = null
@@ -252,7 +253,7 @@ export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: str
       }
     }
     applyHits(overview?.metrics?.rules ?? [])
-    applyUpstreamStats(overview?.metrics?.upstreams ?? [])
+    applyUpstreamStats(overview?.metrics?.upstreams ?? [], overview?.metrics?.recent_window_seconds ?? null)
     validation.value = null
     loadError.value = ''
   })().catch((error: unknown) => { loadError.value = errorMessage(error) }).finally(() => { loading.value = false; pendingLoad = null })

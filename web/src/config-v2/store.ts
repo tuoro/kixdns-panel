@@ -1,6 +1,7 @@
 import { computed, onBeforeUnmount, reactive, ref, shallowReactive, watch } from 'vue'
 import type { RuleCount, UpstreamCount } from '../api/types'
 import { dismissUndoable, useToast } from '../composables/useToast'
+import { recentWindowLabel, settledAttempts, upstreamBasis } from '../dashboard-presentation'
 import { readConfig, type ImportReport, type ReadResult } from '../config-model/document'
 import { normalizeAddress } from '../config-model/kernel'
 import { findKernelRule } from '../config-model/trace-names'
@@ -156,24 +157,29 @@ export function applyHits(counts: RuleCount[]): void {
 export const hitsOf = (rule: Rule): number => hits.value.get(rule.id) ?? 0
 
 // ---------- 上游组的健康 / group health ----------
-// 概览按每个上游地址计数；一个组的数字是它所有地址的合计：成功率按拿到结果的尝试算（取消的不算分母），延迟按次数加权，近一小时取 recent
-// The overview counts per upstream address; a group's figures sum its addresses: success over attempts that got a result (aborted ones leave the denominator), latency weighted by attempts, the last hour from recent
-export interface GroupHealth { success: number; latency: number | null; queries: number }
+// 概览按每个上游地址计数；一个组的数字是它所有地址的合计，算法和概览的上游状态一样：每个地址先按它的依据（最近一小时够 50 次可判断的响应就看最近，
+// 否则看启动以来）取数，成功率 = 成功 ÷（成功 + 错误），延迟按响应次数加权，次数是拿到结果的尝试。以前这里用累计数和旧分母，同一个上游两页写两个成功率
+// The overview counts per upstream address; a group sums its addresses with the overview's upstream-status rule: each address takes its basis (the last hour
+// when it has 50 judged responses, otherwise since start), success = success ÷ (success + errors), latency weighted by responses, the count is settled attempts.
+// This used lifetime counts and the old denominator, so one upstream showed two success rates on two pages
+export interface GroupHealth { success: number; latency: number | null; queries: number; period: string }
 export const groupHealth = ref<Map<string, GroupHealth>>(new Map())
-export function applyUpstreamStats(counts: UpstreamCount[]): void {
+export function applyUpstreamStats(counts: UpstreamCount[], windowSeconds: number | null = null): void {
   const map = new Map<string, GroupHealth>()
   const key = (address: string, transport = 'udp') => normalizeAddress(address, transport)
   for (const g of model.groups) {
     const wanted = new Set(g.addresses.map((a) => key(kernelAddress(a))))
-    const rows = counts.filter((c) => wanted.has(key(c.upstream, c.transport)))
-    if (!rows.length) continue
-    const attempts = rows.reduce((n, c) => n + c.attempts - c.aborted, 0)
-    const success = rows.reduce((n, c) => n + c.success, 0)
-    const timed = rows.filter((c) => c.avg_latency_ms !== null)
-    const weight = timed.reduce((n, c) => n + c.attempts - c.aborted, 0)
-    const latency = weight ? Math.round(timed.reduce((n, c) => n + (c.avg_latency_ms ?? 0) * (c.attempts - c.aborted), 0) / weight) : null
-    const queries = rows.reduce((n, c) => n + (c.recent?.attempts ?? 0), 0)
-    if (attempts) map.set(g.id, { success: Math.round((success / attempts) * 1000) / 10, latency, queries })
+    const bases = counts.filter((c) => wanted.has(key(c.upstream, c.transport))).map(upstreamBasis)
+    if (!bases.length) continue
+    const tallies = bases.map((basis) => basis.tally)
+    const success = tallies.reduce((n, t) => n + t.success, 0)
+    const judged = success + tallies.reduce((n, t) => n + t.errors, 0)
+    const timed = tallies.filter((t) => t.avg_latency_ms !== null)
+    const weight = timed.reduce((n, t) => n + settledAttempts(t), 0)
+    const latency = weight ? Math.round(timed.reduce((n, t) => n + (t.avg_latency_ms ?? 0) * settledAttempts(t), 0) / weight) : null
+    const queries = tallies.reduce((n, t) => n + settledAttempts(t), 0)
+    const period = bases.every((basis) => !basis.recent) ? '启动以来' : recentWindowLabel(windowSeconds)
+    if (judged) map.set(g.id, { success: Math.round((success / judged) * 1000) / 10, latency, queries, period })
   }
   groupHealth.value = map
 }

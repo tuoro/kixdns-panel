@@ -110,7 +110,8 @@ test('页头的「启动」是小号次要按钮，不撑高那一行；连不�
   await page.addInitScript(() => localStorage.setItem('kixdns:demo-empty-first-install', 'true'))
   await page.goto('/config')
   const status = mobile ? page.locator('.ui-ph__lead') : page.locator('.cfg__facts > span').first()
-  await expect(status).toContainText('KixDNS 已停止')
+  // 手机写全「KixDNS 已停止」，宽屏「状态」标签下面只写「已停止」 / Phones say KixDNS 已停止 in full; under the wide 状态 label it reads 已停止
+  await expect(mobile ? status : status.locator('b')).toContainText(mobile ? 'KixDNS 已停止' : '已停止')
   const start = status.getByRole('button', { name: '启动', exact: true })
   await expect(start).toBeVisible()
   await expect(start).toHaveClass(/ui-btn--secondary/)
@@ -131,7 +132,8 @@ test('页头的「启动」是小号次要按钮，不撑高那一行；连不�
   await expect(start).toHaveCount(0)
   await context.setOffline(false)
   await expect(page.locator('.conn__inner')).toHaveCount(0)
-  await expect(status).toContainText('KixDNS 已停止')
+  // 手机写全「KixDNS 已停止」，宽屏「状态」标签下面只写「已停止」 / Phones say KixDNS 已停止 in full; under the wide 状态 label it reads 已停止
+  await expect(mobile ? status : status.locator('b')).toContainText(mobile ? 'KixDNS 已停止' : '已停止')
   await expect(start).toBeVisible()
 })
 
@@ -163,7 +165,7 @@ test('手机上「规则组」的说明在标题和按钮下面占满整行 @res
 
 // KixDNS 停着、又有待应用的版本：页头先说停了，再说哪个版本在等，「启动」跟在后面读作启动 KixDNS
 // KixDNS stopped with a version waiting: the header first says it is stopped, then which version waits, so the 启动 after it reads as starting KixDNS
-test('KixDNS 停着时存成待应用：页头说「KixDNS 已停止 · 版本 #N 待应用」 @responsive', async ({ page }, testInfo) => {
+test('KixDNS 停着时存成待应用：页头先说停了再说哪个版本在等（手机「KixDNS 已停止 · 版本 #N 待应用」） @responsive', async ({ page }, testInfo) => {
   const mobile = testInfo.project.name === 'mobile'
   await page.addInitScript(() => localStorage.setItem('kixdns:demo-empty-first-install', 'true'))
   await page.goto('/config')
@@ -173,7 +175,7 @@ test('KixDNS 停着时存成待应用：页头说「KixDNS 已停止 · 版本 #
   await quick.press('Enter')
   await page.getByRole('button', { name: '保存为待应用', exact: true }).click()
   const status = mobile ? page.locator('.ui-ph__lead') : page.locator('.cfg__facts > span').first().locator('b')
-  await expect(status).toContainText(/KixDNS 已停止\s*·?\s*版本 #\d+ 待应用/)
+  await expect(status).toContainText(mobile ? /KixDNS 已停止\s*·?\s*版本 #\d+ 待应用/ : /^已停止\s*·?\s*版本 #\d+ 待应用/)
   await expect(status.getByRole('button', { name: '启动', exact: true })).toBeVisible()
 })
 
@@ -214,4 +216,19 @@ test('保存途中又改的那一处，保存落地后「撤销」还在', async
   await expect(page.locator('.toast', { hasText: 'later.example.org' }).getByRole('button', { name: '撤销' })).toBeVisible()
   // 第一条的提示是「已添加规则」；合并进来的那条写的是「已加到「…」」 / The first rule's toast reads 已添加规则; the merged one reads 已加到「…」
   await expect(page.locator('.toast', { hasText: '已添加规则' })).toHaveCount(0)
+})
+
+// 同一个上游，概览和上游组卡片用同一种算法：时段、成功率、次数都一样（以前上游组卡片用累计数和旧分母，同一个「最近一小时」写两个成功率）
+// One upstream, one rule on both pages: the overview and the group card show the same period, success rate and count (the card used lifetime counts and the old denominator, so one 最近一小时 carried two rates)
+test('上游组卡片和概览的上游状态写同一个成功率', async ({ page }) => {
+  await page.goto('/')
+  const row = page.locator('.overview-card--upstreams .overview-row', { hasText: '1.1.1.1:53' })
+  const overview = (await row.locator('.overview-row-sub').innerText()).replace(/\s+/g, ' ')
+  const rate = /成功率 ([\d.]+%)/.exec(overview)![1]
+  const count = /([\d,]+) 次响应/.exec(overview)![1]
+  await page.goto('/config?section=upstreams')
+  // 演示里「default」只有 1.1.1.1:53 一个地址 / In the demo, default has the single address 1.1.1.1:53
+  const card = page.locator('.gcard', { has: page.getByRole('button', { name: 'default', exact: true }) })
+  await expect(card.locator('.gcard__health')).toContainText(`成功率 ${rate}`)
+  await expect(card.locator('.gcard__health')).toContainText(`最近一小时 ${count}`)
 })
