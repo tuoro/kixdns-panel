@@ -187,3 +187,23 @@ test('日志页连上后马上重读，「读取失败」不留在横幅收起�
   await expect(page.locator('.logs-notice')).toHaveCount(0)
   await expect(page.locator('.audit-line').first()).toBeVisible()
 })
+
+// 打开日志页时就连不上：只留一句「连上面板后自动打开」，没有空着的工具行；连上以后直接出日志，中间不闪一下红色的「读取失败」
+// The panel already unreachable when the logs page opens: only the waiting line, no empty toolbar; once back the log appears with no red 读取失败 flashing in between
+test('日志页什么都没读到就断了：只留一句，连上后不闪红字', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.locator('main h1')).toBeVisible()
+  await panelDown(page, true)
+  await page.getByRole('link', { name: '日志', exact: true }).click()
+  await expect(page.locator('.logs-notice')).toHaveText('连上面板后自动打开', { timeout: 10_000 })
+  await expect(page.locator('.log-console')).toHaveCount(0)
+  await page.evaluate(() => {
+    const w = window as unknown as { sawRed: boolean }
+    w.sawRed = false
+    new MutationObserver(() => { if (document.querySelector('.logs-notice.ui-notice--err')) w.sawRed = true }).observe(document.body, { subtree: true, childList: true })
+  })
+  await panelDown(page, false)
+  await expect(page.locator('.log-console')).toBeVisible({ timeout: 10_000 })
+  await expect(page.locator('.logs-notice')).toHaveCount(0)
+  expect(await page.evaluate(() => (window as unknown as { sawRed: boolean }).sawRed)).toBe(false)
+})

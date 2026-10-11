@@ -396,7 +396,16 @@ onMounted(async () => {
 })
 onBeforeUnmount(() => window.clearInterval(timer))
 // 连上面板后马上重读当前这一栏，不等下一次轮询（操作审计本来不轮询，以前红字会一直挂着） / Once the panel answers again re-read the current tab at once instead of waiting for the next poll (the audit tab does not poll, so its red notice used to stay)
-watch(panelDown, (now, before) => { if (before && !now) void (mode.value === 'audit' ? loadAudit() : load(true)) })
+// 重读回来之前上一次的「连不上」还挂在 activeError 上：这段时间照旧当作在等面板，不闪一下红字
+// Until that re-read answers, the old unreachable failure still sits in activeError: keep treating it as waiting for the panel, so no red notice flashes
+const reconnecting = ref(false)
+watch(panelDown, (now, before) => {
+  if (!before || now) return
+  reconnecting.value = true
+  void (mode.value === 'audit' ? loadAudit() : load(true)).finally(() => { reconnecting.value = false })
+})
+// 什么都没读到就连不上了：只留一句「连上面板后自动打开」，工具行也不摆出来（没有东西可筛） / Nothing read before the panel went away: only the waiting line, and no toolbar (nothing to filter)
+const waitingForPanel = computed(() => activeError.value !== '' && (panelDown.value || reconnecting.value) && activeCount.value === 0)
 </script>
 
 <template>
@@ -411,7 +420,7 @@ watch(panelDown, (now, before) => { if (before && !now) void (mode.value === 'au
           <div v-if="mode === 'runtime'"><span class="ui-lbl">级别</span><b><UiDotText v-if="levelFacts.length" :parts="levelFacts" /><template v-else>{{ entries.length ? '无' : '—' }}</template></b></div>
         </div>
         <span v-if="factsReady" class="ui-ph__lead ui-ph__phone"><UiDotText :parts="[`最近一条 ${newest ?? '—'}`, ...(mode === 'runtime' ? levelFacts : [])]" /></span>
-        <span v-else-if="!(panelDown && activeCount === 0)" class="sk logs-skeleton-meta" role="status" aria-label="读取日志"></span>
+        <span v-else-if="!waitingForPanel && !(panelDown && activeCount === 0)" class="sk logs-skeleton-meta" role="status" aria-label="读取日志"></span>
       </template>
     </UiPageHeader>
     <!-- 页签在卡片外面，和概览、配置同一种区块页签；查询日志做好后排在最前面
@@ -420,17 +429,17 @@ watch(panelDown, (now, before) => { if (before && !now) void (mode.value === 'au
     <!-- 读取失败：和概览一样一条提示——结论、原因、一个重试；已有行的话只说可能过期
          A load failure is one notice as on the overview: the verdict, the reason, one retry; with rows on screen it only says they may be stale -->
     <!-- 连不上面板时由顶上的横幅说，这里不复述（每 5 秒照常再读，连上就恢复） / With the panel unreachable the banner says it; no second copy here (the 5-second poll carries on and recovers once connected) -->
-    <div v-if="activeError && !panelDown" class="ui-notice ui-notice--err logs-notice" role="alert">
+    <div v-if="activeError && !panelDown && !reconnecting" class="ui-notice ui-notice--err logs-notice" role="alert">
       <CircleAlert :size="16" aria-hidden="true" />
       <span>{{ activeCount > 0 ? '数据可能已过期' : '读取失败' }}</span>
       <small>{{ activeError }}</small>
       <button class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="activeRequesting" @click="retry">重试</button>
     </div>
     <!-- 什么都没读到就连不上了：和别的页一样只写一句 / Nothing read before the panel went away: one line, as on the other pages -->
-    <p v-else-if="activeError && panelDown && activeCount === 0" class="ui-notice ui-notice--off logs-notice" role="status"><Clock :size="16" aria-hidden="true" /><span>连上面板后自动打开</span></p>
+    <p v-else-if="waitingForPanel" class="ui-notice ui-notice--off logs-notice" role="status"><Clock :size="16" aria-hidden="true" /><span>连上面板后自动打开</span></p>
     <!-- 一张白卡：第一行是工具行，下面是列名和自己滚动的行；整页不滚
          One white card: the toolbar is its first row, then the column names and the rows, which scroll on their own; the page never does -->
-    <section :id="`logs-panel-${mode}`" class="log-console ui-card" :class="{ 'log-console--blank': blank }" role="tabpanel" :aria-labelledby="`logs-tab-${mode}`">
+    <section v-if="!waitingForPanel" :id="`logs-panel-${mode}`" class="log-console ui-card" :class="{ 'log-console--blank': blank }" role="tabpanel" :aria-labelledby="`logs-tab-${mode}`">
       <!-- 工具行：搜索框、筛选分段、右端的图标按钮；手机上分段独占第二行
            The toolbar: search, the filter segment, icon buttons at the right end; on a phone the segment takes its own second row -->
       <header v-if="mode === 'runtime'" class="log-toolbar">
