@@ -222,6 +222,22 @@ export function settingVisible(field: SettingField, settings: GlobalSettings): b
   return true
 }
 
+/**
+ * 这一项会不会写进给内核的配置。按内核能力开的开关关着时不写：内核缺省就是关，写着反而让不支持它的内核整份拒绝（更新、回退到那样的内核也会被挡）
+ * Whether this setting goes into the config the kernel reads. A capability-gated switch that is off is left out: the kernel's default is off, and
+ * writing it only makes a kernel without the capability refuse the whole config (and blocks an update or rollback to such a kernel)
+ */
+export function settingWritten(field: SettingField, settings: Readonly<Record<string, unknown>>): boolean {
+  if (!Object.prototype.hasOwnProperty.call(settings, field.key)) return false
+  return !(field.requiresCapability && field.type === 'boolean' && settings[field.key] === false)
+}
+
+/** 实际写给内核的设置：去掉关着的、按能力开的开关 / The settings actually written for the kernel: capability-gated switches that are off are left out */
+export function writtenSettings(settings: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  const fields = new Map(SETTING_SECTIONS.flatMap((section) => section.fields).map((field) => [field.key, field]))
+  return Object.fromEntries(Object.entries(settings).filter(([key]) => { const field = fields.get(key); return !field || settingWritten(field, settings) }))
+}
+
 export function settingSupported(field: SettingField, capabilities: readonly string[]): boolean {
   if (!field.requiresCapability) return true
   return capabilities.includes(field.requiresCapability)

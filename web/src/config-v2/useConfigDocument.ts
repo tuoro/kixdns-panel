@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue'
 import { ApiError, apiRequest, isPanelDown, jsonBody } from '../api/client'
 import type { ConfigApplyResult, ConfigDocument, ConfigRuntimeApplyState, ConfigVersion, ConfigVersionDetail, ConfigVersions, DeleteConfigVersionResult, DeleteConfigVersionsResult, Overview, ServiceStatus, ValidationResult } from '../api/types'
-import { SETTING_SECTIONS, settingSupported } from '../config-editor/schema'
+import { SETTING_SECTIONS, settingSupported, settingWritten } from '../config-editor/schema'
 import { exportConfig, readConfig } from '../config-model/document'
 import type { Model } from '../config-model/model'
 import { traceNames } from '../config-model/trace-names'
@@ -41,7 +41,7 @@ export const currentVersionId = computed(() => {
 })
 export const runtimeUnavailable = computed(() => doc.value?.runtime.status === 'unavailable' && !runtimeStopped.value)
 export const unsupportedFields = computed(() => SETTING_SECTIONS.flatMap((s) => s.fields)
-  .filter((f) => Object.prototype.hasOwnProperty.call(model.settings, f.key) && !settingSupported(f, runtimeCapabilities.value))
+  .filter((f) => settingWritten(f, model.settings) && !settingSupported(f, runtimeCapabilities.value))
   .map((f) => f.label))
 // 内核报了自己支持什么、草稿里却有它不支持的设置：KixDNS 会拒绝整份配置（服务端记成失败的版本，永远不会应用），所以先不让保存
 // The kernel reported what it supports and the draft holds a setting it does not: KixDNS refuses the whole config (the server records a failed version that never applies), so saving waits
@@ -52,18 +52,18 @@ export const blockedFields = computed(() => (!runtimeStopped.value && !runtimeUn
   ? [...unsupportedFields.value, ...(!canCname.value && cnameInUse.value ? ['CNAME 回答'] : [])]
   : []))
 // 不支持的设置在哪一组：「去基础设置」直接打开那一组 / Which group holds the unsupported settings, so 去基础设置 opens it directly
-export const unsupportedSection = computed(() => SETTING_SECTIONS.find((s) => s.fields.some((f) => Object.prototype.hasOwnProperty.call(model.settings, f.key) && !settingSupported(f, runtimeCapabilities.value)))?.id ?? '')
+export const unsupportedSection = computed(() => SETTING_SECTIONS.find((s) => s.fields.some((f) => settingWritten(f, model.settings) && !settingSupported(f, runtimeCapabilities.value)))?.id ?? '')
 // KixDNS 没启动、连不上、没报能力时，保存只存成待应用版本 / Saving only stores a pending version when KixDNS is down, unreachable or silent about capabilities
 export const deferSave = computed(() => runtimeStopped.value || runtimeUnavailable.value || Boolean(capabilityError.value))
 export const fileDiffers = computed(() => !hasPending.value && !hasApplyFailure.value && doc.value?.runtime.status === 'different')
 // 草稿里有内核不支持的东西时，现在应用 / 重试应用也只会被拒：不给这两个按钮 / With something the kernel does not support in the draft, 现在应用 and 重试应用 would only be refused: neither is offered
-// 被挡住时按一下说什么：设置要从配置里去掉，CNAME 要改成 IP / What a press says while blocked: settings come out of the config, CNAME becomes an IP
+// 被挡住时按一下说什么：设置要关掉，CNAME 要改成 IP / What a press says while blocked: settings are switched off, CNAME becomes an IP
 export const blockedHint = computed(() => {
   const settings = blockedFields.value.filter((field) => field !== 'CNAME 回答')
   const cname = settings.length < blockedFields.value.length
   if (!settings.length) return '当前内核不支持 CNAME 回答，先改成 IP 再保存'
-  if (!cname) return `当前内核不支持：${settings.join('、')}，先从配置里去掉再保存`
-  return `当前内核不支持：${blockedFields.value.join('、')}。先把设置从配置里去掉、CNAME 改成 IP，再保存`
+  if (!cname) return `当前内核不支持：${settings.join('、')}，先关掉再保存`
+  return `当前内核不支持：${blockedFields.value.join('、')}。先关掉这些设置、CNAME 改成 IP，再保存`
 })
 export const canApplyNow = computed(() => (hasPending.value || hasApplyFailure.value || fileDiffers.value) && !deferSave.value && blockedFields.value.length === 0)
 export const canSave = computed(() => (dirty.value || canApplyNow.value) && blockedFields.value.length === 0)

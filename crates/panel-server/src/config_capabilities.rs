@@ -33,14 +33,14 @@ pub struct UnsupportedConfigFields {
     cname: bool,
 }
 
-// 每一类给一条做得到的出路：设置要从配置里去掉（写着就算，关着也不行），CNAME 要改成 IP
-// One remedy per kind that can actually be done: settings must be removed from the config (being written counts, even switched off); CNAME answers must become IPs
+// 每一类给一条做得到的出路：设置要关掉（面板不把关着的开关写进配置），CNAME 要改成 IP
+// One remedy per kind that can actually be done: settings are switched off (the panel does not write a switch that is off); CNAME answers must become IPs
 impl fmt::Display for UnsupportedConfigFields {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut parts = Vec::new();
         if !self.fields.is_empty() {
             parts.push(format!(
-                "这个内核不支持配置里的：{}。在基础设置里把{}从配置里去掉，或者换用支持它的内核",
+                "这个内核不支持配置里的：{}。在基础设置里关掉{}再保存，或者换用支持它的内核",
                 self.fields.join("、"),
                 if self.fields.len() > 1 {
                     "它们"

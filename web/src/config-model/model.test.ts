@@ -179,3 +179,18 @@ describe('ruleProblems', () => {
     expect(ruleProblems(model, rule)).toEqual(['「客户端 IP」里有写错的值（标红的那个）'])
   })
 })
+
+describe('按内核能力开的开关', () => {
+  // 关着时不写进配置：内核缺省就是关，写着反而让不支持它的内核整份拒绝；开着的照写，别的设置不动
+  // Off, they are left out: the kernel's default is off, and writing them only makes a kernel without the capability refuse the config; on, they are written; other settings are untouched
+  it('关着的不写进给内核的配置，开着的照写', () => {
+    const model = sampleModel()
+    model.settings = { ...model.settings, statistics_enabled: false, statistics_anonymize_client_ip: false, enable_tcp_fallback: false }
+    const off = compile(model).settings
+    expect(off).not.toHaveProperty('statistics_enabled')
+    expect(off).not.toHaveProperty('statistics_anonymize_client_ip')
+    expect(off).toHaveProperty('enable_tcp_fallback', false)
+    model.settings = { ...model.settings, statistics_enabled: true }
+    expect(compile(model).settings).toHaveProperty('statistics_enabled', true)
+  })
+})

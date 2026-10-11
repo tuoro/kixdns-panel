@@ -2,7 +2,7 @@
 import { ChevronLeft, ChevronRight, Plus, Search, X } from '@lucide/vue'
 import UiHelp from '../ui/UiHelp.vue'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { SETTING_SECTIONS, settingShouldRender, settingSupported, settingValue, settingVisible, type SettingField, type SettingSection } from '../../config-editor/schema'
+import { SETTING_SECTIONS, settingShouldRender, settingSupported, settingValue, settingVisible, settingWritten, type SettingField, type SettingSection } from '../../config-editor/schema'
 import type { GlobalSettings } from '../../config-editor/types'
 import GeoDataEditor from './GeoDataEditor.vue'
 import UiDotText from '../ui/UiDotText.vue'
@@ -42,7 +42,7 @@ const query = computed(() => search.value.trim().toLowerCase())
 const allFields = SETTING_SECTIONS.flatMap((section) => section.fields)
 
 const visibleSections = computed(() => SETTING_SECTIONS.map((section) => {
-  const available = section.fields.filter((field) => shown(field) && (supported(field) || Object.hasOwn(settings.value, field.key)))
+  const available = section.fields.filter((field) => shown(field) && (supported(field) || settingWritten(field, settings.value)))
   const matches = available.filter((field) => `${section.title} ${field.label} ${field.key}`.toLowerCase().includes(query.value))
   const relatedKeys = new Set(matches.flatMap((field) => [field.key, ...dependencyKeys(field)]))
   const fields = query.value
@@ -104,7 +104,7 @@ const versionMatches = computed(() => !query.value || '格式版本 version 配�
 const currentGroup = computed(() => groups.value.find((group) => group.id === current.value) ?? groups.value[0]!)
 const navSections = computed(() => SETTING_SECTIONS.map((section) => ({
   ...section,
-  fields: section.fields.filter((field) => shown(field) && (supported(field) || Object.hasOwn(settings.value, field.key)) && settingShouldRender(field, settings.value, props.capabilities)),
+  fields: section.fields.filter((field) => shown(field) && (supported(field) || settingWritten(field, settings.value)) && settingShouldRender(field, settings.value, props.capabilities)),
 })).filter((section) => section.fields.length > 0))
 const currentSection = computed(() => navSections.value.find((section) => section.id === current.value))
 const paneSections = computed(() => (query.value ? visibleSections.value : currentSection.value ? [currentSection.value] : []))
@@ -156,12 +156,17 @@ function readonlyValue(field: SettingField): string {
 function setValue(key: string, value: unknown): void {
   settings.value = { ...settings.value, [key]: value }
 }
-// 内核不支持的设置只要写在配置里（哪怕是关着的）就会被拒；从配置里去掉这一项，草稿才保存得了
-// A setting the kernel does not support is refused whenever it is written in the config (even switched off); removing it lets the draft save
+// 内核不支持的设置只要写进配置就会被拒（关着的开关不写，见 settingWritten）；从配置里去掉这一项，草稿才保存得了
+// A setting the kernel does not support is refused whenever it is written in the config (a switch that is off is not written, see settingWritten); removing it lets the draft save
 function removeSetting(key: string): void {
   const next = { ...settings.value }
   delete next[key]
   settings.value = next
+}
+// 开关关掉就不写进配置（同上）；别的写法只能从配置里去掉 / A switch turned off is not written (as above); anything else has to come out of the config
+function turnOff(field: SettingField): void {
+  if (field.type === 'boolean') setValue(field.key, false)
+  else removeSetting(field.key)
 }
 
 function scalarValue(field: SettingField): string | number {
@@ -255,7 +260,7 @@ function supported(field: SettingField): boolean {
           <template v-for="field in section.fields" :key="field.key">
             <div v-if="!supported(field)" class="ui-setrow ui-setrow--off">
               <span class="ui-setrow__label"><span>{{ labelFor(field) }}<i v-if="changed?.has(field.key)" class="ui-dot ui-dot--ink settings-dot" aria-hidden="true"></i></span><code v-if="query" class="settings-row__key">{{ field.key }}</code></span>
-              <span class="settings-row__readonly"><code>{{ readonlyValue(field) }}</code><span class="ui-tag">内核不支持</span><button v-if="Object.prototype.hasOwnProperty.call(settings, field.key)" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" @click="removeSetting(field.key)">从配置里去掉</button></span>
+              <span class="settings-row__readonly"><code>{{ readonlyValue(field) }}</code><span class="ui-tag">内核不支持</span><button v-if="settingWritten(field, settings)" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" @click="turnOff(field)">{{ field.type === 'boolean' ? '关掉' : '从配置里去掉' }}</button></span>
             </div>
             <label v-else-if="field.type === 'boolean'" class="ui-setrow ui-setrow--toggle" :class="{ 'ui-setrow--off': disabled(field) }">
               <span class="ui-setrow__label"><span>{{ labelFor(field) }}<i v-if="changed?.has(field.key)" class="ui-dot ui-dot--ink settings-dot" aria-hidden="true"></i></span><small v-if="noteFor(field)">{{ noteFor(field) }}</small><code v-if="query" class="settings-row__key">{{ field.key }}</code></span>
