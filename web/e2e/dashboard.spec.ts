@@ -260,14 +260,15 @@ test('上游状态一行一个上游，错误和拒绝数收进这一行的提�
   expect(sizes.scroll).toBeLessThanOrEqual(sizes.client)
 })
 
-test('中等宽度：1160 时上游状态还在 360 宽的右栏、地址不挤耗时；1159 起一栏到底；规则表 899 起换成两行式且无页面溢出', async ({ page }) => {
+test('中等宽度：1160 时上游状态还在 360 宽的右栏、地址不挤耗时；1159 起图卡一栏到底、下面的卡两两并排（861–959 一张一行）；规则表 899 起换成两行式且无页面溢出', async ({ page }) => {
   // 两栏的最窄处是 1160：侧栏 232 + 页边 64 + 右栏 380 之后左栏才够 480 放下三项小计 / The two-column layout's narrowest point is 1160: after the sidebar 232, gutters 64 and the right column 380, the left column keeps the 480 its three sub-figures need
   await page.setViewportSize({ width: 1160, height: 900 })
   await openOverview(page)
   const layout = () => page.evaluate(() => {
     const volume = document.querySelector('.overview-card--volume')!.getBoundingClientRect()
     const upstreams = document.querySelector('.overview-card--upstreams')!.getBoundingClientRect()
-    return { volume: { left: volume.left, right: volume.right, top: volume.top, bottom: volume.bottom, width: volume.width }, upstreams: { left: upstreams.left, top: upstreams.top, width: upstreams.width } }
+    const share = document.querySelector('.overview-card--share')!.getBoundingClientRect()
+    return { volume: { left: volume.left, right: volume.right, top: volume.top, bottom: volume.bottom, width: volume.width }, upstreams: { left: upstreams.left, top: upstreams.top, width: upstreams.width, right: upstreams.right, height: upstreams.height }, share: { left: share.left, top: share.top, right: share.right, height: share.height } }
   })
   // 1160：两栏的最窄处，右栏收到 360，上游状态和查询量卡同一条顶边 / At 1160, the narrowest two-column layout: the right column is 360, upstreams level with the volume card
   const wide = await layout()
@@ -279,12 +280,25 @@ test('中等宽度：1160 时上游状态还在 360 宽的右栏、地址不挤�
     .filter((row) => row.querySelector('.overview-row-name')!.getBoundingClientRect().right > row.querySelector('.overview-row-value')!.getBoundingClientRect().left)
     .map((row) => row.textContent!.trim()))
   expect(squeezed).toEqual([])
-  // 1159：一栏到底，上游状态落到查询量卡下面，同一条左边、同一个宽 / From 1159 one column: upstreams below the volume card, on the same left edge at the same width
+  // 1159：图卡一栏到底；上游状态落到查询量卡下面、左边对齐，和请求分布并排、等高，两张合起来和图卡一样宽
+  // From 1159 the chart cards run one column; upstreams sit below the volume card on its left edge, paired with request distribution at one height, the pair as wide as the charts
   await page.setViewportSize({ width: 1159, height: 900 })
   const narrow = await layout()
   expect(narrow.upstreams.top).toBeGreaterThan(narrow.volume.bottom)
   expect(Math.round(narrow.upstreams.left)).toBe(Math.round(narrow.volume.left))
-  expect(Math.round(narrow.upstreams.width)).toBe(Math.round(narrow.volume.width))
+  expect(Math.round(narrow.share.top)).toBe(Math.round(narrow.upstreams.top))
+  expect(narrow.share.left).toBeGreaterThan(narrow.upstreams.right)
+  expect(Math.round(narrow.share.right)).toBe(Math.round(narrow.volume.right))
+  expect(Math.round(narrow.share.height)).toBe(Math.round(narrow.upstreams.height))
+  // 861–959 有侧栏，并排的卡太窄、地址会折行：一张一行 / At 861–959 the sidebar leaves paired cards too narrow and addresses would wrap: one card per row
+  await page.setViewportSize({ width: 959, height: 900 })
+  const sidebarBand = await layout()
+  expect(Math.round(sidebarBand.upstreams.width)).toBe(Math.round(sidebarBand.volume.width))
+  expect(sidebarBand.share.top).toBeGreaterThan(sidebarBand.upstreams.top)
+  // 768：没有侧栏，并排 / At 768 there is no sidebar: paired
+  await page.setViewportSize({ width: 768, height: 900 })
+  const tablet = await layout()
+  expect(Math.round(tablet.share.top)).toBe(Math.round(tablet.upstreams.top))
   // 规则表有自己的断点：900 还是四列，899 起换成两行式 / The rules table keeps its own breakpoint: four columns at 900, two-line rows from 899
   await page.setViewportSize({ width: 900, height: 900 })
   await page.getByRole('tab', { name: '规则命中', exact: true }).click()

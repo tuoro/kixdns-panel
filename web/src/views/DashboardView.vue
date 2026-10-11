@@ -1127,6 +1127,15 @@ onBeforeUnmount(() => {
   .overview-grid, .overview-col, .overview-trio, .overview-skeleton, .overview-skeleton-col { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
   .overview-trio > :last-child:nth-child(odd) { grid-column: auto; }
 }
+/* 768–860 和 960–1159：两张图卡照旧占满一行，下面的卡两两并排（上游状态挨着请求分布，响应码挨着缓存构成，运行配置占一整行），
+   不再一张张拉满整行，让右端的数字离名字很远；每对卡等高。861–959 有侧栏，并排的卡不到 320，上游地址会折行，照旧一张一行
+   768–860 and 960–1159: the two chart cards still take full rows, and the cards below pair up (upstream status beside request distribution, response codes
+   beside cache composition, the running config on a full row) instead of each stretching across the row and stranding its right-hand figures; each pair is one
+   height. At 861–959 the sidebar leaves paired cards under 320, where upstream addresses wrap, so the cards stay one per row */
+@media (min-width: 768px) and (max-width: 860px), (min-width: 960px) and (max-width: 1159px) {
+  .overview-col--side, .overview-trio { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .overview-trio > :last-child:nth-child(odd) { grid-column: 1 / -1; }
+}
 /* 900 以下：一栏到底，卡片按原来的顺序叠；规则换成两行式（四列挤不下）
    Below 900: a single column, the cards stacked in the same order; rules turn to two-line rows (four columns no longer fit) */
 @media (max-width: 899px) {
