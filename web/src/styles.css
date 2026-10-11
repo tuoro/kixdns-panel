@@ -420,8 +420,10 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
   .log-toolbar > .ui-seg:has(> :nth-child(6)) > .ui-seg__opt[aria-pressed="true"] { background: var(--l-surface); box-shadow: var(--shadow-raise); }
   /* 两行时每格自己就是 36，像一排按钮：点按区域借不到格子外面 / Across two rows each cell is a 36 of its own, like a row of buttons, since the tap area cannot borrow past it */
   .log-toolbar > .ui-seg:has(> :nth-child(6)) > .ui-seg__opt { min-height: var(--h-md); }
-  /* 两行时点按区域不越过外框：上一行往下补会盖住下一行 / Across two rows the tap area stays inside the frame: the top row reaching down would cover the row below */
-  .log-toolbar > .ui-seg:has(> :nth-child(6)) > .ui-seg__opt::after { inset: -2px 0; }
+  /* 两行时点按区域只往外补到 44：上一行往上、下一行往下，两行之间互不盖住 / Across two rows the tap area grows to 44 outwards only: the top row
+     upwards, the bottom row downwards, so neither covers the other */
+  .log-toolbar > .ui-seg:has(> :nth-child(6)) > .ui-seg__opt::after { inset: calc(var(--h-md) - var(--h-touch)) 0 0; }
+  .log-toolbar > .ui-seg:has(> :nth-child(6)) > .ui-seg__opt:nth-last-child(-n + 3 of .ui-seg__opt)::after { inset: 0 0 calc(var(--h-md) - var(--h-touch)); }
   .log-stream { --log-above: 373px; min-height: 350px; }
   .log-line { min-width: 0; grid-template-columns: 90px minmax(0, 1fr); gap: 4px 8px; padding-block: 9px; }
   .log-line p { grid-column: 1 / -1; }

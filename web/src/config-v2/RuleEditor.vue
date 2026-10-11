@@ -380,7 +380,7 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
         <section v-if="!draft.raw" class="ecard" :class="{ 'ui-card': !inspector }" aria-labelledby="ec-if">
           <header class="ecard__head"><h2 id="ec-if" class="ecard__title">条件</h2></header>
           <div class="ecard__body">
-            <CondForm :model-value="condTree" :order="REQUEST_ORDER" :fields="FIELD" :lead="inspector ? ['满足以下', '条件'] : undefined" :empty="original ? '没有条件，所有请求都会用这条规则。' : '还没有条件。不加的话，这条规则对所有请求生效。'" :show-errors="showErrors" @update:model-value="setTree($event as CondTree)" />
+            <CondForm :model-value="condTree" :order="REQUEST_ORDER" :fields="FIELD" :lead="inspector ? ['满足以下', '条件'] : undefined" :empty="original ? '没有条件，所有请求都会用这条规则。' : '还没有条件。不加的话，这条规则对所有请求生\u2060效。'" :show-errors="showErrors" @update:model-value="setTree($event as CondTree)" />
           </div>
         </section>
 

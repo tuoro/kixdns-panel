@@ -924,7 +924,7 @@ onBeforeUnmount(() => {
    This page's own few sizes: 20 between cards (Surge's card rhythm; the scale has no 20 step), 24/16 inside them (the panel's settled card inset), the chart's minimum height, the curve's height, the sub-figure size */
 .overview-page { --ov-gap: 20px; --ov-pad: var(--s-5); --ov-pad-top: var(--s-4); --ov-plot: 140px; --ov-spark: 56px; --ov-sub: 20px; display: grid; gap: var(--s-5); color: var(--l-ink); }
 /* 骨架块的高度是结果实测的（1440：查询量卡、柱图卡、上游卡、分布卡；375 见文件末尾），只在这里写一次 / Skeleton block heights are measured from the result (1440: volume, bars, upstreams, distribution; 375 at the end of this file), written once here */
-.overview-page { --ov-sk-stat: 233px; --ov-sk-bars: 241px; --ov-sk-list: 271px; --ov-sk-list-2: 203px; }
+.overview-page { --ov-sk-stat: 233px; --ov-sk-bars: 235px; --ov-sk-list: 265px; --ov-sk-list-2: 203px; }
 .overview-page > * { min-width: 0; }
 .overview-skeleton-meta { width: 16rem; height: calc(var(--t-2) * var(--lh-base)); }
 .overview-tabs { margin-bottom: 0; }
@@ -1141,6 +1141,8 @@ onBeforeUnmount(() => {
 @media (min-width: 768px) and (max-width: 860px), (min-width: 960px) and (max-width: 1159px) {
   .overview-col--side, .overview-trio, .overview-skeleton-col + .overview-skeleton-col { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .overview-trio > :last-child:nth-child(odd) { grid-column: 1 / -1; }
+  /* 并排的两块骨架一样高，和读出来以后并排的两张卡一样（实测 247） / The paired skeleton blocks share one height, like the paired cards once loaded (measured 247) */
+  .overview-page { --ov-sk-list: 247px; --ov-sk-list-2: 247px; }
 }
 /* 900 以下：一栏到底，卡片按原来的顺序叠；规则换成两行式（四列挤不下）
    Below 900: a single column, the cards stacked in the same order; rules turn to two-line rows (four columns no longer fit) */
