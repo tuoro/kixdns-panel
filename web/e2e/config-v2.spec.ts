@@ -232,3 +232,37 @@ test('上游组卡片和概览的上游状态写同一个成功率', async ({ pa
   await expect(card.locator('.gcard__health')).toContainText(`成功率 ${rate}`)
   await expect(card.locator('.gcard__health')).toContainText(`最近一小时 ${count}`)
 })
+
+// 手机保存条：「校验通过」不压到按钮；冲突时不留灰掉的保存和备注，「下载草稿」和上面的说明左对齐
+// Phone save bar: 校验通过 never runs under the buttons; a conflict keeps no greyed save or 备注, and 下载草稿 lines up with the text above
+test('手机保存条：校验通过不压按钮，冲突时只留下载和重新读取 @responsive', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'mobile', '只看手机的保存条')
+  await page.goto('/config')
+  const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+  await quick.fill('bar.example.org')
+  await quick.press('Enter')
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '校验', exact: true }).click()
+  await expect(bar.locator('.ui-savebar__status')).toContainText('校验通过')
+  // 量字本身占到哪里（元素自己的框在字溢出时不跟着变宽） / Measure where the words themselves reach (the element's own box does not grow when the text overflows)
+  const textRight = await bar.locator('.ui-savebar__detail').evaluate((el) => {
+    const range = document.createRange()
+    range.selectNodeContents(el)
+    return range.getBoundingClientRect().right
+  })
+  const firstButton = await bar.locator('.savebar__note-toggle').evaluate((el) => el.getBoundingClientRect().left)
+  expect(textRight).toBeLessThanOrEqual(firstButton)
+
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-save-conflict', 'true'))
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar).toContainText('这份配置在别处改过了')
+  await expect(bar.getByRole('button', { name: '保存并应用' })).toHaveCount(0)
+  await expect(bar.locator('.savebar__note-toggle')).toHaveCount(0)
+  const words = await bar.locator('.ui-savebar__status small').evaluate((el) => el.getBoundingClientRect().left)
+  const download = await bar.getByRole('button', { name: '下载草稿' }).evaluate((el) => {
+    const range = document.createRange()
+    range.selectNodeContents(el)
+    return range.getBoundingClientRect().left
+  })
+  expect(Math.abs(download - words)).toBeLessThanOrEqual(1)
+})

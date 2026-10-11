@@ -1869,11 +1869,16 @@ body { background: var(--l-canvas); }
 
 /* 保存完又有之后的修改：状态一句话单独一行，按钮在下一行，不再压在一起（手机） / A save landed with later edits: the status takes its own line and the buttons the next, no longer overlapping (phones) */
 @media (max-width: 860px) {
-  .cfg__savebar.savebar--wrap { flex-wrap: wrap; }
-  .cfg__savebar.savebar--wrap .ui-savebar__status { flex: 1 1 100%; flex-wrap: wrap; }
+  /* 按钮和失败时一样靠右；对勾留在第一行字前面，字在它右边折行，不让对勾单独占一行 / Buttons right-aligned as in the failed state; the check stays before the first line and the text wraps beside it, never leaving the check alone on a line */
+  .cfg__savebar.savebar--wrap { flex-wrap: wrap; justify-content: flex-end; }
+  .cfg__savebar.savebar--wrap .ui-savebar__status { flex: 1 1 100%; flex-wrap: nowrap; align-items: flex-start; }
+  .cfg__savebar.savebar--wrap .ui-savebar__status > .ui-check { flex: 0 0 auto; margin-top: calc((var(--t-3) * var(--lh-base) - var(--size-icon)) / 2); }
+  .cfg__savebar.savebar--wrap .ui-savebar__detail { flex: 1 1 auto; }
 }
 @media (max-width: 640px) {
   .cfg__savebar.savebar--wrap .ui-savebar__detail, .cfg__savebar.ui-savebar--err .ui-savebar__detail { white-space: normal; }
+  /* 冲突时「下载草稿」「重新读取」在手机上自成一行：退回文字按钮的内边距，字和上面的说明对齐 / In a conflict on phones 下载草稿 and 重新读取 take a line of their own: the text buttons' padding is pulled back so their words line up with the text above */
+  .cfg__savebar .savebar__acts { margin-left: calc(var(--s-2) * -1); }
 }
 .cfg__savebar .ui-savebar__status:focus { outline: none; }
 
