@@ -954,5 +954,7 @@ button.ui-link { position: relative; min-height: 0; padding: 0; border: 0; backg
 
 /* 页面标题能接住焦点（焦点兜底落在这里）：框贴着标题的字，不拉成一整行像个空输入框 / The page title can take focus (the focus rescue lands here): its ring hugs the words instead of spanning the row like an empty field */
 .ui-ph__title { width: fit-content; max-width: 100%; }
-/* 只有一行字的提示条：按钮和那一行对齐，不再按两行的高度居中 / A one-line notice: the button lines up with that line instead of centring on two rows */
-.ui-notice:not(:has(> small)) > .ui-notice__action { grid-row: 1; }
+/* 只有一行字的提示条：按钮和那一行对齐，不再按两行的高度居中。只在宽屏：手机上按钮在字下面单独一行（见上面），这里不能把它拉回第一行压住字
+   A one-line notice: the button lines up with that line instead of centring on two rows. Wide screens only: on phones the button has its own row under
+   the text (above), and this must not pull it back onto the first row over the words */
+@media (min-width: 641px) { .ui-notice:not(:has(> small)) > .ui-notice__action { grid-row: 1; } }
