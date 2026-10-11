@@ -62,7 +62,8 @@ export const SETTING_SECTIONS: SettingSection[] = [
       { key: 'doh_path', label: 'DoH 查询路径', type: 'text', default: '/dns-query' },
       { key: 'doh_tls_cert', label: 'DoH TLS 证书', type: 'text', example: '/path/to/cert.pem', wide: true },
       { key: 'doh_tls_key', label: 'DoH TLS 私钥', type: 'text', example: '/path/to/key.pem', wide: true },
-      { key: 'default_upstream', label: '默认上游', type: 'text', default: '1.1.1.1:53', wide: true },
+      // 只有带高级规则时才显示（其余时候由「其余请求」决定）：说清它管的是哪些请求 / Shown only with advanced rules (otherwise 其余请求 decides it): say which requests it serves
+      { key: 'default_upstream', label: '默认上游', type: 'text', default: '1.1.1.1:53', wide: true, title: '高级规则里「交给默认上游」用这里的地址，多个用逗号隔开' },
       { key: 'min_ttl', label: '最小 TTL', type: 'number', min: 0, unit: '秒', default: 0 },
       { key: 'upstream_timeout_ms', label: '上游超时 (ms)', type: 'number', min: 1, unit: '毫秒', default: 9000 },
       { key: 'request_timeout_ms', label: '整体请求超时 (ms)', type: 'number', min: 1, unit: '毫秒', nullable: true, placeholder: '自动计算' },
