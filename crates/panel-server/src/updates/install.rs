@@ -723,7 +723,21 @@ impl UpdateManager {
                 .map_err(|error| UpdateError::Install(error.to_string()))??;
         ensure_config_supported(config, &manifest.config_capabilities)
             .map_err(|error| UpdateError::IncompatibleConfig(error.to_string()))?;
-        let (previous, running) = self.activate_binary(binary, host).await?;
+        // 失败的说法用构建号称呼两边：回退时目标比当前旧，说「新内核」「原来的内核」会把方向说反
+        // Failures name both sides by build: on a rollback the target is older than the current one, and 新内核 / 原来的内核 would read backwards
+        let target_name = manifest.clone().into_installed(false).label();
+        let current_name = match replaced.as_ref() {
+            Some(active) => self
+                .installed_version(active, true)
+                .await
+                .map_or_else(|_| "原来的内核".to_owned(), |version| version.label()),
+            None => "原来的内核".to_owned(),
+        };
+        let names = SwitchNames {
+            target: &target_name,
+            current: &current_name,
+        };
+        let (previous, running) = self.activate_binary(binary, host, names).await?;
         if let Err(error) = self
             .database
             .set_setting(ACTIVE_VERSION_KEY, key.encoded(), unix_timestamp())
@@ -734,7 +748,9 @@ impl UpdateManager {
                 .await
             {
                 return Err(UpdateError::Install(format!(
-                    "记录活动版本失败：{error}；恢复原版本也失败：{rollback}"
+                    "记录活动版本失败：{error}；换回{} 也没成功：{}",
+                    after_cjk(&current_name),
+                    rollback.reason()
                 )));
             }
             return Err(UpdateError::Install(format!(
@@ -879,7 +895,13 @@ impl UpdateManager {
         &self,
         binary: Vec<u8>,
         host: &dyn ServiceHost,
+        names: SwitchNames<'_>,
     ) -> Result<(Option<Vec<u8>>, bool), UpdateError> {
+        let SwitchNames {
+            target: target_name,
+            current: current_name,
+        } = names;
+        let back = after_cjk(current_name);
         #[cfg(not(unix))]
         ensure_update_platform()?;
         validate_elf(&binary)?;
@@ -925,31 +947,30 @@ impl UpdateManager {
             return Ok((current, false));
         }
         if let Err(error) = host.service_action(ServiceAction::Restart).await {
+            let reason = format!("{target_name} 没能启动（{}）", error.reason());
             self.restore_previous(current.as_deref(), host, true)
                 .await
                 .map_err(|rollback| {
                     UpdateError::Install(format!(
-                        "新内核没能启动：{error}；换回原来的内核也失败了：{}",
+                        "{reason}；换回{back} 也没成功（{}）。到系统页手动启动 KixDNS",
                         rollback.reason()
                     ))
                 })?;
-            return Err(UpdateError::Install(format!(
-                "新内核没能启动，已换回原来的内核：{error}"
-            )));
+            return Err(UpdateError::Install(format!("{reason}，已换回{back}")));
         }
         if let Err(error) = host.wait_until_healthy().await {
             // 只要里面那句（「5 秒内没有启动起来（…）」），主语在这里加上，不带「安装更新失败：」前缀，读起来是一句话
             // Only the inner phrase (5 秒内没有启动起来（…）) with the subject added here and without the 安装更新失败： prefix, so it reads as one sentence
-            let reason = format!("新内核 {}", error.reason());
+            let reason = format!("{target_name} {}", error.reason());
             self.restore_previous(current.as_deref(), host, true)
                 .await
                 .map_err(|rollback| {
                     UpdateError::Install(format!(
-                        "{reason}；换回原来的内核也失败了：{}",
+                        "{reason}；换回{back} 也没成功（{}）。到系统页手动启动 KixDNS",
                         rollback.reason()
                     ))
                 })?;
-            return Err(UpdateError::Install(format!("{reason}，已换回原来的内核")));
+            return Err(UpdateError::Install(format!("{reason}，已换回{back}")));
         }
         sync_directory(parent)?;
         Ok((current, true))
@@ -988,15 +1009,33 @@ impl UpdateManager {
         // Restart even without a previous binary: the unit's
         // ConditionFileIsExecutable no longer holds, so the service stops
         // instead of leaving the failed new version running.
+        // 失败的原因不带主语：调用的地方知道换回的是哪个构建 / Failure reasons carry no subject: the caller knows which build it went back to
         host.service_action(ServiceAction::Restart)
             .await
-            .map_err(|error| UpdateError::Install(format!("恢复旧版本后启动失败：{error}")))?;
+            .map_err(|error| UpdateError::Install(format!("没能重启：{}", error.reason())))?;
         if previous.is_none() {
             return Ok(());
         }
         host.wait_until_healthy()
             .await
-            .map_err(|error| UpdateError::Install(format!("原来的内核 {}", error.reason())))?;
+            .map_err(|error| UpdateError::Install(error.reason()))?;
         Ok(())
+    }
+}
+
+/// 切换失败时怎么称呼两边：要换上的和原来的内核（构建 #N、Release 标签） / How a failed switch names both sides: the kernel going in and the one it replaces (构建 #N, a Release tag)
+#[derive(Clone, Copy)]
+pub(super) struct SwitchNames<'a> {
+    pub(super) target: &'a str,
+    pub(super) current: &'a str,
+}
+
+/// 接在汉字后面：Release 标签这类以字母数字开头的名字前空一格（「换回 v0.2.0」），「构建 #N」紧接（「换回构建 #N」）
+/// After Chinese text: a name starting with a Latin letter or digit, such as a Release tag, takes a space (换回 v0.2.0); 构建 #N follows directly (换回构建 #N)
+pub(super) fn after_cjk(name: &str) -> String {
+    if name.starts_with(|c: char| c.is_ascii_alphanumeric()) {
+        format!(" {name}")
+    } else {
+        name.to_owned()
     }
 }

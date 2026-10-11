@@ -30,19 +30,19 @@ export function switchConfirmBody(service: ServiceStatus | null): string {
   const effect = !service
     ? 'KixDNS 正在运行则用这个版本重启，DNS 短暂中断；已停止则只替换程序，不会启动。'
     : serviceRunsForSwitch(service)
-      ? 'KixDNS 会用这个版本重启，DNS 解析短暂中断；健康检查不通过会自动换回当前版本。'
+      ? 'KixDNS 会用这个版本重启，DNS 解析短暂中断；这个版本没启动起来会自动换回当前版本。'
       : 'KixDNS 当前已停止，这次只替换程序，不会启动服务，下次启动时使用这个版本。'
   return `${effect}开机自启设置保持不变。`
 }
 
 /**
- * 切换后重新读过服务状态：服务在跑说明新版本已通过健康检查，停着说明还没生效。
+ * 切换后重新读过服务状态：服务在跑说明这个版本已经启动起来，停着说明还没生效。
  *
- * The service state is re-read after the switch: running means the new
- * version passed its health check, stopped means it is not in effect yet.
+ * The service state is re-read after the switch: running means this
+ * version started up, stopped means it is not in effect yet.
  */
 export function switchedMessage(service: ServiceStatus | null, done: string): string {
   return serviceRunsForSwitch(service)
-    ? `KixDNS ${done}并通过健康检查`
+    ? `KixDNS ${done}，正在运行`
     : `KixDNS ${done}，服务仍停止，下次启动时生效`
 }
