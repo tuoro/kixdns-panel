@@ -103,10 +103,18 @@ export function editTouched(): void {
 }
 
 // ---------- 页头 / header ----------
-export interface HeaderStatus { tone: 'ok' | 'warn' | 'err' | 'off'; lead?: string; before: string; version?: number; after?: string }
+// wide：宽屏「状态」标签下面写的（缺省是 lead，再缺省是整句）；手机上没有标签，写 lead 和整句
+// wide: what sits under the 状态 label on wide screens (lead by default, else the whole line); phones have no label and show lead plus the line
+export interface HeaderStatus { tone: 'ok' | 'warn' | 'err' | 'off'; lead?: string; before: string; version?: number; after?: string; wide?: string[] }
 export const headerStatus = computed<HeaderStatus>(() => {
   if (hasApplyFailure.value) return { tone: 'err', before: '配置应用失败' }
-  if (hasPending.value) return pendingVersionId.value ? { tone: 'warn', before: '版本 #', version: pendingVersionId.value, after: ' 待应用' } : { tone: 'warn', before: '配置待应用' }
+  if (hasPending.value) {
+    const waiting = pendingVersionId.value ? { before: '版本 #', version: pendingVersionId.value, after: ' 待应用' } : { before: '配置待应用' }
+    if (!runtimeStopped.value) return { tone: 'warn', ...waiting }
+    // KixDNS 停着时先说停了，再说哪个版本在等：后面的「启动」读作启动 KixDNS，不是启动这个版本
+    // With KixDNS stopped, say so first and then which version waits: the 启动 after it reads as starting KixDNS, not this version
+    return { tone: 'off', lead: 'KixDNS 已停止', ...waiting, wide: ['KixDNS 已停止', pendingVersionId.value ? `版本 #${pendingVersionId.value} 待应用` : '配置待应用'] }
+  }
   if (runtimeStopped.value) return { tone: 'off', before: 'KixDNS 已停止' }
   if (doc.value?.runtime.status === 'active') return currentVersionId.value ? { tone: 'ok', lead: '运行中', before: '版本 #', version: currentVersionId.value } : { tone: 'ok', before: '运行中' }
   if (fileDiffers.value) return { tone: 'warn', before: '文件与运行配置不同' }
@@ -116,7 +124,8 @@ export const headerStatus = computed<HeaderStatus>(() => {
 // While the panel is unreachable the last runtime state read cannot be trusted: the dot turns grey and reads 状态未知, restored on reconnect (as on the overview)
 const { down: panelDown } = useConnection()
 export const headerLine = computed<HeaderStatus>(() => {
-  if (!applyBusy.value) return panelDown.value ? { tone: 'off', before: '状态未知' } : headerStatus.value
+  // 宽屏的「状态」标签下面只写「未知」，不说两遍「状态」 / Under the wide 状态 label it reads 未知 only, not 状态 twice
+  if (!applyBusy.value) return panelDown.value ? { tone: 'off', before: '状态未知', wide: ['未知'] } : headerStatus.value
   const verb = stage.value === 'validating' ? '校验中' : '应用中'
   return pendingVersionId.value ? { tone: 'warn', before: '版本 #', version: pendingVersionId.value, after: ` ${verb}` } : { tone: 'warn', before: verb }
 })

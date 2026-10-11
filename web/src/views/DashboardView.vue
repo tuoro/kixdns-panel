@@ -89,6 +89,7 @@ const serviceLabel = computed(() => {
 // dropped, restored on reconnect (the banner above says why); the config version and 更新于 stay, the latter saying when these figures were read
 const { down: panelDown } = useConnection()
 const headTone = computed<Tone>(() => (panelDown.value ? 'off' : serviceTone.value))
+// 宽屏「状态」标签下面只写「未知」（不说两遍「状态」）；手机没有标签，写「状态未知」 / Under the wide 状态 label it reads 未知 (not 状态 twice); phones have no label and read 状态未知
 const headLabel = computed(() => (panelDown.value ? '状态未知' : service.value ? serviceLabel.value : '暂不可用'))
 // 「运行中 · active/running」是同一件事说两遍；只有不寻常的状态，systemd 的原始写法才多带了信息（同系统页）。
 // "运行中 · active/running" says one thing twice; only unusual states carry information in systemd's own words (as on the system page).
@@ -656,7 +657,7 @@ onBeforeUnmount(() => {
         <div v-if="service || displayOverview" class="ui-facts overview-facts">
           <div>
             <span class="ui-lbl">状态</span>
-            <b :title="service?.unit"><span class="ui-dot" :class="{ 'ui-dot--warn': headTone === 'warn', 'ui-dot--err': headTone === 'err', 'ui-dot--off': headTone === 'off' }" aria-hidden="true"></span>{{ headLabel }}<small v-if="unusualServiceState && !panelDown" class="ui-mono">{{ unusualServiceState }}</small></b>
+            <b :title="service?.unit"><span class="ui-dot" :class="{ 'ui-dot--warn': headTone === 'warn', 'ui-dot--err': headTone === 'err', 'ui-dot--off': headTone === 'off' }" aria-hidden="true"></span>{{ panelDown ? '未知' : headLabel }}<small v-if="unusualServiceState && !panelDown" class="ui-mono">{{ unusualServiceState }}</small></b>
           </div>
           <div v-if="metaTail === 'live' && overview && !panelDown"><span class="ui-lbl">已运行</span><b>{{ formatDuration(overview.health.uptime_seconds) }}</b></div>
           <div v-else-if="metaTail === 'snapshot'"><span class="ui-lbl">快照</span><b>{{ snapshotLabel }}</b></div>

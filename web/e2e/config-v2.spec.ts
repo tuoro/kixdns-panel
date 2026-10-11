@@ -126,7 +126,8 @@ test('页头的「启动」是小号次要按钮，不撑高那一行；连不�
   }
   await context.setOffline(true)
   await expect(page.locator('.conn__inner')).toBeVisible()
-  await expect(status).toContainText('状态未知')
+  if (mobile) await expect(status).toContainText('状态未知')
+  else await expect(status.locator('b')).toHaveText('未知')
   await expect(start).toHaveCount(0)
   await context.setOffline(false)
   await expect(page.locator('.conn__inner')).toHaveCount(0)
@@ -158,4 +159,20 @@ test('手机上「规则组」的说明在标题和按钮下面占满整行 @res
     return new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size
   })
   expect(phraseLines).toBe(1)
+})
+
+// KixDNS 停着、又有待应用的版本：页头先说停了，再说哪个版本在等，「启动」跟在后面读作启动 KixDNS
+// KixDNS stopped with a version waiting: the header first says it is stopped, then which version waits, so the 启动 after it reads as starting KixDNS
+test('KixDNS 停着时存成待应用：页头说「KixDNS 已停止 · 版本 #N 待应用」 @responsive', async ({ page }, testInfo) => {
+  const mobile = testInfo.project.name === 'mobile'
+  await page.addInitScript(() => localStorage.setItem('kixdns:demo-empty-first-install', 'true'))
+  await page.goto('/config')
+  if (!mobile) await page.getByRole('button', { name: '快速添加', exact: true }).click()
+  const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+  await quick.fill('stopped.example.org')
+  await quick.press('Enter')
+  await page.getByRole('button', { name: '保存为待应用', exact: true }).click()
+  const status = mobile ? page.locator('.ui-ph__lead') : page.locator('.cfg__facts > span').first().locator('b')
+  await expect(status).toContainText(/KixDNS 已停止\s*·?\s*版本 #\d+ 待应用/)
+  await expect(status.getByRole('button', { name: '启动', exact: true })).toBeVisible()
 })
