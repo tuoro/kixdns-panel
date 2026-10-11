@@ -16,6 +16,11 @@ const visible = ref(false)
 const submitting = ref(false)
 const error = ref('')
 const isSetup = computed(() => props.mode === 'setup')
+// 会话过期被送回来时说为什么；配置页上有没保存的修改时照实说丢了 / Sent back by an expired session: say why, and say plainly when unsaved config edits were lost
+const expiredNote = computed(() => {
+  if (isSetup.value || !route.query.expired) return ''
+  return route.query.expired === 'draft' ? '登录已过期，请重新登录。刚才没保存的配置修改已经丢了。' : '登录已过期，请重新登录，之后回到刚才的页面。'
+})
 
 async function submit(): Promise<void> {
   error.value = ''
@@ -44,6 +49,7 @@ async function submit(): Promise<void> {
       <div class="auth-heading">
         <h1>{{ isSetup ? '创建管理员' : '登录面板' }}</h1>
         <p v-if="isSetup">这个账号可以改配置、管服务、装更新。</p>
+        <p v-else-if="expiredNote" role="status">{{ expiredNote }}</p>
       </div>
       <form @submit.prevent="submit">
         <label>用户名<input v-model.trim="username" name="username" autocomplete="username" minlength="3" maxlength="64" required autofocus /></label>

@@ -299,7 +299,7 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     const later = changeCount.value ? ` · 之后改的 ${changeCount.value} 处还没保存` : jsonEdited.value ? ' · JSON 里之后改的还没保存' : ''
     finishStage('done', `${applyResultState(result) === 'pending' ? pendingText : `已生效 · 版本 #${result.version_id}`}${later}`)
   } catch (error) {
-    // 会话过期：重新登录的框会盖上来，这里不挂「没通过校验」，登录后直接再保存 / Session expired: the re-login prompt covers the page; no 没有通过校验 here, the user saves again after signing in
+    // 会话过期：页面会回到登录页，这里不挂「没通过校验」 / Session expired: the page goes back to the login page; no 没有通过校验 here
     if (error instanceof ApiError && error.status === 401) { finishStage('idle'); return }
     const reason = friendlyRuntimeError(error)
     const stopped = stoppedError(error)
