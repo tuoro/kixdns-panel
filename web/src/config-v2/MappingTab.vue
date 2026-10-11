@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { Check, FileInput, Plus, Search, X } from '@lucide/vue'
+import UiHelp from '../components/ui/UiHelp.vue'
 import { computed, nextTick, reactive, ref } from 'vue'
 import UiEmpty from '../components/ui/UiEmpty.vue'
 import UiMenu from '../components/ui/UiMenu.vue'
@@ -122,6 +123,7 @@ function runImport(): void {
       <div class="rw__tools">
         <label v-if="model.mappings.length" class="ui-input rw__search"><Search :size="16" aria-hidden="true" /><input v-model="query" type="search" aria-label="搜索域名映射" placeholder="搜索域名或地址"></label>
         <button class="ui-btn ui-btn--text rw__import" type="button" @click="importDialog?.showModal()"><FileInput :size="16" aria-hidden="true" />批量导入</button>
+        <UiHelp topic="mapping" />
       </div>
       <!-- 添加行和下面的表共用列：域名、回答写在各自的列里，类型列随输入显示会回什么记录，「添加」在行尾。和规则页的快速添加一样不画输入框
            The add row shares the table's columns: domain and answer in their own columns, the type column shows the record it will answer as you type, 添加 at the row end. Borderless like the rules tab's quick add -->

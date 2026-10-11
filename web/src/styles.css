@@ -991,3 +991,28 @@ body:has(.cfg__savebar) .toast-stack { bottom: calc(var(--h-md) + var(--s-3) * 2
   /* 整页编辑器时底部导航不显示，底栏是「取消 / 完成」 / With the full-page editor the bottom navigation is hidden and the footer is 取消 / 完成 */
   body:has([data-config-editing="true"]) .toast-stack { bottom: calc(var(--h-md) + var(--s-3) * 2 + var(--s-3)); }
 }
+
+/* ---------- 帮助抽屉：这一页的概念 + 快捷键一览 / The help drawer: this page's concepts plus the shortcut list ---------- */
+.help { position: fixed; inset: 0; width: 100%; max-width: none; height: 100%; max-height: none; margin: 0; padding: 0; border: 0; background: transparent; overflow: hidden; }
+.help::backdrop { background: var(--scrim); }
+.help__panel { position: absolute; top: 0; right: 0; bottom: 0; width: min(30rem, 100%); display: flex; flex-direction: column; background: var(--l-surface); box-shadow: var(--shadow-float); animation: help-in var(--m-base) var(--ease-out); }
+@keyframes help-in { from { transform: translateX(var(--s-6)); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .help__panel { animation: none; } }
+.help__head { display: flex; align-items: center; gap: var(--s-3); padding: var(--s-4) var(--s-5); border-bottom: 1px solid var(--l-hair); }
+.help__head h2 { flex: 1; min-width: 0; margin: 0; color: var(--l-ink); font-family: var(--f-display); font-size: var(--t-4); font-weight: var(--w-bold); line-height: var(--lh-tight); }
+.help__body { flex: 1; min-height: 0; display: grid; align-content: start; gap: var(--s-6); padding: var(--s-5); overflow: auto; overscroll-behavior: contain; }
+.help__sec { display: grid; gap: var(--s-2); }
+.help__sec > .ui-lbl { margin-bottom: var(--s-1); }
+.help__topic { border-top: 1px solid var(--l-hair); }
+.help__topic summary { list-style: none; display: flex; align-items: center; gap: var(--s-2); min-height: var(--h-md); padding-block: var(--s-2); color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-medium); cursor: pointer; }
+.help__topic summary::-webkit-details-marker { display: none; }
+.help__topic summary::before { flex: 0 0 auto; width: calc(var(--s-3) / 2); height: calc(var(--s-3) / 2); margin-inline: 2px var(--s-1); border-right: 1.5px solid var(--l-ink-3); border-bottom: 1.5px solid var(--l-ink-3); transform: rotate(-45deg); transition: transform var(--m-quick) var(--ease-out); content: ''; }
+.help__topic[open] summary::before { transform: rotate(45deg); }
+.help__topic p { margin: 0 0 var(--s-2); padding-left: calc(var(--s-3) + 8px); color: var(--l-ink-2); font-size: var(--t-2); line-height: var(--lh-base); }
+.help__keys h4 { margin: 0 0 var(--s-1); color: var(--l-ink-3); font-size: var(--t-1); font-weight: var(--w-medium); }
+.help__keys dl { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: var(--s-1) var(--s-3); margin: 0; }
+.help__keys dt { display: flex; gap: 2px; }
+.help__keys dd { margin: 0; color: var(--l-ink-2); font-size: var(--t-2); }
+.kbd { display: inline-grid; place-items: center; min-width: var(--h-tag); height: var(--h-tag); padding: 0 var(--s-1); border: 1px solid var(--l-line-strong); border-bottom-width: 2px; border-radius: var(--r-1); background: var(--l-sunk); color: var(--l-ink); font-family: var(--f-mono); font-size: var(--t-1); }
+/* 手机没有键盘：快捷键一览和账户菜单里那一行都不显示 / Phones have no keyboard: neither the shortcut list nor the account-menu row shows */
+@media (max-width: 640px) { .help__sec--keys, .account-keys { display: none; } }

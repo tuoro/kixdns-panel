@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { Info, Plus, Trash2, X } from '@lucide/vue'
+import UiHelp from '../components/ui/UiHelp.vue'
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import { detectProtocol, PROTOCOL_LABEL, POLLUTED_CIDRS, type Ecs, type Protocol, type UpstreamGroup } from '../config-model/model'
@@ -108,7 +109,7 @@ function remove(): void {
         </div>
 
         <div class="pfield">
-          <label class="pswitch"><span><b>备用组</b><small>这个组的回答不能用时，改问另一个组</small></span><span class="ui-switch"><input v-model="fallbackOn" type="checkbox" aria-label="使用备用组"><i></i></span></label>
+          <label class="pswitch"><span><b>备用组<UiHelp topic="fallback" /></b><small>这个组的回答不能用时，改问另一个组</small></span><span class="ui-switch"><input v-model="fallbackOn" type="checkbox" aria-label="使用备用组"><i></i></span></label>
           <div v-if="fallbackOn" class="fallback ui-rise">
             <label class="ui-checkbox"><input v-model="draft.fallback.onError" type="checkbox"><i></i>上游回 SERVFAIL 或 REFUSED</label>
             <label class="ui-checkbox"><input v-model="draft.fallback.onPolluted" type="checkbox"><i></i><span>结果被污染 <small class="is-mono">{{ POLLUTED_CIDRS.join('、') }}</small></span></label>

@@ -5,6 +5,7 @@ import JsonEditor from '../components/JsonEditor.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import { useConfirm } from '../composables/useConfirm'
 import UiTabs from '../components/ui/UiTabs.vue'
+import UiHelp from '../components/ui/UiHelp.vue'
 import { REQUEST_ORDER, RESPONSE_ORDER } from '../config-model/condKinds'
 import { toDnf, toTree, treeText, type CondTree } from '../config-model/condTree'
 import { actionFieldErrors, matcherFieldErrors } from '../config-editor/field-validation'
@@ -277,7 +278,7 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
     <div class="editor__grid">
       <div class="editor__main">
         <section v-if="draft.raw" class="ecard" :class="{ 'ui-card': !inspector }" aria-labelledby="ec-raw">
-          <header class="ecard__head ecard__head--raw"><div><h2 id="ec-raw" class="ecard__title">内核规则</h2><p class="ecard__desc">这条规则放不进上面那些写法（比如回答阶段先记日志再接着匹配），原样保留。这里改的就是 KixDNS 直接读的规则，保存前会校验。</p></div><UiTabs class="ecard__rawmode" :model-value="rawMode" :items="rawModes" label="内核规则的写法" variant="segment" @update:model-value="setRawMode" /></header>
+          <header class="ecard__head ecard__head--raw"><div><h2 id="ec-raw" class="ecard__title">内核规则<UiHelp topic="raw" /></h2><p class="ecard__desc">这条规则放不进上面那些写法（比如回答阶段先记日志再接着匹配），原样保留。这里改的就是 KixDNS 直接读的规则，保存前会校验。</p></div><UiTabs class="ecard__rawmode" :model-value="rawMode" :items="rawModes" label="内核规则的写法" variant="segment" @update:model-value="setRawMode" /></header>
           <div class="ecard__body">
             <RawRuleEditor v-if="rawMode === 'form'" v-model="rawRules" :pipelines="kernelPipelines" :current-pipeline-id="ownPipelineId" :capabilities="runtimeCapabilities" :show-errors="showErrors" />
             <template v-else><JsonEditor v-model="rawText" :error-line="undefined" /><p v-if="rawError" class="ui-field-error">{{ rawError }}</p></template>
@@ -319,8 +320,8 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
         </section>
 
         <section v-if="!draft.raw && draft.outcome.type === 'upstream'" class="ecard" :class="{ 'ui-card': !inspector, 'is-folded': inspector && !open.after }" aria-labelledby="ec-after">
-          <header v-if="inspector" class="ecard__head ecard__head--fold"><button class="ecard__fold" type="button" :aria-expanded="open.after" aria-controls="ec-after-body" @click="open.after = !open.after"><h2 id="ec-after" class="ecard__title">回答后检查</h2><span class="ecard__sum">{{ afterSummary }}</span><ChevronRight class="ecard__chev" :size="16" aria-hidden="true" /></button></header>
-          <header v-else class="ecard__head"><h2 id="ec-after" class="ecard__title">回答后检查</h2><p class="ecard__desc">回答发出前再检查一次，比如被污染时改问别的组。</p></header>
+          <header v-if="inspector" class="ecard__head ecard__head--fold ecard__head--stretch" :class="{ 'is-open': open.after }"><h2 id="ec-after" class="ecard__title"><button class="ecard__fold-btn" type="button" :aria-expanded="open.after" aria-controls="ec-after-body" aria-describedby="ec-after-sum" @click="open.after = !open.after">回答后检查</button></h2><UiHelp topic="after" /><span id="ec-after-sum" class="ecard__sum">{{ afterSummary }}</span><ChevronRight class="ecard__chev" :size="16" aria-hidden="true" /></header>
+          <header v-else class="ecard__head"><h2 id="ec-after" class="ecard__title">回答后检查<UiHelp topic="after" /></h2><p class="ecard__desc">回答发出前再检查一次，比如被污染时改问别的组。</p></header>
           <div v-show="!inspector || open.after" id="ec-after-body" class="ecard__body">
             <UiTabs v-model="draft.response.mode" :items="responseModes" label="上游回答后" variant="segment" />
             <div v-if="draft.response.mode === 'inherit'" class="after__inherit">
@@ -419,7 +420,7 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
               </div>
             </div>
             <div v-if="!draft.raw && draft.outcome.type === 'upstream'" class="ui-setrow">
-              <span class="ui-setrow__label"><span>客户端子网（ECS）</span><small>告诉上游客户端在哪个网段，让它回就近的地址</small></span>
+              <span class="ui-setrow__label"><span>客户端子网（ECS）<UiHelp topic="ecs" /></span><small>告诉上游客户端在哪个网段，让它回就近的地址</small></span>
               <div class="ui-setrow__control erow erow--wrap">
                 <UiSelect class="erow__ecs" :model-value="ecsChoice" :options="ecsOptions" label="客户端子网" @update:model-value="setEcs" />
                 <template v-if="draft.ecs && draft.ecs !== 'inherit' && draft.ecs.mode === 'client'">

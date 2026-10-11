@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ChevronLeft, ChevronRight, Plus, Search, X } from '@lucide/vue'
+import UiHelp from '../ui/UiHelp.vue'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { SETTING_SECTIONS, settingShouldRender, settingSupported, settingValue, settingVisible, type SettingField, type SettingSection } from '../../config-editor/schema'
 import type { GlobalSettings } from '../../config-editor/types'
@@ -19,7 +20,7 @@ const props = defineProps<{
   capabilities: string[]
   changed?: ReadonlySet<string>
   hiddenKeys?: readonly string[]
-  lead?: { id: string; title: string; description: string; summary: string[]; changed?: boolean }
+  lead?: { id: string; title: string; description: string; summary: string[]; changed?: boolean; help?: string }
 }>()
 const shown = (field: SettingField) => !props.hiddenKeys?.includes(field.key)
 const search = ref('')
@@ -272,7 +273,7 @@ function supported(field: SettingField): boolean {
       </section>
 
       <div v-if="!query && lead && current === lead.id" :key="current" class="ui-rise">
-        <header class="settings-group__head settings-group__head--lead"><h3>{{ lead.title }}</h3><p v-if="lead.description" class="settings-group__desc">{{ lead.description }}</p></header>
+        <header class="settings-group__head settings-group__head--lead"><h3>{{ lead.title }}<UiHelp v-if="lead.help" :topic="lead.help" /></h3><p v-if="lead.description" class="settings-group__desc">{{ lead.description }}</p></header>
         <div class="settings-rows"><slot name="lead" /></div>
       </div>
       <div v-if="!query && current === 'geo'" :key="current" class="ui-rise">

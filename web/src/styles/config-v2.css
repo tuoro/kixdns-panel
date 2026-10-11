@@ -634,18 +634,18 @@ body { background: var(--l-canvas); }
 .rcard__empty > svg { flex: 0 0 auto; }
 
 /* ---------- 规则编辑：整页和右栏两种，条件、结果、回答后检查、更多、内核规则 / rule editor: full page and inspector; conditions, outcome, after-reply check, more, kernel rules ---------- */
-.editor { max-width: 76rem; display: grid; gap: var(--s-4); padding-bottom: var(--s-8); }
+.editor { max-width: 76rem; display: grid; gap: var(--s-4); padding-bottom: calc(var(--h-md) + var(--s-3) * 2 + var(--s-4)); }
 .editor__crumbs { display: flex; }
 .editor__back-icon { display: none; }
 .editor__sep { color: var(--l-line-strong); }
 .editor__title { display: flex; align-items: center; gap: var(--s-4); }
-.editor__name { min-width: 0; flex: 1 1 auto; margin-left: calc(var(--s-2) * -1); padding: var(--s-1) var(--s-2); border: 1px solid transparent; border-radius: var(--r-2); background: transparent; color: var(--l-ink); font-family: var(--f-display); font-size: var(--t-5); font-weight: var(--w-bold); line-height: var(--lh-tight); outline: 0; }
+.editor__name { min-width: 0; flex: 0 1 auto; width: min(100%, 20rem); margin-left: calc(var(--s-2) * -1); padding: var(--s-1) var(--s-2); border: 1px solid transparent; border-radius: var(--r-2); background: transparent; color: var(--l-ink); font-family: var(--f-display); font-size: var(--t-4); font-weight: var(--w-bold); line-height: var(--lh-tight); outline: 0; }
 .editor__name:hover { border-color: var(--l-hair); }
 .editor__name:focus { border-color: var(--l-ink); background: var(--l-surface); }
 .editor__name::placeholder { color: var(--l-ink-3); font-weight: var(--w-medium); }
 .editor__name.is-bad { border-color: var(--err-l); }
 .editor__name-error { margin-top: calc(var(--s-3) * -1); }
-.editor__enabled { flex: 0 0 auto; }
+.editor__enabled { flex: 0 0 auto; margin-left: auto; }
 .editor__grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(18rem, 22rem); align-items: start; gap: var(--s-4); }
 .editor__main { min-width: 0; display: grid; gap: var(--s-4); }
 .editor__aside { position: sticky; top: calc(var(--app-header-height) + var(--s-4)); min-width: 0; }
@@ -773,7 +773,6 @@ body { background: var(--l-canvas); }
   .oparams__main { flex: 1 1 100%; max-width: none; }
   .after__then { grid-template-columns: minmax(0, 1fr); gap: var(--s-1); }
   .after__k { min-height: 0; }
-  .editor__foot { position: sticky; bottom: 0; }
   .editor__foot .ui-btn--primary, .editor__foot .ui-btn--secondary { flex: 1 1 0; }
   .editor__problem { flex: 1 1 100%; order: -1; }
   .editor__spacer { display: none; }
@@ -903,7 +902,7 @@ body { background: var(--l-canvas); }
 /* 底栏铺满整个窗口宽：底色和上面那条线用阴影往两边延伸，按钮仍对齐编辑区 / The bar spans the window: its fill and top line extend sideways by shadow, the buttons stay on the editor's edges */
 /* 底栏铺满视口宽：白底那一层整体下移 100vmax，所以顶边以上不盖住下面那层细线，细线露出 1px
    The bar bleeds to the viewport edges: the white layer is shifted down by 100vmax so it never covers the hairline layer above the top edge, which shows as 1px */
-.editor__foot { position: sticky; z-index: 5; bottom: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); padding-block: var(--s-3); background: var(--l-surface); clip-path: inset(-24px -100vmax 0); box-shadow: 0 100vmax 0 100vmax var(--l-surface), 0 calc(100vmax - 1px) 0 100vmax var(--l-hair), 0 calc(100vmax - 8px) 24px 100vmax var(--shadow-bar-tint); }
+.editor__foot { position: fixed; z-index: 5; bottom: 0; left: calc(var(--side-w) + var(--s-6)); width: min(76rem, calc(100vw - var(--side-w) - var(--s-6) * 2), 1280px); display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); padding-block: var(--s-3); background: var(--l-surface); clip-path: inset(-24px -100vmax 0); box-shadow: 0 100vmax 0 100vmax var(--l-surface), 0 calc(100vmax - 1px) 0 100vmax var(--l-hair), 0 calc(100vmax - 8px) 24px 100vmax var(--shadow-bar-tint); }
 @media (max-width: 640px) {
   .ecard__more { margin: var(--s-3) 0 0; }
 }
@@ -977,7 +976,7 @@ body { background: var(--l-canvas); }
 }
 .editor--inspector { max-width: none; gap: 0; padding-bottom: 0; background: var(--l-surface); border-radius: var(--r-3); box-shadow: var(--shadow-card); }
 .editor--inspector .editor__title { padding: var(--s-4) var(--s-5) 0; gap: var(--s-3); }
-.editor--inspector .editor__name { margin-left: calc(var(--s-2) * -1); font-size: var(--t-4); font-weight: var(--w-bold); }
+.editor--inspector .editor__name { flex: 1 1 auto; width: auto; margin-left: calc(var(--s-2) * -1); font-size: var(--t-4); font-weight: var(--w-bold); }
 .editor--inspector .editor__enabled small { display: none; }
 .editor__meta { margin: var(--s-1) 0 0; padding: 0 var(--s-5); color: var(--l-ink-3); font-size: var(--t-2); font-variant-numeric: tabular-nums; }
 .editor__say { margin: var(--s-3) var(--s-5) 0; padding: var(--s-2) var(--s-3); border-radius: var(--r-2); background: var(--l-sunk); color: var(--l-ink-2); font-size: var(--t-2); line-height: var(--lh-base); }
@@ -989,6 +988,18 @@ body { background: var(--l-canvas); }
 .editor--inspector .ecard__body { padding: 0 var(--s-5) var(--s-4); }
 /* 折起来的区块：标题行是一个按钮，右边一句摘要和一个 ›，展开后 › 转下来 / A folded section: its title row is a button with a summary and a › on the right, which turns down when open */
 .ecard__head--fold { padding: 0 !important; }
+/* 折叠头右端放「?」：折叠按钮占满剩下的宽，图标和右边内边距对齐 / The 「?」 sits at the fold header's right end: the fold button takes the rest, the icon lines up with the right padding */
+/* 标题当按钮、伸出去盖住整行的折叠头（带「?」的那种）：和 .ecard__fold 同样的列和内边距，「?」紧跟标题、叠在伸出的那层上面
+   A fold header whose title is the button, stretched over the whole row (the kind with a 「?」): the same columns and padding as .ecard__fold, the 「?」 right after the title and above the stretched layer */
+.ecard__head--stretch { position: relative; display: grid; grid-template-columns: auto auto minmax(0, 1fr) var(--size-icon); align-items: center; gap: var(--s-3); padding: var(--s-4) var(--s-5) !important; cursor: pointer; }
+.ecard__head--stretch .ecard__title { margin: 0; white-space: nowrap; }
+.ecard__head--stretch > .ui-help { position: relative; z-index: 1; margin-left: calc(var(--s-3) * -1 + var(--s-1)); }
+.ecard__fold-btn { padding: 0; border: 0; background: none; color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit; cursor: pointer; }
+.ecard__fold-btn::after { position: absolute; inset: 0; content: ''; }
+.ecard__fold-btn:focus-visible { outline: 0; }
+.ecard__fold-btn:focus-visible::after { outline: 2px solid var(--focus); outline-offset: -2px; }
+.ecard__head--stretch.is-open .ecard__chev { transform: rotate(90deg); }
+@media (hover: hover) { .ecard__head--stretch:hover .ecard__sum { color: var(--l-ink); } }
 .ecard__fold { width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr) var(--size-icon); align-items: center; gap: var(--s-3); padding: var(--s-3) var(--s-5); border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .ecard__fold .ecard__title { white-space: nowrap; }
 .ecard__sum { overflow: hidden; color: var(--l-ink-2); font-size: var(--t-2); text-overflow: ellipsis; white-space: nowrap; }
@@ -1031,7 +1042,7 @@ body { background: var(--l-canvas); }
 .editor--inspector .ecard__fold { padding-block: var(--s-4); }
 /* 面板比视口高时自己滚，底栏吸在面板底边，取消 / 保存一直看得见 / When the inspector is taller than the viewport it scrolls inside, with the foot stuck to its bottom so 取消 / 保存 stay in view */
 /* 底栏：不吸底、不画阴影，删除在左，取消和保存在右 / The foot: not sticky, no shadow; delete on the left, cancel and save on the right */
-.editor--inspector .editor__foot { padding: var(--s-3) var(--s-4) var(--s-3) var(--s-5); border-top: 1px solid var(--l-hair); clip-path: none; box-shadow: none; position: sticky; bottom: 0; background: var(--l-surface); }
+.editor--inspector .editor__foot { padding: var(--s-3) var(--s-4) var(--s-3) var(--s-5); border-top: 1px solid var(--l-hair); clip-path: none; box-shadow: none; position: sticky; bottom: 0; left: auto; width: auto; background: var(--l-surface); }
 .rawed { display: grid; gap: var(--s-4); }
 .rawed__rule { display: grid; gap: var(--s-3); padding: var(--s-3) 0 var(--s-4); border-bottom: 1px solid var(--l-hair); }
 .rawed__rule:last-of-type { border-bottom: 0; padding-bottom: 0; }
@@ -1665,3 +1676,13 @@ body { background: var(--l-canvas); }
 .imp__verdict { margin: 0; color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-normal); }
 /* 导入说明和第一次用的卡片：小标题同一种小标签；选中的起点用品牌色描边 / The import notes and the first-run card: subheads as the same small label; the chosen start outlined in the accent */
 .imp__subhead { margin: 0 0 var(--s-2); color: var(--l-ink-3); font-size: var(--t-1); font-weight: var(--w-bold); letter-spacing: .06em; text-transform: uppercase; }
+
+/* 没有侧栏时（≤860）底栏贴左右各 16，和主区内边距一样 / Without the sidebar (≤860) the footer sits 16 from each edge, matching the main area's padding */
+@media (max-width: 860px) { .editor__foot { left: var(--s-4); width: calc(100vw - var(--s-4) * 2); } }
+
+/* 整页编辑的名字框就是一个普通输入框：13 号常规字、30 高、常显边线，不再当标题；右栏检查器里的保持标题样式
+   In the full-page editor the name is an ordinary field: 13px regular, 30 tall, an always-visible border, no longer a title; the inspector keeps its title style */
+.editor:not(.editor--inspector) .editor__name { width: min(100%, 20rem); height: var(--h-md); margin-left: 0; padding: 0 var(--s-3); border: 1px solid var(--l-line-strong); border-radius: var(--r-2); background: var(--l-surface); font-family: var(--f-body); font-size: var(--t-3); font-weight: var(--w-normal); line-height: normal; }
+.editor:not(.editor--inspector) .editor__name:hover { border-color: var(--l-line-strong); }
+.editor:not(.editor--inspector) .editor__name:focus { border-color: var(--accent); box-shadow: var(--ring-field); }
+.editor:not(.editor--inspector) .editor__name::placeholder { font-weight: var(--w-normal); }

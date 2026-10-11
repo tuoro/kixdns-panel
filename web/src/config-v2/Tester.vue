@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { Check, Plus, X } from '@lucide/vue'
+import UiHelp from '../components/ui/UiHelp.vue'
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { apiRequest, jsonBody } from '../api/client'
 import type { DnsDiagnostic } from '../api/types'
@@ -72,6 +73,7 @@ const rows = computed(() => {
       <label class="ui-input is-mono tester__domain"><input ref="domainInput" v-model="domain" aria-label="要测试的域名" placeholder="www.example.com" autocapitalize="off" spellcheck="false"></label>
       <UiSelect v-model="qtype" class="tester__qtype" :options="qtypes" label="查询类型" />
       <button class="ui-btn ui-btn--secondary tester__run" type="submit" :disabled="!domain.trim() || running" :aria-busy="running || undefined"><span v-if="running" class="ui-spin" aria-hidden="true"></span>测试</button>
+      <UiHelp topic="tester" />
       <button class="ui-icon-btn tester__close" type="button" aria-label="收起测试" title="收起测试" @click="emit('close')"><X :size="16" /></button>
     </form>
     <!-- 测的是正在用的配置：草稿没保存时说清楚，免得拿结果去对草稿 / It tests the running config: with an unsaved draft, say so, lest the result be read against the draft -->
