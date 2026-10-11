@@ -1080,3 +1080,6 @@ body:has(.editor:not(.editor--inspector)) .toast-stack { bottom: calc(var(--edit
   /* 头像按钮只有 30 宽：左边和别的按钮一样只补 4（不压到外观按钮），差的都补在右边，仍然 44 / The avatar button is only 30 wide: like the others it grows 4 to the left (never over the appearance button) and the rest to the right, still 44 */
   .account-button::before { inset: calc(min(0px, (100% - var(--h-touch)) / 2)) calc(100% - var(--h-touch) + var(--s-1)) calc(min(0px, (100% - var(--h-touch)) / 2)) calc(var(--s-1) * -1); }
 }
+
+/* 登录页的过期提示条：和标题、表单各隔一档 / The login page's expiry notice: one step from the heading and from the form */
+.auth-expired { margin: calc(var(--s-5) * -1 + var(--s-3)) 0 var(--s-5); }
