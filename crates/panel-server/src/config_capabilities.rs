@@ -9,6 +9,9 @@ const MAX_CAPABILITIES: usize = 64;
 
 struct FieldRequirement {
     pointer: &'static str,
+    /// 依附的上一级开关：它没开着时这一项用不到能力（照写，偏好留着），和页面 settingNeedsCapability 同一条规则
+    /// The switch this one depends on: while it is not on, this one needs no capability (still written, the preference kept), the page's settingNeedsCapability rule
+    parent: Option<&'static str>,
     /// 页面上这一项的叫法，提示里用它，不用配置键 / What the page calls the setting; messages use it, not the config key
     label: &'static str,
     capability: &'static str,
@@ -17,11 +20,13 @@ struct FieldRequirement {
 const FIELD_REQUIREMENTS: &[FieldRequirement] = &[
     FieldRequirement {
         pointer: "/settings/statistics_enabled",
+        parent: None,
         label: "启用查询排行",
         capability: CONFIG_QUERY_STATS_V1,
     },
     FieldRequirement {
         pointer: "/settings/statistics_anonymize_client_ip",
+        parent: Some("/settings/statistics_enabled"),
         label: "客户端 IP 脱敏",
         capability: CONFIG_QUERY_STATS_V1,
     },
@@ -77,6 +82,9 @@ pub fn ensure_config_supported(
             content
                 .pointer(requirement.pointer)
                 .is_some_and(|value| value != &Value::Bool(false))
+                && requirement
+                    .parent
+                    .is_none_or(|parent| content.pointer(parent) == Some(&Value::Bool(true)))
                 && !supports(capabilities, requirement.capability)
         })
         .map(|requirement| requirement.label)
@@ -187,6 +195,17 @@ mod tests {
             ensure_config_supported(&json!({"settings": {"statistics_enabled": true}}), &[])
                 .unwrap_err();
         assert!(error.to_string().contains("启用查询排行"));
+    }
+
+    // 上一级关着时，依附它的开关写着 true 也不需要能力：v3.4.0 写下的配置可能就是这样，更新或回退不该被一个看不见的设置挡住
+    // With its parent off, a dependent switch written as true needs no capability: a config written by v3.4.0 may hold exactly that, and an update
+    // or rollback must not be blocked by a setting whose row is hidden
+    #[test]
+    fn ignores_dependent_switches_whose_parent_is_off() {
+        let content = json!({"settings": {"statistics_enabled": false, "statistics_anonymize_client_ip": true}});
+        assert!(ensure_config_supported(&content, &[]).is_ok());
+        let on = json!({"settings": {"statistics_enabled": true, "statistics_anonymize_client_ip": true}});
+        assert!(ensure_config_supported(&on, &[]).is_err());
     }
 
     // 关着的开关不需要能力：安装包自带的配置写着 false，更新或回退到没有统计的内核不该被挡

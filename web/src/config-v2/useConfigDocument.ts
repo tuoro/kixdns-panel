@@ -1,7 +1,7 @@
 import { computed, ref, watch } from 'vue'
 import { ApiError, apiRequest, isPanelDown, jsonBody } from '../api/client'
 import type { ConfigApplyResult, ConfigDocument, ConfigRuntimeApplyState, ConfigVersion, ConfigVersionDetail, ConfigVersions, DeleteConfigVersionResult, DeleteConfigVersionsResult, Overview, ServiceStatus, ValidationResult } from '../api/types'
-import { SETTING_SECTIONS, settingSupported, settingWritten } from '../config-editor/schema'
+import { SETTING_SECTIONS, settingNeedsCapability, settingSupported } from '../config-editor/schema'
 import { exportConfig, readConfig } from '../config-model/document'
 import type { Model } from '../config-model/model'
 import { traceNames } from '../config-model/trace-names'
@@ -41,7 +41,7 @@ export const currentVersionId = computed(() => {
 })
 export const runtimeUnavailable = computed(() => doc.value?.runtime.status === 'unavailable' && !runtimeStopped.value)
 export const unsupportedFields = computed(() => SETTING_SECTIONS.flatMap((s) => s.fields)
-  .filter((f) => settingWritten(f, model.settings) && !settingSupported(f, runtimeCapabilities.value))
+  .filter((f) => settingNeedsCapability(f, model.settings) && !settingSupported(f, runtimeCapabilities.value))
   .map((f) => f.label))
 // 内核报了自己支持什么、草稿里却开着它没有的功能：服务端不收这份配置（开着也不起作用），所以先不让保存
 // The kernel reported what it supports and the draft switches on a feature it lacks: the server refuses the config (the switch would do nothing), so saving waits
@@ -52,7 +52,7 @@ export const blockedFields = computed(() => (!runtimeStopped.value && !runtimeUn
   ? [...unsupportedFields.value, ...(!canCname.value && cnameInUse.value ? ['CNAME 回答'] : [])]
   : []))
 // 不支持的设置在哪一组：「去基础设置」直接打开那一组 / Which group holds the unsupported settings, so 去基础设置 opens it directly
-export const unsupportedSection = computed(() => SETTING_SECTIONS.find((s) => s.fields.some((f) => settingWritten(f, model.settings) && !settingSupported(f, runtimeCapabilities.value)))?.id ?? '')
+export const unsupportedSection = computed(() => SETTING_SECTIONS.find((s) => s.fields.some((f) => settingNeedsCapability(f, model.settings) && !settingSupported(f, runtimeCapabilities.value)))?.id ?? '')
 // KixDNS 没启动、连不上、没报能力时，保存只存成待应用版本 / Saving only stores a pending version when KixDNS is down, unreachable or silent about capabilities
 export const deferSave = computed(() => runtimeStopped.value || runtimeUnavailable.value || Boolean(capabilityError.value))
 export const fileDiffers = computed(() => !hasPending.value && !hasApplyFailure.value && doc.value?.runtime.status === 'different')
