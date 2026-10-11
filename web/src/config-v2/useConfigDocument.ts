@@ -8,7 +8,7 @@ import { traceNames } from '../config-model/trace-names'
 import { useConnection } from '../composables/useConnection'
 import { dismissUndoable, toastMark, useToast } from '../composables/useToast'
 import { errorMessage } from '../utils'
-import { applyHits, applyUpstreamStats, changeCount, dirty, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, reportOpen, unsaved } from './store'
+import { applyHits, applyUpstreamStats, changeCount, dialogEdits, dirty, editorEdited, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, reportOpen, unsaved } from './store'
 
 // 配置页和面板服务之间的事：读配置和历史、KixDNS 的运行状态和能力、校验、保存并热加载、现在应用。
 // 草稿本身在 store.ts；这里只管「文件」和「运行」。所有状态是模块级的，页面和保存条共用同一份。
@@ -307,6 +307,23 @@ function applyResultState(result: ConfigApplyResult): 'applied' | 'pending' {
   return result.apply_state === 'pending' || !result.active_config ? 'pending' : 'applied'
 }
 
+// 保存途中离开配置页：保存照常做完，结果用提示说；没保存成功时草稿留在内存里，回到配置页时接着用它
+// Leaving the config page mid-save: the save still finishes and its outcome is told in a toast; if it failed, the draft stays in memory and the page picks it up on return
+let viewing = false
+let keepOnReturn = false
+let inFlight: string | null = null
+/** 配置页打开（true）或离开（false）；打开时返回要不要留着草稿 / The config page opened (true) or left (false); on open, returns whether to keep the draft */
+export function setViewing(open: boolean): boolean {
+  viewing = open
+  const keep = open && keepOnReturn
+  if (open) keepOnReturn = false
+  return keep
+}
+/** 草稿里没保存的就是正在保存的那一份：离开不用问 / Everything unsaved is the draft being saved right now: leaving need not ask */
+export const onlySaving = (): boolean => busy.value && origin.value === 'draft' && inFlight === JSON.stringify(model)
+  && !editorEdited.value && !jsonEdited.value && dialogEdits.size === 0
+const sentence = (text: string) => text.replace(/[。.]\s*$/, '')
+
 // origin：保存草稿（保存栏报进度）或应用已经保存的版本（页头报进度，出错进提示）。有改动、或者要应用和运行配置不同的文件，
 // 而且 KixDNS 在运行时，先单独校验一次：没过就停在第 1 步，不写入任何版本。
 // origin: saving the draft (the save bar reports) or applying a saved version (the header reports, errors go to a notice). With
@@ -323,6 +340,7 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
   const sent = JSON.stringify(model)
   // 发出去的草稿定在这一刻：之后的修改（校验途中的也算）不在这次保存里，它们的撤销保存后照样留着 / The draft sent is fixed at this moment: edits after it (during validation too) are not in this save, and their undos stay after it lands
   const sentAt = toastMark()
+  inFlight = sent
   origin.value = from
   applyError.value = ''
   conflict.value = false
@@ -355,6 +373,8 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     finishStage('done', `${applyResultState(result) === 'pending' ? pendingText : `已生效 · 版本 #${result.version_id}`}${later}`)
     // 从提示条按的「重试应用」没有保存条报结果：成功了说一句，不让提示条悄悄消失 / 重试应用 from the notice has no save bar to report: say it worked instead of the notice just vanishing
     if (from === 'apply' && applyResultState(result) === 'applied') useToast().success(`版本 #${result.version_id} 已生效`)
+    // 保存途中离开了配置页：没有保存条报结果，用提示说 / Left the config page mid-save: no save bar reports it, so a toast does
+    else if (!viewing) useToast().success(applyResultState(result) === 'pending' ? pendingText : `版本 #${result.version_id} 已生效`)
   } catch (error) {
     // 会话过期：页面会回到登录页，这里不挂「没通过校验」 / Session expired: the page goes back to the login page; no 没有通过校验 here
     if (error instanceof ApiError && error.status === 401) { finishStage('idle'); return }
@@ -383,6 +403,13 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     // 已经挂着「没有生效」时按的「重试应用」：提示条的话和刚才一样，所以另说一句这次重试的结果，不让它悄无声息
     // 重试应用 pressed while 没有生效 already shows: the notice reads as before, so this retry's outcome is said separately instead of passing silently
     else if (from === 'apply') useToast().error(writtenNotApplied ? `重试也没有生效：${failureCause(reason)}` : step === 'validating' ? `重试没有通过校验：${reason}` : conflict.value ? '重试没有成功：这份配置在别处改过了，先重新读取' : `重试没有成功：${reason}`)
+    else if (!viewing) {
+      keepOnReturn = true
+      const why = conflict.value ? '这份配置在别处改过了' : stopped ? 'KixDNS 已停止' : down ? '连不上面板' : sentence(writtenNotApplied ? failureCause(reason) : reason)
+      useToast().error(writtenNotApplied ? `配置保存了，没有生效：${why}。回到配置页可以重试应用` : `配置${step === 'validating' ? '没有通过校验' : '没有保存成功'}：${why}。草稿留在配置页`)
+    }
+  } finally {
+    inFlight = null
   }
 }
 export const applyNow = () => void save('apply')

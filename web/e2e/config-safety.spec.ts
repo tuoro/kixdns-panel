@@ -297,6 +297,53 @@ test('保存途中又改了一笔：保存完那一笔还在，算一处没保�
   await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
 })
 
+// 保存途中离开：问「放弃」也放弃不了，所以不问；保存照常做完，结果用提示说。没保存成功时草稿留着，回来还在
+// Leaving mid-save: a 放弃 question could not discard anything, so none is asked; the save finishes and a toast tells the outcome. If it failed the draft stays for the return
+test('保存途中离开配置页：不问放弃，保存的结果用提示说', async ({ page }) => {
+  await page.goto('/config')
+  await addRule(page, 'leaving.example')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-save-slow', 'true'))
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar).toContainText('写入并应用')
+  await page.getByRole('link', { name: '日志', exact: true }).click()
+  await expect(page).toHaveURL(/\/logs/)
+  await expect(page.locator('dialog.confirm[open]')).toHaveCount(0)
+  await expect(page.locator('.toast', { hasText: /版本 #\d+ 已生效/ })).toBeVisible({ timeout: 5000 })
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
+})
+
+test('保存途中离开，保存没成功：提示说清楚，回到配置页草稿还在', async ({ page }) => {
+  await page.goto('/config')
+  await addRule(page, 'kept.example')
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-save-slow', 'true'); localStorage.setItem('kixdns:demo-save-conflict', 'true') })
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar).toContainText('写入并应用')
+  await page.getByRole('link', { name: '日志', exact: true }).click()
+  await expect(page.locator('.toast', { hasText: '配置没有保存成功：这份配置在别处改过了。草稿留在配置页' })).toBeVisible({ timeout: 5000 })
+  await page.getByRole('link', { name: '规则', exact: true }).click()
+  await expect(page.locator('[data-rule]', { hasText: 'kept.example' })).toBeVisible()
+  await expect(bar).toContainText('这份配置在别处改过了')
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
+})
+
+// 保存途中又改了一笔再离开：那一笔会丢，照样先问 / Leaving after one more edit during the save: that edit would be lost, so it still asks
+test('保存途中又改过再离开：照样先问', async ({ page }) => {
+  await page.goto('/config')
+  await addRule(page, 'first-leave.example')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-save-slow', 'true'))
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar).toContainText('写入并应用')
+  await addRule(page, 'second-leave.example')
+  await page.getByRole('link', { name: '日志', exact: true }).click()
+  await expect(page.locator('dialog.confirm[open]')).toContainText('放弃未保存的修改')
+  await page.locator('dialog.confirm[open]').getByRole('button', { name: '继续编辑' }).click()
+  await expect(page).toHaveURL(/\/config/)
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
+})
+
 test('规则组弹窗里改了一半就按浏览器返回到别的分区：先问一句', async ({ page }) => {
   await page.goto('/')
   const nav = page.locator('.desktop-nav')
