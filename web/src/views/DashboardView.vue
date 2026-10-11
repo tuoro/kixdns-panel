@@ -9,6 +9,7 @@ import UiNumber from '../components/ui/UiNumber.vue'
 import UiPageHeader from '../components/ui/UiPageHeader.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
 import { useConfirm } from '../composables/useConfirm'
+import { useServiceStart } from '../composables/useServiceStart'
 import { useToast } from '../composables/useToast'
 import { HEALTH_LABELS, cacheComposition, pipelineDistribution, rcodeDistribution, latencyBasis, recentWindowLabel, settledAttempts, upstreamBasis, upstreamHealth } from '../dashboard-presentation'
 import type { ShareRow, UpstreamHealth } from '../dashboard-presentation'
@@ -101,7 +102,7 @@ const metaTail = computed<'live' | 'snapshot' | ''>(() => (runtimeState.value ==
 
 // ---------- 页级提示：一次只出一条，读取错误写进原因行 ----------
 // ---------- Page notice: one at a time, a read error goes in its reason line ----------
-interface PageNotice { tone: 'warn' | 'err' | 'off'; icon: typeof CircleAlert; title: string; reason: string; action?: 'retry' | 'config' | 'logs' }
+interface PageNotice { tone: 'warn' | 'err' | 'off'; icon: typeof CircleAlert; title: string; reason: string; action?: 'retry' | 'config' | 'logs' | 'start' }
 // 原因行把几条读取错误和一句「接下来会怎样」连成一段 / The reason line joins the read errors and one sentence on what happens next
 function reasonOf(...parts: string[]): string {
   return parts.filter(Boolean).map((part) => part.replace(/[。；;.]$/, '')).join('；') + '。'
@@ -125,11 +126,11 @@ const notice = computed<PageNotice | null>(() => {
     case 'stopped-empty':
       return serviceTitle
         ? serviceNotice('还没有运行数据')
-        : { tone: 'off', icon: Power, title: 'KixDNS 已停止', reason: reasonOf('还没有运行数据', '启动 KixDNS 后概览会自动更新') }
+        : { tone: 'off', icon: Power, title: 'KixDNS 已停止', reason: reasonOf('还没有运行数据', '启动 KixDNS 后概览会自动更新'), action: 'start' }
     case 'stopped-snapshot':
       return serviceTitle
         ? serviceNotice(`显示停止前${snapshot}的快照`)
-        : { tone: 'off', icon: Power, title: 'KixDNS 已停止', reason: reasonOf(`显示停止前${snapshot}的快照`, '启动 KixDNS 后概览会自动更新') }
+        : { tone: 'off', icon: Power, title: 'KixDNS 已停止', reason: reasonOf(`显示停止前${snapshot}的快照`, '启动 KixDNS 后概览会自动更新'), action: 'start' }
     case 'unavailable-snapshot':
       return { tone: 'warn', icon: CircleAlert, title: '实时数据暂不可用', reason: reasonOf(overviewError.value || 'KixDNS 暂时没有应答', serviceErrorPart, `显示${snapshot}的快照，恢复后会自动更新`), action: 'retry' }
     case 'unavailable':
@@ -365,6 +366,14 @@ function loadStats(silent = false, fresh = false): Promise<void> {
 async function refreshAll(): Promise<void> {
   await load()
   await loadStats()
+}
+// 停着的时候在说它停着的地方就能启动，不用先去系统页 / Start it right where the page says it is stopped, without a trip to the system page
+const { starting, start } = useServiceStart()
+async function startService(): Promise<void> {
+  const status = await start()
+  if (!status) return
+  service.value = status
+  await refreshAll()
 }
 
 async function setStatsWindow(windowSeconds: number): Promise<void> {
@@ -625,6 +634,7 @@ onBeforeUnmount(() => {
       <button v-if="notice.action === 'retry'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="requesting" @click="refreshAll">重试</button>
       <RouterLink v-else-if="notice.action === 'config'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" to="/config">管理配置</RouterLink>
       <RouterLink v-else-if="notice.action === 'logs'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" to="/logs">查看日志</RouterLink>
+      <button v-else-if="notice.action === 'start'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="starting" :aria-busy="starting || undefined" @click="startService"><span v-if="starting" class="ui-spin" aria-hidden="true"></span>启动 KixDNS</button>
     </div>
 
     <!-- 读取失败又没有任何数据时不出页签：下面没有可切换的东西 / No tabs when reading failed with no data at all: there is nothing to switch between -->
@@ -807,7 +817,7 @@ onBeforeUnmount(() => {
           <small>{{ statsError }}</small>
           <button class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="statsLoading" @click="loadStats()">重试</button>
         </div>
-        <UiEmpty v-if="!showStatsSection" :icon="ChartColumn" title="当前 KixDNS 不提供查询排行" desc="更新增强版后可以按客户端和域名查看请求量。" />
+        <UiEmpty v-if="!showStatsSection" :icon="ChartColumn" title="当前 KixDNS 不提供查询排行" desc="更新内核后可以按客户端和域名查看请求量。" />
         <div v-else-if="displayStats?.enabled" class="overview-rankings" :class="{ 'is-loading': statsLoading }">
           <section v-for="group in rankingGroups" :key="group.id" class="overview-ranking">
             <header class="overview-ranking-head"><h2>{{ group.title }}</h2><p>{{ group.id === 'clients' && displayStats.anonymized_clients ? '按脱敏网段聚合' : group.description }}</p></header>
@@ -823,23 +833,23 @@ onBeforeUnmount(() => {
         </div>
         <!-- 下方配置卡已有「管理配置」，这里只说开关在哪，不再放第二个去同一处的按钮
              The config card below already links to the config page; this says where the switch is instead of adding a second link -->
-        <UiEmpty v-else-if="stats" :icon="ChartColumn" title="查询统计未启用" desc="在配置页「基础设置 › 查询统计」打开「启用查询排行」后，这里按客户端和域名列出请求量。" />
+        <UiEmpty v-else-if="stats" :icon="ChartColumn" title="查询排行没有打开" desc="在「基础设置 › 查询统计」里打开「启用查询排行」后，这里按客户端和域名列出请求量。" />
         <p v-else-if="!statsError" class="overview-empty">{{ statsLoading ? '正在读取查询排行' : '查询排行暂不可用' }}</p>
       </section>
 
       <section id="overview-panel-rules" v-show="activeView === 'rules'" class="overview-view" role="tabpanel" aria-labelledby="overview-tab-rules" tabindex="0">
-        <div v-if="rules.length" class="overview-toolbar"><p class="ui-dots"><span>启动以来</span><span>请求与响应阶段的累计执行次数</span></p></div>
+        <div v-if="rules.length" class="overview-toolbar"><p class="ui-dots"><span>启动以来</span><span>请求和回答后两个阶段的命中次数</span></p></div>
         <div v-if="rules.length" class="overview-rules">
-          <div class="ui-rec-head"><span>阶段</span><span>规则</span><span>Pipeline</span><span>执行次数</span></div>
+          <div class="ui-rec-head"><span>阶段</span><span>规则</span><span>Pipeline</span><span>命中次数</span></div>
           <div v-for="rule in rules" :key="`${rule.pipeline}:${rule.phase}:${rule.rule}`" class="ui-rec overview-rule">
-            <span class="overview-rule-phase"><span class="ui-tag" :class="{ 'overview-phase--request': rule.phase === 'request' }">{{ rule.phase === 'request' ? '请求' : '响应' }}</span></span>
+            <span class="overview-rule-phase"><span class="ui-tag" :class="{ 'overview-phase--request': rule.phase === 'request' }">{{ rule.phase === 'request' ? '请求' : '回答后' }}</span></span>
             <strong class="overview-rule-name ui-mono">{{ rule.rule }}</strong>
             <span class="overview-rule-pipeline ui-mono">{{ rule.pipeline }}</span>
             <span class="overview-rule-count">{{ formatNumber(rule.count) }}</span>
-            <p class="ui-rec__phone overview-rule-line"><span class="ui-tag" :class="{ 'overview-phase--request': rule.phase === 'request' }">{{ rule.phase === 'request' ? '请求' : '响应' }}</span><span class="ui-mono">{{ rule.pipeline }}</span></p>
+            <p class="ui-rec__phone overview-rule-line"><span class="ui-tag" :class="{ 'overview-phase--request': rule.phase === 'request' }">{{ rule.phase === 'request' ? '请求' : '回答后' }}</span><span class="ui-mono">{{ rule.pipeline }}</span></p>
           </div>
         </div>
-        <UiEmpty v-else :icon="ListChecks" title="还没有规则执行过" desc="请求经过 Pipeline 里的规则后，这里按执行次数列出每条规则。" />
+        <UiEmpty v-else :icon="ListChecks" title="还没有规则命中过" desc="规则命中后，这里按命中次数列出每条规则。" />
       </section>
     </template>
   </div>

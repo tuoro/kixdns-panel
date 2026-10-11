@@ -221,7 +221,7 @@ function supported(field: SettingField): boolean {
   <div class="settings" :class="{ 'settings--open': mobileOpen || Boolean(query), 'settings--searching': Boolean(query) }">
     <nav class="settings-nav" aria-label="设置分组">
       <!-- 清除按钮和解析编排的搜索框同一个零件：框里的点按格，手机上 44 宽、和框里面一样高（审计第三轮 T5） / The clear button is the same part as in 解析编排's search: a cell inside the field, 44 wide and as tall as the inside on a phone (audit round 3, T5) -->
-      <label class="ui-input settings-search"><Search :size="16" aria-hidden="true" /><input ref="searchInput" v-model="search" type="search" aria-label="搜索基础设置" placeholder="搜索设置或配置 key" @keydown.esc.prevent="clearSearch"><button v-if="search" class="ui-input__affix" type="button" aria-label="清除设置搜索" title="清除设置搜索" @click.prevent="clearSearch"><X :size="14" aria-hidden="true" /></button></label>
+      <label class="ui-input settings-search"><Search :size="16" aria-hidden="true" /><input ref="searchInput" v-model="search" type="search" aria-label="搜索基础设置" placeholder="搜索设置" @keydown.esc.prevent="clearSearch"><button v-if="search" class="ui-input__affix" type="button" aria-label="清除设置搜索" title="清除设置搜索" @click.prevent="clearSearch"><X :size="14" aria-hidden="true" /></button></label>
       <button v-for="group in groups" :key="group.id" type="button" class="settings-nav__item" :aria-current="!query && current === group.id ? 'true' : undefined" :aria-description="group.changed ? '有修改' : undefined" @click="open(group.id)">
         <span class="settings-nav__title">{{ group.title }}<i v-if="group.changed" class="ui-dot ui-dot--ink settings-dot" aria-hidden="true"></i></span>
         <small class="settings-nav__summary"><UiDotText class="ui-dot-text--stats" :parts="group.summary" /></small>
@@ -231,7 +231,7 @@ function supported(field: SettingField): boolean {
 
     <div class="settings-pane">
       <button v-if="isMobile && !query" class="ui-btn ui-btn--text settings-back" type="button" @click="mobileOpen = false"><ChevronLeft :size="16" />全部设置</button>
-      <div v-if="query && !visibleSections.length" class="settings-empty"><strong>没有找到匹配的设置</strong><p>试试「缓存」「超时」或配置 key。</p><button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" @click="clearSearch">清除搜索</button></div>
+      <div v-if="query && !visibleSections.length" class="settings-empty"><strong>没有找到匹配的设置</strong><p>试试「缓存」「超时」，也可以搜配置文件里的字段名。</p><button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" @click="clearSearch">清除搜索</button></div>
 
       <!-- 搜索时列出所有分组里的匹配，一个分组一段；平时只显示选中的那一组。
            While searching, every group's matches, one block per group; otherwise only the selected group. -->

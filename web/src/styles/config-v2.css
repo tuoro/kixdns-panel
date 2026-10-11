@@ -21,8 +21,9 @@ body { background: var(--l-canvas); }
 .cfg__nav .ui-tabs { border-bottom: 0; }
 .cfg__whole { display: flex; margin: 0; }
 .cfg__to-form { display: none; }
-.cfg__whole > span { position: relative; padding-bottom: var(--s-3); color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-medium); white-space: nowrap; }
-.cfg__whole > span::after { position: absolute; right: 0; bottom: -1px; left: 0; border-top: 2px solid var(--ok-l); content: ""; }
+.cfg__whole > span { position: relative; padding-bottom: var(--s-3); color: var(--accent); font-size: var(--t-3); font-weight: var(--w-medium); white-space: nowrap; }
+/* 「完整配置」和别的页签同一个选中样子：强调色的字和下划线，不另用绿色 / 完整配置 looks like any selected tab: accent text and underline, not a green of its own */
+.cfg__whole > span::after { position: absolute; right: 0; bottom: -1px; left: 0; border-top: 2px solid var(--accent); content: ""; }
 .cfg__tools .ui-seg { margin-right: var(--s-2); }
 .cfg__head-action { margin-left: var(--s-1); padding: 0; border: 0; background: none; color: var(--l-ink); font: inherit; font-weight: var(--w-medium); text-decoration: underline; text-decoration-color: var(--l-line-strong); text-underline-offset: 3px; cursor: pointer; }
 .cfg__head-action:hover { text-decoration-color: var(--l-ink); }
@@ -34,6 +35,9 @@ body { background: var(--l-canvas); }
 .cfg__json { display: grid; gap: var(--s-3); }
 .cfg__json-note { max-width: 52em; margin: 0; color: var(--l-ink-3); font-size: var(--t-2); }
 .cfg__json-editor { min-height: 60vh; }
+/* JSON 视图的编辑区是一张卡：行号栏和代码在同一个圆角框里，底边是卡片边，不是被截断的一刀
+   The JSON view's editor is a card: the gutter and the code share one rounded frame, and its bottom is the card's edge rather than a hard cut */
+.cfg__json-editor.json-editor { border: 0; border-radius: var(--r-3); box-shadow: var(--shadow-card); }
 /* 骨架的列要 minmax(0, 1fr)：auto 列会按工具行里几个定宽占位的总和撑开，641–860 时把文档撑出横向滚动 / The skeleton's column must be minmax(0, 1fr): an auto column grows to the sum of the toolbar's fixed-width placeholders and at 641–860 pushes the document into horizontal scroll */
 .cfg__skeleton { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-4); }
 .cfg__sk-tools { display: flex; align-items: center; gap: var(--s-2); min-width: 0; }
@@ -57,7 +61,7 @@ body { background: var(--l-canvas); }
 .savebar__note-text { max-width: 14rem; overflow: hidden; color: var(--l-ink-2); font-size: var(--t-2); text-overflow: ellipsis; white-space: nowrap; }
 .is-aside { visibility: hidden; }
 .savebar__save { min-width: 7.5rem; }
-.savebar__act { margin-left: var(--s-1); }
+.savebar__acts { display: inline-flex; gap: var(--s-1); margin-left: var(--s-1); }
 .cfg__savebar .ui-savebar__status small { color: var(--l-ink-2); font-size: var(--t-2); }
 .cfg__savebar.ui-savebar--err { flex-wrap: wrap; justify-content: flex-end; }
 .cfg__savebar.ui-savebar--err .ui-savebar__status { flex: 1 1 100%; }
@@ -167,7 +171,6 @@ body { background: var(--l-canvas); }
    Commercial rules page (benchmark Surge Dashboard): wide = list + inspector; a tools row at the top of the list card; the selected row on an accent tint
    ============================================================================ */
 .cfg__page-acts { display: contents; }
-.cfg__facts { margin-top: var(--s-2); }
 .cfg__facts > span { display: grid; gap: 2px; }
 .cfg__facts .cfg__head-action { margin-left: var(--s-2); }
 .rules-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-5); align-items: start; }
@@ -187,7 +190,8 @@ body { background: var(--l-canvas); }
   /* 固定在底部的保存条从侧栏右边起，不钻到侧栏下面；左右内边距和内容列对齐（.workspace__main 最宽 1280，左右各 32）
      The fixed save bar starts at the sidebar's right edge instead of running under it; its padding lines up with the content column (.workspace__main is at most 1280 wide, 32 at each side) */
   .cfg__savebar { left: var(--side-w); }
-  .cfg__savebar.ui-savebar { padding-inline: var(--s-6) max(var(--s-6), calc(100% - 1280px - var(--s-6))); }
+  /* 固定定位的百分比按整个视口算，要先扣掉侧栏，右边才和内容列对齐（1440 宽时曾差出 96） / A fixed element's percentages use the whole viewport, so the sidebar comes off first or the right edge misses the content column (96 short at 1440) */
+  .cfg__savebar.ui-savebar { padding-inline: var(--s-6) max(var(--s-6), calc(100% - var(--side-w) - 1280px - var(--s-6))); }
 }
 
 /* ---------- 第一次用 / first use ---------- */
@@ -333,7 +337,7 @@ body { background: var(--l-canvas); }
 .qadd__hint { grid-column: 2 / -1; margin: 0; color: var(--l-ink-2); font-size: var(--t-1); }
 .qadd__hint.is-err { color: var(--err-l); }
 .rcard__order { display: none; margin: 0; padding: var(--s-2) var(--s-3) 0; color: var(--l-ink-3); font-size: var(--t-1); }
-.rcard__empty { display: flex; align-items: center; gap: var(--s-2); margin: var(--s-2) var(--s-4) 0; padding: var(--s-3) var(--s-4); border: 1px dashed var(--l-line-strong); border-radius: var(--r-2); color: var(--l-ink-2); font-size: var(--t-2); }
+.rcard__empty { display: flex; align-items: center; gap: var(--s-2); margin: var(--s-2) var(--s-4); padding: var(--s-3) var(--s-4); border: 1px dashed var(--l-line-strong); border-radius: var(--r-2); color: var(--l-ink-2); font-size: var(--t-2); }
 .rrow__changed { width: var(--s-2); height: var(--s-2); flex: 0 0 auto; }
 .entries__list { margin: 0; padding: 0; list-style: none; }
 .entries__list li { display: grid; grid-template-columns: var(--s-6) minmax(0, 1fr) auto; gap: var(--s-4); align-items: baseline; padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--l-hair); font-size: var(--t-2); }
@@ -352,7 +356,9 @@ body { background: var(--l-canvas); }
   /* 规则三行：名字、命中、开关 / 条件一行 / 结果和「…」；每行高度固定，扫一眼就能对齐 / A rule takes three fixed lines: name, hits and switch; the condition on one line; the outcome and 「…」 */
   .rlist__head { display: none; }
   .rrow__switch::before { position: absolute; inset: calc(var(--s-3) * -1) calc(var(--s-2) * -1); content: ''; }
-  .rrow__menu .ui-icon-btn::before { position: absolute; inset: calc(var(--s-2) * -1) 0; content: ''; }
+  /* 行尾「…」看得见的宽 32，点击范围左右各撑 6 到 44 / The row's 「…」 is 32 wide to the eye; its hit area reaches 6 further each side to 44 */
+  /* 点按区按按钮自己的大小往外补到 44：按钮比 44 大的那一边不动（映射行的按钮比规则行的小，按固定差值补会不够） / The hit area grows from the button's own size to 44; a side already past 44 stays put (the mapping row's button is smaller than the rule row's, so a fixed offset fell short) */
+  .rrow__menu .ui-icon-btn::before, .rw__row > .ui-menu-host .ui-icon-btn::before { position: absolute; inset: calc(min(0px, (100% - var(--h-touch)) / 2)); content: ''; }
   .rpin { grid-template-columns: var(--s-5) minmax(0, 1fr) auto; grid-template-areas: "num main chev"; }
   .rpin .rrow__pill:not(.rpin__rest), .rpin__link, .rpin__long { display: none; }
   .rpin__rest { grid-area: pill; justify-self: start; max-width: none; width: 100%; }
@@ -582,6 +588,11 @@ body { background: var(--l-canvas); }
   /* 规则表：结果、命中、启用、「…」是右边固定的一组，名字和条件拿走其余的宽度；结果和命中之间不再空出一大段
      Rules table: outcome, hits, switch and 「…」 form a fixed group at the right, and the name and condition take the rest; no wide hole between outcome and hits */
   .rlist, .rcard { --rl-cols: var(--s-6) minmax(0, 1fr) 15rem 4.5rem var(--s-7) var(--h-sm); }
+}
+/* 1024 一档内容列窄：结果列收到 11rem（最宽的常见胶囊约 10rem），省下的宽度给规则名和条件，不再把条件截成半句
+   At the 1024 step the content column is narrow: the outcome column drops to 11rem (the widest common pill is about 10rem), and the width it frees goes to the rule name and condition instead of cutting the condition mid-phrase */
+@media (min-width: 861px) and (max-width: 1199px) {
+  .rlist, .rcard { --rl-cols: var(--s-6) minmax(0, 1fr) 11rem 4rem var(--s-7) var(--h-sm); }
 }
 @media (min-width: 641px) {
   /* 宽屏只有一行的规则行：没有第二行时不留它的位置，名字落在行的正中 / Wide one-line rule rows: with no second line nothing is reserved for it, so the name sits in the row's centre */
@@ -1026,12 +1037,15 @@ body { background: var(--l-canvas); }
 .editor--inspector .cform__match { font-size: var(--t-2); }
 .editor--inspector .cform__group { margin-inline: calc(var(--s-3) * -1); }
 /* 结果：五个选项挤成一个分段 / Outcome: the five options become one segmented control */
-.editor--inspector .tiles { display: flex; padding: 2px; border-radius: var(--r-2); background: var(--l-sunk); gap: 2px; }
+/* 分段和下面的下拉框一样撑满面板，右边线对齐（宽屏的 justify-self: start 在这里不要） / The segmented control spans the panel like the select below it, so their right edges meet (the wide layout's justify-self: start is dropped here) */
+.editor--inspector .tiles { display: flex; justify-self: stretch; padding: 2px; border-radius: var(--r-2); background: var(--l-sunk); gap: 2px; }
 .editor--inspector .tile { flex: 1 1 0; min-height: calc(var(--h-md) - 4px); display: flex; align-items: center; justify-content: center; padding: 0 var(--s-1); border: 0; border-radius: calc(var(--r-2) - 2px); background: none; box-shadow: none; }
 .editor--inspector .tile b { font-size: var(--t-2); font-weight: var(--w-medium); color: var(--l-ink-2); white-space: nowrap; }
 .editor--inspector .tile.is-on { background: var(--l-surface); box-shadow: var(--shadow-raise); }
 .editor--inspector .tile.is-on b { color: var(--l-ink); }
-.editor--inspector .tiles__params { margin-top: var(--s-3); }
+/* 分段到下拉框只隔区块里统一的 12，不再额外加一段 / Only the section's usual 12 between the segmented control and the select, nothing extra */
+.editor--inspector .tiles__params { margin-top: 0; padding-top: 0; }
+.editor--inspector .oparams__main { flex: 1 1 auto; max-width: none; }
 /* 「更多」展开后的设置行上下排：名字在上，控件撑满 / Setting rows in an open 更多 stack: name above, control full width */
 .editor--inspector .ecard__rows .ui-setrow { grid-template-columns: minmax(0, 1fr); padding-block: var(--s-2); }
 .editor--inspector .ecard__rows .ui-setrow--toggle { grid-template-columns: minmax(0, 1fr) auto; }
@@ -1360,7 +1374,7 @@ body { background: var(--l-canvas); }
 .rwi li { display: flex; flex-wrap: wrap; gap: var(--s-1) var(--s-3); color: var(--l-ink); }
 .rwi li.is-bad > span { color: var(--l-ink-3); text-decoration: line-through; }
 .rwi small { color: var(--err-l); font-size: var(--t-1); }
-.rw__d .rrow__changed { display: inline-block; margin-left: var(--s-2); vertical-align: middle; }
+.rw__d .rrow__changed, .gcard__name .rrow__changed { display: inline-block; margin-left: var(--s-2); vertical-align: middle; }
 .rw__row.is-fresh { animation: row-fresh calc(var(--m-spin) * 2) var(--ease-out); }
 @media (max-width: 640px) {
   .rw__arrow { display: none; }
@@ -1530,6 +1544,13 @@ body { background: var(--l-canvas); }
   /* 基础设置：名称列 300，控件一直排到窗格内边 / Basic settings: a 300 label column, controls running to the pane's inner edge */
   .sets__card .ui-setrow { grid-template-columns: minmax(0, 300px) minmax(0, 1fr); }
 }
+/* 窗格窄于 38rem（1024 宽的双栏）时照样上下排：上面那条 300 列的规则比组件库的容器查询更具体，不补这一条，三段的分段控件会被裁掉一截
+   Below 38rem (the split view at 1024) the rows still stack: the 300-column rule above outranks the kit's container query, and without this the
+   three-option segmented control was clipped */
+@container setrows (max-width: 38rem) {
+  .sets__card .ui-setrow { grid-template-columns: minmax(0, 1fr); }
+  .sets__card .ui-setrow--toggle { grid-template-columns: minmax(0, 1fr) auto; }
+}
 /* 基础设置：分段控件和下面的下拉框一样占满控件列 / Basic settings: the segmented control fills the control column like the select below it */
 .sets__stack { display: grid; gap: var(--s-2); justify-items: stretch; }
 .sets__stack > .ui-seg { display: flex; }
@@ -1558,6 +1579,9 @@ body { background: var(--l-canvas); }
 /* 一张卡：第一行输入（域名占满，类型 5.5rem，测试，收起），下面一句说明，再是结论条和路径；结论条和诊断页同一种底色
    One card: the input row (the domain fills it, type 5.5rem, 测试, close), a hint line, then the verdict band and the path; the band shares the diagnostics page's tint */
 .tester { display: grid; gap: var(--s-3); padding: var(--s-4) var(--s-5); }
+/* 测试卡和下面的规则列表卡之间留出卡片间距，不贴在一起 / The tester card keeps the usual card gap above the rule list card instead of touching it */
+.rules > .tester { margin-bottom: var(--s-5); }
+@media (max-width: 640px) { .rules > .tester { margin-bottom: var(--s-4); } }
 .tester__inputs { display: flex; align-items: center; gap: var(--s-2); }
 .tester__domain { flex: 1 1 auto; min-width: 0; }
 .tester__qtype { flex: 0 0 5.5rem; }
@@ -1611,8 +1635,12 @@ body { background: var(--l-canvas); }
 .diffd__kind { padding: 0 var(--s-2); border: 1px solid var(--l-hair); border-radius: var(--r-1); color: var(--l-ink-2); font-size: var(--t-1); font-weight: var(--w-medium); }
 .diffd__block ul { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
 .diffd__block li { padding: var(--s-1) var(--s-2); border-radius: var(--r-1); color: var(--l-ink); font-size: var(--t-2); line-height: var(--lh-base); overflow-wrap: anywhere; }
-.diffd__block li.is-del { background: var(--l-canvas); color: var(--l-ink-2); }
-.diffd__block li.is-add { background: var(--l-sunk); }
+/* 去掉的行淡红底、加上的行淡绿底，两种主题都用状态色的浅底：以前两行都是灰，深色模式下一行凹一行凸，看着像出错
+   Removed lines on a faint red, added lines on a faint green, in both themes from the status tints: both used to be grey, and in dark mode one read sunken and the other raised */
+.diffd__block li.is-del { background: var(--err-tint-l); color: var(--l-ink-2); }
+.diffd__block li.is-add { background: var(--ok-tint-l); }
+.diffd__block li.is-del .diffd__sign { color: var(--err-l); }
+.diffd__block li.is-add .diffd__sign { color: var(--ok-l); }
 .hist .pdrawer__panel { width: min(32.5rem, 100%); }
 /* 历史版本：行的字和抽屉标题左边对齐；当前版本的备注是墨色，不像停用 / History: row text lines up with the drawer title; the current version's note is ink, not disabled-looking */
 .hist__list { padding: var(--s-2) var(--s-3); }
@@ -1699,3 +1727,47 @@ body { background: var(--l-canvas); }
 .editor:not(.editor--inspector) .editor__name:hover { border-color: var(--l-line-strong); }
 .editor:not(.editor--inspector) .editor__name:focus { border-color: var(--accent); box-shadow: var(--ring-field); }
 .editor:not(.editor--inspector) .editor__name::placeholder { font-weight: var(--w-normal); }
+
+/* 桌面规则行定高 46，两行字的主按钮内容 48.7，上下各漏进邻行 1.4：撑满这一格、字居中，字的位置不变
+   Desktop rule rows are a fixed 46 and a two-line main button is 48.7, spilling 1.4 into each neighbour: stretch it to the cell and centre the text, which stays where it was */
+@media (min-width: 641px) {
+  .rrow .rrow__main { align-self: stretch; align-content: center; padding-block: 0; }
+}
+/* 手机上的小目标：映射的域名格、上游组名、只有一行的规则名，点击范围撑到 40 以上 / Small phone targets: a mapping's domain cell, a group name, a one-line rule name, hit areas past 40 */
+@media (max-width: 640px) {
+  .rw__d, .gcard__name, .rrow__main { position: relative; }
+  .rw__d::before, .gcard__name::before { position: absolute; inset: calc(var(--s-3) * -1) calc(var(--s-1) * -1); content: ''; }
+  .rrow__main::before { position: absolute; inset: calc(var(--s-2) * -1) 0; content: ''; }
+}
+
+/* ---------- 9.5 审查第一轮：保存条 / review round 1: the save bar ----------
+   641–860 有底部导航：保存条贴在它上面、整宽一行，备注收进「备注」按钮（和手机一样），主按钮不会被挤到被导航挡住的第二行
+   641–860 has the bottom navigation: the bar docks on top of it, full width in one row, the note behind the 备注 button as on phones,
+   so the primary button is never pushed onto a second line hidden by the navigation */
+@media (min-width: 641px) and (max-width: 860px) {
+  .cfg__savebar { right: 0; left: 0; bottom: var(--mobile-nav-height); max-width: none; margin: 0; border-radius: 0; }
+  .cfg__savebar.ui-savebar { flex-wrap: nowrap; padding: var(--s-3) var(--s-6); }
+  .cfg__savebar.ui-savebar--err, .cfg__savebar:has(.savebar__note.is-open) { flex-wrap: wrap; }
+  /* 备注框收起后由「已修改 N 处」吃掉剩下的宽度，按钮靠右 / With the note field folded away, 已修改 N 处 takes the slack and the buttons sit right */
+  .cfg__savebar:not(.ui-savebar--err) .ui-savebar__status { flex: 1 1 auto; min-width: 0; margin-right: 0; }
+  .cfg__savebar.ui-savebar--err .ui-savebar__status { flex: 1 1 100%; }
+  .cfg__savebar .ui-btn--primary { flex: 0 0 auto; }
+  .cfg__savebar .savebar__note-toggle { display: inline-flex; border-color: var(--l-line-strong); background: var(--l-surface); box-shadow: var(--shadow-xs); color: var(--l-ink); }
+  .cfg__savebar .savebar__note-toggle .ui-btn__chev { display: none; }
+  .cfg__savebar .savebar__note { display: none; }
+  .cfg__savebar .savebar__note.is-open { display: flex; flex: 1 1 100%; order: 3; width: auto; }
+  .workspace__main:has(.cfg__savebar) { padding-bottom: calc(var(--mobile-nav-height) + var(--h-md) + var(--s-3) * 2 + var(--s-4)); }
+}
+/* 手机上主按钮不留 7.5rem 的最小宽度：那会把「已修改 N 处」挤到和「备注」重叠 / On phones the primary button drops its 7.5rem minimum, which squeezed 已修改 N 处 into the 备注 button */
+@media (max-width: 640px) {
+  .cfg__savebar .savebar__save { min-width: 0; }
+  .cfg__savebar .ui-savebar__status { gap: var(--s-2); }
+}
+/* 「已修改 N 处」能点开看改了哪些：正文字，下划线和别的对象链接一样 / 已修改 N 处 opens the review: body text with the underline other object links use */
+.savebar__review { color: inherit; font-family: inherit; }
+.savebar__review:hover { text-decoration-color: currentColor; }
+/* 页头里的「启动」「现在应用」是一行字：手机上点按区补到 36 / The header's 启动 and 现在应用 are a word of text: on phones the hit area grows to 36 */
+@media (max-width: 640px) {
+  .cfg__head-action { position: relative; }
+  .cfg__head-action::before { position: absolute; inset: calc(min(0px, (100% - var(--h-md)) / 2)); content: ''; }
+}

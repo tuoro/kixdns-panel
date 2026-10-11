@@ -3,10 +3,12 @@ import { ChevronDown, ShieldCheck } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import UiNumber from '../components/ui/UiNumber.vue'
 import UiDotText from '../components/ui/UiDotText.vue'
+import { useBarHeight } from '../composables/useBarHeight'
 import { useToast } from '../composables/useToast'
+import DraftReviewDialog from './DraftReviewDialog.vue'
 import RuleText from './RuleText.vue'
 import { usePhone } from './phone'
-import { changeCount, discardDraft, model, replaceModel } from './store'
+import { changeCount, discardWithUndo, model } from './store'
 import { busy, conflict, deferNote, deferSave, editTouched, elapsed, note, origin, save, saveMessage, stage, validate, validation, verdict } from './useConfigDocument'
 
 // 保存条只替草稿说话：有改动才升起来，保存完一会儿就收起。两步：先校验，再写入并热加载；任何一步失败都停住，原因里的规则能点。
@@ -14,15 +16,18 @@ import { busy, conflict, deferNote, deferSave, editTouched, elapsed, note, origi
 // The save bar speaks only for the draft: it rises with changes and leaves shortly after a save. Two steps — validate, then write and
 // hot-reload; either can fail and stop, with clickable rule names in the reason. When KixDNS is down, unreachable or silent about
 // capabilities, a save only stores a pending version. Ctrl/Cmd+S presses save. Progress and outcome come from useConfigDocument.
-const props = defineProps<{ jsonError: { line: number; column: number; reason: string } | null }>()
-const emit = defineEmits<{ rule: [id: number]; group: [id: string]; reveal: [line: number, column: number]; reload: [] }>()
+// flush：保存、校验之前把面板和 JSON 里还没进草稿的修改收进来（save）；放弃和查看之前只收 JSON 的（fold）；返回 false 就停在原处
+// flush: before save or validate, pull in edits not yet in the draft from the rule panel and the JSON view (save); before discard or review only the JSON ones (fold); false means stop where we are
+const props = defineProps<{ jsonError: { line: number; column: number; reason: string } | null; jsonDirty?: boolean; flush?: (purpose: 'save' | 'fold') => boolean }>()
+const emit = defineEmits<{ rule: [id: number]; group: [id: string]; reveal: [line: number, column: number]; reload: []; download: [] }>()
 const toast = useToast()
 // 手机上主按钮只写「保存」，给「已修改 N 处」留出一行 / On a phone the main button just says 保存, leaving room for 已修改 N 处
 const phone = usePhone()
 
 // 页头发起的「现在应用」不进保存条 / An apply started from the header never shows in the bar
 const draftStage = computed(() => (origin.value === 'draft' ? stage.value : 'idle'))
-const visible = computed(() => changeCount.value > 0 || draftStage.value !== 'idle' || Boolean(props.jsonError))
+const pending = computed(() => changeCount.value > 0 || Boolean(props.jsonDirty))
+const visible = computed(() => pending.value || draftStage.value !== 'idle' || Boolean(props.jsonError))
 const noteOpen = ref(false)
 // 单独点过「校验」且之后没再改：说一句校验通过 / After a lone 校验 with no edit since: say it passed
 const validated = computed(() => (draftStage.value === 'idle' && validation.value && changeCount.value > 0 ? validation.value : null))
@@ -32,27 +37,45 @@ watch(() => JSON.stringify(model), () => { editTouched(); validation.value = nul
 function onKey(event: KeyboardEvent): void {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
     event.preventDefault()
-    if (document.querySelector('[data-config-editing="true"]')) return
-    if (visible.value && !busy.value && !props.jsonError) void save('draft')
-    else if (!changeCount.value) toast.info('没有要保存的修改')
+    if (document.querySelector('dialog[open]')) return
+    if (busy.value) return
+    if (props.jsonError) toast.info('JSON 写错了，改好才能保存')
+    else if (conflict.value && draftStage.value === 'failed') toast.info('别处已经保存了新版本，先重新读取')
+    else if (visible.value) saveDraft()
+    else toast.info('没有要保存的修改')
   }
+}
+function saveDraft(): void {
+  if (props.flush && !props.flush('save')) return
+  void save('draft')
+}
+function check(): void {
+  if (props.flush && !props.flush('save')) return
+  void validate()
 }
 onMounted(() => window.addEventListener('keydown', onKey))
 onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 const saveButton = ref<HTMLButtonElement | null>(null)
+const bar = ref<HTMLElement | null>(null)
+// 点「已修改 N 处」看草稿和运行中的配置差在哪；从这里也能直接保存 / Clicking 已修改 N 处 shows how the draft differs from the running config, with save right there
+const reviewing = ref(false)
+function review(): void {
+  if (props.flush && !props.flush('fold')) return
+  reviewing.value = true
+}
+const saveLabel = computed(() => (deferSave.value ? '保存为待应用' : '保存并热加载'))
+useBarHeight(bar, '--savebar-h')
 watch(busy, (b) => { if (b) void nextTick(() => saveButton.value?.focus()) })
 
 function discard(): void {
-  const draft = JSON.stringify(model)
-  const count = changeCount.value
-  discardDraft()
-  toast.undoable(`已放弃 ${count} 处修改`, () => replaceModel(JSON.parse(draft)))
+  props.flush?.('fold')
+  discardWithUndo()
 }
 </script>
 
 <template>
   <Transition name="cfg-savebar">
-    <footer v-if="visible" class="ui-savebar cfg__savebar" :class="{ 'ui-savebar--err': draftStage === 'failed' || Boolean(jsonError) }">
+    <footer v-if="visible" ref="bar" class="ui-savebar cfg__savebar" :class="{ 'ui-savebar--err': draftStage === 'failed' || Boolean(jsonError) }">
       <p :key="draftStage === 'failed' ? `f-${note}` : 'state'" class="ui-savebar__status" :class="{ 'ui-shake': draftStage === 'failed' }" :role="draftStage === 'failed' || jsonError ? 'alert' : 'status'">
         <template v-if="draftStage === 'done'"><svg class="ui-check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5" /></svg><span class="ui-savebar__detail">{{ note }}</span></template>
         <template v-else-if="draftStage === 'checking'"><span class="ui-spin" aria-hidden="true"></span><span class="ui-savebar__detail">校验中</span></template>
@@ -62,21 +85,24 @@ function discard(): void {
           <span class="ui-savebar__verdict">{{ verdict }}</span>
           <small><RuleText :text="note" @rule="emit('rule', $event)" @group="emit('group', $event)" /></small>
           <!-- 别处先存了一个版本：不覆盖它，重新读取再改 / Someone else saved first: never overwrite it; reload and redo -->
-          <button v-if="conflict" class="ui-btn ui-btn--text ui-btn--sm savebar__act" type="button" @click="emit('reload')">重新读取</button>
+          <span v-if="conflict" class="savebar__acts"><button class="ui-btn ui-btn--text ui-btn--sm savebar__act" type="button" @click="emit('download')">下载我的修改</button><button class="ui-btn ui-btn--text ui-btn--sm savebar__act" type="button" @click="emit('reload')">重新读取</button></span>
         </template>
         <template v-else-if="jsonError"><span class="ui-savebar__verdict">JSON 写错了</span><small><button class="ui-objlink ui-objlink--plain" type="button" @click="emit('reveal', jsonError.line, jsonError.column)">第 {{ jsonError.line }} 行第 {{ jsonError.column }} 列</button> · {{ jsonError.reason }}</small></template>
-        <template v-else-if="validated"><span class="ui-dot" aria-hidden="true"></span><span class="ui-savebar__detail"><UiDotText :parts="['校验通过', `${validated.pipeline_count} 个 Pipeline、${validated.rule_count} 条内核规则`]" /></span></template>
-        <template v-else><span class="ui-dot ui-dot--ink" aria-hidden="true"></span><span class="ui-savebar__detail">已修改 <b class="ui-savebar__count"><UiNumber :value="String(changeCount)" /></b> 处<small v-if="deferSave"> · {{ deferNote }}</small></span></template>
+        <template v-else-if="validated"><span class="ui-dot" aria-hidden="true"></span><span class="ui-savebar__detail"><UiDotText :parts="['校验通过', '可以保存']" /></span></template>
+        <template v-else-if="changeCount === 0"><span class="ui-dot ui-dot--ink" aria-hidden="true"></span><span class="ui-savebar__detail">JSON 有修改<small v-if="deferSave"> · {{ deferNote }}</small></span></template>
+        <template v-else><span class="ui-dot ui-dot--ink" aria-hidden="true"></span><span class="ui-savebar__detail"><button class="ui-objlink savebar__review" type="button" aria-haspopup="dialog" title="看看改了哪些" @click="review">已修改 <b class="ui-savebar__count"><UiNumber :value="String(changeCount)" /></b> 处</button><small v-if="deferSave"> · {{ deferNote }}</small></span></template>
       </p>
-      <template v-if="draftStage !== 'done' && (changeCount > 0 || draftStage === 'failed') && !jsonError">
+      <template v-if="draftStage !== 'done' && (pending || draftStage === 'failed') && !jsonError">
         <span v-if="busy && saveMessage" class="savebar__note-text">{{ saveMessage }}</span>
         <button class="ui-btn ui-btn--text savebar__note-toggle" :class="{ 'is-aside': busy }" type="button" :inert="busy" :aria-expanded="noteOpen || Boolean(saveMessage)" @click="noteOpen = !noteOpen">备注<ChevronDown class="ui-btn__chev" :size="16" aria-hidden="true" /></button>
         <label class="ui-input ui-savebar__note savebar__note" :class="{ 'is-open': noteOpen || Boolean(saveMessage), 'is-aside': busy }" :inert="busy"><input v-model="saveMessage" aria-label="版本备注" maxlength="160" placeholder="版本备注（可选）"></label>
         <!-- 保存旁边一定有放弃：丢掉草稿回到运行中的配置，提示里能撤销 / Save always comes with discard: drop the draft back to the running config, undoable from the toast -->
-        <button v-if="!phone && draftStage !== 'failed'" class="ui-btn ui-btn--secondary savebar__discard" :class="{ 'is-aside': busy }" type="button" :inert="busy" @click="discard">放弃修改</button>
-        <button v-if="!deferSave" class="ui-btn ui-btn--secondary savebar__check" :class="{ 'is-aside': busy }" type="button" :inert="busy" @click="validate"><ShieldCheck :size="16" aria-hidden="true" />校验</button>
-        <button ref="saveButton" class="ui-btn ui-btn--primary savebar__save config-save-button" type="button" :aria-busy="busy || undefined" @click="save('draft')"><span v-if="busy" class="ui-spin" aria-hidden="true"></span>{{ busy ? '保存中' : deferSave ? (phone ? '存为待应用' : '保存为待应用') : (phone ? '保存' : '保存并热加载') }}</button>
+        <button v-if="!phone" class="ui-btn ui-btn--secondary savebar__discard" :class="{ 'is-aside': busy }" type="button" :inert="busy" @click="discard">放弃修改</button>
+        <button v-if="!deferSave" class="ui-btn ui-btn--secondary savebar__check" :class="{ 'is-aside': busy }" type="button" :inert="busy" @click="check"><ShieldCheck :size="16" aria-hidden="true" />校验</button>
+        <!-- 别处先存了新版本时再保存只会再失败一次：先重新读取 / After someone else saved, saving again only fails again: reload first -->
+        <button ref="saveButton" class="ui-btn ui-btn--primary savebar__save config-save-button" type="button" :aria-busy="busy || undefined" :disabled="conflict && draftStage === 'failed'" @click="saveDraft"><span v-if="busy" class="ui-spin" aria-hidden="true"></span>{{ busy ? '保存中' : deferSave ? (phone ? '存为待应用' : '保存为待应用') : (phone ? '保存' : '保存并热加载') }}</button>
       </template>
     </footer>
   </Transition>
+  <DraftReviewDialog v-if="reviewing" :save-label="saveLabel" :can-save="!busy" @close="reviewing = false" @save="reviewing = false; saveDraft()" />
 </template>

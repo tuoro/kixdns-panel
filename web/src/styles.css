@@ -35,7 +35,9 @@
 
 * { box-sizing: border-box; }
 html, body, #app { min-height: 100%; margin: 0; }
-body { min-width: 320px; font-size: 14px; line-height: 1.5; }
+/* 继承下去的字号也走字阶：桌面 13、手机 14（原来写死 14，桌面上没设字号的提示条、弹层、更新行都比正文大一号）
+   Inherited text follows the scale too: 13 on desktop, 14 on phones (a literal 14 left toasts, popovers and update rows without their own size a step above body text on desktop) */
+body { min-width: 320px; font-size: var(--t-3); line-height: 1.5; }
 button, input, select, textarea { font: inherit; letter-spacing: 0; }
 button, a { -webkit-tap-highlight-color: transparent; }
 button { cursor: pointer; }
@@ -66,7 +68,7 @@ code, .mono { font-family: var(--f-mono); letter-spacing: 0; }
 .account-button > span { width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid var(--l-ink-3); border-radius: 50%; font-size: 15px; }
 .account-center { position: relative; }
 .account-popover { position: absolute; top: 50px; right: 0; width: 210px; padding: 16px; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 4px; box-shadow: 0 10px 30px color-mix(in srgb, var(--d-shell) 12%, transparent); }
-.account-popover > strong { display: block; overflow-wrap: anywhere; font-size: 14px; }
+.account-popover > strong { display: block; overflow-wrap: anywhere; font-size: var(--t-3); }
 .account-popover > small { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; }
 .account-popover > button { width: 100%; min-height: 44px; display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 8px 0 0; color: var(--ink); background: transparent; border: 0; border-top: 1px solid var(--line); font-size: 14px; text-align: left; }
 .workspace { min-height: calc(100dvh - var(--app-header-height)); }
@@ -141,7 +143,7 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
 /* JSON 视图就是面板本身：白底、墨色字，13 号等宽；行号列用页面底色、ink-3。不再是页面里唯一的深色块（规范 3.9）。
    The JSON view is the panel itself: white, ink, 13px mono; the line-number column on the page ground in ink-3.
    No longer the one dark block on the page (spec 3.9). */
-.json-editor { height: min(62vh, 720px); min-height: 440px; overflow: hidden; background: var(--l-surface); }
+.json-editor { height: min(62vh, 720px); min-height: 440px; overflow: hidden; background: var(--l-surface); border: 1px solid var(--l-hair); border-radius: var(--r-2); }
 .json-editor .cm-editor { height: 100%; color: var(--l-ink); background: var(--l-surface); font-family: var(--f-mono); font-size: var(--t-2); }
 .json-editor .cm-editor.cm-focused { outline: 0; }
 .json-editor .cm-scroller { overflow: auto; font-family: var(--f-mono); line-height: var(--lh-base); }
@@ -213,7 +215,7 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
 .log-sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .audit-line { grid-template-columns: 126px 74px 190px minmax(0, 1fr); }
 .audit-line time { white-space: nowrap; }
-.audit-line code { overflow: hidden; color: var(--l-ink); font-size: var(--t-1); text-overflow: ellipsis; white-space: nowrap; }
+.audit-line .audit-action { overflow: hidden; color: var(--l-ink); font-size: var(--t-1); text-overflow: ellipsis; white-space: nowrap; }
 /* 列表底部的「加载更早」：通栏，和顶上的新日志提示条上下对称 / Load-older at the foot: full width, mirroring the new-lines banner on top */
 .log-more { width: 100%; min-height: var(--h-touch); display: flex; align-items: center; justify-content: center; gap: var(--s-1); color: var(--l-ink); background: transparent; border: 0; border-top: 1px solid var(--l-hair); font-family: var(--f-body); font-size: var(--t-1); }
 .log-more:hover:not(:disabled) { background: var(--l-canvas); }
@@ -296,7 +298,7 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
 .auth-next__promise { list-style: none; margin-left: -18px; padding-top: 7px; border-top: 1px solid var(--l-sunk); color: var(--ink); font-weight: 600; }
 
 .toast-stack { position: fixed; z-index: 100; top: 18px; right: 18px; width: min(360px, calc(100vw - 36px)); display: grid; gap: 8px; }
-.toast { min-height: 46px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 9px; padding: 8px 9px 8px 12px; color: var(--l-ink); background: var(--l-surface); border: 1px solid var(--l-line-strong); border-left: 3px solid var(--l-ink-2); border-radius: 6px; box-shadow: var(--shadow-pop); font-size: 14px; line-height: 1.4; }
+.toast { min-height: 46px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 9px; padding: 8px 9px 8px 12px; color: var(--l-ink); background: var(--l-surface); border: 1px solid var(--l-line-strong); border-left: 3px solid var(--l-ink-2); border-radius: 6px; box-shadow: var(--shadow-pop); font-size: var(--t-3); line-height: 1.4; }
 .toast span { overflow-wrap: anywhere; }
 .toast--success { border-left-color: var(--green); }
 .toast--success > svg { color: var(--green); }
@@ -424,8 +426,8 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
   .log-line p { grid-column: 1 / -1; }
   .audit-line { min-width: 0; grid-template-columns: 104px minmax(0, 1fr); gap: 4px 8px; padding-block: 8px; }
   .audit-line strong { text-align: right; }
-  .audit-line code, .audit-line p { grid-column: 1 / -1; }
-  .audit-line code { overflow: visible; overflow-wrap: anywhere; text-overflow: clip; white-space: normal; }
+  .audit-line .audit-action, .audit-line p { grid-column: 1 / -1; }
+  .audit-line .audit-action { overflow: visible; overflow-wrap: anywhere; text-overflow: clip; white-space: normal; }
   /* 一行三块在 375 下挤成竖着断字的窄柱，改成上下两段。
      Three blocks in a row collapse into a narrow column that breaks mid-token
      at 375, so the row stacks instead. */
@@ -452,6 +454,7 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
 .system-skeleton-panel { height: calc(var(--s-8) * 2); }
 .system-check-failed { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-3); padding-bottom: var(--s-1); color: var(--l-ink-3); font-size: var(--t-2); overflow-wrap: anywhere; }
 .system-stale { color: var(--warn-l); overflow-wrap: anywhere; }
+.system-stale__act { margin-left: var(--s-2); color: var(--l-ink); white-space: nowrap; }
 .system-error { flex-basis: 100%; color: var(--err-l); overflow-wrap: anywhere; }
 /* 版本号不在中间断开：窄屏上只在箭头和空格处换行 / A version never breaks mid-number: narrow screens wrap at the arrow */
 .update-row__from-to .ui-mono, .update-row__keep { white-space: nowrap; }
@@ -477,6 +480,13 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
   .install-hashes { grid-template-columns: minmax(0, 1fr); gap: var(--s-2); }
   .install-hashes > div { display: flex; justify-content: space-between; gap: var(--s-3); }
   .install-hashes dd { margin: 0; }
+}
+/* 卡片窄于 34rem（1024 宽时两张卡并排）也竖排：三列放不下 12 位的哈希，会从中间断开 / Below 34rem (two cards side by side at 1024) the hashes stack too: three columns cannot hold a 12-character hash, which broke mid-string */
+.system-card__main { container-type: inline-size; }
+@container (max-width: 34rem) {
+  .install-hashes { grid-template-columns: minmax(0, 1fr); gap: var(--s-2); }
+  .install-hashes > div { display: flex; justify-content: space-between; gap: var(--s-3); }
+  .install-hashes dd { margin: 0; white-space: nowrap; }
 }
 
 
@@ -621,7 +631,7 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
   /* 审计一条两行：动作在左、时间在右；第二行「操作人 · 详情」 / An audit entry is two lines: action left, time right; then 「actor · detail」 */
   .audit-line { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "code code time" "actor detail detail"; gap: var(--s-1) 0; padding: var(--s-3) var(--s-4) var(--s-3) calc(var(--s-4) - 3px); border-bottom: 1px solid var(--l-hair); }
   .audit-line time { grid-area: time; padding-left: var(--s-3); font-size: var(--t-1); }
-  .audit-line code { grid-area: code; overflow: hidden; color: var(--l-ink); font-size: var(--t-2); font-weight: var(--w-medium); text-overflow: ellipsis; white-space: nowrap; }
+  .audit-line .audit-action { grid-area: code; overflow: hidden; color: var(--l-ink); font-size: var(--t-2); font-weight: var(--w-medium); text-overflow: ellipsis; white-space: nowrap; }
   .audit-line strong { grid-area: actor; color: var(--l-ink-3); font-family: var(--f-body); font-size: var(--t-2); font-weight: var(--w-normal); text-align: left; }
   .audit-line strong::after { content: "·"; display: inline-block; width: calc(var(--s-2) * 2); color: var(--l-edge-hover); text-align: center; }
   .audit-line p { grid-area: detail; color: var(--l-ink-2); font-size: var(--t-2); }
@@ -637,6 +647,8 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
   /* 两条更新同一种排法：第二行「从 → 到」不折行，第三行日期 / Both updates share one layout: line two 「from → to」 on one line, line three the date */
   .update-row__from-to { flex-basis: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .update-row__from-to .ui-mono { font-size: var(--t-1); }
+  /* 检查失败的原因要读完才知道怎么办：折行，不截断 / A failed check's reason has to be read in full to act on it: wrap, never truncate */
+  .update-row__from-to:has(> .system-stale) { overflow: visible; white-space: normal; }
 }
 
 /* ---------- v2 第一轮审查：登录 / review round 1: sign-in ---------- */
@@ -794,7 +806,7 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
 .ui-task__meta { line-height: 18px; }
 @media (max-width: 640px) {
   .overview-upstream-line, .overview-address { line-height: 20px; }
-  .audit-line p, .audit-line code, .audit-line strong, .audit-line time { line-height: 20px; }
+  .audit-line p, .audit-line .audit-action, .audit-line strong, .audit-line time { line-height: 20px; }
 }
 @media (max-width: 640px) { .overview-upstream-name, .overview-upstream-id { line-height: 20px; } }
 @media (max-width: 640px) { .overview-upstream-id * { line-height: 20px; } }
@@ -982,14 +994,16 @@ body { text-spacing-trim: trim-start; }
    Desktop: bottom right, clear of the header and its primary button; lifted above a sticky save bar when one is there. Phones: above the
    bottom navigation, lifted again over a save bar or a full-page editor's footer. */
 .toast-stack { top: auto; bottom: var(--s-6); right: var(--s-6); }
-body:has(.cfg__savebar) .toast-stack { bottom: calc(var(--h-md) + var(--s-3) * 2 + var(--s-4)); }
+/* 抬多高按条的实际高度（useBarHeight 量出来写在根元素上），量到之前按一行算 / Lift by the bar's measured height (useBarHeight writes it on the root); one line until measured */
+body:has(.cfg__savebar) .toast-stack { bottom: calc(var(--savebar-h, calc(var(--h-md) + var(--s-3) * 2)) + var(--s-4)); }
+body:has(.editor:not(.editor--inspector)) .toast-stack { bottom: calc(var(--editor-foot-h, calc(var(--h-md) + var(--s-3) * 2)) + var(--s-4)); }
 /* 检查器开着时提示条让到它左边，不盖它的「完成」 / With the inspector open the toast moves left of it, never over its 完成 button */
 @media (min-width: 1360px) { body:has(.rules-split.is-open) .toast-stack { right: calc(var(--s-6) + var(--inspector-w) + var(--s-5)); } }
 @media (max-width: 860px) {
   .toast-stack { top: auto; right: var(--s-3); bottom: calc(var(--mobile-nav-height) + var(--s-3)); width: calc(100vw - var(--s-3) * 2); }
-  body:has(.cfg__savebar) .toast-stack { bottom: calc(var(--mobile-nav-height) + var(--h-md) + var(--s-2) * 2 + var(--s-3)); }
+  body:has(.cfg__savebar) .toast-stack { bottom: calc(var(--mobile-nav-height) + var(--savebar-h, calc(var(--h-md) + var(--s-2) * 2)) + var(--s-3)); }
   /* 整页编辑器时底部导航不显示，底栏是「取消 / 完成」 / With the full-page editor the bottom navigation is hidden and the footer is 取消 / 完成 */
-  body:has([data-config-editing="true"]) .toast-stack { bottom: calc(var(--h-md) + var(--s-3) * 2 + var(--s-3)); }
+  body:has(.editor:not(.editor--inspector)) .toast-stack { bottom: calc(var(--editor-foot-h, calc(var(--h-md) + var(--s-3) * 2)) + var(--s-3)); }
 }
 
 /* ---------- 帮助抽屉：这一页的概念 + 快捷键一览 / The help drawer: this page's concepts plus the shortcut list ---------- */
@@ -999,6 +1013,8 @@ body:has(.cfg__savebar) .toast-stack { bottom: calc(var(--h-md) + var(--s-3) * 2
 @keyframes help-in { from { transform: translateX(var(--s-6)); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .help__panel { animation: none; } }
 .help__head { display: flex; align-items: center; gap: var(--s-3); padding: var(--s-4) var(--s-5); border-bottom: 1px solid var(--l-hair); }
+/* 帮助抽屉的标题栏和别的抽屉一样高（和顶栏同高） / The help drawer's head is as tall as the other drawers' (the app header's height) */
+@media (min-width: 641px) { .help__head { height: var(--app-header-height); padding-block: 0; } }
 .help__head h2 { flex: 1; min-width: 0; margin: 0; color: var(--l-ink); font-family: var(--f-display); font-size: var(--t-4); font-weight: var(--w-bold); line-height: var(--lh-tight); }
 .help__body { flex: 1; min-height: 0; display: grid; align-content: start; gap: var(--s-6); padding: var(--s-5); overflow: auto; overscroll-behavior: contain; }
 .help__sec { display: grid; gap: var(--s-2); }
@@ -1010,9 +1026,28 @@ body:has(.cfg__savebar) .toast-stack { bottom: calc(var(--h-md) + var(--s-3) * 2
 .help__topic[open] summary::before { transform: rotate(45deg); }
 .help__topic p { margin: 0 0 var(--s-2); padding-left: calc(var(--s-3) + 8px); color: var(--l-ink-2); font-size: var(--t-2); line-height: var(--lh-base); }
 .help__keys h4 { margin: 0 0 var(--s-1); color: var(--l-ink-3); font-size: var(--t-1); font-weight: var(--w-medium); }
-.help__keys dl { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: var(--s-1) var(--s-3); margin: 0; }
+/* 键位列定宽：几组快捷键的说明从同一条竖线开始，不各自按最宽的键对齐 / A fixed key column, so every group's descriptions start on one vertical line rather than each aligning to its own widest key */
+.help__keys dl { display: grid; grid-template-columns: 6rem minmax(0, 1fr); align-items: center; gap: var(--s-1) var(--s-3); margin: 0; }
 .help__keys dt { display: flex; gap: 2px; }
 .help__keys dd { margin: 0; color: var(--l-ink-2); font-size: var(--t-2); }
 .kbd { display: inline-grid; place-items: center; min-width: var(--h-tag); height: var(--h-tag); padding: 0 var(--s-1); border: 1px solid var(--l-line-strong); border-bottom-width: 2px; border-radius: var(--r-1); background: var(--l-sunk); color: var(--l-ink); font-family: var(--f-mono); font-size: var(--t-1); }
 /* 手机没有键盘：快捷键一览和账户菜单里那一行都不显示 / Phones have no keyboard: neither the shortcut list nor the account-menu row shows */
 @media (max-width: 640px) { .help__sec--keys, .account-keys { display: none; } }
+
+/* 641–860 宽也是顶栏布局：通知面板和账户菜单一样固定在顶栏下面、贴右边 16，宽 380；原来是相对铃铛绝对定位又同时设了左右，起点从铃铛往右，768 宽时伸出屏幕 280
+   641–860 wide is the top-bar layout too: the notification panel is fixed under the bar, 16 from the right, 380 wide, like the account menu;
+   it used to sit absolutely off the bell with both edges set, starting at the bell and running 280px off a 768 screen */
+@media (min-width: 641px) and (max-width: 860px) {
+  .notification-popover { position: fixed; top: calc(var(--app-header-height) + var(--s-2)); right: var(--s-4); left: auto; width: min(380px, calc(100vw - var(--s-4) * 2)); max-height: calc(100dvh - var(--app-header-height) - var(--mobile-nav-height) - var(--s-4)); overflow: auto; }
+}
+
+/* 手机上的小按钮：点击范围撑到 40 以上，样子不变 / Small buttons on phones: the hit area reaches past 40, the look stays */
+@media (max-width: 640px) {
+  .toast-undo, .credential-eye, .notification-mark-all, .notification-item__actions a, .account-button { position: relative; }
+  .toast-undo::before, .credential-eye::before, .notification-mark-all::before { position: absolute; inset: calc(var(--s-2) * -1); content: ''; }
+  /* 宽度补到 36（不到 44：相邻两个动作只隔 12，补太多会互相压住） / Width grows to 36 (not 44: neighbouring actions are only 12 apart and would overlap) */
+  .notification-item__actions a::before { position: absolute; inset: calc(var(--s-3) * -1) calc(min(0px, (100% - var(--h-md)) / 2)); content: ''; }
+  /* 密码框里的眼睛按钮和框一样高 / The eye button in the password field is as tall as the field */
+  .password-field button { inset: 0 0 0 auto; }
+  .account-button::before { position: absolute; inset: calc(var(--s-1) * -1) calc(var(--s-2) * -1); content: ''; }
+}

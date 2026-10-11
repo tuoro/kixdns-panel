@@ -56,6 +56,7 @@ const filteredAudit = computed(() => {
   if (!needle) return auditEvents.value
   return auditEvents.value.filter((event) =>
     event.action.toLowerCase().includes(needle)
+    || (actionName(event.action) ?? '').includes(needle)
     || event.detail.toLowerCase().includes(needle)
     || (event.actor ?? 'system').toLowerCase().includes(needle),
   )
@@ -132,7 +133,7 @@ const auditOptions = [
   { value: 'all', label: '全部' },
   { value: 'config.', label: '配置' },
   { value: 'service.', label: '服务' },
-  { value: 'kixdns.', label: 'KixDNS' },
+  { value: 'kixdns.', label: '内核' },
   { value: 'auth.', label: '认证' },
   { value: 'diagnostic.', label: '诊断' },
 ]
@@ -176,6 +177,33 @@ function levelDot(priority: number): string {
 function failed(action: string): boolean {
   return action.endsWith('_failed')
 }
+
+// 动作写成人话；认不出的（新版本面板多出来的）照原样用等宽写，不猜 / Actions in words; one not known here (added by a newer panel) is shown as it is, in mono, never guessed
+const ACTION_NAMES: Record<string, string> = {
+  'auth.login': '登录',
+  'auth.setup': '创建管理员',
+  'config.save': '保存配置',
+  'config.restore': '恢复配置版本',
+  'config.auto_rollback': '自动回滚配置',
+  'config.version.delete': '删除配置版本',
+  'config.version.bulk_delete': '批量删除配置版本',
+  'config.geo_data.sync': '同步 Geo 数据',
+  'config.geo_data.cleanup': '清理 Geo 数据',
+  'config.geo_data.schedule': '设置 Geo 数据定时更新',
+  'config.geo_data.schedule.apply': '定时更新 Geo 数据',
+  'diagnostic.dns': 'DNS 诊断',
+  'kixdns.kernel.update': '更新内核',
+  'kixdns.kernel.rollback': '回滚内核',
+  'kixdns.kernel.replace_release': '切换内核版本',
+  'kixdns.kernel.replace_release_failed': '切换内核版本',
+  'service.start': '启动服务',
+  'service.stop': '停止服务',
+  'service.restart': '重启服务',
+  'panel.update.start': '开始更新面板',
+  'settings.statistics_enabled': '设置查询统计',
+  'settings.statistics_anonymize_client_ip': '设置客户端 IP 匿名',
+}
+const actionName = (action: string): string | null => ACTION_NAMES[action] ?? null
 
 function timestamp(microseconds: number): string {
   return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3, hour12: false }).format(new Date(microseconds / 1000))
@@ -437,7 +465,8 @@ onBeforeUnmount(() => window.clearInterval(timer))
             <p><template v-for="(segment, part) in segments" :key="part"><em v-if="segment.strong">{{ segment.text }}</em><i v-else-if="segment.text.endsWith('=')" class="log-key">{{ segment.text }}</i><template v-else>{{ segment.text }}</template></template></p>
           </div>
           <button v-if="runtimeCursor !== null" class="log-more" type="button" :disabled="requesting" @click="loadOlder"><RefreshCw :size="14" :class="{ spin: loadingOlder }" aria-hidden="true" />{{ loadingOlder ? '正在加载' : '加载更早日志' }}</button>
-          <UiEmpty v-if="filtered.length === 0 && !loadError" :icon="ScrollText" title="没有符合条件的日志" :desc="runtimeFiltered ? '清空搜索，或把级别切回「全部」' : undefined" />
+          <!-- 筛出来是空的和根本没有日志是两回事，说法分开 / Nothing matching a filter and no log at all are different things, said differently -->
+          <UiEmpty v-if="filtered.length === 0 && !loadError" :icon="ScrollText" :title="runtimeFiltered ? '没有符合条件的日志' : 'KixDNS 还没有写过日志'" :desc="runtimeFiltered ? '清空搜索，或把级别切回「全部」' : '启动、重载配置和出错时，KixDNS 会在这里留下记录。'" />
         </template>
       </div>
       <div v-else class="log-stream">
@@ -446,10 +475,10 @@ onBeforeUnmount(() => window.clearInterval(timer))
         <div v-if="skeletonAudit" class="log-skeleton" role="status" aria-label="正在读取审计记录"><i v-for="n in 6" :key="n" class="sk"></i></div>
         <template v-else>
           <div v-for="event in filteredAudit" :key="event.id" class="log-line audit-line">
-            <time>{{ auditTimestamp(event.created_at) }}</time><strong>{{ event.actor ?? 'system' }}</strong><code>{{ event.action }}</code><p><span v-if="failed(event.action)" class="ui-tag ui-tag--err">失败</span>{{ event.detail }}</p>
+            <time>{{ auditTimestamp(event.created_at) }}</time><strong>{{ event.actor ?? 'system' }}</strong><span class="audit-action" :class="{ 'ui-mono': !actionName(event.action) }" :title="actionName(event.action) ? event.action : undefined">{{ actionName(event.action) ?? event.action }}</span><p><span v-if="failed(event.action)" class="ui-tag ui-tag--err">失败</span>{{ event.detail }}</p>
           </div>
           <button v-if="auditCursor !== null && !auditQuery" class="log-more" type="button" :disabled="auditRequesting" @click="loadAudit(false)"><RefreshCw :size="14" :class="{ spin: auditLoading }" aria-hidden="true" />加载更多</button>
-          <UiEmpty v-if="filteredAudit.length === 0 && !auditError" :icon="ScrollText" title="没有符合条件的审计记录" :desc="auditFiltered ? '清空搜索，或把类别切回「全部」' : undefined" />
+          <UiEmpty v-if="filteredAudit.length === 0 && !auditError" :icon="ScrollText" :title="auditFiltered ? '没有符合条件的审计记录' : '还没有操作记录'" :desc="auditFiltered ? '清空搜索，或把类别切回「全部」' : '登录、保存配置、更新和重启服务都会记在这里。'" />
         </template>
       </div>
     </section>
@@ -514,7 +543,7 @@ onBeforeUnmount(() => window.clearInterval(timer))
   .logs-page .log-head--audit, .logs-page .audit-line { grid-template-columns: 128px 88px 14rem minmax(0, 1fr); column-gap: var(--s-5); }
   .logs-page .audit-line { min-height: 0; align-items: baseline; align-content: start; padding: var(--s-2) var(--s-5); }
   .logs-page .audit-line time, .logs-page .audit-line strong { font-family: var(--f-body); font-size: var(--t-3); }
-  .logs-page .audit-line code { color: var(--l-ink); font-size: var(--t-2); }
+  .logs-page .audit-line .audit-action { color: var(--l-ink); font-size: var(--t-2); }
   .logs-page .audit-line p { display: flex; align-items: center; gap: var(--s-2); color: var(--l-ink-2); font-size: var(--t-3); }
 }
 
@@ -537,7 +566,7 @@ onBeforeUnmount(() => window.clearInterval(timer))
   .logs-page .log-line:not(.audit-line) > p { grid-area: msg; }
   .logs-page .audit-line { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "code code time" "actor detail detail"; gap: 0; padding: var(--s-2) var(--s-4); }
   .logs-page .audit-line time { grid-area: time; padding-left: var(--s-3); font-size: var(--t-2); }
-  .logs-page .audit-line code { grid-area: code; font-size: var(--t-2); }
+  .logs-page .audit-line .audit-action { grid-area: code; font-size: var(--t-2); }
   .logs-page .audit-line strong { grid-area: actor; color: var(--l-ink-3); font-size: var(--t-2); }
   .logs-page .audit-line p { grid-area: detail; color: var(--l-ink-2); font-size: var(--t-2); }
   .logs-page .audit-line p > .ui-tag { margin-right: var(--s-2); vertical-align: text-bottom; }

@@ -36,7 +36,10 @@ describe('把轨迹里的程序写法翻成人话', () => {
     ['传输：Some(Udp)', '传输：UDP'],
     ['传输：Some(TcpUdp)', '传输：TCP+UDP'],
     ['传输：None', '传输：自动'],
-    ['响应码：No Error；耗时：12 ms；截断：false', '响应码：NOERROR；耗时：12\u00a0ms；未截断'],
+    // 没截断不写，也不留下多余的分号 / Not truncated is left out, without a stray separator
+    ['响应码：No Error；耗时：12 ms；截断：false', '响应码：NOERROR；耗时：12\u00a0ms'],
+    ['截断：false；响应码：No Error', '响应码：NOERROR'],
+    ['客户端：127.0.0.1；监听器：default', '客户端：127.0.0.1；监听标签：default'],
     ['响应码：Server Failure；截断：true', '响应码：SERVFAIL；已截断'],
   ])('%s', (raw, words) => expect(humanizeTraceDetail(raw)).toBe(words))
 
@@ -55,22 +58,23 @@ const kstep = (stage: string, status: string, label: string, detail: string | nu
 describe('执行路径每一步写成一句话', () => {
   // 标签和细节照 p27 内核补丁的原样写法。 / Labels and details exactly as the p27 kernel patch writes them.
   it.each([
-    [kstep('request', 'parsed', 'A example.com', '客户端：192.168.1.23；监听器：default'), '请求 A example.com', '客户端 192.168.1.23 · 监听器 default'],
-    [kstep('pipeline', 'selected', 'default'), '选中管线 default', ''],
-    [kstep('pipeline', 'jump', 'default -> cn'), '从管线 default 跳到 cn', ''],
-    [kstep('response_cache', 'miss', '响应缓存未命中', '管线：default'), '响应缓存未命中', '管线 default'],
+    [kstep('request', 'parsed', 'A example.com', '客户端：192.168.1.23；监听器：default'), '请求 A example.com', '客户端 192.168.1.23 · 监听标签 default'],
+    [kstep('pipeline', 'selected', 'default'), '进入规则组 default', ''],
+    [kstep('pipeline', 'jump', 'default -> cn'), '从规则组 default 跳到规则组 cn', ''],
+    [kstep('response_cache', 'miss', '响应缓存未命中', '管线：default'), '响应缓存未命中', ''],
     [kstep('response_cache', 'fresh', '命中新鲜响应缓存', '剩余 TTL：120 秒'), '命中响应缓存', '剩余 TTL 120 秒'],
     [kstep('response_cache', 'stale', '上游失败，返回过期缓存'), '上游失败，返回过期缓存', ''],
-    [kstep('rule_cache', 'miss', '管线 default 的规则缓存未命中'), '管线 default 的规则缓存未命中', ''],
-    [kstep('rule_cache', 'hit', '命中管线 default 的规则缓存', '已匹配规则：geosite-global'), '命中管线 default 的规则缓存', '已匹配规则 geosite-global'],
-    [kstep('rule', 'matched', 'geosite-global', '管线：default；匹配器数：1'), '命中规则 geosite-global', '匹配器数 1'],
-    [kstep('rule', 'missed', 'block-ads', '管线：default；匹配器数：2'), '规则 block-ads 未命中', '匹配器数 2'],
-    [kstep('decision', 'selected', '规则 geosite-global 转发', '目标：https://1.1.1.1/dns-query；传输：Some(Https)'), '转发给 https://1.1.1.1/dns-query', '规则 geosite-global · 传输 DoH'],
-    [kstep('decision', 'selected', '静态响应 Non-Existent Domain', '答案记录数：0'), '直接返回 NXDOMAIN', '答案记录数 0'],
-    [kstep('decision', 'selected', '跳转到管线 cn'), '跳转到管线 cn', ''],
+    [kstep('rule_cache', 'miss', '管线 default 的规则缓存未命中'), '规则组 default 的规则缓存未命中', ''],
+    [kstep('rule_cache', 'hit', '命中管线 default 的规则缓存', '已匹配规则：geosite-global'), '命中规则组 default 的规则缓存', '已匹配规则 geosite-global'],
+    [kstep('rule', 'matched', 'geosite-global', '管线：default；匹配器数：1'), '命中规则 geosite-global', ''],
+    [kstep('rule', 'missed', 'block-ads', '管线：default；匹配器数：2'), '规则 block-ads 未命中', ''],
+    [kstep('decision', 'selected', '规则 geosite-global 转发', '目标：https://1.1.1.1/dns-query；传输：Some(Https)'), '转发给 https://1.1.1.1/dns-query', '传输 DoH'],
+    [kstep('decision', 'selected', '静态响应 Non-Existent Domain', '答案记录数：0'), '直接返回 NXDOMAIN', ''],
+    [kstep('decision', 'selected', '跳转到管线 cn'), '跳转到规则组 cn', ''],
     [kstep('upstream', 'started', '准备转发到 https://1.1.1.1/dns-query', '规则：geosite-global；传输：Some(Https)'), '发往 https://1.1.1.1/dns-query', '传输 DoH'],
-    [kstep('upstream', 'succeeded', 'https://1.1.1.1/dns-query', '响应码：No Error；耗时：11 ms；截断：false'), 'https://1.1.1.1/dns-query 应答 NOERROR', '耗时 11\u00a0ms · 未截断'],
-    [kstep('upstream', 'failed', '8.8.8.8:53', 'request timed out'), '8.8.8.8:53 没有应答', 'request timed out'],
+    [kstep('upstream', 'succeeded', 'https://1.1.1.1/dns-query', '响应码：No Error；耗时：11 ms；截断：false'), 'https://1.1.1.1/dns-query 收到回答', ''],
+    [kstep('upstream', 'succeeded', '8.8.8.8:53', '响应码：Server Failure；耗时：30 ms；截断：true'), '8.8.8.8:53 回答 SERVFAIL', '已截断'],
+    [kstep('upstream', 'failed', '8.8.8.8:53', 'request timed out'), '8.8.8.8:53 没有回答', 'request timed out'],
   ])('%#', (input, lead, note) => {
     const view = describeStep(input)
     expect(plain(view.lead)).toBe(lead)
@@ -99,7 +103,7 @@ describe('连着的未命中规则并成一行', () => {
 
 describe('细节里的一对键值不拆开', () => {
   it('一对「键 值」是一段，排版时整对换行', () => {
-    expect(detailParts('客户端：192.168.1.23；监听器：default')).toEqual([{ label: '客户端', text: '192.168.1.23', mono: true }, { text: ' · ' }, { label: '监听器', text: 'default', mono: true }])
+    expect(detailParts('客户端：192.168.1.23；监听器：default')).toEqual([{ label: '客户端', text: '192.168.1.23', mono: true }, { text: ' · ' }, { label: '监听标签', text: 'default', mono: true }])
     // 耗时、计数和协议名是量和名称，不是要照抄的字面值 / Durations, counts and protocol names are quantities and names, not literals to copy
     expect(monos(detailParts('耗时：12 ms；匹配器数：1；传输：DoH；协议：TCP+UDP'))).toEqual([])
     expect(monos(detailParts('响应码：NXDOMAIN；回退：SERVFAIL'))).toEqual([])
@@ -123,15 +127,32 @@ describe('转发和应答不把同一个地址说三遍', () => {
     expect(groupTrace([decision, other])).toHaveLength(2)
   })
 
-  it('应答来自刚转给的那个上游时只写「应答 NOERROR」，换了上游就照写地址', () => {
+  it('回答来自刚转给的那个上游时只写「收到回答」，换了上游就照写地址', () => {
     expect(forwardTarget(decision)).toBe('https://1.1.1.1/dns-query')
     expect(forwardTarget(sent)).toBe('https://1.1.1.1/dns-query')
-    expect(plain(describeStep(reply, { target: 'https://1.1.1.1/dns-query' }).lead)).toBe('应答 NOERROR')
-    expect(plain(describeStep(reply, { target: '8.8.8.8:53' }).lead)).toBe('https://1.1.1.1/dns-query 应答 NOERROR')
-    expect(plain(describeStep(kstep('upstream', 'failed', 'https://1.1.1.1/dns-query', '超时'), { target: 'https://1.1.1.1/dns-query' }).lead)).toBe('没有应答')
+    expect(plain(describeStep(reply, { target: 'https://1.1.1.1/dns-query' }).lead)).toBe('收到回答')
+    expect(plain(describeStep(reply, { target: '8.8.8.8:53' }).lead)).toBe('https://1.1.1.1/dns-query 收到回答')
+    expect(plain(describeStep(kstep('upstream', 'failed', 'https://1.1.1.1/dns-query', '超时'), { target: 'https://1.1.1.1/dns-query' }).lead)).toBe('没有回答')
   })
 })
 
 describe('耗时的写法', () => {
   it.each([[0, '0 ms'], [12, '12 ms'], [999, '999 ms'], [1000, '1.0 s'], [5003, '5.0 s']])('%i → %s', (ms, text) => expect(formatElapsed(ms)).toBe(text))
+})
+
+describe('内核的名字换回配置页上的名字', () => {
+  const names = { rule: (label: string) => (label === 'rule-3' ? '域名是 example.org' : null), pipeline: (id: string) => (id === 'main' ? '主列表' : id === 'group-g1' ? '规则组「内网」' : null) }
+  it.each([
+    [kstep('pipeline', 'selected', 'main'), '进入主列表'],
+    [kstep('pipeline', 'jump', 'main -> group-g1'), '从主列表跳到规则组「内网」'],
+    [kstep('pipeline', 'jump', 'main -> other'), '从主列表跳到规则组 other'],
+    [kstep('rule', 'matched', 'rule-3'), '命中规则「域名是 example.org」'],
+    [kstep('rule', 'missed', 'named'), '规则 named 未命中'],
+    [kstep('rule_cache', 'hit', '命中管线 main 的规则缓存'), '命中主列表的规则缓存'],
+  ])('%#', (input, lead) => expect(plain(describeStep(input, { names }).lead)).toBe(lead))
+
+  it('认得出的名字用正文字，认不出的用等宽', () => {
+    expect(monos(describeStep(kstep('rule', 'matched', 'rule-3'), { names }).lead)).toEqual([])
+    expect(monos(describeStep(kstep('rule', 'matched', 'named'), { names }).lead)).toEqual(['named'])
+  })
 })

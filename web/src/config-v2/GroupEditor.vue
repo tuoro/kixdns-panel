@@ -4,6 +4,7 @@ import UiHelp from '../components/ui/UiHelp.vue'
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import { detectProtocol, PROTOCOL_LABEL, POLLUTED_CIDRS, type Ecs, type Protocol, type UpstreamGroup } from '../config-model/model'
+import { useConfirm } from '../composables/useConfirm'
 import { groupUsers, model } from './store'
 
 // 上游组的抽屉：名称、地址（每个地址自动认协议，可改）、客户端子网、备用组。被用着的组不能删，说清楚是谁在用。
@@ -14,6 +15,13 @@ const emit = defineEmits<{ close: []; saved: [group: UpstreamGroup, isNew: boole
 
 const original = props.groupId ? model.groups.find((g) => g.id === props.groupId) ?? null : null
 const draft = reactive<UpstreamGroup>(original ? JSON.parse(JSON.stringify(original)) as UpstreamGroup : { id: `u${Date.now().toString(36)}`, name: '', addresses: [{ address: '', protocol: 'auto' }], ecs: null, fallback: { group: '', onError: false, onPolluted: false } })
+// Esc、点遮罩、关闭、取消都先对照一下：改过就问一句，和规则编辑一样 / Esc, a scrim tap, × and 取消 compare first: ask if anything changed, as the rule editor does
+const initial = JSON.stringify(draft)
+const confirm = useConfirm()
+async function leave(): Promise<void> {
+  if (JSON.stringify(draft) !== initial && !(await confirm.ask({ title: '放弃这个上游组的修改', body: '刚才在这里改的内容不会写进草稿。', confirmLabel: '放弃修改', cancelLabel: '继续编辑' }))) return
+  emit('close')
+}
 const showErrors = ref(false)
 const dialog = ref<HTMLDialogElement | null>(null)
 const nameInput = ref<HTMLInputElement | null>(null)
@@ -71,11 +79,11 @@ function remove(): void {
 </script>
 
 <template>
-  <dialog ref="dialog" class="pdrawer" aria-labelledby="ge-title" @cancel.prevent="emit('close')" @click.self="emit('close')">
+  <dialog ref="dialog" class="pdrawer" aria-labelledby="ge-title" @cancel.prevent="leave" @click.self="leave">
     <form class="pdrawer__panel" @submit.prevent="done">
       <header class="pdrawer__head">
         <h2 id="ge-title">{{ original ? `编辑上游组` : '新建上游组' }}</h2>
-        <button class="ui-icon-btn" type="button" aria-label="关闭" title="关闭" @click="emit('close')"><X :size="16" /></button>
+        <button class="ui-icon-btn" type="button" aria-label="关闭" title="关闭" @click="leave"><X :size="16" /></button>
       </header>
       <div class="pdrawer__body">
         <label class="pfield"><span>名称</span><span class="ui-input"><input ref="nameInput" v-model="draft.name" maxlength="20" placeholder="比如：国内、公司" :aria-invalid="(showErrors && !draft.name.trim()) || undefined"></span></label>
@@ -127,7 +135,7 @@ function remove(): void {
         <p v-if="showErrors && problems.length" class="pdrawer__problem" role="alert">{{ problems[0] }}</p>
         <p v-else-if="original && users.length" class="pdrawer__uses">{{ users.length }} 处在用，不能删除</p>
         <span class="editor__spacer"></span>
-        <button class="ui-btn ui-btn--secondary" type="button" @click="emit('close')">取消</button>
+        <button class="ui-btn ui-btn--secondary" type="button" @click="leave">取消</button>
         <button class="ui-btn ui-btn--primary" type="submit">{{ original ? '完成' : '新建' }}</button>
       </footer>
     </form>

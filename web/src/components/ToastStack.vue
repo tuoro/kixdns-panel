@@ -16,7 +16,7 @@ const toast = useToast()
            摆一个叉等于把唯一有用的动作藏起来。 -->
       <button v-if="item.undo" class="toast-undo" type="button" @click="toast.runUndo(item.id)">撤销</button>
       <button v-else class="icon-button icon-button--small" type="button" title="关闭" @click="toast.dismiss(item.id)">
-        <X :size="15" />
+        <X :size="16" />
       </button>
     </div>
   </div>

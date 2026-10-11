@@ -1,4 +1,17 @@
 import { conditionsText, ecsText, fallbackSentence, outcomeSentence, PROTOCOL_LABEL, effectiveProtocol, remedySentence, responseConditionText, withShi, type Model, type Rule, type UpstreamGroup, ruleTitle } from './model'
+import { SETTING_SECTIONS, type SettingField } from '../config-editor/schema'
+
+// 设置的改动写基础设置页上的名字和单位（「上游超时」「1800 毫秒」），认不出的键才照原样写
+// A settings change uses the name and unit from the settings page (上游超时, 1800 毫秒); only an unknown key is written as it is
+const SETTING_FIELDS = new Map(SETTING_SECTIONS.flatMap((section) => section.fields.map((field) => [field.key, field] as const)))
+const settingLabel = (field: SettingField) => field.label.replace(/\s*[(（][^)）]*[)）]$/, '')
+function settingText(value: unknown, field: SettingField | undefined): string {
+  if (typeof value === 'boolean') return value ? '开' : '关'
+  if (Array.isArray(value)) return value.length ? value.map(String).join('、') : '（空）'
+  if (typeof value === 'number' && field?.unit) return `${value.toLocaleString('en-US')} ${field.unit}`
+  if (typeof value === 'string' || typeof value === 'number') return String(value)
+  return JSON.stringify(value)
+}
 
 // 两份配置差在哪：按页面上的说法写（规则「x」：结果从…改成…），不写 JSON。方向是「恢复这个版本会发生什么」：从现在的 → 那个版本。
 // What differs between two configs, in the page's own words (规则「x」：结果从…改成…), never JSON. The direction is "what restoring that
@@ -11,8 +24,8 @@ function ruleFacts(m: Model, r: Rule): Record<string, string> {
   const facts: Record<string, string> = { 条件: conditionsText(r.conditions), 结果: outcomeSentence(m, r.outcome), 状态: r.enabled ? '启用' : '已停用' }
   if (r.log.enabled) facts.日志 = `记录（${r.log.level}）`
   if (r.ecs !== 'inherit') facts.客户端子网 = ecsText(r.ecs)
-  if (r.response.mode === 'off') facts.上游回答后 = '不检查'
-  if (r.response.mode === 'custom') facts.上游回答后 = `${withShi(r.response.conditions.map(responseConditionText).join(r.response.match === 'all' ? ' 且 ' : '，或 '))}${remedySentence(m, r.response.then)}${r.response.otherwise.type === 'none' ? '' : `，否则${remedySentence(m, r.response.otherwise)}`}`
+  if (r.response.mode === 'off') facts.回答后检查 = '不检查'
+  if (r.response.mode === 'custom') facts.回答后检查 = `${withShi(r.response.conditions.map(responseConditionText).join(r.response.match === 'all' ? ' 且 ' : '，或 '))}${remedySentence(m, r.response.then)}${r.response.otherwise.type === 'none' ? '' : `，否则${remedySentence(m, r.response.otherwise)}`}`
   if (r.note) facts.备注 = r.note
   return facts
 }
@@ -75,7 +88,8 @@ export function diffModels(now: Model, then: Model): DiffBlock[] {
     const a = now.settings[k]
     const b = then.settings[k]
     if (JSON.stringify(a) === JSON.stringify(b)) continue
-    blocks.push({ kind: a === undefined ? '加上' : b === undefined ? '去掉' : '改了', title: `设置 ${k}`, lines: [...(a === undefined ? [] : [{ sign: '-' as const, text: JSON.stringify(a) }]), ...(b === undefined ? [] : [{ sign: '+' as const, text: JSON.stringify(b) }])] })
+    const field = SETTING_FIELDS.get(k)
+    blocks.push({ kind: a === undefined ? '加上' : b === undefined ? '去掉' : '改了', title: field ? settingLabel(field) : `设置 ${k}`, lines: [...(a === undefined ? [] : [{ sign: '-' as const, text: settingText(a, field) }]), ...(b === undefined ? [] : [{ sign: '+' as const, text: settingText(b, field) }])] })
   }
   if (JSON.stringify(now.defaults) !== JSON.stringify(then.defaults)) blocks.push({ kind: '改了', title: '拦截时怎么回应', lines: [{ sign: '-', text: now.defaults.block }, { sign: '+', text: then.defaults.block }] })
   return blocks

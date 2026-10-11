@@ -64,7 +64,7 @@ test('375 宽下日志级别和审计类别的每个选项都完整可见 @respo
   await page.getByRole('tab', { name: '操作审计', exact: true }).click()
   await expect(page.locator('.audit-line').first()).toBeVisible()
   // 两行排开的六格：每格自己 36 高，点按区域就是看得见的格子 / The six cells across two rows: each is 36 tall, its tap area the visible cell
-  await expectEveryOptionVisible(page, page.getByRole('group', { name: '审计动作类别' }), ['全部', '配置', '服务', 'KixDNS', '认证', '诊断'], 35.5)
+  await expectEveryOptionVisible(page, page.getByRole('group', { name: '审计动作类别' }), ['全部', '配置', '服务', '内核', '认证', '诊断'], 35.5)
   await expectPlaceholderFits(page)
   // 刷新和下载仍在视口内。/ Refresh and download still sit inside the viewport.
   for (const title of ['刷新审计记录', '下载筛选结果']) {

@@ -50,7 +50,7 @@ test('「…」里的帮助：这一页的概念 + 快捷键；手机上不列�
   await page.getByRole('menuitem', { name: '帮助', exact: true }).click()
   const drawer = page.getByRole('dialog', { name: '帮助', exact: true })
   await expect(drawer).toBeVisible()
-  await expect(drawer.locator('.help__topic summary')).toHaveText(['回答后检查', '客户端子网（ECS）', 'GeoSite 分类', '规则组', '备用组', '域名映射', '规则默认值', '内核规则', '测试域名'])
+  await expect(drawer.locator('.help__topic summary')).toHaveText(['回答后检查', '客户端子网（ECS）', 'GeoSite 分类', '规则组', '备用组', '域名映射', '规则默认值', '高级规则', '测试域名'])
   await drawer.locator('#help-fallback summary').click()
   await expect(drawer.locator('#help-fallback')).toContainText('不会改问备用组')
   if (mobile) await expect(drawer.getByRole('heading', { name: '键盘快捷键' })).toBeHidden()
@@ -81,7 +81,7 @@ test('快捷键：/ 聚焦搜索、n 新建规则、? 打开快捷键一览；�
   const drawer = page.getByRole('dialog', { name: '帮助', exact: true })
   await expect(drawer).toBeVisible()
   await expect(drawer.getByRole('heading', { name: '键盘快捷键' })).toBeVisible()
-  await expect(drawer.locator('.help__keys dd')).toContainText(['打开帮助和快捷键', '搜索规则', '新建规则', '保存草稿'])
+  await expect(drawer.locator('.help__keys dd')).toContainText(['打开帮助和快捷键', '搜索规则', '新建规则', '保存并热加载（和保存条的按钮一样，会应用到正在运行的 KixDNS）'])
 })
 
 test('账户菜单里的「键盘快捷键」在别的页也能打开一览', async ({ page }, testInfo) => {

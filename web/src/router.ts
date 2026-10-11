@@ -16,16 +16,16 @@ const router = createRouter({
   history: import.meta.env.VITE_DEMO_MODE === 'true' && import.meta.env.PROD ? createWebHashHistory() : createWebHistory(),
   routes: [
     { path: '/login', component: () => import('./views/LoginView.vue'), meta: { guest: true, title: '登录' } },
-    { path: '/setup', component: () => import('./views/SetupView.vue'), meta: { guest: true, title: '初始化' } },
+    { path: '/setup', component: () => import('./views/SetupView.vue'), meta: { guest: true, title: '创建管理员' } },
     {
       path: '/',
       component: AppShell,
       meta: { auth: true },
       children: [
-        { path: '', name: 'dashboard', component: () => import('./views/DashboardView.vue'), meta: { auth: true, title: '运行概览' } },
-        { path: 'config', name: 'config', component: () => import('./views/ConfigV2View.vue'), meta: { auth: true, title: '配置管理' } },
-        { path: 'logs', name: 'logs', component: () => import('./views/LogsView.vue'), meta: { auth: true, title: '运行日志' } },
-        { path: 'diagnostics', name: 'diagnostics', component: () => import('./views/DiagnosticsView.vue'), meta: { auth: true, title: 'DNS 诊断' } },
+        { path: '', name: 'dashboard', component: () => import('./views/DashboardView.vue'), meta: { auth: true, title: '概览' } },
+        { path: 'config', name: 'config', component: () => import('./views/ConfigV2View.vue'), meta: { auth: true, title: '配置' } },
+        { path: 'logs', name: 'logs', component: () => import('./views/LogsView.vue'), meta: { auth: true, title: '日志' } },
+        { path: 'diagnostics', name: 'diagnostics', component: () => import('./views/DiagnosticsView.vue'), meta: { auth: true, title: '诊断' } },
         { path: 'system', name: 'system', component: () => import('./views/SystemView.vue'), meta: { auth: true, title: '系统' } },
         // 组件清单只在开发服务器里有，正式构建里这一项整个被摇掉
         // The component sheet exists on the dev server only; the production build drops it

@@ -27,7 +27,7 @@ test('新配置页：读入、快速添加、打开、保存并热加载 @respon
   const name = page.getByLabel('规则名称，可以不填，不填就用条件当名字')
   await expect(name).toHaveAttribute('placeholder', /example\.org/)
   await name.fill('示例站点')
-  await page.getByRole('button', { name: mobile ? '完成' : '保存', exact: true }).click()
+  await page.getByRole('button', { name: '完成', exact: true }).click()
   await expect(page.locator('.toast', { hasText: '已更新「示例站点」' })).toBeVisible()
   await expect(row).toContainText('示例站点')
   // 保存：先校验再写入，保存条说「已生效 · 版本 #N」，页头版本跟着变 / Save: validate then write; the bar says 已生效 · 版本 #N and the header version follows

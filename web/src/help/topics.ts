@@ -22,7 +22,7 @@ export const HELP_TOPICS: HelpTopic[] = [
   ] },
   { id: 'ecs', title: '客户端子网（ECS）', page: 'config', body: [
     '把客户端所在的网段附在问上游的请求里，支持 ECS 的上游会回离客户端更近的地址。',
-    '「沿用上游组」用上游组里的设置。在规则里单独设了，这条规则会单独占一条管线，缓存也和别的规则分开。',
+    '「沿用上游组」用上游组里的设置。在规则里单独设了，这条规则会单独转发，缓存也和别的规则分开。',
     '它会把客户端的网段告诉上游；不在意就近的话，通常不需要开。',
   ] },
   { id: 'geosite', title: 'GeoSite 分类', page: 'config', body: [
@@ -32,7 +32,7 @@ export const HELP_TOPICS: HelpTopic[] = [
   ] },
   { id: 'groups', title: '规则组', page: 'config', body: [
     '一组单独的规则，写法和主列表一样，从上到下匹配。',
-    '两种进来的方式：某条规则的结果选「转到规则组」，或者让这个组直接接住某个监听入口的请求。',
+    '两种进来的方式：某条规则的结果选「转到规则组」，或者让这个组直接接住带某个监听标签的请求。',
     '适合把一类事情收在一起，比如「孩子的设备」「公司内网」，主列表里只留一条入口。',
   ] },
   { id: 'fallback', title: '备用组', page: 'config', body: [
@@ -49,7 +49,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     '「拦截时怎么回应」决定规则选「拦截 · 沿用默认」时客户端收到什么：NXDOMAIN 说域名不存在，REFUSED 说拒绝回答，空地址回 0.0.0.0 和 ::。',
     '「其余请求」是没有规则命中时交给哪个上游组，和规则列表最下面那一行是同一个设置。',
   ] },
-  { id: 'raw', title: '内核规则', page: 'config', body: [
+  { id: 'raw', title: '高级规则', page: 'config', body: [
     '这条规则放不进面板的写法（比如回答阶段先记日志再接着匹配），面板把它原样保留下来。',
     '这里改的就是 KixDNS 直接读的规则，按内核的字段来写；保存前会先交给内核校验。',
     '表单和 JSON 两种写法随时切换；JSON 写错了切不回表单，改好再切。',
@@ -75,13 +75,13 @@ export const SHORTCUTS: ShortcutGroup[] = [
     { keys: ['?'], what: '打开帮助和快捷键' },
     { keys: ['Esc'], what: '关闭弹层、抽屉和菜单' },
   ] },
-  { title: '配置页', items: [
+  { title: '配置各页', items: [
     { keys: ['/'], what: '搜索规则' },
     { keys: ['n'], what: '新建规则' },
-    { keys: [MOD, 'S'], what: '保存草稿' },
+    { keys: [MOD, 'S'], what: '保存并热加载（和保存条的按钮一样，会应用到正在运行的 KixDNS）' },
   ] },
   { title: '编辑一条规则时', items: [
-    { keys: [MOD, '⏎'], what: '完成' },
+    { keys: [MOD, '⏎'], what: '完成（新规则是「新建」）' },
     { keys: ['Esc'], what: '返回列表' },
   ] },
   { title: '菜单和页签里', items: [

@@ -122,10 +122,12 @@ const DOMAIN_OPS: OpDef[] = [
 ]
 const validRegex = (v: string) => { try { new RegExp(v.replace(/^\(\?i\)/, '')); return true } catch { return false } }
 const domainValid = (v: string, c: { regex?: boolean }) => (c.regex ? validRegex(v) : isDomain(v))
+// 内核按写的原样查分类，「geosite:cn」找不到 cn 这个分类，永远不命中 / The kernel looks the category up as written, so 「geosite:cn」 never finds cn and never matches
+const noGeositePrefix = (v: string): boolean => !/^geosite:/i.test(v)
 export const FIELD: Record<ConditionField, FieldDef> = {
   domain: { label: '域名', ops: DOMAIN_OPS, values: true, placeholder: 'example.com，回车添加', mono: true, valid: domainValid },
   // 行里叫 GeoSite（正式面板一直这么叫），句子里说「域名属于 GeoSite cn」 / The row says GeoSite (the production panel's name); sentences say 「域名属于 GeoSite cn」
-  geosite: { label: 'GeoSite', subject: '域名', ops: [{ value: 'is', label: '属于', phrase: '属于 GeoSite', negate: false }, { value: 'not', label: '不属于', phrase: '不属于 GeoSite', negate: true }], values: true, placeholder: 'cn、category-ads-all…', mono: true, suggest: 'geosite' },
+  geosite: { label: 'GeoSite', subject: '域名', ops: [{ value: 'is', label: '属于', phrase: '属于 GeoSite', negate: false }, { value: 'not', label: '不属于', phrase: '不属于 GeoSite', negate: true }], values: true, placeholder: 'cn、category-ads-all…', mono: true, suggest: 'geosite', valid: noGeositePrefix },
   client_ip: { label: '客户端 IP', ops: IN, values: true, placeholder: '192.168.1.0/24 或单个 IP', mono: true, valid: (v) => isCidr(v) },
   client_country: { label: '客户端地区', ops: IS, values: true, placeholder: 'CN、HK…', mono: true, upper: true, suggest: 'country', valid: (v) => /^[a-z]{2}$|^[a-z0-9_-]{3,}$/i.test(v), hint: 'GeoIP 国家代码' },
   client_private: { label: '客户端网络', merge: 'client_ip', ops: [{ value: 'is', label: '是内网', phrase: '客户端是内网', negate: false }, { value: 'not', label: '不是内网', phrase: '客户端不是内网', negate: true }], values: false, placeholder: '', mono: false },
@@ -144,7 +146,7 @@ export const RESPONSE_FIELD: Record<ResponseField, FieldDef> = {
   upstream: { label: '回答来自', ops: IS, values: true, placeholder: '10.0.0.53:53', mono: true },
   upstream_ip: { label: '上游 IP', ops: IN, values: true, placeholder: '10.0.0.0/8', mono: true, valid: (v) => isCidr(v) },
   request_domain: { label: '请求的域名', ops: DOMAIN_OPS, values: true, placeholder: 'example.com', mono: true, valid: domainValid },
-  request_geosite: { label: '请求域名 GeoSite', subject: '请求的域名', ops: [{ value: 'is', label: '属于', phrase: '属于 GeoSite', negate: false }, { value: 'not', label: '不属于', phrase: '不属于 GeoSite', negate: true }], values: true, placeholder: 'cn', mono: true, suggest: 'geosite' },
+  request_geosite: { label: '请求域名 GeoSite', subject: '请求的域名', ops: [{ value: 'is', label: '属于', phrase: '属于 GeoSite', negate: false }, { value: 'not', label: '不属于', phrase: '不属于 GeoSite', negate: true }], values: true, placeholder: 'cn', mono: true, suggest: 'geosite', valid: noGeositePrefix },
   txt: { label: 'TXT 内容', ops: [
     { value: 'is', label: '等于', negate: false, txtMode: 'exact' }, { value: 'not', label: '不等于', negate: true, txtMode: 'exact' },
     { value: 'prefix', label: '开头是', negate: false, txtMode: 'prefix' }, { value: 'nprefix', label: '开头不是', negate: true, txtMode: 'prefix' },
@@ -268,7 +270,7 @@ export const conditionProblem = (c: Condition) => valueProblem(FIELD[c.field], c
 export function ruleTitle(rule: Rule): string {
   const name = rule.name.trim()
   if (name) return name
-  if (rule.raw) return '原样保留的内核规则'
+  if (rule.raw) return '没有名字的高级规则'
   return conditionsText(rule.conditions)
 }
 
@@ -301,11 +303,11 @@ export function ruleProblems(model: Model, rule: Rule): string[] {
   }
   if (rule.outcome.type === 'upstream' && rule.response.mode === 'custom') {
     const r = rule.response
-    if (!r.conditions.length) out.push('「上游回答后」还没加条件')
+    if (!r.conditions.length) out.push('「回答后检查」还没加条件')
     for (const c of r.conditions) { const p = valueProblem(RESPONSE_FIELD[c.field], c); if (p) out.push(p) }
     if (r.match === 'all' && r.conditions.flatMap(responseTerms).filter((t) => !t.negative && t.any.length > 1).length > 1) out.push('「全部满足」时只能有一个条件填多个值，其余的拆成单独的条件或改成「满足任一」')
     if (r.match === 'any' && r.conditions.flatMap(responseTerms).filter((t) => t.negative).length > r.conditions.filter((c) => c.negate).length) out.push('「满足任一」时，「不是」的条件只能填一个值，几个值拆成几条')
-    if (r.then.type === 'answer' && !r.then.value.trim()) out.push('「上游回答后」的自定义回答还没填内容')
+    if (r.then.type === 'answer' && !r.then.value.trim()) out.push('「回答后检查」的自定义回答还没填内容')
   }
   if (kernelRuleCount(rule) > 32) out.push('条件组合太多（展开后超过 32 条），把多值条件合并成一个')
   return out

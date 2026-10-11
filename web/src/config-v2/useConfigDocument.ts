@@ -119,6 +119,33 @@ const shouldRefreshAfterSaveError = (error: unknown) => error instanceof ApiErro
 const isConflict = (error: unknown) => error instanceof ApiError && error.code === 'config_conflict'
 
 // ---------- 读 / load ----------
+function applyRuntime(nextDoc: ConfigDocument, overview: Overview | null, service: ServiceStatus | null): void {
+  const declared = nextDoc.runtime.declared_capabilities ?? []
+  if (overview) {
+    runtimeStopped.value = !overview.live && (service?.active_state === 'inactive' || overview.service_active === false)
+    runtimeCapabilities.value = overview.live ? overview.health.capabilities : declared
+    capabilityError.value = overview.live || declared.length > 0 ? '' : 'KixDNS 实时能力暂不可用'
+  } else {
+    runtimeStopped.value = service?.active_state === 'inactive'
+    runtimeCapabilities.value = declared
+    if (!runtimeStopped.value && !capabilityError.value && declared.length === 0) capabilityError.value = 'KixDNS 实时能力暂不可用'
+  }
+}
+// 只刷新运行状态，不碰草稿和文件的散列：草稿有修改时（比如在页头启动 KixDNS 之后）用它，保存时照样能发现别处的改动
+// Refresh only the runtime state, leaving the draft and the file hash alone: used while the draft has edits (after starting KixDNS from
+// the header, say), so a later save still notices changes made elsewhere
+export async function refreshRuntime(): Promise<void> {
+  const [nextDoc, overview, service] = await Promise.all([
+    apiRequest<ConfigDocument>('/api/v1/config'),
+    apiRequest<Overview>('/api/v1/overview').catch((error: unknown) => { capabilityError.value = friendlyRuntimeError(error); return null }),
+    apiRequest<ServiceStatus>('/api/v1/service').catch(() => null),
+  ])
+  applyRuntime(nextDoc, overview, service)
+  if (doc.value) doc.value = { ...doc.value, runtime: nextDoc.runtime, pending: nextDoc.pending }
+  applyHits(overview?.metrics?.rules ?? [])
+  applyUpstreamStats(overview?.metrics?.upstreams ?? [])
+}
+
 let pendingLoad: Promise<void> | null = null
 // quiet：保存之后的刷新不换成骨架 / quiet: the refresh after a save keeps the page mounted
 export function load(options: { quiet?: boolean } = {}): Promise<void> {
@@ -131,16 +158,7 @@ export function load(options: { quiet?: boolean } = {}): Promise<void> {
       apiRequest<Overview>('/api/v1/overview').catch((error: unknown) => { capabilityError.value = friendlyRuntimeError(error); return null }),
       apiRequest<ServiceStatus>('/api/v1/service').catch(() => null),
     ])
-    const declared = nextDoc.runtime.declared_capabilities ?? []
-    if (overview) {
-      runtimeStopped.value = !overview.live && (service?.active_state === 'inactive' || overview.service_active === false)
-      runtimeCapabilities.value = overview.live ? overview.health.capabilities : declared
-      capabilityError.value = overview.live || declared.length > 0 ? '' : 'KixDNS 实时能力暂不可用'
-    } else {
-      runtimeStopped.value = service?.active_state === 'inactive'
-      runtimeCapabilities.value = declared
-      if (!runtimeStopped.value && !capabilityError.value && declared.length === 0) capabilityError.value = 'KixDNS 实时能力暂不可用'
-    }
+    applyRuntime(nextDoc, overview, service)
     doc.value = nextDoc
     versions.value = history.versions
     // 读进草稿：散列对得上就是面板写的那份；对不上（手改过）会重新导入并给报告 / Into the draft: the hash matching means the panel wrote it; otherwise it is re-imported with a report

@@ -7,6 +7,7 @@ import { useSession } from '../composables/useSession'
 import HelpDrawer from './HelpDrawer.vue'
 import type { HelpPage } from '../help/topics'
 import { useToast } from '../composables/useToast'
+import { confirmLeave, takeAgreement } from '../composables/useLeaveGuard'
 import { THEME_CHOICES, useTheme, type ThemeChoice } from '../composables/useTheme'
 import { useUpdateNotifications, type UpdateNoticeItem } from '../composables/useUpdateNotifications'
 import { errorMessage } from '../utils'
@@ -105,12 +106,16 @@ async function openNotice(notice: UpdateNoticeItem): Promise<void> {
   await router.push(notice.target)
 }
 
+// 有没保存的修改时先问，再结束会话：先退出再问的话，选「继续编辑」也已经没有登录了
+// With unsaved changes, ask before ending the session: asking afterwards would leave 继续编辑 on a signed-out page
 async function logout(): Promise<void> {
+  if (!(await confirmLeave())) return
   signingOut.value = true
   try {
     await session.logout()
     await router.replace('/login')
   } catch (error) {
+    takeAgreement()
     toast.error(errorMessage(error))
   } finally {
     signingOut.value = false
@@ -174,7 +179,7 @@ onBeforeUnmount(() => {
               <div><strong>更新通知</strong></div>
               <div>
                 <button class="ui-btn ui-btn--secondary ui-btn--icon ui-btn--compact" type="button" title="检查更新" aria-label="检查更新" :disabled="notifications.checking.value" @click="checkUpdates"><RefreshCw :size="14" :class="{ spin: notifications.checking.value }" /></button>
-                <button v-if="notifications.unreadCount.value" class="notification-mark-all" type="button" @click="notifications.markAllRead"><Check :size="13" />全部已读</button>
+                <button v-if="notifications.unreadCount.value" class="notification-mark-all" type="button" @click="notifications.markAllRead"><Check :size="14" />全部已读</button>
               </div>
             </header>
             <div v-if="notifications.notices.value.length" class="notification-list">

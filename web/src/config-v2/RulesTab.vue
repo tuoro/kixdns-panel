@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { Braces, FileUp, FlaskConical, ListFilter, Plus, Search, X } from '@lucide/vue'
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, toRefs } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, reactive, ref, toRefs } from 'vue'
 import UiHelp from '../components/ui/UiHelp.vue'
-import JsonEditor from '../components/JsonEditor.vue'
 import UiMenu from '../components/ui/UiMenu.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
+import { useConfirm } from '../composables/useConfirm'
 import { useToast } from '../composables/useToast'
 import { GEOSITE_SUGGESTIONS } from '../config-model/condKinds'
 import { isCidr, isDomain, newRule, outcomeSentence, rawMatchersText, type Condition, type Outcome, type Rule, type RuleGroup, ruleTitle } from '../config-model/model'
@@ -12,6 +12,8 @@ import { usePhone } from './phone'
 import RuleList from './RuleList.vue'
 import Tester from './Tester.vue'
 import { model, newId, ruleGroupUsers, ui } from './store'
+// JSON 编辑器（CodeMirror）只在用到时才加载：配置页的首包不带它 / The JSON editor (CodeMirror) loads on first use, so the config page's first chunk leaves it out
+const JsonEditor = defineAsyncComponent(() => import('../components/JsonEditor.vue'))
 
 // 规则页：工具栏（搜索、按结果筛、新建）、快速添加、主列表、规则组、高级入口。第一次用时是起步引导。
 // The rules tab: toolbar (search, filter by outcome, new), quick add, the main list, rule groups and advanced entries. On first
@@ -20,6 +22,9 @@ import { model, newId, ruleGroupUsers, ui } from './store'
 defineProps<{ selected: number | null }>()
 const emit = defineEmits<{ open: [ruleId: number | null, groupId: string | null, template?: Partial<Rule>]; tab: [name: string]; editGroup: [id: string | null]; import: [] }>()
 const toast = useToast()
+const confirm = useConfirm()
+// 两个弹层关上之前都对照一下：改过就问一句，和规则、上游组的编辑一样 / Both dialogs compare before closing: ask if anything changed, as rule and upstream group editing do
+const askDiscard = (what: string) => confirm.ask({ title: `放弃${what}的修改`, body: '刚才在这里改的内容不会写进草稿。', confirmLabel: '放弃修改', cancelLabel: '继续编辑' })
 // 规则页快捷键：/ 聚焦搜索，n 新建规则；输入框里、按着修饰键、弹层开着时不抢 / Rules page shortcuts: / focuses the search, n starts a new rule; not while typing, with modifiers held, or while a dialog is open
 const searchInput = ref<HTMLInputElement | null>(null)
 function onPageKey(event: KeyboardEvent): void {
@@ -145,10 +150,16 @@ function useStart(): void {
 // ---------- 规则组 / rule groups ----------
 const dialog = ref<HTMLDialogElement | null>(null)
 const editing = reactive({ id: '', name: '', note: '', listener: '', isNew: true })
+let editingBase = ''
 async function openGroup(group: RuleGroup | null): Promise<void> {
   Object.assign(editing, group ? { id: group.id, name: group.name, note: group.note, listener: group.listener, isNew: false } : { id: '', name: '', note: '', listener: '', isNew: true })
+  editingBase = JSON.stringify(editing)
   await nextTick()
   dialog.value?.showModal()
+}
+async function leaveGroup(): Promise<void> {
+  if (JSON.stringify(editing) !== editingBase && !(await askDiscard('这个规则组'))) return
+  dialog.value?.close()
 }
 function saveGroup(): void {
   if (!editing.name.trim()) return
@@ -169,7 +180,7 @@ function groupAction(group: RuleGroup, value: string): void {
 }
 const groupMenu = (group: RuleGroup) => [
   { value: 'add', label: '在组里新建规则' },
-  { value: 'edit', label: '名称和监听入口' },
+  { value: 'edit', label: '名称和监听标签' },
   { value: 'delete', label: ruleGroupUsers(group.id).length ? '删除（先改掉转到这里的规则）' : '删除', danger: true, disabled: ruleGroupUsers(group.id).length > 0 },
 ]
 
@@ -178,10 +189,16 @@ const entriesDialog = ref<HTMLDialogElement | null>(null)
 const entriesText = ref('')
 const entriesError = computed(() => { try { const v = JSON.parse(entriesText.value) as unknown; return Array.isArray(v) && v.every((e) => e && typeof e === 'object' && typeof (e as { pipeline?: unknown }).pipeline === 'string') ? '' : '要写成入口的数组，每个入口有 pipeline' } catch (e) { return (e as Error).message } })
 const pipelineLabel = (id: string) => model.ruleGroups.find((g) => (g.pipelineId ?? `group-${g.id}`) === id)?.name ?? model.groups.find((g) => (g.pipelineId ?? `upstream-${g.id}`) === id)?.name ?? id
+let entriesBase = ''
 async function editEntries(): Promise<void> {
   entriesText.value = JSON.stringify(model.entries ?? [], null, 2)
+  entriesBase = entriesText.value
   await nextTick()
   entriesDialog.value?.showModal()
+}
+async function leaveEntries(): Promise<void> {
+  if (entriesText.value !== entriesBase && !(await askDiscard('高级入口'))) return
+  entriesDialog.value?.close()
 }
 function saveEntries(): void {
   if (entriesError.value) return
@@ -251,13 +268,14 @@ function saveEntries(): void {
           <p v-if="quickHint" class="qadd__hint" :class="{ 'is-err': !ok }" role="status">{{ quickHint }}</p>
         </form>
         <p class="rcard__order">从上往下判断，第一条决定结果的规则生效。</p>
-        <div v-if="!model.rules.length" class="rcard__empty"><ListFilter :size="16" aria-hidden="true" /><span>还没有规则，所有请求都按最下面的「其余请求」处理。用上面一行快速添加，或者「新建规则」。</span></div>
-        <RuleList :rules="model.rules" :owner="model" :in-group="false" :query="query" :kind="kind" :marks="marks" :selected="selected" :rest-mark="false" :mapping-mark="matchedMapping" @open="emit('open', $event, null)" @mappings="emit('tab', 'mapping')" />
+        <RuleList :rules="model.rules" :owner="model" :in-group="false" :query="query" :kind="kind" :marks="marks" :selected="selected" :rest-mark="false" :mapping-mark="matchedMapping" @open="emit('open', $event, null)" @mappings="emit('tab', 'mapping')">
+          <template #empty><div class="rcard__empty"><ListFilter :size="16" aria-hidden="true" /><span>还没有规则，所有请求都按最下面的「其余请求」处理。用上面一行快速添加，或者「新建规则」。</span></div></template>
+        </RuleList>
       </section>
 
       <section class="rgroups" aria-labelledby="rg-title">
         <header class="rgroups__head">
-          <div><h2 id="rg-title" class="rgroups__title">规则组<UiHelp topic="groups" /></h2><p class="rgroups__desc">一组单独的规则，由「转到规则组」带进来，也可以直接接住某个监听入口的请求。</p></div>
+          <div><h2 id="rg-title" class="rgroups__title">规则组<UiHelp topic="groups" /></h2><p class="rgroups__desc">一组单独的规则。请求由「转到规则组」带进来，或者按监听标签直接进来。</p></div>
           <button class="ui-btn ui-btn--secondary" type="button" @click="openGroup(null)"><Plus :size="16" aria-hidden="true" />新建规则组</button>
         </header>
         <section v-if="model.entries?.length" class="ui-card rcard entries" aria-labelledby="ent-title">
@@ -273,7 +291,7 @@ function saveEntries(): void {
             <div class="rcard__title"><h3>{{ g.name }}</h3><span v-if="g.note" class="rcard__meta">{{ g.note }}</span></div>
             <span class="rcard__facts">
               <span v-if="ruleGroupUsers(g.id).length || !g.listener">{{ ruleGroupUsers(g.id).length ? `从「${ruleGroupUsers(g.id).map((r) => ruleTitle(r)).join('」「')}」转进来` : '还没有规则转到这里' }}</span>
-              <span v-if="g.listener" class="ui-tag ui-tag--mono">监听入口 {{ g.listener }}</span>
+              <span v-if="g.listener" class="ui-tag ui-tag--mono">监听标签 {{ g.listener }}</span>
             </span>
             <!-- 新建在标题行，和「高级入口」的「编辑」一样；表格上面不再多一层，「其余请求」永远是最后一行
                  新建 sits in the title row like 高级入口's 编辑, so no extra strip above the table and 其余请求 stays the last row -->
@@ -285,23 +303,23 @@ function saveEntries(): void {
       </section>
     </template>
 
-    <dialog ref="dialog" class="pdialog" aria-labelledby="rgd-title" @click.self="dialog?.close()">
+    <dialog ref="dialog" class="pdialog" aria-labelledby="rgd-title" @cancel.prevent="leaveGroup" @click.self="leaveGroup">
       <form class="pdialog__panel" method="dialog" @submit.prevent="saveGroup">
-        <header class="pdialog__head"><h2 id="rgd-title">{{ editing.isNew ? '新建规则组' : '规则组的名称和监听入口' }}</h2><button class="ui-icon-btn" type="button" aria-label="关闭" @click="dialog?.close()"><X :size="16" /></button></header>
+        <header class="pdialog__head"><h2 id="rgd-title">{{ editing.isNew ? '新建规则组' : '规则组的名称和监听标签' }}</h2><button class="ui-icon-btn" type="button" aria-label="关闭" @click="leaveGroup"><X :size="16" /></button></header>
         <div class="pdialog__body">
           <label class="pfield"><span>名称</span><span class="ui-input"><input v-model="editing.name" autofocus required maxlength="30" placeholder="比如：内网解析"></span></label>
           <label class="pfield"><span>说明 <small>可选</small></span><span class="ui-input"><input v-model="editing.note" maxlength="80" placeholder="这组规则管什么"></span></label>
-          <label class="pfield"><span>直接接住的监听入口 <small>可选</small></span><span class="ui-input is-mono"><input v-model="editing.listener" maxlength="30" placeholder="比如 lan"></span><small class="pfield__hint">填了以后，带这个标签的监听收到的请求直接进这个组，不经过主列表（域名映射照样先生效）。留空就只能由「转到规则组」带进来。</small></label>
+          <label class="pfield"><span>监听标签 <small>可选</small></span><span class="ui-input is-mono"><input v-model="editing.listener" maxlength="30" placeholder="比如 lan"></span><small class="pfield__hint">填了以后，带这个标签的监听收到的请求直接进这个组，不经过主列表（域名映射照样先生效）。留空就只能由「转到规则组」带进来。</small></label>
         </div>
-        <footer class="pdialog__foot"><button class="ui-btn ui-btn--secondary" type="button" @click="dialog?.close()">取消</button><button class="ui-btn ui-btn--primary" type="submit" :disabled="!editing.name.trim()">{{ editing.isNew ? '新建' : '完成' }}</button></footer>
+        <footer class="pdialog__foot"><button class="ui-btn ui-btn--secondary" type="button" @click="leaveGroup">取消</button><button class="ui-btn ui-btn--primary" type="submit" :disabled="!editing.name.trim()">{{ editing.isNew ? '新建' : '完成' }}</button></footer>
       </form>
     </dialog>
 
-    <dialog ref="entriesDialog" class="pdrawer pdrawer--wide" aria-labelledby="ent-d-title" @cancel.prevent="entriesDialog?.close()" @click.self="entriesDialog?.close()">
+    <dialog ref="entriesDialog" class="pdrawer pdrawer--wide" aria-labelledby="ent-d-title" @cancel.prevent="leaveEntries" @click.self="leaveEntries">
       <div class="pdrawer__panel">
-        <header class="pdrawer__head"><div class="pdrawer__titles"><h2 id="ent-d-title">编辑高级入口</h2><p>直接写内核的入口：pipeline 是要进的 Pipeline，matchers 是条件。按顺序看，第一个命中的生效。</p></div><button class="ui-icon-btn" type="button" aria-label="关闭" @click="entriesDialog?.close()"><X :size="16" /></button></header>
+        <header class="pdrawer__head"><div class="pdrawer__titles"><h2 id="ent-d-title">编辑高级入口</h2><p>直接写内核的入口：pipeline 填要进的规则组 ID，matchers 填条件。按顺序看，第一个命中的生效。</p></div><button class="ui-icon-btn" type="button" aria-label="关闭" @click="leaveEntries"><X :size="16" /></button></header>
         <div class="pdrawer__body"><JsonEditor v-model="entriesText" /><p v-if="entriesError" class="ui-field-error" aria-live="polite">{{ entriesError }}</p></div>
-        <footer class="pdrawer__foot"><button class="ui-btn ui-btn--secondary" type="button" @click="entriesDialog?.close()">取消</button><button class="ui-btn ui-btn--primary" type="button" :disabled="Boolean(entriesError)" @click="saveEntries">完成</button></footer>
+        <footer class="pdrawer__foot"><button class="ui-btn ui-btn--secondary" type="button" @click="leaveEntries">取消</button><button class="ui-btn ui-btn--primary" type="button" :disabled="Boolean(entriesError)" @click="saveEntries">完成</button></footer>
       </div>
     </dialog>
   </div>

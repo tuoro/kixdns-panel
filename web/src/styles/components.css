@@ -308,8 +308,10 @@ a.ui-btn { text-decoration: none; }
 .ui-switch small { order: 2; color: var(--l-ink-3); font-size: var(--t-1); }
 /* 透明的原生 input 叠在画出来的轨道上面：点哪儿都是点在它身上 / The transparent native input sits above the painted track, so every click lands on it */
 .ui-switch input { position: absolute; z-index: 1; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
-.ui-switch i { position: relative; width: var(--switch-w); height: var(--switch-h); flex: 0 0 auto; border-radius: var(--r-full); background: var(--l-line-strong); transition: background var(--m-quick) var(--ease-out); }
-.ui-switch i::after { position: absolute; top: var(--switch-inset, 3px); left: var(--switch-inset, 3px); width: calc(var(--switch-h) - 2 * var(--switch-inset, 3px)); height: calc(var(--switch-h) - 2 * var(--switch-inset, 3px)); border-radius: var(--r-full); background: var(--l-surface); box-shadow: var(--shadow-raise); transition: transform var(--m-quick) var(--ease-out); content: ''; }
+.ui-switch i { position: relative; width: var(--switch-w); height: var(--switch-h); flex: 0 0 auto; border-radius: var(--r-full); background: var(--switch-off); transition: background var(--m-quick) var(--ease-out); }
+.ui-switch i::after { position: absolute; top: var(--switch-inset, 3px); left: var(--switch-inset, 3px); width: calc(var(--switch-h) - 2 * var(--switch-inset, 3px)); height: calc(var(--switch-h) - 2 * var(--switch-inset, 3px)); border-radius: var(--r-full); background: var(--switch-knob-off); box-shadow: var(--shadow-raise); transition: transform var(--m-quick) var(--ease-out), background var(--m-quick) var(--ease-out); content: ''; }
+/* 开着时圆钮回到卡片底色：深色模式下浅色轨道上是深色圆钮 / On, the knob returns to the card colour: a dark knob on the light track in dark mode */
+.ui-switch input:checked + i::after { background: var(--l-surface); }
 .ui-switch input:checked + i { background: var(--l-ink); }
 /* 圆点走完整段：轨道宽减轨道高，开着时离右端和关着时离左端一样远（审计第三轮 T1） / The knob travels the whole track, its width less its height, so on it sits as far from the right end as off from the left (audit round 3, T1) */
 .ui-switch input:checked + i::after { transform: translateX(calc(var(--switch-w) - var(--switch-h))); }
@@ -884,7 +886,9 @@ button.ui-link { position: relative; min-height: 0; padding: 0; border: 0; backg
 /* 页标题 24 · 700；下面一行事实：小标签在上、值在下，横排 / Page title 24 · 700; a facts row under it: small label above, value below, laid out in a row */
 .ui-ph__title { font-size: var(--t-5); font-weight: var(--w-heavy); letter-spacing: -.01em; }
 .ui-lbl { color: var(--l-ink-3); font-size: var(--t-1); font-weight: var(--w-bold); letter-spacing: .06em; text-transform: uppercase; }
-.ui-facts { display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-6); margin-top: var(--s-3); }
+.ui-facts { display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-6); margin-top: var(--s-1); }
+/* 各页标题下的事实行一个样：离标题 4，状态点离字 4；换页时这一行不上下跳 / Every page's facts row under the title is the same: 4 below the title, the status dot 4 from its word, so the row never jumps between pages */
+.ui-facts b > .ui-dot { margin-right: calc(var(--s-1) - var(--s-2)); }
 .ui-facts > div { display: grid; gap: 2px; }
 .ui-facts b { display: inline-flex; align-items: center; gap: var(--s-2); color: var(--l-ink); font-size: var(--t-4); font-weight: var(--w-bold); font-variant-numeric: tabular-nums; }
 /* 卡片小标签：11 大写，和事实行的标签同一个 / The card's small label: 11 uppercase, the same as a fact's label */
@@ -919,4 +923,15 @@ button.ui-link { position: relative; min-height: 0; padding: 0; border: 0; backg
   .ui-help__pop { top: auto; right: 0; bottom: 0; left: 0; width: 100%; padding: var(--s-4) var(--s-4) calc(var(--s-3) + env(safe-area-inset-bottom)); border-width: 1px 0 0; border-radius: var(--r-3) var(--r-3) 0 0; }
   .ui-help__pop:popover-open { animation: ui-sheet-in var(--m-base) var(--ease-out); }
   .ui-help__pop::backdrop { background: var(--scrim); }
+}
+
+/* 手机上看得见的控件可以小，点得到的范围不小于 44：用一层看不见的 ::before 往外撑（和 button.ui-link 同一个做法）
+   On phones a visible control may be small, but what a finger can hit is at least 44: an invisible ::before reaches out (the button.ui-link recipe) */
+@media (max-width: 640px) {
+  .ui-help__btn, a.ui-link, .ui-btn--icon { position: relative; }
+  .ui-help__btn::before { position: absolute; inset: calc((var(--h-touch) - var(--h-tag)) / -2); content: ''; }
+  a.ui-link::before { position: absolute; inset: calc(var(--s-3) * -1) calc(var(--s-1) * -1); content: ''; }
+  .ui-btn--icon::before { position: absolute; inset: calc(var(--s-1) * -1); content: ''; }
+  /* 开关本身 22 高，连着文字的整个 label 都能点 / The switch is 22 tall; the whole label with its text can be tapped */
+  .ui-switch::before { position: absolute; inset: calc(var(--s-3) * -1) 0; content: ''; }
 }

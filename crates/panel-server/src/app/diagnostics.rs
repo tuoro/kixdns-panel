@@ -98,7 +98,7 @@ async fn service_action(
         .audit(
             Some(session.username),
             format!("service.{action}"),
-            format!("服务状态：{}/{}", status.active_state, status.sub_state),
+            format!("服务状态：{}", unit_state_words(&status.active_state)),
             unix_timestamp(),
         )
         .await
@@ -293,6 +293,20 @@ const fn default_audit_limit() -> usize {
     50
 }
 
+/// 审计详情里的服务状态写成中文；systemd 以后多出来的状态照原样写。
+/// The service state in an audit detail, in words; a state systemd adds later is written as it comes.
+fn unit_state_words(active_state: &str) -> &str {
+    match active_state {
+        "active" => "正在运行",
+        "inactive" => "已停止",
+        "failed" => "启动失败",
+        "activating" => "正在启动",
+        "deactivating" => "正在停止",
+        "reloading" => "正在重载",
+        other => other,
+    }
+}
+
 fn default_record_type() -> String {
     "A".to_owned()
 }
@@ -316,4 +330,16 @@ fn normalize_action_prefix(value: Option<String>) -> AppResult<Option<String>> {
         ));
     }
     Ok(Some(value.to_ascii_lowercase()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unit_state_words;
+
+    #[test]
+    fn unit_states_read_as_words_and_unknown_ones_pass_through() {
+        assert_eq!(unit_state_words("active"), "正在运行");
+        assert_eq!(unit_state_words("failed"), "启动失败");
+        assert_eq!(unit_state_words("maintenance"), "maintenance");
+    }
 }

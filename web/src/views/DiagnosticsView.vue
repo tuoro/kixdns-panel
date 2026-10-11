@@ -1,15 +1,17 @@
 <script setup lang="ts">
-import { Check, ChevronDown, ChevronRight, LoaderCircle, Network, TriangleAlert, X } from '@lucide/vue'
-import { computed, onMounted, ref } from 'vue'
+import { Check, ChevronDown, ChevronRight, LoaderCircle, Network, Power, TriangleAlert, X } from '@lucide/vue'
+import { computed, onMounted, ref, shallowRef } from 'vue'
 import { apiRequest, jsonBody } from '../api/client'
-import type { DnsDiagnostic, KixdnsKernel, Overview } from '../api/types'
+import type { ConfigDocument, DnsDiagnostic, KixdnsKernel, Overview } from '../api/types'
 import UiDotText from '../components/ui/UiDotText.vue'
 import UiEmpty from '../components/ui/UiEmpty.vue'
 import UiPageHeader from '../components/ui/UiPageHeader.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
-import { useToast } from '../composables/useToast'
+import { useServiceStart } from '../composables/useServiceStart'
+import { readConfig } from '../config-model/document'
 import { isIp } from '../config-model/model'
-import { describeStep, formatElapsed, forwardTarget, groupTrace, isDnsSuccess, parseDnsAnswer, responseCodeName, traceTone, type TextPart } from '../diagnostics'
+import { traceNames, type TraceNames } from '../config-model/trace-names'
+import { describeStep, formatElapsed, forwardTarget, groupTrace, isDnsSuccess, parseDnsAnswer, responseCodeName, ruleName, traceTone, type TextPart } from '../diagnostics'
 import { errorMessage, formatKixdnsVersion } from '../utils'
 
 const domain = ref('example.com')
@@ -17,7 +19,6 @@ const recordType = ref('A')
 const running = ref(false)
 const result = ref<DnsDiagnostic | null>(null)
 const queryError = ref('')
-const toast = useToast()
 const types = ['A', 'AAAA', 'CNAME', 'MX', 'NS', 'TXT', 'SOA', 'PTR']
 // 记录类型用组件库的下拉框，和配置页同一个（规范 2.3） / The record type uses the kit select, the same as the config page (spec 2.3)
 const typeOptions = types.map((type) => ({ value: type, label: type }))
@@ -36,13 +37,33 @@ const kernelLabel = ref('')
 const canClient = ref(false)
 const clientIp = ref('')
 const clientProblem = computed(() => (clientIp.value.trim() && !isIp(clientIp.value.trim()) ? '客户端 IP 写得不对' : ''))
+// 执行路径里的规则和规则组写配置页上的名字：读一次正在用的配置，只拿来对名字；读不到就照内核的名字写
+// The path names rules and rule groups as the config page does: the running config is read once, only to match names; without it the kernel's names stand
+const names = shallowRef<TraceNames | null>(null)
+// KixDNS 没在运行时先说一句，免得查了才知道 / Say so up front when KixDNS is not running, rather than after a failed query
+const stopped = ref(false)
+const { starting, start } = useServiceStart()
+async function startKixdns(): Promise<void> {
+  if (!(await start())) return
+  stopped.value = false
+  // 刚启动的内核报什么能力要重新问一次：客户端 IP 那一栏靠它 / Ask the freshly started kernel for its capabilities again: the client IP field depends on them
+  try {
+    const overview = await apiRequest<Overview>('/api/v1/overview')
+    configGeneration.value = overview.active_config?.generation ?? null
+    canClient.value = Boolean(overview.live && overview.health?.capabilities.includes('diagnostics_trace_client_v1'))
+  } catch { /* 下次进页面再读 / read again on the next visit */ }
+}
 onMounted(async () => {
-  const [overview, kernel] = await Promise.allSettled([apiRequest<Overview>('/api/v1/overview'), apiRequest<KixdnsKernel>('/api/v1/kixdns/kernel')])
+  const [overview, kernel, config] = await Promise.allSettled([apiRequest<Overview>('/api/v1/overview'), apiRequest<KixdnsKernel>('/api/v1/kixdns/kernel'), apiRequest<ConfigDocument>('/api/v1/config')])
   if (overview.status === 'fulfilled') {
     configGeneration.value = overview.value.active_config?.generation ?? null
     canClient.value = Boolean(overview.value.live && overview.value.health?.capabilities.includes('diagnostics_trace_client_v1'))
+    stopped.value = overview.value.service_active === false
   }
   if (kernel.status === 'fulfilled' && kernel.value.binary_present) kernelLabel.value = formatKixdnsVersion(kernel.value.active)
+  if (config.status === 'fulfilled') {
+    try { names.value = traceNames(readConfig(config.value.content).model) } catch { names.value = null }
+  }
 })
 const clock = (date: Date) => date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
 const steps = computed(() => result.value?.trace_supported ? result.value.trace : [])
@@ -74,12 +95,12 @@ const rows = computed(() => {
   if (row.kind === 'step') {
     // 只有命中规则这一步打勾：它定下了请求怎么走；应答成功是结果栏的事，节点用普通的点
     // Only the matched-rule step gets a check, since it decides the route; a successful reply belongs to the result band, so its node is a plain dot
-    const view = { ...describeStep(row.step, { target }), tone: traceTone(row.step.status), decides: row.step.stage === 'rule' && row.step.status === 'matched', idle: stepIdle(row.step.status), elapsed: (row.sent ?? row.step).elapsed_ms }
+    const view = { ...describeStep(row.step, { target, names: names.value }), tone: traceTone(row.step.status), decides: row.step.stage === 'rule' && row.step.status === 'matched', idle: stepIdle(row.step.status), elapsed: (row.sent ?? row.step).elapsed_ms }
     target = forwardTarget(row.sent ?? row.step) ?? target
     return view
   }
-  const names: TextPart[] = row.steps.flatMap((step, index) => (index ? [{ text: '、' }, { text: step.label, mono: true }] : [{ text: step.label, mono: true }]))
-  return { lead: [{ text: `${row.steps.length} 条规则未命中` }], note: names, tone: 'neutral' as const, decides: false, idle: true, elapsed: row.steps[row.steps.length - 1]!.elapsed_ms }
+  const missed: TextPart[] = row.steps.flatMap((step, index) => [...(index ? [{ text: '、' }] : []), ...ruleName(step.label, names.value)])
+  return { lead: [{ text: `${row.steps.length} 条规则未命中` }], note: missed, tone: 'neutral' as const, decides: false, idle: true, elapsed: row.steps[row.steps.length - 1]!.elapsed_ms }
   })
 })
 
@@ -111,8 +132,8 @@ async function run(): Promise<void> {
       ...jsonBody({ domain: query, record_type: recordType.value, ...(client ? { client_ip: client } : {}) }),
     })
   } catch (error) {
+    // 失败写在结果的位置上就够了，再弹一条不会自己消失的提示是说两遍 / The failure in the result's place is enough; a toast that never clears would say it twice
     queryError.value = errorMessage(error)
-    toast.error(queryError.value)
   } finally {
     running.value = false
     if (keepFocus) domainInput.value?.focus()
@@ -148,6 +169,8 @@ async function run(): Promise<void> {
       <p v-if="clientProblem" id="diag-client-err" class="ui-field-error diag-client-err">{{ clientProblem }}</p>
     </section>
 
+    <!-- KixDNS 停着时先说一句，并且就地能启动 / When KixDNS is stopped, say so first and offer to start it here -->
+    <div v-if="stopped" class="ui-notice ui-notice--off" role="status"><Power :size="16" aria-hidden="true" /><span>KixDNS 已停止</span><small>启动后才能查询</small><button class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="starting" :aria-busy="starting || undefined" @click="startKixdns"><span v-if="starting" class="ui-spin" aria-hidden="true"></span>启动 KixDNS</button></div>
     <!-- 等待时给骨架而不是转圈：骨架的分块和结果一致，数据到达时版面不跳。 -->
     <div v-if="running" class="diag-skeleton" role="status" aria-label="正在等待 DNS 响应">
       <div class="sk diag-skeleton-verdict"></div>
@@ -170,12 +193,13 @@ async function run(): Promise<void> {
               <span v-else-if="!answer.fields" class="diag-record-meta">原始记录</span>
             </span>
           </div>
-          <p v-else class="diag-empty-answers">没有 Answer 记录</p>
+          <p v-else class="diag-empty-answers">没有返回记录</p>
           <button type="button" class="diag-raw-toggle" :aria-expanded="rawOpen" aria-controls="diag-raw" @click="rawOpen = !rawOpen">原始响应<ChevronDown :size="16" aria-hidden="true" /></button>
         </div>
-        <!-- 一行事实：耗时、类型、TTL、截断与否、服务器，用分隔点隔开 / One line of facts: time, type, TTL, truncation, server, dot-separated -->
-        <p class="ui-dots diag-outcome-facts"><span>{{ formatElapsed(result.elapsed_ms) }}</span><template v-if="uniformMeta"><span>{{ uniformMeta.type }}</span><span>TTL {{ uniformMeta.ttl }} 秒</span></template><span>{{ result.truncated ? '已截断' : '未截断' }}</span><span>服务器 {{ result.server }}</span></p>
-        <div v-if="rawOpen" id="diag-raw" class="diag-raw-response"><p v-if="!answers.length">没有 Answer 记录。</p><pre v-for="(answer, index) in result.answers" :key="index">{{ answer }}</pre></div>
+        <!-- 一行事实：类型、TTL，截断了才说。耗时在执行路径最后一行的右端；没有路径时才写在这里，连同问的是哪台服务器
+             One line of facts: type and TTL, truncation only when it happened. The time ends the path's last row; only without a path does it go here, with the server asked -->
+        <p v-if="uniformMeta || result.truncated || !steps.length" class="ui-dots diag-outcome-facts"><template v-if="!steps.length"><span>{{ formatElapsed(result.elapsed_ms) }}</span></template><template v-if="uniformMeta"><span>{{ uniformMeta.type }}</span><span>TTL {{ uniformMeta.ttl }} 秒</span></template><span v-if="result.truncated">已截断</span><span v-if="!steps.length">服务器 {{ result.server }}</span></p>
+        <div v-if="rawOpen" id="diag-raw" class="diag-raw-response"><p v-if="!answers.length">没有返回记录。</p><pre v-for="(answer, index) in result.answers" :key="index">{{ answer }}</pre></div>
       </section>
 
       <!-- 执行路径卡：概览那套小标签，下面一句说时间是累计的；读数字之前先知道这一点。
@@ -198,11 +222,11 @@ async function run(): Promise<void> {
             </div>
           </li>
         </ol>
-        <p v-else class="diag-note">本次查询没有返回执行轨迹。</p>
-        <p v-if="result.trace_truncated" class="diag-trace-warning">执行轨迹已截断；当前展示的是部分阶段，不代表完整解析路径。</p>
+        <p v-else class="diag-note">这次查询没有返回执行路径。</p>
+        <p v-if="result.trace_truncated" class="diag-trace-warning">执行路径不完整，只显示了前面一部分。</p>
       </section>
       <section v-else class="ui-card diag-trace-unavailable">
-        <UiEmpty :icon="Network" title="当前内核仅支持基础查询" desc="升级到包含 diagnostics_trace_v1 的增强版后，可查看规则命中与上游路径。" />
+        <UiEmpty :icon="Network" title="当前内核仅支持基础查询" desc="更新内核后可以看到命中了哪条规则、问了哪个上游。" />
       </section>
     </div>
     <!-- 空页面和别的卡片一样从内容左边读起：小标签、一句说明，下面三个能直接点的例子是一行一个的列表，不是居中的一小撮

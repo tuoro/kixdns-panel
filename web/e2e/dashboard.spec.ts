@@ -86,7 +86,7 @@ test('首页展示精确分布，页签可用键盘切换且完整保留三个�
   await page.keyboard.press('End')
   await expect(page.getByRole('tab', { name: '规则命中' })).toBeFocused()
   await expect(page.locator('.overview-rule')).toHaveCount(4)
-  await expect(page.locator('.overview-rule').filter({ hasText: 'accept-noerror' })).toContainText('响应')
+  await expect(page.locator('.overview-rule').filter({ hasText: 'accept-noerror' })).toContainText('回答后')
   // 按执行次数降序 / Sorted by count, highest first
   const counts = (await page.locator('.overview-rule-count').allTextContents()).map((text) => Number(text.replace(/,/g, '')))
   expect(counts).toEqual([...counts].sort((left, right) => right - left))
@@ -151,9 +151,9 @@ test('首次未启动保留空态视图但禁止运行时操作', async ({ page 
   await expect(page.locator('.overview-ranking .overview-empty')).toHaveText(['尚无数据', '尚无数据'])
   await expect(page.locator('#overview-panel-stats .overview-toolbar')).toHaveCount(0)
   await page.getByRole('tab', { name: '规则命中' }).click()
-  await expect(page.getByText('还没有规则执行过', { exact: true })).toBeVisible()
+  await expect(page.getByText('还没有规则命中过', { exact: true })).toBeVisible()
   // 空表不带「累计执行次数」那行说明 / An empty table carries no caption about execution counts
-  await expect(page.getByText('请求与响应阶段的累计执行次数')).toHaveCount(0)
+  await expect(page.getByText('请求和回答后两个阶段的命中次数')).toHaveCount(0)
 })
 
 for (const stopped of [true, false]) {

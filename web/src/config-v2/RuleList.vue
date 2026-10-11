@@ -136,6 +136,8 @@ onBeforeUnmount(() => window.removeEventListener('pointermove', onMove))
       <li v-if="dropAt === visible.length" class="rlist__drop" aria-hidden="true"></li>
     </ol>
     <p v-if="filtered && !visible.length" class="rlist__none">没有符合的规则</p>
+    <!-- 一条规则都没有时的说明放在表头下面、「其余请求」上面，和规则排在同一处 / With no rules at all, the note sits under the header and above 其余请求, where rules would be -->
+    <slot v-if="!rules.length" name="empty" />
     <div class="rpin rpin--rest" :class="{ 'is-hit': restMark }">
       <span class="rrow__num"><ArrowDownToLine :size="14" aria-hidden="true" /></span>
       <span class="rrow__main rrow__main--static">

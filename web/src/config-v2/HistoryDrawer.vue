@@ -6,6 +6,7 @@ import UiMenu from '../components/ui/UiMenu.vue'
 import { useConfirm } from '../composables/useConfirm'
 import { useToast } from '../composables/useToast'
 import { diffModels, type DiffBlock } from '../config-model/diff'
+import DiffBlocks from './DiffBlocks.vue'
 import { readConfig } from '../config-model/document'
 import { errorMessage, formatVersionTime } from '../utils'
 import RuleText from './RuleText.vue'
@@ -151,10 +152,7 @@ function onRuleLink(id: number): void { dialog.value?.close(); emit('rule', id) 
         <div class="pdialog__body diffd__body">
           <template v-if="blocks && blocks.length">
             <p class="diffd__legend">恢复这个版本：<span class="diffd__sign">−</span> 去掉 <span class="diffd__sign">+</span> 加上</p>
-            <section v-for="(b, i) in blocks" :key="i" class="diffd__block">
-              <h3><span class="diffd__kind">{{ b.kind }}</span>{{ b.title }}<small v-if="b.note">{{ b.note }}</small></h3>
-              <ul><li v-for="(l, j) in b.lines" :key="j" :class="l.sign === '+' ? 'is-add' : 'is-del'"><span class="diffd__sign" aria-hidden="true">{{ l.sign === '+' ? '+' : '−' }}</span><span class="visually-hidden">{{ l.sign === '+' ? '加上' : '去掉' }}</span>{{ l.text }}</li></ul>
-            </section>
+            <DiffBlocks :blocks="blocks" />
           </template>
           <p v-else-if="blocks" class="hist__empty">这个版本和当前的配置一样，恢复它不会改变什么。</p>
         </div>

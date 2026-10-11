@@ -7,7 +7,8 @@ import type { DnsDiagnostic } from '../api/types'
 import UiSelect from '../components/ui/UiSelect.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
 import { compile, isIp } from '../config-model/model'
-import { describeStep, forwardTarget, formatElapsed, groupTrace, isDnsSuccess, parseDnsAnswer, responseCodeName, traceTone, type TextPart } from '../diagnostics'
+import { traceNames } from '../config-model/trace-names'
+import { describeStep, forwardTarget, formatElapsed, groupTrace, isDnsSuccess, parseDnsAnswer, responseCodeName, ruleName, traceTone, type TextPart } from '../diagnostics'
 import { errorMessage } from '../utils'
 import { dirty, findRuleByName, model } from './store'
 import { runtimeCapabilities } from './useConfigDocument'
@@ -76,16 +77,18 @@ const verdict = computed(() => {
 })
 // 执行路径的每一行，和诊断页同一种整理：连着的未命中规则并成一行，只有命中规则那一步打勾 / The path's rows, folded as on the diagnostics page: consecutive misses share a row, only the matched rule gets a check
 const stepIdle = (status: string) => ['miss', 'missed', 'skipped'].includes(status)
+// 路径里的规则和规则组写配置页上的名字，不写内核的 rule-1、main / The path names rules and rule groups as the config page does, not as the kernel's rule-1 or main
+const names = computed(() => traceNames(model))
 const rows = computed(() => {
   let target: string | null = null
   return groupTrace(result.value?.trace_supported ? result.value.trace : []).map((row) => {
     if (row.kind === 'step') {
-      const view = { ...describeStep(row.step, { target }), tone: traceTone(row.step.status), decides: row.step.stage === 'rule' && row.step.status === 'matched', idle: stepIdle(row.step.status), elapsed: (row.sent ?? row.step).elapsed_ms }
+      const view = { ...describeStep(row.step, { target, names: names.value }), tone: traceTone(row.step.status), decides: row.step.stage === 'rule' && row.step.status === 'matched', idle: stepIdle(row.step.status), elapsed: (row.sent ?? row.step).elapsed_ms }
       target = forwardTarget(row.sent ?? row.step) ?? target
       return view
     }
-    const names: TextPart[] = row.steps.flatMap((step, index) => (index ? [{ text: '、' }, { text: step.label, mono: true }] : [{ text: step.label, mono: true }]))
-    return { lead: [{ text: `${row.steps.length} 条规则未命中` }], note: names, tone: 'neutral' as const, decides: false, idle: true, elapsed: row.steps[row.steps.length - 1]!.elapsed_ms }
+    const missed: TextPart[] = row.steps.flatMap((step, index) => [...(index ? [{ text: '、' }] : []), ...ruleName(step.label, names.value)])
+    return { lead: [{ text: `${row.steps.length} 条规则未命中` }], note: missed, tone: 'neutral' as const, decides: false, idle: true, elapsed: row.steps[row.steps.length - 1]!.elapsed_ms }
   })
 })
 </script>

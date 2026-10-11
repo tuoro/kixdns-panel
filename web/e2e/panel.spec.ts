@@ -32,7 +32,7 @@ test('首次未启动时保留完整概览布局', async ({ page }) => {
   // 页签已经写了「规则命中」，下面不再重复同名标题；页签内容照样在 / The tab names 规则命中, so no repeated heading below; the panel is still there
   await page.getByRole('tab', { name: '规则命中', exact: true }).click()
   await expect(page.getByRole('tabpanel', { name: '规则命中' })).toBeVisible()
-  await expect(page.getByText('还没有规则执行过', { exact: true })).toBeVisible()
+  await expect(page.getByText('还没有规则命中过', { exact: true })).toBeVisible()
 })
 
 test('Geo 维护结果离开页面后销毁', async ({ page }) => {
@@ -165,8 +165,12 @@ test('内核检查失败时面板更新照常提示 @responsive', async ({ page 
   await page.addInitScript(() => localStorage.setItem('kixdns:demo-kernel-check-failed', 'true'))
   await open(page, '/system')
   const [kernelRow, panelRow] = [page.locator('.update-row').first(), page.locator('.update-row').nth(1)]
-  await expect(kernelRow.locator('.update-row__from-to')).toContainText('检查失败：GitHub 匿名 API 配额已用尽')
-  await expect(kernelRow.getByRole('button')).toHaveCount(0)
+  await expect(kernelRow.locator('.update-row__from-to')).toContainText('检查失败：GitHub 匿名访问次数用完了')
+  // 不知道最新版本就不给「更新」；行里唯一的按钮是去填 Token 的，点了焦点落到 Token 输入框
+  // No 更新 without a known latest build; the row's only button leads to the token field and focuses it
+  await expect(kernelRow.getByRole('button')).toHaveCount(1)
+  await kernelRow.getByRole('button', { name: '填写 Token', exact: true }).click()
+  await expect(page.getByLabel('GitHub Token', { exact: true })).toBeFocused()
   await expect(panelRow.locator('.update-row__from-to')).toContainText('v1.0.0 → v1.0.1')
   await expect(panelRow.getByRole('button', { name: '在线更新' })).toBeVisible()
   // 回退只用本机的版本，读不到远端时照样能回。 / Rollback uses only local versions, so it still works offline.
@@ -208,7 +212,7 @@ test('操作审计可按动作筛选', async ({ page }) => {
   await expect(page.locator('.audit-line')).toHaveCount(3)
   await page.getByLabel('筛选操作审计').fill('schedule')
   await expect(page.locator('.audit-line')).toHaveCount(1)
-  await expect(page.locator('.audit-line')).toContainText('config.geo_data.schedule.apply')
+  await expect(page.locator('.audit-line')).toContainText('定时更新 Geo 数据')
 })
 
 test('运行日志的级别筛选由服务端执行', async ({ page }) => {

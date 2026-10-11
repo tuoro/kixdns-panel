@@ -254,7 +254,7 @@ impl UpdateManager {
         let rate_limit = parse_rate_limit(response.headers());
         if response.status() == reqwest::StatusCode::FORBIDDEN {
             let message = if rate_limit.as_ref().is_some_and(|rate| rate.remaining == 0) {
-                "GitHub Token 的 API 配额已用尽，请等待重置或更换 Token"
+                "GitHub Token 的访问次数用完了，等配额重置或换一个 Token"
             } else {
                 "GitHub 拒绝验证该 Token，请检查访问策略"
             };
@@ -393,16 +393,16 @@ impl UpdateManager {
             *self.github_rate_limit.write().await = Some(rate_limit.clone());
             if response.status() == reqwest::StatusCode::FORBIDDEN && rate_limit.remaining == 0 {
                 let message = if token.is_some() {
-                    "GitHub Token 的 API 配额已用尽，请等待重置或更换 Token"
+                    "GitHub Token 的访问次数用完了，等配额重置或换一个 Token"
                 } else {
-                    "GitHub 匿名 API 配额已用尽，请在系统页配置 GitHub Token"
+                    "GitHub 匿名访问次数用完了，填写 GitHub Token 后再检查"
                 };
                 return Err(UpdateError::Network(message.to_owned()));
             }
         }
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
             return Err(UpdateError::Network(
-                "GitHub Token 已失效，请在系统页重新配置".to_owned(),
+                "GitHub Token 已失效，换一个新的 Token 后再检查".to_owned(),
             ));
         }
         if response.status() == reqwest::StatusCode::NOT_FOUND {

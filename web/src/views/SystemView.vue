@@ -48,6 +48,14 @@ const panelUpdate = ref<PanelUpdateStatus | null>(null)
 const startingPanelUpdate = ref(false)
 const githubTokenStatus = ref<GithubTokenStatus | null>(null)
 const githubToken = ref('')
+// 检查失败是因为 GitHub 限了匿名访问或 Token 失效时，原因旁边给一个直接去填 Token 的按钮
+// When a check failed because GitHub limited anonymous access or the token went bad, the reason carries a button straight to the token field
+const tokenInput = ref<HTMLInputElement | null>(null)
+const needsToken = (error: string | null | undefined) => Boolean(error && /GitHub Token|GitHub 匿名/.test(error))
+function focusToken(): void {
+  tokenInput.value?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  tokenInput.value?.focus({ preventScroll: true })
+}
 const githubTokenVisible = ref(false)
 const githubTokenBusy = ref(false)
 const githubTokenError = ref('')
@@ -323,7 +331,7 @@ async function startPanelUpdate(): Promise<void> {
   const version = panelNotice.value?.latest_version
   if (!version || !await confirm.ask({
     title: `在线更新面板到 v${version}`,
-    body: '面板会短暂重启，这期间控制台暂时打不开。KixDNS 服务、配置和当前运行状态都保持不变。',
+    body: '面板会短暂重启，这期间面板暂时打不开。KixDNS 服务、配置和当前运行状态都保持不变。',
     confirmLabel: `更新到 v${version}`,
   })) return
   startingPanelUpdate.value = true
@@ -500,7 +508,7 @@ onBeforeUnmount(() => {
         <button v-if="!running" class="ui-btn ui-btn--secondary" type="button" :disabled="!installed || serviceAction !== null" @click="control('start')"><Play :size="16" />启动</button>
         <template v-else>
           <button class="ui-btn ui-btn--secondary" type="button" :disabled="!installed || serviceAction !== null" @click="control('restart')"><RotateCw :size="16" :class="{ spin: serviceAction === 'restart' }" />重启</button>
-          <button class="ui-btn ui-btn--danger" type="button" :disabled="serviceAction !== null" @click="control('stop')"><Square :size="15" />停止</button>
+          <button class="ui-btn ui-btn--danger" type="button" :disabled="serviceAction !== null" @click="control('stop')"><Square :size="16" />停止</button>
         </template>
       </template>
     </UiPageHeader>
@@ -519,7 +527,7 @@ onBeforeUnmount(() => {
           <template #meta>
             <span class="update-row__from-to">
               <template v-if="kernelAction === 'update'">正在下载、校验并切换内核</template>
-              <span v-else-if="!kixdnsNotice" class="system-stale">检查失败：{{ updateStatus.kixdns_error ?? '原因未知' }}</span>
+              <span v-else-if="!kixdnsNotice" class="system-stale">检查失败：{{ updateStatus.kixdns_error ?? '原因未知' }}<button v-if="needsToken(updateStatus.kixdns_error)" class="ui-btn ui-btn--text ui-btn--sm system-stale__act" type="button" @click="focusToken">填写 Token</button></span>
               <!-- 只在新旧版本之间断行，「→」「·」跟着后一段走：不会挂在行尾 / Lines break only between the two versions, and 「→」/「·」 travel with what follows, so neither is left at a line end -->
               <template v-else-if="kixdnsNotice.available && kixdnsNotice.security_update"><span class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span> <span class="update-row__keep">依赖安全升级<template v-if="kixdnsNotice.dependency_revision"> · <span class="ui-num">r{{ kixdnsNotice.dependency_revision }}</span></template></span></template>
               <template v-else-if="kixdnsNotice.available"><span class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span> <span class="update-row__keep">→ <span class="ui-num">{{ latestKixdnsVersion() }}</span></span></template>
@@ -540,7 +548,7 @@ onBeforeUnmount(() => {
           <template #meta>
             <span class="update-row__from-to">
               <template v-if="panelUpdateRunning">{{ panelUpdateLabel() }}</template>
-              <span v-else-if="!panelNotice" class="system-stale">检查失败：{{ updateStatus.panel_error ?? '原因未知' }}</span>
+              <span v-else-if="!panelNotice" class="system-stale">检查失败：{{ updateStatus.panel_error ?? '原因未知' }}<button v-if="needsToken(updateStatus.panel_error)" class="ui-btn ui-btn--text ui-btn--sm system-stale__act" type="button" @click="focusToken">填写 Token</button></span>
               <template v-else-if="panelNotice.available"><span class="ui-num">{{ panelNotice.current_release ?? `v${panelNotice.current_version}` }}</span> <span class="update-row__keep">→ <span class="ui-num">v{{ panelNotice.latest_version }}</span></span></template>
               <template v-else>{{ panelUpdateLabel() }}</template>
             </span>
@@ -621,8 +629,8 @@ onBeforeUnmount(() => {
                  The placeholder fits the width measured at 375; one example that fits is enough. -->
             <label class="ui-input credential-input">
               <KeyRound :size="16" aria-hidden="true" />
-              <input v-model="githubToken" :type="githubTokenVisible ? 'text' : 'password'" :placeholder="githubTokenStatus?.configured ? '输入新 Token' : 'github_pat_…'" autocomplete="new-password" maxlength="256" aria-label="GitHub Token" :disabled="githubTokenBusy" @keyup.enter="saveGithubToken">
-              <button class="credential-eye" type="button" :title="githubTokenVisible ? '隐藏 Token' : '显示 Token'" :aria-label="githubTokenVisible ? '隐藏 Token' : '显示 Token'" @click="githubTokenVisible = !githubTokenVisible"><EyeOff v-if="githubTokenVisible" :size="15" /><Eye v-else :size="15" /></button>
+              <input ref="tokenInput" v-model="githubToken" :type="githubTokenVisible ? 'text' : 'password'" :placeholder="githubTokenStatus?.configured ? '输入新 Token' : 'github_pat_…'" autocomplete="new-password" maxlength="256" aria-label="GitHub Token" :disabled="githubTokenBusy" @keyup.enter="saveGithubToken">
+              <button class="credential-eye" type="button" :title="githubTokenVisible ? '隐藏 Token' : '显示 Token'" :aria-label="githubTokenVisible ? '隐藏 Token' : '显示 Token'" @click="githubTokenVisible = !githubTokenVisible"><EyeOff v-if="githubTokenVisible" :size="16" /><Eye v-else :size="16" /></button>
             </label>
             <button class="ui-btn ui-btn--secondary" type="button" :disabled="!githubToken || githubTokenBusy" @click="saveGithubToken">{{ githubTokenBusy ? '处理中' : (githubTokenStatus?.configured ? '替换' : '保存') }}</button>
             <button class="ui-btn ui-btn--danger ui-btn--icon" type="button" title="删除 Token" aria-label="删除 Token" :disabled="!githubTokenStatus?.configured || githubTokenBusy" @click="deleteGithubToken"><Trash2 :size="16" /></button>

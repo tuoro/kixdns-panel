@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ArrowDown, ArrowLeft, Ban, ChevronDown, ChevronRight, CornerDownRight, Info, MessageSquareText, Server, Trash2 } from '@lucide/vue'
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import JsonEditor from '../components/JsonEditor.vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import { useConfirm } from '../composables/useConfirm'
+import { useBarHeight } from '../composables/useBarHeight'
+import { useToast } from '../composables/useToast'
 import UiTabs from '../components/ui/UiTabs.vue'
 import UiHelp from '../components/ui/UiHelp.vue'
 import { REQUEST_ORDER, RESPONSE_ORDER } from '../config-model/condKinds'
@@ -23,6 +24,8 @@ import RawRuleEditor from './RawRuleEditor.vue'
 import { hitsOf, listOf, model, newId } from './store'
 import { runtimeCapabilities } from './useConfigDocument'
 import { editedText, groupBrief } from './view'
+// JSON 编辑器（CodeMirror）只在用到时才加载：配置页的首包不带它 / The JSON editor (CodeMirror) loads on first use, so the config page's first chunk leaves it out
+const JsonEditor = defineAsyncComponent(() => import('../components/JsonEditor.vue'))
 
 // 编辑一条规则：左边是「如果 / 那么 / 上游回答后 / 其他」，右边随时读出这条规则会做什么。
 // 改的是一份副本，点「完成」才写回草稿；写错的地方在原处标出来。
@@ -37,17 +40,41 @@ const original = props.ruleId !== null ? list.value.find((r) => r.id === props.r
 // 空白规则就是空的：不预填一行「域名」逼人先填域名，条件从「添加条件」里按需加 / A blank rule is blank: no pre-filled 域名 row demanding a domain first; conditions come from 添加条件 as needed
 const draft = reactive<Rule>(original ? JSON.parse(JSON.stringify(original)) as Rule : { ...newRule(newId(), { type: 'upstream', group: model.rest.type === 'upstream' ? model.rest.group : model.groups[0]?.id ?? '' }), ...JSON.parse(JSON.stringify(props.template ?? {})) as Partial<Rule> })
 // 离开前对照：改过就先问一句 / Compared on leaving: ask first if anything changed
-const initial = JSON.stringify(draft)
+let initial = JSON.stringify(draft)
 const confirm = useConfirm()
-async function leave(): Promise<void> {
-  if (JSON.stringify(draft) !== initial && !(await confirm.ask({ title: '放弃这条规则的修改', body: '刚才在这里改的内容不会写进草稿。', confirmLabel: '放弃修改', cancelLabel: '继续编辑' }))) return
-  emit('close')
+const toast = useToast()
+const foot = ref<HTMLElement | null>(null)
+useBarHeight(foot, '--editor-foot-h')
+// 高级规则的修改先在 rawRules / rawText 里，对照时一起算上 / An advanced rule's edits live in rawRules / rawText until 完成, so the comparison counts them too
+const edited = (): boolean => snapshot() !== initial
+// 换一条规则、换分区、点保存条之前，外面先问这一句；没改过就直接放行 / Asked from outside before switching rule or section; passes straight through when nothing changed
+async function confirmDiscard(): Promise<boolean> {
+  return !edited() || confirm.ask({ title: '放弃这条规则的修改', body: '刚才在这里改的内容不会写进草稿。', confirmLabel: '放弃修改', cancelLabel: '继续编辑' })
 }
+async function leave(): Promise<void> {
+  if (await confirmDiscard()) emit('close')
+}
+// 面板开着时，列表里还能停用、挪动、删除这条规则：开关和顺序跟着列表走，规则没了面板就关上
+// While the panel is open the list can still toggle, move or delete this rule: the switch and order follow the list, and the panel closes when the rule is gone
+const syncBase = (patch: Partial<Rule>): void => { initial = JSON.stringify({ ...JSON.parse(initial) as Rule, ...patch }) }
+watch(() => original?.enabled, (now, before) => {
+  if (now === undefined || before === undefined) return
+  if (draft.enabled === before) draft.enabled = now
+  syncBase({ enabled: now })
+})
+watch(() => (original ? list.value.indexOf(original) : -1), (now) => {
+  if (!original) return
+  if (now < 0) emit('close')
+  else positionBase.value = now
+})
 // Esc 返回、Ctrl/Cmd+Enter 完成；对话框开着时不抢 / Esc goes back, Ctrl/Cmd+Enter finishes; not while a dialog is open
 function onKey(event: KeyboardEvent): void {
   if (document.querySelector('dialog[open]')) return
   if (event.key === 'Escape' && !(event.target instanceof HTMLElement && event.target.closest('[role="menu"]'))) { event.preventDefault(); void leave() }
   else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); done() }
+  // 整页编辑时保存条不在：Ctrl+S 说一句该怎么做，不让浏览器弹「另存网页」；面板里的 Ctrl+S 交给保存条
+  // In the full-page editor the save bar is not on screen: Ctrl+S says what to do instead of opening the browser's save-page dialog; in the panel the save bar handles it
+  else if (!props.inspector && event.key.toLowerCase() === 's' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); toast.info(`先点「${original ? '完成' : '新建'}」把这条规则放进草稿，再保存`) }
 }
 onMounted(() => window.addEventListener('keydown', onKey))
 onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
@@ -76,6 +103,13 @@ function setRawMode(next: string): void {
 }
 // 当前这一种写法里的内核规则 / The kernel rules as the active view holds them
 const currentRaw = (): Record<string, unknown>[] => (rawMode.value === 'form' ? JSON.parse(JSON.stringify(rawRules)) as Record<string, unknown>[] : JSON.parse(rawText.value) as Record<string, unknown>[])
+function snapshot(): string {
+  if (!draft.raw) return JSON.stringify(draft)
+  let raw: unknown
+  try { raw = currentRaw() } catch { raw = rawText.value }
+  return JSON.stringify({ ...draft, raw })
+}
+initial = snapshot()
 // 表单里写错的字段由条件表 / 动作表自己标红，这里只数出来给底栏 / The lists mark bad fields themselves; this only counts them for the footer
 const kernelPipelines = computed<PipelineConfig[]>(() => compile(model).pipelines.map((p) => ({ id: p.id, rules: [] })))
 const ownPipelineId = computed(() => { const g = props.groupId ?? (props.ruleId !== null ? listOf(props.ruleId).group?.id ?? null : null); return g ? ruleGroupPipelineId(model, g) : mainPipelineId(model) })
@@ -89,6 +123,9 @@ const rawFieldProblems = computed(() => {
     + (r.name.trim() ? 0 : 1), 0)
 })
 const position = ref(original ? list.value.indexOf(original) : list.value.length)
+// 列表里挪过这条规则：没在这里改过顺序就跟着挪 / The list moved this rule: follow it unless the order was changed here
+const positionBase = ref(position.value)
+watch(positionBase, (now, before) => { if (position.value === before) position.value = now })
 const showErrors = ref(false)
 const problems = computed(() => [...ruleProblems(model, draft), ...(rawError.value ? [`内核规则写错了：${rawError.value}`] : []), ...(rawFieldProblems.value ? [`内核规则里有 ${rawFieldProblems.value} 处没填对（标红的那些）`] : [])])
 const nameInput = ref<HTMLInputElement | null>(null)
@@ -241,11 +278,22 @@ function done(): void {
   draft.name = draft.name.trim()
   draft.edited = new Date().toISOString()
   const target = list.value
+  const at = original ? target.indexOf(original) : -1
+  // 规则在别处被删了：不写回，免得 splice(-1) 删掉最后一条 / The rule was deleted elsewhere: write nothing back, or splice(-1) would drop the last rule
+  if (original && at < 0) { emit('close'); return }
   const saved = JSON.parse(JSON.stringify(draft)) as Rule
-  if (original) target.splice(target.indexOf(original), 1)
+  if (original) target.splice(at, 1)
   target.splice(Math.min(Number(position.value), target.length), 0, saved)
   emit('saved', saved, !original)
 }
+// 保存条要保存时先把面板里的修改收进草稿；写错了就停在面板里指出来 / Before the save bar saves, the panel's edits go into the draft; if something is wrong the panel stops and points at it
+function commit(): boolean {
+  if (!edited()) return true
+  if (problems.value.length) { showErrors.value = true; revealProblem(); return false }
+  done()
+  return true
+}
+defineExpose({ confirmDiscard, commit })
 function remove(): void {
   if (!original) return
   const target = list.value
@@ -278,7 +326,7 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
     <div class="editor__grid">
       <div class="editor__main">
         <section v-if="draft.raw" class="ecard" :class="{ 'ui-card': !inspector }" aria-labelledby="ec-raw">
-          <header class="ecard__head ecard__head--raw"><div><h2 id="ec-raw" class="ecard__title">内核规则<UiHelp topic="raw" /></h2><p class="ecard__desc">这条规则放不进上面那些写法（比如回答阶段先记日志再接着匹配），原样保留。这里改的就是 KixDNS 直接读的规则，保存前会校验。</p></div><UiTabs class="ecard__rawmode" :model-value="rawMode" :items="rawModes" label="内核规则的写法" variant="segment" @update:model-value="setRawMode" /></header>
+          <header class="ecard__head ecard__head--raw"><div><h2 id="ec-raw" class="ecard__title">高级规则<UiHelp topic="raw" /></h2><p class="ecard__desc">这条规则放不进上面那些写法（比如回答阶段先记日志再接着匹配），原样保留。这里改的就是 KixDNS 直接读的规则，保存前会校验。</p></div><UiTabs class="ecard__rawmode" :model-value="rawMode" :items="rawModes" label="内核规则的写法" variant="segment" @update:model-value="setRawMode" /></header>
           <div class="ecard__body">
             <RawRuleEditor v-if="rawMode === 'form'" v-model="rawRules" :pipelines="kernelPipelines" :current-pipeline-id="ownPipelineId" :capabilities="runtimeCapabilities" :show-errors="showErrors" />
             <template v-else><JsonEditor v-model="rawText" :error-line="undefined" /><p v-if="rawError" class="ui-field-error" aria-live="polite">{{ rawError }}</p></template>
@@ -321,9 +369,9 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
 
         <section v-if="!draft.raw && draft.outcome.type === 'upstream'" class="ecard" :class="{ 'ui-card': !inspector, 'is-folded': inspector && !open.after }" aria-labelledby="ec-after">
           <header v-if="inspector" class="ecard__head ecard__head--fold ecard__head--stretch" :class="{ 'is-open': open.after }"><h2 id="ec-after" class="ecard__title"><button class="ecard__fold-btn" type="button" :aria-expanded="open.after" aria-controls="ec-after-body" aria-describedby="ec-after-sum" @click="open.after = !open.after">回答后检查</button></h2><UiHelp topic="after" /><span id="ec-after-sum" class="ecard__sum">{{ afterSummary }}</span><ChevronRight class="ecard__chev" :size="16" aria-hidden="true" /></header>
-          <header v-else class="ecard__head"><h2 id="ec-after" class="ecard__title">回答后检查<UiHelp topic="after" /></h2><p class="ecard__desc">回答发出前再检查一次，比如被污染时改问别的组。</p></header>
+          <header v-else class="ecard__head"><h2 id="ec-after" class="ecard__title">回答后检查<UiHelp topic="after" /></h2><p class="ecard__desc">拿到上游的回答后、发给客户端前再检查一次，比如结果被污染时改问别的组。</p></header>
           <div v-show="!inspector || open.after" id="ec-after-body" class="ecard__body">
-            <UiTabs v-model="draft.response.mode" :items="responseModes" label="上游回答后" variant="segment" />
+            <UiTabs v-model="draft.response.mode" :items="responseModes" label="回答后检查" variant="segment" />
             <div v-if="draft.response.mode === 'inherit'" class="after__inherit">
               <p v-if="upstreamGroup && fallbackSentence(model, upstreamGroup)">「{{ upstreamGroup.name }}」组：{{ fallbackSentence(model, upstreamGroup) }}</p>
               <p v-else-if="upstreamGroup">「{{ upstreamGroup.name }}」组没设备用，上游回什么就返回什么。</p>
@@ -464,13 +512,13 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
 
     <!-- 手机上删除不放在「取消」旁边，放在内容最后一行 / On phones delete never sits beside 取消; it closes the content instead -->
     <button v-if="original" class="ui-btn ui-btn--text editor__delete-row" type="button" @click="remove"><Trash2 :size="16" aria-hidden="true" />删除这条规则</button>
-    <footer class="editor__foot">
+    <footer ref="foot" class="editor__foot">
       <button v-if="original" class="ui-btn ui-btn--text editor__delete" type="button" @click="remove"><Trash2 :size="16" aria-hidden="true" />删除规则</button>
       <button v-if="showErrors && problems.length" class="editor__problem" type="button" role="alert" @click="revealProblem">还有 {{ problems.length }} 处要改：{{ problems[0] }}</button>
       <span class="editor__spacer"></span>
-      <span v-if="!inspector" class="editor__keys" aria-hidden="true">Ctrl+Enter 完成 · Esc 返回</span>
+      <span v-if="!inspector" class="editor__keys" aria-hidden="true">Ctrl+Enter {{ original ? '完成' : '新建' }} · Esc 返回</span>
       <button class="ui-btn ui-btn--secondary" type="button" @click="leave">取消</button>
-      <button class="ui-btn ui-btn--primary" type="button" @click="done">{{ inspector ? '保存' : original ? '完成' : '添加规则' }}</button>
+      <button class="ui-btn ui-btn--primary" type="button" @click="done">{{ original ? '完成' : '新建' }}</button>
     </footer>
   </div>
 </template>

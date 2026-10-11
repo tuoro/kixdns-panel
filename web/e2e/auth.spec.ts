@@ -10,7 +10,7 @@ test.beforeEach(async ({ page }) => {
 
 test('登录页在认证前不暴露任何机器状态 @responsive', async ({ page }) => {
   await page.goto('/login')
-  await expect(page.getByRole('heading', { name: '登录控制台', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '登录面板', exact: true })).toBeVisible()
   const main = page.locator('.auth-page')
   await expect(main).toBeVisible()
 
@@ -20,9 +20,9 @@ test('登录页在认证前不暴露任何机器状态 @responsive', async ({ pa
   }
   await expect(page.locator('.auth-status')).toHaveCount(0)
 
-  // 省掉一次徒劳的点击：面板里没有找回功能，直接说清只能在宿主机上重置，比让人去找强。
-  // Save a futile click: there is no recovery in the panel, so it says outright that a reset happens on the host.
-  await expect(page.locator('.auth-security')).toContainText('忘记密码只能在宿主机上重置')
+  // 省掉一次徒劳的点击：面板里没有找回功能，直接说清要在面板所在的机器上重置，比让人去找强。
+  // Save a futile click: there is no recovery in the panel, so it says outright that a reset happens on the panel's machine.
+  await expect(page.locator('.auth-security')).toContainText('忘记密码需要在面板所在的机器上重置')
 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
 })
@@ -32,7 +32,7 @@ test('初始化页说明接下来会发生什么并承诺不覆盖已有配置 @
   await page.goto('/setup')
   await expect(page.getByRole('heading', { name: '创建管理员', exact: true })).toBeVisible()
   const steps = page.locator('.auth-next')
-  await expect(steps).toContainText('此时 KixDNS 还未被改动')
+  await expect(steps).toContainText('创建后直接进入面板')
   await expect(steps).toContainText('不会覆盖你已有的 KixDNS 配置')
   // 规则前置：不必等提交后才知道密码要 12 位。
   await expect(page.getByLabel('密码', { exact: true })).toHaveAttribute('placeholder', '至少 12 位')

@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { Braces, CircleHelp, Download, FileUp, History, RefreshCw, Settings2 } from '@lucide/vue'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
-import JsonEditor from '../components/JsonEditor.vue'
+import { Braces, CircleHelp, Download, FileUp, History, RefreshCw, Settings2, Undo2 } from '@lucide/vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
+import type JsonEditorType from '../components/JsonEditor.vue'
 import UiDotText from '../components/ui/UiDotText.vue'
 import UiMenu from '../components/ui/UiMenu.vue'
 import UiPageHeader from '../components/ui/UiPageHeader.vue'
@@ -22,13 +22,17 @@ import SaveBar from '../config-v2/SaveBar.vue'
 import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { usePhone, useWide } from '../config-v2/phone'
-import { dirty, importReport, importSource, model, replaceModel, reportOpen, ui } from '../config-v2/store'
+import { dirty, discardWithUndo, importReport, importSource, model, replaceModel, reportOpen, ui } from '../config-v2/store'
 import {
   applyBusy, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, friendlyRuntimeMessage, hasApplyFailure, headerAction, headerLine,
-  load, loadError, loading, pendingVersionId, runtimeStopped, runtimeUnavailable, unsupportedFields,
+  load, loadError, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields,
 } from '../config-v2/useConfigDocument'
 import { useHelp } from '../composables/useHelp'
+import { useServiceStart } from '../composables/useServiceStart'
+import { registerLeaveGuard, takeAgreement } from '../composables/useLeaveGuard'
 import '../styles/config-v2.css'
+// JSON 编辑器（CodeMirror）只在用到时才加载：配置页的首包不带它 / The JSON editor (CodeMirror) loads on first use, so the config page's first chunk leaves it out
+const JsonEditor = defineAsyncComponent(() => import('../components/JsonEditor.vue'))
 
 // 配置页：侧栏里的「规则 · 上游组 · 域名映射 · 基础设置」各是一页，这个文件是它们共用的外壳——页头的事实行、通知条、
 // JSON 视图、导入导出、历史版本、保存条。草稿在 config-v2/store.ts，文件和运行状态在 config-v2/useConfigDocument.ts。
@@ -65,10 +69,14 @@ function showGroupRules(groupId: string): void {
 }
 
 // ---------- 规则编辑 / editing rules ----------
-function openRule(ruleId: number | null, groupId: string | null, template?: Partial<Rule>): void {
+// 面板里那条规则改过还没点「完成」：换别的规则、新建之前先问 / The panel's rule has edits not yet 完成: ask before switching to another rule or a new one
+const inspectorRef = ref<InstanceType<typeof RuleEditor> | null>(null)
+async function openRule(ruleId: number | null, groupId: string | null, template?: Partial<Rule>): Promise<void> {
   if (ui.mode === 'json' && !leaveJson()) return
+  if (inspector.value && editor.value && (ruleId === null || editor.value.ruleId !== ruleId) && !(await inspectorRef.value?.confirmDiscard() ?? true)) return
   editor.value = { ruleId, groupId, template }
-  window.scrollTo({ top: 0 })
+  // 宽屏的面板贴在列表旁边，不跳回页顶，列表停在原处 / On wide screens the panel sits beside the list, so the list keeps its place
+  if (!(wide.value && section.value === 'rules')) window.scrollTo({ top: 0 })
 }
 function closeRule(): void {
   const id = editor.value?.ruleId
@@ -109,11 +117,12 @@ const notice = computed<Notice | null>(() => {
   if (hasApplyFailure.value) {
     const reason = doc.value?.runtime.pending_error || doc.value?.pending?.error || 'KixDNS 没有给出原因。'
     // 草稿有修改时不给「重试应用」：那时保存的是草稿，重试会把草稿当成失败的那个版本发出去 / No retry while the draft has changes: saving then sends the draft, not the version that failed
-    return { tone: 'err', text: pendingVersionId.value ? `KixDNS 没有接受版本 #${pendingVersionId.value}，仍在用之前那份配置。` : 'KixDNS 没有接受上次保存的版本，仍在用之前那份配置。', detail: friendlyRuntimeMessage(reason), action: canApplyNow.value && !dirty.value ? '重试应用' : undefined, run: applyNow }
+    return { tone: 'err', text: pendingVersionId.value ? `KixDNS 没有接受版本 #${pendingVersionId.value}，仍在用之前那份配置。` : 'KixDNS 没有接受上次保存的版本，仍在用之前那份配置。', detail: friendlyRuntimeMessage(reason), action: canApplyNow.value && !unsaved.value ? '重试应用' : undefined, run: applyNow }
   }
   if (applyError.value) { const [text, ...detail] = applyError.value.split('\n'); return { tone: 'err', text: `${text}。`, detail: detail.join('\n') } }
+  // 警告排在说明前面：永远不命中的规则比导入说明要紧 / Warnings rank above information: a rule that never matches matters more than the import notes
+  if (geoPrefixed.value) return { tone: 'warn', text: `${geoPrefixed.value} 个 GeoSite 条件多写了「geosite:」前缀，内核找不到这个分类，永远不会命中。`, action: '去掉前缀', run: stripPrefix }
   if (importReport.value && !reportOpen.value && importReport.value.stats.raw) return { tone: 'off', text: `这份配置是按内核格式读进来的，${importReport.value.stats.raw} 条规则原样保留为高级规则。`, action: '查看导入说明', run: () => { reportOpen.value = true } }
-  if (geoPrefixed.value) return { tone: 'warn', text: `${geoPrefixed.value} 个 GeoSite 条件写成了「geosite:分类」，内核照原样查，这几条永远匹配不上。`, action: '去掉前缀', run: stripPrefix }
   // 没运行、连不上时页头已经说了，功能列表拿不到是它的结果，不另起一条 / When stopped or unreachable the header says so; the missing feature list follows from it
   if (capabilityError.value && !runtimeStopped.value && !runtimeUnavailable.value) return { tone: 'off', text: 'KixDNS 没有报告它支持哪些功能，新功能先按不支持处理。' }
   if (!canCname.value && cnameInUse.value && !capabilityError.value) return { tone: 'warn', text: '当前 KixDNS 不支持固定 CNAME：已有的域名映射和规则会保留，先更新或切换内核再应用。' }
@@ -131,7 +140,7 @@ function stripPrefix(): void {
 // What is shown and edited here is the kernel's part (without panel); switching back re-reads it as a kernel config and carries names, notes and disabled rules over from the draft
 const jsonText = ref('')
 const jsonBase = ref('')
-const jsonEditor = ref<InstanceType<typeof JsonEditor> | null>(null)
+const jsonEditor = ref<InstanceType<typeof JsonEditorType> | null>(null)
 const jsonError = computed(() => (ui.mode === 'json' ? parseProblem(jsonText.value) : null))
 function parseProblem(text: string): { line: number; column: number; reason: string } | null {
   try {
@@ -151,19 +160,40 @@ function parseProblem(text: string): { line: number; column: number; reason: str
     return { line, column, reason }
   }
 }
+// JSON 里改过还没读回表单的部分也算草稿：保存条升起、离开要问、保存前先读回来
+// JSON edits not yet read back into the form count as draft too: the save bar rises, leaving asks, and a save reads them back first
+const jsonDirty = computed(() => ui.mode === 'json' && jsonText.value !== jsonBase.value)
+const unsaved = computed(() => dirty.value || jsonDirty.value)
+const compiledText = (): string => JSON.stringify(compile(model), null, 2)
 function enterJson(): void {
-  jsonText.value = JSON.stringify(compile(model), null, 2)
+  jsonText.value = compiledText()
   jsonBase.value = jsonText.value
   ui.mode = 'json'
 }
+// 把 JSON 里的修改读回草稿 / Read the JSON edits back into the draft
+function foldJson(): void {
+  if (!jsonDirty.value) return
+  const { model: next, report } = readConfig(JSON.parse(jsonText.value) as Record<string, unknown>, model)
+  jsonBase.value = jsonText.value
+  replaceModel(next)
+  if (report && (report.stats.raw || report.notes.some((n) => n.level === 'warn'))) { importReport.value = report; importSource.value = 'JSON 视图里的修改'; reportOpen.value = true }
+}
+// 草稿在 JSON 视图外被换掉（放弃、撤销、重新读取）：JSON 里没有新修改就跟着刷新 / The draft changed outside the JSON view (discard, undo, reload): refresh the text unless it has edits of its own
+watch(() => (ui.mode === 'json' ? JSON.stringify(model) : ''), (now) => { if (now && !jsonDirty.value) { jsonText.value = compiledText(); jsonBase.value = jsonText.value } })
 function leaveJson(): boolean {
   if (jsonError.value) { toast.info('JSON 写错了，改好才能切换'); return false }
-  if (jsonText.value !== jsonBase.value) {
-    const { model: next, report } = readConfig(JSON.parse(jsonText.value) as Record<string, unknown>, model)
-    replaceModel(next)
-    if (report && (report.stats.raw || report.notes.some((n) => n.level === 'warn'))) { importReport.value = report; importSource.value = 'JSON 视图里的修改'; reportOpen.value = true }
-  }
+  foldJson()
   ui.mode = 'form'
+  return true
+}
+// 保存、校验之前（save）：面板里没点「完成」的修改和 JSON 里的修改先收进草稿；放弃和查看之前（fold）只收 JSON 里的
+// Before save or validate (save): the panel's edits not yet 完成 and the JSON edits go into the draft first; before discard or review (fold) only the JSON ones
+function flush(purpose: 'save' | 'fold'): boolean {
+  if (purpose === 'save' && inspector.value && inspectorRef.value && !inspectorRef.value.commit()) return false
+  if (jsonDirty.value) {
+    if (jsonError.value) return false
+    foldJson()
+  }
   return true
 }
 function setMode(m: string): void { if (m === 'json') enterJson(); else leaveJson() }
@@ -174,6 +204,8 @@ const moreItems = computed(() => [
   { value: 'import', label: '导入 JSON', icon: FileUp, disabled: !ready.value },
   { value: 'download', label: '下载 JSON', icon: Download, disabled: !ready.value },
   { value: 'reload', label: '重新读取配置', icon: RefreshCw, disabled: loading.value },
+  // 手机的保存条放不下「放弃修改」，放在这里；桌面的保存条上一直有 / The phone save bar has no room for 放弃修改, so it lives here; the desktop bar always shows it
+  ...(phone.value && unsaved.value ? [{ value: 'discard', label: '放弃修改', icon: Undo2 }] : []),
   { value: 'help', label: '帮助', icon: CircleHelp },
 ])
 function pickMore(value: string): void {
@@ -182,6 +214,7 @@ function pickMore(value: string): void {
   else if (value === 'import') fileInput.value?.click()
   else if (value === 'download') downloadJson()
   else if (value === 'help') help.show('config')
+  else if (value === 'discard') { flush('fold'); discardWithUndo() }
   else void reload()
 }
 
@@ -195,14 +228,19 @@ async function importFile(event: Event): Promise<void> {
   if (file.size > 4 * 1024 * 1024) { toast.error('配置文件不能超过 4 MiB'); return }
   let parsed: Record<string, unknown>
   try { parsed = JSON.parse(await file.text()) as Record<string, unknown> } catch (e) { toast.error(`${file.name} 不是合法的 JSON：${(e as Error).message}`); return }
-  if (dirty.value && !(await confirm.ask({ title: '放弃未保存的修改', body: '导入的文件会替换编辑器里的草稿，没保存的修改会丢失。', confirmLabel: '放弃修改并导入' }))) return
+  if (unsaved.value && !(await confirm.ask({ title: '放弃未保存的修改', body: '导入的文件会替换编辑器里的草稿，没保存的修改会丢失。', confirmLabel: '放弃修改并导入' }))) return
   const before = JSON.parse(JSON.stringify(model)) as Model
   const { model: next, report } = readConfig(parsed, model)
   replaceModel(next)
   ui.mode = 'form'
-  toast.undoable(`已导入 ${file.name}`, () => replaceModel(before))
+  const undo = () => { replaceModel(before); importReport.value = null; reportOpen.value = false; undoImport.value = null }
+  toast.undoable(`已导入 ${file.name}`, undo)
+  undoImport.value = report?.notes.length ? undo : null
   if (report) { importReport.value = report; importSource.value = file.name; reportOpen.value = report.notes.length > 0 }
 }
+// 刚导入的文件能在随后弹出的导入说明里撤销；关掉说明后再打开就不提供了，那时撤销会连带丢掉之后的修改
+// The file just imported can be undone from the report that follows; reopened later it is not offered, since undo would also drop the edits made since
+const undoImport = ref<(() => void) | null>(null)
 function downloadJson(): void {
   if (ui.mode === 'json' && jsonError.value) { toast.error('JSON 写错了，改好再下载'); return }
   const data = ui.mode === 'json' ? jsonText.value : JSON.stringify(exportConfig(model), null, 2)
@@ -213,21 +251,35 @@ function downloadJson(): void {
   URL.revokeObjectURL(a.href)
 }
 async function reload(ask = true): Promise<void> {
-  if (ask && dirty.value && !(await confirm.ask({ title: '放弃未保存的修改', body: '重新读取会丢掉编辑器里没保存的修改。', confirmLabel: '放弃修改并重新读取' }))) return
+  if (ask && unsaved.value && !(await confirm.ask({ title: '放弃未保存的修改', body: '重新读取会丢掉编辑器里没保存的修改。', confirmLabel: '放弃修改并重新读取' }))) return
   editor.value = null
   ui.mode = 'form'
   await load()
 }
 
 // ---------- 进出页面 / entering and leaving ----------
-onMounted(() => { void load(); window.addEventListener('beforeunload', beforeUnload) })
-const beforeUnload = (e: BeforeUnloadEvent) => { if (dirty.value) { e.preventDefault(); e.returnValue = '' } }
-onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
-onBeforeRouteLeave(async () => {
-  if (!dirty.value) return true
-  return confirm.ask({ title: '放弃未保存的修改', body: '当前的配置草稿会被丢弃，已经生效的配置不受影响。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
+// JSON 文本只活在这一页里：回到配置页总是从表单开始，免得 JSON 视图空着又切不回表单
+// The JSON text lives only on this page: coming back always starts in the form, so the JSON view never reopens empty and stuck
+const askLeave = async (): Promise<boolean> => !unsaved.value || confirm.ask({ title: '放弃未保存的修改', body: '当前的配置草稿会被丢弃，已经生效的配置不受影响。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
+const releaseGuard = registerLeaveGuard(askLeave)
+onMounted(() => { ui.mode = 'form'; void load(); window.addEventListener('beforeunload', beforeUnload) })
+const beforeUnload = (e: BeforeUnloadEvent) => { if (unsaved.value) { e.preventDefault(); e.returnValue = '' } }
+onBeforeUnmount(() => { window.removeEventListener('beforeunload', beforeUnload); releaseGuard(); ui.mode = 'form' })
+onBeforeRouteLeave(async () => takeAgreement() || askLeave())
+// 换分区前，面板里没点「完成」的修改先问一句 / Before switching section, ask about panel edits not yet 完成
+onBeforeRouteUpdate(async (to, from) => {
+  if (to.query.section === from.query.section || !inspector.value) return true
+  return (await inspectorRef.value?.confirmDiscard()) ?? true
 })
 watch(section, () => { editor.value = null; void nextTick(() => window.scrollTo({ top: 0 })) })
+// 页头说「KixDNS 未启动」时就地启动；启动后重读运行状态，有待应用的版本页头会换成「现在应用」
+// Start KixDNS where the header says it is stopped; afterwards the runtime state is reread, and a pending version turns the header action into 现在应用
+const { starting, start } = useServiceStart()
+async function startKixdns(): Promise<void> {
+  if (!(await start())) return
+  // 草稿有修改时只刷新运行状态，不重读文件，免得把草稿换掉 / With edits in the draft only the runtime state is refreshed, so the draft is not replaced
+  try { await (unsaved.value ? refreshRuntime() : load({ quiet: true })) } catch { /* 页头下次读取时再更新 / the header updates on the next read */ }
+}
 const versionLabel = computed(() => { const id = pendingVersionId.value ?? currentVersionId.value ?? doc.value?.version_id; return id === null || id === undefined ? '—' : `#${id}` })
 </script>
 
@@ -239,7 +291,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
         <span v-if="!ready && !loadError" class="cfg__status-sk"><i class="sk"></i></span>
         <!-- 宽屏：标题下一排事实（状态、配置版本、规则数、上游组数）；手机：一行状态 / Wide: a facts row under the title (state, config version, rule count, upstream groups); phones: one status line -->
         <span v-else-if="!phone && !firstRun" class="ui-facts cfg__facts" :role="applyBusy ? 'status' : undefined">
-          <span><span class="ui-lbl">状态</span><b><span v-if="applyBusy" class="ui-spin cfg__spin" aria-hidden="true"></span><span v-else class="ui-dot" :class="headerLine.tone === 'ok' ? '' : `ui-dot--${headerLine.tone}`" aria-hidden="true"></span>{{ headerLine.lead ?? `${headerLine.before}${headerLine.version ?? ''}${headerLine.after ?? ''}` }}<button v-if="headerAction && ready" class="cfg__head-action" type="button" @click="applyNow">{{ headerAction }}</button></b></span>
+          <span><span class="ui-lbl">状态</span><b><span v-if="applyBusy" class="ui-spin cfg__spin" aria-hidden="true"></span><span v-else class="ui-dot" :class="headerLine.tone === 'ok' ? '' : `ui-dot--${headerLine.tone}`" aria-hidden="true"></span>{{ headerLine.lead ?? `${headerLine.before}${headerLine.version ?? ''}${headerLine.after ?? ''}` }}<button v-if="headerAction && ready" class="cfg__head-action" type="button" @click="applyNow">{{ headerAction }}</button><button v-else-if="runtimeStopped && ready" class="cfg__head-action" type="button" :disabled="starting" @click="startKixdns">启动</button></b></span>
           <span><span class="ui-lbl">配置版本</span><b>{{ versionLabel }}</b></span>
           <span><span class="ui-lbl">规则</span><b>{{ model.rules.length }} 条</b></span>
           <span><span class="ui-lbl">上游组</span><b>{{ model.groups.length }} 个</b></span>
@@ -249,6 +301,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
           <span v-else class="ui-dot" :class="headerLine.tone === 'ok' ? '' : `ui-dot--${headerLine.tone}`" aria-hidden="true"></span>
           <UiDotText :parts="[headerLine.lead ?? '', `${headerLine.before}${headerLine.version ?? ''}${headerLine.after ?? ''}`].filter(Boolean)" />
           <button v-if="headerAction && ready" class="cfg__head-action" type="button" @click="applyNow">{{ headerAction }}</button>
+          <button v-else-if="runtimeStopped && ready" class="cfg__head-action" type="button" :disabled="starting" @click="startKixdns">启动</button>
         </span>
       </template>
       <template v-if="!firstRun" #actions>
@@ -289,15 +342,15 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
     <div v-else :id="`cfg-panel-${section}`" class="cfg__panel" role="tabpanel" :aria-labelledby="`cfg-tab-${section}`">
       <div v-if="section === 'rules'" class="rules-split" :class="{ 'is-open': inspector }">
         <RulesTab :selected="editor?.ruleId ?? null" @open="openRule" @tab="setTab" @edit-group="groupEditor = { id: $event }" @import="fileInput?.click()" />
-        <RuleEditor v-if="inspector && editor" :key="`${editor.ruleId}-${editor.groupId}`" inspector :rule-id="editor.ruleId" :group-id="editor.groupId" :template="editor.template" @close="closeRule" @saved="ruleSaved" @deleted="ruleDeleted" @edit-group="groupEditor = { id: $event }" />
+        <RuleEditor v-if="inspector && editor" ref="inspectorRef" :key="`${editor.ruleId}-${editor.groupId}`" inspector :rule-id="editor.ruleId" :group-id="editor.groupId" :template="editor.template" @close="closeRule" @saved="ruleSaved" @deleted="ruleDeleted" @edit-group="groupEditor = { id: $event }" />
       </div>
       <UpstreamsTab v-else-if="section === 'upstreams'" @edit="groupEditor = { id: $event }" @rules="showGroupRules" />
       <MappingTab v-else-if="section === 'mapping'" />
       <SettingsTab v-else />
     </div>
-    <SaveBar v-if="ready" :json-error="jsonError" @rule="openRule($event, null)" @group="groupEditor = { id: $event }" @reveal="(l: number, c: number) => jsonEditor?.reveal(l, c)" @reload="reload(false)" />
+    <SaveBar v-if="ready" :json-error="jsonError" :json-dirty="jsonDirty" :flush="flush" @rule="openRule($event, null)" @group="groupEditor = { id: $event }" @reveal="(l: number, c: number) => jsonEditor?.reveal(l, c)" @reload="reload()" @download="downloadJson" />
   </div>
   <GroupEditor v-if="groupEditor" :key="groupEditor.id ?? 'new'" :group-id="groupEditor.id" @close="groupEditor = null" @saved="groupSaved" @deleted="groupDeleted" />
   <HistoryDrawer v-if="historyOpen" :compare-with="historyOpen.compare" @close="historyOpen = null" @rule="historyOpen = null; openRule($event, null)" />
-  <ImportReportDialog v-if="reportOpen && importReport" @close="reportOpen = false" />
+  <ImportReportDialog v-if="reportOpen && importReport" :undo="Boolean(undoImport)" @close="reportOpen = false; undoImport = null" @undo="undoImport?.()" />
 </template>

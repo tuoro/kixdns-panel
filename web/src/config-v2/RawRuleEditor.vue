@@ -51,7 +51,7 @@ function removeRule(index: number): void { rules.value.splice(index, 1) }
         <ActionList v-model="rule.actions" :pipelines="pipelines" :current-pipeline-id="currentPipelineId" :capabilities="capabilities" :show-errors="showErrors" />
       </section>
       <details class="ui-expand rawed__response" :open="rule.response_matchers.length > 0 || rule.response_actions_on_match.length > 0 || rule.response_actions_on_miss.length > 0">
-        <summary>回答阶段<small class="rawed__sum">上游回答后再检查一次；没条件就不检查</small></summary>
+        <summary>回答后检查<small class="rawed__sum">拿到上游的回答后再检查一次；没条件就不检查</small></summary>
         <section class="rawed__stage">
           <h3 class="rawed__title">回答满足<UiSelect v-if="rule.response_matchers.length > 1" class="rawed__relation" size="sm" :model-value="mode(rule.response_matchers, rule.response_matcher_operator)" :options="relationOptions" label="回答条件关系" @update:model-value="setMode(rule, 'response', $event)" /></h3>
           <MatcherList v-model="rule.response_matchers" scope="response" :operator-mode="operatorMode(rule.response_matchers, rule.response_matcher_operator)" :show-errors="showErrors" />

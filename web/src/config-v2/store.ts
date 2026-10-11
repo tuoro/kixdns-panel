@@ -1,7 +1,9 @@
 import { computed, reactive, ref } from 'vue'
 import type { RuleCount, UpstreamCount } from '../api/types'
+import { dismissUndoable, useToast } from '../composables/useToast'
 import { readConfig, type ImportReport, type ReadResult } from '../config-model/document'
 import { normalizeAddress } from '../config-model/kernel'
+import { findKernelRule } from '../config-model/trace-names'
 import { kernelAddress, mainPipelineId, nextId, ruleGroupPipelineId, type Model, type Outcome, type Rule, type RuleGroup, type UpstreamGroup } from '../config-model/model'
 
 // 配置页的草稿：一份模型加上「上次读进来 / 保存成功时」的那份，改动按两者比出来。运行状态、保存流程在 useConfigDocument.ts。
@@ -50,12 +52,21 @@ export const changeCount = computed(() => {
 export const dirty = computed(() => changeCount.value > 0)
 const OPTIONAL = ['mainId', 'mappingId', 'mainExtra', 'entries', 'trailingEntries', 'rawPipelines', 'extra'] as const
 export function replaceModel(next: Model): void {
+  // 草稿整份换掉，旧草稿上的撤销提示一起收起 / The draft is replaced wholesale, so undo messages about the old one go too
+  dismissUndoable()
   const copy = JSON.parse(JSON.stringify(next)) as Model
   for (const k of OPTIONAL) if (copy[k] === undefined) delete model[k]
   Object.assign(model, copy)
 }
 export function markApplied(): void { applied.value = JSON.stringify(model) }
 export function discardDraft(): void { replaceModel(appliedModel.value) }
+// 放弃草稿，提示里能撤销：保存条和手机页头的「…」都走这里 / Discard the draft with an undo in the toast: used by the save bar and the phone header's 「…」
+export function discardWithUndo(): void {
+  const draft = JSON.stringify(model)
+  const count = changeCount.value
+  discardDraft()
+  useToast().undoable(`已放弃 ${count} 处修改`, () => replaceModel(JSON.parse(draft) as Model))
+}
 export function resetTo(next: Model): void { replaceModel(next); markApplied() }
 // 从配置文件的内容读进来，当作已保存的那份 / Read from a config file's content and take it as the saved one
 export function loadContent(content: Record<string, unknown>, prev?: Model): ReadResult {
@@ -128,8 +139,9 @@ export function listOf(ruleId: number): RuleList {
   const group = model.ruleGroups.find((g) => g.rules.some((r) => r.id === ruleId))
   return group ? { rules: group.rules, rest: group.rest, group } : { rules: model.rules, rest: model.rest, group: null }
 }
+// 内核规则名找回草稿里的规则：名字、没起名字时的 rule-编号、高级规则里的名字 / The draft rule behind a kernel rule name: its name, the rule-id of an unnamed rule, or a name inside an advanced rule
 export function findRuleByName(name: string): Rule | undefined {
-  return [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].find((r) => r.name === name.replace(/#\d+$/, ''))
+  return findKernelRule(model, name)
 }
 // 一个上游组被谁用着：规则、其余请求、别的组的备用、高级规则和入口 / Who uses an upstream group: rules, catch-alls, other groups' fallbacks, advanced rules and entries
 export function groupUsers(groupId: string): string[] {
