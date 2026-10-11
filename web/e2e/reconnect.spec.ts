@@ -80,3 +80,21 @@ test('连不上面板时页面不复述横幅，按了只会失败的操作都�
   for (const name of ['重启', '停止']) await expect(page.getByRole('button', { name, exact: true })).toBeDisabled()
   await expect(page.locator('.ui-notice--err')).toHaveCount(0)
 })
+
+// 写进去了、回应却丢了：再按保存时面板上已经是这份配置，说「已经保存过了」，不说「别处改过了」
+// Written but the answer was lost: pressed again, the panel already holds this config, so it says 已经保存过了 rather than 别处改过了
+test('保存的回应丢了：连上后再保存说「已经保存过了」，不是冲突', async ({ page }) => {
+  await page.goto('/config')
+  await page.getByRole('button', { name: '快速添加', exact: true }).click()
+  const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+  await quick.fill('lost.example.org')
+  await quick.press('Enter')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-put-answer-lost', 'true'))
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar).toContainText('连不上面板')
+  await expect(banner(page)).toHaveCount(0, { timeout: 10_000 })
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar).toContainText(/已经保存过了\s*·\s*版本 #\d+/)
+  await expect(bar).not.toContainText('别处改过了')
+})

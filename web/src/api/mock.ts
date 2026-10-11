@@ -1,4 +1,4 @@
-import { ApiError } from './client'
+import { ApiError, PANEL_UNREACHABLE_EVENT } from './client'
 import type {
   ActiveConfig,
   AuditPage,
@@ -702,6 +702,12 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
       apply_error: null,
     })
     configVersionContents.set(versionId, structuredClone(body.content))
+    // kixdns:demo-put-answer-lost：写进去了、也生效了，回应却没回来（面板在保存途中重启那样） / Written and applied, but the answer never arrives (as when the panel restarts mid-save)
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-put-answer-lost') === 'true') {
+      localStorage.removeItem('kixdns:demo-put-answer-lost')
+      window.dispatchEvent(new Event(PANEL_UNREACHABLE_EVENT))
+      throw new ApiError('连不上面板：网络断了，或者面板正在重启。稍后再试。', 0, 'network_unreachable')
+    }
     return { version_id: versionId, sha256: config.sha256, apply_state: 'applied', active_config: activeConfig } as ConfigApplyResult as T
   }
   const restoreMatch = pathname.match(/^\/api\/v1\/config\/versions\/(\d+)\/restore$/)

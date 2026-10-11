@@ -347,6 +347,10 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
   } catch (error) {
     // 会话过期：页面会回到登录页，这里不挂「没通过校验」 / Session expired: the page goes back to the login page; no 没有通过校验 here
     if (error instanceof ApiError && error.status === 401) { finishStage('idle'); return }
+    // 说「别处改过了」之前先看一眼：面板上现在的配置就是这次要存的（上一次写进去了、只是回应丢了），那就是已经保存过了，不是冲突
+    // Before calling it a conflict, look once: if the panel already holds exactly what this save sends (an earlier write landed and only its answer
+    // was lost), it is already saved, not a conflict
+    if (isConflict(error) && await alreadySaved(content, sent)) return
     const reason = friendlyRuntimeError(error)
     const stopped = stoppedError(error)
     const down = isPanelDown(error)
@@ -369,6 +373,17 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
   }
 }
 export const applyNow = () => void save('apply')
+// 键排好序再比，存进去和读出来的键顺序不同也算一样 / Compared with keys sorted, so a different key order on the way back still counts as the same
+const canonical = (value: unknown) => JSON.stringify(value, (_key, item: unknown) => (item && typeof item === 'object' && !Array.isArray(item) ? Object.fromEntries(Object.entries(item as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : item))
+async function alreadySaved(content: unknown, sent: string): Promise<boolean> {
+  const current = await apiRequest<ConfigDocument>('/api/v1/config').catch(() => null)
+  if (!current || canonical(current.content) !== canonical(content)) return false
+  rebaseApplied(JSON.parse(sent) as Model)
+  validation.value = null
+  await load({ quiet: true, keepDraft: true, sent })
+  finishStage('done', current.version_id ? `已经保存过了 · 版本 #${current.version_id}` : '已经保存过了')
+  return true
+}
 /**
  * 重新连上面板以后：「连不上面板」那句已经不对了，收起；没读到配置的整页重读；有没保存的修改时只刷新运行状态（草稿和文件散列不动，
  * 别处的改动照样在保存时发现），没有就整份重读
