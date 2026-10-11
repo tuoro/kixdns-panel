@@ -5,6 +5,7 @@ import { SETTING_SECTIONS, settingSupported } from '../config-editor/schema'
 import { exportConfig, readConfig } from '../config-model/document'
 import type { Model } from '../config-model/model'
 import { traceNames } from '../config-model/trace-names'
+import { useConnection } from '../composables/useConnection'
 import { dismissUndoable, useToast } from '../composables/useToast'
 import { errorMessage } from '../utils'
 import { applyHits, applyUpstreamStats, changeCount, dirty, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, reportOpen, unsaved } from './store'
@@ -111,15 +112,18 @@ export const headerStatus = computed<HeaderStatus>(() => {
   if (fileDiffers.value) return { tone: 'warn', before: '文件与运行配置不同' }
   return { tone: 'off', before: '运行状态不可用' }
 })
+// 连不上面板时，上次读到的运行状态不能当真：点变灰，写「状态未知」，连上后恢复（同概览）
+// While the panel is unreachable the last runtime state read cannot be trusted: the dot turns grey and reads 状态未知, restored on reconnect (as on the overview)
+const { down: panelDown } = useConnection()
 export const headerLine = computed<HeaderStatus>(() => {
-  if (!applyBusy.value) return headerStatus.value
+  if (!applyBusy.value) return panelDown.value ? { tone: 'off', before: '状态未知' } : headerStatus.value
   const verb = stage.value === 'validating' ? '校验中' : '应用中'
   return pendingVersionId.value ? { tone: 'warn', before: '版本 #', version: pendingVersionId.value, after: ` ${verb}` } : { tone: 'warn', before: verb }
 })
 // 待应用时「现在应用」，文件和运行配置不同时「校验并应用」；有要保存的修改时让给保存栏 / 现在应用 when pending, 校验并应用 when the file differs; with changes to save it gives way to the save bar
 export const headerAction = computed(() => {
   // 有任何没保存的修改（包括右侧规则没点完成的）都让给保存栏：应用会重读文件，丢掉那些修改 / Any unsaved edit (an unfinished panel edit included) gives way to the save bar: applying re-reads the file and would drop it
-  if (!canApplyNow.value || unsaved.value || hasApplyFailure.value) return ''
+  if (!canApplyNow.value || unsaved.value || hasApplyFailure.value || panelDown.value) return ''
   return fileDiffers.value ? '校验并应用' : '现在应用'
 })
 export const deferNote = computed(() => {

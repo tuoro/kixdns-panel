@@ -142,6 +142,11 @@ test('断网时内容区顶上挂出「连不上面板」，联网后自己收�
   await context.setOffline(true)
   await expect(banner).toBeVisible()
   await expect(banner).toContainText('连不上面板')
+  // 页头不再复述上次读到的「运行中」：点变灰，写「状态未知」 / The header stops repeating the last-read 运行中: a grey dot and 状态未知
+  const state = page.locator('.overview-heading').locator(testInfo.project.name === 'mobile' ? '.ui-ph__phone' : '.ui-facts > div:first-child b')
+  await expect(state).toContainText('状态未知')
+  await expect(state).not.toContainText('运行中')
+  await expect(state.locator('.ui-dot')).toHaveClass(/ui-dot--off/)
   // 滚到页底也还在：宽屏贴着窗口顶（侧栏不占顶部），手机贴着顶栏下沿 / Still there after scrolling to the bottom: at the window's top on wide screens (the sidebar leaves the top free), under the top bar on phones
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
   const top = testInfo.project.name === 'mobile' ? await page.locator('.app-header').evaluate((el) => el.getBoundingClientRect().bottom) : 0
@@ -149,4 +154,36 @@ test('断网时内容区顶上挂出「连不上面板」，联网后自己收�
   await context.setOffline(false)
   await expect(banner).toHaveCount(0)
   await expect(page.getByText('已重新连上面板')).toBeVisible()
+  // 连上后页头恢复 / Reconnected, the header is restored
+  await expect(state).toContainText('运行中')
+  await expect(state.locator('.ui-dot')).not.toHaveClass(/ui-dot--off/)
+})
+
+test('连不上面板时配置页和系统页的页头也写「状态未知」，连上后恢复 @responsive', async ({ page, context }, testInfo) => {
+  const mobile = testInfo.project.name === 'mobile'
+  await page.goto('/config')
+  const config = mobile ? page.locator('.ui-ph__lead') : page.locator('.cfg__facts > span').first()
+  await expect(config).toContainText('运行中')
+  await context.setOffline(true)
+  await expect(page.locator('.conn__inner')).toBeVisible()
+  await expect(config).toContainText('状态未知')
+  await expect(config).not.toContainText('运行中')
+  await expect(config.locator('.ui-dot')).toHaveClass(/ui-dot--off/)
+  await context.setOffline(false)
+  await expect(page.locator('.conn__inner')).toHaveCount(0)
+  await expect(config).toContainText('运行中')
+
+  await page.goto('/system')
+  const system = page.locator('.system-heading').locator(mobile ? '.ui-ph__phone' : '.ui-facts > div:first-child b')
+  await expect(system).toContainText(mobile ? '运行中' : 'kixdns.service')
+  await expect(system).not.toContainText('状态未知')
+  await context.setOffline(true)
+  await expect(page.locator('.conn__inner')).toBeVisible()
+  await expect(system).toContainText('状态未知')
+  await expect(system).not.toContainText('运行中')
+  await expect(system.locator('.ui-dot')).toHaveClass(/ui-dot--off/)
+  await context.setOffline(false)
+  await expect(page.locator('.conn__inner')).toHaveCount(0)
+  await expect(system).not.toContainText('状态未知')
+  await expect(system.locator('.ui-dot')).not.toHaveClass(/ui-dot--off/)
 })

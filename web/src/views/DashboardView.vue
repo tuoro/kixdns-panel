@@ -12,6 +12,7 @@ import UiNumber from '../components/ui/UiNumber.vue'
 import UiPageHeader from '../components/ui/UiPageHeader.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
 import { useConfirm } from '../composables/useConfirm'
+import { useConnection } from '../composables/useConnection'
 import { useServiceStart } from '../composables/useServiceStart'
 import { useToast } from '../composables/useToast'
 import { HEALTH_LABELS, cacheComposition, pipelineDistribution, rcodeDistribution, latencyBasis, recentWindowLabel, settledAttempts, upstreamBasis, upstreamHealth } from '../dashboard-presentation'
@@ -82,6 +83,11 @@ const serviceLabel = computed(() => {
   if (current?.active_state === 'deactivating') return '正在停止'
   return { ok: '运行中', warn: '正在启动', err: '启动失败', off: '已停止' }[serviceTone.value]
 })
+// 连不上面板时，上次读到的状态已经不能当真：点变灰，写「状态未知」，连上后恢复（顶上的横幅说为什么）
+// While the panel is unreachable the last state read can no longer be trusted: the dot turns grey and reads 状态未知, restored on reconnect (the banner above says why)
+const { down: panelDown } = useConnection()
+const headTone = computed<Tone>(() => (panelDown.value ? 'off' : serviceTone.value))
+const headLabel = computed(() => (panelDown.value ? '状态未知' : service.value ? serviceLabel.value : '暂不可用'))
 // 「运行中 · active/running」是同一件事说两遍；只有不寻常的状态，systemd 的原始写法才多带了信息（同系统页）。
 // "运行中 · active/running" says one thing twice; only unusual states carry information in systemd's own words (as on the system page).
 const unusualServiceState = computed(() => {
@@ -214,14 +220,8 @@ const healthCounts = computed(() => {
 // When every row fell back to the lifetime total the card names the whole run as its period; when only some did, the rows are not marked
 const allSinceStart = computed(() => upstreamRows.value.length > 0 && upstreamRows.value.every((item) => item.sinceStart))
 const ledgerPeriod = computed(() => (allSinceStart.value ? '启动以来' : recentWindowLabel(recentWindow.value)))
-// 上游状态里有没有耗时：旧增强版整列都没有，右边就写成功率，也不画细条 / Whether there is latency at all: old enhanced builds have none, so the right end shows the success rate and no bar is drawn
+// 上游状态里有没有耗时：旧增强版整列都没有，右边就写成功率 / Whether there is latency at all: old enhanced builds have none, so the right end shows the success rate
 const hasLatency = computed(() => upstreamRows.value.some((item) => item.shown.avg_latency_ms !== null))
-// 最慢的上游定细条的满格：每条细条的长度是该上游平均耗时占最慢那个的比例
-// The slowest upstream sets the full bar: each bar's length is that upstream's average latency as a share of the slowest
-const slowestLatency = computed(() => Math.max(0, ...upstreamRows.value.map((item) => item.shown.avg_latency_ms ?? 0)))
-function latencyShare(item: { shown: { avg_latency_ms: number | null } }): number {
-  return slowestLatency.value && item.shown.avg_latency_ms !== null ? item.shown.avg_latency_ms / slowestLatency.value : 0
-}
 // 页头的上游事实：个数，后面跟一句判定汇总——全部正常，或各有几个降级、异常、观察中
 // The header's upstream fact: the count, then one summary of the verdicts: all healthy, or how many are degraded, unhealthy, still observed
 const upstreamFact = computed<string[]>(() => {
@@ -652,7 +652,7 @@ onBeforeUnmount(() => {
         <div v-if="service || displayOverview" class="ui-facts overview-facts">
           <div>
             <span class="ui-lbl">状态</span>
-            <b :title="service?.unit"><span class="ui-dot" :class="{ 'ui-dot--warn': serviceTone === 'warn', 'ui-dot--err': serviceTone === 'err', 'ui-dot--off': serviceTone === 'off' }" aria-hidden="true"></span>{{ service ? serviceLabel : '暂不可用' }}<small v-if="unusualServiceState" class="ui-mono">{{ unusualServiceState }}</small></b>
+            <b :title="service?.unit"><span class="ui-dot" :class="{ 'ui-dot--warn': headTone === 'warn', 'ui-dot--err': headTone === 'err', 'ui-dot--off': headTone === 'off' }" aria-hidden="true"></span>{{ headLabel }}<small v-if="unusualServiceState && !panelDown" class="ui-mono">{{ unusualServiceState }}</small></b>
           </div>
           <div v-if="metaTail === 'live' && overview"><span class="ui-lbl">已运行</span><b>{{ formatDuration(overview.health.uptime_seconds) }}</b></div>
           <div v-else-if="metaTail === 'snapshot'"><span class="ui-lbl">快照</span><b>{{ snapshotLabel }}</b></div>
@@ -661,7 +661,7 @@ onBeforeUnmount(() => {
           <div v-if="metaTail === 'live'" class="overview-meta-time"><span class="ui-lbl">更新于</span><b>{{ updatedLabel }}</b></div>
         </div>
         <!-- 手机上一行说完：状态、已运行、配置版本，和配置页的页头一样 / On phones one line says it all: state, uptime, config version, as on the config page -->
-        <span v-if="service || displayOverview" class="ui-ph__lead ui-ph__phone"><span class="ui-dot" :class="{ 'ui-dot--warn': serviceTone === 'warn', 'ui-dot--err': serviceTone === 'err', 'ui-dot--off': serviceTone === 'off' }" aria-hidden="true"></span><UiDotText :parts="[service ? serviceLabel : '暂不可用', ...(metaTail === 'live' && overview ? [`已运行 ${formatDuration(overview.health.uptime_seconds)}`] : metaTail === 'snapshot' ? [`快照 ${snapshotLabel}`] : []), ...(runningVersion !== null ? [`版本 #${runningVersion}`] : [])]" /></span>
+        <span v-if="service || displayOverview" class="ui-ph__lead ui-ph__phone"><span class="ui-dot" :class="{ 'ui-dot--warn': headTone === 'warn', 'ui-dot--err': headTone === 'err', 'ui-dot--off': headTone === 'off' }" aria-hidden="true"></span><UiDotText :parts="[headLabel, ...(metaTail === 'live' && overview ? [`已运行 ${formatDuration(overview.health.uptime_seconds)}`] : metaTail === 'snapshot' ? [`快照 ${snapshotLabel}`] : []), ...(runningVersion !== null ? [`版本 #${runningVersion}`] : [])]" /></span>
         <span v-else-if="loading" class="sk overview-skeleton-meta" role="status" aria-label="读取服务状态"></span>
         <span v-else>服务状态暂不可用</span>
       </template>
@@ -746,9 +746,9 @@ onBeforeUnmount(() => {
 
           <div class="overview-col">
             <!-- 手动刷新时上游状态变淡；每 15 秒的定时刷新数据不动（全站约定） / Upstream status fades on a manual refresh only; timed refreshes leave the data still (site convention) -->
-            <!-- 每个上游一行：状态点、地址、传输方式，右端是平均耗时，下面一条按最慢上游定满格的细条，再一行成功率和响应次数。
-                 一行里只允许一个告警色：成功率染色，细条按判定上色，耗时本身不染。
-                 One row per upstream: status dot, address, transport, the average latency at the right end, a bar scaled to the slowest upstream, then a line with the success rate and responses. One warning colour per row: the rate is coloured and the bar follows the verdict; the latency itself is not. -->
+            <!-- 每个上游一行：状态点、地址、传输方式，右端是平均耗时，下面一行成功率和响应次数。不画耗时细条：耗时的数已经在右端，细条只是把它再画一遍。
+                 一行里只允许一个告警色：成功率染色，耗时本身不染。
+                 One row per upstream: status dot, address, transport, the average latency at the right end, then a line with the success rate and responses. No latency bar: the figure is already at the right end and a bar only draws it again. One warning colour per row: the rate is coloured; the latency itself is not. -->
             <section class="ui-card overview-card overview-card--upstreams" :class="{ 'is-refreshing': refreshing }" aria-label="上游状态">
               <div class="overview-card-head">
                 <h2 class="ui-card__label">上游状态</h2>
@@ -763,7 +763,6 @@ onBeforeUnmount(() => {
                   </span>
                   <span class="overview-row-value">{{ hasLatency ? formatLatency(item.shown.avg_latency_ms) : formatPercent(upstreamSuccessRate(item.shown)) }}</span>
                   <p class="overview-row-sub ui-dots"><span v-if="hasLatency">成功率 <b :class="`overview-text--${item.health}`">{{ formatPercent(upstreamSuccessRate(item.shown)) }}</b></span><span>{{ formatNumber(item.settled) }} 次响应</span></p>
-                  <span v-if="hasLatency" class="overview-row-bar" aria-hidden="true"><i :class="`overview-bar--${item.health}`" :style="{ width: `${latencyShare(item) * 100}%` }"></i></span>
                 </div>
               </div>
               <p v-else class="overview-empty">{{ overview ? '还没有请求转发到上游，转发后在这里按上游列出。' : '尚无数据' }}</p>
@@ -1000,9 +999,6 @@ onBeforeUnmount(() => {
 .overview-row-bar { grid-column: 1 / -1; height: var(--s-1); overflow: hidden; border-radius: var(--r-full); background: var(--l-hair); }
 /* 很小的一段也画 4 宽，不会成一个点 / A tiny share still draws 4 wide instead of a speck */
 .overview-row-bar > i { display: block; height: 100%; min-width: var(--s-1); border-radius: inherit; background: var(--accent); }
-.overview-bar--degraded { background: var(--warn-l); }
-.overview-bar--unhealthy { background: var(--err-l); }
-.overview-bar--pending { background: var(--l-ink-3); }
 .overview-row-sub { grid-column: 1 / -1; margin: 0; color: var(--l-ink-3); font-size: var(--t-2); font-variant-numeric: tabular-nums; }
 .overview-row-sub b { color: var(--l-ink-2); font-weight: var(--w-medium); }
 .overview-text--degraded, .overview-row-sub b.overview-text--degraded { color: var(--warn-l); }

@@ -222,14 +222,14 @@ test('上游状态一行一个上游，错误和拒绝数收进这一行的提�
   expect(title).toContain('错误 52')
   expect(title).toContain('拒绝 28')
   expect(title).not.toContain('28,230')
-  // 每行同样四样东西：地址、耗时、「成功率 · 次响应」、细条；手机不换成另一套行
-  // Every row shows the same four things: address, latency, 「success rate · responses」, a bar; a phone does not switch to another row design
+  // 每行同样三样东西：地址、耗时、「成功率 · 次响应」；耗时不再画一条细条；手机不换成另一套行
+  // Every row shows the same three things: address, latency, 「success rate · responses」; no latency bar; a phone does not switch to another row design
   for (const row of [rows.nth(0), rows.nth(1), rows.nth(2)]) {
     await expect(row.locator('.overview-address')).toBeVisible()
     await expect(row.locator('.overview-row-value')).toBeVisible()
     await expect(row.locator('.overview-row-sub')).toBeVisible()
-    await expect(row.locator('.overview-row-bar')).toBeVisible()
   }
+  await expect(card.locator('.overview-row-bar')).toHaveCount(0)
   // 地址不挤耗时：名字那格的右边在耗时左边 / The address never runs into the latency: the name cell ends before the value begins
   const squeezed = await rows.evaluateAll((items) => items
     .filter((row) => row.querySelector('.overview-row-name')!.getBoundingClientRect().right > row.querySelector('.overview-row-value')!.getBoundingClientRect().left)
@@ -471,14 +471,13 @@ test('上游健康的分母是全部上游：观察中的也算，页头的上�
   await expect(upstreamFact).not.toContainText('全部正常')
   const fact = await upstreamFact.textContent()
   expect(fact!.indexOf('异常')).toBeLessThan(fact!.indexOf('观察中'))
-  // 行里：2.48 秒的上游判为异常，状态点、成功率和细条跟着判定；耗时写成 2.5 s；观察中的那行状态点读作「观察中」
-  // In the rows: the 2.48 s upstream is unhealthy, and its dot, success rate and bar follow the verdict; the latency reads 2.5 s; the observed row's dot reads 观察中
+  // 行里：2.48 秒的上游判为异常，状态点和成功率跟着判定；耗时写成 2.5 s；观察中的那行状态点读作「观察中」
+  // In the rows: the 2.48 s upstream is unhealthy, and its dot and success rate follow the verdict; the latency reads 2.5 s; the observed row's dot reads 观察中
   const rows = page.locator('.overview-card--upstreams .overview-row')
   const slow = rows.filter({ hasText: '2.5 s' })
   await expect(slow).toHaveCount(1)
   await expect(slow.locator('.overview-dot')).toHaveAttribute('aria-label', '异常')
   await expect(slow.locator('.overview-row-sub b')).toHaveClass(/overview-text--unhealthy/)
-  await expect(slow.locator('.overview-row-bar > i')).toHaveClass(/overview-bar--unhealthy/)
   await expect(page.getByText('2480 ms')).toHaveCount(0)
   await expect(rows.locator('.overview-dot[aria-label="观察中"]')).toHaveCount(1)
 })
