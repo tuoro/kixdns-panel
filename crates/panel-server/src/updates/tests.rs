@@ -1032,6 +1032,8 @@ fn untrusted_runs_at_the_top_do_not_crowd_trusted_ones_out_of_the_page() {
 struct FakeHost {
     running: bool,
     failed_health_checks: AtomicUsize,
+    /// 依次决定每一次重启会不会被 systemd 拒绝（true 拒绝）；排空后都放行 / Decides, in order, whether each restart is refused by systemd (true refuses); all pass once drained
+    refused_restarts: StdMutex<Vec<bool>>,
     calls: StdMutex<Vec<String>>,
 }
 
@@ -1040,6 +1042,7 @@ impl FakeHost {
         Self {
             running,
             failed_health_checks: AtomicUsize::new(0),
+            refused_restarts: StdMutex::new(Vec::new()),
             calls: StdMutex::new(Vec::new()),
         }
     }
@@ -1063,6 +1066,12 @@ impl ServiceHost for FakeHost {
     fn service_action(&self, action: ServiceAction) -> BoxFuture<'_, Result<(), UpdateError>> {
         Box::pin(async move {
             self.calls.lock().unwrap().push(format!("{action:?}"));
+            let mut refusals = self.refused_restarts.lock().unwrap();
+            if !refusals.is_empty() && refusals.remove(0) {
+                return Err(UpdateError::Install(
+                    "KixDNS 没能重启：systemd 拒绝了这次操作。查看原因：journalctl -u kixdns.service -n 50 --no-pager".to_owned(),
+                ));
+            }
             Ok(())
         })
     }
@@ -1310,7 +1319,47 @@ async fn a_switch_that_cannot_go_back_says_both_builds_and_the_next_step() {
     // 两边都没起来：各说一次是谁、为什么，最后给一步能做的 / Neither came up: each named once with its cause, ending with one thing to do
     assert_eq!(
         error.reason(),
-        "构建 #43 健康检查失败；换回构建 #42 也没有启动起来。KixDNS 现在停着，点「启动」再试"
+        "构建 #43 健康检查失败；换回构建 #42 也没有启动起来。KixDNS 现在停着，过一会儿再点「启动」"
+    );
+}
+
+// systemd 拒绝了第一次重启、换回去成功：主语只说一次，看原因的命令放在最后
+// systemd refused the first restart and going back worked: the subject is said once and the command for the cause comes last
+#[tokio::test]
+async fn a_refused_restart_says_why_once_and_ends_with_the_command() {
+    let fixture = switch_fixture().await;
+    let host = FakeHost::new(true);
+    *host.refused_restarts.lock().unwrap() = vec![true];
+
+    let error = fixture
+        .manager
+        .rollback(&empty_config(), &host)
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        error.reason(),
+        "构建 #43 没能启动：systemd 拒绝了这次操作，已换回构建 #42。查看原因：journalctl -u kixdns.service -n 50 --no-pager"
+    );
+}
+
+// 新的没起来、换回去时 systemd 又拒绝了重启（崩溃重启太快撞上启动次数上限）：不叠「没能重启：KixDNS 没能重启」，命令放在最后
+// The new one failed and systemd refused the restart for going back (a crash loop hit the start limit): no stacked subjects, the command last
+#[tokio::test]
+async fn a_refused_rollback_restart_reads_as_one_sentence() {
+    let fixture = switch_fixture().await;
+    let host = FakeHost::failing_first_health_check(true);
+    *host.refused_restarts.lock().unwrap() = vec![false, true];
+
+    let error = fixture
+        .manager
+        .rollback(&empty_config(), &host)
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        error.reason(),
+        "构建 #43 健康检查失败；换回构建 #42 也没有启动起来：systemd 拒绝了这次操作。KixDNS 现在停着，过一会儿再点「启动」。查看原因：journalctl -u kixdns.service -n 50 --no-pager"
     );
 }
 
