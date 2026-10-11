@@ -876,7 +876,7 @@ onBeforeUnmount(() => {
           <small>{{ statsError }}</small>
           <button class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="statsLoading" @click="loadStats()">重试</button>
         </div>
-        <UiEmpty v-if="!showStatsSection" :icon="ChartColumn" title="当前 KixDNS 不提供查询排行" desc="更新内核后可以按客户端和域名查看请求量。" />
+        <UiEmpty v-if="!showStatsSection" :icon="ChartColumn" title="当前内核不支持查询排行" desc="更新内核后可以按客户端和域名查看请求量。" />
         <div v-else-if="displayStats?.enabled" class="overview-rankings" :class="{ 'is-loading': statsLoading }">
           <section v-for="group in rankingGroups" :key="group.id" class="ui-card overview-card overview-ranking">
             <div class="overview-card-head"><h2 class="ui-card__label">{{ group.title }}</h2><span class="overview-card-note">{{ group.id === 'clients' && displayStats.anonymized_clients ? '按脱敏网段聚合' : group.description }}</span></div>

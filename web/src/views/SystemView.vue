@@ -89,6 +89,9 @@ const running = computed(() => service.value?.active_state === 'active')
 // 连不上面板时，上次读到的服务状态不能当真：点变灰，写「状态未知」，连上后恢复（同概览）
 // While the panel is unreachable the last service state read cannot be trusted: the dot turns grey and reads 状态未知, restored on reconnect (as on the overview)
 const { down: panelDown } = useConnection()
+// 接在汉字后面：Release 标签这类字母开头的名字前空一格（「到 v0.2.0」），「构建 #N」紧接（「到构建 #N」），和服务端同一个规则
+// After Chinese text: a name starting with a Latin letter or digit takes a space (到 v0.2.0), 构建 #N follows directly (到构建 #N), the server's rule
+const afterCjk = (name: string) => (/^[A-Za-z0-9]/.test(name) ? ` ${name}` : name)
 const waitingForPanel = computed(() => panelDown.value && !service.value && !kernel.value)
 // 「正在运行 · active/running」「已停止 · inactive/dead」是同一件事说两遍；只有启动中、
 // 自动重启这类不寻常的状态，systemd 的原始写法才多带了信息。
@@ -437,7 +440,7 @@ async function updateKernel(): Promise<void> {
   if (!latest || kernelAction.value) return
   const verb = installed.value ? '更新' : '安装'
   if (!await confirm.ask({
-    title: `${verb}内核到 ${formatKixdnsVersion(latest)}`,
+    title: `${verb}内核到${afterCjk(formatKixdnsVersion(latest))}`,
     body: `先下载并校验这个构建。${switchConfirmBody(service.value)}`,
     confirmLabel: `${verb}内核`,
   })) return
@@ -463,7 +466,7 @@ async function rollbackKernel(): Promise<void> {
   const previous = kernel.value?.previous
   if (!previous || kernelAction.value) return
   if (!await confirm.ask({
-    title: `回退到 ${formatKixdnsVersion(previous)}`,
+    title: `回退到${afterCjk(formatKixdnsVersion(previous))}`,
     body: switchConfirmBody(service.value),
     confirmLabel: '回退内核',
   })) return

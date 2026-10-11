@@ -193,4 +193,13 @@ describe('按内核能力开的开关', () => {
     model.settings = { ...model.settings, statistics_enabled: true }
     expect(compile(model).settings).toHaveProperty('statistics_enabled', true)
   })
+
+  // 依附的上一级关着时也不写：排行关着时的「客户端 IP 脱敏」 / Not written while the switch it depends on is off: 客户端 IP 脱敏 with rankings off
+  it('上一级开关关着时，依附它的开关也不写', () => {
+    const model = sampleModel()
+    model.settings = { ...model.settings, statistics_enabled: false, statistics_anonymize_client_ip: true }
+    expect(compile(model).settings).not.toHaveProperty('statistics_anonymize_client_ip')
+    model.settings = { ...model.settings, statistics_enabled: true }
+    expect(compile(model).settings).toHaveProperty('statistics_anonymize_client_ip', true)
+  })
 })

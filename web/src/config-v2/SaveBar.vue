@@ -9,7 +9,7 @@ import DraftReviewDialog from './DraftReviewDialog.vue'
 import RuleText from './RuleText.vue'
 import { usePhone } from './phone'
 import { changeCount, dialogEdits, discardWithUndo, editorEdited, model } from './store'
-import { blockedFields, blockedHint, busy, conflict, deferNote, deferSave, editTouched, elapsed, note, origin, save, saveMessage, stage, validate, validation, verdict } from './useConfigDocument'
+import { blockedFields, busy, sayBlocked, conflict, deferNote, deferSave, editTouched, elapsed, note, origin, save, saveMessage, stage, validate, validation, verdict } from './useConfigDocument'
 
 // 保存条只替草稿说话：有改动才升起来，保存完一会儿就收起。两步：先校验，再写入并热加载；任何一步失败都停住，原因里的规则能点。
 // KixDNS 没启动、连不上、不报能力时只存成待应用版本。Ctrl/Cmd+S 等于点保存。进度和结果都来自 useConfigDocument。
@@ -43,7 +43,7 @@ function onKey(event: KeyboardEvent): void {
     if (busy.value) return
     if (props.jsonError) toast.info('JSON 写错了，改好才能保存')
     else if (conflict.value && draftStage.value === 'failed') toast.info('别处已经保存了新版本，先重新读取')
-    else if (blockedFields.value.length) toast.info(blockedHint.value)
+    else if (blockedFields.value.length) sayBlocked()
     else if (visible.value) saveDraft()
     // 域名映射行里改了还没点保存：说一句，不说「没有要保存的修改」 / A domain-mapping row edited but not committed: say so instead of 没有要保存的修改
     else if (dialogEdits.size) toast.info(`先保存${[...dialogEdits.values()][0]}，再保存配置`)

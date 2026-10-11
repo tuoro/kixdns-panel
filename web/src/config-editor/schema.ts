@@ -230,7 +230,12 @@ export function settingVisible(field: SettingField, settings: GlobalSettings): b
  */
 export function settingWritten(field: SettingField, settings: Readonly<Record<string, unknown>>): boolean {
   if (!Object.prototype.hasOwnProperty.call(settings, field.key)) return false
-  return !(field.requiresCapability && field.type === 'boolean' && settings[field.key] === false)
+  if (!field.requiresCapability) return true
+  if (field.type === 'boolean' && settings[field.key] === false) return false
+  // 依附的上一级开关关着时也不写（比如排行关着时的「客户端 IP 脱敏」）：内核不看它，写着只会让没有这项能力的内核挡住、而这一行还藏着看不见
+  // Not written either while the switch it depends on is off (客户端 IP 脱敏 with rankings off): the kernel ignores it, and writing it only gets a
+  // kernel without the capability to refuse a setting whose row is hidden
+  return !field.visibleWhen || Boolean(settings[field.visibleWhen])
 }
 
 /** 实际写给内核的设置：去掉关着的、按能力开的开关 / The settings actually written for the kernel: capability-gated switches that are off are left out */

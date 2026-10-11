@@ -37,25 +37,28 @@ pub struct UnsupportedConfigFields {
 // One remedy per kind that can actually be done: settings are switched off (off needs no capability); CNAME answers must become IPs
 impl fmt::Display for UnsupportedConfigFields {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut parts = Vec::new();
-        if !self.fields.is_empty() {
-            parts.push(format!(
-                "这个内核不支持配置里的：{}。在基础设置里关掉{}再保存，或者换用支持它的内核",
-                self.fields.join("、"),
-                if self.fields.len() > 1 {
-                    "它们"
-                } else {
-                    "这一项"
-                }
-            ));
+        let it = if self.fields.len() > 1 {
+            "它们"
+        } else {
+            "这一项"
+        };
+        let fields = self.fields.join("、");
+        // 两类都有时说一句：先列出来，再一起给出路，主语和出路各说一次
+        // Both kinds: one sentence that lists them, then the ways out together, subject and remedy each said once
+        match (self.fields.is_empty(), self.cname) {
+            (false, false) => write!(
+                formatter,
+                "这个内核不支持配置里的：{fields}。在基础设置里关掉{it}再保存，或者换用支持它的内核"
+            ),
+            (true, true) => formatter.write_str(
+                "这个内核不支持 CNAME 回答：把回答写成域名的映射和规则改成 IP，或者换用支持它的内核",
+            ),
+            (false, true) => write!(
+                formatter,
+                "这个内核不支持：{fields}、CNAME 回答。关掉{fields}、把写成域名的回答改成 IP，或者换用支持它们的内核"
+            ),
+            (true, false) => Ok(()),
         }
-        if self.cname {
-            parts.push(
-                "这个内核不支持 CNAME 回答：把回答写成域名的映射和规则改成 IP，或者换用支持它的内核"
-                    .to_owned(),
-            );
-        }
-        formatter.write_str(&parts.join("；"))
     }
 }
 
@@ -192,6 +195,22 @@ mod tests {
     fn accepts_controlled_switches_that_are_off() {
         let content = json!({"settings": {"statistics_enabled": false, "statistics_anonymize_client_ip": false}});
         assert!(ensure_config_supported(&content, &[]).is_ok());
+    }
+
+    // 两类都有时一句话：主语和出路各说一次 / Both kinds in one sentence: subject and remedy each said once
+    #[test]
+    fn both_kinds_read_as_one_sentence() {
+        let content = json!({
+            "settings": {"statistics_enabled": true},
+            "pipelines": [{"id": "default", "rules": [{"actions": [{"type": "static_cname_response", "target": "origin.example."}]}]}]
+        });
+        let message = ensure_config_supported(&content, &[])
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            message,
+            "这个内核不支持：启用查询排行、CNAME 回答。关掉启用查询排行、把写成域名的回答改成 IP，或者换用支持它们的内核"
+        );
     }
 
     #[test]

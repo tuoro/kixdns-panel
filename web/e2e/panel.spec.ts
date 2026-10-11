@@ -153,7 +153,7 @@ test('内核可更新到最新并回到上一个 @responsive', async ({ page }) 
   await expect(page.locator('.service-line')).toContainText('已停止')
 
   await runtime.getByRole('button', { name: '回退', exact: true }).click()
-  await expect(page.getByRole('alertdialog')).toContainText('回退到 构建 #30231271280')
+  await expect(page.getByRole('alertdialog')).toContainText('回退到构建 #30231271280')
   await expect(page.getByRole('alertdialog')).toContainText('不会启动服务')
   await acceptConfirm(page)
   await expect(page.locator('.toast--success').filter({ hasText: '服务仍停止，下次启动时生效' })).toBeVisible()

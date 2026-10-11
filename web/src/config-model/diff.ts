@@ -125,8 +125,10 @@ export function diffModels(now: Model, then: Model): DiffBlock[] {
   const nowSettings = writtenSettings(now.settings)
   const thenSettings = writtenSettings(then.settings)
   for (const k of new Set([...Object.keys(nowSettings), ...Object.keys(thenSettings)])) {
-    const a = nowSettings[k]
-    const b = thenSettings[k]
+    // 按能力开的开关不写就是关：读作「开 → 关」，不读作「去掉」 / A capability-gated switch that is not written is off: read as 开 → 关, not as removed
+    const gated = SETTING_FIELDS.get(k)?.requiresCapability && SETTING_FIELDS.get(k)?.type === 'boolean'
+    const a = nowSettings[k] ?? (gated ? false : undefined)
+    const b = thenSettings[k] ?? (gated ? false : undefined)
     if (JSON.stringify(a) === JSON.stringify(b)) continue
     const field = SETTING_FIELDS.get(k)
     blocks.push({ kind: a === undefined ? '加上' : b === undefined ? '去掉' : '改了', title: field ? settingLabel(field) : GEO_LABELS[k] ?? `设置 ${k}`, lines: [...(a === undefined ? [] : [{ sign: '-' as const, text: settingText(a, field) }]), ...(b === undefined ? [] : [{ sign: '+' as const, text: settingText(b, field) }])] })

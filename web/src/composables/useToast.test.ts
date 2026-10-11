@@ -81,4 +81,10 @@ describe('提示条的存活规则', () => {
     dismissUndoable()
     expect(toast.messages.value).toEqual([])
   })
+
+  it('同一句提示已经开着时不叠第二条', () => {
+    toast.info('当前内核不支持：启用查询排行，先关掉再保存')
+    toast.info('当前内核不支持：启用查询排行，先关掉再保存')
+    expect(toast.messages.value.filter((item) => item.message.startsWith('当前内核不支持'))).toHaveLength(1)
+  })
 })

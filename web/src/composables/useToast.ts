@@ -54,6 +54,9 @@ function runUndo(id: number): void {
 }
 
 function push(message: string, kind: ToastMessage['kind'] = 'info', undo?: () => void): number {
+  // 同一句提示已经开着：不叠第二条（连按两次保存、按钮和 Ctrl+S 各按一次） / The same message already showing: no second copy (save pressed twice, the button and Ctrl+S)
+  const same = !undo ? messages.value.find((item) => item.message === message && item.kind === kind && !item.undo) : undefined
+  if (same) return same.id
   const id = ++sequence
   messages.value.push({ id, kind, message, undo })
 
