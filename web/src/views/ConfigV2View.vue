@@ -12,7 +12,7 @@ import { useConfirm } from '../composables/useConfirm'
 import { useConnection } from '../composables/useConnection'
 import { dismissUndoable, useToast } from '../composables/useToast'
 import { exportConfig, readConfig } from '../config-model/document'
-import { compile, ruleTitle, type Model, type Rule, type UpstreamGroup } from '../config-model/model'
+import { compile, mappingIsIp, ruleTitle, type Model, type Rule, type UpstreamGroup } from '../config-model/model'
 import GroupEditor from '../config-v2/GroupEditor.vue'
 import HistoryDrawer from '../config-v2/HistoryDrawer.vue'
 import ImportReportDialog from '../config-v2/ImportReportDialog.vue'
@@ -193,7 +193,7 @@ function goUnsupported(): void {
 }
 // 写成域名的回答有几处：域名映射和规则（含规则组）分开数 / How many answers are domains: mappings and rules (rule groups included) counted apart
 const cnamePlaces = computed(() => {
-  const mappings = model.mappings.filter((m) => m.enabled && !/^[\d.:a-f, ]+$/i.test(m.target)).length
+  const mappings = model.mappings.filter((m) => m.enabled && !mappingIsIp(m)).length
   const rules = [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].filter((r) => r.outcome.type === 'answer' && r.outcome.kind === 'cname').length
   return { mappings, total: mappings + rules }
 })
@@ -417,11 +417,11 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
         <span v-if="!ready && !loadError" class="cfg__status-sk"><i class="sk"></i></span>
         <!-- 宽屏：标题下一排事实（状态、配置版本、规则数、上游组数）；手机：一行状态 / Wide: a facts row under the title (state, config version, rule count, upstream groups); phones: one status line -->
         <!-- 没读到配置时宽屏也是这一排，只写状态；版本、规则数、上游组数等读到再写 / Without a config read the wide header keeps this row with the state only; version, rule and group counts wait for the read -->
-        <span v-else-if="!phone && !firstRun" class="ui-facts cfg__facts" :role="applyBusy ? 'status' : undefined">
+        <span v-else-if="!phone && !firstRun" class="ui-facts cfg__facts" :class="{ 'cfg__facts--long': (headerLine.wide?.length ?? 0) > 1 }" :role="applyBusy ? 'status' : undefined">
           <span><span class="ui-lbl">状态</span><b><span v-if="applyBusy" class="ui-spin cfg__spin" aria-hidden="true"></span><span v-else class="ui-dot" :class="headerLine.tone === 'ok' ? '' : `ui-dot--${headerLine.tone}`" aria-hidden="true"></span><UiDotText :parts="headerLine.wide ?? [headerLine.lead ?? `${headerLine.before}${headerLine.version ?? ''}${headerLine.after ?? ''}`]" /><button v-if="headerAction && ready" class="cfg__head-action" type="button" @click="applyNow">{{ headerAction }}</button><button v-else-if="runtimeStopped && ready && !panelDown" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline cfg__head-start" type="button" :disabled="starting" @click="startKixdns">启动</button></b></span>
           <template v-if="doc">
           <span><span class="ui-lbl">配置版本</span><b>{{ versionLabel }}</b></span>
-          <span><span class="ui-lbl">规则</span><b>{{ ruleCount }} 条</b></span>
+          <span class="cfg__fact-rules"><span class="ui-lbl">规则</span><b>{{ ruleCount }} 条</b></span>
           <span class="cfg__fact-groups"><span class="ui-lbl">上游组</span><b>{{ model.groups.length }} 个</b></span>
           </template>
         </span>

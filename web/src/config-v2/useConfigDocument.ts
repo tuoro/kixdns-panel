@@ -3,7 +3,7 @@ import { ApiError, apiRequest, isPanelDown, jsonBody } from '../api/client'
 import type { ConfigApplyResult, ConfigDocument, ConfigRuntimeApplyState, ConfigVersion, ConfigVersionDetail, ConfigVersions, DeleteConfigVersionResult, DeleteConfigVersionsResult, Overview, ServiceStatus, ValidationResult } from '../api/types'
 import { SETTING_SECTIONS, settingNeedsCapability, settingSupported } from '../config-editor/schema'
 import { exportConfig, readConfig } from '../config-model/document'
-import type { Model } from '../config-model/model'
+import { mappingIsIp, type Model } from '../config-model/model'
 import { traceNames } from '../config-model/trace-names'
 import { useConnection } from '../composables/useConnection'
 import { dismissUndoable, toastMark, useToast } from '../composables/useToast'
@@ -46,7 +46,9 @@ export const unsupportedFields = computed(() => SETTING_SECTIONS.flatMap((s) => 
 // 内核报了自己支持什么、草稿里却开着它没有的功能：服务端不收这份配置（开着也不起作用），所以先不让保存
 // The kernel reported what it supports and the draft switches on a feature it lacks: the server refuses the config (the switch would do nothing), so saving waits
 // 草稿里用到了 CNAME 回答：域名映射的回答写的是域名，或规则的自定义回答是 CNAME / The draft uses a CNAME answer: a mapping answers with a domain, or a rule's custom answer is a CNAME
-export const cnameInUse = computed(() => model.mappings.some((m) => m.enabled && !/^[\d.:a-f, ]+$/i.test(m.target))
+// 和写出配置时同一个判断：不全是 IP 的回答写成 CNAME（以前按字符猜，cafe.de 这种只由 a–f 组成的域名被当成 IP，警告就漏了）
+// The same test the export uses: an answer that is not all IPs is written as CNAME (it used to guess by characters, so a domain made of a–f letters such as cafe.de passed as an IP and the warning was missed)
+export const cnameInUse = computed(() => model.mappings.some((m) => m.enabled && !mappingIsIp(m))
   || [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].some((r) => r.outcome.type === 'answer' && r.outcome.kind === 'cname'))
 export const blockedFields = computed(() => (!runtimeStopped.value && !runtimeUnavailable.value && !capabilityError.value
   ? [...unsupportedFields.value, ...(!canCname.value && cnameInUse.value ? ['CNAME 回答'] : [])]
@@ -358,7 +360,7 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     }
     const message = saveMessage.value.trim()
     const result = await apiRequest<ConfigApplyResult>('/api/v1/config', { method: 'PUT', ...jsonBody({ content, expected_sha256: doc.value.sha256, message }) })
-    const pendingText = `已存成待应用版本 #${result.version_id}，${pendingWhen()}自动\u2060应用`
+    const pendingText = `已存成待应用版本 #${result.version_id}，${pendingWhen()}自\u2060动\u2060应\u2060用`
     saveMessage.value = ''
     // 写入成功就先记下：文件的散列和版本换成这次的，对照的那份换成发出去的草稿。之后的重读失败了，也不会把已保存的算成修改、下次保存也不会撞上自己
     // Record the write at once: the file hash and version become this save's, and the baseline becomes the draft that was sent. If the re-read after it fails,
