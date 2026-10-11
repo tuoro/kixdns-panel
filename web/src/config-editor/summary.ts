@@ -127,7 +127,7 @@ export function transportLabel(transport: string): string {
   return TRANSPORT_LABELS[transport.toLowerCase()] ?? transport.toUpperCase()
 }
 
-export function summarizeAction(action: ActionConfig): string {
+export function summarizeAction(action: ActionConfig, phase: 'request' | 'response' = 'request'): string {
   switch (action.type) {
     case 'log': return `记录日志（${LEVEL_NAMES[text(action.level, 'info')] ?? text(action.level, 'info')}）`
     case 'static_response': return `返回 ${text(action.rcode)}`
@@ -138,7 +138,8 @@ export function summarizeAction(action: ActionConfig): string {
     // 还没选目标时写成缺什么，不占 ID 那个位置：否则读起来像跳去一个叫「未选择」的 Pipeline（审计第八轮 D1）
     // With no target yet, say what is missing instead of filling the ID slot, which read as a Pipeline named 未选择 (audit round 8, D1)
     case 'jump_to_pipeline': return action.pipeline?.trim() ? `转到 ${action.pipeline.trim()}` : '转到（还没选）'
-    case 'allow': return '交给默认上游'
+    // 回答后的 allow 是照常返回上游的回答 / allow in the answer phase returns the upstream's answer as is
+    case 'allow': return phase === 'response' ? '照常返回' : '交给默认上游'
     case 'deny': return '拦截（REFUSED）'
     case 'forward': {
       // 几个上游用顿号隔开；协议名是英文，用半角括号贴在地址后面（中文排版里英文内容用半角标点）
@@ -155,9 +156,9 @@ export function summarizeAction(action: ActionConfig): string {
 }
 
 // 「然后」后面紧跟动词，中文和中文之间不空格 / 然后 is followed straight by the verb: no space between Chinese words
-export function summarizeActions(actions: ActionConfig[]): string {
+export function summarizeActions(actions: ActionConfig[], phase: 'request' | 'response' = 'request'): string {
   if (actions.length === 0) return '未配置动作'
-  return actions.map(summarizeAction).join('，然后')
+  return actions.map((action) => summarizeAction(action, phase)).join('，然后')
 }
 
 export function summarizeRule(rule: RuleConfig): { condition: string; action: string } {

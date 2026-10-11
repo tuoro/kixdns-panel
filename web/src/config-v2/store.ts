@@ -178,7 +178,8 @@ export function applyUpstreamStats(counts: UpstreamCount[]): void {
 export const healthOf = (group: UpstreamGroup): GroupHealth | undefined => groupHealth.value.get(group.id)
 
 // ---------- 视图 / view ----------
-export const ui = reactive({ query: '', kind: '', tab: 'rules', mode: 'form' as 'form' | 'json' })
+// settingsGroup：基础设置打开时先显示哪一组（从「去基础设置」过来时指到出问题的那一组） / settingsGroup: which settings group opens first (the one with the problem when arriving from 去基础设置)
+export const ui = reactive({ query: '', kind: '', tab: 'rules', mode: 'form' as 'form' | 'json', settingsGroup: '' })
 
 // ---------- 引用 / references ----------
 export interface RuleList { rules: Rule[]; rest: Outcome; group: RuleGroup | null }

@@ -53,7 +53,7 @@ export const SETTING_SECTIONS: SettingSection[] = [
   {
     id: 'network',
     title: '基础与监听',
-    description: '监听地址、默认上游与请求超时',
+    description: '监听地址和请求超时',
     tone: 'green',
     fields: [
       { key: 'bind_udp', label: 'UDP 监听地址', type: 'text', default: '0.0.0.0:5353' },
@@ -112,7 +112,7 @@ export const SETTING_SECTIONS: SettingSection[] = [
       { key: 'serve_stale', label: '过期后继续用旧结果', type: 'boolean', default: false },
       { key: 'serve_stale_ttl', label: '旧结果的 TTL (s)', type: 'number', min: 1, unit: '秒', default: 30, visibleWhen: 'serve_stale' },
       { key: 'serve_stale_expire_ttl', label: '旧结果最多用多久 (s)', type: 'number', min: 0, unit: '秒', default: 86400, visibleWhen: 'serve_stale' },
-      { key: 'serve_stale_ttl_reset', label: '重置过期 TTL', type: 'boolean', default: true, visibleWhen: 'serve_stale' },
+      { key: 'serve_stale_ttl_reset', label: '每用一次旧结果就重新计时', type: 'boolean', default: true, visibleWhen: 'serve_stale' },
       { key: 'serve_stale_client_timeout_ms', label: '客户端等待 (ms)', type: 'number', min: 0, unit: '毫秒', default: 0, visibleWhen: 'serve_stale' },
     ],
   },

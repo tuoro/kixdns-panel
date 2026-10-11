@@ -145,7 +145,7 @@ function remove(): void {
           </div>
         </div>
         <!-- 不能删除的原因写在内容最后，底栏只放动作（手机）/ Why it cannot be deleted closes the content; the footer holds only actions (phone) -->
-        <p v-if="original && users.length" class="pdrawer__uses-body">这个组有 {{ users.length }} 处在用，先把它们改到别的组才能删除。</p>
+        <p v-if="original && users.length" class="pdrawer__uses-body">这个组有 {{ users.length }} 处在用，先把{{ users.length > 1 ? '它们' : '那一处' }}改到别的组才能删除。</p>
       </div>
       <footer class="pdrawer__foot">
         <template v-if="original">

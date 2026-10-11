@@ -24,7 +24,7 @@ import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields } from '../config-v2/useConfigDocument'
+import { applyBusy, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, unsupportedSection } from '../config-v2/useConfigDocument'
 import { useHelp } from '../composables/useHelp'
 import { useServiceStart } from '../composables/useServiceStart'
 import { registerLeaveGuard, takeAgreement } from '../composables/useLeaveGuard'
@@ -154,7 +154,6 @@ function groupDeleted(group: UpstreamGroup, index: number): void {
 
 // ---------- 通知条：一次只说一件事 / the notice strip: one thing at a time ----------
 const geoPrefixed = computed(() => [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].flatMap((r) => r.conditions.flat()).filter((c) => c.field === 'geosite' && c.values.some((v) => /^geosite:/i.test(v))).length)
-const cnameInUse = computed(() => model.mappings.some((m) => m.enabled && !/^[\d.:a-f, ]+$/i.test(m.target)) || model.rules.some((r) => r.outcome.type === 'answer' && r.outcome.kind === 'cname'))
 interface Notice { tone: 'err' | 'warn' | 'off'; text: string; detail?: string; action?: string; run?: () => void }
 const notice = computed<Notice | null>(() => {
   if (loadError.value && doc.value) return { tone: 'err', text: '读取配置失败，下面是上一次读到的内容。', detail: loadError.value, action: '重试', run: () => void reload(true) }
@@ -169,9 +168,9 @@ const notice = computed<Notice | null>(() => {
   if (importReport.value && !reportOpen.value && importReport.value.stats.raw) return { tone: 'off', text: `这份配置是按内核格式读进来的，${importReport.value.stats.raw} 条规则原样保留为高级规则。`, action: '查看导入说明', run: () => { reportOpen.value = true } }
   // 没运行、连不上时页头已经说了，功能列表拿不到是它的结果，不另起一条 / When stopped or unreachable the header says so; the missing feature list follows from it
   if (capabilityError.value && !runtimeStopped.value && !runtimeUnavailable.value) return { tone: 'off', text: 'KixDNS 没有报告它支持哪些功能：新功能先按不支持处理，保存后先存成待应用版本。' }
-  if (!canCname.value && cnameInUse.value && !capabilityError.value) return { tone: 'warn', text: '当前 KixDNS 不支持固定 CNAME：已有的域名映射和规则会保留，先更新或切换内核再应用。' }
+  if (!canCname.value && cnameInUse.value && !capabilityError.value) return { tone: 'warn', text: '当前内核不支持 CNAME 回答：KixDNS 不会接受带 CNAME 的配置。把回答域名的域名映射和规则改成 IP，或者更新内核。' }
   // KixDNS 不接受带着它不支持的设置的配置：说清这一点和两条出路，按钮直接去基础设置 / KixDNS refuses a config carrying settings it does not support: say so with the two ways out, the button going straight to the settings
-  if (unsupportedFields.value.length) { const these = unsupportedFields.value.length > 1 ? '这几项' : '这一项'; return { tone: 'warn', text: `当前内核不支持：${unsupportedFields.value.join('、')}。KixDNS 不会接受带着${these}的配置：先关掉${these}，或者更新到支持它的内核。`, action: section.value === 'settings' ? undefined : '去基础设置', run: () => setTab('settings') } }
+  if (unsupportedFields.value.length) { const these = unsupportedFields.value.length > 1 ? '这几项' : '这一项'; return { tone: 'warn', text: `当前内核不支持：${unsupportedFields.value.join('、')}。只要配置里写着${these}，KixDNS 就不接受：在基础设置里把${these}从配置里去掉，或者更新到支持它的内核。`, action: section.value === 'settings' ? undefined : '去基础设置', run: () => { ui.settingsGroup = unsupportedSection.value; setTab('settings') } } }
   return null
 })
 function stripPrefix(): void {

@@ -4,7 +4,7 @@ import SettingsEditor from '../components/config/SettingsEditor.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
 import { groupName } from '../config-model/model'
-import { changedSettingKeys, model } from './store'
+import { changedSettingKeys, model, ui } from './store'
 import { runtimeCapabilities } from './useConfigDocument'
 
 // 基础设置就是现在面板的那一页（监听、连接、缓存、过期缓存、流控、统计、Geo 数据），最前面多一组「规则默认值」。
@@ -35,7 +35,7 @@ const lead = computed(() => ({
 
 <template>
   <section class="ui-card sets__card" aria-label="基础设置">
-    <SettingsEditor v-model="model.settings" v-model:version="model.format" :capabilities="capabilities" :changed="changedSettingKeys" :hidden-keys="hidden" :lead="lead">
+    <SettingsEditor v-model="model.settings" v-model:version="model.format" :capabilities="capabilities" :changed="changedSettingKeys" :hidden-keys="hidden" :lead="lead" :initial-group="ui.settingsGroup">
       <template #lead>
         <div class="ui-setrow">
           <span class="ui-setrow__label"><span>拦截时怎么回应</span><small>规则选「拦截 · 沿用默认」时用这个。{{ blockNote[model.defaults.block] }}</small></span>

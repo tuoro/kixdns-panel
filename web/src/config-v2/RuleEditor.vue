@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { summarizeAction } from '../config-editor/summary'
 import { traceNames } from '../config-model/trace-names'
 import { jsonProblemText, jsonSyntaxProblem } from '../json-problem'
 import { ArrowDown, ArrowLeft, Ban, ChevronDown, ChevronRight, CornerDownRight, Info, MessageSquareText, Server, Trash2 } from '@lucide/vue'
@@ -12,7 +13,7 @@ import UiHelp from '../components/ui/UiHelp.vue'
 import { REQUEST_ORDER, RESPONSE_ORDER } from '../config-model/condKinds'
 import { toDnf, toTree, treeText, type CondTree } from '../config-model/condTree'
 import { actionFieldErrors, matcherFieldErrors } from '../config-editor/field-validation'
-import type { PipelineConfig, RuleConfig } from '../config-editor/types'
+import type { ActionConfig, PipelineConfig, RuleConfig } from '../config-editor/types'
 import {
   compile, conditionText, ecsText, fallbackSentence, FIELD, kernelPreview, mainPipelineId, newRule, ruleGroupPipelineId, rawMatchersText, withShi, outcomeSentence, remedySentence, RESPONSE_FIELD, responseConditionText,
   ruleProblems, type Ecs, type Outcome, type Remedy, type ResponseCondition, type Rule,
@@ -159,7 +160,7 @@ function capture(): EditorResume {
   return { draft: JSON.parse(JSON.stringify(draft)) as Rule, rawRules: JSON.parse(JSON.stringify(rawRules)) as unknown[], rawMode: rawMode.value, rawText: rawText.value, position: Number(position.value), base: initialSnap.value }
 }
 const showErrors = ref(false)
-const problems = computed(() => [...ruleProblems(model, draft), ...(rawError.value ? [`内核规则写错了：${rawError.value}`] : []), ...(rawFieldProblems.value ? [`内核规则里标红的 ${rawFieldProblems.value} 处`] : [])])
+const problems = computed(() => [...ruleProblems(model, draft), ...(rawError.value ? [`内核规则写错了：${rawError.value}`] : []), ...(rawFieldProblems.value ? ['内核规则里标红的地方'] : [])])
 // 标红的几处各算一处，不把它们算成一处 / Each red-marked field counts as one, rather than all of them as one
 const problemCount = computed(() => problems.value.length + Math.max(0, rawFieldProblems.value - 1))
 const nameInput = ref<HTMLInputElement | null>(null)
@@ -263,8 +264,8 @@ const reading = computed(() => {
   if (draft.raw) {
     try {
       const list = currentRaw() as { matchers?: Record<string, unknown>[]; matcher_operator?: string; actions?: { type: string }[] }[]
-      const ACT: Record<string, string> = { forward: '转发', allow: '交给默认上游', deny: '拒绝', static_response: '固定响应码', static_ip_response: '固定 IP', static_cname_response: '固定 CNAME', static_txt_response: '固定 TXT', replace_txt_response: '替换 TXT', jump_to_pipeline: '转到', log: '记录日志', continue: '继续往下' }
-      return list.map((r, i) => ({ k: `第 ${i + 1} 条`, v: `${rawMatchersText(r.matchers, r.matcher_operator)} → ${(r.actions ?? []).map((a) => ACT[a.type] ?? a.type).join('、') || '没有动作'}` }))
+      // 动作用和表单同一套叫法（含响应码），几条内核规则时写「内核规则 N」，不和顺序里的「第 N 条」撞 / Actions use the form's names (with the response code); with several kernel rules they read 内核规则 N, not colliding with the position's 第 N 条
+      return list.map((r, i) => ({ k: list.length > 1 ? `内核规则 ${i + 1}` : '内核规则', v: `${rawMatchersText(r.matchers, r.matcher_operator)} → ${(r.actions ?? []).map((a) => summarizeAction(a as ActionConfig)).join('、') || '没有动作'}` }))
     } catch { return [{ k: '内核规则', v: 'JSON 还没写对' }] }
   }
   const rows: { k: string; v: string }[] = [{ k: '如果', v: treeText(condTree.value, conditionText) }, { k: '那么', v: outcomeSentence(model, draft.outcome) }]
@@ -370,7 +371,7 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
     <div class="editor__grid">
       <div class="editor__main">
         <section v-if="draft.raw" class="ecard" :class="{ 'ui-card': !inspector }" aria-labelledby="ec-raw">
-          <header class="ecard__head ecard__head--raw"><div><h2 id="ec-raw" class="ecard__title">高级规则<UiHelp topic="raw" /></h2><p class="ecard__desc">面板的表单表达不了这条规则，原样保留。这里改的就是 KixDNS 直接读的规则，保存前会校验。</p></div><UiTabs class="ecard__rawmode" :model-value="rawMode" :items="rawModes" label="内核规则的写法" variant="segment" @update:model-value="setRawMode" /></header>
+          <header class="ecard__head ecard__head--raw"><div><h2 id="ec-raw" class="ecard__title">高级规则<UiHelp topic="raw" /></h2><p class="ecard__desc">这条规则放不进面板的写法，原样保留。这里改的就是 KixDNS 直接读的规则，保存前会校验。</p></div><UiTabs class="ecard__rawmode" :model-value="rawMode" :items="rawModes" label="内核规则的写法" variant="segment" @update:model-value="setRawMode" /></header>
           <div class="ecard__body">
             <RawRuleEditor v-if="rawMode === 'form'" v-model="rawRules" :pipelines="kernelPipelines" :current-pipeline-id="ownPipelineId" :capabilities="runtimeCapabilities" :show-errors="showErrors" :pipeline-name="kernelPipelineName" />
             <template v-else><JsonEditor v-model="rawText" :error-line="undefined" /><p v-if="rawError" class="ui-field-error" aria-live="polite">{{ rawError }}</p></template>

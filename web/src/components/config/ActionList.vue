@@ -24,6 +24,8 @@ const props = withDefaults(defineProps<{
   showErrors?: boolean
   // 组的叫法（主列表、规则组「X」、上游组「X」）；没给就照内核 id 写 / How to name a group (主列表, 规则组「X」, 上游组「X」); the kernel id without it
   pipelineName?: (id: string) => string | null
+  // 回答后的动作里「allow」是把上游的回答照常返回，不是交给默认上游 / In the answer phase allow returns the upstream's answer as is; it does not hand off to the default upstream
+  phase?: 'request' | 'response'
 }>(), {
   capabilities: () => [],
   showErrors: false,
@@ -75,7 +77,8 @@ function useUpstream(action: ActionConfig, index: string): void {
 }
 
 function typeOptions(action: ActionConfig) {
-  const known = supportedActionTypes.value.map((option) => ({ value: option.value, label: option.label }))
+  const label = (option: { value: string; label: string }) => (props.phase === 'response' && option.value === 'allow' ? '照常返回' : option.label)
+  const known = supportedActionTypes.value.map((option) => ({ value: option.value, label: label(option) }))
   if (known.some((option) => option.value === action.type)) return known
   const current = ACTION_TYPES.find((option) => option.value === action.type)
   return [...known, { value: action.type, label: current?.label ?? action.type }]

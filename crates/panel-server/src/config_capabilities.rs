@@ -30,20 +30,32 @@ const FIELD_REQUIREMENTS: &[FieldRequirement] = &[
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnsupportedConfigFields {
     fields: Vec<&'static str>,
+    cname: bool,
 }
 
+// 每一类给一条做得到的出路：设置要从配置里去掉（写着就算，关着也不行），CNAME 要改成 IP
+// One remedy per kind that can actually be done: settings must be removed from the config (being written counts, even switched off); CNAME answers must become IPs
 impl fmt::Display for UnsupportedConfigFields {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "这个内核不支持配置里的：{}。先关掉{}，或者换用支持它的内核",
-            self.fields.join("、"),
-            if self.fields.len() > 1 {
-                "这几项"
-            } else {
-                "这一项"
-            }
-        )
+        let mut parts = Vec::new();
+        if !self.fields.is_empty() {
+            parts.push(format!(
+                "这个内核不支持配置里的：{}。在基础设置里把{}从配置里去掉，或者换用支持它的内核",
+                self.fields.join("、"),
+                if self.fields.len() > 1 {
+                    "它们"
+                } else {
+                    "这一项"
+                }
+            ));
+        }
+        if self.cname {
+            parts.push(
+                "这个内核不支持 CNAME 回答：把回答域名的域名映射和规则改成 IP，或者换用支持它的内核"
+                    .to_owned(),
+            );
+        }
+        formatter.write_str(&parts.join("；"))
     }
 }
 
@@ -51,7 +63,7 @@ pub fn ensure_config_supported(
     content: &Value,
     capabilities: &[String],
 ) -> Result<(), UnsupportedConfigFields> {
-    let mut fields = FIELD_REQUIREMENTS
+    let fields = FIELD_REQUIREMENTS
         .iter()
         .filter(|requirement| {
             content.pointer(requirement.pointer).is_some()
@@ -59,15 +71,12 @@ pub fn ensure_config_supported(
         })
         .map(|requirement| requirement.label)
         .collect::<Vec<_>>();
-    if config_uses_action(content, "static_cname_response")
-        && !supports(capabilities, CONFIG_STATIC_CNAME_RESPONSE_V1)
-    {
-        fields.push("固定 CNAME 回答");
-    }
-    if fields.is_empty() {
+    let cname = config_uses_action(content, "static_cname_response")
+        && !supports(capabilities, CONFIG_STATIC_CNAME_RESPONSE_V1);
+    if fields.is_empty() && !cname {
         Ok(())
     } else {
-        Err(UnsupportedConfigFields { fields })
+        Err(UnsupportedConfigFields { fields, cname })
     }
 }
 
@@ -196,7 +205,7 @@ mod tests {
                 }]
             });
             let error = ensure_config_supported(&content, &[]).unwrap_err();
-            assert!(error.to_string().contains("固定 CNAME 回答"));
+            assert!(error.to_string().contains("CNAME 回答"));
             assert!(
                 ensure_config_supported(&content, &[CONFIG_STATIC_CNAME_RESPONSE_V1.to_owned()])
                     .is_ok()

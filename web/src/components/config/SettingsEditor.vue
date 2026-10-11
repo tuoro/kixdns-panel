@@ -21,6 +21,8 @@ const props = defineProps<{
   changed?: ReadonlySet<string>
   hiddenKeys?: readonly string[]
   lead?: { id: string; title: string; description: string; summary: string[]; changed?: boolean; help?: string }
+  // 先打开哪一组；不给就是最前面那组 / Which group opens first; the leading one when not given
+  initialGroup?: string
 }>()
 const shown = (field: SettingField) => !props.hiddenKeys?.includes(field.key)
 const search = ref('')
@@ -28,7 +30,7 @@ const searchInput = ref<HTMLInputElement>()
 // 左边一列分组、右边一组设置，和解析编排的「左列表、右检查器」同一种版式；手机上先看分组列表，点进去看一组。
 // Groups on the left and one group's settings on the right, the same layout as 解析编排's list and
 // inspector; a phone shows the group list first and opens one group at a time.
-const current = ref(props.lead?.id ?? 'network')
+const current = ref(props.initialGroup || (props.lead?.id ?? 'network'))
 const mobileOpen = ref(false)
 const mobileViewport = window.matchMedia('(max-width: 860px)')
 const isMobile = ref(mobileViewport.matches)
@@ -153,6 +155,13 @@ function readonlyValue(field: SettingField): string {
 function setValue(key: string, value: unknown): void {
   settings.value = { ...settings.value, [key]: value }
 }
+// 内核不支持的设置只要写在配置里（哪怕是关着的）就会被拒；从配置里去掉这一项，草稿才保存得了
+// A setting the kernel does not support is refused whenever it is written in the config (even switched off); removing it lets the draft save
+function removeSetting(key: string): void {
+  const next = { ...settings.value }
+  delete next[key]
+  settings.value = next
+}
 
 function scalarValue(field: SettingField): string | number {
   const value = settings.value[field.key]
@@ -245,7 +254,7 @@ function supported(field: SettingField): boolean {
           <template v-for="field in section.fields" :key="field.key">
             <div v-if="!supported(field)" class="ui-setrow ui-setrow--off">
               <span class="ui-setrow__label"><span>{{ labelFor(field) }}<i v-if="changed?.has(field.key)" class="ui-dot ui-dot--ink settings-dot" aria-hidden="true"></i></span><code v-if="query" class="settings-row__key">{{ field.key }}</code></span>
-              <span class="settings-row__readonly"><code>{{ readonlyValue(field) }}</code><span class="ui-tag">内核不支持</span></span>
+              <span class="settings-row__readonly"><code>{{ readonlyValue(field) }}</code><span class="ui-tag">内核不支持</span><button v-if="Object.prototype.hasOwnProperty.call(settings, field.key)" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" @click="removeSetting(field.key)">从配置里去掉</button></span>
             </div>
             <label v-else-if="field.type === 'boolean'" class="ui-setrow ui-setrow--toggle" :class="{ 'ui-setrow--off': disabled(field) }">
               <span class="ui-setrow__label"><span>{{ labelFor(field) }}<i v-if="changed?.has(field.key)" class="ui-dot ui-dot--ink settings-dot" aria-hidden="true"></i></span><small v-if="noteFor(field)">{{ noteFor(field) }}</small><code v-if="query" class="settings-row__key">{{ field.key }}</code></span>

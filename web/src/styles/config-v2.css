@@ -1090,6 +1090,8 @@ body { background: var(--l-canvas); }
 .rawed__rule:last-of-type { border-bottom: 0; padding-bottom: 0; }
 .rawed__head { display: flex; align-items: center; gap: var(--s-2); }
 .rawed__name { flex: 1 1 auto; min-width: 0; max-width: 20rem; }
+/* 名字框前面写明是内核里的名字，和上面的规则名分开 / The box says up front it is the name inside the kernel, apart from the rule name above */
+.rawed__name-label { flex: none; color: var(--l-ink-3); font-family: var(--f-body); font-size: var(--t-2); white-space: nowrap; }
 .rawed__stage { display: grid; gap: var(--s-2); }
 .rawed__title { display: flex; align-items: center; gap: var(--s-2); margin: 0; font-size: var(--t-2); font-weight: var(--w-bold); color: var(--l-ink-2); }
 .rawed__relation { margin-left: auto; }

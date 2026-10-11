@@ -130,4 +130,9 @@ describe('规则语义摘要', () => {
     pipeline.rules[0]!.actions = [{ type: 'continue' }]
     expect(findBlockingRule(pipeline, 1)).toBeUndefined()
   })
+
+  it('回答后的 allow 是照常返回，不是交给默认上游', () => {
+    expect(summarizeAction({ type: 'allow' })).toBe('交给默认上游')
+    expect(summarizeAction({ type: 'allow' }, 'response')).toBe('照常返回')
+  })
 })

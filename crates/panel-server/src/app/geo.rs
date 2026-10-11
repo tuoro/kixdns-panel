@@ -119,7 +119,7 @@ pub(super) async fn save_geo_data_schedule(
         if GeoDataSyncRequest::from_manifest(&manifest).is_empty() {
             return Err(AppError::BadRequest(
                 "geo_data_schedule_empty",
-                "请先配置并下载至少一个远程 Geo 数据源".to_owned(),
+                "先填一个远程链接并点「下载并填入配置」，才能自动更新".to_owned(),
             ));
         }
     }
@@ -277,7 +277,10 @@ async fn write_synced_geo_config(
                 rollback_config(state, previous.content, &result.sha256, "system").await?;
                 anyhow::bail!(
                     "KixDNS 没有接受新的 Geo 数据，仍在用之前的配置：{}",
-                    super::reload_failure(&error)
+                    match &error {
+                        ControlError::Rejected(reason) => reason.clone(),
+                        other => super::reload_failure(other),
+                    }
                 );
             }
             result

@@ -938,9 +938,9 @@ impl UpdateManager {
             )));
         }
         if let Err(error) = host.wait_until_healthy().await {
-            // 只要里面那句（「新内核 5 秒内没有启动起来（…）」），不带「安装更新失败：」前缀，读起来是一句话
-            // Only the inner phrase (新内核 5 秒内没有启动起来（…）), without the 安装更新失败： prefix, so it reads as one sentence
-            let reason = error.reason();
+            // 只要里面那句（「5 秒内没有启动起来（…）」），主语在这里加上，不带「安装更新失败：」前缀，读起来是一句话
+            // Only the inner phrase (5 秒内没有启动起来（…）) with the subject added here and without the 安装更新失败： prefix, so it reads as one sentence
+            let reason = format!("新内核 {}", error.reason());
             self.restore_previous(current.as_deref(), host, true)
                 .await
                 .map_err(|rollback| {
@@ -996,7 +996,7 @@ impl UpdateManager {
         }
         host.wait_until_healthy()
             .await
-            .map_err(|error| UpdateError::Install(format!("恢复旧版本后健康检查失败：{error}")))?;
+            .map_err(|error| UpdateError::Install(format!("原来的内核 {}", error.reason())))?;
         Ok(())
     }
 }
