@@ -751,7 +751,7 @@ onBeforeUnmount(() => {
             </section>
           </div>
 
-          <div class="overview-col">
+          <div class="overview-col overview-col--side">
             <!-- 手动刷新时上游状态变淡；每 15 秒的定时刷新数据不动（全站约定） / Upstream status fades on a manual refresh only; timed refreshes leave the data still (site convention) -->
             <!-- 每个上游一行：状态点、地址、传输方式，右端是平均耗时，下面一行成功率和响应次数。不画耗时细条：耗时的数已经在右端，细条只是把它再画一遍。
                  一行里只允许一个告警色：成功率染色，耗时本身不染。
@@ -937,6 +937,12 @@ onBeforeUnmount(() => {
    column's bottom: the bar chart on the left, request distribution on the right, so the two bottoms always meet. */
 .overview-grid { display: grid; grid-template-columns: minmax(0, 1fr) calc((100% - 2 * var(--ov-gap)) / 3); gap: var(--ov-gap); align-items: stretch; }
 .overview-col { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: var(--ov-gap); min-width: 0; }
+/* 右栏的富余给上游状态：请求分布按内容高、底边内距和别的卡一样，上游那几行在卡里均匀铺开（以前延迟细条撑着它，去掉以后富余落到了请求分布底下）
+   The right column's slack goes to upstream status: request distribution takes its content height with the usual bottom inset, and the upstream rows spread
+   evenly in their card (the latency bars used to fill it; without them the slack fell under request distribution) */
+.overview-col--side { grid-template-rows: minmax(0, 1fr) auto; }
+.overview-col--side > .overview-card--upstreams { display: flex; flex-direction: column; }
+.overview-col--side > .overview-card--upstreams > .overview-rows { flex: 1 1 auto; align-content: space-evenly; }
 /* 没运行过时卡里只有一句「尚无数据」，撑高只会撑出空白：两栏各按内容高，底边不强求齐平 / Never run, each card holds one line of 尚无数据 and stretching would only stretch blank: both columns take their content height and the bottoms are not forced level */
 .overview-grid.is-empty .overview-col { grid-template-rows: none; align-content: start; }
 .overview-trio { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--ov-gap); }
@@ -1063,7 +1069,10 @@ onBeforeUnmount(() => {
 /* 卡里的表：表头就是卡的第一行，最后一行不画底线、不留下边距 / The table in its card: the column names are the card's first line; the last row has no bottom rule or padding */
 .overview-rules-card .ui-rec:last-child { min-height: 0; padding-bottom: 0; border-bottom: 0; }
 /* 手机上没有表头：第一行不留上边距，卡片上沿和别的卡一样 / Phones have no column head: the first row keeps no top padding, so the card's top inset matches the others */
-@media (max-width: 640px) { .overview-rules-card .ui-rec:first-of-type { padding-top: 0; } }
+/* 第一行紧跟在（窄屏藏起来的）表头后面：`:first-of-type` 匹配不到它，按「表头后面那一行」找 / The first row follows the (hidden on narrow screens) column head: `:first-of-type` never matched it, so it is found as the row after the head */
+@media (max-width: 899px) { .overview-rules-card .ui-rec-head + .ui-rec { padding-top: 0; } }
+/* 手机上工具行只有一行字时不撑到 36：说明和卡片之间不再空出一截 / On phones a one-line toolbar is not stretched to 36, so no gap opens between the caption and the card */
+@media (max-width: 640px) { .overview-toolbar { min-height: 0; } }
 .overview-rule-name { min-width: 0; font-size: var(--t-3); font-weight: var(--w-medium); overflow-wrap: anywhere; }
 .overview-rule-pipeline { min-width: 0; color: var(--l-ink-3); font-size: var(--t-2); overflow-wrap: anywhere; }
 .overview-rule-count { text-align: right; font-variant-numeric: tabular-nums; }

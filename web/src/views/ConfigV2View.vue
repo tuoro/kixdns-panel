@@ -391,7 +391,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
           <span><span class="ui-lbl">状态</span><b><span v-if="applyBusy" class="ui-spin cfg__spin" aria-hidden="true"></span><span v-else class="ui-dot" :class="headerLine.tone === 'ok' ? '' : `ui-dot--${headerLine.tone}`" aria-hidden="true"></span><UiDotText :parts="headerLine.wide ?? [headerLine.lead ?? `${headerLine.before}${headerLine.version ?? ''}${headerLine.after ?? ''}`]" /><button v-if="headerAction && ready" class="cfg__head-action" type="button" @click="applyNow">{{ headerAction }}</button><button v-else-if="runtimeStopped && ready && !panelDown" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline cfg__head-start" type="button" :disabled="starting" @click="startKixdns">启动</button></b></span>
           <span><span class="ui-lbl">配置版本</span><b>{{ versionLabel }}</b></span>
           <span><span class="ui-lbl">规则</span><b>{{ ruleCount }} 条</b></span>
-          <span><span class="ui-lbl">上游组</span><b>{{ model.groups.length }} 个</b></span>
+          <span class="cfg__fact-groups"><span class="ui-lbl">上游组</span><b>{{ model.groups.length }} 个</b></span>
         </span>
         <span v-else class="ui-ph__lead" :role="applyBusy ? 'status' : undefined">
           <span v-if="applyBusy" class="ui-spin cfg__spin" aria-hidden="true"></span>

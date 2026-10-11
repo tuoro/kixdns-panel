@@ -179,6 +179,8 @@ body { background: var(--l-canvas); }
    The header's 启动 is a small secondary button that takes no vertical room: taller than the text, it never heightens the line (the facts row keeps one height), and its label shares the baseline of KixDNS 已停止 */
 .cfg__head-start { margin-block: calc(var(--h-sm) / -2); }
 .cfg__facts .cfg__head-start { margin-left: var(--s-1); }
+/* 861–899 有侧栏、又有「启动」时一排放不下四项：「上游组」先收起（同系统页 960 以下收起 PID） / At 861–899, with the sidebar and 启动 present, four facts do not fit: 上游组 gives way first (as the system page drops PID below 960) */
+@media (min-width: 861px) and (max-width: 899px) { .cfg__facts:has(.cfg__head-start) .cfg__fact-groups { display: none; } }
 .rules-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-5); align-items: start; }
 @media (min-width: 1360px) {
   .rules-split.is-open { grid-template-columns: minmax(0, 1fr) var(--inspector-w); }
@@ -636,7 +638,8 @@ body { background: var(--l-canvas); }
   /* 手机「规则组」区块头：标题和「新建规则组」一行、上下居中，说明在下面占满整行（不再被按钮挤成三行、把「转到规则组」拆开）
      Phone 规则组 head: the title and 新建规则组 share a line, centred; the description runs full width below (no longer squeezed by the button into three lines that split 转到规则组) */
   .rgroups__head { display: grid; row-gap: 0; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "title btn" "desc desc"; align-items: center; }
-  .rgroups__desc { grid-area: desc; margin-top: 0; }
+  /* 说明和按钮下沿隔 8：按钮比标题高，说明不能贴着它 / 8 between the description and the button's bottom: the button is taller than the title, so the text must not touch it */
+  .rgroups__desc { grid-area: desc; margin-top: var(--s-1); }
   /* 测试卡和下面的规则卡隔 16，和别处的卡片间隔一样 / The tester card sits 16 above the rules card, the card gap used elsewhere */
   /* 手机规则组标题行：新建按钮离卡片上边 12，标题仍落在 16 的墨迹线上 / Phone rule-group head: the 新建 button box sits 12 below the card's top, the title still on the 16 ink line */
   /* 规则组标题：离卡片上边和别的卡片一样（字的墨迹 16），按钮和「…」对准标题那一行，两行说明同一个灰
