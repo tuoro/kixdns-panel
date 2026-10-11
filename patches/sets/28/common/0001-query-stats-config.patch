@@ -1,0 +1,65 @@
+diff --git a/src/config.rs b/src/config.rs
+index 13b48ae4dceac9ee1aca9eb3a62821b7484ce43d..047353c40c85759e94ae29cba87fb9242ab5a495 100644
+--- a/src/config.rs
++++ b/src/config.rs
+@@ -242,6 +242,12 @@ pub struct GlobalSettings {
+     /// UDP 失败时是否自动 fallback 到 TCP（默认 true）。 / UDP failure automatically fallbacks to TCP (default true)
+     #[serde(default = "default_enable_tcp_fallback")]
+     pub enable_tcp_fallback: bool,
++    /// 是否记录面板查询排行（默认 false）。/ Enable bounded query rankings for the panel (default false).
++    #[serde(default)]
++    pub statistics_enabled: bool,
++    /// 是否将客户端 IP 截断为网段后再统计（默认 false）。/ Truncate client IPs to a subnet in statistics (default false).
++    #[serde(default)]
++    pub statistics_anonymize_client_ip: bool,
+ }
+ 
+ impl Default for GlobalSettings {
+@@ -294,6 +300,8 @@ impl Default for GlobalSettings {
+             geoip_filter_countries: Vec::new(),
+             geosite_data_paths: Vec::new(),
+             enable_tcp_fallback: default_enable_tcp_fallback(),
++            statistics_enabled: false,
++            statistics_anonymize_client_ip: false,
+         }
+     }
+ }
+diff --git a/src/engine/types.rs b/src/engine/types.rs
+index d1e7c003a39a36bafa8ae9c43b0d9c7da51a2b8e..6acc94077d9d6e44abdeb420677c3d9e2268b7c4 100644
+--- a/src/engine/types.rs
++++ b/src/engine/types.rs
+@@ -134,6 +134,8 @@ fn hash_global_settings_semantics(settings: &GlobalSettings, hasher: &mut impl H
+         geoip_filter_countries,
+         geosite_data_paths,
+         enable_tcp_fallback,
++        statistics_enabled,
++        statistics_anonymize_client_ip,
+     } = settings;
+ 
+     (
+@@ -195,6 +197,8 @@ fn hash_global_settings_semantics(settings: &GlobalSettings, hasher: &mut impl H
+         geoip_filter_countries,
+         geosite_data_paths,
+         enable_tcp_fallback,
++        statistics_enabled,
++        statistics_anonymize_client_ip,
+     )
+         .hash(hasher);
+ }
+@@ -424,4 +428,16 @@ mod tests {
+         assert_ne!(before.get("first"), after.get("first"));
+         assert_ne!(before.get("second"), after.get("second"));
+     }
++
++    #[test]
++    fn panel_statistics_setting_changes_all_namespaces() {
++        let before_config = runtime_config("8.8.8.8:53", "9.9.9.9:53");
++        let mut after_config = before_config.clone();
++        after_config.settings.statistics_enabled = true;
++        let before = build_cache_namespaces(&before_config);
++        let after = build_cache_namespaces(&after_config);
++
++        assert_ne!(before.get("first"), after.get("first"));
++        assert_ne!(before.get("second"), after.get("second"));
++    }
+ }

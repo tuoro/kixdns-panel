@@ -1463,3 +1463,39 @@ fn caps_the_bucket_at_an_hour_however_long_it_has_run() {
     // 跑了一周也不会变成一天一格：窗口固定看最近的一段，不是全部历史。
     assert_eq!(trend_bucket_seconds(7 * 24 * 3_600), 3_600);
 }
+
+/// 内核不在（或是 p28 之前的版本）时，指定客户端 IP、测试草稿都要明确拒绝，不能悄悄退回成普通查询。
+/// Without a kernel (or with one before p28), an assigned client IP and a draft test are refused plainly, never quietly downgraded to a plain query.
+#[tokio::test]
+async fn dns_diagnostic_refuses_options_the_kernel_does_not_declare() {
+    let context = authenticated_app().await;
+    for (body, code) in [
+        (
+            serde_json::json!({ "domain": "example.com", "record_type": "A", "client_ip": "192.168.1.9" }),
+            "diagnostic_client_unsupported",
+        ),
+        (
+            serde_json::json!({ "domain": "example.com", "record_type": "A", "config": { "pipelines": [] } }),
+            "diagnostic_candidate_unsupported",
+        ),
+    ] {
+        let response = context
+            .app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/diagnostics/dns")
+                    .header(COOKIE, context.cookies.clone())
+                    .header("x-csrf-token", context.csrf_token.clone())
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let payload: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap())
+                .unwrap();
+        assert_eq!(payload["error"]["code"], code, "{payload}");
+    }
+}

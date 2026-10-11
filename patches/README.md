@@ -77,14 +77,14 @@ dependencies/<source>/<上游身份>/p<补丁集>-r<修订号>.patch
 
 这种顺序把适配限制在候选版本：旧锁、旧目录和旧 Artifact 保持可复现，面板服务仅在控制协议确实变化时才需要联动修改。
 
-当前补丁集 p27（编号以锁文件的 `patchset` 为准；自 p19 起，增强逻辑通过上游的 `EngineObserver` 接口接入，不再修改 `src/engine`、`src/watcher.rs` 或配置加载器）。通用层：
+当前补丁集 p28（编号以锁文件的 `patchset` 为准；自 p19 起，增强逻辑通过上游的 `EngineObserver` 接口接入，不再修改 `src/engine`、`src/watcher.rs` 或配置加载器）。通用层：
 
 1. `0001-query-stats-config.patch`：查询排行的 `statistics_*` 配置字段及其缓存命名空间参与。
-2. `0002-panel-control-socket.patch`：`panel.rs` 以 `EngineObserver` 实现指标（上游耗时另有只算拿到响应的一份）、查询排行、配置摘要与诊断轨迹，`panel_trace.rs` 从观察者事件重建轨迹；`--debug` 时 `panel.rs` 把每个引擎事件转发给上游的 `TracingObserver`，使 `kixdns::observe` 事件日志在增强版中仍然可用。
+2. `0002-panel-control-socket.patch`：`panel.rs` 以 `EngineObserver` 实现指标（上游耗时另有只算拿到响应的一份）、查询排行、配置摘要与诊断轨迹（可指定客户端 IP；诊断查询不进查询排行），以及草稿试跑：控制 Socket 收到候选配置后起子进程 `kixdns panel-trial`，在子进程里建引擎、跑一次查询；`Cargo.toml` 只在 unix 下给 tokio 补 `process`、`io-util` 两个特性，不改上游那一行；`panel_trace.rs` 从观察者事件重建轨迹；`--debug` 时 `panel.rs` 把每个引擎事件转发给上游的 `TracingObserver`，使 `kixdns::observe` 事件日志在增强版中仍然可用。
 
 兼容层 `split-main` 有两个补丁：
 
-1. `0001-panel-entry.patch`：`main.rs` 通过 `Engine::builder` 注入观察者并启动本机控制 Socket，在 journald 下把致命错误压成单行 `<3>fatal: …`、把 panic 压成单行 `<2>panicked at …`，让面板的错误过滤器能看到启动失败的原因。
+1. `0001-panel-entry.patch`：`main.rs` 通过 `Engine::builder` 注入观察者并启动本机控制 Socket，加一个隐藏的 `panel-trial` 子命令给草稿试跑用，在 journald 下把致命错误压成单行 `<3>fatal: …`、把 panic 压成单行 `<2>panicked at …`，让面板的错误过滤器能看到启动失败的原因。
 2. `0002-dependency-lock.patch`：用固定工具链为这份上游重新解析的 `Cargo.lock`。
 
-p27 由 p25（Action）与 p26（Release）合并而成。Release 轨道停止构建后，只有它在用的 `tokio-main` 兼容层和 p9、p22 已删除，Git 历史里仍可找回。
+p28 在 p27 的基础上加了诊断的客户端 IP 和草稿试跑，上游与兼容层不变。p27 由 p25（Action）与 p26（Release）合并而成。Release 轨道停止构建后，只有它在用的 `tokio-main` 兼容层和 p9、p22 已删除，Git 历史里仍可找回。

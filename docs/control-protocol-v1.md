@@ -10,11 +10,13 @@ Linux 默认地址为 `/run/kixdns/admin.sock`。协议使用 Unix Socket 上的
 
 ### `GET /v1/health`
 
-返回进程状态、上游提交、增强补丁版本、启动时间、当前配置代数和能力列表 `capabilities`。客户端只能在对应能力存在时使用端点或写入受控字段。当前增强版（p27）声明六项：
+返回进程状态、上游提交、增强补丁版本、启动时间、当前配置代数和能力列表 `capabilities`。客户端只能在对应能力存在时使用端点或写入受控字段。当前增强版（p28）声明八项：
 
 - 配置能力：`config_query_stats_v1`（查询统计配置字段，见下文）、`config_static_cname_response_v1`（`static_cname_response` 动作，即固定 CNAME 应答，面板的域名映射用它）
 - `stats_top_v1`：查询排行端点
 - `diagnostics_trace_v1`：诊断轨迹端点
+- `diagnostics_trace_client_v1`：增强版 p28 起，诊断轨迹和草稿试跑接受 `client_ip`，假装查询来自这个客户端
+- `diagnostics_trace_candidate_v1`：增强版 p28 起，草稿试跑端点 `POST /v1/diagnostics/trace-candidate`
 - `metrics_upstream_precision_v1`：增强版 p21 起，`/v1/metrics` 提供 `aborted` 结果、上游耗时、响应码、实际传输、请求完成状态与过期缓存原因。面板只有看到它才计算上游健康并用剔除竞争落败的成功率公式，否则健康显示为未知
 - `metrics_upstream_response_latency_v1`：增强版 p25 起，`/v1/metrics` 另外提供只算拿到响应的上游耗时，面板用它计算平均耗时
 
@@ -88,9 +90,17 @@ Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致
 
 ### `POST /v1/diagnostics/trace`
 
-在当前进程内执行一次真实 DNS 查询并返回结果与有界执行轨迹。请求只接受 `domain` 和固定白名单中的 `record_type`，不能指定服务器；请求体最大 2 KiB，执行最长 6 秒。轨迹覆盖请求解析、Pipeline 选择与跳转、响应/规则缓存、候选规则匹配、最终动作、实际上游和响应阶段匹配。
+在当前进程内执行一次真实 DNS 查询并返回结果与有界执行轨迹。请求接受 `domain`、固定白名单中的 `record_type`，以及可选的 `client_ip`（需要 `diagnostics_trace_client_v1`），不能指定服务器；请求体最大 2 KiB，执行最长 6 秒。`client_ip` 让引擎把这次查询当作来自该地址：按客户端 IP 匹配的条件、ECS 的「发送客户端所在子网」和按客户端区分的缓存都按它算；不填时是 `127.0.0.1`。响应里的 `client_ip` 是实际使用的地址。轨迹覆盖请求解析、Pipeline 选择与跳转、响应/规则缓存、候选规则匹配、最终动作、实际上游和响应阶段匹配。
 
-轨迹最多保留 128 步，超出时设置 `trace_truncated: true`。普通 DNS 请求未进入诊断作用域时不会分配或保存轨迹。该端点会像普通查询一样影响请求指标和缓存；客户端必须先确认 health 含有 `diagnostics_trace_v1`，旧增强版则回退到监听端口上的基础 DNS 查询。
+轨迹最多保留 128 步，超出时设置 `trace_truncated: true`。普通 DNS 请求未进入诊断作用域时不会分配或保存轨迹。该端点会像普通查询一样影响请求指标和缓存，但从 p28 起不进查询排行：测试用的域名和指定的客户端 IP 不是真实流量。客户端必须先确认 health 含有 `diagnostics_trace_v1`，旧增强版则回退到监听端口上的基础 DNS 查询。
+
+### `POST /v1/diagnostics/trace-candidate`
+
+需要 `diagnostics_trace_candidate_v1`。拿一份候选配置试跑一次查询，不碰正在用的配置、缓存和统计。请求体是诊断轨迹的字段加上 `config`（与 `/v1/config/validate` 相同的完整配置对象），最大 4 MiB 加 4 KiB；未知字段一律拒绝。
+
+候选配置先走与 `/v1/config/validate` 相同的校验，不通过时返回 422 `config_invalid`。试跑在子进程 `kixdns panel-trial` 里执行：它从标准输入读请求、往标准输出写结果，不绑定任何监听端口，关掉后台刷新，用独立的统计；建引擎时打开的 UDP socket 池和 GeoSite 监视线程随子进程一起结束。同一时间只跑一个试跑，总时限 12 秒，超时返回 504 `diagnostic_timeout` 并结束子进程；子进程起不来或没有给出结果时返回 503 `diagnostic_trial_unavailable`。
+
+成功时的响应与诊断轨迹相同，另加 `candidate: true`。试跑会真的去问候选配置里的上游。
 
 ## 查询统计配置
 
