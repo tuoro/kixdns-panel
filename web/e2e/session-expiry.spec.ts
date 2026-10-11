@@ -98,3 +98,19 @@ test('会话过期放行的那一次不会留到以后：登录回来再改，�
     await expect(page).toHaveURL(/\/logs$/)
   }
 })
+
+// 会话过期时开着的确认框不留在登录页上：按取消收掉，按了也不会带着失效的会话去停服务
+// A confirm open when the session expires does not stay over the login page: it is settled as cancelled, so nothing acts with the dead session
+test('会话过期时开着的确认框和帮助一起收起，不留在登录页上', async ({ page }) => {
+  await page.goto('/system')
+  await expect(page.locator('main h1')).toHaveText('系统')
+  await page.getByRole('button', { name: '停止', exact: true }).click()
+  await expect(page.getByRole('alertdialog')).toBeVisible()
+  await expireSession(page)
+  await expect(page).toHaveURL(/\/login\?/)
+  await expect(page.getByRole('alertdialog')).toHaveCount(0)
+  await expect(page.locator('dialog[open]')).toHaveCount(0)
+  await signIn(page)
+  await expect(page).toHaveURL(/\/system$/)
+  await expect(page.locator('.system-heading')).not.toContainText('已停止')
+})

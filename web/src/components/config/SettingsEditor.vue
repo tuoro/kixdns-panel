@@ -253,7 +253,7 @@ function supported(field: SettingField): boolean {
       <section v-for="section in paneSections" :key="section.id" class="settings-group" :class="{ 'ui-rise': !query }">
         <!-- 搜索结果里每组的标题也是区块标题，和平时一组的标题一样：和下面的设置名差了字号，不只差字重（规范 1.7，审计 T10）
              Each group heading in search results is a section title, as for a single group: it differs from the setting names in size, not only weight (spec 1.7, audit T10) -->
-        <header class="settings-group__head settings-group__head--lead"><h2>{{ section.title }}</h2><p v-if="section.description" class="settings-group__desc">{{ section.description }}</p></header>
+        <header class="settings-group__head settings-group__head--lead"><h2 tabindex="-1" data-focus-landing>{{ section.title }}</h2><p v-if="section.description" class="settings-group__desc">{{ section.description }}</p></header>
         <div class="settings-rows">
           <!-- 一个设置一行：左边名字和一句说明，右边控件。数字的单位写在输入框里，占位写默认值。
                One setting per row: name and a one-line note on the left, the control on the right; a number's unit sits in the input and the placeholder states the default. -->
@@ -292,7 +292,7 @@ function supported(field: SettingField): boolean {
         <div class="settings-rows"><slot name="lead" /></div>
       </div>
       <div v-if="!query && current === 'geo'" :key="current" class="ui-rise">
-        <header class="settings-group__head settings-group__head--lead"><h2>{{ currentGroup.title }}</h2><p v-if="currentGroup.description" class="settings-group__desc">{{ currentGroup.description }}</p></header>
+        <header class="settings-group__head settings-group__head--lead"><h2 tabindex="-1" data-focus-landing>{{ currentGroup.title }}</h2><p v-if="currentGroup.description" class="settings-group__desc">{{ currentGroup.description }}</p></header>
         <GeoDataEditor v-model="settings" :changed="changed" />
       </div>
     </div>

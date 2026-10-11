@@ -118,3 +118,18 @@ test('有修改时断线读过一次配置：连上后「读取配置失败」�
   await expect(page.locator('.cfg__notice', { hasText: '读取配置失败' })).toHaveCount(0)
   await expect(page.locator('[data-rule]', { hasText: 'keep.example.org' })).toBeVisible()
 })
+
+// 日志页连上以后马上重读：操作审计不轮询，以前「读取失败」会在横幅收起后一直挂着
+// The logs page re-reads on reconnect: the audit tab does not poll, and its 读取失败 used to stay after the banner had gone
+test('日志页连上后马上重读，「读取失败」不留在横幅收起之后', async ({ page }) => {
+  await page.goto('/logs')
+  await page.getByRole('tab', { name: '操作审计' }).click()
+  await expect(page.locator('.audit-line').first()).toBeVisible()
+  await panelDown(page, true)
+  await page.getByRole('button', { name: '刷新审计记录' }).click()
+  await expect(banner(page)).toBeVisible()
+  await panelDown(page, false)
+  await expect(banner(page)).toHaveCount(0, { timeout: 10_000 })
+  await expect(page.locator('.logs-notice')).toHaveCount(0)
+  await expect(page.locator('.audit-line').first()).toBeVisible()
+})

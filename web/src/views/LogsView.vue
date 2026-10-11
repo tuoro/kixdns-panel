@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useNarrowDesktop } from '../config-v2/phone'
-import { CircleAlert, Download, RefreshCw, ScrollText, Search } from '@lucide/vue'
+import { CircleAlert, Clock, Download, RefreshCw, ScrollText, Search } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { apiRequest } from '../api/client'
 import { useConnection } from '../composables/useConnection'
@@ -394,6 +394,8 @@ onMounted(async () => {
   timer = window.setInterval(() => { void poll() }, 5000)
 })
 onBeforeUnmount(() => window.clearInterval(timer))
+// 连上面板后马上重读当前这一栏，不等下一次轮询（操作审计本来不轮询，以前红字会一直挂着） / Once the panel answers again re-read the current tab at once instead of waiting for the next poll (the audit tab does not poll, so its red notice used to stay)
+watch(panelDown, (now, before) => { if (before && !now) void (mode.value === 'audit' ? loadAudit() : load(true)) })
 </script>
 
 <template>
@@ -423,6 +425,8 @@ onBeforeUnmount(() => window.clearInterval(timer))
       <small>{{ activeError }}</small>
       <button class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="activeRequesting" @click="retry">重试</button>
     </div>
+    <!-- 什么都没读到就连不上了：和别的页一样只写一句 / Nothing read before the panel went away: one line, as on the other pages -->
+    <p v-else-if="activeError && panelDown && activeCount === 0" class="ui-notice ui-notice--off logs-notice" role="status"><Clock :size="16" aria-hidden="true" /><span>连上面板后自动打开</span></p>
     <!-- 一张白卡：第一行是工具行，下面是列名和自己滚动的行；整页不滚
          One white card: the toolbar is its first row, then the column names and the rows, which scroll on their own; the page never does -->
     <section :id="`logs-panel-${mode}`" class="log-console ui-card" :class="{ 'log-console--blank': blank }" role="tabpanel" :aria-labelledby="`logs-tab-${mode}`">
