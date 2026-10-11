@@ -185,7 +185,7 @@ const ACTION_NAMES: Record<string, string> = {
   'auth.reset_admin': '重置管理员',
   'config.save': '保存配置',
   'config.restore': '恢复配置版本',
-  'config.auto_rollback': '自动回滚配置',
+  'config.auto_rollback': '自动退回上一版',
   'config.version.delete': '删除配置版本',
   'config.version.bulk_delete': '批量删除配置版本',
   'config.geo_data.sync': '同步 Geo 数据',
@@ -205,7 +205,7 @@ const ACTION_NAMES: Record<string, string> = {
   'service.restart': '重启服务',
   'panel.update.start': '开始更新面板',
   'settings.statistics_enabled': '设置查询统计',
-  'settings.statistics_anonymize_client_ip': '设置客户端 IP 匿名',
+  'settings.statistics_anonymize_client_ip': '设置客户端 IP 脱敏',
 }
 const actionName = (action: string): string | null => ACTION_NAMES[action] ?? null
 

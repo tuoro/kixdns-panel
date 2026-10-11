@@ -159,7 +159,9 @@ function capture(): EditorResume {
   return { draft: JSON.parse(JSON.stringify(draft)) as Rule, rawRules: JSON.parse(JSON.stringify(rawRules)) as unknown[], rawMode: rawMode.value, rawText: rawText.value, position: Number(position.value), base: initialSnap.value }
 }
 const showErrors = ref(false)
-const problems = computed(() => [...ruleProblems(model, draft), ...(rawError.value ? [`内核规则写错了：${rawError.value}`] : []), ...(rawFieldProblems.value ? [`内核规则里有 ${rawFieldProblems.value} 处没填对（标红的那些）`] : [])])
+const problems = computed(() => [...ruleProblems(model, draft), ...(rawError.value ? [`内核规则写错了：${rawError.value}`] : []), ...(rawFieldProblems.value ? [`内核规则里标红的 ${rawFieldProblems.value} 处`] : [])])
+// 标红的几处各算一处，不把它们算成一处 / Each red-marked field counts as one, rather than all of them as one
+const problemCount = computed(() => problems.value.length + Math.max(0, rawFieldProblems.value - 1))
 const nameInput = ref<HTMLInputElement | null>(null)
 onMounted(() => { if (!original) void nextTick(() => nameInput.value?.focus()) })
 
@@ -278,7 +280,7 @@ const reading = computed(() => {
       if (f) rows.push({ k: '回答后', v: f })
     }
   }
-  if (draft.log.enabled) rows.push({ k: '另外', v: `记录日志（${levels.find((l) => l.value === draft.log.level)!.label}级）` })
+  if (draft.log.enabled) rows.push({ k: '另外', v: `记录日志（${levels.find((l) => l.value === draft.log.level)!.label}）` })
   return rows
 })
 // 名字框空着时显示列表里会用的标题，就是条件本身 / An empty name field shows the title the list will use: the condition itself
@@ -368,7 +370,7 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
     <div class="editor__grid">
       <div class="editor__main">
         <section v-if="draft.raw" class="ecard" :class="{ 'ui-card': !inspector }" aria-labelledby="ec-raw">
-          <header class="ecard__head ecard__head--raw"><div><h2 id="ec-raw" class="ecard__title">高级规则<UiHelp topic="raw" /></h2><p class="ecard__desc">这条规则放不进上面那些写法（比如在回答后检查里先记日志再接着匹配），原样保留。这里改的就是 KixDNS 直接读的规则，保存前会校验。</p></div><UiTabs class="ecard__rawmode" :model-value="rawMode" :items="rawModes" label="内核规则的写法" variant="segment" @update:model-value="setRawMode" /></header>
+          <header class="ecard__head ecard__head--raw"><div><h2 id="ec-raw" class="ecard__title">高级规则<UiHelp topic="raw" /></h2><p class="ecard__desc">面板的表单表达不了这条规则，原样保留。这里改的就是 KixDNS 直接读的规则，保存前会校验。</p></div><UiTabs class="ecard__rawmode" :model-value="rawMode" :items="rawModes" label="内核规则的写法" variant="segment" @update:model-value="setRawMode" /></header>
           <div class="ecard__body">
             <RawRuleEditor v-if="rawMode === 'form'" v-model="rawRules" :pipelines="kernelPipelines" :current-pipeline-id="ownPipelineId" :capabilities="runtimeCapabilities" :show-errors="showErrors" :pipeline-name="kernelPipelineName" />
             <template v-else><JsonEditor v-model="rawText" :error-line="undefined" /><p v-if="rawError" class="ui-field-error" aria-live="polite">{{ rawError }}</p></template>
@@ -390,7 +392,7 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
                 <ChevronRight class="crow__chev" :size="16" aria-hidden="true" />
               </button>
               <PhoneSheet v-if="sheet === 'outcome'" title="结果" @close="sheet = null">
-                <div class="ui-pick" role="radiogroup" aria-label="那么">
+                <div class="ui-pick" role="radiogroup" aria-label="结果">
                   <label v-for="o in OUTCOMES" :key="o.type" class="ui-pick__opt"><input type="radio" name="outcome-sheet" :checked="draft.outcome.type === o.type" @change="pickOutcome(o.type)"><b>{{ o.title }}</b><small>{{ o.desc }}</small></label>
                 </div>
                 <OutcomeParams v-if="draft.outcome.type !== 'continue'" :key="draft.outcome.type" v-model="draft.outcome as Outcome" :show-errors="showErrors" label="那么" @edit-group="sheet = null; emit('editGroup', $event)" />
@@ -556,7 +558,7 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
     <button v-if="original" class="ui-btn ui-btn--text editor__delete-row" type="button" @click="remove"><Trash2 :size="16" aria-hidden="true" />删除这条规则</button>
     <footer ref="foot" class="editor__foot">
       <button v-if="original" class="ui-btn ui-btn--text editor__delete" type="button" @click="remove"><Trash2 :size="16" aria-hidden="true" />删除规则</button>
-      <button v-if="showErrors && problems.length" class="editor__problem" type="button" role="alert" @click="revealProblem">还有 {{ problems.length }} 处要改：{{ problems[0] }}</button>
+      <button v-if="showErrors && problems.length" class="editor__problem" type="button" role="alert" @click="revealProblem">还有 {{ problemCount }} 处要改：{{ problems[0] }}</button>
       <span class="editor__spacer"></span>
       <span v-if="!inspector" class="editor__keys" aria-hidden="true">Ctrl+Enter {{ original ? '完成' : '新建' }} · Esc 返回</span>
       <button class="ui-btn ui-btn--secondary" type="button" @click="leave">取消</button>

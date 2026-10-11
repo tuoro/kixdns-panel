@@ -180,7 +180,7 @@ export function conditionsText(groups: Condition[][]): string {
 
 // 内核原样的条件链读成一句话（高级规则和高级入口用） / A verbatim kernel chain read as a sentence (for advanced rules and entries)
 const RAW_LABEL: Record<string, string> = {
-  any: '任意请求', listener_label: '监听标签是', client_ip: '客户端 IP 在', domain_suffix: '域名是', domain_regex: '域名匹配正则', geo_site: '域名属于 GeoSite', geo_site_not: '域名不属于 GeoSite',
+  any: '所有请求', listener_label: '监听标签是', client_ip: '客户端 IP 在', domain_suffix: '域名是', domain_regex: '域名匹配正则', geo_site: '域名属于 GeoSite', geo_site_not: '域名不属于 GeoSite',
   geoip_country: '客户端地区是', geoip_private: '客户端内网', qtype: '查询类型是', qclass: '查询类别是', edns_present: '带 EDNS',
 }
 export function rawMatchersText(matchers: Record<string, unknown>[] | undefined, ruleOp?: string): string {

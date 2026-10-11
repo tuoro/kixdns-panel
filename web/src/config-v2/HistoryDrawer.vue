@@ -12,7 +12,7 @@ import { readConfig } from '../config-model/document'
 import { actorName, errorMessage, formatVersionTime } from '../utils'
 import RuleText from './RuleText.vue'
 import { appliedModel, unsaved } from './store'
-import { bulkDeleting, currentVersionId, deleteVersion, deleteVersions, deleting, friendlyRuntimeError, restoreVersion, restoring, versionDetail, versions } from './useConfigDocument'
+import { bulkDeleting, currentVersionId, deleteVersion, deleteVersions, deleting, friendlyRuntimeError, pendingWhen, restoreVersion, restoring, versionDetail, versions } from './useConfigDocument'
 // 关上后焦点回到打开它的控件 / Focus returns to the opener on close
 useReturnFocus()
 
@@ -72,7 +72,7 @@ async function restore(v: ConfigVersion): Promise<void> {
   try {
     const r = await restoreVersion(v.id)
     emit('restored')
-    toast.success(r.state === 'pending' ? `已存成待应用版本 #${r.versionId}，KixDNS 就绪后自动应用` : `已恢复为版本 #${v.id} 的内容，当前版本 #${r.versionId}`)
+    toast.success(r.state === 'pending' ? `已存成待应用版本 #${r.versionId}，${pendingWhen()}自动应用` : `已恢复为版本 #${v.id} 的内容，当前版本 #${r.versionId}`)
   } catch (error) {
     toast.error(`没有恢复版本 #${v.id}：${friendlyRuntimeError(error)}`)
   }

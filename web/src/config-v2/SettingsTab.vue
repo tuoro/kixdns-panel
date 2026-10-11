@@ -44,7 +44,7 @@ const lead = computed(() => ({
           </div>
         </div>
         <div class="ui-setrow">
-          <span class="ui-setrow__label"><span>其余请求</span><small>一条规则都没命中的请求交给哪里。KixDNS 的默认上游也跟着它，和规则列表最下面那行是同一个设置</small></span>
+          <span class="ui-setrow__label"><span>其余请求</span><small>{{ hidden.length ? '一条规则都没命中的请求交给哪里。KixDNS 的默认上游也跟着它，和规则列表最下面那行是同一个设置' : '一条规则都没命中的请求交给哪里，和规则列表最下面那行是同一个设置。有高级规则时，KixDNS 的默认上游在「基础与监听」里单独设' }}</small></span>
           <div class="ui-setrow__control"><UiSelect :model-value="restValue" :options="restOptions" label="其余请求" @update:model-value="setRest" /></div>
         </div>
       </template>

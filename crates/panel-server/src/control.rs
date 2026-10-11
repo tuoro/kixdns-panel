@@ -262,7 +262,7 @@ pub enum ControlError {
     Unavailable(String),
     #[error("读不懂 KixDNS 的回应：{0}")]
     Protocol(String),
-    #[error("KixDNS 没有接受：{0}")]
+    #[error("KixDNS 没有接受这份配置：{0}")]
     Rejected(String),
     #[error("KixDNS 不支持：{0}")]
     #[cfg_attr(not(unix), allow(dead_code))]

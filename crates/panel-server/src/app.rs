@@ -1039,7 +1039,7 @@ async fn validate_candidate(
         mark_candidate_failed(
             state,
             result.version_id,
-            "KixDNS 拒绝该配置，请先修正校验错误",
+            "KixDNS 没有接受这份配置，先改好校验里列出的问题",
         )
         .await?;
         ensure_validation_accepted(&validation)?;
@@ -1420,7 +1420,7 @@ fn ensure_validation_accepted(validation: &ValidationResult) -> AppResult<()> {
     } else {
         Err(AppError::Unprocessable(
             "config_validation_failed",
-            "KixDNS 拒绝该配置，请先修正校验错误".to_owned(),
+            "KixDNS 没有接受这份配置，先改好校验里列出的问题".to_owned(),
         ))
     }
 }

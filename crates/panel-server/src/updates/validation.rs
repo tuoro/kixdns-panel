@@ -336,9 +336,9 @@ async fn wait_until_healthy_for(
         }
         match tokio::time::timeout(remaining, control.health()).await {
             Ok(Ok(_)) => return Ok(()),
-            Ok(Err(error)) => last_error = Some(error.to_string()),
+            Ok(Err(error)) => last_error = Some(health_cause(&error)),
             Err(_) => {
-                last_error = Some("等待控制接口响应超时".to_owned());
+                last_error = Some("没有回应".to_owned());
                 break;
             }
         }
@@ -347,11 +347,25 @@ async fn wait_until_healthy_for(
         )
         .await;
     }
-    let cause = last_error.unwrap_or_else(|| "控制接口没有返回健康状态".to_owned());
+    let cause = last_error.unwrap_or_else(|| "没有回应".to_owned());
     Err(UpdateError::Install(format!(
-        "KixDNS 在 {} 秒内未通过健康检查：{cause}",
+        "新内核 {} 秒内没有启动起来（{cause}）",
         timeout.as_secs_f64()
     )))
+}
+
+// 健康检查失败的原因，一个短语：套接字不在就是已停止，其余照错误本身说 / Why the health check failed, in one phrase: a missing socket means stopped; anything else as the error says
+fn health_cause(error: &crate::control::ControlError) -> String {
+    match error {
+        crate::control::ControlError::Unavailable(message)
+            if message.contains("No such file")
+                || message.contains("os error 2")
+                || message.contains("找不到指定的文件") =>
+        {
+            "KixDNS 已停止".to_owned()
+        }
+        other => other.to_string(),
+    }
 }
 
 #[cfg(not(unix))]
@@ -377,6 +391,7 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(error.to_string().contains("连不上 KixDNS"));
+        assert!(error.to_string().contains("新内核"));
+        assert!(error.to_string().contains("KixDNS 已停止"));
     }
 }

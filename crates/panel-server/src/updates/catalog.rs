@@ -431,7 +431,7 @@ impl UpdateManager {
             }
         }
         let latest = newest_upstream_build(candidates)
-            .ok_or_else(|| UpdateError::Network("没有可安装的成功增强构建".to_owned()))?;
+            .ok_or_else(|| UpdateError::Network("还没有能安装的构建".to_owned()))?;
         self.latest_cache.write().await.replace(CachedLatest {
             loaded_at: Instant::now(),
             version: latest.clone(),

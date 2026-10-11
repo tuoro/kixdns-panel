@@ -101,7 +101,7 @@ async fn replace_release_kernel(state: &AppState) -> anyhow::Result<()> {
         Ok(installed) => (
             "kixdns.kernel.replace_release",
             format!(
-                "原来的 Release 内核已停止更新，自动从 {} 换成 {}",
+                "原来的正式版内核已停止更新，自动从 {} 换成 {}",
                 release.label(),
                 installed.label()
             ),
@@ -242,7 +242,7 @@ async fn start_panel_update(
         .audit(
             Some(session.username),
             "panel.update.start".to_owned(),
-            format!("目标 {target_version}"),
+            format!("更新到 {target_version}"),
             unix_timestamp(),
         )
         .await

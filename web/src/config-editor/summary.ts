@@ -29,38 +29,41 @@ function geoSiteValue(value: unknown): string {
   return text(value).replace(/^geosite:/i, '')
 }
 
+// 日志级别写页面上的叫法 / Log levels in the page's words
+const LEVEL_NAMES: Record<string, string> = { trace: '跟踪', debug: '调试', info: '信息', warn: '警告', error: '错误' }
+
 export function summarizeMatcher(matcher: MatcherConfig, scope: MatcherScope): string {
   const value = text(matcher.value)
   const cidr = text(matcher.cidr)
   const countries = text(matcher.country_codes)
 
   switch (matcher.type) {
-    case 'any': return '任意请求'
-    case 'listener_label': return `监听标签为 ${value}`
+    case 'any': return '所有请求'
+    case 'listener_label': return `监听标签是 ${value}`
     case 'client_ip': return `客户端 IP 属于 ${cidr}`
-    case 'domain_suffix': return `域名后缀为 ${value}`
+    case 'domain_suffix': return `域名是 ${value}（含子域名）`
     case 'domain_regex': return `域名匹配正则 ${value}`
-    case 'qclass': return `查询类别为 ${value}`
-    case 'edns_present': return expectation(matcher, '请求包含 EDNS', '请求不包含 EDNS')
+    case 'qclass': return `查询类别是 ${value}`
+    case 'edns_present': return expectation(matcher, '请求带 EDNS', '请求不带 EDNS')
     case 'geo_site': return `域名属于 GeoSite ${geoSiteValue(matcher.value)}`
     case 'geo_site_not': return `域名不属于 GeoSite ${geoSiteValue(matcher.value)}`
-    case 'geoip_country': return `客户端 GeoIP 国家为 ${countries}`
-    case 'geoip_private': return expectation(matcher, '客户端 IP 为私网', '客户端 IP 不为私网')
-    case 'qtype': return `查询类型为 ${value}`
-    case 'upstream_equals': return `实际上游为 ${value}`
-    case 'request_domain_suffix': return `请求域名后缀为 ${value}`
-    case 'request_domain_regex': return `请求域名匹配正则 ${value}`
-    case 'response_type': return `响应类型为 ${value}`
-    case 'response_rcode': return `响应码为 ${value}`
-    case 'response_qclass': return `响应类别为 ${value}`
-    case 'response_edns_present': return expectation(matcher, '响应包含 EDNS', '响应不包含 EDNS')
+    case 'geoip_country': return `客户端地区是 ${countries}`
+    case 'geoip_private': return expectation(matcher, '客户端是内网', '客户端不是内网')
+    case 'qtype': return `查询类型是 ${value}`
+    case 'upstream_equals': return `回答来自 ${value}`
+    case 'request_domain_suffix': return `请求的域名是 ${value}（含子域名）`
+    case 'request_domain_regex': return `请求的域名匹配正则 ${value}`
+    case 'response_type': return `回答的记录类型是 ${value}`
+    case 'response_rcode': return `响应码是 ${value}`
+    case 'response_qclass': return `查询类别是 ${value}`
+    case 'response_edns_present': return expectation(matcher, '回答带 EDNS', '回答不带 EDNS')
     case 'response_upstream_ip': return `上游 IP 属于 ${cidr}`
     case 'response_answer_ip': return `回答的 IP 属于 ${cidr}`
-    case 'response_answer_ip_geoip_country': return `回答的 IP GeoIP 国家为 ${countries}`
-    case 'response_answer_ip_geoip_private': return expectation(matcher, '回答的 IP 为私网', '回答的 IP 不为私网')
-    case 'response_request_domain_geosite': return `请求域名属于 GeoSite ${geoSiteValue(matcher.value)}`
-    case 'response_request_domain_geosite_not': return `请求域名不属于 GeoSite ${geoSiteValue(matcher.value)}`
-    case 'response_txt_content': return `TXT 内容以${matcher.mode === 'prefix' ? '前缀' : matcher.mode === 'regex' ? '正则' : '精确'}方式匹配 ${value}`
+    case 'response_answer_ip_geoip_country': return `回答 IP 的地区是 ${countries}`
+    case 'response_answer_ip_geoip_private': return expectation(matcher, '回答的是内网地址', '回答的不是内网地址')
+    case 'response_request_domain_geosite': return `请求的域名属于 GeoSite ${geoSiteValue(matcher.value)}`
+    case 'response_request_domain_geosite_not': return `请求的域名不属于 GeoSite ${geoSiteValue(matcher.value)}`
+    case 'response_txt_content': return `TXT 内容${matcher.mode === 'prefix' ? '开头是' : matcher.mode === 'regex' ? '匹配正则' : '等于'} ${value}`
     default: return `${scope === 'response' ? '响应条件' : '请求条件'} ${matcher.type}`
   }
 }
@@ -91,7 +94,7 @@ export function summarizeMatchers(
   matcherOperator: string,
   scope: MatcherScope,
 ): string {
-  if (matchers.length === 0) return scope === 'response' ? '任意响应' : '任意请求'
+  if (matchers.length === 0) return scope === 'response' ? '所有回答' : '所有请求'
   const summaries = matchers.map((matcher) => summarizeMatcher(matcher, scope))
   if (summaries.length === 1) return summaries[0]!
   const alternatives = sameTypeAlternatives(matchers, matcherOperator, scope)
@@ -126,7 +129,7 @@ export function transportLabel(transport: string): string {
 
 export function summarizeAction(action: ActionConfig): string {
   switch (action.type) {
-    case 'log': return `记录 ${text(action.level, 'info')} 日志`
+    case 'log': return `记录日志（${LEVEL_NAMES[text(action.level, 'info')] ?? text(action.level, 'info')}）`
     case 'static_response': return `返回 ${text(action.rcode)}`
     case 'static_ip_response': return `返回 IP ${text(action.ip)}`
     case 'static_cname_response': return `将域名映射到 ${text(action.target)}`
@@ -135,8 +138,8 @@ export function summarizeAction(action: ActionConfig): string {
     // 还没选目标时写成缺什么，不占 ID 那个位置：否则读起来像跳去一个叫「未选择」的 Pipeline（审计第八轮 D1）
     // With no target yet, say what is missing instead of filling the ID slot, which read as a Pipeline named 未选择 (audit round 8, D1)
     case 'jump_to_pipeline': return action.pipeline?.trim() ? `转到 ${action.pipeline.trim()}` : '转到（还没选）'
-    case 'allow': return '允许当前结果'
-    case 'deny': return '拒绝请求'
+    case 'allow': return '交给默认上游'
+    case 'deny': return '拦截（REFUSED）'
     case 'forward': {
       // 几个上游用顿号隔开；协议名是英文，用半角括号贴在地址后面（中文排版里英文内容用半角标点）
       // Several upstreams are separated by 、; the protocol is an English term, so it follows the address in half-width brackets
@@ -146,7 +149,7 @@ export function summarizeAction(action: ActionConfig): string {
         .map((item) => item.trim())
       return `转发至 ${upstreams.length ? upstreams.join('、') : '默认上游'}${transport ? ` (${transportLabel(transport)})` : ''}`
     }
-    case 'continue': return '继续匹配后续规则'
+    case 'continue': return '继续往下'
     default: return `执行 ${action.type}`
   }
 }

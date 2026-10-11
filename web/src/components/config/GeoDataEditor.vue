@@ -342,7 +342,7 @@ onBeforeUnmount(clearSyncNotice)
         <span class="ui-setrow__label"><span>自动更新</span><small v-if="schedule.next_run_at || schedule.last_success_at"><UiDotText :parts="[schedule.next_run_at ? `下次 ${formatVersionTime(schedule.next_run_at)}` : '', schedule.last_success_at ? `上次成功 ${formatVersionTime(schedule.last_success_at)}` : ''].filter(Boolean)" /></small><small v-else>定时按上面的链接重新下载</small></span>
         <span class="ui-setrow__control geo-schedule"><UiSelect :model-value="String(schedule.interval_hours ?? '')" :options="scheduleOptions" label="自动更新" :disabled="loading || scheduleSaving || syncing" @update:model-value="saveSchedule" /></span>
       </div>
-      <p v-if="schedule.last_error" class="geo-note geo-note--err"><TriangleAlert :size="14" aria-hidden="true" />后台更新失败：{{ schedule.last_error }}</p>
+      <p v-if="schedule.last_error" class="geo-note geo-note--err"><TriangleAlert :size="14" aria-hidden="true" />上次自动更新失败：{{ schedule.last_error }}</p>
       <p v-if="syncNotice" class="geo-note geo-note--ok ui-rise" role="status" aria-live="polite"><CircleCheck :size="14" aria-hidden="true" />{{ syncNotice }}</p>
       <p v-if="statusError" :key="statusError" class="geo-note geo-note--err ui-shake" role="alert"><TriangleAlert :size="14" aria-hidden="true" />{{ statusError }}</p>
     </template>

@@ -118,7 +118,7 @@ export const SETTING_SECTIONS: SettingSection[] = [
   },
   {
     id: 'flow-control',
-    title: '自适应流量控制',
+    title: '自动限流',
     description: '同时处理的请求数、延迟阈值和调整间隔',
     tone: 'green',
     fields: [
@@ -142,45 +142,47 @@ export const SETTING_SECTIONS: SettingSection[] = [
   },
 ]
 
+// 高级规则的表单也说面板的话：和规则卡片的读法、普通规则的条件同一套叫法；内核的写法留在 JSON 里
+// The advanced-rule form speaks the panel's words too: the same names as the rule reading and plain conditions; the kernel's spelling stays in the JSON tab
 export const MATCH_OPERATORS: SelectOption[] = [
-  { value: 'and', label: 'AND' },
-  { value: 'or', label: 'OR' },
-  { value: 'and_not', label: 'AND NOT' },
-  { value: 'or_not', label: 'OR NOT' },
-  { value: 'not', label: 'NOT' },
+  { value: 'and', label: '且' },
+  { value: 'or', label: '或' },
+  { value: 'and_not', label: '且不是' },
+  { value: 'or_not', label: '或不是' },
+  { value: 'not', label: '不是' },
 ]
 
 const SELECTOR_MATCHERS: MatcherDefinition[] = [
   { value: 'listener_label', label: '监听标签', fields: ['value'] },
   { value: 'client_ip', label: '客户端 IP', fields: ['cidr'] },
-  { value: 'domain_suffix', label: '域名后缀', fields: ['value'] },
-  { value: 'domain_regex', label: '域名正则', fields: ['value'] },
-  { value: 'any', label: '任意', fields: [] },
+  { value: 'domain_suffix', label: '域名（含子域名）', fields: ['value'] },
+  { value: 'domain_regex', label: '域名匹配正则', fields: ['value'] },
+  { value: 'any', label: '所有请求', fields: [] },
   { value: 'qclass', label: '查询类别', fields: ['value'] },
-  { value: 'edns_present', label: '存在 EDNS', fields: ['expect'] },
-  { value: 'geo_site', label: 'GeoSite', fields: ['value'] },
-  { value: 'geo_site_not', label: '非 GeoSite', fields: ['value'] },
-  { value: 'geoip_country', label: 'GeoIP 国家', fields: ['country_codes'] },
-  { value: 'geoip_private', label: 'GeoIP 私网', fields: ['expect'] },
-  { value: 'qtype', label: 'QType', fields: ['value'] },
+  { value: 'edns_present', label: '带 EDNS', fields: ['expect'] },
+  { value: 'geo_site', label: '属于 GeoSite', fields: ['value'] },
+  { value: 'geo_site_not', label: '不属于 GeoSite', fields: ['value'] },
+  { value: 'geoip_country', label: '客户端地区', fields: ['country_codes'] },
+  { value: 'geoip_private', label: '客户端是内网', fields: ['expect'] },
+  { value: 'qtype', label: '查询类型', fields: ['value'] },
 ]
 
 const REQUEST_MATCHERS: MatcherDefinition[] = SELECTOR_MATCHERS.filter((item) => item.value !== 'listener_label')
 
 const RESPONSE_MATCHERS: MatcherDefinition[] = [
-  { value: 'upstream_equals', label: '上游等于', fields: ['value'] },
-  { value: 'request_domain_suffix', label: '请求域名后缀', fields: ['value'] },
-  { value: 'request_domain_regex', label: '请求域名正则', fields: ['value'] },
-  { value: 'response_type', label: '响应类型', fields: ['value'] },
+  { value: 'upstream_equals', label: '回答来自', fields: ['value'] },
+  { value: 'request_domain_suffix', label: '请求的域名（含子域名）', fields: ['value'] },
+  { value: 'request_domain_regex', label: '请求的域名匹配正则', fields: ['value'] },
+  { value: 'response_type', label: '回答的记录类型', fields: ['value'] },
   { value: 'response_rcode', label: '响应码', fields: ['value'] },
-  { value: 'response_qclass', label: '响应类别', fields: ['value'] },
-  { value: 'response_edns_present', label: '响应含 EDNS', fields: ['expect'] },
+  { value: 'response_qclass', label: '查询类别', fields: ['value'] },
+  { value: 'response_edns_present', label: '回答带 EDNS', fields: ['expect'] },
   { value: 'response_upstream_ip', label: '上游 IP', fields: ['cidr'] },
   { value: 'response_answer_ip', label: '回答的 IP', fields: ['cidr'] },
-  { value: 'response_answer_ip_geoip_country', label: '回答的 IP 国家', fields: ['country_codes'] },
-  { value: 'response_answer_ip_geoip_private', label: '回答的 IP 私网', fields: ['expect'] },
-  { value: 'response_request_domain_geosite', label: '请求域名 GeoSite', fields: ['value'] },
-  { value: 'response_request_domain_geosite_not', label: '请求域名非 GeoSite', fields: ['value'] },
+  { value: 'response_answer_ip_geoip_country', label: '回答 IP 的地区', fields: ['country_codes'] },
+  { value: 'response_answer_ip_geoip_private', label: '回答的是内网地址', fields: ['expect'] },
+  { value: 'response_request_domain_geosite', label: '请求的域名属于 GeoSite', fields: ['value'] },
+  { value: 'response_request_domain_geosite_not', label: '请求的域名不属于 GeoSite', fields: ['value'] },
   { value: 'response_txt_content', label: 'TXT 内容', fields: ['mode', 'value'] },
 ]
 
@@ -198,10 +200,10 @@ export const ACTION_TYPES: ActionDefinition[] = [
   { value: 'static_txt_response', label: '固定 TXT' },
   { value: 'replace_txt_response', label: '替换 TXT' },
   { value: 'jump_to_pipeline', label: '转到另一组' },
-  { value: 'allow', label: '允许' },
-  { value: 'deny', label: '拒绝' },
+  { value: 'allow', label: '交给默认上游' },
+  { value: 'deny', label: '拦截（REFUSED）' },
   { value: 'forward', label: '转发' },
-  { value: 'continue', label: '继续匹配' },
+  { value: 'continue', label: '继续往下' },
 ]
 
 export const QTYPE_OPTIONS = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'PTR', 'SOA', 'SRV', 'OPT']

@@ -34,7 +34,7 @@ const now = Math.floor(Date.now() / 1000)
 let demoLogArrivals = 0
 const auditEvents = [
   { id: 18, actor: 'admin', action: 'config.save', detail: '版本 #18', created_at: now - 430 },
-  { id: 17, actor: 'admin', action: 'config.geo_data.sync', detail: 'MMDB 1 个、GeoIP 0 个、GeoSite 1 个', created_at: now - 7200 },
+  { id: 17, actor: 'admin', action: 'config.geo_data.sync', detail: 'GeoIP MMDB 1 个、GeoIP DAT 0 个、GeoSite 1 个', created_at: now - 7200 },
   { id: 16, actor: 'admin', action: 'kixdns.kernel.update', detail: '更新到 构建 #30231271280', created_at: now - 86400 },
   { id: 15, actor: 'admin', action: 'service.restart', detail: '服务状态：正在运行', created_at: now - 86520 },
   { id: 14, actor: 'admin', action: 'diagnostic.dns', detail: '执行 A 查询', created_at: now - 172800 },
@@ -734,7 +734,7 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
     versions.versions.unshift({
       id: versionId,
       sha256: config.sha256,
-      message: `回滚至版本 #${sourceId}`,
+      message: `恢复为版本 #${sourceId}`,
       actor: 'admin',
       created_at: config.modified_at,
       apply_state: 'applied',

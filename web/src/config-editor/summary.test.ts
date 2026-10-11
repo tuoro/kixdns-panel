@@ -7,7 +7,7 @@ describe('规则语义摘要', () => {
     expect(summarizeMatchers([
       { type: 'geo_site', operator: 'and', value: 'cn' },
       { type: 'qtype', operator: 'and', value: 'A' },
-    ], 'and', 'request')).toBe('域名属于 GeoSite cn 且 查询类型为 A')
+    ], 'and', 'request')).toBe('域名属于 GeoSite cn 且 查询类型是 A')
     expect(summarizeMatchers([
       { type: 'geo_site', operator: 'and', value: 'geosite:cn' },
     ], 'and', 'request')).toBe('域名属于 GeoSite cn')
@@ -39,7 +39,7 @@ describe('规则语义摘要', () => {
     expect(summarizeMatchers([
       { type: 'domain_suffix', operator: 'and', value: '.example' },
       { type: 'client_ip', operator: 'and_not', cidr: '192.0.2.0/24' },
-    ], 'and', 'request')).toBe('域名后缀为 .example 且非 客户端 IP 属于 192.0.2.0/24')
+    ], 'and', 'request')).toBe('域名是 .example（含子域名） 且非 客户端 IP 属于 192.0.2.0/24')
   })
 
   it('准确摘要主要动作并保留未知动作类型', () => {
@@ -47,7 +47,7 @@ describe('规则语义摘要', () => {
       .toBe('转发至 1.1.1.1:53 (UDP)')
     expect(summarizeAction({ type: 'static_cname_response', target: 'origin.example.' }))
       .toBe('将域名映射到 origin.example.')
-    expect(summarizeAction({ type: 'continue' })).toBe('继续匹配后续规则')
+    expect(summarizeAction({ type: 'continue' })).toBe('继续往下')
     expect(summarizeAction({ type: 'future_action' })).toBe('执行 future_action')
     // 传输方式按人的叫法写，不出现 TCP_UDP、DOH 这样的配置值。 / Transports as people say them, not config values.
     expect(summarizeAction({ type: 'forward', upstream: '223.5.5.5:53', transport: 'tcp_udp' })).toBe('转发至 223.5.5.5:53 (TCP+UDP)')
@@ -70,7 +70,7 @@ describe('规则语义摘要', () => {
       response_actions_on_miss: [],
     }
 
-    expect(summarizeRule(rule)).toEqual({ condition: '任意请求', action: '拒绝请求' })
+    expect(summarizeRule(rule)).toEqual({ condition: '所有请求', action: '拦截（REFUSED）' })
   })
 
   it('按照真实请求动作顺序区分终止、继续和响应后继续', () => {

@@ -9,19 +9,20 @@ const MAX_CAPABILITIES: usize = 64;
 
 struct FieldRequirement {
     pointer: &'static str,
-    field: &'static str,
+    /// 页面上这一项的叫法，提示里用它，不用配置键 / What the page calls the setting; messages use it, not the config key
+    label: &'static str,
     capability: &'static str,
 }
 
 const FIELD_REQUIREMENTS: &[FieldRequirement] = &[
     FieldRequirement {
         pointer: "/settings/statistics_enabled",
-        field: "settings.statistics_enabled",
+        label: "启用查询排行",
         capability: CONFIG_QUERY_STATS_V1,
     },
     FieldRequirement {
         pointer: "/settings/statistics_anonymize_client_ip",
-        field: "settings.statistics_anonymize_client_ip",
+        label: "客户端 IP 脱敏",
         capability: CONFIG_QUERY_STATS_V1,
     },
 ];
@@ -35,8 +36,13 @@ impl fmt::Display for UnsupportedConfigFields {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "当前 KixDNS 不支持配置字段：{}；请先切换到声明相应配置能力的增强版本，或移除这些字段",
-            self.fields.join("、")
+            "这个内核不支持配置里的：{}。先关掉{}，或者换用支持它的内核",
+            self.fields.join("、"),
+            if self.fields.len() > 1 {
+                "这几项"
+            } else {
+                "这一项"
+            }
         )
     }
 }
@@ -51,12 +57,12 @@ pub fn ensure_config_supported(
             content.pointer(requirement.pointer).is_some()
                 && !supports(capabilities, requirement.capability)
         })
-        .map(|requirement| requirement.field)
+        .map(|requirement| requirement.label)
         .collect::<Vec<_>>();
     if config_uses_action(content, "static_cname_response")
         && !supports(capabilities, CONFIG_STATIC_CNAME_RESPONSE_V1)
     {
-        fields.push("actions.static_cname_response");
+        fields.push("固定 CNAME 回答");
     }
     if fields.is_empty() {
         Ok(())
@@ -161,7 +167,7 @@ mod tests {
         let error =
             ensure_config_supported(&json!({"settings": {"statistics_enabled": false}}), &[])
                 .unwrap_err();
-        assert!(error.to_string().contains("settings.statistics_enabled"));
+        assert!(error.to_string().contains("启用查询排行"));
     }
 
     #[test]
@@ -190,7 +196,7 @@ mod tests {
                 }]
             });
             let error = ensure_config_supported(&content, &[]).unwrap_err();
-            assert!(error.to_string().contains("actions.static_cname_response"));
+            assert!(error.to_string().contains("固定 CNAME 回答"));
             assert!(
                 ensure_config_supported(&content, &[CONFIG_STATIC_CNAME_RESPONSE_V1.to_owned()])
                     .is_ok()

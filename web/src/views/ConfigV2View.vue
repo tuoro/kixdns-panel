@@ -170,7 +170,8 @@ const notice = computed<Notice | null>(() => {
   // 没运行、连不上时页头已经说了，功能列表拿不到是它的结果，不另起一条 / When stopped or unreachable the header says so; the missing feature list follows from it
   if (capabilityError.value && !runtimeStopped.value && !runtimeUnavailable.value) return { tone: 'off', text: 'KixDNS 没有报告它支持哪些功能：新功能先按不支持处理，保存后先存成待应用版本。' }
   if (!canCname.value && cnameInUse.value && !capabilityError.value) return { tone: 'warn', text: '当前 KixDNS 不支持固定 CNAME：已有的域名映射和规则会保留，先更新或切换内核再应用。' }
-  if (unsupportedFields.value.length) return { tone: 'off', text: `当前内核不支持：${unsupportedFields.value.join('、')}。带着这几项的配置只能存成待应用版本，更新内核或关掉这几项后才会生效。` }
+  // KixDNS 不接受带着它不支持的设置的配置：说清这一点和两条出路，按钮直接去基础设置 / KixDNS refuses a config carrying settings it does not support: say so with the two ways out, the button going straight to the settings
+  if (unsupportedFields.value.length) { const these = unsupportedFields.value.length > 1 ? '这几项' : '这一项'; return { tone: 'warn', text: `当前内核不支持：${unsupportedFields.value.join('、')}。KixDNS 不会接受带着${these}的配置：先关掉${these}，或者更新到支持它的内核。`, action: section.value === 'settings' ? undefined : '去基础设置', run: () => setTab('settings') } }
   return null
 })
 function stripPrefix(): void {
@@ -283,6 +284,9 @@ async function importFile(event: Event): Promise<void> {
   const problem = jsonSyntaxProblem(text)
   if (problem) { toast.error(`${file.name} 不是合法的 JSON：${jsonProblemText(problem)}`); return }
   parsed = JSON.parse(text) as Record<string, unknown>
+  // 合法的 JSON 不一定是 KixDNS 配置：最外层要是对象，至少有 settings、pipelines 这类内核认的键 / Valid JSON is not necessarily a KixDNS config: the top level must be an object with at least one key the kernel reads
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) { toast.error(`${file.name} 不是 KixDNS 配置：最外层要是 { … }`); return }
+  if (!['version', 'settings', 'pipelines', 'pipeline_select'].some((key) => key in parsed)) { toast.error(`${file.name} 不是 KixDNS 配置：里面没有 settings、pipelines 这些内容`); return }
   if (unsaved.value && !(await confirm.ask({ title: '放弃未保存的修改', body: '导入的文件会替换现在的草稿，没保存的修改会丢失。', confirmLabel: '放弃修改并导入', destructive: true }))) return
   const before = JSON.parse(JSON.stringify(model)) as Model
   const { model: next, report } = readConfig(parsed, model)

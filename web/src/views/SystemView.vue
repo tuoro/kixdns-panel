@@ -130,7 +130,7 @@ function panelUpdateLabel(): string {
     return panelUpdate.value.message || '面板正在在线更新'
   }
   const notice = panelNotice.value
-  if (!notice?.latest_version) return '正式版通道尚未发布'
+  if (!notice?.latest_version) return '正式版还没发布'
   if (notice.available) return '发现正式版更新'
   if (!notice.artifact) return '最新正式版暂无当前架构安装包'
   if (notice.current_release) return '当前正式版已是最新'
@@ -506,9 +506,9 @@ onBeforeUnmount(() => {
           </div>
           <div v-if="service?.main_pid"><span class="ui-lbl">PID</span><b>{{ service.main_pid }}</b></div>
           <div v-if="panelVersion"><span class="ui-lbl">面板版本</span><b>{{ panelVersion }}</b></div>
-          <div v-if="kernel"><span class="ui-lbl">内核</span><b>{{ installed ? formatKixdnsVersion(activeVersion) : '尚未安装' }}</b></div>
+          <div v-if="kernel"><span class="ui-lbl">内核</span><b>{{ installed ? formatKixdnsVersion(activeVersion) : '还没安装' }}</b></div>
         </div>
-        <span v-if="service || kernel || panelVersion" class="ui-ph__lead ui-ph__phone"><span v-if="service" class="ui-dot" :class="{ 'ui-dot--off': !running }" aria-hidden="true"></span><UiDotText :parts="[...(service ? [running ? '运行中' : '已停止'] : []), ...(panelVersion ? [`面板 ${panelVersion}`] : []), ...(kernel ? [installed ? formatKixdnsVersion(activeVersion).replace(' ', '\u00a0') : '内核尚未安装'] : [])]" /></span>
+        <span v-if="service || kernel || panelVersion" class="ui-ph__lead ui-ph__phone"><span v-if="service" class="ui-dot" :class="{ 'ui-dot--off': !running }" aria-hidden="true"></span><UiDotText :parts="[...(service ? [running ? '运行中' : '已停止'] : []), ...(panelVersion ? [`面板 ${panelVersion}`] : []), ...(kernel ? [installed ? formatKixdnsVersion(activeVersion).replace(' ', '\u00a0') : '内核还没安装'] : [])]" /></span>
         <span v-else-if="loadingService" class="sk system-skeleton-meta" role="status" aria-label="读取服务状态"></span>
         <span v-else>服务状态暂不可用</span>
       </template>
@@ -540,7 +540,7 @@ onBeforeUnmount(() => {
               <template v-else-if="kixdnsNotice.available && kixdnsNotice.security_update"><span class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span> <span class="update-row__keep">安全更新<template v-if="kixdnsNotice.dependency_revision"> · <span class="ui-num">r{{ kixdnsNotice.dependency_revision }}</span></template></span></template>
               <template v-else-if="kixdnsNotice.available"><span class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span> <span class="update-row__keep">→ <span class="ui-num">{{ formatKixdnsVersion(activeVersion).startsWith('构建 #') ? latestKixdnsVersion().replace(/^构建 /, '') : latestKixdnsVersion() }}</span></span></template>
               <template v-else-if="kixdnsNotice.current_commit"><span class="update-row__keep">已是最新 · <span class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span></span></template>
-              <template v-else>尚未安装</template>
+              <template v-else>还没安装</template>
             </span>
             <span v-if="kixdnsNotice">发布于 {{ buildTime(kixdnsNotice.created_at) }}</span>
           </template>
@@ -596,12 +596,12 @@ onBeforeUnmount(() => {
       <section class="ui-card system-card runtime-panel" aria-labelledby="system-install-label">
         <div class="system-card__head">
           <h2 id="system-install-label" class="ui-card__label">当前安装</h2>
-          <span v-if="kernel" class="ui-tag" :class="installed ? 'ui-tag--ok' : 'ui-tag--warn'">{{ installed ? '已安装' : '尚未安装' }}</span>
+          <span v-if="kernel" class="ui-tag" :class="installed ? 'ui-tag--ok' : 'ui-tag--warn'">{{ installed ? '已安装' : '还没安装' }}</span>
         </div>
         <div class="system-card__main">
           <div v-if="loadingKernel && !kernel" class="sk system-skeleton-panel" role="status" aria-label="读取安装状态"></div>
           <template v-else-if="kernel">
-            <p class="install-version"><span v-if="installed && versionLead.label" class="install-version__label">{{ versionLead.label }}</span><b>{{ installed ? versionLead.value : '尚未安装' }}</b></p>
+            <p class="install-version"><span v-if="installed && versionLead.label" class="install-version__label">{{ versionLead.label }}</span><b>{{ installed ? versionLead.value : '还没安装' }}</b></p>
             <p v-if="installed" class="ui-dots install-meta">
               <span>补丁集 <span class="ui-num">{{ activeVersion?.patchset ? `p${activeVersion.patchset}${activeVersion.dependency_revision ? `-r${activeVersion.dependency_revision}` : ''}` : '未记录' }}</span></span>
               <span>控制协议 <span class="ui-num">{{ activeVersion?.control_protocol ? `v${activeVersion.control_protocol}` : '未记录' }}</span></span>

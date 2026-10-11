@@ -186,7 +186,7 @@ async fn apply_scheduled_geo_update(state: &AppState) -> anyhow::Result<()> {
     let manifest = state.geo_data.current().await?;
     let request = GeoDataSyncRequest::from_manifest(&manifest);
     if request.is_empty() {
-        anyhow::bail!("没有可用于自动更新的远程 Geo 数据源");
+        anyhow::bail!("没有填下载链接，自动更新用不上");
     }
     let updated = state.geo_data.sync(request).await?;
     apply_synced_geo_data(state, &updated).await
@@ -254,7 +254,7 @@ async fn write_synced_geo_config(
             ensure_running_config_supported(state, &candidate).await?;
             let validation = state.control.validate(&candidate).await?;
             if !validation.valid {
-                anyhow::bail!("KixDNS 拒绝定时更新后的 Geo 配置");
+                anyhow::bail!("KixDNS 没有接受新的 Geo 数据，仍在用之前的配置");
             }
             let result = state
                 .config
@@ -275,7 +275,10 @@ async fn write_synced_geo_config(
                 .await
             {
                 rollback_config(state, previous.content, &result.sha256, "system").await?;
-                anyhow::bail!("定时更新后的 Geo 配置未生效，已自动回滚：{error}");
+                anyhow::bail!(
+                    "KixDNS 没有接受新的 Geo 数据，仍在用之前的配置：{}",
+                    super::reload_failure(&error)
+                );
             }
             result
         }

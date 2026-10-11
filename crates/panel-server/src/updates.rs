@@ -617,7 +617,7 @@ impl UpdateError {
     /// The phrase the page puts after 检查失败：; a failed check gives only its cause, without its own prefix.
     pub fn reason(&self) -> String {
         match self {
-            Self::Network(reason) => reason.clone(),
+            Self::Network(reason) | Self::Install(reason) => reason.clone(),
             other => other.to_string(),
         }
     }

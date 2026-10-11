@@ -39,7 +39,7 @@ function removeRule(index: number): void { rules.value.splice(index, 1) }
   <div class="rawed">
     <article v-for="(rule, i) in rules" :key="i" class="rawed__rule" :aria-label="`内核规则 ${rule.name}`">
       <header class="rawed__head">
-        <label class="ui-input is-mono rawed__name"><input v-model="rule.name" :aria-label="`第 ${i + 1} 条内核规则的名字`" placeholder="规则名" spellcheck="false"></label>
+        <label class="ui-input is-mono rawed__name"><input v-model="rule.name" :aria-label="`第 ${i + 1} 条内核规则的名字`" placeholder="内核里的名字" spellcheck="false"></label>
         <button v-if="rules.length > 1" class="ui-icon-btn" type="button" :aria-label="`去掉第 ${i + 1} 条内核规则`" :title="`去掉第 ${i + 1} 条内核规则`" @click="removeRule(i)"><Trash2 :size="16" /></button>
       </header>
       <section class="rawed__stage">

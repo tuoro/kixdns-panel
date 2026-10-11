@@ -95,3 +95,12 @@ describe('迁移：读成什么样 / migration: what it reads as', () => {
     expect(ptr.conditions).toEqual([[expect.objectContaining({ field: 'qtype', negate: false, values: ['PTR'] }), expect.objectContaining({ field: 'client_private', negate: true })]])
   })
 })
+
+describe('导入说明说清上游组从哪来', () => {
+  it('从默认上游建的组不说「从规则里的转发地址」', () => {
+    const cfg = { version: '1.0', settings: {}, pipeline_select: [{ pipeline: 'main', matchers: [] }], pipelines: [{ id: 'main', rules: [{ name: 'ads', matchers: [{ type: 'geo_site', value: 'category-ads-all' }], actions: [{ type: 'deny' }] }] }] }
+    const text = importKernel(cfg as never).notes.map((n) => n.text).join('\n')
+    expect(text).not.toContain('从规则里的转发地址')
+    expect(text).toContain('配置里没写默认上游，按 KixDNS 的默认 1.1.1.1:53 建了上游组')
+  })
+})

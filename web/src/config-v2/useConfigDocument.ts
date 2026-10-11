@@ -3,8 +3,9 @@ import { ApiError, apiRequest, jsonBody } from '../api/client'
 import type { ConfigApplyResult, ConfigDocument, ConfigRuntimeApplyState, ConfigVersion, ConfigVersionDetail, ConfigVersions, DeleteConfigVersionResult, DeleteConfigVersionsResult, Overview, ServiceStatus, ValidationResult } from '../api/types'
 import { SETTING_SECTIONS, settingSupported } from '../config-editor/schema'
 import { exportConfig, readConfig } from '../config-model/document'
+import { traceNames } from '../config-model/trace-names'
 import { errorMessage } from '../utils'
-import { applyHits, applyUpstreamStats, dialogEdits, dirty, editorEdited, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, reportOpen, unsaved } from './store'
+import { applyHits, applyUpstreamStats, changeCount, dialogEdits, dirty, editorEdited, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, reportOpen, unsaved } from './store'
 
 // 配置页和面板服务之间的事：读配置和历史、KixDNS 的运行状态和能力、校验、保存并热加载、现在应用。
 // 草稿本身在 store.ts；这里只管「文件」和「运行」。所有状态是模块级的，页面和保存条共用同一份。
@@ -39,11 +40,14 @@ export const runtimeUnavailable = computed(() => doc.value?.runtime.status === '
 export const unsupportedFields = computed(() => SETTING_SECTIONS.flatMap((s) => s.fields)
   .filter((f) => Object.prototype.hasOwnProperty.call(model.settings, f.key) && !settingSupported(f, runtimeCapabilities.value))
   .map((f) => f.label))
-// KixDNS 没启动、连不上、没报能力、有不支持的设置时，保存只存成待应用版本 / Saving only stores a pending version when KixDNS is down, unreachable, silent about capabilities, or has unsupported settings
-export const deferSave = computed(() => runtimeStopped.value || runtimeUnavailable.value || Boolean(capabilityError.value) || unsupportedFields.value.length > 0)
+// 内核报了自己支持什么、草稿里却有它不支持的设置：KixDNS 会拒绝整份配置（服务端记成失败的版本，永远不会应用），所以先不让保存
+// The kernel reported what it supports and the draft holds a setting it does not: KixDNS refuses the whole config (the server records a failed version that never applies), so saving waits
+export const blockedFields = computed(() => (!runtimeStopped.value && !runtimeUnavailable.value && !capabilityError.value ? unsupportedFields.value : []))
+// KixDNS 没启动、连不上、没报能力时，保存只存成待应用版本 / Saving only stores a pending version when KixDNS is down, unreachable or silent about capabilities
+export const deferSave = computed(() => runtimeStopped.value || runtimeUnavailable.value || Boolean(capabilityError.value))
 export const fileDiffers = computed(() => !hasPending.value && !hasApplyFailure.value && doc.value?.runtime.status === 'different')
 export const canApplyNow = computed(() => (hasPending.value || hasApplyFailure.value || fileDiffers.value) && !deferSave.value)
-export const canSave = computed(() => dirty.value || canApplyNow.value)
+export const canSave = computed(() => (dirty.value || canApplyNow.value) && blockedFields.value.length === 0)
 
 // ---------- 保存的几步 / the save's stages ----------
 export type SaveStage = 'idle' | 'checking' | 'validating' | 'applying' | 'done' | 'failed'
@@ -111,7 +115,6 @@ export const headerAction = computed(() => {
 export const deferNote = computed(() => {
   if (runtimeStopped.value) return '保存后等 KixDNS 启动再应用'
   if (runtimeUnavailable.value) return '保存后等连上 KixDNS 再应用'
-  if (unsupportedFields.value.length) return '内核不支持部分设置，保存后先存成待应用版本'
   if (capabilityError.value) return 'KixDNS 没有报告它支持哪些功能，保存后先存成待应用版本'
   return deferSave.value ? '保存后先存成待应用版本' : ''
 })
@@ -126,7 +129,16 @@ const stoppedError = (error: unknown) => STOPPED.test(errorMessage(error))
 const STOPPED_NOTE = '草稿还在，可以先存成待应用版本'
 export function friendlyRuntimeMessage(message: string): string {
   if (STOPPED.test(message)) return 'KixDNS 已停止，保存后等它启动再应用'
-  return message.replace(/^KixDNS\s*拒绝(?:操作|了这份配置|该配置)[：:，,]\s*/, '') || message
+  return kernelWords(message.replace(/^KixDNS\s*拒绝(?:操作|了这份配置|该配置)[：:，,]\s*/, '') || message)
+}
+/**
+ * 内核给的英文原因（pipeline "main" references unknown upstream group "fast"）照原话给，但标明是 KixDNS 的原话，引号里的内核 id 换成页面上的叫法
+ * The kernel's English reason (pipeline "main" references unknown upstream group "fast") is kept verbatim but marked as KixDNS's own words, with quoted kernel ids turned into the page's names
+ */
+export function kernelWords(message: string): string {
+  if (/[\u4e00-\u9fff]/.test(message) || !/[A-Za-z]{3,}/.test(message)) return message
+  const names = traceNames(model)
+  return `KixDNS 的原话：${message.replace(/"([\w.-]+)"/g, (whole, id: string) => { const name = names.pipeline(id); return name ? `${whole}（${name}）` : whole })}`
 }
 const friendlyRuntimeError = (error: unknown) => friendlyRuntimeMessage(errorMessage(error))
 /** 没生效的原因本身：去掉句尾「仍在用之前的配置」，给已经说了这件事的提示条用 / Just why it did not take, without the trailing 仍在用之前的配置, for a notice that already says so */
@@ -251,10 +263,12 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     }
     const result = await apiRequest<ConfigApplyResult>('/api/v1/config', { method: 'PUT', ...jsonBody({ content, expected_sha256: doc.value.sha256, message: saveMessage.value.trim() }) })
     validation.value = result.validation ?? validation.value
-    const text = applyResultState(result) === 'pending' ? `已存成待应用版本 #${result.version_id}，KixDNS 就绪后自动应用` : `已生效 · 版本 #${result.version_id}`
+    const pendingText = `已存成待应用版本 #${result.version_id}，${pendingWhen()}自动应用`
     saveMessage.value = ''
     await load({ quiet: true, keepDraft: true, sent })
-    finishStage('done', text)
+    // 保存途中又改了的：说一句那几处还没保存，不让「已生效」盖过它们 / Edits made during the save: say they are not saved yet, so 已生效 does not cover them
+    const later = changeCount.value ? ` · 之后改的 ${changeCount.value} 处还没保存` : ''
+    finishStage('done', `${applyResultState(result) === 'pending' ? pendingText : `已生效 · 版本 #${result.version_id}`}${later}`)
   } catch (error) {
     const reason = friendlyRuntimeError(error)
     const stopped = stoppedError(error)
@@ -269,6 +283,12 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
   }
 }
 export const applyNow = () => void save('apply')
+/** 待应用的版本什么时候自动应用：说出等的是什么 / When a pending version applies by itself: name what it waits for */
+export function pendingWhen(): string {
+  if (runtimeStopped.value) return 'KixDNS 启动后'
+  if (runtimeUnavailable.value) return '连上 KixDNS 后'
+  return 'KixDNS 就绪后'
+}
 
 // ---------- 历史版本 / history ----------
 export const restoring = ref<number | null>(null)
