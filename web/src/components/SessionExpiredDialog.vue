@@ -11,14 +11,18 @@ const password = ref('')
 const error = ref('')
 const submitting = ref(false)
 const passwordInput = ref<HTMLInputElement | null>(null)
+const dialogEl = ref<HTMLDialogElement | null>(null)
 
+// 用 showModal 打开：抽屉、弹层都在浏览器的顶层里，普通的定位层盖不过它们，还会被它们变成不可点；后打开的模态框总在最上面
+// Opened with showModal: drawers and dialogs live in the browser's top layer, which no positioned layer can cover and which makes everything else inert; the last modal opened is always on top
 watch(() => session.expired.value, async (expired) => {
   if (!expired) return
   password.value = ''
   error.value = ''
   await nextTick()
+  if (dialogEl.value && !dialogEl.value.open) dialogEl.value.showModal()
   passwordInput.value?.focus()
-})
+}, { immediate: true })
 
 async function submit(): Promise<void> {
   if (submitting.value || !password.value) return
@@ -67,13 +71,8 @@ async function leave(): Promise<void> {
     keyboard and the dialog re-centres itself, scrolling as a whole if it ever
     exceeds the height available.
   -->
-  <div v-if="session.expired.value" class="session-expired" role="presentation">
-    <section
-      class="session-expired__dialog"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="session-expired-title"
-    >
+  <dialog v-if="session.expired.value" ref="dialogEl" class="session-expired" aria-labelledby="session-expired-title" @cancel.prevent>
+    <section class="session-expired__dialog">
       <h2 id="session-expired-title">登录状态已过期</h2>
       <p>
         请重新输入密码继续。<strong>你在本页的改动都还在</strong>——验证通过后回到刚才的位置。
@@ -105,7 +104,7 @@ async function leave(): Promise<void> {
       </form>
       <button class="button button--secondary session-expired__leave" type="button" @click="leave">退出登录</button>
     </section>
-  </div>
+  </dialog>
 </template>
 
 <style scoped>
@@ -114,7 +113,9 @@ async function leave(): Promise<void> {
    flex with margin:auto on the child is the safe centring: when the content
    outgrows the box it scrolls from the top instead of having its upper half
    clipped out of reach, which align-content:center would do. */
-.session-expired { position: fixed; inset: 0; height: 100dvh; z-index: 120; display: flex; padding: 24px 16px; overflow-y: auto; background: var(--scrim); }
+.session-expired { position: fixed; inset: 0; width: 100%; max-width: none; height: 100dvh; max-height: none; margin: 0; padding: 24px 16px; overflow-y: auto; border: 0; background: var(--scrim); color: inherit; }
+.session-expired[open] { display: flex; }
+.session-expired::backdrop { background: transparent; }
 .session-expired__dialog { width: min(420px, 100%); margin: auto; display: flex; flex-direction: column; gap: 14px; padding: 22px 24px; border-radius: var(--r-2); background: var(--surface); box-shadow: var(--shadow-float); }
 .session-expired__dialog h2 { margin: 0; font-size: var(--t-4); font-weight: 600; }
 .session-expired__dialog p { margin: 0; color: var(--muted); font-size: var(--t-2); line-height: 1.6; }

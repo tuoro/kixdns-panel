@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { diffModels } from '../config-model/diff'
 import type { Model } from '../config-model/model'
-import { demoModel } from '../config-model/testing/samples'
-import { appliedModel, changeCount, model, resetTo } from './store'
+import { exportConfig, readConfig } from '../config-model/document'
+import { LEGACY_MESSY, LEGACY_TEMPLATES, demoModel, sampleModel } from '../config-model/testing/samples'
+import { appliedModel, changeCount, model, rebaseApplied, resetTo } from './store'
 
 // 保存条数出来的每一处修改，「改了哪些」里都要看得到：以前改监听标签时保存条说改了 1 处，对比却说「一样」
 // Every change the save bar counts must show in the review: setting a listener tag once read 「已修改 1 处」 while the review said nothing changed
@@ -73,5 +74,21 @@ describe('「改了哪些」写页面上的叫法', () => {
     expect(text).toContain('空地址')
     expect(text).toContain('记录（调试）')
     expect(text).not.toMatch(/\bzero\b|\bdebug\b/)
+  })
+})
+
+// 保存以后把读回来的文件当作对照、草稿留着：写进文件再读回来不能多出「修改」，否则保存成功后还挂着「已修改 N 处」
+// After a save the file read back becomes the baseline while the draft stays: writing and reading back must not invent changes, or a successful save would still show 已修改 N 处
+describe('保存后读回来的文件当作对照', () => {
+  it.each([
+    ['演示配置', () => demoModel()],
+    ['完整样例', () => sampleModel()],
+    ['导入的乱配置（有高级规则）', () => readConfig(LEGACY_MESSY as unknown as Record<string, unknown>).model],
+    ['导入的旧模板', () => readConfig(LEGACY_TEMPLATES as unknown as Record<string, unknown>).model],
+  ])('%s', (_, make) => {
+    resetTo(make())
+    model.rules.push({ ...model.rules[0]!, id: 9999, name: '保存时加的' })
+    rebaseApplied(readConfig(exportConfig(model), model).model)
+    expect(changeCount.value).toBe(0)
   })
 })

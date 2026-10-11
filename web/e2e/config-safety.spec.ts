@@ -269,3 +269,30 @@ test('高级规则能打开编辑，改了没点完成也算没保存 @responsiv
   await expect(page.getByRole('alertdialog', { name: '放弃这条规则的修改' })).toBeVisible()
   expect(errors).toEqual([])
 })
+
+test('保存在校验这一步被 KixDNS 拒绝：草稿和失败的说法都留着', async ({ page }) => {
+  await page.goto('/config')
+  await addRule(page, 'rejected.example')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-validate-reject', 'true'))
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar.locator('.ui-savebar__verdict')).toHaveText('没有通过校验')
+  // 以前 120 毫秒后重读文件把草稿整份换掉，保存条跟着消失，看起来像保存成功 / Before, the file was re-read 120 ms later and replaced the draft, so the bar vanished as if the save had worked
+  await page.waitForTimeout(800)
+  await expect(bar.locator('.ui-savebar__verdict')).toHaveText('没有通过校验')
+  await expect(page.locator('[data-rule]', { hasText: 'rejected.example' })).toBeVisible()
+})
+
+test('保存途中又改了一笔：保存完那一笔还在，算一处没保存的修改', async ({ page }) => {
+  await page.goto('/config')
+  await addRule(page, 'first.example')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-save-slow', 'true'))
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar).toContainText('写入并应用')
+  await addRule(page, 'during.example', 'block')
+  await expect(bar).toContainText('已生效', { timeout: 5000 })
+  await expect(page.locator('[data-rule]', { hasText: 'during.example' })).toBeVisible()
+  await expect(bar).toContainText('已修改 1 处')
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
+})

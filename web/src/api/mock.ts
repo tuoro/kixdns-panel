@@ -613,6 +613,12 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
       localStorage.removeItem('kixdns:demo-validate-stopped')
       throw new ApiError('KixDNS 已停止', 503, 'kixdns_unavailable')
     }
+    // kixdns:demo-validate-reject：下一次校验被内核拒绝（真内核对它不接受的配置回 422 kixdns_rejected）
+    // kixdns:demo-validate-reject: the next validation is rejected by the kernel (a real kernel answers 422 kixdns_rejected for a config it refuses)
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-validate-reject') === 'true') {
+      localStorage.removeItem('kixdns:demo-validate-reject')
+      throw new ApiError('pipeline "main" references unknown upstream group "fast"', 422, 'kixdns_rejected')
+    }
     const content = JSON.parse(String(init?.body)) as Record<string, unknown>
     const pipelines = Array.isArray(content.pipelines) ? content.pipelines : []
     return { protocol_version: 1, valid: true, pipeline_count: pipelines.length, rule_count: 1 } as T
@@ -622,6 +628,8 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
     // 和真服务一样带 config_conflict，页面才认得出是别处先存了；kixdns:demo-save-conflict 让下一次保存撞上，演示这个状态
     // Carries config_conflict as the real server does, so the page knows someone else saved first; kixdns:demo-save-conflict makes
     // the next save hit it, to show that state
+    // kixdns:demo-save-slow：写入要 1.5 秒，演示保存途中还能改 / kixdns:demo-save-slow: writing takes 1.5 s, to show editing while a save is in flight
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-save-slow') === 'true') await new Promise((resolve) => setTimeout(resolve, 1500))
     const forcedConflict = typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-save-conflict') === 'true'
     if (forcedConflict) localStorage.removeItem('kixdns:demo-save-conflict')
     if (forcedConflict || body.expected_sha256 !== config.sha256) throw new ApiError('配置已被其他操作修改，请刷新后重试', 409, 'config_conflict')

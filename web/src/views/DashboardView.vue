@@ -299,8 +299,8 @@ const statsWindowLabel = computed(() => {
   if (seconds === 3_600) return '最近一小时'
   return `最近 ${statsWindows.find((item) => item.value === seconds)?.label ?? `${Math.round(seconds / 3600)} 小时`}`
 })
-// 排行里的域名可以在「.」后面折行，长域名不再从字母中间断开；客户端地址照旧按通用规则 / Ranked domains may wrap after a dot, so a long one never splits inside a label; client addresses keep the general rule
-const rankedParts = (group: string, name: string): string[] => (group === 'domains' ? name.split(/(?<=\.)/) : breakable(name))
+// 排行里的域名可以在「.」前面折行，长域名不再从字母中间断开；客户端地址照旧按通用规则 / Ranked domains may wrap before a dot, so a long one never splits inside a label; client addresses keep the general rule
+const rankedParts = (group: string, name: string): string[] => (group === 'domains' ? name.split(/(?=\.)/) : breakable(name))
 const rankingGroups = [
   { id: 'clients', title: '客户端排行', description: '按来源地址聚合', empty: '当前窗口暂无客户端数据' },
   { id: 'domains', title: '请求域名排行', description: '按查询次数', empty: '当前窗口暂无域名数据' },
@@ -547,7 +547,9 @@ const chartPixels = computed(() => {
   if (vw < 641) return vw - 64
   const measure = Math.min(vw - 232 - 64, 1280)
   if (vw < 900) return measure - 40
-  return measure - (vw < 1200 ? 360 : 440) - 20 - 40
+  // 1280 起右栏是底排一张卡的宽，左栏 = (版心 − 两个卡距) × 2/3 + 一个卡距；以下右栏 360 / From 1280 the right column is one bottom card wide, so the left is (measure − two gaps) × 2/3 + one gap; below that the right column is 360
+  if (vw >= 1280) return (measure - 40) * 2 / 3 + 20 - 40
+  return measure - 360 - 20 - 40
 })
 
 // 柱图的时间刻度：本地整点，每 1/2/3/6 小时一个（最多四个），按时间落在所属那根柱子里的位置；右端写「现在 HH:MM」，
@@ -868,8 +870,10 @@ onBeforeUnmount(() => {
       </section>
 
       <section id="overview-panel-rules" v-show="activeView === 'rules'" class="overview-view" role="tabpanel" aria-labelledby="overview-tab-rules" tabindex="0">
+        <!-- 页签已经叫「规则命中」，表头也写了「命中次数」：卡片不再加标题，只在上面一行说时段，和查询排行同一种排法
+             The tab already reads 规则命中 and the column says 命中次数: the card takes no title, the line above gives the period, as in 查询排行 -->
+        <div v-if="hitRows.length" class="overview-toolbar"><p>启动以来</p></div>
         <section v-if="hitRows.length" class="ui-card overview-card overview-rules-card" aria-label="每条规则的命中次数">
-          <div class="overview-card-head"><h2 class="ui-card__label">每条规则的命中次数</h2><span class="overview-card-note">启动以来</span></div>
         <div class="overview-rules">
           <div class="ui-rec-head"><span>阶段</span><span>规则</span><span>规则组</span><span>命中次数</span></div>
           <div v-for="rule in hitRows" :key="`${rule.pipeline}:${rule.phase}:${rule.rule}`" class="ui-rec overview-rule">
@@ -1039,8 +1043,7 @@ onBeforeUnmount(() => {
 .overview-rules .ui-rec, .overview-rules .ui-rec-head { grid-column: 1 / -1; grid-template-columns: subgrid; column-gap: inherit; }
 .overview-rules .ui-rec-head > :nth-child(2), .overview-rules .ui-rec-head > :nth-child(3) { text-align: left; }
 .overview-rule { align-items: baseline; }
-/* 卡里的表：表头离卡头 12，最后一行不画底线、不留下边距 / The table in its card: column names 12 under the card head; the last row has no bottom rule or padding */
-.overview-rules-card .overview-rules { margin-top: var(--s-3); }
+/* 卡里的表：表头就是卡的第一行，最后一行不画底线、不留下边距 / The table in its card: the column names are the card's first line; the last row has no bottom rule or padding */
 .overview-rules-card .ui-rec:last-child { padding-bottom: 0; border-bottom: 0; }
 .overview-rule-name { min-width: 0; font-size: var(--t-3); font-weight: var(--w-medium); overflow-wrap: anywhere; }
 .overview-rule-pipeline { min-width: 0; color: var(--l-ink-3); font-size: var(--t-2); overflow-wrap: anywhere; }
@@ -1075,8 +1078,12 @@ onBeforeUnmount(() => {
 /* 1160–1199：右栏收到 360，底下一排两张、第三张（单数时的最后一张）满宽。再窄左栏就不到 480（侧栏 232 + 页边 64 + 右栏 380），
    三项小计会折行，所以 1159 起一栏到底 / 1160–1199: the right column narrows to 360; the bottom row holds two, an odd last card spans the row.
    Narrower, the left column drops under 480 (sidebar 232 + page gutters 64 + right column 380) and the sub-figures wrap, so from 1159 it is one column */
-@media (max-width: 1199px) {
+/* 1200–1279：三分之一窄到 288–315，上游地址会折行；右栏先停在 360，上下两排的列线只在 1280 以上对齐
+   1200–1279: a third shrinks to 288–315 and upstream addresses wrap; the right column holds at 360, and the rows share column lines only from 1280 */
+@media (max-width: 1279px) {
   .overview-grid, .overview-skeleton { grid-template-columns: minmax(0, 1fr) 360px; }
+}
+@media (max-width: 1199px) {
   .overview-trio { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .overview-trio > :last-child:nth-child(odd) { grid-column: 1 / -1; }
 }
@@ -1106,7 +1113,7 @@ onBeforeUnmount(() => {
   .overview-toolbar-tools { width: 100%; justify-content: space-between; }
   .overview-rankings { grid-template-columns: minmax(0, 1fr); }
   /* 卡片吃掉 32 的宽度：名次只有一位数，列收到 16，域名少折一次 / The card takes 32 of the width: ranks are one digit, so their column narrows to 16 and domains fold less */
-  .overview-ranking-list li { grid-template-columns: var(--s-4) minmax(0, 1fr) auto; }
+  .overview-ranking-list li { grid-template-columns: var(--s-4) minmax(0, 1fr) auto; column-gap: var(--s-1); }
   .overview-toolbar-tools > .ui-seg { flex: 1; }
   .overview-runtime-actions { width: 100%; }
   .overview-runtime-actions > * { flex: 1 1 0; }

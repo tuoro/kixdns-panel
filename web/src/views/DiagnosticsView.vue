@@ -261,6 +261,11 @@ async function run(): Promise<void> {
 .diag-query { display: grid; grid-template-columns: minmax(0, 1fr) 7rem auto; gap: var(--s-2); }
 /* 有客户端 IP 时多一列，在记录类型和按钮之间 / With the client IP there is one more column, between the record type and the button */
 .diag-query:has(.diag-client) { grid-template-columns: minmax(0, 1fr) 7rem 12rem auto; }
+/* 861–1023 有侧栏，卡片窄：域名框不比客户端 IP 窄，客户端 IP 单独一行（和手机一样排在最后） / 861–1023 has the sidebar and a narrow card: the domain never gets narrower than the client IP, which takes its own row at the end as on phones */
+@media (min-width: 861px) and (max-width: 1023px) {
+  .diag-query:has(.diag-client) { grid-template-columns: minmax(0, 1fr) 7rem auto; }
+  .diag-client { grid-column: 1 / -1; grid-row: 2; }
+}
 .diag-client.is-bad { border-color: var(--err-l); }
 .diag-client-err { margin: var(--s-2) 0 0; }
 .diag-query input { font-family: var(--f-mono); }

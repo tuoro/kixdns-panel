@@ -2,9 +2,9 @@ import { computed, ref } from 'vue'
 import { ApiError, apiRequest, jsonBody } from '../api/client'
 import type { ConfigApplyResult, ConfigDocument, ConfigRuntimeApplyState, ConfigVersion, ConfigVersionDetail, ConfigVersions, DeleteConfigVersionResult, DeleteConfigVersionsResult, Overview, ServiceStatus, ValidationResult } from '../api/types'
 import { SETTING_SECTIONS, settingSupported } from '../config-editor/schema'
-import { exportConfig } from '../config-model/document'
+import { exportConfig, readConfig } from '../config-model/document'
 import { errorMessage } from '../utils'
-import { applyHits, applyUpstreamStats, dirty, importReport, importSource, loadContent, model, reportOpen } from './store'
+import { applyHits, applyUpstreamStats, dialogEdits, dirty, editorEdited, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, reportOpen, unsaved } from './store'
 
 // 配置页和面板服务之间的事：读配置和历史、KixDNS 的运行状态和能力、校验、保存并热加载、现在应用。
 // 草稿本身在 store.ts；这里只管「文件」和「运行」。所有状态是模块级的，页面和保存条共用同一份。
@@ -104,7 +104,8 @@ export const headerLine = computed<HeaderStatus>(() => {
 })
 // 待应用时「现在应用」，文件和运行配置不同时「校验并应用」；有要保存的修改时让给保存栏 / 现在应用 when pending, 校验并应用 when the file differs; with changes to save it gives way to the save bar
 export const headerAction = computed(() => {
-  if (!canApplyNow.value || dirty.value || hasApplyFailure.value) return ''
+  // 有任何没保存的修改（包括右侧规则没点完成的）都让给保存栏：应用会重读文件，丢掉那些修改 / Any unsaved edit (an unfinished panel edit included) gives way to the save bar: applying re-reads the file and would drop it
+  if (!canApplyNow.value || unsaved.value || hasApplyFailure.value) return ''
   return fileDiffers.value ? '校验并应用' : '现在应用'
 })
 export const deferNote = computed(() => {
@@ -163,7 +164,11 @@ export async function refreshRuntime(): Promise<void> {
 
 let pendingLoad: Promise<void> | null = null
 // quiet：保存之后的刷新不换成骨架 / quiet: the refresh after a save keeps the page mounted
-export function load(options: { quiet?: boolean } = {}): Promise<void> {
+// keepDraft：草稿里有没保存的修改（保存途中又改的、右侧规则没点完成的、删版本时草稿里的）就留着草稿，只把对照的那份换成读到的文件；
+// sent 是保存时发出去的草稿，读回来和它一样、又没有别的没保存的修改时照常整份换上（换成文件里的写法）
+// keepDraft: with unsaved edits in the draft (made during a save, an unfinished panel edit, the draft while a version is deleted) the draft stays and only
+// the baseline becomes the file just read; sent is the draft a save sent, and when nothing changed since and nothing else is unsaved the file replaces it as usual
+export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: string } = {}): Promise<void> {
   if (pendingLoad) return pendingLoad
   if (!options.quiet) loading.value = true
   pendingLoad = (async () => {
@@ -174,16 +179,24 @@ export function load(options: { quiet?: boolean } = {}): Promise<void> {
       apiRequest<ServiceStatus>('/api/v1/service').catch(() => null),
     ])
     applyRuntime(nextDoc, overview, service)
+    const previousSha = doc.value?.sha256
     doc.value = nextDoc
     versions.value = history.versions
     // 读进草稿：散列对得上就是面板写的那份；对不上（手改过）会重新导入并给报告 / Into the draft: the hash matching means the panel wrote it; otherwise it is re-imported with a report
     // 重新读进来的是另一份草稿：上一份草稿的失败和冲突不再适用 / What is read in is a different draft: the previous draft's failure and conflict no longer apply
     if (!options.quiet) { conflict.value = false; if (stage.value === 'failed' || stage.value === 'done') finishStage('idle') }
-    const read = loadContent(nextDoc.content, model)
-    if (read.source === 'imported' && read.report && (read.report.stats.raw || read.report.notes.some((n) => n.level === 'warn'))) {
-      importReport.value = read.report
-      importSource.value = '配置文件'
-      reportOpen.value = false
+    const onlySent = options.sent !== undefined && JSON.stringify(model) === options.sent && !editorEdited.value && !jsonEdited.value && dialogEdits.size === 0
+    if (options.keepDraft && unsaved.value && !onlySent) {
+      // 文件没变就什么都不动；变了（保存成功、别处改过）把对照的那份换成它，草稿里的修改照旧算修改
+      // File unchanged: nothing moves; changed (a save went through, an edit elsewhere): the baseline becomes it and the draft's edits still count as edits
+      if (nextDoc.sha256 !== previousSha) rebaseApplied(readConfig(nextDoc.content, model).model)
+    } else {
+      const read = loadContent(nextDoc.content, model)
+      if (read.source === 'imported' && read.report && (read.report.stats.raw || read.report.notes.some((n) => n.level === 'warn'))) {
+        importReport.value = read.report
+        importSource.value = '配置文件'
+        reportOpen.value = false
+      }
     }
     applyHits(overview?.metrics?.rules ?? [])
     applyUpstreamStats(overview?.metrics?.upstreams ?? [])
@@ -223,6 +236,7 @@ function applyResultState(result: ConfigApplyResult): 'applied' | 'pending' {
 export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
   if (busy.value || !doc.value || !canSave.value) return
   const content = exportConfig(model)
+  const sent = JSON.stringify(model)
   origin.value = from
   applyError.value = ''
   conflict.value = false
@@ -239,7 +253,7 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     validation.value = result.validation ?? validation.value
     const text = applyResultState(result) === 'pending' ? `已存成待应用版本 #${result.version_id}，KixDNS 就绪后自动应用` : `已生效 · 版本 #${result.version_id}`
     saveMessage.value = ''
-    await load({ quiet: true })
+    await load({ quiet: true, keepDraft: true, sent })
     finishStage('done', text)
   } catch (error) {
     const reason = friendlyRuntimeError(error)
@@ -247,8 +261,10 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     verdict.value = stopped ? 'KixDNS 已停止' : step === 'validating' ? '没有通过校验' : '没有保存成功'
     conflict.value = isConflict(error)
     finishStage('failed', conflict.value ? '这份配置在别处改过了，现在的草稿是基于旧版本的' : stopped ? STOPPED_NOTE : reason)
-    if (shouldRefreshAfterSaveError(error)) await load({ quiet: true })
-    else if (stopped) await refreshRuntime().catch(() => undefined)
+    // 校验这一步没写入任何东西：只刷新运行状态，草稿和失败的说法都留着；写入以后失败才重读文件（草稿照样留着）
+    // Nothing was written at the validation step: refresh the runtime only, keeping the draft and the verdict; only a failure after writing re-reads the file (the draft still stays)
+    if (step === 'validating' || stopped) await refreshRuntime().catch(() => undefined)
+    else if (shouldRefreshAfterSaveError(error)) await load({ quiet: true, keepDraft: true })
     if (from === 'apply' && !hasApplyFailure.value) applyError.value = stopped ? 'KixDNS 已停止\n启动后自动应用待应用的版本' : `${step === 'validating' ? '磁盘上的配置没有通过校验' : '没有应用成功'}\n${reason}`
   }
 }
@@ -273,7 +289,7 @@ export async function restoreVersion(id: number): Promise<{ state: 'applied' | '
   }
 }
 async function refreshVersions(removesDesired: boolean): Promise<void> {
-  if (removesDesired) { await load({ quiet: true }); return }
+  if (removesDesired) { await load({ quiet: true, keepDraft: true }); return }
   versions.value = (await apiRequest<ConfigVersions>('/api/v1/config/versions')).versions
 }
 const desired = (v: ConfigVersion) => v.id === pendingVersionId.value || v.apply_state === 'pending' || v.apply_state === 'failed'

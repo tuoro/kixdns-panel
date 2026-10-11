@@ -59,3 +59,18 @@ test('会话过期后选择退出登录才离开当前页', async ({ page }) => 
   await acceptConfirm(page)
   await expect(page).toHaveURL(/\/login\?redirect=/)
 })
+
+test('抽屉开着时会话过期：重新登录的框在最上面，点得到、打得进字，抽屉里的修改还在 @responsive', async ({ page }) => {
+  await page.goto('/config?section=upstreams')
+  await page.getByRole('button', { name: '新建上游组', exact: true }).first().click()
+  const drawer = page.locator('dialog.pdrawer[open]')
+  await drawer.getByLabel('名称', { exact: true }).fill('半成品')
+  await expireSession(page)
+  const relogin = page.getByRole('dialog', { name: '登录状态已过期' })
+  await expect(relogin).toBeVisible()
+  // 点击会做命中检测：以前框被抽屉的遮罩盖住、变成不可点，这一步会超时 / A click hit-tests: before, the drawer's scrim covered the prompt and made it inert, so this timed out
+  await relogin.getByLabel('密码').click({ timeout: 3000 })
+  await page.keyboard.type('secret')
+  await expect(relogin.getByLabel('密码')).toHaveValue('secret')
+  await expect(drawer.getByLabel('名称', { exact: true })).toHaveValue('半成品')
+})

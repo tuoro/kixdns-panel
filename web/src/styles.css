@@ -472,7 +472,8 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
 .credential-hint { display: grid; gap: var(--s-1); max-width: 36em; margin: var(--s-3) 0 0; color: var(--l-ink-3); font-size: var(--t-2); line-height: var(--lh-base); }
 .credential-eye { width: var(--h-sm); height: var(--h-sm); flex: 0 0 auto; display: grid; place-items: center; margin-right: calc(var(--s-2) * -1); padding: 0; border: 0; border-radius: var(--r-1); background: transparent; color: var(--l-ink-3); cursor: pointer; }
 .credential-eye:hover { color: var(--l-ink); background: var(--l-sunk); }
-@media (max-width: 860px) {
+/* 1024 以下（含 861–1023 的侧栏版）两张卡上下排：并排时每张不到 300，Token 框只剩 72 / Below 1024 (the 861–1023 sidebar layout included) the two cards stack: side by side each was under 300 and the token field 72 */
+@media (max-width: 1023px) {
   .system-pair { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 640px) {
@@ -635,7 +636,7 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
   .audit-line strong { grid-area: actor; color: var(--l-ink-3); font-family: var(--f-body); font-size: var(--t-2); font-weight: var(--w-normal); text-align: left; }
   .audit-line strong::after { content: "·"; display: inline-block; width: calc(var(--s-2) * 2); color: var(--l-edge-hover); text-align: center; }
   /* 没有详情（比如登录）时不画点：点后面没东西就是挂在行尾 / No dot when there is no detail (a login, say): a dot with nothing after it dangles at the line end */
-  .audit-line strong:has(+ p:empty)::after { content: none; }
+  .audit-line strong:has(~ p:empty)::after { content: none; }
   .audit-line p { grid-area: detail; color: var(--l-ink-2); font-size: var(--t-2); }
 }
 
@@ -1030,7 +1031,9 @@ body:has(.editor:not(.editor--inspector)) .toast-stack { bottom: calc(var(--edit
 .help__topic summary::before { flex: 0 0 auto; width: calc(var(--s-3) / 2); height: calc(var(--s-3) / 2); margin-inline: 2px var(--s-1); border-right: 1.5px solid var(--l-ink-3); border-bottom: 1.5px solid var(--l-ink-3); transform: rotate(-45deg); transition: transform var(--m-quick) var(--ease-out); content: ''; }
 .help__topic[open] summary::before { transform: rotate(45deg); }
 .help__topic p { margin: 0 0 var(--s-2); padding-left: calc(var(--s-3) + 8px); color: var(--l-ink-2); font-size: var(--t-2); line-height: var(--lh-base); }
-.help__keys h4 { margin: 0 0 var(--s-1); color: var(--l-ink-3); font-size: var(--t-1); font-weight: var(--w-medium); }
+.help__keys h4 { margin: 0 0 var(--s-2); color: var(--l-ink-2); font-size: var(--t-2); font-weight: var(--w-medium); }
+/* 分组之间比组内多留一档：组头靠近它下面的键，不靠近上一组 / More room between groups than inside one, so a group head sits with its keys, not the group above */
+.help__keys + .help__keys { margin-top: var(--s-3); }
 /* 键位列定宽：几组快捷键的说明从同一条竖线开始，不各自按最宽的键对齐 / A fixed key column, so every group's descriptions start on one vertical line rather than each aligning to its own widest key */
 .help__keys dl { display: grid; grid-template-columns: 6rem minmax(0, 1fr); align-items: center; gap: var(--s-1) var(--s-3); margin: 0; }
 .help__keys dt { display: flex; gap: 2px; }
@@ -1060,3 +1063,17 @@ body:has(.editor:not(.editor--inspector)) .toast-stack { bottom: calc(var(--edit
 @media (min-width: 641px) and (max-width: 860px) { .toast-stack { right: var(--s-6); width: min(360px, calc(100vw - var(--s-6) * 2)); } }
 /* 审计的动作是中文名：正文字；认不出的动作 id 才用等宽 / Audit actions are Chinese names in body text; only an unknown action id stays mono */
 .audit-line .audit-action:not(.ui-mono) { font-family: var(--f-body); }
+
+/* 侧栏底部的三个弹层（通知、外观、账户）都从侧栏右边线外 8 打开、底边对齐底部那一行：以前各自贴着自己的按钮，通知盖住了侧栏底部
+   The sidebar foot's three popovers (notifications, appearance, account) all open 8 outside the sidebar's right edge, bottoms level with the foot row:
+   each used to hang off its own button, and notifications covered the sidebar foot */
+@media (min-width: 861px) {
+  .app-header__actions { position: relative; }
+  .app-header__actions > .notification-center, .app-header__actions > .theme-center, .app-header__actions > .account-center { position: static; }
+  .notification-popover, .theme-popover, .account-popover { top: auto; right: auto; bottom: 0; left: calc(100% + var(--s-3) + var(--s-2)); }
+}
+/* 手机顶栏的铃铛和外观按钮：看起来 36，点按区域补到 44（两个按钮隔 8，各补 4 正好不重叠） / The phone top bar's bell and appearance buttons look 36 with a 44 hit area (8 apart, 4 each way meets without overlap) */
+@media (max-width: 640px) {
+  .header-button { position: relative; }
+  .header-button::before { position: absolute; inset: calc(min(0px, (100% - var(--h-touch)) / 2)); content: ''; }
+}

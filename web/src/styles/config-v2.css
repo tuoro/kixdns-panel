@@ -25,7 +25,7 @@ body { background: var(--l-canvas); }
 .cfg__whole > h2 { margin: 0; color: var(--l-ink); font-size: var(--t-4); font-weight: var(--w-bold); white-space: nowrap; }
 .cfg__nav--json { border-bottom: 0; }
 .cfg__tools .ui-seg { margin-right: var(--s-2); }
-.cfg__head-action { margin-left: var(--s-1); padding: 0; border: 0; background: none; color: var(--l-ink); font: inherit; font-weight: var(--w-medium); text-decoration: underline; text-decoration-color: var(--l-line-strong); text-underline-offset: 3px; cursor: pointer; }
+.cfg__head-action { margin-left: var(--s-1); padding: 0; border: 0; background: none; color: var(--l-ink); font: inherit; font-weight: var(--w-medium); text-decoration: underline; text-decoration-color: var(--l-ink-3); text-underline-offset: 3px; cursor: pointer; }
 .cfg__head-action:hover { text-decoration-color: var(--l-ink); }
 .cfg__spin { width: var(--size-icon-sm); height: var(--size-icon-sm); }
 .cfg__status-sk { display: inline-block; width: 9rem; }
@@ -602,6 +602,8 @@ body { background: var(--l-canvas); }
 /* 表头里的说明是说明文字，不是占位：用次要灰 / A table header's note is description, not placeholder: the secondary grey */
 /* 表头里的说明句比列名淡一档 / The sentence in a table header sits a step lighter than the column labels */
 .rlist__order { margin-left: var(--s-3); color: var(--l-ink-3); }
+/* 1024 以下表头放不下这句，会被截成「从上往下判断，…」；帮助里有同样的话 / Below 1024 the header cannot fit the note and cut it to 「从上往下判断，…」; the help says the same */
+@media (max-width: 1023px) { .rlist__head .rlist__order { display: none; } }
 /* 浅灰底上的灰字深一级（对比度过 4.5）：胶囊动词、协议标签 / Grey text on a tinted fill takes the darker step (above 4.5:1): pill verbs, protocol tags */
 .opill__verb, .opill--block .opill__verb, .opill--pass .opill__verb { color: var(--l-ink-2); }
 /* 没起名字的规则标题和有名字的同一个字重，扫一列不会忽轻忽重 / Unnamed rule titles take the named ones' weight, so the column never flickers */
@@ -993,6 +995,7 @@ body { background: var(--l-canvas); }
 }
 .editor--inspector { max-width: none; gap: 0; padding-bottom: 0; background: var(--l-surface); border-radius: var(--r-3); box-shadow: var(--shadow-card); }
 .editor--inspector .editor__title { padding: var(--s-4) var(--s-5) 0; gap: var(--s-3); }
+.editor__name { text-overflow: ellipsis; }
 .editor--inspector .editor__name { flex: 1 1 auto; width: auto; margin-left: calc(var(--s-2) * -1); font-size: var(--t-4); font-weight: var(--w-bold); }
 .editor--inspector .editor__enabled small { display: none; }
 .editor__meta { margin: var(--s-1) 0 0; padding: 0 var(--s-5); color: var(--l-ink-3); font-size: var(--t-2); font-variant-numeric: tabular-nums; }
@@ -1036,6 +1039,18 @@ body { background: var(--l-canvas); }
 .editor--inspector .cform__row > .ui-select { height: var(--h-sm); min-height: var(--h-sm); }
 .editor--inspector .cform__row > .ui-select select { min-height: calc(var(--h-sm) - 2px); font-size: var(--t-2); }
 .editor--inspector .cform__match { font-size: var(--t-2); }
+/* 整页编辑的条件表窄于 40rem 时（侧栏版 900、1024 的主栏）照面板的排法两行：值不再挤在 230 宽里
+   The full-page editor's condition table, when narrower than 40rem (the main column at 900 and 1024 with the sidebar), takes the inspector's two-line rows so values are no longer squeezed into 230 */
+.editor:not(.editor--inspector) .cform { container: cform / inline-size; }
+@container cform (max-width: 40rem) {
+  .cform__row { grid-template-columns: minmax(0, 1fr) auto var(--h-md); grid-template-areas: "label op x" "ctl ctl ctl"; row-gap: var(--s-1); align-items: center; }
+  .cform__row > .cform__label { grid-area: label; padding-top: 0; }
+  .cform__row > .cform__op { grid-area: op; }
+  .cform__row > .cform__label.cform__op { padding-top: 0; }
+  .cform__row > .cform__ctl { grid-area: ctl; }
+  .cform__row > .cform__x { grid-area: x; }
+  .cform__row > span:empty { display: none; }
+}
 .editor--inspector .cform__group { margin-inline: calc(var(--s-3) * -1); }
 /* 结果：五个选项挤成一个分段 / Outcome: the five options become one segmented control */
 /* 分段和下面的下拉框一样撑满面板，右边线对齐（宽屏的 justify-self: start 在这里不要） / The segmented control spans the panel like the select below it, so their right edges meet (the wide layout's justify-self: start is dropped here) */
@@ -1808,3 +1823,10 @@ body { background: var(--l-canvas); }
   .cfg__savebar.ui-savebar { flex-wrap: wrap; }
   .cfg__savebar:not(.ui-savebar--err) .ui-savebar__status { flex: 1 1 100%; }
 }
+
+/* 成段的说明文字最小 12：设置的说明、抽屉里字段下面的提示、测试域名的说明。11 号只留给一两个字的小标签
+   Explanatory sentences are at least 12: setting notes, the hints under drawer fields, the tester's note. 11 stays for one- or two-word labels */
+@media (min-width: 641px) {
+  .ui-setrow__label small, .pfield__hint, .tester__hint { font-size: var(--t-2); }
+}
+

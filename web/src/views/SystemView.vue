@@ -94,6 +94,12 @@ const unusualServiceState = computed(() => {
 })
 const installed = computed(() => kernel.value?.binary_present === true)
 const activeVersion = computed(() => kernel.value?.active ?? null)
+// 大字只写编号，「构建」「构建产物」作小标签放在上面；Release 写标签本身 / The big figure is the number alone, with 构建 or 构建产物 as a small label above; a Release shows its tag
+const versionLead = computed(() => {
+  const text = formatKixdnsVersion(activeVersion.value)
+  const match = /^(构建产物|构建) (#\d+)$/.exec(text)
+  return match ? { label: match[1]!, value: match[2]! } : { label: activeVersion.value?.source === 'release' ? '版本' : '', value: text }
+})
 const loadError = computed(() => [serviceError.value, kernelError.value].filter(Boolean).join('；'))
 
 function buildTime(value: string | null): string {
@@ -595,7 +601,7 @@ onBeforeUnmount(() => {
         <div class="system-card__main">
           <div v-if="loadingKernel && !kernel" class="sk system-skeleton-panel" role="status" aria-label="读取安装状态"></div>
           <template v-else-if="kernel">
-            <p class="install-version">{{ installed ? formatKixdnsVersion(activeVersion) : '尚未安装' }}</p>
+            <p class="install-version"><span v-if="installed && versionLead.label" class="install-version__label">{{ versionLead.label }}</span><b>{{ installed ? versionLead.value : '尚未安装' }}</b></p>
             <p v-if="installed" class="ui-dots install-meta">
               <span>补丁集 <span class="ui-num">{{ activeVersion?.patchset ? `p${activeVersion.patchset}${activeVersion.dependency_revision ? `-r${activeVersion.dependency_revision}` : ''}` : '未记录' }}</span></span>
               <span>控制协议 <span class="ui-num">{{ activeVersion?.control_protocol ? `v${activeVersion.control_protocol}` : '未记录' }}</span></span>
@@ -698,7 +704,11 @@ onBeforeUnmount(() => {
 .system-page .system-check-failed { margin-top: var(--s-3); padding-bottom: 0; }
 
 /* 当前安装：大数字 32 · 700 是这张卡的主角，附注一行，哈希在细线下面 / The installed build: the 32 · 700 figure leads the card, one line of notes, the hashes under a hairline */
-.system-page .install-version { margin: var(--s-2) 0 0; font-family: var(--f-display); font-size: var(--t-6); font-weight: var(--w-heavy); font-variant-numeric: tabular-nums; letter-spacing: -.02em; line-height: var(--lh-tight); overflow-wrap: anywhere; }
+.system-page .install-version { display: grid; gap: var(--s-1); margin: var(--s-2) 0 0; }
+/* 「构建」是小标签，大字只写编号：360 宽、侧栏版 900 宽时「构建 #30231271280」整串放大字会折成两行（和概览的「配置版本 / #18」同一种写法）
+   「构建」 is a small label and the big figure is the number alone: as one big string 「构建 #30231271280」 folded onto two lines at 360 and at 900 (the overview's 配置版本 / #18 pattern) */
+.system-page .install-version__label { color: var(--l-ink-3); font-size: var(--t-1); }
+.system-page .install-version > b { font-family: var(--f-display); font-size: var(--t-6); font-weight: var(--w-heavy); font-variant-numeric: tabular-nums; letter-spacing: -.02em; line-height: var(--lh-tight); white-space: nowrap; }
 .system-page .install-meta { margin-top: var(--s-2); color: var(--l-ink-2); font-size: var(--t-2); }
 .system-page .install-hashes { margin-top: var(--s-4); padding-top: var(--s-3); border-top: 1px solid var(--l-hair); }
 .system-page .system-skeleton-panel { margin-top: var(--s-2); }

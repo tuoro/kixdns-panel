@@ -143,7 +143,8 @@ test('内核可更新到最新并回到上一个 @responsive', async ({ page }) 
   await acceptConfirm(page)
   await expect(page.locator('.toast--success').filter({ hasText: '内核已更新并通过健康检查' })).toBeVisible()
   await expect(kernelRow.locator('.update-row__from-to')).toContainText('已是最新')
-  await expect(runtime.locator('.install-version')).toHaveText('构建 #30235703570')
+  await expect(runtime.locator('.install-version b')).toHaveText('#30235703570')
+  await expect(runtime.locator('.install-version__label')).toHaveText('构建')
   // 上一个版本写在「当前安装」卡的底行，回退按钮就在它旁边 / The previous build sits on the installed card's bottom row, with the rollback button beside it
   await expect(runtime.locator('.install-previous')).toContainText('上一个版本 构建 #30231271280')
 
@@ -157,7 +158,7 @@ test('内核可更新到最新并回到上一个 @responsive', async ({ page }) 
   await acceptConfirm(page)
   await expect(page.locator('.toast--success').filter({ hasText: '服务仍停止，下次启动时生效' })).toBeVisible()
   await expect(page.locator('.service-line')).toContainText('已停止')
-  await expect(runtime.locator('.install-version')).toHaveText('构建 #30231271280')
+  await expect(runtime.locator('.install-version b')).toHaveText('#30231271280')
   await expect(runtime.locator('.install-previous')).toContainText('上一个版本 构建 #30235703570')
 })
 

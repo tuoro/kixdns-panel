@@ -144,6 +144,7 @@ a.ui-btn { text-decoration: none; }
 .ui-seg { position: relative; display: inline-flex; padding: 2px; border-radius: var(--r-2); background: var(--l-sunk); }
 /* 常规分段是 36 高的控件，字用控件角色的 14；13 只给小号（规范第 1 节、5.1，审计第三轮 S4）
    A regular segment is a 36 control, so its labels take the control role's 14; 13 is for the small variant only (spec section 1, 5.1, audit round 3, S4) */
+.ui-seg__opt { font-variant-numeric: tabular-nums; }
 .ui-seg__opt { position: relative; z-index: 1; min-height: calc(var(--h-md) - 4px); display: inline-flex; align-items: center; justify-content: center; gap: var(--s-1); padding: 0 var(--s-3); border: 0; border-radius: var(--r-1); background: transparent; color: var(--l-ink-2); font-size: var(--t-3); font-weight: var(--w-medium); white-space: nowrap; cursor: pointer; transition: color var(--m-quick) var(--ease-out); }
 .ui-seg__opt[aria-pressed="true"] { color: var(--l-ink); }
 .ui-seg__opt:disabled { cursor: not-allowed; opacity: .42; }

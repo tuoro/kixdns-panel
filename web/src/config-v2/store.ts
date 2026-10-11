@@ -106,6 +106,8 @@ export function discardWithUndo(onlyUnfolded?: string): void {
   useToast().undoable(`已放弃 ${count} 处修改`, () => replaceModel(JSON.parse(draft) as Model))
 }
 export function resetTo(next: Model): void { replaceModel(next); markApplied() }
+/** 只换「对照的那份」（已保存的配置），草稿不动：文件在别处变了、草稿里还有没保存的修改时用 / Replace only the baseline (the saved config) and leave the draft: for when the file changed while the draft still holds unsaved edits */
+export function rebaseApplied(next: Model): void { applied.value = JSON.stringify(next) }
 // 从配置文件的内容读进来，当作已保存的那份 / Read from a config file's content and take it as the saved one
 export function loadContent(content: Record<string, unknown>, prev?: Model): ReadResult {
   const result = readConfig(content, prev)
