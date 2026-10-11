@@ -31,7 +31,8 @@ const searchInput = ref<HTMLInputElement>()
 // Groups on the left and one group's settings on the right, the same layout as 解析编排's list and
 // inspector; a phone shows the group list first and opens one group at a time.
 const current = ref(props.initialGroup || (props.lead?.id ?? 'network'))
-const mobileOpen = ref(false)
+// 从「去基础设置」过来时指名了一组：手机上直接打开那一组，不停在目录上 / Arriving from 去基础设置 names a group: on phones that group opens directly instead of the contents list
+const mobileOpen = ref(Boolean(props.initialGroup))
 const mobileViewport = window.matchMedia('(max-width: 860px)')
 const isMobile = ref(mobileViewport.matches)
 function resize(event: MediaQueryListEvent): void { isMobile.value = event.matches }

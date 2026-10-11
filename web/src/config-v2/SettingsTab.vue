@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 import SettingsEditor from '../components/config/SettingsEditor.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
@@ -12,6 +12,8 @@ import { runtimeCapabilities } from './useConfigDocument'
 // The settings tab is today's page (listeners, connections, cache, stale cache, flow control, stats, Geo data) with a 规则默认值
 // group in front. 默认上游 no longer appears on its own: 其余请求 decides it, written as that group's addresses.
 const capabilities = computed(() => runtimeCapabilities.value)
+// 指名的那一组只用这一次：下次打开基础设置照常从头开始 / The named group is used once: the next visit to the settings starts as usual
+onMounted(() => { ui.settingsGroup = '' })
 // 有高级规则时「默认上游」照原样留着、能改：高级规则里的「允许」还按它走 / With advanced rules 默认上游 stays visible and editable: their allow still uses it
 const hidden = computed(() => ([...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].some((r) => r.raw) || model.rawPipelines?.length ? [] : ['default_upstream']))
 const blockItems = [{ value: 'NXDOMAIN', label: 'NXDOMAIN' }, { value: 'REFUSED', label: 'REFUSED' }, { value: 'zero', label: '空地址' }]

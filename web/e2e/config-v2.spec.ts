@@ -176,3 +176,21 @@ test('KixDNS 停着时存成待应用：页头说「KixDNS 已停止 · 版本 #
   await expect(status).toContainText(/KixDNS 已停止\s*·?\s*版本 #\d+ 待应用/)
   await expect(status.getByRole('button', { name: '启动', exact: true })).toBeVisible()
 })
+
+// 「去基础设置」指名了出问题的那一组：手机上直接打开那一组，不停在目录上；只用这一次，下次进基础设置照常从目录开始
+// 去基础设置 names the group with the problem: on phones that group opens directly instead of the contents list; once only, so the next visit starts at the list as usual
+test('手机上「去基础设置」直接打开指名的那一组，只用一次 @responsive', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'mobile', '只看手机的目录')
+  await page.goto('/config')
+  await expect(page.locator('.rcard').first()).toBeVisible()
+  await page.evaluate(async () => {
+    const { ui } = await import('/src/config-v2/store.ts')
+    ui.settingsGroup = 'statistics'
+  })
+  await page.getByRole('tab', { name: '基础设置', exact: true }).click()
+  await expect(page.locator('.settings')).toHaveClass(/settings--open/)
+  await expect(page.getByRole('button', { name: '全部设置' })).toBeVisible()
+  await page.getByRole('tab', { name: '规则', exact: true }).click()
+  await page.getByRole('tab', { name: '基础设置', exact: true }).click()
+  await expect(page.locator('.settings')).not.toHaveClass(/settings--open/)
+})
