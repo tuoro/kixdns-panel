@@ -169,9 +169,9 @@ const notice = computed<Notice | null>(() => {
   if (importReport.value && !reportOpen.value && importReport.value.stats.raw) return { tone: 'off', text: `这份配置是按内核格式读进来的，${importReport.value.stats.raw} 条规则原样保留为高级规则。`, action: '查看导入说明', run: () => { reportOpen.value = true } }
   // 没运行、连不上时页头已经说了，功能列表拿不到是它的结果，不另起一条 / When stopped or unreachable the header says so; the missing feature list follows from it
   if (capabilityError.value && !runtimeStopped.value && !runtimeUnavailable.value) return { tone: 'off', text: 'KixDNS 没有报告它支持哪些功能：新功能先按不支持处理，保存后先存成待应用版本。' }
-  if (!canCname.value && cnameInUse.value && !capabilityError.value) return { tone: 'warn', text: '当前内核不支持 CNAME 回答：KixDNS 不会接受带 CNAME 的配置。把回答域名的域名映射和规则改成 IP，或者更新内核。' }
+  if (!canCname.value && cnameInUse.value && !capabilityError.value) return { tone: 'warn', text: '当前内核不支持 CNAME 回答：KixDNS 不会接受带 CNAME 的配置。把回答写成域名的映射和规则改成 IP，或者更新内核。' }
   // KixDNS 不接受带着它不支持的设置的配置：说清这一点和两条出路，按钮直接去基础设置 / KixDNS refuses a config carrying settings it does not support: say so with the two ways out, the button going straight to the settings
-  if (unsupportedFields.value.length) { const these = unsupportedFields.value.length > 1 ? '这几项' : '这一项'; return { tone: 'warn', text: `当前内核不支持：${unsupportedFields.value.join('、')}。只要配置里写着${these}，KixDNS 就不接受：在基础设置里把${these}从配置里去掉，或者更新到支持它的内核。`, action: section.value === 'settings' ? undefined : '去基础设置', run: () => { ui.settingsGroup = unsupportedSection.value; setTab('settings') } } }
+  if (unsupportedFields.value.length) { const many = unsupportedFields.value.length > 1; return { tone: 'warn', text: `当前内核不支持：${unsupportedFields.value.join('、')}。配置里只要写着${many ? '它们' : '这一项'}（关着也算），KixDNS 就不接受：在基础设置里点${many ? '每一项' : '它'}旁边的「从配置里去掉」，或者更新内核。`, action: section.value === 'settings' ? undefined : '去基础设置', run: () => { ui.settingsGroup = unsupportedSection.value; setTab('settings') } } }
   return null
 })
 function stripPrefix(): void {

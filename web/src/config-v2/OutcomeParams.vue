@@ -55,7 +55,7 @@ const answerProblem = computed(() => {
       <p v-if="showErrors && answerProblem" :id="answerErrId" class="ui-field-error">{{ answerProblem }}</p>
 
       <p v-else class="oparams__note">{{ modelValue.kind === 'ip' ? '几个地址用逗号隔开，按查询类型回 A 或 AAAA，TTL 固定 300 秒' : modelValue.kind === 'cname' ? '回答一条 CNAME，客户端再去解析目标域名' : '常用于 CH 类的 version.bind 这类查询' }}</p>
-      <p v-if="!canCname" class="oparams__note is-warn">当前 KixDNS 不支持固定 CNAME，更新或切换内核后才能选{{ modelValue.kind === 'cname' ? '；这里已经选了，保存时会被内核拒绝' : '' }}</p>
+      <p v-if="!canCname" class="oparams__note is-warn">当前内核不支持 CNAME 回答，更新内核后才能选{{ modelValue.kind === 'cname' ? '；这条选了 CNAME，改成 IP 或 TXT 才能保存' : '' }}</p>
     </template>
     <template v-else-if="modelValue.type === 'group'">
       <UiSelect v-if="ruleGroupOptions.length" class="oparams__main" :model-value="modelValue.group" :options="ruleGroupOptions" :label="`${label}：规则组`" @update:model-value="set({ group: $event })" />

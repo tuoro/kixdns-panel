@@ -51,7 +51,7 @@ impl fmt::Display for UnsupportedConfigFields {
         }
         if self.cname {
             parts.push(
-                "这个内核不支持 CNAME 回答：把回答域名的域名映射和规则改成 IP，或者换用支持它的内核"
+                "这个内核不支持 CNAME 回答：把回答写成域名的映射和规则改成 IP，或者换用支持它的内核"
                     .to_owned(),
             );
         }

@@ -26,7 +26,7 @@ function targetProblem(target: string): string | null {
   const t = target.trim()
   if (!t) return '填要回答的 IP 或域名'
   if (splitList(t).every(isIp)) return null
-  if (isDomain(t)) return canCname.value ? null : '当前 KixDNS 不支持固定 CNAME，回答只能写 IP'
+  if (isDomain(t)) return canCname.value ? null : '当前内核不支持 CNAME 回答，这里只能写 IP'
   return '回答写成 IP（几个用逗号隔开）或一个域名'
 }
 function problem(domain: string, target: string, self: number | null): string | null {

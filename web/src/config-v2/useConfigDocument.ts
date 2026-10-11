@@ -57,6 +57,14 @@ export const unsupportedSection = computed(() => SETTING_SECTIONS.find((s) => s.
 export const deferSave = computed(() => runtimeStopped.value || runtimeUnavailable.value || Boolean(capabilityError.value))
 export const fileDiffers = computed(() => !hasPending.value && !hasApplyFailure.value && doc.value?.runtime.status === 'different')
 // 草稿里有内核不支持的东西时，现在应用 / 重试应用也只会被拒：不给这两个按钮 / With something the kernel does not support in the draft, 现在应用 and 重试应用 would only be refused: neither is offered
+// 被挡住时按一下说什么：设置要从配置里去掉，CNAME 要改成 IP / What a press says while blocked: settings come out of the config, CNAME becomes an IP
+export const blockedHint = computed(() => {
+  const settings = blockedFields.value.filter((field) => field !== 'CNAME 回答')
+  const cname = settings.length < blockedFields.value.length
+  if (!settings.length) return '当前内核不支持 CNAME 回答，先改成 IP 再保存'
+  if (!cname) return `当前内核不支持：${settings.join('、')}，先从配置里去掉再保存`
+  return `当前内核不支持：${blockedFields.value.join('、')}。先把设置从配置里去掉、CNAME 改成 IP，再保存`
+})
 export const canApplyNow = computed(() => (hasPending.value || hasApplyFailure.value || fileDiffers.value) && !deferSave.value && blockedFields.value.length === 0)
 export const canSave = computed(() => (dirty.value || canApplyNow.value) && blockedFields.value.length === 0)
 
@@ -276,7 +284,7 @@ function applyResultState(result: ConfigApplyResult): 'applied' | 'pending' {
 export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
   if (busy.value || !doc.value) return
   // 被内核不支持的设置挡住时说一句，不默默不动 / Blocked by unsupported settings: say so instead of doing nothing
-  if (blockedFields.value.length) { useToast().info(`当前内核不支持：${blockedFields.value.join('、')}，改好再保存`); return }
+  if (blockedFields.value.length) { useToast().info(blockedHint.value); return }
   if (!canSave.value) return
   const content = exportConfig(model)
   const sent = JSON.stringify(model)
