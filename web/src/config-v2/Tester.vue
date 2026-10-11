@@ -70,8 +70,12 @@ async function run(): Promise<void> {
 }
 const answers = computed(() => (result.value?.answers ?? []).map((raw) => parseDnsAnswer(raw)?.data ?? raw))
 const ok = computed(() => Boolean(result.value && isDnsSuccess(result.value.response_code)))
+// 规则直接拦下（执行路径里有「静态响应」）时说「拦截」，和列表里这条规则的写法一样；否则说回答了什么
+// When a rule blocks outright (a 静态响应 step in the path) the verdict says 拦截, as the rule reads in the list; otherwise it says what came back
+const blocked = computed(() => (result.value?.trace_supported ? result.value.trace : []).some((step) => step.stage === 'decision' && /^静态响应 /.test(step.label)))
 const verdict = computed(() => {
   if (!result.value) return ''
+  if (blocked.value && !answers.value.length) return `拦截 · ${responseCodeName(result.value.response_code)}`
   if (!ok.value) return `回答 ${responseCodeName(result.value.response_code)}`
   return answers.value.length ? `回答 ${answers.value.join('、')}` : '没有返回记录'
 })

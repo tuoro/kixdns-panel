@@ -251,10 +251,21 @@ function prefixed(parts: TextPart[]): TextPart[] {
   return parts.length ? [t(' · '), ...parts] : []
 }
 
-/** 去掉转发用的那条规则：它和所在的 Pipeline 同名，路径里上一步已经说了进了哪里 / Drop the forward pipelines' own rules: each is named after its pipeline, and the path already says where the request went */
+/**
+ * 去掉内部步骤：转发用的那条规则（和所在的 Pipeline 同名，路径里上一步已经说了进了哪里），以及跳进规则自带的转发 Pipeline、在那里查规则缓存——读者看到的是「命中规则 X，转发给 Y」
+ * Drop internal steps: the forward pipelines' own rules (each named after its pipeline, and the path already says where the request went), plus the jump into a
+ * rule's own forward pipeline and the rule-cache check there; the reader sees 「命中规则 X，转发给 Y」
+ */
 export function hidePlumbing(steps: DnsTraceStep[], names?: TraceNames | null): DnsTraceStep[] {
   if (!names) return steps
-  return steps.filter((step) => !(step.stage === 'rule' && names.plumbing(step.label, detailValue(step.detail, '管线'))))
+  const intoOwn = (step: DnsTraceStep): boolean => {
+    const target = step.stage === 'decision' ? /^跳转到管线 (.+)$/.exec(step.label)?.[1]
+      : step.stage === 'pipeline' && step.status === 'jump' ? /^.+? -> (.+)$/.exec(step.label)?.[1]
+        : step.stage === 'rule_cache' ? (/^命中管线 (.+) 的规则缓存$/.exec(step.label) ?? /^管线 (.+) 的规则缓存未命中$/.exec(step.label))?.[1]
+          : undefined
+    return target !== undefined && names.ownForward(target)
+  }
+  return steps.filter((step) => !(step.stage === 'rule' && names.plumbing(step.label, detailValue(step.detail, '管线'))) && !intoOwn(step))
 }
 
 export type TraceRow =

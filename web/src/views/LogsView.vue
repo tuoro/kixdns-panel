@@ -182,6 +182,7 @@ function failed(action: string): boolean {
 const ACTION_NAMES: Record<string, string> = {
   'auth.login': '登录',
   'auth.setup': '创建管理员',
+  'auth.reset_admin': '重置管理员',
   'config.save': '保存配置',
   'config.restore': '恢复配置版本',
   'config.auto_rollback': '自动回滚配置',
@@ -396,11 +397,12 @@ onBeforeUnmount(() => window.clearInterval(timer))
          The header: a row of facts under the title (source, newest line, levels), all from the data; a skeleton bar until the first page lands -->
     <UiPageHeader title="日志">
       <template #meta>
+        <!-- 来源在一个页签里不会变（页签已经说了），不再单列 / The source never changes within a tab (the tab already says it), so it is no longer a fact -->
         <div v-if="factsReady" class="ui-facts logs-facts">
-          <div><span class="ui-lbl">来源</span><b>{{ mode === 'audit' ? '面板' : 'kixdns' }}</b></div>
           <div><span class="ui-lbl">最近一条</span><b>{{ newest ?? '—' }}</b></div>
           <div v-if="mode === 'runtime'"><span class="ui-lbl">级别</span><b><UiDotText v-if="levelFacts.length" :parts="levelFacts" /><template v-else>{{ entries.length ? '无' : '—' }}</template></b></div>
         </div>
+        <span v-if="factsReady" class="ui-ph__lead ui-ph__phone"><UiDotText :parts="[`最近一条 ${newest ?? '—'}`, ...(mode === 'runtime' ? levelFacts : [])]" /></span>
         <span v-else class="sk logs-skeleton-meta" role="status" aria-label="读取日志"></span>
       </template>
     </UiPageHeader>
@@ -469,7 +471,7 @@ onBeforeUnmount(() => window.clearInterval(timer))
           </div>
           <button v-if="runtimeCursor !== null" class="log-more" type="button" :disabled="requesting" @click="loadOlder"><RefreshCw :size="14" :class="{ spin: loadingOlder }" aria-hidden="true" />{{ loadingOlder ? '正在加载' : '加载更早日志' }}</button>
           <!-- 筛出来是空的和根本没有日志是两回事，说法分开 / Nothing matching a filter and no log at all are different things, said differently -->
-          <UiEmpty v-if="filtered.length === 0 && !loadError" :icon="ScrollText" :title="runtimeFiltered ? '没有符合条件的日志' : 'KixDNS 还没有写过日志'" :desc="runtimeFiltered ? '清空搜索，或把级别切回「全部」' : '启动、重载配置和出错时，KixDNS 会在这里留下记录。'" />
+          <UiEmpty v-if="filtered.length === 0 && !loadError" :icon="ScrollText" :title="runtimeFiltered ? '没有符合条件的日志' : 'KixDNS 还没有写过日志'" :desc="runtimeFiltered ? '清空搜索，或把级别切回「全部」' : '启动、应用配置和出错时，KixDNS 会在这里留下记录。'" />
         </template>
       </div>
       <div v-else class="log-stream">
@@ -549,6 +551,14 @@ onBeforeUnmount(() => window.clearInterval(timer))
   .logs-page .audit-line .audit-action { color: var(--l-ink); font-size: var(--t-3); }
   .logs-page .audit-line p { display: flex; align-items: center; gap: var(--s-2); color: var(--l-ink-2); font-size: var(--t-3); }
 }
+/* 641–1024：工具行一行排下（搜索框让出宽度，不把两个图标按钮挤到第二行）；审计列收紧，详情拿到大半行
+   641–1024: the toolbar stays on one row (the search gives way instead of pushing the two icon buttons onto a second row); audit columns tighten so the detail gets most of the row */
+@media (min-width: 641px) {
+  .logs-page .log-console > .log-toolbar { flex-wrap: nowrap; }
+}
+@media (min-width: 641px) and (max-width: 1024px) {
+  .logs-page .log-head--audit, .logs-page .audit-line { grid-template-columns: 112px 64px 10rem minmax(0, 1fr); column-gap: var(--s-4); }
+}
 
 /* 手机：工具行第一行搜索加图标按钮、第二行分段（六个类别三列两行）；没有列名行；
    运行日志一条两行：时间、来源、行尾的级别点，然后消息；审计一条两行：动作和时间，然后「操作者 · 详情」
@@ -575,7 +585,7 @@ onBeforeUnmount(() => window.clearInterval(timer))
   .logs-page .audit-line p > .ui-tag { margin-right: var(--s-2); vertical-align: text-bottom; }
   .logs-page .log-skeleton { padding-inline: var(--s-4); }
   .logs-page .log-skeleton > .sk { height: calc(var(--log-line) * 2); }
-  .logs-page .logs-facts { gap: var(--s-3) var(--s-5); }
-  .logs-page .logs-facts > div { flex: 0 0 calc(50% - var(--s-5) / 2); }
+  /* 手机页头只有一行状态，占位也是一行 / The phone header is one status line, so is its placeholder */
+  .logs-page .logs-skeleton-meta { height: calc(var(--t-2) * var(--lh-base)); }
 }
 </style>

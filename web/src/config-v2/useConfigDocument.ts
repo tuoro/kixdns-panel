@@ -114,8 +114,14 @@ export const deferNote = computed(() => {
 })
 
 // ---------- 错误的说法 / wording of errors ----------
+// 控制接口连不上：KixDNS 停了（面板还没发现） / The control socket is gone: KixDNS has stopped (before the panel noticed)
+const STOPPED = /No such file|os error 2|控制接口.*不可用|控制接口.*未启动/i
+const stoppedError = (error: unknown) => STOPPED.test(errorMessage(error))
+// 保存或校验时才发现停了：标题说停了，不说「没有通过校验」；草稿不动，读一次运行状态，保存键换成「保存为待应用」
+// Found stopped while saving or validating: the title says so rather than 没有通过校验; the draft stays, the runtime is re-read and the button becomes 保存为待应用
+const STOPPED_NOTE = '草稿还在，可以先存成待应用版本'
 export function friendlyRuntimeMessage(message: string): string {
-  if (/No such file|os error 2|控制接口.*不可用|控制接口.*未启动/i.test(message)) return 'KixDNS 已停止，保存后等它启动再应用'
+  if (STOPPED.test(message)) return 'KixDNS 已停止，保存后等它启动再应用'
   return message.replace(/^KixDNS\s*拒绝(?:操作|了这份配置|该配置)[：:，,]\s*/, '') || message
 }
 const friendlyRuntimeError = (error: unknown) => friendlyRuntimeMessage(errorMessage(error))
@@ -193,8 +199,10 @@ export async function validate(): Promise<ValidationResult | null> {
     finishStage('idle')
     return validation.value
   } catch (error) {
-    verdict.value = '没有通过校验'
-    finishStage('failed', friendlyRuntimeError(error))
+    const stopped = stoppedError(error)
+    verdict.value = stopped ? 'KixDNS 已停止' : '没有通过校验'
+    finishStage('failed', stopped ? STOPPED_NOTE : friendlyRuntimeError(error))
+    if (stopped) await refreshRuntime().catch(() => undefined)
     return null
   }
 }
@@ -230,11 +238,13 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     finishStage('done', text)
   } catch (error) {
     const reason = friendlyRuntimeError(error)
-    verdict.value = step === 'validating' ? '没有通过校验' : '没有保存成功'
+    const stopped = stoppedError(error)
+    verdict.value = stopped ? 'KixDNS 已停止' : step === 'validating' ? '没有通过校验' : '没有保存成功'
     conflict.value = isConflict(error)
-    finishStage('failed', conflict.value ? '这份配置在别处改过了，现在的草稿是基于旧版本的' : reason)
+    finishStage('failed', conflict.value ? '这份配置在别处改过了，现在的草稿是基于旧版本的' : stopped ? STOPPED_NOTE : reason)
     if (shouldRefreshAfterSaveError(error)) await load({ quiet: true })
-    if (from === 'apply' && !hasApplyFailure.value) applyError.value = `${step === 'validating' ? '磁盘上的配置没有通过校验' : '没有应用成功'}\n${reason}`
+    else if (stopped) await refreshRuntime().catch(() => undefined)
+    if (from === 'apply' && !hasApplyFailure.value) applyError.value = stopped ? 'KixDNS 已停止\n启动后自动应用待应用的版本' : `${step === 'validating' ? '磁盘上的配置没有通过校验' : '没有应用成功'}\n${reason}`
   }
 }
 export const applyNow = () => void save('apply')

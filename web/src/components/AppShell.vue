@@ -4,6 +4,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Compon
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { useHelp } from '../composables/useHelp'
 import { useSession } from '../composables/useSession'
+import ConnectionBanner from './ConnectionBanner.vue'
 import HelpDrawer from './HelpDrawer.vue'
 import type { HelpPage } from '../help/topics'
 import { useToast } from '../composables/useToast'
@@ -34,7 +35,7 @@ const themeButton = ref<HTMLButtonElement | null>(null)
 const THEME_ICONS: Record<ThemeChoice, Component> = { system: Monitor, light: Sun, dark: Moon }
 const themeIcon = computed(() => THEME_ICONS[theme.choice.value])
 const signingOut = ref(false)
-const title = computed(() => route.meta.title ?? 'KixDNS Panel')
+const title = computed(() => route.meta.title ?? 'KixDNS 面板')
 // 侧栏底部的版本行：面板版本，有更新时上面多一行 / The sidebar's version line: the panel version, with an update line above it when one is available
 const panelVersion = computed(() => notifications.status.value?.panel?.current_version ?? '')
 const updateLine = computed(() => {
@@ -233,6 +234,7 @@ onBeforeUnmount(() => {
       </div>
     </header>
     <div class="workspace">
+      <ConnectionBanner />
       <main id="main-content" class="workspace__main" tabindex="-1">
         <div v-if="!hasPageHeading" class="page-heading"><h1>{{ title }}</h1></div>
         <RouterView />

@@ -64,7 +64,7 @@ async function submit(): Promise<void> {
            这块是静态文案，不含任何机器状态，所以不存在登录页那个暴露问题。 -->
       <div v-if="isSetup" class="auth-next">
         <p class="auth-next__promise">面板不会覆盖你已有的 KixDNS 配置。</p>
-        <p>写好规则后点「保存并热加载」才会生效。</p>
+        <p>写好规则后点「保存并应用」才会生效。</p>
       </div>
       <div class="auth-security">
         <ShieldCheck :size="14" />

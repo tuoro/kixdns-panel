@@ -137,7 +137,7 @@ function runImport(): void {
       </form>
       <UiEmpty v-if="!model.mappings.length" :icon="FileInput" title="还没有域名映射" desc="比如把 nas.home.arpa 指到 NAS 的内网地址。" />
       <template v-else>
-        <div class="rw__head" aria-hidden="true"><span>域名<span class="rlist__order">先于所有规则生效，连同子域名；从上往下第一条命中的生效</span></span><span>回答</span><span>类型</span><span>启用</span><span></span></div>
+        <div class="rw__head" aria-hidden="true"><span>域名<span class="rlist__order">先于所有规则，连同子域名；第一条命中的生效</span></span><span>回答</span><span>类型</span><span>启用</span><span></span></div>
         <ul>
           <li v-for="r in shown" :key="r.id" class="rw__row" :class="{ 'is-off': !r.enabled, 'is-editing': editing.id === r.id }" :data-rw="r.id">
             <template v-if="editing.id === r.id">

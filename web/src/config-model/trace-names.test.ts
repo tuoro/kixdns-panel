@@ -35,7 +35,7 @@ describe('执行路径里的内核名字找回配置页的名字', () => {
 
   it('面板自己生成的规则写成整句，上游组的转发规则算「转发用的」', () => {
     expect(names.matched('其余请求')).toBe('没有规则命中，按「其余请求」处理')
-    expect(names.matched('内网解析·其余')).toBe('规则组「内网解析」里没有规则命中，按其余请求处理')
+    expect(names.matched('内网解析·其余')).toBe('规则组「内网解析」里没有规则命中，按「其余请求」处理')
     expect(names.matched('域名映射 nas.home.arpa')).toBe('命中域名映射「nas.home.arpa」')
     expect(names.matched('公司内网')).toBeNull()
     const upstream = compile(model).pipelines.find((p) => p.rules.length === 1 && p.rules[0]!.name === p.id && !p.id.startsWith('rule-'))!

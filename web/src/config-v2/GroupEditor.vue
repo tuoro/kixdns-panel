@@ -5,7 +5,7 @@ import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import { detectProtocol, PROTOCOL_LABEL, POLLUTED_CIDRS, type Ecs, type Protocol, type UpstreamGroup } from '../config-model/model'
 import { useConfirm } from '../composables/useConfirm'
-import { groupUsers, model } from './store'
+import { groupUsers, model, trackDialogEdits } from './store'
 
 // 上游组的抽屉：名称、地址（每个地址自动认协议，可改）、客户端子网、备用组。被用着的组不能删，说清楚是谁在用。
 // The upstream group drawer: name, addresses (protocol detected per address, overridable), client subnet, fallback.
@@ -17,6 +17,8 @@ const original = props.groupId ? model.groups.find((g) => g.id === props.groupId
 const draft = reactive<UpstreamGroup>(original ? JSON.parse(JSON.stringify(original)) as UpstreamGroup : { id: `u${Date.now().toString(36)}`, name: '', addresses: [{ address: '', protocol: 'auto' }], ecs: null, fallback: { group: '', onError: false, onPolluted: false } })
 // Esc、点遮罩、关闭、取消都先对照一下：改过就问一句，和规则编辑一样 / Esc, a scrim tap, × and 取消 compare first: ask if anything changed, as the rule editor does
 const initial = JSON.stringify(draft)
+// 抽屉开着、改过时离开页面或刷新也先问 / With the drawer open and edited, leaving the page or reloading asks first too
+trackDialogEdits('这个上游组', () => JSON.stringify(draft) !== initial)
 const confirm = useConfirm()
 async function leave(): Promise<void> {
   if (JSON.stringify(draft) !== initial && !(await confirm.ask({ title: '放弃这个上游组的修改', body: '刚才在这里改的内容不会写进草稿。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true }))) return

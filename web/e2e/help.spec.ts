@@ -81,7 +81,7 @@ test('快捷键：/ 聚焦搜索、n 新建规则、? 打开快捷键一览；�
   const drawer = page.getByRole('dialog', { name: '帮助', exact: true })
   await expect(drawer).toBeVisible()
   await expect(drawer.getByRole('heading', { name: '键盘快捷键' })).toBeVisible()
-  await expect(drawer.locator('.help__keys dd')).toContainText(['打开帮助和快捷键', '搜索规则', '新建规则', '保存并热加载（和保存条的按钮一样，会应用到正在运行的 KixDNS）'])
+  await expect(drawer.locator('.help__keys dd')).toContainText(['打开帮助和快捷键', '搜索规则', '新建规则', '保存并应用（和保存条的按钮一样，会应用到正在运行的 KixDNS）'])
 })
 
 test('账户菜单里的「键盘快捷键」在别的页也能打开一览', async ({ page }, testInfo) => {

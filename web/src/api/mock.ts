@@ -34,12 +34,12 @@ const now = Math.floor(Date.now() / 1000)
 let demoLogArrivals = 0
 const auditEvents = [
   { id: 18, actor: 'admin', action: 'config.save', detail: '版本 #18', created_at: now - 430 },
-  { id: 17, actor: 'admin', action: 'config.geo_data.sync', detail: '同步 Geo 数据：MMDB 1，GeoIP 0，GeoSite 1 个', created_at: now - 7200 },
-  { id: 16, actor: 'admin', action: 'kixdns.kernel.update', detail: '内核更新到 Run #30231271280', created_at: now - 86400 },
+  { id: 17, actor: 'admin', action: 'config.geo_data.sync', detail: 'MMDB 1 个、GeoIP 0 个、GeoSite 1 个', created_at: now - 7200 },
+  { id: 16, actor: 'admin', action: 'kixdns.kernel.update', detail: '更新到 构建 #30231271280', created_at: now - 86400 },
   { id: 15, actor: 'admin', action: 'service.restart', detail: '服务状态：正在运行', created_at: now - 86520 },
   { id: 14, actor: 'admin', action: 'diagnostic.dns', detail: '执行 A 查询', created_at: now - 172800 },
   { id: 13, actor: 'admin', action: 'auth.login', detail: '', created_at: now - 173100 },
-  { id: 12, actor: null, action: 'config.geo_data.schedule.apply', detail: '定时更新 Geo 数据并生成配置版本 #17', created_at: now - 604800 },
+  { id: 12, actor: null, action: 'config.geo_data.schedule.apply', detail: '生成配置版本 #17', created_at: now - 604800 },
 ]
 let config: ConfigDocument = {
   content: {
@@ -607,6 +607,12 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
     return { deleted_id: id } as DeleteConfigVersionResult as T
   }
   if (path === '/api/v1/config/validate') {
+    // kixdns:demo-validate-stopped：下一次校验撞上 KixDNS 刚停掉（控制接口不在了），演示保存时才发现停了的样子
+    // kixdns:demo-validate-stopped: the next validation finds KixDNS just stopped (the control socket is gone), showing a stop discovered while saving
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-validate-stopped') === 'true') {
+      localStorage.removeItem('kixdns:demo-validate-stopped')
+      throw new ApiError('KixDNS 控制接口不可用', 503, 'kixdns_unavailable')
+    }
     const content = JSON.parse(String(init?.body)) as Record<string, unknown>
     const pipelines = Array.isArray(content.pipelines) ? content.pipelines : []
     return { protocol_version: 1, valid: true, pipeline_count: pipelines.length, rule_count: 1 } as T

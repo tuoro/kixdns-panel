@@ -615,9 +615,10 @@ a.ui-btn { text-decoration: none; }
   .ui-ph--stack { grid-template-columns: minmax(0, 1fr); }
   .ui-ph--stack .ui-ph__actions { justify-content: stretch; }
   .ui-ph--stack .ui-ph__actions > * { flex: 1; }
-  /* 按钮看起来和桌面一样 36，点按区域上下补到 44；小号按钮在手机上也是 36、14 号字 / A button looks 36 as on desktop with its tap area grown to 44; a small one is 36 with 14px text on a phone too */
+  /* 按钮看起来和桌面一样 36，点按区域上下补到 44；小号按钮在手机上也是 36、14 号字。点按区域按内框的百分比算：按钮有 1px 边框，按 36 算只补到 42
+     A button looks 36 as on desktop with its tap area grown to 44; a small one is 36 with 14px text on a phone too. The tap area is a percentage of the inner box: the button has a 1px border, so counting from 36 reached only 42 */
   .ui-btn, .ui-btn--sm { position: relative; min-height: var(--h-md); }
-  .ui-btn::before { position: absolute; inset: calc((var(--h-touch) - var(--h-md)) / -2) 0; content: ''; }
+  .ui-btn::before { position: absolute; inset: calc(min(0px, (100% - var(--h-touch)) / 2)) 0; content: ''; }
   .ui-btn--sm { font-size: var(--t-3); }
   /* 图标按钮也是 36，和同一行的框一样高，点按区域四边补到 44 / An icon button is 36 too, as tall as the fields on its line, with its tap area grown to 44 on every side */
   .ui-icon-btn, .ui-icon-btn--sm { position: relative; width: var(--h-md); height: var(--h-md); }
@@ -677,7 +678,7 @@ a.ui-btn { text-decoration: none; }
      outweighs the line it sits beside */
   .ui-btn--inline { position: relative; min-height: var(--h-sm); font-size: var(--t-2); }
   .ui-btn--inline > svg { width: var(--size-icon-sm); height: var(--size-icon-sm); }
-  .ui-btn--inline::before { position: absolute; inset: calc((var(--h-touch) - var(--h-sm)) / -2) 0; content: ''; }
+  .ui-btn--inline::before { position: absolute; inset: calc(min(0px, (100% - var(--h-touch)) / 2)) 0; content: ''; }
   /* 手机上小号下拉框是 36、小号图标按钮是 44 的格子，框里的按钮跟框一样高，图标都用 16：一行里的箭头和 × 一样大（规范 5.1，审计第四轮 V6、T3）
      On a phone a small select is 36, a small icon button a 44 cell and an in-field button as tall as its field; all take 16 icons so every chevron and × on a line matches (spec 5.1, audit round 4, V6, T3) */
   .ui-select.ui-input--sm > svg { width: var(--size-icon); height: var(--size-icon); right: var(--s-3); }
@@ -936,4 +937,12 @@ button.ui-link { position: relative; min-height: 0; padding: 0; border: 0; backg
   .ui-btn--icon::before { position: absolute; inset: calc(var(--s-1) * -1); content: ''; }
   /* 开关本身 22 高，连着文字的整个 label 都能点 / The switch is 22 tall; the whole label with its text can be tapped */
   .ui-switch::before { position: absolute; inset: calc(var(--s-3) * -1) 0; content: ''; }
+}
+
+/* 页头事实：宽屏是「标签 / 值」一排，手机上换成一行状态（和配置页一样），省下首屏的高度
+   Header facts: a row of label / value pairs on wide screens, one status line on phones (as on the config page), saving first-screen height */
+.ui-ph__phone { display: none; }
+@media (max-width: 640px) {
+  .ui-ph__meta > .ui-facts { display: none; }
+  .ui-ph__phone { display: inline-flex; }
 }

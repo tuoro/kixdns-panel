@@ -24,6 +24,7 @@ import type {
 } from '../api/types'
 import StatusBanner from '../components/StatusBanner.vue'
 import UiPageHeader from '../components/ui/UiPageHeader.vue'
+import UiDotText from '../components/ui/UiDotText.vue'
 import UiTask, { type UiTaskState } from '../components/ui/UiTask.vue'
 import { useConfirm } from '../composables/useConfirm'
 import { useToast } from '../composables/useToast'
@@ -113,7 +114,7 @@ const kixdnsNotice = computed(() => updateStatus.value?.kixdns ?? null)
 const panelNotice = computed(() => updateStatus.value?.panel ?? null)
 
 function latestKixdnsVersion(): string {
-  return kixdnsNotice.value ? `Run #${kixdnsNotice.value.run_id}` : '未检查'
+  return kixdnsNotice.value ? `构建 #${kixdnsNotice.value.run_id}` : '未检查'
 }
 
 const kernelTaskState = computed<UiTaskState>(() => (kernelAction.value === 'update' ? 'run' : 'idle'))
@@ -251,7 +252,7 @@ async function deleteGithubToken(): Promise<void> {
   if (!githubTokenStatus.value?.configured || githubTokenBusy.value
     || !await confirm.ask({
       title: '删除 GitHub Token',
-      body: '版本与更新检查会退回匿名访问，受更严格的速率限制。随时可以重新填一个新的。',
+      body: '之后检查更新不带 Token，GitHub 每小时只让查 60 次。需要时再填一个就行。',
       confirmLabel: '删除 Token',
       destructive: true,
     })) return
@@ -331,7 +332,7 @@ async function startPanelUpdate(): Promise<void> {
   const version = panelNotice.value?.latest_version
   if (!version || !await confirm.ask({
     title: `在线更新面板到 v${version}`,
-    body: '面板会短暂重启，这期间面板暂时打不开。KixDNS 服务、配置和当前运行状态都保持不变。',
+    body: '更新时面板会重启，期间页面会提示连不上，重启完自动恢复。KixDNS 照常运行，配置不变。',
     confirmLabel: `更新到 v${version}`,
   })) return
   startingPanelUpdate.value = true
@@ -501,6 +502,7 @@ onBeforeUnmount(() => {
           <div v-if="panelVersion"><span class="ui-lbl">面板版本</span><b>{{ panelVersion }}</b></div>
           <div v-if="kernel"><span class="ui-lbl">内核</span><b>{{ installed ? formatKixdnsVersion(activeVersion) : '尚未安装' }}</b></div>
         </div>
+        <span v-if="service || kernel || panelVersion" class="ui-ph__lead ui-ph__phone"><span v-if="service" class="ui-dot" :class="{ 'ui-dot--off': !running }" aria-hidden="true"></span><UiDotText :parts="[...(service ? [running ? '运行中' : '已停止'] : []), ...(service?.main_pid ? [`PID ${service.main_pid}`] : []), ...(panelVersion ? [`面板 ${panelVersion}`] : []), ...(kernel ? [installed ? formatKixdnsVersion(activeVersion) : '内核尚未安装'] : [])]" /></span>
         <span v-else-if="loadingService" class="sk system-skeleton-meta" role="status" aria-label="读取服务状态"></span>
         <span v-else>服务状态暂不可用</span>
       </template>
@@ -523,7 +525,7 @@ onBeforeUnmount(() => {
       <div v-else-if="updateStatus" class="system-tasks" :class="{ 'is-refreshing': checkingUpdates }">
         <UiTask class="update-row" :state="kernelTaskState" title="KixDNS 内核" :started-at="kernelUpdateStartedAt" indeterminate>
           <template #icon><Cpu :size="16" /></template>
-          <template v-if="kixdnsNotice?.available" #title><span class="ui-tag ui-tag--strong">{{ kixdnsNotice.security_update ? '安全更新' : '有新版本' }}</span></template>
+          <template v-if="kixdnsNotice?.available" #title><span class="ui-tag ui-tag--strong">{{ kixdnsNotice.security_update ? '安全更新' : '有新构建' }}</span></template>
           <template #meta>
             <span class="update-row__from-to">
               <template v-if="kernelAction === 'update'">正在下载、校验并切换内核</template>
@@ -545,7 +547,7 @@ onBeforeUnmount(() => {
           </template>
         </UiTask>
 
-        <UiTask class="update-row" :state="panelTaskState" title="KixDNS Panel" :started-at="panelUpdateStartedAt" :progress="panelUpdateProgress">
+        <UiTask class="update-row" :state="panelTaskState" title="KixDNS 面板" :started-at="panelUpdateStartedAt" :progress="panelUpdateProgress">
           <template #icon><PanelsTopLeft :size="16" /></template>
           <template v-if="panelNotice?.available" #title><span class="ui-tag ui-tag--strong">有新版本</span></template>
           <template #meta>
@@ -556,7 +558,7 @@ onBeforeUnmount(() => {
               <template v-else>{{ panelUpdateLabel() }}</template>
             </span>
             <span v-if="panelNotice?.published_at">发布于 {{ buildTime(panelNotice.published_at) }}</span>
-            <span v-if="panelNotice && !panelNotice.release_url">首个正式 Release 发布后显示</span>
+            <span v-if="panelNotice && !panelNotice.release_url">首个正式版发布后显示</span>
             <p v-if="panelUpdateFailure" class="ui-task__error update-row__failure" role="alert">
               <span>{{ panelUpdateFailure }}</span>
               <button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" @click="dismissPanelUpdateFailure">知道了</button>
@@ -599,11 +601,11 @@ onBeforeUnmount(() => {
               <span>补丁集 <span class="ui-num">{{ activeVersion?.patchset ? `p${activeVersion.patchset}${activeVersion.dependency_revision ? `-r${activeVersion.dependency_revision}` : ''}` : '未记录' }}</span></span>
               <span>控制协议 <span class="ui-num">{{ activeVersion?.control_protocol ? `v${activeVersion.control_protocol}` : '未记录' }}</span></span>
               <!-- 链接本身是 inline-flex，套一层再让 ui-dots 画点 / The link is inline-flex, so it is wrapped before ui-dots draws the dot -->
-              <span v-if="activeVersion?.source_url"><a class="ui-link" :href="activeVersion.source_url" target="_blank" rel="noopener noreferrer">上游详情<ExternalLink :size="12" /></a></span>
+              <span v-if="activeVersion?.source_url"><a class="ui-link" :href="activeVersion.source_url" target="_blank" rel="noopener noreferrer">原版源码<ExternalLink :size="12" /></a></span>
             </p>
             <p v-else class="install-meta">在上方「可用更新」里安装最新构建</p>
             <dl class="ui-strip install-hashes">
-              <div><dt>上游提交</dt><dd class="ui-mono">{{ activeVersion?.upstream_commit ? shortHash(activeVersion.upstream_commit, 12) : '未记录' }}</dd></div>
+              <div><dt>原版提交</dt><dd class="ui-mono">{{ activeVersion?.upstream_commit ? shortHash(activeVersion.upstream_commit, 12) : '未记录' }}</dd></div>
               <div><dt>增强构建</dt><dd class="ui-mono">{{ shortHash(activeVersion?.commit, 12) }}</dd></div>
               <div><dt>二进制摘要</dt><dd class="ui-mono">{{ shortHash(activeVersion?.binary_sha256, 14) }}</dd></div>
             </dl>
@@ -685,6 +687,9 @@ onBeforeUnmount(() => {
    The bottom row: 16 above its hairline, 12 below, on the card's lower edge; the paired cards share a height, so the rows align */
 .system-card__row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-2) var(--s-4); margin: var(--s-4) 0 0; padding-top: var(--s-3); border-top: 1px solid var(--l-hair); color: var(--l-ink-3); font-size: var(--t-2); }
 .system-card__row > .ui-dots { min-width: 0; }
+/* 底行一样高：一张卡底行有「回退」小按钮、另一张只有一行字，按按钮的高度留，两张卡底行的细线才对齐
+   Bottom rows share a height: one holds the small 回退 button, the other only a line of text; sized to the button, the two cards' bottom hairlines line up */
+.system-card__row { min-height: calc(var(--h-sm) + var(--s-3) + 1px); }
 
 /* 更新行：第一行贴着标签下面 12，最后一行不画线、不留底 / Update rows: the first sits 12 under the label, the last draws no line and keeps no bottom */
 .system-tasks { margin-top: var(--s-2); }
@@ -705,8 +710,6 @@ onBeforeUnmount(() => {
 
 @media (max-width: 640px) {
   .system-page { gap: var(--s-4); }
-  .system-facts { gap: var(--s-3) var(--s-5); }
-  .system-facts > div { flex: 0 0 calc(50% - var(--s-5) / 2); }
   .system-card { padding: var(--s-3) var(--s-4) var(--s-4); }
 }
 /* 没有可回退版本时底行的一句说明 / The bottom row's note when there is nothing to roll back to */

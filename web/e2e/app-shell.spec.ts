@@ -133,3 +133,20 @@ test('不同屏宽无页面横向溢出，手机标题与点击区域保持合�
     }
   }
 })
+
+test('断网时内容区顶上挂出「连不上面板」，联网后自己收起 @responsive', async ({ page, context }, testInfo) => {
+  await page.goto('/')
+  await expect(page.locator('.overview-page')).toBeVisible()
+  const banner = page.locator('.conn__inner')
+  await expect(banner).toHaveCount(0)
+  await context.setOffline(true)
+  await expect(banner).toBeVisible()
+  await expect(banner).toContainText('连不上面板')
+  // 滚到页底也还在：宽屏贴着窗口顶（侧栏不占顶部），手机贴着顶栏下沿 / Still there after scrolling to the bottom: at the window's top on wide screens (the sidebar leaves the top free), under the top bar on phones
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
+  const top = testInfo.project.name === 'mobile' ? await page.locator('.app-header').evaluate((el) => el.getBoundingClientRect().bottom) : 0
+  expect(Math.round((await banner.boundingBox())!.y)).toBe(Math.round(top))
+  await context.setOffline(false)
+  await expect(banner).toHaveCount(0)
+  await expect(page.getByText('已重新连上面板')).toBeVisible()
+})

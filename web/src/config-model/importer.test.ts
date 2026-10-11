@@ -81,10 +81,10 @@ describe('迁移：读成什么样 / migration: what it reads as', () => {
     // An entry that never runs stays verbatim at the end; rules with several forwards or with actions after the deciding one are kept verbatim as advanced rules, not tidied
     expect(text).toContain('入口「never」排在接住所有请求的入口后面，永远轮不到，原样保留在最后')
     expect(model.trailingEntries).toEqual([{ pipeline: 'never', matchers: [{ type: 'qtype', value: 'MX' }] }])
-    expect(text).toContain('「ads」放不进新的规则格式（决定结果的动作后面还有 1 个动作）')
-    expect(text).toContain('「two-forwards」放不进新的规则格式（一条规则里有 2 个转发）')
-    expect(text).toContain('「odd-field」放不进新的规则格式')
-    expect(text).toContain('「weird-response」放不进新的规则格式')
+    expect(text).toContain('「ads」放不进面板的写法（决定结果的动作后面还有 1 个动作）')
+    expect(text).toContain('「two-forwards」放不进面板的写法（一条规则里有 2 个转发）')
+    expect(text).toContain('「odd-field」放不进面板的写法')
+    expect(text).toContain('「weird-response」放不进面板的写法')
     expect(text).toContain('多写了「geosite:」前缀')
     expect(stats.raw).toBe(4)
     const messy = compile(model) as KConfigLike

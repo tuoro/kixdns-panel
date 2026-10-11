@@ -1,4 +1,4 @@
-import { computed, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, shallowReactive, watch } from 'vue'
 import type { RuleCount, UpstreamCount } from '../api/types'
 import { dismissUndoable, useToast } from '../composables/useToast'
 import { readConfig, type ImportReport, type ReadResult } from '../config-model/document'
@@ -18,14 +18,29 @@ const applied = ref(JSON.stringify(model))
 export const appliedModel = computed(() => JSON.parse(applied.value) as Model)
 
 // ---------- 改动 / changes ----------
-const byId = <T extends { id: string | number }>(xs: T[]) => new Map(xs.map((x) => [x.id, JSON.stringify(x)]))
-function changedIn<T extends { id: string | number }>(before: T[], after: T[]): Set<T['id']> {
-  const old = byId(before)
-  return new Set(after.filter((x) => old.get(x.id) !== JSON.stringify(x)).map((x) => x.id))
+/**
+ * 比较规则时只看看得见、会写进配置的部分：改动时间、条件的内部编号、关着的日志的级别、没打开的回答后检查里留着的内容都不算
+ * Rules compare by what is shown and written: the edit time, condition ids, the level of a log that is off and whatever an unused response check still holds do not count
+ */
+export function ruleShape(rule: Rule): string {
+  const plain = <C extends { id: number }>(c: C) => ({ ...c, id: 0 })
+  return JSON.stringify({
+    ...rule,
+    edited: '',
+    conditions: rule.conditions.map((group) => group.map(plain)),
+    log: rule.log.enabled ? rule.log : { enabled: false },
+    response: rule.response.mode === 'custom' ? { ...rule.response, conditions: rule.response.conditions.map(plain) } : { mode: rule.response.mode },
+  })
+}
+const plainShape = (x: unknown) => JSON.stringify(x)
+const byId = <T extends { id: string | number }>(xs: T[], shape: (x: T) => string) => new Map(xs.map((x) => [x.id, shape(x)]))
+function changedIn<T extends { id: string | number }>(before: T[], after: T[], shape: (x: T) => string = plainShape): Set<T['id']> {
+  const old = byId(before, shape)
+  return new Set(after.filter((x) => old.get(x.id) !== shape(x)).map((x) => x.id))
 }
 export const changedRuleIds = computed(() => {
   const before = appliedModel.value
-  return new Set<number>([...changedIn(before.rules, model.rules), ...model.ruleGroups.flatMap((g) => [...changedIn(before.ruleGroups.find((b) => b.id === g.id)?.rules ?? [], g.rules)])])
+  return new Set<number>([...changedIn(before.rules, model.rules, ruleShape), ...model.ruleGroups.flatMap((g) => [...changedIn(before.ruleGroups.find((b) => b.id === g.id)?.rules ?? [], g.rules, ruleShape)])])
 })
 export const changedGroupIds = computed(() => changedIn(appliedModel.value.groups, model.groups))
 export const changedMappingIds = computed(() => changedIn(appliedModel.value.mappings, model.mappings))
@@ -39,11 +54,11 @@ export const changedSettingKeys = computed(() => {
 // 改了几处：按对象数，改一条规则算一处，删掉的也算 / How many places changed: per object, one edited rule is one place, deletions count too
 export const changeCount = computed(() => {
   const before = appliedModel.value
-  const diff = <T extends { id: string | number }>(a: T[], b: T[]) => changedIn(a, b).size + a.filter((x) => !b.some((y) => y.id === x.id)).length
+  const diff = <T extends { id: string | number }>(a: T[], b: T[], shape?: (x: T) => string) => changedIn(a, b, shape).size + a.filter((x) => !b.some((y) => y.id === x.id)).length
   const order = (a: { id: string | number }[], b: { id: string | number }[]) => (a.length === b.length && a.map((x) => x.id).join() !== b.map((x) => x.id).join() ? 1 : 0)
-  const rgRules = model.ruleGroups.reduce((n, g) => { const p = before.ruleGroups.find((x) => x.id === g.id); return n + diff(p?.rules ?? [], g.rules) + order(p?.rules ?? [], g.rules) }, 0)
+  const rgRules = model.ruleGroups.reduce((n, g) => { const p = before.ruleGroups.find((x) => x.id === g.id); return n + diff(p?.rules ?? [], g.rules, ruleShape) + order(p?.rules ?? [], g.rules) }, 0)
   const rgMeta = diff(before.ruleGroups.map((g) => ({ ...g, rules: [] })), model.ruleGroups.map((g) => ({ ...g, rules: [] })))
-  return changedSettingKeys.value.size + diff(before.rules, model.rules) + order(before.rules, model.rules) + rgRules + rgMeta
+  return changedSettingKeys.value.size + diff(before.rules, model.rules, ruleShape) + order(before.rules, model.rules) + rgRules + rgMeta
     + diff(before.groups, model.groups) + diff(before.mappings, model.mappings) + order(before.mappings, model.mappings)
     + (JSON.stringify(before.rest) !== JSON.stringify(model.rest) ? 1 : 0) + (JSON.stringify(before.defaults) !== JSON.stringify(model.defaults) ? 1 : 0)
     + (JSON.stringify(before.entries ?? null) !== JSON.stringify(model.entries ?? null) ? 1 : 0)
@@ -60,7 +75,16 @@ export const dirty = computed(() => changeCount.value > 0)
 export const editorEditedBy = ref<symbol | null>(null)
 export const editorEdited = computed(() => editorEditedBy.value !== null)
 export const jsonEdited = ref(false)
-export const unsaved = computed(() => dirty.value || editorEdited.value || jsonEdited.value)
+// 抽屉和弹层（上游组、规则组、高级入口）里还没写进草稿的修改；值是离开时问话里的称呼
+// Unfinished edits in drawers and dialogs (upstream group, rule group, advanced entries); the value names it in the leave question
+export const dialogEdits = shallowReactive(new Map<symbol, string>())
+export const unsaved = computed(() => dirty.value || editorEdited.value || jsonEdited.value || dialogEdits.size > 0)
+/** 在组件 setup 里调用：改过就登记，改回去或卸下就注销 / Call in a component's setup: registered while edited, released when reverted or unmounted */
+export function trackDialogEdits(what: string, edited: () => boolean): void {
+  const me = Symbol(what)
+  watch(edited, (now) => { if (now) dialogEdits.set(me, what); else dialogEdits.delete(me) }, { immediate: true })
+  onBeforeUnmount(() => dialogEdits.delete(me))
+}
 const OPTIONAL = ['mainId', 'mappingId', 'mainExtra', 'entries', 'trailingEntries', 'rawPipelines', 'extra'] as const
 export const UNMODELLED = ['mainId', 'mappingId', 'mainExtra', 'rawPipelines', 'extra'] as const
 export function replaceModel(next: Model): void {

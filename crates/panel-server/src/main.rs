@@ -2,8 +2,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::Context;
-use clap::Parser;
-use kixdns_panel_server::{AppSettings, TrustedProxies, run};
+use clap::{Parser, Subcommand};
+use kixdns_panel_server::{AppSettings, TrustedProxies, reset_admins, run};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
@@ -136,6 +136,15 @@ struct Args {
         default_value = "127.0.0.1/32,::1/128"
     )]
     trusted_proxies: TrustedProxies,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// 忘记管理员密码时用：删除所有管理员账号和登录会话，之后打开面板会重新创建管理员；配置、版本历史和审计记录都保留。
+    ResetAdmin,
 }
 
 impl Args {
@@ -185,9 +194,17 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    run(Args::parse().into_settings()?)
-        .await
-        .context("面板服务异常退出")
+    let args = Args::parse();
+    if matches!(args.command, Some(Command::ResetAdmin)) {
+        let removed = reset_admins(args.database.clone())
+            .await
+            .context("重置管理员失败")?;
+        println!(
+            "已删除 {removed} 个管理员账号。打开面板会重新进入「创建管理员」，配置和版本历史都还在。"
+        );
+        return Ok(());
+    }
+    run(args.into_settings()?).await.context("面板服务异常退出")
 }
 
 fn present(value: Option<String>) -> Option<String> {

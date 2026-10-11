@@ -47,7 +47,7 @@ router.beforeEach(async (to) => {
 })
 
 router.afterEach((to) => {
-  document.title = to.meta.title ? `${to.meta.title} · KixDNS Panel` : 'KixDNS Panel'
+  document.title = to.meta.title ? `${to.meta.title} · KixDNS 面板` : 'KixDNS 面板'
 })
 
 export default router

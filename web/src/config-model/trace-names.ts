@@ -20,6 +20,8 @@ export interface TraceNames {
    * without it only upstream groups' are recognised.
    */
   plumbing: (label: string, pipeline: string | null) => boolean
+  /** 规则单独设了 ECS 或回答检查时自带的转发 Pipeline（rule-编号）：跳进去、在里面查缓存都是内部步骤 / A rule's own forward pipeline (rule-N, when it sets ECS or an answer check): jumping in and checking caches there are internal steps */
+  ownForward: (id: string) => boolean
 }
 
 const allRules = (model: Model): Rule[] => [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)]
@@ -42,6 +44,10 @@ export function findKernelRule(model: Model, label: string): Rule | undefined {
 
 export function traceNames(model: Model): TraceNames {
   const upstreamIds = new Set(model.groups.map((g) => upstreamPipelineId(model, g.id)))
+  const ownRule = (id: string): Rule | undefined => {
+    const own = /^rule-(\d+)$/.exec(id)?.[1]
+    return own === undefined ? undefined : allRules(model).find((r) => r.id === Number(own))
+  }
   const pipeline = (id: string): string | null => {
     if (id === mainPipelineId(model)) return '主列表'
     if (id === (model.mappingId ?? 'domain_mapping')) return '域名映射'
@@ -49,8 +55,7 @@ export function traceNames(model: Model): TraceNames {
     if (group) return `规则组「${group.name}」`
     const upstream = model.groups.find((g) => upstreamPipelineId(model, g.id) === id)
     if (upstream) return `上游组「${upstream.name}」`
-    const own = /^rule-(\d+)$/.exec(id)?.[1]
-    const rule = own === undefined ? undefined : allRules(model).find((r) => r.id === Number(own))
+    const rule = ownRule(id)
     return rule ? `规则「${ruleTitle(rule)}」的转发` : null
   }
   return {
@@ -59,11 +64,12 @@ export function traceNames(model: Model): TraceNames {
     matched: (label) => {
       if (label === '其余请求') return '没有规则命中，按「其余请求」处理'
       const group = model.ruleGroups.find((g) => label === `${g.name}·其余`)
-      if (group) return `规则组「${group.name}」里没有规则命中，按其余请求处理`
+      if (group) return `规则组「${group.name}」里没有规则命中，按「其余请求」处理`
       const mapped = /^域名映射 (.+)$/.exec(label)?.[1]
       return mapped ? `命中域名映射「${mapped}」` : null
     },
     plumbing: (label, at) => (at ? label === at && (upstreamIds.has(at) || /^rule-\d+$/.test(at)) : upstreamIds.has(label) && !findKernelRule(model, label)),
+    ownForward: (id) => ownRule(id) !== undefined,
     rule: (label) => {
       const rule = findKernelRule(model, label)
       return rule ? ruleTitle(rule) : null

@@ -1,10 +1,10 @@
 import { expect, test } from '@playwright/test'
 
-// 新配置页（?v2=1，③b）：读入演示配置、快速添加一条规则、在右栏（宽屏）或整页（手机）打开、保存并热加载。
+// 新配置页（?v2=1，③b）：读入演示配置、快速添加一条规则、在右栏（宽屏）或整页（手机）打开、保存并应用。
 // 旧配置页的用例在 config-*.spec.ts 里照跑；这一页在 ③d 成为默认前只走 ?v2=1。
 // The new config page (?v2=1, ③b): load the demo config, quick-add a rule, open it in the inspector (wide) or full page (phone),
 // save with hot reload. The old page's specs keep running; this page is reached only through ?v2=1 until ③d makes it the default.
-test('新配置页：读入、快速添加、打开、保存并热加载 @responsive', async ({ page }, testInfo) => {
+test('新配置页：读入、快速添加、打开、保存并应用 @responsive', async ({ page }, testInfo) => {
   const mobile = testInfo.project.name === 'mobile'
   await page.goto('/config?v2=1')
   await expect(page.locator('main h1')).toHaveText(mobile ? '配置' : '规则')
@@ -31,7 +31,7 @@ test('新配置页：读入、快速添加、打开、保存并热加载 @respon
   await expect(page.locator('.toast', { hasText: '已更新「示例站点」' })).toBeVisible()
   await expect(row).toContainText('示例站点')
   // 保存：先校验再写入，保存条说「已生效 · 版本 #N」，页头版本跟着变 / Save: validate then write; the bar says 已生效 · 版本 #N and the header version follows
-  await page.getByRole('button', { name: mobile ? '保存' : '保存并热加载', exact: true }).click()
+  await page.getByRole('button', { name: '保存并应用', exact: true }).click()
   await expect(page.locator('.cfg__savebar')).toContainText('已生效')
   await expect(page.locator('.cfg__savebar')).toContainText('版本 #')
   if (!mobile) await expect(page.locator('.cfg__facts')).toContainText('1 条')

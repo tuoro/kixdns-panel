@@ -29,7 +29,7 @@ import { acceptConfirm, cancelConfirm } from './confirm'
  * a line of its own, which fits in full at 375.
  */
 const EXPECTED_TOTAL = '12,847,392'
-const EXPECTED_TREND = '近 24 小时 3,835,000 次'
+const EXPECTED_TREND = '最近 24 小时 3,835,000 次'
 
 async function openOverview(page: Page): Promise<void> {
   await page.goto('/')
@@ -115,7 +115,8 @@ test('查询排行保留时间窗口与带确认的清理操作', async ({ page 
 test('运行配置与缓存清理保持可用', async ({ page }) => {
   await openOverview(page)
   await expect(page.locator('.overview-config-lead')).toContainText('#18')
-  await expect(page.locator('.overview-config-hashes')).toContainText('#24')
+  // 卡片主项是面板的配置版本，内核重新加载的次数退到摘要条里 / The card leads with the panel's config version; the kernel's reload count moves to the strip
+  await expect(page.locator('.overview-config-hashes')).toContainText('24 次')
   // 补丁集按 pN 写，和系统页一致 / The patchset reads pN, as on the system page
   await expect(page.locator('.overview-config-hashes')).toContainText(/补丁集p\d+/)
   await expect(page.locator('.overview-config-state')).toHaveText('已生效')
@@ -503,17 +504,17 @@ test('查询排行的时段跟着手上的数据走：定时刷新还在路上�
   await openOverview(page)
   await page.getByRole('tab', { name: '查询排行', exact: true }).click()
   const line = page.locator('.overview-toolbar p').first()
-  await expect(line).toContainText('近 24 小时')
+  await expect(line).toContainText('最近 24 小时')
   await expect(line).toContainText('已观察 2,400 次请求')
   // 60 秒一次的定时刷新发出一个慢的 24 小时请求；它还在路上，就切到 1 小时
   await page.evaluate(() => { (globalThis as { __slowStats?: boolean }).__slowStats = true })
   await page.clock.runFor(60_000)
   await page.getByRole('button', { name: '1 小时', exact: true }).click()
-  await expect(line).toContainText('近 1 小时')
+  await expect(line).toContainText('最近 1 小时')
   await expect(line).toContainText('已观察 100 次请求')
   // 旧的 24 小时结果回来了，也不能盖掉 / The old 24-hour result arrives and must not overwrite anything
   await page.clock.runFor(2_000)
-  await expect(line).toContainText('近 1 小时')
+  await expect(line).toContainText('最近 1 小时')
   await expect(line).toContainText('已观察 100 次请求')
   await expect(page.getByRole('button', { name: '1 小时', exact: true })).toHaveAttribute('aria-pressed', 'true')
 })
@@ -550,7 +551,7 @@ test('耗时慢了：平均延迟取整写 212 ms；上游状态里 999.6 ms 写
   expect(latencyColour).not.toBe(await resolve('--err-l'))
 })
 
-test('配置重载失败提到页顶：旧配置照常服务，是降级，给出去配置页的动作', async ({ page }) => {
+test('配置应用失败提到页顶：旧配置照常服务，是降级，给出去配置页的动作', async ({ page }) => {
   await openOverview(page)
   await page.evaluate(async () => {
     const { mockRequest } = await import('/src/api/mock.ts')
@@ -560,10 +561,10 @@ test('配置重载失败提到页顶：旧配置照常服务，是降级，给�
   await remountOverview(page)
   const notice = page.locator('.ui-notice:visible')
   await expect(notice).toHaveCount(1)
-  await expect(notice).toContainText('配置重载失败')
-  await expect(notice).toContainText('仍按配置代次 #18 运行')
+  await expect(notice).toContainText('配置应用失败')
+  await expect(notice).toContainText('仍按配置版本 #18 运行')
   await expect(notice.getByRole('link', { name: '管理配置', exact: true })).toBeVisible()
-  await expect(page.locator('.overview-config-state')).toHaveText('重载失败')
+  await expect(page.locator('.overview-config-state')).toHaveText('应用失败')
   await expect(page.locator('.overview-reload-error')).toContainText('unknown upstream group')
 })
 

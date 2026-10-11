@@ -209,7 +209,7 @@ export function blockLabel(model: Model, response: BlockResponse): string {
 // 列表里那颗结果胶囊：动词 + 客户端实际收到什么 / The outcome pill in the list: the verb plus what the client actually gets
 export function outcomePill(model: Model, o: Outcome): { verb: string; value: string; mono: boolean; broken: boolean } {
   switch (o.type) {
-    case 'upstream': { const n = groupName(model, o.group); return { verb: '上游', value: n ?? '已删除的组', mono: false, broken: !n } }
+    case 'upstream': { const n = groupName(model, o.group); return { verb: '交给', value: n ?? '已删除的组', mono: false, broken: !n } }
     // 响应码是助记词，正文字体；只有 0.0.0.0 / :: 这种地址才用等宽 / Response codes are mnemonics in the body face; only addresses such as 0.0.0.0 / :: are mono
     case 'block': return { verb: '拦截', value: blockLabel(model, o.response), mono: (o.response === 'default' ? model.defaults.block : o.response) === 'zero', broken: false }
     case 'answer': {
@@ -217,7 +217,7 @@ export function outcomePill(model: Model, o: Outcome): { verb: string; value: st
       return { verb: '回答', value: `${kind}${o.kind === 'txt' ? `"${o.value}"` : o.value.split(',').map((x) => x.trim()).filter(Boolean).join(', ') || '…'}`, mono: true, broken: !o.value.trim() }
     }
     case 'group': { const n = ruleGroupName(model, o.group); return { verb: '转到', value: n ?? '已删除的规则组', mono: false, broken: !n } }
-    case 'continue': return { verb: '继续', value: '交给下一条', mono: false, broken: false }
+    case 'continue': return { verb: '继续', value: '往下一条', mono: false, broken: false }
   }
 }
 export function outcomeSentence(model: Model, o: Outcome): string {
@@ -226,7 +226,7 @@ export function outcomeSentence(model: Model, o: Outcome): string {
     case 'block': return `拦截，回应 ${blockLabel(model, o.response)}`
     case 'answer': return o.kind === 'txt' ? `直接回答 TXT「${o.value}」` : o.kind === 'ip' ? `直接回答 ${splitList(o.value).join('、')}` : `直接回答 CNAME ${o.value}`
     case 'group': return `转到规则组「${ruleGroupName(model, o.group) ?? '已删除'}」`
-    case 'continue': return '不作决定，交给下一条规则'
+    case 'continue': return '不作决定，继续往下一条'
   }
 }
 export function remedySentence(model: Model, r: Remedy): string {

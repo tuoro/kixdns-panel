@@ -68,7 +68,7 @@ test('保存条的保存会把右栏里没点完成的修改一起保存', async
   await addRule(page, 'carry.example')
   await page.locator('[data-rule]').first().locator('.rrow__main').click()
   await page.getByLabel('规则名称，可以不填，不填就用条件当名字').fill('一起保存')
-  await page.getByRole('button', { name: '保存并热加载', exact: true }).click()
+  await page.getByRole('button', { name: '保存并应用', exact: true }).click()
   await expect(page.locator('.cfg__savebar')).toContainText('已生效')
   await expect(page.locator('[data-rule]').first()).toContainText('一起保存')
 })
@@ -108,7 +108,7 @@ test('有没保存的修改时退出登录：先问，选继续编辑就还登�
   await expect(page).toHaveURL(/\/config/)
   await expect(page.locator('.cfg__savebar')).toContainText('已修改')
   // 还登录着：保存照样成功 / Still signed in: saving still works
-  await page.getByRole('button', { name: '保存并热加载', exact: true }).click()
+  await page.getByRole('button', { name: '保存并应用', exact: true }).click()
   await expect(page.locator('.cfg__savebar')).toContainText('已生效')
 })
 
@@ -116,11 +116,11 @@ test('别处先存了一个版本：保存停住，可以下载自己的修改�
   await page.addInitScript(() => { if (!sessionStorage.getItem('conflict-armed')) { sessionStorage.setItem('conflict-armed', '1'); localStorage.setItem('kixdns:demo-save-conflict', 'true') } })
   await page.goto('/config')
   await addRule(page, 'mine.example')
-  await page.getByRole('button', { name: '保存并热加载', exact: true }).click()
+  await page.getByRole('button', { name: '保存并应用', exact: true }).click()
   const bar = page.locator('.cfg__savebar')
   await expect(bar).toContainText('这份配置在别处改过了')
   // 再按保存只会再失败一次：主按钮停用；放弃修改还在；能把自己的修改下载下来 / Saving again would only fail again: the primary is disabled; discard is still there; the user's edits can be downloaded
-  await expect(bar.getByRole('button', { name: '保存并热加载', exact: true })).toBeDisabled()
+  await expect(bar.getByRole('button', { name: '保存并应用', exact: true })).toBeDisabled()
   await expect(bar.getByRole('button', { name: '放弃修改', exact: true })).toBeVisible()
   const download = page.waitForEvent('download')
   await bar.getByRole('button', { name: '下载草稿', exact: true }).click()
@@ -136,7 +136,7 @@ test('别处先存了一个版本：保存停住，可以下载自己的修改�
 test('右栏里改了没点完成就离开配置页：先问这条规则', async ({ page }) => {
   await page.goto('/config')
   await addRule(page, 'leave.example')
-  await page.getByRole('button', { name: '保存并热加载', exact: true }).click()
+  await page.getByRole('button', { name: '保存并应用', exact: true }).click()
   await expect(page.locator('.cfg__savebar')).toContainText('已生效')
   await page.locator('[data-rule]').first().locator('.rrow__main').click()
   await page.getByLabel('规则名称，可以不填，不填就用条件当名字').fill('没点完成')
@@ -171,12 +171,12 @@ test('冲突以后再改一笔，保存仍然停着，直到重新读取', async
   await page.addInitScript(() => { if (!sessionStorage.getItem('conflict-armed')) { sessionStorage.setItem('conflict-armed', '1'); localStorage.setItem('kixdns:demo-save-conflict', 'true') } })
   await page.goto('/config')
   await addRule(page, 'first.example')
-  await page.getByRole('button', { name: '保存并热加载', exact: true }).click()
+  await page.getByRole('button', { name: '保存并应用', exact: true }).click()
   const bar = page.locator('.cfg__savebar')
   await expect(bar).toContainText('这份配置在别处改过了')
   await addRule(page, 'second.example', 'block')
   await expect(bar).toContainText('这份配置在别处改过了')
-  await expect(bar.getByRole('button', { name: '保存并热加载', exact: true })).toBeDisabled()
+  await expect(bar.getByRole('button', { name: '保存并应用', exact: true })).toBeDisabled()
   // 重新读取以后，上一份草稿的失败不再挂着 / After re-reading, the previous draft's failure no longer hangs around
   await bar.getByRole('button', { name: '重新读取', exact: true }).click()
   await page.getByRole('alertdialog', { name: '放弃未保存的修改' }).getByRole('button', { name: '放弃修改并重新读取' }).click()
@@ -221,4 +221,30 @@ test('手机上编辑列表靠下的规则，完成后那一行还在眼前并�
   await expect(edited.locator('.rrow__main')).toBeFocused()
   // 以前返回时浏览器把列表恢复到页顶，这一行落在屏幕外 / Before, back restored the list to the top and the row was off screen
   await expect(edited).toBeInViewport()
+})
+
+test('上游组抽屉里改了还没写进草稿就按浏览器返回：先问一句', async ({ page }) => {
+  // 从概览点进来：返回走的是页面里的路由，离开前要问 / Arrive from the overview, so back is an in-app route change that must ask first
+  await page.goto('/')
+  await page.locator('.desktop-nav').getByRole('link', { name: '上游组' }).click()
+  await page.getByRole('button', { name: '新建上游组', exact: true }).first().click()
+  const drawer = page.locator('dialog[open]').last()
+  await drawer.getByLabel('名称', { exact: true }).fill('半成品')
+  await page.goBack()
+  const ask = page.getByRole('alertdialog', { name: '放弃这个上游组的修改' })
+  await expect(ask).toBeVisible()
+  await ask.getByRole('button', { name: '继续编辑' }).click()
+  await expect(page).toHaveURL(/section=upstreams/)
+  await expect(drawer.getByLabel('名称', { exact: true })).toHaveValue('半成品')
+})
+
+test('保存时才发现 KixDNS 停了：标题说停了，不说没通过校验，草稿还在', async ({ page }) => {
+  await page.goto('/config')
+  await addRule(page, 'stopped.example')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-validate-stopped', 'true'))
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar.locator('.ui-savebar__verdict')).toHaveText('KixDNS 已停止')
+  await expect(bar).toContainText('草稿还在，可以先存成待应用版本')
+  await expect(page.locator('[data-rule]', { hasText: 'stopped.example' })).toBeVisible()
 })

@@ -78,7 +78,7 @@ export const SHORTCUTS: ShortcutGroup[] = [
   { title: '配置各页', items: [
     { keys: ['/'], what: '搜索规则' },
     { keys: ['n'], what: '新建规则' },
-    { keys: [MOD, 'S'], what: '保存并热加载（和保存条的按钮一样，会应用到正在运行的 KixDNS）' },
+    { keys: [MOD, 'S'], what: '保存并应用（和保存条的按钮一样，会应用到正在运行的 KixDNS）' },
   ] },
   { title: '编辑一条规则时', items: [
     { keys: [MOD, '⏎'], what: '完成（新规则是「新建」）' },

@@ -11,7 +11,7 @@ import { isCidr, isDomain, newRule, outcomeSentence, rawMatchersText, type Condi
 import { usePhone } from './phone'
 import RuleList from './RuleList.vue'
 import Tester from './Tester.vue'
-import { model, newId, ruleGroupUsers, ui } from './store'
+import { model, newId, ruleGroupUsers, trackDialogEdits, ui } from './store'
 // JSON 编辑器（CodeMirror）只在用到时才加载：配置页的首包不带它 / The JSON editor (CodeMirror) loads on first use, so the config page's first chunk leaves it out
 const JsonEditor = defineAsyncComponent(() => import('../components/JsonEditor.vue'))
 
@@ -150,15 +150,18 @@ function useStart(): void {
 // ---------- 规则组 / rule groups ----------
 const dialog = ref<HTMLDialogElement | null>(null)
 const editing = reactive({ id: '', name: '', note: '', listener: '', isNew: true })
-let editingBase = ''
+// 弹层开着时是打开那一刻的样子，关上后是 null；改过时离开页面或刷新也先问
+// While the dialog is open this is how it looked when opened, null once closed; edited, leaving the page or reloading asks first too
+const editingBase = ref<string | null>(null)
+trackDialogEdits('这个规则组', () => editingBase.value !== null && JSON.stringify(editing) !== editingBase.value)
 async function openGroup(group: RuleGroup | null): Promise<void> {
   Object.assign(editing, group ? { id: group.id, name: group.name, note: group.note, listener: group.listener, isNew: false } : { id: '', name: '', note: '', listener: '', isNew: true })
-  editingBase = JSON.stringify(editing)
+  editingBase.value = JSON.stringify(editing)
   await nextTick()
   dialog.value?.showModal()
 }
 async function leaveGroup(): Promise<void> {
-  if (JSON.stringify(editing) !== editingBase && !(await askDiscard('这个规则组'))) return
+  if (JSON.stringify(editing) !== editingBase.value && !(await askDiscard('这个规则组'))) return
   dialog.value?.close()
 }
 function saveGroup(): void {
@@ -189,15 +192,16 @@ const entriesDialog = ref<HTMLDialogElement | null>(null)
 const entriesText = ref('')
 const entriesError = computed(() => { try { const v = JSON.parse(entriesText.value) as unknown; return Array.isArray(v) && v.every((e) => e && typeof e === 'object' && typeof (e as { pipeline?: unknown }).pipeline === 'string') ? '' : '要写成入口的数组，每个入口有 pipeline' } catch (e) { return (e as Error).message } })
 const pipelineLabel = (id: string) => model.ruleGroups.find((g) => (g.pipelineId ?? `group-${g.id}`) === id)?.name ?? model.groups.find((g) => (g.pipelineId ?? `upstream-${g.id}`) === id)?.name ?? id
-let entriesBase = ''
+const entriesBase = ref<string | null>(null)
+trackDialogEdits('高级入口', () => entriesBase.value !== null && entriesText.value !== entriesBase.value)
 async function editEntries(): Promise<void> {
   entriesText.value = JSON.stringify(model.entries ?? [], null, 2)
-  entriesBase = entriesText.value
+  entriesBase.value = entriesText.value
   await nextTick()
   entriesDialog.value?.showModal()
 }
 async function leaveEntries(): Promise<void> {
-  if (entriesText.value !== entriesBase && !(await askDiscard('高级入口'))) return
+  if (entriesText.value !== entriesBase.value && !(await askDiscard('高级入口'))) return
   entriesDialog.value?.close()
 }
 function saveEntries(): void {
@@ -303,7 +307,7 @@ function saveEntries(): void {
       </section>
     </template>
 
-    <dialog ref="dialog" class="pdialog" aria-labelledby="rgd-title" @cancel.prevent="leaveGroup" @click.self="leaveGroup">
+    <dialog ref="dialog" class="pdialog" aria-labelledby="rgd-title" @cancel.prevent="leaveGroup" @click.self="leaveGroup" @close="editingBase = null">
       <form class="pdialog__panel" method="dialog" @submit.prevent="saveGroup">
         <header class="pdialog__head"><h2 id="rgd-title">{{ editing.isNew ? '新建规则组' : '规则组的名称和监听标签' }}</h2><button class="ui-icon-btn" type="button" aria-label="关闭" @click="leaveGroup"><X :size="16" /></button></header>
         <div class="pdialog__body">
@@ -315,7 +319,7 @@ function saveEntries(): void {
       </form>
     </dialog>
 
-    <dialog ref="entriesDialog" class="pdrawer pdrawer--wide" aria-labelledby="ent-d-title" @cancel.prevent="leaveEntries" @click.self="leaveEntries">
+    <dialog ref="entriesDialog" class="pdrawer pdrawer--wide" aria-labelledby="ent-d-title" @cancel.prevent="leaveEntries" @click.self="leaveEntries" @close="entriesBase = null">
       <div class="pdrawer__panel">
         <header class="pdrawer__head"><div class="pdrawer__titles"><h2 id="ent-d-title">编辑高级入口</h2><p>直接写内核的入口：pipeline 填要进的规则组 ID，matchers 填条件。按顺序看，第一个命中的生效。</p></div><button class="ui-icon-btn" type="button" aria-label="关闭" @click="leaveEntries"><X :size="16" /></button></header>
         <div class="pdrawer__body"><JsonEditor v-model="entriesText" /><p v-if="entriesError" class="ui-field-error" aria-live="polite">{{ entriesError }}</p></div>

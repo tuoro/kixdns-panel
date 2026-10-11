@@ -22,7 +22,7 @@ import SaveBar from '../config-v2/SaveBar.vue'
 import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
-import { dirty, discardWithUndo, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
+import { dialogEdits, dirty, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
 import {
   applyBusy, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, friendlyRuntimeMessage, hasApplyFailure, headerAction, headerLine,
   load, loadError, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields,
@@ -57,6 +57,8 @@ function setTab(t: string): void {
 }
 const ready = computed(() => !loading.value && Boolean(doc.value))
 const firstRun = computed(() => ready.value && ui.mode === 'form' && !model.groups.length && !model.rules.length)
+// 页头的规则数连同规则组里的，和导入说明数的一样 / The header's rule count includes rule groups' rules, as the import report counts them
+const ruleCount = computed(() => model.rules.length + model.ruleGroups.reduce((n, group) => n + group.rules.length, 0))
 // 宽屏上规则在右侧面板里编辑，列表留在左边；窄屏和手机仍是整页编辑 / On wide screens a rule is edited in the right-hand inspector with the list on the left; narrow screens and phones keep the full-page editor
 const editor = ref<{ ruleId: number | null; groupId: string | null; template?: Partial<Rule>; resume?: EditorResume | null } | null>(null)
 const inspector = computed(() => editor.value !== null && wide.value && section.value === 'rules' && ui.mode === 'form')
@@ -281,7 +283,7 @@ async function importFile(event: Event): Promise<void> {
   if (file.size > 4 * 1024 * 1024) { toast.error('配置文件不能超过 4 MiB'); return }
   let parsed: Record<string, unknown>
   try { parsed = JSON.parse(await file.text()) as Record<string, unknown> } catch (e) { toast.error(`${file.name} 不是合法的 JSON：${(e as Error).message}`); return }
-  if (unsaved.value && !(await confirm.ask({ title: '放弃未保存的修改', body: '导入的文件会替换编辑器里的草稿，没保存的修改会丢失。', confirmLabel: '放弃修改并导入', destructive: true }))) return
+  if (unsaved.value && !(await confirm.ask({ title: '放弃未保存的修改', body: '导入的文件会替换现在的草稿，没保存的修改会丢失。', confirmLabel: '放弃修改并导入', destructive: true }))) return
   const before = JSON.parse(JSON.stringify(model)) as Model
   const { model: next, report } = readConfig(parsed, model)
   replaceModel(next)
@@ -304,7 +306,7 @@ function downloadJson(): void {
   URL.revokeObjectURL(a.href)
 }
 async function reload(ask = true): Promise<void> {
-  if (ask && unsaved.value && !(await confirm.ask({ title: '放弃未保存的修改', body: '重新读取会丢掉编辑器里没保存的修改。', confirmLabel: '放弃修改并重新读取', destructive: true }))) return
+  if (ask && unsaved.value && !(await confirm.ask({ title: '放弃未保存的修改', body: '重新读取会丢掉没保存的修改。', confirmLabel: '放弃修改并重新读取', destructive: true }))) return
   editor.value = null
   ui.mode = 'form'
   await load()
@@ -313,10 +315,11 @@ async function reload(ask = true): Promise<void> {
 // ---------- 进出页面 / entering and leaving ----------
 // JSON 文本只活在这一页里：回到配置页总是从表单开始，免得 JSON 视图空着又切不回表单
 // The JSON text lives only on this page: coming back always starts in the form, so the JSON view never reopens empty and stuck
-// 只有规则编辑里没点「完成」的修改时，问的是这条规则；草稿或 JSON 有修改时问整份草稿 / With only a rule edit not yet 完成 the question is about that rule; with draft or JSON edits it is about the whole draft
+// 只有规则编辑里没点「完成」的、或开着的抽屉里的修改时，问的是那一样；草稿或 JSON 有修改时问整份草稿
+// With only a rule edit not yet 完成, or an open drawer's edits, the question names that one thing; with draft or JSON edits it is about the whole draft
 const askLeave = async (): Promise<boolean> => {
   if (!unsaved.value) return true
-  if (!dirty.value && !jsonDirty.value) return confirm.ask({ title: '放弃这条规则的修改', body: '刚才在这里改的内容不会写进草稿。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
+  if (!dirty.value && !jsonDirty.value) return confirm.ask({ title: `放弃${editorEdited.value ? '这条规则' : [...dialogEdits.values()][0] ?? '这条规则'}的修改`, body: '刚才在这里改的内容不会写进草稿。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
   return confirm.ask({ title: '放弃未保存的修改', body: '当前的配置草稿会被丢弃，已经生效的配置不受影响。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
 }
 const releaseGuard = registerLeaveGuard(askLeave)
@@ -366,7 +369,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
         <span v-else-if="!phone && !firstRun" class="ui-facts cfg__facts" :role="applyBusy ? 'status' : undefined">
           <span><span class="ui-lbl">状态</span><b><span v-if="applyBusy" class="ui-spin cfg__spin" aria-hidden="true"></span><span v-else class="ui-dot" :class="headerLine.tone === 'ok' ? '' : `ui-dot--${headerLine.tone}`" aria-hidden="true"></span>{{ headerLine.lead ?? `${headerLine.before}${headerLine.version ?? ''}${headerLine.after ?? ''}` }}<button v-if="headerAction && ready" class="cfg__head-action" type="button" @click="applyNow">{{ headerAction }}</button><button v-else-if="runtimeStopped && ready" class="cfg__head-action" type="button" :disabled="starting" @click="startKixdns">启动</button></b></span>
           <span><span class="ui-lbl">配置版本</span><b>{{ versionLabel }}</b></span>
-          <span><span class="ui-lbl">规则</span><b>{{ model.rules.length }} 条</b></span>
+          <span><span class="ui-lbl">规则</span><b>{{ ruleCount }} 条</b></span>
           <span><span class="ui-lbl">上游组</span><b>{{ model.groups.length }} 个</b></span>
         </span>
         <span v-else class="ui-ph__lead" :role="applyBusy ? 'status' : undefined">
@@ -395,8 +398,8 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
     <input ref="fileInput" class="visually-hidden" type="file" accept=".json,application/json" @change="importFile">
     <!-- 侧栏收起时（≤860）分区页签在这一行；宽屏上分区在侧栏里，这一行只在 JSON 视图时出现（≥861 由 CSS 藏起页签）
          With the sidebar folded (≤860) the section tabs sit on this row; on wide screens sections live in the sidebar and the row shows only in the JSON view (CSS hides the tabs at ≥861) -->
-    <div v-if="!firstRun && (compact || ui.mode === 'json')" class="cfg__nav">
-      <p v-if="ui.mode === 'json'" class="cfg__whole"><span>完整配置</span><button class="ui-btn ui-btn--text ui-btn--sm ui-btn--inline cfg__to-form" type="button" @click="setMode('form')">回到表单</button></p>
+    <div v-if="!firstRun && (compact || ui.mode === 'json')" class="cfg__nav" :class="{ 'cfg__nav--json': ui.mode === 'json' }">
+      <div v-if="ui.mode === 'json'" class="cfg__whole"><h2>完整配置</h2><button class="ui-btn ui-btn--text ui-btn--sm ui-btn--inline cfg__to-form" type="button" @click="setMode('form')">回到表单</button></div>
       <UiTabs v-else class="cfg__tabs" :model-value="section" :items="tabs" label="配置分类" id-prefix="cfg" @update:model-value="setTab" />
     </div>
 

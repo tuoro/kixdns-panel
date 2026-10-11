@@ -478,7 +478,7 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
           else if (ruleGroupOf.has(t)) rule.outcome = { type: 'group', group: ruleGroupOf.get(t)!.id }
           else raw(t === mainSource ? '跳回主列表' : `跳到不存在的「${t}」`)
         } else rule.outcome = staticOutcome(a) ?? raw(`动作 ${a.type} 没有对应的写法`)
-        if (a.type === 'replace_txt_response') note(`「${rule.name}」在请求阶段替换 TXT，内核当作「交给下一条」处理，已这样显示`)
+        if (a.type === 'replace_txt_response') note(`「${rule.name}」在请求阶段替换 TXT，内核当作「继续往下一条」处理，已这样显示`)
         if (dead) raw(`决定结果的动作后面还有 ${dead} 个动作`)
         decided = true
         break
@@ -489,7 +489,7 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
     } catch (e) {
       if (!(e instanceof Raw)) throw e
       rawCount++
-      note(`「${base(kr.name)}」${where}放不进新的规则格式（${e.message}），原样保留为高级规则`, 'warn')
+      note(`「${base(kr.name)}」${where}放不进面板的写法（${e.message}），原样保留为高级规则`, 'warn')
       return { ...rule, conditions: [[]], outcome: { type: 'continue' }, response: { ...rule.response, mode: 'inherit' }, ecs: 'inherit', raw: [clone(kr) as unknown as Record<string, unknown>] }
     }
   }
@@ -570,7 +570,7 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
     const list = convertList(p.rules ?? [], `（规则组「${rg.name}」）`)
     rg.rules = list.rules
     rg.rest = list.rest
-    if (!(refs.get(p.id) ?? []).length) note(`规则组「${rg.name}」没有入口，也没有规则转过来，内核用不到它；先保留着`)
+    if (!(refs.get(p.id) ?? []).length) note(`规则组「${rg.name}」没有监听标签，也没有规则转到它，内核用不到它；先保留着`)
   }
   for (const id of inline) if (!consumed.has(id)) rawPipelines.push(clone(byId.get(id)!) as unknown as Record<string, unknown>)
 

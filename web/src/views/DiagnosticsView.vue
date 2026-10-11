@@ -2,7 +2,8 @@
 import { Check, ChevronDown, ChevronRight, LoaderCircle, Network, Power, TriangleAlert, X } from '@lucide/vue'
 import { computed, onMounted, ref, shallowRef } from 'vue'
 import { apiRequest, jsonBody } from '../api/client'
-import type { ConfigDocument, DnsDiagnostic, KixdnsKernel, Overview } from '../api/types'
+import type { ConfigDocument, ConfigVersion, ConfigVersions, DnsDiagnostic, KixdnsKernel, Overview } from '../api/types'
+import { runningVersionId } from '../running-version'
 import UiDotText from '../components/ui/UiDotText.vue'
 import UiEmpty from '../components/ui/UiEmpty.vue'
 import UiPageHeader from '../components/ui/UiPageHeader.vue'
@@ -30,7 +31,10 @@ const domainInput = ref<HTMLInputElement | null>(null)
 // neither shown nor guessed.
 const lastRun = ref<{ domain: string; time: string } | null>(null)
 // 事实行另外两项：正在跑的配置版本和内核版本，查一次就够；拿不到就不显示，不编造 / Two more facts: the running config version and the kernel build, fetched once; left out when unavailable, never invented
-const configGeneration = ref<number | null>(null)
+// 页头的配置版本是面板的版本号（按正在运行的内容对上历史版本），和配置页一致 / The header's config version is the panel's number (the running content matched against the history), as on the config page
+const activeSha = ref<string | null>(null)
+const versions = ref<ConfigVersion[]>([])
+const runningVersion = computed(() => runningVersionId(activeSha.value, versions.value))
 const kernelLabel = ref('')
 // 客户端 IP：内核 p28 起可以假装查询来自某个客户端，按客户端分流的规则才测得出来；内核不支持时不出现
 // Client IP: from kernel p28 a query can pretend to come from a client, which is how per-client rules get tested; absent when the kernel lacks it
@@ -49,14 +53,15 @@ async function startKixdns(): Promise<void> {
   // 刚启动的内核报什么能力要重新问一次：客户端 IP 那一栏靠它 / Ask the freshly started kernel for its capabilities again: the client IP field depends on them
   try {
     const overview = await apiRequest<Overview>('/api/v1/overview')
-    configGeneration.value = overview.active_config?.generation ?? null
+    activeSha.value = overview.active_config?.sha256 ?? null
     canClient.value = Boolean(overview.live && overview.health?.capabilities.includes('diagnostics_trace_client_v1'))
   } catch { /* 下次进页面再读 / read again on the next visit */ }
 }
 onMounted(async () => {
-  const [overview, kernel, config] = await Promise.allSettled([apiRequest<Overview>('/api/v1/overview'), apiRequest<KixdnsKernel>('/api/v1/kixdns/kernel'), apiRequest<ConfigDocument>('/api/v1/config')])
+  const [overview, kernel, config, history] = await Promise.allSettled([apiRequest<Overview>('/api/v1/overview'), apiRequest<KixdnsKernel>('/api/v1/kixdns/kernel'), apiRequest<ConfigDocument>('/api/v1/config'), apiRequest<ConfigVersions>('/api/v1/config/versions')])
+  if (history.status === 'fulfilled') versions.value = history.value.versions
   if (overview.status === 'fulfilled') {
-    configGeneration.value = overview.value.active_config?.generation ?? null
+    activeSha.value = overview.value.active_config?.sha256 ?? null
     canClient.value = Boolean(overview.value.live && overview.value.health?.capabilities.includes('diagnostics_trace_client_v1'))
     stopped.value = overview.value.service_active === false
   }
@@ -147,10 +152,11 @@ async function run(): Promise<void> {
       <template #meta>
         <!-- 事实行只写这一页有的事实：上一次查的是什么、什么时候 / The facts row states only what this page has: what was last queried and when -->
         <div class="ui-facts diag-facts">
-          <div v-if="configGeneration !== null"><span class="ui-lbl">配置版本</span><b class="ui-num">#{{ configGeneration }}</b></div>
+          <div v-if="runningVersion !== null"><span class="ui-lbl">配置版本</span><b class="ui-num">#{{ runningVersion }}</b></div>
           <div v-if="kernelLabel"><span class="ui-lbl">内核</span><b class="diag-fact-kernel">{{ kernelLabel }}</b></div>
           <div><span class="ui-lbl">上次查询</span><b v-if="lastRun"><UiDotText :parts="[lastRun.domain, lastRun.time]" /></b><b v-else>还没查过</b></div>
         </div>
+        <span class="ui-ph__lead ui-ph__phone"><UiDotText :parts="[...(runningVersion !== null ? [`版本 #${runningVersion}`] : []), lastRun ? `上次查询 ${lastRun.domain}` : '还没查过', ...(lastRun ? [lastRun.time] : [])]" /></span>
       </template>
     </UiPageHeader>
 
@@ -316,12 +322,6 @@ async function run(): Promise<void> {
 
 @media (max-width: 640px) {
   .diag-page, .diag-result, .diag-skeleton { gap: var(--s-4); }
-  /* 配置版本和内核两项一行，和其它页一样；上次查询单独占满一行，域名和时刻就不用折成两行 / Config version and kernel share a line, as on the other pages; the last query takes a whole line so the domain and time need not fold onto two */
-  .diag-facts { gap: var(--s-3) var(--s-5); }
-  .diag-facts > div { flex: 0 0 calc(50% - var(--s-5) / 2); }
-  .diag-facts > div:last-child { flex-basis: 100%; }
-  /* 「Run #30231271280」刚好一格宽：不许折成两行，多出的一两像素落进列距里 / 「Run #30231271280」 is exactly a column wide: it never folds onto two lines, a pixel or two spill into the column gap */
-  .diag-fact-kernel { white-space: nowrap; }
   /* 类型只有一到五个字母：下拉框 72，把宽度让给域名 / A type is one to five letters: a 72 select, the width goes to the domain */
   .diag-query { grid-template-columns: minmax(0, 1fr) 4.5rem auto; }
   /* 手机上客户端 IP 单独一行，排在最后 / On phones the client IP takes its own row at the end */

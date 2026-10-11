@@ -70,7 +70,7 @@ function closeReview(): void {
   reviewing.value = false
   void nextTick(() => document.querySelector<HTMLButtonElement>('.savebar__review')?.focus())
 }
-const saveLabel = computed(() => (deferSave.value ? '保存为待应用' : '保存并热加载'))
+const saveLabel = computed(() => (deferSave.value ? '保存为待应用' : '保存并应用'))
 useBarHeight(bar, '--savebar-h')
 watch(busy, (b) => { if (b) void nextTick(() => saveButton.value?.focus()) })
 
@@ -92,7 +92,7 @@ function discard(): void {
         <template v-if="draftStage === 'done'"><svg class="ui-check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5" /></svg><span class="ui-savebar__detail">{{ note }}</span></template>
         <template v-else-if="draftStage === 'checking'"><span class="ui-spin" aria-hidden="true"></span><span class="ui-savebar__detail">校验中</span></template>
         <template v-else-if="draftStage === 'validating'"><span class="ui-spin" aria-hidden="true"></span><span class="ui-savebar__detail"><UiDotText :parts="['第 1 步', '校验', ...(elapsed ? [elapsed] : [])]" /></span></template>
-        <template v-else-if="draftStage === 'applying'"><span class="ui-spin" aria-hidden="true"></span><span class="ui-savebar__detail"><UiDotText :parts="deferSave ? ['存成待应用版本', ...(elapsed ? [elapsed] : [])] : ['第 2 步', '写入并热加载', ...(elapsed ? [elapsed] : [])]" /></span></template>
+        <template v-else-if="draftStage === 'applying'"><span class="ui-spin" aria-hidden="true"></span><span class="ui-savebar__detail"><UiDotText :parts="deferSave ? ['存成待应用版本', ...(elapsed ? [elapsed] : [])] : ['第 2 步', '写入并应用', ...(elapsed ? [elapsed] : [])]" /></span></template>
         <template v-else-if="draftStage === 'failed'">
           <span class="ui-savebar__verdict">{{ verdict }}</span>
           <small><RuleText :text="note" @rule="emit('rule', $event)" @group="emit('group', $event)" /></small>
@@ -112,7 +112,7 @@ function discard(): void {
         <button v-if="!phone" class="ui-btn ui-btn--secondary savebar__discard" :class="{ 'is-aside': busy }" type="button" :inert="busy" @click="discard">放弃修改</button>
         <button v-if="!deferSave && !conflict" class="ui-btn ui-btn--secondary savebar__check" :class="{ 'is-aside': busy }" type="button" :inert="busy" @click="check"><ShieldCheck :size="16" aria-hidden="true" />校验</button>
         <!-- 别处先存了新版本时再保存只会再失败一次：先重新读取 / After someone else saved, saving again only fails again: reload first -->
-        <button ref="saveButton" class="ui-btn ui-btn--primary savebar__save config-save-button" type="button" :aria-busy="busy || undefined" :disabled="conflict && draftStage === 'failed'" @click="saveDraft"><span v-if="busy" class="ui-spin" aria-hidden="true"></span>{{ busy ? '保存中' : deferSave ? (phone ? '存为待应用' : '保存为待应用') : (phone ? '保存' : '保存并热加载') }}</button>
+        <button ref="saveButton" class="ui-btn ui-btn--primary savebar__save config-save-button" type="button" :aria-busy="busy || undefined" :disabled="conflict && draftStage === 'failed'" @click="saveDraft"><span v-if="busy" class="ui-spin" aria-hidden="true"></span>{{ busy ? '保存中' : saveLabel }}</button>
       </template>
     </footer>
   </Transition>

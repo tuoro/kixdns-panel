@@ -59,7 +59,7 @@ function closeDiff(): void { diffDialog.value?.close(); preview.value = null; bl
 async function restore(v: ConfigVersion): Promise<void> {
   const ok = await confirm.ask({
     title: `恢复到配置版本 #${v.id}`,
-    body: `${unsaved.value ? '编辑器里未保存的修改会丢失。' : ''}会用版本 #${v.id} 的内容生成一个新版本并立即应用；现在这一版留在历史里，随时可以再恢复。`,
+    body: `${unsaved.value ? '没保存的修改会丢失。' : ''}会用版本 #${v.id} 的内容生成一个新版本并立即应用；现在这一版留在历史里，随时可以再恢复。`,
     confirmLabel: `恢复版本 #${v.id}`,
     // 会丢掉草稿时按会丢东西处理：焦点放在取消上 / When it drops the draft it is treated as losing something: focus starts on cancel
     destructive: unsaved.value,

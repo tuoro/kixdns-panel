@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, SESSION_EXPIRED_EVENT, apiRequest, jsonBody, setCsrfToken } from './client'
+import { ApiError, PANEL_UNREACHABLE_EVENT, SESSION_EXPIRED_EVENT, apiRequest, isPanelDown, jsonBody, setCsrfToken } from './client'
 
 afterEach(() => {
   setCsrfToken('')
@@ -69,5 +69,39 @@ describe('API 客户端', () => {
       message: '用户名或密码错误',
     })
     expect(expired).not.toHaveBeenCalled()
+  })
+
+  it('面板没答话时广播连不上：断网、反向代理的 502–504', async () => {
+    const eventTarget = new EventTarget()
+    const unreachable = vi.fn()
+    eventTarget.addEventListener(PANEL_UNREACHABLE_EVENT, unreachable)
+    vi.stubGlobal('window', eventTarget)
+
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch') }))
+    const offline: unknown = await apiRequest('/api/v1/overview').catch((caught: unknown) => caught)
+    expect(offline).toMatchObject({ status: 0, code: 'network_unreachable' })
+    expect(isPanelDown(offline)).toBe(true)
+
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('<html>Bad Gateway</html>', { status: 502 })))
+    const proxied: unknown = await apiRequest('/api/v1/overview').catch((caught: unknown) => caught)
+    expect(proxied).toMatchObject({ status: 502, code: 'panel_unavailable' })
+    expect(isPanelDown(proxied)).toBe(true)
+    expect(unreachable).toHaveBeenCalledTimes(2)
+  })
+
+  it('面板自己答的 503 不算连不上', async () => {
+    const eventTarget = new EventTarget()
+    const unreachable = vi.fn()
+    eventTarget.addEventListener(PANEL_UNREACHABLE_EVENT, unreachable)
+    vi.stubGlobal('window', eventTarget)
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      '{"error":{"code":"kixdns_unavailable","message":"KixDNS 没有运行"}}',
+      { status: 503, headers: { 'content-type': 'application/json' } },
+    )))
+
+    const error: unknown = await apiRequest('/api/v1/overview').catch((caught: unknown) => caught)
+    expect(error).toMatchObject({ status: 503, code: 'kixdns_unavailable' })
+    expect(isPanelDown(error)).toBe(false)
+    expect(unreachable).not.toHaveBeenCalled()
   })
 })

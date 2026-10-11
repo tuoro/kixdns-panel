@@ -37,3 +37,28 @@ describe('保存条的计数和「改了哪些」说的是同一件事', () => {
     expect(diffModels(appliedModel.value, model)).toEqual([])
   })
 })
+
+// 看不见、也不写进配置的字段变了不算修改：关着的日志的级别、没打开的回答后检查、条件的内部编号、改动时间
+// Fields that are neither shown nor written do not count: the level of a log that is off, an unused response check, condition ids, the edit time
+const invisible: [string, (m: Model) => void][] = [
+  ['关着的日志换了级别', (m) => { const r = m.rules[1]!; r.log = { enabled: false, level: r.log.level === 'debug' ? 'warn' : 'debug' } }],
+  ['没打开的回答后检查里留着条件', (m) => { const r = m.rules[1]!; r.response = { ...r.response, mode: r.response.mode === 'custom' ? 'inherit' : r.response.mode, conditions: [{ id: 999, field: 'rcode', negate: false, values: ['SERVFAIL'] }] } }],
+  ['条件重新编号', (m) => { m.rules.forEach((r) => r.conditions.forEach((g) => g.forEach((c) => { c.id += 1000 }))) }],
+  ['改动时间', (m) => { m.rules[1]!.edited = '2030-01-01T00:00:00Z' }],
+]
+
+describe('看不见的字段不算修改', () => {
+  beforeEach(() => {
+    const start = demoModel()
+    // 让第二条规则的日志和回答后检查都是关着的 / Make sure the second rule's log and response check are off
+    start.rules[1]!.log = { enabled: false, level: 'info' }
+    start.rules[1]!.response = { ...start.rules[1]!.response, mode: 'inherit' }
+    resetTo(start)
+  })
+
+  it.each(invisible)('%s', (_, mutate) => {
+    mutate(model)
+    expect(changeCount.value).toBe(0)
+    expect(diffModels(appliedModel.value, model)).toEqual([])
+  })
+})

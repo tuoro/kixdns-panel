@@ -257,8 +257,10 @@ impl GeoDataManager {
         let mut size = 0_u64;
 
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk
-                .map_err(|error| GeoDataError::Download(format!("下载 Geo 数据失败：{error}")))?;
+            let chunk = chunk.map_err(|error| {
+                tracing::warn!(%error, "下载 Geo 数据时连接中断");
+                GeoDataError::Download("下载 Geo 数据时连接断了，稍后再试".to_owned())
+            })?;
             size = size
                 .checked_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX))
                 .ok_or_else(|| GeoDataError::Download("Geo 数据文件过大".to_owned()))?;
@@ -564,11 +566,10 @@ async fn request_with_safe_redirects(mut url: Url) -> Result<(Response, Url), Ge
             .resolve(&host, address)
             .build()
             .map_err(|error| GeoDataError::Internal(anyhow::Error::new(error)))?;
-        let response = client
-            .get(url.clone())
-            .send()
-            .await
-            .map_err(|error| GeoDataError::Download(format!("下载 Geo 数据失败：{error}")))?;
+        let response = client.get(url.clone()).send().await.map_err(|error| {
+            tracing::warn!(%error, %url, "连不上 Geo 数据地址");
+            GeoDataError::Download(format!("连不上 {host}，下载 Geo 数据失败，稍后再试"))
+        })?;
         if !response.status().is_redirection() {
             return Ok((response, url));
         }

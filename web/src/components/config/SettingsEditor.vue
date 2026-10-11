@@ -77,7 +77,7 @@ function summary(section: SettingSection): string[] {
   return entries.length ? entries : [section.description]
 }
 
-const GEO_GROUP = { id: 'geo', title: 'Geo 数据', description: 'GeoIP 与 GeoSite 数据的来源、自动更新和 MMDB 转换' }
+const GEO_GROUP = { id: 'geo', title: 'Geo 数据', description: 'GeoIP 与 GeoSite 数据的来源和自动更新' }
 const GEO_KEYS = ['geoip_db_path', 'geoip_dat_path', 'geosite_data_paths']
 function changedAny(keys: string[]): boolean {
   return keys.some((key) => props.changed?.has(key))

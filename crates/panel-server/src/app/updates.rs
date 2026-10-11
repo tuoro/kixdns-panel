@@ -242,7 +242,7 @@ async fn start_panel_update(
         .audit(
             Some(session.username),
             "panel.update.start".to_owned(),
-            format!("开始在线更新面板到 {target_version}"),
+            format!("目标 {target_version}"),
             unix_timestamp(),
         )
         .await
@@ -287,7 +287,7 @@ async fn update_kixdns_kernel(
             .audit(
                 Some(session.username),
                 "kixdns.kernel.update".to_owned(),
-                format!("内核更新到 {}", installed.label()),
+                format!("更新到 {}", installed.label()),
                 unix_timestamp(),
             )
             .await
@@ -322,7 +322,7 @@ async fn rollback_kixdns_kernel(
             .audit(
                 Some(session.username),
                 "kixdns.kernel.rollback".to_owned(),
-                format!("内核回退到 {}", installed.label()),
+                format!("回退到 {}", installed.label()),
                 unix_timestamp(),
             )
             .await

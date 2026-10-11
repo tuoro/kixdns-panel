@@ -82,8 +82,9 @@ pub(super) async fn cleanup_geo_data(
             Some(session.username),
             "config.geo_data.cleanup".to_owned(),
             format!(
-                "清理 Geo 数据：删除 {} 个文件，释放 {} 字节",
-                result.removed_files, result.reclaimed_bytes
+                "删除 {} 个文件，释放 {}",
+                result.removed_files,
+                human_bytes(result.reclaimed_bytes)
             ),
             unix_timestamp(),
         )
@@ -132,10 +133,9 @@ pub(super) async fn save_geo_data_schedule(
         .audit(
             Some(session.username),
             "config.geo_data.schedule".to_owned(),
-            schedule.interval_hours.map_or_else(
-                || "关闭 Geo 自动更新".to_owned(),
-                |hours| format!("设置 Geo 自动更新间隔为 {hours} 小时"),
-            ),
+            schedule
+                .interval_hours
+                .map_or_else(|| "关闭".to_owned(), |hours| format!("每 {hours} 小时")),
             unix_timestamp(),
         )
         .await
@@ -293,4 +293,34 @@ async fn write_synced_geo_config(
         )
         .await?;
     Ok(())
+}
+
+/// 审计详情里的大小写成 KB / MB，不写一长串字节数 / Sizes in audit details read as KB or MB rather than a long byte count
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["字节", "KB", "MB", "GB"];
+    let mut value = bytes;
+    let mut unit = 0;
+    let mut tenths = 0;
+    while value >= 1024 && unit < UNITS.len() - 1 {
+        tenths = (value % 1024) * 10 / 1024;
+        value /= 1024;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{value} {}", UNITS[0])
+    } else {
+        format!("{value}.{tenths} {}", UNITS[unit])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::human_bytes;
+
+    #[test]
+    fn sizes_read_in_the_nearest_unit() {
+        assert_eq!(human_bytes(512), "512 字节");
+        assert_eq!(human_bytes(1536), "1.5 KB");
+        assert_eq!(human_bytes(5 * 1024 * 1024), "5.0 MB");
+    }
 }

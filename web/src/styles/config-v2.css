@@ -19,11 +19,11 @@ body { background: var(--l-canvas); }
 .toolbar__lead { margin: 0; color: var(--l-ink-2); font-size: var(--t-2); }
 .cfg__nav { gap: var(--s-2) var(--s-4); border-bottom: 1px solid var(--l-hair); }
 .cfg__nav .ui-tabs { border-bottom: 0; }
-.cfg__whole { display: flex; margin: 0; }
+.cfg__whole { display: flex; align-items: center; margin: 0; }
 .cfg__to-form { display: none; }
-.cfg__whole > span { position: relative; padding-bottom: var(--s-3); color: var(--accent); font-size: var(--t-3); font-weight: var(--w-medium); white-space: nowrap; }
-/* 「完整配置」和别的页签同一个选中样子：强调色的字和下划线，不另用绿色 / 完整配置 looks like any selected tab: accent text and underline, not a green of its own */
-.cfg__whole > span::after { position: absolute; right: 0; bottom: -1px; left: 0; border-top: 2px solid var(--accent); content: ""; }
+/* JSON 视图只有一样东西，用普通的卡片标题，不画只有一个页签的页签条 / The JSON view holds one thing: a plain card-size heading, not a tab strip with a single tab */
+.cfg__whole > h2 { margin: 0; color: var(--l-ink); font-size: var(--t-4); font-weight: var(--w-bold); white-space: nowrap; }
+.cfg__nav--json { border-bottom: 0; }
 .cfg__tools .ui-seg { margin-right: var(--s-2); }
 .cfg__head-action { margin-left: var(--s-1); padding: 0; border: 0; background: none; color: var(--l-ink); font: inherit; font-weight: var(--w-medium); text-decoration: underline; text-decoration-color: var(--l-line-strong); text-underline-offset: 3px; cursor: pointer; }
 .cfg__head-action:hover { text-decoration-color: var(--l-ink); }
@@ -87,10 +87,11 @@ body { background: var(--l-canvas); }
   .toolbar__spacer { display: none; }
   .toolbar > .ui-btn { flex: 0 0 auto; }
   .toolbar__lead { flex: 1 1 100%; }
-  .cfg__whole { justify-content: space-between; align-items: flex-start; }
+  .cfg__whole { justify-content: space-between; }
   .cfg__to-form { display: inline-flex; margin-right: calc(var(--s-3) * -1); }
   .cfg__nav { row-gap: var(--s-3); border-bottom: 0; }
-  .cfg__nav .ui-tabs, .cfg__whole { width: 100%; border-bottom: 1px solid var(--l-hair); }
+  .cfg__nav .ui-tabs { width: 100%; border-bottom: 1px solid var(--l-hair); }
+  .cfg__whole { width: 100%; }
   .cfg__tools { display: none; }
   /* 保存条一行：状态、备注、校验（图标）、保存 / The save bar is one row: status, note, validate (icon), save */
   .cfg__savebar.ui-savebar { flex-wrap: nowrap; }
@@ -846,7 +847,7 @@ body { background: var(--l-canvas); }
 }
 /* 删除这类左边的文字动作：图标贴着内容左边起 / Destructive text actions on the left: the icon starts at the content edge */
 .psheet__delete, .editor__delete { position: relative; padding-inline: 0; margin-left: 0; }
-.psheet__delete::before, .editor__delete::before { position: absolute; inset: calc((var(--h-touch) - var(--h-md)) / -2) calc(var(--s-2) * -1); content: ''; }
+.psheet__delete::before, .editor__delete::before { position: absolute; inset: calc(min(0px, (100% - var(--h-touch)) / 2)) calc(var(--s-2) * -1); content: ''; }
 @media (max-width: 640px) {
   /* 编辑页：手机上不再重复一遍表单（「这条规则会」），只留「试一个域名」 / Editor: phones drop the restated form (这条规则会) and keep only 试一个域名 */
   .editor__back-icon { display: inline-grid; flex: 0 0 auto; width: var(--s-6); margin-left: calc(var(--s-2) * -1); }
@@ -1137,7 +1138,7 @@ body { background: var(--l-canvas); }
 }
 .pdrawer__uses-body { display: none; margin: 0; color: var(--l-ink-3); font-size: var(--t-2); }
 .pdrawer__delete { color: var(--err-l); position: relative; padding-inline: 0; margin-left: 0; }
-.pdrawer__delete::before { position: absolute; inset: calc((var(--h-touch) - var(--h-md)) / -2) calc(var(--s-2) * -1); content: ''; }
+.pdrawer__delete::before { position: absolute; inset: calc(min(0px, (100% - var(--h-touch)) / 2)) calc(var(--s-2) * -1); content: ''; }
 @media (max-width: 640px) {
   .pdrawer__uses-body { display: block; }
   .pdrawer__foot > .pdrawer__uses, .pdrawer__delete.is-locked { display: none; }
@@ -1542,8 +1543,8 @@ body { background: var(--l-canvas); }
 .sets__card { overflow: clip; }
 .sets__note { color: var(--l-ink-3); font-size: var(--t-1); }
 @media (min-width: 861px) {
-  /* 基础设置：名称列 300，控件一直排到窗格内边 / Basic settings: a 300 label column, controls running to the pane's inner edge */
-  .sets__card .ui-setrow { grid-template-columns: minmax(0, 300px) minmax(0, 1fr); }
+  /* 基础设置：名称列 300，控件最宽 320（三段的分段控件拉到 500 多宽时每段都太空） / Basic settings: a 300 label column, controls at most 320 (stretched past 500 a three-option segmented control reads as empty) */
+  .sets__card .ui-setrow { grid-template-columns: minmax(0, 300px) minmax(0, 320px); }
 }
 /* 窗格窄于 38rem（1024 宽的双栏）时照样上下排：上面那条 300 列的规则比组件库的容器查询更具体，不补这一条，三段的分段控件会被裁掉一截
    Below 38rem (the split view at 1024) the rows still stack: the 300-column rule above outranks the kit's container query, and without this the
@@ -1562,15 +1563,14 @@ body { background: var(--l-canvas); }
   .settings-nav { padding-bottom: 0; }
 }
 @media (min-width: 861px) {
-  /* 基础设置：左栏是工作区底色，选中项是白色凸起块（和侧栏的选中项一样）；右栏的组标题是小标签。组件自带的样式带作用域，这里用更长的选择器盖过去
-     Settings: the nav column takes the ground colour and the selected item is a white raised block (like the sidebar's); the pane's group title is a small label. The component's own styles are scoped, so longer selectors here win */
+  /* 基础设置：左栏是工作区底色，选中项是白色凸起块（和侧栏的选中项一样）；右栏的组标题和卡片标题同号，和手机一样。组件自带的样式带作用域，这里用更长的选择器盖过去
+     Settings: the nav column takes the ground colour and the selected item is a white raised block (like the sidebar's); the pane's group title is card-title size, as on phones. The component's own styles are scoped, so longer selectors here win */
   .sets__card .settings .settings-nav { top: var(--s-6); gap: 2px; padding: var(--s-4) var(--s-5); background: var(--l-canvas); border-right: 1px solid var(--l-hair); }
   .sets__card .settings .settings-search { margin-bottom: var(--s-3); }
   .sets__card .settings .settings-nav__item { min-height: var(--h-md); padding: 0 var(--s-3); color: var(--l-ink-2); font-size: var(--t-3); font-weight: var(--w-normal); }
   .sets__card .settings .settings-nav__item[aria-current="true"] { background: var(--l-surface); box-shadow: var(--shadow-raise); color: var(--l-ink); font-weight: var(--w-medium); }
   .sets__card .settings .settings-pane { padding: var(--s-4) var(--s-5) var(--s-5); border-left: 0; }
-  .sets__card .settings .settings-group__head--lead { margin-bottom: var(--s-2); }
-  .sets__card .settings .settings-group__head--lead h2 { color: var(--l-ink-3); font-size: var(--t-1); font-weight: var(--w-bold); letter-spacing: .06em; text-transform: uppercase; }
+  .sets__card .settings .settings-group__head--lead { margin-bottom: var(--s-3); }
 }
 @media (min-width: 861px) and (hover: hover) {
   .sets__card .settings .settings-nav__item:hover:not([aria-current="true"]) { background: var(--l-sunk); color: var(--l-ink); }
@@ -1781,6 +1781,12 @@ body { background: var(--l-canvas); }
    The JSON view's card: the gutter takes the card's white with a hairline, the card reaches 24 above the viewport's bottom, and the last line keeps a little room instead of being sliced */
 .cfg__json-editor .cm-gutters { background: var(--l-surface); }
 .cfg__json-editor .cm-content { padding-bottom: var(--s-2); }
+/* 行号离卡片左边 16、离细线 8，代码离细线 8：行号不再贴着卡片边 / Line numbers sit 16 from the card's edge and 8 from the hairline, code 8 past it, so the numbers no longer hug the edge */
+.cfg__json-editor .cm-lineNumbers .cm-gutterElement { padding: 0 var(--s-2) 0 var(--s-4); }
+.cfg__json-editor .cm-content { padding-left: var(--s-1); }
+/* 标题和下面那句说明是一组：间距 8，不按页面的块间距 / The heading and the note under it are one group: 8 apart, not the page's block gap */
+.cfg__nav--json + .cfg__json { margin-top: calc(var(--s-2) - var(--s-5)); }
+@media (max-width: 640px) { .cfg__nav--json + .cfg__json { margin-top: calc(var(--s-2) - var(--s-4)); } }
 @media (min-width: 641px) { .cfg__json-editor.json-editor { height: max(440px, calc(100dvh - 17rem)); } }
 /* 641–860 有顶栏和底部页签栏：卡片停在页签栏上面 24 / 641–860 has the top bar and the bottom tab bar: the card stops 24 above the tab bar */
 @media (min-width: 641px) and (max-width: 860px) { .cfg__json-editor.json-editor { height: max(440px, calc(100dvh - 17rem - var(--mobile-nav-height) - var(--app-header-height))); } }
@@ -1795,5 +1801,10 @@ body { background: var(--l-canvas); }
 }
 /* 宽屏的映射添加行不画「+」：它挤在卡片内边距里，左边的强调条和占位字已经说明这是添加 / The wide mapping add row drops the 「+」: it was squeezed into the card padding, and the accent bar and placeholder already say "add" */
 @media (min-width: 641px) { .rw__addicon { display: none; } }
-/* 1024 以下表头的长说明会把「子域名」折成两行，收起来；帮助里有同样的话 / Below 1024 the header's long note broke 子域名 across lines, so it folds away; the help says the same */
-@media (max-width: 1023px) { .rw__head .rlist__order { display: none; } }
+/* 1280 以下表头的说明会折成两行，收起来；帮助里有同样的话 / Below 1280 the header's note would fold onto two lines, so it goes away; the help says the same */
+@media (max-width: 1279px) { .rw__head .rlist__order { display: none; } }
+/* 窄于 360 的手机放不下「已修改 N 处」加三个按钮：状态单独一行，按钮在下一行 / Below 360 a phone cannot fit 已修改 N 处 beside three buttons: the status takes its own line and the buttons the next */
+@media (max-width: 359px) {
+  .cfg__savebar.ui-savebar { flex-wrap: wrap; }
+  .cfg__savebar:not(.ui-savebar--err) .ui-savebar__status { flex: 1 1 100%; }
+}

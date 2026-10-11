@@ -446,7 +446,7 @@ async fn setup(
         .audit(
             Some(username),
             "auth.setup".to_owned(),
-            "创建初始管理员".to_owned(),
+            String::new(),
             unix_timestamp(),
         )
         .await
@@ -845,7 +845,7 @@ async fn restore_config(
         .audit(
             Some(session.username),
             "config.restore".to_owned(),
-            format!("恢复配置版本 #{id}，生成版本 #{}", result.version_id),
+            format!("#{id}，生成版本 #{}", result.version_id),
             unix_timestamp(),
         )
         .await
@@ -873,7 +873,7 @@ async fn delete_config_version(
         .audit(
             Some(session.username),
             "config.version.delete".to_owned(),
-            format!("删除配置版本 #{id}"),
+            format!("版本 #{id}"),
             unix_timestamp(),
         )
         .await
@@ -900,7 +900,7 @@ async fn delete_config_versions(
         .audit(
             Some(session.username),
             "config.version.bulk_delete".to_owned(),
-            format!("批量删除 {} 个配置版本", deleted_ids.len()),
+            format!("{} 个版本", deleted_ids.len()),
             unix_timestamp(),
         )
         .await
@@ -973,7 +973,7 @@ async fn rollback_config(
         .audit(
             Some(actor.to_owned()),
             "config.auto_rollback".to_owned(),
-            format!("自动回滚生成配置版本 #{}", rollback.version_id),
+            format!("生成配置版本 #{}", rollback.version_id),
             unix_timestamp(),
         )
         .await

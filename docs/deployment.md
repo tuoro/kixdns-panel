@@ -128,6 +128,16 @@ KixDNS 默认监听 `0.0.0.0:53`。安装器在改动主机之前按配置里的
 
 `0.0.0.0` 包括公网网卡：**不要在路由器上映射 `5738`**，防火墙或安全组只放行可信网段。只需本机反向代理时，把 `/etc/kixdns-panel/panel.env` 的 `KIXDNS_PANEL_BIND` 改为 `127.0.0.1:5738` 并重启面板。升级只会把旧默认值 `127.0.0.1:5738` 迁移为新默认值，自定义值不变。
 
+### 忘记管理员密码
+
+面板里没有找回密码的入口，在面板所在的机器上执行：
+
+```bash
+sudo -u kixdns-panel /usr/local/bin/kixdns-panel-server --database /var/lib/kixdns-panel/panel.db reset-admin
+```
+
+它删除所有管理员账号和登录会话，配置、版本历史和操作审计都保留，操作审计里会多一条「重置管理员」。之后打开面板会重新进入「创建管理员」。改过 `KIXDNS_PANEL_DATABASE` 的，把 `--database` 换成 `/etc/kixdns-panel/panel.env` 里的路径。
+
 ## HTTPS 反向代理
 
 Nginx 最小片段（TLS 按现有配置补充）：

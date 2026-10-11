@@ -131,6 +131,26 @@ impl Database {
         .await
     }
 
+    /// 删除所有管理员和他们的登录会话。忘记密码时在面板所在的机器上执行；之后打开面板会回到「创建管理员」。
+    /// 配置、版本历史和审计记录都不动。返回删掉了几个管理员。
+    /// Delete every administrator and their sessions. Run on the panel's machine after a forgotten password; the panel then opens
+    /// on 创建管理员 again. Configuration, version history and the audit log are untouched. Returns how many administrators went.
+    pub async fn reset_admins(&self, now: i64) -> anyhow::Result<usize> {
+        self.call(move |connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute("DELETE FROM sessions", [])?;
+            let removed = transaction.execute("DELETE FROM users", [])?;
+            transaction.execute(
+                "INSERT INTO audit_events(actor, action, detail, created_at) VALUES(NULL, 'auth.reset_admin', ?1, ?2)",
+                params![format!("删除 {removed} 个管理员"), now],
+            )?;
+            transaction.commit()?;
+            Ok(removed)
+        })
+        .await
+    }
+
     pub async fn create_first_user(
         &self,
         username: String,
@@ -962,6 +982,26 @@ mod tests {
         CURRENT_SCHEMA_VERSION, Database, MAX_AUDIT_EVENTS, MAX_CONFIG_VERSIONS,
         METRIC_SAMPLE_RETENTION_SECONDS, MetricSample, prune_audit_events, prune_config_versions,
     };
+
+    #[tokio::test]
+    async fn reset_admins_brings_back_setup_and_keeps_the_audit_trail() {
+        let directory = tempdir().unwrap();
+        let database = Database::open(directory.path().join("panel.db"))
+            .await
+            .unwrap();
+        database
+            .create_first_user("admin".to_owned(), "hash".to_owned(), 1)
+            .await
+            .unwrap();
+        assert!(database.has_users().await.unwrap());
+        assert_eq!(database.reset_admins(2).await.unwrap(), 1);
+        assert!(!database.has_users().await.unwrap());
+        // 重置后能重新创建管理员 / A new administrator can be created after the reset
+        database
+            .create_first_user("admin2".to_owned(), "hash".to_owned(), 3)
+            .await
+            .unwrap();
+    }
 
     #[test]
     fn retains_only_recent_configuration_and_audit_rows() {

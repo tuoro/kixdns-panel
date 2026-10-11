@@ -21,7 +21,7 @@ import OutcomeParams from './OutcomeParams.vue'
 import { usePhone } from './phone'
 import PhoneSheet from './PhoneSheet.vue'
 import RawRuleEditor from './RawRuleEditor.vue'
-import { editorEditedBy, hitsOf, listOf, model, newId } from './store'
+import { editorEditedBy, hitsOf, listOf, model, newId, ruleShape } from './store'
 import { runtimeCapabilities } from './useConfigDocument'
 import { editedText, groupBrief } from './view'
 // JSON 编辑器（CodeMirror）只在用到时才加载：配置页的首包不带它 / The JSON editor (CodeMirror) loads on first use, so the config page's first chunk leaves it out
@@ -113,8 +113,9 @@ function setRawMode(next: string): void {
 }
 // 当前这一种写法里的内核规则 / The kernel rules as the active view holds them
 const currentRaw = (): Record<string, unknown>[] => (rawMode.value === 'form' ? JSON.parse(JSON.stringify(rawRules)) as Record<string, unknown>[] : JSON.parse(rawText.value) as Record<string, unknown>[])
+// 和保存条同一把尺子：看不见的字段（关着的日志的级别等）改了不算没完成的修改 / The save bar's yardstick: hidden fields (the level of a log that is off and so on) do not make an unfinished edit
 function snapshot(): string {
-  if (!draft.raw) return JSON.stringify(draft)
+  if (!draft.raw) return ruleShape(draft)
   let raw: unknown
   try { raw = currentRaw() } catch { raw = rawText.value }
   return JSON.stringify({ ...draft, raw })
@@ -175,7 +176,8 @@ const afterSummary = computed(() => {
   const f = upstreamGroup.value ? fallbackSentence(model, upstreamGroup.value) : ''
   return f ? `沿用上游组：${f}` : '沿用上游组'
 })
-const moreSummary = computed(() => [draft.log.enabled ? `日志${levelLabel(draft.log.level)}` : '日志关', ...(draft.outcome.type === 'upstream' ? [draft.ecs === 'inherit' ? 'ECS 沿用' : ecsText(draft.ecs)] : []), positions.value[position.value]?.label.replace(/ · .*$/, '') ?? '', draft.note ? '有备注' : '无备注'].filter(Boolean).join(' · '))
+// 位置不写：面板顶上那行已经说了第几条 / The position is left out: the line at the top of the panel already says which one it is
+const moreSummary = computed(() => [draft.log.enabled ? `日志${levelLabel(draft.log.level)}` : '日志关', ...(draft.outcome.type === 'upstream' ? [draft.ecs === 'inherit' ? '子网按组' : ecsText(draft.ecs)] : []), draft.note ? '有备注' : '无备注'].join(' · '))
 
 // ---------- 那么 / outcome ----------
 const OUTCOMES = [
@@ -350,10 +352,11 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
       <input ref="nameInput" v-model="draft.name" class="editor__name" aria-label="规则名称，可以不填，不填就用条件当名字" title="名字可以不填，列表里用条件当标题" :placeholder="namePlaceholder" maxlength="40">
       <label class="ui-switch editor__enabled"><input v-model="draft.enabled" type="checkbox" aria-label="启用这条规则"><i></i><small>{{ draft.enabled ? '启用' : '已停用' }}</small></label>
     </div>
-    <!-- 面板：名字下面一行事实，再一句这条规则会做什么（整页编辑时这句在右栏） / Inspector: a facts line under the name, then what the rule does (the full-page editor says it in the aside) -->
+    <!-- 面板：名字下面一行事实，再一句这条规则会做什么（整页编辑时这句在右栏）。没起名字时名字的占位已经是条件，下面的结果卡写着去向，这句就不再重复
+         Inspector: a facts line under the name, then what the rule does (the full-page editor says it in the aside). Unnamed, the name placeholder already reads as the condition and the result card below names the outcome, so the sentence is not repeated -->
     <template v-if="inspector">
       <p class="editor__meta">{{ original ? `第 ${Number(position) + 1} 条 · 命中 ${hitsOf(original).toLocaleString('en-US')} 次 · ${Number.isNaN(Date.parse(original.edited)) ? '从配置文件读进来的' : `${editedText(original.edited)}改过`}` : `新规则 · 会排在第 ${Number(position) + 1} 条` }}</p>
-      <p v-if="!draft.raw" class="editor__say">{{ readingLead }}<template v-for="line in readingMore" :key="line">；{{ line }}</template></p>
+      <p v-if="!draft.raw && draft.name.trim()" class="editor__say">{{ readingLead }}<template v-for="line in readingMore" :key="line">；{{ line }}</template></p>
     </template>
 
     <div class="editor__grid">

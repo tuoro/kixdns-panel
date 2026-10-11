@@ -97,8 +97,8 @@ export function formatKixdnsVersion(version: KixdnsVersionIdentity | null | unde
   if (!version) return '未记录'
   if (version.source === 'release') return version.release_tag ?? 'Release'
   if (version.source === 'action') {
-    if (version.run_id) return `Run #${version.run_id}`
-    return version.source_id ? `Artifact #${version.source_id}` : 'Action'
+    if (version.run_id) return `构建 #${version.run_id}`
+    return version.source_id ? `构建产物 #${version.source_id}` : '构建'
   }
   return '未记录'
 }

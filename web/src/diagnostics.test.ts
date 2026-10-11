@@ -148,6 +148,7 @@ describe('内核的名字换回配置页上的名字', () => {
     entry: (id: string) => (id === 'upstream-cn' ? '主列表' : pipeline(id)),
     matched: (label: string) => (label === '其余请求' ? '没有规则命中，按「其余请求」处理' : null),
     plumbing: (label: string, at: string | null) => label === at && at === 'upstream-cn',
+    ownForward: () => false,
   }
   it.each([
     [kstep('pipeline', 'selected', 'main'), '进入主列表'],
@@ -167,10 +168,22 @@ describe('内核的名字换回配置页上的名字', () => {
 })
 
 describe('转发用的那条规则不单列', () => {
-  const names = { rule: () => null, pipeline: () => null, entry: () => null, matched: () => null, plumbing: (label: string, at: string | null) => label === at && at === 'upstream-cn' }
+  const names = { rule: () => null, pipeline: () => null, entry: () => null, matched: () => null, plumbing: (label: string, at: string | null) => label === at && (at === 'upstream-cn' || at === 'rule-3'), ownForward: (id: string) => id === 'rule-3' }
   it('和所在 Pipeline 同名的那条去掉，用户的规则留着', () => {
     const steps = [kstep('rule', 'matched', '国内域名', '管线：main'), kstep('pipeline', 'jump', 'main -> upstream-cn'), kstep('rule', 'matched', 'upstream-cn', '管线：upstream-cn')]
     expect(hidePlumbing(steps, names).map((step) => step.label)).toEqual(['国内域名', 'main -> upstream-cn'])
     expect(hidePlumbing(steps, null)).toHaveLength(3)
+  })
+
+  it('规则自带的转发：跳进去、查缓存、里面那条都不单列，只剩命中和转发', () => {
+    const steps = [
+      kstep('rule', 'matched', '苹果服务', '管线：main'),
+      kstep('decision', 'jump', '跳转到管线 rule-3'),
+      kstep('pipeline', 'jump', 'main -> rule-3'),
+      kstep('rule_cache', 'miss', '管线 rule-3 的规则缓存未命中'),
+      kstep('rule', 'matched', 'rule-3', '管线：rule-3'),
+      kstep('decision', 'forward', '规则 rule-3 转发', '目标：1.1.1.1:53'),
+    ]
+    expect(hidePlumbing(steps, names).map((step) => step.label)).toEqual(['苹果服务', '规则 rule-3 转发'])
   })
 })
