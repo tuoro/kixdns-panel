@@ -147,6 +147,14 @@ test('断网时内容区顶上挂出「连不上面板」，联网后自己收�
   await expect(state).toContainText('状态未知')
   await expect(state).not.toContainText('运行中')
   await expect(state.locator('.ui-dot')).toHaveClass(/ui-dot--off/)
+  // 「已运行」也是上次读到的，不再写；配置版本和「更新于」照写；运行配置卡的「已生效」不上色
+  // 已运行 is also last-read and is dropped; the config version and 更新于 stay; the config card's 已生效 loses its colour
+  const heading = page.locator('.overview-heading')
+  await expect(heading).not.toContainText('已运行')
+  await expect(heading).toContainText(testInfo.project.name === 'mobile' ? '版本 #' : '更新于')
+  const configTag = page.locator('.overview-config-state')
+  await expect(configTag).toHaveText('已生效')
+  await expect(configTag).not.toHaveClass(/ui-tag--ok/)
   // 滚到页底也还在：宽屏贴着窗口顶（侧栏不占顶部），手机贴着顶栏下沿 / Still there after scrolling to the bottom: at the window's top on wide screens (the sidebar leaves the top free), under the top bar on phones
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
   const top = testInfo.project.name === 'mobile' ? await page.locator('.app-header').evaluate((el) => el.getBoundingClientRect().bottom) : 0
@@ -157,6 +165,8 @@ test('断网时内容区顶上挂出「连不上面板」，联网后自己收�
   // 连上后页头恢复 / Reconnected, the header is restored
   await expect(state).toContainText('运行中')
   await expect(state.locator('.ui-dot')).not.toHaveClass(/ui-dot--off/)
+  await expect(heading).toContainText('已运行')
+  await expect(configTag).toHaveClass(/ui-tag--ok/)
 })
 
 test('连不上面板时配置页和系统页的页头也写「状态未知」，连上后恢复 @responsive', async ({ page, context }, testInfo) => {

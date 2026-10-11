@@ -83,8 +83,10 @@ const serviceLabel = computed(() => {
   if (current?.active_state === 'deactivating') return '正在停止'
   return { ok: '运行中', warn: '正在启动', err: '启动失败', off: '已停止' }[serviceTone.value]
 })
-// 连不上面板时，上次读到的状态已经不能当真：点变灰，写「状态未知」，连上后恢复（顶上的横幅说为什么）
-// While the panel is unreachable the last state read can no longer be trusted: the dot turns grey and reads 状态未知, restored on reconnect (the banner above says why)
+// 连不上面板时，上次读到的状态已经不能当真：点变灰，写「状态未知」，不再写「已运行」，连上后恢复（顶上的横幅说为什么）；
+// 配置版本和「更新于」照写——后者正说明这些数是什么时候读到的
+// While the panel is unreachable the last state read can no longer be trusted: the dot turns grey and reads 状态未知 and 已运行 is
+// dropped, restored on reconnect (the banner above says why); the config version and 更新于 stay, the latter saying when these figures were read
 const { down: panelDown } = useConnection()
 const headTone = computed<Tone>(() => (panelDown.value ? 'off' : serviceTone.value))
 const headLabel = computed(() => (panelDown.value ? '状态未知' : service.value ? serviceLabel.value : '暂不可用'))
@@ -282,7 +284,9 @@ const rules = computed(() => [...(displayOverview.value?.metrics.rules ?? [])].s
 const configTag = computed(() => {
   if (!overview.value) return { label: '未运行', tone: '' }
   if (runtimeUnavailable.value) return { label: '运行快照', tone: '' }
-  return overview.value.active_config.last_reload.success ? { label: '已生效', tone: 'ok' } : { label: '应用失败', tone: 'warn' }
+  const tag = overview.value.active_config.last_reload.success ? { label: '已生效', tone: 'ok' } : { label: '应用失败', tone: 'warn' }
+  // 连不上面板时这是上次读到的结论：照写，但不上色，和页头的「状态未知」一致 / While the panel is unreachable this is the last-read verdict: still written, but uncoloured, matching 状态未知 in the header
+  return panelDown.value ? { ...tag, tone: '' } : tag
 })
 
 // ---------- 查询排行 ----------
@@ -654,14 +658,14 @@ onBeforeUnmount(() => {
             <span class="ui-lbl">状态</span>
             <b :title="service?.unit"><span class="ui-dot" :class="{ 'ui-dot--warn': headTone === 'warn', 'ui-dot--err': headTone === 'err', 'ui-dot--off': headTone === 'off' }" aria-hidden="true"></span>{{ headLabel }}<small v-if="unusualServiceState && !panelDown" class="ui-mono">{{ unusualServiceState }}</small></b>
           </div>
-          <div v-if="metaTail === 'live' && overview"><span class="ui-lbl">已运行</span><b>{{ formatDuration(overview.health.uptime_seconds) }}</b></div>
+          <div v-if="metaTail === 'live' && overview && !panelDown"><span class="ui-lbl">已运行</span><b>{{ formatDuration(overview.health.uptime_seconds) }}</b></div>
           <div v-else-if="metaTail === 'snapshot'"><span class="ui-lbl">快照</span><b>{{ snapshotLabel }}</b></div>
           <div v-if="overview && runningVersion !== null"><span class="ui-lbl">配置版本</span><b>#{{ runningVersion }}</b></div>
           <div v-if="upstreamFact.length"><span class="ui-lbl">上游</span><b><UiDotText :parts="upstreamFact" /></b></div>
           <div v-if="metaTail === 'live'" class="overview-meta-time"><span class="ui-lbl">更新于</span><b>{{ updatedLabel }}</b></div>
         </div>
         <!-- 手机上一行说完：状态、已运行、配置版本，和配置页的页头一样 / On phones one line says it all: state, uptime, config version, as on the config page -->
-        <span v-if="service || displayOverview" class="ui-ph__lead ui-ph__phone"><span class="ui-dot" :class="{ 'ui-dot--warn': headTone === 'warn', 'ui-dot--err': headTone === 'err', 'ui-dot--off': headTone === 'off' }" aria-hidden="true"></span><UiDotText :parts="[headLabel, ...(metaTail === 'live' && overview ? [`已运行 ${formatDuration(overview.health.uptime_seconds)}`] : metaTail === 'snapshot' ? [`快照 ${snapshotLabel}`] : []), ...(runningVersion !== null ? [`版本 #${runningVersion}`] : [])]" /></span>
+        <span v-if="service || displayOverview" class="ui-ph__lead ui-ph__phone"><span class="ui-dot" :class="{ 'ui-dot--warn': headTone === 'warn', 'ui-dot--err': headTone === 'err', 'ui-dot--off': headTone === 'off' }" aria-hidden="true"></span><UiDotText :parts="[headLabel, ...(metaTail === 'live' && overview && !panelDown ? [`已运行 ${formatDuration(overview.health.uptime_seconds)}`] : metaTail === 'snapshot' ? [`快照 ${snapshotLabel}`] : []), ...(runningVersion !== null ? [`版本 #${runningVersion}`] : [])]" /></span>
         <span v-else-if="loading" class="sk overview-skeleton-meta" role="status" aria-label="读取服务状态"></span>
         <span v-else>服务状态暂不可用</span>
       </template>
