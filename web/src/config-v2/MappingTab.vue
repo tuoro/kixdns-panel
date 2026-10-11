@@ -141,7 +141,7 @@ function runImport(): void {
       <!-- 和规则列表同一种排法：工具行是卡片的第一行（搜索在左，批量导入是右端的文字按钮），添加行在它下面
            Laid out like the rules list: the tools row is the card's first row (search left, 批量导入 as a text button at the right end), the add row under it -->
       <div class="rw__tools">
-        <label v-if="model.mappings.length" class="ui-input rw__search"><Search :size="16" aria-hidden="true" /><input v-model="query" type="search" aria-label="搜索域名映射" placeholder="搜索域名或地址"></label>
+        <label v-if="model.mappings.length" class="ui-input rw__search"><Search :size="16" aria-hidden="true" /><input v-model="query" type="search" aria-label="搜索域名映射" placeholder="搜索域名或回答"></label>
         <button class="ui-btn ui-btn--text rw__import" type="button" @click="importDialog?.showModal()"><FileInput :size="16" aria-hidden="true" />批量导入</button>
         <UiHelp topic="mapping" />
       </div>

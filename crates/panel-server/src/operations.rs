@@ -229,8 +229,16 @@ impl Operations {
             UnixStream::connect(&self.service_helper_socket),
         )
         .await
-        .map_err(|_| OperationError::Failed("helper 连接超时".to_owned()))?
-        .map_err(|error| OperationError::Failed(format!("无法连接服务控制 helper：{error}")))?;
+        .map_err(|_| {
+            OperationError::Failed(
+                "连不上面板的服务助手（kixdns-panel-helper）：连接超时".to_owned(),
+            )
+        })?
+        .map_err(|error| {
+            OperationError::Failed(format!(
+                "连不上面板的服务助手（kixdns-panel-helper）：{error}"
+            ))
+        })?;
         stream
             .write_all(action.as_bytes())
             .await

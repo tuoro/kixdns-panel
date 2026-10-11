@@ -17,7 +17,7 @@ useBarHeight(inner, '--conn-h')
   <div class="conn" role="status">
     <div v-if="down && !booting" ref="inner" class="conn__inner">
       <WifiOff :size="16" aria-hidden="true" />
-      <p><strong>连不上面板</strong><span>网络断了，或者面板正在重启。连上后这条会自己消失。</span></p>
+      <p><strong>连不上面板</strong><span>网络断了，或者面板正在重启。连上后自动恢复。</span></p>
       <button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" :disabled="checking" @click="retry">{{ checking ? '正在重试' : '重试' }}</button>
     </div>
   </div>

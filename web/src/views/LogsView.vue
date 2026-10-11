@@ -441,7 +441,7 @@ onBeforeUnmount(() => window.clearInterval(timer))
         </div>
       </header>
       <header v-else class="log-toolbar">
-        <label class="ui-input log-search"><Search :size="16" aria-hidden="true" /><input v-model="auditQuery" aria-label="筛选操作审计" :placeholder="narrow ? '筛选操作记录' : '筛选操作者、动作或详情'" /></label>
+        <label class="ui-input log-search"><Search :size="16" aria-hidden="true" /><input v-model="auditQuery" aria-label="筛选操作审计" :placeholder="narrow ? '筛选操作审计' : '筛选操作者、动作或详情'" /></label>
         <!-- 六个类别在手机上排成三列两行，和运行日志一样留在第二行 / The six categories go three by two on a phone, on the second row like the runtime levels -->
         <UiTabs class="log-category-seg" :model-value="auditCategory" :items="auditItems" label="审计动作类别" variant="segment" @update:model-value="selectAuditCategory" />
         <div class="log-toolbar__end">

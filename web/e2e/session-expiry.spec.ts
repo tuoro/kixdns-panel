@@ -40,7 +40,7 @@ test('会话过期直接回登录页；草稿丢了照实说，登录后回到�
   expect(url.searchParams.get('expired')).toBe('draft')
   await expect(page.getByRole('alertdialog')).toHaveCount(0)
   await expect(page.locator('dialog[open]')).toHaveCount(0)
-  await expect(page.getByRole('status').filter({ hasText: '登录已过期' })).toHaveText('登录已过期，请重新登录。刚才没保存的配置修改已经丢了。')
+  await expect(page.getByRole('status').filter({ hasText: '登录已过期' })).toHaveText('登录已过期，刚才没保存的配置修改没有留下来。登录后回到刚才的页面。')
 
   await signIn(page)
   await expect(page).toHaveURL(/\/config$/)
@@ -53,7 +53,7 @@ test('没有没保存的修改时，登录页只说过期，登录后回到原�
   await expireSession(page)
   await expect(page).toHaveURL(/\/login\?/)
   expect(new URL(page.url()).searchParams.get('expired')).toBe('1')
-  await expect(page.getByRole('status').filter({ hasText: '登录已过期' })).toHaveText('登录已过期，请重新登录，之后回到刚才的页面。')
+  await expect(page.getByRole('status').filter({ hasText: '登录已过期' })).toHaveText('登录已过期。登录后回到刚才的页面。')
   await signIn(page)
   await expect(page).toHaveURL(/\/logs$/)
 })

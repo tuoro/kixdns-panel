@@ -19,7 +19,7 @@ const isSetup = computed(() => props.mode === 'setup')
 // 会话过期被送回来时说为什么；配置页上有没保存的修改时照实说丢了 / Sent back by an expired session: say why, and say plainly when unsaved config edits were lost
 const expiredNote = computed(() => {
   if (isSetup.value || !route.query.expired) return ''
-  return route.query.expired === 'draft' ? '登录已过期，请重新登录。刚才没保存的配置修改已经丢了。' : '登录已过期，请重新登录，之后回到刚才的页面。'
+  return route.query.expired === 'draft' ? '登录已过期，刚才没保存的配置修改没有留下来。登录后回到刚才的页面。' : '登录已过期。登录后回到刚才的页面。'
 })
 
 async function submit(): Promise<void> {
