@@ -29,7 +29,7 @@ import { acceptConfirm, cancelConfirm } from './confirm'
  * a line of its own, which fits in full at 375.
  */
 const EXPECTED_TOTAL = '12,847,392'
-const EXPECTED_TREND = '近 24 小时 3,835,000 次'
+const EXPECTED_TREND = '最近 24 小时 3,835,000 次'
 
 async function openOverview(page: Page): Promise<void> {
   await page.goto('/')
@@ -86,7 +86,7 @@ test('首页展示精确分布，页签可用键盘切换且完整保留三个�
   await page.keyboard.press('End')
   await expect(page.getByRole('tab', { name: '规则命中' })).toBeFocused()
   await expect(page.locator('.overview-rule')).toHaveCount(4)
-  await expect(page.locator('.overview-rule').filter({ hasText: 'accept-noerror' })).toContainText('响应')
+  await expect(page.locator('.overview-rule').filter({ hasText: 'accept-noerror' })).toContainText('回答后')
   // 按执行次数降序 / Sorted by count, highest first
   const counts = (await page.locator('.overview-rule-count').allTextContents()).map((text) => Number(text.replace(/,/g, '')))
   expect(counts).toEqual([...counts].sort((left, right) => right - left))
@@ -115,13 +115,14 @@ test('查询排行保留时间窗口与带确认的清理操作', async ({ page 
 test('运行配置与缓存清理保持可用', async ({ page }) => {
   await openOverview(page)
   await expect(page.locator('.overview-config-lead')).toContainText('#18')
-  await expect(page.locator('.overview-config-hashes')).toContainText('#24')
+  // 卡片主项是面板的配置版本，内核重新加载的次数退到摘要条里 / The card leads with the panel's config version; the kernel's reload count moves to the strip
+  await expect(page.locator('.overview-config-hashes')).toContainText('24 次')
   // 补丁集按 pN 写，和系统页一致 / The patchset reads pN, as on the system page
   await expect(page.locator('.overview-config-hashes')).toContainText(/补丁集p\d+/)
   await expect(page.locator('.overview-config-state')).toHaveText('已生效')
-  await page.getByRole('button', { name: '清空内部缓存', exact: true }).click()
+  await page.getByRole('button', { name: '清空缓存', exact: true }).click()
   await acceptConfirm(page)
-  await expect(page.getByText('已清理 19,354 个缓存条目', { exact: true })).toBeVisible()
+  await expect(page.getByText('已清空 19,354 条缓存', { exact: true })).toBeVisible()
 })
 
 test('首次未启动保留空态视图但禁止运行时操作', async ({ page }) => {
@@ -144,16 +145,16 @@ test('首次未启动保留空态视图但禁止运行时操作', async ({ page 
   // Never started, the list cards read 尚无数据 too (the 还没有请求… sentences are for a running kernel with no traffic)
   await expect(page.locator('.overview-card--share .overview-empty')).toHaveText('尚无数据')
   await expect(page.locator('.overview-card--upstreams .overview-empty')).toHaveText('尚无数据')
-  await expect(page.getByRole('button', { name: '清空内部缓存', exact: true })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '清空缓存', exact: true })).toBeDisabled()
   await expect(page.locator('.overview-config-state')).toHaveText('未运行')
   await page.getByRole('tab', { name: '查询排行' }).click()
   // 两张表留着，各写「尚无数据」；没有窗口和总量可说，工具行不出 / Both tables stay, each reading 尚无数据; no window or volume to state, so no toolbar
   await expect(page.locator('.overview-ranking .overview-empty')).toHaveText(['尚无数据', '尚无数据'])
   await expect(page.locator('#overview-panel-stats .overview-toolbar')).toHaveCount(0)
   await page.getByRole('tab', { name: '规则命中' }).click()
-  await expect(page.getByText('还没有规则执行过', { exact: true })).toBeVisible()
+  await expect(page.getByText('还没有规则命中过', { exact: true })).toBeVisible()
   // 空表不带「累计执行次数」那行说明 / An empty table carries no caption about execution counts
-  await expect(page.getByText('请求与响应阶段的累计执行次数')).toHaveCount(0)
+  await expect(page.getByText('每条规则的命中次数')).toHaveCount(0)
 })
 
 for (const stopped of [true, false]) {
@@ -189,7 +190,7 @@ for (const stopped of [true, false]) {
     // 已停止也说接下来会怎样，不说「不再更新」 / Stopped also says what comes next, never 不再更新
     await expect(page.locator('.overview-notice small')).toHaveText(stopped
       ? /^显示停止前 \d{2}:\d{2} 的快照；启动 KixDNS 后概览会自动更新。$/
-      : /^KixDNS 暂时没有应答；显示 \d{2}:\d{2} 的快照，恢复后会自动更新。$/)
+      : /^KixDNS 暂时没有回应；显示 \d{2}:\d{2} 的快照，恢复后会自动更新。$/)
     // 底栏只说按钮什么时候能用，不再复述状态 / The foot says only when the button becomes usable, without restating the state
     await expect(page.locator('.overview-runtime-note')).toHaveText(stopped ? 'KixDNS 运行后才能清空缓存' : '实时数据恢复后才能清空缓存')
     await expect(page.locator('.overview-total-value')).toHaveText(EXPECTED_TOTAL)
@@ -197,7 +198,7 @@ for (const stopped of [true, false]) {
     await expect(page.locator('.overview-config-state')).toHaveText('运行快照')
     // 已停止才叫「最后运行配置」；服务还在跑、只是读不到实时数据时仍是「当前运行配置」
     await expect(page.getByRole('heading', { name: stopped ? '最后运行配置' : '当前运行配置', exact: true })).toBeVisible()
-    await expect(page.getByRole('button', { name: '清空内部缓存', exact: true })).toBeDisabled()
+    await expect(page.getByRole('button', { name: '清空缓存', exact: true })).toBeDisabled()
     await page.getByRole('tab', { name: '查询排行' }).click()
     await expect(page.getByRole('button', { name: '1 小时', exact: true })).toBeDisabled()
     await expect(page.getByRole('button', { name: '清空查询排行', exact: true })).toBeDisabled()
@@ -221,14 +222,14 @@ test('上游状态一行一个上游，错误和拒绝数收进这一行的提�
   expect(title).toContain('错误 52')
   expect(title).toContain('拒绝 28')
   expect(title).not.toContain('28,230')
-  // 每行同样四样东西：地址、耗时、「成功率 · 次响应」、细条；手机不换成另一套行
-  // Every row shows the same four things: address, latency, 「success rate · responses」, a bar; a phone does not switch to another row design
+  // 每行同样三样东西：地址、耗时、「成功率 · 次响应」；耗时不再画一条细条；手机不换成另一套行
+  // Every row shows the same three things: address, latency, 「success rate · responses」; no latency bar; a phone does not switch to another row design
   for (const row of [rows.nth(0), rows.nth(1), rows.nth(2)]) {
     await expect(row.locator('.overview-address')).toBeVisible()
     await expect(row.locator('.overview-row-value')).toBeVisible()
     await expect(row.locator('.overview-row-sub')).toBeVisible()
-    await expect(row.locator('.overview-row-bar')).toBeVisible()
   }
+  await expect(card.locator('.overview-row-bar')).toHaveCount(0)
   // 地址不挤耗时：名字那格的右边在耗时左边 / The address never runs into the latency: the name cell ends before the value begins
   const squeezed = await rows.evaluateAll((items) => items
     .filter((row) => row.querySelector('.overview-row-name')!.getBoundingClientRect().right > row.querySelector('.overview-row-value')!.getBoundingClientRect().left)
@@ -470,14 +471,13 @@ test('上游健康的分母是全部上游：观察中的也算，页头的上�
   await expect(upstreamFact).not.toContainText('全部正常')
   const fact = await upstreamFact.textContent()
   expect(fact!.indexOf('异常')).toBeLessThan(fact!.indexOf('观察中'))
-  // 行里：2.48 秒的上游判为异常，状态点、成功率和细条跟着判定；耗时写成 2.5 s；观察中的那行状态点读作「观察中」
-  // In the rows: the 2.48 s upstream is unhealthy, and its dot, success rate and bar follow the verdict; the latency reads 2.5 s; the observed row's dot reads 观察中
+  // 行里：2.48 秒的上游判为异常，状态点和成功率跟着判定；耗时写成 2.5 s；观察中的那行状态点读作「观察中」
+  // In the rows: the 2.48 s upstream is unhealthy, and its dot and success rate follow the verdict; the latency reads 2.5 s; the observed row's dot reads 观察中
   const rows = page.locator('.overview-card--upstreams .overview-row')
   const slow = rows.filter({ hasText: '2.5 s' })
   await expect(slow).toHaveCount(1)
   await expect(slow.locator('.overview-dot')).toHaveAttribute('aria-label', '异常')
   await expect(slow.locator('.overview-row-sub b')).toHaveClass(/overview-text--unhealthy/)
-  await expect(slow.locator('.overview-row-bar > i')).toHaveClass(/overview-bar--unhealthy/)
   await expect(page.getByText('2480 ms')).toHaveCount(0)
   await expect(rows.locator('.overview-dot[aria-label="观察中"]')).toHaveCount(1)
 })
@@ -503,17 +503,17 @@ test('查询排行的时段跟着手上的数据走：定时刷新还在路上�
   await openOverview(page)
   await page.getByRole('tab', { name: '查询排行', exact: true }).click()
   const line = page.locator('.overview-toolbar p').first()
-  await expect(line).toContainText('近 24 小时')
+  await expect(line).toContainText('最近 24 小时')
   await expect(line).toContainText('已观察 2,400 次请求')
   // 60 秒一次的定时刷新发出一个慢的 24 小时请求；它还在路上，就切到 1 小时
   await page.evaluate(() => { (globalThis as { __slowStats?: boolean }).__slowStats = true })
   await page.clock.runFor(60_000)
   await page.getByRole('button', { name: '1 小时', exact: true }).click()
-  await expect(line).toContainText('近 1 小时')
+  await expect(line).toContainText('最近一小时')
   await expect(line).toContainText('已观察 100 次请求')
   // 旧的 24 小时结果回来了，也不能盖掉 / The old 24-hour result arrives and must not overwrite anything
   await page.clock.runFor(2_000)
-  await expect(line).toContainText('近 1 小时')
+  await expect(line).toContainText('最近一小时')
   await expect(line).toContainText('已观察 100 次请求')
   await expect(page.getByRole('button', { name: '1 小时', exact: true })).toHaveAttribute('aria-pressed', 'true')
 })
@@ -550,7 +550,7 @@ test('耗时慢了：平均延迟取整写 212 ms；上游状态里 999.6 ms 写
   expect(latencyColour).not.toBe(await resolve('--err-l'))
 })
 
-test('配置重载失败提到页顶：旧配置照常服务，是降级，给出去配置页的动作', async ({ page }) => {
+test('配置应用失败提到页顶：旧配置照常服务，是降级，给出去配置页的动作', async ({ page }) => {
   await openOverview(page)
   await page.evaluate(async () => {
     const { mockRequest } = await import('/src/api/mock.ts')
@@ -560,10 +560,10 @@ test('配置重载失败提到页顶：旧配置照常服务，是降级，给�
   await remountOverview(page)
   const notice = page.locator('.ui-notice:visible')
   await expect(notice).toHaveCount(1)
-  await expect(notice).toContainText('配置重载失败')
-  await expect(notice).toContainText('仍按配置代次 #18 运行')
+  await expect(notice).toContainText('配置应用失败')
+  await expect(notice).toContainText('仍按配置版本 #18 运行')
   await expect(notice.getByRole('link', { name: '管理配置', exact: true })).toBeVisible()
-  await expect(page.locator('.overview-config-state')).toHaveText('重载失败')
+  await expect(page.locator('.overview-config-state')).toHaveText('应用失败')
   await expect(page.locator('.overview-reload-error')).toContainText('unknown upstream group')
 })
 

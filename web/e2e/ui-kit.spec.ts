@@ -99,7 +99,7 @@ test('状态胶囊：进行中写进度和已用时间，完成打勾，失败�
   await expect(task.getByRole('status')).toContainText(/正在下载 .* MB/)
   await expect(task.getByRole('status')).toContainText(/已用 \d+ 秒/)
   await expect(task).toHaveAttribute('data-state', 'done', { timeout: 10_000 })
-  await expect(task.getByRole('status')).toHaveText('已更新到 Run #30235703570')
+  await expect(task.getByRole('status')).toHaveText('已更新到 构建 #30235703570')
   await expect(task.getByRole('progressbar')).toHaveCount(0)
 
   await task.getByRole('button', { name: '复原' }).click()

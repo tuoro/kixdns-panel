@@ -243,14 +243,14 @@ impl UpdateManager {
             Ok(notice) => (Some(notice), None),
             Err(error) => {
                 tracing::warn!(%error, "内核更新检查失败");
-                (None, Some(error.to_string()))
+                (None, Some(error.reason()))
             }
         };
         let (panel, panel_error) = match panel {
             Ok(notice) => (Some(notice), None),
             Err(error) => {
                 tracing::warn!(%error, "面板更新检查失败");
-                (None, Some(error.to_string()))
+                (None, Some(error.reason()))
             }
         };
         UpdateNotifications {
@@ -431,7 +431,7 @@ impl UpdateManager {
             }
         }
         let latest = newest_upstream_build(candidates)
-            .ok_or_else(|| UpdateError::Network("没有可安装的成功增强构建".to_owned()))?;
+            .ok_or_else(|| UpdateError::Network("还没有能安装的构建".to_owned()))?;
         self.latest_cache.write().await.replace(CachedLatest {
             loaded_at: Instant::now(),
             version: latest.clone(),

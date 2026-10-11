@@ -21,6 +21,8 @@ const props = defineProps<{
   changed?: ReadonlySet<string>
   hiddenKeys?: readonly string[]
   lead?: { id: string; title: string; description: string; summary: string[]; changed?: boolean; help?: string }
+  // 先打开哪一组；不给就是最前面那组 / Which group opens first; the leading one when not given
+  initialGroup?: string
 }>()
 const shown = (field: SettingField) => !props.hiddenKeys?.includes(field.key)
 const search = ref('')
@@ -28,7 +30,7 @@ const searchInput = ref<HTMLInputElement>()
 // 左边一列分组、右边一组设置，和解析编排的「左列表、右检查器」同一种版式；手机上先看分组列表，点进去看一组。
 // Groups on the left and one group's settings on the right, the same layout as 解析编排's list and
 // inspector; a phone shows the group list first and opens one group at a time.
-const current = ref(props.lead?.id ?? 'network')
+const current = ref(props.initialGroup || (props.lead?.id ?? 'network'))
 const mobileOpen = ref(false)
 const mobileViewport = window.matchMedia('(max-width: 860px)')
 const isMobile = ref(mobileViewport.matches)
@@ -77,7 +79,7 @@ function summary(section: SettingSection): string[] {
   return entries.length ? entries : [section.description]
 }
 
-const GEO_GROUP = { id: 'geo', title: 'Geo 数据', description: 'GeoIP 与 GeoSite 数据的来源、自动更新和 MMDB 转换' }
+const GEO_GROUP = { id: 'geo', title: 'Geo 数据', description: 'GeoIP 与 GeoSite 数据的来源和自动更新' }
 const GEO_KEYS = ['geoip_db_path', 'geoip_dat_path', 'geosite_data_paths']
 function changedAny(keys: string[]): boolean {
   return keys.some((key) => props.changed?.has(key))
@@ -153,6 +155,13 @@ function readonlyValue(field: SettingField): string {
 function setValue(key: string, value: unknown): void {
   settings.value = { ...settings.value, [key]: value }
 }
+// 内核不支持的设置只要写在配置里（哪怕是关着的）就会被拒；从配置里去掉这一项，草稿才保存得了
+// A setting the kernel does not support is refused whenever it is written in the config (even switched off); removing it lets the draft save
+function removeSetting(key: string): void {
+  const next = { ...settings.value }
+  delete next[key]
+  settings.value = next
+}
 
 function scalarValue(field: SettingField): string | number {
   const value = settings.value[field.key]
@@ -221,7 +230,7 @@ function supported(field: SettingField): boolean {
   <div class="settings" :class="{ 'settings--open': mobileOpen || Boolean(query), 'settings--searching': Boolean(query) }">
     <nav class="settings-nav" aria-label="设置分组">
       <!-- 清除按钮和解析编排的搜索框同一个零件：框里的点按格，手机上 44 宽、和框里面一样高（审计第三轮 T5） / The clear button is the same part as in 解析编排's search: a cell inside the field, 44 wide and as tall as the inside on a phone (audit round 3, T5) -->
-      <label class="ui-input settings-search"><Search :size="16" aria-hidden="true" /><input ref="searchInput" v-model="search" type="search" aria-label="搜索基础设置" placeholder="搜索设置或配置 key" @keydown.esc.prevent="clearSearch"><button v-if="search" class="ui-input__affix" type="button" aria-label="清除设置搜索" title="清除设置搜索" @click.prevent="clearSearch"><X :size="14" aria-hidden="true" /></button></label>
+      <label class="ui-input settings-search"><Search :size="16" aria-hidden="true" /><input ref="searchInput" v-model="search" type="search" aria-label="搜索基础设置" placeholder="搜索设置" @keydown.esc.prevent="clearSearch"><button v-if="search" class="ui-input__affix" type="button" aria-label="清除设置搜索" title="清除设置搜索" @click.prevent="clearSearch"><X :size="14" aria-hidden="true" /></button></label>
       <button v-for="group in groups" :key="group.id" type="button" class="settings-nav__item" :aria-current="!query && current === group.id ? 'true' : undefined" :aria-description="group.changed ? '有修改' : undefined" @click="open(group.id)">
         <span class="settings-nav__title">{{ group.title }}<i v-if="group.changed" class="ui-dot ui-dot--ink settings-dot" aria-hidden="true"></i></span>
         <small class="settings-nav__summary"><UiDotText class="ui-dot-text--stats" :parts="group.summary" /></small>
@@ -231,7 +240,7 @@ function supported(field: SettingField): boolean {
 
     <div class="settings-pane">
       <button v-if="isMobile && !query" class="ui-btn ui-btn--text settings-back" type="button" @click="mobileOpen = false"><ChevronLeft :size="16" />全部设置</button>
-      <div v-if="query && !visibleSections.length" class="settings-empty"><strong>没有找到匹配的设置</strong><p>试试「缓存」「超时」或配置 key。</p><button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" @click="clearSearch">清除搜索</button></div>
+      <div v-if="query && !visibleSections.length" class="settings-empty"><strong>没有找到匹配的设置</strong><p>试试「缓存」「超时」，也可以搜配置文件里的字段名。</p><button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" @click="clearSearch">清除搜索</button></div>
 
       <!-- 搜索时列出所有分组里的匹配，一个分组一段；平时只显示选中的那一组。
            While searching, every group's matches, one block per group; otherwise only the selected group. -->
@@ -245,7 +254,7 @@ function supported(field: SettingField): boolean {
           <template v-for="field in section.fields" :key="field.key">
             <div v-if="!supported(field)" class="ui-setrow ui-setrow--off">
               <span class="ui-setrow__label"><span>{{ labelFor(field) }}<i v-if="changed?.has(field.key)" class="ui-dot ui-dot--ink settings-dot" aria-hidden="true"></i></span><code v-if="query" class="settings-row__key">{{ field.key }}</code></span>
-              <span class="settings-row__readonly"><code>{{ readonlyValue(field) }}</code><span class="ui-tag">内核不支持</span></span>
+              <span class="settings-row__readonly"><code>{{ readonlyValue(field) }}</code><span class="ui-tag">内核不支持</span><button v-if="Object.prototype.hasOwnProperty.call(settings, field.key)" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" @click="removeSetting(field.key)">从配置里去掉</button></span>
             </div>
             <label v-else-if="field.type === 'boolean'" class="ui-setrow ui-setrow--toggle" :class="{ 'ui-setrow--off': disabled(field) }">
               <span class="ui-setrow__label"><span>{{ labelFor(field) }}<i v-if="changed?.has(field.key)" class="ui-dot ui-dot--ink settings-dot" aria-hidden="true"></i></span><small v-if="noteFor(field)">{{ noteFor(field) }}</small><code v-if="query" class="settings-row__key">{{ field.key }}</code></span>

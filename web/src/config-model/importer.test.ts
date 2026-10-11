@@ -81,11 +81,11 @@ describe('迁移：读成什么样 / migration: what it reads as', () => {
     // An entry that never runs stays verbatim at the end; rules with several forwards or with actions after the deciding one are kept verbatim as advanced rules, not tidied
     expect(text).toContain('入口「never」排在接住所有请求的入口后面，永远轮不到，原样保留在最后')
     expect(model.trailingEntries).toEqual([{ pipeline: 'never', matchers: [{ type: 'qtype', value: 'MX' }] }])
-    expect(text).toContain('「ads」放不进新的规则格式（决定结果的动作后面还有 1 个动作）')
-    expect(text).toContain('「two-forwards」放不进新的规则格式（一条规则里有 2 个转发）')
-    expect(text).toContain('「odd-field」放不进新的规则格式')
-    expect(text).toContain('「weird-response」放不进新的规则格式')
-    expect(text).toContain('geosite:分类')
+    expect(text).toContain('「ads」放不进面板的写法（决定结果的动作后面还有 1 个动作）')
+    expect(text).toContain('「two-forwards」放不进面板的写法（一条规则里有 2 个转发）')
+    expect(text).toContain('「odd-field」放不进面板的写法')
+    expect(text).toContain('「weird-response」放不进面板的写法')
+    expect(text).toContain('多写了「geosite:」前缀')
     expect(stats.raw).toBe(4)
     const messy = compile(model) as KConfigLike
     expect(messy.pipeline_select!.at(-1)).toEqual({ pipeline: 'never', matcher_operator: 'and', matchers: [{ type: 'qtype', value: 'MX' }] })
@@ -93,5 +93,14 @@ describe('迁移：读成什么样 / migration: what it reads as', () => {
     // 规则级 and_not：第一项肯定，其余否定 / rule-level and_not: the first item positive, the rest negated
     const ptr = model.rules.find((r) => r.name === 'not-private-ptr')!
     expect(ptr.conditions).toEqual([[expect.objectContaining({ field: 'qtype', negate: false, values: ['PTR'] }), expect.objectContaining({ field: 'client_private', negate: true })]])
+  })
+})
+
+describe('导入说明说清上游组从哪来', () => {
+  it('从默认上游建的组不说「从规则里的转发地址」', () => {
+    const cfg = { version: '1.0', settings: {}, pipeline_select: [{ pipeline: 'main', matchers: [] }], pipelines: [{ id: 'main', rules: [{ name: 'ads', matchers: [{ type: 'geo_site', value: 'category-ads-all' }], actions: [{ type: 'deny' }] }] }] }
+    const text = importKernel(cfg as never).notes.map((n) => n.text).join('\n')
+    expect(text).not.toContain('从规则里的转发地址')
+    expect(text).toContain('配置里没写默认上游，按 KixDNS 的默认 1.1.1.1:53 建了上游组')
   })
 })

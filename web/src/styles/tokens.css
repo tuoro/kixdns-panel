@@ -72,6 +72,10 @@
   --l-hair:    #e6e8ee;  /* 分隔线 */
   --l-line-strong: #d7dae2;  /* 控件边框：次要按钮、聚焦的输入框 */
   --l-edge-hover: #c4c8d2;  /* 能输入、能按的白底控件悬停时的边 / the edge of a white field or button on hover */
+  /* 开关关着时的轨道和圆钮：轨道比控件边框深一档，圆钮一直是浅色，关着的开关在白卡和深色卡上都看得出形状
+     An off switch's track and knob: the track a step darker than control borders, the knob always light, so an off switch keeps its shape on white and dark cards */
+  --switch-off: #8c92a1;  /* 关着的开关轨道和白底至少 3:1 / an off track keeps 3:1 against white */
+  --switch-knob-off: #ffffff;
   /* 底纹网点。比分隔线深一档：分隔线是一条连续的线，看得见；
      网点是离散的小点，同样的明度铺开之后几乎消失，需要再压一档才成立。
      Texture dots, a step darker than the hairline: a hairline is a continuous
@@ -248,6 +252,8 @@
     --l-hair: #262b36;
     --l-line-strong: #353b48;
     --l-edge-hover: #48505f;
+    --switch-off: #626a7a;
+    --switch-knob-off: #c9ced8;
     --l-texture: #2a303b;
     --l-ink: #e8eaf0;
     --l-ink-2: #aab1c0;
@@ -298,6 +304,8 @@
   --l-hair: #262b36;
   --l-line-strong: #353b48;
   --l-edge-hover: #48505f;
+  --switch-off: #626a7a;
+  --switch-knob-off: #c9ced8;
   --l-texture: #2a303b;
   --l-ink: #e8eaf0;
   --l-ink-2: #aab1c0;

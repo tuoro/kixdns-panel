@@ -1,6 +1,7 @@
 import { createApp } from 'vue'
 import App from './App.vue'
 import { SESSION_EXPIRED_EVENT } from './api/client'
+import { probePanel, untilReachable } from './composables/useConnection'
 import { useSession } from './composables/useSession'
 import { useToast } from './composables/useToast'
 import './composables/useTheme'
@@ -38,7 +39,14 @@ const staleChunks = createStaleChunkRecovery({
 // No preventDefault: the error still reaches router.onError, which knows the
 // page the user was heading to.
 window.addEventListener('vite:preloadError', (event) => staleChunks.markPreloadError(event.payload))
-router.onError((error, to) => {
+router.onError(async (error, to) => {
+  // 分块加载不到也可能是面板正在重启：先问一次面板，没答话就挂出横幅、等它回来再打开那一页，不刷新到浏览器的错误页
+  // A chunk failing to load can also mean the panel is restarting: ask the panel once; with no answer the banner goes up and the page opens once it is back, instead of reloading onto the browser's error page
+  if (staleChunks.isPreloadError(error) && !(await probePanel())) {
+    await untilReachable()
+    void router.push(to.fullPath)
+    return
+  }
   if (staleChunks.handleRouterError(error, router.resolve(to.fullPath).href)) return
   // 刷新过仍然加载不到，或者浏览器记不住刷新过：说清楚，让用户自己刷新。
   // Still failing after a reload, or unable to remember reloading: say so and

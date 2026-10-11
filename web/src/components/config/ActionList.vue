@@ -22,6 +22,10 @@ const props = withDefaults(defineProps<{
   currentPipelineId: string
   capabilities?: string[]
   showErrors?: boolean
+  // 组的叫法（主列表、规则组「X」、上游组「X」）；没给就照内核 id 写 / How to name a group (主列表, 规则组「X」, 上游组「X」); the kernel id without it
+  pipelineName?: (id: string) => string | null
+  // 回答后的动作里「allow」是把上游的回答照常返回，不是交给默认上游 / In the answer phase allow returns the upstream's answer as is; it does not hand off to the default upstream
+  phase?: 'request' | 'response'
 }>(), {
   capabilities: () => [],
   showErrors: false,
@@ -38,7 +42,9 @@ const instanceId = useId()
 const touched = reactive(new Set<string>())
 const root = ref<HTMLElement | null>(null)
 const { focusRow } = useRowFocus(root)
-const logLevels = ['trace', 'debug', 'info', 'warn', 'error']
+// 日志级别写页面上的叫法，取值照旧是内核的 / Log levels read in the page's words; the values stay the kernel's
+const LOG_LEVELS = [{ value: 'trace', label: '跟踪' }, { value: 'debug', label: '调试' }, { value: 'info', label: '信息' }, { value: 'warn', label: '警告' }, { value: 'error', label: '错误' }]
+const levelOptions = (current: string | undefined) => [...LOG_LEVELS, ...(current && !LOG_LEVELS.some((level) => level.value === current) ? [{ value: current, label: current }] : [])]
 const responseCodes = ['NOERROR', 'NXDOMAIN', 'SERVFAIL', 'REFUSED']
 const existingUpstreams = computed(() => {
   const upstreams = new Map<string, { upstream: string; transport: string }>()
@@ -71,7 +77,8 @@ function useUpstream(action: ActionConfig, index: string): void {
 }
 
 function typeOptions(action: ActionConfig) {
-  const known = supportedActionTypes.value.map((option) => ({ value: option.value, label: option.label }))
+  const label = (option: { value: string; label: string }) => (props.phase === 'response' && option.value === 'allow' ? '照常返回' : option.label)
+  const known = supportedActionTypes.value.map((option) => ({ value: option.value, label: label(option) }))
   if (known.some((option) => option.value === action.type)) return known
   const current = ACTION_TYPES.find((option) => option.value === action.type)
   return [...known, { value: action.type, label: current?.label ?? action.type }]
@@ -89,7 +96,7 @@ function transportOptions(action: ActionConfig) {
 }
 
 function pipelineOptions(action: ActionConfig) {
-  const options = [{ value: '', label: '选择 Pipeline', disabled: true }, ...props.pipelines.map((pipeline) => ({ value: pipeline.id, label: pipeline.id, disabled: pipeline.id === props.currentPipelineId }))]
+  const options = [{ value: '', label: '选择要转到的组', disabled: true }, ...props.pipelines.map((pipeline) => ({ value: pipeline.id, label: props.pipelineName?.(pipeline.id) ?? pipeline.id, disabled: pipeline.id === props.currentPipelineId }))]
   return action.pipeline && !props.pipelines.some((pipeline) => pipeline.id === action.pipeline) ? [...options, { value: action.pipeline, label: `${action.pipeline}（不存在）` }] : options
 }
 
@@ -103,10 +110,10 @@ function toggleEcs(action: ActionConfig): void {
   ecsToggled.set(toRaw(action), !ecsOpen(action))
 }
 const ecsOptions = [
-  { value: '', label: '不单独设置' },
-  { value: 'clear', label: '清除 ECS' },
-  { value: 'from_client_ip', label: '使用客户端 IP' },
-  { value: 'static', label: '固定子网' },
+  { value: '', label: '不处理，原样转发' },
+  { value: 'clear', label: '不发送客户端子网' },
+  { value: 'from_client_ip', label: '发送客户端所在子网' },
+  { value: 'static', label: '发送固定的子网' },
 ]
 
 function fieldId(index: number, field: string): string {
@@ -187,11 +194,11 @@ function move(index: number, direction: string): void {
         <div class="ui-rows__params">
           <template v-if="action.type === 'log'">
             <span class="ui-rows__plabel">级别</span>
-            <UiSelect v-model="action.level" class="is-enum" :options="enumOptions(logLevels, action.level)" :label="`动作 ${index + 1} 日志级别`" />
+            <UiSelect v-model="action.level" class="is-enum" :options="levelOptions(action.level)" :label="`动作 ${index + 1} 日志级别`" />
           </template>
           <template v-else-if="action.type === 'static_response'">
             <span class="ui-rows__plabel">响应码</span>
-            <UiSelect v-model="action.rcode" class="is-enum" :options="enumOptions(responseCodes, action.rcode)" :label="`动作 ${index + 1} RCode`" />
+            <UiSelect v-model="action.rcode" class="is-enum" :options="enumOptions(responseCodes, action.rcode)" :label="`动作 ${index + 1} 响应码`" />
           </template>
           <template v-else-if="action.type === 'static_ip_response'">
             <span class="ui-rows__plabel">IP</span>
@@ -204,8 +211,8 @@ function move(index: number, direction: string): void {
             <label class="ui-input is-num"><input type="number" :value="action.ttl" min="0" max="4294967295" :aria-label="`动作 ${index + 1} CNAME TTL`" placeholder="300" :aria-invalid="Boolean(visibleError(index, 'ttl')) || undefined" :aria-describedby="errorId(index, 'ttl')" @input="setTtl(action, $event)" @blur="touch(index, 'ttl')"><em class="ui-setrow__unit">秒</em></label>
           </template>
           <template v-else-if="action.type === 'jump_to_pipeline'">
-            <span class="ui-rows__plabel">Pipeline</span>
-            <UiSelect v-model="action.pipeline" mono :options="pipelineOptions(action)" :label="`动作 ${index + 1} 目标 Pipeline`" :invalid="Boolean(visibleError(index, 'pipeline'))" />
+            <span class="ui-rows__plabel">转到</span>
+            <UiSelect v-model="action.pipeline" :mono="!pipelineName" :options="pipelineOptions(action)" :label="`动作 ${index + 1} 要转到的组`" :invalid="Boolean(visibleError(index, 'pipeline'))" />
           </template>
           <template v-else-if="action.type === 'forward'">
             <span class="ui-rows__plabel is-top">上游</span>
@@ -228,9 +235,9 @@ function move(index: number, direction: string): void {
         </template>
         <div v-if="action.type === 'forward'" class="ui-rows__sub">
           <UiSelect v-model="action.transport" size="sm" class="action-transport" :options="transportOptions(action)" :label="`动作 ${index + 1} 传输协议`" />
-          <button class="ui-btn ui-btn--text ui-btn--sm action-ecs-toggle" type="button" :aria-expanded="ecsOpen(action)" :aria-controls="fieldId(index, 'ecs')" @click="toggleEcs(action)">ECS {{ action.ecs ? '已设置' : '未设置' }}<ChevronDown class="ui-btn__chev" :size="14" aria-hidden="true" /></button>
+          <button class="ui-btn ui-btn--text ui-btn--sm action-ecs-toggle" type="button" :aria-expanded="ecsOpen(action)" :aria-controls="fieldId(index, 'ecs')" @click="toggleEcs(action)">客户端子网：{{ action.ecs ? '已设置' : '未设置' }}<ChevronDown class="ui-btn__chev" :size="14" aria-hidden="true" /></button>
           <div v-if="ecsOpen(action)" :id="fieldId(index, 'ecs')" class="action-ecs ui-rise">
-            <UiSelect :model-value="action.ecs?.mode ?? ''" :options="ecsOptions" :label="`动作 ${index + 1} ECS 模式`" @update:model-value="changeEcs(action, $event)" />
+            <UiSelect :model-value="action.ecs?.mode ?? ''" :options="ecsOptions" :label="`动作 ${index + 1} 客户端子网`" @update:model-value="changeEcs(action, $event)" />
             <template v-if="action.ecs?.mode === 'from_client_ip'">
               <label class="ui-input is-num"><input type="number" :value="action.ecs.prefix_v4" min="0" max="32" aria-label="ECS IPv4 前缀" placeholder="24" @input="setEcsNumber(action, 'prefix_v4', $event)"><em class="ui-setrow__unit">IPv4</em></label>
               <label class="ui-input is-num"><input type="number" :value="action.ecs.prefix_v6" min="0" max="128" aria-label="ECS IPv6 前缀" placeholder="56" @input="setEcsNumber(action, 'prefix_v6', $event)"><em class="ui-setrow__unit">IPv6</em></label>

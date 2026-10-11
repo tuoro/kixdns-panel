@@ -97,10 +97,15 @@ export function formatKixdnsVersion(version: KixdnsVersionIdentity | null | unde
   if (!version) return '未记录'
   if (version.source === 'release') return version.release_tag ?? 'Release'
   if (version.source === 'action') {
-    if (version.run_id) return `Run #${version.run_id}`
-    return version.source_id ? `Artifact #${version.source_id}` : 'Action'
+    if (version.run_id) return `构建 #${version.run_id}`
+    return version.source_id ? `构建产物 #${version.source_id}` : '构建'
   }
   return '未记录'
+}
+
+/** 操作者：面板自己做的（定时更新、自动退回）写「自动」，不写英文的 system / The actor: what the panel did on its own (schedules, automatic fallback) reads 自动, not the English system */
+export function actorName(actor: string | null | undefined): string {
+  return !actor || actor === 'system' ? '自动' : actor
 }
 
 export function errorMessage(error: unknown): string {

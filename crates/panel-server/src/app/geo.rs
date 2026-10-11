@@ -56,7 +56,7 @@ pub(super) async fn sync_geo_data(
             Some(session.username),
             "config.geo_data.sync".to_owned(),
             format!(
-                "同步 Geo 数据：MMDB {}，GeoIP {}，GeoSite {} 个",
+                "GeoIP MMDB {} 个、GeoIP DAT {} 个、GeoSite {} 个",
                 usize::from(result.geoip_mmdb.is_some()),
                 usize::from(result.geoip_dat.is_some()),
                 result.geosite.len()
@@ -82,8 +82,9 @@ pub(super) async fn cleanup_geo_data(
             Some(session.username),
             "config.geo_data.cleanup".to_owned(),
             format!(
-                "清理 Geo 数据：删除 {} 个文件，释放 {} 字节",
-                result.removed_files, result.reclaimed_bytes
+                "删除 {} 个文件，释放 {}",
+                result.removed_files,
+                human_bytes(result.reclaimed_bytes)
             ),
             unix_timestamp(),
         )
@@ -118,7 +119,7 @@ pub(super) async fn save_geo_data_schedule(
         if GeoDataSyncRequest::from_manifest(&manifest).is_empty() {
             return Err(AppError::BadRequest(
                 "geo_data_schedule_empty",
-                "请先配置并下载至少一个远程 Geo 数据源".to_owned(),
+                "先填一个远程链接并点「下载并填入配置」，才能自动更新".to_owned(),
             ));
         }
     }
@@ -132,10 +133,9 @@ pub(super) async fn save_geo_data_schedule(
         .audit(
             Some(session.username),
             "config.geo_data.schedule".to_owned(),
-            schedule.interval_hours.map_or_else(
-                || "关闭 Geo 自动更新".to_owned(),
-                |hours| format!("设置 Geo 自动更新间隔为 {hours} 小时"),
-            ),
+            schedule
+                .interval_hours
+                .map_or_else(|| "关闭".to_owned(), schedule_label),
             unix_timestamp(),
         )
         .await
@@ -155,6 +155,15 @@ pub(super) fn spawn_geo_scheduler(state: AppState) {
             }
         }
     });
+}
+
+/// 定时更新的间隔，和页面上的选项同一种说法 / The schedule interval in the words the page's options use
+fn schedule_label(hours: u64) -> String {
+    match hours {
+        24 => "每天".to_owned(),
+        168 => "每周".to_owned(),
+        other => format!("每 {other} 小时"),
+    }
 }
 
 async fn run_due_geo_schedule(state: &AppState) -> anyhow::Result<()> {
@@ -177,7 +186,7 @@ async fn apply_scheduled_geo_update(state: &AppState) -> anyhow::Result<()> {
     let manifest = state.geo_data.current().await?;
     let request = GeoDataSyncRequest::from_manifest(&manifest);
     if request.is_empty() {
-        anyhow::bail!("没有可用于自动更新的远程 Geo 数据源");
+        anyhow::bail!("没有填下载链接，自动更新用不上");
     }
     let updated = state.geo_data.sync(request).await?;
     apply_synced_geo_data(state, &updated).await
@@ -245,7 +254,7 @@ async fn write_synced_geo_config(
             ensure_running_config_supported(state, &candidate).await?;
             let validation = state.control.validate(&candidate).await?;
             if !validation.valid {
-                anyhow::bail!("KixDNS 拒绝定时更新后的 Geo 配置");
+                anyhow::bail!("KixDNS 没有接受新的 Geo 数据，仍在用之前的配置");
             }
             let result = state
                 .config
@@ -266,7 +275,13 @@ async fn write_synced_geo_config(
                 .await
             {
                 rollback_config(state, previous.content, &result.sha256, "system").await?;
-                anyhow::bail!("定时更新后的 Geo 配置未生效，已自动回滚：{error}");
+                anyhow::bail!(
+                    "KixDNS 没有接受新的 Geo 数据，仍在用之前的配置：{}",
+                    match &error {
+                        ControlError::Rejected(reason) => reason.clone(),
+                        other => super::reload_failure(other),
+                    }
+                );
             }
             result
         }
@@ -288,9 +303,46 @@ async fn write_synced_geo_config(
         .audit(
             None,
             "config.geo_data.schedule.apply".to_owned(),
-            format!("定时更新 Geo 数据并生成配置版本 #{}", result.version_id),
+            format!("生成配置版本 #{}", result.version_id),
             unix_timestamp(),
         )
         .await?;
     Ok(())
+}
+
+/// 审计详情里的大小写成 KB / MB，不写一长串字节数 / Sizes in audit details read as KB or MB rather than a long byte count
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["字节", "KB", "MB", "GB"];
+    let mut value = bytes;
+    let mut unit = 0;
+    let mut tenths = 0;
+    while value >= 1024 && unit < UNITS.len() - 1 {
+        tenths = (value % 1024) * 10 / 1024;
+        value /= 1024;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{value} {}", UNITS[0])
+    } else {
+        format!("{value}.{tenths} {}", UNITS[unit])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{human_bytes, schedule_label};
+
+    #[test]
+    fn schedule_reads_like_the_page() {
+        assert_eq!(schedule_label(24), "每天");
+        assert_eq!(schedule_label(168), "每周");
+        assert_eq!(schedule_label(12), "每 12 小时");
+    }
+
+    #[test]
+    fn sizes_read_in_the_nearest_unit() {
+        assert_eq!(human_bytes(512), "512 字节");
+        assert_eq!(human_bytes(1536), "1.5 KB");
+        assert_eq!(human_bytes(5 * 1024 * 1024), "5.0 MB");
+    }
 }

@@ -42,8 +42,8 @@ async function submit(): Promise<void> {
     <section class="auth-panel">
       <div class="auth-brand"><span><Activity :size="22" /></span><strong>KixDNS</strong></div>
       <div class="auth-heading">
-        <h1>{{ isSetup ? '创建管理员' : '登录控制台' }}</h1>
-        <p>{{ isSetup ? '此账号将拥有配置、服务与更新权限。' : '使用管理员凭据继续。' }}</p>
+        <h1>{{ isSetup ? '创建管理员' : '登录面板' }}</h1>
+        <p v-if="isSetup">这个账号可以改配置、管服务、装更新。</p>
       </div>
       <form @submit.prevent="submit">
         <label>用户名<input v-model.trim="username" name="username" autocomplete="username" minlength="3" maxlength="64" required autofocus /></label>
@@ -57,20 +57,19 @@ async function submit(): Promise<void> {
         <label v-if="isSetup">确认密码<input v-model="confirmation" name="confirmation" type="password" placeholder="再输入一次" autocomplete="new-password" minlength="12" maxlength="256" required /></label>
         <p v-if="error" class="form-error" role="alert">{{ error }}</p>
         <button class="ui-btn ui-btn--primary auth-submit" type="submit" :disabled="submitting">
-          <span>{{ submitting ? '正在验证' : isSetup ? '创建并进入' : '登录' }}</span>
+          <span>{{ submitting ? (isSetup ? '正在创建' : '正在验证') : isSetup ? '创建并进入' : '登录' }}</span>
         </button>
       </form>
       <!-- 首次运行的人心里有个没被回答的问题：我填完这个表，它会对我的 DNS 做什么。
            这块是静态文案，不含任何机器状态，所以不存在登录页那个暴露问题。 -->
-      <ol v-if="isSetup" class="auth-next">
-        <li>创建账号后进入控制台，此时 KixDNS 还未被改动。</li>
-        <li>在配置页编排解析规则，确认无误再应用到运行配置。</li>
-        <li class="auth-next__promise">面板不会覆盖你已有的 KixDNS 配置。</li>
-      </ol>
+      <div v-if="isSetup" class="auth-next">
+        <p class="auth-next__promise">面板不会覆盖你已有的 KixDNS 配置。</p>
+        <p>写好规则后点「保存并应用」才会生效。</p>
+      </div>
       <div class="auth-security">
         <ShieldCheck :size="14" />
         <span>
-          凭据用 Argon2id 哈希保护，会话只存在 HttpOnly Cookie。<template v-if="!isSetup">忘记密码只能在宿主机上<span class="nowrap">重置。</span></template>
+          密码不以明文保存，登录状态只留在这个浏览器里。<template v-if="!isSetup">忘记密码时，在面板所在的机器上执行 <code>kixdns-panel-server reset-admin</code>，部署文档里有完整命令。</template>
         </span>
       </div>
     </section>

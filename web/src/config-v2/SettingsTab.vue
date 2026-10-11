@@ -4,7 +4,7 @@ import SettingsEditor from '../components/config/SettingsEditor.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
 import { groupName } from '../config-model/model'
-import { changedSettingKeys, model } from './store'
+import { changedSettingKeys, model, ui } from './store'
 import { runtimeCapabilities } from './useConfigDocument'
 
 // 基础设置就是现在面板的那一页（监听、连接、缓存、过期缓存、流控、统计、Geo 数据），最前面多一组「规则默认值」。
@@ -35,7 +35,7 @@ const lead = computed(() => ({
 
 <template>
   <section class="ui-card sets__card" aria-label="基础设置">
-    <SettingsEditor v-model="model.settings" v-model:version="model.format" :capabilities="capabilities" :changed="changedSettingKeys" :hidden-keys="hidden" :lead="lead">
+    <SettingsEditor v-model="model.settings" v-model:version="model.format" :capabilities="capabilities" :changed="changedSettingKeys" :hidden-keys="hidden" :lead="lead" :initial-group="ui.settingsGroup">
       <template #lead>
         <div class="ui-setrow">
           <span class="ui-setrow__label"><span>拦截时怎么回应</span><small>规则选「拦截 · 沿用默认」时用这个。{{ blockNote[model.defaults.block] }}</small></span>
@@ -44,7 +44,7 @@ const lead = computed(() => ({
           </div>
         </div>
         <div class="ui-setrow">
-          <span class="ui-setrow__label"><span>其余请求</span><small>一条规则都没命中的请求交给哪里。KixDNS 的默认上游也跟着它，和规则列表最下面那行是同一个设置</small></span>
+          <span class="ui-setrow__label"><span>其余请求</span><small>{{ hidden.length ? '一条规则都没命中的请求交给哪里。KixDNS 的默认上游也跟着它，和规则列表最下面那行是同一个设置' : '一条规则都没命中的请求交给哪里，和规则列表最下面那行是同一个设置。有高级规则时，KixDNS 的默认上游在「基础与监听」里单独设' }}</small></span>
           <div class="ui-setrow__control"><UiSelect :model-value="restValue" :options="restOptions" label="其余请求" @update:model-value="setRest" /></div>
         </div>
       </template>

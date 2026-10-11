@@ -25,14 +25,14 @@ test('首次未启动时保留完整概览布局', async ({ page }) => {
   // 没运行过：卡片叫「运行配置」，标签写「未运行」，不自相矛盾 / Never run: the card is 运行配置 with the tag 未运行, not a contradiction
   await expect(page.getByRole('heading', { name: '运行配置', exact: true })).toBeVisible()
   await expect(page.getByRole('heading', { name: '上游状态' })).toBeVisible()
-  await expect(page.getByRole('button', { name: '清空内部缓存' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '清空缓存' })).toBeDisabled()
   await page.getByRole('tab', { name: '查询排行', exact: true }).click()
   await expect(page.getByRole('heading', { name: '客户端排行' })).toBeVisible()
   await expect(page.getByRole('heading', { name: '请求域名排行' })).toBeVisible()
   // 页签已经写了「规则命中」，下面不再重复同名标题；页签内容照样在 / The tab names 规则命中, so no repeated heading below; the panel is still there
   await page.getByRole('tab', { name: '规则命中', exact: true }).click()
   await expect(page.getByRole('tabpanel', { name: '规则命中' })).toBeVisible()
-  await expect(page.getByText('还没有规则执行过', { exact: true })).toBeVisible()
+  await expect(page.getByText('还没有规则命中过', { exact: true })).toBeVisible()
 })
 
 test('Geo 维护结果离开页面后销毁', async ({ page }) => {
@@ -132,41 +132,46 @@ test('内核可更新到最新并回到上一个 @responsive', async ({ page }) 
   await open(page, '/system')
   const kernelRow = page.locator('.update-row').first()
   const runtime = page.locator('.runtime-panel')
-  await expect(kernelRow.locator('.update-row__from-to')).toContainText('Run #30231271280 → Run #30235703570')
+  await expect(kernelRow.locator('.update-row__from-to')).toContainText('构建 #30231271280 → #30235703570')
   // 更新前先确认要装哪个构建，并按当前服务状态说清是短暂重启还是什么都不启动。
   // An update first names the build and says, from the service state, whether DNS restarts briefly or nothing starts.
   await kernelRow.getByRole('button', { name: '更新', exact: true }).click()
-  await expect(page.getByRole('alertdialog')).toContainText('Run #30235703570')
+  await expect(page.getByRole('alertdialog')).toContainText('构建 #30235703570')
   await expect(page.getByRole('alertdialog')).toContainText('DNS 解析短暂中断')
   await expect(page.getByRole('alertdialog')).toContainText('开机自启设置保持不变')
   await expectNoPageOverflow(page)
   await acceptConfirm(page)
   await expect(page.locator('.toast--success').filter({ hasText: '内核已更新并通过健康检查' })).toBeVisible()
   await expect(kernelRow.locator('.update-row__from-to')).toContainText('已是最新')
-  await expect(runtime.locator('.install-version')).toHaveText('Run #30235703570')
+  await expect(runtime.locator('.install-version b')).toHaveText('#30235703570')
+  await expect(runtime.locator('.install-version__label')).toHaveText('构建')
   // 上一个版本写在「当前安装」卡的底行，回退按钮就在它旁边 / The previous build sits on the installed card's bottom row, with the rollback button beside it
-  await expect(runtime.locator('.install-previous')).toContainText('上一个版本 Run #30231271280')
+  await expect(runtime.locator('.install-previous')).toContainText('上一个版本 构建 #30231271280')
 
   await page.locator('.service-line').getByRole('button', { name: '停止' }).click()
   await acceptConfirm(page)
   await expect(page.locator('.service-line')).toContainText('已停止')
 
   await runtime.getByRole('button', { name: '回退', exact: true }).click()
-  await expect(page.getByRole('alertdialog')).toContainText('回退到 Run #30231271280')
+  await expect(page.getByRole('alertdialog')).toContainText('回退到 构建 #30231271280')
   await expect(page.getByRole('alertdialog')).toContainText('不会启动服务')
   await acceptConfirm(page)
   await expect(page.locator('.toast--success').filter({ hasText: '服务仍停止，下次启动时生效' })).toBeVisible()
   await expect(page.locator('.service-line')).toContainText('已停止')
-  await expect(runtime.locator('.install-version')).toHaveText('Run #30231271280')
-  await expect(runtime.locator('.install-previous')).toContainText('上一个版本 Run #30235703570')
+  await expect(runtime.locator('.install-version b')).toHaveText('#30231271280')
+  await expect(runtime.locator('.install-previous')).toContainText('上一个版本 构建 #30235703570')
 })
 
 test('内核检查失败时面板更新照常提示 @responsive', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('kixdns:demo-kernel-check-failed', 'true'))
   await open(page, '/system')
   const [kernelRow, panelRow] = [page.locator('.update-row').first(), page.locator('.update-row').nth(1)]
-  await expect(kernelRow.locator('.update-row__from-to')).toContainText('检查失败：GitHub 匿名 API 配额已用尽')
-  await expect(kernelRow.getByRole('button')).toHaveCount(0)
+  await expect(kernelRow.locator('.update-row__from-to')).toContainText('检查失败：GitHub 匿名访问次数用完了')
+  // 不知道最新版本就不给「更新」；行里唯一的按钮是去填 Token 的，点了焦点落到 Token 输入框
+  // No 更新 without a known latest build; the row's only button leads to the token field and focuses it
+  await expect(kernelRow.getByRole('button')).toHaveCount(1)
+  await kernelRow.getByRole('button', { name: '填写 Token', exact: true }).click()
+  await expect(page.locator('input[aria-label="GitHub Token"]')).toBeFocused()
   await expect(panelRow.locator('.update-row__from-to')).toContainText('v1.0.0 → v1.0.1')
   await expect(panelRow.getByRole('button', { name: '在线更新' })).toBeVisible()
   // 回退只用本机的版本，读不到远端时照样能回。 / Rollback uses only local versions, so it still works offline.
@@ -208,7 +213,7 @@ test('操作审计可按动作筛选', async ({ page }) => {
   await expect(page.locator('.audit-line')).toHaveCount(3)
   await page.getByLabel('筛选操作审计').fill('schedule')
   await expect(page.locator('.audit-line')).toHaveCount(1)
-  await expect(page.locator('.audit-line')).toContainText('config.geo_data.schedule.apply')
+  await expect(page.locator('.audit-line')).toContainText('定时更新 Geo 数据')
 })
 
 test('运行日志的级别筛选由服务端执行', async ({ page }) => {

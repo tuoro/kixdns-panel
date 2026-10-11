@@ -101,7 +101,7 @@ async fn replace_release_kernel(state: &AppState) -> anyhow::Result<()> {
         Ok(installed) => (
             "kixdns.kernel.replace_release",
             format!(
-                "Release 轨道已停止构建，内核已从 {} 自动换成 {}",
+                "原来的正式版内核已停止更新，自动从 {} 换成 {}",
                 release.label(),
                 installed.label()
             ),
@@ -154,7 +154,7 @@ async fn save_github_token(
         .audit(
             Some(session.username),
             "system.github_token.configure".to_owned(),
-            "配置 GitHub API Token".to_owned(),
+            String::new(),
             unix_timestamp(),
         )
         .await
@@ -179,7 +179,7 @@ async fn delete_github_token(
         .audit(
             Some(session.username),
             "system.github_token.remove".to_owned(),
-            "删除 GitHub API Token".to_owned(),
+            String::new(),
             unix_timestamp(),
         )
         .await
@@ -242,7 +242,7 @@ async fn start_panel_update(
         .audit(
             Some(session.username),
             "panel.update.start".to_owned(),
-            format!("开始在线更新面板到 {target_version}"),
+            format!("更新到 {target_version}"),
             unix_timestamp(),
         )
         .await
@@ -287,7 +287,7 @@ async fn update_kixdns_kernel(
             .audit(
                 Some(session.username),
                 "kixdns.kernel.update".to_owned(),
-                format!("内核更新到 {}", installed.label()),
+                format!("更新到 {}", installed.label()),
                 unix_timestamp(),
             )
             .await
@@ -322,7 +322,7 @@ async fn rollback_kixdns_kernel(
             .audit(
                 Some(session.username),
                 "kixdns.kernel.rollback".to_owned(),
-                format!("内核回退到 {}", installed.label()),
+                format!("回退到 {}", installed.label()),
                 unix_timestamp(),
             )
             .await

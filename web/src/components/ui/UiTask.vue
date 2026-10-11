@@ -39,7 +39,7 @@ onBeforeUnmount(() => window.clearInterval(timer))
       <span v-if="state === 'run'" class="ui-spin"></span>
       <svg v-else-if="state === 'done'" class="ui-check" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
         stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
-      <X v-else-if="state === 'fail'" :size="15" />
+      <X v-else-if="state === 'fail'" :size="16" />
       <slot v-else name="icon" />
     </span>
     <div>

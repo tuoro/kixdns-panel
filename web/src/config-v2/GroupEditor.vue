@@ -1,10 +1,14 @@
 <script setup lang="ts">
+import { useReturnFocus } from '../composables/useReturnFocus'
 import { Info, Plus, Trash2, X } from '@lucide/vue'
 import UiHelp from '../components/ui/UiHelp.vue'
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import { detectProtocol, PROTOCOL_LABEL, POLLUTED_CIDRS, type Ecs, type Protocol, type UpstreamGroup } from '../config-model/model'
-import { groupUsers, model } from './store'
+import { useConfirm } from '../composables/useConfirm'
+import { groupUsers, model, trackDialogEdits } from './store'
+// 关上后焦点回到打开它的控件 / Focus returns to the opener on close
+useReturnFocus()
 
 // 上游组的抽屉：名称、地址（每个地址自动认协议，可改）、客户端子网、备用组。被用着的组不能删，说清楚是谁在用。
 // The upstream group drawer: name, addresses (protocol detected per address, overridable), client subnet, fallback.
@@ -14,6 +18,23 @@ const emit = defineEmits<{ close: []; saved: [group: UpstreamGroup, isNew: boole
 
 const original = props.groupId ? model.groups.find((g) => g.id === props.groupId) ?? null : null
 const draft = reactive<UpstreamGroup>(original ? JSON.parse(JSON.stringify(original)) as UpstreamGroup : { id: `u${Date.now().toString(36)}`, name: '', addresses: [{ address: '', protocol: 'auto' }], ecs: null, fallback: { group: '', onError: false, onPolluted: false } })
+// Esc、点遮罩、关闭、取消都先对照一下：改过就问一句，和规则编辑一样 / Esc, a scrim tap, × and 取消 compare first: ask if anything changed, as the rule editor does
+// 按「完成」会写进去的样子比较：空地址、首尾空格、关着的备用组里留的值都不算改过 / Compared as 完成 would write it: empty addresses, surrounding spaces and values left in a switched-off fallback do not count as edits
+const shape = (g: UpstreamGroup): string => JSON.stringify({
+  ...g,
+  name: g.name.trim(),
+  addresses: g.addresses.filter((a) => a.address.trim()).map((a) => ({ ...a, address: a.address.trim() })),
+  fallback: g.fallback.onError || g.fallback.onPolluted ? g.fallback : { group: '', onError: false, onPolluted: false },
+})
+const initial = shape(draft)
+const edited = (): boolean => shape(draft) !== initial
+// 抽屉开着、改过时离开页面或刷新也先问 / With the drawer open and edited, leaving the page or reloading asks first too
+trackDialogEdits('这个上游组', edited, { outlivesSection: true })
+const confirm = useConfirm()
+async function leave(): Promise<void> {
+  if (edited() && !(await confirm.ask({ title: '放弃这个上游组的修改', body: '刚才在这里改的内容不会写进草稿。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true }))) return
+  emit('close')
+}
 const showErrors = ref(false)
 const dialog = ref<HTMLDialogElement | null>(null)
 const nameInput = ref<HTMLInputElement | null>(null)
@@ -54,28 +75,34 @@ const problems = computed(() => {
 
 function done(): void {
   if (problems.value.length) { showErrors.value = true; return }
+  // 没改过就只是关上，不提示「已更新」 / Unchanged: just close, no 已更新 toast
+  if (original && !edited()) { emit('close'); return }
   draft.name = draft.name.trim()
   draft.addresses = draft.addresses.filter((a) => a.address.trim()).map((a) => ({ ...a, address: a.address.trim() }))
   if (!fallbackOn.value) draft.fallback = { group: '', onError: false, onPolluted: false }
   const saved = JSON.parse(JSON.stringify(draft)) as UpstreamGroup
-  if (original) model.groups.splice(model.groups.indexOf(original), 1, saved)
+  // 按 id 找回这个组再写：草稿被整份换过时手里的对象已经不在列表里，按对象找会写到别的组上 / Find the group by id before writing: if the draft was replaced the held object is no longer in the list, and finding it by object would write over another group
+  const at = original ? model.groups.findIndex((g) => g.id === original.id) : -1
+  if (original && at < 0) { emit('close'); return }
+  if (original) model.groups.splice(at, 1, saved)
   else model.groups.push(saved)
   emit('saved', saved, !original)
 }
 function remove(): void {
   if (!original || users.value.length) return
-  const index = model.groups.indexOf(original)
-  model.groups.splice(index, 1)
-  emit('deleted', original, index)
+  const index = model.groups.findIndex((g) => g.id === original.id)
+  if (index < 0) { emit('close'); return }
+  const [removed] = model.groups.splice(index, 1)
+  emit('deleted', removed!, index)
 }
 </script>
 
 <template>
-  <dialog ref="dialog" class="pdrawer" aria-labelledby="ge-title" @cancel.prevent="emit('close')" @click.self="emit('close')">
+  <dialog ref="dialog" class="pdrawer" aria-labelledby="ge-title" @cancel.prevent="leave" @click.self="leave">
     <form class="pdrawer__panel" @submit.prevent="done">
       <header class="pdrawer__head">
         <h2 id="ge-title">{{ original ? `编辑上游组` : '新建上游组' }}</h2>
-        <button class="ui-icon-btn" type="button" aria-label="关闭" title="关闭" @click="emit('close')"><X :size="16" /></button>
+        <button class="ui-icon-btn" type="button" aria-label="关闭" title="关闭" @click="leave"><X :size="16" /></button>
       </header>
       <div class="pdrawer__body">
         <label class="pfield"><span>名称</span><span class="ui-input"><input ref="nameInput" v-model="draft.name" maxlength="20" placeholder="比如：国内、公司" :aria-invalid="(showErrors && !draft.name.trim()) || undefined"></span></label>
@@ -118,7 +145,7 @@ function remove(): void {
           </div>
         </div>
         <!-- 不能删除的原因写在内容最后，底栏只放动作（手机）/ Why it cannot be deleted closes the content; the footer holds only actions (phone) -->
-        <p v-if="original && users.length" class="pdrawer__uses-body">这个组有 {{ users.length }} 处在用，先把它们改到别的组才能删除。</p>
+        <p v-if="original && users.length" class="pdrawer__uses-body">这个组有 {{ users.length }} 处在用，先把{{ users.length > 1 ? '它们' : '那一处' }}改到别的组才能删除。</p>
       </div>
       <footer class="pdrawer__foot">
         <template v-if="original">
@@ -127,7 +154,7 @@ function remove(): void {
         <p v-if="showErrors && problems.length" class="pdrawer__problem" role="alert">{{ problems[0] }}</p>
         <p v-else-if="original && users.length" class="pdrawer__uses">{{ users.length }} 处在用，不能删除</p>
         <span class="editor__spacer"></span>
-        <button class="ui-btn ui-btn--secondary" type="button" @click="emit('close')">取消</button>
+        <button class="ui-btn ui-btn--secondary" type="button" @click="leave">取消</button>
         <button class="ui-btn ui-btn--primary" type="submit">{{ original ? '完成' : '新建' }}</button>
       </footer>
     </form>

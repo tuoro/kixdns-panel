@@ -73,6 +73,17 @@ function push(message: string, kind: ToastMessage['kind'] = 'info', undo?: () =>
   return id
 }
 
+/**
+ * 收起所有还开着的撤销提示。撤销记住的是旧草稿里的对象，草稿整份换掉（保存、放弃、重新读取、导入）以后它们就指不到东西了，
+ * 留着只会让人点了没反应。
+ *
+ * Clear every open undo message. An undo holds objects from the old draft; once the draft is replaced wholesale (save, discard,
+ * reload, import) they point at nothing, and leaving them up only invites a click that does nothing.
+ */
+export function dismissUndoable(): void {
+  messages.value = messages.value.filter((message) => !message.undo)
+}
+
 export function useToast() {
   return {
     messages: readonly(messages),

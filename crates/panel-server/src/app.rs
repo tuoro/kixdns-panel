@@ -446,7 +446,7 @@ async fn setup(
         .audit(
             Some(username),
             "auth.setup".to_owned(),
-            "创建初始管理员".to_owned(),
+            String::new(),
             unix_timestamp(),
         )
         .await
@@ -502,7 +502,7 @@ async fn login(
         .audit(
             Some(user.username.clone()),
             "auth.login".to_owned(),
-            "登录成功".to_owned(),
+            String::new(),
             unix_timestamp(),
         )
         .await
@@ -786,7 +786,7 @@ async fn save_config(
         .audit(
             Some(session.username),
             "config.save".to_owned(),
-            format!("保存配置版本 #{}", result.version_id),
+            format!("版本 #{}", result.version_id),
             unix_timestamp(),
         )
         .await
@@ -836,7 +836,7 @@ async fn restore_config(
         &state,
         candidate,
         &request.expected_sha256,
-        format!("回滚至版本 #{id}"),
+        format!("恢复为版本 #{id}"),
         session.username.clone(),
     )
     .await?;
@@ -845,7 +845,7 @@ async fn restore_config(
         .audit(
             Some(session.username),
             "config.restore".to_owned(),
-            format!("恢复配置版本 #{id}，生成版本 #{}", result.version_id),
+            format!("#{id}，生成版本 #{}", result.version_id),
             unix_timestamp(),
         )
         .await
@@ -873,7 +873,7 @@ async fn delete_config_version(
         .audit(
             Some(session.username),
             "config.version.delete".to_owned(),
-            format!("删除配置版本 #{id}"),
+            format!("版本 #{id}"),
             unix_timestamp(),
         )
         .await
@@ -900,7 +900,7 @@ async fn delete_config_versions(
         .audit(
             Some(session.username),
             "config.version.bulk_delete".to_owned(),
-            format!("批量删除 {} 个配置版本", deleted_ids.len()),
+            format!("{} 个版本", deleted_ids.len()),
             unix_timestamp(),
         )
         .await
@@ -926,7 +926,7 @@ async fn flush_cache(
             Some(session.username),
             "cache.flush".to_owned(),
             format!(
-                "清理响应缓存 {} 项、规则缓存 {} 项",
+                "响应缓存 {} 条、规则缓存 {} 条",
                 result.response_entries_before, result.rule_entries_before
             ),
             unix_timestamp(),
@@ -952,7 +952,7 @@ async fn rollback_config(
         .save(
             previous_content,
             failed_sha256,
-            "热加载失败自动回滚".to_owned(),
+            "应用失败，自动退回上一版".to_owned(),
             actor.to_owned(),
         )
         .await
@@ -973,7 +973,7 @@ async fn rollback_config(
         .audit(
             Some(actor.to_owned()),
             "config.auto_rollback".to_owned(),
-            format!("自动回滚生成配置版本 #{}", rollback.version_id),
+            format!("生成配置版本 #{}", rollback.version_id),
             unix_timestamp(),
         )
         .await
@@ -1039,7 +1039,7 @@ async fn validate_candidate(
         mark_candidate_failed(
             state,
             result.version_id,
-            "KixDNS 拒绝该配置，请先修正校验错误",
+            "KixDNS 没有接受这份配置，先改好校验里列出的问题",
         )
         .await?;
         ensure_validation_accepted(&validation)?;
@@ -1111,11 +1111,9 @@ async fn activate_candidate(
                 .restore_formal(previous.content)
                 .await
                 .map_err(map_config_error)?;
-            mark_candidate_failed(state, result.version_id, error.to_string()).await?;
-            return Err(AppError::Unprocessable(
-                "reload_failed",
-                format!("新配置未生效，旧配置仍已保留：{error}"),
-            ));
+            let message = format!("{}，仍在用之前的配置", reload_failure(&error));
+            mark_candidate_failed(state, result.version_id, message.clone()).await?;
+            return Err(AppError::Unprocessable("reload_failed", message));
         }
     };
     state
@@ -1422,7 +1420,7 @@ fn ensure_validation_accepted(validation: &ValidationResult) -> AppResult<()> {
     } else {
         Err(AppError::Unprocessable(
             "config_validation_failed",
-            "KixDNS 拒绝该配置，请先修正校验错误".to_owned(),
+            "KixDNS 没有接受这份配置，先改好校验里列出的问题".to_owned(),
         ))
     }
 }
@@ -1531,14 +1529,30 @@ fn map_control_error(error: ControlError) -> AppError {
     }
 }
 
+/// 新配置没生效的原因，一句话：没接受（带内核给的原因）、没及时确认、已停止，其余照错误本身说。
+/// Why a new config did not take, in one phrase: not accepted (with the kernel's reason), not
+/// confirmed in time, stopped; anything else as the error itself says.
+fn reload_failure(error: &ControlError) -> String {
+    match error {
+        ControlError::Rejected(reason) => format!("KixDNS 没有接受这份配置：{reason}"),
+        ControlError::Unavailable(message) => normalize_control_unavailable_message(message),
+        other => other.to_string(),
+    }
+}
+
+// 控制接口的套接字不在就是 KixDNS 停了；已经以 KixDNS 开头的句子照原样；其余说连不上。
+// A missing control socket means KixDNS has stopped; sentences already naming KixDNS stay as
+// they are; anything else says it could not be reached.
 fn normalize_control_unavailable_message(message: &str) -> String {
     if message.contains("No such file")
         || message.contains("os error 2")
         || message.contains("找不到指定的文件")
     {
-        "KixDNS 未启动，增强控制接口暂不可用".to_owned()
-    } else {
+        "KixDNS 已停止".to_owned()
+    } else if message.starts_with("KixDNS") {
         message.to_owned()
+    } else {
+        format!("连不上 KixDNS：{message}")
     }
 }
 

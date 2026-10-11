@@ -1639,3 +1639,41 @@ fn downloads_from_github_first_only_when_a_token_is_configured() {
     assert_eq!(with_token[1].url, remote.download_url);
     assert!(with_token[1].token.is_none(), "nightly.link 不能收到 Token");
 }
+
+#[test]
+fn installed_label_matches_the_page() {
+    let mut version = InstalledVersion {
+        source: Some(VersionSource::Action),
+        source_id: Some(7),
+        commit: "0123456789abcdef".to_owned(),
+        run_id: Some(30_231_271_280),
+        release_tag: None,
+        created_at: None,
+        source_url: None,
+        build_url: None,
+        artifact: String::new(),
+        artifact_digest: None,
+        upstream_repository: None,
+        upstream_commit: None,
+        patchset: None,
+        dependency_revision: None,
+        control_protocol: None,
+        config_capabilities: Vec::new(),
+        binary_sha256: String::new(),
+        installed_at: 0,
+        active: true,
+    };
+    assert_eq!(version.label(), "构建 #30231271280");
+    version.run_id = None;
+    version.release_tag = Some("v0.2.0".to_owned());
+    assert_eq!(version.label(), "v0.2.0");
+    version.release_tag = None;
+    assert_eq!(version.label(), "构建 0123456789ab");
+}
+
+#[test]
+fn a_failed_check_reports_only_its_cause() {
+    let error = UpdateError::Network("GitHub 匿名访问次数用完了".to_owned());
+    assert_eq!(error.reason(), "GitHub 匿名访问次数用完了");
+    assert_eq!(UpdateError::Unsupported.reason(), "当前平台不支持自动更新");
+}

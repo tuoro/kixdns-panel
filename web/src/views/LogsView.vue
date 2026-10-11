@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useNarrowDesktop } from '../config-v2/phone'
 import { CircleAlert, Download, RefreshCw, ScrollText, Search } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { apiRequest } from '../api/client'
@@ -9,7 +10,9 @@ import UiNewItemsBanner from '../components/ui/UiNewItemsBanner.vue'
 import UiPageHeader from '../components/ui/UiPageHeader.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
 import { segmentLogMessage } from '../logs'
-import { errorMessage } from '../utils'
+import { actorName, errorMessage } from '../utils'
+// 侧栏版最窄的一档里审计搜索框只有 110 宽：占位换短的 / In the narrowest sidebar band the audit search is 110 wide, so its placeholder is shorter
+const narrow = useNarrowDesktop()
 
 const entries = ref<LogEntry[]>([])
 const auditEvents = ref<AuditEvent[]>([])
@@ -56,8 +59,9 @@ const filteredAudit = computed(() => {
   if (!needle) return auditEvents.value
   return auditEvents.value.filter((event) =>
     event.action.toLowerCase().includes(needle)
+    || (actionName(event.action) ?? '').includes(needle)
     || event.detail.toLowerCase().includes(needle)
-    || (event.actor ?? 'system').toLowerCase().includes(needle),
+    || actorName(event.actor).toLowerCase().includes(needle),
   )
 })
 // 分段跟着筛选结果算一次；放在模板里会让每次重绘都重新切一遍正文。
@@ -89,8 +93,8 @@ const levelFacts = computed(() => {
     else if (entry.priority === 4) warnings += 1
   }
   const parts: string[] = []
-  if (errors > 0) parts.push(`${errors} 错误`)
-  if (warnings > 0) parts.push(`${warnings} 警告`)
+  if (errors > 0) parts.push(`${errors} 条错误`)
+  if (warnings > 0) parts.push(`${warnings} 条警告`)
   return parts
 })
 // 首屏还没回来时页头和列表都放骨架；之后事实行一直在，换页签时跟着换。
@@ -132,7 +136,7 @@ const auditOptions = [
   { value: 'all', label: '全部' },
   { value: 'config.', label: '配置' },
   { value: 'service.', label: '服务' },
-  { value: 'kixdns.', label: 'KixDNS' },
+  { value: 'kixdns.', label: '内核' },
   { value: 'auth.', label: '认证' },
   { value: 'diagnostic.', label: '诊断' },
 ]
@@ -176,6 +180,37 @@ function levelDot(priority: number): string {
 function failed(action: string): boolean {
   return action.endsWith('_failed')
 }
+
+// 动作写成人话；认不出的（新版本面板多出来的）照原样用等宽写，不猜 / Actions in words; one not known here (added by a newer panel) is shown as it is, in mono, never guessed
+const ACTION_NAMES: Record<string, string> = {
+  'auth.login': '登录',
+  'auth.setup': '创建管理员',
+  'auth.reset_admin': '重置管理员',
+  'config.save': '保存配置',
+  'config.restore': '恢复配置版本',
+  'config.auto_rollback': '自动退回上一版',
+  'config.version.delete': '删除配置版本',
+  'config.version.bulk_delete': '批量删除配置版本',
+  'config.geo_data.sync': '同步 Geo 数据',
+  'config.geo_data.cleanup': '清理 Geo 数据',
+  'config.geo_data.schedule': '设置 Geo 数据定时更新',
+  'config.geo_data.schedule.apply': '定时更新 Geo 数据',
+  'diagnostic.dns': 'DNS 诊断',
+  'kixdns.kernel.update': '更新内核',
+  'kixdns.kernel.rollback': '回退内核',
+  'cache.flush': '清空缓存',
+  'system.github_token.configure': '保存 GitHub Token',
+  'system.github_token.remove': '删除 GitHub Token',
+  'kixdns.kernel.replace_release': '切换内核版本',
+  'kixdns.kernel.replace_release_failed': '切换内核版本',
+  'service.start': '启动服务',
+  'service.stop': '停止服务',
+  'service.restart': '重启服务',
+  'panel.update.start': '开始更新面板',
+  'settings.statistics_enabled': '设置查询统计',
+  'settings.statistics_anonymize_client_ip': '设置客户端 IP 脱敏',
+}
+const actionName = (action: string): string | null => ACTION_NAMES[action] ?? null
 
 function timestamp(microseconds: number): string {
   return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3, hour12: false }).format(new Date(microseconds / 1000))
@@ -343,7 +378,7 @@ function retry(): void {
 function download(): void {
   const content = mode.value === 'runtime'
     ? filtered.value.map((entry) => `${timestamp(entry.timestamp_unix_micros)} [${label(entry.priority)}] ${entry.source}: ${entry.message}`).join('\n')
-    : filteredAudit.value.map((event) => `${auditTimestamp(event.created_at)} [${event.actor ?? 'system'}] ${event.action}: ${event.detail}`).join('\n')
+    : filteredAudit.value.map((event) => `${auditTimestamp(event.created_at)} [${actorName(event.actor)}] ${event.action}: ${event.detail}`).join('\n')
   const url = URL.createObjectURL(new Blob([content], { type: 'text/plain;charset=utf-8' }))
   const anchor = document.createElement('a')
   anchor.href = url
@@ -365,11 +400,12 @@ onBeforeUnmount(() => window.clearInterval(timer))
          The header: a row of facts under the title (source, newest line, levels), all from the data; a skeleton bar until the first page lands -->
     <UiPageHeader title="日志">
       <template #meta>
+        <!-- 来源在一个页签里不会变（页签已经说了），不再单列 / The source never changes within a tab (the tab already says it), so it is no longer a fact -->
         <div v-if="factsReady" class="ui-facts logs-facts">
-          <div><span class="ui-lbl">来源</span><b>{{ mode === 'audit' ? '面板' : 'kixdns' }}</b></div>
           <div><span class="ui-lbl">最近一条</span><b>{{ newest ?? '—' }}</b></div>
           <div v-if="mode === 'runtime'"><span class="ui-lbl">级别</span><b><UiDotText v-if="levelFacts.length" :parts="levelFacts" /><template v-else>{{ entries.length ? '无' : '—' }}</template></b></div>
         </div>
+        <span v-if="factsReady" class="ui-ph__lead ui-ph__phone"><UiDotText :parts="[`最近一条 ${newest ?? '—'}`, ...(mode === 'runtime' ? levelFacts : [])]" /></span>
         <span v-else class="sk logs-skeleton-meta" role="status" aria-label="读取日志"></span>
       </template>
     </UiPageHeader>
@@ -405,7 +441,7 @@ onBeforeUnmount(() => window.clearInterval(timer))
         </div>
       </header>
       <header v-else class="log-toolbar">
-        <label class="ui-input log-search"><Search :size="16" aria-hidden="true" /><input v-model="auditQuery" aria-label="筛选操作审计" placeholder="筛选操作者、动作或详情" /></label>
+        <label class="ui-input log-search"><Search :size="16" aria-hidden="true" /><input v-model="auditQuery" aria-label="筛选操作审计" :placeholder="narrow ? '筛选操作记录' : '筛选操作者、动作或详情'" /></label>
         <!-- 六个类别在手机上排成三列两行，和运行日志一样留在第二行 / The six categories go three by two on a phone, on the second row like the runtime levels -->
         <UiTabs class="log-category-seg" :model-value="auditCategory" :items="auditItems" label="审计动作类别" variant="segment" @update:model-value="selectAuditCategory" />
         <div class="log-toolbar__end">
@@ -437,7 +473,8 @@ onBeforeUnmount(() => window.clearInterval(timer))
             <p><template v-for="(segment, part) in segments" :key="part"><em v-if="segment.strong">{{ segment.text }}</em><i v-else-if="segment.text.endsWith('=')" class="log-key">{{ segment.text }}</i><template v-else>{{ segment.text }}</template></template></p>
           </div>
           <button v-if="runtimeCursor !== null" class="log-more" type="button" :disabled="requesting" @click="loadOlder"><RefreshCw :size="14" :class="{ spin: loadingOlder }" aria-hidden="true" />{{ loadingOlder ? '正在加载' : '加载更早日志' }}</button>
-          <UiEmpty v-if="filtered.length === 0 && !loadError" :icon="ScrollText" title="没有符合条件的日志" :desc="runtimeFiltered ? '清空搜索，或把级别切回「全部」' : undefined" />
+          <!-- 筛出来是空的和根本没有日志是两回事，说法分开 / Nothing matching a filter and no log at all are different things, said differently -->
+          <UiEmpty v-if="filtered.length === 0 && !loadError" :icon="ScrollText" :title="runtimeFiltered ? '没有符合条件的日志' : 'KixDNS 还没有写过日志'" :desc="runtimeFiltered ? '清空搜索，或把级别切回「全部」' : '启动、应用配置和出错时，KixDNS 会在这里留下记录。'" />
         </template>
       </div>
       <div v-else class="log-stream">
@@ -446,10 +483,10 @@ onBeforeUnmount(() => window.clearInterval(timer))
         <div v-if="skeletonAudit" class="log-skeleton" role="status" aria-label="正在读取审计记录"><i v-for="n in 6" :key="n" class="sk"></i></div>
         <template v-else>
           <div v-for="event in filteredAudit" :key="event.id" class="log-line audit-line">
-            <time>{{ auditTimestamp(event.created_at) }}</time><strong>{{ event.actor ?? 'system' }}</strong><code>{{ event.action }}</code><p><span v-if="failed(event.action)" class="ui-tag ui-tag--err">失败</span>{{ event.detail }}</p>
+            <time>{{ auditTimestamp(event.created_at) }}</time><strong>{{ actorName(event.actor) }}</strong><span class="audit-action" :class="{ 'ui-mono': !actionName(event.action) }" :title="actionName(event.action) ? event.action : undefined">{{ actionName(event.action) ?? event.action }}</span><p><span v-if="failed(event.action)" class="ui-tag ui-tag--err">失败</span>{{ event.detail }}</p>
           </div>
           <button v-if="auditCursor !== null && !auditQuery" class="log-more" type="button" :disabled="auditRequesting" @click="loadAudit(false)"><RefreshCw :size="14" :class="{ spin: auditLoading }" aria-hidden="true" />加载更多</button>
-          <UiEmpty v-if="filteredAudit.length === 0 && !auditError" :icon="ScrollText" title="没有符合条件的审计记录" :desc="auditFiltered ? '清空搜索，或把类别切回「全部」' : undefined" />
+          <UiEmpty v-if="filteredAudit.length === 0 && !auditError" :icon="ScrollText" :title="auditFiltered ? '没有符合条件的审计记录' : '还没有操作记录'" :desc="auditFiltered ? '清空搜索，或把类别切回「全部」' : '登录、保存配置、更新和重启服务都会记在这里。'" />
         </template>
       </div>
     </section>
@@ -514,8 +551,16 @@ onBeforeUnmount(() => window.clearInterval(timer))
   .logs-page .log-head--audit, .logs-page .audit-line { grid-template-columns: 128px 88px 14rem minmax(0, 1fr); column-gap: var(--s-5); }
   .logs-page .audit-line { min-height: 0; align-items: baseline; align-content: start; padding: var(--s-2) var(--s-5); }
   .logs-page .audit-line time, .logs-page .audit-line strong { font-family: var(--f-body); font-size: var(--t-3); }
-  .logs-page .audit-line code { color: var(--l-ink); font-size: var(--t-2); }
+  .logs-page .audit-line .audit-action { color: var(--l-ink); font-size: var(--t-3); }
   .logs-page .audit-line p { display: flex; align-items: center; gap: var(--s-2); color: var(--l-ink-2); font-size: var(--t-3); }
+}
+/* 641–1024：工具行一行排下（搜索框让出宽度，不把两个图标按钮挤到第二行）；审计列收紧，详情拿到大半行
+   641–1024: the toolbar stays on one row (the search gives way instead of pushing the two icon buttons onto a second row); audit columns tighten so the detail gets most of the row */
+@media (min-width: 641px) {
+  .logs-page .log-console > .log-toolbar { flex-wrap: nowrap; }
+}
+@media (min-width: 641px) and (max-width: 1024px) {
+  .logs-page .log-head--audit, .logs-page .audit-line { grid-template-columns: 112px 64px 10rem minmax(0, 1fr); column-gap: var(--s-4); }
 }
 
 /* 手机：工具行第一行搜索加图标按钮、第二行分段（六个类别三列两行）；没有列名行；
@@ -537,13 +582,13 @@ onBeforeUnmount(() => window.clearInterval(timer))
   .logs-page .log-line:not(.audit-line) > p { grid-area: msg; }
   .logs-page .audit-line { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "code code time" "actor detail detail"; gap: 0; padding: var(--s-2) var(--s-4); }
   .logs-page .audit-line time { grid-area: time; padding-left: var(--s-3); font-size: var(--t-2); }
-  .logs-page .audit-line code { grid-area: code; font-size: var(--t-2); }
+  .logs-page .audit-line .audit-action { grid-area: code; font-size: var(--t-2); }
   .logs-page .audit-line strong { grid-area: actor; color: var(--l-ink-3); font-size: var(--t-2); }
   .logs-page .audit-line p { grid-area: detail; color: var(--l-ink-2); font-size: var(--t-2); }
   .logs-page .audit-line p > .ui-tag { margin-right: var(--s-2); vertical-align: text-bottom; }
   .logs-page .log-skeleton { padding-inline: var(--s-4); }
   .logs-page .log-skeleton > .sk { height: calc(var(--log-line) * 2); }
-  .logs-page .logs-facts { gap: var(--s-3) var(--s-5); }
-  .logs-page .logs-facts > div { flex: 0 0 calc(50% - var(--s-5) / 2); }
+  /* 手机页头只有一行状态，占位也是一行 / The phone header is one status line, so is its placeholder */
+  .logs-page .logs-skeleton-meta { height: calc(var(--t-2) * var(--lh-base)); }
 }
 </style>

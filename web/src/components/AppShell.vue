@@ -4,9 +4,11 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Compon
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { useHelp } from '../composables/useHelp'
 import { useSession } from '../composables/useSession'
+import ConnectionBanner from './ConnectionBanner.vue'
 import HelpDrawer from './HelpDrawer.vue'
 import type { HelpPage } from '../help/topics'
 import { useToast } from '../composables/useToast'
+import { confirmLeave, takeAgreement } from '../composables/useLeaveGuard'
 import { THEME_CHOICES, useTheme, type ThemeChoice } from '../composables/useTheme'
 import { useUpdateNotifications, type UpdateNoticeItem } from '../composables/useUpdateNotifications'
 import { errorMessage } from '../utils'
@@ -33,7 +35,7 @@ const themeButton = ref<HTMLButtonElement | null>(null)
 const THEME_ICONS: Record<ThemeChoice, Component> = { system: Monitor, light: Sun, dark: Moon }
 const themeIcon = computed(() => THEME_ICONS[theme.choice.value])
 const signingOut = ref(false)
-const title = computed(() => route.meta.title ?? 'KixDNS Panel')
+const title = computed(() => route.meta.title ?? 'KixDNS 面板')
 // 侧栏底部的版本行：面板版本，有更新时上面多一行 / The sidebar's version line: the panel version, with an update line above it when one is available
 const panelVersion = computed(() => notifications.status.value?.panel?.current_version ?? '')
 const updateLine = computed(() => {
@@ -105,7 +107,10 @@ async function openNotice(notice: UpdateNoticeItem): Promise<void> {
   await router.push(notice.target)
 }
 
+// 有没保存的修改时先问，再结束会话：先退出再问的话，选「继续编辑」也已经没有登录了
+// With unsaved changes, ask before ending the session: asking afterwards would leave 继续编辑 on a signed-out page
 async function logout(): Promise<void> {
+  if (!(await confirmLeave())) return
   signingOut.value = true
   try {
     await session.logout()
@@ -113,6 +118,8 @@ async function logout(): Promise<void> {
   } catch (error) {
     toast.error(errorMessage(error))
   } finally {
+    // 同意过的那一次只给紧接着的这次换页用，无论成败都收回 / The agreement covers only the page change right after it, so it is withdrawn whatever happened
+    takeAgreement()
     signingOut.value = false
   }
 }
@@ -174,7 +181,7 @@ onBeforeUnmount(() => {
               <div><strong>更新通知</strong></div>
               <div>
                 <button class="ui-btn ui-btn--secondary ui-btn--icon ui-btn--compact" type="button" title="检查更新" aria-label="检查更新" :disabled="notifications.checking.value" @click="checkUpdates"><RefreshCw :size="14" :class="{ spin: notifications.checking.value }" /></button>
-                <button v-if="notifications.unreadCount.value" class="notification-mark-all" type="button" @click="notifications.markAllRead"><Check :size="13" />全部已读</button>
+                <button v-if="notifications.unreadCount.value" class="notification-mark-all" type="button" @click="notifications.markAllRead"><Check :size="14" />全部已读</button>
               </div>
             </header>
             <div v-if="notifications.notices.value.length" class="notification-list">
@@ -227,6 +234,7 @@ onBeforeUnmount(() => {
       </div>
     </header>
     <div class="workspace">
+      <ConnectionBanner />
       <main id="main-content" class="workspace__main" tabindex="-1">
         <div v-if="!hasPageHeading" class="page-heading"><h1>{{ title }}</h1></div>
         <RouterView />

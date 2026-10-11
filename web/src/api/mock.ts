@@ -33,13 +33,13 @@ const now = Math.floor(Date.now() / 1000)
 // New log lines that have "arrived" in the demo; grows only under kixdns:demo-log-growing.
 let demoLogArrivals = 0
 const auditEvents = [
-  { id: 18, actor: 'admin', action: 'config.save', detail: '保存配置版本 #18', created_at: now - 430 },
-  { id: 17, actor: 'admin', action: 'config.geo_data.sync', detail: '同步 Geo 数据：MMDB 1，GeoIP 0，GeoSite 1 个', created_at: now - 7200 },
-  { id: 16, actor: 'admin', action: 'kixdns.kernel.update', detail: '内核更新到 Run #30231271280', created_at: now - 86400 },
-  { id: 15, actor: 'admin', action: 'service.restart', detail: '服务状态：active/running', created_at: now - 86520 },
+  { id: 18, actor: 'admin', action: 'config.save', detail: '版本 #18', created_at: now - 430 },
+  { id: 17, actor: 'admin', action: 'config.geo_data.sync', detail: 'GeoIP MMDB 1 个、GeoIP DAT 0 个、GeoSite 1 个', created_at: now - 7200 },
+  { id: 16, actor: 'admin', action: 'kixdns.kernel.update', detail: '更新到 构建 #30231271280', created_at: now - 86400 },
+  { id: 15, actor: 'admin', action: 'service.restart', detail: '服务状态：正在运行', created_at: now - 86520 },
   { id: 14, actor: 'admin', action: 'diagnostic.dns', detail: '执行 A 查询', created_at: now - 172800 },
-  { id: 13, actor: 'admin', action: 'auth.login', detail: '登录成功', created_at: now - 173100 },
-  { id: 12, actor: null, action: 'config.geo_data.schedule.apply', detail: '定时更新 Geo 数据并生成配置版本 #17', created_at: now - 604800 },
+  { id: 13, actor: 'admin', action: 'auth.login', detail: '', created_at: now - 173100 },
+  { id: 12, actor: null, action: 'config.geo_data.schedule.apply', detail: '生成配置版本 #17', created_at: now - 604800 },
 ]
 let config: ConfigDocument = {
   content: {
@@ -419,7 +419,7 @@ function installedKixdnsVersion(remote: RemoteKixdnsVersion, active: boolean, in
 // 匿名配额用完时读不到最新内核，面板的更新照样能查到。
 // A failed kernel check is shown only under this flag, mirroring kixdns:demo-empty-first-install:
 // with the anonymous quota spent the newest kernel cannot be read, while the panel update still can.
-const KERNEL_CHECK_ERROR = 'GitHub 匿名 API 配额已用尽，请在系统页配置 GitHub Token'
+const KERNEL_CHECK_ERROR = 'GitHub 匿名访问次数用完了'
 
 function kernelCheckFails(): boolean {
   return typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-kernel-check-failed') === 'true'
@@ -485,7 +485,7 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
   if (path === '/api/v1/auth/logout') return { ok: true } as T
   const emptyFirstInstall = typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-empty-first-install') === 'true'
   if (path === '/api/v1/overview') {
-    if (emptyFirstInstall) throw new Error('KixDNS 控制接口不可用')
+    if (emptyFirstInstall) throw new Error('KixDNS 已停止')
     return overview as T
   }
   if (pathname === '/api/v1/stats/top' && method === 'GET') {
@@ -607,13 +607,32 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
     return { deleted_id: id } as DeleteConfigVersionResult as T
   }
   if (path === '/api/v1/config/validate') {
+    // kixdns:demo-validate-stopped：下一次校验撞上 KixDNS 刚停掉（控制接口不在了），演示保存时才发现停了的样子
+    // kixdns:demo-validate-stopped: the next validation finds KixDNS just stopped (the control socket is gone), showing a stop discovered while saving
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-validate-stopped') === 'true') {
+      localStorage.removeItem('kixdns:demo-validate-stopped')
+      throw new ApiError('KixDNS 已停止', 503, 'kixdns_unavailable')
+    }
+    // kixdns:demo-validate-reject：下一次校验被内核拒绝（真内核对它不接受的配置回 422 kixdns_rejected）
+    // kixdns:demo-validate-reject: the next validation is rejected by the kernel (a real kernel answers 422 kixdns_rejected for a config it refuses)
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-validate-reject') === 'true') {
+      localStorage.removeItem('kixdns:demo-validate-reject')
+      throw new ApiError('pipeline "main" references unknown upstream group "fast"', 422, 'kixdns_rejected')
+    }
     const content = JSON.parse(String(init?.body)) as Record<string, unknown>
     const pipelines = Array.isArray(content.pipelines) ? content.pipelines : []
     return { protocol_version: 1, valid: true, pipeline_count: pipelines.length, rule_count: 1 } as T
   }
   if (path === '/api/v1/config' && method === 'PUT') {
     const body = JSON.parse(String(init?.body)) as { content: Record<string, unknown>; expected_sha256: string; message?: string }
-    if (body.expected_sha256 !== config.sha256) throw new Error('配置已被其他操作修改，请刷新后重试')
+    // 和真服务一样带 config_conflict，页面才认得出是别处先存了；kixdns:demo-save-conflict 让下一次保存撞上，演示这个状态
+    // Carries config_conflict as the real server does, so the page knows someone else saved first; kixdns:demo-save-conflict makes
+    // the next save hit it, to show that state
+    // kixdns:demo-save-slow：写入要 1.5 秒，演示保存途中还能改 / kixdns:demo-save-slow: writing takes 1.5 s, to show editing while a save is in flight
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-save-slow') === 'true') await new Promise((resolve) => setTimeout(resolve, 1500))
+    const forcedConflict = typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-save-conflict') === 'true'
+    if (forcedConflict) localStorage.removeItem('kixdns:demo-save-conflict')
+    if (forcedConflict || body.expected_sha256 !== config.sha256) throw new ApiError('配置已被其他操作修改，请刷新后重试', 409, 'config_conflict')
     const nextSha = `demo${Date.now().toString(16)}`.padEnd(64, '0').slice(0, 64)
     const versionId = ++nextConfigVersionId
     const createdAt = Math.floor(Date.now() / 1000)
@@ -715,7 +734,7 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
     versions.versions.unshift({
       id: versionId,
       sha256: config.sha256,
-      message: `回滚至版本 #${sourceId}`,
+      message: `恢复为版本 #${sourceId}`,
       actor: 'admin',
       created_at: config.modified_at,
       apply_state: 'applied',

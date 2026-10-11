@@ -51,7 +51,6 @@ const title = computed(() => ruleTitle(props.rule))
         <span v-if="rule.outcome.type === 'upstream' && rule.response.mode === 'custom'" class="rrow__icon" role="img" aria-label="单独检查上游回答" title="单独检查上游回答"><ShieldCheck :size="14" aria-hidden="true" /></span>
         <span v-if="mark === 'hit'" class="ui-tag ui-tag--ok">命中</span>
         <span v-else-if="mark === 'pass'" class="ui-tag">经过</span>
-        <span v-if="rule.raw" class="ui-tag">高级</span>
         <span v-if="!rule.enabled" class="ui-tag">已停用</span>
         <span v-else-if="broken" class="ui-tag ui-tag--warn">要修改</span>
         <span v-else-if="shadowedBy" class="ui-tag ui-tag--warn" :title="`第 ${shadowedBy} 条接住了所有请求，这条永远轮不到`">到不了</span>
@@ -59,8 +58,8 @@ const title = computed(() => ruleTitle(props.rule))
       </span>
       <span class="rrow__line"><span class="rrow__pill rrow__pill--inline" aria-hidden="true"><span v-if="rule.raw" class="opill opill--pass"><span class="opill__verb">高级</span></span><OutcomePill v-else :outcome="rule.outcome" /></span><span v-if="named" class="rrow__cond" :title="summary">{{ summary }}</span><span v-else-if="rule.note" class="rrow__cond rrow__note">{{ rule.note }}</span></span>
     </button>
-    <span class="rrow__pill"><span v-if="rule.raw" class="opill opill--pass" title="原样保留的内核规则"><span class="opill__verb">高级</span><span class="opill__val">原样保留的内核规则</span></span><OutcomePill v-else :outcome="rule.outcome" /></span>
-    <span class="rrow__hits" :title="`启动以来命中 ${hits.toLocaleString('en-US')} 次`">{{ hits ? fmtCount(hits) : '—' }}</span>
+    <span class="rrow__pill"><span v-if="rule.raw" class="opill opill--pass" title="按内核写法原样保留"><span class="opill__verb">高级</span><span class="opill__val">按内核写法保留</span></span><OutcomePill v-else :outcome="rule.outcome" /></span>
+    <span class="rrow__hits" :class="{ 'is-zero': !hits }" :title="`启动以来命中 ${hits.toLocaleString('en-US')} 次`"><span class="rrow__hits-label">命中 </span>{{ hits ? fmtCount(hits) : '—' }}</span>
     <label class="ui-switch rrow__switch"><input v-model="rule.enabled" type="checkbox" :aria-label="`启用规则：${title}`"><i></i></label>
     <span class="rrow__menu"><UiMenu :items="menu" :label="`规则「${title}」的操作`" :title="`第 ${index} 条 · ${title}`" anchor=".rrow" @select="emit('action', $event)" /></span>
   </li>

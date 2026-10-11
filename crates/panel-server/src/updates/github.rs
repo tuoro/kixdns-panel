@@ -243,9 +243,7 @@ impl UpdateManager {
             .bearer_auth(token)
             .send()
             .await
-            .map_err(|error| {
-                UpdateError::Network(format!("GitHub API connection failed: {error}"))
-            })?;
+            .map_err(|error| github_unreachable(&error))?;
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
             return Err(UpdateError::Invalid(
                 "GitHub Token 无效，请检查后重试".to_owned(),
@@ -254,7 +252,7 @@ impl UpdateManager {
         let rate_limit = parse_rate_limit(response.headers());
         if response.status() == reqwest::StatusCode::FORBIDDEN {
             let message = if rate_limit.as_ref().is_some_and(|rate| rate.remaining == 0) {
-                "GitHub Token 的 API 配额已用尽，请等待重置或更换 Token"
+                "GitHub Token 的访问次数用完了，等次数重置或换一个 Token"
             } else {
                 "GitHub 拒绝验证该 Token，请检查访问策略"
             };
@@ -262,12 +260,10 @@ impl UpdateManager {
         }
         let payload = response
             .error_for_status()
-            .map_err(|error| UpdateError::Network(error.to_string()))?
+            .map_err(|error| github_refused(&error))?
             .json::<GithubRateLimitResponse>()
             .await
-            .map_err(|error| {
-                UpdateError::Network(format!("GitHub API response invalid: {error}"))
-            })?;
+            .map_err(|error| github_unreadable(&error))?;
         let rate_limit = rate_limit.unwrap_or(GithubRateLimit {
             limit: payload.resources.core.limit,
             remaining: payload.resources.core.remaining,
@@ -386,23 +382,24 @@ impl UpdateManager {
         if let Some(token) = token.as_ref() {
             request = request.bearer_auth(token.expose_secret());
         }
-        let response = request.send().await.map_err(|error| {
-            UpdateError::Network(format!("GitHub API connection failed: {error}"))
-        })?;
+        let response = request
+            .send()
+            .await
+            .map_err(|error| github_unreachable(&error))?;
         if let Some(rate_limit) = parse_rate_limit(response.headers()) {
             *self.github_rate_limit.write().await = Some(rate_limit.clone());
             if response.status() == reqwest::StatusCode::FORBIDDEN && rate_limit.remaining == 0 {
                 let message = if token.is_some() {
-                    "GitHub Token 的 API 配额已用尽，请等待重置或更换 Token"
+                    "GitHub Token 的访问次数用完了，等次数重置或换一个 Token"
                 } else {
-                    "GitHub 匿名 API 配额已用尽，请在系统页配置 GitHub Token"
+                    "GitHub 匿名访问次数用完了"
                 };
                 return Err(UpdateError::Network(message.to_owned()));
             }
         }
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
             return Err(UpdateError::Network(
-                "GitHub Token 已失效，请在系统页重新配置".to_owned(),
+                "GitHub Token 已失效，换一个新的 Token 后再检查".to_owned(),
             ));
         }
         if response.status() == reqwest::StatusCode::NOT_FOUND {
@@ -411,7 +408,7 @@ impl UpdateManager {
         response
             .error_for_status()
             .map(Some)
-            .map_err(|error| UpdateError::Network(format!("GitHub API request failed: {error}")))
+            .map_err(|error| github_refused(&error))
     }
 
     pub(super) fn http_client(
@@ -427,4 +424,23 @@ impl UpdateManager {
             .build()
             .map_err(|error| UpdateError::Invalid(error.to_string()))
     }
+}
+
+// GitHub 出错时给人看的是中文的原因和下一步，原始错误写进日志 / A GitHub failure shows a Chinese reason and next step; the raw error goes to the log
+fn github_unreachable(error: &reqwest::Error) -> UpdateError {
+    tracing::warn!(%error, "连不上 GitHub API");
+    UpdateError::Network("连不上 GitHub，稍后再检查".to_owned())
+}
+
+fn github_unreadable(error: &reqwest::Error) -> UpdateError {
+    tracing::warn!(%error, "GitHub API 返回的内容无法解析");
+    UpdateError::Network("GitHub 返回的内容读不懂，稍后再检查".to_owned())
+}
+
+fn github_refused(error: &reqwest::Error) -> UpdateError {
+    tracing::warn!(%error, "GitHub API 返回错误状态");
+    UpdateError::Network(error.status().map_or_else(
+        || "GitHub 没有正常回应，稍后再检查".to_owned(),
+        |status| format!("GitHub 返回了错误（{}），稍后再检查", status.as_u16()),
+    ))
 }

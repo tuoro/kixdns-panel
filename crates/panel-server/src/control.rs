@@ -256,13 +256,15 @@ const fn default_live() -> bool {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ControlError {
-    #[error("KixDNS 增强控制接口不可用：{0}")]
+    // 这些说法会原样出现在页面上：说发生了什么，不用「增强控制接口」这类内部叫法
+    // These read verbatim on the page: they say what happened, without internal names such as 增强控制接口
+    #[error("连不上 KixDNS：{0}")]
     Unavailable(String),
-    #[error("KixDNS 增强控制协议错误：{0}")]
+    #[error("读不懂 KixDNS 的回应：{0}")]
     Protocol(String),
-    #[error("KixDNS 拒绝操作：{0}")]
+    #[error("KixDNS 没有接受这份配置：{0}")]
     Rejected(String),
-    #[error("KixDNS 增强能力不可用：{0}")]
+    #[error("KixDNS 不支持：{0}")]
     #[cfg_attr(not(unix), allow(dead_code))]
     Unsupported(String),
 }
@@ -373,12 +375,12 @@ impl ControlClient {
                     active
                         .last_reload
                         .error
-                        .unwrap_or_else(|| "配置热加载失败".to_owned()),
+                        .unwrap_or_else(|| "没有给出原因".to_owned()),
                 ));
             }
             if tokio::time::Instant::now() >= deadline {
                 return Err(ControlError::Unavailable(
-                    "等待配置热加载回执超时".to_owned(),
+                    "KixDNS 没有及时确认新配置".to_owned(),
                 ));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;

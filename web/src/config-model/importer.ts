@@ -263,6 +263,8 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
     if (g && f && f !== 'none') g.fallback = { group: groupOfPipeline.get(f.target)!.id, onError: f.onError, onPolluted: f.onPolluted }
   }
   const createdGroups: string[] = []
+  // 从默认上游建出来的组单独记：说明里写它来自默认上游，不说「从规则里的转发地址」 / Groups built from the default upstream are kept apart, so the note says where they came from
+  const fromDefault: string[] = []
   // 规则里直接写的转发：先找地址一样的组，子网不同就在规则上单独设，组有备用而规则没有就让规则「不检查」 /
   // A forward written in a rule: reuse a group with the same addresses, overriding the subnet on the rule when it differs and turning
   // the answer check off when the group has a fallback the rule did not
@@ -277,7 +279,8 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
     const created: UpstreamGroup = { id: prevG && !usedGroupIds.has(prevG.id) ? prevG.id : slug(name === '默认上游' ? 'default' : hostLabel(addrs).split(' ')[0]!), name: uniqueName(prevG?.name ?? name ?? hostLabel(addrs)), addresses: addrs, ecs, fallback: { group: '', onError: false, onPolluted: false } }
     usedGroupIds.add(created.id)
     groups.push(created)
-    createdGroups.push(created.name)
+    if (name === '默认上游') fromDefault.push(created.name)
+    else createdGroups.push(created.name)
     return { group: created, ecs: 'inherit', off: false }
   }
   const defaultGroup = () => groupFor(addressesOf(defaultUp, 'udp'), null, '默认上游').group
@@ -377,7 +380,7 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
     const logs = actions.filter((a) => a.type === 'log')
     const rest = actions.filter((a) => a.type !== 'log')
     const firstReal = actions.findIndex((a) => a.type !== 'log')
-    if (rest.length > 1 || (firstReal >= 0 && actions.slice(firstReal).some((a) => a.type === 'log'))) return raw('回答阶段有几个动作')
+    if (rest.length > 1 || (firstReal >= 0 && actions.slice(firstReal).some((a) => a.type === 'log'))) return raw('回答后检查里有几个动作')
     const log = logs.length ? ((typeof logs[0]!.level === 'string' ? logs[0]!.level : 'info') as Rule['log']['level']) : null
     if (!rest.length) return { remedy: { type: 'none' }, log }
     const a = rest[0]!
@@ -400,7 +403,7 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
         const text = Array.isArray(a.text) ? a.text : [a.text]
         return text.length === 1 ? done({ type: 'rewrite_txt', value: String(text[0]) }) : raw('替换成几段 TXT')
       }
-      default: return done(staticOutcome(a) ?? raw(`回答阶段的动作 ${a.type} 没有对应的写法`))
+      default: return done(staticOutcome(a) ?? raw(`回答后检查里的动作 ${a.type} 没有对应的写法`))
     }
   }
   function staticOutcome(a: KAction): Outcome | null {
@@ -420,7 +423,7 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
     const onMatch = r.response_actions_on_match ?? []
     const onMiss = r.response_actions_on_miss ?? []
     if (!onMatch.length && !onMiss.length) return null
-    if (!(r.response_matchers ?? []).length) return raw('回答处理没有条件')
+    if (!(r.response_matchers ?? []).length) return raw('回答后检查没有条件')
     const groupsL = dnf(r.response_matchers, r.response_matcher_operator)
     if (!groupsL.length) return raw('回答条件永远不成立')
     let match: 'all' | 'any'
@@ -478,18 +481,18 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
           else if (ruleGroupOf.has(t)) rule.outcome = { type: 'group', group: ruleGroupOf.get(t)!.id }
           else raw(t === mainSource ? '跳回主列表' : `跳到不存在的「${t}」`)
         } else rule.outcome = staticOutcome(a) ?? raw(`动作 ${a.type} 没有对应的写法`)
-        if (a.type === 'replace_txt_response') note(`「${rule.name}」在请求阶段替换 TXT，内核当作「交给下一条」处理，已这样显示`)
+        if (a.type === 'replace_txt_response') note(`「${base(kr.name)}」在请求时就替换 TXT，内核当作「继续往下一条」处理，已这样显示`)
         if (dead) raw(`决定结果的动作后面还有 ${dead} 个动作`)
         decided = true
         break
       }
       if (!decided) rule.outcome = { type: 'continue' }
-      if (hasResponse && !forwardedHere) raw('回答处理挂在不直接转发的规则上')
+      if (hasResponse && !forwardedHere) raw('回答后检查挂在不直接转发的规则上')
       return rule
     } catch (e) {
       if (!(e instanceof Raw)) throw e
       rawCount++
-      note(`「${base(kr.name)}」${where}放不进新的规则格式（${e.message}），原样保留为高级规则`, 'warn')
+      note(`「${base(kr.name)}」${where}放不进面板的写法（${e.message}），原样保留为高级规则`, 'warn')
       return { ...rule, conditions: [[]], outcome: { type: 'continue' }, response: { ...rule.response, mode: 'inherit' }, ecs: 'inherit', raw: [clone(kr) as unknown as Record<string, unknown>] }
     }
   }
@@ -570,7 +573,7 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
     const list = convertList(p.rules ?? [], `（规则组「${rg.name}」）`)
     rg.rules = list.rules
     rg.rest = list.rest
-    if (!(refs.get(p.id) ?? []).length) note(`规则组「${rg.name}」没有入口，也没有规则转过来，内核用不到它；先保留着`)
+    if (!(refs.get(p.id) ?? []).length) note(`规则组「${rg.name}」没有监听标签，也没有规则转到它，内核用不到它；先保留着`)
   }
   for (const id of inline) if (!consumed.has(id)) rawPipelines.push(clone(byId.get(id)!) as unknown as Record<string, unknown>)
 
@@ -584,10 +587,12 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
   for (const g of groups) if (g.fallback.group) used.add(g.fallback.group)
   const finalGroups = groups.filter((g) => used.has(g.id) || groupIds.has(g.pipelineId ?? `upstream-${g.id}`))
   const createdUsed = createdGroups.filter((name) => finalGroups.some((g) => g.name === name))
+  const defaultUsed = fromDefault.filter((name) => finalGroups.some((g) => g.name === name))
 
   const geoPrefixed = allRules.flatMap((r) => r.conditions.flat()).filter((c) => c.field === 'geosite' && c.values.some((v) => /^geosite:/i.test(v))).length
-  if (geoPrefixed) note(`有 ${geoPrefixed} 个 GeoSite 条件写成了「geosite:分类」，内核照原样查，永远匹配不上；规则页可以一键去掉前缀`, 'warn')
+  if (geoPrefixed) note(`有 ${geoPrefixed} 个 GeoSite 条件多写了「geosite:」前缀，内核找不到对应的分类，永远不会命中；关掉说明后在页面上方一键去掉`, 'warn')
   if (createdUsed.length) note(`从规则里的转发地址整理出上游组：${createdUsed.join('、')}，名字可以改`)
+  for (const name of defaultUsed) note(settings.default_upstream === undefined ? `配置里没写默认上游，按 KixDNS 的默认 ${defaultUp} 建了上游组「${name}」` : `其余请求原来交给默认上游 ${defaultUp}，整理成了上游组「${name}」`)
 
   let model: Model = {
     format: String(cfg.version ?? '1.0'),

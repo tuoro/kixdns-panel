@@ -29,8 +29,8 @@ export function buildUpdateNotices(status: UpdateNotifications | null): UpdateNo
       id: `kixdns:action:${kixdns.source_id}`,
       kind: 'kixdns',
       title: 'KixDNS 内核',
-      detail: security ? '依赖安全升级可用' : '新的内核构建可用',
-      meta: `Run #${kixdns.run_id}${revision}`,
+      detail: security ? '有安全更新' : '有新构建',
+      meta: `构建 #${kixdns.run_id}${revision}`,
       target: '/system',
       external: false,
     })
@@ -39,8 +39,8 @@ export function buildUpdateNotices(status: UpdateNotifications | null): UpdateNo
     notices.push({
       id: `panel:${panel.latest_version ?? 'unknown'}`,
       kind: 'panel',
-      title: 'KixDNS Panel',
-      detail: '新的面板正式版可用',
+      title: 'KixDNS 面板',
+      detail: '有新版本',
       meta: panel.latest_version ? `v${panel.latest_version}` : '',
       target: panel.release_url ?? '/system',
       external: Boolean(panel.release_url),

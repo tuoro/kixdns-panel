@@ -17,7 +17,7 @@ cd "$root"
 
 # 基线：随迁移进度下调，永不上调 / Baseline: lower it as migration proceeds, never raise it
 BASELINE_COLOR=0
-BASELINE_SIZE=41
+BASELINE_SIZE=36
 BASELINE_RADIUS=19
 BASELINE_WEIGHT=12
 BASELINE_SHADOW=0

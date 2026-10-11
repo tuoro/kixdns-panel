@@ -47,7 +47,7 @@ export function matcherFieldErrors(matcher: MatcherConfig, scope: MatcherScope):
 // Action parameters are named as the action list labels them; the CNAME 目标 is spelled out as 目标域名, as the mapping tab calls it
 const ACTION_REQUIRED = {
   upstream: requiredFieldError('上游'),
-  pipeline: requiredFieldError('Pipeline', true),
+  pipeline: requiredFieldError('要转到的组', true),
   ip: requiredFieldError('IP'),
   target: requiredFieldError('目标域名'),
 }
@@ -77,8 +77,8 @@ export function actionFieldErrors(
     }
   }
   if (action.type === 'jump_to_pipeline' && !errors.pipeline) {
-    if (action.pipeline === currentPipelineId) errors.pipeline = '不能跳转到当前 Pipeline'
-    else if (pipelineIds.length > 0 && !pipelineIds.includes(action.pipeline ?? '')) errors.pipeline = '目标 Pipeline 不存在'
+    if (action.pipeline === currentPipelineId) errors.pipeline = '不能转到自己所在的这一组'
+    else if (pipelineIds.length > 0 && !pipelineIds.includes(action.pipeline ?? '')) errors.pipeline = '要转到的组不存在'
   }
   return errors
 }

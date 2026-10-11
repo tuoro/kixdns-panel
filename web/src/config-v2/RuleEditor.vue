@@ -1,15 +1,19 @@
 <script setup lang="ts">
+import { summarizeAction } from '../config-editor/summary'
+import { traceNames } from '../config-model/trace-names'
+import { jsonProblemText, jsonSyntaxProblem } from '../json-problem'
 import { ArrowDown, ArrowLeft, Ban, ChevronDown, ChevronRight, CornerDownRight, Info, MessageSquareText, Server, Trash2 } from '@lucide/vue'
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import JsonEditor from '../components/JsonEditor.vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import { useConfirm } from '../composables/useConfirm'
+import { useBarHeight } from '../composables/useBarHeight'
+import { useToast } from '../composables/useToast'
 import UiTabs from '../components/ui/UiTabs.vue'
 import UiHelp from '../components/ui/UiHelp.vue'
 import { REQUEST_ORDER, RESPONSE_ORDER } from '../config-model/condKinds'
 import { toDnf, toTree, treeText, type CondTree } from '../config-model/condTree'
 import { actionFieldErrors, matcherFieldErrors } from '../config-editor/field-validation'
-import type { PipelineConfig, RuleConfig } from '../config-editor/types'
+import type { ActionConfig, PipelineConfig, RuleConfig } from '../config-editor/types'
 import {
   compile, conditionText, ecsText, fallbackSentence, FIELD, kernelPreview, mainPipelineId, newRule, ruleGroupPipelineId, rawMatchersText, withShi, outcomeSentence, remedySentence, RESPONSE_FIELD, responseConditionText,
   ruleProblems, type Ecs, type Outcome, type Remedy, type ResponseCondition, type Rule,
@@ -20,16 +24,20 @@ import OutcomeParams from './OutcomeParams.vue'
 import { usePhone } from './phone'
 import PhoneSheet from './PhoneSheet.vue'
 import RawRuleEditor from './RawRuleEditor.vue'
-import { hitsOf, listOf, model, newId } from './store'
+import { editorEditedBy, hitsOf, listOf, model, newId, ruleShape } from './store'
 import { runtimeCapabilities } from './useConfigDocument'
 import { editedText, groupBrief } from './view'
+// JSON 编辑器（CodeMirror）只在用到时才加载：配置页的首包不带它 / The JSON editor (CodeMirror) loads on first use, so the config page's first chunk leaves it out
+const JsonEditor = defineAsyncComponent(() => import('../components/JsonEditor.vue'))
 
 // 编辑一条规则：左边是「如果 / 那么 / 上游回答后 / 其他」，右边随时读出这条规则会做什么。
 // 改的是一份副本，点「完成」才写回草稿；写错的地方在原处标出来。
 // Editing one rule: 如果 / 那么 / 上游回答后 / 其他 on the left, and on the right a live reading of what the rule does.
 // Edits go to a copy that 完成 writes back to the draft; mistakes are marked where they are.
 // inspector：宽屏上在列表右边的面板里编辑，没有面包屑和右栏，各区块收成一列 / inspector: on wide screens the rule is edited in the panel beside the list, without crumbs or the aside, sections stacked in one column
-const props = withDefaults(defineProps<{ ruleId: number | null; groupId: string | null; template?: Partial<Rule>; inspector?: boolean }>(), { inspector: false })
+// resume：宽窄切换（转屏、拖窗口）时换成另一种编辑器，把上一个实例里还没点「完成」的修改接着用 / resume: when the layout switches (rotation, a resized window) the other editor takes over the edits not yet 完成 in the previous instance
+export interface EditorResume { draft: Rule; rawRules: unknown[]; rawMode: 'form' | 'json'; rawText: string; position: number; base: string }
+const props = withDefaults(defineProps<{ ruleId: number | null; groupId: string | null; template?: Partial<Rule>; inspector?: boolean; resume?: EditorResume | null }>(), { inspector: false, resume: null })
 const emit = defineEmits<{ close: []; saved: [rule: Rule, isNew: boolean]; deleted: [rule: Rule, index: number, list: Rule[]]; editGroup: [id: string] }>()
 
 const list = computed(() => (props.ruleId !== null ? listOf(props.ruleId).rules : props.groupId ? model.ruleGroups.find((g) => g.id === props.groupId)!.rules : model.rules))
@@ -37,17 +45,41 @@ const original = props.ruleId !== null ? list.value.find((r) => r.id === props.r
 // 空白规则就是空的：不预填一行「域名」逼人先填域名，条件从「添加条件」里按需加 / A blank rule is blank: no pre-filled 域名 row demanding a domain first; conditions come from 添加条件 as needed
 const draft = reactive<Rule>(original ? JSON.parse(JSON.stringify(original)) as Rule : { ...newRule(newId(), { type: 'upstream', group: model.rest.type === 'upstream' ? model.rest.group : model.groups[0]?.id ?? '' }), ...JSON.parse(JSON.stringify(props.template ?? {})) as Partial<Rule> })
 // 离开前对照：改过就先问一句 / Compared on leaving: ask first if anything changed
-const initial = JSON.stringify(draft)
+const initialSnap = ref(JSON.stringify(draft))
 const confirm = useConfirm()
-async function leave(): Promise<void> {
-  if (JSON.stringify(draft) !== initial && !(await confirm.ask({ title: '放弃这条规则的修改', body: '刚才在这里改的内容不会写进草稿。', confirmLabel: '放弃修改', cancelLabel: '继续编辑' }))) return
-  emit('close')
+const toast = useToast()
+const foot = ref<HTMLElement | null>(null)
+useBarHeight(foot, '--editor-foot-h')
+// 高级规则的修改先在 rawRules / rawText 里，对照时一起算上；对照和登记放在下面 rawText 声明之后（立即执行的 watch 会马上读它）
+// An advanced rule's edits live in rawRules / rawText until 完成, so the comparison counts them too; comparing and registering come after rawText is declared below (the immediate watch reads it at once)
+// 换一条规则、换分区、点保存条之前，外面先问这一句；没改过就直接放行 / Asked from outside before switching rule or section; passes straight through when nothing changed
+async function confirmDiscard(): Promise<boolean> {
+  return !edited() || confirm.ask({ title: '放弃这条规则的修改', body: '刚才在这里改的内容不会写进草稿。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
 }
+async function leave(): Promise<void> {
+  if (await confirmDiscard()) emit('close')
+}
+// 面板开着时，列表里还能停用、挪动、删除这条规则：开关和顺序跟着列表走，规则没了面板就关上
+// While the panel is open the list can still toggle, move or delete this rule: the switch and order follow the list, and the panel closes when the rule is gone
+const syncBase = (patch: Partial<Rule>): void => { initialSnap.value = JSON.stringify({ ...JSON.parse(initialSnap.value) as Rule, ...patch }) }
+watch(() => original?.enabled, (now, before) => {
+  if (now === undefined || before === undefined) return
+  if (draft.enabled === before) draft.enabled = now
+  syncBase({ enabled: now })
+})
+watch(() => (original ? list.value.indexOf(original) : -1), (now) => {
+  if (!original) return
+  if (now < 0) emit('close')
+  else positionBase.value = now
+})
 // Esc 返回、Ctrl/Cmd+Enter 完成；对话框开着时不抢 / Esc goes back, Ctrl/Cmd+Enter finishes; not while a dialog is open
 function onKey(event: KeyboardEvent): void {
   if (document.querySelector('dialog[open]')) return
   if (event.key === 'Escape' && !(event.target instanceof HTMLElement && event.target.closest('[role="menu"]'))) { event.preventDefault(); void leave() }
   else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); done() }
+  // 整页编辑时保存条不在：Ctrl+S 说一句该怎么做，不让浏览器弹「另存网页」；面板里的 Ctrl+S 交给保存条
+  // In the full-page editor the save bar is not on screen: Ctrl+S says what to do instead of opening the browser's save-page dialog; in the panel the save bar handles it
+  else if (!props.inspector && event.key.toLowerCase() === 's' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); toast.info(`先点「${original ? '完成' : '新建'}」把这条规则放进草稿，再保存`) }
 }
 onMounted(() => window.addEventListener('keydown', onKey))
 onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
@@ -61,11 +93,11 @@ const rawModes = [{ value: 'form', label: '表单' }, { value: 'json', label: 'J
 const rawText = ref('')
 const rawError = computed(() => {
   if (!draft.raw || rawMode.value !== 'json') return ''
-  try {
-    const v = JSON.parse(rawText.value) as unknown
-    if (!Array.isArray(v) || !v.length || !v.every((r) => r && typeof r === 'object' && typeof (r as { name?: unknown }).name === 'string')) return '要写成内核规则的数组，每条都有 name'
-    return ''
-  } catch (e) { return (e as Error).message }
+  const problem = jsonSyntaxProblem(rawText.value)
+  if (problem) return jsonProblemText(problem)
+  const v = JSON.parse(rawText.value) as unknown
+  if (!Array.isArray(v) || !v.length || !v.every((r) => r && typeof r === 'object' && typeof (r as { name?: unknown }).name === 'string')) return '要写成内核规则的数组，每条都有 name'
+  return ''
 })
 function setRawMode(next: string): void {
   if (next === rawMode.value) return
@@ -76,8 +108,28 @@ function setRawMode(next: string): void {
 }
 // 当前这一种写法里的内核规则 / The kernel rules as the active view holds them
 const currentRaw = (): Record<string, unknown>[] => (rawMode.value === 'form' ? JSON.parse(JSON.stringify(rawRules)) as Record<string, unknown>[] : JSON.parse(rawText.value) as Record<string, unknown>[])
+// 和保存条同一把尺子：看不见的字段（关着的日志的级别等）改了不算没完成的修改 / The save bar's yardstick: hidden fields (the level of a log that is off and so on) do not make an unfinished edit
+function snapshot(): string {
+  if (!draft.raw) return ruleShape(draft)
+  let raw: unknown
+  try { raw = currentRaw() } catch { raw = rawText.value }
+  return JSON.stringify({ ...draft, raw })
+}
+initialSnap.value = snapshot()
+const editedNow = computed(() => snapshot() !== initialSnap.value)
+const edited = (): boolean => editedNow.value
+// 改过没点「完成」要让页面知道：离开、刷新、保存条都按它算 / The page must know about edits not yet 完成: leaving, reloading and the save bar count them
+const me = Symbol('rule-editor')
+watch(editedNow, (now) => {
+  if (now) editorEditedBy.value = me
+  else if (editorEditedBy.value === me) editorEditedBy.value = null
+}, { immediate: true })
+onBeforeUnmount(() => { if (editorEditedBy.value === me) editorEditedBy.value = null })
 // 表单里写错的字段由条件表 / 动作表自己标红，这里只数出来给底栏 / The lists mark bad fields themselves; this only counts them for the footer
 const kernelPipelines = computed<PipelineConfig[]>(() => compile(model).pipelines.map((p) => ({ id: p.id, rules: [] })))
+// 转到哪一组用配置页的叫法（主列表、规则组「X」、上游组「X」），和执行路径一样 / Jump targets use the config page's names (主列表, 规则组「X」, 上游组「X」), as the trace does
+const kernelNames = computed(() => traceNames(model))
+const kernelPipelineName = (id: string): string | null => kernelNames.value.pipeline(id)
 const ownPipelineId = computed(() => { const g = props.groupId ?? (props.ruleId !== null ? listOf(props.ruleId).group?.id ?? null : null); return g ? ruleGroupPipelineId(model, g) : mainPipelineId(model) })
 const rawFieldProblems = computed(() => {
   if (!draft.raw || rawMode.value !== 'form') return 0
@@ -89,8 +141,28 @@ const rawFieldProblems = computed(() => {
     + (r.name.trim() ? 0 : 1), 0)
 })
 const position = ref(original ? list.value.indexOf(original) : list.value.length)
+// 列表里挪过这条规则：没在这里改过顺序就跟着挪 / The list moved this rule: follow it unless the order was changed here
+const positionBase = ref(position.value)
+watch(positionBase, (now, before) => { if (position.value === before) position.value = now })
+// 接着上一个实例的修改：对照的基准仍是原来那条规则，所以接过来以后照样算「改过」 / Carry on from the previous instance: the baseline is still the original rule, so the carried edits still count as edits
+if (props.resume) {
+  const r = props.resume
+  Object.assign(draft, JSON.parse(JSON.stringify(r.draft)) as Rule)
+  rawRules.splice(0, rawRules.length, ...(JSON.parse(JSON.stringify(r.rawRules)) as Record<string, unknown>[]).map(asRuleConfig))
+  rawMode.value = r.rawMode
+  rawText.value = r.rawText
+  position.value = r.position
+  // 对照的基准也接过来：新规则在新实例里的编号不同，按自己的基准算会把没动过的新规则也当成改过
+  // The baseline comes along too: a new rule gets another id in the new instance, and comparing against its own baseline would count an untouched new rule as edited
+  initialSnap.value = r.base
+}
+function capture(): EditorResume {
+  return { draft: JSON.parse(JSON.stringify(draft)) as Rule, rawRules: JSON.parse(JSON.stringify(rawRules)) as unknown[], rawMode: rawMode.value, rawText: rawText.value, position: Number(position.value), base: initialSnap.value }
+}
 const showErrors = ref(false)
-const problems = computed(() => [...ruleProblems(model, draft), ...(rawError.value ? [`内核规则写错了：${rawError.value}`] : []), ...(rawFieldProblems.value ? [`内核规则里有 ${rawFieldProblems.value} 处没填对（标红的那些）`] : [])])
+const problems = computed(() => [...ruleProblems(model, draft), ...(rawError.value ? [`内核规则写错了：${rawError.value}`] : []), ...(rawFieldProblems.value ? ['内核规则里标红的地方'] : [])])
+// 标红的几处各算一处，不把它们算成一处 / Each red-marked field counts as one, rather than all of them as one
+const problemCount = computed(() => problems.value.length + Math.max(0, rawFieldProblems.value - 1))
 const nameInput = ref<HTMLInputElement | null>(null)
 onMounted(() => { if (!original) void nextTick(() => nameInput.value?.focus()) })
 
@@ -113,7 +185,8 @@ const afterSummary = computed(() => {
   const f = upstreamGroup.value ? fallbackSentence(model, upstreamGroup.value) : ''
   return f ? `沿用上游组：${f}` : '沿用上游组'
 })
-const moreSummary = computed(() => [draft.log.enabled ? `日志${levelLabel(draft.log.level)}` : '日志关', ...(draft.outcome.type === 'upstream' ? [draft.ecs === 'inherit' ? 'ECS 沿用' : ecsText(draft.ecs)] : []), positions.value[position.value]?.label.replace(/ · .*$/, '') ?? '', draft.note ? '有备注' : '无备注'].filter(Boolean).join(' · '))
+// 位置不写：面板顶上那行已经说了第几条 / The position is left out: the line at the top of the panel already says which one it is
+const moreSummary = computed(() => [draft.log.enabled ? `日志：${levelLabel(draft.log.level)}` : '日志：关', ...(draft.outcome.type === 'upstream' ? [draft.ecs === 'inherit' ? '子网按组' : ecsText(draft.ecs)] : []), draft.note ? '有备注' : '无备注'].join(' · '))
 
 // ---------- 那么 / outcome ----------
 const OUTCOMES = [
@@ -191,8 +264,8 @@ const reading = computed(() => {
   if (draft.raw) {
     try {
       const list = currentRaw() as { matchers?: Record<string, unknown>[]; matcher_operator?: string; actions?: { type: string }[] }[]
-      const ACT: Record<string, string> = { forward: '转发', allow: '交给默认上游', deny: '拒绝', static_response: '固定响应码', static_ip_response: '固定 IP', static_cname_response: '固定 CNAME', static_txt_response: '固定 TXT', replace_txt_response: '替换 TXT', jump_to_pipeline: '转到', log: '记录日志', continue: '继续往下' }
-      return list.map((r, i) => ({ k: `第 ${i + 1} 条`, v: `${rawMatchersText(r.matchers, r.matcher_operator)} → ${(r.actions ?? []).map((a) => ACT[a.type] ?? a.type).join('、') || '没有动作'}` }))
+      // 动作用和表单同一套叫法（含响应码），几条内核规则时写「内核规则 N」，不和顺序里的「第 N 条」撞 / Actions use the form's names (with the response code); with several kernel rules they read 内核规则 N, not colliding with the position's 第 N 条
+      return list.map((r, i) => ({ k: list.length > 1 ? `内核规则 ${i + 1}` : '内核规则', v: `${rawMatchersText(r.matchers, r.matcher_operator)} → ${(r.actions ?? []).map((a) => summarizeAction(a as ActionConfig)).join('、') || '没有动作'}` }))
     } catch { return [{ k: '内核规则', v: 'JSON 还没写对' }] }
   }
   const rows: { k: string; v: string }[] = [{ k: '如果', v: treeText(condTree.value, conditionText) }, { k: '那么', v: outcomeSentence(model, draft.outcome) }]
@@ -208,13 +281,14 @@ const reading = computed(() => {
       if (f) rows.push({ k: '回答后', v: f })
     }
   }
-  if (draft.log.enabled) rows.push({ k: '另外', v: `记录日志（${levels.find((l) => l.value === draft.log.level)!.label}级）` })
+  if (draft.log.enabled) rows.push({ k: '另外', v: `记录日志（${levels.find((l) => l.value === draft.log.level)!.label}）` })
   return rows
 })
 // 名字框空着时显示列表里会用的标题，就是条件本身 / An empty name field shows the title the list will use: the condition itself
 // 新规则还没条件时，占位别写「所有请求」——那像个填好的名字；写清楚这格是名字、可以不填 / A new rule without conditions does not show 「所有请求」 as its placeholder (it reads like a filled-in name); say what the field is and that it is optional
 const namePlaceholder = computed(() => (!original && !draft.conditions.some((g) => g.length) ? '规则名称，可以不填' : ruleTitle({ ...draft, name: '' } as Rule)))
-const readingLead = computed(() => `${withShi(reading.value[0]?.v ?? '')}，${reading.value[1]?.v ?? ''}`)
+// 没有条件时不说「所有请求时，…」，说「所有请求都…」 / Without conditions it reads 「所有请求都…」, not 「所有请求时，…」
+const readingLead = computed(() => (!draft.raw && !draft.conditions.some((g) => g.length) ? `所有请求都${reading.value[1]?.v ?? ''}` : `${withShi(reading.value[0]?.v ?? '')}，${reading.value[1]?.v ?? ''}`))
 const readingMore = computed(() => reading.value.slice(2).map((row) => `${row.k}：${row.v}`))
 
 const kernelJson = computed(() => JSON.stringify(kernelPreview(model, draft), null, 2))
@@ -231,6 +305,8 @@ function revealProblem(): void {
   })
 }
 function done(): void {
+  // 没改就点「完成」：只是关上，不盖「改过」的时间，也不让保存条多数一处 / 完成 without edits just closes: no new edited time, and no phantom change in the save bar
+  if (original && !edited()) { emit('close'); return }
   if (problems.value.length) {
     showErrors.value = true
     revealProblem()
@@ -241,11 +317,27 @@ function done(): void {
   draft.name = draft.name.trim()
   draft.edited = new Date().toISOString()
   const target = list.value
+  const at = original ? target.indexOf(original) : -1
+  // 规则在别处被删了：不写回，免得 splice(-1) 删掉最后一条 / The rule was deleted elsewhere: write nothing back, or splice(-1) would drop the last rule
+  if (original && at < 0) { emit('close'); return }
   const saved = JSON.parse(JSON.stringify(draft)) as Rule
-  if (original) target.splice(target.indexOf(original), 1)
+  if (original) target.splice(at, 1)
   target.splice(Math.min(Number(position.value), target.length), 0, saved)
   emit('saved', saved, !original)
 }
+// 保存条要保存时先把面板里的修改收进草稿；写错了就停在面板里指出来 / Before the save bar saves, the panel's edits go into the draft; if something is wrong the panel stops and points at it
+function commit(): boolean {
+  if (!edited()) return true
+  if (problems.value.length) {
+    showErrors.value = true
+    revealProblem()
+    toast.info('先改好右侧规则再保存')
+    return false
+  }
+  done()
+  return true
+}
+defineExpose({ confirmDiscard, commit, capture })
 function remove(): void {
   if (!original) return
   const target = list.value
@@ -269,18 +361,19 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
       <input ref="nameInput" v-model="draft.name" class="editor__name" aria-label="规则名称，可以不填，不填就用条件当名字" title="名字可以不填，列表里用条件当标题" :placeholder="namePlaceholder" maxlength="40">
       <label class="ui-switch editor__enabled"><input v-model="draft.enabled" type="checkbox" aria-label="启用这条规则"><i></i><small>{{ draft.enabled ? '启用' : '已停用' }}</small></label>
     </div>
-    <!-- 面板：名字下面一行事实，再一句这条规则会做什么（整页编辑时这句在右栏） / Inspector: a facts line under the name, then what the rule does (the full-page editor says it in the aside) -->
+    <!-- 面板：名字下面一行事实，再一句这条规则会做什么（整页编辑时这句在右栏）。没起名字时名字的占位已经是条件，下面的结果卡写着去向，这句就不再重复
+         Inspector: a facts line under the name, then what the rule does (the full-page editor says it in the aside). Unnamed, the name placeholder already reads as the condition and the result card below names the outcome, so the sentence is not repeated -->
     <template v-if="inspector">
       <p class="editor__meta">{{ original ? `第 ${Number(position) + 1} 条 · 命中 ${hitsOf(original).toLocaleString('en-US')} 次 · ${Number.isNaN(Date.parse(original.edited)) ? '从配置文件读进来的' : `${editedText(original.edited)}改过`}` : `新规则 · 会排在第 ${Number(position) + 1} 条` }}</p>
-      <p v-if="!draft.raw" class="editor__say">{{ readingLead }}<template v-for="line in readingMore" :key="line">；{{ line }}</template></p>
+      <p v-if="!draft.raw && draft.name.trim()" class="editor__say">{{ readingLead }}<template v-for="line in readingMore" :key="line">；{{ line }}</template></p>
     </template>
 
     <div class="editor__grid">
       <div class="editor__main">
         <section v-if="draft.raw" class="ecard" :class="{ 'ui-card': !inspector }" aria-labelledby="ec-raw">
-          <header class="ecard__head ecard__head--raw"><div><h2 id="ec-raw" class="ecard__title">内核规则<UiHelp topic="raw" /></h2><p class="ecard__desc">这条规则放不进上面那些写法（比如回答阶段先记日志再接着匹配），原样保留。这里改的就是 KixDNS 直接读的规则，保存前会校验。</p></div><UiTabs class="ecard__rawmode" :model-value="rawMode" :items="rawModes" label="内核规则的写法" variant="segment" @update:model-value="setRawMode" /></header>
+          <header class="ecard__head ecard__head--raw"><div><h2 id="ec-raw" class="ecard__title">高级规则<UiHelp topic="raw" /></h2><p class="ecard__desc">这条规则放不进面板的写法，原样保留。这里改的就是 KixDNS 直接读的规则，保存前会校验。</p></div><UiTabs class="ecard__rawmode" :model-value="rawMode" :items="rawModes" label="内核规则的写法" variant="segment" @update:model-value="setRawMode" /></header>
           <div class="ecard__body">
-            <RawRuleEditor v-if="rawMode === 'form'" v-model="rawRules" :pipelines="kernelPipelines" :current-pipeline-id="ownPipelineId" :capabilities="runtimeCapabilities" :show-errors="showErrors" />
+            <RawRuleEditor v-if="rawMode === 'form'" v-model="rawRules" :pipelines="kernelPipelines" :current-pipeline-id="ownPipelineId" :capabilities="runtimeCapabilities" :show-errors="showErrors" :pipeline-name="kernelPipelineName" />
             <template v-else><JsonEditor v-model="rawText" :error-line="undefined" /><p v-if="rawError" class="ui-field-error" aria-live="polite">{{ rawError }}</p></template>
           </div>
         </section>
@@ -299,11 +392,11 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
                 <span class="crow__text"><span class="crow__head"><b>{{ outcomeSentence(model, draft.outcome) }}</b></span><span v-if="outcomeNote" class="crow__vals">{{ outcomeNote }}</span></span>
                 <ChevronRight class="crow__chev" :size="16" aria-hidden="true" />
               </button>
-              <PhoneSheet v-if="sheet === 'outcome'" title="那么" @close="sheet = null">
-                <div class="ui-pick" role="radiogroup" aria-label="那么">
+              <PhoneSheet v-if="sheet === 'outcome'" title="结果" @close="sheet = null">
+                <div class="ui-pick" role="radiogroup" aria-label="结果">
                   <label v-for="o in OUTCOMES" :key="o.type" class="ui-pick__opt"><input type="radio" name="outcome-sheet" :checked="draft.outcome.type === o.type" @change="pickOutcome(o.type)"><b>{{ o.title }}</b><small>{{ o.desc }}</small></label>
                 </div>
-                <OutcomeParams v-if="draft.outcome.type !== 'continue'" :key="draft.outcome.type" v-model="draft.outcome as Outcome" :show-errors="showErrors" label="那么" @edit-group="sheet = null; emit('editGroup', $event)" />
+                <OutcomeParams v-if="draft.outcome.type !== 'continue'" :key="draft.outcome.type" v-model="draft.outcome as Outcome" :show-errors="showErrors" label="结果" @edit-group="sheet = null; emit('editGroup', $event)" />
               </PhoneSheet>
             </template>
             <template v-else>
@@ -313,7 +406,7 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
                 <b>{{ o.title }}</b><small class="visually-hidden">{{ o.desc }}</small>
               </label>
             </div>
-            <OutcomeParams v-if="draft.outcome.type !== 'continue'" :key="draft.outcome.type" v-model="draft.outcome as Outcome" class="tiles__params" :show-errors="showErrors" label="那么" @edit-group="emit('editGroup', $event)" />
+            <OutcomeParams v-if="draft.outcome.type !== 'continue'" :key="draft.outcome.type" v-model="draft.outcome as Outcome" class="tiles__params" :show-errors="showErrors" label="结果" @edit-group="emit('editGroup', $event)" />
             <p v-else class="oparams__note tiles__params">这条规则不决定结果，请求接着往下走。常和下面的「记录日志」一起用，只记录某些请求。</p>
             </template>
           </div>
@@ -321,9 +414,9 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
 
         <section v-if="!draft.raw && draft.outcome.type === 'upstream'" class="ecard" :class="{ 'ui-card': !inspector, 'is-folded': inspector && !open.after }" aria-labelledby="ec-after">
           <header v-if="inspector" class="ecard__head ecard__head--fold ecard__head--stretch" :class="{ 'is-open': open.after }"><h2 id="ec-after" class="ecard__title"><button class="ecard__fold-btn" type="button" :aria-expanded="open.after" aria-controls="ec-after-body" aria-describedby="ec-after-sum" @click="open.after = !open.after">回答后检查</button></h2><UiHelp topic="after" /><span id="ec-after-sum" class="ecard__sum">{{ afterSummary }}</span><ChevronRight class="ecard__chev" :size="16" aria-hidden="true" /></header>
-          <header v-else class="ecard__head"><h2 id="ec-after" class="ecard__title">回答后检查<UiHelp topic="after" /></h2><p class="ecard__desc">回答发出前再检查一次，比如被污染时改问别的组。</p></header>
+          <header v-else class="ecard__head"><h2 id="ec-after" class="ecard__title">回答后检查<UiHelp topic="after" /></h2><p class="ecard__desc">拿到上游的回答后、发给客户端前再检查一次，比如结果被污染时改问别的组。</p></header>
           <div v-show="!inspector || open.after" id="ec-after-body" class="ecard__body">
-            <UiTabs v-model="draft.response.mode" :items="responseModes" label="上游回答后" variant="segment" />
+            <UiTabs v-model="draft.response.mode" :items="responseModes" label="回答后检查" variant="segment" />
             <div v-if="draft.response.mode === 'inherit'" class="after__inherit">
               <p v-if="upstreamGroup && fallbackSentence(model, upstreamGroup)">「{{ upstreamGroup.name }}」组：{{ fallbackSentence(model, upstreamGroup) }}</p>
               <p v-else-if="upstreamGroup">「{{ upstreamGroup.name }}」组没设备用，上游回什么就返回什么。</p>
@@ -464,13 +557,13 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
 
     <!-- 手机上删除不放在「取消」旁边，放在内容最后一行 / On phones delete never sits beside 取消; it closes the content instead -->
     <button v-if="original" class="ui-btn ui-btn--text editor__delete-row" type="button" @click="remove"><Trash2 :size="16" aria-hidden="true" />删除这条规则</button>
-    <footer class="editor__foot">
+    <footer ref="foot" class="editor__foot">
       <button v-if="original" class="ui-btn ui-btn--text editor__delete" type="button" @click="remove"><Trash2 :size="16" aria-hidden="true" />删除规则</button>
-      <button v-if="showErrors && problems.length" class="editor__problem" type="button" role="alert" @click="revealProblem">还有 {{ problems.length }} 处要改：{{ problems[0] }}</button>
+      <button v-if="showErrors && problems.length" class="editor__problem" type="button" role="alert" @click="revealProblem">还有 {{ problemCount }} 处要改：{{ problems[0] }}</button>
       <span class="editor__spacer"></span>
-      <span v-if="!inspector" class="editor__keys" aria-hidden="true">Ctrl+Enter 完成 · Esc 返回</span>
+      <span v-if="!inspector" class="editor__keys" aria-hidden="true">Ctrl+Enter {{ original ? '完成' : '新建' }} · Esc 返回</span>
       <button class="ui-btn ui-btn--secondary" type="button" @click="leave">取消</button>
-      <button class="ui-btn ui-btn--primary" type="button" @click="done">{{ inspector ? '保存' : original ? '完成' : '添加规则' }}</button>
+      <button class="ui-btn ui-btn--primary" type="button" @click="done">{{ original ? '完成' : '新建' }}</button>
     </footer>
   </div>
 </template>

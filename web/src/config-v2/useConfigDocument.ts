@@ -1,10 +1,14 @@
 import { computed, ref } from 'vue'
-import { ApiError, apiRequest, jsonBody } from '../api/client'
+import { ApiError, apiRequest, isPanelDown, jsonBody } from '../api/client'
 import type { ConfigApplyResult, ConfigDocument, ConfigRuntimeApplyState, ConfigVersion, ConfigVersionDetail, ConfigVersions, DeleteConfigVersionResult, DeleteConfigVersionsResult, Overview, ServiceStatus, ValidationResult } from '../api/types'
 import { SETTING_SECTIONS, settingSupported } from '../config-editor/schema'
-import { exportConfig } from '../config-model/document'
+import { exportConfig, readConfig } from '../config-model/document'
+import type { Model } from '../config-model/model'
+import { traceNames } from '../config-model/trace-names'
+import { useConnection } from '../composables/useConnection'
+import { dismissUndoable, useToast } from '../composables/useToast'
 import { errorMessage } from '../utils'
-import { applyHits, applyUpstreamStats, dirty, importReport, importSource, loadContent, model, reportOpen } from './store'
+import { applyHits, applyUpstreamStats, changeCount, dirty, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, reportOpen, unsaved } from './store'
 
 // 配置页和面板服务之间的事：读配置和历史、KixDNS 的运行状态和能力、校验、保存并热加载、现在应用。
 // 草稿本身在 store.ts；这里只管「文件」和「运行」。所有状态是模块级的，页面和保存条共用同一份。
@@ -39,11 +43,22 @@ export const runtimeUnavailable = computed(() => doc.value?.runtime.status === '
 export const unsupportedFields = computed(() => SETTING_SECTIONS.flatMap((s) => s.fields)
   .filter((f) => Object.prototype.hasOwnProperty.call(model.settings, f.key) && !settingSupported(f, runtimeCapabilities.value))
   .map((f) => f.label))
-// KixDNS 没启动、连不上、没报能力、有不支持的设置时，保存只存成待应用版本 / Saving only stores a pending version when KixDNS is down, unreachable, silent about capabilities, or has unsupported settings
-export const deferSave = computed(() => runtimeStopped.value || runtimeUnavailable.value || Boolean(capabilityError.value) || unsupportedFields.value.length > 0)
+// 内核报了自己支持什么、草稿里却有它不支持的设置：KixDNS 会拒绝整份配置（服务端记成失败的版本，永远不会应用），所以先不让保存
+// The kernel reported what it supports and the draft holds a setting it does not: KixDNS refuses the whole config (the server records a failed version that never applies), so saving waits
+// 草稿里用到了 CNAME 回答：域名映射的回答写的是域名，或规则的自定义回答是 CNAME / The draft uses a CNAME answer: a mapping answers with a domain, or a rule's custom answer is a CNAME
+export const cnameInUse = computed(() => model.mappings.some((m) => m.enabled && !/^[\d.:a-f, ]+$/i.test(m.target))
+  || [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].some((r) => r.outcome.type === 'answer' && r.outcome.kind === 'cname'))
+export const blockedFields = computed(() => (!runtimeStopped.value && !runtimeUnavailable.value && !capabilityError.value
+  ? [...unsupportedFields.value, ...(!canCname.value && cnameInUse.value ? ['CNAME 回答'] : [])]
+  : []))
+// 不支持的设置在哪一组：「去基础设置」直接打开那一组 / Which group holds the unsupported settings, so 去基础设置 opens it directly
+export const unsupportedSection = computed(() => SETTING_SECTIONS.find((s) => s.fields.some((f) => Object.prototype.hasOwnProperty.call(model.settings, f.key) && !settingSupported(f, runtimeCapabilities.value)))?.id ?? '')
+// KixDNS 没启动、连不上、没报能力时，保存只存成待应用版本 / Saving only stores a pending version when KixDNS is down, unreachable or silent about capabilities
+export const deferSave = computed(() => runtimeStopped.value || runtimeUnavailable.value || Boolean(capabilityError.value))
 export const fileDiffers = computed(() => !hasPending.value && !hasApplyFailure.value && doc.value?.runtime.status === 'different')
-export const canApplyNow = computed(() => (hasPending.value || hasApplyFailure.value || fileDiffers.value) && !deferSave.value)
-export const canSave = computed(() => dirty.value || canApplyNow.value)
+// 草稿里有内核不支持的东西时，现在应用 / 重试应用也只会被拒：不给这两个按钮 / With something the kernel does not support in the draft, 现在应用 and 重试应用 would only be refused: neither is offered
+export const canApplyNow = computed(() => (hasPending.value || hasApplyFailure.value || fileDiffers.value) && !deferSave.value && blockedFields.value.length === 0)
+export const canSave = computed(() => (dirty.value || canApplyNow.value) && blockedFields.value.length === 0)
 
 // ---------- 保存的几步 / the save's stages ----------
 export type SaveStage = 'idle' | 'checking' | 'validating' | 'applying' | 'done' | 'failed'
@@ -80,48 +95,106 @@ export function finishStage(next: 'done' | 'failed' | 'idle', text = ''): void {
   // 「已生效」停三秒再回到平常；失败一直留着，直到再改或再存 / "Applied" stays three seconds; a failure stays until the next edit or save
   if (next === 'done') settleTimer = setTimeout(() => { if (stage.value === 'done') stage.value = 'idle' }, 3000)
 }
-// 再改一笔，上一次保存的结果就过时了 / A new edit makes the last save's outcome stale
-export function editTouched(): void { if (stage.value === 'done' || stage.value === 'failed') finishStage('idle') }
+// 再改一笔，上一次保存的结果就过时了；冲突除外：草稿还是基于旧版本，再存也一样失败，要等重新读取
+// A new edit makes the last save's outcome stale, except a conflict: the draft is still based on the old version and would fail again until re-read
+export function editTouched(): void {
+  if (conflict.value) return
+  if (stage.value === 'done' || stage.value === 'failed') finishStage('idle')
+}
 
 // ---------- 页头 / header ----------
 export interface HeaderStatus { tone: 'ok' | 'warn' | 'err' | 'off'; lead?: string; before: string; version?: number; after?: string }
 export const headerStatus = computed<HeaderStatus>(() => {
   if (hasApplyFailure.value) return { tone: 'err', before: '配置应用失败' }
   if (hasPending.value) return pendingVersionId.value ? { tone: 'warn', before: '版本 #', version: pendingVersionId.value, after: ' 待应用' } : { tone: 'warn', before: '配置待应用' }
-  if (runtimeStopped.value) return { tone: 'off', before: 'KixDNS 未启动' }
+  if (runtimeStopped.value) return { tone: 'off', before: 'KixDNS 已停止' }
   if (doc.value?.runtime.status === 'active') return currentVersionId.value ? { tone: 'ok', lead: '运行中', before: '版本 #', version: currentVersionId.value } : { tone: 'ok', before: '运行中' }
   if (fileDiffers.value) return { tone: 'warn', before: '文件与运行配置不同' }
   return { tone: 'off', before: '运行状态不可用' }
 })
+// 连不上面板时，上次读到的运行状态不能当真：点变灰，写「状态未知」，连上后恢复（同概览）
+// While the panel is unreachable the last runtime state read cannot be trusted: the dot turns grey and reads 状态未知, restored on reconnect (as on the overview)
+const { down: panelDown } = useConnection()
 export const headerLine = computed<HeaderStatus>(() => {
-  if (!applyBusy.value) return headerStatus.value
+  if (!applyBusy.value) return panelDown.value ? { tone: 'off', before: '状态未知' } : headerStatus.value
   const verb = stage.value === 'validating' ? '校验中' : '应用中'
   return pendingVersionId.value ? { tone: 'warn', before: '版本 #', version: pendingVersionId.value, after: ` ${verb}` } : { tone: 'warn', before: verb }
 })
 // 待应用时「现在应用」，文件和运行配置不同时「校验并应用」；有要保存的修改时让给保存栏 / 现在应用 when pending, 校验并应用 when the file differs; with changes to save it gives way to the save bar
 export const headerAction = computed(() => {
-  if (!canApplyNow.value || dirty.value || hasApplyFailure.value) return ''
+  // 有任何没保存的修改（包括右侧规则没点完成的）都让给保存栏：应用会重读文件，丢掉那些修改 / Any unsaved edit (an unfinished panel edit included) gives way to the save bar: applying re-reads the file and would drop it
+  if (!canApplyNow.value || unsaved.value || hasApplyFailure.value || panelDown.value) return ''
   return fileDiffers.value ? '校验并应用' : '现在应用'
 })
 export const deferNote = computed(() => {
   if (runtimeStopped.value) return '保存后等 KixDNS 启动再应用'
   if (runtimeUnavailable.value) return '保存后等连上 KixDNS 再应用'
+  if (capabilityError.value) return 'KixDNS 没有报告它支持哪些功能，保存后先存成待应用版本'
   return deferSave.value ? '保存后先存成待应用版本' : ''
 })
 
 // ---------- 错误的说法 / wording of errors ----------
+// 控制接口的套接字不在：KixDNS 停了（面板还没发现）。只认这几种说法；连接超时、没及时确认新配置这类不算停了
+// The control socket is gone: KixDNS has stopped (before the panel noticed). Only these wordings count; a timeout or a late confirmation is not a stop
+const STOPPED = /No such file|os error 2|找不到指定的文件|^KixDNS 已停止/
+const stoppedError = (error: unknown) => STOPPED.test(errorMessage(error))
+// 保存或校验时才发现停了：标题说停了，不说「没有通过校验」；草稿不动，读一次运行状态，保存键换成「保存为待应用」
+// Found stopped while saving or validating: the title says so rather than 没有通过校验; the draft stays, the runtime is re-read and the button becomes 保存为待应用
+const STOPPED_NOTE = '草稿还在，可以先存成待应用版本'
 export function friendlyRuntimeMessage(message: string): string {
-  if (/No such file|os error 2|控制接口.*不可用|控制接口.*未启动/i.test(message)) return 'KixDNS 未启动，配置将保存为待应用版本'
-  return message.replace(/^KixDNS\s*拒绝(?:操作|了这份配置|该配置)[：:，,]\s*/, '') || message
+  if (STOPPED.test(message)) return 'KixDNS 已停止，保存后等它启动再应用'
+  return kernelWords(message.replace(/^KixDNS\s*拒绝(?:操作|了这份配置|该配置)[：:，,]\s*/, '') || message)
+}
+/**
+ * 内核给的英文原因（pipeline "main" references unknown upstream group "fast"）照原话给，但标明是 KixDNS 的原话，引号里的内核 id 换成页面上的叫法
+ * The kernel's English reason (pipeline "main" references unknown upstream group "fast") is kept verbatim but marked as KixDNS's own words, with quoted kernel ids turned into the page's names
+ */
+export function kernelWords(message: string): string {
+  if (/[\u4e00-\u9fff]/.test(message) || !/[A-Za-z]{3,}/.test(message)) return message
+  const names = traceNames(model)
+  return `KixDNS 的原话：${message.replace(/"([\w.-]+)"/g, (whole, id: string) => { const name = names.pipeline(id); return name ? `${whole}（${name}）` : whole })}`
 }
 const friendlyRuntimeError = (error: unknown) => friendlyRuntimeMessage(errorMessage(error))
+/** 没生效的原因本身：去掉句尾「仍在用之前的配置」，给已经说了这件事的提示条用 / Just why it did not take, without the trailing 仍在用之前的配置, for a notice that already says so */
+export const failureCause = (message: string): string => friendlyRuntimeMessage(message).replace(/[，,]\s*仍在用之前的配置。?$/, '')
 const shouldRefreshAfterSaveError = (error: unknown) => error instanceof ApiError && ['unsupported_config_fields', 'config_validation_failed', 'reload_failed', 'kixdns_rejected'].includes(error.code)
 const isConflict = (error: unknown) => error instanceof ApiError && error.code === 'config_conflict'
 
 // ---------- 读 / load ----------
+function applyRuntime(nextDoc: ConfigDocument, overview: Overview | null, service: ServiceStatus | null): void {
+  const declared = nextDoc.runtime.declared_capabilities ?? []
+  if (overview) {
+    runtimeStopped.value = !overview.live && (service?.active_state === 'inactive' || overview.service_active === false)
+    runtimeCapabilities.value = overview.live ? overview.health.capabilities : declared
+    capabilityError.value = overview.live || declared.length > 0 ? '' : 'KixDNS 实时能力暂不可用'
+  } else {
+    runtimeStopped.value = service?.active_state === 'inactive'
+    runtimeCapabilities.value = declared
+    if (!runtimeStopped.value && !capabilityError.value && declared.length === 0) capabilityError.value = 'KixDNS 实时能力暂不可用'
+  }
+}
+// 只刷新运行状态，不碰草稿和文件的散列：草稿有修改时（比如在页头启动 KixDNS 之后）用它，保存时照样能发现别处的改动
+// Refresh only the runtime state, leaving the draft and the file hash alone: used while the draft has edits (after starting KixDNS from
+// the header, say), so a later save still notices changes made elsewhere
+export async function refreshRuntime(): Promise<void> {
+  const [nextDoc, overview, service] = await Promise.all([
+    apiRequest<ConfigDocument>('/api/v1/config'),
+    apiRequest<Overview>('/api/v1/overview').catch((error: unknown) => { capabilityError.value = friendlyRuntimeError(error); return null }),
+    apiRequest<ServiceStatus>('/api/v1/service').catch(() => null),
+  ])
+  applyRuntime(nextDoc, overview, service)
+  if (doc.value) doc.value = { ...doc.value, runtime: nextDoc.runtime, pending: nextDoc.pending }
+  applyHits(overview?.metrics?.rules ?? [])
+  applyUpstreamStats(overview?.metrics?.upstreams ?? [])
+}
+
 let pendingLoad: Promise<void> | null = null
 // quiet：保存之后的刷新不换成骨架 / quiet: the refresh after a save keeps the page mounted
-export function load(options: { quiet?: boolean } = {}): Promise<void> {
+// keepDraft：草稿里有没保存的修改（保存途中又改的、右侧规则没点完成的、删版本时草稿里的）就留着草稿，只把对照的那份换成读到的文件；
+// sent 是保存时发出去的草稿，读回来和它一样、又没有别的没保存的修改时照常整份换上（换成文件里的写法）
+// keepDraft: with unsaved edits in the draft (made during a save, an unfinished panel edit, the draft while a version is deleted) the draft stays and only
+// the baseline becomes the file just read; sent is the draft a save sent, and when nothing changed since and nothing else is unsaved the file replaces it as usual
+export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: string } = {}): Promise<void> {
   if (pendingLoad) return pendingLoad
   if (!options.quiet) loading.value = true
   pendingLoad = (async () => {
@@ -131,24 +204,28 @@ export function load(options: { quiet?: boolean } = {}): Promise<void> {
       apiRequest<Overview>('/api/v1/overview').catch((error: unknown) => { capabilityError.value = friendlyRuntimeError(error); return null }),
       apiRequest<ServiceStatus>('/api/v1/service').catch(() => null),
     ])
-    const declared = nextDoc.runtime.declared_capabilities ?? []
-    if (overview) {
-      runtimeStopped.value = !overview.live && (service?.active_state === 'inactive' || overview.service_active === false)
-      runtimeCapabilities.value = overview.live ? overview.health.capabilities : declared
-      capabilityError.value = overview.live || declared.length > 0 ? '' : 'KixDNS 实时能力暂不可用'
-    } else {
-      runtimeStopped.value = service?.active_state === 'inactive'
-      runtimeCapabilities.value = declared
-      if (!runtimeStopped.value && !capabilityError.value && declared.length === 0) capabilityError.value = 'KixDNS 实时能力暂不可用'
-    }
+    applyRuntime(nextDoc, overview, service)
+    const previousSha = doc.value?.sha256
     doc.value = nextDoc
     versions.value = history.versions
     // 读进草稿：散列对得上就是面板写的那份；对不上（手改过）会重新导入并给报告 / Into the draft: the hash matching means the panel wrote it; otherwise it is re-imported with a report
-    const read = loadContent(nextDoc.content, model)
-    if (read.source === 'imported' && read.report && (read.report.stats.raw || read.report.notes.some((n) => n.level === 'warn'))) {
-      importReport.value = read.report
-      importSource.value = '配置文件'
-      reportOpen.value = false
+    // 重新读进来的是另一份草稿：上一份草稿的失败和冲突不再适用 / What is read in is a different draft: the previous draft's failure and conflict no longer apply
+    if (!options.quiet) { conflict.value = false; if (stage.value === 'failed' || stage.value === 'done') finishStage('idle') }
+    // 保存之后（sent）一律只换对照的那份：草稿里的对象不换，开着的抽屉、规则面板拿着的还是同一个对象（以前整份换掉，保存途中打开的上游组抽屉会改到别的组）。
+    // 写进文件再读回来和草稿一样（store.test 里有往返测试），所以没再改过时「已修改」归零
+    // After a save (sent) only the baseline moves: the draft's objects stay, so an open drawer or rule panel still holds the same object (replacing them
+    // made an upstream-group drawer opened during a save write to another group). Writing and reading back equals the draft (round-trip test in store.test), so with no edits since, the count returns to zero
+    if (options.sent !== undefined || (options.keepDraft && unsaved.value)) {
+      // 文件没变就什么都不动；变了（保存成功、别处改过）把对照的那份换成它，草稿里的修改照旧算修改
+      // File unchanged: nothing moves; changed (a save went through, an edit elsewhere): the baseline becomes it and the draft's edits still count as edits
+      if (options.sent !== undefined || nextDoc.sha256 !== previousSha) rebaseApplied(readConfig(nextDoc.content, model).model)
+    } else {
+      const read = loadContent(nextDoc.content, model)
+      if (read.source === 'imported' && read.report && (read.report.stats.raw || read.report.notes.some((n) => n.level === 'warn'))) {
+        importReport.value = read.report
+        importSource.value = '配置文件'
+        reportOpen.value = false
+      }
     }
     applyHits(overview?.metrics?.rules ?? [])
     applyUpstreamStats(overview?.metrics?.upstreams ?? [])
@@ -160,7 +237,8 @@ export function load(options: { quiet?: boolean } = {}): Promise<void> {
 
 // ---------- 校验、保存、应用 / validate, save, apply ----------
 export async function validate(): Promise<ValidationResult | null> {
-  if (deferSave.value) return null
+  // 冲突时校验没有意义，还会把冲突的提示盖掉：先重新读取 / Validating during a conflict means nothing and would wipe the conflict line: re-read first
+  if (deferSave.value || conflict.value) return null
   origin.value = 'draft'
   startStage('checking')
   try {
@@ -168,8 +246,12 @@ export async function validate(): Promise<ValidationResult | null> {
     finishStage('idle')
     return validation.value
   } catch (error) {
-    verdict.value = '没有通过校验'
-    finishStage('failed', friendlyRuntimeError(error))
+    if (error instanceof ApiError && error.status === 401) { finishStage('idle'); return null }
+    const stopped = stoppedError(error)
+    const down = isPanelDown(error)
+    verdict.value = stopped ? 'KixDNS 已停止' : down ? '连不上面板' : '没有通过校验'
+    finishStage('failed', stopped ? STOPPED_NOTE : down ? '草稿还在，连上后再校验' : friendlyRuntimeError(error))
+    if (stopped) await refreshRuntime().catch(() => undefined)
     return null
   }
 }
@@ -183,8 +265,12 @@ function applyResultState(result: ConfigApplyResult): 'applied' | 'pending' {
 // origin: saving the draft (the save bar reports) or applying a saved version (the header reports, errors go to a notice). With
 // changes, or a file that differs from what runs, and KixDNS running, validate on its own first: a failure stops at step 1 with no version written.
 export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
-  if (busy.value || !doc.value || !canSave.value) return
+  if (busy.value || !doc.value) return
+  // 被内核不支持的设置挡住时说一句，不默默不动 / Blocked by unsupported settings: say so instead of doing nothing
+  if (blockedFields.value.length) { useToast().info(`当前内核不支持：${blockedFields.value.join('、')}，改好再保存`); return }
+  if (!canSave.value) return
   const content = exportConfig(model)
+  const sent = JSON.stringify(model)
   origin.value = from
   applyError.value = ''
   conflict.value = false
@@ -198,21 +284,48 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
       stage.value = step
     }
     const result = await apiRequest<ConfigApplyResult>('/api/v1/config', { method: 'PUT', ...jsonBody({ content, expected_sha256: doc.value.sha256, message: saveMessage.value.trim() }) })
-    validation.value = result.validation ?? validation.value
-    const text = applyResultState(result) === 'pending' ? `已存成待应用版本 #${result.version_id}，KixDNS 就绪后自动应用` : `已生效 · 版本 #${result.version_id}`
+    const pendingText = `已存成待应用版本 #${result.version_id}，${pendingWhen()}自动应用`
     saveMessage.value = ''
-    await load({ quiet: true })
-    finishStage('done', text)
+    // 写入成功就先记下：文件的散列和版本换成这次的，对照的那份换成发出去的草稿。之后的重读失败了，也不会把已保存的算成修改、下次保存也不会撞上自己
+    // Record the write at once: the file hash and version become this save's, and the baseline becomes the draft that was sent. If the re-read after it fails,
+    // nothing saved counts as a change and the next save does not collide with itself
+    if (doc.value) doc.value = { ...doc.value, sha256: result.sha256, version_id: result.version_id }
+    rebaseApplied(JSON.parse(sent) as Model)
+    validation.value = null
+    // 保存落地后，之前的「撤销」都过时了：撤回去会改掉刚保存的东西 / Once a save lands, earlier 撤销 toasts are stale: undoing would change what was just saved
+    dismissUndoable()
+    await load({ quiet: true, keepDraft: true, sent })
+    // 保存途中又改了的：说一句那几处还没保存，不让「已生效」盖过它们 / Edits made during the save: say they are not saved yet, so 已生效 does not cover them
+    const later = changeCount.value ? ` · 之后改的 ${changeCount.value} 处还没保存` : jsonEdited.value ? ' · JSON 里之后改的还没保存' : ''
+    finishStage('done', `${applyResultState(result) === 'pending' ? pendingText : `已生效 · 版本 #${result.version_id}`}${later}`)
   } catch (error) {
+    // 会话过期：重新登录的框会盖上来，这里不挂「没通过校验」，登录后直接再保存 / Session expired: the re-login prompt covers the page; no 没有通过校验 here, the user saves again after signing in
+    if (error instanceof ApiError && error.status === 401) { finishStage('idle'); return }
     const reason = friendlyRuntimeError(error)
-    verdict.value = step === 'validating' ? '没有通过校验' : '没有保存成功'
+    const stopped = stoppedError(error)
+    const down = isPanelDown(error)
+    // 写进文件以后 KixDNS 没接受：版本已经存下了，只是没生效 / KixDNS refused after the write: the version is stored, it just did not take
+    const writtenNotApplied = step === 'applying' && error instanceof ApiError && ['reload_failed', 'kixdns_rejected'].includes(error.code)
+    verdict.value = stopped ? 'KixDNS 已停止' : down ? '连不上面板' : writtenNotApplied ? '保存了，没有生效' : step === 'validating' ? '没有通过校验' : '没有保存成功'
     conflict.value = isConflict(error)
-    finishStage('failed', conflict.value ? '这份配置在别处改过了，现在的草稿是基于旧版本的' : reason)
-    if (shouldRefreshAfterSaveError(error)) await load({ quiet: true })
-    if (from === 'apply' && !hasApplyFailure.value) applyError.value = `${step === 'validating' ? '磁盘上的配置没有通过校验' : '没有应用成功'}\n${reason}`
+    finishStage('failed', conflict.value ? '这份配置在别处改过了，现在的草稿是基于旧版本的' : stopped ? STOPPED_NOTE : down ? '草稿还在，连上后再保存' : writtenNotApplied ? failureCause(reason) : reason)
+    // 校验这一步没写入任何东西：只刷新运行状态，草稿和失败的说法都留着；写入以后失败才重读文件（草稿照样留着）
+    // Nothing was written at the validation step: refresh the runtime only, keeping the draft and the verdict; only a failure after writing re-reads the file (the draft still stays)
+    if (step === 'validating' || stopped) await refreshRuntime().catch(() => undefined)
+    else if (shouldRefreshAfterSaveError(error)) await load({ quiet: true, keepDraft: true })
+    // 写进去了却没生效、草稿也没有别的修改：这件事交给页面上方的提示条（那里有「重试应用」），保存条退下，不再给第二个重试
+    // Written but not applied and nothing else in the draft: the notice above owns it (with 重试应用); the save bar steps aside instead of offering a second retry
+    if (writtenNotApplied && changeCount.value === 0 && from === 'draft') finishStage('idle')
+    if (from === 'apply' && !hasApplyFailure.value) applyError.value = stopped ? 'KixDNS 已停止\n启动后自动应用待应用的版本' : `${step === 'validating' ? '磁盘上的配置没有通过校验' : '没有应用成功'}\n${reason}`
   }
 }
 export const applyNow = () => void save('apply')
+/** 待应用的版本什么时候自动应用：说出等的是什么 / When a pending version applies by itself: name what it waits for */
+export function pendingWhen(): string {
+  if (runtimeStopped.value) return 'KixDNS 启动后'
+  if (runtimeUnavailable.value) return '连上 KixDNS 后'
+  return 'KixDNS 就绪后'
+}
 
 // ---------- 历史版本 / history ----------
 export const restoring = ref<number | null>(null)
@@ -233,7 +346,7 @@ export async function restoreVersion(id: number): Promise<{ state: 'applied' | '
   }
 }
 async function refreshVersions(removesDesired: boolean): Promise<void> {
-  if (removesDesired) { await load({ quiet: true }); return }
+  if (removesDesired) { await load({ quiet: true, keepDraft: true }); return }
   versions.value = (await apiRequest<ConfigVersions>('/api/v1/config/versions')).versions
 }
 const desired = (v: ConfigVersion) => v.id === pendingVersionId.value || v.apply_state === 'pending' || v.apply_state === 'failed'

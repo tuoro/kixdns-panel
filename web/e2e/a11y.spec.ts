@@ -80,7 +80,7 @@ test('条件没填值就保存：错误提示连到输入框上，读屏器读�
   const field = editor.getByRole('textbox', { name: '域名', exact: true })
   await expect(field).toBeVisible()
   await expect(field).not.toHaveAttribute('aria-describedby')
-  await editor.getByRole('button', { name: /^(保存|添加规则)$/ }).click()
+  await editor.getByRole('button', { name: /^(完成|新建)$/ }).click()
   await expect(field).toHaveAttribute('aria-invalid', 'true')
   const id = await field.getAttribute('aria-describedby')
   expect(id).toBeTruthy()

@@ -13,7 +13,7 @@ import type { MatcherConfig, PipelineConfig, PipelineSelectMode, RuleConfig } fr
 // chain with operators, the action list, the answer phase's matchers and actions. Built from the config page's two low-level editors
 // (MatcherList, ActionList) rather than a JSON blob; JSON stays available as the other view.
 const rules = defineModel<RuleConfig[]>({ required: true })
-defineProps<{ pipelines: PipelineConfig[]; currentPipelineId: string; capabilities: string[]; showErrors?: boolean }>()
+defineProps<{ pipelines: PipelineConfig[]; currentPipelineId: string; capabilities: string[]; showErrors?: boolean; pipelineName?: (id: string) => string | null }>()
 const relationOptions = [{ value: 'all', label: '全部满足' }, { value: 'any', label: '任一满足' }, { value: 'custom', label: '自定义组合' }]
 // 选过「自定义组合」的条件链记在这里：切回「全部 / 任一」时清掉 / Chains set to 自定义组合 are remembered here and forgotten when set back to 全部 / 任一
 const custom = ref(new Set<MatcherConfig[]>())
@@ -39,7 +39,7 @@ function removeRule(index: number): void { rules.value.splice(index, 1) }
   <div class="rawed">
     <article v-for="(rule, i) in rules" :key="i" class="rawed__rule" :aria-label="`内核规则 ${rule.name}`">
       <header class="rawed__head">
-        <label class="ui-input is-mono rawed__name"><input v-model="rule.name" :aria-label="`第 ${i + 1} 条内核规则的名字`" placeholder="规则名" spellcheck="false"></label>
+        <label class="ui-input is-mono rawed__name"><span class="rawed__name-label">内核里的名字</span><input v-model="rule.name" :aria-label="`第 ${i + 1} 条内核规则的名字`" placeholder="内核里的名字" spellcheck="false"></label>
         <button v-if="rules.length > 1" class="ui-icon-btn" type="button" :aria-label="`去掉第 ${i + 1} 条内核规则`" :title="`去掉第 ${i + 1} 条内核规则`" @click="removeRule(i)"><Trash2 :size="16" /></button>
       </header>
       <section class="rawed__stage">
@@ -48,21 +48,21 @@ function removeRule(index: number): void { rules.value.splice(index, 1) }
       </section>
       <section class="rawed__stage">
         <h3 class="rawed__title">怎么处理</h3>
-        <ActionList v-model="rule.actions" :pipelines="pipelines" :current-pipeline-id="currentPipelineId" :capabilities="capabilities" :show-errors="showErrors" />
+        <ActionList v-model="rule.actions" :pipelines="pipelines" :current-pipeline-id="currentPipelineId" :capabilities="capabilities" :show-errors="showErrors" :pipeline-name="pipelineName" />
       </section>
       <details class="ui-expand rawed__response" :open="rule.response_matchers.length > 0 || rule.response_actions_on_match.length > 0 || rule.response_actions_on_miss.length > 0">
-        <summary>回答阶段<small class="rawed__sum">上游回答后再检查一次；没条件就不检查</small></summary>
+        <summary>回答后检查<small class="rawed__sum">拿到上游的回答后再检查一次；没条件就不检查</small></summary>
         <section class="rawed__stage">
           <h3 class="rawed__title">回答满足<UiSelect v-if="rule.response_matchers.length > 1" class="rawed__relation" size="sm" :model-value="mode(rule.response_matchers, rule.response_matcher_operator)" :options="relationOptions" label="回答条件关系" @update:model-value="setMode(rule, 'response', $event)" /></h3>
           <MatcherList v-model="rule.response_matchers" scope="response" :operator-mode="operatorMode(rule.response_matchers, rule.response_matcher_operator)" :show-errors="showErrors" />
         </section>
         <section class="rawed__stage">
           <h3 class="rawed__title">满足时</h3>
-          <ActionList v-model="rule.response_actions_on_match" :pipelines="pipelines" :current-pipeline-id="currentPipelineId" :capabilities="capabilities" :show-errors="showErrors" />
+          <ActionList v-model="rule.response_actions_on_match" phase="response" :pipelines="pipelines" :current-pipeline-id="currentPipelineId" :capabilities="capabilities" :show-errors="showErrors" :pipeline-name="pipelineName" />
         </section>
         <section class="rawed__stage">
           <h3 class="rawed__title">不满足时</h3>
-          <ActionList v-model="rule.response_actions_on_miss" :pipelines="pipelines" :current-pipeline-id="currentPipelineId" :capabilities="capabilities" :show-errors="showErrors" />
+          <ActionList v-model="rule.response_actions_on_miss" phase="response" :pipelines="pipelines" :current-pipeline-id="currentPipelineId" :capabilities="capabilities" :show-errors="showErrors" :pipeline-name="pipelineName" />
         </section>
       </details>
     </article>

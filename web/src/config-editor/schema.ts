@@ -53,7 +53,7 @@ export const SETTING_SECTIONS: SettingSection[] = [
   {
     id: 'network',
     title: '基础与监听',
-    description: '监听地址、默认上游与请求超时',
+    description: '监听地址和请求超时',
     tone: 'green',
     fields: [
       { key: 'bind_udp', label: 'UDP 监听地址', type: 'text', default: '0.0.0.0:5353' },
@@ -66,7 +66,7 @@ export const SETTING_SECTIONS: SettingSection[] = [
       { key: 'min_ttl', label: '最小 TTL', type: 'number', min: 0, unit: '秒', default: 0 },
       { key: 'upstream_timeout_ms', label: '上游超时 (ms)', type: 'number', min: 1, unit: '毫秒', default: 9000 },
       { key: 'request_timeout_ms', label: '整体请求超时 (ms)', type: 'number', min: 1, unit: '毫秒', nullable: true, placeholder: '自动计算' },
-      { key: 'response_jump_limit', label: '响应跳转上限', type: 'number', min: 1, unit: '次', default: 10 },
+      { key: 'response_jump_limit', label: '回答后改问次数上限', type: 'number', min: 1, unit: '次', default: 10 },
       { key: 'enable_tcp_fallback', label: 'UDP 失败改用 TCP', type: 'boolean', default: true },
     ],
   },
@@ -106,26 +106,26 @@ export const SETTING_SECTIONS: SettingSection[] = [
   {
     id: 'stale',
     title: '过期缓存',
-    description: '过期响应的服务窗口与客户端等待时间',
+    description: '缓存过期后还能用旧结果多久，客户端等多久',
     tone: 'red',
     fields: [
-      { key: 'serve_stale', label: '服务过期响应', type: 'boolean', default: false },
-      { key: 'serve_stale_ttl', label: '回复 TTL (s)', type: 'number', min: 1, unit: '秒', default: 30, visibleWhen: 'serve_stale' },
-      { key: 'serve_stale_expire_ttl', label: '服务窗口 (s)', type: 'number', min: 0, unit: '秒', default: 86400, visibleWhen: 'serve_stale' },
-      { key: 'serve_stale_ttl_reset', label: '重置过期 TTL', type: 'boolean', default: true, visibleWhen: 'serve_stale' },
+      { key: 'serve_stale', label: '过期后继续用旧结果', type: 'boolean', default: false },
+      { key: 'serve_stale_ttl', label: '旧结果的 TTL (s)', type: 'number', min: 1, unit: '秒', default: 30, visibleWhen: 'serve_stale' },
+      { key: 'serve_stale_expire_ttl', label: '旧结果最多用多久 (s)', type: 'number', min: 0, unit: '秒', default: 86400, visibleWhen: 'serve_stale' },
+      { key: 'serve_stale_ttl_reset', label: '每用一次旧结果就重新计时', type: 'boolean', default: true, visibleWhen: 'serve_stale' },
       { key: 'serve_stale_client_timeout_ms', label: '客户端等待 (ms)', type: 'number', min: 0, unit: '毫秒', default: 0, visibleWhen: 'serve_stale' },
     ],
   },
   {
     id: 'flow-control',
-    title: '自适应流量控制',
-    description: '并发许可数、延迟阈值与调整间隔',
+    title: '自动限流',
+    description: '同时处理的请求数、延迟阈值和调整间隔',
     tone: 'green',
     fields: [
-      { key: 'flow_control_enabled', label: '启用流控', type: 'boolean', default: false },
-      { key: 'flow_control_initial_permits', label: '初始许可数', type: 'number', min: 1, unit: '个', default: 500, visibleWhen: 'flow_control_enabled' },
-      { key: 'flow_control_min_permits', label: '最小许可数', type: 'number', min: 1, unit: '个', default: 100, visibleWhen: 'flow_control_enabled' },
-      { key: 'flow_control_max_permits', label: '最大许可数', type: 'number', min: 1, unit: '个', default: 800, visibleWhen: 'flow_control_enabled' },
+      { key: 'flow_control_enabled', label: '自动限流', type: 'boolean', default: false },
+      { key: 'flow_control_initial_permits', label: '同时处理的请求数（初始）', type: 'number', min: 1, unit: '个', default: 500, visibleWhen: 'flow_control_enabled' },
+      { key: 'flow_control_min_permits', label: '同时处理的请求数（最少）', type: 'number', min: 1, unit: '个', default: 100, visibleWhen: 'flow_control_enabled' },
+      { key: 'flow_control_max_permits', label: '同时处理的请求数（最多）', type: 'number', min: 1, unit: '个', default: 800, visibleWhen: 'flow_control_enabled' },
       { key: 'flow_control_latency_threshold_ms', label: '延迟阈值 (ms)', type: 'number', min: 1, unit: '毫秒', default: 100, visibleWhen: 'flow_control_enabled' },
       { key: 'flow_control_adjustment_interval_secs', label: '调整间隔 (s)', type: 'number', min: 1, unit: '秒', default: 5, visibleWhen: 'flow_control_enabled' },
     ],
@@ -142,45 +142,47 @@ export const SETTING_SECTIONS: SettingSection[] = [
   },
 ]
 
+// 高级规则的表单也说面板的话：和规则卡片的读法、普通规则的条件同一套叫法；内核的写法留在 JSON 里
+// The advanced-rule form speaks the panel's words too: the same names as the rule reading and plain conditions; the kernel's spelling stays in the JSON tab
 export const MATCH_OPERATORS: SelectOption[] = [
-  { value: 'and', label: 'AND' },
-  { value: 'or', label: 'OR' },
-  { value: 'and_not', label: 'AND NOT' },
-  { value: 'or_not', label: 'OR NOT' },
-  { value: 'not', label: 'NOT' },
+  { value: 'and', label: '且' },
+  { value: 'or', label: '或' },
+  { value: 'and_not', label: '且不是' },
+  { value: 'or_not', label: '或不是' },
+  { value: 'not', label: '不是' },
 ]
 
 const SELECTOR_MATCHERS: MatcherDefinition[] = [
   { value: 'listener_label', label: '监听标签', fields: ['value'] },
   { value: 'client_ip', label: '客户端 IP', fields: ['cidr'] },
-  { value: 'domain_suffix', label: '域名后缀', fields: ['value'] },
-  { value: 'domain_regex', label: '域名正则', fields: ['value'] },
-  { value: 'any', label: '任意', fields: [] },
-  { value: 'qclass', label: 'QClass', fields: ['value'] },
-  { value: 'edns_present', label: '存在 EDNS', fields: ['expect'] },
-  { value: 'geo_site', label: 'GeoSite', fields: ['value'] },
-  { value: 'geo_site_not', label: '非 GeoSite', fields: ['value'] },
-  { value: 'geoip_country', label: 'GeoIP 国家', fields: ['country_codes'] },
-  { value: 'geoip_private', label: 'GeoIP 私网', fields: ['expect'] },
-  { value: 'qtype', label: 'QType', fields: ['value'] },
+  { value: 'domain_suffix', label: '域名（含子域名）', fields: ['value'] },
+  { value: 'domain_regex', label: '域名匹配正则', fields: ['value'] },
+  { value: 'any', label: '所有请求', fields: [] },
+  { value: 'qclass', label: '查询类别', fields: ['value'] },
+  { value: 'edns_present', label: '带 EDNS', fields: ['expect'] },
+  { value: 'geo_site', label: '属于 GeoSite', fields: ['value'] },
+  { value: 'geo_site_not', label: '不属于 GeoSite', fields: ['value'] },
+  { value: 'geoip_country', label: '客户端地区', fields: ['country_codes'] },
+  { value: 'geoip_private', label: '客户端是内网', fields: ['expect'] },
+  { value: 'qtype', label: '查询类型', fields: ['value'] },
 ]
 
 const REQUEST_MATCHERS: MatcherDefinition[] = SELECTOR_MATCHERS.filter((item) => item.value !== 'listener_label')
 
 const RESPONSE_MATCHERS: MatcherDefinition[] = [
-  { value: 'upstream_equals', label: '上游等于', fields: ['value'] },
-  { value: 'request_domain_suffix', label: '请求域名后缀', fields: ['value'] },
-  { value: 'request_domain_regex', label: '请求域名正则', fields: ['value'] },
-  { value: 'response_type', label: '响应类型', fields: ['value'] },
-  { value: 'response_rcode', label: '响应 RCode', fields: ['value'] },
-  { value: 'response_qclass', label: '响应 QClass', fields: ['value'] },
-  { value: 'response_edns_present', label: '响应含 EDNS', fields: ['expect'] },
+  { value: 'upstream_equals', label: '回答来自', fields: ['value'] },
+  { value: 'request_domain_suffix', label: '请求的域名（含子域名）', fields: ['value'] },
+  { value: 'request_domain_regex', label: '请求的域名匹配正则', fields: ['value'] },
+  { value: 'response_type', label: '回答的记录类型', fields: ['value'] },
+  { value: 'response_rcode', label: '响应码', fields: ['value'] },
+  { value: 'response_qclass', label: '查询类别', fields: ['value'] },
+  { value: 'response_edns_present', label: '回答带 EDNS', fields: ['expect'] },
   { value: 'response_upstream_ip', label: '上游 IP', fields: ['cidr'] },
-  { value: 'response_answer_ip', label: '应答 IP', fields: ['cidr'] },
-  { value: 'response_answer_ip_geoip_country', label: '应答 IP 国家', fields: ['country_codes'] },
-  { value: 'response_answer_ip_geoip_private', label: '应答 IP 私网', fields: ['expect'] },
-  { value: 'response_request_domain_geosite', label: '请求域名 GeoSite', fields: ['value'] },
-  { value: 'response_request_domain_geosite_not', label: '请求域名非 GeoSite', fields: ['value'] },
+  { value: 'response_answer_ip', label: '回答的 IP', fields: ['cidr'] },
+  { value: 'response_answer_ip_geoip_country', label: '回答 IP 的地区', fields: ['country_codes'] },
+  { value: 'response_answer_ip_geoip_private', label: '回答的是内网地址', fields: ['expect'] },
+  { value: 'response_request_domain_geosite', label: '请求的域名属于 GeoSite', fields: ['value'] },
+  { value: 'response_request_domain_geosite_not', label: '请求的域名不属于 GeoSite', fields: ['value'] },
   { value: 'response_txt_content', label: 'TXT 内容', fields: ['mode', 'value'] },
 ]
 
@@ -192,16 +194,16 @@ export const MATCHER_DEFINITIONS: Record<MatcherScope, MatcherDefinition[]> = {
 
 export const ACTION_TYPES: ActionDefinition[] = [
   { value: 'log', label: '记录日志' },
-  { value: 'static_response', label: '固定 RCode' },
+  { value: 'static_response', label: '固定响应码' },
   { value: 'static_ip_response', label: '固定 IP' },
   { value: 'static_cname_response', label: '固定 CNAME', requiresCapability: CONFIG_STATIC_CNAME_RESPONSE_V1 },
   { value: 'static_txt_response', label: '固定 TXT' },
   { value: 'replace_txt_response', label: '替换 TXT' },
-  { value: 'jump_to_pipeline', label: '跳转 Pipeline' },
-  { value: 'allow', label: '允许' },
-  { value: 'deny', label: '拒绝' },
+  { value: 'jump_to_pipeline', label: '转到另一组' },
+  { value: 'allow', label: '交给默认上游' },
+  { value: 'deny', label: '拦截（REFUSED）' },
   { value: 'forward', label: '转发' },
-  { value: 'continue', label: '继续匹配' },
+  { value: 'continue', label: '继续往下' },
 ]
 
 export const QTYPE_OPTIONS = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'PTR', 'SOA', 'SRV', 'OPT']

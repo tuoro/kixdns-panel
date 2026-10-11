@@ -1,13 +1,19 @@
 <script setup lang="ts">
+import { useReturnFocus } from '../composables/useReturnFocus'
 import { keepTail } from './view'
 import { CircleAlert, Info, X } from '@lucide/vue'
 import { computed, onMounted, ref } from 'vue'
 import UiDotText from '../components/ui/UiDotText.vue'
 import { importReport, importSource } from './store'
+// 关上后焦点回到打开它的控件 / Focus returns to the opener on close
+useReturnFocus()
 
 // 导入说明：旧格式读进来时做了什么、哪些原样保留了。先说结论，再一条条列；要注意的排前面。
 // The import notes: what reading an older config did and what was kept verbatim. The verdict first, then each note, warnings on top.
-const emit = defineEmits<{ close: [] }>()
+// undo：从文件导入时给「撤销导入」。报告是模态框，旁边的撤销提示点不到，所以撤销放在这里
+// undo: offered for a file import. The report is modal, so the undo toast beside it cannot be reached; the undo lives here instead
+const props = defineProps<{ undo?: boolean }>()
+const emit = defineEmits<{ close: []; undo: [] }>()
 const dialog = ref<HTMLDialogElement | null>(null)
 onMounted(() => dialog.value?.showModal())
 const r = computed(() => importReport.value!)
@@ -38,7 +44,7 @@ const verdict = computed(() => (r.value.stats.raw ? `${r.value.stats.raw} 条规
           </section>
         </div>
       </div>
-      <footer class="pdialog__foot"><button class="ui-btn ui-btn--primary" type="button" @click="emit('close')">知道了</button></footer>
+      <footer class="pdialog__foot"><button v-if="props.undo" class="ui-btn ui-btn--secondary" type="button" @click="emit('undo')">撤销导入</button><button class="ui-btn ui-btn--primary" type="button" @click="emit('close')">知道了</button></footer>
     </div>
   </dialog>
 </template>

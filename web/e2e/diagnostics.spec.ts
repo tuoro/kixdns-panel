@@ -35,17 +35,19 @@ async function noOverflow(page: Page): Promise<void> {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
 }
 
-test('结果栏只说结果：记录、响应码、耗时和服务器，不复述执行路径', async ({ page }) => {
+test('结果栏只说结果：记录、响应码、类型和 TTL；耗时在路径末尾，不复述执行路径', async ({ page }) => {
   await query(page)
   const outcome = page.locator('.diag-outcome')
   await expect(page.locator('.diag-answer-row')).toHaveCount(2)
   await expect(page.locator('.diag-answer-row').first()).toContainText('104.18.26.120')
   await expect(page.locator('.diag-answer-row').last()).toContainText('104.18.27.120')
-  // 事实行是组件库的分隔点列表：耗时打头，然后类型和 TTL（都一样，只写一次）、截断与否、服务器。逐项断言：
-  // 分隔点是 ::before 画的，拼起来的 textContent 里没有它。
-  // The facts line is the kit's dot list: elapsed first, then the type and TTL (shared, stated once), truncation and the server.
+  // 事实行是组件库的分隔点列表：类型和 TTL（都一样，只写一次），截断了才说。总耗时是执行路径最后一行右端的时间，
+  // 「服务器 KixDNS 内部执行链」对人没有意义，有路径时都不写。逐项断言：分隔点是 ::before 画的，拼起来的 textContent 里没有它。
+  // The facts line is the kit's dot list: the type and TTL (shared, stated once), truncation only when it happened. The total time is
+  // the time at the end of the path's last row, and 「服务器 KixDNS 内部执行链」 means nothing to a person, so with a path neither is written.
   // Asserted item by item: the dots are drawn by ::before and never appear in the joined textContent.
-  await expect(page.locator('.diag-outcome-facts > span')).toHaveText(['12 ms', 'A', 'TTL 300 秒', '未截断', '服务器 KixDNS 内部执行链'])
+  await expect(page.locator('.diag-outcome-facts > span')).toHaveText(['A', 'TTL 300 秒'])
+  await expect(page.locator('.diag-trace .ui-step').last().locator('.ui-step__time')).toHaveText('12 ms')
   // 命中哪条规则、由谁应答写在执行路径里（带绿色对勾），结果栏不再说一遍。
   // Which rule matched and who answered live in the path, with a green check; the bar does not repeat them.
   await expect(outcome).not.toContainText('geosite-global')
@@ -79,8 +81,9 @@ test('每一步的细节直接摊开，缓存未命中不是故障 @responsive',
   await expect(steps.nth(4)).toContainText('https://1.1.1.1/dns-query')
   // 程序内部的写法翻成人话：不出现 Some(Https)、false 和 hickory 的「No Error」。
   // Program-internal spellings become words: no Some(Https), false or hickory's "No Error".
-  await expect(steps.nth(5).locator('.ui-step__what')).toHaveText('应答 NOERROR')
-  await expect(steps.nth(5)).toContainText('未截断')
+  // 回答本身在结果栏里：这一行只说收到了；没截断不写 / The answer is in the result bar, so this row only says one came; not truncated goes unsaid
+  await expect(steps.nth(5).locator('.ui-step__what')).toHaveText('收到回答')
+  await expect(steps.nth(5)).not.toContainText('截断')
   await expect(steps.nth(4)).toContainText('传输 DoH')
   await expect(page.locator('.diag-trace')).not.toContainText('Some(')
   await expect(page.locator('.diag-trace')).not.toContainText('false')
@@ -181,13 +184,14 @@ test('真实内核轨迹：未命中的规则并成一行，「准备转发」�
   // 决定转发和真的发出去是同一件事，并成一行；应答那一行不再重复地址。
   // Deciding to forward and sending are one event on one row; the reply row does not repeat the address.
   await expect(steps).toHaveCount(6)
-  await expect(steps.nth(1).locator('.ui-step__what')).toHaveText('管线 default 的规则缓存未命中')
+  // 内核的 Pipeline id 换回配置页的名字：演示配置里 default 是上游组「default」那条 / The kernel's pipeline id becomes the config page's name: in the demo config default is upstream group 「default」's pipeline
+  await expect(steps.nth(1).locator('.ui-step__what')).toHaveText('上游组「default」的规则缓存未命中')
   await expect(steps.nth(2)).toHaveClass(/ui-step--idle/)
   await expect(steps.nth(2).locator('.ui-step__what')).toHaveText('3 条规则未命中')
   await expect(steps.nth(2).locator('.ui-step__why')).toHaveText('block-ads、geosite-cn、lan-hosts')
   await expect(steps.nth(4).locator('.ui-step__what')).toHaveText('转发给 https://1.1.1.1/dns-query')
   await expect(steps.nth(4).locator('.ui-step__time')).toHaveText('2 ms')
-  await expect(steps.nth(5).locator('.ui-step__what')).toHaveText('应答 NOERROR')
+  await expect(steps.nth(5).locator('.ui-step__what')).toHaveText('收到回答')
   // 超过一秒写成秒。 / Past a second, the time is in seconds.
   await expect(steps.nth(5).locator('.ui-step__time')).toHaveText('1.2 s')
   await expect(page.locator('.diag-trace')).not.toContainText('started')
@@ -204,7 +208,7 @@ test('多个命中与长轨迹不被固定六阶段裁掉', async ({ page }) => 
   // 结论带只点前三条并说明一共几条；执行路径里十一步一步不少。
   // The verdict names the first three and the total; the path keeps every one of the eleven steps.
   await expect(page.locator('.diag-trace .ui-step')).toHaveCount(11)
-  await expect(page.locator('.diag-trace-warning')).toContainText('不代表完整解析路径')
+  await expect(page.locator('.diag-trace-warning')).toContainText('执行路径不完整')
   await expect(page.locator('.diag-trace .ui-step').last()).toContainText('future_stage')
   await noOverflow(page)
 })
@@ -218,6 +222,6 @@ test('查询失败可重试，成功空轨迹不沿用旧结果', async ({ page 
   await page.getByRole('button', { name: '执行查询', exact: true }).click()
   await expect(page.locator('.diag-error')).toHaveCount(0)
   await expect(page.locator('.diag-status')).toContainText('NXDOMAIN')
-  await expect(page.locator('.diag-note')).toContainText('本次查询没有返回执行轨迹')
+  await expect(page.locator('.diag-note')).toContainText('这次查询没有返回执行路径')
   await noOverflow(page)
 })

@@ -70,8 +70,8 @@ test('JSON 视图：显示内核配置，改了设置回到表单算一处修改
   await page.keyboard.type('30000')
   await expect(page.locator('.cm-line', { hasText: '"cache_capacity": 30000' })).toHaveCount(1)
   await expect(line).toHaveCount(0)
-  // JSON 视图里改的还没进草稿：保存条不出来，回到表单才算 / Edits in the JSON view are not in the draft yet: no save bar until 回到表单
-  await expect(page.locator('.cfg__savebar')).toHaveCount(0)
+  // JSON 视图里改的也算草稿：保存条马上升起，说 JSON 有修改；回到表单时读回来，按对象数 / Edits in the JSON view count as draft: the save bar rises at once saying JSON 有修改; back in the form they are read back and counted per object
+  await expect(page.locator('.cfg__savebar')).toContainText('JSON 有修改')
   // 桌面上回表单走页头的「表单 | JSON」分段或「…」菜单（手机上「完整配置」旁边另有一个「回到表单」）/ On desktop the way back is the header's 表单 | JSON segment or the 「…」 menu (phones add a 回到表单 beside 完整配置)
   await more(page, '回到表单')
   await expect(page.locator('.cfg__json')).toHaveCount(0)

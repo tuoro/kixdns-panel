@@ -612,6 +612,17 @@ pub enum UpdateError {
     Unsupported,
 }
 
+impl UpdateError {
+    /// 页面在「检查失败：」后面接的那句：检查更新失败只给原因，不再带自己的前缀。
+    /// The phrase the page puts after 检查失败：; a failed check gives only its cause, without its own prefix.
+    pub fn reason(&self) -> String {
+        match self {
+            Self::Network(reason) | Self::Install(reason) => reason.clone(),
+            other => other.to_string(),
+        }
+    }
+}
+
 impl UpdateManager {
     pub fn new(database: Database, settings: UpdateSettings) -> Result<Self, UpdateError> {
         let UpdateSettings {
@@ -696,13 +707,15 @@ impl UpdateManager {
 }
 
 impl InstalledVersion {
-    /// 审计日志里对这个内核的称呼，和界面一致：上游 Run 或 Release 标签；早期安装只有构建提交。
-    /// How the audit log names this kernel, matching the page: the upstream run or Release
-    /// tag; early installs only have the build commit.
+    /// 审计日志里对这个内核的称呼，和界面一致（web/src/utils.ts 的 formatKixdnsVersion）：
+    /// 构建 #上游 Run 编号，或 Release 标签本身；早期安装只有构建提交。
+    /// How the audit log names this kernel, matching the page (formatKixdnsVersion in
+    /// web/src/utils.ts): 构建 # and the upstream run, or the Release tag itself; early
+    /// installs only have the build commit.
     pub fn label(&self) -> String {
         match (self.run_id, self.release_tag.as_deref()) {
-            (Some(run_id), _) => format!("Run #{run_id}"),
-            (None, Some(tag)) => format!("Release {tag}"),
+            (Some(run_id), _) => format!("构建 #{run_id}"),
+            (None, Some(tag)) => tag.to_owned(),
             (None, None) => format!("构建 {}", self.commit.get(..12).unwrap_or(&self.commit)),
         }
     }

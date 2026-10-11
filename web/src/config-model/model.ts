@@ -122,10 +122,12 @@ const DOMAIN_OPS: OpDef[] = [
 ]
 const validRegex = (v: string) => { try { new RegExp(v.replace(/^\(\?i\)/, '')); return true } catch { return false } }
 const domainValid = (v: string, c: { regex?: boolean }) => (c.regex ? validRegex(v) : isDomain(v))
+// 内核按写的原样查分类，「geosite:cn」找不到 cn 这个分类，永远不命中 / The kernel looks the category up as written, so 「geosite:cn」 never finds cn and never matches
+const noGeositePrefix = (v: string): boolean => !/^geosite:/i.test(v)
 export const FIELD: Record<ConditionField, FieldDef> = {
   domain: { label: '域名', ops: DOMAIN_OPS, values: true, placeholder: 'example.com，回车添加', mono: true, valid: domainValid },
   // 行里叫 GeoSite（正式面板一直这么叫），句子里说「域名属于 GeoSite cn」 / The row says GeoSite (the production panel's name); sentences say 「域名属于 GeoSite cn」
-  geosite: { label: 'GeoSite', subject: '域名', ops: [{ value: 'is', label: '属于', phrase: '属于 GeoSite', negate: false }, { value: 'not', label: '不属于', phrase: '不属于 GeoSite', negate: true }], values: true, placeholder: 'cn、category-ads-all…', mono: true, suggest: 'geosite' },
+  geosite: { label: 'GeoSite', subject: '域名', ops: [{ value: 'is', label: '属于', phrase: '属于 GeoSite', negate: false }, { value: 'not', label: '不属于', phrase: '不属于 GeoSite', negate: true }], values: true, placeholder: 'cn、category-ads-all…', mono: true, suggest: 'geosite', valid: noGeositePrefix },
   client_ip: { label: '客户端 IP', ops: IN, values: true, placeholder: '192.168.1.0/24 或单个 IP', mono: true, valid: (v) => isCidr(v) },
   client_country: { label: '客户端地区', ops: IS, values: true, placeholder: 'CN、HK…', mono: true, upper: true, suggest: 'country', valid: (v) => /^[a-z]{2}$|^[a-z0-9_-]{3,}$/i.test(v), hint: 'GeoIP 国家代码' },
   client_private: { label: '客户端网络', merge: 'client_ip', ops: [{ value: 'is', label: '是内网', phrase: '客户端是内网', negate: false }, { value: 'not', label: '不是内网', phrase: '客户端不是内网', negate: true }], values: false, placeholder: '', mono: false },
@@ -144,7 +146,7 @@ export const RESPONSE_FIELD: Record<ResponseField, FieldDef> = {
   upstream: { label: '回答来自', ops: IS, values: true, placeholder: '10.0.0.53:53', mono: true },
   upstream_ip: { label: '上游 IP', ops: IN, values: true, placeholder: '10.0.0.0/8', mono: true, valid: (v) => isCidr(v) },
   request_domain: { label: '请求的域名', ops: DOMAIN_OPS, values: true, placeholder: 'example.com', mono: true, valid: domainValid },
-  request_geosite: { label: '请求域名 GeoSite', subject: '请求的域名', ops: [{ value: 'is', label: '属于', phrase: '属于 GeoSite', negate: false }, { value: 'not', label: '不属于', phrase: '不属于 GeoSite', negate: true }], values: true, placeholder: 'cn', mono: true, suggest: 'geosite' },
+  request_geosite: { label: '请求域名 GeoSite', subject: '请求的域名', ops: [{ value: 'is', label: '属于', phrase: '属于 GeoSite', negate: false }, { value: 'not', label: '不属于', phrase: '不属于 GeoSite', negate: true }], values: true, placeholder: 'cn', mono: true, suggest: 'geosite', valid: noGeositePrefix },
   txt: { label: 'TXT 内容', ops: [
     { value: 'is', label: '等于', negate: false, txtMode: 'exact' }, { value: 'not', label: '不等于', negate: true, txtMode: 'exact' },
     { value: 'prefix', label: '开头是', negate: false, txtMode: 'prefix' }, { value: 'nprefix', label: '开头不是', negate: true, txtMode: 'prefix' },
@@ -178,7 +180,7 @@ export function conditionsText(groups: Condition[][]): string {
 
 // 内核原样的条件链读成一句话（高级规则和高级入口用） / A verbatim kernel chain read as a sentence (for advanced rules and entries)
 const RAW_LABEL: Record<string, string> = {
-  any: '任意请求', listener_label: '监听标签是', client_ip: '客户端 IP 在', domain_suffix: '域名是', domain_regex: '域名匹配正则', geo_site: '域名属于 GeoSite', geo_site_not: '域名不属于 GeoSite',
+  any: '所有请求', listener_label: '监听标签是', client_ip: '客户端 IP 在', domain_suffix: '域名是', domain_regex: '域名匹配正则', geo_site: '域名属于 GeoSite', geo_site_not: '域名不属于 GeoSite',
   geoip_country: '客户端地区是', geoip_private: '客户端内网', qtype: '查询类型是', qclass: '查询类别是', edns_present: '带 EDNS',
 }
 export function rawMatchersText(matchers: Record<string, unknown>[] | undefined, ruleOp?: string): string {
@@ -207,7 +209,7 @@ export function blockLabel(model: Model, response: BlockResponse): string {
 // 列表里那颗结果胶囊：动词 + 客户端实际收到什么 / The outcome pill in the list: the verb plus what the client actually gets
 export function outcomePill(model: Model, o: Outcome): { verb: string; value: string; mono: boolean; broken: boolean } {
   switch (o.type) {
-    case 'upstream': { const n = groupName(model, o.group); return { verb: '上游', value: n ?? '已删除的组', mono: false, broken: !n } }
+    case 'upstream': { const n = groupName(model, o.group); return { verb: '交给', value: n ?? '已删除的组', mono: false, broken: !n } }
     // 响应码是助记词，正文字体；只有 0.0.0.0 / :: 这种地址才用等宽 / Response codes are mnemonics in the body face; only addresses such as 0.0.0.0 / :: are mono
     case 'block': return { verb: '拦截', value: blockLabel(model, o.response), mono: (o.response === 'default' ? model.defaults.block : o.response) === 'zero', broken: false }
     case 'answer': {
@@ -215,7 +217,7 @@ export function outcomePill(model: Model, o: Outcome): { verb: string; value: st
       return { verb: '回答', value: `${kind}${o.kind === 'txt' ? `"${o.value}"` : o.value.split(',').map((x) => x.trim()).filter(Boolean).join(', ') || '…'}`, mono: true, broken: !o.value.trim() }
     }
     case 'group': { const n = ruleGroupName(model, o.group); return { verb: '转到', value: n ?? '已删除的规则组', mono: false, broken: !n } }
-    case 'continue': return { verb: '继续', value: '交给下一条', mono: false, broken: false }
+    case 'continue': return { verb: '继续', value: '往下一条', mono: false, broken: false }
   }
 }
 export function outcomeSentence(model: Model, o: Outcome): string {
@@ -224,7 +226,7 @@ export function outcomeSentence(model: Model, o: Outcome): string {
     case 'block': return `拦截，回应 ${blockLabel(model, o.response)}`
     case 'answer': return o.kind === 'txt' ? `直接回答 TXT「${o.value}」` : o.kind === 'ip' ? `直接回答 ${splitList(o.value).join('、')}` : `直接回答 CNAME ${o.value}`
     case 'group': return `转到规则组「${ruleGroupName(model, o.group) ?? '已删除'}」`
-    case 'continue': return '不作决定，交给下一条规则'
+    case 'continue': return '不作决定，继续往下一条'
   }
 }
 export function remedySentence(model: Model, r: Remedy): string {
@@ -268,7 +270,7 @@ export const conditionProblem = (c: Condition) => valueProblem(FIELD[c.field], c
 export function ruleTitle(rule: Rule): string {
   const name = rule.name.trim()
   if (name) return name
-  if (rule.raw) return '原样保留的内核规则'
+  if (rule.raw) return '没有名字的高级规则'
   return conditionsText(rule.conditions)
 }
 
@@ -301,11 +303,11 @@ export function ruleProblems(model: Model, rule: Rule): string[] {
   }
   if (rule.outcome.type === 'upstream' && rule.response.mode === 'custom') {
     const r = rule.response
-    if (!r.conditions.length) out.push('「上游回答后」还没加条件')
+    if (!r.conditions.length) out.push('「回答后检查」还没加条件')
     for (const c of r.conditions) { const p = valueProblem(RESPONSE_FIELD[c.field], c); if (p) out.push(p) }
     if (r.match === 'all' && r.conditions.flatMap(responseTerms).filter((t) => !t.negative && t.any.length > 1).length > 1) out.push('「全部满足」时只能有一个条件填多个值，其余的拆成单独的条件或改成「满足任一」')
     if (r.match === 'any' && r.conditions.flatMap(responseTerms).filter((t) => t.negative).length > r.conditions.filter((c) => c.negate).length) out.push('「满足任一」时，「不是」的条件只能填一个值，几个值拆成几条')
-    if (r.then.type === 'answer' && !r.then.value.trim()) out.push('「上游回答后」的自定义回答还没填内容')
+    if (r.then.type === 'answer' && !r.then.value.trim()) out.push('「回答后检查」的自定义回答还没填内容')
   }
   if (kernelRuleCount(rule) > 32) out.push('条件组合太多（展开后超过 32 条），把多值条件合并成一个')
   return out

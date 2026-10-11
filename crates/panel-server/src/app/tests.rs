@@ -1499,3 +1499,28 @@ async fn dns_diagnostic_refuses_options_the_kernel_does_not_declare() {
         assert_eq!(payload["error"]["code"], code, "{payload}");
     }
 }
+
+#[test]
+fn reload_failures_read_as_one_plain_phrase() {
+    use crate::control::ControlError;
+    assert_eq!(
+        super::reload_failure(&ControlError::Rejected("没有给出原因".to_owned())),
+        "KixDNS 没有接受这份配置：没有给出原因"
+    );
+    assert_eq!(
+        super::reload_failure(&ControlError::Unavailable(
+            "No such file or directory (os error 2)".to_owned()
+        )),
+        "KixDNS 已停止"
+    );
+    assert_eq!(
+        super::reload_failure(&ControlError::Unavailable(
+            "KixDNS 没有及时确认新配置".to_owned()
+        )),
+        "KixDNS 没有及时确认新配置"
+    );
+    assert_eq!(
+        super::reload_failure(&ControlError::Unavailable("connection refused".to_owned())),
+        "连不上 KixDNS：connection refused"
+    );
+}

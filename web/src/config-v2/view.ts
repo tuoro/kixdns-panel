@@ -7,10 +7,6 @@ export function fmtCount(n: number): string {
   if (n >= 1e4) return `${trim(n / 1e4)}\u00a0万`
   return n.toLocaleString('en-US')
 }
-// 「次」跟在万、亿后面不再空一格（1.8 万次），跟在数字后面照常空一格（3,402 次） / 次 follows 万 and 亿 directly (1.8 万次) and a plain number after a space (3,402 次)
-export function fmtTimes(n: number): string {
-  return n >= 1e4 ? `${fmtCount(n)}次` : `${fmtCount(n)}\u00a0次`
-}
 const trim = (x: number) => (x >= 100 ? Math.round(x).toString() : x.toFixed(1).replace(/\.0$/, ''))
 
 export function protocolsOf(g: UpstreamGroup): string {

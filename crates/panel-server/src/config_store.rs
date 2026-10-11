@@ -484,13 +484,10 @@ fn sha256(bytes: &[u8]) -> String {
     sha256_hex(bytes)
 }
 
+/// 备注去掉首尾空白、最多 200 字；没写就留空，页面写「未填写备注」。
+/// The note trimmed and at most 200 characters; left empty when not written, and the page says 未填写备注.
 fn normalize_message(message: &str) -> String {
-    let message = message.trim();
-    if message.is_empty() {
-        "更新配置".to_owned()
-    } else {
-        message.chars().take(200).collect()
-    }
+    message.trim().chars().take(200).collect()
 }
 
 #[cfg(test)]

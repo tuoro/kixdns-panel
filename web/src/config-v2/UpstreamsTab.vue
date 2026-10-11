@@ -6,8 +6,7 @@ import UiMenu from '../components/ui/UiMenu.vue'
 import { useToast } from '../composables/useToast'
 import { ecsText, effectiveProtocol, fallbackSentence, PROTOCOL_LABEL, type UpstreamGroup } from '../config-model/model'
 import { usePhone } from './phone'
-import { groupUsers, healthOf, model } from './store'
-import { fmtTimes } from './view'
+import { changedGroupIds, groupUsers, healthOf, model } from './store'
 
 // 上游组：每组一张卡。标题行是组名和它的标签，右端 编辑 和「…」；下面是近一小时好不好；地址一行一条；最下面一句备用和子网。
 // 「新建上游组」是这一页唯一的主操作：宽屏传送到页头，手机在列表上面一行。
@@ -23,7 +22,8 @@ const tone = (rate: number) => (rate >= 99 ? '' : rate >= 95 ? 'ui-dot--warn' : 
 // 延迟只有拿到过回复才有数；没有就不写「平均 … ms」 / Latency exists only once a reply came back; without one the 平均 … ms part is left out
 const healthParts = (g: UpstreamGroup): string[] => {
   const h = health(g)!
-  return [`成功 ${h.success}%`, ...(h.latency === null ? [] : [`平均 ${h.latency} ms`]), `近一小时 ${fmtTimes(h.queries)}`]
+  // 和概览的上游状态同一种写法：成功率、平均耗时、最近一小时的次数（不缩成「万」） / Worded as the overview's upstream status: success rate, mean latency, the last hour's count (never shortened to 万)
+  return [`成功率 ${h.success}%`, ...(h.latency === null ? [] : [`平均 ${h.latency} ms`]), `最近一小时 ${h.queries.toLocaleString('en-US')}\u00a0次响应`]
 }
 const shown = (address: string) => address.replace(/^[a-z+]+:\/\//i, '')
 function facts(g: UpstreamGroup): string[] {
@@ -62,7 +62,8 @@ function act(g: UpstreamGroup, value: string): void {
     <div v-else class="gcards">
       <article v-for="g in model.groups" :key="g.id" class="ui-card gcard">
         <header class="gcard__head">
-          <button class="gcard__name" type="button" @click="emit('edit', g.id)">{{ g.name }}</button>
+          <!-- 改过还没保存的组和规则、映射一样带一个点 / A group changed but not yet saved carries the same dot as rules and mappings -->
+          <button class="gcard__name" type="button" @click="emit('edit', g.id)">{{ g.name }}<span v-if="changedGroupIds.has(g.id)" class="ui-dot ui-dot--ink rrow__changed" role="img" aria-label="改过，还没保存" title="改过，还没保存"></span></button>
           <span v-if="model.rest.type === 'upstream' && model.rest.group === g.id" class="ui-tag">其余请求</span>
           <span class="gcard__spacer"></span>
           <button v-if="groupUsers(g.id).length" class="ui-link gcard__uses gcard__uses--head" type="button" :title="groupUsers(g.id).join('\n')" @click="emit('rules', g.id)">{{ groupUsers(g.id).length }} 处在用</button>

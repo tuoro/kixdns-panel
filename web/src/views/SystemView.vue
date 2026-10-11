@@ -24,8 +24,10 @@ import type {
 } from '../api/types'
 import StatusBanner from '../components/StatusBanner.vue'
 import UiPageHeader from '../components/ui/UiPageHeader.vue'
+import UiDotText from '../components/ui/UiDotText.vue'
 import UiTask, { type UiTaskState } from '../components/ui/UiTask.vue'
 import { useConfirm } from '../composables/useConfirm'
+import { useConnection } from '../composables/useConnection'
 import { useToast } from '../composables/useToast'
 import { useUpdateStatus } from '../composables/useUpdateStatus'
 import { errorMessage, formatDate, formatKixdnsVersion, shortHash } from '../utils'
@@ -48,6 +50,14 @@ const panelUpdate = ref<PanelUpdateStatus | null>(null)
 const startingPanelUpdate = ref(false)
 const githubTokenStatus = ref<GithubTokenStatus | null>(null)
 const githubToken = ref('')
+// 检查失败是因为 GitHub 限了匿名访问或 Token 失效时，原因旁边给一个直接去填 Token 的按钮
+// When a check failed because GitHub limited anonymous access or the token went bad, the reason carries a button straight to the token field
+const tokenInput = ref<HTMLInputElement | null>(null)
+const needsToken = (error: string | null | undefined) => Boolean(error && /GitHub Token|GitHub 匿名/.test(error))
+function focusToken(): void {
+  tokenInput.value?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  tokenInput.value?.focus({ preventScroll: true })
+}
 const githubTokenVisible = ref(false)
 const githubTokenBusy = ref(false)
 const githubTokenError = ref('')
@@ -75,6 +85,9 @@ const PANEL_UPDATE_DISMISSED_KEY = 'kixdns:panel-update-failure-dismissed'
 const dismissedPanelUpdateFailure = ref(readDismissedPanelUpdateFailure())
 
 const running = computed(() => service.value?.active_state === 'active')
+// 连不上面板时，上次读到的服务状态不能当真：点变灰，写「状态未知」，连上后恢复（同概览）
+// While the panel is unreachable the last service state read cannot be trusted: the dot turns grey and reads 状态未知, restored on reconnect (as on the overview)
+const { down: panelDown } = useConnection()
 // 「正在运行 · active/running」「已停止 · inactive/dead」是同一件事说两遍；只有启动中、
 // 自动重启这类不寻常的状态，systemd 的原始写法才多带了信息。
 // "正在运行 · active/running" and "已停止 · inactive/dead" say one thing twice; only
@@ -85,6 +98,12 @@ const unusualServiceState = computed(() => {
 })
 const installed = computed(() => kernel.value?.binary_present === true)
 const activeVersion = computed(() => kernel.value?.active ?? null)
+// 大字只写编号，「构建」「构建产物」作小标签放在上面；Release 写标签本身 / The big figure is the number alone, with 构建 or 构建产物 as a small label above; a Release shows its tag
+const versionLead = computed(() => {
+  const text = formatKixdnsVersion(activeVersion.value)
+  const match = /^(构建产物|构建) (#\d+)$/.exec(text)
+  return match ? { label: match[1]!, value: match[2]! } : { label: activeVersion.value?.source === 'release' ? '版本' : '', value: text }
+})
 const loadError = computed(() => [serviceError.value, kernelError.value].filter(Boolean).join('；'))
 
 function buildTime(value: string | null): string {
@@ -105,7 +124,7 @@ const kixdnsNotice = computed(() => updateStatus.value?.kixdns ?? null)
 const panelNotice = computed(() => updateStatus.value?.panel ?? null)
 
 function latestKixdnsVersion(): string {
-  return kixdnsNotice.value ? `Run #${kixdnsNotice.value.run_id}` : '未检查'
+  return kixdnsNotice.value ? `构建 #${kixdnsNotice.value.run_id}` : '未检查'
 }
 
 const kernelTaskState = computed<UiTaskState>(() => (kernelAction.value === 'update' ? 'run' : 'idle'))
@@ -115,7 +134,7 @@ function panelUpdateLabel(): string {
     return panelUpdate.value.message || '面板正在在线更新'
   }
   const notice = panelNotice.value
-  if (!notice?.latest_version) return '正式版通道尚未发布'
+  if (!notice?.latest_version) return '正式版还没发布'
   if (notice.available) return '发现正式版更新'
   if (!notice.artifact) return '最新正式版暂无当前架构安装包'
   if (notice.current_release) return '当前正式版已是最新'
@@ -243,7 +262,7 @@ async function deleteGithubToken(): Promise<void> {
   if (!githubTokenStatus.value?.configured || githubTokenBusy.value
     || !await confirm.ask({
       title: '删除 GitHub Token',
-      body: '版本与更新检查会退回匿名访问，受更严格的速率限制。随时可以重新填一个新的。',
+      body: '之后检查更新不带 Token，GitHub 每小时只让查 60 次。需要时再填一个就行。',
       confirmLabel: '删除 Token',
       destructive: true,
     })) return
@@ -323,7 +342,7 @@ async function startPanelUpdate(): Promise<void> {
   const version = panelNotice.value?.latest_version
   if (!version || !await confirm.ask({
     title: `在线更新面板到 v${version}`,
-    body: '面板会短暂重启，这期间控制台暂时打不开。KixDNS 服务、配置和当前运行状态都保持不变。',
+    body: '更新时面板会重启，期间页面会提示连不上，重启完自动恢复。KixDNS 照常运行，配置不变。',
     confirmLabel: `更新到 v${version}`,
   })) return
   startingPanelUpdate.value = true
@@ -391,8 +410,8 @@ async function control(action: ServiceAction): Promise<void> {
   if ((action === 'stop' || action === 'restart') && !await confirm.ask({
     title: `${names[action]} KixDNS 服务`,
     body: action === 'stop'
-      ? '停止期间这台机器上的 DNS 解析会中断，直到重新启动。配置和缓存都保留。'
-      : '服务会短暂中断，随后按当前运行配置重新提供解析。配置不受影响。',
+      ? '停止期间，用 KixDNS 解析的设备都查不到域名，直到重新启动。配置不变，缓存会清空。'
+      : '服务会短暂中断，随后按当前运行配置重新提供解析。配置不变，缓存会清空。',
     confirmLabel: `${names[action]}服务`,
     destructive: action === 'stop',
   })) return
@@ -487,12 +506,13 @@ onBeforeUnmount(() => {
         <div v-if="service || kernel || panelVersion" class="ui-facts system-facts">
           <div v-if="service">
             <span class="ui-lbl">服务</span>
-            <b :title="running ? '正在运行' : '已停止'"><span class="ui-dot" :class="{ 'ui-dot--off': !running }" aria-hidden="true"></span>{{ service.unit }}<small v-if="!running">已停止</small><small v-if="unusualServiceState" class="ui-mono">{{ unusualServiceState }}</small></b>
+            <b :title="panelDown ? '状态未知' : running ? '正在运行' : '已停止'"><span class="ui-dot" :class="{ 'ui-dot--off': !running || panelDown }" aria-hidden="true"></span>{{ service.unit }}<small v-if="panelDown">状态未知</small><template v-else><small v-if="!running">已停止</small><small v-if="unusualServiceState" class="ui-mono">{{ unusualServiceState }}</small></template></b>
           </div>
-          <div v-if="service?.main_pid"><span class="ui-lbl">PID</span><b>{{ service.main_pid }}</b></div>
+          <div v-if="service?.main_pid" class="system-fact-pid"><span class="ui-lbl">PID</span><b>{{ service.main_pid }}</b></div>
           <div v-if="panelVersion"><span class="ui-lbl">面板版本</span><b>{{ panelVersion }}</b></div>
-          <div v-if="kernel"><span class="ui-lbl">内核</span><b>{{ installed ? formatKixdnsVersion(activeVersion) : '尚未安装' }}</b></div>
+          <div v-if="kernel"><span class="ui-lbl">内核</span><b>{{ installed ? formatKixdnsVersion(activeVersion) : '还没安装' }}</b></div>
         </div>
+        <span v-if="service || kernel || panelVersion" class="ui-ph__lead ui-ph__phone"><span v-if="service" class="ui-dot" :class="{ 'ui-dot--off': !running || panelDown }" aria-hidden="true"></span><UiDotText :parts="[...(service ? [panelDown ? '状态未知' : running ? '运行中' : '已停止'] : []), ...(panelVersion ? [`面板 ${panelVersion}`] : []), ...(kernel ? [installed ? formatKixdnsVersion(activeVersion).replace(' ', '\u00a0') : '内核还没安装'] : [])]" /></span>
         <span v-else-if="loadingService" class="sk system-skeleton-meta" role="status" aria-label="读取服务状态"></span>
         <span v-else>服务状态暂不可用</span>
       </template>
@@ -500,7 +520,7 @@ onBeforeUnmount(() => {
         <button v-if="!running" class="ui-btn ui-btn--secondary" type="button" :disabled="!installed || serviceAction !== null" @click="control('start')"><Play :size="16" />启动</button>
         <template v-else>
           <button class="ui-btn ui-btn--secondary" type="button" :disabled="!installed || serviceAction !== null" @click="control('restart')"><RotateCw :size="16" :class="{ spin: serviceAction === 'restart' }" />重启</button>
-          <button class="ui-btn ui-btn--danger" type="button" :disabled="serviceAction !== null" @click="control('stop')"><Square :size="15" />停止</button>
+          <button class="ui-btn ui-btn--danger" type="button" :disabled="serviceAction !== null" @click="control('stop')"><Square :size="16" />停止</button>
         </template>
       </template>
     </UiPageHeader>
@@ -515,26 +535,29 @@ onBeforeUnmount(() => {
       <div v-else-if="updateStatus" class="system-tasks" :class="{ 'is-refreshing': checkingUpdates }">
         <UiTask class="update-row" :state="kernelTaskState" title="KixDNS 内核" :started-at="kernelUpdateStartedAt" indeterminate>
           <template #icon><Cpu :size="16" /></template>
-          <template v-if="kixdnsNotice?.available" #title><span class="ui-tag ui-tag--strong">{{ kixdnsNotice.security_update ? '安全更新' : '有新版本' }}</span></template>
+          <template v-if="kixdnsNotice?.available" #title><span class="ui-tag ui-tag--strong">{{ kixdnsNotice.security_update ? '安全更新' : '有新构建' }}</span></template>
           <template #meta>
             <span class="update-row__from-to">
               <template v-if="kernelAction === 'update'">正在下载、校验并切换内核</template>
               <span v-else-if="!kixdnsNotice" class="system-stale">检查失败：{{ updateStatus.kixdns_error ?? '原因未知' }}</span>
               <!-- 只在新旧版本之间断行，「→」「·」跟着后一段走：不会挂在行尾 / Lines break only between the two versions, and 「→」/「·」 travel with what follows, so neither is left at a line end -->
-              <template v-else-if="kixdnsNotice.available && kixdnsNotice.security_update"><span class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span> <span class="update-row__keep">依赖安全升级<template v-if="kixdnsNotice.dependency_revision"> · <span class="ui-num">r{{ kixdnsNotice.dependency_revision }}</span></template></span></template>
-              <template v-else-if="kixdnsNotice.available"><span class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span> <span class="update-row__keep">→ <span class="ui-num">{{ latestKixdnsVersion() }}</span></span></template>
+              <template v-else-if="kixdnsNotice.available && kixdnsNotice.security_update"><span class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span> <span class="update-row__keep">安全更新<template v-if="kixdnsNotice.dependency_revision"> · <span class="ui-num">r{{ kixdnsNotice.dependency_revision }}</span></template></span></template>
+              <template v-else-if="kixdnsNotice.available"><span class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span> <span class="update-row__keep">→ <span class="ui-num">{{ formatKixdnsVersion(activeVersion).startsWith('构建 #') ? latestKixdnsVersion().replace(/^构建 /, '') : latestKixdnsVersion() }}</span></span></template>
               <template v-else-if="kixdnsNotice.current_commit"><span class="update-row__keep">已是最新 · <span class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span></span></template>
-              <template v-else>尚未安装</template>
+              <template v-else>还没安装</template>
             </span>
-            <span v-if="kixdnsNotice">构建于 {{ buildTime(kixdnsNotice.created_at) }}</span>
+            <span v-if="kixdnsNotice">发布于 {{ buildTime(kixdnsNotice.created_at) }}</span>
           </template>
-          <template v-if="kixdnsNotice || !installed" #actions>
+          <!-- 检查失败是 GitHub 的访问次数或 Token 的事：去填 Token 的按钮放在这一行的按钮位，和「更新」同一个位置、同一个样子
+               When a check failed over GitHub's access limit or the token, the button to fill in a token sits in the row's action slot, where and how 更新 sits -->
+          <template v-if="kixdnsNotice || !installed || needsToken(updateStatus.kixdns_error)" #actions>
+            <button v-if="!kixdnsNotice && needsToken(updateStatus.kixdns_error)" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" @click="focusToken">填写 Token</button>
             <a v-if="kixdnsNotice" class="ui-link" :href="kixdnsNotice.build_url" target="_blank" rel="noopener noreferrer">构建详情<ExternalLink :size="12" /></a>
             <button v-if="kixdnsNotice?.available || !installed" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" :disabled="!kernel?.latest || kernelAction !== null" @click="updateKernel">{{ kernelAction === 'update' ? '更新中' : (installed ? '更新' : '安装') }}</button>
           </template>
         </UiTask>
 
-        <UiTask class="update-row" :state="panelTaskState" title="KixDNS Panel" :started-at="panelUpdateStartedAt" :progress="panelUpdateProgress">
+        <UiTask class="update-row" :state="panelTaskState" title="KixDNS 面板" :started-at="panelUpdateStartedAt" :progress="panelUpdateProgress">
           <template #icon><PanelsTopLeft :size="16" /></template>
           <template v-if="panelNotice?.available" #title><span class="ui-tag ui-tag--strong">有新版本</span></template>
           <template #meta>
@@ -545,15 +568,16 @@ onBeforeUnmount(() => {
               <template v-else>{{ panelUpdateLabel() }}</template>
             </span>
             <span v-if="panelNotice?.published_at">发布于 {{ buildTime(panelNotice.published_at) }}</span>
-            <span v-if="panelNotice && !panelNotice.release_url">首个正式 Release 发布后显示</span>
+            <span v-if="panelNotice && !panelNotice.release_url">首个正式版发布后显示</span>
             <p v-if="panelUpdateFailure" class="ui-task__error update-row__failure" role="alert">
               <span>{{ panelUpdateFailure }}</span>
               <button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" @click="dismissPanelUpdateFailure">知道了</button>
             </p>
           </template>
-          <template v-if="panelNotice?.release_url" #actions>
-            <a class="ui-link" :href="panelNotice.release_url" target="_blank" rel="noopener noreferrer">发布说明<ExternalLink :size="12" /></a>
-            <button v-if="panelNotice.available" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" :disabled="startingPanelUpdate || panelUpdateRunning" @click="startPanelUpdate">{{ panelUpdateRunning ? '更新中' : '在线更新' }}</button>
+          <template v-if="panelNotice?.release_url || (!panelNotice && needsToken(updateStatus.panel_error))" #actions>
+            <button v-if="!panelNotice && needsToken(updateStatus.panel_error)" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" @click="focusToken">填写 Token</button>
+            <a v-if="panelNotice?.release_url" class="ui-link" :href="panelNotice.release_url" target="_blank" rel="noopener noreferrer">发布说明<ExternalLink :size="12" /></a>
+            <button v-if="panelNotice?.available" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" :disabled="startingPanelUpdate || panelUpdateRunning" @click="startPanelUpdate">{{ panelUpdateRunning ? '更新中' : '在线更新' }}</button>
           </template>
         </UiTask>
       </div>
@@ -576,22 +600,21 @@ onBeforeUnmount(() => {
       <section class="ui-card system-card runtime-panel" aria-labelledby="system-install-label">
         <div class="system-card__head">
           <h2 id="system-install-label" class="ui-card__label">当前安装</h2>
-          <span v-if="kernel" class="ui-tag" :class="installed ? 'ui-tag--ok' : 'ui-tag--warn'">{{ installed ? '已安装' : '尚未安装' }}</span>
+          <span v-if="kernel" class="ui-tag" :class="installed ? 'ui-tag--ok' : 'ui-tag--warn'">{{ installed ? '已安装' : '还没安装' }}</span>
         </div>
         <div class="system-card__main">
           <div v-if="loadingKernel && !kernel" class="sk system-skeleton-panel" role="status" aria-label="读取安装状态"></div>
           <template v-else-if="kernel">
-            <p class="install-version">{{ installed ? formatKixdnsVersion(activeVersion) : '尚未安装' }}</p>
+            <p class="install-version"><span v-if="installed && versionLead.label" class="install-version__label">{{ versionLead.label }}</span><b>{{ installed ? versionLead.value : '还没安装' }}</b></p>
             <p v-if="installed" class="ui-dots install-meta">
-              <span>增强版运行时</span>
               <span>补丁集 <span class="ui-num">{{ activeVersion?.patchset ? `p${activeVersion.patchset}${activeVersion.dependency_revision ? `-r${activeVersion.dependency_revision}` : ''}` : '未记录' }}</span></span>
               <span>控制协议 <span class="ui-num">{{ activeVersion?.control_protocol ? `v${activeVersion.control_protocol}` : '未记录' }}</span></span>
               <!-- 链接本身是 inline-flex，套一层再让 ui-dots 画点 / The link is inline-flex, so it is wrapped before ui-dots draws the dot -->
-              <span v-if="activeVersion?.source_url"><a class="ui-link" :href="activeVersion.source_url" target="_blank" rel="noopener noreferrer">上游详情<ExternalLink :size="12" /></a></span>
+              <span v-if="activeVersion?.source_url"><a class="ui-link" :href="activeVersion.source_url" target="_blank" rel="noopener noreferrer">原版源码<ExternalLink :size="12" /></a></span>
             </p>
             <p v-else class="install-meta">在上方「可用更新」里安装最新构建</p>
             <dl class="ui-strip install-hashes">
-              <div><dt>上游提交</dt><dd class="ui-mono">{{ activeVersion?.upstream_commit ? shortHash(activeVersion.upstream_commit, 12) : '未记录' }}</dd></div>
+              <div><dt>原版提交</dt><dd class="ui-mono">{{ activeVersion?.upstream_commit ? shortHash(activeVersion.upstream_commit, 12) : '未记录' }}</dd></div>
               <div><dt>增强构建</dt><dd class="ui-mono">{{ shortHash(activeVersion?.commit, 12) }}</dd></div>
               <div><dt>二进制摘要</dt><dd class="ui-mono">{{ shortHash(activeVersion?.binary_sha256, 14) }}</dd></div>
             </dl>
@@ -612,7 +635,7 @@ onBeforeUnmount(() => {
 
       <section class="ui-card system-card credential-panel" aria-labelledby="system-credential-label">
         <div class="system-card__head">
-          <h2 id="system-credential-label" class="ui-card__label">GitHub 凭据</h2>
+          <h2 id="system-credential-label" class="ui-card__label ui-card__label--as-is">GitHub Token</h2>
           <span class="ui-tag" :class="{ 'ui-tag--ok': githubTokenStatus?.configured }">{{ githubTokenStatus?.configured ? '已配置' : '匿名' }}</span>
         </div>
         <div class="system-card__main">
@@ -621,8 +644,8 @@ onBeforeUnmount(() => {
                  The placeholder fits the width measured at 375; one example that fits is enough. -->
             <label class="ui-input credential-input">
               <KeyRound :size="16" aria-hidden="true" />
-              <input v-model="githubToken" :type="githubTokenVisible ? 'text' : 'password'" :placeholder="githubTokenStatus?.configured ? '输入新 Token' : 'github_pat_…'" autocomplete="new-password" maxlength="256" aria-label="GitHub Token" :disabled="githubTokenBusy" @keyup.enter="saveGithubToken">
-              <button class="credential-eye" type="button" :title="githubTokenVisible ? '隐藏 Token' : '显示 Token'" :aria-label="githubTokenVisible ? '隐藏 Token' : '显示 Token'" @click="githubTokenVisible = !githubTokenVisible"><EyeOff v-if="githubTokenVisible" :size="15" /><Eye v-else :size="15" /></button>
+              <input ref="tokenInput" v-model="githubToken" :type="githubTokenVisible ? 'text' : 'password'" :placeholder="githubTokenStatus?.configured ? '输入新 Token' : 'github_pat_…'" autocomplete="new-password" maxlength="256" aria-label="GitHub Token" :disabled="githubTokenBusy" @keyup.enter="saveGithubToken">
+              <button class="credential-eye" type="button" :title="githubTokenVisible ? '隐藏 Token' : '显示 Token'" :aria-label="githubTokenVisible ? '隐藏 Token' : '显示 Token'" @click="githubTokenVisible = !githubTokenVisible"><EyeOff v-if="githubTokenVisible" :size="16" /><Eye v-else :size="16" /></button>
             </label>
             <button class="ui-btn ui-btn--secondary" type="button" :disabled="!githubToken || githubTokenBusy" @click="saveGithubToken">{{ githubTokenBusy ? '处理中' : (githubTokenStatus?.configured ? '替换' : '保存') }}</button>
             <button class="ui-btn ui-btn--danger ui-btn--icon" type="button" title="删除 Token" aria-label="删除 Token" :disabled="!githubTokenStatus?.configured || githubTokenBusy" @click="deleteGithubToken"><Trash2 :size="16" /></button>
@@ -632,8 +655,8 @@ onBeforeUnmount(() => {
           <p class="credential-hint"><span>只用于版本检查和内核下载，不会发送到 nightly.link。</span><template v-if="!githubTokenStatus?.configured"><span>匿名访问 GitHub 每小时只有 60 次请求，检查版本和下载内核容易被限速。</span><span>填一个 Token 后是每小时 <span class="nowrap">5,000 次</span>。</span></template></p>
         </div>
         <div class="system-card__row credential-quota">
-          <span v-if="githubRate" class="ui-dots"><span>API 配额 <span class="ui-num">{{ githubQuota }}</span></span><span>重置于 {{ githubRateReset() }}</span></span>
-          <span v-else>面板还没向 GitHub 请求过，配额未知</span>
+          <span v-if="githubRate" class="ui-dots"><span>剩余次数 <span class="ui-num">{{ githubQuota }}</span></span><span>{{ githubRateReset() }} 重置</span></span>
+          <span v-else>面板还没访问过 GitHub，剩余次数未知</span>
           <span v-if="githubTokenError" class="system-error">{{ githubTokenError }}</span>
         </div>
       </section>
@@ -653,6 +676,8 @@ onBeforeUnmount(() => {
 .system-page > .ui-ph { margin-bottom: 0; }
 /* 事实行：标签在上、值在下；状态点和它的值之间 4，和概览一样 / The facts row: label over value; 4 between the dot and its value, as on the overview */
 .system-facts { flex: 1 1 100%; margin-top: var(--s-1); }
+/* 侧栏版 861–959 页头放不下四项加两个按钮：PID 收起，内核不再单独占一行 / At 861–959 with the sidebar the header cannot hold four facts and two buttons: PID folds away so 内核 no longer takes its own row */
+@media (min-width: 861px) and (max-width: 959px) { .system-facts > .system-fact-pid { display: none; } }
 .system-facts b > .ui-dot { margin-right: calc(var(--s-1) - var(--s-2)); }
 /* 「已停止」整词换到下一行，不拆成一个字一行（手机上一格只有半行宽） / 已停止 moves to the next line as a whole word, never one character per line (a phone cell is half a line wide) */
 .system-facts b { flex-wrap: wrap; }
@@ -673,6 +698,9 @@ onBeforeUnmount(() => {
    The bottom row: 16 above its hairline, 12 below, on the card's lower edge; the paired cards share a height, so the rows align */
 .system-card__row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-2) var(--s-4); margin: var(--s-4) 0 0; padding-top: var(--s-3); border-top: 1px solid var(--l-hair); color: var(--l-ink-3); font-size: var(--t-2); }
 .system-card__row > .ui-dots { min-width: 0; }
+/* 底行一样高：一张卡底行有「回退」小按钮、另一张只有一行字，按按钮的高度留，两张卡底行的细线才对齐
+   Bottom rows share a height: one holds the small 回退 button, the other only a line of text; sized to the button, the two cards' bottom hairlines line up */
+.system-card__row { min-height: calc(var(--h-sm) + var(--s-3) + 1px); }
 
 /* 更新行：第一行贴着标签下面 12，最后一行不画线、不留底 / Update rows: the first sits 12 under the label, the last draws no line and keeps no bottom */
 .system-tasks { margin-top: var(--s-2); }
@@ -682,7 +710,11 @@ onBeforeUnmount(() => {
 .system-page .system-check-failed { margin-top: var(--s-3); padding-bottom: 0; }
 
 /* 当前安装：大数字 32 · 700 是这张卡的主角，附注一行，哈希在细线下面 / The installed build: the 32 · 700 figure leads the card, one line of notes, the hashes under a hairline */
-.system-page .install-version { margin: var(--s-2) 0 0; font-family: var(--f-display); font-size: var(--t-6); font-weight: var(--w-heavy); font-variant-numeric: tabular-nums; letter-spacing: -.02em; line-height: var(--lh-tight); overflow-wrap: anywhere; }
+.system-page .install-version { display: grid; gap: var(--s-1); margin: var(--s-2) 0 0; }
+/* 「构建」是小标签，大字只写编号：360 宽、侧栏版 900 宽时「构建 #30231271280」整串放大字会折成两行（和概览的「配置版本 / #18」同一种写法）
+   「构建」 is a small label and the big figure is the number alone: as one big string 「构建 #30231271280」 folded onto two lines at 360 and at 900 (the overview's 配置版本 / #18 pattern) */
+.system-page .install-version__label { color: var(--l-ink-3); font-size: var(--t-1); }
+.system-page .install-version > b { font-family: var(--f-display); font-size: var(--t-6); font-weight: var(--w-heavy); font-variant-numeric: tabular-nums; letter-spacing: -.02em; line-height: var(--lh-tight); white-space: nowrap; }
 .system-page .install-meta { margin-top: var(--s-2); color: var(--l-ink-2); font-size: var(--t-2); }
 .system-page .install-hashes { margin-top: var(--s-4); padding-top: var(--s-3); border-top: 1px solid var(--l-hair); }
 .system-page .system-skeleton-panel { margin-top: var(--s-2); }
@@ -693,8 +725,6 @@ onBeforeUnmount(() => {
 
 @media (max-width: 640px) {
   .system-page { gap: var(--s-4); }
-  .system-facts { gap: var(--s-3) var(--s-5); }
-  .system-facts > div { flex: 0 0 calc(50% - var(--s-5) / 2); }
   .system-card { padding: var(--s-3) var(--s-4) var(--s-4); }
 }
 /* 没有可回退版本时底行的一句说明 / The bottom row's note when there is nothing to roll back to */

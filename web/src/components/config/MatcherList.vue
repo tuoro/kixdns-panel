@@ -36,10 +36,10 @@ const root = ref<HTMLElement | null>(null)
 const { focusRow } = useRowFocus(root)
 
 const expectLabels: Record<string, [string, string]> = {
-  edns_present: ['有 EDNS', '没有'],
-  response_edns_present: ['有 EDNS', '没有'],
-  geoip_private: ['是私网', '不是'],
-  response_answer_ip_geoip_private: ['是私网', '不是'],
+  edns_present: ['带', '不带'],
+  response_edns_present: ['带', '不带'],
+  geoip_private: ['是', '不是'],
+  response_answer_ip_geoip_private: ['是', '不是'],
 }
 
 function fields(matcher: MatcherConfig): string[] {
@@ -61,7 +61,7 @@ function qtypeOptions(matcher: MatcherConfig) {
 }
 
 function modeOptions(matcher: MatcherConfig) {
-  const options = [{ value: 'exact', label: '精确' }, { value: 'prefix', label: '前缀' }, { value: 'regex', label: '正则' }]
+  const options = [{ value: 'exact', label: '等于' }, { value: 'prefix', label: '开头是' }, { value: 'regex', label: '匹配正则' }]
   return matcher.mode && !options.some((option) => option.value === matcher.mode) ? [{ value: matcher.mode, label: matcher.mode }, ...options] : options
 }
 
@@ -147,7 +147,7 @@ function move(index: number, direction: string): void {
           </template>
           <template v-if="fields(matcher).includes('value')">
             <span class="ui-rows__plabel">{{ hint(matcher).label }}</span>
-            <UiSelect v-if="matcher.type === 'qtype'" v-model="matcher.value" class="is-enum" :options="qtypeOptions(matcher)" :label="`条件 ${index + 1} QType`" />
+            <UiSelect v-if="matcher.type === 'qtype'" v-model="matcher.value" class="is-enum" :options="qtypeOptions(matcher)" :label="`条件 ${index + 1} 查询类型`" />
             <label v-else class="ui-input"><input v-model="matcher.value" class="mono" type="text" :aria-label="`条件 ${index + 1} 值`" :placeholder="hint(matcher).example" :aria-invalid="Boolean(visibleError(index, 'value')) || undefined" :aria-describedby="describedBy(index, 'value', matcher)" @blur="leaveValue(matcher, index)"></label>
           </template>
           <template v-if="fields(matcher).includes('cidr')">
@@ -159,8 +159,7 @@ function move(index: number, direction: string): void {
             <label class="ui-input"><input class="mono" type="text" :value="countryCodesValue(matcher)" :aria-label="`条件 ${index + 1} 国家代码`" :placeholder="hint(matcher).example" :aria-invalid="Boolean(visibleError(index, 'country_codes')) || undefined" :aria-describedby="describedBy(index, 'country_codes', matcher)" @input="setCountryCodes(matcher, $event)" @blur="touch(index, 'country_codes')"></label>
           </template>
           <template v-if="fields(matcher).includes('expect')">
-            <span class="ui-rows__plabel">期望</span>
-            <span class="ui-seg" role="group" :aria-label="`条件 ${index + 1} 期望存在`">
+            <span class="ui-seg" role="group" :aria-label="`条件 ${index + 1} ${definitions.find((item) => item.value === matcher.type)?.label ?? ''}`">
               <button class="ui-seg__opt" type="button" :aria-pressed="matcher.expect !== false" @click="matcher.expect = true">{{ (expectLabels[matcher.type] ?? ['有', '没有'])[0] }}</button>
               <button class="ui-seg__opt" type="button" :aria-pressed="matcher.expect === false" @click="matcher.expect = false">{{ (expectLabels[matcher.type] ?? ['有', '没有'])[1] }}</button>
             </span>
