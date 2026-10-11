@@ -7,6 +7,7 @@ import { useSession } from './composables/useSession'
 import { useToast } from './composables/useToast'
 import './composables/useTheme'
 import router from './router'
+import { startFocusRescue } from './focus-rescue'
 import { stopIosFocusZoom } from './ios-zoom'
 import { createStaleChunkRecovery } from './stale-chunk-recovery'
 import './styles.css'
@@ -58,3 +59,4 @@ router.onError(async (error, to) => {
 })
 
 createApp(App).use(router).mount('#app')
+startFocusRescue()
