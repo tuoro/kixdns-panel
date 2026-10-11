@@ -63,7 +63,7 @@ function act(g: UpstreamGroup, value: string): void {
       <article v-for="g in model.groups" :key="g.id" class="ui-card gcard">
         <header class="gcard__head">
           <!-- 改过还没保存的组和规则、映射一样带一个点 / A group changed but not yet saved carries the same dot as rules and mappings -->
-          <button class="gcard__name" type="button" @click="emit('edit', g.id)">{{ g.name }}<span v-if="changedGroupIds.has(g.id)" class="ui-dot ui-dot--ink rrow__changed" role="img" aria-label="改过，还没保存" title="改过，还没保存"></span></button>
+          <button class="gcard__name" type="button" @click="emit('edit', g.id)"><span class="gcard__name-text">{{ g.name }}</span><span v-if="changedGroupIds.has(g.id)" class="ui-dot ui-dot--ink rrow__changed" role="img" aria-label="改过，还没保存" title="改过，还没保存"></span></button>
           <span v-if="model.rest.type === 'upstream' && model.rest.group === g.id" class="ui-tag">其余请求</span>
           <span class="gcard__spacer"></span>
           <button v-if="groupUsers(g.id).length" class="ui-link gcard__uses gcard__uses--head" type="button" :title="groupUsers(g.id).join('\n')" @click="emit('rules', g.id)">{{ groupUsers(g.id).length }} 处在用</button>

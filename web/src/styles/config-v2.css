@@ -76,7 +76,8 @@ body { background: var(--l-canvas); }
   /* 页头右边两个图标按钮：历史版本和「…」（表单/JSON、导入、下载、重新读取） / Two icon buttons on the header's right: history and 「…」 (form/JSON, import, download, reload) */
   .cfg .ui-ph__actions { gap: var(--s-2); }
   .cfg__more { display: inline-flex; }
-  .cfg__tabs { overflow-x: auto; scrollbar-width: none; }
+  /* 横向滚动的页签条会把页签往上补出的 8 一起裁掉：条子本身往上多占 8（外边距收回），点按区域才是 44 / A horizontally scrolling tab strip clips the 8 each tab extends upwards: the strip itself reaches 8 higher (taken back by its margin), so the hit area is 44 */
+  .cfg__tabs { overflow-x: auto; scrollbar-width: none; margin-top: calc(var(--h-md) - var(--h-touch)); padding-top: calc(var(--h-touch) - var(--h-md)); }
   .toolbar__search { flex: 1 1 auto; min-width: 0; }
   .toolbar__kind { display: none; }
   .toolbar__filter { position: relative; width: var(--h-md); flex: 0 0 auto; display: inline-flex; padding: 0; }
@@ -1349,7 +1350,9 @@ body { background: var(--l-canvas); }
 /* 标题行：组名 15/600，标签贴在名字后面；「N 处在用」、编辑、「…」靠右端 / Title row: the name at 15/600 with its tag beside it; 「N 处在用」, 编辑 and 「…」 at the right end */
 .gcard__head { display: flex; align-items: center; gap: var(--s-2); min-height: var(--h-sm); margin: 0; }
 /* 卡片名字和其他卡片标题一样 16 / Card names match every other card title at 16 */
-.gcard__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0; border: 0; background: none; color: var(--l-ink); font-family: var(--f-display); cursor: pointer; font-size: var(--t-4); font-weight: var(--w-bold); line-height: var(--lh-tight); }
+/* 省略号在名字那一段上：按钮本身不裁切，手机上往外补的点按区域（::before）才不会被裁掉 / The ellipsis lives on the name span: the button itself does not clip, so its phone hit area (::before) is not clipped away */
+.gcard__name { display: inline-flex; align-items: center; min-width: 0; padding: 0; border: 0; background: none; color: var(--l-ink); font-family: var(--f-display); cursor: pointer; font-size: var(--t-4); font-weight: var(--w-bold); line-height: var(--lh-tight); }
+.gcard__name-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gcard__spacer { flex: 1 1 auto; }
 /* 上游组卡片：「几处在用」宽屏在状态行、手机在标题行；「…」总在标题行最右 / Group cards: 「N 处在用」 on the status line on wide screens and in the title row on phones; 「…」 always at the title row's right end */
 /* ============================================================================
@@ -1704,6 +1707,8 @@ body { background: var(--l-canvas); }
 .hist__menu .ui-icon-btn { margin-right: calc((var(--h-sm) - var(--size-icon)) / -2 - 3px); }
 @media (max-width: 640px) {
   .hist__foot .hist__bulk { flex: 0 0 auto; }
+  /* 「批量删除」是没有底色的文字按钮：手机上点按区域照样补到 44（底栏上下各有 12 的内边距，不会压到列表） / 批量删除 is a text button without a fill: on phones its hit area still grows to 44 (the footer's 12 padding keeps it off the list) */
+  .hist__bulk::before { inset: calc(min(0px, (100% - var(--h-touch)) / 2)) calc(var(--s-2) * -1); content: ''; }
 }
 /* 状态标签不撑高历史版本的行 / Status tags do not heighten history rows */
 .hist__tags .ui-tag { margin-block: -2px; }
@@ -1769,7 +1774,7 @@ body { background: var(--l-canvas); }
 /* 手机上的小目标：映射的域名格、上游组名、只有一行的规则名，点击范围撑到 40 以上 / Small phone targets: a mapping's domain cell, a group name, a one-line rule name, hit areas past 40 */
 @media (max-width: 640px) {
   .rw__d, .gcard__name, .rrow__main { position: relative; }
-  .rw__d::before, .gcard__name::before { position: absolute; inset: calc(var(--s-3) * -1) calc(var(--s-1) * -1); content: ''; }
+  .rw__d::before, .gcard__name::before { position: absolute; inset: calc(min(0px, (100% - var(--h-touch)) / 2)) calc(var(--s-1) * -1); content: ''; }
   .rrow__main::before { position: absolute; inset: calc(var(--s-2) * -1) 0; content: ''; }
 }
 
