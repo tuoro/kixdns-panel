@@ -341,6 +341,9 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     // Written but not applied and nothing else in the draft: the notice above owns it (with 重试应用); the save bar steps aside instead of offering a second retry
     if (writtenNotApplied && changeCount.value === 0 && from === 'draft') finishStage('idle')
     if (from === 'apply' && !hasApplyFailure.value) applyError.value = stopped ? 'KixDNS 已停止\n启动后自动应用待应用的版本' : `${step === 'validating' ? '磁盘上的配置没有通过校验' : '没有应用成功'}\n${reason}`
+    // 已经挂着「没有生效」时按的「重试应用」：提示条的话和刚才一样，所以另说一句这次重试的结果，不让它悄无声息
+    // 重试应用 pressed while 没有生效 already shows: the notice reads as before, so this retry's outcome is said separately instead of passing silently
+    else if (from === 'apply') useToast().error(writtenNotApplied ? `重试也没有生效：${failureCause(reason)}` : step === 'validating' ? `重试没有通过校验：${reason}` : `重试没有发出去：${reason}`)
   }
 }
 export const applyNow = () => void save('apply')

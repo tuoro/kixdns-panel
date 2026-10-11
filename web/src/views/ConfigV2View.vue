@@ -25,7 +25,7 @@ import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, panelBack, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, unsupportedSection } from '../config-v2/useConfigDocument'
+import { applyBusy, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, panelBack, save, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, unsupportedSection } from '../config-v2/useConfigDocument'
 import { useHelp } from '../composables/useHelp'
 import { useServiceStart } from '../composables/useServiceStart'
 import { registerLeaveGuard, takeAgreement } from '../composables/useLeaveGuard'
@@ -155,13 +155,13 @@ function groupDeleted(group: UpstreamGroup, index: number): void {
 
 // ---------- 通知条：一次只说一件事 / the notice strip: one thing at a time ----------
 const geoPrefixed = computed(() => [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].flatMap((r) => r.conditions.flat()).filter((c) => c.field === 'geosite' && c.values.some((v) => /^geosite:/i.test(v))).length)
-interface Notice { tone: 'err' | 'warn' | 'off'; text: string; detail?: string; action?: string; run?: () => void }
+interface Notice { tone: 'err' | 'warn' | 'off'; text: string; detail?: string; action?: string; run?: () => void | Promise<void> }
 const notice = computed<Notice | null>(() => {
   if (loadError.value && doc.value) return { tone: 'err', text: '读取配置失败，下面是上一次读到的内容。', detail: loadError.value, action: '重试', run: () => void reload(true) }
   if (hasApplyFailure.value) {
     const reason = doc.value?.runtime.pending_error || doc.value?.pending?.error || 'KixDNS 没有给出原因。'
     // 草稿有修改时不给「重试应用」：那时保存的是草稿，重试会把草稿当成失败的那个版本发出去 / No retry while the draft has changes: saving then sends the draft, not the version that failed
-    return { tone: 'err', text: pendingVersionId.value ? `版本 #${pendingVersionId.value} 没有生效，仍在用之前那份配置。` : '上次保存的版本没有生效，仍在用之前那份配置。', detail: failureCause(reason), action: canApplyNow.value && !unsaved.value ? '重试应用' : undefined, run: applyNow }
+    return { tone: 'err', text: pendingVersionId.value ? `版本 #${pendingVersionId.value} 没有生效，仍在用之前那份配置。` : '上次保存的版本没有生效，仍在用之前那份配置。', detail: failureCause(reason), action: canApplyNow.value && !unsaved.value && !panelDown.value ? '重试应用' : undefined, run: () => save('apply') }
   }
   if (applyError.value) { const [text, ...detail] = applyError.value.split('\n'); return { tone: 'err', text: `${text}。`, detail: detail.join('\n') } }
   // 警告排在说明前面：永远不命中的规则比导入说明要紧 / Warnings rank above information: a rule that never matches matters more than the import notes
@@ -327,6 +327,15 @@ const askLeave = async (): Promise<boolean> => {
   return confirm.ask({ title: '放弃未保存的修改', body: '当前的配置草稿会被丢弃，已经生效的配置不受影响。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
 }
 const releaseGuard = registerLeaveGuard(askLeave, () => unsaved.value)
+// 提示条的按钮做事期间停用，焦点跟着掉到页面上：做完没人接住焦点时，回到这个按钮（还在的话），不在了就落在提示条上
+// The notice's button is disabled while it works and focus falls to the page: when nothing caught it afterwards, it returns to the button if still there, else to the notice
+async function runNotice(): Promise<void> {
+  await notice.value?.run?.()
+  await nextTick()
+  if (document.activeElement && document.activeElement !== document.body) return
+  const box = document.querySelector<HTMLElement>('.cfg__notice')
+  ;(box?.querySelector<HTMLElement>('.ui-notice__action:not(:disabled)') ?? box)?.focus()
+}
 onMounted(() => {
   ui.mode = 'form'
   // 刷新后编辑器不在了，地址里的 ?rule= 也去掉 / After a reload the editor is gone, so ?rule= leaves the address too
@@ -400,11 +409,11 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
       </template>
     </UiPageHeader>
 
-    <div v-if="notice && ready" class="ui-notice cfg__notice" :class="notice.tone === 'err' ? 'ui-notice--err' : notice.tone === 'off' ? 'ui-notice--off' : ''" :role="notice.tone === 'err' ? 'alert' : 'status'">
+    <div v-if="notice && ready" class="ui-notice cfg__notice" tabindex="-1" :class="notice.tone === 'err' ? 'ui-notice--err' : notice.tone === 'off' ? 'ui-notice--off' : ''" :role="notice.tone === 'err' ? 'alert' : 'status'">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10" /><path d="M12 8v4M12 16h.01" /></svg>
       <span>{{ notice.text }}</span>
       <small v-if="notice.detail"><RuleText :text="notice.detail" @rule="openRule($event, null)" @group="groupEditor = { id: $event }" /></small>
-      <button v-if="notice.action" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="applyBusy" @click="notice.run?.()">{{ notice.action }}</button>
+      <button v-if="notice.action" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="applyBusy" @click="runNotice">{{ notice.action }}</button>
     </div>
 
     <input ref="fileInput" class="visually-hidden" type="file" accept=".json,application/json" @change="importFile">
