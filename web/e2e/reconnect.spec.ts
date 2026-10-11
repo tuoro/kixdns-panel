@@ -92,9 +92,9 @@ test('连不上面板时页面不复述横幅，按了只会失败的操作都�
   await expect(page.locator('.ui-notice--err')).toHaveCount(0)
 })
 
-// 写进去了、回应却丢了：再按保存时面板上已经是这份配置，说「已经保存过了」，不说「别处改过了」
-// Written but the answer was lost: pressed again, the panel already holds this config, so it says 已经保存过了 rather than 别处改过了
-test('保存的回应丢了：连上后再保存说「已经保存过了」，不是冲突', async ({ page }) => {
+// 写进去了、回应却丢了：连上以后面板上已经是这份配置，保存条直接说「已经保存过了」，不再请人再存一次，也不说「别处改过了」
+// Written but the answer was lost: once reconnected the panel already holds this config, so the bar says 已经保存过了 at once, asks for no second save and never says 别处改过了
+test('保存的回应丢了：连上后直接说「已经保存过了」，不是冲突', async ({ page }) => {
   await page.goto('/config')
   await page.getByRole('button', { name: '快速添加', exact: true }).click()
   const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
@@ -105,9 +105,52 @@ test('保存的回应丢了：连上后再保存说「已经保存过了」，�
   await bar.getByRole('button', { name: '保存并应用' }).click()
   await expect(bar).toContainText('连不上面板')
   await expect(banner(page)).toHaveCount(0, { timeout: 10_000 })
-  await bar.getByRole('button', { name: '保存并应用' }).click()
   await expect(bar).toContainText(/已经保存过了\s*·\s*版本 #\d+/)
+  await expect(bar.getByRole('button', { name: '保存并应用' })).toHaveCount(0)
+  await expect(page.locator('[data-rule]', { hasText: 'lost.example.org' }).getByLabel('改过，还没保存')).toHaveCount(0)
+})
+
+// 回应丢了以后又改了一笔：连上后说已经保存过了、之后改的还没保存；在连上之前就再存，撞上的「别处」是自己，接着存下去
+// One more edit after the answer was lost: once reconnected the bar says it was already saved and the later edit is not; saving again before
+// that check, the 别处 met is this page's own save, so the save goes on
+async function loseAnswerThenEdit(page: Page): Promise<void> {
+  await page.goto('/config')
+  await page.getByRole('button', { name: '快速添加', exact: true }).click()
+  const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+  await quick.fill('lost.example.org')
+  await quick.press('Enter')
+  // 回应丢了的那一刻面板也停止答话，连上之前的检查都读不到 / The panel stops answering as the answer is lost, so nothing checks before it is back
+  await page.evaluate(() => {
+    window.addEventListener('kixdns:panel-unreachable', () => localStorage.setItem('kixdns:demo-panel-down', 'true'), { capture: true, once: true })
+    localStorage.setItem('kixdns:demo-put-answer-lost', 'true')
+  })
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar).toContainText('连不上面板')
+  await page.getByLabel('快速添加的结果', { exact: true }).selectOption('block')
+  await quick.fill('later.example.org')
+  await quick.press('Enter')
+  await expect(page.locator('[data-rule]', { hasText: 'later.example.org' })).toBeVisible()
+}
+
+test('回应丢了又改了一笔：连上后说已经保存过了，之后改的还没保存', async ({ page }) => {
+  await loseAnswerThenEdit(page)
+  await panelDown(page, false)
+  const bar = page.locator('.cfg__savebar')
+  await expect(bar).toContainText(/已经保存过了\s*·\s*版本 #\d+\s*·\s*之后改的 1 处还没保存/, { timeout: 10_000 })
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar).toContainText(/已生效\s*·\s*版本 #\d+/)
   await expect(bar).not.toContainText('别处改过了')
+})
+
+test('回应丢了又改了一笔，连上前就再存：不说别处改过了，存下去', async ({ page }) => {
+  await loseAnswerThenEdit(page)
+  await panelDown(page, false)
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar).toContainText(/已生效\s*·\s*版本 #\d+/)
+  await expect(bar).not.toContainText('别处改过了')
+  await expect(page.locator('[data-rule]', { hasText: 'later.example.org' })).toBeVisible()
 })
 
 // 有没保存的修改时连不上面板、又读了一次配置：连上以后那条「读取配置失败」收起，不和「已重新连上面板」并排

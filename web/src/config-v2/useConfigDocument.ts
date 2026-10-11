@@ -8,7 +8,7 @@ import { traceNames } from '../config-model/trace-names'
 import { useConnection } from '../composables/useConnection'
 import { dismissUndoable, toastMark, useToast } from '../composables/useToast'
 import { errorMessage } from '../utils'
-import { applyHits, applyUpstreamStats, changeCount, dialogEdits, dirty, editorEdited, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, reportOpen, unsaved } from './store'
+import { applyHits, applyUpstreamStats, changeCount, dialogEdits, dirty, draftGeneration, editorEdited, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, reportOpen, unsaved } from './store'
 
 // 配置页和面板服务之间的事：读配置和历史、KixDNS 的运行状态和能力、校验、保存并热加载、现在应用。
 // 草稿本身在 store.ts；这里只管「文件」和「运行」。所有状态是模块级的，页面和保存条共用同一份。
@@ -312,6 +312,9 @@ function applyResultState(result: ConfigApplyResult): 'applied' | 'pending' {
 let viewing = false
 let keepOnReturn = false
 let inFlight: string | null = null
+// 回应丢了的那次保存（写进去没有不知道）：连上以后、或者下一次保存撞上「别处改过了」时，拿面板上的配置和它比一比
+// The save whose answer was lost (written or not, unknown): once reconnected, or when the next save meets 别处改过了, compare the panel's config with it
+let unanswered: { content: unknown; sent: string; generation: number } | null = null
 /** 配置页打开（true）或离开（false）；打开时返回要不要留着草稿 / The config page opened (true) or left (false); on open, returns whether to keep the draft */
 export function setViewing(open: boolean): boolean {
   viewing = open
@@ -382,9 +385,12 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     // Before calling it a conflict, look once: if the panel already holds exactly what this save sends (an earlier write landed and only its answer
     // was lost), it is already saved, not a conflict
     if (isConflict(error) && await alreadySaved(content, sent)) return
+    // 撞上的「别处」其实是自己回应丢了的那次保存：把对照的那份换成它，再接着存这次多改的 / The 别处 met is this page's own save whose answer was lost: rebase onto it and go on saving what changed since
+    if (isConflict(error) && await settleUnanswered(false)) { finishStage('idle'); return save(from) }
     const reason = friendlyRuntimeError(error)
     const stopped = stoppedError(error)
     const down = isPanelDown(error)
+    if (down && step === 'applying') unanswered = { content, sent, generation: draftGeneration() }
     // 写进文件以后 KixDNS 没接受：版本已经存下了，只是没生效 / KixDNS refused after the write: the version is stored, it just did not take
     const writtenNotApplied = step === 'applying' && error instanceof ApiError && ['reload_failed', 'kixdns_rejected'].includes(error.code)
     // 写进去了（只是没生效）：和保存落地一样，草稿定下来之前的「撤销」过时了 / Written (just not applied): as when a save lands, undos from before the draft was fixed are stale
@@ -425,6 +431,29 @@ async function alreadySaved(content: unknown, sent: string): Promise<boolean> {
   return true
 }
 /**
+ * 回应丢了的那次保存其实写进去了：对照的那份换成它，之后又改的照样算修改；announce 时保存条说「已经保存过了」。
+ * 读不到面板就留着下次再比；草稿整份换过（放弃、重新读取、导入）就不再比
+ * The save whose answer was lost did land: the baseline becomes it and later edits still count as edits; with announce the save bar says 已经保存过了.
+ * When the panel cannot be read it is kept for next time; once the draft was replaced wholesale (discard, reload, import) it is dropped
+ */
+async function settleUnanswered(announce: boolean): Promise<boolean> {
+  const lost = unanswered
+  if (!lost) return false
+  if (lost.generation !== draftGeneration()) { unanswered = null; return false }
+  const current = await apiRequest<ConfigDocument>('/api/v1/config').catch(() => null)
+  if (!current) return false
+  unanswered = null
+  if (canonical(current.content) !== canonical(lost.content)) return false
+  rebaseApplied(JSON.parse(lost.sent) as Model)
+  validation.value = null
+  await load({ quiet: true, keepDraft: true, sent: lost.sent })
+  if (announce) {
+    const later = changeCount.value ? ` · 之后改的 ${changeCount.value} 处还没保存` : ''
+    finishStage('done', `${current.version_id ? `已经保存过了 · 版本 #${current.version_id}` : '已经保存过了'}${later}`)
+  }
+  return true
+}
+/**
  * 重新连上面板以后：「连不上面板」那句已经不对了，收起；没读到配置的整页重读；有没保存的修改时只刷新运行状态（草稿和文件散列不动，
  * 别处的改动照样在保存时发现），没有就整份重读
  * Back in touch with the panel: the 连不上面板 verdict is stale and goes; a page that never read the config reads it; with unsaved edits only the
@@ -434,6 +463,7 @@ export async function panelBack(): Promise<void> {
   if (stage.value === 'failed' && verdict.value === '连不上面板') finishStage('idle')
   if (busy.value) return
   if (!doc.value) { await load(); return }
+  if (await settleUnanswered(true)) return
   if (unsaved.value || conflict.value) {
     // 有没保存的修改时不重读文件，但运行状态读到了：因为连不上而挂着的「读取配置失败」收起 / With unsaved edits the file is not re-read, but the runtime did read: a 读取配置失败 left by the outage goes
     const refreshed = await refreshRuntime().then(() => true, () => false)
