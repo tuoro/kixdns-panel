@@ -1,5 +1,5 @@
 import { conditionsText, ecsText, fallbackSentence, outcomeSentence, PROTOCOL_LABEL, effectiveProtocol, rawMatchersText, remedySentence, responseConditionText, withShi, type Model, type Rule, type UpstreamGroup, ruleTitle } from './model'
-import { SETTING_SECTIONS, type SettingField } from '../config-editor/schema'
+import { SETTING_SECTIONS, writtenSettings, type SettingField } from '../config-editor/schema'
 
 // 设置的改动写基础设置页上的名字和单位（「上游超时」「1800 毫秒」），认不出的键才照原样写
 // A settings change uses the name and unit from the settings page (上游超时, 1800 毫秒); only an unknown key is written as it is
@@ -121,9 +121,12 @@ export function diffModels(now: Model, then: Model): DiffBlock[] {
     if (!old) blocks.push({ kind: '加上', title: `域名映射 ${x.domain}`, lines: [{ sign: '+', text: mapping(x) }] })
     else if (mapping(old) !== mapping(x)) blocks.push({ kind: '改了', title: `域名映射 ${x.domain}`, lines: [{ sign: '-', text: mapping(old) }, { sign: '+', text: mapping(x) }] })
   }
-  for (const k of new Set([...Object.keys(now.settings), ...Object.keys(then.settings)])) {
-    const a = now.settings[k]
-    const b = then.settings[k]
+  // 按实际写给内核的比：关着的、按能力开的开关不写，写没写着「关」不算改动 / Compare what is actually written for the kernel: an off capability-gated switch is not written, so whether 「off」 was spelled out is no change
+  const nowSettings = writtenSettings(now.settings)
+  const thenSettings = writtenSettings(then.settings)
+  for (const k of new Set([...Object.keys(nowSettings), ...Object.keys(thenSettings)])) {
+    const a = nowSettings[k]
+    const b = thenSettings[k]
     if (JSON.stringify(a) === JSON.stringify(b)) continue
     const field = SETTING_FIELDS.get(k)
     blocks.push({ kind: a === undefined ? '加上' : b === undefined ? '去掉' : '改了', title: field ? settingLabel(field) : GEO_LABELS[k] ?? `设置 ${k}`, lines: [...(a === undefined ? [] : [{ sign: '-' as const, text: settingText(a, field) }]), ...(b === undefined ? [] : [{ sign: '+' as const, text: settingText(b, field) }])] })
