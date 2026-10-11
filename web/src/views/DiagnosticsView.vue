@@ -8,6 +8,7 @@ import UiDotText from '../components/ui/UiDotText.vue'
 import UiEmpty from '../components/ui/UiEmpty.vue'
 import UiPageHeader from '../components/ui/UiPageHeader.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
+import { useConnection } from '../composables/useConnection'
 import { useServiceStart } from '../composables/useServiceStart'
 import { readConfig } from '../config-model/document'
 import { isIp } from '../config-model/model'
@@ -15,6 +16,8 @@ import { traceNames, type TraceNames } from '../config-model/trace-names'
 import { describeStep, formatElapsed, forwardTarget, groupTrace, hidePlumbing, isDnsSuccess, parseDnsAnswer, responseCodeName, ruleName, traceTone, type TextPart } from '../diagnostics'
 import { errorMessage, formatKixdnsVersion } from '../utils'
 
+// 连不上面板时查询按了只会失败：先停用，横幅说为什么 / With the panel unreachable a query could only fail: disabled, the banner says why
+const { down: panelDown } = useConnection()
 const domain = ref('example.com')
 const recordType = ref('A')
 const running = ref(false)
@@ -172,7 +175,7 @@ async function run(): Promise<void> {
         <label class="ui-input diag-domain"><input ref="domainInput" v-model="domain" type="text" inputmode="url" maxlength="253" required placeholder="example.com" aria-label="域名" autocapitalize="none" :spellcheck="false" /></label>
         <UiSelect v-model="recordType" class="diag-record-type" :options="typeOptions" label="查询类型" />
         <label v-if="canClient" class="ui-input diag-client" :class="{ 'is-bad': clientProblem }"><input v-model="clientIp" type="text" inputmode="decimal" placeholder="客户端 IP，可不填" aria-label="客户端 IP，可以不填" :aria-invalid="Boolean(clientProblem) || undefined" :aria-describedby="clientProblem ? 'diag-client-err' : undefined" autocapitalize="none" :spellcheck="false" /></label>
-        <button class="ui-btn ui-btn--primary diag-run" type="submit" :disabled="running" :aria-label="running ? '正在查询' : '执行查询'"><LoaderCircle v-if="running" class="diag-spinner" :size="16" aria-hidden="true" /><span class="diag-run-desktop">{{ running ? '正在查询…' : '执行查询' }}</span><span class="diag-run-mobile" aria-hidden="true">{{ running ? '查询中' : '查询' }}</span></button>
+        <button class="ui-btn ui-btn--primary diag-run" type="submit" :disabled="running || panelDown" :aria-label="running ? '正在查询' : '执行查询'"><LoaderCircle v-if="running" class="diag-spinner" :size="16" aria-hidden="true" /><span class="diag-run-desktop">{{ running ? '正在查询…' : '执行查询' }}</span><span class="diag-run-mobile" aria-hidden="true">{{ running ? '查询中' : '查询' }}</span></button>
       </form>
       <p v-if="clientProblem" id="diag-client-err" class="ui-field-error diag-client-err">{{ clientProblem }}</p>
     </section>

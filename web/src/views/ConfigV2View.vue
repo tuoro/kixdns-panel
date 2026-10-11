@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { jsonProblemText, jsonSyntaxProblem, type JsonProblem } from '../json-problem'
-import { Braces, CircleHelp, Download, FileUp, History, RefreshCw, Settings2, Undo2 } from '@lucide/vue'
+import { Braces, CircleHelp, Clock, Download, FileUp, History, RefreshCw, Settings2, Undo2 } from '@lucide/vue'
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import type JsonEditorType from '../components/JsonEditor.vue'
@@ -157,7 +157,8 @@ function groupDeleted(group: UpstreamGroup, index: number): void {
 const geoPrefixed = computed(() => [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].flatMap((r) => r.conditions.flat()).filter((c) => c.field === 'geosite' && c.values.some((v) => /^geosite:/i.test(v))).length)
 interface Notice { tone: 'err' | 'warn' | 'off'; text: string; detail?: string; action?: string; run?: () => void | Promise<void> }
 const notice = computed<Notice | null>(() => {
-  if (loadError.value && doc.value) return { tone: 'err', text: '读取配置失败，下面是上一次读到的内容。', detail: loadError.value, action: '重试', run: () => void reload(true) }
+  // 连不上面板时由顶上的横幅说，这里不复述 / With the panel unreachable the banner says it; no second copy here
+  if (loadError.value && doc.value && !panelDown.value) return { tone: 'err', text: '读取配置失败，下面是上一次读到的内容。', detail: loadError.value, action: '重试', run: () => void reload(true) }
   if (hasApplyFailure.value) {
     const reason = doc.value?.runtime.pending_error || doc.value?.pending?.error || 'KixDNS 没有给出原因。'
     // 草稿有修改时不给「重试应用」：那时保存的是草稿，重试会把草稿当成失败的那个版本发出去 / No retry while the draft has changes: saving then sends the draft, not the version that failed
@@ -443,6 +444,8 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
       <div class="cfg__sk-tools"><i class="sk"></i><i class="sk"></i><span></span><i class="sk"></i><i class="sk"></i></div>
       <div class="ui-card cfg__sk-list"><div v-for="n in 7" :key="n" class="cfg__sk-row"><i class="sk"></i><span><i class="sk"></i><i class="sk"></i></span><i class="sk"></i><i class="sk"></i></div></div>
     </div>
+    <!-- 连不上面板时什么都没读到：只写一句连上后会自己打开，原因和重试交给顶上的横幅 / Nothing read with the panel unreachable: one line saying it opens by itself once connected; the cause and the retry belong to the banner above -->
+    <p v-else-if="loadError && !doc && panelDown" class="ui-notice ui-notice--off cfg__wait" role="status"><Clock :size="16" aria-hidden="true" /><span>连上面板后自动打开</span></p>
     <div v-else-if="loadError && !doc" class="cfg__failed">
       <p class="cfg__failed-title">读取配置失败</p>
       <p class="cfg__failed-reason">{{ loadError }}</p>

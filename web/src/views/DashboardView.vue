@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ChartColumn, CircleAlert, CircleX, Eraser, ListChecks, Power, RefreshCw, SlidersHorizontal } from '@lucide/vue'
+import { ChartColumn, CircleAlert, CircleX, Clock, Eraser, ListChecks, Power, RefreshCw, SlidersHorizontal } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { apiRequest } from '../api/client'
 import type { CacheFlushResult, ConfigDocument, ConfigVersion, ConfigVersions, Overview, QueryStatsSnapshot, ServiceStatus, StatsClearResult } from '../api/types'
@@ -60,7 +60,8 @@ const statsWindows = [
 const runtimeState = computed(() => dashboardRuntimeState(overview.value, service.value))
 const statsSupported = computed(() => supportsQueryStats(overview.value?.health.capabilities ?? []))
 const runtimeUnavailable = computed(() => hasStaleDashboardData(runtimeState.value))
-const runtimeControlsDisabled = computed(() => runtimeState.value !== 'live')
+// 连不上面板时按了只会失败：和 KixDNS 没在跑一样停用 / With the panel unreachable a press could only fail: disabled as when KixDNS is not running
+const runtimeControlsDisabled = computed(() => runtimeState.value !== 'live' || panelDown.value)
 const displayOverview = computed(() => overview.value ?? (runtimeState.value === 'stopped-empty' ? emptyOverview() : null))
 const showStatsSection = computed(() => statsSupported.value || runtimeState.value === 'stopped-empty')
 const displayStats = computed(() => stats.value ?? (runtimeState.value === 'stopped-empty' ? emptyQueryStats(statsWindow.value) : null))
@@ -120,6 +121,10 @@ function reasonOf(...parts: string[]): string {
   return parts.filter(Boolean).map((part) => part.replace(/[。；;.]$/, '')).join('；') + '。'
 }
 const notice = computed<PageNotice | null>(() => {
+  // 连不上面板时顶上的横幅已经说了为什么、也有重试：这里只说手上的数是什么时候读到的，不再复述原因、不给第二个重试，也不给按了只会失败的「启动」
+  // With the panel unreachable the banner above says why and offers the retry: this only says when the figures in hand were read, without restating the cause,
+  // a second retry, or a 启动 that could only fail
+  if (panelDown.value) return loadedAt.value ? { tone: 'off', icon: Clock, title: `显示 ${updatedLabel.value} 读到的数据`, reason: '' } : { tone: 'off', icon: Clock, title: '连上面板后自动打开', reason: '' }
   if (loading.value) return null
   const snapshot = snapshotLabel.value ? ` ${snapshotLabel.value} ` : ''
   // 运行数据的错误不带前缀（标题已经说了是运行数据）；服务状态的错误带「服务状态：」，和它分得开
@@ -673,7 +678,7 @@ onBeforeUnmount(() => {
         <span v-else>服务状态暂不可用</span>
       </template>
       <template #actions>
-        <button class="ui-btn ui-btn--secondary ui-btn--icon" type="button" title="刷新" aria-label="刷新" :disabled="requesting || statsLoading" @click="refreshAll">
+        <button class="ui-btn ui-btn--secondary ui-btn--icon" type="button" title="刷新" aria-label="刷新" :disabled="requesting || statsLoading || panelDown" @click="refreshAll">
           <RefreshCw :size="16" :class="{ spin: refreshing || statsLoading }" aria-hidden="true" />
         </button>
       </template>
@@ -683,7 +688,7 @@ onBeforeUnmount(() => {
     <div v-if="notice" class="ui-notice overview-notice" :class="notice.tone === 'warn' ? '' : `ui-notice--${notice.tone}`" :role="notice.tone === 'err' ? 'alert' : 'status'">
       <component :is="notice.icon" :size="16" aria-hidden="true" />
       <span>{{ notice.title }}</span>
-      <small>{{ notice.reason }}</small>
+      <small v-if="notice.reason">{{ notice.reason }}</small>
       <button v-if="notice.action === 'retry'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="requesting" @click="refreshAll">重试</button>
       <RouterLink v-else-if="notice.action === 'config'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" to="/config">管理配置</RouterLink>
       <RouterLink v-else-if="notice.action === 'logs'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" to="/logs">查看日志</RouterLink>
@@ -838,7 +843,7 @@ onBeforeUnmount(() => {
             <!-- 按钮不能按时只说什么时候能按，状态由页顶提示说；PID 在系统页页头里，这里不重复
                  When the buttons are unavailable this says when they will be, the page notice says why; the PID lives in the system page's header -->
             <div class="overview-runtime-foot">
-              <span v-if="runtimeState !== 'live' || !overview" class="overview-runtime-note">{{ runtimeState === 'unavailable-snapshot' ? '实时数据恢复后才能清空缓存' : 'KixDNS 运行后才能清空缓存' }}</span>
+              <span v-if="runtimeState !== 'live' || !overview || panelDown" class="overview-runtime-note">{{ panelDown ? '连上面板后才能清空缓存' : runtimeState === 'unavailable-snapshot' ? '实时数据恢复后才能清空缓存' : 'KixDNS 运行后才能清空缓存' }}</span>
               <span class="overview-runtime-actions">
                 <RouterLink class="ui-btn ui-btn--secondary" to="/config"><SlidersHorizontal :size="16" aria-hidden="true" />管理配置</RouterLink>
                 <button class="ui-btn ui-btn--danger" type="button" :disabled="flushing || runtimeControlsDisabled" @click="flushCache"><Eraser :size="16" aria-hidden="true" />{{ flushing ? '正在清空' : '清空缓存' }}</button>
@@ -863,7 +868,7 @@ onBeforeUnmount(() => {
             <button class="ui-btn ui-btn--danger overview-clear" type="button" title="清空查询排行" :disabled="statsClearing || runtimeControlsDisabled || !stats?.enabled || !stats.requests_observed" @click="clearQueryStats" aria-label="清空查询排行"><Eraser :size="16" aria-hidden="true" /><span class="overview-clear__label">清空</span></button>
           </div>
         </div>
-        <div v-if="statsError && runtimeState !== 'stopped-empty'" class="ui-notice ui-notice--err overview-notice" role="alert">
+        <div v-if="statsError && runtimeState !== 'stopped-empty' && !panelDown" class="ui-notice ui-notice--err overview-notice" role="alert">
           <CircleX :size="16" aria-hidden="true" />
           <span>查询排行读取失败</span>
           <small>{{ statsError }}</small>

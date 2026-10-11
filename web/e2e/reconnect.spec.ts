@@ -37,7 +37,9 @@ test('连不上面板时打开的配置页和系统页，连上以后自己读�
   await expect(page.locator('main h1')).toHaveText('日志')
   await panelDown(page, true)
   await page.getByRole('link', { name: mobile ? '配置' : '规则', exact: true }).first().click()
-  await expect(page.locator('.cfg__failed')).toBeVisible()
+  // 原因和重试交给顶上的横幅：页内只写一句连上后会自己打开 / The cause and the retry belong to the banner: the page only says it opens by itself once connected
+  await expect(page.locator('.cfg__wait')).toHaveText('连上面板后自动打开')
+  await expect(page.locator('.cfg__failed')).toHaveCount(0)
   // 没读到配置时页头不写规则数、上游组数 / Without a config read the header shows no rule or group counts
   await expect(page.locator('.cfg__facts')).toHaveCount(0)
   await panelDown(page, false)
@@ -46,7 +48,33 @@ test('连不上面板时打开的配置页和系统页，连上以后自己读�
   await panelDown(page, true)
   await page.getByRole('link', { name: '系统', exact: true }).first().click()
   await expect(banner(page)).toBeVisible()
+  await expect(page.locator('.system-wait')).toHaveText('连上面板后自动打开')
   await panelDown(page, false)
   await expect(banner(page)).toHaveCount(0, { timeout: 10_000 })
   await expect(page.locator('.system-heading')).toContainText(mobile ? '运行中' : 'kixdns.service')
+})
+
+// 连不上面板时：横幅说原因、给重试；页面只说手上的数是什么时候读到的，不复述原因，按了只会失败的操作都停用
+// With the panel unreachable the banner gives the cause and the retry; the page only says when its figures were read, restates nothing, and disables anything that could only fail
+test('连不上面板时页面不复述横幅，按了只会失败的操作都停用 @responsive', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.locator('.overview-card--upstreams')).toBeVisible()
+  await panelDown(page, true)
+  await page.evaluate(() => window.dispatchEvent(new Event('kixdns:panel-unreachable')))
+  await expect(banner(page)).toBeVisible()
+  const notice = page.locator('.overview-notice')
+  await expect(notice).toHaveText(/^显示 .+ 读到的数据$/)
+  await expect(notice.getByRole('button')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '刷新' })).toBeDisabled()
+
+  await page.getByRole('link', { name: '系统', exact: true }).first().click()
+  await expect(page.locator('.system-wait')).toBeVisible()
+  await panelDown(page, false)
+  await expect(banner(page)).toHaveCount(0, { timeout: 10_000 })
+  await expect(page.getByRole('button', { name: '重启' })).toBeEnabled()
+  await panelDown(page, true)
+  await page.evaluate(() => window.dispatchEvent(new Event('kixdns:panel-unreachable')))
+  await expect(banner(page)).toBeVisible()
+  for (const name of ['重启', '停止']) await expect(page.getByRole('button', { name, exact: true })).toBeDisabled()
+  await expect(page.locator('.ui-notice--err')).toHaveCount(0)
 })

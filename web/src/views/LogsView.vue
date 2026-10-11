@@ -3,6 +3,7 @@ import { useNarrowDesktop } from '../config-v2/phone'
 import { CircleAlert, Download, RefreshCw, ScrollText, Search } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { apiRequest } from '../api/client'
+import { useConnection } from '../composables/useConnection'
 import type { AuditEvent, AuditPage, LogEntry, LogsResponse } from '../api/types'
 import UiDotText from '../components/ui/UiDotText.vue'
 import UiEmpty from '../components/ui/UiEmpty.vue'
@@ -32,6 +33,7 @@ const auditRequesting = ref(false)
 const atTop = ref(true)
 const fresh = ref<LogsResponse | null>(null)
 const loadError = ref('')
+const { down: panelDown } = useConnection()
 const auditError = ref('')
 const auditCursor = ref<number | null>(null)
 const runtimeCursor = ref<string | null>(null)
@@ -414,7 +416,8 @@ onBeforeUnmount(() => window.clearInterval(timer))
     <UiTabs :model-value="mode" :items="viewItems" label="日志视图" id-prefix="logs" @update:model-value="switchMode($event as LogMode)" />
     <!-- 读取失败：和概览一样一条提示——结论、原因、一个重试；已有行的话只说可能过期
          A load failure is one notice as on the overview: the verdict, the reason, one retry; with rows on screen it only says they may be stale -->
-    <div v-if="activeError" class="ui-notice ui-notice--err logs-notice" role="alert">
+    <!-- 连不上面板时由顶上的横幅说，这里不复述（每 5 秒照常再读，连上就恢复） / With the panel unreachable the banner says it; no second copy here (the 5-second poll carries on and recovers once connected) -->
+    <div v-if="activeError && !panelDown" class="ui-notice ui-notice--err logs-notice" role="alert">
       <CircleAlert :size="16" aria-hidden="true" />
       <span>{{ activeCount > 0 ? '数据可能已过期' : '读取失败' }}</span>
       <small>{{ activeError }}</small>
