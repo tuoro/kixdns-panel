@@ -23,6 +23,16 @@ fail() {
   exit 1
 }
 
+# 再试一次怎么做：面板的在线更新也走这个安装器（带 --panel-only-update），那时人点的是按钮，不是命令
+# How to try again: the panel's online update runs this installer too (with --panel-only-update); then the user pressed a button, not a command
+retry_hint() {
+  if [[ " ${INSTALLER_ARGUMENTS[*]} " == *" --panel-only-update "* ]]; then
+    printf '再点一次在线更新'
+  else
+    printf '重新运行一键安装命令'
+  fi
+}
+
 usage() {
   cat <<EOF
 用法：curl -fsSL ${ONE_CLICK_URL} | sudo bash
@@ -304,7 +314,7 @@ download_archive() {
   curl --fail "${progress}" --show-error --location \
     --proto '=https' --tlsv1.2 --retry 3 --connect-timeout 10 --max-time 600 \
     --output "${archive}" "${asset_url}" ||
-    fail "下载安装包失败，未改动系统。请检查网络后重新运行一键安装命令"
+    fail "下载安装包失败，未改动系统。请检查网络后$(retry_hint)"
 }
 
 main() {

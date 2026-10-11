@@ -163,6 +163,13 @@ build_installer_arguments "${old_installer}" v3.1.0
 assert_equals "${FINAL_INSTALLER_ARGUMENTS[*]}" "--replace-existing --kixdns-unit dns.service --panel-only-update" \
   "已知参数和它们的取值应原样透传"
 
+# 面板的在线更新带着 --panel-only-update 跑：再试一次是再点按钮，不是重新运行命令
+# The panel's online update runs with --panel-only-update: trying again means pressing the button again, not rerunning a command
+INSTALLER_ARGUMENTS=(--panel-only-update)
+assert_equals "$(retry_hint)" "再点一次在线更新" "在线更新失败时让人再点一次按钮"
+INSTALLER_ARGUMENTS=(--replace-existing)
+assert_equals "$(retry_hint)" "重新运行一键安装命令" "命令行安装失败时让人重新运行命令"
+
 REINSTALL=false INSTALLER_ARGUMENTS=(--keep-existing)
 build_installer_arguments "${new_installer}" v3.1.1
 assert_equals "${FINAL_INSTALLER_ARGUMENTS[*]}" "--keep-existing" "--keep-existing 应交给安装包自己说明已移除"

@@ -31,15 +31,17 @@ fail_because() {
 }
 
 # 从一步的 stderr 里挑出原因：安装器最后一行常是「已恢复原有程序」这类收尾话，
-# 真正的原因在带「失败：」的那一行；没有这样的行就用最后一个非空行。
+# 真正的原因在带「失败：」的那一行；没有这样的行就用最后一个非空行。安装器自己的「（一键）安装失败：」前缀去掉，
+# 状态里只留一个「在线更新失败：」。
 # Pick the reason out of a step's stderr: the installer's last line is usually a rollback epilogue
 # such as "restored the original programs", and the real reason sits on the line carrying "失败：";
-# without one, use the last non-empty line.
+# without one, use the last non-empty line. The installer's own 「（一键）安装失败：」 prefix is dropped,
+# so the status carries a single 「在线更新失败：」.
 failure_line() {
   awk '
     { gsub(/[[:cntrl:]]/, "") }
     NF { last = $0; if (index($0, "失败：")) reason = $0 }
-    END { print (reason != "" ? reason : last) }
+    END { out = (reason != "" ? reason : last); sub(/^(一键)?安装失败：/, "", out); print out }
   ' "$1"
 }
 

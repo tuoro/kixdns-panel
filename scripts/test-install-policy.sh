@@ -1044,8 +1044,13 @@ output="$(online_update_status "printf '正在安装文件与服务…\n'
 printf '安装失败：kixdns-panel.service 启动后没有保持运行（15 秒内没有稳定运行并接受 5738 端口连接）。\n查看原因：journalctl -u kixdns-panel.service -n 50 --no-pager\n' >&2
 printf '安装未完成，已恢复原有程序和服务。\n' >&2
 exit 1" "${latest_release}")"
-assert_contains "${output}" "failed 在线更新失败：安装失败：kixdns-panel.service 启动后没有保持运行" \
-  "安装器失败时状态应带上安装器给出的原因"
+assert_contains "${output}" "failed 在线更新失败：kixdns-panel.service 启动后没有保持运行" \
+  "安装器失败时状态应带上安装器给出的原因，不再叠一层「安装失败：」"
+assert_not_contains "${output}" "安装失败：" "状态里只留一个「在线更新失败：」"
+
+output="$(online_update_status "printf '一键安装失败：下载安装包失败，未改动系统。请检查网络后再点一次在线更新\n' >&2; exit 1" "${latest_release}")"
+assert_equals "${output}" "failed 在线更新失败：下载安装包失败，未改动系统。请检查网络后再点一次在线更新" \
+  "一键安装器的前缀也去掉"
 
 output="$(online_update_status "exit 0" "printf 'curl: (6) Could not resolve host: api.github.com\n' >&2; return 6")"
 assert_contains "${output}" "failed 在线更新失败：curl: (6) Could not resolve host: api.github.com" \

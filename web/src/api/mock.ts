@@ -304,7 +304,7 @@ let panelUpdateStatus: PanelUpdateStatus = typeof localStorage !== 'undefined'
   && localStorage.getItem('kixdns:demo-panel-update-failed') === 'true'
   ? {
       state: 'failed',
-      message: '在线更新失败：一键安装失败：下载 kixdns-panel-linux-x86_64.zip 超时',
+      message: '在线更新失败：下载安装包失败，未改动系统。请检查网络后再点一次在线更新',
       target_version: 'v1.0.1',
       updated_at: 1_789_000_000,
     }
