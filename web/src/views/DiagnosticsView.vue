@@ -35,6 +35,8 @@ const lastRun = ref<{ domain: string; time: string } | null>(null)
 const activeSha = ref<string | null>(null)
 const versions = ref<ConfigVersion[]>([])
 const runningVersion = computed(() => runningVersionId(activeSha.value, versions.value))
+// 手机页头一行放不下长域名：超过 20 个字符的截短，完整的在宽屏的事实行和结果里 / A phone header line cannot hold a long domain: one over 20 characters is shortened; the full one is in the wide facts row and the result
+const shortDomain = (domain: string) => (domain.length > 20 ? `${domain.slice(0, 19)}…` : domain)
 const kernelLabel = ref('')
 // 客户端 IP：内核 p28 起可以假装查询来自某个客户端，按客户端分流的规则才测得出来；内核不支持时不出现
 // Client IP: from kernel p28 a query can pretend to come from a client, which is how per-client rules get tested; absent when the kernel lacks it
@@ -156,7 +158,7 @@ async function run(): Promise<void> {
           <div v-if="kernelLabel"><span class="ui-lbl">内核</span><b class="diag-fact-kernel">{{ kernelLabel }}</b></div>
           <div><span class="ui-lbl">上次查询</span><b v-if="lastRun"><UiDotText :parts="[lastRun.domain, lastRun.time]" /></b><b v-else>还没查过</b></div>
         </div>
-        <span class="ui-ph__lead ui-ph__phone"><UiDotText :parts="[...(runningVersion !== null ? [`版本 #${runningVersion}`] : []), lastRun ? `上次查询 ${lastRun.domain}` : '还没查过', ...(lastRun ? [lastRun.time] : [])]" /></span>
+        <span class="ui-ph__lead ui-ph__phone"><UiDotText :parts="[...(runningVersion !== null ? [`版本 #${runningVersion}`] : []), lastRun ? `上次查询 ${shortDomain(lastRun.domain)}` : '还没查过', ...(lastRun ? [lastRun.time] : [])]" /></span>
       </template>
     </UiPageHeader>
 

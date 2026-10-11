@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { diffModels } from '../config-model/diff'
-import type { Model } from '../config-model/model'
+import { ruleTitle, type Model } from '../config-model/model'
 import { exportConfig, readConfig } from '../config-model/document'
 import { LEGACY_MESSY, LEGACY_TEMPLATES, demoModel, sampleModel } from '../config-model/testing/samples'
 import { appliedModel, changeCount, model, rebaseApplied, resetTo } from './store'
@@ -90,5 +90,35 @@ describe('保存后读回来的文件当作对照', () => {
     model.rules.push({ ...model.rules[0]!, id: 9999, name: '保存时加的' })
     rebaseApplied(readConfig(exportConfig(model), model).model)
     expect(changeCount.value).toBe(0)
+  })
+})
+
+describe('拦截规则上留着的客户端子网和回答后检查不算修改', () => {
+  beforeEach(() => {
+    const start = demoModel()
+    start.rules[1]!.outcome = { type: 'block', response: 'default' }
+    start.rules[1]!.ecs = 'inherit'
+    start.rules[1]!.response = { ...start.rules[1]!.response, mode: 'inherit' }
+    resetTo(start)
+  })
+
+  it('改成上游、设了子网又改回拦截', () => {
+    model.rules[1]!.ecs = { mode: 'clear' }
+    model.rules[1]!.response = { ...model.rules[1]!.response, mode: 'off' }
+    expect(changeCount.value).toBe(0)
+    expect(diffModels(appliedModel.value, model)).toEqual([])
+  })
+})
+
+describe('「改了哪些」只报真正挪过的规则', () => {
+  beforeEach(() => resetTo(demoModel()))
+
+  it('把第一条移到最后：只有这一条是「移动」', () => {
+    expect(model.rules.length).toBeGreaterThan(2)
+    const first = model.rules[0]!
+    model.rules.push(model.rules.shift()!)
+    const moves = diffModels(appliedModel.value, model).filter((block) => block.kind === '移动')
+    expect(moves).toHaveLength(1)
+    expect(moves[0]!.title).toContain(ruleTitle(first))
   })
 })

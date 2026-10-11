@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { actorName } from '../utils'
+import { useReturnFocus } from '../composables/useReturnFocus'
 import { Ellipsis, Trash2, X } from '@lucide/vue'
 import { computed, nextTick, onMounted, ref } from 'vue'
 import type { ConfigVersion } from '../api/types'
@@ -9,16 +9,18 @@ import { useToast } from '../composables/useToast'
 import { diffModels, type DiffBlock } from '../config-model/diff'
 import DiffBlocks from './DiffBlocks.vue'
 import { readConfig } from '../config-model/document'
-import { errorMessage, formatVersionTime } from '../utils'
+import { actorName, errorMessage, formatVersionTime } from '../utils'
 import RuleText from './RuleText.vue'
 import { appliedModel, unsaved } from './store'
 import { bulkDeleting, currentVersionId, deleteVersion, deleteVersions, deleting, friendlyRuntimeError, restoreVersion, restoring, versionDetail, versions } from './useConfigDocument'
+// 关上后焦点回到打开它的控件 / Focus returns to the opener on close
+useReturnFocus()
 
 // 历史版本：一行是备注加「#编号 · 时间」，点一行看「恢复它会改什么」；恢复和删除在行的菜单里，「选择」可以一次删几个。
 // History: a row is the note plus 「#id · time」; clicking it shows what restoring would change. Restore and delete live in the row's
 // menu, and 选择 deletes several at once.
 const props = defineProps<{ compareWith?: number | null }>()
-const emit = defineEmits<{ close: []; rule: [id: number] }>()
+const emit = defineEmits<{ close: []; rule: [id: number]; restored: [] }>()
 const toast = useToast()
 const confirm = useConfirm()
 const dialog = ref<HTMLDialogElement | null>(null)
@@ -69,6 +71,7 @@ async function restore(v: ConfigVersion): Promise<void> {
   closeDiff()
   try {
     const r = await restoreVersion(v.id)
+    emit('restored')
     toast.success(r.state === 'pending' ? `已存成待应用版本 #${r.versionId}，KixDNS 就绪后自动应用` : `已恢复为版本 #${v.id} 的内容，当前版本 #${r.versionId}`)
   } catch (error) {
     toast.error(`没有恢复版本 #${v.id}：${friendlyRuntimeError(error)}`)
@@ -154,7 +157,7 @@ function onRuleLink(id: number): void { dialog.value?.close(); emit('rule', id) 
         </header>
         <div class="pdialog__body diffd__body">
           <template v-if="blocks && blocks.length">
-            <p class="diffd__legend">恢复这个版本：<span class="diffd__sign is-del">−</span> 去掉 <span class="diffd__sign is-add">+</span> 加上</p>
+            <p v-if="blocks.some((block) => block.lines.length)" class="diffd__legend">恢复这个版本：<span class="diffd__sign is-del">−</span> 去掉 <span class="diffd__sign is-add">+</span> 加上</p>
             <DiffBlocks :blocks="blocks" />
           </template>
           <p v-else-if="blocks" class="hist__empty">这个版本和当前的配置一样，恢复它不会改变什么。</p>

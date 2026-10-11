@@ -24,12 +24,15 @@ export const appliedModel = computed(() => JSON.parse(applied.value) as Model)
  */
 export function ruleShape(rule: Rule): string {
   const plain = <C extends { id: number }>(c: C) => ({ ...c, id: 0 })
+  // 客户端子网和回答后检查只在交给上游组时写进配置；别的结果下留着的值不算 / Client subnet and the response check are written only when the rule hands off to an upstream group; values left behind under other outcomes do not count
+  const forwards = rule.outcome.type === 'upstream'
   return JSON.stringify({
     ...rule,
     edited: '',
     conditions: rule.conditions.map((group) => group.map(plain)),
     log: rule.log.enabled ? rule.log : { enabled: false },
-    response: rule.response.mode === 'custom' ? { ...rule.response, conditions: rule.response.conditions.map(plain) } : { mode: rule.response.mode },
+    ecs: forwards ? rule.ecs : 'inherit',
+    response: !forwards ? { mode: 'inherit' } : rule.response.mode === 'custom' ? { ...rule.response, conditions: rule.response.conditions.map(plain) } : { mode: rule.response.mode },
   })
 }
 const plainShape = (x: unknown) => JSON.stringify(x)

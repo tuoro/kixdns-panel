@@ -620,6 +620,8 @@ a.ui-btn { text-decoration: none; }
      A button looks 36 as on desktop with its tap area grown to 44; a small one is 36 with 14px text on a phone too. The tap area is a percentage of the inner box: the button has a 1px border, so counting from 36 reached only 42 */
   .ui-btn, .ui-btn--sm { position: relative; min-height: var(--h-md); }
   .ui-btn::before { position: absolute; inset: calc(min(0px, (100% - var(--h-touch)) / 2)) 0; content: ''; }
+  /* 只有图标的按钮是 36 的方块：点按区域四边都补到 44，不只上下 / An icon-only button is a 36 square: its hit area grows to 44 on every side, not just above and below */
+  .ui-btn--icon::before { inset: calc(min(0px, (100% - var(--h-touch)) / 2)); }
   .ui-btn--sm { font-size: var(--t-3); }
   /* 图标按钮也是 36，和同一行的框一样高，点按区域四边补到 44 / An icon button is 36 too, as tall as the fields on its line, with its tap area grown to 44 on every side */
   .ui-icon-btn, .ui-icon-btn--sm { position: relative; width: var(--h-md); height: var(--h-md); }

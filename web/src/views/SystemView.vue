@@ -508,7 +508,7 @@ onBeforeUnmount(() => {
           <div v-if="panelVersion"><span class="ui-lbl">面板版本</span><b>{{ panelVersion }}</b></div>
           <div v-if="kernel"><span class="ui-lbl">内核</span><b>{{ installed ? formatKixdnsVersion(activeVersion) : '尚未安装' }}</b></div>
         </div>
-        <span v-if="service || kernel || panelVersion" class="ui-ph__lead ui-ph__phone"><span v-if="service" class="ui-dot" :class="{ 'ui-dot--off': !running }" aria-hidden="true"></span><UiDotText :parts="[...(service ? [running ? '运行中' : '已停止'] : []), ...(service?.main_pid ? [`PID ${service.main_pid}`] : []), ...(panelVersion ? [`面板 ${panelVersion}`] : []), ...(kernel ? [installed ? formatKixdnsVersion(activeVersion) : '内核尚未安装'] : [])]" /></span>
+        <span v-if="service || kernel || panelVersion" class="ui-ph__lead ui-ph__phone"><span v-if="service" class="ui-dot" :class="{ 'ui-dot--off': !running }" aria-hidden="true"></span><UiDotText :parts="[...(service ? [running ? '运行中' : '已停止'] : []), ...(panelVersion ? [`面板 ${panelVersion}`] : []), ...(kernel ? [installed ? formatKixdnsVersion(activeVersion).replace(' ', '\u00a0') : '内核尚未安装'] : [])]" /></span>
         <span v-else-if="loadingService" class="sk system-skeleton-meta" role="status" aria-label="读取服务状态"></span>
         <span v-else>服务状态暂不可用</span>
       </template>

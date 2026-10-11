@@ -1,18 +1,21 @@
 <script setup lang="ts">
 import { WifiOff } from '@lucide/vue'
-import { onBeforeUnmount, onMounted } from 'vue'
-import { startConnectionWatch, stopConnectionWatch, useConnection } from '../composables/useConnection'
+import { ref } from 'vue'
+import { useBarHeight } from '../composables/useBarHeight'
+import { useConnection } from '../composables/useConnection'
 
 // 连不上面板时内容区顶上一条横幅（手机上贴着顶栏），不随页面滚走；连上后自己收起并提示一句
 // While the panel is unreachable a strip sits atop the content area (under the top bar on phones) and stays there on scroll; it folds away by itself on reconnect, with a toast
-const { down, checking, retry } = useConnection()
-onMounted(startConnectionWatch)
-onBeforeUnmount(stopConnectionWatch)
+// 监听在 App 里一直开着（启动时也要），这里只负责显示 / Listening stays on in App (it is needed at start too); this only shows it
+const { down, checking, booting, retry } = useConnection()
+// 横幅的高度写到 --conn-h 上：同样贴着顶部的东西（宽屏的规则面板）往下让开 / The banner's height goes to --conn-h so other things stuck to the top (the wide rule inspector) move down out of its way
+const inner = ref<HTMLElement | null>(null)
+useBarHeight(inner, '--conn-h')
 </script>
 
 <template>
   <div class="conn" role="status">
-    <div v-if="down" class="conn__inner">
+    <div v-if="down && !booting" ref="inner" class="conn__inner">
       <WifiOff :size="16" aria-hidden="true" />
       <p><strong>连不上面板</strong><span>网络断了，或者面板正在重启。连上后这条会自己消失。</span></p>
       <button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" :disabled="checking" @click="retry">{{ checking ? '正在重试' : '重试' }}</button>

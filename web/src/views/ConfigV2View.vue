@@ -131,12 +131,17 @@ async function ruleDeleted(rule: Rule, index: number, list: Rule[]): Promise<voi
 }
 // 宽窄切换会把面板换成整页编辑（或反过来），换之前把没点「完成」的修改交给下一个
 // A width change swaps the panel for the full-page editor (or back); before the swap the edits not yet 完成 are handed over
+// 宽窄切换去掉 ?rule 不是「返回」：修改已经交给下一个编辑器，换地址时不问 / The layout swap dropping ?rule is not a back-out: the edits went to the next editor, so the address change asks nothing
+let layoutSwap = false
 watch(inspector, (now, before) => {
   if (!editor.value || now === before || !editorRef.value) return
   editor.value = { ...editor.value, resume: editorRef.value.capture() }
   // 换成整页编辑时也记进历史，返回手势回到列表；换回面板时把 ?rule 去掉 / Switching to the full page goes into history too, so back returns to the list; switching back to the panel drops ?rule
   if (!now && !route.query.rule) void router.push({ query: { ...route.query, rule: editor.value.ruleId === null ? 'new' : String(editor.value.ruleId) } })
-  else if (now && route.query.rule) void router.replace({ query: { ...route.query, rule: undefined } })
+  else if (now && route.query.rule) {
+    layoutSwap = true
+    void router.replace({ query: { ...route.query, rule: undefined } }).finally(() => { layoutSwap = false })
+  }
 }, { flush: 'pre' })
 function groupSaved(group: UpstreamGroup, isNew: boolean): void {
   groupEditor.value = null
@@ -221,6 +226,12 @@ function foldJson(): void {
 }
 // 草稿在 JSON 视图外被换掉（放弃、撤销、重新读取）：JSON 里没有新修改就跟着刷新 / The draft changed outside the JSON view (discard, undo, reload): refresh the text unless it has edits of its own
 watch(() => (ui.mode === 'json' ? JSON.stringify(model) : ''), (now) => { if (now && !jsonDirty.value) { jsonText.value = compiledText(); jsonBase.value = jsonText.value } })
+// 恢复历史版本是问过「没保存的修改会丢失」的：JSON 视图里的文字也换成恢复后的草稿 / A restore was confirmed with 没保存的修改会丢失, so the JSON view's text becomes the restored draft too
+function afterRestore(): void {
+  if (ui.mode !== 'json') return
+  jsonText.value = compiledText()
+  jsonBase.value = jsonText.value
+}
 function leaveJson(): boolean {
   if (jsonError.value) { toast.info('JSON 写错了，改好才能切换'); return false }
   foldJson()
@@ -325,6 +336,9 @@ onBeforeRouteLeave(async () => takeAgreement() || askLeave())
 // 换分区、或者从整页编辑按返回：规则编辑里没点「完成」的修改先问一句；同意了就关掉编辑
 // Switching section, or pressing back out of the full-page editor: first ask about rule edits not yet 完成; once agreed the editor closes
 onBeforeRouteUpdate(async (to, from) => {
+  if (layoutSwap) return true
+  // 换分区会卸下规则组、高级入口的弹层：里面有没写进草稿的修改就先问（浏览器返回也走这里） / Changing section unmounts the rule-group and 高级入口 dialogs: ask first when they hold unwritten edits (browser back comes through here too)
+  if (to.query.section !== from.query.section && dialogEdits.size && !(await confirm.ask({ title: `放弃${[...dialogEdits.values()][0]}的修改`, body: '刚才在这里改的内容不会写进草稿。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true }))) return false
   const backOut = Boolean(from.query.rule) && !to.query.rule
   if (!editor.value || (to.query.section === from.query.section && !backOut)) return true
   if (!(await editorRef.value?.confirmDiscard() ?? true)) return false
@@ -417,6 +431,6 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
     <SaveBar v-if="ready" :json-error="jsonError" :json-dirty="jsonDirty" :flush="flush" @rule="openRule($event, null)" @group="groupEditor = { id: $event }" @reveal="(l: number, c: number) => jsonEditor?.reveal(l, c)" @reload="reload()" @download="downloadJson" @discarded="afterDiscard" />
   </div>
   <GroupEditor v-if="groupEditor" :key="groupEditor.id ?? 'new'" :group-id="groupEditor.id" @close="groupEditor = null" @saved="groupSaved" @deleted="groupDeleted" />
-  <HistoryDrawer v-if="historyOpen" :compare-with="historyOpen.compare" @close="historyOpen = null" @rule="historyOpen = null; openRule($event, null)" />
+  <HistoryDrawer v-if="historyOpen" :compare-with="historyOpen.compare" @close="historyOpen = null" @rule="historyOpen = null; openRule($event, null)" @restored="afterRestore" />
   <ImportReportDialog v-if="reportOpen && importReport" :undo="Boolean(undoImport)" @close="reportOpen = false; undoImport = null" @undo="undoImport?.()" />
 </template>

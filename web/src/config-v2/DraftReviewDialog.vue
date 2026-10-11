@@ -26,7 +26,8 @@ const blocks = computed(() => diffModels(appliedModel.value, model))
       </header>
       <div class="pdialog__body diffd__body">
         <template v-if="blocks.length">
-          <p class="diffd__legend">保存以后：<span class="diffd__sign is-del">−</span> 去掉 <span class="diffd__sign is-add">+</span> 加上</p>
+          <!-- 图例只在真有 −/+ 行时出现：只挪了顺序时没有可对照的符号 / The legend appears only when there are −/+ lines: a pure reorder has no signs to explain -->
+          <p v-if="blocks.some((block) => block.lines.length)" class="diffd__legend">保存以后：<span class="diffd__sign is-del">−</span> 去掉 <span class="diffd__sign is-add">+</span> 加上</p>
           <DiffBlocks :blocks="blocks" />
         </template>
         <p v-else class="hist__empty">草稿和上次保存的版本一样，保存不会改变什么。</p>

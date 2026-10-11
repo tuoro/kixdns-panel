@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useReturnFocus } from '../composables/useReturnFocus'
 import { Info, Plus, Trash2, X } from '@lucide/vue'
 import UiHelp from '../components/ui/UiHelp.vue'
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
@@ -6,6 +7,8 @@ import UiSelect from '../components/ui/UiSelect.vue'
 import { detectProtocol, PROTOCOL_LABEL, POLLUTED_CIDRS, type Ecs, type Protocol, type UpstreamGroup } from '../config-model/model'
 import { useConfirm } from '../composables/useConfirm'
 import { groupUsers, model, trackDialogEdits } from './store'
+// 关上后焦点回到打开它的控件 / Focus returns to the opener on close
+useReturnFocus()
 
 // 上游组的抽屉：名称、地址（每个地址自动认协议，可改）、客户端子网、备用组。被用着的组不能删，说清楚是谁在用。
 // The upstream group drawer: name, addresses (protocol detected per address, overridable), client subnet, fallback.
@@ -16,12 +19,20 @@ const emit = defineEmits<{ close: []; saved: [group: UpstreamGroup, isNew: boole
 const original = props.groupId ? model.groups.find((g) => g.id === props.groupId) ?? null : null
 const draft = reactive<UpstreamGroup>(original ? JSON.parse(JSON.stringify(original)) as UpstreamGroup : { id: `u${Date.now().toString(36)}`, name: '', addresses: [{ address: '', protocol: 'auto' }], ecs: null, fallback: { group: '', onError: false, onPolluted: false } })
 // Esc、点遮罩、关闭、取消都先对照一下：改过就问一句，和规则编辑一样 / Esc, a scrim tap, × and 取消 compare first: ask if anything changed, as the rule editor does
-const initial = JSON.stringify(draft)
+// 按「完成」会写进去的样子比较：空地址、首尾空格、关着的备用组里留的值都不算改过 / Compared as 完成 would write it: empty addresses, surrounding spaces and values left in a switched-off fallback do not count as edits
+const shape = (g: UpstreamGroup): string => JSON.stringify({
+  ...g,
+  name: g.name.trim(),
+  addresses: g.addresses.filter((a) => a.address.trim()).map((a) => ({ ...a, address: a.address.trim() })),
+  fallback: g.fallback.onError || g.fallback.onPolluted ? g.fallback : { group: '', onError: false, onPolluted: false },
+})
+const initial = shape(draft)
+const edited = (): boolean => shape(draft) !== initial
 // 抽屉开着、改过时离开页面或刷新也先问 / With the drawer open and edited, leaving the page or reloading asks first too
-trackDialogEdits('这个上游组', () => JSON.stringify(draft) !== initial)
+trackDialogEdits('这个上游组', edited)
 const confirm = useConfirm()
 async function leave(): Promise<void> {
-  if (JSON.stringify(draft) !== initial && !(await confirm.ask({ title: '放弃这个上游组的修改', body: '刚才在这里改的内容不会写进草稿。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true }))) return
+  if (edited() && !(await confirm.ask({ title: '放弃这个上游组的修改', body: '刚才在这里改的内容不会写进草稿。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true }))) return
   emit('close')
 }
 const showErrors = ref(false)
@@ -64,6 +75,8 @@ const problems = computed(() => {
 
 function done(): void {
   if (problems.value.length) { showErrors.value = true; return }
+  // 没改过就只是关上，不提示「已更新」 / Unchanged: just close, no 已更新 toast
+  if (original && !edited()) { emit('close'); return }
   draft.name = draft.name.trim()
   draft.addresses = draft.addresses.filter((a) => a.address.trim()).map((a) => ({ ...a, address: a.address.trim() }))
   if (!fallbackOn.value) draft.fallback = { group: '', onError: false, onPolluted: false }

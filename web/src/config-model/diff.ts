@@ -34,9 +34,11 @@ function ruleFacts(m: Model, r: Rule): Record<string, string> {
   if (r.raw) return { 高级规则: rawSummary(r), 状态: r.enabled ? '启用' : '已停用', ...(r.note ? { 备注: r.note } : {}) }
   const facts: Record<string, string> = { 条件: conditionsText(r.conditions), 结果: outcomeSentence(m, r.outcome), 状态: r.enabled ? '启用' : '已停用' }
   if (r.log.enabled) facts.日志 = `记录（${LEVEL_NAME[r.log.level] ?? r.log.level}）`
-  if (r.ecs !== 'inherit') facts.客户端子网 = ecsText(r.ecs)
-  if (r.response.mode === 'off') facts.回答后检查 = '不检查'
-  if (r.response.mode === 'custom') facts.回答后检查 = `${withShi(r.response.conditions.map(responseConditionText).join(r.response.match === 'all' ? ' 且 ' : '，或 '))}${remedySentence(m, r.response.then)}${r.response.otherwise.type === 'none' ? '' : `，否则${remedySentence(m, r.response.otherwise)}`}`
+  // 客户端子网和回答后检查只在交给上游组时生效，别的结果下不列 / Client subnet and the response check apply only when handing off to an upstream group, so other outcomes do not list them
+  const forwards = r.outcome.type === 'upstream'
+  if (forwards && r.ecs !== 'inherit') facts.客户端子网 = ecsText(r.ecs)
+  if (forwards && r.response.mode === 'off') facts.回答后检查 = '不检查'
+  if (forwards && r.response.mode === 'custom') facts.回答后检查 = `${withShi(r.response.conditions.map(responseConditionText).join(r.response.match === 'all' ? ' 且 ' : '，或 '))}${remedySentence(m, r.response.then)}${r.response.otherwise.type === 'none' ? '' : `，否则${remedySentence(m, r.response.otherwise)}`}`
   if (r.note) facts.备注 = r.note
   return facts
 }
@@ -57,7 +59,26 @@ function changed(a: Record<string, string>, b: Record<string, string>): DiffLine
   }
   return out
 }
+/**
+ * 真正挪过的那几条：两边共有的规则按先后排，最长的一段相同顺序之外的才算挪过。只挪了一条时只报那一条，不把被它顶开的都算上
+ * The rules actually moved: of the rules on both sides, those outside the longest run kept in the same order. Moving one rule reports that one, not every rule it pushed along
+ */
+function movedIds(a: Rule[], b: Rule[]): Set<number> {
+  const before = a.filter((x) => b.some((y) => y.id === x.id)).map((x) => x.id)
+  const after = b.filter((x) => a.some((y) => y.id === x.id)).map((x) => x.id)
+  const n = before.length
+  const m = after.length
+  const len = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0))
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) len[i]![j] = before[i] === after[j] ? len[i + 1]![j + 1]! + 1 : Math.max(len[i + 1]![j]!, len[i]![j + 1]!)
+  const kept = new Set<number>()
+  for (let i = 0, j = 0; i < n && j < m;) {
+    if (before[i] === after[j]) { kept.add(before[i]!); i++; j++ } else if (len[i + 1]![j]! >= len[i]![j + 1]!) i++; else j++
+  }
+  return new Set(after.filter((id) => !kept.has(id)))
+}
+
 function listDiff(blocks: DiffBlock[], now: Model, then: Model, a: Rule[], b: Rule[], where: string): void {
+  const moved = movedIds(a, b)
   for (const r of a) if (!b.some((x) => x.id === r.id)) blocks.push({ kind: '去掉', title: `${where}规则「${ruleTitle(r)}」`, lines: Object.entries(ruleFacts(now, r)).map(([k, v]) => ({ sign: '-', text: `${k}：${v}` })) })
   for (const [i, r] of b.entries()) {
     const old = a.find((x) => x.id === r.id)
@@ -66,9 +87,7 @@ function listDiff(blocks: DiffBlock[], now: Model, then: Model, a: Rule[], b: Ru
     // 内核写法改了、读出来的条件却一样（比如只改了动作）：照样列出来，说明是写法变了 / The kernel rules changed but read the same (say only an action changed): still listed, saying the wording changed
     if (old.raw && r.raw && JSON.stringify(old.raw) !== JSON.stringify(r.raw) && rawSummary(old) === rawSummary(r)) lines.push({ sign: '-', text: `高级规则：${rawSummary(old)}` }, { sign: '+', text: `高级规则：${rawSummary(r)}，内核写法有改动` })
     if (lines.length) blocks.push({ kind: '改了', title: `${where}规则「${ruleTitle(r)}」`, lines })
-    const from = a.filter((x) => b.some((y) => y.id === x.id)).indexOf(old)
-    const to = b.filter((x) => a.some((y) => y.id === x.id)).indexOf(r)
-    if (from !== to && !lines.length) blocks.push({ kind: '移动', title: `${where}规则「${ruleTitle(r)}」`, lines: [], note: `从第 ${a.indexOf(old) + 1} 条移到第 ${i + 1} 条` })
+    if (moved.has(r.id) && !lines.length) blocks.push({ kind: '移动', title: `${where}规则「${ruleTitle(r)}」`, lines: [], note: `从第 ${a.indexOf(old) + 1} 条移到第 ${i + 1} 条` })
   }
 }
 

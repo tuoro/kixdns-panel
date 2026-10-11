@@ -4,10 +4,11 @@ import UiHelp from '../components/ui/UiHelp.vue'
 import { computed, nextTick, reactive, ref } from 'vue'
 import UiEmpty from '../components/ui/UiEmpty.vue'
 import UiMenu from '../components/ui/UiMenu.vue'
+import { useConfirm } from '../composables/useConfirm'
 import { useToast } from '../composables/useToast'
 import { isDomain, isIp, mappingIsIp, splitList, type Mapping } from '../config-model/model'
 import { usePhone } from './phone'
-import { changedMappingIds, model, newId } from './store'
+import { changedMappingIds, model, newId, trackDialogEdits } from './store'
 import { canCname } from './useConfigDocument'
 
 // 域名映射：域名直接回答一个 IP 或另一个域名，先于所有规则，也管子域名。像通讯录一样一行一条，上面一行直接添加。
@@ -56,6 +57,12 @@ const shown = computed(() => {
 
 // 行内编辑 / inline edit
 const editing = reactive({ id: -1, domain: '', target: '', ttl: '' as string, error: '' })
+// 行里改了没点完成、批量导入里写了还没导入：离开页面、换分区、刷新都先问 / A row edited but not committed, bulk-import text not yet imported: leaving, switching section and reloading ask first
+const confirm = useConfirm()
+trackDialogEdits('这条域名映射', () => {
+  const row = editing.id < 0 ? undefined : model.mappings.find((r) => r.id === editing.id)
+  return Boolean(row) && (editing.domain !== row!.domain || editing.target !== row!.target || editing.ttl !== (row!.ttl === null ? '' : String(row!.ttl)))
+})
 async function edit(r: Mapping): Promise<void> {
   Object.assign(editing, { id: r.id, domain: r.domain, target: r.target, ttl: r.ttl === null ? '' : String(r.ttl), error: '' })
   await nextTick()
@@ -96,6 +103,13 @@ function act(r: Mapping, value: string): void {
 // Bulk import: one 「domain answer [TTL]」 per line, separated by spaces; hosts-file 「IP domain」 too. No arrows: they are awkward to type.
 const importDialog = ref<HTMLDialogElement | null>(null)
 const importText = ref('')
+trackDialogEdits('批量导入', () => importText.value.trim() !== '')
+// Esc、点遮罩、关闭、取消：写了内容先问，和别的弹层一样 / Esc, a scrim tap, × and 取消: ask first when text was written, as other dialogs do
+async function leaveImport(): Promise<void> {
+  if (importText.value.trim() && !(await confirm.ask({ title: '放弃批量导入的内容', body: '写在这里的映射还没导入，关上就没了。', confirmLabel: '放弃', cancelLabel: '继续编辑', destructive: true }))) return
+  importText.value = ''
+  importDialog.value?.close()
+}
 const parsed = computed(() => importText.value.split('\n').map((line) => line.replace(/#.*/, '').trim()).filter(Boolean).map((line) => {
   const parts = line.split(/\s+/)
   const ttlText = parts.length > 2 && /^\d+$/.test(parts.at(-1)!) ? parts.pop()! : null
@@ -165,9 +179,9 @@ function runImport(): void {
       </template>
     </section>
 
-    <dialog ref="importDialog" class="pdialog" aria-labelledby="rwi-title" @click.self="importDialog?.close()">
+    <dialog ref="importDialog" class="pdialog" aria-labelledby="rwi-title" @cancel.prevent="leaveImport" @click.self="leaveImport">
       <form class="pdialog__panel" @submit.prevent="runImport">
-        <header class="pdialog__head"><h2 id="rwi-title">批量导入域名映射</h2><button class="ui-icon-btn" type="button" aria-label="关闭" @click="importDialog?.close()"><X :size="16" /></button></header>
+        <header class="pdialog__head"><h2 id="rwi-title">批量导入域名映射</h2><button class="ui-icon-btn" type="button" aria-label="关闭" @click="leaveImport"><X :size="16" /></button></header>
         <div class="pdialog__body">
           <label class="pfield"><span>一行一条：域名 回答 [TTL]。hosts 文件的「IP 域名」也认。</span>
             <span class="ui-input ui-input--area"><textarea v-model="importText" rows="7" autofocus aria-label="要导入的域名映射" placeholder="nas.home.arpa 192.168.1.10&#10;192.168.1.20 tv.home.arpa&#10;files.home.arpa nas.home.arpa"></textarea></span>
@@ -176,7 +190,7 @@ function runImport(): void {
             <li v-for="(p, i) in parsed" :key="i" :class="{ 'is-bad': p.problem }"><span class="is-mono">{{ p.domain || '—' }} → {{ p.target || '—' }}{{ p.ttl !== null ? ` · ${p.ttl} 秒` : '' }}</span><small v-if="p.problem">{{ p.problem }}</small></li>
           </ul>
         </div>
-        <footer class="pdialog__foot"><button class="ui-btn ui-btn--secondary" type="button" @click="importDialog?.close()">取消</button><button class="ui-btn ui-btn--primary" type="submit" :disabled="!importable.length">{{ importable.length ? `导入 ${importable.length} 条` : '导入' }}</button></footer>
+        <footer class="pdialog__foot"><button class="ui-btn ui-btn--secondary" type="button" @click="leaveImport">取消</button><button class="ui-btn ui-btn--primary" type="submit" :disabled="!importable.length">{{ importable.length ? `导入 ${importable.length} 条` : '导入' }}</button></footer>
       </form>
     </dialog>
   </div>

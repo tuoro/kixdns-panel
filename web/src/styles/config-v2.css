@@ -180,7 +180,7 @@ body { background: var(--l-canvas); }
   /* 面板开着时列表窄了：结果那一列最窄 9rem、命中 4rem，名字那一列才留得住 / With the inspector open the list is narrower: the result column bottoms at 9rem and hits at 4rem, so the name column keeps its room */
   .rules-split.is-open :is(.rlist, .rcard) { --rl-cols: var(--s-6) minmax(0, 1.5fr) minmax(9rem, 1fr) 4rem var(--s-7) var(--h-sm); }
   /* 面板跟着滚：顶部留页边距，太高时自己滚 / The inspector sticks: a page margin above, scrolling inside when taller than the viewport */
-  .rules-split > .editor--inspector { position: sticky; top: var(--s-6); max-height: calc(100dvh - var(--s-6) * 2); overflow: auto; overscroll-behavior: contain; }
+  .rules-split > .editor--inspector { position: sticky; top: calc(var(--s-6) + var(--conn-h, 0px)); max-height: calc(100dvh - var(--s-6) * 2 - var(--conn-h, 0px)); overflow: auto; overscroll-behavior: contain; }
 }
 .rules-split.is-open .rlist__order { display: none; }
 .rules-split.is-open .rcard__search { flex-basis: 14rem; }

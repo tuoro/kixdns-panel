@@ -1,8 +1,11 @@
 <script setup lang="ts">
+import { useReturnFocus } from '../composables/useReturnFocus'
 import { X } from '@lucide/vue'
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { useHelp } from '../composables/useHelp'
 import { SHORTCUTS, topicsOf } from '../help/topics'
+// 关上后焦点回到打开它的控件 / Focus returns to the opener on close
+useReturnFocus()
 
 // 帮助抽屉：这一页的概念按词条列出来（点开读），底部是快捷键一览。从「?」弹层过来时直接展开那个词条；从账户菜单或 ? 键过来时滚到快捷键。
 // The help drawer: this page's concepts as expandable entries, the shortcut list at the bottom. Coming from a 「?」 popover opens that entry; coming from the account menu or the ? key scrolls to the shortcuts.

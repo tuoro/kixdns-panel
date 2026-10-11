@@ -1,5 +1,6 @@
 import { createRouter, createWebHashHistory, createWebHistory } from 'vue-router'
 import AppShell from './components/AppShell.vue'
+import { whenPanelAnswers } from './composables/useConnection'
 import { useSession } from './composables/useSession'
 
 declare module 'vue-router' {
@@ -38,7 +39,8 @@ const router = createRouter({
 
 router.beforeEach(async (to) => {
   const session = useSession()
-  await session.initialize()
+  // 面板没答话（断网、正在重启）时等它回来再接着打开，不留一张白页 / When the panel does not answer (network down, restarting) wait for it and carry on, never leaving a blank page
+  await whenPanelAnswers(() => session.initialize())
   if (session.setupRequired.value && to.path !== '/setup') return '/setup'
   if (!session.setupRequired.value && to.path === '/setup') return session.user.value ? '/' : '/login'
   if (to.meta.auth && !session.user.value) return `/login?redirect=${encodeURIComponent(to.fullPath)}`
