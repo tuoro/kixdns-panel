@@ -156,8 +156,8 @@ function readonlyValue(field: SettingField): string {
 function setValue(key: string, value: unknown): void {
   settings.value = { ...settings.value, [key]: value }
 }
-// 内核不支持的设置只要写进配置就会被拒（关着的开关不写，见 settingWritten）；从配置里去掉这一项，草稿才保存得了
-// A setting the kernel does not support is refused whenever it is written in the config (a switch that is off is not written, see settingWritten); removing it lets the draft save
+// 内核不支持的设置开着时保存会被挡（开着也不起作用；关着的开关不写，见 settingWritten）；关掉或从配置里去掉，草稿才保存得了
+// A setting the kernel does not support blocks saving while it is on (it would do nothing; a switch that is off is not written, see settingWritten); switching it off or removing it lets the draft save
 function removeSetting(key: string): void {
   const next = { ...settings.value }
   delete next[key]

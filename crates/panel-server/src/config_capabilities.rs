@@ -33,8 +33,8 @@ pub struct UnsupportedConfigFields {
     cname: bool,
 }
 
-// 每一类给一条做得到的出路：设置要关掉（面板不把关着的开关写进配置），CNAME 要改成 IP
-// One remedy per kind that can actually be done: settings are switched off (the panel does not write a switch that is off); CNAME answers must become IPs
+// 每一类给一条做得到的出路：设置要关掉（关着的不需要这项能力），CNAME 要改成 IP
+// One remedy per kind that can actually be done: settings are switched off (off needs no capability); CNAME answers must become IPs
 impl fmt::Display for UnsupportedConfigFields {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut parts = Vec::new();
@@ -65,8 +65,15 @@ pub fn ensure_config_supported(
 ) -> Result<(), UnsupportedConfigFields> {
     let fields = FIELD_REQUIREMENTS
         .iter()
+        // 写着「关」（false）不算用到：内核缺省就是关，没有这项能力的内核会把不认识的键直接忽略，结果一样。
+        // 只有开着才需要这项能力（不然开了也不起作用）；安装包自带的配置就写着 false，不能因此挡住更新或回退
+        // Written as off (false) does not count as used: off is the kernel's default, and a kernel without the capability ignores the
+        // unknown key, with the same result. Only on needs the capability (otherwise it would silently do nothing); the shipped config
+        // writes false, which must not block an update or rollback
         .filter(|requirement| {
-            content.pointer(requirement.pointer).is_some()
+            content
+                .pointer(requirement.pointer)
+                .is_some_and(|value| value != &Value::Bool(false))
                 && !supports(capabilities, requirement.capability)
         })
         .map(|requirement| requirement.label)
@@ -174,9 +181,17 @@ mod tests {
     #[test]
     fn rejects_controlled_fields_without_capability() {
         let error =
-            ensure_config_supported(&json!({"settings": {"statistics_enabled": false}}), &[])
+            ensure_config_supported(&json!({"settings": {"statistics_enabled": true}}), &[])
                 .unwrap_err();
         assert!(error.to_string().contains("启用查询排行"));
+    }
+
+    // 关着的开关不需要能力：安装包自带的配置写着 false，更新或回退到没有统计的内核不该被挡
+    // A switch that is off needs no capability: the shipped config writes false, and updating or rolling back to a kernel without statistics must not be blocked
+    #[test]
+    fn accepts_controlled_switches_that_are_off() {
+        let content = json!({"settings": {"statistics_enabled": false, "statistics_anonymize_client_ip": false}});
+        assert!(ensure_config_supported(&content, &[]).is_ok());
     }
 
     #[test]

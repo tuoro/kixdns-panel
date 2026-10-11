@@ -43,8 +43,8 @@ export const runtimeUnavailable = computed(() => doc.value?.runtime.status === '
 export const unsupportedFields = computed(() => SETTING_SECTIONS.flatMap((s) => s.fields)
   .filter((f) => settingWritten(f, model.settings) && !settingSupported(f, runtimeCapabilities.value))
   .map((f) => f.label))
-// 内核报了自己支持什么、草稿里却有它不支持的设置：KixDNS 会拒绝整份配置（服务端记成失败的版本，永远不会应用），所以先不让保存
-// The kernel reported what it supports and the draft holds a setting it does not: KixDNS refuses the whole config (the server records a failed version that never applies), so saving waits
+// 内核报了自己支持什么、草稿里却开着它没有的功能：服务端不收这份配置（开着也不起作用），所以先不让保存
+// The kernel reported what it supports and the draft switches on a feature it lacks: the server refuses the config (the switch would do nothing), so saving waits
 // 草稿里用到了 CNAME 回答：域名映射的回答写的是域名，或规则的自定义回答是 CNAME / The draft uses a CNAME answer: a mapping answers with a domain, or a rule's custom answer is a CNAME
 export const cnameInUse = computed(() => model.mappings.some((m) => m.enabled && !/^[\d.:a-f, ]+$/i.test(m.target))
   || [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].some((r) => r.outcome.type === 'answer' && r.outcome.kind === 'cname'))

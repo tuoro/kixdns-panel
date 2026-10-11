@@ -177,7 +177,7 @@ const notice = computed<Notice | null>(() => {
   // 说出有几处，域名映射里有的就给去那里的按钮 / Say how many places, with a button to the domain mappings when some are there
   if (!canCname.value && cnameInUse.value && !capabilityError.value) return { tone: 'warn', text: `当前内核不支持 CNAME 回答：有 ${cnamePlaces.value.total} 处回答写的是域名，KixDNS 不会接受这份配置。把它们改成 IP，或者更新内核。`, action: cnamePlaces.value.mappings && section.value !== 'mapping' ? '去域名映射' : undefined, run: () => setTab('mapping') }
   // KixDNS 不接受带着它不支持的设置的配置：说清这一点和两条出路，按钮直接去基础设置 / KixDNS refuses a config carrying settings it does not support: say so with the two ways out, the button going straight to the settings
-  if (unsupportedFields.value.length) { const many = unsupportedFields.value.length > 1; return { tone: 'warn', text: `当前内核不支持：${unsupportedFields.value.join('、')}。这${many ? '几项' : '一项'}开着时 KixDNS 不接受这份配置：在基础设置里点${many ? '每一项' : '它'}旁边的「关掉」，或者更新内核。`, action: section.value === 'settings' ? undefined : '去基础设置', run: goUnsupported } }
+  if (unsupportedFields.value.length) { const many = unsupportedFields.value.length > 1; return { tone: 'warn', text: `当前内核不支持：${unsupportedFields.value.join('、')}。${many ? '它们' : '这一项'}开着时这份配置存不了（这个内核没有这项功能，开着也不起作用）：在基础设置里点${many ? '每一项' : '它'}旁边的「关掉」，或者更新内核。`, action: section.value === 'settings' ? undefined : '去基础设置', run: goUnsupported } }
   return null
 })
 function goUnsupported(): void {
