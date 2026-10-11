@@ -48,19 +48,31 @@ impl fmt::Display for UnsupportedConfigFields {
             "这一项"
         };
         let fields = self.fields.join("、");
+        let them = if self.fields.len() > 1 {
+            "它们"
+        } else {
+            "它"
+        };
+        // 句中点名设置时加「」，和页面上的写法一样 / Settings named mid-sentence take 「」, as the page writes them
+        let quoted = self
+            .fields
+            .iter()
+            .map(|field| format!("「{field}」"))
+            .collect::<Vec<_>>()
+            .join("、");
         // 两类都有时说一句：先列出来，再一起给出路，主语和出路各说一次
         // Both kinds: one sentence that lists them, then the ways out together, subject and remedy each said once
         match (self.fields.is_empty(), self.cname) {
             (false, false) => write!(
                 formatter,
-                "这个内核不支持配置里的：{fields}。在基础设置里关掉{it}再保存，或者换用支持它的内核"
+                "这个内核不支持配置里的：{fields}。在基础设置里关掉{it}再保存，或者换用支持{them}的内核"
             ),
             (true, true) => formatter.write_str(
                 "这个内核不支持 CNAME 回答：把回答写成域名的映射和规则改成 IP，或者换用支持它的内核",
             ),
             (false, true) => write!(
                 formatter,
-                "这个内核不支持：{fields}、CNAME 回答。关掉{fields}、把写成域名的回答改成 IP，或者换用支持它们的内核"
+                "这个内核不支持：{fields}、CNAME 回答。关掉{quoted}、把写成域名的回答改成 IP，或者换用支持它们的内核"
             ),
             (true, false) => Ok(()),
         }
@@ -228,7 +240,7 @@ mod tests {
             .to_string();
         assert_eq!(
             message,
-            "这个内核不支持：启用查询排行、CNAME 回答。关掉启用查询排行、把写成域名的回答改成 IP，或者换用支持它们的内核"
+            "这个内核不支持：启用查询排行、CNAME 回答。关掉「启用查询排行」、把写成域名的回答改成 IP，或者换用支持它们的内核"
         );
     }
 

@@ -572,7 +572,7 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
   if (path === '/api/v1/config/versions' && method === 'GET') return versions as T
   if (path === '/api/v1/config/versions/bulk' && method === 'DELETE') {
     const body = JSON.parse(String(init?.body)) as { ids: number[]; expected_sha256: string }
-    if (body.expected_sha256 !== config.sha256) throw new Error('配置已被其他操作修改，请刷新后重试')
+    if (body.expected_sha256 !== config.sha256) throw new Error('这份配置在别处改过了，先重新读取')
     const ids = [...new Set(body.ids)].sort((left, right) => left - right)
     if (ids.length === 0) throw new Error('请至少选择一个配置版本')
     if (ids.length > 100 || ids.some((id) => !Number.isInteger(id) || id <= 0)) {
@@ -598,7 +598,7 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
   if (configVersionMatch && method === 'DELETE') {
     const body = JSON.parse(String(init?.body)) as { expected_sha256: string }
     // 与后端 ConfigStore::delete_version 保持一致：待应用时校验编辑中的候选 SHA。
-    if (body.expected_sha256 !== config.sha256) throw new Error('配置已被其他操作修改，请刷新后重试')
+    if (body.expected_sha256 !== config.sha256) throw new Error('这份配置在别处改过了，先重新读取')
     const id = Number(configVersionMatch[1])
     if (id === currentConfigVersionId()) throw new Error('当前生效版本不能删除，请先恢复其他版本')
     const index = versions.versions.findIndex((version) => version.id === id)
@@ -632,7 +632,7 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
     if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-save-slow') === 'true') await new Promise((resolve) => setTimeout(resolve, 1500))
     const forcedConflict = typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-save-conflict') === 'true'
     if (forcedConflict) localStorage.removeItem('kixdns:demo-save-conflict')
-    if (forcedConflict || body.expected_sha256 !== config.sha256) throw new ApiError('配置已被其他操作修改，请刷新后重试', 409, 'config_conflict')
+    if (forcedConflict || body.expected_sha256 !== config.sha256) throw new ApiError('这份配置在别处改过了，先重新读取', 409, 'config_conflict')
     const nextSha = `demo${Date.now().toString(16)}`.padEnd(64, '0').slice(0, 64)
     const versionId = ++nextConfigVersionId
     const createdAt = Math.floor(Date.now() / 1000)
@@ -713,7 +713,7 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
   const restoreMatch = pathname.match(/^\/api\/v1\/config\/versions\/(\d+)\/restore$/)
   if (restoreMatch && method === 'POST') {
     const body = JSON.parse(String(init?.body)) as { expected_sha256: string }
-    if (body.expected_sha256 !== config.sha256) throw new Error('配置已被其他操作修改，请刷新后重试')
+    if (body.expected_sha256 !== config.sha256) throw new Error('这份配置在别处改过了，先重新读取')
     const sourceId = Number(restoreMatch[1])
     const sourceVersion = versions.versions.find((version) => version.id === sourceId)
     const content = configVersionContents.get(sourceId)

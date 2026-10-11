@@ -104,7 +104,8 @@ const levelFacts = computed(() => {
 // the facts stay and follow the tab.
 const skeletonRuntime = computed(() => loading.value && entries.value.length === 0)
 const skeletonAudit = computed(() => auditLoading.value && auditEvents.value.length === 0)
-const factsReady = computed(() => mode.value === 'runtime' ? !skeletonRuntime.value : !skeletonAudit.value)
+// 连不上面板、又什么都没读到时不写「最近一条 —」：和别的页一样只留下面那一句 / Unreachable with nothing read: no 「最近一条 —」, only the line below, as on the other pages
+const factsReady = computed(() => (mode.value === 'runtime' ? !skeletonRuntime.value : !skeletonAudit.value) && !(panelDown.value && activeCount.value === 0))
 const runtimeFiltered = computed(() => query.value !== '' || level.value !== 'all')
 const auditFiltered = computed(() => auditQuery.value !== '' || auditCategory.value !== 'all')
 // 读取失败且一行都没有：卡片收成只剩工具行。原因和重试都在上面的提示里，列表里不再说一遍。
@@ -410,7 +411,7 @@ watch(panelDown, (now, before) => { if (before && !now) void (mode.value === 'au
           <div v-if="mode === 'runtime'"><span class="ui-lbl">级别</span><b><UiDotText v-if="levelFacts.length" :parts="levelFacts" /><template v-else>{{ entries.length ? '无' : '—' }}</template></b></div>
         </div>
         <span v-if="factsReady" class="ui-ph__lead ui-ph__phone"><UiDotText :parts="[`最近一条 ${newest ?? '—'}`, ...(mode === 'runtime' ? levelFacts : [])]" /></span>
-        <span v-else class="sk logs-skeleton-meta" role="status" aria-label="读取日志"></span>
+        <span v-else-if="!(panelDown && activeCount === 0)" class="sk logs-skeleton-meta" role="status" aria-label="读取日志"></span>
       </template>
     </UiPageHeader>
     <!-- 页签在卡片外面，和概览、配置同一种区块页签；查询日志做好后排在最前面

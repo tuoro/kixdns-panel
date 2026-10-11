@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Check, ChevronDown, ChevronRight, LoaderCircle, Network, Power, TriangleAlert, X } from '@lucide/vue'
 import { computed, onMounted, ref, shallowRef } from 'vue'
-import { apiRequest, jsonBody } from '../api/client'
+import { apiRequest, isPanelDown, jsonBody } from '../api/client'
 import type { ConfigDocument, ConfigVersion, ConfigVersions, DnsDiagnostic, KixdnsKernel, Overview } from '../api/types'
 import { runningVersionId } from '../running-version'
 import UiDotText from '../components/ui/UiDotText.vue'
@@ -23,6 +23,8 @@ const recordType = ref('A')
 const running = ref(false)
 const result = ref<DnsDiagnostic | null>(null)
 const queryError = ref('')
+// 查询失败是因为连不上面板：不叫人去查域名（横幅已经说了原因） / The query failed because the panel was unreachable: do not send the user to check the domain (the banner says why)
+const queryPanelDown = ref(false)
 const types = ['A', 'AAAA', 'CNAME', 'MX', 'NS', 'TXT', 'SOA', 'PTR']
 // 记录类型用组件库的下拉框，和配置页同一个（规范 2.3） / The record type uses the kit select, the same as the config page (spec 2.3)
 const typeOptions = types.map((type) => ({ value: type, label: type }))
@@ -144,6 +146,7 @@ async function run(): Promise<void> {
   } catch (error) {
     // 失败写在结果的位置上就够了，再弹一条不会自己消失的提示是说两遍 / The failure in the result's place is enough; a toast that never clears would say it twice
     queryError.value = errorMessage(error)
+    queryPanelDown.value = isPanelDown(error)
   } finally {
     running.value = false
     if (keepFocus) domainInput.value?.focus()
@@ -187,7 +190,7 @@ async function run(): Promise<void> {
       <div class="sk diag-skeleton-verdict"></div>
       <div class="sk diag-skeleton-card"></div>
     </div>
-    <div v-else-if="queryError" class="diag-error" role="alert"><TriangleAlert :size="20" /><div><h2>查询失败</h2><p>{{ queryError }}</p><small>检查域名或服务状态后可重新查询。</small></div></div>
+    <div v-else-if="queryError" class="diag-error" role="alert"><TriangleAlert :size="20" /><div><h2>查询失败</h2><p>{{ queryError }}</p><small v-if="!queryPanelDown">检查域名或服务状态后可重新查询。</small></div></div>
     <div v-else-if="result" class="diagnostic-result diag-result">
       <!-- 每一块只回答一个问题：上面的结果卡回答「结果是什么」——响应码、回答、一行事实；
            下面的执行路径回答「怎么走的」。命中的规则在路径里带绿色对勾。

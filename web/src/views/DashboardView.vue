@@ -237,7 +237,8 @@ const upstreamFact = computed<string[]>(() => {
   const total = upstreamRows.value.length
   if (!total) return []
   const parts = [`${total} 个`]
-  if (!precisionSupported.value) return parts
+  // 连不上面板时判定是上次读到的：只写个数，不在「状态未知」旁边写「全部正常」 / With the panel unreachable the verdicts are last-read: only the count, no 全部正常 beside 状态未知
+  if (!precisionSupported.value || panelDown.value) return parts
   const { degraded, unhealthy, pending } = healthCounts.value
   if (degraded) parts.push(`${degraded} 个降级`)
   if (unhealthy) parts.push(`${unhealthy} 个异常`)
@@ -647,7 +648,7 @@ onMounted(async () => {
   statsTimer = window.setInterval(() => void loadStats(true), 60000)
 })
 // 连上面板后马上重读，不等下一次 15 秒的定时刷新 / Once the panel answers again re-read at once instead of waiting for the next 15-second tick
-watch(panelDown, (now, before) => { if (before && !now && !unmounted) { void load(true); void loadStats(true) } })
+watch(panelDown, (now, before) => { if (before && !now && !unmounted) { void loadNames(); void load(true); void loadStats(true) } })
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onViewportResize)
   unmounted = true

@@ -178,11 +178,11 @@ const notice = computed<Notice | null>(() => {
   if (!canCname.value && cnameInUse.value && !capabilityError.value) {
     const them = cnamePlaces.value.total > 1 ? '它们' : '它'
     // 同时还有开着的不支持的设置：一条提示把两件事都说了，保存条说的「有 N 项」和这里对得上 / Unsupported settings switched on as well: one notice says both, so the bar's 「有 N 项」 matches it
-    if (unsupportedFields.value.length) return { tone: 'warn', text: `当前内核不支持：CNAME 回答、${unsupportedFields.value.join('、')}。有 ${cnamePlaces.value.total}\u00a0处回答写的是域名，要把${them}改成 IP；开着的设置要在基础设置里关掉。或者更新内核。`, action: section.value === 'settings' ? (cnamePlaces.value.mappings ? '去域名映射' : undefined) : '去基础设置', run: () => (section.value === 'settings' ? setTab('mapping') : goUnsupported()) }
+    if (unsupportedFields.value.length) return { tone: 'warn', text: `当前内核不支持：${unsupportedFields.value.join('、')}、CNAME 回答。在基础设置里关掉${unsupportedFields.value.map((f) => `「${f}」`).join('、')}，把 ${cnamePlaces.value.total}\u00a0处写成域名的回答改成 IP，或者更新内核。`, action: section.value === 'settings' ? (cnamePlaces.value.mappings ? '去域名映射' : undefined) : '去基础设置', run: () => (section.value === 'settings' ? setTab('mapping') : goUnsupported()) }
     return { tone: 'warn', text: `当前内核不支持 CNAME 回答：有 ${cnamePlaces.value.total}\u00a0处回答写的是域名，KixDNS 不会接受这份配置。把${them}改成 IP，或者更新内核。`, action: cnamePlaces.value.mappings && section.value !== 'mapping' ? '去域名映射' : undefined, run: () => setTab('mapping') }
   }
   // KixDNS 不接受带着它不支持的设置的配置：说清这一点和两条出路，按钮直接去基础设置 / KixDNS refuses a config carrying settings it does not support: say so with the two ways out, the button going straight to the settings
-  if (unsupportedFields.value.length) { const many = unsupportedFields.value.length > 1; return { tone: 'warn', text: `当前内核不支持：${unsupportedFields.value.join('、')}。${many ? '它们' : '这一项'}开着时这份配置存不了（这个内核没有这项功能，开着也不起作用）：在基础设置里点${many ? '每一项' : '它'}旁边的「关掉」，或者更新内核。`, action: section.value === 'settings' ? undefined : '去基础设置', run: goUnsupported } }
+  if (unsupportedFields.value.length) { const many = unsupportedFields.value.length > 1; return { tone: 'warn', text: `当前内核不支持：${unsupportedFields.value.join('、')}。开着也不起作用，关掉才能保存：在基础设置里点${many ? '' : '它旁边的'}「关掉」，或者更新内核。`, action: section.value === 'settings' ? undefined : '去基础设置', run: goUnsupported } }
   return null
 })
 function goUnsupported(): void {

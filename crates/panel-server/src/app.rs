@@ -1502,7 +1502,7 @@ fn map_config_error(error: ConfigError) -> AppError {
         }
         ConfigError::Conflict => AppError::Conflict(
             "config_conflict",
-            "配置已被其他操作修改，请刷新后重试".to_owned(),
+            "这份配置在别处改过了，先重新读取".to_owned(),
         ),
         ConfigError::ActiveVersion => AppError::Conflict(
             "config_version_active",
