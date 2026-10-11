@@ -1877,8 +1877,8 @@ body { background: var(--l-canvas); }
 }
 @media (max-width: 640px) {
   .cfg__savebar.savebar--wrap .ui-savebar__detail, .cfg__savebar.ui-savebar--err .ui-savebar__detail { white-space: normal; }
-  /* 冲突时「下载草稿」「重新读取」在手机上自成一行：退回文字按钮的内边距，字和上面的说明对齐 / In a conflict on phones 下载草稿 and 重新读取 take a line of their own: the text buttons' padding is pulled back so their words line up with the text above */
-  .cfg__savebar .savebar__acts { margin-left: calc(var(--s-2) * -1); }
+  /* 冲突时「下载草稿」「重新读取」在手机上自成一行：退回小号文字按钮 12 的内边距，字和上面的说明对齐 / In a conflict on phones 下载草稿 and 重新读取 take a line of their own: the small text buttons' 12 padding is pulled back so their words line up with the text above */
+  .cfg__savebar .savebar__acts { margin-left: calc(var(--s-3) * -1); }
 }
 .cfg__savebar .ui-savebar__status:focus { outline: none; }
 
