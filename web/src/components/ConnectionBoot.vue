@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { WifiOff } from '@lucide/vue'
+import { CircleAlert, WifiOff } from '@lucide/vue'
 import { useConnection } from '../composables/useConnection'
 
 // 刚打开页面时就连不上面板：外壳还没挂上，这里占满页面说清楚，连上后路由接着打开要去的那一页
 // The panel is unreachable right as the page opens: the shell has not mounted, so this fills the page and says so; once it answers the router carries on to the page asked for
-const { booting, checking, retry } = useConnection()
+const { booting, bootError, checking, retry } = useConnection()
+const reload = () => window.location.reload()
 </script>
 
 <template>
@@ -14,6 +15,14 @@ const { booting, checking, retry } = useConnection()
       <h1>连不上面板</h1>
       <p>网络断了，或者面板正在重启。连上后会自动打开。</p>
       <button class="ui-btn ui-btn--secondary" type="button" :disabled="checking" @click="retry">{{ checking ? '正在重试' : '重试' }}</button>
+    </section>
+  </main>
+  <main v-else-if="bootError" class="boot" role="alert">
+    <section class="boot__card">
+      <CircleAlert :size="20" aria-hidden="true" />
+      <h1>打不开面板</h1>
+      <p>{{ bootError }}</p>
+      <button class="ui-btn ui-btn--secondary" type="button" @click="reload">重试</button>
     </section>
   </main>
 </template>

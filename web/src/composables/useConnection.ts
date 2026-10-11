@@ -10,6 +10,8 @@ const down = ref(false)
 const checking = ref(false)
 // 刚打开页面就连不上：外壳还没挂上，横幅也就没有，由启动时的等待页说 / Unreachable right at start: the shell has not mounted and neither has the banner, so the boot wait page says it
 const booting = ref(false)
+// 启动时面板答了话却是错误（比如 500）：不再留白页，等待页换成「打不开面板」和原因 / At start the panel answered with an error (a 500, say): no blank page, the wait page says 打不开面板 with the reason
+const bootError = ref('')
 let timer: ReturnType<typeof setInterval> | undefined
 
 // 浏览器自己知道断网时，不靠请求结果收起横幅 / While the browser itself reports offline, no request result takes the banner down
@@ -25,6 +27,8 @@ function markUp(): void {
   timer = undefined
   if (!down.value) return
   down.value = false
+  // 「还没联网」那句已经过时，和「已重新连上」不并排 / The 「not online yet」 note is stale now and does not sit beside 已重新连上
+  if (offlineToast !== null) { useToast().dismiss(offlineToast); offlineToast = null }
   useToast().success('已重新连上面板')
 }
 
@@ -71,7 +75,7 @@ export async function whenPanelAnswers<T>(read: () => Promise<T>): Promise<T> {
       booting.value = false
       return value
     } catch (error) {
-      if (!isPanelDown(error)) { booting.value = false; throw error }
+      if (!isPanelDown(error)) { booting.value = false; bootError.value = error instanceof Error ? error.message : '面板返回了错误'; throw error }
       booting.value = true
       markDown()
       await untilReachable()
@@ -97,14 +101,15 @@ export function stopConnectionWatch(): void {
 }
 
 // 重试：浏览器自己报断网时请求注定失败，说一句再等联网 / Retry: while the browser itself reports offline a request would fail anyway, so say so and wait for the network
+let offlineToast: number | null = null
 function retry(): Promise<void> {
   if (!browserOnline()) {
-    useToast().info('浏览器显示没有联网，联网后会自动重连')
+    offlineToast = useToast().info('浏览器显示没有联网，联网后会自动重连')
     return Promise.resolve()
   }
   return check()
 }
 
 export function useConnection() {
-  return { down: readonly(down), checking: readonly(checking), booting: readonly(booting), retry }
+  return { down: readonly(down), checking: readonly(checking), booting: readonly(booting), bootError: readonly(bootError), retry }
 }

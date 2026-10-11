@@ -155,7 +155,7 @@ function runImport(): void {
         <ul>
           <li v-for="r in shown" :key="r.id" class="rw__row" :class="{ 'is-off': !r.enabled, 'is-editing': editing.id === r.id }" :data-rw="r.id">
             <template v-if="editing.id === r.id">
-              <form class="rw__edit" @submit.prevent="commit(r)">
+              <form class="rw__edit" @submit.prevent="commit(r)" @keydown.esc.prevent="editing.id = -1">
                 <label class="ui-input ui-input--sm is-mono"><input v-model="editing.domain" aria-label="域名" :aria-invalid="Boolean(editing.error) || undefined" :aria-describedby="editing.error ? 'rw-edit-err' : undefined" @input="editing.error = ''"></label>
                 <label class="ui-input ui-input--sm is-mono"><input v-model="editing.target" aria-label="回答" :aria-invalid="Boolean(editing.error) || undefined" :aria-describedby="editing.error ? 'rw-edit-err' : undefined" @input="editing.error = ''"></label>
                 <label v-if="!splitList(editing.target).every(isIp)" class="ui-input ui-input--sm rw__ttl"><input v-model="editing.ttl" type="number" min="0" aria-label="TTL" placeholder="300"><i>秒</i></label>

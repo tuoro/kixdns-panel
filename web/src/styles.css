@@ -675,7 +675,7 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
 .auth-security { gap: var(--s-2); margin-top: var(--s-4); padding-top: var(--s-4); border-top: 1px solid var(--l-hair); color: var(--l-ink-3); font-size: var(--t-1); }
 .auth-security svg { margin-top: 2px; color: var(--l-ink-3); }
 /* 重置命令用等宽，长了能在任意处折行，不撑宽卡片 / The reset command is mono and may wrap anywhere instead of widening the card */
-.auth-security code { color: var(--l-ink-2); font-family: var(--f-mono); font-size: inherit; overflow-wrap: anywhere; }
+.auth-security code { color: var(--l-ink-2); font-family: var(--f-mono); font-size: inherit; white-space: nowrap; }
 @media (max-width: 640px) {
   .auth-panel { padding: var(--s-5) var(--s-4); }
   .auth-brand { margin-bottom: var(--s-5); }

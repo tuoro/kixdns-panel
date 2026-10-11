@@ -39,12 +39,14 @@ function onKey(event: KeyboardEvent): void {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
     event.preventDefault()
     // 弹层开着时不替它保存，但说一句该怎么做，不让按键没反应 / With a dialog open the bar does not save for it, but says what to do instead of swallowing the key
-    if (document.querySelector('dialog[open]')) { toast.info(dialogEdits.size ? '先点「完成」把这里的修改放进草稿，再保存' : '先关掉这个窗口，再保存'); return }
+    if (document.querySelector('dialog[open]')) { toast.info(dialogEdits.size ? '先点窗口里的按钮把修改放进草稿，再保存' : '先关掉这个窗口，再保存'); return }
     if (busy.value) return
     if (props.jsonError) toast.info('JSON 写错了，改好才能保存')
     else if (conflict.value && draftStage.value === 'failed') toast.info('别处已经保存了新版本，先重新读取')
     else if (blockedFields.value.length) toast.info(`当前内核不支持：${blockedFields.value.join('、')}，先关掉再保存`)
     else if (visible.value) saveDraft()
+    // 域名映射行里改了还没点保存：说一句，不说「没有要保存的修改」 / A domain-mapping row edited but not committed: say so instead of 没有要保存的修改
+    else if (dialogEdits.size) toast.info(`先保存${[...dialogEdits.values()][0]}，再保存配置`)
     else toast.info('没有要保存的修改')
   }
 }
@@ -112,13 +114,13 @@ function discard(): void {
       </p>
       <!-- JSON 写错时只留「放弃修改」：改不好也能回到草稿 / With broken JSON only 放弃修改 stays, so the way back to the draft is always there -->
       <button v-if="jsonError && !phone" class="ui-btn ui-btn--secondary savebar__discard" type="button" @click="discard">放弃修改</button>
-      <template v-if="draftStage !== 'done' && (pending || draftStage === 'failed') && !jsonError">
+      <template v-if="(draftStage !== 'done' || pending) && (pending || draftStage === 'failed') && !jsonError">
         <span v-if="busy && saveMessage" class="savebar__note-text">{{ saveMessage }}</span>
         <button class="ui-btn ui-btn--text savebar__note-toggle" :class="{ 'is-aside': busy }" type="button" :inert="busy" :aria-expanded="noteOpen || Boolean(saveMessage)" @click="noteOpen = !noteOpen">备注<ChevronDown class="ui-btn__chev" :size="16" aria-hidden="true" /></button>
         <label class="ui-input ui-savebar__note savebar__note" :class="{ 'is-open': noteOpen || Boolean(saveMessage), 'is-aside': busy }" :inert="busy"><input v-model="saveMessage" aria-label="版本备注" maxlength="160" placeholder="版本备注（可选）"></label>
         <!-- 保存旁边一定有放弃：丢掉草稿回到运行中的配置，提示里能撤销 / Save always comes with discard: drop the draft back to the running config, undoable from the toast -->
-        <button v-if="!phone" class="ui-btn ui-btn--secondary savebar__discard" :class="{ 'is-aside': busy }" type="button" :inert="busy" @click="discard">放弃修改</button>
-        <button v-if="!deferSave && !conflict" class="ui-btn ui-btn--secondary savebar__check" :class="{ 'is-aside': busy }" type="button" :inert="busy" @click="check"><ShieldCheck :size="16" aria-hidden="true" />校验</button>
+        <button v-if="!phone && pending" class="ui-btn ui-btn--secondary savebar__discard" :class="{ 'is-aside': busy }" type="button" :inert="busy" @click="discard">放弃修改</button>
+        <button v-if="!deferSave && !conflict && pending" class="ui-btn ui-btn--secondary savebar__check" :class="{ 'is-aside': busy }" type="button" :inert="busy" @click="check"><ShieldCheck :size="16" aria-hidden="true" />校验</button>
         <!-- 别处先存了新版本时再保存只会再失败一次：先重新读取 / After someone else saved, saving again only fails again: reload first -->
         <button ref="saveButton" class="ui-btn ui-btn--primary savebar__save config-save-button" type="button" :aria-busy="busy || undefined" :disabled="(conflict && draftStage === 'failed') || blockedFields.length > 0" @click="saveDraft"><span v-if="busy && stage !== 'checking'" class="ui-spin" aria-hidden="true"></span>{{ busy && stage !== 'checking' ? '保存中' : saveLabel }}</button>
       </template>

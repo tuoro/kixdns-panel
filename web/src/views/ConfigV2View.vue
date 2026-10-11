@@ -23,7 +23,7 @@ import SaveBar from '../config-v2/SaveBar.vue'
 import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
-import { dialogEdits, dirty, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
+import { dialogEdits, dirty, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
 import { applyBusy, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields } from '../config-v2/useConfigDocument'
 import { useHelp } from '../composables/useHelp'
 import { useServiceStart } from '../composables/useServiceStart'
@@ -157,7 +157,7 @@ const geoPrefixed = computed(() => [...model.rules, ...model.ruleGroups.flatMap(
 const cnameInUse = computed(() => model.mappings.some((m) => m.enabled && !/^[\d.:a-f, ]+$/i.test(m.target)) || model.rules.some((r) => r.outcome.type === 'answer' && r.outcome.kind === 'cname'))
 interface Notice { tone: 'err' | 'warn' | 'off'; text: string; detail?: string; action?: string; run?: () => void }
 const notice = computed<Notice | null>(() => {
-  if (loadError.value && doc.value) return { tone: 'err', text: '读取配置失败，下面是上一次读到的内容。', detail: loadError.value, action: '重试', run: () => void reload(false) }
+  if (loadError.value && doc.value) return { tone: 'err', text: '读取配置失败，下面是上一次读到的内容。', detail: loadError.value, action: '重试', run: () => void reload(true) }
   if (hasApplyFailure.value) {
     const reason = doc.value?.runtime.pending_error || doc.value?.pending?.error || 'KixDNS 没有给出原因。'
     // 草稿有修改时不给「重试应用」：那时保存的是草稿，重试会把草稿当成失败的那个版本发出去 / No retry while the draft has changes: saving then sends the draft, not the version that failed
@@ -342,7 +342,7 @@ onBeforeRouteLeave(async () => takeAgreement() || askLeave())
 onBeforeRouteUpdate(async (to, from) => {
   if (layoutSwap) return true
   // 换分区会卸下规则组、高级入口的弹层：里面有没写进草稿的修改就先问（浏览器返回也走这里） / Changing section unmounts the rule-group and 高级入口 dialogs: ask first when they hold unwritten edits (browser back comes through here too)
-  if (to.query.section !== from.query.section && dialogEdits.size && !(await confirm.ask({ title: `放弃${[...dialogEdits.values()][0]}的修改`, body: '刚才在这里改的内容不会写进草稿。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true }))) return false
+  if (to.query.section !== from.query.section && sectionEdits.size && !(await confirm.ask({ title: `放弃${dialogEdits.get([...sectionEdits][0]!) ?? '这里'}的修改`, body: '刚才在这里改的内容不会写进草稿。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true }))) return false
   const backOut = Boolean(from.query.rule) && !to.query.rule
   if (!editor.value || (to.query.section === from.query.section && !backOut)) return true
   if (!(await editorRef.value?.confirmDiscard() ?? true)) return false

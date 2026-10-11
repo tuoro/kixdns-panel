@@ -1,9 +1,12 @@
 <script setup lang="ts">
+import { useReturnFocus } from '../composables/useReturnFocus'
 import { keepTail } from './view'
 import { CircleAlert, Info, X } from '@lucide/vue'
 import { computed, onMounted, ref } from 'vue'
 import UiDotText from '../components/ui/UiDotText.vue'
 import { importReport, importSource } from './store'
+// 关上后焦点回到打开它的控件 / Focus returns to the opener on close
+useReturnFocus()
 
 // 导入说明：旧格式读进来时做了什么、哪些原样保留了。先说结论，再一条条列；要注意的排前面。
 // The import notes: what reading an older config did and what was kept verbatim. The verdict first, then each note, warnings on top.

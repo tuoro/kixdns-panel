@@ -395,7 +395,7 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
                 <div class="ui-pick" role="radiogroup" aria-label="结果">
                   <label v-for="o in OUTCOMES" :key="o.type" class="ui-pick__opt"><input type="radio" name="outcome-sheet" :checked="draft.outcome.type === o.type" @change="pickOutcome(o.type)"><b>{{ o.title }}</b><small>{{ o.desc }}</small></label>
                 </div>
-                <OutcomeParams v-if="draft.outcome.type !== 'continue'" :key="draft.outcome.type" v-model="draft.outcome as Outcome" :show-errors="showErrors" label="那么" @edit-group="sheet = null; emit('editGroup', $event)" />
+                <OutcomeParams v-if="draft.outcome.type !== 'continue'" :key="draft.outcome.type" v-model="draft.outcome as Outcome" :show-errors="showErrors" label="结果" @edit-group="sheet = null; emit('editGroup', $event)" />
               </PhoneSheet>
             </template>
             <template v-else>
@@ -405,7 +405,7 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
                 <b>{{ o.title }}</b><small class="visually-hidden">{{ o.desc }}</small>
               </label>
             </div>
-            <OutcomeParams v-if="draft.outcome.type !== 'continue'" :key="draft.outcome.type" v-model="draft.outcome as Outcome" class="tiles__params" :show-errors="showErrors" label="那么" @edit-group="emit('editGroup', $event)" />
+            <OutcomeParams v-if="draft.outcome.type !== 'continue'" :key="draft.outcome.type" v-model="draft.outcome as Outcome" class="tiles__params" :show-errors="showErrors" label="结果" @edit-group="emit('editGroup', $event)" />
             <p v-else class="oparams__note tiles__params">这条规则不决定结果，请求接着往下走。常和下面的「记录日志」一起用，只记录某些请求。</p>
             </template>
           </div>

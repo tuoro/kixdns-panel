@@ -162,7 +162,7 @@ body { background: var(--l-canvas); }
 .cfg__savebar { position: fixed; z-index: 30; border-top-color: transparent; box-shadow: 0 -1px 0 var(--l-hair), 0 -8px 24px var(--shadow-bar-tint); border-top-width: 0; }
 @media (min-width: 641px) {
   /* 保存条：备注框最宽 22rem，按钮组靠右；「放弃修改」和编辑页的「取消」一样带边 / Save bar: the note caps at 22rem with the buttons pushed right; 放弃修改 is outlined like the editor's 取消 */
-  .cfg__savebar:not(.ui-savebar--err) .savebar__note { flex: 0 1 22rem; margin-right: auto; }
+  .cfg__savebar .savebar__note { flex: 0 1 22rem; margin-right: auto; }
 }
 @media (min-width: 861px) {
   .cfg__nav:has(> .cfg__tabs) { display: none; }
@@ -594,6 +594,13 @@ body { background: var(--l-canvas); }
    At the 1024 step the content column is narrow: the outcome column drops to 11rem (the widest common pill is about 10rem), and the width it frees goes to the rule name and condition instead of cutting the condition mid-phrase */
 @media (min-width: 861px) and (max-width: 1199px) {
   .rlist, .rcard { --rl-cols: var(--s-6) minmax(0, 1fr) 11rem 4rem var(--s-7) var(--h-sm); }
+}
+/* 861–1023 有侧栏，规则名那一列只剩 90–130：和 860 以下一样收起命中列，结果列可缩，名字和条件拿回宽度
+   861–1023 has the sidebar and left the name column 90–130 wide: as below 860 the hits column folds away and the outcome column may shrink, giving width back to the name and condition */
+@media (min-width: 861px) and (max-width: 1023px) {
+  .rlist, .rcard { --rl-cols: var(--s-5) minmax(0, 1fr) minmax(8rem, 12rem) var(--s-7) var(--h-sm); }
+  .rlist__head > :nth-child(4), .rrow__hits { display: none; }
+  .rpin__link { grid-column: 4 / -1; }
 }
 @media (min-width: 641px) {
   /* 宽屏只有一行的规则行：没有第二行时不留它的位置，名字落在行的正中 / Wide one-line rule rows: with no second line nothing is reserved for it, so the name sits in the row's centre */
@@ -1043,13 +1050,13 @@ body { background: var(--l-canvas); }
    The full-page editor's condition table, when narrower than 40rem (the main column at 900 and 1024 with the sidebar), takes the inspector's two-line rows so values are no longer squeezed into 230 */
 .editor:not(.editor--inspector) .cform { container: cform / inline-size; }
 @container cform (max-width: 40rem) {
-  .cform__row { grid-template-columns: minmax(0, 1fr) auto var(--h-md); grid-template-areas: "label op x" "ctl ctl ctl"; row-gap: var(--s-1); align-items: center; }
-  .cform__row > .cform__label { grid-area: label; padding-top: 0; }
-  .cform__row > .cform__op { grid-area: op; }
-  .cform__row > .cform__label.cform__op { padding-top: 0; }
-  .cform__row > .cform__ctl { grid-area: ctl; }
-  .cform__row > .cform__x { grid-area: x; }
-  .cform__row > span:empty { display: none; }
+  .cform__row:not(.cform__prow) { grid-template-columns: minmax(0, 1fr) auto var(--h-md); grid-template-areas: "label op x" "ctl ctl ctl"; row-gap: var(--s-1); align-items: center; }
+  .cform__row:not(.cform__prow) > .cform__label { grid-area: label; padding-top: 0; }
+  .cform__row:not(.cform__prow) > .cform__op { grid-area: op; }
+  .cform__row:not(.cform__prow) > .cform__label.cform__op { padding-top: 0; }
+  .cform__row:not(.cform__prow) > .cform__ctl { grid-area: ctl; }
+  .cform__row:not(.cform__prow) > .cform__x { grid-area: x; }
+  .cform__row:not(.cform__prow) > span:empty { display: none; }
 }
 .editor--inspector .cform__group { margin-inline: calc(var(--s-3) * -1); }
 /* 结果：五个选项挤成一个分段 / Outcome: the five options become one segmented control */
@@ -1828,5 +1835,17 @@ body { background: var(--l-canvas); }
    Explanatory sentences are at least 12: setting notes, the hints under drawer fields, the tester's note. 11 stays for one- or two-word labels */
 @media (min-width: 641px) {
   .ui-setrow__label small, .pfield__hint, .tester__hint { font-size: var(--t-2); }
+}
+
+/* 手机工具行里只有图标的按钮（测试域名、新建规则、按结果筛选）：看起来 36，点按区域四边补到 44 / Icon-only toolbar buttons on phones (测试域名, 新建规则, 按结果筛选): they look 36, with a 44 hit area on every side */
+@media (max-width: 640px) {
+  .toolbar .toolbar__icon::before { inset: calc(min(0px, (100% - var(--h-touch)) / 2)); }
+}
+
+/* 整页编辑的卡片窄于 37rem（侧栏版 1160–1279、862–915）时，结果的五块不再按内容宽排成一条（会伸出卡片），改成五等分占满
+   When a full-page editor card is narrower than 37rem (1160–1279 and 862–915 with the sidebar), the five outcome tiles stop sizing to content (which ran past the card) and split the width into five */
+.editor:not(.editor--inspector) .ecard__body { container: ecard / inline-size; }
+@container ecard (max-width: 37rem) {
+  .tiles { display: grid; width: 100%; grid-template-columns: repeat(5, minmax(0, 1fr)); }
 }
 

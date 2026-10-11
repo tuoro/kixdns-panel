@@ -29,7 +29,7 @@ const shape = (g: UpstreamGroup): string => JSON.stringify({
 const initial = shape(draft)
 const edited = (): boolean => shape(draft) !== initial
 // 抽屉开着、改过时离开页面或刷新也先问 / With the drawer open and edited, leaving the page or reloading asks first too
-trackDialogEdits('这个上游组', edited)
+trackDialogEdits('这个上游组', edited, { outlivesSection: true })
 const confirm = useConfirm()
 async function leave(): Promise<void> {
   if (edited() && !(await confirm.ask({ title: '放弃这个上游组的修改', body: '刚才在这里改的内容不会写进草稿。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true }))) return
@@ -81,15 +81,19 @@ function done(): void {
   draft.addresses = draft.addresses.filter((a) => a.address.trim()).map((a) => ({ ...a, address: a.address.trim() }))
   if (!fallbackOn.value) draft.fallback = { group: '', onError: false, onPolluted: false }
   const saved = JSON.parse(JSON.stringify(draft)) as UpstreamGroup
-  if (original) model.groups.splice(model.groups.indexOf(original), 1, saved)
+  // 按 id 找回这个组再写：草稿被整份换过时手里的对象已经不在列表里，按对象找会写到别的组上 / Find the group by id before writing: if the draft was replaced the held object is no longer in the list, and finding it by object would write over another group
+  const at = original ? model.groups.findIndex((g) => g.id === original.id) : -1
+  if (original && at < 0) { emit('close'); return }
+  if (original) model.groups.splice(at, 1, saved)
   else model.groups.push(saved)
   emit('saved', saved, !original)
 }
 function remove(): void {
   if (!original || users.value.length) return
-  const index = model.groups.indexOf(original)
-  model.groups.splice(index, 1)
-  emit('deleted', original, index)
+  const index = model.groups.findIndex((g) => g.id === original.id)
+  if (index < 0) { emit('close'); return }
+  const [removed] = model.groups.splice(index, 1)
+  emit('deleted', removed!, index)
 }
 </script>
 

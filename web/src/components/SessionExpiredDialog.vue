@@ -15,8 +15,17 @@ const dialogEl = ref<HTMLDialogElement | null>(null)
 
 // 用 showModal 打开：抽屉、弹层都在浏览器的顶层里，普通的定位层盖不过它们，还会被它们变成不可点；后打开的模态框总在最上面
 // Opened with showModal: drawers and dialogs live in the browser's top layer, which no positioned layer can cover and which makes everything else inert; the last modal opened is always on top
+// 过期前焦点在哪：重新登录后放回去，不掉到页面开头 / Where focus was before expiry: put back after re-login instead of dropping to the page start
+let returnTo: HTMLElement | null = null
 watch(() => session.expired.value, async (expired) => {
-  if (!expired) return
+  if (!expired) {
+    const target = returnTo
+    returnTo = null
+    await nextTick()
+    if (target?.isConnected) target.focus()
+    return
+  }
+  returnTo = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null
   password.value = ''
   error.value = ''
   await nextTick()

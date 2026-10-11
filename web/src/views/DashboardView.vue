@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ChartColumn, CircleAlert, CircleX, Eraser, ListChecks, Power, RefreshCw, SlidersHorizontal } from '@lucide/vue'
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { apiRequest } from '../api/client'
 import type { CacheFlushResult, ConfigDocument, ConfigVersion, ConfigVersions, Overview, QueryStatsSnapshot, ServiceStatus, StatsClearResult } from '../api/types'
 import { readConfig } from '../config-model/document'
@@ -542,7 +542,20 @@ function compactCount(value: number): string {
 // Roughly how wide the bar chart is, for dropping axis labels that cannot fit: the card minus its padding on a phone; on wide screens the left column (the 1280 measure less the right column and the 20 gutter) minus the padding
 const viewportWidth = ref(typeof window === 'undefined' ? 1440 : window.innerWidth)
 const onViewportResize = () => { viewportWidth.value = window.innerWidth }
+// 柱图实际有多宽：量柱子那一层（不含右边刻度那一栏）；还没量到时按版式估 / How wide the bars really are: measured on the bar layer (without the right-hand axis gutter); estimated from the layout until measured
+const barsEl = ref<HTMLElement | null>(null)
+const measuredBars = ref(0)
+let barsObserver: ResizeObserver | null = null
+watch(barsEl, (node) => {
+  barsObserver?.disconnect()
+  barsObserver = null
+  if (!node || typeof ResizeObserver === 'undefined') return
+  barsObserver = new ResizeObserver(() => { measuredBars.value = node.getBoundingClientRect().width })
+  barsObserver.observe(node)
+})
+onBeforeUnmount(() => barsObserver?.disconnect())
 const chartPixels = computed(() => {
+  if (measuredBars.value > 0) return measuredBars.value
   const vw = viewportWidth.value
   if (vw < 641) return vw - 64
   const measure = Math.min(vw - 232 - 64, 1280)
@@ -581,7 +594,8 @@ const axisTicks = computed<AxisTick[]>(() => {
     // 落在采样断档里的整点没有柱子可挂，不画 / A whole hour inside a sampling gap has no bar to hang on and is skipped
     if (at >= from + bucket) continue
     const x = (index + (at - from) / bucket) / points.length
-    if ((1 - x) * px < (isNow ? 84 : 56)) continue
+    // 右端的「现在 HH:MM」约 66 宽、整点字半宽约 17，中间再留 4：不到 88 就让开 / The right-end 「现在 HH:MM」 is about 66 wide and a tick label half-width about 17, with 4 between: under 88 the tick gives way
+    if ((1 - x) * px < (isNow ? 88 : 56)) continue
     // 字居中在它的时刻上；离左端不到 18 时改为从那里向右写，不越出卡片 / Centred on its moment; within 18 of the left end it runs rightward from there instead of passing the card edge
     ticks.push({ x, label: `${date.getHours()}:00`, start: x * px < 18 })
   }
@@ -719,7 +733,7 @@ onBeforeUnmount(() => {
               </div>
               <div v-if="bars.length" class="overview-bars" role="img" :aria-label="`${trendWindow}每小时查询量`">
                 <div class="overview-bars-plot">
-                  <div class="overview-bars-cols">
+                  <div ref="barsEl" class="overview-bars-cols">
                     <i v-for="bar in bars" :key="bar.key" :class="{ 'is-live': bar.live }" :style="{ height: `${bar.share * 100}%` }" :title="bar.title"></i>
                   </div>
                   <span v-for="line in barScale.lines" :key="line.value" class="overview-bars-line" :style="{ bottom: `${line.share * 100}%` }"><i>{{ compactCount(line.value) }}</i></span>
@@ -1002,7 +1016,7 @@ onBeforeUnmount(() => {
 .overview-dot--pending { background: var(--l-ink-3); }
 
 /* ---------- 查询排行、规则命中：页签下一行说明，右边工具 ---------- */
-.overview-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-2) var(--s-4); }
+.overview-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-2) var(--s-4); min-height: var(--h-sm); }
 .overview-toolbar p, .overview-config-meta, .overview-runtime-note { margin: 0; color: var(--l-ink-3); font-size: var(--t-2); font-variant-numeric: tabular-nums; }
 .overview-toolbar-tools { display: flex; align-items: center; gap: var(--s-2); }
 /* 清空和「清空缓存」「停止」一样是带红边的按钮，盒子贴着版心右边 / 清空 is an outlined destructive button like 清空缓存 and 停止, its box on the measure's right edge */
@@ -1063,6 +1077,9 @@ onBeforeUnmount(() => {
 .overview-reload-error { margin: var(--s-1) 0 0; color: var(--warn-l); font-size: var(--t-2); overflow-wrap: anywhere; }
 .overview-config-line { display: none; margin: 0; color: var(--l-ink-2); font-size: var(--t-2); }
 .overview-config-hashes { padding-top: var(--s-3); border-top: 1px solid var(--l-hair); }
+/* 卡片只剩 270 宽时（1200–1350 的预览版式）摘要条照样两列：最宽的散列 112，放得下；按自动列它会掉成一列、把这一排撑高
+   With the card down to 270 (the preview layout at 1200–1350) the strip keeps two columns: the widest hash is 112 and fits; auto columns dropped it to one and stretched the row */
+@media (min-width: 641px) { .overview-config-hashes { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: var(--s-4); } }
 .overview-runtime-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); margin-left: auto; }
 
 /* ---------- 骨架：按结果实测的尺寸画，间距同结果 ---------- */

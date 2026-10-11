@@ -1,11 +1,12 @@
 import { computed, ref } from 'vue'
-import { ApiError, apiRequest, jsonBody } from '../api/client'
+import { ApiError, apiRequest, isPanelDown, jsonBody } from '../api/client'
 import type { ConfigApplyResult, ConfigDocument, ConfigRuntimeApplyState, ConfigVersion, ConfigVersionDetail, ConfigVersions, DeleteConfigVersionResult, DeleteConfigVersionsResult, Overview, ServiceStatus, ValidationResult } from '../api/types'
 import { SETTING_SECTIONS, settingSupported } from '../config-editor/schema'
 import { exportConfig, readConfig } from '../config-model/document'
+import type { Model } from '../config-model/model'
 import { traceNames } from '../config-model/trace-names'
 import { errorMessage } from '../utils'
-import { applyHits, applyUpstreamStats, changeCount, dialogEdits, dirty, editorEdited, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, reportOpen, unsaved } from './store'
+import { applyHits, applyUpstreamStats, changeCount, dirty, importReport, importSource, loadContent, model, rebaseApplied, reportOpen, unsaved } from './store'
 
 // 配置页和面板服务之间的事：读配置和历史、KixDNS 的运行状态和能力、校验、保存并热加载、现在应用。
 // 草稿本身在 store.ts；这里只管「文件」和「运行」。所有状态是模块级的，页面和保存条共用同一份。
@@ -197,11 +198,14 @@ export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: str
     // 读进草稿：散列对得上就是面板写的那份；对不上（手改过）会重新导入并给报告 / Into the draft: the hash matching means the panel wrote it; otherwise it is re-imported with a report
     // 重新读进来的是另一份草稿：上一份草稿的失败和冲突不再适用 / What is read in is a different draft: the previous draft's failure and conflict no longer apply
     if (!options.quiet) { conflict.value = false; if (stage.value === 'failed' || stage.value === 'done') finishStage('idle') }
-    const onlySent = options.sent !== undefined && JSON.stringify(model) === options.sent && !editorEdited.value && !jsonEdited.value && dialogEdits.size === 0
-    if (options.keepDraft && unsaved.value && !onlySent) {
+    // 保存之后（sent）一律只换对照的那份：草稿里的对象不换，开着的抽屉、规则面板拿着的还是同一个对象（以前整份换掉，保存途中打开的上游组抽屉会改到别的组）。
+    // 写进文件再读回来和草稿一样（store.test 里有往返测试），所以没再改过时「已修改」归零
+    // After a save (sent) only the baseline moves: the draft's objects stay, so an open drawer or rule panel still holds the same object (replacing them
+    // made an upstream-group drawer opened during a save write to another group). Writing and reading back equals the draft (round-trip test in store.test), so with no edits since, the count returns to zero
+    if (options.sent !== undefined || (options.keepDraft && unsaved.value)) {
       // 文件没变就什么都不动；变了（保存成功、别处改过）把对照的那份换成它，草稿里的修改照旧算修改
       // File unchanged: nothing moves; changed (a save went through, an edit elsewhere): the baseline becomes it and the draft's edits still count as edits
-      if (nextDoc.sha256 !== previousSha) rebaseApplied(readConfig(nextDoc.content, model).model)
+      if (options.sent !== undefined || nextDoc.sha256 !== previousSha) rebaseApplied(readConfig(nextDoc.content, model).model)
     } else {
       const read = loadContent(nextDoc.content, model)
       if (read.source === 'imported' && read.report && (read.report.stats.raw || read.report.notes.some((n) => n.level === 'warn'))) {
@@ -229,9 +233,11 @@ export async function validate(): Promise<ValidationResult | null> {
     finishStage('idle')
     return validation.value
   } catch (error) {
+    if (error instanceof ApiError && error.status === 401) { finishStage('idle'); return null }
     const stopped = stoppedError(error)
-    verdict.value = stopped ? 'KixDNS 已停止' : '没有通过校验'
-    finishStage('failed', stopped ? STOPPED_NOTE : friendlyRuntimeError(error))
+    const down = isPanelDown(error)
+    verdict.value = stopped ? 'KixDNS 已停止' : down ? '连不上面板' : '没有通过校验'
+    finishStage('failed', stopped ? STOPPED_NOTE : down ? '草稿还在，连上后再校验' : friendlyRuntimeError(error))
     if (stopped) await refreshRuntime().catch(() => undefined)
     return null
   }
@@ -262,19 +268,29 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
       stage.value = step
     }
     const result = await apiRequest<ConfigApplyResult>('/api/v1/config', { method: 'PUT', ...jsonBody({ content, expected_sha256: doc.value.sha256, message: saveMessage.value.trim() }) })
-    validation.value = result.validation ?? validation.value
     const pendingText = `已存成待应用版本 #${result.version_id}，${pendingWhen()}自动应用`
     saveMessage.value = ''
+    // 写入成功就先记下：文件的散列和版本换成这次的，对照的那份换成发出去的草稿。之后的重读失败了，也不会把已保存的算成修改、下次保存也不会撞上自己
+    // Record the write at once: the file hash and version become this save's, and the baseline becomes the draft that was sent. If the re-read after it fails,
+    // nothing saved counts as a change and the next save does not collide with itself
+    if (doc.value) doc.value = { ...doc.value, sha256: result.sha256, version_id: result.version_id }
+    rebaseApplied(JSON.parse(sent) as Model)
+    validation.value = null
     await load({ quiet: true, keepDraft: true, sent })
     // 保存途中又改了的：说一句那几处还没保存，不让「已生效」盖过它们 / Edits made during the save: say they are not saved yet, so 已生效 does not cover them
     const later = changeCount.value ? ` · 之后改的 ${changeCount.value} 处还没保存` : ''
     finishStage('done', `${applyResultState(result) === 'pending' ? pendingText : `已生效 · 版本 #${result.version_id}`}${later}`)
   } catch (error) {
+    // 会话过期：重新登录的框会盖上来，这里不挂「没通过校验」，登录后直接再保存 / Session expired: the re-login prompt covers the page; no 没有通过校验 here, the user saves again after signing in
+    if (error instanceof ApiError && error.status === 401) { finishStage('idle'); return }
     const reason = friendlyRuntimeError(error)
     const stopped = stoppedError(error)
-    verdict.value = stopped ? 'KixDNS 已停止' : step === 'validating' ? '没有通过校验' : '没有保存成功'
+    const down = isPanelDown(error)
+    // 写进文件以后 KixDNS 没接受：版本已经存下了，只是没生效 / KixDNS refused after the write: the version is stored, it just did not take
+    const writtenNotApplied = step === 'applying' && error instanceof ApiError && ['reload_failed', 'kixdns_rejected'].includes(error.code)
+    verdict.value = stopped ? 'KixDNS 已停止' : down ? '连不上面板' : writtenNotApplied ? '保存了，没有生效' : step === 'validating' ? '没有通过校验' : '没有保存成功'
     conflict.value = isConflict(error)
-    finishStage('failed', conflict.value ? '这份配置在别处改过了，现在的草稿是基于旧版本的' : stopped ? STOPPED_NOTE : reason)
+    finishStage('failed', conflict.value ? '这份配置在别处改过了，现在的草稿是基于旧版本的' : stopped ? STOPPED_NOTE : down ? '草稿还在，连上后再保存' : writtenNotApplied ? failureCause(reason) : reason)
     // 校验这一步没写入任何东西：只刷新运行状态，草稿和失败的说法都留着；写入以后失败才重读文件（草稿照样留着）
     // Nothing was written at the validation step: refresh the runtime only, keeping the draft and the verdict; only a failure after writing re-reads the file (the draft still stays)
     if (step === 'validating' || stopped) await refreshRuntime().catch(() => undefined)

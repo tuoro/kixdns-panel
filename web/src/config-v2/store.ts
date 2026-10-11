@@ -81,12 +81,17 @@ export const jsonEdited = ref(false)
 // 抽屉和弹层（上游组、规则组、高级入口）里还没写进草稿的修改；值是离开时问话里的称呼
 // Unfinished edits in drawers and dialogs (upstream group, rule group, advanced entries); the value names it in the leave question
 export const dialogEdits = shallowReactive(new Map<symbol, string>())
+// 跟着分区一起卸下的那些（规则组、高级入口、域名映射）：换分区前要问；上游组抽屉不跟分区走，换分区它还在，不问
+// The ones unmounted with their section (rule groups, 高级入口, domain mappings): a section change asks first; the upstream-group drawer outlives the section and does not ask
+export const sectionEdits = shallowReactive(new Set<symbol>())
 export const unsaved = computed(() => dirty.value || editorEdited.value || jsonEdited.value || dialogEdits.size > 0)
 /** 在组件 setup 里调用：改过就登记，改回去或卸下就注销 / Call in a component's setup: registered while edited, released when reverted or unmounted */
-export function trackDialogEdits(what: string, edited: () => boolean): void {
+export function trackDialogEdits(what: string, edited: () => boolean, options: { outlivesSection?: boolean } = {}): void {
   const me = Symbol(what)
-  watch(edited, (now) => { if (now) dialogEdits.set(me, what); else dialogEdits.delete(me) }, { immediate: true })
-  onBeforeUnmount(() => dialogEdits.delete(me))
+  watch(edited, (now) => {
+    if (now) { dialogEdits.set(me, what); if (!options.outlivesSection) sectionEdits.add(me) } else { dialogEdits.delete(me); sectionEdits.delete(me) }
+  }, { immediate: true })
+  onBeforeUnmount(() => { dialogEdits.delete(me); sectionEdits.delete(me) })
 }
 const OPTIONAL = ['mainId', 'mappingId', 'mainExtra', 'entries', 'trailingEntries', 'rawPipelines', 'extra'] as const
 export const UNMODELLED = ['mainId', 'mappingId', 'mainExtra', 'rawPipelines', 'extra'] as const
