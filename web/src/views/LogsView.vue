@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useNarrowDesktop } from '../config-v2/phone'
 import { CircleAlert, Download, RefreshCw, ScrollText, Search } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { apiRequest } from '../api/client'
@@ -10,6 +11,8 @@ import UiPageHeader from '../components/ui/UiPageHeader.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
 import { segmentLogMessage } from '../logs'
 import { actorName, errorMessage } from '../utils'
+// 侧栏版最窄的一档里审计搜索框只有 110 宽：占位换短的 / In the narrowest sidebar band the audit search is 110 wide, so its placeholder is shorter
+const narrow = useNarrowDesktop()
 
 const entries = ref<LogEntry[]>([])
 const auditEvents = ref<AuditEvent[]>([])
@@ -438,7 +441,7 @@ onBeforeUnmount(() => window.clearInterval(timer))
         </div>
       </header>
       <header v-else class="log-toolbar">
-        <label class="ui-input log-search"><Search :size="16" aria-hidden="true" /><input v-model="auditQuery" aria-label="筛选操作审计" placeholder="筛选操作者、动作或详情" /></label>
+        <label class="ui-input log-search"><Search :size="16" aria-hidden="true" /><input v-model="auditQuery" aria-label="筛选操作审计" :placeholder="narrow ? '筛选操作记录' : '筛选操作者、动作或详情'" /></label>
         <!-- 六个类别在手机上排成三列两行，和运行日志一样留在第二行 / The six categories go three by two on a phone, on the second row like the runtime levels -->
         <UiTabs class="log-category-seg" :model-value="auditCategory" :items="auditItems" label="审计动作类别" variant="segment" @update:model-value="selectAuditCategory" />
         <div class="log-toolbar__end">

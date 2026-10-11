@@ -64,6 +64,12 @@ function check(): void {
 onMounted(() => window.addEventListener('keydown', onKey))
 onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 const saveButton = ref<HTMLButtonElement | null>(null)
+const statusLine = ref<HTMLElement | null>(null)
+// 保存落地后按钮可能跟着收起：焦点掉到页面开头时放到状态那一行，读屏也会读到结果 / After a save lands the buttons may fold away: when focus falls to the page start it goes to the status line, which a screen reader then reads
+watch(() => draftStage.value, (now) => {
+  if (now !== 'done') return
+  void nextTick(() => { if (!document.activeElement || document.activeElement === document.body) statusLine.value?.focus() })
+})
 const bar = ref<HTMLElement | null>(null)
 // 点「已修改 N 处」看草稿和运行中的配置差在哪；从这里也能直接保存 / Clicking 已修改 N 处 shows how the draft differs from the running config, with save right there
 const reviewing = ref(false)
@@ -93,8 +99,8 @@ function discard(): void {
 
 <template>
   <Transition name="cfg-savebar">
-    <footer v-if="visible" ref="bar" class="ui-savebar cfg__savebar" :class="{ 'ui-savebar--err': draftStage === 'failed' || Boolean(jsonError) }">
-      <p :key="draftStage === 'failed' ? `f-${note}` : 'state'" class="ui-savebar__status" :class="{ 'ui-shake': draftStage === 'failed' }" :role="draftStage === 'failed' || jsonError ? 'alert' : 'status'">
+    <footer v-if="visible" ref="bar" class="ui-savebar cfg__savebar" :class="{ 'ui-savebar--err': draftStage === 'failed' || Boolean(jsonError) || blockedFields.length > 0, 'savebar--wrap': draftStage === 'done' && pending }">
+      <p :key="draftStage === 'failed' ? `f-${note}` : 'state'" ref="statusLine" tabindex="-1" class="ui-savebar__status" :class="{ 'ui-shake': draftStage === 'failed' }" :role="draftStage === 'failed' || jsonError ? 'alert' : 'status'">
         <template v-if="draftStage === 'done'"><svg class="ui-check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5" /></svg><span class="ui-savebar__detail">{{ note }}</span></template>
         <template v-else-if="draftStage === 'checking'"><span class="ui-spin" aria-hidden="true"></span><span class="ui-savebar__detail">校验中</span></template>
         <template v-else-if="draftStage === 'validating'"><span class="ui-spin" aria-hidden="true"></span><span class="ui-savebar__detail"><UiDotText :parts="['第 1 步', '校验', ...(elapsed ? [elapsed] : [])]" /></span></template>
@@ -122,7 +128,7 @@ function discard(): void {
         <button v-if="!phone && pending" class="ui-btn ui-btn--secondary savebar__discard" :class="{ 'is-aside': busy }" type="button" :inert="busy" @click="discard">放弃修改</button>
         <button v-if="!deferSave && !conflict && pending" class="ui-btn ui-btn--secondary savebar__check" :class="{ 'is-aside': busy }" type="button" :inert="busy" @click="check"><ShieldCheck :size="16" aria-hidden="true" />校验</button>
         <!-- 别处先存了新版本时再保存只会再失败一次：先重新读取 / After someone else saved, saving again only fails again: reload first -->
-        <button ref="saveButton" class="ui-btn ui-btn--primary savebar__save config-save-button" type="button" :aria-busy="busy || undefined" :disabled="(conflict && draftStage === 'failed') || blockedFields.length > 0" @click="saveDraft"><span v-if="busy && stage !== 'checking'" class="ui-spin" aria-hidden="true"></span>{{ busy && stage !== 'checking' ? '保存中' : saveLabel }}</button>
+        <button ref="saveButton" class="ui-btn ui-btn--primary savebar__save config-save-button" type="button" :aria-busy="busy || undefined" :disabled="conflict && draftStage === 'failed'" @click="saveDraft"><span v-if="busy && stage !== 'checking'" class="ui-spin" aria-hidden="true"></span>{{ busy && stage !== 'checking' ? '保存中' : saveLabel }}</button>
       </template>
     </footer>
   </Transition>

@@ -9,7 +9,7 @@ import { useConfirm } from '../composables/useConfirm'
 import { useToast } from '../composables/useToast'
 import { GEOSITE_SUGGESTIONS } from '../config-model/condKinds'
 import { isCidr, isDomain, newRule, outcomeSentence, rawMatchersText, type Condition, type Outcome, type Rule, type RuleGroup, ruleTitle } from '../config-model/model'
-import { usePhone } from './phone'
+import { useNarrowDesktop, usePhone } from './phone'
 import RuleList from './RuleList.vue'
 import Tester from './Tester.vue'
 import { model, newId, ruleGroupUsers, trackDialogEdits, ui } from './store'
@@ -55,6 +55,7 @@ const cond = (field: Condition['field'], values: string[], negate = false): Cond
 
 // ---------- 快速添加：一行写值，选结果，回车 / quick add: values on one line, pick an outcome, Enter ----------
 const phone = usePhone()
+const narrow = useNarrowDesktop()
 const quick = reactive({ text: '', target: '' })
 // 宽屏上快速添加藏在工具行的「快速添加」后面，点开才占一行；手机上一直在 / On wide screens quick add hides behind the toolbar's 快速添加 and takes a row only when opened; on phones it is always there
 const quickOpen = ref(false)
@@ -274,7 +275,7 @@ function saveEntries(): void {
         </div>
         <form v-if="phone || quickOpen" class="qadd" :class="{ 'is-typing': quick.text.trim() }" @submit.prevent="quickAdd">
           <Plus class="qadd__icon" :size="16" aria-hidden="true" />
-          <label class="qadd__input"><input ref="quickInput" v-model="quick.text" aria-label="快速添加：域名、GeoSite 或 IP 网段" :placeholder="'域名、geosite:分类 或网段，空格隔开'" autocapitalize="off" spellcheck="false"></label>
+          <label class="qadd__input"><input ref="quickInput" v-model="quick.text" aria-label="快速添加：域名、GeoSite 或 IP 网段" :placeholder="narrow ? '域名、geosite:分类 或网段' : '域名、geosite:分类 或网段，空格隔开'" autocapitalize="off" spellcheck="false"></label>
           <UiSelect v-model="quickTarget" class="qadd__target" :options="quickTargets" label="快速添加的结果" :size="phone ? 'md' : 'sm'" />
           <button class="ui-btn ui-btn--secondary qadd__btn" :class="{ 'ui-btn--sm': !phone }" type="submit" :disabled="!ok">{{ mergeInto ? '加进去' : '添加' }}</button>
           <p v-if="quickHint" class="qadd__hint" :class="{ 'is-err': !ok }" role="status">{{ quickHint }}</p>

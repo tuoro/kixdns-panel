@@ -58,7 +58,9 @@ export const changedSettingKeys = computed(() => {
 export const changeCount = computed(() => {
   const before = appliedModel.value
   const diff = <T extends { id: string | number }>(a: T[], b: T[], shape?: (x: T) => string) => changedIn(a, b, shape).size + a.filter((x) => !b.some((y) => y.id === x.id)).length
-  const order = (a: { id: string | number }[], b: { id: string | number }[]) => (a.length === b.length && a.map((x) => x.id).join() !== b.map((x) => x.id).join() ? 1 : 0)
+  // 顺序只比两边都有的那些：删一条再加一条不算挪过，和「改了哪些」一致 / Order compares only items on both sides: deleting one and adding another is not a move, matching the review
+  const shared = (x: { id: string | number }[], y: { id: string | number }[]) => x.filter((i) => y.some((j) => j.id === i.id)).map((i) => i.id).join()
+  const order = (a: { id: string | number }[], b: { id: string | number }[]) => (shared(a, b) !== shared(b, a) ? 1 : 0)
   const rgRules = model.ruleGroups.reduce((n, g) => { const p = before.ruleGroups.find((x) => x.id === g.id); return n + diff(p?.rules ?? [], g.rules, ruleShape) + order(p?.rules ?? [], g.rules) }, 0)
   const rgMeta = diff(before.ruleGroups.map((g) => ({ ...g, rules: [] })), model.ruleGroups.map((g) => ({ ...g, rules: [] })))
   return changedSettingKeys.value.size + diff(before.rules, model.rules, ruleShape) + order(before.rules, model.rules) + rgRules + rgMeta

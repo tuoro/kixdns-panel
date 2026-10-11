@@ -346,7 +346,7 @@ test('域名映射：行里改了没点完成就离开、批量导入写了内�
   await page.getByRole('button', { name: '批量导入' }).click()
   await page.getByLabel('要导入的域名映射').fill('tv.home.arpa 192.168.1.20')
   await page.keyboard.press('Escape')
-  await expect(page.getByRole('alertdialog', { name: '放弃批量导入的内容' })).toBeVisible()
+  await expect(page.getByRole('alertdialog', { name: '放弃批量导入的修改' })).toBeVisible()
 })
 
 test('上游组抽屉：备用组开了又关、没改什么就关上，不问也不提示「已更新」', async ({ page }) => {

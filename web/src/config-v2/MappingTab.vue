@@ -7,7 +7,7 @@ import UiMenu from '../components/ui/UiMenu.vue'
 import { useConfirm } from '../composables/useConfirm'
 import { useToast } from '../composables/useToast'
 import { isDomain, isIp, mappingIsIp, splitList, type Mapping } from '../config-model/model'
-import { usePhone } from './phone'
+import { useNarrowDesktop, usePhone } from './phone'
 import { changedMappingIds, model, newId, trackDialogEdits } from './store'
 import { canCname } from './useConfigDocument'
 
@@ -16,6 +16,7 @@ import { canCname } from './useConfigDocument'
 // address book, with an add line on top.
 const toast = useToast()
 const phone = usePhone()
+const narrow = useNarrowDesktop()
 const add = reactive({ domain: '', target: '' })
 const addError = ref('')
 const domainInput = ref<HTMLInputElement | null>(null)
@@ -68,6 +69,11 @@ async function edit(r: Mapping): Promise<void> {
   await nextTick()
   document.querySelector<HTMLInputElement>(`[data-rw="${r.id}"] input`)?.focus()
 }
+// Esc 取消这一行的修改，焦点回到这一行的「…」，不掉到页面开头 / Esc cancels the row edit and focus returns to the row's 「…」 instead of the page start
+function cancelEdit(r: Mapping): void {
+  editing.id = -1
+  void nextTick(() => document.querySelector<HTMLElement>(`[data-rw="${r.id}"] .ui-menu-host button`)?.focus())
+}
 function commit(r: Mapping): void {
   const p = problem(editing.domain, editing.target, r.id)
   if (p) { editing.error = p; return }
@@ -106,7 +112,7 @@ const importText = ref('')
 trackDialogEdits('批量导入', () => importText.value.trim() !== '')
 // Esc、点遮罩、关闭、取消：写了内容先问，和别的弹层一样 / Esc, a scrim tap, × and 取消: ask first when text was written, as other dialogs do
 async function leaveImport(): Promise<void> {
-  if (importText.value.trim() && !(await confirm.ask({ title: '放弃批量导入的内容', body: '写在这里的映射还没导入，关上就没了。', confirmLabel: '放弃', cancelLabel: '继续编辑', destructive: true }))) return
+  if (importText.value.trim() && !(await confirm.ask({ title: '放弃批量导入的修改', body: '写在这里的映射还没导入，关上就没了。', confirmLabel: '放弃', cancelLabel: '继续编辑', destructive: true }))) return
   importText.value = ''
   importDialog.value?.close()
 }
@@ -143,7 +149,7 @@ function runImport(): void {
            The add row shares the table's columns: domain and answer in their own columns, the type column shows the record it will answer as you type, 添加 at the row end. Borderless like the rules tab's quick add -->
       <form class="rw__add" :class="{ 'is-typing': add.domain.trim() || add.target.trim() }" @submit.prevent="submit">
         <Plus class="rw__addicon" :size="16" aria-hidden="true" />
-        <label class="rw__field rw__field--domain"><input ref="domainInput" v-model="add.domain" aria-label="要映射的域名" :placeholder="phone ? '添加域名映射：nas.home.arpa' : '添加域名：nas.home.arpa'" autocapitalize="off" spellcheck="false" @input="addError = ''"></label>
+        <label class="rw__field rw__field--domain"><input ref="domainInput" v-model="add.domain" aria-label="要映射的域名" :placeholder="phone ? '添加域名映射：nas.home.arpa' : narrow ? '添加域名' : '添加域名：nas.home.arpa'" autocapitalize="off" spellcheck="false" @input="addError = ''"></label>
         <label class="rw__field rw__field--target"><input v-model="add.target" aria-label="回答的 IP 或域名" placeholder="回答：IP 或域名" autocapitalize="off" spellcheck="false" @input="addError = ''"></label>
         <span class="rw__k rw__addkind" aria-live="polite"><span v-if="addKind" class="ui-tag ui-tag--mono">{{ addKind }}</span></span>
         <button class="ui-btn ui-btn--secondary rw__submit" :class="{ 'ui-btn--sm': !phone }" type="submit" :disabled="!add.domain.trim() || !add.target.trim()">添加</button>
@@ -155,7 +161,7 @@ function runImport(): void {
         <ul>
           <li v-for="r in shown" :key="r.id" class="rw__row" :class="{ 'is-off': !r.enabled, 'is-editing': editing.id === r.id }" :data-rw="r.id">
             <template v-if="editing.id === r.id">
-              <form class="rw__edit" @submit.prevent="commit(r)" @keydown.esc.prevent="editing.id = -1">
+              <form class="rw__edit" @submit.prevent="commit(r)" @keydown.esc.prevent="cancelEdit(r)">
                 <label class="ui-input ui-input--sm is-mono"><input v-model="editing.domain" aria-label="域名" :aria-invalid="Boolean(editing.error) || undefined" :aria-describedby="editing.error ? 'rw-edit-err' : undefined" @input="editing.error = ''"></label>
                 <label class="ui-input ui-input--sm is-mono"><input v-model="editing.target" aria-label="回答" :aria-invalid="Boolean(editing.error) || undefined" :aria-describedby="editing.error ? 'rw-edit-err' : undefined" @input="editing.error = ''"></label>
                 <label v-if="!splitList(editing.target).every(isIp)" class="ui-input ui-input--sm rw__ttl"><input v-model="editing.ttl" type="number" min="0" aria-label="TTL" placeholder="300"><i>秒</i></label>

@@ -1016,7 +1016,7 @@ onBeforeUnmount(() => {
 .overview-dot--pending { background: var(--l-ink-3); }
 
 /* ---------- 查询排行、规则命中：页签下一行说明，右边工具 ---------- */
-.overview-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-2) var(--s-4); min-height: var(--h-sm); }
+.overview-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-2) var(--s-4); min-height: var(--h-md); }
 .overview-toolbar p, .overview-config-meta, .overview-runtime-note { margin: 0; color: var(--l-ink-3); font-size: var(--t-2); font-variant-numeric: tabular-nums; }
 .overview-toolbar-tools { display: flex; align-items: center; gap: var(--s-2); }
 /* 清空和「清空缓存」「停止」一样是带红边的按钮，盒子贴着版心右边 / 清空 is an outlined destructive button like 清空缓存 and 停止, its box on the measure's right edge */
@@ -1058,7 +1058,9 @@ onBeforeUnmount(() => {
 .overview-rules .ui-rec-head > :nth-child(2), .overview-rules .ui-rec-head > :nth-child(3) { text-align: left; }
 .overview-rule { align-items: baseline; }
 /* 卡里的表：表头就是卡的第一行，最后一行不画底线、不留下边距 / The table in its card: the column names are the card's first line; the last row has no bottom rule or padding */
-.overview-rules-card .ui-rec:last-child { padding-bottom: 0; border-bottom: 0; }
+.overview-rules-card .ui-rec:last-child { min-height: 0; padding-bottom: 0; border-bottom: 0; }
+/* 手机上没有表头：第一行不留上边距，卡片上沿和别的卡一样 / Phones have no column head: the first row keeps no top padding, so the card's top inset matches the others */
+@media (max-width: 640px) { .overview-rules-card .ui-rec:first-of-type { padding-top: 0; } }
 .overview-rule-name { min-width: 0; font-size: var(--t-3); font-weight: var(--w-medium); overflow-wrap: anywhere; }
 .overview-rule-pipeline { min-width: 0; color: var(--l-ink-3); font-size: var(--t-2); overflow-wrap: anywhere; }
 .overview-rule-count { text-align: right; font-variant-numeric: tabular-nums; }
@@ -1079,7 +1081,7 @@ onBeforeUnmount(() => {
 .overview-config-hashes { padding-top: var(--s-3); border-top: 1px solid var(--l-hair); }
 /* 卡片只剩 270 宽时（1200–1350 的预览版式）摘要条照样两列：最宽的散列 112，放得下；按自动列它会掉成一列、把这一排撑高
    With the card down to 270 (the preview layout at 1200–1350) the strip keeps two columns: the widest hash is 112 and fits; auto columns dropped it to one and stretched the row */
-@media (min-width: 641px) { .overview-config-hashes { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: var(--s-4); } }
+@media (min-width: 641px) { .overview-config-hashes { grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); column-gap: var(--s-4); } }
 .overview-runtime-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); margin-left: auto; }
 
 /* ---------- 骨架：按结果实测的尺寸画，间距同结果 ---------- */

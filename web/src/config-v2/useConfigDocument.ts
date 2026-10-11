@@ -5,8 +5,9 @@ import { SETTING_SECTIONS, settingSupported } from '../config-editor/schema'
 import { exportConfig, readConfig } from '../config-model/document'
 import type { Model } from '../config-model/model'
 import { traceNames } from '../config-model/trace-names'
+import { dismissUndoable, useToast } from '../composables/useToast'
 import { errorMessage } from '../utils'
-import { applyHits, applyUpstreamStats, changeCount, dirty, importReport, importSource, loadContent, model, rebaseApplied, reportOpen, unsaved } from './store'
+import { applyHits, applyUpstreamStats, changeCount, dirty, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, reportOpen, unsaved } from './store'
 
 // 配置页和面板服务之间的事：读配置和历史、KixDNS 的运行状态和能力、校验、保存并热加载、现在应用。
 // 草稿本身在 store.ts；这里只管「文件」和「运行」。所有状态是模块级的，页面和保存条共用同一份。
@@ -54,7 +55,8 @@ export const unsupportedSection = computed(() => SETTING_SECTIONS.find((s) => s.
 // KixDNS 没启动、连不上、没报能力时，保存只存成待应用版本 / Saving only stores a pending version when KixDNS is down, unreachable or silent about capabilities
 export const deferSave = computed(() => runtimeStopped.value || runtimeUnavailable.value || Boolean(capabilityError.value))
 export const fileDiffers = computed(() => !hasPending.value && !hasApplyFailure.value && doc.value?.runtime.status === 'different')
-export const canApplyNow = computed(() => (hasPending.value || hasApplyFailure.value || fileDiffers.value) && !deferSave.value)
+// 草稿里有内核不支持的东西时，现在应用 / 重试应用也只会被拒：不给这两个按钮 / With something the kernel does not support in the draft, 现在应用 and 重试应用 would only be refused: neither is offered
+export const canApplyNow = computed(() => (hasPending.value || hasApplyFailure.value || fileDiffers.value) && !deferSave.value && blockedFields.value.length === 0)
 export const canSave = computed(() => (dirty.value || canApplyNow.value) && blockedFields.value.length === 0)
 
 // ---------- 保存的几步 / the save's stages ----------
@@ -259,7 +261,10 @@ function applyResultState(result: ConfigApplyResult): 'applied' | 'pending' {
 // origin: saving the draft (the save bar reports) or applying a saved version (the header reports, errors go to a notice). With
 // changes, or a file that differs from what runs, and KixDNS running, validate on its own first: a failure stops at step 1 with no version written.
 export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
-  if (busy.value || !doc.value || !canSave.value) return
+  if (busy.value || !doc.value) return
+  // 被内核不支持的设置挡住时说一句，不默默不动 / Blocked by unsupported settings: say so instead of doing nothing
+  if (blockedFields.value.length) { useToast().info(`当前内核不支持：${blockedFields.value.join('、')}，改好再保存`); return }
+  if (!canSave.value) return
   const content = exportConfig(model)
   const sent = JSON.stringify(model)
   origin.value = from
@@ -283,9 +288,11 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     if (doc.value) doc.value = { ...doc.value, sha256: result.sha256, version_id: result.version_id }
     rebaseApplied(JSON.parse(sent) as Model)
     validation.value = null
+    // 保存落地后，之前的「撤销」都过时了：撤回去会改掉刚保存的东西 / Once a save lands, earlier 撤销 toasts are stale: undoing would change what was just saved
+    dismissUndoable()
     await load({ quiet: true, keepDraft: true, sent })
     // 保存途中又改了的：说一句那几处还没保存，不让「已生效」盖过它们 / Edits made during the save: say they are not saved yet, so 已生效 does not cover them
-    const later = changeCount.value ? ` · 之后改的 ${changeCount.value} 处还没保存` : ''
+    const later = changeCount.value ? ` · 之后改的 ${changeCount.value} 处还没保存` : jsonEdited.value ? ' · JSON 里之后改的还没保存' : ''
     finishStage('done', `${applyResultState(result) === 'pending' ? pendingText : `已生效 · 版本 #${result.version_id}`}${later}`)
   } catch (error) {
     // 会话过期：重新登录的框会盖上来，这里不挂「没通过校验」，登录后直接再保存 / Session expired: the re-login prompt covers the page; no 没有通过校验 here, the user saves again after signing in
@@ -302,6 +309,9 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     // Nothing was written at the validation step: refresh the runtime only, keeping the draft and the verdict; only a failure after writing re-reads the file (the draft still stays)
     if (step === 'validating' || stopped) await refreshRuntime().catch(() => undefined)
     else if (shouldRefreshAfterSaveError(error)) await load({ quiet: true, keepDraft: true })
+    // 写进去了却没生效、草稿也没有别的修改：这件事交给页面上方的提示条（那里有「重试应用」），保存条退下，不再给第二个重试
+    // Written but not applied and nothing else in the draft: the notice above owns it (with 重试应用); the save bar steps aside instead of offering a second retry
+    if (writtenNotApplied && changeCount.value === 0 && from === 'draft') finishStage('idle')
     if (from === 'apply' && !hasApplyFailure.value) applyError.value = stopped ? 'KixDNS 已停止\n启动后自动应用待应用的版本' : `${step === 'validating' ? '磁盘上的配置没有通过校验' : '没有应用成功'}\n${reason}`
   }
 }

@@ -420,6 +420,9 @@ body { background: var(--l-canvas); }
   .rrow__cond { white-space: normal; }
   .rrow > .rrow__pill { display: flex; grid-area: pill; }
   .rrow__hits { display: inline; grid-area: hits; align-self: center; line-height: var(--lh-tight); }
+  /* 手机没有表头：命中数前写「命中」，没命中过就什么都不写，不留一个孤零零的「—」 / Phones have no column head: the count reads 命中 N, and a rule never matched shows nothing instead of a lone 「—」 */
+  .rrow .rrow__hits.is-zero { display: none; }
+  .rrow .rrow__hits-label { display: inline; }
   .rrow__switch { align-self: start; grid-area: switch; justify-self: end; margin-top: calc((var(--s-5) - var(--switch-h)) / 2); }
   .rcard__order { padding: var(--s-3) var(--s-4); display: none; }
   .rpin:not(.rpin--rest) .rrow__main { display: flex; align-items: baseline; gap: var(--s-2); }
@@ -979,7 +982,7 @@ body { background: var(--l-canvas); }
 .cform__prow .is-empty { color: var(--l-ink-3); }
 /* 出错时只把值（或「还没填值」）标红，比较照常 / On an error only the values (or 还没填值) turn red; the comparison stays as is */
 .cform__prow.is-bad .cform__sum > span { color: var(--err-l); }
-.cform__prow > svg { margin-right: -5px; color: var(--l-ink-3); }
+.cform__prow > svg { justify-self: end; margin-right: -6px; color: var(--l-ink-3); }
 .cform--phone .ui-menu-host { display: block; justify-self: stretch; }
 .cform__padd { width: 100%; display: flex; align-items: center; gap: 10px; min-height: var(--h-touch); padding: 0; border: 0; border-top: 1px solid var(--l-hair); background: none; color: var(--l-ink-2); font: inherit; font-size: var(--t-3); font-weight: var(--w-medium); cursor: pointer; }
 .cform--phone > .cform__empty + .ui-menu-host .cform__padd { border-top: 0; }
@@ -1484,7 +1487,8 @@ body { background: var(--l-canvas); }
 .rw__add .rw__hint, .rw__add .ui-field-error { padding-bottom: var(--s-1); }
 @media (min-width: 641px) {
   /* 映射表的开关列和「…」列和规则表一样宽，切页签时开关不挪位 / The mapping switch and menu columns match the rules table, so switches stay put across tabs */
-  .rw__head, .rw__row, .rw__addrow { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 10rem var(--s-7) var(--h-sm); }
+  /* 类型列最宽的是「CNAME」标签（约 49）：5rem 够了，省下的宽度给域名和回答 / The type column's widest content is the CNAME tag (about 49): 5rem is enough, and the width goes to the domain and answer */
+  .rw__head, .rw__row, .rw__addrow { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 5rem var(--s-7) var(--h-sm); }
   .rw__submit > svg { display: none; }
 }
 .rw__row.is-off > :not(.ui-switch) { opacity: .5; }
@@ -1850,4 +1854,17 @@ body { background: var(--l-canvas); }
 @container ecard (max-width: 37rem) {
   .tiles { display: grid; width: 100%; grid-template-columns: repeat(5, minmax(0, 1fr)); }
 }
+
+/* 保存完又有之后的修改：状态一句话单独一行，按钮在下一行，不再压在一起（手机） / A save landed with later edits: the status takes its own line and the buttons the next, no longer overlapping (phones) */
+@media (max-width: 860px) {
+  .cfg__savebar.savebar--wrap { flex-wrap: wrap; }
+  .cfg__savebar.savebar--wrap .ui-savebar__status { flex: 1 1 100%; flex-wrap: wrap; }
+}
+@media (max-width: 640px) {
+  .cfg__savebar.savebar--wrap .ui-savebar__detail, .cfg__savebar.ui-savebar--err .ui-savebar__detail { white-space: normal; }
+}
+.cfg__savebar .ui-savebar__status:focus { outline: none; }
+
+/* 宽屏有「命中」表头，数字前不再写一遍 / Wide screens have the 命中 column head, so the number carries no label */
+.rrow__hits-label { display: none; }
 
