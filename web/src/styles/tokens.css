@@ -93,7 +93,7 @@
   --auth-curve:   #ffffff;  /* 曲线：浅色是白线，暗色压到边线亮度 / the curves: white on light, pressed to edge-line brightness on dark */
   --l-ink:     #15171d;  /* 主文字 */
   --l-ink-2:   #4b5160;  /* 次要文字 */
-  --l-ink-3:   #80869a;  /* 注释文字、次要说明 */
+  --l-ink-3:   #676d82;  /* 注释文字、次要说明。在三种底色上都过 4.5:1（白 5.14、画布 4.68、下沉 4.50），原来的 #80869a 只有 3.2–3.6 / Notes and secondary captions; at least 4.5:1 on all three grounds (white 5.14, canvas 4.68, sunk 4.50) where the old #80869a managed only 3.2–3.6 */
 
   /* ---------- 品牌色 ----------
      一种靛色（Surge 的数据色），只用在：主按钮、选中态、链接、开关开态、聚焦环、图表主色、手机页签下划线。
@@ -131,7 +131,7 @@
   --ok-line-l: #cbe4d7;  /* 浅底：状态标签的边框 */
   --ok-d:      #4fae86;  /* 深底：健康 */
 
-  --warn-l:      #b26b0c;
+  --warn-l:      #9d5e0b;  /* 警告文字：三种底色和警告底上都过 4.5:1 / Warning text: at least 4.5:1 on all three grounds and on the warning tint */
   --warn-tint-l: #fbf0de;
   --warn-line-l: #edd8b0;
   --warn-d:      #d5a253;
