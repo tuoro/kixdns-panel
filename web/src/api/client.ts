@@ -22,6 +22,8 @@ export const SESSION_EXPIRED_EVENT = 'kixdns:session-expired'
 // 面板没答话（断网、面板在重启、反向代理后面没人）时广播，外壳据此挂出重连横幅 / Broadcast when the panel did not answer (network down, panel restarting, nothing behind the reverse proxy); the shell shows the reconnect banner
 export const PANEL_UNREACHABLE_EVENT = 'kixdns:panel-unreachable'
 
+const UNREACHABLE_MESSAGE = '连不上面板：网络断了，或者面板正在重启。稍后再试。'
+
 function reportUnreachable(): void {
   if (typeof window !== 'undefined') window.dispatchEvent(new Event(PANEL_UNREACHABLE_EVENT))
 }
@@ -45,6 +47,13 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}): Promi
   const requestInit = { ...init, method, headers }
   // 演示数据只在演示包里加载：生产包不带它，也不会执行它的顶层代码 / The demo backend loads only in the demo build: production neither ships nor runs its top-level code
   if (demoMode) {
+    // kixdns:demo-panel-down：演示面板没答话，和真的 fetch 失败走同一条路（横幅、重试、连上后重读都能在演示里看到）
+    // kixdns:demo-panel-down: the demo panel does not answer, taking the same path as a real fetch failure (banner, retry and the re-read after reconnecting all show in the demo)
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-panel-down') === 'true') {
+      await new Promise((resolve) => setTimeout(resolve, 120))
+      reportUnreachable()
+      throw new ApiError(UNREACHABLE_MESSAGE, 0, 'network_unreachable')
+    }
     const { mockRequest } = await import('./mock')
     return mockRequest<T>(path, requestInit)
   }
@@ -57,7 +66,7 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}): Promi
   }).catch((error: unknown) => {
     if (error instanceof DOMException && error.name === 'AbortError') throw error
     reportUnreachable()
-    throw new ApiError('连不上面板：网络断了，或者面板正在重启。稍后再试。', 0, 'network_unreachable')
+    throw new ApiError(UNREACHABLE_MESSAGE, 0, 'network_unreachable')
   })
   if (!response.ok) {
     if (

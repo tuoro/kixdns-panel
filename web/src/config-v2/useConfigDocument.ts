@@ -193,10 +193,17 @@ function applyRuntime(nextDoc: ConfigDocument, overview: Overview | null, servic
 // 只刷新运行状态，不碰草稿和文件的散列：草稿有修改时（比如在页头启动 KixDNS 之后）用它，保存时照样能发现别处的改动
 // Refresh only the runtime state, leaving the draft and the file hash alone: used while the draft has edits (after starting KixDNS from
 // the header, say), so a later save still notices changes made elsewhere
+// 运行数据读不到：KixDNS 那边的原因记成「没有报告能力」；连不上面板不是 KixDNS 的事，照样抛出去（横幅会说）
+// The runtime data failed: a cause on the KixDNS side counts as 没有报告能力; an unreachable panel is not KixDNS's doing and is rethrown (the banner says it)
+function overviewFailed(error: unknown): null {
+  if (isPanelDown(error)) throw error
+  capabilityError.value = friendlyRuntimeError(error)
+  return null
+}
 export async function refreshRuntime(): Promise<void> {
   const [nextDoc, overview, service] = await Promise.all([
     apiRequest<ConfigDocument>('/api/v1/config'),
-    apiRequest<Overview>('/api/v1/overview').catch((error: unknown) => { capabilityError.value = friendlyRuntimeError(error); return null }),
+    apiRequest<Overview>('/api/v1/overview').catch(overviewFailed),
     apiRequest<ServiceStatus>('/api/v1/service').catch(() => null),
   ])
   applyRuntime(nextDoc, overview, service)
@@ -218,7 +225,7 @@ export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: str
     const [nextDoc, history, overview, service] = await Promise.all([
       apiRequest<ConfigDocument>('/api/v1/config'),
       apiRequest<ConfigVersions>('/api/v1/config/versions'),
-      apiRequest<Overview>('/api/v1/overview').catch((error: unknown) => { capabilityError.value = friendlyRuntimeError(error); return null }),
+      apiRequest<Overview>('/api/v1/overview').catch(overviewFailed),
       apiRequest<ServiceStatus>('/api/v1/service').catch(() => null),
     ])
     applyRuntime(nextDoc, overview, service)
@@ -337,6 +344,19 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
   }
 }
 export const applyNow = () => void save('apply')
+/**
+ * 重新连上面板以后：「连不上面板」那句已经不对了，收起；没读到配置的整页重读；有没保存的修改时只刷新运行状态（草稿和文件散列不动，
+ * 别处的改动照样在保存时发现），没有就整份重读
+ * Back in touch with the panel: the 连不上面板 verdict is stale and goes; a page that never read the config reads it; with unsaved edits only the
+ * runtime is refreshed (the draft and the file hash stay, so changes made elsewhere still surface at save), otherwise the whole document is re-read
+ */
+export async function panelBack(): Promise<void> {
+  if (stage.value === 'failed' && verdict.value === '连不上面板') finishStage('idle')
+  if (busy.value) return
+  if (!doc.value) { await load(); return }
+  if (unsaved.value || conflict.value) await refreshRuntime().catch(() => undefined)
+  else await load({ quiet: true })
+}
 /** 待应用的版本什么时候自动应用：说出等的是什么 / When a pending version applies by itself: name what it waits for */
 export function pendingWhen(): string {
   if (runtimeStopped.value) return 'KixDNS 启动后'

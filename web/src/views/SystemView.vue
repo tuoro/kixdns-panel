@@ -12,7 +12,7 @@ import {
   Square,
   Trash2,
 } from '@lucide/vue'
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { apiRequest, jsonBody } from '../api/client'
 import type {
   GithubTokenStatus,
@@ -478,10 +478,13 @@ async function rollbackKernel(): Promise<void> {
   }
 }
 
-onMounted(() => {
+function loadPage(): void {
   void Promise.all([refreshAll(), refreshUpdates()]).then(() => loadGithubTokenStatus())
   void loadPanelUpdateStatus()
-})
+}
+onMounted(loadPage)
+// 连上面板后整页重读一次，不用人去点重试 / Once the panel answers again the whole page re-reads, with nobody pressing 重试
+watch(panelDown, (now, before) => { if (before && !now) loadPage() })
 
 onBeforeUnmount(() => {
   if (panelUpdateTimer) clearTimeout(panelUpdateTimer)

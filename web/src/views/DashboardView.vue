@@ -640,6 +640,8 @@ onMounted(async () => {
   timer = window.setInterval(() => void load(true), 15000)
   statsTimer = window.setInterval(() => void loadStats(true), 60000)
 })
+// 连上面板后马上重读，不等下一次 15 秒的定时刷新 / Once the panel answers again re-read at once instead of waiting for the next 15-second tick
+watch(panelDown, (now, before) => { if (before && !now && !unmounted) { void load(true); void loadStats(true) } })
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onViewportResize)
   unmounted = true
