@@ -14,7 +14,10 @@ export function registerLeaveGuard(ask: Ask): () => void {
 
 /** 先问登记过的页面；没有登记就直接放行。 / Ask the registered page first; pass straight through when none is registered. */
 export async function confirmLeave(): Promise<boolean> {
-  agreed = current ? await current() : true
+  // 没有页面登记就直接放行，也不记「同意过」：否则这一下会留到以后，让配置页某次离开不再问
+  // With no page registered it passes without recording agreement: otherwise the flag lingers and some later leave of the config page goes unasked
+  if (!current) return true
+  agreed = await current()
   return agreed
 }
 

@@ -8,7 +8,7 @@ import UiSelect from '../components/ui/UiSelect.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
 import { compile, isIp } from '../config-model/model'
 import { traceNames } from '../config-model/trace-names'
-import { describeStep, forwardTarget, formatElapsed, groupTrace, isDnsSuccess, parseDnsAnswer, responseCodeName, ruleName, traceTone, type TextPart } from '../diagnostics'
+import { describeStep, forwardTarget, formatElapsed, groupTrace, hidePlumbing, isDnsSuccess, parseDnsAnswer, responseCodeName, ruleName, traceTone, type TextPart } from '../diagnostics'
 import { errorMessage } from '../utils'
 import { dirty, findRuleByName, model } from './store'
 import { runtimeCapabilities } from './useConfigDocument'
@@ -73,7 +73,7 @@ const ok = computed(() => Boolean(result.value && isDnsSuccess(result.value.resp
 const verdict = computed(() => {
   if (!result.value) return ''
   if (!ok.value) return `回答 ${responseCodeName(result.value.response_code)}`
-  return answers.value.length ? `回答 ${answers.value.join('、')}` : '回答成功，但没有记录'
+  return answers.value.length ? `回答 ${answers.value.join('、')}` : '没有返回记录'
 })
 // 执行路径的每一行，和诊断页同一种整理：连着的未命中规则并成一行，只有命中规则那一步打勾 / The path's rows, folded as on the diagnostics page: consecutive misses share a row, only the matched rule gets a check
 const stepIdle = (status: string) => ['miss', 'missed', 'skipped'].includes(status)
@@ -81,7 +81,7 @@ const stepIdle = (status: string) => ['miss', 'missed', 'skipped'].includes(stat
 const names = computed(() => traceNames(model))
 const rows = computed(() => {
   let target: string | null = null
-  return groupTrace(result.value?.trace_supported ? result.value.trace : []).map((row) => {
+  return groupTrace(hidePlumbing(result.value?.trace_supported ? result.value.trace : [], names.value)).map((row) => {
     if (row.kind === 'step') {
       const view = { ...describeStep(row.step, { target, names: names.value }), tone: traceTone(row.step.status), decides: row.step.stage === 'rule' && row.step.status === 'matched', idle: stepIdle(row.step.status), elapsed: (row.sent ?? row.step).elapsed_ms }
       target = forwardTarget(row.sent ?? row.step) ?? target
@@ -104,7 +104,7 @@ const rows = computed(() => {
     </form>
     <!-- 第二行：客户端 IP、测哪份配置；内核不支持时不出现 / Second row: client IP and which config; absent when the kernel lacks them -->
     <div v-if="canClient || (canDraft && dirty)" class="tester__opts">
-      <label v-if="canClient" class="ui-input is-mono tester__client" :class="{ 'is-bad': clientProblem }"><input v-model="clientIp" aria-label="客户端 IP，可以不填" :aria-invalid="Boolean(clientProblem) || undefined" :aria-describedby="clientProblem ? 'tester-client-err' : undefined" placeholder="客户端 IP，默认本机" autocapitalize="off" spellcheck="false" @keydown.enter.prevent="run"></label>
+      <label v-if="canClient" class="ui-input is-mono tester__client" :class="{ 'is-bad': clientProblem }"><input v-model="clientIp" aria-label="客户端 IP，可以不填" :aria-invalid="Boolean(clientProblem) || undefined" :aria-describedby="clientProblem ? 'tester-client-err' : undefined" placeholder="客户端 IP，可不填" autocapitalize="off" spellcheck="false" @keydown.enter.prevent="run"></label>
       <UiTabs v-if="canDraft && dirty" :model-value="target" class="tester__target" :items="targets" label="测哪份配置" variant="segment" @update:model-value="target = $event as 'draft' | 'live'" />
     </div>
     <p v-if="clientProblem" id="tester-client-err" class="ui-field-error tester__error">{{ clientProblem }}</p>
@@ -127,7 +127,7 @@ const rows = computed(() => {
         </li>
       </ol>
       <p v-else class="tester__hint">这个内核不回报执行路径，只有回答。</p>
-      <p v-if="result.trace_truncated" class="tester__hint">执行轨迹已截断，上面只是一部分。</p>
+      <p v-if="result.trace_truncated" class="tester__hint">执行路径不完整，只显示了前面一部分。</p>
     </div>
   </section>
 </template>

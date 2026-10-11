@@ -80,15 +80,19 @@ export function finishStage(next: 'done' | 'failed' | 'idle', text = ''): void {
   // 「已生效」停三秒再回到平常；失败一直留着，直到再改或再存 / "Applied" stays three seconds; a failure stays until the next edit or save
   if (next === 'done') settleTimer = setTimeout(() => { if (stage.value === 'done') stage.value = 'idle' }, 3000)
 }
-// 再改一笔，上一次保存的结果就过时了 / A new edit makes the last save's outcome stale
-export function editTouched(): void { if (stage.value === 'done' || stage.value === 'failed') finishStage('idle') }
+// 再改一笔，上一次保存的结果就过时了；冲突除外：草稿还是基于旧版本，再存也一样失败，要等重新读取
+// A new edit makes the last save's outcome stale, except a conflict: the draft is still based on the old version and would fail again until re-read
+export function editTouched(): void {
+  if (conflict.value) return
+  if (stage.value === 'done' || stage.value === 'failed') finishStage('idle')
+}
 
 // ---------- 页头 / header ----------
 export interface HeaderStatus { tone: 'ok' | 'warn' | 'err' | 'off'; lead?: string; before: string; version?: number; after?: string }
 export const headerStatus = computed<HeaderStatus>(() => {
   if (hasApplyFailure.value) return { tone: 'err', before: '配置应用失败' }
   if (hasPending.value) return pendingVersionId.value ? { tone: 'warn', before: '版本 #', version: pendingVersionId.value, after: ' 待应用' } : { tone: 'warn', before: '配置待应用' }
-  if (runtimeStopped.value) return { tone: 'off', before: 'KixDNS 未启动' }
+  if (runtimeStopped.value) return { tone: 'off', before: 'KixDNS 已停止' }
   if (doc.value?.runtime.status === 'active') return currentVersionId.value ? { tone: 'ok', lead: '运行中', before: '版本 #', version: currentVersionId.value } : { tone: 'ok', before: '运行中' }
   if (fileDiffers.value) return { tone: 'warn', before: '文件与运行配置不同' }
   return { tone: 'off', before: '运行状态不可用' }
@@ -111,7 +115,7 @@ export const deferNote = computed(() => {
 
 // ---------- 错误的说法 / wording of errors ----------
 export function friendlyRuntimeMessage(message: string): string {
-  if (/No such file|os error 2|控制接口.*不可用|控制接口.*未启动/i.test(message)) return 'KixDNS 未启动，配置将保存为待应用版本'
+  if (/No such file|os error 2|控制接口.*不可用|控制接口.*未启动/i.test(message)) return 'KixDNS 已停止，保存后等它启动再应用'
   return message.replace(/^KixDNS\s*拒绝(?:操作|了这份配置|该配置)[：:，,]\s*/, '') || message
 }
 const friendlyRuntimeError = (error: unknown) => friendlyRuntimeMessage(errorMessage(error))
@@ -162,6 +166,8 @@ export function load(options: { quiet?: boolean } = {}): Promise<void> {
     doc.value = nextDoc
     versions.value = history.versions
     // 读进草稿：散列对得上就是面板写的那份；对不上（手改过）会重新导入并给报告 / Into the draft: the hash matching means the panel wrote it; otherwise it is re-imported with a report
+    // 重新读进来的是另一份草稿：上一份草稿的失败和冲突不再适用 / What is read in is a different draft: the previous draft's failure and conflict no longer apply
+    if (!options.quiet) { conflict.value = false; if (stage.value === 'failed' || stage.value === 'done') finishStage('idle') }
     const read = loadContent(nextDoc.content, model)
     if (read.source === 'imported' && read.report && (read.report.stats.raw || read.report.notes.some((n) => n.level === 'warn'))) {
       importReport.value = read.report

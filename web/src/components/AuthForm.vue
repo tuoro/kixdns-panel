@@ -63,8 +63,7 @@ async function submit(): Promise<void> {
       <!-- 首次运行的人心里有个没被回答的问题：我填完这个表，它会对我的 DNS 做什么。
            这块是静态文案，不含任何机器状态，所以不存在登录页那个暴露问题。 -->
       <ol v-if="isSetup" class="auth-next">
-        <li>创建后直接进入面板。</li>
-        <li>在「规则」里写好规则，点「保存并热加载」后才生效。</li>
+        <li>写好规则后点「保存并热加载」才会生效。</li>
         <li class="auth-next__promise">面板不会覆盖你已有的 KixDNS 配置。</li>
       </ol>
       <div class="auth-security">

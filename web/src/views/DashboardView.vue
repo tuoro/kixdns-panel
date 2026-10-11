@@ -404,13 +404,13 @@ async function clearQueryStats(): Promise<void> {
 async function flushCache(): Promise<void> {
   if (!await confirm.ask({
     title: '清空内部缓存',
-    body: `${formatNumber(displayOverview.value?.metrics.cache_entries ?? 0)} 条缓存条目会被丢弃。接下来一小段时间里这些域名要重新向上游查询，响应会变慢；解析结果本身不受影响。`,
+    body: `${formatNumber(displayOverview.value?.metrics.cache_entries ?? 0)} 条缓存会被丢弃。接下来一小段时间里这些域名要重新向上游查询，响应会变慢；解析结果本身不受影响。`,
     confirmLabel: '清空缓存',
   })) return
   flushing.value = true
   try {
     const result = await apiRequest<CacheFlushResult>('/api/v1/cache/flush', { method: 'POST' })
-    toast.success(`已清理 ${formatNumber(result.response_entries_before + result.rule_entries_before)} 个缓存条目`)
+    toast.success(`已清空 ${formatNumber(result.response_entries_before + result.rule_entries_before)} 条缓存`)
     await load(true)
   } catch (error) {
     toast.error(errorMessage(error))
@@ -838,7 +838,7 @@ onBeforeUnmount(() => {
       </section>
 
       <section id="overview-panel-rules" v-show="activeView === 'rules'" class="overview-view" role="tabpanel" aria-labelledby="overview-tab-rules" tabindex="0">
-        <div v-if="rules.length" class="overview-toolbar"><p class="ui-dots"><span>启动以来</span><span>请求和回答后两个阶段的命中次数</span></p></div>
+        <div v-if="rules.length" class="overview-toolbar"><p class="ui-dots"><span>启动以来</span><span>每条规则的命中次数</span></p></div>
         <div v-if="rules.length" class="overview-rules">
           <div class="ui-rec-head"><span>阶段</span><span>规则</span><span>Pipeline</span><span>命中次数</span></div>
           <div v-for="rule in rules" :key="`${rule.pipeline}:${rule.phase}:${rule.rule}`" class="ui-rec overview-rule">

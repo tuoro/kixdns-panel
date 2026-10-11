@@ -454,7 +454,6 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
 .system-skeleton-panel { height: calc(var(--s-8) * 2); }
 .system-check-failed { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-3); padding-bottom: var(--s-1); color: var(--l-ink-3); font-size: var(--t-2); overflow-wrap: anywhere; }
 .system-stale { color: var(--warn-l); overflow-wrap: anywhere; }
-.system-stale__act { margin-left: var(--s-2); color: var(--l-ink); white-space: nowrap; }
 .system-error { flex-basis: 100%; color: var(--err-l); overflow-wrap: anywhere; }
 /* 版本号不在中间断开：窄屏上只在箭头和空格处换行 / A version never breaks mid-number: narrow screens wrap at the arrow */
 .update-row__from-to .ui-mono, .update-row__keep { white-space: nowrap; }
@@ -1000,7 +999,7 @@ body:has(.editor:not(.editor--inspector)) .toast-stack { bottom: calc(var(--edit
 /* 检查器开着时提示条让到它左边，不盖它的「完成」 / With the inspector open the toast moves left of it, never over its 完成 button */
 @media (min-width: 1360px) { body:has(.rules-split.is-open) .toast-stack { right: calc(var(--s-6) + var(--inspector-w) + var(--s-5)); } }
 @media (max-width: 860px) {
-  .toast-stack { top: auto; right: var(--s-3); bottom: calc(var(--mobile-nav-height) + var(--s-3)); width: calc(100vw - var(--s-3) * 2); }
+  .toast-stack { top: auto; right: var(--s-4); bottom: calc(var(--mobile-nav-height) + var(--s-3)); width: calc(100vw - var(--s-4) * 2); }
   body:has(.cfg__savebar) .toast-stack { bottom: calc(var(--mobile-nav-height) + var(--savebar-h, calc(var(--h-md) + var(--s-2) * 2)) + var(--s-3)); }
   /* 整页编辑器时底部导航不显示，底栏是「取消 / 完成」 / With the full-page editor the bottom navigation is hidden and the footer is 取消 / 完成 */
   body:has(.editor:not(.editor--inspector)) .toast-stack { bottom: calc(var(--editor-foot-h, calc(var(--h-md) + var(--s-3) * 2)) + var(--s-3)); }
@@ -1051,3 +1050,7 @@ body:has(.editor:not(.editor--inspector)) .toast-stack { bottom: calc(var(--edit
   .password-field button { inset: 0 0 0 auto; }
   .account-button::before { position: absolute; inset: calc(var(--s-1) * -1) calc(var(--s-2) * -1); content: ''; }
 }
+/* 641–860 的提示条和桌面一样窄、靠右，不横跨整个平板宽度；手机上左右和页面一样留 16 / At 641–860 toasts stay narrow and right-aligned as on desktop instead of spanning the tablet; on phones they keep the page's 16 at each side */
+@media (min-width: 641px) and (max-width: 860px) { .toast-stack { right: var(--s-6); width: min(360px, calc(100vw - var(--s-6) * 2)); } }
+/* 审计的动作是中文名：正文字；认不出的动作 id 才用等宽 / Audit actions are Chinese names in body text; only an unknown action id stays mono */
+.audit-line .audit-action:not(.ui-mono) { font-family: var(--f-body); }

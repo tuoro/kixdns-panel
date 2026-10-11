@@ -1639,8 +1639,8 @@ body { background: var(--l-canvas); }
    Removed lines on a faint red, added lines on a faint green, in both themes from the status tints: both used to be grey, and in dark mode one read sunken and the other raised */
 .diffd__block li.is-del { background: var(--err-tint-l); color: var(--l-ink-2); }
 .diffd__block li.is-add { background: var(--ok-tint-l); }
-.diffd__block li.is-del .diffd__sign { color: var(--err-l); }
-.diffd__block li.is-add .diffd__sign { color: var(--ok-l); }
+.diffd__block li.is-del .diffd__sign, .diffd__sign.is-del { color: var(--err-l); }
+.diffd__block li.is-add .diffd__sign, .diffd__sign.is-add { color: var(--ok-l); }
 .hist .pdrawer__panel { width: min(32.5rem, 100%); }
 /* 历史版本：行的字和抽屉标题左边对齐；当前版本的备注是墨色，不像停用 / History: row text lines up with the drawer title; the current version's note is ink, not disabled-looking */
 .hist__list { padding: var(--s-2) var(--s-3); }
@@ -1771,3 +1771,26 @@ body { background: var(--l-canvas); }
   .cfg__head-action { position: relative; }
   .cfg__head-action::before { position: absolute; inset: calc(min(0px, (100% - var(--h-md)) / 2)); content: ''; }
 }
+
+/* ---------- 9.5 审查第二轮 / review round 2 ---------- */
+/* 「已修改 N 处」的下划线连到数字下面：数字的每一位是 inline-block，文字下划线不会自己画进去，让它们各画一段
+   The 已修改 N 处 underline runs under the count too: each digit is an inline-block that a text underline skips, so each draws its own piece */
+.savebar__review :is(.ui-num, .ui-num__digit) { text-decoration: inherit; }
+/* JSON 视图的卡片：行号栏用卡片的白底加一道细线，卡片伸到离视口底边 24，最后一行下面留一点空，不被切半
+   The JSON view's card: the gutter takes the card's white with a hairline, the card reaches 24 above the viewport's bottom, and the last line keeps a little room instead of being sliced */
+.cfg__json-editor .cm-gutters { background: var(--l-surface); }
+.cfg__json-editor .cm-content { padding-bottom: var(--s-2); }
+@media (min-width: 641px) { .cfg__json-editor.json-editor { height: max(440px, calc(100dvh - 17rem)); } }
+/* 规则编辑的名称框聚焦和别的输入框一样：强调色边加一圈淡光 / The rule name field focuses like every other field: the accent edge with a faint halo */
+.editor__name:focus { border-color: var(--accent); box-shadow: var(--ring-field); }
+/* 规则组还没有时，和规则列表空着时同一种虚线框 / No rule groups yet: the same dashed empty row as an empty rule list */
+.rgroups__none { display: flex; align-items: center; gap: var(--s-2); margin: var(--s-3) 0 0; padding: var(--s-3) var(--s-4); border: 1px dashed var(--l-line-strong); border-radius: var(--r-2); color: var(--l-ink-2); font-size: var(--t-2); }
+.rgroups__none > svg { flex: 0 0 auto; }
+@media (max-width: 640px) {
+  /* 手机上对话框底栏两个按钮平分，和抽屉一样 / On phones a dialog's footer splits its two buttons evenly, as drawers do */
+  .pdialog__foot > .ui-btn { flex: 1 1 0; }
+}
+/* 宽屏的映射添加行不画「+」：它挤在卡片内边距里，左边的强调条和占位字已经说明这是添加 / The wide mapping add row drops the 「+」: it was squeezed into the card padding, and the accent bar and placeholder already say "add" */
+@media (min-width: 641px) { .rw__addicon { display: none; } }
+/* 1024 以下表头的长说明会把「子域名」折成两行，收起来；帮助里有同样的话 / Below 1024 the header's long note broke 子域名 across lines, so it folds away; the help says the same */
+@media (max-width: 1023px) { .rw__head .rlist__order { display: none; } }

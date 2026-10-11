@@ -15,14 +15,14 @@ import GroupEditor from '../config-v2/GroupEditor.vue'
 import HistoryDrawer from '../config-v2/HistoryDrawer.vue'
 import ImportReportDialog from '../config-v2/ImportReportDialog.vue'
 import MappingTab from '../config-v2/MappingTab.vue'
-import RuleEditor from '../config-v2/RuleEditor.vue'
+import RuleEditor, { type EditorResume } from '../config-v2/RuleEditor.vue'
 import RulesTab from '../config-v2/RulesTab.vue'
 import RuleText from '../config-v2/RuleText.vue'
 import SaveBar from '../config-v2/SaveBar.vue'
 import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
-import { usePhone, useWide } from '../config-v2/phone'
-import { dirty, discardWithUndo, importReport, importSource, model, replaceModel, reportOpen, ui } from '../config-v2/store'
+import { useCompact, usePhone, useWide } from '../config-v2/phone'
+import { dirty, discardWithUndo, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
 import {
   applyBusy, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, friendlyRuntimeMessage, hasApplyFailure, headerAction, headerLine,
   load, loadError, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields,
@@ -45,19 +45,20 @@ const router = useRouter()
 const toast = useToast()
 const confirm = useConfirm()
 const phone = usePhone()
+const compact = useCompact()
 const wide = useWide()
 const tabs = [{ value: 'rules', label: '规则' }, { value: 'upstreams', label: '上游组' }, { value: 'mapping', label: '域名映射' }, { value: 'settings', label: '基础设置' }]
 const section = computed(() => (tabs.some((t) => t.value === route.query.section) ? String(route.query.section) : 'rules'))
 watch(section, (s) => { ui.tab = s }, { immediate: true })
-const pageTitle = computed(() => (phone.value || ui.mode === 'json' ? '配置' : tabs.find((t) => t.value === section.value)?.label ?? '配置'))
+const pageTitle = computed(() => (compact.value || ui.mode === 'json' ? '配置' : tabs.find((t) => t.value === section.value)?.label ?? '配置'))
 function setTab(t: string): void {
   if (ui.mode === 'json' && !leaveJson()) return
-  void router.replace({ query: { ...route.query, section: t === 'rules' ? undefined : t } })
+  void router.replace({ query: { ...route.query, section: t === 'rules' ? undefined : t, rule: undefined } })
 }
 const ready = computed(() => !loading.value && Boolean(doc.value))
 const firstRun = computed(() => ready.value && ui.mode === 'form' && !model.groups.length && !model.rules.length)
 // 宽屏上规则在右侧面板里编辑，列表留在左边；窄屏和手机仍是整页编辑 / On wide screens a rule is edited in the right-hand inspector with the list on the left; narrow screens and phones keep the full-page editor
-const editor = ref<{ ruleId: number | null; groupId: string | null; template?: Partial<Rule> } | null>(null)
+const editor = ref<{ ruleId: number | null; groupId: string | null; template?: Partial<Rule>; resume?: EditorResume | null } | null>(null)
 const inspector = computed(() => editor.value !== null && wide.value && section.value === 'rules' && ui.mode === 'form')
 const groupEditor = ref<{ id: string | null } | null>(null)
 const historyOpen = ref<{ compare: number | null } | null>(null)
@@ -69,36 +70,58 @@ function showGroupRules(groupId: string): void {
 }
 
 // ---------- 规则编辑 / editing rules ----------
-// 面板里那条规则改过还没点「完成」：换别的规则、新建之前先问 / The panel's rule has edits not yet 完成: ask before switching to another rule or a new one
-const inspectorRef = ref<InstanceType<typeof RuleEditor> | null>(null)
+// 宽屏面板和整页编辑共用一个 ref：换规则、换分区、开 JSON 之前先问还没点「完成」的修改
+// The wide panel and the full-page editor share one ref: switching rule, section or to JSON first asks about edits not yet 完成
+const editorRef = ref<InstanceType<typeof RuleEditor> | null>(null)
+// 整页编辑记进浏览器历史（?rule=）：手机上的返回手势回到列表，而不是直接离开配置页；面板不进历史，换行不会堆一串记录
+// The full-page editor goes into browser history (?rule=): a phone's back gesture returns to the list instead of leaving the config
+// page; the panel stays out of history, so switching rows does not pile up entries
 async function openRule(ruleId: number | null, groupId: string | null, template?: Partial<Rule>): Promise<void> {
   if (ui.mode === 'json' && !leaveJson()) return
-  if (inspector.value && editor.value && (ruleId === null || editor.value.ruleId !== ruleId) && !(await inspectorRef.value?.confirmDiscard() ?? true)) return
+  if (editor.value && (ruleId === null || editor.value.ruleId !== ruleId) && !(await editorRef.value?.confirmDiscard() ?? true)) return
   editor.value = { ruleId, groupId, template }
   // 宽屏的面板贴在列表旁边，不跳回页顶，列表停在原处 / On wide screens the panel sits beside the list, so the list keeps its place
-  if (!(wide.value && section.value === 'rules')) window.scrollTo({ top: 0 })
+  if (!(wide.value && section.value === 'rules')) {
+    window.scrollTo({ top: 0 })
+    if (!route.query.rule) void router.push({ query: { ...route.query, rule: ruleId === null ? 'new' : String(ruleId) } })
+  }
+}
+// 关掉整页编辑时把那条历史退掉，地址回到列表 / Closing the full-page editor steps back out of its history entry, so the address is the list again
+function leaveEditorHistory(): void {
+  if (route.query.rule) router.back()
 }
 function closeRule(): void {
   const id = editor.value?.ruleId
   editor.value = null
+  leaveEditorHistory()
   if (id !== null && id !== undefined) requestAnimationFrame(() => { const row = document.querySelector<HTMLElement>(`[data-rule="${id}"]`); row?.scrollIntoView({ block: 'center' }); row?.querySelector<HTMLElement>('.rrow__main')?.focus() })
 }
 function ruleSaved(rule: Rule, isNew: boolean): void {
   editor.value = null
+  leaveEditorHistory()
   // 手机上编辑器占整页，完成时保存条还看不见：提示里说一句还要保存；桌面上保存条就在旁边，不重复
   // On a phone the editor fills the page and the save bar is not in view at 完成, so the toast says a save is still due; on desktop the bar sits right there
   toast.success(`${isNew ? '已添加' : '已更新'}「${ruleTitle(rule)}」${phone.value ? '，保存后生效' : ''}`)
+  // 焦点回到这一行，键盘接着往下走，不掉到页面开头 / Focus returns to the row so the keyboard carries on from there instead of dropping to the page start
   requestAnimationFrame(() => {
     const row = document.querySelector<HTMLElement>(`[data-rule="${rule.id}"]`)
     row?.scrollIntoView({ block: 'center' })
+    row?.querySelector<HTMLElement>('.rrow__main')?.focus({ preventScroll: true })
     row?.classList.add('is-fresh')
     setTimeout(() => row?.classList.remove('is-fresh'), 1600)
   })
 }
 function ruleDeleted(rule: Rule, index: number, list: Rule[]): void {
   editor.value = null
+  leaveEditorHistory()
   toast.undoable(`已删除「${ruleTitle(rule)}」`, () => list.splice(Math.min(index, list.length), 0, rule))
 }
+// 宽窄切换会把面板换成整页编辑（或反过来），换之前把没点「完成」的修改交给下一个
+// A width change swaps the panel for the full-page editor (or back); before the swap the edits not yet 完成 are handed over
+watch(inspector, (now, before) => {
+  if (!editor.value || now === before || !editorRef.value) return
+  editor.value = { ...editor.value, resume: editorRef.value.capture() }
+}, { flush: 'pre' })
 function groupSaved(group: UpstreamGroup, isNew: boolean): void {
   groupEditor.value = null
   toast.success(isNew ? `已新建上游组「${group.name}」` : `已更新「${group.name}」`)
@@ -121,7 +144,7 @@ const notice = computed<Notice | null>(() => {
   }
   if (applyError.value) { const [text, ...detail] = applyError.value.split('\n'); return { tone: 'err', text: `${text}。`, detail: detail.join('\n') } }
   // 警告排在说明前面：永远不命中的规则比导入说明要紧 / Warnings rank above information: a rule that never matches matters more than the import notes
-  if (geoPrefixed.value) return { tone: 'warn', text: `${geoPrefixed.value} 个 GeoSite 条件多写了「geosite:」前缀，内核找不到这个分类，永远不会命中。`, action: '去掉前缀', run: stripPrefix }
+  if (geoPrefixed.value) return { tone: 'warn', text: `${geoPrefixed.value} 个 GeoSite 条件多写了「geosite:」前缀，内核找不到对应的分类，永远不会命中。`, action: '去掉前缀', run: stripPrefix }
   if (importReport.value && !reportOpen.value && importReport.value.stats.raw) return { tone: 'off', text: `这份配置是按内核格式读进来的，${importReport.value.stats.raw} 条规则原样保留为高级规则。`, action: '查看导入说明', run: () => { reportOpen.value = true } }
   // 没运行、连不上时页头已经说了，功能列表拿不到是它的结果，不另起一条 / When stopped or unreachable the header says so; the missing feature list follows from it
   if (capabilityError.value && !runtimeStopped.value && !runtimeUnavailable.value) return { tone: 'off', text: 'KixDNS 没有报告它支持哪些功能，新功能先按不支持处理。' }
@@ -163,12 +186,26 @@ function parseProblem(text: string): { line: number; column: number; reason: str
 // JSON 里改过还没读回表单的部分也算草稿：保存条升起、离开要问、保存前先读回来
 // JSON edits not yet read back into the form count as draft too: the save bar rises, leaving asks, and a save reads them back first
 const jsonDirty = computed(() => ui.mode === 'json' && jsonText.value !== jsonBase.value)
-const unsaved = computed(() => dirty.value || jsonDirty.value)
+watch(jsonDirty, (now) => { jsonEdited.value = now }, { immediate: true })
 const compiledText = (): string => JSON.stringify(compile(model), null, 2)
-function enterJson(): void {
+// JSON 文本按草稿重写一遍：放弃、撤销之后，JSON 视图里也是草稿现在的样子 / Rewrite the JSON text from the draft: after discard or undo the JSON view shows the draft as it now is
+function resetJsonText(): void {
   jsonText.value = compiledText()
   jsonBase.value = jsonText.value
+}
+// 打开 JSON 视图之前，规则编辑里没点「完成」的修改先问一句，再关掉编辑 / Before opening the JSON view, ask about rule edits not yet 完成, then close the editor
+async function enterJson(): Promise<void> {
+  if (editor.value) {
+    if (!(await editorRef.value?.confirmDiscard() ?? true)) return
+    editor.value = null
+    leaveEditorHistory()
+  }
+  resetJsonText()
   ui.mode = 'json'
+}
+// 放弃草稿以后：JSON 视图里改了一半或写错的文字一起丢掉 / After a discard, half-made or broken edits in the JSON view go too
+function afterDiscard(): void {
+  if (ui.mode === 'json') resetJsonText()
 }
 // 把 JSON 里的修改读回草稿 / Read the JSON edits back into the draft
 function foldJson(): void {
@@ -189,14 +226,14 @@ function leaveJson(): boolean {
 // 保存、校验之前（save）：面板里没点「完成」的修改和 JSON 里的修改先收进草稿；放弃和查看之前（fold）只收 JSON 里的
 // Before save or validate (save): the panel's edits not yet 完成 and the JSON edits go into the draft first; before discard or review (fold) only the JSON ones
 function flush(purpose: 'save' | 'fold'): boolean {
-  if (purpose === 'save' && inspector.value && inspectorRef.value && !inspectorRef.value.commit()) return false
+  if (purpose === 'save' && editor.value && editorRef.value && !editorRef.value.commit()) return false
   if (jsonDirty.value) {
     if (jsonError.value) return false
     foldJson()
   }
   return true
 }
-function setMode(m: string): void { if (m === 'json') enterJson(); else leaveJson() }
+function setMode(m: string): void { if (m === 'json') void enterJson(); else leaveJson() }
 const modes = [{ value: 'form', label: '表单', icon: Settings2 }, { value: 'json', label: 'JSON', icon: Braces }]
 const moreItems = computed(() => [
   { value: 'history', label: '历史版本', icon: History, disabled: !ready.value },
@@ -214,7 +251,7 @@ function pickMore(value: string): void {
   else if (value === 'import') fileInput.value?.click()
   else if (value === 'download') downloadJson()
   else if (value === 'help') help.show('config')
-  else if (value === 'discard') { flush('fold'); discardWithUndo() }
+  else if (value === 'discard') { if (!jsonError.value) flush('fold'); discardWithUndo(); afterDiscard() }
   else void reload()
 }
 
@@ -260,16 +297,31 @@ async function reload(ask = true): Promise<void> {
 // ---------- 进出页面 / entering and leaving ----------
 // JSON 文本只活在这一页里：回到配置页总是从表单开始，免得 JSON 视图空着又切不回表单
 // The JSON text lives only on this page: coming back always starts in the form, so the JSON view never reopens empty and stuck
-const askLeave = async (): Promise<boolean> => !unsaved.value || confirm.ask({ title: '放弃未保存的修改', body: '当前的配置草稿会被丢弃，已经生效的配置不受影响。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
+// 只有规则编辑里没点「完成」的修改时，问的是这条规则；草稿或 JSON 有修改时问整份草稿 / With only a rule edit not yet 完成 the question is about that rule; with draft or JSON edits it is about the whole draft
+const askLeave = async (): Promise<boolean> => {
+  if (!unsaved.value) return true
+  if (!dirty.value && !jsonDirty.value) return confirm.ask({ title: '放弃这条规则的修改', body: '刚才在这里改的内容不会写进草稿。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
+  return confirm.ask({ title: '放弃未保存的修改', body: '当前的配置草稿会被丢弃，已经生效的配置不受影响。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
+}
 const releaseGuard = registerLeaveGuard(askLeave)
-onMounted(() => { ui.mode = 'form'; void load(); window.addEventListener('beforeunload', beforeUnload) })
+onMounted(() => {
+  ui.mode = 'form'
+  // 刷新后编辑器不在了，地址里的 ?rule= 也去掉 / After a reload the editor is gone, so ?rule= leaves the address too
+  if (route.query.rule) void router.replace({ query: { ...route.query, rule: undefined } })
+  void load()
+  window.addEventListener('beforeunload', beforeUnload)
+})
 const beforeUnload = (e: BeforeUnloadEvent) => { if (unsaved.value) { e.preventDefault(); e.returnValue = '' } }
-onBeforeUnmount(() => { window.removeEventListener('beforeunload', beforeUnload); releaseGuard(); ui.mode = 'form' })
+onBeforeUnmount(() => { window.removeEventListener('beforeunload', beforeUnload); releaseGuard(); ui.mode = 'form'; jsonEdited.value = false })
 onBeforeRouteLeave(async () => takeAgreement() || askLeave())
-// 换分区前，面板里没点「完成」的修改先问一句 / Before switching section, ask about panel edits not yet 完成
+// 换分区、或者从整页编辑按返回：规则编辑里没点「完成」的修改先问一句；同意了就关掉编辑
+// Switching section, or pressing back out of the full-page editor: first ask about rule edits not yet 完成; once agreed the editor closes
 onBeforeRouteUpdate(async (to, from) => {
-  if (to.query.section === from.query.section || !inspector.value) return true
-  return (await inspectorRef.value?.confirmDiscard()) ?? true
+  const backOut = Boolean(from.query.rule) && !to.query.rule
+  if (!editor.value || (to.query.section === from.query.section && !backOut)) return true
+  if (!(await editorRef.value?.confirmDiscard() ?? true)) return false
+  editor.value = null
+  return true
 })
 watch(section, () => { editor.value = null; void nextTick(() => window.scrollTo({ top: 0 })) })
 // 页头说「KixDNS 未启动」时就地启动；启动后重读运行状态，有待应用的版本页头会换成「现在应用」
@@ -284,7 +336,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
 </script>
 
 <template>
-  <RuleEditor v-if="editor && !inspector" :key="`${editor.ruleId}-${editor.groupId}`" :rule-id="editor.ruleId" :group-id="editor.groupId" :template="editor.template" @close="closeRule" @saved="ruleSaved" @deleted="ruleDeleted" @edit-group="groupEditor = { id: $event }" />
+  <RuleEditor v-if="editor && !inspector" ref="editorRef" :key="`${editor.ruleId}-${editor.groupId}`" :rule-id="editor.ruleId" :group-id="editor.groupId" :template="editor.template" :resume="editor.resume" @close="closeRule" @saved="ruleSaved" @deleted="ruleDeleted" @edit-group="groupEditor = { id: $event }" />
   <div v-else class="page cfg">
     <UiPageHeader :title="pageTitle">
       <template #meta>
@@ -320,8 +372,9 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
     </div>
 
     <input ref="fileInput" class="visually-hidden" type="file" accept=".json,application/json" @change="importFile">
-    <!-- 手机上页签在这一行；桌面上页签在侧栏里，这一行只在 JSON 视图时出现 / Phones keep the tabs on this row; on desktop they live in the sidebar and the row appears only in the JSON view -->
-    <div v-if="!firstRun && (phone || ui.mode === 'json')" class="cfg__nav">
+    <!-- 侧栏收起时（≤860）分区页签在这一行；宽屏上分区在侧栏里，这一行只在 JSON 视图时出现（≥861 由 CSS 藏起页签）
+         With the sidebar folded (≤860) the section tabs sit on this row; on wide screens sections live in the sidebar and the row shows only in the JSON view (CSS hides the tabs at ≥861) -->
+    <div v-if="!firstRun && (compact || ui.mode === 'json')" class="cfg__nav">
       <p v-if="ui.mode === 'json'" class="cfg__whole"><span>完整配置</span><button class="ui-btn ui-btn--text ui-btn--sm ui-btn--inline cfg__to-form" type="button" @click="setMode('form')">回到表单</button></p>
       <UiTabs v-else class="cfg__tabs" :model-value="section" :items="tabs" label="配置分类" id-prefix="cfg" @update:model-value="setTab" />
     </div>
@@ -342,13 +395,13 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
     <div v-else :id="`cfg-panel-${section}`" class="cfg__panel" role="tabpanel" :aria-labelledby="`cfg-tab-${section}`">
       <div v-if="section === 'rules'" class="rules-split" :class="{ 'is-open': inspector }">
         <RulesTab :selected="editor?.ruleId ?? null" @open="openRule" @tab="setTab" @edit-group="groupEditor = { id: $event }" @import="fileInput?.click()" />
-        <RuleEditor v-if="inspector && editor" ref="inspectorRef" :key="`${editor.ruleId}-${editor.groupId}`" inspector :rule-id="editor.ruleId" :group-id="editor.groupId" :template="editor.template" @close="closeRule" @saved="ruleSaved" @deleted="ruleDeleted" @edit-group="groupEditor = { id: $event }" />
+        <RuleEditor v-if="inspector && editor" ref="editorRef" :key="`${editor.ruleId}-${editor.groupId}`" inspector :rule-id="editor.ruleId" :group-id="editor.groupId" :template="editor.template" :resume="editor.resume" @close="closeRule" @saved="ruleSaved" @deleted="ruleDeleted" @edit-group="groupEditor = { id: $event }" />
       </div>
       <UpstreamsTab v-else-if="section === 'upstreams'" @edit="groupEditor = { id: $event }" @rules="showGroupRules" />
       <MappingTab v-else-if="section === 'mapping'" />
       <SettingsTab v-else />
     </div>
-    <SaveBar v-if="ready" :json-error="jsonError" :json-dirty="jsonDirty" :flush="flush" @rule="openRule($event, null)" @group="groupEditor = { id: $event }" @reveal="(l: number, c: number) => jsonEditor?.reveal(l, c)" @reload="reload()" @download="downloadJson" />
+    <SaveBar v-if="ready" :json-error="jsonError" :json-dirty="jsonDirty" :flush="flush" @rule="openRule($event, null)" @group="groupEditor = { id: $event }" @reveal="(l: number, c: number) => jsonEditor?.reveal(l, c)" @reload="reload()" @download="downloadJson" @discarded="afterDiscard" />
   </div>
   <GroupEditor v-if="groupEditor" :key="groupEditor.id ?? 'new'" :group-id="groupEditor.id" @close="groupEditor = null" @saved="groupSaved" @deleted="groupDeleted" />
   <HistoryDrawer v-if="historyOpen" :compare-with="historyOpen.compare" @close="historyOpen = null" @rule="historyOpen = null; openRule($event, null)" />

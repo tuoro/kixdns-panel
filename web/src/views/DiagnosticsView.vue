@@ -11,7 +11,7 @@ import { useServiceStart } from '../composables/useServiceStart'
 import { readConfig } from '../config-model/document'
 import { isIp } from '../config-model/model'
 import { traceNames, type TraceNames } from '../config-model/trace-names'
-import { describeStep, formatElapsed, forwardTarget, groupTrace, isDnsSuccess, parseDnsAnswer, responseCodeName, ruleName, traceTone, type TextPart } from '../diagnostics'
+import { describeStep, formatElapsed, forwardTarget, groupTrace, hidePlumbing, isDnsSuccess, parseDnsAnswer, responseCodeName, ruleName, traceTone, type TextPart } from '../diagnostics'
 import { errorMessage, formatKixdnsVersion } from '../utils'
 
 const domain = ref('example.com')
@@ -91,7 +91,7 @@ const stepIdle = (status: string) => ['miss', 'missed', 'skipped'].includes(stat
 const rows = computed(() => {
   // 记着上一次转给了谁，上游应答时就不用再写一遍地址。 / Remember the last forward target so the reply need not repeat the address.
   let target: string | null = null
-  return groupTrace(steps.value).map((row) => {
+  return groupTrace(hidePlumbing(steps.value, names.value)).map((row) => {
   if (row.kind === 'step') {
     // 只有命中规则这一步打勾：它定下了请求怎么走；应答成功是结果栏的事，节点用普通的点
     // Only the matched-rule step gets a check, since it decides the route; a successful reply belongs to the result band, so its node is a plain dot
@@ -162,8 +162,8 @@ async function run(): Promise<void> {
     <section class="diag-query-card">
       <form class="diag-query" aria-label="DNS 查询" @submit.prevent="run">
         <label class="ui-input diag-domain"><input ref="domainInput" v-model="domain" type="text" inputmode="url" maxlength="253" required placeholder="example.com" aria-label="域名" autocapitalize="none" :spellcheck="false" /></label>
-        <UiSelect v-model="recordType" class="diag-record-type" :options="typeOptions" label="记录类型" />
-        <label v-if="canClient" class="ui-input diag-client" :class="{ 'is-bad': clientProblem }"><input v-model="clientIp" type="text" inputmode="decimal" placeholder="客户端 IP，默认本机" aria-label="客户端 IP，可以不填" :aria-invalid="Boolean(clientProblem) || undefined" :aria-describedby="clientProblem ? 'diag-client-err' : undefined" autocapitalize="none" :spellcheck="false" /></label>
+        <UiSelect v-model="recordType" class="diag-record-type" :options="typeOptions" label="查询类型" />
+        <label v-if="canClient" class="ui-input diag-client" :class="{ 'is-bad': clientProblem }"><input v-model="clientIp" type="text" inputmode="decimal" placeholder="客户端 IP，可不填" aria-label="客户端 IP，可以不填" :aria-invalid="Boolean(clientProblem) || undefined" :aria-describedby="clientProblem ? 'diag-client-err' : undefined" autocapitalize="none" :spellcheck="false" /></label>
         <button class="ui-btn ui-btn--primary diag-run" type="submit" :disabled="running" :aria-label="running ? '正在查询' : '执行查询'"><LoaderCircle v-if="running" class="diag-spinner" :size="16" aria-hidden="true" /><span class="diag-run-desktop">{{ running ? '正在查询…' : '执行查询' }}</span><span class="diag-run-mobile" aria-hidden="true">{{ running ? '查询中' : '查询' }}</span></button>
       </form>
       <p v-if="clientProblem" id="diag-client-err" class="ui-field-error diag-client-err">{{ clientProblem }}</p>
@@ -233,7 +233,7 @@ async function run(): Promise<void> {
          The empty page reads from the content edge like every other card: a small label, one line, then three examples to tap as a list of rows rather than a centred cluster -->
     <section v-else class="ui-card diag-placeholder">
       <h2 class="ui-card__label">从一次查询开始</h2>
-      <p class="diag-card-note">看应答、命中了哪条规则、实际走了哪条路。可以先试一个例子：</p>
+      <p class="diag-card-note">看回答、命中了哪条规则、问了哪个上游。可以先试一个例子：</p>
       <ul class="diag-tries">
         <li v-for="example in examples" :key="example.domain + example.type"><button class="diag-try" type="button" @click="tryExample(example)"><span class="ui-mono">{{ example.domain }}</span><span class="diag-try__type">{{ example.type }}<ChevronRight :size="16" aria-hidden="true" /></span></button></li>
       </ul>

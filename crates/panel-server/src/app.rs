@@ -502,7 +502,7 @@ async fn login(
         .audit(
             Some(user.username.clone()),
             "auth.login".to_owned(),
-            "登录成功".to_owned(),
+            String::new(),
             unix_timestamp(),
         )
         .await
@@ -786,7 +786,7 @@ async fn save_config(
         .audit(
             Some(session.username),
             "config.save".to_owned(),
-            format!("保存配置版本 #{}", result.version_id),
+            format!("版本 #{}", result.version_id),
             unix_timestamp(),
         )
         .await

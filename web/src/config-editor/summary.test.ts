@@ -23,7 +23,7 @@ describe('规则语义摘要', () => {
       { type: 'response_answer_ip', operator: 'and', cidr: '0.0.0.0/32' },
       { type: 'response_answer_ip', operator: 'and', cidr: '240.0.0.0/4' },
       { type: 'response_answer_ip', operator: 'and', cidr: '255.255.255.255/32' },
-    ], 'or', 'response')).toBe('应答 IP 属于 0.0.0.0/32、240.0.0.0/4 或 255.255.255.255/32')
+    ], 'or', 'response')).toBe('回答的 IP 属于 0.0.0.0/32、240.0.0.0/4 或 255.255.255.255/32')
     // 否定的不并：「不属于 A 或 B」读起来是两个都不属于，内核算的是「不属于 A」或「不属于 B」
     // Negations never merge: 「不属于 A 或 B」 reads as outside both, while the kernel evaluates (not A) or (not B)
     expect(summarizeMatchers([

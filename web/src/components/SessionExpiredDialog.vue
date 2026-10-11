@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { confirmLeave, takeAgreement } from '../composables/useLeaveGuard'
 import { useSession } from '../composables/useSession'
 import { errorMessage } from '../utils'
 
@@ -34,9 +35,16 @@ async function submit(): Promise<void> {
 }
 
 // 这是这个框里唯一真会丢东西的选项，所以做次要样式、放在下面。
-function leave(): void {
+// 有没保存的修改时先问；选「继续编辑」就留在这个框里，会话也不放弃（和账户菜单的退出登录一样）
+// With unsaved changes ask first; 继续编辑 keeps this dialog and the session (as the account menu's sign-out does)
+async function leave(): Promise<void> {
+  if (!(await confirmLeave())) return
   session.abandonExpiredSession()
-  void router.replace({ path: '/login', query: { redirect: router.currentRoute.value.fullPath } })
+  try {
+    await router.replace({ path: '/login', query: { redirect: router.currentRoute.value.fullPath } })
+  } finally {
+    takeAgreement()
+  }
 }
 </script>
 

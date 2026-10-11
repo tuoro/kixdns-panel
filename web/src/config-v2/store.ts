@@ -48,9 +48,21 @@ export const changeCount = computed(() => {
     + (JSON.stringify(before.rest) !== JSON.stringify(model.rest) ? 1 : 0) + (JSON.stringify(before.defaults) !== JSON.stringify(model.defaults) ? 1 : 0)
     + (JSON.stringify(before.entries ?? null) !== JSON.stringify(model.entries ?? null) ? 1 : 0)
     + (JSON.stringify(before.trailingEntries ?? null) !== JSON.stringify(model.trailingEntries ?? null) ? 1 : 0)
+    // 表单里没有的内核部分（JSON 视图里改的顶层键、原样保留的 Pipeline 等）也算：不算的话改了不提示，下次保存悄悄带出去
+    // Kernel parts the form does not model (top-level keys edited in the JSON view, pipelines kept verbatim and so on) count too: otherwise
+    // the change raises nothing and ships silently with the next save
+    + UNMODELLED.filter((k) => JSON.stringify(before[k] ?? null) !== JSON.stringify(model[k] ?? null)).length
 })
 export const dirty = computed(() => changeCount.value > 0)
+// 还没进草稿的修改也算「没保存」：规则编辑里没点「完成」的、JSON 视图里还没读回的。离开、刷新、重新读取、导入、保存条都只看 unsaved 这一个值
+// Edits not yet in the draft count as unsaved too: a rule edit not yet 完成 and JSON text not yet read back. Leaving, reloading,
+// re-reading, importing and the save bar all read this one value
+export const editorEditedBy = ref<symbol | null>(null)
+export const editorEdited = computed(() => editorEditedBy.value !== null)
+export const jsonEdited = ref(false)
+export const unsaved = computed(() => dirty.value || editorEdited.value || jsonEdited.value)
 const OPTIONAL = ['mainId', 'mappingId', 'mainExtra', 'entries', 'trailingEntries', 'rawPipelines', 'extra'] as const
+export const UNMODELLED = ['mainId', 'mappingId', 'mainExtra', 'rawPipelines', 'extra'] as const
 export function replaceModel(next: Model): void {
   // 草稿整份换掉，旧草稿上的撤销提示一起收起 / The draft is replaced wholesale, so undo messages about the old one go too
   dismissUndoable()

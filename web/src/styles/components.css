@@ -893,6 +893,8 @@ button.ui-link { position: relative; min-height: 0; padding: 0; border: 0; backg
 .ui-facts b { display: inline-flex; align-items: center; gap: var(--s-2); color: var(--l-ink); font-size: var(--t-4); font-weight: var(--w-bold); font-variant-numeric: tabular-nums; }
 /* 卡片小标签：11 大写，和事实行的标签同一个 / The card's small label: 11 uppercase, the same as a fact's label */
 .ui-card__label { margin: 0; color: var(--l-ink-3); font-size: var(--t-1); font-weight: var(--w-bold); letter-spacing: .06em; text-transform: uppercase; }
+/* 产品名照原样写，不转大写（GitHub 不是 GITHUB） / Product names keep their own case (GitHub, not GITHUB) */
+.ui-card__label--as-is { letter-spacing: 0; text-transform: none; }
 /* 选中的列表行：品牌色淡底，左边一条 3px 的品牌色 / A selected list row: accent tint with a 3px accent bar on the left */
 .ui-selected { position: relative; background: var(--accent-tint); }
 .ui-selected::before { position: absolute; top: 0; bottom: 0; left: 0; width: 3px; background: var(--accent); content: ''; }

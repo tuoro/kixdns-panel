@@ -85,7 +85,7 @@ describe('迁移：读成什么样 / migration: what it reads as', () => {
     expect(text).toContain('「two-forwards」放不进新的规则格式（一条规则里有 2 个转发）')
     expect(text).toContain('「odd-field」放不进新的规则格式')
     expect(text).toContain('「weird-response」放不进新的规则格式')
-    expect(text).toContain('geosite:分类')
+    expect(text).toContain('多写了「geosite:」前缀')
     expect(stats.raw).toBe(4)
     const messy = compile(model) as KConfigLike
     expect(messy.pipeline_select!.at(-1)).toEqual({ pipeline: 'never', matcher_operator: 'and', matchers: [{ type: 'qtype', value: 'MX' }] })

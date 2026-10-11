@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { DnsTraceStep } from './api/types'
-import { humanizeTraceDetail, isDnsSuccess, parseDnsAnswer, responseCodeName, traceTone, describeStep, detailParts, formatElapsed, forwardTarget, groupTrace, type TextPart } from './diagnostics'
+import { humanizeTraceDetail, isDnsSuccess, parseDnsAnswer, responseCodeName, traceTone, describeStep, detailParts, formatElapsed, forwardTarget, groupTrace, hidePlumbing, type TextPart } from './diagnostics'
 
 describe('DNS 应答台账', () => {
   it.each([
@@ -141,7 +141,14 @@ describe('耗时的写法', () => {
 })
 
 describe('内核的名字换回配置页上的名字', () => {
-  const names = { rule: (label: string) => (label === 'rule-3' ? '域名是 example.org' : null), pipeline: (id: string) => (id === 'main' ? '主列表' : id === 'group-g1' ? '规则组「内网」' : null) }
+  const pipeline = (id: string) => (id === 'main' ? '主列表' : id === 'group-g1' ? '规则组「内网」' : id === 'upstream-cn' ? '上游组「国内」' : null)
+  const names = {
+    rule: (label: string) => (label === 'rule-3' ? '域名是 example.org' : null),
+    pipeline,
+    entry: (id: string) => (id === 'upstream-cn' ? '主列表' : pipeline(id)),
+    matched: (label: string) => (label === '其余请求' ? '没有规则命中，按「其余请求」处理' : null),
+    plumbing: (label: string, at: string | null) => label === at && at === 'upstream-cn',
+  }
   it.each([
     [kstep('pipeline', 'selected', 'main'), '进入主列表'],
     [kstep('pipeline', 'jump', 'main -> group-g1'), '从主列表跳到规则组「内网」'],
@@ -149,10 +156,21 @@ describe('内核的名字换回配置页上的名字', () => {
     [kstep('rule', 'matched', 'rule-3'), '命中规则「域名是 example.org」'],
     [kstep('rule', 'missed', 'named'), '规则 named 未命中'],
     [kstep('rule_cache', 'hit', '命中管线 main 的规则缓存'), '命中主列表的规则缓存'],
+    [kstep('pipeline', 'selected', 'upstream-cn'), '进入主列表'],
+    [kstep('rule', 'matched', '其余请求', '管线：main'), '没有规则命中，按「其余请求」处理'],
   ])('%#', (input, lead) => expect(plain(describeStep(input, { names }).lead)).toBe(lead))
 
   it('认得出的名字用正文字，认不出的用等宽', () => {
     expect(monos(describeStep(kstep('rule', 'matched', 'rule-3'), { names }).lead)).toEqual([])
     expect(monos(describeStep(kstep('rule', 'matched', 'named'), { names }).lead)).toEqual(['named'])
+  })
+})
+
+describe('转发用的那条规则不单列', () => {
+  const names = { rule: () => null, pipeline: () => null, entry: () => null, matched: () => null, plumbing: (label: string, at: string | null) => label === at && at === 'upstream-cn' }
+  it('和所在 Pipeline 同名的那条去掉，用户的规则留着', () => {
+    const steps = [kstep('rule', 'matched', '国内域名', '管线：main'), kstep('pipeline', 'jump', 'main -> upstream-cn'), kstep('rule', 'matched', 'upstream-cn', '管线：upstream-cn')]
+    expect(hidePlumbing(steps, names).map((step) => step.label)).toEqual(['国内域名', 'main -> upstream-cn'])
+    expect(hidePlumbing(steps, null)).toHaveLength(3)
   })
 })

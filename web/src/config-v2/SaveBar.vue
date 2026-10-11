@@ -8,7 +8,7 @@ import { useToast } from '../composables/useToast'
 import DraftReviewDialog from './DraftReviewDialog.vue'
 import RuleText from './RuleText.vue'
 import { usePhone } from './phone'
-import { changeCount, discardWithUndo, model } from './store'
+import { changeCount, discardWithUndo, editorEdited, model } from './store'
 import { busy, conflict, deferNote, deferSave, editTouched, elapsed, note, origin, save, saveMessage, stage, validate, validation, verdict } from './useConfigDocument'
 
 // 保存条只替草稿说话：有改动才升起来，保存完一会儿就收起。两步：先校验，再写入并热加载；任何一步失败都停住，原因里的规则能点。
@@ -19,14 +19,15 @@ import { busy, conflict, deferNote, deferSave, editTouched, elapsed, note, origi
 // flush：保存、校验之前把面板和 JSON 里还没进草稿的修改收进来（save）；放弃和查看之前只收 JSON 的（fold）；返回 false 就停在原处
 // flush: before save or validate, pull in edits not yet in the draft from the rule panel and the JSON view (save); before discard or review only the JSON ones (fold); false means stop where we are
 const props = defineProps<{ jsonError: { line: number; column: number; reason: string } | null; jsonDirty?: boolean; flush?: (purpose: 'save' | 'fold') => boolean }>()
-const emit = defineEmits<{ rule: [id: number]; group: [id: string]; reveal: [line: number, column: number]; reload: []; download: [] }>()
+const emit = defineEmits<{ rule: [id: number]; group: [id: string]; reveal: [line: number, column: number]; reload: []; download: []; discarded: [] }>()
 const toast = useToast()
 // 手机上主按钮只写「保存」，给「已修改 N 处」留出一行 / On a phone the main button just says 保存, leaving room for 已修改 N 处
 const phone = usePhone()
 
 // 页头发起的「现在应用」不进保存条 / An apply started from the header never shows in the bar
 const draftStage = computed(() => (origin.value === 'draft' ? stage.value : 'idle'))
-const pending = computed(() => changeCount.value > 0 || Boolean(props.jsonDirty))
+// 还没进草稿的修改也让保存条升起：JSON 里的、右侧面板里没点「完成」的 / Edits not yet in the draft raise the bar too: the JSON view's and the side panel's not yet 完成
+const pending = computed(() => changeCount.value > 0 || Boolean(props.jsonDirty) || editorEdited.value)
 const visible = computed(() => pending.value || draftStage.value !== 'idle' || Boolean(props.jsonError))
 const noteOpen = ref(false)
 // 单独点过「校验」且之后没再改：说一句校验通过 / After a lone 校验 with no edit since: say it passed
@@ -49,8 +50,9 @@ function saveDraft(): void {
   if (props.flush && !props.flush('save')) return
   void save('draft')
 }
+// 校验看的是草稿：只读回 JSON，不替右侧面板点「完成」（那会关掉它） / Validation checks the draft: it reads the JSON back but never presses 完成 for the side panel (that would close it)
 function check(): void {
-  if (props.flush && !props.flush('save')) return
+  if (props.flush && !props.flush('fold')) return
   void validate()
 }
 onMounted(() => window.addEventListener('keydown', onKey))
@@ -59,9 +61,14 @@ const saveButton = ref<HTMLButtonElement | null>(null)
 const bar = ref<HTMLElement | null>(null)
 // 点「已修改 N 处」看草稿和运行中的配置差在哪；从这里也能直接保存 / Clicking 已修改 N 处 shows how the draft differs from the running config, with save right there
 const reviewing = ref(false)
+// 看之前先把右侧面板里没点「完成」的修改收进来：对话框里看到的就是要保存的 / Before the review, the side panel's edits not yet 完成 go in, so the dialog shows exactly what will be saved
 function review(): void {
-  if (props.flush && !props.flush('fold')) return
+  if (props.flush && !props.flush('save')) return
   reviewing.value = true
+}
+function closeReview(): void {
+  reviewing.value = false
+  void nextTick(() => document.querySelector<HTMLButtonElement>('.savebar__review')?.focus())
 }
 const saveLabel = computed(() => (deferSave.value ? '保存为待应用' : '保存并热加载'))
 useBarHeight(bar, '--savebar-h')
@@ -70,6 +77,9 @@ watch(busy, (b) => { if (b) void nextTick(() => saveButton.value?.focus()) })
 function discard(): void {
   props.flush?.('fold')
   discardWithUndo()
+  emit('discarded')
+  // 焦点落到提示里的「撤销」：保存条收起后不掉回页面开头 / Focus lands on the toast's 撤销, so it does not fall back to the page start once the bar leaves
+  void nextTick(() => [...document.querySelectorAll<HTMLButtonElement>('.toast-undo')].pop()?.focus())
 }
 </script>
 
@@ -85,11 +95,11 @@ function discard(): void {
           <span class="ui-savebar__verdict">{{ verdict }}</span>
           <small><RuleText :text="note" @rule="emit('rule', $event)" @group="emit('group', $event)" /></small>
           <!-- 别处先存了一个版本：不覆盖它，重新读取再改 / Someone else saved first: never overwrite it; reload and redo -->
-          <span v-if="conflict" class="savebar__acts"><button class="ui-btn ui-btn--text ui-btn--sm savebar__act" type="button" @click="emit('download')">下载我的修改</button><button class="ui-btn ui-btn--text ui-btn--sm savebar__act" type="button" @click="emit('reload')">重新读取</button></span>
+          <span v-if="conflict" class="savebar__acts"><button class="ui-btn ui-btn--text ui-btn--sm savebar__act" type="button" @click="emit('download')">下载草稿</button><button class="ui-btn ui-btn--text ui-btn--sm savebar__act" type="button" @click="emit('reload')">重新读取</button></span>
         </template>
         <template v-else-if="jsonError"><span class="ui-savebar__verdict">JSON 写错了</span><small><button class="ui-objlink ui-objlink--plain" type="button" @click="emit('reveal', jsonError.line, jsonError.column)">第 {{ jsonError.line }} 行第 {{ jsonError.column }} 列</button> · {{ jsonError.reason }}</small></template>
         <template v-else-if="validated"><span class="ui-dot" aria-hidden="true"></span><span class="ui-savebar__detail"><UiDotText :parts="['校验通过', '可以保存']" /></span></template>
-        <template v-else-if="changeCount === 0"><span class="ui-dot ui-dot--ink" aria-hidden="true"></span><span class="ui-savebar__detail">JSON 有修改<small v-if="deferSave"> · {{ deferNote }}</small></span></template>
+        <template v-else-if="changeCount === 0"><span class="ui-dot ui-dot--ink" aria-hidden="true"></span><span class="ui-savebar__detail">{{ jsonDirty ? 'JSON 有修改' : '右侧规则还没点「完成」' }}<small v-if="deferSave"> · {{ deferNote }}</small></span></template>
         <template v-else><span class="ui-dot ui-dot--ink" aria-hidden="true"></span><span class="ui-savebar__detail"><button class="ui-objlink savebar__review" type="button" aria-haspopup="dialog" title="看看改了哪些" @click="review">已修改 <b class="ui-savebar__count"><UiNumber :value="String(changeCount)" /></b> 处</button><small v-if="deferSave"> · {{ deferNote }}</small></span></template>
       </p>
       <template v-if="draftStage !== 'done' && (pending || draftStage === 'failed') && !jsonError">
@@ -104,5 +114,5 @@ function discard(): void {
       </template>
     </footer>
   </Transition>
-  <DraftReviewDialog v-if="reviewing" :save-label="saveLabel" :can-save="!busy" @close="reviewing = false" @save="reviewing = false; saveDraft()" />
+  <DraftReviewDialog v-if="reviewing" :save-label="saveLabel" :can-save="!busy" @close="closeReview" @save="reviewing = false; saveDraft()" />
 </template>

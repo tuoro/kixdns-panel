@@ -19,7 +19,7 @@ const draft = reactive<UpstreamGroup>(original ? JSON.parse(JSON.stringify(origi
 const initial = JSON.stringify(draft)
 const confirm = useConfirm()
 async function leave(): Promise<void> {
-  if (JSON.stringify(draft) !== initial && !(await confirm.ask({ title: '放弃这个上游组的修改', body: '刚才在这里改的内容不会写进草稿。', confirmLabel: '放弃修改', cancelLabel: '继续编辑' }))) return
+  if (JSON.stringify(draft) !== initial && !(await confirm.ask({ title: '放弃这个上游组的修改', body: '刚才在这里改的内容不会写进草稿。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true }))) return
   emit('close')
 }
 const showErrors = ref(false)

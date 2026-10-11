@@ -377,7 +377,7 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
     const logs = actions.filter((a) => a.type === 'log')
     const rest = actions.filter((a) => a.type !== 'log')
     const firstReal = actions.findIndex((a) => a.type !== 'log')
-    if (rest.length > 1 || (firstReal >= 0 && actions.slice(firstReal).some((a) => a.type === 'log'))) return raw('回答阶段有几个动作')
+    if (rest.length > 1 || (firstReal >= 0 && actions.slice(firstReal).some((a) => a.type === 'log'))) return raw('回答后检查里有几个动作')
     const log = logs.length ? ((typeof logs[0]!.level === 'string' ? logs[0]!.level : 'info') as Rule['log']['level']) : null
     if (!rest.length) return { remedy: { type: 'none' }, log }
     const a = rest[0]!
@@ -400,7 +400,7 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
         const text = Array.isArray(a.text) ? a.text : [a.text]
         return text.length === 1 ? done({ type: 'rewrite_txt', value: String(text[0]) }) : raw('替换成几段 TXT')
       }
-      default: return done(staticOutcome(a) ?? raw(`回答阶段的动作 ${a.type} 没有对应的写法`))
+      default: return done(staticOutcome(a) ?? raw(`回答后检查里的动作 ${a.type} 没有对应的写法`))
     }
   }
   function staticOutcome(a: KAction): Outcome | null {
@@ -586,7 +586,7 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
   const createdUsed = createdGroups.filter((name) => finalGroups.some((g) => g.name === name))
 
   const geoPrefixed = allRules.flatMap((r) => r.conditions.flat()).filter((c) => c.field === 'geosite' && c.values.some((v) => /^geosite:/i.test(v))).length
-  if (geoPrefixed) note(`有 ${geoPrefixed} 个 GeoSite 条件写成了「geosite:分类」，内核照原样查，永远匹配不上；规则页可以一键去掉前缀`, 'warn')
+  if (geoPrefixed) note(`有 ${geoPrefixed} 个 GeoSite 条件多写了「geosite:」前缀，内核找不到对应的分类，永远不会命中；关掉说明后在页面上方一键去掉`, 'warn')
   if (createdUsed.length) note(`从规则里的转发地址整理出上游组：${createdUsed.join('、')}，名字可以改`)
 
   let model: Model = {

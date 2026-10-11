@@ -115,9 +115,10 @@ async function logout(): Promise<void> {
     await session.logout()
     await router.replace('/login')
   } catch (error) {
-    takeAgreement()
     toast.error(errorMessage(error))
   } finally {
+    // 同意过的那一次只给紧接着的这次换页用，无论成败都收回 / The agreement covers only the page change right after it, so it is withdrawn whatever happened
+    takeAgreement()
     signingOut.value = false
   }
 }

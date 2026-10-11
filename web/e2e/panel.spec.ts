@@ -170,7 +170,7 @@ test('内核检查失败时面板更新照常提示 @responsive', async ({ page 
   // No 更新 without a known latest build; the row's only button leads to the token field and focuses it
   await expect(kernelRow.getByRole('button')).toHaveCount(1)
   await kernelRow.getByRole('button', { name: '填写 Token', exact: true }).click()
-  await expect(page.getByLabel('GitHub Token', { exact: true })).toBeFocused()
+  await expect(page.locator('input[aria-label="GitHub Token"]')).toBeFocused()
   await expect(panelRow.locator('.update-row__from-to')).toContainText('v1.0.0 → v1.0.1')
   await expect(panelRow.getByRole('button', { name: '在线更新' })).toBeVisible()
   // 回退只用本机的版本，读不到远端时照样能回。 / Rollback uses only local versions, so it still works offline.

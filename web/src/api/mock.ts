@@ -33,12 +33,12 @@ const now = Math.floor(Date.now() / 1000)
 // New log lines that have "arrived" in the demo; grows only under kixdns:demo-log-growing.
 let demoLogArrivals = 0
 const auditEvents = [
-  { id: 18, actor: 'admin', action: 'config.save', detail: '保存配置版本 #18', created_at: now - 430 },
+  { id: 18, actor: 'admin', action: 'config.save', detail: '版本 #18', created_at: now - 430 },
   { id: 17, actor: 'admin', action: 'config.geo_data.sync', detail: '同步 Geo 数据：MMDB 1，GeoIP 0，GeoSite 1 个', created_at: now - 7200 },
   { id: 16, actor: 'admin', action: 'kixdns.kernel.update', detail: '内核更新到 Run #30231271280', created_at: now - 86400 },
   { id: 15, actor: 'admin', action: 'service.restart', detail: '服务状态：正在运行', created_at: now - 86520 },
   { id: 14, actor: 'admin', action: 'diagnostic.dns', detail: '执行 A 查询', created_at: now - 172800 },
-  { id: 13, actor: 'admin', action: 'auth.login', detail: '登录成功', created_at: now - 173100 },
+  { id: 13, actor: 'admin', action: 'auth.login', detail: '', created_at: now - 173100 },
   { id: 12, actor: null, action: 'config.geo_data.schedule.apply', detail: '定时更新 Geo 数据并生成配置版本 #17', created_at: now - 604800 },
 ]
 let config: ConfigDocument = {
@@ -419,7 +419,7 @@ function installedKixdnsVersion(remote: RemoteKixdnsVersion, active: boolean, in
 // 匿名配额用完时读不到最新内核，面板的更新照样能查到。
 // A failed kernel check is shown only under this flag, mirroring kixdns:demo-empty-first-install:
 // with the anonymous quota spent the newest kernel cannot be read, while the panel update still can.
-const KERNEL_CHECK_ERROR = 'GitHub 匿名访问次数用完了，填写 GitHub Token 后再检查'
+const KERNEL_CHECK_ERROR = 'GitHub 匿名访问次数用完了'
 
 function kernelCheckFails(): boolean {
   return typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-kernel-check-failed') === 'true'

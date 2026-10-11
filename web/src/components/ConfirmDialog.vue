@@ -5,6 +5,7 @@ import UiDotText from './ui/UiDotText.vue'
 
 const confirm = useConfirm()
 const confirmButton = ref<HTMLButtonElement | null>(null)
+const cancelButton = ref<HTMLButtonElement | null>(null)
 const dialog = ref<HTMLDialogElement | null>(null)
 let returnFocus: HTMLElement | null = null
 /**
@@ -63,7 +64,9 @@ watch(() => confirm.pending.value, (request) => {
     element.showModal()
     setTimeout(() => { justOpened = false })
   }
-  confirmButton.value?.focus()
+  // 会丢东西的确认框把焦点放在「取消」上：顺手一个回车不会把修改扔掉 / A confirm that loses something focuses 取消, so a reflexive Enter never throws the edits away
+  const first = confirm.pending.value?.destructive ? cancelButton.value : confirmButton.value
+  first?.focus()
 }, { flush: 'post' })
 
 const bodyText = computed(() => confirm.pending.value?.body ?? '')
@@ -97,7 +100,7 @@ const bodyText = computed(() => confirm.pending.value?.body ?? '')
         <li v-for="item in confirm.pending.value.items" :key="item"><UiDotText :parts="item.split('\u00a0· ')" /></li>
       </ul>
       <div class="confirm__actions">
-        <button class="ui-btn ui-btn--secondary" type="button" @click="confirm.settle(false)">
+        <button ref="cancelButton" class="ui-btn ui-btn--secondary" type="button" @click="confirm.settle(false)">
           {{ confirm.pending.value.cancelLabel ?? '取消' }}
         </button>
         <!-- 主按钮写动词和数量，不写「确定」。红色只给不可撤销的操作。 -->

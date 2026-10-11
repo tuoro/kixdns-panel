@@ -23,7 +23,7 @@ const tone = (rate: number) => (rate >= 99 ? '' : rate >= 95 ? 'ui-dot--warn' : 
 const healthParts = (g: UpstreamGroup): string[] => {
   const h = health(g)!
   // 和概览的上游状态同一种写法：成功率、平均耗时、最近一小时的次数（不缩成「万」） / Worded as the overview's upstream status: success rate, mean latency, the last hour's count (never shortened to 万)
-  return [`成功率 ${h.success}%`, ...(h.latency === null ? [] : [`平均 ${h.latency} ms`]), `最近一小时 ${h.queries.toLocaleString('en-US')}\u00a0次`]
+  return [`成功率 ${h.success}%`, ...(h.latency === null ? [] : [`平均 ${h.latency} ms`]), `最近一小时 ${h.queries.toLocaleString('en-US')}\u00a0次响应`]
 }
 const shown = (address: string) => address.replace(/^[a-z+]+:\/\//i, '')
 function facts(g: UpstreamGroup): string[] {

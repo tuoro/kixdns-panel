@@ -56,7 +56,7 @@ pub(super) async fn sync_geo_data(
             Some(session.username),
             "config.geo_data.sync".to_owned(),
             format!(
-                "同步 Geo 数据：MMDB {}，GeoIP {}，GeoSite {} 个",
+                "MMDB {} 个、GeoIP {} 个、GeoSite {} 个",
                 usize::from(result.geoip_mmdb.is_some()),
                 usize::from(result.geoip_dat.is_some()),
                 result.geosite.len()
@@ -288,7 +288,7 @@ async fn write_synced_geo_config(
         .audit(
             None,
             "config.geo_data.schedule.apply".to_owned(),
-            format!("定时更新 Geo 数据并生成配置版本 #{}", result.version_id),
+            format!("生成配置版本 #{}", result.version_id),
             unix_timestamp(),
         )
         .await?;

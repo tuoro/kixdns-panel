@@ -55,9 +55,9 @@ export function summarizeMatcher(matcher: MatcherConfig, scope: MatcherScope): s
     case 'response_qclass': return `响应 QClass 为 ${value}`
     case 'response_edns_present': return expectation(matcher, '响应包含 EDNS', '响应不包含 EDNS')
     case 'response_upstream_ip': return `上游 IP 属于 ${cidr}`
-    case 'response_answer_ip': return `应答 IP 属于 ${cidr}`
-    case 'response_answer_ip_geoip_country': return `应答 IP GeoIP 国家为 ${countries}`
-    case 'response_answer_ip_geoip_private': return expectation(matcher, '应答 IP 为私网', '应答 IP 不为私网')
+    case 'response_answer_ip': return `回答的 IP 属于 ${cidr}`
+    case 'response_answer_ip_geoip_country': return `回答的 IP GeoIP 国家为 ${countries}`
+    case 'response_answer_ip_geoip_private': return expectation(matcher, '回答的 IP 为私网', '回答的 IP 不为私网')
     case 'response_request_domain_geosite': return `请求域名属于 GeoSite ${geoSiteValue(matcher.value)}`
     case 'response_request_domain_geosite_not': return `请求域名不属于 GeoSite ${geoSiteValue(matcher.value)}`
     case 'response_txt_content': return `TXT 内容以${matcher.mode === 'prefix' ? '前缀' : matcher.mode === 'regex' ? '正则' : '精确'}方式匹配 ${value}`

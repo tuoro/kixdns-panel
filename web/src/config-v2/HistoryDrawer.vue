@@ -10,7 +10,7 @@ import DiffBlocks from './DiffBlocks.vue'
 import { readConfig } from '../config-model/document'
 import { errorMessage, formatVersionTime } from '../utils'
 import RuleText from './RuleText.vue'
-import { appliedModel, dirty } from './store'
+import { appliedModel, unsaved } from './store'
 import { bulkDeleting, currentVersionId, deleteVersion, deleteVersions, deleting, friendlyRuntimeError, restoreVersion, restoring, versionDetail, versions } from './useConfigDocument'
 
 // 历史版本：一行是备注加「#编号 · 时间」，点一行看「恢复它会改什么」；恢复和删除在行的菜单里，「选择」可以一次删几个。
@@ -59,7 +59,7 @@ function closeDiff(): void { diffDialog.value?.close(); preview.value = null; bl
 async function restore(v: ConfigVersion): Promise<void> {
   const ok = await confirm.ask({
     title: `恢复到配置版本 #${v.id}`,
-    body: `${dirty.value ? '编辑器里未保存的修改会丢失。' : ''}会用版本 #${v.id} 的内容生成一个新版本并立即应用；现在这一版留在历史里，随时可以再恢复。`,
+    body: `${unsaved.value ? '编辑器里未保存的修改会丢失。' : ''}会用版本 #${v.id} 的内容生成一个新版本并立即应用；现在这一版留在历史里，随时可以再恢复。`,
     confirmLabel: `恢复版本 #${v.id}`,
   })
   if (!ok) return
@@ -151,7 +151,7 @@ function onRuleLink(id: number): void { dialog.value?.close(); emit('rule', id) 
         </header>
         <div class="pdialog__body diffd__body">
           <template v-if="blocks && blocks.length">
-            <p class="diffd__legend">恢复这个版本：<span class="diffd__sign">−</span> 去掉 <span class="diffd__sign">+</span> 加上</p>
+            <p class="diffd__legend">恢复这个版本：<span class="diffd__sign is-del">−</span> 去掉 <span class="diffd__sign is-add">+</span> 加上</p>
             <DiffBlocks :blocks="blocks" />
           </template>
           <p v-else-if="blocks" class="hist__empty">这个版本和当前的配置一样，恢复它不会改变什么。</p>

@@ -121,7 +121,7 @@ test('运行配置与缓存清理保持可用', async ({ page }) => {
   await expect(page.locator('.overview-config-state')).toHaveText('已生效')
   await page.getByRole('button', { name: '清空内部缓存', exact: true }).click()
   await acceptConfirm(page)
-  await expect(page.getByText('已清理 19,354 个缓存条目', { exact: true })).toBeVisible()
+  await expect(page.getByText('已清空 19,354 条缓存', { exact: true })).toBeVisible()
 })
 
 test('首次未启动保留空态视图但禁止运行时操作', async ({ page }) => {
@@ -153,7 +153,7 @@ test('首次未启动保留空态视图但禁止运行时操作', async ({ page 
   await page.getByRole('tab', { name: '规则命中' }).click()
   await expect(page.getByText('还没有规则命中过', { exact: true })).toBeVisible()
   // 空表不带「累计执行次数」那行说明 / An empty table carries no caption about execution counts
-  await expect(page.getByText('请求和回答后两个阶段的命中次数')).toHaveCount(0)
+  await expect(page.getByText('每条规则的命中次数')).toHaveCount(0)
 })
 
 for (const stopped of [true, false]) {

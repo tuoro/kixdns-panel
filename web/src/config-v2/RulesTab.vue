@@ -8,7 +8,7 @@ import { useConfirm } from '../composables/useConfirm'
 import { useToast } from '../composables/useToast'
 import { GEOSITE_SUGGESTIONS } from '../config-model/condKinds'
 import { isCidr, isDomain, newRule, outcomeSentence, rawMatchersText, type Condition, type Outcome, type Rule, type RuleGroup, ruleTitle } from '../config-model/model'
-import { usePhone } from './phone'
+import { useNarrow, usePhone } from './phone'
 import RuleList from './RuleList.vue'
 import Tester from './Tester.vue'
 import { model, newId, ruleGroupUsers, ui } from './store'
@@ -24,7 +24,7 @@ const emit = defineEmits<{ open: [ruleId: number | null, groupId: string | null,
 const toast = useToast()
 const confirm = useConfirm()
 // 两个弹层关上之前都对照一下：改过就问一句，和规则、上游组的编辑一样 / Both dialogs compare before closing: ask if anything changed, as rule and upstream group editing do
-const askDiscard = (what: string) => confirm.ask({ title: `放弃${what}的修改`, body: '刚才在这里改的内容不会写进草稿。', confirmLabel: '放弃修改', cancelLabel: '继续编辑' })
+const askDiscard = (what: string) => confirm.ask({ title: `放弃${what}的修改`, body: '刚才在这里改的内容不会写进草稿。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
 // 规则页快捷键：/ 聚焦搜索，n 新建规则；输入框里、按着修饰键、弹层开着时不抢 / Rules page shortcuts: / focuses the search, n starts a new rule; not while typing, with modifiers held, or while a dialog is open
 const searchInput = ref<HTMLInputElement | null>(null)
 function onPageKey(event: KeyboardEvent): void {
@@ -54,6 +54,7 @@ const cond = (field: Condition['field'], values: string[], negate = false): Cond
 
 // ---------- 快速添加：一行写值，选结果，回车 / quick add: values on one line, pick an outcome, Enter ----------
 const phone = usePhone()
+const narrow = useNarrow()
 const quick = reactive({ text: '', target: '' })
 // 宽屏上快速添加藏在工具行的「快速添加」后面，点开才占一行；手机上一直在 / On wide screens quick add hides behind the toolbar's 快速添加 and takes a row only when opened; on phones it is always there
 const quickOpen = ref(false)
@@ -262,7 +263,7 @@ function saveEntries(): void {
         </div>
         <form v-if="phone || quickOpen" class="qadd" :class="{ 'is-typing': quick.text.trim() }" @submit.prevent="quickAdd">
           <Plus class="qadd__icon" :size="16" aria-hidden="true" />
-          <label class="qadd__input"><input ref="quickInput" v-model="quick.text" aria-label="快速添加：域名、GeoSite 或 IP 网段" :placeholder="phone ? '快速添加域名、GeoSite 或网段' : '快速添加：域名、geosite:分类 或 IP 网段，几个用空格隔开'" autocapitalize="off" spellcheck="false"></label>
+          <label class="qadd__input"><input ref="quickInput" v-model="quick.text" aria-label="快速添加：域名、GeoSite 或 IP 网段" :placeholder="phone || narrow ? '域名、geosite:分类 或网段，空格隔开' : '快速添加：域名、geosite:分类 或网段，空格隔开'" autocapitalize="off" spellcheck="false"></label>
           <UiSelect v-model="quickTarget" class="qadd__target" :options="quickTargets" label="快速添加的结果" :size="phone ? 'md' : 'sm'" />
           <button class="ui-btn ui-btn--secondary qadd__btn" :class="{ 'ui-btn--sm': !phone }" type="submit" :disabled="!ok">{{ mergeInto ? '加进去' : '添加' }}</button>
           <p v-if="quickHint" class="qadd__hint" :class="{ 'is-err': !ok }" role="status">{{ quickHint }}</p>
@@ -285,7 +286,7 @@ function saveEntries(): void {
           </header>
           <ol class="entries__list"><li v-for="(e, i) in model.entries" :key="i"><span class="entries__ord">{{ i + 1 }}</span><span class="entries__cond">{{ rawMatchersText(e.matchers, e.matcher_operator) }}</span><span class="entries__to">进入「{{ pipelineLabel(e.pipeline) }}」</span></li></ol>
         </section>
-        <p v-if="!model.ruleGroups.length && !model.entries?.length" class="rgroups__none">还没有规则组。</p>
+        <div v-if="!model.ruleGroups.length && !model.entries?.length" class="rgroups__none"><ListFilter :size="16" aria-hidden="true" /><span>还没有规则组。</span></div>
         <section v-for="g in model.ruleGroups" :key="g.id" class="ui-card rcard" :aria-label="`规则组：${g.name}`">
           <header class="rcard__head">
             <div class="rcard__title"><h3>{{ g.name }}</h3><span v-if="g.note" class="rcard__meta">{{ g.note }}</span></div>

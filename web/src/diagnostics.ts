@@ -199,7 +199,10 @@ export function describeStep(step: DnsTraceStep, context: TraceContext = {}): St
   const note = detailParts(detail)
   let match: RegExpExecArray | null
   if (stage === 'request' && status === 'parsed') return { lead: sentence(t('请求'), m(label)), note }
-  if (stage === 'pipeline' && status === 'selected') return { lead: sentence(t('进入'), pipelineName(label, names)), note }
+  if (stage === 'pipeline' && status === 'selected') {
+    const said = names?.entry(label)
+    return { lead: said ? [t(`进入${said}`)] : sentence(t('进入'), pipelineName(label, names)), note }
+  }
   if (stage === 'pipeline' && status === 'jump' && (match = /^(.+?) -> (.+)$/.exec(label))) return { lead: sentence(t('从'), pipelineName(match[1]!, names), t('跳到'), pipelineName(match[2]!, names)), note }
   // 「管线 X」在上一步刚说过，细节里不再重复 / The pipeline was just named one step up, so the detail drops it
   if (stage === 'response_cache') {
@@ -213,7 +216,11 @@ export function describeStep(step: DnsTraceStep, context: TraceContext = {}): St
     if ((match = /^管线 (.+) 的规则缓存未命中$/.exec(label))) return { lead: sentence(pipelineName(match[1]!, names), t('的规则缓存未命中')), note }
   }
   // 匹配器数、答案记录数是内核的计数，读路径的人用不上 / Matcher and answer-record counts are kernel bookkeeping a reader of the path has no use for
-  if (stage === 'rule' && status === 'matched') return { lead: sentence(t('命中规则'), ruleName(label, names)), note: detailParts(detail, ['管线', '匹配器数']) }
+  if (stage === 'rule' && status === 'matched') {
+    // 面板自己生成的规则（其余请求、域名映射）写成整句，不写它们在内核里的名字 / Rules the panel generates (catch-alls, mappings) read as whole sentences, not by their kernel names
+    const said = names?.matched(label)
+    return { lead: said ? [t(said)] : sentence(t('命中规则'), ruleName(label, names)), note: detailParts(detail, ['管线', '匹配器数']) }
+  }
   if (stage === 'rule' && ['missed', 'miss'].includes(status)) return { lead: sentence(t('规则'), ruleName(label, names), t('未命中')), note: detailParts(detail, ['管线', '匹配器数']) }
   if (stage === 'decision') {
     const target = detailValue(detail, '目标')
@@ -242,6 +249,12 @@ export function describeStep(step: DnsTraceStep, context: TraceContext = {}): St
 
 function prefixed(parts: TextPart[]): TextPart[] {
   return parts.length ? [t(' · '), ...parts] : []
+}
+
+/** 去掉转发用的那条规则：它和所在的 Pipeline 同名，路径里上一步已经说了进了哪里 / Drop the forward pipelines' own rules: each is named after its pipeline, and the path already says where the request went */
+export function hidePlumbing(steps: DnsTraceStep[], names?: TraceNames | null): DnsTraceStep[] {
+  if (!names) return steps
+  return steps.filter((step) => !(step.stage === 'rule' && names.plumbing(step.label, detailValue(step.detail, '管线'))))
 }
 
 export type TraceRow =

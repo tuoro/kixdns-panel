@@ -32,7 +32,7 @@ test('初始化页说明接下来会发生什么并承诺不覆盖已有配置 @
   await page.goto('/setup')
   await expect(page.getByRole('heading', { name: '创建管理员', exact: true })).toBeVisible()
   const steps = page.locator('.auth-next')
-  await expect(steps).toContainText('创建后直接进入面板')
+  await expect(steps).toContainText('才会生效')
   await expect(steps).toContainText('不会覆盖你已有的 KixDNS 配置')
   // 规则前置：不必等提交后才知道密码要 12 位。
   await expect(page.getByLabel('密码', { exact: true })).toHaveAttribute('placeholder', '至少 12 位')

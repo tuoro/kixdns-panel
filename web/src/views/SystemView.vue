@@ -399,8 +399,8 @@ async function control(action: ServiceAction): Promise<void> {
   if ((action === 'stop' || action === 'restart') && !await confirm.ask({
     title: `${names[action]} KixDNS 服务`,
     body: action === 'stop'
-      ? '停止期间这台机器上的 DNS 解析会中断，直到重新启动。配置和缓存都保留。'
-      : '服务会短暂中断，随后按当前运行配置重新提供解析。配置不受影响。',
+      ? '停止期间，用 KixDNS 解析的设备都查不到域名，直到重新启动。配置不变，缓存会清空。'
+      : '服务会短暂中断，随后按当前运行配置重新提供解析。配置不变，缓存会清空。',
     confirmLabel: `${names[action]}服务`,
     destructive: action === 'stop',
   })) return
@@ -527,7 +527,7 @@ onBeforeUnmount(() => {
           <template #meta>
             <span class="update-row__from-to">
               <template v-if="kernelAction === 'update'">正在下载、校验并切换内核</template>
-              <span v-else-if="!kixdnsNotice" class="system-stale">检查失败：{{ updateStatus.kixdns_error ?? '原因未知' }}<button v-if="needsToken(updateStatus.kixdns_error)" class="ui-btn ui-btn--text ui-btn--sm system-stale__act" type="button" @click="focusToken">填写 Token</button></span>
+              <span v-else-if="!kixdnsNotice" class="system-stale">检查失败：{{ updateStatus.kixdns_error ?? '原因未知' }}</span>
               <!-- 只在新旧版本之间断行，「→」「·」跟着后一段走：不会挂在行尾 / Lines break only between the two versions, and 「→」/「·」 travel with what follows, so neither is left at a line end -->
               <template v-else-if="kixdnsNotice.available && kixdnsNotice.security_update"><span class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span> <span class="update-row__keep">依赖安全升级<template v-if="kixdnsNotice.dependency_revision"> · <span class="ui-num">r{{ kixdnsNotice.dependency_revision }}</span></template></span></template>
               <template v-else-if="kixdnsNotice.available"><span class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span> <span class="update-row__keep">→ <span class="ui-num">{{ latestKixdnsVersion() }}</span></span></template>
@@ -536,7 +536,10 @@ onBeforeUnmount(() => {
             </span>
             <span v-if="kixdnsNotice">构建于 {{ buildTime(kixdnsNotice.created_at) }}</span>
           </template>
-          <template v-if="kixdnsNotice || !installed" #actions>
+          <!-- 检查失败是 GitHub 的访问次数或 Token 的事：去填 Token 的按钮放在这一行的按钮位，和「更新」同一个位置、同一个样子
+               When a check failed over GitHub's access limit or the token, the button to fill in a token sits in the row's action slot, where and how 更新 sits -->
+          <template v-if="kixdnsNotice || !installed || needsToken(updateStatus.kixdns_error)" #actions>
+            <button v-if="!kixdnsNotice && needsToken(updateStatus.kixdns_error)" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" @click="focusToken">填写 Token</button>
             <a v-if="kixdnsNotice" class="ui-link" :href="kixdnsNotice.build_url" target="_blank" rel="noopener noreferrer">构建详情<ExternalLink :size="12" /></a>
             <button v-if="kixdnsNotice?.available || !installed" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" :disabled="!kernel?.latest || kernelAction !== null" @click="updateKernel">{{ kernelAction === 'update' ? '更新中' : (installed ? '更新' : '安装') }}</button>
           </template>
@@ -548,7 +551,7 @@ onBeforeUnmount(() => {
           <template #meta>
             <span class="update-row__from-to">
               <template v-if="panelUpdateRunning">{{ panelUpdateLabel() }}</template>
-              <span v-else-if="!panelNotice" class="system-stale">检查失败：{{ updateStatus.panel_error ?? '原因未知' }}<button v-if="needsToken(updateStatus.panel_error)" class="ui-btn ui-btn--text ui-btn--sm system-stale__act" type="button" @click="focusToken">填写 Token</button></span>
+              <span v-else-if="!panelNotice" class="system-stale">检查失败：{{ updateStatus.panel_error ?? '原因未知' }}</span>
               <template v-else-if="panelNotice.available"><span class="ui-num">{{ panelNotice.current_release ?? `v${panelNotice.current_version}` }}</span> <span class="update-row__keep">→ <span class="ui-num">v{{ panelNotice.latest_version }}</span></span></template>
               <template v-else>{{ panelUpdateLabel() }}</template>
             </span>
@@ -559,9 +562,10 @@ onBeforeUnmount(() => {
               <button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" @click="dismissPanelUpdateFailure">知道了</button>
             </p>
           </template>
-          <template v-if="panelNotice?.release_url" #actions>
-            <a class="ui-link" :href="panelNotice.release_url" target="_blank" rel="noopener noreferrer">发布说明<ExternalLink :size="12" /></a>
-            <button v-if="panelNotice.available" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" :disabled="startingPanelUpdate || panelUpdateRunning" @click="startPanelUpdate">{{ panelUpdateRunning ? '更新中' : '在线更新' }}</button>
+          <template v-if="panelNotice?.release_url || (!panelNotice && needsToken(updateStatus.panel_error))" #actions>
+            <button v-if="!panelNotice && needsToken(updateStatus.panel_error)" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" @click="focusToken">填写 Token</button>
+            <a v-if="panelNotice?.release_url" class="ui-link" :href="panelNotice.release_url" target="_blank" rel="noopener noreferrer">发布说明<ExternalLink :size="12" /></a>
+            <button v-if="panelNotice?.available" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" :disabled="startingPanelUpdate || panelUpdateRunning" @click="startPanelUpdate">{{ panelUpdateRunning ? '更新中' : '在线更新' }}</button>
           </template>
         </UiTask>
       </div>
@@ -620,7 +624,7 @@ onBeforeUnmount(() => {
 
       <section class="ui-card system-card credential-panel" aria-labelledby="system-credential-label">
         <div class="system-card__head">
-          <h2 id="system-credential-label" class="ui-card__label">GitHub 凭据</h2>
+          <h2 id="system-credential-label" class="ui-card__label ui-card__label--as-is">GitHub Token</h2>
           <span class="ui-tag" :class="{ 'ui-tag--ok': githubTokenStatus?.configured }">{{ githubTokenStatus?.configured ? '已配置' : '匿名' }}</span>
         </div>
         <div class="system-card__main">
@@ -640,8 +644,8 @@ onBeforeUnmount(() => {
           <p class="credential-hint"><span>只用于版本检查和内核下载，不会发送到 nightly.link。</span><template v-if="!githubTokenStatus?.configured"><span>匿名访问 GitHub 每小时只有 60 次请求，检查版本和下载内核容易被限速。</span><span>填一个 Token 后是每小时 <span class="nowrap">5,000 次</span>。</span></template></p>
         </div>
         <div class="system-card__row credential-quota">
-          <span v-if="githubRate" class="ui-dots"><span>API 配额 <span class="ui-num">{{ githubQuota }}</span></span><span>重置于 {{ githubRateReset() }}</span></span>
-          <span v-else>面板还没向 GitHub 请求过，配额未知</span>
+          <span v-if="githubRate" class="ui-dots"><span>剩余次数 <span class="ui-num">{{ githubQuota }}</span></span><span>{{ githubRateReset() }} 重置</span></span>
+          <span v-else>面板还没访问过 GitHub，剩余次数未知</span>
           <span v-if="githubTokenError" class="system-error">{{ githubTokenError }}</span>
         </div>
       </section>
