@@ -41,6 +41,8 @@ test('会话过期直接回登录页；草稿丢了照实说，登录后回到�
   await expect(page.getByRole('alertdialog')).toHaveCount(0)
   await expect(page.locator('dialog[open]')).toHaveCount(0)
   await expect(page.getByRole('status').filter({ hasText: '登录已过期' })).toHaveText('登录已过期，刚才没保存的配置修改没有留下来。登录后回到刚才的页面。')
+  // 配置页的「撤销」提示随页面一起收起：草稿已经没了，撤销不了 / The config page's undo toast goes with the page: the draft is gone, nothing to undo
+  await expect(page.locator('.toast').filter({ hasText: '已添加规则' })).toHaveCount(0)
 
   await signIn(page)
   await expect(page).toHaveURL(/\/config$/)

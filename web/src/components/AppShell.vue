@@ -161,6 +161,8 @@ onBeforeUnmount(() => {
       <nav class="desktop-nav" aria-label="主导航">
         <template v-for="group in navGroups" :key="group.label || group.items[0].to">
           <span v-if="group.label" class="nav-label">{{ group.label }}</span>
+          <!-- 没有组名的组（只有一项）也和上一组隔开，不像是上一组的最后一项 / A group without a heading (a single item) still stands apart, never reading as the last item of the group above -->
+          <span v-else-if="group !== navGroups[0]" class="nav-gap" aria-hidden="true"></span>
           <!-- 自己写 a：配置的四项共用一条路由，RouterLink 的当前态分不出来 / Our own anchors: the four config items share one route, so RouterLink's current state cannot tell them apart -->
           <RouterLink v-for="item in group.items" :key="item.label" :to="navTarget(item)" custom v-slot="{ href, navigate }">
             <a :href="href" :aria-current="isCurrent(item) ? 'page' : undefined" @click="navigate"><component :is="item.icon" :size="16" aria-hidden="true" /><span>{{ item.label }}</span></a>

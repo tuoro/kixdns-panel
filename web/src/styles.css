@@ -951,6 +951,7 @@ body { text-spacing-trim: trim-start; }
   .desktop-nav a.router-link-exact-active, .desktop-nav a[aria-current="page"] { color: var(--l-ink); background: var(--l-surface); box-shadow: var(--shadow-raise); }
   .desktop-nav a.router-link-exact-active svg, .desktop-nav a[aria-current="page"] svg { color: var(--accent); }
   .desktop-nav a.router-link-exact-active::after { display: none; }
+  .desktop-nav .nav-gap { height: var(--s-4); }
   .desktop-nav .nav-label { padding: var(--s-4) var(--s-3) var(--s-1); color: var(--l-ink-3); font-size: var(--t-1); font-weight: var(--w-bold); letter-spacing: .06em; text-transform: uppercase; }
   .desktop-nav a.nav-sub { height: var(--h-sm); padding-left: calc(var(--s-3) + var(--h-sm)); }
   .app-header__actions { justify-self: auto; margin-top: auto; padding-top: var(--s-3); border-top: 1px solid var(--l-hair); }
