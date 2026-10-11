@@ -47,16 +47,8 @@ const confirm = useConfirm()
 const toast = useToast()
 const foot = ref<HTMLElement | null>(null)
 useBarHeight(foot, '--editor-foot-h')
-// 高级规则的修改先在 rawRules / rawText 里，对照时一起算上 / An advanced rule's edits live in rawRules / rawText until 完成, so the comparison counts them too
-const editedNow = computed(() => snapshot() !== initialSnap.value)
-const edited = (): boolean => editedNow.value
-// 改过没点「完成」要让页面知道：离开、刷新、保存条都按它算 / The page must know about edits not yet 完成: leaving, reloading and the save bar count them
-const me = Symbol('rule-editor')
-watch(editedNow, (now) => {
-  if (now) editorEditedBy.value = me
-  else if (editorEditedBy.value === me) editorEditedBy.value = null
-}, { immediate: true })
-onBeforeUnmount(() => { if (editorEditedBy.value === me) editorEditedBy.value = null })
+// 高级规则的修改先在 rawRules / rawText 里，对照时一起算上；对照和登记放在下面 rawText 声明之后（立即执行的 watch 会马上读它）
+// An advanced rule's edits live in rawRules / rawText until 完成, so the comparison counts them too; comparing and registering come after rawText is declared below (the immediate watch reads it at once)
 // 换一条规则、换分区、点保存条之前，外面先问这一句；没改过就直接放行 / Asked from outside before switching rule or section; passes straight through when nothing changed
 async function confirmDiscard(): Promise<boolean> {
   return !edited() || confirm.ask({ title: '放弃这条规则的修改', body: '刚才在这里改的内容不会写进草稿。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
@@ -121,6 +113,15 @@ function snapshot(): string {
   return JSON.stringify({ ...draft, raw })
 }
 initialSnap.value = snapshot()
+const editedNow = computed(() => snapshot() !== initialSnap.value)
+const edited = (): boolean => editedNow.value
+// 改过没点「完成」要让页面知道：离开、刷新、保存条都按它算 / The page must know about edits not yet 完成: leaving, reloading and the save bar count them
+const me = Symbol('rule-editor')
+watch(editedNow, (now) => {
+  if (now) editorEditedBy.value = me
+  else if (editorEditedBy.value === me) editorEditedBy.value = null
+}, { immediate: true })
+onBeforeUnmount(() => { if (editorEditedBy.value === me) editorEditedBy.value = null })
 // 表单里写错的字段由条件表 / 动作表自己标红，这里只数出来给底栏 / The lists mark bad fields themselves; this only counts them for the footer
 const kernelPipelines = computed<PipelineConfig[]>(() => compile(model).pipelines.map((p) => ({ id: p.id, rules: [] })))
 const ownPipelineId = computed(() => { const g = props.groupId ?? (props.ruleId !== null ? listOf(props.ruleId).group?.id ?? null : null); return g ? ruleGroupPipelineId(model, g) : mainPipelineId(model) })

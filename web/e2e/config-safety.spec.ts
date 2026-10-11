@@ -248,3 +248,24 @@ test('保存时才发现 KixDNS 停了：标题说停了，不说没通过校验
   await expect(bar).toContainText('草稿还在，可以先存成待应用版本')
   await expect(page.locator('[data-rule]', { hasText: 'stopped.example' })).toBeVisible()
 })
+
+test('高级规则能打开编辑，改了没点完成也算没保存 @responsive', async ({ page }, testInfo) => {
+  // 放不进面板写法的内核规则（动作在决定结果后还有一个）导入后成为高级规则 / A kernel rule that fits no panel field (an action after the deciding one) imports as an advanced rule
+  const config = { version: '1.0', settings: {}, pipeline_select: [{ pipeline: 'main', matchers: [] }], pipelines: [{ id: 'main', rules: [{ name: 'ads', matchers: [{ type: 'geo_site', value: 'category-ads-all' }], actions: [{ type: 'log', level: 'info' }, { type: 'deny' }, { type: 'static_response', rcode: 'NXDOMAIN' }] }] }] }
+  const errors: string[] = []
+  page.on('pageerror', (error) => errors.push(error.message))
+  await page.goto('/config')
+  await expect(page.locator('.rcard')).toBeVisible()
+  await page.locator('input[type="file"]').setInputFiles({ name: 'raw.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(config)) })
+  const report = page.locator('dialog[open]')
+  if (await report.count()) await page.keyboard.press('Escape')
+  await page.locator('[data-rule]', { hasText: 'ads' }).locator('.rrow__main').click()
+  const editor = testInfo.project.name === 'mobile' ? page.locator('.editor').first() : page.locator('.editor--inspector')
+  await expect(editor).toBeVisible()
+  await expect(editor.getByRole('button', { name: '完成', exact: true })).toBeVisible()
+  // 改一处没点完成就取消：先问一句（导入本身已经让草稿有修改，所以看的是取消时的提问） / One edit then 取消 asks first (the import already dirtied the draft, so the question on 取消 is what tells)
+  await editor.getByRole('checkbox', { name: '启用这条规则' }).uncheck()
+  await editor.getByRole('button', { name: '取消', exact: true }).click()
+  await expect(page.getByRole('alertdialog', { name: '放弃这条规则的修改' })).toBeVisible()
+  expect(errors).toEqual([])
+})
