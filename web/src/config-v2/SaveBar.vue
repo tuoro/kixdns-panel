@@ -75,8 +75,10 @@ useBarHeight(bar, '--savebar-h')
 watch(busy, (b) => { if (b) void nextTick(() => saveButton.value?.focus()) })
 
 function discard(): void {
+  // 只有面板或 JSON 里的修改时，说清丢掉的是哪些，不给一个什么都恢复不了的「撤销」 / With only panel or JSON edits, say which were dropped instead of offering an 撤销 that restores nothing
+  const what = props.jsonDirty ? '已放弃 JSON 里的修改' : editorEdited.value ? '已放弃右侧规则的修改' : undefined
   props.flush?.('fold')
-  discardWithUndo()
+  discardWithUndo(what)
   emit('discarded')
   // 焦点落到提示里的「撤销」：保存条收起后不掉回页面开头 / Focus lands on the toast's 撤销, so it does not fall back to the page start once the bar leaves
   void nextTick(() => [...document.querySelectorAll<HTMLButtonElement>('.toast-undo')].pop()?.focus())
@@ -99,7 +101,7 @@ function discard(): void {
         </template>
         <template v-else-if="jsonError"><span class="ui-savebar__verdict">JSON 写错了</span><small><button class="ui-objlink ui-objlink--plain" type="button" @click="emit('reveal', jsonError.line, jsonError.column)">第 {{ jsonError.line }} 行第 {{ jsonError.column }} 列</button> · {{ jsonError.reason }}</small></template>
         <template v-else-if="validated"><span class="ui-dot" aria-hidden="true"></span><span class="ui-savebar__detail"><UiDotText :parts="['校验通过', '可以保存']" /></span></template>
-        <template v-else-if="changeCount === 0"><span class="ui-dot ui-dot--ink" aria-hidden="true"></span><span class="ui-savebar__detail">{{ jsonDirty ? 'JSON 有修改' : '右侧规则还没点「完成」' }}<small v-if="deferSave"> · {{ deferNote }}</small></span></template>
+        <template v-else-if="changeCount === 0"><span class="ui-dot ui-dot--ink" aria-hidden="true"></span><span class="ui-savebar__detail">{{ jsonDirty ? 'JSON 有修改' : '右侧规则的修改还没放进草稿' }}<small v-if="deferSave"> · {{ deferNote }}</small></span></template>
         <template v-else><span class="ui-dot ui-dot--ink" aria-hidden="true"></span><span class="ui-savebar__detail"><button class="ui-objlink savebar__review" type="button" aria-haspopup="dialog" title="看看改了哪些" @click="review">已修改 <b class="ui-savebar__count"><UiNumber :value="String(changeCount)" /></b> 处</button><small v-if="deferSave"> · {{ deferNote }}</small></span></template>
       </p>
       <template v-if="draftStage !== 'done' && (pending || draftStage === 'failed') && !jsonError">
@@ -108,7 +110,7 @@ function discard(): void {
         <label class="ui-input ui-savebar__note savebar__note" :class="{ 'is-open': noteOpen || Boolean(saveMessage), 'is-aside': busy }" :inert="busy"><input v-model="saveMessage" aria-label="版本备注" maxlength="160" placeholder="版本备注（可选）"></label>
         <!-- 保存旁边一定有放弃：丢掉草稿回到运行中的配置，提示里能撤销 / Save always comes with discard: drop the draft back to the running config, undoable from the toast -->
         <button v-if="!phone" class="ui-btn ui-btn--secondary savebar__discard" :class="{ 'is-aside': busy }" type="button" :inert="busy" @click="discard">放弃修改</button>
-        <button v-if="!deferSave" class="ui-btn ui-btn--secondary savebar__check" :class="{ 'is-aside': busy }" type="button" :inert="busy" @click="check"><ShieldCheck :size="16" aria-hidden="true" />校验</button>
+        <button v-if="!deferSave && !conflict" class="ui-btn ui-btn--secondary savebar__check" :class="{ 'is-aside': busy }" type="button" :inert="busy" @click="check"><ShieldCheck :size="16" aria-hidden="true" />校验</button>
         <!-- 别处先存了新版本时再保存只会再失败一次：先重新读取 / After someone else saved, saving again only fails again: reload first -->
         <button ref="saveButton" class="ui-btn ui-btn--primary savebar__save config-save-button" type="button" :aria-busy="busy || undefined" :disabled="conflict && draftStage === 'failed'" @click="saveDraft"><span v-if="busy" class="ui-spin" aria-hidden="true"></span>{{ busy ? '保存中' : deferSave ? (phone ? '存为待应用' : '保存为待应用') : (phone ? '保存' : '保存并热加载') }}</button>
       </template>

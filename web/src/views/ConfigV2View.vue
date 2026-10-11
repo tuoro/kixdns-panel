@@ -82,45 +82,61 @@ async function openRule(ruleId: number | null, groupId: string | null, template?
   editor.value = { ruleId, groupId, template }
   // 宽屏的面板贴在列表旁边，不跳回页顶，列表停在原处 / On wide screens the panel sits beside the list, so the list keeps its place
   if (!(wide.value && section.value === 'rules')) {
+    // 先记进历史再回页顶：浏览器给列表那一条记下的是现在的位置，返回时列表回到原处 / Into history first, then to the top: the browser records the list's current position for its entry, so back returns the list to where it was
+    if (!route.query.rule) await router.push({ query: { ...route.query, rule: ruleId === null ? 'new' : String(ruleId) } })
     window.scrollTo({ top: 0 })
-    if (!route.query.rule) void router.push({ query: { ...route.query, rule: ruleId === null ? 'new' : String(ruleId) } })
   }
 }
-// 关掉整页编辑时把那条历史退掉，地址回到列表 / Closing the full-page editor steps back out of its history entry, so the address is the list again
-function leaveEditorHistory(): void {
-  if (route.query.rule) router.back()
+// 关掉整页编辑时把那条历史退掉，地址回到列表；等返回走完（浏览器恢复了列表位置）再交回去 / Closing the full-page editor steps back out of its history entry; resolves once that back has settled and the browser has restored the list position
+function leaveEditorHistory(): Promise<void> {
+  if (!route.query.rule) return Promise.resolve()
+  return new Promise((resolve) => {
+    const off = router.afterEach(() => { off(); resolve() })
+    router.back()
+  })
 }
-function closeRule(): void {
+// 回到列表后，那一行在视野里并拿到焦点 / Back on the list, the row is in view and has the focus
+function revealRow(id: number | null | undefined, fresh = false): void {
+  if (id === null || id === undefined) return
+  requestAnimationFrame(() => {
+    const row = document.querySelector<HTMLElement>(`[data-rule="${id}"]`)
+    if (!row) return
+    const box = row.getBoundingClientRect()
+    if (box.top < 0 || box.bottom > window.innerHeight) row.scrollIntoView({ block: 'center' })
+    row.querySelector<HTMLElement>('.rrow__main')?.focus({ preventScroll: true })
+    if (fresh) { row.classList.add('is-fresh'); setTimeout(() => row.classList.remove('is-fresh'), 1600) }
+  })
+}
+async function closeRule(): Promise<void> {
   const id = editor.value?.ruleId
   editor.value = null
-  leaveEditorHistory()
-  if (id !== null && id !== undefined) requestAnimationFrame(() => { const row = document.querySelector<HTMLElement>(`[data-rule="${id}"]`); row?.scrollIntoView({ block: 'center' }); row?.querySelector<HTMLElement>('.rrow__main')?.focus() })
+  await leaveEditorHistory()
+  revealRow(id)
 }
-function ruleSaved(rule: Rule, isNew: boolean): void {
+async function ruleSaved(rule: Rule, isNew: boolean): Promise<void> {
   editor.value = null
-  leaveEditorHistory()
+  await leaveEditorHistory()
   // 手机上编辑器占整页，完成时保存条还看不见：提示里说一句还要保存；桌面上保存条就在旁边，不重复
   // On a phone the editor fills the page and the save bar is not in view at 完成, so the toast says a save is still due; on desktop the bar sits right there
   toast.success(`${isNew ? '已添加' : '已更新'}「${ruleTitle(rule)}」${phone.value ? '，保存后生效' : ''}`)
   // 焦点回到这一行，键盘接着往下走，不掉到页面开头 / Focus returns to the row so the keyboard carries on from there instead of dropping to the page start
-  requestAnimationFrame(() => {
-    const row = document.querySelector<HTMLElement>(`[data-rule="${rule.id}"]`)
-    row?.scrollIntoView({ block: 'center' })
-    row?.querySelector<HTMLElement>('.rrow__main')?.focus({ preventScroll: true })
-    row?.classList.add('is-fresh')
-    setTimeout(() => row?.classList.remove('is-fresh'), 1600)
-  })
+  revealRow(rule.id, true)
 }
-function ruleDeleted(rule: Rule, index: number, list: Rule[]): void {
+async function ruleDeleted(rule: Rule, index: number, list: Rule[]): Promise<void> {
   editor.value = null
-  leaveEditorHistory()
+  await leaveEditorHistory()
   toast.undoable(`已删除「${ruleTitle(rule)}」`, () => list.splice(Math.min(index, list.length), 0, rule))
+  // 删掉以后焦点落在提示里的「撤销」上 / After the delete, focus lands on the toast's 撤销
+  void nextTick(() => [...document.querySelectorAll<HTMLButtonElement>('.toast-undo')].pop()?.focus())
 }
 // 宽窄切换会把面板换成整页编辑（或反过来），换之前把没点「完成」的修改交给下一个
 // A width change swaps the panel for the full-page editor (or back); before the swap the edits not yet 完成 are handed over
 watch(inspector, (now, before) => {
   if (!editor.value || now === before || !editorRef.value) return
   editor.value = { ...editor.value, resume: editorRef.value.capture() }
+  // 换成整页编辑时也记进历史，返回手势回到列表；换回面板时把 ?rule 去掉 / Switching to the full page goes into history too, so back returns to the list; switching back to the panel drops ?rule
+  if (!now && !route.query.rule) void router.push({ query: { ...route.query, rule: editor.value.ruleId === null ? 'new' : String(editor.value.ruleId) } })
+  else if (now && route.query.rule) void router.replace({ query: { ...route.query, rule: undefined } })
 }, { flush: 'pre' })
 function groupSaved(group: UpstreamGroup, isNew: boolean): void {
   groupEditor.value = null
@@ -251,7 +267,7 @@ function pickMore(value: string): void {
   else if (value === 'import') fileInput.value?.click()
   else if (value === 'download') downloadJson()
   else if (value === 'help') help.show('config')
-  else if (value === 'discard') { if (!jsonError.value) flush('fold'); discardWithUndo(); afterDiscard() }
+  else if (value === 'discard') { const what = jsonDirty.value ? '已放弃 JSON 里的修改' : undefined; if (!jsonError.value) flush('fold'); discardWithUndo(what); afterDiscard() }
   else void reload()
 }
 
@@ -265,7 +281,7 @@ async function importFile(event: Event): Promise<void> {
   if (file.size > 4 * 1024 * 1024) { toast.error('配置文件不能超过 4 MiB'); return }
   let parsed: Record<string, unknown>
   try { parsed = JSON.parse(await file.text()) as Record<string, unknown> } catch (e) { toast.error(`${file.name} 不是合法的 JSON：${(e as Error).message}`); return }
-  if (unsaved.value && !(await confirm.ask({ title: '放弃未保存的修改', body: '导入的文件会替换编辑器里的草稿，没保存的修改会丢失。', confirmLabel: '放弃修改并导入' }))) return
+  if (unsaved.value && !(await confirm.ask({ title: '放弃未保存的修改', body: '导入的文件会替换编辑器里的草稿，没保存的修改会丢失。', confirmLabel: '放弃修改并导入', destructive: true }))) return
   const before = JSON.parse(JSON.stringify(model)) as Model
   const { model: next, report } = readConfig(parsed, model)
   replaceModel(next)
@@ -288,7 +304,7 @@ function downloadJson(): void {
   URL.revokeObjectURL(a.href)
 }
 async function reload(ask = true): Promise<void> {
-  if (ask && unsaved.value && !(await confirm.ask({ title: '放弃未保存的修改', body: '重新读取会丢掉编辑器里没保存的修改。', confirmLabel: '放弃修改并重新读取' }))) return
+  if (ask && unsaved.value && !(await confirm.ask({ title: '放弃未保存的修改', body: '重新读取会丢掉编辑器里没保存的修改。', confirmLabel: '放弃修改并重新读取', destructive: true }))) return
   editor.value = null
   ui.mode = 'form'
   await load()
@@ -320,9 +336,14 @@ onBeforeRouteUpdate(async (to, from) => {
   const backOut = Boolean(from.query.rule) && !to.query.rule
   if (!editor.value || (to.query.section === from.query.section && !backOut)) return true
   if (!(await editorRef.value?.confirmDiscard() ?? true)) return false
+  const id = editor.value.ruleId
   editor.value = null
+  if (backOut) void router.isReady().then(() => nextTick(() => revealRow(id)))
   return true
 })
+// 地址里还带着 ?rule、编辑却已经关了（前进到旧的记录、从编辑里切到别的分区）：把它去掉，地址和页面一致
+// The address still carries ?rule while no editor is open (forward onto an old entry, switching section from the editor): drop it so the address matches the page
+watch(() => route.query.rule, (rule) => { if (rule && !editor.value) void router.replace({ query: { ...route.query, rule: undefined } }) })
 watch(section, () => { editor.value = null; void nextTick(() => window.scrollTo({ top: 0 })) })
 // 页头说「KixDNS 未启动」时就地启动；启动后重读运行状态，有待应用的版本页头会换成「现在应用」
 // Start KixDNS where the header says it is stopped; afterwards the runtime state is reread, and a pending version turns the header action into 现在应用

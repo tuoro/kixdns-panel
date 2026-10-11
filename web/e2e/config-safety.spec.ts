@@ -141,7 +141,7 @@ test('右栏里改了没点完成就离开配置页：先问这条规则', async
   await page.locator('[data-rule]').first().locator('.rrow__main').click()
   await page.getByLabel('规则名称，可以不填，不填就用条件当名字').fill('没点完成')
   // 草稿已经保存，只剩面板里的修改：保存条照样升起，Ctrl+S 会把它一起存了 / The draft is saved and only the panel's edit is left: the bar still rises
-  await expect(page.locator('.cfg__savebar')).toContainText('右侧规则还没点「完成」')
+  await expect(page.locator('.cfg__savebar')).toContainText('右侧规则的修改还没放进草稿')
   await page.locator('.desktop-nav').getByRole('link', { name: '概览' }).click()
   const ask = page.getByRole('alertdialog', { name: '放弃这条规则的修改' })
   await expect(ask).toBeVisible()
@@ -199,4 +199,26 @@ test('手机上从整页编辑按返回：回到规则列表，改过先问 @res
   // 回到的是规则列表，不是概览 / Back lands on the rule list, not the overview
   await expect(page).toHaveURL(/\/config/)
   await expect(page.locator('[data-rule]').first()).toContainText('back.example')
+})
+
+test('手机上编辑列表靠下的规则，完成后那一行还在眼前并拿到焦点 @responsive', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'mobile', '整页编辑只在窄屏上出现 / the full-page editor appears only on narrow screens')
+  // 二十条规则的内核配置，导入后列表比一屏长 / A kernel config with twenty rules, so the imported list is longer than one screen
+  const rules = Array.from({ length: 20 }, (_, i) => ({ name: `r${i + 1}`, matchers: [{ type: 'domain_suffix', value: `site${i + 1}.example` }], actions: [{ type: 'forward', upstream: '1.1.1.1:53' }] }))
+  const config = { version: '1.0', settings: {}, pipeline_select: [{ pipeline: 'main', matchers: [] }], pipelines: [{ id: 'main', rules }] }
+  await page.goto('/config')
+  // 等配置读完再导入，不然读回来的配置会把导入的盖掉 / Import only after the config has loaded, or the load would overwrite the import
+  await expect(page.locator('.rcard')).toBeVisible()
+  await page.locator('input[type="file"]').setInputFiles({ name: 'many.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(config)) })
+  const dialog = page.locator('dialog[open]')
+  if (await dialog.count()) await page.keyboard.press('Escape')
+  const row = page.locator('[data-rule]', { hasText: 'r18' })
+  await row.scrollIntoViewIfNeeded()
+  await row.locator('.rrow__main').click()
+  await page.getByLabel('规则名称，可以不填，不填就用条件当名字').fill('第十八条')
+  await page.getByRole('button', { name: '完成', exact: true }).click()
+  const edited = page.locator('[data-rule]', { hasText: '第十八条' })
+  await expect(edited.locator('.rrow__main')).toBeFocused()
+  // 以前返回时浏览器把列表恢复到页顶，这一行落在屏幕外 / Before, back restored the list to the top and the row was off screen
+  await expect(edited).toBeInViewport()
 })

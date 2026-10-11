@@ -193,7 +193,10 @@ const ACTION_NAMES: Record<string, string> = {
   'config.geo_data.schedule.apply': '定时更新 Geo 数据',
   'diagnostic.dns': 'DNS 诊断',
   'kixdns.kernel.update': '更新内核',
-  'kixdns.kernel.rollback': '回滚内核',
+  'kixdns.kernel.rollback': '回退内核',
+  'cache.flush': '清空缓存',
+  'system.github_token.configure': '保存 GitHub Token',
+  'system.github_token.remove': '删除 GitHub Token',
   'kixdns.kernel.replace_release': '切换内核版本',
   'kixdns.kernel.replace_release_failed': '切换内核版本',
   'service.start': '启动服务',
@@ -543,7 +546,7 @@ onBeforeUnmount(() => window.clearInterval(timer))
   .logs-page .log-head--audit, .logs-page .audit-line { grid-template-columns: 128px 88px 14rem minmax(0, 1fr); column-gap: var(--s-5); }
   .logs-page .audit-line { min-height: 0; align-items: baseline; align-content: start; padding: var(--s-2) var(--s-5); }
   .logs-page .audit-line time, .logs-page .audit-line strong { font-family: var(--f-body); font-size: var(--t-3); }
-  .logs-page .audit-line .audit-action { color: var(--l-ink); font-size: var(--t-2); }
+  .logs-page .audit-line .audit-action { color: var(--l-ink); font-size: var(--t-3); }
   .logs-page .audit-line p { display: flex; align-items: center; gap: var(--s-2); color: var(--l-ink-2); font-size: var(--t-3); }
 }
 

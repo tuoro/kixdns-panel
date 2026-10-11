@@ -184,7 +184,8 @@ export function load(options: { quiet?: boolean } = {}): Promise<void> {
 
 // ---------- 校验、保存、应用 / validate, save, apply ----------
 export async function validate(): Promise<ValidationResult | null> {
-  if (deferSave.value) return null
+  // 冲突时校验没有意义，还会把冲突的提示盖掉：先重新读取 / Validating during a conflict means nothing and would wipe the conflict line: re-read first
+  if (deferSave.value || conflict.value) return null
   origin.value = 'draft'
   startStage('checking')
   try {

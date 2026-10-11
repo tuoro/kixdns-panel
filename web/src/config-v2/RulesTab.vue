@@ -8,7 +8,7 @@ import { useConfirm } from '../composables/useConfirm'
 import { useToast } from '../composables/useToast'
 import { GEOSITE_SUGGESTIONS } from '../config-model/condKinds'
 import { isCidr, isDomain, newRule, outcomeSentence, rawMatchersText, type Condition, type Outcome, type Rule, type RuleGroup, ruleTitle } from '../config-model/model'
-import { useNarrow, usePhone } from './phone'
+import { usePhone } from './phone'
 import RuleList from './RuleList.vue'
 import Tester from './Tester.vue'
 import { model, newId, ruleGroupUsers, ui } from './store'
@@ -54,7 +54,6 @@ const cond = (field: Condition['field'], values: string[], negate = false): Cond
 
 // ---------- 快速添加：一行写值，选结果，回车 / quick add: values on one line, pick an outcome, Enter ----------
 const phone = usePhone()
-const narrow = useNarrow()
 const quick = reactive({ text: '', target: '' })
 // 宽屏上快速添加藏在工具行的「快速添加」后面，点开才占一行；手机上一直在 / On wide screens quick add hides behind the toolbar's 快速添加 and takes a row only when opened; on phones it is always there
 const quickOpen = ref(false)
@@ -101,7 +100,7 @@ function quickAdd(): void {
     const c = target.conditions[0]![0]!
     const before = [...c.values]
     c.values = [...new Set([...c.values, ...p.values])]
-    toast.undoable(`已加到「${target.name}」`, () => { c.values = before })
+    toast.undoable(`已加到「${ruleTitle(target)}」`, () => { c.values = before })
   } else {
     const rule: Rule = { ...newRule(newId(), quickOutcome()), conditions: [[cond(p.field, p.values)]] }
     model.rules.push(rule)
@@ -263,14 +262,14 @@ function saveEntries(): void {
         </div>
         <form v-if="phone || quickOpen" class="qadd" :class="{ 'is-typing': quick.text.trim() }" @submit.prevent="quickAdd">
           <Plus class="qadd__icon" :size="16" aria-hidden="true" />
-          <label class="qadd__input"><input ref="quickInput" v-model="quick.text" aria-label="快速添加：域名、GeoSite 或 IP 网段" :placeholder="phone || narrow ? '域名、geosite:分类 或网段，空格隔开' : '快速添加：域名、geosite:分类 或网段，空格隔开'" autocapitalize="off" spellcheck="false"></label>
+          <label class="qadd__input"><input ref="quickInput" v-model="quick.text" aria-label="快速添加：域名、GeoSite 或 IP 网段" :placeholder="'域名、geosite:分类 或网段，空格隔开'" autocapitalize="off" spellcheck="false"></label>
           <UiSelect v-model="quickTarget" class="qadd__target" :options="quickTargets" label="快速添加的结果" :size="phone ? 'md' : 'sm'" />
           <button class="ui-btn ui-btn--secondary qadd__btn" :class="{ 'ui-btn--sm': !phone }" type="submit" :disabled="!ok">{{ mergeInto ? '加进去' : '添加' }}</button>
           <p v-if="quickHint" class="qadd__hint" :class="{ 'is-err': !ok }" role="status">{{ quickHint }}</p>
         </form>
         <p class="rcard__order">从上往下判断，第一条决定结果的规则生效。</p>
         <RuleList :rules="model.rules" :owner="model" :in-group="false" :query="query" :kind="kind" :marks="marks" :selected="selected" :rest-mark="false" :mapping-mark="matchedMapping" @open="emit('open', $event, null)" @mappings="emit('tab', 'mapping')">
-          <template #empty><div class="rcard__empty"><ListFilter :size="16" aria-hidden="true" /><span>还没有规则，所有请求都按最下面的「其余请求」处理。用上面一行快速添加，或者「新建规则」。</span></div></template>
+          <template #empty><div class="rcard__empty"><ListFilter :size="16" aria-hidden="true" /><span>{{ phone ? '还没有规则，所有请求都按最下面的「其余请求」处理。用上面一行添加，或点 + 新建规则。' : '还没有规则，所有请求都按最下面的「其余请求」处理。点「快速添加」或「新建规则」开始。' }}</span></div></template>
         </RuleList>
       </section>
 

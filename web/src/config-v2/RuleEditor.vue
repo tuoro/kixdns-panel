@@ -33,7 +33,7 @@ const JsonEditor = defineAsyncComponent(() => import('../components/JsonEditor.v
 // Edits go to a copy that 完成 writes back to the draft; mistakes are marked where they are.
 // inspector：宽屏上在列表右边的面板里编辑，没有面包屑和右栏，各区块收成一列 / inspector: on wide screens the rule is edited in the panel beside the list, without crumbs or the aside, sections stacked in one column
 // resume：宽窄切换（转屏、拖窗口）时换成另一种编辑器，把上一个实例里还没点「完成」的修改接着用 / resume: when the layout switches (rotation, a resized window) the other editor takes over the edits not yet 完成 in the previous instance
-export interface EditorResume { draft: Rule; rawRules: unknown[]; rawMode: 'form' | 'json'; rawText: string; position: number }
+export interface EditorResume { draft: Rule; rawRules: unknown[]; rawMode: 'form' | 'json'; rawText: string; position: number; base: string }
 const props = withDefaults(defineProps<{ ruleId: number | null; groupId: string | null; template?: Partial<Rule>; inspector?: boolean; resume?: EditorResume | null }>(), { inspector: false, resume: null })
 const emit = defineEmits<{ close: []; saved: [rule: Rule, isNew: boolean]; deleted: [rule: Rule, index: number, list: Rule[]]; editGroup: [id: string] }>()
 
@@ -144,9 +144,12 @@ if (props.resume) {
   rawMode.value = r.rawMode
   rawText.value = r.rawText
   position.value = r.position
+  // 对照的基准也接过来：新规则在新实例里的编号不同，按自己的基准算会把没动过的新规则也当成改过
+  // The baseline comes along too: a new rule gets another id in the new instance, and comparing against its own baseline would count an untouched new rule as edited
+  initialSnap.value = r.base
 }
 function capture(): EditorResume {
-  return { draft: JSON.parse(JSON.stringify(draft)) as Rule, rawRules: JSON.parse(JSON.stringify(rawRules)) as unknown[], rawMode: rawMode.value, rawText: rawText.value, position: Number(position.value) }
+  return { draft: JSON.parse(JSON.stringify(draft)) as Rule, rawRules: JSON.parse(JSON.stringify(rawRules)) as unknown[], rawMode: rawMode.value, rawText: rawText.value, position: Number(position.value), base: initialSnap.value }
 }
 const showErrors = ref(false)
 const problems = computed(() => [...ruleProblems(model, draft), ...(rawError.value ? [`内核规则写错了：${rawError.value}`] : []), ...(rawFieldProblems.value ? [`内核规则里有 ${rawFieldProblems.value} 处没填对（标红的那些）`] : [])])
@@ -273,7 +276,8 @@ const reading = computed(() => {
 // 名字框空着时显示列表里会用的标题，就是条件本身 / An empty name field shows the title the list will use: the condition itself
 // 新规则还没条件时，占位别写「所有请求」——那像个填好的名字；写清楚这格是名字、可以不填 / A new rule without conditions does not show 「所有请求」 as its placeholder (it reads like a filled-in name); say what the field is and that it is optional
 const namePlaceholder = computed(() => (!original && !draft.conditions.some((g) => g.length) ? '规则名称，可以不填' : ruleTitle({ ...draft, name: '' } as Rule)))
-const readingLead = computed(() => `${withShi(reading.value[0]?.v ?? '')}，${reading.value[1]?.v ?? ''}`)
+// 没有条件时不说「所有请求时，…」，说「所有请求都…」 / Without conditions it reads 「所有请求都…」, not 「所有请求时，…」
+const readingLead = computed(() => (!draft.raw && !draft.conditions.some((g) => g.length) ? `所有请求都${reading.value[1]?.v ?? ''}` : `${withShi(reading.value[0]?.v ?? '')}，${reading.value[1]?.v ?? ''}`))
 const readingMore = computed(() => reading.value.slice(2).map((row) => `${row.k}：${row.v}`))
 
 const kernelJson = computed(() => JSON.stringify(kernelPreview(model, draft), null, 2))
@@ -316,7 +320,7 @@ function commit(): boolean {
   if (problems.value.length) {
     showErrors.value = true
     revealProblem()
-    toast.info(`右侧规则还有 ${problems.value.length} 处要改，改好或点「取消」再保存`)
+    toast.info('先改好右侧规则再保存')
     return false
   }
   done()

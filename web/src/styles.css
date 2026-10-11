@@ -70,7 +70,7 @@ code, .mono { font-family: var(--f-mono); letter-spacing: 0; }
 .account-popover { position: absolute; top: 50px; right: 0; width: 210px; padding: 16px; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 4px; box-shadow: 0 10px 30px color-mix(in srgb, var(--d-shell) 12%, transparent); }
 .account-popover > strong { display: block; overflow-wrap: anywhere; font-size: var(--t-3); }
 .account-popover > small { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; }
-.account-popover > button { width: 100%; min-height: 44px; display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 8px 0 0; color: var(--ink); background: transparent; border: 0; border-top: 1px solid var(--line); font-size: 14px; text-align: left; }
+.account-popover > button { width: 100%; min-height: 44px; display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 8px 0 0; color: var(--ink); background: transparent; border: 0; border-top: 1px solid var(--line); font-size: var(--t-3); text-align: left; }
 .workspace { min-height: calc(100dvh - var(--app-header-height)); }
 .workspace__main { width: 100%; max-width: 1760px; margin: 0 auto; padding: 28px 28px 44px; scroll-margin-top: var(--app-header-height); }
 .workspace__main:focus { outline: none; }
@@ -100,7 +100,7 @@ code, .mono { font-family: var(--f-mono); letter-spacing: 0; }
 .notification-item__icon { width: 34px; height: 34px; display: grid; place-items: center; color: var(--green); background: var(--green-soft); border-radius: 5px; }
 .notification-item__body { min-width: 0; }
 .notification-item__title { display: flex; align-items: center; gap: 7px; }
-.notification-item__title strong { overflow: hidden; color: var(--l-ink); font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.notification-item__title strong { overflow: hidden; color: var(--l-ink); font-size: var(--t-3); text-overflow: ellipsis; white-space: nowrap; }
 .notification-item__title i { width: 6px; height: 6px; flex: 0 0 auto; background: var(--red); border-radius: 50%; }
 .notification-item__body p { margin-top: 3px; color: var(--l-ink-2); font-size: 12px; }
 .notification-item__body small { display: block; margin-top: 4px; overflow: hidden; color: var(--l-ink-3); font-family: var(--f-mono); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
@@ -294,8 +294,9 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
 .auth-security { display: flex; align-items: flex-start; gap: 8px; margin-top: 20px; color: var(--l-ink-2); font-size: 12px; line-height: 1.5; }
 .auth-security svg { flex: 0 0 auto; color: var(--muted); }
 /* 首次运行时说明接下来两步并写明不会覆盖已有配置。静态文案，不含机器状态。 */
-.auth-next { display: grid; gap: 7px; margin: 20px 0 0; padding: 14px 16px 14px 32px; background: var(--l-surface); border: 1px solid var(--l-hair); border-radius: 5px; color: var(--l-ink-2); font-size: 12px; line-height: 1.55; }
-.auth-next__promise { list-style: none; margin-left: -18px; padding-top: 7px; border-top: 1px solid var(--l-sunk); color: var(--ink); font-weight: 600; }
+.auth-next { display: grid; gap: 4px; margin: 20px 0 0; padding: 14px 16px; background: var(--l-surface); border: 1px solid var(--l-hair); border-radius: 5px; color: var(--l-ink-2); font-size: 12px; line-height: 1.55; }
+.auth-next p { margin: 0; }
+.auth-next__promise { color: var(--ink); font-weight: 600; }
 
 .toast-stack { position: fixed; z-index: 100; top: 18px; right: 18px; width: min(360px, calc(100vw - 36px)); display: grid; gap: 8px; }
 .toast { min-height: 46px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 9px; padding: 8px 9px 8px 12px; color: var(--l-ink); background: var(--l-surface); border: 1px solid var(--l-line-strong); border-left: 3px solid var(--l-ink-2); border-radius: 6px; box-shadow: var(--shadow-pop); font-size: var(--t-3); line-height: 1.4; }
@@ -633,6 +634,8 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
   .audit-line .audit-action { grid-area: code; overflow: hidden; color: var(--l-ink); font-size: var(--t-2); font-weight: var(--w-medium); text-overflow: ellipsis; white-space: nowrap; }
   .audit-line strong { grid-area: actor; color: var(--l-ink-3); font-family: var(--f-body); font-size: var(--t-2); font-weight: var(--w-normal); text-align: left; }
   .audit-line strong::after { content: "·"; display: inline-block; width: calc(var(--s-2) * 2); color: var(--l-edge-hover); text-align: center; }
+  /* 没有详情（比如登录）时不画点：点后面没东西就是挂在行尾 / No dot when there is no detail (a login, say): a dot with nothing after it dangles at the line end */
+  .audit-line strong:has(+ p:empty)::after { content: none; }
   .audit-line p { grid-area: detail; color: var(--l-ink-2); font-size: var(--t-2); }
 }
 
@@ -653,7 +656,8 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
 /* ---------- v2 第一轮审查：登录 / review round 1: sign-in ---------- */
 /* 背景不动；卡片换成和面板同一套零件：细边圆角 10、输入框 36、聚焦墨色、主按钮墨色居中
    The ground stays; the card takes the panel's parts: hairline edge, radius 10, 36px fields, ink focus, an ink primary with a centred label */
-.auth-panel { width: min(100%, 400px); padding: var(--s-6); border: 1px solid var(--l-hair); border-radius: var(--r-3); box-shadow: var(--shadow-pop); }
+/* 卡片宽度按视口算，不按收缩的父元素：说明文字短了卡片也不跟着变窄，手机上左右照样留 16 / Width follows the viewport, not a shrink-to-fit parent: shorter copy never narrows the card, and phones keep 16 at each side */
+.auth-panel { width: min(400px, calc(100vw - 32px)); padding: var(--s-6); border: 1px solid var(--l-hair); border-radius: var(--r-3); box-shadow: var(--shadow-pop); }
 .auth-brand { gap: var(--s-2); margin-bottom: var(--s-6); }
 .auth-brand span { width: var(--h-sm); height: var(--h-sm); color: var(--d-ink); background: var(--l-ink); border-radius: var(--r-2); }
 .auth-brand span svg { width: var(--size-icon); height: var(--size-icon); }
@@ -1045,7 +1049,7 @@ body:has(.editor:not(.editor--inspector)) .toast-stack { bottom: calc(var(--edit
   .toast-undo, .credential-eye, .notification-mark-all, .notification-item__actions a, .account-button { position: relative; }
   .toast-undo::before, .credential-eye::before, .notification-mark-all::before { position: absolute; inset: calc(var(--s-2) * -1); content: ''; }
   /* 宽度补到 36（不到 44：相邻两个动作只隔 12，补太多会互相压住） / Width grows to 36 (not 44: neighbouring actions are only 12 apart and would overlap) */
-  .notification-item__actions a::before { position: absolute; inset: calc(var(--s-3) * -1) calc(min(0px, (100% - var(--h-md)) / 2)); content: ''; }
+  .notification-item__actions a::before { position: absolute; inset: calc(var(--s-3) * -1) calc(min(0px, (100% - var(--h-md)) / 2 - 1px)); content: ''; }
   /* 密码框里的眼睛按钮和框一样高 / The eye button in the password field is as tall as the field */
   .password-field button { inset: 0 0 0 auto; }
   .account-button::before { position: absolute; inset: calc(var(--s-1) * -1) calc(var(--s-2) * -1); content: ''; }

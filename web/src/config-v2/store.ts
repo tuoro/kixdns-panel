@@ -73,10 +73,12 @@ export function replaceModel(next: Model): void {
 export function markApplied(): void { applied.value = JSON.stringify(model) }
 export function discardDraft(): void { replaceModel(appliedModel.value) }
 // 放弃草稿，提示里能撤销：保存条和手机页头的「…」都走这里 / Discard the draft with an undo in the toast: used by the save bar and the phone header's 「…」
-export function discardWithUndo(): void {
+export function discardWithUndo(onlyUnfolded?: string): void {
   const draft = JSON.stringify(model)
   const count = changeCount.value
   discardDraft()
+  // 草稿本身没改过（只有面板或 JSON 里的）：没有可撤销的东西 / The draft itself was unchanged (only panel or JSON edits): nothing to undo
+  if (!count) { useToast().success(onlyUnfolded ?? '没有要放弃的修改'); return }
   useToast().undoable(`已放弃 ${count} 处修改`, () => replaceModel(JSON.parse(draft) as Model))
 }
 export function resetTo(next: Model): void { replaceModel(next); markApplied() }

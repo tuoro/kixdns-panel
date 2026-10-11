@@ -1061,7 +1061,7 @@ body { background: var(--l-canvas); }
 .editor--inspector .ecard__fold { padding-block: var(--s-4); }
 /* 面板比视口高时自己滚，底栏吸在面板底边，取消 / 保存一直看得见 / When the inspector is taller than the viewport it scrolls inside, with the foot stuck to its bottom so 取消 / 保存 stay in view */
 /* 底栏：不吸底、不画阴影，删除在左，取消和保存在右 / The foot: not sticky, no shadow; delete on the left, cancel and save on the right */
-.editor--inspector .editor__foot { padding: var(--s-3) var(--s-4) var(--s-3) var(--s-5); border-top: 1px solid var(--l-hair); clip-path: none; box-shadow: none; position: sticky; bottom: 0; left: auto; width: auto; background: var(--l-surface); }
+.editor--inspector .editor__foot { padding: var(--s-3) var(--s-5); border-top: 1px solid var(--l-hair); clip-path: none; box-shadow: none; position: sticky; bottom: 0; left: auto; width: auto; background: var(--l-surface); }
 .rawed { display: grid; gap: var(--s-4); }
 .rawed__rule { display: grid; gap: var(--s-3); padding: var(--s-3) 0 var(--s-4); border-bottom: 1px solid var(--l-hair); }
 .rawed__rule:last-of-type { border-bottom: 0; padding-bottom: 0; }
@@ -1383,7 +1383,8 @@ body { background: var(--l-canvas); }
   .rw__d { grid-area: d; }
   .rw__row > .ui-switch::before { position: absolute; inset: calc(var(--s-3) * -1) calc(var(--s-2) * -1); content: ''; }
   .rw__row .ui-menu-host .ui-icon-btn { position: relative; width: var(--s-6); height: calc(var(--h-tag) + var(--s-1)); }
-  .rw__row .ui-menu-host .ui-icon-btn::before { position: absolute; inset: calc(var(--s-2) * -1) 0; content: ''; }
+  /* 上面紧挨着开关，竖向只补 8；横向补到 44，左右都没有别的按钮 / The switch sits right above, so it grows only 8 vertically; horizontally it grows to 44, with nothing beside it */
+  .rw__row .ui-menu-host .ui-icon-btn::before { position: absolute; inset: calc(var(--s-2) * -1) calc(min(0px, (100% - var(--h-touch)) / 2)); content: ''; }
   .rw__edit { grid-template-columns: minmax(0, 1fr) var(--h-sm) var(--h-sm); }
   .rw__edit > :nth-child(1), .rw__edit > :nth-child(2) { grid-column: 1 / -1; }
   .rgroups__head > .ui-btn { grid-area: btn; align-self: start; }
@@ -1769,18 +1770,20 @@ body { background: var(--l-canvas); }
 /* 页头里的「启动」「现在应用」是一行字：手机上点按区补到 36 / The header's 启动 and 现在应用 are a word of text: on phones the hit area grows to 36 */
 @media (max-width: 640px) {
   .cfg__head-action { position: relative; }
-  .cfg__head-action::before { position: absolute; inset: calc(min(0px, (100% - var(--h-md)) / 2)); content: ''; }
+  .cfg__head-action::before { position: absolute; inset: calc(min(0px, (100% - var(--h-touch)) / 2)); content: ''; }
 }
 
 /* ---------- 9.5 审查第二轮 / review round 2 ---------- */
 /* 「已修改 N 处」的下划线连到数字下面：数字的每一位是 inline-block，文字下划线不会自己画进去，让它们各画一段
    The 已修改 N 处 underline runs under the count too: each digit is an inline-block that a text underline skips, so each draws its own piece */
-.savebar__review :is(.ui-num, .ui-num__digit) { text-decoration: inherit; }
+.savebar__review :is(.ui-savebar__count, .ui-num, .ui-num__digit) { text-decoration: inherit; }
 /* JSON 视图的卡片：行号栏用卡片的白底加一道细线，卡片伸到离视口底边 24，最后一行下面留一点空，不被切半
    The JSON view's card: the gutter takes the card's white with a hairline, the card reaches 24 above the viewport's bottom, and the last line keeps a little room instead of being sliced */
 .cfg__json-editor .cm-gutters { background: var(--l-surface); }
 .cfg__json-editor .cm-content { padding-bottom: var(--s-2); }
 @media (min-width: 641px) { .cfg__json-editor.json-editor { height: max(440px, calc(100dvh - 17rem)); } }
+/* 641–860 有顶栏和底部页签栏：卡片停在页签栏上面 24 / 641–860 has the top bar and the bottom tab bar: the card stops 24 above the tab bar */
+@media (min-width: 641px) and (max-width: 860px) { .cfg__json-editor.json-editor { height: max(440px, calc(100dvh - 17rem - var(--mobile-nav-height) - var(--app-header-height))); } }
 /* 规则编辑的名称框聚焦和别的输入框一样：强调色边加一圈淡光 / The rule name field focuses like every other field: the accent edge with a faint halo */
 .editor__name:focus { border-color: var(--accent); box-shadow: var(--ring-field); }
 /* 规则组还没有时，和规则列表空着时同一种虚线框 / No rule groups yet: the same dashed empty row as an empty rule list */
