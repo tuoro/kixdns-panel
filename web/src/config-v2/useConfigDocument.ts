@@ -6,7 +6,7 @@ import { exportConfig, readConfig } from '../config-model/document'
 import type { Model } from '../config-model/model'
 import { traceNames } from '../config-model/trace-names'
 import { useConnection } from '../composables/useConnection'
-import { dismissUndoable, useToast } from '../composables/useToast'
+import { dismissUndoable, toastMark, useToast } from '../composables/useToast'
 import { errorMessage } from '../utils'
 import { applyHits, applyUpstreamStats, changeCount, dirty, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, reportOpen, unsaved } from './store'
 
@@ -293,8 +293,13 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
   // 被内核不支持的设置挡住时说一句，不默默不动 / Blocked by unsupported settings: say so instead of doing nothing
   if (blockedFields.value.length) { useToast().info(blockedHint.value); return }
   if (!canSave.value) return
-  const content = exportConfig(model)
+  // 要写入的配置在这一刻定下来，复制一份：导出的结果和草稿共用数组，写入的请求要等校验完才打包，校验途中的修改会混进去、没校验就写进文件
+  // The config to write is fixed now, as a copy: the export shares arrays with the draft and the write request is only built after validation,
+  // so an edit made during validation would slip in and be written unvalidated
+  const content: unknown = JSON.parse(JSON.stringify(exportConfig(model)))
   const sent = JSON.stringify(model)
+  // 发出去的草稿定在这一刻：之后的修改（校验途中的也算）不在这次保存里，它们的撤销保存后照样留着 / The draft sent is fixed at this moment: edits after it (during validation too) are not in this save, and their undos stay after it lands
+  const sentAt = toastMark()
   origin.value = from
   applyError.value = ''
   conflict.value = false
@@ -316,8 +321,9 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     if (doc.value) doc.value = { ...doc.value, sha256: result.sha256, version_id: result.version_id }
     rebaseApplied(JSON.parse(sent) as Model)
     validation.value = null
-    // 保存落地后，之前的「撤销」都过时了：撤回去会改掉刚保存的东西 / Once a save lands, earlier 撤销 toasts are stale: undoing would change what was just saved
-    dismissUndoable()
+    // 保存落地后，草稿定下来之前的「撤销」都过时了：撤回去会改掉刚保存的东西；保存途中又改的那几处，撤销照样管用，留着
+    // Once a save lands, undos raised before it was sent are stale: undoing would change what was just saved; those for edits made during the save still apply and stay
+    dismissUndoable(sentAt)
     await load({ quiet: true, keepDraft: true, sent })
     // 保存途中又改了的：说一句那几处还没保存，不让「已生效」盖过它们 / Edits made during the save: say they are not saved yet, so 已生效 does not cover them
     const later = changeCount.value ? ` · 之后改的 ${changeCount.value} 处还没保存` : jsonEdited.value ? ' · JSON 里之后改的还没保存' : ''

@@ -194,3 +194,24 @@ test('手机上「去基础设置」直接打开指名的那一组，只用一�
   await page.getByRole('tab', { name: '基础设置', exact: true }).click()
   await expect(page.locator('.settings')).not.toHaveClass(/settings--open/)
 })
+
+// 保存途中又加的规则不在这次保存里：保存落地后它的「撤销」照样留着；保存之前那条的撤销收起（撤回去会改掉刚保存的东西）
+// A rule added during a save is not part of it: its 撤销 stays after the save lands, while the earlier rule's undo goes (undoing would change what was just saved)
+test('保存途中又改的那一处，保存落地后「撤销」还在', async ({ page }) => {
+  await page.goto('/config')
+  await page.getByRole('button', { name: '快速添加', exact: true }).click()
+  const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+  await quick.fill('first.example.org')
+  await quick.press('Enter')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-save-slow', 'true'))
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  // 等保存真的发出去（写入那一步慢 1.5 秒）再改 / Edit only once the save is under way (the write step takes 1.5 s)
+  await expect(bar).toContainText('保存中')
+  await quick.fill('later.example.org')
+  await quick.press('Enter')
+  await expect(bar).toContainText('之后改的 1 处还没保存', { timeout: 10_000 })
+  await expect(page.locator('.toast', { hasText: 'later.example.org' }).getByRole('button', { name: '撤销' })).toBeVisible()
+  // 第一条的提示是「已添加规则」；合并进来的那条写的是「已加到「…」」 / The first rule's toast reads 已添加规则; the merged one reads 已加到「…」
+  await expect(page.locator('.toast', { hasText: '已添加规则' })).toHaveCount(0)
+})

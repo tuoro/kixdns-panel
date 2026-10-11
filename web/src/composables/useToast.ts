@@ -80,8 +80,17 @@ function push(message: string, kind: ToastMessage['kind'] = 'info', undo?: () =>
  * Clear every open undo message. An undo holds objects from the old draft; once the draft is replaced wholesale (save, discard,
  * reload, import) they point at nothing, and leaving them up only invites a click that does nothing.
  */
-export function dismissUndoable(): void {
-  messages.value = messages.value.filter((message) => !message.undo)
+export function dismissUndoable(before = Number.POSITIVE_INFINITY): void {
+  messages.value = messages.value.filter((message) => !message.undo || message.id >= before)
+}
+
+/**
+ * 现在这一刻的记号：之后发出的提示 id 都不小于它。保存发出去时记一下，落地后只收起这之前的撤销（保存途中又改的，撤销还管用）
+ * A mark for this moment: every message raised after it has an id at least this large. A save records it when it sends, and once it
+ * lands clears only the undos from before (an edit made during the save keeps its undo, which still applies)
+ */
+export function toastMark(): number {
+  return sequence + 1
 }
 
 export function useToast() {
