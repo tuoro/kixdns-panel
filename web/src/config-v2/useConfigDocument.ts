@@ -281,6 +281,19 @@ export async function validate(): Promise<ValidationResult | null> {
   }
 }
 
+// 写入的结果先记进运行状态和版本列表：之后的重读失败了，页头也和保存条说同一个版本（以前页头还按旧列表写上一个版本）
+// The write's outcome goes into the runtime state and the version list at once: if the re-read after it fails, the header still names the same version
+// as the save bar (it used to name the previous one from the stale list)
+function recordWrite(result: ConfigApplyResult, message: string): void {
+  const applied = applyResultState(result) === 'applied'
+  if (doc.value) {
+    doc.value = applied
+      ? { ...doc.value, pending: null, runtime: { ...doc.value.runtime, status: 'active', active_sha256: result.sha256, apply_state: 'active', pending_error: null } }
+      : { ...doc.value, pending: { version_id: result.version_id, sha256: result.sha256, message }, runtime: { ...doc.value.runtime, status: 'pending', apply_state: 'pending' } }
+  }
+  const entry: ConfigVersion = { id: result.version_id, sha256: result.sha256, message, actor: '', created_at: Math.floor(Date.now() / 1000), apply_state: applied ? 'applied' : 'pending' }
+  versions.value = [entry, ...versions.value.filter((v) => v.id !== result.version_id).map((v) => (applied && v.apply_state === 'applied' ? { ...v, apply_state: 'superseded' as const } : v))]
+}
 function applyResultState(result: ConfigApplyResult): 'applied' | 'pending' {
   return result.apply_state === 'pending' || !result.active_config ? 'pending' : 'applied'
 }
@@ -313,13 +326,15 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
       step = 'applying'
       stage.value = step
     }
-    const result = await apiRequest<ConfigApplyResult>('/api/v1/config', { method: 'PUT', ...jsonBody({ content, expected_sha256: doc.value.sha256, message: saveMessage.value.trim() }) })
+    const message = saveMessage.value.trim()
+    const result = await apiRequest<ConfigApplyResult>('/api/v1/config', { method: 'PUT', ...jsonBody({ content, expected_sha256: doc.value.sha256, message }) })
     const pendingText = `已存成待应用版本 #${result.version_id}，${pendingWhen()}自动应用`
     saveMessage.value = ''
     // 写入成功就先记下：文件的散列和版本换成这次的，对照的那份换成发出去的草稿。之后的重读失败了，也不会把已保存的算成修改、下次保存也不会撞上自己
     // Record the write at once: the file hash and version become this save's, and the baseline becomes the draft that was sent. If the re-read after it fails,
     // nothing saved counts as a change and the next save does not collide with itself
     if (doc.value) doc.value = { ...doc.value, sha256: result.sha256, version_id: result.version_id }
+    recordWrite(result, message)
     rebaseApplied(JSON.parse(sent) as Model)
     validation.value = null
     // 保存落地后，草稿定下来之前的「撤销」都过时了：撤回去会改掉刚保存的东西；保存途中又改的那几处，撤销照样管用，留着
