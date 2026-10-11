@@ -8,6 +8,7 @@ import UiEmpty from '../components/ui/UiEmpty.vue'
 import UiPageHeader from '../components/ui/UiPageHeader.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import { useToast } from '../composables/useToast'
+import { isIp } from '../config-model/model'
 import { describeStep, formatElapsed, forwardTarget, groupTrace, isDnsSuccess, parseDnsAnswer, responseCodeName, traceTone, type TextPart } from '../diagnostics'
 import { errorMessage, formatKixdnsVersion } from '../utils'
 
@@ -30,9 +31,17 @@ const lastRun = ref<{ domain: string; time: string } | null>(null)
 // 事实行另外两项：正在跑的配置版本和内核版本，查一次就够；拿不到就不显示，不编造 / Two more facts: the running config version and the kernel build, fetched once; left out when unavailable, never invented
 const configGeneration = ref<number | null>(null)
 const kernelLabel = ref('')
+// 客户端 IP：内核 p28 起可以假装查询来自某个客户端，按客户端分流的规则才测得出来；内核不支持时不出现
+// Client IP: from kernel p28 a query can pretend to come from a client, which is how per-client rules get tested; absent when the kernel lacks it
+const canClient = ref(false)
+const clientIp = ref('')
+const clientProblem = computed(() => (clientIp.value.trim() && !isIp(clientIp.value.trim()) ? '客户端 IP 写得不对' : ''))
 onMounted(async () => {
   const [overview, kernel] = await Promise.allSettled([apiRequest<Overview>('/api/v1/overview'), apiRequest<KixdnsKernel>('/api/v1/kixdns/kernel')])
-  if (overview.status === 'fulfilled') configGeneration.value = overview.value.active_config?.generation ?? null
+  if (overview.status === 'fulfilled') {
+    configGeneration.value = overview.value.active_config?.generation ?? null
+    canClient.value = Boolean(overview.value.live && overview.value.health?.capabilities.includes('diagnostics_trace_client_v1'))
+  }
   if (kernel.status === 'fulfilled' && kernel.value.binary_present) kernelLabel.value = formatKixdnsVersion(kernel.value.active)
 })
 const clock = (date: Date) => date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
@@ -82,8 +91,9 @@ function tryExample(example: { domain: string; type: string }): void {
 }
 
 async function run(): Promise<void> {
-  if (running.value) return
+  if (running.value || clientProblem.value) return
   const query = domain.value.trim()
+  const client = canClient.value ? clientIp.value.trim() : ''
   // 查完焦点回到域名框，改个域名就能再查。回车提交时它本来就在那里；点按钮的话桌面上也放回去，
   // 手机上不放——那会把键盘弹出来盖住结果。
   // After the run the focus returns to the domain field so the next query is one edit away. On an
@@ -98,7 +108,7 @@ async function run(): Promise<void> {
   try {
     result.value = await apiRequest<DnsDiagnostic>('/api/v1/diagnostics/dns', {
       method: 'POST',
-      ...jsonBody({ domain: query, record_type: recordType.value }),
+      ...jsonBody({ domain: query, record_type: recordType.value, ...(client ? { client_ip: client } : {}) }),
     })
   } catch (error) {
     queryError.value = errorMessage(error)
@@ -132,8 +142,10 @@ async function run(): Promise<void> {
       <form class="diag-query" aria-label="DNS 查询" @submit.prevent="run">
         <label class="ui-input diag-domain"><input ref="domainInput" v-model="domain" type="text" inputmode="url" maxlength="253" required placeholder="example.com" aria-label="域名" autocapitalize="none" :spellcheck="false" /></label>
         <UiSelect v-model="recordType" class="diag-record-type" :options="typeOptions" label="记录类型" />
+        <label v-if="canClient" class="ui-input diag-client" :class="{ 'is-bad': clientProblem }"><input v-model="clientIp" type="text" inputmode="decimal" placeholder="客户端 IP，默认本机" aria-label="客户端 IP，可以不填" :aria-invalid="Boolean(clientProblem) || undefined" :aria-describedby="clientProblem ? 'diag-client-err' : undefined" autocapitalize="none" :spellcheck="false" /></label>
         <button class="ui-btn ui-btn--primary diag-run" type="submit" :disabled="running" :aria-label="running ? '正在查询' : '执行查询'"><LoaderCircle v-if="running" class="diag-spinner" :size="16" aria-hidden="true" /><span class="diag-run-desktop">{{ running ? '正在查询…' : '执行查询' }}</span><span class="diag-run-mobile" aria-hidden="true">{{ running ? '查询中' : '查询' }}</span></button>
       </form>
+      <p v-if="clientProblem" id="diag-client-err" class="ui-field-error diag-client-err">{{ clientProblem }}</p>
     </section>
 
     <!-- 等待时给骨架而不是转圈：骨架的分块和结果一致，数据到达时版面不跳。 -->
@@ -217,6 +229,10 @@ async function run(): Promise<void> {
 /* 查询条：宽屏上在一张白卡里，左右 24、上下 12，和规则页卡片里的工具行一样 / The query bar: on a wide screen in a white card, 24 at the sides and 12 above and below, like the toolbar row in the rules page's card */
 @media (min-width: 641px) { .diag-query-card { padding: var(--s-3) var(--s-5); border-radius: var(--r-3); background: var(--l-surface); box-shadow: var(--shadow-card); } }
 .diag-query { display: grid; grid-template-columns: minmax(0, 1fr) 7rem auto; gap: var(--s-2); }
+/* 有客户端 IP 时多一列，在记录类型和按钮之间 / With the client IP there is one more column, between the record type and the button */
+.diag-query:has(.diag-client) { grid-template-columns: minmax(0, 1fr) 7rem 12rem auto; }
+.diag-client.is-bad { border-color: var(--err-l); }
+.diag-client-err { margin: var(--s-2) 0 0; }
 .diag-query input { font-family: var(--f-mono); }
 .diag-run-mobile { display: none; }
 .diag-spinner { animation: ui-spin var(--m-spin) linear infinite; }
@@ -284,6 +300,9 @@ async function run(): Promise<void> {
   .diag-fact-kernel { white-space: nowrap; }
   /* 类型只有一到五个字母：下拉框 72，把宽度让给域名 / A type is one to five letters: a 72 select, the width goes to the domain */
   .diag-query { grid-template-columns: minmax(0, 1fr) 4.5rem auto; }
+  /* 手机上客户端 IP 单独一行，排在最后 / On phones the client IP takes its own row at the end */
+  .diag-query:has(.diag-client) { grid-template-columns: minmax(0, 1fr) 4.5rem auto; }
+  .diag-client { grid-column: 1 / -1; grid-row: 2; }
   /* 窄格子里收一收左右留白，AAAA、CNAME 放得下 / Tighter padding in the narrow cell so AAAA and CNAME fit */
   .diag-record-type select { padding-inline: var(--s-2) calc(var(--s-2) + var(--size-icon)); }
   .diag-record-type > svg { right: var(--s-2); }

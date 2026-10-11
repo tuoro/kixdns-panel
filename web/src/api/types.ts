@@ -330,6 +330,10 @@ export interface DnsDiagnostic {
   trace_supported: boolean
   trace_truncated: boolean
   trace: DnsTraceStep[]
+  /** 内核按哪个客户端 IP 处理的；旧内核没有 / The client IP the kernel used; absent on older kernels */
+  client_ip?: string | null
+  /** 测的是正在用的配置还是草稿；旧面板服务没有 / Live config or draft; absent on older panel servers */
+  source?: 'live' | 'draft'
 }
 
 export interface DnsTraceStep {

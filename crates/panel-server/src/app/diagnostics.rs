@@ -8,13 +8,17 @@ use serde::Deserialize;
 use crate::auth::{authenticate, unix_timestamp, verify_csrf};
 use crate::db::AuditPage;
 use crate::error::{AppError, AppResult};
-use crate::operations::{DnsDiagnostic, LogLevel, LogPage, ServiceAction, ServiceStatus};
+use crate::operations::{
+    DiagnosticSource, DnsDiagnostic, LogLevel, LogPage, ServiceAction, ServiceStatus,
+};
 
 use super::{
     AppState, map_config_error, map_control_error, map_operation_error, reconcile_pending,
 };
 
 const DIAGNOSTICS_TRACE_CAPABILITY: &str = "diagnostics_trace_v1";
+const DIAGNOSTICS_CLIENT_CAPABILITY: &str = "diagnostics_trace_client_v1";
+const DIAGNOSTICS_CANDIDATE_CAPABILITY: &str = "diagnostics_trace_candidate_v1";
 
 #[derive(Debug, Deserialize)]
 struct LogsQuery {
@@ -37,6 +41,12 @@ struct DnsDiagnosticRequest {
     domain: String,
     #[serde(default = "default_record_type")]
     record_type: String,
+    /// 假装查询来自这个客户端 IP（内核 p28 起）/ Pretend the query comes from this client IP (kernel p28 on)
+    #[serde(default)]
+    client_ip: Option<std::net::IpAddr>,
+    /// 不填时测正在用的配置；填了就拿这份草稿试跑（内核 p28 起）/ Omitted: test the live config; given: run against this draft (kernel p28 on)
+    #[serde(default)]
+    config: Option<serde_json::Value>,
 }
 
 pub(super) fn routes() -> Router<AppState> {
@@ -160,18 +170,36 @@ async fn dns_diagnostic(
 ) -> AppResult<Json<DnsDiagnostic>> {
     let session = authenticate(&state.database, &jar).await?;
     verify_csrf(&session, &jar, &headers)?;
-    let supports_trace = state.control.health().await.is_ok_and(|health| {
-        health
-            .capabilities
-            .iter()
-            .any(|capability| capability == DIAGNOSTICS_TRACE_CAPABILITY)
-    });
+    let capabilities = state
+        .control
+        .health()
+        .await
+        .map(|health| health.capabilities)
+        .unwrap_or_default();
+    check_diagnostic_options(&request, &capabilities)?;
+    let supports = |name: &str| capabilities.iter().any(|capability| capability == name);
+    let supports_trace = supports(DIAGNOSTICS_TRACE_CAPABILITY);
     let result = if supports_trace {
-        let trace = state
-            .control
-            .diagnostic_trace(&request.domain, &request.record_type)
-            .await
-            .map_err(map_control_error)?;
+        let trace = match &request.config {
+            Some(config) => {
+                state
+                    .control
+                    .diagnostic_trace_candidate(
+                        &request.domain,
+                        &request.record_type,
+                        request.client_ip,
+                        config,
+                    )
+                    .await
+            }
+            None => {
+                state
+                    .control
+                    .diagnostic_trace(&request.domain, &request.record_type, request.client_ip)
+                    .await
+            }
+        }
+        .map_err(map_control_error)?;
         DnsDiagnostic {
             server: "KixDNS 内部执行链".to_owned(),
             domain: trace.domain,
@@ -183,6 +211,12 @@ async fn dns_diagnostic(
             trace_supported: true,
             trace_truncated: trace.trace_truncated,
             trace: trace.trace,
+            client_ip: trace.client_ip,
+            source: if trace.candidate {
+                DiagnosticSource::Draft
+            } else {
+                DiagnosticSource::Live
+            },
         }
     } else {
         let config = state.config.current().await.map_err(map_config_error)?;
@@ -197,12 +231,58 @@ async fn dns_diagnostic(
         .audit(
             Some(session.username),
             "diagnostic.dns".to_owned(),
-            format!("执行 {} 查询", request.record_type),
+            format!(
+                "执行 {} 查询{}{}",
+                request.record_type,
+                if request.config.is_some() {
+                    "（草稿）"
+                } else {
+                    ""
+                },
+                request
+                    .client_ip
+                    .map(|ip| format!("，客户端 {ip}"))
+                    .unwrap_or_default()
+            ),
             unix_timestamp(),
         )
         .await
         .map_err(AppError::Internal)?;
     Ok(Json(result))
+}
+
+/// 客户端 IP 和草稿只在内核声明了对应能力时才用；不认就说清楚，不悄悄丢掉——丢了客户端 IP，测出来的就是别的设备的结果。
+/// 草稿还要过一遍和保存时相同的能力检查。
+/// The client IP and the draft are used only when the kernel declares them; otherwise say so plainly rather than dropping
+/// them, since a dropped client IP yields another device's result. The draft also goes through the same capability gate as saving.
+fn check_diagnostic_options(
+    request: &DnsDiagnosticRequest,
+    capabilities: &[String],
+) -> AppResult<()> {
+    let supports = |name: &str| capabilities.iter().any(|capability| capability == name);
+    if request.client_ip.is_some() && !supports(DIAGNOSTICS_CLIENT_CAPABILITY) {
+        return Err(AppError::BadRequest(
+            "diagnostic_client_unsupported",
+            "当前内核还不支持指定客户端 IP，更新内核后可用".to_owned(),
+        ));
+    }
+    let Some(config) = &request.config else {
+        return Ok(());
+    };
+    if !supports(DIAGNOSTICS_CANDIDATE_CAPABILITY) {
+        return Err(AppError::BadRequest(
+            "diagnostic_candidate_unsupported",
+            "当前内核还不支持测试草稿，更新内核后可用".to_owned(),
+        ));
+    }
+    if !config.is_object() {
+        return Err(AppError::BadRequest(
+            "diagnostic_candidate_invalid",
+            "草稿配置必须是一个 JSON 对象".to_owned(),
+        ));
+    }
+    crate::config_capabilities::ensure_config_supported(config, capabilities)
+        .map_err(|error| AppError::Unprocessable("unsupported_config_fields", error.to_string()))
 }
 
 const fn default_log_limit() -> usize {

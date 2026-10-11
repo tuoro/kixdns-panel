@@ -167,7 +167,7 @@ const overview: Overview = {
     started_at_unix: now - 289420,
     uptime_seconds: 289420,
     config_generation: 18,
-    capabilities: ['stats_top_v1', 'config_static_cname_response_v1', 'metrics_upstream_precision_v1'],
+    capabilities: ['stats_top_v1', 'config_static_cname_response_v1', 'metrics_upstream_precision_v1', 'diagnostics_trace_v1', 'diagnostics_trace_client_v1', 'diagnostics_trace_candidate_v1'],
   },
   active_config: activeConfig,
   metrics: {
@@ -433,6 +433,31 @@ function demoKernel(): KixdnsKernel {
     previous: previousKixdnsVersion ? installedKixdnsVersion(previousKixdnsVersion, false, now - 86_400) : null,
     latest: failed ? null : latestKixdnsVersion,
     remote_error: failed ? KERNEL_CHECK_ERROR : null,
+  }
+}
+
+async function mockDraftTrial(domain: string, recordType: string, client: string, config: Record<string, unknown>): Promise<DnsDiagnostic> {
+  const { simulate } = await import('../config-model/testing/kernel-sim')
+  const sim = simulate(config as Parameters<typeof simulate>[0], { domain: domain.toLowerCase().replace(/\.$/, ''), client, qtype: recordType }, (upstreams) => ({
+    rcode: 'NOERROR', answers: [`${domain}. 300 IN A 104.18.26.120`], upstream: upstreams[0] ?? '',
+  }))
+  const trace: DnsDiagnostic['trace'] = [
+    { stage: 'request', status: 'parsed', label: `${recordType} ${domain}`, detail: `客户端：${client}；监听器：default`, elapsed_ms: 0 },
+  ]
+  let pipeline = ''
+  for (const step of sim.steps.filter((one) => one.phase === 'request')) {
+    if (step.pipeline !== pipeline) { pipeline = step.pipeline; trace.push({ stage: 'pipeline', status: 'selected', label: pipeline, detail: null, elapsed_ms: 0 }) }
+    trace.push({ stage: 'rule', status: 'matched', label: step.rule, detail: `管线：${step.pipeline}；匹配器数：1`, elapsed_ms: 1 })
+    // 和真内核同一种写法：转发写目标，其余写静态响应 / Worded as the real kernel: a forward names its target, anything else is a static response
+    trace.push(step.decision.startsWith('forward')
+      ? { stage: 'decision', status: 'selected', label: `规则 ${step.rule} 转发`, detail: `目标：${step.decision.replace(/^forward:?\s*/, '') || '上游'}`, elapsed_ms: 1 }
+      : { stage: 'decision', status: 'selected', label: `静态响应 ${sim.rcode}`, detail: `答案记录数：${sim.answers.length}`, elapsed_ms: 1 })
+  }
+  const rcode = sim.rcode === 'NOERROR' ? 'No Error' : sim.rcode === 'NXDOMAIN' ? 'Non-Existent Domain' : sim.rcode === 'REFUSED' ? 'Query Refused' : sim.rcode
+  return {
+    server: 'KixDNS 草稿试跑', domain, record_type: recordType, response_code: rcode, elapsed_ms: 14, truncated: false,
+    answers: sim.answers.map((a) => (a.includes(' IN ') ? a : `${domain}. 300 IN A ${a}`)),
+    trace_supported: true, trace_truncated: false, trace, client_ip: client, source: 'draft',
   }
 }
 
@@ -774,7 +799,11 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
     } as AuditPage as T
   }
   if (path === '/api/v1/diagnostics/dns') {
-    const body = JSON.parse(String(init?.body)) as { domain: string; record_type: string }
+    const body = JSON.parse(String(init?.body)) as { domain: string; record_type: string; client_ip?: string; config?: Record<string, unknown> }
+    const client = body.client_ip ?? '127.0.0.1'
+    // 演示里的草稿试跑：用测试用的内核模拟器按草稿算一遍（单独一个包，只在演示里加载）
+    // The demo's draft trial: evaluate the draft with the tests' kernel simulator (its own chunk, loaded only in the demo)
+    if (body.config) return (await mockDraftTrial(body.domain, body.record_type, client, body.config)) as T
     return {
       server: 'KixDNS 内部执行链',
       domain: body.domain,
@@ -786,13 +815,15 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
       trace_supported: true,
       trace_truncated: false,
       trace: [
-        { stage: 'request', status: 'parsed', label: `${body.record_type} ${body.domain}`, detail: '客户端：127.0.0.1；监听器：default', elapsed_ms: 0 },
+        { stage: 'request', status: 'parsed', label: `${body.record_type} ${body.domain}`, detail: `客户端：${client}；监听器：default`, elapsed_ms: 0 },
         { stage: 'pipeline', status: 'selected', label: 'default', detail: null, elapsed_ms: 0 },
         { stage: 'response_cache', status: 'miss', label: '响应缓存未命中', detail: '管线：default', elapsed_ms: 0 },
         { stage: 'rule', status: 'matched', label: 'geosite-global', detail: '管线：default；匹配器数：1', elapsed_ms: 1 },
         { stage: 'decision', status: 'selected', label: '规则 geosite-global 转发', detail: '目标：https://1.1.1.1/dns-query；传输：Some(Https)', elapsed_ms: 1 },
         { stage: 'upstream', status: 'succeeded', label: 'https://1.1.1.1/dns-query', detail: '响应码：No Error；耗时：12 ms；截断：false', elapsed_ms: 12 },
       ],
+      client_ip: client,
+      source: 'live',
     } as DnsDiagnostic as T
   }
   if (pathname === '/api/v1/settings/github-token') {

@@ -94,6 +94,12 @@ pub struct DiagnosticTrace {
     pub protocol_version: u8,
     pub domain: String,
     pub record_type: String,
+    /// 内核实际按哪个客户端 IP 处理的；p28 之前的内核不返回 / The client IP the kernel actually used; kernels before p28 omit it
+    #[serde(default)]
+    pub client_ip: Option<String>,
+    /// 是不是用草稿配置试跑的 / Whether this ran against the draft config
+    #[serde(default)]
+    pub candidate: bool,
     pub response_code: String,
     pub elapsed_ms: u64,
     pub truncated: bool,
@@ -309,17 +315,42 @@ impl ControlClient {
         self.post_json("/v1/cache/flush", Vec::new()).await
     }
 
+    /// 在正在用的配置上诊断一次查询。内核自己最多跑 6 秒，这里多等两秒，让内核的超时说明能传回来。
+    /// Diagnose one query on the live config. The kernel runs at most 6 seconds; waiting two more lets its own timeout message come back.
     pub async fn diagnostic_trace(
         &self,
         domain: &str,
         record_type: &str,
+        client_ip: Option<std::net::IpAddr>,
     ) -> Result<DiagnosticTrace, ControlError> {
-        let body = serde_json::to_vec(&serde_json::json!({
-            "domain": domain,
-            "record_type": record_type,
-        }))
-        .map_err(|error| ControlError::Protocol(format!("序列化诊断请求失败：{error}")))?;
-        self.post_json("/v1/diagnostics/trace", body).await
+        let body = serde_json::to_vec(&diagnostic_body(domain, record_type, client_ip, None))
+            .map_err(|error| ControlError::Protocol(format!("序列化诊断请求失败：{error}")))?;
+        self.post_json_within("/v1/diagnostics/trace", body, Duration::from_secs(8))
+            .await
+    }
+
+    /// 拿草稿配置试跑一次查询（内核 p28 起）。内核总时限 12 秒，这里等 15 秒。
+    /// Run one query against the draft config (kernel p28 on). The kernel's limit is 12 seconds; this waits 15.
+    pub async fn diagnostic_trace_candidate(
+        &self,
+        domain: &str,
+        record_type: &str,
+        client_ip: Option<std::net::IpAddr>,
+        config: &Value,
+    ) -> Result<DiagnosticTrace, ControlError> {
+        let body = serde_json::to_vec(&diagnostic_body(
+            domain,
+            record_type,
+            client_ip,
+            Some(config),
+        ))
+        .map_err(|error| ControlError::Protocol(format!("序列化试跑请求失败：{error}")))?;
+        self.post_json_within(
+            "/v1/diagnostics/trace-candidate",
+            body,
+            Duration::from_secs(15),
+        )
+        .await
     }
 
     pub async fn wait_for_config(
@@ -366,16 +397,39 @@ impl ControlClient {
     where
         T: serde::de::DeserializeOwned,
     {
-        let (_, body) = self.request("POST", path, body).await?;
+        self.post_json_within(path, body, REQUEST_TIMEOUT).await
+    }
+
+    async fn post_json_within<T>(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        timeout: Duration,
+    ) -> Result<T, ControlError>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        let (_, body) = self.request_within("POST", path, body, timeout).await?;
         decode_versioned_json(path, &body)
     }
 
-    #[cfg(unix)]
     async fn request(
         &self,
         method: &str,
         path: &str,
         body: Vec<u8>,
+    ) -> Result<(u16, Vec<u8>), ControlError> {
+        self.request_within(method, path, body, REQUEST_TIMEOUT)
+            .await
+    }
+
+    #[cfg(unix)]
+    async fn request_within(
+        &self,
+        method: &str,
+        path: &str,
+        body: Vec<u8>,
+        timeout: Duration,
     ) -> Result<(u16, Vec<u8>), ControlError> {
         use bytes::Bytes;
         use http_body_util::{BodyExt, Full, Limited};
@@ -407,7 +461,7 @@ impl ControlClient {
             .header("content-type", "application/json")
             .body(Full::new(Bytes::from(body)))
             .map_err(|error| ControlError::Protocol(error.to_string()))?;
-        let response = tokio::time::timeout(Duration::from_secs(5), sender.send_request(request))
+        let response = tokio::time::timeout(timeout, sender.send_request(request))
             .await
             .map_err(|_| ControlError::Unavailable("请求超时".to_owned()))?
             .map_err(|error| ControlError::Unavailable(error.to_string()))?;
@@ -433,16 +487,38 @@ impl ControlClient {
 
     #[cfg(not(unix))]
     #[allow(clippy::unused_async)]
-    async fn request(
+    async fn request_within(
         &self,
         _method: &str,
         _path: &str,
         _body: Vec<u8>,
+        _timeout: Duration,
     ) -> Result<(u16, Vec<u8>), ControlError> {
         Err(ControlError::Unavailable(
             "当前平台不支持 Unix Socket".to_owned(),
         ))
     }
+}
+
+/// 普通控制请求的应答时限 / The reply limit for ordinary control requests
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 诊断与试跑的请求体：客户端 IP 和草稿配置只在有的时候才带上，旧内核收到的还是原来的两个字段。
+/// The diagnostic and trial body: the client IP and the draft config ride along only when present, so an older kernel still gets just the two original fields.
+fn diagnostic_body(
+    domain: &str,
+    record_type: &str,
+    client_ip: Option<std::net::IpAddr>,
+    config: Option<&Value>,
+) -> Value {
+    let mut body = serde_json::json!({ "domain": domain, "record_type": record_type });
+    if let Some(ip) = client_ip {
+        body["client_ip"] = Value::String(ip.to_string());
+    }
+    if let Some(config) = config {
+        body["config"] = config.clone();
+    }
+    body
 }
 
 fn decode_versioned_json<T>(path: &str, body: &[u8]) -> Result<T, ControlError>
@@ -1008,5 +1084,41 @@ kixdns_upstream_latency_ms_count{upstream="8.8.8.8:53",transport="udp"} 2
         assert_eq!(trace.domain, "example.com");
         assert_eq!(trace.trace[0].status, "matched");
         assert!(!trace.trace_truncated);
+        // p28 之前的内核不返回这两个字段 / Kernels before p28 omit these two
+        assert_eq!(trace.client_ip, None);
+        assert!(!trace.candidate);
+    }
+
+    #[test]
+    fn decodes_the_client_ip_and_candidate_flag_from_p28() {
+        let response = r#"{"protocol_version":1,"domain":"a.example","record_type":"A","client_ip":"192.168.1.9","candidate":true,
+            "response_code":"No Error","elapsed_ms":3,"truncated":false,"answers":[],"trace_truncated":false,"trace":[]}"#;
+        let trace = decode_versioned_json::<DiagnosticTrace>(
+            "/v1/diagnostics/trace-candidate",
+            response.as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(trace.client_ip.as_deref(), Some("192.168.1.9"));
+        assert!(trace.candidate);
+    }
+
+    #[test]
+    fn diagnostic_body_adds_the_client_ip_and_config_only_when_present() {
+        let plain = super::diagnostic_body("a.example", "A", None, None);
+        assert_eq!(
+            plain,
+            serde_json::json!({ "domain": "a.example", "record_type": "A" })
+        );
+        let config = serde_json::json!({ "pipelines": [] });
+        let full = super::diagnostic_body(
+            "a.example",
+            "AAAA",
+            Some("fd00::9".parse().unwrap()),
+            Some(&config),
+        );
+        assert_eq!(
+            full,
+            serde_json::json!({ "domain": "a.example", "record_type": "AAAA", "client_ip": "fd00::9", "config": { "pipelines": [] } })
+        );
     }
 }

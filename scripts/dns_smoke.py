@@ -22,6 +22,7 @@ from typing import Any, Callable, TextIO, TypeVar
 DOMAIN = "smoke.kixdns.test"
 INITIAL_IP = "203.0.113.10"
 RELOADED_IP = "203.0.113.11"
+CANDIDATE_IP = "203.0.113.12"
 T = TypeVar("T")
 
 
@@ -97,13 +98,18 @@ def wait_for(operation: Callable[[], T], predicate: Callable[[T], bool], label: 
     raise SmokeFailure(f"等待{label}超时{detail}")
 
 
-def unix_http(socket_path: Path, path: str) -> bytes:
+def unix_http(socket_path: Path, path: str, body: bytes | None = None, timeout: float = 2) -> bytes:
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-        client.settimeout(2)
+        client.settimeout(timeout)
         client.connect(str(socket_path))
-        client.sendall(
-            f"GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n".encode()
-        )
+        if body is None:
+            request = f"GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n".encode()
+        else:
+            request = (
+                f"POST {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n"
+                f"Content-Type: application/json\r\nContent-Length: {len(body)}\r\n\r\n"
+            ).encode() + body
+        client.sendall(request)
         response = bytearray()
         while b"\r\n\r\n" not in response:
             chunk = client.recv(4096)
@@ -134,6 +140,62 @@ def get_json(socket_path: Path, path: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise SmokeFailure(f"{path} 没有返回 JSON 对象")
     return value
+
+
+def post_json(socket_path: Path, path: str, value: dict[str, Any], timeout: float = 2) -> dict[str, Any]:
+    result = json.loads(unix_http(socket_path, path, json.dumps(value).encode(), timeout))
+    if not isinstance(result, dict):
+        raise SmokeFailure(f"{path} 没有返回 JSON 对象")
+    return result
+
+
+def child_pids(parent: int) -> list[int]:
+    """内核进程的子进程：草稿试跑结束后不应留下任何一个 / The kernel's children; a finished draft trial leaves none."""
+    children = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+        except OSError:
+            continue
+        if int(fields[1]) == parent:
+            children.append(int(entry.name))
+    return children
+
+
+def check_diagnostics(socket_path: Path, port: int, capabilities: list[str], live_ip: str, pid: int) -> None:
+    """诊断能力：指定客户端 IP 的轨迹、用候选配置试跑；按健康端点声明的能力决定测哪些。
+    Diagnostics: a trace with an assigned client IP and a trial on a candidate config, tested as the health endpoint declares."""
+    if "diagnostics_trace_client_v1" in capabilities:
+        trace = post_json(
+            socket_path,
+            "/v1/diagnostics/trace",
+            {"domain": DOMAIN, "record_type": "A", "client_ip": "192.0.2.10"},
+        )
+        if trace.get("client_ip") != "192.0.2.10":
+            raise SmokeFailure(f"诊断轨迹没有用指定的客户端 IP：{trace.get('client_ip')}")
+        if not any(live_ip in answer for answer in trace.get("answers", [])):
+            raise SmokeFailure(f"诊断轨迹的回答缺少 {live_ip}：{trace.get('answers')}")
+        if "192.0.2.10" not in str(trace.get("trace", [{}])[0].get("detail", "")):
+            raise SmokeFailure("诊断轨迹第一步没有写出指定的客户端 IP")
+    if "diagnostics_trace_candidate_v1" in capabilities:
+        candidate = json.loads(render_config(port, CANDIDATE_IP))
+        trial = post_json(
+            socket_path,
+            "/v1/diagnostics/trace-candidate",
+            {"domain": DOMAIN, "record_type": "A", "client_ip": "192.0.2.11", "config": candidate},
+            timeout=15,
+        )
+        if trial.get("candidate") is not True or trial.get("client_ip") != "192.0.2.11":
+            raise SmokeFailure(f"草稿试跑的结果不对：{trial}")
+        if not any(CANDIDATE_IP in answer for answer in trial.get("answers", [])):
+            raise SmokeFailure(f"草稿试跑没有用候选配置回答：{trial.get('answers')}")
+        # 试跑不碰正在用的配置，子进程也已经收掉 / The trial leaves the live config alone and its child is gone
+        query_a(port, live_ip)
+        leftover = wait_for(lambda: child_pids(pid), lambda value: not value, "试跑子进程退出")
+        if leftover:
+            raise SmokeFailure(f"试跑后留下了子进程：{leftover}")
 
 
 def encode_name(name: str) -> bytes:
@@ -244,6 +306,7 @@ def run_contract(binary: Path, directory: Path, log: TextIO) -> None:
             "结构化热加载回执",
         )
         query_a(port, RELOADED_IP)
+        check_diagnostics(socket_path, port, list(health.get("capabilities", [])), RELOADED_IP, process.pid)
     finally:
         process.terminate()
         try:

@@ -99,6 +99,21 @@ pub struct DnsDiagnostic {
     pub trace_supported: bool,
     pub trace_truncated: bool,
     pub trace: Vec<crate::control::DiagnosticTraceStep>,
+    /// 内核按哪个客户端 IP 处理的；旧内核和基础查询为空 / The client IP the kernel used; empty on older kernels and the basic query
+    pub client_ip: Option<String>,
+    /// 测的是哪份配置：正在用的还是草稿 / Which config was tested: the live one or the draft
+    pub source: DiagnosticSource,
+}
+
+/// 诊断用的配置 / The config a diagnostic ran against
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DiagnosticSource {
+    /// 正在用的配置 / The live config
+    #[default]
+    Live,
+    /// 还没保存的草稿 / The unsaved draft
+    Draft,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -362,6 +377,8 @@ impl Operations {
             trace_supported: false,
             trace_truncated: false,
             trace: Vec::new(),
+            client_ip: None,
+            source: DiagnosticSource::Live,
         })
     }
 

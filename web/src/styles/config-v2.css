@@ -1559,6 +1559,11 @@ body { background: var(--l-canvas); }
 .tester__run { flex: 0 0 auto; }
 .tester__close { flex: 0 0 auto; }
 .tester__hint { margin: 0; color: var(--l-ink-3); font-size: var(--t-1); }
+/* 第二行：客户端 IP 与测哪份配置，和第一行同高、左对齐 / Second row: client IP and which config, as tall as the first row, aligned left */
+.tester__opts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); }
+.tester__client { flex: 0 1 14rem; min-width: 0; }
+.tester__client.is-bad { border-color: var(--err-l); }
+.tester__tag { margin-right: var(--s-2); vertical-align: 2px; }
 .tester__error { margin: 0; }
 .tester__out { display: grid; gap: var(--s-3); }
 .tester__result { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-2) var(--s-4); padding: var(--s-3) var(--s-4); border-radius: var(--r-2); background: var(--ok-tint-l); }
@@ -1570,6 +1575,9 @@ body { background: var(--l-canvas); }
   .tester__inputs { flex-wrap: wrap; }
   .tester__domain { flex-basis: 100%; }
   .tester__qtype { flex: 1 1 5.5rem; }
+  .tester__client { flex: 1 1 100%; }
+  /* 手机上开关在上、输入框在下，出错提示紧跟输入框 / On phones the switch comes first and the field last, so its error sits right under it */
+  .tester__target { flex: 1 1 100%; order: -1; }
 }
 
 /* ---------- 历史版本 / history ---------- */
