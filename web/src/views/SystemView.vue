@@ -89,6 +89,7 @@ const running = computed(() => service.value?.active_state === 'active')
 // 连不上面板时，上次读到的服务状态不能当真：点变灰，写「状态未知」，连上后恢复（同概览）
 // While the panel is unreachable the last service state read cannot be trusted: the dot turns grey and reads 状态未知, restored on reconnect (as on the overview)
 const { down: panelDown } = useConnection()
+const waitingForPanel = computed(() => panelDown.value && !service.value && !kernel.value)
 // 「正在运行 · active/running」「已停止 · inactive/dead」是同一件事说两遍；只有启动中、
 // 自动重启这类不寻常的状态，systemd 的原始写法才多带了信息。
 // "正在运行 · active/running" and "已停止 · inactive/dead" say one thing twice; only
@@ -496,7 +497,6 @@ onBeforeUnmount(() => {
   <div class="page system-page">
     <!-- 连不上面板时顶上的横幅已经说了为什么、也有重试：这一页不再复述，什么都没读到时只写一句连上后会自己打开 / With the panel unreachable the banner says why and offers the retry: this page does not repeat it, and with nothing read it only says it opens by itself once connected -->
     <StatusBanner v-if="loadError && !panelDown" :message="loadError" :stale="Boolean(service || kernel)" :busy="loadingService || loadingKernel" @retry="refreshAll" />
-    <p v-else-if="panelDown && !service && !kernel" class="ui-notice ui-notice--off system-wait" role="status"><Clock :size="16" aria-hidden="true" /><span>连上面板后自动打开</span></p>
     <!-- 按「要不要现在动手」排：服务状态就在页头的事实行里，在不在跑、要不要动它一眼可知；
          有更新时更新紧随其后，不需要动手的安装信息和凭据降到下面。整页没有黑按钮：
          这一页是看状态、偶尔操作，列表里每行的操作一律用次要按钮。
@@ -531,6 +531,10 @@ onBeforeUnmount(() => {
       </template>
     </UiPageHeader>
 
+    <!-- 什么都没读到就连不上了：标题下面一句，卡片先不画（缓存的更新卡读不到内核会写成「还没安装」，那是错的）
+         Nothing read before the panel went away: one line under the title and no cards yet (the cached update card, without the kernel, would say 还没安装, which is wrong) -->
+    <p v-if="waitingForPanel" class="ui-notice ui-notice--off system-wait" role="status"><Clock :size="16" aria-hidden="true" /><span>连上面板后自动打开</span></p>
+    <template v-else>
     <!-- 卡片都是概览那套：小标签一行，右端一个标签或按钮；内容是细线隔开的行 / Every card follows the overview: a small label line with a tag or button at its end; rows between hairlines -->
     <section class="ui-card system-card update-panel" aria-labelledby="system-updates-label">
       <div class="system-card__head">
@@ -667,6 +671,7 @@ onBeforeUnmount(() => {
         </div>
       </section>
     </div>
+    </template>
 
   </div>
 </template>

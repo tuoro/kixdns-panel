@@ -49,6 +49,8 @@ test('连不上面板时打开的配置页和系统页，连上以后自己读�
   await page.getByRole('link', { name: '系统', exact: true }).first().click()
   await expect(banner(page)).toBeVisible()
   await expect(page.locator('.system-wait')).toHaveText('连上面板后自动打开')
+  // 什么都没读到时不画卡片：缓存的更新卡读不到内核会写成「还没安装」 / No cards while nothing is read: the cached update card would say 还没安装 without the kernel
+  await expect(page.locator('.update-panel')).toHaveCount(0)
   await panelDown(page, false)
   await expect(banner(page)).toHaveCount(0, { timeout: 10_000 })
   await expect(page.locator('.system-heading')).toContainText(mobile ? '运行中' : 'kixdns.service')
