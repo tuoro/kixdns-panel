@@ -40,8 +40,12 @@ test('连不上面板时打开的配置页和系统页，连上以后自己读�
   // 原因和重试交给顶上的横幅：页内只写一句连上后会自己打开 / The cause and the retry belong to the banner: the page only says it opens by itself once connected
   await expect(page.locator('.cfg__wait')).toHaveText('连上面板后自动打开')
   await expect(page.locator('.cfg__failed')).toHaveCount(0)
-  // 没读到配置时页头不写规则数、上游组数 / Without a config read the header shows no rule or group counts
-  await expect(page.locator('.cfg__facts')).toHaveCount(0)
+  // 没读到配置时页头不写规则数、上游组数，只写状态 / Without a config read the header shows no rule or group counts, only the state
+  if (!mobile) {
+    await expect(page.locator('.cfg__facts')).toContainText('未知')
+    await expect(page.locator('.cfg__facts')).not.toContainText('规则')
+    await expect(page.locator('.cfg__facts')).not.toContainText('上游组')
+  }
   await panelDown(page, false)
   await expect(page.locator('.cfg__panel')).toBeVisible({ timeout: 10_000 })
 

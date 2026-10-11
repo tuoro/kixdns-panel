@@ -1007,6 +1007,8 @@ onBeforeUnmount(() => {
 .overview-bars-axis > span.is-end { transform: translateX(-100%); }
 
 @media (min-width: 641px) { .overview-notice--phone { display: none; } }
+/* 手机上这一行是一句灰字，不是一个填色的框：少占首屏 / On phones this line is grey text, not a filled box: less of the first screen */
+.ui-notice.overview-notice--phone { padding: 0; background: transparent; color: var(--l-ink-2); font-size: var(--t-2); }
 /* ---------- 列表卡：一行一个名字、右对齐的数、一条细条 ---------- */
 .overview-card--upstreams.is-refreshing .overview-rows { opacity: .72; transition: opacity var(--m-quick) var(--ease-out); }
 .overview-rows { display: grid; margin-top: var(--s-1); }
@@ -1136,7 +1138,7 @@ onBeforeUnmount(() => {
    beside cache composition, the running config on a full row) instead of each stretching across the row and stranding its right-hand figures; each pair is one
    height. At 861–959 the sidebar leaves paired cards under 320, where upstream addresses wrap, so the cards stay one per row */
 @media (min-width: 768px) and (max-width: 860px), (min-width: 960px) and (max-width: 1159px) {
-  .overview-col--side, .overview-trio { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .overview-col--side, .overview-trio, .overview-skeleton-col + .overview-skeleton-col { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .overview-trio > :last-child:nth-child(odd) { grid-column: 1 / -1; }
 }
 /* 900 以下：一栏到底，卡片按原来的顺序叠；规则换成两行式（四列挤不下）

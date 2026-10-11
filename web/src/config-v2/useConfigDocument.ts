@@ -125,9 +125,9 @@ export const headerStatus = computed<HeaderStatus>(() => {
   if (hasPending.value) {
     const waiting = pendingVersionId.value ? { before: '版本 #', version: pendingVersionId.value, after: ' 待应用' } : { before: '配置待应用' }
     if (!runtimeStopped.value) return { tone: 'warn', ...waiting }
-    // KixDNS 停着时先说停了，再说哪个版本在等：后面的「启动」读作启动 KixDNS，不是启动这个版本
+    // KixDNS 停着时先说停了，再说哪个版本在等：后面的「启动」读作启动 KixDNS，不是启动这个版本（宽屏版本号已经在旁边的「配置版本」里）
     // With KixDNS stopped, say so first and then which version waits: the 启动 after it reads as starting KixDNS, not this version
-    return { tone: 'off', lead: 'KixDNS 已停止', ...waiting, wide: ['已停止', pendingVersionId.value ? `版本 #${pendingVersionId.value} 待应用` : '配置待应用'] }
+    return { tone: 'off', lead: 'KixDNS 已停止', ...waiting, wide: ['已停止', '待应用'] }
   }
   // 宽屏「状态」标签下面写「已停止」，和「运行中」「未知」一样不带主语，900 宽左右那一排才放得下 / Under the wide 状态 label it reads 已停止, without a subject like 运行中 and 未知, so the row fits around 900
   if (runtimeStopped.value) return { tone: 'off', before: 'KixDNS 已停止', wide: ['已停止'] }

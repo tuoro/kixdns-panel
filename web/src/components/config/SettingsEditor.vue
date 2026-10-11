@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ChevronLeft, ChevronRight, Plus, Search, X } from '@lucide/vue'
 import UiHelp from '../ui/UiHelp.vue'
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { SETTING_SECTIONS, settingShouldRender, settingSupported, settingValue, settingVisible, settingWritten, type SettingField, type SettingSection } from '../../config-editor/schema'
 import type { GlobalSettings } from '../../config-editor/types'
 import GeoDataEditor from './GeoDataEditor.vue'
@@ -31,6 +31,10 @@ const searchInput = ref<HTMLInputElement>()
 // Groups on the left and one group's settings on the right, the same layout as 解析编排's list and
 // inspector; a phone shows the group list first and opens one group at a time.
 const current = ref(props.initialGroup || (props.lead?.id ?? 'network'))
+// 刚按「关掉」的那几行先留着（写「已关闭」、按钮收起），离开这一组再消失：不然整组一下子空了，右边只剩白板
+// Rows just switched off with 关掉 stay (reading 已关闭, the button gone) until the group is left: otherwise the whole group vanishes at once and the pane goes blank
+const keptOff = reactive(new Set<string>())
+watch(current, () => keptOff.clear())
 // 从「去基础设置」过来时指名了一组：手机上直接打开那一组，不停在目录上 / Arriving from 去基础设置 names a group: on phones that group opens directly instead of the contents list
 const mobileOpen = ref(Boolean(props.initialGroup))
 const mobileViewport = window.matchMedia('(max-width: 860px)')
@@ -42,7 +46,7 @@ const query = computed(() => search.value.trim().toLowerCase())
 const allFields = SETTING_SECTIONS.flatMap((section) => section.fields)
 
 const visibleSections = computed(() => SETTING_SECTIONS.map((section) => {
-  const available = section.fields.filter((field) => shown(field) && (supported(field) || settingWritten(field, settings.value)))
+  const available = section.fields.filter((field) => shown(field) && (supported(field) || settingWritten(field, settings.value) || keptOff.has(field.key)))
   const matches = available.filter((field) => `${section.title} ${field.label} ${field.key}`.toLowerCase().includes(query.value))
   const relatedKeys = new Set(matches.flatMap((field) => [field.key, ...dependencyKeys(field)]))
   const fields = query.value
@@ -104,7 +108,7 @@ const versionMatches = computed(() => !query.value || '格式版本 version 配�
 const currentGroup = computed(() => groups.value.find((group) => group.id === current.value) ?? groups.value[0]!)
 const navSections = computed(() => SETTING_SECTIONS.map((section) => ({
   ...section,
-  fields: section.fields.filter((field) => shown(field) && (supported(field) || settingWritten(field, settings.value)) && settingShouldRender(field, settings.value, props.capabilities)),
+  fields: section.fields.filter((field) => shown(field) && (supported(field) || settingWritten(field, settings.value) || keptOff.has(field.key)) && settingShouldRender(field, settings.value, props.capabilities)),
 })).filter((section) => section.fields.length > 0))
 const currentSection = computed(() => navSections.value.find((section) => section.id === current.value))
 const paneSections = computed(() => (query.value ? visibleSections.value : currentSection.value ? [currentSection.value] : []))
@@ -165,6 +169,7 @@ function removeSetting(key: string): void {
 }
 // 开关关掉就不写进配置（同上）；别的写法只能从配置里去掉 / A switch turned off is not written (as above); anything else has to come out of the config
 function turnOff(field: SettingField): void {
+  keptOff.add(field.key)
   if (field.type === 'boolean') setValue(field.key, false)
   else removeSetting(field.key)
 }

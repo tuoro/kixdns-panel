@@ -180,8 +180,8 @@ body { background: var(--l-canvas); }
    The header's 启动 is a small secondary button that takes no vertical room: taller than the text, it never heightens the line (the facts row keeps one height), and its label shares the baseline of KixDNS 已停止 */
 .cfg__head-start { margin-block: calc(var(--h-sm) / -2); }
 .cfg__facts .cfg__head-start { margin-left: var(--s-1); }
-/* 861–899 有侧栏、又有「启动」时一排放不下四项：「上游组」先收起（同系统页 960 以下收起 PID） / At 861–899, with the sidebar and 启动 present, four facts do not fit: 上游组 gives way first (as the system page drops PID below 960) */
-@media (min-width: 861px) and (max-width: 899px) { .cfg__facts:has(.cfg__head-start) .cfg__fact-groups { display: none; } }
+/* 861–959 有侧栏、又有「启动」时一排放不下四项：「上游组」先收起（同系统页 960 以下收起 PID） / At 861–959, with the sidebar and 启动 present, four facts do not fit: 上游组 gives way first (as the system page drops PID below 960) */
+@media (min-width: 861px) and (max-width: 959px) { .cfg__facts:has(.cfg__head-start) .cfg__fact-groups { display: none; } }
 .rules-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-5); align-items: start; }
 @media (min-width: 1360px) {
   .rules-split.is-open { grid-template-columns: minmax(0, 1fr) var(--inspector-w); }

@@ -175,7 +175,12 @@ test('KixDNS 停着时存成待应用：页头先说停了再说哪个版本在�
   await quick.press('Enter')
   await page.getByRole('button', { name: '保存为待应用', exact: true }).click()
   const status = mobile ? page.locator('.ui-ph__lead') : page.locator('.cfg__facts > span').first().locator('b')
-  await expect(status).toContainText(mobile ? /KixDNS 已停止\s*·?\s*版本 #\d+ 待应用/ : /^已停止\s*·?\s*版本 #\d+ 待应用/)
+  // 宽屏的版本号在旁边的「配置版本」里，状态只写「已停止 · 待应用」，一排放得下 / On wide screens the version sits in the 配置版本 fact beside it, so the state reads 已停止 · 待应用 and the row fits
+  if (mobile) await expect(status).toContainText(/KixDNS 已停止\s*·?\s*版本 #\d+ 待应用/)
+  else {
+    await expect(status).toContainText(/^已停止\s*·?\s*待应用/)
+    await expect(page.locator('.cfg__facts')).toContainText(/配置版本\s*#\d+/)
+  }
   await expect(status.getByRole('button', { name: '启动', exact: true })).toBeVisible()
 })
 
@@ -265,4 +270,24 @@ test('手机保存条：校验通过不压按钮，冲突时只留下载和重�
     return range.getBoundingClientRect().left
   })
   expect(Math.abs(download - words)).toBeLessThanOrEqual(1)
+})
+
+// 内核不支持的开关按「关掉」以后，那一行先留着写「已关闭」，这一组不会一下子空掉；离开这一组再消失
+// After 关掉 on a switch the kernel lacks, its row stays reading 已关闭, so the group never empties at once; it goes once the group is left
+test('不支持的开关按「关掉」后那一行留着写「已关闭」，设置面板不变空白', async ({ page }) => {
+  await page.goto('/config')
+  await expect(page.locator('.rcard').first()).toBeVisible()
+  await page.evaluate(async () => {
+    const doc = await import('/src/config-v2/useConfigDocument.ts')
+    doc.runtimeCapabilities.value = []
+    const { ui } = await import('/src/config-v2/store.ts')
+    ui.settingsGroup = 'statistics'
+  })
+  await page.getByRole('link', { name: '基础设置', exact: true }).first().click()
+  const off = page.getByRole('button', { name: '关掉', exact: true })
+  await expect(off).toBeVisible()
+  await off.click()
+  await expect(off).toHaveCount(0)
+  await expect(page.locator('.settings-row__readonly').first()).toContainText('已关闭')
+  await expect(page.locator('.settings').getByRole('heading', { level: 2 }).first()).toBeVisible()
 })
