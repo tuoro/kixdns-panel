@@ -142,13 +142,13 @@ function runImport(): void {
           <li v-for="r in shown" :key="r.id" class="rw__row" :class="{ 'is-off': !r.enabled, 'is-editing': editing.id === r.id }" :data-rw="r.id">
             <template v-if="editing.id === r.id">
               <form class="rw__edit" @submit.prevent="commit(r)">
-                <label class="ui-input ui-input--sm is-mono"><input v-model="editing.domain" aria-label="域名" @input="editing.error = ''"></label>
-                <label class="ui-input ui-input--sm is-mono"><input v-model="editing.target" aria-label="回答" @input="editing.error = ''"></label>
+                <label class="ui-input ui-input--sm is-mono"><input v-model="editing.domain" aria-label="域名" :aria-invalid="Boolean(editing.error) || undefined" :aria-describedby="editing.error ? 'rw-edit-err' : undefined" @input="editing.error = ''"></label>
+                <label class="ui-input ui-input--sm is-mono"><input v-model="editing.target" aria-label="回答" :aria-invalid="Boolean(editing.error) || undefined" :aria-describedby="editing.error ? 'rw-edit-err' : undefined" @input="editing.error = ''"></label>
                 <label v-if="!splitList(editing.target).every(isIp)" class="ui-input ui-input--sm rw__ttl"><input v-model="editing.ttl" type="number" min="0" aria-label="TTL" placeholder="300"><i>秒</i></label>
                 <span v-else class="rw__ttl rw__ttl--fixed">TTL 300 秒</span>
                 <button class="ui-icon-btn ui-icon-btn--sm" type="submit" aria-label="保存" title="保存"><Check :size="14" /></button>
                 <button class="ui-icon-btn ui-icon-btn--sm" type="button" aria-label="取消" title="取消" @click="editing.id = -1"><X :size="14" /></button>
-                <p v-if="editing.error" class="ui-field-error rw__err">{{ editing.error }}</p>
+                <p v-if="editing.error" id="rw-edit-err" class="ui-field-error rw__err" role="alert">{{ editing.error }}</p>
               </form>
             </template>
             <template v-else>

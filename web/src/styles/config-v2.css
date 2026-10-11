@@ -325,6 +325,11 @@ body { background: var(--l-canvas); }
 .qadd__input { min-width: 0; display: flex; }
 .qadd__input input { width: 100%; min-height: var(--h-sm); padding: 0; border: 0; outline: 0; background: transparent; color: var(--l-ink); font-family: var(--f-mono); font-size: var(--t-2); }
 .qadd:focus-within { background: var(--l-canvas); }
+/* 不画输入框的添加行聚焦时：左边一条品牌色竖条、「+」变品牌色，和选中规则行同一种标记；只换底色太淡，几乎看不出焦点在这
+   A borderless add row with focus: an accent bar on the left and an accent 「+」, the same mark as a selected rule row; the tint change alone was too faint to show where focus is */
+.qadd, .rw__add { position: relative; }
+.qadd:focus-within::before, .rw__add:focus-within::before { position: absolute; top: 0; bottom: 0; left: 0; width: 3px; background: var(--accent); content: ''; }
+.qadd:focus-within .qadd__icon, .rw__add:focus-within .rw__addicon { color: var(--accent); }
 .qadd__hint { grid-column: 2 / -1; margin: 0; color: var(--l-ink-2); font-size: var(--t-1); }
 .qadd__hint.is-err { color: var(--err-l); }
 .rcard__order { display: none; margin: 0; padding: var(--s-2) var(--s-3) 0; color: var(--l-ink-3); font-size: var(--t-1); }
@@ -1543,7 +1548,7 @@ body { background: var(--l-canvas); }
   .sets__card .settings .settings-nav__item[aria-current="true"] { background: var(--l-surface); box-shadow: var(--shadow-raise); color: var(--l-ink); font-weight: var(--w-medium); }
   .sets__card .settings .settings-pane { padding: var(--s-4) var(--s-5) var(--s-5); border-left: 0; }
   .sets__card .settings .settings-group__head--lead { margin-bottom: var(--s-2); }
-  .sets__card .settings .settings-group__head--lead h3 { color: var(--l-ink-3); font-size: var(--t-1); font-weight: var(--w-bold); letter-spacing: .06em; text-transform: uppercase; }
+  .sets__card .settings .settings-group__head--lead h2 { color: var(--l-ink-3); font-size: var(--t-1); font-weight: var(--w-bold); letter-spacing: .06em; text-transform: uppercase; }
 }
 @media (min-width: 861px) and (hover: hover) {
   .sets__card .settings .settings-nav__item:hover:not([aria-current="true"]) { background: var(--l-sunk); color: var(--l-ink); }

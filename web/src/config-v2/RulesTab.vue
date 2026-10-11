@@ -300,7 +300,7 @@ function saveEntries(): void {
     <dialog ref="entriesDialog" class="pdrawer pdrawer--wide" aria-labelledby="ent-d-title" @cancel.prevent="entriesDialog?.close()" @click.self="entriesDialog?.close()">
       <div class="pdrawer__panel">
         <header class="pdrawer__head"><div class="pdrawer__titles"><h2 id="ent-d-title">编辑高级入口</h2><p>直接写内核的入口：pipeline 是要进的 Pipeline，matchers 是条件。按顺序看，第一个命中的生效。</p></div><button class="ui-icon-btn" type="button" aria-label="关闭" @click="entriesDialog?.close()"><X :size="16" /></button></header>
-        <div class="pdrawer__body"><JsonEditor v-model="entriesText" /><p v-if="entriesError" class="ui-field-error">{{ entriesError }}</p></div>
+        <div class="pdrawer__body"><JsonEditor v-model="entriesText" /><p v-if="entriesError" class="ui-field-error" aria-live="polite">{{ entriesError }}</p></div>
         <footer class="pdrawer__foot"><button class="ui-btn ui-btn--secondary" type="button" @click="entriesDialog?.close()">取消</button><button class="ui-btn ui-btn--primary" type="button" :disabled="Boolean(entriesError)" @click="saveEntries">完成</button></footer>
       </div>
     </dialog>

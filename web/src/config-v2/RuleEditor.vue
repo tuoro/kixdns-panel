@@ -281,7 +281,7 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
           <header class="ecard__head ecard__head--raw"><div><h2 id="ec-raw" class="ecard__title">内核规则<UiHelp topic="raw" /></h2><p class="ecard__desc">这条规则放不进上面那些写法（比如回答阶段先记日志再接着匹配），原样保留。这里改的就是 KixDNS 直接读的规则，保存前会校验。</p></div><UiTabs class="ecard__rawmode" :model-value="rawMode" :items="rawModes" label="内核规则的写法" variant="segment" @update:model-value="setRawMode" /></header>
           <div class="ecard__body">
             <RawRuleEditor v-if="rawMode === 'form'" v-model="rawRules" :pipelines="kernelPipelines" :current-pipeline-id="ownPipelineId" :capabilities="runtimeCapabilities" :show-errors="showErrors" />
-            <template v-else><JsonEditor v-model="rawText" :error-line="undefined" /><p v-if="rawError" class="ui-field-error">{{ rawError }}</p></template>
+            <template v-else><JsonEditor v-model="rawText" :error-line="undefined" /><p v-if="rawError" class="ui-field-error" aria-live="polite">{{ rawError }}</p></template>
           </div>
         </section>
         <section v-if="!draft.raw" class="ecard" :class="{ 'ui-card': !inspector }" aria-labelledby="ec-if">
