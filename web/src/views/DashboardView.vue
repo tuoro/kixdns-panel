@@ -297,6 +297,8 @@ const statsWindowLabel = computed(() => {
   const seconds = displayStats.value?.window_seconds ?? statsWindow.value
   return `最近 ${statsWindows.find((item) => item.value === seconds)?.label ?? `${Math.round(seconds / 3600)} 小时`}`
 })
+// 排行里的域名可以在「.」后面折行，长域名不再从字母中间断开；客户端地址照旧按通用规则 / Ranked domains may wrap after a dot, so a long one never splits inside a label; client addresses keep the general rule
+const rankedParts = (group: string, name: string): string[] => (group === 'domains' ? name.split(/(?<=\.)/) : breakable(name))
 const rankingGroups = [
   { id: 'clients', title: '客户端排行', description: '按来源地址聚合', empty: '当前窗口暂无客户端数据' },
   { id: 'domains', title: '请求域名排行', description: '按查询次数', empty: '当前窗口暂无域名数据' },
@@ -841,12 +843,12 @@ onBeforeUnmount(() => {
         </div>
         <UiEmpty v-if="!showStatsSection" :icon="ChartColumn" title="当前 KixDNS 不提供查询排行" desc="更新内核后可以按客户端和域名查看请求量。" />
         <div v-else-if="displayStats?.enabled" class="overview-rankings" :class="{ 'is-loading': statsLoading }">
-          <section v-for="group in rankingGroups" :key="group.id" class="overview-ranking">
-            <header class="overview-ranking-head"><h2>{{ group.title }}</h2><p>{{ group.id === 'clients' && displayStats.anonymized_clients ? '按脱敏网段聚合' : group.description }}</p></header>
+          <section v-for="group in rankingGroups" :key="group.id" class="ui-card overview-card overview-ranking">
+            <div class="overview-card-head"><h2 class="ui-card__label">{{ group.title }}</h2><span class="overview-card-note">{{ group.id === 'clients' && displayStats.anonymized_clients ? '按脱敏网段聚合' : group.description }}</span></div>
             <ol v-if="displayStats[group.id].length" class="overview-ranking-list">
               <li v-for="(item, index) in displayStats[group.id]" :key="item.name">
                 <span class="overview-rank">{{ index + 1 }}</span>
-                <strong class="ui-mono"><template v-for="(part, partIndex) in breakable(item.name)" :key="partIndex"><wbr v-if="partIndex" />{{ part }}</template></strong><span class="overview-rank-count">{{ formatNumber(item.count) }}</span>
+                <strong class="ui-mono"><template v-for="(part, partIndex) in rankedParts(group.id, item.name)" :key="partIndex"><wbr v-if="partIndex" />{{ part }}</template></strong><span class="overview-rank-count">{{ formatNumber(item.count) }}</span>
                 <i aria-hidden="true"><span :style="{ width: `${item.count / (group.id === 'clients' ? maxClient : maxDomain) * 100}%` }"></span></i>
               </li>
             </ol>
@@ -860,8 +862,9 @@ onBeforeUnmount(() => {
       </section>
 
       <section id="overview-panel-rules" v-show="activeView === 'rules'" class="overview-view" role="tabpanel" aria-labelledby="overview-tab-rules" tabindex="0">
-        <div v-if="rules.length" class="overview-toolbar"><p class="ui-dots"><span>启动以来</span><span>每条规则的命中次数</span></p></div>
-        <div v-if="rules.length" class="overview-rules">
+        <section v-if="rules.length" class="ui-card overview-card overview-rules-card" aria-label="每条规则的命中次数">
+          <div class="overview-card-head"><h2 class="ui-card__label">每条规则的命中次数</h2><span class="overview-card-note">启动以来</span></div>
+        <div class="overview-rules">
           <div class="ui-rec-head"><span>阶段</span><span>规则</span><span>规则组</span><span>命中次数</span></div>
           <div v-for="rule in rules" :key="`${rule.pipeline}:${rule.phase}:${rule.rule}`" class="ui-rec overview-rule">
             <span class="overview-rule-phase"><span class="ui-tag" :class="{ 'overview-phase--request': rule.phase === 'request' }">{{ rule.phase === 'request' ? '请求' : '回答后' }}</span></span>
@@ -871,6 +874,7 @@ onBeforeUnmount(() => {
             <p class="ui-rec__phone overview-rule-line"><span class="ui-tag" :class="{ 'overview-phase--request': rule.phase === 'request' }">{{ rule.phase === 'request' ? '请求' : '回答后' }}</span><span :class="{ 'ui-mono': !pipelineName(rule.pipeline) }">{{ pipelineName(rule.pipeline) ?? rule.pipeline }}</span></p>
           </div>
         </div>
+        </section>
         <UiEmpty v-else :icon="ListChecks" title="还没有规则命中过" desc="规则命中后，这里按命中次数列出每条规则。" />
       </section>
     </template>
@@ -896,11 +900,12 @@ onBeforeUnmount(() => {
 .overview-facts b > .ui-dot { margin-right: calc(var(--s-1) - var(--s-2)); }
 .overview-facts b > small { color: var(--l-ink-3); font-weight: var(--w-normal); }
 
-/* ---------- 版式：左栏两张图卡，右栏 440 的两张列表卡，底下一排三张 ----------
-   两栏各自把第二张卡撑到栏底：左边长高的是柱图，右边是请求分布。两栏底边因此永远齐平。
-   ---------- Layout: two chart cards on the left, two 440 list cards on the right, a row of three below ----------
-   Each column stretches its second card to the column's bottom: the bar chart on the left, request distribution on the right, so the two bottoms always meet. */
-.overview-grid { display: grid; grid-template-columns: minmax(0, 1fr) 440px; gap: var(--ov-gap); align-items: stretch; }
+/* ---------- 版式：12 栏。上排左 8 栏两张图卡、右 4 栏两张列表卡，底下一排三张各 4 栏 ----------
+   右栏正好是底排一张卡的宽（(100% − 两个卡距) ÷ 3），上下两排的列线因此对齐。两栏各自把第二张卡撑到栏底：左边长高的是柱图，右边是请求分布，两栏底边永远齐平。
+   ---------- Layout: 12 columns. Top row: two chart cards over 8 columns, two list cards over 4; below, three cards of 4 each ----------
+   The right column is exactly one bottom card wide ((100% − two gaps) ÷ 3), so the rows share column lines. Each column stretches its second card to the
+   column's bottom: the bar chart on the left, request distribution on the right, so the two bottoms always meet. */
+.overview-grid { display: grid; grid-template-columns: minmax(0, 1fr) calc((100% - 2 * var(--ov-gap)) / 3); gap: var(--ov-gap); align-items: stretch; }
 .overview-col { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: var(--ov-gap); min-width: 0; }
 /* 没运行过时卡里只有一句「尚无数据」，撑高只会撑出空白：两栏各按内容高，底边不强求齐平 / Never run, each card holds one line of 尚无数据 and stretching would only stretch blank: both columns take their content height and the bottoms are not forced level */
 .overview-grid.is-empty .overview-col { grid-template-rows: none; align-content: start; }
@@ -994,20 +999,13 @@ onBeforeUnmount(() => {
 .overview-clear { flex: none; }
 /* 手机上只留橡皮擦图标的 36 方块，不像第四个筛选项；名字在 aria-label 和 title 里 / On phones only a 36 square with the eraser icon remains, so it no longer reads as a fourth filter; its name lives in aria-label and title */
 @media (max-width: 640px) { .overview-clear { width: var(--h-md); padding: 0; } .overview-clear__label { display: none; } }
-.overview-rankings { position: relative; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-4); transition: opacity var(--m-quick) var(--ease-out); }
+.overview-rankings { position: relative; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ov-gap); transition: opacity var(--m-quick) var(--ease-out); }
 .overview-rankings.is-loading { opacity: .5; }
-/* 两列在全站的 16 格线上，中间一条竖细线把左列的数字和右列的名次隔开，不读成一行 / Both lists sit on the site's 16 grid; a vertical hairline in the gutter keeps the left list's counts apart from the right list's ranks */
-/* 竖线从表头细线往下接，到最后一根条为止，和横线接成一个 T / The rule runs down from the header hairline to the last bar, meeting the header line in a T */
-@media (min-width: 641px) {
-  .overview-rankings > :nth-child(2) .overview-ranking-list { position: relative; }
-  .overview-rankings > :nth-child(2) .overview-ranking-list::before { position: absolute; top: calc(var(--s-2) * -1); bottom: var(--s-2); left: calc(var(--s-4) / -2 - 1px); border-left: 1px solid var(--l-hair); content: ''; }
-}
-/* 排行和其他区块一样：标题行上面一条细线 / Rankings match every other section: a hairline over the title row */
-.overview-ranking { min-width: 0; padding-top: var(--s-5); border-top: 1px solid var(--l-hair); }
-.overview-ranking h2 { margin: 0; font-family: var(--f-display); font-size: var(--t-4); font-weight: var(--w-bold); }
-/* 排行的标题行和别的区块一样：说明在右边、同一条基线 / The ranking title row matches the other sections: the caption on the right, on one baseline */
-.overview-ranking-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--s-1) var(--s-4); margin-bottom: var(--s-2); }
-.overview-ranking-head p { margin: 0; color: var(--l-ink-3); font-size: var(--t-2); }
+/* 两张排行各是一张卡，卡与卡之间是卡距，不再画竖线隔开；最后一行不再自带下边距，卡底只留卡片内边距
+   Each ranking is a card with the card gap between them, no vertical hairline; the last row drops its own bottom padding so only the card's padding remains */
+.overview-ranking { min-width: 0; }
+.overview-ranking .overview-ranking-list { margin-top: var(--s-2); }
+.overview-ranking-list li:last-child { padding-bottom: 0; }
 .overview-ranking-list { margin: 0; padding: 0; list-style: none; }
 /* 每行只有一条横线：细条本身。行与行之间不再加分隔线 / Each row draws one horizontal line, its bar; no divider between rows */
 .overview-ranking-list li { display: grid; grid-template-columns: var(--s-5) minmax(0, 1fr) auto; gap: var(--s-2); align-items: baseline; padding: var(--s-2) 0 var(--s-3); line-height: calc(var(--s-5) - 2px); }
@@ -1035,6 +1033,9 @@ onBeforeUnmount(() => {
 .overview-rules .ui-rec, .overview-rules .ui-rec-head { grid-column: 1 / -1; grid-template-columns: subgrid; column-gap: inherit; }
 .overview-rules .ui-rec-head > :nth-child(2), .overview-rules .ui-rec-head > :nth-child(3) { text-align: left; }
 .overview-rule { align-items: baseline; }
+/* 卡里的表：表头离卡头 12，最后一行不画底线、不留下边距 / The table in its card: column names 12 under the card head; the last row has no bottom rule or padding */
+.overview-rules-card .overview-rules { margin-top: var(--s-3); }
+.overview-rules-card .ui-rec:last-child { padding-bottom: 0; border-bottom: 0; }
 .overview-rule-name { min-width: 0; font-size: var(--t-3); font-weight: var(--w-medium); overflow-wrap: anywhere; }
 .overview-rule-pipeline { min-width: 0; color: var(--l-ink-3); font-size: var(--t-2); overflow-wrap: anywhere; }
 .overview-rule-count { text-align: right; font-variant-numeric: tabular-nums; }
@@ -1056,7 +1057,7 @@ onBeforeUnmount(() => {
 .overview-runtime-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); margin-left: auto; }
 
 /* ---------- 骨架：按结果实测的尺寸画，间距同结果 ---------- */
-.overview-skeleton { display: grid; grid-template-columns: minmax(0, 1fr) 440px; gap: var(--ov-gap); }
+.overview-skeleton { display: grid; grid-template-columns: minmax(0, 1fr) calc((100% - 2 * var(--ov-gap)) / 3); gap: var(--ov-gap); }
 .overview-skeleton-col { display: grid; gap: var(--ov-gap); align-content: start; }
 .overview-skeleton-col > i { border-radius: var(--r-3); }
 .overview-skeleton-stat { height: var(--ov-sk-stat); }
@@ -1097,13 +1098,9 @@ onBeforeUnmount(() => {
   .overview-config-line { display: flex; }
   .overview-toolbar { align-items: stretch; }
   .overview-toolbar-tools { width: 100%; justify-content: space-between; }
-  .overview-rankings { grid-template-columns: minmax(0, 1fr); gap: var(--s-5); padding-top: var(--s-3); }
-  /* 排行的第一块紧跟在时段选择下面，不画顶线：选择那一行不是一个区块 / The first ranking follows the window picker without a top rule: the picker row is not a section */
-  .overview-ranking:first-child { padding-top: 0; border-top: 0; }
-  /* 排行之间的细线上下一样远：上面是列表间距，下面是区块内边距，最后一行不再自带下边距 / The line between rankings is equally far from both: the list gap above, the section padding below, the last row without its own bottom padding */
-  .overview-ranking { padding-top: var(--s-4); }
-  .overview-rankings { gap: var(--s-4); }
-  .overview-ranking-list li:last-child { padding-bottom: 0; }
+  .overview-rankings { grid-template-columns: minmax(0, 1fr); }
+  /* 卡片吃掉 32 的宽度：名次只有一位数，列收到 16，域名少折一次 / The card takes 32 of the width: ranks are one digit, so their column narrows to 16 and domains fold less */
+  .overview-ranking-list li { grid-template-columns: var(--s-4) minmax(0, 1fr) auto; }
   .overview-toolbar-tools > .ui-seg { flex: 1; }
   .overview-runtime-actions { width: 100%; }
   .overview-runtime-actions > * { flex: 1 1 0; }
