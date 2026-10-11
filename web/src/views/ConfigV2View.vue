@@ -25,7 +25,7 @@ import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, busy, onlySaving, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, panelBack, save, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, unsupportedSection } from '../config-v2/useConfigDocument'
+import { applyBusy, busy, conflict, onlySaving, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, panelBack, save, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, unsupportedSection } from '../config-v2/useConfigDocument'
 import { useHelp } from '../composables/useHelp'
 import { useServiceStart } from '../composables/useServiceStart'
 import { registerLeaveGuard, takeAgreement } from '../composables/useLeaveGuard'
@@ -162,11 +162,13 @@ const notice = computed<Notice | null>(() => {
   if (hasApplyFailure.value) {
     const reason = doc.value?.runtime.pending_error || doc.value?.pending?.error || 'KixDNS 没有给出原因。'
     // 草稿有修改时不给「重试应用」：那时保存的是草稿，重试会把草稿当成失败的那个版本发出去 / No retry while the draft has changes: saving then sends the draft, not the version that failed
-    const retry = canApplyNow.value && !unsaved.value && !panelDown.value
+    const retry = canApplyNow.value && !unsaved.value && !panelDown.value && !conflict.value
+    // 重试撞上「别处改过了」：再重试还是撞上，按钮换成重新读取 / A retry that met 别处改过了 would meet it again: the button becomes 重新读取
+    const reread = conflict.value && !panelDown.value
     // 挡住重试的是内核不支持的设置时，这一条也说清它和出路（不支持的那条提示排在后面，这时显示不出来） / When unsupported settings block the retry, this notice names them and the way out too (the unsupported notice ranks below and cannot show)
     const blocked = !retry && unsupportedFields.value.length > 0
     const cause = failureCause(reason).replace(/。$/, '')
-    return { tone: 'err', text: pendingVersionId.value ? `版本 #${pendingVersionId.value} 没有生效，仍在用之前那份配置。` : '上次保存的版本没有生效，仍在用之前那份配置。', detail: blocked ? `${cause}。当前内核不支持：${unsupportedFields.value.join('、')}，先在基础设置里关掉。` : cause, action: retry ? '重试应用' : blocked && section.value !== 'settings' ? '去基础设置' : undefined, run: retry ? () => save('apply') : goUnsupported }
+    return { tone: 'err', text: pendingVersionId.value ? `版本 #${pendingVersionId.value} 没有生效，仍在用之前那份配置。` : '上次保存的版本没有生效，仍在用之前那份配置。', detail: blocked ? `${cause}。当前内核不支持：${unsupportedFields.value.join('、')}，先在基础设置里关掉。` : cause, action: reread ? '重新读取' : retry ? '重试应用' : blocked && section.value !== 'settings' ? '去基础设置' : undefined, run: reread ? () => reload() : retry ? () => save('apply') : goUnsupported }
   }
   if (applyError.value) { const [text, ...detail] = applyError.value.split('\n'); return { tone: 'err', text: `${text}。`, detail: detail.join('\n') } }
   // 警告排在说明前面：永远不命中的规则比导入说明要紧 / Warnings rank above information: a rule that never matches matters more than the import notes
@@ -277,7 +279,8 @@ const moreItems = computed(() => [
   { value: 'mode', label: ui.mode === 'json' ? '回到表单' : '查看 JSON', icon: ui.mode === 'json' ? Settings2 : Braces, disabled: !ready.value },
   { value: 'import', label: '导入 JSON', icon: FileUp, disabled: !ready.value },
   { value: 'download', label: '下载 JSON', icon: Download, disabled: !ready.value },
-  { value: 'reload', label: '重新读取配置', icon: RefreshCw, disabled: loading.value },
+  // 连不上面板时读不到，按了只会失败 / Unreachable panel: the read can only fail
+  { value: 'reload', label: '重新读取配置', icon: RefreshCw, disabled: loading.value || panelDown.value },
   // 手机的保存条放不下「放弃修改」，放在这里；桌面的保存条上一直有 / The phone save bar has no room for 放弃修改, so it lives here; the desktop bar always shows it
   ...(phone.value && unsaved.value ? [{ value: 'discard', label: '放弃修改', icon: Undo2 }] : []),
   { value: 'help', label: '帮助', icon: CircleHelp },

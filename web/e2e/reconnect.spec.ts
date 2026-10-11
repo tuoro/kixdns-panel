@@ -207,3 +207,25 @@ test('日志页什么都没读到就断了：只留一句，连上后不闪红�
   await expect(page.locator('.logs-notice')).toHaveCount(0)
   expect(await page.evaluate(() => (window as unknown as { sawRed: boolean }).sawRed)).toBe(false)
 })
+
+// 配置页连不上面板时，重新读取、批量删除、比较里的恢复都停用：按了只会失败，或者进到一个什么都选不了的状态
+// On the config page with the panel unreachable, re-reading, bulk delete and the compare's restore are disabled: pressing them could only fail, or enter a state where nothing can be picked
+test('配置页断线时重新读取、批量删除、恢复都停用', async ({ page }) => {
+  await page.goto('/config')
+  await page.getByRole('button', { name: '更多配置操作' }).click()
+  await page.getByRole('menuitem', { name: '历史版本' }).click()
+  const drawer = page.locator('dialog.hist[open]')
+  await drawer.getByRole('button', { name: '版本 #17 的操作' }).click()
+  await page.getByRole('menuitem', { name: '和当前比较' }).click()
+  const restore = page.locator('dialog.diffd[open]').getByRole('button', { name: '恢复为版本 #17' })
+  await expect(restore).toBeEnabled()
+  await panelDown(page, true)
+  await page.evaluate(() => window.dispatchEvent(new Event('kixdns:panel-unreachable')))
+  await expect(banner(page)).toBeVisible()
+  await expect(restore).toBeDisabled()
+  await page.locator('dialog.diffd[open]').getByRole('button', { name: '关闭比较' }).click()
+  await expect(drawer.getByRole('button', { name: '批量删除' })).toBeDisabled()
+  await drawer.getByRole('button', { name: '关闭' }).first().click()
+  await page.getByRole('button', { name: '更多配置操作' }).click()
+  await expect(page.getByRole('menuitem', { name: '重新读取配置' })).toBeDisabled()
+})
