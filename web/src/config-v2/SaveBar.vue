@@ -126,7 +126,8 @@ function discard(): void {
         <label class="ui-input ui-savebar__note savebar__note" :class="{ 'is-open': noteOpen || Boolean(saveMessage), 'is-aside': busy }" :inert="busy"><input v-model="saveMessage" aria-label="版本备注" maxlength="160" placeholder="版本备注（可选）"></label>
         <!-- 保存旁边一定有放弃：丢掉草稿回到运行中的配置，提示里能撤销 / Save always comes with discard: drop the draft back to the running config, undoable from the toast -->
         <button v-if="!phone && pending" class="ui-btn ui-btn--secondary savebar__discard" :class="{ 'is-aside': busy }" type="button" :inert="busy" @click="discard">放弃修改</button>
-        <button v-if="!deferSave && !conflict && pending" class="ui-btn ui-btn--secondary savebar__check" :class="{ 'is-aside': busy }" type="button" :inert="busy" @click="check"><ShieldCheck :size="16" aria-hidden="true" />校验</button>
+        <!-- 被内核不支持的设置挡住时不给「校验」：按了只会把同一句提示再说一遍 / No 校验 while unsupported settings block saving: pressing it would only repeat the same toast -->
+        <button v-if="!deferSave && !conflict && pending && !blockedFields.length" class="ui-btn ui-btn--secondary savebar__check" :class="{ 'is-aside': busy }" type="button" :inert="busy" @click="check"><ShieldCheck :size="16" aria-hidden="true" />校验</button>
         <!-- 别处先存了新版本时再保存只会再失败一次：先重新读取 / After someone else saved, saving again only fails again: reload first -->
         <!-- 手机上冲突时不留灰掉的保存和备注：这时只能下载或重新读取，省下一整行 / On phones a conflict drops the greyed save and 备注: only download or reload can happen then, which saves a whole row -->
         <button v-if="!(phone && conflict && draftStage === 'failed')" ref="saveButton" class="ui-btn ui-btn--primary savebar__save config-save-button" type="button" :aria-busy="busy || undefined" :disabled="conflict && draftStage === 'failed'" @click="saveDraft"><span v-if="busy && stage !== 'checking'" class="ui-spin" aria-hidden="true"></span>{{ busy && stage !== 'checking' ? '保存中' : saveLabel }}</button>

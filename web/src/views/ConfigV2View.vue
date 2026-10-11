@@ -161,7 +161,11 @@ const notice = computed<Notice | null>(() => {
   if (hasApplyFailure.value) {
     const reason = doc.value?.runtime.pending_error || doc.value?.pending?.error || 'KixDNS 没有给出原因。'
     // 草稿有修改时不给「重试应用」：那时保存的是草稿，重试会把草稿当成失败的那个版本发出去 / No retry while the draft has changes: saving then sends the draft, not the version that failed
-    return { tone: 'err', text: pendingVersionId.value ? `版本 #${pendingVersionId.value} 没有生效，仍在用之前那份配置。` : '上次保存的版本没有生效，仍在用之前那份配置。', detail: failureCause(reason), action: canApplyNow.value && !unsaved.value && !panelDown.value ? '重试应用' : undefined, run: () => save('apply') }
+    const retry = canApplyNow.value && !unsaved.value && !panelDown.value
+    // 挡住重试的是内核不支持的设置时，这一条也说清它和出路（不支持的那条提示排在后面，这时显示不出来） / When unsupported settings block the retry, this notice names them and the way out too (the unsupported notice ranks below and cannot show)
+    const blocked = !retry && unsupportedFields.value.length > 0
+    const cause = failureCause(reason).replace(/。$/, '')
+    return { tone: 'err', text: pendingVersionId.value ? `版本 #${pendingVersionId.value} 没有生效，仍在用之前那份配置。` : '上次保存的版本没有生效，仍在用之前那份配置。', detail: blocked ? `${cause}。当前内核不支持：${unsupportedFields.value.join('、')}，先在基础设置里从配置里去掉。` : cause, action: retry ? '重试应用' : blocked && section.value !== 'settings' ? '去基础设置' : undefined, run: retry ? () => save('apply') : goUnsupported }
   }
   if (applyError.value) { const [text, ...detail] = applyError.value.split('\n'); return { tone: 'err', text: `${text}。`, detail: detail.join('\n') } }
   // 警告排在说明前面：永远不命中的规则比导入说明要紧 / Warnings rank above information: a rule that never matches matters more than the import notes
@@ -169,10 +173,21 @@ const notice = computed<Notice | null>(() => {
   if (importReport.value && !reportOpen.value && importReport.value.stats.raw) return { tone: 'off', text: `这份配置是按内核格式读进来的，${importReport.value.stats.raw} 条规则原样保留为高级规则。`, action: '查看导入说明', run: () => { reportOpen.value = true } }
   // 没运行、连不上时页头已经说了，功能列表拿不到是它的结果，不另起一条 / When stopped or unreachable the header says so; the missing feature list follows from it
   if (capabilityError.value && !runtimeStopped.value && !runtimeUnavailable.value) return { tone: 'off', text: 'KixDNS 没有报告它支持哪些功能：新功能先按不支持处理，保存后先存成待应用版本。' }
-  if (!canCname.value && cnameInUse.value && !capabilityError.value) return { tone: 'warn', text: '当前内核不支持 CNAME 回答：KixDNS 不会接受带 CNAME 的配置。把回答写成域名的映射和规则改成 IP，或者更新内核。' }
+  // 说出有几处，域名映射里有的就给去那里的按钮 / Say how many places, with a button to the domain mappings when some are there
+  if (!canCname.value && cnameInUse.value && !capabilityError.value) return { tone: 'warn', text: `当前内核不支持 CNAME 回答：有 ${cnamePlaces.value.total} 处回答写的是域名，KixDNS 不会接受这份配置。把它们改成 IP，或者更新内核。`, action: cnamePlaces.value.mappings && section.value !== 'mapping' ? '去域名映射' : undefined, run: () => setTab('mapping') }
   // KixDNS 不接受带着它不支持的设置的配置：说清这一点和两条出路，按钮直接去基础设置 / KixDNS refuses a config carrying settings it does not support: say so with the two ways out, the button going straight to the settings
-  if (unsupportedFields.value.length) { const many = unsupportedFields.value.length > 1; return { tone: 'warn', text: `当前内核不支持：${unsupportedFields.value.join('、')}。配置里只要写着${many ? '它们' : '这一项'}（关着也算），KixDNS 就不接受：在基础设置里点${many ? '每一项' : '它'}旁边的「从配置里去掉」，或者更新内核。`, action: section.value === 'settings' ? undefined : '去基础设置', run: () => { ui.settingsGroup = unsupportedSection.value; setTab('settings') } } }
+  if (unsupportedFields.value.length) { const many = unsupportedFields.value.length > 1; return { tone: 'warn', text: `当前内核不支持：${unsupportedFields.value.join('、')}。配置里只要写着${many ? '它们' : '这一项'}（关着也算），KixDNS 就不接受：在基础设置里点${many ? '每一项' : '它'}旁边的「从配置里去掉」，或者更新内核。`, action: section.value === 'settings' ? undefined : '去基础设置', run: goUnsupported } }
   return null
+})
+function goUnsupported(): void {
+  ui.settingsGroup = unsupportedSection.value
+  setTab('settings')
+}
+// 写成域名的回答有几处：域名映射和规则（含规则组）分开数 / How many answers are domains: mappings and rules (rule groups included) counted apart
+const cnamePlaces = computed(() => {
+  const mappings = model.mappings.filter((m) => m.enabled && !/^[\d.:a-f, ]+$/i.test(m.target)).length
+  const rules = [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].filter((r) => r.outcome.type === 'answer' && r.outcome.kind === 'cname').length
+  return { mappings, total: mappings + rules }
 })
 function stripPrefix(): void {
   let n = 0
