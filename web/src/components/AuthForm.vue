@@ -69,7 +69,7 @@ async function submit(): Promise<void> {
       <div class="auth-security">
         <ShieldCheck :size="14" />
         <span>
-          密码不以明文保存，登录状态只留在这个浏览器里。<template v-if="!isSetup">忘记密码需要在面板所在的机器上<span class="nowrap">重置。</span></template>
+          密码不以明文保存，登录状态只留在这个浏览器里。<template v-if="!isSetup">忘记密码时，在面板所在的机器上执行 <code>kixdns-panel-server reset-admin</code>，部署文档里有完整命令。</template>
         </span>
       </div>
     </section>

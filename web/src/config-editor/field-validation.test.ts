@@ -40,8 +40,8 @@ describe('配置字段共享校验', () => {
     expect(actionFieldErrors({ type: 'forward', upstream: '' }, 'default')).toEqual({ upstream: '请填写上游' })
     expect(actionFieldErrors({ type: 'static_ip_response', ip: ' ' }, 'default')).toEqual({ ip: '请填写 IP' })
     // 必填错误靠开头的「请填写」「请选择」认出来，别的错误不算 / Required errors are told by their 请填写 / 请选择 opening; no other error is
-    expect(['请填写域名', '请选择 Pipeline'].every(isRequiredFieldError)).toBe(true)
-    expect([GEOSITE_PREFIX_ERROR, 'CNAME 目标域名格式无效', '不能跳转到当前 Pipeline', '目标 Pipeline 不存在'].some(isRequiredFieldError)).toBe(false)
+    expect(['请填写域名', '请选择要转到的组'].every(isRequiredFieldError)).toBe(true)
+    expect([GEOSITE_PREFIX_ERROR, 'CNAME 目标域名格式无效', '不能转到自己所在的这一组', '要转到的组不存在'].some(isRequiredFieldError)).toBe(false)
   })
 
   it('DNS 名称按 UTF-8 字节检查标签与总长度，支持结尾根点', () => {
@@ -67,11 +67,11 @@ describe('配置字段共享校验', () => {
 
   it('区分未选择、自跳转、目标不存在；省略列表时不猜测目标是否存在', () => {
     expect(actionFieldErrors({ type: 'jump_to_pipeline', pipeline: '' }, 'default', ['default']))
-      .toEqual({ pipeline: '请选择 Pipeline' })
+      .toEqual({ pipeline: '请选择要转到的组' })
     expect(actionFieldErrors({ type: 'jump_to_pipeline', pipeline: 'default' }, 'default', ['default']))
-      .toEqual({ pipeline: '不能跳转到当前 Pipeline' })
+      .toEqual({ pipeline: '不能转到自己所在的这一组' })
     expect(actionFieldErrors({ type: 'jump_to_pipeline', pipeline: 'removed' }, 'default', ['default']))
-      .toEqual({ pipeline: '目标 Pipeline 不存在' })
+      .toEqual({ pipeline: '要转到的组不存在' })
     expect(actionFieldErrors({ type: 'jump_to_pipeline', pipeline: 'fallback' }, 'default')).toEqual({})
   })
 

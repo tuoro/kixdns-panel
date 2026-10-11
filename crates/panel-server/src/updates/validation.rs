@@ -377,6 +377,6 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(error.to_string().contains("增强控制接口不可用"));
+        assert!(error.to_string().contains("连不上 KixDNS"));
     }
 }

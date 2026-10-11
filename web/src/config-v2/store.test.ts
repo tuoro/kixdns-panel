@@ -62,3 +62,16 @@ describe('看不见的字段不算修改', () => {
     expect(diffModels(appliedModel.value, model)).toEqual([])
   })
 })
+
+describe('「改了哪些」写页面上的叫法', () => {
+  beforeEach(() => resetTo(demoModel()))
+
+  it('拦截回应和日志级别不写内核取值', () => {
+    model.defaults.block = 'zero'
+    model.rules[1]!.log = { enabled: true, level: 'debug' }
+    const text = diffModels(appliedModel.value, model).flatMap((block) => block.lines.map((line) => line.text)).join('\n')
+    expect(text).toContain('空地址')
+    expect(text).toContain('记录（调试）')
+    expect(text).not.toMatch(/\bzero\b|\bdebug\b/)
+  })
+})

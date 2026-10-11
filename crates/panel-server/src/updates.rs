@@ -612,6 +612,17 @@ pub enum UpdateError {
     Unsupported,
 }
 
+impl UpdateError {
+    /// 页面在「检查失败：」后面接的那句：检查更新失败只给原因，不再带自己的前缀。
+    /// The phrase the page puts after 检查失败：; a failed check gives only its cause, without its own prefix.
+    pub fn reason(&self) -> String {
+        match self {
+            Self::Network(reason) => reason.clone(),
+            other => other.to_string(),
+        }
+    }
+}
+
 impl UpdateManager {
     pub fn new(database: Database, settings: UpdateSettings) -> Result<Self, UpdateError> {
         let UpdateSettings {

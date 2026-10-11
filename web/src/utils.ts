@@ -103,6 +103,11 @@ export function formatKixdnsVersion(version: KixdnsVersionIdentity | null | unde
   return '未记录'
 }
 
+/** 操作者：面板自己做的（定时更新、自动退回）写「自动」，不写英文的 system / The actor: what the panel did on its own (schedules, automatic fallback) reads 自动, not the English system */
+export function actorName(actor: string | null | undefined): string {
+  return !actor || actor === 'system' ? '自动' : actor
+}
+
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : '操作失败，请稍后重试'
 }

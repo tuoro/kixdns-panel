@@ -56,7 +56,7 @@ pub(super) async fn sync_geo_data(
             Some(session.username),
             "config.geo_data.sync".to_owned(),
             format!(
-                "MMDB {} 个、GeoIP {} 个、GeoSite {} 个",
+                "GeoIP MMDB {} 个、GeoIP DAT {} 个、GeoSite {} 个",
                 usize::from(result.geoip_mmdb.is_some()),
                 usize::from(result.geoip_dat.is_some()),
                 result.geosite.len()
@@ -135,7 +135,7 @@ pub(super) async fn save_geo_data_schedule(
             "config.geo_data.schedule".to_owned(),
             schedule
                 .interval_hours
-                .map_or_else(|| "关闭".to_owned(), |hours| format!("每 {hours} 小时")),
+                .map_or_else(|| "关闭".to_owned(), schedule_label),
             unix_timestamp(),
         )
         .await
@@ -155,6 +155,15 @@ pub(super) fn spawn_geo_scheduler(state: AppState) {
             }
         }
     });
+}
+
+/// 定时更新的间隔，和页面上的选项同一种说法 / The schedule interval in the words the page's options use
+fn schedule_label(hours: u64) -> String {
+    match hours {
+        24 => "每天".to_owned(),
+        168 => "每周".to_owned(),
+        other => format!("每 {other} 小时"),
+    }
 }
 
 async fn run_due_geo_schedule(state: &AppState) -> anyhow::Result<()> {
@@ -315,7 +324,14 @@ fn human_bytes(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::human_bytes;
+    use super::{human_bytes, schedule_label};
+
+    #[test]
+    fn schedule_reads_like_the_page() {
+        assert_eq!(schedule_label(24), "每天");
+        assert_eq!(schedule_label(168), "每周");
+        assert_eq!(schedule_label(12), "每 12 小时");
+    }
 
     #[test]
     fn sizes_read_in_the_nearest_unit() {

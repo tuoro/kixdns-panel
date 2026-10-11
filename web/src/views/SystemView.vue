@@ -531,12 +531,12 @@ onBeforeUnmount(() => {
               <template v-if="kernelAction === 'update'">正在下载、校验并切换内核</template>
               <span v-else-if="!kixdnsNotice" class="system-stale">检查失败：{{ updateStatus.kixdns_error ?? '原因未知' }}</span>
               <!-- 只在新旧版本之间断行，「→」「·」跟着后一段走：不会挂在行尾 / Lines break only between the two versions, and 「→」/「·」 travel with what follows, so neither is left at a line end -->
-              <template v-else-if="kixdnsNotice.available && kixdnsNotice.security_update"><span class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span> <span class="update-row__keep">依赖安全升级<template v-if="kixdnsNotice.dependency_revision"> · <span class="ui-num">r{{ kixdnsNotice.dependency_revision }}</span></template></span></template>
-              <template v-else-if="kixdnsNotice.available"><span class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span> <span class="update-row__keep">→ <span class="ui-num">{{ latestKixdnsVersion() }}</span></span></template>
+              <template v-else-if="kixdnsNotice.available && kixdnsNotice.security_update"><span class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span> <span class="update-row__keep">安全更新<template v-if="kixdnsNotice.dependency_revision"> · <span class="ui-num">r{{ kixdnsNotice.dependency_revision }}</span></template></span></template>
+              <template v-else-if="kixdnsNotice.available"><span class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span> <span class="update-row__keep">→ <span class="ui-num">{{ formatKixdnsVersion(activeVersion).startsWith('构建 #') ? latestKixdnsVersion().replace(/^构建 /, '') : latestKixdnsVersion() }}</span></span></template>
               <template v-else-if="kixdnsNotice.current_commit"><span class="update-row__keep">已是最新 · <span class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span></span></template>
               <template v-else>尚未安装</template>
             </span>
-            <span v-if="kixdnsNotice">构建于 {{ buildTime(kixdnsNotice.created_at) }}</span>
+            <span v-if="kixdnsNotice">发布于 {{ buildTime(kixdnsNotice.created_at) }}</span>
           </template>
           <!-- 检查失败是 GitHub 的访问次数或 Token 的事：去填 Token 的按钮放在这一行的按钮位，和「更新」同一个位置、同一个样子
                When a check failed over GitHub's access limit or the token, the button to fill in a token sits in the row's action slot, where and how 更新 sits -->
@@ -597,7 +597,6 @@ onBeforeUnmount(() => {
           <template v-else-if="kernel">
             <p class="install-version">{{ installed ? formatKixdnsVersion(activeVersion) : '尚未安装' }}</p>
             <p v-if="installed" class="ui-dots install-meta">
-              <span>增强版运行时</span>
               <span>补丁集 <span class="ui-num">{{ activeVersion?.patchset ? `p${activeVersion.patchset}${activeVersion.dependency_revision ? `-r${activeVersion.dependency_revision}` : ''}` : '未记录' }}</span></span>
               <span>控制协议 <span class="ui-num">{{ activeVersion?.control_protocol ? `v${activeVersion.control_protocol}` : '未记录' }}</span></span>
               <!-- 链接本身是 inline-flex，套一层再让 ui-dots 画点 / The link is inline-flex, so it is wrapped before ui-dots draws the dot -->

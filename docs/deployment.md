@@ -136,7 +136,7 @@ KixDNS 默认监听 `0.0.0.0:53`。安装器在改动主机之前按配置里的
 sudo -u kixdns-panel /usr/local/bin/kixdns-panel-server --database /var/lib/kixdns-panel/panel.db reset-admin
 ```
 
-它删除所有管理员账号和登录会话，配置、版本历史和操作审计都保留，操作审计里会多一条「重置管理员」。之后打开面板会重新进入「创建管理员」。改过 `KIXDNS_PANEL_DATABASE` 的，把 `--database` 换成 `/etc/kixdns-panel/panel.env` 里的路径。
+它删除所有管理员账号和登录会话，配置、版本历史和操作审计都保留，操作审计里会多一条「重置管理员」。之后打开面板会重新进入「创建管理员」。重置后尽快打开面板创建新的管理员：在那之前，能访问面板的人都能抢先创建。改过 `KIXDNS_PANEL_DATABASE` 的，把 `--database` 换成 `/etc/kixdns-panel/panel.env` 里的路径。
 
 ## HTTPS 反向代理
 

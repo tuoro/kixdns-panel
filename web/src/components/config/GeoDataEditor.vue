@@ -294,7 +294,7 @@ onBeforeUnmount(clearSyncNotice)
        during loading like the inputs, lest a row just added be overwritten. -->
   <div class="geo">
     <div class="ui-setrow">
-      <span class="ui-setrow__label"><span>数据来源</span><small>{{ mode === 'remote' ? '面板按链接下载文件' : '直接写路由器上已有文件的位置' }}</small></span>
+      <span class="ui-setrow__label"><span>数据来源</span><small>{{ mode === 'remote' ? '面板按链接下载文件' : '直接写面板所在机器上已有文件的位置' }}</small></span>
       <span class="ui-setrow__control"><UiTabs :model-value="mode" :items="modeItems" label="Geo 数据来源" variant="segment" @update:model-value="mode = $event as GeoMode" /></span>
     </div>
 

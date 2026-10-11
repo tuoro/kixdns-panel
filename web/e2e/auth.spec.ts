@@ -22,7 +22,7 @@ test('登录页在认证前不暴露任何机器状态 @responsive', async ({ pa
 
   // 省掉一次徒劳的点击：面板里没有找回功能，直接说清要在面板所在的机器上重置，比让人去找强。
   // Save a futile click: there is no recovery in the panel, so it says outright that a reset happens on the panel's machine.
-  await expect(page.locator('.auth-security')).toContainText('忘记密码需要在面板所在的机器上重置')
+  await expect(page.locator('.auth-security')).toContainText('忘记密码时，在面板所在的机器上执行 kixdns-panel-server reset-admin')
 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
 })

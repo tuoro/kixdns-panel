@@ -205,7 +205,7 @@ async function run(): Promise<void> {
         <!-- 一行事实：类型、TTL，截断了才说。耗时在执行路径最后一行的右端；没有路径时才写在这里，连同问的是哪台服务器
              One line of facts: type and TTL, truncation only when it happened. The time ends the path's last row; only without a path does it go here, with the server asked -->
         <p v-if="uniformMeta || result.truncated || !steps.length" class="ui-dots diag-outcome-facts"><template v-if="!steps.length"><span>{{ formatElapsed(result.elapsed_ms) }}</span></template><template v-if="uniformMeta"><span>{{ uniformMeta.type }}</span><span>TTL {{ uniformMeta.ttl }} 秒</span></template><span v-if="result.truncated">已截断</span><span v-if="!steps.length">服务器 {{ result.server }}</span></p>
-        <div v-if="rawOpen" id="diag-raw" class="diag-raw-response"><p v-if="!answers.length">没有返回记录。</p><pre v-for="(answer, index) in result.answers" :key="index">{{ answer }}</pre></div>
+        <div v-if="rawOpen" id="diag-raw" class="diag-raw-response"><p v-if="!answers.length">没有返回记录</p><pre v-for="(answer, index) in result.answers" :key="index">{{ answer }}</pre></div>
       </section>
 
       <!-- 执行路径卡：概览那套小标签，下面一句说时间是累计的；读数字之前先知道这一点。

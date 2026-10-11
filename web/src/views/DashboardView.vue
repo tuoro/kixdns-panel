@@ -135,7 +135,7 @@ const notice = computed<PageNotice | null>(() => {
         ? serviceNotice(`显示停止前${snapshot}的快照`)
         : { tone: 'off', icon: Power, title: 'KixDNS 已停止', reason: reasonOf(`显示停止前${snapshot}的快照`, '启动 KixDNS 后概览会自动更新'), action: 'start' }
     case 'unavailable-snapshot':
-      return { tone: 'warn', icon: CircleAlert, title: '实时数据暂不可用', reason: reasonOf(overviewError.value || 'KixDNS 暂时没有应答', serviceErrorPart, `显示${snapshot}的快照，恢复后会自动更新`), action: 'retry' }
+      return { tone: 'warn', icon: CircleAlert, title: '实时数据暂不可用', reason: reasonOf(overviewError.value || 'KixDNS 暂时没有回应', serviceErrorPart, `显示${snapshot}的快照，恢复后会自动更新`), action: 'retry' }
     case 'unavailable':
       return { tone: 'err', icon: CircleX, title: '读不到运行数据', reason: reasonOf(overviewError.value, serviceErrorPart, '页面每 15 秒自动重试'), action: 'retry' }
     default: {
@@ -295,6 +295,8 @@ const statsWindowItems = computed(() => statsWindows.map((item) => ({ value: Str
 // The period follows the window of the data in hand, not the option just pressed: it changes when the new window's data arrives
 const statsWindowLabel = computed(() => {
   const seconds = displayStats.value?.window_seconds ?? statsWindow.value
+  // 一小时写成「最近一小时」，和上游状态、平均延迟同一种说法 / One hour reads 最近一小时, as upstream status and mean latency say it
+  if (seconds === 3_600) return '最近一小时'
   return `最近 ${statsWindows.find((item) => item.value === seconds)?.label ?? `${Math.round(seconds / 3600)} 小时`}`
 })
 // 排行里的域名可以在「.」后面折行，长域名不再从字母中间断开；客户端地址照旧按通用规则 / Ranked domains may wrap after a dot, so a long one never splits inside a label; client addresses keep the general rule
@@ -414,7 +416,7 @@ async function clearQueryStats(): Promise<void> {
 
 async function flushCache(): Promise<void> {
   if (!await confirm.ask({
-    title: '清空内部缓存',
+    title: '清空缓存',
     body: `${formatNumber(displayOverview.value?.metrics.cache_entries ?? 0)} 条缓存会被丢弃。接下来一小段时间里这些域名要重新向上游查询，响应会变慢；解析结果本身不受影响。`,
     confirmLabel: '清空缓存',
   })) return
@@ -467,7 +469,8 @@ const trendWindow = computed(() => {
   // minutes as "last 0 hours" or, worse, "last 1 hour", presenting a panel just
   // started as one that has run a full hour.
   if (seconds < 3600) return `最近 ${Math.max(1, Math.round(seconds / 60))} 分钟`
-  return `最近 ${Math.round(seconds / 3600)} 小时`
+  const hours = Math.round(seconds / 3600)
+  return hours === 1 ? '最近一小时' : `最近 ${hours} 小时`
 })
 
 const trendPending = computed(() => {
@@ -604,6 +607,9 @@ const hitName = (label: string) => names.value?.rule(label) ?? null
 // 认不出的名字里，纯 ASCII 的（内核 id）用等宽，中文的（其余请求、域名映射 x）用正文字 / Of unrecognised names, pure ASCII ones (kernel ids) are mono and Chinese ones (其余请求, 域名映射 x) body text
 const machineName = (label: string) => /^[\x20-\x7e]+$/.test(label)
 const pipelineName = (id: string) => names.value?.pipeline(id) ?? null
+// 上游组和规则自带的转发 Pipeline 里那条规则（和 Pipeline 同名）不单列：它数的就是转进来的请求，和跳过去的那条规则重复
+// The rule inside an upstream group's or a rule's own forward pipeline (named after the pipeline) is not listed: it counts the requests sent there, repeating the rule that jumped
+const hitRows = computed(() => rules.value.filter((rule) => !names.value?.plumbing(rule.rule, rule.pipeline)))
 onMounted(async () => {
   void loadNames()
   window.addEventListener('resize', onViewportResize, { passive: true })
@@ -813,7 +819,7 @@ onBeforeUnmount(() => {
               <span v-if="runtimeState !== 'live' || !overview" class="overview-runtime-note">{{ runtimeState === 'unavailable-snapshot' ? '实时数据恢复后才能清空缓存' : 'KixDNS 运行后才能清空缓存' }}</span>
               <span class="overview-runtime-actions">
                 <RouterLink class="ui-btn ui-btn--secondary" to="/config"><SlidersHorizontal :size="16" aria-hidden="true" />管理配置</RouterLink>
-                <button class="ui-btn ui-btn--danger" type="button" :disabled="flushing || runtimeControlsDisabled" @click="flushCache"><Eraser :size="16" aria-hidden="true" />{{ flushing ? '正在清空' : '清空内部缓存' }}</button>
+                <button class="ui-btn ui-btn--danger" type="button" :disabled="flushing || runtimeControlsDisabled" @click="flushCache"><Eraser :size="16" aria-hidden="true" />{{ flushing ? '正在清空' : '清空缓存' }}</button>
               </span>
             </div>
           </section>
@@ -862,11 +868,11 @@ onBeforeUnmount(() => {
       </section>
 
       <section id="overview-panel-rules" v-show="activeView === 'rules'" class="overview-view" role="tabpanel" aria-labelledby="overview-tab-rules" tabindex="0">
-        <section v-if="rules.length" class="ui-card overview-card overview-rules-card" aria-label="每条规则的命中次数">
+        <section v-if="hitRows.length" class="ui-card overview-card overview-rules-card" aria-label="每条规则的命中次数">
           <div class="overview-card-head"><h2 class="ui-card__label">每条规则的命中次数</h2><span class="overview-card-note">启动以来</span></div>
         <div class="overview-rules">
           <div class="ui-rec-head"><span>阶段</span><span>规则</span><span>规则组</span><span>命中次数</span></div>
-          <div v-for="rule in rules" :key="`${rule.pipeline}:${rule.phase}:${rule.rule}`" class="ui-rec overview-rule">
+          <div v-for="rule in hitRows" :key="`${rule.pipeline}:${rule.phase}:${rule.rule}`" class="ui-rec overview-rule">
             <span class="overview-rule-phase"><span class="ui-tag" :class="{ 'overview-phase--request': rule.phase === 'request' }">{{ rule.phase === 'request' ? '请求' : '回答后' }}</span></span>
             <strong class="overview-rule-name" :class="{ 'ui-mono': !hitName(rule.rule) && machineName(rule.rule) }">{{ hitName(rule.rule) ?? rule.rule }}</strong>
             <span class="overview-rule-pipeline" :class="{ 'ui-mono': !pipelineName(rule.pipeline) }">{{ pipelineName(rule.pipeline) ?? rule.pipeline }}</span>
@@ -995,7 +1001,7 @@ onBeforeUnmount(() => {
 .overview-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-2) var(--s-4); }
 .overview-toolbar p, .overview-config-meta, .overview-runtime-note { margin: 0; color: var(--l-ink-3); font-size: var(--t-2); font-variant-numeric: tabular-nums; }
 .overview-toolbar-tools { display: flex; align-items: center; gap: var(--s-2); }
-/* 清空和「清空内部缓存」「停止」一样是带红边的按钮，盒子贴着版心右边 / 清空 is an outlined destructive button like 清空内部缓存 and 停止, its box on the measure's right edge */
+/* 清空和「清空缓存」「停止」一样是带红边的按钮，盒子贴着版心右边 / 清空 is an outlined destructive button like 清空缓存 and 停止, its box on the measure's right edge */
 .overview-clear { flex: none; }
 /* 手机上只留橡皮擦图标的 36 方块，不像第四个筛选项；名字在 aria-label 和 title 里 / On phones only a 36 square with the eraser icon remains, so it no longer reads as a fourth filter; its name lives in aria-label and title */
 @media (max-width: 640px) { .overview-clear { width: var(--h-md); padding: 0; } .overview-clear__label { display: none; } }

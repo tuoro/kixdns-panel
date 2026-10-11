@@ -110,12 +110,15 @@ export const headerAction = computed(() => {
 export const deferNote = computed(() => {
   if (runtimeStopped.value) return '保存后等 KixDNS 启动再应用'
   if (runtimeUnavailable.value) return '保存后等连上 KixDNS 再应用'
+  if (unsupportedFields.value.length) return '内核不支持部分设置，保存后先存成待应用版本'
+  if (capabilityError.value) return 'KixDNS 没有报告它支持哪些功能，保存后先存成待应用版本'
   return deferSave.value ? '保存后先存成待应用版本' : ''
 })
 
 // ---------- 错误的说法 / wording of errors ----------
-// 控制接口连不上：KixDNS 停了（面板还没发现） / The control socket is gone: KixDNS has stopped (before the panel noticed)
-const STOPPED = /No such file|os error 2|控制接口.*不可用|控制接口.*未启动/i
+// 控制接口的套接字不在：KixDNS 停了（面板还没发现）。只认这几种说法；连接超时、没及时确认新配置这类不算停了
+// The control socket is gone: KixDNS has stopped (before the panel noticed). Only these wordings count; a timeout or a late confirmation is not a stop
+const STOPPED = /No such file|os error 2|找不到指定的文件|^KixDNS 已停止/
 const stoppedError = (error: unknown) => STOPPED.test(errorMessage(error))
 // 保存或校验时才发现停了：标题说停了，不说「没有通过校验」；草稿不动，读一次运行状态，保存键换成「保存为待应用」
 // Found stopped while saving or validating: the title says so rather than 没有通过校验; the draft stays, the runtime is re-read and the button becomes 保存为待应用
@@ -125,6 +128,8 @@ export function friendlyRuntimeMessage(message: string): string {
   return message.replace(/^KixDNS\s*拒绝(?:操作|了这份配置|该配置)[：:，,]\s*/, '') || message
 }
 const friendlyRuntimeError = (error: unknown) => friendlyRuntimeMessage(errorMessage(error))
+/** 没生效的原因本身：去掉句尾「仍在用之前的配置」，给已经说了这件事的提示条用 / Just why it did not take, without the trailing 仍在用之前的配置, for a notice that already says so */
+export const failureCause = (message: string): string => friendlyRuntimeMessage(message).replace(/[，,]\s*仍在用之前的配置。?$/, '')
 const shouldRefreshAfterSaveError = (error: unknown) => error instanceof ApiError && ['unsupported_config_fields', 'config_validation_failed', 'reload_failed', 'kixdns_rejected'].includes(error.code)
 const isConflict = (error: unknown) => error instanceof ApiError && error.code === 'config_conflict'
 

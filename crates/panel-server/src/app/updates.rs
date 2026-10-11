@@ -101,7 +101,7 @@ async fn replace_release_kernel(state: &AppState) -> anyhow::Result<()> {
         Ok(installed) => (
             "kixdns.kernel.replace_release",
             format!(
-                "Release 轨道已停止构建，内核已从 {} 自动换成 {}",
+                "原来的 Release 内核已停止更新，自动从 {} 换成 {}",
                 release.label(),
                 installed.label()
             ),
@@ -154,7 +154,7 @@ async fn save_github_token(
         .audit(
             Some(session.username),
             "system.github_token.configure".to_owned(),
-            "配置 GitHub API Token".to_owned(),
+            String::new(),
             unix_timestamp(),
         )
         .await
@@ -179,7 +179,7 @@ async fn delete_github_token(
         .audit(
             Some(session.username),
             "system.github_token.remove".to_owned(),
-            "删除 GitHub API Token".to_owned(),
+            String::new(),
             unix_timestamp(),
         )
         .await

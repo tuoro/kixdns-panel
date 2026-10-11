@@ -485,7 +485,7 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
   if (path === '/api/v1/auth/logout') return { ok: true } as T
   const emptyFirstInstall = typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-empty-first-install') === 'true'
   if (path === '/api/v1/overview') {
-    if (emptyFirstInstall) throw new Error('KixDNS 控制接口不可用')
+    if (emptyFirstInstall) throw new Error('KixDNS 已停止')
     return overview as T
   }
   if (pathname === '/api/v1/stats/top' && method === 'GET') {
@@ -611,7 +611,7 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
     // kixdns:demo-validate-stopped: the next validation finds KixDNS just stopped (the control socket is gone), showing a stop discovered while saving
     if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-validate-stopped') === 'true') {
       localStorage.removeItem('kixdns:demo-validate-stopped')
-      throw new ApiError('KixDNS 控制接口不可用', 503, 'kixdns_unavailable')
+      throw new ApiError('KixDNS 已停止', 503, 'kixdns_unavailable')
     }
     const content = JSON.parse(String(init?.body)) as Record<string, unknown>
     const pipelines = Array.isArray(content.pipelines) ? content.pipelines : []

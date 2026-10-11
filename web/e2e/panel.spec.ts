@@ -25,7 +25,7 @@ test('首次未启动时保留完整概览布局', async ({ page }) => {
   // 没运行过：卡片叫「运行配置」，标签写「未运行」，不自相矛盾 / Never run: the card is 运行配置 with the tag 未运行, not a contradiction
   await expect(page.getByRole('heading', { name: '运行配置', exact: true })).toBeVisible()
   await expect(page.getByRole('heading', { name: '上游状态' })).toBeVisible()
-  await expect(page.getByRole('button', { name: '清空内部缓存' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '清空缓存' })).toBeDisabled()
   await page.getByRole('tab', { name: '查询排行', exact: true }).click()
   await expect(page.getByRole('heading', { name: '客户端排行' })).toBeVisible()
   await expect(page.getByRole('heading', { name: '请求域名排行' })).toBeVisible()
@@ -132,7 +132,7 @@ test('内核可更新到最新并回到上一个 @responsive', async ({ page }) 
   await open(page, '/system')
   const kernelRow = page.locator('.update-row').first()
   const runtime = page.locator('.runtime-panel')
-  await expect(kernelRow.locator('.update-row__from-to')).toContainText('构建 #30231271280 → 构建 #30235703570')
+  await expect(kernelRow.locator('.update-row__from-to')).toContainText('构建 #30231271280 → #30235703570')
   // 更新前先确认要装哪个构建，并按当前服务状态说清是短暂重启还是什么都不启动。
   // An update first names the build and says, from the service state, whether DNS restarts briefly or nothing starts.
   await kernelRow.getByRole('button', { name: '更新', exact: true }).click()

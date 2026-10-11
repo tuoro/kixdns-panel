@@ -9,7 +9,7 @@ import UiNewItemsBanner from '../components/ui/UiNewItemsBanner.vue'
 import UiPageHeader from '../components/ui/UiPageHeader.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
 import { segmentLogMessage } from '../logs'
-import { errorMessage } from '../utils'
+import { actorName, errorMessage } from '../utils'
 
 const entries = ref<LogEntry[]>([])
 const auditEvents = ref<AuditEvent[]>([])
@@ -58,7 +58,7 @@ const filteredAudit = computed(() => {
     event.action.toLowerCase().includes(needle)
     || (actionName(event.action) ?? '').includes(needle)
     || event.detail.toLowerCase().includes(needle)
-    || (event.actor ?? 'system').toLowerCase().includes(needle),
+    || actorName(event.actor).toLowerCase().includes(needle),
   )
 })
 // 分段跟着筛选结果算一次；放在模板里会让每次重绘都重新切一遍正文。
@@ -90,8 +90,8 @@ const levelFacts = computed(() => {
     else if (entry.priority === 4) warnings += 1
   }
   const parts: string[] = []
-  if (errors > 0) parts.push(`${errors} 错误`)
-  if (warnings > 0) parts.push(`${warnings} 警告`)
+  if (errors > 0) parts.push(`${errors} 条错误`)
+  if (warnings > 0) parts.push(`${warnings} 条警告`)
   return parts
 })
 // 首屏还没回来时页头和列表都放骨架；之后事实行一直在，换页签时跟着换。
@@ -375,7 +375,7 @@ function retry(): void {
 function download(): void {
   const content = mode.value === 'runtime'
     ? filtered.value.map((entry) => `${timestamp(entry.timestamp_unix_micros)} [${label(entry.priority)}] ${entry.source}: ${entry.message}`).join('\n')
-    : filteredAudit.value.map((event) => `${auditTimestamp(event.created_at)} [${event.actor ?? 'system'}] ${event.action}: ${event.detail}`).join('\n')
+    : filteredAudit.value.map((event) => `${auditTimestamp(event.created_at)} [${actorName(event.actor)}] ${event.action}: ${event.detail}`).join('\n')
   const url = URL.createObjectURL(new Blob([content], { type: 'text/plain;charset=utf-8' }))
   const anchor = document.createElement('a')
   anchor.href = url
@@ -480,7 +480,7 @@ onBeforeUnmount(() => window.clearInterval(timer))
         <div v-if="skeletonAudit" class="log-skeleton" role="status" aria-label="正在读取审计记录"><i v-for="n in 6" :key="n" class="sk"></i></div>
         <template v-else>
           <div v-for="event in filteredAudit" :key="event.id" class="log-line audit-line">
-            <time>{{ auditTimestamp(event.created_at) }}</time><strong>{{ event.actor ?? 'system' }}</strong><span class="audit-action" :class="{ 'ui-mono': !actionName(event.action) }" :title="actionName(event.action) ? event.action : undefined">{{ actionName(event.action) ?? event.action }}</span><p><span v-if="failed(event.action)" class="ui-tag ui-tag--err">失败</span>{{ event.detail }}</p>
+            <time>{{ auditTimestamp(event.created_at) }}</time><strong>{{ actorName(event.actor) }}</strong><span class="audit-action" :class="{ 'ui-mono': !actionName(event.action) }" :title="actionName(event.action) ? event.action : undefined">{{ actionName(event.action) ?? event.action }}</span><p><span v-if="failed(event.action)" class="ui-tag ui-tag--err">失败</span>{{ event.detail }}</p>
           </div>
           <button v-if="auditCursor !== null && !auditQuery" class="log-more" type="button" :disabled="auditRequesting" @click="loadAudit(false)"><RefreshCw :size="14" :class="{ spin: auditLoading }" aria-hidden="true" />加载更多</button>
           <UiEmpty v-if="filteredAudit.length === 0 && !auditError" :icon="ScrollText" :title="auditFiltered ? '没有符合条件的审计记录' : '还没有操作记录'" :desc="auditFiltered ? '清空搜索，或把类别切回「全部」' : '登录、保存配置、更新和重启服务都会记在这里。'" />

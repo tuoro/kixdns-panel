@@ -27,10 +27,13 @@ function rawSummary(r: Rule): string {
   const first = raw[0] as { matchers?: Record<string, unknown>[]; matcher_operator?: string } | undefined
   return `${first ? rawMatchersText(first.matchers, first.matcher_operator) : '没有内核规则'}${raw.length > 1 ? `，另有 ${raw.length - 1} 条内核规则` : ''}（按内核写法保留）`
 }
+// 对比里写页面上的叫法，不写内核取值（debug、zero） / The diff uses the page's words, not kernel values (debug, zero)
+const LEVEL_NAME: Record<string, string> = { trace: '跟踪', debug: '调试', info: '信息', warn: '警告', error: '错误' }
+const BLOCK_NAME: Record<string, string> = { NXDOMAIN: 'NXDOMAIN', REFUSED: 'REFUSED', zero: '空地址' }
 function ruleFacts(m: Model, r: Rule): Record<string, string> {
   if (r.raw) return { 高级规则: rawSummary(r), 状态: r.enabled ? '启用' : '已停用', ...(r.note ? { 备注: r.note } : {}) }
   const facts: Record<string, string> = { 条件: conditionsText(r.conditions), 结果: outcomeSentence(m, r.outcome), 状态: r.enabled ? '启用' : '已停用' }
-  if (r.log.enabled) facts.日志 = `记录（${r.log.level}）`
+  if (r.log.enabled) facts.日志 = `记录（${LEVEL_NAME[r.log.level] ?? r.log.level}）`
   if (r.ecs !== 'inherit') facts.客户端子网 = ecsText(r.ecs)
   if (r.response.mode === 'off') facts.回答后检查 = '不检查'
   if (r.response.mode === 'custom') facts.回答后检查 = `${withShi(r.response.conditions.map(responseConditionText).join(r.response.match === 'all' ? ' 且 ' : '，或 '))}${remedySentence(m, r.response.then)}${r.response.otherwise.type === 'none' ? '' : `，否则${remedySentence(m, r.response.otherwise)}`}`
@@ -106,7 +109,7 @@ export function diffModels(now: Model, then: Model): DiffBlock[] {
     const field = SETTING_FIELDS.get(k)
     blocks.push({ kind: a === undefined ? '加上' : b === undefined ? '去掉' : '改了', title: field ? settingLabel(field) : GEO_LABELS[k] ?? `设置 ${k}`, lines: [...(a === undefined ? [] : [{ sign: '-' as const, text: settingText(a, field) }]), ...(b === undefined ? [] : [{ sign: '+' as const, text: settingText(b, field) }])] })
   }
-  if (JSON.stringify(now.defaults) !== JSON.stringify(then.defaults)) blocks.push({ kind: '改了', title: '拦截时怎么回应', lines: [{ sign: '-', text: now.defaults.block }, { sign: '+', text: then.defaults.block }] })
+  if (JSON.stringify(now.defaults) !== JSON.stringify(then.defaults)) blocks.push({ kind: '改了', title: '拦截时怎么回应', lines: [{ sign: '-', text: BLOCK_NAME[now.defaults.block] ?? now.defaults.block }, { sign: '+', text: BLOCK_NAME[then.defaults.block] ?? then.defaults.block }] })
   // 映射只换了顺序：先后决定哪条先命中 / Mappings only reordered: the order decides which matches first
   const shared = (a: Model['mappings'], b: Model['mappings']) => a.filter((x) => b.some((y) => y.id === x.id)).map((x) => x.id).join()
   if (shared(now.mappings, then.mappings) !== shared(then.mappings, now.mappings)) blocks.push({ kind: '移动', title: '域名映射的顺序', lines: [], note: then.mappings.map((x) => x.domain).join('、') })

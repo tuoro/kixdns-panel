@@ -40,7 +40,7 @@ export function summarizeMatcher(matcher: MatcherConfig, scope: MatcherScope): s
     case 'client_ip': return `客户端 IP 属于 ${cidr}`
     case 'domain_suffix': return `域名后缀为 ${value}`
     case 'domain_regex': return `域名匹配正则 ${value}`
-    case 'qclass': return `查询 QClass 为 ${value}`
+    case 'qclass': return `查询类别为 ${value}`
     case 'edns_present': return expectation(matcher, '请求包含 EDNS', '请求不包含 EDNS')
     case 'geo_site': return `域名属于 GeoSite ${geoSiteValue(matcher.value)}`
     case 'geo_site_not': return `域名不属于 GeoSite ${geoSiteValue(matcher.value)}`
@@ -51,8 +51,8 @@ export function summarizeMatcher(matcher: MatcherConfig, scope: MatcherScope): s
     case 'request_domain_suffix': return `请求域名后缀为 ${value}`
     case 'request_domain_regex': return `请求域名匹配正则 ${value}`
     case 'response_type': return `响应类型为 ${value}`
-    case 'response_rcode': return `响应 RCode 为 ${value}`
-    case 'response_qclass': return `响应 QClass 为 ${value}`
+    case 'response_rcode': return `响应码为 ${value}`
+    case 'response_qclass': return `响应类别为 ${value}`
     case 'response_edns_present': return expectation(matcher, '响应包含 EDNS', '响应不包含 EDNS')
     case 'response_upstream_ip': return `上游 IP 属于 ${cidr}`
     case 'response_answer_ip': return `回答的 IP 属于 ${cidr}`
@@ -134,7 +134,7 @@ export function summarizeAction(action: ActionConfig): string {
     case 'replace_txt_response': return `替换 TXT 为 ${text(action.text)}`
     // 还没选目标时写成缺什么，不占 ID 那个位置：否则读起来像跳去一个叫「未选择」的 Pipeline（审计第八轮 D1）
     // With no target yet, say what is missing instead of filling the ID slot, which read as a Pipeline named 未选择 (audit round 8, D1)
-    case 'jump_to_pipeline': return action.pipeline?.trim() ? `跳转至 Pipeline ${action.pipeline.trim()}` : '跳转至 Pipeline（还没选）'
+    case 'jump_to_pipeline': return action.pipeline?.trim() ? `转到 ${action.pipeline.trim()}` : '转到（还没选）'
     case 'allow': return '允许当前结果'
     case 'deny': return '拒绝请求'
     case 'forward': {

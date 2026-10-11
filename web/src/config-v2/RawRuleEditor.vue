@@ -13,7 +13,7 @@ import type { MatcherConfig, PipelineConfig, PipelineSelectMode, RuleConfig } fr
 // chain with operators, the action list, the answer phase's matchers and actions. Built from the config page's two low-level editors
 // (MatcherList, ActionList) rather than a JSON blob; JSON stays available as the other view.
 const rules = defineModel<RuleConfig[]>({ required: true })
-defineProps<{ pipelines: PipelineConfig[]; currentPipelineId: string; capabilities: string[]; showErrors?: boolean }>()
+defineProps<{ pipelines: PipelineConfig[]; currentPipelineId: string; capabilities: string[]; showErrors?: boolean; pipelineName?: (id: string) => string | null }>()
 const relationOptions = [{ value: 'all', label: '全部满足' }, { value: 'any', label: '任一满足' }, { value: 'custom', label: '自定义组合' }]
 // 选过「自定义组合」的条件链记在这里：切回「全部 / 任一」时清掉 / Chains set to 自定义组合 are remembered here and forgotten when set back to 全部 / 任一
 const custom = ref(new Set<MatcherConfig[]>())
@@ -48,7 +48,7 @@ function removeRule(index: number): void { rules.value.splice(index, 1) }
       </section>
       <section class="rawed__stage">
         <h3 class="rawed__title">怎么处理</h3>
-        <ActionList v-model="rule.actions" :pipelines="pipelines" :current-pipeline-id="currentPipelineId" :capabilities="capabilities" :show-errors="showErrors" />
+        <ActionList v-model="rule.actions" :pipelines="pipelines" :current-pipeline-id="currentPipelineId" :capabilities="capabilities" :show-errors="showErrors" :pipeline-name="pipelineName" />
       </section>
       <details class="ui-expand rawed__response" :open="rule.response_matchers.length > 0 || rule.response_actions_on_match.length > 0 || rule.response_actions_on_miss.length > 0">
         <summary>回答后检查<small class="rawed__sum">拿到上游的回答后再检查一次；没条件就不检查</small></summary>
@@ -58,11 +58,11 @@ function removeRule(index: number): void { rules.value.splice(index, 1) }
         </section>
         <section class="rawed__stage">
           <h3 class="rawed__title">满足时</h3>
-          <ActionList v-model="rule.response_actions_on_match" :pipelines="pipelines" :current-pipeline-id="currentPipelineId" :capabilities="capabilities" :show-errors="showErrors" />
+          <ActionList v-model="rule.response_actions_on_match" :pipelines="pipelines" :current-pipeline-id="currentPipelineId" :capabilities="capabilities" :show-errors="showErrors" :pipeline-name="pipelineName" />
         </section>
         <section class="rawed__stage">
           <h3 class="rawed__title">不满足时</h3>
-          <ActionList v-model="rule.response_actions_on_miss" :pipelines="pipelines" :current-pipeline-id="currentPipelineId" :capabilities="capabilities" :show-errors="showErrors" />
+          <ActionList v-model="rule.response_actions_on_miss" :pipelines="pipelines" :current-pipeline-id="currentPipelineId" :capabilities="capabilities" :show-errors="showErrors" :pipeline-name="pipelineName" />
         </section>
       </details>
     </article>

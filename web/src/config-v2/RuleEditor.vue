@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { traceNames } from '../config-model/trace-names'
+import { jsonProblemText, jsonSyntaxProblem } from '../json-problem'
 import { ArrowDown, ArrowLeft, Ban, ChevronDown, ChevronRight, CornerDownRight, Info, MessageSquareText, Server, Trash2 } from '@lucide/vue'
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import UiSelect from '../components/ui/UiSelect.vue'
@@ -90,11 +92,11 @@ const rawModes = [{ value: 'form', label: '表单' }, { value: 'json', label: 'J
 const rawText = ref('')
 const rawError = computed(() => {
   if (!draft.raw || rawMode.value !== 'json') return ''
-  try {
-    const v = JSON.parse(rawText.value) as unknown
-    if (!Array.isArray(v) || !v.length || !v.every((r) => r && typeof r === 'object' && typeof (r as { name?: unknown }).name === 'string')) return '要写成内核规则的数组，每条都有 name'
-    return ''
-  } catch (e) { return (e as Error).message }
+  const problem = jsonSyntaxProblem(rawText.value)
+  if (problem) return jsonProblemText(problem)
+  const v = JSON.parse(rawText.value) as unknown
+  if (!Array.isArray(v) || !v.length || !v.every((r) => r && typeof r === 'object' && typeof (r as { name?: unknown }).name === 'string')) return '要写成内核规则的数组，每条都有 name'
+  return ''
 })
 function setRawMode(next: string): void {
   if (next === rawMode.value) return
@@ -124,6 +126,9 @@ watch(editedNow, (now) => {
 onBeforeUnmount(() => { if (editorEditedBy.value === me) editorEditedBy.value = null })
 // 表单里写错的字段由条件表 / 动作表自己标红，这里只数出来给底栏 / The lists mark bad fields themselves; this only counts them for the footer
 const kernelPipelines = computed<PipelineConfig[]>(() => compile(model).pipelines.map((p) => ({ id: p.id, rules: [] })))
+// 转到哪一组用配置页的叫法（主列表、规则组「X」、上游组「X」），和执行路径一样 / Jump targets use the config page's names (主列表, 规则组「X」, 上游组「X」), as the trace does
+const kernelNames = computed(() => traceNames(model))
+const kernelPipelineName = (id: string): string | null => kernelNames.value.pipeline(id)
 const ownPipelineId = computed(() => { const g = props.groupId ?? (props.ruleId !== null ? listOf(props.ruleId).group?.id ?? null : null); return g ? ruleGroupPipelineId(model, g) : mainPipelineId(model) })
 const rawFieldProblems = computed(() => {
   if (!draft.raw || rawMode.value !== 'form') return 0
@@ -178,7 +183,7 @@ const afterSummary = computed(() => {
   return f ? `沿用上游组：${f}` : '沿用上游组'
 })
 // 位置不写：面板顶上那行已经说了第几条 / The position is left out: the line at the top of the panel already says which one it is
-const moreSummary = computed(() => [draft.log.enabled ? `日志${levelLabel(draft.log.level)}` : '日志关', ...(draft.outcome.type === 'upstream' ? [draft.ecs === 'inherit' ? '子网按组' : ecsText(draft.ecs)] : []), draft.note ? '有备注' : '无备注'].join(' · '))
+const moreSummary = computed(() => [draft.log.enabled ? `日志：${levelLabel(draft.log.level)}` : '日志：关', ...(draft.outcome.type === 'upstream' ? [draft.ecs === 'inherit' ? '子网按组' : ecsText(draft.ecs)] : []), draft.note ? '有备注' : '无备注'].join(' · '))
 
 // ---------- 那么 / outcome ----------
 const OUTCOMES = [
@@ -365,7 +370,7 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
         <section v-if="draft.raw" class="ecard" :class="{ 'ui-card': !inspector }" aria-labelledby="ec-raw">
           <header class="ecard__head ecard__head--raw"><div><h2 id="ec-raw" class="ecard__title">高级规则<UiHelp topic="raw" /></h2><p class="ecard__desc">这条规则放不进上面那些写法（比如在回答后检查里先记日志再接着匹配），原样保留。这里改的就是 KixDNS 直接读的规则，保存前会校验。</p></div><UiTabs class="ecard__rawmode" :model-value="rawMode" :items="rawModes" label="内核规则的写法" variant="segment" @update:model-value="setRawMode" /></header>
           <div class="ecard__body">
-            <RawRuleEditor v-if="rawMode === 'form'" v-model="rawRules" :pipelines="kernelPipelines" :current-pipeline-id="ownPipelineId" :capabilities="runtimeCapabilities" :show-errors="showErrors" />
+            <RawRuleEditor v-if="rawMode === 'form'" v-model="rawRules" :pipelines="kernelPipelines" :current-pipeline-id="ownPipelineId" :capabilities="runtimeCapabilities" :show-errors="showErrors" :pipeline-name="kernelPipelineName" />
             <template v-else><JsonEditor v-model="rawText" :error-line="undefined" /><p v-if="rawError" class="ui-field-error" aria-live="polite">{{ rawError }}</p></template>
           </div>
         </section>
@@ -384,7 +389,7 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
                 <span class="crow__text"><span class="crow__head"><b>{{ outcomeSentence(model, draft.outcome) }}</b></span><span v-if="outcomeNote" class="crow__vals">{{ outcomeNote }}</span></span>
                 <ChevronRight class="crow__chev" :size="16" aria-hidden="true" />
               </button>
-              <PhoneSheet v-if="sheet === 'outcome'" title="那么" @close="sheet = null">
+              <PhoneSheet v-if="sheet === 'outcome'" title="结果" @close="sheet = null">
                 <div class="ui-pick" role="radiogroup" aria-label="那么">
                   <label v-for="o in OUTCOMES" :key="o.type" class="ui-pick__opt"><input type="radio" name="outcome-sheet" :checked="draft.outcome.type === o.type" @change="pickOutcome(o.type)"><b>{{ o.title }}</b><small>{{ o.desc }}</small></label>
                 </div>

@@ -243,14 +243,14 @@ impl UpdateManager {
             Ok(notice) => (Some(notice), None),
             Err(error) => {
                 tracing::warn!(%error, "内核更新检查失败");
-                (None, Some(error.to_string()))
+                (None, Some(error.reason()))
             }
         };
         let (panel, panel_error) = match panel {
             Ok(notice) => (Some(notice), None),
             Err(error) => {
                 tracing::warn!(%error, "面板更新检查失败");
-                (None, Some(error.to_string()))
+                (None, Some(error.reason()))
             }
         };
         UpdateNotifications {

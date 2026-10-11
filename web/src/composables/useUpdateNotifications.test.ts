@@ -43,8 +43,8 @@ describe('更新通知', () => {
       kixdns: { ...kixdns, security_update: true, dependency_revision: 1 },
       panel: { ...panel, available: false },
     })
-    expect(notice).toMatchObject({ title: 'KixDNS 内核', detail: '依赖安全升级可用', meta: '构建 #99 · r1' })
-    expect(buildUpdateNotices(status)[0]).toMatchObject({ detail: '内核有新构建', meta: '构建 #99' })
+    expect(notice).toMatchObject({ title: 'KixDNS 内核', detail: '有安全更新', meta: '构建 #99 · r1' })
+    expect(buildUpdateNotices(status)[0]).toMatchObject({ detail: '有新构建', meta: '构建 #99' })
   })
 
   it('只展示当前仍可用的更新', () => {

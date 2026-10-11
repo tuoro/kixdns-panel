@@ -1670,3 +1670,10 @@ fn installed_label_matches_the_page() {
     version.release_tag = None;
     assert_eq!(version.label(), "构建 0123456789ab");
 }
+
+#[test]
+fn a_failed_check_reports_only_its_cause() {
+    let error = UpdateError::Network("GitHub 匿名访问次数用完了".to_owned());
+    assert_eq!(error.reason(), "GitHub 匿名访问次数用完了");
+    assert_eq!(UpdateError::Unsupported.reason(), "当前平台不支持自动更新");
+}

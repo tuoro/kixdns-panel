@@ -57,7 +57,7 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}): Promi
   }).catch((error: unknown) => {
     if (error instanceof DOMException && error.name === 'AbortError') throw error
     reportUnreachable()
-    throw new ApiError('连不上面板：网络断开了，或者面板正在重启。稍后再试。', 0, 'network_unreachable')
+    throw new ApiError('连不上面板：网络断了，或者面板正在重启。稍后再试。', 0, 'network_unreachable')
   })
   if (!response.ok) {
     if (

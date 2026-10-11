@@ -76,7 +76,7 @@ async function leave(): Promise<void> {
     >
       <h2 id="session-expired-title">登录状态已过期</h2>
       <p>
-        请重新输入密码继续。<strong>你在本页的改动都还在</strong>——验证通过后回到刚才的位置，配置草稿原样保留。
+        请重新输入密码继续。<strong>你在本页的改动都还在</strong>——验证通过后回到刚才的位置。
       </p>
       <form @submit.prevent="submit">
         <label>

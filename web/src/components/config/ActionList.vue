@@ -22,6 +22,8 @@ const props = withDefaults(defineProps<{
   currentPipelineId: string
   capabilities?: string[]
   showErrors?: boolean
+  // 组的叫法（主列表、规则组「X」、上游组「X」）；没给就照内核 id 写 / How to name a group (主列表, 规则组「X」, 上游组「X」); the kernel id without it
+  pipelineName?: (id: string) => string | null
 }>(), {
   capabilities: () => [],
   showErrors: false,
@@ -89,7 +91,7 @@ function transportOptions(action: ActionConfig) {
 }
 
 function pipelineOptions(action: ActionConfig) {
-  const options = [{ value: '', label: '选择 Pipeline', disabled: true }, ...props.pipelines.map((pipeline) => ({ value: pipeline.id, label: pipeline.id, disabled: pipeline.id === props.currentPipelineId }))]
+  const options = [{ value: '', label: '选择要转到的组', disabled: true }, ...props.pipelines.map((pipeline) => ({ value: pipeline.id, label: props.pipelineName?.(pipeline.id) ?? pipeline.id, disabled: pipeline.id === props.currentPipelineId }))]
   return action.pipeline && !props.pipelines.some((pipeline) => pipeline.id === action.pipeline) ? [...options, { value: action.pipeline, label: `${action.pipeline}（不存在）` }] : options
 }
 
@@ -191,7 +193,7 @@ function move(index: number, direction: string): void {
           </template>
           <template v-else-if="action.type === 'static_response'">
             <span class="ui-rows__plabel">响应码</span>
-            <UiSelect v-model="action.rcode" class="is-enum" :options="enumOptions(responseCodes, action.rcode)" :label="`动作 ${index + 1} RCode`" />
+            <UiSelect v-model="action.rcode" class="is-enum" :options="enumOptions(responseCodes, action.rcode)" :label="`动作 ${index + 1} 响应码`" />
           </template>
           <template v-else-if="action.type === 'static_ip_response'">
             <span class="ui-rows__plabel">IP</span>
@@ -204,8 +206,8 @@ function move(index: number, direction: string): void {
             <label class="ui-input is-num"><input type="number" :value="action.ttl" min="0" max="4294967295" :aria-label="`动作 ${index + 1} CNAME TTL`" placeholder="300" :aria-invalid="Boolean(visibleError(index, 'ttl')) || undefined" :aria-describedby="errorId(index, 'ttl')" @input="setTtl(action, $event)" @blur="touch(index, 'ttl')"><em class="ui-setrow__unit">秒</em></label>
           </template>
           <template v-else-if="action.type === 'jump_to_pipeline'">
-            <span class="ui-rows__plabel">Pipeline</span>
-            <UiSelect v-model="action.pipeline" mono :options="pipelineOptions(action)" :label="`动作 ${index + 1} 目标 Pipeline`" :invalid="Boolean(visibleError(index, 'pipeline'))" />
+            <span class="ui-rows__plabel">转到</span>
+            <UiSelect v-model="action.pipeline" :mono="!pipelineName" :options="pipelineOptions(action)" :label="`动作 ${index + 1} 要转到的组`" :invalid="Boolean(visibleError(index, 'pipeline'))" />
           </template>
           <template v-else-if="action.type === 'forward'">
             <span class="ui-rows__plabel is-top">上游</span>

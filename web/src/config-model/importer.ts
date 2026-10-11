@@ -420,7 +420,7 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
     const onMatch = r.response_actions_on_match ?? []
     const onMiss = r.response_actions_on_miss ?? []
     if (!onMatch.length && !onMiss.length) return null
-    if (!(r.response_matchers ?? []).length) return raw('回答处理没有条件')
+    if (!(r.response_matchers ?? []).length) return raw('回答后检查没有条件')
     const groupsL = dnf(r.response_matchers, r.response_matcher_operator)
     if (!groupsL.length) return raw('回答条件永远不成立')
     let match: 'all' | 'any'
@@ -478,13 +478,13 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
           else if (ruleGroupOf.has(t)) rule.outcome = { type: 'group', group: ruleGroupOf.get(t)!.id }
           else raw(t === mainSource ? '跳回主列表' : `跳到不存在的「${t}」`)
         } else rule.outcome = staticOutcome(a) ?? raw(`动作 ${a.type} 没有对应的写法`)
-        if (a.type === 'replace_txt_response') note(`「${rule.name}」在请求阶段替换 TXT，内核当作「继续往下一条」处理，已这样显示`)
+        if (a.type === 'replace_txt_response') note(`「${base(kr.name)}」在请求时就替换 TXT，内核当作「继续往下一条」处理，已这样显示`)
         if (dead) raw(`决定结果的动作后面还有 ${dead} 个动作`)
         decided = true
         break
       }
       if (!decided) rule.outcome = { type: 'continue' }
-      if (hasResponse && !forwardedHere) raw('回答处理挂在不直接转发的规则上')
+      if (hasResponse && !forwardedHere) raw('回答后检查挂在不直接转发的规则上')
       return rule
     } catch (e) {
       if (!(e instanceof Raw)) throw e

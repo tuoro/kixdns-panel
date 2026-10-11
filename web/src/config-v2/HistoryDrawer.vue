@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { actorName } from '../utils'
 import { Ellipsis, Trash2, X } from '@lucide/vue'
 import { computed, nextTick, onMounted, ref } from 'vue'
 import type { ConfigVersion } from '../api/types'
@@ -58,9 +59,9 @@ async function openDiff(v: ConfigVersion): Promise<void> {
 function closeDiff(): void { diffDialog.value?.close(); preview.value = null; blocks.value = null }
 async function restore(v: ConfigVersion): Promise<void> {
   const ok = await confirm.ask({
-    title: `恢复到配置版本 #${v.id}`,
+    title: `恢复为版本 #${v.id}`,
     body: `${unsaved.value ? '没保存的修改会丢失。' : ''}会用版本 #${v.id} 的内容生成一个新版本并立即应用；现在这一版留在历史里，随时可以再恢复。`,
-    confirmLabel: `恢复版本 #${v.id}`,
+    confirmLabel: `恢复为版本 #${v.id}`,
     // 会丢掉草稿时按会丢东西处理：焦点放在取消上 / When it drops the draft it is treated as losing something: focus starts on cancel
     destructive: unsaved.value,
   })
@@ -68,14 +69,14 @@ async function restore(v: ConfigVersion): Promise<void> {
   closeDiff()
   try {
     const r = await restoreVersion(v.id)
-    toast.success(r.state === 'pending' ? `版本 #${v.id} 已保存为待应用版本` : `版本 #${v.id} 已恢复，当前版本 #${r.versionId}`)
+    toast.success(r.state === 'pending' ? `已存成待应用版本 #${r.versionId}，KixDNS 就绪后自动应用` : `已恢复为版本 #${v.id} 的内容，当前版本 #${r.versionId}`)
   } catch (error) {
     toast.error(`没有恢复版本 #${v.id}：${friendlyRuntimeError(error)}`)
   }
 }
 async function remove(v: ConfigVersion): Promise<void> {
   if (isCurrent(v)) { toast.error('当前生效版本不能删除，请先恢复其他版本'); return }
-  const ok = await confirm.ask({ title: `删除配置版本 #${v.id}`, body: '删除后不能恢复。当前生效的配置不受影响。', confirmLabel: '删除这个版本', items: [`#${v.id} · ${v.message || '未填写备注'}`], destructive: true })
+  const ok = await confirm.ask({ title: `删除配置版本 #${v.id}`, body: '删除后找不回来。当前生效的配置不受影响。', confirmLabel: '删除这个版本', items: [`#${v.id} · ${v.message || '未填写备注'}`], destructive: true })
   if (!ok) return
   try {
     await deleteVersion(v)
@@ -86,7 +87,7 @@ async function remove(v: ConfigVersion): Promise<void> {
 }
 async function removePicked(): Promise<void> {
   const list = versions.value.filter((v) => picked.value.includes(v.id))
-  const ok = await confirm.ask({ title: `删除 ${list.length} 个历史版本`, body: '删除后不能恢复。当前生效的配置不受影响。', confirmLabel: `删除 ${list.length} 个版本`, items: list.map((v) => `#${v.id} · ${v.message || '未填写备注'}`), destructive: true })
+  const ok = await confirm.ask({ title: `删除 ${list.length} 个历史版本`, body: '删除后找不回来。当前生效的配置不受影响。', confirmLabel: `删除 ${list.length} 个版本`, items: list.map((v) => `#${v.id} · ${v.message || '未填写备注'}`), destructive: true })
   if (!ok) return
   try {
     const count = await deleteVersions(list.map((v) => v.id))
@@ -126,7 +127,7 @@ function onRuleLink(id: number): void { dialog.value?.close(); emit('rule', id) 
           <label v-if="selecting" class="ui-checkbox hist__check" :class="{ 'is-hidden': isCurrent(v) }"><input type="checkbox" :checked="picked.includes(v.id)" :disabled="isCurrent(v)" :aria-label="`选择版本 #${v.id}`" @change="toggle(v)"><i></i></label>
           <button class="hist__main" type="button" :disabled="isCurrent(v) && !selecting" @click="selecting ? toggle(v) : openDiff(v)">
             <span class="hist__note" :class="{ 'is-empty': !v.message }">{{ v.message || '未填写备注' }}</span>
-            <span class="hist__meta">#{{ v.id }} · {{ formatVersionTime(v.created_at) }} · {{ v.actor }}</span>
+            <span class="hist__meta">#{{ v.id }} · {{ formatVersionTime(v.created_at) }} · {{ actorName(v.actor) }}</span>
           </button>
           <span class="hist__tags">
             <span v-if="restoring === v.id" class="hist__busy"><span class="ui-spin" aria-hidden="true"></span>恢复中</span>
@@ -148,7 +149,7 @@ function onRuleLink(id: number): void { dialog.value?.close(); emit('rule', id) 
       <div v-if="preview" class="pdialog__panel diffd__panel">
         <header class="pdialog__head">
           <!-- 全文还没到时只有谁、什么时候；比较的那句等算出来再接在前面 / Until the content arrives only who and when; the comparison phrase joins in front once computed -->
-          <div class="pdrawer__titles"><h2 id="diff-title">#{{ preview.id }} · {{ preview.message || '未填写备注' }}</h2><p><template v-if="blocks">{{ blocks.length ? `和当前比，${blocks.length} 处不同` : '和当前一样' }} · </template>{{ preview.actor }} · {{ formatVersionTime(preview.created_at) }}</p></div>
+          <div class="pdrawer__titles"><h2 id="diff-title">#{{ preview.id }} · {{ preview.message || '未填写备注' }}</h2><p><template v-if="blocks">{{ blocks.length ? `和当前比，${blocks.length} 处不同` : '和当前一样' }} · </template>{{ actorName(preview.actor) }} · {{ formatVersionTime(preview.created_at) }}</p></div>
           <button class="ui-icon-btn" type="button" aria-label="关闭比较" @click="closeDiff"><X :size="16" /></button>
         </header>
         <div class="pdialog__body diffd__body">

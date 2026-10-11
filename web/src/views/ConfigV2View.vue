@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { jsonProblemText, jsonSyntaxProblem, type JsonProblem } from '../json-problem'
 import { Braces, CircleHelp, Download, FileUp, History, RefreshCw, Settings2, Undo2 } from '@lucide/vue'
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
@@ -23,10 +24,7 @@ import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import {
-  applyBusy, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, friendlyRuntimeMessage, hasApplyFailure, headerAction, headerLine,
-  load, loadError, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields,
-} from '../config-v2/useConfigDocument'
+import { applyBusy, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields } from '../config-v2/useConfigDocument'
 import { useHelp } from '../composables/useHelp'
 import { useServiceStart } from '../composables/useServiceStart'
 import { registerLeaveGuard, takeAgreement } from '../composables/useLeaveGuard'
@@ -158,16 +156,16 @@ const notice = computed<Notice | null>(() => {
   if (hasApplyFailure.value) {
     const reason = doc.value?.runtime.pending_error || doc.value?.pending?.error || 'KixDNS 没有给出原因。'
     // 草稿有修改时不给「重试应用」：那时保存的是草稿，重试会把草稿当成失败的那个版本发出去 / No retry while the draft has changes: saving then sends the draft, not the version that failed
-    return { tone: 'err', text: pendingVersionId.value ? `KixDNS 没有接受版本 #${pendingVersionId.value}，仍在用之前那份配置。` : 'KixDNS 没有接受上次保存的版本，仍在用之前那份配置。', detail: friendlyRuntimeMessage(reason), action: canApplyNow.value && !unsaved.value ? '重试应用' : undefined, run: applyNow }
+    return { tone: 'err', text: pendingVersionId.value ? `版本 #${pendingVersionId.value} 没有生效，仍在用之前那份配置。` : '上次保存的版本没有生效，仍在用之前那份配置。', detail: failureCause(reason), action: canApplyNow.value && !unsaved.value ? '重试应用' : undefined, run: applyNow }
   }
   if (applyError.value) { const [text, ...detail] = applyError.value.split('\n'); return { tone: 'err', text: `${text}。`, detail: detail.join('\n') } }
   // 警告排在说明前面：永远不命中的规则比导入说明要紧 / Warnings rank above information: a rule that never matches matters more than the import notes
   if (geoPrefixed.value) return { tone: 'warn', text: `${geoPrefixed.value} 个 GeoSite 条件多写了「geosite:」前缀，内核找不到对应的分类，永远不会命中。`, action: '去掉前缀', run: stripPrefix }
   if (importReport.value && !reportOpen.value && importReport.value.stats.raw) return { tone: 'off', text: `这份配置是按内核格式读进来的，${importReport.value.stats.raw} 条规则原样保留为高级规则。`, action: '查看导入说明', run: () => { reportOpen.value = true } }
   // 没运行、连不上时页头已经说了，功能列表拿不到是它的结果，不另起一条 / When stopped or unreachable the header says so; the missing feature list follows from it
-  if (capabilityError.value && !runtimeStopped.value && !runtimeUnavailable.value) return { tone: 'off', text: 'KixDNS 没有报告它支持哪些功能，新功能先按不支持处理。' }
+  if (capabilityError.value && !runtimeStopped.value && !runtimeUnavailable.value) return { tone: 'off', text: 'KixDNS 没有报告它支持哪些功能：新功能先按不支持处理，保存后先存成待应用版本。' }
   if (!canCname.value && cnameInUse.value && !capabilityError.value) return { tone: 'warn', text: '当前 KixDNS 不支持固定 CNAME：已有的域名映射和规则会保留，先更新或切换内核再应用。' }
-  if (unsupportedFields.value.length) return { tone: 'off', text: `当前内核不支持：${unsupportedFields.value.join('、')}，这几项保留原样。` }
+  if (unsupportedFields.value.length) return { tone: 'off', text: `当前内核不支持：${unsupportedFields.value.join('、')}。带着这几项的配置只能存成待应用版本，更新内核或关掉这几项后才会生效。` }
   return null
 })
 function stripPrefix(): void {
@@ -183,23 +181,11 @@ const jsonText = ref('')
 const jsonBase = ref('')
 const jsonEditor = ref<InstanceType<typeof JsonEditorType> | null>(null)
 const jsonError = computed(() => (ui.mode === 'json' ? parseProblem(jsonText.value) : null))
-function parseProblem(text: string): { line: number; column: number; reason: string } | null {
-  try {
-    const v = JSON.parse(text) as unknown
-    if (!v || typeof v !== 'object' || Array.isArray(v)) return { line: 1, column: 1, reason: '配置根节点必须是 JSON 对象' }
-    return null
-  } catch (e) {
-    const msg = String((e as Error).message)
-    const pos = Number(/position (\d+)/.exec(msg)?.[1] ?? NaN)
-    const lc = /line (\d+) column (\d+)/.exec(msg)
-    const at = Number.isNaN(pos) ? null : pos
-    const before = at === null ? text : text.slice(0, at)
-    const line = lc ? Number(lc[1]) : before.split('\n').length
-    const column = lc ? Number(lc[2]) : before.length - before.lastIndexOf('\n')
-    const rest = at === null ? '' : text.slice(at)
-    const reason = /^\s*[}\]]/.test(rest) && /,\s*$/.test(before) ? '多余的逗号' : /^\s*[A-Za-z_]/.test(rest) && /[{,]\s*$/.test(before) ? '属性名要用双引号' : /end of JSON|Unexpected end/i.test(msg) ? 'JSON 不完整' : /Expected ',' or/i.test(msg) ? '少了逗号或右括号' : '这里多了一个字符'
-    return { line, column, reason }
-  }
+function parseProblem(text: string): JsonProblem | null {
+  const syntax = jsonSyntaxProblem(text)
+  if (syntax) return syntax
+  const v = JSON.parse(text) as unknown
+  return !v || typeof v !== 'object' || Array.isArray(v) ? { line: 1, column: 1, reason: '配置根节点必须是 JSON 对象' } : null
 }
 // JSON 里改过还没读回表单的部分也算草稿：保存条升起、离开要问、保存前先读回来
 // JSON edits not yet read back into the form count as draft too: the save bar rises, leaving asks, and a save reads them back first
@@ -282,7 +268,10 @@ async function importFile(event: Event): Promise<void> {
   if (!file) return
   if (file.size > 4 * 1024 * 1024) { toast.error('配置文件不能超过 4 MiB'); return }
   let parsed: Record<string, unknown>
-  try { parsed = JSON.parse(await file.text()) as Record<string, unknown> } catch (e) { toast.error(`${file.name} 不是合法的 JSON：${(e as Error).message}`); return }
+  const text = await file.text()
+  const problem = jsonSyntaxProblem(text)
+  if (problem) { toast.error(`${file.name} 不是合法的 JSON：${jsonProblemText(problem)}`); return }
+  parsed = JSON.parse(text) as Record<string, unknown>
   if (unsaved.value && !(await confirm.ask({ title: '放弃未保存的修改', body: '导入的文件会替换现在的草稿，没保存的修改会丢失。', confirmLabel: '放弃修改并导入', destructive: true }))) return
   const before = JSON.parse(JSON.stringify(model)) as Model
   const { model: next, report } = readConfig(parsed, model)

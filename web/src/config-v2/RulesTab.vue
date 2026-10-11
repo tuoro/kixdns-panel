@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { jsonProblemText, jsonSyntaxProblem } from '../json-problem'
 import { Braces, FileUp, FlaskConical, ListFilter, Plus, Search, X } from '@lucide/vue'
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, reactive, ref, toRefs } from 'vue'
 import UiHelp from '../components/ui/UiHelp.vue'
@@ -90,7 +91,9 @@ const quickHint = computed(() => {
   if ('error' in parsed.value) return parsed.value.error
   const p = parsed.value
   const sentence = outcomeSentence(model, quickOutcome())
-  return mergeInto.value ? `加到「${ruleTitle(mergeInto.value)}」里：${LABEL[p.field]}多 ${p.values.length} 个，${sentence}` : `新建一条规则：${LABEL[p.field]}是 ${p.values.join('、')}，${sentence}`
+  // 「GeoSite」「客户端 IP」这类以拉丁字母结尾的名字后面空一格再接中文 / A name ending in Latin letters (GeoSite, 客户端 IP) takes a space before the Chinese that follows
+  const label = /[A-Za-z]$/.test(LABEL[p.field] ?? '') ? `${LABEL[p.field]} ` : LABEL[p.field]
+  return mergeInto.value ? `加到「${ruleTitle(mergeInto.value)}」里：${label}多 ${p.values.length} 个，${sentence}` : `新建一条规则：${label}是 ${p.values.join('、')}，${sentence}`
 })
 function quickAdd(): void {
   const p = ok.value
@@ -190,7 +193,12 @@ const groupMenu = (group: RuleGroup) => [
 // ---------- 高级入口 / advanced entries ----------
 const entriesDialog = ref<HTMLDialogElement | null>(null)
 const entriesText = ref('')
-const entriesError = computed(() => { try { const v = JSON.parse(entriesText.value) as unknown; return Array.isArray(v) && v.every((e) => e && typeof e === 'object' && typeof (e as { pipeline?: unknown }).pipeline === 'string') ? '' : '要写成入口的数组，每个入口有 pipeline' } catch (e) { return (e as Error).message } })
+const entriesError = computed(() => {
+  const problem = jsonSyntaxProblem(entriesText.value)
+  if (problem) return jsonProblemText(problem)
+  const v = JSON.parse(entriesText.value) as unknown
+  return Array.isArray(v) && v.every((e) => e && typeof e === 'object' && typeof (e as { pipeline?: unknown }).pipeline === 'string') ? '' : '要写成入口的数组，每个入口有 pipeline'
+})
 const pipelineLabel = (id: string) => model.ruleGroups.find((g) => (g.pipelineId ?? `group-${g.id}`) === id)?.name ?? model.groups.find((g) => (g.pipelineId ?? `upstream-${g.id}`) === id)?.name ?? id
 const entriesBase = ref<string | null>(null)
 trackDialogEdits('高级入口', () => entriesBase.value !== null && entriesText.value !== entriesBase.value)

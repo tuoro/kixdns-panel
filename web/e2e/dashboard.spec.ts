@@ -120,7 +120,7 @@ test('运行配置与缓存清理保持可用', async ({ page }) => {
   // 补丁集按 pN 写，和系统页一致 / The patchset reads pN, as on the system page
   await expect(page.locator('.overview-config-hashes')).toContainText(/补丁集p\d+/)
   await expect(page.locator('.overview-config-state')).toHaveText('已生效')
-  await page.getByRole('button', { name: '清空内部缓存', exact: true }).click()
+  await page.getByRole('button', { name: '清空缓存', exact: true }).click()
   await acceptConfirm(page)
   await expect(page.getByText('已清空 19,354 条缓存', { exact: true })).toBeVisible()
 })
@@ -145,7 +145,7 @@ test('首次未启动保留空态视图但禁止运行时操作', async ({ page 
   // Never started, the list cards read 尚无数据 too (the 还没有请求… sentences are for a running kernel with no traffic)
   await expect(page.locator('.overview-card--share .overview-empty')).toHaveText('尚无数据')
   await expect(page.locator('.overview-card--upstreams .overview-empty')).toHaveText('尚无数据')
-  await expect(page.getByRole('button', { name: '清空内部缓存', exact: true })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '清空缓存', exact: true })).toBeDisabled()
   await expect(page.locator('.overview-config-state')).toHaveText('未运行')
   await page.getByRole('tab', { name: '查询排行' }).click()
   // 两张表留着，各写「尚无数据」；没有窗口和总量可说，工具行不出 / Both tables stay, each reading 尚无数据; no window or volume to state, so no toolbar
@@ -190,7 +190,7 @@ for (const stopped of [true, false]) {
     // 已停止也说接下来会怎样，不说「不再更新」 / Stopped also says what comes next, never 不再更新
     await expect(page.locator('.overview-notice small')).toHaveText(stopped
       ? /^显示停止前 \d{2}:\d{2} 的快照；启动 KixDNS 后概览会自动更新。$/
-      : /^KixDNS 暂时没有应答；显示 \d{2}:\d{2} 的快照，恢复后会自动更新。$/)
+      : /^KixDNS 暂时没有回应；显示 \d{2}:\d{2} 的快照，恢复后会自动更新。$/)
     // 底栏只说按钮什么时候能用，不再复述状态 / The foot says only when the button becomes usable, without restating the state
     await expect(page.locator('.overview-runtime-note')).toHaveText(stopped ? 'KixDNS 运行后才能清空缓存' : '实时数据恢复后才能清空缓存')
     await expect(page.locator('.overview-total-value')).toHaveText(EXPECTED_TOTAL)
@@ -198,7 +198,7 @@ for (const stopped of [true, false]) {
     await expect(page.locator('.overview-config-state')).toHaveText('运行快照')
     // 已停止才叫「最后运行配置」；服务还在跑、只是读不到实时数据时仍是「当前运行配置」
     await expect(page.getByRole('heading', { name: stopped ? '最后运行配置' : '当前运行配置', exact: true })).toBeVisible()
-    await expect(page.getByRole('button', { name: '清空内部缓存', exact: true })).toBeDisabled()
+    await expect(page.getByRole('button', { name: '清空缓存', exact: true })).toBeDisabled()
     await page.getByRole('tab', { name: '查询排行' }).click()
     await expect(page.getByRole('button', { name: '1 小时', exact: true })).toBeDisabled()
     await expect(page.getByRole('button', { name: '清空查询排行', exact: true })).toBeDisabled()
@@ -510,11 +510,11 @@ test('查询排行的时段跟着手上的数据走：定时刷新还在路上�
   await page.evaluate(() => { (globalThis as { __slowStats?: boolean }).__slowStats = true })
   await page.clock.runFor(60_000)
   await page.getByRole('button', { name: '1 小时', exact: true }).click()
-  await expect(line).toContainText('最近 1 小时')
+  await expect(line).toContainText('最近一小时')
   await expect(line).toContainText('已观察 100 次请求')
   // 旧的 24 小时结果回来了，也不能盖掉 / The old 24-hour result arrives and must not overwrite anything
   await page.clock.runFor(2_000)
-  await expect(line).toContainText('最近 1 小时')
+  await expect(line).toContainText('最近一小时')
   await expect(line).toContainText('已观察 100 次请求')
   await expect(page.getByRole('button', { name: '1 小时', exact: true })).toHaveAttribute('aria-pressed', 'true')
 })
