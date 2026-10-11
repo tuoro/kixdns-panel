@@ -214,6 +214,8 @@ export async function refreshRuntime(): Promise<void> {
 }
 
 let pendingLoad: Promise<void> | null = null
+// 上一次读取失败是不是因为连不上面板：连上后运行状态读得到，这条失败就过时了 / Whether the last read failed because the panel was unreachable: once the runtime reads again, that failure is stale
+let loadFailedDown = false
 // quiet：保存之后的刷新不换成骨架 / quiet: the refresh after a save keeps the page mounted
 // keepDraft：草稿里有没保存的修改（保存途中又改的、右侧规则没点完成的、删版本时草稿里的）就留着草稿，只把对照的那份换成读到的文件；
 // sent 是保存时发出去的草稿，读回来和它一样、又没有别的没保存的修改时照常整份换上（换成文件里的写法）
@@ -256,7 +258,8 @@ export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: str
     applyUpstreamStats(overview?.metrics?.upstreams ?? [], overview?.metrics?.recent_window_seconds ?? null)
     validation.value = null
     loadError.value = ''
-  })().catch((error: unknown) => { loadError.value = errorMessage(error) }).finally(() => { loading.value = false; pendingLoad = null })
+    loadFailedDown = false
+  })().catch((error: unknown) => { loadError.value = errorMessage(error); loadFailedDown = isPanelDown(error) }).finally(() => { loading.value = false; pendingLoad = null })
   return pendingLoad
 }
 
@@ -394,8 +397,11 @@ export async function panelBack(): Promise<void> {
   if (stage.value === 'failed' && verdict.value === '连不上面板') finishStage('idle')
   if (busy.value) return
   if (!doc.value) { await load(); return }
-  if (unsaved.value || conflict.value) await refreshRuntime().catch(() => undefined)
-  else await load({ quiet: true })
+  if (unsaved.value || conflict.value) {
+    // 有没保存的修改时不重读文件，但运行状态读到了：因为连不上而挂着的「读取配置失败」收起 / With unsaved edits the file is not re-read, but the runtime did read: a 读取配置失败 left by the outage goes
+    const refreshed = await refreshRuntime().then(() => true, () => false)
+    if (refreshed && loadFailedDown) { loadError.value = ''; loadFailedDown = false }
+  } else await load({ quiet: true })
 }
 /** 待应用的版本什么时候自动应用：说出等的是什么 / When a pending version applies by itself: name what it waits for */
 export function pendingWhen(): string {

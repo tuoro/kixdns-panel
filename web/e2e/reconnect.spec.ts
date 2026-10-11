@@ -98,3 +98,23 @@ test('保存的回应丢了：连上后再保存说「已经保存过了」，�
   await expect(bar).toContainText(/已经保存过了\s*·\s*版本 #\d+/)
   await expect(bar).not.toContainText('别处改过了')
 })
+
+// 有没保存的修改时连不上面板、又读了一次配置：连上以后那条「读取配置失败」收起，不和「已重新连上面板」并排
+// Unsaved edits, the panel unreachable and the config re-read: once reconnected, 读取配置失败 goes instead of sitting beside 已重新连上面板
+test('有修改时断线读过一次配置：连上后「读取配置失败」收起', async ({ page }) => {
+  await page.goto('/config')
+  await page.getByRole('button', { name: '快速添加', exact: true }).click()
+  const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+  await quick.fill('keep.example.org')
+  await quick.press('Enter')
+  await panelDown(page, true)
+  await page.evaluate(async () => {
+    const { load } = await import('/src/config-v2/useConfigDocument.ts')
+    await load({ quiet: true, keepDraft: true })
+  })
+  await expect(banner(page)).toBeVisible()
+  await panelDown(page, false)
+  await expect(banner(page)).toHaveCount(0, { timeout: 10_000 })
+  await expect(page.locator('.cfg__notice', { hasText: '读取配置失败' })).toHaveCount(0)
+  await expect(page.locator('[data-rule]', { hasText: 'keep.example.org' })).toBeVisible()
+})
