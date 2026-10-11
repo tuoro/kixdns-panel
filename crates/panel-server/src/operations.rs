@@ -152,7 +152,9 @@ pub enum OperationError {
     #[cfg(not(unix))]
     #[error("当前平台不支持此操作")]
     Unsupported,
-    #[error("宿主机操作失败：{0}")]
+    // 失败的原因本身已经是一句完整的话（「连不上面板的服务助手…」「KixDNS 没能启动…」），不再加「宿主机操作失败：」
+    // The reason is already a whole sentence (连不上面板的服务助手…, KixDNS 没能启动…), so no 宿主机操作失败： prefix
+    #[error("{0}")]
     Failed(String),
 }
 
@@ -256,7 +258,11 @@ impl Operations {
         .map_err(|_| OperationError::Failed("服务控制超时".to_owned()))?
         .map_err(|error| OperationError::Failed(format!("读取服务控制结果失败：{error}")))?;
         if response.trim() != "OK" {
-            return Err(OperationError::Failed(truncate(&response, 1_024)));
+            return Err(OperationError::Failed(helper_failure(
+                &self.service_unit,
+                action,
+                &response,
+            )));
         }
         Ok(())
     }
@@ -597,6 +603,26 @@ fn json_string<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
 }
 
 #[cfg(any(unix, test))]
+/// 服务助手回的失败行换成一句人话：去掉协议里的「ERROR」；systemctl 的英文原话不进提示（照样记进日志），给出看原因的命令
+/// The helper's failure line becomes one plain sentence: the protocol's ERROR goes; systemctl's English original stays out of the message
+/// (it is still logged), and the command to see why is given
+#[cfg_attr(not(unix), allow(dead_code))]
+fn helper_failure(unit: &str, action: &str, response: &str) -> String {
+    let line = response.trim();
+    let line = line.strip_prefix("ERROR").map_or(line, str::trim_start);
+    tracing::warn!(action, detail = %line, "服务助手报告失败");
+    if !line.contains("systemctl") {
+        return truncate(line, 1_024);
+    }
+    let (subject, unit) = match action {
+        "start" => ("KixDNS 没能启动", unit),
+        "stop" => ("KixDNS 没能停止", unit),
+        "restart" => ("KixDNS 没能重启", unit),
+        _ => ("面板没能开始在线更新", "kixdns-panel-update.service"),
+    };
+    format!("{subject}：systemd 拒绝了这次操作。查看原因：journalctl -u {unit} -n 50 --no-pager")
+}
+
 fn truncate(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
 }
@@ -608,9 +634,35 @@ mod tests {
     use tokio::net::UdpSocket;
 
     use super::{
-        LogLevel, OperationError, Operations, ServiceAction, journal_arguments, parse_journal_page,
-        parse_record_type, unit_log_notice,
+        LogLevel, OperationError, Operations, ServiceAction, helper_failure, journal_arguments,
+        parse_journal_page, parse_record_type, unit_log_notice,
     };
+
+    // 服务助手的失败不把协议记号和 systemctl 的英文原话交给页面，给出看原因的命令；别的原因照原样
+    // A helper failure hands the page neither the protocol token nor systemctl's English original, but the command to see why; other reasons pass through
+    #[test]
+    fn helper_failures_read_as_one_sentence() {
+        let refused = "ERROR systemctl 执行失败: Job for kixdns.service failed because start of the service was attempted too often.\n";
+        assert_eq!(
+            helper_failure("kixdns.service", "start", refused),
+            "KixDNS 没能启动：systemd 拒绝了这次操作。查看原因：journalctl -u kixdns.service -n 50 --no-pager"
+        );
+        assert_eq!(
+            helper_failure("dns.service", "restart", refused),
+            "KixDNS 没能重启：systemd 拒绝了这次操作。查看原因：journalctl -u dns.service -n 50 --no-pager"
+        );
+        assert_eq!(
+            helper_failure("kixdns.service", "stop", "ERROR 不支持的动作\n"),
+            "不支持的动作"
+        );
+        assert_eq!(
+            OperationError::Failed(
+                "连不上面板的服务助手（kixdns-panel-helper）：连接超时".to_owned()
+            )
+            .to_string(),
+            "连不上面板的服务助手（kixdns-panel-helper）：连接超时"
+        );
+    }
 
     fn operations(unit: &str) -> Result<Operations, OperationError> {
         Operations::new(

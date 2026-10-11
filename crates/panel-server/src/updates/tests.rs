@@ -1310,7 +1310,7 @@ async fn a_switch_that_cannot_go_back_says_both_builds_and_the_next_step() {
     // 两边都没起来：各说一次是谁、为什么，最后给一步能做的 / Neither came up: each named once with its cause, ending with one thing to do
     assert_eq!(
         error.reason(),
-        "构建 #43 健康检查失败；换回构建 #42 也没成功（健康检查失败）。到系统页手动启动 KixDNS"
+        "构建 #43 健康检查失败；换回构建 #42 也没有启动起来。KixDNS 现在停着，点「启动」再试"
     );
 }
 

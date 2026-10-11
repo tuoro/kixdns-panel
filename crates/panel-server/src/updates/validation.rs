@@ -349,7 +349,7 @@ async fn wait_until_healthy_for(
     }
     let cause = last_error.unwrap_or_else(|| "没有回应".to_owned());
     Err(UpdateError::Install(format!(
-        "{} 秒内没有启动起来（{cause}）",
+        "没有在 {} 秒内启动起来（{cause}）",
         timeout.as_secs_f64()
     )))
 }
@@ -391,7 +391,7 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(error.to_string().contains("秒内没有启动起来"));
+        assert!(error.to_string().contains("秒内启动起来"));
         assert!(error.to_string().contains("KixDNS 已停止"));
     }
 }

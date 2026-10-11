@@ -947,28 +947,24 @@ impl UpdateManager {
             return Ok((current, false));
         }
         if let Err(error) = host.service_action(ServiceAction::Restart).await {
-            let reason = format!("{target_name} 没能启动（{}）", error.reason());
+            let cause = error.reason();
+            let reason = format!("{target_name} 没能启动（{cause}）");
             self.restore_previous(current.as_deref(), host, true)
                 .await
                 .map_err(|rollback| {
-                    UpdateError::Install(format!(
-                        "{reason}；换回{back} 也没成功（{}）。到系统页手动启动 KixDNS",
-                        rollback.reason()
-                    ))
+                    UpdateError::Install(both_failed(&reason, &back, &cause, &rollback.reason()))
                 })?;
             return Err(UpdateError::Install(format!("{reason}，已换回{back}")));
         }
         if let Err(error) = host.wait_until_healthy().await {
-            // 只要里面那句（「5 秒内没有启动起来（…）」），主语在这里加上，不带「安装更新失败：」前缀，读起来是一句话
-            // Only the inner phrase (5 秒内没有启动起来（…）) with the subject added here and without the 安装更新失败： prefix, so it reads as one sentence
-            let reason = format!("{target_name} {}", error.reason());
+            // 只要里面那句（「没有在 5 秒内启动起来（…）」），主语在这里加上，不带「安装更新失败：」前缀，读起来是一句话
+            // Only the inner phrase (没有在 5 秒内启动起来（…）) with the subject added here and without the 安装更新失败： prefix, so it reads as one sentence
+            let cause = error.reason();
+            let reason = format!("{target_name} {cause}");
             self.restore_previous(current.as_deref(), host, true)
                 .await
                 .map_err(|rollback| {
-                    UpdateError::Install(format!(
-                        "{reason}；换回{back} 也没成功（{}）。到系统页手动启动 KixDNS",
-                        rollback.reason()
-                    ))
+                    UpdateError::Install(both_failed(&reason, &back, &cause, &rollback.reason()))
                 })?;
             return Err(UpdateError::Install(format!("{reason}，已换回{back}")));
         }
@@ -1028,6 +1024,18 @@ impl UpdateManager {
 pub(super) struct SwitchNames<'a> {
     pub(super) target: &'a str,
     pub(super) current: &'a str,
+}
+
+/// 两边都没起来：先说新的为什么没起来，再说换回去也没起来；原因相同就不说第二遍，括号不套括号。最后一步在系统页上就能做
+/// Neither came up: why the new one failed, then that switching back failed too; the same cause is not repeated and parentheses never nest.
+/// The last step can be taken right on the system page
+fn both_failed(reason: &str, back: &str, cause: &str, rollback: &str) -> String {
+    let again = if rollback == cause {
+        String::new()
+    } else {
+        format!("：{rollback}")
+    };
+    format!("{reason}；换回{back} 也没有启动起来{again}。KixDNS 现在停着，点「启动」再试")
 }
 
 /// 接在汉字后面：Release 标签这类以字母数字开头的名字前空一格（「换回 v0.2.0」），「构建 #N」紧接（「换回构建 #N」）
