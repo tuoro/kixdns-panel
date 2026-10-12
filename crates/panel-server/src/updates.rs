@@ -597,7 +597,8 @@ pub enum UpdateError {
     Invalid(String),
     #[error("检查更新失败：{0}")]
     Network(String),
-    #[error("内核包没通过校验：{0}")]
+    /// 内核包和面板更新包都会走到这里，开头不写死是哪一种 / Both kernel packages and panel updates end up here, so the opening does not name either
+    #[error("更新包没通过校验：{0}")]
     Verification(String),
     #[error("安装更新失败：{0}")]
     Install(String),

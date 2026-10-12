@@ -1524,3 +1524,17 @@ fn reload_failures_read_as_one_plain_phrase() {
         "连不上 KixDNS：connection refused"
     );
 }
+
+// 原因单独读不出是哪件事（「校验值格式无效」）：页面拿到的要带「更新包没通过校验：」的开头，内核和面板更新都适用
+// The reason alone does not say what failed (校验值格式无效): the page gets the 更新包没通过校验 opening, which fits kernel and panel updates alike
+#[test]
+fn an_update_verification_error_reaches_the_page_with_its_opening() {
+    let error = super::map_update_error(crate::updates::UpdateError::Verification(
+        "校验值格式无效".to_owned(),
+    ));
+    assert!(matches!(
+        error,
+        crate::error::AppError::Unprocessable("update_verification_failed", _)
+    ));
+    assert_eq!(error.to_string(), "更新包没通过校验：校验值格式无效");
+}

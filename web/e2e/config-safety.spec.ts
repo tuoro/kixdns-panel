@@ -121,9 +121,11 @@ test('别处先存了一个版本：保存停住，可以下载自己的修改�
   await page.getByRole('button', { name: '保存并应用', exact: true }).click()
   const bar = page.locator('.cfg__savebar')
   await expect(bar).toContainText('这份配置在别处改过了')
-  // 再按保存只会再失败一次：主按钮停用；放弃修改还在；能把自己的修改下载下来 / Saving again would only fail again: the primary is disabled; discard is still there; the user's edits can be downloaded
+  // 再按保存只会再失败一次：主按钮停用；放弃修改在这时就是重新读取，不另放一个（和手机一样）；能把自己的修改下载下来
+  // Saving again would only fail again: the primary is disabled; discarding is re-reading here, so there is no second control (as on phones); the user's edits can be downloaded
   await expect(bar.getByRole('button', { name: '保存并应用', exact: true })).toBeDisabled()
-  await expect(bar.getByRole('button', { name: '放弃修改', exact: true })).toBeVisible()
+  await expect(bar.getByRole('button', { name: '放弃修改', exact: true })).toHaveCount(0)
+  await expect(bar.getByRole('button', { name: '重新读取', exact: true })).toBeVisible()
   const download = page.waitForEvent('download')
   await bar.getByRole('button', { name: '下载草稿', exact: true }).click()
   expect((await download).suggestedFilename()).toBe('kixdns-config.json')
@@ -652,6 +654,30 @@ test('应用失败的版本：重启确认框不说「重启后应用」', async
   await expect(dialog).toContainText('没有生效，重启后仍用之前那份配置；要再试，到配置页点「重试应用」')
   await expect(dialog).not.toContainText('重启后应用待应用的版本')
   await page.keyboard.press('Escape')
+})
+
+// 「重试应用」「现在应用」每次都存成一个新版本：成功时说出按的是哪一版、现在是哪一版，备注跟着到新版本上
+// （以前只说「版本 #N+1 已生效」，按的明明是 #N，新版本还没有备注）
+// 重试应用 and 现在应用 are each stored as a new version: success names the version pressed and the current one, and the note moves to the new version
+// (it used to say only 版本 #N+1 已生效 although #N was pressed, and the new version had no note)
+test('重试应用成功：说出两个版本号，备注带到新版本', async ({ page }) => {
+  await page.goto('/config')
+  await addRule(page, 'retry-note.example')
+  const bar = page.locator('.cfg__savebar')
+  // 宽屏的备注框一直在，窄一些才收在「备注」后面 / Wide screens always show the note field; narrower ones keep it behind 备注
+  const note = bar.getByLabel('版本备注')
+  if (!(await note.isVisible())) await bar.locator('.savebar__note-toggle').click()
+  await note.fill('把视频域名交给 CDN 组')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-apply-failed', 'true'))
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(page.locator('main')).toContainText('没有生效，仍在用之前那份配置')
+  const failed = Number((await page.locator('main').innerText()).match(/版本 #(\d+) 没有生效/)![1])
+  await page.getByRole('button', { name: '重试应用' }).click()
+  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain(`已应用版本 #${failed} 的内容，当前版本 #${failed + 1}`)
+  await page.getByRole('button', { name: '更多配置操作' }).click()
+  await page.getByRole('menuitem', { name: '历史版本' }).click()
+  await expect(page.locator('.hist__row').first()).toContainText(`#${failed + 1}`)
+  await expect(page.locator('.hist__row').first()).toContainText('把视频域名交给 CDN 组')
 })
 
 // 单独「校验」还没回来时按的保存，从按下起就是一次保存：按钮写「保存中」，重新读取停用；校验没过就停在那句结论上，不接着存

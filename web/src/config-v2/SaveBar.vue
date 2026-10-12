@@ -153,8 +153,10 @@ function discard(): void {
         <span v-if="busy && saveMessage" class="savebar__note-text">{{ saveMessage }}</span>
         <button v-if="!(phone && conflict)" class="ui-btn ui-btn--text savebar__note-toggle" :class="{ 'is-aside': busy }" type="button" :inert="busy" :aria-expanded="noteOpen || Boolean(saveMessage)" @click="noteOpen = !noteOpen">备注<ChevronDown class="ui-btn__chev" :size="16" aria-hidden="true" /></button>
         <label class="ui-input ui-savebar__note savebar__note" :class="{ 'is-open': noteOpen || Boolean(saveMessage), 'is-aside': busy }" :inert="busy"><input v-model="saveMessage" aria-label="版本备注" maxlength="160" placeholder="版本备注（可选）"></label>
-        <!-- 保存旁边一定有放弃：丢掉草稿回到运行中的配置，提示里能撤销 / Save always comes with discard: drop the draft back to the running config, undoable from the toast -->
-        <button v-if="!phone && pending" class="ui-btn ui-btn--secondary savebar__discard" :class="{ 'is-aside': busy }" type="button" :inert="busy" @click="discard">放弃修改</button>
+        <!-- 保存旁边一定有放弃：丢掉草稿回到运行中的配置，提示里能撤销；冲突时放弃就是重新读取，旁边已经有「重新读取」，不再放第二个（和手机一样）
+             Save always comes with discard: drop the draft back to the running config, undoable from the toast; in a conflict discarding is re-reading, and
+             重新读取 already sits beside it, so no second control (as on phones) -->
+        <button v-if="!phone && pending && !(conflict && draftStage === 'failed')" class="ui-btn ui-btn--secondary savebar__discard" :class="{ 'is-aside': busy }" type="button" :inert="busy" @click="discard">放弃修改</button>
         <!-- 被内核不支持的设置挡住时不给「校验」：按了只会把同一句提示再说一遍 / No 校验 while unsupported settings block saving: pressing it would only repeat the same toast -->
         <button v-if="!deferSave && !conflict && pending && !blockedFields.length" class="ui-btn ui-btn--secondary savebar__check" :class="{ 'is-aside': busy }" type="button" :inert="busy" @click="check"><ShieldCheck :size="16" aria-hidden="true" />校验</button>
         <!-- 别处先存了新版本时再保存只会再失败一次：先重新读取 / After someone else saved, saving again only fails again: reload first -->

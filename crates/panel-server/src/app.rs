@@ -1593,8 +1593,10 @@ fn map_update_error(error: UpdateError) -> AppError {
         UpdateError::Network(message) => {
             AppError::ServiceUnavailable("update_network_error", message)
         }
-        UpdateError::Verification(message) => {
-            AppError::Unprocessable("update_verification_failed", message)
+        // 带上「更新包没通过校验：」的开头：里面的原因（「超过 128 MiB」「校验值不对…」）单独读不出是哪件事
+        // Keep the 更新包没通过校验 opening: the reasons inside (超过 128 MiB, 校验值不对…) do not say on their own what failed
+        error @ UpdateError::Verification(_) => {
+            AppError::Unprocessable("update_verification_failed", error.to_string())
         }
         UpdateError::Install(message) => {
             AppError::ServiceUnavailable("update_install_failed", message)

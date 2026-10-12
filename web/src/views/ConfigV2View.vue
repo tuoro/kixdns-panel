@@ -215,23 +215,40 @@ const cnamePlaces = computed(() => {
   const mappings = model.mappings.filter((m) => m.enabled && !mappingIsIp(m)).length
   return { mappings, total: cnameUse.value.rules.length + mappings + cnameUse.value.untraced }
 })
-// 说出写成域名的是哪几条规则：点名前两条（点了打开那条规则），多的写「等 N 条」，域名映射只数条数（有「去域名映射」）；只有映射时不另起一行
-// Name the rules whose answers are domains: the first two by name (a click opens that rule), the rest as 「等 N 条」, mappings only counted (they have 去域名映射);
-// with mappings alone no extra line
+// 规则名太长时截在一整项后面：先找「、」「且」，没有才找空格，都没有才截在字中间；截掉的地方写「…」
+// A long rule title is cut after a whole item: at 、 or 且 first, then a space, and mid-word only without either; the cut is marked 「…」
+function cutTitle(full: string): string {
+  if (full.length <= 36) return full
+  const head = full.slice(0, 35)
+  const list = head.lastIndexOf('、')
+  const and = head.lastIndexOf(' 且 ')
+  if (list > 8 || and > 8) return list > and ? `${head.slice(0, list)}…` : `${head.slice(0, and + 2)}…`
+  const space = head.lastIndexOf(' ')
+  return `${(space > 8 ? head.slice(0, space) : head).replace(/[\s.\-_]+$/, '')}…`
+}
+// 说出写成域名的是哪几条规则：点名前两条（点了打开那条规则），多的写「等 N 条」，域名映射只数条数（有「去域名映射」），认不回规则的几处说只能在 JSON 里改；
+// 只有映射时不另起一行
+// Name the rules whose answers are domains: the first two by name (a click opens that rule), the rest as 「等 N 条」, mappings only counted (they have 去域名映射),
+// and places that trace back to no rule as editable only in JSON; with mappings alone no extra line
 const cnameWhere = computed((): { detail?: string; links?: Record<string, number> } => {
   const rules = cnameUse.value.rules
-  if (!rules.length) return {}
+  const untraced = cnameUse.value.untraced
+  // 没有认得回的规则：全是只能在 JSON 里改的就直说「这处 / 这 N 处」，还有映射时说「其中 N 处」 / No rule traced back: when every place is JSON-only say 这处 / 这 N 处, with mappings too say 其中 N 处
+  if (!rules.length) {
+    if (!untraced) return {}
+    if (untraced < cnamePlaces.value.total) return { detail: `其中\u00a0${untraced}\u00a0处只能在 JSON 里改` }
+    return { detail: untraced === 1 ? '这处回答只能在 JSON 里改' : `这\u00a0${untraced}\u00a0处回答都只能在 JSON 里改` }
+  }
   const links: Record<string, number> = {}
   for (const rule of rules.slice(0, 2)) {
-    const full = ruleTitle(rule).replace(/[「」]/g, '')
-    // 超过 36 个字才截，常见的域名条件整个写出来；截在点、连字符上时先去掉它，不出现「name.…」 / Cut only past 36 characters, so a usual domain condition is written in full; a cut that ends on a dot or hyphen drops it first, so no 「name.…」
-    const title = full.length > 36 ? `${full.slice(0, 35).replace(/[\s.\-_]+$/, '')}…` : full
+    const title = cutTitle(ruleTitle(rule).replace(/[「」]/g, ''))
     if (!(title in links)) links[title] = rule.id
   }
   const named = Object.keys(links).map((title) => `「${title}」`).join('')
   const more = rules.length > Object.keys(links).length ? `等\u00a0${rules.length}\u00a0条` : ''
   const mappings = cnamePlaces.value.mappings ? `、域名映射\u00a0${cnamePlaces.value.mappings}\u00a0条` : ''
-  return { detail: `写成域名的有：规则${named}${more}${mappings}`, links }
+  const json = untraced ? `，另有\u00a0${untraced}\u00a0处只能在 JSON 里改` : ''
+  return { detail: `写成域名的有：规则${named}${more}${mappings}${json}`, links }
 })
 function stripPrefix(): void {
   let n = 0

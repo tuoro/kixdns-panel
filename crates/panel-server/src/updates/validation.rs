@@ -35,7 +35,7 @@ pub(super) fn validate_slug(value: &str, repository: bool) -> Result<(), UpdateE
 pub(super) fn validate_digest(digest: &str) -> Result<(), UpdateError> {
     let value = digest
         .strip_prefix("sha256:")
-        .ok_or_else(|| UpdateError::Verification("只接受 SHA-256 Artifact digest".to_owned()))?;
+        .ok_or_else(|| UpdateError::Verification("只接受 SHA-256 校验值".to_owned()))?;
     validate_hex_digest(value)
 }
 

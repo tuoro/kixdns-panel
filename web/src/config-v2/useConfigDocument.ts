@@ -324,7 +324,8 @@ export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: str
       origin.value = 'draft'
       conflict.value = true
       verdict.value = '这份配置在别处改过了'
-      finishStage('failed', '现在的草稿是基于旧版本的，可以先下载草稿再重新读取')
+      // 后面紧跟着「下载草稿」「重新读取」两个链接：说明不再复述它们 / The 下载草稿 and 重新读取 links follow right after: the note does not restate them
+      finishStage('failed', '现在的草稿是基于旧版本的')
     } else if (options.sent !== undefined || (options.keepDraft && unsaved.value)) {
       // 文件没变就什么都不动；变了（保存成功、别处改过）把对照的那份换成它，草稿里的修改照旧算修改
       // File unchanged: nothing moves; changed (a save went through, an edit elsewhere): the baseline becomes it and the draft's edits still count as edits
@@ -524,7 +525,8 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
       step = 'applying'
       stage.value = step
     }
-    const message = saveMessage.value.trim()
+    // 「现在应用」没有备注栏：带上待应用版本的备注，生效的那个版本照样写着它是什么 / 现在应用 has no note field: carry the pending version's note, so the version that runs still says what it is
+    const message = saveMessage.value.trim() || (from === 'apply' ? pendingNote(failedBefore) : '')
     const result = await apiRequest<ConfigApplyResult>('/api/v1/config', { method: 'PUT', ...jsonBody({ content, expected_sha256: expected, message }) })
     const pendingText = `已存成待应用版本 #${result.version_id}，${pendingWhen()}自\u2060动\u2060应\u2060用`
     saveMessage.value = ''
@@ -546,7 +548,8 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     const later = changeCount.value ? ` · 之后改的 ${changeCount.value} 处还没保存` : jsonEdited.value ? ' · JSON 里之后改的还没保存' : ''
     finishStage('done', `${applyResultState(result) === 'pending' ? pendingText : `已生效 · 版本 #${result.version_id}`}${later}`)
     // 从提示条按的「重试应用」没有保存条报结果：成功了说一句，不让提示条悄悄消失 / 重试应用 from the notice has no save bar to report: say it worked instead of the notice just vanishing
-    if (from === 'apply' && applyResultState(result) === 'applied') useToast().success(`版本 #${result.version_id} 已生效`)
+    // 每次写入都存成新版本：「现在应用」按的是 #18，生效的是 #19，用恢复版本的说法交代一句 / Every write is stored as a new version: 现在应用 was pressed on #18 and #19 took effect, said in the restore wording
+    if (from === 'apply' && applyResultState(result) === 'applied') useToast().success(failedBefore && failedBefore !== result.version_id ? `已应用版本 #${failedBefore} 的内容，当前版本 #${result.version_id}` : `版本 #${result.version_id} 已生效`)
     // 保存途中离开了配置页：没有保存条报结果，用提示说；退出登录时放下了这份草稿就不说（确认框说过「不再告诉你结果」）
     // Left the config page mid-save: no save bar reports it, so a toast does; not after sign-out let the draft go (the confirm said no result would follow)
     else if (!viewing && !abandoned) useToast().success(applyResultState(result) === 'pending' ? pendingText : `版本 #${result.version_id} 已生效`)
@@ -602,7 +605,7 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
         if (!viewing && !abandoned) {
           dismissAwayToast()
           awayToast = useToast().error(stopped ? 'KixDNS 已停止：待应用的版本启动后自动应用'
-            : writtenNotApplied ? `${which(pendingVersionId.value)}没有生效。${sentence(failureCause(reason))}。回到配\u2060置\u2060页可以重试应用`
+            : writtenNotApplied ? `${failedBefore && pendingVersionId.value && pendingVersionId.value !== failedBefore ? `存成了版本 #${pendingVersionId.value}，` : which(pendingVersionId.value)}没有生效。${sentence(failureCause(reason))}。回到配\u2060置\u2060页可以重试应用`
               : down && step === 'applying' ? `不知道${which(failedBefore)}应用了没有：连不上面板。连上后会自己核对`
                 : down ? `${which(failedBefore)}没有应用：连不上面板。连上后回配\u2060置\u2060页再应用`
                   : step === 'validating' ? `${which(failedBefore)}没有应用。配置文件没有通过校验。${reason}` : `${which(failedBefore)}没有应用。${reason}`)
@@ -679,8 +682,20 @@ async function settleOnce(announce: boolean): Promise<boolean> {
     // (perhaps after it landed), so it is handled as a conflict, or saving on return would silently overwrite the other version
     const changedElsewhere = Boolean(doc.value) && current.sha256 !== doc.value!.sha256
     // 这时页面上正有一次保存在跑：结论交给它自己说（它会撞上同一个冲突），这里不抢着改保存条 / A save is running on the page: it reports for itself (it meets the same conflict), so the bar is not changed here
+    // 丢的是「现在应用」、草稿里也没有要保存的：没什么可丢的，直接读入别处的版本并说一句（以前进了冲突状态，可保存条不为应用显示，页面上一声不响）
+    // The lost request was 现在应用 and nothing in the draft is unsaved: nothing can be lost, so read the other version in and say so (it used to enter the
+    // conflict state, which the save bar does not show for an apply, so the page stayed silent)
+    if (changedElsewhere && inFlight === null && applying && !unsaved.value) {
+      await load({ quiet: true, fresh: true })
+      const read = doc.value?.version_id ? `，已读入版本 #${doc.value.version_id}` : '，已重新读取'
+      if (viewing && announce) useToast().info(`刚才那次应用不在现在的配置里：这份配置在别处改\u2060过\u2060了${read}`)
+      else if (!viewing && awayToast !== null) { dismissAwayToast(); awayToast = useToast().error(`刚才那次应用不在现在的配置里：这份配置在别处改\u2060过\u2060了${read}`) }
+      return false
+    }
     if (changedElsewhere && inFlight === null) {
       conflict.value = true
+      // 草稿里还有没保存的修改：冲突归保存条说（「现在应用」的结果保存条不显示） / Unsaved edits remain: the save bar owns the conflict (it does not show 现在应用's outcomes)
+      origin.value = 'draft'
       // 那次保存可能存上过、又被别处盖掉：不说「没有保存」，只说它不在现在的配置里 / The save may have landed and then been overwritten: say it is not in the current config, not that it was never saved
       verdict.value = applying ? '刚才那次应用不在现在的配置里' : '刚才那次保存不在现在的配置里'
       finishStage('failed', '这份配置在别处改过了，现在的草稿是基于旧版本的')
@@ -725,10 +740,12 @@ async function settleOnce(announce: boolean): Promise<boolean> {
   if (!viewing || (announce && (!sameDraft || applying))) {
     dismissAwayToast()
     // 说出它现在生效了没有（核对时已经读过一遍运行状态） / Say whether it is in effect now (the runtime was just read during the check)
-    const opening = applying ? '刚才那次应用已经写进去了' : '刚才那次保存已经存上了'
-    if (hasApplyFailure.value) useToast().error(`${opening}：${version ? `${version} ` : ''}没有生效，${viewing ? '可以重试应用' : '回到配\u2060置\u2060页可以重试应用'}`)
-    else if (hasPending.value) useToast().success(`${opening}：${version ? `${version} 待应用，` : ''}${pendingWhen()}自\u2060动\u2060应\u2060用`)
-    else useToast().success(version ? `${opening}：${version} 已生效` : opening)
+    // 应用存成了新版本：开头就说出新编号，后面只说结果（和恢复版本、重试应用一样交代编号） / An apply stored as a new version: the opening names it and the rest says the outcome (numbers are accounted for as restore and retry do)
+    const opening = applying ? (version ? `刚才那次应用存成了${version}` : '刚才那次应用存上了') : '刚才那次保存已经存上了'
+    const which = applying || !version ? '' : `${version} `
+    if (hasApplyFailure.value) useToast().error(`${opening}：${which}没有生效，${viewing ? '可以重试应用' : '回到配\u2060置\u2060页可以重试应用'}`)
+    else if (hasPending.value) useToast().success(`${opening}：${which}待应用，${pendingWhen()}自\u2060动\u2060应\u2060用`)
+    else useToast().success(applying ? `${opening}：已生效` : version ? `${opening}：${version} 已生效` : opening)
     // 草稿里没有别的修改了：不用再留着、也不用拦着刷新 / Nothing else is unsaved in the draft: no need to keep it or to guard reloads
     if (!unsaved.value) dropKeptDraft()
   }
@@ -764,6 +781,10 @@ export async function panelBack(): Promise<void> {
 // 连上面板后自己接着做（配置页开着没有都一样），不等人点重试 / Once the panel answers again, carry on by itself (whether or not the config page is open) instead of waiting for 重试
 watch(panelDown, (now, before) => { if (before && !now) void panelBack() })
 /** 待应用的版本什么时候自动应用：说出等的是什么 / When a pending version applies by itself: name what it waits for */
+// 待应用版本的备注：文档里带着就用它，否则到历史里找 / The pending version's note: from the document when it carries one, otherwise from the history
+function pendingNote(id: number | null): string {
+  return doc.value?.pending?.message || (id ? versions.value.find((v) => v.id === id)?.message ?? '' : '')
+}
 export function pendingWhen(): string {
   if (runtimeStopped.value) return 'KixDNS 启动后'
   if (runtimeUnavailable.value) return '连上 KixDNS 后'
