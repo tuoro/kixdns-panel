@@ -63,7 +63,7 @@ export const SETTING_SECTIONS: SettingSection[] = [
       { key: 'doh_tls_cert', label: 'DoH TLS 证书', type: 'text', example: '/path/to/cert.pem', wide: true },
       { key: 'doh_tls_key', label: 'DoH TLS 私钥', type: 'text', example: '/path/to/key.pem', wide: true },
       // 只有带高级规则时才显示（其余时候由「其余请求」决定）：说清它管的是哪些请求 / Shown only with advanced rules (otherwise 其余请求 decides it): say which requests it serves
-      { key: 'default_upstream', label: '默认上游', type: 'text', default: '1.1.1.1:53', wide: true, title: '高级规则里「交给默认上游」用这里的地址，多个用逗号隔开' },
+      { key: 'default_upstream', label: '默认上游', type: 'text', default: '1.1.1.1:53', wide: true, title: '高级规则里「交给默认上游」和没写地址的转发用这里的地址，多个用逗号隔开' },
       { key: 'min_ttl', label: '最小 TTL', type: 'number', min: 0, unit: '秒', default: 0 },
       { key: 'upstream_timeout_ms', label: '上游超时 (ms)', type: 'number', min: 1, unit: '毫秒', default: 9000 },
       { key: 'request_timeout_ms', label: '整体请求超时 (ms)', type: 'number', min: 1, unit: '毫秒', nullable: true, placeholder: '自动计算' },
@@ -230,12 +230,17 @@ export function settingVisible(field: SettingField, settings: GlobalSettings): b
  */
 export function settingWritten(field: SettingField, settings: Readonly<Record<string, unknown>>): boolean {
   if (!Object.prototype.hasOwnProperty.call(settings, field.key)) return false
-  if (!field.requiresCapability) return true
-  if (field.type === 'boolean' && settings[field.key] === false) return false
-  // 依附的上一级开关关着时也不写（比如排行关着时的「客户端 IP 脱敏」）：内核不看它，写着只会让没有这项能力的内核挡住、而这一行还藏着看不见
-  // Not written either while the switch it depends on is off (客户端 IP 脱敏 with rankings off): the kernel ignores it, and writing it only gets a
-  // kernel without the capability to refuse a setting whose row is hidden
-  return !field.visibleWhen || Boolean(settings[field.visibleWhen])
+  return !(field.requiresCapability && field.type === 'boolean' && settings[field.key] === false)
+}
+
+/**
+ * 这一项用不用得到内核的这项能力：写着、而且依附的上一级开着。排行关着时的「客户端 IP 脱敏」照写（偏好留着），但用不到能力，
+ * 不该因为它挡住保存、更新或回退（服务端 config_capabilities.rs 同一条规则）
+ * Whether this setting needs the kernel capability: written, and the switch it depends on is on. 客户端 IP 脱敏 with rankings off is still written
+ * (the preference is kept) but needs no capability, so it must not block a save, update or rollback (the server's config_capabilities.rs has the same rule)
+ */
+export function settingNeedsCapability(field: SettingField, settings: Readonly<Record<string, unknown>>): boolean {
+  return settingWritten(field, settings) && (!field.visibleWhen || Boolean(settings[field.visibleWhen]))
 }
 
 /** 实际写给内核的设置：去掉关着的、按能力开的开关 / The settings actually written for the kernel: capability-gated switches that are off are left out */

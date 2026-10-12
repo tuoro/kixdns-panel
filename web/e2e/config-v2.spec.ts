@@ -291,3 +291,22 @@ test('不支持的开关按「关掉」后那一行留着写「已关闭」，�
   await expect(page.locator('.settings-row__readonly').first()).toContainText('已关闭')
   await expect(page.locator('.settings').getByRole('heading', { level: 2 }).first()).toBeVisible()
 })
+
+// 手机上提示条的按钮在字下面单独一行，不压住字（只有一行字的提示条也一样）
+// On phones a notice's button has its own row under the text and never covers it (one-line notices included)
+test('手机上提示条的按钮不压住字 @responsive', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'mobile', '只看手机的提示条')
+  await page.goto('/config')
+  await expect(page.locator('.rcard').first()).toBeVisible()
+  const config = { version: '1.0', settings: {}, pipeline_select: [{ pipeline: 'main', matchers: [] }], pipelines: [{ id: 'main', rules: [{ name: 'g', matchers: [{ type: 'geo_site', value: 'geosite:cn' }], actions: [{ type: 'deny' }] }] }] }
+  await page.locator('input[type="file"]').setInputFiles({ name: 'prefixed.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(config)) })
+  if (await page.locator('dialog[open]').count()) await page.keyboard.press('Escape')
+  const notice = page.locator('.cfg__notice')
+  await expect(notice.getByRole('button', { name: '去掉前缀' })).toBeVisible()
+  const overlap = await notice.evaluate((box) => {
+    const text = box.querySelector(':scope > span')!.getBoundingClientRect()
+    const button = box.querySelector('.ui-notice__action')!.getBoundingClientRect()
+    return Math.min(text.bottom, button.bottom) - Math.max(text.top, button.top) > 0 && Math.min(text.right, button.right) - Math.max(text.left, button.left) > 0
+  })
+  expect(overlap).toBe(false)
+})

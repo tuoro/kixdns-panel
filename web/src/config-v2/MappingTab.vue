@@ -48,6 +48,7 @@ function submit(): void {
   addError.value = ''
   domainInput.value?.focus()
 }
+const unsupportedCname = (r: Mapping) => !canCname.value && r.enabled && !mappingIsIp(r)
 const kind = (r: Mapping) => (mappingIsIp(r) ? [...new Set(splitList(r.target).map((ip) => (ip.includes(':') ? 'AAAA' : 'A')))].join(' + ') : 'CNAME')
 // 添加行的类型列：回答写对了就先显示会回什么记录 / The add row's type column: once the answer is valid it shows the record it will give
 const addKind = computed(() => (add.target.trim() && !targetProblem(add.target) ? kind({ id: -1, domain: '', target: add.target.trim(), ttl: null, enabled: true }) : ''))
@@ -110,9 +111,9 @@ function act(r: Mapping, value: string): void {
 const importDialog = ref<HTMLDialogElement | null>(null)
 const importText = ref('')
 trackDialogEdits('批量导入', () => importText.value.trim() !== '')
-// Esc、点遮罩、关闭、取消：写了内容先问，和别的弹层一样 / Esc, a scrim tap, × and 取消: ask first when text was written, as other dialogs do
+// Esc、点遮罩、关闭、取消：写了内容先问，问法和离开页面、别的弹层一样 / Esc, a scrim tap, × and 取消: ask first when text was written, in the same words as leaving the page or any other dialog
 async function leaveImport(): Promise<void> {
-  if (importText.value.trim() && !(await confirm.ask({ title: '放弃批量导入的修改', body: '写在这里的映射还没导入，关上就没了。', confirmLabel: '放弃', cancelLabel: '继续编辑', destructive: true }))) return
+  if (importText.value.trim() && !(await confirm.ask({ title: '放弃批量导入的修改', body: '刚才在这里改的内容不会写进草稿。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true }))) return
   importText.value = ''
   importDialog.value?.close()
 }
@@ -175,7 +176,8 @@ function runImport(): void {
               <button class="rw__d" type="button" @click="edit(r)">{{ r.domain }}<span v-if="changedMappingIds.has(r.id)" class="ui-dot ui-dot--ink rrow__changed" role="img" aria-label="改过，还没保存" title="改过，还没保存"></span></button>
               <!-- TTL 是回答的一部分，跟在回答后面；类型列只放类型 / The TTL belongs to the answer and follows it; the type column holds only the type -->
               <span class="rw__t">{{ r.target }}<span v-if="r.ttl !== null" class="rw__ttlnote">TTL {{ r.ttl }} 秒</span></span>
-              <span class="rw__k"><span class="ui-tag ui-tag--mono">{{ kind(r) }}</span></span>
+              <!-- 内核不支持 CNAME 时，提示条数到的那几处（启用的）标成警示色，停用的不算、照旧 / With CNAME unsupported, the rows the notice counts (enabled ones) take the warning colour; disabled ones do not count and stay plain -->
+              <span class="rw__k"><span class="ui-tag ui-tag--mono" :class="{ 'ui-tag--warn': unsupportedCname(r) }" :title="unsupportedCname(r) ? '当前内核不支持 CNAME 回答' : undefined">{{ kind(r) }}</span></span>
               <label class="ui-switch"><input v-model="r.enabled" type="checkbox" :aria-label="`启用 ${r.domain} 的映射`"><i></i></label>
               <UiMenu :items="rowMenu(r)" :label="`${r.domain} 的操作`" anchor=".rw__row" @select="act(r, $event)" />
             </template>

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { andChains, compile, kernelAddress, ruleProblems, type Condition, type Model } from './model'
 import { cond, sampleModel } from './testing/samples'
+import { SETTING_SECTIONS, settingNeedsCapability } from '../config-editor/schema'
 import { foldChain } from './testing/kernel-sim'
 
 // 用照内核源码复刻的求值（kernel.ts foldChain），不在测试里另写一套理解 / Use the fold rebuilt from the kernel source (kernel.ts), not a second reading of it
@@ -194,12 +195,14 @@ describe('按内核能力开的开关', () => {
     expect(compile(model).settings).toHaveProperty('statistics_enabled', true)
   })
 
-  // 依附的上一级关着时也不写：排行关着时的「客户端 IP 脱敏」 / Not written while the switch it depends on is off: 客户端 IP 脱敏 with rankings off
-  it('上一级开关关着时，依附它的开关也不写', () => {
+  // 依附的开关照写（偏好留着），但上一级关着时用不到内核能力：不因为它挡住保存
+  // A dependent switch is written as set (the preference is kept), but with its parent off it needs no capability, so it does not block saving
+  it('上一级开关关着时，依附它的开关照写，但不算用到能力', () => {
     const model = sampleModel()
     model.settings = { ...model.settings, statistics_enabled: false, statistics_anonymize_client_ip: true }
-    expect(compile(model).settings).not.toHaveProperty('statistics_anonymize_client_ip')
-    model.settings = { ...model.settings, statistics_enabled: true }
     expect(compile(model).settings).toHaveProperty('statistics_anonymize_client_ip', true)
+    const field = SETTING_SECTIONS.flatMap((s) => s.fields).find((f) => f.key === 'statistics_anonymize_client_ip')!
+    expect(settingNeedsCapability(field, model.settings)).toBe(false)
+    expect(settingNeedsCapability(field, { ...model.settings, statistics_enabled: true })).toBe(true)
   })
 })

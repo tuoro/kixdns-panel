@@ -952,7 +952,16 @@ button.ui-link { position: relative; min-height: 0; padding: 0; border: 0; backg
   .ui-ph__phone { display: inline-flex; }
 }
 
-/* 页面标题能接住焦点（焦点兜底落在这里）：框贴着标题的字，不拉成一整行像个空输入框 / The page title can take focus (the focus rescue lands here): its ring hugs the words instead of spanning the row like an empty field */
-.ui-ph__title { width: fit-content; max-width: 100%; }
-/* 只有一行字的提示条：按钮和那一行对齐，不再按两行的高度居中 / A one-line notice: the button lines up with that line instead of centring on two rows */
-.ui-notice:not(:has(> small)) > .ui-notice__action { grid-row: 1; }
+/* 页面标题和分组标题能接住焦点（焦点兜底落在这里）：框贴着标题的字、圆角和别的焦点框一样，不拉成一整行像个空输入框
+   Page and group headings can take focus (the focus rescue lands there): the ring hugs the words with the usual rounded corners instead of spanning the row like an empty field */
+.ui-ph__title, :is(h1, h2, h3)[data-focus-landing] { width: fit-content; max-width: 100%; border-radius: var(--r-1); }
+/* 只有一行字的提示条：按钮和那一行对齐，不再按两行的高度居中。只在宽屏：手机上按钮在字下面单独一行（见上面），这里不能把它拉回第一行压住字
+   A one-line notice: the button lines up with that line instead of centring on two rows. Wide screens only: on phones the button has its own row under
+   the text (above), and this must not pull it back onto the first row over the words */
+@media (min-width: 641px) {
+  .ui-notice:not(:has(> small)) > .ui-notice__action { grid-row: 1; }
+  /* 那一行字和按钮按中线对齐（以前字比按钮高 4px）；图标照旧贴着第一行，折成两行时不跑到中间
+     The line of text centres on the button (it sat 4px high); the icon stays on the first line, so it does not drift to the middle when the text wraps */
+  .ui-notice:not(:has(> small)) { align-items: center; }
+  .ui-notice:not(:has(> small)) > svg { align-self: start; }
+}

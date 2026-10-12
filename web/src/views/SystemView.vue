@@ -327,7 +327,7 @@ async function pollPanelUpdate(): Promise<void> {
   if (Date.now() < panelUpdateDeadline) {
     schedulePanelUpdatePoll()
   } else {
-    toast.error('无法确认在线更新结果，请执行 journalctl -u kixdns-panel-update.service 查看')
+    toast.error('没能确认在线更新的结果。查看原因：journalctl -u kixdns-panel-update.service -n 50 --no-pager')
   }
 }
 
@@ -517,7 +517,7 @@ onBeforeUnmount(() => {
             <span class="ui-lbl">服务</span>
             <b :title="panelDown ? '状态未知' : running ? '正在运行' : '已停止'"><span class="ui-dot" :class="{ 'ui-dot--off': !running || panelDown }" aria-hidden="true"></span>{{ service.unit }}<small v-if="panelDown">状态未知</small><template v-else><small v-if="!running">已停止</small><small v-if="unusualServiceState" class="ui-mono">{{ unusualServiceState }}</small></template></b>
           </div>
-          <div v-if="service?.main_pid" class="system-fact-pid"><span class="ui-lbl">PID</span><b>{{ service.main_pid }}</b></div>
+          <div v-if="service?.main_pid && !panelDown" class="system-fact-pid"><span class="ui-lbl">PID</span><b>{{ service.main_pid }}</b></div>
           <div v-if="panelVersion"><span class="ui-lbl">面板版本</span><b>{{ panelVersion }}</b></div>
           <div v-if="kernel"><span class="ui-lbl">内核</span><b>{{ installed ? formatKixdnsVersion(activeVersion) : '还没安装' }}</b></div>
         </div>

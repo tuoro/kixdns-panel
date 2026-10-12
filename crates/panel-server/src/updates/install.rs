@@ -947,14 +947,16 @@ impl UpdateManager {
             return Ok((current, false));
         }
         if let Err(error) = host.service_action(ServiceAction::Restart).await {
-            let cause = error.reason();
-            let reason = format!("{target_name} 没能启动（{cause}）");
+            let (cause, hint) = split_hint(&error.reason());
+            let reason = format!("{target_name} 没能启动：{cause}");
             self.restore_previous(current.as_deref(), host, true)
                 .await
                 .map_err(|rollback| {
                     UpdateError::Install(both_failed(&reason, &back, &cause, &rollback.reason()))
                 })?;
-            return Err(UpdateError::Install(format!("{reason}，已换回{back}")));
+            return Err(UpdateError::Install(format!(
+                "{reason}，已换回{back}{hint}"
+            )));
         }
         if let Err(error) = host.wait_until_healthy().await {
             // 只要里面那句（「没有在 5 秒内启动起来（…）」），主语在这里加上，不带「安装更新失败：」前缀，读起来是一句话
@@ -1008,7 +1010,7 @@ impl UpdateManager {
         // 失败的原因不带主语：调用的地方知道换回的是哪个构建 / Failure reasons carry no subject: the caller knows which build it went back to
         host.service_action(ServiceAction::Restart)
             .await
-            .map_err(|error| UpdateError::Install(format!("没能重启：{}", error.reason())))?;
+            .map_err(|error| UpdateError::Install(error.reason()))?;
         if previous.is_none() {
             return Ok(());
         }
@@ -1030,12 +1032,36 @@ pub(super) struct SwitchNames<'a> {
 /// Neither came up: why the new one failed, then that switching back failed too; the same cause is not repeated and parentheses never nest.
 /// The last step can be taken right on the system page
 fn both_failed(reason: &str, back: &str, cause: &str, rollback: &str) -> String {
+    let (rollback, hint) = split_hint(rollback);
     let again = if rollback == cause {
         String::new()
     } else {
         format!("：{rollback}")
     };
-    format!("{reason}；换回{back} 也没有启动起来{again}。KixDNS 现在停着，点「启动」再试")
+    // systemd 拒绝重启时要过一会儿才肯再启动：说「过一会儿」，看原因的命令放在最后
+    // When systemd refused the restart it only starts again after a while: say so, and put the command for the cause last
+    format!(
+        "{reason}；换回{back} 也没有启动起来{again}。KixDNS 现在停着，过一会儿再点「启动」{hint}"
+    )
+}
+
+// 服务助手的失败句子拆成原因和看原因的命令（命令总放在最后），并去掉它自带的「KixDNS 没能重启：」主语，免得和这里的主语说两遍
+// Splits a helper failure sentence into the cause and the command to see why (the command always goes last), and drops its own
+// 「KixDNS 没能重启：」 subject so it is not said twice beside the subject here
+fn split_hint(message: &str) -> (String, String) {
+    let (cause, hint) = match message.find("。查看原因：") {
+        Some(at) => (&message[..at], &message[at..]),
+        None => (message, ""),
+    };
+    let cause = [
+        "KixDNS 没能重启：",
+        "KixDNS 没能启动：",
+        "KixDNS 没能停止：",
+    ]
+    .iter()
+    .find_map(|subject| cause.strip_prefix(subject))
+    .unwrap_or(cause);
+    (cause.to_owned(), hint.to_owned())
 }
 
 /// 接在汉字后面：Release 标签这类以字母数字开头的名字前空一格（「换回 v0.2.0」），「构建 #N」紧接（「换回构建 #N」）

@@ -1,14 +1,14 @@
 import { computed, ref, watch } from 'vue'
 import { ApiError, apiRequest, isPanelDown, jsonBody } from '../api/client'
 import type { ConfigApplyResult, ConfigDocument, ConfigRuntimeApplyState, ConfigVersion, ConfigVersionDetail, ConfigVersions, DeleteConfigVersionResult, DeleteConfigVersionsResult, Overview, ServiceStatus, ValidationResult } from '../api/types'
-import { SETTING_SECTIONS, settingSupported, settingWritten } from '../config-editor/schema'
+import { SETTING_SECTIONS, settingNeedsCapability, settingSupported } from '../config-editor/schema'
 import { exportConfig, readConfig } from '../config-model/document'
-import type { Model } from '../config-model/model'
+import { mappingIsIp, type Model } from '../config-model/model'
 import { traceNames } from '../config-model/trace-names'
 import { useConnection } from '../composables/useConnection'
 import { dismissUndoable, toastMark, useToast } from '../composables/useToast'
 import { errorMessage } from '../utils'
-import { applyHits, applyUpstreamStats, changeCount, dirty, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, reportOpen, unsaved } from './store'
+import { applyHits, applyUpstreamStats, changeCount, dialogEdits, dirty, draftGeneration, editorEdited, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, reportOpen, unsaved } from './store'
 
 // 配置页和面板服务之间的事：读配置和历史、KixDNS 的运行状态和能力、校验、保存并热加载、现在应用。
 // 草稿本身在 store.ts；这里只管「文件」和「运行」。所有状态是模块级的，页面和保存条共用同一份。
@@ -41,18 +41,20 @@ export const currentVersionId = computed(() => {
 })
 export const runtimeUnavailable = computed(() => doc.value?.runtime.status === 'unavailable' && !runtimeStopped.value)
 export const unsupportedFields = computed(() => SETTING_SECTIONS.flatMap((s) => s.fields)
-  .filter((f) => settingWritten(f, model.settings) && !settingSupported(f, runtimeCapabilities.value))
+  .filter((f) => settingNeedsCapability(f, model.settings) && !settingSupported(f, runtimeCapabilities.value))
   .map((f) => f.label))
 // 内核报了自己支持什么、草稿里却开着它没有的功能：服务端不收这份配置（开着也不起作用），所以先不让保存
 // The kernel reported what it supports and the draft switches on a feature it lacks: the server refuses the config (the switch would do nothing), so saving waits
 // 草稿里用到了 CNAME 回答：域名映射的回答写的是域名，或规则的自定义回答是 CNAME / The draft uses a CNAME answer: a mapping answers with a domain, or a rule's custom answer is a CNAME
-export const cnameInUse = computed(() => model.mappings.some((m) => m.enabled && !/^[\d.:a-f, ]+$/i.test(m.target))
+// 和写出配置时同一个判断：不全是 IP 的回答写成 CNAME（以前按字符猜，cafe.de 这种只由 a–f 组成的域名被当成 IP，警告就漏了）
+// The same test the export uses: an answer that is not all IPs is written as CNAME (it used to guess by characters, so a domain made of a–f letters such as cafe.de passed as an IP and the warning was missed)
+export const cnameInUse = computed(() => model.mappings.some((m) => m.enabled && !mappingIsIp(m))
   || [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].some((r) => r.outcome.type === 'answer' && r.outcome.kind === 'cname'))
 export const blockedFields = computed(() => (!runtimeStopped.value && !runtimeUnavailable.value && !capabilityError.value
   ? [...unsupportedFields.value, ...(!canCname.value && cnameInUse.value ? ['CNAME 回答'] : [])]
   : []))
 // 不支持的设置在哪一组：「去基础设置」直接打开那一组 / Which group holds the unsupported settings, so 去基础设置 opens it directly
-export const unsupportedSection = computed(() => SETTING_SECTIONS.find((s) => s.fields.some((f) => settingWritten(f, model.settings) && !settingSupported(f, runtimeCapabilities.value)))?.id ?? '')
+export const unsupportedSection = computed(() => SETTING_SECTIONS.find((s) => s.fields.some((f) => settingNeedsCapability(f, model.settings) && !settingSupported(f, runtimeCapabilities.value)))?.id ?? '')
 // KixDNS 没启动、连不上、没报能力时，保存只存成待应用版本 / Saving only stores a pending version when KixDNS is down, unreachable or silent about capabilities
 export const deferSave = computed(() => runtimeStopped.value || runtimeUnavailable.value || Boolean(capabilityError.value))
 export const fileDiffers = computed(() => !hasPending.value && !hasApplyFailure.value && doc.value?.runtime.status === 'different')
@@ -307,6 +309,26 @@ function applyResultState(result: ConfigApplyResult): 'applied' | 'pending' {
   return result.apply_state === 'pending' || !result.active_config ? 'pending' : 'applied'
 }
 
+// 保存途中离开配置页：保存照常做完，结果用提示说；没保存成功时草稿留在内存里，回到配置页时接着用它
+// Leaving the config page mid-save: the save still finishes and its outcome is told in a toast; if it failed, the draft stays in memory and the page picks it up on return
+let viewing = false
+let keepOnReturn = false
+let inFlight: string | null = null
+// 回应丢了的那次保存（写进去没有不知道）：连上以后、或者下一次保存撞上「别处改过了」时，拿面板上的配置和它比一比
+// The save whose answer was lost (written or not, unknown): once reconnected, or when the next save meets 别处改过了, compare the panel's config with it
+let unanswered: { content: unknown; sent: string; generation: number } | null = null
+/** 配置页打开（true）或离开（false）；打开时返回要不要留着草稿 / The config page opened (true) or left (false); on open, returns whether to keep the draft */
+export function setViewing(open: boolean): boolean {
+  viewing = open
+  const keep = open && keepOnReturn
+  if (open) keepOnReturn = false
+  return keep
+}
+/** 草稿里没保存的就是正在保存的那一份：离开不用问 / Everything unsaved is the draft being saved right now: leaving need not ask */
+export const onlySaving = (): boolean => busy.value && origin.value === 'draft' && inFlight === JSON.stringify(model)
+  && !editorEdited.value && !jsonEdited.value && dialogEdits.size === 0
+const sentence = (text: string) => text.replace(/[。.]\s*$/, '')
+
 // origin：保存草稿（保存栏报进度）或应用已经保存的版本（页头报进度，出错进提示）。有改动、或者要应用和运行配置不同的文件，
 // 而且 KixDNS 在运行时，先单独校验一次：没过就停在第 1 步，不写入任何版本。
 // origin: saving the draft (the save bar reports) or applying a saved version (the header reports, errors go to a notice). With
@@ -323,6 +345,7 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
   const sent = JSON.stringify(model)
   // 发出去的草稿定在这一刻：之后的修改（校验途中的也算）不在这次保存里，它们的撤销保存后照样留着 / The draft sent is fixed at this moment: edits after it (during validation too) are not in this save, and their undos stay after it lands
   const sentAt = toastMark()
+  inFlight = sent
   origin.value = from
   applyError.value = ''
   conflict.value = false
@@ -337,7 +360,7 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     }
     const message = saveMessage.value.trim()
     const result = await apiRequest<ConfigApplyResult>('/api/v1/config', { method: 'PUT', ...jsonBody({ content, expected_sha256: doc.value.sha256, message }) })
-    const pendingText = `已存成待应用版本 #${result.version_id}，${pendingWhen()}自动\u2060应用`
+    const pendingText = `已存成待应用版本 #${result.version_id}，${pendingWhen()}自\u2060动\u2060应\u2060用`
     saveMessage.value = ''
     // 写入成功就先记下：文件的散列和版本换成这次的，对照的那份换成发出去的草稿。之后的重读失败了，也不会把已保存的算成修改、下次保存也不会撞上自己
     // Record the write at once: the file hash and version become this save's, and the baseline becomes the draft that was sent. If the re-read after it fails,
@@ -355,6 +378,8 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     finishStage('done', `${applyResultState(result) === 'pending' ? pendingText : `已生效 · 版本 #${result.version_id}`}${later}`)
     // 从提示条按的「重试应用」没有保存条报结果：成功了说一句，不让提示条悄悄消失 / 重试应用 from the notice has no save bar to report: say it worked instead of the notice just vanishing
     if (from === 'apply' && applyResultState(result) === 'applied') useToast().success(`版本 #${result.version_id} 已生效`)
+    // 保存途中离开了配置页：没有保存条报结果，用提示说 / Left the config page mid-save: no save bar reports it, so a toast does
+    else if (!viewing) useToast().success(applyResultState(result) === 'pending' ? pendingText : `版本 #${result.version_id} 已生效`)
   } catch (error) {
     // 会话过期：页面会回到登录页，这里不挂「没通过校验」 / Session expired: the page goes back to the login page; no 没有通过校验 here
     if (error instanceof ApiError && error.status === 401) { finishStage('idle'); return }
@@ -362,9 +387,12 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     // Before calling it a conflict, look once: if the panel already holds exactly what this save sends (an earlier write landed and only its answer
     // was lost), it is already saved, not a conflict
     if (isConflict(error) && await alreadySaved(content, sent)) return
+    // 撞上的「别处」其实是自己回应丢了的那次保存：把对照的那份换成它，再接着存这次多改的 / The 别处 met is this page's own save whose answer was lost: rebase onto it and go on saving what changed since
+    if (isConflict(error) && await settleUnanswered(false)) { finishStage('idle'); return save(from) }
     const reason = friendlyRuntimeError(error)
     const stopped = stoppedError(error)
     const down = isPanelDown(error)
+    if (down && step === 'applying') unanswered = { content, sent, generation: draftGeneration() }
     // 写进文件以后 KixDNS 没接受：版本已经存下了，只是没生效 / KixDNS refused after the write: the version is stored, it just did not take
     const writtenNotApplied = step === 'applying' && error instanceof ApiError && ['reload_failed', 'kixdns_rejected'].includes(error.code)
     // 写进去了（只是没生效）：和保存落地一样，草稿定下来之前的「撤销」过时了 / Written (just not applied): as when a save lands, undos from before the draft was fixed are stale
@@ -383,6 +411,13 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     // 已经挂着「没有生效」时按的「重试应用」：提示条的话和刚才一样，所以另说一句这次重试的结果，不让它悄无声息
     // 重试应用 pressed while 没有生效 already shows: the notice reads as before, so this retry's outcome is said separately instead of passing silently
     else if (from === 'apply') useToast().error(writtenNotApplied ? `重试也没有生效：${failureCause(reason)}` : step === 'validating' ? `重试没有通过校验：${reason}` : conflict.value ? '重试没有成功：这份配置在别处改过了，先重新读取' : `重试没有成功：${reason}`)
+    else if (!viewing) {
+      keepOnReturn = true
+      const why = conflict.value ? '这份配置在别处改过了' : stopped ? 'KixDNS 已停止' : down ? '连不上面板' : sentence(writtenNotApplied ? failureCause(reason) : reason)
+      useToast().error(writtenNotApplied ? `配置保存了，没有生效：${why}。回到配置页可以重试应用` : `配置${step === 'validating' ? '没有通过校验' : '没有保存成功'}：${why}。草稿留在配置页`)
+    }
+  } finally {
+    inFlight = null
   }
 }
 export const applyNow = () => void save('apply')
@@ -398,6 +433,29 @@ async function alreadySaved(content: unknown, sent: string): Promise<boolean> {
   return true
 }
 /**
+ * 回应丢了的那次保存其实写进去了：对照的那份换成它，之后又改的照样算修改；announce 时保存条说「已经保存过了」。
+ * 读不到面板就留着下次再比；草稿整份换过（放弃、重新读取、导入）就不再比
+ * The save whose answer was lost did land: the baseline becomes it and later edits still count as edits; with announce the save bar says 已经保存过了.
+ * When the panel cannot be read it is kept for next time; once the draft was replaced wholesale (discard, reload, import) it is dropped
+ */
+async function settleUnanswered(announce: boolean): Promise<boolean> {
+  const lost = unanswered
+  if (!lost) return false
+  if (lost.generation !== draftGeneration()) { unanswered = null; return false }
+  const current = await apiRequest<ConfigDocument>('/api/v1/config').catch(() => null)
+  if (!current) return false
+  unanswered = null
+  if (canonical(current.content) !== canonical(lost.content)) return false
+  rebaseApplied(JSON.parse(lost.sent) as Model)
+  validation.value = null
+  await load({ quiet: true, keepDraft: true, sent: lost.sent })
+  if (announce) {
+    const later = changeCount.value ? ` · 之后改的 ${changeCount.value} 处还没保存` : ''
+    finishStage('done', `${current.version_id ? `已经保存过了 · 版本 #${current.version_id}` : '已经保存过了'}${later}`)
+  }
+  return true
+}
+/**
  * 重新连上面板以后：「连不上面板」那句已经不对了，收起；没读到配置的整页重读；有没保存的修改时只刷新运行状态（草稿和文件散列不动，
  * 别处的改动照样在保存时发现），没有就整份重读
  * Back in touch with the panel: the 连不上面板 verdict is stale and goes; a page that never read the config reads it; with unsaved edits only the
@@ -407,6 +465,7 @@ export async function panelBack(): Promise<void> {
   if (stage.value === 'failed' && verdict.value === '连不上面板') finishStage('idle')
   if (busy.value) return
   if (!doc.value) { await load(); return }
+  if (await settleUnanswered(true)) return
   if (unsaved.value || conflict.value) {
     // 有没保存的修改时不重读文件，但运行状态读到了：因为连不上而挂着的「读取配置失败」收起 / With unsaved edits the file is not re-read, but the runtime did read: a 读取配置失败 left by the outage goes
     const refreshed = await refreshRuntime().then(() => true, () => false)

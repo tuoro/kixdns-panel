@@ -2,7 +2,7 @@
 import { ChevronLeft, ChevronRight, Plus, Search, X } from '@lucide/vue'
 import UiHelp from '../ui/UiHelp.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { SETTING_SECTIONS, settingShouldRender, settingSupported, settingValue, settingVisible, settingWritten, type SettingField, type SettingSection } from '../../config-editor/schema'
+import { SETTING_SECTIONS, settingShouldRender, settingSupported, settingValue, settingVisible, settingNeedsCapability, type SettingField, type SettingSection } from '../../config-editor/schema'
 import type { GlobalSettings } from '../../config-editor/types'
 import GeoDataEditor from './GeoDataEditor.vue'
 import UiDotText from '../ui/UiDotText.vue'
@@ -46,7 +46,7 @@ const query = computed(() => search.value.trim().toLowerCase())
 const allFields = SETTING_SECTIONS.flatMap((section) => section.fields)
 
 const visibleSections = computed(() => SETTING_SECTIONS.map((section) => {
-  const available = section.fields.filter((field) => shown(field) && (supported(field) || settingWritten(field, settings.value) || keptOff.has(field.key)))
+  const available = section.fields.filter((field) => shown(field) && (supported(field) || settingNeedsCapability(field, settings.value) || keptOff.has(field.key)))
   const matches = available.filter((field) => `${section.title} ${field.label} ${field.key}`.toLowerCase().includes(query.value))
   const relatedKeys = new Set(matches.flatMap((field) => [field.key, ...dependencyKeys(field)]))
   const fields = query.value
@@ -108,7 +108,7 @@ const versionMatches = computed(() => !query.value || '格式版本 version 配�
 const currentGroup = computed(() => groups.value.find((group) => group.id === current.value) ?? groups.value[0]!)
 const navSections = computed(() => SETTING_SECTIONS.map((section) => ({
   ...section,
-  fields: section.fields.filter((field) => shown(field) && (supported(field) || settingWritten(field, settings.value) || keptOff.has(field.key)) && settingShouldRender(field, settings.value, props.capabilities)),
+  fields: section.fields.filter((field) => shown(field) && (supported(field) || settingNeedsCapability(field, settings.value) || keptOff.has(field.key)) && settingShouldRender(field, settings.value, props.capabilities)),
 })).filter((section) => section.fields.length > 0))
 const currentSection = computed(() => navSections.value.find((section) => section.id === current.value))
 const paneSections = computed(() => (query.value ? visibleSections.value : currentSection.value ? [currentSection.value] : []))
@@ -265,7 +265,7 @@ function supported(field: SettingField): boolean {
           <template v-for="field in section.fields" :key="field.key">
             <div v-if="!supported(field)" class="ui-setrow ui-setrow--off">
               <span class="ui-setrow__label"><span>{{ labelFor(field) }}<i v-if="changed?.has(field.key)" class="ui-dot ui-dot--ink settings-dot" aria-hidden="true"></i></span><code v-if="query" class="settings-row__key">{{ field.key }}</code></span>
-              <span class="settings-row__readonly"><code>{{ readonlyValue(field) }}</code><span class="ui-tag">内核不支持</span><button v-if="settingWritten(field, settings)" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" @click="turnOff(field)">{{ field.type === 'boolean' ? '关掉' : '从配置里去掉' }}</button></span>
+              <span class="settings-row__readonly"><code>{{ readonlyValue(field) }}</code><span class="ui-tag">内核不支持</span><button v-if="settingNeedsCapability(field, settings)" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" @click="turnOff(field)">{{ field.type === 'boolean' ? '关掉' : '从配置里去掉' }}</button></span>
             </div>
             <label v-else-if="field.type === 'boolean'" class="ui-setrow ui-setrow--toggle" :class="{ 'ui-setrow--off': disabled(field) }">
               <span class="ui-setrow__label"><span>{{ labelFor(field) }}<i v-if="changed?.has(field.key)" class="ui-dot ui-dot--ink settings-dot" aria-hidden="true"></i></span><small v-if="noteFor(field)">{{ noteFor(field) }}</small><code v-if="query" class="settings-row__key">{{ field.key }}</code></span>

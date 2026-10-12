@@ -123,6 +123,23 @@ describe('「改了哪些」只报真正挪过的规则', () => {
   })
 })
 
+// 只由 a–f 组成的域名（cafe.de）也是域名：写出来是 CNAME，内核不支持 CNAME 时要挡住，和写出的配置一致
+// A domain made only of a–f letters (cafe.de) is still a domain: it is written as CNAME, so a kernel without CNAME support must block it, matching the export
+describe('写成域名的回答', () => {
+  beforeEach(() => resetTo(demoModel()))
+
+  it('cafe.de 这种域名算 CNAME，不当成 IP', async () => {
+    const { cnameInUse } = await import('./useConfigDocument')
+    model.mappings = [{ id: 9001, domain: 'nas.home', target: 'cafe.de', ttl: null, enabled: true }]
+    model.rules = model.rules.filter((r) => !(r.outcome.type === 'answer' && r.outcome.kind === 'cname'))
+    model.ruleGroups = model.ruleGroups.map((g) => ({ ...g, rules: g.rules.filter((r) => !(r.outcome.type === 'answer' && r.outcome.kind === 'cname')) }))
+    expect(JSON.stringify(exportConfig(model))).toContain('cafe.de')
+    expect(cnameInUse.value).toBe(true)
+    model.mappings = [{ id: 9001, domain: 'nas.home', target: '192.168.1.2, fd00::2', ttl: null, enabled: true }]
+    expect(cnameInUse.value).toBe(false)
+  })
+})
+
 describe('内核给的英文原因', () => {
   beforeEach(() => resetTo(demoModel()))
 

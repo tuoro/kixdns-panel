@@ -182,6 +182,8 @@ body { background: var(--l-canvas); }
 .cfg__facts .cfg__head-start { margin-left: var(--s-1); }
 /* 861–959 有侧栏、又有「启动」时一排放不下四项：「上游组」先收起（同系统页 960 以下收起 PID） / At 861–959, with the sidebar and 启动 present, four facts do not fit: 上游组 gives way first (as the system page drops PID below 960) */
 @media (min-width: 861px) and (max-width: 959px) { .cfg__facts:has(.cfg__head-start) .cfg__fact-groups { display: none; } }
+/* 861–876 停着又有待应用版本时（「已停止 · 待应用」加「启动」）三项也放不下：「规则」接着收起，不折成两行 / At 861–876, stopped with a pending version (已停止 · 待应用 plus 启动), three facts still do not fit: 规则 gives way next instead of wrapping */
+@media (min-width: 861px) and (max-width: 876px) { .cfg__facts--long:has(.cfg__head-start) .cfg__fact-rules { display: none; } }
 .rules-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-5); align-items: start; }
 @media (min-width: 1360px) {
   .rules-split.is-open { grid-template-columns: minmax(0, 1fr) var(--inspector-w); }
@@ -1424,7 +1426,8 @@ body { background: var(--l-canvas); }
   .rw__row .ui-menu-host .ui-icon-btn { position: relative; width: var(--s-6); height: calc(var(--h-tag) + var(--s-1)); }
   /* 上面紧挨着开关，竖向只补 8；横向补到 44，左右都没有别的按钮 / The switch sits right above, so it grows only 8 vertically; horizontally it grows to 44, with nothing beside it */
   .rw__row .ui-menu-host .ui-icon-btn::before { position: absolute; inset: calc(var(--s-2) * -1) calc(min(0px, (100% - var(--h-touch)) / 2)); content: ''; }
-  .rw__edit { grid-template-columns: minmax(0, 1fr) var(--h-sm) var(--h-sm); }
+  /* 手机上图标按钮是 36：列也给 36，✓ 和 × 之间留出整条缝，两个的点按区域各补到 44、互不压住 / Icon buttons are 36 on phones: so are the columns, leaving the whole gap between ✓ and × so each tap area reaches 44 without covering the other */
+  .rw__edit { grid-template-columns: minmax(0, 1fr) var(--h-md) var(--h-md); }
   .rw__edit > :nth-child(1), .rw__edit > :nth-child(2) { grid-column: 1 / -1; }
   .rgroups__head > .ui-btn { grid-area: btn; }
 }

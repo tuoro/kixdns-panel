@@ -288,7 +288,7 @@ function saveEntries(): void {
 
       <section class="rgroups" aria-labelledby="rg-title">
         <header class="rgroups__head">
-          <div><h2 id="rg-title" class="rgroups__title">规则组<UiHelp topic="groups" /></h2><p class="rgroups__desc">一组单独的规则。请求由「转到规则组」带进来，或者按监听标签直接进来。</p></div>
+          <div><h2 id="rg-title" class="rgroups__title">规则组<UiHelp topic="groups" /></h2><p class="rgroups__desc">一组单独的规则。请求由「转到规则组」带进来，或者按<span class="nowrap">监听标签</span>直接进来。</p></div>
           <button class="ui-btn ui-btn--secondary" type="button" @click="openGroup(null)"><Plus :size="16" aria-hidden="true" />新建规则组</button>
         </header>
         <section v-if="model.entries?.length" class="ui-card rcard entries" aria-labelledby="ent-title">

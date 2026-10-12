@@ -18,7 +18,7 @@ onMounted(() => { ui.settingsGroup = '' })
 const hidden = computed(() => ([...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].some((r) => r.raw) || model.rawPipelines?.length ? [] : ['default_upstream']))
 const blockItems = [{ value: 'NXDOMAIN', label: 'NXDOMAIN' }, { value: 'REFUSED', label: 'REFUSED' }, { value: 'zero', label: '空地址' }]
 const blockNote: Record<string, string> = {
-  NXDOMAIN: '告诉客户端域名不存在，大多数设备立刻放弃，不再重试',
+  NXDOMAIN: '告诉客户端域名不存在，大多数设备立刻放弃，不再重\u2060试',
   REFUSED: '告诉客户端拒绝回答，有的设备会换一台 DNS 再问',
   zero: '回答 0.0.0.0 和 ::，浏览器连不上，但能看出是被拦了',
 }

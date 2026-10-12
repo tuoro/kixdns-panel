@@ -148,8 +148,8 @@ function onRuleLink(id: number): void { dialog.value?.close(); emit('rule', id) 
       </ol>
       <p v-else class="hist__empty">还没有保存过版本</p>
       <!-- 批量删除从底栏进出，页头只有标题和关闭 / Bulk delete is entered and left from the footer; the header holds only the title and close -->
-      <footer v-if="selecting" class="pdrawer__foot"><button class="ui-btn ui-btn--secondary" type="button" :disabled="bulkDeleting" @click="selecting = false; picked = []">取消</button><span class="editor__spacer"></span><button class="ui-btn ui-btn--danger" type="button" :disabled="!picked.length || bulkDeleting" @click="removePicked">{{ picked.length ? `删除 ${picked.length} 个版本` : '删除所选' }}</button></footer>
-      <footer v-else-if="deletable.length" class="pdrawer__foot hist__foot"><button class="ui-btn ui-btn--danger hist__bulk" type="button" @click="selecting = true; picked = []"><Trash2 :size="16" aria-hidden="true" />批量删除</button></footer>
+      <footer v-if="selecting" class="pdrawer__foot"><button class="ui-btn ui-btn--secondary" type="button" :disabled="bulkDeleting" @click="selecting = false; picked = []">取消</button><span class="editor__spacer"></span><button class="ui-btn ui-btn--danger" type="button" :disabled="!picked.length || bulkDeleting || panelDown" @click="removePicked">{{ picked.length ? `删除 ${picked.length} 个版本` : '删除所选' }}</button></footer>
+      <footer v-else-if="deletable.length" class="pdrawer__foot hist__foot"><button class="ui-btn ui-btn--danger hist__bulk" type="button" :disabled="panelDown" @click="selecting = true; picked = []"><Trash2 :size="16" aria-hidden="true" />批量删除</button></footer>
     </aside>
     <dialog ref="diffDialog" class="pdialog diffd" aria-labelledby="diff-title" @cancel.prevent="closeDiff" @click.self="closeDiff">
       <div v-if="preview" class="pdialog__panel diffd__panel">
@@ -165,7 +165,7 @@ function onRuleLink(id: number): void { dialog.value?.close(); emit('rule', id) 
           </template>
           <p v-else-if="blocks" class="hist__empty">这个版本和当前的配置一样，恢复它不会改变什么。</p>
         </div>
-        <footer v-if="blocks && blocks.length" class="pdialog__foot"><button class="ui-btn ui-btn--secondary" type="button" @click="closeDiff">关闭</button><button class="ui-btn ui-btn--primary" type="button" @click="restore(preview)">恢复为版本 #{{ preview.id }}</button></footer>
+        <footer v-if="blocks && blocks.length" class="pdialog__foot"><button class="ui-btn ui-btn--secondary" type="button" @click="closeDiff">关闭</button><button class="ui-btn ui-btn--primary" type="button" :disabled="busy || panelDown" @click="restore(preview)">恢复为版本 #{{ preview.id }}</button></footer>
       </div>
     </dialog>
   </dialog>

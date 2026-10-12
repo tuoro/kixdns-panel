@@ -12,7 +12,7 @@ import { useConfirm } from '../composables/useConfirm'
 import { useConnection } from '../composables/useConnection'
 import { dismissUndoable, useToast } from '../composables/useToast'
 import { exportConfig, readConfig } from '../config-model/document'
-import { compile, ruleTitle, type Model, type Rule, type UpstreamGroup } from '../config-model/model'
+import { compile, mappingIsIp, ruleTitle, type Model, type Rule, type UpstreamGroup } from '../config-model/model'
 import GroupEditor from '../config-v2/GroupEditor.vue'
 import HistoryDrawer from '../config-v2/HistoryDrawer.vue'
 import ImportReportDialog from '../config-v2/ImportReportDialog.vue'
@@ -25,7 +25,7 @@ import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, panelBack, save, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, unsupportedSection } from '../config-v2/useConfigDocument'
+import { applyBusy, busy, conflict, onlySaving, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, panelBack, save, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, unsupportedSection } from '../config-v2/useConfigDocument'
 import { useHelp } from '../composables/useHelp'
 import { useServiceStart } from '../composables/useServiceStart'
 import { registerLeaveGuard, takeAgreement } from '../composables/useLeaveGuard'
@@ -162,11 +162,13 @@ const notice = computed<Notice | null>(() => {
   if (hasApplyFailure.value) {
     const reason = doc.value?.runtime.pending_error || doc.value?.pending?.error || 'KixDNS 没有给出原因。'
     // 草稿有修改时不给「重试应用」：那时保存的是草稿，重试会把草稿当成失败的那个版本发出去 / No retry while the draft has changes: saving then sends the draft, not the version that failed
-    const retry = canApplyNow.value && !unsaved.value && !panelDown.value
+    const retry = canApplyNow.value && !unsaved.value && !panelDown.value && !conflict.value
+    // 重试撞上「别处改过了」：再重试还是撞上，按钮换成重新读取 / A retry that met 别处改过了 would meet it again: the button becomes 重新读取
+    const reread = conflict.value && !panelDown.value
     // 挡住重试的是内核不支持的设置时，这一条也说清它和出路（不支持的那条提示排在后面，这时显示不出来） / When unsupported settings block the retry, this notice names them and the way out too (the unsupported notice ranks below and cannot show)
     const blocked = !retry && unsupportedFields.value.length > 0
     const cause = failureCause(reason).replace(/。$/, '')
-    return { tone: 'err', text: pendingVersionId.value ? `版本 #${pendingVersionId.value} 没有生效，仍在用之前那份配置。` : '上次保存的版本没有生效，仍在用之前那份配置。', detail: blocked ? `${cause}。当前内核不支持：${unsupportedFields.value.join('、')}，先在基础设置里关掉。` : cause, action: retry ? '重试应用' : blocked && section.value !== 'settings' ? '去基础设置' : undefined, run: retry ? () => save('apply') : goUnsupported }
+    return { tone: 'err', text: pendingVersionId.value ? `版本 #${pendingVersionId.value} 没有生效，仍在用之前那份配置。` : '上次保存的版本没有生效，仍在用之前那份配置。', detail: blocked ? `${cause}。当前内核不支持：${unsupportedFields.value.join('、')}，先在基础设置里关掉。` : cause, action: reread ? '重新读取' : retry ? '重试应用' : blocked && section.value !== 'settings' ? '去基础设置' : undefined, run: reread ? () => reload() : retry ? () => save('apply') : goUnsupported }
   }
   if (applyError.value) { const [text, ...detail] = applyError.value.split('\n'); return { tone: 'err', text: `${text}。`, detail: detail.join('\n') } }
   // 警告排在说明前面：永远不命中的规则比导入说明要紧 / Warnings rank above information: a rule that never matches matters more than the import notes
@@ -178,11 +180,11 @@ const notice = computed<Notice | null>(() => {
   if (!canCname.value && cnameInUse.value && !capabilityError.value) {
     const them = cnamePlaces.value.total > 1 ? '它们' : '它'
     // 同时还有开着的不支持的设置：一条提示把两件事都说了，保存条说的「有 N 项」和这里对得上 / Unsupported settings switched on as well: one notice says both, so the bar's 「有 N 项」 matches it
-    if (unsupportedFields.value.length) return { tone: 'warn', text: `当前内核不支持：CNAME 回答、${unsupportedFields.value.join('、')}。有 ${cnamePlaces.value.total}\u00a0处回答写的是域名，要把${them}改成 IP；开着的设置要在基础设置里关掉。或者更新内核。`, action: section.value === 'settings' ? (cnamePlaces.value.mappings ? '去域名映射' : undefined) : '去基础设置', run: () => (section.value === 'settings' ? setTab('mapping') : goUnsupported()) }
+    if (unsupportedFields.value.length) return { tone: 'warn', text: `当前内核不支持：${unsupportedFields.value.join('、')}、CNAME 回答。在基础设置里关掉${unsupportedFields.value.map((f) => `「${f}」`).join('、')}，把 ${cnamePlaces.value.total}\u00a0处写成域名的回答改成 IP，或者更新内核。`, action: section.value === 'settings' ? (cnamePlaces.value.mappings ? '去域名映射' : undefined) : '去基础设置', run: () => (section.value === 'settings' ? setTab('mapping') : goUnsupported()) }
     return { tone: 'warn', text: `当前内核不支持 CNAME 回答：有 ${cnamePlaces.value.total}\u00a0处回答写的是域名，KixDNS 不会接受这份配置。把${them}改成 IP，或者更新内核。`, action: cnamePlaces.value.mappings && section.value !== 'mapping' ? '去域名映射' : undefined, run: () => setTab('mapping') }
   }
   // KixDNS 不接受带着它不支持的设置的配置：说清这一点和两条出路，按钮直接去基础设置 / KixDNS refuses a config carrying settings it does not support: say so with the two ways out, the button going straight to the settings
-  if (unsupportedFields.value.length) { const many = unsupportedFields.value.length > 1; return { tone: 'warn', text: `当前内核不支持：${unsupportedFields.value.join('、')}。${many ? '它们' : '这一项'}开着时这份配置存不了（这个内核没有这项功能，开着也不起作用）：在基础设置里点${many ? '每一项' : '它'}旁边的「关掉」，或者更新内核。`, action: section.value === 'settings' ? undefined : '去基础设置', run: goUnsupported } }
+  if (unsupportedFields.value.length) { const many = unsupportedFields.value.length > 1; return { tone: 'warn', text: `当前内核不支持：${unsupportedFields.value.join('、')}。开着也不起作用，关掉才能保存：在基础设置里点${many ? '' : '它旁边的'}「关掉」，或者更新内核。`, action: section.value === 'settings' ? undefined : '去基础设置', run: goUnsupported } }
   return null
 })
 function goUnsupported(): void {
@@ -191,7 +193,7 @@ function goUnsupported(): void {
 }
 // 写成域名的回答有几处：域名映射和规则（含规则组）分开数 / How many answers are domains: mappings and rules (rule groups included) counted apart
 const cnamePlaces = computed(() => {
-  const mappings = model.mappings.filter((m) => m.enabled && !/^[\d.:a-f, ]+$/i.test(m.target)).length
+  const mappings = model.mappings.filter((m) => m.enabled && !mappingIsIp(m)).length
   const rules = [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].filter((r) => r.outcome.type === 'answer' && r.outcome.kind === 'cname').length
   return { mappings, total: mappings + rules }
 })
@@ -277,7 +279,8 @@ const moreItems = computed(() => [
   { value: 'mode', label: ui.mode === 'json' ? '回到表单' : '查看 JSON', icon: ui.mode === 'json' ? Settings2 : Braces, disabled: !ready.value },
   { value: 'import', label: '导入 JSON', icon: FileUp, disabled: !ready.value },
   { value: 'download', label: '下载 JSON', icon: Download, disabled: !ready.value },
-  { value: 'reload', label: '重新读取配置', icon: RefreshCw, disabled: loading.value },
+  // 连不上面板时读不到，按了只会失败 / Unreachable panel: the read can only fail
+  { value: 'reload', label: '重新读取配置', icon: RefreshCw, disabled: loading.value || panelDown.value },
   // 手机的保存条放不下「放弃修改」，放在这里；桌面的保存条上一直有 / The phone save bar has no room for 放弃修改, so it lives here; the desktop bar always shows it
   ...(phone.value && unsaved.value ? [{ value: 'discard', label: '放弃修改', icon: Undo2 }] : []),
   { value: 'help', label: '帮助', icon: CircleHelp },
@@ -343,7 +346,8 @@ async function reload(ask = true): Promise<void> {
 // 只有规则编辑里没点「完成」的、或开着的抽屉里的修改时，问的是那一样；草稿或 JSON 有修改时问整份草稿
 // With only a rule edit not yet 完成, or an open drawer's edits, the question names that one thing; with draft or JSON edits it is about the whole draft
 const askLeave = async (): Promise<boolean> => {
-  if (!unsaved.value) return true
+  // 正在保存、之后没再改：保存照常做完，结果会用提示说，不问「放弃」（问了也放弃不了） / Saving with nothing changed since: the save finishes and a toast tells its outcome, so no 放弃 question (it could not discard anyway)
+  if (!unsaved.value || onlySaving()) return true
   if (!dirty.value && !jsonDirty.value) return confirm.ask({ title: `放弃${editorEdited.value ? '这条规则' : [...dialogEdits.values()][0] ?? '这条规则'}的修改`, body: '刚才在这里改的内容不会写进草稿。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
   return confirm.ask({ title: '放弃未保存的修改', body: '当前的配置草稿会被丢弃，已经生效的配置不受影响。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
 }
@@ -361,12 +365,16 @@ onMounted(() => {
   ui.mode = 'form'
   // 刷新后编辑器不在了，地址里的 ?rule= 也去掉 / After a reload the editor is gone, so ?rule= leaves the address too
   if (route.query.rule) void router.replace({ query: { ...route.query, rule: undefined } })
-  void load()
+  // 离开时还在保存：那次保存做完会自己重读，这里不读，免得把旧文件换进草稿；离开后没保存成功的草稿留着，保存条上失败的说法也留着
+  // Still saving from before leaving: that save re-reads when done, so no read here (it would put the old file into the draft); a draft whose save failed
+  // after leaving stays, and so does what the save bar said about the failure
+  const keep = setViewing(true)
+  if (!busy.value) void load(keep ? { quiet: true, keepDraft: true } : {})
   window.addEventListener('beforeunload', beforeUnload)
 })
 const beforeUnload = (e: BeforeUnloadEvent) => { if (unsaved.value) { e.preventDefault(); e.returnValue = '' } }
 // 带「撤销」的提示只对这一页的草稿有用：离开时一起收起（会话过期跳到登录页时也不会留着） / Undo toasts only make sense for this page's draft: they go when it unmounts (including a jump to the login page on session expiry)
-onBeforeUnmount(() => { window.removeEventListener('beforeunload', beforeUnload); releaseGuard(); dismissUndoable(); ui.mode = 'form'; jsonEdited.value = false })
+onBeforeUnmount(() => { setViewing(false); window.removeEventListener('beforeunload', beforeUnload); releaseGuard(); dismissUndoable(); ui.mode = 'form'; jsonEdited.value = false })
 onBeforeRouteLeave(async () => takeAgreement() || askLeave())
 // 换分区、或者从整页编辑按返回：规则编辑里没点「完成」的修改先问一句；同意了就关掉编辑
 // Switching section, or pressing back out of the full-page editor: first ask about rule edits not yet 完成; once agreed the editor closes
@@ -409,11 +417,11 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
         <span v-if="!ready && !loadError" class="cfg__status-sk"><i class="sk"></i></span>
         <!-- 宽屏：标题下一排事实（状态、配置版本、规则数、上游组数）；手机：一行状态 / Wide: a facts row under the title (state, config version, rule count, upstream groups); phones: one status line -->
         <!-- 没读到配置时宽屏也是这一排，只写状态；版本、规则数、上游组数等读到再写 / Without a config read the wide header keeps this row with the state only; version, rule and group counts wait for the read -->
-        <span v-else-if="!phone && !firstRun" class="ui-facts cfg__facts" :role="applyBusy ? 'status' : undefined">
+        <span v-else-if="!phone && !firstRun" class="ui-facts cfg__facts" :class="{ 'cfg__facts--long': (headerLine.wide?.length ?? 0) > 1 }" :role="applyBusy ? 'status' : undefined">
           <span><span class="ui-lbl">状态</span><b><span v-if="applyBusy" class="ui-spin cfg__spin" aria-hidden="true"></span><span v-else class="ui-dot" :class="headerLine.tone === 'ok' ? '' : `ui-dot--${headerLine.tone}`" aria-hidden="true"></span><UiDotText :parts="headerLine.wide ?? [headerLine.lead ?? `${headerLine.before}${headerLine.version ?? ''}${headerLine.after ?? ''}`]" /><button v-if="headerAction && ready" class="cfg__head-action" type="button" @click="applyNow">{{ headerAction }}</button><button v-else-if="runtimeStopped && ready && !panelDown" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline cfg__head-start" type="button" :disabled="starting" @click="startKixdns">启动</button></b></span>
           <template v-if="doc">
           <span><span class="ui-lbl">配置版本</span><b>{{ versionLabel }}</b></span>
-          <span><span class="ui-lbl">规则</span><b>{{ ruleCount }} 条</b></span>
+          <span class="cfg__fact-rules"><span class="ui-lbl">规则</span><b>{{ ruleCount }} 条</b></span>
           <span class="cfg__fact-groups"><span class="ui-lbl">上游组</span><b>{{ model.groups.length }} 个</b></span>
           </template>
         </span>
