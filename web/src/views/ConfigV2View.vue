@@ -25,7 +25,7 @@ import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, busy, cnameAnswers, conflict, onlySaving, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, unsupportedSection } from '../config-v2/useConfigDocument'
+import { applyBusy, busy, cnameAnswers, conflict, dropEditsAfterSave, onlySaving, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, unsupportedSection } from '../config-v2/useConfigDocument'
 import { useHelp } from '../composables/useHelp'
 import { useServiceStart } from '../composables/useServiceStart'
 import { registerLeaveGuard, takeAgreement } from '../composables/useLeaveGuard'
@@ -347,7 +347,12 @@ const askLeave = async (): Promise<boolean> => {
   if (!unsaved.value || onlySaving()) return true
   if (!dirty.value && !jsonDirty.value) return confirm.ask({ title: `放弃${editorEdited.value ? '这条规则' : [...dialogEdits.values()][0] ?? '这条规则'}的修改`, body: '刚才在这里改的内容不会写进草稿。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
   // 正在保存时又改过：正在保存的那份照常落地，丢掉的只是之后改的 / Edited again during a save: the part being saved still lands, only the later edits are dropped
-  if (busy.value) return confirm.ask({ title: '放弃保存之后的修改', body: '正在保存的那份照常保存，保存开始以后改的会丢掉。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
+  // 同意了就把草稿退回正在保存的那一份：保存没成功时回来看到的正是它，不会冒出说好丢掉的那几处 / On agreement the draft goes back to the one being saved: a failed save brings back exactly that, not the edits agreed to drop
+  if (busy.value) {
+    const agreed = await confirm.ask({ title: '放弃保存之后的修改', body: '正在保存的那份照常保存，保存开始以后改的会丢掉。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
+    if (agreed) dropEditsAfterSave()
+    return agreed
+  }
   return confirm.ask({ title: '放弃未保存的修改', body: '当前的配置草稿会被丢弃，已经生效的配置不受影响。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
 }
 const releaseGuard = registerLeaveGuard(askLeave, () => unsaved.value)
@@ -368,7 +373,12 @@ onMounted(() => {
   // Still saving from before leaving: that save re-reads when done, so no read here (it would put the old file into the draft); a draft whose save failed
   // after leaving stays, and so does what the save bar said about the failure
   const keep = setViewing(true)
-  if (!busy.value) void load(keep ? { quiet: true, keepDraft: true } : {})
+  // 留着的草稿撞上过「别处改过了」：只刷新运行状态，文件散列和对照的那份等「重新读取」再换（和在页面上撞上时一样），
+  // 否则「放弃修改」会把别处的改动也算成自己的
+  // A kept draft that met 别处改过了: refresh the runtime only and leave the file hash and baseline for 重新读取 (as when it happens on the page);
+  // otherwise 放弃修改 would count the other writer's change as one's own
+  if (keep && conflict.value) void refreshRuntime().catch(() => undefined)
+  else if (!busy.value) void load(keep ? { quiet: true, keepDraft: true } : {})
   window.addEventListener('beforeunload', beforeUnload)
 })
 const beforeUnload = (e: BeforeUnloadEvent) => { if (unsaved.value) { e.preventDefault(); e.returnValue = '' } }
@@ -445,7 +455,8 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
       <button v-if="notice.action" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="applyBusy" @click="runNotice">{{ notice.action }}</button>
     </div>
 
-    <input ref="fileInput" class="visually-hidden" type="file" accept=".json,application/json" @change="importFile">
+    <!-- 只由菜单里的「导入 JSON」打开：不进 Tab 顺序，读屏也不念一个没名字的「选择文件」 / Opened only by 导入 JSON in the menu: out of the Tab order, and screen readers do not announce a nameless "choose file" -->
+    <input ref="fileInput" class="visually-hidden" type="file" accept=".json,application/json" tabindex="-1" aria-hidden="true" @change="importFile">
     <!-- 侧栏收起时（≤860）分区页签在这一行；宽屏上分区在侧栏里，这一行只在 JSON 视图时出现（≥861 由 CSS 藏起页签）
          With the sidebar folded (≤860) the section tabs sit on this row; on wide screens sections live in the sidebar and the row shows only in the JSON view (CSS hides the tabs at ≥861) -->
     <div v-if="!firstRun && (compact || ui.mode === 'json')" class="cfg__nav" :class="{ 'cfg__nav--json': ui.mode === 'json' }">

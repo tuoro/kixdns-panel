@@ -335,6 +335,43 @@ test('保存途中离开，保存没成功：提示说清楚，回到配置页�
   await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
 })
 
+// 保存还没做完人已经离开：刷新或关掉浏览器先问一句（草稿只在内存里） / A save still running after leaving: reloading or closing the browser asks first (the draft lives only in memory)
+test('保存途中离开：保存还没做完时刷新浏览器先问', async ({ page }) => {
+  await page.goto('/config')
+  await addRule(page, 'unload.example')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-save-slow', 'true'))
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar).toContainText('写入并应用')
+  await page.getByRole('link', { name: '日志', exact: true }).click()
+  await expect(page).toHaveURL(/\/logs/)
+  expect(await page.evaluate(() => { const event = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(event); return event.defaultPrevented })).toBe(true)
+  await expect(page.locator('.toast', { hasText: /版本 #\d+ 已生效/ })).toBeVisible({ timeout: 5000 })
+  // 保存做完、草稿没有别的修改了：不再拦着 / The save is done and nothing else is unsaved: no longer guarded
+  expect(await page.evaluate(() => { const event = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(event); return event.defaultPrevented })).toBe(false)
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
+})
+
+// 保存途中又改了一笔，离开时同意丢掉它：保存没成功，回来看到的是正在保存的那一份，不会冒出说好丢掉的那一笔
+// One more edit during a save, agreed to drop on leaving: the save fails, and coming back shows the draft being saved, not the edit agreed to drop
+test('保存途中离开时丢掉之后的修改：保存没成功回来也不再出现', async ({ page }) => {
+  await page.goto('/config')
+  await addRule(page, 'saving.example')
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-save-slow', 'true'); localStorage.setItem('kixdns:demo-save-conflict', 'true') })
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar).toContainText('写入并应用')
+  await addRule(page, 'dropped.example', 'block')
+  await page.getByRole('link', { name: '日志', exact: true }).click()
+  await page.locator('dialog.confirm[open]').getByRole('button', { name: '放弃修改' }).click()
+  await expect(page).toHaveURL(/\/logs/)
+  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('没有保存成功：这份配置在别处改过了。草稿留在配置页')
+  await page.getByRole('link', { name: '规则', exact: true }).click()
+  await expect(page.locator('[data-rule]', { hasText: 'saving.example' })).toBeVisible()
+  await expect(page.locator('[data-rule]', { hasText: 'dropped.example' })).toHaveCount(0)
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
+})
+
 // 保存途中离开到概览：「版本 #N 已生效」落地时概览马上重读，页头不再写上一个版本 / Leaving for the overview mid-save: when 「版本 #N 已生效」 lands the overview re-reads at once, so its header no longer names the previous version
 test('保存途中离开到概览：提示说已生效时概览也是新版本', async ({ page }) => {
   await page.goto('/config')

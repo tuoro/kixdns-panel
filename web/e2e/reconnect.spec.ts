@@ -254,3 +254,19 @@ test('回应丢了时已经离开配置页：连上后照样核对，回来不�
   await expect(page.locator('.cfg__savebar', { hasText: '连不上面板' })).toHaveCount(0)
   await expect(page.locator('[data-rule]', { hasText: 'away-lost.example.org' }).getByLabel('改过，还没保存')).toHaveCount(0)
 })
+
+// 回应丢了以后草稿整份换过（放弃修改又撤销）：面板上的文件还是自己那次保存的，连上后照样认出来，再保存不说「别处改过了」
+// After a lost answer the draft was replaced wholesale (discard, then undo): the file on the panel is still one's own save, so after reconnecting it is still
+// recognised and the next save does not say 别处改过了
+test('回应丢了后放弃又撤销：连上后再存不说别处改过了', async ({ page }) => {
+  await loseAnswerThenEdit(page)
+  await page.locator('.cfg__savebar').getByRole('button', { name: '放弃修改' }).click()
+  await page.locator('.toast').getByRole('button', { name: '撤销' }).click()
+  await expect(page.locator('[data-rule]', { hasText: 'later.example.org' })).toBeVisible()
+  await panelDown(page, false)
+  await expect(banner(page)).toHaveCount(0, { timeout: 10_000 })
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar).toContainText(/已生效\s*·\s*版本 #\d+/)
+  await expect(bar).not.toContainText('别处改过了')
+})

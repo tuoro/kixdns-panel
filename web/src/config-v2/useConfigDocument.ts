@@ -1,5 +1,6 @@
 import { computed, ref, watch } from 'vue'
 import { ApiError, CONFIG_WRITTEN_EVENT, apiRequest, isPanelDown, jsonBody } from '../api/client'
+import { registerHeldDraft } from '../composables/useLeaveGuard'
 import type { ConfigApplyResult, ConfigDocument, ConfigRuntimeApplyState, ConfigVersion, ConfigVersionDetail, ConfigVersions, DeleteConfigVersionResult, DeleteConfigVersionsResult, Overview, ServiceStatus, ValidationResult } from '../api/types'
 import { SETTING_SECTIONS, settingNeedsCapability, settingSupported } from '../config-editor/schema'
 import { exportConfig, readConfig } from '../config-model/document'
@@ -8,7 +9,7 @@ import { traceNames } from '../config-model/trace-names'
 import { useConnection } from '../composables/useConnection'
 import { dismissUndoable, toastMark, useToast } from '../composables/useToast'
 import { errorMessage } from '../utils'
-import { applyHits, applyUpstreamStats, changeCount, dialogEdits, dirty, draftGeneration, editorEdited, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, reportOpen, unsaved } from './store'
+import { applyHits, applyUpstreamStats, changeCount, dialogEdits, dirty, draftGeneration, editorEdited, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, replaceModel, reportOpen, unsaved } from './store'
 
 // 配置页和面板服务之间的事：读配置和历史、KixDNS 的运行状态和能力、校验、保存并热加载、现在应用。
 // 草稿本身在 store.ts；这里只管「文件」和「运行」。所有状态是模块级的，页面和保存条共用同一份。
@@ -337,15 +338,24 @@ let awayToast: number | null = null
 // The save whose answer was lost (written or not, unknown): once reconnected, or when the next save meets 别处改过了, compare the panel's config with it
 let unanswered: { content: unknown; sent: string; generation: number; sentAt: number } | null = null
 const announceWritten = () => { if (typeof window !== 'undefined') window.dispatchEvent(new Event(CONFIG_WRITTEN_EVENT)) }
-// 草稿只留在内存里时，刷新或关掉浏览器先问一句（配置页开着时由它自己问） / While a draft lives only in memory, reloading or closing the browser asks first (the config page asks itself while open)
-const guardKeptDraft = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
+// 不在配置页时草稿还在内存里（正在保存，或者没保存成功留着）：刷新、关掉浏览器先问一句；配置页开着时由它自己问
+// Away from the config page with a draft still in memory (a save in flight, or one that failed and is kept): reloading or closing the browser asks first; while
+// the config page is open it asks itself
+export const draftHeldAway = (): boolean => !viewing && (busy.value || keepOnReturn)
+if (typeof window !== 'undefined') window.addEventListener('beforeunload', (event) => { if (draftHeldAway()) { event.preventDefault(); event.returnValue = '' } })
+// 会话过期跳到登录页时，不在配置页的这份草稿也算丢了：登录页照实说，回来时不再拿它充数（两种时机结果一样）
+// When the session expires and the app goes to the login page, a draft held away from the config page counts as lost too: the login page says so, and it
+// is not brought back on return (both timings end the same)
+registerHeldDraft(draftHeldAway, () => { keepOnReturn = false })
 function keepDraftForReturn(): void {
-  if (!keepOnReturn && typeof window !== 'undefined') window.addEventListener('beforeunload', guardKeptDraft)
   keepOnReturn = true
 }
 function dropKeptDraft(): void {
   keepOnReturn = false
-  if (typeof window !== 'undefined') window.removeEventListener('beforeunload', guardKeptDraft)
+}
+/** 离开时同意丢掉保存开始以后改的：草稿退回正在保存的那一份，保存没成功时回来看到的就是它 / Agreed to drop the edits made after the save began: the draft goes back to the one being saved, which is what a failed save brings back */
+export function dropEditsAfterSave(): void {
+  if (inFlight !== null) replaceModel(JSON.parse(inFlight) as Model)
 }
 function dismissAwayToast(): void {
   if (awayToast !== null) useToast().dismiss(awayToast)
@@ -487,10 +497,13 @@ async function alreadySaved(content: unknown, sent: string): Promise<boolean> {
 async function settleUnanswered(announce: boolean): Promise<boolean> {
   const lost = unanswered
   if (!lost) return false
-  if (lost.generation !== draftGeneration()) { unanswered = null; return false }
   const current = await apiRequest<ConfigDocument>('/api/v1/config').catch(() => null)
   if (!current) return false
   unanswered = null
+  // 草稿整份换过（放弃又撤销、导入）也照样比：面板上的文件和对照的那份跟草稿是怎么来的无关；只有「已经保存过了」这句要草稿还是那一份
+  // Compared even after the draft was replaced wholesale (discard then undo, an import): the file on the panel and the baseline do not depend on how the
+  // draft came about; only the 已经保存过了 line needs the draft to be the same one
+  const sameDraft = lost.generation === draftGeneration()
   if (canonical(current.content) !== canonical(lost.content)) {
     // 不在配置页时，「不知道存上没有」那条提示换成核对的结果 / Away from the config page, the 不知道存上没有 toast is replaced by the result
     if (!viewing && awayToast !== null) { dismissAwayToast(); awayToast = useToast().error('刚才那次保存没有存上，草稿留在配\u2060置\u2060页，回去再保存') }
@@ -503,7 +516,7 @@ async function settleUnanswered(announce: boolean): Promise<boolean> {
   await load({ quiet: true, keepDraft: true, sent: lost.sent })
   announceWritten()
   const version = current.version_id ? `版本 #${current.version_id}` : ''
-  if (announce) {
+  if (announce && sameDraft) {
     const later = changeCount.value ? ` · 之后改的 ${changeCount.value} 处还没保存` : ''
     finishStage('done', `${version ? `已经保存过了 · ${version}` : '已经保存过了'}${later}`)
   }
