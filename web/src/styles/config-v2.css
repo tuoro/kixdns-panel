@@ -29,6 +29,8 @@ body { background: var(--l-canvas); }
 .cfg__head-action:hover { text-decoration-color: var(--l-ink); }
 .cfg__spin { width: var(--size-icon-sm); height: var(--size-icon-sm); }
 .cfg__status-sk { width: 9rem; }
+/* 重新读取、恢复版本还在读：内容调淡、不能改，读回来再恢复 / A re-read or restore is still reading: the content dims and takes no edits until it lands */
+.cfg__panel[aria-busy="true"], .cfg__json[aria-busy="true"] { opacity: .6; transition: opacity var(--m-quick) var(--ease-out); }
 .cfg__notice { margin-top: calc(var(--s-1) * -1); }
 .cfg__notice .ui-objlink, .ui-savebar .ui-objlink { font-size: inherit; color: inherit; text-decoration-color: currentColor; }
 .cfg__json { display: grid; gap: var(--s-3); }
@@ -1753,8 +1755,9 @@ body { background: var(--l-canvas); }
 /* 历史版本：「批量删除」是红字的文字按钮，不再是底栏里最重的东西 / History: 批量删除 is a red text button, no longer the heaviest thing in the footer */
 .hist__bulk { position: relative; margin-left: 0; border-color: transparent; background: transparent; box-shadow: none; padding-inline: 0; color: var(--l-ink-2); }
 .hist__bulk:hover:not(:disabled) { color: var(--l-ink); }
-/* 当前版本的「…」不画，只留它那一格，标签仍对齐同一条右边 / The current version's 「…」 is not drawn, only its slot remains, so tags still share one right edge */
-.hist__menu button:disabled { visibility: hidden; }
+/* 当前版本的「…」不画，只留它那一格，标签仍对齐同一条右边；只管这个占位按钮，菜单里停用的项照常灰着显示
+   The current version's 「…」 is not drawn, only its slot remains, so tags still share one right edge; only this placeholder, so disabled menu items still show greyed */
+.hist__menu > .ui-icon-btn:disabled { visibility: hidden; }
 /* 历史版本：每一行都留着「…」那一格（当前版本那一格空着），状态标签全在同一条右边 / History: every row keeps the 「…」 slot (empty on the current version), so status tags share one right edge */
 /* 历史版本：行之间一条细线；当前版本也留着「…」那一格，标签都靠同一条右边 / History: a hairline between rows; the current version keeps the 「…」 slot too, so every tag ends on the same right edge */
 .hist__row.is-current:not(:has(> .hist__check)) { grid-template-areas: "main main tags menu" "err err err ."; }
@@ -1817,6 +1820,10 @@ body { background: var(--l-canvas); }
   .rrow > .rrow__main::before, .rw__row > .rw__d::before { position: absolute; inset: 0; content: ''; }
   .rpin .rrow__main { position: relative; }
   .rpin .rrow__main::before { position: absolute; inset: calc(var(--s-2) * -1) 0; content: ''; }
+  /* 停用的行里调淡的结果、命中、回答、类型：半透明会把它们叠到整行点按区上面，让第二行点了没反应；它们本身不能点，点按穿过去
+     The dimmed outcome, hits, answer and type of a disabled row: the opacity lifts them above the row-wide hit area, leaving the second line dead; they are not
+     tappable themselves, so taps pass through */
+  .rrow.is-off > :is(.rrow__pill, .rrow__hits), .rw__row.is-off > :is(.rw__t, .rw__k) { pointer-events: none; }
 }
 
 /* ---------- 9.5 审查第一轮：保存条 / review round 1: the save bar ----------

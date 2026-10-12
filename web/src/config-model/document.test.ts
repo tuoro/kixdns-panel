@@ -37,6 +37,27 @@ describe('配置文件的存取 / storing and loading the config file', () => {
     expect(back.model.rules.find((r) => r.name === '旧统计接口')).toMatchObject({ enabled: false })
   })
 
+  it('内核部分被手改过：没起名字的规则各自接回自己的编号，不会全接到第一条上 / kernel part edited by hand: unnamed rules each get their own id back, not all the first one\'s', () => {
+    const model = sampleModel()
+    const shape = model.rules.find((r) => !r.raw && r.conditions[0]?.length && r.outcome.type === 'upstream')!
+    for (const [i, domain] of ['a.example.com', 'b.example.com', 'c.example.com'].entries()) {
+      const rule = JSON.parse(JSON.stringify(shape)) as typeof shape
+      rule.id = 901 + i
+      rule.name = ''
+      rule.note = `第 ${i + 1} 条`
+      rule.conditions = [[{ ...rule.conditions[0]![0]!, field: 'domain', values: [domain], negate: false, regex: false }]]
+      model.rules.push(rule)
+    }
+    const cfg = JSON.parse(JSON.stringify(exportConfig(model))) as Record<string, unknown> & { settings: Record<string, unknown> }
+    cfg.settings.cache_capacity = 50000
+    const back = readConfig(cfg)
+    expect(back.source).toBe('imported')
+    const unnamed = back.model.rules.filter((r) => !r.name && r.conditions[0]?.some((c) => c.values.some((v) => v.endsWith('.example.com'))))
+    expect(unnamed.map((r) => [r.id, r.note, r.conditions[0]![0]!.values[0]])).toEqual([[901, '第 1 条', 'a.example.com'], [902, '第 2 条', 'b.example.com'], [903, '第 3 条', 'c.example.com']])
+    const ids = back.model.rules.map((r) => r.id)
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+
   it('panel 格式版本不认识时也按内核部分重新导入 / an unknown panel format version is re-imported from the kernel part too', () => {
     const cfg = exportConfig(sampleModel()) as Record<string, unknown> & { panel: { v: number } }
     cfg.panel.v = PANEL_FORMAT + 1

@@ -651,3 +651,89 @@ test('应用失败的版本：重启确认框不说「重启后应用」', async
   await expect(dialog).not.toContainText('重启后应用待应用的版本')
   await page.keyboard.press('Escape')
 })
+
+// 单独「校验」还没回来时按的保存，从按下起就是一次保存：按钮写「保存中」，重新读取停用；校验没过就停在那句结论上，不接着存
+// Save pressed while a lone 校验 is out is a save from the press: the button reads 保存中 and 重新读取 is disabled; a failed check stops there instead of saving
+test('校验途中按的保存：算作保存，校验没过就不存', async ({ page }) => {
+  await page.goto('/config')
+  await addRule(page, 'queued.example')
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-validate-slow', 'true'); localStorage.setItem('kixdns:demo-validate-reject', 'true') })
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '校验', exact: true }).click()
+  await bar.locator('.savebar__save').click()
+  await expect(bar.locator('.savebar__save')).toHaveText('保存中')
+  await page.getByRole('button', { name: '更多配置操作' }).click()
+  await expect(page.locator('[role=menuitem]', { hasText: '重新读取配置' })).toBeDisabled()
+  await page.keyboard.press('Escape')
+  await expect(bar).toContainText('没有通过校验', { timeout: 5000 })
+  // 没有接着存：保存条停在校验的结论上，按钮回到「保存并应用」 / Nothing followed: the bar stays at the check's verdict and the button is back to 保存并应用
+  await page.waitForTimeout(1500)
+  await expect(bar).toContainText('没有通过校验')
+  await expect(bar.locator('.savebar__save')).toHaveText('保存并应用')
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-validate-slow'))
+})
+
+// 键盘按「校验」：焦点不落到「保存并应用」上，再按一下 Enter 也不会保存 / 校验 by keyboard: focus does not land on 保存并应用, so another Enter does not save
+test('键盘按校验以后，焦点不在保存按钮上', async ({ page }) => {
+  await page.goto('/config')
+  await addRule(page, 'enter.example')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-validate-slow', 'true'))
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '校验', exact: true }).focus()
+  await page.keyboard.press('Enter')
+  await expect(bar).toContainText('校验中')
+  await expect(bar.locator('.savebar__save')).not.toBeFocused()
+  await page.keyboard.press('Enter')
+  await expect(bar).toContainText('校验通过', { timeout: 5000 })
+  await expect(page.locator('[data-rule]', { hasText: 'enter.example' })).toBeVisible()
+  await expect(bar.locator('.savebar__save')).toHaveText('保存并应用')
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-validate-slow'))
+})
+
+// 保存途中历史版本里停用的操作照样看得见（灰着），不是几行空白；「删除 N 个版本」也停用
+// During a save the history's disabled actions stay visible (greyed), not blank rows; 删除 N 个版本 is disabled too
+test('保存途中，历史版本里停用的操作灰着显示', async ({ page }) => {
+  await page.goto('/config')
+  await addRule(page, 'hist-menu.example')
+  // 校验和写入各 1.5 秒：打开历史和菜单时保存一定还在跑 / Validation and the write take 1.5 s each, so the save is surely still running while the history and its menu open
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-save-slow', 'true'); localStorage.setItem('kixdns:demo-validate-slow', 'true') })
+  await page.locator('.cfg__savebar').getByRole('button', { name: '保存并应用' }).click()
+  await page.getByRole('button', { name: '更多配置操作' }).click()
+  await page.getByRole('menuitem', { name: '历史版本' }).click()
+  await page.locator('.hist__menu button[aria-haspopup]').first().click()
+  const restore = page.locator('[role=menuitem]', { hasText: '恢复为这个版本' })
+  // 不等保存做完：菜单一打开就得看得见、灰着 / Without waiting for the save to end: as soon as the menu opens it must be visible and greyed
+  await expect(restore).toHaveCSS('visibility', 'visible', { timeout: 500 })
+  await expect(restore).toBeDisabled({ timeout: 500 })
+  await page.evaluate(() => { localStorage.removeItem('kixdns:demo-save-slow'); localStorage.removeItem('kixdns:demo-validate-slow') })
+})
+
+// 配置页上保存还在路上时退出登录：和在别处一样问，同意以后登录页干净 / Signing out on the config page with a save on its way: asked as anywhere else, and the login page is clean after agreeing
+test('配置页上保存途中退出登录：先问，同意后不留草稿', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', '账户菜单在宽屏的顶栏')
+  await page.goto('/config')
+  await addRule(page, 'onpage-signout.example')
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-save-slow', 'true'); localStorage.setItem('kixdns:demo-save-conflict', 'true') })
+  await page.locator('.cfg__savebar').getByRole('button', { name: '保存并应用' }).click()
+  await page.getByRole('button', { name: /^账户：/ }).click()
+  await page.getByRole('button', { name: '退出登录' }).click()
+  await expect(page.locator('dialog.confirm[open]')).toContainText('配置页的保存还没做完')
+  await page.locator('dialog.confirm[open]').getByRole('button', { name: '放弃并退出' }).click()
+  await expect(page).toHaveURL(/\/login/)
+  await page.waitForTimeout(2500)
+  expect(await toastTexts(page)).toEqual([])
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
+})
+
+// 重新读取还在读时，列表不能改：读回来的会整份换掉草稿 / While 重新读取 reads, the list takes no edits: what comes back replaces the draft
+test('重新读取途中，页面不能改', async ({ page }) => {
+  await page.goto('/config')
+  await addRule(page, 'reread.example')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-read-slow', 'true'))
+  await page.getByRole('button', { name: '更多配置操作' }).click()
+  await page.getByRole('menuitem', { name: '重新读取配置' }).click()
+  await page.locator('dialog.confirm[open]').getByRole('button', { name: '放弃修改并重新读取' }).click()
+  await expect(page.locator('.cfg__panel')).toHaveAttribute('inert', '')
+  await expect(page.locator('.cfg__panel')).not.toHaveAttribute('inert', '', { timeout: 10_000 })
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-read-slow'))
+})

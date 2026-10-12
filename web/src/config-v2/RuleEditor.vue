@@ -39,7 +39,7 @@ const JsonEditor = defineAsyncComponent(() => import('../components/JsonEditor.v
 // resume：宽窄切换（转屏、拖窗口）时换成另一种编辑器，把上一个实例里还没点「完成」的修改接着用 / resume: when the layout switches (rotation, a resized window) the other editor takes over the edits not yet 完成 in the previous instance
 export interface EditorResume { draft: Rule; rawRules: unknown[]; rawMode: 'form' | 'json'; rawText: string; position: number; base: string }
 const props = withDefaults(defineProps<{ ruleId: number | null; groupId: string | null; template?: Partial<Rule>; inspector?: boolean; resume?: EditorResume | null }>(), { inspector: false, resume: null })
-const emit = defineEmits<{ close: []; saved: [rule: Rule, isNew: boolean]; deleted: [rule: Rule, index: number, list: Rule[]]; editGroup: [id: string] }>()
+const emit = defineEmits<{ close: []; reopen: []; saved: [rule: Rule, isNew: boolean]; deleted: [rule: Rule, index: number, list: Rule[]]; editGroup: [id: string] }>()
 
 const list = computed(() => (props.ruleId !== null ? listOf(props.ruleId).rules : props.groupId ? model.ruleGroups.find((g) => g.id === props.groupId)!.rules : model.rules))
 const original = props.ruleId !== null ? list.value.find((r) => r.id === props.ruleId)! : null
@@ -70,8 +70,11 @@ watch(() => original?.enabled, (now, before) => {
 })
 watch(() => (original ? list.value.indexOf(original) : -1), (now) => {
   if (!original) return
-  if (now < 0) emit('close')
-  else positionBase.value = now
+  if (now >= 0) { positionBase.value = now; return }
+  // 重新读取把草稿整份换掉了：这条规则还在、这里也没改过，就换成读进来的那条接着开着，不悄悄关上 / A re-read replaced the draft wholesale: if this rule still exists and nothing was edited here, reopen on the rule just read instead of closing silently
+  const stillThere = props.ruleId !== null && listOf(props.ruleId).rules.some((r) => r.id === props.ruleId)
+  if (stillThere && !edited()) emit('reopen')
+  else emit('close')
 })
 // Esc 返回、Ctrl/Cmd+Enter 完成；对话框开着时不抢 / Esc goes back, Ctrl/Cmd+Enter finishes; not while a dialog is open
 function onKey(event: KeyboardEvent): void {

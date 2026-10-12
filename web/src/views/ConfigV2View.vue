@@ -26,7 +26,7 @@ import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, busy, cnameAnswers, conflict, dropEditsAfterSave, saveInFlight, onlySaving, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, unsupportedSection } from '../config-v2/useConfigDocument'
+import { applyBusy, busy, rereading, cnameAnswers, conflict, dropEditsAfterSave, saveInFlight, onlySaving, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, unsupportedSection } from '../config-v2/useConfigDocument'
 import { useHelp } from '../composables/useHelp'
 import { useServiceStart } from '../composables/useServiceStart'
 import { registerLeaveGuard, takeAgreement } from '../composables/useLeaveGuard'
@@ -60,7 +60,15 @@ const firstRun = computed(() => ready.value && ui.mode === 'form' && !model.grou
 // 页头的规则数连同规则组里的，和导入说明数的一样 / The header's rule count includes rule groups' rules, as the import report counts them
 const ruleCount = computed(() => model.rules.length + model.ruleGroups.reduce((n, group) => n + group.rules.length, 0))
 // 宽屏上规则在右侧面板里编辑，列表留在左边；窄屏和手机仍是整页编辑 / On wide screens a rule is edited in the right-hand inspector with the list on the left; narrow screens and phones keep the full-page editor
-const editor = ref<{ ruleId: number | null; groupId: string | null; template?: Partial<Rule>; resume?: EditorResume | null } | null>(null)
+// nonce：同一条规则重新打开（重读以后换成读进来的那条）时换个 key，让编辑重新装上 / nonce: a new key when the same rule reopens (on the rule just read), so the editor mounts afresh
+const editor = ref<{ ruleId: number | null; groupId: string | null; template?: Partial<Rule>; resume?: EditorResume | null; nonce?: number } | null>(null)
+// 重读以后接着开着同一条规则：焦点原来在编辑里的，回到规则名上，不掉到页面开头 / Reopening the same rule after a re-read: focus that was in the editor returns to the rule name instead of dropping to the page start
+function reopenRule(): void {
+  if (!editor.value) return
+  const hadFocus = Boolean(document.activeElement?.closest('.editor'))
+  editor.value = { ...editor.value, resume: null, nonce: (editor.value.nonce ?? 0) + 1 }
+  if (hadFocus) void nextTick(() => document.querySelector<HTMLElement>('.editor .editor__name')?.focus({ preventScroll: true }))
+}
 const inspector = computed(() => editor.value !== null && wide.value && section.value === 'rules' && ui.mode === 'form')
 const groupEditor = ref<{ id: string | null } | null>(null)
 const historyOpen = ref<{ compare: number | null } | null>(null)
@@ -423,7 +431,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
 </script>
 
 <template>
-  <RuleEditor v-if="editor && !inspector" ref="editorRef" :key="`${editor.ruleId}-${editor.groupId}`" :rule-id="editor.ruleId" :group-id="editor.groupId" :template="editor.template" :resume="editor.resume" @close="closeRule" @saved="ruleSaved" @deleted="ruleDeleted" @edit-group="groupEditor = { id: $event }" />
+  <RuleEditor v-if="editor && !inspector" ref="editorRef" :key="`${editor.ruleId}-${editor.groupId}-${editor.nonce ?? 0}`" :rule-id="editor.ruleId" :group-id="editor.groupId" :template="editor.template" :resume="editor.resume" @close="closeRule" @reopen="reopenRule" @saved="ruleSaved" @deleted="ruleDeleted" @edit-group="groupEditor = { id: $event }" />
   <div v-else class="page cfg">
     <UiPageHeader :title="pageTitle">
       <template #meta>
@@ -448,7 +456,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
       </template>
       <template v-if="!firstRun" #actions>
         <!-- 当前页签自己的操作（规则页的「新建规则」）从页签组件传送到这里 / The current tab's own actions (the rules tab's 新建规则) teleport here from the tab component -->
-        <span id="cfg-actions" class="cfg__page-acts"></span>
+        <span id="cfg-actions" class="cfg__page-acts" :inert="rereading || undefined"></span>
         <UiTabs v-if="ui.mode === 'json'" class="cfg__mode" :model-value="ui.mode" :items="modes" label="配置视图" variant="segment" @update:model-value="setMode" />
         <UiMenu class="cfg__more" :items="moreItems" label="更多配置操作" title="配置" @select="pickMore" />
       </template>
@@ -481,14 +489,15 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
       <p class="cfg__failed-reason">{{ loadError }}</p>
       <button class="ui-btn ui-btn--secondary" type="button" @click="reload(false)"><RefreshCw :size="16" aria-hidden="true" />重试</button>
     </div>
-    <div v-else-if="ui.mode === 'json'" class="cfg__json ui-fade">
+    <div v-else-if="ui.mode === 'json'" class="cfg__json ui-fade" :inert="rereading || undefined" :aria-busy="rereading || undefined">
       <p class="cfg__json-note">这里是 KixDNS 读的配置，可以直接改。切回表单时会重新读一遍；规则名、备注、停用的规则这些面板自己的信息另外保存，不在这里。</p>
       <JsonEditor ref="jsonEditor" v-model="jsonText" class="cfg__json-editor" :error-line="jsonError?.line" />
     </div>
-    <div v-else :id="`cfg-panel-${section}`" class="cfg__panel" role="tabpanel" :aria-labelledby="`cfg-tab-${section}`">
+    <!-- 重新读取、恢复版本读回来之前不让改：读回来的会整份换掉草稿 / No edits until a re-read or restore comes back: what comes back replaces the draft -->
+    <div v-else :id="`cfg-panel-${section}`" class="cfg__panel" role="tabpanel" :aria-labelledby="`cfg-tab-${section}`" :inert="rereading || undefined" :aria-busy="rereading || undefined">
       <div v-if="section === 'rules'" class="rules-split" :class="{ 'is-open': inspector }">
         <RulesTab :selected="editor?.ruleId ?? null" @open="openRule" @tab="setTab" @edit-group="groupEditor = { id: $event }" @import="fileInput?.click()" />
-        <RuleEditor v-if="inspector && editor" ref="editorRef" :key="`${editor.ruleId}-${editor.groupId}`" inspector :rule-id="editor.ruleId" :group-id="editor.groupId" :template="editor.template" :resume="editor.resume" @close="closeRule" @saved="ruleSaved" @deleted="ruleDeleted" @edit-group="groupEditor = { id: $event }" />
+        <RuleEditor v-if="inspector && editor" ref="editorRef" :key="`${editor.ruleId}-${editor.groupId}-${editor.nonce ?? 0}`" inspector :rule-id="editor.ruleId" :group-id="editor.groupId" :template="editor.template" :resume="editor.resume" @close="closeRule" @reopen="reopenRule" @saved="ruleSaved" @deleted="ruleDeleted" @edit-group="groupEditor = { id: $event }" />
       </div>
       <UpstreamsTab v-else-if="section === 'upstreams'" @edit="groupEditor = { id: $event }" @rules="showGroupRules" />
       <MappingTab v-else-if="section === 'mapping'" />

@@ -10,7 +10,7 @@ import { traceNames } from '../config-model/trace-names'
 import { useConnection } from '../composables/useConnection'
 import { dismissUndoable, toastMark, useToast } from '../composables/useToast'
 import { errorMessage } from '../utils'
-import { applyHits, applyUpstreamStats, changeCount, dialogEdits, dirty, draftGeneration, editorEdited, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, replaceModel, reportOpen, unsaved } from './store'
+import { appliedSnapshot, applyHits, applyUpstreamStats, changeCount, dialogEdits, dirty, draftGeneration, editorEdited, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, replaceModel, reportOpen, unsaved } from './store'
 
 // 配置页和面板服务之间的事：读配置和历史、KixDNS 的运行状态和能力、校验、保存并热加载、现在应用。
 // 草稿本身在 store.ts；这里只管「文件」和「运行」。所有状态是模块级的，页面和保存条共用同一份。
@@ -108,8 +108,11 @@ const clock = ref(0)
 let clockTimer: ReturnType<typeof setInterval> | undefined
 let settleTimer: ReturnType<typeof setTimeout> | undefined
 export const busy = computed(() => ['checking', 'validating', 'applying'].includes(stage.value))
-// 真的在保存（校验、写入），不是单独点的「校验」：这时换掉草稿的操作要等它做完 / A save really running (validate, then write), not a lone 校验: actions that replace the draft wait for it
-export const saveInFlight = computed(() => stage.value === 'validating' || stage.value === 'applying')
+// 单独的「校验」还没回来时按了保存：这一下排在校验后面，从按下起就算一次保存 / Save pressed while a lone 校验 is out: it waits behind the check and counts as a save from the press
+export const queued = ref(false)
+// 真的在保存（校验、写入，或者排在单独的「校验」后面），不是单独点的「校验」：这时换掉草稿的操作要等它做完
+// A save really running (validate, then write, or queued behind a lone 校验), not a lone 校验: actions that replace the draft wait for it
+export const saveInFlight = computed(() => queued.value || stage.value === 'validating' || stage.value === 'applying')
 export const elapsed = computed(() => {
   const seconds = (clock.value - startedAt.value) / 1000
   return busy.value && seconds >= 1 ? `已用 ${seconds.toFixed(1)} 秒` : ''
@@ -251,6 +254,7 @@ let loadFailedDown = false
 export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: string } = {}): Promise<void> {
   if (pendingLoad) return pendingLoad
   if (!options.quiet) loading.value = true
+  const unsavedAtStart = unsaved.value
   pendingLoad = (async () => {
     const [nextDoc, history, overview, service] = await Promise.all([
       apiRequest<ConfigDocument>('/api/v1/config'),
@@ -259,8 +263,14 @@ export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: str
       apiRequest<ServiceStatus>('/api/v1/service').catch(() => null),
     ])
     applyRuntime(nextDoc, overview, service)
-    const previousSha = doc.value?.sha256
-    doc.value = nextDoc
+    const previous = doc.value
+    const previousSha = previous?.sha256
+    // 静默重读发出去时草稿还没改、读回来之前这边改了，而面板上的文件又变了：不拿文件把这些修改冲掉，只更新运行状态（和有修改时连上一样）；
+    // 下次保存会撞上「别处改过了」，再重新读取
+    // The quiet re-read left with no edits, edits were made before it came back, and the file changed on the panel: the edits are not wiped by the file,
+    // only the runtime moves (as on a reconnect with edits); the next save meets 别处改过了 and re-reads then
+    const keepEdits = previous !== null && options.quiet === true && options.sent === undefined && !options.keepDraft && !unsavedAtStart && unsaved.value && nextDoc.sha256 !== previousSha
+    doc.value = keepEdits ? { ...previous, runtime: nextDoc.runtime, pending: nextDoc.pending } : nextDoc
     versions.value = history.versions
     // 读进草稿：散列对得上就是面板写的那份；对不上（手改过）会重新导入并给报告 / Into the draft: the hash matching means the panel wrote it; otherwise it is re-imported with a report
     // 重新读进来的是另一份草稿：上一份草稿的失败和冲突不再适用 / What is read in is a different draft: the previous draft's failure and conflict no longer apply
@@ -269,7 +279,9 @@ export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: str
     // 写进文件再读回来和草稿一样（store.test 里有往返测试），所以没再改过时「已修改」归零
     // After a save (sent) only the baseline moves: the draft's objects stay, so an open drawer or rule panel still holds the same object (replacing them
     // made an upstream-group drawer opened during a save write to another group). Writing and reading back equals the draft (round-trip test in store.test), so with no edits since, the count returns to zero
-    if (options.sent !== undefined || (options.keepDraft && unsaved.value)) {
+    if (keepEdits) {
+      // 草稿和对照的那份都不动 / Neither the draft nor the baseline moves
+    } else if (options.sent !== undefined || (options.keepDraft && unsaved.value)) {
       // 文件没变就什么都不动；变了（保存成功、别处改过）把对照的那份换成它，草稿里的修改照旧算修改
       // File unchanged: nothing moves; changed (a save went through, an edit elsewhere): the baseline becomes it and the draft's edits still count as edits
       if (options.sent !== undefined || nextDoc.sha256 !== previousSha) rebaseApplied(readConfig(nextDoc.content, model).model)
@@ -297,6 +309,7 @@ export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: str
 // ---------- 校验、保存、应用 / validate, save, apply ----------
 // 单独点的「校验」还没回来时按了保存：等它回来再保存，不吞掉这一下 / Save pressed while a lone 校验 is still out: the save waits for it instead of swallowing the press
 let checkRun: Promise<ValidationResult | null> | null = null
+let checkedContent: string | null = null
 export async function validate(): Promise<ValidationResult | null> {
   if (checkRun) return checkRun
   checkRun = runCheck()
@@ -307,8 +320,12 @@ async function runCheck(): Promise<ValidationResult | null> {
   if (deferSave.value || conflict.value) return null
   origin.value = 'draft'
   startStage('checking')
+  // 记下校验的是哪一份：排在后面的保存要写的正是这一份时，不再校验第二遍 / Note which content is checked: a save queued behind it that writes exactly this need not check it twice
+  const checked = JSON.stringify(exportConfig(model))
+  checkedContent = null
   try {
-    validation.value = await apiRequest<ValidationResult>('/api/v1/config/validate', { method: 'POST', ...jsonBody(exportConfig(model)) })
+    validation.value = await apiRequest<ValidationResult>('/api/v1/config/validate', { method: 'POST', body: checked })
+    checkedContent = checked
     finishStage('idle')
     return validation.value
   } catch (error) {
@@ -348,7 +365,7 @@ let inFlight: string | null = null
 let awayToast: number | null = null
 // 回应丢了的那次保存（写进去没有不知道）：连上以后、或者下一次保存撞上「别处改过了」时，拿面板上的配置和它比一比
 // The save whose answer was lost (written or not, unknown): once reconnected, or when the next save meets 别处改过了, compare the panel's config with it
-let unanswered: { content: unknown; sent: string; generation: number; sentAt: number } | null = null
+let unanswered: { content: unknown; sent: string; base: string; generation: number; sentAt: number } | null = null
 const announceWritten = () => { if (typeof window !== 'undefined') window.dispatchEvent(new Event(CONFIG_WRITTEN_EVENT)) }
 // 不在配置页时草稿还在内存里（正在保存，或者没保存成功留着）：刷新、关掉浏览器先问一句；配置页开着时由它自己问
 // Away from the config page with a draft still in memory (a save in flight, or one that failed and is kept): reloading or closing the browser asks first; while
@@ -361,7 +378,7 @@ if (typeof window !== 'undefined') window.addEventListener('beforeunload', (even
 // 会话过期或退出登录时放下这份草稿：离开那条提示一起收起；还在路上的那次保存不再把草稿留下、也不再弹「草稿留在配置页」
 // Let go of the held draft on session expiry or sign-out: its away toast goes too, and a save still on its way no longer keeps the draft or says 草稿留在配置页
 let abandoned = false
-registerHeldDraft(draftHeldAway, () => { keepOnReturn = false; dismissAwayToast(); if (inFlight !== null) abandoned = true }, () => useConfirm().ask({
+registerHeldDraft(draftHeldAway, () => inFlight !== null, () => { keepOnReturn = false; dismissAwayToast(); if (inFlight !== null) abandoned = true }, () => useConfirm().ask({
   title: '放弃配置页的草稿',
   body: busy.value ? '配置页的保存还没做完。退出登录以后不再告诉你结果，没存上的修改也会丢掉。' : '配置页有一份没保存成功的修改，还没存到面板上，退出登录以后就没了。',
   confirmLabel: '放弃并退出',
@@ -402,8 +419,10 @@ const sentence = (text: string) => text.replace(/[。.]\s*$/, '')
 // origin: saving the draft (the save bar reports) or applying a saved version (the header reports, errors go to a notice). With
 // changes, or a file that differs from what runs, and KixDNS running, validate on its own first: a failure stops at step 1 with no version written.
 export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
-  if (checkRun) await checkRun
-  if (busy.value || !doc.value) return
+  // 排着的那次已经算数：再按一下不另起一次 / A queued save already counts: another press starts nothing new
+  if (queued.value) return
+  const waiting = checkRun
+  if ((busy.value && !waiting) || !doc.value) return
   // 被内核不支持的设置挡住时说一句，不默默不动 / Blocked by unsupported settings: say so instead of doing nothing
   if (blockedFields.value.length) { sayBlocked(); return }
   if (!canSave.value) return
@@ -412,14 +431,32 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
   // so an edit made during validation would slip in and be written unvalidated
   const content: unknown = JSON.parse(JSON.stringify(exportConfig(model)))
   const sent = JSON.stringify(model)
+  // 对照的版本也定在这一刻：等候和校验途中文件换了（比如恢复了一个版本），写入照样按冲突处理，不悄悄盖在上面
+  // The version written against is fixed now too: if the file changed while waiting or validating (a version restored, say), the write still meets a conflict instead of landing on top
+  const expected = doc.value.sha256
+  // 保存前对照的那份：回应丢了以后草稿只是被整份放弃时，草稿跟着落地的那一份走 / The baseline before the save: if the answer is lost and the draft is then simply discarded, the draft follows the version that landed
+  const base = appliedSnapshot()
   // 发出去的草稿定在这一刻：之后的修改（校验途中的也算）不在这次保存里，它们的撤销保存后照样留着 / The draft sent is fixed at this moment: edits after it (during validation too) are not in this save, and their undos stay after it lands
   const sentAt = toastMark()
   const settledBefore = settledCount
   inFlight = sent
+  let prechecked = false
+  if (waiting) {
+    // 单独的「校验」还没回来时按的保存：从这一刻起就是一次保存（按钮写「保存中」、换掉草稿的操作停用、离开时照保存途中问），等校验回来接着存
+    // Save pressed while a lone 校验 is out: from now on it is a save (the button reads 保存中, draft-replacing actions are disabled, leaving asks as
+    // during a save), and it carries on once the check returns
+    queued.value = true
+    try { await waiting } finally { queued.value = false }
+    // 校验没过（被拒、KixDNS 停了、连不上）：停在那句结论上，不接着存；退出登录时放下了这份草稿也不存
+    // The check failed (rejected, KixDNS stopped, unreachable): stop at that verdict instead of saving; nor save a draft let go at sign-out
+    if (stage.value === 'failed' || abandoned || busy.value || !doc.value) { inFlight = null; abandoned = false; return }
+    // 校验过的正是要写的这一份：不再校验第二遍 / What was checked is exactly what will be written: no second check
+    prechecked = checkedContent === JSON.stringify(content)
+  }
   origin.value = from
   applyError.value = ''
   conflict.value = false
-  const checkFirst = (dirty.value || fileDiffers.value) && !deferSave.value
+  const checkFirst = (dirty.value || fileDiffers.value) && !deferSave.value && !prechecked
   let step: SaveStage = checkFirst ? 'validating' : 'applying'
   startStage(step)
   try {
@@ -429,7 +466,7 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
       stage.value = step
     }
     const message = saveMessage.value.trim()
-    const result = await apiRequest<ConfigApplyResult>('/api/v1/config', { method: 'PUT', ...jsonBody({ content, expected_sha256: doc.value.sha256, message }) })
+    const result = await apiRequest<ConfigApplyResult>('/api/v1/config', { method: 'PUT', ...jsonBody({ content, expected_sha256: expected, message }) })
     const pendingText = `已存成待应用版本 #${result.version_id}，${pendingWhen()}自\u2060动\u2060应\u2060用`
     saveMessage.value = ''
     // 写入成功就先记下：文件的散列和版本换成这次的，对照的那份换成发出去的草稿。之后的重读失败了，也不会把已保存的算成修改、下次保存也不会撞上自己
@@ -468,7 +505,7 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     const reason = friendlyRuntimeError(error)
     const stopped = stoppedError(error)
     const down = isPanelDown(error)
-    if (down && step === 'applying') unanswered = { content, sent, generation: draftGeneration(), sentAt }
+    if (down && step === 'applying') unanswered = { content, sent, base, generation: draftGeneration(), sentAt }
     // 写进文件以后 KixDNS 没接受：版本已经存下了，只是没生效 / KixDNS refused after the write: the version is stored, it just did not take
     const writtenNotApplied = step === 'applying' && error instanceof ApiError && ['reload_failed', 'kixdns_rejected'].includes(error.code)
     // 写进去了（只是没生效）：和保存落地一样，草稿定下来之前的「撤销」过时了 / Written (just not applied): as when a save lands, undos from before the draft was fixed are stale
@@ -561,7 +598,8 @@ async function settleOnce(announce: boolean): Promise<boolean> {
     // The file on the panel is still the draft's base: the save did not land. The file changed and is not one's own save: it was changed elsewhere
     // (perhaps after it landed), so it is handled as a conflict, or saving on return would silently overwrite the other version
     const changedElsewhere = Boolean(doc.value) && current.sha256 !== doc.value!.sha256
-    if (changedElsewhere) {
+    // 这时页面上正有一次保存在跑：结论交给它自己说（它会撞上同一个冲突），这里不抢着改保存条 / A save is running on the page: it reports for itself (it meets the same conflict), so the bar is not changed here
+    if (changedElsewhere && inFlight === null) {
       conflict.value = true
       // 那次保存可能存上过、又被别处盖掉：不说「没有保存」，只说它不在现在的配置里 / The save may have landed and then been overwritten: say it is not in the current config, not that it was never saved
       verdict.value = '刚才那次保存不在现在的配置里'
@@ -577,6 +615,10 @@ async function settleOnce(announce: boolean): Promise<boolean> {
     return false
   }
   settledCount += 1
+  // 回应丢了以后草稿只是整份放弃了（回到保存前的样子）：草稿跟着落地的那一份走，不然保存条会留一处「修改」把刚存上的删掉
+  // After the lost answer the draft was simply discarded (back to the pre-save baseline): it follows the version that landed, or the bar would keep a
+  // 「change」 that deletes what was just saved
+  if (!sameDraft && canonical(model) === canonical(JSON.parse(lost.base))) replaceModel(JSON.parse(lost.sent) as Model)
   rebaseApplied(JSON.parse(lost.sent) as Model)
   validation.value = null
   // 和保存落地一样：发出去之前的「撤销」过时了 / As when a save lands: undos raised before it was sent are stale
@@ -584,7 +626,8 @@ async function settleOnce(announce: boolean): Promise<boolean> {
   await load({ quiet: true, keepDraft: true, sent: lost.sent })
   announceWritten()
   const version = current.version_id ? `版本 #${current.version_id}` : ''
-  if (announce && sameDraft) {
+  // 页面上正有一次保存在跑：保存条交给它说 / A save is running on the page: the bar is left to it
+  if (announce && sameDraft && inFlight === null) {
     const later = changeCount.value ? ` · 之后改的 ${changeCount.value} 处还没保存` : ''
     finishStage('done', `${version ? `已经保存过了 · ${version}` : '已经保存过了'}${later}`)
   }
@@ -638,6 +681,8 @@ export function pendingWhen(): string {
 
 // ---------- 历史版本 / history ----------
 export const restoring = ref<number | null>(null)
+// 重新读取或恢复版本正在读：页面先不让改，读回来的会整份换掉草稿，这时改的会悄悄丢掉 / A re-read or a restore is reading: the page takes no edits, since what comes back replaces the draft and edits made now would vanish
+export const rereading = computed(() => (loading.value && doc.value !== null) || restoring.value !== null)
 export const deleting = ref<number | null>(null)
 export const bulkDeleting = ref(false)
 // 版本的完整内容（比较用） / A version's full content (for comparing)
