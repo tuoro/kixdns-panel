@@ -146,9 +146,12 @@ a.ui-btn { text-decoration: none; }
 @media (max-width: 640px) { .ui-tabs__tab:focus-visible { outline-offset: -3px; border-radius: var(--r-2); } }
 /* 宽屏页签上面补 8 的空（用负外边距抵掉，排版不动），焦点框紧贴页签：字的上下都留着空，不再像盖子一样压在字上
    On wide screens a tab gets 8 of room above (cancelled by a negative margin, so nothing moves) and its ring sits on the tab: room above and below the word, no lid on it */
+/* 框画在一层伪元素上，左右各多出 4：页签本身没有左右内边距，框贴着页签会压在第一个和最后一个字上；排版和下划线都不动
+   The ring is drawn on a pseudo-element 4 wider on each side: tabs have no side padding, so a ring on the tab itself touches the first and last glyph; layout and the underline stay put */
 @media (min-width: 641px) {
   .ui-tabs__tab { padding-top: var(--s-2); margin-top: calc(var(--s-2) * -1); }
-  .ui-tabs__tab:focus-visible { outline-offset: 0; }
+  .ui-tabs__tab:focus-visible { outline: none; }
+  .ui-tabs__tab:focus-visible::before { position: absolute; inset: 0 calc(var(--s-1) * -1); border-radius: var(--r-1); outline: 2px solid var(--focus); pointer-events: none; content: ''; }
 }
 .ui-tabs__ind { position: absolute; bottom: -1px; left: 0; width: 0; height: 0; border-top: 2px solid var(--l-ink); pointer-events: none; transition: transform var(--m-base) var(--ease-out), width var(--m-base) var(--ease-out); }
 .ui-seg { position: relative; display: inline-flex; padding: 2px; border-radius: var(--r-2); background: var(--l-sunk); }
