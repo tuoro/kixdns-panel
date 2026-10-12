@@ -52,6 +52,8 @@ test('「…」里的帮助：这一页的概念 + 快捷键；手机上不列�
   const drawer = page.getByRole('dialog', { name: '帮助', exact: true })
   await expect(drawer).toBeVisible()
   await expect(drawer.locator('.help__topic summary')).toHaveText(['回答后检查', '客户端子网（ECS）', 'GeoSite 分类', '规则组', '备用组', '域名映射', '规则默认值', '高级规则', '测试域名'])
+  // 手机上概念一行 44，和「…」的底部菜单一样 / On phones a concept row is 44, like the ⋯ bottom sheet
+  if (mobile) for (const height of await drawer.locator('.help__topic summary').evaluateAll((rows) => rows.map((row) => row.getBoundingClientRect().height))) expect(height).toBeGreaterThanOrEqual(44)
   await drawer.locator('#help-fallback summary').click()
   await expect(drawer.locator('#help-fallback')).toContainText('不会改问备用组')
   if (mobile) await expect(drawer.getByRole('heading', { name: '键盘快捷键' })).toBeHidden()

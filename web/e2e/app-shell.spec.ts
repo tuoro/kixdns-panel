@@ -134,6 +134,22 @@ test('不同屏宽无页面横向溢出，手机标题与点击区域保持合�
   }
 })
 
+// 页头读完是宽屏两行的「标签 / 值」、手机一行状态：读完之前的占位一样高，数据到了标签页、工具行和卡片不往下跳
+// The loaded header is two-line label / value pairs on wide screens and one status line on phones: the placeholder before the read is just as tall, so tabs, toolbars and cards do not jump when data lands
+test('页头读完前后一样高，内容不往下跳 @responsive', async ({ page }, testInfo) => {
+  await page.addInitScript(() => localStorage.setItem('kixdns:demo-read-slow', 'true'))
+  // 手机系统页读完会多出「重启 / 停止」一行，那是能做的事到了，不是占位不准 / On phones the system page gains the 重启 / 停止 row once read: actions arriving, not a placeholder mismatch
+  const paths = testInfo.project.name === 'mobile' ? ['/', '/config', '/logs'] : ['/', '/config', '/logs', '/system']
+  for (const path of paths) {
+    await page.goto(path)
+    const header = page.locator('main .ui-ph')
+    await expect(page.locator('main .ui-ph .sk')).toBeVisible()
+    const loading = (await header.boundingBox())!.height
+    await expect(page.locator('main .ui-ph .sk')).toHaveCount(0, { timeout: 10_000 })
+    expect(Math.abs((await header.boundingBox())!.height - loading), path).toBeLessThanOrEqual(1)
+  }
+})
+
 test('断网时内容区顶上挂出「连不上面板」，联网后自己收起 @responsive', async ({ page, context }, testInfo) => {
   await page.goto('/')
   await expect(page.locator('.overview-page')).toBeVisible()

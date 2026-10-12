@@ -462,8 +462,10 @@ async function mockDraftTrial(domain: string, recordType: string, client: string
 }
 
 export async function mockRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  await new Promise((resolve) => setTimeout(resolve, 120))
   const method = init?.method ?? 'GET'
+  // kixdns:demo-read-slow：读取要 1.5 秒，演示各页读完之前的占位 / kixdns:demo-read-slow: reads take 1.5 s, to show each page's placeholder before the read lands
+  const slowRead = method === 'GET' && typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-read-slow') === 'true'
+  await new Promise((resolve) => setTimeout(resolve, slowRead ? 1500 : 120))
   const url = new URL(path, 'http://panel.local')
   const pathname = url.pathname
   // 同上：让初始化页也能在演示里看到，否则它的用例只能永远跳过。
