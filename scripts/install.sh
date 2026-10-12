@@ -1285,7 +1285,7 @@ print_port53_notice() {
       resolved_manual_commands
       ;;
     other)
-      printf '端口 %s：被 %s占用，KixDNS 启动会失败；先停用这个程序，或把配置里的 bind_udp/bind_tcp 改到别的端口\n' \
+      printf '端口 %s：被 %s占用，KixDNS 启动会失败；先停用这个程序，或在面板的基础设置里把 UDP / TCP 监听地址改到别的端口\n' \
         "${PORT_CONFLICT_PORT}" "$(holder_text)"
       ;;
   esac
@@ -1304,7 +1304,6 @@ print_summary() {
   printf '面板地址：%s\n' "${panel_url}"
   case ${INSTALL_KIND} in
     fresh)
-      printf '下一步：打开面板地址，创建管理员，然后在概览页点「启动 KixDNS」\n'
       printf 'KixDNS：已安装，尚未启动\n'
       ;;
     migrate)
@@ -1330,6 +1329,8 @@ print_summary() {
       ;;
   esac
   print_port53_notice
+  # 下一步放在端口 53 的提醒后面：那条要在启动 KixDNS 之前先做 / The next step comes after the port-53 notice, which has to happen before KixDNS starts
+  [[ ${INSTALL_KIND} == fresh ]] && printf '下一步：打开面板地址，创建管理员，然后在概览页点「启动 KixDNS」\n'
   printf '只在可信内网使用面板；公网访问必须配置防火墙和 HTTPS 反向代理。\n'
   printf '构建：面板 %.12s · KixDNS %.12s\n' "${PANEL_BUILD_COMMIT}" "${KIXDNS_BUILD_COMMIT}"
 }

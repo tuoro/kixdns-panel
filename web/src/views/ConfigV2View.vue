@@ -26,7 +26,7 @@ import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, busy, rereading, cnameAnswers, conflict, dropEditsAfterSave, saveInFlight, onlySaving, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, cnameRules, unsupportedSection } from '../config-v2/useConfigDocument'
+import { applyBusy, busy, rereading, conflict, dropEditsAfterSave, saveInFlight, onlySaving, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, cnameUse, unsupportedSection } from '../config-v2/useConfigDocument'
 import { useHelp } from '../composables/useHelp'
 import { useServiceStart } from '../composables/useServiceStart'
 import { registerLeaveGuard, takeAgreement } from '../composables/useLeaveGuard'
@@ -180,7 +180,8 @@ const notice = computed<Notice | null>(() => {
     const cause = failureCause(reason).replace(/。$/, '')
     return { tone: 'err', text: pendingVersionId.value ? `版本 #${pendingVersionId.value} 没有生效，仍在用之前那份配置。` : '上次保存的版本没有生效，仍在用之前那份配置。', detail: reread ? `${cause}。这份配置在别处改过了，先重新读取。` : blocked ? `${cause}。当前内核不支持：${unsupportedFields.value.join('、')}，先在基础设置里关掉。` : cause, action: reread ? '重新读取' : retry ? '重试应用' : blocked && section.value !== 'settings' ? '去基础设置' : undefined, run: reread ? () => reload() : retry ? () => save('apply') : goUnsupported }
   }
-  if (applyError.value) { const [text, ...detail] = applyError.value.split('\n'); return { tone: 'err', text: `${text}。`, detail: detail.join('\n') } }
+  // 连不上面板时由顶上的横幅说；连上以后核对的结果再说应用了没有 / While the panel is unreachable the banner speaks; once back, the check says whether it applied
+  if (applyError.value && !panelDown.value) { const [text, ...detail] = applyError.value.split('\n'); return { tone: 'err', text: `${text}。`, detail: detail.join('\n') } }
   // 警告排在说明前面：永远不命中的规则比导入说明要紧 / Warnings rank above information: a rule that never matches matters more than the import notes
   if (geoPrefixed.value) return { tone: 'warn', text: `${geoPrefixed.value} 个 GeoSite 条件多写了「geosite:」前缀，内核找不到对应的分类，永远不会命中。`, action: '去掉前缀', run: stripPrefix }
   if (importReport.value && !reportOpen.value && importReport.value.stats.raw) return { tone: 'off', text: `这份配置是按内核格式读进来的，${importReport.value.stats.raw} 条规则原样保留为高级规则。`, action: '查看导入说明', run: () => { reportOpen.value = true } }
@@ -205,20 +206,24 @@ function goUnsupported(): void {
   void nextTick(() => { ui.settingsGroup = unsupportedSection.value })
   setTab('settings')
 }
-// 写成域名的回答有几处：按写出的配置数（和服务端一样）；域名映射里有几处另数，决定给不给「去域名映射」
-// How many answers are domains: counted on the export (as the server does); the mappings among them are counted apart, to decide whether to offer 去域名映射
-const cnamePlaces = computed(() => ({ mappings: model.mappings.filter((m) => m.enabled && !mappingIsIp(m)).length, total: cnameAnswers.value }))
+// 写成域名的回答有几处：按看得见的东西数——认回来的规则、开着的写成域名的映射、认不回来的几处——和下面点名的对得上
+// How many answers are domains: counted in what the user sees — the rules traced back, enabled mappings answering with a domain, the places that do not trace
+// back — so it matches what is named below
+const cnamePlaces = computed(() => {
+  const mappings = model.mappings.filter((m) => m.enabled && !mappingIsIp(m)).length
+  return { mappings, total: cnameUse.value.rules.length + mappings + cnameUse.value.untraced }
+})
 // 说出写成域名的是哪几条规则：点名前两条（点了打开那条规则），多的写「等 N 条」，域名映射只数条数（有「去域名映射」）；只有映射时不另起一行
 // Name the rules whose answers are domains: the first two by name (a click opens that rule), the rest as 「等 N 条」, mappings only counted (they have 去域名映射);
 // with mappings alone no extra line
 const cnameWhere = computed((): { detail?: string; links?: Record<string, number> } => {
-  const rules = cnameRules.value
+  const rules = cnameUse.value.rules
   if (!rules.length) return {}
   const links: Record<string, number> = {}
   for (const rule of rules.slice(0, 2)) {
     const full = ruleTitle(rule).replace(/[「」]/g, '')
-    // 超过 32 个字才截，短的域名条件整个写出来 / Cut only past 32 characters, so a short domain condition is written in full
-    const title = full.length > 32 ? `${full.slice(0, 31)}…` : full
+    // 超过 36 个字才截，常见的域名条件整个写出来 / Cut only past 36 characters, so a usual domain condition is written in full
+    const title = full.length > 36 ? `${full.slice(0, 35)}…` : full
     if (!(title in links)) links[title] = rule.id
   }
   const named = Object.keys(links).map((title) => `「${title}」`).join('')
@@ -332,7 +337,7 @@ async function importFile(event: Event): Promise<void> {
   const file = input.files?.[0]
   input.value = ''
   if (!file) return
-  if (file.size > 4 * 1024 * 1024) { toast.error('配置文件不能超过 4 MiB'); return }
+  if (file.size > 4 * 1024 * 1024) { toast.error('配置文件不能超过 4\u00a0MiB'); return }
   let parsed: Record<string, unknown>
   const text = await file.text()
   const problem = jsonSyntaxProblem(text)

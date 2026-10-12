@@ -133,7 +133,7 @@ function remove(): void {
           </div>
           <label v-if="draft.ecs?.mode === 'static'" class="ui-input is-mono"><input v-model="draft.ecs.subnet" aria-label="固定子网" placeholder="203.0.113.0/24"></label>
           <!-- 按所选的方式说：只有「发送客户端所在子网」会跳过内网客户端，固定子网对谁都发（内核 apply_ecs） / Said per choice: only 发送客户端所在子网 skips LAN clients; a fixed subnet is sent for everyone (kernel apply_ecs) -->
-          <small class="pfield__hint">{{ draft.ecs?.mode === 'static' ? '每个请求都带上这个子网，内网客户端也一样。' : draft.ecs?.mode === 'client' ? '发送子网能让国内 CDN 回离客户端近的地址；内网客户端不发送。' : '发送子网能让国内 CDN 回离客户端近的地址。' }}</small>
+          <small class="pfield__hint">{{ draft.ecs?.mode === 'static' ? '每个请求都带上这个子网，内网客户端也一样。' : draft.ecs?.mode === 'client' ? '发送子网能让国内 CDN 回离客户端近的地址；内网客户端的请求不带子网。' : '发送子网能让国内 CDN 回离客户端近的地址。' }}</small>
         </div>
 
         <div class="pfield">

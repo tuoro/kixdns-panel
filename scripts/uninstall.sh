@@ -178,10 +178,10 @@ detect_kept_kixdns() {
     if ! managed_binary_present; then
       if unit_created_by_panel "${file}"; then
         DEAD_PANEL_UNITS+=("${unit}")
-        printf '%s 指向的 KixDNS 程序已不存在；该 unit 由面板创建，将随面板一起移除。\n' "${unit}"
+        printf '%s 指向的 KixDNS 程序已不存在；这个服务由面板创建，随面板一起移除。\n' "${unit}"
       else
         DEAD_FOREIGN_UNITS+=("${unit}")
-        printf '%s 指向的 KixDNS 程序已不存在；该 unit 不是面板创建的，保留不动，请自行处理。\n' "${unit}"
+        printf '%s 指向的 KixDNS 程序已不存在；这个服务不是面板创建的，保留不动。\n' "${unit}"
       fi
       continue
     fi
@@ -221,7 +221,7 @@ open_terminal() {
   # 裸 exec 上的重定向会永久生效：写成 `exec 3<>/dev/tty 2>/dev/null` 会让之后所有错误信息消失。
   # A redirection on a bare exec is permanent: `exec 3<>/dev/tty 2>/dev/null` would hide every later error.
   { exec 3<>/dev/tty; } 2>/dev/null ||
-    fail "当前没有交互终端；请明确指定 KixDNS 与配置处理选项，并使用 --yes"
+    fail "当前没有交互终端；要写明 KixDNS 和配置怎么处理，并加 --yes"
 }
 
 close_terminal() {
@@ -246,15 +246,15 @@ choose_kixdns_action() {
   fi
   [[ ${KIXDNS_ACTION} == auto ]] || return 0
   open_terminal
-  printf '\n请选择 KixDNS 的处理方式：\n' >&3
+  printf '\n选择 KixDNS 的处理方式：\n' >&3
   printf '  1. 仅卸载面板，保留当前 KixDNS\n' >&3
   if [[ ${HAS_EXTERNAL_BACKUP} == true ]]; then
-    printf '  2. 移除 KixDNS Enhanced，并恢复迁移前的外部 KixDNS\n' >&3
+    printf '  2. 移除增强版，恢复原来的 KixDNS\n' >&3
   else
     printf '  2. 同时移除面板管理的 KixDNS\n' >&3
   fi
   printf '  3. 取消卸载（默认）\n' >&3
-  printf '请选择 [1-3]：' >&3
+  printf '选 [1-3]：' >&3
   IFS= read -r choice <&3 || true
   close_terminal
   case ${choice} in
@@ -268,11 +268,11 @@ choose_config_action() {
   local choice=""
   [[ ${CONFIG_ACTION} == auto ]] || return 0
   open_terminal
-  printf '\n请选择配置与运行数据的处理方式：\n' >&3
+  printf '\n选择配置与运行数据的处理方式：\n' >&3
   printf '  1. 保留配置、数据库、版本库和 Geo 数据\n' >&3
   printf '  2. 删除全部面板配置与运行数据\n' >&3
   printf '  3. 取消卸载（默认）\n' >&3
-  printf '请选择 [1-3]：' >&3
+  printf '选 [1-3]：' >&3
   IFS= read -r choice <&3 || true
   close_terminal
   case ${choice} in
@@ -373,7 +373,7 @@ remove_account() {
   getent passwd "${account}" >/dev/null 2>&1 || return 0
   terminate_account_processes "${account}"
   userdel "${account}" 2>/dev/null ||
-    fail "无法删除账号 ${account}，请先停止该账号的其他进程"
+    fail "删不掉账号 ${account}：先停掉这个账号的其他进程"
 }
 
 remove_panel_components() {
@@ -513,7 +513,7 @@ restore_external_state() {
 }
 
 print_result() {
-  printf 'KixDNS Panel 已卸载。\n'
+  printf 'KixDNS 面板已卸载。\n'
   if [[ ${#DEAD_PANEL_UNITS[@]} -gt 0 || ${#DEAD_FOREIGN_UNITS[@]} -gt 0 ]]; then
     printf '面板目录里的 KixDNS 程序已不存在，没有可保留的 KixDNS。\n'
   elif [[ ${KIXDNS_ACTION} == keep ]]; then
@@ -530,7 +530,7 @@ print_result() {
 
 main() {
   parse_arguments "$@"
-  [[ ${EUID} -eq 0 ]] || fail "请使用 root 权限运行"
+  [[ ${EUID} -eq 0 ]] || fail "要用 root 权限运行"
   command -v systemctl >/dev/null 2>&1 || fail "系统未安装 systemd"
   run_uninstall
 }

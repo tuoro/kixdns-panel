@@ -576,7 +576,7 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
     const body = JSON.parse(String(init?.body)) as { ids: number[]; expected_sha256: string }
     if (body.expected_sha256 !== config.sha256) throw new Error('这份配置在别处改过了，先重新读取')
     const ids = [...new Set(body.ids)].sort((left, right) => left - right)
-    if (ids.length === 0) throw new Error('请至少选择一个配置版本')
+    if (ids.length === 0) throw new Error('还没选要删除的版本')
     if (ids.length > 100 || ids.some((id) => !Number.isInteger(id) || id <= 0)) {
       throw new Error('配置版本 ID 无效')
     }
@@ -646,11 +646,13 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
     if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-apply-failed') === 'true') {
       localStorage.removeItem('kixdns:demo-apply-failed')
       const error = 'KixDNS 没有接受这份配置：upstream "fast" did not answer the health check，仍在用之前的配置'
+      // 真面板读回来的版本号是这个没生效的版本（desired() 返回它） / A real panel reads back the failed version's id (desired() returns it)
       config = {
         ...config,
         content: body.content,
         sha256: nextSha,
         modified_at: createdAt,
+        version_id: versionId,
         pending: { version_id: versionId, sha256: nextSha, message, actor: 'admin', created_at: createdAt, error },
         runtime: { ...config.runtime, status: 'failed', apply_state: 'failed', pending_error: error },
       }
