@@ -431,7 +431,7 @@ test('上游组的子网说明跟着所选方式说', async ({ page }) => {
   await select.selectOption({ label: '发送固定的子网' })
   await expect(hint).toHaveText('每个请求都带上这个子网，内网客户端也一样。')
   await select.selectOption({ label: '发送客户端所在子网' })
-  await expect(hint).toHaveText('发送子网能让国内 CDN 回离客户端近的地址；内网客户端不发送。')
+  await expect(hint).toHaveText('发送子网能让国内 CDN 回离客户端近的地址；内网客户端的请求不带子网。')
 })
 
 // 「不检查」时没有「这一步」：超时的说明直接说会怎样 / Under 不检查 there is no step to skip: the timeout note says what happens
@@ -515,9 +515,41 @@ test('内核不支持 CNAME 时，提示点名写成域名的规则', async ({ p
     document.runtimeCapabilities.value = document.runtimeCapabilities.value.filter((c: string) => c !== 'config_static_cname_response_v1')
   })
   const notice = page.locator('.cfg__notice')
-  await expect(notice).toContainText('写成域名的有：规则「域名是 a.example.com」「域名是 b.example.com」等 3 条')
-  await notice.getByRole('button', { name: '域名是 b.example.com' }).click()
+  // 名字两头的引号用连接符粘着，比文字时先去掉（连同不换行空格） / The quotes are glued to the names with word joiners, removed (with no-break spaces) before comparing
+  const plain = () => notice.evaluate((el) => el.textContent!.replace(/\u2060/g, '').replace(/\u00a0/g, ' '))
+  await expect.poll(plain).toContain('写成域名的有：规则「域名是 a.example.com」「域名是 b.example.com」等 3 条')
+  await notice.getByRole('link', { name: '域名是 b.example.com' }).click()
   await expect(page.locator('.editor')).toBeVisible()
   await expect(page.locator('.editor')).toContainText('b.example.com')
   await expect(page.locator('.editor')).toContainText('这条选了 CNAME')
+})
+
+// 起了名字的规则只在「回答后检查」里回答域名，也点得到它；一条规则拆成两组条件只算一处，上面的条数和下面点名的对得上
+// A named rule whose 回答后检查 answers with a domain is named too; a rule split into two condition groups counts once, so the count above matches the names below
+test('CNAME 提示：回答后检查里的也点名，拆开的规则只算一处', async ({ page }) => {
+  await page.goto('/config')
+  await expect(page.locator('.cfg__panel')).toBeVisible()
+  await page.evaluate(async () => {
+    const url = (part: string) => performance.getEntriesByType('resource').map((e) => e.name).filter((n) => n.includes(part)).pop()!
+    const store = await import(url('/src/config-v2/store.ts'))
+    const models = await import(url('/src/config-model/model.ts'))
+    const document = await import(url('/src/config-v2/useConfigDocument.ts'))
+    const domain = (value: string) => ({ id: store.newId(), field: 'domain', values: [value], negate: false, regex: false })
+    const split = models.newRule(store.newId(), { type: 'answer', kind: 'cname', value: 'split.cdn.example.net', ttl: null })
+    split.name = '两组条件'
+    split.conditions = [[domain('one.example.com')], [domain('two.example.com')]]
+    const checked = models.newRule(store.newId(), { type: 'upstream', group: store.model.groups[0].id })
+    checked.name = '异常时回 CDN'
+    checked.conditions = [[domain('check.example.com')]]
+    checked.response = { ...checked.response, mode: 'custom', conditions: [{ id: store.newId(), field: 'rcode', negate: false, values: ['SERVFAIL'] }], then: { type: 'answer', kind: 'cname', value: 'fallback.cdn.example.net', ttl: null } }
+    store.model.rules.push(split, checked)
+    document.runtimeCapabilities.value = document.runtimeCapabilities.value.filter((c: string) => c !== 'config_static_cname_response_v1')
+  })
+  const notice = page.locator('.cfg__notice')
+  await expect(notice).toContainText('有 2 处回答写的是域名')
+  await expect(notice.getByRole('link', { name: '两组条件' })).toBeVisible()
+  await expect(notice.getByRole('link', { name: '异常时回 CDN' })).toBeVisible()
+  await notice.getByRole('link', { name: '异常时回 CDN' }).click()
+  await expect(page.locator('.editor')).toBeVisible()
+  await expect(page.locator('.editor')).toContainText('check.example.com')
 })

@@ -147,6 +147,8 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
 .json-editor { height: min(62vh, 720px); min-height: 440px; overflow: hidden; background: var(--l-surface); border: 1px solid var(--l-hair); border-radius: var(--r-2); }
 .json-editor .cm-editor { height: 100%; color: var(--l-ink); background: var(--l-surface); font-family: var(--f-mono); font-size: var(--t-2); }
 .json-editor .cm-editor.cm-focused { outline: 0; }
+/* 编辑器拿到焦点时外框和别的输入框一样：品牌色边加一圈淡光 / With focus in the editor its frame matches every other field: the accent border plus the faint halo */
+.json-editor:has(.cm-focused) { border-color: var(--accent); box-shadow: var(--ring-field); }
 .json-editor .cm-scroller { overflow: auto; font-family: var(--f-mono); line-height: var(--lh-base); }
 .json-editor .cm-gutters { color: var(--l-ink-3); background: var(--l-canvas); border-right: 1px solid var(--l-hair); }
 .json-editor .cm-focused .cm-activeLine { background: var(--l-canvas); }
@@ -453,9 +455,11 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
 .system-page { display: grid; gap: var(--s-5); align-content: start; }
 .system-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-4); align-items: stretch; }
 .system-skeleton-meta { width: min(260px, 100%); }
+.update-row__cur-sk { display: inline-block; width: 7em; height: 1em; vertical-align: middle; }
 /* 按钮那一行的占位只在手机上要（宽屏按钮在标题右边，不占高度） / The button row's placeholder is needed only on phones (on wide screens the buttons sit beside the title and add no height) */
 .system-actions-sk { display: none; }
-@media (max-width: 640px) { .system-actions-sk { display: block; flex: 1 1 100%; height: var(--h-md); } }
+/* 两块和读完后的「重启」「停止」一样宽、一样的圆角 / Two slabs as wide as the loaded 重启 and 停止, with the same corners */
+@media (max-width: 640px) { .system-actions-sk { display: block; flex: 1 1 0; height: var(--h-md); border-radius: var(--r-2); } }
 .system-skeleton-rows { display: grid; gap: var(--s-2); padding-bottom: var(--s-2); }
 .system-skeleton-rows .sk { height: var(--s-7); }
 .system-skeleton-panel { height: calc(var(--s-8) * 2); }
@@ -542,7 +546,7 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
 /* 短的界面文字也按词换行，和提示条、提示一样：确认框正文、空状态、字段提示、规则摘要、登录说明不把「新建规则」「影响」这样的词拆到两行；长段的帮助说明不在内
    Short UI prose wraps by words too, as notices and toasts do: confirm bodies, empty states, field hints, the rule summary and the sign-in note never split words
    such as 新建规则 or 影响 across lines; long help paragraphs are left out */
-:is(.confirm__dialog > p, .confirm__items, .ui-empty__desc, .rcard__empty, .rgroups__none, .overview-empty, .overview-config-empty, .hist__empty, .settings-empty, .notification-empty, .ups__empty, .cform__empty, .cform__help, .pfield__hint, .tester__hint, .qadd__hint, .rw__hint, .credential-hint, .reading__lead, .reading__more, .auth-security) { word-break: keep-all; overflow-wrap: anywhere; }
+:is(.confirm__dialog > p, .confirm__items, .ui-empty__desc, .rcard__empty, .rgroups__none, .overview-empty, .overview-config-empty, .hist__empty, .settings-empty, .notification-empty, .ups__empty, .cform__empty, .cform__help, .pfield__hint, .tester__hint, .qadd__hint, .rw__hint, .credential-hint, .reading__lead, .reading__more, .auth-security, .cfg__json-note, .ecard__desc, .imp__notes li > span) { word-break: keep-all; overflow-wrap: anywhere; }
 .toast > svg { margin-top: calc((1lh - 18px) / 2); }
 .toast > .icon-button { margin-block: calc((1lh - 32px) / 2); }
 .toast > .toast-undo { margin-block: calc((1lh - 26px) / 2); }

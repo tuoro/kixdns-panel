@@ -398,7 +398,7 @@ for kind in panel-documentation panel-execstart; do
     exit 1
   }
   assert_contains "${output}" "systemctl disable --now kixdns.service" "移除失效的面板 unit 前应先停用它"
-  assert_contains "${output}" "该 unit 由面板创建，将随面板一起移除" "移除失效的面板 unit 时必须说明原因"
+  assert_contains "${output}" "这个服务由面板创建，随面板一起移除" "移除失效的面板 unit 时必须说明原因"
   assert_contains "${output}" "没有可保留的 KixDNS" "程序不在时不能声称 KixDNS 已保留"
 done
 output="$(dead_unit_uninstall foreign 2>&1)"
@@ -407,7 +407,7 @@ output="$(dead_unit_uninstall foreign 2>&1)"
   exit 1
 }
 assert_contains "${output}" "UNIT-LEFT" "不是面板创建的 unit 必须原样保留"
-assert_contains "${output}" "该 unit 不是面板创建的，保留不动" "保留失效的外部 unit 时必须说明"
+assert_contains "${output}" "这个服务不是面板创建的，保留不动" "保留失效的外部 unit 时必须说明"
 [[ ${output} != *"systemctl disable --now kixdns.service"* ]] || {
   printf '断言失败：不是面板创建的 unit 不应被停用\n%s\n' "${output}" >&2
   exit 1

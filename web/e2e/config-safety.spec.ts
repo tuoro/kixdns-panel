@@ -97,14 +97,16 @@ test('JSON 视图里的修改算草稿：保存条升起，离开前要问，回
   await expect(page.locator('.rcard')).toBeVisible()
 })
 
-test('有没保存的修改时退出登录：先问，选继续编辑就还登录着', async ({ page }) => {
+// 退出登录时问的按钮用退出的说法（和在别处退出一样）：先不退出 / 放弃并退出 / Sign-out asks with sign-out buttons (as from elsewhere): 先不退出 / 放弃并退出
+test('有没保存的修改时退出登录：先问，选先不退出就还登录着', async ({ page }) => {
   await page.goto('/config')
   await addRule(page, 'stay.example')
   await page.locator('.account-button').click()
   await page.getByRole('button', { name: '退出登录' }).click()
   const ask = page.getByRole('alertdialog', { name: '放弃未保存的修改' })
   await expect(ask).toBeVisible()
-  await ask.getByRole('button', { name: '继续编辑' }).click()
+  await expect(ask.getByRole('button', { name: '放弃并退出' })).toBeVisible()
+  await ask.getByRole('button', { name: '先不退出' }).click()
   await expect(page).toHaveURL(/\/config/)
   await expect(page.locator('.cfg__savebar')).toContainText('已修改')
   // 还登录着：保存照样成功 / Still signed in: saving still works
@@ -735,5 +737,47 @@ test('重新读取途中，页面不能改', async ({ page }) => {
   await page.locator('dialog.confirm[open]').getByRole('button', { name: '放弃修改并重新读取' }).click()
   await expect(page.locator('.cfg__panel')).toHaveAttribute('inert', '')
   await expect(page.locator('.cfg__panel')).not.toHaveAttribute('inert', '', { timeout: 10_000 })
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-read-slow'))
+})
+
+// 校验途中按的保存、按完就离开，校验没过：和直接保存失败一样，草稿留着、提示说为什么，回来还在
+// A save pressed during 校验, the page left right after, and the check fails: as with a direct save that fails, the draft is kept, a toast says why, and it is there on return
+test('排着的保存离开后校验没过：草稿留着并说明', async ({ page }) => {
+  await page.goto('/config')
+  await addRule(page, 'queued-left.example')
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-validate-slow', 'true'); localStorage.setItem('kixdns:demo-validate-reject', 'true') })
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '校验', exact: true }).click()
+  await bar.locator('.savebar__save').click()
+  await page.getByRole('link', { name: '日志', exact: true }).first().click()
+  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContainEqual(expect.stringContaining('配置没有保存：没有通过校验。草稿留在配置页'))
+  await page.getByRole('link', { name: '规则', exact: true }).first().click()
+  await expect(page.locator('[data-rule]', { hasText: 'queued-left.example' })).toBeVisible()
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-validate-slow'))
+})
+
+// 连上以后的静默重读还在路上时保存落地：那次读是写之前发的，不能拿它把刚存上的规则冲掉
+// A save lands while the quiet re-read after a reconnect is still out: that read left before the write and must not wipe the rule just saved
+test('重连后的重读还在路上时保存落地，刚存的规则不会被冲掉', async ({ page }) => {
+  await page.goto('/config')
+  await expect(page.locator('.cfg__panel')).toBeVisible()
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-panel-down', 'true'); window.dispatchEvent(new Event('kixdns:panel-unreachable')) })
+  await expect(page.locator('.conn__inner')).toBeVisible()
+  await page.evaluate(async () => {
+    localStorage.setItem('kixdns:demo-read-slow', 'true')
+    localStorage.removeItem('kixdns:demo-panel-down')
+    const url = performance.getEntriesByType('resource').map((e) => e.name).filter((n) => n.includes('/src/composables/useConnection.ts')).pop()!
+    const connection = await import(url)
+    void connection.useConnection().retry()
+  })
+  await expect(page.locator('.conn__inner')).toHaveCount(0, { timeout: 10_000 })
+  // 读还在路上（1.5 秒）：这时加一条规则、保存；只让读慢，写照常快 / The read is still out (1.5 s): add a rule and save now; only reads are slow, the write is quick
+  await addRule(page, 'during-reread.example')
+  await page.locator('.cfg__savebar').getByRole('button', { name: '保存并应用' }).click()
+  await expect(page.locator('.cfg__savebar')).toContainText('已生效', { timeout: 10_000 })
+  // 那次旧的读回来以后：规则还在，也不算没保存的修改 / After the old read returns: the rule is still there and does not count as unsaved
+  await page.waitForTimeout(3500)
+  await expect(page.locator('[data-rule]', { hasText: 'during-reread.example' })).toBeVisible()
+  await expect(page.locator('[data-rule]', { hasText: 'during-reread.example' }).getByLabel('改过，还没保存')).toHaveCount(0)
   await page.evaluate(() => localStorage.removeItem('kixdns:demo-read-slow'))
 })

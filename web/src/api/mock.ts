@@ -461,11 +461,21 @@ async function mockDraftTrial(domain: string, recordType: string, client: string
   }
 }
 
+// kixdns:demo-read-slow：读取的回答要 1.5 秒才到，读到的是发出时面板上的样子（和真的慢网络一样：中途别的写入落地了，这次读到的仍是旧的）；
+// 用来演示各页读完之前的占位，也用来测读回来时文件已经变了的情况
+// kixdns:demo-read-slow: a read's answer takes 1.5 s to arrive and holds what the panel had when it was sent (as on a real slow network: a write landing
+// meanwhile does not change it); shows each page's placeholder before the read lands, and tests a read that returns after the file moved
 export async function mockRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const method = init?.method ?? 'GET'
-  // kixdns:demo-read-slow：读取要 1.5 秒，演示各页读完之前的占位 / kixdns:demo-read-slow: reads take 1.5 s, to show each page's placeholder before the read lands
   const slowRead = method === 'GET' && typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-read-slow') === 'true'
-  await new Promise((resolve) => setTimeout(resolve, slowRead ? 1500 : 120))
+  await new Promise((resolve) => setTimeout(resolve, 120))
+  const answer = await mockAnswer<T>(path, init)
+  if (slowRead) await new Promise((resolve) => setTimeout(resolve, 1380))
+  return answer
+}
+
+async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
+  const method = init?.method ?? 'GET'
   const url = new URL(path, 'http://panel.local')
   const pathname = url.pathname
   // 同上：让初始化页也能在演示里看到，否则它的用例只能永远跳过。
@@ -576,7 +586,7 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
     const body = JSON.parse(String(init?.body)) as { ids: number[]; expected_sha256: string }
     if (body.expected_sha256 !== config.sha256) throw new Error('这份配置在别处改过了，先重新读取')
     const ids = [...new Set(body.ids)].sort((left, right) => left - right)
-    if (ids.length === 0) throw new Error('请至少选择一个配置版本')
+    if (ids.length === 0) throw new Error('还没选要删除的版本')
     if (ids.length > 100 || ids.some((id) => !Number.isInteger(id) || id <= 0)) {
       throw new Error('配置版本 ID 无效')
     }
@@ -646,11 +656,13 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
     if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-apply-failed') === 'true') {
       localStorage.removeItem('kixdns:demo-apply-failed')
       const error = 'KixDNS 没有接受这份配置：upstream "fast" did not answer the health check，仍在用之前的配置'
+      // 真面板读回来的版本号是这个没生效的版本（desired() 返回它） / A real panel reads back the failed version's id (desired() returns it)
       config = {
         ...config,
         content: body.content,
         sha256: nextSha,
         modified_at: createdAt,
+        version_id: versionId,
         pending: { version_id: versionId, sha256: nextSha, message, actor: 'admin', created_at: createdAt, error },
         runtime: { ...config.runtime, status: 'failed', apply_state: 'failed', pending_error: error },
       }

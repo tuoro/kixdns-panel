@@ -16,6 +16,8 @@ use crate::db::{CONFIG_APPLY_FAILED, CONFIG_APPLY_PENDING, ConfigVersionSummary,
 use crate::digest::sha256_hex;
 
 pub const MAX_CONFIG_BYTES: usize = 4 * 1024 * 1024;
+// 「4 MiB」中间是不换行空格：手机上数字和单位不分两行 / A no-break space inside 「4 MiB」, so the number and its unit stay on one line on phones
+const CONFIG_TOO_LARGE: &str = "配置文件不能超过 4\u{a0}MiB";
 
 #[derive(Clone)]
 pub struct ConfigStore {
@@ -209,7 +211,7 @@ impl ConfigStore {
         validate_config_shape(&content)?;
         let serialized = format_json(&content)?;
         if serialized.len() > MAX_CONFIG_BYTES {
-            return Err(ConfigError::Invalid("配置文件不能超过 4 MiB".to_owned()));
+            return Err(ConfigError::Invalid(CONFIG_TOO_LARGE.to_owned()));
         }
         let path = Arc::clone(&self.path);
         let bytes = serialized.into_bytes();
@@ -265,7 +267,7 @@ impl ConfigStore {
     ) -> Result<Vec<i64>, ConfigError> {
         let version_ids = version_ids.into_iter().collect::<BTreeSet<_>>();
         if version_ids.is_empty() {
-            return Err(ConfigError::Invalid("请至少选择一个配置版本".to_owned()));
+            return Err(ConfigError::Invalid("还没选要删除的版本".to_owned()));
         }
         if version_ids.len() > 100 {
             return Err(ConfigError::Invalid(
@@ -309,7 +311,7 @@ impl ConfigStore {
         validate_config_shape(&content)?;
         let serialized = format_json(&content)?;
         if serialized.len() > MAX_CONFIG_BYTES {
-            return Err(ConfigError::Invalid("配置文件不能超过 4 MiB".to_owned()));
+            return Err(ConfigError::Invalid(CONFIG_TOO_LARGE.to_owned()));
         }
         let sha256 = sha256(serialized.as_bytes());
         let path = Arc::clone(&self.path);
@@ -339,7 +341,7 @@ impl ConfigStore {
         validate_config_shape(&content)?;
         let serialized = format_json(&content)?;
         if serialized.len() > MAX_CONFIG_BYTES {
-            return Err(ConfigError::Invalid("配置文件不能超过 4 MiB".to_owned()));
+            return Err(ConfigError::Invalid(CONFIG_TOO_LARGE.to_owned()));
         }
         let sha256 = sha256(serialized.as_bytes());
         let version_id = self
@@ -385,7 +387,7 @@ fn read_document(path: &Path) -> Result<ConfigDocument, ConfigError> {
         ));
     }
     if metadata.len() > MAX_CONFIG_BYTES as u64 {
-        return Err(ConfigError::Invalid("配置文件不能超过 4 MiB".to_owned()));
+        return Err(ConfigError::Invalid(CONFIG_TOO_LARGE.to_owned()));
     }
     let bytes = fs::read(path).with_context(|| format!("读取配置失败：{}", path.display()))?;
     let raw = String::from_utf8(bytes.clone()).context("配置文件必须使用 UTF-8 编码")?;

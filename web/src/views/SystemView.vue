@@ -104,6 +104,8 @@ const unusualServiceState = computed(() => {
 })
 const installed = computed(() => kernel.value?.binary_present === true)
 const activeVersion = computed(() => kernel.value?.active ?? null)
+// 内核信息还在读：现在的构建先用灰块占着，不写「未记录」（那不是真的） / The kernel is still being read: the current build is held by a grey slab instead of 「未记录」 (which would be false)
+const kernelPending = computed(() => !kernel.value && loadingKernel.value)
 // 大字只写编号，「构建」「构建产物」作小标签放在上面；Release 写标签本身 / The big figure is the number alone, with 构建 or 构建产物 as a small label above; a Release shows its tag
 const versionLead = computed(() => {
   const text = formatKixdnsVersion(activeVersion.value)
@@ -533,7 +535,7 @@ onBeforeUnmount(() => {
       </template>
       <!-- 服务状态读回来之前，手机上先留出按钮那一行（灰块），读到以后内容不往下跳 / Before the service status arrives, phones keep the button row's place (a grey slab), so the content does not jump when it lands -->
       <template v-if="service || loadingService" #actions>
-        <span v-if="!service" class="sk system-actions-sk" aria-hidden="true"></span>
+        <template v-if="!service"><span class="sk system-actions-sk" aria-hidden="true"></span><span class="sk system-actions-sk" aria-hidden="true"></span></template>
         <button v-else-if="!running" class="ui-btn ui-btn--secondary" type="button" :disabled="!installed || serviceAction !== null || panelDown" @click="control('start')"><Play :size="16" />启动</button>
         <template v-else>
           <button class="ui-btn ui-btn--secondary" type="button" :disabled="!installed || serviceAction !== null || panelDown" @click="control('restart')"><RotateCw :size="16" :class="{ spin: serviceAction === 'restart' }" />重启</button>
@@ -562,8 +564,8 @@ onBeforeUnmount(() => {
               <template v-if="kernelAction === 'update'">正在下载、校验并切换内核</template>
               <span v-else-if="!kixdnsNotice" class="system-stale">检查失败：{{ updateStatus.kixdns_error ?? '原因未知' }}</span>
               <!-- 只在新旧版本之间断行，「→」「·」跟着后一段走：不会挂在行尾 / Lines break only between the two versions, and 「→」/「·」 travel with what follows, so neither is left at a line end -->
-              <template v-else-if="kixdnsNotice.available && kixdnsNotice.security_update"><span class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span> <span class="update-row__keep">安全更新<template v-if="kixdnsNotice.dependency_revision"> · <span class="ui-num">r{{ kixdnsNotice.dependency_revision }}</span></template></span></template>
-              <template v-else-if="kixdnsNotice.available"><span class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span> <span class="update-row__keep">→ <span class="ui-num">{{ formatKixdnsVersion(activeVersion).startsWith('构建 #') ? latestKixdnsVersion().replace(/^构建 /, '') : latestKixdnsVersion() }}</span></span></template>
+              <template v-else-if="kixdnsNotice.available && kixdnsNotice.security_update"><span v-if="kernelPending" class="sk update-row__cur-sk" aria-hidden="true"></span><span v-else class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span> <span class="update-row__keep">安全更新<template v-if="kixdnsNotice.dependency_revision"> · <span class="ui-num">r{{ kixdnsNotice.dependency_revision }}</span></template></span></template>
+              <template v-else-if="kixdnsNotice.available"><span v-if="kernelPending" class="sk update-row__cur-sk" aria-hidden="true"></span><span v-else class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span> <span class="update-row__keep">→ <span class="ui-num">{{ formatKixdnsVersion(activeVersion).startsWith('构建 #') ? latestKixdnsVersion().replace(/^构建 /, '') : latestKixdnsVersion() }}</span></span></template>
               <template v-else-if="kixdnsNotice.current_commit"><span class="update-row__keep">已是最新 · <span class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span></span></template>
               <template v-else>还没安装</template>
             </span>

@@ -117,3 +117,9 @@ export function errorMessage(error: unknown): string {
 // radios and file pickers take no text, so shortcuts still work there
 const TYPING = 'textarea, select, [contenteditable="true"], input:not([type="checkbox"], [type="radio"], [type="button"], [type="submit"], [type="reset"], [type="range"], [type="color"], [type="file"])'
 export const isTyping = (target: EventTarget | null): boolean => target instanceof HTMLElement && Boolean(target.closest(TYPING))
+
+// 句子最后几个字绑在一起不折行：中文折行时末行不会只剩一两个字 / Binds a sentence's last few characters so a Chinese wrap never leaves one or two alone on the last line
+export function keepTail(text: string, size = 5): [string, string] {
+  if (text.length <= size * 2) return [text, '']
+  return [text.slice(0, -size), text.slice(-size)]
+}

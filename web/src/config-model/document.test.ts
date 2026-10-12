@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { exportConfig, kernelPart, PANEL_FORMAT, readConfig } from './document'
-import { compile } from './model'
+import { compile, mainPipelineId, newRule, type Model } from './model'
 import { mockRequest } from '../api/mock'
 import type { ConfigDocument } from '../api/types'
 import { LEGACY_TEMPLATES, sampleModel } from './testing/samples'
@@ -56,6 +56,46 @@ describe('配置文件的存取 / storing and loading the config file', () => {
     expect(unnamed.map((r) => [r.id, r.note, r.conditions[0]![0]!.values[0]])).toEqual([[901, '第 1 条', 'a.example.com'], [902, '第 2 条', 'b.example.com'], [903, '第 3 条', 'c.example.com']])
     const ids = back.model.rules.map((r) => r.id)
     expect(new Set(ids).size).toBe(ids.length)
+  })
+
+  it('页面重开以后再导入手改过的配置：新加的规则编号不和接回来的旧编号撞 / after a page reload, re-importing a hand-edited config gives new rules ids that never collide with carried-over ones', async () => {
+    // 第一次：内核格式的配置导进来，编号从导入器的计数开始 / First load: a kernel-format config is imported, ids come from the importer's counter
+    vi.resetModules()
+    const first = await import('./document')
+    const imported = first.readConfig(JSON.parse(JSON.stringify(LEGACY_TEMPLATES)) as Record<string, unknown>).model
+    const cfg = JSON.parse(JSON.stringify(first.exportConfig(imported))) as Record<string, unknown> & { pipelines: { id: string; rules: Record<string, unknown>[] }[] }
+    // 手改：主列表最前面加两条规则 / By hand: two rules at the top of the main list
+    const main = cfg.pipelines.find((p) => p.id === mainPipelineId(imported))!
+    const template = main.rules[0]!
+    main.rules.unshift({ ...JSON.parse(JSON.stringify(template)), name: 'by-hand-1', matchers: [{ type: 'domain_suffix', value: 'hand-1.example.com', operator: 'and' }] }, { ...JSON.parse(JSON.stringify(template)), name: 'by-hand-2', matchers: [{ type: 'domain_suffix', value: 'hand-2.example.com', operator: 'and' }] })
+    // 第二次：页面重开，导入器的计数从头来 / Second load: the page reloads and the importer's counter starts over
+    vi.resetModules()
+    const second = await import('./document')
+    const back = second.readConfig(cfg)
+    expect(back.source).toBe('imported')
+    const rules = [...back.model.rules, ...back.model.ruleGroups.flatMap((g) => g.rules)]
+    const ids = [...rules.map((r) => r.id), ...rules.flatMap((r) => r.conditions.flat().map((c) => c.id)), ...back.model.mappings.map((m) => m.id)]
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+
+  it('内核部分被手改过：停用的没名字规则放回原来的位置 / kernel part edited by hand: a disabled unnamed rule goes back to its own place', () => {
+    const model: Model = sampleModel()
+    model.rules = []
+    const add = (domain: string, enabled = true) => {
+      const rule = newRule(800 + model.rules.length, { type: 'block', response: 'default' })
+      rule.enabled = enabled
+      rule.conditions = [[{ id: 900 + model.rules.length, field: 'domain', values: [domain], negate: false, regex: false }]]
+      model.rules.push(rule)
+    }
+    add('u1.example.com')
+    add('u2.example.com')
+    add('off.example.com', false)
+    add('u3.example.com')
+    const cfg = JSON.parse(JSON.stringify(exportConfig(model))) as Record<string, unknown> & { settings: Record<string, unknown> }
+    cfg.settings.cache_capacity = 50000
+    const back = readConfig(cfg)
+    expect(back.source).toBe('imported')
+    expect(back.model.rules.map((r) => r.conditions[0]![0]!.values[0])).toEqual(['u1.example.com', 'u2.example.com', 'off.example.com', 'u3.example.com'])
   })
 
   it('panel 格式版本不认识时也按内核部分重新导入 / an unknown panel format version is re-imported from the kernel part too', () => {

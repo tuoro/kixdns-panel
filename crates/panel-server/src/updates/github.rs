@@ -328,7 +328,7 @@ impl UpdateManager {
         }
 
         Err(UpdateError::Network(
-            "GitHub Artifact 分页结果不完整，过一会儿再检查".to_owned(),
+            "GitHub 返回的构建列表不完整，过一会儿再检查".to_owned(),
         ))
     }
 
