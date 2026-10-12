@@ -18,7 +18,8 @@ test('概念旁的「?」：点开说明，Esc 关掉焦点回到按钮，「全
   await button.click()
   const pop = page.getByRole('dialog', { name: '回答后检查', exact: true })
   await expect(pop).toBeVisible()
-  await expect(pop).toContainText('上游超时或连不上不会走到这一步')
+  // 超时或连不上时有单独的「否则」就走「否则」，旧说法「不会走到这一步」是错的 / On timeout a separate 「否则」 runs; the old "never gets here" was wrong
+  await expect(pop).toContainText('上游超时或连不上时，单独设了「否则」就按「否则」处理')
   // 等升起的动画走完再量：慢机器上量到半路，底边还在屏幕外 / Measure after the rise animation: on a slow machine a mid-flight box is still below the screen
   await pop.evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)))
   // 在屏幕里，手机上贴底 / On screen, docked to the bottom on phones
