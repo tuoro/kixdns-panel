@@ -15,7 +15,7 @@ const toast = useToast()
       <!-- 可撤销的那条右侧是撤销而不是叉：真正的撤销窗口就是它显示的这段时间，
            摆一个叉等于把唯一有用的动作藏起来。 -->
       <button v-if="item.undo" class="toast-undo" type="button" @click="toast.runUndo(item.id)">撤销</button>
-      <button v-else class="icon-button icon-button--small" type="button" title="关闭" @click="toast.dismiss(item.id)">
+      <button v-else class="icon-button icon-button--small toast-close" type="button" title="关闭" aria-label="关闭提示" @click="toast.dismiss(item.id)">
         <X :size="16" />
       </button>
     </div>

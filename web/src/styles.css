@@ -1056,6 +1056,9 @@ body:has(.editor:not(.editor--inspector)) .toast-stack { bottom: calc(var(--edit
 @media (max-width: 640px) {
   .toast-undo, .credential-eye, .notification-mark-all, .notification-item__actions a, .account-button { position: relative; }
   .toast-undo::before, .credential-eye::before, .notification-mark-all::before { position: absolute; inset: calc(var(--s-2) * -1); content: ''; }
+  /* 失败的提示不自己消失，这个叉是收起它的唯一办法：看得见的 32，点按区域补到 44 / Failure toasts never clear themselves and this × is the only way to dismiss them: 32 to the eye, a 44 tap area */
+  .toast-close { position: relative; }
+  .toast-close::before { position: absolute; inset: calc(min(0px, (100% - var(--h-touch)) / 2)); content: ''; }
   /* 宽度补到 36（不到 44：相邻两个动作只隔 12，补太多会互相压住） / Width grows to 36 (not 44: neighbouring actions are only 12 apart and would overlap) */
   .notification-item__actions a::before { position: absolute; inset: calc(var(--s-3) * -1) calc(min(0px, (100% - var(--h-md)) / 2 - 1px)); content: ''; }
   /* 密码框里的眼睛按钮和框一样高 / The eye button in the password field is as tall as the field */
