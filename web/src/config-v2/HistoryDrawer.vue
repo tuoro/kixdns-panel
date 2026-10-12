@@ -13,7 +13,7 @@ import { readConfig } from '../config-model/document'
 import { actorName, errorMessage, formatVersionTime } from '../utils'
 import RuleText from './RuleText.vue'
 import { appliedModel, unsaved } from './store'
-import { bulkDeleting, currentVersionId, deleteVersion, deleteVersions, deleting, friendlyRuntimeError, pendingWhen, restoreVersion, restoring, versionDetail, versions } from './useConfigDocument'
+import { bulkDeleting, currentVersionId, deferSave, deleteVersion, deleteVersions, deleting, friendlyRuntimeError, pendingWhen, restoreVersion, restoring, versionDetail, versions } from './useConfigDocument'
 // 关上后焦点回到打开它的控件 / Focus returns to the opener on close
 useReturnFocus()
 
@@ -63,7 +63,8 @@ function closeDiff(): void { diffDialog.value?.close(); preview.value = null; bl
 async function restore(v: ConfigVersion): Promise<void> {
   const ok = await confirm.ask({
     title: `恢复为版本 #${v.id}`,
-    body: `${unsaved.value ? '没保存的修改会丢失。' : ''}会用版本 #${v.id} 的内容生成一个新版本并立即应用；现在这一版留在历史里，随时可以再恢复。`,
+    // KixDNS 停着或连不上时恢复出来的新版本先存成待应用，和恢复后的提示说的一样 / With KixDNS stopped or unreachable the restored version is stored as pending, as the toast after it says
+    body: `${unsaved.value ? '没保存的修改会丢失。' : ''}会用版本 #${v.id} 的内容生成一个新版本，${deferSave.value ? `${pendingWhen()}自动应用` : '并立即应用'}；现在这一版留在历史里，随时可以再恢复。`,
     confirmLabel: `恢复为版本 #${v.id}`,
     // 会丢掉草稿时按会丢东西处理：焦点放在取消上 / When it drops the draft it is treated as losing something: focus starts on cancel
     destructive: unsaved.value,

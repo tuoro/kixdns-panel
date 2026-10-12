@@ -460,7 +460,8 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     if (from === 'apply' && !hasApplyFailure.value) applyError.value = stopped ? 'KixDNS 已停止\n启动后自动应用待应用的版本' : `${step === 'validating' ? '磁盘上的配置没有通过校验' : '没有应用成功'}\n${reason}`
     // 已经挂着「没有生效」时按的「重试应用」：提示条的话和刚才一样，所以另说一句这次重试的结果，不让它悄无声息
     // 重试应用 pressed while 没有生效 already shows: the notice reads as before, so this retry's outcome is said separately instead of passing silently
-    else if (from === 'apply') retryToast = useToast().error(writtenNotApplied ? `重试也没有生效：${failureCause(reason)}` : step === 'validating' ? `重试没有通过校验：${reason}` : conflict.value ? '重试没有成功：这份配置在别处改过了，先重新读取' : `重试没有成功：${reason}`)
+    // 撞上冲突时提示条已经换成「重新读取」并写明原因，不再另弹一条说同一句 / On a conflict the notice already offers 重新读取 with the reason, so no toast repeats it
+    else if (from === 'apply') { if (!conflict.value) retryToast = useToast().error(writtenNotApplied ? `重试也没有生效：${failureCause(reason)}` : step === 'validating' ? `重试没有通过校验：${reason}` : `重试没有成功：${reason}`) }
     else if (!viewing) {
       // 动词跟着实际发生了什么走（和保存条的判定一样），不跟着停在哪一步；内核的原话放最后
       // The verb follows what actually happened (as the save bar's verdict does), not the step it stopped at; the kernel's own words go last
@@ -468,11 +469,11 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
       dismissAwayToast()
       const kept = '草稿留在配\u2060置\u2060页'
       awayToast = useToast().error(writtenNotApplied ? `${pendingVersionId.value ? `版本 #${pendingVersionId.value}` : '配置'}保存了，没有生效：${sentence(failureCause(reason))}。回到配\u2060置\u2060页可以重试应用`
-        : conflict.value ? `没有保存成功：这份配置在别处改\u2060过\u2060了。${kept}`
+        : conflict.value ? `配置没有保存：这份配置在别处改\u2060过\u2060了。${kept}，回去重新读取后再改`
           : stopped ? `配置没有保存：KixDNS 已停止。${kept}，可以先存成待应用版本`
-            : down && step === 'applying' ? '不知道配置存上没有：连不上面板。连上后会自己核对，草稿还在'
+            : down && step === 'applying' ? `不知道配置存上没有：连不上面板。${kept}，连上后会自己核对`
               : down ? `配置没有保存：连不上面板。${kept}，连上后再保存`
-                : `配置${step === 'validating' ? '没有通过校验' : '没有保存成功'}，${kept}。${reason}`)
+                : `配置没有保存：${step === 'validating' ? '没有通过校验' : '没有成功'}。${kept}。${reason}`)
     }
   } finally {
     inFlight = null
@@ -519,8 +520,21 @@ async function settleOnce(announce: boolean): Promise<boolean> {
   // draft came about; only the 已经保存过了 line needs the draft to be the same one
   const sameDraft = lost.generation === draftGeneration()
   if (canonical(current.content) !== canonical(lost.content)) {
+    // 面板上的文件还是草稿的底子：那次保存没有存上。文件变了又不是自己那次：别处改过了（可能是存上以后又被改掉），按冲突处理，
+    // 免得回去一按保存就悄悄盖掉别处的版本
+    // The file on the panel is still the draft's base: the save did not land. The file changed and is not one's own save: it was changed elsewhere
+    // (perhaps after it landed), so it is handled as a conflict, or saving on return would silently overwrite the other version
+    const changedElsewhere = Boolean(doc.value) && current.sha256 !== doc.value!.sha256
+    if (changedElsewhere) {
+      conflict.value = true
+      verdict.value = '没有保存成功'
+      finishStage('failed', '这份配置在别处改过了，现在的草稿是基于旧版本的')
+    }
     // 不在配置页时，「不知道存上没有」那条提示换成核对的结果 / Away from the config page, the 不知道存上没有 toast is replaced by the result
-    if (!viewing && awayToast !== null) { dismissAwayToast(); awayToast = useToast().error('刚才那次保存没有存上，草稿留在配\u2060置\u2060页，回去再保存') }
+    if (!viewing && awayToast !== null) {
+      dismissAwayToast()
+      awayToast = useToast().error(changedElsewhere ? '配置没有保存：这份配置在别处改\u2060过\u2060了。草稿留在配\u2060置\u2060页，回去重新读取后再改' : '配置没有保存：刚才那次没有存上。草稿留在配\u2060置\u2060页，回去再保存')
+    }
     return false
   }
   settledCount += 1
@@ -537,7 +551,10 @@ async function settleOnce(announce: boolean): Promise<boolean> {
   }
   if (!viewing) {
     dismissAwayToast()
-    useToast().success(version ? `刚才那次保存已经存上了：${version}` : '刚才那次保存已经存上了')
+    // 说出它现在生效了没有（核对时已经读过一遍运行状态） / Say whether it is in effect now (the runtime was just read during the check)
+    if (hasApplyFailure.value) useToast().error(`刚才那次保存存上了，没有生效：${version || '这个版本'}。回到配\u2060置\u2060页可以重试应用`)
+    else if (hasPending.value) useToast().success(`刚才那次保存已经存上了：${version ? `${version} 待应用，` : ''}${pendingWhen()}自\u2060动\u2060应\u2060用`)
+    else useToast().success(version ? `刚才那次保存已经存上了：${version} 已生效` : '刚才那次保存已经存上了')
     // 草稿里没有别的修改了：不用再留着、也不用拦着刷新 / Nothing else is unsaved in the draft: no need to keep it or to guard reloads
     if (!unsaved.value) dropKeptDraft()
   }

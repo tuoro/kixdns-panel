@@ -16,6 +16,7 @@ import {
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { apiRequest, jsonBody } from '../api/client'
 import type {
+  ConfigDocument,
   GithubTokenStatus,
   KixdnsKernel,
   PanelUpdateStartResponse,
@@ -347,7 +348,7 @@ async function startPanelUpdate(): Promise<void> {
   const version = panelNotice.value?.latest_version
   if (!version || !await confirm.ask({
     title: `在线更新面板到 v${version}`,
-    body: '更新时面板会重启，期间页面会提示连不上，重启完自动恢复。KixDNS 照常运行，配置不变。',
+    body: '更新时面板会重启，期间页面会提示连不上，重启完自动恢复。KixDNS 不受影响，配置不变。',
     confirmLabel: `更新到 v${version}`,
   })) return
   startingPanelUpdate.value = true
@@ -412,11 +413,13 @@ async function refreshAll(): Promise<void> {
 
 async function control(action: ServiceAction): Promise<void> {
   const names: Record<ServiceAction, string> = { start: '启动', stop: '停止', restart: '重启' }
+  // 重启以后面板会接着应用待应用的版本：有的话说出来（读不到配置就不提） / After a restart the panel applies a pending version: say so when there is one (left out if the config cannot be read)
+  const pendingId = action === 'restart' ? (await apiRequest<ConfigDocument>('/api/v1/config').catch(() => null))?.pending?.version_id : null
   if ((action === 'stop' || action === 'restart') && !await confirm.ask({
     title: `${names[action]} KixDNS 服务`,
     body: action === 'stop'
       ? '停止期间，用 KixDNS 解析的设备都查不到域名，直到重新启动。配置不变，缓存会清空。'
-      : '服务会短暂中断，随后按当前运行配置重新提供解析。配置不变，缓存会清空。',
+      : `服务会短暂中断，缓存会清空。${pendingId ? `重启后应用待应用的版本 #${pendingId}。` : ''}`,
     confirmLabel: `${names[action]}服务`,
     destructive: action === 'stop',
   })) return

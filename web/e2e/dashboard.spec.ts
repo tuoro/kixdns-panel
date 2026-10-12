@@ -121,8 +121,10 @@ test('运行配置与缓存清理保持可用', async ({ page }) => {
   await expect(page.locator('.overview-config-hashes')).toContainText(/补丁集p\d+/)
   await expect(page.locator('.overview-config-state')).toHaveText('已生效')
   await page.getByRole('button', { name: '清空缓存', exact: true }).click()
+  // 提示说的条数就是确认框里那个数，不另外加上内部的规则缓存 / The toast's count is the number in the confirm, without the internal rule cache added on
+  const asked = (await page.getByRole('alertdialog').textContent())!.match(/([\d,]+) 条缓存会被丢弃/)![1]
   await acceptConfirm(page)
-  await expect(page.getByText('已清空 19,354 条缓存', { exact: true })).toBeVisible()
+  await expect(page.getByText(`已清空 ${asked} 条缓存`, { exact: true })).toBeVisible()
 })
 
 test('首次未启动保留空态视图但禁止运行时操作', async ({ page }) => {

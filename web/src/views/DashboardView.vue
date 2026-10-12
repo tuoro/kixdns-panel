@@ -435,7 +435,9 @@ async function flushCache(): Promise<void> {
   flushing.value = true
   try {
     const result = await apiRequest<CacheFlushResult>('/api/v1/cache/flush', { method: 'POST' })
-    toast.success(`已清空 ${formatNumber(result.response_entries_before + result.rule_entries_before)} 条缓存`)
+    // 说的是刚才确认框里那个数（回答缓存）：规则缓存是内部的，加进来两个数就对不上；操作审计里两个都记着
+    // The number just confirmed (the answer cache): the rule cache is internal and adding it made the two numbers disagree; the audit detail keeps both
+    toast.success(`已清空 ${formatNumber(result.response_entries_before)} 条缓存`)
     await load(true)
   } catch (error) {
     toast.error(errorMessage(error))

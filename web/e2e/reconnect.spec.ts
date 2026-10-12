@@ -251,10 +251,10 @@ test('回应丢了时已经离开配置页：连上后照样核对，回来不�
   await bar.getByRole('button', { name: '保存并应用' }).click()
   await expect(bar).toContainText('写入并应用')
   await page.getByRole('link', { name: '日志', exact: true }).click()
-  await expect.poll(toastTexts, { timeout: 5000 }).toContain('不知道配置存上没有：连不上面板。连上后会自己核对，草稿还在')
+  await expect.poll(toastTexts, { timeout: 5000 }).toContain('不知道配置存上没有：连不上面板。草稿留在配置页，连上后会自己核对')
   await expect(banner(page)).toHaveCount(0, { timeout: 10_000 })
-  await expect.poll(async () => (await toastTexts()).some((text) => /^刚才那次保存已经存上了：版本 #\d+$/.test(text)), { timeout: 5000 }).toBe(true)
-  expect(await toastTexts()).not.toContain('不知道配置存上没有：连不上面板。连上后会自己核对，草稿还在')
+  await expect.poll(async () => (await toastTexts()).some((text) => /^刚才那次保存已经存上了：版本 #\d+ 已生效$/.test(text)), { timeout: 5000 }).toBe(true)
+  expect(await toastTexts()).not.toContain('不知道配置存上没有：连不上面板。草稿留在配置页，连上后会自己核对')
   await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
   await page.getByRole('link', { name: '规则', exact: true }).click()
   await expect(page.locator('[data-rule]', { hasText: 'away-lost.example.org' })).toBeVisible()
@@ -291,4 +291,35 @@ test('窄一点的宽屏上，长的保存条状态不把按钮挤出屏幕', as
   expect(save!.x + save!.width).toBeLessThanOrEqual(900)
   const note = await bar.locator('.savebar__note').boundingBox()
   expect(note!.width).toBeGreaterThanOrEqual(150)
+})
+
+// 回应丢了、连上之前别处又存了一版：面板上的文件既不是草稿的底子、也不是自己那次保存。按冲突处理，不给一个会悄悄盖掉别处版本的保存
+// The answer was lost and someone else saved before the reconnect: the file on the panel is neither the draft's base nor one's own save. It is handled as a
+// conflict, with no save offered that would silently overwrite the other version
+test('回应丢了时别处又存了一版：连上后按冲突处理，不悄悄盖掉', async ({ page }) => {
+  await page.goto('/config')
+  await page.getByRole('button', { name: '快速添加', exact: true }).click()
+  const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+  await quick.fill('mine.example.org')
+  await quick.press('Enter')
+  await page.evaluate(() => {
+    window.addEventListener('kixdns:panel-unreachable', () => localStorage.setItem('kixdns:demo-panel-down', 'true'), { capture: true, once: true })
+    localStorage.setItem('kixdns:demo-put-answer-lost', 'true')
+  })
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar).toContainText('连不上面板')
+  // 别处直接写进演示后端（绕过这一页的连不上） / Someone else writes straight into the demo backend (bypassing this page's outage)
+  await page.evaluate(async () => {
+    const url = performance.getEntriesByType('resource').map((e) => e.name).filter((n) => n.includes('/src/api/mock.ts')).pop()!
+    const mock = await import(url) as { mockRequest: (path: string, init?: RequestInit) => Promise<{ sha256: string; content: { settings?: Record<string, unknown> } }> }
+    const current = await mock.mockRequest('/api/v1/config')
+    const content = JSON.parse(JSON.stringify(current.content)) as { settings: Record<string, unknown> }
+    content.settings = { ...content.settings, cache_capacity: 4321 }
+    await mock.mockRequest('/api/v1/config', { method: 'PUT', body: JSON.stringify({ content, expected_sha256: current.sha256, message: '别处' }) })
+  })
+  await panelDown(page, false)
+  await expect(banner(page)).toHaveCount(0, { timeout: 10_000 })
+  await expect(bar).toContainText('这份配置在别处改过了', { timeout: 5000 })
+  await expect(bar.getByRole('button', { name: '保存并应用' })).toBeDisabled()
 })

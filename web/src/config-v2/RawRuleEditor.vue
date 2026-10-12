@@ -61,7 +61,7 @@ function removeRule(index: number): void { rules.value.splice(index, 1) }
           <ActionList v-model="rule.response_actions_on_match" phase="response" :pipelines="pipelines" :current-pipeline-id="currentPipelineId" :capabilities="capabilities" :show-errors="showErrors" :pipeline-name="pipelineName" />
         </section>
         <section class="rawed__stage">
-          <h3 class="rawed__title">不满足时</h3>
+          <h3 class="rawed__title">不满足或没有回答时</h3>
           <ActionList v-model="rule.response_actions_on_miss" phase="response" :pipelines="pipelines" :current-pipeline-id="currentPipelineId" :capabilities="capabilities" :show-errors="showErrors" :pipeline-name="pipelineName" />
         </section>
       </details>

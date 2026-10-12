@@ -141,7 +141,7 @@ function remove(): void {
             <label class="ui-checkbox"><input v-model="draft.fallback.onError" type="checkbox"><i></i>上游回 SERVFAIL 或 REFUSED</label>
             <label class="ui-checkbox"><input v-model="draft.fallback.onPolluted" type="checkbox"><i></i><span>结果被污染 <small class="is-mono">{{ POLLUTED_CIDRS.join('、') }}</small></span></label>
             <div class="pfield__row"><span class="fallback__k">改问</span><UiSelect v-model="draft.fallback.group" class="pfield__grow" :options="otherGroups" label="备用组" /></div>
-            <p class="ui-notice ui-notice--off"><Info :size="16" aria-hidden="true" /><span>上游全部超时或连不上时，KixDNS 直接回 SERVFAIL，不会改问备用组。</span></p>
+            <p class="ui-notice ui-notice--off"><Info :size="16" aria-hidden="true" /><span>上游全部超时或连不上时不会改问备用组：开了「过期后继续用旧结果」先回旧结果，没有就回 SERVFAIL。</span></p>
           </div>
         </div>
         <!-- 不能删除的原因写在内容最后，底栏只放动作（手机）/ Why it cannot be deleted closes the content; the footer holds only actions (phone) -->

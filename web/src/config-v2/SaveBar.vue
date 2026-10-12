@@ -42,7 +42,7 @@ function onKey(event: KeyboardEvent): void {
     if (document.querySelector('dialog[open]')) { toast.info(dialogEdits.size ? '先点窗口里的按钮把修改放进草稿，再保存' : '先关掉这个窗口，再保存'); return }
     if (busy.value) return
     if (props.jsonError) toast.info('JSON 写错了，改好才能保存')
-    else if (conflict.value && draftStage.value === 'failed') toast.info('别处已经保存了新版本，先重新读取')
+    else if (conflict.value && draftStage.value === 'failed') toast.info('这份配置在别处改过了，先重新读取')
     else if (blockedFields.value.length) sayBlocked()
     else if (visible.value) saveDraft()
     // 域名映射行里改了还没点保存：说一句，不说「没有要保存的修改」 / A domain-mapping row edited but not committed: say so instead of 没有要保存的修改

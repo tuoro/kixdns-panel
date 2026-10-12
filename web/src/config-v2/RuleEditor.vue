@@ -451,19 +451,21 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
                 <UiSelect v-if="draft.response.thenLog" v-model="draft.response.thenLog" class="erow__level" :options="levels" label="回答检查的日志级别" size="sm" />
               </div>
               <template v-if="phone">
-                <button class="crow" type="button" aria-label="修改不满足时怎么做" @click="sheet = 'otherwise'"><span class="crow__text"><span class="crow__head"><i class="crow__join">否则</i><b>{{ remedySentence(model, draft.response.otherwise) }}</b></span></span><ChevronRight class="crow__chev" :size="16" aria-hidden="true" /></button>
-                <PhoneSheet v-if="sheet === 'otherwise'" title="不满足时" @close="sheet = null">
-                  <div class="pfield"><span>怎么做</span><UiSelect :model-value="draft.response.otherwise.type" :options="elseKinds" label="不满足时怎么做" @update:model-value="draft.response.otherwise = remedyOf($event)" /></div>
+                <button class="crow" type="button" aria-label="修改不满足或没有回答时怎么做" @click="sheet = 'otherwise'"><span class="crow__text"><span class="crow__head"><i class="crow__join">否则</i><b>{{ remedySentence(model, draft.response.otherwise) }}</b></span></span><ChevronRight class="crow__chev" :size="16" aria-hidden="true" /></button>
+                <PhoneSheet v-if="sheet === 'otherwise'" title="不满足或没有回答时" @close="sheet = null">
+                  <div class="pfield"><span>怎么做</span><UiSelect :model-value="draft.response.otherwise.type" :options="elseKinds" label="不满足或没有回答时怎么做" @update:model-value="draft.response.otherwise = remedyOf($event)" /></div>
                   <OutcomeParams v-if="draft.response.otherwise.type !== 'none'" v-model="draft.response.otherwise" :show-errors="showErrors" label="否则" @edit-group="sheet = null; emit('editGroup', $event)" />
                 </PhoneSheet>
               </template>
               <div v-else class="after__then">
                 <span class="after__k">否则</span>
-                <UiSelect class="after__kind" :model-value="draft.response.otherwise.type" :options="elseKinds" label="不满足时怎么做" @update:model-value="draft.response.otherwise = remedyOf($event)" />
+                <UiSelect class="after__kind" :model-value="draft.response.otherwise.type" :options="elseKinds" label="不满足或没有回答时怎么做" @update:model-value="draft.response.otherwise = remedyOf($event)" />
                 <OutcomeParams v-if="draft.response.otherwise.type !== 'none'" v-model="draft.response.otherwise" class="after__params" :show-errors="showErrors" label="否则" @edit-group="emit('editGroup', $event)" />
               </div>
             </div>
-            <p class="ui-notice ui-notice--off after__limit"><Info :size="16" aria-hidden="true" /><span>上游全部超时或连不上时不会走到这一步，KixDNS 直接回 SERVFAIL。</span></p>
+            <!-- 和内核一样：上游全都没回时，单独设了「否则」就按「否则」做（内核的 response_actions_on_miss）；没设就先回过期的旧结果，再回 SERVFAIL
+                 As the kernel does: when no upstream answers, a custom 「否则」 runs (the kernel's response_actions_on_miss); without one a stale answer goes first, then SERVFAIL -->
+            <p class="ui-notice ui-notice--off after__limit"><Info :size="16" aria-hidden="true" /><span>{{ draft.response.mode === 'custom' && draft.response.otherwise.type !== 'none' ? '上游全部超时或连不上时，按「否则」处理。' : '上游全部超时或连不上时不会走到这一步：开了「过期后继续用旧结果」先回旧结果，没有就回 SERVFAIL。' }}</span></p>
           </div>
         </section>
 

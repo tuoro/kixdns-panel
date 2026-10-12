@@ -349,7 +349,7 @@ const askLeave = async (): Promise<boolean> => {
   // 正在保存时又改过：正在保存的那份照常落地，丢掉的只是之后改的 / Edited again during a save: the part being saved still lands, only the later edits are dropped
   // 同意了就把草稿退回正在保存的那一份：保存没成功时回来看到的正是它，不会冒出说好丢掉的那几处 / On agreement the draft goes back to the one being saved: a failed save brings back exactly that, not the edits agreed to drop
   if (busy.value) {
-    const agreed = await confirm.ask({ title: '放弃保存之后的修改', body: '正在保存的那份照常保存，保存开始以后改的会丢掉。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
+    const agreed = await confirm.ask({ title: '放弃保存开始后改的内容', body: '正在保存的那份照常保存；保存开始以后改的会丢掉。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
     if (agreed) dropEditsAfterSave()
     return agreed
   }

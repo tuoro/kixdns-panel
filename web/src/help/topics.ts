@@ -17,7 +17,7 @@ export interface HelpTopic {
 export const HELP_TOPICS: HelpTopic[] = [
   { id: 'after', title: '回答后检查', page: 'config', body: [
     '上游回答之后再看一眼：回答里的 IP 落在某个网段、或者是某种响应码时，改问另一个组、拦下或者换一个回答。',
-    '只在拿到回答之后才发生。上游超时或连不上不会走到这一步，KixDNS 直接回 SERVFAIL。',
+    '条件只在拿到回答之后才比。上游超时或连不上时，单独设了「否则」就按「否则」处理；没设就回 SERVFAIL（开了「过期后继续用旧结果」时先回旧结果）。',
     '「沿用上游组」用这个组里设的备用组；「单独设置」由这条规则自己定条件和去处；「不检查」就是上游回什么返回什么。',
   ] },
   { id: 'ecs', title: '客户端子网（ECS）', page: 'config', body: [
@@ -37,7 +37,7 @@ export const HELP_TOPICS: HelpTopic[] = [
   ] },
   { id: 'fallback', title: '备用组', page: 'config', body: [
     '这个组的上游回了 SERVFAIL 或 REFUSED，或者回答落在「结果被污染」后面列出的网段里，就改问另一个组。',
-    '只在上游回答之后才判断。上游超时或连不上时 KixDNS 直接回 SERVFAIL，不会改问备用组。',
+    '只在上游回答之后才判断。上游超时或连不上时不会改问备用组：开了「过期后继续用旧结果」先回旧结果，没有就回 SERVFAIL。',
     '怕上游连不上，就在组里多填几个地址：它们同时问，谁先回用谁。',
   ] },
   { id: 'mapping', title: '域名映射', page: 'config', body: [

@@ -324,14 +324,14 @@ test('保存途中离开，保存没成功：提示说清楚，回到配置页�
   await bar.getByRole('button', { name: '保存并应用' }).click()
   await expect(bar).toContainText('写入并应用')
   await page.getByRole('link', { name: '日志', exact: true }).click()
-  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('没有保存成功：这份配置在别处改过了。草稿留在配置页')
+  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('配置没有保存：这份配置在别处改过了。草稿留在配置页，回去重新读取后再改')
   // 草稿只在内存里：这时刷新或关掉浏览器先问一句 / The draft lives only in memory: reloading or closing the browser asks first
   expect(await page.evaluate(() => { const event = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(event); return event.defaultPrevented })).toBe(true)
   await page.getByRole('link', { name: '规则', exact: true }).click()
   await expect(page.locator('[data-rule]', { hasText: 'kept.example' })).toBeVisible()
   await expect(bar).toContainText('这份配置在别处改过了')
   // 保存条接着说了，离开时的那条提示收起 / The save bar says it now, so the toast from leaving goes
-  await expect.poll(() => toastTexts(page)).not.toContain('没有保存成功：这份配置在别处改过了。草稿留在配置页')
+  await expect.poll(() => toastTexts(page)).not.toContain('配置没有保存：这份配置在别处改过了。草稿留在配置页，回去重新读取后再改')
   await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
 })
 
@@ -365,7 +365,7 @@ test('保存途中离开时丢掉之后的修改：保存没成功回来也不�
   await page.getByRole('link', { name: '日志', exact: true }).click()
   await page.locator('dialog.confirm[open]').getByRole('button', { name: '放弃修改' }).click()
   await expect(page).toHaveURL(/\/logs/)
-  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('没有保存成功：这份配置在别处改过了。草稿留在配置页')
+  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('配置没有保存：这份配置在别处改过了。草稿留在配置页，回去重新读取后再改')
   await page.getByRole('link', { name: '规则', exact: true }).click()
   await expect(page.locator('[data-rule]', { hasText: 'saving.example' })).toBeVisible()
   await expect(page.locator('[data-rule]', { hasText: 'dropped.example' })).toHaveCount(0)
@@ -399,8 +399,8 @@ test('保存途中又改过再离开：照样先问', async ({ page }) => {
   await addRule(page, 'second-leave.example')
   await page.getByRole('link', { name: '日志', exact: true }).click()
   // 正在保存的那份照常落地，问的只是之后改的 / The part being saved still lands; the question is only about the later edits
-  await expect(page.locator('dialog.confirm[open]')).toContainText('放弃保存之后的修改')
-  await expect(page.locator('dialog.confirm[open]')).toContainText('正在保存的那份照常保存，保存开始以后改的会丢掉。')
+  await expect(page.locator('dialog.confirm[open]')).toContainText('放弃保存开始后改的内容')
+  await expect(page.locator('dialog.confirm[open]')).toContainText('正在保存的那份照常保存；保存开始以后改的会丢掉。')
   await page.locator('dialog.confirm[open]').getByRole('button', { name: '继续编辑' }).click()
   await expect(page).toHaveURL(/\/config/)
   await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
