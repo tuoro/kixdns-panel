@@ -5,12 +5,12 @@ import { registerHeldDraft } from '../composables/useLeaveGuard'
 import type { ConfigApplyResult, ConfigDocument, ConfigRuntimeApplyState, ConfigVersion, ConfigVersionDetail, ConfigVersions, DeleteConfigVersionResult, DeleteConfigVersionsResult, Overview, ServiceStatus, ValidationResult } from '../api/types'
 import { SETTING_SECTIONS, settingNeedsCapability, settingSupported } from '../config-editor/schema'
 import { exportConfig, readConfig } from '../config-model/document'
-import type { Model } from '../config-model/model'
+import type { Model, Rule } from '../config-model/model'
 import { traceNames } from '../config-model/trace-names'
 import { useConnection } from '../composables/useConnection'
 import { dismissUndoable, toastMark, useToast } from '../composables/useToast'
 import { errorMessage } from '../utils'
-import { appliedSnapshot, applyHits, applyUpstreamStats, changeCount, dialogEdits, dirty, draftGeneration, editorEdited, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, replaceModel, reportOpen, unsaved } from './store'
+import { appliedSnapshot, findRuleByName, applyHits, applyUpstreamStats, changeCount, dialogEdits, dirty, draftGeneration, editorEdited, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, replaceModel, reportOpen, unsaved } from './store'
 
 // 配置页和面板服务之间的事：读配置和历史、KixDNS 的运行状态和能力、校验、保存并热加载、现在应用。
 // 草稿本身在 store.ts；这里只管「文件」和「运行」。所有状态是模块级的，页面和保存条共用同一份。
@@ -67,6 +67,26 @@ export function rulesUsingAction(content: Record<string, unknown>, type: string)
 // How many CNAME answers the draft has (a mapping answering with a domain, a rule's or post-reply check's custom answer); read only when the kernel lacks support, so only then is it exported
 export const cnameAnswers = computed(() => rulesUsingAction(exportConfig(model) as Record<string, unknown>, 'static_cname_response'))
 export const cnameInUse = computed(() => cnameAnswers.value > 0)
+// 回答写成域名的是哪几条规则（规则自己的回答、回答后检查的自定义回答，规则组里的也算）：在写出的配置里找，再认回草稿里的规则；
+// 域名映射认不回规则，另外数。提示条点名用
+// Which rules answer with a domain (a rule's own answer, a post-reply check's custom answer, rule groups included): found in the export and traced back to
+// the draft's rules; mappings do not trace back to a rule and are counted apart. For naming them in the notice
+export const cnameRules = computed((): Rule[] => {
+  if (!cnameInUse.value) return []
+  const content = exportConfig(model) as Record<string, unknown>
+  const pipelines = Array.isArray(content.pipelines) ? content.pipelines : []
+  const found = new Map<number, Rule>()
+  for (const pipeline of pipelines) {
+    const rules = isRecord(pipeline) && Array.isArray(pipeline.rules) ? pipeline.rules : []
+    for (const kernelRule of rules) {
+      if (!ruleUsesAction(kernelRule, 'static_cname_response') || !isRecord(kernelRule) || typeof kernelRule.name !== 'string') continue
+      // 拆开的几条叫 name#N，合回一条 / Split parts are named name#N and fold back into one
+      const rule = findRuleByName(kernelRule.name.replace(/#\d+$/, ''))
+      if (rule && !found.has(rule.id)) found.set(rule.id, rule)
+    }
+  }
+  return [...found.values()]
+})
 export const blockedFields = computed(() => (!runtimeStopped.value && !runtimeUnavailable.value && !capabilityError.value
   ? [...unsupportedFields.value, ...(!canCname.value && cnameInUse.value ? ['CNAME 回答'] : [])]
   : []))

@@ -492,3 +492,28 @@ test('保存途中的保存条：按钮不出屏，转圈不变形 @responsive',
   expect(Math.round(spin.width)).toBe(Math.round(spin.height))
   await page.evaluate(() => { localStorage.removeItem('kixdns:demo-save-slow'); localStorage.removeItem('kixdns:demo-validate-slow') })
 })
+
+// 内核不支持 CNAME 时，提示说出写成域名的是哪几条规则：前两条点名、点了打开那条，多的写「等 N 条」
+// With CNAME unsupported, the notice names the rules whose answers are domains: the first two by name, opening that rule on click, the rest as 「等 N 条」
+test('内核不支持 CNAME 时，提示点名写成域名的规则', async ({ page }) => {
+  await page.goto('/config')
+  await expect(page.locator('.cfg__panel')).toBeVisible()
+  await page.evaluate(async () => {
+    const url = (part: string) => performance.getEntriesByType('resource').map((e) => e.name).filter((n) => n.includes(part)).pop()!
+    const store = await import(url('/src/config-v2/store.ts'))
+    const models = await import(url('/src/config-model/model.ts'))
+    const document = await import(url('/src/config-v2/useConfigDocument.ts'))
+    for (const name of ['a', 'b', 'c']) {
+      const rule = models.newRule(store.newId(), { type: 'answer', kind: 'cname', value: `${name}.cdn.example.net`, ttl: null })
+      rule.conditions = [[{ id: store.newId(), field: 'domain', values: [`${name}.example.com`], negate: false, regex: false }]]
+      store.model.rules.push(rule)
+    }
+    document.runtimeCapabilities.value = document.runtimeCapabilities.value.filter((c: string) => c !== 'config_static_cname_response_v1')
+  })
+  const notice = page.locator('.cfg__notice')
+  await expect(notice).toContainText('写成域名的有：规则「域名是 a.example.com」「域名是 b.example.com」等 3 条')
+  await notice.getByRole('button', { name: '域名是 b.example.com' }).click()
+  await expect(page.locator('.editor')).toBeVisible()
+  await expect(page.locator('.editor')).toContainText('b.example.com')
+  await expect(page.locator('.editor')).toContainText('这条选了 CNAME')
+})

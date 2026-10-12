@@ -4,11 +4,13 @@ import { findRuleByName, model } from './store'
 
 // KixDNS 给的原因里提到的规则名和上游组名能点：点规则打开那条规则，点组打开那个组（和现在面板的 RuntimeMessage 一样）
 // Rule and group names in a reason from KixDNS are links: a rule opens its editor, a group its drawer (like today's RuntimeMessage)
-const props = defineProps<{ text: string }>()
+// links：写在「」里的显示名直接对到规则编号（没起名字的规则显示的是条件，按名字认不回来） / links: display titles written in 「」 map straight to rule ids (an unnamed rule shows its condition, which name lookup cannot trace)
+const props = defineProps<{ text: string; links?: Record<string, number> }>()
 const emit = defineEmits<{ rule: [id: number]; group: [id: string] }>()
 const parts = computed(() => props.text.split(/(「[^」]+」)/).map((piece) => {
   const name = /^「(.+)」$/.exec(piece)?.[1]
   if (!name) return { text: piece }
+  if (props.links && Object.hasOwn(props.links, name)) return { text: piece, rule: props.links[name] }
   const rule = findRuleByName(name)
   if (rule) return { text: piece, rule: rule.id }
   const group = model.groups.find((g) => g.name === name)

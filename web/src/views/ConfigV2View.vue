@@ -26,7 +26,7 @@ import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, busy, rereading, cnameAnswers, conflict, dropEditsAfterSave, saveInFlight, onlySaving, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, unsupportedSection } from '../config-v2/useConfigDocument'
+import { applyBusy, busy, rereading, cnameAnswers, conflict, dropEditsAfterSave, saveInFlight, onlySaving, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, cnameRules, unsupportedSection } from '../config-v2/useConfigDocument'
 import { useHelp } from '../composables/useHelp'
 import { useServiceStart } from '../composables/useServiceStart'
 import { registerLeaveGuard, takeAgreement } from '../composables/useLeaveGuard'
@@ -164,7 +164,8 @@ function groupDeleted(group: UpstreamGroup, index: number): void {
 
 // ---------- 通知条：一次只说一件事 / the notice strip: one thing at a time ----------
 const geoPrefixed = computed(() => [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].flatMap((r) => r.conditions.flat()).filter((c) => c.field === 'geosite' && c.values.some((v) => /^geosite:/i.test(v))).length)
-interface Notice { tone: 'err' | 'warn' | 'off'; text: string; detail?: string; action?: string; run?: () => void | Promise<void> }
+// links：说明里「」中的显示名对到规则编号（CNAME 提示点名的规则） / links: display titles in 「」 within the detail mapped to rule ids (the rules the CNAME notice names)
+interface Notice { tone: 'err' | 'warn' | 'off'; text: string; detail?: string; links?: Record<string, number>; action?: string; run?: () => void | Promise<void> }
 const notice = computed<Notice | null>(() => {
   // 连不上面板时由顶上的横幅说，这里不复述 / With the panel unreachable the banner says it; no second copy here
   if (loadError.value && doc.value && !panelDown.value) return { tone: 'err', text: '读取配置失败，下面是上一次读到的内容。', detail: loadError.value, action: '重试', run: () => void reload(true) }
@@ -189,8 +190,8 @@ const notice = computed<Notice | null>(() => {
   if (!canCname.value && cnameInUse.value && !capabilityError.value) {
     const them = cnamePlaces.value.total > 1 ? '它们' : '它'
     // 同时还有开着的不支持的设置：一条提示把两件事都说了，保存条说的「有 N 项」和这里对得上 / Unsupported settings switched on as well: one notice says both, so the bar's 「有 N 项」 matches it
-    if (unsupportedFields.value.length) return { tone: 'warn', text: `当前内核不支持：${unsupportedFields.value.join('、')}、CNAME\u00a0回答。在基础设置里关掉${unsupportedFields.value.map((f) => `「${f}」`).join('、')}，把\u00a0${cnamePlaces.value.total}\u00a0处写成域名的回答改成 IP，或者更新内核。`, action: section.value === 'settings' ? (cnamePlaces.value.mappings ? '去域名映射' : undefined) : '去基础设置', run: () => (section.value === 'settings' ? setTab('mapping') : goUnsupported()) }
-    return { tone: 'warn', text: `当前内核不支持 CNAME\u00a0回答：有\u00a0${cnamePlaces.value.total}\u00a0处回答写的是域名，KixDNS 不会接受这份配置。把${them}改成 IP，或者更新内核。`, action: cnamePlaces.value.mappings && section.value !== 'mapping' ? '去域名映射' : undefined, run: () => setTab('mapping') }
+    if (unsupportedFields.value.length) return { tone: 'warn', text: `当前内核不支持：${unsupportedFields.value.join('、')}、CNAME\u00a0回答。在基础设置里关掉${unsupportedFields.value.map((f) => `「${f}」`).join('、')}，把\u00a0${cnamePlaces.value.total}\u00a0处写成域名的回答改成 IP，或者更新内核。`, ...cnameWhere.value, action: section.value === 'settings' ? (cnamePlaces.value.mappings ? '去域名映射' : undefined) : '去基础设置', run: () => (section.value === 'settings' ? setTab('mapping') : goUnsupported()) }
+    return { tone: 'warn', text: `当前内核不支持 CNAME\u00a0回答：有\u00a0${cnamePlaces.value.total}\u00a0处回答写的是域名，KixDNS 不会接受这份配置。把${them}改成 IP，或者更新内核。`, ...cnameWhere.value, action: cnamePlaces.value.mappings && section.value !== 'mapping' ? '去域名映射' : undefined, run: () => setTab('mapping') }
   }
   // KixDNS 不接受带着它不支持的设置的配置：说清这一点和两条出路，按钮直接去基础设置 / KixDNS refuses a config carrying settings it does not support: say so with the two ways out, the button going straight to the settings
   if (unsupportedFields.value.length) { const many = unsupportedFields.value.length > 1; return { tone: 'warn', text: `当前内核不支持：${unsupportedFields.value.join('、')}。开着也不起作用，关掉才能保存：在基础设置里点${many ? '' : '它旁边的'}「关掉」，或者更新内核。`, action: section.value === 'settings' ? (unsupportedTitle.value ? `去${unsupportedTitle.value}` : undefined) : '去基础设置', run: goUnsupported } }
@@ -207,6 +208,23 @@ function goUnsupported(): void {
 // 写成域名的回答有几处：按写出的配置数（和服务端一样）；域名映射里有几处另数，决定给不给「去域名映射」
 // How many answers are domains: counted on the export (as the server does); the mappings among them are counted apart, to decide whether to offer 去域名映射
 const cnamePlaces = computed(() => ({ mappings: model.mappings.filter((m) => m.enabled && !mappingIsIp(m)).length, total: cnameAnswers.value }))
+// 说出写成域名的是哪几条规则：点名前两条（点了打开那条规则），多的写「等 N 条」，域名映射只数条数（有「去域名映射」）；只有映射时不另起一行
+// Name the rules whose answers are domains: the first two by name (a click opens that rule), the rest as 「等 N 条」, mappings only counted (they have 去域名映射);
+// with mappings alone no extra line
+const cnameWhere = computed((): { detail?: string; links?: Record<string, number> } => {
+  const rules = cnameRules.value
+  if (!rules.length) return {}
+  const links: Record<string, number> = {}
+  for (const rule of rules.slice(0, 2)) {
+    const full = ruleTitle(rule).replace(/[「」]/g, '')
+    const title = full.length > 20 ? `${full.slice(0, 19)}…` : full
+    if (!(title in links)) links[title] = rule.id
+  }
+  const named = Object.keys(links).map((title) => `「${title}」`).join('')
+  const more = rules.length > Object.keys(links).length ? `等\u00a0${rules.length}\u00a0条` : ''
+  const mappings = cnamePlaces.value.mappings ? `、域名映射\u00a0${cnamePlaces.value.mappings}\u00a0条` : ''
+  return { detail: `写成域名的有：规则${named}${more}${mappings}`, links }
+})
 function stripPrefix(): void {
   let n = 0
   for (const r of [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)]) for (const c of r.conditions.flat()) if (c.field === 'geosite') c.values = c.values.map((v) => { if (/^geosite:/i.test(v)) { n++; return v.replace(/^geosite:/i, '') } return v })
@@ -465,7 +483,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
     <div v-if="notice && ready" class="ui-notice cfg__notice" tabindex="-1" :class="notice.tone === 'err' ? 'ui-notice--err' : notice.tone === 'off' ? 'ui-notice--off' : ''" :role="notice.tone === 'err' ? 'alert' : 'status'">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10" /><path d="M12 8v4M12 16h.01" /></svg>
       <span>{{ notice.text }}</span>
-      <small v-if="notice.detail"><RuleText :text="notice.detail" @rule="openRule($event, null)" @group="groupEditor = { id: $event }" /></small>
+      <small v-if="notice.detail"><RuleText :text="notice.detail" :links="notice.links" @rule="openRule($event, null)" @group="groupEditor = { id: $event }" /></small>
       <button v-if="notice.action" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="applyBusy" @click="runNotice">{{ notice.action }}</button>
     </div>
 
