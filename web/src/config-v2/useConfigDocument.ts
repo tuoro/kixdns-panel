@@ -363,7 +363,7 @@ if (typeof window !== 'undefined') window.addEventListener('beforeunload', (even
 let abandoned = false
 registerHeldDraft(draftHeldAway, () => { keepOnReturn = false; dismissAwayToast(); if (inFlight !== null) abandoned = true }, () => useConfirm().ask({
   title: '放弃配置页的草稿',
-  body: busy.value ? '配置页的保存还没做完。退出登录以后不再告诉你结果，没存上的修改也会丢掉。' : '配置页有一份没保存成功的修改，只留在这个页面里，退出登录以后就没了。',
+  body: busy.value ? '配置页的保存还没做完。退出登录以后不再告诉你结果，没存上的修改也会丢掉。' : '配置页有一份没保存成功的修改，还没存到面板上，退出登录以后就没了。',
   confirmLabel: '放弃并退出',
   cancelLabel: '先不退出',
   destructive: true,
@@ -451,8 +451,9 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     finishStage('done', `${applyResultState(result) === 'pending' ? pendingText : `已生效 · 版本 #${result.version_id}`}${later}`)
     // 从提示条按的「重试应用」没有保存条报结果：成功了说一句，不让提示条悄悄消失 / 重试应用 from the notice has no save bar to report: say it worked instead of the notice just vanishing
     if (from === 'apply' && applyResultState(result) === 'applied') useToast().success(`版本 #${result.version_id} 已生效`)
-    // 保存途中离开了配置页：没有保存条报结果，用提示说 / Left the config page mid-save: no save bar reports it, so a toast does
-    else if (!viewing) useToast().success(applyResultState(result) === 'pending' ? pendingText : `版本 #${result.version_id} 已生效`)
+    // 保存途中离开了配置页：没有保存条报结果，用提示说；退出登录时放下了这份草稿就不说（确认框说过「不再告诉你结果」）
+    // Left the config page mid-save: no save bar reports it, so a toast does; not after sign-out let the draft go (the confirm said no result would follow)
+    else if (!viewing && !abandoned) useToast().success(applyResultState(result) === 'pending' ? pendingText : `版本 #${result.version_id} 已生效`)
     announceWritten()
   } catch (error) {
     // 会话过期：页面会回到登录页，这里不挂「没通过校验」 / Session expired: the page goes back to the login page; no 没有通过校验 here
@@ -486,7 +487,9 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
       applyError.value = stopped ? 'KixDNS 已停止\n启动后自动应用待应用的版本' : `${step === 'validating' ? '磁盘上的配置没有通过校验' : '没有应用成功'}\n${reason}`
       applyFailedDown = down
       // 按完「现在应用」就离开了：配置页的提示条看不见，用提示说 / Left right after 现在应用: the config page's notice is out of sight, so a toast says it
-      if (!viewing) useToast().error(stopped ? 'KixDNS 已停止：待应用的版本启动后自动应用' : `${step === 'validating' ? '没有应用：磁盘上的配置没有通过校验' : '没有应用成功'}。${down ? '连不上面板，连上后回配置页再应用' : reason}`)
+      // 一个开头：「版本 #N 没有应用：」，后面是原因 / One opening, 版本 #N 没有应用：, then the cause
+      const which = pendingVersionId.value ? `版本 #${pendingVersionId.value} ` : '配置'
+      if (!viewing) useToast().error(stopped ? 'KixDNS 已停止：待应用的版本启动后自动应用' : step === 'validating' ? `${which}没有应用：磁盘上的配置没有通过校验。${reason}` : down ? `${which}没有应用：连不上面板。连上后回配\u2060置\u2060页再应用` : `${which}没有应用：${sentence(reason)}`)
     }
     // 已经挂着「没有生效」时按的「重试应用」：提示条的话和刚才一样，所以另说一句这次重试的结果，不让它悄无声息
     // 重试应用 pressed while 没有生效 already shows: the notice reads as before, so this retry's outcome is said separately instead of passing silently
@@ -503,7 +506,7 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
           : stopped ? `配置没有保存：KixDNS 已停止。${kept}，可以先存成待应用版本`
             : down && step === 'applying' ? `不知道配置存上没有：连不上面板。${kept}，连上后会自己核对`
               : down ? `配置没有保存：连不上面板。${kept}，连上后再保存`
-                : `配置没有保存：${step === 'validating' ? '没有通过校验' : '没有成功'}。${kept}。${reason}`)
+                : step === 'validating' ? `配置没有保存：没有通过校验。${kept}。${reason}` : `配置没有保存：${sentence(reason)}。${kept}`)
     }
   } finally {
     inFlight = null
@@ -560,7 +563,8 @@ async function settleOnce(announce: boolean): Promise<boolean> {
     const changedElsewhere = Boolean(doc.value) && current.sha256 !== doc.value!.sha256
     if (changedElsewhere) {
       conflict.value = true
-      verdict.value = '没有保存成功'
+      // 那次保存可能存上过、又被别处盖掉：不说「没有保存」，只说它不在现在的配置里 / The save may have landed and then been overwritten: say it is not in the current config, not that it was never saved
+      verdict.value = '刚才那次保存不在现在的配置里'
       finishStage('failed', '这份配置在别处改过了，现在的草稿是基于旧版本的')
     }
     // 在配置页上、那次保存就是没存上：保存条接着说「校验通过」，另说一句没存上 / On the config page with the save simply not landed: the bar goes on to 校验通过, so say it did not land
@@ -568,7 +572,7 @@ async function settleOnce(announce: boolean): Promise<boolean> {
     // 不在配置页时，「不知道存上没有」那条提示换成核对的结果 / Away from the config page, the 不知道存上没有 toast is replaced by the result
     if (!viewing && awayToast !== null) {
       dismissAwayToast()
-      awayToast = useToast().error(changedElsewhere ? '配置没有保存：这份配置在别处改\u2060过\u2060了。草稿留在配\u2060置\u2060页，回去重新读取后再改' : '配置没有保存：刚才那次没有存上。草稿留在配\u2060置\u2060页，回去再保存')
+      awayToast = useToast().error(changedElsewhere ? '刚才那次保存不在现在的配置里：这份配置在别处改\u2060过\u2060了。草稿留在配\u2060置\u2060页，回去重新读取后再改' : '刚才那次保存没有存上。草稿留在配\u2060置\u2060页，回去再保存')
     }
     return false
   }
@@ -588,7 +592,7 @@ async function settleOnce(announce: boolean): Promise<boolean> {
   if (!viewing || (announce && !sameDraft)) {
     dismissAwayToast()
     // 说出它现在生效了没有（核对时已经读过一遍运行状态） / Say whether it is in effect now (the runtime was just read during the check)
-    if (hasApplyFailure.value) useToast().error(`刚才那次保存存上了，没有生效：${version || '这个版本'}。回到配\u2060置\u2060页可以重试应用`)
+    if (hasApplyFailure.value) useToast().error(`刚才那次保存已经存上了：${version ? `${version} ` : ''}没有生效，回到配\u2060置\u2060页可以重试应用`)
     else if (hasPending.value) useToast().success(`刚才那次保存已经存上了：${version ? `${version} 待应用，` : ''}${pendingWhen()}自\u2060动\u2060应\u2060用`)
     else useToast().success(version ? `刚才那次保存已经存上了：${version} 已生效` : '刚才那次保存已经存上了')
     // 草稿里没有别的修改了：不用再留着、也不用拦着刷新 / Nothing else is unsaved in the draft: no need to keep it or to guard reloads

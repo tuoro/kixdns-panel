@@ -17,7 +17,7 @@ pub enum AppError {
     Conflict(&'static str, String),
     #[error("{1}")]
     NotFound(&'static str, String),
-    #[error("请求过于频繁，请稍后重试")]
+    #[error("操作太频繁，过一会儿再试")]
     TooManyRequests,
     #[error("{1}")]
     Unprocessable(&'static str, String),
@@ -62,7 +62,7 @@ impl IntoResponse for AppError {
             Self::TooManyRequests => (
                 StatusCode::TOO_MANY_REQUESTS,
                 "rate_limited",
-                "请求过于频繁，请稍后重试".to_owned(),
+                "操作太频繁，过一会儿再试".to_owned(),
             ),
             Self::Unprocessable(code, message) => (StatusCode::UNPROCESSABLE_ENTITY, code, message),
             Self::ServiceUnavailable(code, message) => {

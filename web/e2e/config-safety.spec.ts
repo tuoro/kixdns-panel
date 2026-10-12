@@ -613,3 +613,41 @@ test('断线又连上时开着的规则面板不会自己关上', async ({ page 
   await page.waitForTimeout(800)
   await expect(name).toBeVisible()
 })
+
+// 保存途中退出登录、同意放弃：确认框说了「不再告诉你结果」，登录页就不再弹那次保存的结果
+// Signing out mid-save and agreeing to drop the draft: the confirm said no result would follow, so the login page shows none
+test('保存途中退出登录并放弃：登录页不再说那次保存的结果', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', '账户菜单在宽屏的顶栏')
+  await page.goto('/config')
+  await addRule(page, 'signout.example')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-save-slow', 'true'))
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar).toContainText('写入并应用')
+  await page.getByRole('link', { name: '日志', exact: true }).click()
+  await page.getByRole('button', { name: /^账户：/ }).click()
+  await page.getByRole('button', { name: '退出登录' }).click()
+  await expect(page.locator('dialog.confirm[open]')).toContainText('退出登录以后不再告诉你结果')
+  await page.locator('dialog.confirm[open]').getByRole('button', { name: '放弃并退出' }).click()
+  await expect(page).toHaveURL(/\/login/)
+  // 慢保存要 1.5 秒才落地：等它落地以后再看 / The slow save takes 1.5 s to land: look after it has
+  await page.waitForTimeout(2500)
+  expect((await toastTexts(page)).filter((text) => text.includes('已生效'))).toEqual([])
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
+})
+
+// 应用失败过的版本，重启以后面板不会再试（旧文件已经放回去了）：重启的确认框照实说，并指到「重试应用」
+// A version that failed to apply is not retried after a restart (the old file was put back): the restart confirm says so and points to 重试应用
+test('应用失败的版本：重启确认框不说「重启后应用」', async ({ page }) => {
+  await page.goto('/config')
+  await addRule(page, 'failed-apply.example')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-apply-failed', 'true'))
+  await page.locator('.cfg__savebar').getByRole('button', { name: '保存并应用' }).click()
+  await expect(page.locator('main')).toContainText('没有生效，仍在用之前那份配置')
+  await page.getByRole('link', { name: '系统', exact: true }).first().click()
+  await page.getByRole('button', { name: '重启', exact: true }).click()
+  const dialog = page.locator('dialog.confirm[open]')
+  await expect(dialog).toContainText('没有生效，重启后仍用之前那份配置；要再试，到配置页点「重试应用」')
+  await expect(dialog).not.toContainText('重启后应用待应用的版本')
+  await page.keyboard.press('Escape')
+})

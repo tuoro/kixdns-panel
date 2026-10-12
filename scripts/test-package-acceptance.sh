@@ -147,7 +147,7 @@ dns_port="$(python3 "${ACCEPTANCE_PY}" prepare --config "${CONFIG_PATH}")"
 
 run_installer
 installed=true
-require_output "安装完成：KixDNS Panel" "首次安装没有说明安装了哪个版本"
+require_output "安装完成：KixDNS 面板" "首次安装没有说明安装了哪个版本"
 require_output "下一步：" "首次安装没有给出下一步"
 require_output "KixDNS：已安装，尚未启动" "首次安装没有说明 KixDNS 未启动"
 ! systemctl is-active --quiet kixdns.service || fail "首次安装不应自动启动 KixDNS"

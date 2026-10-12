@@ -420,3 +420,27 @@ test('手机上点规则行、映射行的第二行也能进编辑 @responsive',
   await tapCentre(page.locator('[data-rw]', { hasText: 'line.home.arpa' }).locator('.rw__t'))
   await expect(page.locator('.rw__edit')).toBeVisible()
 })
+
+// 上游组的 ECS 说明跟着所选方式说：固定子网对内网客户端也发（内核 apply_ecs），只有「发送客户端所在子网」跳过内网
+// The group's ECS hint follows the choice: a fixed subnet is sent for LAN clients too (kernel apply_ecs); only 发送客户端所在子网 skips them
+test('上游组的子网说明跟着所选方式说', async ({ page }) => {
+  await page.goto('/config?section=upstreams')
+  await page.locator('.gcard__name').first().click()
+  const select = page.getByLabel('客户端子网', { exact: true })
+  const hint = page.locator('.pfield:has(select[aria-label="客户端子网"]) .pfield__hint')
+  await select.selectOption({ label: '发送固定的子网' })
+  await expect(hint).toHaveText('每个请求都带上这个子网，内网客户端也一样。')
+  await select.selectOption({ label: '发送客户端所在子网' })
+  await expect(hint).toHaveText('发送子网能让国内 CDN 回离客户端近的地址；内网客户端不发送。')
+})
+
+// 「不检查」时没有「这一步」：超时的说明直接说会怎样 / Under 不检查 there is no step to skip: the timeout note says what happens
+test('回答后不检查时，超时的说明不提「这一步」', async ({ page }) => {
+  await page.goto('/config')
+  await page.getByRole('button', { name: '新建规则', exact: true }).first().click()
+  // 宽屏的右侧面板里这一段默认收着 / In the wide side panel this section starts folded
+  await page.locator('.editor').getByRole('button', { name: '回答后检查', exact: true }).click()
+  await page.getByRole('group', { name: '回答后检查' }).getByRole('button', { name: '不检查' }).click()
+  const note = page.locator('.after__limit')
+  await expect(note).toHaveText('上游全部超时或连不上时：开了「过期后继续用旧结果」先回旧结果，没有就回 SERVFAIL。')
+})

@@ -1,7 +1,7 @@
 import type { MatcherConfig } from './types'
 
-// 条件列表和字段校验共用：字段名既写在窄屏的控件旁边，也用在「请填写…」里（审计第五轮 B3）
-// Shared by the condition list and field validation: the field name labels the control in a narrow container and names it in 请填写… (audit round 5, B3)
+// 条件列表和字段校验共用：字段名既写在窄屏的控件旁边，也用在「还没填…」里（审计第五轮 B3）
+// Shared by the condition list and field validation: the field name labels the control in a narrow container and names it in 还没填… (audit round 5, B3)
 export interface MatcherHint { label: string; example: string; help?: string }
 // 每种类型的短字段名（窄屏上写在控件左边）和占位符；只有占位符说不清的才留一句提示（规范 4.2）。
 // A short field name per type (shown beside the control in a narrow container) and a placeholder;

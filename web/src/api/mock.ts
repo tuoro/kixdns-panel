@@ -304,7 +304,7 @@ let panelUpdateStatus: PanelUpdateStatus = typeof localStorage !== 'undefined'
   && localStorage.getItem('kixdns:demo-panel-update-failed') === 'true'
   ? {
       state: 'failed',
-      message: '在线更新失败：下载安装包失败，系统没有改动。检查网络后再点一次在线更新',
+      message: '在线更新失败：下载安装包失败，面板还是原来的版本。检查网络后再点一次在线更新',
       target_version: 'v1.0.1',
       updated_at: 1_789_000_000,
     }
@@ -581,7 +581,7 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
       throw new Error('配置版本 ID 无效')
     }
     if (ids.includes(currentConfigVersionId() ?? -1)) {
-      throw new Error('当前生效版本不能删除，请先恢复其他版本')
+      throw new Error('正在用的版本不能删除：先恢复别的版本')
     }
     if (ids.some((id) => !versions.versions.some((version) => version.id === id))) {
       throw new Error('配置文件不存在')
@@ -602,7 +602,7 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
     // 与后端 ConfigStore::delete_version 保持一致：待应用时校验编辑中的候选 SHA。
     if (body.expected_sha256 !== config.sha256) throw new Error('这份配置在别处改过了，先重新读取')
     const id = Number(configVersionMatch[1])
-    if (id === currentConfigVersionId()) throw new Error('当前生效版本不能删除，请先恢复其他版本')
+    if (id === currentConfigVersionId()) throw new Error('正在用的版本不能删除：先恢复别的版本')
     const index = versions.versions.findIndex((version) => version.id === id)
     if (index < 0) throw new Error('配置文件不存在')
     removeConfigVersions([id], emptyFirstInstall)
@@ -641,6 +641,23 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
     const versionId = ++nextConfigVersionId
     const createdAt = Math.floor(Date.now() / 1000)
     const message = body.message?.trim() || '更新配置'
+    // kixdns:demo-apply-failed：写进去了，KixDNS 却没接受（真面板会放回旧文件、把这个版本记成没有生效，回 422 reload_failed）
+    // kixdns:demo-apply-failed: written, but KixDNS did not take it (a real panel puts the old file back, records the version as failed and answers 422 reload_failed)
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-apply-failed') === 'true') {
+      localStorage.removeItem('kixdns:demo-apply-failed')
+      const error = 'KixDNS 没有接受这份配置：upstream "fast" did not answer the health check，仍在用之前的配置'
+      config = {
+        ...config,
+        content: body.content,
+        sha256: nextSha,
+        modified_at: createdAt,
+        pending: { version_id: versionId, sha256: nextSha, message, actor: 'admin', created_at: createdAt, error },
+        runtime: { ...config.runtime, status: 'failed', apply_state: 'failed', pending_error: error },
+      }
+      versions.versions.unshift({ id: versionId, sha256: nextSha, message, actor: 'admin', created_at: createdAt, apply_state: 'failed', apply_error: error })
+      configVersionContents.set(versionId, structuredClone(body.content))
+      throw new ApiError(error, 422, 'reload_failed')
+    }
     if (emptyFirstInstall) {
       config = {
         ...config,

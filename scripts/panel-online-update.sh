@@ -62,7 +62,7 @@ prepare_github_api_config() {
   local mode
   local token
   [[ -e ${GITHUB_TOKEN_FILE} ]] || return 0
-  local invalid="GitHub Token 文件权限或格式无效，请在系统页重新配置 Token"
+  local invalid="GitHub Token 文件权限或格式不对，在系统页重新填一次 Token"
   [[ -f ${GITHUB_TOKEN_FILE} && ! -L ${GITHUB_TOKEN_FILE} ]] || fail_because "${invalid}"
   mode="$(stat -c '%a' -- "${GITHUB_TOKEN_FILE}")"
   [[ ${mode} =~ ^[0-7]{3,4}$ ]] || fail_because "${invalid}"

@@ -413,13 +413,16 @@ async function refreshAll(): Promise<void> {
 
 async function control(action: ServiceAction): Promise<void> {
   const names: Record<ServiceAction, string> = { start: '启动', stop: '停止', restart: '重启' }
-  // 重启以后面板会接着应用待应用的版本：有的话说出来（读不到配置就不提） / After a restart the panel applies a pending version: say so when there is one (left out if the config cannot be read)
-  const pendingId = action === 'restart' ? (await apiRequest<ConfigDocument>('/api/v1/config').catch(() => null))?.pending?.version_id : null
+  // 重启以后面板只接着应用还在等的版本；应用失败过的不会再试（旧配置已经放回去了），那时说清楚，指到配置页的「重试应用」（读不到配置就不提）
+  // After a restart the panel applies only a version still waiting; one that failed is not retried (the old file was put back), so say that and point to 重试应用 on the config page (left out if the config cannot be read)
+  const pending = action === 'restart' ? (await apiRequest<ConfigDocument>('/api/v1/config').catch(() => null))?.pending : null
+  const pendingId = pending?.version_id
+  const restartNote = !pendingId ? '' : pending?.error ? `版本 #${pendingId} 没有生效，重启后仍用之前那份配置；要再试，到配置页点「重试应用」。` : `重启后应用待应用的版本 #${pendingId}。`
   if ((action === 'stop' || action === 'restart') && !await confirm.ask({
     title: `${names[action]} KixDNS 服务`,
     body: action === 'stop'
       ? '停止期间，用 KixDNS 解析的设备都查不到域名，直到重新启动。配置不变，缓存会清空。'
-      : `服务会短暂中断，缓存会清空。${pendingId ? `重启后应用待应用的版本 #${pendingId}。` : ''}`,
+      : `服务会短暂中断，缓存会清空。${restartNote}`,
     confirmLabel: `${names[action]}服务`,
     destructive: action === 'stop',
   })) return
@@ -668,7 +671,7 @@ onBeforeUnmount(() => {
           </div>
           <!-- 先说它只用在哪、不去哪；没配置时再说清为什么要填：GitHub 对匿名请求每小时只给 60 次，带 Token 是 5000 次。
                First where it is used and where it never goes; without a token, also why one helps: GitHub allows 60 anonymous requests an hour, 5,000 with a token. -->
-          <p class="credential-hint"><span>只用于版本检查和内核下载，不会发送到 nightly.link。</span><template v-if="!githubTokenStatus?.configured"><span>匿名访问 GitHub 每小时只有 60 次请求，检查版本和下载内核容易被限速。</span><span>填一个 Token 后是每小时 <span class="nowrap">5,000 次</span>。</span></template></p>
+          <p class="credential-hint"><span>只用于版本检查和内核下载，不会发送到 nightly.link。</span><template v-if="!githubTokenStatus?.configured"><span>匿名访问 GitHub 每小时只有 <span class="nowrap">60 次请求</span>，检查版本和下载内核容易被限速。</span><span>填一个 Token 后是每小时 <span class="nowrap">5,000 次</span>。</span></template></p>
         </div>
         <div class="system-card__row credential-quota">
           <span v-if="githubRate" class="ui-dots"><span>剩余次数 <span class="ui-num">{{ githubQuota }}</span></span><span>{{ githubRateReset() }} 重置</span></span>

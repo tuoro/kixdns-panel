@@ -8,9 +8,9 @@
 | :--: | :--: |
 | ![运行概览](docs/images/dashboard.png) | ![配置管理](docs/images/configuration.png) |
 
-| 系统与更新 | DNS 诊断 |
+| 系统 | DNS 诊断 |
 | :--: | :--: |
-| ![系统与更新](docs/images/system.png) | ![DNS 诊断](docs/images/diagnostics.png) |
+| ![系统](docs/images/system.png) | ![DNS 诊断](docs/images/diagnostics.png) |
 
 *截图来自本地演示环境，数据均为示例。*
 

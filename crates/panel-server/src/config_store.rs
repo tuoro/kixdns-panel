@@ -53,7 +53,7 @@ pub enum ConfigError {
     NotFound,
     #[error("配置已被其他操作修改")]
     Conflict,
-    #[error("当前生效版本不能删除")]
+    #[error("正在用的版本不能删除")]
     ActiveVersion,
     #[error("{0}")]
     Invalid(String),

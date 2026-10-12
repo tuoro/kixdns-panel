@@ -2,14 +2,14 @@ import { matcherHint } from './matcher-hints'
 import { MATCHER_DEFINITIONS } from './schema'
 import type { ActionConfig, MatcherConfig, MatcherScope } from './types'
 
-// 必填的格子空着时，错误说出它叫什么，和这一行写的字段名一样：「请填写域名」「请选择 Pipeline」（审计第五轮 B3）
-// An empty required field is named in its error as its row labels it: 请填写域名, 请选择 Pipeline (audit round 5, B3)
+// 必填的格子空着时，错误说出它叫什么，和这一行写的字段名一样：「还没填域名」「还没选 Pipeline」（审计第五轮 B3；第十三轮去掉「请」）
+// An empty required field is named in its error as its row labels it: 还没填域名, 还没选 Pipeline (audit round 5, B3; round 13 dropped 请)
 export function requiredFieldError(label: string, choose = false): string {
-  return `${choose ? '请选择' : '请填写'}${/^[A-Za-z0-9]/.test(label) ? ' ' : ''}${label}`
+  return `${choose ? '还没选' : '还没填'}${/^[A-Za-z0-9]/.test(label) ? ' ' : ''}${label}`
 }
 
 export function isRequiredFieldError(message: string): boolean {
-  return /^请(?:填写|选择)/.test(message)
+  return /^还没(?:填|选)/.test(message)
 }
 
 export function validDnsName(value: string): boolean {

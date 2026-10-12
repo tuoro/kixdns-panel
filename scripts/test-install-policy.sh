@@ -132,7 +132,7 @@ output="$(run_in_pty "${migration_fixture}
   choose_install_mode
   printf 'MODE=%s\n' \"\${INSTALL_MODE}\"
 " ']：' maybe ']：' 2 ']：' '?')"
-assert_contains "${output}" "请输入 y 或 n。" "认不出的回答应提示重新输入"
+assert_contains "${output}" "输入 y 或 n。" "认不出的回答应提示重新输入"
 assert_contains "${output}" "已取消安装，现有 KixDNS 未作修改。" "连续三次认不出应取消安装"
 assert_not_contains "${output}" "MODE=managed" "认不出的回答不能被当作同意"
 
@@ -300,7 +300,7 @@ commit_a=$(printf 'a%.0s' {1..40})
 commit_b=$(printf 'b%.0s' {1..40})
 printf 'KIXDNS_PANEL_INSTALLED_RELEASE=v3.1.1\nKIXDNS_PANEL_INSTALLED_COMMIT=%s\n' "${commit_a}" > "${PANEL_ENV}"
 output="$(same_version_output true v3.1.1 "${commit_b}" false)"
-assert_contains "${output}" "KixDNS Panel v3.1.1 已安装，未作任何修改。" "同一 Release 再次运行应直接退出"
+assert_contains "${output}" "KixDNS 面板 v3.1.1 已安装，未作任何修改。" "同一 Release 再次运行应直接退出"
 assert_contains "${output}" "--reinstall" "同一版本提示应说明如何修复安装"
 assert_not_contains "${output}" "CONTINUED" "同一 Release 不应继续安装"
 output="$(same_version_output true v3.1.1 "${commit_b}" true)"
@@ -308,7 +308,7 @@ assert_contains "${output}" "CONTINUED" "--reinstall 应继续安装"
 # 同一版本但面板没在运行：说「未作任何修改」就是把坏掉的安装当成好的，应按 --reinstall 修复。
 # Same version but the panel is not running: "nothing changed" would pass off a broken install as fine; repair as --reinstall.
 output="$(same_version_output true v3.1.1 "${commit_b}" false false)"
-assert_contains "${output}" "KixDNS Panel v3.1.1 已安装，但面板没有在运行" "同版本面板未运行时应说明原因"
+assert_contains "${output}" "KixDNS 面板 v3.1.1 已安装，但面板没有在运行" "同版本面板未运行时应说明原因"
 assert_not_contains "${output}" "未作任何修改" "面板未运行时不能说未作修改"
 assert_contains "${output}" "CONTINUED REINSTALL=true" "面板未运行时应按 --reinstall 继续修复安装"
 output="$(same_version_output true v3.1.2 "${commit_a}" false)"
@@ -973,13 +973,13 @@ summary_of() {
 }
 ln -sfn ../run/systemd/resolve/stub-resolv.conf "${WORK}/summary-resolv.conf"
 output="$(summary_of fresh false true false resolved false '')"
-assert_equals "$(sed -n 2p <<< "${output}")" "安装完成：KixDNS Panel v3.1.1" "结果第一行应说明安装了哪个版本"
+assert_equals "$(sed -n 2p <<< "${output}")" "安装完成：KixDNS 面板 v3.1.1" "结果第一行应说明安装了哪个版本"
 assert_equals "$(sed -n 3p <<< "${output}")" "面板地址：http://192.168.1.20:5738" "第二行应是面板地址"
-assert_contains "${output}" "下一步：打开面板地址 → 创建管理员账号 → 在「系统与更新」页启动 KixDNS" "首次安装应给出下一步"
+assert_contains "${output}" "下一步：打开面板地址，创建管理员，然后在概览页点「启动 KixDNS」" "首次安装应给出下一步"
 assert_contains "${output}" "KixDNS：已安装，尚未启动" "首次安装应说明 KixDNS 未启动"
 assert_contains "${output}" "端口 53：被 systemd-resolved 占用" "端口未处理时应给出提示"
 assert_contains "${output}" "sudo ln -sfn /run/systemd/resolve/resolv.conf ${WORK}/summary-resolv.conf" "应给出改指向 resolv.conf 的命令"
-assert_equals "$(tail -n 2 <<< "${output}" | head -n 1)" "请仅在可信内网使用面板；公网访问必须配置防火墙和 HTTPS 反向代理。" "安全提醒应在构建信息之前"
+assert_equals "$(tail -n 2 <<< "${output}" | head -n 1)" "只在可信内网使用面板；公网访问必须配置防火墙和 HTTPS 反向代理。" "安全提醒应在构建信息之前"
 assert_equals "$(tail -n 1 <<< "${output}")" "构建：面板 aaaaaaaaaaaa · KixDNS bbbbbbbbbbbb" "构建身份应在最后一行"
 output="$(summary_of migrate true true true none false '')"
 assert_contains "${output}" "KixDNS：已迁移为增强版，保持原来的运行状态（运行中）；原 unit 备份在 /var/lib/kixdns-panel/external-backup，卸载面板时可恢复" "迁移结果应说明状态与备份"
@@ -996,7 +996,7 @@ assert_contains "${output}" "KixDNS：已替换，保持原状态（已停止）
 output="$(summary_of fresh false true false resolved true '')"
 assert_contains "${output}" "端口 53：已关闭 systemd-resolved 的本机监听" "关闭监听后应说明并提示卸载可恢复"
 output="$(summary_of panel-only true false false none false 'v3.1.0')"
-assert_equals "$(sed -n 2p <<< "${output}")" "面板更新完成：KixDNS Panel v3.1.1" "仅更新面板的结果第一行"
+assert_equals "$(sed -n 2p <<< "${output}")" "面板更新完成：KixDNS 面板 v3.1.1" "仅更新面板的结果第一行"
 assert_contains "${output}" "KixDNS：未替换，配置与运行状态保持不变" "仅更新面板应说明 KixDNS 未动"
 
 # ---------------------------------------------------------------------------

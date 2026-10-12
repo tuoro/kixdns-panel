@@ -109,7 +109,7 @@ export function actorName(actor: string | null | undefined): string {
 }
 
 export function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : '操作失败，请稍后重试'
+  return error instanceof Error ? error.message : '没有成功，过一会儿再试'
 }
 
 // 快捷键（? n /）要不要让路：焦点在能打字的地方（输入框、多行框、下拉、可编辑区）时让；开关、单选框、文件框不打字，照样响应

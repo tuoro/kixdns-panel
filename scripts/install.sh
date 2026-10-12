@@ -65,7 +65,7 @@ usage() {
 
   --replace-existing    主机上已有不是本面板安装的 KixDNS 时，同意迁移为增强版；无人值守安装必需
   --reinstall           已安装同一版本时仍重新安装，用于修复被改动或损坏的安装
-  --panel-only-update   只更新面板，与「系统与更新」页的面板更新相同；不停止也不替换 KixDNS
+  --panel-only-update   只更新面板，和系统页的「在线更新」一样；不停止也不替换 KixDNS
   --kixdns-unit UNIT    既有 KixDNS 的 systemd unit，默认 kixdns.service
   --kixdns-config PATH  既有 KixDNS 配置路径，默认从 unit 中检测
   --kixdns-binary PATH  既有 KixDNS 程序路径，默认从 unit 中检测
@@ -87,7 +87,7 @@ parse_arguments() {
       --keep-existing)
         # 旧参数单独给出去向：该模式从未能正常运行，不能让用户以为只是拼错了。
         # The old flag gets its own answer: the mode never worked, so it must not read like a typo.
-        fail "「仅安装面板」模式已移除：它装出的面板无法启动。已有 KixDNS 时请改用 --replace-existing 迁移为增强版；迁移会备份原 unit 与运行状态，卸载面板（sudo kixdns-panel-uninstall）时选择移除增强版即可恢复原来的 KixDNS。"
+        fail "「仅安装面板」模式已移除：它装出的面板无法启动。已有 KixDNS 时改用 --replace-existing 迁移为增强版；迁移会备份原 unit 与运行状态，卸载面板（sudo kixdns-panel-uninstall）时选择移除增强版即可恢复原来的 KixDNS。"
         ;;
       --replace-existing) INSTALL_MODE="managed" ;;
       --reinstall) REINSTALL=true ;;
@@ -179,7 +179,7 @@ refuse_legacy_panel() {
   [[ -e ${PANEL_SERVER_BINARY} ]] || return 0
   [[ $(environment_value KIXDNS_MANAGEMENT_ENABLED || true) == false ]] || return 0
   fail "这台主机装的是已移除的「仅安装面板」模式，不能直接升级或更新。
-请先运行 sudo kixdns-panel-uninstall 卸载面板（原来的 KixDNS 保持不变），
+先运行 sudo kixdns-panel-uninstall 卸载面板（原来的 KixDNS 保持不变），
 再重新安装，并在提示时选择迁移为增强版。"
 }
 
@@ -213,7 +213,7 @@ load_existing_panel_settings() {
 
 validate_panel_only_update() {
   [[ ${PANEL_ONLY_UPDATE} == true ]] || return 0
-  [[ ${EXISTING_PANEL} == true ]] || fail "--panel-only-update 只适用于已安装的 KixDNS Panel；首次安装请去掉该参数"
+  [[ ${EXISTING_PANEL} == true ]] || fail "--panel-only-update 只适用于已安装的 KixDNS 面板；首次安装去掉这个参数"
 }
 
 package_panel_label() {
@@ -259,11 +259,11 @@ skip_if_already_installed() {
   # 版本相同但面板没在运行，说明安装坏了；直接退出等于把它当成好的，改按 --reinstall 修复。
   # Same version but the panel is not running means a broken install; exiting would pass it off as fine, so repair as --reinstall.
   if ! systemctl is-active --quiet kixdns-panel.service 2>/dev/null; then
-    printf 'KixDNS Panel %s 已安装，但面板没有在运行，现在按 --reinstall 重新安装以修复。\n' "$(package_panel_label)"
+    printf 'KixDNS 面板 %s 已安装，但面板没有在运行，现在按 --reinstall 重新安装以修复。\n' "$(package_panel_label)"
     REINSTALL=true
     return 0
   fi
-  printf 'KixDNS Panel %s 已安装，未作任何修改。\n' "$(package_panel_label)"
+  printf 'KixDNS 面板 %s 已安装，未作任何修改。\n' "$(package_panel_label)"
   printf '需要修复安装时，加 --reinstall 重新运行。\n'
   exit 0
 }
@@ -375,7 +375,7 @@ ask_yes_no() {
     case ${answer} in
       [yY] | [yY][eE][sS]) return 0 ;;
       "" | [nN] | [nN][oO]) return 1 ;;
-      *) printf '请输入 y 或 n。\n' >&3 ;;
+      *) printf '输入 y 或 n。\n' >&3 ;;
     esac
   done
   return 1
@@ -607,10 +607,10 @@ plan_port53() {
   # This run restarts a KixDNS that was running; it cannot start without the port, so stop before touching the host.
   if [[ ${PORT_CONFLICT} == resolved ]]; then
     fail "端口 ${PORT_CONFLICT_PORT} 被 systemd-resolved 占用，替换后的 KixDNS 无法启动。
-请在终端里运行安装器并同意关闭它的监听，或先手动执行：
+在终端里运行安装器并同意关闭它的监听，或先手动执行：
 $(resolved_manual_commands)"
   fi
-  fail "端口 ${PORT_CONFLICT_PORT} 被 $(holder_text)占用，替换后的 KixDNS 无法启动；请先停用该程序，或把配置里的 bind_udp/bind_tcp 改到其他端口，然后重新运行。"
+  fail "端口 ${PORT_CONFLICT_PORT} 被 $(holder_text)占用，替换后的 KixDNS 无法启动；先停用这个程序，或把配置里的 bind_udp/bind_tcp 改到别的端口，然后重新运行。"
 }
 
 # glibc 对第一台 DNS 服务器的超时就是 5 秒，丢一个 UDP 包单次查询就会失败；最多试三次，
@@ -672,7 +672,7 @@ disable_resolved_stub() {
     sleep 0.1
   done
   [[ ${PORT_CONFLICT} != resolved ]] ||
-    abort_install "关闭监听后端口 ${RESOLVED_PORT} 仍被 systemd-resolved 占用，请检查 /etc/systemd/resolved.conf 里的 DNSStubListenerExtra"
+    abort_install "关闭监听后端口 ${RESOLVED_PORT} 仍被 systemd-resolved 占用，检查 /etc/systemd/resolved.conf 里的 DNSStubListenerExtra"
   if [[ ${resolved_before} == true ]] && ! name_resolution_works; then
     abort_install "关闭 systemd-resolved 的本机监听后，本机域名解析不可用"
   fi
@@ -719,7 +719,7 @@ restore_managed_service_state() {
 }
 
 require_root() {
-  [[ ${EUID} -eq 0 ]] || fail "请使用 root 权限运行"
+  [[ ${EUID} -eq 0 ]] || fail "要用 root 权限运行"
 }
 
 require_file() {
@@ -1285,7 +1285,7 @@ print_port53_notice() {
       resolved_manual_commands
       ;;
     other)
-      printf '端口 %s：被 %s占用，KixDNS 启动会失败；请先停用该程序，或把配置里的 bind_udp/bind_tcp 改到其他端口\n' \
+      printf '端口 %s：被 %s占用，KixDNS 启动会失败；先停用这个程序，或把配置里的 bind_udp/bind_tcp 改到别的端口\n' \
         "${PORT_CONFLICT_PORT}" "$(holder_text)"
       ;;
   esac
@@ -1297,14 +1297,14 @@ print_summary() {
   package_label="$(package_panel_label)"
   printf '\n'
   if [[ ${INSTALL_KIND} == panel-only ]]; then
-    printf '面板更新完成：KixDNS Panel %s\n' "${package_label}"
+    printf '面板更新完成：KixDNS 面板 %s\n' "${package_label}"
   else
-    printf '安装完成：KixDNS Panel %s\n' "${package_label}"
+    printf '安装完成：KixDNS 面板 %s\n' "${package_label}"
   fi
   printf '面板地址：%s\n' "${panel_url}"
   case ${INSTALL_KIND} in
     fresh)
-      printf '下一步：打开面板地址 → 创建管理员账号 → 在「系统与更新」页启动 KixDNS\n'
+      printf '下一步：打开面板地址，创建管理员，然后在概览页点「启动 KixDNS」\n'
       printf 'KixDNS：已安装，尚未启动\n'
       ;;
     migrate)
@@ -1330,7 +1330,7 @@ print_summary() {
       ;;
   esac
   print_port53_notice
-  printf '请仅在可信内网使用面板；公网访问必须配置防火墙和 HTTPS 反向代理。\n'
+  printf '只在可信内网使用面板；公网访问必须配置防火墙和 HTTPS 反向代理。\n'
   printf '构建：面板 %.12s · KixDNS %.12s\n' "${PANEL_BUILD_COMMIT}" "${KIXDNS_BUILD_COMMIT}"
 }
 

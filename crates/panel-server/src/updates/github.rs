@@ -106,7 +106,7 @@ pub(super) fn read_github_token(path: &Path) -> Result<Option<SecretString>, Upd
         use std::os::unix::fs::PermissionsExt;
         if metadata.permissions().mode() & 0o077 != 0 {
             return Err(UpdateError::Invalid(
-                "GitHub Token 文件权限过宽，请设置为 0600".to_owned(),
+                "GitHub Token 文件权限太宽，要设成 0600".to_owned(),
             ));
         }
     }
@@ -328,7 +328,7 @@ impl UpdateManager {
         }
 
         Err(UpdateError::Network(
-            "GitHub Artifact 分页结果不完整，请稍后重试".to_owned(),
+            "GitHub Artifact 分页结果不完整，过一会儿再检查".to_owned(),
         ))
     }
 

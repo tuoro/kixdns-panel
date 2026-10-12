@@ -291,6 +291,17 @@ const namePlaceholder = computed(() => (!original && !draft.conditions.some((g) 
 // 没有条件时不说「所有请求时，…」，说「所有请求都…」 / Without conditions it reads 「所有请求都…」, not 「所有请求时，…」
 // 组名的后引号和「解析」连着写，折行时「解析」不单独落到下一行 / The group name's closing quote is glued to 解析, so a wrap never leaves 解析 alone on the next line
 const glueTail = (text: string): string => text.replace(/」解析$/, '」\u2060解析')
+// 上游全都没回时会怎样，照内核说：只有写出去的「否则」才会执行（没有条件就什么都不写）；改 TXT 没有回答可改，回 SERVFAIL；其余先回旧结果再回 SERVFAIL
+// What happens when no upstream answers, as the kernel does it: only an exported 「否则」 runs (nothing is exported without conditions); replacing TXT has no
+// answer to edit and returns SERVFAIL; otherwise a stale answer first, then SERVFAIL
+const afterLimit = computed(() => {
+  const r = draft.response
+  const otherwiseRuns = r.mode === 'custom' && r.conditions.length > 0 && r.otherwise.type !== 'none'
+  if (otherwiseRuns && r.otherwise.type === 'rewrite_txt') return '上游全部超时或连不上时没有回答可改，KixDNS 回 SERVFAIL。'
+  if (otherwiseRuns) return '上游全部超时或连不上时，按「否则」处理。'
+  if (r.mode === 'off') return '上游全部超时或连不上时：开了「过期后继续用旧结果」先回旧结果，没有就回 SERVFAIL。'
+  return '上游全部超时或连不上时不会走到这一步：开了「过期后继续用旧结果」先回旧结果，没有就回 SERVFAIL。'
+})
 const readingLead = computed(() => (!draft.raw && !draft.conditions.some((g) => g.length) ? `所有请求都${glueTail(reading.value[1]?.v ?? '')}` : `${withShi(reading.value[0]?.v ?? '')}，${glueTail(reading.value[1]?.v ?? '')}`))
 const readingMore = computed(() => reading.value.slice(2).map((row) => `${row.k}：${row.v}`))
 
@@ -488,7 +499,7 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
             </div>
             <!-- 和内核一样：上游全都没回时，单独设了「否则」就按「否则」做（内核的 response_actions_on_miss）；没设就先回过期的旧结果，再回 SERVFAIL
                  As the kernel does: when no upstream answers, a custom 「否则」 runs (the kernel's response_actions_on_miss); without one a stale answer goes first, then SERVFAIL -->
-            <p class="ui-notice ui-notice--off after__limit"><Info :size="16" aria-hidden="true" /><span>{{ draft.response.mode === 'custom' && draft.response.otherwise.type !== 'none' ? '上游全部超时或连不上时，按「否则」处理。' : '上游全部超时或连不上时不会走到这一步：开了「过期后继续用旧结果」先回旧结果，没有就回 SERVFAIL。' }}</span></p>
+            <p class="ui-notice ui-notice--off after__limit"><Info :size="16" aria-hidden="true" /><span>{{ afterLimit }}</span></p>
           </div>
         </section>
 

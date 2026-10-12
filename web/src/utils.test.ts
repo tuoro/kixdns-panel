@@ -18,7 +18,7 @@ describe('界面格式化工具', () => {
 
   it('不会把未知异常直接渲染为对象字符串', () => {
     expect(errorMessage(new Error('明确错误'))).toBe('明确错误')
-    expect(errorMessage({ secret: 'value' })).toBe('操作失败，请稍后重试')
+    expect(errorMessage({ secret: 'value' })).toBe('没有成功，过一会儿再试')
   })
 
   it('使用上游身份展示 KixDNS 版本', () => {
