@@ -13,6 +13,7 @@ import { useNarrowDesktop, usePhone } from './phone'
 import RuleList from './RuleList.vue'
 import Tester from './Tester.vue'
 import { model, newId, ruleGroupUsers, trackDialogEdits, ui } from './store'
+import { isTyping } from '../utils'
 // JSON 编辑器（CodeMirror）只在用到时才加载：配置页的首包不带它 / The JSON editor (CodeMirror) loads on first use, so the config page's first chunk leaves it out
 const JsonEditor = defineAsyncComponent(() => import('../components/JsonEditor.vue'))
 
@@ -30,8 +31,7 @@ const askDiscard = (what: string) => confirm.ask({ title: `放弃${what}的修�
 const searchInput = ref<HTMLInputElement | null>(null)
 function onPageKey(event: KeyboardEvent): void {
   if (event.metaKey || event.ctrlKey || event.altKey) return
-  const t = event.target
-  if (t instanceof HTMLElement && t.closest('input, textarea, select, [contenteditable="true"]')) return
+  if (isTyping(event.target)) return
   if (document.querySelector('dialog[open]')) return
   if (event.key === '/') { event.preventDefault(); searchInput.value?.focus() }
   else if (event.key === 'n') { event.preventDefault(); emit('open', null, null) }

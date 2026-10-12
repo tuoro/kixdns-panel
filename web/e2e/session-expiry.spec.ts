@@ -114,3 +114,20 @@ test('会话过期时开着的确认框和帮助一起收起，不留在登录�
   await expect(page).toHaveURL(/\/system$/)
   await expect(page.locator('.system-heading')).not.toContainText('已停止')
 })
+
+// 保存途中离开了配置页，会话随后过期：那份只在内存里的草稿也留不下来，登录页照实说（和在配置页上过期时一样）
+// Left the config page mid-save and the session then expires: the draft held only in memory cannot survive either, and the login page says so (as when it expires on the config page)
+test('离开配置页时还在保存，会话过期：登录页照实说草稿没留下', async ({ page }) => {
+  await openDirtyConfig(page, false)
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-save-slow', 'true'))
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar).toContainText('写入并应用')
+  await page.getByRole('link', { name: '日志', exact: true }).click()
+  await expect(page).toHaveURL(/\/logs/)
+  await expireSession(page)
+  await expect(page).toHaveURL(/\/login\?/)
+  expect(new URL(page.url()).searchParams.get('expired')).toBe('draft')
+  await expect(page.locator('.auth-expired small')).toHaveText('刚才没保存的配置修改没有留下来。登录后回到刚才的页面。')
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
+})

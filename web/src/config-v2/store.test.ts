@@ -128,6 +128,28 @@ describe('「改了哪些」只报真正挪过的规则', () => {
 describe('写成域名的回答', () => {
   beforeEach(() => resetTo(demoModel()))
 
+  // 按写出的配置数：停用的规则不写出，不算；回答后检查里的 CNAME 写出了，算 / Counted on the export: a disabled rule is not written and does not count; a CNAME in a post-reply check is written and counts
+  it('停用的 CNAME 规则不算，回答后检查里的 CNAME 算', async () => {
+    const { cnameAnswers, cnameInUse } = await import('./useConfigDocument')
+    model.mappings = []
+    const plain = model.rules.filter((r) => !(r.outcome.type === 'answer' && r.outcome.kind === 'cname'))
+    model.ruleGroups = model.ruleGroups.map((g) => ({ ...g, rules: g.rules.filter((r) => !(r.outcome.type === 'answer' && r.outcome.kind === 'cname')) }))
+    model.rules = plain
+    expect(cnameInUse.value).toBe(false)
+    const rule = model.rules[0]!
+    rule.outcome = { type: 'answer', kind: 'cname', value: 'target.example.net', ttl: null } as typeof rule.outcome
+    rule.enabled = false
+    expect(cnameInUse.value).toBe(false)
+    rule.enabled = true
+    expect(cnameAnswers.value).toBe(1)
+    // 回答后检查只跟在转发的规则后面 / Post-reply checks follow forwarding rules only
+    rule.outcome = { type: 'upstream', group: model.groups[0]!.id }
+    expect(cnameInUse.value).toBe(false)
+    rule.response = { mode: 'custom', match: 'any', conditions: [{ id: 9101, field: 'rcode', values: ['SERVFAIL'], negate: false }], then: { type: 'answer', kind: 'cname', value: 'fallback.example.net', ttl: null } as typeof rule.response.then, otherwise: { type: 'none' } }
+    expect(cnameInUse.value).toBe(true)
+    expect(cnameAnswers.value).toBe(1)
+  })
+
   it('cafe.de 这种域名算 CNAME，不当成 IP', async () => {
     const { cnameInUse } = await import('./useConfigDocument')
     model.mappings = [{ id: 9001, domain: 'nas.home', target: 'cafe.de', ttl: null, enabled: true }]

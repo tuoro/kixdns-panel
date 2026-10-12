@@ -21,9 +21,19 @@ export function registerLeaveGuard(ask: Ask, hasPending: () => boolean): () => v
  * With no page registered nothing is recorded, so no agreement lingers
  */
 export function leaveWithoutAsking(): boolean {
-  if (!current) return false
+  // 不在页面上、只在内存里的草稿也算：会话过期时它一样留不下来，就此放下 / A draft held only in memory, away from its page, counts too: it cannot survive the expiry either, so it is let go
+  const heldLost = held?.has() ?? false
+  if (heldLost) held?.drop()
+  if (!current) return heldLost
   agreed = true
-  return pending?.() ?? false
+  return (pending?.() ?? false) || heldLost
+}
+
+// 页面已经离开、草稿还在内存里（离开配置页时还在保存，或者没保存成功留着）：登记一下，会话过期时知道有它
+// A page already left with its draft still in memory (a save in flight when leaving the config page, or a failed one kept): registered so session expiry knows about it
+let held: { has: () => boolean; drop: () => void } | null = null
+export function registerHeldDraft(has: () => boolean, drop: () => void): void {
+  held = { has, drop }
 }
 
 /** 先问登记过的页面；没有登记就直接放行。 / Ask the registered page first; pass straight through when none is registered. */

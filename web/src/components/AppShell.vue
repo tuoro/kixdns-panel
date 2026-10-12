@@ -11,7 +11,7 @@ import { useToast } from '../composables/useToast'
 import { confirmLeave, takeAgreement } from '../composables/useLeaveGuard'
 import { THEME_CHOICES, useTheme, type ThemeChoice } from '../composables/useTheme'
 import { useUpdateNotifications, type UpdateNoticeItem } from '../composables/useUpdateNotifications'
-import { errorMessage } from '../utils'
+import { errorMessage, isTyping } from '../utils'
 
 const route = useRoute()
 const router = useRouter()
@@ -81,9 +81,8 @@ function togglePopover(kind: PopoverKind): void {
 }
 
 // ? 打开帮助抽屉（输入框里和弹层开着时不抢）/ ? opens the help drawer, not while typing or while a dialog is open
-function typing(event: KeyboardEvent): boolean { const t = event.target; return t instanceof HTMLElement && Boolean(t.closest('input, textarea, select, [contenteditable="true"]')) }
 function handleKeydown(event: KeyboardEvent): void {
-  if (event.key === '?' && !event.metaKey && !event.ctrlKey && !event.altKey && !typing(event) && !document.querySelector('dialog[open]')) { event.preventDefault(); activePopover.value = null; help.show(helpPage.value, 'shortcuts'); return }
+  if (event.key === '?' && !event.metaKey && !event.ctrlKey && !event.altKey && !isTyping(event.target) && !document.querySelector('dialog[open]')) { event.preventDefault(); activePopover.value = null; help.show(helpPage.value, 'shortcuts'); return }
   if (event.key !== 'Escape' || !activePopover.value) return
   const trigger = activePopover.value === 'account' ? accountButton : activePopover.value === 'theme' ? themeButton : notificationButton
   activePopover.value = null

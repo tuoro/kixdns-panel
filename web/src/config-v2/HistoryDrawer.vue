@@ -86,7 +86,8 @@ async function remove(v: ConfigVersion): Promise<void> {
     await deleteVersion(v)
     toast.success(`配置版本 #${v.id} 已删除`)
   } catch (error) {
-    toast.error(errorMessage(error))
+    // 和恢复一样先说没做成什么 / As with restore, first say what did not happen
+    toast.error(`没有删除版本 #${v.id}：${friendlyRuntimeError(error)}`)
   }
 }
 async function removePicked(): Promise<void> {
@@ -99,7 +100,7 @@ async function removePicked(): Promise<void> {
     picked.value = []
     selecting.value = false
   } catch (error) {
-    toast.error(errorMessage(error))
+    toast.error(`没有删除所选版本：${friendlyRuntimeError(error)}`)
   }
 }
 function toggle(v: ConfigVersion): void {

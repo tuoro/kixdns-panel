@@ -184,6 +184,29 @@ test('KixDNS 停着时存成待应用：页头先说停了再说哪个版本在�
   await expect(status.getByRole('button', { name: '启动', exact: true })).toBeVisible()
 })
 
+// 641–679（横放的手机）和 861–876 停着又有待应用版本时，页头一行放得下：放不下的事实先收起，不折成两行
+// At 641–679 (landscape phones) and 861–876, stopped with a pending version, the header stays one line: facts that do not fit give way instead of wrapping
+test('停着又有待应用版本：窄一点的宽度下配置页、系统页页头也只有一行', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', '只看 641 以上的页头')
+  await page.addInitScript(() => localStorage.setItem('kixdns:demo-empty-first-install', 'true'))
+  await page.goto('/config')
+  await page.getByRole('button', { name: '快速添加', exact: true }).click()
+  const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+  await quick.fill('narrow.example.org')
+  await quick.press('Enter')
+  await page.getByRole('button', { name: '保存为待应用', exact: true }).click()
+  await expect(page.locator('.cfg__facts')).toContainText(/待应用/)
+  const headHeight = () => page.locator('main .ui-ph').first().evaluate((el) => Math.round(el.getBoundingClientRect().height))
+  for (const width of [667, 641, 870]) {
+    await page.setViewportSize({ width, height: 800 })
+    await expect.poll(headHeight).toBeLessThan(90)
+  }
+  await page.setViewportSize({ width: 650, height: 800 })
+  await page.getByRole('link', { name: '系统', exact: true }).first().click()
+  await expect(page.locator('.system-facts')).toBeVisible()
+  await expect.poll(headHeight).toBeLessThan(90)
+})
+
 // 「去基础设置」指名了出问题的那一组：手机上直接打开那一组，不停在目录上；只用这一次，下次进基础设置照常从目录开始
 // 去基础设置 names the group with the problem: on phones that group opens directly instead of the contents list; once only, so the next visit starts at the list as usual
 test('手机上「去基础设置」直接打开指名的那一组，只用一次 @responsive', async ({ page }, testInfo) => {
@@ -309,4 +332,49 @@ test('手机上提示条的按钮不压住字 @responsive', async ({ page }, tes
     return Math.min(text.bottom, button.bottom) - Math.max(text.top, button.top) > 0 && Math.min(text.right, button.right) - Math.max(text.left, button.left) > 0
   })
   expect(overlap).toBe(false)
+})
+
+// 手机上规则行、映射行的「…」和开关在同一行并排，点按区都到 44、互不压住（以前「…」在开关正下方，只隔 28，点开关偏下一点就打开了菜单）
+// On phones a rule or mapping row has 「…」 and the switch side by side on one line, each with a 44 tap area that does not cover the other
+// (「…」 used to sit right under the switch, 28 apart, so a tap a little low on the switch opened the menu)
+test('手机上行里的「…」和开关并排，点按区各 44 @responsive', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'mobile', '只看手机的行')
+  // 从按钮中心往四个方向走，量出点得到它的范围 / Walk out from the control's centre in four directions to measure where it can be tapped
+  const reach = (rowSelector: string, switchSelector: string, menuSelector: string) => page.evaluate(([rowSelector, switchSelector, menuSelector]) => {
+    const row = document.querySelector(rowSelector)!
+    const measure = (el: Element) => {
+      const box = el.getBoundingClientRect()
+      const cx = box.left + box.width / 2
+      const cy = box.top + box.height / 2
+      const hits = (x: number, y: number) => { const at = document.elementFromPoint(x, y); return at !== null && (at === el || el.contains(at) || at.contains(el) && at.tagName === 'LABEL') }
+      let top = cy, bottom = cy, left = cx, right = cx
+      while (hits(cx, top - 1) && top > cy - 40) top--
+      while (hits(cx, bottom + 1) && bottom < cy + 40) bottom++
+      while (hits(left - 1, cy) && left > cx - 40) left--
+      while (hits(right + 1, cy) && right < cx + 40) right++
+      return { cy, width: right - left + 1, height: bottom - top + 1 }
+    }
+    return { toggle: measure(row.querySelector(switchSelector)!), menu: measure(row.querySelector(menuSelector)!) }
+  }, [rowSelector, switchSelector, menuSelector])
+
+  await page.goto('/config')
+  const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+  await quick.fill('row.example.org')
+  await quick.press('Enter')
+  const rule = await reach('[data-rule]', '.rrow__switch input', '.rrow__menu .ui-icon-btn')
+  await page.goto('/config?section=mapping')
+  await page.getByLabel('要映射的域名').fill('row.home.arpa')
+  await page.getByLabel('回答的 IP 或域名').fill('192.168.1.40')
+  await page.getByRole('button', { name: '添加', exact: true }).click()
+  const mapping = await reach('[data-rw]', '.ui-switch input', '.ui-menu-host .ui-icon-btn')
+  // 点域名进编辑：为了省略号裁掉的溢出不能把点按区域也裁成 20 高 / Tapping the domain to edit: the overflow clipped for the ellipsis must not clip the tap area to 20 as well
+  const domain = await reach('[data-rw]', '.rw__d', '.rw__d')
+  expect(domain.toggle.height).toBeGreaterThanOrEqual(44)
+  for (const { toggle, menu } of [rule, mapping]) {
+    expect(Math.abs(toggle.cy - menu.cy)).toBeLessThan(2)
+    for (const area of [toggle, menu]) {
+      expect(area.width).toBeGreaterThanOrEqual(44)
+      expect(area.height).toBeGreaterThanOrEqual(44)
+    }
+  }
 })

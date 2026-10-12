@@ -165,7 +165,7 @@ describe('演示 API', () => {
     await expect(mockRequest('/api/v1/kixdns/kernel/update', {
       method: 'POST',
       body: JSON.stringify({ source_id: initial.active?.source_id }),
-    })).rejects.toThrow('上游又有了更新的构建')
+    })).rejects.toThrow('上游又出了更新的构建')
 
     const updated = await mockRequest<KixdnsKernel>('/api/v1/kixdns/kernel/update', {
       method: 'POST',

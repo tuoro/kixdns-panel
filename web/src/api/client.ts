@@ -21,6 +21,9 @@ const demoMode = import.meta.env.VITE_DEMO_MODE === 'true'
 export const SESSION_EXPIRED_EVENT = 'kixdns:session-expired'
 // 面板没答话（断网、面板在重启、反向代理后面没人）时广播，外壳据此挂出重连横幅 / Broadcast when the panel did not answer (network down, panel restarting, nothing behind the reverse proxy); the shell shows the reconnect banner
 export const PANEL_UNREACHABLE_EVENT = 'kixdns:panel-unreachable'
+// 配置页写进了一个新版本（也包括离开配置页以后才落地的保存）：概览、诊断听到就重读，不和「版本 #N 已生效」对不上
+// The config page wrote a new version (including a save that landed after leaving the page): the overview and diagnostics re-read on it, so they never contradict 「版本 #N 已生效」
+export const CONFIG_WRITTEN_EVENT = 'kixdns:config-written'
 
 const UNREACHABLE_MESSAGE = '连不上面板：网络断了，或者面板正在重启。稍后再试。'
 
@@ -55,7 +58,11 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}): Promi
       throw new ApiError(UNREACHABLE_MESSAGE, 0, 'network_unreachable')
     }
     const { mockRequest } = await import('./mock')
-    return mockRequest<T>(path, requestInit)
+    // 和真的网络一样每次给一份新的数据：演示后端在原地改它的对象，原样交出去的话页面拿到的还是同一个引用，看不出变了，页头一直停在旧版本
+    // A fresh copy every time, as over a real network: the demo backend mutates its objects in place, and handing them out as they are gives the page
+    // the same reference again, which it cannot see has changed, so a header stayed on the old version
+    const answer = await mockRequest<T>(path, requestInit)
+    return answer === undefined ? answer : JSON.parse(JSON.stringify(answer)) as T
   }
 
   // fetch 自己失败（断网、面板在重启）时浏览器只给「Failed to fetch」「Load failed」，换成一句看得懂的话

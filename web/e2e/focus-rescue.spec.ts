@@ -70,8 +70,11 @@ test('删掉一条域名映射，焦点落到下一条', async ({ page }) => {
     await page.getByRole('button', { name: '添加', exact: true }).click()
   }
   await expect(page.locator('[data-rw]')).toHaveCount(3)
-  await page.getByRole('button', { name: 'b.home.arpa 的操作' }).click()
-  await page.getByRole('menuitem', { name: '删除' }).click()
+  // 兜底只管键盘用户：用键盘打开菜单、删除 / The rescue serves keyboard users: open the menu and delete with the keyboard
+  await page.getByRole('button', { name: 'b.home.arpa 的操作' }).focus()
+  await page.keyboard.press('Enter')
+  await page.getByRole('menuitem', { name: '删除' }).focus()
+  await page.keyboard.press('Enter')
   await expect(page.locator('[data-rw]')).toHaveCount(2)
   await expect.poll(() => page.evaluate(() => document.activeElement?.closest('[data-rw]')?.textContent ?? '')).toContain('c.home.arpa')
 })
@@ -186,4 +189,53 @@ test('自己离开输入框以后，焦点不被拉回去', async ({ page }) => 
   // 等过兜底检查的那一帧再看 / Look after the frame in which the rescue checks
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 200)))))
   expect(await activeIsBody(page)).toBe(true)
+})
+
+// 用鼠标保存：保存条收起后不把焦点放回开关上，接着按空格是滚动页面，不会把规则切了 / A mouse save: when the bar leaves focus is not put back on the switch, so the next Space scrolls instead of toggling the rule
+test('用鼠标保存以后按空格不会切换规则', async ({ page }) => {
+  await page.goto('/config')
+  await page.getByRole('button', { name: '快速添加', exact: true }).click()
+  const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+  await quick.fill('mouse.example.org')
+  await quick.press('Enter')
+  const toggle = page.locator('[data-rule]', { hasText: 'mouse.example.org' }).locator('input[type=checkbox]').first()
+  await toggle.click({ force: true })
+  await page.locator('.cfg__savebar').getByRole('button', { name: '保存并应用' }).click()
+  await expect(page.locator('.cfg__savebar')).toHaveCount(0, { timeout: 10_000 })
+  await page.keyboard.press('Space')
+  await page.waitForTimeout(300)
+  await expect(page.locator('.cfg__savebar')).toHaveCount(0)
+})
+
+// 键盘保存后焦点回到开关：开关不是打字的地方，? 照样打开快捷键一览 / After a keyboard save focus is back on the switch: a switch takes no text, so ? still opens the shortcut list
+test('焦点在开关上时快捷键照样能用', async ({ page }) => {
+  await page.goto('/config')
+  await page.getByRole('button', { name: '快速添加', exact: true }).click()
+  const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+  await quick.fill('keys.example.org')
+  await quick.press('Enter')
+  await page.locator('[data-rule]', { hasText: 'keys.example.org' }).locator('input[type=checkbox]').first().focus()
+  await page.keyboard.press('?')
+  const drawer = page.getByRole('dialog', { name: '帮助', exact: true })
+  await expect(drawer).toBeVisible()
+  await expect(drawer.getByRole('heading', { name: '键盘快捷键' })).toBeVisible()
+})
+
+// 从比较里恢复版本：确认框关掉、比较框也关掉以后，焦点留在还开着的历史版本里，不掉到 <body>
+// Restoring from a compare: once the confirm and the compare close, focus stays in the history drawer still open instead of dropping to <body>
+test('从比较里恢复版本以后焦点留在历史版本里', async ({ page }) => {
+  await page.goto('/config')
+  await page.getByRole('button', { name: '更多配置操作' }).focus()
+  await page.keyboard.press('Enter')
+  await page.getByRole('menuitem', { name: '历史版本' }).focus()
+  await page.keyboard.press('Enter')
+  const drawer = page.locator('dialog.hist[open]')
+  await drawer.getByRole('button', { name: /#17/ }).first().focus()
+  await page.keyboard.press('Enter')
+  await page.locator('dialog.diffd[open]').getByRole('button', { name: '恢复为版本 #17' }).focus()
+  await page.keyboard.press('Enter')
+  await page.locator('dialog.confirm[open]').getByRole('button', { name: /恢复为版本 #17/ }).focus()
+  await page.keyboard.press('Enter')
+  await expect(page.locator('dialog.diffd[open]')).toHaveCount(0)
+  await expect.poll(() => page.evaluate(() => Boolean(document.activeElement?.closest('dialog.hist[open]'))), { timeout: 5000 }).toBe(true)
 })
