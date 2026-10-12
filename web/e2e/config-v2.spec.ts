@@ -484,11 +484,15 @@ test('保存途中的保存条：按钮不出屏，转圈不变形 @responsive',
   await page.evaluate(() => { localStorage.setItem('kixdns:demo-save-slow', 'true'); localStorage.setItem('kixdns:demo-validate-slow', 'true') })
   const bar = page.locator('.cfg__savebar')
   await bar.locator('.savebar__save').click()
-  await expect(bar.locator('.ui-savebar__status')).toContainText('已用', { timeout: 5000 })
+  // 等进到第 2 步再量（这一步稳定 1.5 秒）：从第 1 步换过去的那一下状态会重画，转圈换成新的元素
+  // Measure once in step 2 (steady for 1.5 s): switching from step 1 redraws the status and the spinner becomes a new element
+  await expect(bar.locator('.ui-savebar__status')).toContainText(/写入并应用.*已用/, { timeout: 5000 })
   const width = page.viewportSize()!.width
   const save = (await bar.locator('.savebar__save').boundingBox())!
   expect(save.x + save.width).toBeLessThanOrEqual(width)
-  const spin = (await bar.locator('.ui-savebar__status .ui-spin').boundingBox())!
+  const spinner = bar.locator('.ui-savebar__status .ui-spin')
+  await expect(spinner).toBeVisible()
+  const spin = (await spinner.boundingBox())!
   expect(Math.round(spin.width)).toBe(Math.round(spin.height))
   await page.evaluate(() => { localStorage.removeItem('kixdns:demo-save-slow'); localStorage.removeItem('kixdns:demo-validate-slow') })
 })

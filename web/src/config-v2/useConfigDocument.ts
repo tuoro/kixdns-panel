@@ -634,7 +634,6 @@ async function settleOnce(announce: boolean): Promise<boolean> {
     }
     return false
   }
-  settledCount += 1
   // 回应丢了以后草稿只是整份放弃了（回到保存前的样子）：草稿跟着落地的那一份走，不然保存条会留一处「修改」把刚存上的删掉
   // After the lost answer the draft was simply discarded (back to the pre-save baseline): it follows the version that landed, or the bar would keep a
   // 「change」 that deletes what was just saved
@@ -643,7 +642,10 @@ async function settleOnce(announce: boolean): Promise<boolean> {
   validation.value = null
   // 和保存落地一样：发出去之前的「撤销」过时了 / As when a save lands: undos raised before it was sent are stale
   dismissUndoable(lost.sentAt)
-  await load({ quiet: true, keepDraft: true, sent: lost.sent })
+  // 读回来、文件散列换成那次保存的以后才算核对完：这时按下的保存拿到的对照版本已经是新的；读回来之前按下的，撞上冲突时看到计数变了就接着存
+  // The check counts as done only once the file is read back and the hash is the landed save's: a save pressed after that writes against the new version;
+  // one pressed before it sees the count change when it meets the conflict, and carries on
+  try { await load({ quiet: true, keepDraft: true, sent: lost.sent }) } finally { settledCount += 1 }
   announceWritten()
   const version = current.version_id ? `版本 #${current.version_id}` : ''
   // 页面上正有一次保存在跑：保存条交给它说 / A save is running on the page: the bar is left to it
