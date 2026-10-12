@@ -175,3 +175,15 @@ test('重启完焦点回到「重启」', async ({ page }) => {
   await expect(page.getByRole('button', { name: '重启', exact: true })).toBeEnabled({ timeout: 10_000 })
   await expect.poll(() => activeLabel(page)).toBe('重启')
 })
+
+// 自己放掉的焦点不去接：元素还在原处时离开它（点空白处、blur），焦点留在页面上，接着按的快捷键不会变成在框里打字
+// Focus let go on purpose is not caught: leaving an element that stays in place (blank click, blur) keeps focus on the page, so the next shortcut is not typed into the field
+test('自己离开输入框以后，焦点不被拉回去', async ({ page }) => {
+  await page.goto('/config')
+  const search = page.getByLabel('搜索规则')
+  await search.focus()
+  await search.blur()
+  // 等过兜底检查的那一帧再看 / Look after the frame in which the rescue checks
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 200)))))
+  expect(await activeIsBody(page)).toBe(true)
+})

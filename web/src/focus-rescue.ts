@@ -1,12 +1,14 @@
 // 焦点兜底：拿着焦点的东西被删掉、挪动或停用时，浏览器把焦点丢回 <body>，键盘用户就得从页头重新 Tab。这里只在焦点真的丢了时接住它：
 // 按钮停用（做事期间）就等它恢复再回去；被挪动（列表上移下移）就回到它；弹层、保存条关掉回到进去之前的控件；被删掉就落到原地换上来的那一行、
-// 下一行或上一行，再不行落到最近还在的那一块里第一个能聚焦的东西，最后才是页面标题。人自己点页面空白处时焦点也会回到 <body>，那时不去动它。
+// 下一行或上一行，再不行落到最近还在的那一块里第一个能聚焦的东西，最后才是页面标题。人或脚本自己放掉焦点（点空白处、blur）时元素还在原处、可用，
+// 之后就不去动它。
 //
 // A focus safety net: when whatever holds focus is removed, moved or disabled, the browser drops focus back to <body> and a keyboard user starts
 // over from the header. This catches focus only when it was truly lost: a disabled button (busy) gets it back once enabled again; a moved one
 // (a list row moved up or down) gets it back at once; a closed dialog or save bar returns it to where focus came from; a removed one hands it to
 // the row re-rendered in its place, the next row or the previous one, else the first focusable thing in the nearest container still on the page,
-// and only then the page heading. Clicking blank page space also sends focus to <body>; that is left alone.
+// and only then the page heading. When the user or a script lets go of focus (a click on blank space, blur()) the element is still in place and
+// enabled; from then on it is left alone.
 
 // 只落在按钮和链接上：落进输入框的话，接着按的快捷键（? n /）会变成打字 / Land on buttons and links only: in a field, the next shortcut (? n /) would become typing
 const LANDING = 'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"]):not(input):not(textarea):not(select)'
@@ -20,9 +22,15 @@ interface Spot { element: HTMLElement; ancestors: HTMLElement[]; row: Element | 
 
 let last: Spot | null = null
 let waiting: HTMLElement | null = null
-// 焦点是人自己按鼠标或手指放掉的（点了空白处），之后不再去接 / Focus was let go by the user's own press (blank space): do not catch it afterwards
-let droppedByUser = false
-let pressing = false
+// 拿着焦点的元素失焦了（焦点掉回 <body>）；是不是自己放掉的，等下一次检查再看（删掉元素时浏览器也先发失焦，那时元素还在页面上）
+// The focused element lost focus to <body>; whether that was on purpose is decided at the next check (removing an element also fires the blur first, while it is still on the page)
+let blurred = false
+// 焦点是自己放掉的：检查时元素还在原处、可用（点了空白处、脚本 blur），之后不再去接
+// Focus was let go on purpose: at the check the element was still in place and enabled (a click on blank space, a script's blur), so it is not caught afterwards
+let released = false
+// 拿着焦点的元素（或它的上层）被从页面上拿下来过：被删掉，或者被挪了位置（键控列表上移下移会先拿下再放回）
+// The focused element (or something above it) was taken off the page: removed, or moved (a keyed list moving a row takes it off and puts it back)
+let displaced = false
 // 每次焦点从外面进到弹层、提示条或保存条，都记下是从哪进去的 / Each time focus enters a dialog, the toast stack or the save bar from outside, remember where it came from
 const openers = new WeakMap<Element, Spot>()
 
@@ -50,7 +58,9 @@ function remember(element: HTMLElement): void {
   }
   last = spotOf(element)
   waiting = null
-  droppedByUser = false
+  blurred = false
+  released = false
+  displaced = false
 }
 
 function pageHeading(): HTMLElement | null {
@@ -115,12 +125,13 @@ function landing(spot: Spot, depth = 0): HTMLElement | 'wait' | null {
 
 function check(): void {
   if (document.activeElement && document.activeElement !== document.body) { waiting = null; return }
-  if (droppedByUser && !waiting) return
+  if (released && !waiting) return
   const element = waiting ?? last?.element
   if (!element || !last) return
   if (usable(element)) {
-    // 停用的按钮恢复了，或者元素被挪了个位置（人什么也没按）：焦点回去；挪动的跟着滚到看得见
-    // A disabled button came back, or the element was moved (the user pressed nothing): focus returns; a moved one is scrolled into view
+    // 停用的按钮恢复了，或者元素被挪了个位置：焦点回去，挪动的跟着滚到看得见；元素一直在原处的话焦点不是丢的，不动
+    // A disabled button came back, or the element was moved: focus returns and a moved one is scrolled into view; an element that never left was not lost, so leave it
+    if (!waiting && !displaced) { if (blurred) released = true; return }
     const moved = !waiting
     waiting = null
     element.focus({ preventScroll: true })
@@ -150,14 +161,16 @@ function schedule(): void {
 
 export function startFocusRescue(): void {
   document.addEventListener('focusin', (event) => { if (event.target instanceof HTMLElement) remember(event.target) })
-  // 鼠标或手指按着没松开时焦点丢了，是人自己点了空白处；点击触发的删除、挪动发生在松开以后，不算
-  // Focus lost while a mouse button or finger is still down is the user clicking blank space; removals and moves a click causes happen after release
-  for (const type of ['pointerdown', 'mousedown']) document.addEventListener(type, () => { pressing = true }, true)
-  for (const type of ['pointerup', 'pointercancel', 'mouseup']) document.addEventListener(type, () => { pressing = false }, true)
+  // 焦点掉回 <body>（整个窗口切走不算）：停用、删掉、挪动造成的，浏览器放掉焦点以后再看一次
+  // Focus falls to <body> (the whole window losing focus does not count): a loss caused by disabling, removing or moving is checked again once the browser lets go
   document.addEventListener('focusout', (event) => {
-    if (event.relatedTarget !== null) return
-    droppedByUser = pressing
+    if (event.relatedTarget !== null || !last || event.target !== last.element || !document.hasFocus()) return
+    blurred = true
     schedule()
   })
-  new MutationObserver(schedule).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['disabled', 'inert', 'open', 'hidden'] })
+  new MutationObserver((records) => {
+    const element = last?.element
+    if (element && records.some((record) => [...record.removedNodes].some((node) => node === element || node.contains(element)))) displaced = true
+    schedule()
+  }).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['disabled', 'inert', 'open', 'hidden'] })
 }
