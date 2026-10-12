@@ -143,11 +143,24 @@ test('页头读完前后一样高，内容不往下跳 @responsive', async ({ pa
   for (const path of paths) {
     await page.goto(path)
     const header = page.locator('main .ui-ph')
-    await expect(page.locator('main .ui-ph .sk')).toBeVisible()
+    await expect(page.locator('main .ui-ph__meta .sk')).toBeVisible()
     const loading = (await header.boundingBox())!.height
-    await expect(page.locator('main .ui-ph .sk')).toHaveCount(0, { timeout: 10_000 })
+    await expect(page.locator('main .ui-ph__meta .sk')).toHaveCount(0, { timeout: 10_000 })
     expect(Math.abs((await header.boundingBox())!.height - loading), path).toBeLessThanOrEqual(1)
   }
+})
+
+// 手机系统页读到服务状态以后才有「重启 / 停止」那一行：读到之前先留出它的位置，下面的卡片不往下跳
+// The phone system page gets its 重启 / 停止 row only once the service status arrives: its place is kept before that, so the cards below do not jump
+test('手机系统页读完服务状态时，卡片不往下跳 @responsive', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'mobile', '宽屏的按钮在标题右边，不占高度')
+  await page.addInitScript(() => localStorage.setItem('kixdns:demo-read-slow', 'true'))
+  await page.goto('/system')
+  const card = page.locator('main .ui-card').first()
+  await expect(card).toBeVisible({ timeout: 10_000 })
+  const before = (await card.boundingBox())!.y
+  await expect(page.locator('main .ui-ph__actions .ui-btn').first()).toBeVisible({ timeout: 10_000 })
+  expect(Math.abs((await card.boundingBox())!.y - before)).toBeLessThanOrEqual(1)
 })
 
 test('断网时内容区顶上挂出「连不上面板」，联网后自己收起 @responsive', async ({ page, context }, testInfo) => {

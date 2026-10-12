@@ -531,8 +531,10 @@ onBeforeUnmount(() => {
         <span v-else-if="loadingService" class="sk ui-ph__sk system-skeleton-meta" role="status" aria-label="读取服务状态"></span>
         <span v-else>服务状态暂不可用</span>
       </template>
-      <template v-if="service" #actions>
-        <button v-if="!running" class="ui-btn ui-btn--secondary" type="button" :disabled="!installed || serviceAction !== null || panelDown" @click="control('start')"><Play :size="16" />启动</button>
+      <!-- 服务状态读回来之前，手机上先留出按钮那一行（灰块），读到以后内容不往下跳 / Before the service status arrives, phones keep the button row's place (a grey slab), so the content does not jump when it lands -->
+      <template v-if="service || loadingService" #actions>
+        <span v-if="!service" class="sk system-actions-sk" aria-hidden="true"></span>
+        <button v-else-if="!running" class="ui-btn ui-btn--secondary" type="button" :disabled="!installed || serviceAction !== null || panelDown" @click="control('start')"><Play :size="16" />启动</button>
         <template v-else>
           <button class="ui-btn ui-btn--secondary" type="button" :disabled="!installed || serviceAction !== null || panelDown" @click="control('restart')"><RotateCw :size="16" :class="{ spin: serviceAction === 'restart' }" />重启</button>
           <button class="ui-btn ui-btn--danger" type="button" :disabled="serviceAction !== null || panelDown" @click="control('stop')"><Square :size="16" />停止</button>

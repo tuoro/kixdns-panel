@@ -18,7 +18,8 @@ onMounted(() => { ui.settingsGroup = '' })
 const hidden = computed(() => ([...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].some((r) => r.raw) || model.rawPipelines?.length ? [] : ['default_upstream']))
 const blockItems = [{ value: 'NXDOMAIN', label: 'NXDOMAIN' }, { value: 'REFUSED', label: 'REFUSED' }, { value: 'zero', label: '空地址' }]
 const blockNote: Record<string, string> = {
-  NXDOMAIN: '告诉客户端域名不存在，大多数设备立刻放弃，不再重\u2060试',
+  // 词不拆到两行：「不存在」「放弃」 / Words are not split across lines: 不存在, 放弃
+  NXDOMAIN: '告诉客户端域名不\u2060存\u2060在，大多数设备立刻放\u2060弃，不再重\u2060试',
   REFUSED: '告诉客户端拒绝回答，有的设备会换一台 DNS 再问',
   zero: '回答 0.0.0.0 和 ::，浏览器连不上，但能看出是被拦了',
 }
@@ -46,7 +47,7 @@ const lead = computed(() => ({
           </div>
         </div>
         <div class="ui-setrow">
-          <span class="ui-setrow__label"><span>其余请求</span><small>{{ hidden.length ? '一条规则都没命中的请求交给哪里。KixDNS 的默认上游也跟着它，和规则列表最下面那行是同一个设置。' : '一条规则都没命中的请求交给哪里，和规则列表最下面那行是同一个设置。有高级规则时，KixDNS 的默认上游在「基础与监听」里单独设。' }}</small></span>
+          <span class="ui-setrow__label"><span>其余请求</span><small>{{ hidden.length ? '一条规则都没命中的请求交给哪里。KixDNS 的默认上游也跟\u2060着它，和规则列表最\u2060下\u2060面那行是同一个设置。' : '一条规则都没命中的请求交给哪里，和规则列表最\u2060下\u2060面那行是同一个设置。有高级规则时，KixDNS 的默认上游在「基础与监听」里单独设。' }}</small></span>
           <div class="ui-setrow__control"><UiSelect :model-value="restValue" :options="restOptions" label="其余请求" @update:model-value="setRest" /></div>
         </div>
       </template>

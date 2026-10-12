@@ -5,6 +5,8 @@ import { CircleAlert, Info, X } from '@lucide/vue'
 import { computed, onMounted, ref } from 'vue'
 import UiDotText from '../components/ui/UiDotText.vue'
 import { importReport, importSource } from './store'
+// 说明里的组名「doh.pub 等 2 个」只在显示时连起来，组名本身（存进配置的数据）不动 / A group name such as 「doh.pub 等 2 个」 is glued only for display; the name itself (data stored in the config) is left alone
+const glue = (text: string): string => text.replace(/等 (\d+) 个/g, '等\u00a0$1\u00a0个')
 // 关上后焦点回到打开它的控件 / Focus returns to the opener on close
 useReturnFocus()
 
@@ -39,7 +41,7 @@ const verdict = computed(() => (r.value.stats.raw ? `${r.value.stats.raw} 条规
           <section v-for="group in noteGroups" :key="group.level" class="imp__group">
             <h3 class="imp__subhead">{{ group.title }}</h3>
             <ul class="imp__notes">
-              <li v-for="(n, i) in group.notes" :key="i" :class="`is-${n.level}`"><CircleAlert v-if="n.level === 'warn'" :size="16" aria-hidden="true" /><Info v-else :size="16" aria-hidden="true" /><span>{{ keepTail(n.text)[0] }}<span class="nowrap">{{ keepTail(n.text)[1] }}</span></span></li>
+              <li v-for="(n, i) in group.notes" :key="i" :class="`is-${n.level}`"><CircleAlert v-if="n.level === 'warn'" :size="16" aria-hidden="true" /><Info v-else :size="16" aria-hidden="true" /><span>{{ keepTail(glue(n.text))[0] }}<span class="nowrap">{{ keepTail(glue(n.text))[1] }}</span></span></li>
             </ul>
           </section>
         </div>

@@ -469,3 +469,26 @@ test('手机上停用的规则行、映射行，点第二行也能进编辑 @res
   await tapCentre(mapping.locator('.rw__t'))
   await expect(page.locator('.rw__edit')).toBeVisible()
 })
+
+// 保存途中状态会变长（「第 2 步 · 写入并应用 · 已用 N 秒」）：最窄的侧栏宽度下「保存中」也不被挤出屏幕；手机上状态前的转圈是圆的，不被挤扁
+// The status grows during a save (第 2 步 · 写入并应用 · 已用 N 秒): at the narrowest sidebar width 保存中 stays on screen; on phones the status spinner stays round
+test('保存途中的保存条：按钮不出屏，转圈不变形 @responsive', async ({ page }, testInfo) => {
+  const mobile = testInfo.project.name === 'mobile'
+  if (!mobile) await page.setViewportSize({ width: 861, height: 800 })
+  await page.goto('/config')
+  await expect(page.locator('.cfg__panel')).toBeVisible()
+  const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+  if (!(await quick.isVisible())) await page.getByRole('button', { name: '快速添加', exact: true }).click()
+  await quick.fill('inflight.example.org')
+  await quick.press('Enter')
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-save-slow', 'true'); localStorage.setItem('kixdns:demo-validate-slow', 'true') })
+  const bar = page.locator('.cfg__savebar')
+  await bar.locator('.savebar__save').click()
+  await expect(bar.locator('.ui-savebar__status')).toContainText('已用', { timeout: 5000 })
+  const width = page.viewportSize()!.width
+  const save = (await bar.locator('.savebar__save').boundingBox())!
+  expect(save.x + save.width).toBeLessThanOrEqual(width)
+  const spin = (await bar.locator('.ui-savebar__status .ui-spin').boundingBox())!
+  expect(Math.round(spin.width)).toBe(Math.round(spin.height))
+  await page.evaluate(() => { localStorage.removeItem('kixdns:demo-save-slow'); localStorage.removeItem('kixdns:demo-validate-slow') })
+})

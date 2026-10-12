@@ -191,7 +191,7 @@ for (const stopped of [true, false]) {
     // With the service up and no error text, the reason still says what happened, not only that a snapshot is shown
     // 已停止也说接下来会怎样，不说「不再更新」 / Stopped also says what comes next, never 不再更新
     await expect(page.locator('.overview-notice small')).toHaveText(stopped
-      ? /^显示停止前 \d{2}:\d{2} 的快照；启动 KixDNS 后概览会自动更新。$/
+      ? /^显示停止前 \d{2}:\d{2} 的快照；启动 KixDNS\s后概览会自动更新。$/
       : /^KixDNS 暂时没有回应；显示 \d{2}:\d{2} 的快照，恢复后会自动更新。$/)
     // 底栏只说按钮什么时候能用，不再复述状态 / The foot says only when the button becomes usable, without restating the state
     await expect(page.locator('.overview-runtime-note')).toHaveText(stopped ? 'KixDNS 运行后才能清空缓存' : '实时数据恢复后才能清空缓存')

@@ -453,6 +453,9 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
 .system-page { display: grid; gap: var(--s-5); align-content: start; }
 .system-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-4); align-items: stretch; }
 .system-skeleton-meta { width: min(260px, 100%); }
+/* 按钮那一行的占位只在手机上要（宽屏按钮在标题右边，不占高度） / The button row's placeholder is needed only on phones (on wide screens the buttons sit beside the title and add no height) */
+.system-actions-sk { display: none; }
+@media (max-width: 640px) { .system-actions-sk { display: block; flex: 1 1 100%; height: var(--h-md); } }
 .system-skeleton-rows { display: grid; gap: var(--s-2); padding-bottom: var(--s-2); }
 .system-skeleton-rows .sk { height: var(--s-7); }
 .system-skeleton-panel { height: calc(var(--s-8) * 2); }
@@ -1054,6 +1057,11 @@ body:has(.editor:not(.editor--inspector)) .toast-stack { bottom: calc(var(--edit
 .help__topic p { margin: 0 0 var(--s-2); padding-left: calc(var(--s-3) + 8px); color: var(--l-ink-2); font-size: var(--t-2); line-height: var(--lh-base); }
 /* 手机上概念一行 44，和「…」的底部菜单一样 / On phones a concept row is 44, like the ⋯ bottom sheet */
 @media (max-width: 640px) { .help__topic summary { min-height: var(--h-touch); } }
+/* 概念列表一行接一行，不再隔 8：标题落在上下两条细线正中；小标签到第一条线仍是 12，展开的说明末尾也留 12
+   Concept rows follow one another without the 8 gap, so a title sits midway between its hairlines; label to the first hairline stays 12, and an open topic ends 12 above the next */
+.help__sec:has(> .help__topic) { row-gap: 0; }
+.help__sec:has(> .help__topic) > .ui-lbl { margin-bottom: var(--s-3); }
+.help__topic[open] > p:last-child { margin-bottom: var(--s-3); }
 .help__keys h4 { margin: 0 0 var(--s-2); color: var(--l-ink-2); font-size: var(--t-2); font-weight: var(--w-medium); }
 /* 分组之间比组内多留一档：组头靠近它下面的键，不靠近上一组 / More room between groups than inside one, so a group head sits with its keys, not the group above */
 .help__keys + .help__keys { margin-top: var(--s-3); }
