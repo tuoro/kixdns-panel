@@ -74,7 +74,7 @@ assert_equals "${#INSTALLER_ARGUMENTS[@]}" 0 "--reinstall 不应进入安装器�
 
 # ---- 版本标签 / version tag ----
 message="$(VERSION=3.1.0 expect_failure validate_version_tag)"
-assert_contains "${message}" "必须以 v 开头" "缺少 v 前缀时应说明原因"
+assert_contains "${message}" "要以 v 开头" "缺少 v 前缀时应说明原因"
 assert_contains "${message}" "--version v3.1.0" "缺少 v 前缀时应给出改正后的写法"
 message="$(VERSION=latest expect_failure validate_version_tag)"
 assert_contains "${message}" "vX.Y.Z" "无法修正的标签应说明格式"
@@ -107,7 +107,7 @@ done
 # With --retry 3 curl writes the same error several times.
 message="$(VERSION="" expect_failure explain_api_failure 000 https://api.example/x \
   $'curl: (6) Could not resolve host: api.github.com\ncurl: (6) Could not resolve host: api.github.com\r\n\n')"
-assert_contains "${message}" "无法连接 GitHub：curl: (6) Could not resolve host: api.github.com。" "断网时应只带上一次 curl 的错误"
+assert_contains "${message}" "连不上 GitHub：curl: (6) Could not resolve host: api.github.com。" "断网时应只带上一次 curl 的错误"
 assert_equals "$(wc -l <<< "${message}")" 1 "断网提示应只占一行"
 message="$(VERSION="" expect_failure explain_api_failure 502 https://api.example/x "")"
 assert_contains "${message}" "HTTP 502（https://api.example/x）" "其它状态应带上状态码和地址"
@@ -278,7 +278,7 @@ output="$(run_main -- --replace-existing)"
 assert_contains "${output}" "正在读取最新正式版信息…" "应先提示读取 Release"
 assert_contains "${output}" "正在下载 ${asset}（38.4 MB）…" "应在下载前提示文件名和大小"
 assert_contains "${output}" "校验通过。" "校验后应提示"
-assert_contains "${output}" "准备安装 KixDNS Panel v3.1.0（${architecture}）" "应保留准备安装提示"
+assert_contains "${output}" "准备安装 KixDNS 面板 v3.1.0（${architecture}）" "应保留准备安装提示"
 assert_equals "$(tr '\n' ' ' < "${RECORD_FILE}")" "--replace-existing " "安装器应收到透传参数"
 # 命令替换里 stderr 不是终端：下载不应输出进度条。
 # stderr is not a terminal inside command substitution, so the download must stay silent.
@@ -288,7 +288,7 @@ assert_not_contains "${download_argv}" "--progress-bar" "非终端下载不应�
 
 printf 'KIXDNS_MANAGEMENT_ENABLED=true\nKIXDNS_PANEL_INSTALLED_RELEASE=v3.1.0\n' > "${PANEL_ENV}"
 output="$(run_main)"
-assert_contains "${output}" "已安装 KixDNS Panel v3.1.0，无需重复安装" "同版本应短路"
+assert_contains "${output}" "已安装 KixDNS 面板 v3.1.0，无需重复安装" "同版本应短路"
 assert_contains "${output}" "bash -s -- --reinstall" "短路提示应给出修复性重装命令"
 assert_equals "$(wc -l < "${STUB_CALLS}")" 1 "同版本短路不应下载安装包"
 [[ ! -e ${RECORD_FILE} ]] || { printf '断言失败：同版本短路不应运行安装器\n' >&2; exit 1; }
@@ -298,16 +298,16 @@ assert_equals "$(cat -- "${SYSTEMCTL_CALLS}")" "is-active --quiet kixdns-panel.s
 # Same release but the panel is not running: do not skip; say so and repair.
 STUB_PANEL_ACTIVE=false
 output="$(run_main)"
-assert_contains "${output}" "已安装 KixDNS Panel v3.1.0，但面板未在运行，将进行修复性重装" "面板未运行时应说明将修复"
+assert_contains "${output}" "已安装 KixDNS 面板 v3.1.0，但面板没在运行，接着修复性重装" "面板未运行时应说明将修复"
 assert_not_contains "${output}" "无需重复安装" "面板未运行时不应短路"
 assert_equals "$(wc -l < "${STUB_CALLS}")" 2 "面板未运行时应下载安装包"
-assert_contains "${output}" "准备安装 KixDNS Panel v3.1.0" "面板未运行时应继续安装"
+assert_contains "${output}" "准备安装 KixDNS 面板 v3.1.0" "面板未运行时应继续安装"
 assert_equals "$(wc -c < "${RECORD_FILE}")" 1 "旧安装包不认识 --reinstall，修复时也不应转交"
 STUB_PANEL_ACTIVE=true
 
 output="$(run_main --version v3.1.0 --reinstall)"
 assert_contains "${output}" "正在读取版本 v3.1.0 信息…" "指定版本时应提示版本号"
-assert_contains "${output}" "准备安装 KixDNS Panel v3.1.0" "--reinstall 应继续安装"
+assert_contains "${output}" "准备安装 KixDNS 面板 v3.1.0" "--reinstall 应继续安装"
 assert_equals "$(wc -c < "${RECORD_FILE}")" 1 "旧安装包不应收到 --reinstall"
 
 rm -f -- "${PANEL_ENV}"

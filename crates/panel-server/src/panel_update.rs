@@ -47,7 +47,7 @@ impl PanelUpdateStatus {
         ) && !self.is_running()
         {
             self.state = PanelUpdateState::Failed;
-            "上次在线更新未正常结束，请重新发起更新".clone_into(&mut self.message);
+            "上次在线更新没有做完，再点一次在线更新".clone_into(&mut self.message);
         }
         // 失败状态只由下一次在线更新重写；改用安装包升级到（或越过）目标版本后，那次失败已经
         // 不成立，继续显示只会误导。

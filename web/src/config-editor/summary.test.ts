@@ -44,18 +44,18 @@ describe('规则语义摘要', () => {
 
   it('准确摘要主要动作并保留未知动作类型', () => {
     expect(summarizeAction({ type: 'forward', upstream: '1.1.1.1:53', transport: 'udp' }))
-      .toBe('转发至 1.1.1.1:53 (UDP)')
+      .toBe('转发给 1.1.1.1:53 (UDP)')
     expect(summarizeAction({ type: 'static_cname_response', target: 'origin.example.' }))
-      .toBe('将域名映射到 origin.example.')
+      .toBe('直接回答 CNAME origin.example.')
     expect(summarizeAction({ type: 'continue' })).toBe('继续往下')
-    expect(summarizeAction({ type: 'future_action' })).toBe('执行 future_action')
+    expect(summarizeAction({ type: 'future_action' })).toBe('动作 future_action（面板认不出）')
     // 传输方式按人的叫法写，不出现 TCP_UDP、DOH 这样的配置值。 / Transports as people say them, not config values.
-    expect(summarizeAction({ type: 'forward', upstream: '223.5.5.5:53', transport: 'tcp_udp' })).toBe('转发至 223.5.5.5:53 (TCP+UDP)')
-    expect(summarizeAction({ type: 'forward', upstream: 'https://dns.google/dns-query', transport: 'doh' })).toBe('转发至 https://dns.google/dns-query (DoH)')
-    expect(summarizeAction({ type: 'forward', upstream: 'x', transport: 'future' })).toBe('转发至 x (FUTURE)')
+    expect(summarizeAction({ type: 'forward', upstream: '223.5.5.5:53', transport: 'tcp_udp' })).toBe('转发给 223.5.5.5:53 (TCP+UDP)')
+    expect(summarizeAction({ type: 'forward', upstream: 'https://dns.google/dns-query', transport: 'doh' })).toBe('转发给 https://dns.google/dns-query (DoH)')
+    expect(summarizeAction({ type: 'forward', upstream: 'x', transport: 'future' })).toBe('转发给 x (FUTURE)')
     // 几个上游用顿号隔开 / Several upstreams are separated by 、
     expect(summarizeAction({ type: 'forward', upstream: 'https://doh.pub/dns-query,https://dns.alidns.com/dns-query', transport: 'doh' }))
-      .toBe('转发至 https://doh.pub/dns-query、https://dns.alidns.com/dns-query (DoH)')
+      .toBe('转发给 https://doh.pub/dns-query、https://dns.alidns.com/dns-query (DoH)')
   })
 
   it('为完整规则分别生成条件和动作摘要', () => {

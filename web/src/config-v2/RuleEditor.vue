@@ -26,6 +26,7 @@ import PhoneSheet from './PhoneSheet.vue'
 import RawRuleEditor from './RawRuleEditor.vue'
 import { editorEditedBy, hitsOf, listOf, model, newId, ruleShape } from './store'
 import { runtimeCapabilities } from './useConfigDocument'
+import { MOD } from '../help/topics'
 import { editedText, groupBrief } from './view'
 // JSON 编辑器（CodeMirror）只在用到时才加载：配置页的首包不带它 / The JSON editor (CodeMirror) loads on first use, so the config page's first chunk leaves it out
 const JsonEditor = defineAsyncComponent(() => import('../components/JsonEditor.vue'))
@@ -563,7 +564,7 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
       <button v-if="original" class="ui-btn ui-btn--text editor__delete" type="button" @click="remove"><Trash2 :size="16" aria-hidden="true" />删除规则</button>
       <button v-if="showErrors && problems.length" class="editor__problem" type="button" role="alert" @click="revealProblem">还有 {{ problemCount }} 处要改：{{ problems[0] }}</button>
       <span class="editor__spacer"></span>
-      <span v-if="!inspector" class="editor__keys" aria-hidden="true">Ctrl+Enter {{ original ? '完成' : '新建' }} · Esc 返回</span>
+      <span v-if="!inspector" class="editor__keys" aria-hidden="true">{{ MOD === '⌘' ? '⌘⏎' : 'Ctrl+Enter' }} {{ original ? '完成' : '新建' }} · Esc 返回</span>
       <button class="ui-btn ui-btn--secondary" type="button" @click="leave">取消</button>
       <button class="ui-btn ui-btn--primary" type="button" @click="done">{{ original ? '完成' : '新建' }}</button>
     </footer>

@@ -353,7 +353,7 @@ const askLeave = async (): Promise<boolean> => {
     if (agreed) dropEditsAfterSave()
     return agreed
   }
-  return confirm.ask({ title: '放弃未保存的修改', body: '当前的配置草稿会被丢弃，已经生效的配置不受影响。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
+  return confirm.ask({ title: '放弃未保存的修改', body: '当前的配置草稿会被丢弃，已经生效的配置不受影\u2060响。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
 }
 const releaseGuard = registerLeaveGuard(askLeave, () => unsaved.value)
 // 提示条的按钮做事期间停用，焦点跟着掉到页面上：做完没人接住焦点时，回到这个按钮（还在的话），不在了就落在提示条上

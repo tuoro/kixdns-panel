@@ -466,7 +466,7 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
         rule.response = resp ?? { ...rule.response, mode: g.off ? 'off' : 'inherit' }
       }
       // 几个转发的规则内核加载时会合并（不带子网、不执行其他动作）：不替用户整理，原样保留 / A rule with several forwards is merged by the kernel at load (no subnet, no other actions); it is kept verbatim rather than tidied
-      if (forwards.length > 1) raw(`一条规则里有 ${forwards.length} 个转发`)
+      if (forwards.length > 1) raw(`一条规则里有 ${forwards.length}\u00a0个转发`)
       let decided = false
       for (const [i, a] of actions.entries()) {
         if (a.type === 'log') { if (!rule.log.enabled) rule.log = { enabled: true, level: (typeof a.level === 'string' ? a.level : 'info') as Rule['log']['level'] }; continue }
@@ -482,7 +482,7 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
           else raw(t === mainSource ? '跳回主列表' : `跳到不存在的「${t}」`)
         } else rule.outcome = staticOutcome(a) ?? raw(`动作 ${a.type} 没有对应的写法`)
         if (a.type === 'replace_txt_response') note(`「${base(kr.name)}」在请求时就替换 TXT，内核当作「继续往下一条」处理，已这样显示`)
-        if (dead) raw(`决定结果的动作后面还有 ${dead} 个动作`)
+        if (dead) raw(`决定结果的动作后面还有 ${dead}\u00a0个动作`)
         decided = true
         break
       }

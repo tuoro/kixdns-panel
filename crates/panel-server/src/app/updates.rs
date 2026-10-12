@@ -287,7 +287,7 @@ async fn update_kixdns_kernel(
             .audit(
                 Some(session.username),
                 "kixdns.kernel.update".to_owned(),
-                format!("更新到 {}", installed.label()),
+                after_verb("更新到", &installed.label()),
                 unix_timestamp(),
             )
             .await
@@ -322,7 +322,7 @@ async fn rollback_kixdns_kernel(
             .audit(
                 Some(session.username),
                 "kixdns.kernel.rollback".to_owned(),
-                format!("回退到 {}", installed.label()),
+                after_verb("回退到", &installed.label()),
                 unix_timestamp(),
             )
             .await
@@ -335,4 +335,14 @@ async fn rollback_kixdns_kernel(
             .map_err(map_update_error)
     })
     .await
+}
+
+// 操作审计的详情：中文标签（构建 #N）直接接在动词后面，拉丁字母开头的（v1.0.1）前面留一个空格，和页面上的写法一样
+// The audit detail: a Chinese label (构建 #N) follows the verb directly, a Latin one (v1.0.1) after a space, as the page writes it
+fn after_verb(verb: &str, label: &str) -> String {
+    if label.starts_with(|c: char| c.is_ascii_alphanumeric()) {
+        format!("{verb} {label}")
+    } else {
+        format!("{verb}{label}")
+    }
 }

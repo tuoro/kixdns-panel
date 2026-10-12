@@ -550,7 +550,7 @@ fn unit_log_notice(unit: &str, output: &str) -> Option<String> {
     }
     (!redirected.is_empty()).then(|| {
         format!(
-            "这个 unit 的输出没有送到 journald（{}），这里只会看到 systemd 自己的启停记录",
+            "KixDNS 的输出没有送到 journald（{}），这里只能看到 systemd 记下的启动和停止",
             redirected.join("，")
         )
     })
@@ -767,13 +767,13 @@ mod tests {
             )
             .as_deref(),
             Some(
-                "这个 unit 的输出没有送到 journald（StandardOutput=file:/var/log/kixdns.log），这里只会看到 systemd 自己的启停记录"
+                "KixDNS 的输出没有送到 journald（StandardOutput=file:/var/log/kixdns.log），这里只能看到 systemd 记下的启动和停止"
             )
         );
         assert_eq!(
             notice("StandardOutput=journal\nStandardError=null\n").as_deref(),
             Some(
-                "这个 unit 的输出没有送到 journald（StandardError=null），这里只会看到 systemd 自己的启停记录"
+                "KixDNS 的输出没有送到 journald（StandardError=null），这里只能看到 systemd 记下的启动和停止"
             )
         );
         assert_eq!(
@@ -781,7 +781,7 @@ mod tests {
                 "LoadState=loaded\nStandardOutput=append:/var/log/kixdns.log\nStandardError=truncate:/var/log/kixdns.err\n"
             )
             .as_deref(),
-            Some("这个 unit 的输出没有送到 journald（StandardOutput=append:/var/log/kixdns.log，StandardError=truncate:/var/log/kixdns.err），这里只会看到 systemd 自己的启停记录")
+            Some("KixDNS 的输出没有送到 journald（StandardOutput=append:/var/log/kixdns.log，StandardError=truncate:/var/log/kixdns.err），这里只能看到 systemd 记下的启动和停止")
         );
         assert_eq!(notice(""), None);
         assert_eq!(notice("ActiveState=active\n"), None);

@@ -96,7 +96,7 @@ async fn stalled_artifact_download_fails_on_the_read_timeout() {
         "断流应在读超时后放弃，实际等了 {:?}",
         started.elapsed()
     );
-    assert!(message.contains("下载 KixDNS 产物超时"), "{message}");
+    assert!(message.contains("下载 KixDNS 内核超时"), "{message}");
 }
 
 #[tokio::test]
@@ -121,7 +121,7 @@ async fn endless_artifact_download_fails_on_the_download_timeout() {
         "下载总时限应生效，实际等了 {:?}",
         started.elapsed()
     );
-    assert!(message.contains("下载 KixDNS 产物超时"), "{message}");
+    assert!(message.contains("下载 KixDNS 内核超时"), "{message}");
 }
 
 /// 对每个连接依次回一个固定响应，并记下请求头（小写）。返回基址和记录。

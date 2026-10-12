@@ -536,11 +536,11 @@ fn parse_url(value: &str) -> Result<Url, GeoDataError> {
     if value.len() > MAX_URL_BYTES {
         return Err(GeoDataError::Invalid("Geo 数据链接过长".to_owned()));
     }
-    let url = Url::parse(value)
-        .map_err(|_| GeoDataError::Invalid("Geo 数据链接格式不正确".to_owned()))?;
+    let url =
+        Url::parse(value).map_err(|_| GeoDataError::Invalid("Geo 数据链接写得不对".to_owned()))?;
     if url.scheme() != "https" {
         return Err(GeoDataError::Invalid(
-            "Geo 数据链接仅允许使用 HTTPS".to_owned(),
+            "Geo 数据链接只能用 https://".to_owned(),
         ));
     }
     if !url.username().is_empty() || url.password().is_some() {
