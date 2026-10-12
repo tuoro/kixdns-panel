@@ -462,7 +462,6 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
 @media (max-width: 640px) { .system-actions-sk { display: block; flex: 1 1 0; height: var(--h-md); border-radius: var(--r-2); } }
 .system-skeleton-rows { display: grid; gap: var(--s-2); padding-bottom: var(--s-2); }
 .system-skeleton-rows .sk { height: var(--s-7); }
-.system-skeleton-panel { height: calc(var(--s-8) * 2); }
 .system-check-failed { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-3); padding-bottom: var(--s-1); color: var(--l-ink-3); font-size: var(--t-2); overflow-wrap: anywhere; }
 .system-stale { color: var(--warn-l); overflow-wrap: anywhere; }
 .system-error { flex-basis: 100%; color: var(--err-l); overflow-wrap: anywhere; }
