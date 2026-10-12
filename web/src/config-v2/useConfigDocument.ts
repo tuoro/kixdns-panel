@@ -281,10 +281,17 @@ let loadFailedDown = false
 // sent 是保存时发出去的草稿，读回来和它一样、又没有别的没保存的修改时照常整份换上（换成文件里的写法）
 // keepDraft: with unsaved edits in the draft (made during a save, an unfinished panel edit, the draft while a version is deleted) the draft stays and only
 // the baseline becomes the file just read; sent is the draft a save sent, and when nothing changed since and nothing else is unsaved the file replaces it as usual
-export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: string } = {}): Promise<void> {
-  if (pendingLoad) return pendingLoad
+// fresh：调用的人要整份换上读到的文件（恢复版本：确认时已经说了没保存的修改会丢），不走「保留这边的修改」
+// fresh: the caller replaces the draft with the file read, whatever was edited (a restore: its confirm said unsaved edits would be lost), never the keep-edits path
+export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: string; fresh?: boolean } = {}): Promise<void> {
+  // 已经有一次读在路上：一般就等它；但保存（sent）和要保留草稿的读，得看到自己写进去以后的文件——那次读是写之前发的，等它回来再读一次
+  // A read is already out: usually just wait for it; but a save's read (sent) and a keep-draft read must see the file after their own write — that read left
+  // before the write, so wait for it and then read again
+  if (pendingLoad) return options.sent !== undefined || options.keepDraft ? pendingLoad.catch(() => undefined).then(() => load(options)) : pendingLoad
   if (!options.quiet) loading.value = true
   const unsavedAtStart = unsaved.value
+  // 发出时文件的散列：读回来之前有一次写（保存落地）把它挪了，这次读到的就是旧的，不拿它盖掉 / The file hash when sent: if a write (a landed save) moved it before this read returns, what was read is stale and must not overwrite it
+  const shaAtStart = doc.value?.sha256
   pendingLoad = (async () => {
     const [nextDoc, history, overview, service] = await Promise.all([
       apiRequest<ConfigDocument>('/api/v1/config'),
@@ -292,6 +299,8 @@ export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: str
       apiRequest<Overview>('/api/v1/overview').catch(overviewFailed),
       apiRequest<ServiceStatus>('/api/v1/service').catch(() => null),
     ])
+    // 读的时候文件已经被这边的一次写挪过了：读到的是旧文件，只当没读（写的那一方会自己再读） / The file was moved by a write from this page while reading: what came back is stale, so it is dropped (the writer reads again itself)
+    if (options.sent === undefined && doc.value && shaAtStart !== undefined && doc.value.sha256 !== shaAtStart) return
     applyRuntime(nextDoc, overview, service)
     const previous = doc.value
     const previousSha = previous?.sha256
@@ -299,7 +308,7 @@ export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: str
     // 下次保存会撞上「别处改过了」，再重新读取
     // The quiet re-read left with no edits, edits were made before it came back, and the file changed on the panel: the edits are not wiped by the file,
     // only the runtime moves (as on a reconnect with edits); the next save meets 别处改过了 and re-reads then
-    const keepEdits = previous !== null && options.quiet === true && options.sent === undefined && !options.keepDraft && !unsavedAtStart && unsaved.value && nextDoc.sha256 !== previousSha
+    const keepEdits = previous !== null && options.quiet === true && options.sent === undefined && !options.keepDraft && !options.fresh && !unsavedAtStart && unsaved.value && nextDoc.sha256 !== previousSha
     doc.value = keepEdits ? { ...previous, runtime: nextDoc.runtime, pending: nextDoc.pending } : nextDoc
     versions.value = history.versions
     // 读进草稿：散列对得上就是面板写的那份；对不上（手改过）会重新导入并给报告 / Into the draft: the hash matching means the panel wrote it; otherwise it is re-imported with a report
@@ -310,7 +319,12 @@ export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: str
     // After a save (sent) only the baseline moves: the draft's objects stay, so an open drawer or rule panel still holds the same object (replacing them
     // made an upstream-group drawer opened during a save write to another group). Writing and reading back equals the draft (round-trip test in store.test), so with no edits since, the count returns to zero
     if (keepEdits) {
-      // 草稿和对照的那份都不动 / Neither the draft nor the baseline moves
+      // 草稿和对照的那份都不动；文件在别处改过了，马上说出来（下载草稿 / 重新读取），不等保存撞上才知道
+      // Neither the draft nor the baseline moves; the file was changed elsewhere, so say it now (下载草稿 / 重新读取) instead of waiting for a save to hit it
+      origin.value = 'draft'
+      conflict.value = true
+      verdict.value = '这份配置在别处改过了'
+      finishStage('failed', '现在的草稿是基于旧版本的，可以先下载草稿再重新读取')
     } else if (options.sent !== undefined || (options.keepDraft && unsaved.value)) {
       // 文件没变就什么都不动；变了（保存成功、别处改过）把对照的那份换成它，草稿里的修改照旧算修改
       // File unchanged: nothing moves; changed (a save went through, an edit elsewhere): the baseline becomes it and the draft's edits still count as edits
@@ -478,8 +492,18 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     // during a save), and it carries on once the check returns
     queued.value = true
     try { await waiting } finally { queued.value = false }
-    // 校验没过（被拒、KixDNS 停了、连不上）：停在那句结论上，不接着存；退出登录时放下了这份草稿也不存
-    // The check failed (rejected, KixDNS stopped, unreachable): stop at that verdict instead of saving; nor save a draft let go at sign-out
+    // 校验没过（被拒、KixDNS 停了、连不上）：停在那句结论上，不接着存；退出登录时放下了这份草稿也不存。
+    // 按完就离开了：和直接保存失败一样，草稿留着等回来、用提示说为什么没存
+    // The check failed (rejected, KixDNS stopped, unreachable): stop at that verdict instead of saving; nor save a draft let go at sign-out.
+    // Left right after pressing: as with a direct save that fails, the draft is kept for the return and a toast says why nothing was saved
+    if (stage.value === 'failed' && !viewing && !abandoned) {
+      keepDraftForReturn()
+      dismissAwayToast()
+      const kept = '草稿留在配\u2060置\u2060页'
+      awayToast = useToast().error(verdict.value === 'KixDNS 已停止' ? `配置没有保存：KixDNS 已停止。${kept}，可以先存成待应用版本`
+        : verdict.value === '连不上面板' ? `配置没有保存：连不上面板。${kept}，连上后再保存`
+          : `配置没有保存：没有通过校验。${kept}。${note.value}`)
+    }
     if (stage.value === 'failed' || abandoned || busy.value || !doc.value) { inFlight = null; abandoned = false; return }
     // 校验过的正是要写的这一份：不再校验第二遍 / What was checked is exactly what will be written: no second check
     prechecked = checkedContent === JSON.stringify(content)
@@ -760,7 +784,7 @@ export async function restoreVersion(id: number): Promise<{ state: 'applied' | '
   restoring.value = id
   try {
     const result = await apiRequest<ConfigApplyResult>(`/api/v1/config/versions/${id}/restore`, { method: 'POST', ...jsonBody({ expected_sha256: doc.value.sha256 }) })
-    await load({ quiet: true })
+    await load({ quiet: true, fresh: true })
     return { state: applyResultState(result), versionId: result.version_id }
   } finally {
     restoring.value = null

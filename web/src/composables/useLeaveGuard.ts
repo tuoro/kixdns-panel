@@ -2,7 +2,8 @@
 // 问过并且同意了，紧接着的那次换页就不再问第二遍。
 // A page with unsaved work registers its "ask before leaving" here. Leaving that is more than a page change, such as signing out,
 // asks it first and only then ends the session; once agreed, the page change that follows does not ask a second time.
-type Ask = () => Promise<boolean>
+// purpose：signout 时问的按钮写退出登录的说法 / purpose: signout makes the question use sign-out wording
+type Ask = (purpose?: 'signout') => Promise<boolean>
 
 let current: Ask | null = null
 let pending: (() => boolean) | null = null
@@ -59,7 +60,7 @@ export async function confirmLeave(): Promise<boolean> {
     if (agreed) held.drop()
     return agreed
   }
-  agreed = await current()
+  agreed = await current('signout')
   return agreed
 }
 

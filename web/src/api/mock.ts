@@ -461,11 +461,21 @@ async function mockDraftTrial(domain: string, recordType: string, client: string
   }
 }
 
+// kixdns:demo-read-slow：读取的回答要 1.5 秒才到，读到的是发出时面板上的样子（和真的慢网络一样：中途别的写入落地了，这次读到的仍是旧的）；
+// 用来演示各页读完之前的占位，也用来测读回来时文件已经变了的情况
+// kixdns:demo-read-slow: a read's answer takes 1.5 s to arrive and holds what the panel had when it was sent (as on a real slow network: a write landing
+// meanwhile does not change it); shows each page's placeholder before the read lands, and tests a read that returns after the file moved
 export async function mockRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const method = init?.method ?? 'GET'
-  // kixdns:demo-read-slow：读取要 1.5 秒，演示各页读完之前的占位 / kixdns:demo-read-slow: reads take 1.5 s, to show each page's placeholder before the read lands
   const slowRead = method === 'GET' && typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-read-slow') === 'true'
-  await new Promise((resolve) => setTimeout(resolve, slowRead ? 1500 : 120))
+  await new Promise((resolve) => setTimeout(resolve, 120))
+  const answer = await mockAnswer<T>(path, init)
+  if (slowRead) await new Promise((resolve) => setTimeout(resolve, 1380))
+  return answer
+}
+
+async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
+  const method = init?.method ?? 'GET'
   const url = new URL(path, 'http://panel.local')
   const pathname = url.pathname
   // 同上：让初始化页也能在演示里看到，否则它的用例只能永远跳过。

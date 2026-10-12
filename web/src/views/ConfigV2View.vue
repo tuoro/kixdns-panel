@@ -87,6 +87,8 @@ const editorRef = ref<InstanceType<typeof RuleEditor> | null>(null)
 // The full-page editor goes into browser history (?rule=): a phone's back gesture returns to the list instead of leaving the config
 // page; the panel stays out of history, so switching rows does not pile up entries
 async function openRule(ruleId: number | null, groupId: string | null, template?: Partial<Rule>): Promise<void> {
+  // 重新读取、恢复版本还在读：读回来的会整份换掉草稿，这时打开的编辑会落在旧的上面（快捷键 n、提示条里的规则名都走这里） / A re-read or restore is reading: what comes back replaces the draft, so an editor opened now would sit on the old one (the n shortcut and the notice's rule names come through here)
+  if (rereading.value) return
   if (ui.mode === 'json' && !leaveJson()) return
   if (editor.value && (ruleId === null || editor.value.ruleId !== ruleId) && !(await editorRef.value?.confirmDiscard() ?? true)) return
   editor.value = { ruleId, groupId, template }
@@ -311,7 +313,8 @@ const modes = [{ value: 'form', label: '表单', icon: Settings2 }, { value: 'js
 const moreItems = computed(() => [
   { value: 'history', label: '历史版本', icon: History, disabled: !ready.value },
   { value: 'mode', label: ui.mode === 'json' ? '回到表单' : '查看 JSON', icon: ui.mode === 'json' ? Settings2 : Braces, disabled: !ready.value },
-  { value: 'import', label: '导入 JSON', icon: FileUp, disabled: !ready.value },
+  // 保存途中不导入：导入会换掉草稿，和重新读取一样等保存做完 / No import during a save: it replaces the draft, so it waits for the save like 重新读取
+  { value: 'import', label: '导入 JSON', icon: FileUp, disabled: !ready.value || saveInFlight.value },
   { value: 'download', label: '下载 JSON', icon: Download, disabled: !ready.value },
   // 连不上面板时读不到，按了只会失败 / Unreachable panel: the read can only fail
   // 保存途中也不重新读取：读进来的会被那次保存覆盖，「之后改的」就成了撤回刚保存的 / Not during a save either: the read would be overtaken by that save, and 之后改的 would become a revert of what was just saved
@@ -326,6 +329,8 @@ function pickMore(value: string): void {
   else if (value === 'import') fileInput.value?.click()
   else if (value === 'download') downloadJson()
   else if (value === 'help') help.show('config')
+  // 文件在别处改过了：放弃修改就是重新读取面板上现在的那份 / The file was changed elsewhere: discarding means re-reading what the panel holds now
+  else if (value === 'discard' && conflict.value) void reload()
   else if (value === 'discard') { const what = jsonDirty.value ? '已放弃 JSON 里的修改' : undefined; if (!jsonError.value) flush('fold'); discardWithUndo(what); afterDiscard() }
   else void reload()
 }
@@ -380,18 +385,20 @@ async function reload(ask = true): Promise<void> {
 // The JSON text lives only on this page: coming back always starts in the form, so the JSON view never reopens empty and stuck
 // 只有规则编辑里没点「完成」的、或开着的抽屉里的修改时，问的是那一样；草稿或 JSON 有修改时问整份草稿
 // With only a rule edit not yet 完成, or an open drawer's edits, the question names that one thing; with draft or JSON edits it is about the whole draft
-const askLeave = async (): Promise<boolean> => {
+// purpose 是 signout 时按钮写「放弃并退出 / 先不退出」，和在别处退出登录时一样 / With purpose signout the buttons read 放弃并退出 / 先不退出, as when signing out from elsewhere
+const askLeave = async (purpose?: 'signout'): Promise<boolean> => {
+  const labels = purpose === 'signout' ? { confirmLabel: '放弃并退出', cancelLabel: '先不退出' } : { confirmLabel: '放弃修改', cancelLabel: '继续编辑' }
   // 正在保存、之后没再改：保存照常做完，结果会用提示说，不问「放弃」（问了也放弃不了） / Saving with nothing changed since: the save finishes and a toast tells its outcome, so no 放弃 question (it could not discard anyway)
   if (!unsaved.value || onlySaving()) return true
-  if (!dirty.value && !jsonDirty.value) return confirm.ask({ title: `放弃${editorEdited.value ? '这条规则' : [...dialogEdits.values()][0] ?? '这条规则'}的修改`, body: '刚才在这里改的内容不会写进草稿。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
+  if (!dirty.value && !jsonDirty.value) return confirm.ask({ title: `放弃${editorEdited.value ? '这条规则' : [...dialogEdits.values()][0] ?? '这条规则'}的修改`, body: '刚才在这里改的内容不会写进草稿。', ...labels, destructive: true })
   // 正在保存时又改过：正在保存的那份照常落地，丢掉的只是之后改的 / Edited again during a save: the part being saved still lands, only the later edits are dropped
   // 同意了就把草稿退回正在保存的那一份：保存没成功时回来看到的正是它，不会冒出说好丢掉的那几处 / On agreement the draft goes back to the one being saved: a failed save brings back exactly that, not the edits agreed to drop
   if (saveInFlight.value) {
-    const agreed = await confirm.ask({ title: '放弃保存开始后改的内容', body: '正在保存的那份照常保存；保存开始以后改的会丢掉。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
+    const agreed = await confirm.ask({ title: '放弃保存开始后改的内容', body: '正在保存的那份照常保存；保存开始以后改的会丢掉。', ...labels, destructive: true })
     if (agreed) dropEditsAfterSave()
     return agreed
   }
-  return confirm.ask({ title: '放弃未保存的修改', body: '当前的配置草稿会被丢弃，已经生效的配置不受影\u2060响。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
+  return confirm.ask({ title: '放弃未保存的修改', body: '当前的配置草稿会被丢弃，已经生效的配置不受影\u2060响。', ...labels, destructive: true })
 }
 const releaseGuard = registerLeaveGuard(askLeave, () => unsaved.value)
 // 提示条的按钮做事期间停用，焦点跟着掉到页面上：做完没人接住焦点时，回到这个按钮（还在的话），不在了就落在提示条上
@@ -463,7 +470,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
         <!-- 宽屏：标题下一排事实（状态、配置版本、规则数、上游组数）；手机：一行状态 / Wide: a facts row under the title (state, config version, rule count, upstream groups); phones: one status line -->
         <!-- 没读到配置时宽屏也是这一排，只写状态；版本、规则数、上游组数等读到再写 / Without a config read the wide header keeps this row with the state only; version, rule and group counts wait for the read -->
         <span v-else-if="!phone && !firstRun" class="ui-facts cfg__facts" :class="{ 'cfg__facts--long': (headerLine.wide?.length ?? 0) > 1 }" :role="applyBusy ? 'status' : undefined">
-          <span><span class="ui-lbl">状态</span><b><span v-if="applyBusy" class="ui-spin cfg__spin" aria-hidden="true"></span><span v-else class="ui-dot" :class="headerLine.tone === 'ok' ? '' : `ui-dot--${headerLine.tone}`" aria-hidden="true"></span><UiDotText :parts="headerLine.wide ?? [headerLine.lead ?? `${headerLine.before}${headerLine.version ?? ''}${headerLine.after ?? ''}`]" /><button v-if="headerAction && ready" class="cfg__head-action" type="button" @click="applyNow">{{ headerAction }}</button><button v-else-if="runtimeStopped && ready && !panelDown" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline cfg__head-start" type="button" :disabled="starting" @click="startKixdns">启动</button></b></span>
+          <span><span class="ui-lbl">状态</span><b><span v-if="applyBusy" class="ui-spin cfg__spin" aria-hidden="true"></span><span v-else class="ui-dot" :class="headerLine.tone === 'ok' ? '' : `ui-dot--${headerLine.tone}`" aria-hidden="true"></span><UiDotText :parts="headerLine.wide ?? [headerLine.lead ?? `${headerLine.before}${headerLine.version ?? ''}${headerLine.after ?? ''}`]" /><button v-if="headerAction && ready && !applyBusy" class="cfg__head-action" type="button" @click="applyNow">{{ headerAction }}</button><button v-else-if="runtimeStopped && ready && !panelDown" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline cfg__head-start" type="button" :disabled="starting" @click="startKixdns">启动</button></b></span>
           <template v-if="doc">
           <span><span class="ui-lbl">配置版本</span><b>{{ versionLabel }}</b></span>
           <span class="cfg__fact-rules"><span class="ui-lbl">规则</span><b>{{ ruleCount }} 条</b></span>
@@ -474,7 +481,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
           <span v-if="applyBusy" class="ui-spin cfg__spin" aria-hidden="true"></span>
           <span v-else class="ui-dot" :class="headerLine.tone === 'ok' ? '' : `ui-dot--${headerLine.tone}`" aria-hidden="true"></span>
           <UiDotText :parts="[headerLine.lead ?? '', `${headerLine.before}${headerLine.version ?? ''}${headerLine.after ?? ''}`].filter(Boolean)" />
-          <button v-if="headerAction && ready" class="cfg__head-action" type="button" @click="applyNow">{{ headerAction }}</button>
+          <button v-if="headerAction && ready && !applyBusy" class="cfg__head-action" type="button" @click="applyNow">{{ headerAction }}</button>
           <button v-else-if="runtimeStopped && ready && !panelDown" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline cfg__head-start" type="button" :disabled="starting" @click="startKixdns">启动</button>
         </span>
       </template>
@@ -520,7 +527,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
     <!-- 重新读取、恢复版本读回来之前不让改：读回来的会整份换掉草稿 / No edits until a re-read or restore comes back: what comes back replaces the draft -->
     <div v-else :id="`cfg-panel-${section}`" class="cfg__panel" role="tabpanel" :aria-labelledby="`cfg-tab-${section}`" :inert="rereading || undefined" :aria-busy="rereading || undefined">
       <div v-if="section === 'rules'" class="rules-split" :class="{ 'is-open': inspector }">
-        <RulesTab :selected="editor?.ruleId ?? null" @open="openRule" @tab="setTab" @edit-group="groupEditor = { id: $event }" @import="fileInput?.click()" />
+        <RulesTab :selected="editor?.ruleId ?? null" @open="openRule" @tab="setTab" @edit-group="groupEditor = { id: $event }" @import="!saveInFlight && fileInput?.click()" />
         <RuleEditor v-if="inspector && editor" ref="editorRef" :key="`${editor.ruleId}-${editor.groupId}-${editor.nonce ?? 0}`" inspector :rule-id="editor.ruleId" :group-id="editor.groupId" :template="editor.template" :resume="editor.resume" @close="closeRule" @reopen="reopenRule" @saved="ruleSaved" @deleted="ruleDeleted" @edit-group="groupEditor = { id: $event }" />
       </div>
       <UpstreamsTab v-else-if="section === 'upstreams'" @edit="groupEditor = { id: $event }" @rules="showGroupRules" />

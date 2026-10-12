@@ -30,7 +30,9 @@ body { background: var(--l-canvas); }
 .cfg__spin { width: var(--size-icon-sm); height: var(--size-icon-sm); }
 .cfg__status-sk { width: 9rem; }
 /* 重新读取、恢复版本还在读：内容调淡、不能改，读回来再恢复 / A re-read or restore is still reading: the content dims and takes no edits until it lands */
-.cfg__panel[aria-busy="true"], .cfg__json[aria-busy="true"] { opacity: .6; transition: opacity var(--m-quick) var(--ease-out); }
+.cfg__panel[aria-busy="true"], .cfg__json[aria-busy="true"], .cfg__savebar[aria-busy="true"] { opacity: .6; transition: opacity var(--m-quick) var(--ease-out); }
+/* 页头里传送过来的按钮（新建规则、测试域名）跟着调淡：它们的容器是 display: contents，自己挂不上透明度 / The buttons teleported into the header (新建规则, 测试域名) dim too: their container is display: contents and cannot carry opacity */
+.cfg__page-acts[inert] > * { opacity: .6; transition: opacity var(--m-quick) var(--ease-out); }
 .cfg__notice { margin-top: calc(var(--s-1) * -1); }
 .cfg__notice .ui-objlink, .ui-savebar .ui-objlink { font-size: inherit; color: inherit; text-decoration-color: currentColor; }
 .cfg__json { display: grid; gap: var(--s-3); }
@@ -39,6 +41,9 @@ body { background: var(--l-canvas); }
 /* JSON 视图的编辑区是一张卡：行号栏和代码在同一个圆角框里，底边是卡片边，不是被截断的一刀
    The JSON view's editor is a card: the gutter and the code share one rounded frame, and its bottom is the card's edge rather than a hard cut */
 .cfg__json-editor.json-editor { border: 0; border-radius: var(--r-3); box-shadow: var(--shadow-card); }
+/* 卡片没有边框，聚焦时用向内收 1 的描边画出输入框那条品牌色边（不挪动内容），外面照样一圈淡光
+   The card has no border, so focus draws the field's accent edge as an outline pulled 1 px inside (nothing moves), with the usual halo outside */
+.cfg__json-editor.json-editor:has(.cm-focused) { outline: 1px solid var(--accent); outline-offset: -1px; box-shadow: var(--shadow-card), var(--ring-field); }
 /* 骨架的列要 minmax(0, 1fr)：auto 列会按工具行里几个定宽占位的总和撑开，641–860 时把文档撑出横向滚动 / The skeleton's column must be minmax(0, 1fr): an auto column grows to the sum of the toolbar's fixed-width placeholders and at 641–860 pushes the document into horizontal scroll */
 .cfg__skeleton { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-4); }
 .cfg__sk-tools { display: flex; align-items: center; gap: var(--s-2); min-width: 0; }
@@ -1718,6 +1723,7 @@ body { background: var(--l-canvas); }
 .diffd__block li.is-del .diffd__sign, .diffd__sign.is-del { color: var(--err-l); }
 .diffd__block li.is-add .diffd__sign, .diffd__sign.is-add { color: var(--ok-l); }
 .hist .pdrawer__panel { width: min(32.5rem, 100%); }
+.diffd__loading { display: flex; align-items: center; gap: var(--s-2); margin: 0; color: var(--l-ink-3); font-size: var(--t-2); }
 /* 历史版本：行的字和抽屉标题左边对齐；当前版本的备注是墨色，不像停用 / History: row text lines up with the drawer title; the current version's note is ink, not disabled-looking */
 .hist__list { padding: var(--s-2) var(--s-3); }
 .hist__row { padding-inline: var(--s-3); }

@@ -2,8 +2,7 @@ import { effectiveOps, normalizeAddress, type KAction, type KConfigLike, type KM
 import {
   isIp, kernelAddress, POLLUTED_CIDRS, splitList,
   type BlockResponse, type Condition, type Ecs, type Mapping, type Model, type Outcome, type Protocol, type Remedy, type ResponseCondition,
-  type ResponseHandling, type Rule, type RuleGroup, type UpstreamAddress, type UpstreamGroup,
-} from './model'
+  type ResponseHandling, type Rule, type RuleGroup, type UpstreamAddress, type UpstreamGroup, nextId as nextFreeId } from './model'
 
 // 把任何一份内核配置读成模型，不丢东西：能放进规则、上游组、域名映射的就放进去，放不进的原样保留成高级规则 / 高级入口，
 // 写回去和原来一样。每一处改动都记一条说明给用户看。依据的内核行为见 kernel.ts 顶上的出处。
@@ -163,6 +162,10 @@ function mergeGroups(groups: Condition[][]): Condition[][] {
 export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
   const notes: ImportNote[] = []
   const note = (text: string, level: ImportNote['level'] = 'info') => notes.push({ level, text })
+  // 新规则的编号从上一份用过的编号之后开始：页面重开以后计数从头来，会和接回来的旧编号撞上（点一条开的是另一条）
+  // New rules number from above every id the previous model used: after a page reload the counter starts over and would collide with carried-over ids
+  // (clicking one rule opened another)
+  if (prev) nextId = Math.max(nextId, nextFreeId(prev))
   const pipelines = (cfg.pipelines ?? []) as KPipelineLike[]
   const byId = new Map(pipelines.map((p) => [p.id, p]))
   const settings = clone(cfg.settings ?? {})
@@ -629,11 +632,14 @@ function carryOver(model: Model, prev: Model): Model {
   // conditions, and each previous rule is taken once
   const sameShape = (a: Rule, b: Rule) => (a.raw || b.raw ? JSON.stringify(a.raw ?? null) === JSON.stringify(b.raw ?? null) : condsKey(a.conditions) === condsKey(b.conditions))
   for (const [now, before] of lists) {
-    const taken = new Set<Rule>()
+    // 上一份的每条认回了现在的哪一条：停用的规则按它前面那条认回来的规则放回去（没起名字的规则名字都一样，按名字找会放错位置）
+    // Which current rule each previous rule was matched to: a disabled rule goes back after the matched rule before it (unnamed rules share one name, so
+    // finding the anchor by name put it in the wrong place)
+    const paired = new Map<Rule, Rule>()
     for (const r of now) {
-      const p = before.find((x) => x.enabled && !taken.has(x) && x.name === r.name && (r.name !== '' || sameShape(x, r)))
+      const p = before.find((x) => x.enabled && !paired.has(x) && x.name === r.name && (r.name !== '' || sameShape(x, r)))
       if (!p) continue
-      taken.add(p)
+      paired.set(p, r)
       Object.assign(r, { id: p.id, note: p.note, edited: p.edited, outcome: sameBlock(p.outcome, r.outcome) ? p.outcome : r.outcome })
       // 条件一样只是顺序不同（内核要求多值的条件排最前）：用上一份的顺序 / Same conditions in another order (the kernel wants a multi-valued one first): keep the previous order
       if (!r.raw && !p.raw && condsKey(r.conditions) === condsKey(p.conditions)) r.conditions = p.conditions
@@ -641,8 +647,8 @@ function carryOver(model: Model, prev: Model): Model {
     }
     before.forEach((p, i) => {
       if (p.enabled) return
-      const anchor = before.slice(0, i).reverse().find((x) => x.enabled && now.some((r) => r.name === x.name))
-      const at = anchor ? now.findIndex((r) => r.name === anchor.name) + 1 : 0
+      const anchor = before.slice(0, i).reverse().find((x) => paired.has(x))
+      const at = anchor ? now.indexOf(paired.get(anchor)!) + 1 : 0
       now.splice(at, 0, p)
     })
   }

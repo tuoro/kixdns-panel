@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { keepTail } from '../../utils'
 import { CircleHelp } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
 import { useRoute } from 'vue-router'
@@ -82,7 +83,7 @@ onBeforeUnmount(() => hide(false))
     <button ref="button" class="ui-help__btn" type="button" :aria-label="`什么是${topic.title}`" aria-haspopup="dialog" :aria-expanded="open" @click.stop.prevent="toggle"><CircleHelp :size="14" aria-hidden="true" /></button>
     <div v-if="open" ref="pop" popover="manual" class="ui-help__pop" role="dialog" :aria-label="topic.title" tabindex="-1">
       <strong class="ui-help__title">{{ topic.title }}</strong>
-      <p v-for="(line, i) in topic.body" :key="i">{{ line }}</p>
+      <p v-for="(line, i) in topic.body" :key="i">{{ keepTail(line)[0] }}<span class="nowrap">{{ keepTail(line)[1] }}</span></p>
       <button class="ui-help__more" type="button" @click="more">全部说明和快捷键</button>
     </div>
   </span>

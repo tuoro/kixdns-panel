@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useReturnFocus } from '../composables/useReturnFocus'
 import { Ellipsis, Trash2, X } from '@lucide/vue'
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { ConfigVersion } from '../api/types'
 import UiMenu from '../components/ui/UiMenu.vue'
 import { useConfirm } from '../composables/useConfirm'
@@ -32,6 +32,10 @@ const preview = ref<ConfigVersion | null>(null)
 // 比较的结果：打开一行后去取那个版本的全文，拿到才算；没拿到之前是 null，什么都不显示
 // The comparison: a row's full content is fetched when opened and compared once it arrives; null until then, and nothing shows
 const blocks = ref<DiffBlock[] | null>(null)
+// 版本内容 0.3 秒还没到：比较里先写一句正在读取，不留一块空白 / The version's content not back after 0.3 s: the compare sheet says it is reading instead of showing a blank
+const slowDiff = ref(false)
+let slowTimer: ReturnType<typeof setTimeout> | undefined
+onBeforeUnmount(() => clearTimeout(slowTimer))
 // 有哪个版本正在恢复或删除时，菜单里的操作都停一停 / While any version is being restored or deleted the menu actions wait
 // 配置页正在保存时也算忙：恢复会和那次保存撞上，变成「别处改过了」 / A save running on the config page counts as busy too: a restore would collide with it and read as 别处改过了
 const busy = computed(() => restoring.value !== null || deleting.value !== null || bulkDeleting.value || saveInFlight.value)
@@ -48,6 +52,9 @@ async function openDiff(v: ConfigVersion): Promise<void> {
   if (selecting.value || isCurrent(v)) return
   preview.value = v
   blocks.value = null
+  slowDiff.value = false
+  clearTimeout(slowTimer)
+  slowTimer = setTimeout(() => { slowDiff.value = blocks.value === null }, 300)
   await nextTick()
   diffDialog.value?.showModal()
   try {
@@ -167,6 +174,7 @@ function onRuleLink(id: number): void { dialog.value?.close(); emit('rule', id) 
             <DiffBlocks :blocks="blocks" />
           </template>
           <p v-else-if="blocks" class="hist__empty">这个版本和当前的配置一样，恢复它不会改变什么。</p>
+          <p v-else-if="slowDiff" class="diffd__loading" role="status"><span class="ui-spin" aria-hidden="true"></span>正在读取这个版本</p>
         </div>
         <footer v-if="blocks && blocks.length" class="pdialog__foot"><button class="ui-btn ui-btn--secondary" type="button" @click="closeDiff">关闭</button><button class="ui-btn ui-btn--primary" type="button" :disabled="busy || panelDown" @click="restore(preview)">恢复为版本 #{{ preview.id }}</button></footer>
       </div>

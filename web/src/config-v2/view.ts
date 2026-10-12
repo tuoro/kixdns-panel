@@ -30,11 +30,7 @@ export function blockOptions(model: Model): { value: BlockResponse; label: strin
   ]
 }
 
-// 句子最后几个字绑在一起不折行：中文折行时末行不会只剩一两个字 / Binds a sentence's last few characters so a Chinese wrap never leaves one or two alone on the last line
-export function keepTail(text: string, size = 5): [string, string] {
-  if (text.length <= size * 2) return [text, '']
-  return [text.slice(0, -size), text.slice(-size)]
-}
+export { keepTail } from '../utils'
 
 // 规则最近一次改动：ISO 时间读成「3 天前」，导入的那些写的是「导入」就原样显示 / A rule's last edit: an ISO time reads as 「3 天前」; imported ones say 「导入」 as written
 export function editedText(edited: string): string {
