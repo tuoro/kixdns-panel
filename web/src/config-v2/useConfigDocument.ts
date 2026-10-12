@@ -537,14 +537,17 @@ let retryToast: number | null = null
  * runtime is refreshed (the draft and the file hash stay, so changes made elsewhere still surface at save), otherwise the whole document is re-read
  */
 export async function panelBack(): Promise<void> {
-  if (stage.value === 'failed' && verdict.value === '连不上面板') finishStage('idle')
+  // 「连不上面板」那句等回应丢了的那次保存核对完再撤：先撤的话，中间会闪一下「校验通过 · 可以保存」（上次校验的结果），再变成「已经保存过了」
+  // The 连不上面板 verdict goes only after a lost save has been checked: clearing it first flashed 「校验通过 · 可以保存」 (the last validation) before 已经保存过了
+  const clearStale = () => { if (stage.value === 'failed' && verdict.value === '连不上面板') finishStage('idle') }
   // 不在配置页时也做：离开期间连上的，回来时保存条不再说「连不上面板」，回应丢了的那次保存照样核对；配置页从没打开过就什么都不读
   // Done away from the config page too: after a reconnect while away the save bar no longer says 连不上面板 on return, and a lost save is still checked;
   // nothing is read when the config page was never opened
-  if (!viewing && !doc.value) return
-  if (busy.value) return
-  if (!doc.value) { await load(); return }
-  if (await settleUnanswered(true)) return
+  if ((!viewing && !doc.value) || busy.value) { clearStale(); return }
+  if (!doc.value) { clearStale(); await load(); return }
+  const settled = await settleUnanswered(true)
+  clearStale()
+  if (settled) return
   if (unsaved.value || conflict.value) {
     // 有没保存的修改时不重读文件，但运行状态读到了：因为连不上而挂着的「读取配置失败」收起 / With unsaved edits the file is not re-read, but the runtime did read: a 读取配置失败 left by the outage goes
     const refreshed = await refreshRuntime().then(() => true, () => false)

@@ -104,8 +104,15 @@ test('保存的回应丢了：连上后直接说「已经保存过了」，不�
   const bar = page.locator('.cfg__savebar')
   await bar.getByRole('button', { name: '保存并应用' }).click()
   await expect(bar).toContainText('连不上面板')
+  // 连上以后只变一次：从「连不上面板」直接到「已经保存过了」，中间不闪「校验通过 · 可以保存」 / Back online it changes once: from 连不上面板 straight to 已经保存过了, no 校验通过 · 可以保存 flashing between
+  await page.evaluate(() => {
+    const w = window as unknown as { sawReady: boolean }
+    w.sawReady = false
+    new MutationObserver(() => { if (document.querySelector('.cfg__savebar')?.textContent?.includes('校验通过')) w.sawReady = true }).observe(document.body, { subtree: true, childList: true, characterData: true })
+  })
   await expect(banner(page)).toHaveCount(0, { timeout: 10_000 })
   await expect(bar).toContainText(/已经保存过了\s*·\s*版本 #\d+/)
+  expect(await page.evaluate(() => (window as unknown as { sawReady: boolean }).sawReady)).toBe(false)
   await expect(bar.getByRole('button', { name: '保存并应用' })).toHaveCount(0)
   await expect(page.locator('[data-rule]', { hasText: 'lost.example.org' }).getByLabel('改过，还没保存')).toHaveCount(0)
 })
@@ -269,4 +276,19 @@ test('回应丢了后放弃又撤销：连上后再存不说别处改过了', as
   await bar.getByRole('button', { name: '保存并应用' }).click()
   await expect(bar).toContainText(/已生效\s*·\s*版本 #\d+/)
   await expect(bar).not.toContainText('别处改过了')
+})
+
+// 900 宽时「已经保存过了 · 之后改的 N 处还没保存」这么长的状态换成两行：备注框放得下占位字，「保存并应用」不被挤出屏幕
+// At 900 a status as long as 已经保存过了 · 之后改的 N 处还没保存 takes two rows: the note still fits its placeholder and 保存并应用 is not pushed off screen
+test('窄一点的宽屏上，长的保存条状态不把按钮挤出屏幕', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', '只看 861 以上的保存条')
+  await page.setViewportSize({ width: 900, height: 800 })
+  await loseAnswerThenEdit(page)
+  await panelDown(page, false)
+  const bar = page.locator('.cfg__savebar')
+  await expect(bar).toContainText(/已经保存过了/, { timeout: 10_000 })
+  const save = await bar.getByRole('button', { name: '保存并应用' }).boundingBox()
+  expect(save!.x + save!.width).toBeLessThanOrEqual(900)
+  const note = await bar.locator('.savebar__note').boundingBox()
+  expect(note!.width).toBeGreaterThanOrEqual(150)
 })

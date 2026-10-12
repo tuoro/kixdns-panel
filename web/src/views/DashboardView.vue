@@ -1154,6 +1154,8 @@ onBeforeUnmount(() => {
   /* 并排的两块骨架一样高，和读出来以后并排的两张卡一样（实测 247） / The paired skeleton blocks share one height, like the paired cards once loaded (measured 247) */
   .overview-page { --ov-sk-list: 247px; --ov-sk-list-2: 247px; }
 }
+/* 861–959 一栏到底时上游状态也是 247 高（地址折行前那一档）：第一块骨架跟着，读出来时下面不跳 / At 861–959, one card per row, 上游状态 is 247 too: the first skeleton block follows so nothing below jumps on load */
+@media (min-width: 861px) and (max-width: 959px) { .overview-page { --ov-sk-list: 247px; } }
 /* 900 以下：一栏到底，卡片按原来的顺序叠；规则换成两行式（四列挤不下）
    Below 900: a single column, the cards stacked in the same order; rules turn to two-line rows (four columns no longer fit) */
 @media (max-width: 899px) {

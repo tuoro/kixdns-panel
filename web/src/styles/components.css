@@ -955,6 +955,8 @@ button.ui-link { position: relative; min-height: 0; padding: 0; border: 0; backg
 /* 页面标题和分组标题能接住焦点（焦点兜底落在这里）：框贴着标题的字、圆角和别的焦点框一样，不拉成一整行像个空输入框
    Page and group headings can take focus (the focus rescue lands there): the ring hugs the words with the usual rounded corners instead of spanning the row like an empty field */
 .ui-ph__title, :is(h1, h2, h3)[data-focus-landing] { width: fit-content; max-width: 100%; border-radius: var(--r-1); }
+/* 框不往外让 2px（会碰到下面那行说明），左右各留 3 的空：内边距和负外边距抵消，版面不动 / The ring does not stand 2px off (it would touch the description below); 3 of air at the sides, padding offset by a negative margin so nothing moves */
+:is(h1, h2, h3)[data-focus-landing]:focus-visible, .ui-ph__title:focus-visible { outline-offset: 0; padding-inline: 3px; margin-inline: -3px; }
 /* 只有一行字的提示条：按钮和那一行对齐，不再按两行的高度居中。只在宽屏：手机上按钮在字下面单独一行（见上面），这里不能把它拉回第一行压住字
    A one-line notice: the button lines up with that line instead of centring on two rows. Wide screens only: on phones the button has its own row under
    the text (above), and this must not pull it back onto the first row over the words */

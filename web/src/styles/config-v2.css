@@ -66,6 +66,17 @@ body { background: var(--l-canvas); }
 .cfg__savebar.ui-savebar--err { flex-wrap: wrap; justify-content: flex-end; }
 .cfg__savebar.ui-savebar--err .ui-savebar__status { flex: 1 1 100%; }
 .cfg__savebar.ui-savebar--err .savebar__note-toggle { margin-left: auto; }
+/* 备注框不缩到放不下占位字（10rem）；说得长的状态（已保存加之后的修改、存成待应用）在 1100 以下用两行的样子，两行时让备注框让路，「保存并应用」不被挤出屏幕
+   The note never shrinks below its placeholder (10rem); long statuses (saved plus later edits, a deferred save) take the two-row form below 1100, and in two-row
+   bars the note gives way so 保存并应用 is never pushed off screen */
+@media (min-width: 861px) {
+  .cfg__savebar .savebar__note { min-width: 10rem; }
+  .cfg__savebar:is(.ui-savebar--err, :has(.ui-check), :has(.ui-savebar__detail small)) .savebar__note { flex: 1 1 10rem; max-width: 22rem; }
+}
+@media (min-width: 861px) and (max-width: 1100px) {
+  .cfg__savebar:is(:has(.ui-check), :has(.ui-savebar__detail small)) { flex-wrap: wrap; }
+  .cfg__savebar:is(:has(.ui-check), :has(.ui-savebar__detail small)) .ui-savebar__status { flex: 1 1 100%; margin-right: 0; }
+}
 @media (max-width: 860px) {
   .cfg__savebar { right: var(--s-4); left: var(--s-4); bottom: calc(var(--mobile-nav-height) + var(--s-3)); flex-wrap: wrap; padding: var(--s-2) var(--s-3) var(--s-3); }
   .cfg__savebar .ui-savebar__status { flex: 1 1 100%; }
@@ -180,8 +191,9 @@ body { background: var(--l-canvas); }
    The header's 启动 is a small secondary button that takes no vertical room: taller than the text, it never heightens the line (the facts row keeps one height), and its label shares the baseline of KixDNS 已停止 */
 .cfg__head-start { margin-block: calc(var(--h-sm) / -2); }
 .cfg__facts .cfg__head-start { margin-left: var(--s-1); }
-/* 861–959 有侧栏、又有「启动」时一排放不下四项：「上游组」先收起（同系统页 960 以下收起 PID） / At 861–959, with the sidebar and 启动 present, four facts do not fit: 上游组 gives way first (as the system page drops PID below 960) */
-@media (min-width: 861px) and (max-width: 959px) { .cfg__facts:has(.cfg__head-start) .cfg__fact-groups { display: none; } }
+/* 861–959 有侧栏、641–679（横放的手机、小平板）本来就窄，又有「启动」时一排放不下四项：「上游组」先收起（同系统页这两段收起 PID）
+   At 861–959 with the sidebar, and at 641–679 (landscape phones, small tablets), four facts do not fit beside 启动: 上游组 gives way first (as the system page drops PID in both bands) */
+@media (min-width: 641px) and (max-width: 679px), (min-width: 861px) and (max-width: 959px) { .cfg__facts:has(.cfg__head-start) .cfg__fact-groups { display: none; } }
 /* 861–876 停着又有待应用版本时（「已停止 · 待应用」加「启动」）三项也放不下：「规则」接着收起，不折成两行 / At 861–876, stopped with a pending version (已停止 · 待应用 plus 启动), three facts still do not fit: 规则 gives way next instead of wrapping */
 @media (min-width: 861px) and (max-width: 876px) { .cfg__facts--long:has(.cfg__head-start) .cfg__fact-rules { display: none; } }
 .rules-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-5); align-items: start; }
@@ -1787,6 +1799,9 @@ body { background: var(--l-canvas); }
 @media (max-width: 640px) {
   .rw__d, .gcard__name, .rrow__main { position: relative; }
   .rw__d::before, .gcard__name::before { position: absolute; inset: calc(min(0px, (100% - var(--h-touch)) / 2)) calc(var(--s-1) * -1); content: ''; }
+  /* 映射的域名格为了省略号要裁掉溢出，连补出去的点按区域也一起裁了（只剩 20 高）：改成留出 12 再裁，省略号照旧
+     The mapping's domain cell clips its overflow for the ellipsis, which clipped its grown hit area too (20 tall): clip with 12 to spare, the ellipsis unchanged */
+  .rw__d { overflow: clip; overflow-clip-margin: var(--s-3); }
   .rrow__main::before { position: absolute; inset: calc(var(--s-2) * -1) 0; content: ''; }
 }
 

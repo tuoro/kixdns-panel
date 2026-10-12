@@ -184,6 +184,29 @@ test('KixDNS 停着时存成待应用：页头先说停了再说哪个版本在�
   await expect(status.getByRole('button', { name: '启动', exact: true })).toBeVisible()
 })
 
+// 641–679（横放的手机）和 861–876 停着又有待应用版本时，页头一行放得下：放不下的事实先收起，不折成两行
+// At 641–679 (landscape phones) and 861–876, stopped with a pending version, the header stays one line: facts that do not fit give way instead of wrapping
+test('停着又有待应用版本：窄一点的宽度下配置页、系统页页头也只有一行', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', '只看 641 以上的页头')
+  await page.addInitScript(() => localStorage.setItem('kixdns:demo-empty-first-install', 'true'))
+  await page.goto('/config')
+  await page.getByRole('button', { name: '快速添加', exact: true }).click()
+  const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+  await quick.fill('narrow.example.org')
+  await quick.press('Enter')
+  await page.getByRole('button', { name: '保存为待应用', exact: true }).click()
+  await expect(page.locator('.cfg__facts')).toContainText(/待应用/)
+  const headHeight = () => page.locator('main .ui-ph').first().evaluate((el) => Math.round(el.getBoundingClientRect().height))
+  for (const width of [667, 641, 870]) {
+    await page.setViewportSize({ width, height: 800 })
+    await expect.poll(headHeight).toBeLessThan(90)
+  }
+  await page.setViewportSize({ width: 650, height: 800 })
+  await page.getByRole('link', { name: '系统', exact: true }).first().click()
+  await expect(page.locator('.system-facts')).toBeVisible()
+  await expect.poll(headHeight).toBeLessThan(90)
+})
+
 // 「去基础设置」指名了出问题的那一组：手机上直接打开那一组，不停在目录上；只用这一次，下次进基础设置照常从目录开始
 // 去基础设置 names the group with the problem: on phones that group opens directly instead of the contents list; once only, so the next visit starts at the list as usual
 test('手机上「去基础设置」直接打开指名的那一组，只用一次 @responsive', async ({ page }, testInfo) => {
@@ -344,6 +367,9 @@ test('手机上行里的「…」和开关并排，点按区各 44 @responsive',
   await page.getByLabel('回答的 IP 或域名').fill('192.168.1.40')
   await page.getByRole('button', { name: '添加', exact: true }).click()
   const mapping = await reach('[data-rw]', '.ui-switch input', '.ui-menu-host .ui-icon-btn')
+  // 点域名进编辑：为了省略号裁掉的溢出不能把点按区域也裁成 20 高 / Tapping the domain to edit: the overflow clipped for the ellipsis must not clip the tap area to 20 as well
+  const domain = await reach('[data-rw]', '.rw__d', '.rw__d')
+  expect(domain.toggle.height).toBeGreaterThanOrEqual(44)
   for (const { toggle, menu } of [rule, mapping]) {
     expect(Math.abs(toggle.cy - menu.cy)).toBeLessThan(2)
     for (const area of [toggle, menu]) {

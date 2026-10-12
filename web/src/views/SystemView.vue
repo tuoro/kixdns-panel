@@ -690,8 +690,8 @@ onBeforeUnmount(() => {
 .system-page > .ui-ph { margin-bottom: 0; }
 /* 事实行：标签在上、值在下；状态点和它的值之间 4，和概览一样 / The facts row: label over value; 4 between the dot and its value, as on the overview */
 .system-facts { flex: 1 1 100%; margin-top: var(--s-1); }
-/* 侧栏版 861–959 页头放不下四项加两个按钮：PID 收起，内核不再单独占一行 / At 861–959 with the sidebar the header cannot hold four facts and two buttons: PID folds away so 内核 no longer takes its own row */
-@media (min-width: 861px) and (max-width: 959px) { .system-facts > .system-fact-pid { display: none; } }
+/* 侧栏版 861–959、641–679（横放的手机、小平板）页头放不下四项加两个按钮：PID 收起，内核不再单独占一行 / At 861–959 with the sidebar, and at 641–679 (landscape phones, small tablets), the header cannot hold four facts and two buttons: PID folds away so 内核 no longer takes its own row */
+@media (min-width: 641px) and (max-width: 679px), (min-width: 861px) and (max-width: 959px) { .system-facts > .system-fact-pid { display: none; } }
 .system-facts b > .ui-dot { margin-right: calc(var(--s-1) - var(--s-2)); }
 /* 「已停止」整词换到下一行，不拆成一个字一行（手机上一格只有半行宽） / 已停止 moves to the next line as a whole word, never one character per line (a phone cell is half a line wide) */
 .system-facts b { flex-wrap: wrap; }
