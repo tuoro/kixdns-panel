@@ -31,6 +31,17 @@ export function useNarrowDesktop(): Ref<boolean> {
   return narrow
 }
 
+// 保存条一行放不下「校验通过 · 可以保存」的宽度（手机，和侧栏版最窄的 861–909），只写「校验通过」，「保存并应用」不被挤出屏幕；641–860 的保存条状态独占一行，放得下
+// Widths where the one-row save bar cannot fit 校验通过 · 可以保存 (phones, and the narrowest sidebar band 861–909): it says just 校验通过, so 保存并应用 stays on screen; at 641–860 the status has its own row and fits
+export function useTightSaveBar(): Ref<boolean> {
+  const query = window.matchMedia('(max-width: 640px), (min-width: 861px) and (max-width: 909px)')
+  const tight = ref(query.matches)
+  const update = (): void => { tight.value = query.matches }
+  query.addEventListener('change', update)
+  onBeforeUnmount(() => query.removeEventListener('change', update))
+  return tight
+}
+
 // 宽屏（≥1360）：列表要留够六列（名字至少 150）加 27rem 的面板，再窄就回到整页编辑 / Wide screens (≥1360): the list needs its six columns (a name of at least 150) beside a 27rem inspector; narrower goes back to the full-page editor
 export function useWide(): Ref<boolean> {
   const query = window.matchMedia('(min-width: 1360px)')

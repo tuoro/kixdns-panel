@@ -173,7 +173,7 @@ function runImport(): void {
               </form>
             </template>
             <template v-else>
-              <button class="rw__d" type="button" @click="edit(r)">{{ r.domain }}<span v-if="changedMappingIds.has(r.id)" class="ui-dot ui-dot--ink rrow__changed" role="img" aria-label="改过，还没保存" title="改过，还没保存"></span></button>
+              <button class="rw__d" type="button" @click="edit(r)"><span class="rw__dt">{{ r.domain }}</span><span v-if="changedMappingIds.has(r.id)" class="ui-dot ui-dot--ink rrow__changed" role="img" aria-label="改过，还没保存" title="改过，还没保存"></span></button>
               <!-- TTL 是回答的一部分，跟在回答后面；类型列只放类型 / The TTL belongs to the answer and follows it; the type column holds only the type -->
               <span class="rw__t">{{ r.target }}<span v-if="r.ttl !== null" class="rw__ttlnote">TTL {{ r.ttl }} 秒</span></span>
               <!-- 内核不支持 CNAME 时，提示条数到的那几处（启用的）标成警示色，停用的不算、照旧 / With CNAME unsupported, the rows the notice counts (enabled ones) take the warning colour; disabled ones do not count and stay plain -->

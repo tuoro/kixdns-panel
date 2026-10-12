@@ -141,6 +141,9 @@ a.ui-btn { text-decoration: none; }
 .ui-tabs { position: relative; display: flex; gap: var(--s-6); border-bottom: 1px solid var(--l-hair); }
 .ui-tabs__tab { position: relative; padding: 0 0 var(--s-3); border: 0; background: transparent; color: var(--l-ink-2); font-size: var(--t-3); font-weight: var(--w-medium); white-space: nowrap; cursor: pointer; transition: color var(--m-quick) var(--ease-out); }
 .ui-tabs__tab[aria-selected="true"] { color: var(--l-ink); }
+/* 焦点框和按钮的一样是圆角；手机上页签条横向滚动会裁掉外面的框，框画在页签里面 / The focus ring is rounded like a button's; on phones the scrolling tab strip clips an outer ring, so it is drawn inside the tab */
+.ui-tabs__tab:focus-visible { border-radius: var(--r-1); }
+@media (max-width: 640px) { .ui-tabs__tab:focus-visible { outline-offset: -3px; border-radius: var(--r-2); } }
 .ui-tabs__ind { position: absolute; bottom: -1px; left: 0; width: 0; height: 0; border-top: 2px solid var(--l-ink); pointer-events: none; transition: transform var(--m-base) var(--ease-out), width var(--m-base) var(--ease-out); }
 .ui-seg { position: relative; display: inline-flex; padding: 2px; border-radius: var(--r-2); background: var(--l-sunk); }
 /* 常规分段是 36 高的控件，字用控件角色的 14；13 只给小号（规范第 1 节、5.1，审计第三轮 S4）
@@ -736,7 +739,8 @@ a.ui-btn { text-decoration: none; }
    v2 第一轮审查后的组件修正 / Kit corrections after review round 1
    ============================================================================ */
 /* 不可撤销的确认：红底白字，只用在确认框里 / Irreversible confirmations: solid red, used only inside confirm dialogs */
-.ui-btn--critical { color: var(--d-ink); background: var(--err-l); }
+/* 字色和主按钮一样跟着主题走：深色里红底变浅，白字只有 2.6:1，换深字 / Text follows the theme like the primary button: in dark the red turns light and white text drops to 2.6:1, so the text goes dark */
+.ui-btn--critical { color: var(--accent-ink); background: var(--err-l); }
 @media (hover: hover) { .ui-btn--critical:hover:not(:disabled) { background: var(--err-l-deep); } }
 /* 任务行的图标位和通知里同一个形状：30 的圆角方块 / The task icon slot takes the notifications' shape: a 30px rounded square */
 .ui-task__icon { border-radius: var(--r-2); }
@@ -950,6 +954,12 @@ button.ui-link { position: relative; min-height: 0; padding: 0; border: 0; backg
 @media (max-width: 640px) {
   .ui-ph__meta > .ui-facts { display: none; }
   .ui-ph__phone { display: inline-flex; }
+}
+/* 页头读完之前的占位：手机上一行；宽屏和读完的「标签 / 值」一样高（两行、中间 2px、上边 4px），数据到了下面的内容不往下跳
+   The header placeholder before the read: one line on phones; on wide screens as tall as the loaded label / value pairs (two lines, 2px between, 4px above), so nothing below jumps when the data lands */
+.ui-ph__sk { height: calc(var(--t-2) * var(--lh-base)); }
+@media (min-width: 641px) {
+  .ui-ph__sk { height: calc(2 * var(--t-2) * var(--lh-base) + 2px); margin-top: var(--s-1); }
 }
 
 /* 页面标题和分组标题能接住焦点（焦点兜底落在这里）：框贴着标题的字、圆角和别的焦点框一样，不拉成一整行像个空输入框

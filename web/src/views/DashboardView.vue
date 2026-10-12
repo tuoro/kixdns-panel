@@ -688,7 +688,7 @@ onBeforeUnmount(() => {
         </div>
         <!-- 手机上一行说完：状态、已运行、配置版本，和配置页的页头一样 / On phones one line says it all: state, uptime, config version, as on the config page -->
         <span v-if="service || displayOverview" class="ui-ph__lead ui-ph__phone"><span class="ui-dot" :class="{ 'ui-dot--warn': headTone === 'warn', 'ui-dot--err': headTone === 'err', 'ui-dot--off': headTone === 'off' }" aria-hidden="true"></span><UiDotText :parts="[headLabel, ...(metaTail === 'live' && overview && !panelDown ? [`已运行 ${formatDuration(overview.health.uptime_seconds)}`] : metaTail === 'snapshot' ? [`快照 ${snapshotLabel}`] : []), ...(runningVersion !== null ? [`版本 #${runningVersion}`] : [])]" /></span>
-        <span v-else-if="loading" class="sk overview-skeleton-meta" role="status" aria-label="读取服务状态"></span>
+        <span v-else-if="loading" class="sk ui-ph__sk overview-skeleton-meta" role="status" aria-label="读取服务状态"></span>
         <span v-else-if="panelDown" class="ui-ph__lead"><span class="ui-dot ui-dot--off" aria-hidden="true"></span>状态未知</span>
         <span v-else>服务状态暂不可用</span>
       </template>
@@ -938,7 +938,7 @@ onBeforeUnmount(() => {
 /* 骨架块的高度是结果实测的（1440：查询量卡、柱图卡、上游卡、分布卡；375 见文件末尾），只在这里写一次 / Skeleton block heights are measured from the result (1440: volume, bars, upstreams, distribution; 375 at the end of this file), written once here */
 .overview-page { --ov-sk-stat: 233px; --ov-sk-bars: 235px; --ov-sk-list: 265px; --ov-sk-list-2: 203px; }
 .overview-page > * { min-width: 0; }
-.overview-skeleton-meta { width: 16rem; height: calc(var(--t-2) * var(--lh-base)); }
+.overview-skeleton-meta { width: 16rem; }
 .overview-tabs { margin-bottom: 0; }
 .overview-view { display: grid; gap: var(--ov-gap); outline-offset: var(--s-1); }
 /* 鼠标点进面板不画框，键盘进来照常显示焦点 / No ring when a panel is clicked; keyboard focus still shows */
@@ -963,8 +963,9 @@ onBeforeUnmount(() => {
 .overview-col--side { grid-template-rows: minmax(0, 1fr) auto; }
 .overview-col--side > .overview-card--upstreams { display: flex; flex-direction: column; }
 .overview-col--side > .overview-card--upstreams > .overview-rows { flex: 1 1 auto; align-content: space-evenly; }
-/* 没运行过时卡里只有一句「尚无数据」，撑高只会撑出空白：两栏各按内容高，底边不强求齐平 / Never run, each card holds one line of 尚无数据 and stretching would only stretch blank: both columns take their content height and the bottoms are not forced level */
+/* 没运行过时卡里只有一句「尚无数据」：左栏按内容高；右栏两张卡平分富余、一样高，底边和左栏齐平，不在右下留一块空（两栏并排时，1160 起） / Never run, each card holds one line of 尚无数据: the left column takes its content height; the right column's two cards share the slack equally, so they match in height and end level with the left, leaving no hole at the bottom right (only while the two columns stand side by side, from 1160) */
 .overview-grid.is-empty .overview-col { grid-template-rows: none; align-content: start; }
+@media (min-width: 1160px) { .overview-grid.is-empty > .overview-col--side { grid-template-rows: auto auto; align-content: stretch; } }
 .overview-trio { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--ov-gap); }
 .overview-trio > :only-child { grid-column: 1 / -1; }
 

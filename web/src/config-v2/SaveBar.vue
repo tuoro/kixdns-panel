@@ -7,7 +7,7 @@ import { useBarHeight } from '../composables/useBarHeight'
 import { useToast } from '../composables/useToast'
 import DraftReviewDialog from './DraftReviewDialog.vue'
 import RuleText from './RuleText.vue'
-import { usePhone } from './phone'
+import { usePhone, useTightSaveBar } from './phone'
 import { changeCount, dialogEdits, discardWithUndo, editorEdited, model } from './store'
 import { blockedFields, busy, saveInFlight, sayBlocked, conflict, deferNote, deferSave, editTouched, elapsed, note, origin, save, saveMessage, stage, validate, validation, verdict } from './useConfigDocument'
 
@@ -23,6 +23,7 @@ const emit = defineEmits<{ rule: [id: number]; group: [id: string]; reveal: [lin
 const toast = useToast()
 // 手机上主按钮只写「保存」，给「已修改 N 处」留出一行 / On a phone the main button just says 保存, leaving room for 已修改 N 处
 const phone = usePhone()
+const tight = useTightSaveBar()
 
 // 页头发起的「现在应用」不进保存条 / An apply started from the header never shows in the bar
 const draftStage = computed(() => (origin.value === 'draft' ? stage.value : 'idle'))
@@ -123,7 +124,7 @@ function discard(): void {
         <template v-else-if="jsonError"><span class="ui-savebar__verdict">JSON 写错了</span><small><button class="ui-objlink ui-objlink--plain" type="button" @click="emit('reveal', jsonError.line, jsonError.column)">第 {{ jsonError.line }} 行第 {{ jsonError.column }} 列</button> · {{ jsonError.reason }}</small></template>
         <!-- 有内核不支持的设置：保存不了，说是哪几项 / Settings the kernel does not support: saving cannot happen, and the bar names them -->
         <template v-else-if="blockedFields.length"><span class="ui-savebar__verdict">保存不了</span><small>有 {{ blockedFields.length }} 项内核不支持，见页面上方</small></template>
-        <template v-else-if="validated"><span class="ui-dot" aria-hidden="true"></span><span class="ui-savebar__detail"><UiDotText :parts="phone ? ['校验通过'] : ['校验通过', '可以保存']" /></span></template>
+        <template v-else-if="validated"><span class="ui-dot" aria-hidden="true"></span><span class="ui-savebar__detail"><UiDotText :parts="tight ? ['校验通过'] : ['校验通过', '可以保存']" /></span></template>
         <template v-else-if="changeCount === 0"><span class="ui-dot ui-dot--ink" aria-hidden="true"></span><span class="ui-savebar__detail">{{ jsonDirty ? 'JSON 有修改' : '右侧规则的修改还没放进草稿' }}<small v-if="deferSave"> · {{ deferNote }}</small></span></template>
         <template v-else><span class="ui-dot ui-dot--ink" aria-hidden="true"></span><span class="ui-savebar__detail"><button class="ui-objlink savebar__review" type="button" aria-haspopup="dialog" title="看看改了哪些" @click="review">已修改 <b class="ui-savebar__count"><UiNumber :value="String(changeCount)" /></b> 处</button><small v-if="deferSave"> · {{ deferNote }}</small></span></template>
       </p>

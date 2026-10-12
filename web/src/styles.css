@@ -51,7 +51,8 @@ h1, h2, h3, p { margin: 0; }
 code, .mono { font-family: var(--f-mono); letter-spacing: 0; }
 
 .app-shell { min-height: 100dvh; background: var(--canvas); }
-.skip-link { position: fixed; top: 8px; left: 16px; z-index: 100; padding: 10px 16px; color: var(--d-ink); background: var(--ink); transform: translateY(-180%); }
+/* 底和字都跟主题翻：深色里底变浅，字跟着变深 / Ground and text both flip with the theme: in dark the ground turns light and the text dark */
+.skip-link { position: fixed; top: 8px; left: 16px; z-index: 100; padding: 10px 16px; color: var(--l-canvas); background: var(--l-ink); transform: translateY(-180%); }
 .skip-link:focus { transform: none; }
 .app-header { position: sticky; top: 0; z-index: 40; min-height: var(--app-header-height); display: grid; grid-template-columns: minmax(140px, 1fr) auto minmax(140px, 1fr); align-items: center; padding-inline: 28px; color: var(--d-ink); background: var(--ink); border-bottom: 1px solid var(--l-ink); }
 .app-brand { width: max-content; min-height: 44px; display: inline-flex; align-items: center; gap: 10px; text-decoration: none; }
@@ -451,7 +452,7 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
    only lays them out. */
 .system-page { display: grid; gap: var(--s-5); align-content: start; }
 .system-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-4); align-items: stretch; }
-.system-skeleton-meta { display: inline-block; width: min(260px, 100%); height: var(--s-4); }
+.system-skeleton-meta { width: min(260px, 100%); }
 .system-skeleton-rows { display: grid; gap: var(--s-2); padding-bottom: var(--s-2); }
 .system-skeleton-rows .sk { height: var(--s-7); }
 .system-skeleton-panel { height: calc(var(--s-8) * 2); }
@@ -535,6 +536,10 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
    A toast running to several lines: the icon and × line up with the first line (as notices do) instead of floating mid-block; Chinese wraps by words */
 .toast { align-items: start; padding-block: 13px; }
 .toast > span { word-break: keep-all; }
+/* 短的界面文字也按词换行，和提示条、提示一样：确认框正文、空状态、字段提示、规则摘要、登录说明不把「新建规则」「影响」这样的词拆到两行；长段的帮助说明不在内
+   Short UI prose wraps by words too, as notices and toasts do: confirm bodies, empty states, field hints, the rule summary and the sign-in note never split words
+   such as 新建规则 or 影响 across lines; long help paragraphs are left out */
+:is(.confirm__dialog > p, .confirm__items, .ui-empty__desc, .rcard__empty, .rgroups__none, .overview-empty, .overview-config-empty, .hist__empty, .settings-empty, .notification-empty, .ups__empty, .cform__empty, .cform__help, .pfield__hint, .tester__hint, .qadd__hint, .rw__hint, .credential-hint, .reading__lead, .reading__more, .auth-security) { word-break: keep-all; overflow-wrap: anywhere; }
 .toast > svg { margin-top: calc((1lh - 18px) / 2); }
 .toast > .icon-button { margin-block: calc((1lh - 32px) / 2); }
 .toast > .toast-undo { margin-block: calc((1lh - 26px) / 2); }
@@ -721,10 +726,9 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
 .account-popover > button { position: relative; min-height: var(--h-md); margin-top: var(--s-4); padding: 0 var(--s-2); border-top: 0; border-radius: var(--r-2); }
 .account-popover > button::before { position: absolute; top: calc(var(--s-2) * -1); right: calc(var(--s-2) * -1); left: calc(var(--s-2) * -1); height: calc(var(--s-1) / 4); background: var(--l-hair); content: ''; }
 .account-popover > button:hover:not(:disabled) { background: var(--l-sunk); }
-/* 手机上账户菜单和「…」的底部菜单一样一行 44，帮助里的概念一行也到 44 / On phones the account menu rows are 44 like the ⋯ bottom sheet, and the help drawer's concept rows too */
+/* 手机上账户菜单和「…」的底部菜单一样一行 44（帮助里的概念行在帮助抽屉的样式后面写，不然被基础的 36 盖掉） / On phones the account menu rows are 44 like the ⋯ bottom sheet (the help drawer's concept rows are set after the drawer's own rules, or its base 36 wins) */
 @media (max-width: 640px) {
   .account-popover > button { min-height: var(--h-touch); }
-  .help__topic summary { min-height: var(--h-touch); }
 }
 /* 登录卡片的品牌和顶栏一样：不套黑底方块 / The sign-in brand matches the header: no black tile behind the mark */
 .auth-brand span { width: auto; height: auto; color: var(--l-ink); background: none; border-radius: 0; }
@@ -1048,6 +1052,8 @@ body:has(.editor:not(.editor--inspector)) .toast-stack { bottom: calc(var(--edit
 .help__topic summary::before { flex: 0 0 auto; width: calc(var(--s-3) / 2); height: calc(var(--s-3) / 2); margin-inline: 2px var(--s-1); border-right: 1.5px solid var(--l-ink-3); border-bottom: 1.5px solid var(--l-ink-3); transform: rotate(-45deg); transition: transform var(--m-quick) var(--ease-out); content: ''; }
 .help__topic[open] summary::before { transform: rotate(45deg); }
 .help__topic p { margin: 0 0 var(--s-2); padding-left: calc(var(--s-3) + 8px); color: var(--l-ink-2); font-size: var(--t-2); line-height: var(--lh-base); }
+/* 手机上概念一行 44，和「…」的底部菜单一样 / On phones a concept row is 44, like the ⋯ bottom sheet */
+@media (max-width: 640px) { .help__topic summary { min-height: var(--h-touch); } }
 .help__keys h4 { margin: 0 0 var(--s-2); color: var(--l-ink-2); font-size: var(--t-2); font-weight: var(--w-medium); }
 /* 分组之间比组内多留一档：组头靠近它下面的键，不靠近上一组 / More room between groups than inside one, so a group head sits with its keys, not the group above */
 .help__keys + .help__keys { margin-top: var(--s-3); }

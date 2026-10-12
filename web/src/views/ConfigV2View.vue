@@ -427,7 +427,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
   <div v-else class="page cfg">
     <UiPageHeader :title="pageTitle">
       <template #meta>
-        <span v-if="!ready && !loadError" class="cfg__status-sk"><i class="sk"></i></span>
+        <span v-if="!ready && !loadError" class="sk ui-ph__sk cfg__status-sk"></span>
         <!-- 宽屏：标题下一排事实（状态、配置版本、规则数、上游组数）；手机：一行状态 / Wide: a facts row under the title (state, config version, rule count, upstream groups); phones: one status line -->
         <!-- 没读到配置时宽屏也是这一排，只写状态；版本、规则数、上游组数等读到再写 / Without a config read the wide header keeps this row with the state only; version, rule and group counts wait for the read -->
         <span v-else-if="!phone && !firstRun" class="ui-facts cfg__facts" :class="{ 'cfg__facts--long': (headerLine.wide?.length ?? 0) > 1 }" :role="applyBusy ? 'status' : undefined">

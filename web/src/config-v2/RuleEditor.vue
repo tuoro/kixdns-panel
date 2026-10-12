@@ -289,7 +289,9 @@ const reading = computed(() => {
 // 新规则还没条件时，占位别写「所有请求」——那像个填好的名字；写清楚这格是名字、可以不填 / A new rule without conditions does not show 「所有请求」 as its placeholder (it reads like a filled-in name); say what the field is and that it is optional
 const namePlaceholder = computed(() => (!original && !draft.conditions.some((g) => g.length) ? '规则名称，可以不填' : ruleTitle({ ...draft, name: '' } as Rule)))
 // 没有条件时不说「所有请求时，…」，说「所有请求都…」 / Without conditions it reads 「所有请求都…」, not 「所有请求时，…」
-const readingLead = computed(() => (!draft.raw && !draft.conditions.some((g) => g.length) ? `所有请求都${reading.value[1]?.v ?? ''}` : `${withShi(reading.value[0]?.v ?? '')}，${reading.value[1]?.v ?? ''}`))
+// 组名的后引号和「解析」连着写，折行时「解析」不单独落到下一行 / The group name's closing quote is glued to 解析, so a wrap never leaves 解析 alone on the next line
+const glueTail = (text: string): string => text.replace(/」解析$/, '」\u2060解析')
+const readingLead = computed(() => (!draft.raw && !draft.conditions.some((g) => g.length) ? `所有请求都${glueTail(reading.value[1]?.v ?? '')}` : `${withShi(reading.value[0]?.v ?? '')}，${glueTail(reading.value[1]?.v ?? '')}`))
 const readingMore = computed(() => reading.value.slice(2).map((row) => `${row.k}：${row.v}`))
 
 const kernelJson = computed(() => JSON.stringify(kernelPreview(model, draft), null, 2))

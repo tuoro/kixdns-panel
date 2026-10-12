@@ -525,7 +525,7 @@ onBeforeUnmount(() => {
           <div v-if="kernel"><span class="ui-lbl">内核</span><b>{{ installed ? formatKixdnsVersion(activeVersion) : '还没安装' }}</b></div>
         </div>
         <span v-if="service || kernel || panelVersion" class="ui-ph__lead ui-ph__phone"><span v-if="service" class="ui-dot" :class="{ 'ui-dot--off': !running || panelDown }" aria-hidden="true"></span><UiDotText :parts="[...(service ? [panelDown ? '状态未知' : running ? '运行中' : '已停止'] : []), ...(panelVersion ? [`面板 ${panelVersion}`] : []), ...(kernel ? [installed ? formatKixdnsVersion(activeVersion).replace(' ', '\u00a0') : '内核还没安装'] : [])]" /></span>
-        <span v-else-if="loadingService" class="sk system-skeleton-meta" role="status" aria-label="读取服务状态"></span>
+        <span v-else-if="loadingService" class="sk ui-ph__sk system-skeleton-meta" role="status" aria-label="读取服务状态"></span>
         <span v-else>服务状态暂不可用</span>
       </template>
       <template v-if="service" #actions>
