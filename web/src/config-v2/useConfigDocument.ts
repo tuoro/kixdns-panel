@@ -1,9 +1,9 @@
 import { computed, ref, watch } from 'vue'
-import { ApiError, apiRequest, isPanelDown, jsonBody } from '../api/client'
+import { ApiError, CONFIG_WRITTEN_EVENT, apiRequest, isPanelDown, jsonBody } from '../api/client'
 import type { ConfigApplyResult, ConfigDocument, ConfigRuntimeApplyState, ConfigVersion, ConfigVersionDetail, ConfigVersions, DeleteConfigVersionResult, DeleteConfigVersionsResult, Overview, ServiceStatus, ValidationResult } from '../api/types'
 import { SETTING_SECTIONS, settingNeedsCapability, settingSupported } from '../config-editor/schema'
 import { exportConfig, readConfig } from '../config-model/document'
-import { mappingIsIp, type Model } from '../config-model/model'
+import type { Model } from '../config-model/model'
 import { traceNames } from '../config-model/trace-names'
 import { useConnection } from '../composables/useConnection'
 import { dismissUndoable, toastMark, useToast } from '../composables/useToast'
@@ -45,11 +45,26 @@ export const unsupportedFields = computed(() => SETTING_SECTIONS.flatMap((s) => 
   .map((f) => f.label))
 // 内核报了自己支持什么、草稿里却开着它没有的功能：服务端不收这份配置（开着也不起作用），所以先不让保存
 // The kernel reported what it supports and the draft switches on a feature it lacks: the server refuses the config (the switch would do nothing), so saving waits
-// 草稿里用到了 CNAME 回答：域名映射的回答写的是域名，或规则的自定义回答是 CNAME / The draft uses a CNAME answer: a mapping answers with a domain, or a rule's custom answer is a CNAME
-// 和写出配置时同一个判断：不全是 IP 的回答写成 CNAME（以前按字符猜，cafe.de 这种只由 a–f 组成的域名被当成 IP，警告就漏了）
-// The same test the export uses: an answer that is not all IPs is written as CNAME (it used to guess by characters, so a domain made of a–f letters such as cafe.de passed as an IP and the warning was missed)
-export const cnameInUse = computed(() => model.mappings.some((m) => m.enabled && !mappingIsIp(m))
-  || [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].some((r) => r.outcome.type === 'answer' && r.outcome.kind === 'cname'))
+// 写出去的配置里有几条规则用到某种动作：和服务端 config_uses_action 同一个判断（后台刷新规则和每条规则的动作，含回答后检查的两组）。
+// 按写出的配置数，停用的规则（不写出）不算，回答后检查、高级规则、域名映射里的都算
+// How many rules in the exported config use an action type: the same test as the server's config_uses_action (the background refresh rule and every
+// rule's actions, both post-reply groups included). Counted on the export, so disabled rules (not written) do not count, while post-reply checks,
+// advanced rules and mappings do
+const ACTION_FIELDS = ['actions', 'response_actions_on_match', 'response_actions_on_miss']
+const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+const ruleUsesAction = (rule: unknown, type: string) => isRecord(rule) && ACTION_FIELDS.some((field) => {
+  const actions = rule[field]
+  return Array.isArray(actions) && actions.some((action) => isRecord(action) && action.type === type)
+})
+export function rulesUsingAction(content: Record<string, unknown>, type: string): number {
+  const pipelines = Array.isArray(content.pipelines) ? content.pipelines : []
+  const rules = pipelines.flatMap((pipeline) => (isRecord(pipeline) && Array.isArray(pipeline.rules) ? pipeline.rules : []))
+  return [content.background_refresh_rule, ...rules].filter((rule) => ruleUsesAction(rule, type)).length
+}
+// 草稿里有几处 CNAME 回答（域名映射写成域名、规则或回答后检查的自定义回答是 CNAME）；只在内核不支持时才会读到它，那时才导出一次
+// How many CNAME answers the draft has (a mapping answering with a domain, a rule's or post-reply check's custom answer); read only when the kernel lacks support, so only then is it exported
+export const cnameAnswers = computed(() => rulesUsingAction(exportConfig(model) as Record<string, unknown>, 'static_cname_response'))
+export const cnameInUse = computed(() => cnameAnswers.value > 0)
 export const blockedFields = computed(() => (!runtimeStopped.value && !runtimeUnavailable.value && !capabilityError.value
   ? [...unsupportedFields.value, ...(!canCname.value && cnameInUse.value ? ['CNAME 回答'] : [])]
   : []))
@@ -267,6 +282,8 @@ export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: str
     validation.value = null
     loadError.value = ''
     loadFailedDown = false
+    // 重新读取成功：「重试没有成功：…先重新读取」那条提示说的事已经办了 / Re-read done: the 「重试没有成功：…先重新读取」 toast's advice has been taken
+    if (!options.quiet && retryToast !== null) { useToast().dismiss(retryToast); retryToast = null }
   })().catch((error: unknown) => { loadError.value = errorMessage(error); loadFailedDown = isPanelDown(error) }).finally(() => { loading.value = false; pendingLoad = null })
   return pendingLoad
 }
@@ -314,14 +331,34 @@ function applyResultState(result: ConfigApplyResult): 'applied' | 'pending' {
 let viewing = false
 let keepOnReturn = false
 let inFlight: string | null = null
+// 离开以后报保存结果的那条失败提示：回到配置页时保存条接着说，它就收起 / The failure toast raised after leaving: it goes when the config page reopens and the save bar takes over
+let awayToast: number | null = null
 // 回应丢了的那次保存（写进去没有不知道）：连上以后、或者下一次保存撞上「别处改过了」时，拿面板上的配置和它比一比
 // The save whose answer was lost (written or not, unknown): once reconnected, or when the next save meets 别处改过了, compare the panel's config with it
-let unanswered: { content: unknown; sent: string; generation: number } | null = null
+let unanswered: { content: unknown; sent: string; generation: number; sentAt: number } | null = null
+const announceWritten = () => { if (typeof window !== 'undefined') window.dispatchEvent(new Event(CONFIG_WRITTEN_EVENT)) }
+// 草稿只留在内存里时，刷新或关掉浏览器先问一句（配置页开着时由它自己问） / While a draft lives only in memory, reloading or closing the browser asks first (the config page asks itself while open)
+const guardKeptDraft = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
+function keepDraftForReturn(): void {
+  if (!keepOnReturn && typeof window !== 'undefined') window.addEventListener('beforeunload', guardKeptDraft)
+  keepOnReturn = true
+}
+function dropKeptDraft(): void {
+  keepOnReturn = false
+  if (typeof window !== 'undefined') window.removeEventListener('beforeunload', guardKeptDraft)
+}
+function dismissAwayToast(): void {
+  if (awayToast !== null) useToast().dismiss(awayToast)
+  awayToast = null
+}
 /** 配置页打开（true）或离开（false）；打开时返回要不要留着草稿 / The config page opened (true) or left (false); on open, returns whether to keep the draft */
 export function setViewing(open: boolean): boolean {
   viewing = open
   const keep = open && keepOnReturn
-  if (open) keepOnReturn = false
+  if (open) {
+    dropKeptDraft()
+    dismissAwayToast()
+  }
   return keep
 }
 /** 草稿里没保存的就是正在保存的那一份：离开不用问 / Everything unsaved is the draft being saved right now: leaving need not ask */
@@ -380,6 +417,7 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     if (from === 'apply' && applyResultState(result) === 'applied') useToast().success(`版本 #${result.version_id} 已生效`)
     // 保存途中离开了配置页：没有保存条报结果，用提示说 / Left the config page mid-save: no save bar reports it, so a toast does
     else if (!viewing) useToast().success(applyResultState(result) === 'pending' ? pendingText : `版本 #${result.version_id} 已生效`)
+    announceWritten()
   } catch (error) {
     // 会话过期：页面会回到登录页，这里不挂「没通过校验」 / Session expired: the page goes back to the login page; no 没有通过校验 here
     if (error instanceof ApiError && error.status === 401) { finishStage('idle'); return }
@@ -392,7 +430,7 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     const reason = friendlyRuntimeError(error)
     const stopped = stoppedError(error)
     const down = isPanelDown(error)
-    if (down && step === 'applying') unanswered = { content, sent, generation: draftGeneration() }
+    if (down && step === 'applying') unanswered = { content, sent, generation: draftGeneration(), sentAt }
     // 写进文件以后 KixDNS 没接受：版本已经存下了，只是没生效 / KixDNS refused after the write: the version is stored, it just did not take
     const writtenNotApplied = step === 'applying' && error instanceof ApiError && ['reload_failed', 'kixdns_rejected'].includes(error.code)
     // 写进去了（只是没生效）：和保存落地一样，草稿定下来之前的「撤销」过时了 / Written (just not applied): as when a save lands, undos from before the draft was fixed are stale
@@ -410,11 +448,19 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     if (from === 'apply' && !hasApplyFailure.value) applyError.value = stopped ? 'KixDNS 已停止\n启动后自动应用待应用的版本' : `${step === 'validating' ? '磁盘上的配置没有通过校验' : '没有应用成功'}\n${reason}`
     // 已经挂着「没有生效」时按的「重试应用」：提示条的话和刚才一样，所以另说一句这次重试的结果，不让它悄无声息
     // 重试应用 pressed while 没有生效 already shows: the notice reads as before, so this retry's outcome is said separately instead of passing silently
-    else if (from === 'apply') useToast().error(writtenNotApplied ? `重试也没有生效：${failureCause(reason)}` : step === 'validating' ? `重试没有通过校验：${reason}` : conflict.value ? '重试没有成功：这份配置在别处改过了，先重新读取' : `重试没有成功：${reason}`)
+    else if (from === 'apply') retryToast = useToast().error(writtenNotApplied ? `重试也没有生效：${failureCause(reason)}` : step === 'validating' ? `重试没有通过校验：${reason}` : conflict.value ? '重试没有成功：这份配置在别处改过了，先重新读取' : `重试没有成功：${reason}`)
     else if (!viewing) {
-      keepOnReturn = true
-      const why = conflict.value ? '这份配置在别处改过了' : stopped ? 'KixDNS 已停止' : down ? '连不上面板' : sentence(writtenNotApplied ? failureCause(reason) : reason)
-      useToast().error(writtenNotApplied ? `配置保存了，没有生效：${why}。回到配置页可以重试应用` : `配置${step === 'validating' ? '没有通过校验' : '没有保存成功'}：${why}。草稿留在配置页`)
+      // 动词跟着实际发生了什么走（和保存条的判定一样），不跟着停在哪一步；内核的原话放最后
+      // The verb follows what actually happened (as the save bar's verdict does), not the step it stopped at; the kernel's own words go last
+      if (!writtenNotApplied) keepDraftForReturn()
+      dismissAwayToast()
+      const kept = '草稿留在配\u2060置\u2060页'
+      awayToast = useToast().error(writtenNotApplied ? `${pendingVersionId.value ? `版本 #${pendingVersionId.value}` : '配置'}保存了，没有生效：${sentence(failureCause(reason))}。回到配\u2060置\u2060页可以重试应用`
+        : conflict.value ? `没有保存成功：这份配置在别处改\u2060过\u2060了。${kept}`
+          : stopped ? `配置没有保存：KixDNS 已停止。${kept}，可以先存成待应用版本`
+            : down && step === 'applying' ? '不知道配置存上没有：连不上面板。连上后会自己核对，草稿还在'
+              : down ? `配置没有保存：连不上面板。${kept}，连上后再保存`
+                : `配置${step === 'validating' ? '没有通过校验' : '没有保存成功'}，${kept}。${reason}`)
     }
   } finally {
     inFlight = null
@@ -445,16 +491,32 @@ async function settleUnanswered(announce: boolean): Promise<boolean> {
   const current = await apiRequest<ConfigDocument>('/api/v1/config').catch(() => null)
   if (!current) return false
   unanswered = null
-  if (canonical(current.content) !== canonical(lost.content)) return false
+  if (canonical(current.content) !== canonical(lost.content)) {
+    // 不在配置页时，「不知道存上没有」那条提示换成核对的结果 / Away from the config page, the 不知道存上没有 toast is replaced by the result
+    if (!viewing && awayToast !== null) { dismissAwayToast(); awayToast = useToast().error('刚才那次保存没有存上，草稿留在配\u2060置\u2060页，回去再保存') }
+    return false
+  }
   rebaseApplied(JSON.parse(lost.sent) as Model)
   validation.value = null
+  // 和保存落地一样：发出去之前的「撤销」过时了 / As when a save lands: undos raised before it was sent are stale
+  dismissUndoable(lost.sentAt)
   await load({ quiet: true, keepDraft: true, sent: lost.sent })
+  announceWritten()
+  const version = current.version_id ? `版本 #${current.version_id}` : ''
   if (announce) {
     const later = changeCount.value ? ` · 之后改的 ${changeCount.value} 处还没保存` : ''
-    finishStage('done', `${current.version_id ? `已经保存过了 · 版本 #${current.version_id}` : '已经保存过了'}${later}`)
+    finishStage('done', `${version ? `已经保存过了 · ${version}` : '已经保存过了'}${later}`)
+  }
+  if (!viewing) {
+    dismissAwayToast()
+    useToast().success(version ? `刚才那次保存已经存上了：${version}` : '刚才那次保存已经存上了')
+    // 草稿里没有别的修改了：不用再留着、也不用拦着刷新 / Nothing else is unsaved in the draft: no need to keep it or to guard reloads
+    if (!unsaved.value) dropKeptDraft()
   }
   return true
 }
+// 「重试应用」撞上冲突时的提示：重新读取以后它说的就过时了 / The toast from a 重试应用 that met a conflict: stale once the config is re-read
+let retryToast: number | null = null
 /**
  * 重新连上面板以后：「连不上面板」那句已经不对了，收起；没读到配置的整页重读；有没保存的修改时只刷新运行状态（草稿和文件散列不动，
  * 别处的改动照样在保存时发现），没有就整份重读
@@ -463,6 +525,10 @@ async function settleUnanswered(announce: boolean): Promise<boolean> {
  */
 export async function panelBack(): Promise<void> {
   if (stage.value === 'failed' && verdict.value === '连不上面板') finishStage('idle')
+  // 不在配置页时也做：离开期间连上的，回来时保存条不再说「连不上面板」，回应丢了的那次保存照样核对；配置页从没打开过就什么都不读
+  // Done away from the config page too: after a reconnect while away the save bar no longer says 连不上面板 on return, and a lost save is still checked;
+  // nothing is read when the config page was never opened
+  if (!viewing && !doc.value) return
   if (busy.value) return
   if (!doc.value) { await load(); return }
   if (await settleUnanswered(true)) return
@@ -472,6 +538,8 @@ export async function panelBack(): Promise<void> {
     if (refreshed && loadFailedDown) { loadError.value = ''; loadFailedDown = false }
   } else await load({ quiet: true })
 }
+// 连上面板后自己接着做（配置页开着没有都一样），不等人点重试 / Once the panel answers again, carry on by itself (whether or not the config page is open) instead of waiting for 重试
+watch(panelDown, (now, before) => { if (before && !now) void panelBack() })
 /** 待应用的版本什么时候自动应用：说出等的是什么 / When a pending version applies by itself: name what it waits for */
 export function pendingWhen(): string {
   if (runtimeStopped.value) return 'KixDNS 启动后'

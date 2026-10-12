@@ -25,7 +25,7 @@ import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, busy, conflict, onlySaving, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, panelBack, save, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, unsupportedSection } from '../config-v2/useConfigDocument'
+import { applyBusy, busy, cnameAnswers, conflict, onlySaving, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, unsupportedSection } from '../config-v2/useConfigDocument'
 import { useHelp } from '../composables/useHelp'
 import { useServiceStart } from '../composables/useServiceStart'
 import { registerLeaveGuard, takeAgreement } from '../composables/useLeaveGuard'
@@ -168,7 +168,7 @@ const notice = computed<Notice | null>(() => {
     // 挡住重试的是内核不支持的设置时，这一条也说清它和出路（不支持的那条提示排在后面，这时显示不出来） / When unsupported settings block the retry, this notice names them and the way out too (the unsupported notice ranks below and cannot show)
     const blocked = !retry && unsupportedFields.value.length > 0
     const cause = failureCause(reason).replace(/。$/, '')
-    return { tone: 'err', text: pendingVersionId.value ? `版本 #${pendingVersionId.value} 没有生效，仍在用之前那份配置。` : '上次保存的版本没有生效，仍在用之前那份配置。', detail: blocked ? `${cause}。当前内核不支持：${unsupportedFields.value.join('、')}，先在基础设置里关掉。` : cause, action: reread ? '重新读取' : retry ? '重试应用' : blocked && section.value !== 'settings' ? '去基础设置' : undefined, run: reread ? () => reload() : retry ? () => save('apply') : goUnsupported }
+    return { tone: 'err', text: pendingVersionId.value ? `版本 #${pendingVersionId.value} 没有生效，仍在用之前那份配置。` : '上次保存的版本没有生效，仍在用之前那份配置。', detail: reread ? `${cause}。这份配置在别处改过了，先重新读取。` : blocked ? `${cause}。当前内核不支持：${unsupportedFields.value.join('、')}，先在基础设置里关掉。` : cause, action: reread ? '重新读取' : retry ? '重试应用' : blocked && section.value !== 'settings' ? '去基础设置' : undefined, run: reread ? () => reload() : retry ? () => save('apply') : goUnsupported }
   }
   if (applyError.value) { const [text, ...detail] = applyError.value.split('\n'); return { tone: 'err', text: `${text}。`, detail: detail.join('\n') } }
   // 警告排在说明前面：永远不命中的规则比导入说明要紧 / Warnings rank above information: a rule that never matches matters more than the import notes
@@ -181,7 +181,7 @@ const notice = computed<Notice | null>(() => {
     const them = cnamePlaces.value.total > 1 ? '它们' : '它'
     // 同时还有开着的不支持的设置：一条提示把两件事都说了，保存条说的「有 N 项」和这里对得上 / Unsupported settings switched on as well: one notice says both, so the bar's 「有 N 项」 matches it
     if (unsupportedFields.value.length) return { tone: 'warn', text: `当前内核不支持：${unsupportedFields.value.join('、')}、CNAME 回答。在基础设置里关掉${unsupportedFields.value.map((f) => `「${f}」`).join('、')}，把 ${cnamePlaces.value.total}\u00a0处写成域名的回答改成 IP，或者更新内核。`, action: section.value === 'settings' ? (cnamePlaces.value.mappings ? '去域名映射' : undefined) : '去基础设置', run: () => (section.value === 'settings' ? setTab('mapping') : goUnsupported()) }
-    return { tone: 'warn', text: `当前内核不支持 CNAME 回答：有 ${cnamePlaces.value.total}\u00a0处回答写的是域名，KixDNS 不会接受这份配置。把${them}改成 IP，或者更新内核。`, action: cnamePlaces.value.mappings && section.value !== 'mapping' ? '去域名映射' : undefined, run: () => setTab('mapping') }
+    return { tone: 'warn', text: `当前内核不支持 CNAME 回答：有\u00a0${cnamePlaces.value.total}\u00a0处回答写的是域名，KixDNS 不会接受这份配置。把${them}改成 IP，或者更新内核。`, action: cnamePlaces.value.mappings && section.value !== 'mapping' ? '去域名映射' : undefined, run: () => setTab('mapping') }
   }
   // KixDNS 不接受带着它不支持的设置的配置：说清这一点和两条出路，按钮直接去基础设置 / KixDNS refuses a config carrying settings it does not support: say so with the two ways out, the button going straight to the settings
   if (unsupportedFields.value.length) { const many = unsupportedFields.value.length > 1; return { tone: 'warn', text: `当前内核不支持：${unsupportedFields.value.join('、')}。开着也不起作用，关掉才能保存：在基础设置里点${many ? '' : '它旁边的'}「关掉」，或者更新内核。`, action: section.value === 'settings' ? undefined : '去基础设置', run: goUnsupported } }
@@ -191,12 +191,9 @@ function goUnsupported(): void {
   ui.settingsGroup = unsupportedSection.value
   setTab('settings')
 }
-// 写成域名的回答有几处：域名映射和规则（含规则组）分开数 / How many answers are domains: mappings and rules (rule groups included) counted apart
-const cnamePlaces = computed(() => {
-  const mappings = model.mappings.filter((m) => m.enabled && !mappingIsIp(m)).length
-  const rules = [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].filter((r) => r.outcome.type === 'answer' && r.outcome.kind === 'cname').length
-  return { mappings, total: mappings + rules }
-})
+// 写成域名的回答有几处：按写出的配置数（和服务端一样）；域名映射里有几处另数，决定给不给「去域名映射」
+// How many answers are domains: counted on the export (as the server does); the mappings among them are counted apart, to decide whether to offer 去域名映射
+const cnamePlaces = computed(() => ({ mappings: model.mappings.filter((m) => m.enabled && !mappingIsIp(m)).length, total: cnameAnswers.value }))
 function stripPrefix(): void {
   let n = 0
   for (const r of [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)]) for (const c of r.conditions.flat()) if (c.field === 'geosite') c.values = c.values.map((v) => { if (/^geosite:/i.test(v)) { n++; return v.replace(/^geosite:/i, '') } return v })
@@ -349,6 +346,8 @@ const askLeave = async (): Promise<boolean> => {
   // 正在保存、之后没再改：保存照常做完，结果会用提示说，不问「放弃」（问了也放弃不了） / Saving with nothing changed since: the save finishes and a toast tells its outcome, so no 放弃 question (it could not discard anyway)
   if (!unsaved.value || onlySaving()) return true
   if (!dirty.value && !jsonDirty.value) return confirm.ask({ title: `放弃${editorEdited.value ? '这条规则' : [...dialogEdits.values()][0] ?? '这条规则'}的修改`, body: '刚才在这里改的内容不会写进草稿。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
+  // 正在保存时又改过：正在保存的那份照常落地，丢掉的只是之后改的 / Edited again during a save: the part being saved still lands, only the later edits are dropped
+  if (busy.value) return confirm.ask({ title: '放弃保存之后的修改', body: '正在保存的那份照常保存，保存开始以后改的会丢掉。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
   return confirm.ask({ title: '放弃未保存的修改', body: '当前的配置草稿会被丢弃，已经生效的配置不受影响。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
 }
 const releaseGuard = registerLeaveGuard(askLeave, () => unsaved.value)
@@ -399,8 +398,6 @@ watch(section, () => { editor.value = null; void nextTick(() => window.scrollTo(
 const { starting, start } = useServiceStart()
 // 连不上面板时页头写「状态未知」，「启动」也收起：按了也只会失败 / While the panel is unreachable the header reads 状态未知 and 启动 is withdrawn: pressing it could only fail
 const { down: panelDown } = useConnection()
-// 连上面板后自己重读，不等人点重试 / Once the panel answers again the page re-reads by itself instead of waiting for 重试
-watch(panelDown, (now, before) => { if (before && !now) void panelBack() })
 async function startKixdns(): Promise<void> {
   if (!(await start())) return
   // 草稿有修改时只刷新运行状态，不重读文件，免得把草稿换掉 / With edits in the draft only the runtime state is refreshed, so the draft is not replaced

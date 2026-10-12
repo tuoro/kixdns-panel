@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Check, ChevronDown, ChevronRight, LoaderCircle, Network, Power, TriangleAlert, X } from '@lucide/vue'
-import { computed, onMounted, ref, shallowRef } from 'vue'
-import { apiRequest, isPanelDown, jsonBody } from '../api/client'
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+import { CONFIG_WRITTEN_EVENT, apiRequest, isPanelDown, jsonBody } from '../api/client'
 import type { ConfigDocument, ConfigVersion, ConfigVersions, DnsDiagnostic, KixdnsKernel, Overview } from '../api/types'
 import { runningVersionId } from '../running-version'
 import UiDotText from '../components/ui/UiDotText.vue'
@@ -64,7 +64,8 @@ async function startKixdns(): Promise<void> {
     canClient.value = Boolean(overview.live && overview.health?.capabilities.includes('diagnostics_trace_client_v1'))
   } catch { /* 下次进页面再读 / read again on the next visit */ }
 }
-onMounted(async () => {
+// 页头的版本和「按草稿单独跑一次」都靠这几样；配置写进了新版本就重读 / The header's version and the draft trial rely on these; re-read when a new config version is written
+async function readPage(): Promise<void> {
   const [overview, kernel, config, history] = await Promise.allSettled([apiRequest<Overview>('/api/v1/overview'), apiRequest<KixdnsKernel>('/api/v1/kixdns/kernel'), apiRequest<ConfigDocument>('/api/v1/config'), apiRequest<ConfigVersions>('/api/v1/config/versions')])
   if (history.status === 'fulfilled') versions.value = history.value.versions
   if (overview.status === 'fulfilled') {
@@ -76,7 +77,13 @@ onMounted(async () => {
   if (config.status === 'fulfilled') {
     try { names.value = traceNames(readConfig(config.value.content).model) } catch { names.value = null }
   }
+}
+const onConfigWritten = () => void readPage()
+onMounted(() => {
+  window.addEventListener(CONFIG_WRITTEN_EVENT, onConfigWritten)
+  void readPage()
 })
+onBeforeUnmount(() => window.removeEventListener(CONFIG_WRITTEN_EVENT, onConfigWritten))
 const clock = (date: Date) => date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
 const steps = computed(() => result.value?.trace_supported ? result.value.trace : [])
 const answers = computed(() => result.value?.answers.map((raw) => ({ raw, fields: parseDnsAnswer(raw) })) ?? [])

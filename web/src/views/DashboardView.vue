@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ChartColumn, CircleAlert, CircleX, Clock, Eraser, ListChecks, Power, RefreshCw, SlidersHorizontal } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import { apiRequest } from '../api/client'
+import { CONFIG_WRITTEN_EVENT, apiRequest } from '../api/client'
 import type { CacheFlushResult, ConfigDocument, ConfigVersion, ConfigVersions, Overview, QueryStatsSnapshot, ServiceStatus, StatsClearResult } from '../api/types'
 import { readConfig } from '../config-model/document'
 import { traceNames, type TraceNames } from '../config-model/trace-names'
@@ -638,9 +638,18 @@ const pipelineName = (id: string) => names.value?.pipeline(id) ?? null
 // 上游组和规则自带的转发 Pipeline 里那条规则（和 Pipeline 同名）不单列：它数的就是转进来的请求，和跳过去的那条规则重复
 // The rule inside an upstream group's or a rule's own forward pipeline (named after the pipeline) is not listed: it counts the requests sent there, repeating the rule that jumped
 const hitRows = computed(() => rules.value.filter((rule) => !names.value?.plumbing(rule.rule, rule.pipeline)))
+// 配置写进了新版本（包括离开配置页以后才落地的保存）：马上重读，页头和「当前运行配置」不和「版本 #N 已生效」对不上
+// A new config version was written (including a save that landed after leaving the config page): re-read at once, so the header and the running-config card match 「版本 #N 已生效」
+// 正在读的那一次可能是保存落地之前发出的：等它读完再读一次，不拿它的旧结果充数 / A read already in flight may predate the save: wait for it, then read again instead of reusing its stale answer
+const onConfigWritten = () => {
+  if (unmounted) return
+  void loadNames()
+  void Promise.resolve(pendingLoad).then(() => { if (!unmounted) void load(true) })
+}
 onMounted(async () => {
   void loadNames()
   window.addEventListener('resize', onViewportResize, { passive: true })
+  window.addEventListener(CONFIG_WRITTEN_EVENT, onConfigWritten)
   await load()
   await loadStats()
   if (unmounted) return
@@ -651,6 +660,7 @@ onMounted(async () => {
 watch(panelDown, (now, before) => { if (before && !now && !unmounted) { void loadNames(); void load(true); void loadStats(true) } })
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onViewportResize)
+  window.removeEventListener(CONFIG_WRITTEN_EVENT, onConfigWritten)
   unmounted = true
   window.clearInterval(timer)
   window.clearInterval(statsTimer)

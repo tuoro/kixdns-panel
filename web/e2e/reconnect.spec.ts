@@ -229,3 +229,28 @@ test('配置页断线时重新读取、批量删除、恢复都停用', async ({
   await page.getByRole('button', { name: '更多配置操作' }).click()
   await expect(page.getByRole('menuitem', { name: '重新读取配置' })).toBeDisabled()
 })
+
+// 回应丢了的时候人已经离开配置页：连上以后照样核对，提示换成核对的结果；回到配置页，保存条不再说「连不上面板」
+// The answer was lost after leaving the config page: once reconnected it is still checked and the toast becomes the result; back on the config page the bar no longer says 连不上面板
+test('回应丢了时已经离开配置页：连上后照样核对，回来不再说连不上', async ({ page }) => {
+  const toastTexts = () => page.locator('.toast').allTextContents().then((texts) => texts.map((text) => text.replace(/⁠/g, '').trim()))
+  await page.goto('/config')
+  await page.getByRole('button', { name: '快速添加', exact: true }).click()
+  const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+  await quick.fill('away-lost.example.org')
+  await quick.press('Enter')
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-save-slow', 'true'); localStorage.setItem('kixdns:demo-put-answer-lost', 'true') })
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar).toContainText('写入并应用')
+  await page.getByRole('link', { name: '日志', exact: true }).click()
+  await expect.poll(toastTexts, { timeout: 5000 }).toContain('不知道配置存上没有：连不上面板。连上后会自己核对，草稿还在')
+  await expect(banner(page)).toHaveCount(0, { timeout: 10_000 })
+  await expect.poll(async () => (await toastTexts()).some((text) => /^刚才那次保存已经存上了：版本 #\d+$/.test(text)), { timeout: 5000 }).toBe(true)
+  expect(await toastTexts()).not.toContain('不知道配置存上没有：连不上面板。连上后会自己核对，草稿还在')
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
+  await page.getByRole('link', { name: '规则', exact: true }).click()
+  await expect(page.locator('[data-rule]', { hasText: 'away-lost.example.org' })).toBeVisible()
+  await expect(page.locator('.cfg__savebar', { hasText: '连不上面板' })).toHaveCount(0)
+  await expect(page.locator('[data-rule]', { hasText: 'away-lost.example.org' }).getByLabel('改过，还没保存')).toHaveCount(0)
+})
