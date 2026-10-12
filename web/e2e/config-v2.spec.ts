@@ -310,3 +310,45 @@ test('手机上提示条的按钮不压住字 @responsive', async ({ page }, tes
   })
   expect(overlap).toBe(false)
 })
+
+// 手机上规则行、映射行的「…」和开关在同一行并排，点按区都到 44、互不压住（以前「…」在开关正下方，只隔 28，点开关偏下一点就打开了菜单）
+// On phones a rule or mapping row has 「…」 and the switch side by side on one line, each with a 44 tap area that does not cover the other
+// (「…」 used to sit right under the switch, 28 apart, so a tap a little low on the switch opened the menu)
+test('手机上行里的「…」和开关并排，点按区各 44 @responsive', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'mobile', '只看手机的行')
+  // 从按钮中心往四个方向走，量出点得到它的范围 / Walk out from the control's centre in four directions to measure where it can be tapped
+  const reach = (rowSelector: string, switchSelector: string, menuSelector: string) => page.evaluate(([rowSelector, switchSelector, menuSelector]) => {
+    const row = document.querySelector(rowSelector)!
+    const measure = (el: Element) => {
+      const box = el.getBoundingClientRect()
+      const cx = box.left + box.width / 2
+      const cy = box.top + box.height / 2
+      const hits = (x: number, y: number) => { const at = document.elementFromPoint(x, y); return at !== null && (at === el || el.contains(at) || at.contains(el) && at.tagName === 'LABEL') }
+      let top = cy, bottom = cy, left = cx, right = cx
+      while (hits(cx, top - 1) && top > cy - 40) top--
+      while (hits(cx, bottom + 1) && bottom < cy + 40) bottom++
+      while (hits(left - 1, cy) && left > cx - 40) left--
+      while (hits(right + 1, cy) && right < cx + 40) right++
+      return { cy, width: right - left + 1, height: bottom - top + 1 }
+    }
+    return { toggle: measure(row.querySelector(switchSelector)!), menu: measure(row.querySelector(menuSelector)!) }
+  }, [rowSelector, switchSelector, menuSelector])
+
+  await page.goto('/config')
+  const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+  await quick.fill('row.example.org')
+  await quick.press('Enter')
+  const rule = await reach('[data-rule]', '.rrow__switch input', '.rrow__menu .ui-icon-btn')
+  await page.goto('/config?section=mapping')
+  await page.getByLabel('要映射的域名').fill('row.home.arpa')
+  await page.getByLabel('回答的 IP 或域名').fill('192.168.1.40')
+  await page.getByRole('button', { name: '添加', exact: true }).click()
+  const mapping = await reach('[data-rw]', '.ui-switch input', '.ui-menu-host .ui-icon-btn')
+  for (const { toggle, menu } of [rule, mapping]) {
+    expect(Math.abs(toggle.cy - menu.cy)).toBeLessThan(2)
+    for (const area of [toggle, menu]) {
+      expect(area.width).toBeGreaterThanOrEqual(44)
+      expect(area.height).toBeGreaterThanOrEqual(44)
+    }
+  }
+})

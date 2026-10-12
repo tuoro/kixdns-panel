@@ -366,8 +366,9 @@ body { background: var(--l-canvas); }
   /* 收起靠工具行里压下去的「测试」按钮，两行输入框左右对齐 / Collapse via the pressed test button above, so both input rows share their edges */
   /* 规则三行：名字、命中、开关 / 条件一行 / 结果和「…」；每行高度固定，扫一眼就能对齐 / A rule takes three fixed lines: name, hits and switch; the condition on one line; the outcome and 「…」 */
   .rlist__head { display: none; }
-  .rrow__switch::before { position: absolute; inset: calc(var(--s-3) * -1) calc(var(--s-2) * -1); content: ''; }
-  /* 行尾「…」看得见的宽 32，点击范围左右各撑 6 到 44 / The row's 「…」 is 32 wide to the eye; its hit area reaches 6 further each side to 44 */
+  /* 开关看得见的 36×22：点按区上下补 12、左右只补 4，左边紧挨着「…」，两个都是 44 宽、互不压住
+     The switch shows 36×22: its hit area grows 12 up and down but only 4 sideways, since 「…」 sits right beside it; both are 44 wide without covering each other */
+  .rrow__switch::before { position: absolute; inset: calc(var(--s-3) * -1) calc(var(--s-1) * -1); content: ''; }
   /* 点按区按按钮自己的大小往外补到 44：按钮比 44 大的那一边不动（映射行的按钮比规则行的小，按固定差值补会不够） / The hit area grows from the button's own size to 44; a side already past 44 stays put (the mapping row's button is smaller than the rule row's, so a fixed offset fell short) */
   .rrow__menu .ui-icon-btn::before, .rw__row > .ui-menu-host .ui-icon-btn::before { position: absolute; inset: calc(min(0px, (100% - var(--h-touch)) / 2)); content: ''; }
   .rpin { grid-template-columns: var(--s-5) minmax(0, 1fr) auto; grid-template-areas: "num main chev"; }
@@ -494,9 +495,11 @@ body { background: var(--l-canvas); }
 .opill > * { display: inline-flex; align-items: center; }
 @media (max-width: 640px) {
   /* 规则行内的间距收紧一点 / A little tighter inside rule rows */
-  /* 规则三行：名字和开关 / 条件，最多两行 / 结果、命中和「…」；右边一列 36，开关和「…」上下对齐
-     A rule takes three lines: name and switch / the condition, up to two lines / outcome, hits and 「…」; a 36 right column keeps the switch and 「…」 in line */
-  .rrow { grid-template-columns: var(--s-5) minmax(0, 1fr) auto var(--h-md); grid-template-areas: "num main main switch" "num pill hits menu"; padding-block: var(--s-3); row-gap: var(--s-1); }
+  /* 规则：第一行名字、「…」和开关并排，第二行结果和命中。以前「…」在开关正下方，两个只隔 28，点开关偏下一点就打开了菜单
+     A rule: name, 「…」 and the switch side by side on the first line, the outcome and hits on the second. 「…」 used to sit right under the switch,
+     only 28 apart, so a tap a little low on the switch opened the menu */
+  .rrow { grid-template-columns: var(--s-5) minmax(0, 1fr) auto auto; grid-template-areas: "num main menu switch" "num pill hits hits"; padding-block: var(--s-3); row-gap: var(--s-1); }
+  .rrow__hits { justify-self: end; }
   .rrow__main { grid-area: main; padding: 0; gap: 0; }
   .rrow.is-off .rrow__menu { opacity: .55; }
 }
@@ -506,8 +509,10 @@ body { background: var(--l-canvas); }
 /* 组里新建规则：文字和规则名同一条线 / In-group add: its text on the rule-name line */
 .rcard__foot .ui-btn { gap: calc(var(--s-6) + var(--s-4) - (var(--s-6) - 16px) / 2 - 16px - 3px); }
 @media (max-width: 640px) {
-  .rrow__menu { grid-area: menu; align-self: center; justify-self: end; margin-right: 0; }
-  .rrow__menu .ui-icon-btn { position: relative; width: var(--s-6); height: calc(var(--h-tag) + var(--s-1)); margin-right: calc((var(--s-6) - var(--size-icon)) / -2); }
+  /* 「…」是 36 的按钮，上下各收进 6，不把名字那一行（24）撑高，和开关同一条中线 / 「…」 is a 36 button pulled in 6 above and below, so the name line (24) keeps its height and it shares the switch's centre line */
+  .rrow__menu { grid-area: menu; align-self: start; justify-self: end; margin-right: 0; }
+  /* 不再往行尾挪出半个按钮（它不在行尾了）；比后面通用的「按图形对齐行尾」那条更具体 / No longer shifted out by half a button (it is not at the row end); more specific than the general glyph-to-row-end rule further down */
+  .rrow .rrow__menu .ui-icon-btn { position: relative; width: var(--h-md); height: var(--h-md); margin: calc((var(--s-5) - var(--h-md)) / 2) 0; }
   .rrow__line, .rrow__cond { line-height: 20px; }
   .rrow__name { min-height: var(--s-5); flex-wrap: nowrap; line-height: 20px; }
 }
@@ -1422,10 +1427,9 @@ body { background: var(--l-canvas); }
   .rw__lead .toolbar__lead { flex: 1 1 0; }
   .rw__head { display: none; }
   .rw__d { grid-area: d; }
-  .rw__row > .ui-switch::before { position: absolute; inset: calc(var(--s-3) * -1) calc(var(--s-2) * -1); content: ''; }
-  .rw__row .ui-menu-host .ui-icon-btn { position: relative; width: var(--s-6); height: calc(var(--h-tag) + var(--s-1)); }
-  /* 上面紧挨着开关，竖向只补 8；横向补到 44，左右都没有别的按钮 / The switch sits right above, so it grows only 8 vertically; horizontally it grows to 44, with nothing beside it */
-  .rw__row .ui-menu-host .ui-icon-btn::before { position: absolute; inset: calc(var(--s-2) * -1) calc(min(0px, (100% - var(--h-touch)) / 2)); content: ''; }
+  /* 和规则行一样：开关左右只补 4，「…」是 36 的按钮、上下收进 6，两个并排各 44 / As in rule rows: the switch grows only 4 sideways, 「…」 is a 36 button pulled in 6 above and below, each 44 side by side */
+  .rw__row > .ui-switch::before { position: absolute; inset: calc(var(--s-3) * -1) calc(var(--s-1) * -1); content: ''; }
+  .rw__row .ui-menu-host .ui-icon-btn { position: relative; width: var(--h-md); height: var(--h-md); margin-block: calc((var(--s-5) - var(--h-md)) / 2); }
   /* 手机上图标按钮是 36：列也给 36，✓ 和 × 之间留出整条缝，两个的点按区域各补到 44、互不压住 / Icon buttons are 36 on phones: so are the columns, leaving the whole gap between ✓ and × so each tap area reaches 44 without covering the other */
   .rw__edit { grid-template-columns: minmax(0, 1fr) var(--h-md) var(--h-md); }
   .rw__edit > :nth-child(1), .rw__edit > :nth-child(2) { grid-column: 1 / -1; }
@@ -1444,10 +1448,10 @@ body { background: var(--l-canvas); }
   .rw__submit { width: var(--h-md); padding: 0; }
   .rw__submit-label { display: none; }
   .rw__search { max-width: none; }
-  /* 域名映射：第一行域名和开关，第二行回答、类型和「…」；右边一列 36 / Mapping: domain and switch first, answer, type and 「…」 second; a 36 right column */
-  .rw__row { padding: var(--s-2) var(--s-4); grid-template-columns: minmax(0, 1fr) auto var(--h-md); grid-template-areas: "d d switch" "t k menu"; row-gap: var(--s-1); }
+  /* 域名映射：第一行域名、「…」和开关并排，第二行回答和靠右的类型 / Mapping: domain, 「…」 and the switch side by side first, then the answer and the type at the right */
+  .rw__row { padding: var(--s-2) var(--s-4); grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "d menu switch" "t k k"; row-gap: var(--s-1); }
   .rw__row > .ui-switch { position: relative; grid-area: switch; justify-self: end; }
-  .rw__row > .ui-menu-host { grid-area: menu; justify-self: center; margin-right: 0; }
+  .rw__row > .ui-menu-host { grid-area: menu; align-self: center; justify-self: center; margin-right: 0; }
   .rw__row .ui-menu-host { margin-right: 0; }
 }
 /* 测试结论以「」收尾时，收回括号自带的半个字空白，后面的灰字不再离得特别远 / When the tester's verdict ends in 」, take back the bracket's built-in half blank so the grey facts after it are not pushed away */
@@ -1480,10 +1484,11 @@ body { background: var(--l-canvas); }
   .rw__head .rlist__order { display: none; }
 }
 .rw__row > .ui-menu-host { justify-self: end; }
-@media (max-width: 640px) {
-  .rw__row > .ui-menu-host .ui-icon-btn { margin-right: calc((var(--s-6) - var(--size-icon)) / -2); }
-}
 .rw__row > .ui-menu-host .ui-icon-btn { margin-right: calc((var(--h-sm) - var(--size-icon)) / -2 - 3px); }
+@media (max-width: 640px) {
+  /* 手机上「…」不在行尾（开关在它右边），不再往外挪半个按钮 / On phones 「…」 is not at the row end (the switch is to its right), so it is not shifted out by half a button */
+  .rw__row > .ui-menu-host .ui-icon-btn { margin-right: 0; }
+}
 @media (min-width: 641px) {
   /* 映射的添加行用表格的列：域名框在「域名」列，回答框在「回答」列 / The mapping add row uses the table's columns: the domain field under 域名, the answer field under 回答 */
   .rw__addrow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 10rem 4rem 2.5rem; column-gap: var(--s-4); }
