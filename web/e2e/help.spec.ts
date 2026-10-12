@@ -18,7 +18,8 @@ test('概念旁的「?」：点开说明，Esc 关掉焦点回到按钮，「全
   await button.click()
   const pop = page.getByRole('dialog', { name: '回答后检查', exact: true })
   await expect(pop).toBeVisible()
-  await expect(pop).toContainText('上游超时或连不上不会走到这一步')
+  // 超时或连不上时有单独的「否则」就走「否则」，旧说法「不会走到这一步」是错的 / On timeout a separate 「否则」 runs; the old "never gets here" was wrong
+  await expect(pop).toContainText('上游超时或连不上时，单独设了「否则」就按「否则」处理')
   // 等升起的动画走完再量：慢机器上量到半路，底边还在屏幕外 / Measure after the rise animation: on a slow machine a mid-flight box is still below the screen
   await pop.evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)))
   // 在屏幕里，手机上贴底 / On screen, docked to the bottom on phones
@@ -51,6 +52,8 @@ test('「…」里的帮助：这一页的概念 + 快捷键；手机上不列�
   const drawer = page.getByRole('dialog', { name: '帮助', exact: true })
   await expect(drawer).toBeVisible()
   await expect(drawer.locator('.help__topic summary')).toHaveText(['回答后检查', '客户端子网（ECS）', 'GeoSite 分类', '规则组', '备用组', '域名映射', '规则默认值', '高级规则', '测试域名'])
+  // 手机上概念一行 44，和「…」的底部菜单一样 / On phones a concept row is 44, like the ⋯ bottom sheet
+  if (mobile) for (const height of await drawer.locator('.help__topic summary').evaluateAll((rows) => rows.map((row) => row.getBoundingClientRect().height))) expect(height).toBeGreaterThanOrEqual(44)
   await drawer.locator('#help-fallback summary').click()
   await expect(drawer.locator('#help-fallback')).toContainText('不会改问备用组')
   if (mobile) await expect(drawer.getByRole('heading', { name: '键盘快捷键' })).toBeHidden()

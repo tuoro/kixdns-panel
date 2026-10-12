@@ -7,9 +7,9 @@ import { useBarHeight } from '../composables/useBarHeight'
 import { useToast } from '../composables/useToast'
 import DraftReviewDialog from './DraftReviewDialog.vue'
 import RuleText from './RuleText.vue'
-import { usePhone } from './phone'
+import { usePhone, useTightSaveBar } from './phone'
 import { changeCount, dialogEdits, discardWithUndo, editorEdited, model } from './store'
-import { blockedFields, busy, sayBlocked, conflict, deferNote, deferSave, editTouched, elapsed, note, origin, save, saveMessage, stage, validate, validation, verdict } from './useConfigDocument'
+import { blockedFields, busy, saveInFlight, sayBlocked, conflict, deferNote, deferSave, editTouched, elapsed, note, origin, save, saveMessage, stage, validate, validation, verdict } from './useConfigDocument'
 
 // 保存条只替草稿说话：有改动才升起来，保存完一会儿就收起。两步：先校验，再写入并热加载；任何一步失败都停住，原因里的规则能点。
 // KixDNS 没启动、连不上、不报能力时只存成待应用版本。Ctrl/Cmd+S 等于点保存。进度和结果都来自 useConfigDocument。
@@ -23,6 +23,7 @@ const emit = defineEmits<{ rule: [id: number]; group: [id: string]; reveal: [lin
 const toast = useToast()
 // 手机上主按钮只写「保存」，给「已修改 N 处」留出一行 / On a phone the main button just says 保存, leaving room for 已修改 N 处
 const phone = usePhone()
+const tight = useTightSaveBar()
 
 // 页头发起的「现在应用」不进保存条 / An apply started from the header never shows in the bar
 const draftStage = computed(() => (origin.value === 'draft' ? stage.value : 'idle'))
@@ -40,9 +41,10 @@ function onKey(event: KeyboardEvent): void {
     event.preventDefault()
     // 弹层开着时不替它保存，但说一句该怎么做，不让按键没反应 / With a dialog open the bar does not save for it, but says what to do instead of swallowing the key
     if (document.querySelector('dialog[open]')) { toast.info(dialogEdits.size ? '先点窗口里的按钮把修改放进草稿，再保存' : '先关掉这个窗口，再保存'); return }
-    if (busy.value) return
+    // 单独的「校验」还没回来时照样保存（等它回来接着存）；真的在保存时不重复 / During a lone 校验 the save still goes (it waits for the check); during a real save it is not repeated
+    if (saveInFlight.value) return
     if (props.jsonError) toast.info('JSON 写错了，改好才能保存')
-    else if (conflict.value && draftStage.value === 'failed') toast.info('别处已经保存了新版本，先重新读取')
+    else if (conflict.value && draftStage.value === 'failed') toast.info('这份配置在别处改过了，先重新读取')
     else if (blockedFields.value.length) sayBlocked()
     else if (visible.value) saveDraft()
     // 域名映射行里改了还没点保存：说一句，不说「没有要保存的修改」 / A domain-mapping row edited but not committed: say so instead of 没有要保存的修改
@@ -84,7 +86,15 @@ function closeReview(): void {
 }
 const saveLabel = computed(() => (deferSave.value ? '保存为待应用' : '保存并应用'))
 useBarHeight(bar, '--savebar-h')
-watch(busy, (b) => { if (b) void nextTick(() => saveButton.value?.focus()) })
+// 保存开始时焦点挪到保存按钮（上面会出「保存中」），只在焦点本来就在保存条上或者没落在任何地方时：正在输入框里打字的人不被拽走
+// When a save starts focus moves to the save button (it shows 保存中), only if focus was already in the bar or nowhere: someone typing in a field is not pulled away
+watch(busy, (b) => {
+  if (!b) return
+  void nextTick(() => {
+    const active = document.activeElement
+    if (!active || active === document.body || bar.value?.contains(active)) saveButton.value?.focus()
+  })
+})
 
 function discard(): void {
   // 只有面板或 JSON 里的修改时，说清丢掉的是哪些，不给一个什么都恢复不了的「撤销」 / With only panel or JSON edits, say which were dropped instead of offering an 撤销 that restores nothing
@@ -114,7 +124,7 @@ function discard(): void {
         <template v-else-if="jsonError"><span class="ui-savebar__verdict">JSON 写错了</span><small><button class="ui-objlink ui-objlink--plain" type="button" @click="emit('reveal', jsonError.line, jsonError.column)">第 {{ jsonError.line }} 行第 {{ jsonError.column }} 列</button> · {{ jsonError.reason }}</small></template>
         <!-- 有内核不支持的设置：保存不了，说是哪几项 / Settings the kernel does not support: saving cannot happen, and the bar names them -->
         <template v-else-if="blockedFields.length"><span class="ui-savebar__verdict">保存不了</span><small>有 {{ blockedFields.length }} 项内核不支持，见页面上方</small></template>
-        <template v-else-if="validated"><span class="ui-dot" aria-hidden="true"></span><span class="ui-savebar__detail"><UiDotText :parts="phone ? ['校验通过'] : ['校验通过', '可以保存']" /></span></template>
+        <template v-else-if="validated"><span class="ui-dot" aria-hidden="true"></span><span class="ui-savebar__detail"><UiDotText :parts="tight ? ['校验通过'] : ['校验通过', '可以保存']" /></span></template>
         <template v-else-if="changeCount === 0"><span class="ui-dot ui-dot--ink" aria-hidden="true"></span><span class="ui-savebar__detail">{{ jsonDirty ? 'JSON 有修改' : '右侧规则的修改还没放进草稿' }}<small v-if="deferSave"> · {{ deferNote }}</small></span></template>
         <template v-else><span class="ui-dot ui-dot--ink" aria-hidden="true"></span><span class="ui-savebar__detail"><button class="ui-objlink savebar__review" type="button" aria-haspopup="dialog" title="看看改了哪些" @click="review">已修改 <b class="ui-savebar__count"><UiNumber :value="String(changeCount)" /></b> 处</button><small v-if="deferSave"> · {{ deferNote }}</small></span></template>
       </p>

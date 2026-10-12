@@ -197,7 +197,8 @@ async function run(): Promise<void> {
       <div class="sk diag-skeleton-verdict"></div>
       <div class="sk diag-skeleton-card"></div>
     </div>
-    <div v-else-if="queryError" class="diag-error" role="alert"><TriangleAlert :size="20" /><div><h2>查询失败</h2><p>{{ queryError }}</p><small v-if="!queryPanelDown">检查域名或服务状态后可重新查询。</small></div></div>
+    <!-- 查询途中连不上面板：顶上的横幅已经说了原因，这里只说这次没做完、连上后再查 / The panel dropped mid-query: the banner already says why, so this only says the query did not finish and to run it again once connected -->
+    <div v-else-if="queryError" class="diag-error" role="alert"><TriangleAlert :size="20" /><div><h2>{{ queryPanelDown ? '查询没有做完' : '查询失败' }}</h2><p>{{ queryPanelDown ? '连上面板后再查一次。' : queryError }}</p><small v-if="!queryPanelDown">检查域名或服务状态后可重新查询。</small></div></div>
     <div v-else-if="result" class="diagnostic-result diag-result">
       <!-- 每一块只回答一个问题：上面的结果卡回答「结果是什么」——响应码、回答、一行事实；
            下面的执行路径回答「怎么走的」。命中的规则在路径里带绿色对勾。

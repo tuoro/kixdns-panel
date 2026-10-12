@@ -124,7 +124,7 @@ onBeforeUnmount(() => window.removeEventListener('pointermove', onMove))
         <span class="rrow__cond"><span class="rpin__long">{{ mappingSummary }}，先于下面所有规则</span><span class="rpin__short">{{ liveMappings.length }} 个域名，先于下面所有规则</span></span>
       </button>
       <ChevronRight class="rpin__chev" :size="16" aria-hidden="true" />
-      <span class="rrow__pill"><span class="opill"><span class="opill__verb">回答</span><span class="opill__val">{{ liveMappings.every(mappingIsIp) ? '本地地址' : '本地地址或别名' }}</span></span></span>
+      <span class="rrow__pill"><span class="opill"><span class="opill__verb">回答</span><span class="opill__val">{{ liveMappings.every(mappingIsIp) ? '固定 IP' : '固定 IP 或域名' }}</span></span></span>
       <span class="rpin__link"><button class="ui-link" type="button" @click="emit('mappings')">管理域名映射</button></span>
     </div>
     <ol ref="listEl" class="rlist__rows">

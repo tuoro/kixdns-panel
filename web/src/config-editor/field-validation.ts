@@ -71,9 +71,9 @@ export function actionFieldErrors(
     if (!values.some((value) => value.trim())) errors.text = requiredFieldError('文本')
   }
   if (action.type === 'static_cname_response') {
-    if (!errors.target && !validDnsName(action.target ?? '')) errors.target = 'CNAME 目标域名格式无效'
+    if (!errors.target && !validDnsName(action.target ?? '')) errors.target = 'CNAME 目标域名写得不对'
     if (action.ttl !== undefined && (!Number.isInteger(action.ttl) || action.ttl < 0 || action.ttl > 4_294_967_295)) {
-      errors.ttl = 'CNAME TTL 必须是 0 到 4294967295 的整数'
+      errors.ttl = 'TTL 填 0 到 4294967295 之间的整数'
     }
   }
   if (action.type === 'jump_to_pipeline' && !errors.pipeline) {

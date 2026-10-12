@@ -349,7 +349,7 @@ impl UpdateManager {
     ) -> Result<InstalledVersion, UpdateError> {
         if expected.is_some_and(|expected| expected != latest.remote.source_id) {
             return Err(UpdateError::Conflict(
-                "上游又出了更新的构建，重新检查后再更新".to_owned(),
+                "没有更新内核：原版又出了新构建，点「检查更新」看过后再更新".to_owned(),
             ));
         }
         let key = VersionKey::remote(&latest.remote)?;
@@ -553,7 +553,7 @@ impl UpdateManager {
         let network = |error: reqwest::Error| {
             if error.is_timeout() {
                 UpdateError::Network(format!(
-                    "下载 KixDNS 产物超时：网络过慢或连接中断，请检查到 GitHub 的网络后重试（{error}）"
+                    "下载 KixDNS 内核超时：网络太慢或连接断了，检查到 GitHub 的网络后再试（{error}）"
                 ))
             } else {
                 UpdateError::Network(error.to_string())

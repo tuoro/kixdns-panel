@@ -132,7 +132,7 @@ export function summarizeAction(action: ActionConfig, phase: 'request' | 'respon
     case 'log': return `记录日志（${LEVEL_NAMES[text(action.level, 'info')] ?? text(action.level, 'info')}）`
     case 'static_response': return `返回 ${text(action.rcode)}`
     case 'static_ip_response': return `返回 IP ${text(action.ip)}`
-    case 'static_cname_response': return `将域名映射到 ${text(action.target)}`
+    case 'static_cname_response': return `直接回答 CNAME ${text(action.target)}`
     case 'static_txt_response': return `返回 TXT ${text(action.text)}`
     case 'replace_txt_response': return `替换 TXT 为 ${text(action.text)}`
     // 还没选目标时写成缺什么，不占 ID 那个位置：否则读起来像跳去一个叫「未选择」的 Pipeline（审计第八轮 D1）
@@ -148,10 +148,10 @@ export function summarizeAction(action: ActionConfig, phase: 'request' | 'respon
       const upstreams = (typeof action.upstream === 'string' ? action.upstream.split(',') : Array.isArray(action.upstream) ? action.upstream : [])
         .filter((item): item is string => typeof item === 'string' && Boolean(item.trim()))
         .map((item) => item.trim())
-      return `转发至 ${upstreams.length ? upstreams.join('、') : '默认上游'}${transport ? ` (${transportLabel(transport)})` : ''}`
+      return `转发给 ${upstreams.length ? upstreams.join('、') : '默认上游'}${transport ? ` (${transportLabel(transport)})` : ''}`
     }
     case 'continue': return '继续往下'
-    default: return `执行 ${action.type}`
+    default: return `动作 ${action.type}（面板认不出）`
   }
 }
 

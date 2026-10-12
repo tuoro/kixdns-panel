@@ -12,6 +12,7 @@ import { useConfirm } from '../composables/useConfirm'
 import { useConnection } from '../composables/useConnection'
 import { dismissUndoable, useToast } from '../composables/useToast'
 import { exportConfig, readConfig } from '../config-model/document'
+import { SETTING_SECTIONS } from '../config-editor/schema'
 import { compile, mappingIsIp, ruleTitle, type Model, type Rule, type UpstreamGroup } from '../config-model/model'
 import GroupEditor from '../config-v2/GroupEditor.vue'
 import HistoryDrawer from '../config-v2/HistoryDrawer.vue'
@@ -25,7 +26,7 @@ import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, busy, cnameAnswers, conflict, dropEditsAfterSave, onlySaving, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, unsupportedSection } from '../config-v2/useConfigDocument'
+import { applyBusy, busy, cnameAnswers, conflict, dropEditsAfterSave, saveInFlight, onlySaving, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, unsupportedSection } from '../config-v2/useConfigDocument'
 import { useHelp } from '../composables/useHelp'
 import { useServiceStart } from '../composables/useServiceStart'
 import { registerLeaveGuard, takeAgreement } from '../composables/useLeaveGuard'
@@ -184,11 +185,15 @@ const notice = computed<Notice | null>(() => {
     return { tone: 'warn', text: `当前内核不支持 CNAME\u00a0回答：有\u00a0${cnamePlaces.value.total}\u00a0处回答写的是域名，KixDNS 不会接受这份配置。把${them}改成 IP，或者更新内核。`, action: cnamePlaces.value.mappings && section.value !== 'mapping' ? '去域名映射' : undefined, run: () => setTab('mapping') }
   }
   // KixDNS 不接受带着它不支持的设置的配置：说清这一点和两条出路，按钮直接去基础设置 / KixDNS refuses a config carrying settings it does not support: say so with the two ways out, the button going straight to the settings
-  if (unsupportedFields.value.length) { const many = unsupportedFields.value.length > 1; return { tone: 'warn', text: `当前内核不支持：${unsupportedFields.value.join('、')}。开着也不起作用，关掉才能保存：在基础设置里点${many ? '' : '它旁边的'}「关掉」，或者更新内核。`, action: section.value === 'settings' ? undefined : '去基础设置', run: goUnsupported } }
+  if (unsupportedFields.value.length) { const many = unsupportedFields.value.length > 1; return { tone: 'warn', text: `当前内核不支持：${unsupportedFields.value.join('、')}。开着也不起作用，关掉才能保存：在基础设置里点${many ? '' : '它旁边的'}「关掉」，或者更新内核。`, action: section.value === 'settings' ? (unsupportedTitle.value ? `去${unsupportedTitle.value}` : undefined) : '去基础设置', run: goUnsupported } }
   return null
 })
+// 已经在基础设置里时按钮直接点名那一组（「去查询统计」），设置编辑器跟着换过去 / Already in the settings, the button names the group (去查询统计) and the editor switches to it
+const unsupportedTitle = computed(() => SETTING_SECTIONS.find((group) => group.id === unsupportedSection.value)?.title ?? '')
 function goUnsupported(): void {
-  ui.settingsGroup = unsupportedSection.value
+  // 先清空再写：同一组再按一次也要换过去 / Cleared first: pressing again for the same group still switches
+  ui.settingsGroup = ''
+  void nextTick(() => { ui.settingsGroup = unsupportedSection.value })
   setTab('settings')
 }
 // 写成域名的回答有几处：按写出的配置数（和服务端一样）；域名映射里有几处另数，决定给不给「去域名映射」
@@ -262,7 +267,7 @@ function leaveJson(): boolean {
 // 保存、校验之前（save）：面板里没点「完成」的修改和 JSON 里的修改先收进草稿；放弃和查看之前（fold）只收 JSON 里的
 // Before save or validate (save): the panel's edits not yet 完成 and the JSON edits go into the draft first; before discard or review (fold) only the JSON ones
 function flush(purpose: 'save' | 'fold'): boolean {
-  if (purpose === 'save' && editor.value && editorRef.value && !editorRef.value.commit()) return false
+  if (purpose === 'save' && editor.value && editorRef.value && !editorRef.value.commit(inspector.value)) return false
   if (jsonDirty.value) {
     if (jsonError.value) return false
     foldJson()
@@ -277,9 +282,10 @@ const moreItems = computed(() => [
   { value: 'import', label: '导入 JSON', icon: FileUp, disabled: !ready.value },
   { value: 'download', label: '下载 JSON', icon: Download, disabled: !ready.value },
   // 连不上面板时读不到，按了只会失败 / Unreachable panel: the read can only fail
-  { value: 'reload', label: '重新读取配置', icon: RefreshCw, disabled: loading.value || panelDown.value },
+  // 保存途中也不重新读取：读进来的会被那次保存覆盖，「之后改的」就成了撤回刚保存的 / Not during a save either: the read would be overtaken by that save, and 之后改的 would become a revert of what was just saved
+  { value: 'reload', label: '重新读取配置', icon: RefreshCw, disabled: loading.value || panelDown.value || saveInFlight.value },
   // 手机的保存条放不下「放弃修改」，放在这里；桌面的保存条上一直有 / The phone save bar has no room for 放弃修改, so it lives here; the desktop bar always shows it
-  ...(phone.value && unsaved.value ? [{ value: 'discard', label: '放弃修改', icon: Undo2 }] : []),
+  ...(phone.value && unsaved.value ? [{ value: 'discard', label: '放弃修改', icon: Undo2, disabled: saveInFlight.value }] : []),
   { value: 'help', label: '帮助', icon: CircleHelp },
 ])
 function pickMore(value: string): void {
@@ -348,12 +354,12 @@ const askLeave = async (): Promise<boolean> => {
   if (!dirty.value && !jsonDirty.value) return confirm.ask({ title: `放弃${editorEdited.value ? '这条规则' : [...dialogEdits.values()][0] ?? '这条规则'}的修改`, body: '刚才在这里改的内容不会写进草稿。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
   // 正在保存时又改过：正在保存的那份照常落地，丢掉的只是之后改的 / Edited again during a save: the part being saved still lands, only the later edits are dropped
   // 同意了就把草稿退回正在保存的那一份：保存没成功时回来看到的正是它，不会冒出说好丢掉的那几处 / On agreement the draft goes back to the one being saved: a failed save brings back exactly that, not the edits agreed to drop
-  if (busy.value) {
-    const agreed = await confirm.ask({ title: '放弃保存之后的修改', body: '正在保存的那份照常保存，保存开始以后改的会丢掉。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
+  if (saveInFlight.value) {
+    const agreed = await confirm.ask({ title: '放弃保存开始后改的内容', body: '正在保存的那份照常保存；保存开始以后改的会丢掉。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
     if (agreed) dropEditsAfterSave()
     return agreed
   }
-  return confirm.ask({ title: '放弃未保存的修改', body: '当前的配置草稿会被丢弃，已经生效的配置不受影响。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
+  return confirm.ask({ title: '放弃未保存的修改', body: '当前的配置草稿会被丢弃，已经生效的配置不受影\u2060响。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true })
 }
 const releaseGuard = registerLeaveGuard(askLeave, () => unsaved.value)
 // 提示条的按钮做事期间停用，焦点跟着掉到页面上：做完没人接住焦点时，回到这个按钮（还在的话），不在了就落在提示条上
@@ -421,7 +427,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
   <div v-else class="page cfg">
     <UiPageHeader :title="pageTitle">
       <template #meta>
-        <span v-if="!ready && !loadError" class="cfg__status-sk"><i class="sk"></i></span>
+        <span v-if="!ready && !loadError" class="sk ui-ph__sk cfg__status-sk"></span>
         <!-- 宽屏：标题下一排事实（状态、配置版本、规则数、上游组数）；手机：一行状态 / Wide: a facts row under the title (state, config version, rule count, upstream groups); phones: one status line -->
         <!-- 没读到配置时宽屏也是这一排，只写状态；版本、规则数、上游组数等读到再写 / Without a config read the wide header keeps this row with the state only; version, rule and group counts wait for the read -->
         <span v-else-if="!phone && !firstRun" class="ui-facts cfg__facts" :class="{ 'cfg__facts--long': (headerLine.wide?.length ?? 0) > 1 }" :role="applyBusy ? 'status' : undefined">

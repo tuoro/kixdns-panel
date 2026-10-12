@@ -324,14 +324,14 @@ test('保存途中离开，保存没成功：提示说清楚，回到配置页�
   await bar.getByRole('button', { name: '保存并应用' }).click()
   await expect(bar).toContainText('写入并应用')
   await page.getByRole('link', { name: '日志', exact: true }).click()
-  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('没有保存成功：这份配置在别处改过了。草稿留在配置页')
+  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('配置没有保存：这份配置在别处改过了。草稿留在配置页，回去重新读取后再改')
   // 草稿只在内存里：这时刷新或关掉浏览器先问一句 / The draft lives only in memory: reloading or closing the browser asks first
   expect(await page.evaluate(() => { const event = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(event); return event.defaultPrevented })).toBe(true)
   await page.getByRole('link', { name: '规则', exact: true }).click()
   await expect(page.locator('[data-rule]', { hasText: 'kept.example' })).toBeVisible()
   await expect(bar).toContainText('这份配置在别处改过了')
   // 保存条接着说了，离开时的那条提示收起 / The save bar says it now, so the toast from leaving goes
-  await expect.poll(() => toastTexts(page)).not.toContain('没有保存成功：这份配置在别处改过了。草稿留在配置页')
+  await expect.poll(() => toastTexts(page)).not.toContain('配置没有保存：这份配置在别处改过了。草稿留在配置页，回去重新读取后再改')
   await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
 })
 
@@ -365,7 +365,7 @@ test('保存途中离开时丢掉之后的修改：保存没成功回来也不�
   await page.getByRole('link', { name: '日志', exact: true }).click()
   await page.locator('dialog.confirm[open]').getByRole('button', { name: '放弃修改' }).click()
   await expect(page).toHaveURL(/\/logs/)
-  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('没有保存成功：这份配置在别处改过了。草稿留在配置页')
+  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('配置没有保存：这份配置在别处改过了。草稿留在配置页，回去重新读取后再改')
   await page.getByRole('link', { name: '规则', exact: true }).click()
   await expect(page.locator('[data-rule]', { hasText: 'saving.example' })).toBeVisible()
   await expect(page.locator('[data-rule]', { hasText: 'dropped.example' })).toHaveCount(0)
@@ -399,8 +399,8 @@ test('保存途中又改过再离开：照样先问', async ({ page }) => {
   await addRule(page, 'second-leave.example')
   await page.getByRole('link', { name: '日志', exact: true }).click()
   // 正在保存的那份照常落地，问的只是之后改的 / The part being saved still lands; the question is only about the later edits
-  await expect(page.locator('dialog.confirm[open]')).toContainText('放弃保存之后的修改')
-  await expect(page.locator('dialog.confirm[open]')).toContainText('正在保存的那份照常保存，保存开始以后改的会丢掉。')
+  await expect(page.locator('dialog.confirm[open]')).toContainText('放弃保存开始后改的内容')
+  await expect(page.locator('dialog.confirm[open]')).toContainText('正在保存的那份照常保存；保存开始以后改的会丢掉。')
   await page.locator('dialog.confirm[open]').getByRole('button', { name: '继续编辑' }).click()
   await expect(page).toHaveURL(/\/config/)
   await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
@@ -501,4 +501,115 @@ test('保存途中打开上游组抽屉，保存落地后改名：改的是打�
   await expect(page.locator('.gcard', { hasText: '海外' })).toHaveCount(1)
   await expect(page.locator('.gcard', { hasText: '改过名' })).toHaveCount(1)
   await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
+})
+
+// 单独点的「校验」还没回来时离开：没有在保存，问的是整份草稿；按保存不会被吞掉，等校验回来接着存
+// Leaving while a lone 校验 is out: nothing is being saved, so the question is about the whole draft; pressing save is not swallowed, it waits for the check
+test('校验途中离开问整份草稿，按保存会等校验回来接着存', async ({ page }) => {
+  await page.goto('/config')
+  await addRule(page, 'checking.example')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-validate-slow', 'true'))
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '校验' }).click()
+  await expect(bar).toContainText('校验中')
+  await page.getByRole('link', { name: '日志', exact: true }).click()
+  await expect(page.locator('dialog.confirm[open]')).toContainText('放弃未保存的修改')
+  await page.locator('dialog.confirm[open]').getByRole('button', { name: '继续编辑' }).click()
+  await bar.getByRole('button', { name: '校验' }).click()
+  await expect(bar).toContainText('校验中')
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar).toContainText(/已生效\s*·\s*版本 #\d+/, { timeout: 8000 })
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-validate-slow'))
+})
+
+// 保存途中换掉草稿的操作先停用：重新读取、恢复版本都会和那次保存撞上 / Actions that replace the draft wait during a save: re-reading or restoring would collide with it
+test('保存途中不能重新读取或恢复版本', async ({ page }) => {
+  await page.goto('/config')
+  await addRule(page, 'busy.example')
+  // 校验和写入都放慢，保存前后要 3 秒，够打开历史版本 / Validation and the write both slowed: 3 s of save, enough to open the history
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-save-slow', 'true'); localStorage.setItem('kixdns:demo-validate-slow', 'true') })
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar).toContainText('校验')
+  await page.getByRole('button', { name: '更多配置操作' }).click()
+  await expect(page.getByRole('menuitem', { name: '重新读取配置' })).toBeDisabled()
+  await page.getByRole('menuitem', { name: '历史版本' }).click()
+  await page.locator('dialog.hist[open]').getByRole('button', { name: '版本 #17 的操作' }).click()
+  // 弹层里停用的菜单项按角色找不到，按元素找 / A disabled menu item inside the dialog is not found by role, so find the element itself
+  await expect(page.locator('[role=menuitem]', { hasText: '恢复为这个版本' })).toBeDisabled()
+  await expect(page.locator('[role=menuitem]', { hasText: '删除这个版本' })).toBeDisabled()
+  await page.evaluate(() => { localStorage.removeItem('kixdns:demo-save-slow'); localStorage.removeItem('kixdns:demo-validate-slow') })
+})
+
+// 在输入框里按 Ctrl+S：焦点留在输入框里，接着打的字不会跑到按钮上或者变成快捷键
+// Ctrl+S in a field: focus stays in the field, so the next keys neither go to the button nor fire shortcuts
+test('在输入框里按 Ctrl+S，焦点不离开输入框', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', '手机没有键盘 / phones have no keyboard')
+  await page.goto('/config')
+  await addRule(page, 'typing.example')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-save-slow', 'true'))
+  const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+  await quick.focus()
+  await page.keyboard.press('Control+s')
+  // 保存还在进行时接着打字：字进输入框，不进保存按钮 / Typing on while the save runs: the keys go into the field, not to the save button
+  await expect(page.locator('.cfg__savebar')).toContainText('写入并应用')
+  await page.keyboard.type('next')
+  await expect(quick).toBeFocused()
+  await expect(quick).toHaveValue('next')
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
+})
+
+// 宽屏右侧面板里按 Ctrl+S：修改收进草稿并保存，面板不关，焦点还在名字框里 / Ctrl+S in the wide side panel: the edit goes into the draft and is saved, the panel stays open and focus stays in the name field
+test('宽屏右侧编辑规则时按 Ctrl+S，保存后面板不关', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', '只看宽屏的右侧面板')
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/config')
+  await addRule(page, 'panel.example')
+  await page.keyboard.press('Escape')
+  await page.locator('[data-rule]', { hasText: 'panel.example' }).locator('.rrow__main').click()
+  const name = page.getByLabel('规则名称，可以不填，不填就用条件当名字')
+  await name.fill('面板里改的名字')
+  await page.keyboard.press('Control+s')
+  await expect(page.locator('.cfg__savebar')).toContainText(/已生效/, { timeout: 8000 })
+  await expect(name).toBeVisible()
+  await expect(name).toBeFocused()
+  await expect(page.locator('[data-rule]', { hasText: '面板里改的名字' })).toHaveCount(1)
+})
+
+// 草稿留在内存里时退出登录：先问一句，同意了才放下 / Signing out with a held draft: ask first, and let it go only on agreement
+test('配置页的草稿还留着时退出登录先问', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', '账户菜单在宽屏的顶栏')
+  await page.goto('/config')
+  await addRule(page, 'held.example')
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-save-slow', 'true'); localStorage.setItem('kixdns:demo-save-conflict', 'true') })
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar).toContainText('写入并应用')
+  await page.getByRole('link', { name: '日志', exact: true }).click()
+  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('配置没有保存：这份配置在别处改过了。草稿留在配置页，回去重新读取后再改')
+  await page.getByRole('button', { name: /^账户：/ }).click()
+  await page.getByRole('button', { name: '退出登录' }).click()
+  await expect(page.locator('dialog.confirm[open]')).toContainText('放弃配置页的草稿')
+  await page.locator('dialog.confirm[open]').getByRole('button', { name: '先不退出' }).click()
+  await expect(page).toHaveURL(/\/logs/)
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
+})
+
+// 开着右侧规则面板（没改动）时断线又连上：静默重读的是同一份文件，面板不会自己关上 / A side panel open (unedited) through an outage: the quiet re-read finds the same file, so the panel does not close by itself
+test('断线又连上时开着的规则面板不会自己关上', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', '只看宽屏的右侧面板')
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/config')
+  await addRule(page, 'stay-open.example')
+  await page.locator('.cfg__savebar').getByRole('button', { name: '保存并应用' }).click()
+  await expect(page.locator('.cfg__savebar')).toContainText(/已生效/, { timeout: 8000 })
+  await page.locator('[data-rule]', { hasText: 'stay-open.example' }).locator('.rrow__main').click()
+  const name = page.getByLabel('规则名称，可以不填，不填就用条件当名字')
+  await expect(name).toBeVisible()
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-panel-down', 'true'); window.dispatchEvent(new Event('kixdns:panel-unreachable')) })
+  await expect(page.locator('.conn__inner')).toBeVisible()
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-panel-down'))
+  await expect(page.locator('.conn__inner')).toHaveCount(0, { timeout: 10_000 })
+  await page.waitForTimeout(800)
+  await expect(name).toBeVisible()
 })

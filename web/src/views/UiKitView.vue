@@ -40,7 +40,7 @@ async function install(): Promise<void> {
   taskNote.value = '正在切换内核'
   await wait(900)
   taskState.value = 'done'
-  taskNote.value = '已更新到 构建 #30235703570'
+  taskNote.value = '已更新到构建 #30235703570'
 }
 function fail(): void {
   taskState.value = 'fail'

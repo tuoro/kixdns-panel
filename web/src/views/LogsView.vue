@@ -420,7 +420,7 @@ const waitingForPanel = computed(() => activeError.value !== '' && (panelDown.va
           <div v-if="mode === 'runtime'"><span class="ui-lbl">级别</span><b><UiDotText v-if="levelFacts.length" :parts="levelFacts" /><template v-else>{{ entries.length ? '无' : '—' }}</template></b></div>
         </div>
         <span v-if="factsReady" class="ui-ph__lead ui-ph__phone"><UiDotText :parts="[`最近一条 ${newest ?? '—'}`, ...(mode === 'runtime' ? levelFacts : [])]" /></span>
-        <span v-else-if="!waitingForPanel && !(panelDown && activeCount === 0)" class="sk logs-skeleton-meta" role="status" aria-label="读取日志"></span>
+        <span v-else-if="!waitingForPanel && !(panelDown && activeCount === 0)" class="sk ui-ph__sk logs-skeleton-meta" role="status" aria-label="读取日志"></span>
       </template>
     </UiPageHeader>
     <!-- 页签在卡片外面，和概览、配置同一种区块页签；查询日志做好后排在最前面
@@ -524,7 +524,7 @@ const waitingForPanel = computed(() => activeError.value !== '' && (panelDown.va
 
 /* 页头事实行：标签在上、值在下，和概览同一种 / The header facts: label over value, as on the overview */
 .logs-page .logs-facts { flex: 1 1 100%; margin-top: var(--s-1); }
-.logs-page .logs-skeleton-meta { display: inline-block; width: 16rem; height: calc(var(--t-4) * var(--lh-base)); }
+.logs-page .logs-skeleton-meta { width: 16rem; }
 
 /* 卡片：白、圆角 14、浮在底色上；工具行是第一行，底下一条细线 / The card: white, radius 14, floating on the ground; the toolbar is its first row with a hairline below */
 .logs-page .log-console { overflow: hidden; gap: 0; border: 0; border-radius: var(--r-3); background: var(--l-surface); box-shadow: var(--shadow-card); }
@@ -533,6 +533,8 @@ const waitingForPanel = computed(() => activeError.value !== '' && (panelDown.va
 .logs-page .log-search { flex: 0 1 22rem; min-width: 10rem; max-width: 22rem; }
 .logs-page .log-console > .log-notice { margin: 0; padding: var(--s-2) var(--s-5); border: 0; border-bottom: 1px solid var(--l-hair); border-radius: 0; }
 .logs-page .log-console > .log-stream { padding: 0; border: 0; border-radius: 0; background: var(--l-surface); }
+/* 卡片会裁掉外面的焦点框：框画在日志区里面，底下两个角跟卡片一样圆 / The card clips an outer focus ring: the ring is drawn inside the stream, its bottom corners rounded like the card */
+.logs-page .log-console > .log-stream:focus-visible { outline-offset: -3px; border-radius: 0 0 var(--r-3) var(--r-3); }
 .logs-page .log-console:has(.audit-line) > .log-stream { padding-bottom: 0; }
 /* 读取失败且一行都没有：卡片只剩工具行，不留一大块空白 / A failure with no rows: the card keeps only its toolbar, no blank slab */
 .logs-page .log-console--blank { flex: 0 0 auto; }
@@ -605,7 +607,5 @@ const waitingForPanel = computed(() => activeError.value !== '' && (panelDown.va
   .logs-page .audit-line p > .ui-tag { margin-right: var(--s-2); vertical-align: text-bottom; }
   .logs-page .log-skeleton { padding-inline: var(--s-4); }
   .logs-page .log-skeleton > .sk { height: calc(var(--log-line) * 2); }
-  /* 手机页头只有一行状态，占位也是一行 / The phone header is one status line, so is its placeholder */
-  .logs-page .logs-skeleton-meta { height: calc(var(--t-2) * var(--lh-base)); }
 }
 </style>

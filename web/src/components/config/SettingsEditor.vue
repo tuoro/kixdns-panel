@@ -37,6 +37,8 @@ const keptOff = reactive(new Set<string>())
 watch(current, () => keptOff.clear())
 // 从「去基础设置」过来时指名了一组：手机上直接打开那一组，不停在目录上 / Arriving from 去基础设置 names a group: on phones that group opens directly instead of the contents list
 const mobileOpen = ref(Boolean(props.initialGroup))
+// 已经开着时又指名了一组（页面上方的「去查询统计」）：换过去，手机上直接打开 / A group named while already open (去查询统计 above): switch to it, opening it directly on phones
+watch(() => props.initialGroup, (group) => { if (group) { current.value = group; mobileOpen.value = true } })
 const mobileViewport = window.matchMedia('(max-width: 860px)')
 const isMobile = ref(mobileViewport.matches)
 function resize(event: MediaQueryListEvent): void { isMobile.value = event.matches }
@@ -323,6 +325,8 @@ function supported(field: SettingField): boolean {
 /* 上下内边距按 36 高和一行字算：导航项正好 36，和上面的搜索框一样高（规范 2.1，审计第三轮 T4） / The block padding comes from the 36 height and one line, so an item is exactly 36 like the search box (spec 2.1, audit round 3, T4) */
 .settings-nav__item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0 var(--s-2); min-height: var(--h-md); padding: calc((var(--h-md) - 1lh) / 2) var(--s-3); border: 0; border-radius: var(--r-2); background: transparent; color: var(--l-ink-2); font: inherit; font-size: var(--t-3); text-align: left; cursor: pointer; }
 @media (hover: hover) { .settings-nav__item:hover { background: var(--l-canvas); color: var(--l-ink); } }
+/* 列表在卡片里贴着边，外面的焦点框会被卡片裁掉，框画在这一项里面 / The list sits flush in its card, which clips an outer focus ring, so the ring is drawn inside the item */
+.settings-nav__item:focus-visible { outline-offset: -3px; }
 /* 选中只换底色和颜色，不改字重（规范 1.6，审计 T12） / Selection changes fill and colour, never weight (spec 1.6, audit T12) */
 .settings-nav__item[aria-current="true"] { background: var(--l-sunk); color: var(--l-ink); }
 .settings-nav__summary, .settings-nav__chevron { display: none; }
@@ -386,6 +390,8 @@ function supported(field: SettingField): boolean {
   .settings-search { margin-inline: var(--s-4); margin-bottom: var(--s-1); }
   .settings-nav__item { padding-inline: var(--s-4); border-radius: 0; font-weight: var(--w-medium); }
   .settings-nav__item + .settings-nav__item { border-top: 1px solid var(--l-hair); }
+  /* 行是直角的，焦点框照样圆角，和别的焦点框一样 / The rows are square, but the focus ring stays rounded like every other ring */
+  .settings-nav__item:focus-visible { border-radius: var(--r-2); }
   .settings-nav__summary { font-size: var(--t-2); }
   /* 下边 8 加最后一行自己的 8 是 16，和左右一样（规范 6.4，审计第二轮 T2） / 8 plus the last row's own 8 makes 16, the side inset (spec 6.4, audit round 2, T2) */
   .settings-pane { display: none; padding: var(--s-4) var(--s-4) var(--s-2); border-left: 0; }

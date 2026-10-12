@@ -185,9 +185,9 @@ function validateUrl(value: string): void {
   try {
     parsed = new URL(value)
   } catch {
-    throw new Error('Geo 数据链接格式不正确')
+    throw new Error('Geo 数据链接写得不对')
   }
-  if (parsed.protocol !== 'https:') throw new Error('Geo 数据链接仅允许使用 HTTPS')
+  if (parsed.protocol !== 'https:') throw new Error('Geo 数据链接只能用 https://')
   if (parsed.username || parsed.password) throw new Error('Geo 数据链接不能包含用户名或密码')
 }
 

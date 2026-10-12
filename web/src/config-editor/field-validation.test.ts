@@ -33,7 +33,7 @@ describe('配置字段共享校验', () => {
     expect(actionFieldErrors({ type: 'static_cname_response', target: ' ' }, 'default'))
       .toEqual({ target: '请填写目标域名' })
     expect(actionFieldErrors({ type: 'static_cname_response', target: 'bad target' }, 'default'))
-      .toEqual({ target: 'CNAME 目标域名格式无效' })
+      .toEqual({ target: 'CNAME 目标域名写得不对' })
   })
 
   it('动作的必填参数按动作列表里的字段名报错，拉丁字母前留一个空格（审计第五轮 B3）', () => {
@@ -41,7 +41,7 @@ describe('配置字段共享校验', () => {
     expect(actionFieldErrors({ type: 'static_ip_response', ip: ' ' }, 'default')).toEqual({ ip: '请填写 IP' })
     // 必填错误靠开头的「请填写」「请选择」认出来，别的错误不算 / Required errors are told by their 请填写 / 请选择 opening; no other error is
     expect(['请填写域名', '请选择要转到的组'].every(isRequiredFieldError)).toBe(true)
-    expect([GEOSITE_PREFIX_ERROR, 'CNAME 目标域名格式无效', '不能转到自己所在的这一组', '要转到的组不存在'].some(isRequiredFieldError)).toBe(false)
+    expect([GEOSITE_PREFIX_ERROR, 'CNAME 目标域名写得不对', '不能转到自己所在的这一组', '要转到的组不存在'].some(isRequiredFieldError)).toBe(false)
   })
 
   it('DNS 名称按 UTF-8 字节检查标签与总长度，支持结尾根点', () => {
@@ -62,7 +62,7 @@ describe('配置字段共享校验', () => {
 
   it.each([-1, 1.5, 4_294_967_296, Number.NaN, Number.POSITIVE_INFINITY])('CNAME TTL 拒绝无效值 %s', (ttl) => {
     expect(actionFieldErrors({ type: 'static_cname_response', target: 'origin.example.', ttl }, 'default'))
-      .toEqual({ ttl: 'CNAME TTL 必须是 0 到 4294967295 的整数' })
+      .toEqual({ ttl: 'TTL 填 0 到 4294967295 之间的整数' })
   })
 
   it('区分未选择、自跳转、目标不存在；省略列表时不猜测目标是否存在', () => {

@@ -295,6 +295,28 @@ test('手机保存条：校验通过不压按钮，冲突时只留下载和重�
   expect(Math.abs(download - words)).toBeLessThanOrEqual(1)
 })
 
+// 侧栏版最窄的一段（861–909）「校验通过」只写这四个字：「· 可以保存」会把「保存并应用」挤出屏幕；910 起放得下就写全
+// In the narrowest sidebar band (861–909) the bar says just 校验通过: 「· 可以保存」 pushed 保存并应用 off screen; from 910 there is room for the whole line
+test('侧栏版最窄时，校验通过的保存条不把按钮挤出屏幕', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', '只看 861 以上的保存条')
+  await page.setViewportSize({ width: 861, height: 800 })
+  await page.goto('/config')
+  await page.getByRole('button', { name: '快速添加', exact: true }).click()
+  const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+  await quick.fill('narrow.example.org')
+  await quick.press('Enter')
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '校验', exact: true }).click()
+  await expect(bar.locator('.ui-savebar__status')).toContainText('校验通过')
+  for (const width of [861, 909, 910]) {
+    await page.setViewportSize({ width, height: 800 })
+    await expect(bar.locator('.ui-savebar__status')).toContainText(width >= 910 ? '可以保存' : '校验通过')
+    if (width < 910) await expect(bar.locator('.ui-savebar__status')).not.toContainText('可以保存')
+    const save = (await bar.getByRole('button', { name: '保存并应用' }).boundingBox())!
+    expect(save.x + save.width, `${width}`).toBeLessThanOrEqual(width)
+  }
+})
+
 // 内核不支持的开关按「关掉」以后，那一行先留着写「已关闭」，这一组不会一下子空掉；离开这一组再消失
 // After 关掉 on a switch the kernel lacks, its row stays reading 已关闭, so the group never empties at once; it goes once the group is left
 test('不支持的开关按「关掉」后那一行留着写「已关闭」，设置面板不变空白', async ({ page }) => {
@@ -377,4 +399,24 @@ test('手机上行里的「…」和开关并排，点按区各 44 @responsive',
       expect(area.height).toBeGreaterThanOrEqual(44)
     }
   }
+})
+
+// 手机上规则行、映射行整行都能点进编辑：第二行（结果、回答）以前点了没反应 / On phones a rule or mapping row opens the editor anywhere: the second line (outcome, answer) used to do nothing
+test('手机上点规则行、映射行的第二行也能进编辑 @responsive', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'mobile', '只看手机的行')
+  await page.goto('/config')
+  const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+  await quick.fill('second-line.example.org')
+  await quick.press('Enter')
+  // 像手指一样点第二行那个位置（那里接住点击的是整行的点击区） / Tap the second line's spot as a finger would (the row's hit area takes it there)
+  const tapCentre = async (locator: ReturnType<typeof page.locator>) => { const box = (await locator.boundingBox())!; await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2) }
+  await tapCentre(page.locator('[data-rule]', { hasText: 'second-line.example.org' }).locator(':scope > .rrow__pill'))
+  await expect(page).toHaveURL(/rule=/)
+  await page.goBack()
+  await page.goto('/config?section=mapping')
+  await page.getByLabel('要映射的域名').fill('line.home.arpa')
+  await page.getByLabel('回答的 IP 或域名').fill('192.168.1.50')
+  await page.getByRole('button', { name: '添加', exact: true }).click()
+  await tapCentre(page.locator('[data-rw]', { hasText: 'line.home.arpa' }).locator('.rw__t'))
+  await expect(page.locator('.rw__edit')).toBeVisible()
 })

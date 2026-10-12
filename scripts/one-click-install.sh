@@ -33,6 +33,27 @@ retry_hint() {
   fi
 }
 
+# 没动成时说什么没变：在线更新只换面板，说「面板还是原来的版本」；一键安装说「系统没有改动」（在系统页上读着不像页面名）
+# What stayed as it was when nothing happened: an online update only swaps the panel, so 面板还是原来的版本; a one-click install says 系统没有改动
+unchanged_note() {
+  if [[ " ${INSTALLER_ARGUMENTS[*]} " == *" --panel-only-update "* ]]; then
+    printf '面板还是原来的版本'
+  else
+    printf '系统没有改动'
+  fi
+}
+
+# GitHub 匿名次数用完时怎么办：在线更新是在系统页按的，Token 在那里填；命令行安装写 Token 文件或手动安装
+# What to do when GitHub's anonymous quota runs out: an online update was pressed on the system page, where the token is entered; a command-line install
+# writes the token file or installs by hand
+token_hint() {
+  if [[ " ${INSTALLER_ARGUMENTS[*]} " == *" --panel-only-update "* ]]; then
+    printf '过一会儿再点一次在线更新，或者在系统页填一个 GitHub Token'
+  else
+    printf '过一会儿再试；或把 GitHub Token 写入 %s（权限 0600）后再试；或按 docs/deployment.md 的「手动安装」下载安装包' "${GITHUB_TOKEN_FILE}"
+  fi
+}
+
 usage() {
   cat <<EOF
 用法：curl -fsSL ${ONE_CLICK_URL} | sudo bash
@@ -93,13 +114,13 @@ parse_arguments() {
 validate_version_tag() {
   [[ -z ${VERSION} || ${VERSION} =~ ${TAG_PATTERN} ]] && return 0
   if [[ v${VERSION} =~ ${TAG_PATTERN} ]]; then
-    fail "版本标签必须以 v 开头，请改用 --version v${VERSION}"
+    fail "版本标签要以 v 开头：用 --version v${VERSION}"
   fi
   fail "版本标签 ${VERSION} 格式无效，应形如 vX.Y.Z；可用版本见 ${RELEASES_URL}"
 }
 
 require_root() {
-  [[ ${EUID} -eq 0 ]] || fail "请使用 sudo bash 运行一键安装命令"
+  [[ ${EUID} -eq 0 ]] || fail "要用 sudo bash 运行一键安装命令"
 }
 
 require_commands() {
@@ -162,19 +183,19 @@ explain_api_failure() {
       if [[ -n ${VERSION} ]]; then
         fail "找不到版本 ${VERSION}，可用版本见 ${RELEASES_URL}"
       fi
-      fail "仓库还没有正式版，请到 ${RELEASES_URL} 查看"
+      fail "仓库还没有正式版，到 ${RELEASES_URL} 看看"
       ;;
     403 | 429)
-      fail "GitHub API 拒绝了请求（HTTP ${status}），通常是匿名访问超出限额：每个出口 IP 每小时 60 次。可稍后重试；或把 GitHub Token 写入 ${GITHUB_TOKEN_FILE}（权限 0600）后重试；或按 docs/deployment.md 的「手动安装」下载安装包"
+      fail "GitHub API 拒绝了请求（HTTP ${status}），通常是匿名访问超出限额：每个出口 IP 每小时 60 次。$(token_hint)"
       ;;
     000)
       # --retry 每次重试都会写一行同样的错误，只留最后一行。
       # --retry writes the same error once per attempt; keep only the last line.
       curl_error="$(tr -d '\r' <<< "${curl_error}" | awk 'NF { line = $0 } END { print line }')"
-      fail "无法连接 GitHub：${curl_error:-未知网络错误}。请检查网络和 DNS 后重试"
+      fail "连不上 GitHub：${curl_error:-未知网络错误}。检查网络和 DNS 后$(retry_hint)"
       ;;
     *)
-      fail "读取 Release 信息失败：HTTP ${status}（${api_url}），请稍后重试"
+      fail "读取 Release 信息失败：HTTP ${status}（${api_url}），过一会儿$(retry_hint)"
       ;;
   esac
 }
@@ -237,7 +258,7 @@ print_already_installed() {
   local tag=$1
   local hint="--reinstall"
   [[ -z ${VERSION} ]] || hint="--version ${VERSION} --reinstall"
-  printf '已安装 KixDNS Panel %s，无需重复安装；如需修复性重装：curl -fsSL %s | sudo bash -s -- %s\n' \
+  printf '已安装 KixDNS 面板 %s，无需重复安装；如需修复性重装：curl -fsSL %s | sudo bash -s -- %s\n' \
     "${tag}" "${ONE_CLICK_URL}" "${hint}"
 }
 
@@ -283,7 +304,7 @@ build_installer_arguments() {
       ! installer_supports_flag "${known}" "${argument}"; then
       # --keep-existing 总是原样转交：新安装包会自己说明该模式已移除以及如何迁移。
       # --keep-existing always passes through: newer packages explain its removal themselves.
-      fail "KixDNS Panel ${tag} 的安装器不认识参数 ${argument}，系统没有改动。检查拼写，或用 --version 选择支持该参数的版本"
+      fail "KixDNS 面板 ${tag} 的安装器不认识参数 ${argument}，$(unchanged_note)。检查拼写，或用 --version 选择支持该参数的版本"
     fi
     FINAL_INSTALLER_ARGUMENTS+=("${argument}")
   done
@@ -314,7 +335,7 @@ download_archive() {
   curl --fail "${progress}" --show-error --location \
     --proto '=https' --tlsv1.2 --retry 3 --connect-timeout 10 --max-time 600 \
     --output "${archive}" "${asset_url}" ||
-    fail "下载安装包失败，系统没有改动。检查网络后$(retry_hint)"
+    fail "下载安装包失败，$(unchanged_note)。检查网络后$(retry_hint)"
 }
 
 main() {
@@ -363,7 +384,7 @@ main() {
     fi
     # 版本对得上但面板没在运行，说明上次安装或运行出了问题，按 --reinstall 处理。
     # The release matches but the panel is down, so something broke; treat it as --reinstall.
-    printf '已安装 KixDNS Panel %s，但面板未在运行，将进行修复性重装\n' "${tag}"
+    printf '已安装 KixDNS 面板 %s，但面板没在运行，接着修复性重装\n' "${tag}"
     REINSTALL=true
   fi
 
@@ -385,7 +406,7 @@ main() {
   download_archive "${asset_url}" "${archive}"
   printf '%s  %s\n' "${asset_digest#sha256:}" "${archive}" |
     sha256sum --check --strict --status ||
-    fail "安装包 SHA-256 与 GitHub 公布的摘要不一致，已丢弃，系统没有改动。再试一次；仍不一致请不要安装，并到 https://github.com/${REPOSITORY}/issues 报告"
+    fail "安装包 SHA-256 与 GitHub 公布的摘要不一致，已丢弃，$(unchanged_note)。再试一次；仍不一致请不要安装，并到 https://github.com/${REPOSITORY}/issues 报告"
   validate_archive_entries "${archive}"
   install -d -m 0700 "${extract_directory}"
   unzip -q "${archive}" -d "${extract_directory}"
@@ -399,7 +420,7 @@ main() {
   printf '校验通过。\n'
 
   build_installer_arguments "${package_root}/scripts/install.sh" "${tag}"
-  printf '准备安装 KixDNS Panel %s（%s）\n' "${tag}" "${architecture}"
+  printf '准备安装 KixDNS 面板 %s（%s）\n' "${tag}" "${architecture}"
   bash "${package_root}/scripts/install.sh" "${FINAL_INSTALLER_ARGUMENTS[@]}"
 }
 

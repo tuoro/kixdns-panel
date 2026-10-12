@@ -26,6 +26,7 @@ import PhoneSheet from './PhoneSheet.vue'
 import RawRuleEditor from './RawRuleEditor.vue'
 import { editorEditedBy, hitsOf, listOf, model, newId, ruleShape } from './store'
 import { runtimeCapabilities } from './useConfigDocument'
+import { MOD } from '../help/topics'
 import { editedText, groupBrief } from './view'
 // JSON 编辑器（CodeMirror）只在用到时才加载：配置页的首包不带它 / The JSON editor (CodeMirror) loads on first use, so the config page's first chunk leaves it out
 const JsonEditor = defineAsyncComponent(() => import('../components/JsonEditor.vue'))
@@ -288,7 +289,9 @@ const reading = computed(() => {
 // 新规则还没条件时，占位别写「所有请求」——那像个填好的名字；写清楚这格是名字、可以不填 / A new rule without conditions does not show 「所有请求」 as its placeholder (it reads like a filled-in name); say what the field is and that it is optional
 const namePlaceholder = computed(() => (!original && !draft.conditions.some((g) => g.length) ? '规则名称，可以不填' : ruleTitle({ ...draft, name: '' } as Rule)))
 // 没有条件时不说「所有请求时，…」，说「所有请求都…」 / Without conditions it reads 「所有请求都…」, not 「所有请求时，…」
-const readingLead = computed(() => (!draft.raw && !draft.conditions.some((g) => g.length) ? `所有请求都${reading.value[1]?.v ?? ''}` : `${withShi(reading.value[0]?.v ?? '')}，${reading.value[1]?.v ?? ''}`))
+// 组名的后引号和「解析」连着写，折行时「解析」不单独落到下一行 / The group name's closing quote is glued to 解析, so a wrap never leaves 解析 alone on the next line
+const glueTail = (text: string): string => text.replace(/」解析$/, '」\u2060解析')
+const readingLead = computed(() => (!draft.raw && !draft.conditions.some((g) => g.length) ? `所有请求都${glueTail(reading.value[1]?.v ?? '')}` : `${withShi(reading.value[0]?.v ?? '')}，${glueTail(reading.value[1]?.v ?? '')}`))
 const readingMore = computed(() => reading.value.slice(2).map((row) => `${row.k}：${row.v}`))
 
 const kernelJson = computed(() => JSON.stringify(kernelPreview(model, draft), null, 2))
@@ -325,8 +328,27 @@ function done(): void {
   target.splice(Math.min(Number(position.value), target.length), 0, saved)
   emit('saved', saved, !original)
 }
+// 宽屏右侧面板里保存（Ctrl+S 或保存条）：修改原地写回这条规则，面板不关，焦点留在正在打字的地方；新建的规则照旧收起
+// Saving from the wide side panel (Ctrl+S or the save bar): the edits are written back into this rule in place and the panel stays open, focus where the
+// typing was; a new rule still closes as before
+function keepOpen(): void {
+  if (draft.raw) draft.raw = currentRaw()
+  draft.conditions = draft.conditions.filter((g) => g.length).length ? draft.conditions.filter((g) => g.length) : [[]]
+  draft.name = draft.name.trim()
+  draft.edited = new Date().toISOString()
+  const target = list.value
+  const at = original ? target.indexOf(original) : -1
+  if (!original || at < 0) { emit('close'); return }
+  Object.assign(original, JSON.parse(JSON.stringify(draft)) as Rule)
+  target.splice(at, 1)
+  const to = Math.min(Number(position.value), target.length)
+  target.splice(to, 0, original)
+  position.value = to
+  positionBase.value = to
+  initialSnap.value = snapshot()
+}
 // 保存条要保存时先把面板里的修改收进草稿；写错了就停在面板里指出来 / Before the save bar saves, the panel's edits go into the draft; if something is wrong the panel stops and points at it
-function commit(): boolean {
+function commit(stay = false): boolean {
   if (!edited()) return true
   if (problems.value.length) {
     showErrors.value = true
@@ -334,7 +356,8 @@ function commit(): boolean {
     toast.info('先改好右侧规则再保存')
     return false
   }
-  done()
+  if (stay && original) keepOpen()
+  else done()
   return true
 }
 defineExpose({ confirmDiscard, commit, capture })
@@ -451,19 +474,21 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
                 <UiSelect v-if="draft.response.thenLog" v-model="draft.response.thenLog" class="erow__level" :options="levels" label="回答检查的日志级别" size="sm" />
               </div>
               <template v-if="phone">
-                <button class="crow" type="button" aria-label="修改不满足时怎么做" @click="sheet = 'otherwise'"><span class="crow__text"><span class="crow__head"><i class="crow__join">否则</i><b>{{ remedySentence(model, draft.response.otherwise) }}</b></span></span><ChevronRight class="crow__chev" :size="16" aria-hidden="true" /></button>
-                <PhoneSheet v-if="sheet === 'otherwise'" title="不满足时" @close="sheet = null">
-                  <div class="pfield"><span>怎么做</span><UiSelect :model-value="draft.response.otherwise.type" :options="elseKinds" label="不满足时怎么做" @update:model-value="draft.response.otherwise = remedyOf($event)" /></div>
+                <button class="crow" type="button" aria-label="修改不满足或没有回答时怎么做" @click="sheet = 'otherwise'"><span class="crow__text"><span class="crow__head"><i class="crow__join">否则</i><b>{{ remedySentence(model, draft.response.otherwise) }}</b></span></span><ChevronRight class="crow__chev" :size="16" aria-hidden="true" /></button>
+                <PhoneSheet v-if="sheet === 'otherwise'" title="不满足或没有回答时" @close="sheet = null">
+                  <div class="pfield"><span>怎么做</span><UiSelect :model-value="draft.response.otherwise.type" :options="elseKinds" label="不满足或没有回答时怎么做" @update:model-value="draft.response.otherwise = remedyOf($event)" /></div>
                   <OutcomeParams v-if="draft.response.otherwise.type !== 'none'" v-model="draft.response.otherwise" :show-errors="showErrors" label="否则" @edit-group="sheet = null; emit('editGroup', $event)" />
                 </PhoneSheet>
               </template>
               <div v-else class="after__then">
                 <span class="after__k">否则</span>
-                <UiSelect class="after__kind" :model-value="draft.response.otherwise.type" :options="elseKinds" label="不满足时怎么做" @update:model-value="draft.response.otherwise = remedyOf($event)" />
+                <UiSelect class="after__kind" :model-value="draft.response.otherwise.type" :options="elseKinds" label="不满足或没有回答时怎么做" @update:model-value="draft.response.otherwise = remedyOf($event)" />
                 <OutcomeParams v-if="draft.response.otherwise.type !== 'none'" v-model="draft.response.otherwise" class="after__params" :show-errors="showErrors" label="否则" @edit-group="emit('editGroup', $event)" />
               </div>
             </div>
-            <p class="ui-notice ui-notice--off after__limit"><Info :size="16" aria-hidden="true" /><span>上游全部超时或连不上时不会走到这一步，KixDNS 直接回 SERVFAIL。</span></p>
+            <!-- 和内核一样：上游全都没回时，单独设了「否则」就按「否则」做（内核的 response_actions_on_miss）；没设就先回过期的旧结果，再回 SERVFAIL
+                 As the kernel does: when no upstream answers, a custom 「否则」 runs (the kernel's response_actions_on_miss); without one a stale answer goes first, then SERVFAIL -->
+            <p class="ui-notice ui-notice--off after__limit"><Info :size="16" aria-hidden="true" /><span>{{ draft.response.mode === 'custom' && draft.response.otherwise.type !== 'none' ? '上游全部超时或连不上时，按「否则」处理。' : '上游全部超时或连不上时不会走到这一步：开了「过期后继续用旧结果」先回旧结果，没有就回 SERVFAIL。' }}</span></p>
           </div>
         </section>
 
@@ -561,7 +586,7 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
       <button v-if="original" class="ui-btn ui-btn--text editor__delete" type="button" @click="remove"><Trash2 :size="16" aria-hidden="true" />删除规则</button>
       <button v-if="showErrors && problems.length" class="editor__problem" type="button" role="alert" @click="revealProblem">还有 {{ problemCount }} 处要改：{{ problems[0] }}</button>
       <span class="editor__spacer"></span>
-      <span v-if="!inspector" class="editor__keys" aria-hidden="true">Ctrl+Enter {{ original ? '完成' : '新建' }} · Esc 返回</span>
+      <span v-if="!inspector" class="editor__keys" aria-hidden="true">{{ MOD === '⌘' ? '⌘⏎' : 'Ctrl+Enter' }} {{ original ? '完成' : '新建' }} · Esc 返回</span>
       <button class="ui-btn ui-btn--secondary" type="button" @click="leave">取消</button>
       <button class="ui-btn ui-btn--primary" type="button" @click="done">{{ original ? '完成' : '新建' }}</button>
     </footer>

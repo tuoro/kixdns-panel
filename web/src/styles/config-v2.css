@@ -28,8 +28,7 @@ body { background: var(--l-canvas); }
 .cfg__head-action { margin-left: var(--s-1); padding: 0; border: 0; background: none; color: var(--l-ink); font: inherit; font-weight: var(--w-medium); text-decoration: underline; text-decoration-color: var(--l-ink-3); text-underline-offset: 3px; cursor: pointer; }
 .cfg__head-action:hover { text-decoration-color: var(--l-ink); }
 .cfg__spin { width: var(--size-icon-sm); height: var(--size-icon-sm); }
-.cfg__status-sk { display: inline-block; width: 9rem; }
-.cfg__status-sk .sk { height: 1lh; }
+.cfg__status-sk { width: 9rem; }
 .cfg__notice { margin-top: calc(var(--s-1) * -1); }
 .cfg__notice .ui-objlink, .ui-savebar .ui-objlink { font-size: inherit; color: inherit; text-decoration-color: currentColor; }
 .cfg__json { display: grid; gap: var(--s-3); }
@@ -200,7 +199,7 @@ body { background: var(--l-canvas); }
 @media (min-width: 1360px) {
   .rules-split.is-open { grid-template-columns: minmax(0, 1fr) var(--inspector-w); }
   /* 面板开着时列表窄了：结果那一列最窄 9rem、命中 4rem，名字那一列才留得住 / With the inspector open the list is narrower: the result column bottoms at 9rem and hits at 4rem, so the name column keeps its room */
-  .rules-split.is-open :is(.rlist, .rcard) { --rl-cols: var(--s-6) minmax(0, 1.5fr) minmax(9rem, 1fr) 4rem var(--s-7) var(--h-sm); }
+  .rules-split.is-open :is(.rlist, .rcard) { --rl-num: var(--s-6); --rl-cols: var(--rl-num) minmax(0, 1.5fr) minmax(9rem, 1fr) 4rem var(--s-7) var(--h-sm); }
   /* 面板跟着滚：顶部留页边距，太高时自己滚 / The inspector sticks: a page margin above, scrolling inside when taller than the viewport */
   .rules-split > .editor--inspector { position: sticky; top: calc(var(--s-6) + var(--conn-h, 0px)); max-height: calc(100dvh - var(--s-6) * 2 - var(--conn-h, 0px)); overflow: auto; overscroll-behavior: contain; }
 }
@@ -285,7 +284,8 @@ body { background: var(--l-canvas); }
 
 /* ---------- 规则列表：卡片、表头、行、置顶行、结果胶囊、快速添加、规则组、高级入口 / rule list: card, header, rows, pinned rows, outcome pill, quick add, rule groups, advanced entries ---------- */
 .rcard { overflow: clip; }
-.rlist, .rcard { --rl-cols: var(--s-6) minmax(0, 1.5fr) minmax(12rem, 1fr) 4.5rem var(--s-7) var(--h-sm); }
+/* --rl-num 是 # 那一列的宽度，高级入口的列表也用它，序号和条件跟规则表对在同一条线上 / --rl-num is the # column's width; the advanced-entry list uses it too, so its numbers and conditions line up with the rule tables */
+.rlist, .rcard { --rl-num: var(--s-6); --rl-cols: var(--rl-num) minmax(0, 1.5fr) minmax(12rem, 1fr) 4.5rem var(--s-7) var(--h-sm); }
 .rlist__head, .rrow, .rpin { display: grid; grid-template-columns: var(--rl-cols); column-gap: var(--s-4); align-items: center; padding-inline: var(--s-4); }
 .rlist__head { min-height: var(--h-md); border-bottom: 1px solid var(--l-hair); color: var(--l-ink-3); font-size: var(--t-1); }
 .rlist__head > :first-child { text-align: center; }
@@ -363,13 +363,13 @@ body { background: var(--l-canvas); }
 .rcard__empty { display: flex; align-items: center; gap: var(--s-2); margin: var(--s-2) var(--s-4); padding: var(--s-3) var(--s-4); border: 1px dashed var(--l-line-strong); border-radius: var(--r-2); color: var(--l-ink-2); font-size: var(--t-2); }
 .rrow__changed { width: var(--s-2); height: var(--s-2); flex: 0 0 auto; }
 .entries__list { margin: 0; padding: 0; list-style: none; }
-.entries__list li { display: grid; grid-template-columns: var(--s-6) minmax(0, 1fr) auto; gap: var(--s-4); align-items: baseline; padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--l-hair); font-size: var(--t-2); }
+.entries__list li { display: grid; grid-template-columns: var(--rl-num) minmax(0, 1fr) auto; gap: var(--s-4); align-items: baseline; padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--l-hair); font-size: var(--t-2); }
 .entries__list li:last-child { border-bottom: 0; }
 .entries__ord { color: var(--l-ink-3); text-align: center; font-variant-numeric: tabular-nums; }
 .entries__cond { min-width: 0; color: var(--l-ink); overflow-wrap: anywhere; }
 .entries__to { color: var(--l-ink-2); white-space: nowrap; }
 @media (max-width: 860px) {
-  .rlist, .rcard { --rl-cols: var(--s-5) minmax(0, 1fr) minmax(8rem, 12rem) var(--s-7) var(--h-sm); }
+  .rlist, .rcard { --rl-num: var(--s-5); --rl-cols: var(--rl-num) minmax(0, 1fr) minmax(8rem, 12rem) var(--s-7) var(--h-sm); }
   .rlist__head > :nth-child(4), .rrow__hits { display: none; }
   .rpin__link { grid-column: 4 / -1; }
 }
@@ -461,6 +461,8 @@ body { background: var(--l-canvas); }
 /* 「继续」透明底，所以不画分隔竖线 / 继续 has no fill, so no divider after its verb */
 .opill--pass .opill__verb { box-shadow: inset -1px 0 0 var(--l-hair); padding-right: var(--s-2); }
 .rrow__num { position: relative; display: grid; place-items: center; color: var(--l-ink-3); font-size: var(--t-2); font-variant-numeric: tabular-nums; justify-items: end; padding-right: var(--s-1); }
+/* 正在编辑的那行底色带一点蓝，灰色序号只剩 4.4:1，加深一档 / The row being edited has a faint blue tint that leaves the grey number at 4.4:1, so it goes one step darker */
+.rrow.ui-selected .rrow__num { color: var(--l-ink-2); }
 /* 表格里的文字都从规则名那一条线开始，图标都居中在 # 那一列 / Every text in the table starts on the rule-name line, every icon centred in the # column */
 .qadd { display: grid; row-gap: var(--s-1); align-items: center; border-bottom: 1px solid var(--l-hair); column-gap: var(--s-4); }
 .rcard__foot .ui-btn { padding-left: calc((var(--s-6) - 14px) / 2); }
@@ -481,7 +483,7 @@ body { background: var(--l-canvas); }
 .rlist__hits { padding-right: 0; }
 @media (min-width: 641px) {
   /* 卡片内边距一律 24：表格卡、工具行和表单卡叠在一起时左边不再错开 / Every card inset is 24: table cards, toolbars and form cards no longer jog where they stack */
-  .rlist__head, .rrow, .rpin { padding-inline: var(--s-5); }
+  .rlist__head, .rrow, .rpin, .entries__list li { padding-inline: var(--s-5); }
   .rcard__foot { padding-inline: var(--s-5); }
   /* # 这一列：序号和行首图标都居中在同一条线上 / The # column: numbers and row icons all centre on one line */
   .rrow__num { justify-items: center; padding-right: 0; font-variant-numeric: tabular-nums; }
@@ -618,17 +620,17 @@ body { background: var(--l-canvas); }
 @media (min-width: 861px) {
   /* 规则表：结果、命中、启用、「…」是右边固定的一组，名字和条件拿走其余的宽度；结果和命中之间不再空出一大段
      Rules table: outcome, hits, switch and 「…」 form a fixed group at the right, and the name and condition take the rest; no wide hole between outcome and hits */
-  .rlist, .rcard { --rl-cols: var(--s-6) minmax(0, 1fr) 15rem 4.5rem var(--s-7) var(--h-sm); }
+  .rlist, .rcard { --rl-num: var(--s-6); --rl-cols: var(--rl-num) minmax(0, 1fr) 15rem 4.5rem var(--s-7) var(--h-sm); }
 }
 /* 1024 一档内容列窄：结果列收到 11rem（最宽的常见胶囊约 10rem），省下的宽度给规则名和条件，不再把条件截成半句
    At the 1024 step the content column is narrow: the outcome column drops to 11rem (the widest common pill is about 10rem), and the width it frees goes to the rule name and condition instead of cutting the condition mid-phrase */
 @media (min-width: 861px) and (max-width: 1199px) {
-  .rlist, .rcard { --rl-cols: var(--s-6) minmax(0, 1fr) 11rem 4rem var(--s-7) var(--h-sm); }
+  .rlist, .rcard { --rl-num: var(--s-6); --rl-cols: var(--rl-num) minmax(0, 1fr) 11rem 4rem var(--s-7) var(--h-sm); }
 }
 /* 861–1023 有侧栏，规则名那一列只剩 90–130：和 860 以下一样收起命中列，结果列可缩，名字和条件拿回宽度
    861–1023 has the sidebar and left the name column 90–130 wide: as below 860 the hits column folds away and the outcome column may shrink, giving width back to the name and condition */
 @media (min-width: 861px) and (max-width: 1023px) {
-  .rlist, .rcard { --rl-cols: var(--s-5) minmax(0, 1fr) minmax(8rem, 12rem) var(--s-7) var(--h-sm); }
+  .rlist, .rcard { --rl-num: var(--s-5); --rl-cols: var(--rl-num) minmax(0, 1fr) minmax(8rem, 12rem) var(--s-7) var(--h-sm); }
   .rlist__head > :nth-child(4), .rrow__hits { display: none; }
   .rpin__link { grid-column: 4 / -1; }
 }
@@ -1206,6 +1208,8 @@ body { background: var(--l-canvas); }
 /* 抽屉头 56 高，和顶栏同高，两条细线对齐 / The drawer head is 56 tall like the app header, so the two hairlines meet */
 .pdrawer__head, .pdialog__head { display: flex; flex: 0 0 auto; align-items: center; gap: var(--s-2); min-height: var(--app-header-height); padding-block: calc((var(--app-header-height) - var(--h-md)) / 2); }
 .pdrawer__head > .ui-icon-btn:last-child, .pdialog__head > .ui-icon-btn:last-child { margin-right: calc((var(--h-md) - var(--size-icon)) / -2 - 3px); }
+/* 手机上关闭按钮往外挪到 × 贴着内容边，外面的焦点框会超出屏幕 1px，框画在按钮里面 / On phones the close button is pulled out until its × sits on the content edge, which pushed an outer focus ring 1px off screen, so the ring is drawn inside the button */
+@media (max-width: 640px) { :is(.pdrawer__head, .pdialog__head) > .ui-icon-btn:last-child:focus-visible { outline-offset: -2px; } }
 /* 弹窗头：有副标题时关闭按钮对齐标题那一行 / Dialog heads: with a subtitle the close button aligns with the title line */
 .pdrawer__head:has(.pdrawer__titles), .pdialog__head:has(.pdrawer__titles) { align-items: flex-start; }
 .pdrawer__head:has(.pdrawer__titles) > .ui-icon-btn, .pdialog__head:has(.pdrawer__titles) > .ui-icon-btn { margin-top: calc((var(--t-4) * var(--lh-tight) - var(--h-md)) / 2); }
@@ -1546,6 +1550,11 @@ body { background: var(--l-canvas); }
 .rw__adderr { grid-column: 1 / -1; margin: 0; padding-bottom: var(--s-1); }
 /* 域名是一行的标题：比回答重一级 / The domain is the row's title: one step heavier than the answer */
 .rw__d { min-width: 0; overflow: hidden; padding: 0; border: 0; background: none; color: var(--l-ink); font-family: var(--f-mono); font-size: var(--t-2); text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; font-weight: var(--w-medium); }
+/* 长域名只省略域名本身，后面「改过」的点一直看得见 / A long domain ellipsizes only the name, so the changed dot after it stays visible */
+.rw__d { display: flex; align-items: center; }
+.rw__dt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rw__d > .rrow__changed { flex: none; }
+.rw__d:focus-visible { border-radius: var(--r-1); }
 @media (max-width: 640px) {
   /* 手机：先只露一行「添加域名映射」，开始输入才出回答、类型和「添加」 / Phones: only the 添加域名映射 line shows until typing reveals the answer, the type and 添加 */
   .rw__add { padding: 0 var(--s-4); }
@@ -1758,7 +1767,8 @@ body { background: var(--l-canvas); }
 .imp__notes { display: grid; gap: var(--s-2); max-height: 50vh; margin: 0; padding: 0; overflow-y: auto; list-style: none; }
 .imp__notes li { display: grid; grid-template-columns: var(--size-icon) minmax(0, 1fr); gap: var(--s-2); color: var(--l-ink); font-size: var(--t-2); line-height: var(--lh-base); }
 @media (max-width: 640px) {
-  .entries__list li { grid-template-columns: var(--s-5) minmax(0, 1fr); }
+  /* 和手机上的规则行一样：# 列 24、列间 8、两行之间 4 / As phone rule rows: a 24 # column, 8 between columns, 4 between the lines */
+  .entries__list li { grid-template-columns: var(--s-5) minmax(0, 1fr); gap: var(--s-1) var(--s-2); }
 }
 .imp__notes li svg { margin-top: 3px; color: var(--l-ink-3); }
 .imp__notes li.is-warn svg { color: var(--warn-l); }
@@ -1797,12 +1807,16 @@ body { background: var(--l-canvas); }
 }
 /* 手机上的小目标：映射的域名格、上游组名、只有一行的规则名，点击范围撑到 40 以上 / Small phone targets: a mapping's domain cell, a group name, a one-line rule name, hit areas past 40 */
 @media (max-width: 640px) {
-  .rw__d, .gcard__name, .rrow__main { position: relative; }
-  .rw__d::before, .gcard__name::before { position: absolute; inset: calc(min(0px, (100% - var(--h-touch)) / 2)) calc(var(--s-1) * -1); content: ''; }
-  /* 映射的域名格为了省略号要裁掉溢出，连补出去的点按区域也一起裁了（只剩 20 高）：改成留出 12 再裁，省略号照旧
-     The mapping's domain cell clips its overflow for the ellipsis, which clipped its grown hit area too (20 tall): clip with 12 to spare, the ellipsis unchanged */
-  .rw__d { overflow: clip; overflow-clip-margin: var(--s-3); }
-  .rrow__main::before { position: absolute; inset: calc(var(--s-2) * -1) 0; content: ''; }
+  .gcard__name { position: relative; }
+  .gcard__name::before { position: absolute; inset: calc(min(0px, (100% - var(--h-touch)) / 2)) calc(var(--s-1) * -1); content: ''; }
+  /* 规则行、映射行整行都能点进编辑（第二行的结果、回答以前点了没反应）：点按区域铺满这一行；「…」和开关排在后面、自己有定位，盖在它上面照样点得到
+     A rule or mapping row opens the editor anywhere on it (the outcome or answer line used to do nothing): the hit area spans the row; 「…」 and the switch come
+     later and are positioned, so they sit above it and still take their own taps */
+  .rw__row { position: relative; }
+  .rrow > .rrow__main, .rw__row > .rw__d { position: static; }
+  .rrow > .rrow__main::before, .rw__row > .rw__d::before { position: absolute; inset: 0; content: ''; }
+  .rpin .rrow__main { position: relative; }
+  .rpin .rrow__main::before { position: absolute; inset: calc(var(--s-2) * -1) 0; content: ''; }
 }
 
 /* ---------- 9.5 审查第一轮：保存条 / review round 1: the save bar ----------

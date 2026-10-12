@@ -246,7 +246,7 @@ impl UpdateManager {
             .map_err(|error| github_unreachable(&error))?;
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
             return Err(UpdateError::Invalid(
-                "GitHub Token 无效，请检查后重试".to_owned(),
+                "GitHub Token 无效，换一个再试".to_owned(),
             ));
         }
         let rate_limit = parse_rate_limit(response.headers());
@@ -254,7 +254,7 @@ impl UpdateManager {
             let message = if rate_limit.as_ref().is_some_and(|rate| rate.remaining == 0) {
                 "GitHub Token 的访问次数用完了，等次数重置或换一个 Token"
             } else {
-                "GitHub 拒绝验证该 Token，请检查访问策略"
+                "GitHub 拒绝了这个 Token：检查它的访问策略"
             };
             return Err(UpdateError::Network(message.to_owned()));
         }

@@ -35,7 +35,7 @@ let demoLogArrivals = 0
 const auditEvents = [
   { id: 18, actor: 'admin', action: 'config.save', detail: '版本 #18', created_at: now - 430 },
   { id: 17, actor: 'admin', action: 'config.geo_data.sync', detail: 'GeoIP\u00a0MMDB\u00a01\u00a0个、GeoIP\u00a0DAT\u00a00\u00a0个、GeoSite\u00a01\u00a0个', created_at: now - 7200 },
-  { id: 16, actor: 'admin', action: 'kixdns.kernel.update', detail: '更新到 构建 #30231271280', created_at: now - 86400 },
+  { id: 16, actor: 'admin', action: 'kixdns.kernel.update', detail: '更新到构建 #30231271280', created_at: now - 86400 },
   { id: 15, actor: 'admin', action: 'service.restart', detail: '服务状态：正在运行', created_at: now - 86520 },
   { id: 14, actor: 'admin', action: 'diagnostic.dns', detail: '执行 A 查询', created_at: now - 172800 },
   { id: 13, actor: 'admin', action: 'auth.login', detail: '', created_at: now - 173100 },
@@ -462,8 +462,10 @@ async function mockDraftTrial(domain: string, recordType: string, client: string
 }
 
 export async function mockRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  await new Promise((resolve) => setTimeout(resolve, 120))
   const method = init?.method ?? 'GET'
+  // kixdns:demo-read-slow：读取要 1.5 秒，演示各页读完之前的占位 / kixdns:demo-read-slow: reads take 1.5 s, to show each page's placeholder before the read lands
+  const slowRead = method === 'GET' && typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-read-slow') === 'true'
+  await new Promise((resolve) => setTimeout(resolve, slowRead ? 1500 : 120))
   const url = new URL(path, 'http://panel.local')
   const pathname = url.pathname
   // 同上：让初始化页也能在演示里看到，否则它的用例只能永远跳过。
@@ -515,7 +517,7 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
   if (path === '/api/v1/kixdns/kernel/update' && method === 'POST') {
     const body = JSON.parse(String(init?.body)) as { source_id: number }
     if (body.source_id !== latestKixdnsVersion.source_id) {
-      throw new ApiError('上游又出了更新的构建，重新检查后再更新', 409, 'update_conflict')
+      throw new ApiError('没有更新内核：原版又出了新构建，点「检查更新」看过后再更新', 409, 'update_conflict')
     }
     if (activeKixdnsVersion !== latestKixdnsVersion) {
       previousKixdnsVersion = activeKixdnsVersion
@@ -607,6 +609,8 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
     return { deleted_id: id } as DeleteConfigVersionResult as T
   }
   if (path === '/api/v1/config/validate') {
+    // kixdns:demo-validate-slow：校验要 1.5 秒，演示校验途中按保存、离开页面 / kixdns:demo-validate-slow: validation takes 1.5 s, to show saving or leaving while it runs
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-validate-slow') === 'true') await new Promise((resolve) => setTimeout(resolve, 1500))
     // kixdns:demo-validate-stopped：下一次校验撞上 KixDNS 刚停掉（控制接口不在了），演示保存时才发现停了的样子
     // kixdns:demo-validate-stopped: the next validation finds KixDNS just stopped (the control socket is gone), showing a stop discovered while saving
     if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-validate-stopped') === 'true') {

@@ -61,7 +61,7 @@ router.onError(async (error, to) => {
   // Still failing after a reload, or unable to remember reloading: say so and
   // leave the refresh to the user.
   if (staleChunks.isPreloadError(error)) {
-    useToast().error('页面文件加载失败，面板可能刚更新过。请刷新浏览器后重试')
+    useToast().error('页面文件加载失败，面板可能刚更新过。刷新浏览器再试')
   }
 })
 
