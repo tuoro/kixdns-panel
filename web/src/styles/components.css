@@ -57,8 +57,9 @@
 .ui-btn { min-height: var(--h-md); display: inline-flex; align-items: center; justify-content: center; gap: var(--s-2); padding: 0 var(--s-3); border: 1px solid transparent; border-radius: var(--r-2); font-size: var(--t-3); font-weight: var(--w-medium); line-height: var(--lh-tight); white-space: nowrap; cursor: pointer; transition: background-color var(--m-quick) var(--ease-out), border-color var(--m-quick) var(--ease-out), color var(--m-quick) var(--ease-out), transform var(--m-quick) var(--ease-out); }
 /* 按钮也可以是链接（站内跳转），样子不变，不带下划线 / A button may be a link (in-app navigation); it looks the same, with no underline */
 a.ui-btn { text-decoration: none; }
-.ui-btn:active:not(:disabled) { transform: scale(.98); }
-.ui-btn:disabled { cursor: not-allowed; opacity: .42; }
+/* aria-disabled：看着停用，但还能点，点了说为什么（手机上看不到 title） / aria-disabled: looks disabled but still takes a tap that says why (phones never show a title) */
+.ui-btn:active:not(:disabled, [aria-disabled="true"]) { transform: scale(.98); }
+.ui-btn:disabled, .ui-btn[aria-disabled="true"] { cursor: not-allowed; opacity: .42; }
 .ui-btn--primary { color: var(--d-ink); background: var(--l-ink); }
 .ui-btn--secondary { color: var(--l-ink); background: var(--l-surface); border-color: var(--l-line-strong); box-shadow: var(--shadow-xs); }
 .ui-btn--text { padding-inline: var(--s-2); color: var(--l-ink-2); background: transparent; font-weight: var(--w-medium); }

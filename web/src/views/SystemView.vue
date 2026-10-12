@@ -565,7 +565,7 @@ onBeforeUnmount(() => {
               <span v-else-if="!kixdnsNotice" class="system-stale">检查失败：{{ updateStatus.kixdns_error ?? '原因未知' }}</span>
               <!-- 只在新旧版本之间断行，「→」「·」跟着后一段走：不会挂在行尾 / Lines break only between the two versions, and 「→」/「·」 travel with what follows, so neither is left at a line end -->
               <template v-else-if="kixdnsNotice.available && kixdnsNotice.security_update"><span v-if="kernelPending" class="sk update-row__cur-sk" aria-hidden="true"></span><span v-else class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span> <span class="update-row__keep">安全更新<template v-if="kixdnsNotice.dependency_revision"> · <span class="ui-num">r{{ kixdnsNotice.dependency_revision }}</span></template></span></template>
-              <template v-else-if="kixdnsNotice.available"><span v-if="kernelPending" class="sk update-row__cur-sk" aria-hidden="true"></span><span v-else class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span> <span class="update-row__keep">→ <span class="ui-num">{{ formatKixdnsVersion(activeVersion).startsWith('构建 #') ? latestKixdnsVersion().replace(/^构建 /, '') : latestKixdnsVersion() }}</span></span></template>
+              <template v-else-if="kixdnsNotice.available"><span v-if="kernelPending" class="sk update-row__cur-sk" aria-hidden="true"></span><span v-else class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span> <span class="update-row__keep">→ <span class="ui-num">{{ kernelPending || formatKixdnsVersion(activeVersion).startsWith('构建 #') ? latestKixdnsVersion().replace(/^构建 /, '') : latestKixdnsVersion() }}</span></span></template>
               <template v-else-if="kixdnsNotice.current_commit"><span class="update-row__keep">已是最新 · <span class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span></span></template>
               <template v-else>还没安装</template>
             </span>
@@ -576,7 +576,7 @@ onBeforeUnmount(() => {
           <template v-if="kixdnsNotice || !installed || needsToken(updateStatus.kixdns_error)" #actions>
             <button v-if="!kixdnsNotice && needsToken(updateStatus.kixdns_error)" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" @click="focusToken">填写 Token</button>
             <a v-if="kixdnsNotice" class="ui-link" :href="kixdnsNotice.build_url" target="_blank" rel="noopener noreferrer">构建详情<ExternalLink :size="12" /></a>
-            <button v-if="kixdnsNotice?.available || !installed" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" :disabled="!kernel?.latest || kernelAction !== null || panelDown" @click="updateKernel">{{ kernelAction === 'update' ? '更新中' : (installed ? '更新' : '安装') }}</button>
+            <button v-if="kixdnsNotice?.available || !installed" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" :disabled="!kernel?.latest || kernelAction !== null || panelDown" @click="updateKernel">{{ kernelAction === 'update' ? '更新中' : (installed || kernelPending ? '更新' : '安装') }}</button>
           </template>
         </UiTask>
 

@@ -782,6 +782,46 @@ test('排着的保存离开后校验没过：草稿留着并说明', async ({ pa
   await page.evaluate(() => localStorage.removeItem('kixdns:demo-validate-slow'))
 })
 
+// 离开后没保存成功的草稿留着；离开期间别处存了新版本：回来时马上说「别处改过了」，不悄悄换到新文件上
+// （以前悄悄换了底子，下一次保存就把别处的改动当成自己的删掉了）
+// A draft whose save failed after leaving is held; another writer saves meanwhile: on return the page says 别处改过了 at once instead of silently moving onto
+// the new file (it used to rebase, and the next save then removed the other writer's change as if it were one's own)
+test('留着的草稿回来时文件在别处改过了：马上进冲突，不悄悄换底子', async ({ page }) => {
+  await page.goto('/config')
+  await addRule(page, 'held-return.example')
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-validate-slow', 'true'); localStorage.setItem('kixdns:demo-validate-reject', 'true') })
+  const bar = page.locator('.cfg__savebar')
+  await bar.locator('.savebar__save').click()
+  await page.getByRole('link', { name: '日志', exact: true }).first().click()
+  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContainEqual(expect.stringContaining('配置没有保存：没有通过校验。草稿留在配置页'))
+  await page.evaluate(() => { localStorage.removeItem('kixdns:demo-validate-slow'); localStorage.removeItem('kixdns:demo-validate-reject'); localStorage.setItem('kixdns:demo-changed-elsewhere', 'true') })
+  await page.getByRole('link', { name: '规则', exact: true }).first().click()
+  await expect(bar).toContainText('这份配置在别处改过了')
+  await expect(bar.getByRole('button', { name: '保存并应用', exact: true })).toBeDisabled()
+  await expect(page.locator('[data-rule]', { hasText: 'held-return.example' })).toBeVisible()
+})
+
+// 断网时改了，连上时文件已经在别处换了：连上就说「别处改过了」，不等保存撞上才知道
+// Edits made during an outage, and the file changed elsewhere by the time the panel is back: say 别处改过了 on reconnect instead of waiting for a save to hit it
+test('断网时改的草稿，连上时文件在别处改过了：马上进冲突', async ({ page }) => {
+  await page.goto('/config')
+  await expect(page.locator('.cfg__panel')).toBeVisible()
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-panel-down', 'true'); window.dispatchEvent(new Event('kixdns:panel-unreachable')) })
+  await expect(page.locator('.conn__inner')).toBeVisible()
+  await addRule(page, 'outage-edit.example')
+  await page.evaluate(async () => {
+    localStorage.removeItem('kixdns:demo-panel-down')
+    localStorage.setItem('kixdns:demo-changed-elsewhere', 'true')
+    const url = performance.getEntriesByType('resource').map((e) => e.name).filter((n) => n.includes('/src/composables/useConnection.ts')).pop()!
+    const connection = await import(url)
+    void connection.useConnection().retry()
+  })
+  await expect(page.locator('.conn__inner')).toHaveCount(0, { timeout: 10_000 })
+  const bar = page.locator('.cfg__savebar')
+  await expect(bar).toContainText('这份配置在别处改过了')
+  await expect(page.locator('[data-rule]', { hasText: 'outage-edit.example' })).toBeVisible()
+})
+
 // 连上以后的静默重读还在路上时保存落地：那次读是写之前发的，不能拿它把刚存上的规则冲掉
 // A save lands while the quiet re-read after a reconnect is still out: that read left before the write and must not wipe the rule just saved
 test('重连后的重读还在路上时保存落地，刚存的规则不会被冲掉', async ({ page }) => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { errorMessage, formatAgo, formatDuration, formatKixdnsVersion, formatPercent, formatSmallPercent, formatVersionTime, shortHash, upstreamSuccessRate } from './utils'
+import { errorMessage, formatAgo, formatDuration, formatKixdnsVersion, formatPercent, formatSmallPercent, formatVersionTime, helpRuns, shortHash, upstreamSuccessRate } from './utils'
 
 describe('界面格式化工具', () => {
   it('生成稳定且紧凑的运行指标', () => {
@@ -91,5 +91,26 @@ describe('formatAgo', () => {
     expect(formatAgo(now / 1000 - 5 * 60, now)).toBe('5 分钟前')
     expect(formatAgo(now / 1000 - 3 * 3600, now)).toBe('3 小时前')
     expect(formatAgo(now / 1000 - 3 * 86_400 - 60, now)).toBe('3 天前')
+  })
+})
+
+describe('helpRuns', () => {
+  const glued = (text: string) => helpRuns(text).filter((r) => r.glue).map((r) => r.text)
+  it('段尾五个字连在一起，整段拼回来不多不少 / the last five characters are glued and the runs add back up to the text', () => {
+    const text = '把一个域名直接回成某个 IP，不再去问上游。'
+    expect(helpRuns(text).map((r) => r.text).join('')).toBe(text)
+    expect(glued(text)).toEqual(['去问上游。'])
+  })
+  it('10 个字以内的「…」整个连住，长引号不连 / a 「…」 of up to 10 characters is glued whole; a longer one is not', () => {
+    expect(glued('比如公司内网的设备，可以用「公司内网」这一组单独转发出去。')).toEqual(['「公司内网」', '单独转发出去。'.slice(-5)])
+    expect(glued('写成「这是一段超过十个字的很长很长的引号」的样子以后再说明')).toEqual(['以后再说明'])
+  })
+  it('引号跨在段尾切口上时，切口挪到引号前面 / a quote straddling the tail cut moves the cut to its start', () => {
+    const runs = helpRuns('某条规则的结果选「转到规则组」')
+    expect(runs.at(-1)).toEqual({ text: '「转到规则组」', glue: true })
+    expect(runs.map((r) => r.text).join('')).toBe('某条规则的结果选「转到规则组」')
+  })
+  it('短句不拆 / a short line stays one run', () => {
+    expect(helpRuns('先试一个例子')).toEqual([{ text: '先试一个例子', glue: false }])
   })
 })

@@ -57,6 +57,9 @@ function onKey(event: KeyboardEvent): void {
   }
 }
 function saveDraft(): void {
+  // 页头的「现在应用」还在跑：按钮看着停用，点了说一句为什么（和 Ctrl+S 一样；手机上看不到 title）
+  // The header's 现在应用 is still running: the button looks disabled and a tap says why (as Ctrl+S does; phones never show the title)
+  if (applying.value) { toast.info(applyingNote.value); return }
   if (props.flush && !props.flush('save')) return
   void save('draft')
 }
@@ -161,7 +164,7 @@ function discard(): void {
         <button v-if="!deferSave && !conflict && pending && !blockedFields.length" class="ui-btn ui-btn--secondary savebar__check" :class="{ 'is-aside': busy }" type="button" :inert="busy" @click="check"><ShieldCheck :size="16" aria-hidden="true" />校验</button>
         <!-- 别处先存了新版本时再保存只会再失败一次：先重新读取 / After someone else saved, saving again only fails again: reload first -->
         <!-- 手机上冲突时不留灰掉的保存和备注：这时只能下载或重新读取，省下一整行 / On phones a conflict drops the greyed save and 备注: only download or reload can happen then, which saves a whole row -->
-        <button v-if="!(phone && conflict && draftStage === 'failed')" ref="saveButton" class="ui-btn ui-btn--primary savebar__save config-save-button" type="button" :aria-busy="busy || undefined" :disabled="(conflict && draftStage === 'failed') || applying" :title="applying ? applyingNote : undefined" @click="saveDraft"><span v-if="saving" class="ui-spin" aria-hidden="true"></span>{{ saving ? '保存中' : saveLabel }}</button>
+        <button v-if="!(phone && conflict && draftStage === 'failed')" ref="saveButton" class="ui-btn ui-btn--primary savebar__save config-save-button" type="button" :aria-busy="busy || undefined" :disabled="conflict && draftStage === 'failed'" :aria-disabled="applying || undefined" :title="applying ? applyingNote : undefined" @click="saveDraft"><span v-if="saving" class="ui-spin" aria-hidden="true"></span>{{ saving ? '保存中' : saveLabel }}</button>
       </template>
     </footer>
   </Transition>

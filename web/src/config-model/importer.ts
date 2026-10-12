@@ -645,10 +645,13 @@ function carryOver(model: Model, prev: Model): Model {
       if (!r.raw && !p.raw && condsKey(r.conditions) === condsKey(p.conditions)) r.conditions = p.conditions
       if (!r.raw && !p.raw && r.response.mode === 'custom' && p.response.mode === 'custom' && JSON.stringify({ ...r.response, conditions: r.response.conditions.map(fullKey).sort() }) === JSON.stringify({ ...p.response, conditions: p.response.conditions.map(fullKey).sort() })) r.response = p.response
     }
+    // 前面那条也是停用的（已经放回去了）就接在它后面：只看认回来的规则时，连着的几条停用规则会倒过来，每手改一次换一次
+    // When the rule before is disabled too (already put back) it anchors there: looking at matched rules only, consecutive disabled rules came back reversed
+    // and swapped on every hand edit
     before.forEach((p, i) => {
       if (p.enabled) return
-      const anchor = before.slice(0, i).reverse().find((x) => paired.has(x))
-      const at = anchor ? now.indexOf(paired.get(anchor)!) + 1 : 0
+      const anchor = before.slice(0, i).reverse().find((x) => paired.has(x) || !x.enabled)
+      const at = anchor ? now.indexOf(paired.get(anchor) ?? anchor) + 1 : 0
       now.splice(at, 0, p)
     })
   }

@@ -6,6 +6,7 @@ import type { ConfigVersion } from '../api/types'
 import UiMenu from '../components/ui/UiMenu.vue'
 import { useConfirm } from '../composables/useConfirm'
 import { useConnection } from '../composables/useConnection'
+import { useSession } from '../composables/useSession'
 import { useToast } from '../composables/useToast'
 import { diffModels, type DiffBlock } from '../config-model/diff'
 import DiffBlocks from './DiffBlocks.vue'
@@ -21,7 +22,7 @@ useReturnFocus()
 // History: a row is the note plus 「#id · time」; clicking it shows what restoring would change. Restore and delete live in the row's
 // menu, and 选择 deletes several at once.
 const props = defineProps<{ compareWith?: number | null }>()
-const emit = defineEmits<{ close: []; rule: [id: number]; restored: [] }>()
+const emit = defineEmits<{ close: []; rule: [id: number] }>()
 const toast = useToast()
 const confirm = useConfirm()
 const dialog = ref<HTMLDialogElement | null>(null)
@@ -79,12 +80,14 @@ async function restore(v: ConfigVersion): Promise<void> {
   })
   if (!ok) return
   closeDiff()
+  // 恢复途中退出登录或会话过期：结果不再报（和保存途中退出一样），登录页上不冒出配置页的提示
+  // Signed out or expired mid-restore: the outcome is not reported (as with a save), so no config-page toast appears on the login page
+  const session = useSession()
   try {
     const r = await restoreVersion(v.id)
-    emit('restored')
-    toast.success(r.state === 'pending' ? `已存成待应用版本 #${r.versionId}，${pendingWhen()}自动应用` : `已恢复为版本 #${v.id} 的内容，当前版本 #${r.versionId}`)
+    if (session.authenticated.value) toast.success(r.state === 'pending' ? `已存成待应用版本 #${r.versionId}，${pendingWhen()}自动应用` : `已恢复为版本 #${v.id} 的内容，当前版本 #${r.versionId}`)
   } catch (error) {
-    toast.error(`没有恢复版本 #${v.id}：${friendlyRuntimeError(error)}`)
+    if (session.authenticated.value) toast.error(`没有恢复版本 #${v.id}：${friendlyRuntimeError(error)}`)
   }
 }
 async function remove(v: ConfigVersion): Promise<void> {

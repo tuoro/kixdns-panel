@@ -123,3 +123,25 @@ export function keepTail(text: string, size = 5): [string, string] {
   if (text.length <= size * 2) return [text, '']
   return [text.slice(0, -size), text.slice(-size)]
 }
+
+// 帮助段落按「整块」排：段尾几个字连在一起（同 keepTail），10 个字以内的「…」也连在一起，不把「公司内网」「转到规则组」拆到两行；
+// 引号跨在段尾的切口上时，切口挪到引号前面。这是面板自己给名字、引号加的连接规则，不是分词
+// A help paragraph is laid out in glued runs: its last few characters stay together (as keepTail does), and so does every 「…」 of up to 10 characters, so
+// 「公司内网」 or 「转到规则组」 never splits across lines; a quote straddling the tail cut moves the cut to the quote's start. This is the panel's own glue
+// rule for names and quotes, not segmentation
+export function helpRuns(text: string, size = 5): Array<{ text: string; glue: boolean }> {
+  const quotes = [...text.matchAll(/「[^「」]{1,10}」/g)].map((m) => [m.index, m.index + m[0].length] as const)
+  let cut = text.length > size * 2 ? text.length - size : text.length
+  for (const [start, end] of quotes) if (start < cut && end > cut) cut = start
+  const runs: Array<{ text: string; glue: boolean }> = []
+  let at = 0
+  for (const [start, end] of quotes) {
+    if (end > cut) break
+    if (start > at) runs.push({ text: text.slice(at, start), glue: false })
+    runs.push({ text: text.slice(start, end), glue: true })
+    at = end
+  }
+  if (cut > at) runs.push({ text: text.slice(at, cut), glue: false })
+  if (cut < text.length) runs.push({ text: text.slice(cut), glue: true })
+  return runs
+}

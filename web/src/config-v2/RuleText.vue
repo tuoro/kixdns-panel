@@ -31,4 +31,6 @@ const parts = computed(() => props.text.split(/(「[^」]+」)/).map((piece) => 
    first opened the second (an inline link counts its text as the hit area) */
 .rtext .ui-objlink { position: static; white-space: normal; }
 .rtext .ui-objlink::before { content: none; }
+/* 句子里的链接焦点框贴着字：默认往外让 2 会压到两边的「」 / A link in running text keeps its focus ring tight: the default 2 px offset ran through the 「」 beside it */
+.rtext .ui-objlink:focus-visible { outline-offset: 0; border-radius: var(--r-1); }
 </style>
