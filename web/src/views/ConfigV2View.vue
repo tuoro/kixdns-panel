@@ -224,8 +224,8 @@ const cnameWhere = computed((): { detail?: string; links?: Record<string, number
   const links: Record<string, number> = {}
   for (const rule of rules.slice(0, 2)) {
     const full = ruleTitle(rule).replace(/[「」]/g, '')
-    // 超过 36 个字才截，常见的域名条件整个写出来 / Cut only past 36 characters, so a usual domain condition is written in full
-    const title = full.length > 36 ? `${full.slice(0, 35)}…` : full
+    // 超过 36 个字才截，常见的域名条件整个写出来；截在点、连字符上时先去掉它，不出现「name.…」 / Cut only past 36 characters, so a usual domain condition is written in full; a cut that ends on a dot or hyphen drops it first, so no 「name.…」
+    const title = full.length > 36 ? `${full.slice(0, 35).replace(/[\s.\-_]+$/, '')}…` : full
     if (!(title in links)) links[title] = rule.id
   }
   const named = Object.keys(links).map((title) => `「${title}」`).join('')

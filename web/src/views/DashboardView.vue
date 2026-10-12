@@ -144,11 +144,11 @@ const notice = computed<PageNotice | null>(() => {
     case 'stopped-empty':
       return serviceTitle
         ? serviceNotice('还没有运行数据')
-        : { tone: 'off', icon: Power, title: 'KixDNS 已停止', reason: reasonOf('还没有运行数据', '「启动 KixDNS」后概览会自动更新'), action: 'start' }
+        : { tone: 'off', icon: Power, title: 'KixDNS 已停止', reason: reasonOf('还没有运行数据', '「启动\u00a0KixDNS」\u2060后概览会自动更新'), action: 'start' }
     case 'stopped-snapshot':
       return serviceTitle
         ? serviceNotice(`显示停止前${snapshot}的快照`)
-        : { tone: 'off', icon: Power, title: 'KixDNS 已停止', reason: reasonOf(`显示停止前${snapshot}的快照`, '「启动 KixDNS」后概览会自动更新'), action: 'start' }
+        : { tone: 'off', icon: Power, title: 'KixDNS 已停止', reason: reasonOf(`显示停止前${snapshot}的快照`, '「启动\u00a0KixDNS」\u2060后概览会自动更新'), action: 'start' }
     case 'unavailable-snapshot':
       return { tone: 'warn', icon: CircleAlert, title: '实时数据暂不可用', reason: reasonOf(overviewError.value || 'KixDNS 暂时没有回应', serviceErrorPart, `显示${snapshot}的快照，恢复后会自动更新`), action: 'retry' }
     case 'unavailable':

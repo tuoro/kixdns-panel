@@ -132,7 +132,7 @@ test('首次未启动保留空态视图但禁止运行时操作', async ({ page 
   await openOverview(page)
   // 页头写「已停止」，提示也说「已停止」：面板确认不了「从没启动过」这段历史 / Header and notice both say 已停止: the panel cannot confirm a never-started history
   await expect(page.getByText('KixDNS 已停止', { exact: true })).toBeVisible()
-  await expect(page.locator('.overview-notice small')).toHaveText('还没有运行数据；「启动 KixDNS」后概览会自动更新。')
+  await expect(page.locator('.overview-notice small')).toHaveText('还没有运行数据；「启动\u00a0KixDNS」\u2060后概览会自动更新。')
   await expect(page.getByText('数据可能已过期')).toHaveCount(0)
   // 没有数时名称不带时段；空卡也不写时段和口径；两张图卡都只写「尚无数据」 / With no figures the names carry no period; empty cards drop their period notes; both chart cards read 尚无数据
   await expect(page.locator('.overview-card--volume .ui-card__label')).toHaveText('查询量')
@@ -191,7 +191,7 @@ for (const stopped of [true, false]) {
     // With the service up and no error text, the reason still says what happened, not only that a snapshot is shown
     // 已停止也说接下来会怎样，不说「不再更新」 / Stopped also says what comes next, never 不再更新
     await expect(page.locator('.overview-notice small')).toHaveText(stopped
-      ? /^显示停止前 \d{2}:\d{2} 的快照；「启动 KixDNS」后概览会自动更新。$/
+      ? /^显示停止前 \d{2}:\d{2} 的快照；「启动\u00a0KixDNS」\u2060后概览会自动更新。$/
       : /^KixDNS 暂时没有回应；显示 \d{2}:\d{2} 的快照，恢复后会自动更新。$/)
     // 底栏只说按钮什么时候能用，不再复述状态 / The foot says only when the button becomes usable, without restating the state
     await expect(page.locator('.overview-runtime-note')).toHaveText(stopped ? 'KixDNS 运行后才能清空缓存' : '实时数据恢复后才能清空缓存')
