@@ -392,6 +392,7 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
   const sent = JSON.stringify(model)
   // 发出去的草稿定在这一刻：之后的修改（校验途中的也算）不在这次保存里，它们的撤销保存后照样留着 / The draft sent is fixed at this moment: edits after it (during validation too) are not in this save, and their undos stay after it lands
   const sentAt = toastMark()
+  const settledBefore = settledCount
   inFlight = sent
   origin.value = from
   applyError.value = ''
@@ -436,7 +437,8 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     // was lost), it is already saved, not a conflict
     if (isConflict(error) && await alreadySaved(content, sent)) return
     // 撞上的「别处」其实是自己回应丢了的那次保存：把对照的那份换成它，再接着存这次多改的 / The 别处 met is this page's own save whose answer was lost: rebase onto it and go on saving what changed since
-    if (isConflict(error) && await settleUnanswered(false)) { finishStage('idle'); return save(from) }
+    // 保存途中连上、后台的核对先一步认出了那次保存（文件散列已经换成它）：同样接着存 / Reconnected mid-save and the background check got there first (the file hash already moved to it): carry on saving all the same
+    if (isConflict(error) && (await settleUnanswered(false) || settledCount !== settledBefore)) { finishStage('idle'); return save(from) }
     const reason = friendlyRuntimeError(error)
     const stopped = stoppedError(error)
     const down = isPanelDown(error)
@@ -494,7 +496,19 @@ async function alreadySaved(content: unknown, sent: string): Promise<boolean> {
  * The save whose answer was lost did land: the baseline becomes it and later edits still count as edits; with announce the save bar says 已经保存过了.
  * When the panel cannot be read it is kept for next time; once the draft was replaced wholesale (discard, reload, import) it is dropped
  */
-async function settleUnanswered(announce: boolean): Promise<boolean> {
+// 同一时刻只核对一次：连上时后台在核对，人这时按了保存、撞上冲突，就等那次核对的结果，不另起一次（记录已经被它取走，另起一次会说成「别处改过了」）
+// One check at a time: if the reconnect is checking in the background when a save meets a conflict, the save waits for that check instead of starting another
+// (the record has already been taken by it, so a second check would call it 别处改过了)
+let settling: Promise<boolean> | null = null
+let settledCount = 0
+// 核对成功过几次：保存发出去以后才核对完的，撞上的冲突就是那次核对已经认出来的自己的保存 / How many checks have succeeded: one finishing after a save was sent means the conflict it meets is one's own save, already recognised
+function settleUnanswered(announce: boolean): Promise<boolean> {
+  if (settling) return settling
+  if (!unanswered) return Promise.resolve(false)
+  settling = settleOnce(announce).finally(() => { settling = null })
+  return settling
+}
+async function settleOnce(announce: boolean): Promise<boolean> {
   const lost = unanswered
   if (!lost) return false
   const current = await apiRequest<ConfigDocument>('/api/v1/config').catch(() => null)
@@ -509,6 +523,7 @@ async function settleUnanswered(announce: boolean): Promise<boolean> {
     if (!viewing && awayToast !== null) { dismissAwayToast(); awayToast = useToast().error('刚才那次保存没有存上，草稿留在配\u2060置\u2060页，回去再保存') }
     return false
   }
+  settledCount += 1
   rebaseApplied(JSON.parse(lost.sent) as Model)
   validation.value = null
   // 和保存落地一样：发出去之前的「撤销」过时了 / As when a save lands: undos raised before it was sent are stale
