@@ -9,7 +9,7 @@ import DraftReviewDialog from './DraftReviewDialog.vue'
 import RuleText from './RuleText.vue'
 import { usePhone, useTightSaveBar } from './phone'
 import { changeCount, dialogEdits, discardWithUndo, editorEdited, model } from './store'
-import { blockedFields, busy, saveInFlight, sayBlocked, conflict, deferNote, deferSave, editTouched, elapsed, note, origin, save, saveMessage, stage, validate, validation, verdict } from './useConfigDocument'
+import { blockedFields, busy, queued, saveInFlight, sayBlocked, conflict, deferNote, deferSave, editTouched, elapsed, note, origin, save, saveMessage, stage, validate, validation, verdict } from './useConfigDocument'
 
 // 保存条只替草稿说话：有改动才升起来，保存完一会儿就收起。两步：先校验，再写入并热加载；任何一步失败都停住，原因里的规则能点。
 // KixDNS 没启动、连不上、不报能力时只存成待应用版本。Ctrl/Cmd+S 等于点保存。进度和结果都来自 useConfigDocument。
@@ -85,14 +85,18 @@ function closeReview(): void {
   void nextTick(() => document.querySelector<HTMLButtonElement>('.savebar__review')?.focus())
 }
 const saveLabel = computed(() => (deferSave.value ? '保存为待应用' : '保存并应用'))
+// 在写入，或者排在单独的「校验」后面等着写：按钮写「保存中」 / Writing, or queued behind a lone 校验 to write: the button reads 保存中
+const saving = computed(() => (busy.value && stage.value !== 'checking') || queued.value)
 useBarHeight(bar, '--savebar-h')
-// 保存开始时焦点挪到保存按钮（上面会出「保存中」），只在焦点本来就在保存条上或者没落在任何地方时：正在输入框里打字的人不被拽走
-// When a save starts focus moves to the save button (it shows 保存中), only if focus was already in the bar or nowhere: someone typing in a field is not pulled away
+// 保存开始时焦点挪到保存按钮（上面会出「保存中」），只在焦点本来就在保存条上或者没落在任何地方时：正在输入框里打字的人不被拽走。
+// 单独的「校验」不挪到保存按钮：再按一下 Enter 或按住不放就成了保存并应用，焦点放到状态那一行
+// When a save starts focus moves to the save button (it shows 保存中), only if focus was already in the bar or nowhere: someone typing in a field is not pulled away.
+// A lone 校验 does not move it to the save button, where a second Enter or a held key would save and apply: focus goes to the status line
 watch(busy, (b) => {
   if (!b) return
   void nextTick(() => {
     const active = document.activeElement
-    if (!active || active === document.body || bar.value?.contains(active)) saveButton.value?.focus()
+    if (!active || active === document.body || bar.value?.contains(active)) (stage.value === 'checking' && !queued.value ? statusLine.value : saveButton.value)?.focus()
   })
 })
 
@@ -140,7 +144,7 @@ function discard(): void {
         <button v-if="!deferSave && !conflict && pending && !blockedFields.length" class="ui-btn ui-btn--secondary savebar__check" :class="{ 'is-aside': busy }" type="button" :inert="busy" @click="check"><ShieldCheck :size="16" aria-hidden="true" />校验</button>
         <!-- 别处先存了新版本时再保存只会再失败一次：先重新读取 / After someone else saved, saving again only fails again: reload first -->
         <!-- 手机上冲突时不留灰掉的保存和备注：这时只能下载或重新读取，省下一整行 / On phones a conflict drops the greyed save and 备注: only download or reload can happen then, which saves a whole row -->
-        <button v-if="!(phone && conflict && draftStage === 'failed')" ref="saveButton" class="ui-btn ui-btn--primary savebar__save config-save-button" type="button" :aria-busy="busy || undefined" :disabled="conflict && draftStage === 'failed'" @click="saveDraft"><span v-if="busy && stage !== 'checking'" class="ui-spin" aria-hidden="true"></span>{{ busy && stage !== 'checking' ? '保存中' : saveLabel }}</button>
+        <button v-if="!(phone && conflict && draftStage === 'failed')" ref="saveButton" class="ui-btn ui-btn--primary savebar__save config-save-button" type="button" :aria-busy="busy || undefined" :disabled="conflict && draftStage === 'failed'" @click="saveDraft"><span v-if="saving" class="ui-spin" aria-hidden="true"></span>{{ saving ? '保存中' : saveLabel }}</button>
       </template>
     </footer>
   </Transition>

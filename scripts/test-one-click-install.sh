@@ -324,7 +324,7 @@ if output="$(run_main)"; then
   printf '断言失败：摘要不一致时应失败\n' >&2
   exit 1
 fi
-assert_contains "${output}" "请不要安装" "摘要不一致时应明确不要安装"
+assert_contains "${output}" "就不要安装" "摘要不一致时应明确不要安装"
 [[ ! -e ${RECORD_FILE} ]] || { printf '断言失败：摘要不一致不应运行安装器\n' >&2; exit 1; }
 STUB_ARCHIVE="${WORK}/${asset}"
 

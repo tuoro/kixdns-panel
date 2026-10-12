@@ -121,7 +121,7 @@ describe('演示 API', () => {
     await expect(mockRequest<DeleteConfigVersionResult>(`/api/v1/config/versions/${current?.id}`, {
       method: 'DELETE',
       body: JSON.stringify({ expected_sha256: config.sha256 }),
-    })).rejects.toThrow('当前生效版本不能删除')
+    })).rejects.toThrow('正在用的版本不能删除')
 
     const deleted = await mockRequest<DeleteConfigVersionResult>(`/api/v1/config/versions/${removable?.id}`, {
       method: 'DELETE',
@@ -139,7 +139,7 @@ describe('演示 API', () => {
         ids: [current?.id, bulkRemovable?.id],
         expected_sha256: config.sha256,
       }),
-    })).rejects.toThrow('当前生效版本不能删除')
+    })).rejects.toThrow('正在用的版本不能删除')
     const afterRejectedBulk = await mockRequest<ConfigVersions>('/api/v1/config/versions')
     expect(afterRejectedBulk.versions.some((version) => version.id === bulkRemovable?.id)).toBe(true)
 

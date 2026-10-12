@@ -406,7 +406,7 @@ main() {
   download_archive "${asset_url}" "${archive}"
   printf '%s  %s\n' "${asset_digest#sha256:}" "${archive}" |
     sha256sum --check --strict --status ||
-    fail "安装包 SHA-256 与 GitHub 公布的摘要不一致，已丢弃，$(unchanged_note)。再试一次；仍不一致请不要安装，并到 https://github.com/${REPOSITORY}/issues 报告"
+    fail "安装包 SHA-256 与 GitHub 公布的摘要不一致，已丢弃，$(unchanged_note)。再试一次；仍不一致就不要安装，并到 https://github.com/${REPOSITORY}/issues 报告"
   validate_archive_entries "${archive}"
   install -d -m 0700 "${extract_directory}"
   unzip -q "${archive}" -d "${extract_directory}"

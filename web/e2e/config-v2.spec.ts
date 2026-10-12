@@ -420,3 +420,104 @@ test('手机上点规则行、映射行的第二行也能进编辑 @responsive',
   await tapCentre(page.locator('[data-rw]', { hasText: 'line.home.arpa' }).locator('.rw__t'))
   await expect(page.locator('.rw__edit')).toBeVisible()
 })
+
+// 上游组的 ECS 说明跟着所选方式说：固定子网对内网客户端也发（内核 apply_ecs），只有「发送客户端所在子网」跳过内网
+// The group's ECS hint follows the choice: a fixed subnet is sent for LAN clients too (kernel apply_ecs); only 发送客户端所在子网 skips them
+test('上游组的子网说明跟着所选方式说', async ({ page }) => {
+  await page.goto('/config?section=upstreams')
+  await page.locator('.gcard__name').first().click()
+  const select = page.getByLabel('客户端子网', { exact: true })
+  const hint = page.locator('.pfield:has(select[aria-label="客户端子网"]) .pfield__hint')
+  await select.selectOption({ label: '发送固定的子网' })
+  await expect(hint).toHaveText('每个请求都带上这个子网，内网客户端也一样。')
+  await select.selectOption({ label: '发送客户端所在子网' })
+  await expect(hint).toHaveText('发送子网能让国内 CDN 回离客户端近的地址；内网客户端不发送。')
+})
+
+// 「不检查」时没有「这一步」：超时的说明直接说会怎样 / Under 不检查 there is no step to skip: the timeout note says what happens
+test('回答后不检查时，超时的说明不提「这一步」', async ({ page }) => {
+  await page.goto('/config')
+  await page.getByRole('button', { name: '新建规则', exact: true }).first().click()
+  // 宽屏的右侧面板里这一段默认收着 / In the wide side panel this section starts folded
+  await page.locator('.editor').getByRole('button', { name: '回答后检查', exact: true }).click()
+  await page.getByRole('group', { name: '回答后检查' }).getByRole('button', { name: '不检查' }).click()
+  const note = page.locator('.after__limit')
+  await expect(note).toHaveText('上游全部超时或连不上时：开了「过期后继续用旧结果」先回旧结果，没有就回 SERVFAIL。')
+})
+
+// 停用的行调淡以后，第二行也照样点得进编辑（调淡的部分以前盖在整行的点按区上面） / Disabled rows still open from their second line (the dimmed parts used to sit above the row's hit area)
+test('手机上停用的规则行、映射行，点第二行也能进编辑 @responsive', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'mobile', '只看手机的行')
+  await page.goto('/config')
+  const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+  await quick.fill('off-line.example.org')
+  await quick.press('Enter')
+  const tapCentre = async (locator: ReturnType<typeof page.locator>) => { const box = (await locator.boundingBox())!; await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2) }
+  const row = page.locator('[data-rule]', { hasText: 'off-line.example.org' })
+  await row.locator('.rrow__switch').click()
+  await expect(row).toHaveClass(/is-off/)
+  await tapCentre(row.locator(':scope > .rrow__pill'))
+  await expect(page).toHaveURL(/rule=/)
+  await page.goBack()
+  await page.goto('/config?section=mapping')
+  await page.getByLabel('要映射的域名').fill('off.home.arpa')
+  await page.getByLabel('回答的 IP 或域名').fill('192.168.1.51')
+  await page.getByRole('button', { name: '添加', exact: true }).click()
+  const mapping = page.locator('[data-rw]', { hasText: 'off.home.arpa' })
+  await mapping.locator('.ui-switch').click()
+  await expect(mapping).toHaveClass(/is-off/)
+  await tapCentre(mapping.locator('.rw__t'))
+  await expect(page.locator('.rw__edit')).toBeVisible()
+})
+
+// 保存途中状态会变长（「第 2 步 · 写入并应用 · 已用 N 秒」）：最窄的侧栏宽度下「保存中」也不被挤出屏幕；手机上状态前的转圈是圆的，不被挤扁
+// The status grows during a save (第 2 步 · 写入并应用 · 已用 N 秒): at the narrowest sidebar width 保存中 stays on screen; on phones the status spinner stays round
+test('保存途中的保存条：按钮不出屏，转圈不变形 @responsive', async ({ page }, testInfo) => {
+  const mobile = testInfo.project.name === 'mobile'
+  if (!mobile) await page.setViewportSize({ width: 861, height: 800 })
+  await page.goto('/config')
+  await expect(page.locator('.cfg__panel')).toBeVisible()
+  const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+  if (!(await quick.isVisible())) await page.getByRole('button', { name: '快速添加', exact: true }).click()
+  await quick.fill('inflight.example.org')
+  await quick.press('Enter')
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-save-slow', 'true'); localStorage.setItem('kixdns:demo-validate-slow', 'true') })
+  const bar = page.locator('.cfg__savebar')
+  await bar.locator('.savebar__save').click()
+  // 等进到第 2 步再量（这一步稳定 1.5 秒）：从第 1 步换过去的那一下状态会重画，转圈换成新的元素
+  // Measure once in step 2 (steady for 1.5 s): switching from step 1 redraws the status and the spinner becomes a new element
+  await expect(bar.locator('.ui-savebar__status')).toContainText(/写入并应用.*已用/, { timeout: 5000 })
+  const width = page.viewportSize()!.width
+  const save = (await bar.locator('.savebar__save').boundingBox())!
+  expect(save.x + save.width).toBeLessThanOrEqual(width)
+  const spinner = bar.locator('.ui-savebar__status .ui-spin')
+  await expect(spinner).toBeVisible()
+  const spin = (await spinner.boundingBox())!
+  expect(Math.round(spin.width)).toBe(Math.round(spin.height))
+  await page.evaluate(() => { localStorage.removeItem('kixdns:demo-save-slow'); localStorage.removeItem('kixdns:demo-validate-slow') })
+})
+
+// 内核不支持 CNAME 时，提示说出写成域名的是哪几条规则：前两条点名、点了打开那条，多的写「等 N 条」
+// With CNAME unsupported, the notice names the rules whose answers are domains: the first two by name, opening that rule on click, the rest as 「等 N 条」
+test('内核不支持 CNAME 时，提示点名写成域名的规则', async ({ page }) => {
+  await page.goto('/config')
+  await expect(page.locator('.cfg__panel')).toBeVisible()
+  await page.evaluate(async () => {
+    const url = (part: string) => performance.getEntriesByType('resource').map((e) => e.name).filter((n) => n.includes(part)).pop()!
+    const store = await import(url('/src/config-v2/store.ts'))
+    const models = await import(url('/src/config-model/model.ts'))
+    const document = await import(url('/src/config-v2/useConfigDocument.ts'))
+    for (const name of ['a', 'b', 'c']) {
+      const rule = models.newRule(store.newId(), { type: 'answer', kind: 'cname', value: `${name}.cdn.example.net`, ttl: null })
+      rule.conditions = [[{ id: store.newId(), field: 'domain', values: [`${name}.example.com`], negate: false, regex: false }]]
+      store.model.rules.push(rule)
+    }
+    document.runtimeCapabilities.value = document.runtimeCapabilities.value.filter((c: string) => c !== 'config_static_cname_response_v1')
+  })
+  const notice = page.locator('.cfg__notice')
+  await expect(notice).toContainText('写成域名的有：规则「域名是 a.example.com」「域名是 b.example.com」等 3 条')
+  await notice.getByRole('button', { name: '域名是 b.example.com' }).click()
+  await expect(page.locator('.editor')).toBeVisible()
+  await expect(page.locator('.editor')).toContainText('b.example.com')
+  await expect(page.locator('.editor')).toContainText('这条选了 CNAME')
+})

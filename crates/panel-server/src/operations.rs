@@ -544,7 +544,7 @@ fn unit_log_notice(unit: &str, output: &str) -> Option<String> {
     }
     if let Some(state) = load_state.filter(|state| *state != "loaded") {
         return Some(format!(
-            "systemd 里找不到 unit {unit}（LoadState={}），日志页读不到它的输出",
+            "systemd 里找不到 KixDNS 的服务（{unit}，LoadState={}），日志页读不到它的输出",
             truncate(state, 64)
         ));
     }
@@ -758,7 +758,7 @@ mod tests {
             notice("LoadState=not-found\nStandardOutput=inherit\nStandardError=inherit\n")
                 .as_deref(),
             Some(
-                "systemd 里找不到 unit kixdns.service（LoadState=not-found），日志页读不到它的输出"
+                "systemd 里找不到 KixDNS 的服务（kixdns.service，LoadState=not-found），日志页读不到它的输出"
             )
         );
         assert_eq!(

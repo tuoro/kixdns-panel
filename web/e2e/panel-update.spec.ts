@@ -18,7 +18,7 @@ test('在线更新失败时显示具体原因，收起后刷新也不再出现 @
   const panelRow = page.locator('.update-row').nth(1)
   await expect(panelRow.locator('.update-row__from-to')).toContainText('v1.0.0 → v1.0.1')
   const failure = panelRow.locator('.update-row__failure')
-  await expect(failure).toContainText('在线更新失败：下载安装包失败，系统没有改动。检查网络后再点一次在线更新')
+  await expect(failure).toContainText('在线更新失败：下载安装包失败，面板还是原来的版本。检查网络后再点一次在线更新')
   await expect(panelRow.getByRole('button', { name: '在线更新' })).toBeEnabled()
 
   // 手机宽度下原因和按钮都在行内，不撑出横向滚动。

@@ -4,11 +4,13 @@ import { findRuleByName, model } from './store'
 
 // KixDNS 给的原因里提到的规则名和上游组名能点：点规则打开那条规则，点组打开那个组（和现在面板的 RuntimeMessage 一样）
 // Rule and group names in a reason from KixDNS are links: a rule opens its editor, a group its drawer (like today's RuntimeMessage)
-const props = defineProps<{ text: string }>()
+// links：写在「」里的显示名直接对到规则编号（没起名字的规则显示的是条件，按名字认不回来） / links: display titles written in 「」 map straight to rule ids (an unnamed rule shows its condition, which name lookup cannot trace)
+const props = defineProps<{ text: string; links?: Record<string, number> }>()
 const emit = defineEmits<{ rule: [id: number]; group: [id: string] }>()
 const parts = computed(() => props.text.split(/(「[^」]+」)/).map((piece) => {
   const name = /^「(.+)」$/.exec(piece)?.[1]
   if (!name) return { text: piece }
+  if (props.links && Object.hasOwn(props.links, name)) return { text: piece, rule: props.links[name] }
   const rule = findRuleByName(name)
   if (rule) return { text: piece, rule: rule.id }
   const group = model.groups.find((g) => g.name === name)
@@ -17,5 +19,12 @@ const parts = computed(() => props.text.split(/(「[^」]+」)/).map((piece) => 
 </script>
 
 <template>
-  <span class="rtext"><template v-for="(p, i) in parts" :key="i"><template v-if="p.rule !== undefined">「<button class="ui-objlink ui-objlink--plain" type="button" @click="emit('rule', p.rule)">{{ p.text.slice(1, -1) }}</button>」</template><template v-else-if="p.group !== undefined">「<button class="ui-objlink ui-objlink--plain" type="button" @click="emit('group', p.group)">{{ p.text.slice(1, -1) }}</button>」</template><template v-else>{{ p.text }}</template></template></span>
+  <span class="rtext"><template v-for="(p, i) in parts" :key="i"><span v-if="p.rule !== undefined" class="rtext__ref">「<button class="ui-objlink ui-objlink--plain" type="button" @click="emit('rule', p.rule)">{{ p.text.slice(1, -1) }}</button>」</span><span v-else-if="p.group !== undefined" class="rtext__ref">「<button class="ui-objlink ui-objlink--plain" type="button" @click="emit('group', p.group)">{{ p.text.slice(1, -1) }}</button>」</span><template v-else>{{ p.text }}</template></template></span>
 </template>
+
+<style>
+/* 「名字」是一个整体：引号不和名字分在两行（按钮是一整块，连接符管不到它）；名字太长时在按钮里面换行
+   「name」 is one unit: the quotes never part from the name across lines (the button is one box, which a word joiner cannot reach); a long name wraps inside the button */
+.rtext__ref { white-space: nowrap; }
+.rtext__ref > .ui-objlink { white-space: normal; }
+</style>

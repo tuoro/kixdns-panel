@@ -533,8 +533,10 @@ const waitingForPanel = computed(() => activeError.value !== '' && (panelDown.va
 .logs-page .log-search { flex: 0 1 22rem; min-width: 10rem; max-width: 22rem; }
 .logs-page .log-console > .log-notice { margin: 0; padding: var(--s-2) var(--s-5); border: 0; border-bottom: 1px solid var(--l-hair); border-radius: 0; }
 .logs-page .log-console > .log-stream { padding: 0; border: 0; border-radius: 0; background: var(--l-surface); }
-/* 卡片会裁掉外面的焦点框：框画在日志区里面，底下两个角跟卡片一样圆 / The card clips an outer focus ring: the ring is drawn inside the stream, its bottom corners rounded like the card */
-.logs-page .log-console > .log-stream:focus-visible { outline-offset: -3px; border-radius: 0 0 var(--r-3) var(--r-3); }
+/* 日志区拿到焦点时框住整张卡片：画在日志区里面的框会被粘住的表头和警告行盖掉，工具行和日志区在眼里本来就是一个东西
+   When the stream has focus the ring goes round the whole card: a ring inside the stream is covered by the sticky header and the warning rows, and the toolbar and stream read as one thing anyway */
+.logs-page .log-console:has(> .log-stream:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
+.logs-page .log-console > .log-stream:focus-visible { outline: none; }
 .logs-page .log-console:has(.audit-line) > .log-stream { padding-bottom: 0; }
 /* 读取失败且一行都没有：卡片只剩工具行，不留一大块空白 / A failure with no rows: the card keeps only its toolbar, no blank slab */
 .logs-page .log-console--blank { flex: 0 0 auto; }

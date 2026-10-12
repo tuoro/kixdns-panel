@@ -597,7 +597,7 @@ pub enum UpdateError {
     Invalid(String),
     #[error("检查更新失败：{0}")]
     Network(String),
-    #[error("更新产物校验失败：{0}")]
+    #[error("内核包没通过校验：{0}")]
     Verification(String),
     #[error("安装更新失败：{0}")]
     Install(String),

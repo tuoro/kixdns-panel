@@ -698,7 +698,7 @@ fn validate_response(response: &Response) -> Result<(), GeoDataError> {
         .is_some_and(|value| value.to_ascii_lowercase().starts_with("text/html"))
     {
         return Err(GeoDataError::Download(
-            "Geo 数据链接返回了 HTML 页面，请填写文件直链".to_owned(),
+            "Geo 数据链接打开的是网页，填文件的直接下载链接".to_owned(),
         ));
     }
     Ok(())

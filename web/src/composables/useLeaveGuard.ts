@@ -21,19 +21,23 @@ export function registerLeaveGuard(ask: Ask, hasPending: () => boolean): () => v
  * With no page registered nothing is recorded, so no agreement lingers
  */
 export function leaveWithoutAsking(): boolean {
-  // 不在页面上、只在内存里的草稿也算：会话过期时它一样留不下来，就此放下 / A draft held only in memory, away from its page, counts too: it cannot survive the expiry either, so it is let go
+  // 不在页面上、只在内存里的草稿也算：会话过期时它一样留不下来，就此放下；配置页开着、保存还在路上也放下，那次保存的结果不再报
+  // A draft held only in memory, away from its page, counts too: it cannot survive the expiry either, so it is let go; so is a save still on its way
+  // with the config page open, and its result is no longer reported
   const heldLost = held?.has() ?? false
-  if (heldLost) held?.drop()
+  const savingLost = held?.saving() ?? false
+  if (heldLost || savingLost) held?.drop()
   if (!current) return heldLost
   agreed = true
-  return (pending?.() ?? false) || heldLost
+  return (pending?.() ?? false) || heldLost || savingLost
 }
 
 // 页面已经离开、草稿还在内存里（离开配置页时还在保存，或者没保存成功留着）：登记一下，会话过期时知道有它
 // A page already left with its draft still in memory (a save in flight when leaving the config page, or a failed one kept): registered so session expiry knows about it
-let held: { has: () => boolean; drop: () => void; ask: Ask } | null = null
-export function registerHeldDraft(has: () => boolean, drop: () => void, ask: Ask): void {
-  held = { has, drop, ask }
+let held: { has: () => boolean; saving: () => boolean; drop: () => void; ask: Ask } | null = null
+/** saving：配置页的保存还在路上（不管页面开没开着） / saving: the config page's save is still on its way (whether or not the page is open) */
+export function registerHeldDraft(has: () => boolean, saving: () => boolean, drop: () => void, ask: Ask): void {
+  held = { has, saving, drop, ask }
 }
 
 /** 先问登记过的页面；没有登记就直接放行。 / Ask the registered page first; pass straight through when none is registered. */
@@ -46,6 +50,14 @@ export async function confirmLeave(): Promise<boolean> {
     const agreedHeld = await held.ask()
     if (agreedHeld) held.drop()
     return agreedHeld
+  }
+  // 配置页开着、保存还在路上：和在别处一样问「配置页的保存还没做完」，同意就放下（那次保存的结果不再报，没存上的也不留）
+  // The config page is open with a save on its way: ask 配置页的保存还没做完 as from anywhere else, and let it go on agreement (its result is no longer
+  // reported, nor is a failed draft kept)
+  if (held?.saving()) {
+    agreed = await held.ask()
+    if (agreed) held.drop()
+    return agreed
   }
   agreed = await current()
   return agreed

@@ -39,7 +39,7 @@ const JsonEditor = defineAsyncComponent(() => import('../components/JsonEditor.v
 // resume：宽窄切换（转屏、拖窗口）时换成另一种编辑器，把上一个实例里还没点「完成」的修改接着用 / resume: when the layout switches (rotation, a resized window) the other editor takes over the edits not yet 完成 in the previous instance
 export interface EditorResume { draft: Rule; rawRules: unknown[]; rawMode: 'form' | 'json'; rawText: string; position: number; base: string }
 const props = withDefaults(defineProps<{ ruleId: number | null; groupId: string | null; template?: Partial<Rule>; inspector?: boolean; resume?: EditorResume | null }>(), { inspector: false, resume: null })
-const emit = defineEmits<{ close: []; saved: [rule: Rule, isNew: boolean]; deleted: [rule: Rule, index: number, list: Rule[]]; editGroup: [id: string] }>()
+const emit = defineEmits<{ close: []; reopen: []; saved: [rule: Rule, isNew: boolean]; deleted: [rule: Rule, index: number, list: Rule[]]; editGroup: [id: string] }>()
 
 const list = computed(() => (props.ruleId !== null ? listOf(props.ruleId).rules : props.groupId ? model.ruleGroups.find((g) => g.id === props.groupId)!.rules : model.rules))
 const original = props.ruleId !== null ? list.value.find((r) => r.id === props.ruleId)! : null
@@ -70,8 +70,11 @@ watch(() => original?.enabled, (now, before) => {
 })
 watch(() => (original ? list.value.indexOf(original) : -1), (now) => {
   if (!original) return
-  if (now < 0) emit('close')
-  else positionBase.value = now
+  if (now >= 0) { positionBase.value = now; return }
+  // 重新读取把草稿整份换掉了：这条规则还在、这里也没改过，就换成读进来的那条接着开着，不悄悄关上 / A re-read replaced the draft wholesale: if this rule still exists and nothing was edited here, reopen on the rule just read instead of closing silently
+  const stillThere = props.ruleId !== null && listOf(props.ruleId).rules.some((r) => r.id === props.ruleId)
+  if (stillThere && !edited()) emit('reopen')
+  else emit('close')
 })
 // Esc 返回、Ctrl/Cmd+Enter 完成；对话框开着时不抢 / Esc goes back, Ctrl/Cmd+Enter finishes; not while a dialog is open
 function onKey(event: KeyboardEvent): void {
@@ -291,6 +294,17 @@ const namePlaceholder = computed(() => (!original && !draft.conditions.some((g) 
 // 没有条件时不说「所有请求时，…」，说「所有请求都…」 / Without conditions it reads 「所有请求都…」, not 「所有请求时，…」
 // 组名的后引号和「解析」连着写，折行时「解析」不单独落到下一行 / The group name's closing quote is glued to 解析, so a wrap never leaves 解析 alone on the next line
 const glueTail = (text: string): string => text.replace(/」解析$/, '」\u2060解析')
+// 上游全都没回时会怎样，照内核说：只有写出去的「否则」才会执行（没有条件就什么都不写）；改 TXT 没有回答可改，回 SERVFAIL；其余先回旧结果再回 SERVFAIL
+// What happens when no upstream answers, as the kernel does it: only an exported 「否则」 runs (nothing is exported without conditions); replacing TXT has no
+// answer to edit and returns SERVFAIL; otherwise a stale answer first, then SERVFAIL
+const afterLimit = computed(() => {
+  const r = draft.response
+  const otherwiseRuns = r.mode === 'custom' && r.conditions.length > 0 && r.otherwise.type !== 'none'
+  if (otherwiseRuns && r.otherwise.type === 'rewrite_txt') return '上游全部超时或连不上时没有回答可改，KixDNS 回 SERVFAIL。'
+  if (otherwiseRuns) return '上游全部超时或连不上时，按「否则」处理。'
+  if (r.mode === 'off') return '上游全部超时或连不上时：开了「过期后继续用旧结果」先回旧结果，没有就回 SERVFAIL。'
+  return '上游全部超时或连不上时不会走到这一步：开了「过期后继续用旧结果」先回旧结果，没有就回 SERVFAIL。'
+})
 const readingLead = computed(() => (!draft.raw && !draft.conditions.some((g) => g.length) ? `所有请求都${glueTail(reading.value[1]?.v ?? '')}` : `${withShi(reading.value[0]?.v ?? '')}，${glueTail(reading.value[1]?.v ?? '')}`))
 const readingMore = computed(() => reading.value.slice(2).map((row) => `${row.k}：${row.v}`))
 
@@ -488,7 +502,7 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
             </div>
             <!-- 和内核一样：上游全都没回时，单独设了「否则」就按「否则」做（内核的 response_actions_on_miss）；没设就先回过期的旧结果，再回 SERVFAIL
                  As the kernel does: when no upstream answers, a custom 「否则」 runs (the kernel's response_actions_on_miss); without one a stale answer goes first, then SERVFAIL -->
-            <p class="ui-notice ui-notice--off after__limit"><Info :size="16" aria-hidden="true" /><span>{{ draft.response.mode === 'custom' && draft.response.otherwise.type !== 'none' ? '上游全部超时或连不上时，按「否则」处理。' : '上游全部超时或连不上时不会走到这一步：开了「过期后继续用旧结果」先回旧结果，没有就回 SERVFAIL。' }}</span></p>
+            <p class="ui-notice ui-notice--off after__limit"><Info :size="16" aria-hidden="true" /><span>{{ afterLimit }}</span></p>
           </div>
         </section>
 

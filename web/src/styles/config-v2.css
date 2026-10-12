@@ -29,6 +29,8 @@ body { background: var(--l-canvas); }
 .cfg__head-action:hover { text-decoration-color: var(--l-ink); }
 .cfg__spin { width: var(--size-icon-sm); height: var(--size-icon-sm); }
 .cfg__status-sk { width: 9rem; }
+/* 重新读取、恢复版本还在读：内容调淡、不能改，读回来再恢复 / A re-read or restore is still reading: the content dims and takes no edits until it lands */
+.cfg__panel[aria-busy="true"], .cfg__json[aria-busy="true"] { opacity: .6; transition: opacity var(--m-quick) var(--ease-out); }
 .cfg__notice { margin-top: calc(var(--s-1) * -1); }
 .cfg__notice .ui-objlink, .ui-savebar .ui-objlink { font-size: inherit; color: inherit; text-decoration-color: currentColor; }
 .cfg__json { display: grid; gap: var(--s-3); }
@@ -72,6 +74,9 @@ body { background: var(--l-canvas); }
   .cfg__savebar .savebar__note { min-width: 10rem; }
   .cfg__savebar:is(.ui-savebar--err, :has(.ui-check), :has(.ui-savebar__detail small)) .savebar__note { flex: 1 1 10rem; max-width: 22rem; }
 }
+/* 保存途中备注框藏起来（还占着位置）：让它让路，「第 2 步 · 写入并应用 · 已用 N 秒」变长时「保存中」不被挤出屏幕
+   During a save the note is hidden but keeps its place: it gives way, so 保存中 is not pushed off screen as 「第 2 步 · 写入并应用 · 已用 N 秒」 grows */
+@media (min-width: 861px) { .cfg__savebar .savebar__note.is-aside { min-width: 0; flex-shrink: 1; } }
 @media (min-width: 861px) and (max-width: 1100px) {
   .cfg__savebar:is(:has(.ui-check), :has(.ui-savebar__detail small)) { flex-wrap: wrap; }
   .cfg__savebar:is(:has(.ui-check), :has(.ui-savebar__detail small)) .ui-savebar__status { flex: 1 1 100%; margin-right: 0; }
@@ -1057,7 +1062,10 @@ body { background: var(--l-canvas); }
 .ecard__fold-btn { padding: 0; border: 0; background: none; color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit; cursor: pointer; }
 .ecard__fold-btn::after { position: absolute; inset: 0; content: ''; }
 .ecard__fold-btn:focus-visible { outline: 0; }
-.ecard__fold-btn:focus-visible::after { outline: 2px solid var(--focus); outline-offset: -2px; }
+.ecard__fold-btn:focus-visible::after { outline: 2px solid var(--focus); outline-offset: -2px; border-radius: var(--r-2); }
+/* 整行的折叠头在可滚动的右侧面板里，外面的焦点框会被裁掉三边：框画在里面、圆角，和带「?」的那种一样
+   A full-width fold header inside the scrolling side panel loses three sides of an outer ring: the ring goes inside and rounded, like the kind with a 「?」 */
+.ecard__fold:focus-visible { outline-offset: -2px; border-radius: var(--r-2); }
 .ecard__head--stretch.is-open .ecard__chev { transform: rotate(90deg); }
 @media (hover: hover) { .ecard__head--stretch:hover .ecard__sum { color: var(--l-ink); } }
 .ecard__fold { width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr) var(--size-icon); align-items: center; gap: var(--s-3); padding: var(--s-3) var(--s-5); border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
@@ -1522,8 +1530,6 @@ body { background: var(--l-canvas); }
 .rw__add .rw__hint, .rw__add .ui-field-error { padding-bottom: var(--s-1); }
 @media (min-width: 641px) {
   /* 映射表的开关列和「…」列和规则表一样宽，切页签时开关不挪位 / The mapping switch and menu columns match the rules table, so switches stay put across tabs */
-  /* 类型列最宽的是「CNAME」标签（约 49）：5rem 够了，省下的宽度给域名和回答 / The type column's widest content is the CNAME tag (about 49): 5rem is enough, and the width goes to the domain and answer */
-  .rw__head, .rw__row, .rw__addrow { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 5rem var(--s-7) var(--h-sm); }
   .rw__submit > svg { display: none; }
 }
 .rw__row.is-off > :not(.ui-switch) { opacity: .5; }
@@ -1536,9 +1542,10 @@ body { background: var(--l-canvas); }
 /* 域名映射的添加行：和表格同一套列，字落在各列的起点；不画框，聚焦时整行灰底（同规则页的快速添加）
    The mapping add row: the table's own columns, text starting where each column starts; no boxes, the row greys on focus (as the rules tab's quick add) */
 /* 表头、行、添加行只从一处取列宽 / Header, rows and the add row take their columns from one place */
-.rw__list { overflow: clip; --rw-cols: minmax(0, 1fr) minmax(0, 1fr) 10rem var(--s-7) var(--h-sm); }
+/* 类型列只放类型标签（TTL 跟在回答后面了），最宽的「A + AAAA」约 72：6rem 够了，省下的宽度给回答，不再截断「192.168.1.30, fd00::30」
+   The type column holds only the type tag (the TTL follows the answer now), the widest 「A + AAAA」 about 72: 6rem is enough, and the width goes to the answer */
+.rw__list { overflow: clip; --rw-cols: minmax(0, 1fr) minmax(0, 1fr) 6rem var(--s-7) var(--h-sm); }
 @media (min-width: 641px) {
-  /* 域名映射：类型列放得下「CNAME 600 秒」 / Mapping: the type column fits 「CNAME 600 秒」 */
   .rw__head, .rw__row { padding-inline: var(--s-5); grid-template-columns: var(--rw-cols); }
 }
 .rw__add { grid-template-columns: var(--rw-cols); column-gap: var(--s-4); row-gap: var(--s-1); padding: var(--s-2) var(--s-5); }
@@ -1753,8 +1760,9 @@ body { background: var(--l-canvas); }
 /* 历史版本：「批量删除」是红字的文字按钮，不再是底栏里最重的东西 / History: 批量删除 is a red text button, no longer the heaviest thing in the footer */
 .hist__bulk { position: relative; margin-left: 0; border-color: transparent; background: transparent; box-shadow: none; padding-inline: 0; color: var(--l-ink-2); }
 .hist__bulk:hover:not(:disabled) { color: var(--l-ink); }
-/* 当前版本的「…」不画，只留它那一格，标签仍对齐同一条右边 / The current version's 「…」 is not drawn, only its slot remains, so tags still share one right edge */
-.hist__menu button:disabled { visibility: hidden; }
+/* 当前版本的「…」不画，只留它那一格，标签仍对齐同一条右边；只管这个占位按钮，菜单里停用的项照常灰着显示
+   The current version's 「…」 is not drawn, only its slot remains, so tags still share one right edge; only this placeholder, so disabled menu items still show greyed */
+.hist__menu > .ui-icon-btn:disabled { visibility: hidden; }
 /* 历史版本：每一行都留着「…」那一格（当前版本那一格空着），状态标签全在同一条右边 / History: every row keeps the 「…」 slot (empty on the current version), so status tags share one right edge */
 /* 历史版本：行之间一条细线；当前版本也留着「…」那一格，标签都靠同一条右边 / History: a hairline between rows; the current version keeps the 「…」 slot too, so every tag ends on the same right edge */
 .hist__row.is-current:not(:has(> .hist__check)) { grid-template-areas: "main main tags menu" "err err err ."; }
@@ -1817,6 +1825,10 @@ body { background: var(--l-canvas); }
   .rrow > .rrow__main::before, .rw__row > .rw__d::before { position: absolute; inset: 0; content: ''; }
   .rpin .rrow__main { position: relative; }
   .rpin .rrow__main::before { position: absolute; inset: calc(var(--s-2) * -1) 0; content: ''; }
+  /* 停用的行里调淡的结果、命中、回答、类型：半透明会把它们叠到整行点按区上面，让第二行点了没反应；它们本身不能点，点按穿过去
+     The dimmed outcome, hits, answer and type of a disabled row: the opacity lifts them above the row-wide hit area, leaving the second line dead; they are not
+     tappable themselves, so taps pass through */
+  .rrow.is-off > :is(.rrow__pill, .rrow__hits), .rw__row.is-off > :is(.rw__t, .rw__k) { pointer-events: none; }
 }
 
 /* ---------- 9.5 审查第一轮：保存条 / review round 1: the save bar ----------

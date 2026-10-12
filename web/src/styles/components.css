@@ -144,6 +144,15 @@ a.ui-btn { text-decoration: none; }
 /* 焦点框和按钮的一样是圆角；手机上页签条横向滚动会裁掉外面的框，框画在页签里面 / The focus ring is rounded like a button's; on phones the scrolling tab strip clips an outer ring, so it is drawn inside the tab */
 .ui-tabs__tab:focus-visible { border-radius: var(--r-1); }
 @media (max-width: 640px) { .ui-tabs__tab:focus-visible { outline-offset: -3px; border-radius: var(--r-2); } }
+/* 宽屏页签上面补 8 的空（用负外边距抵掉，排版不动），焦点框紧贴页签：字的上下都留着空，不再像盖子一样压在字上
+   On wide screens a tab gets 8 of room above (cancelled by a negative margin, so nothing moves) and its ring sits on the tab: room above and below the word, no lid on it */
+/* 框画在一层伪元素上，左右各多出 4：页签本身没有左右内边距，框贴着页签会压在第一个和最后一个字上；排版和下划线都不动
+   The ring is drawn on a pseudo-element 4 wider on each side: tabs have no side padding, so a ring on the tab itself touches the first and last glyph; layout and the underline stay put */
+@media (min-width: 641px) {
+  .ui-tabs__tab { padding-top: var(--s-2); margin-top: calc(var(--s-2) * -1); }
+  .ui-tabs__tab:focus-visible { outline: none; }
+  .ui-tabs__tab:focus-visible::before { position: absolute; inset: 0 calc(var(--s-1) * -1); border-radius: var(--r-1); outline: 2px solid var(--focus); pointer-events: none; content: ''; }
+}
 .ui-tabs__ind { position: absolute; bottom: -1px; left: 0; width: 0; height: 0; border-top: 2px solid var(--l-ink); pointer-events: none; transition: transform var(--m-base) var(--ease-out), width var(--m-base) var(--ease-out); }
 .ui-seg { position: relative; display: inline-flex; padding: 2px; border-radius: var(--r-2); background: var(--l-sunk); }
 /* 常规分段是 36 高的控件，字用控件角色的 14；13 只给小号（规范第 1 节、5.1，审计第三轮 S4）
@@ -236,7 +245,7 @@ a.ui-btn { text-decoration: none; }
 .ui-task__actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--s-2); }
 .ui-task__bar { grid-column: 2 / -1; height: var(--s-1); overflow: hidden; border-radius: var(--r-full); background: var(--l-sunk); }
 .ui-task__bar > i { display: block; width: 0; height: 100%; background: var(--l-ink); transition: width var(--m-slow) linear; }
-.ui-spin { width: var(--s-4); height: var(--s-4); border: 2px solid var(--l-hair); border-top-color: var(--l-ink); border-radius: var(--r-full); animation: ui-spin var(--m-spin) linear infinite; }
+.ui-spin { flex: none; width: var(--s-4); height: var(--s-4); border: 2px solid var(--l-hair); border-top-color: var(--l-ink); border-radius: var(--r-full); animation: ui-spin var(--m-spin) linear infinite; }
 /* 墨色按钮里的加载圈：轨道用深底的注释灰，才看得出是一个圈 / On an ink button the track takes the dark-ground note grey so it still reads as a ring */
 .ui-btn--primary .ui-spin { border-color: var(--d-ink-3); border-top-color: var(--d-ink); }
 @keyframes ui-spin { to { transform: rotate(360deg); } }

@@ -624,10 +624,16 @@ function carryOver(model: Model, prev: Model): Model {
   if (sameBlock(prev.rest, model.rest)) model.rest = prev.rest
   for (const rg of model.ruleGroups) { const p = prev.ruleGroups.find((x) => x.id === rg.id); if (p && sameBlock(p.rest, rg.rest)) rg.rest = p.rest }
   const lists: [Rule[], Rule[]][] = [[model.rules, prev.rules], ...model.ruleGroups.map((g): [Rule[], Rule[]] => [g.rules, prev.ruleGroups.find((p) => p.id === g.id)?.rules ?? []])]
+  // 没起名字的规则名字都是空的：只按名字找会全接到第一条上（编号重复、备注抄错）。没名字的再要条件一样，上一份的每条只接一次
+  // Unnamed rules all have an empty name: matching on the name alone gave every one the first one's id and note. Unnamed ones must also have the same
+  // conditions, and each previous rule is taken once
+  const sameShape = (a: Rule, b: Rule) => (a.raw || b.raw ? JSON.stringify(a.raw ?? null) === JSON.stringify(b.raw ?? null) : condsKey(a.conditions) === condsKey(b.conditions))
   for (const [now, before] of lists) {
+    const taken = new Set<Rule>()
     for (const r of now) {
-      const p = before.find((x) => x.enabled && x.name === r.name)
+      const p = before.find((x) => x.enabled && !taken.has(x) && x.name === r.name && (r.name !== '' || sameShape(x, r)))
       if (!p) continue
+      taken.add(p)
       Object.assign(r, { id: p.id, note: p.note, edited: p.edited, outcome: sameBlock(p.outcome, r.outcome) ? p.outcome : r.outcome })
       // 条件一样只是顺序不同（内核要求多值的条件排最前）：用上一份的顺序 / Same conditions in another order (the kernel wants a multi-valued one first): keep the previous order
       if (!r.raw && !p.raw && condsKey(r.conditions) === condsKey(p.conditions)) r.conditions = p.conditions

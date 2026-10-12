@@ -4,13 +4,13 @@ import { actionFieldErrors, GEOSITE_PREFIX_ERROR, isRequiredFieldError, matcherF
 describe('配置字段共享校验', () => {
   it('按条件的实际字段检查必填值，错误说出字段名，并保留未知类型', () => {
     expect(matcherFieldErrors({ type: 'domain_suffix', operator: 'and', value: '  ' }, 'request'))
-      .toEqual({ value: '请填写域名' })
+      .toEqual({ value: '还没填域名' })
     expect(matcherFieldErrors({ type: 'response_answer_ip', operator: 'and' }, 'response'))
-      .toEqual({ cidr: '请填写网段' })
+      .toEqual({ cidr: '还没填网段' })
     expect(matcherFieldErrors({ type: 'geoip_country', operator: 'and', country_codes: [' '] }, 'selector'))
-      .toEqual({ country_codes: '请填写地区代码' })
-    expect(matcherFieldErrors({ type: 'geo_site', operator: 'and', value: '' }, 'selector')).toEqual({ value: '请填写分类' })
-    expect(matcherFieldErrors({ type: 'qtype', operator: 'and', value: '' }, 'request')).toEqual({ value: '请选择类型' })
+      .toEqual({ country_codes: '还没填地区代码' })
+    expect(matcherFieldErrors({ type: 'geo_site', operator: 'and', value: '' }, 'selector')).toEqual({ value: '还没填分类' })
+    expect(matcherFieldErrors({ type: 'qtype', operator: 'and', value: '' }, 'request')).toEqual({ value: '还没选类型' })
     expect(matcherFieldErrors({ type: 'edns_present', operator: 'and', expect: false }, 'request')).toEqual({})
     expect(matcherFieldErrors({ type: 'future_matcher', operator: 'and' }, 'request')).toEqual({})
   })
@@ -31,16 +31,16 @@ describe('配置字段共享校验', () => {
 
   it('缺失 CNAME 目标只报告必填错误，非法目标报告格式错误', () => {
     expect(actionFieldErrors({ type: 'static_cname_response', target: ' ' }, 'default'))
-      .toEqual({ target: '请填写目标域名' })
+      .toEqual({ target: '还没填目标域名' })
     expect(actionFieldErrors({ type: 'static_cname_response', target: 'bad target' }, 'default'))
       .toEqual({ target: 'CNAME 目标域名写得不对' })
   })
 
   it('动作的必填参数按动作列表里的字段名报错，拉丁字母前留一个空格（审计第五轮 B3）', () => {
-    expect(actionFieldErrors({ type: 'forward', upstream: '' }, 'default')).toEqual({ upstream: '请填写上游' })
-    expect(actionFieldErrors({ type: 'static_ip_response', ip: ' ' }, 'default')).toEqual({ ip: '请填写 IP' })
-    // 必填错误靠开头的「请填写」「请选择」认出来，别的错误不算 / Required errors are told by their 请填写 / 请选择 opening; no other error is
-    expect(['请填写域名', '请选择要转到的组'].every(isRequiredFieldError)).toBe(true)
+    expect(actionFieldErrors({ type: 'forward', upstream: '' }, 'default')).toEqual({ upstream: '还没填上游' })
+    expect(actionFieldErrors({ type: 'static_ip_response', ip: ' ' }, 'default')).toEqual({ ip: '还没填 IP' })
+    // 必填错误靠开头的「还没填」「还没选」认出来，别的错误不算 / Required errors are told by their 还没填 / 还没选 opening; no other error is
+    expect(['还没填域名', '还没选要转到的组'].every(isRequiredFieldError)).toBe(true)
     expect([GEOSITE_PREFIX_ERROR, 'CNAME 目标域名写得不对', '不能转到自己所在的这一组', '要转到的组不存在'].some(isRequiredFieldError)).toBe(false)
   })
 
@@ -67,7 +67,7 @@ describe('配置字段共享校验', () => {
 
   it('区分未选择、自跳转、目标不存在；省略列表时不猜测目标是否存在', () => {
     expect(actionFieldErrors({ type: 'jump_to_pipeline', pipeline: '' }, 'default', ['default']))
-      .toEqual({ pipeline: '请选择要转到的组' })
+      .toEqual({ pipeline: '还没选要转到的组' })
     expect(actionFieldErrors({ type: 'jump_to_pipeline', pipeline: 'default' }, 'default', ['default']))
       .toEqual({ pipeline: '不能转到自己所在的这一组' })
     expect(actionFieldErrors({ type: 'jump_to_pipeline', pipeline: 'removed' }, 'default', ['default']))
@@ -77,7 +77,7 @@ describe('配置字段共享校验', () => {
 
   it('TXT 必须包含有效文本，未知动作不被前端误判', () => {
     expect(actionFieldErrors({ type: 'static_txt_response', text: [' ', ''] }, 'default'))
-      .toEqual({ text: '请填写文本' })
+      .toEqual({ text: '还没填文本' })
     expect(actionFieldErrors({ type: 'replace_txt_response', text: 'v=spf1' }, 'default')).toEqual({})
     expect(actionFieldErrors({ type: 'future_action', future_field: 'keep' }, 'default')).toEqual({})
   })

@@ -81,7 +81,7 @@ async function restore(v: ConfigVersion): Promise<void> {
   }
 }
 async function remove(v: ConfigVersion): Promise<void> {
-  if (isCurrent(v)) { toast.error('当前生效版本不能删除，请先恢复其他版本'); return }
+  if (isCurrent(v)) { toast.error('正在用的版本不能删除：先恢复别的版本'); return }
   const ok = await confirm.ask({ title: `删除配置版本 #${v.id}`, body: '删除后找不回来。当前生效的配置不受影响。', confirmLabel: '删除这个版本', items: [`#${v.id} · ${v.message || '未填写备注'}`], destructive: true })
   if (!ok) return
   try {
@@ -151,7 +151,7 @@ function onRuleLink(id: number): void { dialog.value?.close(); emit('rule', id) 
       </ol>
       <p v-else class="hist__empty">还没有保存过版本</p>
       <!-- 批量删除从底栏进出，页头只有标题和关闭 / Bulk delete is entered and left from the footer; the header holds only the title and close -->
-      <footer v-if="selecting" class="pdrawer__foot"><button class="ui-btn ui-btn--secondary" type="button" :disabled="bulkDeleting" @click="selecting = false; picked = []">取消</button><span class="editor__spacer"></span><button class="ui-btn ui-btn--danger" type="button" :disabled="!picked.length || bulkDeleting || panelDown" @click="removePicked">{{ picked.length ? `删除 ${picked.length} 个版本` : '删除所选' }}</button></footer>
+      <footer v-if="selecting" class="pdrawer__foot"><button class="ui-btn ui-btn--secondary" type="button" :disabled="bulkDeleting" @click="selecting = false; picked = []">取消</button><span class="editor__spacer"></span><button class="ui-btn ui-btn--danger" type="button" :disabled="!picked.length || busy || panelDown" @click="removePicked">{{ picked.length ? `删除 ${picked.length} 个版本` : '删除所选' }}</button></footer>
       <footer v-else-if="deletable.length" class="pdrawer__foot hist__foot"><button class="ui-btn ui-btn--danger hist__bulk" type="button" :disabled="panelDown" @click="selecting = true; picked = []"><Trash2 :size="16" aria-hidden="true" />批量删除</button></footer>
     </aside>
     <dialog ref="diffDialog" class="pdialog diffd" aria-labelledby="diff-title" @cancel.prevent="closeDiff" @click.self="closeDiff">

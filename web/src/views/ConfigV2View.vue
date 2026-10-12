@@ -26,7 +26,7 @@ import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, busy, cnameAnswers, conflict, dropEditsAfterSave, saveInFlight, onlySaving, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, unsupportedSection } from '../config-v2/useConfigDocument'
+import { applyBusy, busy, rereading, cnameAnswers, conflict, dropEditsAfterSave, saveInFlight, onlySaving, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, cnameRules, unsupportedSection } from '../config-v2/useConfigDocument'
 import { useHelp } from '../composables/useHelp'
 import { useServiceStart } from '../composables/useServiceStart'
 import { registerLeaveGuard, takeAgreement } from '../composables/useLeaveGuard'
@@ -60,7 +60,15 @@ const firstRun = computed(() => ready.value && ui.mode === 'form' && !model.grou
 // 页头的规则数连同规则组里的，和导入说明数的一样 / The header's rule count includes rule groups' rules, as the import report counts them
 const ruleCount = computed(() => model.rules.length + model.ruleGroups.reduce((n, group) => n + group.rules.length, 0))
 // 宽屏上规则在右侧面板里编辑，列表留在左边；窄屏和手机仍是整页编辑 / On wide screens a rule is edited in the right-hand inspector with the list on the left; narrow screens and phones keep the full-page editor
-const editor = ref<{ ruleId: number | null; groupId: string | null; template?: Partial<Rule>; resume?: EditorResume | null } | null>(null)
+// nonce：同一条规则重新打开（重读以后换成读进来的那条）时换个 key，让编辑重新装上 / nonce: a new key when the same rule reopens (on the rule just read), so the editor mounts afresh
+const editor = ref<{ ruleId: number | null; groupId: string | null; template?: Partial<Rule>; resume?: EditorResume | null; nonce?: number } | null>(null)
+// 重读以后接着开着同一条规则：焦点原来在编辑里的，回到规则名上，不掉到页面开头 / Reopening the same rule after a re-read: focus that was in the editor returns to the rule name instead of dropping to the page start
+function reopenRule(): void {
+  if (!editor.value) return
+  const hadFocus = Boolean(document.activeElement?.closest('.editor'))
+  editor.value = { ...editor.value, resume: null, nonce: (editor.value.nonce ?? 0) + 1 }
+  if (hadFocus) void nextTick(() => document.querySelector<HTMLElement>('.editor .editor__name')?.focus({ preventScroll: true }))
+}
 const inspector = computed(() => editor.value !== null && wide.value && section.value === 'rules' && ui.mode === 'form')
 const groupEditor = ref<{ id: string | null } | null>(null)
 const historyOpen = ref<{ compare: number | null } | null>(null)
@@ -156,7 +164,8 @@ function groupDeleted(group: UpstreamGroup, index: number): void {
 
 // ---------- 通知条：一次只说一件事 / the notice strip: one thing at a time ----------
 const geoPrefixed = computed(() => [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].flatMap((r) => r.conditions.flat()).filter((c) => c.field === 'geosite' && c.values.some((v) => /^geosite:/i.test(v))).length)
-interface Notice { tone: 'err' | 'warn' | 'off'; text: string; detail?: string; action?: string; run?: () => void | Promise<void> }
+// links：说明里「」中的显示名对到规则编号（CNAME 提示点名的规则） / links: display titles in 「」 within the detail mapped to rule ids (the rules the CNAME notice names)
+interface Notice { tone: 'err' | 'warn' | 'off'; text: string; detail?: string; links?: Record<string, number>; action?: string; run?: () => void | Promise<void> }
 const notice = computed<Notice | null>(() => {
   // 连不上面板时由顶上的横幅说，这里不复述 / With the panel unreachable the banner says it; no second copy here
   if (loadError.value && doc.value && !panelDown.value) return { tone: 'err', text: '读取配置失败，下面是上一次读到的内容。', detail: loadError.value, action: '重试', run: () => void reload(true) }
@@ -181,8 +190,8 @@ const notice = computed<Notice | null>(() => {
   if (!canCname.value && cnameInUse.value && !capabilityError.value) {
     const them = cnamePlaces.value.total > 1 ? '它们' : '它'
     // 同时还有开着的不支持的设置：一条提示把两件事都说了，保存条说的「有 N 项」和这里对得上 / Unsupported settings switched on as well: one notice says both, so the bar's 「有 N 项」 matches it
-    if (unsupportedFields.value.length) return { tone: 'warn', text: `当前内核不支持：${unsupportedFields.value.join('、')}、CNAME\u00a0回答。在基础设置里关掉${unsupportedFields.value.map((f) => `「${f}」`).join('、')}，把\u00a0${cnamePlaces.value.total}\u00a0处写成域名的回答改成 IP，或者更新内核。`, action: section.value === 'settings' ? (cnamePlaces.value.mappings ? '去域名映射' : undefined) : '去基础设置', run: () => (section.value === 'settings' ? setTab('mapping') : goUnsupported()) }
-    return { tone: 'warn', text: `当前内核不支持 CNAME\u00a0回答：有\u00a0${cnamePlaces.value.total}\u00a0处回答写的是域名，KixDNS 不会接受这份配置。把${them}改成 IP，或者更新内核。`, action: cnamePlaces.value.mappings && section.value !== 'mapping' ? '去域名映射' : undefined, run: () => setTab('mapping') }
+    if (unsupportedFields.value.length) return { tone: 'warn', text: `当前内核不支持：${unsupportedFields.value.join('、')}、CNAME\u00a0回答。在基础设置里关掉${unsupportedFields.value.map((f) => `「${f}」`).join('、')}，把\u00a0${cnamePlaces.value.total}\u00a0处写成域名的回答改成 IP，或者更新内核。`, ...cnameWhere.value, action: section.value === 'settings' ? (cnamePlaces.value.mappings ? '去域名映射' : undefined) : '去基础设置', run: () => (section.value === 'settings' ? setTab('mapping') : goUnsupported()) }
+    return { tone: 'warn', text: `当前内核不支持 CNAME\u00a0回答：有\u00a0${cnamePlaces.value.total}\u00a0处回答写的是域名，KixDNS 不会接受这份配置。把${them}改成 IP，或者更新内核。`, ...cnameWhere.value, action: cnamePlaces.value.mappings && section.value !== 'mapping' ? '去域名映射' : undefined, run: () => setTab('mapping') }
   }
   // KixDNS 不接受带着它不支持的设置的配置：说清这一点和两条出路，按钮直接去基础设置 / KixDNS refuses a config carrying settings it does not support: say so with the two ways out, the button going straight to the settings
   if (unsupportedFields.value.length) { const many = unsupportedFields.value.length > 1; return { tone: 'warn', text: `当前内核不支持：${unsupportedFields.value.join('、')}。开着也不起作用，关掉才能保存：在基础设置里点${many ? '' : '它旁边的'}「关掉」，或者更新内核。`, action: section.value === 'settings' ? (unsupportedTitle.value ? `去${unsupportedTitle.value}` : undefined) : '去基础设置', run: goUnsupported } }
@@ -199,6 +208,24 @@ function goUnsupported(): void {
 // 写成域名的回答有几处：按写出的配置数（和服务端一样）；域名映射里有几处另数，决定给不给「去域名映射」
 // How many answers are domains: counted on the export (as the server does); the mappings among them are counted apart, to decide whether to offer 去域名映射
 const cnamePlaces = computed(() => ({ mappings: model.mappings.filter((m) => m.enabled && !mappingIsIp(m)).length, total: cnameAnswers.value }))
+// 说出写成域名的是哪几条规则：点名前两条（点了打开那条规则），多的写「等 N 条」，域名映射只数条数（有「去域名映射」）；只有映射时不另起一行
+// Name the rules whose answers are domains: the first two by name (a click opens that rule), the rest as 「等 N 条」, mappings only counted (they have 去域名映射);
+// with mappings alone no extra line
+const cnameWhere = computed((): { detail?: string; links?: Record<string, number> } => {
+  const rules = cnameRules.value
+  if (!rules.length) return {}
+  const links: Record<string, number> = {}
+  for (const rule of rules.slice(0, 2)) {
+    const full = ruleTitle(rule).replace(/[「」]/g, '')
+    // 超过 32 个字才截，短的域名条件整个写出来 / Cut only past 32 characters, so a short domain condition is written in full
+    const title = full.length > 32 ? `${full.slice(0, 31)}…` : full
+    if (!(title in links)) links[title] = rule.id
+  }
+  const named = Object.keys(links).map((title) => `「${title}」`).join('')
+  const more = rules.length > Object.keys(links).length ? `等\u00a0${rules.length}\u00a0条` : ''
+  const mappings = cnamePlaces.value.mappings ? `、域名映射\u00a0${cnamePlaces.value.mappings}\u00a0条` : ''
+  return { detail: `写成域名的有：规则${named}${more}${mappings}`, links }
+})
 function stripPrefix(): void {
   let n = 0
   for (const r of [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)]) for (const c of r.conditions.flat()) if (c.field === 'geosite') c.values = c.values.map((v) => { if (/^geosite:/i.test(v)) { n++; return v.replace(/^geosite:/i, '') } return v })
@@ -423,7 +450,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
 </script>
 
 <template>
-  <RuleEditor v-if="editor && !inspector" ref="editorRef" :key="`${editor.ruleId}-${editor.groupId}`" :rule-id="editor.ruleId" :group-id="editor.groupId" :template="editor.template" :resume="editor.resume" @close="closeRule" @saved="ruleSaved" @deleted="ruleDeleted" @edit-group="groupEditor = { id: $event }" />
+  <RuleEditor v-if="editor && !inspector" ref="editorRef" :key="`${editor.ruleId}-${editor.groupId}-${editor.nonce ?? 0}`" :rule-id="editor.ruleId" :group-id="editor.groupId" :template="editor.template" :resume="editor.resume" @close="closeRule" @reopen="reopenRule" @saved="ruleSaved" @deleted="ruleDeleted" @edit-group="groupEditor = { id: $event }" />
   <div v-else class="page cfg">
     <UiPageHeader :title="pageTitle">
       <template #meta>
@@ -448,7 +475,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
       </template>
       <template v-if="!firstRun" #actions>
         <!-- 当前页签自己的操作（规则页的「新建规则」）从页签组件传送到这里 / The current tab's own actions (the rules tab's 新建规则) teleport here from the tab component -->
-        <span id="cfg-actions" class="cfg__page-acts"></span>
+        <span id="cfg-actions" class="cfg__page-acts" :inert="rereading || undefined"></span>
         <UiTabs v-if="ui.mode === 'json'" class="cfg__mode" :model-value="ui.mode" :items="modes" label="配置视图" variant="segment" @update:model-value="setMode" />
         <UiMenu class="cfg__more" :items="moreItems" label="更多配置操作" title="配置" @select="pickMore" />
       </template>
@@ -457,7 +484,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
     <div v-if="notice && ready" class="ui-notice cfg__notice" tabindex="-1" :class="notice.tone === 'err' ? 'ui-notice--err' : notice.tone === 'off' ? 'ui-notice--off' : ''" :role="notice.tone === 'err' ? 'alert' : 'status'">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10" /><path d="M12 8v4M12 16h.01" /></svg>
       <span>{{ notice.text }}</span>
-      <small v-if="notice.detail"><RuleText :text="notice.detail" @rule="openRule($event, null)" @group="groupEditor = { id: $event }" /></small>
+      <small v-if="notice.detail"><RuleText :text="notice.detail" :links="notice.links" @rule="openRule($event, null)" @group="groupEditor = { id: $event }" /></small>
       <button v-if="notice.action" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="applyBusy" @click="runNotice">{{ notice.action }}</button>
     </div>
 
@@ -481,14 +508,15 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
       <p class="cfg__failed-reason">{{ loadError }}</p>
       <button class="ui-btn ui-btn--secondary" type="button" @click="reload(false)"><RefreshCw :size="16" aria-hidden="true" />重试</button>
     </div>
-    <div v-else-if="ui.mode === 'json'" class="cfg__json ui-fade">
+    <div v-else-if="ui.mode === 'json'" class="cfg__json ui-fade" :inert="rereading || undefined" :aria-busy="rereading || undefined">
       <p class="cfg__json-note">这里是 KixDNS 读的配置，可以直接改。切回表单时会重新读一遍；规则名、备注、停用的规则这些面板自己的信息另外保存，不在这里。</p>
       <JsonEditor ref="jsonEditor" v-model="jsonText" class="cfg__json-editor" :error-line="jsonError?.line" />
     </div>
-    <div v-else :id="`cfg-panel-${section}`" class="cfg__panel" role="tabpanel" :aria-labelledby="`cfg-tab-${section}`">
+    <!-- 重新读取、恢复版本读回来之前不让改：读回来的会整份换掉草稿 / No edits until a re-read or restore comes back: what comes back replaces the draft -->
+    <div v-else :id="`cfg-panel-${section}`" class="cfg__panel" role="tabpanel" :aria-labelledby="`cfg-tab-${section}`" :inert="rereading || undefined" :aria-busy="rereading || undefined">
       <div v-if="section === 'rules'" class="rules-split" :class="{ 'is-open': inspector }">
         <RulesTab :selected="editor?.ruleId ?? null" @open="openRule" @tab="setTab" @edit-group="groupEditor = { id: $event }" @import="fileInput?.click()" />
-        <RuleEditor v-if="inspector && editor" ref="editorRef" :key="`${editor.ruleId}-${editor.groupId}`" inspector :rule-id="editor.ruleId" :group-id="editor.groupId" :template="editor.template" :resume="editor.resume" @close="closeRule" @saved="ruleSaved" @deleted="ruleDeleted" @edit-group="groupEditor = { id: $event }" />
+        <RuleEditor v-if="inspector && editor" ref="editorRef" :key="`${editor.ruleId}-${editor.groupId}-${editor.nonce ?? 0}`" inspector :rule-id="editor.ruleId" :group-id="editor.groupId" :template="editor.template" :resume="editor.resume" @close="closeRule" @reopen="reopenRule" @saved="ruleSaved" @deleted="ruleDeleted" @edit-group="groupEditor = { id: $event }" />
       </div>
       <UpstreamsTab v-else-if="section === 'upstreams'" @edit="groupEditor = { id: $event }" @rules="showGroupRules" />
       <MappingTab v-else-if="section === 'mapping'" />

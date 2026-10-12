@@ -1506,7 +1506,7 @@ fn map_config_error(error: ConfigError) -> AppError {
         ),
         ConfigError::ActiveVersion => AppError::Conflict(
             "config_version_active",
-            "当前生效版本不能删除，请先恢复其他版本".to_owned(),
+            "正在用的版本不能删除：先恢复别的版本".to_owned(),
         ),
         ConfigError::Invalid(message) => AppError::BadRequest("config_invalid", message),
         ConfigError::Internal(error) => AppError::Internal(error),

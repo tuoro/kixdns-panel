@@ -135,7 +135,7 @@ pub(super) fn validate_build_identity(identity: &BuildIdentity) -> Result<(), Up
     }
     if identity.control_protocol != CONTROL_PROTOCOL_VERSION {
         return Err(UpdateError::Verification(format!(
-            "控制协议不兼容：需要 v{CONTROL_PROTOCOL_VERSION}，产物为 v{}",
+            "控制协议不兼容：需要 v{CONTROL_PROTOCOL_VERSION}，这个内核是 v{}",
             identity.control_protocol
         )));
     }
