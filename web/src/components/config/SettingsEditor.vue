@@ -37,6 +37,8 @@ const keptOff = reactive(new Set<string>())
 watch(current, () => keptOff.clear())
 // 从「去基础设置」过来时指名了一组：手机上直接打开那一组，不停在目录上 / Arriving from 去基础设置 names a group: on phones that group opens directly instead of the contents list
 const mobileOpen = ref(Boolean(props.initialGroup))
+// 已经开着时又指名了一组（页面上方的「去查询统计」）：换过去，手机上直接打开 / A group named while already open (去查询统计 above): switch to it, opening it directly on phones
+watch(() => props.initialGroup, (group) => { if (group) { current.value = group; mobileOpen.value = true } })
 const mobileViewport = window.matchMedia('(max-width: 860px)')
 const isMobile = ref(mobileViewport.matches)
 function resize(event: MediaQueryListEvent): void { isMobile.value = event.matches }

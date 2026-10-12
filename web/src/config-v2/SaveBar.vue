@@ -9,7 +9,7 @@ import DraftReviewDialog from './DraftReviewDialog.vue'
 import RuleText from './RuleText.vue'
 import { usePhone } from './phone'
 import { changeCount, dialogEdits, discardWithUndo, editorEdited, model } from './store'
-import { blockedFields, busy, sayBlocked, conflict, deferNote, deferSave, editTouched, elapsed, note, origin, save, saveMessage, stage, validate, validation, verdict } from './useConfigDocument'
+import { blockedFields, busy, saveInFlight, sayBlocked, conflict, deferNote, deferSave, editTouched, elapsed, note, origin, save, saveMessage, stage, validate, validation, verdict } from './useConfigDocument'
 
 // 保存条只替草稿说话：有改动才升起来，保存完一会儿就收起。两步：先校验，再写入并热加载；任何一步失败都停住，原因里的规则能点。
 // KixDNS 没启动、连不上、不报能力时只存成待应用版本。Ctrl/Cmd+S 等于点保存。进度和结果都来自 useConfigDocument。
@@ -40,7 +40,8 @@ function onKey(event: KeyboardEvent): void {
     event.preventDefault()
     // 弹层开着时不替它保存，但说一句该怎么做，不让按键没反应 / With a dialog open the bar does not save for it, but says what to do instead of swallowing the key
     if (document.querySelector('dialog[open]')) { toast.info(dialogEdits.size ? '先点窗口里的按钮把修改放进草稿，再保存' : '先关掉这个窗口，再保存'); return }
-    if (busy.value) return
+    // 单独的「校验」还没回来时照样保存（等它回来接着存）；真的在保存时不重复 / During a lone 校验 the save still goes (it waits for the check); during a real save it is not repeated
+    if (saveInFlight.value) return
     if (props.jsonError) toast.info('JSON 写错了，改好才能保存')
     else if (conflict.value && draftStage.value === 'failed') toast.info('这份配置在别处改过了，先重新读取')
     else if (blockedFields.value.length) sayBlocked()
@@ -84,7 +85,15 @@ function closeReview(): void {
 }
 const saveLabel = computed(() => (deferSave.value ? '保存为待应用' : '保存并应用'))
 useBarHeight(bar, '--savebar-h')
-watch(busy, (b) => { if (b) void nextTick(() => saveButton.value?.focus()) })
+// 保存开始时焦点挪到保存按钮（上面会出「保存中」），只在焦点本来就在保存条上或者没落在任何地方时：正在输入框里打字的人不被拽走
+// When a save starts focus moves to the save button (it shows 保存中), only if focus was already in the bar or nowhere: someone typing in a field is not pulled away
+watch(busy, (b) => {
+  if (!b) return
+  void nextTick(() => {
+    const active = document.activeElement
+    if (!active || active === document.body || bar.value?.contains(active)) saveButton.value?.focus()
+  })
+})
 
 function discard(): void {
   // 只有面板或 JSON 里的修改时，说清丢掉的是哪些，不给一个什么都恢复不了的「撤销」 / With only panel or JSON edits, say which were dropped instead of offering an 撤销 that restores nothing

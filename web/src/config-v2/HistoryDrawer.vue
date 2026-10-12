@@ -13,7 +13,7 @@ import { readConfig } from '../config-model/document'
 import { actorName, errorMessage, formatVersionTime } from '../utils'
 import RuleText from './RuleText.vue'
 import { appliedModel, unsaved } from './store'
-import { bulkDeleting, currentVersionId, deferSave, deleteVersion, deleteVersions, deleting, friendlyRuntimeError, pendingWhen, restoreVersion, restoring, versionDetail, versions } from './useConfigDocument'
+import { bulkDeleting, currentVersionId, deferSave, deleteVersion, saveInFlight, deleteVersions, deleting, friendlyRuntimeError, pendingWhen, restoreVersion, restoring, versionDetail, versions } from './useConfigDocument'
 // 关上后焦点回到打开它的控件 / Focus returns to the opener on close
 useReturnFocus()
 
@@ -33,7 +33,8 @@ const preview = ref<ConfigVersion | null>(null)
 // The comparison: a row's full content is fetched when opened and compared once it arrives; null until then, and nothing shows
 const blocks = ref<DiffBlock[] | null>(null)
 // 有哪个版本正在恢复或删除时，菜单里的操作都停一停 / While any version is being restored or deleted the menu actions wait
-const busy = computed(() => restoring.value !== null || deleting.value !== null || bulkDeleting.value)
+// 配置页正在保存时也算忙：恢复会和那次保存撞上，变成「别处改过了」 / A save running on the config page counts as busy too: a restore would collide with it and read as 别处改过了
+const busy = computed(() => restoring.value !== null || deleting.value !== null || bulkDeleting.value || saveInFlight.value)
 
 const isCurrent = (v: ConfigVersion) => v.id === currentVersionId.value
 const deletable = computed(() => versions.value.filter((v) => !isCurrent(v)))

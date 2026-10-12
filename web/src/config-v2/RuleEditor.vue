@@ -326,8 +326,27 @@ function done(): void {
   target.splice(Math.min(Number(position.value), target.length), 0, saved)
   emit('saved', saved, !original)
 }
+// 宽屏右侧面板里保存（Ctrl+S 或保存条）：修改原地写回这条规则，面板不关，焦点留在正在打字的地方；新建的规则照旧收起
+// Saving from the wide side panel (Ctrl+S or the save bar): the edits are written back into this rule in place and the panel stays open, focus where the
+// typing was; a new rule still closes as before
+function keepOpen(): void {
+  if (draft.raw) draft.raw = currentRaw()
+  draft.conditions = draft.conditions.filter((g) => g.length).length ? draft.conditions.filter((g) => g.length) : [[]]
+  draft.name = draft.name.trim()
+  draft.edited = new Date().toISOString()
+  const target = list.value
+  const at = original ? target.indexOf(original) : -1
+  if (!original || at < 0) { emit('close'); return }
+  Object.assign(original, JSON.parse(JSON.stringify(draft)) as Rule)
+  target.splice(at, 1)
+  const to = Math.min(Number(position.value), target.length)
+  target.splice(to, 0, original)
+  position.value = to
+  positionBase.value = to
+  initialSnap.value = snapshot()
+}
 // 保存条要保存时先把面板里的修改收进草稿；写错了就停在面板里指出来 / Before the save bar saves, the panel's edits go into the draft; if something is wrong the panel stops and points at it
-function commit(): boolean {
+function commit(stay = false): boolean {
   if (!edited()) return true
   if (problems.value.length) {
     showErrors.value = true
@@ -335,7 +354,8 @@ function commit(): boolean {
     toast.info('先改好右侧规则再保存')
     return false
   }
-  done()
+  if (stay && original) keepOpen()
+  else done()
   return true
 }
 defineExpose({ confirmDiscard, commit, capture })

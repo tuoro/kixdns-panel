@@ -378,3 +378,23 @@ test('手机上行里的「…」和开关并排，点按区各 44 @responsive',
     }
   }
 })
+
+// 手机上规则行、映射行整行都能点进编辑：第二行（结果、回答）以前点了没反应 / On phones a rule or mapping row opens the editor anywhere: the second line (outcome, answer) used to do nothing
+test('手机上点规则行、映射行的第二行也能进编辑 @responsive', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'mobile', '只看手机的行')
+  await page.goto('/config')
+  const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+  await quick.fill('second-line.example.org')
+  await quick.press('Enter')
+  // 像手指一样点第二行那个位置（那里接住点击的是整行的点击区） / Tap the second line's spot as a finger would (the row's hit area takes it there)
+  const tapCentre = async (locator: ReturnType<typeof page.locator>) => { const box = (await locator.boundingBox())!; await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2) }
+  await tapCentre(page.locator('[data-rule]', { hasText: 'second-line.example.org' }).locator(':scope > .rrow__pill'))
+  await expect(page).toHaveURL(/rule=/)
+  await page.goBack()
+  await page.goto('/config?section=mapping')
+  await page.getByLabel('要映射的域名').fill('line.home.arpa')
+  await page.getByLabel('回答的 IP 或域名').fill('192.168.1.50')
+  await page.getByRole('button', { name: '添加', exact: true }).click()
+  await tapCentre(page.locator('[data-rw]', { hasText: 'line.home.arpa' }).locator('.rw__t'))
+  await expect(page.locator('.rw__edit')).toBeVisible()
+})

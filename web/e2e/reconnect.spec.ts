@@ -323,3 +323,13 @@ test('回应丢了时别处又存了一版：连上后按冲突处理，不悄�
   await expect(bar).toContainText('这份配置在别处改过了', { timeout: 5000 })
   await expect(bar.getByRole('button', { name: '保存并应用' })).toBeDisabled()
 })
+
+// 回应丢了以后在配置页上放弃了修改：连上核对出那次其实存上了，也要说一句（保存条这时说不了） / The draft discarded on the page after a lost answer: when the check finds the save did land, say so (the bar cannot then)
+test('回应丢了后在页上放弃修改：核对出存上了也要说', async ({ page }) => {
+  const toastTexts = () => page.locator('.toast').allTextContents().then((texts) => texts.map((text) => text.replace(/⁠/g, '').trim()))
+  await loseAnswerThenEdit(page)
+  await page.locator('.cfg__savebar').getByRole('button', { name: '放弃修改' }).click()
+  await panelDown(page, false)
+  await expect(banner(page)).toHaveCount(0, { timeout: 10_000 })
+  await expect.poll(async () => (await toastTexts()).some((text) => /^刚才那次保存已经存上了：版本 #\d+ 已生效$/.test(text)), { timeout: 5000 }).toBe(true)
+})

@@ -1797,12 +1797,16 @@ body { background: var(--l-canvas); }
 }
 /* 手机上的小目标：映射的域名格、上游组名、只有一行的规则名，点击范围撑到 40 以上 / Small phone targets: a mapping's domain cell, a group name, a one-line rule name, hit areas past 40 */
 @media (max-width: 640px) {
-  .rw__d, .gcard__name, .rrow__main { position: relative; }
-  .rw__d::before, .gcard__name::before { position: absolute; inset: calc(min(0px, (100% - var(--h-touch)) / 2)) calc(var(--s-1) * -1); content: ''; }
-  /* 映射的域名格为了省略号要裁掉溢出，连补出去的点按区域也一起裁了（只剩 20 高）：改成留出 12 再裁，省略号照旧
-     The mapping's domain cell clips its overflow for the ellipsis, which clipped its grown hit area too (20 tall): clip with 12 to spare, the ellipsis unchanged */
-  .rw__d { overflow: clip; overflow-clip-margin: var(--s-3); }
-  .rrow__main::before { position: absolute; inset: calc(var(--s-2) * -1) 0; content: ''; }
+  .gcard__name { position: relative; }
+  .gcard__name::before { position: absolute; inset: calc(min(0px, (100% - var(--h-touch)) / 2)) calc(var(--s-1) * -1); content: ''; }
+  /* 规则行、映射行整行都能点进编辑（第二行的结果、回答以前点了没反应）：点按区域铺满这一行；「…」和开关排在后面、自己有定位，盖在它上面照样点得到
+     A rule or mapping row opens the editor anywhere on it (the outcome or answer line used to do nothing): the hit area spans the row; 「…」 and the switch come
+     later and are positioned, so they sit above it and still take their own taps */
+  .rw__row { position: relative; }
+  .rrow > .rrow__main, .rw__row > .rw__d { position: static; }
+  .rrow > .rrow__main::before, .rw__row > .rw__d::before { position: absolute; inset: 0; content: ''; }
+  .rpin .rrow__main { position: relative; }
+  .rpin .rrow__main::before { position: absolute; inset: calc(var(--s-2) * -1) 0; content: ''; }
 }
 
 /* ---------- 9.5 审查第一轮：保存条 / review round 1: the save bar ----------

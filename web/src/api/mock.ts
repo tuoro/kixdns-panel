@@ -607,6 +607,8 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
     return { deleted_id: id } as DeleteConfigVersionResult as T
   }
   if (path === '/api/v1/config/validate') {
+    // kixdns:demo-validate-slow：校验要 1.5 秒，演示校验途中按保存、离开页面 / kixdns:demo-validate-slow: validation takes 1.5 s, to show saving or leaving while it runs
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-validate-slow') === 'true') await new Promise((resolve) => setTimeout(resolve, 1500))
     // kixdns:demo-validate-stopped：下一次校验撞上 KixDNS 刚停掉（控制接口不在了），演示保存时才发现停了的样子
     // kixdns:demo-validate-stopped: the next validation finds KixDNS just stopped (the control socket is gone), showing a stop discovered while saving
     if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-validate-stopped') === 'true') {

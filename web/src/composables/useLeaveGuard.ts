@@ -31,16 +31,22 @@ export function leaveWithoutAsking(): boolean {
 
 // 页面已经离开、草稿还在内存里（离开配置页时还在保存，或者没保存成功留着）：登记一下，会话过期时知道有它
 // A page already left with its draft still in memory (a save in flight when leaving the config page, or a failed one kept): registered so session expiry knows about it
-let held: { has: () => boolean; drop: () => void } | null = null
-export function registerHeldDraft(has: () => boolean, drop: () => void): void {
-  held = { has, drop }
+let held: { has: () => boolean; drop: () => void; ask: Ask } | null = null
+export function registerHeldDraft(has: () => boolean, drop: () => void, ask: Ask): void {
+  held = { has, drop, ask }
 }
 
 /** 先问登记过的页面；没有登记就直接放行。 / Ask the registered page first; pass straight through when none is registered. */
 export async function confirmLeave(): Promise<boolean> {
   // 没有页面登记就直接放行，也不记「同意过」：否则这一下会留到以后，让配置页某次离开不再问
   // With no page registered it passes without recording agreement: otherwise the flag lingers and some later leave of the config page goes unasked
-  if (!current) return true
+  if (!current) {
+    // 配置页不在，但它的草稿还在内存里（正在保存或没保存成功）：退出登录前也问一句，同意就放下 / The config page is gone but its draft is held in memory: ask before signing out too, and let it go on agreement
+    if (!held?.has()) return true
+    const agreedHeld = await held.ask()
+    if (agreedHeld) held.drop()
+    return agreedHeld
+  }
   agreed = await current()
   return agreed
 }
