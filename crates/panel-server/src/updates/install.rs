@@ -349,7 +349,7 @@ impl UpdateManager {
     ) -> Result<InstalledVersion, UpdateError> {
         if expected.is_some_and(|expected| expected != latest.remote.source_id) {
             return Err(UpdateError::Conflict(
-                "上游又有了更新的构建，请刷新后再更新".to_owned(),
+                "上游又出了更新的构建，重新检查后再更新".to_owned(),
             ));
         }
         let key = VersionKey::remote(&latest.remote)?;

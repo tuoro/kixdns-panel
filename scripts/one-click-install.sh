@@ -283,7 +283,7 @@ build_installer_arguments() {
       ! installer_supports_flag "${known}" "${argument}"; then
       # --keep-existing 总是原样转交：新安装包会自己说明该模式已移除以及如何迁移。
       # --keep-existing always passes through: newer packages explain its removal themselves.
-      fail "KixDNS Panel ${tag} 的安装器不认识参数 ${argument}，未改动系统。请检查拼写，或用 --version 选择支持该参数的版本"
+      fail "KixDNS Panel ${tag} 的安装器不认识参数 ${argument}，系统没有改动。检查拼写，或用 --version 选择支持该参数的版本"
     fi
     FINAL_INSTALLER_ARGUMENTS+=("${argument}")
   done
@@ -314,7 +314,7 @@ download_archive() {
   curl --fail "${progress}" --show-error --location \
     --proto '=https' --tlsv1.2 --retry 3 --connect-timeout 10 --max-time 600 \
     --output "${archive}" "${asset_url}" ||
-    fail "下载安装包失败，未改动系统。请检查网络后$(retry_hint)"
+    fail "下载安装包失败，系统没有改动。检查网络后$(retry_hint)"
 }
 
 main() {
@@ -385,7 +385,7 @@ main() {
   download_archive "${asset_url}" "${archive}"
   printf '%s  %s\n' "${asset_digest#sha256:}" "${archive}" |
     sha256sum --check --strict --status ||
-    fail "安装包 SHA-256 与 GitHub 公布的摘要不一致，已丢弃且未改动系统。请重试一次；仍不一致请不要安装，并到 https://github.com/${REPOSITORY}/issues 报告"
+    fail "安装包 SHA-256 与 GitHub 公布的摘要不一致，已丢弃，系统没有改动。再试一次；仍不一致请不要安装，并到 https://github.com/${REPOSITORY}/issues 报告"
   validate_archive_entries "${archive}"
   install -d -m 0700 "${extract_directory}"
   unzip -q "${archive}" -d "${extract_directory}"

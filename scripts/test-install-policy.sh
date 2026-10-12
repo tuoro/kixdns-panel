@@ -1048,8 +1048,8 @@ assert_contains "${output}" "failed 在线更新失败：kixdns-panel.service �
   "安装器失败时状态应带上安装器给出的原因，不再叠一层「安装失败：」"
 assert_not_contains "${output}" "安装失败：" "状态里只留一个「在线更新失败：」"
 
-output="$(online_update_status "printf '一键安装失败：下载安装包失败，未改动系统。请检查网络后再点一次在线更新\n' >&2; exit 1" "${latest_release}")"
-assert_equals "${output}" "failed 在线更新失败：下载安装包失败，未改动系统。请检查网络后再点一次在线更新" \
+output="$(online_update_status "printf '一键安装失败：下载安装包失败，系统没有改动。检查网络后再点一次在线更新\n' >&2; exit 1" "${latest_release}")"
+assert_equals "${output}" "failed 在线更新失败：下载安装包失败，系统没有改动。检查网络后再点一次在线更新" \
   "一键安装器的前缀也去掉"
 
 output="$(online_update_status "exit 0" "printf 'curl: (6) Could not resolve host: api.github.com\n' >&2; return 6")"

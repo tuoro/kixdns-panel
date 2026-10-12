@@ -304,7 +304,7 @@ let panelUpdateStatus: PanelUpdateStatus = typeof localStorage !== 'undefined'
   && localStorage.getItem('kixdns:demo-panel-update-failed') === 'true'
   ? {
       state: 'failed',
-      message: '在线更新失败：下载安装包失败，未改动系统。请检查网络后再点一次在线更新',
+      message: '在线更新失败：下载安装包失败，系统没有改动。检查网络后再点一次在线更新',
       target_version: 'v1.0.1',
       updated_at: 1_789_000_000,
     }
@@ -515,7 +515,7 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
   if (path === '/api/v1/kixdns/kernel/update' && method === 'POST') {
     const body = JSON.parse(String(init?.body)) as { source_id: number }
     if (body.source_id !== latestKixdnsVersion.source_id) {
-      throw new ApiError('上游又有了更新的构建，请刷新后再更新', 409, 'update_conflict')
+      throw new ApiError('上游又出了更新的构建，重新检查后再更新', 409, 'update_conflict')
     }
     if (activeKixdnsVersion !== latestKixdnsVersion) {
       previousKixdnsVersion = activeKixdnsVersion
