@@ -217,7 +217,8 @@ const cnameWhere = computed((): { detail?: string; links?: Record<string, number
   const links: Record<string, number> = {}
   for (const rule of rules.slice(0, 2)) {
     const full = ruleTitle(rule).replace(/[「」]/g, '')
-    const title = full.length > 20 ? `${full.slice(0, 19)}…` : full
+    // 超过 32 个字才截，短的域名条件整个写出来 / Cut only past 32 characters, so a short domain condition is written in full
+    const title = full.length > 32 ? `${full.slice(0, 31)}…` : full
     if (!(title in links)) links[title] = rule.id
   }
   const named = Object.keys(links).map((title) => `「${title}」`).join('')

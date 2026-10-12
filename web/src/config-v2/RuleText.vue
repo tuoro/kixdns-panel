@@ -19,5 +19,12 @@ const parts = computed(() => props.text.split(/(「[^」]+」)/).map((piece) => 
 </script>
 
 <template>
-  <span class="rtext"><template v-for="(p, i) in parts" :key="i"><template v-if="p.rule !== undefined">「<button class="ui-objlink ui-objlink--plain" type="button" @click="emit('rule', p.rule)">{{ p.text.slice(1, -1) }}</button>」</template><template v-else-if="p.group !== undefined">「<button class="ui-objlink ui-objlink--plain" type="button" @click="emit('group', p.group)">{{ p.text.slice(1, -1) }}</button>」</template><template v-else>{{ p.text }}</template></template></span>
+  <span class="rtext"><template v-for="(p, i) in parts" :key="i"><span v-if="p.rule !== undefined" class="rtext__ref">「<button class="ui-objlink ui-objlink--plain" type="button" @click="emit('rule', p.rule)">{{ p.text.slice(1, -1) }}</button>」</span><span v-else-if="p.group !== undefined" class="rtext__ref">「<button class="ui-objlink ui-objlink--plain" type="button" @click="emit('group', p.group)">{{ p.text.slice(1, -1) }}</button>」</span><template v-else>{{ p.text }}</template></template></span>
 </template>
+
+<style>
+/* 「名字」是一个整体：引号不和名字分在两行（按钮是一整块，连接符管不到它）；名字太长时在按钮里面换行
+   「name」 is one unit: the quotes never part from the name across lines (the button is one box, which a word joiner cannot reach); a long name wraps inside the button */
+.rtext__ref { white-space: nowrap; }
+.rtext__ref > .ui-objlink { white-space: normal; }
+</style>
