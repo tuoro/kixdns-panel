@@ -30,6 +30,8 @@ export const runtimeCapabilities = ref<string[]>([])
 export const applyError = ref('')
 // 「KixDNS 已停止」那条提示在它又跑起来以后就过时了 / The 「KixDNS 已停止」 notice is stale once it runs again
 watch(runtimeStopped, (now, was) => { if (was && !now && applyError.value.startsWith('KixDNS 已停止')) applyError.value = '' })
+// 待应用的版本后来生效了（后台每 5 秒那次、或者别的页面）：「…没有应用」那条提示就过时了 / The pending version took effect later (the background pass, another page): the 「…没有应用」 notice is stale
+watch(() => doc.value?.pending?.version_id ?? null, (now, was) => { if (was !== null && now === null && !hasApplyFailure.value) { applyError.value = ''; applyFailedDown = false } })
 export const validation = ref<ValidationResult | null>(null)
 export const canCname = computed(() => runtimeCapabilities.value.includes('config_static_cname_response_v1'))
 
@@ -178,7 +180,8 @@ export function editTouched(): void {
 // wide: what sits under the 状态 label on wide screens (lead by default, else the whole line); phones have no label and show lead plus the line
 export interface HeaderStatus { tone: 'ok' | 'warn' | 'err' | 'off'; lead?: string; before: string; version?: number; after?: string; wide?: string[] }
 export const headerStatus = computed<HeaderStatus>(() => {
-  if (hasApplyFailure.value) return { tone: 'err', before: '配置应用失败' }
+  // 应用失败、KixDNS 又停着：先说停了，旁边的「启动」读作启动 KixDNS，不是启动那份失败的配置 / Failed and KixDNS stopped: the stop comes first, so 启动 beside it reads as starting KixDNS, not the failed config
+  if (hasApplyFailure.value) return runtimeStopped.value ? { tone: 'off', lead: 'KixDNS 已停止', before: '应用失败', wide: ['已停止', '应用失败'] } : { tone: 'err', before: '配置应用失败' }
   if (hasPending.value) {
     const waiting = pendingVersionId.value ? { before: '版本 #', version: pendingVersionId.value, after: ' 待应用' } : { before: '配置待应用' }
     if (!runtimeStopped.value) return { tone: 'warn', ...waiting }
@@ -281,6 +284,7 @@ function enterStaleBase(): void {
   finishStage('failed', '现在的草稿是基于旧版本的')
 }
 export async function refreshRuntime(): Promise<void> {
+  const writesAtStart = writeCount
   const [nextDoc, overview, service] = await Promise.all([
     apiRequest<ConfigDocument>('/api/v1/config'),
     apiRequest<Overview>('/api/v1/overview').catch(overviewFailed),
@@ -289,8 +293,14 @@ export async function refreshRuntime(): Promise<void> {
   applyRuntime(nextDoc, overview, service)
   // 只刷新运行状态的时候（有修改时连上、启动 KixDNS）也看一眼文件：别处换过了就和静默重读一样马上说
   // A runtime-only refresh (a reconnect or 启动 KixDNS with edits) still looks at the file: changed elsewhere, it says so at once, as the quiet re-read does
+  // 读的时候这一页写过（保存、应用、恢复）或者正在写：读到的是写之前的样子，只当没读 / This page wrote (or is writing) while it read: what came back predates the write, so it is dropped
+  if (writeCount !== writesAtStart || busy.value || restoring.value !== null) return
   const moved = doc.value !== null && nextDoc.sha256 !== doc.value.sha256
+  // 待应用的版本生效了、失败了或换了：历史里的标签跟着变（只刷新运行状态时以前不重读历史，失败的版本还挂着「待应用」）
+  // The pending version applied, failed or changed: the history tags follow (a runtime-only refresh used not to re-read the history, leaving 待应用 on a failed version)
+  const pendingMoved = doc.value !== null && (doc.value.pending?.version_id !== nextDoc.pending?.version_id || Boolean(doc.value.pending?.error) !== Boolean(nextDoc.pending?.error))
   if (doc.value) doc.value = { ...doc.value, runtime: nextDoc.runtime, pending: nextDoc.pending }
+  if (pendingMoved) versions.value = (await apiRequest<ConfigVersions>('/api/v1/config/versions').catch(() => ({ versions: versions.value }))).versions
   if (moved && unsaved.value && !busy.value && !conflict.value) enterStaleBase()
   applyHits(overview?.metrics?.rules ?? [])
   applyUpstreamStats(overview?.metrics?.upstreams ?? [], overview?.metrics?.recent_window_seconds ?? null)
@@ -326,6 +336,7 @@ export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: str
   const unsavedAtStart = unsaved.value
   // 发出时文件的散列：读回来之前有一次写（保存落地）把它挪了，这次读到的就是旧的，不拿它盖掉 / The file hash when sent: if a write (a landed save) moved it before this read returns, what was read is stale and must not overwrite it
   const shaAtStart = doc.value?.sha256
+  const writesAtStart = writeCount
   pendingLoad = (async () => {
     const [nextDoc, history, overview, service] = await Promise.all([
       apiRequest<ConfigDocument>('/api/v1/config'),
@@ -334,7 +345,8 @@ export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: str
       apiRequest<ServiceStatus>('/api/v1/service').catch(() => null),
     ])
     // 读的时候文件已经被这边的一次写挪过了：读到的是旧文件，只当没读（写的那一方会自己再读） / The file was moved by a write from this page while reading: what came back is stale, so it is dropped (the writer reads again itself)
-    if (options.sent === undefined && doc.value && shaAtStart !== undefined && doc.value.sha256 !== shaAtStart) return
+    // 原地生效不挪散列：再按写的次数看一眼 / An in-place apply does not move the hash, so the write count is checked too
+    if (options.sent === undefined && doc.value && ((shaAtStart !== undefined && doc.value.sha256 !== shaAtStart) || writeCount !== writesAtStart)) return
     applyRuntime(nextDoc, overview, service)
     const previous = doc.value
     const previousSha = previous?.sha256
@@ -408,7 +420,8 @@ async function runCheck(): Promise<ValidationResult | null> {
   // 校验途中又改了草稿（加了一条、改了一处）也一样：结论说的不是现在这份，丢掉，免得把没校验过的说成「校验通过」
   // An edit made to the draft while checking counts too: the verdict is not about the draft as it is now, so it is dropped rather than calling an unchecked
   // change 校验通过
-  const stale = () => draftGeneration() !== generation || JSON.stringify(exportConfig(model)) !== checked
+  // JSON 视图里又打了字（还没收进草稿）也算：校验收进去的是开始那一刻的 JSON / Typing in the JSON view (not yet folded into the draft) counts too: the check folded the JSON as it was at the start
+  const stale = () => draftGeneration() !== generation || JSON.stringify(exportConfig(model)) !== checked || jsonEdited.value
   try {
     const result = await apiRequest<ValidationResult>('/api/v1/config/validate', { method: 'POST', body: checked })
     if (stale()) { finishStage('idle'); return null }
@@ -431,7 +444,10 @@ async function runCheck(): Promise<ValidationResult | null> {
 // 写入的结果先记进运行状态和版本列表：之后的重读失败了，页头也和保存条说同一个版本（以前页头还按旧列表写上一个版本）
 // The write's outcome goes into the runtime state and the version list at once: if the re-read after it fails, the header still names the same version
 // as the save bar (it used to name the previous one from the stale list)
+// 这一页写过几次（保存、应用、恢复、删除版本）：写之前发出的读回来时认得出自己过时了 / How many writes this page made (save, apply, restore, delete): a read sent before a write knows it is stale when it lands
+let writeCount = 0
 function recordWrite(result: ConfigApplyResult, message: string): void {
+  writeCount += 1
   const applied = applyResultState(result) === 'applied'
   if (doc.value) {
     doc.value = applied
@@ -441,8 +457,10 @@ function recordWrite(result: ConfigApplyResult, message: string): void {
   const entry: ConfigVersion = { id: result.version_id, sha256: result.sha256, message, actor: '', created_at: Math.floor(Date.now() / 1000), apply_state: applied ? 'applied' : 'pending' }
   versions.value = [entry, ...versions.value.filter((v) => v.id !== result.version_id).map((v) => (applied && v.apply_state === 'applied' ? { ...v, apply_state: 'superseded' as const } : v))]
 }
+// 服务端说了生效没有就照它说的：已经生效、KixDNS 这会儿连不上时 active_config 是空的，那也是生效了
+// The server's own word decides: an apply already in effect while KixDNS is unreachable comes without active_config, and is still in effect
 function applyResultState(result: ConfigApplyResult): 'applied' | 'pending' {
-  return result.apply_state === 'pending' || !result.active_config ? 'pending' : 'applied'
+  return result.apply_state === 'pending' ? 'pending' : 'applied'
 }
 
 // 保存途中离开配置页：保存照常做完，结果用提示说；没保存成功时草稿留在内存里，回到配置页时接着用它
@@ -487,7 +505,8 @@ function dropKeptDraft(): void {
 }
 /** 离开时同意丢掉保存开始以后改的：草稿退回正在保存的那一份，保存没成功时回来看到的就是它 / Agreed to drop the edits made after the save began: the draft goes back to the one being saved, which is what a failed save brings back */
 export function dropEditsAfterSave(): void {
-  if (inFlight !== null) replaceModel(JSON.parse(inFlight) as Model)
+  // 「现在应用」不是保存草稿：没有「正在保存的那一份」可以退回 / 现在应用 is not a draft save: there is no 「the one being saved」 to go back to
+  if (inFlight !== null && origin.value === 'draft') replaceModel(JSON.parse(inFlight) as Model)
 }
 function dismissAwayToast(): void {
   if (awayToast !== null) useToast().dismiss(awayToast)
@@ -496,6 +515,9 @@ function dismissAwayToast(): void {
 /** 配置页打开（true）或离开（false）；打开时返回要不要留着草稿 / The config page opened (true) or left (false); on open, returns whether to keep the draft */
 export function setViewing(open: boolean): boolean {
   viewing = open
+  // 「现在应用」断线时还在配置页、随后离开：这时就挂上「不知道…应用了没有」，连上后的核对才有一条可以换掉（以前离开后什么都不说）
+  // 现在应用 was cut off on the page and the user then leaves: raise 「不知道…应用了没有」 now, so the check after reconnecting has a toast to replace (nothing was said away before)
+  if (!open && unanswered?.from === 'apply' && awayToast === null && signedIn()) awayToast = useToast().error(`不知道${unanswered.pending ? `版本 #${unanswered.pending} ` : '配置'}应用了没有：连不上面板。连上后会自己核对`)
   const keep = open && keepOnReturn
   if (open) {
     dropKeptDraft()
@@ -608,7 +630,10 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     // 每次写入都存成新版本：「现在应用」按的是 #18，生效的是 #19，用恢复版本的说法交代一句 / Every write is stored as a new version: 现在应用 was pressed on #18 and #19 took effect, said in the restore wording
     // 原地生效时服务端先存着没动（KixDNS 连不上或停了）：没有应用，照实说，不说「已存成」（它本来就是待应用的）
     // An in-place apply the server only kept (KixDNS unreachable or stopped): it was not applied, and is said so rather than 已存成 (it was pending already)
-    if (inPlace && applyResultState(result) === 'pending') {
+    // 「重试应用」被服务端先存着（KixDNS 这会儿没回应）：提示条一下子没了，说一句它存成了哪个待应用版本
+    // 重试应用 kept by the server (KixDNS not answering just now): the notice simply vanishes, so say which pending version it became
+    if (retrying && applyResultState(result) === 'pending' && viewing) useToast().info(`版本 #${failedBefore} 的内容存成了待应用版本\u00a0#${result.version_id}，${pendingWhen()}自\u2060动\u2060应\u2060用`)
+    else if (inPlace && applyResultState(result) === 'pending') {
       const notYet = `版本 #${result.version_id} 还没有应用：${runtimeStopped.value ? 'KixDNS 已停止，启动后自动应用' : 'KixDNS 没有回应，就绪后自动应用'}`
       if (viewing) useToast().info(notYet)
       else if (signedIn()) { dismissAwayToast(); awayToast = useToast().error(notYet) }
@@ -798,13 +823,13 @@ async function settleOnce(announce: boolean): Promise<boolean> {
     // 在配置页上、那次保存就是没存上：保存条接着说「校验通过」，另说一句没存上 / On the config page with the save simply not landed: the bar goes on to 校验通过, so say it did not land
     // 草稿里又有修改时页头不给「现在应用」（让给保存条）：说保存会带上它，不指一个看不见的按钮
     // With edits in the draft the header offers no 现在应用 (it gives way to the save bar): say a save takes it along instead of pointing at a missing button
-    const applyAgain = unsaved.value ? '；保存后会和你的修改一起生效' : '，可以再点「现在应用」'
+    const applyAgain = unsaved.value ? '；它的内容会和你的修改一起保存生效' : '，可以再点「现在应用」'
     if (viewing && announce && !changedElsewhere) useToast().info(applying ? `${pendingName}还没有应用${applyAgain}` : '刚才那次保存没有存上，可以再保存')
     // 不在配置页时，「不知道存上没有」那条提示换成核对的结果 / Away from the config page, the 不知道存上没有 toast is replaced by the result
     if (!viewing && awayToast !== null) {
       dismissAwayToast()
       awayToast = useToast().error(applying
-        ? (changedElsewhere ? '刚才那次应用不在现在的配置里：这份配置在别处改\u2060过\u2060了，回到配\u2060置\u2060页重新读取' : `${pendingName}还没有应用，回到配\u2060置\u2060页${unsaved.value ? '保存后会和你的修改一起生效' : '可以再点「现在应用」'}`)
+        ? (changedElsewhere ? '刚才那次应用不在现在的配置里：这份配置在别处改\u2060过\u2060了，回到配\u2060置\u2060页重新读取' : `${pendingName}还没有应用，${unsaved.value ? '回到配\u2060置\u2060页保存时，它的内容会和你的修改一起生效' : '回到配\u2060置\u2060页可以再点「现在应用」'}`)
         : changedElsewhere ? '刚才那次保存不在现在的配置里：这份配置在别处改\u2060过\u2060了。草稿留在配\u2060置\u2060页，回去重新读取后再改' : '刚才那次保存没有存上。草稿留在配\u2060置\u2060页，回去再保存')
     }
     return false
@@ -884,6 +909,22 @@ watch(panelDown, (now, before) => { if (before && !now) void panelBack() })
 /** 待应用的版本什么时候自动应用：说出等的是什么 / When a pending version applies by itself: name what it waits for */
 // 还登录着：退出登录或会话过期以后，配置页的结果不再报 / Still signed in: after sign-out or expiry the config page reports no outcome
 const signedIn = (): boolean => useSession().authenticated.value
+/**
+ * 等待应用的版本时每 5 秒看一眼：没有修改就整份静默重读（别处换了文件就读入并说一句），有修改只刷新运行状态（文件换了马上进冲突）；
+ * 页面开着时后台让它生效了也说一句——用户被告诉过「就绪后自动应用」，等的就是这个
+ * The 5-second look while a version is pending: with no edits a whole quiet re-read (a file changed elsewhere is read in and said), with edits the runtime
+ * only (a changed file enters the conflict state at once); the background putting it into effect while the page is open is said too — the user was told
+ * 「就绪后自动应用」 and is waiting for exactly that
+ */
+export async function checkPending(): Promise<void> {
+  const before = doc.value?.sha256
+  const waited = pendingVersionId.value
+  if (unsaved.value) await refreshRuntime()
+  else await load({ quiet: true })
+  if (!doc.value || busy.value) return
+  if (before !== undefined && doc.value.sha256 !== before && !unsaved.value) useToast().info(`这份配置在别处改\u2060过\u2060了，已读入版本\u00a0#${doc.value.version_id ?? ''}`)
+  else if (waited !== null && !hasPending.value && !hasApplyFailure.value && !conflict.value && doc.value.sha256 === before) useToast().success(`版本 #${waited} 已生效`)
+}
 // 待应用版本的备注：文档里带着就用它，否则到历史里找 / The pending version's note: from the document when it carries one, otherwise from the history
 function pendingNote(id: number | null): string {
   return doc.value?.pending?.message || (id ? versions.value.find((v) => v.id === id)?.message ?? '' : '')
@@ -911,6 +952,7 @@ export async function restoreVersion(id: number): Promise<{ state: 'applied' | '
   restoring.value = id
   try {
     const result = await apiRequest<ConfigApplyResult>(`/api/v1/config/versions/${id}/restore`, { method: 'POST', ...jsonBody({ expected_sha256: doc.value.sha256 }) })
+    writeCount += 1
     await load({ quiet: true, fresh: true })
     restoredCount.value += 1
     return { state: applyResultState(result), versionId: result.version_id }
@@ -928,6 +970,7 @@ export async function deleteVersion(v: ConfigVersion): Promise<void> {
   deleting.value = v.id
   try {
     await apiRequest<DeleteConfigVersionResult>(`/api/v1/config/versions/${v.id}`, { method: 'DELETE', ...jsonBody({ expected_sha256: doc.value.sha256 }) })
+    writeCount += 1
     await refreshVersions(desired(v))
   } finally {
     deleting.value = null
@@ -938,6 +981,7 @@ export async function deleteVersions(ids: number[]): Promise<number> {
   bulkDeleting.value = true
   try {
     const result = await apiRequest<DeleteConfigVersionsResult>('/api/v1/config/versions/bulk', { method: 'DELETE', ...jsonBody({ ids, expected_sha256: doc.value.sha256 }) })
+    writeCount += 1
     await refreshVersions(versions.value.some((v) => ids.includes(v.id) && desired(v)))
     return result.deleted_ids.length
   } finally {

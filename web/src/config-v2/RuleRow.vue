@@ -15,6 +15,9 @@ const props = defineProps<{ rule: Rule; index: number; count: number; mark: 'hit
 const emit = defineEmits<{ open: []; action: [value: string]; grip: [event: PointerEvent] }>()
 
 // 高级规则读它原样的内核条件 / An advanced rule reads its verbatim kernel conditions
+// 显示用：连字符后面连住，手机两行时不把 category-ads-all 拆成「category-ads- / all」（title 照旧给原样）
+// For display: glued after each hyphen, so two phone lines never split category-ads-all into 「category-ads- / all」 (the title keeps the plain text)
+const shownSummary = computed(() => summary.value.replace(/(?<=[\w.:])-(?=[\w!])/g, '-\u2060'))
 const summary = computed(() => {
   const raw = props.rule.raw
   if (!raw) return conditionsText(props.rule.conditions)
@@ -56,7 +59,7 @@ const title = computed(() => ruleTitle(props.rule))
         <span v-else-if="shadowedBy" class="ui-tag ui-tag--warn" :title="`第 ${shadowedBy} 条接住了所有请求，这条永远轮不到`">到不了</span>
         <span v-if="changedRuleIds.has(rule.id)" class="ui-dot ui-dot--ink rrow__changed" role="img" aria-label="改过，还没保存" title="改过，还没保存"></span>
       </span>
-      <span class="rrow__line"><span class="rrow__pill rrow__pill--inline" aria-hidden="true"><span v-if="rule.raw" class="opill opill--pass"><span class="opill__verb">高级</span></span><OutcomePill v-else :outcome="rule.outcome" /></span><span v-if="named" class="rrow__cond" :title="summary">{{ summary }}</span><span v-else-if="rule.note" class="rrow__cond rrow__note">{{ rule.note }}</span></span>
+      <span class="rrow__line"><span class="rrow__pill rrow__pill--inline" aria-hidden="true"><span v-if="rule.raw" class="opill opill--pass"><span class="opill__verb">高级</span></span><OutcomePill v-else :outcome="rule.outcome" /></span><span v-if="named" class="rrow__cond" :title="summary">{{ shownSummary }}</span><span v-else-if="rule.note" class="rrow__cond rrow__note">{{ rule.note }}</span></span>
     </button>
     <span class="rrow__pill"><span v-if="rule.raw" class="opill opill--pass" title="按内核写法原样保留"><span class="opill__verb">高级</span><span class="opill__val">按内核写法保留</span></span><OutcomePill v-else :outcome="rule.outcome" /></span>
     <span class="rrow__hits" :class="{ 'is-zero': !hits }" :title="`启动以来命中 ${hits.toLocaleString('en-US')} 次`"><span class="rrow__hits-label">命中 </span>{{ hits ? fmtCount(hits) : '—' }}</span>

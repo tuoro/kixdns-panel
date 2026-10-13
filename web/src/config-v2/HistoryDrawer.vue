@@ -85,7 +85,7 @@ async function restore(v: ConfigVersion): Promise<void> {
   const session = useSession()
   try {
     const r = await restoreVersion(v.id)
-    if (session.authenticated.value) toast.success(r.state === 'pending' ? `已存成待应用版本 #${r.versionId}，${pendingWhen()}自动应用` : `已恢复为版本 #${v.id} 的内容，当前版本 #${r.versionId}`)
+    if (session.authenticated.value) toast.success(r.state === 'pending' ? `版本 #${v.id} 的内容存成了待应用版本\u00a0#${r.versionId}，${pendingWhen()}自\u2060动\u2060应\u2060用` : `已恢复为版本 #${v.id} 的内容，当前版本\u00a0#${r.versionId}`)
   } catch (error) {
     if (session.authenticated.value) toast.error(`没有恢复版本 #${v.id}：${friendlyRuntimeError(error)}`)
   }

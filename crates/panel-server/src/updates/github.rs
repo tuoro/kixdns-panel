@@ -35,7 +35,7 @@ pub(super) fn artifact_page_count(total_count: usize) -> Result<usize, UpdateErr
         return Ok(pages);
     }
     Err(UpdateError::Network(format!(
-        "Artifact 数量超过分页安全上限（最多 {} 条）",
+        "上游的构建太多（超过 {} 个），检查不了",
         ARTIFACT_PAGE_SIZE * MAX_ARTIFACT_PAGES
     )))
 }

@@ -29,7 +29,7 @@ body { background: var(--l-canvas); }
 .cfg__head-action:hover { text-decoration-color: var(--l-ink); }
 .cfg__spin { width: var(--size-icon-sm); height: var(--size-icon-sm); }
 /* 应用中的转圈和平时的点一样往后收 4：状态的字不再往右跳 / The applying spinner pulls in its trailing gap like the dot does, so the status text does not jump right */
-:is(.ui-facts b, .ui-ph__lead) > .cfg__spin { margin-right: calc(var(--s-1) - var(--s-2)); }
+:is(.ui-facts b, .ui-ph__lead) > .cfg__spin { margin-right: calc(var(--s-1) - var(--s-2)); align-self: center; }
 .cfg__status-sk { width: 9rem; }
 /* 重新读取、恢复版本还在读：内容调淡、不能改，读回来再恢复 / A re-read or restore is still reading: the content dims and takes no edits until it lands */
 .cfg__panel[aria-busy="true"], .cfg__json[aria-busy="true"] { opacity: .6; transition: opacity var(--m-quick) var(--ease-out); }
@@ -632,7 +632,7 @@ body { background: var(--l-canvas); }
   .rrow__num { grid-area: num; align-self: start; min-height: var(--s-5); justify-items: center; text-align: center; }
   .qadd__icon { grid-area: icon; translate: -2px 0; }
   /* ↳ 对准「域名映射」那一行字的中线 / ↳ centres on the 域名映射 text line */
-  .rpin .rrow__num svg { translate: 0 3px; }
+  .rpin:not(.rpin--rest) .rrow__num svg { translate: 0 3px; }
 }
 /* 结果胶囊里动词和值同一个行高再居中，基线就落在一起（动词小一号，各用各的行高会偏高） / In outcome pills the verb and value share one line height before centring, so their baselines meet (the smaller verb sat high with its own line height) */
 .opill__verb, .opill__val { line-height: 16px; }
@@ -1313,6 +1313,9 @@ body { background: var(--l-canvas); }
 .fallback .pfield__row:has(> .fallback__k) { flex-direction: column; align-items: stretch; gap: var(--s-2); }
 .fallback__k { color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-medium); }
 .gcard__health { display: flex; align-items: center; gap: var(--s-2); margin: calc(var(--s-2) * -1) 0 0; color: var(--l-ink-2); font-size: var(--t-2); font-variant-numeric: tabular-nums; min-height: var(--s-5); }
+/* 手机上数字折成两行时，点对准第一行的中线，不停在两行中间 / When the figures wrap to two lines on phones, the dot centres on the first line instead of between the two */
+.gcard__health { align-items: flex-start; min-height: 0; padding-block: calc((var(--s-5) - 1lh) / 2); }
+.gcard__health > .ui-dot { margin-top: calc((1lh - var(--size-dot)) / 2); }
 .gcard__health > .gcard__uses, .gcard__health > .gcard__unused { margin-left: auto; }
 .gcard__facts { min-height: 0; }
 @media (max-width: 640px) {
@@ -1950,6 +1953,9 @@ body { background: var(--l-canvas); }
   .cfg__savebar.savebar--wrap .ui-savebar__detail, .cfg__savebar.ui-savebar--err .ui-savebar__detail { white-space: normal; }
   /* 冲突时「下载草稿」「重新读取」在手机上自成一行：退回小号文字按钮 12 的内边距，字和上面的说明对齐 / In a conflict on phones 下载草稿 and 重新读取 take a line of their own: the small text buttons' 12 padding is pulled back so their words line up with the text above */
   .cfg__savebar .savebar__acts { margin-left: calc(var(--s-3) * -1); }
+  /* 两个链接总是自己一行：561–640 时放得下也不跟在说明后面（往回收的那 12 是按自己一行算的） / The two links always take their own line: at 561–640 they would fit after the
+     sentence, but the 12 pulled back assumes a line of their own */
+  .cfg__savebar .savebar__acts { flex-basis: 100%; }
 }
 .cfg__savebar .ui-savebar__status:focus { outline: none; }
 
