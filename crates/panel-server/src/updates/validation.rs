@@ -69,11 +69,11 @@ pub(super) fn parse_panel_release_version(tag: &str) -> Result<semver::Version, 
         .map_err(|error| UpdateError::Verification(format!("面板 Release 版本无效：{error}")))
 }
 
-/// fork 发布的日期版本：UTC 日期 `YYYY.MM.DD`，同一天再发布时是 `YYYY.MM.DD.N`（N 从 2 起）。
+/// fork 发布的日期版本：北京时间的日期 `YYYY.MM.DD`，同一天再发布时是 `YYYY.MM.DD.N`（N 从 2 起）。
 /// 字段按年、月、日、当天第几次排列，比较就是逐段比数字，2026.10.13.10 比 2026.10.13.9 新。
-/// A fork release's date version: the UTC date `YYYY.MM.DD`, or `YYYY.MM.DD.N` (N from 2)
-/// for a later release the same day. The fields run year, month, day, sequence, so
-/// comparing compares each part as a number and 2026.10.13.10 is newer than 2026.10.13.9.
+/// A fork release's date version: the date in Beijing time `YYYY.MM.DD`, or `YYYY.MM.DD.N`
+/// (N from 2) for a later release the same day. The fields run year, month, day, sequence,
+/// so comparing compares each part as a number and 2026.10.13.10 is newer than 2026.10.13.9.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct KernelVersion {
     year: u16,
