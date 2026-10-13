@@ -136,8 +136,9 @@ test('内核可更新到最新并回到上一个 @responsive', async ({ page }) 
   await expect(kernelRow.getByRole('link', { name: '发布说明' })).toHaveAttribute('href', 'https://github.com/tuoro/kixdns/releases/tag/2026.10.13.2')
   await expect(runtime.locator('.install-version__label')).toHaveText('版本')
   await expect(runtime.locator('.install-version b')).toHaveText('2026.10.13')
-  // fork 发布没有补丁集：附注里不写「补丁集 未记录」 / A fork release has no patchset: the notes do not say 补丁集 未记录
+  // fork 发布没有补丁集：附注里不写「补丁集 未记录」；提交是内核仓库的 / A fork release has no patchset, so the notes do not say 补丁集 未记录; its commit is the kernel repository's
   await expect(runtime.locator('.install-meta')).not.toContainText('补丁集')
+  await expect(runtime.locator('.install-hashes')).toContainText('内核提交351d490c7bc0')
   // 面板改用 fork 发布之前的 p28 内核还留着，照旧按构建号称呼 / The p28 kernel from before the move to fork releases is still kept and named by its build as before
   await expect(runtime.locator('.install-previous')).toContainText('上一个版本 构建 #36374613990')
   // 更新前先确认要装哪个版本，并按当前服务状态说清是短暂重启还是什么都不启动。

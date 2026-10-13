@@ -655,7 +655,8 @@ onBeforeUnmount(() => {
             <p v-else class="install-meta">在上方「可用更新」里安装最新版本</p>
             <dl class="ui-strip install-hashes">
               <div><dt>原版提交</dt><dd class="ui-mono">{{ activeVersion?.upstream_commit ? shortHash(activeVersion.upstream_commit, 12) : '未记录' }}</dd></div>
-              <div><dt>增强构建</dt><dd class="ui-mono">{{ shortHash(activeVersion?.commit, 12) }}</dd></div>
+              <!-- fork 发布记的是内核仓库的提交；旧的 Action 内核记的是面板仓库构建它的那次提交 / A fork release records the kernel repository's commit; an old Action kernel records the panel repository commit that built it -->
+              <div><dt>{{ activeVersion?.source === 'fork' ? '内核提交' : '增强构建' }}</dt><dd class="ui-mono">{{ shortHash(activeVersion?.commit, 12) }}</dd></div>
               <div><dt>二进制摘要</dt><dd class="ui-mono">{{ shortHash(activeVersion?.binary_sha256, 14) }}</dd></div>
             </dl>
           </template>
