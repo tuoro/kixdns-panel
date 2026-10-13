@@ -442,7 +442,8 @@ let awayToast: number | null = null
 // from / pending：丢的是保存还是「现在应用」，当时待应用的是哪个版本——核对的结果按它来说 / from / pending: whether the lost request was a save or 现在应用, and which version was pending — the result is worded by it
 // version：发出时文件的版本号——「现在应用」发的就是待应用的那份文件，比内容认不出写没写进去，要看版本号动没动
 // version: the file's version when sent — 现在应用 sends the pending file itself, so the content cannot tell whether it was written; the version number moving can
-let unanswered: { content: unknown; sent: string; base: string; generation: number; sentAt: number; from: 'draft' | 'apply'; pending: number | null; version: number | null } | null = null
+// inPlace：丢的是让待应用版本原地生效的那次（编号不动），写没写进去看待应用的还在不在 / inPlace: the lost request put the pending version into effect in place (the number does not move), so whether it landed is read from whether that version is still pending
+let unanswered: { content: unknown; sent: string; base: string; generation: number; sentAt: number; from: 'draft' | 'apply'; pending: number | null; version: number | null; inPlace: boolean } | null = null
 const announceWritten = () => { if (typeof window !== 'undefined') window.dispatchEvent(new Event(CONFIG_WRITTEN_EVENT)) }
 // 不在配置页时草稿还在内存里（正在保存，或者没保存成功留着）：刷新、关掉浏览器先问一句；配置页开着时由它自己问
 // Away from the config page with a draft still in memory (a save in flight, or one that failed and is kept): reloading or closing the browser asks first; while
@@ -545,9 +546,14 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
   // 没有生效 was already showing when this was pressed: it is a retry, and its outcome is worded as one (looking after the failure would see this run's state)
   const retrying = from === 'apply' && hasApplyFailure.value
   const failedBefore = pendingVersionId.value
+  // 「现在应用」一个待应用的版本：让它原地生效（服务端和后台每 5 秒做的一样），不另存一个内容相同的新版本；编号、备注都不变。
+  // 「重试应用」（应用失败过的）和「校验并应用」（手改过、没有对应版本的文件）照旧写一个新版本
+  // 现在应用 on a pending version puts it into effect in place (as the server's background pass does every 5 seconds) instead of storing an identical
+  // new version, so its number and note stay. 重试应用 (a failed version) and 校验并应用 (a hand-edited file with no version) still write a new version
+  const inPlace = from === 'apply' && !retrying && !fileDiffers.value && !dirty.value && failedBefore !== null
   applyError.value = ''
   conflict.value = false
-  const checkFirst = (dirty.value || fileDiffers.value) && !deferSave.value && !prechecked
+  const checkFirst = (dirty.value || fileDiffers.value) && !deferSave.value && !prechecked && !inPlace
   let step: SaveStage = checkFirst ? 'validating' : 'applying'
   startStage(step)
   try {
@@ -556,9 +562,12 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
       step = 'applying'
       stage.value = step
     }
-    // 「现在应用」没有备注栏：带上待应用版本的备注，生效的那个版本照样写着它是什么 / 现在应用 has no note field: carry the pending version's note, so the version that runs still says what it is
-    const message = saveMessage.value.trim() || (from === 'apply' ? pendingNote(failedBefore) : '')
-    const result = await apiRequest<ConfigApplyResult>('/api/v1/config', { method: 'PUT', ...jsonBody({ content, expected_sha256: expected, message }) })
+    // 「现在应用」没有备注栏：原地生效的版本备注本来就在；另存新版本时带上待应用版本的备注，生效的那个版本照样写着它是什么
+    // 现在应用 has no note field: a version put into effect in place keeps its own note; a new version carries the pending one's note, so the version that runs still says what it is
+    const message = inPlace ? pendingNote(failedBefore) : saveMessage.value.trim() || (from === 'apply' ? pendingNote(failedBefore) : '')
+    const result = inPlace
+      ? await apiRequest<ConfigApplyResult>(`/api/v1/config/versions/${failedBefore}/apply`, { method: 'POST' })
+      : await apiRequest<ConfigApplyResult>('/api/v1/config', { method: 'PUT', ...jsonBody({ content, expected_sha256: expected, message }) })
     const pendingText = `已存成待应用版本 #${result.version_id}，${pendingWhen()}自\u2060动\u2060应\u2060用`
     saveMessage.value = ''
     // 写入成功就先记下：文件的散列和版本换成这次的，对照的那份换成发出去的草稿。之后的重读失败了，也不会把已保存的算成修改、下次保存也不会撞上自己
@@ -598,9 +607,13 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     const reason = friendlyRuntimeError(error)
     const stopped = stoppedError(error)
     const down = isPanelDown(error)
-    if (down && step === 'applying') unanswered = { content, sent, base, generation: draftGeneration(), sentAt, from, pending: pendingVersionId.value ?? null, version: doc.value?.version_id ?? null }
+    if (down && step === 'applying') unanswered = { content, sent, base, generation: draftGeneration(), sentAt, from, pending: pendingVersionId.value ?? null, version: doc.value?.version_id ?? null, inPlace }
     // 写进文件以后 KixDNS 没接受：版本已经存下了，只是没生效 / KixDNS refused after the write: the version is stored, it just did not take
-    const writtenNotApplied = step === 'applying' && error instanceof ApiError && ['reload_failed', 'kixdns_rejected'].includes(error.code)
+    // 原地生效时服务端自己校验：没过、不支持、协议出错也会把这个版本记成没有生效，和写进去却没被接受一样说
+    // An in-place apply is validated by the server: a refusal, an unsupported setting or a protocol error also marks the version as not taken, so it is
+    // worded like a write that KixDNS refused
+    const failedInPlace = inPlace && error instanceof ApiError && ['config_validation_failed', 'unsupported_config_fields', 'kixdns_protocol_error'].includes(error.code)
+    const writtenNotApplied = step === 'applying' && error instanceof ApiError && (['reload_failed', 'kixdns_rejected'].includes(error.code) || failedInPlace)
     // 写进去了（只是没生效）：和保存落地一样，草稿定下来之前的「撤销」过时了 / Written (just not applied): as when a save lands, undos from before the draft was fixed are stale
     if (writtenNotApplied) dismissUndoable(sentAt)
     verdict.value = stopped ? 'KixDNS 已停止' : down ? '连不上面板' : writtenNotApplied ? '保存了，没有生效' : step === 'validating' ? '没有通过校验' : '没有保存成功'
@@ -609,7 +622,7 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     // 校验这一步没写入任何东西：只刷新运行状态，草稿和失败的说法都留着；写入以后失败才重读文件（草稿照样留着）
     // Nothing was written at the validation step: refresh the runtime only, keeping the draft and the verdict; only a failure after writing re-reads the file (the draft still stays)
     if (step === 'validating' || stopped) await refreshRuntime().catch(() => undefined)
-    else if (shouldRefreshAfterSaveError(error)) await load({ quiet: true, keepDraft: true, own: true })
+    else if (shouldRefreshAfterSaveError(error) || failedInPlace) await load({ quiet: true, keepDraft: true, own: true })
     // 写进去了却没生效、草稿也没有别的修改：这件事交给页面上方的提示条（那里有「重试应用」），保存条退下，不再给第二个重试
     // Written but not applied and nothing else in the draft: the notice above owns it (with 重试应用); the save bar steps aside instead of offering a second retry
     if (writtenNotApplied && changeCount.value === 0 && from === 'draft') finishStage('idle')
@@ -709,7 +722,12 @@ async function settleOnce(announce: boolean): Promise<boolean> {
   // 「现在应用」没写进去时文件还是那份待应用的，内容和发出去的一模一样：版本号没动就是没写进去（以前当成写进去了，还说「待应用，就绪后自动应用」）
   // When 现在应用 was not written the file is still the pending one, identical to what was sent: an unmoved version number means it was not written (it used to
   // count as written and even said 待应用, 就绪后自动应用)
-  const notWritten = applying && lost.version !== null && current.version_id === lost.version
+  // 原地生效的那次编号本来就不动：待应用的还是它、也没有失败记录，就是没写进去（后台先一步让它生效了也算写进去了，结果一样）
+  // An in-place apply never moves the number: the version still pending with no failure means it was not written (the background putting it into
+  // effect first counts as written: the outcome is the same)
+  const notWritten = applying && (lost.inPlace
+    ? lost.pending !== null && current.pending?.version_id === lost.pending && !current.pending.error
+    : lost.version !== null && current.version_id === lost.version)
   if (notWritten || canonical(current.content) !== canonical(lost.content)) {
     // 面板上的文件还是草稿的底子：那次保存没有存上。文件变了又不是自己那次：别处改过了（可能是存上以后又被改掉），按冲突处理，
     // 免得回去一按保存就悄悄盖掉别处的版本
@@ -775,12 +793,15 @@ async function settleOnce(announce: boolean): Promise<boolean> {
   if (!viewing || (announce && (!sameDraft || applying))) {
     dismissAwayToast()
     // 说出它现在生效了没有（核对时已经读过一遍运行状态） / Say whether it is in effect now (the runtime was just read during the check)
-    // 应用存成了新版本：开头就说出新编号，后面只说结果（和恢复版本、重试应用一样交代编号） / An apply stored as a new version: the opening names it and the rest says the outcome (numbers are accounted for as restore and retry do)
-    const opening = applying ? (version ? `刚才那次应用存成了${version}` : '刚才那次应用存上了') : '刚才那次保存已经存上了'
-    const which = applying || !version ? '' : `${version} `
+    // 应用存成了新版本：开头就说出新编号，后面只说结果（和恢复版本、重试应用一样交代编号）；原地生效的编号没变，照常说「版本 #N …」
+    // An apply stored as a new version: the opening names it and the rest says the outcome (numbers are accounted for as restore and retry do); an
+    // in-place apply kept its number, so it reads 版本 #N … as usual
+    const stored = applying && !lost.inPlace
+    const opening = stored ? (version ? `刚才那次应用存成了${version}` : '刚才那次应用存上了') : applying ? '刚才那次应用' : '刚才那次保存已经存上了'
+    const which = stored || !version ? '' : `${version} `
     if (hasApplyFailure.value) useToast().error(`${opening}：${which}没有生效，${viewing ? '可以重试应用' : '回到配\u2060置\u2060页可以重试应用'}`)
     else if (hasPending.value) useToast().success(`${opening}：${which}待应用，${pendingWhen()}自\u2060动\u2060应\u2060用`)
-    else useToast().success(applying ? `${opening}：已生效` : version ? `${opening}：${version} 已生效` : opening)
+    else useToast().success(stored ? `${opening}：已生效` : version ? `${opening}：${version} 已生效` : applying ? `${opening}已经生效` : opening)
     // 草稿里没有别的修改了：不用再留着、也不用拦着刷新 / Nothing else is unsaved in the draft: no need to keep it or to guard reloads
     if (!unsaved.value) dropKeptDraft()
   }

@@ -1538,3 +1538,156 @@ fn an_update_verification_error_reaches_the_page_with_its_opening() {
     ));
     assert_eq!(error.to_string(), "更新包没通过校验：校验值格式无效");
 }
+
+// ---------------------------------------------------------------------------
+// 待应用的版本原地生效 / Putting the pending version into effect in place
+// ---------------------------------------------------------------------------
+
+/// 假的 `KixDNS` 控制接口：报告它在用的就是磁盘上那份配置，文件一变就算重载了一次（真的 `KixDNS` 自己盯着这个文件）。
+/// A fake `KixDNS` control socket: it reports the config file on disk as the one in use, and a changed file counts
+/// as one reload (the real `KixDNS` watches that file itself).
+fn start_fake_kixdns(directory: &std::path::Path) -> tokio::task::JoinHandle<()> {
+    use axum::routing::{get, post};
+    let socket = directory.join("admin.sock");
+    let config = directory.join("pipeline.json");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new((String::new(), 0_u64)));
+    let active = move || {
+        let sha256 = crate::digest::sha256_hex(&std::fs::read(&config).unwrap());
+        let mut seen = seen.lock().unwrap();
+        if seen.0 != sha256 {
+            seen.0.clone_from(&sha256);
+            seen.1 += 1;
+        }
+        serde_json::json!({
+            "protocol_version": 1, "generation": seen.1, "sha256": sha256, "loaded_at_unix": 0,
+            "reload_sequence": seen.1, "last_reload": { "success": true, "error": null },
+        })
+    };
+    let router = Router::new()
+        .route(
+            "/v1/health",
+            get(|| async {
+                axum::Json(serde_json::json!({
+                    "protocol_version": 1, "status": "ok", "pid": 1, "version": "test", "upstream_commit": "test",
+                    "patchset": "p0", "started_at_unix": 0, "uptime_seconds": 1, "config_generation": 1, "capabilities": [],
+                }))
+            }),
+        )
+        .route(
+            "/v1/config/active",
+            get(move || {
+                let active = active.clone();
+                async move { axum::Json(active()) }
+            }),
+        )
+        .route(
+            "/v1/config/validate",
+            post(|| async {
+                axum::Json(serde_json::json!({ "protocol_version": 1, "valid": true, "pipeline_count": 1, "rule_count": 0 }))
+            }),
+        );
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() })
+}
+
+async fn send_json(context: &AuthenticatedApp, request: Request<Body>) -> (StatusCode, Value) {
+    let response = context.app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let body = to_bytes(response.into_body(), 256 * 1024).await.unwrap();
+    (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+}
+
+async fn get_json(context: &AuthenticatedApp, path: &str) -> Value {
+    let request = Request::get(path)
+        .header(COOKIE, context.cookies.clone())
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send_json(context, request).await;
+    assert_eq!(status, StatusCode::OK, "{path}");
+    body
+}
+
+async fn apply_version(context: &AuthenticatedApp, id: i64) -> (StatusCode, Value) {
+    let request = Request::post(format!("/api/v1/config/versions/{id}/apply"))
+        .header(COOKIE, context.cookies.clone())
+        .header("x-csrf-token", context.csrf_token.clone())
+        .body(Body::empty())
+        .unwrap();
+    send_json(context, request).await
+}
+
+/// `KixDNS` 停着时存一份，存成待应用版本，返回它的编号 / Save while `KixDNS` is down, so it is stored as a pending version; returns its id
+async fn save_pending(context: &AuthenticatedApp, pipeline: &str, message: &str) -> i64 {
+    let expected = get_json(context, "/api/v1/config").await["sha256"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let body = serde_json::json!({
+        "content": { "pipelines": [{ "id": pipeline, "rules": [] }] },
+        "expected_sha256": expected,
+        "message": message,
+    });
+    let request = Request::put("/api/v1/config")
+        .header(CONTENT_TYPE, "application/json")
+        .header(COOKIE, context.cookies.clone())
+        .header("x-csrf-token", context.csrf_token.clone())
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let (status, payload) = send_json(context, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(payload["apply_state"], "pending");
+    payload["version_id"].as_i64().unwrap()
+}
+
+// 「现在应用」让待应用的那个版本原地生效：不新建版本，编号和备注都不变；再按一次只回「已生效」，不再多出版本
+// 现在应用 puts the pending version itself into effect: no new version, its number and note stay; pressing again only
+// answers 已生效 and adds no version
+#[tokio::test]
+async fn applying_the_pending_version_keeps_its_number_and_note() {
+    let context = authenticated_app().await;
+    let pending = save_pending(&context, "in-place", "把视频域名交给 CDN 组").await;
+    let count = get_json(&context, "/api/v1/config/versions").await["versions"]
+        .as_array()
+        .unwrap()
+        .len();
+    let _kixdns = start_fake_kixdns(context.directory.path());
+
+    for _ in 0..2 {
+        let (status, payload) = apply_version(&context, pending).await;
+        assert_eq!(status, StatusCode::OK, "{payload}");
+        assert_eq!(payload["version_id"], pending);
+        assert_eq!(payload["apply_state"], "applied");
+        assert!(payload["active_config"].is_object());
+    }
+
+    let versions = get_json(&context, "/api/v1/config/versions").await["versions"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(versions.len(), count, "no new version");
+    let applied = versions.iter().find(|v| v["id"] == pending).unwrap();
+    assert_eq!(applied["apply_state"], "applied");
+    assert_eq!(applied["message"], "把视频域名交给 CDN 组");
+    let document = get_json(&context, "/api/v1/config").await;
+    assert!(document["pending"].is_null());
+    assert_eq!(document["version_id"], pending);
+    let formal: Value = serde_json::from_slice(
+        &std::fs::read(context.directory.path().join("pipeline.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(formal["pipelines"][0]["id"], "in-place");
+}
+
+// 按下时待应用的已经不是这一版（别处又存了一版）：回冲突，什么都不动
+// The pending version is no longer the one pressed (another was saved meanwhile): a conflict, and nothing changes
+#[tokio::test]
+async fn applying_a_version_that_is_no_longer_pending_is_a_conflict() {
+    let context = authenticated_app().await;
+    let first = save_pending(&context, "first", "第一版").await;
+    let second = save_pending(&context, "second", "第二版").await;
+    let (status, payload) = apply_version(&context, first).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{payload}");
+    assert_eq!(payload["error"]["code"], "config_conflict");
+    let document = get_json(&context, "/api/v1/config").await;
+    assert_eq!(document["pending"]["version_id"], second);
+}
