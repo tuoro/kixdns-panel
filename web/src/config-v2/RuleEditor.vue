@@ -362,12 +362,13 @@ function keepOpen(): void {
   initialSnap.value = snapshot()
 }
 // 保存条要保存时先把面板里的修改收进草稿；写错了就停在面板里指出来 / Before the save bar saves, the panel's edits go into the draft; if something is wrong the panel stops and points at it
-function commit(stay = false): boolean {
+// verb：收进草稿以后要做的事（保存、下载），说「先改好右侧规则再…」时用 / verb: what follows folding it into the draft (save, download), for 「先改好右侧规则再…」
+function commit(stay = false, verb = '保存'): boolean {
   if (!edited()) return true
   if (problems.value.length) {
     showErrors.value = true
     revealProblem()
-    toast.info('先改好右侧规则再保存')
+    toast.info(`先改好右侧规则再${verb}`)
     return false
   }
   if (stay && original) keepOpen()

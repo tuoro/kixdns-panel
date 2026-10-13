@@ -673,7 +673,7 @@ test('重试应用成功：说出两个版本号，备注带到新版本', async
   await expect(page.locator('main')).toContainText('没有生效，仍在用之前那份配置')
   const failed = Number((await page.locator('main').innerText()).match(/版本 #(\d+) 没有生效/)![1])
   await page.getByRole('button', { name: '重试应用' }).click()
-  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain(`已应用版本 #${failed} 的内容，当前版本 #${failed + 1}`)
+  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain(`已应用版本 #${failed} 的内容，当前版本\u00a0#${failed + 1}`)
   await page.getByRole('button', { name: '更多配置操作' }).click()
   await page.getByRole('menuitem', { name: '历史版本' }).click()
   await expect(page.locator('.hist__row').first()).toContainText(`#${failed + 1}`)
@@ -692,6 +692,8 @@ async function savePending(page: Page, domain: string, note: string): Promise<nu
   await page.evaluate(() => localStorage.setItem('kixdns:demo-save-pending', 'true'))
   await bar.getByRole('button', { name: '保存并应用' }).click()
   await expect(page.locator('main .ui-ph')).toContainText('待应用')
+  // 等这次保存连同它的重读都做完：之后设的演示开关才不会被这次重读用掉 / Wait for the save and its re-read to finish, so a demo flag set afterwards is not used up by that re-read
+  await expect(bar).toContainText('已存成待应用版本')
   return Number((await page.locator('main .ui-ph').innerText()).match(/版本 #(\d+) 待应用/)![1])
 }
 const reconnect = (page: Page) => page.evaluate(async () => {
@@ -732,6 +734,72 @@ test('现在应用没送到面板：连上以后说还没有应用，不说成�
   await reconnect(page)
   await expect.poll(() => toastTexts(page), { timeout: 8000 }).toContain(`版本 #${pending} 还没有应用，可以再点「现在应用」`)
   await expect(page.locator('main .ui-ph')).toContainText(`版本 #${pending} 待应用`)
+})
+
+// 有待应用的版本时离开再回到配置页：页面照常出来（以前每 5 秒看一眼的那段在声明前读了连接状态，整页空白）
+// Leaving and returning to the config page with a version pending: the page renders (the 5-second watcher used to read the connection state before its
+// declaration, leaving a blank page)
+test('有待应用的版本时回到配置页：页面照常出来', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', (error) => errors.push(String(error)))
+  await savePending(page, 'return-pending.example', '回来看看')
+  await page.getByRole('link', { name: '日志', exact: true }).first().click()
+  await page.getByRole('link', { name: '规则', exact: true }).first().click()
+  await expect(page.locator('[data-rule]', { hasText: 'return-pending.example' })).toBeVisible()
+  await expect(page.locator('main .ui-ph')).toContainText('待应用')
+  expect(errors).toEqual([])
+})
+
+// 等着待应用的版本时别处换了文件：页面整份跟着换（以前只把新运行状态贴到旧文件上，页头说「运行中」，列表还是旧的）
+// The file changes elsewhere while a version is pending: the page follows the whole file (it used to pin the new runtime onto the old file, so the header
+// said 运行中 over the old list)
+test('等着待应用的版本时别处换了文件：页面整份跟着换', async ({ page }) => {
+  await savePending(page, 'replaced-elsewhere.example', '等着生效')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-changed-elsewhere', 'true'))
+  await expect(page.locator('[data-rule]', { hasText: 'replaced-elsewhere.example' })).toHaveCount(0, { timeout: 10_000 })
+  await expect(page.locator('main .ui-ph')).not.toContainText('待应用')
+})
+
+// 按「现在应用」时待应用的已经被别处换掉：没什么要保存的，直接读入新的并说一句，不留一条没有按钮、读完也不走的红色提示
+// 现在应用 meets a pending version replaced elsewhere: nothing needs saving, so the new one is read in and said, with no red notice that has no button and
+// outlives the re-read
+test('现在应用撞上别处的版本：读入并说一句，不留过时的提示', async ({ page }) => {
+  const pending = await savePending(page, 'in-place-overtaken.example', '被别处换掉')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-apply-overtaken', 'true'))
+  await page.getByRole('button', { name: '现在应用', exact: true }).click()
+  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContainEqual(expect.stringMatching(new RegExp(`^版本 #${pending} 没有应用：这份配置在别处改过了，已读入版本\u00a0#\\d+$`)))
+  await expect(page.locator('main .ui-ph')).not.toContainText('待应用')
+  await expect(page.locator('.cfg__notice')).toHaveCount(0)
+})
+
+// 「现在应用」途中退出登录：应用没有草稿可丢，不问；退出以后也不报它的结果
+// Signing out during 现在应用: an apply has no draft to lose, so nothing is asked, and its outcome is not reported afterwards
+test('现在应用途中退出登录：不问草稿，登录页上不报结果', async ({ page }) => {
+  const pending = await savePending(page, 'in-place-signout.example', '途中退出')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-save-slow', 'true'))
+  await page.getByRole('button', { name: '现在应用', exact: true }).click()
+  await page.locator('.account-button').click()
+  await page.getByRole('button', { name: '退出登录' }).click()
+  await expect(page).toHaveURL(/\/login/)
+  await expect(page.getByRole('alertdialog')).toHaveCount(0)
+  await page.waitForTimeout(2500)
+  expect(await toastTexts(page)).not.toContain(`版本 #${pending} 已生效`)
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
+})
+
+// 校验途中又改了草稿：结论说的是改之前的那份，不挂到现在的草稿上（以前会把没校验过的说成「校验通过」）
+// The draft edited while 校验 runs: the verdict is about the draft before the edit and is not hung on the current one (it used to call an unchecked edit 校验通过)
+test('校验途中改了草稿：校验的结论不挂到改过的草稿上', async ({ page }) => {
+  await page.goto('/config')
+  await addRule(page, 'checked-before.example')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-validate-slow', 'true'))
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '校验', exact: true }).click()
+  await addRule(page, 'added-during-check.example')
+  await page.waitForTimeout(2500)
+  await expect(bar).not.toContainText('校验通过')
+  await expect(bar).toContainText('已修改')
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-validate-slow'))
 })
 
 // 单独「校验」还没回来时按的保存，从按下起就是一次保存：按钮写「保存中」，重新读取停用；校验没过就停在那句结论上，不接着存

@@ -154,8 +154,9 @@ function discard(): void {
       <button v-if="jsonError && !phone" class="ui-btn ui-btn--secondary savebar__discard" type="button" @click="discard">放弃修改</button>
       <template v-if="(draftStage !== 'done' || pending) && (pending || draftStage === 'failed' || inSave) && !jsonError">
         <span v-if="busy && saveMessage" class="savebar__note-text">{{ saveMessage }}</span>
-        <button v-if="!(phone && conflict)" class="ui-btn ui-btn--text savebar__note-toggle" :class="{ 'is-aside': busy }" type="button" :inert="busy" :aria-expanded="noteOpen || Boolean(saveMessage)" @click="noteOpen = !noteOpen">备注<ChevronDown class="ui-btn__chev" :size="16" aria-hidden="true" /></button>
-        <label class="ui-input ui-savebar__note savebar__note" :class="{ 'is-open': noteOpen || Boolean(saveMessage), 'is-aside': busy }" :inert="busy"><input v-model="saveMessage" aria-label="版本备注" maxlength="160" placeholder="版本备注（可选）"></label>
+        <!-- 冲突时备注用不上（只能下载或重新读取，重新读取会丢掉这份草稿）：各种宽度都不给 / In a conflict a note has no use (only download or re-read, and re-reading drops the draft): no width offers it -->
+        <button v-if="!(conflict && draftStage === 'failed')" class="ui-btn ui-btn--text savebar__note-toggle" :class="{ 'is-aside': busy }" type="button" :inert="busy" :aria-expanded="noteOpen || Boolean(saveMessage)" @click="noteOpen = !noteOpen">备注<ChevronDown class="ui-btn__chev" :size="16" aria-hidden="true" /></button>
+        <label v-if="!(conflict && draftStage === 'failed')" class="ui-input ui-savebar__note savebar__note" :class="{ 'is-open': noteOpen || Boolean(saveMessage), 'is-aside': busy }" :inert="busy"><input v-model="saveMessage" aria-label="版本备注" maxlength="160" placeholder="版本备注（可选）"></label>
         <!-- 保存旁边一定有放弃：丢掉草稿回到运行中的配置，提示里能撤销；冲突时放弃就是重新读取，旁边已经有「重新读取」，不再放第二个（和手机一样）
              Save always comes with discard: drop the draft back to the running config, undoable from the toast; in a conflict discarding is re-reading, and
              重新读取 already sits beside it, so no second control (as on phones) -->

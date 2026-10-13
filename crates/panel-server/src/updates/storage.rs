@@ -39,7 +39,7 @@ pub(super) fn store_version(
     validate_elf(binary)?;
     if manifest.binary_sha256 != sha256(binary) {
         return Err(UpdateError::Verification(
-            "版本清单二进制摘要不匹配".to_owned(),
+            "版本清单里的二进制校验值对不上".to_owned(),
         ));
     }
     ensure_directory(versions_path)?;
@@ -85,7 +85,7 @@ pub(super) fn load_bundled_manifest(
     }
     let source_id = key
         .source_id
-        .ok_or_else(|| UpdateError::Verification("完整包缺少 Artifact ID".to_owned()))?;
+        .ok_or_else(|| UpdateError::Verification("完整包缺少内核包编号".to_owned()))?;
     let build_commit = read_metadata_text(metadata_path, "KIXDNS_BUILD_COMMIT", 128)?;
     validate_commit(&build_commit)
         .map_err(|_| UpdateError::Verification("完整包构建提交无效".to_owned()))?;
@@ -97,13 +97,13 @@ pub(super) fn load_bundled_manifest(
     let metadata_source_id = read_metadata_u64(metadata_path, "KIXDNS_ARTIFACT_ID")?;
     if metadata_source_id != source_id {
         return Err(UpdateError::Verification(
-            "完整包 Artifact ID 与安装环境不一致".to_owned(),
+            "完整包里的内核包编号和安装环境对不上".to_owned(),
         ));
     }
     let build_run_id = read_metadata_u64(metadata_path, "KIXDNS_SOURCE_RUN_ID")?;
     let artifact = read_metadata_text(metadata_path, "KIXDNS_ARTIFACT_NAME", 256)?;
     validate_slug(&artifact, false)
-        .map_err(|_| UpdateError::Verification("完整包 Artifact 名称无效".to_owned()))?;
+        .map_err(|_| UpdateError::Verification("完整包里的内核包名称无效".to_owned()))?;
     let artifact_digest = read_metadata_text(metadata_path, "KIXDNS_ARTIFACT_DIGEST", 128)?;
     validate_digest(&artifact_digest)?;
     let declared_binary_digest = read_metadata_text(metadata_path, "KIXDNS_BINARY_SHA256", 128)?;
@@ -253,7 +253,7 @@ pub(super) fn load_verified_version(
     let actual = sha256(&binary);
     if manifest.binary_sha256 != actual {
         return Err(UpdateError::Verification(
-            "本地版本二进制摘要不匹配".to_owned(),
+            "本地版本的二进制校验值对不上".to_owned(),
         ));
     }
     Ok((manifest, binary))

@@ -28,6 +28,8 @@ body { background: var(--l-canvas); }
 .cfg__head-action { margin-left: var(--s-1); padding: 0; border: 0; background: none; color: var(--l-ink); font: inherit; font-weight: var(--w-medium); text-decoration: underline; text-decoration-color: var(--l-ink-3); text-underline-offset: 3px; cursor: pointer; }
 .cfg__head-action:hover { text-decoration-color: var(--l-ink); }
 .cfg__spin { width: var(--size-icon-sm); height: var(--size-icon-sm); }
+/* 应用中的转圈和平时的点一样往后收 4：状态的字不再往右跳 / The applying spinner pulls in its trailing gap like the dot does, so the status text does not jump right */
+:is(.ui-facts b, .ui-ph__lead) > .cfg__spin { margin-right: calc(var(--s-1) - var(--s-2)); }
 .cfg__status-sk { width: 9rem; }
 /* 重新读取、恢复版本还在读：内容调淡、不能改，读回来再恢复 / A re-read or restore is still reading: the content dims and takes no edits until it lands */
 .cfg__panel[aria-busy="true"], .cfg__json[aria-busy="true"] { opacity: .6; transition: opacity var(--m-quick) var(--ease-out); }
@@ -77,6 +79,8 @@ body { background: var(--l-canvas); }
 .cfg__savebar .ui-savebar__status small { color: var(--l-ink-2); font-size: var(--t-2); }
 .cfg__savebar.ui-savebar--err { flex-wrap: wrap; justify-content: flex-end; }
 .cfg__savebar.ui-savebar--err .ui-savebar__status { flex: 1 1 100%; }
+/* 冲突时保存条只剩说明和两个链接（备注、放弃都去掉了）：宽屏上说明和灰掉的保存排一行 / In a conflict the bar holds only the note and its two links (备注 and 放弃 are gone): on wide screens the status shares the greyed save's row */
+@media (min-width: 641px) { .cfg__savebar.ui-savebar--err:has(.savebar__acts) .ui-savebar__status { flex: 1 1 auto; } }
 .cfg__savebar.ui-savebar--err .savebar__note-toggle { margin-left: auto; }
 /* 备注框不缩到放不下占位字（10rem）；说得长的状态（已保存加之后的修改、存成待应用）在 1100 以下用两行的样子，两行时让备注框让路，「保存并应用」不被挤出屏幕
    The note never shrinks below its placeholder (10rem); long statuses (saved plus later edits, a deferred save) take the two-row form below 1100, and in two-row
@@ -487,8 +491,9 @@ body { background: var(--l-canvas); }
   .qadd__input input { min-height: var(--h-touch); padding-left: 0; }
   .rcard__foot { padding-inline: var(--s-4); }
   .rpin__chev { display: block; grid-area: chev; color: var(--l-ink-3); align-self: center; }
-  /* 规则：条件两行时行距 20；行上下各 12 / Rules: a two-line condition at 20 leading; 12 above and below each row */
-  .rrow__cond { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-height: calc(var(--t-2) * var(--lh-base)); }
+  /* 规则：条件两行时行距 20；行上下各 12；按词换行，断在「且」「或」两边的空格上，不拆「域名」「查询类型」 / Rules: a two-line condition at 20 leading; 12 above
+     and below each row; wrapped by words, so it breaks at the spaces around 且 / 或 instead of splitting 域名 or 查询类型 */
+  .rrow__cond { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-height: calc(var(--t-2) * var(--lh-base)); word-break: keep-all; overflow-wrap: anywhere; }
 }
 /* 命中列名和数字同一条右边 / The 命中 header shares the numbers' right edge */
 /* ============================================================================

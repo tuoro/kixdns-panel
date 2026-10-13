@@ -885,24 +885,42 @@ async fn apply_pending_config(
             apply_pending_candidate(&state, &content, saved).await?
         }
         None => already_applied(&state, id).await?,
-        Some(_) => {
-            return Err(AppError::Conflict(
-                "config_conflict",
-                "待应用的版本已经换了，先重新读取".to_owned(),
+        // 后台刚让这一版试过、没有生效：照它记下的原因说，和应用被拒一样（版本没换，是失败了）
+        // The background just tried this version and it did not take: say so with the reason it recorded, as a refusal
+        // (the version did not change; it failed)
+        Some(summary) if summary.id == id && summary.apply_state == CONFIG_APPLY_FAILED => {
+            return Err(AppError::Unprocessable(
+                "reload_failed",
+                summary
+                    .apply_error
+                    .unwrap_or_else(|| "KixDNS 没有接受这份配置".to_owned()),
             ));
         }
+        Some(_) => return Err(changed_elsewhere()),
     };
-    state
-        .database
-        .audit(
-            Some(session.username),
-            "config.apply".to_owned(),
-            format!("版本 #{id}"),
-            unix_timestamp(),
-        )
-        .await
-        .map_err(AppError::Internal)?;
+    // 只记真的生效了的：KixDNS 连不上、先存着的那次什么都没做，不记
+    // Only an apply that took effect is recorded: one deferred because KixDNS was unreachable did nothing
+    if result.apply_state == CONFIG_APPLY_APPLIED {
+        state
+            .database
+            .audit(
+                Some(session.username),
+                "config.apply".to_owned(),
+                format!("版本 #{id}"),
+                unix_timestamp(),
+            )
+            .await
+            .map_err(AppError::Internal)?;
+    }
     Ok(Json(result))
+}
+
+/// 和保存撞上别处的版本时同一句话 / The same words as a save that meets another writer's version
+fn changed_elsewhere() -> AppError {
+    AppError::Conflict(
+        "config_conflict",
+        "这份配置在别处改过了，先重新读取".to_owned(),
+    )
 }
 
 /// 没有待应用的版本了：正在用的就是这一版（后台先一步让它生效了）才算已生效，否则是别处换过了。
@@ -911,22 +929,16 @@ async fn apply_pending_config(
 async fn already_applied(state: &AppState, id: i64) -> AppResult<ConfigApplyResponse> {
     let current = state.config.current().await.map_err(map_config_error)?;
     if current.version_id != Some(id) {
-        return Err(AppError::Conflict(
-            "config_conflict",
-            "待应用的版本已经换了，先重新读取".to_owned(),
-        ));
+        return Err(changed_elsewhere());
     }
-    let active = state
-        .control
-        .active_config()
-        .await
-        .map_err(map_control_error)?;
+    // 这一版已经生效了；KixDNS 这会儿连不上也不改变这件事，只是给不出它正在用的配置
+    // This version is in effect; KixDNS being unreachable right now does not change that, it only leaves the active config unknown
     Ok(ConfigApplyResponse {
         version_id: id,
         sha256: current.sha256,
         apply_state: CONFIG_APPLY_APPLIED,
         apply_error: None,
-        active_config: Some(active),
+        active_config: state.control.active_config().await.ok(),
         validation: None,
     })
 }

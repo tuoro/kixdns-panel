@@ -1546,7 +1546,8 @@ fn an_update_verification_error_reaches_the_page_with_its_opening() {
 /// 假的 `KixDNS` 控制接口：报告它在用的就是磁盘上那份配置，文件一变就算重载了一次（真的 `KixDNS` 自己盯着这个文件）。
 /// A fake `KixDNS` control socket: it reports the config file on disk as the one in use, and a changed file counts
 /// as one reload (the real `KixDNS` watches that file itself).
-fn start_fake_kixdns(directory: &std::path::Path) -> tokio::task::JoinHandle<()> {
+/// `valid` 是校验的结论 / `valid` is what validation answers
+fn start_fake_kixdns(directory: &std::path::Path, valid: bool) -> tokio::task::JoinHandle<()> {
     use axum::routing::{get, post};
     let socket = directory.join("admin.sock");
     let config = directory.join("pipeline.json");
@@ -1583,8 +1584,8 @@ fn start_fake_kixdns(directory: &std::path::Path) -> tokio::task::JoinHandle<()>
         )
         .route(
             "/v1/config/validate",
-            post(|| async {
-                axum::Json(serde_json::json!({ "protocol_version": 1, "valid": true, "pipeline_count": 1, "rule_count": 0 }))
+            post(move || async move {
+                axum::Json(serde_json::json!({ "protocol_version": 1, "valid": valid, "pipeline_count": 1, "rule_count": 0 }))
             }),
         );
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() })
@@ -1650,7 +1651,7 @@ async fn applying_the_pending_version_keeps_its_number_and_note() {
         .as_array()
         .unwrap()
         .len();
-    let _kixdns = start_fake_kixdns(context.directory.path());
+    let _kixdns = start_fake_kixdns(context.directory.path(), true);
 
     for _ in 0..2 {
         let (status, payload) = apply_version(&context, pending).await;
@@ -1690,4 +1691,66 @@ async fn applying_a_version_that_is_no_longer_pending_is_a_conflict() {
     assert_eq!(payload["error"]["code"], "config_conflict");
     let document = get_json(&context, "/api/v1/config").await;
     assert_eq!(document["pending"]["version_id"], second);
+}
+
+async fn apply_audits(context: &AuthenticatedApp) -> usize {
+    get_json(context, "/api/v1/audit?action_prefix=config.apply").await["events"]
+        .as_array()
+        .unwrap()
+        .len()
+}
+
+// KixDNS 连不上时按「现在应用」：版本还是待应用，审计里不记一条什么都没做的「应用」
+// 现在应用 while KixDNS is unreachable: the version stays pending, and no 「应用」 that did nothing is audited
+#[tokio::test]
+async fn applying_while_kixdns_is_unreachable_stays_pending_unaudited() {
+    let context = authenticated_app().await;
+    let pending = save_pending(&context, "deferred", "先存着").await;
+    let (status, payload) = apply_version(&context, pending).await;
+    assert_eq!(status, StatusCode::OK, "{payload}");
+    assert_eq!(payload["apply_state"], "pending");
+    assert_eq!(payload["version_id"], pending);
+    assert_eq!(apply_audits(&context).await, 0);
+    let document = get_json(&context, "/api/v1/config").await;
+    assert_eq!(document["pending"]["version_id"], pending);
+}
+
+// 后台（或者上一次按）刚让这一版试过、没有生效：再按回的是它没生效的原因，不是「别处改过了」
+// The background (or an earlier press) just tried this version and it did not take: pressing again answers with why, not
+// 别处改过了
+#[tokio::test]
+async fn applying_a_version_that_failed_answers_with_its_reason() {
+    let context = authenticated_app().await;
+    let pending = save_pending(&context, "refused", "会被拒").await;
+    let _kixdns = start_fake_kixdns(context.directory.path(), false);
+    let (status, _) = apply_version(&context, pending).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let (status, payload) = apply_version(&context, pending).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{payload}");
+    assert_eq!(payload["error"]["code"], "reload_failed");
+    assert!(
+        payload["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("KixDNS 没有接受这份配置"),
+        "{payload}"
+    );
+    assert_eq!(apply_audits(&context).await, 0);
+}
+
+// 已经生效了的版本再按一次，KixDNS 这会儿停了也照实回「已生效」（只是给不出它在用的配置）
+// Pressing again on a version already in effect answers 已生效 even with KixDNS stopped right now (only the active config is unknown)
+#[tokio::test]
+async fn an_applied_version_answers_applied_even_with_kixdns_down() {
+    let context = authenticated_app().await;
+    let pending = save_pending(&context, "then-down", "生效后停了").await;
+    let kixdns = start_fake_kixdns(context.directory.path(), true);
+    let (status, _) = apply_version(&context, pending).await;
+    assert_eq!(status, StatusCode::OK);
+    kixdns.abort();
+    let _ = kixdns.await;
+    let (status, payload) = apply_version(&context, pending).await;
+    assert_eq!(status, StatusCode::OK, "{payload}");
+    assert_eq!(payload["apply_state"], "applied");
+    assert!(payload["active_config"].is_null());
 }

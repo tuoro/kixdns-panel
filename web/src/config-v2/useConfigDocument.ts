@@ -8,6 +8,7 @@ import { exportConfig, readConfig } from '../config-model/document'
 import type { Model, Rule } from '../config-model/model'
 import { traceNames } from '../config-model/trace-names'
 import { useConnection } from '../composables/useConnection'
+import { useSession } from '../composables/useSession'
 import { dismissUndoable, toastMark, useToast } from '../composables/useToast'
 import { errorMessage } from '../utils'
 import { appliedSnapshot, findRuleByName, applyHits, applyUpstreamStats, changeCount, dialogEdits, dirty, draftGeneration, editorEdited, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, replaceModel, reportOpen, unsaved } from './store'
@@ -27,6 +28,8 @@ export const runtimeStopped = ref(false)
 export const runtimeCapabilities = ref<string[]>([])
 // 从页头「现在应用」「校验并应用」发起、又没走到服务端记录失败的那一步时的原因 / The reason when an apply from the header failed before the server could record it
 export const applyError = ref('')
+// 「KixDNS 已停止」那条提示在它又跑起来以后就过时了 / The 「KixDNS 已停止」 notice is stale once it runs again
+watch(runtimeStopped, (now, was) => { if (was && !now && applyError.value.startsWith('KixDNS 已停止')) applyError.value = '' })
 export const validation = ref<ValidationResult | null>(null)
 export const canCname = computed(() => runtimeCapabilities.value.includes('config_static_cname_response_v1'))
 
@@ -201,8 +204,10 @@ export const headerLine = computed<HeaderStatus>(() => {
 // 待应用时「现在应用」，文件和运行配置不同时「校验并应用」；有要保存的修改时让给保存栏 / 现在应用 when pending, 校验并应用 when the file differs; with changes to save it gives way to the save bar
 export const headerAction = computed(() => {
   // 有任何没保存的修改（包括右侧规则没点完成的）都让给保存栏：应用会重读文件，丢掉那些修改 / Any unsaved edit (an unfinished panel edit included) gives way to the save bar: applying re-reads the file and would drop it
-  // 保存还在收尾时也不给：这时按下会被吞掉，什么都不发生 / Nor while a save is still finishing: a press then is swallowed and nothing happens
-  if (!canApplyNow.value || unsaved.value || hasApplyFailure.value || panelDown.value || busy.value) return ''
+  // 恢复、重新读取、删除版本、保存还在收尾时也不给：别的操作都在等它们，按了只会撞上它们，或者什么都不发生（保存途中按下会被吞掉）；冲突时先重新读取
+  // Nor during a restore, a re-read, a version delete or a save still finishing: everything else waits for those, and a press would collide with them or do
+  // nothing at all (a press during a save is swallowed); in a conflict, re-read first
+  if (!canApplyNow.value || unsaved.value || hasApplyFailure.value || panelDown.value || conflict.value || busy.value || rereading.value || deleting.value !== null || bulkDeleting.value) return ''
   return fileDiffers.value ? '校验并应用' : '现在应用'
 })
 export const deferNote = computed(() => {
@@ -235,7 +240,10 @@ export function kernelWords(message: string): string {
 }
 const friendlyRuntimeError = (error: unknown) => friendlyRuntimeMessage(errorMessage(error))
 /** 没生效的原因本身：去掉句尾「仍在用之前的配置」，给已经说了这件事的提示条用 / Just why it did not take, without the trailing 仍在用之前的配置, for a notice that already says so */
-export const failureCause = (message: string): string => friendlyRuntimeMessage(message).replace(/[，,]\s*仍在用之前的配置。?$/, '')
+// 版本没生效是因为 KixDNS 在确认新配置之前停了：这个版本已经记成没有生效，不会等它启动再自己应用，不能说成「启动后再应用」
+// A version that did not take because KixDNS stopped before confirming the new config: it is recorded as not taken and will not apply by itself on start, so
+// it must not read 启动后再应用
+export const failureCause = (message: string): string => (STOPPED.test(message) ? 'KixDNS 在确认新配置前停了' : friendlyRuntimeMessage(message)).replace(/[，,]\s*仍在用之前的配置。?$/, '')
 const shouldRefreshAfterSaveError = (error: unknown) => error instanceof ApiError && ['unsupported_config_fields', 'config_validation_failed', 'reload_failed', 'kixdns_rejected'].includes(error.code)
 const isConflict = (error: unknown) => error instanceof ApiError && error.code === 'config_conflict'
 
@@ -344,7 +352,9 @@ export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: str
     // 读进草稿：散列对得上就是面板写的那份；对不上（手改过）会重新导入并给报告 / Into the draft: the hash matching means the panel wrote it; otherwise it is re-imported with a report
     // 重新读进来的是另一份草稿：上一份草稿的失败和冲突不再适用 / What is read in is a different draft: the previous draft's failure and conflict no longer apply
     // 整份换上（fresh，恢复版本）也一样：之前那次读刚说的「别处改过了」随草稿一起换掉 / A fresh read (a restore) likewise: a 别处改过了 just raised by the earlier read goes with the draft it was about
-    if (!options.quiet || options.fresh) { conflict.value = false; if (stage.value === 'failed' || stage.value === 'done') finishStage('idle') }
+    // 「…没有应用」那条提示说的是刚换掉的那份文件：读进来的是另一份了，一起收起
+    // The 「…没有应用」 notice was about the file just replaced: what is read in is another, so it goes too
+    if (!options.quiet || options.fresh) { conflict.value = false; applyError.value = ''; applyFailedDown = false; if (stage.value === 'failed' || stage.value === 'done') finishStage('idle') }
     // 保存之后（sent）一律只换对照的那份：草稿里的对象不换，开着的抽屉、规则面板拿着的还是同一个对象（以前整份换掉，保存途中打开的上游组抽屉会改到别的组）。
     // 写进文件再读回来和草稿一样（store.test 里有往返测试），所以没再改过时「已修改」归零
     // After a save (sent) only the baseline moves: the draft's objects stay, so an open drawer or rule panel still holds the same object (replacing them
@@ -395,16 +405,20 @@ async function runCheck(): Promise<ValidationResult | null> {
   // 校验途中草稿整份换过（重新读取、导入、放弃修改）：结论说的是已经不在的那份，丢掉，不挂到新草稿上
   // The draft was replaced wholesale while checking (重新读取, an import, 放弃修改): the verdict is about a draft that is gone, so it is dropped, not hung on the new one
   const generation = draftGeneration()
+  // 校验途中又改了草稿（加了一条、改了一处）也一样：结论说的不是现在这份，丢掉，免得把没校验过的说成「校验通过」
+  // An edit made to the draft while checking counts too: the verdict is not about the draft as it is now, so it is dropped rather than calling an unchecked
+  // change 校验通过
+  const stale = () => draftGeneration() !== generation || JSON.stringify(exportConfig(model)) !== checked
   try {
     const result = await apiRequest<ValidationResult>('/api/v1/config/validate', { method: 'POST', body: checked })
-    if (draftGeneration() !== generation) { finishStage('idle'); return null }
+    if (stale()) { finishStage('idle'); return null }
     validation.value = result
     checkedContent = checked
     finishStage('idle')
     return validation.value
   } catch (error) {
     if (error instanceof ApiError && error.status === 401) { finishStage('idle'); return null }
-    if (draftGeneration() !== generation) { finishStage('idle'); return null }
+    if (stale()) { finishStage('idle'); return null }
     const stopped = stoppedError(error)
     const down = isPanelDown(error)
     verdict.value = stopped ? 'KixDNS 已停止' : down ? '连不上面板' : '没有通过校验'
@@ -449,7 +463,8 @@ const announceWritten = () => { if (typeof window !== 'undefined') window.dispat
 // 不在配置页时草稿还在内存里（正在保存，或者没保存成功留着）：刷新、关掉浏览器先问一句；配置页开着时由它自己问
 // Away from the config page with a draft still in memory (a save in flight, or one that failed and is kept): reloading or closing the browser asks first; while
 // the config page is open it asks itself
-export const draftHeldAway = (): boolean => !viewing && (busy.value || keepOnReturn)
+// 「现在应用」不算：它没有草稿，什么都丢不了，结果在服务端照样落下 / 现在应用 does not count: it has no draft and nothing can be lost; its outcome lands on the server regardless
+export const draftHeldAway = (): boolean => !viewing && ((busy.value && origin.value === 'draft') || keepOnReturn)
 if (typeof window !== 'undefined') window.addEventListener('beforeunload', (event) => { if (draftHeldAway()) { event.preventDefault(); event.returnValue = '' } })
 // 会话过期跳到登录页时，不在配置页的这份草稿也算丢了：登录页照实说，回来时不再拿它充数（两种时机结果一样）
 // When the session expires and the app goes to the login page, a draft held away from the config page counts as lost too: the login page says so, and it
@@ -457,7 +472,7 @@ if (typeof window !== 'undefined') window.addEventListener('beforeunload', (even
 // 会话过期或退出登录时放下这份草稿：离开那条提示一起收起；还在路上的那次保存不再把草稿留下、也不再弹「草稿留在配置页」
 // Let go of the held draft on session expiry or sign-out: its away toast goes too, and a save still on its way no longer keeps the draft or says 草稿留在配置页
 let abandoned = false
-registerHeldDraft(draftHeldAway, () => inFlight !== null, () => { keepOnReturn = false; dismissAwayToast(); if (inFlight !== null) abandoned = true }, () => useConfirm().ask({
+registerHeldDraft(draftHeldAway, () => inFlight !== null && origin.value === 'draft', () => { keepOnReturn = false; dismissAwayToast(); if (inFlight !== null) abandoned = true }, () => useConfirm().ask({
   title: '放弃配置页的草稿',
   body: busy.value ? '配置页的保存还没做完。退出登录以后不再告诉你结果，没存上的修改也会丢掉。' : '配置页有一份没保存成功的修改，还没存到面板上，退出登录以后就没了。',
   confirmLabel: '放弃并退出',
@@ -569,7 +584,6 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     const result = inPlace
       ? await apiRequest<ConfigApplyResult>(`/api/v1/config/versions/${failedBefore}/apply`, { method: 'POST' })
       : await apiRequest<ConfigApplyResult>('/api/v1/config', { method: 'PUT', ...jsonBody({ content, expected_sha256: expected, message }) })
-    const pendingText = `已存成待应用版本 #${result.version_id}，${pendingWhen()}自\u2060动\u2060应\u2060用`
     saveMessage.value = ''
     // 写入成功就先记下：文件的散列和版本换成这次的，对照的那份换成发出去的草稿。之后的重读失败了，也不会把已保存的算成修改、下次保存也不会撞上自己
     // Record the write at once: the file hash and version become this save's, and the baseline becomes the draft that was sent. If the re-read after it fails,
@@ -585,12 +599,22 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     // Once a save lands, undos raised before it was sent are stale: undoing would change what was just saved; those for edits made during the save still apply and stay
     dismissUndoable(sentAt)
     await load({ quiet: true, keepDraft: true, sent })
+    // 「就绪后 / 启动后」看读回来以后的运行状态，不看按下时的 / 就绪后 / 启动后 follows the runtime as read back, not as it was at the press
+    const pendingText = `已存成待应用版本 #${result.version_id}，${pendingWhen()}自\u2060动\u2060应\u2060用`
     // 保存途中又改了的：说一句那几处还没保存，不让「已生效」盖过它们 / Edits made during the save: say they are not saved yet, so 已生效 does not cover them
     const later = changeCount.value ? ` · 之后改的 ${changeCount.value} 处还没保存` : jsonEdited.value ? ' · JSON 里之后改的还没保存' : ''
     finishStage('done', `${applyResultState(result) === 'pending' ? pendingText : `已生效 · 版本 #${result.version_id}`}${later}`)
     // 从提示条按的「重试应用」没有保存条报结果：成功了说一句，不让提示条悄悄消失 / 重试应用 from the notice has no save bar to report: say it worked instead of the notice just vanishing
     // 每次写入都存成新版本：「现在应用」按的是 #18，生效的是 #19，用恢复版本的说法交代一句 / Every write is stored as a new version: 现在应用 was pressed on #18 and #19 took effect, said in the restore wording
-    if (from === 'apply' && applyResultState(result) === 'applied') useToast().success(failedBefore && failedBefore !== result.version_id ? `已应用版本 #${failedBefore} 的内容，当前版本 #${result.version_id}` : `版本 #${result.version_id} 已生效`)
+    // 原地生效时服务端先存着没动（KixDNS 连不上或停了）：没有应用，照实说，不说「已存成」（它本来就是待应用的）
+    // An in-place apply the server only kept (KixDNS unreachable or stopped): it was not applied, and is said so rather than 已存成 (it was pending already)
+    if (inPlace && applyResultState(result) === 'pending') {
+      const notYet = `版本 #${result.version_id} 还没有应用：${runtimeStopped.value ? 'KixDNS 已停止，启动后自动应用' : 'KixDNS 没有回应，就绪后自动应用'}`
+      if (viewing) useToast().info(notYet)
+      else if (signedIn()) { dismissAwayToast(); awayToast = useToast().error(notYet) }
+    }
+    // 退出登录或会话过期以后，「现在应用」的结果不再报（应用没有草稿可丢，确认框也不问它） / After sign-out or expiry the outcome of 现在应用 is not reported (an apply has no draft to lose, and the confirm does not ask about it)
+    else if (from === 'apply' && applyResultState(result) === 'applied') { if (signedIn()) useToast().success(failedBefore && failedBefore !== result.version_id ? `已应用版本 #${failedBefore} 的内容，当前版本\u00a0#${result.version_id}` : `版本 #${result.version_id} 已生效`) }
     // 保存途中离开了配置页：没有保存条报结果，用提示说；退出登录时放下了这份草稿就不说（确认框说过「不再告诉你结果」）
     // Left the config page mid-save: no save bar reports it, so a toast does; not after sign-out let the draft go (the confirm said no result would follow)
     else if (!viewing && !abandoned) useToast().success(applyResultState(result) === 'pending' ? pendingText : `版本 #${result.version_id} 已生效`)
@@ -605,8 +629,19 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     // 撞上的「别处」其实是自己回应丢了的那次保存：把对照的那份换成它，再接着存这次多改的 / The 别处 met is this page's own save whose answer was lost: rebase onto it and go on saving what changed since
     // 保存途中连上、后台的核对先一步认出了那次保存（文件散列已经换成它）：同样接着存 / Reconnected mid-save and the background check got there first (the file hash already moved to it): carry on saving all the same
     if (isConflict(error) && (await settleUnanswered(false) || settledCount !== settledBefore)) { finishStage('idle'); return save(from) }
+    // 原地生效撞上别处的版本：没什么要保存的（「现在应用」只在没有修改时给），直接读入并说一句；途中又改了的，冲突归保存条说
+    // An in-place apply met another writer's version: nothing needs saving (现在应用 is offered only without edits), so read it in and say so; with edits made
+    // meanwhile the save bar owns the conflict
+    if (inPlace && isConflict(error)) {
+      finishStage('idle')
+      if (unsaved.value) { enterStaleBase(); return }
+      await load({ quiet: true, fresh: true })
+      const text = `版本 #${failedBefore} 没有应用：这份配置在别处改\u2060过\u2060了，${doc.value?.version_id ? `已读入版本\u00a0#${doc.value.version_id}` : '已重新读取'}`
+      if (viewing) useToast().info(text)
+      else if (signedIn()) { dismissAwayToast(); awayToast = useToast().error(text) }
+      return
+    }
     const reason = friendlyRuntimeError(error)
-    const stopped = stoppedError(error)
     const down = isPanelDown(error)
     if (down && step === 'applying') unanswered = { content, sent, base, generation: draftGeneration(), sentAt, from, pending: pendingVersionId.value ?? null, version: doc.value?.version_id ?? null, inPlace }
     // 写进文件以后 KixDNS 没接受：版本已经存下了，只是没生效 / KixDNS refused after the write: the version is stored, it just did not take
@@ -615,6 +650,8 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     // worded like a write that KixDNS refused
     const failedInPlace = inPlace && error instanceof ApiError && ['config_validation_failed', 'unsupported_config_fields', 'kixdns_protocol_error'].includes(error.code)
     const writtenNotApplied = step === 'applying' && error instanceof ApiError && (['reload_failed', 'kixdns_rejected'].includes(error.code) || failedInPlace)
+    // 版本写进去了、KixDNS 在确认前停了：那是「没有生效」，不是「停着、存成待应用」 / Written, then KixDNS stopped before confirming: that is 没有生效, not 停着、存成待应用
+    const stopped = stoppedError(error) && !writtenNotApplied
     // 写进去了（只是没生效）：和保存落地一样，草稿定下来之前的「撤销」过时了 / Written (just not applied): as when a save lands, undos from before the draft was fixed are stale
     if (writtenNotApplied) dismissUndoable(sentAt)
     verdict.value = stopped ? 'KixDNS 已停止' : down ? '连不上面板' : writtenNotApplied ? '保存了，没有生效' : step === 'validating' ? '没有通过校验' : '没有保存成功'
@@ -638,18 +675,20 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
         // 重试应用 pressed while 没有生效 already shows: the notice reads as before, so this retry's outcome is said separately, naming the new version when the retry
         // was stored as one; on a conflict the notice already offers 重新读取 with the reason, so no toast repeats it
         const stored = writtenNotApplied && pendingVersionId.value && pendingVersionId.value !== failedBefore ? `，存成了版本 #${pendingVersionId.value}` : ''
-        if (!conflict.value) retryToast = useToast().error(writtenNotApplied ? `重试也没有生效${stored}。${failureCause(reason)}` : step === 'validating' ? `重试没有通过校验。${reason}` : `重试没有成功。${reason}`)
+        // 写入时断线：不知道重试写进去没有，连上后的核对会换掉这一条 / Cut off while writing: whether the retry landed is unknown, and the check after reconnecting replaces this
+        if (!conflict.value && signedIn()) retryToast = useToast().error(writtenNotApplied ? `重试也没有生效${stored}。${failureCause(reason)}` : down && step === 'applying' ? '不知道重试应用了没有：连不上面板。连上后会自己核对' : step === 'validating' ? `重试没有通过校验。${reason}` : `重试没有成功。${reason}`)
       } else {
         // 写进去了却没生效：提示条的「版本 #N 没有生效」管这件事，不再另挂一条 / Written but not taken: the notice's 版本 #N 没有生效 owns it, no second notice
         if (!writtenNotApplied) {
-          applyError.value = stopped ? 'KixDNS 已停止\n启动后自动应用待应用的版本' : `${which(failedBefore)}没有应用\n${step === 'validating' ? `配置文件没有通过校验。${reason}` : reason}`
+          // 「校验并应用」的是手改过的文件，没有待应用的版本：停着时说启动后会读这份文件 / 校验并应用 is for a hand-edited file with no pending version: stopped, it says KixDNS reads the file on start
+          applyError.value = stopped ? `KixDNS 已停止\n${failedBefore === null ? '启动后会读这份文件' : '启动后自动应用待应用的版本'}` : `${which(failedBefore)}没有应用\n${step === 'validating' ? `配置文件没有通过校验。${reason}` : reason}`
           applyFailedDown = down
         }
         // 按完「现在应用」就离开了：配置页的提示条看不见，用提示说；写入时断线不知道应用了没有，连上后核对的结果会换掉这一条
         // Left right after 现在应用: the notice is out of sight, so a toast says it; an outage during the write leaves it unknown, and the check after reconnecting replaces this toast
-        if (!viewing && !abandoned) {
+        if (!viewing && signedIn()) {
           dismissAwayToast()
-          awayToast = useToast().error(stopped ? 'KixDNS 已停止：待应用的版本启动后自动应用'
+          awayToast = useToast().error(stopped ? `KixDNS 已停止：${failedBefore === null ? '启动后会读这份文件' : '待应用的版本启动后自动应用'}`
             : writtenNotApplied ? `${failedBefore && pendingVersionId.value && pendingVersionId.value !== failedBefore ? `存成了版本 #${pendingVersionId.value}，` : which(pendingVersionId.value)}没有生效。${sentence(failureCause(reason))}。回到配\u2060置\u2060页可以重试应用`
               : down && step === 'applying' ? `不知道${which(failedBefore)}应用了没有：连不上面板。连上后会自己核对`
                 : down ? `${which(failedBefore)}没有应用：连不上面板。连上后回配\u2060置\u2060页再应用`
@@ -713,6 +752,8 @@ async function settleOnce(announce: boolean): Promise<boolean> {
   const current = await apiRequest<ConfigDocument>('/api/v1/config').catch(() => null)
   if (!current) return false
   unanswered = null
+  // 「不知道重试应用了没有」那条由下面核对的结果换掉 / The 「不知道重试应用了没有」 toast is replaced by the result below
+  if (lost.from === 'apply' && retryToast !== null) { useToast().dismiss(retryToast); retryToast = null }
   // 草稿整份换过（放弃又撤销、导入）也照样比：面板上的文件和对照的那份跟草稿是怎么来的无关；只有「已经保存过了」这句要草稿还是那一份
   // Compared even after the draft was replaced wholesale (discard then undo, an import): the file on the panel and the baseline do not depend on how the
   // draft came about; only the 已经保存过了 line needs the draft to be the same one
@@ -741,7 +782,7 @@ async function settleOnce(announce: boolean): Promise<boolean> {
     // conflict state, which the save bar does not show for an apply, so the page stayed silent)
     if (changedElsewhere && inFlight === null && applying && !unsaved.value) {
       await load({ quiet: true, fresh: true })
-      const read = doc.value?.version_id ? `，已读入版本 #${doc.value.version_id}` : '，已重新读取'
+      const read = doc.value?.version_id ? `，已读入版本\u00a0#${doc.value.version_id}` : '，已重新读取'
       if (viewing && announce) useToast().info(`刚才那次应用不在现在的配置里：这份配置在别处改\u2060过\u2060了${read}`)
       else if (!viewing && awayToast !== null) { dismissAwayToast(); awayToast = useToast().error(`刚才那次应用不在现在的配置里：这份配置在别处改\u2060过\u2060了${read}`) }
       return false
@@ -755,12 +796,15 @@ async function settleOnce(announce: boolean): Promise<boolean> {
       finishStage('failed', '这份配置在别处改过了，现在的草稿是基于旧版本的')
     }
     // 在配置页上、那次保存就是没存上：保存条接着说「校验通过」，另说一句没存上 / On the config page with the save simply not landed: the bar goes on to 校验通过, so say it did not land
-    if (viewing && announce && !changedElsewhere) useToast().info(applying ? `${pendingName}还没有应用，可以再点「现在应用」` : '刚才那次保存没有存上，可以再保存')
+    // 草稿里又有修改时页头不给「现在应用」（让给保存条）：说保存会带上它，不指一个看不见的按钮
+    // With edits in the draft the header offers no 现在应用 (it gives way to the save bar): say a save takes it along instead of pointing at a missing button
+    const applyAgain = unsaved.value ? '；保存后会和你的修改一起生效' : '，可以再点「现在应用」'
+    if (viewing && announce && !changedElsewhere) useToast().info(applying ? `${pendingName}还没有应用${applyAgain}` : '刚才那次保存没有存上，可以再保存')
     // 不在配置页时，「不知道存上没有」那条提示换成核对的结果 / Away from the config page, the 不知道存上没有 toast is replaced by the result
     if (!viewing && awayToast !== null) {
       dismissAwayToast()
       awayToast = useToast().error(applying
-        ? (changedElsewhere ? '刚才那次应用不在现在的配置里：这份配置在别处改\u2060过\u2060了，回到配\u2060置\u2060页重新读取' : `${pendingName}还没有应用，回到配\u2060置\u2060页可以再点「现在应用」`)
+        ? (changedElsewhere ? '刚才那次应用不在现在的配置里：这份配置在别处改\u2060过\u2060了，回到配\u2060置\u2060页重新读取' : `${pendingName}还没有应用，回到配\u2060置\u2060页${unsaved.value ? '保存后会和你的修改一起生效' : '可以再点「现在应用」'}`)
         : changedElsewhere ? '刚才那次保存不在现在的配置里：这份配置在别处改\u2060过\u2060了。草稿留在配\u2060置\u2060页，回去重新读取后再改' : '刚才那次保存没有存上。草稿留在配\u2060置\u2060页，回去再保存')
     }
     return false
@@ -838,6 +882,8 @@ export async function panelBack(): Promise<void> {
 // 连上面板后自己接着做（配置页开着没有都一样），不等人点重试 / Once the panel answers again, carry on by itself (whether or not the config page is open) instead of waiting for 重试
 watch(panelDown, (now, before) => { if (before && !now) void panelBack() })
 /** 待应用的版本什么时候自动应用：说出等的是什么 / When a pending version applies by itself: name what it waits for */
+// 还登录着：退出登录或会话过期以后，配置页的结果不再报 / Still signed in: after sign-out or expiry the config page reports no outcome
+const signedIn = (): boolean => useSession().authenticated.value
 // 待应用版本的备注：文档里带着就用它，否则到历史里找 / The pending version's note: from the document when it carries one, otherwise from the history
 function pendingNote(id: number | null): string {
   return doc.value?.pending?.message || (id ? versions.value.find((v) => v.id === id)?.message ?? '' : '')

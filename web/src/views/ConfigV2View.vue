@@ -26,7 +26,7 @@ import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, busy, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, cnameUse, unsupportedSection } from '../config-v2/useConfigDocument'
+import { applyBusy, busy, deferSave, hasPending, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, cnameUse, unsupportedSection } from '../config-v2/useConfigDocument'
 import { useHelp } from '../composables/useHelp'
 import { useServiceStart } from '../composables/useServiceStart'
 import { registerLeaveGuard, takeAgreement } from '../composables/useLeaveGuard'
@@ -393,7 +393,7 @@ function downloadJson(): void {
   // 右侧规则里没点「完成」的修改也是草稿的一部分：先收进来再下载（冲突时下载完就要重新读取，漏掉它就丢了）；写得不完整就先说
   // Edits in the side panel not yet 完成 are part of the draft too: fold them in before downloading (in a conflict the download is followed by 重新读取, which
   // would lose them); when the rule is incomplete, say so first
-  if (ui.mode !== 'json' && editor.value && editorRef.value && !editorRef.value.commit(inspector.value)) { toast.info('先改好右侧规则再下载'); return }
+  if (ui.mode !== 'json' && editor.value && editorRef.value && !editorRef.value.commit(inspector.value, '下载')) return
   const data = ui.mode === 'json' ? jsonText.value : JSON.stringify(exportConfig(model), null, 2)
   const a = document.createElement('a')
   a.href = URL.createObjectURL(new Blob([data], { type: 'application/json' }))
@@ -481,6 +481,22 @@ watch(section, () => { editor.value = null; void nextTick(() => window.scrollTo(
 const { starting, start } = useServiceStart()
 // 连不上面板时页头写「状态未知」，「启动」也收起：按了也只会失败 / While the panel is unreachable the header reads 状态未知 and 启动 is withdrawn: pressing it could only fail
 const { down: panelDown } = useConnection()
+// 放在 panelDown 声明之后：watch 立刻就跑，放在前面会在声明前读到它（回到配置页时整页空白）。
+// 有待应用的版本、KixDNS 又在运行：面板后台每 5 秒会自己让它生效（或者发现它不行）。页面跟着每 5 秒看一眼运行状态，直到它不再是待应用的，
+// 免得页头一直挂着过时的「待应用 · 现在应用」，失败了也藏在「待应用」后面
+// Declared after panelDown: the watcher runs at once and would read it before its declaration (a blank page on return).
+// A pending version with KixDNS running again: the panel's background pass puts it into effect (or finds it refused) every 5 seconds. The page looks at the
+// runtime every 5 seconds too until it is no longer pending, so the header does not keep a stale 「待应用 · 现在应用」 and a failure does not hide behind 待应用
+const watchingPending = computed(() => ready.value && hasPending.value && !deferSave.value && !busy.value && !panelDown.value && !rereading.value)
+let pendingTimer: number | undefined
+watch(watchingPending, (on) => {
+  window.clearInterval(pendingTimer)
+  // 没有修改就整份静默重读（别处换了文件也跟着换，不把新运行状态贴到旧文件上）；有修改只刷新运行状态，文件换了会马上进冲突
+  // With no edits, a whole quiet re-read (a file changed elsewhere is followed, rather than pinning the new runtime onto the old file); with edits, only the
+  // runtime, and a changed file enters the conflict state at once
+  pendingTimer = on ? window.setInterval(() => { void (unsaved.value ? refreshRuntime() : load({ quiet: true })).catch(() => undefined) }, 5000) : undefined
+}, { immediate: true })
+onBeforeUnmount(() => window.clearInterval(pendingTimer))
 async function startKixdns(): Promise<void> {
   if (!(await start())) return
   // 草稿有修改时只刷新运行状态，不重读文件，免得把草稿换掉 / With edits in the draft only the runtime state is refreshed, so the draft is not replaced

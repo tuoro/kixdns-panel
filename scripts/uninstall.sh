@@ -239,7 +239,7 @@ choose_kixdns_action() {
   fi
   if [[ ${KIXDNS_MANAGED} != true ]]; then
     if [[ ${KIXDNS_ACTION} == remove && ${#DEAD_PANEL_UNITS[@]} -eq 0 && ${#DEAD_FOREIGN_UNITS[@]} -eq 0 ]]; then
-      printf '当前使用外部 KixDNS；为防止误删，卸载器只移除面板并保留外部 KixDNS。\n'
+      printf '这台机器的 KixDNS 不归面板管理，为防止误删，只卸载面板、保留它。\n'
     fi
     KIXDNS_ACTION=keep
     return
@@ -320,9 +320,9 @@ load_external_backup() {
   # 规则以 panel-server 的 Operations::new 为准（scripts/test-unit-name-rule.sh 校对）。
   # The rule is panel-server's Operations::new (checked by scripts/test-unit-name-rule.sh).
   [[ ${ORIGINAL_UNIT} =~ ^[A-Za-z0-9][A-Za-z0-9_.@-]{0,119}\.service$ && ${ORIGINAL_UNIT} != *..* ]] ||
-    fail "外部 KixDNS 备份中的 unit 名称无效"
+    fail "原来的 KixDNS 的备份里，服务名称无效"
   [[ ${ORIGINAL_ENABLED} =~ ^(true|false)$ && ${ORIGINAL_ACTIVE} =~ ^(true|false)$ ]] ||
-    fail "外部 KixDNS 备份中的服务状态无效"
+    fail "原来的 KixDNS 的备份里，运行状态无效"
 }
 
 validate_removal_targets() {
