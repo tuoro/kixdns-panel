@@ -201,7 +201,8 @@ export const headerLine = computed<HeaderStatus>(() => {
 // 待应用时「现在应用」，文件和运行配置不同时「校验并应用」；有要保存的修改时让给保存栏 / 现在应用 when pending, 校验并应用 when the file differs; with changes to save it gives way to the save bar
 export const headerAction = computed(() => {
   // 有任何没保存的修改（包括右侧规则没点完成的）都让给保存栏：应用会重读文件，丢掉那些修改 / Any unsaved edit (an unfinished panel edit included) gives way to the save bar: applying re-reads the file and would drop it
-  if (!canApplyNow.value || unsaved.value || hasApplyFailure.value || panelDown.value) return ''
+  // 保存还在收尾时也不给：这时按下会被吞掉，什么都不发生 / Nor while a save is still finishing: a press then is swallowed and nothing happens
+  if (!canApplyNow.value || unsaved.value || hasApplyFailure.value || panelDown.value || busy.value) return ''
   return fileDiffers.value ? '校验并应用' : '现在应用'
 })
 export const deferNote = computed(() => {
