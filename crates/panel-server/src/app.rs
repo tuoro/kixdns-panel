@@ -30,7 +30,8 @@ mod geo;
 mod updates;
 
 use geo::{
-    cleanup_geo_data, get_geo_data, get_geo_data_schedule, save_geo_data_schedule,
+    cleanup_geo_data, get_builtin_geosite, get_geo_data, get_geo_data_schedule,
+    import_builtin_geosite, save_geo_data_schedule, spawn_builtin_geosite_seed,
     spawn_geo_scheduler, sync_geo_data,
 };
 
@@ -75,6 +76,8 @@ pub struct AppSettings {
     pub bundled_metadata: PathBuf,
     pub github_token_path: PathBuf,
     pub geo_data_path: PathBuf,
+    /// 安装包内置 `GeoSite` 的说明文件；开发构建里不存在。 / The package's built-in `GeoSite` descriptor; absent in development builds.
+    pub builtin_geosite: Option<PathBuf>,
     pub web_root: PathBuf,
     pub secure_cookie: bool,
     pub trusted_proxies: TrustedProxies,
@@ -305,8 +308,11 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         .initialize_installed_version()
         .await
         .map_err(|error| anyhow::anyhow!(error))?;
-    let geo_data = GeoDataManager::new(database.clone(), &settings.geo_data_path)
+    let mut geo_data = GeoDataManager::new(database.clone(), &settings.geo_data_path)
         .map_err(|error| anyhow::anyhow!(error))?;
+    if let Some(descriptor) = settings.builtin_geosite {
+        geo_data = geo_data.with_builtin_geosite(descriptor);
+    }
     let state = AppState {
         database,
         config,
@@ -328,6 +334,7 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         recent_history: Arc::default(),
     };
     spawn_geo_scheduler(state.clone());
+    spawn_builtin_geosite_seed(state.clone());
     spawn_config_reconciler(state.clone());
     spawn_metrics_sampler(state.clone());
     updates::spawn_legacy_kernel_replacement(state.clone());
@@ -362,6 +369,10 @@ fn api_router(state: AppState) -> Router {
         .route("/config/validate", post(validate_config))
         .route("/config/geo-data", get(get_geo_data))
         .route("/config/geo-data/sync", post(sync_geo_data))
+        .route(
+            "/config/geo-data/builtin",
+            get(get_builtin_geosite).post(import_builtin_geosite),
+        )
         .route("/config/geo-data/cleanup", post(cleanup_geo_data))
         .route(
             "/config/geo-data/schedule",

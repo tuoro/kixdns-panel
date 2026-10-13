@@ -11,6 +11,8 @@ on:
       - crates/panel-helper/**
       - deploy/**
       - scripts/fetch-kixdns-release.sh
+      - scripts/fetch-builtin-geosite.sh
+      - scripts/verify-geosite.py
       - scripts/kixdns-artifact-identity.sh
       - scripts/lock-reference.sh
       - scripts/install.sh
@@ -35,6 +37,8 @@ on:
       - crates/panel-helper/**
       - deploy/**
       - scripts/fetch-kixdns-release.sh
+      - scripts/fetch-builtin-geosite.sh
+      - scripts/verify-geosite.py
       - scripts/kixdns-artifact-identity.sh
       - scripts/lock-reference.sh
       - scripts/install.sh
@@ -94,6 +98,28 @@ jobs:
               "$KIXDNS_KERNEL_REPOSITORY" "$version" "$architecture" "dist/kernel-$architecture"
           done
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+  geosite:
+    name: Pick built-in GeoSite
+    runs-on: ubuntu-24.04
+    outputs:
+      release: ${{ steps.pick.outputs.release }}
+    steps:
+      - name: Checkout panel repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # 和内核一样一次运行只挑一次版本，两个架构的包带同一份；PR 上也跑一遍取文件和检查。
+      # Like the kernel, pick the release once per run so both architectures carry the same file; pull
+      # requests run the fetch and its checks too.
+      - name: Pick and verify the latest GeoSite release
+        id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          release="$(gh api repos/Loyalsoldier/v2ray-rules-dat/releases/latest --jq .tag_name)"
+          bash scripts/fetch-builtin-geosite.sh "$release" dist/builtin-geo
+          printf 'release=%s\n' "$release" >> "$GITHUB_OUTPUT"
 
   verify:
     name: Verify panel
@@ -270,7 +296,7 @@ jobs:
   build:
     name: Build Linux ${{ matrix.arch }}
     if: github.event_name != 'pull_request'
-    needs: [kernel, verify]
+    needs: [kernel, geosite, verify]
     permissions:
       actions: read
       contents: read
@@ -339,6 +365,12 @@ jobs:
           bash scripts/fetch-kixdns-release.sh \
             "$KIXDNS_KERNEL_REPOSITORY" "$KIXDNS_KERNEL_VERSION" "${{ matrix.arch }}" dist/kixdns-kernel
 
+      - name: Fetch built-in GeoSite
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GEOSITE_RELEASE: ${{ needs.geosite.outputs.release }}
+        run: bash scripts/fetch-builtin-geosite.sh "$GEOSITE_RELEASE" dist/builtin-geo
+
       - name: Verify GLIBC baseline
         run: |
           bash scripts/verify-glibc-baseline.sh \
@@ -355,8 +387,10 @@ jobs:
           install -Dm755 dist/kixdns-kernel/kixdns "$bundle/bin/kixdns"
           install -Dm755 "target/${{ matrix.target }}/release/kixdns-panel-server" "$bundle/bin/kixdns-panel-server"
           install -Dm755 "target/${{ matrix.target }}/release/kixdns-panel-helper" "$bundle/bin/kixdns-panel-helper"
-          mkdir -p "$bundle/web" "$bundle/docs"
+          mkdir -p "$bundle/web" "$bundle/docs" "$bundle/geo"
           cp -a web/dist/. "$bundle/web/"
+          install -m 0644 dist/builtin-geo/geosite.dat dist/builtin-geo/geosite.json \
+            dist/builtin-geo/LICENSE "$bundle/geo/"
           cp -a deploy scripts "$bundle/"
           cp docs/architecture.md docs/config-capabilities.md docs/control-protocol-v1.md \
             docs/deployment.md "$bundle/docs/"

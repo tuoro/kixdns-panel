@@ -245,6 +245,28 @@ def require_bundled_kernel(kernel: dict[str, Any]) -> None:
     require(active.get("control_protocol") == 1, "完整包控制协议身份缺失")
 
 
+def require_builtin_geosite(client: PanelClient) -> None:
+    """全新安装的首次启动导入了安装包里的 GeoSite：来源是它的下载链接，文件就是包里那份，标记已用掉。"""
+    builtin = client.request("/api/v1/config/geo-data/builtin")
+    require(isinstance(builtin, dict), "完整包没有带内置 GeoSite")
+    require(
+        str(builtin.get("url", "")).startswith("https://github.com/Loyalsoldier/v2ray-rules-dat/"),
+        "内置 GeoSite 的来源不是 Loyalsoldier",
+    )
+    manifest = wait_for(
+        lambda: client.request("/api/v1/config/geo-data"),
+        lambda value: len(value.get("geosite", [])) == 1,
+        "首次启动导入内置 GeoSite",
+    )
+    imported = manifest["geosite"][0]
+    require(imported.get("sha256") == builtin.get("sha256"), "导入的 GeoSite 不是安装包里那份")
+    require(imported.get("url") == builtin.get("url"), "导入的 GeoSite 没有记下下载链接")
+    require(
+        not Path("/var/lib/kixdns-panel/geo/.import-builtin-geosite").exists(),
+        "首次启动后导入标记还在",
+    )
+
+
 def verify_installation(base_url: str, dns_port: int, mode: str) -> None:
     client = PanelClient(base_url)
     wait_for_panel(client)
@@ -256,6 +278,7 @@ def verify_installation(base_url: str, dns_port: int, mode: str) -> None:
         # The kernel card waits on the panel's GitHub query for the newest build, which can exceed 5 s;
         # only this call is relaxed.
         require_bundled_kernel(client.request("/api/v1/kixdns/kernel", timeout=30))
+        require_builtin_geosite(client)
         started = client.request("/api/v1/service/start", method="POST", csrf=True)
         require(started.get("active_state") == "active", "面板无法启动首次安装的 KixDNS")
         verify_runtime(client, dns_port, INITIAL_IP)

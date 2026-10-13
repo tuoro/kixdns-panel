@@ -10,6 +10,7 @@ import type {
   DeleteConfigVersionsResult,
   ConfigVersions,
   DnsDiagnostic,
+  GeoDataBuiltin,
   GeoDataCleanupResult,
   GeoDataManifest,
   GeoDataSchedule,
@@ -107,6 +108,26 @@ let geoData: GeoDataManifest = {
     size: 5_904_224,
     downloaded_at: now - 7200,
   }],
+}
+
+// 安装包自带的 GeoSite / The GeoSite the package brings along
+const builtinGeosite: GeoDataBuiltin = {
+  url: 'https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat',
+  release: '202610122207',
+  release_url: 'https://github.com/Loyalsoldier/v2ray-rules-dat/releases/tag/202610122207',
+  published_at: '2026-10-12T22:08:31Z',
+  sha256: '032108de31922356df8fea422323bca7ada1ffcf3b73064ecd8e86e520a241cf',
+  size: 11_182_961,
+}
+
+// 以前装的、从没配过 GeoSite 的主机：Geo 设置里给出「导入」（kixdns:demo-geosite-empty）
+// A host installed earlier that never configured GeoSite: the Geo settings offer 导入 (kixdns:demo-geosite-empty)
+let geositeEmptied = false
+function geositeEmptyIfAsked(): void {
+  if (geositeEmptied || typeof localStorage === 'undefined' || localStorage.getItem('kixdns:demo-geosite-empty') !== 'true') return
+  geositeEmptied = true
+  geoData = { ...geoData, geosite: [] }
+  delete (config.content.settings as Record<string, unknown>).geosite_data_paths
 }
 
 let geoDataSchedule: GeoDataSchedule = {
@@ -623,11 +644,32 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     return demoKernel() as T
   }
   if (path === '/api/v1/config' && method === 'GET') {
+    geositeEmptyIfAsked()
     changeElsewhereIfAsked()
     backgroundAppliesIfAsked()
     return config as T
   }
-  if (path === '/api/v1/config/geo-data' && method === 'GET') return geoData as T
+  if (path === '/api/v1/config/geo-data' && method === 'GET') {
+    geositeEmptyIfAsked()
+    return geoData as T
+  }
+  if (path === '/api/v1/config/geo-data/builtin' && method === 'GET') return builtinGeosite as T
+  // 和服务端一样：只在还没有 GeoSite 数据时导入，用户自己选的来源不被换掉
+  // Matches the server: import only while there is no GeoSite data, so a source the user chose is never replaced
+  if (path === '/api/v1/config/geo-data/builtin' && method === 'POST') {
+    if (geoData.geosite.length > 0) throw new ApiError('已经有 GeoSite 数据了：要换成内置的那份，先删掉现有的链接并保存', 400, 'geo_data_invalid')
+    geoData = {
+      ...geoData,
+      geosite: [{
+        url: builtinGeosite.url,
+        path: `/var/lib/kixdns-panel/geo/geosite-${builtinGeosite.sha256}.dat`,
+        sha256: builtinGeosite.sha256,
+        size: builtinGeosite.size,
+        downloaded_at: Math.floor(Date.now() / 1000),
+      }],
+    }
+    return geoData as T
+  }
   if (path === '/api/v1/config/geo-data/cleanup' && method === 'POST') {
     return { scanned_files: 4, removed_files: 1, reclaimed_bytes: 5_904_224 } as GeoDataCleanupResult as T
   }

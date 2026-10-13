@@ -51,6 +51,7 @@ async fn test_app() -> (TempDir, Router) {
         bundled_metadata: directory.path().join("bundle"),
         github_token_path: directory.path().join("github-token"),
         geo_data_path: directory.path().join("geo"),
+        builtin_geosite: None,
         web_root,
         secure_cookie: false,
         trusted_proxies: TrustedProxies::default(),
@@ -607,6 +608,133 @@ async fn test_state(directory: &TempDir) -> super::AppState {
         dummy_password_hash: Arc::from("unused"),
         recent_history: Arc::default(),
     }
+}
+
+/// 一份测试用的内置 GeoSite：只有 `cn` 分类的数据文件和它的说明。
+/// A test built-in `GeoSite`: a data file holding only the `cn` category, and its descriptor.
+fn write_builtin_geosite(directory: &std::path::Path) -> (std::path::PathBuf, Vec<u8>) {
+    let builtin = directory.join("builtin");
+    std::fs::create_dir_all(&builtin).unwrap();
+    let data = b"\x0a\x04\x0a\x02cn".to_vec();
+    std::fs::write(builtin.join("geosite.dat"), &data).unwrap();
+    let descriptor = builtin.join("geosite.json");
+    std::fs::write(
+        &descriptor,
+        serde_json::json!({
+            "schema_version": 1,
+            "file": "geosite.dat",
+            "url": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat",
+            "release": "202610122207",
+            "release_url": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/tag/202610122207",
+            "sha256": crate::digest::sha256_hex(&data),
+            "size": data.len(),
+        })
+        .to_string(),
+    )
+    .unwrap();
+    (descriptor, data)
+}
+
+async fn builtin_geosite_state(
+    directory: &TempDir,
+    settings: serde_json::Value,
+) -> super::AppState {
+    std::fs::write(
+        directory.path().join("pipeline.json"),
+        serde_json::json!({ "pipelines": [], "settings": settings }).to_string(),
+    )
+    .unwrap();
+    let mut state = test_state(directory).await;
+    let (descriptor, _) = write_builtin_geosite(directory.path());
+    state.geo_data = state.geo_data.clone().with_builtin_geosite(descriptor);
+    state
+}
+
+/// 全新安装的首次启动：配置里没有 `GeoSite` 时导入内置的那份，写进配置（KixDNS 还没启动，存成待应用
+/// 的版本），记进审计，标记用掉就删；之后再启动不会再导入。
+/// A fresh install's first start: with no `GeoSite` in the config the built-in copy is imported and
+/// written into the config (a pending version, `KixDNS` has not started), audited, and the marker is
+/// spent; later starts import nothing again.
+#[tokio::test]
+async fn a_fresh_install_imports_the_builtin_geosite_once() {
+    let directory = tempdir().unwrap();
+    let state = builtin_geosite_state(&directory, serde_json::json!({})).await;
+    let marker = directory.path().join("geo/.import-builtin-geosite");
+    std::fs::write(&marker, b"").unwrap();
+
+    super::geo::seed_builtin_geosite(&state).await.unwrap();
+
+    assert!(!marker.exists(), "the marker is spent");
+    let manifest = state.geo_data.current().await.unwrap();
+    assert_eq!(manifest.geosite.len(), 1);
+    let desired = state.config.desired().await.unwrap();
+    assert_eq!(
+        desired.content["settings"]["geosite_data_paths"],
+        serde_json::json!([manifest.geosite[0].path])
+    );
+    assert!(
+        state.config.pending().await.unwrap().is_some(),
+        "waits for KixDNS to start"
+    );
+    let audit = state
+        .database
+        .list_audit_events(10, None, Some("config.geo_data.import_builtin".to_owned()))
+        .await
+        .unwrap();
+    assert_eq!(audit.events.len(), 1);
+    assert!(audit.events[0].actor.is_none());
+    assert!(
+        audit.events[0].detail.contains("202610122207"),
+        "{}",
+        audit.events[0].detail
+    );
+
+    // 没有标记就什么都不做：用户删掉 GeoSite 以后，重启不会把它塞回来
+    // Without the marker nothing happens: once the user removes GeoSite, a restart does not put it back
+    super::geo::seed_builtin_geosite(&state).await.unwrap();
+    assert_eq!(
+        state
+            .database
+            .list_audit_events(10, None, Some("config.geo_data.import_builtin".to_owned()))
+            .await
+            .unwrap()
+            .events
+            .len(),
+        1
+    );
+}
+
+/// 配置里已经写着 GeoSite（比如迁移来的 `KixDNS` 配置）：不导入，不改配置，只用掉标记。
+/// A config that already names `GeoSite` files (such as a migrated `KixDNS` config): nothing is imported
+/// and the config is untouched; the marker is just spent.
+#[tokio::test]
+async fn the_builtin_geosite_never_replaces_a_configured_source() {
+    let directory = tempdir().unwrap();
+    let own = serde_json::json!({ "geosite_data_paths": ["/srv/geo/my-geosite.dat"] });
+    let state = builtin_geosite_state(&directory, own.clone()).await;
+    let marker = directory.path().join("geo/.import-builtin-geosite");
+    std::fs::write(&marker, b"").unwrap();
+
+    super::geo::seed_builtin_geosite(&state).await.unwrap();
+
+    assert!(!marker.exists());
+    assert!(state.geo_data.current().await.unwrap().geosite.is_empty());
+    let desired = state.config.desired().await.unwrap();
+    assert_eq!(desired.content["settings"], own);
+    assert!(state.config.pending().await.unwrap().is_none());
+}
+
+/// 只更新过面板的主机没有标记：不自动导入，由用户在 Geo 设置里自己点。
+/// A host that only updated the panel has no marker: nothing is imported until the user asks.
+#[tokio::test]
+async fn an_upgraded_host_is_not_seeded() {
+    let directory = tempdir().unwrap();
+    let state = builtin_geosite_state(&directory, serde_json::json!({})).await;
+
+    super::geo::seed_builtin_geosite(&state).await.unwrap();
+
+    assert!(state.geo_data.current().await.unwrap().geosite.is_empty());
+    assert!(state.config.pending().await.unwrap().is_none());
 }
 
 #[tokio::test]

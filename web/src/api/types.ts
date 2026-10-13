@@ -263,6 +263,17 @@ export interface GeoDataManifest {
   geosite: GeoDataResource[]
 }
 
+/** 安装包自带的 GeoSite（Loyalsoldier 的 geosite.dat）；开发构建没有。 / The GeoSite the package brings along (Loyalsoldier's geosite.dat); development builds have none. */
+export interface GeoDataBuiltin {
+  /** 导入后按这个链接更新，用户可以改成别的。 / Updates follow this link once imported; the user may change it. */
+  url: string
+  release: string
+  release_url: string
+  published_at: string | null
+  sha256: string
+  size: number
+}
+
 export interface GeoDataSyncRequest {
   geoip_mmdb_url: string | null
   geoip_dat_url: string | null

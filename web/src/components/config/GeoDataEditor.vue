@@ -17,6 +17,7 @@ import UiDotText from '../ui/UiDotText.vue'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { apiRequest, jsonBody } from '../../api/client'
 import type {
+  GeoDataBuiltin,
   GeoDataCleanupResult,
   GeoDataManifest,
   GeoDataResource,
@@ -44,6 +45,10 @@ const schedule = ref<GeoDataSchedule>({
 const mmdbUrl = ref('')
 const datUrl = ref('')
 const geositeUrls = ref<string[]>([''])
+// 安装包自带的 GeoSite；开发构建、或读不到时为 null，「导入」就不出现
+// The GeoSite the package brings along; null in development builds or when it cannot be read, and then 导入 does not show
+const builtin = ref<GeoDataBuiltin | null>(null)
+const importing = ref(false)
 const loading = ref(true)
 const syncing = ref(false)
 const scheduleSaving = ref(false)
@@ -83,7 +88,8 @@ function fileName(location: string): string {
 function fileLine(resource: GeoDataResource | null | undefined, url: string): FileLine | null {
   const downloaded = resourceStatus(resource, url)
   // 名字取链接里的文件名：面板下载后按摘要改了名，那个名字认不出来 / The name comes from the link: the panel renames downloads by hash, which nobody recognises
-  if (downloaded) return { name: fileName(url) || fileName(downloaded.path), meta: [formatSize(downloaded.size), formatAgo(downloaded.downloaded_at)] }
+  // 还是安装包里那份时写「安装包自带」：按链接更新过一次以后就是普通的下载 / Still the package's own copy reads 安装包自带; after one update from the link it is an ordinary download
+  if (downloaded) return { name: fileName(url) || fileName(downloaded.path), meta: [formatSize(downloaded.size), downloaded.sha256 === builtin.value?.sha256 ? '安装包自带' : formatAgo(downloaded.downloaded_at)] }
   return url.trim() ? { name: fileName(url), meta: ['还没下载'] } : null
 }
 
@@ -195,18 +201,49 @@ async function loadManifest(): Promise<void> {
   loading.value = true
   statusError.value = ''
   try {
-    const [next, nextSchedule] = await Promise.all([
+    const [next, nextSchedule, nextBuiltin] = await Promise.all([
       apiRequest<GeoDataManifest>('/api/v1/config/geo-data'),
       apiRequest<GeoDataSchedule>('/api/v1/config/geo-data/schedule'),
+      apiRequest<GeoDataBuiltin | null>('/api/v1/config/geo-data/builtin').catch(() => null),
     ])
     manifest.value = next
     schedule.value = nextSchedule
+    builtin.value = nextBuiltin
     fillUrls(next)
     mode.value = isManagedConfiguration(next) ? 'remote' : 'local'
   } catch (error) {
     statusError.value = errorMessage(error)
   } finally {
     loading.value = false
+  }
+}
+
+// 还没有任何 GeoSite（没有链接、没有下载过、配置里也没写路径）时，才给出安装包里那份；已经有了就不替用户换来源
+// The package's copy is offered only while there is no GeoSite at all (no link, nothing downloaded, no path in the config); once there is, the user's source is never swapped
+const offerBuiltin = computed(() => Boolean(builtin.value)
+  && manifest.value.geosite.length === 0
+  && !geositeUrls.value.some((url) => url.trim())
+  && listSetting('geosite_data_paths').length === 0)
+
+// 和导入以后那一行写得一样，只多一个「导入」：320 宽的栏里一行放得下 / Written exactly like the line after import, plus 导入: it fits one line of the 320-wide column
+const builtinMeta = computed(() => builtin.value ? [formatSize(builtin.value.size), '安装包自带'] : [])
+
+// 和「下载并填入配置」一样：面板准备好文件，路径填进草稿，保存后才生效；之后按这个链接更新，频率在「自动更新」里选
+// Like 下载并填入配置: the panel prepares the file and the path goes into the draft, taking effect on save; later updates follow this link, at the frequency chosen under 自动更新
+async function importBuiltin(): Promise<void> {
+  statusError.value = ''
+  clearSyncNotice()
+  importing.value = true
+  try {
+    const next = await apiRequest<GeoDataManifest>('/api/v1/config/geo-data/builtin', { method: 'POST' })
+    manifest.value = next
+    fillUrls(next)
+    settings.value.geosite_data_paths = next.geosite.map((resource) => resource.path)
+    showSyncNotice('已导入，文件路径已填进草稿')
+  } catch (error) {
+    statusError.value = errorMessage(error)
+  } finally {
+    importing.value = false
   }
 }
 
@@ -316,10 +353,17 @@ onBeforeUnmount(clearSyncNotice)
       <div class="ui-setrow geo-row">
         <span class="ui-setrow__label"><span>GeoSite<i v-if="changed?.has('geosite_data_paths')" class="ui-dot ui-dot--ink geo-dot" aria-hidden="true"></i></span><small v-if="!geositeUrls.some(Boolean)">域名分类数据</small></span>
         <span class="geo-list">
+          <!-- 安装包里那份放在最上面，和下载过的文件同一种写法；下面照旧可以填自己的链接 / The package's copy sits on top, written like a downloaded file; a link of one's own can still go below -->
+          <span v-if="offerBuiltin" class="geo-file geo-builtin">
+            <span class="geo-file__main"><b>geosite.dat</b><span class="geo-file__meta"><UiDotText :parts="builtinMeta" /></span></span>
+            <button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" aria-label="导入安装包自带的 GeoSite" :disabled="loading || syncing || importing" @click="importBuiltin"><RefreshCw v-if="importing" :size="14" class="spin" aria-hidden="true" /><Download v-else :size="14" aria-hidden="true" />{{ importing ? '导入中' : '导入' }}</button>
+          </span>
           <span v-for="(url, index) in geositeUrls" :key="index" class="geo-item">
-            <span class="geo-file">
+            <!-- 只有一个空链接时没有文件可说，× 也删不掉什么：这一行不出，链接框直接跟在名字下面，和 GeoIP DAT 一样
+                 A single empty link has no file to describe and its × removes nothing: the line is left out and the box follows the name, as for GeoIP DAT -->
+            <span v-if="fileLine(manifest.geosite[index], url) || geositeUrls.length > 1" class="geo-file">
               <span class="geo-file__main"><template v-if="fileLine(manifest.geosite[index], url)"><b>{{ fileLine(manifest.geosite[index], url)!.name }}</b><span class="geo-file__meta"><UiDotText :parts="fileLine(manifest.geosite[index], url)!.meta" /></span></template></span>
-              <button class="ui-icon-btn ui-icon-btn--sm geo-file__remove" type="button" :title="`删除 GeoSite 链接 ${index + 1}`" :aria-label="`删除 GeoSite 链接 ${index + 1}`" :disabled="loading || syncing" @click="removeRemoteGeosite(index)"><X :size="14" /></button>
+              <button class="ui-icon-btn ui-icon-btn--sm geo-file__remove" type="button" :title="`删除 GeoSite 链接 ${index + 1}`" :aria-label="`删除 GeoSite 链接 ${index + 1}`" :disabled="loading || syncing || importing" @click="removeRemoteGeosite(index)"><X :size="14" /></button>
             </span>
             <label class="ui-input ui-input--area geo-link"><UiUrlField :model-value="url" :label="`GeoSite 链接 ${index + 1}`" placeholder="如 https://example.com/geosite.dat" :disabled="loading || syncing" @update:model-value="setRemoteGeosite(index, $event)" /></label>
           </span>
@@ -381,6 +425,8 @@ onBeforeUnmount(clearSyncNotice)
 .geo-file__main { min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--s-2); }
 .geo-file b { color: var(--l-ink); font-family: var(--f-mono); font-size: var(--t-3); font-weight: var(--w-medium); overflow-wrap: anywhere; }
 .geo-file__meta { color: var(--l-ink-2); font-size: var(--t-2); white-space: nowrap; }
+/* 安装包那一行带一个按钮：手机上按钮比字高，字对着按钮中线，不跟普通文件行一样贴顶 / The package's line carries a button: on a phone the button is taller than the text, so the text centres on it instead of sitting at the top like a file line */
+.geo-file.geo-builtin { align-items: center; }
 /* 链接框：等宽 13 号，放不下就在「/」后面换行（UiUrlField） / The link box: 13px mono, wrapping after a "/" (UiUrlField) */
 .geo-link.ui-input--area { font-size: var(--t-2); }
 /* 「添加链接」「清理」往回收一格：图标落在框的左边线上（规范 6.5，审计 T9） / 添加链接 and 清理 pulled back so their icons sit on the box edge (spec 6.5, audit T9) */

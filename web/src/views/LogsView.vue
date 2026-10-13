@@ -199,6 +199,7 @@ const ACTION_NAMES: Record<string, string> = {
   'config.geo_data.cleanup': '清理 Geo 数据',
   'config.geo_data.schedule': '设置 Geo 数据定时更新',
   'config.geo_data.schedule.apply': '定时更新 Geo 数据',
+  'config.geo_data.import_builtin': '导入内置 GeoSite',
   'diagnostic.dns': 'DNS 诊断',
   'kixdns.kernel.update': '更新内核',
   'kixdns.kernel.rollback': '回退内核',
