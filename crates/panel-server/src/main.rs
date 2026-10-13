@@ -45,35 +45,19 @@ struct Args {
     #[arg(long, env = "KIXDNS_DIAGNOSTIC_SERVER", default_value = "127.0.0.1:53")]
     diagnostic_server: SocketAddr,
 
-    /// 发布增强 Artifact 的 GitHub 仓库。
-    #[arg(
-        long,
-        env = "KIXDNS_UPDATE_REPOSITORY",
-        default_value = "tuoro/kixdns-panel"
-    )]
-    update_repository: String,
+    /// 发布 `KixDNS` 内核（日期版本）的 GitHub 仓库。
+    #[arg(long, env = "KIXDNS_KERNEL_REPOSITORY", default_value = "tuoro/kixdns")]
+    kernel_repository: String,
 
-    /// 增强构建工作流文件名。
-    #[arg(
-        long,
-        env = "KIXDNS_UPDATE_WORKFLOW",
-        default_value = "build-kixdns.yml"
-    )]
-    update_workflow: String,
+    /// 当前完整安装包自带内核的来源：`fork`；旧安装包不写，按 Action 构建处理。
+    #[arg(long, env = "KIXDNS_INSTALLED_SOURCE")]
+    installed_source: Option<String>,
 
-    /// 下载 Artifact 的分支。
-    #[arg(long, env = "KIXDNS_UPDATE_BRANCH", default_value = "main")]
-    update_branch: String,
-
-    /// nightly.link Artifact 名称。
-    #[arg(long, env = "KIXDNS_UPDATE_ARTIFACT", default_value_t = default_artifact())]
-    update_artifact: String,
-
-    /// 当前完整安装包对应的面板仓库提交；在线更新记录优先于此值。
+    /// 当前完整安装包自带内核的提交；在线更新记录优先于此值。
     #[arg(long, env = "KIXDNS_INSTALLED_COMMIT")]
     installed_commit: Option<String>,
 
-    /// 当前完整安装包自带增强 Artifact 的 GitHub ID。
+    /// 当前完整安装包自带内核包在 GitHub 上的编号。
     #[arg(long, env = "KIXDNS_INSTALLED_SOURCE_ID")]
     installed_source_id: Option<String>,
 
@@ -166,10 +150,8 @@ impl Args {
             service_unit: args.service_unit,
             service_helper_socket: args.service_helper_socket,
             diagnostic_server: args.diagnostic_server,
-            update_repository: args.update_repository,
-            update_workflow: args.update_workflow,
-            update_branch: args.update_branch,
-            update_artifact: args.update_artifact,
+            kernel_repository: args.kernel_repository,
+            installed_source: present(args.installed_source),
             installed_commit: present(args.installed_commit),
             installed_source_id,
             panel_installed_commit: present(args.panel_installed_commit),
@@ -211,13 +193,6 @@ fn present(value: Option<String>) -> Option<String> {
     value.filter(|value| !value.trim().is_empty())
 }
 
-fn default_artifact() -> String {
-    match std::env::consts::ARCH {
-        "aarch64" => "kixdns-enhanced-linux-arm64".to_owned(),
-        _ => "kixdns-enhanced-linux-x86_64".to_owned(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,6 +203,8 @@ mod tests {
         // The removed panel-only mode wrote these keys empty; the panel must still start.
         let settings = Args::try_parse_from([
             "kixdns-panel-server",
+            "--installed-source",
+            "",
             "--installed-commit",
             "",
             "--installed-source-id",
@@ -240,6 +217,7 @@ mod tests {
         .expect("空的安装身份不应让参数解析失败")
         .into_settings()
         .unwrap();
+        assert_eq!(settings.installed_source, None);
         assert_eq!(settings.installed_commit, None);
         assert_eq!(settings.installed_source_id, None);
         assert_eq!(settings.panel_installed_commit, None);

@@ -175,10 +175,10 @@ function levelDot(priority: number): string {
   return priority <= 3 ? 'ui-dot--err' : priority === 4 ? 'ui-dot--warn' : 'ui-dot--off'
 }
 
-// 审计只用动作名尾巴上的 _failed 记一次失败（kixdns.kernel.replace_release_failed）；
+// 审计只用动作名尾巴上的 _failed 记一次失败（kixdns.kernel.replace_legacy_failed）；
 // 别的行都是做成了的事，不另标「成功」。
 // The audit records a failure only through an action name ending in _failed
-// (kixdns.kernel.replace_release_failed); every other row is a thing that was
+// (kixdns.kernel.replace_legacy_failed); every other row is a thing that was
 // done, and gets no 成功 tag.
 function failed(action: string): boolean {
   return action.endsWith('_failed')
@@ -205,6 +205,10 @@ const ACTION_NAMES: Record<string, string> = {
   'cache.flush': '清空缓存',
   'system.github_token.configure': '保存 GitHub Token',
   'system.github_token.remove': '删除 GitHub Token',
+  // 面板启动时把停更的旧内核换成最新版本；replace_release 是 v3.4.0 换 Release 内核时留下的记录
+  // At start-up the panel replaces a kernel that stopped updating with the newest version; replace_release is what v3.4.0 left when it replaced Release kernels
+  'kixdns.kernel.replace_legacy': '切换内核版本',
+  'kixdns.kernel.replace_legacy_failed': '切换内核版本',
   'kixdns.kernel.replace_release': '切换内核版本',
   'kixdns.kernel.replace_release_failed': '切换内核版本',
   'service.start': '启动服务',

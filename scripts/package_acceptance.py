@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import http.cookiejar
 import json
+import re
 import socket
 import subprocess
 import sys
@@ -230,12 +231,17 @@ def exercise_panel(client: PanelClient, dns_port: int) -> None:
 
 
 def require_bundled_kernel(kernel: dict[str, Any]) -> None:
-    """完整包自带的内核已经作为当前内核记进本机库存，带着完整的构建身份。"""
+    """完整包自带的内核已经作为当前内核记进本机库存：fork 发布的日期版本，带着完整的来源身份。"""
     active = kernel.get("active")
     require(isinstance(active, dict), "完整包 KixDNS 没有导入本地版本库存")
     require(active.get("active") is True, "完整包 KixDNS 没有记为当前内核")
-    require(isinstance(active.get("source_id"), int), "完整包没有记录 Artifact ID")
-    require(active.get("upstream_repository") == "olicesx/kixdns", "完整包上游身份缺失")
+    require(active.get("source") == "fork", "完整包 KixDNS 不是 fork 发布版")
+    require(isinstance(active.get("source_id"), int), "完整包没有记录内核包编号")
+    require(
+        re.fullmatch(r"\d{4}\.\d{2}\.\d{2}(\.\d+)?", str(active.get("release_tag"))) is not None,
+        "完整包没有记录内核的日期版本",
+    )
+    require(active.get("patchset") is None, "fork 发布版不该带补丁集")
     require(active.get("control_protocol") == 1, "完整包控制协议身份缺失")
 
 

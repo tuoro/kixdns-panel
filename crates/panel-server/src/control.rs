@@ -23,6 +23,13 @@ pub struct Health {
     pub status: String,
     pub pid: u32,
     pub version: String,
+    /// fork 发布时编译进去的日期版本和提交；补丁集构建和本地构建没有。
+    /// The date version and commit a fork release compiles in; patchset and local builds
+    /// have neither.
+    #[serde(default)]
+    pub release_version: Option<String>,
+    #[serde(default)]
+    pub release_commit: Option<String>,
     pub upstream_commit: String,
     pub patchset: String,
     pub started_at_unix: u64,
@@ -1059,6 +1066,26 @@ kixdns_upstream_latency_ms_count{upstream="8.8.8.8:53",transport="udp"} 2
         }"#;
         let health = decode_versioned_json::<Health>("/v1/health", old_health).unwrap();
         assert!(health.capabilities.is_empty());
+        assert_eq!(health.release_version, None);
+
+        // fork 发布的内核没有补丁集，另报日期版本和这一版的提交。
+        // A fork release has no patchset and reports its date version and commit instead.
+        let release_health = br#"{
+            "protocol_version":1,"status":"ok","pid":1,"version":"0.1.0",
+            "release_version":"2026.10.13.2",
+            "release_commit":"527ae0a023c81094d80c949d844dbc7d1da85b32",
+            "upstream_commit":"42981abe52ce53271be50b430594e02601e8b615",
+            "patchset":"unknown","started_at_unix":1,"uptime_seconds":2,
+            "config_generation":3,"capabilities":["stats_top_v1"]
+        }"#;
+        let health = decode_versioned_json::<Health>("/v1/health", release_health).unwrap();
+        assert_eq!(health.release_version.as_deref(), Some("2026.10.13.2"));
+        let browser = serde_json::to_value(&health).unwrap();
+        assert_eq!(browser["release_version"], "2026.10.13.2");
+        assert_eq!(
+            browser["release_commit"],
+            "527ae0a023c81094d80c949d844dbc7d1da85b32"
+        );
     }
 
     #[test]

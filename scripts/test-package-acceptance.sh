@@ -174,8 +174,11 @@ grep -Fq -- "--unit kixdns.service --allowed-uid $(id -u kixdns-panel)" \
 [[ $(stat -c '%U:%G:%a' -- /run/kixdns-panel/control.sock) == kixdns-panel:kixdns:600 ]] ||
   fail "服务控制 helper Socket 权限不符合预期"
 kixdns_source_id="$(awk -F= '$1 == "KIXDNS_INSTALLED_SOURCE_ID" { print $2 }' "${PANEL_ENV}")"
-[[ ${kixdns_source_id} =~ ^[1-9][0-9]*$ ]] || fail "完整包没有写入 KixDNS Artifact ID"
-[[ -f /var/lib/kixdns-panel/bundle/upstream.lock.json ]] || fail "完整包构建身份没有持久化"
+[[ ${kixdns_source_id} =~ ^[1-9][0-9]*$ ]] || fail "完整包没有写入 KixDNS 内核包编号"
+[[ $(awk -F= '$1 == "KIXDNS_INSTALLED_SOURCE" { print $2 }' "${PANEL_ENV}") == fork ]] ||
+  fail "完整包没有记下内核来自 fork 发布"
+[[ -f /var/lib/kixdns-panel/bundle/KIXDNS_SOURCE.json ]] || fail "完整包内核来源没有持久化"
+[[ ! -e /var/lib/kixdns-panel/bundle/upstream.lock.json ]] || fail "完整包里还留着补丁集构建的身份"
 panel_env_new="$(mktemp /etc/kixdns-panel/.acceptance-env.XXXXXX)"
 awk -v diagnostic="127.0.0.1:${dns_port}" '
   /^KIXDNS_DIAGNOSTIC_SERVER=/ {

@@ -20,17 +20,15 @@ export function buildUpdateNotices(status: UpdateNotifications | null): UpdateNo
   const notices: UpdateNoticeItem[] = []
   const { kixdns, panel } = status
   if (kixdns?.available) {
-    const security = kixdns.security_update
-    const revision = security && kixdns.dependency_revision ? ` · r${kixdns.dependency_revision}` : ''
     notices.push({
-      // 编号沿用有两条轨道时的写法：已读记录按它存，换了写法旧提示会重新冒出来。
-      // The id keeps the form from when there were two tracks: read state is stored by
-      // it, and a new form would bring old notices back.
-      id: `kixdns:action:${kixdns.source_id}`,
+      // 已读记录按编号存：每个发布的内核包编号都不一样，新版本总是一条新提示。
+      // Read state is stored by id: every released package has its own id, so a new
+      // version is always a new notice.
+      id: `kixdns:fork:${kixdns.source_id}`,
       kind: 'kixdns',
       title: 'KixDNS 内核',
-      detail: security ? '有安全更新' : '有新构建',
-      meta: `构建 #${kixdns.run_id}${revision}`,
+      detail: '有新版本',
+      meta: kixdns.release_tag,
       target: '/system',
       external: false,
     })

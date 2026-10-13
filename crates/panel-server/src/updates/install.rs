@@ -3,21 +3,20 @@
 
 use super::ACTIVE_VERSION_KEY;
 use super::ArtifactCapabilities;
-use super::ArtifactSource;
-use super::BuildIdentity;
 use super::ExtractedArtifact;
 use super::InstalledVersion;
+use super::KernelSource;
 use super::LEGACY_ACTIVE_COMMIT_KEY;
+use super::LEGACY_REPLACED_KEY;
 use super::MANIFEST_SCHEMA_VERSION;
 use super::MAX_ARTIFACT_BYTES;
 use super::MAX_BINARY_BYTES;
 use super::MAX_BUILD_IDENTITY_BYTES;
 use super::MAX_CAPABILITIES_BYTES;
 use super::PREVIOUS_VERSION_KEY;
-use super::RELEASE_REPLACED_KEY;
 use super::RemoteVersion;
-use super::ResolvedVersion;
 use super::ServiceHost;
+use super::UPSTREAM_REPOSITORY;
 use super::UpdateError;
 use super::UpdateManager;
 use super::VersionKey;
@@ -32,14 +31,12 @@ use super::storage::read_regular_file;
 use super::storage::regular_file_exists;
 use super::storage::store_version;
 use super::storage::update_stored_capabilities;
+use super::validation::kernel_architecture;
 use super::validation::persist;
 use super::validation::sha256;
 use super::validation::sync_directory;
-use super::validation::validate_build_identity;
-use super::validation::validate_commit;
 use super::validation::validate_elf;
 use super::validation::validate_hex_digest;
-use super::validation::validate_remote_build_identity;
 use super::validation::write_executable;
 use crate::auth::unix_timestamp;
 use crate::config_capabilities::canonical_runtime_capabilities;
@@ -47,8 +44,6 @@ use crate::config_capabilities::ensure_config_supported;
 use crate::config_capabilities::validate_declared_capabilities;
 use crate::operations::ServiceAction;
 use futures_util::StreamExt;
-use secrecy::ExposeSecret;
-use secrecy::SecretString;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
@@ -58,36 +53,12 @@ use std::io::Read;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// 按顺序尝试的下载来源。Actions 产物即使在公开仓库也要登录才能下载，匿名只能走
-/// nightly.link；配了 Token 时先直接从 GitHub 下载，Token 权限不够或下载失败再回退。
-/// Download sources in the order they are tried. Actions artifacts need a login even in
-/// a public repository, so anonymous downloads can only go through nightly.link. With a
-/// token configured GitHub is tried first, falling back when the token lacks the
-/// permission or the download fails.
-pub(super) fn artifact_sources(
-    repository: &str,
-    version: &RemoteVersion,
-    token: Option<&SecretString>,
-) -> Vec<ArtifactSource> {
-    let mut sources = Vec::new();
-    if let Some(token) = token {
-        sources.push(ArtifactSource {
-            url: format!(
-                "https://api.github.com/repos/{repository}/actions/artifacts/{}/zip",
-                version.source_id
-            ),
-            token: Some(token.clone()),
-            label: "GitHub",
-        });
-    }
-    sources.push(ArtifactSource {
-        url: version.download_url.clone(),
-        token: None,
-        label: "nightly.link",
-    });
-    sources
-}
-
+/// 解开 fork 发布的内核包：根目录下 `SHA256SUMS` 列出的 kixdns、`KIXDNS_SOURCE.json` 和
+/// `KIXDNS_CAPABILITIES.json` 逐个核对摘要。包是谁、哪一版，由调用方拿 `KIXDNS_SOURCE.json`
+/// 和发布清单对照。
+/// Unpacks a fork release's kernel package: kixdns, `KIXDNS_SOURCE.json` and
+/// `KIXDNS_CAPABILITIES.json` at the root are each checked against `SHA256SUMS`. Which
+/// package and version it is gets settled by the caller, against the release manifest.
 pub(super) fn extract_artifact(archive: &[u8]) -> Result<ExtractedArtifact, UpdateError> {
     let mut archive = zip::ZipArchive::new(Cursor::new(archive))
         .map_err(|error| UpdateError::Verification(format!("不是有效的 ZIP 文件：{error}")))?;
@@ -96,48 +67,82 @@ pub(super) fn extract_artifact(archive: &[u8]) -> Result<ExtractedArtifact, Upda
         .map_err(|_| UpdateError::Verification("SHA256SUMS 不是 UTF-8".to_owned()))?;
     let checksums = parse_checksums(&checksums)?;
     let binary = read_verified_zip_entry(&mut archive, &checksums, "kixdns", MAX_BINARY_BYTES)?;
-    let identity = read_verified_zip_entry(
+    let source = read_verified_zip_entry(
         &mut archive,
         &checksums,
-        "upstream.lock.json",
+        "KIXDNS_SOURCE.json",
         MAX_BUILD_IDENTITY_BYTES,
     )?;
-    let identity: BuildIdentity = serde_json::from_slice(&identity)
-        .map_err(|error| UpdateError::Verification(format!("构建身份无效：{error}")))?;
-    validate_build_identity(&identity)?;
-    let build_commit =
-        read_verified_zip_entry(&mut archive, &checksums, "KIXDNS_BUILD_COMMIT", 128)?;
-    let build_commit = String::from_utf8(build_commit)
-        .map_err(|_| UpdateError::Verification("KIXDNS_BUILD_COMMIT 不是 UTF-8".to_owned()))?;
-    let build_commit = build_commit.trim().to_owned();
-    validate_commit(&build_commit)
-        .map_err(|_| UpdateError::Verification("包内构建提交无效".to_owned()))?;
-    let config_capabilities = match read_optional_verified_zip_entry(
+    let source: KernelSource = serde_json::from_slice(&source)
+        .map_err(|error| UpdateError::Verification(format!("内核来源说明无效：{error}")))?;
+    if source.schema_version != 1 {
+        return Err(UpdateError::Verification(
+            "内核来源说明的格式不受支持".to_owned(),
+        ));
+    }
+    let capabilities = read_verified_zip_entry(
         &mut archive,
         &checksums,
         "KIXDNS_CAPABILITIES.json",
         MAX_CAPABILITIES_BYTES,
-    )? {
-        Some(content) => {
-            let manifest: ArtifactCapabilities = serde_json::from_slice(&content)
-                .map_err(|error| UpdateError::Verification(format!("配置能力清单无效：{error}")))?;
-            if manifest.schema_version != 1 {
-                return Err(UpdateError::Verification(
-                    "配置能力清单版本不受支持".to_owned(),
-                ));
-            }
-            validate_declared_capabilities(&manifest.config_capabilities)
-                .map_err(UpdateError::Verification)?;
-            manifest.config_capabilities
-        }
-        None => Vec::new(),
-    };
+    )?;
+    let config_capabilities = parse_capabilities(&capabilities)?;
     Ok(ExtractedArtifact {
         binary,
-        identity,
-        build_commit,
+        source,
         config_capabilities,
     })
+}
+
+/// 内核包和完整包里的 `KIXDNS_CAPABILITIES.json`。
+/// `KIXDNS_CAPABILITIES.json` in a kernel package or a full package.
+pub(super) fn parse_capabilities(content: &[u8]) -> Result<Vec<String>, UpdateError> {
+    let manifest: ArtifactCapabilities = serde_json::from_slice(content)
+        .map_err(|error| UpdateError::Verification(format!("配置能力清单无效：{error}")))?;
+    if manifest.schema_version != 1 {
+        return Err(UpdateError::Verification(
+            "配置能力清单版本不受支持".to_owned(),
+        ));
+    }
+    validate_declared_capabilities(&manifest.config_capabilities)
+        .map_err(UpdateError::Verification)?;
+    Ok(manifest.config_capabilities)
+}
+
+/// 包里的 `KIXDNS_SOURCE.json` 必须正是发布清单说的那一版：同一仓库、版本、提交、原版提交，
+/// 本机架构，控制协议也一致。
+/// The package's `KIXDNS_SOURCE.json` must be exactly the version the release manifest
+/// names: same repository, version, commit and upstream commit, this architecture, and
+/// the same control protocol.
+pub(super) fn verify_kernel_source(
+    source: &KernelSource,
+    repository: &str,
+    version: &str,
+    commit: &str,
+    upstream_commit: Option<&str>,
+) -> Result<(), UpdateError> {
+    let matches = source.repository == repository
+        && source.version == version
+        && source.commit.eq_ignore_ascii_case(commit)
+        && match (source.upstream_commit.as_deref(), upstream_commit) {
+            (Some(packaged), Some(expected)) => packaged.eq_ignore_ascii_case(expected),
+            (None, None) => true,
+            _ => false,
+        }
+        && source.arch == kernel_architecture();
+    if !matches {
+        return Err(UpdateError::Verification(
+            "内核包的来源说明和发布清单对不上".to_owned(),
+        ));
+    }
+    if source.control_protocol != super::CONTROL_PROTOCOL_VERSION {
+        return Err(UpdateError::Verification(format!(
+            "控制协议不兼容：需要 v{}，这个内核是 v{}",
+            super::CONTROL_PROTOCOL_VERSION,
+            source.control_protocol
+        )));
+    }
+    Ok(())
 }
 
 pub(super) fn parse_checksums(checksums: &str) -> Result<HashMap<String, String>, UpdateError> {
@@ -185,23 +190,6 @@ pub(super) fn read_verified_zip_entry(
         )));
     }
     Ok(bytes)
-}
-
-pub(super) fn read_optional_verified_zip_entry(
-    archive: &mut zip::ZipArchive<Cursor<&[u8]>>,
-    checksums: &HashMap<String, String>,
-    name: &str,
-    limit: u64,
-) -> Result<Option<Vec<u8>>, UpdateError> {
-    let count = archive.file_names().filter(|entry| *entry == name).count();
-    match count {
-        0 if checksums.contains_key(name) => Err(UpdateError::Verification(format!(
-            "SHA256SUMS 声明了缺失的 {name}"
-        ))),
-        0 => Ok(None),
-        1 => read_verified_zip_entry(archive, checksums, name, limit).map(Some),
-        _ => Err(UpdateError::Verification(format!("包里的 {name} 重复"))),
-    }
 }
 
 pub(super) fn read_zip_entry(
@@ -301,6 +289,7 @@ impl UpdateManager {
         let versions_path = Arc::clone(&self.versions_path);
         let binary_path = Arc::clone(&self.binary_path);
         let bundled_metadata = Arc::clone(&self.bundled_metadata);
+        let repository = Arc::clone(&self.kernel_repository);
         let initial = self.initial_version_key()?;
         tokio::task::spawn_blocking(move || {
             let (manifest, _) = match load_verified_version(&versions_path, &key) {
@@ -309,7 +298,7 @@ impl UpdateManager {
                     // 首次安装时版本目录可能尚未建立，仍以已校验的完整包清单为准。
                     let binary = read_regular_file(&binary_path, "当前 KixDNS 二进制")?;
                     (
-                        load_bundled_manifest(&bundled_metadata, &key, &binary)?,
+                        load_bundled_manifest(&bundled_metadata, &repository, &key, &binary)?,
                         binary,
                     )
                 }
@@ -323,11 +312,11 @@ impl UpdateManager {
         .map_err(|error| UpdateError::Install(error.to_string()))?
     }
 
-    /// 更新到最新内核。`expected` 是页面上显示的那个构建：上游之后又出了新构建就拒绝，
-    /// 确认框里写的版本就是装上的版本。启动时自动替换 Release 内核不经过页面，不传。
-    /// Updates to the newest kernel. `expected` is the build the page showed: if upstream
-    /// has built a newer one since, the update is refused, so the version named in the
-    /// confirmation is the one installed. The start-up replacement of a Release kernel
+    /// 更新到最新内核。`expected` 是页面上显示的那个包：之后又发布了更新的版本就拒绝，
+    /// 确认框里写的版本就是装上的版本。启动时自动替换旧轨道内核不经过页面，不传。
+    /// Updates to the newest kernel. `expected` is the package the page showed: if a newer
+    /// version has been released since, the update is refused, so the version named in the
+    /// confirmation is the one installed. The start-up replacement of an old-track kernel
     /// has no page and passes none.
     pub async fn update(
         &self,
@@ -342,17 +331,17 @@ impl UpdateManager {
 
     pub(super) async fn update_locked(
         &self,
-        latest: &ResolvedVersion,
+        latest: &RemoteVersion,
         expected: Option<u64>,
         config: &Value,
         host: &dyn ServiceHost,
     ) -> Result<InstalledVersion, UpdateError> {
-        if expected.is_some_and(|expected| expected != latest.remote.source_id) {
+        if expected.is_some_and(|expected| expected != latest.source_id) {
             return Err(UpdateError::Conflict(
-                "没有更新内核：原版又出了新构建，点「检查更新」看过后再更新".to_owned(),
+                "没有更新内核：又发布了更新的版本，点「检查更新」看过后再更新".to_owned(),
             ));
         }
-        let key = VersionKey::remote(&latest.remote)?;
+        let key = VersionKey::remote(latest)?;
         if self.active_version().await?.as_ref() == Some(&key) {
             return self.installed_version(&key, true).await;
         }
@@ -377,21 +366,23 @@ impl UpdateManager {
         self.activate_locked(&previous, config, host).await
     }
 
-    /// 正在运行 Release 内核、而且它从没被换下过时返回它。Release 轨道已停止构建，新面板
-    /// 启动时把它换成最新的 Action 内核；换下后用户又自己回退到 Release 的，不再替换。
-    /// Returns the running kernel when it is a Release kernel that was never replaced. The
-    /// Release track no longer builds, so a new panel replaces it with the newest Action
-    /// kernel at start-up; a user who rolls back to it afterwards is left alone.
-    pub async fn release_kernel_to_replace(&self) -> Result<Option<InstalledVersion>, UpdateError> {
+    /// 正在运行旧轨道的内核（Action 构建或更早的 Release）、而且它们从没被换下过时返回它。
+    /// 旧轨道已停止更新，新面板启动时把它换成 fork 的最新版本；换下后用户又自己回退到
+    /// 旧内核的，不再替换。
+    /// Returns the running kernel when it comes from an old track (an Action build or an
+    /// earlier Release) and none was ever replaced. The old tracks are no longer updated,
+    /// so a new panel replaces it with the fork's newest version at start-up; a user who
+    /// rolls back to an old kernel afterwards is left alone.
+    pub async fn legacy_kernel_to_replace(&self) -> Result<Option<InstalledVersion>, UpdateError> {
         let Some(active) = self.active_version().await? else {
             return Ok(None);
         };
-        if active.source != VersionSource::Release {
+        if active.source == VersionSource::Fork {
             return Ok(None);
         }
         let replaced = self
             .database
-            .get_setting(RELEASE_REPLACED_KEY)
+            .get_setting(LEGACY_REPLACED_KEY)
             .await
             .map_err(|error| UpdateError::Install(error.to_string()))?;
         if replaced.is_some() {
@@ -477,8 +468,8 @@ impl UpdateManager {
         self.initial_commit
             .as_deref()
             .map(|commit| match self.initial_source_id {
-                Some(source_id) => VersionKey::tracked(VersionSource::Action, source_id, commit),
-                None => VersionKey::new(VersionSource::Action, commit),
+                Some(source_id) => VersionKey::tracked(self.initial_source, source_id, commit),
+                None => VersionKey::new(self.initial_source, commit),
             })
             .transpose()
     }
@@ -492,10 +483,11 @@ impl UpdateManager {
         }
         let binary_path = Arc::clone(&self.binary_path);
         let metadata_path = Arc::clone(&self.bundled_metadata);
+        let repository = Arc::clone(&self.kernel_repository);
         let key = key.clone();
         tokio::task::spawn_blocking(move || {
             let binary = read_regular_file(&binary_path, "当前 KixDNS 二进制")?;
-            match load_bundled_manifest(&metadata_path, &key, &binary) {
+            match load_bundled_manifest(&metadata_path, &repository, &key, &binary) {
                 Ok(_) => Ok(true),
                 Err(error) => {
                     tracing::warn!(%error, "完整包身份与当前 KixDNS 二进制不匹配");
@@ -526,13 +518,13 @@ impl UpdateManager {
         .map_err(|error| UpdateError::Install(error.to_string()))?
     }
 
-    // API JSON 请求很小，20 秒总超时足够；4 MB 以上的产物在国内到 GitHub、nightly.link 的慢链路上
+    // API JSON 请求很小，20 秒总超时足够；4 MB 以上的内核包在国内到 GitHub 的慢链路上
     // 常要几分钟，共用这个总超时会让低于约 200 KB/s 的安装必然失败。所以客户端只限定连接和
     // 两次收到数据之间的间隔，下载请求再单独给一个宽松的总时限。
-    // API JSON is small and 20 s total is plenty, but a 4 MB+ artifact over a slow mainland-China link to
-    // GitHub or nightly.link takes minutes; sharing that total made every install below ~200 KB/s fail.
-    // The client therefore bounds only connecting and the gap between received data, and the download
-    // request gets its own generous total limit.
+    // API JSON is small and 20 s total is plenty, but a 4 MB+ kernel package over a slow
+    // mainland-China link to GitHub takes minutes; sharing that total made every install
+    // below ~200 KB/s fail. The client therefore bounds only connecting and the gap between
+    // received data, and the download request gets its own generous total limit.
     pub(super) const API_TIMEOUT: Duration = Duration::from_secs(20);
 
     pub(super) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -541,10 +533,14 @@ impl UpdateManager {
 
     pub(super) const DOWNLOAD_TIMEOUT: Duration = Duration::from_mins(5);
 
-    pub(super) async fn fetch_artifact(
+    /// 下载一个发布文件，超过 `limit` 字节就放弃。发布页的文件是公开的，不带 Token；
+    /// GitHub 回应跳转到存储服务，reqwest 跟过去。
+    /// Downloads one release file, giving up past `limit` bytes. Release files are public,
+    /// so no token is sent; GitHub answers with a redirect to storage, which reqwest follows.
+    pub(super) async fn fetch_limited(
         client: &reqwest::Client,
         url: &str,
-        token: Option<&SecretString>,
+        limit: usize,
         timeout: Duration,
     ) -> Result<Vec<u8>, UpdateError> {
         // reqwest 把读超时和总超时都报成一句 "error decoding response body"，用户看不出是网太慢。
@@ -559,16 +555,12 @@ impl UpdateManager {
                 UpdateError::Network(error.to_string())
             }
         };
+        let too_large = || UpdateError::Verification(format!("超过 {}", format_size(limit)));
         // 请求级时限覆盖客户端的 20 秒总超时，只作用于这次下载。
         // The per-request limit overrides the client's 20 s total, for this download only.
-        let mut request = client.get(url).timeout(timeout);
-        if let Some(token) = token {
-            // GitHub 回应的是跳转到存储服务的地址；换了主机时 reqwest 会去掉认证头，Token 不会跟过去。
-            // GitHub answers with a redirect to blob storage; reqwest drops the auth header when
-            // the host changes, so the token never follows it.
-            request = request.bearer_auth(token.expose_secret());
-        }
-        let response = request
+        let response = client
+            .get(url)
+            .timeout(timeout)
             .send()
             .await
             .map_err(network)?
@@ -576,117 +568,104 @@ impl UpdateManager {
             .map_err(network)?;
         if response
             .content_length()
-            .is_some_and(|length| length > MAX_ARTIFACT_BYTES as u64)
+            .is_some_and(|length| length > limit as u64)
         {
-            return Err(UpdateError::Verification("超过 128\u{a0}MiB".to_owned()));
+            return Err(too_large());
         }
         let mut stream = response.bytes_stream();
         let mut bytes = Vec::new();
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(network)?;
-            if bytes.len().saturating_add(chunk.len()) > MAX_ARTIFACT_BYTES {
-                return Err(UpdateError::Verification("超过 128\u{a0}MiB".to_owned()));
+            if bytes.len().saturating_add(chunk.len()) > limit {
+                return Err(too_large());
             }
             bytes.extend_from_slice(&chunk);
         }
         Ok(bytes)
     }
 
-    pub(super) async fn download(&self, version: &ResolvedVersion) -> Result<Vec<u8>, UpdateError> {
-        let token = self.github_token.read().await.clone();
-        let sources = artifact_sources(&self.repository, &version.remote, token.as_ref());
-        Self::fetch_first_verified(
-            &self.client,
-            &sources,
-            &version.remote.artifact_digest,
-            Self::DOWNLOAD_TIMEOUT,
-        )
-        .await
-    }
-
-    /// 依次尝试每个来源，返回第一个通过摘要校验的包；都失败时报最后一个来源的错误。
-    /// Tries each source in turn and returns the first package that passes the digest
-    /// check; when all fail, reports the last source's error.
-    pub(super) async fn fetch_first_verified(
+    /// 下载内核包并和发布清单里的 SHA-256 对照。
+    /// Downloads a kernel package and checks it against the release manifest's SHA-256.
+    pub(super) async fn download_verified(
         client: &reqwest::Client,
-        sources: &[ArtifactSource],
+        url: &str,
         digest: &str,
         timeout: Duration,
     ) -> Result<Vec<u8>, UpdateError> {
         let expected = digest
             .strip_prefix("sha256:")
             .ok_or_else(|| UpdateError::Verification("校验值格式无效".to_owned()))?;
-        let mut last_error = None;
-        for (index, source) in sources.iter().enumerate() {
-            let result = Self::fetch_artifact(client, &source.url, source.token.as_ref(), timeout)
-                .await
-                .and_then(|bytes| {
-                    let actual = sha256(&bytes);
-                    if actual == expected {
-                        Ok(bytes)
-                    } else {
-                        Err(UpdateError::Verification(format!(
-                            "下载的包和发布的校验值对不上（应为 {}…，实际 {}…）",
-                            short_digest(expected),
-                            short_digest(&actual)
-                        )))
-                    }
-                });
-            match result {
-                Ok(bytes) => return Ok(bytes),
-                Err(error) => {
-                    if index + 1 < sources.len() {
-                        tracing::warn!(%error, source = source.label, "内核包下载失败，改用下一个来源");
-                    }
-                    last_error = Some(error);
-                }
-            }
+        let bytes = Self::fetch_limited(client, url, MAX_ARTIFACT_BYTES, timeout).await?;
+        let actual = sha256(&bytes);
+        if !actual.eq_ignore_ascii_case(expected) {
+            return Err(UpdateError::Verification(format!(
+                "下载的包和发布的校验值对不上（应为 {}…，实际 {}…）",
+                short_digest(expected),
+                short_digest(&actual)
+            )));
         }
-        Err(last_error.unwrap_or_else(|| UpdateError::Network("没有可用的下载来源".to_owned())))
+        Ok(bytes)
     }
 
     pub(super) async fn install_resolved(
         &self,
-        version: &ResolvedVersion,
+        version: &RemoteVersion,
         config: &Value,
     ) -> Result<(), UpdateError> {
-        let key = VersionKey::remote(&version.remote)?;
+        let key = VersionKey::remote(version)?;
         if self.version_exists(&key)? {
             return Ok(());
         }
-        let archive = self.download(version).await?;
+        // 发布清单已经说了这一版认哪些配置字段：当前配置用不了就不必下载。
+        // The release manifest already says which config fields this version knows: when
+        // the current config cannot run on it there is no point downloading.
+        ensure_config_supported(config, &version.config_capabilities)
+            .map_err(|error| UpdateError::IncompatibleConfig(error.to_string()))?;
+        let archive = Self::download_verified(
+            &self.client,
+            &version.download_url,
+            &version.artifact_digest,
+            Self::DOWNLOAD_TIMEOUT,
+        )
+        .await?;
         let extracted = tokio::task::spawn_blocking(move || extract_artifact(&archive))
             .await
             .map_err(|error| UpdateError::Verification(error.to_string()))??;
-        if !extracted
-            .build_commit
-            .eq_ignore_ascii_case(&version.remote.commit)
-        {
+        verify_kernel_source(
+            &extracted.source,
+            &self.kernel_repository,
+            &version.release_tag,
+            &version.commit,
+            version.upstream_commit.as_deref(),
+        )?;
+        if extracted.config_capabilities != version.config_capabilities {
             return Err(UpdateError::Verification(
-                "包内构建提交与 GitHub 来源提交不匹配".to_owned(),
+                "内核包的配置能力和发布清单对不上".to_owned(),
             ));
         }
-        validate_remote_build_identity(&version.remote, &extracted.identity)?;
         ensure_config_supported(config, &extracted.config_capabilities)
             .map_err(|error| UpdateError::IncompatibleConfig(error.to_string()))?;
         validate_elf(&extracted.binary)?;
         let manifest = VersionManifest {
             schema_version: MANIFEST_SCHEMA_VERSION,
-            source: Some(version.remote.source),
-            source_id: Some(version.remote.source_id),
-            commit: version.remote.commit.clone(),
-            run_id: Some(version.remote.run_id),
-            release_tag: None,
-            created_at: Some(version.remote.created_at.clone()),
-            source_url: Some(version.remote.source_url.clone()),
-            build_url: Some(version.remote.build_url.clone()),
-            artifact: version.remote.artifact.clone(),
-            artifact_digest: Some(version.remote.artifact_digest.clone()),
-            upstream_repository: Some(extracted.identity.repository),
-            upstream_commit: Some(extracted.identity.commit),
-            patchset: Some(extracted.identity.patchset),
-            dependency_revision: extracted.identity.dependency_revision,
-            control_protocol: Some(extracted.identity.control_protocol),
+            source: Some(VersionSource::Fork),
+            source_id: Some(version.source_id),
+            commit: version.commit.clone(),
+            run_id: None,
+            release_tag: Some(version.release_tag.clone()),
+            created_at: version.created_at.clone(),
+            source_url: version.source_url.clone(),
+            build_url: Some(version.build_url.clone()),
+            artifact: version.artifact.clone(),
+            artifact_digest: Some(version.artifact_digest.clone()),
+            upstream_repository: version
+                .upstream_commit
+                .as_ref()
+                .map(|_| UPSTREAM_REPOSITORY.to_owned()),
+            upstream_commit: version.upstream_commit.clone(),
+            patchset: None,
+            dependency_revision: None,
+            control_protocol: Some(version.control_protocol),
             config_capabilities: extracted.config_capabilities,
             binary_sha256: sha256(&extracted.binary),
             installed_at: unix_timestamp(),
@@ -776,10 +755,10 @@ impl UpdateManager {
         Ok(manifest.into_installed(true))
     }
 
-    /// 切换成功后记下被换下的内核，它成了上一个；Release 内核被 Action 内核换下时另记一笔。
+    /// 切换成功后记下被换下的内核，它成了上一个；旧轨道的内核被 fork 发布版换下时另记一笔。
     /// 写不进去只影响回退目标，切换本身已经完成，不撤销。
     /// After a successful switch, record the replaced kernel as the previous one, and note
-    /// when a Release kernel gave way to an Action kernel. A failed write only affects the
+    /// when an old-track kernel gave way to a fork release. A failed write only affects the
     /// rollback target; the switch itself is done and stays.
     async fn remember_replaced(&self, replaced: &VersionKey, active: &VersionKey) {
         let now = unix_timestamp();
@@ -790,14 +769,14 @@ impl UpdateManager {
         {
             tracing::warn!(%error, "内核已切换，但没能记下上一个内核");
         }
-        if replaced.source == VersionSource::Release
-            && active.source == VersionSource::Action
+        if replaced.source != VersionSource::Fork
+            && active.source == VersionSource::Fork
             && let Err(error) = self
                 .database
-                .set_setting(RELEASE_REPLACED_KEY, now.to_string(), now)
+                .set_setting(LEGACY_REPLACED_KEY, now.to_string(), now)
                 .await
         {
-            tracing::warn!(%error, "内核已切换，但没能记下 Release 内核已被替换");
+            tracing::warn!(%error, "内核已切换，但没能记下旧内核已被替换");
         }
     }
 
@@ -805,10 +784,10 @@ impl UpdateManager {
         let binary_path = Arc::clone(&self.binary_path);
         let versions_path = Arc::clone(&self.versions_path);
         let bundled_metadata = Arc::clone(&self.bundled_metadata);
+        let repository = Arc::clone(&self.kernel_repository);
         let initial = self.initial_version_key()?;
         let key = key.clone();
         let worker_key = key.clone();
-        let artifact = self.artifact.to_string();
         tokio::task::spawn_blocking(move || {
             let binary = read_regular_file(&binary_path, "当前 KixDNS 二进制")?;
             validate_elf(&binary)?;
@@ -822,7 +801,7 @@ impl UpdateManager {
             }
             let manifest =
                 if initial.as_ref() == Some(&worker_key) && worker_key.source_id.is_some() {
-                    load_bundled_manifest(&bundled_metadata, &worker_key, &binary)?
+                    load_bundled_manifest(&bundled_metadata, &repository, &worker_key, &binary)?
                 } else {
                     if worker_key.source_id.is_some() {
                         return Err(UpdateError::Verification(
@@ -839,7 +818,7 @@ impl UpdateManager {
                         created_at: None,
                         source_url: None,
                         build_url: None,
-                        artifact,
+                        artifact: legacy_artifact_name().to_owned(),
                         artifact_digest: None,
                         upstream_repository: None,
                         upstream_commit: None,
@@ -1019,7 +998,7 @@ impl UpdateManager {
     }
 }
 
-/// 切换失败时怎么称呼两边：要换上的和原来的内核（构建 #N、Release 标签） / How a failed switch names both sides: the kernel going in and the one it replaces (构建 #N, a Release tag)
+/// 切换失败时怎么称呼两边：要换上的和原来的内核（日期版本、构建 #N、Release 标签） / How a failed switch names both sides: the kernel going in and the one it replaces (a date version, 构建 #N, a Release tag)
 #[derive(Clone, Copy)]
 pub(super) struct SwitchNames<'a> {
     pub(super) target: &'a str,
@@ -1062,8 +1041,8 @@ fn split_hint(message: &str) -> (String, String) {
     (cause.to_owned(), hint.to_owned())
 }
 
-/// 接在汉字后面：Release 标签这类以字母数字开头的名字前空一格（「换回 v0.2.0」），「构建 #N」紧接（「换回构建 #N」）
-/// After Chinese text: a name starting with a Latin letter or digit, such as a Release tag, takes a space (换回 v0.2.0); 构建 #N follows directly (换回构建 #N)
+/// 接在汉字后面：日期版本、Release 标签这类以字母数字开头的名字前空一格（「换回 2026.10.13」），「构建 #N」紧接（「换回构建 #N」）
+/// After Chinese text: a name starting with a Latin letter or digit, such as a date version or a Release tag, takes a space (换回 2026.10.13); 构建 #N follows directly (换回构建 #N)
 pub(super) fn after_cjk(name: &str) -> String {
     if name.starts_with(|c: char| c.is_ascii_alphanumeric()) {
         format!(" {name}")
@@ -1075,4 +1054,24 @@ pub(super) fn after_cjk(name: &str) -> String {
 /// 校验值只给前 12 位：整串 64 位在手机上要占五六行，前 12 位已经够对照 / Only the first 12 characters of a digest: all 64 take five or six lines on a phone, and 12 are enough to compare
 fn short_digest(digest: &str) -> &str {
     digest.get(..12).unwrap_or(digest)
+}
+
+/// 早期安装没有记下内核包名，补记录时用当时的默认包名。
+/// Early installs recorded no package name; the default name of the time fills the record.
+fn legacy_artifact_name() -> &'static str {
+    match std::env::consts::ARCH {
+        "aarch64" => "kixdns-enhanced-linux-arm64",
+        _ => "kixdns-enhanced-linux-x86_64",
+    }
+}
+
+/// 大小上限的说法：整 MiB 写 MiB，否则写 KiB。
+/// How a size limit reads: whole MiB as MiB, otherwise KiB.
+fn format_size(bytes: usize) -> String {
+    const MIB: usize = 1024 * 1024;
+    if bytes.is_multiple_of(MIB) {
+        format!("{}\u{a0}MiB", bytes / MIB)
+    } else {
+        format!("{}\u{a0}KiB", bytes / 1024)
+    }
 }

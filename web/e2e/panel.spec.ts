@@ -132,34 +132,42 @@ test('内核可更新到最新并回到上一个 @responsive', async ({ page }) 
   await open(page, '/system')
   const kernelRow = page.locator('.update-row').first()
   const runtime = page.locator('.runtime-panel')
-  await expect(kernelRow.locator('.update-row__from-to')).toContainText('构建 #30231271280 → #30235703570')
-  // 更新前先确认要装哪个构建，并按当前服务状态说清是短暂重启还是什么都不启动。
-  // An update first names the build and says, from the service state, whether DNS restarts briefly or nothing starts.
+  await expect(kernelRow.locator('.update-row__from-to')).toContainText('2026.10.13 → 2026.10.13.2')
+  await expect(kernelRow.getByRole('link', { name: '发布说明' })).toHaveAttribute('href', 'https://github.com/tuoro/kixdns/releases/tag/2026.10.13.2')
+  await expect(runtime.locator('.install-version__label')).toHaveText('版本')
+  await expect(runtime.locator('.install-version b')).toHaveText('2026.10.13')
+  // fork 发布没有补丁集：附注里不写「补丁集 未记录」 / A fork release has no patchset: the notes do not say 补丁集 未记录
+  await expect(runtime.locator('.install-meta')).not.toContainText('补丁集')
+  // 面板改用 fork 发布之前的 p28 内核还留着，照旧按构建号称呼 / The p28 kernel from before the move to fork releases is still kept and named by its build as before
+  await expect(runtime.locator('.install-previous')).toContainText('上一个版本 构建 #36374613990')
+  // 更新前先确认要装哪个版本，并按当前服务状态说清是短暂重启还是什么都不启动。
+  // An update first names the version and says, from the service state, whether DNS restarts briefly or nothing starts.
   await kernelRow.getByRole('button', { name: '更新', exact: true }).click()
-  await expect(page.getByRole('alertdialog')).toContainText('构建 #30235703570')
+  await expect(page.getByRole('alertdialog')).toContainText('更新内核到 2026.10.13.2')
+  await expect(page.getByRole('alertdialog')).toContainText('先下载并校验这个版本')
   await expect(page.getByRole('alertdialog')).toContainText('DNS 解析短暂中断')
   await expect(page.getByRole('alertdialog')).toContainText('开机自启设置保持不变')
   await expectNoPageOverflow(page)
   await acceptConfirm(page)
   await expect(page.locator('.toast--success').filter({ hasText: '内核已更新，正在运行' })).toBeVisible()
   await expect(kernelRow.locator('.update-row__from-to')).toContainText('已是最新')
-  await expect(runtime.locator('.install-version b')).toHaveText('#30235703570')
-  await expect(runtime.locator('.install-version__label')).toHaveText('构建')
-  // 上一个版本写在「当前安装」卡的底行，回退按钮就在它旁边 / The previous build sits on the installed card's bottom row, with the rollback button beside it
-  await expect(runtime.locator('.install-previous')).toContainText('上一个版本 构建 #30231271280')
+  await expect(runtime.locator('.install-version b')).toHaveText('2026.10.13.2')
+  await expect(runtime.locator('.install-version__label')).toHaveText('版本')
+  // 上一个版本写在「当前安装」卡的底行，回退按钮就在它旁边 / The previous version sits on the installed card's bottom row, with the rollback button beside it
+  await expect(runtime.locator('.install-previous')).toContainText('上一个版本 2026.10.13')
 
   await page.locator('.service-line').getByRole('button', { name: '停止' }).click()
   await acceptConfirm(page)
   await expect(page.locator('.service-line')).toContainText('已停止')
 
   await runtime.getByRole('button', { name: '回退', exact: true }).click()
-  await expect(page.getByRole('alertdialog')).toContainText('回退到构建 #30231271280')
+  await expect(page.getByRole('alertdialog')).toContainText('回退到 2026.10.13')
   await expect(page.getByRole('alertdialog')).toContainText('不会启动服务')
   await acceptConfirm(page)
   await expect(page.locator('.toast--success').filter({ hasText: '服务仍停止，下次启动时生效' })).toBeVisible()
   await expect(page.locator('.service-line')).toContainText('已停止')
-  await expect(runtime.locator('.install-version b')).toHaveText('#30231271280')
-  await expect(runtime.locator('.install-previous')).toContainText('上一个版本 构建 #30235703570')
+  await expect(runtime.locator('.install-version b')).toHaveText('2026.10.13')
+  await expect(runtime.locator('.install-previous')).toContainText('上一个版本 2026.10.13.2')
 })
 
 test('内核检查失败时面板更新照常提示 @responsive', async ({ page }) => {

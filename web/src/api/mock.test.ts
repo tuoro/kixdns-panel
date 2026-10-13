@@ -158,14 +158,15 @@ describe('演示 API', () => {
     const latest = initial.latest
     expect(latest).not.toBeNull()
     expect(initial.active?.source_id).not.toBe(latest?.source_id)
-    expect(initial.previous).not.toBeNull()
+    // 上一个是面板改用 fork 发布之前的 p28 内核。 / The previous one is the p28 kernel from before the move to fork releases.
+    expect(initial.previous).toMatchObject({ source: 'action', run_id: 36374613990, patchset: 28 })
 
-    // 只装界面上看到的那个构建：编号对不上说明上游又出了新的。
-    // Only the build the page showed is installed: a different id means upstream moved on.
+    // 只装界面上看到的那个版本：编号对不上说明又发布了新的。
+    // Only the version the page showed is installed: a different id means a newer one was released.
     await expect(mockRequest('/api/v1/kixdns/kernel/update', {
       method: 'POST',
       body: JSON.stringify({ source_id: initial.active?.source_id }),
-    })).rejects.toThrow('没有更新内核：原版又出了新构建')
+    })).rejects.toThrow('没有更新内核：又发布了更新的版本')
 
     const updated = await mockRequest<KixdnsKernel>('/api/v1/kixdns/kernel/update', {
       method: 'POST',
@@ -194,23 +195,23 @@ describe('演示 API', () => {
     expect(running.active_state).toBe('active')
   })
 
-  it('展示上游官方 Action 与增强构建的独立身份', async () => {
+  it('展示 fork 发布版和它基于的原版提交', async () => {
     const kernel = await mockRequest<KixdnsKernel>('/api/v1/kixdns/kernel')
     const latest = kernel.latest
-    expect(latest?.source).toBe('action')
-    expect(latest?.run_id).toBe(30235703570)
-    expect(latest?.source_id).not.toBe(latest?.run_id)
-    expect(latest?.source_url).toContain('olicesx/kixdns/actions/runs/30235703570')
-    expect(latest?.build_url).toContain('tuoro/kixdns-panel/actions/runs/30565639501')
-    expect(latest?.artifact).toBe('kixdns-enhanced-action-30235703570-p8-46ac788fc96c-linux-x86_64')
+    expect(latest?.source).toBe('fork')
+    expect(latest?.release_tag).toBe('2026.10.13.2')
+    expect(latest?.source_url).toContain('olicesx/kixdns/commit/42981abe52ce53271be50b430594e02601e8b615')
+    expect(latest?.build_url).toBe('https://github.com/tuoro/kixdns/releases/tag/2026.10.13.2')
+    expect(latest?.artifact).toBe('kixdns-2026.10.13.2-linux-x86_64.zip')
     expect(latest?.artifact_digest).toMatch(/^sha256:[a-f0-9]{64}$/)
-    // 最新那个构建按演示状态还没装，所以能力要从真正装着的版本上取。
-    // The newest build is not installed in the demo, so capabilities come from the one that is.
-    expect(kernel.active?.config_capabilities).toContain('config_query_stats_v1')
+    // 最新那个版本按演示状态还没装，所以能力要从真正装着的版本上取。
+    // The newest version is not installed in the demo, so capabilities come from the one that is.
+    expect(kernel.active?.source).toBe('fork')
+    expect(kernel.active?.patchset).toBeNull()
+    expect(kernel.active?.config_capabilities).toEqual(['config_query_stats_v1'])
     for (const version of [kernel.active, kernel.previous]) {
       expect(version?.commit).not.toBe(version?.upstream_commit)
     }
-    expect(kernel.active?.upstream_commit).toBe('647c5b1d2af6963176d7f8da6c3ed031e6b58497')
   })
 
   it('分别返回 KixDNS 与面板正式版更新', async () => {

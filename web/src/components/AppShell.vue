@@ -41,7 +41,7 @@ const panelVersion = computed(() => notifications.status.value?.panel?.current_v
 const updateLine = computed(() => {
   const u = notifications.status.value
   if (u?.panel?.available && u.panel.latest_version) return `有新版本 v${u.panel.latest_version}`
-  if (u?.kixdns?.available) return '内核有新构建'
+  if (u?.kixdns?.available) return '内核有新版本'
   return ''
 })
 const hasPageHeading = computed(() => ['dashboard', 'config', 'logs', 'diagnostics', 'system', 'ui-kit'].includes(String(route.name)))

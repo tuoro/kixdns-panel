@@ -39,6 +39,9 @@ PANEL_RELEASE=""
 PANEL_BUILD_COMMIT=""
 KIXDNS_BUILD_COMMIT=""
 KIXDNS_SOURCE_ID=""
+# 完整包自带内核的来源：现在的安装包都是 fork 发布版；只更新面板时沿用原来的记录。
+# Where the full package's kernel came from: current packages carry a fork release; a panel-only update keeps the old record.
+KIXDNS_SOURCE=""
 PREVIOUS_PANEL_LABEL=""
 SERVICE_WAIT_SECONDS=15
 SERVICE_STABLE_SECONDS=4
@@ -726,14 +729,6 @@ require_file() {
   [[ -f "$1" ]] || fail "安装包缺少 $1"
 }
 
-detect_artifact() {
-  case "$(uname -m)" in
-    x86_64 | amd64) printf '%s\n' 'kixdns-enhanced-linux-x86_64' ;;
-    aarch64 | arm64) printf '%s\n' 'kixdns-enhanced-linux-arm64' ;;
-    *) fail "仅支持 Linux x86_64 和 ARM64" ;;
-  esac
-}
-
 is_private_ipv4() {
   local address=$1
   awk -F. '
@@ -1036,13 +1031,25 @@ render_panel_environment() {
   local panel_commit=$4
   local panel_release=$5
   local kixdns_source_id=$6
+  local kixdns_source=$7
   awk -v kixdns_commit="${kixdns_commit}" -v panel_commit="${panel_commit}" \
     -v panel_release="${panel_release}" -v kixdns_source_id="${kixdns_source_id}" \
+    -v kixdns_source="${kixdns_source}" \
     -v config_path="${KIXDNS_CONFIG_PATH}" -v binary_path="${KIXDNS_BINARY_PATH}" \
     -v control_socket="${KIXDNS_CONTROL_SOCKET}" -v helper_socket="${KIXDNS_SERVICE_HELPER_SOCKET}" \
     -v service_unit="${KIXDNS_SERVICE_UNIT}" '
-    /^KIXDNS_UPDATE_WORKFLOW=build-enhanced\.yml$/ {
-      print "KIXDNS_UPDATE_WORKFLOW=build-kixdns.yml"
+    # 内核改从 fork 的发布页更新：按补丁集构建找 Artifact 的这几项和它们的说明不再读取，删掉免得误导手工编辑的人。
+    # Kernels now update from fork releases: the settings that located patchset Artifacts, and their comments, are no
+    # longer read, so drop them to keep hand edits from being misled.
+    /^# GitHub API 元数据请求可在系统页配置 Token；Artifact 下载仍通过 nightly\.link。$/ { next }
+    /^# x86_64 使用 x86_64，ARM64 使用 arm64；安装脚本会自动填写。$/ { next }
+    /^KIXDNS_UPDATE_(REPOSITORY|WORKFLOW|BRANCH|ARTIFACT)=/ { next }
+    /^# 完整安装包复用的 KixDNS Action 提交，由安装脚本填写；不要手工修改。$/ {
+      print "# 完整安装包自带内核的来源和提交，由安装脚本填写；不要手工修改。"
+      next
+    }
+    /^# 完整安装包自带增强 Artifact 的 GitHub ID，由安装脚本填写。$/ {
+      print "# 完整安装包自带内核包在 GitHub 上的编号，由安装脚本填写。"
       next
     }
     /^KIXDNS_PANEL_BIND=127\.0\.0\.1:5738$/ {
@@ -1060,7 +1067,14 @@ render_panel_environment() {
     # The removed management switch: drop the key and its comment from old files so hand edits are not misled.
     /^# true：面板管理增强版二进制；false：/ { next }
     /^KIXDNS_MANAGEMENT_ENABLED=/ { next }
+    /^KIXDNS_INSTALLED_SOURCE=/ {
+      if (kixdns_source != "") print "KIXDNS_INSTALLED_SOURCE=" kixdns_source
+      kixdns_source_found = 1
+      next
+    }
     /^KIXDNS_INSTALLED_COMMIT=/ {
+      if (!kixdns_source_found && kixdns_source != "") print "KIXDNS_INSTALLED_SOURCE=" kixdns_source
+      kixdns_source_found = 1
       print "KIXDNS_INSTALLED_COMMIT=" kixdns_commit
       kixdns_found = 1
       next
@@ -1091,6 +1105,7 @@ render_panel_environment() {
       if (!socket_found) print "KIXDNS_CONTROL_SOCKET=" control_socket
       if (!helper_socket_found) print "KIXDNS_SERVICE_HELPER_SOCKET=" helper_socket
       if (!unit_found) print "KIXDNS_SERVICE_UNIT=" service_unit
+      if (!kixdns_source_found && kixdns_source != "") print "KIXDNS_INSTALLED_SOURCE=" kixdns_source
       if (!kixdns_found) print "KIXDNS_INSTALLED_COMMIT=" kixdns_commit
       if (!source_id_found) print "KIXDNS_INSTALLED_SOURCE_ID=" kixdns_source_id
       if (!panel_found) print "KIXDNS_PANEL_INSTALLED_COMMIT=" panel_commit
@@ -1102,18 +1117,17 @@ render_panel_environment() {
 update_panel_environment() {
   local kixdns_commit=$1
   local kixdns_source_id=$2
+  local kixdns_source=$3
   local temporary
   temporary="$(mktemp /etc/kixdns-panel/.panel.env.XXXXXX)"
   render_panel_environment "${PANEL_ENV}" "${temporary}" "${kixdns_commit}" \
-    "${PANEL_BUILD_COMMIT}" "${PANEL_RELEASE}" "${kixdns_source_id}"
+    "${PANEL_BUILD_COMMIT}" "${PANEL_RELEASE}" "${kixdns_source_id}" "${kixdns_source}"
   chown root:"${KIXDNS_GROUP}" "${temporary}"
   chmod 0640 "${temporary}"
   mv -fT -- "${temporary}" "${PANEL_ENV}"
 }
 
 install_configuration() {
-  local artifact
-  artifact="$(detect_artifact)"
   install -d -o root -g "${KIXDNS_GROUP}" -m 0750 /etc/kixdns-panel
   install -d -o "${PANEL_USER}" -g "${KIXDNS_GROUP}" -m 0750 "$(dirname -- "${KIXDNS_CONFIG_PATH}")"
   if [[ ! -e ${KIXDNS_CONFIG_PATH} ]]; then
@@ -1124,7 +1138,7 @@ install_configuration() {
     chmod 0640 -- "${KIXDNS_CONFIG_PATH}"
   fi
   if [[ ! -e ${PANEL_ENV} ]]; then
-    sed -e "s/^KIXDNS_UPDATE_ARTIFACT=.*/KIXDNS_UPDATE_ARTIFACT=${artifact}/" \
+    sed -e "s/^KIXDNS_INSTALLED_SOURCE=.*/KIXDNS_INSTALLED_SOURCE=${KIXDNS_SOURCE}/" \
       -e "s/^KIXDNS_INSTALLED_COMMIT=.*/KIXDNS_INSTALLED_COMMIT=${KIXDNS_BUILD_COMMIT}/" \
       -e "s/^KIXDNS_PANEL_INSTALLED_COMMIT=.*/KIXDNS_PANEL_INSTALLED_COMMIT=${PANEL_BUILD_COMMIT}/" \
       -e "s/^KIXDNS_INSTALLED_SOURCE_ID=.*/KIXDNS_INSTALLED_SOURCE_ID=${KIXDNS_SOURCE_ID}/" \
@@ -1132,7 +1146,7 @@ install_configuration() {
     chown root:"${KIXDNS_GROUP}" "${PANEL_ENV}"
     chmod 0640 "${PANEL_ENV}"
   fi
-  update_panel_environment "${KIXDNS_BUILD_COMMIT}" "${KIXDNS_SOURCE_ID}"
+  update_panel_environment "${KIXDNS_BUILD_COMMIT}" "${KIXDNS_SOURCE_ID}" "${KIXDNS_SOURCE}"
 }
 
 install_bundled_metadata() {
@@ -1140,9 +1154,11 @@ install_bundled_metadata() {
   local file
   [[ ${INSTALL_KIND} != panel-only ]] || return 0
   install -d -o root -g "${KIXDNS_GROUP}" -m 0750 "${target}"
-  install -o root -g "${KIXDNS_GROUP}" -m 0640 \
-    "${PACKAGE_ROOT}/upstream.lock.json" "${target}/upstream.lock.json"
-  for file in KIXDNS_BUILD_COMMIT KIXDNS_SOURCE_RUN_ID KIXDNS_ARTIFACT_ID \
+  # 旧安装包带的是补丁集构建的身份；换成 fork 发布版后这两份不再对应装上的内核，删掉免得混用。
+  # Older packages carried a patchset build's identity; with a fork release these two no longer describe the installed
+  # kernel, so remove them rather than let them mix.
+  rm -f -- "${target}/upstream.lock.json" "${target}/KIXDNS_SOURCE_RUN_ID"
+  for file in KIXDNS_BUILD_COMMIT KIXDNS_SOURCE.json KIXDNS_ARTIFACT_ID \
     KIXDNS_ARTIFACT_NAME KIXDNS_ARTIFACT_DIGEST KIXDNS_BINARY_SHA256 \
     KIXDNS_CAPABILITIES.json; do
     install -o root -g "${KIXDNS_GROUP}" -m 0640 \
@@ -1351,17 +1367,17 @@ main() {
   require_file "${PACKAGE_ROOT}/scripts/panel-online-update.sh"
   require_file "${PACKAGE_ROOT}/PANEL_BUILD_COMMIT"
   require_file "${PACKAGE_ROOT}/KIXDNS_BUILD_COMMIT"
-  require_file "${PACKAGE_ROOT}/KIXDNS_SOURCE_RUN_ID"
+  require_file "${PACKAGE_ROOT}/KIXDNS_SOURCE.json"
   require_file "${PACKAGE_ROOT}/KIXDNS_ARTIFACT_ID"
   require_file "${PACKAGE_ROOT}/KIXDNS_ARTIFACT_NAME"
   require_file "${PACKAGE_ROOT}/KIXDNS_ARTIFACT_DIGEST"
   require_file "${PACKAGE_ROOT}/KIXDNS_BINARY_SHA256"
   require_file "${PACKAGE_ROOT}/KIXDNS_CAPABILITIES.json"
-  require_file "${PACKAGE_ROOT}/upstream.lock.json"
   require_file "${PACKAGE_ROOT}/SHA256SUMS"
   PANEL_BUILD_COMMIT="$(tr -d '[:space:]' < "${PACKAGE_ROOT}/PANEL_BUILD_COMMIT")"
   KIXDNS_BUILD_COMMIT="$(tr -d '[:space:]' < "${PACKAGE_ROOT}/KIXDNS_BUILD_COMMIT")"
   KIXDNS_SOURCE_ID="$(tr -d '[:space:]' < "${PACKAGE_ROOT}/KIXDNS_ARTIFACT_ID")"
+  KIXDNS_SOURCE=fork
   if [[ -f "${PACKAGE_ROOT}/PANEL_RELEASE" ]]; then
     PANEL_RELEASE="$(tr -d '[:space:]' < "${PACKAGE_ROOT}/PANEL_RELEASE")"
     [[ "${PANEL_RELEASE}" =~ ^[0-9A-Za-z._-]{1,100}$ ]] || fail "PANEL_RELEASE 标签无效"
@@ -1411,6 +1427,7 @@ main() {
   if [[ ${INSTALL_KIND} == panel-only ]]; then
     KIXDNS_BUILD_COMMIT="$(environment_value KIXDNS_INSTALLED_COMMIT || true)"
     KIXDNS_SOURCE_ID="$(environment_value KIXDNS_INSTALLED_SOURCE_ID || true)"
+    KIXDNS_SOURCE="$(environment_value KIXDNS_INSTALLED_SOURCE || true)"
   elif kixdns_replaced; then
     if [[ ${KIXDNS_RESTART} == true ]]; then
       printf '正在停止 %s 以替换 KixDNS，完成后恢复原状态。\n' "${KIXDNS_SERVICE_UNIT}"
@@ -1436,7 +1453,7 @@ main() {
   install_web
   install_bundled_metadata
   if [[ ${INSTALL_KIND} == panel-only ]]; then
-    update_panel_environment "${KIXDNS_BUILD_COMMIT}" "${KIXDNS_SOURCE_ID}"
+    update_panel_environment "${KIXDNS_BUILD_COMMIT}" "${KIXDNS_SOURCE_ID}" "${KIXDNS_SOURCE}"
   else
     install_configuration
   fi

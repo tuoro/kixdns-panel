@@ -8,16 +8,19 @@ use tempfile::Builder;
 use crate::auth::unix_timestamp;
 use crate::config_capabilities::validate_declared_capabilities;
 
+use super::catalog::{release_page_url, upstream_commit_url};
+use super::install::{parse_capabilities, verify_kernel_source};
 use super::validation::{
-    persist, sha256, sync_directory, validate_build_identity, validate_commit, validate_digest,
-    validate_elf, validate_hex_digest, validate_manifest_build_identity, validate_manifest_source,
-    validate_slug, write_executable, write_private_file,
+    kernel_asset_name, parse_kernel_version, persist, sha256, sync_directory,
+    validate_build_identity, validate_commit, validate_digest, validate_elf, validate_hex_digest,
+    validate_manifest_build_identity, validate_manifest_source, validate_slug, write_executable,
+    write_private_file,
 };
 use super::{
-    ArtifactCapabilities, BuildIdentity, InstalledVersion, MANIFEST_SCHEMA_VERSION,
-    MAX_BINARY_BYTES, MAX_BUILD_IDENTITY_BYTES, MAX_CAPABILITIES_BYTES, PANEL_REPOSITORY,
-    SOURCE_MANIFEST_SCHEMA_VERSION, UPSTREAM_REPOSITORY, UpdateError, VersionKey, VersionManifest,
-    VersionSource,
+    BuildIdentity, CONTROL_PROTOCOL_VERSION, InstalledVersion, KernelSource,
+    MANIFEST_SCHEMA_VERSION, MAX_BINARY_BYTES, MAX_BUILD_IDENTITY_BYTES, MAX_CAPABILITIES_BYTES,
+    PANEL_REPOSITORY, SOURCE_MANIFEST_SCHEMA_VERSION, UPSTREAM_REPOSITORY, UpdateError, VersionKey,
+    VersionManifest, VersionSource,
 };
 
 pub(super) fn store_version(
@@ -73,16 +76,43 @@ pub(super) fn store_version(
     Ok(())
 }
 
+/// 完整安装包随带的内核身份。新安装包带的是 fork 发布版（`KIXDNS_SOURCE.json`）；只更新
+/// 过面板的主机还留着旧安装包的 Action 构建身份（`upstream.lock.json`），两种都要认。
+/// The kernel identity a full package brought along. New packages carry a fork release
+/// (`KIXDNS_SOURCE.json`); hosts that only updated the panel still keep an old package's
+/// Action build identity (`upstream.lock.json`), so both are recognised.
 pub(super) fn load_bundled_manifest(
     metadata_path: &Path,
+    repository: &str,
     key: &VersionKey,
     binary: &[u8],
 ) -> Result<VersionManifest, UpdateError> {
-    if key.source != VersionSource::Action {
-        return Err(UpdateError::Verification(
-            "完整安装包只支持 Action 增强构建身份".to_owned(),
-        ));
+    match key.source {
+        VersionSource::Fork => load_bundled_release(metadata_path, repository, key, binary),
+        VersionSource::Action => load_bundled_action(metadata_path, key, binary),
+        VersionSource::Release => Err(UpdateError::Verification(
+            "完整安装包不会带 Release 内核".to_owned(),
+        )),
     }
+}
+
+/// 两种完整包共有的几项：包编号、内核包名和摘要、二进制摘要都要和安装环境、当前二进制一致。
+/// What both kinds of full package share: the package id, the package name and digest
+/// and the binary digest must all match the install environment and the current binary.
+struct BundledPackage {
+    source_id: u64,
+    commit: String,
+    artifact: String,
+    artifact_digest: String,
+    binary_sha256: String,
+    config_capabilities: Vec<String>,
+}
+
+fn read_bundled_package(
+    metadata_path: &Path,
+    key: &VersionKey,
+    binary: &[u8],
+) -> Result<BundledPackage, UpdateError> {
     let source_id = key
         .source_id
         .ok_or_else(|| UpdateError::Verification("完整包缺少内核包编号".to_owned()))?;
@@ -100,7 +130,6 @@ pub(super) fn load_bundled_manifest(
             "完整包里的内核包编号和安装环境不一致".to_owned(),
         ));
     }
-    let build_run_id = read_metadata_u64(metadata_path, "KIXDNS_SOURCE_RUN_ID")?;
     let artifact = read_metadata_text(metadata_path, "KIXDNS_ARTIFACT_NAME", 256)?;
     validate_slug(&artifact, false)
         .map_err(|_| UpdateError::Verification("完整包里的内核包名称无效".to_owned()))?;
@@ -114,6 +143,97 @@ pub(super) fn load_bundled_manifest(
             "当前 KixDNS 二进制与完整包身份不匹配".to_owned(),
         ));
     }
+    let capabilities = read_metadata_file(
+        metadata_path,
+        "KIXDNS_CAPABILITIES.json",
+        MAX_CAPABILITIES_BYTES,
+    )?;
+    let config_capabilities = parse_capabilities(&capabilities).map_err(|error| {
+        UpdateError::Verification(format!("完整包配置能力无效：{}", error.reason()))
+    })?;
+    validate_elf(binary)?;
+    Ok(BundledPackage {
+        source_id,
+        commit: build_commit,
+        artifact,
+        artifact_digest,
+        binary_sha256,
+        config_capabilities,
+    })
+}
+
+fn load_bundled_release(
+    metadata_path: &Path,
+    repository: &str,
+    key: &VersionKey,
+    binary: &[u8],
+) -> Result<VersionManifest, UpdateError> {
+    let package = read_bundled_package(metadata_path, key, binary)?;
+    let source_bytes = read_metadata_file(
+        metadata_path,
+        "KIXDNS_SOURCE.json",
+        MAX_BUILD_IDENTITY_BYTES,
+    )?;
+    let source: KernelSource = serde_json::from_slice(&source_bytes)
+        .map_err(|error| UpdateError::Verification(format!("完整包内核来源无效：{error}")))?;
+    if source.schema_version != 1 {
+        return Err(UpdateError::Verification(
+            "完整包内核来源的格式不受支持".to_owned(),
+        ));
+    }
+    parse_kernel_version(&source.version)?;
+    if let Some(upstream) = source.upstream_commit.as_deref() {
+        validate_commit(upstream)
+            .map_err(|_| UpdateError::Verification("完整包原版提交无效".to_owned()))?;
+    }
+    verify_kernel_source(
+        &source,
+        repository,
+        &source.version,
+        &package.commit,
+        source.upstream_commit.as_deref(),
+    )?;
+    if package.artifact != kernel_asset_name(&source.version) {
+        return Err(UpdateError::Verification(
+            "完整包里的内核包名称和版本对不上".to_owned(),
+        ));
+    }
+    let upstream_commit = source
+        .upstream_commit
+        .as_deref()
+        .map(str::to_ascii_lowercase);
+    Ok(VersionManifest {
+        schema_version: MANIFEST_SCHEMA_VERSION,
+        source: Some(VersionSource::Fork),
+        source_id: Some(package.source_id),
+        commit: package.commit.to_ascii_lowercase(),
+        run_id: None,
+        release_tag: Some(source.version.clone()),
+        created_at: None,
+        source_url: upstream_commit.as_deref().map(upstream_commit_url),
+        build_url: Some(release_page_url(repository, &source.version)),
+        artifact: package.artifact,
+        artifact_digest: Some(package.artifact_digest),
+        upstream_repository: upstream_commit
+            .as_ref()
+            .map(|_| UPSTREAM_REPOSITORY.to_owned()),
+        upstream_commit,
+        patchset: None,
+        dependency_revision: None,
+        control_protocol: Some(CONTROL_PROTOCOL_VERSION),
+        config_capabilities: package.config_capabilities,
+        binary_sha256: package.binary_sha256,
+        installed_at: unix_timestamp(),
+    })
+}
+
+fn load_bundled_action(
+    metadata_path: &Path,
+    key: &VersionKey,
+    binary: &[u8],
+) -> Result<VersionManifest, UpdateError> {
+    let package = read_bundled_package(metadata_path, key, binary)?;
+    let build_run_id = read_metadata_u64(metadata_path, "KIXDNS_SOURCE_RUN_ID")?;
     let identity_bytes = read_metadata_file(
         metadata_path,
         "upstream.lock.json",
@@ -130,26 +250,11 @@ pub(super) fn load_bundled_manifest(
     let official_run_id = identity
         .official_run_id
         .ok_or_else(|| UpdateError::Verification("完整包缺少原版构建编号".to_owned()))?;
-    let capabilities_bytes = read_metadata_file(
-        metadata_path,
-        "KIXDNS_CAPABILITIES.json",
-        MAX_CAPABILITIES_BYTES,
-    )?;
-    let capabilities: ArtifactCapabilities = serde_json::from_slice(&capabilities_bytes)
-        .map_err(|error| UpdateError::Verification(format!("完整包配置能力无效：{error}")))?;
-    if capabilities.schema_version != 1 {
-        return Err(UpdateError::Verification(
-            "完整包配置能力清单版本不受支持".to_owned(),
-        ));
-    }
-    validate_declared_capabilities(&capabilities.config_capabilities)
-        .map_err(UpdateError::Verification)?;
-    validate_elf(binary)?;
     Ok(VersionManifest {
         schema_version: MANIFEST_SCHEMA_VERSION,
         source: Some(VersionSource::Action),
-        source_id: Some(source_id),
-        commit: build_commit,
+        source_id: Some(package.source_id),
+        commit: package.commit,
         run_id: Some(official_run_id),
         release_tag: None,
         created_at: None,
@@ -159,15 +264,15 @@ pub(super) fn load_bundled_manifest(
         build_url: Some(format!(
             "https://github.com/{PANEL_REPOSITORY}/actions/runs/{build_run_id}"
         )),
-        artifact,
-        artifact_digest: Some(artifact_digest),
+        artifact: package.artifact,
+        artifact_digest: Some(package.artifact_digest),
         upstream_repository: Some(identity.repository),
         upstream_commit: Some(identity.commit),
         patchset: Some(identity.patchset),
         dependency_revision: identity.dependency_revision,
         control_protocol: Some(identity.control_protocol),
-        config_capabilities: capabilities.config_capabilities,
-        binary_sha256,
+        config_capabilities: package.config_capabilities,
+        binary_sha256: package.binary_sha256,
         installed_at: unix_timestamp(),
     })
 }
@@ -340,11 +445,7 @@ fn parse_version_directory(name: &str) -> Option<VersionKey> {
         return VersionKey::new(VersionSource::Action, name).ok();
     }
     let (source, identity) = name.split_once('-')?;
-    let source = match source {
-        "action" => VersionSource::Action,
-        "release" => VersionSource::Release,
-        _ => return None,
-    };
+    let source = VersionSource::parse(source)?;
     let Some((source_id, commit)) = identity.split_once('-') else {
         return VersionKey::new(source, identity).ok();
     };
@@ -370,7 +471,9 @@ pub(super) fn locate_version_directory(
             return Ok(trackless);
         }
     }
-    if key.source == VersionSource::Release {
+    // 只有 Action 内核留下过只用提交命名的旧目录。
+    // Only Action kernels left old directories named by commit alone.
+    if key.source != VersionSource::Action {
         return Ok(current);
     }
     let legacy = versions_path.join(&key.commit);

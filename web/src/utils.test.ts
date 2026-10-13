@@ -22,6 +22,7 @@ describe('界面格式化工具', () => {
   })
 
   it('使用上游身份展示 KixDNS 版本', () => {
+    expect(formatKixdnsVersion({ source: 'fork', source_id: 3, run_id: null, release_tag: '2026.10.13.2' })).toBe('2026.10.13.2')
     expect(formatKixdnsVersion({ source: 'release', source_id: 1, run_id: null, release_tag: 'v0.1.1' })).toBe('v0.1.1')
     expect(formatKixdnsVersion({ source: 'action', source_id: 2, run_id: 30235703570, release_tag: null })).toBe('构建 #30235703570')
     expect(formatKixdnsVersion({ source: 'action', source_id: 8695590365, run_id: null, release_tag: null })).toBe('构建产物 #8695590365')
