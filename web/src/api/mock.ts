@@ -715,6 +715,24 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
       configVersionContents.set(versionId, structuredClone(body.content))
       throw new ApiError(error, 422, 'reload_failed')
     }
+    // kixdns:demo-save-pending：KixDNS 在运行，这次保存时却没及时回应，先存成待应用（真面板后台每 5 秒会自己补上；演示里留着，好按「现在应用」）
+    // kixdns:demo-save-pending: KixDNS is running but did not answer in time for this save, so it is stored as pending (a real panel's background
+    // pass applies it within 5 seconds; the demo leaves it, so 现在应用 can be pressed)
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-save-pending') === 'true') {
+      localStorage.removeItem('kixdns:demo-save-pending')
+      config = {
+        ...config,
+        content: body.content,
+        sha256: nextSha,
+        modified_at: createdAt,
+        version_id: versionId,
+        pending: { version_id: versionId, sha256: nextSha, message, actor: 'admin', created_at: createdAt, error: null },
+        runtime: { ...config.runtime, status: 'pending', apply_state: 'pending', pending_error: null },
+      }
+      versions.versions.unshift({ id: versionId, sha256: nextSha, message, actor: 'admin', created_at: createdAt, apply_state: 'pending', apply_error: null })
+      configVersionContents.set(versionId, structuredClone(body.content))
+      return { version_id: versionId, sha256: nextSha, apply_state: 'pending' } as ConfigApplyResult as T
+    }
     if (emptyFirstInstall) {
       config = {
         ...config,
@@ -787,6 +805,39 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
       throw new ApiError('连不上面板：网络断了，或者面板正在重启。稍后再试。', 0, 'network_unreachable')
     }
     return { version_id: versionId, sha256: config.sha256, apply_state: 'applied', active_config: activeConfig } as ConfigApplyResult as T
+  }
+  // 让待应用的版本原地生效：不新建版本，编号和备注都不变；已经生效了照实回，待应用的换了就是冲突（和真面板一样）
+  // Put the pending version into effect in place: no new version, its number and note stay; already in effect answers so, and a changed pending
+  // version is a conflict (as on the real panel)
+  const applyMatch = pathname.match(/^\/api\/v1\/config\/versions\/(\d+)\/apply$/)
+  if (applyMatch && method === 'POST') {
+    const id = Number(applyMatch[1])
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-save-slow') === 'true') await new Promise((resolve) => setTimeout(resolve, 1500))
+    if (!config.pending && config.version_id === id) return { version_id: id, sha256: config.sha256, apply_state: 'applied', active_config: activeConfig } as ConfigApplyResult as T
+    if (config.pending?.version_id !== id || config.pending.error) throw new ApiError('待应用的版本已经换了，先重新读取', 409, 'config_conflict')
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-apply-failed') === 'true') {
+      localStorage.removeItem('kixdns:demo-apply-failed')
+      const error = 'KixDNS 没有接受这份配置：upstream "fast" did not answer the health check，仍在用之前的配置'
+      config = { ...config, pending: { ...config.pending, error }, runtime: { ...config.runtime, status: 'failed', apply_state: 'failed', pending_error: error } }
+      versions.versions = versions.versions.map((v) => (v.id === id ? { ...v, apply_state: 'failed', apply_error: error } : v))
+      throw new ApiError(error, 422, 'reload_failed')
+    }
+    config = {
+      ...config,
+      pending: null,
+      runtime: { ...config.runtime, status: 'active', active_sha256: config.sha256, generation: activeConfig.generation + 1, apply_state: 'active', pending_error: null },
+    }
+    activeConfig.sha256 = config.sha256
+    activeConfig.generation += 1
+    activeConfig.reload_sequence += 1
+    versions.versions = versions.versions.map((v) => (v.id === id ? { ...v, apply_state: 'applied' } : v.apply_state === 'applied' ? { ...v, apply_state: 'superseded' } : v))
+    // kixdns:demo-put-answer-lost 对这里也管用：生效了，回应却没回来 / kixdns:demo-put-answer-lost applies here too: in effect, but the answer never arrives
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-put-answer-lost') === 'true') {
+      localStorage.removeItem('kixdns:demo-put-answer-lost')
+      window.dispatchEvent(new Event(PANEL_UNREACHABLE_EVENT))
+      throw new ApiError('连不上面板：网络断了，或者面板正在重启。稍后再试。', 0, 'network_unreachable')
+    }
+    return { version_id: id, sha256: config.sha256, apply_state: 'applied', active_config: activeConfig } as ConfigApplyResult as T
   }
   const restoreMatch = pathname.match(/^\/api\/v1\/config\/versions\/(\d+)\/restore$/)
   if (restoreMatch && method === 'POST') {

@@ -680,6 +680,60 @@ test('重试应用成功：说出两个版本号，备注带到新版本', async
   await expect(page.locator('.hist__row').first()).toContainText('把视频域名交给 CDN 组')
 })
 
+// 存成待应用的版本，按「现在应用」：页头说的是 #N，生效的就是 #N（以前另存一个内容相同的 #N+1），备注留在它上面
+// Save a pending version and press 现在应用: the header said #N and #N is what takes effect (it used to store an identical #N+1), with its note
+async function savePending(page: Page, domain: string, note: string): Promise<number> {
+  await page.goto('/config')
+  await addRule(page, domain)
+  const bar = page.locator('.cfg__savebar')
+  const field = bar.getByLabel('版本备注')
+  if (!(await field.isVisible())) await bar.locator('.savebar__note-toggle').click()
+  await field.fill(note)
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-save-pending', 'true'))
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(page.locator('main .ui-ph')).toContainText('待应用')
+  return Number((await page.locator('main .ui-ph').innerText()).match(/版本 #(\d+) 待应用/)![1])
+}
+const reconnect = (page: Page) => page.evaluate(async () => {
+  localStorage.removeItem('kixdns:demo-panel-down')
+  const url = performance.getEntriesByType('resource').map((e) => e.name).filter((n) => n.includes('/src/composables/useConnection.ts')).pop()!
+  const connection = await import(url)
+  void connection.useConnection().retry()
+})
+
+test('现在应用：待应用的版本原地生效，编号和备注不变，不多出版本', async ({ page }) => {
+  const pending = await savePending(page, 'in-place.example', '把视频域名交给 CDN 组')
+  await page.getByRole('button', { name: '现在应用', exact: true }).click()
+  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain(`版本 #${pending} 已生效`)
+  await page.getByRole('button', { name: '更多配置操作' }).click()
+  await page.getByRole('menuitem', { name: '历史版本' }).click()
+  const top = page.locator('.hist__row').first()
+  await expect(top).toContainText(`#${pending}`)
+  await expect(top).toContainText('把视频域名交给 CDN 组')
+  await expect(page.locator('.hist__row', { hasText: `#${pending + 1}` })).toHaveCount(0)
+})
+
+test('现在应用的回应丢了：连上以后按待应用的还在不在核对，说出结果', async ({ page }) => {
+  const pending = await savePending(page, 'in-place-lost.example', '回应丢了')
+  // 生效了，回应却没回来 / In effect, but the answer never arrives
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-put-answer-lost', 'true'))
+  await page.getByRole('button', { name: '现在应用', exact: true }).click()
+  await expect(page.locator('.conn__inner')).toBeVisible()
+  await reconnect(page)
+  await expect.poll(() => toastTexts(page), { timeout: 8000 }).toContain(`刚才那次应用：版本 #${pending} 已生效`)
+})
+
+test('现在应用没送到面板：连上以后说还没有应用，不说成功', async ({ page }) => {
+  const pending = await savePending(page, 'in-place-unsent.example', '没送到')
+  // 面板这时已经连不上了，页面还不知道：按下去的请求根本没到 / The panel is already unreachable and the page does not know yet: the request never arrives
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-panel-down', 'true'))
+  await page.getByRole('button', { name: '现在应用', exact: true }).click()
+  await expect(page.locator('.conn__inner')).toBeVisible()
+  await reconnect(page)
+  await expect.poll(() => toastTexts(page), { timeout: 8000 }).toContain(`版本 #${pending} 还没有应用，可以再点「现在应用」`)
+  await expect(page.locator('main .ui-ph')).toContainText(`版本 #${pending} 待应用`)
+})
+
 // 单独「校验」还没回来时按的保存，从按下起就是一次保存：按钮写「保存中」，重新读取停用；校验没过就停在那句结论上，不接着存
 // Save pressed while a lone 校验 is out is a save from the press: the button reads 保存中 and 重新读取 is disabled; a failed check stops there instead of saving
 test('校验途中按的保存：算作保存，校验没过就不存', async ({ page }) => {

@@ -378,6 +378,7 @@ fn api_router(state: AppState) -> Router {
             get(config_version).delete(delete_config_version),
         )
         .route("/config/versions/{id}/restore", post(restore_config))
+        .route("/config/versions/{id}/apply", post(apply_pending_config))
         .route("/cache/flush", post(flush_cache))
         .merge(diagnostics::routes())
         .merge(updates::routes())
@@ -851,6 +852,83 @@ async fn restore_config(
         .await
         .map_err(AppError::Internal)?;
     Ok(Json(result))
+}
+
+/// 让待应用的版本原地生效：和后台每 5 秒、启动 `KixDNS` 时做的一样，不新建版本，编号和备注都不变。
+/// 后台已经让它生效了就照实回「已生效」，不再重载一次；待应用的已经换成别的版本时回冲突。
+///
+/// Put the pending version into effect in place, as the background reconciler (every 5 seconds and on
+/// start) does: no new version, so its number and note stay. When the background already applied it,
+/// the answer says so without reloading again; when the pending version is no longer this one, it is a
+/// conflict.
+async fn apply_pending_config(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> AppResult<Json<ConfigApplyResponse>> {
+    let session = authenticate(&state.database, &jar).await?;
+    verify_csrf(&session, &jar, &headers)?;
+    let _apply_guard = state.config_apply_lock.lock().await;
+    let pending = state.config.pending().await.map_err(AppError::Internal)?;
+    let result = match pending {
+        Some(summary) if summary.id == id && summary.apply_state == CONFIG_APPLY_PENDING => {
+            let content = state
+                .config
+                .version_content(id)
+                .await
+                .map_err(map_config_error)?;
+            let saved = SaveResult {
+                version_id: summary.id,
+                sha256: summary.sha256,
+            };
+            apply_pending_candidate(&state, &content, saved).await?
+        }
+        None => already_applied(&state, id).await?,
+        Some(_) => {
+            return Err(AppError::Conflict(
+                "config_conflict",
+                "待应用的版本已经换了，先重新读取".to_owned(),
+            ));
+        }
+    };
+    state
+        .database
+        .audit(
+            Some(session.username),
+            "config.apply".to_owned(),
+            format!("版本 #{id}"),
+            unix_timestamp(),
+        )
+        .await
+        .map_err(AppError::Internal)?;
+    Ok(Json(result))
+}
+
+/// 没有待应用的版本了：正在用的就是这一版（后台先一步让它生效了）才算已生效，否则是别处换过了。
+/// No pending version left: it counts as applied only if the file in use is this version (the background
+/// got there first); otherwise the config was changed elsewhere.
+async fn already_applied(state: &AppState, id: i64) -> AppResult<ConfigApplyResponse> {
+    let current = state.config.current().await.map_err(map_config_error)?;
+    if current.version_id != Some(id) {
+        return Err(AppError::Conflict(
+            "config_conflict",
+            "待应用的版本已经换了，先重新读取".to_owned(),
+        ));
+    }
+    let active = state
+        .control
+        .active_config()
+        .await
+        .map_err(map_control_error)?;
+    Ok(ConfigApplyResponse {
+        version_id: id,
+        sha256: current.sha256,
+        apply_state: CONFIG_APPLY_APPLIED,
+        apply_error: None,
+        active_config: Some(active),
+        validation: None,
+    })
 }
 
 async fn delete_config_version(
