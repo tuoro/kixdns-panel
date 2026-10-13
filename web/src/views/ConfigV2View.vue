@@ -457,17 +457,6 @@ onMounted(() => {
 const beforeUnload = (e: BeforeUnloadEvent) => { if (unsaved.value) { e.preventDefault(); e.returnValue = '' } }
 // 带「撤销」的提示只对这一页的草稿有用：离开时一起收起（会话过期跳到登录页时也不会留着） / Undo toasts only make sense for this page's draft: they go when it unmounts (including a jump to the login page on session expiry)
 onBeforeUnmount(() => { setViewing(false); window.removeEventListener('beforeunload', beforeUnload); releaseGuard(); dismissUndoable(); ui.mode = 'form'; jsonEdited.value = false })
-// 有待应用的版本、KixDNS 又在运行：面板后台每 5 秒会自己让它生效（或者发现它不行）。页面跟着每 5 秒看一眼运行状态，直到它不再是待应用的，
-// 免得页头一直挂着过时的「待应用 · 现在应用」，失败了也藏在「待应用」后面
-// A pending version with KixDNS running again: the panel's background pass puts it into effect (or finds it refused) every 5 seconds. The page looks at the
-// runtime every 5 seconds too until it is no longer pending, so the header does not keep a stale 「待应用 · 现在应用」 and a failure does not hide behind 待应用
-const watchingPending = computed(() => ready.value && hasPending.value && !deferSave.value && !busy.value && !panelDown.value && !rereading.value)
-let pendingTimer: number | undefined
-watch(watchingPending, (on) => {
-  window.clearInterval(pendingTimer)
-  pendingTimer = on ? window.setInterval(() => { void refreshRuntime().catch(() => undefined) }, 5000) : undefined
-}, { immediate: true })
-onBeforeUnmount(() => window.clearInterval(pendingTimer))
 onBeforeRouteLeave(async () => takeAgreement() || askLeave())
 // 换分区、或者从整页编辑按返回：规则编辑里没点「完成」的修改先问一句；同意了就关掉编辑
 // Switching section, or pressing back out of the full-page editor: first ask about rule edits not yet 完成; once agreed the editor closes
@@ -492,6 +481,22 @@ watch(section, () => { editor.value = null; void nextTick(() => window.scrollTo(
 const { starting, start } = useServiceStart()
 // 连不上面板时页头写「状态未知」，「启动」也收起：按了也只会失败 / While the panel is unreachable the header reads 状态未知 and 启动 is withdrawn: pressing it could only fail
 const { down: panelDown } = useConnection()
+// 放在 panelDown 声明之后：watch 立刻就跑，放在前面会在声明前读到它（回到配置页时整页空白）。
+// 有待应用的版本、KixDNS 又在运行：面板后台每 5 秒会自己让它生效（或者发现它不行）。页面跟着每 5 秒看一眼运行状态，直到它不再是待应用的，
+// 免得页头一直挂着过时的「待应用 · 现在应用」，失败了也藏在「待应用」后面
+// Declared after panelDown: the watcher runs at once and would read it before its declaration (a blank page on return).
+// A pending version with KixDNS running again: the panel's background pass puts it into effect (or finds it refused) every 5 seconds. The page looks at the
+// runtime every 5 seconds too until it is no longer pending, so the header does not keep a stale 「待应用 · 现在应用」 and a failure does not hide behind 待应用
+const watchingPending = computed(() => ready.value && hasPending.value && !deferSave.value && !busy.value && !panelDown.value && !rereading.value)
+let pendingTimer: number | undefined
+watch(watchingPending, (on) => {
+  window.clearInterval(pendingTimer)
+  // 没有修改就整份静默重读（别处换了文件也跟着换，不把新运行状态贴到旧文件上）；有修改只刷新运行状态，文件换了会马上进冲突
+  // With no edits, a whole quiet re-read (a file changed elsewhere is followed, rather than pinning the new runtime onto the old file); with edits, only the
+  // runtime, and a changed file enters the conflict state at once
+  pendingTimer = on ? window.setInterval(() => { void (unsaved.value ? refreshRuntime() : load({ quiet: true })).catch(() => undefined) }, 5000) : undefined
+}, { immediate: true })
+onBeforeUnmount(() => window.clearInterval(pendingTimer))
 async function startKixdns(): Promise<void> {
   if (!(await start())) return
   // 草稿有修改时只刷新运行状态，不重读文件，免得把草稿换掉 / With edits in the draft only the runtime state is refreshed, so the draft is not replaced

@@ -692,6 +692,8 @@ async function savePending(page: Page, domain: string, note: string): Promise<nu
   await page.evaluate(() => localStorage.setItem('kixdns:demo-save-pending', 'true'))
   await bar.getByRole('button', { name: '保存并应用' }).click()
   await expect(page.locator('main .ui-ph')).toContainText('待应用')
+  // 等这次保存连同它的重读都做完：之后设的演示开关才不会被这次重读用掉 / Wait for the save and its re-read to finish, so a demo flag set afterwards is not used up by that re-read
+  await expect(bar).toContainText('已存成待应用版本')
   return Number((await page.locator('main .ui-ph').innerText()).match(/版本 #(\d+) 待应用/)![1])
 }
 const reconnect = (page: Page) => page.evaluate(async () => {
@@ -732,6 +734,30 @@ test('现在应用没送到面板：连上以后说还没有应用，不说成�
   await reconnect(page)
   await expect.poll(() => toastTexts(page), { timeout: 8000 }).toContain(`版本 #${pending} 还没有应用，可以再点「现在应用」`)
   await expect(page.locator('main .ui-ph')).toContainText(`版本 #${pending} 待应用`)
+})
+
+// 有待应用的版本时离开再回到配置页：页面照常出来（以前每 5 秒看一眼的那段在声明前读了连接状态，整页空白）
+// Leaving and returning to the config page with a version pending: the page renders (the 5-second watcher used to read the connection state before its
+// declaration, leaving a blank page)
+test('有待应用的版本时回到配置页：页面照常出来', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', (error) => errors.push(String(error)))
+  await savePending(page, 'return-pending.example', '回来看看')
+  await page.getByRole('link', { name: '日志', exact: true }).first().click()
+  await page.getByRole('link', { name: '规则', exact: true }).first().click()
+  await expect(page.locator('[data-rule]', { hasText: 'return-pending.example' })).toBeVisible()
+  await expect(page.locator('main .ui-ph')).toContainText('待应用')
+  expect(errors).toEqual([])
+})
+
+// 等着待应用的版本时别处换了文件：页面整份跟着换（以前只把新运行状态贴到旧文件上，页头说「运行中」，列表还是旧的）
+// The file changes elsewhere while a version is pending: the page follows the whole file (it used to pin the new runtime onto the old file, so the header
+// said 运行中 over the old list)
+test('等着待应用的版本时别处换了文件：页面整份跟着换', async ({ page }) => {
+  await savePending(page, 'replaced-elsewhere.example', '等着生效')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-changed-elsewhere', 'true'))
+  await expect(page.locator('[data-rule]', { hasText: 'replaced-elsewhere.example' })).toHaveCount(0, { timeout: 10_000 })
+  await expect(page.locator('main .ui-ph')).not.toContainText('待应用')
 })
 
 // 按「现在应用」时待应用的已经被别处换掉：没什么要保存的，直接读入新的并说一句，不留一条没有按钮、读完也不走的红色提示
