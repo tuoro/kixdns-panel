@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { CircleAlert, CircleCheck, Info, X } from '@lucide/vue'
-import { computed } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useToast } from '../composables/useToast'
 
 const toast = useToast()
@@ -18,16 +18,57 @@ function commandUnits(command: string): string[] {
   }
   return units
 }
+// 打开着的模态对话框（抽屉、确认框）在顶层，盖住页面上的一切，外面的东西也点不到：有它时提示放进最上面那个里，才看得见、点得到；没有时留在原处
+// An open modal dialog (a drawer, a confirm) sits in the top layer above everything and makes the rest inert: while one is open the toasts go inside the
+// topmost one, so they show and take clicks; otherwise they stay where they are
+const modals = ref<HTMLDialogElement[]>([])
+const topModal = computed(() => modals.value.at(-1) ?? null)
+function trackModals(): void {
+  const open = [...document.querySelectorAll('dialog')].filter((dialog) => dialog.open && dialog.matches(':modal'))
+  // 先开的在前、后开的在后：叠着的时候放进最后开的那个 / Earlier ones first, later ones last: when stacked, the last one opened gets them
+  modals.value = [...modals.value.filter((dialog) => open.includes(dialog)), ...open.filter((dialog) => !modals.value.includes(dialog))]
+}
+// 框里贴着底边的那一块（抽屉的按钮栏、手机上从底边升起的确认框）：提示放到它上面，不盖住「完成」「取消」和要回答的问题
+// The part of the dialog anchored to the bottom edge (a drawer's button bar, a phone confirm rising from the bottom): the toasts sit above it, never over
+// 完成 / 取消 or the question being asked
+const lift = ref(0)
+function measureLift(): void {
+  const modal = topModal.value
+  if (!modal) { lift.value = 0; return }
+  const floor = window.innerHeight
+  const tops = [...modal.querySelectorAll<HTMLElement>('.pdrawer__foot, .pdialog__foot, .confirm__dialog')]
+    .map((el) => el.getBoundingClientRect())
+    .filter((rect) => rect.height > 0 && rect.bottom >= floor - 1)
+    .map((rect) => rect.top)
+  lift.value = tops.length ? Math.max(0, Math.round(floor - Math.min(...tops))) : 0
+}
+const remeasure = () => { void nextTick(measureLift) }
+let observer: MutationObserver | null = null
+onMounted(() => {
+  trackModals()
+  observer = new MutationObserver(trackModals)
+  observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['open'] })
+  window.addEventListener('resize', remeasure)
+  // 底边升起的框动画做完才在最终位置 / A sheet rising from the bottom is in place only once its animation ends
+  document.addEventListener('animationend', remeasure, true)
+})
+onBeforeUnmount(() => {
+  observer?.disconnect()
+  window.removeEventListener('resize', remeasure)
+  document.removeEventListener('animationend', remeasure, true)
+})
 const items = computed(() => toast.messages.value.map((item) => {
   const match = item.message.match(COMMAND)
   return match?.index === undefined
     ? { ...item, text: item.message, command: [] as string[] }
     : { ...item, text: item.message.slice(0, match.index), command: commandUnits(match[1]!) }
 }))
+watch([topModal, () => toast.messages.value.length], remeasure)
 </script>
 
 <template>
-  <div class="toast-stack" aria-live="polite">
+  <Teleport :to="topModal ?? 'body'" :disabled="!topModal">
+  <div class="toast-stack" aria-live="polite" :style="lift ? { bottom: `calc(${lift}px + var(--s-4))` } : undefined">
     <div v-for="item in items" :key="item.id" class="toast" :class="`toast--${item.kind}`">
       <CircleCheck v-if="item.kind === 'success'" :size="18" />
       <CircleAlert v-else-if="item.kind === 'error'" :size="18" />
@@ -41,4 +82,5 @@ const items = computed(() => toast.messages.value.map((item) => {
       </button>
     </div>
   </div>
+  </Teleport>
 </template>

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { jsonProblemText, jsonSyntaxProblem } from '../json-problem'
 import { Braces, FileUp, FlaskConical, ListFilter, Plus, Search, X } from '@lucide/vue'
-import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, reactive, ref, toRefs } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, reactive, ref, toRefs, watch } from 'vue'
 import UiHelp from '../components/ui/UiHelp.vue'
 import UiMenu from '../components/ui/UiMenu.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
@@ -12,7 +12,7 @@ import { isCidr, isDomain, newRule, outcomeSentence, rawMatchersText, type Condi
 import { useNarrowDesktop, usePhone } from './phone'
 import RuleList from './RuleList.vue'
 import Tester from './Tester.vue'
-import { model, newId, ruleGroupUsers, trackDialogEdits, ui } from './store'
+import { draftGeneration, model, newId, ruleGroupUsers, trackDialogEdits, ui } from './store'
 import { useGeositeCatalog } from './useGeosite'
 import { isTyping } from '../utils'
 // JSON 编辑器（CodeMirror）只在用到时才加载：配置页的首包不带它 / The JSON editor (CodeMirror) loads on first use, so the config page's first chunk leaves it out
@@ -181,7 +181,11 @@ function saveGroup(): void {
   if (editing.isNew) {
     const id = `g${Date.now().toString(36)}`
     model.ruleGroups.push({ id, name: editing.name.trim(), note: editing.note.trim(), listener: editing.listener.trim(), rules: [], rest: model.rest.type === 'upstream' ? { ...model.rest } : { type: 'upstream', group: model.groups[0]?.id ?? '' } })
-  } else Object.assign(model.ruleGroups.find((x) => x.id === editing.id)!, { name: editing.name.trim(), note: editing.note.trim(), listener: editing.listener.trim() })
+  } else {
+    // 按 id 找回这个组再写；草稿换过、组已经不在了就只关上（以前在这里报错，对话框关不掉） / Find the group by id before writing; if the draft was replaced and the group is gone, just close (this used to throw and leave the dialog stuck)
+    const group = model.ruleGroups.find((x) => x.id === editing.id)
+    if (group) Object.assign(group, { name: editing.name.trim(), note: editing.note.trim(), listener: editing.listener.trim() })
+  }
   dialog.value?.close()
 }
 function groupAction(group: RuleGroup, value: string): void {
@@ -217,6 +221,21 @@ async function editEntries(): Promise<void> {
   await nextTick()
   entriesDialog.value?.showModal()
 }
+// 草稿被整份换掉（别处改的读了进来）：开着又没改过的规则组、高级入口换成读进来的样子；组没了就关上。以前点保存会把打开时的副本写回去
+// 改过的碰不上这种读入：有修改时页面算没保存，静默重读和连上后都只刷新运行状态
+// The draft was replaced wholesale (a change made elsewhere was read in): an open, unedited rule-group or 高级入口 dialog takes what was read, and the group
+// dialog closes if the group is gone. Saving used to write back the copy taken at opening. An edited one never meets such a read: its edits make the page
+// unsaved, and the quiet re-reads and reconnects then refresh the runtime only
+watch(draftGeneration, () => {
+  if (editingBase.value !== null && !editing.isNew && JSON.stringify(editing) === editingBase.value) {
+    const group = model.ruleGroups.find((x) => x.id === editing.id)
+    if (group) { Object.assign(editing, { name: group.name, note: group.note, listener: group.listener }); editingBase.value = JSON.stringify(editing) } else dialog.value?.close()
+  }
+  if (entriesBase.value !== null && entriesText.value === entriesBase.value) {
+    entriesText.value = JSON.stringify(model.entries ?? [], null, 2)
+    entriesBase.value = entriesText.value
+  }
+})
 async function leaveEntries(): Promise<void> {
   if (entriesText.value !== entriesBase.value && !(await askDiscard('高级入口'))) return
   entriesDialog.value?.close()

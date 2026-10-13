@@ -14,7 +14,7 @@ import { readConfig } from '../config-model/document'
 import { actorName, errorMessage, formatVersionTime } from '../utils'
 import RuleText from './RuleText.vue'
 import { appliedModel, unsaved } from './store'
-import { bulkDeleting, currentVersionId, deferSave, deleteVersion, saveInFlight, deleteVersions, deleting, friendlyRuntimeError, pendingWhen, restoreVersion, restoring, versionDetail, versions } from './useConfigDocument'
+import { bulkDeleting, currentVersionId, deferSave, deleteVersion, saveInFlight, deleteVersions, deleting, failureCause, friendlyRuntimeError, pendingWhen, restoreVersion, restoring, versionDetail, versions } from './useConfigDocument'
 // 关上后焦点回到打开它的控件 / Focus returns to the opener on close
 useReturnFocus()
 
@@ -85,7 +85,7 @@ async function restore(v: ConfigVersion): Promise<void> {
   const session = useSession()
   try {
     const r = await restoreVersion(v.id)
-    if (session.authenticated.value) toast.success(r.state === 'pending' ? `版本 #${v.id} 的内容存成了待应用版本\u00a0#${r.versionId}，${pendingWhen()}自\u2060动\u2060应\u2060用` : `已恢复为版本 #${v.id} 的内容，当前版本\u00a0#${r.versionId}`)
+    if (session.authenticated.value) toast.success(r.state === 'pending' ? `版本\u00a0#${v.id}\u00a0的内容\u200b存成了待应用版本\u00a0#${r.versionId}，${pendingWhen()}自\u2060动\u2060应\u2060用` : `已恢复为版本 #${v.id} 的内容，当前版本\u00a0#${r.versionId}`)
   } catch (error) {
     if (session.authenticated.value) toast.error(`没有恢复版本 #${v.id}：${friendlyRuntimeError(error)}`)
   }
@@ -156,7 +156,7 @@ function onRuleLink(id: number): void { dialog.value?.close(); emit('rule', id) 
             <span v-else-if="v.apply_state === 'pending'" class="ui-tag ui-tag--warn">待应用</span>
           </span>
           <span class="hist__menu"><UiMenu v-if="!isCurrent(v) && !selecting" :items="menu()" :label="`版本 #${v.id} 的操作`" :title="`#${v.id} · ${v.message || '未填写备注'}`" anchor=".hist__row" @select="act(v, $event)" /><!-- 当前版本也占着这一格（不能操作），各行的标签落在同一条右边 / The current version keeps the slot too (disabled), so every row's tag ends on the same right edge --><button v-else-if="isCurrent(v) && !selecting" class="ui-icon-btn ui-icon-btn--sm" type="button" disabled aria-label="当前版本没有可做的操作"><Ellipsis :size="16" aria-hidden="true" /></button></span>
-          <p v-if="v.apply_error" class="hist__err"><RuleText :text="v.apply_error" @rule="onRuleLink" /></p>
+          <p v-if="v.apply_error" class="hist__err"><RuleText :text="failureCause(v.apply_error)" @rule="onRuleLink" /></p>
         </li>
       </ol>
       <p v-else class="hist__empty">还没有保存过版本</p>

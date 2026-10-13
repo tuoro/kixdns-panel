@@ -14,14 +14,15 @@ import { expect, type Page } from '@playwright/test'
 export async function acceptConfirm(page: Page): Promise<void> {
   const dialog = page.getByRole('alertdialog')
   await expect(dialog).toBeVisible()
-  // 主按钮是最后一个——取消在左，确认在右。
-  await dialog.getByRole('button').last().click()
+  // 主按钮是按钮区的最后一个——取消在左，确认在右。只在按钮区里找：框开着时提示条也放在框里，它的关闭钮排在最后
+  // The primary is the last button of the action row (cancel left, confirm right). Look only there: while the dialog is open the toasts sit inside it, and their close button comes last
+  await dialog.locator('.confirm__actions').getByRole('button').last().click()
   await expect(dialog).toHaveCount(0)
 }
 
 export async function cancelConfirm(page: Page): Promise<void> {
   const dialog = page.getByRole('alertdialog')
   await expect(dialog).toBeVisible()
-  await dialog.getByRole('button').first().click()
+  await dialog.locator('.confirm__actions').getByRole('button').first().click()
   await expect(dialog).toHaveCount(0)
 }

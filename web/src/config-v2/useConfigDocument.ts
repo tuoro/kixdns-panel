@@ -30,8 +30,9 @@ export const runtimeCapabilities = ref<string[]>([])
 export const applyError = ref('')
 // 「KixDNS 已停止」那条提示在它又跑起来以后就过时了 / The 「KixDNS 已停止」 notice is stale once it runs again
 watch(runtimeStopped, (now, was) => { if (was && !now && applyError.value.startsWith('KixDNS 已停止')) applyError.value = '' })
-// 待应用的版本后来生效了（后台每 5 秒那次、或者别的页面）：「…没有应用」那条提示就过时了 / The pending version took effect later (the background pass, another page): the 「…没有应用」 notice is stale
-watch(() => doc.value?.pending?.version_id ?? null, (now, was) => { if (was !== null && now === null && !hasApplyFailure.value) { applyError.value = ''; applyFailedDown = false } })
+// 待应用的版本后来生效了（后台每 5 秒那次、或者别的页面），或者换成了别处存的另一个：「版本 #N …没有应用」那条提示就过时了
+// The pending version took effect later (the background pass, another page), or another writer's version replaced it: the 「版本 #N …没有应用」 notice is stale
+watch(() => doc.value?.pending?.version_id ?? null, (now, was) => { if (was !== null && now !== was && !hasApplyFailure.value) { applyError.value = ''; applyFailedDown = false } })
 export const validation = ref<ValidationResult | null>(null)
 export const canCname = computed(() => runtimeCapabilities.value.includes('config_static_cname_response_v1'))
 
@@ -294,13 +295,17 @@ export async function refreshRuntime(): Promise<void> {
   // 只刷新运行状态的时候（有修改时连上、启动 KixDNS）也看一眼文件：别处换过了就和静默重读一样马上说
   // A runtime-only refresh (a reconnect or 启动 KixDNS with edits) still looks at the file: changed elsewhere, it says so at once, as the quiet re-read does
   // 读的时候这一页写过（保存、应用、恢复）或者正在写：读到的是写之前的样子，只当没读 / This page wrote (or is writing) while it read: what came back predates the write, so it is dropped
-  if (writeCount !== writesAtStart || busy.value || restoring.value !== null) return
+  if (writeCount !== writesAtStart || busy.value || restoring.value !== null || deleting.value !== null || bulkDeleting.value) return
   const moved = doc.value !== null && nextDoc.sha256 !== doc.value.sha256
   // 待应用的版本生效了、失败了或换了：历史里的标签跟着变（只刷新运行状态时以前不重读历史，失败的版本还挂着「待应用」）
   // The pending version applied, failed or changed: the history tags follow (a runtime-only refresh used not to re-read the history, leaving 待应用 on a failed version)
   const pendingMoved = doc.value !== null && (doc.value.pending?.version_id !== nextDoc.pending?.version_id || Boolean(doc.value.pending?.error) !== Boolean(nextDoc.pending?.error))
   if (doc.value) doc.value = { ...doc.value, runtime: nextDoc.runtime, pending: nextDoc.pending }
-  if (pendingMoved) versions.value = (await apiRequest<ConfigVersions>('/api/v1/config/versions').catch(() => ({ versions: versions.value }))).versions
+  if (pendingMoved) {
+    const list = (await apiRequest<ConfigVersions>('/api/v1/config/versions').catch(() => ({ versions: versions.value }))).versions
+    // 读列表的时候这一页写过：写的那一方已经记下了新列表，不拿旧的盖掉 / This page wrote while the list was read: the write already recorded the newer list, so the old one does not overwrite it
+    if (writeCount === writesAtStart) versions.value = list
+  }
   if (moved && unsaved.value && !busy.value && !conflict.value) enterStaleBase()
   applyHits(overview?.metrics?.rules ?? [])
   applyUpstreamStats(overview?.metrics?.upstreams ?? [], overview?.metrics?.recent_window_seconds ?? null)
@@ -347,6 +352,7 @@ export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: str
     // 读的时候文件已经被这边的一次写挪过了：读到的是旧文件，只当没读（写的那一方会自己再读） / The file was moved by a write from this page while reading: what came back is stale, so it is dropped (the writer reads again itself)
     // 原地生效不挪散列：再按写的次数看一眼 / An in-place apply does not move the hash, so the write count is checked too
     if (options.sent === undefined && doc.value && ((shaAtStart !== undefined && doc.value.sha256 !== shaAtStart) || writeCount !== writesAtStart)) return
+    docWrites = writesAtStart
     applyRuntime(nextDoc, overview, service)
     const previous = doc.value
     const previousSha = previous?.sha256
@@ -446,6 +452,10 @@ async function runCheck(): Promise<ValidationResult | null> {
 // as the save bar (it used to name the previous one from the stale list)
 // 这一页写过几次（保存、应用、恢复、删除版本）：写之前发出的读回来时认得出自己过时了 / How many writes this page made (save, apply, restore, delete): a read sent before a write knows it is stale when it lands
 let writeCount = 0
+// 页面上的文件是这一页写到第几次以后读的：写进去以后那次重读失败了，它就落在后面，这时文件「变了」可能是自己写的，不说「别处改过了」
+// After how many of this page's writes the file on the page was read: when the re-read after a write failed it lags behind, and a file that 「moved」 may be
+// this page's own write, so 别处改过了 is not said
+let docWrites = 0
 function recordWrite(result: ConfigApplyResult, message: string): void {
   writeCount += 1
   const applied = applyResultState(result) === 'applied'
@@ -632,17 +642,21 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     // An in-place apply the server only kept (KixDNS unreachable or stopped): it was not applied, and is said so rather than 已存成 (it was pending already)
     // 「重试应用」被服务端先存着（KixDNS 这会儿没回应）：提示条一下子没了，说一句它存成了哪个待应用版本
     // 重试应用 kept by the server (KixDNS not answering just now): the notice simply vanishes, so say which pending version it became
-    if (retrying && applyResultState(result) === 'pending' && viewing) useToast().info(`版本 #${failedBefore} 的内容存成了待应用版本\u00a0#${result.version_id}，${pendingWhen()}自\u2060动\u2060应\u2060用`)
+    // 「版本 #N 的内容」连成一块，后面可以断开 / 「版本 #N 的内容」 is one block, with a break allowed after it
+    const retriedPending = `版本\u00a0#${failedBefore}\u00a0的内容\u200b存成了待应用版本\u00a0#${result.version_id}，${pendingWhen()}自\u2060动\u2060应\u2060用`
+    if (retrying && applyResultState(result) === 'pending' && viewing) useToast().info(retriedPending)
     else if (inPlace && applyResultState(result) === 'pending') {
-      const notYet = `版本 #${result.version_id} 还没有应用：${runtimeStopped.value ? 'KixDNS 已停止，启动后自动应用' : 'KixDNS 没有回应，就绪后自动应用'}`
+      const notYet = `版本 #${result.version_id} 还没有应用：${runtimeStopped.value ? 'KixDNS\u00a0已停止，启动后自动应用' : 'KixDNS\u00a0没有回应，就绪后自动应用'}`
+      // 后台几秒内就会补上：离开后也用会自己收起的提示，不挂一条很快就过时的红色提示 / The background pass catches up within seconds: away too it is a self-dismissing info toast, not a red one that soon goes stale
       if (viewing) useToast().info(notYet)
-      else if (signedIn()) { dismissAwayToast(); awayToast = useToast().error(notYet) }
+      else if (signedIn()) { dismissAwayToast(); useToast().info(notYet) }
     }
     // 退出登录或会话过期以后，「现在应用」的结果不再报（应用没有草稿可丢，确认框也不问它） / After sign-out or expiry the outcome of 现在应用 is not reported (an apply has no draft to lose, and the confirm does not ask about it)
     else if (from === 'apply' && applyResultState(result) === 'applied') { if (signedIn()) useToast().success(failedBefore && failedBefore !== result.version_id ? `已应用版本 #${failedBefore} 的内容，当前版本\u00a0#${result.version_id}` : `版本 #${result.version_id} 已生效`) }
     // 保存途中离开了配置页：没有保存条报结果，用提示说；退出登录时放下了这份草稿就不说（确认框说过「不再告诉你结果」）
     // Left the config page mid-save: no save bar reports it, so a toast does; not after sign-out let the draft go (the confirm said no result would follow)
-    else if (!viewing && !abandoned) useToast().success(applyResultState(result) === 'pending' ? pendingText : `版本 #${result.version_id} 已生效`)
+    // 离开以后重试应用被先存着：同样说出存的是哪一版的内容 / A retry kept as pending while away: say whose content it stored, as on the page
+    else if (!viewing && !abandoned) useToast().success(applyResultState(result) === 'pending' ? (retrying ? retriedPending : pendingText) : `版本 #${result.version_id} 已生效`)
     announceWritten()
   } catch (error) {
     // 会话过期：页面会回到登录页，这里不挂「没通过校验」 / Session expired: the page goes back to the login page; no 没有通过校验 here
@@ -879,6 +893,13 @@ async function settleOnce(announce: boolean): Promise<boolean> {
 }
 // 「重试应用」撞上冲突时的提示：重新读取以后它说的就过时了 / The toast from a 重试应用 that met a conflict: stale once the config is re-read
 let retryToast: number | null = null
+// 退出登录或会话过期：配置页留在别处的结果提示一起收起，登录页上不再挂着它们（以前只收起草稿那条）
+// Sign-out or expiry: the config page's outcome toasts left on other pages go too, so none hangs on the login page (only the held-draft one used to)
+watch(useSession().authenticated, (now) => {
+  if (now) return
+  dismissAwayToast()
+  if (retryToast !== null) { useToast().dismiss(retryToast); retryToast = null }
+})
 /**
  * 重新连上面板以后：「连不上面板」那句已经不对了，收起；没读到配置的整页重读；有没保存的修改时只刷新运行状态（草稿和文件散列不动，
  * 别处的改动照样在保存时发现），没有就整份重读
@@ -898,41 +919,65 @@ export async function panelBack(): Promise<void> {
   clearStale()
   if (applyFailedDown) { applyError.value = ''; applyFailedDown = false }
   if (settled) return
+  // 断线期间后台让待应用的版本生效了、或者别处换了文件：和每 5 秒那次看一样说一句（以前只有「已重新连上面板」）
+  // The background put the pending version into effect during the outage, or the file was changed elsewhere: said as the 5-second look says it (only 已重新连上面板 used to show)
   if (unsaved.value || conflict.value) {
     // 有没保存的修改时不重读文件，但运行状态读到了：因为连不上而挂着的「读取配置失败」收起 / With unsaved edits the file is not re-read, but the runtime did read: a 读取配置失败 left by the outage goes
-    const refreshed = await refreshRuntime().then(() => true, () => false)
+    const refreshed = await rereadAndSay(true).then(() => true, () => false)
     if (refreshed && loadFailedDown) { loadError.value = ''; loadFailedDown = false }
-  } else await load({ quiet: true })
+  } else await rereadAndSay(false)
 }
 // 连上面板后自己接着做（配置页开着没有都一样），不等人点重试 / Once the panel answers again, carry on by itself (whether or not the config page is open) instead of waiting for 重试
 watch(panelDown, (now, before) => { if (before && !now) void panelBack() })
-/** 待应用的版本什么时候自动应用：说出等的是什么 / When a pending version applies by itself: name what it waits for */
 // 还登录着：退出登录或会话过期以后，配置页的结果不再报 / Still signed in: after sign-out or expiry the config page reports no outcome
 const signedIn = (): boolean => useSession().authenticated.value
 /**
- * 等待应用的版本时每 5 秒看一眼：没有修改就整份静默重读（别处换了文件就读入并说一句），有修改只刷新运行状态（文件换了马上进冲突）；
- * 页面开着时后台让它生效了也说一句——用户被告诉过「就绪后自动应用」，等的就是这个
- * The 5-second look while a version is pending: with no edits a whole quiet re-read (a file changed elsewhere is read in and said), with edits the runtime
- * only (a changed file enters the conflict state at once); the background putting it into effect while the page is open is said too — the user was told
- * 「就绪后自动应用」 and is waiting for exactly that
+ * 读一遍再说读到了什么：有修改（edited）只刷新运行状态（文件换了马上进冲突），没有就整份静默重读。别处换了文件、读了进来，说「别处改过了」；
+ * 等着的待应用版本生效了，说「版本 #N 已生效」——用户被告诉过「就绪后自动应用」，等的就是这个。每 5 秒那次看、连上面板、启动 KixDNS 都走这里
+ * Read, then say what was found: with edits only the runtime is refreshed (a changed file enters the conflict state at once), otherwise a whole quiet re-read.
+ * A file changed elsewhere and read in is said with 别处改过了; the awaited pending version taking effect with 「版本 #N 已生效」 — the user was told
+ * 「就绪后自动应用」 and is waiting for exactly that. The 5-second look, a reconnect and 启动 KixDNS all come through here
  */
-export async function checkPending(): Promise<void> {
+export async function rereadAndSay(edited: boolean): Promise<void> {
+  // 已经有一次读在路上：它是别人发的，结果由发的那一方说，这里跟着读就不再说一遍 / A read is already out: it belongs to whoever sent it, who reports it, so joining it says nothing twice
+  const joined = pendingLoad !== null
   const before = doc.value?.sha256
   const waited = pendingVersionId.value
-  if (unsaved.value) await refreshRuntime()
+  const writesAtStart = writeCount
+  // 页面上的文件读在这一页最近一次写之后：否则文件「变了」可能是自己写的 / The file on the page was read after this page's latest write: otherwise a 「moved」 file may be its own write
+  const caughtUp = docWrites === writesAtStart
+  if (edited) await refreshRuntime()
   else await load({ quiet: true })
-  if (!doc.value || busy.value) return
-  if (before !== undefined && doc.value.sha256 !== before && !unsaved.value) useToast().info(`这份配置在别处改\u2060过\u2060了，已读入版本\u00a0#${doc.value.version_id ?? ''}`)
+  // 读的时候这一页自己写过（删除版本、保存、应用、恢复）：结果由那次写自己说，这里不说「别处改过了」
+  // This page wrote while it read (a version delete, save, apply, restore): that write reports its own outcome, so no 别处改过了 here
+  if (writeCount !== writesAtStart || !doc.value || busy.value) return
+  // 只刷新了运行状态、修改却在途中没了（放弃修改）：整份读一遍再下结论 / Only the runtime was refreshed and the edits went away meanwhile (放弃修改): read the whole file before concluding
+  if (edited && !unsaved.value && !conflict.value) {
+    await load({ quiet: true })
+    if (writeCount !== writesAtStart || !doc.value || busy.value) return
+  }
+  // 配置页不开着、或者已经退出登录、会话过期：什么都不说，回来时页头会说 / Away from the config page, signed out or expired: nothing is said; the header says it on return
+  if (joined || !caughtUp || !viewing || !signedIn()) return
+  // 读进来的文件没有对应的版本号时不写半截编号 / A file read in with no version number does not get half a number
+  if (before !== undefined && doc.value.sha256 !== before && !unsaved.value) useToast().info(`这份配置在别处改\u2060过\u2060了，${doc.value.version_id ? `已读入版本\u00a0#${doc.value.version_id}` : '已重新读取'}`)
   else if (waited !== null && !hasPending.value && !hasApplyFailure.value && !conflict.value && doc.value.sha256 === before) useToast().success(`版本 #${waited} 已生效`)
+}
+/** 等待应用的版本时每 5 秒看一眼 / The 5-second look while a version is pending */
+export async function checkPending(): Promise<void> {
+  // 有一次读在路上（删除版本、恢复、连上后的重读）：这一下跳过，下一次再看 / A read is out (a version delete, a restore, a reconnect read): skip this tick and look next time
+  if (pendingLoad) return
+  await rereadAndSay(unsaved.value)
 }
 // 待应用版本的备注：文档里带着就用它，否则到历史里找 / The pending version's note: from the document when it carries one, otherwise from the history
 function pendingNote(id: number | null): string {
   return doc.value?.pending?.message || (id ? versions.value.find((v) => v.id === id)?.message ?? '' : '')
 }
+/** 待应用的版本什么时候自动应用：说出等的是什么 / When a pending version applies by itself: name what it waits for */
 export function pendingWhen(): string {
-  if (runtimeStopped.value) return 'KixDNS 启动后'
-  if (runtimeUnavailable.value) return '连上 KixDNS 后'
-  return 'KixDNS 就绪后'
+  // 主语和「后」连住：手机上不拆成「连上 KixDNS / 后自动应用」 / The subject stays glued to 后, so phones never split 「连上 KixDNS / 后自动应用」
+  if (runtimeStopped.value) return 'KixDNS\u00a0启动后'
+  if (runtimeUnavailable.value) return '连上\u00a0KixDNS\u00a0后'
+  return 'KixDNS\u00a0就绪后'
 }
 
 // ---------- 历史版本 / history ----------

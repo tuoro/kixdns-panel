@@ -1,4 +1,5 @@
 import { ApiError, PANEL_UNREACHABLE_EVENT } from './client'
+import { exportConfig, readConfig } from '../config-model/document'
 import type {
   ActiveConfig,
   AuditPage,
@@ -341,6 +342,40 @@ function applyPendingInPlace(id: number): void {
   versions.versions = versions.versions.map((v) => (v.id === id ? { ...v, apply_state: 'applied' } : v.apply_state === 'applied' ? { ...v, apply_state: 'superseded' } : v))
 }
 
+async function saveSlowIfAsked(): Promise<void> {
+  const slow = typeof localStorage === 'undefined' ? null : localStorage.getItem('kixdns:demo-save-slow')
+  if (slow === 'true' || Number(slow) > 0) await new Promise((resolve) => setTimeout(resolve, slow === 'true' ? 1500 : Number(slow)))
+}
+
+// 把一份内容存成待应用的新版本：KixDNS 在运行，只是还没接 / Store content as a new pending version: KixDNS runs and has just not taken it yet
+function storePending(content: Record<string, unknown>, sha: string, versionId: number, createdAt: number, message: string): ConfigApplyResult {
+  config = {
+    ...config,
+    content,
+    sha256: sha,
+    modified_at: createdAt,
+    version_id: versionId,
+    pending: { version_id: versionId, sha256: sha, message, actor: 'admin', created_at: createdAt, error: null },
+    runtime: { ...config.runtime, status: 'pending', apply_state: 'pending', pending_error: null },
+  }
+  versions.versions.unshift({ id: versionId, sha256: sha, message, actor: 'admin', created_at: createdAt, apply_state: 'pending', apply_error: null })
+  configVersionContents.set(versionId, structuredClone(content))
+  return { version_id: versionId, sha256: sha, apply_state: 'pending' } as ConfigApplyResult
+}
+
+// kixdns:demo-elsewhere-pending：下一次读配置之前，另一处用面板存了一个待应用的新版本（面板的格式块完整，和真面板写的一样）：第一个上游组多了一个地址
+// kixdns:demo-elsewhere-pending: just before the next config read, someone elsewhere stored a new pending version through the panel (its panel block intact,
+// as a real panel writes it): the first upstream group has one more address
+function elsewherePendingIfAsked(): void {
+  if (typeof localStorage === 'undefined' || localStorage.getItem('kixdns:demo-elsewhere-pending') !== 'true') return
+  localStorage.removeItem('kixdns:demo-elsewhere-pending')
+  const model = readConfig(structuredClone(config.content)).model
+  const group = model.groups[0]
+  if (!group) return
+  group.addresses.push({ address: '203.0.113.53', protocol: 'auto' })
+  storePending(exportConfig(model), `else${Date.now().toString(16)}`.padEnd(64, '0').slice(0, 64), ++nextConfigVersionId, Math.floor(Date.now() / 1000), '另一处加了一个上游地址')
+}
+
 // kixdns:demo-background-applies：下一次读配置之前，面板后台那一遍（真面板每 5 秒）让待应用的版本生效了
 // kixdns:demo-background-applies: just before the next config read, the panel's background pass (every 5 s on a real panel) put the pending version into effect
 function backgroundAppliesIfAsked(): void {
@@ -662,6 +697,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     geositeUnreadableIfAsked()
     changeElsewhereIfAsked()
     backgroundAppliesIfAsked()
+    elsewherePendingIfAsked()
     return config as T
   }
   if (path === '/api/v1/config/geo-data' && method === 'GET') {
@@ -799,8 +835,8 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     // 和真服务一样带 config_conflict，页面才认得出是别处先存了；kixdns:demo-save-conflict 让下一次保存撞上，演示这个状态
     // Carries config_conflict as the real server does, so the page knows someone else saved first; kixdns:demo-save-conflict makes
     // the next save hit it, to show that state
-    // kixdns:demo-save-slow：写入要 1.5 秒，演示保存途中还能改 / kixdns:demo-save-slow: writing takes 1.5 s, to show editing while a save is in flight
-    if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-save-slow') === 'true') await new Promise((resolve) => setTimeout(resolve, 1500))
+    // kixdns:demo-save-slow：写入要 1.5 秒（写个数字就是那么多毫秒），演示保存途中还能改 / kixdns:demo-save-slow: writing takes 1.5 s (or that many ms when a number), to show editing while a save is in flight
+    await saveSlowIfAsked()
     const forcedConflict = typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-save-conflict') === 'true'
     if (forcedConflict) localStorage.removeItem('kixdns:demo-save-conflict')
     if (forcedConflict || body.expected_sha256 !== config.sha256) throw new ApiError('这份配置在别处改过了，先重新读取', 409, 'config_conflict')
@@ -832,18 +868,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     // pass applies it within 5 seconds; the demo leaves it, so 现在应用 can be pressed)
     if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-save-pending') === 'true') {
       localStorage.removeItem('kixdns:demo-save-pending')
-      config = {
-        ...config,
-        content: body.content,
-        sha256: nextSha,
-        modified_at: createdAt,
-        version_id: versionId,
-        pending: { version_id: versionId, sha256: nextSha, message, actor: 'admin', created_at: createdAt, error: null },
-        runtime: { ...config.runtime, status: 'pending', apply_state: 'pending', pending_error: null },
-      }
-      versions.versions.unshift({ id: versionId, sha256: nextSha, message, actor: 'admin', created_at: createdAt, apply_state: 'pending', apply_error: null })
-      configVersionContents.set(versionId, structuredClone(body.content))
-      return { version_id: versionId, sha256: nextSha, apply_state: 'pending' } as ConfigApplyResult as T
+      return storePending(body.content, nextSha, versionId, createdAt, message) as T
     }
     if (emptyFirstInstall) {
       config = {
@@ -926,7 +951,12 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     const id = Number(applyMatch[1])
     changeElsewhereIfAsked()
     changeElsewhereIfAsked('kixdns:demo-apply-overtaken')
-    if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-save-slow') === 'true') await new Promise((resolve) => setTimeout(resolve, 1500))
+    await saveSlowIfAsked()
+    // kixdns:demo-apply-error：下一次「现在应用」面板内部出错（什么都没写） / kixdns:demo-apply-error: the next 现在应用 meets an internal panel error (nothing written)
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-apply-error') === 'true') {
+      localStorage.removeItem('kixdns:demo-apply-error')
+      throw new ApiError('面板内部出错', 500, 'internal_error')
+    }
     if (!config.pending && config.version_id === id) return { version_id: id, sha256: config.sha256, apply_state: 'applied', active_config: activeConfig } as ConfigApplyResult as T
     // 刚试过、没有生效的这一版：照它记下的原因说（和真面板一样），不说别处改过 / This version just tried and refused: say why, as the real panel does, not 别处改过
     if (config.pending?.version_id === id && config.pending.error) throw new ApiError(config.pending.error, 422, 'reload_failed')

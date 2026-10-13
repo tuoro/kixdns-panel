@@ -2,11 +2,11 @@
 import { useReturnFocus } from '../composables/useReturnFocus'
 import { Info, Plus, Trash2, X } from '@lucide/vue'
 import UiHelp from '../components/ui/UiHelp.vue'
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import { detectProtocol, PROTOCOL_LABEL, POLLUTED_CIDRS, type Ecs, type Protocol, type UpstreamGroup } from '../config-model/model'
 import { useConfirm } from '../composables/useConfirm'
-import { groupUsers, model, trackDialogEdits } from './store'
+import { draftGeneration, groupUsers, model, trackDialogEdits } from './store'
 // 关上后焦点回到打开它的控件 / Focus returns to the opener on close
 useReturnFocus()
 
@@ -26,10 +26,22 @@ const shape = (g: UpstreamGroup): string => JSON.stringify({
   addresses: g.addresses.filter((a) => a.address.trim()).map((a) => ({ ...a, address: a.address.trim() })),
   fallback: g.fallback.onError || g.fallback.onPolluted ? g.fallback : { group: '', onError: false, onPolluted: false },
 })
-const initial = shape(draft)
+let initial = shape(draft)
 const edited = (): boolean => shape(draft) !== initial
 // 抽屉开着、改过时离开页面或刷新也先问 / With the drawer open and edited, leaving the page or reloading asks first too
 trackDialogEdits('这个上游组', edited, { outlivesSection: true })
+// 草稿被整份换掉（别处改的读了进来）：这里没改过就换成读进来的这个组接着开着，组没了就关上。以前按「完成」会把打开时的副本写回去，悄悄撤掉别处的改动。
+// 改过的抽屉碰不上这种读入：有修改时页面算没保存，静默重读和连上后都只刷新运行状态
+// The draft was replaced wholesale (a change made elsewhere was read in): unedited here, the drawer carries on with the group just read, and closes if the group
+// is gone. 完成 used to write back the copy taken at opening, silently undoing the other change. An edited drawer never meets such a read: its edits make the page
+// unsaved, and the quiet re-reads and reconnects then refresh the runtime only
+watch(draftGeneration, () => {
+  if (!original || edited()) return
+  const now = model.groups.find((g) => g.id === original.id)
+  if (!now) { emit('close'); return }
+  Object.assign(draft, JSON.parse(JSON.stringify(now)) as UpstreamGroup)
+  initial = shape(draft)
+})
 const confirm = useConfirm()
 async function leave(): Promise<void> {
   if (edited() && !(await confirm.ask({ title: '放弃这个上游组的修改', body: '刚才在这里改的内容不会写进草稿。', confirmLabel: '放弃修改', cancelLabel: '继续编辑', destructive: true }))) return

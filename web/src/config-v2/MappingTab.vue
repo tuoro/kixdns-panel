@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { Check, FileInput, Plus, Search, X } from '@lucide/vue'
 import UiHelp from '../components/ui/UiHelp.vue'
-import { computed, nextTick, reactive, ref } from 'vue'
+import { computed, nextTick, reactive, ref, watch } from 'vue'
 import UiEmpty from '../components/ui/UiEmpty.vue'
 import UiMenu from '../components/ui/UiMenu.vue'
 import { useConfirm } from '../composables/useConfirm'
 import { useToast } from '../composables/useToast'
 import { isDomain, isIp, mappingIsIp, splitList, type Mapping } from '../config-model/model'
 import { useNarrowDesktop, usePhone } from './phone'
-import { changedMappingIds, model, newId, trackDialogEdits } from './store'
+import { changedMappingIds, draftGeneration, model, newId, trackDialogEdits } from './store'
 import { canCname } from './useConfigDocument'
 
 // 域名映射：域名直接回答一个 IP 或另一个域名，先于所有规则，也管子域名。像通讯录一样一行一条，上面一行直接添加。
@@ -59,14 +59,16 @@ const shown = computed(() => {
 
 // 行内编辑 / inline edit
 const editing = reactive({ id: -1, domain: '', target: '', ttl: '' as string, error: '' })
+// 开始编辑那一刻这一行的样子：改没改过拿它比 / The row as it was when editing began: edits are measured against it
+const editingFrom = reactive({ domain: '', target: '', ttl: '' })
+const fields = (r: Mapping) => ({ domain: r.domain, target: r.target, ttl: r.ttl === null ? '' : String(r.ttl) })
+const rowEdited = (): boolean => editing.domain !== editingFrom.domain || editing.target !== editingFrom.target || editing.ttl !== editingFrom.ttl
 // 行里改了没点完成、批量导入里写了还没导入：离开页面、换分区、刷新都先问 / A row edited but not committed, bulk-import text not yet imported: leaving, switching section and reloading ask first
 const confirm = useConfirm()
-trackDialogEdits('这条域名映射', () => {
-  const row = editing.id < 0 ? undefined : model.mappings.find((r) => r.id === editing.id)
-  return Boolean(row) && (editing.domain !== row!.domain || editing.target !== row!.target || editing.ttl !== (row!.ttl === null ? '' : String(row!.ttl)))
-})
+trackDialogEdits('这条域名映射', () => editing.id >= 0 && model.mappings.some((r) => r.id === editing.id) && rowEdited())
 async function edit(r: Mapping): Promise<void> {
-  Object.assign(editing, { id: r.id, domain: r.domain, target: r.target, ttl: r.ttl === null ? '' : String(r.ttl), error: '' })
+  Object.assign(editing, { id: r.id, ...fields(r), error: '' })
+  Object.assign(editingFrom, fields(r))
   await nextTick()
   document.querySelector<HTMLInputElement>(`[data-rw="${r.id}"] input`)?.focus()
 }
@@ -75,6 +77,16 @@ function cancelEdit(r: Mapping): void {
   editing.id = -1
   void nextTick(() => document.querySelector<HTMLElement>(`[data-rw="${r.id}"] .ui-menu-host button`)?.focus())
 }
+// 草稿被整份换掉（别处改的读了进来）：正在编辑又没改过的这一行换成读进来的样子，行没了就收起。以前点完成会把开始编辑时的值写回去，悄悄撤掉别处的改动
+// The draft was replaced wholesale (a change made elsewhere was read in): the row being edited, if unedited, takes what was read, and the edit closes if the
+// row is gone. 完成 used to write back the values from when editing began, silently undoing the other change
+watch(draftGeneration, () => {
+  if (editing.id < 0 || rowEdited()) return
+  const row = model.mappings.find((r) => r.id === editing.id)
+  if (!row) { editing.id = -1; return }
+  Object.assign(editing, fields(row))
+  Object.assign(editingFrom, fields(row))
+})
 function commit(r: Mapping): void {
   const p = problem(editing.domain, editing.target, r.id)
   if (p) { editing.error = p; return }
