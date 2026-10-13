@@ -565,7 +565,7 @@ onBeforeUnmount(() => {
               <span v-else-if="!kixdnsNotice" class="system-stale">检查失败：{{ updateStatus.kixdns_error ?? '原因未知' }}</span>
               <!-- 只在新旧版本之间断行，「→」「·」跟着后一段走：不会挂在行尾 / Lines break only between the two versions, and 「→」/「·」 travel with what follows, so neither is left at a line end -->
               <template v-else-if="kixdnsNotice.available && kixdnsNotice.security_update"><span v-if="kernelPending" class="sk update-row__cur-sk" aria-hidden="true"></span><span v-else class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span> <span class="update-row__keep">安全更新<template v-if="kixdnsNotice.dependency_revision"> · <span class="ui-num">r{{ kixdnsNotice.dependency_revision }}</span></template></span></template>
-              <template v-else-if="kixdnsNotice.available"><span v-if="kernelPending" class="sk update-row__cur-sk" aria-hidden="true"></span><span v-else class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span> <span class="update-row__keep">→ <span class="ui-num">{{ formatKixdnsVersion(activeVersion).startsWith('构建 #') ? latestKixdnsVersion().replace(/^构建 /, '') : latestKixdnsVersion() }}</span></span></template>
+              <template v-else-if="kixdnsNotice.available"><span v-if="kernelPending" class="sk update-row__cur-sk" aria-hidden="true"></span><span v-else class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span> <span class="update-row__keep">→ <span class="ui-num">{{ kernelPending || formatKixdnsVersion(activeVersion).startsWith('构建 #') ? latestKixdnsVersion().replace(/^构建 /, '') : latestKixdnsVersion() }}</span></span></template>
               <template v-else-if="kixdnsNotice.current_commit"><span class="update-row__keep">已是最新 · <span class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span></span></template>
               <template v-else>还没安装</template>
             </span>
@@ -576,7 +576,7 @@ onBeforeUnmount(() => {
           <template v-if="kixdnsNotice || !installed || needsToken(updateStatus.kixdns_error)" #actions>
             <button v-if="!kixdnsNotice && needsToken(updateStatus.kixdns_error)" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" @click="focusToken">填写 Token</button>
             <a v-if="kixdnsNotice" class="ui-link" :href="kixdnsNotice.build_url" target="_blank" rel="noopener noreferrer">构建详情<ExternalLink :size="12" /></a>
-            <button v-if="kixdnsNotice?.available || !installed" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" :disabled="!kernel?.latest || kernelAction !== null || panelDown" @click="updateKernel">{{ kernelAction === 'update' ? '更新中' : (installed ? '更新' : '安装') }}</button>
+            <button v-if="kixdnsNotice?.available || !installed" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" :disabled="!kernel?.latest || kernelAction !== null || panelDown" @click="updateKernel">{{ kernelAction === 'update' ? '更新中' : (installed || kernelPending ? '更新' : '安装') }}</button>
           </template>
         </UiTask>
 
@@ -624,9 +624,17 @@ onBeforeUnmount(() => {
         <div class="system-card__head">
           <h2 id="system-install-label" class="ui-card__label">当前安装</h2>
           <span v-if="kernel" class="ui-tag" :class="installed ? 'ui-tag--ok' : 'ui-tag--warn'">{{ installed ? '已安装' : '还没安装' }}</span>
+          <span v-else-if="loadingKernel" class="ui-tag install-sk__tag" aria-hidden="true">已安装</span>
         </div>
         <div class="system-card__main">
-          <div v-if="loadingKernel && !kernel" class="sk system-skeleton-panel" role="status" aria-label="读取安装状态"></div>
+          <!-- 占位照读完后的样子排：小标签、大编号、一行附注、细线下三行哈希，用同样的类所以行高和间距一致；以前是一整块灰板，像一张没加载的图
+               The placeholder is laid out like the loaded card (small label, big number, one note line, three hashes under the hairline) with the same
+               classes, so line heights and gaps match; it used to be one grey slab that read like an image that had not loaded -->
+          <div v-if="loadingKernel && !kernel" class="install-sk" role="status" aria-label="读取安装状态">
+            <p class="install-version" aria-hidden="true"><span class="install-version__label"><i class="sk install-sk__label"></i></span><b><i class="sk install-sk__big"></i></b></p>
+            <p class="install-meta" aria-hidden="true"><span><i class="sk install-sk__meta"></i></span></p>
+            <dl class="ui-strip install-hashes" aria-hidden="true"><div v-for="n in 3" :key="n"><dt><i class="sk install-sk__dt"></i></dt><dd class="ui-mono"><i class="sk install-sk__dd"></i></dd></div></dl>
+          </div>
           <template v-else-if="kernel">
             <p class="install-version"><span v-if="installed && versionLead.label" class="install-version__label">{{ versionLead.label }}</span><b>{{ installed ? versionLead.value : '还没安装' }}</b></p>
             <p v-if="installed" class="ui-dots install-meta">
@@ -646,6 +654,8 @@ onBeforeUnmount(() => {
         <!-- 本机只留当前和上一个内核：回退只有一步，就放在当前安装的底行。
              Only the current and the previous kernel stay on this host, so a rollback is
              one step and sits on the installed card's bottom row. -->
+        <!-- 读取时底行也先占着（装好的内核都有这一行），读完卡片不长高、下面的卡不往下跳 / While reading, the bottom row is held too (an installed kernel always has it), so the card does not grow and the card below does not jump -->
+        <div v-if="loadingKernel && !kernel" class="system-card__row install-sk" aria-hidden="true"><span><i class="sk install-sk__row"></i></span></div>
         <div v-if="installed" class="system-card__row install-previous">
           <template v-if="kernel?.previous">
             <span>上一个版本 <span class="ui-num">{{ formatKixdnsVersion(kernel.previous) }}</span></span>
@@ -741,7 +751,16 @@ onBeforeUnmount(() => {
 .system-page .install-version > b { font-family: var(--f-display); font-size: var(--t-6); font-weight: var(--w-heavy); font-variant-numeric: tabular-nums; letter-spacing: -.02em; line-height: var(--lh-tight); white-space: nowrap; }
 .system-page .install-meta { margin-top: var(--s-2); color: var(--l-ink-2); font-size: var(--t-2); }
 .system-page .install-hashes { margin-top: var(--s-4); padding-top: var(--s-3); border-top: 1px solid var(--l-hair); }
-.system-page .system-skeleton-panel { margin-top: var(--s-2); }
+/* 当前安装的占位：灰条比文字矮，竖直居中在各自那一行里，行高来自真正的类 / The installed card's placeholder: bars shorter than the text, centred in their own lines, whose heights come from the real classes */
+.system-page .install-sk .sk { display: inline-block; height: .7em; vertical-align: middle; }
+.system-page .install-sk__label { width: 2.5em; }
+.system-page .install-sk__big { width: 5.5em; }
+.system-page .install-sk__meta { width: 16em; max-width: 100%; }
+.system-page .install-sk__dt { width: 4em; }
+.system-page .install-sk__dd { width: 8em; max-width: 100%; }
+.system-page .install-sk__row { width: 12em; max-width: 100%; }
+/* 标签的位置也先占着：同样大小的灰块，字透明 / The tag's place is held too: a grey block of the same size with the text transparent */
+.system-page .install-sk__tag { color: transparent; background: var(--l-hair); }
 
 /* GitHub 凭据：表单在标签下面 12，说明在表单下面 12 / The credential: the form 12 under the label, the note 12 under the form */
 .system-page .credential-form { margin-top: var(--s-3); }

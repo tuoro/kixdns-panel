@@ -275,7 +275,7 @@ async fn reports_the_last_failure_when_every_source_fails() {
     .unwrap_err();
 
     assert!(
-        matches!(error, UpdateError::Verification(ref message) if message.contains("digest 不匹配")),
+        matches!(error, UpdateError::Verification(ref message) if message.contains("校验值不对")),
         "{error:?}"
     );
 }

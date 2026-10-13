@@ -282,7 +282,7 @@ function saveEntries(): void {
         </form>
         <p class="rcard__order">从上往下判断，第一条决定结果的规则生效。</p>
         <RuleList :rules="model.rules" :owner="model" :in-group="false" :query="query" :kind="kind" :marks="marks" :selected="selected" :rest-mark="false" :mapping-mark="matchedMapping" @open="emit('open', $event, null)" @mappings="emit('tab', 'mapping')">
-          <template #empty><div class="rcard__empty"><ListFilter :size="16" aria-hidden="true" /><span>{{ phone ? '还没有规则，所有请求都按最下面的「其余请求」处理。用上面一行添加，或点 + 新建规则。' : '还没有规则，所有请求都按最下面的「其余请求」处理。点「快速添加」或「新建规则」开始。' }}</span></div></template>
+          <template #empty><div class="rcard__empty"><ListFilter :size="16" aria-hidden="true" /><span>{{ phone ? '还没有规则，所有请求都按最下面的「其余请求」处理。用上面一行添加，或点\u00a0+\u00a0新建规则。' : '还没有规则，所有请求都按最下面的「其余请求」处理。点「快速添加」或「新建规则」开始。' }}</span></div></template>
         </RuleList>
       </section>
 

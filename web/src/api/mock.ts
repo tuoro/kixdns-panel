@@ -244,6 +244,42 @@ const configVersionContents = new Map(
   versions.versions.map((version) => [version.id, demoConfigVersion(version.id)]),
 )
 
+// 拿一个旧版本的内容存成新版本并生效：恢复版本，和演示里「别处恢复了一个版本」都走这里
+// Store an old version's content as a new, active version: used by restore and by the demo's "someone elsewhere restored a version"
+function activateCopy(sourceId: number, content: Record<string, unknown>, message: string): ConfigApplyResult {
+  const sourceVersion = versions.versions.find((version) => version.id === sourceId)!
+  const versionId = ++nextConfigVersionId
+  config = {
+    content: structuredClone(content),
+    sha256: sourceVersion.sha256,
+    modified_at: Math.floor(Date.now() / 1000),
+    version_id: versionId,
+    pending: null,
+    runtime: {
+      status: 'active',
+      active_sha256: sourceVersion.sha256,
+      generation: activeConfig.generation + 1,
+      apply_state: 'active',
+      pending_error: null,
+      declared_capabilities: ['config_query_stats_v1', 'config_static_cname_response_v1'],
+    },
+  }
+  activeConfig.sha256 = config.sha256
+  activeConfig.generation += 1
+  activeConfig.reload_sequence += 1
+  versions.versions.unshift({
+    id: versionId,
+    sha256: config.sha256,
+    message,
+    actor: 'admin',
+    created_at: config.modified_at,
+    apply_state: 'applied',
+    apply_error: null,
+  })
+  configVersionContents.set(versionId, structuredClone(content))
+  return { version_id: versionId, sha256: config.sha256, apply_state: 'applied', active_config: activeConfig } as ConfigApplyResult
+}
+
 function demoConfigVersion(id: number): Record<string, unknown> {
   const content = structuredClone(config.content)
   const settings = content.settings as Record<string, unknown>
@@ -542,7 +578,16 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     previousKixdnsVersion = current
     return demoKernel() as T
   }
-  if (path === '/api/v1/config' && method === 'GET') return config as T
+  if (path === '/api/v1/config' && method === 'GET') {
+    // kixdns:demo-changed-elsewhere：这次读之前，另一处（别的浏览器、别的管理员）恢复了一个旧版本，演示「这份配置在别处改过了」
+    // kixdns:demo-changed-elsewhere: just before this read someone elsewhere (another browser, another admin) restored an older version, to show 这份配置在别处改过了
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-changed-elsewhere') === 'true') {
+      localStorage.removeItem('kixdns:demo-changed-elsewhere')
+      const source = versions.versions.find((version) => version.sha256 !== config.sha256 && configVersionContents.has(version.id))
+      if (source) activateCopy(source.id, configVersionContents.get(source.id)!, `另一处恢复了版本 #${source.id}`)
+    }
+    return config as T
+  }
   if (path === '/api/v1/config/geo-data' && method === 'GET') return geoData as T
   if (path === '/api/v1/config/geo-data/cleanup' && method === 'POST') {
     return { scanned_files: 4, removed_files: 1, reclaimed_bytes: 5_904_224 } as GeoDataCleanupResult as T
@@ -751,36 +796,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     const sourceVersion = versions.versions.find((version) => version.id === sourceId)
     const content = configVersionContents.get(sourceId)
     if (!sourceVersion || !content) throw new Error('配置文件不存在')
-    const versionId = ++nextConfigVersionId
-    config = {
-      content: structuredClone(content),
-      sha256: sourceVersion.sha256,
-      modified_at: Math.floor(Date.now() / 1000),
-      version_id: versionId,
-      pending: null,
-      runtime: {
-        status: 'active',
-        active_sha256: sourceVersion.sha256,
-        generation: activeConfig.generation + 1,
-        apply_state: 'active',
-        pending_error: null,
-        declared_capabilities: ['config_query_stats_v1', 'config_static_cname_response_v1'],
-      },
-    }
-    activeConfig.sha256 = config.sha256
-    activeConfig.generation += 1
-    activeConfig.reload_sequence += 1
-    versions.versions.unshift({
-      id: versionId,
-      sha256: config.sha256,
-      message: `恢复为版本 #${sourceId}`,
-      actor: 'admin',
-      created_at: config.modified_at,
-      apply_state: 'applied',
-      apply_error: null,
-    })
-    configVersionContents.set(versionId, structuredClone(content))
-    return { version_id: versionId, sha256: config.sha256, apply_state: 'applied', active_config: activeConfig } as ConfigApplyResult as T
+    return activateCopy(sourceId, content, `恢复为版本 #${sourceId}`) as T
   }
   if (path === '/api/v1/cache/flush') {
     return { protocol_version: 1, response_entries_before: 18642, response_entries_after: 0, rule_entries_before: 712, rule_entries_after: 0 } as T

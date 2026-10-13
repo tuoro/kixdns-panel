@@ -98,6 +98,33 @@ describe('配置文件的存取 / storing and loading the config file', () => {
     expect(back.model.rules.map((r) => r.conditions[0]![0]!.values[0])).toEqual(['u1.example.com', 'u2.example.com', 'off.example.com', 'u3.example.com'])
   })
 
+  it('内核部分被手改过：连着的几条停用规则保持原来的先后 / kernel part edited by hand: consecutive disabled rules keep their order', () => {
+    const model: Model = sampleModel()
+    model.rules = []
+    const add = (domain: string, enabled = true) => {
+      const rule = newRule(800 + model.rules.length, { type: 'block', response: 'default' })
+      rule.enabled = enabled
+      rule.conditions = [[{ id: 900 + model.rules.length, field: 'domain', values: [domain], negate: false, regex: false }]]
+      model.rules.push(rule)
+    }
+    add('off1.example.com', false)
+    add('off2.example.com', false)
+    add('u1.example.com')
+    add('offa.example.com', false)
+    add('offb.example.com', false)
+    add('u2.example.com')
+    const order = ['off1.example.com', 'off2.example.com', 'u1.example.com', 'offa.example.com', 'offb.example.com', 'u2.example.com']
+    const cfg = JSON.parse(JSON.stringify(exportConfig(model))) as Record<string, unknown> & { settings: Record<string, unknown> }
+    cfg.settings.cache_capacity = 50000
+    const back = readConfig(cfg)
+    expect(back.source).toBe('imported')
+    expect(back.model.rules.map((r) => r.conditions[0]![0]!.values[0])).toEqual(order)
+    // 再手改一次也不来回换 / A second hand edit does not swap them back and forth either
+    const again = JSON.parse(JSON.stringify(exportConfig(back.model))) as Record<string, unknown> & { settings: Record<string, unknown> }
+    again.settings.cache_capacity = 60000
+    expect(readConfig(again).model.rules.map((r) => r.conditions[0]![0]!.values[0])).toEqual(order)
+  })
+
   it('panel 格式版本不认识时也按内核部分重新导入 / an unknown panel format version is re-imported from the kernel part too', () => {
     const cfg = exportConfig(sampleModel()) as Record<string, unknown> & { panel: { v: number } }
     cfg.panel.v = PANEL_FORMAT + 1

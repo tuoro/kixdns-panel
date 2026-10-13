@@ -121,9 +121,11 @@ test('别处先存了一个版本：保存停住，可以下载自己的修改�
   await page.getByRole('button', { name: '保存并应用', exact: true }).click()
   const bar = page.locator('.cfg__savebar')
   await expect(bar).toContainText('这份配置在别处改过了')
-  // 再按保存只会再失败一次：主按钮停用；放弃修改还在；能把自己的修改下载下来 / Saving again would only fail again: the primary is disabled; discard is still there; the user's edits can be downloaded
+  // 再按保存只会再失败一次：主按钮停用；放弃修改在这时就是重新读取，不另放一个（和手机一样）；能把自己的修改下载下来
+  // Saving again would only fail again: the primary is disabled; discarding is re-reading here, so there is no second control (as on phones); the user's edits can be downloaded
   await expect(bar.getByRole('button', { name: '保存并应用', exact: true })).toBeDisabled()
-  await expect(bar.getByRole('button', { name: '放弃修改', exact: true })).toBeVisible()
+  await expect(bar.getByRole('button', { name: '放弃修改', exact: true })).toHaveCount(0)
+  await expect(bar.getByRole('button', { name: '重新读取', exact: true })).toBeVisible()
   const download = page.waitForEvent('download')
   await bar.getByRole('button', { name: '下载草稿', exact: true }).click()
   expect((await download).suggestedFilename()).toBe('kixdns-config.json')
@@ -654,6 +656,30 @@ test('应用失败的版本：重启确认框不说「重启后应用」', async
   await page.keyboard.press('Escape')
 })
 
+// 「重试应用」「现在应用」每次都存成一个新版本：成功时说出按的是哪一版、现在是哪一版，备注跟着到新版本上
+// （以前只说「版本 #N+1 已生效」，按的明明是 #N，新版本还没有备注）
+// 重试应用 and 现在应用 are each stored as a new version: success names the version pressed and the current one, and the note moves to the new version
+// (it used to say only 版本 #N+1 已生效 although #N was pressed, and the new version had no note)
+test('重试应用成功：说出两个版本号，备注带到新版本', async ({ page }) => {
+  await page.goto('/config')
+  await addRule(page, 'retry-note.example')
+  const bar = page.locator('.cfg__savebar')
+  // 宽屏的备注框一直在，窄一些才收在「备注」后面 / Wide screens always show the note field; narrower ones keep it behind 备注
+  const note = bar.getByLabel('版本备注')
+  if (!(await note.isVisible())) await bar.locator('.savebar__note-toggle').click()
+  await note.fill('把视频域名交给 CDN 组')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-apply-failed', 'true'))
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(page.locator('main')).toContainText('没有生效，仍在用之前那份配置')
+  const failed = Number((await page.locator('main').innerText()).match(/版本 #(\d+) 没有生效/)![1])
+  await page.getByRole('button', { name: '重试应用' }).click()
+  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain(`已应用版本 #${failed} 的内容，当前版本 #${failed + 1}`)
+  await page.getByRole('button', { name: '更多配置操作' }).click()
+  await page.getByRole('menuitem', { name: '历史版本' }).click()
+  await expect(page.locator('.hist__row').first()).toContainText(`#${failed + 1}`)
+  await expect(page.locator('.hist__row').first()).toContainText('把视频域名交给 CDN 组')
+})
+
 // 单独「校验」还没回来时按的保存，从按下起就是一次保存：按钮写「保存中」，重新读取停用；校验没过就停在那句结论上，不接着存
 // Save pressed while a lone 校验 is out is a save from the press: the button reads 保存中 and 重新读取 is disabled; a failed check stops there instead of saving
 test('校验途中按的保存：算作保存，校验没过就不存', async ({ page }) => {
@@ -754,6 +780,46 @@ test('排着的保存离开后校验没过：草稿留着并说明', async ({ pa
   await page.getByRole('link', { name: '规则', exact: true }).first().click()
   await expect(page.locator('[data-rule]', { hasText: 'queued-left.example' })).toBeVisible()
   await page.evaluate(() => localStorage.removeItem('kixdns:demo-validate-slow'))
+})
+
+// 离开后没保存成功的草稿留着；离开期间别处存了新版本：回来时马上说「别处改过了」，不悄悄换到新文件上
+// （以前悄悄换了底子，下一次保存就把别处的改动当成自己的删掉了）
+// A draft whose save failed after leaving is held; another writer saves meanwhile: on return the page says 别处改过了 at once instead of silently moving onto
+// the new file (it used to rebase, and the next save then removed the other writer's change as if it were one's own)
+test('留着的草稿回来时文件在别处改过了：马上进冲突，不悄悄换底子', async ({ page }) => {
+  await page.goto('/config')
+  await addRule(page, 'held-return.example')
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-validate-slow', 'true'); localStorage.setItem('kixdns:demo-validate-reject', 'true') })
+  const bar = page.locator('.cfg__savebar')
+  await bar.locator('.savebar__save').click()
+  await page.getByRole('link', { name: '日志', exact: true }).first().click()
+  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContainEqual(expect.stringContaining('配置没有保存：没有通过校验。草稿留在配置页'))
+  await page.evaluate(() => { localStorage.removeItem('kixdns:demo-validate-slow'); localStorage.removeItem('kixdns:demo-validate-reject'); localStorage.setItem('kixdns:demo-changed-elsewhere', 'true') })
+  await page.getByRole('link', { name: '规则', exact: true }).first().click()
+  await expect(bar).toContainText('这份配置在别处改过了')
+  await expect(bar.getByRole('button', { name: '保存并应用', exact: true })).toBeDisabled()
+  await expect(page.locator('[data-rule]', { hasText: 'held-return.example' })).toBeVisible()
+})
+
+// 断网时改了，连上时文件已经在别处换了：连上就说「别处改过了」，不等保存撞上才知道
+// Edits made during an outage, and the file changed elsewhere by the time the panel is back: say 别处改过了 on reconnect instead of waiting for a save to hit it
+test('断网时改的草稿，连上时文件在别处改过了：马上进冲突', async ({ page }) => {
+  await page.goto('/config')
+  await expect(page.locator('.cfg__panel')).toBeVisible()
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-panel-down', 'true'); window.dispatchEvent(new Event('kixdns:panel-unreachable')) })
+  await expect(page.locator('.conn__inner')).toBeVisible()
+  await addRule(page, 'outage-edit.example')
+  await page.evaluate(async () => {
+    localStorage.removeItem('kixdns:demo-panel-down')
+    localStorage.setItem('kixdns:demo-changed-elsewhere', 'true')
+    const url = performance.getEntriesByType('resource').map((e) => e.name).filter((n) => n.includes('/src/composables/useConnection.ts')).pop()!
+    const connection = await import(url)
+    void connection.useConnection().retry()
+  })
+  await expect(page.locator('.conn__inner')).toHaveCount(0, { timeout: 10_000 })
+  const bar = page.locator('.cfg__savebar')
+  await expect(bar).toContainText('这份配置在别处改过了')
+  await expect(page.locator('[data-rule]', { hasText: 'outage-edit.example' })).toBeVisible()
 })
 
 // 连上以后的静默重读还在路上时保存落地：那次读是写之前发的，不能拿它把刚存上的规则冲掉

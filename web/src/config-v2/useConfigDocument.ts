@@ -261,6 +261,16 @@ function overviewFailed(error: unknown): null {
   capabilityError.value = friendlyRuntimeError(error)
   return null
 }
+// 草稿有没保存的修改，面板上的文件却在别处换了：马上说出来（下载草稿 / 重新读取），不等保存撞上才知道；草稿、对照的那份和文件散列都不动
+// The draft has unsaved edits but the file on the panel was changed elsewhere: say so now (下载草稿 / 重新读取) instead of waiting for a save to hit it;
+// the draft, the baseline and the file hash all stay
+function enterStaleBase(): void {
+  origin.value = 'draft'
+  conflict.value = true
+  verdict.value = '这份配置在别处改过了'
+  // 后面紧跟着「下载草稿」「重新读取」两个链接：说明不再复述它们 / The 下载草稿 and 重新读取 links follow right after: the note does not restate them
+  finishStage('failed', '现在的草稿是基于旧版本的')
+}
 export async function refreshRuntime(): Promise<void> {
   const [nextDoc, overview, service] = await Promise.all([
     apiRequest<ConfigDocument>('/api/v1/config'),
@@ -268,12 +278,18 @@ export async function refreshRuntime(): Promise<void> {
     apiRequest<ServiceStatus>('/api/v1/service').catch(() => null),
   ])
   applyRuntime(nextDoc, overview, service)
+  // 只刷新运行状态的时候（有修改时连上、启动 KixDNS）也看一眼文件：别处换过了就和静默重读一样马上说
+  // A runtime-only refresh (a reconnect or 启动 KixDNS with edits) still looks at the file: changed elsewhere, it says so at once, as the quiet re-read does
+  const moved = doc.value !== null && nextDoc.sha256 !== doc.value.sha256
   if (doc.value) doc.value = { ...doc.value, runtime: nextDoc.runtime, pending: nextDoc.pending }
+  if (moved && unsaved.value && !busy.value && !conflict.value) enterStaleBase()
   applyHits(overview?.metrics?.rules ?? [])
   applyUpstreamStats(overview?.metrics?.upstreams ?? [], overview?.metrics?.recent_window_seconds ?? null)
 }
 
 let pendingLoad: Promise<void> | null = null
+// 排在路上那次读后面的「要显示读取中」的读（重新读取）：前一次读完时不把「读取中」撤掉 / Loud reads (重新读取) queued behind the read in flight: when that read ends, 读取中 stays up
+let loudWaiting = 0
 // 上一次读取失败是不是因为连不上面板：连上后运行状态读得到，这条失败就过时了 / Whether the last read failed because the panel was unreachable: once the runtime reads again, that failure is stale
 let loadFailedDown = false
 // quiet：保存之后的刷新不换成骨架 / quiet: the refresh after a save keeps the page mounted
@@ -283,11 +299,20 @@ let loadFailedDown = false
 // the baseline becomes the file just read; sent is the draft a save sent, and when nothing changed since and nothing else is unsaved the file replaces it as usual
 // fresh：调用的人要整份换上读到的文件（恢复版本：确认时已经说了没保存的修改会丢），不走「保留这边的修改」
 // fresh: the caller replaces the draft with the file read, whatever was edited (a restore: its confirm said unsaved edits would be lost), never the keep-edits path
-export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: string; fresh?: boolean } = {}): Promise<void> {
-  // 已经有一次读在路上：一般就等它；但保存（sent）和要保留草稿的读，得看到自己写进去以后的文件——那次读是写之前发的，等它回来再读一次
-  // A read is already out: usually just wait for it; but a save's read (sent) and a keep-draft read must see the file after their own write — that read left
-  // before the write, so wait for it and then read again
-  if (pendingLoad) return options.sent !== undefined || options.keepDraft ? pendingLoad.catch(() => undefined).then(() => load(options)) : pendingLoad
+// own：文件是这一页自己挪的（写进去了却没生效、删了待应用的版本），留着的草稿换到新文件上；没有 own 时文件变了就是别处改的，进冲突状态
+// own: this page moved the file itself (written but not taken, a pending version deleted), so a kept draft moves onto the new file; without own a changed
+// file was changed elsewhere and the conflict state follows
+export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: string; fresh?: boolean; own?: boolean } = {}): Promise<void> {
+  // 已经有一次读在路上：只有同样静默的读才等它就算数；保存（sent）、要保留草稿的、要整份换上的（恢复版本）和「重新读取」都得看到之后的文件——
+  // 那次读是之前发的，等它回来再读一次（以前恢复版本拿到的是之前那次读，页面停在恢复前的文件上，提示却说恢复好了）
+  // A read is already out: only another plain quiet read counts it as its own; a save's read (sent), a keep-draft read, a fresh read (a restore) and 重新读取
+  // must see the file as it is after them — that read left earlier, so wait for it and read again (a restore used to get the earlier read: the page stayed on
+  // the pre-restore file while the toast said it was restored)
+  if (pendingLoad) {
+    if (options.sent === undefined && !options.keepDraft && !options.fresh && options.quiet) return pendingLoad
+    if (!options.quiet) { loudWaiting += 1; loading.value = true }
+    return pendingLoad.catch(() => undefined).then(() => { if (!options.quiet) loudWaiting -= 1; return load(options) })
+  }
   if (!options.quiet) loading.value = true
   const unsavedAtStart = unsaved.value
   // 发出时文件的散列：读回来之前有一次写（保存落地）把它挪了，这次读到的就是旧的，不拿它盖掉 / The file hash when sent: if a write (a landed save) moved it before this read returns, what was read is stale and must not overwrite it
@@ -308,24 +333,23 @@ export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: str
     // 下次保存会撞上「别处改过了」，再重新读取
     // The quiet re-read left with no edits, edits were made before it came back, and the file changed on the panel: the edits are not wiped by the file,
     // only the runtime moves (as on a reconnect with edits); the next save meets 别处改过了 and re-reads then
-    const keepEdits = previous !== null && options.quiet === true && options.sent === undefined && !options.keepDraft && !options.fresh && !unsavedAtStart && unsaved.value && nextDoc.sha256 !== previousSha
+    // 回到留着的草稿（keepDraft、不是自己挪的文件）时文件变了也一样：以前悄悄换到新文件上，下次保存就把别处的改动当成自己的删掉了
+    // The same on returning to a held draft (keepDraft, a file this page did not move): it used to rebase silently, and the next save then removed the other
+    // writer's change as if it were one's own
+    const keepEdits = previous !== null && options.sent === undefined && !options.fresh && nextDoc.sha256 !== previousSha && unsaved.value
+      && ((options.quiet === true && !options.keepDraft && !unsavedAtStart) || (options.keepDraft === true && !options.own))
     doc.value = keepEdits ? { ...previous, runtime: nextDoc.runtime, pending: nextDoc.pending } : nextDoc
     versions.value = history.versions
     // 读进草稿：散列对得上就是面板写的那份；对不上（手改过）会重新导入并给报告 / Into the draft: the hash matching means the panel wrote it; otherwise it is re-imported with a report
     // 重新读进来的是另一份草稿：上一份草稿的失败和冲突不再适用 / What is read in is a different draft: the previous draft's failure and conflict no longer apply
-    if (!options.quiet) { conflict.value = false; if (stage.value === 'failed' || stage.value === 'done') finishStage('idle') }
+    // 整份换上（fresh，恢复版本）也一样：之前那次读刚说的「别处改过了」随草稿一起换掉 / A fresh read (a restore) likewise: a 别处改过了 just raised by the earlier read goes with the draft it was about
+    if (!options.quiet || options.fresh) { conflict.value = false; if (stage.value === 'failed' || stage.value === 'done') finishStage('idle') }
     // 保存之后（sent）一律只换对照的那份：草稿里的对象不换，开着的抽屉、规则面板拿着的还是同一个对象（以前整份换掉，保存途中打开的上游组抽屉会改到别的组）。
     // 写进文件再读回来和草稿一样（store.test 里有往返测试），所以没再改过时「已修改」归零
     // After a save (sent) only the baseline moves: the draft's objects stay, so an open drawer or rule panel still holds the same object (replacing them
     // made an upstream-group drawer opened during a save write to another group). Writing and reading back equals the draft (round-trip test in store.test), so with no edits since, the count returns to zero
-    if (keepEdits) {
-      // 草稿和对照的那份都不动；文件在别处改过了，马上说出来（下载草稿 / 重新读取），不等保存撞上才知道
-      // Neither the draft nor the baseline moves; the file was changed elsewhere, so say it now (下载草稿 / 重新读取) instead of waiting for a save to hit it
-      origin.value = 'draft'
-      conflict.value = true
-      verdict.value = '这份配置在别处改过了'
-      finishStage('failed', '现在的草稿是基于旧版本的，可以先下载草稿再重新读取')
-    } else if (options.sent !== undefined || (options.keepDraft && unsaved.value)) {
+    if (keepEdits) enterStaleBase()
+    else if (options.sent !== undefined || (options.keepDraft && unsaved.value)) {
       // 文件没变就什么都不动；变了（保存成功、别处改过）把对照的那份换成它，草稿里的修改照旧算修改
       // File unchanged: nothing moves; changed (a save went through, an edit elsewhere): the baseline becomes it and the draft's edits still count as edits
       if (options.sent !== undefined || nextDoc.sha256 !== previousSha) rebaseApplied(readConfig(nextDoc.content, model).model)
@@ -346,7 +370,7 @@ export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: str
     loadFailedDown = false
     // 重新读取成功：「重试没有成功：…先重新读取」那条提示说的事已经办了 / Re-read done: the 「重试没有成功：…先重新读取」 toast's advice has been taken
     if (!options.quiet && retryToast !== null) { useToast().dismiss(retryToast); retryToast = null }
-  })().catch((error: unknown) => { loadError.value = errorMessage(error); loadFailedDown = isPanelDown(error) }).finally(() => { loading.value = false; pendingLoad = null })
+  })().catch((error: unknown) => { loadError.value = errorMessage(error); loadFailedDown = isPanelDown(error) }).finally(() => { loading.value = loudWaiting > 0; pendingLoad = null })
   return pendingLoad
 }
 
@@ -367,13 +391,19 @@ async function runCheck(): Promise<ValidationResult | null> {
   // 记下校验的是哪一份：排在后面的保存要写的正是这一份时，不再校验第二遍 / Note which content is checked: a save queued behind it that writes exactly this need not check it twice
   const checked = JSON.stringify(exportConfig(model))
   checkedContent = null
+  // 校验途中草稿整份换过（重新读取、导入、放弃修改）：结论说的是已经不在的那份，丢掉，不挂到新草稿上
+  // The draft was replaced wholesale while checking (重新读取, an import, 放弃修改): the verdict is about a draft that is gone, so it is dropped, not hung on the new one
+  const generation = draftGeneration()
   try {
-    validation.value = await apiRequest<ValidationResult>('/api/v1/config/validate', { method: 'POST', body: checked })
+    const result = await apiRequest<ValidationResult>('/api/v1/config/validate', { method: 'POST', body: checked })
+    if (draftGeneration() !== generation) { finishStage('idle'); return null }
+    validation.value = result
     checkedContent = checked
     finishStage('idle')
     return validation.value
   } catch (error) {
     if (error instanceof ApiError && error.status === 401) { finishStage('idle'); return null }
+    if (draftGeneration() !== generation) { finishStage('idle'); return null }
     const stopped = stoppedError(error)
     const down = isPanelDown(error)
     verdict.value = stopped ? 'KixDNS 已停止' : down ? '连不上面板' : '没有通过校验'
@@ -410,7 +440,9 @@ let awayToast: number | null = null
 // 回应丢了的那次保存（写进去没有不知道）：连上以后、或者下一次保存撞上「别处改过了」时，拿面板上的配置和它比一比
 // The save whose answer was lost (written or not, unknown): once reconnected, or when the next save meets 别处改过了, compare the panel's config with it
 // from / pending：丢的是保存还是「现在应用」，当时待应用的是哪个版本——核对的结果按它来说 / from / pending: whether the lost request was a save or 现在应用, and which version was pending — the result is worded by it
-let unanswered: { content: unknown; sent: string; base: string; generation: number; sentAt: number; from: 'draft' | 'apply'; pending: number | null } | null = null
+// version：发出时文件的版本号——「现在应用」发的就是待应用的那份文件，比内容认不出写没写进去，要看版本号动没动
+// version: the file's version when sent — 现在应用 sends the pending file itself, so the content cannot tell whether it was written; the version number moving can
+let unanswered: { content: unknown; sent: string; base: string; generation: number; sentAt: number; from: 'draft' | 'apply'; pending: number | null; version: number | null } | null = null
 const announceWritten = () => { if (typeof window !== 'undefined') window.dispatchEvent(new Event(CONFIG_WRITTEN_EVENT)) }
 // 不在配置页时草稿还在内存里（正在保存，或者没保存成功留着）：刷新、关掉浏览器先问一句；配置页开着时由它自己问
 // Away from the config page with a draft still in memory (a save in flight, or one that failed and is kept): reloading or closing the browser asks first; while
@@ -524,7 +556,8 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
       step = 'applying'
       stage.value = step
     }
-    const message = saveMessage.value.trim()
+    // 「现在应用」没有备注栏：带上待应用版本的备注，生效的那个版本照样写着它是什么 / 现在应用 has no note field: carry the pending version's note, so the version that runs still says what it is
+    const message = saveMessage.value.trim() || (from === 'apply' ? pendingNote(failedBefore) : '')
     const result = await apiRequest<ConfigApplyResult>('/api/v1/config', { method: 'PUT', ...jsonBody({ content, expected_sha256: expected, message }) })
     const pendingText = `已存成待应用版本 #${result.version_id}，${pendingWhen()}自\u2060动\u2060应\u2060用`
     saveMessage.value = ''
@@ -546,7 +579,8 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     const later = changeCount.value ? ` · 之后改的 ${changeCount.value} 处还没保存` : jsonEdited.value ? ' · JSON 里之后改的还没保存' : ''
     finishStage('done', `${applyResultState(result) === 'pending' ? pendingText : `已生效 · 版本 #${result.version_id}`}${later}`)
     // 从提示条按的「重试应用」没有保存条报结果：成功了说一句，不让提示条悄悄消失 / 重试应用 from the notice has no save bar to report: say it worked instead of the notice just vanishing
-    if (from === 'apply' && applyResultState(result) === 'applied') useToast().success(`版本 #${result.version_id} 已生效`)
+    // 每次写入都存成新版本：「现在应用」按的是 #18，生效的是 #19，用恢复版本的说法交代一句 / Every write is stored as a new version: 现在应用 was pressed on #18 and #19 took effect, said in the restore wording
+    if (from === 'apply' && applyResultState(result) === 'applied') useToast().success(failedBefore && failedBefore !== result.version_id ? `已应用版本 #${failedBefore} 的内容，当前版本 #${result.version_id}` : `版本 #${result.version_id} 已生效`)
     // 保存途中离开了配置页：没有保存条报结果，用提示说；退出登录时放下了这份草稿就不说（确认框说过「不再告诉你结果」）
     // Left the config page mid-save: no save bar reports it, so a toast does; not after sign-out let the draft go (the confirm said no result would follow)
     else if (!viewing && !abandoned) useToast().success(applyResultState(result) === 'pending' ? pendingText : `版本 #${result.version_id} 已生效`)
@@ -564,7 +598,7 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     const reason = friendlyRuntimeError(error)
     const stopped = stoppedError(error)
     const down = isPanelDown(error)
-    if (down && step === 'applying') unanswered = { content, sent, base, generation: draftGeneration(), sentAt, from, pending: pendingVersionId.value ?? null }
+    if (down && step === 'applying') unanswered = { content, sent, base, generation: draftGeneration(), sentAt, from, pending: pendingVersionId.value ?? null, version: doc.value?.version_id ?? null }
     // 写进文件以后 KixDNS 没接受：版本已经存下了，只是没生效 / KixDNS refused after the write: the version is stored, it just did not take
     const writtenNotApplied = step === 'applying' && error instanceof ApiError && ['reload_failed', 'kixdns_rejected'].includes(error.code)
     // 写进去了（只是没生效）：和保存落地一样，草稿定下来之前的「撤销」过时了 / Written (just not applied): as when a save lands, undos from before the draft was fixed are stale
@@ -575,7 +609,7 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     // 校验这一步没写入任何东西：只刷新运行状态，草稿和失败的说法都留着；写入以后失败才重读文件（草稿照样留着）
     // Nothing was written at the validation step: refresh the runtime only, keeping the draft and the verdict; only a failure after writing re-reads the file (the draft still stays)
     if (step === 'validating' || stopped) await refreshRuntime().catch(() => undefined)
-    else if (shouldRefreshAfterSaveError(error)) await load({ quiet: true, keepDraft: true })
+    else if (shouldRefreshAfterSaveError(error)) await load({ quiet: true, keepDraft: true, own: true })
     // 写进去了却没生效、草稿也没有别的修改：这件事交给页面上方的提示条（那里有「重试应用」），保存条退下，不再给第二个重试
     // Written but not applied and nothing else in the draft: the notice above owns it (with 重试应用); the save bar steps aside instead of offering a second retry
     if (writtenNotApplied && changeCount.value === 0 && from === 'draft') finishStage('idle')
@@ -602,7 +636,7 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
         if (!viewing && !abandoned) {
           dismissAwayToast()
           awayToast = useToast().error(stopped ? 'KixDNS 已停止：待应用的版本启动后自动应用'
-            : writtenNotApplied ? `${which(pendingVersionId.value)}没有生效。${sentence(failureCause(reason))}。回到配\u2060置\u2060页可以重试应用`
+            : writtenNotApplied ? `${failedBefore && pendingVersionId.value && pendingVersionId.value !== failedBefore ? `存成了版本 #${pendingVersionId.value}，` : which(pendingVersionId.value)}没有生效。${sentence(failureCause(reason))}。回到配\u2060置\u2060页可以重试应用`
               : down && step === 'applying' ? `不知道${which(failedBefore)}应用了没有：连不上面板。连上后会自己核对`
                 : down ? `${which(failedBefore)}没有应用：连不上面板。连上后回配\u2060置\u2060页再应用`
                   : step === 'validating' ? `${which(failedBefore)}没有应用。配置文件没有通过校验。${reason}` : `${which(failedBefore)}没有应用。${reason}`)
@@ -672,15 +706,31 @@ async function settleOnce(announce: boolean): Promise<boolean> {
   // 丢的是「现在应用」：结果按应用说，不说「保存」（那时没有保存条，也没有要保存的东西） / The lost request was 现在应用: the result is worded as an apply, not a save (there was no save bar and nothing to save)
   const applying = lost.from === 'apply'
   const pendingName = lost.pending ? `版本 #${lost.pending} ` : '待应用的版本'
-  if (canonical(current.content) !== canonical(lost.content)) {
+  // 「现在应用」没写进去时文件还是那份待应用的，内容和发出去的一模一样：版本号没动就是没写进去（以前当成写进去了，还说「待应用，就绪后自动应用」）
+  // When 现在应用 was not written the file is still the pending one, identical to what was sent: an unmoved version number means it was not written (it used to
+  // count as written and even said 待应用, 就绪后自动应用)
+  const notWritten = applying && lost.version !== null && current.version_id === lost.version
+  if (notWritten || canonical(current.content) !== canonical(lost.content)) {
     // 面板上的文件还是草稿的底子：那次保存没有存上。文件变了又不是自己那次：别处改过了（可能是存上以后又被改掉），按冲突处理，
     // 免得回去一按保存就悄悄盖掉别处的版本
     // The file on the panel is still the draft's base: the save did not land. The file changed and is not one's own save: it was changed elsewhere
     // (perhaps after it landed), so it is handled as a conflict, or saving on return would silently overwrite the other version
     const changedElsewhere = Boolean(doc.value) && current.sha256 !== doc.value!.sha256
     // 这时页面上正有一次保存在跑：结论交给它自己说（它会撞上同一个冲突），这里不抢着改保存条 / A save is running on the page: it reports for itself (it meets the same conflict), so the bar is not changed here
+    // 丢的是「现在应用」、草稿里也没有要保存的：没什么可丢的，直接读入别处的版本并说一句（以前进了冲突状态，可保存条不为应用显示，页面上一声不响）
+    // The lost request was 现在应用 and nothing in the draft is unsaved: nothing can be lost, so read the other version in and say so (it used to enter the
+    // conflict state, which the save bar does not show for an apply, so the page stayed silent)
+    if (changedElsewhere && inFlight === null && applying && !unsaved.value) {
+      await load({ quiet: true, fresh: true })
+      const read = doc.value?.version_id ? `，已读入版本 #${doc.value.version_id}` : '，已重新读取'
+      if (viewing && announce) useToast().info(`刚才那次应用不在现在的配置里：这份配置在别处改\u2060过\u2060了${read}`)
+      else if (!viewing && awayToast !== null) { dismissAwayToast(); awayToast = useToast().error(`刚才那次应用不在现在的配置里：这份配置在别处改\u2060过\u2060了${read}`) }
+      return false
+    }
     if (changedElsewhere && inFlight === null) {
       conflict.value = true
+      // 草稿里还有没保存的修改：冲突归保存条说（「现在应用」的结果保存条不显示） / Unsaved edits remain: the save bar owns the conflict (it does not show 现在应用's outcomes)
+      origin.value = 'draft'
       // 那次保存可能存上过、又被别处盖掉：不说「没有保存」，只说它不在现在的配置里 / The save may have landed and then been overwritten: say it is not in the current config, not that it was never saved
       verdict.value = applying ? '刚才那次应用不在现在的配置里' : '刚才那次保存不在现在的配置里'
       finishStage('failed', '这份配置在别处改过了，现在的草稿是基于旧版本的')
@@ -725,10 +775,12 @@ async function settleOnce(announce: boolean): Promise<boolean> {
   if (!viewing || (announce && (!sameDraft || applying))) {
     dismissAwayToast()
     // 说出它现在生效了没有（核对时已经读过一遍运行状态） / Say whether it is in effect now (the runtime was just read during the check)
-    const opening = applying ? '刚才那次应用已经写进去了' : '刚才那次保存已经存上了'
-    if (hasApplyFailure.value) useToast().error(`${opening}：${version ? `${version} ` : ''}没有生效，${viewing ? '可以重试应用' : '回到配\u2060置\u2060页可以重试应用'}`)
-    else if (hasPending.value) useToast().success(`${opening}：${version ? `${version} 待应用，` : ''}${pendingWhen()}自\u2060动\u2060应\u2060用`)
-    else useToast().success(version ? `${opening}：${version} 已生效` : opening)
+    // 应用存成了新版本：开头就说出新编号，后面只说结果（和恢复版本、重试应用一样交代编号） / An apply stored as a new version: the opening names it and the rest says the outcome (numbers are accounted for as restore and retry do)
+    const opening = applying ? (version ? `刚才那次应用存成了${version}` : '刚才那次应用存上了') : '刚才那次保存已经存上了'
+    const which = applying || !version ? '' : `${version} `
+    if (hasApplyFailure.value) useToast().error(`${opening}：${which}没有生效，${viewing ? '可以重试应用' : '回到配\u2060置\u2060页可以重试应用'}`)
+    else if (hasPending.value) useToast().success(`${opening}：${which}待应用，${pendingWhen()}自\u2060动\u2060应\u2060用`)
+    else useToast().success(applying ? `${opening}：已生效` : version ? `${opening}：${version} 已生效` : opening)
     // 草稿里没有别的修改了：不用再留着、也不用拦着刷新 / Nothing else is unsaved in the draft: no need to keep it or to guard reloads
     if (!unsaved.value) dropKeptDraft()
   }
@@ -764,6 +816,10 @@ export async function panelBack(): Promise<void> {
 // 连上面板后自己接着做（配置页开着没有都一样），不等人点重试 / Once the panel answers again, carry on by itself (whether or not the config page is open) instead of waiting for 重试
 watch(panelDown, (now, before) => { if (before && !now) void panelBack() })
 /** 待应用的版本什么时候自动应用：说出等的是什么 / When a pending version applies by itself: name what it waits for */
+// 待应用版本的备注：文档里带着就用它，否则到历史里找 / The pending version's note: from the document when it carries one, otherwise from the history
+function pendingNote(id: number | null): string {
+  return doc.value?.pending?.message || (id ? versions.value.find((v) => v.id === id)?.message ?? '' : '')
+}
 export function pendingWhen(): string {
   if (runtimeStopped.value) return 'KixDNS 启动后'
   if (runtimeUnavailable.value) return '连上 KixDNS 后'
@@ -772,6 +828,9 @@ export function pendingWhen(): string {
 
 // ---------- 历史版本 / history ----------
 export const restoring = ref<number | null>(null)
+// 恢复落地的次数：页面自己看着它收尾（JSON 视图换成恢复后的文字），历史抽屉在恢复途中关掉了也照样做
+// How many restores have landed: the page watches it to finish up (the JSON view takes the restored text), even when the history drawer was closed mid-restore
+export const restoredCount = ref(0)
 // 重新读取或恢复版本正在读：页面先不让改，读回来的会整份换掉草稿，这时改的会悄悄丢掉 / A re-read or a restore is reading: the page takes no edits, since what comes back replaces the draft and edits made now would vanish
 export const rereading = computed(() => (loading.value && doc.value !== null) || restoring.value !== null)
 export const deleting = ref<number | null>(null)
@@ -785,13 +844,14 @@ export async function restoreVersion(id: number): Promise<{ state: 'applied' | '
   try {
     const result = await apiRequest<ConfigApplyResult>(`/api/v1/config/versions/${id}/restore`, { method: 'POST', ...jsonBody({ expected_sha256: doc.value.sha256 }) })
     await load({ quiet: true, fresh: true })
+    restoredCount.value += 1
     return { state: applyResultState(result), versionId: result.version_id }
   } finally {
     restoring.value = null
   }
 }
 async function refreshVersions(removesDesired: boolean): Promise<void> {
-  if (removesDesired) { await load({ quiet: true, keepDraft: true }); return }
+  if (removesDesired) { await load({ quiet: true, keepDraft: true, own: true }); return }
   versions.value = (await apiRequest<ConfigVersions>('/api/v1/config/versions')).versions
 }
 const desired = (v: ConfigVersion) => v.id === pendingVersionId.value || v.apply_state === 'pending' || v.apply_state === 'failed'

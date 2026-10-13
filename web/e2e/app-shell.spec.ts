@@ -163,6 +163,19 @@ test('手机系统页读完服务状态时，卡片不往下跳 @responsive', as
   expect(Math.abs((await card.boundingBox())!.y - before)).toBeLessThanOrEqual(1)
 })
 
+// 「当前安装」读到之前按读完的样子占位（标签、大编号、附注、三行哈希、底行），读完卡片不长高，下面的卡不往下跳；以前是一整块灰板，读完长高 60 多
+// The installed card holds the loaded layout before the read (tag, label, big number, note, three hashes, bottom row), so it does not grow and the card below stays put; it used to be one grey slab that grew by 60-odd px on load
+test('系统页「当前安装」读完前后一样高 @responsive', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('kixdns:demo-read-slow', 'true'))
+  await page.goto('/system')
+  const card = page.locator('.runtime-panel')
+  await expect(card.getByRole('status', { name: '读取安装状态' })).toBeVisible({ timeout: 10_000 })
+  const loading = (await card.boundingBox())!.height
+  await expect(card.getByRole('status', { name: '读取安装状态' })).toHaveCount(0, { timeout: 10_000 })
+  await expect(card.locator('.install-version b')).toBeVisible()
+  expect(Math.abs((await card.boundingBox())!.height - loading)).toBeLessThanOrEqual(1)
+})
+
 test('断网时内容区顶上挂出「连不上面板」，联网后自己收起 @responsive', async ({ page, context }, testInfo) => {
   await page.goto('/')
   await expect(page.locator('.overview-page')).toBeVisible()

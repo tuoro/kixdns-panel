@@ -26,7 +26,7 @@ import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, busy, rereading, conflict, dropEditsAfterSave, saveInFlight, onlySaving, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, cnameUse, unsupportedSection } from '../config-v2/useConfigDocument'
+import { applyBusy, busy, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, cnameUse, unsupportedSection } from '../config-v2/useConfigDocument'
 import { useHelp } from '../composables/useHelp'
 import { useServiceStart } from '../composables/useServiceStart'
 import { registerLeaveGuard, takeAgreement } from '../composables/useLeaveGuard'
@@ -215,23 +215,40 @@ const cnamePlaces = computed(() => {
   const mappings = model.mappings.filter((m) => m.enabled && !mappingIsIp(m)).length
   return { mappings, total: cnameUse.value.rules.length + mappings + cnameUse.value.untraced }
 })
-// 说出写成域名的是哪几条规则：点名前两条（点了打开那条规则），多的写「等 N 条」，域名映射只数条数（有「去域名映射」）；只有映射时不另起一行
-// Name the rules whose answers are domains: the first two by name (a click opens that rule), the rest as 「等 N 条」, mappings only counted (they have 去域名映射);
-// with mappings alone no extra line
+// 规则名太长时截在一整项后面：先找「、」「且」，没有才找空格，都没有才截在字中间；截掉的地方写「…」
+// A long rule title is cut after a whole item: at 、 or 且 first, then a space, and mid-word only without either; the cut is marked 「…」
+function cutTitle(full: string): string {
+  if (full.length <= 36) return full
+  const head = full.slice(0, 35)
+  const list = head.lastIndexOf('、')
+  const and = head.lastIndexOf(' 且 ')
+  if (list > 8 || and > 8) return list > and ? `${head.slice(0, list)}…` : `${head.slice(0, and + 2)}…`
+  const space = head.lastIndexOf(' ')
+  return `${(space > 8 ? head.slice(0, space) : head).replace(/[\s.\-_]+$/, '')}…`
+}
+// 说出写成域名的是哪几条规则：点名前两条（点了打开那条规则），多的写「等 N 条」，域名映射只数条数（有「去域名映射」），认不回规则的几处说只能在 JSON 里改；
+// 只有映射时不另起一行
+// Name the rules whose answers are domains: the first two by name (a click opens that rule), the rest as 「等 N 条」, mappings only counted (they have 去域名映射),
+// and places that trace back to no rule as editable only in JSON; with mappings alone no extra line
 const cnameWhere = computed((): { detail?: string; links?: Record<string, number> } => {
   const rules = cnameUse.value.rules
-  if (!rules.length) return {}
+  const untraced = cnameUse.value.untraced
+  // 没有认得回的规则：全是只能在 JSON 里改的就直说「这处 / 这 N 处」，还有映射时说「其中 N 处」 / No rule traced back: when every place is JSON-only say 这处 / 这 N 处, with mappings too say 其中 N 处
+  if (!rules.length) {
+    if (!untraced) return {}
+    if (untraced < cnamePlaces.value.total) return { detail: `其中\u00a0${untraced}\u00a0处只能在 JSON 里改` }
+    return { detail: untraced === 1 ? '这处回答只能在 JSON 里改' : `这\u00a0${untraced}\u00a0处回答都只能在 JSON 里改` }
+  }
   const links: Record<string, number> = {}
   for (const rule of rules.slice(0, 2)) {
-    const full = ruleTitle(rule).replace(/[「」]/g, '')
-    // 超过 36 个字才截，常见的域名条件整个写出来；截在点、连字符上时先去掉它，不出现「name.…」 / Cut only past 36 characters, so a usual domain condition is written in full; a cut that ends on a dot or hyphen drops it first, so no 「name.…」
-    const title = full.length > 36 ? `${full.slice(0, 35).replace(/[\s.\-_]+$/, '')}…` : full
+    const title = cutTitle(ruleTitle(rule).replace(/[「」]/g, ''))
     if (!(title in links)) links[title] = rule.id
   }
   const named = Object.keys(links).map((title) => `「${title}」`).join('')
   const more = rules.length > Object.keys(links).length ? `等\u00a0${rules.length}\u00a0条` : ''
   const mappings = cnamePlaces.value.mappings ? `、域名映射\u00a0${cnamePlaces.value.mappings}\u00a0条` : ''
-  return { detail: `写成域名的有：规则${named}${more}${mappings}`, links }
+  const json = untraced ? `，另有\u00a0${untraced}\u00a0处只能在 JSON 里改` : ''
+  return { detail: `写成域名的有：规则${named}${more}${mappings}${json}`, links }
 })
 function stripPrefix(): void {
   let n = 0
@@ -292,6 +309,10 @@ function afterRestore(): void {
   jsonText.value = compiledText()
   jsonBase.value = jsonText.value
 }
+// 页面自己看着恢复落地，不靠抽屉转告：恢复途中关掉抽屉，JSON 里同意丢掉的修改以前会留下来，切回表单又把恢复改回去
+// The page watches the restore land itself instead of relying on the drawer: closing the drawer mid-restore used to keep the JSON edits the user agreed to
+// drop, and going back to the form then reverted the restore
+watch(restoredCount, afterRestore)
 function leaveJson(): boolean {
   if (jsonError.value) { toast.info('JSON 写错了，改好才能切换'); return false }
   foldJson()
@@ -310,17 +331,20 @@ function flush(purpose: 'save' | 'fold'): boolean {
 }
 function setMode(m: string): void { if (m === 'json') void enterJson(); else leaveJson() }
 const modes = [{ value: 'form', label: '表单', icon: Settings2 }, { value: 'json', label: 'JSON', icon: Braces }]
+// 重新读取、恢复版本还在读：会换掉草稿、读草稿的几项都等它读完（以前恢复途中还能导入，读回来悄悄盖掉；「重试应用」会让恢复撞上自己写的版本）
+// While 重新读取 or a restore is reading, the items that replace or read the draft wait for it (an import during a restore used to be silently overwritten
+// when the read landed, and 重试应用 made the restore collide with the version this page had just written)
 const moreItems = computed(() => [
-  { value: 'history', label: '历史版本', icon: History, disabled: !ready.value },
-  { value: 'mode', label: ui.mode === 'json' ? '回到表单' : '查看 JSON', icon: ui.mode === 'json' ? Settings2 : Braces, disabled: !ready.value },
+  { value: 'history', label: '历史版本', icon: History, disabled: !ready.value || rereading.value },
+  { value: 'mode', label: ui.mode === 'json' ? '回到表单' : '查看 JSON', icon: ui.mode === 'json' ? Settings2 : Braces, disabled: !ready.value || rereading.value },
   // 保存途中不导入：导入会换掉草稿，和重新读取一样等保存做完 / No import during a save: it replaces the draft, so it waits for the save like 重新读取
-  { value: 'import', label: '导入 JSON', icon: FileUp, disabled: !ready.value || saveInFlight.value },
+  { value: 'import', label: '导入 JSON', icon: FileUp, disabled: !ready.value || saveInFlight.value || rereading.value },
   { value: 'download', label: '下载 JSON', icon: Download, disabled: !ready.value },
   // 连不上面板时读不到，按了只会失败 / Unreachable panel: the read can only fail
   // 保存途中也不重新读取：读进来的会被那次保存覆盖，「之后改的」就成了撤回刚保存的 / Not during a save either: the read would be overtaken by that save, and 之后改的 would become a revert of what was just saved
-  { value: 'reload', label: '重新读取配置', icon: RefreshCw, disabled: loading.value || panelDown.value || saveInFlight.value },
-  // 手机的保存条放不下「放弃修改」，放在这里；桌面的保存条上一直有 / The phone save bar has no room for 放弃修改, so it lives here; the desktop bar always shows it
-  ...(phone.value && unsaved.value ? [{ value: 'discard', label: '放弃修改', icon: Undo2, disabled: saveInFlight.value }] : []),
+  { value: 'reload', label: '重新读取配置', icon: RefreshCw, disabled: loading.value || panelDown.value || saveInFlight.value || rereading.value },
+  // 手机的保存条放不下「放弃修改」，放在这里；桌面的保存条上有（冲突时那里只有「重新读取」） / The phone save bar has no room for 放弃修改, so it lives here; the desktop bar shows it (in a conflict it offers 重新读取 instead)
+  ...(phone.value && unsaved.value ? [{ value: 'discard', label: '放弃修改', icon: Undo2, disabled: saveInFlight.value || rereading.value }] : []),
   { value: 'help', label: '帮助', icon: CircleHelp },
 ])
 function pickMore(value: string): void {
@@ -366,6 +390,10 @@ async function importFile(event: Event): Promise<void> {
 const undoImport = ref<(() => void) | null>(null)
 function downloadJson(): void {
   if (ui.mode === 'json' && jsonError.value) { toast.error('JSON 写错了，改好再下载'); return }
+  // 右侧规则里没点「完成」的修改也是草稿的一部分：先收进来再下载（冲突时下载完就要重新读取，漏掉它就丢了）；写得不完整就先说
+  // Edits in the side panel not yet 完成 are part of the draft too: fold them in before downloading (in a conflict the download is followed by 重新读取, which
+  // would lose them); when the rule is incomplete, say so first
+  if (ui.mode !== 'json' && editor.value && editorRef.value && !editorRef.value.commit(inspector.value)) { toast.info('先改好右侧规则再下载'); return }
   const data = ui.mode === 'json' ? jsonText.value : JSON.stringify(exportConfig(model), null, 2)
   const a = document.createElement('a')
   a.href = URL.createObjectURL(new Blob([data], { type: 'application/json' }))
@@ -497,7 +525,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10" /><path d="M12 8v4M12 16h.01" /></svg>
       <span>{{ notice.text }}</span>
       <small v-if="notice.detail"><RuleText :text="notice.detail" :links="notice.links" @rule="openRule($event, null)" @group="groupEditor = { id: $event }" /></small>
-      <button v-if="notice.action" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="applyBusy" @click="runNotice">{{ notice.action }}</button>
+      <button v-if="notice.action" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="applyBusy || rereading" @click="runNotice">{{ notice.action }}</button>
     </div>
 
     <!-- 只由菜单里的「导入 JSON」打开：不进 Tab 顺序，读屏也不念一个没名字的「选择文件」 / Opened only by 导入 JSON in the menu: out of the Tab order, and screen readers do not announce a nameless "choose file" -->
@@ -505,7 +533,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
     <!-- 侧栏收起时（≤860）分区页签在这一行；宽屏上分区在侧栏里，这一行只在 JSON 视图时出现（≥861 由 CSS 藏起页签）
          With the sidebar folded (≤860) the section tabs sit on this row; on wide screens sections live in the sidebar and the row shows only in the JSON view (CSS hides the tabs at ≥861) -->
     <div v-if="!firstRun && (compact || ui.mode === 'json')" class="cfg__nav" :class="{ 'cfg__nav--json': ui.mode === 'json' }">
-      <div v-if="ui.mode === 'json'" class="cfg__whole"><h2>完整配置</h2><button class="ui-btn ui-btn--text ui-btn--sm ui-btn--inline cfg__to-form" type="button" @click="setMode('form')">回到表单</button></div>
+      <div v-if="ui.mode === 'json'" class="cfg__whole"><h2>完整配置</h2><button class="ui-btn ui-btn--text ui-btn--sm ui-btn--inline cfg__to-form" type="button" :disabled="rereading" @click="setMode('form')">回到表单</button></div>
       <UiTabs v-else class="cfg__tabs" :model-value="section" :items="tabs" label="配置分类" id-prefix="cfg" @update:model-value="setTab" />
     </div>
 
@@ -537,6 +565,6 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
     <SaveBar v-if="ready" :json-error="jsonError" :json-dirty="jsonDirty" :flush="flush" @rule="openRule($event, null)" @group="groupEditor = { id: $event }" @reveal="(l: number, c: number) => jsonEditor?.reveal(l, c)" @reload="reload()" @download="downloadJson" @discarded="afterDiscard" />
   </div>
   <GroupEditor v-if="groupEditor" :key="groupEditor.id ?? 'new'" :group-id="groupEditor.id" @close="groupEditor = null" @saved="groupSaved" @deleted="groupDeleted" />
-  <HistoryDrawer v-if="historyOpen" :compare-with="historyOpen.compare" @close="historyOpen = null" @rule="historyOpen = null; openRule($event, null)" @restored="afterRestore" />
+  <HistoryDrawer v-if="historyOpen" :compare-with="historyOpen.compare" @close="historyOpen = null" @rule="historyOpen = null; openRule($event, null)" />
   <ImportReportDialog v-if="reportOpen && importReport" :undo="Boolean(undoImport)" @close="reportOpen = false; undoImport = null" @undo="undoImport?.()" />
 </template>

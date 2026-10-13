@@ -90,7 +90,7 @@ pub(super) fn artifact_sources(
 
 pub(super) fn extract_artifact(archive: &[u8]) -> Result<ExtractedArtifact, UpdateError> {
     let mut archive = zip::ZipArchive::new(Cursor::new(archive))
-        .map_err(|error| UpdateError::Verification(format!("Artifact 不是有效 ZIP：{error}")))?;
+        .map_err(|error| UpdateError::Verification(format!("不是有效的 ZIP 文件：{error}")))?;
     let checksums = read_zip_entry(&mut archive, "SHA256SUMS", 64 * 1024)?;
     let checksums = String::from_utf8(checksums)
         .map_err(|_| UpdateError::Verification("SHA256SUMS 不是 UTF-8".to_owned()))?;
@@ -198,9 +198,7 @@ pub(super) fn read_optional_verified_zip_entry(
         ))),
         0 => Ok(None),
         1 => read_verified_zip_entry(archive, checksums, name, limit).map(Some),
-        _ => Err(UpdateError::Verification(format!(
-            "Artifact 中的 {name} 重复"
-        ))),
+        _ => Err(UpdateError::Verification(format!("包里的 {name} 重复"))),
     }
 }
 
@@ -211,12 +209,12 @@ pub(super) fn read_zip_entry(
 ) -> Result<Vec<u8>, UpdateError> {
     if archive.file_names().filter(|entry| *entry == name).count() != 1 {
         return Err(UpdateError::Verification(format!(
-            "Artifact 中的 {name} 缺失或重复"
+            "包里的 {name} 缺失或重复"
         )));
     }
     let file = archive
         .by_name(name)
-        .map_err(|_| UpdateError::Verification(format!("Artifact 缺少 {name}")))?;
+        .map_err(|_| UpdateError::Verification(format!("包里缺少 {name}")))?;
     if file.is_dir() || file.size() > limit {
         return Err(UpdateError::Verification(format!("{name} 大小无效")));
     }
@@ -578,18 +576,14 @@ impl UpdateManager {
             .content_length()
             .is_some_and(|length| length > MAX_ARTIFACT_BYTES as u64)
         {
-            return Err(UpdateError::Verification(
-                "Artifact 超过 128 MiB".to_owned(),
-            ));
+            return Err(UpdateError::Verification("超过 128\u{a0}MiB".to_owned()));
         }
         let mut stream = response.bytes_stream();
         let mut bytes = Vec::new();
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(network)?;
             if bytes.len().saturating_add(chunk.len()) > MAX_ARTIFACT_BYTES {
-                return Err(UpdateError::Verification(
-                    "Artifact 超过 128 MiB".to_owned(),
-                ));
+                return Err(UpdateError::Verification("超过 128\u{a0}MiB".to_owned()));
             }
             bytes.extend_from_slice(&chunk);
         }
@@ -619,7 +613,7 @@ impl UpdateManager {
     ) -> Result<Vec<u8>, UpdateError> {
         let expected = digest
             .strip_prefix("sha256:")
-            .ok_or_else(|| UpdateError::Verification("Artifact digest 格式无效".to_owned()))?;
+            .ok_or_else(|| UpdateError::Verification("校验值格式无效".to_owned()))?;
         let mut last_error = None;
         for (index, source) in sources.iter().enumerate() {
             let result = Self::fetch_artifact(client, &source.url, source.token.as_ref(), timeout)
@@ -630,7 +624,7 @@ impl UpdateManager {
                         Ok(bytes)
                     } else {
                         Err(UpdateError::Verification(format!(
-                            "Artifact digest 不匹配：期望 {expected}，实际 {actual}"
+                            "校验值不对（应为 {expected}，实际 {actual}）"
                         )))
                     }
                 });

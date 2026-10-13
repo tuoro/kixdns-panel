@@ -47,7 +47,7 @@ usage() {
 默认通过交互终端依次询问 KixDNS 和配置数据的处理方式。
 
   --keep-kixdns     仅卸载面板，保留当前 KixDNS
-  --remove-kixdns   同时移除面板管理的 KixDNS；外部 KixDNS 始终保留
+  --remove-kixdns   同时移除面板管理的 KixDNS；迁移过来的会移除增强版、恢复原来的 KixDNS
   --keep-config     保留面板配置、数据库、版本库和 Geo 数据
   --remove-config   删除面板配置与运行数据
   --yes             跳过最终确认；仍须明确指定缺少的处理方式
@@ -289,6 +289,9 @@ confirm_uninstall() {
   printf '\n卸载计划：\n' >&3
   if [[ ${KIXDNS_ACTION} == keep ]]; then
     printf '  - 保留 KixDNS\n' >&3
+  elif [[ ${HAS_EXTERNAL_BACKUP} == true ]]; then
+    # 和上面的选项同一句话：迁移过来的主机上，移除的是增强版，原来的 KixDNS 会放回去
+    printf '  - 移除增强版，恢复原来的 KixDNS\n' >&3
   else
     printf '  - 移除面板管理的 KixDNS\n' >&3
   fi
@@ -509,7 +512,7 @@ restore_external_state() {
   else
     systemctl stop "${ORIGINAL_UNIT}" 2>/dev/null || true
   fi
-  printf '迁移前的外部 KixDNS 服务定义与运行状态已恢复。\n'
+  printf '原来的 KixDNS 已恢复，运行状态和迁移前一样。\n'
 }
 
 print_result() {

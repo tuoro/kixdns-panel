@@ -30,7 +30,9 @@ body { background: var(--l-canvas); }
 .cfg__spin { width: var(--size-icon-sm); height: var(--size-icon-sm); }
 .cfg__status-sk { width: 9rem; }
 /* 重新读取、恢复版本还在读：内容调淡、不能改，读回来再恢复 / A re-read or restore is still reading: the content dims and takes no edits until it lands */
-.cfg__panel[aria-busy="true"], .cfg__json[aria-busy="true"], .cfg__savebar[aria-busy="true"] { opacity: .6; transition: opacity var(--m-quick) var(--ease-out); }
+.cfg__panel[aria-busy="true"], .cfg__json[aria-busy="true"] { opacity: .6; transition: opacity var(--m-quick) var(--ease-out); }
+/* 保存条是固定在底上的一层：调淡它自己，下面滚过的行会透出来压在字上；只调淡里面的东西 / The save bar is a fixed layer: dimming the bar itself lets the rows scrolling under it show through its text, so only its contents dim */
+.cfg__savebar[aria-busy="true"] > :not(.is-aside) { opacity: .6; transition: opacity var(--m-quick) var(--ease-out); }
 /* 页头里传送过来的按钮（新建规则、测试域名）跟着调淡：它们的容器是 display: contents，自己挂不上透明度 / The buttons teleported into the header (新建规则, 测试域名) dim too: their container is display: contents and cannot carry opacity */
 .cfg__page-acts[inert] > * { opacity: .6; transition: opacity var(--m-quick) var(--ease-out); }
 .cfg__notice { margin-top: calc(var(--s-1) * -1); }
@@ -41,9 +43,13 @@ body { background: var(--l-canvas); }
 /* JSON 视图的编辑区是一张卡：行号栏和代码在同一个圆角框里，底边是卡片边，不是被截断的一刀
    The JSON view's editor is a card: the gutter and the code share one rounded frame, and its bottom is the card's edge rather than a hard cut */
 .cfg__json-editor.json-editor { border: 0; border-radius: var(--r-3); box-shadow: var(--shadow-card); }
-/* 卡片没有边框，聚焦时用向内收 1 的描边画出输入框那条品牌色边（不挪动内容），外面照样一圈淡光
-   The card has no border, so focus draws the field's accent edge as an outline pulled 1 px inside (nothing moves), with the usual halo outside */
-.cfg__json-editor.json-editor:has(.cm-focused) { outline: 1px solid var(--accent); outline-offset: -1px; box-shadow: var(--shadow-card), var(--ring-field); }
+/* 卡片没有边框，聚焦时画出输入框那条品牌色边（不挪动内容），外面照样一圈淡光。边画在盖在上面的一层上：CodeMirror 的滚动层是 position: relative、
+   铺满整张卡，往里收的描边会被它盖住，只剩淡光
+   The card has no border, so focus draws the field's accent edge (nothing moves) with the usual halo outside. The edge is drawn on an overlay: CodeMirror's
+   scroller is position: relative and fills the card, so an inset outline is painted under it and only the halo showed */
+.cfg__json-editor.json-editor { position: relative; }
+.cfg__json-editor.json-editor:has(.cm-focused) { box-shadow: var(--shadow-card), var(--ring-field); }
+.cfg__json-editor.json-editor:has(.cm-focused)::after { content: ""; position: absolute; inset: 0; z-index: 1; border: 1px solid var(--accent); border-radius: inherit; pointer-events: none; }
 /* 骨架的列要 minmax(0, 1fr)：auto 列会按工具行里几个定宽占位的总和撑开，641–860 时把文档撑出横向滚动 / The skeleton's column must be minmax(0, 1fr): an auto column grows to the sum of the toolbar's fixed-width placeholders and at 641–860 pushes the document into horizontal scroll */
 .cfg__skeleton { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-4); }
 .cfg__sk-tools { display: flex; align-items: center; gap: var(--s-2); min-width: 0; }
@@ -1709,6 +1715,10 @@ body { background: var(--l-canvas); }
   .pdialog__panel { width: 100%; max-height: 88%; border-radius: var(--r-3) var(--r-3) 0 0; animation: ui-sheet-in var(--m-base) var(--ease-out); }
 }
 .diffd__body { gap: var(--s-4); }
+/* 对比的内容是打开以后才读到的：桌面上居中的话，标题会随着内容到来往上跳 100 多；顶端对齐，只往下长（手机是底部抽屉，往上长本来就自然）
+   The compare content arrives after opening: centred on desktop, the title jumped up 100-odd px as it landed; anchored to the top it only grows downward
+   (phones use a bottom sheet, where growing upward reads naturally) */
+@media (min-width: 641px) { .diffd.pdialog { align-items: start; padding-top: min(14vh, 128px); } }
 .diffd__legend { margin: 0; color: var(--l-ink-3); font-size: var(--t-2); }
 .diffd__sign { display: inline-block; width: 1.2em; color: var(--l-ink-2); font-family: var(--f-mono); text-align: center; }
 .diffd__block h3 { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-1) var(--s-2); margin: 0 0 var(--s-2); color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-bold); }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { keepTail } from '../utils'
+import { helpRuns } from '../utils'
 import { useReturnFocus } from '../composables/useReturnFocus'
 import { X } from '@lucide/vue'
 import { computed, nextTick, onMounted, ref } from 'vue'
@@ -38,7 +38,7 @@ onMounted(() => {
           <details v-for="t in topics" :id="`help-${t.id}`" :key="t.id" class="help__topic" :open="t.id === req?.topic">
             <summary>{{ t.title }}</summary>
             <!-- 每段最后几个字连着：末行不只剩一两个字、也不把「上游」「什么」这样的词拆开 / Each paragraph keeps its last few characters together: no last line of one or two characters, no word such as 上游 split -->
-            <p v-for="(line, i) in t.body" :key="i">{{ keepTail(line)[0] }}<span class="nowrap">{{ keepTail(line)[1] }}</span></p>
+            <p v-for="(line, i) in t.body" :key="i"><template v-for="(run, j) in helpRuns(line)" :key="j"><span v-if="run.glue" class="nowrap">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></p>
           </details>
         </section>
         <section id="help-shortcuts" class="help__sec help__sec--keys" aria-labelledby="help-keys-title">
