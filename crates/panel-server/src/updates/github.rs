@@ -1,44 +1,22 @@
-//! GitHub 访问：Token 的保存与校验、API 请求、工作流运行和产物列表。
-//! GitHub access: storing and checking the token, API requests, workflow runs and artifact listings.
+//! GitHub 访问：Token 的保存与校验、API 请求。
+//! GitHub access: storing and checking the token, and API requests.
 
-use super::ARTIFACT_PAGE_SIZE;
-use super::Artifact;
-use super::ArtifactList;
-use super::CachedArtifacts;
 use super::GithubRateLimit;
 use super::GithubRateLimitResponse;
 use super::GithubTokenStatus;
-use super::MAX_ARTIFACT_PAGES;
 use super::MAX_GITHUB_TOKEN_BYTES;
-use super::REMOTE_CACHE_TTL;
 use super::UpdateError;
 use super::UpdateManager;
-use super::WorkflowRun;
-use super::WorkflowRuns;
 use super::storage::ensure_directory;
 use super::validation::persist;
 use super::validation::sync_directory;
-use super::validation::validate_commit;
 use super::validation::write_private_file;
 use secrecy::ExposeSecret;
 use secrecy::SecretString;
-use std::collections::HashSet;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::Path;
 use std::time::Duration;
-use std::time::Instant;
-
-pub(super) fn artifact_page_count(total_count: usize) -> Result<usize, UpdateError> {
-    let pages = total_count.div_ceil(ARTIFACT_PAGE_SIZE);
-    if pages <= MAX_ARTIFACT_PAGES {
-        return Ok(pages);
-    }
-    Err(UpdateError::Network(format!(
-        "上游的构建太多（超过 {} 个），检查不了",
-        ARTIFACT_PAGE_SIZE * MAX_ARTIFACT_PAGES
-    )))
-}
 
 pub(super) fn parse_rate_limit(headers: &reqwest::header::HeaderMap) -> Option<GithubRateLimit> {
     let limit = headers
@@ -157,55 +135,6 @@ pub(super) fn remove_github_token(path: &Path) -> Result<(), UpdateError> {
     }
 }
 
-/// 只保留本仓库自己在目标分支上由 push、定时或手动触发的成功运行。
-/// `branch=` 查询按 `head_branch` 匹配，fork 的 `main` 发来的 pull request
-/// 同样叫 `main`，而且 `pull_request` 运行执行的是 PR 自带的工作流文件，
-/// 可以去掉上传 Artifact 的守卫；这类运行一旦排在最前，面板就会把 fork
-/// 构造的二进制当作最新版本安装。
-/// Keep only successful runs of this repository's own branch triggered by
-/// push, schedule or manual dispatch. The `branch=` query matches `head_branch`,
-/// and a pull request from a fork's `main` is also called `main`; a
-/// `pull_request` run executes the PR's own workflow file, which can drop the
-/// guard around the artifact upload. Without this filter the newest such run
-/// would be installed as the latest version.
-pub(super) fn trusted_workflow_runs(
-    runs: Vec<WorkflowRun>,
-    repository: &str,
-    branch: &str,
-    limit: usize,
-) -> Vec<WorkflowRun> {
-    runs.into_iter()
-        .filter(|run| validate_commit(&run.head_sha).is_ok())
-        .filter(|run| {
-            matches!(
-                run.event.as_deref(),
-                Some("push" | "schedule" | "workflow_dispatch")
-            )
-        })
-        .filter(|run| run.head_branch.as_deref() == Some(branch))
-        .filter(|run| {
-            run.head_repository
-                .as_ref()
-                .and_then(|head| head.full_name.as_deref())
-                .is_some_and(|name| name.eq_ignore_ascii_case(repository))
-        })
-        .take(limit)
-        .collect()
-}
-
-/// 一次取满一页再过滤：按 limit 取，排在前面的不可信运行（fork 的 pull request
-/// 等）会把可信运行挤出这一页，版本目录就少了甚至空了。
-/// Fetch a full page and filter afterwards: fetching only `limit` runs lets
-/// untrusted runs at the top (fork pull requests and the like) crowd trusted
-/// ones out of the page, shrinking or emptying the catalogue.
-pub(super) const WORKFLOW_RUN_PAGE_SIZE: usize = 100;
-
-pub(super) fn workflow_runs_url(repository: &str, workflow: &str, branch: &str) -> String {
-    format!(
-        "https://api.github.com/repos/{repository}/actions/workflows/{workflow}/runs?branch={branch}&status=success&exclude_pull_requests=true&per_page={WORKFLOW_RUN_PAGE_SIZE}"
-    )
-}
-
 impl UpdateManager {
     pub async fn github_token_status(&self) -> GithubTokenStatus {
         GithubTokenStatus {
@@ -278,71 +207,6 @@ impl UpdateManager {
         ))
     }
 
-    pub(super) async fn workflow_runs(
-        &self,
-        limit: usize,
-    ) -> Result<Vec<WorkflowRun>, UpdateError> {
-        let limit = limit.clamp(1, 30);
-        let runs_url = workflow_runs_url(&self.repository, &self.workflow, &self.branch);
-        let runs = self.get_json::<WorkflowRuns>(&runs_url).await?;
-        Ok(trusted_workflow_runs(
-            runs.workflow_runs,
-            &self.repository,
-            &self.branch,
-            limit,
-        ))
-    }
-
-    pub(super) async fn repository_artifacts(&self) -> Result<Vec<Artifact>, UpdateError> {
-        let mut cache = self.artifact_cache.write().await;
-        if let Some(cached) = cache.as_ref()
-            && cached.loaded_at.elapsed() < REMOTE_CACHE_TTL
-        {
-            return Ok(cached.artifacts.clone());
-        }
-
-        let mut artifacts = Vec::new();
-        let mut artifact_ids = HashSet::new();
-        let mut total_count = 0;
-        for page in 1..=MAX_ARTIFACT_PAGES {
-            let artifacts_url = format!(
-                "https://api.github.com/repos/{}/actions/artifacts?per_page={ARTIFACT_PAGE_SIZE}&page={page}",
-                self.repository
-            );
-            let response = self.get_json::<ArtifactList>(&artifacts_url).await?;
-            total_count = total_count.max(response.total_count);
-            artifact_page_count(total_count)?;
-            artifacts.extend(
-                response
-                    .artifacts
-                    .into_iter()
-                    .filter(|artifact| artifact_ids.insert(artifact.id)),
-            );
-            if artifacts.len() >= total_count {
-                cache.replace(CachedArtifacts {
-                    loaded_at: Instant::now(),
-                    artifacts: artifacts.clone(),
-                });
-                return Ok(artifacts);
-            }
-        }
-
-        Err(UpdateError::Network(
-            "GitHub 返回的构建列表不完整，过一会儿再检查".to_owned(),
-        ))
-    }
-
-    pub(super) async fn get_json<T>(&self, url: &str) -> Result<T, UpdateError>
-    where
-        T: serde::de::DeserializeOwned,
-    {
-        self.github_response(url)
-            .await?
-            .json()
-            .await
-            .map_err(|error| UpdateError::Network(error.to_string()))
-    }
-
     pub(super) async fn get_json_optional<T>(&self, url: &str) -> Result<Option<T>, UpdateError>
     where
         T: serde::de::DeserializeOwned,
@@ -356,15 +220,6 @@ impl UpdateManager {
             .await
             .map(Some)
             .map_err(|error| UpdateError::Network(error.to_string()))
-    }
-
-    pub(super) async fn github_response(
-        &self,
-        url: &str,
-    ) -> Result<reqwest::Response, UpdateError> {
-        self.github_response_optional(url)
-            .await?
-            .ok_or_else(|| UpdateError::Network("GitHub API 资源不存在".to_owned()))
     }
 
     pub(super) async fn github_response_optional(

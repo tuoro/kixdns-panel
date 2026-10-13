@@ -10,8 +10,8 @@ use crate::control::ControlClient;
 use crate::digest::sha256_hex;
 
 use super::{
-    BuildIdentity, CONTROL_PROTOCOL_VERSION, RemoteVersion, SOURCE_MANIFEST_SCHEMA_VERSION,
-    UPSTREAM_REPOSITORY, UpdateError, VersionManifest, VersionSource,
+    BuildIdentity, CONTROL_PROTOCOL_VERSION, SOURCE_MANIFEST_SCHEMA_VERSION, UPSTREAM_REPOSITORY,
+    UpdateError, VersionManifest, VersionSource,
 };
 
 pub(super) fn validate_slug(value: &str, repository: bool) -> Result<(), UpdateError> {
@@ -69,56 +69,77 @@ pub(super) fn parse_panel_release_version(tag: &str) -> Result<semver::Version, 
         .map_err(|error| UpdateError::Verification(format!("面板 Release 版本无效：{error}")))
 }
 
-pub(super) fn artifact_coordinates(artifact: &str) -> Result<(&str, &str), UpdateError> {
-    let (prefix, architecture) = artifact
-        .rsplit_once("-linux-")
-        .ok_or_else(|| UpdateError::Invalid("构建名称必须以 -linux-<架构> 结尾".to_owned()))?;
-    if prefix.is_empty() || architecture.is_empty() {
-        return Err(UpdateError::Invalid("构建名称无效".to_owned()));
+/// fork 发布的日期版本：UTC 日期 `YYYY.MM.DD`，同一天再发布时是 `YYYY.MM.DD.N`（N 从 2 起）。
+/// 字段按年、月、日、当天第几次排列，比较就是逐段比数字，2026.10.13.10 比 2026.10.13.9 新。
+/// A fork release's date version: the UTC date `YYYY.MM.DD`, or `YYYY.MM.DD.N` (N from 2)
+/// for a later release the same day. The fields run year, month, day, sequence, so
+/// comparing compares each part as a number and 2026.10.13.10 is newer than 2026.10.13.9.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct KernelVersion {
+    year: u16,
+    month: u8,
+    day: u8,
+    sequence: u32,
+}
+
+pub(super) fn parse_kernel_version(tag: &str) -> Result<KernelVersion, UpdateError> {
+    fn fixed(value: &str, width: usize) -> Option<u32> {
+        (value.len() == width && value.bytes().all(|byte| byte.is_ascii_digit()))
+            .then(|| value.parse().ok())
+            .flatten()
     }
-    Ok((prefix, architecture))
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub(super) struct ParsedArtifactReference {
-    pub(super) official_run_id: u64,
-    pub(super) patchset: Option<u32>,
-}
-
-/// 从 `<前缀>-action-<上游 Run>[-p<补丁集>-<指纹>]-linux-<架构>` 里读出上游 Run 和补丁集。
-/// Reads the upstream run and patchset out of
-/// `<prefix>-action-<upstream run>[-p<patchset>-<fingerprint>]-linux-<arch>`.
-pub(super) fn parse_artifact_reference(
-    base: &str,
-    artifact: &str,
-) -> Option<ParsedArtifactReference> {
-    let (prefix, architecture) = artifact_coordinates(base).ok()?;
-    let prefix = format!("{prefix}-{}-", VersionSource::Action.as_str());
-    let suffix = format!("-linux-{architecture}");
-    let identity = artifact.strip_prefix(&prefix)?.strip_suffix(&suffix)?;
-    let (reference, patchset) = parse_artifact_build_identity(identity)?;
-    let official_run_id = reference
-        .parse::<u64>()
-        .ok()
-        .filter(|run_id| *run_id > 0 && run_id.to_string() == reference)?;
-    Some(ParsedArtifactReference {
-        official_run_id,
-        patchset,
-    })
-}
-
-fn parse_artifact_build_identity(identity: &str) -> Option<(&str, Option<u32>)> {
-    let Some((reference, build)) = identity.rsplit_once("-p") else {
-        return Some((identity, None));
+    let invalid = || UpdateError::Verification("内核版本号无效".to_owned());
+    let mut parts = tag.split('.');
+    let (Some(year), Some(month), Some(day)) = (parts.next(), parts.next(), parts.next()) else {
+        return Err(invalid());
     };
-    let Some((patchset, fingerprint)) = build.split_once('-') else {
-        return Some((identity, None));
+    let sequence = match (parts.next(), parts.next()) {
+        (None, None) => 1,
+        // 当天第几次不补零：2026.10.13.02 不是这里发布的写法。
+        // The sequence carries no leading zero: 2026.10.13.02 is not how releases are named.
+        (Some(sequence), None)
+            if !sequence.starts_with('0')
+                && (1..=9).contains(&sequence.len())
+                && sequence.bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            sequence
+                .parse::<u32>()
+                .ok()
+                .filter(|sequence| *sequence >= 2)
+                .ok_or_else(invalid)?
+        }
+        _ => return Err(invalid()),
     };
-    if fingerprint.len() != 12 || !fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Some((identity, None));
+    let year = fixed(year, 4).and_then(|year| u16::try_from(year).ok());
+    let month = fixed(month, 2)
+        .filter(|month| (1..=12).contains(month))
+        .and_then(|month| u8::try_from(month).ok());
+    let day = fixed(day, 2)
+        .filter(|day| (1..=31).contains(day))
+        .and_then(|day| u8::try_from(day).ok());
+    match (year, month, day) {
+        (Some(year), Some(month), Some(day)) => Ok(KernelVersion {
+            year,
+            month,
+            day,
+            sequence,
+        }),
+        _ => Err(invalid()),
     }
-    let patchset = patchset.parse::<u32>().ok().filter(|value| *value > 0)?;
-    Some((reference, Some(patchset)))
+}
+
+/// 本机架构在内核发布里的写法。 / This host's architecture as kernel releases write it.
+pub(super) fn kernel_architecture() -> &'static str {
+    match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        _ => "x86_64",
+    }
+}
+
+/// 某个版本里本机架构的内核包文件名。
+/// The file name of this architecture's kernel package in a given version.
+pub(super) fn kernel_asset_name(version: &str) -> String {
+    format!("kixdns-{version}-linux-{}.zip", kernel_architecture())
 }
 
 pub(super) fn validate_build_identity(identity: &BuildIdentity) -> Result<(), UpdateError> {
@@ -139,34 +160,14 @@ pub(super) fn validate_build_identity(identity: &BuildIdentity) -> Result<(), Up
             identity.control_protocol
         )));
     }
-    // 只有 Action 轨道还在构建；Release 内核只会是以前装下的，不会再从包里装进来。
-    // Only the Action track still builds; a Release kernel can only be one installed
-    // earlier, never one unpacked now.
+    // 带 upstream.lock.json 的只有旧的 Action 构建；Release 内核只会是以前装下的。
+    // Only old Action builds carry upstream.lock.json; a Release kernel can only be one
+    // installed earlier.
     if identity.source != VersionSource::Action
         || identity.official_run_id.is_none_or(|run_id| run_id == 0)
     {
         return Err(UpdateError::Verification(
             "包内上游来源不是有效的 Action 构建".to_owned(),
-        ));
-    }
-    Ok(())
-}
-
-pub(super) fn validate_remote_build_identity(
-    remote: &RemoteVersion,
-    identity: &BuildIdentity,
-) -> Result<(), UpdateError> {
-    if remote
-        .patchset
-        .is_some_and(|patchset| patchset != identity.patchset)
-    {
-        return Err(UpdateError::Verification(
-            "包内补丁集和内核包名称对不上".to_owned(),
-        ));
-    }
-    if identity.official_run_id != Some(remote.run_id) {
-        return Err(UpdateError::Verification(
-            "包内原版构建和内核包名称对不上".to_owned(),
         ));
     }
     Ok(())
@@ -189,6 +190,9 @@ pub(super) fn validate_manifest_source(manifest: &VersionManifest) -> Result<(),
         (Some(VersionSource::Release), Some(source_id), None, Some(tag)) if source_id > 0 => {
             validate_release_tag(tag)
         }
+        (Some(VersionSource::Fork), Some(source_id), None, Some(tag)) if source_id > 0 => {
+            parse_kernel_version(tag).map(|_| ())
+        }
         _ => Err(UpdateError::Verification(
             "版本清单来源身份不完整".to_owned(),
         )),
@@ -198,6 +202,9 @@ pub(super) fn validate_manifest_source(manifest: &VersionManifest) -> Result<(),
 pub(super) fn validate_manifest_build_identity(
     manifest: &VersionManifest,
 ) -> Result<(), UpdateError> {
+    if manifest.source == Some(VersionSource::Fork) {
+        return validate_fork_manifest_identity(manifest);
+    }
     match (
         manifest.upstream_repository.as_ref(),
         manifest.upstream_commit.as_ref(),
@@ -222,6 +229,41 @@ pub(super) fn validate_manifest_build_identity(
             "版本清单中的构建身份不完整".to_owned(),
         )),
     }
+}
+
+/// fork 发布没有补丁集和依赖修订；基于的原版提交（有的话）和控制协议照样核对。
+/// A fork release has no patchset or dependency revision; the upstream commit it is based
+/// on (when recorded) and the control protocol are still checked.
+fn validate_fork_manifest_identity(manifest: &VersionManifest) -> Result<(), UpdateError> {
+    if manifest.patchset.is_some() || manifest.dependency_revision.is_some() {
+        return Err(UpdateError::Verification(
+            "版本清单中的构建身份无效".to_owned(),
+        ));
+    }
+    match (
+        manifest.upstream_repository.as_deref(),
+        manifest.upstream_commit.as_deref(),
+    ) {
+        (None, None) => {}
+        (Some(repository), Some(commit)) => {
+            if repository != UPSTREAM_REPOSITORY {
+                return Err(UpdateError::Verification("上游仓库身份无效".to_owned()));
+            }
+            validate_commit(commit)
+                .map_err(|_| UpdateError::Verification("上游提交身份无效".to_owned()))?;
+        }
+        _ => {
+            return Err(UpdateError::Verification(
+                "版本清单中的构建身份不完整".to_owned(),
+            ));
+        }
+    }
+    if manifest.control_protocol != Some(CONTROL_PROTOCOL_VERSION) {
+        return Err(UpdateError::Verification(
+            "版本清单中的控制协议无效".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn validate_hex_digest(value: &str) -> Result<(), UpdateError> {

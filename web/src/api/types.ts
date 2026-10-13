@@ -14,6 +14,9 @@ export interface Health {
   status: string
   pid: number
   version: string
+  /** fork 发布时编译进去的日期版本和提交；补丁集构建和本地构建没有。 / The date version and commit a fork release compiles in; patchset and local builds have neither. */
+  release_version?: string | null
+  release_commit?: string | null
   upstream_commit: string
   patchset: string
   started_at_unix: number
@@ -349,12 +352,11 @@ export interface KixdnsUpdateNotice {
   current_commit: string | null
   latest_commit: string
   source_id: number
-  run_id: number
-  created_at: string
-  build_url: string
-  /** 同一版本换上修补过的依赖重新构建。 / The same version rebuilt with patched dependencies. */
-  security_update: boolean
-  dependency_revision: number | null
+  /** 最新版本的日期版本号，例如 2026.10.13.2。 / The newest version's date version, such as 2026.10.13.2. */
+  release_tag: string
+  created_at: string | null
+  /** 这一版的发布页。 / This version's release page. */
+  release_url: string
 }
 
 export interface PanelUpdateNotice {
@@ -407,21 +409,29 @@ export interface PanelUpdateStartResponse {
   target_version: string
 }
 
-/** 远端只有 Action 轨道；Release 只出现在以前装下的内核上。 / Only the Action track is offered remotely; Release appears only on kernels installed earlier. */
-export type KixdnsVersionSource = 'action' | 'release'
+/**
+ * 远端只有 fork 发布的日期版本；Action（面板仓库按补丁集构建）和 Release（更早的正式版轨道）只出现在以前装下的内核上。
+ * Only the fork's date-versioned releases are offered remotely; Action (built by the panel repository from a patchset)
+ * and Release (the older release track) appear only on kernels installed earlier.
+ */
+export type KixdnsVersionSource = 'action' | 'release' | 'fork'
 
 export interface RemoteKixdnsVersion {
-  source: 'action'
+  source: 'fork'
   source_id: number
   commit: string
-  run_id: number
-  patchset: number | null
-  created_at: string
-  source_url: string
+  release_tag: string
+  upstream_commit: string | null
+  created_at: string | null
+  /** 基于的原版提交。 / The upstream commit it is based on. */
+  source_url: string | null
+  /** 这一版的发布页。 / This version's release page. */
   build_url: string
   artifact: string
   artifact_digest: string
   download_url: string
+  control_protocol: number
+  config_capabilities: string[]
 }
 
 export interface InstalledKixdnsVersion {
@@ -447,9 +457,9 @@ export interface InstalledKixdnsVersion {
 }
 
 /**
- * 内核：正在用的、本机保存的上一个（可以回退），以及上游最新的增强构建。
+ * 内核：正在用的、本机保存的上一个（可以回退），以及 fork 最新发布的版本。
  * The kernel: the one in use, the previous one kept on this host (to roll back to),
- * and the newest enhanced build upstream.
+ * and the newest version the fork released.
  */
 export interface KixdnsKernel {
   binary_present: boolean

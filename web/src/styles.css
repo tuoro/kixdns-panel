@@ -455,9 +455,8 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
 .system-page { display: grid; gap: var(--s-5); align-content: start; }
 .system-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-4); align-items: stretch; }
 .system-skeleton-meta { width: min(260px, 100%); }
-/* 占位和读完后的「构建 #30231271280」一样宽（约 10em），箭头读完不挪 / The placeholder is as wide as the loaded 「构建 #30231271280」 (about 10em), so the arrow stays put */
-.update-row__cur-sk { display: inline-block; width: 10.2em; height: 1em; vertical-align: middle; }
-@media (max-width: 640px) { .update-row__cur-sk { width: 10em; } }
+/* 占位和读完后的日期版本「2026.10.13」一样宽（约 5.8em），箭头读完不挪 / The placeholder is as wide as the loaded date version 「2026.10.13」 (about 5.8em), so the arrow stays put */
+.update-row__cur-sk { display: inline-block; width: 5.8em; height: 1em; vertical-align: middle; }
 /* 按钮那一行的占位只在手机上要（宽屏按钮在标题右边，不占高度） / The button row's placeholder is needed only on phones (on wide screens the buttons sit beside the title and add no height) */
 .system-actions-sk { display: none; }
 /* 两块和读完后的「重启」「停止」一样宽、一样的圆角 / Two slabs as wide as the loaded 重启 and 停止, with the same corners */

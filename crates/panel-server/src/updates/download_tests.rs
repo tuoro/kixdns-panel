@@ -1,13 +1,21 @@
-//! 产物下载的超时分层：API 用短总时限，下载只在断流或整体过久时放弃。
-//! Timeout layering for artifact downloads: API calls keep a short total limit,
-//! downloads give up only when data stops arriving or the whole transfer runs too long.
+//! 内核下载与安装：超时分层（API 用短总时限，下载只在断流或整体过久时放弃）、大小上限、
+//! 摘要核对，以及从本地服务装一个 fork 发布包的完整过程。
+//! Kernel downloads and installs: timeout layering (API calls keep a short total limit,
+//! downloads give up only when data stops arriving or the whole transfer runs too long),
+//! the size limit, the digest check, and installing a fork release package end to end
+//! from a local server.
 
 use std::time::{Duration, Instant};
 
+use tempfile::tempdir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-use super::{UpdateError, UpdateManager};
+use super::tests::{
+    TEST_CAPABILITIES, TEST_VERSION, fork_remote, kernel_package, kernel_source_json, test_settings,
+};
+use super::{MAX_ARTIFACT_BYTES, UpdateError, UpdateManager, VersionKey, VersionSource};
+use crate::db::Database;
 
 /// 本地 HTTP 服务：声明 `declared` 字节，再每隔 `interval` 发一个字节，共 `chunks` 个；
 /// 发完后停顿 `stall_after` 才关闭连接。
@@ -67,9 +75,10 @@ async fn slow_artifact_download_outlives_the_api_timeout() {
     )
     .unwrap();
 
-    let bytes = UpdateManager::fetch_artifact(&client, &url, None, Duration::from_secs(5))
-        .await
-        .unwrap();
+    let bytes =
+        UpdateManager::fetch_limited(&client, &url, MAX_ARTIFACT_BYTES, Duration::from_secs(5))
+            .await
+            .unwrap();
 
     assert_eq!(bytes, b"kkkkkkkk");
 }
@@ -88,7 +97,8 @@ async fn stalled_artifact_download_fails_on_the_read_timeout() {
     let started = Instant::now();
 
     let message = timeout_message(
-        UpdateManager::fetch_artifact(&client, &url, None, Duration::from_secs(20)).await,
+        UpdateManager::fetch_limited(&client, &url, MAX_ARTIFACT_BYTES, Duration::from_secs(20))
+            .await,
     );
 
     assert!(
@@ -113,7 +123,13 @@ async fn endless_artifact_download_fails_on_the_download_timeout() {
     let started = Instant::now();
 
     let message = timeout_message(
-        UpdateManager::fetch_artifact(&client, &url, None, Duration::from_millis(500)).await,
+        UpdateManager::fetch_limited(
+            &client,
+            &url,
+            MAX_ARTIFACT_BYTES,
+            Duration::from_millis(500),
+        )
+        .await,
     );
 
     assert!(
@@ -166,14 +182,6 @@ fn response(status: &str, headers: &str, body: &[u8]) -> Vec<u8> {
     response
 }
 
-fn source(url: String, token: Option<&str>) -> super::ArtifactSource {
-    super::ArtifactSource {
-        url,
-        token: token.map(|token| secrecy::SecretString::from(token.to_owned())),
-        label: "test",
-    }
-}
-
 fn digest_of(bytes: &[u8]) -> String {
     format!("sha256:{}", super::sha256(bytes))
 }
@@ -188,42 +196,34 @@ fn test_client() -> reqwest::Client {
 }
 
 #[tokio::test]
-async fn token_reaches_github_but_never_the_storage_it_redirects_to() {
-    let (blob, blob_requests) = recording_server(vec![response("200 OK", "", b"package")]).await;
-    let redirect = format!("Location: {blob}/artifact.zip\r\n");
-    let (github, github_requests) =
-        recording_server(vec![response("302 Found", &redirect, b"")]).await;
+async fn a_release_file_past_its_limit_is_refused() {
+    let (server, _) = recording_server(vec![response("200 OK", "", &[b'k'; 2048])]).await;
 
-    let bytes = UpdateManager::fetch_first_verified(
+    let error = UpdateManager::fetch_limited(
         &test_client(),
-        &[source(format!("{github}/zip"), Some("secret-token"))],
-        &digest_of(b"package"),
+        &format!("{server}/manifest.json"),
+        1024,
         Duration::from_secs(5),
     )
     .await
-    .unwrap();
+    .unwrap_err();
 
-    assert_eq!(bytes, b"package");
-    assert!(github_requests.lock().unwrap()[0].contains("authorization: bearer secret-token"));
-    let blob_request = blob_requests.lock().unwrap()[0].clone();
     assert!(
-        !blob_request.contains("authorization") && !blob_request.contains("secret-token"),
-        "Token 不能跟着跳转发给存储服务：{blob_request}"
+        matches!(error, UpdateError::Verification(ref message) if message == "超过 1\u{a0}KiB"),
+        "{error:?}"
     );
 }
 
 #[tokio::test]
-async fn falls_back_to_nightly_link_when_github_refuses_the_token() {
-    let (github, _) = recording_server(vec![response("401 Unauthorized", "", b"{}")]).await;
-    let (nightly, nightly_requests) =
+async fn follows_the_release_redirect_to_storage_without_credentials() {
+    let (storage, storage_requests) =
         recording_server(vec![response("200 OK", "", b"package")]).await;
+    let redirect = format!("Location: {storage}/package.zip\r\n");
+    let (github, _) = recording_server(vec![response("302 Found", &redirect, b"")]).await;
 
-    let bytes = UpdateManager::fetch_first_verified(
+    let bytes = UpdateManager::download_verified(
         &test_client(),
-        &[
-            source(format!("{github}/zip"), Some("secret-token")),
-            source(format!("{nightly}/artifact.zip"), None),
-        ],
+        &format!("{github}/releases/download/{TEST_VERSION}/package.zip"),
         &digest_of(b"package"),
         Duration::from_secs(5),
     )
@@ -231,43 +231,16 @@ async fn falls_back_to_nightly_link_when_github_refuses_the_token() {
     .unwrap();
 
     assert_eq!(bytes, b"package");
-    assert!(
-        !nightly_requests.lock().unwrap()[0].contains("authorization"),
-        "nightly.link 不能收到 Token"
-    );
+    assert!(!storage_requests.lock().unwrap()[0].contains("authorization"));
 }
 
 #[tokio::test]
-async fn falls_back_when_the_first_package_fails_the_digest() {
-    let (github, _) = recording_server(vec![response("200 OK", "", b"tampered")]).await;
-    let (nightly, _) = recording_server(vec![response("200 OK", "", b"package")]).await;
+async fn a_package_that_differs_from_the_manifest_is_refused() {
+    let (server, _) = recording_server(vec![response("200 OK", "", b"tampered")]).await;
 
-    let bytes = UpdateManager::fetch_first_verified(
+    let error = UpdateManager::download_verified(
         &test_client(),
-        &[
-            source(format!("{github}/zip"), Some("secret-token")),
-            source(format!("{nightly}/artifact.zip"), None),
-        ],
-        &digest_of(b"package"),
-        Duration::from_secs(5),
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(bytes, b"package");
-}
-
-#[tokio::test]
-async fn reports_the_last_failure_when_every_source_fails() {
-    let (github, _) = recording_server(vec![response("401 Unauthorized", "", b"{}")]).await;
-    let (nightly, _) = recording_server(vec![response("200 OK", "", b"tampered")]).await;
-
-    let error = UpdateManager::fetch_first_verified(
-        &test_client(),
-        &[
-            source(format!("{github}/zip"), Some("secret-token")),
-            source(format!("{nightly}/artifact.zip"), None),
-        ],
+        &format!("{server}/package.zip"),
         &digest_of(b"package"),
         Duration::from_secs(5),
     )
@@ -278,4 +251,140 @@ async fn reports_the_last_failure_when_every_source_fails() {
         matches!(error, UpdateError::Verification(ref message) if message.contains("校验值对不上")),
         "{error:?}"
     );
+}
+
+/// 一个刚建好的面板，只为安装测试：没有内核，fork 仓库是测试用的那个。
+/// A fresh panel just for install tests: no kernel, and the test fork repository.
+async fn install_manager(directory: &std::path::Path) -> UpdateManager {
+    let database = Database::open(directory.join("panel.db")).await.unwrap();
+    UpdateManager::new(database, test_settings(directory)).unwrap()
+}
+
+fn test_binary() -> Vec<u8> {
+    let mut binary = vec![0_u8; 32];
+    binary[..4].copy_from_slice(b"\x7fELF");
+    binary[5] = 1;
+    let machine = match std::env::consts::ARCH {
+        "aarch64" => 183_u16,
+        _ => 62_u16,
+    };
+    binary[18..20].copy_from_slice(&machine.to_le_bytes());
+    binary[31] = 5;
+    binary
+}
+
+#[tokio::test]
+async fn installs_a_release_package_that_matches_its_manifest() {
+    let directory = tempdir().unwrap();
+    let manager = install_manager(directory.path()).await;
+    let binary = test_binary();
+    let mut remote = fork_remote(77, TEST_VERSION);
+    let package = kernel_package(
+        &binary,
+        &kernel_source_json(TEST_VERSION, &remote.commit),
+        TEST_CAPABILITIES,
+    );
+    let (server, _) = recording_server(vec![response("200 OK", "", &package)]).await;
+    remote.download_url = format!("{server}/{}", remote.artifact);
+    remote.artifact_digest = digest_of(&package);
+
+    manager
+        .install_resolved(&remote, &serde_json::json!({"pipelines": []}))
+        .await
+        .unwrap();
+
+    let key = VersionKey::tracked(VersionSource::Fork, 77, &remote.commit).unwrap();
+    let (manifest, stored) =
+        super::load_verified_version(&directory.path().join("versions"), &key).unwrap();
+    assert_eq!(stored, binary);
+    assert_eq!(manifest.release_tag.as_deref(), Some(TEST_VERSION));
+    assert_eq!(manifest.upstream_commit, remote.upstream_commit);
+    assert_eq!(manifest.patchset, None);
+    assert_eq!(
+        manifest.artifact_digest.as_deref(),
+        Some(remote.artifact_digest.as_str())
+    );
+    assert_eq!(manifest.config_capabilities, vec!["config_query_stats_v1"]);
+}
+
+#[tokio::test]
+async fn a_package_for_another_version_is_not_stored() {
+    let directory = tempdir().unwrap();
+    let manager = install_manager(directory.path()).await;
+    let mut remote = fork_remote(77, TEST_VERSION);
+    // 包本身完好、摘要也对，但它说自己是另一版。
+    // The package is intact and its digest matches, but it says it is another version.
+    let package = kernel_package(
+        &test_binary(),
+        &kernel_source_json("2026.10.13", &remote.commit),
+        TEST_CAPABILITIES,
+    );
+    let (server, _) = recording_server(vec![response("200 OK", "", &package)]).await;
+    remote.download_url = format!("{server}/{}", remote.artifact);
+    remote.artifact_digest = digest_of(&package);
+
+    let error = manager
+        .install_resolved(&remote, &serde_json::json!({"pipelines": []}))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, UpdateError::Verification(_)), "{error:?}");
+    assert_eq!(
+        std::fs::read_dir(directory.path().join("versions"))
+            .unwrap()
+            .count(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn a_package_whose_capabilities_differ_from_the_manifest_is_not_stored() {
+    let directory = tempdir().unwrap();
+    let manager = install_manager(directory.path()).await;
+    let mut remote = fork_remote(77, TEST_VERSION);
+    // 清单说认查询排行，包里却没有：配置页会按清单放行，内核却不认。
+    // The manifest says query statistics are known but the package lacks them: the config
+    // page would allow what the kernel then ignores.
+    let package = kernel_package(
+        &test_binary(),
+        &kernel_source_json(TEST_VERSION, &remote.commit),
+        r#"{"schema_version":1,"config_capabilities":[]}"#,
+    );
+    let (server, _) = recording_server(vec![response("200 OK", "", &package)]).await;
+    remote.download_url = format!("{server}/{}", remote.artifact);
+    remote.artifact_digest = digest_of(&package);
+
+    let error = manager
+        .install_resolved(&remote, &serde_json::json!({"pipelines": []}))
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, UpdateError::Verification(ref message) if message.contains("配置能力")),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_config_the_release_cannot_run_is_refused_before_downloading() {
+    let directory = tempdir().unwrap();
+    let manager = install_manager(directory.path()).await;
+    let (server, requests) = recording_server(vec![response("200 OK", "", b"package")]).await;
+    let mut remote = fork_remote(77, TEST_VERSION);
+    remote.download_url = format!("{server}/{}", remote.artifact);
+    remote.config_capabilities = Vec::new();
+
+    let error = manager
+        .install_resolved(
+            &remote,
+            &serde_json::json!({"settings": {"statistics_enabled": true}, "pipelines": []}),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, UpdateError::IncompatibleConfig(_)),
+        "{error:?}"
+    );
+    assert!(requests.lock().unwrap().is_empty(), "nothing is downloaded");
 }

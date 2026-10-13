@@ -902,7 +902,7 @@ KIXDNS_BINARY_PATH=/var/lib/kixdns-panel/bin/kixdns
 KIXDNS_CONTROL_SOCKET=/run/kixdns/admin.sock
 KIXDNS_SERVICE_UNIT=kixdns.service
 render_panel_environment "${environment_source}" "${environment_output}" \
-  kixdns-commit panel-commit '' 42
+  kixdns-commit panel-commit '' 42 fork
 if grep -q '^KIXDNS_PANEL_INSTALLED_RELEASE=' "${environment_output}"; then
   printf '断言失败：Action 包不应输出空 Release 环境变量\n' >&2
   exit 1
@@ -916,7 +916,7 @@ if grep -q 'KIXDNS_UPDATE_RELEASE_WORKFLOW' "${environment_output}"; then
   exit 1
 fi
 render_panel_environment "${environment_source}" "${environment_output}" \
-  kixdns-commit panel-commit v1.0.0 42
+  kixdns-commit panel-commit v1.0.0 42 fork
 release_value="$(awk -F= '$1 == "KIXDNS_PANEL_INSTALLED_RELEASE" { print $2 }' "${environment_output}")"
 assert_equals "${release_value}" "v1.0.0" "正式包应保留 Release 标签"
 helper_socket_value="$(awk -F= '$1 == "KIXDNS_SERVICE_HELPER_SOCKET" { print $2 }' "${environment_output}")"
@@ -925,14 +925,55 @@ bind_value="$(awk -F= '$1 == "KIXDNS_PANEL_BIND" { print $2 }' "${environment_ou
 assert_equals "${bind_value}" "0.0.0.0:5738" "旧版默认监听地址应迁移为内网可访问"
 source_id_value="$(awk -F= '$1 == "KIXDNS_INSTALLED_SOURCE_ID" { print $2 }' "${environment_output}")"
 assert_equals "${source_id_value}" "42" "面板环境应记录完整包 Artifact ID"
-if grep -q 'KIXDNS_MANAGEMENT_ENABLED\|KIXDNS_UPDATE_RELEASE_WORKFLOW' "${PACKAGE_ROOT}/deploy/panel.env.example"; then
+if grep -q 'KIXDNS_MANAGEMENT_ENABLED\|KIXDNS_UPDATE_' "${PACKAGE_ROOT}/deploy/panel.env.example"; then
   printf '断言失败：面板环境模板不应再包含已移除的设置\n' >&2
   exit 1
 fi
 
+# 旧面板写下的环境：按补丁集构建找 Artifact 的设置，还没有内核来源。
+# An environment an older panel wrote: the settings that located patchset Artifacts, and no kernel source yet.
+printf '%s\n' \
+  '# GitHub API 元数据请求可在系统页配置 Token；Artifact 下载仍通过 nightly.link。' \
+  'KIXDNS_UPDATE_REPOSITORY=tuoro/kixdns-panel' \
+  'KIXDNS_UPDATE_WORKFLOW=build-kixdns.yml' \
+  'KIXDNS_UPDATE_BRANCH=main' \
+  '# x86_64 使用 x86_64，ARM64 使用 arm64；安装脚本会自动填写。' \
+  'KIXDNS_UPDATE_ARTIFACT=kixdns-enhanced-linux-x86_64' \
+  '# 完整安装包复用的 KixDNS Action 提交，由安装脚本填写；不要手工修改。' \
+  'KIXDNS_INSTALLED_COMMIT=old-commit' \
+  '# 完整安装包自带增强 Artifact 的 GitHub ID，由安装脚本填写。' \
+  'KIXDNS_INSTALLED_SOURCE_ID=7' > "${environment_source}"
+render_panel_environment "${environment_source}" "${environment_output}" \
+  kixdns-commit panel-commit '' 42 fork
+if grep -q 'KIXDNS_UPDATE_\|nightly\.link\|自动填写。$\|Action 提交\|增强 Artifact' "${environment_output}"; then
+  printf '断言失败：升级应删掉不再读取的 Artifact 更新设置和旧说明\n' >&2
+  exit 1
+fi
+identity_lines="$(grep '^KIXDNS_INSTALLED_\|^# 完整安装包' "${environment_output}")"
+expected_identity="$(printf '%s\n' \
+  '# 完整安装包自带内核的来源和提交，由安装脚本填写；不要手工修改。' \
+  'KIXDNS_INSTALLED_SOURCE=fork' \
+  'KIXDNS_INSTALLED_COMMIT=kixdns-commit' \
+  '# 完整安装包自带内核包在 GitHub 上的编号，由安装脚本填写。' \
+  'KIXDNS_INSTALLED_SOURCE_ID=42')"
+assert_equals "${identity_lines}" "${expected_identity}" "完整包应在提交前记下内核来源，说明改成新的说法"
+# 只更新面板、原来没记来源（旧 Action 内核）：不凭空写上来源。
+# A panel-only update with no recorded source (an old Action kernel): no source is made up.
+render_panel_environment "${environment_source}" "${environment_output}" \
+  old-commit panel-commit '' 7 ''
+if grep -q '^KIXDNS_INSTALLED_SOURCE=' "${environment_output}"; then
+  printf '断言失败：没有来源记录时不应写出内核来源\n' >&2
+  exit 1
+fi
+printf '%s\n' 'KIXDNS_INSTALLED_SOURCE=fork' 'KIXDNS_INSTALLED_COMMIT=old-commit' > "${environment_source}"
+render_panel_environment "${environment_source}" "${environment_output}" \
+  old-commit panel-commit '' 7 fork
+assert_equals "$(grep -c '^KIXDNS_INSTALLED_SOURCE=fork$' "${environment_output}")" "1" \
+  "已有的内核来源应原地保留一行"
+
 printf '%s\n' 'KIXDNS_PANEL_BIND=192.168.10.5:6754' > "${environment_source}"
 render_panel_environment "${environment_source}" "${environment_output}" \
-  kixdns-commit panel-commit '' 42
+  kixdns-commit panel-commit '' 42 fork
 bind_value="$(awk -F= '$1 == "KIXDNS_PANEL_BIND" { print $2 }' "${environment_output}")"
 assert_equals "${bind_value}" "192.168.10.5:6754" "用户自定义监听地址不应被升级覆盖"
 

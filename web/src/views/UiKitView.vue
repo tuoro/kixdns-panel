@@ -26,7 +26,7 @@ function refresh(): void { total.value += 180 + Math.floor(Math.random() * 900) 
 const taskState = ref<UiTaskState>('idle')
 const taskStarted = ref<number | null>(null)
 const taskProgress = ref<number | null>(null)
-const taskNote = ref('构建 #30231271280 → 构建 #30235703570 · 构建于 07/31 01:31')
+const taskNote = ref('2026.10.13 → 2026.10.13.2 · 发布于 10/13 17:12')
 const wait = (ms: number) => new Promise((resolve) => { window.setTimeout(resolve, ms) })
 async function install(): Promise<void> {
   taskState.value = 'run'
@@ -40,16 +40,16 @@ async function install(): Promise<void> {
   taskNote.value = '正在切换内核'
   await wait(900)
   taskState.value = 'done'
-  taskNote.value = '已更新到构建 #30235703570'
+  taskNote.value = '已更新到 2026.10.13.2'
 }
 function fail(): void {
   taskState.value = 'fail'
-  taskNote.value = '下载中断：连接 nightly.link 超时。检查网络后重试。'
+  taskNote.value = '下载中断：连接 GitHub 超时。检查网络后重试。'
 }
 function reset(): void {
   taskState.value = 'idle'
   taskStarted.value = null
-  taskNote.value = '构建 #30231271280 → 构建 #30235703570 · 构建于 07/31 01:31'
+  taskNote.value = '2026.10.13 → 2026.10.13.2 · 发布于 10/13 17:12'
 }
 
 const pending = ref(0)
@@ -112,7 +112,7 @@ function showNew(): void {
       </div>
       <p class="ui-kit__label">跟在一行小字旁边：加 --inline，手机上看起来仍是 30，点按区域 44</p>
       <div class="ui-kit__row">
-        <span class="ui-kit__note">上一个版本 <span class="ui-mono">构建 #30229870401</span></span>
+        <span class="ui-kit__note">上一个版本 <span class="ui-mono">构建 #36374613990</span></span>
         <button class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button">回退</button>
       </div>
     </UiSection>
@@ -121,8 +121,8 @@ function showNew(): void {
       <UiCard title="当前安装" desc="增强版运行时">
         <template #actions><span class="ui-tag ui-tag--ok">已安装</span></template>
         <dl class="ui-kv">
-          <div><dt>当前版本</dt><dd class="ui-mono">构建 #30231271280</dd></div>
-          <div><dt>原版提交</dt><dd class="ui-mono">647c5b1d2af6</dd></div>
+          <div><dt>当前版本</dt><dd class="ui-mono">2026.10.13.2</dd></div>
+          <div><dt>原版提交</dt><dd class="ui-mono">42981abe52ce</dd></div>
           <div><dt>控制协议</dt><dd class="ui-mono">v1</dd></div>
           <div><dt>安装来源</dt><dd><a class="ui-link" href="#">原版源码</a></dd></div>
         </dl>
@@ -134,7 +134,7 @@ function showNew(): void {
           <div><dt>配置代次</dt><dd class="ui-mono">#18</dd></div>
           <div><dt>已应用</dt><dd class="ui-mono">24 次</dd></div>
           <div><dt>配置摘要</dt><dd class="ui-mono">45b9a1c0c7b551</dd></div>
-          <div><dt>补丁集</dt><dd class="ui-mono">v6</dd></div>
+          <div><dt>内核</dt><dd class="ui-mono">2026.10.13.2</dd></div>
         </dl>
         <template #foot><span>PID <span class="ui-mono">1428</span> · 统计为运行时累计值</span></template>
       </UiCard>

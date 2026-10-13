@@ -199,6 +199,19 @@ test('真实内核轨迹：未命中的规则并成一行，「准备转发」�
   await noOverflow(page)
 })
 
+// 同一个查询正好在问上游：这次不另发，等那一次的回答。内核写的是一句中文，按正文显示，不像地址那样用等宽
+// The same query is already out upstream: this one waits for that answer. The kernel writes a Chinese sentence, shown in the body face, not mono like an address
+test('等候正在进行的同一个查询写成一句话 @responsive', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('kixdns:demo-trace-joined', 'true'))
+  await query(page)
+  const joined = page.locator('.diag-trace .ui-step').filter({ hasText: '等候正在进行的同一个查询' })
+  await expect(joined).toHaveCount(1)
+  await expect(joined.locator('.ui-mono, code')).toHaveCount(0)
+  // 前一行仍是规则决定转给谁 / The row before still says where the rule meant to send it
+  await expect(page.locator('.diag-trace')).toContainText('转发给 https://1.1.1.1/dns-query')
+  await noOverflow(page)
+})
+
 test('多个命中与长轨迹不被固定六阶段裁掉', async ({ page }) => {
   const trace: DnsTraceStep[] = Array.from({ length: 11 }, (_, index) => ({
     stage: index === 10 ? 'future_stage' : 'rule', status: 'matched', label: 'rule-' + index + '-' + 'long-name-'.repeat(8), detail: '保留原始说明', elapsed_ms: index,

@@ -75,6 +75,7 @@ describe('执行路径每一步写成一句话', () => {
     [kstep('upstream', 'succeeded', 'https://1.1.1.1/dns-query', '响应码：No Error；耗时：11 ms；截断：false'), 'https://1.1.1.1/dns-query 收到回答', ''],
     [kstep('upstream', 'succeeded', '8.8.8.8:53', '响应码：Server Failure；耗时：30 ms；截断：true'), '8.8.8.8:53 回答 SERVFAIL', '已截断'],
     [kstep('upstream', 'failed', '8.8.8.8:53', 'request timed out'), '8.8.8.8:53 没有回答', 'request timed out'],
+    [kstep('upstream', 'joined', '等候正在进行的同一个查询'), '等候正在进行的同一个查询', ''],
   ])('%#', (input, lead, note) => {
     const view = describeStep(input)
     expect(plain(view.lead)).toBe(lead)
@@ -84,6 +85,8 @@ describe('执行路径每一步写成一句话', () => {
   it('名字和地址用等宽；响应码是助记词，和中文一样用正文字体', () => {
     expect(monos(describeStep(kstep('upstream', 'succeeded', 'https://1.1.1.1/dns-query', '响应码：No Error；耗时：11 ms；截断：false')).lead)).toEqual(['https://1.1.1.1/dns-query'])
     expect(monos(detailParts('剩余 TTL：120 秒'))).toEqual([])
+    // 等候同一个查询是一句话，不是地址 / Waiting on the same query is a sentence, not an address
+    expect(monos(describeStep(kstep('upstream', 'joined', '等候正在进行的同一个查询')).lead)).toEqual([])
   })
 
   it('认不出的阶段和写法退回「阶段名 标签」，状态照翻', () => {

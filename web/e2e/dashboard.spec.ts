@@ -117,8 +117,9 @@ test('运行配置与缓存清理保持可用', async ({ page }) => {
   await expect(page.locator('.overview-config-lead')).toContainText('#18')
   // 卡片主项是面板的配置版本，内核重新加载的次数退到摘要条里 / The card leads with the panel's config version; the kernel's reload count moves to the strip
   await expect(page.locator('.overview-config-hashes')).toContainText('24 次')
-  // 补丁集按 pN 写，和系统页一致 / The patchset reads pN, as on the system page
-  await expect(page.locator('.overview-config-hashes')).toContainText(/补丁集p\d+/)
+  // fork 发布的内核报日期版本，替代补丁集那一项 / A fork release reports its date version in place of the patchset
+  await expect(page.locator('.overview-config-hashes')).toContainText('内核2026.10.13')
+  await expect(page.locator('.overview-config-hashes')).not.toContainText('补丁集')
   await expect(page.locator('.overview-config-state')).toHaveText('已生效')
   await page.getByRole('button', { name: '清空缓存', exact: true }).click()
   // 提示说的条数就是确认框里那个数，不另外加上内部的规则缓存 / The toast's count is the number in the confirm, without the internal rule cache added on

@@ -6,22 +6,147 @@ use futures_util::future::BoxFuture;
 use tempfile::tempdir;
 
 use super::ServiceHost;
-use super::validation::ParsedArtifactReference;
+use super::install::verify_kernel_source;
+use super::validation::{kernel_architecture, kernel_asset_name};
 use super::{
-    ARTIFACT_PAGE_SIZE, BuildIdentity, GithubRelease, InstalledVersion, MANIFEST_SCHEMA_VERSION,
-    MAX_ARTIFACT_PAGES, ReleaseAsset, RemoteVersion, RepositoryFile, ResolvedVersion, UpdateError,
-    UpdateManager, UpdateSettings, VersionKey, VersionManifest, VersionSource, WorkflowRuns,
-    artifact_page_count, build_lock_revision, extract_artifact, load_bundled_manifest,
-    load_verified_version, newest_upstream_build, panel_release_asset_name,
-    parse_artifact_reference, prune_versions, sha256, store_version, to_kixdns_update_notice,
-    to_panel_update_notice, trusted_workflow_runs, update_stored_capabilities, validate_commit,
-    validate_digest, validate_github_token, validate_remote_build_identity, validate_slug,
-    workflow_runs_url, write_github_token,
+    BuildIdentity, GithubRelease, InstalledVersion, MANIFEST_SCHEMA_VERSION, ReleaseAsset,
+    ReleaseManifest, RemoteVersion, UpdateError, UpdateManager, UpdateSettings, VersionKey,
+    VersionManifest, VersionSource, extract_artifact, load_bundled_manifest, load_verified_version,
+    panel_release_asset_name, parse_kernel_version, prune_versions, remote_version, sha256,
+    store_version, to_kixdns_update_notice, to_panel_update_notice, update_stored_capabilities,
+    validate_commit, validate_digest, validate_github_token, validate_slug, write_github_token,
 };
 use crate::db::Database;
 use crate::operations::ServiceAction;
 
 const TEST_BUILD_COMMIT: &str = "4e8002d08a56afc08be335d0d5ed337c7690f9af";
+pub(crate) const TEST_REPOSITORY: &str = "tuoro/kixdns";
+pub(crate) const TEST_UPSTREAM_COMMIT: &str = "42981abe52ce53271be50b430594e02601e8b615";
+pub(crate) const TEST_VERSION: &str = "2026.10.13.2";
+pub(crate) const TEST_CAPABILITIES: &str =
+    r#"{"schema_version":1,"config_capabilities":["config_query_stats_v1"]}"#;
+
+/// 各测试共用的设置：fork 仓库、没有完整包身份，路径都在给定目录下。
+/// Settings the tests share: the fork repository, no full-package identity, and every path
+/// under the given directory.
+pub(crate) fn test_settings(directory: &std::path::Path) -> UpdateSettings {
+    UpdateSettings {
+        kernel_repository: TEST_REPOSITORY.to_owned(),
+        installed_source: None,
+        installed_commit: None,
+        installed_source_id: None,
+        panel_installed_commit: None,
+        panel_installed_release: None,
+        binary_path: directory.join("bin/kixdns"),
+        versions_path: directory.join("versions"),
+        bundled_metadata: directory.join("bundle"),
+        github_token_path: directory.join("github-token"),
+    }
+}
+
+/// fork 发布包里的 `KIXDNS_SOURCE.json`。 / `KIXDNS_SOURCE.json` in a fork release package.
+pub(crate) fn kernel_source_json(version: &str, commit: &str) -> String {
+    serde_json::json!({
+        "schema_version": 1,
+        "repository": TEST_REPOSITORY,
+        "version": version,
+        "commit": commit,
+        "upstream_commit": TEST_UPSTREAM_COMMIT,
+        "arch": kernel_architecture(),
+        "control_protocol": 1,
+    })
+    .to_string()
+}
+
+/// 按 fork 发布流程的样子打一个内核包：三份文件加 `SHA256SUMS`。
+/// Packs a kernel the way the fork's release workflow does: three files plus `SHA256SUMS`.
+pub(crate) fn kernel_package(binary: &[u8], source: &str, capabilities: &str) -> Vec<u8> {
+    let checksums = format!(
+        "{}  kixdns\n{}  KIXDNS_CAPABILITIES.json\n{}  KIXDNS_SOURCE.json\n",
+        sha256(binary),
+        sha256(capabilities.as_bytes()),
+        sha256(source.as_bytes())
+    );
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    for (name, content) in [
+        ("kixdns", binary),
+        ("KIXDNS_CAPABILITIES.json", capabilities.as_bytes()),
+        ("KIXDNS_SOURCE.json", source.as_bytes()),
+        ("SHA256SUMS", checksums.as_bytes()),
+    ] {
+        writer.start_file(name, options).unwrap();
+        writer.write_all(content).unwrap();
+    }
+    writer.finish().unwrap().into_inner()
+}
+
+/// 已经对过发布清单的 fork 版本；下载地址默认指向 GitHub，安装测试会换成本地服务。
+/// A fork version already checked against its manifest; the download address points at
+/// GitHub, and install tests swap in a local server.
+pub(crate) fn fork_remote(source_id: u64, tag: &str) -> RemoteVersion {
+    let artifact = kernel_asset_name(tag);
+    RemoteVersion {
+        source: VersionSource::Fork,
+        source_id,
+        commit: TEST_BUILD_COMMIT.to_owned(),
+        release_tag: tag.to_owned(),
+        upstream_commit: Some(TEST_UPSTREAM_COMMIT.to_owned()),
+        created_at: Some("2026-10-13T08:00:00Z".to_owned()),
+        source_url: Some(format!(
+            "https://github.com/olicesx/kixdns/commit/{TEST_UPSTREAM_COMMIT}"
+        )),
+        build_url: format!("https://github.com/{TEST_REPOSITORY}/releases/tag/{tag}"),
+        download_url: format!(
+            "https://github.com/{TEST_REPOSITORY}/releases/download/{tag}/{artifact}"
+        ),
+        artifact,
+        artifact_digest: format!("sha256:{}", "a".repeat(64)),
+        control_protocol: 1,
+        config_capabilities: vec!["config_query_stats_v1".to_owned()],
+    }
+}
+
+fn fork_manifest(remote: &RemoteVersion, binary: &[u8]) -> VersionManifest {
+    VersionManifest {
+        schema_version: MANIFEST_SCHEMA_VERSION,
+        source: Some(VersionSource::Fork),
+        source_id: Some(remote.source_id),
+        commit: remote.commit.clone(),
+        run_id: None,
+        release_tag: Some(remote.release_tag.clone()),
+        created_at: remote.created_at.clone(),
+        source_url: remote.source_url.clone(),
+        build_url: Some(remote.build_url.clone()),
+        artifact: remote.artifact.clone(),
+        artifact_digest: Some(remote.artifact_digest.clone()),
+        upstream_repository: Some("olicesx/kixdns".to_owned()),
+        upstream_commit: remote.upstream_commit.clone(),
+        patchset: None,
+        dependency_revision: None,
+        control_protocol: Some(1),
+        config_capabilities: remote.config_capabilities.clone(),
+        binary_sha256: sha256(binary),
+        installed_at: 42,
+    }
+}
+
+/// 存一个可以直接切换过去的 fork 版本，返回它的远端身份和二进制；二进制按包编号区分，
+/// 也和同编号的 Action 构建不同。
+/// Stores a fork version ready to switch to and returns its remote identity and binary;
+/// binaries differ by package id, and from an Action build with the same id.
+fn store_fork_build(
+    versions_path: &std::path::Path,
+    source_id: u64,
+    tag: &str,
+) -> (RemoteVersion, Vec<u8>) {
+    let mut binary = test_elf();
+    binary[30] = 1;
+    binary[31] = u8::try_from(source_id).unwrap();
+    let remote = fork_remote(source_id, tag);
+    store_version(versions_path, &fork_manifest(&remote, &binary), &binary).unwrap();
+    (remote, binary)
+}
 
 const TEST_IDENTITY: &str = r#"{
         "repository":"olicesx/kixdns",
@@ -42,21 +167,6 @@ fn test_elf() -> Vec<u8> {
     };
     binary[18..20].copy_from_slice(&machine.to_le_bytes());
     binary
-}
-
-#[test]
-fn calculates_all_artifact_pages_and_rejects_unbounded_catalogs() {
-    assert_eq!(artifact_page_count(0).unwrap(), 0);
-    assert_eq!(artifact_page_count(ARTIFACT_PAGE_SIZE).unwrap(), 1);
-    assert_eq!(artifact_page_count(ARTIFACT_PAGE_SIZE + 1).unwrap(), 2);
-    assert_eq!(
-        artifact_page_count(ARTIFACT_PAGE_SIZE * MAX_ARTIFACT_PAGES).unwrap(),
-        MAX_ARTIFACT_PAGES
-    );
-    assert!(matches!(
-        artifact_page_count(ARTIFACT_PAGE_SIZE * MAX_ARTIFACT_PAGES + 1),
-        Err(UpdateError::Network(_))
-    ));
 }
 
 #[test]
@@ -88,15 +198,6 @@ fn stores_github_token_as_a_private_regular_file() {
         assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
     }
     assert_eq!(std::fs::read_to_string(path).unwrap(), "github_pat_example");
-}
-
-fn test_checksums(binary: &[u8], identity: &str) -> String {
-    format!(
-        "{}  kixdns\n{}  upstream.lock.json\n{}  KIXDNS_BUILD_COMMIT\n",
-        sha256(binary),
-        sha256(identity.as_bytes()),
-        sha256(TEST_BUILD_COMMIT.as_bytes())
-    )
 }
 
 fn test_manifest(source_id: u64, commit: &str, binary: &[u8]) -> VersionManifest {
@@ -157,7 +258,7 @@ fn imports_verified_bundled_build_identity() {
     write_bundle_metadata(directory.path(), &binary);
     let key = VersionKey::tracked(VersionSource::Action, 42, TEST_BUILD_COMMIT).unwrap();
 
-    let manifest = load_bundled_manifest(directory.path(), &key, &binary).unwrap();
+    let manifest = load_bundled_manifest(directory.path(), TEST_REPOSITORY, &key, &binary).unwrap();
 
     assert_eq!(manifest.source_id, Some(42));
     assert_eq!(manifest.run_id, Some(30_235_703_570));
@@ -185,7 +286,7 @@ fn bundled_build_records_its_dependency_revision() {
     write_bundle_metadata(directory.path(), &binary);
     let key = VersionKey::tracked(VersionSource::Action, 42, TEST_BUILD_COMMIT).unwrap();
     assert_eq!(
-        load_bundled_manifest(directory.path(), &key, &binary)
+        load_bundled_manifest(directory.path(), TEST_REPOSITORY, &key, &binary)
             .unwrap()
             .dependency_revision,
         None
@@ -198,7 +299,7 @@ fn bundled_build_records_its_dependency_revision() {
         format!("{identity}\n"),
     )
     .unwrap();
-    let manifest = load_bundled_manifest(directory.path(), &key, &binary).unwrap();
+    let manifest = load_bundled_manifest(directory.path(), TEST_REPOSITORY, &key, &binary).unwrap();
     assert_eq!(manifest.dependency_revision, Some(1));
     assert_eq!(manifest.into_installed(true).dependency_revision, Some(1));
 }
@@ -212,7 +313,7 @@ fn rejects_bundled_identity_for_a_different_binary() {
     changed.push(1);
     let key = VersionKey::tracked(VersionSource::Action, 42, TEST_BUILD_COMMIT).unwrap();
 
-    assert!(load_bundled_manifest(directory.path(), &key, &changed).is_err());
+    assert!(load_bundled_manifest(directory.path(), TEST_REPOSITORY, &key, &changed).is_err());
 }
 
 #[tokio::test]
@@ -234,18 +335,12 @@ async fn reads_capabilities_from_unmaterialized_bundled_version() {
     let manager = UpdateManager::new(
         database,
         UpdateSettings {
-            repository: "tuoro/kixdns-panel".to_owned(),
-            workflow: "build-kixdns.yml".to_owned(),
-            branch: "main".to_owned(),
-            artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
             installed_commit: Some(TEST_BUILD_COMMIT.to_owned()),
             installed_source_id: Some(42),
-            panel_installed_commit: None,
-            panel_installed_release: None,
             binary_path: binary_path.clone(),
             versions_path,
             bundled_metadata,
-            github_token_path: directory.path().join("github-token"),
+            ..test_settings(directory.path())
         },
     )
     .unwrap();
@@ -271,18 +366,12 @@ async fn bundled_binary_identity_replaces_stale_database_state() {
     let manager = UpdateManager::new(
         database.clone(),
         UpdateSettings {
-            repository: "tuoro/kixdns-panel".to_owned(),
-            workflow: "build-kixdns.yml".to_owned(),
-            branch: "main".to_owned(),
-            artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
             installed_commit: Some(TEST_BUILD_COMMIT.to_owned()),
             installed_source_id: Some(42),
-            panel_installed_commit: None,
-            panel_installed_release: None,
             binary_path: binary_path.clone(),
             versions_path: versions_path.clone(),
             bundled_metadata,
-            github_token_path: directory.path().join("github-token"),
+            ..test_settings(directory.path())
         },
     )
     .unwrap();
@@ -325,66 +414,399 @@ async fn bundled_binary_identity_replaces_stale_database_state() {
     );
 }
 
+/// 新完整包带的 fork 发布版身份：和 `build-panel.yml` 写进包里的文件一一对应。
+/// The fork release identity a new full package carries: one file per item `build-panel.yml`
+/// writes into the package.
+fn write_fork_bundle_metadata(directory: &std::path::Path, binary: &[u8], version: &str) {
+    std::fs::create_dir_all(directory).unwrap();
+    for (name, value) in [
+        ("KIXDNS_BUILD_COMMIT", TEST_BUILD_COMMIT.to_owned()),
+        ("KIXDNS_ARTIFACT_ID", "77".to_owned()),
+        ("KIXDNS_ARTIFACT_NAME", kernel_asset_name(version)),
+        (
+            "KIXDNS_ARTIFACT_DIGEST",
+            format!("sha256:{}", "a".repeat(64)),
+        ),
+        ("KIXDNS_BINARY_SHA256", sha256(binary)),
+        ("KIXDNS_CAPABILITIES.json", TEST_CAPABILITIES.to_owned()),
+        (
+            "KIXDNS_SOURCE.json",
+            kernel_source_json(version, TEST_BUILD_COMMIT),
+        ),
+    ] {
+        std::fs::write(directory.join(name), format!("{value}\n")).unwrap();
+    }
+}
+
+#[test]
+fn imports_a_verified_fork_release_bundle() {
+    let directory = tempdir().unwrap();
+    let binary = test_elf();
+    write_fork_bundle_metadata(directory.path(), &binary, TEST_VERSION);
+    let key = VersionKey::tracked(VersionSource::Fork, 77, TEST_BUILD_COMMIT).unwrap();
+
+    let manifest = load_bundled_manifest(directory.path(), TEST_REPOSITORY, &key, &binary).unwrap();
+
+    assert_eq!(manifest.source, Some(VersionSource::Fork));
+    assert_eq!(manifest.source_id, Some(77));
+    assert_eq!(manifest.run_id, None);
+    assert_eq!(manifest.release_tag.as_deref(), Some(TEST_VERSION));
+    assert_eq!(manifest.patchset, None);
+    assert_eq!(
+        manifest.upstream_commit.as_deref(),
+        Some(TEST_UPSTREAM_COMMIT)
+    );
+    assert_eq!(
+        manifest.build_url.as_deref(),
+        Some("https://github.com/tuoro/kixdns/releases/tag/2026.10.13.2")
+    );
+    assert_eq!(
+        manifest.source_url.as_deref(),
+        Some("https://github.com/olicesx/kixdns/commit/42981abe52ce53271be50b430594e02601e8b615")
+    );
+    assert_eq!(manifest.config_capabilities, vec!["config_query_stats_v1"]);
+    // 读出来的身份要能原样存进本机库存。 / The identity read back must be storable as is.
+    let stored = tempdir().unwrap();
+    store_version(stored.path(), &manifest, &binary).unwrap();
+    assert_eq!(
+        load_verified_version(stored.path(), &key)
+            .unwrap()
+            .0
+            .into_installed(true)
+            .label(),
+        TEST_VERSION
+    );
+}
+
+#[test]
+fn rejects_a_fork_bundle_that_does_not_match_its_release() {
+    let binary = test_elf();
+    let key = VersionKey::tracked(VersionSource::Fork, 77, TEST_BUILD_COMMIT).unwrap();
+    let refused = |change: &dyn Fn(&std::path::Path), repository: &str| {
+        let directory = tempdir().unwrap();
+        write_fork_bundle_metadata(directory.path(), &binary, TEST_VERSION);
+        change(directory.path());
+        load_bundled_manifest(directory.path(), repository, &key, &binary).is_err()
+    };
+    assert!(refused(&|_| {}, "someone/kixdns"), "another repository");
+    assert!(
+        refused(
+            &|directory| std::fs::write(
+                directory.join("KIXDNS_ARTIFACT_NAME"),
+                kernel_asset_name("2026.10.12"),
+            )
+            .unwrap(),
+            TEST_REPOSITORY,
+        ),
+        "a package name for another version"
+    );
+    assert!(
+        refused(
+            &|directory| std::fs::write(
+                directory.join("KIXDNS_SOURCE.json"),
+                kernel_source_json(TEST_VERSION, "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25"),
+            )
+            .unwrap(),
+            TEST_REPOSITORY,
+        ),
+        "a source note for another commit"
+    );
+    assert!(
+        refused(
+            &|directory| std::fs::remove_file(directory.join("KIXDNS_SOURCE.json")).unwrap(),
+            TEST_REPOSITORY,
+        ),
+        "no source note"
+    );
+}
+
+#[tokio::test]
+async fn a_full_package_with_a_fork_release_is_the_active_kernel() {
+    let directory = tempdir().unwrap();
+    let database = Database::open(directory.path().join("panel.db"))
+        .await
+        .unwrap();
+    let binary = test_elf();
+    let bundled_metadata = directory.path().join("bundle");
+    write_fork_bundle_metadata(&bundled_metadata, &binary, TEST_VERSION);
+    let manager = UpdateManager::new(
+        database,
+        UpdateSettings {
+            installed_source: Some("fork".to_owned()),
+            installed_commit: Some(TEST_BUILD_COMMIT.to_owned()),
+            installed_source_id: Some(77),
+            bundled_metadata,
+            ..test_settings(directory.path())
+        },
+    )
+    .unwrap();
+    std::fs::create_dir_all(directory.path().join("bin")).unwrap();
+    std::fs::write(directory.path().join("bin/kixdns"), &binary).unwrap();
+
+    manager.initialize_installed_version().await.unwrap();
+
+    let expected = VersionKey::tracked(VersionSource::Fork, 77, TEST_BUILD_COMMIT).unwrap();
+    assert_eq!(manager.active_version().await.unwrap(), Some(expected));
+    assert!(
+        manager.legacy_kernel_to_replace().await.unwrap().is_none(),
+        "a fork kernel is never replaced at start-up"
+    );
+    assert_eq!(
+        manager.active_capabilities().await.unwrap(),
+        vec!["config_query_stats_v1".to_owned()]
+    );
+}
+
+#[tokio::test]
+async fn refuses_an_unknown_or_incomplete_installed_source() {
+    let directory = tempdir().unwrap();
+    let database = Database::open(directory.path().join("panel.db"))
+        .await
+        .unwrap();
+    let settings = |source: &str, source_id: Option<u64>| UpdateSettings {
+        installed_source: Some(source.to_owned()),
+        installed_commit: Some(TEST_BUILD_COMMIT.to_owned()),
+        installed_source_id: source_id,
+        ..test_settings(directory.path())
+    };
+    // 完整包不会带 Release 内核；fork 内核没有包编号就认不出是哪一个。
+    // A full package never brings a Release kernel; a fork kernel without its package id
+    // cannot be told apart.
+    assert!(UpdateManager::new(database.clone(), settings("release", Some(7))).is_err());
+    assert!(UpdateManager::new(database.clone(), settings("nightly", Some(7))).is_err());
+    assert!(UpdateManager::new(database.clone(), settings("fork", None)).is_err());
+    assert!(UpdateManager::new(database.clone(), settings("fork", Some(7))).is_ok());
+    // 旧安装包不写来源：按 Action 构建处理。 / Older packages write no source: an Action build.
+    assert!(UpdateManager::new(database, settings(" ", Some(7))).is_ok());
+}
+
 #[test]
 fn validates_fixed_update_coordinates_and_digests() {
-    assert!(validate_slug("tuoro/kixdns-panel", true).is_ok());
+    assert!(validate_slug("tuoro/kixdns", true).is_ok());
     assert!(validate_slug("https://evil.invalid", true).is_err());
-    assert!(validate_slug("build-kixdns.yml", false).is_ok());
-    assert!(validate_slug("../../workflow", false).is_err());
-    assert!(validate_slug("..", false).is_err());
     assert!(validate_slug("owner/..", true).is_err());
     assert!(validate_digest(&format!("sha256:{}", "a".repeat(64))).is_ok());
     assert!(validate_digest("sha256:bad").is_err());
     assert!(validate_commit("374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25").is_ok());
     assert!(validate_commit("not-a-commit").is_err());
-    let tracked = VersionKey::tracked(
+    for source in [
         VersionSource::Action,
-        42,
-        "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25",
-    )
-    .unwrap();
-    assert_eq!(VersionKey::parse(&tracked.encoded()).unwrap(), tracked);
-    let parse = |name| parse_artifact_reference("kixdns-enhanced-linux-x86_64", name);
+        VersionSource::Release,
+        VersionSource::Fork,
+    ] {
+        let tracked =
+            VersionKey::tracked(source, 42, "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25").unwrap();
+        assert_eq!(VersionKey::parse(&tracked.encoded()).unwrap(), tracked);
+    }
     assert_eq!(
-        parse("kixdns-enhanced-action-30235703570-linux-x86_64"),
-        Some(ParsedArtifactReference {
-            official_run_id: 30_235_703_570,
-            patchset: None,
-        })
+        VersionKey::tracked(
+            VersionSource::Fork,
+            77,
+            "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25"
+        )
+        .unwrap()
+        .directory_name(),
+        "fork-77-374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25"
     );
-    assert_eq!(
-        parse("kixdns-enhanced-action-30235703570-p5-44e7e6b02316-linux-x86_64"),
-        Some(ParsedArtifactReference {
-            official_run_id: 30_235_703_570,
-            patchset: Some(5),
-        })
-    );
-    // Release 轨道已停止构建，它留下的包不再进入候选。
-    // The Release track no longer builds; packages it left behind are not candidates.
-    assert_eq!(parse("kixdns-enhanced-release-v0.1.1-linux-x86_64"), None);
-    assert_eq!(parse("kixdns-enhanced-action-../../bad-linux-x86_64"), None);
-    assert_eq!(parse("kixdns-enhanced-action-0042-linux-x86_64"), None);
+    assert!(VersionKey::parse("nightly:42:374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25").is_err());
 }
 
 #[test]
-fn serializes_remote_artifact_identity() {
-    let artifact_digest = format!("sha256:{}", "a".repeat(64));
-    let remote = RemoteVersion {
-        source: VersionSource::Action,
-        source_id: 42,
-        commit: "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25".to_owned(),
-        run_id: 42,
-        patchset: None,
-        created_at: "2026-07-28T00:00:00Z".to_owned(),
-        source_url: "https://github.com/olicesx/kixdns/actions/runs/42".to_owned(),
-        build_url: "https://github.com/tuoro/kixdns-panel/actions/runs/99".to_owned(),
-        artifact: "kixdns-enhanced-action-42-linux-x86_64".to_owned(),
-        artifact_digest: artifact_digest.clone(),
-        download_url: "https://nightly.link/example/actions/runs/42/artifact.zip".to_owned(),
-    };
+fn date_versions_compare_part_by_part() {
+    let version = |tag: &str| parse_kernel_version(tag).unwrap();
+    assert!(version("2026.10.13") < version("2026.10.13.2"));
+    assert!(version("2026.10.13.2") < version("2026.10.13.10"));
+    assert!(version("2026.10.13.10") < version("2026.10.14"));
+    assert!(version("2026.09.30.3") < version("2026.10.01"));
+    assert!(version("2026.12.31") < version("2027.01.01"));
+    assert_eq!(version("2026.10.13"), version("2026.10.13"));
+    for tag in [
+        "",
+        "v2026.10.13",
+        "2026.10",
+        "2026.1.13",
+        "2026.10.3",
+        "26.10.13",
+        "2026.13.01",
+        "2026.00.10",
+        "2026.10.32",
+        "2026.10.13.1",
+        "2026.10.13.0",
+        "2026.10.13.02",
+        "2026.10.13.",
+        "2026.10.13.2.1",
+        "2026.10.13-2",
+        "2026.10.13.x",
+    ] {
+        assert!(parse_kernel_version(tag).is_err(), "{tag:?}");
+    }
+}
 
-    let serialized = serde_json::to_value(remote).unwrap();
-    assert_eq!(serialized["artifact_digest"], artifact_digest);
+/// fork 最新发布的样子：本机架构的包、另一个架构的包和发布清单。
+/// What the fork's latest release looks like: this architecture's package, the other
+/// architecture's and the manifest.
+fn test_release(tag: &str, size: u64, digest: Option<String>) -> GithubRelease {
+    let other = if kernel_architecture() == "x86_64" {
+        "arm64"
+    } else {
+        "x86_64"
+    };
+    GithubRelease {
+        tag_name: tag.to_owned(),
+        published_at: Some("2026-10-13T08:00:00Z".to_owned()),
+        draft: false,
+        prerelease: false,
+        assets: vec![
+            ReleaseAsset {
+                id: 77,
+                name: kernel_asset_name(tag),
+                size,
+                digest,
+            },
+            ReleaseAsset {
+                id: 78,
+                name: format!("kixdns-{tag}-linux-{other}.zip"),
+                size: 9,
+                digest: None,
+            },
+            ReleaseAsset {
+                id: 79,
+                name: "manifest.json".to_owned(),
+                size: 700,
+                digest: None,
+            },
+        ],
+    }
+}
+
+fn test_release_manifest(tag: &str, size: u64) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "repository": TEST_REPOSITORY,
+        "version": tag,
+        "commit": TEST_BUILD_COMMIT,
+        "upstream_commit": TEST_UPSTREAM_COMMIT,
+        "control_protocol": 1,
+        "config_capabilities": ["config_query_stats_v1"],
+        "assets": {
+            kernel_architecture(): {
+                "name": kernel_asset_name(tag),
+                "size": size,
+                "sha256": "b".repeat(64),
+            },
+        },
+    })
+}
+
+#[test]
+fn accepts_the_latest_release_that_matches_its_manifest() {
+    let manifest: ReleaseManifest =
+        serde_json::from_value(test_release_manifest(TEST_VERSION, 4096)).unwrap();
+    let digest = format!("sha256:{}", "b".repeat(64));
+    for recorded in [Some(digest.clone()), None] {
+        let release = test_release(TEST_VERSION, 4096, recorded);
+        let remote = remote_version(TEST_REPOSITORY, &release, &manifest).unwrap();
+        assert_eq!(remote.source, VersionSource::Fork);
+        assert_eq!(remote.source_id, 77);
+        assert_eq!(remote.release_tag, TEST_VERSION);
+        assert_eq!(remote.commit, TEST_BUILD_COMMIT);
+        assert_eq!(
+            remote.upstream_commit.as_deref(),
+            Some(TEST_UPSTREAM_COMMIT)
+        );
+        assert_eq!(remote.artifact_digest, digest);
+        assert_eq!(
+            remote.download_url,
+            format!(
+                "https://github.com/tuoro/kixdns/releases/download/2026.10.13.2/{}",
+                kernel_asset_name(TEST_VERSION)
+            )
+        );
+        assert_eq!(
+            remote.build_url,
+            "https://github.com/tuoro/kixdns/releases/tag/2026.10.13.2"
+        );
+        assert_eq!(remote.config_capabilities, vec!["config_query_stats_v1"]);
+    }
+
+    // 第一版发布记的是 base_commit，没有 upstream_commit：照样认，只是不显示原版提交。
+    // The first release recorded base_commit rather than upstream_commit: still accepted,
+    // only without an upstream commit to show.
+    let mut first = test_release_manifest("2026.10.13", 4096);
+    first.as_object_mut().unwrap().remove("upstream_commit");
+    first["base_commit"] = TEST_UPSTREAM_COMMIT.into();
+    let first: ReleaseManifest = serde_json::from_value(first).unwrap();
+    let remote = remote_version(
+        TEST_REPOSITORY,
+        &test_release("2026.10.13", 4096, None),
+        &first,
+    )
+    .unwrap();
+    assert_eq!(remote.upstream_commit, None);
+    assert_eq!(remote.source_url, None);
+}
+
+#[test]
+fn refuses_a_release_that_disagrees_with_its_manifest() {
+    let refused = |change: &dyn Fn(&mut serde_json::Value, &mut GithubRelease)| {
+        let mut manifest = test_release_manifest(TEST_VERSION, 4096);
+        let mut release = test_release(TEST_VERSION, 4096, None);
+        change(&mut manifest, &mut release);
+        let manifest: ReleaseManifest = serde_json::from_value(manifest).unwrap();
+        remote_version(TEST_REPOSITORY, &release, &manifest).is_err()
+    };
+    assert!(!refused(&|_, _| {}), "the unchanged release is accepted");
+    assert!(refused(
+        &|manifest, _| manifest["repository"] = "someone/kixdns".into()
+    ));
+    assert!(refused(
+        &|manifest, _| manifest["version"] = "2026.10.13".into()
+    ));
+    assert!(refused(&|manifest, _| manifest["schema_version"] = 2.into()));
+    assert!(refused(&|manifest, _| manifest["commit"] = "main".into()));
+    assert!(refused(
+        &|manifest, _| manifest["upstream_commit"] = "abc".into()
+    ));
+    assert!(refused(
+        &|manifest, _| manifest["control_protocol"] = 2.into()
+    ));
+    assert!(refused(
+        &|manifest, _| manifest["config_capabilities"] = serde_json::json!(["Bad Name"])
+    ));
+    assert!(refused(
+        &|manifest, _| manifest["assets"] = serde_json::json!({})
+    ));
+    assert!(refused(&|manifest, _| {
+        manifest["assets"][kernel_architecture()]["name"] = "kixdns.zip".into();
+    }));
+    assert!(refused(&|manifest, _| {
+        manifest["assets"][kernel_architecture()]["sha256"] = "b".into();
+    }));
+    assert!(refused(&|manifest, _| {
+        manifest["assets"][kernel_architecture()]["size"] = 0.into();
+    }));
+    assert!(refused(&|_, release| release.prerelease = true));
+    assert!(refused(&|_, release| release.draft = true));
+    assert!(refused(&|_, release| release.tag_name = "v0.2.0".to_owned()));
+    assert!(refused(&|_, release| release.assets[0].size = 4097));
+    assert!(refused(&|_, release| release.assets[0].id = 0));
+    assert!(refused(&|_, release| {
+        release.assets[0].digest = Some(format!("sha256:{}", "c".repeat(64)));
+    }));
+    assert!(refused(&|_, release| {
+        release.assets.remove(0);
+    }));
+}
+
+#[test]
+fn serializes_remote_release_identity() {
+    let serialized = serde_json::to_value(fork_remote(77, TEST_VERSION)).unwrap();
+    assert_eq!(serialized["source"], "fork");
+    assert_eq!(serialized["release_tag"], TEST_VERSION);
+    assert_eq!(
+        serialized["artifact_digest"],
+        format!("sha256:{}", "a".repeat(64))
+    );
 }
 
 #[test]
@@ -396,8 +818,12 @@ fn notifies_only_for_newer_panel_release_with_matching_asset() {
     let release = |tag: &str, asset_name: &str| GithubRelease {
         tag_name: tag.to_owned(),
         published_at: Some("2026-07-30T00:00:00Z".to_owned()),
+        draft: false,
+        prerelease: false,
         assets: vec![ReleaseAsset {
+            id: 1,
             name: asset_name.to_owned(),
+            size: 1,
             digest: Some(format!("sha256:{}", "a".repeat(64))),
         }],
     };
@@ -450,62 +876,16 @@ fn notifies_only_for_newer_panel_release_with_matching_asset() {
     assert_eq!(major_update.latest_version.as_deref(), Some("2.0.0"));
 }
 
-#[test]
-fn legacy_kixdns_identity_is_not_treated_as_exact_build() {
-    let remote = RemoteVersion {
-        source: VersionSource::Action,
-        source_id: 42,
-        commit: TEST_BUILD_COMMIT.to_owned(),
-        run_id: 7,
-        patchset: Some(5),
-        created_at: "2026-07-30T00:00:00Z".to_owned(),
-        source_url: "https://github.com/olicesx/kixdns/actions/runs/7".to_owned(),
-        build_url: "https://github.com/tuoro/kixdns-panel/actions/runs/8".to_owned(),
-        artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
-        artifact_digest: format!("sha256:{}", "a".repeat(64)),
-        download_url: "https://nightly.link/example.zip".to_owned(),
-    };
-    let legacy = VersionKey::new(VersionSource::Action, TEST_BUILD_COMMIT).unwrap();
-    assert!(to_kixdns_update_notice(&remote, Some(&legacy), None, None).available);
-
-    let exact = VersionKey::tracked(VersionSource::Action, 42, TEST_BUILD_COMMIT).unwrap();
-    assert!(!to_kixdns_update_notice(&remote, Some(&exact), None, None).available);
-}
-
-const REBUILD_COMMIT: &str = "9c1e5b7d3f2a4c6e8b0d1f3a5c7e9b2d4f6a8c0e";
-
-fn remote_build(run_id: u64, patchset: u32) -> RemoteVersion {
-    RemoteVersion {
-        source: VersionSource::Action,
-        source_id: 1000 + u64::from(patchset),
-        commit: REBUILD_COMMIT.to_owned(),
-        run_id,
-        patchset: Some(patchset),
-        created_at: "2026-09-22T00:00:00Z".to_owned(),
-        source_url: "https://github.com/olicesx/kixdns".to_owned(),
-        build_url: "https://github.com/tuoro/kixdns-panel/actions/runs/1".to_owned(),
-        artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
-        artifact_digest: format!("sha256:{}", "a".repeat(64)),
-        download_url: "https://nightly.link/example.zip".to_owned(),
-    }
-}
-
 fn installed_build(
-    run_id: Option<u64>,
+    source: VersionSource,
     release_tag: Option<&str>,
-    patchset: u32,
 ) -> (VersionKey, InstalledVersion) {
-    let source = if release_tag.is_some() {
-        VersionSource::Release
-    } else {
-        VersionSource::Action
-    };
     let manifest = VersionManifest {
         schema_version: MANIFEST_SCHEMA_VERSION,
         source: Some(source),
         source_id: Some(7),
         commit: TEST_BUILD_COMMIT.to_owned(),
-        run_id,
+        run_id: (source == VersionSource::Action).then_some(36_374_613_990),
         release_tag: release_tag.map(str::to_owned),
         created_at: None,
         source_url: None,
@@ -514,7 +894,7 @@ fn installed_build(
         artifact_digest: None,
         upstream_repository: None,
         upstream_commit: None,
-        patchset: Some(patchset),
+        patchset: (source == VersionSource::Action).then_some(28),
         dependency_revision: None,
         control_protocol: Some(1),
         config_capabilities: Vec::new(),
@@ -526,142 +906,146 @@ fn installed_build(
 }
 
 #[test]
-fn catalogue_follows_upstream_order_not_rebuild_time() {
-    // 每周续建只重建快过期的旧版本；它的构建更新，但上游更旧，不能排到前面。
-    // The weekly refresh rebuilds only versions about to expire. Their build is newer but
-    // their upstream is older, so they must not move ahead.
-    let resolved = |run_id: u64, build_run_id: u64| ResolvedVersion {
-        remote: remote_build(run_id, 23),
-        build_run_id,
+fn kixdns_notice_follows_date_versions() {
+    let latest = fork_remote(77, TEST_VERSION);
+    let available = |installed: &str| {
+        let (active, current) = installed_build(VersionSource::Fork, Some(installed));
+        to_kixdns_update_notice(&latest, Some(&active), Some(&current)).available
     };
-    let newest =
-        newest_upstream_build([resolved(90, 60), resolved(80, 70), resolved(100, 50)]).unwrap();
+    assert!(available("2026.10.13"));
+    assert!(available("2026.09.30.4"));
+    assert!(
+        !available("2026.10.13.2"),
+        "the same version is not an update"
+    );
+    assert!(
+        !available("2026.10.13.10"),
+        "an older release is never offered as an update"
+    );
+    assert!(!available("2026.10.14"));
+
+    let notice = to_kixdns_update_notice(&latest, None, None);
+    assert!(!notice.available, "nothing installed: the page offers 安装");
+    assert_eq!(notice.release_tag, TEST_VERSION);
     assert_eq!(
-        (newest.remote.run_id, newest.build_run_id),
-        (100, 50),
-        "a rebuild of an older upstream version must not win"
+        notice.release_url,
+        "https://github.com/tuoro/kixdns/releases/tag/2026.10.13.2"
     );
-
-    // 同一上游版本取最新的那次构建：它带着当前的补丁集和依赖修订。
-    // Of one upstream version the latest build wins: it carries the current patchset and
-    // dependency revision.
-    let newest = newest_upstream_build([resolved(100, 50), resolved(100, 80)]).unwrap();
-    assert_eq!(newest.build_run_id, 80);
-    assert!(newest_upstream_build([]).is_none());
 }
 
 #[test]
-fn kixdns_notice_follows_upstream_versions() {
-    let (active, current) = installed_build(Some(90), None, 22);
-    let notice = |remote: RemoteVersion| {
-        to_kixdns_update_notice(&remote, Some(&active), Some(&current), None).available
-    };
-    assert!(
-        !notice(remote_build(90, 22)),
-        "a rebuild of the installed version is not an update"
-    );
-    assert!(notice(remote_build(100, 22)));
-    assert!(
-        !notice(remote_build(80, 23)),
-        "an older upstream run is never offered as an update"
-    );
-    assert!(notice(remote_build(90, 23)));
-
-    // Release 轨道已停止构建：装着 Release 内核时，最新的 Action 内核就是它的更新。
-    // The Release track no longer builds: with a Release kernel installed, the newest
-    // Action kernel is its update.
-    let (active, current) = installed_build(None, Some("v0.2.0"), 24);
-    let release =
-        to_kixdns_update_notice(&remote_build(90, 22), Some(&active), Some(&current), None);
-    assert!(release.available);
-    assert!(!release.security_update);
+fn old_track_kernels_are_offered_the_fork_release() {
+    let latest = fork_remote(77, TEST_VERSION);
+    // 旧轨道已停止更新：装着 p28 的 Action 内核或更早的 Release 内核，fork 的最新版本就是更新。
+    // The old tracks no longer update: with a p28 Action kernel or an earlier Release
+    // kernel installed, the fork's newest version is the update.
+    for (source, tag) in [
+        (VersionSource::Action, None),
+        (VersionSource::Release, Some("v0.2.0")),
+    ] {
+        let (active, current) = installed_build(source, tag);
+        assert!(to_kixdns_update_notice(&latest, Some(&active), Some(&current)).available);
+        assert!(to_kixdns_update_notice(&latest, Some(&active), None).available);
+    }
 }
 
 #[test]
-fn extracts_only_checksum_verified_binary() {
+fn extracts_a_checksum_verified_release_package() {
     let binary = b"test-binary";
-    let checksum = test_checksums(binary, TEST_IDENTITY);
-    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    let options = zip::write::SimpleFileOptions::default();
-    writer.start_file("kixdns", options).unwrap();
-    writer.write_all(binary).unwrap();
-    writer.start_file("SHA256SUMS", options).unwrap();
-    writer.write_all(checksum.as_bytes()).unwrap();
-    writer.start_file("upstream.lock.json", options).unwrap();
-    writer.write_all(TEST_IDENTITY.as_bytes()).unwrap();
-    writer.start_file("KIXDNS_BUILD_COMMIT", options).unwrap();
-    writer.write_all(TEST_BUILD_COMMIT.as_bytes()).unwrap();
-    let archive = writer.finish().unwrap().into_inner();
-
-    let extracted = extract_artifact(&archive).unwrap();
+    let source = kernel_source_json(TEST_VERSION, TEST_BUILD_COMMIT);
+    let extracted = extract_artifact(&kernel_package(binary, &source, TEST_CAPABILITIES)).unwrap();
     assert_eq!(extracted.binary, binary);
-    assert_eq!(extracted.identity.patchset, 5);
-    assert_eq!(extracted.build_commit, TEST_BUILD_COMMIT);
-    assert!(extracted.config_capabilities.is_empty());
-
-    let wrong_checksum = checksum.replace(&sha256(binary), &"0".repeat(64));
-    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    writer.start_file("kixdns", options).unwrap();
-    writer.write_all(binary).unwrap();
-    writer.start_file("SHA256SUMS", options).unwrap();
-    writer.write_all(wrong_checksum.as_bytes()).unwrap();
-    writer.start_file("upstream.lock.json", options).unwrap();
-    writer.write_all(TEST_IDENTITY.as_bytes()).unwrap();
-    writer.start_file("KIXDNS_BUILD_COMMIT", options).unwrap();
-    writer.write_all(TEST_BUILD_COMMIT.as_bytes()).unwrap();
-    let tampered = writer.finish().unwrap().into_inner();
-    assert!(extract_artifact(&tampered).is_err());
-}
-
-#[test]
-fn extracts_checksum_verified_config_capabilities() {
-    let binary = b"test-binary";
-    let capabilities = br#"{"schema_version":1,"config_capabilities":["config_query_stats_v1"]}"#;
-    let checksum = format!(
-        "{}  kixdns\n{}  upstream.lock.json\n{}  KIXDNS_CAPABILITIES.json\n{}  KIXDNS_BUILD_COMMIT\n",
-        sha256(binary),
-        sha256(TEST_IDENTITY.as_bytes()),
-        sha256(capabilities),
-        sha256(TEST_BUILD_COMMIT.as_bytes())
-    );
-    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    let options = zip::write::SimpleFileOptions::default();
-    writer.start_file("kixdns", options).unwrap();
-    writer.write_all(binary).unwrap();
-    writer.start_file("SHA256SUMS", options).unwrap();
-    writer.write_all(checksum.as_bytes()).unwrap();
-    writer.start_file("upstream.lock.json", options).unwrap();
-    writer.write_all(TEST_IDENTITY.as_bytes()).unwrap();
-    writer
-        .start_file("KIXDNS_CAPABILITIES.json", options)
-        .unwrap();
-    writer.write_all(capabilities).unwrap();
-    writer.start_file("KIXDNS_BUILD_COMMIT", options).unwrap();
-    writer.write_all(TEST_BUILD_COMMIT.as_bytes()).unwrap();
-    let archive = writer.finish().unwrap().into_inner();
-
-    let extracted = extract_artifact(&archive).unwrap();
+    assert_eq!(extracted.source.version, TEST_VERSION);
     assert_eq!(extracted.config_capabilities, vec!["config_query_stats_v1"]);
+    verify_kernel_source(
+        &extracted.source,
+        TEST_REPOSITORY,
+        TEST_VERSION,
+        TEST_BUILD_COMMIT,
+        Some(TEST_UPSTREAM_COMMIT),
+    )
+    .unwrap();
 }
 
 #[test]
-fn rejects_incompatible_control_protocol() {
+fn rejects_a_tampered_or_incomplete_release_package() {
     let binary = b"test-binary";
-    let incompatible = TEST_IDENTITY.replace("\"control_protocol\":1", "\"control_protocol\":2");
-    let checksum = test_checksums(binary, &incompatible);
-    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    let options = zip::write::SimpleFileOptions::default();
-    writer.start_file("kixdns", options).unwrap();
-    writer.write_all(binary).unwrap();
-    writer.start_file("SHA256SUMS", options).unwrap();
-    writer.write_all(checksum.as_bytes()).unwrap();
-    writer.start_file("upstream.lock.json", options).unwrap();
-    writer.write_all(incompatible.as_bytes()).unwrap();
-    writer.start_file("KIXDNS_BUILD_COMMIT", options).unwrap();
-    writer.write_all(TEST_BUILD_COMMIT.as_bytes()).unwrap();
-    let archive = writer.finish().unwrap().into_inner();
+    let source = kernel_source_json(TEST_VERSION, TEST_BUILD_COMMIT);
+    let package = |entries: &[(&str, &[u8])]| {
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default();
+        for (name, content) in entries {
+            writer.start_file(*name, options).unwrap();
+            writer.write_all(content).unwrap();
+        }
+        writer.finish().unwrap().into_inner()
+    };
+    let checksums = format!(
+        "{}  kixdns\n{}  KIXDNS_CAPABILITIES.json\n{}  KIXDNS_SOURCE.json\n",
+        sha256(binary),
+        sha256(TEST_CAPABILITIES.as_bytes()),
+        sha256(source.as_bytes())
+    );
+    // 二进制被换过，校验值对不上。 / The binary was swapped and no longer matches.
+    let tampered = package(&[
+        ("kixdns", b"other-binary"),
+        ("KIXDNS_CAPABILITIES.json", TEST_CAPABILITIES.as_bytes()),
+        ("KIXDNS_SOURCE.json", source.as_bytes()),
+        ("SHA256SUMS", checksums.as_bytes()),
+    ]);
+    assert!(extract_artifact(&tampered).is_err());
+    // 旧 Action 包的样子：没有 KIXDNS_SOURCE.json。 / An old Action package: no KIXDNS_SOURCE.json.
+    let without_source = package(&[
+        ("kixdns", binary),
+        ("KIXDNS_CAPABILITIES.json", TEST_CAPABILITIES.as_bytes()),
+        ("SHA256SUMS", checksums.as_bytes()),
+    ]);
+    assert!(extract_artifact(&without_source).is_err());
+    let unsupported = source.replace("\"schema_version\":1", "\"schema_version\":2");
+    assert!(extract_artifact(&kernel_package(binary, &unsupported, TEST_CAPABILITIES)).is_err());
+}
 
-    assert!(extract_artifact(&archive).is_err());
+#[test]
+fn a_package_must_be_the_version_its_manifest_names() {
+    let source = |version: &str, commit: &str| {
+        serde_json::from_str::<super::KernelSource>(&kernel_source_json(version, commit)).unwrap()
+    };
+    let check = |source: &super::KernelSource, upstream: Option<&str>| {
+        verify_kernel_source(
+            source,
+            TEST_REPOSITORY,
+            TEST_VERSION,
+            TEST_BUILD_COMMIT,
+            upstream,
+        )
+    };
+    let packaged = source(TEST_VERSION, TEST_BUILD_COMMIT);
+    assert!(check(&packaged, Some(TEST_UPSTREAM_COMMIT)).is_ok());
+    assert!(check(&packaged, None).is_err(), "upstream commits differ");
+    assert!(
+        check(
+            &source("2026.10.13", TEST_BUILD_COMMIT),
+            Some(TEST_UPSTREAM_COMMIT)
+        )
+        .is_err()
+    );
+    assert!(
+        check(
+            &source(TEST_VERSION, "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25"),
+            Some(TEST_UPSTREAM_COMMIT)
+        )
+        .is_err()
+    );
+    let mut other_arch = packaged.clone();
+    other_arch.arch = "riscv64".to_owned();
+    assert!(check(&other_arch, Some(TEST_UPSTREAM_COMMIT)).is_err());
+    let mut other_repository = packaged.clone();
+    other_repository.repository = "someone/kixdns".to_owned();
+    assert!(check(&other_repository, Some(TEST_UPSTREAM_COMMIT)).is_err());
+    let mut newer_protocol = packaged;
+    newer_protocol.control_protocol = 2;
+    let error = check(&newer_protocol, Some(TEST_UPSTREAM_COMMIT)).unwrap_err();
+    assert!(error.to_string().contains("控制协议不兼容"), "{error}");
 }
 
 #[test]
@@ -782,18 +1166,8 @@ async fn treats_empty_panel_release_as_unset() {
             .await
             .unwrap(),
         UpdateSettings {
-            repository: "tuoro/kixdns-panel".to_owned(),
-            workflow: "build-kixdns.yml".to_owned(),
-            branch: "main".to_owned(),
-            artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
-            installed_commit: None,
-            installed_source_id: None,
-            panel_installed_commit: None,
             panel_installed_release: Some(String::new()),
-            binary_path: directory.path().join("bin/kixdns"),
-            versions_path: directory.path().join("versions"),
-            bundled_metadata: directory.path().join("bundle"),
-            github_token_path: directory.path().join("github-token"),
+            ..test_settings(directory.path())
         },
     )
     .unwrap();
@@ -889,9 +1263,12 @@ fn keeps_tracked_builds_with_the_same_commit_separate() {
         "kixdns-enhanced-action-30231271280-linux-x86_64",
     );
 
+    let fork = fork_manifest(&fork_remote(102, TEST_VERSION), &binary);
+
     store_version(directory.path(), &action, &binary).unwrap();
     store_version(directory.path(), &release, &binary).unwrap();
     store_version(directory.path(), &previous_action, &binary).unwrap();
+    store_version(directory.path(), &fork, &binary).unwrap();
 
     let action_key = VersionKey::tracked(VersionSource::Action, 99, commit).unwrap();
     let release_key = VersionKey::tracked(VersionSource::Release, 100, commit).unwrap();
@@ -918,18 +1295,42 @@ fn keeps_tracked_builds_with_the_same_commit_separate() {
             .source,
         Some(VersionSource::Release)
     );
+    let fork_key = VersionKey::tracked(VersionSource::Fork, 102, commit).unwrap();
+    assert_eq!(
+        load_verified_version(directory.path(), &fork_key)
+            .unwrap()
+            .0
+            .release_tag
+            .as_deref(),
+        Some(TEST_VERSION)
+    );
 }
 
 #[test]
-fn verifies_package_identity_against_the_artifact_name() {
-    let identity = serde_json::from_str::<BuildIdentity>(TEST_IDENTITY).unwrap();
-    let remote = remote_build(30_235_703_570, 5);
-    assert!(validate_remote_build_identity(&remote, &identity).is_ok());
-    assert!(validate_remote_build_identity(&remote_build(1, 5), &identity).is_err());
-    assert!(validate_remote_build_identity(&remote_build(30_235_703_570, 6), &identity).is_err());
+fn a_stored_fork_release_carries_no_patchset() {
+    let directory = tempdir().unwrap();
+    let binary = test_elf();
+    let remote = fork_remote(77, TEST_VERSION);
+    let mut with_patchset = fork_manifest(&remote, &binary);
+    with_patchset.patchset = Some(28);
+    assert!(store_version(directory.path(), &with_patchset, &binary).is_err());
+    let mut bad_tag = fork_manifest(&remote, &binary);
+    bad_tag.release_tag = Some("v0.2.0".to_owned());
+    assert!(store_version(directory.path(), &bad_tag, &binary).is_err());
+    let mut no_protocol = fork_manifest(&remote, &binary);
+    no_protocol.control_protocol = None;
+    assert!(store_version(directory.path(), &no_protocol, &binary).is_err());
+    // 没记原版提交的（第一版发布）照样能存。 / One without an upstream commit (the first release) is still stored.
+    let mut first = fork_manifest(&remote, &binary);
+    first.upstream_repository = None;
+    first.upstream_commit = None;
+    store_version(directory.path(), &first, &binary).unwrap();
+}
 
-    // Release 轨道已停止构建，包里的 Release 身份一律不认。
-    // The Release track no longer builds, so a Release identity in a package is refused.
+#[test]
+fn a_bundled_release_identity_is_refused() {
+    // 旧完整包里只会是 Action 构建；带 Release 身份的一律不认。
+    // An old full package can only hold an Action build; a Release identity is refused.
     let release = serde_json::json!({
         "repository": "olicesx/kixdns",
         "source": "release",
@@ -941,90 +1342,6 @@ fn verifies_package_identity_against_the_artifact_name() {
     });
     let release = serde_json::from_value::<BuildIdentity>(release).unwrap();
     assert!(super::validation::validate_build_identity(&release).is_err());
-}
-
-#[test]
-fn catalogue_keeps_only_this_repository_push_schedule_and_dispatch_runs() {
-    let commit = "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25";
-    let run = |id: u64, event: &str, branch: &str, repository: &str| {
-        serde_json::json!({
-            "id": id,
-            "head_sha": commit,
-            "created_at": "2026-09-01T00:00:00Z",
-            "html_url": format!("https://github.com/tuoro/kixdns-panel/actions/runs/{id}"),
-            "event": event,
-            "head_branch": branch,
-            "head_repository": {"full_name": repository},
-        })
-    };
-    let mut missing_event = run(8, "push", "main", "tuoro/kixdns-panel");
-    missing_event.as_object_mut().unwrap().remove("event");
-    let mut null_repository = run(9, "push", "main", "tuoro/kixdns-panel");
-    null_repository["head_repository"] = serde_json::Value::Null;
-    // 最新的是 fork 从自己的 main 发来的 pull request，它必须被排除。
-    // The newest run is a pull request from a fork's own main; it must go.
-    let fixture = serde_json::json!({
-        "workflow_runs": [
-            run(14, "pull_request", "main", "attacker/kixdns-panel"),
-            run(13, "pull_request_target", "main", "tuoro/kixdns-panel"),
-            run(12, "push", "main", "attacker/kixdns-panel"),
-            run(11, "push", "feature", "tuoro/kixdns-panel"),
-            missing_event,
-            null_repository,
-            run(7, "push", "main", "Tuoro/KixDNS-Panel"),
-            run(6, "schedule", "main", "tuoro/kixdns-panel"),
-            run(5, "workflow_dispatch", "main", "tuoro/kixdns-panel"),
-        ]
-    });
-    let runs: WorkflowRuns = serde_json::from_value(fixture).unwrap();
-
-    let kept = trusted_workflow_runs(runs.workflow_runs, "tuoro/kixdns-panel", "main", 30);
-
-    assert_eq!(
-        kept.iter().map(|run| run.id).collect::<Vec<_>>(),
-        vec![7, 6, 5]
-    );
-}
-
-#[test]
-fn untrusted_runs_at_the_top_do_not_crowd_trusted_ones_out_of_the_page() {
-    let commit = "374d63ccfdde6d281d3c7b5de9c689bfb0b0fb25";
-    // 最新的 40 次是 fork 的 pull request，比面板要的 30 条还多。
-    // The newest 40 runs are fork pull requests, more than the 30 the panel asks for.
-    let all_runs = (0..100_u64)
-        .map(|index| {
-            let untrusted = index < 40;
-            serde_json::json!({
-                "id": 1_000 - index,
-                "head_sha": commit,
-                "created_at": "2026-09-01T00:00:00Z",
-                "html_url": "https://github.com/tuoro/kixdns-panel/actions/runs/1",
-                "event": if untrusted { "pull_request" } else { "push" },
-                "head_branch": "main",
-                "head_repository": {
-                    "full_name": if untrusted { "attacker/kixdns-panel" } else { "tuoro/kixdns-panel" }
-                },
-            })
-        })
-        .collect::<Vec<_>>();
-    let url = workflow_runs_url("tuoro/kixdns-panel", "build-kixdns.yml", "main");
-    let per_page = url
-        .split(['?', '&'])
-        .find_map(|pair| pair.strip_prefix("per_page="))
-        .unwrap()
-        .parse::<usize>()
-        .unwrap();
-    // GitHub 按 per_page 返回最新的若干条。
-    // GitHub returns the newest per_page runs.
-    let served: WorkflowRuns = serde_json::from_value(serde_json::json!({
-        "workflow_runs": all_runs.into_iter().take(per_page).collect::<Vec<_>>(),
-    }))
-    .unwrap();
-
-    let kept = trusted_workflow_runs(served.workflow_runs, "tuoro/kixdns-panel", "main", 30);
-
-    assert_eq!(kept.len(), 30);
-    assert_eq!(kept.first().map(|run| run.id), Some(960));
 }
 
 /// 记录切换期间对宿主机做了什么的假宿主。
@@ -1117,18 +1434,6 @@ impl SwitchFixture {
     }
 }
 
-/// 远端最新构建正是本机已存的 Artifact 43：更新时不用下载。
-/// The newest remote build is the Artifact 43 already stored, so an update downloads nothing.
-fn target_build() -> ResolvedVersion {
-    let mut remote = remote_build(43, 5);
-    remote.source_id = 43;
-    remote.commit = TEST_BUILD_COMMIT.to_owned();
-    ResolvedVersion {
-        remote,
-        build_run_id: 99,
-    }
-}
-
 /// 存一个可切换的版本；二进制按 Artifact ID 区分，`installed_at` 决定装得早晚。
 /// Stores a version ready to switch to; binaries differ by artifact id, and
 /// `installed_at` says how recently it was installed.
@@ -1158,18 +1463,9 @@ pub(crate) async fn switch_fixture() -> SwitchFixture {
     let manager = UpdateManager::new(
         database.clone(),
         UpdateSettings {
-            repository: "tuoro/kixdns-panel".to_owned(),
-            workflow: "build-kixdns.yml".to_owned(),
-            branch: "main".to_owned(),
-            artifact: "kixdns-enhanced-linux-x86_64".to_owned(),
-            installed_commit: None,
-            installed_source_id: None,
-            panel_installed_commit: None,
-            panel_installed_release: None,
             binary_path: binary_path.clone(),
             versions_path: versions_path.clone(),
-            bundled_metadata: directory.path().join("bundle"),
-            github_token_path: directory.path().join("github-token"),
+            ..test_settings(directory.path())
         },
     )
     .unwrap();
@@ -1423,25 +1719,31 @@ async fn rollback_without_a_previous_kernel_is_a_conflict() {
 #[tokio::test]
 async fn updating_keeps_the_replaced_kernel_as_the_only_other_version() {
     let fixture = switch_fixture().await;
-    // 上一个原本是更早的 41；更新到 43 之后，上一个变成刚换下的 42，41 被清掉。
-    // The previous kernel was the older 41; after updating to 43 it becomes the 42 just
-    // replaced, and 41 is removed.
+    // 上一个原本是更早的 41；更新到 fork 版本之后，上一个变成刚换下的 42，41 被清掉。
+    // The previous kernel was the older 41; after updating to a fork version it becomes
+    // the 42 just replaced, and 41 is removed.
     let older = store_stored_build(&fixture.versions_path, 41, 10);
     fixture
         .database
         .set_setting(super::PREVIOUS_VERSION_KEY, older.encoded(), 42)
         .await
         .unwrap();
+    let (latest, binary) = store_fork_build(&fixture.versions_path, 77, TEST_VERSION);
     let host = FakeHost::new(true);
 
     let installed = fixture
         .manager
-        .update_locked(&target_build(), Some(43), &empty_config(), &host)
+        .update_locked(&latest, Some(77), &empty_config(), &host)
         .await
         .unwrap();
 
-    assert_eq!(installed.source_id, Some(43));
-    assert_eq!(std::fs::read(&fixture.binary_path).unwrap(), fixture.target);
+    assert_eq!(installed.source, Some(VersionSource::Fork));
+    assert_eq!(installed.label(), TEST_VERSION);
+    assert_eq!(std::fs::read(&fixture.binary_path).unwrap(), binary);
+    assert_eq!(
+        active_setting(&fixture.database).await,
+        Some(VersionKey::remote(&latest).unwrap().encoded())
+    );
     assert_eq!(
         previous_setting(&fixture.database).await,
         Some(fixture.current_key.encoded())
@@ -1458,20 +1760,42 @@ async fn updating_keeps_the_replaced_kernel_as_the_only_other_version() {
 #[tokio::test]
 async fn update_refuses_a_build_other_than_the_one_the_page_showed() {
     let fixture = switch_fixture().await;
+    let (latest, _) = store_fork_build(&fixture.versions_path, 77, TEST_VERSION);
     let host = FakeHost::new(true);
 
     let error = fixture
         .manager
-        .update_locked(&target_build(), Some(44), &empty_config(), &host)
+        .update_locked(&latest, Some(44), &empty_config(), &host)
         .await
         .unwrap_err();
 
     assert!(matches!(error, UpdateError::Conflict(_)), "{error}");
+    assert_eq!(
+        error.reason(),
+        "没有更新内核：又发布了更新的版本，点「检查更新」看过后再更新"
+    );
     assert!(host.calls().is_empty());
     assert_eq!(
         std::fs::read(&fixture.binary_path).unwrap(),
         fixture.current
     );
+}
+
+#[tokio::test]
+async fn a_failed_switch_names_the_date_version() {
+    let fixture = switch_fixture().await;
+    let (latest, _) = store_fork_build(&fixture.versions_path, 77, TEST_VERSION);
+    let host = FakeHost::failing_first_health_check(true);
+
+    let error = fixture
+        .manager
+        .update_locked(&latest, Some(77), &empty_config(), &host)
+        .await
+        .unwrap_err();
+
+    // 日期版本以数字开头：接在汉字后面空一格，和页面一样。
+    // A date version starts with a digit: it takes a space after Chinese text, as on the page.
+    assert_eq!(error.reason(), "2026.10.13.2 健康检查失败，已换回构建 #42");
 }
 
 #[tokio::test]
@@ -1522,64 +1846,44 @@ async fn start_up_keeps_the_current_kernel_and_one_previous() {
     assert!(!fixture.versions_path.join(newest.directory_name()).exists());
 }
 
-fn release_manifest(binary: &[u8]) -> VersionManifest {
-    let mut manifest = test_manifest(100, TEST_BUILD_COMMIT, binary);
-    manifest.source = Some(VersionSource::Release);
-    manifest.run_id = None;
-    manifest.release_tag = Some("v0.2.0".to_owned());
-    manifest.artifact = "kixdns-enhanced-release-v0.2.0-linux-x86_64".to_owned();
-    manifest
-}
-
 #[tokio::test]
-async fn a_release_kernel_is_replaced_once_and_left_alone_after_a_rollback() {
+async fn an_old_track_kernel_is_replaced_once_and_left_alone_after_a_rollback() {
     let fixture = switch_fixture().await;
-    let mut release_binary = test_elf();
-    release_binary[31] = 9;
-    store_version(
-        &fixture.versions_path,
-        &release_manifest(&release_binary),
-        &release_binary,
-    )
-    .unwrap();
-    let release_key = VersionKey::tracked(VersionSource::Release, 100, TEST_BUILD_COMMIT).unwrap();
-    std::fs::write(&fixture.binary_path, &release_binary).unwrap();
-    fixture
-        .database
-        .set_setting(super::ACTIVE_VERSION_KEY, release_key.encoded(), 42)
-        .await
-        .unwrap();
+    // 只在线更新过面板的主机还跑着 p28 的 Action 内核：新面板启动时换成 fork 版本。
+    // A host that only updated the panel online still runs the p28 Action kernel: the new
+    // panel replaces it with the fork version at start-up.
     assert_eq!(
         fixture
             .manager
-            .release_kernel_to_replace()
+            .legacy_kernel_to_replace()
             .await
             .unwrap()
-            .and_then(|version| version.release_tag),
-        Some("v0.2.0".to_owned())
+            .and_then(|version| version.source_id),
+        Some(42)
     );
 
+    let (latest, _) = store_fork_build(&fixture.versions_path, 77, TEST_VERSION);
     let host = FakeHost::new(true);
     fixture
         .manager
-        .update_locked(&target_build(), None, &empty_config(), &host)
+        .update_locked(&latest, None, &empty_config(), &host)
         .await
         .unwrap();
     assert!(
         fixture
             .manager
-            .release_kernel_to_replace()
+            .legacy_kernel_to_replace()
             .await
             .unwrap()
             .is_none()
     );
     assert_eq!(
         previous_setting(&fixture.database).await,
-        Some(release_key.encoded())
+        Some(fixture.current_key.encoded())
     );
 
-    // 用户自己回退到 Release 内核：面板重启时不再替换。
-    // The user rolls back to the Release kernel: a panel restart does not replace it again.
+    // 用户自己回退到旧内核：面板重启时不再替换。
+    // The user rolls back to the old kernel: a panel restart does not replace it again.
     fixture
         .manager
         .rollback(&empty_config(), &host)
@@ -1587,127 +1891,53 @@ async fn a_release_kernel_is_replaced_once_and_left_alone_after_a_rollback() {
         .unwrap();
     assert_eq!(
         active_setting(&fixture.database).await,
-        Some(release_key.encoded())
+        Some(fixture.current_key.encoded())
     );
     assert!(
         fixture
             .manager
-            .release_kernel_to_replace()
+            .legacy_kernel_to_replace()
             .await
             .unwrap()
             .is_none()
     );
 }
 
-#[test]
-fn kixdns_notice_offers_dependency_security_upgrades() {
-    let (active, current) = installed_build(Some(90), None, 22);
-    let rebuilt = || {
-        let mut remote = remote_build(90, 22);
-        remote.artifact = "kixdns-enhanced-action-90-p22-0123456789ab-linux-x86_64".to_owned();
-        remote
-    };
-    let notice = |remote: &RemoteVersion, current: &InstalledVersion, revision: Option<u32>| {
-        to_kixdns_update_notice(remote, Some(&active), Some(current), revision)
-    };
+#[tokio::test]
+async fn an_earlier_release_kernel_is_replaced_too() {
+    let fixture = switch_fixture().await;
+    let mut release_binary = test_elf();
+    release_binary[31] = 9;
+    let mut manifest = test_manifest(100, TEST_BUILD_COMMIT, &release_binary);
+    manifest.source = Some(VersionSource::Release);
+    manifest.run_id = None;
+    manifest.release_tag = Some("v0.2.0".to_owned());
+    manifest.artifact = "kixdns-enhanced-release-v0.2.0-linux-x86_64".to_owned();
+    store_version(&fixture.versions_path, &manifest, &release_binary).unwrap();
+    let release_key = VersionKey::tracked(VersionSource::Release, 100, TEST_BUILD_COMMIT).unwrap();
+    std::fs::write(&fixture.binary_path, &release_binary).unwrap();
+    fixture
+        .database
+        .set_setting(super::ACTIVE_VERSION_KEY, release_key.encoded(), 42)
+        .await
+        .unwrap();
+    // v3.4.0 把 Release 换成 Action 时记下的旧标记不挡这一次。
+    // The old marker v3.4.0 left when it replaced a Release kernel does not block this one.
+    fixture
+        .database
+        .set_setting("release_kernel_replaced_at", "1".to_owned(), 1)
+        .await
+        .unwrap();
 
-    let upgrade = notice(&rebuilt(), &current, Some(1));
-    assert!(upgrade.available);
-    assert!(upgrade.security_update);
-    assert_eq!(upgrade.dependency_revision, Some(1));
-
-    assert!(
-        !notice(&rebuilt(), &current, None).available,
-        "a rebuild without a dependency revision is not an update"
-    );
-
-    let mut refreshed = current.clone();
-    refreshed.dependency_revision = Some(1);
-    assert!(!notice(&rebuilt(), &refreshed, Some(1)).available);
-    assert!(notice(&rebuilt(), &refreshed, Some(2)).security_update);
-
-    // 早期记录没有修订号，但包名相同就是同一份构建输入，不算升级。
-    // Older records carry no revision, but an identical package name means identical
-    // build inputs, so it is not an upgrade.
-    let mut same_package = rebuilt();
-    same_package.artifact.clone_from(&current.artifact);
-    assert!(!notice(&same_package, &current, Some(1)).available);
-
-    let newer = notice(&remote_build(100, 22), &current, Some(3));
-    assert!(newer.available);
-    assert!(
-        !newer.security_update,
-        "a newer upstream version is a normal update"
-    );
-    assert_eq!(newer.dependency_revision, None);
-}
-
-fn lock_file(identity: &serde_json::Value) -> RepositoryFile {
-    use base64::Engine;
-
-    let encoded = base64::engine::general_purpose::STANDARD.encode(identity.to_string());
-    // GitHub 每 60 个字符换一行。 / GitHub wraps the content every 60 characters.
-    let wrapped = encoded
-        .as_bytes()
-        .chunks(60)
-        .map(|chunk| std::str::from_utf8(chunk).unwrap())
-        .collect::<Vec<_>>()
-        .join("\n");
-    RepositoryFile {
-        encoding: "base64".to_owned(),
-        content: wrapped,
-    }
-}
-
-#[test]
-fn reads_the_dependency_revision_a_build_used() {
-    let remote = remote_build(30_235_703_570, 5);
-    let mut identity: serde_json::Value = serde_json::from_str(TEST_IDENTITY).unwrap();
     assert_eq!(
-        build_lock_revision(&lock_file(&identity), &remote).unwrap(),
-        None
+        fixture
+            .manager
+            .legacy_kernel_to_replace()
+            .await
+            .unwrap()
+            .and_then(|version| version.release_tag),
+        Some("v0.2.0".to_owned())
     );
-
-    identity["dependency_revision"] = 2.into();
-    assert_eq!(
-        build_lock_revision(&lock_file(&identity), &remote).unwrap(),
-        Some(2)
-    );
-
-    let other_run = remote_build(1, 5);
-    assert!(build_lock_revision(&lock_file(&identity), &other_run).is_err());
-    let other_patchset = remote_build(30_235_703_570, 6);
-    assert!(build_lock_revision(&lock_file(&identity), &other_patchset).is_err());
-
-    identity["dependency_revision"] = 0.into();
-    assert!(build_lock_revision(&lock_file(&identity), &remote).is_err());
-
-    let mut plain = lock_file(&identity);
-    plain.encoding = "utf-8".to_owned();
-    assert!(build_lock_revision(&plain, &remote).is_err());
-}
-
-#[test]
-fn downloads_from_github_first_only_when_a_token_is_configured() {
-    let remote = remote_build(90, 22);
-    let anonymous = super::artifact_sources("tuoro/kixdns-panel", &remote, None);
-    assert_eq!(anonymous.len(), 1);
-    assert_eq!(anonymous[0].url, remote.download_url);
-    assert!(anonymous[0].token.is_none());
-
-    let token = secrecy::SecretString::from("secret-token".to_owned());
-    let with_token = super::artifact_sources("tuoro/kixdns-panel", &remote, Some(&token));
-    assert_eq!(with_token.len(), 2);
-    assert_eq!(
-        with_token[0].url,
-        format!(
-            "https://api.github.com/repos/tuoro/kixdns-panel/actions/artifacts/{}/zip",
-            remote.source_id
-        )
-    );
-    assert!(with_token[0].token.is_some());
-    assert_eq!(with_token[1].url, remote.download_url);
-    assert!(with_token[1].token.is_none(), "nightly.link 不能收到 Token");
 }
 
 #[test]
@@ -1737,6 +1967,9 @@ fn installed_label_matches_the_page() {
     version.run_id = None;
     version.release_tag = Some("v0.2.0".to_owned());
     assert_eq!(version.label(), "v0.2.0");
+    version.source = Some(VersionSource::Fork);
+    version.release_tag = Some(TEST_VERSION.to_owned());
+    assert_eq!(version.label(), "2026.10.13.2");
     version.release_tag = None;
     assert_eq!(version.label(), "构建 0123456789ab");
 }

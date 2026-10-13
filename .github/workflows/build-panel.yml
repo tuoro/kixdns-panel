@@ -10,7 +10,7 @@ on:
       - crates/panel-server/**
       - crates/panel-helper/**
       - deploy/**
-      - scripts/fetch-kixdns-artifact.sh
+      - scripts/fetch-kixdns-release.sh
       - scripts/kixdns-artifact-identity.sh
       - scripts/lock-reference.sh
       - scripts/install.sh
@@ -34,7 +34,7 @@ on:
       - crates/panel-server/**
       - crates/panel-helper/**
       - deploy/**
-      - scripts/fetch-kixdns-artifact.sh
+      - scripts/fetch-kixdns-release.sh
       - scripts/kixdns-artifact-identity.sh
       - scripts/lock-reference.sh
       - scripts/install.sh
@@ -58,11 +58,43 @@ permissions:
   actions: read
   contents: read
 
+env:
+  # 发布内核（日期版本）的仓库；完整安装包带它的一个版本。
+  # The repository that publishes kernels (date versions); the full package carries one of them.
+  KIXDNS_KERNEL_REPOSITORY: tuoro/kixdns
+
 concurrency:
   group: panel-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  kernel:
+    name: Pick KixDNS kernel release
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.pick.outputs.version }}
+    steps:
+      - name: Checkout panel repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # 一次运行只挑一次版本：两个架构的构建分头取内核，各自去问「最新」会在中间赶上新发布。
+      # 在 PR 上也跑一遍，取内核的脚本不用等合并才第一次执行。
+      # Pick the version once per run: the two architecture builds fetch the kernel separately, and
+      # asking each for "latest" could straddle a new release. It runs on pull requests too, so the
+      # fetch script does not first execute after the merge.
+      - name: Pick and verify the latest kernel release
+        id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          version="$(gh api "repos/${KIXDNS_KERNEL_REPOSITORY}/releases/latest" --jq .tag_name)"
+          for architecture in x86_64 arm64; do
+            bash scripts/fetch-kixdns-release.sh \
+              "$KIXDNS_KERNEL_REPOSITORY" "$version" "$architecture" "dist/kernel-$architecture"
+          done
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
   verify:
     name: Verify panel
     runs-on: ubuntu-24.04
@@ -238,7 +270,7 @@ jobs:
   build:
     name: Build Linux ${{ matrix.arch }}
     if: github.event_name != 'pull_request'
-    needs: verify
+    needs: [kernel, verify]
     permissions:
       actions: read
       contents: read
@@ -299,16 +331,13 @@ jobs:
       - name: Build service control helper
         run: cargo build --package kixdns-panel-helper --release --locked --target ${{ matrix.target }}
 
-      - name: Reuse verified KixDNS artifact
+      - name: Fetch verified KixDNS kernel release
         env:
           GH_TOKEN: ${{ github.token }}
-          KIXDNS_ARTIFACT_WAIT_ATTEMPTS: 90
-          KIXDNS_ARTIFACT_WAIT_SECONDS: 20
+          KIXDNS_KERNEL_VERSION: ${{ needs.kernel.outputs.version }}
         run: |
-          bash scripts/fetch-kixdns-artifact.sh \
-            "$GITHUB_REPOSITORY" build-kixdns.yml main \
-            "kixdns-enhanced-linux-${{ matrix.arch }}" \
-            upstream.lock.json dist/reused-kixdns
+          bash scripts/fetch-kixdns-release.sh \
+            "$KIXDNS_KERNEL_REPOSITORY" "$KIXDNS_KERNEL_VERSION" "${{ matrix.arch }}" dist/kixdns-kernel
 
       - name: Verify GLIBC baseline
         run: |
@@ -317,13 +346,13 @@ jobs:
           bash scripts/verify-glibc-baseline.sh \
             "target/${{ matrix.target }}/release/kixdns-panel-helper" "$GLIBC_BASELINE"
           bash scripts/verify-glibc-baseline.sh \
-            dist/reused-kixdns/kixdns "$GLIBC_BASELINE"
+            dist/kixdns-kernel/kixdns "$GLIBC_BASELINE"
 
       - name: Package complete panel artifact
         shell: bash
         run: |
           bundle="dist/kixdns-panel-linux-${{ matrix.arch }}"
-          install -Dm755 dist/reused-kixdns/kixdns "$bundle/bin/kixdns"
+          install -Dm755 dist/kixdns-kernel/kixdns "$bundle/bin/kixdns"
           install -Dm755 "target/${{ matrix.target }}/release/kixdns-panel-server" "$bundle/bin/kixdns-panel-server"
           install -Dm755 "target/${{ matrix.target }}/release/kixdns-panel-helper" "$bundle/bin/kixdns-panel-helper"
           mkdir -p "$bundle/web" "$bundle/docs"
@@ -331,11 +360,11 @@ jobs:
           cp -a deploy scripts "$bundle/"
           cp docs/architecture.md docs/config-capabilities.md docs/control-protocol-v1.md \
             docs/deployment.md "$bundle/docs/"
-          cp README.md LICENSE upstream.lock.json "$bundle/"
-          cp dist/reused-kixdns/KIXDNS_BUILD_COMMIT dist/reused-kixdns/KIXDNS_SOURCE_RUN_ID \
-            dist/reused-kixdns/KIXDNS_ARTIFACT_ID dist/reused-kixdns/KIXDNS_ARTIFACT_NAME \
-            dist/reused-kixdns/KIXDNS_ARTIFACT_DIGEST dist/reused-kixdns/KIXDNS_BINARY_SHA256 \
-            dist/reused-kixdns/KIXDNS_CAPABILITIES.json "$bundle/"
+          cp README.md LICENSE "$bundle/"
+          cp dist/kixdns-kernel/KIXDNS_BUILD_COMMIT dist/kixdns-kernel/KIXDNS_SOURCE.json \
+            dist/kixdns-kernel/KIXDNS_ARTIFACT_ID dist/kixdns-kernel/KIXDNS_ARTIFACT_NAME \
+            dist/kixdns-kernel/KIXDNS_ARTIFACT_DIGEST dist/kixdns-kernel/KIXDNS_BINARY_SHA256 \
+            dist/kixdns-kernel/KIXDNS_CAPABILITIES.json "$bundle/"
           printf '%s\n' "$GITHUB_SHA" > "$bundle/PANEL_BUILD_COMMIT"
           if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
             printf '%s\n' "${GITHUB_REF_NAME}" > "$bundle/PANEL_RELEASE"

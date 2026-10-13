@@ -844,10 +844,12 @@ onBeforeUnmount(() => {
                 <p class="overview-config-lead"><span>配置版本</span><strong :class="{ 'ui-mono': runningVersion !== null }">{{ runningVersion !== null ? `#${runningVersion}` : '面板外的配置' }}</strong></p>
                 <p v-if="!overview.active_config.last_reload.success && overview.active_config.last_reload.error" class="overview-reload-error ui-mono">{{ overview.active_config.last_reload.error }}</p>
                 <!-- 每一对「名称 值」是一个不拆开的块，点在块之间；哈希照常用等宽 / Each name–value pair is one unbroken block with dots between blocks; hashes stay mono -->
-                <p class="overview-config-line ui-dots"><span>已应用 <span class="ui-num">{{ overview.active_config.reload_sequence }}</span> 次</span><span>补丁集 <span class="ui-num">{{ overview.health.patchset ? `p${overview.health.patchset}` : '未记录' }}</span></span><span>配置摘要 <span class="ui-mono">{{ shortHash(overview.active_config.sha256, 14) }}</span></span><span>原版提交 <span class="ui-mono">{{ shortHash(overview.health.upstream_commit, 12) }}</span></span></p>
+                <p class="overview-config-line ui-dots"><span>已应用 <span class="ui-num">{{ overview.active_config.reload_sequence }}</span> 次</span><span v-if="overview.health.release_version">内核 <span class="ui-num">{{ overview.health.release_version }}</span></span><span v-else>补丁集 <span class="ui-num">{{ overview.health.patchset ? `p${overview.health.patchset}` : '未记录' }}</span></span><span>配置摘要 <span class="ui-mono">{{ shortHash(overview.active_config.sha256, 14) }}</span></span><span>原版提交 <span class="ui-mono">{{ shortHash(overview.health.upstream_commit, 12) }}</span></span></p>
                 <dl class="ui-strip overview-config-hashes">
                   <div><dt>已应用</dt><dd><span class="ui-num">{{ overview.active_config.reload_sequence }}</span> 次</dd></div>
-                  <div><dt>补丁集</dt><dd class="ui-num">{{ overview.health.patchset ? `p${overview.health.patchset}` : '未记录' }}</dd></div>
+                  <!-- fork 发布的内核报日期版本，没有补丁集；旧内核照旧写补丁集 / A fork release reports its date version and has no patchset; older kernels still show the patchset -->
+                  <div v-if="overview.health.release_version"><dt>内核</dt><dd class="ui-num">{{ overview.health.release_version }}</dd></div>
+                  <div v-else><dt>补丁集</dt><dd class="ui-num">{{ overview.health.patchset ? `p${overview.health.patchset}` : '未记录' }}</dd></div>
                   <div><dt>配置摘要</dt><dd class="ui-mono" :title="overview.active_config.sha256">{{ shortHash(overview.active_config.sha256, 14) }}</dd></div>
                   <div><dt>原版提交</dt><dd class="ui-mono">{{ shortHash(overview.health.upstream_commit, 12) }}</dd></div>
                 </dl>

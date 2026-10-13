@@ -240,6 +240,9 @@ export function describeStep(step: DnsTraceStep, context: TraceContext = {}): St
     const heard = code && isDnsSuccess(code) ? [t('收到回答')] : [t(`回答 ${code}`)]
     if (status === 'succeeded' && code) return { lead: same ? heard : sentence(m(label), heard), note: detailParts(detail, ['响应码', '耗时']) }
     if (status === 'failed') return { lead: same ? [t('没有回答')] : sentence(m(label), t('没有回答')), note: detail ? [t(detail)] : [] }
+    // 同样的查询正在问上游：这次不另发，等它的回答。内核的说法本身就是一句中文，照正文写，不当成地址用等宽
+    // The same query is already out upstream: this one sends nothing and waits for that answer. The kernel's wording is a Chinese sentence, so it reads in the body face, not mono like an address
+    if (status === 'joined') return { lead: [t(label || '等候正在进行的同一个查询')], note }
   }
   const stageName = traceStageNames[stage]
   // 不认识的阶段把阶段标识原样写上：新内核多出来的一步不能悄悄消失。

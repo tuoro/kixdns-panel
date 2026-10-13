@@ -7,11 +7,9 @@ const kixdns: KixdnsUpdateNotice = {
   current_commit: 'a'.repeat(40),
   latest_commit: 'b'.repeat(40),
   source_id: 42,
-  run_id: 99,
-  created_at: '2026-07-30T00:00:00Z',
-  build_url: 'https://github.com/tuoro/kixdns-panel/actions/runs/100',
-  security_update: false,
-  dependency_revision: null,
+  release_tag: '2026.10.13.2',
+  created_at: '2026-10-13T09:12:40Z',
+  release_url: 'https://github.com/tuoro/kixdns/releases/tag/2026.10.13.2',
 }
 
 const panel: PanelUpdateNotice = {
@@ -32,19 +30,15 @@ const status: UpdateNotifications = { kixdns, kixdns_error: null, panel, panel_e
 describe('更新通知', () => {
   it('使用不可变版本身份区分两类通知', () => {
     const notices = buildUpdateNotices(status)
-    expect(notices.map((notice) => notice.id)).toEqual(['kixdns:action:42', 'panel:1.0.1'])
+    expect(notices.map((notice) => notice.id)).toEqual(['kixdns:fork:42', 'panel:1.0.1'])
     expect(notices[0]).toMatchObject({ external: false, target: '/system' })
     expect(notices[1]).toMatchObject({ external: true, meta: 'v1.0.1' })
   })
 
-  it('同一版本的依赖修订提示为依赖安全升级', () => {
-    const [notice] = buildUpdateNotices({
-      ...status,
-      kixdns: { ...kixdns, security_update: true, dependency_revision: 1 },
-      panel: { ...panel, available: false },
-    })
-    expect(notice).toMatchObject({ title: 'KixDNS 内核', detail: '有安全更新', meta: '构建 #99 · r1' })
-    expect(buildUpdateNotices(status)[0]).toMatchObject({ detail: '有新构建', meta: '构建 #99' })
+  // 依赖修复也会发一个新版本，所以内核只有一种提示：有新版本，写版本号。
+  // A dependency fix ships as a new version too, so the kernel has one notice: a new version, by its number.
+  it('内核的新版本按日期版本提示', () => {
+    expect(buildUpdateNotices(status)[0]).toMatchObject({ title: 'KixDNS 内核', detail: '有新版本', meta: '2026.10.13.2' })
   })
 
   it('只展示当前仍可用的更新', () => {
@@ -62,6 +56,6 @@ describe('更新通知', () => {
     expect(buildUpdateNotices({ ...status, kixdns: null, kixdns_error: '没有可安装的成功增强构建' })
       .map((notice) => notice.id)).toEqual(['panel:1.0.1'])
     expect(buildUpdateNotices({ ...status, panel: null, panel_error: 'GitHub API 资源不存在' })
-      .map((notice) => notice.id)).toEqual(['kixdns:action:42'])
+      .map((notice) => notice.id)).toEqual(['kixdns:fork:42'])
   })
 })

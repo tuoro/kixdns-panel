@@ -45,12 +45,15 @@ revised_identity() {
     bash scripts/kixdns-artifact-identity.sh revised.lock.json x86_64
   )
 }
-jq '.dependency_revision = 1' "$copy/upstream.lock.json" > "$copy/revised.lock.json"
+# 用比当前锁更高的修订号：锁本身可能已经带着修订（#198 之后是 r1），写死 1 时那份补丁就在，测试的前提不成立。
+# Use a revision above the lock's own: the lock may already carry one (r1 since #198), and a hard-coded 1 then has its patch present.
+next_revision=$(($(jq -r '.dependency_revision // 0' "$copy/upstream.lock.json") + 1))
+jq --argjson revision "$next_revision" '.dependency_revision = $revision' "$copy/upstream.lock.json" > "$copy/revised.lock.json"
 if revised_identity >/dev/null 2>&1; then
   echo '锁引用的依赖修订不存在时必须拒绝生成身份' >&2
   exit 1
 fi
-revision_file="$copy/patches/dependencies/$(jq -r .source "$copy/upstream.lock.json")/$(jq -r .official_run_id "$copy/upstream.lock.json")/p$(jq -r .patchset "$copy/upstream.lock.json")-r1.patch"
+revision_file="$copy/patches/dependencies/$(jq -r .source "$copy/upstream.lock.json")/$(jq -r .official_run_id "$copy/upstream.lock.json")/p$(jq -r .patchset "$copy/upstream.lock.json")-r${next_revision}.patch"
 mkdir -p "$(dirname "$revision_file")"
 printf 'diff --git a/Cargo.lock b/Cargo.lock\n' > "$revision_file"
 revised="$(revised_identity)"

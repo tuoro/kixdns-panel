@@ -90,8 +90,8 @@ const running = computed(() => service.value?.active_state === 'active')
 // 连不上面板时，上次读到的服务状态不能当真：点变灰，写「状态未知」，连上后恢复（同概览）
 // While the panel is unreachable the last service state read cannot be trusted: the dot turns grey and reads 状态未知, restored on reconnect (as on the overview)
 const { down: panelDown } = useConnection()
-// 接在汉字后面：Release 标签这类字母开头的名字前空一格（「到 v0.2.0」），「构建 #N」紧接（「到构建 #N」），和服务端同一个规则
-// After Chinese text: a name starting with a Latin letter or digit takes a space (到 v0.2.0), 构建 #N follows directly (到构建 #N), the server's rule
+// 接在汉字后面：日期版本、Release 标签这类字母数字开头的名字前空一格（「到 2026.10.13」），「构建 #N」紧接（「到构建 #N」），和服务端同一个规则
+// After Chinese text: a name starting with a Latin letter or digit takes a space (到 2026.10.13), 构建 #N follows directly (到构建 #N), the server's rule
 const afterCjk = (name: string) => (/^[A-Za-z0-9]/.test(name) ? ` ${name}` : name)
 const waitingForPanel = computed(() => panelDown.value && !service.value && !kernel.value)
 // 「正在运行 · active/running」「已停止 · inactive/dead」是同一件事说两遍；只有启动中、
@@ -106,16 +106,24 @@ const installed = computed(() => kernel.value?.binary_present === true)
 const activeVersion = computed(() => kernel.value?.active ?? null)
 // 内核信息还在读：现在的构建先用灰块占着，不写「未记录」（那不是真的） / The kernel is still being read: the current build is held by a grey slab instead of 「未记录」 (which would be false)
 const kernelPending = computed(() => !kernel.value && loadingKernel.value)
-// 大字只写编号，「构建」「构建产物」作小标签放在上面；Release 写标签本身 / The big figure is the number alone, with 构建 or 构建产物 as a small label above; a Release shows its tag
+// 大字只写编号，「构建」「构建产物」作小标签放在上面；日期版本和 Release 写「版本」和版本号本身 / The big figure is the number alone, with 构建 or 构建产物 as a small label above; a date version or a Release shows 版本 and the version itself
 const versionLead = computed(() => {
   const text = formatKixdnsVersion(activeVersion.value)
   const match = /^(构建产物|构建) (#\d+)$/.exec(text)
-  return match ? { label: match[1]!, value: match[2]! } : { label: activeVersion.value?.source === 'release' ? '版本' : '', value: text }
+  const source = activeVersion.value?.source
+  return match ? { label: match[1]!, value: match[2]! } : { label: source === 'fork' || source === 'release' ? '版本' : '', value: text }
+})
+// 手机上页头只有一行字、没有「内核」这个标签：日期版本单写一串数字读不出是什么，前面带上「内核」；「构建 #N」自己说得清
+// On phones the header is one line with no 内核 label: a bare date version does not say what it is, so 内核 goes before it; 构建 #N says so itself
+const kernelPhoneLabel = computed(() => {
+  if (!installed.value) return '内核还没安装'
+  const name = formatKixdnsVersion(activeVersion.value)
+  return /^[A-Za-z0-9]/.test(name) ? `内核\u00a0${name}` : name.replace(' ', '\u00a0')
 })
 const loadError = computed(() => [serviceError.value, kernelError.value].filter(Boolean).join('；'))
 
 function buildTime(value: string | null): string {
-  if (!value) return '构建时间未记录'
+  if (!value) return '时间未记录'
   return new Intl.DateTimeFormat('zh-CN', {
     month: '2-digit',
     day: '2-digit',
@@ -132,7 +140,7 @@ const kixdnsNotice = computed(() => updateStatus.value?.kixdns ?? null)
 const panelNotice = computed(() => updateStatus.value?.panel ?? null)
 
 function latestKixdnsVersion(): string {
-  return kixdnsNotice.value ? `构建 #${kixdnsNotice.value.run_id}` : '未检查'
+  return kixdnsNotice.value?.release_tag ?? '未检查'
 }
 
 const kernelTaskState = computed<UiTaskState>(() => (kernelAction.value === 'update' ? 'run' : 'idle'))
@@ -440,16 +448,16 @@ async function control(action: ServiceAction): Promise<void> {
   }
 }
 
-// 更新只装这一页看到的那个最新构建：确认框里写的版本就是要装的版本，期间上游又有新构建时服务端会拒绝。
-// An update installs only the newest build this page showed, so the version in the
-// confirmation is the one installed; the server refuses if upstream moved on meanwhile.
+// 更新只装这一页看到的那个最新版本：确认框里写的版本就是要装的版本，期间又发布了新版本时服务端会拒绝。
+// An update installs only the newest version this page showed, so the version in the
+// confirmation is the one installed; the server refuses if a newer one was released meanwhile.
 async function updateKernel(): Promise<void> {
   const latest = kernel.value?.latest
   if (!latest || kernelAction.value) return
   const verb = installed.value ? '更新' : '安装'
   if (!await confirm.ask({
     title: `${verb}内核到${afterCjk(formatKixdnsVersion(latest))}`,
-    body: `先下载并校验这个构建。${switchConfirmBody(service.value)}`,
+    body: `先下载并校验这个版本。${switchConfirmBody(service.value)}`,
     confirmLabel: `${verb}内核`,
   })) return
   kernelAction.value = 'update'
@@ -529,7 +537,7 @@ onBeforeUnmount(() => {
           <div v-if="panelVersion"><span class="ui-lbl">面板版本</span><b>{{ panelVersion }}</b></div>
           <div v-if="kernel"><span class="ui-lbl">内核</span><b>{{ installed ? formatKixdnsVersion(activeVersion) : '还没安装' }}</b></div>
         </div>
-        <span v-if="service || kernel || panelVersion" class="ui-ph__lead ui-ph__phone"><span v-if="service" class="ui-dot" :class="{ 'ui-dot--off': !running || panelDown }" aria-hidden="true"></span><UiDotText :parts="[...(service ? [panelDown ? '状态未知' : running ? '运行中' : '已停止'] : []), ...(panelVersion ? [`面板 ${panelVersion}`] : []), ...(kernel ? [installed ? formatKixdnsVersion(activeVersion).replace(' ', '\u00a0') : '内核还没安装'] : [])]" /></span>
+        <span v-if="service || kernel || panelVersion" class="ui-ph__lead ui-ph__phone"><span v-if="service" class="ui-dot" :class="{ 'ui-dot--off': !running || panelDown }" aria-hidden="true"></span><UiDotText :parts="[...(service ? [panelDown ? '状态未知' : running ? '运行中' : '已停止'] : []), ...(panelVersion ? [`面板 ${panelVersion}`] : []), ...(kernel ? [kernelPhoneLabel] : [])]" /></span>
         <span v-else-if="loadingService" class="sk ui-ph__sk system-skeleton-meta" role="status" aria-label="读取服务状态"></span>
         <span v-else>服务状态暂不可用</span>
       </template>
@@ -558,24 +566,24 @@ onBeforeUnmount(() => {
       <div v-else-if="updateStatus" class="system-tasks" :class="{ 'is-refreshing': checkingUpdates }">
         <UiTask class="update-row" :state="kernelTaskState" title="KixDNS 内核" :started-at="kernelUpdateStartedAt" indeterminate>
           <template #icon><Cpu :size="16" /></template>
-          <template v-if="kixdnsNotice?.available" #title><span class="ui-tag ui-tag--strong">{{ kixdnsNotice.security_update ? '安全更新' : '有新构建' }}</span></template>
+          <template v-if="kixdnsNotice?.available" #title><span class="ui-tag ui-tag--strong">有新版本</span></template>
           <template #meta>
             <span class="update-row__from-to">
               <template v-if="kernelAction === 'update'">正在下载、校验并切换内核</template>
               <span v-else-if="!kixdnsNotice" class="system-stale">检查失败：{{ updateStatus.kixdns_error ?? '原因未知' }}</span>
               <!-- 只在新旧版本之间断行，「→」「·」跟着后一段走：不会挂在行尾 / Lines break only between the two versions, and 「→」/「·」 travel with what follows, so neither is left at a line end -->
-              <template v-else-if="kixdnsNotice.available && kixdnsNotice.security_update"><span v-if="kernelPending" class="sk update-row__cur-sk" aria-hidden="true"></span><span v-else class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span> <span class="update-row__keep">安全更新<template v-if="kixdnsNotice.dependency_revision"> · <span class="ui-num">r{{ kixdnsNotice.dependency_revision }}</span></template></span></template>
-              <template v-else-if="kixdnsNotice.available"><span v-if="kernelPending" class="sk update-row__cur-sk" aria-hidden="true"></span><span v-else class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span> <span class="update-row__keep">→ <span class="ui-num">{{ kernelPending || formatKixdnsVersion(activeVersion).startsWith('构建 #') ? latestKixdnsVersion().replace(/^构建 /, '') : latestKixdnsVersion() }}</span></span></template>
+              <template v-else-if="kixdnsNotice.available"><span v-if="kernelPending" class="sk update-row__cur-sk" aria-hidden="true"></span><span v-else class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span> <span class="update-row__keep">→ <span class="ui-num">{{ latestKixdnsVersion() }}</span></span></template>
               <template v-else-if="kixdnsNotice.current_commit"><span class="update-row__keep">已是最新 · <span class="ui-num">{{ formatKixdnsVersion(activeVersion) }}</span></span></template>
               <template v-else>还没安装</template>
             </span>
-            <span v-if="kixdnsNotice">发布于 {{ buildTime(kixdnsNotice.created_at) }}</span>
+            <span v-if="kixdnsNotice?.created_at">发布于 {{ buildTime(kixdnsNotice.created_at) }}</span>
           </template>
           <!-- 检查失败是 GitHub 的访问次数或 Token 的事：去填 Token 的按钮放在这一行的按钮位，和「更新」同一个位置、同一个样子
                When a check failed over GitHub's access limit or the token, the button to fill in a token sits in the row's action slot, where and how 更新 sits -->
           <template v-if="kixdnsNotice || !installed || needsToken(updateStatus.kixdns_error)" #actions>
             <button v-if="!kixdnsNotice && needsToken(updateStatus.kixdns_error)" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" @click="focusToken">填写 Token</button>
-            <a v-if="kixdnsNotice" class="ui-link" :href="kixdnsNotice.build_url" target="_blank" rel="noopener noreferrer">构建详情<ExternalLink :size="12" /></a>
+            <!-- 和面板那一行同一个说法：链到这一版的发布页 / The same wording as the panel row: a link to this version's release page -->
+            <a v-if="kixdnsNotice" class="ui-link" :href="kixdnsNotice.release_url" target="_blank" rel="noopener noreferrer">发布说明<ExternalLink :size="12" /></a>
             <button v-if="kixdnsNotice?.available || !installed" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" :disabled="!kernel?.latest || kernelAction !== null || panelDown" @click="updateKernel">{{ kernelAction === 'update' ? '更新中' : (installed || kernelPending ? '更新' : '安装') }}</button>
           </template>
         </UiTask>
@@ -638,15 +646,17 @@ onBeforeUnmount(() => {
           <template v-else-if="kernel">
             <p class="install-version"><span v-if="installed && versionLead.label" class="install-version__label">{{ versionLead.label }}</span><b>{{ installed ? versionLead.value : '还没安装' }}</b></p>
             <p v-if="installed" class="ui-dots install-meta">
-              <span>补丁集 <span class="ui-num">{{ activeVersion?.patchset ? `p${activeVersion.patchset}${activeVersion.dependency_revision ? `-r${activeVersion.dependency_revision}` : ''}` : '未记录' }}</span></span>
+              <!-- 补丁集只有旧的 Action 内核有；fork 发布没有这一项，不写「未记录」 / Only old Action kernels have a patchset; a fork release has none, so 未记录 is not written -->
+              <span v-if="activeVersion?.patchset">补丁集 <span class="ui-num">p{{ activeVersion.patchset }}{{ activeVersion.dependency_revision ? `-r${activeVersion.dependency_revision}` : '' }}</span></span>
               <span>控制协议 <span class="ui-num">{{ activeVersion?.control_protocol ? `v${activeVersion.control_protocol}` : '未记录' }}</span></span>
               <!-- 链接本身是 inline-flex，套一层再让 ui-dots 画点 / The link is inline-flex, so it is wrapped before ui-dots draws the dot -->
               <span v-if="activeVersion?.source_url"><a class="ui-link" :href="activeVersion.source_url" target="_blank" rel="noopener noreferrer">原版源码<ExternalLink :size="12" /></a></span>
             </p>
-            <p v-else class="install-meta">在上方「可用更新」里安装最新构建</p>
+            <p v-else class="install-meta">在上方「可用更新」里安装最新版本</p>
             <dl class="ui-strip install-hashes">
               <div><dt>原版提交</dt><dd class="ui-mono">{{ activeVersion?.upstream_commit ? shortHash(activeVersion.upstream_commit, 12) : '未记录' }}</dd></div>
-              <div><dt>增强构建</dt><dd class="ui-mono">{{ shortHash(activeVersion?.commit, 12) }}</dd></div>
+              <!-- fork 发布记的是内核仓库的提交；旧的 Action 内核记的是面板仓库构建它的那次提交 / A fork release records the kernel repository's commit; an old Action kernel records the panel repository commit that built it -->
+              <div><dt>{{ activeVersion?.source === 'fork' ? '内核提交' : '增强构建' }}</dt><dd class="ui-mono">{{ shortHash(activeVersion?.commit, 12) }}</dd></div>
               <div><dt>二进制摘要</dt><dd class="ui-mono">{{ shortHash(activeVersion?.binary_sha256, 14) }}</dd></div>
             </dl>
           </template>
@@ -685,7 +695,7 @@ onBeforeUnmount(() => {
           </div>
           <!-- 先说它只用在哪、不去哪；没配置时再说清为什么要填：GitHub 对匿名请求每小时只给 60 次，带 Token 是 5000 次。
                First where it is used and where it never goes; without a token, also why one helps: GitHub allows 60 anonymous requests an hour, 5,000 with a token. -->
-          <p class="credential-hint"><span>只用于版本检查和内核下载，不会发送到 nightly.link。</span><template v-if="!githubTokenStatus?.configured"><span>匿名访问 GitHub 每小时只有 <span class="nowrap">60 次请求</span>，检查版本和下载内核容易被限速。</span><span>填一个 Token 后是每小时 <span class="nowrap">5,000 次</span>。</span></template></p>
+          <p class="credential-hint"><span>只在检查新版本时发给 GitHub，下载不用它。</span><template v-if="!githubTokenStatus?.configured"><span>匿名访问 GitHub 每小时只有 <span class="nowrap">60 次请求</span>，常检查更新容易被限速。</span><span>填一个 Token 后是每小时 <span class="nowrap">5,000 次</span>。</span></template></p>
         </div>
         <div class="system-card__row credential-quota">
           <span v-if="githubRate" class="ui-dots"><span>剩余次数 <span class="ui-num">{{ githubQuota }}</span></span><span>{{ githubRateReset() }} 重置</span></span>

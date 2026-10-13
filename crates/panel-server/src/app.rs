@@ -64,10 +64,8 @@ pub struct AppSettings {
     pub service_unit: String,
     pub service_helper_socket: PathBuf,
     pub diagnostic_server: SocketAddr,
-    pub update_repository: String,
-    pub update_workflow: String,
-    pub update_branch: String,
-    pub update_artifact: String,
+    pub kernel_repository: String,
+    pub installed_source: Option<String>,
     pub installed_commit: Option<String>,
     pub installed_source_id: Option<u64>,
     pub panel_installed_commit: Option<String>,
@@ -290,10 +288,8 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
     let updates = UpdateManager::new(
         database.clone(),
         UpdateSettings {
-            repository: settings.update_repository,
-            workflow: settings.update_workflow,
-            branch: settings.update_branch,
-            artifact: settings.update_artifact,
+            kernel_repository: settings.kernel_repository,
+            installed_source: settings.installed_source,
             installed_commit: settings.installed_commit,
             installed_source_id: settings.installed_source_id,
             panel_installed_commit: settings.panel_installed_commit,
@@ -334,7 +330,7 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
     spawn_geo_scheduler(state.clone());
     spawn_config_reconciler(state.clone());
     spawn_metrics_sampler(state.clone());
-    updates::spawn_release_kernel_replacement(state.clone());
+    updates::spawn_legacy_kernel_replacement(state.clone());
     let api = api_router(state);
 
     let index_file = settings.web_root.join("index.html");

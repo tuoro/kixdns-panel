@@ -87,14 +87,16 @@ export function shortHash(value: string | null | undefined, length = 10): string
 }
 
 interface KixdnsVersionIdentity {
-  source: 'action' | 'release' | null
+  source: 'action' | 'release' | 'fork' | null
   source_id: number | null
-  run_id: number | null
+  run_id?: number | null
   release_tag?: string | null
 }
 
+/** fork 发布写日期版本，更早的 Release 写标签，旧的 Action 内核写「构建 #上游 Run」，和服务端的 label() 一致。 / A fork release reads as its date version, an earlier Release as its tag, an old Action kernel as 构建 # and the upstream run, as the server's label() does. */
 export function formatKixdnsVersion(version: KixdnsVersionIdentity | null | undefined): string {
   if (!version) return '未记录'
+  if (version.source === 'fork') return version.release_tag ?? '未记录'
   if (version.source === 'release') return version.release_tag ?? 'Release'
   if (version.source === 'action') {
     if (version.run_id) return `构建 #${version.run_id}`

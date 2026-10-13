@@ -71,24 +71,25 @@ pub(super) fn routes() -> Router<AppState> {
         .route("/kixdns/kernel/rollback", post(rollback_kixdns_kernel))
 }
 
-/// Release 轨道已停止构建：新面板启动后在后台把 Release 内核换成最新的 Action 内核。
-/// 走和「更新」按钮同一套下载、校验、配置兼容检查、切换与失败回滚；哪一步失败都保持原样、
-/// 记进审计，下次启动再试，用户也可以在系统页手动更新。
-/// The Release track no longer builds, so after start-up a new panel replaces a Release
-/// kernel with the newest Action kernel in the background. It goes through the same
-/// download, verification, config compatibility check, switch and rollback as the update
-/// button; when any step fails nothing changes, the audit log says so, and the next start
-/// tries again while the user can still update from the System page.
-pub(super) fn spawn_release_kernel_replacement(state: AppState) {
+/// 旧轨道（面板仓库的 Action 构建、更早的 Release）已停止更新：新面板启动后在后台把旧内核
+/// 换成 fork 的最新版本。走和「更新」按钮同一套下载、校验、配置兼容检查、切换与失败回滚；
+/// 哪一步失败都保持原样、记进审计，下次启动再试，用户也可以在系统页手动更新。
+/// The old tracks (the panel repository's Action builds, earlier Releases) are no longer
+/// updated, so after start-up a new panel replaces an old kernel with the fork's newest
+/// version in the background. It goes through the same download, verification, config
+/// compatibility check, switch and rollback as the update button; when any step fails
+/// nothing changes, the audit log says so, and the next start tries again while the user
+/// can still update from the System page.
+pub(super) fn spawn_legacy_kernel_replacement(state: AppState) {
     tokio::spawn(async move {
-        if let Err(error) = replace_release_kernel(&state).await {
-            tracing::warn!(error = ?error, "自动替换 Release 内核没有完成");
+        if let Err(error) = replace_legacy_kernel(&state).await {
+            tracing::warn!(error = ?error, "自动替换旧内核没有完成");
         }
     });
 }
 
-async fn replace_release_kernel(state: &AppState) -> anyhow::Result<()> {
-    let Some(release) = state.updates.release_kernel_to_replace().await? else {
+async fn replace_legacy_kernel(state: &AppState) -> anyhow::Result<()> {
+    let Some(legacy) = state.updates.legacy_kernel_to_replace().await? else {
         return Ok(());
     };
     let _apply_guard = state.config_apply_lock.lock().await;
@@ -99,18 +100,18 @@ async fn replace_release_kernel(state: &AppState) -> anyhow::Result<()> {
         .await
     {
         Ok(installed) => (
-            "kixdns.kernel.replace_release",
+            "kixdns.kernel.replace_legacy",
             format!(
-                "原来的正式版内核已停止更新，自动从 {} 换成 {}",
-                release.label(),
-                installed.label()
+                "原来的内核已停止更新，自动{} {}",
+                after_verb("从", &legacy.label()),
+                after_verb("换成", &installed.label())
             ),
         ),
         Err(error) => (
-            "kixdns.kernel.replace_release_failed",
+            "kixdns.kernel.replace_legacy_failed",
             format!(
-                "没能把 Release 内核 {} 自动换成最新内核：{error}。下次启动面板时再试，也可以在系统页手动更新",
-                release.label()
+                "{} 自动换成最新的内核：{error}。下次启动面板时再试，也可以在系统页手动更新",
+                after_verb("没能把", &legacy.label())
             ),
         ),
     };
@@ -337,8 +338,8 @@ async fn rollback_kixdns_kernel(
     .await
 }
 
-// 操作审计的详情：中文标签（构建 #N）直接接在动词后面，拉丁字母开头的（v1.0.1）前面留一个空格，和页面上的写法一样
-// The audit detail: a Chinese label (构建 #N) follows the verb directly, a Latin one (v1.0.1) after a space, as the page writes it
+// 操作审计的详情：中文标签（构建 #N）直接接在动词后面，数字或拉丁字母开头的（2026.10.13、v1.0.1）前面留一个空格，和页面上的写法一样
+// The audit detail: a Chinese label (构建 #N) follows the verb directly, one starting with a digit or Latin letter (2026.10.13, v1.0.1) after a space, as the page writes it
 fn after_verb(verb: &str, label: &str) -> String {
     if label.starts_with(|c: char| c.is_ascii_alphanumeric()) {
         format!("{verb} {label}")
