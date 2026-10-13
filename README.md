@@ -1,6 +1,6 @@
 # KixDNS Panel
 
-[KixDNS](https://github.com/olicesx/kixdns) 的增强发行版与 Web 管理面板。上游源码不进本仓库，增强能力以可重放补丁维护；面板只通过本机控制协议与 DNS 数据面通信。
+[KixDNS](https://github.com/olicesx/kixdns) 的 Web 管理面板。内核来自 fork [tuoro/kixdns](https://github.com/tuoro/kixdns) 按日期版本发布的增强版：上游加修复，再加面板接口；面板只通过本机控制协议与 DNS 数据面通信。
 
 ## 界面预览
 
@@ -30,7 +30,7 @@
 - **配置管理**：结构化表单与原始 JSON 双向编辑，域名映射、GeoIP/GeoSite 数据托管；保存前由 KixDNS 自身校验，热加载失败自动回滚，保留版本历史
 - **DNS 诊断**：对本机 KixDNS 发起查询，逐段展示命中的 Pipeline、规则、缓存与上游
 - **日志**：KixDNS journal 实时查看与操作审计
-- **内核更新**：在面板内把 KixDNS 增强版更新到上游最新构建，或回到上一个，激活失败自动恢复
+- **内核更新**：在面板内把 KixDNS 更新到 fork 最新发布的日期版本，或回到上一个，激活失败自动恢复
 - **面板自更新**：系统页一键更新到最新正式版，双重校验摘要，不动 KixDNS
 - **安全**：Argon2id 认证、HttpOnly 会话、CSRF 防护、登录限流；面板进程不以 root 运行
 - 桌面与手机均可用
@@ -69,6 +69,6 @@ VITE_DEMO_MODE=true npm run dev   # 演示数据模式
 - [系统架构](docs/architecture.md)：组件边界、构建流水线与安全设计
 - [增强控制协议 v1](docs/control-protocol-v1.md)：面板与 KixDNS 之间的本机接口
 - [配置能力契约](docs/config-capabilities.md)：新配置字段的兼容规则
-- [补丁说明](patches/README.md)：补丁集维护与上游重基
+- [补丁说明](patches/README.md)：v3.4.0 及更早的面板仍在用的冻结补丁集 p28
 
 许可证：GPL-3.0-only。

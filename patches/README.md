@@ -1,5 +1,7 @@
 # 增强补丁
 
+> **已冻结（2026-10-14）。** 新面板的内核改从 fork [tuoro/kixdns](https://github.com/tuoro/kixdns) 的日期版本发布获取。这里的补丁集只为 v3.4.0 及更早的面板构建 p28：每天的上游同步已经删除，锁、补丁集和产物名格式都不再改，`build-kixdns.yml` 只在产物快过期时续建。下文保留补丁集的结构和当时的维护方法，「上游自动重基」「依赖修订」里提到的每日同步任务已不存在。
+
 `sets/<编号>/` 保存不可变的版本化补丁集，锁文件中的 `patchset` 只读取对应编号。上游源码不进入本仓库；`cargo xtask prepare` 会检出到 `.upstream/kixdns-<source>-<commit>-p<patchset>`（有依赖修订时再加 `-r<修订号>`，可用 `cargo xtask checkout-dir` 查询），以 `git apply` 重放所选集合中的补丁，最后应用锁文件指定的依赖修订。工具使用来源、补丁版本和内容 SHA-256 标记完整补丁集，支持幂等执行并拒绝混用不同内容。
 
 ~~~text
