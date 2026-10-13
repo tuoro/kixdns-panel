@@ -72,9 +72,9 @@ pub(super) fn parse_panel_release_version(tag: &str) -> Result<semver::Version, 
 pub(super) fn artifact_coordinates(artifact: &str) -> Result<(&str, &str), UpdateError> {
     let (prefix, architecture) = artifact
         .rsplit_once("-linux-")
-        .ok_or_else(|| UpdateError::Invalid("Artifact 名称必须以 -linux-<架构> 结尾".to_owned()))?;
+        .ok_or_else(|| UpdateError::Invalid("构建名称必须以 -linux-<架构> 结尾".to_owned()))?;
     if prefix.is_empty() || architecture.is_empty() {
-        return Err(UpdateError::Invalid("Artifact 名称无效".to_owned()));
+        return Err(UpdateError::Invalid("构建名称无效".to_owned()));
     }
     Ok((prefix, architecture))
 }
@@ -166,7 +166,7 @@ pub(super) fn validate_remote_build_identity(
     }
     if identity.official_run_id != Some(remote.run_id) {
         return Err(UpdateError::Verification(
-            "包内官方 Action Run 和内核包名称对不上".to_owned(),
+            "包内原版构建和内核包名称对不上".to_owned(),
         ));
     }
     Ok(())

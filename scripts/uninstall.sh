@@ -211,7 +211,7 @@ load_settings() {
   # 规则以 panel-server 的 Operations::new 为准（scripts/test-unit-name-rule.sh 校对）。
   # The rule is panel-server's Operations::new (checked by scripts/test-unit-name-rule.sh).
   [[ ${KIXDNS_SERVICE_UNIT} =~ ^[A-Za-z0-9][A-Za-z0-9_.@-]{0,119}\.service$ && ${KIXDNS_SERVICE_UNIT} != *..* ]] ||
-    fail "panel.env 中的 KixDNS unit 名称无效"
+    fail "panel.env 里的 KixDNS 服务名称无效"
   if [[ -f ${EXTERNAL_BACKUP}/install.env ]]; then
     HAS_EXTERNAL_BACKUP=true
   fi

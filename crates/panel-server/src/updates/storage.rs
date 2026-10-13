@@ -39,7 +39,7 @@ pub(super) fn store_version(
     validate_elf(binary)?;
     if manifest.binary_sha256 != sha256(binary) {
         return Err(UpdateError::Verification(
-            "版本清单里的二进制校验值对不上".to_owned(),
+            "版本清单里的二进制摘要对不上".to_owned(),
         ));
     }
     ensure_directory(versions_path)?;
@@ -97,7 +97,7 @@ pub(super) fn load_bundled_manifest(
     let metadata_source_id = read_metadata_u64(metadata_path, "KIXDNS_ARTIFACT_ID")?;
     if metadata_source_id != source_id {
         return Err(UpdateError::Verification(
-            "完整包里的内核包编号和安装环境对不上".to_owned(),
+            "完整包里的内核包编号和安装环境不一致".to_owned(),
         ));
     }
     let build_run_id = read_metadata_u64(metadata_path, "KIXDNS_SOURCE_RUN_ID")?;
@@ -129,7 +129,7 @@ pub(super) fn load_bundled_manifest(
     }
     let official_run_id = identity
         .official_run_id
-        .ok_or_else(|| UpdateError::Verification("完整包缺少上游 Action Run ID".to_owned()))?;
+        .ok_or_else(|| UpdateError::Verification("完整包缺少原版构建编号".to_owned()))?;
     let capabilities_bytes = read_metadata_file(
         metadata_path,
         "KIXDNS_CAPABILITIES.json",
@@ -253,7 +253,7 @@ pub(super) fn load_verified_version(
     let actual = sha256(&binary);
     if manifest.binary_sha256 != actual {
         return Err(UpdateError::Verification(
-            "本地版本的二进制校验值对不上".to_owned(),
+            "本地版本的二进制摘要对不上".to_owned(),
         ));
     }
     Ok((manifest, binary))

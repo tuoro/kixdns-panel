@@ -26,7 +26,7 @@ import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, busy, deferSave, hasPending, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, cnameUse, unsupportedSection } from '../config-v2/useConfigDocument'
+import { applyBusy, busy, checkPending, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, cnameUse, unsupportedSection } from '../config-v2/useConfigDocument'
 import { useHelp } from '../composables/useHelp'
 import { useServiceStart } from '../composables/useServiceStart'
 import { registerLeaveGuard, takeAgreement } from '../composables/useLeaveGuard'
@@ -180,7 +180,10 @@ const notice = computed<Notice | null>(() => {
     // 挡住重试的是内核不支持的设置时，这一条也说清它和出路（不支持的那条提示排在后面，这时显示不出来） / When unsupported settings block the retry, this notice names them and the way out too (the unsupported notice ranks below and cannot show)
     const blocked = !retry && unsupportedFields.value.length > 0
     const cause = failureCause(reason).replace(/。$/, '')
-    return { tone: 'err', text: pendingVersionId.value ? `版本 #${pendingVersionId.value} 没有生效，仍在用之前那份配置。` : '上次保存的版本没有生效，仍在用之前那份配置。', detail: reread ? `${cause}。这份配置在别处改过了，先重新读取。` : blocked ? `${cause}。当前内核不支持：${unsupportedFields.value.join('、')}，先在基础设置里关掉。` : cause, action: reread ? '重新读取' : retry ? '重试应用' : blocked && section.value !== 'settings' ? '去基础设置' : undefined, run: reread ? () => reload() : retry ? () => save('apply') : goUnsupported }
+    // KixDNS 还停着：没有哪份配置「在用」，照实说停了；原因说它在确认前停了，启动后用之前那份 / KixDNS still stopped: no config is in use, so the stop is said; the cause says it stopped before confirming and the previous config runs on start
+    const which = pendingVersionId.value ? `版本 #${pendingVersionId.value} ` : '上次保存的版本'
+    const stoppedNow = runtimeStopped.value
+    return { tone: 'err', text: stoppedNow ? `${which}没有生效，KixDNS 已停止。` : `${which}没有生效，仍在用之前那份配置。`, detail: stoppedNow ? `${cause}；启动后用之前那份配置` : reread ? `${cause}。这份配置在别处改过了，先重新读取。` : blocked ? `${cause}。当前内核不支持：${unsupportedFields.value.join('、')}，先在基础设置里关掉。` : cause, action: reread ? '重新读取' : retry ? '重试应用' : blocked && section.value !== 'settings' ? '去基础设置' : undefined, run: reread ? () => reload() : retry ? () => save('apply') : goUnsupported }
   }
   // 连不上面板时由顶上的横幅说；连上以后核对的结果再说应用了没有 / While the panel is unreachable the banner speaks; once back, the check says whether it applied
   if (applyError.value && !panelDown.value) { const [text, ...detail] = applyError.value.split('\n'); return { tone: 'err', text: `${text}。`, detail: detail.join('\n') } }
@@ -421,7 +424,8 @@ const askLeave = async (purpose?: 'signout'): Promise<boolean> => {
   if (!dirty.value && !jsonDirty.value) return confirm.ask({ title: `放弃${editorEdited.value ? '这条规则' : [...dialogEdits.values()][0] ?? '这条规则'}的修改`, body: '刚才在这里改的内容不会写进草稿。', ...labels, destructive: true })
   // 正在保存时又改过：正在保存的那份照常落地，丢掉的只是之后改的 / Edited again during a save: the part being saved still lands, only the later edits are dropped
   // 同意了就把草稿退回正在保存的那一份：保存没成功时回来看到的正是它，不会冒出说好丢掉的那几处 / On agreement the draft goes back to the one being saved: a failed save brings back exactly that, not the edits agreed to drop
-  if (saveInFlight.value) {
+  // 只有保存草稿才有「正在保存的那份」；「现在应用」途中改的，问的就是整份草稿 / Only a draft save has 「the one being saved」; edits during 现在应用 are asked about as the whole draft
+  if (saveInFlight.value && origin.value === 'draft') {
     const agreed = await confirm.ask({ title: '放弃保存开始后改的内容', body: '正在保存的那份照常保存；保存开始以后改的会丢掉。', ...labels, destructive: true })
     if (agreed) dropEditsAfterSave()
     return agreed
@@ -494,7 +498,7 @@ watch(watchingPending, (on) => {
   // 没有修改就整份静默重读（别处换了文件也跟着换，不把新运行状态贴到旧文件上）；有修改只刷新运行状态，文件换了会马上进冲突
   // With no edits, a whole quiet re-read (a file changed elsewhere is followed, rather than pinning the new runtime onto the old file); with edits, only the
   // runtime, and a changed file enters the conflict state at once
-  pendingTimer = on ? window.setInterval(() => { void (unsaved.value ? refreshRuntime() : load({ quiet: true })).catch(() => undefined) }, 5000) : undefined
+  pendingTimer = on ? window.setInterval(() => { void checkPending().catch(() => undefined) }, 5000) : undefined
 }, { immediate: true })
 onBeforeUnmount(() => window.clearInterval(pendingTimer))
 async function startKixdns(): Promise<void> {

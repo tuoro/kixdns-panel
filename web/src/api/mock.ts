@@ -291,6 +291,28 @@ function changeElsewhereIfAsked(flag = 'kixdns:demo-changed-elsewhere'): void {
   if (source) activateCopy(source.id, configVersionContents.get(source.id)!, `另一处恢复了版本 #${source.id}`)
 }
 
+// 让待应用的版本原地生效：「现在应用」和演示里的「后台那一遍」都走这里 / Put the pending version into effect in place: used by 现在应用 and by the demo's "background pass"
+function applyPendingInPlace(id: number): void {
+  config = {
+    ...config,
+    pending: null,
+    runtime: { ...config.runtime, status: 'active', active_sha256: config.sha256, generation: activeConfig.generation + 1, apply_state: 'active', pending_error: null },
+  }
+  activeConfig.sha256 = config.sha256
+  activeConfig.generation += 1
+  activeConfig.reload_sequence += 1
+  versions.versions = versions.versions.map((v) => (v.id === id ? { ...v, apply_state: 'applied' } : v.apply_state === 'applied' ? { ...v, apply_state: 'superseded' } : v))
+}
+
+// kixdns:demo-background-applies：下一次读配置之前，面板后台那一遍（真面板每 5 秒）让待应用的版本生效了
+// kixdns:demo-background-applies: just before the next config read, the panel's background pass (every 5 s on a real panel) put the pending version into effect
+function backgroundAppliesIfAsked(): void {
+  if (typeof localStorage === 'undefined' || localStorage.getItem('kixdns:demo-background-applies') !== 'true') return
+  if (!config.pending || config.pending.error) return
+  localStorage.removeItem('kixdns:demo-background-applies')
+  applyPendingInPlace(config.pending.version_id!)
+}
+
 function demoConfigVersion(id: number): Record<string, unknown> {
   const content = structuredClone(config.content)
   const settings = content.settings as Record<string, unknown>
@@ -591,6 +613,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (path === '/api/v1/config' && method === 'GET') {
     changeElsewhereIfAsked()
+    backgroundAppliesIfAsked()
     return config as T
   }
   if (path === '/api/v1/config/geo-data' && method === 'GET') return geoData as T
@@ -831,15 +854,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
       versions.versions = versions.versions.map((v) => (v.id === id ? { ...v, apply_state: 'failed', apply_error: error } : v))
       throw new ApiError(error, 422, 'reload_failed')
     }
-    config = {
-      ...config,
-      pending: null,
-      runtime: { ...config.runtime, status: 'active', active_sha256: config.sha256, generation: activeConfig.generation + 1, apply_state: 'active', pending_error: null },
-    }
-    activeConfig.sha256 = config.sha256
-    activeConfig.generation += 1
-    activeConfig.reload_sequence += 1
-    versions.versions = versions.versions.map((v) => (v.id === id ? { ...v, apply_state: 'applied' } : v.apply_state === 'applied' ? { ...v, apply_state: 'superseded' } : v))
+    applyPendingInPlace(id)
     // kixdns:demo-put-answer-lost 对这里也管用：生效了，回应却没回来 / kixdns:demo-put-answer-lost applies here too: in effect, but the answer never arrives
     if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-put-answer-lost') === 'true') {
       localStorage.removeItem('kixdns:demo-put-answer-lost')

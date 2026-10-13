@@ -758,6 +758,32 @@ test('等着待应用的版本时别处换了文件：页面整份跟着换', as
   await page.evaluate(() => localStorage.setItem('kixdns:demo-changed-elsewhere', 'true'))
   await expect(page.locator('[data-rule]', { hasText: 'replaced-elsewhere.example' })).toHaveCount(0, { timeout: 10_000 })
   await expect(page.locator('main .ui-ph')).not.toContainText('待应用')
+  // 读入了别处的版本：说一句，不让待应用的那条规则悄悄消失 / Another writer's version was read in: said so, so the pending rule does not vanish without a word
+  await expect.poll(() => toastTexts(page)).toContainEqual(expect.stringMatching(/^这份配置在别处改过了，已读入版本\u00a0#\d+$/))
+})
+
+// 等着待应用的版本时，后台那一遍让它生效了：页面开着就说一句（说过「就绪后自动应用」，用户等的就是这个）
+// The background pass puts the pending version into effect while the page is open: it is said (the user was told 就绪后自动应用 and waits for exactly this)
+test('等着待应用的版本时后台让它生效了：说一句已生效', async ({ page }) => {
+  const pending = await savePending(page, 'background-applies.example', '等后台')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-background-applies', 'true'))
+  await expect.poll(() => toastTexts(page), { timeout: 10_000 }).toContain(`版本 #${pending} 已生效`)
+  await expect(page.locator('main .ui-ph')).not.toContainText('待应用')
+})
+
+// 「现在应用」途中又改了一处、然后离开：问的是整份草稿（应用没有「正在保存的那份」可以留下）
+// An edit during 现在应用, then leaving: the question is about the whole draft (an apply has no 「the one being saved」 to keep)
+test('现在应用途中改了再离开：问放弃未保存的修改', async ({ page }) => {
+  await savePending(page, 'leave-during-apply.example', '途中改')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-save-slow', 'true'))
+  await page.getByRole('button', { name: '现在应用', exact: true }).click()
+  await addRule(page, 'edit-during-apply.example')
+  await page.getByRole('link', { name: '日志', exact: true }).first().click()
+  const ask = page.getByRole('alertdialog')
+  await expect(ask).toBeVisible()
+  await expect(ask).toContainText('放弃未保存的修改')
+  await ask.getByRole('button', { name: '继续编辑' }).click()
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
 })
 
 // 按「现在应用」时待应用的已经被别处换掉：没什么要保存的，直接读入新的并说一句，不留一条没有按钮、读完也不走的红色提示
@@ -800,6 +826,22 @@ test('校验途中改了草稿：校验的结论不挂到改过的草稿上', as
   await expect(bar).not.toContainText('校验通过')
   await expect(bar).toContainText('已修改')
   await page.evaluate(() => localStorage.removeItem('kixdns:demo-validate-slow'))
+})
+
+// JSON 视图里校验以后又改了：「校验通过」说的不是现在这份，不再挂着
+// JSON edited after 校验 in the JSON view: 校验通过 is no longer about what is there and does not stay
+test('JSON 视图校验以后又改了：不再挂着校验通过', async ({ page }) => {
+  await page.goto('/config')
+  await addRule(page, 'json-check.example')
+  await page.getByRole('button', { name: '更多配置操作' }).click()
+  await page.getByRole('menuitem', { name: '查看 JSON' }).click()
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '校验', exact: true }).click()
+  await expect(bar).toContainText('校验通过')
+  await page.locator('.json-editor .cm-content').click()
+  await page.keyboard.press('Control+End')
+  await page.keyboard.type(' ')
+  await expect(bar).not.toContainText('校验通过')
 })
 
 // 单独「校验」还没回来时按的保存，从按下起就是一次保存：按钮写「保存中」，重新读取停用；校验没过就停在那句结论上，不接着存

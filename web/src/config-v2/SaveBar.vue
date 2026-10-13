@@ -32,7 +32,8 @@ const pending = computed(() => changeCount.value > 0 || Boolean(props.jsonDirty)
 const visible = computed(() => pending.value || draftStage.value !== 'idle' || Boolean(props.jsonError))
 const noteOpen = ref(false)
 // 单独点过「校验」且之后没再改：说一句校验通过 / After a lone 校验 with no edit since: say it passed
-const validated = computed(() => (draftStage.value === 'idle' && validation.value && changeCount.value > 0 ? validation.value : null))
+// JSON 视图里又改了还没收进草稿：「校验通过」说的不是现在这份 / JSON edited and not yet folded: 校验通过 would not be about what is there now
+const validated = computed(() => (draftStage.value === 'idle' && validation.value && changeCount.value > 0 && !props.jsonDirty ? validation.value : null))
 // 有新改动就清掉上一次的结果 / A new edit clears the previous result
 watch(() => JSON.stringify(model), () => { editTouched(); validation.value = null })
 
