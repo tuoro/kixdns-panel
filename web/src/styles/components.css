@@ -60,6 +60,7 @@ a.ui-btn { text-decoration: none; }
 /* aria-disabled：看着停用，但还能点，点了说为什么（手机上看不到 title） / aria-disabled: looks disabled but still takes a tap that says why (phones never show a title) */
 .ui-btn:active:not(:disabled, [aria-disabled="true"]) { transform: scale(.98); }
 .ui-btn:disabled, .ui-btn[aria-disabled="true"] { cursor: not-allowed; opacity: .42; }
+/* 悬停的变色同样不给看着停用的按钮（下面各处 :hover 都排除了 aria-disabled） / Hover colours skip a button that looks disabled too (every :hover below excludes aria-disabled) */
 .ui-btn--primary { color: var(--d-ink); background: var(--l-ink); }
 .ui-btn--secondary { color: var(--l-ink); background: var(--l-surface); border-color: var(--l-line-strong); box-shadow: var(--shadow-xs); }
 .ui-btn--text { padding-inline: var(--s-2); color: var(--l-ink-2); background: transparent; font-weight: var(--w-medium); }
@@ -599,16 +600,16 @@ a.ui-btn { text-decoration: none; }
 /* 悬停的底色只给能悬停的设备：触屏上点一下，:hover 会一直粘在那里，看起来像被选中了。
    Hover fills only on devices that hover: on touch a tap leaves :hover stuck, which reads as selected. */
 @media (hover: hover) {
-  .ui-btn--primary:hover:not(:disabled) { background: var(--d-raise-2); }
-  .ui-btn--secondary:hover:not(:disabled) { background: var(--l-canvas); }
-  .ui-btn--text:hover:not(:disabled) { color: var(--l-ink); background: var(--l-sunk); }
-  .ui-btn--danger:hover:not(:disabled) { background: var(--err-tint-l); }
-  .ui-icon-btn:hover:not(:disabled) { color: var(--l-ink); background: var(--l-sunk); }
-  .ui-icon-btn--danger:hover:not(:disabled) { color: var(--err-l); background: var(--err-tint-l); }
+  .ui-btn--primary:hover:not(:disabled, [aria-disabled="true"]) { background: var(--d-raise-2); }
+  .ui-btn--secondary:hover:not(:disabled, [aria-disabled="true"]) { background: var(--l-canvas); }
+  .ui-btn--text:hover:not(:disabled, [aria-disabled="true"]) { color: var(--l-ink); background: var(--l-sunk); }
+  .ui-btn--danger:hover:not(:disabled, [aria-disabled="true"]) { background: var(--err-tint-l); }
+  .ui-icon-btn:hover:not(:disabled, [aria-disabled="true"]) { color: var(--l-ink); background: var(--l-sunk); }
+  .ui-icon-btn--danger:hover:not(:disabled, [aria-disabled="true"]) { color: var(--err-l); background: var(--err-tint-l); }
   .ui-link:hover { text-decoration-color: var(--l-ink); }
   /* 框底已经是浅灰：悬停再深一档，框里的按钮悬停用分隔线的灰 / The field is already pale grey: hover goes one step darker, and a button inside it hovers in the hairline grey */
   .ui-input:hover:not(:focus-within) { border-color: var(--l-edge-hover); }
-  .ui-btn--secondary:hover:not(:disabled) { border-color: var(--l-edge-hover); }
+  .ui-btn--secondary:hover:not(:disabled, [aria-disabled="true"]) { border-color: var(--l-edge-hover); }
   .ui-input__affix:hover { background: var(--l-hair); color: var(--l-ink); }
   .ui-tabs__tab:hover, .ui-seg__opt:hover { color: var(--l-ink); }
   .ui-banner:hover:not(:disabled) { background: var(--l-canvas); }
@@ -751,7 +752,7 @@ a.ui-btn { text-decoration: none; }
 /* 不可撤销的确认：红底白字，只用在确认框里 / Irreversible confirmations: solid red, used only inside confirm dialogs */
 /* 字色和主按钮一样跟着主题走：深色里红底变浅，白字只有 2.6:1，换深字 / Text follows the theme like the primary button: in dark the red turns light and white text drops to 2.6:1, so the text goes dark */
 .ui-btn--critical { color: var(--accent-ink); background: var(--err-l); }
-@media (hover: hover) { .ui-btn--critical:hover:not(:disabled) { background: var(--err-l-deep); } }
+@media (hover: hover) { .ui-btn--critical:hover:not(:disabled, [aria-disabled="true"]) { background: var(--err-l-deep); } }
 /* 任务行的图标位和通知里同一个形状：30 的圆角方块 / The task icon slot takes the notifications' shape: a 30px rounded square */
 .ui-task__icon { border-radius: var(--r-2); }
 /* 说明文字不留单字孤行 / Descriptions never leave a single character alone on the last line */
@@ -918,8 +919,8 @@ button.ui-link { position: relative; min-height: 0; padding: 0; border: 0; backg
 .ui-selected { position: relative; background: var(--accent-tint); }
 .ui-selected::before { position: absolute; top: 0; bottom: 0; left: 0; width: 3px; background: var(--accent); content: ''; }
 @media (hover: hover) {
-  .ui-btn--primary:hover:not(:disabled) { background: var(--accent-deep); }
-  .ui-btn--text:hover:not(:disabled) { color: var(--accent-deep); background: var(--accent-tint); }
+  .ui-btn--primary:hover:not(:disabled, [aria-disabled="true"]) { background: var(--accent-deep); }
+  .ui-btn--text:hover:not(:disabled, [aria-disabled="true"]) { color: var(--accent-deep); background: var(--accent-tint); }
   .ui-link:hover { color: var(--accent-deep); text-decoration-color: var(--accent); }
 }
 /* 不定进度条：一段品牌色在轨道里来回扫，不说进度；减少动态效果时只留一段静止的淡条 / The indeterminate bar: a sweep of accent back and forth, no claim of progress; under reduced motion a still faint segment */

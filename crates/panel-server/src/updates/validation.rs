@@ -161,12 +161,12 @@ pub(super) fn validate_remote_build_identity(
         .is_some_and(|patchset| patchset != identity.patchset)
     {
         return Err(UpdateError::Verification(
-            "包内补丁集与 Artifact 名称不匹配".to_owned(),
+            "包内补丁集和内核包名称对不上".to_owned(),
         ));
     }
     if identity.official_run_id != Some(remote.run_id) {
         return Err(UpdateError::Verification(
-            "包内官方 Action Run 与 Artifact 名称不匹配".to_owned(),
+            "包内官方 Action Run 和内核包名称对不上".to_owned(),
         ));
     }
     Ok(())
@@ -226,7 +226,9 @@ pub(super) fn validate_manifest_build_identity(
 
 pub(super) fn validate_hex_digest(value: &str) -> Result<(), UpdateError> {
     if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(UpdateError::Verification("SHA-256 摘要格式无效".to_owned()));
+        return Err(UpdateError::Verification(
+            "SHA-256 校验值格式无效".to_owned(),
+        ));
     }
     Ok(())
 }

@@ -280,6 +280,17 @@ function activateCopy(sourceId: number, content: Record<string, unknown>, messag
   return { version_id: versionId, sha256: config.sha256, apply_state: 'applied', active_config: activeConfig } as ConfigApplyResult
 }
 
+// kixdns:demo-changed-elsewhere：下一次读配置或「现在应用」之前，另一处（别的浏览器、别的管理员）恢复了一个旧版本，演示「这份配置在别处改过了」
+// kixdns:demo-changed-elsewhere: just before the next config read or 现在应用, someone elsewhere (another browser, another admin) restored an older version,
+// to show 这份配置在别处改过了
+// kixdns:demo-apply-overtaken 只在「现在应用」到达时起作用（页面每 5 秒的读不会先用掉它）/ kixdns:demo-apply-overtaken acts only when 现在应用 arrives (the page's 5-second reads do not use it up first)
+function changeElsewhereIfAsked(flag = 'kixdns:demo-changed-elsewhere'): void {
+  if (typeof localStorage === 'undefined' || localStorage.getItem(flag) !== 'true') return
+  localStorage.removeItem(flag)
+  const source = versions.versions.find((version) => version.sha256 !== config.sha256 && configVersionContents.has(version.id))
+  if (source) activateCopy(source.id, configVersionContents.get(source.id)!, `另一处恢复了版本 #${source.id}`)
+}
+
 function demoConfigVersion(id: number): Record<string, unknown> {
   const content = structuredClone(config.content)
   const settings = content.settings as Record<string, unknown>
@@ -579,13 +590,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     return demoKernel() as T
   }
   if (path === '/api/v1/config' && method === 'GET') {
-    // kixdns:demo-changed-elsewhere：这次读之前，另一处（别的浏览器、别的管理员）恢复了一个旧版本，演示「这份配置在别处改过了」
-    // kixdns:demo-changed-elsewhere: just before this read someone elsewhere (another browser, another admin) restored an older version, to show 这份配置在别处改过了
-    if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-changed-elsewhere') === 'true') {
-      localStorage.removeItem('kixdns:demo-changed-elsewhere')
-      const source = versions.versions.find((version) => version.sha256 !== config.sha256 && configVersionContents.has(version.id))
-      if (source) activateCopy(source.id, configVersionContents.get(source.id)!, `另一处恢复了版本 #${source.id}`)
-    }
+    changeElsewhereIfAsked()
     return config as T
   }
   if (path === '/api/v1/config/geo-data' && method === 'GET') return geoData as T
@@ -812,9 +817,13 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
   const applyMatch = pathname.match(/^\/api\/v1\/config\/versions\/(\d+)\/apply$/)
   if (applyMatch && method === 'POST') {
     const id = Number(applyMatch[1])
+    changeElsewhereIfAsked()
+    changeElsewhereIfAsked('kixdns:demo-apply-overtaken')
     if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-save-slow') === 'true') await new Promise((resolve) => setTimeout(resolve, 1500))
     if (!config.pending && config.version_id === id) return { version_id: id, sha256: config.sha256, apply_state: 'applied', active_config: activeConfig } as ConfigApplyResult as T
-    if (config.pending?.version_id !== id || config.pending.error) throw new ApiError('待应用的版本已经换了，先重新读取', 409, 'config_conflict')
+    // 刚试过、没有生效的这一版：照它记下的原因说（和真面板一样），不说别处改过 / This version just tried and refused: say why, as the real panel does, not 别处改过
+    if (config.pending?.version_id === id && config.pending.error) throw new ApiError(config.pending.error, 422, 'reload_failed')
+    if (config.pending?.version_id !== id) throw new ApiError('这份配置在别处改过了，先重新读取', 409, 'config_conflict')
     if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-apply-failed') === 'true') {
       localStorage.removeItem('kixdns:demo-apply-failed')
       const error = 'KixDNS 没有接受这份配置：upstream "fast" did not answer the health check，仍在用之前的配置'

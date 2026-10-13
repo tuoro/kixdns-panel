@@ -179,7 +179,9 @@ pub(super) fn read_verified_zip_entry(
     let actual = sha256(&bytes);
     if expected != &actual {
         return Err(UpdateError::Verification(format!(
-            "{name} 摘要不匹配：期望 {expected}，实际 {actual}"
+            "{name} 的校验值对不上（应为 {}…，实际 {}…）",
+            short_digest(expected),
+            short_digest(&actual)
         )));
     }
     Ok(bytes)
@@ -624,7 +626,9 @@ impl UpdateManager {
                         Ok(bytes)
                     } else {
                         Err(UpdateError::Verification(format!(
-                            "校验值不对（应为 {expected}，实际 {actual}）"
+                            "下载的包和发布的校验值对不上（应为 {}…，实际 {}…）",
+                            short_digest(expected),
+                            short_digest(&actual)
                         )))
                     }
                 });
@@ -1066,4 +1070,9 @@ pub(super) fn after_cjk(name: &str) -> String {
     } else {
         name.to_owned()
     }
+}
+
+/// 校验值只给前 12 位：整串 64 位在手机上要占五六行，前 12 位已经够对照 / Only the first 12 characters of a digest: all 64 take five or six lines on a phone, and 12 are enough to compare
+fn short_digest(digest: &str) -> &str {
+    digest.get(..12).unwrap_or(digest)
 }
