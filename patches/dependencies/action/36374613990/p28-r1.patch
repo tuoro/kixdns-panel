@@ -1,0 +1,25 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index cba9f2d1faee4f83ef9fd21471bce5b16e9270b3..a683d04205aa278b2c9c40027a281e6a194d38c4 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1561,9 +1561,9 @@ dependencies = [
+ 
+ [[package]]
+ name = "quinn-proto"
+-version = "0.11.17"
++version = "0.11.18"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "04759210543be93709136e28212294a659ef5001836ff4eab4d663e4529bba83"
++checksum = "a9746dbde176634f4f2f1faf2404e30a31b2bc1e9cafb5329c95d8177a18c9fc"
+ dependencies = [
+  "bytes",
+  "fastbloom",
+@@ -2630,7 +2630,7 @@ version = "0.1.11"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
+ dependencies = [
+- "windows-sys 0.61.2",
++ "windows-sys 0.48.0",
+ ]
+ 
+ [[package]]
