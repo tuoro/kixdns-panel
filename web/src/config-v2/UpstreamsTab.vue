@@ -21,18 +21,18 @@ const phone = usePhone()
 const health = (g: UpstreamGroup) => healthOf(g)
 // 卡片上写明还用在哪儿；「其余请求」标题行已有标签，不重复 / The card says where else it is used; 其余请求 already has a tag in the title row
 const usedIn = (g: UpstreamGroup): string[] => groupUsers(g.id).filter((use) => use !== '其余请求')
-// 旧版面板留下的副本：说清它是怎么来的、原来那组还用在哪儿、要整体换掉该怎么做
-// A copy the old panel left behind: how it came about, where the original is still used, and how to replace it everywhere
+// 旧版面板留下的副本：标题说是什么，下面一句说怎么来的、原来那组还在不在用；具体用在哪儿，原来那组的卡片上写着。
+// 手机上在逗号处折行，两半各自不断开（后半句不重复名字，长度固定）；名字太长、前半句一行放不下时才在「时」后面断
+// A copy the old panel left behind: the title says what it is, one line below says how it came about and whether the original is still used;
+// the original's own card says where. On phones the line breaks at the comma and neither half splits (the second half repeats no name, so its length is fixed); only when a long name makes the first half overflow does it break after 时
 // 名字里的连字符后面不折行：手机上「global-copy」不会断成两行 / No break after a hyphen in a name: on phones 「global-copy」 stays on one line
 const glue = (name: string): string => name.replace(/-(?=\w)/g, '-\u2060')
 const copies = computed(() => oldPanelCopies().map(({ copy, original }) => {
-  const uses = groupUsers(original.id)
+  const uses = groupUsers(original.id).length
   return {
     key: copy.id,
-    title: `「${glue(copy.name)}」是旧版面板自动复制出来的`,
-    detail: uses.length
-      ? `旧版面板编辑被几处共用的组时，会复制一份、只改当时编辑的那一处。原来的「${glue(original.name)}」还用在${uses.map(glue).join('、')}；要整体换掉，就把${uses.length > 1 ? '这几处' : '这一处'}也改到「${glue(copy.name)}」。`
-      : `旧版面板编辑被几处共用的组时，会复制一份、只改当时编辑的那一处。原来的「${glue(original.name)}」已经没有地方在用，可以删掉。`,
+    title: `「${glue(copy.name)}」是旧版面板复制的`,
+    detail: `改\u2060「${glue(original.name)}」\u2060时\u200b另存的一份，原来那组${uses ? `还有\u00a0${uses}\u00a0处在用。` : '已经没有地方在用，可以删掉。'}`,
   }
 }))
 const tone = (rate: number) => (rate >= 99 ? '' : rate >= 95 ? 'ui-dot--warn' : 'ui-dot--err')
