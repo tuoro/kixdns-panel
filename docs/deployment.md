@@ -192,6 +192,7 @@ sudo systemctl restart kixdns-panel.service
 | `/run/kixdns-panel/control.sock` | helper 通道（`0600`） |
 | `/usr/local/libexec/kixdns-panel-helper` | root helper |
 | `/usr/share/kixdns-panel/web` | 前端静态资源 |
+| `/usr/share/kixdns-panel/geo` | 安装包自带的 GeoSite：`geosite.dat`、来源说明 `geosite.json` 和它的 GPL-3.0 许可证，面板升级时整体替换 |
 
 数据库有界：配置历史最多 100 条，审计事件最多 10,000 条，请求量采样每 60 秒一个、只留 25 小时，都在写入时顺带清理。
 
@@ -230,6 +231,13 @@ v3.4.0 及更早的面板继续从面板仓库的冻结轨道（p28）取内核�
 
 - **远程链接**：只接受 HTTPS 直链。面板下载后按 SHA-256 存入 `/var/lib/kixdns-panel/geo/`，把本地路径写进配置；链接本身只存在面板数据库。单文件上限 128 MiB，GeoSite 最多 8 个。拒绝指向本机、私网和保留地址的链接，每次重定向都重新检查。定时更新成功后自动删除当前清单和所有保留配置版本都不再引用的旧文件，回滚到任一保留版本时文件都还在；删除历史版本后留下的文件，可在配置页手动清理
 - **本地路径**：直接使用已有文件，不迁移、不覆盖
+
+完整安装包自带一份打包时最新的 [Loyalsoldier](https://github.com/Loyalsoldier/v2ray-rules-dat) `geosite.dat`（GPL-3.0）。打包前核对发布页摘要、它自带的 `sha256sum` 文件和下载内容，并确认带着模板用到的 `cn`、`geolocation-!cn`、`category-ads-all` 分类。
+
+- **全新安装**：面板首次启动导入一次，配置写上它的路径；KixDNS 还没启动时先存成待应用版本，启动后生效
+- **升级和迁移**：不改配置。还没有任何 GeoSite 时，「Geo 数据」里出现「geosite.dat · 安装包自带 · 导入」，自己点；导入只填草稿，保存后生效
+- **已经有 GeoSite**（链接、下载过的文件或配置里的路径）：既不提示也不导入，服务端同样拒绝。面板升级只替换 `/usr/share/kixdns-panel/geo` 里那份，不碰已导入的文件和配置
+- 导入后来源记为 Loyalsoldier 的 `latest` 下载链接；「自动更新」默认关闭，选每天或每周后按这个链接更新，也可以换成自己的链接
 
 ## 面板更新
 
