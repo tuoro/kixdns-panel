@@ -132,6 +132,18 @@ function geositeEmptyIfAsked(): void {
   delete (config.content.settings as Record<string, unknown>).geosite_data_paths
 }
 
+// 配置里另有一个面板读不到的 GeoSite 文件（kixdns:demo-geosite-unreadable）：分类照列，「分类不存在」的提醒停掉并说明原因
+// The config names one more GeoSite file the panel cannot read (kixdns:demo-geosite-unreadable): categories still list, and the missing-category warning stops with the reason given
+const unreadableGeosite = '/etc/kixdns/geosite-extra.dat'
+let geositeUnreadableAdded = false
+function geositeUnreadableIfAsked(): void {
+  if (geositeUnreadableAdded || typeof localStorage === 'undefined' || localStorage.getItem('kixdns:demo-geosite-unreadable') !== 'true') return
+  geositeUnreadableAdded = true
+  const settings = config.content.settings as Record<string, unknown>
+  const paths = Array.isArray(settings.geosite_data_paths) ? settings.geosite_data_paths : []
+  settings.geosite_data_paths = [...paths, unreadableGeosite]
+}
+
 let geoDataSchedule: GeoDataSchedule = {
   interval_hours: 168,
   last_attempt_at: now - 7200,
@@ -647,6 +659,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (path === '/api/v1/config' && method === 'GET') {
     geositeEmptyIfAsked()
+    geositeUnreadableIfAsked()
     changeElsewhereIfAsked()
     backgroundAppliesIfAsked()
     return config as T
@@ -660,10 +673,11 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
   // Like the server: the config's and the manifest's files, unread ones with a reason, and the built-in one apart; every file shares the demo categories
   if (path === '/api/v1/config/geo-data/geosite-categories' && method === 'GET') {
     geositeEmptyIfAsked()
+    geositeUnreadableIfAsked()
     const known = new Map(geoData.geosite.map((resource) => [resource.path, resource.sha256]))
     const configured = (config.content.settings as Record<string, unknown>).geosite_data_paths
     const paths = [...new Set([...(Array.isArray(configured) ? configured.filter((p): p is string => typeof p === 'string') : []), ...known.keys()])]
-    const files = paths.map((p) => (known.has(p) ? { path: p, sha256: known.get(p)!, error: null } : { path: p, sha256: null, error: '文件不存在' }))
+    const files = paths.map((p) => (known.has(p) ? { path: p, sha256: known.get(p)!, error: null } : { path: p, sha256: null, error: p === unreadableGeosite ? '面板没有权限读这个文件' : '文件不存在' }))
     const digests = new Set([...files.map((file) => file.sha256).filter((sha): sha is string => Boolean(sha)), builtinGeosite.sha256])
     return {
       files,

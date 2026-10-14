@@ -6,7 +6,7 @@ import UiMenu from '../components/ui/UiMenu.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
 import { newOf, opPart, SUGGEST, type AnyCond } from '../config-model/condKinds'
-import { bangNote, geositeWarning } from '../config-model/geosite'
+import { bangNote, geositeWarning, uncheckedNote } from '../config-model/geosite'
 import { opOf, valueProblem, type FieldDef } from '../config-model/model'
 import ChipsInput from './ChipsInput.vue'
 import GeositeInput from './GeositeInput.vue'
@@ -73,6 +73,8 @@ const catalog = useGeositeCatalog()
 const isGeo = (c: AnyCond): boolean => c.field === 'geosite' || c.field === 'request_geosite'
 const geoWarn = (c: AnyCond) => (isGeo(c) ? geositeWarning(c.values, c.negate, catalog.value) : null)
 const geoNote = (c: AnyCond) => (isGeo(c) ? bangNote(c.values) : null)
+// 有文件读不到时「分类不存在」的提醒停了，说一句为什么 / With a file unread the missing-category warning is off, so say why
+const geoUnchecked = (c: AnyCond) => (isGeo(c) ? uncheckedNote(catalog.value) : null)
 const setItems = (items: AnyItem[]) => emit('update:modelValue', { ...props.modelValue, items })
 const setMatch = (match: string) => emit('update:modelValue', { ...props.modelValue, match: match as Match })
 function patch(i: number, part: Partial<AnyCond>): void {
@@ -133,6 +135,7 @@ function addGroup(): void {
             <p v-if="problem(item)" :id="errId(i)" class="ui-field-error">{{ problem(item) }}</p>
             <p v-else-if="geoWarn(item)" class="ui-field-warn">{{ geoWarn(item) }}</p>
             <p v-if="geoNote(item)" class="ui-field-note">{{ geoNote(item) }}</p>
+            <p v-if="geoUnchecked(item)" class="ui-field-note">{{ geoUnchecked(item) }}</p>
           </GeositeInput>
           <template v-else>
             <ChipsInput :class="{ 'is-mono': def(item).mono }" :model-value="item.values" :describedby="problem(item) ? errId(i) : undefined" :label="def(item).label" :placeholder="def(item).placeholder" :suggestions="SUGGEST[item.field] ?? []" :upper="def(item).upper" :spaces="item.field === 'txt'" :valid="valid(item)" :invalid="Boolean(problem(item))" @update:model-value="patch(i, { values: $event })" />
@@ -156,6 +159,7 @@ function addGroup(): void {
       <GeositeInput v-if="isGeo(editingCond)" :model-value="editingCond.values" :label="def(editingCond).label" :placeholder="def(editingCond).placeholder" :valid="valid(editingCond)" :invalid="Boolean(problem(editingCond))" @update:model-value="patch(editing!, { values: $event })">
         <p v-if="geoWarn(editingCond)" class="ui-field-warn">{{ geoWarn(editingCond) }}</p>
         <p v-if="geoNote(editingCond)" class="ui-field-note">{{ geoNote(editingCond) }}</p>
+        <p v-if="geoUnchecked(editingCond)" class="ui-field-note">{{ geoUnchecked(editingCond) }}</p>
       </GeositeInput>
       <ChipsInput v-else :class="{ 'is-mono': def(editingCond).mono }" :model-value="editingCond.values" :label="def(editingCond).label" :placeholder="def(editingCond).placeholder" :suggestions="SUGGEST[editingCond.field] ?? []" :upper="def(editingCond).upper" :spaces="editingCond.field === 'txt'" :valid="valid(editingCond)" :invalid="Boolean(problem(editingCond))" @update:model-value="patch(editing!, { values: $event })" />
       <p class="cform__help">{{ op(editingCond).negate ? '可以填几个，全都不符合才算' : '可以填几个，符合其中一个就算' }}</p>

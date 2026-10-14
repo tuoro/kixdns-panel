@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { GeositeCategories } from '../api/types'
-import { bangNote, geositeIssue, geositeWarning, mergeCatalog, refineOptions, searchGeosite, splitTag } from './geosite'
+import { bangNote, geositeIssue, geositeWarning, mergeCatalog, refineOptions, searchGeosite, splitTag, uncheckedNote } from './geosite'
 
 const google = { name: 'google', domains: 1077, attributes: [{ key: '!cn', domains: 7 }, { key: 'ads', domains: 54 }, { key: 'cn', domains: 126 }] }
 const response: GeositeCategories = {
@@ -36,9 +36,14 @@ describe('GeoSite catalog', () => {
     expect(catalog.state).toBe('partial')
     expect(catalog.gaps).toEqual([
       { path: '/etc/kixdns/mine.dat', reason: '面板没有权限读这个文件' },
-      { path: '/new.dat', reason: '还没保存，保存后才能读出里面的分类' },
+      { path: '/new.dat', reason: null },
     ])
     expect(geositeIssue('nope', catalog)).toBeNull()
+    // 不检查时说清为什么 / When nothing is checked, say why
+    expect(uncheckedNote(catalog)).toBe('读不到 /etc/kixdns/mine.dat 等 2 个文件：面板没有权限读这个文件。这里不检查分类在不在')
+    expect(uncheckedNote(mergeCatalog(response, ['/geo/a.dat', '/new.dat'], 'ok'))).toBe('/new.dat 还没保存，保存后才检查分类在不在')
+    expect(uncheckedNote(mergeCatalog(response, ['/geo/a.dat'], 'ok'))).toBeNull()
+    expect(uncheckedNote(mergeCatalog(null, [], 'failed'))).toBe('没拿到 GeoSite 分类，这里只能手写，也不检查分类在不在')
   })
 
   it('lists the package categories when the draft has no GeoSite file, and every value then misses', () => {

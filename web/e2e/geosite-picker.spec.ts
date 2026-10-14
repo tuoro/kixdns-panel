@@ -77,6 +77,17 @@ test('还没有 GeoSite 数据：先列出安装包里的分类，条件下面�
   await expect(page.locator('[data-rule] .ui-tag--warn', { hasText: '缺 GeoSite' })).toBeVisible()
 })
 
+test('有 GeoSite 文件读不到：照样列分类，但不说「没有」，而是说清为什么不检查', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('kixdns:demo-geosite-unreadable', 'true'))
+  const { editor, field, list } = await newGeositeCondition(page)
+  await expect(list.getByRole('option').first()).toContainText('cn')
+  await field.fill('googel')
+  await field.press('Enter')
+  await expect(page.locator('.chip--warn')).toHaveCount(0)
+  await expect(editor.locator('.ui-field-warn')).toHaveCount(0)
+  await expect(editor.locator('.ui-field-note')).toHaveText('读不到 /etc/kixdns/geosite-extra.dat：面板没有权限读这个文件。这里不检查分类在不在')
+})
+
 test('快速添加认得数据里的分类，数据里没有的直接说', async ({ page }) => {
   await page.goto('/config')
   await page.getByRole('button', { name: '快速添加', exact: true }).click()

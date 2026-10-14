@@ -65,8 +65,8 @@ export type CatalogState = 'ready' | 'partial' | 'builtin' | 'none' | 'loading' 
 export interface Catalog {
   state: CatalogState
   categories: ReadonlyMap<string, GeositeCategory>
-  /** 读不到或还没保存的文件和原因 / Files that did not read or are not saved yet, with the reason */
-  gaps: { path: string; reason: string }[]
+  /** 读不到的文件和原因；reason 为 null 是还没保存 / Files that did not read, with the reason; a null reason means not saved yet */
+  gaps: { path: string; reason: string | null }[]
 }
 
 /** 和内核的 split_tag_attr 一样：第一个「@」两边都不空才算带属性 / As the kernel's split_tag_attr: only a first 「@」 with text on both sides makes an attribute */
@@ -90,7 +90,7 @@ export function mergeCatalog(response: GeositeCategories | null, paths: readonly
     const file = response.files.find((f) => f.path === path)
     const catalog = file?.sha256 ? response.catalogs[file.sha256] : undefined
     if (!catalog) {
-      gaps.push({ path, reason: file?.error ?? '还没保存，保存后才能读出里面的分类' })
+      gaps.push({ path, reason: file ? file.error ?? '读不出内容' : null })
       continue
     }
     for (const category of catalog) categories.set(category.name, category)
@@ -125,6 +125,21 @@ export function geositeWarning(values: readonly string[], negate: boolean, catal
     return `${what}，${negate ? '「不属于」对所有域名都成立' : '这个值不会命中'}`
   }
   return null
+}
+
+/**
+ * 拿不准的时候说一句为什么不检查：有文件读不到、还没保存，或者整个没拿到分类。不说的话，「分类不存在」的提醒悄悄停了，
+ * 用户会以为写的都对。
+ * When unsure, say why nothing is checked: a file did not read, is not saved yet, or no categories came at all. Otherwise
+ * the missing-category warning would stop silently and everything would look right.
+ */
+export function uncheckedNote(catalog: Catalog): string | null {
+  if (catalog.state === 'failed') return '没拿到 GeoSite 分类，这里只能手写，也不检查分类在不在'
+  if (catalog.state !== 'partial') return null
+  const gap = catalog.gaps[0]!
+  // 路径是拉丁字母，后面接中文要空一格 / The path is Latin text, so a space precedes the Chinese after it
+  const more = catalog.gaps.length > 1 ? ` 等 ${catalog.gaps.length} 个文件` : ''
+  return gap.reason === null ? `${gap.path}${more || ' '}还没保存，保存后才检查分类在不在` : `读不到 ${gap.path}${more}：${gap.reason}。这里不检查分类在不在`
 }
 
 /** `@!` 在 V2Ray 和这里都是属性名本身；旧内核把它当「不带」，所以写了就提醒一次 / `@!` names the attribute itself, here as in V2Ray; old kernels read it as 「without」, so it is explained once */
