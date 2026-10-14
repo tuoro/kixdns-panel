@@ -7,6 +7,7 @@ use tempfile::tempdir;
 
 use super::ServiceHost;
 use super::install::verify_kernel_source;
+use super::storage::bundled_binary_is_current;
 use super::validation::{kernel_architecture, kernel_asset_name};
 use super::{
     BuildIdentity, GithubRelease, InstalledVersion, MANIFEST_SCHEMA_VERSION, ReleaseAsset,
@@ -1979,4 +1980,28 @@ fn a_failed_check_reports_only_its_cause() {
     let error = UpdateError::Network("GitHub 匿名访问次数用完了".to_owned());
     assert_eq!(error.reason(), "GitHub 匿名访问次数用完了");
     assert_eq!(UpdateError::Unsupported.reason(), "当前平台不支持自动更新");
+}
+
+/// 换过内核以后，二进制不再是完整包带的那个：只比校验值就能说「不是」，不需要、也不该当成错误。
+/// After a kernel update the binary is no longer the package's: the digest alone says no, which is not an error.
+#[test]
+fn a_replaced_binary_is_simply_not_the_bundled_one() {
+    let directory = tempdir().unwrap();
+    assert!(
+        !bundled_binary_is_current(directory.path(), b"bundled"),
+        "no record counts as no"
+    );
+    std::fs::write(
+        directory.path().join("KIXDNS_BINARY_SHA256"),
+        format!(
+            "{}\n",
+            super::validation::sha256(b"bundled").to_ascii_uppercase()
+        ),
+    )
+    .unwrap();
+    assert!(bundled_binary_is_current(directory.path(), b"bundled"));
+    assert!(!bundled_binary_is_current(
+        directory.path(),
+        b"replaced by an update"
+    ));
 }

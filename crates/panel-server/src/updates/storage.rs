@@ -81,6 +81,16 @@ pub(super) fn store_version(
 /// The kernel identity a full package brought along. New packages carry a fork release
 /// (`KIXDNS_SOURCE.json`); hosts that only updated the panel still keep an old package's
 /// Action build identity (`upstream.lock.json`), so both are recognised.
+/// 当前二进制还是不是完整包带的那个：只比对包里记下的校验值。换过内核以后答案本来就是「不是」，属于正常情况，
+/// 不再去读其余身份、也不报错；包里没有这项记录时同样算「不是」。
+/// Whether the current binary is still the one the full package brought: only the recorded digest is compared.
+/// After a kernel update the answer is simply no, which is normal, so the rest of the identity is neither read nor
+/// reported; a package without the record also counts as no.
+pub(super) fn bundled_binary_is_current(metadata_path: &Path, binary: &[u8]) -> bool {
+    read_metadata_text(metadata_path, "KIXDNS_BINARY_SHA256", 128)
+        .is_ok_and(|declared| declared.eq_ignore_ascii_case(&sha256(binary)))
+}
+
 pub(super) fn load_bundled_manifest(
     metadata_path: &Path,
     repository: &str,

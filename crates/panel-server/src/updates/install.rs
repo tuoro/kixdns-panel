@@ -22,6 +22,7 @@ use super::UpdateManager;
 use super::VersionKey;
 use super::VersionManifest;
 use super::VersionSource;
+use super::storage::bundled_binary_is_current;
 use super::storage::list_installed;
 use super::storage::load_bundled_manifest;
 use super::storage::load_verified_version;
@@ -487,6 +488,11 @@ impl UpdateManager {
         let key = key.clone();
         tokio::task::spawn_blocking(move || {
             let binary = read_regular_file(&binary_path, "当前 KixDNS 二进制")?;
+            // 换过内核以后二进制本来就不是包里那个：照实说「不是」，不记警告（以前每次查看内核都记两条）
+            // After a kernel update the binary is simply not the package's: say no without a warning (each kernel check used to log two)
+            if !bundled_binary_is_current(&metadata_path, &binary) {
+                return Ok(false);
+            }
             match load_bundled_manifest(&metadata_path, &repository, &key, &binary) {
                 Ok(_) => Ok(true),
                 Err(error) => {
