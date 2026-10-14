@@ -50,6 +50,36 @@ test('Geo 维护结果离开页面后销毁', async ({ page }) => {
   await page.getByRole('navigation', { name: '设置分组' }).getByRole('button', { name: /Geo 数据/ }).click()
   await expect(page.locator('.geo')).toBeVisible()
   await expect(page.locator('.geo-note--ok')).toHaveCount(0)
+  // 已经有 GeoSite 了：不再提安装包里那份 / GeoSite is already there: the package's copy is not offered
+  await expect(page.locator('.geo-builtin')).toHaveCount(0)
+})
+
+test('还没有 GeoSite 时可以导入安装包自带的那份 @responsive', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('kixdns:demo-geosite-empty', 'true'))
+  await open(page, '/config?section=settings')
+  await page.getByRole('navigation', { name: '设置分组' }).getByRole('button', { name: /Geo 数据/ }).click()
+  const geo = page.locator('.geo')
+  const offer = geo.locator('.geo-builtin')
+  const link = geo.getByRole('textbox', { name: 'GeoSite 链接 1' })
+  await expect(offer).toContainText('geosite.dat')
+  await expect(offer).toContainText('安装包自带')
+
+  // 用户填了自己的链接就不再提；清掉又回来 / A link of the user's own hides the offer; clearing it brings it back
+  await link.fill('https://example.com/geosite.dat')
+  await expect(offer).toHaveCount(0)
+  await link.fill('')
+  await expect(offer).toBeVisible()
+
+  await geo.getByRole('button', { name: '导入安装包自带的 GeoSite' }).click()
+  await expect(geo.locator('.geo-note--ok')).toContainText('已导入，文件路径已填进草稿')
+  await expect(offer).toHaveCount(0)
+  // 链接框为了好折行插了看不见的断点，比较前去掉 / The link field adds invisible break hints for wrapping; drop them before comparing
+  await expect.poll(async () => (await link.inputValue()).replace(/[\u200b\u2060]/g, ''))
+    .toBe('https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat')
+  await expect(geo.locator('.geo-item', { has: page.getByRole('textbox', { name: 'GeoSite 链接 1' }) }).locator('.geo-file')).toContainText('geosite.dat10.7 MiB · 安装包自带')
+  // 路径进了草稿，保存后才生效 / The path is in the draft and takes effect on save
+  await expect(page.locator('.cfg__savebar')).toContainText('已修改 1 处')
+  await expectNoPageOverflow(page)
 })
 
 test('DNS 诊断在结果顶部显示实际命中的规则 @responsive', async ({ page }) => {

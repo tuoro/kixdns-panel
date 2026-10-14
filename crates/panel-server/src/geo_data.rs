@@ -26,12 +26,44 @@ const MAX_URL_BYTES: usize = 4096;
 const MAX_GEOSITE_FILES: usize = 8;
 const MAX_DOWNLOAD_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 4;
+/// 全新安装时安装器在 Geo 目录里留下的标记：首次启动导入一次内置 GeoSite，用完就删。
+/// The marker the installer leaves in the Geo directory on a fresh install: the first start
+/// imports the built-in `GeoSite` once and removes it.
+const BUILTIN_SEED_MARKER: &str = ".import-builtin-geosite";
 
 #[derive(Clone)]
 pub struct GeoDataManager {
     database: Database,
     root: Arc<PathBuf>,
     sync_lock: Arc<Mutex<()>>,
+    builtin_geosite: Option<Arc<PathBuf>>,
+}
+
+/// 安装包自带的 GeoSite：说明文件 `geosite.json` 写着同目录下数据文件的来源、发布、摘要和大小。
+/// The `GeoSite` the package brings along: `geosite.json` describes the data file next to it by
+/// source, release, digest and size.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BuiltinGeosite {
+    /// 导入后按这个链接更新；用户可以改成别的。 / Updates follow this link once imported; the user may change it.
+    pub url: String,
+    pub release: String,
+    pub release_url: String,
+    pub published_at: Option<String>,
+    pub sha256: String,
+    pub size: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct BuiltinGeositeDescriptor {
+    schema_version: u32,
+    file: String,
+    url: String,
+    release: String,
+    release_url: String,
+    #[serde(default)]
+    published_at: Option<String>,
+    sha256: String,
+    size: u64,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -121,7 +153,112 @@ impl GeoDataManager {
             database,
             root: Arc::new(root),
             sync_lock: Arc::new(Mutex::new(())),
+            builtin_geosite: None,
         })
+    }
+
+    /// 安装包里内置 `GeoSite` 的说明文件位置；文件不存在（开发构建）时就当没有内置的。
+    /// Where the package's built-in `GeoSite` descriptor lives; a missing file (a development
+    /// build) means there is none.
+    #[must_use]
+    pub fn with_builtin_geosite(mut self, descriptor: PathBuf) -> Self {
+        self.builtin_geosite = Some(Arc::new(descriptor));
+        self
+    }
+
+    pub fn builtin_geosite(&self) -> Result<Option<BuiltinGeosite>, GeoDataError> {
+        Ok(self.load_builtin_geosite()?.map(|(builtin, _)| builtin))
+    }
+
+    fn load_builtin_geosite(&self) -> Result<Option<(BuiltinGeosite, PathBuf)>, GeoDataError> {
+        match self.builtin_geosite.as_deref() {
+            Some(descriptor) => load_builtin_geosite(descriptor),
+            None => Ok(None),
+        }
+    }
+
+    /// 把内置 `GeoSite` 拷进面板管理的 Geo 目录、记进清单，来源记成它的下载链接，之后按那个
+    /// 链接更新。已经有 `GeoSite` 数据时不动：用户自己选的来源不被换掉。
+    /// Copies the built-in `GeoSite` into the panel's Geo directory and records it in the manifest
+    /// with its download link as the source, which later updates follow. With `GeoSite` data
+    /// already present nothing changes: a source the user chose is never replaced.
+    pub async fn import_builtin_geosite(&self) -> Result<GeoDataManifest, GeoDataError> {
+        let _guard = self.sync_lock.lock().await;
+        let (builtin, data) = self
+            .load_builtin_geosite()?
+            .ok_or_else(|| GeoDataError::Invalid("这个安装包没有带内置 GeoSite".to_owned()))?;
+        let mut manifest = self.current().await?;
+        if !manifest.geosite.is_empty() {
+            return Err(GeoDataError::Invalid(
+                "已经有 GeoSite 数据了：要换成内置的那份，先删掉现有的链接并保存".to_owned(),
+            ));
+        }
+        manifest
+            .geosite
+            .push(self.copy_builtin_geosite(&builtin, &data).await?);
+        let serialized = serde_json::to_string(&manifest)
+            .map_err(|error| GeoDataError::Internal(anyhow::Error::new(error)))?;
+        self.database
+            .set_setting(MANIFEST_KEY, serialized, unix_timestamp())
+            .await?;
+        Ok(manifest)
+    }
+
+    async fn copy_builtin_geosite(
+        &self,
+        builtin: &BuiltinGeosite,
+        data: &Path,
+    ) -> Result<GeoDataResource, GeoDataError> {
+        let bytes = tokio::fs::read(data)
+            .await
+            .map_err(|error| internal_io("读取内置 GeoSite", error))?;
+        let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        let sha256 = encode_hex(Sha256::digest(&bytes));
+        if size != builtin.size || sha256 != builtin.sha256 {
+            return Err(GeoDataError::Internal(anyhow::anyhow!(
+                "内置 GeoSite 和它的说明对不上，安装包可能损坏了，重新安装面板"
+            )));
+        }
+        let mut temporary = Builder::new()
+            .prefix(".geo-builtin-")
+            .tempfile_in(self.root.as_ref())
+            .map_err(|error| internal_io("创建 Geo 数据临时文件", error))?;
+        #[cfg(unix)]
+        restrict_file_permissions(temporary.as_file())?;
+        std::io::Write::write_all(&mut temporary, &bytes)
+            .map_err(|error| internal_io("写入 Geo 数据", error))?;
+        temporary
+            .as_file()
+            .sync_all()
+            .map_err(|error| internal_io("持久化 Geo 数据", error))?;
+        let path = self
+            .root
+            .join(format!("{}-{sha256}.dat", ResourceKind::Site.prefix()));
+        persist_content_addressed(temporary, &path, &sha256, size).await?;
+        Ok(GeoDataResource {
+            url: builtin.url.clone(),
+            path: path.to_string_lossy().into_owned(),
+            sha256,
+            size,
+            downloaded_at: unix_timestamp(),
+        })
+    }
+
+    /// 全新安装留下的「首次启动导入内置 GeoSite」标记还在不在。
+    /// Whether the fresh-install marker asking the first start to import the built-in `GeoSite` is
+    /// still there.
+    #[must_use]
+    pub fn builtin_seed_requested(&self) -> bool {
+        fs::symlink_metadata(self.root.join(BUILTIN_SEED_MARKER))
+            .is_ok_and(|metadata| metadata.is_file())
+    }
+
+    pub fn clear_builtin_seed(&self) -> Result<(), GeoDataError> {
+        match fs::remove_file(self.root.join(BUILTIN_SEED_MARKER)) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(internal_io("删除内置 GeoSite 导入标记", error)),
+        }
     }
 
     pub async fn current(&self) -> Result<GeoDataManifest, GeoDataError> {
@@ -355,6 +492,74 @@ impl GeoDataSyncRequest {
             && self.geoip_dat_url.is_none()
             && self.geosite_urls.is_empty()
     }
+}
+
+/// 读内置 `GeoSite` 的说明并和数据文件对照；说明文件不存在时就是没有内置的。
+/// Reads the built-in `GeoSite` descriptor and checks it against the data file; a missing
+/// descriptor means there is none.
+fn load_builtin_geosite(
+    descriptor: &Path,
+) -> Result<Option<(BuiltinGeosite, PathBuf)>, GeoDataError> {
+    let invalid = |reason: &str| {
+        GeoDataError::Internal(anyhow::anyhow!(
+            "内置 GeoSite 的说明无效（{reason}），重新安装面板"
+        ))
+    };
+    let content = match fs::read(descriptor) {
+        Ok(content) => content,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(internal_io("读取内置 GeoSite 说明", error)),
+    };
+    let parsed: BuiltinGeositeDescriptor =
+        serde_json::from_slice(&content).map_err(|_| invalid("不是有效的 JSON"))?;
+    if parsed.schema_version != 1 {
+        return Err(invalid("格式版本不受支持"));
+    }
+    if parsed.file.is_empty() || parsed.file.contains(['/', '\\']) || parsed.file.starts_with('.') {
+        return Err(invalid("文件名"));
+    }
+    parse_url(&parsed.url).map_err(|_| invalid("下载链接"))?;
+    parse_url(&parsed.release_url).map_err(|_| invalid("发布页链接"))?;
+    if parsed.release.is_empty()
+        || parsed.release.len() > 64
+        || !parsed
+            .release
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+    {
+        return Err(invalid("发布标签"));
+    }
+    if parsed.sha256.len() != 64
+        || !parsed
+            .sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(invalid("摘要"));
+    }
+    if parsed.size == 0 || parsed.size > MAX_DOWNLOAD_BYTES {
+        return Err(invalid("大小"));
+    }
+    let data = descriptor
+        .parent()
+        .ok_or_else(|| invalid("所在目录"))?
+        .join(&parsed.file);
+    let metadata =
+        fs::symlink_metadata(&data).map_err(|error| internal_io("检查内置 GeoSite", error))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() != parsed.size {
+        return Err(invalid("数据文件和说明的大小对不上"));
+    }
+    Ok(Some((
+        BuiltinGeosite {
+            url: parsed.url,
+            release: parsed.release,
+            release_url: parsed.release_url,
+            published_at: parsed.published_at,
+            sha256: parsed.sha256,
+            size: parsed.size,
+        },
+        data,
+    )))
 }
 
 pub fn apply_manifest_paths(
@@ -817,8 +1022,8 @@ mod tests {
 
     use super::{
         GeoDataError, GeoDataManager, GeoDataManifest, GeoDataResource, GeoDataSyncRequest,
-        ResourceKind, apply_manifest_paths, cleanup_managed_files, is_allowed_download_ip,
-        is_mihomo_fake_ip, is_public_ip, normalize_geosite_urls, parse_url,
+        MANIFEST_KEY, ResourceKind, apply_manifest_paths, cleanup_managed_files,
+        is_allowed_download_ip, is_mihomo_fake_ip, is_public_ip, normalize_geosite_urls, parse_url,
         persist_content_addressed, protected_geo_paths,
     };
     use crate::db::Database;
@@ -1022,5 +1227,155 @@ mod tests {
         assert_eq!(disabled.interval_hours, None);
         assert_eq!(disabled.next_run_at, None);
         assert!(!disabled.is_due(i64::MAX));
+    }
+
+    const BUILTIN_URL: &str =
+        "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat";
+
+    /// 安装包里的内置 GeoSite：一个只有 `cn` 分类的数据文件和它的说明。
+    /// The package's built-in `GeoSite`: a data file holding only the `cn` category, and its descriptor.
+    fn write_builtin(directory: &std::path::Path) -> (std::path::PathBuf, Vec<u8>) {
+        let builtin = directory.join("builtin");
+        std::fs::create_dir_all(&builtin).unwrap();
+        let data = b"\x0a\x04\x0a\x02cn".to_vec();
+        std::fs::write(builtin.join("geosite.dat"), &data).unwrap();
+        let descriptor = builtin.join("geosite.json");
+        std::fs::write(
+            &descriptor,
+            serde_json::json!({
+                "schema_version": 1,
+                "file": "geosite.dat",
+                "url": BUILTIN_URL,
+                "release": "202610122207",
+                "release_url": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/tag/202610122207",
+                "published_at": "2026-10-12T22:08:31Z",
+                "sha256": sha256_hex(&data),
+                "size": data.len(),
+                "license": "GPL-3.0",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        (descriptor, data)
+    }
+
+    async fn manager_with_builtin(
+        directory: &std::path::Path,
+        descriptor: std::path::PathBuf,
+    ) -> GeoDataManager {
+        let database = Database::open(directory.join("panel.db")).await.unwrap();
+        GeoDataManager::new(database, &directory.join("geo"))
+            .unwrap()
+            .with_builtin_geosite(descriptor)
+    }
+
+    #[tokio::test]
+    async fn imports_the_builtin_geosite_into_the_managed_store() {
+        let directory = tempdir().unwrap();
+        let (descriptor, data) = write_builtin(directory.path());
+        let manager = manager_with_builtin(directory.path(), descriptor).await;
+
+        let builtin = manager
+            .builtin_geosite()
+            .unwrap()
+            .expect("built-in GeoSite");
+        assert_eq!(builtin.url, BUILTIN_URL);
+        assert_eq!(builtin.release, "202610122207");
+        let manifest = manager.import_builtin_geosite().await.unwrap();
+
+        assert_eq!(manifest.geosite.len(), 1);
+        let resource = &manifest.geosite[0];
+        // 来源记成下载链接：之后的更新按它走，用户也可以改成别的
+        // The source is the download link: later updates follow it, and the user may change it
+        assert_eq!(resource.url, BUILTIN_URL);
+        assert_eq!(resource.sha256, sha256_hex(&data));
+        let stored = std::path::Path::new(&resource.path);
+        assert_eq!(
+            stored.file_name().unwrap().to_string_lossy(),
+            format!("geosite-{}.dat", sha256_hex(&data))
+        );
+        assert_eq!(std::fs::read(stored).unwrap(), data);
+        assert_eq!(manager.current().await.unwrap().geosite.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_builtin_geosite_never_replaces_existing_geosite_data() {
+        let directory = tempdir().unwrap();
+        let (descriptor, _) = write_builtin(directory.path());
+        let manager = manager_with_builtin(directory.path(), descriptor).await;
+        let own = GeoDataManifest {
+            geosite: vec![GeoDataResource {
+                url: "https://example.com/my-geosite.dat".to_owned(),
+                path: "/var/lib/kixdns-panel/geo/geosite-mine.dat".to_owned(),
+                sha256: "d".repeat(64),
+                size: 9,
+                downloaded_at: 1,
+            }],
+            ..GeoDataManifest::default()
+        };
+        manager
+            .database
+            .set_setting(MANIFEST_KEY, serde_json::to_string(&own).unwrap(), 1)
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            manager.import_builtin_geosite().await,
+            Err(GeoDataError::Invalid(_))
+        ));
+        let kept = manager.current().await.unwrap();
+        assert_eq!(kept.geosite.len(), 1);
+        assert_eq!(kept.geosite[0].url, "https://example.com/my-geosite.dat");
+    }
+
+    #[tokio::test]
+    async fn a_builtin_geosite_that_disagrees_with_its_descriptor_is_refused() {
+        let directory = tempdir().unwrap();
+        let (descriptor, data) = write_builtin(directory.path());
+        let mut description: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&descriptor).unwrap()).unwrap();
+
+        // 内容被换过（大小一样，摘要不同）：导入时才发现，清单不动
+        // The content was swapped (same size, different digest): caught at import, the manifest untouched
+        let mut tampered = data.clone();
+        *tampered.last_mut().unwrap() = b'x';
+        std::fs::write(descriptor.with_file_name("geosite.dat"), &tampered).unwrap();
+        let manager = manager_with_builtin(directory.path(), descriptor.clone()).await;
+        assert!(manager.builtin_geosite().unwrap().is_some());
+        assert!(manager.import_builtin_geosite().await.is_err());
+        assert!(manager.current().await.unwrap().geosite.is_empty());
+        std::fs::write(descriptor.with_file_name("geosite.dat"), &data).unwrap();
+
+        for (field, value) in [
+            ("size", serde_json::json!(data.len() + 1)),
+            ("file", serde_json::json!("../geosite.dat")),
+            ("url", serde_json::json!("http://example.com/geosite.dat")),
+            ("sha256", serde_json::json!("abc")),
+            ("schema_version", serde_json::json!(2)),
+        ] {
+            let mut changed = description.clone();
+            changed[field] = value;
+            std::fs::write(&descriptor, changed.to_string()).unwrap();
+            assert!(manager.builtin_geosite().is_err(), "{field}");
+        }
+        description["release"] = serde_json::json!("202610122207");
+        std::fs::remove_file(&descriptor).unwrap();
+        assert!(
+            manager.builtin_geosite().unwrap().is_none(),
+            "no descriptor, no built-in"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_fresh_install_marker_is_read_once_and_cleared() {
+        let directory = tempdir().unwrap();
+        let (descriptor, _) = write_builtin(directory.path());
+        let manager = manager_with_builtin(directory.path(), descriptor).await;
+        assert!(!manager.builtin_seed_requested());
+        std::fs::write(directory.path().join("geo/.import-builtin-geosite"), b"").unwrap();
+        assert!(manager.builtin_seed_requested());
+        manager.clear_builtin_seed().unwrap();
+        assert!(!manager.builtin_seed_requested());
+        manager.clear_builtin_seed().unwrap();
     }
 }

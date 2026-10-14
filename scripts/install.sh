@@ -887,6 +887,7 @@ rollback_install() {
   restore_path /usr/local/libexec/kixdns-panel-one-click-install panel-one-click-install
   restore_path /usr/local/libexec/kixdns-panel-online-update panel-online-update
   restore_path /usr/share/kixdns-panel/web web
+  restore_path /usr/share/kixdns-panel/geo builtin-geo
   restore_path /etc/systemd/system/kixdns-panel.service panel-service
   restore_path /usr/local/libexec/kixdns-panel-helper panel-helper
   restore_path /etc/systemd/system/kixdns-panel-helper.service panel-helper-service
@@ -998,6 +999,7 @@ prepare_rollback() {
   backup_path /usr/local/libexec/kixdns-panel-one-click-install panel-one-click-install
   backup_path /usr/local/libexec/kixdns-panel-online-update panel-online-update
   backup_path /usr/share/kixdns-panel/web web
+  backup_path /usr/share/kixdns-panel/geo builtin-geo
   backup_path /etc/systemd/system/kixdns-panel.service panel-service
   backup_path /usr/local/libexec/kixdns-panel-helper panel-helper
   backup_path /etc/systemd/system/kixdns-panel-helper.service panel-helper-service
@@ -1007,6 +1009,40 @@ prepare_rollback() {
   # 只挂 ERR 时，Ctrl-C、SIGTERM 或 SSH 断线会直接杀掉 bash，已停掉的服务不会恢复。
   # With only ERR trapped, Ctrl-C, SIGTERM or an SSH hangup kill bash and stopped services stay stopped.
   trap 'rollback_install 130 interrupted' INT TERM HUP
+}
+
+# 安装包自带的 GeoSite（Loyalsoldier 的 geosite.dat、来源说明和 GPL 许可证）。只是安装包里的数据：
+# 面板只在全新安装的首次启动、或用户自己点「导入」时用它，之后按用户选的来源和频率更新，面板升级从不替换用户的数据。
+# The GeoSite the package brings along (Loyalsoldier's geosite.dat, its source note and GPL licence). It is only package data:
+# the panel uses it on a fresh install's first start or when the user presses 导入, then updates follow the source and schedule
+# the user chose, and a panel upgrade never replaces the user's data.
+install_builtin_geo() {
+  local target=/usr/share/kixdns-panel/geo
+  local staged="${target}.new"
+  local previous="${target}.previous"
+  rm -rf -- "${staged}"
+  install -d -o root -g root -m 0755 "${staged}"
+  install -o root -g root -m 0644 "${PACKAGE_ROOT}/geo/geosite.dat" "${PACKAGE_ROOT}/geo/geosite.json" \
+    "${PACKAGE_ROOT}/geo/LICENSE" "${staged}/"
+  if [[ -d "${target}" ]]; then
+    rm -rf -- "${previous}"
+    mv -- "${target}" "${previous}"
+  fi
+  mv -- "${staged}" "${target}"
+  # 回滚用的是安装前的备份，换下来的旧副本留着只占地方（约 11 MB）
+  # Rollback restores from the pre-install backup, so the replaced copy would only take up space (about 11 MB)
+  rm -rf -- "${previous}"
+}
+
+# 全新安装时请首次启动的面板导入一次内置 GeoSite；面板用完就删这个标记。升级和迁移不放：
+# 那些主机原有的配置可能有意不用 GeoSite，导入会改变分流结果，由用户自己决定。
+# On a fresh install, ask the panel's first start to import the built-in GeoSite once; the panel removes the marker after
+# use. Upgrades and migrations get none: their existing configs may leave GeoSite out on purpose, and importing would
+# change routing, so the user decides.
+request_builtin_geosite_import() {
+  [[ ${INSTALL_KIND} == fresh ]] || return 0
+  install -o "${PANEL_USER}" -g "${KIXDNS_GROUP}" -m 0640 /dev/null \
+    /var/lib/kixdns-panel/geo/.import-builtin-geosite
 }
 
 install_web() {
@@ -1362,6 +1398,9 @@ main() {
   require_file "${PACKAGE_ROOT}/bin/kixdns-panel-server"
   require_file "${PACKAGE_ROOT}/bin/kixdns-panel-helper"
   require_file "${PACKAGE_ROOT}/web/index.html"
+  require_file "${PACKAGE_ROOT}/geo/geosite.dat"
+  require_file "${PACKAGE_ROOT}/geo/geosite.json"
+  require_file "${PACKAGE_ROOT}/geo/LICENSE"
   require_file "${PACKAGE_ROOT}/deploy/config/pipeline.json"
   require_file "${PACKAGE_ROOT}/scripts/one-click-install.sh"
   require_file "${PACKAGE_ROOT}/scripts/panel-online-update.sh"
@@ -1451,11 +1490,13 @@ main() {
   install -o root -g root -m 0755 "${PACKAGE_ROOT}/bin/kixdns-panel-helper" /usr/local/libexec/.kixdns-panel-helper.new
   mv -fT -- /usr/local/libexec/.kixdns-panel-helper.new /usr/local/libexec/kixdns-panel-helper
   install_web
+  install_builtin_geo
   install_bundled_metadata
   if [[ ${INSTALL_KIND} == panel-only ]]; then
     update_panel_environment "${KIXDNS_BUILD_COMMIT}" "${KIXDNS_SOURCE_ID}" "${KIXDNS_SOURCE}"
   else
     install_configuration
+    request_builtin_geosite_import
   fi
   install_services
   verify_services_started

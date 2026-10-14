@@ -105,6 +105,14 @@ struct Args {
     )]
     geo_data: PathBuf,
 
+    /// 安装包自带的 geosite.dat 的说明文件；不存在时（开发构建）就当没有自带的。
+    #[arg(
+        long,
+        env = "KIXDNS_BUILTIN_GEOSITE",
+        default_value = "/usr/share/kixdns-panel/geo/geosite.json"
+    )]
+    builtin_geosite: PathBuf,
+
     /// Vue 前端构建产物目录。
     #[arg(long, env = "KIXDNS_WEB_ROOT", default_value = "web/dist")]
     web_root: PathBuf,
@@ -161,6 +169,7 @@ impl Args {
             bundled_metadata: args.bundled_metadata,
             github_token_path: args.github_token_path,
             geo_data_path: args.geo_data,
+            builtin_geosite: Some(args.builtin_geosite),
             web_root: args.web_root,
             secure_cookie: args.secure_cookie,
             trusted_proxies: args.trusted_proxies,

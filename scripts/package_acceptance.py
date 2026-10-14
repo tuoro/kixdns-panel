@@ -245,6 +245,51 @@ def require_bundled_kernel(kernel: dict[str, Any]) -> None:
     require(active.get("control_protocol") == 1, "完整包控制协议身份缺失")
 
 
+def require_builtin_geosite(client: PanelClient) -> str:
+    """全新安装的首次启动导入了安装包里的 GeoSite：来源是它的下载链接，文件就是包里那份；KixDNS
+    还没启动，写进配置的是一个待应用版本。返回导入后的文件路径。"""
+    builtin = client.request("/api/v1/config/geo-data/builtin")
+    require(isinstance(builtin, dict), "完整包没有带内置 GeoSite")
+    require(
+        str(builtin.get("url", "")).startswith("https://github.com/Loyalsoldier/v2ray-rules-dat/"),
+        "内置 GeoSite 的来源不是 Loyalsoldier",
+    )
+    # 标记是导入的最后一步才删的：它不在了，文件和配置都已经写好
+    marker = Path("/var/lib/kixdns-panel/geo/.import-builtin-geosite")
+    wait_for(marker.exists, lambda exists: not exists, "首次启动导入内置 GeoSite")
+    manifest = client.request("/api/v1/config/geo-data")
+    require(len(manifest.get("geosite", [])) == 1, "首次启动没有导入内置 GeoSite")
+    imported = manifest["geosite"][0]
+    require(imported.get("sha256") == builtin.get("sha256"), "导入的 GeoSite 不是安装包里那份")
+    require(imported.get("url") == builtin.get("url"), "导入的 GeoSite 没有记下下载链接")
+    document = client.request("/api/v1/config")
+    require(document.get("pending") is not None, "KixDNS 没启动时导入的 GeoSite 没有存成待应用版本")
+    require(
+        document.get("content", {}).get("settings", {}).get("geosite_data_paths") == [imported["path"]],
+        "待应用的配置没有带上导入的 GeoSite",
+    )
+    return imported["path"]
+
+
+def require_builtin_geosite_applied(client: PanelClient, path: str) -> None:
+    """KixDNS 启动后，面板在后台应用待应用版本（启动时一次，之后每 5 秒）：等它不再待应用，
+    必须已经生效，运行的配置带着导入的 GeoSite。"""
+    document = wait_for(
+        lambda: client.request("/api/v1/config"),
+        lambda value: value.get("runtime", {}).get("status") != "pending",
+        "KixDNS 启动后应用导入的 GeoSite",
+    )
+    runtime = document.get("runtime", {})
+    require(
+        runtime.get("status") == "active",
+        f"导入的 GeoSite 没有生效：{runtime.get('status')}，{runtime.get('pending_error')}",
+    )
+    require(
+        document.get("content", {}).get("settings", {}).get("geosite_data_paths") == [path],
+        "运行的配置没有带上导入的 GeoSite",
+    )
+
+
 def verify_installation(base_url: str, dns_port: int, mode: str) -> None:
     client = PanelClient(base_url)
     wait_for_panel(client)
@@ -256,9 +301,11 @@ def verify_installation(base_url: str, dns_port: int, mode: str) -> None:
         # The kernel card waits on the panel's GitHub query for the newest build, which can exceed 5 s;
         # only this call is relaxed.
         require_bundled_kernel(client.request("/api/v1/kixdns/kernel", timeout=30))
+        geosite_path = require_builtin_geosite(client)
         started = client.request("/api/v1/service/start", method="POST", csrf=True)
         require(started.get("active_state") == "active", "面板无法启动首次安装的 KixDNS")
         verify_runtime(client, dns_port, INITIAL_IP)
+        require_builtin_geosite_applied(client, geosite_path)
         exercise_panel(client, dns_port)
         live = client.request("/api/v1/overview")
         require(live.get("live") is True, "运行概览没有标记为实时数据")
