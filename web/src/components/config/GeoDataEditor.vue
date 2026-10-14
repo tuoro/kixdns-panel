@@ -32,6 +32,13 @@ type GeoMode = 'remote' | 'local'
 const settings = defineModel<GlobalSettings>({ required: true })
 // changed：草稿里改过的设置 key，对应的那一行名字后面画墨点 / changed: setting keys the draft changed; the matching row gets an ink dot after its name
 defineProps<{ changed?: ReadonlySet<string> }>()
+// 这条占位提示里有网址，所以放在脚本里绑定：vue-tsc 3.3.12 起会把 v-for 里组件静态属性中的「//」
+// 当成注释开头，循环变量随之丢失（vuejs/language-tools#6240）。
+// This placeholder holds a URL, so it is bound from here: since 3.3.12, vue-tsc reads a "//" in a
+// static component attribute inside v-for as the start of a comment and loses the loop variables
+// (vuejs/language-tools#6240).
+const geositePlaceholder = '如 https://example.com/geosite.dat'
+
 const mode = ref<GeoMode>('remote')
 const modeItems = [{ value: 'remote', label: '远程链接', icon: Link2 }, { value: 'local', label: '本地路径', icon: FolderOpen }]
 const manifest = ref<GeoDataManifest>({ geoip_mmdb: null, geoip_dat: null, geosite: [] })
@@ -365,7 +372,7 @@ onBeforeUnmount(clearSyncNotice)
               <span class="geo-file__main"><template v-if="fileLine(manifest.geosite[index], url)"><b>{{ fileLine(manifest.geosite[index], url)!.name }}</b><span class="geo-file__meta"><UiDotText :parts="fileLine(manifest.geosite[index], url)!.meta" /></span></template></span>
               <button class="ui-icon-btn ui-icon-btn--sm geo-file__remove" type="button" :title="`删除 GeoSite 链接 ${index + 1}`" :aria-label="`删除 GeoSite 链接 ${index + 1}`" :disabled="loading || syncing || importing" @click="removeRemoteGeosite(index)"><X :size="14" /></button>
             </span>
-            <label class="ui-input ui-input--area geo-link"><UiUrlField :model-value="url" :label="`GeoSite 链接 ${index + 1}`" placeholder="如 https://example.com/geosite.dat" :disabled="loading || syncing" @update:model-value="setRemoteGeosite(index, $event)" /></label>
+            <label class="ui-input ui-input--area geo-link"><UiUrlField :model-value="url" :label="`GeoSite 链接 ${index + 1}`" :placeholder="geositePlaceholder" :disabled="loading || syncing" @update:model-value="setRemoteGeosite(index, $event)" /></label>
           </span>
           <button class="ui-btn ui-btn--text ui-btn--sm geo-list__add" type="button" :disabled="loading || geositeUrls.length >= 8 || syncing" @click="addRemoteGeosite"><Plus :size="14" aria-hidden="true" />添加链接</button>
         </span>
