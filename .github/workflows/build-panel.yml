@@ -142,7 +142,7 @@ jobs:
           [[ "${GITHUB_REF_NAME}" == "v${version}" ]]
 
       - name: Install Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.12.0
           cache: npm
@@ -164,7 +164,7 @@ jobs:
       # rust-cache's ~/.cargo/bin usually skips the build here, but any Cargo.lock change misses the cache
       # and recompiles for ~2m45s; the prebuilt binary takes seconds either way, same version, SHA-256 checked.
       - name: Install dependency auditor
-        uses: taiki-e/install-action@e407f7bafb71fd004bc5c2da3032e5470cbb6ef0 # v2.87.24
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
         with:
           tool: cargo-audit@0.22.2
           fallback: none
@@ -235,7 +235,7 @@ jobs:
 
       - name: Upload web acceptance report
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: panel-playwright-report
           path: |
@@ -334,7 +334,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Install Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.12.0
           cache: npm
@@ -418,7 +418,7 @@ jobs:
           fi
 
       - name: Upload complete panel artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: kixdns-panel-linux-${{ matrix.arch }}
           path: dist/kixdns-panel-linux-${{ matrix.arch }}
@@ -427,7 +427,7 @@ jobs:
 
       - name: Stage release package
         if: github.event_name == 'release'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: kixdns-panel-release-${{ matrix.arch }}
           path: dist/kixdns-panel-linux-${{ matrix.arch }}.zip
@@ -444,7 +444,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Download x86_64 panel package
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: kixdns-panel-linux-x86_64
           path: dist/kixdns-panel
@@ -466,7 +466,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Download release packages
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: kixdns-panel-release-*
           path: dist
