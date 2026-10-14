@@ -73,7 +73,7 @@ test('v4.0.0 写在规则组上的监听标签读进来变成高级入口；还�
   await expect(entries.locator('.entries__list li').first()).toContainText('进入「内网解析」')
   const card = page.locator('[data-group="lan"]')
   await expect(card).not.toContainText('监听标签')
-  await expect(card.locator('.rcard__facts')).toContainText('高级入口指向这里')
+  await expect(card.locator('.rcard__facts')).toHaveText('从「内网反查」转进来，高级入口也指向这里')
   // 读进来的样子就是存着的样子：没有要保存的修改 / What was read is what is stored: nothing to save
   await expect(page.locator('.cfg__savebar')).toHaveCount(0)
   // 主列表的「内网反查」也转到这个组：两样都在时先说规则 / 内网反查 in the main list jumps here too: with both, the rule comes first

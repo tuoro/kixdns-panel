@@ -348,9 +348,9 @@ function saveEntries(): void {
             <div class="rcard__title"><h3>{{ g.name }}</h3><span v-if="g.note" class="rcard__meta">{{ g.note }}</span></div>
             <!-- 请求从哪儿进来：转进来的规则可以点开；一条都没有时直接给「新建入口规则」 / Where requests come in from: the rules jumping here open on click; with none, 新建入口规则 is right there -->
             <span class="rcard__facts">
-              <span v-if="ruleGroupUsers(g.id).length">从<template v-for="r in ruleGroupUsers(g.id)" :key="r.id">「<button class="ui-objlink ui-objlink--plain" type="button" @click="openRule(r)">{{ ruleTitle(r) }}</button>」</template>转进来</span>
-              <span v-if="entryUsers(g).length">高级入口指向这里</span>
-              <template v-if="!ruleGroupUsers(g.id).length && !entryUsers(g).length"><span>还没有规则转到这里</span><button class="ui-link" type="button" @click="newEntry(g)">新建入口规则</button></template>
+              <span v-if="ruleGroupUsers(g.id).length">从<template v-for="r in ruleGroupUsers(g.id)" :key="r.id">「<button class="ui-objlink ui-objlink--plain" type="button" @click="openRule(r)">{{ ruleTitle(r) }}</button>」</template>转进来<template v-if="entryUsers(g).length">，高级入口也指向这里</template></span>
+              <span v-else-if="entryUsers(g).length">高级入口指向这里</span>
+              <template v-else><span>还没有规则转到这里</span><button class="ui-link" type="button" @click="newEntry(g)">新建入口规则</button></template>
             </span>
             <!-- 新建在标题行，和「高级入口」的「编辑」一样；表格上面不再多一层，「其余请求」永远是最后一行
                  新建 sits in the title row like 高级入口's 编辑, so no extra strip above the table and 其余请求 stays the last row -->
