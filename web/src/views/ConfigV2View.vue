@@ -25,8 +25,8 @@ import SaveBar from '../config-v2/SaveBar.vue'
 import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
-import { dialogEdits, dirty, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, busy, checkPending, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, cnameUse, unsupportedSection } from '../config-v2/useConfigDocument'
+import { dialogEdits, dirty, discardDraft, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
+import { applyBusy, bulkDeleting, busy, checkPending, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, rereadAndSay, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, cnameUse, unsupportedSection } from '../config-v2/useConfigDocument'
 import { useHelp } from '../composables/useHelp'
 import { useServiceStart } from '../composables/useServiceStart'
 import { registerLeaveGuard, takeAgreement } from '../composables/useLeaveGuard'
@@ -183,7 +183,7 @@ const notice = computed<Notice | null>(() => {
     // KixDNS 还停着：没有哪份配置「在用」，照实说停了；原因说它在确认前停了，启动后用之前那份 / KixDNS still stopped: no config is in use, so the stop is said; the cause says it stopped before confirming and the previous config runs on start
     const which = pendingVersionId.value ? `版本 #${pendingVersionId.value} ` : '上次保存的版本'
     const stoppedNow = runtimeStopped.value
-    return { tone: 'err', text: stoppedNow ? `${which}没有生效，KixDNS 已停止。` : `${which}没有生效，仍在用之前那份配置。`, detail: stoppedNow ? `${cause}；启动后用之前那份配置` : reread ? `${cause}。这份配置在别处改过了，先重新读取。` : blocked ? `${cause}。当前内核不支持：${unsupportedFields.value.join('、')}，先在基础设置里关掉。` : cause, action: reread ? '重新读取' : retry ? '重试应用' : blocked && section.value !== 'settings' ? '去基础设置' : undefined, run: reread ? () => reload() : retry ? () => save('apply') : goUnsupported }
+    return { tone: 'err', text: stoppedNow ? `${which}没有生效，KixDNS 已停止。` : `${which}没有生效，仍在用之前那份配置。`, detail: stoppedNow ? `${cause === 'KixDNS 在确认新配置前停了' ? '它在确认新配置前停了' : cause}；启动后会用之前那份配置` : reread ? `${cause}。这份配置在别处改过了，先重新读取。` : blocked ? `${cause}。当前内核不支持：${unsupportedFields.value.join('、')}，先在基础设置里关掉。` : cause, action: reread ? '重新读取' : retry ? '重试应用' : blocked && section.value !== 'settings' ? '去基础设置' : undefined, run: reread ? () => reload() : retry ? () => save('apply') : goUnsupported }
   }
   // 连不上面板时由顶上的横幅说；连上以后核对的结果再说应用了没有 / While the panel is unreachable the banner speaks; once back, the check says whether it applied
   if (applyError.value && !panelDown.value) { const [text, ...detail] = applyError.value.split('\n'); return { tone: 'err', text: `${text}。`, detail: detail.join('\n') } }
@@ -430,7 +430,12 @@ const askLeave = async (purpose?: 'signout'): Promise<boolean> => {
     if (agreed) dropEditsAfterSave()
     return agreed
   }
-  return confirm.ask({ title: '放弃未保存的修改', body: '当前的配置草稿会被丢弃，已经生效的配置不受影\u2060响。', ...labels, destructive: true })
+  const agreed = await confirm.ask({ title: '放弃未保存的修改', body: '当前的配置草稿会被丢弃，已经生效的配置不受影\u2060响。', ...labels, destructive: true })
+  // 「现在应用」还在做：回到配置页时它没做完，那次重读不会发生，应用自己的重读又留着修改。同意了就马上丢掉，回来时看不到说好丢掉的修改
+  // 现在应用 is still running: on a return before it ends the page skips its read, and the apply's own re-read keeps edits. On agreement they go at once, so a
+  // return never shows the edits agreed to drop
+  if (agreed && applyBusy.value) discardDraft()
+  return agreed
 }
 const releaseGuard = registerLeaveGuard(askLeave, () => unsaved.value)
 // 提示条的按钮做事期间停用，焦点跟着掉到页面上：做完没人接住焦点时，回到这个按钮（还在的话），不在了就落在提示条上
@@ -491,7 +496,7 @@ const { down: panelDown } = useConnection()
 // Declared after panelDown: the watcher runs at once and would read it before its declaration (a blank page on return).
 // A pending version with KixDNS running again: the panel's background pass puts it into effect (or finds it refused) every 5 seconds. The page looks at the
 // runtime every 5 seconds too until it is no longer pending, so the header does not keep a stale 「待应用 · 现在应用」 and a failure does not hide behind 待应用
-const watchingPending = computed(() => ready.value && hasPending.value && !deferSave.value && !busy.value && !panelDown.value && !rereading.value)
+const watchingPending = computed(() => ready.value && hasPending.value && !deferSave.value && !busy.value && !panelDown.value && !rereading.value && deleting.value === null && !bulkDeleting.value)
 let pendingTimer: number | undefined
 watch(watchingPending, (on) => {
   window.clearInterval(pendingTimer)
@@ -503,8 +508,9 @@ watch(watchingPending, (on) => {
 onBeforeUnmount(() => window.clearInterval(pendingTimer))
 async function startKixdns(): Promise<void> {
   if (!(await start())) return
-  // 草稿有修改时只刷新运行状态，不重读文件，免得把草稿换掉 / With edits in the draft only the runtime state is refreshed, so the draft is not replaced
-  try { await (unsaved.value ? refreshRuntime() : load({ quiet: true })) } catch { /* 页头下次读取时再更新 / the header updates on the next read */ }
+  // 草稿有修改时只刷新运行状态，不重读文件，免得把草稿换掉；启动时待应用的版本生效了，和每 5 秒那次看一样说一句
+  // With edits in the draft only the runtime state is refreshed, so the draft is not replaced; a pending version taking effect on start is said, as the 5-second look says it
+  try { await rereadAndSay(unsaved.value) } catch { /* 页头下次读取时再更新 / the header updates on the next read */ }
 }
 const versionLabel = computed(() => { const id = pendingVersionId.value ?? currentVersionId.value ?? doc.value?.version_id; return id === null || id === undefined ? '—' : `#${id}` })
 </script>
@@ -517,8 +523,8 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
         <span v-if="!ready && !loadError" class="sk ui-ph__sk cfg__status-sk"></span>
         <!-- 宽屏：标题下一排事实（状态、配置版本、规则数、上游组数）；手机：一行状态 / Wide: a facts row under the title (state, config version, rule count, upstream groups); phones: one status line -->
         <!-- 没读到配置时宽屏也是这一排，只写状态；版本、规则数、上游组数等读到再写 / Without a config read the wide header keeps this row with the state only; version, rule and group counts wait for the read -->
-        <span v-else-if="!phone && !firstRun" class="ui-facts cfg__facts" :class="{ 'cfg__facts--long': (headerLine.wide?.length ?? 0) > 1 }" :role="applyBusy ? 'status' : undefined">
-          <span><span class="ui-lbl">状态</span><b><span v-if="applyBusy" class="ui-spin cfg__spin" aria-hidden="true"></span><span v-else class="ui-dot" :class="headerLine.tone === 'ok' ? '' : `ui-dot--${headerLine.tone}`" aria-hidden="true"></span><UiDotText :parts="headerLine.wide ?? [headerLine.lead ?? `${headerLine.before}${headerLine.version ?? ''}${headerLine.after ?? ''}`]" /><button v-if="headerAction && ready && !applyBusy" class="cfg__head-action" type="button" @click="applyNow">{{ headerAction }}</button><button v-else-if="runtimeStopped && ready && !panelDown" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline cfg__head-start" type="button" :disabled="starting" @click="startKixdns">启动</button></b></span>
+        <span v-else-if="!phone && !firstRun" class="ui-facts cfg__facts" :class="{ 'cfg__facts--long': (headerLine.wide?.length ?? 0) > 1, 'cfg__facts--fail': hasApplyFailure }" :role="applyBusy ? 'status' : undefined">
+          <span><span class="ui-lbl">状态</span><b><span v-if="applyBusy" class="ui-spin cfg__spin" aria-hidden="true"></span><span v-else class="ui-dot" :class="headerLine.tone === 'ok' ? '' : `ui-dot--${headerLine.tone}`" aria-hidden="true"></span><UiDotText :parts="headerLine.wide ?? [headerLine.lead ?? `${headerLine.before}${headerLine.version ?? ''}${headerLine.after ?? ''}`]" /><button v-if="headerAction && ready && !applyBusy" class="cfg__head-action" type="button" @click="applyNow">{{ headerAction }}</button><span v-else-if="applyBusy && ready" class="cfg__head-action is-held" aria-hidden="true">现在应用</span><button v-else-if="runtimeStopped && ready && !panelDown" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline cfg__head-start" type="button" :disabled="starting" @click="startKixdns">启动</button></b></span>
           <template v-if="doc">
           <span><span class="ui-lbl">配置版本</span><b>{{ versionLabel }}</b></span>
           <span class="cfg__fact-rules"><span class="ui-lbl">规则</span><b>{{ ruleCount }} 条</b></span>
@@ -529,7 +535,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
           <span v-if="applyBusy" class="ui-spin cfg__spin" aria-hidden="true"></span>
           <span v-else class="ui-dot" :class="headerLine.tone === 'ok' ? '' : `ui-dot--${headerLine.tone}`" aria-hidden="true"></span>
           <UiDotText :parts="[headerLine.lead ?? '', `${headerLine.before}${headerLine.version ?? ''}${headerLine.after ?? ''}`].filter(Boolean)" />
-          <button v-if="headerAction && ready && !applyBusy" class="cfg__head-action" type="button" @click="applyNow">{{ headerAction }}</button>
+          <button v-if="headerAction && ready && !applyBusy" class="cfg__head-action" type="button" @click="applyNow">{{ headerAction }}</button><span v-else-if="applyBusy && ready" class="cfg__head-action is-held" aria-hidden="true">现在应用</span>
           <button v-else-if="runtimeStopped && ready && !panelDown" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline cfg__head-start" type="button" :disabled="starting" @click="startKixdns">启动</button>
         </span>
       </template>

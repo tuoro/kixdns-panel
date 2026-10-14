@@ -210,11 +210,20 @@ body { background: var(--l-canvas); }
    The header's 启动 is a small secondary button that takes no vertical room: taller than the text, it never heightens the line (the facts row keeps one height), and its label shares the baseline of KixDNS 已停止 */
 .cfg__head-start { margin-block: calc(var(--h-sm) / -2); }
 .cfg__facts .cfg__head-start { margin-left: var(--s-1); }
+/* 应用途中「现在应用」的位置先占着（看不见）：页头那排事实不左右滑 / While applying, 现在应用 keeps its place (invisible), so the header facts do not slide */
+.cfg__head-action.is-held { visibility: hidden; text-decoration: none; }
+/* 手机上「启动」比状态那行高，挂到下面：紧跟的提示条往下让一点，按钮和它隔 12 / On phones 启动 is taller than the status line and hangs below it: a notice right after
+   moves down a little, so the button is 12 from it */
+@media (max-width: 640px) { .ui-ph:has(.cfg__head-start) ~ .cfg__notice { margin-top: 2px; } }
 /* 861–959 有侧栏、641–679（横放的手机、小平板）本来就窄，又有「启动」时一排放不下四项：「上游组」先收起（同系统页这两段收起 PID）
    At 861–959 with the sidebar, and at 641–679 (landscape phones, small tablets), four facts do not fit beside 启动: 上游组 gives way first (as the system page drops PID in both bands) */
 @media (min-width: 641px) and (max-width: 679px), (min-width: 861px) and (max-width: 959px) { .cfg__facts:has(.cfg__head-start) .cfg__fact-groups { display: none; } }
 /* 861–876 停着又有待应用版本时（「已停止 · 待应用」加「启动」）三项也放不下：「规则」接着收起，不折成两行 / At 861–876, stopped with a pending version (已停止 · 待应用 plus 启动), three facts still do not fit: 规则 gives way next instead of wrapping */
 @media (min-width: 861px) and (max-width: 876px) { .cfg__facts--long:has(.cfg__head-start) .cfg__fact-rules { display: none; } }
+/* 「已停止 · 应用失败」比「已停止 · 待应用」宽一个字：680–694 和 877–891 再各收起一项，不折成两行 / 「已停止 · 应用失败」 is one character wider than 「已停止 · 待应用」: at 680–694 and
+   877–891 one more fact gives way instead of wrapping */
+@media (min-width: 680px) and (max-width: 694px) { .cfg__facts--fail:has(.cfg__head-start) .cfg__fact-groups { display: none; } }
+@media (min-width: 877px) and (max-width: 891px) { .cfg__facts--fail:has(.cfg__head-start) .cfg__fact-rules { display: none; } }
 .rules-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s-5); align-items: start; }
 @media (min-width: 1360px) {
   .rules-split.is-open { grid-template-columns: minmax(0, 1fr) var(--inspector-w); }
@@ -1909,6 +1918,10 @@ body { background: var(--l-canvas); }
 @media (max-width: 640px) {
   .cfg__head-action, .cfg__head-start { position: relative; }
   .cfg__head-action::before, .cfg__head-start::before { position: absolute; inset: calc(min(0px, (100% - var(--h-touch)) / 2)); content: ''; }
+  /* 下面紧挨着分区标签，它们的点按区往上伸了 8：这里的点按区从底边往上长（上面是标题，没有能点的），不和标签抢，两边都够 44
+     The section tabs sit right below with hit areas reaching 8 up: this hit area grows upward from the bottom edge instead (the title above has nothing to tap),
+     so neither takes from the other and both get 44 */
+  .cfg__head-action::before, .cfg__head-start::before { top: auto; bottom: 0; height: var(--h-touch); }
 }
 
 /* ---------- 9.5 审查第二轮 / review round 2 ---------- */

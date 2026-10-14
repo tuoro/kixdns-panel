@@ -402,6 +402,8 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
      frameless icon button is a 44 tap cell. main.ts stops iPhone's focus zoom, so field text no longer has to be 16. */
   .app-shell .button, .app-shell .inline-command { min-height: var(--h-md); }
   .app-shell .icon-button { min-width: var(--h-touch); min-height: var(--h-touch); }
+  /* 提示的叉放进抽屉里时也在 .app-shell 下：保持 32 的样子，44 的点按区由 ::before 给 / A toast's close inside a drawer is under .app-shell too: it keeps its 32 look, and ::before gives the 44 tap area */
+  .toast .toast-close { min-width: 0; min-height: 0; }
   .app-shell input:not([type="checkbox"]):not([type="radio"]), .app-shell select { min-height: var(--h-md); }
   .app-shell .button { font-size: 14px; }
   .notification-popover { position: fixed; top: 60px; right: 10px; left: 10px; width: auto; max-height: calc(100dvh - 138px); }

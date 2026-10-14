@@ -19,7 +19,8 @@ const emit = defineEmits<{ open: []; action: [value: string]; grip: [event: Poin
 // 高级规则读它原样的内核条件 / An advanced rule reads its verbatim kernel conditions
 // 显示用：连字符后面连住，手机两行时不把 category-ads-all 拆成「category-ads- / all」（title 照旧给原样）
 // For display: glued after each hyphen, so two phone lines never split category-ads-all into 「category-ads- / all」 (the title keeps the plain text)
-const shownSummary = computed(() => summary.value.replace(/(?<=[\w.:])-(?=[\w!])/g, '-\u2060'))
+// 最后一个很短的值也和前面的词连住：不留「cn」这样两个字母单独一行 / A very short last value is glued to the word before it, so 「cn」 never sits alone on a line
+const shownSummary = computed(() => summary.value.replace(/(?<=[\w.:])-(?=[\w!])/g, '-\u2060').replace(/ (?=\S{1,4}$)/, '\u00a0'))
 const summary = computed(() => {
   const raw = props.rule.raw
   if (!raw) return conditionsText(props.rule.conditions)

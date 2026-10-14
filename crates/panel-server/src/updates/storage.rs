@@ -127,7 +127,7 @@ fn read_bundled_package(
     let metadata_source_id = read_metadata_u64(metadata_path, "KIXDNS_ARTIFACT_ID")?;
     if metadata_source_id != source_id {
         return Err(UpdateError::Verification(
-            "完整包里的内核包编号和安装环境不一致".to_owned(),
+            "内核包编号和安装环境不一致".to_owned(),
         ));
     }
     let artifact = read_metadata_text(metadata_path, "KIXDNS_ARTIFACT_NAME", 256)?;

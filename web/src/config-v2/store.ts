@@ -101,13 +101,14 @@ export function trackDialogEdits(what: string, edited: () => boolean, options: {
 }
 const OPTIONAL = ['mainId', 'mappingId', 'mainExtra', 'entries', 'trailingEntries', 'rawPipelines', 'extra'] as const
 export const UNMODELLED = ['mainId', 'mappingId', 'mainExtra', 'rawPipelines', 'extra'] as const
-// 草稿整份换掉过几次：换过以后，之前发出去的那份就不再是这份草稿的底子 / How often the draft was replaced wholesale: after one, a draft sent earlier no longer underlies this one
-let generation = 0
-export const draftGeneration = (): number => generation
+// 草稿整份换掉过几次：换过以后，之前发出去的那份就不再是这份草稿的底子；开着的抽屉、对话框也看着它，拿着的副本跟着换
+// How often the draft was replaced wholesale: after one, a draft sent earlier no longer underlies this one; open drawers and dialogs watch it too, so the copies they hold follow
+const generation = ref(0)
+export const draftGeneration = (): number => generation.value
 export function replaceModel(next: Model): void {
   // 草稿整份换掉，旧草稿上的撤销提示一起收起 / The draft is replaced wholesale, so undo messages about the old one go too
   dismissUndoable()
-  generation += 1
+  generation.value += 1
   const copy = JSON.parse(JSON.stringify(next)) as Model
   for (const k of OPTIONAL) if (copy[k] === undefined) delete model[k]
   Object.assign(model, copy)

@@ -201,7 +201,7 @@ load_settings() {
     # panel-only mode means the KixDNS is not the panel's. Without panel.env ownership is unknown, so keep it.
     value="$(environment_value KIXDNS_MANAGEMENT_ENABLED || true)"
     [[ -z ${value} || ${value} =~ ^(true|false)$ ]] ||
-      fail "panel.env 中的 KixDNS 管理模式无效"
+      fail "panel.env 里的 KixDNS 管理模式无效"
     [[ ${value} == false ]] || KIXDNS_MANAGED=true
     value="$(environment_value KIXDNS_SERVICE_UNIT || true)"
     [[ -z ${value} ]] || KIXDNS_SERVICE_UNIT=${value}

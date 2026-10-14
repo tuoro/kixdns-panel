@@ -176,7 +176,7 @@ impl Operations {
                 byte.is_ascii_alphanumeric() || matches!(byte, b'@' | b'_' | b'-' | b'.')
             })
         {
-            return Err(OperationError::Invalid("systemd unit 名称无效".to_owned()));
+            return Err(OperationError::Invalid("KixDNS 服务名称无效".to_owned()));
         }
         Ok(Self {
             service_unit: Arc::from(service_unit),

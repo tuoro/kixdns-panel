@@ -1,4 +1,5 @@
 import { expect, type Page, test } from '@playwright/test'
+import { acceptConfirm } from './confirm'
 
 // 草稿不能悄悄丢、也不能改错地方：右栏面板跟着列表走、JSON 视图里的修改算草稿、退出登录先问。
 // The draft must neither vanish quietly nor change the wrong thing: the side panel follows the list, edits in the JSON view count as
@@ -475,7 +476,7 @@ test('上游组抽屉：备用组开了又关、没改什么就关上，不问�
   const fallback = drawer.getByRole('checkbox', { name: '使用备用组' })
   await fallback.check()
   await fallback.uncheck()
-  await drawer.getByRole('button', { name: '关闭' }).click()
+  await drawer.getByRole('button', { name: '关闭', exact: true }).click()
   await expect(page.getByRole('alertdialog')).toHaveCount(0)
   await expect(drawer).toHaveCount(0)
   await page.locator('.gcard').first().getByRole('button', { name: '编辑' }).click()
@@ -786,6 +787,130 @@ test('现在应用途中改了再离开：问放弃未保存的修改', async ({
   await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
 })
 
+// 上游组抽屉开着、没改什么时，每 5 秒那次看读进了别处的版本：抽屉换成读进来的组，按「完成」不把打开时的副本写回去（以前悄悄撤掉了别处加的地址）
+// An upstream-group drawer is open and unedited when the 5-second look reads another writer's version in: the drawer takes the group just read, and 完成
+// does not write back the copy taken at opening (it used to silently undo the address added elsewhere)
+test('上游组抽屉开着时读进了别处的版本：抽屉跟着换，完成不撤掉别处加的地址', async ({ page }) => {
+  await savePending(page, 'drawer-read-in.example', '等着生效')
+  await page.getByRole('link', { name: '上游组', exact: true }).first().click()
+  await page.locator('.gcard').first().getByRole('button', { name: '编辑' }).click()
+  const drawer = page.locator('dialog.pdrawer[open]')
+  await expect(drawer).toBeVisible()
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-elsewhere-pending', 'true'))
+  const values = () => drawer.locator('input').evaluateAll((inputs) => inputs.map((input) => (input as HTMLInputElement).value))
+  await expect.poll(values, { timeout: 10_000 }).toContain('203.0.113.53')
+  // 读入的提示放在抽屉里，看得见，也不盖住底下的「取消」「完成」 / The read-in toast sits inside the drawer, in sight, and clear of 取消 / 完成 below
+  await expect(drawer.locator('.toast')).toContainText('这份配置在别处改')
+  const toastBox = (await drawer.locator('.toast').boundingBox())!
+  const footBox = (await drawer.locator('.pdrawer__foot').boundingBox())!
+  expect(toastBox.y + toastBox.height).toBeLessThanOrEqual(footBox.y)
+  await drawer.getByLabel('名称', { exact: true }).fill('改过名的组')
+  await drawer.getByRole('button', { name: '完成', exact: true }).click()
+  await expect(drawer).toHaveCount(0)
+  const card = page.locator('.gcard', { hasText: '改过名的组' })
+  await expect(card).toContainText('203.0.113.53')
+})
+
+// 「现在应用」没成功挂着「版本 #N 没有应用」时，别处又存了一个待应用的版本、读了进来：那条说旧版本的提示收起
+// 现在应用 failed and 「版本 #N 没有应用」 shows when another writer's pending version is read in: the notice about the old version goes
+test('现在应用没成功后读进了别处的待应用版本：旧版本的提示收起', async ({ page }) => {
+  const pending = await savePending(page, 'stale-notice.example', '应用出错')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-apply-error', 'true'))
+  await page.getByRole('button', { name: '现在应用', exact: true }).click()
+  await expect(page.locator('.cfg__notice')).toContainText(`版本 #${pending} 没有应用`)
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-elsewhere-pending', 'true'))
+  await expect.poll(() => toastTexts(page), { timeout: 10_000 }).toContainEqual(expect.stringMatching(/^这份配置在别处改过了，已读入版本\u00a0#\d+$/))
+  await expect(page.locator('main .ui-ph')).toContainText(`版本 #${pending + 1} 待应用`)
+  await expect(page.locator('.cfg__notice')).toHaveCount(0)
+})
+
+// 每 5 秒那次看的读还在路上时离开了配置页：读回来不在别的页上说「已生效」（页头回来时会说）
+// The 5-second look's read is still out when the config page is left: when it lands nothing says 已生效 on the other page (the header says it on return)
+test('看的那次读还在路上时离开配置页：别的页上不说已生效', async ({ page }) => {
+  const pending = await savePending(page, 'leave-mid-check.example', '离开时')
+  await page.evaluate(async () => {
+    localStorage.setItem('kixdns:demo-read-slow', 'true')
+    localStorage.setItem('kixdns:demo-background-applies', 'true')
+    const url = performance.getEntriesByType('resource').map((e) => e.name).filter((n) => n.includes('/src/config-v2/useConfigDocument.ts')).pop()!
+    const doc = await import(url)
+    void doc.checkPending()
+  })
+  await page.getByRole('link', { name: '日志', exact: true }).first().click()
+  await expect(page).toHaveURL(/\/logs/)
+  await page.waitForTimeout(2500)
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-read-slow'))
+  expect(await toastTexts(page)).not.toContain(`版本 #${pending} 已生效`)
+})
+
+// 离开配置页后「现在应用」没有生效，提示挂在别的页上；退出登录时它一起收起，不留在登录页
+// 现在应用 fails after the config page was left and its toast hangs on another page; signing out takes it away, so it does not stay on the login page
+test('离开后现在应用没有生效的提示：退出登录时收起', async ({ page }) => {
+  const pending = await savePending(page, 'signout-away-toast.example', '退出前')
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-save-slow', 'true'); localStorage.setItem('kixdns:demo-apply-failed', 'true') })
+  await page.getByRole('button', { name: '现在应用', exact: true }).click()
+  await page.getByRole('link', { name: '日志', exact: true }).first().click()
+  await expect.poll(() => toastTexts(page), { timeout: 8000 }).toContainEqual(expect.stringContaining(`版本 #${pending} 没有生效`))
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
+  await page.getByRole('button', { name: /^账户：/ }).click()
+  await page.getByRole('dialog', { name: '账户', exact: true }).getByRole('button', { name: '退出登录', exact: true }).click()
+  await expect(page).toHaveURL(/\/login$/)
+  await expect(page.locator('.toast')).toHaveCount(0)
+})
+
+// 「现在应用」途中改了一处，离开时同意放弃，又在应用做完之前回来：说好丢掉的那处不在草稿里（以前回来时还在，应用做完后也还在）
+// An edit during 现在应用, agreed to drop on leaving, then a return before the apply ends: the dropped edit is not in the draft (it used to be back, and stayed after the apply)
+test('现在应用途中同意放弃修改又马上回来：丢掉的修改不再出现', async ({ page }) => {
+  const pending = await savePending(page, 'drop-during-apply.example', '途中丢')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-save-slow', '4000'))
+  await page.getByRole('button', { name: '现在应用', exact: true }).click()
+  await addRule(page, 'dropped-edit.example')
+  await page.getByRole('link', { name: '日志', exact: true }).first().click()
+  await acceptConfirm(page)
+  await expect(page).toHaveURL(/\/logs/)
+  await page.goBack()
+  // 回来时应用还没做完 / Back before the apply is done
+  await expect(page.locator('.cfg__spin').first()).toBeVisible()
+  await expect(page.locator('[data-rule]', { hasText: 'dropped-edit.example' })).toHaveCount(0)
+  await expect.poll(() => toastTexts(page), { timeout: 8000 }).toContain(`版本 #${pending} 已生效`)
+  await expect(page.locator('[data-rule]', { hasText: 'dropped-edit.example' })).toHaveCount(0)
+  await expect(page.getByText(/已修改 \d+ 处/)).toHaveCount(0)
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
+})
+
+// 断线期间后台让待应用的版本生效了：连上后说一句（以前只有「已重新连上面板」，页头悄悄变成运行中）
+// The background put the pending version into effect during an outage: said after reconnecting (only 已重新连上面板 used to show while the header quietly turned to 运行中)
+test('断线期间待应用的版本生效了：连上后说已生效', async ({ page }) => {
+  const pending = await savePending(page, 'applied-while-down.example', '断线时')
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-panel-down', 'true'); window.dispatchEvent(new Event('kixdns:panel-unreachable')) })
+  await expect(page.locator('.conn__inner')).toBeVisible()
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-background-applies', 'true'))
+  await reconnect(page)
+  await expect.poll(() => toastTexts(page), { timeout: 8000 }).toContain(`版本 #${pending} 已生效`)
+  await expect(page.locator('main .ui-ph')).not.toContainText('待应用')
+})
+
+// 删除待应用的版本时恰好赶上每 5 秒那次看：那次看跳过，不把这一页自己删掉的说成「别处改过了」
+// The 5-second look falls inside the delete of the pending version: that look is skipped, and this page's own delete is not called 别处改过了
+test('删除待应用的版本时赶上每 5 秒那次看：不说别处改过了', async ({ page }) => {
+  const pending = await savePending(page, 'delete-mid-check.example', '要删掉')
+  await page.getByRole('button', { name: '更多配置操作' }).click()
+  await page.getByRole('menuitem', { name: '历史版本' }).click()
+  await page.getByRole('button', { name: `版本 #${pending} 的操作` }).click()
+  await page.getByRole('menuitem', { name: '删除这个版本' }).click()
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-read-slow', 'true'))
+  await acceptConfirm(page)
+  // 删除后的重读还在路上，这时那次看来了 / The delete's re-read is still out when the look comes
+  await page.evaluate(async () => {
+    const url = performance.getEntriesByType('resource').map((e) => e.name).filter((n) => n.includes('/src/config-v2/useConfigDocument.ts')).pop()!
+    const doc = await import(url)
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    await doc.checkPending()
+  })
+  await expect.poll(() => toastTexts(page), { timeout: 8000 }).toContainEqual(expect.stringContaining(`#${pending} 已删除`))
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-read-slow'))
+  expect((await toastTexts(page)).filter((text) => text.includes('别处改过了'))).toEqual([])
+})
+
 // 按「现在应用」时待应用的已经被别处换掉：没什么要保存的，直接读入新的并说一句，不留一条没有按钮、读完也不走的红色提示
 // 现在应用 meets a pending version replaced elsewhere: nothing needs saving, so the new one is read in and said, with no red notice that has no button and
 // outlives the re-read
@@ -842,6 +967,21 @@ test('JSON 视图校验以后又改了：不再挂着校验通过', async ({ pag
   await page.keyboard.press('Control+End')
   await page.keyboard.type(' ')
   await expect(bar).not.toContainText('校验通过')
+})
+
+// 历史版本里没生效的原因和页面上的提示同一个说法：不带「仍在用之前的配置」（KixDNS 停着时那句不对）
+// The history row gives the same cause as the notice: without 仍在用之前的配置 (untrue while KixDNS is stopped)
+test('历史里没生效的原因和提示同一个说法', async ({ page }) => {
+  await page.goto('/config')
+  await addRule(page, 'history-cause.example')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-apply-failed', 'true'))
+  await page.locator('.cfg__savebar').getByRole('button', { name: '保存并应用' }).click()
+  await expect(page.locator('main')).toContainText('没有生效，仍在用之前那份配置')
+  await page.getByRole('button', { name: '更多配置操作' }).click()
+  await page.getByRole('menuitem', { name: '历史版本' }).click()
+  const err = page.locator('.hist__err').first()
+  await expect(err).toContainText('KixDNS 没有接受这份配置')
+  await expect(err).not.toContainText('仍在用之前的配置')
 })
 
 // 单独「校验」还没回来时按的保存，从按下起就是一次保存：按钮写「保存中」，重新读取停用；校验没过就停在那句结论上，不接着存
