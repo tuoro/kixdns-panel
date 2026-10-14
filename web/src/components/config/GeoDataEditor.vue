@@ -33,10 +33,10 @@ const settings = defineModel<GlobalSettings>({ required: true })
 // changed：草稿里改过的设置 key，对应的那一行名字后面画墨点 / changed: setting keys the draft changed; the matching row gets an ink dot after its name
 defineProps<{ changed?: ReadonlySet<string> }>()
 // 这条占位提示里有网址，所以放在脚本里绑定：vue-tsc 3.3.12 起会把 v-for 里组件静态属性中的「//」
-// 当成注释开头，循环变量随之丢失（vuejs/language-tools#6240）。
+// 当成注释开头，循环变量随之丢失（vuejs/language-tools 的 issue 6240）。
 // This placeholder holds a URL, so it is bound from here: since 3.3.12, vue-tsc reads a "//" in a
 // static component attribute inside v-for as the start of a comment and loses the loop variables
-// (vuejs/language-tools#6240).
+// (vuejs/language-tools issue 6240).
 const geositePlaceholder = '如 https://example.com/geosite.dat'
 
 const mode = ref<GeoMode>('remote')
