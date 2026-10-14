@@ -6,7 +6,7 @@ import { recentWindowLabel, settledAttempts, upstreamBasis } from '../dashboard-
 import { readConfig, type ImportReport, type ReadResult } from '../config-model/document'
 import { normalizeAddress } from '../config-model/kernel'
 import { findKernelRule } from '../config-model/trace-names'
-import { kernelAddress, mainPipelineId, nextId, ruleGroupPipelineId, ruleTitle, type Model, type Outcome, type Rule, type RuleGroup, type UpstreamGroup } from '../config-model/model'
+import { kernelAddress, mainPipelineId, nextId, ruleGroupPipelineId, ruleTitle, type Model, type Outcome, type Remedy, type Rule, type RuleGroup, type UpstreamGroup } from '../config-model/model'
 
 // 配置页的草稿：一份模型加上「上次读进来 / 保存成功时」的那份，改动按两者比出来。运行状态、保存流程在 useConfigDocument.ts。
 // The config page's draft: one model plus the one last loaded or saved, with changes computed between them. Runtime state and the
@@ -245,6 +245,38 @@ export function oldPanelCopies(): { copy: UpstreamGroup; original: UpstreamGroup
     const original = base === undefined ? undefined : model.groups.find((g) => g !== copy && pid(g) === base)
     return original ? [{ copy, original }] : []
   })
+}
+// 什么时候不能一键用副本替换原来那组：副本的备用就是原来那组（替换后自己备用自己）；高级规则、高级入口或原样保留的 Pipeline 里
+// 写着副本的 ID（面板不改手写的内容，删掉副本会让它们指空）
+// When a copy cannot replace its original in one step: the copy falls back to the original (it would fall back to itself), or an advanced
+// rule, advanced entry or verbatim pipeline names the copy's ID (the panel does not edit hand-written content, and removing the copy would leave it dangling)
+export function copyReplaceBlocker(copy: UpstreamGroup, original: UpstreamGroup): string | null {
+  if (copy.fallback.group === original.id && (copy.fallback.onError || copy.fallback.onPolluted)) return `它的备用组就是「${original.name}」`
+  const pid = copy.pipelineId ?? `upstream-${copy.id}`
+  const raw = [model.entries ?? [], model.trailingEntries ?? [], model.rawPipelines ?? [], [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].filter((r) => r.raw).map((r) => r.raw)]
+  return JSON.stringify(raw).includes(`"${pid}"`) ? '高级规则或高级入口里引用了它' : null
+}
+// 用旧版面板的副本替换原来那组：原来那组留下名字和 Pipeline ID，地址、客户端子网和备用换成副本的；用副本的地方改用原来那组，副本删掉。
+// 原来那组还用着的地方（比如回答后检查）跟着改走副本的上游——旧版面板当时本该做到的。返回撤销：只还原这里动过的地方
+// Replace the original with the old panel's copy: the original keeps its name and pipeline ID and takes the copy's addresses, client subnet and
+// fallback; whatever used the copy now uses the original, and the copy goes. Places still on the original (an answer check, say) follow the
+// copy's upstreams, which is what the old panel should have done at the time. Returns an undo that restores only what was touched here
+export function replaceWithCopy(copy: UpstreamGroup, original: UpstreamGroup): () => void {
+  const clone = (g: UpstreamGroup) => JSON.parse(JSON.stringify({ addresses: g.addresses, ecs: g.ecs, fallback: g.fallback })) as Pick<UpstreamGroup, 'addresses' | 'ecs' | 'fallback'>
+  const kept = clone(original)
+  const undo: (() => void)[] = [() => Object.assign(original, kept)]
+  Object.assign(original, clone(copy))
+  // 备用组那一格关着时可能还留着原来那组的 ID：清掉，免得写成自己备用自己 / An unused fallback slot may still hold the original's ID: clear it rather than point the group at itself
+  if (original.fallback.group === original.id) original.fallback = { group: '', onError: false, onPolluted: false }
+  const repoint = (o: { group: string }) => { o.group = original.id; undo.push(() => { o.group = copy.id }) }
+  const uses = (o: Outcome | Remedy): o is Extract<Outcome, { type: 'upstream' }> => o.type === 'upstream' && o.group === copy.id
+  for (const r of [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)]) for (const o of [r.outcome, r.response.then, r.response.otherwise]) if (uses(o)) repoint(o)
+  for (const o of [model.rest, ...model.ruleGroups.map((g) => g.rest)]) if (uses(o)) repoint(o)
+  for (const g of model.groups) if (g !== copy && g.fallback.group === copy.id) repoint(g.fallback)
+  const at = model.groups.indexOf(copy)
+  model.groups.splice(at, 1)
+  undo.push(() => model.groups.splice(Math.min(at, model.groups.length), 0, copy))
+  return () => { for (const step of undo.reverse()) step() }
 }
 export function ruleGroupUsers(groupId: string): Rule[] {
   return [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].filter((r) => r.outcome.type === 'group' && r.outcome.group === groupId)

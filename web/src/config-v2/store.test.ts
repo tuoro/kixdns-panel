@@ -3,7 +3,7 @@ import { diffModels } from '../config-model/diff'
 import { ruleTitle, type Model } from '../config-model/model'
 import { exportConfig, readConfig } from '../config-model/document'
 import { LEGACY_MESSY, LEGACY_TEMPLATES, demoModel, sampleModel } from '../config-model/testing/samples'
-import { appliedModel, changeCount, groupUsers, model, oldPanelCopies, rebaseApplied, resetTo } from './store'
+import { appliedModel, changeCount, copyReplaceBlocker, groupUsers, model, oldPanelCopies, rebaseApplied, replaceWithCopy, resetTo } from './store'
 
 // 保存条数出来的每一处修改，「改了哪些」里都要看得到：以前改监听标签时保存条说改了 1 处，对比却说「一样」
 // Every change the save bar counts must show in the review: setting a listener tag once read 「已修改 1 处」 while the review said nothing changed
@@ -227,5 +227,67 @@ describe('旧版面板留下的副本', () => {
   it('名字碰巧带 -copy、原来的组并不存在时不算', () => {
     resetTo(readConfig(kernel('global-copy', false)).model)
     expect(oldPanelCopies()).toEqual([])
+  })
+
+  // 写出来的内核配置里所有跳转目标 / Every jump target in the kernel config written out
+  const jumps = (x: unknown): string[] => {
+    if (Array.isArray(x)) return x.flatMap(jumps)
+    if (!x || typeof x !== 'object') return []
+    const o = x as Record<string, unknown>
+    return [...(o.type === 'jump_to_pipeline' && typeof o.pipeline === 'string' ? [o.pipeline] : []), ...Object.values(o).flatMap(jumps)]
+  }
+
+  it('用副本替换原来那组：原来那组换成副本的上游，回答后检查和其余请求都走它，副本删掉', () => {
+    resetTo(readConfig(kernel('global-copy')).model)
+    const { copy, original } = oldPanelCopies()[0]!
+    expect(copyReplaceBlocker(copy, original)).toBeNull()
+    const before = JSON.stringify(model)
+    const undo = replaceWithCopy(copy, original)
+
+    expect(model.groups.map((g) => g.name)).not.toContain('global-copy')
+    expect(original.addresses.map((a) => a.address)).toEqual(['https://dns.google/dns-query'])
+    expect(groupUsers(original.id)).toEqual(['规则「cn_parallel」的回答后检查', '其余请求'])
+    expect(oldPanelCopies()).toEqual([])
+    // 写出来的配置：没有副本、没有旧上游，Pipeline ID 照旧是 global，每个跳转都落在存在的 Pipeline 上
+    // Written out: no copy, no old upstream, the pipeline ID is still global, and every jump lands on a pipeline that exists
+    const out = exportConfig(model)
+    const kernelText = JSON.stringify({ ...out, panel: undefined })
+    expect(kernelText).not.toContain('global-copy')
+    expect(kernelText).not.toContain('quad9')
+    const ids = (out.pipelines as { id: string }[]).map((p) => p.id)
+    expect(ids).toContain('global')
+    expect(jumps(out).every((id) => ids.includes(id))).toBe(true)
+    expect(jumps(out)).toContain('global')
+
+    undo()
+    expect(JSON.stringify(model)).toBe(before)
+  })
+
+  it('原来那组已经没人用时照样能替换，结果只剩一组', () => {
+    const k = kernel('global-copy')
+    k.pipelines[0] = forward('cn', 'https://doh.pub/dns-query')
+    resetTo(readConfig(k).model)
+    const { copy, original } = oldPanelCopies()[0]!
+    expect(groupUsers(original.id)).toEqual([])
+    replaceWithCopy(copy, original)
+    expect(model.groups.filter((g) => g.addresses.some((a) => a.address.includes('dns.google')))).toEqual([original])
+    expect(groupUsers(original.id)).toEqual(['其余请求'])
+  })
+
+  it('副本的备用就是原来那组、或者高级入口写着副本时不能一键替换', () => {
+    resetTo(readConfig(kernel('global-copy')).model)
+    const { copy, original } = oldPanelCopies()[0]!
+    copy.fallback = { group: original.id, onError: true, onPolluted: false }
+    expect(copyReplaceBlocker(copy, original)).toBe('它的备用组就是「global」')
+    // 备用那一格关着、只是留着 ID：可以替换，替换后不会自己备用自己 / The fallback slot is off and merely keeps the ID: replaceable, and the result never falls back to itself
+    copy.fallback = { group: original.id, onError: false, onPolluted: false }
+    expect(copyReplaceBlocker(copy, original)).toBeNull()
+    replaceWithCopy(copy, original)
+    expect(original.fallback.group).toBe('')
+
+    resetTo(readConfig(kernel('global-copy')).model)
+    const pair = oldPanelCopies()[0]!
+    model.entries = [{ pipeline: 'global-copy', matchers: [{ type: 'any' }] }]
+    expect(copyReplaceBlocker(pair.copy, pair.original)).toBe('高级规则或高级入口里引用了它')
   })
 })

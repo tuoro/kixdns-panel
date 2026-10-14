@@ -1468,8 +1468,8 @@ body { background: var(--l-canvas); }
 .gcard__facts { margin: 0; line-height: var(--lh-base); overflow-wrap: anywhere; word-break: normal; color: var(--l-ink-3); font-size: var(--t-2); }
 /* 说明和「用在…」一格里上下排，挨着 / The facts and 「用在…」 stacked in one track, close together */
 .gcard__foot { display: grid; align-content: start; gap: var(--s-1); }
-/* 旧版面板副本的说明和下面的卡片隔开一张卡片的距离 / The old-panel copy note sits one card gap above the cards */
-.ups__copy { margin: 0 0 var(--s-4); }
+/* 旧版面板副本那一行：来历在前，「用它替换…」跟在后面，放不下时整个换到下一行 / The old-panel copy line: the origin first, 用它替换… after it, moving whole to the next line when it does not fit */
+.gcard__copy { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: var(--s-3); }
 
 /* ---------- 域名映射 / domain mappings ---------- */
 .rw { display: grid; gap: var(--s-4); }
