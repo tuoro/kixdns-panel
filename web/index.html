@@ -6,7 +6,12 @@
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <meta name="apple-mobile-web-app-title" content="KixDNS" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#151a1d" />
+    <!-- 手机浏览器地址栏的颜色，和手机顶栏同色（tokens.css 里 --l-surface 的浅色、深色值）；跟随系统时按系统偏好二选一，
+         页面里选了浅色或深色，useTheme.ts 把两条都改成那一种
+         The phone browser's address bar matches the phone header (--l-surface's light and dark values in tokens.css); following the
+         system, the preference picks one; once light or dark is chosen in the page, useTheme.ts sets both to that one -->
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#171a22" />
     <meta name="description" content="KixDNS 增强管理面板" />
     <title>KixDNS 面板</title>
   </head>
