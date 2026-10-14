@@ -178,6 +178,7 @@
   --size-icon-sm: 14px;  /* 紧凑控件和 12–13 号字旁边的图标 / icons in compact controls and beside 12–13px text */
   --size-check: 16px;    /* 复选框 / checkbox */
   --size-avatar: 28px;   /* 侧栏和页头的头像 / the avatar in the sidebar and header */
+  --size-brand: 22px;    /* 标志：侧栏、手机顶栏、登录页 / the mark in the sidebar, the phone header and the sign-in page */
   --size-badge: 18px;    /* 铃铛上的角标 / the bell's badge */
 
   /* ---------- 子项行的列宽 ----------

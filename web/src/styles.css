@@ -57,7 +57,6 @@ code, .mono { font-family: var(--f-mono); letter-spacing: 0; }
 .app-header { position: sticky; top: 0; z-index: 40; min-height: var(--app-header-height); display: grid; grid-template-columns: minmax(140px, 1fr) auto minmax(140px, 1fr); align-items: center; padding-inline: 28px; color: var(--d-ink); background: var(--ink); border-bottom: 1px solid var(--l-ink); }
 .app-brand { width: max-content; min-height: 44px; display: inline-flex; align-items: center; gap: 10px; text-decoration: none; }
 .app-brand strong { font-family: var(--f-display); font-size: 22px; font-weight: 700; letter-spacing: -.5px; }
-.app-brand svg { flex: 0 0 auto; }
 .desktop-nav { display: flex; align-self: stretch; gap: 28px; }
 .desktop-nav a { position: relative; min-width: 58px; display: grid; place-items: center; color: var(--l-ink-3); text-decoration: none; font-size: 15px; font-weight: 550; }
 .desktop-nav a:hover { color: var(--l-surface); }
@@ -283,7 +282,6 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
 }
 .auth-panel { position: relative; width: min(100%, 420px); padding: 32px 30px; background: var(--l-surface); border-radius: var(--r-2); box-shadow: 0 22px 52px -22px var(--scrim); }
 .auth-brand { display: flex; align-items: center; gap: 10px; margin-bottom: 34px; }
-.auth-brand span { width: 36px; height: 36px; display: grid; place-items: center; color: var(--ok-tint-l); background: var(--ink); border-radius: 6px; }
 .auth-brand strong { font-size: 17px; }
 .auth-heading { margin-bottom: 30px; }
 .auth-heading h1 { margin-bottom: 9px; color: var(--l-ink); font-family: var(--f-display); font-size: 27px; line-height: 1.2; }
@@ -378,7 +376,6 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
   .app-header { grid-template-columns: minmax(0, 1fr) auto; padding-inline: 16px; }
   .app-brand { gap: 8px; }
   .app-brand strong { font-size: 18px; }
-  .app-brand svg { width: var(--h-sm); height: var(--h-sm); }
   .desktop-nav { display: none; }
   .workspace__main { padding: 20px 16px calc(var(--mobile-nav-height) + 24px); }
   .page-heading { gap: 10px; margin-bottom: 20px; }
@@ -513,7 +510,6 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
 .app-header { color: var(--l-ink); background: var(--l-surface); border-bottom: 1px solid var(--l-hair); }
 .app-brand { color: var(--l-ink); }
 .app-brand strong { font-size: var(--t-5); font-weight: var(--w-bold); letter-spacing: -.3px; }
-.app-brand svg { width: var(--h-sm); height: var(--h-sm); }
 .desktop-nav { gap: var(--s-5); }
 .desktop-nav a { color: var(--l-ink-3); font-size: var(--t-3); font-weight: var(--w-medium); }
 .desktop-nav a:hover, .desktop-nav a.router-link-exact-active { color: var(--l-ink); }
@@ -560,7 +556,6 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
 @media (max-width: 860px) {
   :root { --app-header-height: 52px; }
   .app-brand strong { font-size: var(--t-4); }
-  .app-brand svg { width: var(--s-5); height: var(--s-5); }
   .mobile-nav { background: var(--l-surface); border-top: 1px solid var(--l-hair); }
   .mobile-nav a { min-height: calc(var(--h-touch) + var(--s-1)); gap: 2px; color: var(--l-ink-3); font-size: var(--t-1); }
   .mobile-nav a.router-link-exact-active { color: var(--l-ink); font-weight: var(--w-medium); }
@@ -685,8 +680,6 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
 /* 卡片宽度按视口算，不按收缩的父元素：说明文字短了卡片也不跟着变窄，手机上左右照样留 16 / Width follows the viewport, not a shrink-to-fit parent: shorter copy never narrows the card, and phones keep 16 at each side */
 .auth-panel { width: min(400px, calc(100vw - 32px)); padding: var(--s-6); border: 1px solid var(--l-hair); border-radius: var(--r-3); box-shadow: var(--shadow-pop); }
 .auth-brand { gap: var(--s-2); margin-bottom: var(--s-6); }
-.auth-brand span { width: var(--h-sm); height: var(--h-sm); color: var(--d-ink); background: var(--l-ink); border-radius: var(--r-2); }
-.auth-brand span svg { width: var(--size-icon); height: var(--size-icon); }
 .auth-brand strong { font-size: var(--t-4); font-weight: var(--w-bold); }
 .auth-heading { margin-bottom: var(--s-5); }
 .auth-heading h1 { margin-bottom: var(--s-1); color: var(--l-ink); font-size: var(--t-5); font-weight: var(--w-bold); letter-spacing: -.01em; }
@@ -739,9 +732,6 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
 @media (max-width: 640px) {
   .account-popover > button { min-height: var(--h-touch); }
 }
-/* 登录卡片的品牌和顶栏一样：不套黑底方块 / The sign-in brand matches the header: no black tile behind the mark */
-.auth-brand span { width: auto; height: auto; color: var(--l-ink); background: none; border-radius: 0; }
-.auth-brand span svg { width: var(--s-5); height: var(--s-5); }
 
 /* ---------- v2 第三轮审查 / review round 3 ---------- */
 /* 登录卡片在背景曲线之上，曲线不再穿过聚焦的输入框 / The sign-in card sits above the background curves, which no longer cross a focused field */
@@ -968,9 +958,9 @@ body { text-spacing-trim: trim-start; }
 @media (min-width: 861px) {
   .app-shell { display: grid; grid-template-columns: var(--side-w) minmax(0, 1fr); }
   .app-header { position: sticky; top: 0; z-index: 40; height: 100dvh; min-height: 0; display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: var(--s-5) var(--s-3) var(--s-4); border-bottom: 0; border-right: 1px solid var(--l-hair); background: var(--l-canvas); }
-  .app-brand { min-height: 0; gap: 10px; margin-bottom: var(--s-4); padding: 0 var(--s-2); }
+  /* 左内边距和导航项一样 12：K 的竖条和下面的导航图标对在一列 / The same 12 left inset as the nav items, so the K's stem lines up with the nav icons below */
+  .app-brand { min-height: 0; gap: 10px; margin-bottom: var(--s-4); padding: 0 var(--s-3); }
   .app-brand strong { font-size: var(--t-4); font-weight: var(--w-heavy); letter-spacing: -.01em; }
-  .app-brand svg { box-sizing: border-box; width: var(--h-sm); height: var(--h-sm); padding: calc((var(--h-sm) - var(--size-icon)) / 2); border-radius: var(--r-2); color: var(--accent-ink); background: var(--accent); }
   /* 导航项撑满侧栏宽度、靠左：老顶栏的 align-items: center 会把它们缩成居中的一小块 / Nav items fill the sidebar's width and sit left: the old top bar's align-items: center shrank them into centred chips */
   .desktop-nav { display: flex; flex-direction: column; align-items: stretch; align-self: stretch; gap: 2px; }
   .desktop-nav a, .desktop-nav .nav-label { width: auto; text-align: left; }
@@ -1004,9 +994,10 @@ body { text-spacing-trim: trim-start; }
   .app-version__now { font-variant-numeric: tabular-nums; }
 }
 @media (max-width: 860px) { .app-version { display: none; } }
-/* 登录页的品牌：和侧栏一样的品牌色方块 / The auth page's brand mark: the same accent tile as the sidebar */
-.auth-brand span { width: var(--h-sm); height: var(--h-sm); display: grid; place-items: center; color: var(--accent-ink); background: var(--accent); border-radius: var(--r-2); }
-.auth-brand span svg { width: var(--size-icon); height: var(--size-icon); }
+/* 标志「块面 K」：不套底色方块，竖条跟文字色、「<」是品牌色；侧栏、手机顶栏、登录页同一个大小
+   The block K mark: no tile behind it, the stem in the text colour and the 「<」 in the accent; one size in the sidebar, the phone header and the sign-in page */
+.brand-mark { flex: 0 0 auto; width: var(--size-brand); height: var(--size-brand); }
+.brand-mark__chevron { fill: var(--accent); }
 
 /* ---------- 外观：铃铛旁一个图标，点开选三态 / Appearance: an icon beside the bell opens the three-way choice ---------- */
 .theme-center { position: relative; }
