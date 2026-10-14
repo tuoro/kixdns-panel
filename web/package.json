@@ -13,23 +13,23 @@
   "dependencies": {
     "@codemirror/commands": "^6.11.1",
     "@codemirror/lang-json": "^6.0.2",
-    "@codemirror/language": "^6.12.4",
+    "@codemirror/language": "^6.13.1",
     "@codemirror/state": "^6.7.6",
-    "@codemirror/view": "^6.43.13",
+    "@codemirror/view": "^6.43.14",
     "@fontsource/archivo": "^5.3.0",
     "@fontsource/ibm-plex-mono": "^5.3.0",
     "@lezer/highlight": "^1.2.5",
-    "@lucide/vue": "^1.52.0",
+    "@lucide/vue": "^1.55.0",
     "vue": "^3.5.43",
     "vue-router": "^4.5.0"
   },
   "devDependencies": {
-    "@playwright/test": "^1.63.0",
+    "@playwright/test": "^1.64.0",
     "@types/node": "^22.20.5",
     "@vitejs/plugin-vue": "^5.2.1",
     "typescript": "~5.9.3",
-    "vite": "^6.0.7",
+    "vite": "^6.4.4",
     "vitest": "^5.0.3",
-    "vue-tsc": "^3.3.11"
+    "vue-tsc": "^3.3.13"
   }
 }
