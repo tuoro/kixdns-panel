@@ -27,7 +27,8 @@ export const HELP_TOPICS: HelpTopic[] = [
   ] },
   { id: 'geosite', title: 'GeoSite 分类', page: 'config', body: [
     '域名分类库里的一类域名，比如 cn 是国内常用域名，category-ads-all 是广告域名。',
-    '写什么查什么：分类名按原样在库里找，不会展开或猜测，库里没有这个分类时条件不命中。条件里只写分类名，比如 cn；快速添加里写 geosite:cn 会自动去掉前缀。',
+    '写什么查什么：分类名按原样在库里找（不分大小写），不会展开或猜测，库里没有这个分类时条件不命中。条件里只写分类名，比如 cn；快速添加里写 geosite:cn 会自动去掉前缀。',
+    '「分类@属性」只要分类里带这个属性的域名，比如 google@cn 是谷歌在中国大陆有接入点的域名。@!cn 指标了 !cn 的域名（被排除出国内列表的那些），和 V2Ray 一样，不是「不带 cn」；要「不带 cn」，加一个「不属于 GeoSite google@cn」的条件。',
     '库文件在基础设置的 Geo 数据里指定。',
   ] },
   { id: 'groups', title: '规则组', page: 'config', body: [

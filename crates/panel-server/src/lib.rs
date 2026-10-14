@@ -7,6 +7,7 @@ mod db;
 mod digest;
 mod error;
 mod geo_data;
+mod geosite_catalog;
 mod operations;
 mod panel_update;
 mod recent_window;

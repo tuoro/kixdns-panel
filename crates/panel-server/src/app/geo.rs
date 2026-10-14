@@ -1,10 +1,13 @@
+use std::collections::{BTreeMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Json;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum_extra::extract::CookieJar;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::auth::{authenticate, unix_timestamp, verify_csrf};
 use crate::control::ControlError;
@@ -13,6 +16,7 @@ use crate::geo_data::{
     BuiltinGeosite, GeoDataCleanupResult, GeoDataManifest, GeoDataSchedule, GeoDataSyncRequest,
     apply_manifest_paths,
 };
+use crate::geosite_catalog::{CatalogCache, GeositeCategory};
 
 use super::{
     AppState, ensure_running_config_supported, map_config_error, map_geo_data_error,
@@ -82,6 +86,112 @@ pub(super) async fn get_builtin_geosite(
         .builtin_geosite()
         .map(Json)
         .map_err(map_geo_data_error)
+}
+
+/// 一个 `GeoSite` 文件读得怎么样：读到了给出内容摘要（分类在 `catalogs` 里按摘要找），读不到给出原因。
+/// How one `GeoSite` file read: its content digest when it read (its categories sit in `catalogs` under
+/// it), or why it did not.
+#[derive(Debug, Serialize)]
+pub(super) struct GeositeFile {
+    path: String,
+    sha256: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct GeositeCategories {
+    /// 要编辑的配置和清单里出现的文件，按配置里的顺序 / The files the config being edited and the manifest name, in config order
+    files: Vec<GeositeFile>,
+    /// 安装包自带的那份：还没有 `GeoSite` 时配置页先用它列出分类 / The built-in file: with no `GeoSite` yet, the config page lists its categories
+    builtin: Option<GeositeFile>,
+    /// 按内容摘要放的分类，内置那份和导入后的副本只放一次 / Categories by content digest, so the built-in file and its imported copy appear once
+    catalogs: BTreeMap<String, Arc<Vec<GeositeCategory>>>,
+}
+
+/// 配置页挑 `GeoSite` 分类用：读出要编辑的配置（待应用的优先）、清单和安装包里的 `GeoSite` 文件各有哪些分类。
+/// 只读面板自己知道的路径，不接受页面传来的路径；草稿里新写、还没保存的本地路径，页面会说保存后才能读。
+/// For picking `GeoSite` categories on the config page: which categories the `GeoSite` files of the config
+/// being edited (pending first), the manifest and the package hold. Only paths the panel already knows are
+/// read, never paths sent by the page; a local path typed into the draft and not yet saved is reported by
+/// the page as readable after saving.
+pub(super) async fn get_geosite_categories(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> AppResult<Json<GeositeCategories>> {
+    authenticate(&state.database, &jar).await?;
+    let desired = state.config.desired().await.map_err(map_config_error)?;
+    let mut paths: Vec<String> = desired
+        .content
+        .pointer("/settings/geosite_data_paths")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|path| path.as_str().map(str::to_owned))
+        .collect();
+    let manifest = state.geo_data.current().await.map_err(map_geo_data_error)?;
+    paths.extend(manifest.geosite.into_iter().map(|resource| resource.path));
+    let mut seen = HashSet::new();
+    paths.retain(|path| seen.insert(path.clone()));
+    let builtin = state
+        .geo_data
+        .builtin_geosite_data()
+        .map_err(map_geo_data_error)?;
+    let cache = Arc::clone(&state.geosite_catalog);
+    // 读盘和解析在阻塞线程里做：一个 11 MB 的文件要几十毫秒 / Disk and parsing run on a blocking thread: an 11 MB file takes tens of milliseconds
+    let categories =
+        tokio::task::spawn_blocking(move || read_geosite_files(&cache, &paths, builtin))
+            .await
+            .map_err(|error| AppError::Internal(anyhow::Error::new(error)))?;
+    Ok(Json(categories))
+}
+
+pub(super) fn read_geosite_files(
+    cache: &CatalogCache,
+    paths: &[String],
+    builtin: Option<PathBuf>,
+) -> GeositeCategories {
+    let mut catalogs = BTreeMap::new();
+    let mut read = |path: String| {
+        // 内核按自己的工作目录找相对路径，面板不知道那是哪里 / The kernel resolves a relative path from its own working directory, which the panel cannot know
+        if !Path::new(&path).is_absolute() {
+            return GeositeFile {
+                path,
+                sha256: None,
+                error: Some("写的是相对路径，面板不知道 KixDNS 从哪个目录找它".to_owned()),
+            };
+        }
+        match cache.read(Path::new(&path)) {
+            Ok(catalog) => {
+                catalogs
+                    .entry(catalog.sha256.clone())
+                    .or_insert(catalog.categories);
+                GeositeFile {
+                    path,
+                    sha256: Some(catalog.sha256),
+                    error: None,
+                }
+            }
+            Err(error) => GeositeFile {
+                path,
+                sha256: None,
+                error: Some(error.to_string()),
+            },
+        }
+    };
+    let files: Vec<GeositeFile> = paths.iter().cloned().map(&mut read).collect();
+    let builtin = builtin.map(|path| read(path.to_string_lossy().into_owned()));
+    cache.retain(
+        &files
+            .iter()
+            .chain(&builtin)
+            .map(|file| PathBuf::from(&file.path))
+            .collect(),
+    );
+    GeositeCategories {
+        files,
+        builtin,
+        catalogs,
+    }
 }
 
 /// 用户在 Geo 设置里点「导入内置 GeoSite」：和「下载并填入配置」一样只准备文件、返回清单，路径由

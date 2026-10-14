@@ -128,7 +128,7 @@ const noGeositePrefix = (v: string): boolean => !/^geosite:/i.test(v)
 export const FIELD: Record<ConditionField, FieldDef> = {
   domain: { label: '域名', ops: DOMAIN_OPS, values: true, placeholder: 'example.com，回车添加', mono: true, valid: domainValid },
   // 行里叫 GeoSite（正式面板一直这么叫），句子里说「域名属于 GeoSite cn」 / The row says GeoSite (the production panel's name); sentences say 「域名属于 GeoSite cn」
-  geosite: { label: 'GeoSite', subject: '域名', ops: [{ value: 'is', label: '属于', phrase: '属于 GeoSite', negate: false }, { value: 'not', label: '不属于', phrase: '不属于 GeoSite', negate: true }], values: true, placeholder: 'cn、category-ads-all…', mono: true, suggest: 'geosite', valid: noGeositePrefix },
+  geosite: { label: 'GeoSite', subject: '域名', ops: [{ value: 'is', label: '属于', phrase: '属于 GeoSite', negate: false }, { value: 'not', label: '不属于', phrase: '不属于 GeoSite', negate: true }], values: true, placeholder: '搜索分类，如 cn、google', mono: true, suggest: 'geosite', valid: noGeositePrefix },
   client_ip: { label: '客户端 IP', ops: IN, values: true, placeholder: '192.168.1.0/24 或单个 IP', mono: true, valid: (v) => isCidr(v) },
   client_country: { label: '客户端地区', ops: IS, values: true, placeholder: 'CN、HK…', mono: true, upper: true, suggest: 'country', valid: (v) => /^[a-z]{2}$|^[a-z0-9_-]{3,}$/i.test(v), hint: 'GeoIP 国家代码' },
   client_private: { label: '客户端网络', merge: 'client_ip', ops: [{ value: 'is', label: '是内网', phrase: '客户端是内网', negate: false }, { value: 'not', label: '不是内网', phrase: '客户端不是内网', negate: true }], values: false, placeholder: '', mono: false },
@@ -147,7 +147,7 @@ export const RESPONSE_FIELD: Record<ResponseField, FieldDef> = {
   upstream: { label: '回答来自', ops: IS, values: true, placeholder: '10.0.0.53:53', mono: true },
   upstream_ip: { label: '上游 IP', ops: IN, values: true, placeholder: '10.0.0.0/8', mono: true, valid: (v) => isCidr(v) },
   request_domain: { label: '请求的域名', ops: DOMAIN_OPS, values: true, placeholder: 'example.com', mono: true, valid: domainValid },
-  request_geosite: { label: '请求域名 GeoSite', subject: '请求的域名', ops: [{ value: 'is', label: '属于', phrase: '属于 GeoSite', negate: false }, { value: 'not', label: '不属于', phrase: '不属于 GeoSite', negate: true }], values: true, placeholder: 'cn', mono: true, suggest: 'geosite', valid: noGeositePrefix },
+  request_geosite: { label: '请求域名 GeoSite', subject: '请求的域名', ops: [{ value: 'is', label: '属于', phrase: '属于 GeoSite', negate: false }, { value: 'not', label: '不属于', phrase: '不属于 GeoSite', negate: true }], values: true, placeholder: '搜索分类，如 cn', mono: true, suggest: 'geosite', valid: noGeositePrefix },
   txt: { label: 'TXT 内容', ops: [
     { value: 'is', label: '等于', negate: false, txtMode: 'exact' }, { value: 'not', label: '不等于', negate: true, txtMode: 'exact' },
     { value: 'prefix', label: '开头是', negate: false, txtMode: 'prefix' }, { value: 'nprefix', label: '开头不是', negate: true, txtMode: 'prefix' },

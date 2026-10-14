@@ -103,6 +103,11 @@ a.ui-btn { text-decoration: none; }
    Invalid: a red frame and the message under the field, replacing its hint; shown on blur or submit only. */
 .ui-input:has([aria-invalid="true"]) { border-color: var(--err-l); }
 .ui-field-error { margin: 0; color: var(--err-l); font-size: var(--t-1); }
+/* 提醒：值写得没错，但大概不是想要的（比如数据里没有这个分类）；说明：解释这个值在这里的意思。都在框下面，不挡保存。
+   A caution: the value is well formed but probably not what was meant (the data lacks the category, say); a note explains what
+   the value means here. Both sit under the field and never block saving. */
+.ui-field-warn { margin: 0; color: var(--warn-l); font-size: var(--t-1); }
+.ui-field-note { margin: 0; color: var(--l-ink-2); font-size: var(--t-1); }
 
 /* ---------- 下拉框：输入框的外框 + 原生 select + 自画箭头 ----------
    系统弹层和手机滚轮选择器保留；外框、高度、圆角和输入框一样，同一行分不出高矮。

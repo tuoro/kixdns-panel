@@ -1,8 +1,7 @@
 import type { FieldDef, OpDef } from './model'
 
-// 输入时的建议：GeoSite 分类和地区先用固定的常见值（GeoSite 内置之后再从 geo-data 接口拿），记录类型、类别、响应码是 DNS 的固定集合
-// Suggestions while typing: GeoSite categories and regions are a fixed list of common values for now (the geo-data API takes over once GeoSite is bundled); record types, classes and rcodes are DNS's own sets
-export const GEOSITE_SUGGESTIONS = ['cn', 'geolocation-!cn', 'geolocation-cn', 'category-ads-all', 'apple', 'google', 'microsoft', 'github', 'netflix', 'telegram', 'private']
+// 输入时的建议：地区用固定的常见值，记录类型、类别、响应码是 DNS 的固定集合；GeoSite 分类从数据里读，见 geosite.ts
+// Suggestions while typing: regions are a fixed list of common values, and record types, classes and rcodes are DNS's own sets; GeoSite categories come from the data, see geosite.ts
 export const COUNTRY_SUGGESTIONS = ['CN', 'HK', 'TW', 'JP', 'SG', 'US', 'private']
 export const QTYPE_SUGGESTIONS = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS', 'PTR', 'SRV', 'SOA', 'HTTPS', 'SVCB', 'CAA', 'ANY']
 export const QCLASS_SUGGESTIONS = ['IN', 'CH', 'HS']
@@ -19,7 +18,7 @@ export const REQUEST_ORDER = ['domain', 'geosite', 'qtype', 'qclass', 'edns', 'c
 export const RESPONSE_ORDER = ['rcode', 'answer_ip', 'answer_country', 'answer_private', 'answer_type', 'txt', 'upstream', 'upstream_ip', 'request_domain', 'request_geosite', 'qclass', 'edns']
 
 export const SUGGEST: Record<string, readonly string[]> = {
-  geosite: GEOSITE_SUGGESTIONS, request_geosite: GEOSITE_SUGGESTIONS, client_country: COUNTRY_SUGGESTIONS, answer_country: COUNTRY_SUGGESTIONS,
+  client_country: COUNTRY_SUGGESTIONS, answer_country: COUNTRY_SUGGESTIONS,
   qtype: QTYPE_SUGGESTIONS, answer_type: QTYPE_SUGGESTIONS, qclass: QCLASS_SUGGESTIONS, rcode: RCODE_SUGGESTIONS,
 }
 

@@ -11,6 +11,7 @@ import type {
   ConfigVersions,
   DnsDiagnostic,
   GeoDataBuiltin,
+  GeositeCategories,
   GeoDataCleanupResult,
   GeoDataManifest,
   GeoDataSchedule,
@@ -28,6 +29,7 @@ import type {
   PanelUpdateStatus,
   ValidationResult,
 } from './types'
+import { demoGeositeCategories } from './mock-geosite'
 
 const now = Math.floor(Date.now() / 1000)
 // 演示里已经「到来」的新日志行数，只在 kixdns:demo-log-growing 下增长。
@@ -654,6 +656,21 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     return geoData as T
   }
   if (path === '/api/v1/config/geo-data/builtin' && method === 'GET') return builtinGeosite as T
+  // 和服务端一样：读配置和清单里的文件，没读到的给原因；内置那份另给。分类都用同一份演示数据
+  // Like the server: the config's and the manifest's files, unread ones with a reason, and the built-in one apart; every file shares the demo categories
+  if (path === '/api/v1/config/geo-data/geosite-categories' && method === 'GET') {
+    geositeEmptyIfAsked()
+    const known = new Map(geoData.geosite.map((resource) => [resource.path, resource.sha256]))
+    const configured = (config.content.settings as Record<string, unknown>).geosite_data_paths
+    const paths = [...new Set([...(Array.isArray(configured) ? configured.filter((p): p is string => typeof p === 'string') : []), ...known.keys()])]
+    const files = paths.map((p) => (known.has(p) ? { path: p, sha256: known.get(p)!, error: null } : { path: p, sha256: null, error: '文件不存在' }))
+    const digests = new Set([...files.map((file) => file.sha256).filter((sha): sha is string => Boolean(sha)), builtinGeosite.sha256])
+    return {
+      files,
+      builtin: { path: '/usr/share/kixdns-panel/geo/geosite.dat', sha256: builtinGeosite.sha256, error: null },
+      catalogs: Object.fromEntries([...digests].map((sha) => [sha, demoGeositeCategories])),
+    } satisfies GeositeCategories as T
+  }
   // 和服务端一样：只在还没有 GeoSite 数据时导入，用户自己选的来源不被换掉
   // Matches the server: import only while there is no GeoSite data, so a source the user chose is never replaced
   if (path === '/api/v1/config/geo-data/builtin' && method === 'POST') {

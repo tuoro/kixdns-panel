@@ -7,12 +7,13 @@ import UiMenu from '../components/ui/UiMenu.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import { useConfirm } from '../composables/useConfirm'
 import { useToast } from '../composables/useToast'
-import { GEOSITE_SUGGESTIONS } from '../config-model/condKinds'
+import { GEOSITE_COMMON, geositeIssue } from '../config-model/geosite'
 import { isCidr, isDomain, newRule, outcomeSentence, rawMatchersText, type Condition, type Outcome, type Rule, type RuleGroup, ruleTitle } from '../config-model/model'
 import { useNarrowDesktop, usePhone } from './phone'
 import RuleList from './RuleList.vue'
 import Tester from './Tester.vue'
 import { model, newId, ruleGroupUsers, trackDialogEdits, ui } from './store'
+import { useGeositeCatalog } from './useGeosite'
 import { isTyping } from '../utils'
 // JSON 编辑器（CodeMirror）只在用到时才加载：配置页的首包不带它 / The JSON editor (CodeMirror) loads on first use, so the config page's first chunk leaves it out
 const JsonEditor = defineAsyncComponent(() => import('../components/JsonEditor.vue'))
@@ -65,17 +66,24 @@ const quickTargets = computed(() => [...model.groups.map((g) => ({ value: `up:${
 // 选过的组被删了或换了一份配置，就落回第一项 / If the chosen group is gone or the config changed, fall back to the first option
 const quickTarget = computed({ get: () => (quickTargets.value.some((o) => o.value === quick.target) ? quick.target : quickTargets.value[0]?.value ?? 'block'), set: (v: string) => { quick.target = v } })
 const quickOutcome = (): Outcome => (quickTarget.value === 'block' ? { type: 'block', response: 'default' } : { type: 'upstream', group: quickTarget.value.slice(3) })
-// 认值：IP 或网段是客户端 IP，「geosite:」或认得的分类是 GeoSite，其余是域名 / IP or range is client IP, 「geosite:」 or a known category is GeoSite, the rest are domains
+// 认值：IP 或网段是客户端 IP，「geosite:」或 GeoSite 数据里有的分类是 GeoSite，其余是域名；数据读全时，写了数据里没有的分类直接说
+// IP or range is client IP, 「geosite:」 or a category in the GeoSite data is GeoSite, the rest are domains; with the data read
+// completely, a category the data lacks is said at once
+const geosite = useGeositeCatalog()
+const knownCategory = (t: string): boolean => geosite.value.categories.has(t.toLowerCase()) || (GEOSITE_COMMON as readonly string[]).includes(t.toLowerCase())
 const parsed = computed<{ field: Condition['field']; values: string[] } | { error: string } | null>(() => {
   const tokens = quick.text.split(/[\s,，]+/).map((t) => t.trim()).filter(Boolean)
   if (!tokens.length) return null
-  const kindOf = (t: string): Condition['field'] | null => (isCidr(t) ? 'client_ip' : /^geosite:/i.test(t) || GEOSITE_SUGGESTIONS.includes(t.toLowerCase()) ? 'geosite' : isDomain(t) ? 'domain' : null)
+  const kindOf = (t: string): Condition['field'] | null => (isCidr(t) ? 'client_ip' : /^geosite:/i.test(t) || knownCategory(t) ? 'geosite' : isDomain(t) ? 'domain' : null)
   const bad = tokens.find((t) => !kindOf(t))
   if (bad) return { error: `认不出「${bad}」：写域名、geosite:分类或 IP 网段` }
   const kinds = new Set(tokens.map(kindOf))
   if (kinds.size > 1) return { error: '一次只加一种：域名、GeoSite 或 IP 网段' }
   const field = [...kinds][0]!
-  return { field, values: tokens.map((t) => (field === 'geosite' ? t.replace(/^geosite:/i, '').toLowerCase() : t)) }
+  const values = tokens.map((t) => (field === 'geosite' ? t.replace(/^geosite:/i, '').toLowerCase() : t))
+  const missing = field === 'geosite' ? values.find((v) => geositeIssue(v, geosite.value)?.kind === 'category' || geositeIssue(v, geosite.value)?.kind === 'attribute') : undefined
+  if (missing) return { error: `当前 GeoSite 数据里没有「${missing}」` }
+  return { field, values }
 })
 const ok = computed(() => (parsed.value && !('error' in parsed.value) ? parsed.value : null))
 const LABEL: Record<string, string> = { domain: '域名', geosite: 'GeoSite', client_ip: '客户端 IP' }
