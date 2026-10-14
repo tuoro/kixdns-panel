@@ -17,6 +17,13 @@ import type { ActionConfig, PipelineConfig } from '../../config-editor/types'
 // more they are numbered and the ordinal doubles as the reorder menu. A forward's upstream has the
 // params cell to itself, with a ▾ at its end for upstreams used elsewhere; transport and ECS are
 // secondary and sit on the line below (spec 3.4b).
+// 这条占位提示里有网址，所以放在脚本里绑定：vue-tsc 3.3.12 起会把 v-for 里组件静态属性中的「//」
+// 当成注释开头，循环变量随之丢失（vuejs/language-tools 的 issue 6240）。
+// This placeholder holds a URL, so it is bound from here: since 3.3.12, vue-tsc reads a "//" in a
+// static component attribute inside v-for as the start of a comment and loses the loop variables
+// (vuejs/language-tools issue 6240).
+const upstreamPlaceholder = '192.168.1.1:53, https://dns.example/dns-query'
+
 const props = withDefaults(defineProps<{
   pipelines: PipelineConfig[]
   currentPipelineId: string
@@ -218,7 +225,7 @@ function move(index: number, direction: string): void {
             <span class="ui-rows__plabel is-top">上游</span>
             <!-- 上游可能是一串网址：框会换行、长高，只在「/」「,」后面断，几个上游和很长的地址都看得全（审计 B4、V16）
                  An upstream may be a list of URLs: the field wraps and grows, breaking only after "/" and ",", so several upstreams and long addresses stay readable (audits B4, V16) -->
-            <label class="ui-input ui-input--area is-long"><UiUrlField v-model="action.upstream" :label="`动作 ${index + 1} 上游`" placeholder="192.168.1.1:53, https://dns.example/dns-query" :invalid="Boolean(visibleError(index, 'upstream'))" :describedby="errorId(index, 'upstream')" @blur="touch(index, 'upstream')" /><UiMenu v-if="existingItems.length" trigger-class="ui-input__affix" :label="`动作 ${index + 1} 选用已有上游`" :items="existingItems" @select="useUpstream(action, $event)"><ChevronDown :size="16" aria-hidden="true" /></UiMenu></label>
+            <label class="ui-input ui-input--area is-long"><UiUrlField v-model="action.upstream" :label="`动作 ${index + 1} 上游`" :placeholder="upstreamPlaceholder" :invalid="Boolean(visibleError(index, 'upstream'))" :describedby="errorId(index, 'upstream')" @blur="touch(index, 'upstream')" /><UiMenu v-if="existingItems.length" trigger-class="ui-input__affix" :label="`动作 ${index + 1} 选用已有上游`" :items="existingItems" @select="useUpstream(action, $event)"><ChevronDown :size="16" aria-hidden="true" /></UiMenu></label>
           </template>
           <template v-else-if="action.type === 'static_txt_response' || action.type === 'replace_txt_response'">
             <span class="ui-rows__plabel">文本</span>
