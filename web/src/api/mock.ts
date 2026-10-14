@@ -1,5 +1,6 @@
 import { ApiError, PANEL_UNREACHABLE_EVENT } from './client'
 import { exportConfig, readConfig } from '../config-model/document'
+import { sampleModel } from '../config-model/testing/samples'
 import type {
   ActiveConfig,
   AuditPage,
@@ -360,6 +361,35 @@ function oldCopyIfAsked(): void {
   }
 }
 
+// 请求分布按去向（kixdns:demo-destinations）：样本配置写成面板格式，概览的计数照它一步步走出来——
+// 映射 2,140；主列表里拦截和自定义回答 9,620；公司 1,830、苹果服务 11,250（转发自带 ECS）、国内域名 41,900、内网反查 2,150（组里转公司 410、
+// 其余转路由器 1,740）、防 DNS 重绑定 18,400（自带检查拦下 12），其余 41,180 去国外；回答后检查：公司转国内 36，国内污染转国外 260，
+// 苹果服务的转发沿用国内的检查转国外 84。各去向合起来正好是总请求数，主列表和规则组只是路过
+// Request destinations (kixdns:demo-destinations): the sample config in the panel's format, with overview counts walked through it step by
+// step (the numbers above). The destinations add up to the total; the main list and the rule group are only passed through
+let destinationsApplied = false
+function destinationsIfAsked(): void {
+  if (destinationsApplied || typeof localStorage === 'undefined' || localStorage.getItem('kixdns:demo-destinations') !== 'true') return
+  destinationsApplied = true
+  const model = sampleModel()
+  config = { ...config, content: exportConfig(model) }
+  const own = (name: string) => `rule-${model.rules.find((r) => r.name === name)!.id}`
+  const [apple, rebind] = [own('苹果服务'), own('防 DNS 重绑定')]
+  const answered = (pipeline: string, count: number) => ({ pipeline, rule: pipeline, phase: 'response' as const, count })
+  const hit = (rule: string, count: number, pipeline = 'main') => ({ pipeline, rule, phase: 'request' as const, count })
+  overview.metrics.requests_total = 128_470
+  overview.metrics.pipelines = [
+    { name: 'domain_mapping', count: 2_140 }, { name: 'main', count: 126_330 }, { name: 'group-lan', count: 2_150 },
+    { name: 'upstream-corp', count: 2_240 }, { name: 'upstream-cn', count: 41_936 }, { name: apple, count: 11_250 },
+    { name: 'upstream-router', count: 1_740 }, { name: rebind, count: 18_400 }, { name: 'upstream-abroad', count: 41_524 },
+  ]
+  overview.metrics.rules = [
+    hit('国内域名', 41_900), hit('其余请求', 41_180), hit('防 DNS 重绑定', 18_400), hit('苹果服务', 11_250), hit('广告与跟踪', 9_100),
+    hit('内网反查', 2_150), hit('公司内网', 1_830), hit('火狐 DoH 探测', 480), hit('版本查询', 40), hit('公司网段反查', 410, 'group-lan'),
+    answered('upstream-cn', 260), answered(apple, 84), answered('upstream-corp', 36), answered(rebind, 12),
+  ]
+}
+
 // 让待应用的版本原地生效：「现在应用」和演示里的「后台那一遍」都走这里 / Put the pending version into effect in place: used by 现在应用 and by the demo's "background pass"
 function applyPendingInPlace(id: number): void {
   config = {
@@ -679,6 +709,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
   const emptyFirstInstall = typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-empty-first-install') === 'true'
   if (path === '/api/v1/overview') {
     if (emptyFirstInstall) throw new Error('KixDNS 已停止')
+    destinationsIfAsked()
     return overview as T
   }
   if (pathname === '/api/v1/stats/top' && method === 'GET') {
@@ -725,6 +756,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (path === '/api/v1/config' && method === 'GET') {
     oldCopyIfAsked()
+    destinationsIfAsked()
     geositeEmptyIfAsked()
     geositeUnreadableIfAsked()
     changeElsewhereIfAsked()

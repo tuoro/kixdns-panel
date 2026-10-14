@@ -95,6 +95,23 @@ test('首页展示精确分布，页签可用键盘切换且完整保留三个�
   await expect(page.getByRole('heading', { name: '上游状态' })).toBeVisible()
 })
 
+// 请求分布按去向：每个请求只算在最后停下的地方，主列表、规则组这种转交的列表不出现，各行合起来就是总请求数
+// Request distribution by destination: each request counts where it finally stopped, lists that only hand requests on never show, and the rows add up to the total
+test('请求分布按去向：不重复计数，主列表和规则组不单列 @responsive', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('kixdns:demo-destinations', 'true'))
+  await page.goto('/')
+  const distribution = page.locator('.overview-card--share').first()
+  await expect(distribution.locator('.overview-card-note')).toHaveText('启动以来 · 按去向')
+  const rows = distribution.locator('.overview-row')
+  await expect(rows.locator('.overview-row-name')).toHaveText(['上游组「国外」', '上游组「国内」', '拦截和自定义回答', '上游组「公司」', '域名映射', '上游组「路由器」'])
+  await expect(rows.locator('.overview-row-value')).toHaveText(['59,912 · 46.6%', '52,842 · 41.1%', '9,632 · 7.5%', '2,204 · 1.7%', '2,140 · 1.7%', '1,740 · 1.4%'])
+  const counts = (await rows.locator('.overview-row-value').allTextContents()).map((v) => Number(v.split(' · ')[0]!.replace(/,/g, '')))
+  expect(counts.reduce((sum, n) => sum + n, 0)).toBe(128_470)
+  await expect(distribution).not.toContainText('主列表')
+  await expect(distribution).not.toContainText('规则组')
+  await expect(distribution.locator('.overview-card-foot')).toHaveCount(0)
+})
+
 test('查询排行保留时间窗口与带确认的清理操作', async ({ page }) => {
   await openOverview(page)
   await page.getByRole('tab', { name: '查询排行' }).click()
