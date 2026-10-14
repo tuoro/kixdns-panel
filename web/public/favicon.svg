@@ -1,4 +1,14 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="10" fill="#147d55"/>
-  <path d="M10 34h11l6-19 10 35 7-24 4 8h6" fill="none" stroke="#e8fff2" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="10.75 11 42 42">
+  <!-- 标志「块面 K」，和 src/components/BrandMark.vue 同一个图形；浏览器是深色时竖条变白、「<」换深色模式的品牌色
+       The block K, the same shape as src/components/BrandMark.vue; with a dark browser the stem turns white and the 「<」 takes the dark accent -->
+  <style>
+    .stem { fill: #15171d; }
+    .chevron { fill: #5b5bd6; }
+    @media (prefers-color-scheme: dark) {
+      .stem { fill: #ffffff; }
+      .chevron { fill: #8c8cf0; }
+    }
+  </style>
+  <rect class="stem" x="13" y="13" width="11" height="38" rx="3"/>
+  <path class="chevron" d="M50.5 13H38.4L27.6 30.2Q26.5 32 27.6 33.8L38.4 51H50.5L39 32Z"/>
 </svg>

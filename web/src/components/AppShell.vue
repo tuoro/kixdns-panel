@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { Activity, ArrowRightLeft, Bell, Check, Cpu, FileText, Keyboard, LayoutGrid, List, LogOut, Monitor, Moon, PanelsTopLeft, RefreshCw, Server, Settings, SlidersHorizontal, Stethoscope, Sun } from '@lucide/vue'
+import { ArrowRightLeft, Bell, Check, Cpu, FileText, Keyboard, LayoutGrid, List, LogOut, Monitor, Moon, PanelsTopLeft, RefreshCw, Server, Settings, SlidersHorizontal, Stethoscope, Sun } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { useHelp } from '../composables/useHelp'
 import { useSession } from '../composables/useSession'
+import BrandMark from './BrandMark.vue'
 import ConnectionBanner from './ConnectionBanner.vue'
 import HelpDrawer from './HelpDrawer.vue'
 import type { HelpPage } from '../help/topics'
@@ -156,7 +157,7 @@ onBeforeUnmount(() => {
     <header class="app-header">
       <!-- 手机上打开头部菜单时，下面的页面压暗，点一下暗处收起 / On a phone an open header menu dims the page below; a tap on the dim area closes it -->
       <div v-if="activePopover" class="popover-scrim" aria-hidden="true"></div>
-      <RouterLink class="app-brand" to="/" aria-label="KixDNS 首页"><Activity :size="32" /><strong>KixDNS</strong></RouterLink>
+      <RouterLink class="app-brand" to="/" aria-label="KixDNS 首页"><BrandMark /><strong>KixDNS</strong></RouterLink>
       <nav class="desktop-nav" aria-label="主导航">
         <template v-for="group in navGroups" :key="group.label || group.items[0].to">
           <span v-if="group.label" class="nav-label">{{ group.label }}</span>

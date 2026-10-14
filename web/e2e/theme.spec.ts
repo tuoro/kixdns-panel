@@ -36,6 +36,42 @@ test('铃铛旁的外观按钮：选深色立刻生效、图标跟着变、刷�
   expect(await page.evaluate(() => localStorage.getItem('kixdns-panel.theme'))).toBeNull()
 })
 
+// 手机浏览器地址栏和顶栏同色：跟随系统时两条 theme-color 按系统偏好各管一种，选了浅色或深色两条都换成那一种
+// The phone browser's address bar matches the header: following the system the two theme-color tags each serve one preference; a chosen
+// light or dark puts both on that one
+test('手机地址栏的颜色跟着外观走 @responsive', async ({ page }, testInfo) => {
+  await page.goto('/')
+  await expect(page.locator('main h1')).toBeVisible()
+  const bars = () => page.evaluate(() => [...document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]')].map((tag) => `${tag.media} ${tag.content}`))
+  const header = () => page.evaluate(() => getComputedStyle(document.querySelector('.app-header')!).backgroundColor)
+  const SYSTEM = ['(prefers-color-scheme: light) #ffffff', '(prefers-color-scheme: dark) #171a22']
+  expect(await bars()).toEqual(SYSTEM)
+  // 两种颜色就是两种外观下手机顶栏的底色（桌面上 .app-header 是侧栏，地址栏颜色只在手机上有用）
+  // The two colours are the phone header's background under each appearance (on desktop .app-header is the sidebar, and the bar colour only matters on phones)
+  if (testInfo.project.name === 'mobile') {
+    expect(await header()).toBe('rgb(255, 255, 255)')
+    await page.emulateMedia({ colorScheme: 'dark' })
+    expect(await header()).toBe('rgb(23, 26, 34)')
+    await page.emulateMedia({ colorScheme: 'light' })
+  }
+
+  const button = page.getByRole('button', { name: /^外观：/ })
+  const popover = page.getByRole('dialog', { name: '外观', exact: true })
+  await button.click()
+  await popover.getByRole('radio', { name: '深色' }).click()
+  expect(await bars()).toEqual(['(prefers-color-scheme: light) #171a22', '(prefers-color-scheme: dark) #171a22'])
+  // 刷新以后一开始就是深色 / After a reload it starts dark
+  await page.reload()
+  await expect(page.locator('main h1')).toBeVisible()
+  expect(await bars()).toEqual(['(prefers-color-scheme: light) #171a22', '(prefers-color-scheme: dark) #171a22'])
+  await button.click()
+  await popover.getByRole('radio', { name: '浅色' }).click()
+  expect(await bars()).toEqual(['(prefers-color-scheme: light) #ffffff', '(prefers-color-scheme: dark) #ffffff'])
+  await button.click()
+  await popover.getByRole('radio', { name: '跟随系统' }).click()
+  expect(await bars()).toEqual(SYSTEM)
+})
+
 // 提示条全站一个位置：桌面右下、手机底部导航上方；配置页有保存条时抬到它上面，不盖页头的主按钮
 // Toasts sit in one place everywhere: desktop bottom right, phones above the bottom navigation; lifted over the save bar on the config page, never over the header's primary button
 test('提示条在右下 / 底部导航上方，保存条在时抬到它上面 @responsive', async ({ page }, testInfo) => {

@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { Activity, Clock, Eye, EyeOff, ShieldCheck, TriangleAlert } from '@lucide/vue'
+import { Clock, Eye, EyeOff, ShieldCheck, TriangleAlert } from '@lucide/vue'
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useSession } from '../composables/useSession'
 import { errorMessage } from '../utils'
+import BrandMark from './BrandMark.vue'
 
 const props = defineProps<{ mode: 'login' | 'setup' }>()
 const route = useRoute()
@@ -45,7 +46,7 @@ async function submit(): Promise<void> {
 <template>
   <main class="auth-page">
     <section class="auth-panel">
-      <div class="auth-brand"><span><Activity :size="22" /></span><strong>KixDNS</strong></div>
+      <div class="auth-brand"><BrandMark /><strong>KixDNS</strong></div>
       <div class="auth-heading">
         <h1>{{ isSetup ? '创建管理员' : '登录面板' }}</h1>
         <p v-if="isSetup">这个账号可以改配置、管服务、装更新。</p>
