@@ -155,7 +155,7 @@ export function applyHits(counts: RuleCount[]): void {
   const lists: [string, Rule[]][] = [[mainPipelineId(model), model.rules], ...model.ruleGroups.map((g): [string, Rule[]] => [ruleGroupPipelineId(model, g.id), g.rules])]
   for (const [pipeline, rules] of lists) {
     for (const r of rules) {
-      const kname = r.name.trim() || `rule-${r.id}`
+      const kname = kernelRuleName(r)
       const n = counts.filter((c) => c.phase === 'request' && c.pipeline === pipeline && c.rule.replace(/#\d+$/, '') === kname).reduce((s, c) => s + c.count, 0)
       if (n) map.set(r.id, n)
     }
@@ -163,6 +163,12 @@ export function applyHits(counts: RuleCount[]): void {
   hits.value = map
 }
 export const hitsOf = (rule: Rule): number => hits.value.get(rule.id) ?? 0
+const kernelRuleName = (rule: Rule) => rule.name.trim() || `rule-${rule.id}`
+/** 查询日志里这条规则的查询：按内核里的名字和所在列表筛，和命中数同一口径 / This rule's queries in the query log: by its kernel name and list, as the hit count is */
+export function ruleLogQuery(rule: Rule): { rule: string; in: string } {
+  const group = model.ruleGroups.find((g) => g.rules.some((r) => r.id === rule.id))
+  return { rule: kernelRuleName(rule), in: group ? ruleGroupPipelineId(model, group.id) : mainPipelineId(model) }
+}
 
 // ---------- 上游组的健康 / group health ----------
 // 概览按每个上游地址计数；一个组的数字是它所有地址的合计，算法和概览的上游状态一样：每个地址先按它的依据（最近一小时够 50 次可判断的响应就看最近，

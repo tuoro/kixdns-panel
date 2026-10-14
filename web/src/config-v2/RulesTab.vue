@@ -2,6 +2,7 @@
 import { jsonProblemText, jsonSyntaxProblem } from '../json-problem'
 import { Braces, FileUp, FlaskConical, ListFilter, Plus, Search, X } from '@lucide/vue'
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, reactive, ref, toRefs, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import UiHelp from '../components/ui/UiHelp.vue'
 import UiMenu from '../components/ui/UiMenu.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
@@ -49,6 +50,15 @@ const marks = computed(() => new Map<number, 'hit' | 'pass'>(matchedRule.value =
 function onMatched(ruleId: number | null, mapping: boolean): void { matchedRule.value = ruleId; matchedMapping.value = mapping }
 function toggleTester(): void { testing.value = !testing.value; if (!testing.value) onMatched(null, false) }
 async function quickFromTester(domainName: string): Promise<void> { quick.text = domainName; quickOpen.value = true; await nextTick(); quickInput.value?.focus() }
+// 查询日志的「为这个域名建规则」带着域名来（?quick=）：填进快速添加，地址栏里的参数用完就去掉 / The query log's 为这个域名建规则 arrives with the domain (?quick=): it goes into quick add, and the parameter leaves the address bar once used
+const route = useRoute()
+const router = useRouter()
+onMounted(() => {
+  const asked = typeof route.query.quick === 'string' ? route.query.quick.trim() : ''
+  if (!asked) return
+  void quickFromTester(asked)
+  void router.replace({ query: { ...route.query, quick: undefined } })
+})
 
 // 新建就是一条空白规则：主按钮只干一件事，带知识的预设在用得到的地方（「回答后检查」的常用、GeoSite 的候选）
 // New means a blank rule: the primary button does one thing, and the presets that carry know-how live where they apply (回答后检查's 常用, GeoSite suggestions)

@@ -350,6 +350,9 @@ body { background: var(--l-canvas); }
 .rrow__cond { overflow: hidden; color: var(--l-ink-2); font-size: var(--t-2); text-overflow: ellipsis; white-space: nowrap; }
 .rrow__pill { min-width: 0; display: flex; }
 .rrow__hits { color: var(--l-ink-2); font-size: var(--t-2); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+/* 命中过的次数能点进查询日志：和组件库的链接一样一条浅下划线 / A hit count with hits opens the query log: a light underline, as kit links have */
+a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-hover); text-underline-offset: 3px; }
+@media (hover: hover) { a.rrow__hits:hover { color: var(--l-ink); text-decoration-color: var(--l-ink); } }
 .rrow__menu { display: flex; justify-content: flex-end; }
 .rrow__pill.rrow__pill--inline, .rpin__short, .rpin__chev { display: none; }
 .rpin__link, .rpin__rest { grid-column: 4 / -1; justify-self: end; }

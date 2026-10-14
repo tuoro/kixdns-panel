@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { ChartColumn, CircleAlert, CircleX, Clock, Eraser, ListChecks, Power, RefreshCw, SlidersHorizontal } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { RouterLink } from 'vue-router'
 import { CONFIG_WRITTEN_EVENT, apiRequest } from '../api/client'
-import type { CacheFlushResult, ConfigDocument, ConfigVersion, ConfigVersions, Overview, QueryStatsSnapshot, ServiceStatus, StatsClearResult } from '../api/types'
+import type { CacheFlushResult, ConfigDocument, ConfigVersion, ConfigVersions, Overview, QueryStatsSnapshot, RuleCount, ServiceStatus, StatsClearResult } from '../api/types'
 import { readConfig } from '../config-model/document'
 import type { Model } from '../config-model/model'
 import { traceNames, type TraceNames } from '../config-model/trace-names'
+import { destinationOfRow } from '../querylog'
 import { requestDestinations, type KernelPipeline } from '../request-destinations'
 import { runningVersionId } from '../running-version'
 import UiDotText from '../components/ui/UiDotText.vue'
@@ -21,7 +23,7 @@ import { HEALTH_LABELS, cacheComposition, rcodeDistribution, latencyBasis, recen
 import type { ShareRow, UpstreamHealth } from '../dashboard-presentation'
 import { dashboardRuntimeState, emptyOverview, emptyQueryStats, hasStaleDashboardData, supportsQueryStats, supportsUpstreamPrecision } from '../dashboard-state'
 import { sparkline } from '../trend'
-import { softBreakOffsets } from '../ui/soft-breaks'
+import { softBreakParts } from '../ui/soft-breaks'
 import { errorMessage, formatDuration, formatNumber, formatPercent, shortHash, upstreamSuccessRate } from '../utils'
 
 const overview = ref<Overview | null>(null)
@@ -263,16 +265,7 @@ function upstreamTitle(item: { transport: string; settled: number; shown: { succ
 }
 // 长地址只在目录边界的「/」后面断行（同 JSON 视图的规矩），不从词中间断开
 // Long addresses break only after a directory 「/」 (the JSON view's rule), never inside a word
-function breakable(text: string): string[] {
-  const parts: string[] = []
-  let at = 0
-  for (const offset of softBreakOffsets(text)) {
-    parts.push(text.slice(at, offset))
-    at = offset
-  }
-  parts.push(text.slice(at))
-  return parts
-}
+const breakable = softBreakParts
 
 // ---------- 三张分布卡：全是启动以来的累计，每行一个名字、「次数 · 占比」和一条细条 ----------
 // ---------- Three distribution cards: all lifetime totals, each row a name, 「count · share」 and a bar ----------
@@ -663,6 +656,18 @@ const pipelineName = (id: string) => names.value?.pipeline(id) ?? null
 // 上游组和规则自带的转发 Pipeline 里那条规则（和 Pipeline 同名）不单列：它数的就是转进来的请求，和跳过去的那条规则重复
 // The rule inside an upstream group's or a rule's own forward pipeline (named after the pipeline) is not listed: it counts the requests sent there, repeating the rule that jumped
 const hitRows = computed(() => rules.value.filter((rule) => !names.value?.plumbing(rule.rule, rule.pipeline)))
+
+// ---------- 点进查询日志 / into the query log ----------
+// 上游、去向、规则、排行的每一行都能点：查询日志打开时筛选已经带好。整行可点，用一层盖在行上的链接，行本身的排版不动；
+// 内核不支持查询日志时不出这层。
+// Every row of upstreams, destinations, rules and rankings opens the query log with the filter already set. The whole row is the
+// target, through a link laid over it, so the row's own layout is untouched; without kernel support there is no link.
+const logLinks = computed(() => Boolean(overview.value?.health?.capabilities.includes('querylog_v1')))
+const upstreamLog = (upstream: string) => ({ path: '/logs', query: { upstream } })
+const destinationLog = (key: string) => ({ path: '/logs', query: { dest: routing.value ? destinationOfRow(key, routing.value.model) : undefined } })
+// 内核把拆开的规则记成「名字#N」，查询日志按规则认，不分是哪一段 / The kernel records split rules as name#N; the query log matches the rule, whichever part
+const ruleLog = (rule: RuleCount) => ({ path: '/logs', query: { rule: rule.rule.replace(/#\d+$/, ''), in: rule.pipeline, phase: rule.phase === 'response' ? 'response' : undefined } })
+const rankingLog = (group: 'clients' | 'domains', name: string) => ({ path: '/logs', query: group === 'clients' ? { client: name } : { q: name } })
 // 配置写进了新版本（包括离开配置页以后才落地的保存）：马上重读，页头和「当前运行配置」不和「版本 #N 已生效」对不上
 // A new config version was written (including a save that landed after leaving the config page): re-read at once, so the header and the running-config card match 「版本 #N 已生效」
 // 正在读的那一次可能是保存落地之前发出的：等它读完再读一次，不拿它的旧结果充数 / A read already in flight may predate the save: wait for it, then read again instead of reusing its stale answer
@@ -805,8 +810,9 @@ onBeforeUnmount(() => {
                 <span v-if="upstreamRows.length" class="overview-card-note">{{ ledgerPeriod }}</span>
               </div>
               <div v-if="upstreamRows.length" class="overview-rows">
-                <div v-for="item in upstreamRows" :key="upstreamKey(item)" class="overview-row" :title="upstreamTitle(item)">
-                  <span class="overview-row-name">
+                <div v-for="item in upstreamRows" :key="upstreamKey(item)" class="overview-row" :class="{ 'ov-jumps': logLinks }" :title="upstreamTitle(item)">
+                  <RouterLink v-if="logLinks" class="ov-jump" :to="upstreamLog(item.upstream)" :aria-label="`在查询日志里看问过 ${item.upstream} 的查询`" :title="upstreamTitle(item)" />
+                  <span class="overview-row-name ov-jump-name">
                     <i class="ui-dot overview-dot" :class="`overview-dot--${item.health}`" role="img" :aria-label="healthLabel(item.health)"></i>
                     <!-- 地址最后一段和传输标签绑在一起折行，标签不会单独落到下一行 / The address's last segment and the transport tag wrap together, so the tag never drops to a line of its own -->
                     <span class="overview-address"><template v-for="(part, index) in breakable(item.upstream).slice(0, -1)" :key="index"><span class="ui-mono">{{ part }}</span><wbr /></template><span class="overview-address-tail"><span class="ui-mono">{{ breakable(item.upstream).at(-1) }}</span><span class="overview-row-tag">{{ transportLabel(item.transport) }}</span></span></span>
@@ -826,8 +832,9 @@ onBeforeUnmount(() => {
                 <span v-if="card.rows.length" class="overview-card-note"><UiDotText :parts="card.note" /></span>
               </div>
               <div v-if="card.rows.length" class="overview-rows">
-                <div v-for="row in card.rows" :key="row.key" class="overview-row">
-                  <span class="overview-row-name"><span :class="{ 'ui-mono': row.mono ?? card.mono }">{{ row.label }}</span></span>
+                <div v-for="row in card.rows" :key="row.key" class="overview-row" :class="{ 'ov-jumps': logLinks && routing }">
+                  <RouterLink v-if="logLinks && routing" class="ov-jump" :to="destinationLog(row.key)" :aria-label="`在查询日志里看去了${row.label}的查询`" />
+                  <span class="overview-row-name ov-jump-name"><span :class="{ 'ui-mono': row.mono ?? card.mono }">{{ row.label }}</span></span>
                   <span class="overview-row-value">{{ formatNumber(row.count) }} · {{ formatPercent(row.share) }}</span>
                   <span class="overview-row-bar" aria-hidden="true"><i :style="{ width: `${row.share * 100}%` }"></i></span>
                 </div>
@@ -920,9 +927,10 @@ onBeforeUnmount(() => {
           <section v-for="group in rankingGroups" :key="group.id" class="ui-card overview-card overview-ranking">
             <div class="overview-card-head"><h2 class="ui-card__label">{{ group.title }}</h2><span class="overview-card-note">{{ group.id === 'clients' && displayStats.anonymized_clients ? '按脱敏网段聚合' : group.description }}</span></div>
             <ol v-if="displayStats[group.id].length" class="overview-ranking-list">
-              <li v-for="(item, index) in displayStats[group.id]" :key="item.name">
+              <li v-for="(item, index) in displayStats[group.id]" :key="item.name" :class="{ 'ov-jumps': logLinks }">
+                <RouterLink v-if="logLinks" class="ov-jump" :to="rankingLog(group.id, item.name)" :aria-label="`在查询日志里看 ${item.name} 的查询`" />
                 <span class="overview-rank">{{ index + 1 }}</span>
-                <strong class="ui-mono"><template v-for="(part, partIndex) in rankedParts(group.id, item.name)" :key="partIndex"><wbr v-if="partIndex" />{{ part }}</template></strong><span class="overview-rank-count">{{ formatNumber(item.count) }}</span>
+                <strong class="ui-mono ov-jump-name"><template v-for="(part, partIndex) in rankedParts(group.id, item.name)" :key="partIndex"><wbr v-if="partIndex" />{{ part }}</template></strong><span class="overview-rank-count">{{ formatNumber(item.count) }}</span>
                 <i aria-hidden="true"><span :style="{ width: `${item.count / (group.id === 'clients' ? maxClient : maxDomain) * 100}%` }"></span></i>
               </li>
             </ol>
@@ -942,9 +950,10 @@ onBeforeUnmount(() => {
         <section v-if="hitRows.length" class="ui-card overview-card overview-rules-card" aria-label="每条规则的命中次数">
         <div class="overview-rules">
           <div class="ui-rec-head"><span>阶段</span><span>规则</span><span>规则组</span><span>命中次数</span></div>
-          <div v-for="rule in hitRows" :key="`${rule.pipeline}:${rule.phase}:${rule.rule}`" class="ui-rec overview-rule">
+          <div v-for="rule in hitRows" :key="`${rule.pipeline}:${rule.phase}:${rule.rule}`" class="ui-rec overview-rule" :class="{ 'ov-jumps': logLinks }">
+            <RouterLink v-if="logLinks" class="ov-jump" :to="ruleLog(rule)" :aria-label="`在查询日志里看命中「${hitName(rule.rule) ?? rule.rule}」的查询`" />
             <span class="overview-rule-phase"><span class="ui-tag" :class="{ 'overview-phase--request': rule.phase === 'request' }">{{ rule.phase === 'request' ? '请求' : '回答后' }}</span></span>
-            <strong class="overview-rule-name" :class="{ 'ui-mono': !hitName(rule.rule) && machineName(rule.rule) }">{{ hitName(rule.rule) ?? rule.rule }}</strong>
+            <strong class="overview-rule-name ov-jump-name" :class="{ 'ui-mono': !hitName(rule.rule) && machineName(rule.rule) }">{{ hitName(rule.rule) ?? rule.rule }}</strong>
             <span class="overview-rule-pipeline" :class="{ 'ui-mono': !pipelineName(rule.pipeline) }">{{ pipelineName(rule.pipeline) ?? rule.pipeline }}</span>
             <span class="overview-rule-count">{{ formatNumber(rule.count) }}</span>
             <p class="ui-rec__phone overview-rule-line"><span class="ui-tag" :class="{ 'overview-phase--request': rule.phase === 'request' }">{{ rule.phase === 'request' ? '请求' : '回答后' }}</span><span :class="{ 'ui-mono': !pipelineName(rule.pipeline) }">{{ pipelineName(rule.pipeline) ?? rule.pipeline }}</span></p>
@@ -1054,6 +1063,13 @@ onBeforeUnmount(() => {
 /* ---------- 列表卡：一行一个名字、右对齐的数、一条细条 ---------- */
 .overview-card--upstreams.is-refreshing .overview-rows { opacity: .72; transition: opacity var(--m-quick) var(--ease-out); }
 .overview-rows { display: grid; margin-top: var(--s-1); }
+/* 点进查询日志：盖在行上的链接，行本身不动；悬停时名字带下划线，键盘焦点照常画框（往外让 4，不压住字）
+   Into the query log: a link laid over the row, the row itself untouched; on hover the name is underlined, and keyboard focus draws the usual ring (4 outside, clear of the text) */
+.ov-jumps { position: relative; }
+.ov-jump { position: absolute; inset: calc(var(--s-1) * -1); z-index: 1; border-radius: var(--r-1); }
+.ov-jump:focus-visible { outline: 2px solid var(--focus); outline-offset: 0; }
+/* 上游地址的末段在 inline-flex 里，下划线传不进去，单独给等宽的那几段 / The address tail sits in an inline-flex the underline does not reach, so the mono parts take it themselves */
+@media (hover: hover) { .ov-jumps:has(> .ov-jump:hover) :is(.ov-jump-name, .ov-jump-name .overview-address-tail > .ui-mono) { text-decoration: underline; text-decoration-color: var(--l-edge-hover); text-underline-offset: 3px; } }
 .overview-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-1) var(--s-3); align-items: center; padding: var(--s-3) 0; border-top: 1px solid var(--l-hair); font-size: var(--t-3); }
 .overview-row:first-child { padding-top: var(--s-2); border-top: 0; }
 .overview-row:last-child { padding-bottom: 0; }

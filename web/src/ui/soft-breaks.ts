@@ -16,3 +16,15 @@ export const JSON_SOFT_BREAK = /_(?=[A-Za-z0-9])|(?<=[A-Za-z0-9_.-])\/(?=[A-Za-z
 export function softBreakOffsets(text: string): number[] {
   return [...text.matchAll(new RegExp(JSON_SOFT_BREAK.source, 'g'))].map((match) => match.index + match[0].length)
 }
+
+/** 按软换行点切开：地址只在目录边界的「/」后面断，概览的上游地址和查询日志的步骤都用 / Split at the soft breaks: an address wraps only after a directory 「/」; used by the overview's upstream addresses and the query log's steps */
+export function softBreakParts(text: string): string[] {
+  const parts: string[] = []
+  let at = 0
+  for (const offset of softBreakOffsets(text)) {
+    parts.push(text.slice(at, offset))
+    at = offset
+  }
+  parts.push(text.slice(at))
+  return parts
+}

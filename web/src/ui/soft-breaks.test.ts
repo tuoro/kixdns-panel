@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { softBreakOffsets } from './soft-breaks'
+import { softBreakOffsets, softBreakParts } from './soft-breaks'
 
 // 把每个软换行点画成「|」 / Draws every soft break as 「|」
 function marked(text: string): string {
@@ -22,5 +22,11 @@ describe('JSON 视图的软换行点', () => {
     for (const cidr of ['192.168.1.0/24', '10.0.0.0/8', 'fd00::/8', '2001:db8::/128', '0.0.0.0/32, 240.0.0.0/4']) expect(marked(cidr)).toBe(cidr)
     expect(marked('https://dns.google')).toBe('https://dns.google')
     expect(marked('1.1.1.1:53')).toBe('1.1.1.1:53')
+  })
+
+  it('切成段：连起来还是原文，没有断点时整段一个', () => {
+    expect(softBreakParts('cloudflare-dns.com/dns-query')).toEqual(['cloudflare-dns.com/', 'dns-query'])
+    expect(softBreakParts('1.1.1.1:53')).toEqual(['1.1.1.1:53'])
+    for (const text of ['https://223.5.5.5/dns-query', '"/var/lib/kixdns2/GeoLite2-Country.mmdb"', '']) expect(softBreakParts(text).join('')).toBe(text)
   })
 })

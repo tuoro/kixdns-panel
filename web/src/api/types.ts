@@ -507,3 +507,96 @@ export interface SetupStatus {
 }
 
 export type ServiceAction = 'start' | 'stop' | 'restart'
+
+/**
+ * 查询日志：每次 DNS 查询一条，按时间倒序。内核把同一个请求的几条事件串成一条交给面板，面板写进按天分的文件。
+ * The query log: one entry per DNS query, newest first. The kernel joins a request's events into one record for the panel, which
+ * writes it into day files.
+ */
+// forwarded 上游回的；cached / stale 缓存（新鲜 / 过期）；joined 和同一查询合并；blocked 规则拦下（拒绝、错误码或 0.0.0.0）；
+// answered 规则或映射直接回答；failed 没拿到结果
+// forwarded: an upstream answered; cached / stale: the cache (fresh / expired); joined: merged with the same query in flight;
+// blocked: a rule stopped it (refusal, an error code or 0.0.0.0); answered: a rule or mapping answered itself; failed: no result
+export type QueryLogOutcome = 'forwarded' | 'cached' | 'stale' | 'joined' | 'blocked' | 'answered' | 'failed'
+
+/** 处理过程里的一步 / One step of how the query was handled */
+export interface QueryLogStep {
+  /** 从请求开始累计的毫秒 / Milliseconds since the request started */
+  at_ms: number
+  kind: 'pipeline' | 'rule' | 'cache' | 'upstream' | 'check' | 'response'
+  pipeline: string
+  /** rule、check：内核里的规则名 / rule, check: the kernel rule name */
+  rule?: string
+  /** rule：这条规则的去向；check：触发时改去哪 / rule: where it sends the request; check: where a match sends it */
+  target?: string
+  /** cache：命中（新鲜或过期）还是没命中 / cache: a hit (fresh or stale) or a miss */
+  cache?: 'fresh' | 'stale' | 'miss'
+  /** upstream：地址和协议 / upstream: address and protocol */
+  upstream?: string
+  transport?: string
+  /** upstream：先回的那个、落后的、出错的 / upstream: the one that answered first, one that lost the race, one that failed */
+  result?: 'won' | 'lost' | 'error'
+  rcode?: string
+  latency_ms?: number
+  error?: string
+  /** check：触发了没有 / check: whether it matched */
+  matched?: boolean
+}
+
+export interface QueryLogEntry {
+  seq: number
+  time_unix_ms: number
+  /** 客户端 IP；开了「只记网段」就是网段 / The client IP, or its subnet when only subnets are kept */
+  client: string
+  transport: 'udp' | 'tcp' | 'doh' | null
+  qname: string
+  qtype: string
+  /** 请求最后停下的内核 Pipeline / The kernel pipeline the request finally stopped in */
+  pipeline: string
+  /** 决定结果的规则（内核名），没有为 null / The deciding rule (kernel name), null when none */
+  rule: string | null
+  outcome: QueryLogOutcome
+  /** 回答来自哪个上游地址（缓存命中时是缓存的来源） / The upstream address the answer came from (for a cache hit, where the cached answer came from) */
+  upstream: string | null
+  rcode: string
+  answers: string[]
+  latency_ms: number
+  /** 失败时的原因 / Why it failed */
+  error: string | null
+  steps: QueryLogStep[]
+}
+
+/** 面板没来得及从内核取走、漏记的一段 / A stretch the panel could not collect from the kernel in time */
+export interface QueryLogGap {
+  seq: number
+  time_unix_ms: number
+  gap: number
+}
+
+export type QueryLogItem = QueryLogEntry | QueryLogGap
+
+export interface QueryLogPage {
+  protocol_version: 1
+  /** 内核支持查询日志（能力 querylog_v1） / The kernel supports the query log (capability querylog_v1) */
+  supported: boolean
+  enabled: boolean
+  items: QueryLogItem[]
+  /** 再往前取时带上的游标；没有更早的为 null / The cursor for older items; null when there are none */
+  next_before: number | null
+  newest_seq: number
+}
+
+export interface QueryLogSettings {
+  enabled: boolean
+  /** 保存多久（小时）：6、24、168、720、2160，或 1–8760 自己填 / How long to keep, in hours */
+  retention_hours: number
+  /** 最多占多少空间（字节） / The space cap, in bytes */
+  max_bytes: number
+  /** 客户端只记网段（IPv4 /24、IPv6 /64，和查询排行的脱敏一样） / Keep only the client's subnet (IPv4 /24, IPv6 /64, as the rankings do) */
+  anonymize_clients: boolean
+  /** 不记录的域名（含子域名） / Domains not recorded, subdomains included */
+  ignored_domains: string[]
+  used_bytes: number
+  /** 最早一条的时间，没有为 null / The oldest entry's time, null when empty */
+  oldest_unix_ms: number | null
+}
