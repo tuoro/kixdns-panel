@@ -6,11 +6,14 @@ import UiMenu from '../components/ui/UiMenu.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
 import { newOf, opPart, SUGGEST, type AnyCond } from '../config-model/condKinds'
+import { bangNote, geositeWarning, uncheckedNote } from '../config-model/geosite'
 import { opOf, valueProblem, type FieldDef } from '../config-model/model'
 import ChipsInput from './ChipsInput.vue'
+import GeositeInput from './GeositeInput.vue'
 import { usePhone } from './phone'
 import PhoneSheet from './PhoneSheet.vue'
 import { newId } from './store'
+import { useGeositeCatalog } from './useGeosite'
 
 // 条件表单：一个条件一行，从左往右读成一句话——「域名　[不是 ▾]　[beta.apple.com]　×」，和邮件规则、防火墙规则一个写法。
 // 有两项以上才出现顶上那句「满足以下 [全部 ▾] 条件……」；只有一项时没有可选的，不摆出来。
@@ -64,6 +67,14 @@ const ops = (c: AnyCond) => def(c).ops.map((o) => ({ value: o.value, label: o.la
 const opWord = (c: AnyCond) => op(c).label
 const valid = (c: AnyCond) => (v: string) => !def(c).valid || def(c).valid!(v, c)
 const problem = (c: AnyCond) => (props.showErrors ? valueProblem(def(c), c) : null)
+// GeoSite 条件：写了数据里没有的值随时提醒（不等到保存），写了 @! 时说明它在这里的意思
+// GeoSite conditions: a value the data lacks is flagged at once (not only on save), and @! is explained when written
+const catalog = useGeositeCatalog()
+const isGeo = (c: AnyCond): boolean => c.field === 'geosite' || c.field === 'request_geosite'
+const geoWarn = (c: AnyCond) => (isGeo(c) ? geositeWarning(c.values, c.negate, catalog.value) : null)
+const geoNote = (c: AnyCond) => (isGeo(c) ? bangNote(c.values) : null)
+// 有文件读不到时「分类不存在」的提醒停了，说一句为什么 / With a file unread the missing-category warning is off, so say why
+const geoUnchecked = (c: AnyCond) => (isGeo(c) ? uncheckedNote(catalog.value) : null)
 const setItems = (items: AnyItem[]) => emit('update:modelValue', { ...props.modelValue, items })
 const setMatch = (match: string) => emit('update:modelValue', { ...props.modelValue, match: match as Match })
 function patch(i: number, part: Partial<AnyCond>): void {
@@ -120,14 +131,22 @@ function addGroup(): void {
         <UiSelect v-if="def(item).ops.length > 1" class="cform__op" :model-value="op(item).value" :options="ops(item)" :label="`${def(item).label}怎么比`" @update:model-value="setOp(i, $event)" />
         <span v-else class="cform__label cform__op">{{ op(item).label }}</span>
         <div v-if="def(item).values" class="cform__ctl">
-          <ChipsInput :class="{ 'is-mono': def(item).mono }" :model-value="item.values" :describedby="problem(item) ? errId(i) : undefined" :label="def(item).label" :placeholder="def(item).placeholder" :suggestions="SUGGEST[item.field] ?? []" :upper="def(item).upper" :spaces="item.field === 'txt'" :valid="valid(item)" :invalid="Boolean(problem(item))" @update:model-value="patch(i, { values: $event })" />
-          <p v-if="problem(item)" :id="errId(i)" class="ui-field-error">{{ problem(item) }}</p>
+          <GeositeInput v-if="isGeo(item)" :model-value="item.values" :describedby="problem(item) ? errId(i) : undefined" :label="def(item).label" :placeholder="def(item).placeholder" :valid="valid(item)" :invalid="Boolean(problem(item))" @update:model-value="patch(i, { values: $event })">
+            <p v-if="problem(item)" :id="errId(i)" class="ui-field-error">{{ problem(item) }}</p>
+            <p v-else-if="geoWarn(item)" class="ui-field-warn">{{ geoWarn(item) }}</p>
+            <p v-if="geoNote(item)" class="ui-field-note">{{ geoNote(item) }}</p>
+            <p v-if="geoUnchecked(item)" class="ui-field-note">{{ geoUnchecked(item) }}</p>
+          </GeositeInput>
+          <template v-else>
+            <ChipsInput :class="{ 'is-mono': def(item).mono }" :model-value="item.values" :describedby="problem(item) ? errId(i) : undefined" :label="def(item).label" :placeholder="def(item).placeholder" :suggestions="SUGGEST[item.field] ?? []" :upper="def(item).upper" :spaces="item.field === 'txt'" :valid="valid(item)" :invalid="Boolean(problem(item))" @update:model-value="patch(i, { values: $event })" />
+            <p v-if="problem(item)" :id="errId(i)" class="ui-field-error">{{ problem(item) }}</p>
+          </template>
         </div>
         <span v-else />
         <button class="ui-icon-btn ui-icon-btn--sm cform__x" type="button" :aria-label="`去掉「${def(item).label}」`" :title="`去掉「${def(item).label}」`" @click="remove(i)"><X :size="16" /></button>
       </div>
       <button v-else class="cform__row cform__prow" :class="{ 'is-bad': Boolean(problem(item)) }" type="button" @click="editing = i">
-        <span><b>{{ def(item).label }}</b><span class="cform__sum"><span v-if="def(item).values && !item.values.length" class="is-empty">还没填值</span><template v-else>{{ opWord(item) }}<template v-if="def(item).values">{{ ' ' }}<span :class="{ 'is-mono': def(item).mono }">{{ item.values.join('、') }}</span></template></template></span></span>
+        <span><b>{{ def(item).label }}</b><span class="cform__sum"><span v-if="def(item).values && !item.values.length" class="is-empty">还没填值</span><template v-else>{{ opWord(item) }}<template v-if="def(item).values">{{ ' ' }}<span :class="{ 'is-mono': def(item).mono }">{{ item.values.join('、') }}</span></template></template></span><span v-if="!problem(item) && geoWarn(item)" class="cform__pwarn">{{ geoWarn(item) }}</span></span>
         <ChevronRight :size="16" aria-hidden="true" />
       </button>
     </template>
@@ -137,7 +156,12 @@ function addGroup(): void {
     <UiTabs v-if="!def(editingCond).values || def(editingCond).ops.length === 2" :model-value="op(editingCond).value" :items="ops(editingCond)" :label="`${def(editingCond).label}怎么比`" variant="segment" @update:model-value="setOp(editing!, $event)" />
     <UiSelect v-else :model-value="op(editingCond).value" :options="ops(editingCond)" :label="`${def(editingCond).label}怎么比`" @update:model-value="setOp(editing!, $event)" />
     <template v-if="def(editingCond).values">
-      <ChipsInput :class="{ 'is-mono': def(editingCond).mono }" :model-value="editingCond.values" :label="def(editingCond).label" :placeholder="def(editingCond).placeholder" :suggestions="SUGGEST[editingCond.field] ?? []" :upper="def(editingCond).upper" :spaces="editingCond.field === 'txt'" :valid="valid(editingCond)" :invalid="Boolean(problem(editingCond))" @update:model-value="patch(editing!, { values: $event })" />
+      <GeositeInput v-if="isGeo(editingCond)" :model-value="editingCond.values" :label="def(editingCond).label" :placeholder="def(editingCond).placeholder" :valid="valid(editingCond)" :invalid="Boolean(problem(editingCond))" @update:model-value="patch(editing!, { values: $event })">
+        <p v-if="geoWarn(editingCond)" class="ui-field-warn">{{ geoWarn(editingCond) }}</p>
+        <p v-if="geoNote(editingCond)" class="ui-field-note">{{ geoNote(editingCond) }}</p>
+        <p v-if="geoUnchecked(editingCond)" class="ui-field-note">{{ geoUnchecked(editingCond) }}</p>
+      </GeositeInput>
+      <ChipsInput v-else :class="{ 'is-mono': def(editingCond).mono }" :model-value="editingCond.values" :label="def(editingCond).label" :placeholder="def(editingCond).placeholder" :suggestions="SUGGEST[editingCond.field] ?? []" :upper="def(editingCond).upper" :spaces="editingCond.field === 'txt'" :valid="valid(editingCond)" :invalid="Boolean(problem(editingCond))" @update:model-value="patch(editing!, { values: $event })" />
       <p class="cform__help">{{ op(editingCond).negate ? '可以填几个，全都不符合才算' : '可以填几个，符合其中一个就算' }}</p>
     </template>
     <template #foot><button class="ui-btn ui-btn--text psheet__delete" type="button" @click="remove(editing!)"><Trash2 :size="16" aria-hidden="true" />删除</button></template>

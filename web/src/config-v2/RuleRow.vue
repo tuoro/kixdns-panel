@@ -3,8 +3,10 @@ import { FileText, GripVertical, ShieldCheck } from '@lucide/vue'
 import { computed } from 'vue'
 import UiMenu from '../components/ui/UiMenu.vue'
 import OutcomePill from './OutcomePill.vue'
+import { ruleGeositeTag } from '../config-model/geosite'
 import { conditionsText, rawMatchersText, ruleProblems, ruleTitle, type Rule } from '../config-model/model'
 import { changedRuleIds, hitsOf, model } from './store'
+import { useGeositeCatalog } from './useGeosite'
 import { fmtCount } from './view'
 
 // 列表里的一条规则：序号、名字和条件、结果、命中次数、开关、菜单。点名字那一块打开编辑。
@@ -25,6 +27,9 @@ const summary = computed(() => {
   return `${rawMatchersText(first.matchers, first.matcher_operator)}${raw.length > 1 ? `，另有 ${raw.length - 1} 条内核规则` : ''}`
 })
 const broken = computed(() => ruleProblems(model, props.rule).length > 0)
+// GeoSite 值在当前数据里命中不了：比「要修改」「到不了」轻，排在它们后面 / A GeoSite value that cannot match the current data: milder than 要修改 and 到不了, so after them
+const geosite = useGeositeCatalog()
+const geoTag = computed(() => ruleGeositeTag(props.rule, geosite.value))
 const menu = computed(() => [
   { value: 'edit', label: '编辑' },
   { value: 'duplicate', label: '复制一份' },
@@ -57,6 +62,7 @@ const title = computed(() => ruleTitle(props.rule))
         <span v-if="!rule.enabled" class="ui-tag">已停用</span>
         <span v-else-if="broken" class="ui-tag ui-tag--warn">要修改</span>
         <span v-else-if="shadowedBy" class="ui-tag ui-tag--warn" :title="`第 ${shadowedBy} 条接住了所有请求，这条永远轮不到`">到不了</span>
+        <span v-else-if="geoTag" class="ui-tag ui-tag--warn" :title="geoTag.title">{{ geoTag.label }}</span>
         <span v-if="changedRuleIds.has(rule.id)" class="ui-dot ui-dot--ink rrow__changed" role="img" aria-label="改过，还没保存" title="改过，还没保存"></span>
       </span>
       <span class="rrow__line"><span class="rrow__pill rrow__pill--inline" aria-hidden="true"><span v-if="rule.raw" class="opill opill--pass"><span class="opill__verb">高级</span></span><OutcomePill v-else :outcome="rule.outcome" /></span><span v-if="named" class="rrow__cond" :title="summary">{{ shownSummary }}</span><span v-else-if="rule.note" class="rrow__cond rrow__note">{{ rule.note }}</span></span>

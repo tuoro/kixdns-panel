@@ -170,6 +170,13 @@ impl GeoDataManager {
         Ok(self.load_builtin_geosite()?.map(|(builtin, _)| builtin))
     }
 
+    /// 内置 `GeoSite` 的数据文件；开发构建没有。配置页在还没导入时用它列出分类。
+    /// The built-in `GeoSite` data file; a development build has none. Before an import the config
+    /// page lists its categories.
+    pub fn builtin_geosite_data(&self) -> Result<Option<PathBuf>, GeoDataError> {
+        Ok(self.load_builtin_geosite()?.map(|(_, data)| data))
+    }
+
     fn load_builtin_geosite(&self) -> Result<Option<(BuiltinGeosite, PathBuf)>, GeoDataError> {
         match self.builtin_geosite.as_deref() {
             Some(descriptor) => load_builtin_geosite(descriptor),

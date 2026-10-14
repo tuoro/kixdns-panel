@@ -777,6 +777,28 @@ body { background: var(--l-canvas); }
 .chip__text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip__x:hover { color: var(--l-ink); }
 .chip--bad { background: var(--err-tint-l); color: var(--err-l); box-shadow: inset 0 0 0 1px var(--err-line-l); }
+/* 数据里没有、命中不了的 GeoSite 值：黄色，和规则列表的「无此分类」同一种提醒 / A GeoSite value the data lacks: amber, the same caution as the rule list's 无此分类 */
+.chip--warn { background: var(--warn-tint-l); color: var(--warn-l); box-shadow: inset 0 0 0 1px var(--warn-line-l); }
+/* 细分箭头：和 × 一样大，紧贴在字后面 / The narrowing chevron: the size of the ×, right after the text */
+.chip .ui-menu-host { display: inline-flex; }
+.chip__refine { width: var(--s-4); height: calc(var(--h-tag) + var(--s-1)); display: grid; place-items: center; padding: 0; border: 0; border-radius: var(--r-1); background: none; color: var(--l-ink-2); cursor: pointer; }
+.chip__refine svg { width: var(--size-icon-sm); height: var(--size-icon-sm); }
+.chip--warn .chip__refine, .chip--warn .chip__x { color: inherit; }
+/* GeoSite 候选：一行一个分类，名字（等宽）、说明、域名数；桌面浮在输入框下面，手机直接排在下面
+   GeoSite candidates: one category per row, name (mono), note, domain count; floating under the field on desktop, laid out below it on phones */
+.gsi { max-height: calc(var(--h-sm) * 8 + var(--s-1) * 2); display: grid; grid-template-columns: auto minmax(0, 1fr) auto; column-gap: var(--s-3); align-content: start; margin: 0; overflow-y: auto; padding: var(--s-1); border: 1px solid var(--l-hair); border-radius: var(--r-2); background: var(--l-surface); color: var(--l-ink); list-style: none; overscroll-behavior: contain; }
+.gsi--pop { position: fixed; inset: auto; top: var(--gsi-y, 0); left: var(--gsi-x, 0); width: var(--gsi-w, auto); box-shadow: var(--shadow-pop); }
+.gsi--pop:not(:popover-open) { display: none; }
+/* 每行借用列表的三列（subgrid）：名字、说明、数量上下对齐 / Each row borrows the list's three columns (subgrid), so names, notes and counts line up */
+.gsi__opt { min-height: var(--h-sm); display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: center; padding: 0 var(--s-2); border-radius: var(--r-1); font-size: var(--t-2); cursor: pointer; }
+.gsi__opt.is-active { background: var(--l-sunk); }
+.gsi__name { font-family: var(--f-mono); }
+.gsi__note { min-width: 0; overflow: hidden; color: var(--l-ink-2); text-overflow: ellipsis; white-space: nowrap; }
+.gsi__count { color: var(--l-ink-3); font-size: var(--t-1); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+@media (max-width: 640px) {
+  .gsi { max-height: calc(var(--h-md) * 6 + var(--s-1) * 2); margin-top: var(--s-2); }
+  .gsi__opt { min-height: var(--h-md); }
+}
 /* 那么 / outcome */
 .oparams { display: grid; gap: var(--s-2); min-width: 0; }
 .oparams__line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); }
@@ -1033,6 +1055,8 @@ body { background: var(--l-canvas); }
 .cform__prow .is-empty { color: var(--l-ink-3); }
 /* 出错时只把值（或「还没填值」）标红，比较照常 / On an error only the values (or 还没填值) turn red; the comparison stays as is */
 .cform__prow.is-bad .cform__sum > span { color: var(--err-l); }
+/* 命中不了的 GeoSite 值：行上多一行黄字说为什么，不用点进去才知道；值本身不变色，只有那一个有问题 / GeoSite values that cannot match: an amber line on the row says why without opening the sheet; the values keep their colour, as only one may be at fault */
+.cform__prow .cform__pwarn { display: block; margin-top: 2px; color: var(--warn-l); font-size: var(--t-1); }
 .cform__prow > svg { justify-self: end; margin-right: -6px; color: var(--l-ink-3); }
 .cform--phone .ui-menu-host { display: block; justify-self: stretch; }
 .cform__padd { width: 100%; display: flex; align-items: center; gap: 10px; min-height: var(--h-touch); padding: 0; border: 0; border-top: 1px solid var(--l-hair); background: none; color: var(--l-ink-2); font: inherit; font-size: var(--t-3); font-weight: var(--w-medium); cursor: pointer; }

@@ -600,6 +600,7 @@ async fn test_state(directory: &TempDir) -> super::AppState {
         .unwrap(),
         updates,
         geo_data,
+        geosite_catalog: Arc::default(),
         secure_cookie: false,
         trusted_proxies: TrustedProxies::default(),
         login_limiter: Arc::new(crate::auth::LoginLimiter::default()),
@@ -1877,4 +1878,103 @@ async fn an_applied_version_answers_applied_even_with_kixdns_down() {
     assert_eq!(status, StatusCode::OK, "{payload}");
     assert_eq!(payload["apply_state"], "applied");
     assert!(payload["active_config"].is_null());
+}
+
+/// 配置页挑 `GeoSite` 分类：读配置里的文件，同一个文件只读一次；相对路径、读不到的文件给出原因；不登录不给。
+/// Picking `GeoSite` categories on the config page: the config's files are read, each once; a relative or
+/// unreadable path comes back with the reason; nothing without signing in.
+#[tokio::test]
+async fn geosite_categories_come_from_the_files_the_config_names() {
+    use crate::geosite_catalog::test_data::{domain, site};
+
+    let context = authenticated_app().await;
+    let mut data = site(
+        "GOOGLE",
+        &[domain("google.com", &[]), domain("google.cn", &["cn"])],
+    );
+    data.extend(site("cn", &[domain("baidu.com", &[])]));
+    let local = context.directory.path().join("local.dat");
+    std::fs::write(&local, &data).unwrap();
+    let missing = context.directory.path().join("missing.dat");
+    std::fs::write(
+        context.directory.path().join("pipeline.json"),
+        serde_json::json!({
+            "pipelines": [],
+            "settings": { "geosite_data_paths": [local, "relative.dat", missing, local] },
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let unauthorized = context
+        .app
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/config/geo-data/geosite-categories")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+    let response = context
+        .app
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/config/geo-data/geosite-categories")
+                .header(COOKIE, context.cookies.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap()).unwrap();
+    let sha256 = crate::digest::sha256_hex(&data);
+    assert_eq!(
+        body["files"],
+        serde_json::json!([
+            { "path": local, "sha256": sha256, "error": null },
+            { "path": "relative.dat", "sha256": null, "error": "写的是相对路径，面板不知道 KixDNS 从哪个目录找它" },
+            { "path": missing, "sha256": null, "error": "文件不存在" },
+        ]),
+        "each path once, in config order"
+    );
+    assert_eq!(body["builtin"], Value::Null);
+    assert_eq!(
+        body["catalogs"],
+        serde_json::json!({
+            sha256: [
+                { "name": "cn", "domains": 1, "attributes": [] },
+                { "name": "google", "domains": 2, "attributes": [{ "key": "cn", "domains": 1 }] },
+            ],
+        })
+    );
+}
+
+/// 内置那份和导入后的副本内容一样：分类只放一份，两边都指向它。
+/// The built-in file and its imported copy hold the same bytes: the categories appear once and both point at them.
+#[test]
+fn the_builtin_geosite_and_its_imported_copy_share_one_catalog() {
+    use crate::geosite_catalog::test_data::{domain, site};
+
+    let directory = tempdir().unwrap();
+    let data = site("cn", &[domain("baidu.com", &["cn"])]);
+    let builtin = directory.path().join("builtin.dat");
+    let copy = directory.path().join("geosite-copy.dat");
+    std::fs::write(&builtin, &data).unwrap();
+    std::fs::write(&copy, &data).unwrap();
+    let cache = crate::geosite_catalog::CatalogCache::default();
+    let result = super::geo::read_geosite_files(
+        &cache,
+        &[copy.to_string_lossy().into_owned()],
+        Some(builtin),
+    );
+    let value = serde_json::to_value(&result).unwrap();
+    let sha256 = crate::digest::sha256_hex(&data);
+    assert_eq!(value["files"][0]["sha256"], sha256);
+    assert_eq!(value["builtin"]["sha256"], sha256);
+    assert_eq!(value["catalogs"].as_object().unwrap().len(), 1);
 }

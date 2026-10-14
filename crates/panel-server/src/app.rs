@@ -31,8 +31,8 @@ mod updates;
 
 use geo::{
     cleanup_geo_data, get_builtin_geosite, get_geo_data, get_geo_data_schedule,
-    import_builtin_geosite, save_geo_data_schedule, spawn_builtin_geosite_seed,
-    spawn_geo_scheduler, sync_geo_data,
+    get_geosite_categories, import_builtin_geosite, save_geo_data_schedule,
+    spawn_builtin_geosite_seed, spawn_geo_scheduler, sync_geo_data,
 };
 
 use crate::auth::{
@@ -52,6 +52,7 @@ use crate::db::{
 };
 use crate::error::{AppError, AppResult};
 use crate::geo_data::{GeoDataError, GeoDataManager};
+use crate::geosite_catalog::CatalogCache;
 use crate::operations::{OperationError, Operations};
 use crate::recent_window::RecentHistory;
 use crate::updates::{UpdateError, UpdateManager, UpdateSettings};
@@ -91,6 +92,7 @@ pub struct AppState {
     operations: Operations,
     updates: UpdateManager,
     geo_data: GeoDataManager,
+    geosite_catalog: Arc<CatalogCache>,
     secure_cookie: bool,
     trusted_proxies: TrustedProxies,
     login_limiter: Arc<LoginLimiter>,
@@ -325,6 +327,7 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         .map_err(|error| anyhow::anyhow!(error))?,
         updates,
         geo_data,
+        geosite_catalog: Arc::default(),
         secure_cookie: settings.secure_cookie,
         trusted_proxies: settings.trusted_proxies,
         login_limiter: Arc::new(LoginLimiter::default()),
@@ -374,6 +377,10 @@ fn api_router(state: AppState) -> Router {
             get(get_builtin_geosite).post(import_builtin_geosite),
         )
         .route("/config/geo-data/cleanup", post(cleanup_geo_data))
+        .route(
+            "/config/geo-data/geosite-categories",
+            get(get_geosite_categories),
+        )
         .route(
             "/config/geo-data/schedule",
             get(get_geo_data_schedule).put(save_geo_data_schedule),

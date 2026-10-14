@@ -274,6 +274,28 @@ export interface GeoDataBuiltin {
   size: number
 }
 
+/** GeoSite 数据里的一个分类：域名数，以及带各属性（cn、ads、!cn…）的域名数。 / One GeoSite category: its domain count and the count per attribute (cn, ads, !cn …). */
+export interface GeositeCategory {
+  /** 小写的分类名 / The category name in lower case */
+  name: string
+  domains: number
+  attributes: { key: string; domains: number }[]
+}
+
+/** 一个 GeoSite 文件读得怎么样：读到了给内容摘要，读不到给原因。 / How one GeoSite file read: its content digest, or why it did not. */
+export interface GeositeFile {
+  path: string
+  sha256: string | null
+  error: string | null
+}
+
+/** 面板知道的 GeoSite 文件和它们的分类，分类按内容摘要放。 / The GeoSite files the panel knows and their categories, keyed by content digest. */
+export interface GeositeCategories {
+  files: GeositeFile[]
+  builtin: GeositeFile | null
+  catalogs: Record<string, GeositeCategory[]>
+}
+
 export interface GeoDataSyncRequest {
   geoip_mmdb_url: string | null
   geoip_dat_url: string | null
