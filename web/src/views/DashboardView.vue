@@ -4,7 +4,9 @@ import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vu
 import { CONFIG_WRITTEN_EVENT, apiRequest } from '../api/client'
 import type { CacheFlushResult, ConfigDocument, ConfigVersion, ConfigVersions, Overview, QueryStatsSnapshot, ServiceStatus, StatsClearResult } from '../api/types'
 import { readConfig } from '../config-model/document'
+import type { Model } from '../config-model/model'
 import { traceNames, type TraceNames } from '../config-model/trace-names'
+import { requestDestinations, type KernelPipeline } from '../request-destinations'
 import { runningVersionId } from '../running-version'
 import UiDotText from '../components/ui/UiDotText.vue'
 import UiEmpty from '../components/ui/UiEmpty.vue'
@@ -15,7 +17,7 @@ import { useConfirm } from '../composables/useConfirm'
 import { useConnection } from '../composables/useConnection'
 import { useServiceStart } from '../composables/useServiceStart'
 import { useToast } from '../composables/useToast'
-import { HEALTH_LABELS, cacheComposition, pipelineDistribution, rcodeDistribution, latencyBasis, recentWindowLabel, settledAttempts, upstreamBasis, upstreamHealth } from '../dashboard-presentation'
+import { HEALTH_LABELS, cacheComposition, rcodeDistribution, latencyBasis, recentWindowLabel, settledAttempts, upstreamBasis, upstreamHealth } from '../dashboard-presentation'
 import type { ShareRow, UpstreamHealth } from '../dashboard-presentation'
 import { dashboardRuntimeState, emptyOverview, emptyQueryStats, hasStaleDashboardData, supportsQueryStats, supportsUpstreamPrecision } from '../dashboard-state'
 import { sparkline } from '../trend'
@@ -274,10 +276,23 @@ function breakable(text: string): string[] {
 
 // ---------- 三张分布卡：全是启动以来的累计，每行一个名字、「次数 · 占比」和一条细条 ----------
 // ---------- Three distribution cards: all lifetime totals, each row a name, 「count · share」 and a bar ----------
-interface ShareCard { key: string; title: string; note: string[]; mono?: boolean; rows: ShareRow[]; empty: string }
-const pipelines = computed(() => pipelineDistribution(displayOverview.value?.metrics.pipelines ?? []))
+// foot：数不准的地方照实写在卡片底下 / foot: where the counts cannot be exact, said under the rows
+interface ShareCard { key: string; title: string; note: string[]; mono?: boolean; rows: ShareRow[]; empty: string; foot?: string }
+// 请求分布按去向：每个请求只算在它最后停下的地方，主列表、规则组这种转交的列表不单列（见 request-destinations.ts）
+// Request distribution by destination: each request counts only where it finally stopped; lists that hand requests on are not listed (see request-destinations.ts)
+const destinations = computed(() => {
+  const metrics = displayOverview.value?.metrics
+  const read = routing.value
+  if (!metrics || !read) return { rows: [], caveats: [] }
+  return requestDestinations({ total: metrics.requests_total, hits: metrics.pipelines, matches: metrics.rules, pipelines: read.pipelines, model: read.model, names: read.names })
+})
+const destinationsEmpty = computed(() => {
+  if (!overview.value) return '尚无数据'
+  if (routingFailed.value) return '读不到配置，暂时分不出去向'
+  return routing.value ? '还没有请求，有了以后在这里按去向列出。' : '正在读取配置'
+})
 const shareCards = computed<ShareCard[]>(() => [
-  { key: 'pipelines', title: '请求分布', note: ['启动以来', '按规则组'], rows: pipelines.value.map((row) => { const said = names.value?.pipeline(row.name); return { key: row.name, label: said ?? row.name, mono: !said, count: row.count, share: row.share } }), empty: overview.value ? '还没有请求，有了以后在这里按规则组列出。' : '尚无数据' },
+  { key: 'pipelines', title: '请求分布', note: ['启动以来', '按去向'], rows: destinations.value.rows, foot: destinations.value.caveats.join('；'), empty: destinationsEmpty.value },
   { key: 'rcodes', title: '响应码分布', note: ['启动以来', '已得到结果的请求'], rows: rcodeDistribution(displayOverview.value?.metrics.upstreams ?? []), empty: '' },
   { key: 'cache', title: '缓存构成', note: ['启动以来', '命中按来源'], rows: displayOverview.value ? cacheComposition(displayOverview.value.metrics) : [], empty: '' },
 ])
@@ -627,11 +642,19 @@ const compactTotal = computed(() => {
 
 // 第一次读取还没结束就离开页面时，不能再装上定时器 / Leaving before the first read finishes must not install the timers afterwards
 let unmounted = false
-// 请求分布和规则命中里的内核名字（main、group-g1、rule-12）换成配置页上的叫法：读一次配置，只拿来对名字
-// Kernel names in the distribution and the hits table (main, group-g1, rule-12) take the config page's names: the config is read once, only to match names
-const names = shallowRef<TraceNames | null>(null)
+// 请求分布和规则命中要对上配置：内核名字（main、group-g1、rule-12）换成配置页上的叫法，请求分布还要知道每个 Pipeline 是转交还是转发。读一次配置，名字、模型和内核 Pipeline 一起留着
+// The distribution and the hits table follow the config: kernel names (main, group-g1, rule-12) take the config page's names, and the
+// distribution needs to know which pipelines hand requests on and which forward. The config is read once; names, model and kernel pipelines are kept together
+const routing = shallowRef<{ names: TraceNames; model: Model; pipelines: KernelPipeline[] } | null>(null)
+const routingFailed = ref(false)
+const names = computed(() => routing.value?.names ?? null)
 async function loadNames(): Promise<void> {
-  try { names.value = traceNames(readConfig((await apiRequest<ConfigDocument>('/api/v1/config')).content).model) } catch { names.value = null }
+  try {
+    const content = (await apiRequest<ConfigDocument>('/api/v1/config')).content
+    const model = readConfig(content).model
+    routing.value = { names: traceNames(model), model, pipelines: Array.isArray(content.pipelines) ? (content.pipelines as KernelPipeline[]) : [] }
+    routingFailed.value = false
+  } catch { routing.value = null; routingFailed.value = true }
 }
 const hitName = (label: string) => names.value?.rule(label) ?? null
 // 认不出的名字里，纯 ASCII 的（内核 id）用等宽，中文的（其余请求、域名映射 x）用正文字 / Of unrecognised names, pure ASCII ones (kernel ids) are mono and Chinese ones (其余请求, 域名映射 x) body text
@@ -810,6 +833,7 @@ onBeforeUnmount(() => {
                 </div>
               </div>
               <p v-else class="overview-empty">{{ card.empty }}</p>
+              <p v-if="card.rows.length && card.foot" class="overview-card-foot">{{ card.foot }}</p>
             </section>
           </div>
         </div>
@@ -981,6 +1005,8 @@ onBeforeUnmount(() => {
 .overview-card-note { color: var(--l-ink-3); font-size: var(--t-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .overview-card-note b { color: var(--l-ink-2); font-weight: var(--w-medium); }
 .overview-empty { margin: 0; padding: var(--s-3) 0 0; color: var(--l-ink-3); font-size: var(--t-2); }
+/* 请求分布底下的说明：哪些请求的去向数不准 / The note under the request distribution: which requests' destinations cannot be counted exactly */
+.overview-card-foot { margin: var(--s-3) 0 0; color: var(--l-ink-3); font-size: var(--t-1); line-height: var(--lh-base); }
 
 /* ---------- 查询量卡 ---------- */
 /* 曲线要贴到卡片的三条边，卡片不留下内边距，溢出裁掉 / The curve must reach three of the card's edges, so the card keeps no bottom padding and clips overflow */
