@@ -55,8 +55,10 @@ export interface Rule {
   // 高级规则：放不进上面这些字段的内核规则，原样保留、原样写回 / An advanced rule: kernel rules that fit none of the fields above, kept and written back verbatim
   raw?: Record<string, unknown>[]
 }
-export interface RuleGroup { id: string; name: string; note: string; rules: Rule[]; rest: Outcome; listener: string; pipelineId?: string; extra?: Record<string, unknown> }
-// 高级入口：除了「按监听标签进规则组」以外的内核入口，原样保留 / An advanced entry: a kernel entry other than a listener label into a rule group, kept verbatim
+// 规则组只能由「转到规则组」带进来；按监听标签直接进组的入口算高级入口（旧版模型读进来时挪过去，见 document.ts）
+// A rule group is entered only through 转到规则组; an entry by listener label is an advanced entry (older models move it there on read, see document.ts)
+export interface RuleGroup { id: string; name: string; note: string; rules: Rule[]; rest: Outcome; pipelineId?: string; extra?: Record<string, unknown> }
+// 高级入口：域名映射和主列表以外的内核入口（监听标签、认不出的条件），原样保留 / An advanced entry: a kernel entry other than the mappings and the main list (listener labels, unrecognised conditions), kept verbatim
 export interface RawEntry { pipeline: string; matchers: Record<string, unknown>[]; matcher_operator?: string }
 export interface Mapping { id: number; domain: string; target: string; ttl: number | null; enabled: boolean }
 export interface Defaults { block: 'NXDOMAIN' | 'REFUSED' | 'zero' }
@@ -217,7 +219,7 @@ export function outcomePill(model: Model, o: Outcome): { verb: string; value: st
       const kind = o.kind === 'ip' ? '' : o.kind === 'cname' ? 'CNAME ' : 'TXT '
       return { verb: '回答', value: `${kind}${o.kind === 'txt' ? `"${o.value}"` : o.value.split(',').map((x) => x.trim()).filter(Boolean).join(', ') || '…'}`, mono: true, broken: !o.value.trim() }
     }
-    case 'group': { const n = ruleGroupName(model, o.group); return { verb: '转到', value: n ?? '已删除的规则组', mono: false, broken: !n } }
+    case 'group': { const n = ruleGroupName(model, o.group); return { verb: '转到规则组', value: n ?? '已删除的规则组', mono: false, broken: !n } }
     case 'continue': return { verb: '继续', value: '往下一条', mono: false, broken: false }
   }
 }
@@ -494,19 +496,18 @@ export function kernelRuleCount(rule: Rule): number {
 export function compile(model: Model): KernelConfig {
   const pipelines: KernelConfig['pipelines'] = []
   for (const g of model.groups) pipelines.push(forwardPipeline(model, upstreamPipelineId(model, g.id), g.id, g.ecs, groupFallback(model, g) ?? {}))
-  // 域名映射和现在的面板一样做成最前面的入口：所有请求先过它，带监听标签直接进规则组的也一样
-  // Domain mappings are the first entry, as in today's panel: every request meets them first, including those a listener sends straight to a rule group
+  // 域名映射和现在的面板一样做成最前面的入口：所有请求先过它，被高级入口带去别处的也一样
+  // Domain mappings are the first entry, as in today's panel: every request meets them first, including those an advanced entry sends elsewhere
   const live = model.mappings.filter((r) => r.enabled && r.domain.trim() && r.target.trim())
   const mappingId = model.mappingId ?? 'domain_mapping'
   if (live.length) pipelines.push({ id: mappingId, rules: live.map((r) => ({ ...emptyRule(`域名映射 ${r.domain.trim()}`, mappingActions(r)), matchers: [{ type: 'domain_suffix', value: r.domain.trim(), operator: 'and' }] })) })
   const main = [...model.rules.filter((r) => r.enabled).flatMap((r) => kernelRules(model, r)), emptyRule('其余请求', outcomeActions(model, model.rest))]
   pipelines.push({ ...model.mainExtra, id: mainPipelineId(model), rules: main })
   const select: KernelConfig['pipeline_select'] = live.length ? [{ pipeline: mappingId, matcher_operator: 'and', matchers: live.map((r, i) => ({ type: 'domain_suffix', value: r.domain.trim(), operator: i ? 'or' : 'and' })) }] : []
-  // 入口顺序：域名映射、按监听标签进规则组、高级入口、主列表 / Entry order: domain mappings, listener labels into rule groups, advanced entries, the main list
+  // 入口顺序：域名映射、高级入口、主列表 / Entry order: domain mappings, advanced entries, the main list
   for (const rg of model.ruleGroups) {
     const id = ruleGroupPipelineId(model, rg.id)
     pipelines.push({ ...rg.extra, id, rules: [...rg.rules.filter((r) => r.enabled).flatMap((r) => kernelRules(model, r)), emptyRule(`${rg.name}·其余`, outcomeActions(model, rg.rest))] })
-    if (rg.listener.trim()) select.push({ pipeline: id, matcher_operator: 'and', matchers: [{ type: 'listener_label', value: rg.listener.trim() }] })
   }
   select.push(...(model.entries ?? []).map((e) => JSON.parse(JSON.stringify({ matcher_operator: 'and', ...e })) as KernelConfig['pipeline_select'][number]))
   for (const p of model.rawPipelines ?? []) pipelines.push(JSON.parse(JSON.stringify(p)) as KPipeline)

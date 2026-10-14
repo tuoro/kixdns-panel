@@ -13,7 +13,7 @@ const mutations: [string, (m: Model) => void][] = [
   ['删除一条规则', (m) => { m.rules.pop() }],
   ['其余请求', (m) => { m.rest = { type: 'block', response: 'default' } }],
   ['上游组地址', (m) => { m.groups[0]!.addresses.push({ address: '9.9.9.9', protocol: 'auto' }) }],
-  ['规则组监听标签', (m) => { m.ruleGroups[0]!.listener = 'lan' }],
+  ['规则组名称', (m) => { m.ruleGroups[0]!.name = '改过的组名' }],
   ['规则组说明', (m) => { m.ruleGroups[0]!.note = '新的说明' }],
   ['映射顺序', (m) => { m.mappings.push(m.mappings.shift()!) }],
   ['映射目标', (m) => { m.mappings[0]!.target = '192.168.1.99' }],

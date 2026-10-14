@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { exportConfig, kernelPart, PANEL_FORMAT, readConfig } from './document'
+import { exportConfig, kernelPart, PANEL_FORMAT, panelHash, readConfig } from './document'
+import type { KConfigLike } from './kernel'
 import { compile, mainPipelineId, newRule, type Model } from './model'
 import { mockRequest } from '../api/mock'
 import type { ConfigDocument } from '../api/types'
@@ -123,6 +124,23 @@ describe('配置文件的存取 / storing and loading the config file', () => {
     const again = JSON.parse(JSON.stringify(exportConfig(back.model))) as Record<string, unknown> & { settings: Record<string, unknown> }
     again.settings.cache_capacity = 60000
     expect(readConfig(again).model.rules.map((r) => r.conditions[0]![0]!.values[0])).toEqual(order)
+  })
+
+  it('v4.0.0 及更早的模型里规则组带的监听标签：读进来挪成高级入口，内核里的入口和原来一样 / a listener label on a rule group in a v4.0.0-or-older model becomes an advanced entry on read, and the kernel entries stay as they were', () => {
+    const model = sampleModel()
+    model.entries = [{ pipeline: 'group-lan', matchers: [{ type: 'qtype', value: 'PTR' }] }]
+    // v4.0.0 写出来的样子：域名映射之后、高级入口之前是「监听标签 → 规则组」 / As v4.0.0 wrote it: listener → rule group after the mappings and before the advanced entries
+    const kernel = compile(model) as unknown as KConfigLike & { pipeline_select: { pipeline: string }[] }
+    const legacy = { pipeline: 'group-lan', matcher_operator: 'and', matchers: [{ type: 'listener_label', value: 'lan' }] }
+    kernel.pipeline_select.splice(kernel.pipeline_select.findIndex((s) => s.pipeline !== 'domain_mapping'), 0, legacy)
+    const legacyModel = { ...model, ruleGroups: model.ruleGroups.map((g) => ({ ...g, listener: g.id === 'lan' ? ' lan ' : '' })) }
+    const back = readConfig(JSON.parse(JSON.stringify({ ...kernel, panel: { v: PANEL_FORMAT, hash: panelHash(kernel), model: legacyModel } })) as Record<string, unknown>)
+    expect(back.source).toBe('panel')
+    expect(back.model.ruleGroups.some((g) => 'listener' in g)).toBe(false)
+    expect(back.model.entries).toEqual([legacy, ...model.entries])
+    // 键的先后不算，入口的顺序和内容一样 / Key order aside, the entries are the same and in the same order
+    const sorted = (v: unknown): unknown => (Array.isArray(v) ? v.map(sorted) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b)).map(([k, x]) => [k, sorted(x)])) : v)
+    expect(sorted(compile(back.model).pipeline_select)).toEqual(sorted(kernel.pipeline_select))
   })
 
   it('panel 格式版本不认识时也按内核部分重新导入 / an unknown panel format version is re-imported from the kernel part too', () => {

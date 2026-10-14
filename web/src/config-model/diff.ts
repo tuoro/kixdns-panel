@@ -106,8 +106,8 @@ export function diffModels(now: Model, then: Model): DiffBlock[] {
   for (const rg of then.ruleGroups) {
     const old = now.ruleGroups.find((x) => x.id === rg.id)
     if (!old) { blocks.push({ kind: '加上', title: `规则组「${rg.name}」`, lines: rg.rules.map((r) => ({ sign: '+', text: `规则「${ruleTitle(r)}」：${conditionsText(r.conditions)} → ${outcomeSentence(then, r.outcome)}` })) }); continue }
-    // 规则组自己的名称、说明、监听标签：改了监听标签会改变哪些请求直接进这个组 / The rule group's own name, note and listener tag: a new tag changes which requests enter the group directly
-    const meta = (g: typeof rg) => ({ 名称: g.name, 说明: g.note || '（没有）', 监听标签: g.listener || '（没有）' })
+    // 规则组自己的名称和说明 / The rule group's own name and note
+    const meta = (g: typeof rg) => ({ 名称: g.name, 说明: g.note || '（没有）' })
     const metaLines = changed(meta(old), meta(rg))
     if (metaLines.length) blocks.push({ kind: '改了', title: `规则组「${rg.name}」`, lines: metaLines })
     if (JSON.stringify(old.extra ?? null) !== JSON.stringify(rg.extra ?? null)) blocks.push({ kind: '改了', title: `规则组「${rg.name}」的其他内核设置`, lines: kernelLines(old.extra, rg.extra) })

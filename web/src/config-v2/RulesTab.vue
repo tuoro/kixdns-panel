@@ -8,11 +8,11 @@ import UiSelect from '../components/ui/UiSelect.vue'
 import { useConfirm } from '../composables/useConfirm'
 import { useToast } from '../composables/useToast'
 import { GEOSITE_COMMON, geositeIssue } from '../config-model/geosite'
-import { isCidr, isDomain, newRule, outcomeSentence, rawMatchersText, type Condition, type Outcome, type Rule, type RuleGroup, ruleTitle } from '../config-model/model'
+import { isCidr, isDomain, newRule, outcomeSentence, rawMatchersText, ruleGroupPipelineId, type Condition, type Outcome, type Rule, type RuleGroup, ruleTitle } from '../config-model/model'
 import { useNarrowDesktop, usePhone } from './phone'
 import RuleList from './RuleList.vue'
 import Tester from './Tester.vue'
-import { draftGeneration, model, newId, ruleGroupUsers, trackDialogEdits, ui } from './store'
+import { draftGeneration, listOf, model, newId, ruleGroupUsers, trackDialogEdits, ui } from './store'
 import { useGeositeCatalog } from './useGeosite'
 import { isTyping } from '../utils'
 // JSON 编辑器（CodeMirror）只在用到时才加载：配置页的首包不带它 / The JSON editor (CodeMirror) loads on first use, so the config page's first chunk leaves it out
@@ -161,13 +161,13 @@ function useStart(): void {
 
 // ---------- 规则组 / rule groups ----------
 const dialog = ref<HTMLDialogElement | null>(null)
-const editing = reactive({ id: '', name: '', note: '', listener: '', isNew: true })
+const editing = reactive({ id: '', name: '', note: '', isNew: true })
 // 弹层开着时是打开那一刻的样子，关上后是 null；改过时离开页面或刷新也先问
 // While the dialog is open this is how it looked when opened, null once closed; edited, leaving the page or reloading asks first too
 const editingBase = ref<string | null>(null)
 trackDialogEdits('这个规则组', () => editingBase.value !== null && JSON.stringify(editing) !== editingBase.value)
 async function openGroup(group: RuleGroup | null): Promise<void> {
-  Object.assign(editing, group ? { id: group.id, name: group.name, note: group.note, listener: group.listener, isNew: false } : { id: '', name: '', note: '', listener: '', isNew: true })
+  Object.assign(editing, group ? { id: group.id, name: group.name, note: group.note, isNew: false } : { id: '', name: '', note: '', isNew: true })
   editingBase.value = JSON.stringify(editing)
   await nextTick()
   dialog.value?.showModal()
@@ -180,11 +180,11 @@ function saveGroup(): void {
   if (!editing.name.trim()) return
   if (editing.isNew) {
     const id = `g${Date.now().toString(36)}`
-    model.ruleGroups.push({ id, name: editing.name.trim(), note: editing.note.trim(), listener: editing.listener.trim(), rules: [], rest: model.rest.type === 'upstream' ? { ...model.rest } : { type: 'upstream', group: model.groups[0]?.id ?? '' } })
+    model.ruleGroups.push({ id, name: editing.name.trim(), note: editing.note.trim(), rules: [], rest: model.rest.type === 'upstream' ? { ...model.rest } : { type: 'upstream', group: model.groups[0]?.id ?? '' } })
   } else {
     // 按 id 找回这个组再写；草稿换过、组已经不在了就只关上（以前在这里报错，对话框关不掉） / Find the group by id before writing; if the draft was replaced and the group is gone, just close (this used to throw and leave the dialog stuck)
     const group = model.ruleGroups.find((x) => x.id === editing.id)
-    if (group) Object.assign(group, { name: editing.name.trim(), note: editing.note.trim(), listener: editing.listener.trim() })
+    if (group) Object.assign(group, { name: editing.name.trim(), note: editing.note.trim() })
   }
   dialog.value?.close()
 }
@@ -197,11 +197,22 @@ function groupAction(group: RuleGroup, value: string): void {
     toast.undoable(`已删除规则组「${group.name}」`, () => model.ruleGroups.splice(at, 0, group))
   }
 }
-const groupMenu = (group: RuleGroup) => [
-  { value: 'add', label: '在组里新建规则' },
-  { value: 'edit', label: '名称和监听标签' },
-  { value: 'delete', label: ruleGroupUsers(group.id).length ? '删除（先改掉转到这里的规则）' : '删除', danger: true, disabled: ruleGroupUsers(group.id).length > 0 },
-]
+// 高级入口里指向这个组的（包括排在主列表后面、永远轮不到的那些）：删掉组会让它们指空，保存时内核会拒绝
+// Advanced entries pointing at this group (including the ones after the main list that never run): deleting the group would leave them
+// pointing at nothing, which the kernel rejects on save
+const entryUsers = (group: RuleGroup) => [...(model.entries ?? []), ...(model.trailingEntries ?? [])].filter((e) => e.pipeline === ruleGroupPipelineId(model, group.id))
+const groupMenu = (group: RuleGroup) => {
+  const blocker = ruleGroupUsers(group.id).length ? '删除（先改掉转到这里的规则）' : entryUsers(group).length ? '删除（先改掉指向这里的高级入口）' : ''
+  return [
+    { value: 'add', label: '在组里新建规则' },
+    { value: 'edit', label: '名称和说明' },
+    { value: 'delete', label: blocker || '删除', danger: true, disabled: Boolean(blocker) },
+  ]
+}
+// 入口规则：在主列表新建一条、结果已经是「转到这个组」，只差条件 / An entry rule: a new main-list rule already set to 转到 this group, needing only its conditions
+const newEntry = (group: RuleGroup) => emit('open', null, null, { outcome: { type: 'group', group: group.id } })
+// 打开转进来的那条规则，它可能在主列表，也可能在别的组里 / Open a rule that jumps here; it may be in the main list or in another group
+const openRule = (rule: Rule) => emit('open', rule.id, listOf(rule.id).group?.id ?? null)
 
 // ---------- 高级入口 / advanced entries ----------
 const entriesDialog = ref<HTMLDialogElement | null>(null)
@@ -229,7 +240,7 @@ async function editEntries(): Promise<void> {
 watch(draftGeneration, () => {
   if (editingBase.value !== null && !editing.isNew && JSON.stringify(editing) === editingBase.value) {
     const group = model.ruleGroups.find((x) => x.id === editing.id)
-    if (group) { Object.assign(editing, { name: group.name, note: group.note, listener: group.listener }); editingBase.value = JSON.stringify(editing) } else dialog.value?.close()
+    if (group) { Object.assign(editing, { name: group.name, note: group.note }); editingBase.value = JSON.stringify(editing) } else dialog.value?.close()
   }
   if (entriesBase.value !== null && entriesText.value === entriesBase.value) {
     entriesText.value = JSON.stringify(model.entries ?? [], null, 2)
@@ -313,9 +324,16 @@ function saveEntries(): void {
         </RuleList>
       </section>
 
-      <section class="rgroups" aria-labelledby="rg-title">
+      <!-- 规则组是少数人才用的整理工具：一个都没有时只留一行，不占一整块；有了再展开成卡片
+           Rule groups are an organising tool few need: with none there is a single line instead of a whole block, and cards once there are some -->
+      <p v-if="!model.ruleGroups.length && !model.entries?.length" class="rgroups__line">
+        <span class="rgroups__line-title">规则组<UiHelp topic="groups" /></span>
+        <span class="rgroups__line-text">好几条规则共用同一个前提时，可以收进一个规则组。</span>
+        <button class="ui-link" type="button" @click="openGroup(null)">新建规则组</button>
+      </p>
+      <section v-else class="rgroups" aria-labelledby="rg-title">
         <header class="rgroups__head">
-          <div><h2 id="rg-title" class="rgroups__title">规则组<UiHelp topic="groups" /></h2><p class="rgroups__desc">一组单独的规则。请求由「转到规则组」带进来，或者按<span class="nowrap">监听标签</span>直接进来。</p></div>
+          <div><h2 id="rg-title" class="rgroups__title">规则组<UiHelp topic="groups" /></h2><p class="rgroups__desc">主列表里结果是「转到规则组」的规则命中时，请求才进到组里，进去后不再回主列表。</p></div>
           <button class="ui-btn ui-btn--secondary" type="button" @click="openGroup(null)"><Plus :size="16" aria-hidden="true" />新建规则组</button>
         </header>
         <section v-if="model.entries?.length" class="ui-card rcard entries" aria-labelledby="ent-title">
@@ -325,17 +343,18 @@ function saveEntries(): void {
           </header>
           <ol class="entries__list"><li v-for="(e, i) in model.entries" :key="i"><span class="entries__ord">{{ i + 1 }}</span><span class="entries__cond">{{ rawMatchersText(e.matchers, e.matcher_operator) }}</span><span class="entries__to">进入「{{ pipelineLabel(e.pipeline) }}」</span></li></ol>
         </section>
-        <div v-if="!model.ruleGroups.length && !model.entries?.length" class="rgroups__none"><ListFilter :size="16" aria-hidden="true" /><span>还没有规则组。</span></div>
-        <section v-for="g in model.ruleGroups" :key="g.id" class="ui-card rcard" :aria-label="`规则组：${g.name}`">
+        <section v-for="g in model.ruleGroups" :key="g.id" class="ui-card rcard" :data-group="g.id" tabindex="-1" :aria-label="`规则组：${g.name}`">
           <header class="rcard__head">
             <div class="rcard__title"><h3>{{ g.name }}</h3><span v-if="g.note" class="rcard__meta">{{ g.note }}</span></div>
+            <!-- 请求从哪儿进来：转进来的规则可以点开；一条都没有时直接给「新建入口规则」 / Where requests come in from: the rules jumping here open on click; with none, 新建入口规则 is right there -->
             <span class="rcard__facts">
-              <span v-if="ruleGroupUsers(g.id).length || !g.listener">{{ ruleGroupUsers(g.id).length ? `从「${ruleGroupUsers(g.id).map((r) => ruleTitle(r)).join('」「')}」转进来` : '还没有规则转到这里' }}</span>
-              <span v-if="g.listener" class="ui-tag ui-tag--mono">监听标签 {{ g.listener }}</span>
+              <span v-if="ruleGroupUsers(g.id).length">从<template v-for="r in ruleGroupUsers(g.id)" :key="r.id">「<button class="ui-objlink ui-objlink--plain" type="button" @click="openRule(r)">{{ ruleTitle(r) }}</button>」</template>转进来<template v-if="entryUsers(g).length">，高级入口也指向这里</template></span>
+              <span v-else-if="entryUsers(g).length">高级入口指向这里</span>
+              <template v-else><span>还没有规则转到这里</span><button class="ui-link" type="button" @click="newEntry(g)">新建入口规则</button></template>
             </span>
             <!-- 新建在标题行，和「高级入口」的「编辑」一样；表格上面不再多一层，「其余请求」永远是最后一行
                  新建 sits in the title row like 高级入口's 编辑, so no extra strip above the table and 其余请求 stays the last row -->
-            <button class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline rcard__new" type="button" @click="emit('open', null, g.id)"><Plus :size="14" aria-hidden="true" />新建规则</button>
+            <button class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline rcard__new" type="button" aria-label="在组里新建规则" @click="emit('open', null, g.id)"><Plus :size="14" aria-hidden="true" /><span class="rcard__new-text">在组里新建规则</span></button>
             <UiMenu :items="groupMenu(g)" :label="`规则组「${g.name}」的操作`" @select="groupAction(g, $event)" />
           </header>
           <RuleList :rules="g.rules" :owner="g" :in-group="true" :query="query" :kind="kind" :marks="marks" :selected="selected" :rest-mark="false" :mapping-mark="false" @open="emit('open', $event, g.id)" />
@@ -345,11 +364,10 @@ function saveEntries(): void {
 
     <dialog ref="dialog" class="pdialog" aria-labelledby="rgd-title" @cancel.prevent="leaveGroup" @click.self="leaveGroup" @close="editingBase = null">
       <form class="pdialog__panel" method="dialog" @submit.prevent="saveGroup">
-        <header class="pdialog__head"><h2 id="rgd-title">{{ editing.isNew ? '新建规则组' : '规则组的名称和监听标签' }}</h2><button class="ui-icon-btn" type="button" aria-label="关闭" @click="leaveGroup"><X :size="16" /></button></header>
+        <header class="pdialog__head"><h2 id="rgd-title">{{ editing.isNew ? '新建规则组' : '规则组的名称和说明' }}</h2><button class="ui-icon-btn" type="button" aria-label="关闭" @click="leaveGroup"><X :size="16" /></button></header>
         <div class="pdialog__body">
           <label class="pfield"><span>名称</span><span class="ui-input"><input v-model="editing.name" autofocus required maxlength="30" placeholder="比如：内网解析"></span></label>
           <label class="pfield"><span>说明 <small>可选</small></span><span class="ui-input"><input v-model="editing.note" maxlength="80" placeholder="这组规则管什么"></span></label>
-          <label class="pfield"><span>监听标签 <small>可选</small></span><span class="ui-input is-mono"><input v-model="editing.listener" maxlength="30" placeholder="比如 lan"></span><small class="pfield__hint">填了以后，带这个标签的监听收到的请求直接进这个组，不经过主列表（域名映射照样先生效）。留空就只能由「转到规则组」带进来。</small></label>
         </div>
         <footer class="pdialog__foot"><button class="ui-btn ui-btn--secondary" type="button" @click="leaveGroup">取消</button><button class="ui-btn ui-btn--primary" type="submit" :disabled="!editing.name.trim()">{{ editing.isNew ? '新建' : '完成' }}</button></footer>
       </form>

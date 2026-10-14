@@ -142,6 +142,10 @@ test('页头的「启动」是小号次要按钮，不撑高那一行；连不�
 test('手机上「规则组」的说明在标题和按钮下面占满整行 @responsive', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'mobile', '只看手机的版式')
   await page.goto('/config')
+  // 没有规则组时只有一行，先建一个，区块头才出来 / With no rule groups there is only a line; create one so the section head shows
+  await page.locator('.rgroups__line').getByRole('button', { name: '新建规则组', exact: true }).click()
+  await page.locator('dialog.pdialog[open]').getByPlaceholder('比如：内网解析').fill('孩子的设备')
+  await page.locator('dialog.pdialog[open]').getByRole('button', { name: '新建', exact: true }).click()
   const head = page.locator('.rgroups__head')
   await head.scrollIntoViewIfNeeded()
   const box = async (locator: ReturnType<typeof page.locator>) => (await locator.boundingBox())!

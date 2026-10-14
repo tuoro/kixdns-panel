@@ -56,7 +56,7 @@ export function sampleModel(): Model {
       rule({ name: '旧统计接口', enabled: false, conditions: [[cond('domain', ['stats.old-vendor.example'])]], outcome: { type: 'block', response: 'REFUSED' }, edited: '3 个月前' }),
     ],
     ruleGroups: [
-      { id: 'lan', name: '内网解析', note: '局域网设备的反向解析', listener: '', rest: { type: 'upstream', group: 'router' }, rules: [
+      { id: 'lan', name: '内网解析', note: '局域网设备的反向解析', rest: { type: 'upstream', group: 'router' }, rules: [
         rule({ name: '公司网段反查', conditions: [[cond('domain', ['10.in-addr.arpa'])]], outcome: { type: 'upstream', group: 'corp' } }),
       ] },
     ],
