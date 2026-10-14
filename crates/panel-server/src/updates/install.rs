@@ -198,7 +198,18 @@ pub(super) fn read_zip_entry(
     name: &str,
     limit: u64,
 ) -> Result<Vec<u8>, UpdateError> {
-    if archive.file_names().filter(|entry| *entry == name).count() != 1 {
+    // zip 9 起文件名逐个解码，可能失败；解不开的文件名说明包有问题，和其他校验一样直接拒绝
+    // Since zip 9, names are decoded one by one and can fail; an undecodable name means a broken
+    // package, refused like any other failed check
+    let mut found = 0usize;
+    for entry in archive.file_names() {
+        let entry = entry
+            .map_err(|error| UpdateError::Verification(format!("包里的文件名无效：{error}")))?;
+        if entry == name {
+            found += 1;
+        }
+    }
+    if found != 1 {
         return Err(UpdateError::Verification(format!(
             "包里的 {name} 缺失或重复"
         )));
