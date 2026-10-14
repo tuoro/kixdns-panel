@@ -6,7 +6,7 @@ import { recentWindowLabel, settledAttempts, upstreamBasis } from '../dashboard-
 import { readConfig, type ImportReport, type ReadResult } from '../config-model/document'
 import { normalizeAddress } from '../config-model/kernel'
 import { findKernelRule } from '../config-model/trace-names'
-import { kernelAddress, mainPipelineId, nextId, ruleGroupPipelineId, type Model, type Outcome, type Rule, type RuleGroup, type UpstreamGroup } from '../config-model/model'
+import { kernelAddress, mainPipelineId, nextId, ruleGroupPipelineId, ruleTitle, type Model, type Outcome, type Rule, type RuleGroup, type UpstreamGroup } from '../config-model/model'
 
 // 配置页的草稿：一份模型加上「上次读进来 / 保存成功时」的那份，改动按两者比出来。运行状态、保存流程在 useConfigDocument.ts。
 // The config page's draft: one model plus the one last loaded or saved, with changes computed between them. Runtime state and the
@@ -213,11 +213,14 @@ export function findRuleByName(name: string): Rule | undefined {
 // 一个上游组被谁用着：规则、其余请求、别的组的备用、高级规则和入口 / Who uses an upstream group: rules, catch-alls, other groups' fallbacks, advanced rules and entries
 export function groupUsers(groupId: string): string[] {
   const out: string[] = []
+  // 只在「回答后检查」里用到时点明这一点：这一处平时不走，最容易被忘掉（旧面板的副本就是这样留下来的）
+  // A use only in 回答后检查 says so: it is rarely taken and the easiest to forget (the old panel's copies were left behind this way)
   const scan = (rules: Rule[], where: string) => {
     for (const r of rules) {
-      const uses = (r.outcome.type === 'upstream' && r.outcome.group === groupId)
-        || (r.response.mode === 'custom' && [r.response.then, r.response.otherwise].some((x) => x.type === 'upstream' && x.group === groupId))
-      if (uses) out.push(`${where}「${r.name}」`)
+      const direct = r.outcome.type === 'upstream' && r.outcome.group === groupId
+      const checked = r.response.mode === 'custom' && [r.response.then, r.response.otherwise].some((x) => x.type === 'upstream' && x.group === groupId)
+      if (direct) out.push(`${where}「${ruleTitle(r)}」`)
+      else if (checked) out.push(`${where}「${ruleTitle(r)}」的回答后检查`)
     }
   }
   scan(model.rules, '规则')
@@ -230,6 +233,18 @@ export function groupUsers(groupId: string): string[] {
   const pid = model.groups.find((g) => g.id === groupId)?.pipelineId ?? `upstream-${groupId}`
   if (JSON.stringify([model.entries ?? [], model.trailingEntries ?? [], [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].filter((r) => r.raw).map((r) => r.raw)]).includes(`"${pid}"`)) out.push('高级规则或高级入口')
   return out
+}
+// 旧版面板（v3.4.0 及更早）编辑被几处共用的组时，会复制一份「原名-copy」（重名再加 -2、-3），只改当时编辑的那一处，原来的组照旧
+// 被其余几处用着。升级后两份一起摆出来，看着像删掉的东西又回来了：认出这一对，页面上说清楚
+// The old panel (v3.4.0 and earlier) copied a group used in several places to 「name-copy」 (then -2, -3) when one place was edited, leaving the
+// original in use elsewhere. After an upgrade both show up and look like something deleted came back: spot the pair so the page can explain it
+export function oldPanelCopies(): { copy: UpstreamGroup; original: UpstreamGroup }[] {
+  const pid = (g: UpstreamGroup) => g.pipelineId ?? `upstream-${g.id}`
+  return model.groups.flatMap((copy) => {
+    const base = /^(.+)-copy(?:-\d+)?$/.exec(pid(copy))?.[1]
+    const original = base === undefined ? undefined : model.groups.find((g) => g !== copy && pid(g) === base)
+    return original ? [{ copy, original }] : []
+  })
 }
 export function ruleGroupUsers(groupId: string): Rule[] {
   return [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].filter((r) => r.outcome.type === 'group' && r.outcome.group === groupId)

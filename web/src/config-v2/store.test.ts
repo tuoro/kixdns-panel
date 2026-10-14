@@ -3,7 +3,7 @@ import { diffModels } from '../config-model/diff'
 import { ruleTitle, type Model } from '../config-model/model'
 import { exportConfig, readConfig } from '../config-model/document'
 import { LEGACY_MESSY, LEGACY_TEMPLATES, demoModel, sampleModel } from '../config-model/testing/samples'
-import { appliedModel, changeCount, model, rebaseApplied, resetTo } from './store'
+import { appliedModel, changeCount, groupUsers, model, oldPanelCopies, rebaseApplied, resetTo } from './store'
 
 // 保存条数出来的每一处修改，「改了哪些」里都要看得到：以前改监听标签时保存条说改了 1 处，对比却说「一样」
 // Every change the save bar counts must show in the review: setting a listener tag once read 「已修改 1 处」 while the review said nothing changed
@@ -185,5 +185,47 @@ describe('内核给的英文原因', () => {
     const block = blocks.find((b) => b.title.includes('启用查询排行'))!
     expect(block.kind).toBe('改了')
     expect(block.lines.map((line) => line.sign)).toEqual(['-', '+'])
+  })
+})
+
+// 旧版面板编辑被两处共用的组时复制出「原名-copy」，只改了其余请求；回答后检查还指着原来的组
+// The old panel copied a group used in two places to 「name-copy」 for the catch-all only; the answer check still points at the original
+describe('旧版面板留下的副本', () => {
+  const forward = (id: string, upstream: string, extra: Record<string, unknown> = {}) => ({ id, rules: [{ name: `${id}_parallel`, matchers: [{ type: 'any' }], actions: [{ type: 'forward', upstream }], ...extra }] })
+  // withOriginal 为 false 时没有原来的组，也没有指向它的回答后检查 / Without withOriginal there is no original group and no answer check pointing at it
+  const kernel = (copyId: string, withOriginal = true) => ({
+    version: '1.0',
+    settings: {},
+    pipeline_select: [
+      { pipeline: 'cn', matchers: [{ type: 'geo_site', value: 'cn' }] },
+      { pipeline: copyId, matchers: [{ type: 'any' }] },
+    ],
+    pipelines: [
+      forward('cn', 'https://doh.pub/dns-query', withOriginal ? {
+        response_matchers: [{ type: 'response_answer_ip', cidr: '0.0.0.0/32' }],
+        response_actions_on_match: [{ type: 'jump_to_pipeline', pipeline: 'global' }],
+        response_actions_on_miss: [],
+      } : {}),
+      ...(withOriginal ? [forward('global', 'https://dns.quad9.net/dns-query')] : []),
+      forward(copyId, 'https://dns.google/dns-query'),
+    ],
+  })
+
+  it('认出原组和副本，原来那组写明只在回答后检查里用到', () => {
+    resetTo(readConfig(kernel('global-copy')).model)
+    const pairs = oldPanelCopies()
+    expect(pairs.map((p) => [p.copy.name, p.original.name])).toEqual([['global-copy', 'global']])
+    expect(groupUsers(pairs[0]!.original.id)).toEqual(['规则「cn_parallel」的回答后检查'])
+    expect(groupUsers(pairs[0]!.copy.id)).toEqual(['其余请求'])
+  })
+
+  it('重名时旧面板加的编号也认', () => {
+    resetTo(readConfig(kernel('global-copy-2')).model)
+    expect(oldPanelCopies().map((p) => [p.copy.name, p.original.name])).toEqual([['global-copy-2', 'global']])
+  })
+
+  it('名字碰巧带 -copy、原来的组并不存在时不算', () => {
+    resetTo(readConfig(kernel('global-copy', false)).model)
+    expect(oldPanelCopies()).toEqual([])
   })
 })

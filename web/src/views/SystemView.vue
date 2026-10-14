@@ -650,7 +650,10 @@ onBeforeUnmount(() => {
               <span v-if="activeVersion?.patchset">补丁集 <span class="ui-num">p{{ activeVersion.patchset }}{{ activeVersion.dependency_revision ? `-r${activeVersion.dependency_revision}` : '' }}</span></span>
               <span>控制协议 <span class="ui-num">{{ activeVersion?.control_protocol ? `v${activeVersion.control_protocol}` : '未记录' }}</span></span>
               <!-- 链接本身是 inline-flex，套一层再让 ui-dots 画点 / The link is inline-flex, so it is wrapped before ui-dots draws the dot -->
-              <span v-if="activeVersion?.source_url"><a class="ui-link" :href="activeVersion.source_url" target="_blank" rel="noopener noreferrer">原版源码<ExternalLink :size="12" /></a></span>
+              <!-- fork 发布的内核链到它所在的发布页，和「可用更新」里的「发布说明」同一个去处；旧轨道的内核是上游的构建，仍链到上游
+                   A fork release links to the release it came from, the same place as 发布说明 under 可用更新; an old-track kernel was upstream's build and still links upstream -->
+              <span v-if="activeVersion?.source === 'fork' && activeVersion.build_url"><a class="ui-link" :href="activeVersion.build_url" target="_blank" rel="noopener noreferrer">发布说明<ExternalLink :size="12" /></a></span>
+              <span v-else-if="activeVersion?.source_url"><a class="ui-link" :href="activeVersion.source_url" target="_blank" rel="noopener noreferrer">原版源码<ExternalLink :size="12" /></a></span>
             </p>
             <p v-else class="install-meta">在上方「可用更新」里安装最新版本</p>
             <dl class="ui-strip install-hashes">

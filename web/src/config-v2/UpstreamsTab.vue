@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { Plus, Server } from '@lucide/vue'
+import { Info, Plus, Server } from '@lucide/vue'
+import { computed } from 'vue'
 import UiDotText from '../components/ui/UiDotText.vue'
 import UiEmpty from '../components/ui/UiEmpty.vue'
 import UiMenu from '../components/ui/UiMenu.vue'
 import { useToast } from '../composables/useToast'
 import { ecsText, effectiveProtocol, fallbackSentence, PROTOCOL_LABEL, type UpstreamGroup } from '../config-model/model'
 import { usePhone } from './phone'
-import { changedGroupIds, groupUsers, healthOf, model } from './store'
+import { changedGroupIds, groupUsers, healthOf, model, oldPanelCopies } from './store'
 
 // 上游组：每组一张卡。标题行是组名和它的标签，右端 编辑 和「…」；下面是近一小时好不好；地址一行一条；最下面一句备用和子网。
 // 「新建上游组」是这一页唯一的主操作：宽屏传送到页头，手机在列表上面一行。
@@ -18,6 +19,22 @@ const toast = useToast()
 const phone = usePhone()
 
 const health = (g: UpstreamGroup) => healthOf(g)
+// 卡片上写明还用在哪儿；「其余请求」标题行已有标签，不重复 / The card says where else it is used; 其余请求 already has a tag in the title row
+const usedIn = (g: UpstreamGroup): string[] => groupUsers(g.id).filter((use) => use !== '其余请求')
+// 旧版面板留下的副本：说清它是怎么来的、原来那组还用在哪儿、要整体换掉该怎么做
+// A copy the old panel left behind: how it came about, where the original is still used, and how to replace it everywhere
+// 名字里的连字符后面不折行：手机上「global-copy」不会断成两行 / No break after a hyphen in a name: on phones 「global-copy」 stays on one line
+const glue = (name: string): string => name.replace(/-(?=\w)/g, '-\u2060')
+const copies = computed(() => oldPanelCopies().map(({ copy, original }) => {
+  const uses = groupUsers(original.id)
+  return {
+    key: copy.id,
+    title: `「${glue(copy.name)}」是旧版面板自动复制出来的`,
+    detail: uses.length
+      ? `旧版面板编辑被几处共用的组时，会复制一份、只改当时编辑的那一处。原来的「${glue(original.name)}」还用在${uses.map(glue).join('、')}；要整体换掉，就把${uses.length > 1 ? '这几处' : '这一处'}也改到「${glue(copy.name)}」。`
+      : `旧版面板编辑被几处共用的组时，会复制一份、只改当时编辑的那一处。原来的「${glue(original.name)}」已经没有地方在用，可以删掉。`,
+  }
+}))
 const tone = (rate: number) => (rate >= 99 ? '' : rate >= 95 ? 'ui-dot--warn' : 'ui-dot--err')
 // 延迟只有拿到过回复才有数；没有就不写「平均 … ms」 / Latency exists only once a reply came back; without one the 平均 … ms part is left out
 const healthParts = (g: UpstreamGroup): string[] => {
@@ -59,7 +76,8 @@ function act(g: UpstreamGroup, value: string): void {
     </Teleport>
     <!-- 没有组时那句引导放在空状态里，不再占着工具行 / With no groups the lead sentence lives in the empty state instead of a tools row -->
     <UiEmpty v-if="!model.groups.length" class="ui-card ups__empty" :icon="Server" title="还没有上游组" desc="规则里选组名就行，地址、加密方式和备用都在组里设一次。" />
-    <div v-else class="gcards">
+    <p v-for="c in copies" :key="c.key" class="ui-notice ui-notice--off ups__copy" role="note"><Info :size="16" aria-hidden="true" /><span>{{ c.title }}</span><small>{{ c.detail }}</small></p>
+    <div v-if="model.groups.length" class="gcards">
       <article v-for="g in model.groups" :key="g.id" class="ui-card gcard">
         <header class="gcard__head">
           <!-- 改过还没保存的组和规则、映射一样带一个点 / A group changed but not yet saved carries the same dot as rules and mappings -->
@@ -83,7 +101,12 @@ function act(g: UpstreamGroup, value: string): void {
         <ul class="gcard__addrs">
           <li v-for="(a, i) in g.addresses" :key="i"><span class="gcard__addr">{{ shown(a.address) }}</span><span class="ui-tag gcard__proto">{{ PROTOCOL_LABEL[effectiveProtocol(a)] }}</span></li>
         </ul>
-        <p class="gcard__facts"><UiDotText :parts="facts(g)" /></p>
+        <!-- 说明和「用在…」同占卡片的最后一格：同一排的卡片按四格对齐，多一格会把对齐打乱
+             The facts and 「用在…」 share the card's last track: cards in a row align on four tracks, and a fifth would break that -->
+        <div class="gcard__foot">
+          <p class="gcard__facts"><UiDotText :parts="facts(g)" /></p>
+          <p v-if="usedIn(g).length" class="gcard__facts">用在{{ usedIn(g).join('、') }}</p>
+        </div>
       </article>
     </div>
   </div>

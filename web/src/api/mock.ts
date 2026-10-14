@@ -329,6 +329,37 @@ function changeElsewhereIfAsked(flag = 'kixdns:demo-changed-elsewhere'): void {
   if (source) activateCopy(source.id, configVersionContents.get(source.id)!, `另一处恢复了版本 #${source.id}`)
 }
 
+// 旧版面板留下的一对组（kixdns:demo-old-copy）：编辑被两处共用的「global」时，旧面板复制出「global-copy」只改了其余请求，
+// 国内回答被污染时的改问还指着原来的「global」。地址都是公共 DNS
+// A pair the old panel left behind (kixdns:demo-old-copy): editing 「global」, used in two places, made it copy 「global-copy」 for the
+// catch-all only, while the re-ask on a polluted domestic answer still points at the original. Every address is a public resolver
+let oldCopyApplied = false
+function oldCopyIfAsked(): void {
+  if (oldCopyApplied || typeof localStorage === 'undefined' || localStorage.getItem('kixdns:demo-old-copy') !== 'true') return
+  oldCopyApplied = true
+  const forward = (id: string, upstream: string, extra: Record<string, unknown> = {}) => ({ id, rules: [{ name: `${id}_parallel`, matchers: [{ type: 'any' }], actions: [{ type: 'forward', upstream }], ...extra }] })
+  config = {
+    ...config,
+    content: {
+      ...config.content,
+      pipeline_select: [
+        { pipeline: 'cn', matchers: [{ type: 'geo_site', value: 'cn' }] },
+        { pipeline: 'global-copy', matchers: [{ type: 'any' }] },
+      ],
+      pipelines: [
+        forward('cn', 'https://doh.pub/dns-query, https://dns.alidns.com/dns-query', {
+          response_matchers: [{ type: 'response_answer_ip', cidr: '0.0.0.0/32' }, { type: 'response_answer_ip', cidr: '240.0.0.0/4' }],
+          response_matcher_operator: 'or',
+          response_actions_on_match: [{ type: 'jump_to_pipeline', pipeline: 'global' }],
+          response_actions_on_miss: [],
+        }),
+        forward('global', 'https://dns.quad9.net/dns-query'),
+        forward('global-copy', 'https://dns.google/dns-query, https://cloudflare-dns.com/dns-query'),
+      ],
+    },
+  }
+}
+
 // 让待应用的版本原地生效：「现在应用」和演示里的「后台那一遍」都走这里 / Put the pending version into effect in place: used by 现在应用 and by the demo's "background pass"
 function applyPendingInPlace(id: number): void {
   config = {
@@ -693,6 +724,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     return demoKernel() as T
   }
   if (path === '/api/v1/config' && method === 'GET') {
+    oldCopyIfAsked()
     geositeEmptyIfAsked()
     geositeUnreadableIfAsked()
     changeElsewhereIfAsked()
