@@ -4,7 +4,7 @@ import { computed } from 'vue'
 import UiMenu from '../components/ui/UiMenu.vue'
 import OutcomePill from './OutcomePill.vue'
 import { ruleGeositeTag } from '../config-model/geosite'
-import { conditionsText, rawMatchersText, ruleProblems, ruleTitle, type Rule } from '../config-model/model'
+import { conditionsText, rawMatchersText, ruleGroupName, ruleProblems, ruleTitle, type Rule } from '../config-model/model'
 import { changedRuleIds, hitsOf, model } from './store'
 import { useGeositeCatalog } from './useGeosite'
 import { fmtCount } from './view'
@@ -43,6 +43,16 @@ const menu = computed(() => [
 const named = computed(() => Boolean(props.rule.name.trim()) || Boolean(props.rule.raw))
 const hits = computed(() => hitsOf(props.rule))
 const title = computed(() => ruleTitle(props.rule))
+// 结果是「转到规则组」时，点结果那一格跳到那个组的卡片（规则组不按位置执行，从这里看得到它接在哪条规则后面）
+// When the outcome is 转到规则组, clicking the outcome jumps to that group's card (groups do not run by position; this shows which rule they hang off)
+const target = computed(() => (props.rule.outcome.type === 'group' ? ruleGroupName(model, props.rule.outcome.group) : null))
+function showGroup(): void {
+  if (props.rule.outcome.type !== 'group') return
+  const card = document.querySelector<HTMLElement>(`[data-group="${CSS.escape(props.rule.outcome.group)}"]`)
+  if (!card) return
+  card.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
+  card.focus({ preventScroll: true })
+}
 </script>
 
 <template>
@@ -68,7 +78,7 @@ const title = computed(() => ruleTitle(props.rule))
       </span>
       <span class="rrow__line"><span class="rrow__pill rrow__pill--inline" aria-hidden="true"><span v-if="rule.raw" class="opill opill--pass"><span class="opill__verb">高级</span></span><OutcomePill v-else :outcome="rule.outcome" /></span><span v-if="named" class="rrow__cond" :title="summary">{{ shownSummary }}</span><span v-else-if="rule.note" class="rrow__cond rrow__note">{{ rule.note }}</span></span>
     </button>
-    <span class="rrow__pill"><span v-if="rule.raw" class="opill opill--pass" title="按内核写法原样保留"><span class="opill__verb">高级</span><span class="opill__val">按内核写法保留</span></span><OutcomePill v-else :outcome="rule.outcome" /></span>
+    <span class="rrow__pill"><span v-if="rule.raw" class="opill opill--pass" title="按内核写法原样保留"><span class="opill__verb">高级</span><span class="opill__val">按内核写法保留</span></span><button v-else-if="target" class="rrow__goto" type="button" :aria-label="`跳到规则组「${target}」`" @click="showGroup"><OutcomePill :outcome="rule.outcome" /></button><OutcomePill v-else :outcome="rule.outcome" /></span>
     <span class="rrow__hits" :class="{ 'is-zero': !hits }" :title="`启动以来命中 ${hits.toLocaleString('en-US')} 次`"><span class="rrow__hits-label">命中 </span>{{ hits ? fmtCount(hits) : '—' }}</span>
     <label class="ui-switch rrow__switch"><input v-model="rule.enabled" type="checkbox" :aria-label="`启用规则：${title}`"><i></i></label>
     <span class="rrow__menu"><UiMenu :items="menu" :label="`规则「${title}」的操作`" :title="`第 ${index} 条 · ${title}`" anchor=".rrow" @select="emit('action', $event)" /></span>

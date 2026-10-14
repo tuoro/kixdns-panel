@@ -333,17 +333,15 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
   const consumed = new Map<string, string>()
   const isList = (id: string) => byId.has(id) && !groupIds.has(id) && id !== mappingPipeline && !inline.has(id)
 
-  // ---------- 入口怎么落：监听标签进规则组 / 原样保留 / 变成主列表最前面的规则 ----------
-  // ---------- how entries land: a listener into a rule group / kept verbatim / rules at the top of the main list ----------
-  // 内核按顺序看入口，所以只有开头连续的「监听标签 → 规则组」能记到规则组上；最后一个必须原样保留的入口之前的都原样保留，
-  // 之后的变成规则，排在主列表最前面（它们本来就在主列表之前被看到）。
-  // The kernel reads entries in order, so only a leading run of listener → rule group entries can live on the groups; everything up to
-  // the last entry that must stay verbatim stays verbatim, and the entries after it become rules at the head of the main list.
-  const listenerInto = (s: { matchers?: KMatcher[]; pipeline: string }) => (s.matchers ?? []).length === 1 && s.matchers![0]!.type === 'listener_label' && isList(s.pipeline) && s.pipeline !== mainSource
-  let lead = 0
-  while (lead < pre.length && listenerInto(pre[lead]!) && !pre.slice(0, lead).some((s) => s.pipeline === pre[lead]!.pipeline)) lead++
-  const listeners = pre.slice(0, lead)
-  const later = pre.slice(lead)
+  // ---------- 入口怎么落：原样保留 / 变成主列表最前面的规则 ----------
+  // ---------- how entries land: kept verbatim / rules at the top of the main list ----------
+  // 内核按顺序看入口：最后一个必须原样保留的入口（带监听标签，或条件认不出）之前的都原样保留成高级入口，之后的变成规则，排在主列表最前面
+  // （它们本来就在主列表之前被看到）。监听标签是 KixDNS 启动参数给整个进程的一个标签，不是每个监听各一个，所以不放到规则组上
+  // The kernel reads entries in order: everything up to the last entry that must stay verbatim (a listener label, or conditions not
+  // recognised) stays as an advanced entry, and the entries after it become rules at the head of the main list (they were seen before
+  // the main list anyway). A listener label is one label for the whole process from KixDNS's startup flags, not one per listener, so it
+  // does not go on rule groups
+  const later = pre
   const entryConditions = (s: { matchers?: KMatcher[]; matcher_operator?: string }): Condition[][] | null => {
     try { return mergeGroups(dnf(s.matchers, s.matcher_operator).map((g) => g.map(requestCondition))) } catch (e) { if (e instanceof Raw) return null; throw e }
   }
@@ -365,7 +363,7 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
     const prevRg = prev?.ruleGroups.find((g) => (g.pipelineId ?? `group-${g.id}`) === id)
     let gid = prevRg?.id ?? (id.startsWith('group-') ? id.slice(6) : id)
     while (ruleGroups.some((g) => g.id === gid)) gid = `${gid}-2`
-    const rg: RuleGroup = { id: gid, name: prevRg?.name ?? gid, note: prevRg?.note ?? '', rules: [], rest: { type: 'continue' }, listener: '' }
+    const rg: RuleGroup = { id: gid, name: prevRg?.name ?? gid, note: prevRg?.note ?? '', rules: [], rest: { type: 'continue' } }
     if (id !== `group-${gid}`) rg.pipelineId = id
     const ex = Object.fromEntries(Object.entries(p).filter(([k]) => !PIPELINE_KEYS.has(k)))
     if (Object.keys(ex).length) rg.extra = ex
@@ -374,7 +372,6 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
     return rg
   }
   for (const p of pipelines) if (isList(p.id) && p.id !== mainSource && !unfold.has(p.id)) makeRuleGroup(p.id)
-  for (const s of listeners) ruleGroupOf.get(s.pipeline)!.listener = String(s.matchers![0]!.value)
 
   // ---------- 规则 / rules ----------
   let rawCount = 0
@@ -576,7 +573,7 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
     const list = convertList(p.rules ?? [], `（规则组「${rg.name}」）`)
     rg.rules = list.rules
     rg.rest = list.rest
-    if (!(refs.get(p.id) ?? []).length) note(`规则组「${rg.name}」没有监听标签，也没有规则转到它，内核用不到它；先保留着`)
+    if (!(refs.get(p.id) ?? []).length) note(`规则组「${rg.name}」没有规则转到它，也没有入口指向它，内核用不到它；先保留着`)
   }
   for (const id of inline) if (!consumed.has(id)) rawPipelines.push(clone(byId.get(id)!) as unknown as Record<string, unknown>)
 

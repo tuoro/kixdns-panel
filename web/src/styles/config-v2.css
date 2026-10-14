@@ -369,7 +369,7 @@ body { background: var(--l-canvas); }
 .rgroups { display: grid; gap: var(--s-3); margin-top: var(--s-6); }
 .rgroups__head { display: flex; gap: var(--s-2) var(--s-4); }
 .rgroups__title { margin: 0; color: var(--l-ink); font-family: var(--f-display); font-size: var(--t-4); font-weight: var(--w-bold); }
-.rgroups__desc, .rgroups__none { margin: var(--s-1) 0 0; color: var(--l-ink-3); font-size: var(--t-2); }
+.rgroups__desc { margin: var(--s-1) 0 0; color: var(--l-ink-3); font-size: var(--t-2); }
 .rcard__head { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "title facts menu"; align-items: center; gap: var(--s-2) var(--s-4); padding: var(--s-3) var(--s-3) var(--s-3) var(--s-5); border-bottom: 1px solid var(--l-hair); }
 .rcard__title { grid-area: title; display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-1) var(--s-3); }
 .rcard__head > .ui-btn, .rcard__head > .ui-menu-host { grid-area: menu; }
@@ -698,6 +698,10 @@ body { background: var(--l-canvas); }
      Rule-group head: as far below the card top as every other card (ink at 16), the button and 「…」 centred on the title line, both description lines one grey */
   .rcard__head:has(.rcard__new) { grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "title new menu" "facts facts facts"; align-items: start; padding-top: var(--s-3); }
   .rcard__head:has(.rcard__new) > .rcard__new, .rcard__head:has(.rcard__new) > .ui-menu-host { margin-top: 0; }
+  /* 「在组里新建规则」在手机上只留「+」，和「…」一样大：字太长会把组名旁的说明挤成碎行（菜单里也有这一项）
+     On phones 在组里新建规则 keeps only its +, as large as the 「…」: the words would squeeze the group's note into broken lines (the menu has the item too) */
+  .rcard__new-text { display: none; }
+  .rcard__head > .rcard__new { width: var(--h-sm); padding-inline: 0; justify-content: center; }
 }
 /* 工具行：搜索 + 按结果筛 + 快速添加（文字按钮），在列表卡片顶上，下面一条细线 / Tools row: search, filter by outcome, 快速添加 as a text button, at the top of the list card with a hairline under it */
 .rcard__tools { display: flex; align-items: center; gap: var(--s-2); padding: var(--s-3) var(--s-5); border-bottom: 1px solid var(--l-hair); }
@@ -1947,9 +1951,14 @@ body { background: var(--l-canvas); }
 @media (min-width: 641px) and (max-width: 860px) { .cfg__json-editor.json-editor { height: max(440px, calc(100dvh - 17rem - var(--mobile-nav-height) - var(--app-header-height))); } }
 /* 规则编辑的名称框聚焦和别的输入框一样：强调色边加一圈淡光 / The rule name field focuses like every other field: the accent edge with a faint halo */
 .editor__name:focus { border-color: var(--accent); box-shadow: var(--ring-field); }
-/* 规则组还没有时，和规则列表空着时同一种虚线框 / No rule groups yet: the same dashed empty row as an empty rule list */
-.rgroups__none { display: flex; align-items: center; gap: var(--s-2); margin: var(--s-3) 0 0; padding: var(--s-3) var(--s-4); border: 1px dashed var(--l-line-strong); border-radius: var(--r-2); color: var(--l-ink-2); font-size: var(--t-2); }
-.rgroups__none > svg { flex: 0 0 auto; }
+/* 一个规则组都没有时只留一行：标题（带「?」）、一句话、「新建规则组」，放不下就折行；离规则卡片和展开时一样远
+   With no rule groups a single line remains: the title (with its ?), one sentence and 新建规则组, wrapping when needed; it sits as far below the rule card as the full section */
+.rgroups__line { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-1) var(--s-3); margin: var(--s-6) 0 0; color: var(--l-ink-3); font-size: var(--t-2); }
+.rgroups__line-title { display: inline-flex; align-items: center; gap: var(--s-1); color: var(--l-ink-2); font-weight: var(--w-medium); }
+@media (max-width: 640px) { .rgroups__line { margin-top: var(--s-5); } }
+/* 结果是「转到规则组」时那一格是按钮：样子和别的结果一样，指上去组名带下划线 / A 转到规则组 outcome is a button: it looks like any outcome, the group name underlined on hover */
+.rrow__goto { min-width: 0; display: flex; padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
+.rrow__goto:hover .opill__val, .rrow__goto:focus-visible .opill__val { text-decoration: underline; }
 @media (max-width: 640px) {
   /* 手机上对话框底栏两个按钮平分，和抽屉一样 / On phones a dialog's footer splits its two buttons evenly, as drawers do */
   .pdialog__foot > .ui-btn { flex: 1 1 0; }

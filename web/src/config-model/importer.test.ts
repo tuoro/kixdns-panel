@@ -52,7 +52,7 @@ describe('迁移：读成什么样 / migration: what it reads as', () => {
     const shape = (m: typeof before) => ({
       groups: m.groups.map((g) => [g.id, g.name, g.addresses, g.ecs, g.fallback]),
       rules: m.rules.map((r) => [r.name, r.enabled, r.outcome, r.ecs, r.log, r.response.mode, r.conditions.map((g) => g.map((c) => [c.field, c.negate, Boolean(c.regex), [...c.values].sort()]))]),
-      ruleGroups: m.ruleGroups.map((g) => [g.id, g.name, g.rest, g.listener, g.rules.map((r) => r.name)]),
+      ruleGroups: m.ruleGroups.map((g) => [g.id, g.name, g.rest, g.rules.map((r) => r.name)]),
       mappings: m.mappings.map((x) => [x.domain, x.target, x.ttl, x.enabled]),
       rest: m.rest,
     })
@@ -73,9 +73,13 @@ describe('迁移：读成什么样 / migration: what it reads as', () => {
     const { model, notes, stats } = importKernel(LEGACY_MESSY)
     const text = notes.map((n) => n.text).join('\n')
     expect(model.extra).toEqual({ background_refresh_rule: LEGACY_MESSY.background_refresh_rule })
-    expect(model.ruleGroups.find((g) => g.id === 'lan')!.listener).toBe('lan')
-    // 监听标签加别的条件的入口原样保留，排在它后面的带条件入口照样变成规则 / A listener-plus-condition entry stays verbatim; a conditional entry after it still becomes a rule
-    expect(model.entries).toEqual([{ pipeline: 'special', matchers: [{ type: 'listener_label', value: 'guest' }, { type: 'qtype', value: 'AAAA' }] }])
+    // 带监听标签的入口都原样保留成高级入口，不放到规则组上（监听标签是整个进程一个）；排在它们后面的带条件入口照样变成规则
+    // Entries with a listener label all stay verbatim as advanced entries, never on rule groups (the label is one per process); a conditional entry after them still becomes a rule
+    expect(model.entries).toEqual([
+      { pipeline: 'lan', matchers: [{ type: 'listener_label', value: 'lan' }] },
+      { pipeline: 'special', matchers: [{ type: 'listener_label', value: 'guest' }, { type: 'qtype', value: 'AAAA' }] },
+    ])
+    expect(model.ruleGroups.find((g) => g.id === 'lan')).toBeDefined()
     expect(model.rules[0]!.name).toBe('kids-block')
     // 永远轮不到的入口原样留在最后；几个转发、决定结果后还有动作的规则原样保留成高级规则，不替用户整理
     // An entry that never runs stays verbatim at the end; rules with several forwards or with actions after the deciding one are kept verbatim as advanced rules, not tidied

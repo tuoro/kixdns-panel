@@ -1,5 +1,6 @@
 import { ApiError, PANEL_UNREACHABLE_EVENT } from './client'
-import { exportConfig, readConfig } from '../config-model/document'
+import { exportConfig, panelHash, PANEL_FORMAT, readConfig } from '../config-model/document'
+import { compile } from '../config-model/model'
 import { sampleModel } from '../config-model/testing/samples'
 import type {
   ActiveConfig,
@@ -390,6 +391,19 @@ function destinationsIfAsked(): void {
   ]
 }
 
+// v4.0.0 写出来的、规则组带监听标签的配置（kixdns:demo-listener-group）：读进来时监听标签挪成高级入口，规则组照常显示
+// A config as v4.0.0 wrote it, with a listener label on a rule group (kixdns:demo-listener-group): on read the label becomes an advanced entry and the group shows as usual
+let listenerGroupApplied = false
+function listenerGroupIfAsked(): void {
+  if (listenerGroupApplied || typeof localStorage === 'undefined' || localStorage.getItem('kixdns:demo-listener-group') !== 'true') return
+  listenerGroupApplied = true
+  const model = sampleModel()
+  const kernel = compile(model) as unknown as Record<string, unknown> & { pipeline_select: { pipeline: string }[] }
+  kernel.pipeline_select.splice(kernel.pipeline_select.findIndex((s) => s.pipeline !== 'domain_mapping'), 0, { pipeline: 'group-lan', matcher_operator: 'and', matchers: [{ type: 'listener_label', value: 'lan' }] } as { pipeline: string })
+  const legacy = { ...model, ruleGroups: model.ruleGroups.map((g) => ({ ...g, listener: g.id === 'lan' ? 'lan' : '' })) }
+  config = { ...config, content: { ...kernel, panel: { v: PANEL_FORMAT, hash: panelHash(kernel), model: legacy } } }
+}
+
 // 让待应用的版本原地生效：「现在应用」和演示里的「后台那一遍」都走这里 / Put the pending version into effect in place: used by 现在应用 and by the demo's "background pass"
 function applyPendingInPlace(id: number): void {
   config = {
@@ -757,6 +771,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
   if (path === '/api/v1/config' && method === 'GET') {
     oldCopyIfAsked()
     destinationsIfAsked()
+    listenerGroupIfAsked()
     geositeEmptyIfAsked()
     geositeUnreadableIfAsked()
     changeElsewhereIfAsked()
