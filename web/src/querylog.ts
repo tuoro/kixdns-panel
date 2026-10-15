@@ -1,4 +1,4 @@
-import type { QueryLogEntry, QueryLogItem, QueryLogStep } from './api/types'
+import type { QueryLogEntry, QueryLogGap, QueryLogItem, QueryLogRecord, QueryLogStep, QueryLogStepRecord } from './api/types'
 import { ruleGroupPipelineId, type Model } from './config-model/model'
 import type { TraceNames } from './config-model/trace-names'
 import type { TextPart } from './diagnostics'
@@ -11,7 +11,86 @@ import { directLabel, forwardGroups, ownForwardLabel, ownForwards, type KernelPi
 
 export interface QueryLogContext { model: Model; names: TraceNames; pipelines: KernelPipeline[] }
 
-export const isGap = (item: QueryLogItem): item is Extract<QueryLogItem, { gap: number }> => 'gap' in item
+export const isGap = (item: QueryLogItem): item is QueryLogGap => 'gap' in item
+
+// ---------- 接口记录换成显示用的记录 / API records into display records ----------
+
+const TRANSPORT_NAMES: Record<string, string> = { udp: 'UDP', tcp: 'TCP', tcp_udp: 'TCP+UDP', doh: 'DoH', dot: 'DoT', doq: 'DoQ' }
+const ms = (us: number | undefined) => (us ?? 0) / 1000
+
+/**
+ * 接口给的是内核的说法：耗时是微秒，回答后检查是 phase 为 response 的规则，上游的结果是 success / aborted / rejected / error。
+ * 这里换成页面画的样子；内核单记的决定（没有规则命中时列表的默认去处、回答后检查没命中时的去处）并到对应的那一步上，
+ * 最后补上回给客户端的那一步。
+ * The API speaks the kernel's terms: latencies in microseconds, answer checks as rules whose phase is response, upstream results as
+ * success / aborted / rejected / error. This turns them into what the page draws; decisions the kernel records on their own (a list's
+ * default when no rule matched, where an unmatched answer check goes) join their step, and the reply to the client is added last.
+ */
+export function entryOf(record: QueryLogRecord): QueryLogEntry {
+  const outcome = record.outcome
+  const fixed = outcome === 'blocked' ? 'block' : 'answer'
+  const steps: QueryLogStep[] = []
+  let here = record.steps.find((step) => step.kind === 'pipeline')?.pipeline ?? record.pipeline ?? ''
+  // 一条决定在页面上怎么说：跳去的列表、转发的上游，或者直接回应（拦截、直接回答） / How a decision reads on the page: the list
+  // jumped to, the upstream forwarded to, or a direct reply (block, answer)
+  const decided = (step: QueryLogStepRecord): Pick<QueryLogStep, 'target' | 'forward'> => {
+    if (step.decision === 'static') return { target: fixed }
+    if (step.decision === 'forward') return { forward: step.target }
+    if (step.decision === 'continue') return { target: 'continue' }
+    return step.target ? { target: step.target } : {}
+  }
+  for (const step of record.steps) {
+    const at_ms = ms(step.at_us)
+    if (step.kind === 'pipeline') {
+      here = step.pipeline ?? here
+      steps.push({ at_ms, kind: 'pipeline', pipeline: here })
+    } else if (step.kind === 'rule' && step.phase === 'response') {
+      steps.push({ at_ms, kind: 'check', pipeline: step.pipeline ?? here, rule: step.rule, matched: step.matched ?? false, ...(step.decision ? decided(step) : {}) })
+    } else if (step.kind === 'rule') {
+      steps.push({ at_ms, kind: 'rule', pipeline: step.pipeline ?? here, rule: step.rule, ...decided(step) })
+    } else if (step.kind === 'decision' && step.phase === 'response') {
+      // 回答后检查没命中时的去处：并到这条检查上 / Where an unmatched answer check goes: joined to that check
+      const check = [...steps].reverse().find((s) => s.kind === 'check' && s.rule === step.rule && s.pipeline === (step.pipeline ?? here) && s.target === undefined && s.forward === undefined)
+      if (check) Object.assign(check, decided(step))
+      else steps.push({ at_ms, kind: 'check', pipeline: step.pipeline ?? here, rule: step.rule, matched: true, ...decided(step) })
+    } else if (step.kind === 'decision') {
+      // 没有规则命中，列表的默认去处 / No rule matched: the list's default
+      steps.push({ at_ms, kind: 'rule', pipeline: step.pipeline ?? here, rule: step.rule, ...decided(step) })
+    } else if (step.kind === 'cache') {
+      const cache = step.result === 'fresh' ? 'fresh' : step.result === 'miss' ? 'miss' : 'stale'
+      steps.push({ at_ms, kind: 'cache', pipeline: here, cache, ...(step.source ? { upstream: step.source } : {}) })
+    } else if (step.kind === 'joined') {
+      steps.push({ at_ms, kind: 'joined', pipeline: here })
+    } else if (step.kind === 'upstream') {
+      const result = step.result === 'success' ? 'won' : step.result === 'aborted' ? 'lost' : step.result === 'rejected' ? 'rejected' : 'error'
+      const protocol = step.via ?? step.transport
+      steps.push({ at_ms, kind: 'upstream', pipeline: here, upstream: step.upstream, transport: protocol ? (TRANSPORT_NAMES[protocol] ?? protocol) : undefined, result, rcode: step.rcode, latency_ms: ms(step.latency_us), error: step.error })
+    }
+  }
+  const latency = ms(record.latency_us)
+  // 回给客户端的那一步：取消的什么也没回 / The reply to the client: a cancelled query got none
+  if (outcome !== 'cancelled') steps.push({ at_ms: latency, kind: 'response', pipeline: here, rcode: record.rcode ?? 'SERVFAIL' })
+  return {
+    id: record.id,
+    time_unix_ms: record.time_unix_ms,
+    client: record.client,
+    transport: record.transport ?? null,
+    qname: record.qname,
+    qtype: record.qtype,
+    pipeline: record.pipeline ?? here,
+    rule: record.rule ?? null,
+    outcome,
+    upstream: record.upstream ?? null,
+    rcode: record.rcode ?? (record.status === 'failed' ? 'SERVFAIL' : ''),
+    answers: record.answers,
+    latency_ms: latency,
+    error: record.error ?? null,
+    steps,
+    steps_truncated: record.steps_truncated ?? false,
+  }
+}
+
+export const itemOf = (item: QueryLogRecord | QueryLogGap): QueryLogItem => ('gap' in item ? item : entryOf(item))
 
 export interface Destination {
   /** 去向筛选用的键 / The key the destination filter uses */
@@ -84,6 +163,7 @@ export function destinationOptions(ctx: QueryLogContext | null): DestinationOpti
 export interface QueryStatus { tone: 'ok' | 'off' | 'warn' | 'err'; label: string }
 export function statusOf(entry: QueryLogEntry): QueryStatus {
   if (entry.outcome === 'failed') return { tone: 'err', label: '失败' }
+  if (entry.outcome === 'cancelled') return { tone: 'warn', label: '已取消' }
   if (entry.outcome === 'stale') return { tone: 'warn', label: '过期缓存' }
   if (entry.outcome === 'blocked') return { tone: 'off', label: '拦截' }
   if (entry.rcode === 'NXDOMAIN') return { tone: 'off', label: '域名不存在' }
@@ -124,6 +204,7 @@ export function routeOf(entry: QueryLogEntry, ctx: QueryLogContext | null): { wh
 /** 表格的回答一格：第一条记录加「+N」；没有记录时说为什么 / The table's answer cell: the first record plus 「+N」; without records, why */
 export function answerOf(entry: QueryLogEntry): { text: string; more: number; literal: boolean; tone: '' | 'muted' | 'err' } {
   if (entry.outcome === 'failed') return { text: entry.error ?? '没有回答', more: 0, literal: false, tone: 'err' }
+  if (entry.outcome === 'cancelled') return { text: '没有回答', more: 0, literal: false, tone: 'muted' }
   if (entry.answers.length) return { text: entry.answers[0]!, more: entry.answers.length - 1, literal: true, tone: '' }
   // 拦截回的 NXDOMAIN 不是「域名不存在」，照写响应码 / A block's NXDOMAIN is not 「the domain does not exist」: the code is written as is
   if (entry.outcome === 'blocked') return { text: entry.rcode, more: 0, literal: false, tone: 'muted' }
@@ -132,12 +213,21 @@ export function answerOf(entry: QueryLogEntry): { text: string; more: number; li
   return { text: '没有记录', more: 0, literal: false, tone: 'muted' }
 }
 
-/** 表格的来源一格：答案从哪来——缓存、合并，或回答的那个上游；规则直接回应的空着 / The table's source cell: cache, joined, or the upstream that answered; empty when a rule answered */
-export function sourceOf(entry: QueryLogEntry): { text: string; literal: boolean; tone: '' | 'warn' } | null {
+/** 上游地址只留主机和端口，去掉协议头和路径 / An upstream address down to its host and port, without the scheme or the path */
+export function upstreamHost(address: string): string {
+  return address.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/\/.*$/, '') || address
+}
+
+/**
+ * 表格的来源一格：答案从哪来——缓存、合并，或回答的那个上游（只写主机，完整地址在 full 里）；规则直接回应的空着
+ * The table's source cell: cache, joined, or the upstream that answered (the host only, the whole address in full); empty when a
+ * rule answered
+ */
+export function sourceOf(entry: QueryLogEntry): { text: string; full?: string; literal: boolean; tone: '' | 'warn' } | null {
   if (entry.outcome === 'cached') return { text: '缓存', literal: false, tone: '' }
   if (entry.outcome === 'stale') return { text: '过期缓存', literal: false, tone: 'warn' }
   if (entry.outcome === 'joined') return { text: '合并', literal: false, tone: '' }
-  if (entry.outcome === 'forwarded' && entry.upstream) return { text: entry.upstream, literal: true, tone: '' }
+  if (entry.outcome === 'forwarded' && entry.upstream) return { text: upstreamHost(entry.upstream), full: entry.upstream, literal: true, tone: '' }
   return null
 }
 
@@ -169,23 +259,27 @@ export function detailFacts(entry: QueryLogEntry, ctx: QueryLogContext | null): 
   // 谁回答的 / who answered
   const asked = entry.steps.filter((st) => st.kind === 'upstream')
   const won = [...asked].reverse().find((st) => st.result === 'won')
-  const polluted = entry.steps.find((st) => st.kind === 'check' && st.matched)
+  // 回答后检查把先回的结果否掉、改问别的列表 / An answer check rejected the first answer and asked another list
+  const polluted = entry.steps.find((st) => st.kind === 'check' && st.matched && st.target !== undefined && !DIRECT.has(st.target))
   let who: DetailFact
   if (entry.outcome === 'cached') who = { key: 'who', label: '谁回答的', lead: [[t('缓存')]], sub: entry.upstream ? [t('答案原先来自 '), m(entry.upstream)] : [], tone: '' }
   else if (entry.outcome === 'stale') who = { key: 'who', label: '谁回答的', lead: [[t('过期缓存')]], sub: [t('上游都没回，先回了过期的旧结果')], tone: 'warn' }
   else if (entry.outcome === 'joined') who = { key: 'who', label: '谁回答的', lead: [[t('合并')]], sub: [t('同一时刻有相同的查询，共用了它问上游的结果')], tone: '' }
   else if (entry.outcome === 'failed') who = { key: 'who', label: '谁回答的', lead: [[t('没有上游回答')]], sub: [t(asked.length ? `问了 ${asked.length} 个上游：${entry.error ?? '都没回'}` : entry.error ?? '')], tone: 'err' }
+  else if (entry.outcome === 'cancelled') who = { key: 'who', label: '谁回答的', lead: [[t('没有回答')]], sub: [t('回答之前请求就没了：客户端不再等，或者 KixDNS 停了')], tone: 'warn' }
   else if (entry.outcome === 'forwarded' && won) {
     const late = asked.filter((st) => st.result === 'lost' && st.pipeline === won.pipeline).length
     const sub: TextPart[] = [t([won.transport, won.latency_ms !== undefined ? latencyText(won.latency_ms) : null].filter(Boolean).join(' · '))]
-    if (polluted) sub.push(t(`；先回的结果被判为污染，改问${polluted.target ? place(polluted.target) : '别的组'}`))
-    else if (late) sub.push(t(`；另外 ${late} 个晚一步`))
+    if (polluted) sub.push(t(`；先回的结果没通过回答后检查，改问${polluted.target && polluted.target !== 'continue' ? place(polluted.target) : '别的组'}`))
+    else if (late) sub.push(t(`；同时问的另外 ${late} 个就不再等`))
     who = { key: 'who', label: '谁回答的', lead: [[m(won.upstream ?? entry.upstream ?? '')]], sub, tone: '' }
   } else who = { key: 'who', label: '谁回答的', lead: [[t('规则直接回应')]], sub: [t('没有问上游')], tone: '' }
   // 回答了什么 / what came back
   const records = entry.answers.slice(0, 4).map((a) => [m(a)])
   const what: DetailFact = entry.outcome === 'failed'
     ? { key: 'what', label: '回答', lead: [[t('SERVFAIL')]], sub: [t('客户端收到服务器失败')], tone: 'err' }
+    : entry.outcome === 'cancelled'
+      ? { key: 'what', label: '回答', lead: [[t('没有回答')]], sub: [], tone: '' }
     : { key: 'what', label: '回答', lead: records.length ? records : [[t(answerOf(entry).text)]], sub: whatSub(entry) ? [t(whatSub(entry))] : [], tone: '' }
   return [{ key: 'where', label: '去向', lead: [[t(whereLead)]], sub: whereSub ? [t(whereSub)] : [], tone: '' }, who, what]
 }
@@ -219,13 +313,33 @@ export interface StepRow { at: number; tone: 'ok' | 'err' | 'warn' | ''; idle: b
 const t = (text: string): TextPart => ({ text })
 const m = (text: string): TextPart => ({ text, mono: true })
 
+/** 规则直接回应、不再去别处的几种去向 / The destinations of a rule that replies itself instead of going elsewhere */
+const DIRECT = new Set(['block', 'answer', 'continue'])
+
 /** 处理过程：一步一句，按时间排 / The handling, one sentence a step, in time order */
 export function stepRows(entry: QueryLogEntry, ctx: QueryLogContext | null): StepRow[] {
   const groupOf = ctx ? forwardGroups(ctx.pipelines, ctx.model) : () => undefined
+  // 上游组和规则自带的转发列表是面板替用户生成的：里面那条转发规则不单说，上一步已经说了交给谁
+  // Upstream groups and a rule's own forward list are generated by the panel: their forwarding rule goes unsaid, the step before already said where the query went
+  const plumbing = new Set(ctx ? ownForwards(ctx.pipelines, ctx.model) : [])
+  const generated = (pipeline: string) => Boolean(groupOf(pipeline)) || plumbing.has(pipeline)
   const place = (pipeline: string) => {
     const g = groupOf(pipeline)
     if (g) return `上游组「${g.name}」`
     return ctx?.names.pipeline(pipeline) ?? pipeline
+  }
+  const toRuleGroup = (target: string) => Boolean(ctx?.model.ruleGroups.some((g) => ruleGroupPipelineId(ctx.model, g.id) === target))
+  // 一条决定接在句子后面怎么说 / How a decision continues the sentence
+  const then = (step: QueryLogStep): TextPart[] => {
+    if (step.forward) return [t('，转发给 '), m(step.forward)]
+    if (step.target === 'block') return [t('，拦截')]
+    if (step.target === 'answer') return [t('，直接回答')]
+    if (step.target === 'continue') return [t('，接着往下')]
+    if (!step.target) return []
+    // 规则就在这个列表里转发、又认不出上游组时说「直接转发」，不说「交给」它自己 / A rule forwarding inside its own list with no group recognised reads 直接转发, not a hand-off to itself
+    if (step.target === step.pipeline && !groupOf(step.target)) return [t('，直接转发')]
+    // 转去规则组用规则列表里的动词「转到」 / A hand-off to a rule group uses the rule list's verb 转到
+    return [t(`，${toRuleGroup(step.target) ? '转到' : '交给'}${place(step.target)}`)]
   }
   const rows: StepRow[] = []
   const row = (step: QueryLogStep, lead: TextPart[], note: TextPart[] = [], tone: StepRow['tone'] = '', extra: Partial<StepRow> = {}) => rows.push({ at: step.at_ms, tone, idle: false, decides: false, lead, note, ...extra })
@@ -234,37 +348,41 @@ export function stepRows(entry: QueryLogEntry, ctx: QueryLogContext | null): Ste
   let firstAnswer = -1
   for (const step of steps) {
     if (step.kind === 'pipeline') {
-      // 每个查询都从主列表进来，第一步不单说；上游组自己的那段也不说（上一步已经说了交给谁）
-      // Every query enters at the main list, so the first step goes unsaid; an upstream group's own list neither (the step before says where it went)
-      if (step === steps[0] || groupOf(step.pipeline)) continue
+      // 每个查询都从主列表进来，第一步不单说；面板生成的转发列表也不说（上一步已经说了交给谁）
+      // Every query enters at the main list, so the first step goes unsaid; a generated forward list neither (the step before says where it went)
+      if (step === steps[0] || generated(step.pipeline)) continue
       row(step, [t(`进入${place(step.pipeline)}`)])
     } else if (step.kind === 'rule') {
+      if (generated(step.pipeline)) continue
       const said = step.rule ? ctx?.names.matched(step.rule) : null
       const title = step.rule ? (ctx?.names.rule(step.rule) ?? step.rule) : ''
-      const head = said ?? `命中规则「${title}」`
-      // 规则就在这个列表里转发、又认不出上游组时说「直接转发」，不说「交给」它自己 / A rule forwarding inside its own list with no group recognised reads 直接转发, not a hand-off to itself
-      // 转去规则组用规则列表里的动词「转到」 / A hand-off to a rule group uses the rule list's verb 转到
-      const toRuleGroup = (target: string) => Boolean(ctx?.model.ruleGroups.some((g) => ruleGroupPipelineId(ctx.model, g.id) === target))
-      const tail = step.target === 'block' ? '，拦截' : step.target === 'answer' ? '，直接回答' : !step.target ? '' : step.target === step.pipeline && !groupOf(step.target) ? '，直接转发' : `，${toRuleGroup(step.target) ? '转到' : '交给'}${place(step.target)}`
-      row(step, [t(`${head}${tail}`)], [], step.target === 'block' ? 'err' : '')
+      const head = said ?? (step.rule ? `命中规则「${title}」` : '没有规则命中')
+      row(step, [t(head), ...then(step)], [], step.target === 'block' ? 'err' : '')
     } else if (step.kind === 'cache') {
       if (step.cache === 'fresh') row(step, [t('缓存里有，直接回')], step.upstream ? [t('答案来自 '), m(step.upstream)] : [], 'ok', { decides: true })
       else if (step.cache === 'stale') row(step, [t('上游都没回，先回过期的旧结果')], step.upstream ? [t('答案来自 '), m(step.upstream)] : [], 'warn', { decides: true })
       else row(step, [t('缓存里没有，去问上游')], [], '', { idle: true })
+    } else if (step.kind === 'joined') {
+      row(step, [t('同一时刻有相同的查询，共用它问上游的结果')], [], 'ok', { decides: true })
     } else if (step.kind === 'upstream') {
       const where = m(step.upstream ?? '')
       // 右边的时间已经是累计耗时，这里只写协议和响应码 / The time column already carries the cumulative latency, so this says only the protocol and code
       const facts: TextPart[] = [t([step.transport, step.result === 'error' ? null : step.rcode].filter(Boolean).join(' · '))]
       if (step.result === 'won') { firstAnswer = rows.length; row(step, [where, t(' 先回')], facts, 'ok', { decides: true }) }
-      else if (step.result === 'lost') row(step, [where, t(' 也回了，晚一步没用上')], facts, '', { idle: true })
+      // 别的上游先回了，不再等它：它没回，也就没有响应码 / Another upstream answered first, so this one was not waited for: it did not reply, and has no code
+      else if (step.result === 'lost') row(step, [where, t(' 没等它回，另一个先回了')], [t(step.transport ?? '')].filter((p) => p.text), '', { idle: true })
+      else if (step.result === 'rejected') row(step, [where, t(` 回了 ${step.rcode ?? '错误'}，这个回答没用`)], [t(step.transport ?? '')].filter((p) => p.text), 'warn')
       else row(step, [where, t(` ${step.error ?? '出错'}`)], [t(step.transport ?? '')].filter((p) => p.text), 'err')
     } else if (step.kind === 'check') {
-      if (step.matched) {
+      const action = then(step)
+      const named = step.rule && !generated(step.pipeline) ? `「${ctx?.names.rule(step.rule) ?? step.rule}」` : ''
+      if (step.matched && step.target && !DIRECT.has(step.target)) {
         // 先回的那个答案被检查否掉了：它不再是定下结果的一步，不打勾 / The first answer was rejected by the check: no longer the deciding step, so no tick
         if (firstAnswer >= 0) rows[firstAnswer] = { ...rows[firstAnswer]!, tone: '', decides: false }
-        row(step, [t(`回答后检查：结果被污染，改问${step.target ? place(step.target) : '别的组'}`)], [], 'warn')
-      }
-      else row(step, [t('回答后检查：没发现问题')], [], '', { idle: true })
+        row(step, [t(`回答后检查${named}：这个回答不能用，改问${place(step.target)}`)], [], 'warn')
+      } else if (step.matched || action.length) {
+        row(step, [t(`回答后检查${named}${step.matched ? '命中' : '没命中'}`), ...(step.forward ? [t('，照用这个回答')] : action)], [], step.target === 'block' ? 'err' : '')
+      } else row(step, [t(`回答后检查${named}：没发现问题`)], [], '', { idle: true })
     } else if (step.kind === 'response') {
       const ok = step.rcode !== 'SERVFAIL' && entry.outcome !== 'failed'
       const records = entry.answers.length ? `，${entry.answers.length} 条记录` : ''
@@ -272,5 +390,8 @@ export function stepRows(entry: QueryLogEntry, ctx: QueryLogContext | null): Ste
       row(step, [t(`${ok ? '回给客户端' : '回'} ${step.rcode ?? ''}${ok ? records : entry.error ? `：${entry.error}` : ''}`)], [], ok ? '' : 'err')
     }
   }
+  // 回答之前请求就没了：照实说，不编一个响应 / The request was gone before an answer: said plainly, no reply is made up
+  if (entry.outcome === 'cancelled') rows.push({ at: entry.latency_ms, tone: 'warn', idle: false, decides: false, lead: [t('回答之前请求就没了')], note: [t('客户端不再等，或者 KixDNS 停了')] })
+  if (entry.steps_truncated) rows.push({ at: entry.latency_ms, tone: '', idle: true, decides: false, lead: [t('后面的步骤太多，没有记下')], note: [] })
   return rows
 }

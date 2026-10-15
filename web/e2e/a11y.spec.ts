@@ -10,7 +10,17 @@ import { expect, test, type Page } from '@playwright/test'
 const CONTRAST = `(() => {
   const lum = (c) => { const [r, g, b] = c.map((v) => { v /= 255; return v <= .03928 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4 }); return .2126 * r + .7152 * g + .0722 * b }
   const parse = (s) => { const m = /rgba?\\(([^)]+)\\)/.exec(s); if (!m) return null; const p = m[1].split(',').map(Number); return { rgb: p.slice(0, 3), a: p.length > 3 ? p[3] : 1 } }
-  const bgOf = (el) => { let e = el; while (e) { const c = parse(getComputedStyle(e).backgroundColor); if (c && c.a > 0.9) return c.rgb; e = e.parentElement } return parse(getComputedStyle(document.body).backgroundColor)?.rgb ?? [255, 255, 255] }
+  // 底色按元素记住：一张长表的几百行共用同一串祖先，不用每个字都从头往上找一遍 / The ground is remembered per element: the
+  // hundreds of rows in a long table share their ancestors, so no text walks the whole way up again
+  const grounds = new Map()
+  const bgOf = (el) => {
+    if (!el) return parse(getComputedStyle(document.body).backgroundColor)?.rgb ?? [255, 255, 255]
+    if (grounds.has(el)) return grounds.get(el)
+    const c = parse(getComputedStyle(el).backgroundColor)
+    const ground = c && c.a > 0.9 ? c.rgb : bgOf(el.parentElement)
+    grounds.set(el, ground)
+    return ground
+  }
   const out = []; const seen = new Set()
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
   let n

@@ -264,7 +264,7 @@ test('运行日志的级别筛选由服务端执行', async ({ page }) => {
   // The paged demo: 120 lines in all, 80 loaded on the first page; 5 of those are
   // warnings, 8 of the full 120 are.
   await page.addInitScript(() => localStorage.setItem('kixdns:demo-log-paged-slow', 'true'))
-  await open(page, '/logs')
+  await open(page, '/logs?view=runtime')
   await expect(page.locator('.log-line')).toHaveCount(80)
 
   // 切到「警告」后是 8 行：浏览器只过滤已加载的 80 行最多找到 5 行，多出来的 3 行只能来自服务端。
@@ -285,7 +285,7 @@ test('运行日志停在顶部时直接显示新日志，读历史时攒进提�
   // The test moves the clock forward instead of waiting five real seconds.
   await page.clock.install()
   await page.addInitScript(() => localStorage.setItem('kixdns:demo-log-growing', 'true'))
-  await open(page, '/logs')
+  await open(page, '/logs?view=runtime')
   const lines = page.locator('.log-line')
   const banner = page.locator('.ui-banner')
   await expect(lines.first()).toContainText('transport=tcp')
@@ -326,11 +326,11 @@ test('运行日志停在顶部时直接显示新日志，读历史时攒进提�
 })
 
 test('unit 输出未送到 journald 时运行日志显示常驻提示 @responsive', async ({ page }) => {
-  await open(page, '/logs')
+  await open(page, '/logs?view=runtime')
   await expect(page.locator('.log-notice')).toHaveCount(0)
 
   await page.addInitScript(() => localStorage.setItem('kixdns:demo-log-output-redirected', 'true'))
-  await open(page, '/logs')
+  await open(page, '/logs?view=runtime')
   const notice = page.locator('.log-notice')
   // 句子由服务端拼好，页面原样展示，不在浏览器里再拼一遍。
   // The sentence is composed server-side and shown verbatim, not re-assembled in the browser.
@@ -352,7 +352,7 @@ test('切换级别后不会拿旧级别的游标翻页', async ({ page }) => {
   // scroll requests the warning level with the "all" cursor 79, and when it lands the three
   // warning lines after 79 are appended again: 8 lines become 11.
   await page.addInitScript(() => localStorage.setItem('kixdns:demo-log-paged-slow', 'true'))
-  await open(page, '/logs')
+  await open(page, '/logs?view=runtime')
   const lines = page.locator('.log-line')
   const loadMore = page.locator('.log-more')
   // 翻页走滚动处理器而不是点按钮：Playwright 点之前会把按钮滚进视口，那一滚本身就触发翻页。

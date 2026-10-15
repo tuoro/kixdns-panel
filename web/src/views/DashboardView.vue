@@ -734,7 +734,8 @@ onBeforeUnmount(() => {
       <small v-if="notice.reason">{{ notice.reason }}</small>
       <button v-if="notice.action === 'retry'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="requesting" @click="refreshAll">重试</button>
       <RouterLink v-else-if="notice.action === 'config'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" to="/config">管理配置</RouterLink>
-      <RouterLink v-else-if="notice.action === 'logs'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" to="/logs">查看日志</RouterLink>
+      <!-- 启动失败的原因在运行日志里，直接打开那一页签（日志页默认是查询日志） / Why it failed to start is in the runtime log, so that tab opens directly (the logs page defaults to the query log) -->
+      <RouterLink v-else-if="notice.action === 'logs'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" to="/logs?view=runtime">查看日志</RouterLink>
       <button v-else-if="notice.action === 'start'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="starting" :aria-busy="starting || undefined" @click="startService"><span v-if="starting" class="ui-spin" aria-hidden="true"></span>启动 KixDNS</button>
     </div>
 

@@ -55,7 +55,7 @@ async function expectPlaceholderFits(page: Page): Promise<void> {
 
 test('375 宽下日志级别和审计类别的每个选项都完整可见 @responsive', async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 })
-  await page.goto('/logs')
+  await page.goto('/logs?view=runtime')
   await expect(page.locator('.log-line').first()).toBeVisible()
 
   await expectEveryOptionVisible(page, page.getByRole('group', { name: '日志级别' }), ['全部', '错误', '警告', '信息'])
@@ -77,11 +77,11 @@ test('375 宽下日志级别和审计类别的每个选项都完整可见 @respo
 // The logs page speaks the same language as the rest: the header reads 日志, the section tabs sit outside the card, and the
 // level filter is the kit segment, its pressed option a raised white block rather than white text on a dark fill
 test('日志页用组件库的页头、区块页签和筛选分段 @responsive', async ({ page }) => {
-  await page.goto('/logs')
+  await page.goto('/logs?view=runtime')
   await expect(page.locator('.log-line').first()).toBeVisible()
   await expect(page.getByRole('heading', { level: 1, name: '日志', exact: true })).toBeVisible()
   const tabs = page.getByRole('tablist', { name: '日志视图' })
-  await expect(tabs.getByRole('tab')).toHaveText(['运行日志', '操作审计'])
+  await expect(tabs.getByRole('tab')).toHaveText(['查询日志', '运行日志', '操作审计'])
   expect(await tabs.evaluate((element) => Boolean(element.closest('.log-console')))).toBe(false)
   const level = page.getByRole('group', { name: '日志级别' })
   await expect(level).toHaveClass(/\bui-seg\b/)

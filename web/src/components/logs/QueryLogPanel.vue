@@ -9,7 +9,7 @@ import { useConnection } from '../../composables/useConnection'
 import { useToast } from '../../composables/useToast'
 import { readConfig } from '../../config-model/document'
 import { traceNames } from '../../config-model/trace-names'
-import { answerOf, destinationOptions, detailFacts, isGap, latencyText, requestLine, routeOf, SLOW_MS, sourceOf, statusOf, stepRows, timeText, type QueryLogContext } from '../../querylog'
+import { answerOf, destinationOptions, detailFacts, isGap, itemOf, latencyText, requestLine, routeOf, SLOW_MS, sourceOf, statusOf, stepRows, timeText, type QueryLogContext } from '../../querylog'
 import type { KernelPipeline } from '../../request-destinations'
 import { softBreakParts } from '../../ui/soft-breaks'
 import { errorMessage } from '../../utils'
@@ -29,8 +29,8 @@ import { usePhone } from '../../config-v2/phone'
 // create a rule, test again in diagnostics, show only this client, stop recording this domain. Filters live in the address bar, so the
 // overview and the rule list can jump in with them. New queries work as in the runtime log: at the top they come straight in, while
 // reading further down they wait in the banner.
-// facts：页头事实；'loading' 是第一次还没读完（页头放骨架），null 是没有可说的（内核太旧、关着、读不到）
-// facts: the header facts; 'loading' until the first read lands (the header shows a skeleton), null when there is nothing to say (old kernel, off, unreadable)
+// facts：页头事实；'loading' 是第一次还没读完（页头放骨架），null 是没有可说的（内核太旧、读不到）
+// facts: the header facts; 'loading' until the first read lands (the header shows a skeleton), null when there is nothing to say (old kernel, unreadable)
 const emit = defineEmits<{ facts: [parts: string[] | 'loading' | null] }>()
 const route = useRoute()
 const router = useRouter()
@@ -40,8 +40,11 @@ const confirm = useConfirm()
 const PAGE = 200
 const items = ref<QueryLogItem[]>([])
 const supported = ref(true)
-const enabled = ref(true)
 const nextBefore = ref<number | null>(null)
+// 一次往前找有上限：上一次读在这一刻停下、还没凑满一页时，列表末尾说找到哪儿了，给一个「继续往前找」
+// A read searches only so far back: when the last read stopped here before the page filled, the list's end says how far it got and
+// offers 继续往前找
+const stoppedAt = ref<number | null>(null)
 const loading = ref(false)
 const loadingOlder = ref(false)
 const loadError = ref('')
@@ -113,9 +116,9 @@ async function load(): Promise<void> {
   try {
     const page = await apiRequest<QueryLogPage>(`/api/v1/querylog?${params()}`)
     supported.value = page.supported
-    enabled.value = page.enabled
-    items.value = page.items
+    items.value = page.items.map(itemOf)
     nextBefore.value = page.next_before
+    stoppedAt.value = stoppedOf(page)
     fresh.value = null
     loadError.value = ''
     selected.value = null
@@ -131,21 +134,24 @@ async function loadOlder(): Promise<void> {
   loadingOlder.value = true
   try {
     const page = await apiRequest<QueryLogPage>(`/api/v1/querylog?${params({ before: String(nextBefore.value) })}`)
-    items.value = [...items.value, ...page.items]
+    items.value = [...items.value, ...page.items.map(itemOf)]
     nextBefore.value = page.next_before
+    stoppedAt.value = stoppedOf(page)
   } catch (error) {
     toast.error(`没能读到更早的查询：${errorMessage(error)}`)
   } finally {
     loadingOlder.value = false
   }
 }
+/** 这一页是不是因为看到上限才停下的：还有更早的，却没凑满一页 / Whether this page stopped at the read limit: more is older, yet the page is not full */
+const stoppedOf = (page: QueryLogPage) => (page.next_before !== null && page.items.length < PAGE ? page.scanned_to_unix_ms : null)
 // 停在顶部时新查询直接进来；往下读时攒着，由提示条放进来 / At the top new queries come straight in; further down they wait for the banner
 async function poll(): Promise<void> {
-  if (loading.value || !supported.value || !enabled.value || document.hidden) return
+  if (loading.value || !supported.value || document.hidden) return
   try {
     const page = await apiRequest<QueryLogPage>(`/api/v1/querylog?${params()}`)
-    const first = items.value[0]?.seq ?? 0
-    const newer = page.items.filter((item) => item.seq > first)
+    const first = items.value[0]?.id ?? 0
+    const newer = page.items.filter((item) => item.id > first).map(itemOf)
     if (!newer.length) return
     if (atTop.value && selected.value === null) { items.value = [...newer, ...items.value]; return }
     fresh.value = newer
@@ -193,16 +199,16 @@ const phoneLine = (entry: QueryLogEntry) => {
 
 // ---------- 选中和详情 / selection and the detail ----------
 const phone = usePhone()
-const current = computed(() => (selected.value === null ? null : items.value.find((item): item is QueryLogEntry => !isGap(item) && item.seq === selected.value) ?? null))
+const current = computed(() => (selected.value === null ? null : items.value.find((item): item is QueryLogEntry => !isGap(item) && item.id === selected.value) ?? null))
 const detailTab = ref<'summary' | 'steps'>('summary')
 const DETAIL_TABS = [{ value: 'summary', label: '概况' }, { value: 'steps', label: '处理过程' }]
 const sheet = ref<HTMLDialogElement | null>(null)
-function select(seq: number): void {
-  selected.value = selected.value === seq ? null : seq
+function select(id: number): void {
+  selected.value = selected.value === id ? null : id
   if (selected.value === null) return
   if (phone.value) { void nextTick(() => sheet.value?.showModal()); return }
   // 详情升起来以后，选中的行不能被它盖住 / Once the detail rises, the selected row must not sit under it
-  void nextTick(() => stream.value?.querySelector(`[data-seq="${seq}"]`)?.scrollIntoView({ block: 'nearest' }))
+  void nextTick(() => stream.value?.querySelector(`[data-id="${id}"]`)?.scrollIntoView({ block: 'nearest' }))
 }
 function closeDetail(): void {
   if (sheet.value?.open) sheet.value.close()
@@ -213,13 +219,13 @@ function onRowKey(event: KeyboardEvent): void {
   if (event.key === 'Escape' && selected.value !== null) { event.preventDefault(); closeDetail(); return }
   if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
   const list = items.value.filter((item): item is QueryLogEntry => !isGap(item))
-  const at = list.findIndex((item) => item.seq === selected.value)
+  const at = list.findIndex((item) => item.id === selected.value)
   const next = list[at < 0 ? 0 : Math.min(list.length - 1, Math.max(0, at + (event.key === 'ArrowDown' ? 1 : -1)))]
   if (!next) return
   event.preventDefault()
-  selected.value = next.seq
+  selected.value = next.id
   void nextTick(() => {
-    const row = stream.value?.querySelector<HTMLButtonElement>(`[data-seq="${next.seq}"]`)
+    const row = stream.value?.querySelector<HTMLButtonElement>(`[data-id="${next.id}"]`)
     row?.focus({ preventScroll: true })
     row?.scrollIntoView({ block: 'nearest' })
   })
@@ -232,7 +238,7 @@ function onlyClient(entry: QueryLogEntry): void { setQuery({ client: entry.clien
 function onlyClientFromSheet(entry: QueryLogEntry): void { const at = entry.client; closeDetail(); setQuery({ client: at }) }
 // 规则：打开规则页的快速添加，域名填好 / A rule: opens quick add on the rules page with the domain filled in
 const ruleLink = (entry: QueryLogEntry) => ({ path: '/config', query: { quick: entry.qname } })
-const diagLink = (entry: QueryLogEntry) => ({ path: '/diagnostics', query: { domain: entry.qname, type: entry.qtype, client: entry.client.includes('/') ? undefined : entry.client } })
+const diagLink = (entry: QueryLogEntry) => ({ path: '/diagnostics', query: { domain: entry.qname, type: entry.qtype, client: entry.client } })
 async function ignoreDomain(entry: QueryLogEntry): Promise<void> {
   const current = settings.value ?? await apiRequest<QueryLogSettings>('/api/v1/querylog/settings')
   if (current.ignored_domains.includes(entry.qname)) return
@@ -255,7 +261,7 @@ function download(): void {
 const drawer = ref<HTMLDialogElement | null>(null)
 // 数字和单位之间是不断行空格：页头事实按第一个普通空格分出标签和值 / A no-break space between number and unit: the header facts split label from value at the first ordinary space
 const RETENTIONS = [{ value: '6', label: '6\u00a0小时' }, { value: '24', label: '1\u00a0天' }, { value: '168', label: '7\u00a0天' }, { value: '720', label: '30\u00a0天' }, { value: '2160', label: '90\u00a0天' }, { value: 'custom', label: '自定义' }]
-const draft = ref({ enabled: true, retention: '2160', customHours: '', maxMb: '500', anonymize: false, ignored: '' })
+const draft = ref({ retention: '2160', customHours: '', maxMb: '500', ignored: '' })
 const draftProblem = computed(() => {
   if (draft.value.retention === 'custom' && !(Number(draft.value.customHours) >= 1 && Number(draft.value.customHours) <= 8760 && Number.isInteger(Number(draft.value.customHours)))) return '保存时长填 1 到 8760 之间的整数小时'
   if (!(Number(draft.value.maxMb) >= 10)) return '空间上限至少 10 MB'
@@ -266,7 +272,7 @@ async function openSettings(): Promise<void> {
   const s = await apiRequest<QueryLogSettings>('/api/v1/querylog/settings')
   settings.value = s
   const preset = RETENTIONS.some((r) => r.value === String(s.retention_hours))
-  draft.value = { enabled: s.enabled, retention: preset ? String(s.retention_hours) : 'custom', customHours: preset ? '' : String(s.retention_hours), maxMb: String(Math.round(s.max_bytes / 1048576)), anonymize: s.anonymize_clients, ignored: s.ignored_domains.join('\n') }
+  draft.value = { retention: preset ? String(s.retention_hours) : 'custom', customHours: preset ? '' : String(s.retention_hours), maxMb: String(Math.round(s.max_bytes / 1048576)), ignored: s.ignored_domains.join('\n') }
   await nextTick()
   drawer.value?.showModal()
 }
@@ -274,10 +280,8 @@ async function saveSettings(): Promise<void> {
   if (draftProblem.value) return
   const d = draft.value
   settings.value = await apiRequest<QueryLogSettings>('/api/v1/querylog/settings', { method: 'PUT', body: JSON.stringify({
-    enabled: d.enabled,
     retention_hours: d.retention === 'custom' ? Number(d.customHours) : Number(d.retention),
     max_bytes: Math.round(Number(d.maxMb) * 1048576),
-    anonymize_clients: d.anonymize,
     ignored_domains: d.ignored.split(/\s+/).map((x) => x.trim().toLowerCase()).filter(Boolean),
   }) })
   drawer.value?.close()
@@ -292,15 +296,11 @@ async function clearAll(): Promise<void> {
   toast.success('查询日志已清空')
   void load()
 }
-async function turnOn(): Promise<void> {
-  settings.value = await apiRequest<QueryLogSettings>('/api/v1/querylog/settings', { method: 'PUT', body: JSON.stringify({ enabled: true }) })
-  void load()
-}
 
 // 页头事实：最近一条、保存多久、已用多少 / Header facts: the newest entry, how long it keeps, how much it uses
-watch([items, settings, enabled, supported, loaded, loadError], () => {
+watch([items, settings, supported, loaded, loadError], () => {
   if (!loaded.value) { emit('facts', 'loading'); return }
-  if (!supported.value || !enabled.value || (loadError.value && !items.value.length)) { emit('facts', null); return }
+  if ((!supported.value || loadError.value) && !items.value.length) { emit('facts', null); return }
   const first = items.value.find((item) => !isGap(item))
   // 保存多久、已用多少是设置里的事，页头只说最近一条 / Retention and space used belong to the settings; the header says only the newest entry
   emit('facts', [`最近一条 ${first ? timeText(first.time_unix_ms) : '—'}`])
@@ -308,9 +308,11 @@ watch([items, settings, enabled, supported, loaded, loadError], () => {
 
 watch(() => [route.query.q, route.query.dest, route.query.client, route.query.rule, route.query.in, route.query.phase, route.query.upstream], () => { void load() })
 onMounted(async () => {
-  await loadContext()
-  await load()
-  try { settings.value = await apiRequest<QueryLogSettings>('/api/v1/querylog/settings') } catch { /* 页头少一项，不影响列表 / The header loses a fact, the list is unaffected */ }
+  // 配置、日志、设置一起读：日志先到就先画，名字等配置到了再换成配置页上的叫法；慢网络上少等两趟
+  // The config, the log and the settings are read together: the log is drawn as soon as it lands and its names switch to the config
+  // page's once the config arrives; on a slow network that saves two round trips
+  void apiRequest<QueryLogSettings>('/api/v1/querylog/settings').then((s) => { settings.value = s }, () => { /* 页头少一项，不影响列表 / The header loses a fact, the list is unaffected */ })
+  await Promise.all([loadContext(), load()])
   timer = window.setInterval(() => { void poll() }, 5000)
   window.addEventListener('scroll', onScroll, { passive: true })
 })
@@ -318,16 +320,10 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
 </script>
 
 <template>
-  <!-- 内核太旧：说清要做什么 / A kernel too old: say what to do -->
-  <section v-if="!supported" class="ui-card qlog-state">
+  <!-- 内核太旧、也没有记下过什么：说清要做什么 / A kernel too old and nothing recorded: say what to do -->
+  <section v-if="!supported && loaded && !entries.length" class="ui-card qlog-state">
     <UiEmpty :icon="FileSearch" title="当前内核不支持查询日志" desc="把 KixDNS 内核更新到最新版本后可用，更新在系统页。">
       <RouterLink class="ui-btn ui-btn--secondary" to="/system">去系统页</RouterLink>
-    </UiEmpty>
-  </section>
-  <!-- 关着：说会记什么、存在哪、存多久，一个开启按钮 / Off: what it records, where and for how long, and one button to turn it on -->
-  <section v-else-if="!enabled" class="ui-card qlog-state">
-    <UiEmpty :icon="FileSearch" title="查询日志没有开" :desc="`开了以后，每次查询都会记下来：谁问的、问了什么、怎么回的、花了多久。存在面板所在的机器上，默认保存 90\u00a0天、最多 500\u00a0MB。`">
-      <button class="ui-btn ui-btn--primary" type="button" @click="turnOn">开启查询日志</button>
     </UiEmpty>
   </section>
   <!-- 读取失败：和运行日志一样一条提示，有行时只说可能过期 / A load failure: one notice as in the runtime log; with rows on screen it only says they may be stale -->
@@ -339,7 +335,9 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
     <button class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="loading" @click="load">重试</button>
   </div>
   <p v-else-if="waitingForPanel" class="ui-notice ui-notice--off logs-notice" role="status"><Clock :size="16" aria-hidden="true" /><span>连上面板后自动打开</span></p>
-  <section v-if="supported && enabled && !waitingForPanel" class="log-console ui-card qlog" role="tabpanel" aria-labelledby="logs-tab-query">
+  <!-- 换成了不支持查询日志的内核：以前记下的照样能看，上面说一句 / Switched to a kernel without the query log: what was recorded before can still be read, with a line above -->
+  <p v-if="!supported && entries.length" class="ui-notice ui-notice--off logs-notice" role="status"><FileSearch :size="16" aria-hidden="true" /><span>当前内核不支持查询日志，下面是以前记下的；新的查询要更新内核后才会记录</span><RouterLink class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" to="/system">去系统页</RouterLink></p>
+  <section v-if="(supported || entries.length) && !waitingForPanel" class="log-console ui-card qlog" role="tabpanel" aria-labelledby="logs-tab-query">
     <!-- 工具行：搜索、去向、右端设置和下载 / The toolbar: search, destination, settings and download at the right end -->
     <header class="log-toolbar">
       <label class="ui-input log-search"><Search :size="16" aria-hidden="true" /><input v-model="q" aria-label="搜索域名或客户端" placeholder="搜索域名或客户端" autocapitalize="off" spellcheck="false" /></label>
@@ -361,10 +359,10 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
         <div v-if="entries.length" class="qlog-head" aria-hidden="true"><span></span><span class="ui-lbl">时间</span><span class="ui-lbl">客户端</span><span class="ui-lbl">域名</span><span class="ui-lbl">类型</span><span class="ui-lbl">去向</span><span class="ui-lbl qlog-c-answer">回答</span><span class="ui-lbl qlog-c-source">来源</span><span class="ui-lbl qlog-num">耗时</span></div>
         <UiNewItemsBanner v-if="freshLabel" :label="freshLabel" :loading="loading" @show="showFresh" />
         <div v-if="loading && !entries.length" class="log-skeleton" role="status" aria-label="正在读取查询日志"><i v-for="n in 12" :key="n" class="sk"></i></div>
-        <template v-for="item in entries" :key="item.seq">
+        <template v-for="item in entries" :key="item.id">
           <!-- 漏记的一段：照实说，不悄悄缺 / A gap: said plainly, never a silent hole -->
-          <p v-if="isGap(item)" class="qlog-gap" role="note">这里漏记了 {{ item.gap }} 条：面板当时没来得及从内核取走</p>
-          <button v-else class="qlog-row" :class="{ 'is-selected': selected === item.seq }" type="button" :data-seq="item.seq" :aria-current="selected === item.seq ? 'true' : undefined" @click="select(item.seq)">
+          <p v-if="isGap(item)" class="qlog-gap" role="note">这里漏记了 {{ item.gap }} 条：面板没能从内核取到</p>
+          <button v-else class="qlog-row" :class="{ 'is-selected': selected === item.id }" type="button" :data-id="item.id" :aria-current="selected === item.id ? 'true' : undefined" @click="select(item.id)">
             <i class="ui-dot qlog-dot" :class="`qlog-dot--${statusOf(item).tone}`" role="img" :aria-label="statusOf(item).label"></i>
             <time class="qlog-c-time">{{ timeText(item.time_unix_ms, now) }}</time>
             <span class="qlog-c-client qlog-lit">{{ item.client }}</span>
@@ -372,14 +370,17 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
             <span class="qlog-c-type">{{ item.qtype }}</span>
             <span class="qlog-c-dest"><span :class="{ 'qlog-lit': routeCell(item).mono }">{{ routeCell(item).where }}</span><span v-if="routeCell(item).rule" class="qlog-c-rule"> · {{ routeCell(item).rule }}</span></span>
             <span class="qlog-c-answer" :class="`is-${answerOf(item).tone || 'plain'}`"><span :class="{ 'qlog-lit': answerOf(item).literal }">{{ answerOf(item).text }}</span><span v-if="answerOf(item).more" class="qlog-more-n"> +{{ answerOf(item).more }}</span></span>
-            <span class="qlog-c-source" :class="{ 'is-warn': sourceOf(item)?.tone === 'warn' }"><span v-if="sourceOf(item)" :class="{ 'qlog-lit': sourceOf(item)!.literal }">{{ sourceOf(item)!.text }}</span></span>
+            <span class="qlog-c-source" :class="{ 'is-warn': sourceOf(item)?.tone === 'warn' }"><span v-if="sourceOf(item)" :class="{ 'qlog-lit': sourceOf(item)!.literal }" :title="sourceOf(item)!.full">{{ sourceOf(item)!.text }}</span></span>
             <span class="qlog-num qlog-c-latency" :class="{ 'is-slow': item.latency_ms >= SLOW_MS && item.outcome !== 'failed' }">{{ latencyText(item.latency_ms) }}</span>
-            <!-- 手机：第二行 / phones: the second line -->
-            <span class="qlog-phone"><UiDotText :parts="phoneLine(item)" /></span>
+            <!-- 手机：第二行，只在手机上画（和下面的 640 断点一致），宽屏一页少画上千个元素 / phones: the second line, drawn on phones only (the
+                 640 breakpoint below), sparing wide screens a thousand elements a page -->
+            <span v-if="phone" class="qlog-phone"><UiDotText :parts="phoneLine(item)" /></span>
           </button>
         </template>
         <p v-if="loadingOlder" class="qlog-more" role="status">正在读取更早的查询</p>
-        <UiEmpty v-if="!loading && !entries.length && !loadError" :icon="FileSearch" :title="filtered ? '没有符合条件的查询' : '还没有查询'" :desc="filtered ? '清空搜索，或把去向、客户端的筛选去掉' : '有设备来解析域名，就会出现在这里。'" />
+        <!-- 一次只往前找那么多：没凑满一页时说找到哪儿了，接着找由人决定，不悄悄扫完几十天 / A read searches only so far: when the page is short, say how far it got and let the reader decide to go on, instead of quietly scanning weeks -->
+        <p v-else-if="stoppedAt !== null && nextBefore !== null" class="qlog-more qlog-stopped" role="status"><span>{{ entries.length ? '' : '没找到符合条件的查询，' }}已经找到 {{ timeText(stoppedAt, now) }}</span><button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" @click="loadOlder">继续往前找</button></p>
+        <UiEmpty v-if="!loading && !entries.length && !loadError && stoppedAt === null" :icon="FileSearch" :title="filtered ? '没有符合条件的查询' : '还没有查询'" :desc="filtered ? '清空搜索，或把去向、客户端的筛选去掉' : '有设备来解析域名，就会出现在这里。'" />
       </div>
       <!-- 宽屏的详情：页头（域名、谁在什么时候问的、状态），一行页签和四个去处，下面是概况或处理过程 / The wide-screen detail: a head (domain, who asked and when, status), a bar with tabs and four actions, then the summary or the steps -->
       <section v-if="current && !phone" class="qlog-pane" aria-label="查询详情">
@@ -470,7 +471,6 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
         <button class="ui-icon-btn" type="button" aria-label="关闭" title="关闭" @click="drawer?.close()"><X :size="16" /></button>
       </header>
       <div class="pdrawer__body qlog-settings">
-        <label class="pswitch"><span><b>记录查询</b><small>关掉以后不再记新的查询，已经记下的照旧保留</small></span><span class="ui-switch"><input v-model="draft.enabled" type="checkbox" aria-label="记录查询"><i></i></span></label>
         <div class="pfield">
           <span>保存多久</span>
           <UiTabs v-model="draft.retention" :items="RETENTIONS" label="保存多久" variant="segment" />
@@ -479,9 +479,8 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
         <label class="pfield">
           <span>最多占用</span>
           <span class="ui-input qlog-mb"><input v-model="draft.maxMb" inputmode="numeric" aria-label="最多占用多少 MB"><span>MB</span></span>
-          <small class="pfield__hint">{{ settings ? `已用 ${mb(settings.used_bytes)}${settings.oldest_unix_ms ? `，最早一条是 ${timeText(settings.oldest_unix_ms, 0)}` : ''}。` : '' }}超过上限时先删最早的那一天。</small>
+          <small class="pfield__hint">{{ settings ? `已用 ${mb(settings.used_bytes)}${settings.oldest_unix_ms ? `，最早一条是 ${timeText(settings.oldest_unix_ms, 0)}` : ''}。` : '' }}超过上限时先删最早的。</small>
         </label>
-        <label class="pswitch"><span><b>客户端只记网段</b><small>IPv4 记到 /24，IPv6 记到 /64（和查询排行的脱敏一样），看不出是哪一台设备</small></span><span class="ui-switch"><input v-model="draft.anonymize" type="checkbox" aria-label="客户端只记网段"><i></i></span></label>
         <label class="pfield">
           <span>不记录的域名 <small>可选</small></span>
           <textarea v-model="draft.ignored" class="ui-input qlog-ignored" rows="4" placeholder="一行一个，连子域名一起不记" spellcheck="false" autocapitalize="off"></textarea>
@@ -546,6 +545,8 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
 .logs-page .qlog-phone, .logs-page .qlog-phone-type { display: none; }
 .logs-page .qlog-gap { margin: 0; padding: var(--s-2) var(--s-5); background: var(--l-sunk); color: var(--l-ink-2); font-size: var(--t-2); }
 .logs-page .qlog-more { margin: 0; padding: var(--s-3) var(--s-5); color: var(--l-ink-3); font-size: var(--t-2); }
+/* 找到哪儿了、接着找：一行字后面跟按钮，窄了按钮换到下一行 / How far it got and going on: a line of text with the button after it, wrapping on narrow screens */
+.logs-page .qlog-stopped { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2) var(--s-3); }
 .logs-page .qlog-stream > .ui-banner { top: var(--h-md); }
 
 /* 详情在表格下方：页头、页签和四个去处一行、内容；16rem 高，概况正好放下，处理过程在里面滚 / The detail under the table: a head, one bar of tabs and four actions, the content; 16rem tall, the summary fits exactly and the steps scroll inside */
