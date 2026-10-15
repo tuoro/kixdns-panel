@@ -3,7 +3,6 @@ import { ApiError, CONFIG_WRITTEN_EVENT, apiRequest, isPanelDown, jsonBody } fro
 import { useConfirm } from '../composables/useConfirm'
 import { registerHeldDraft } from '../composables/useLeaveGuard'
 import type { ConfigApplyResult, ConfigDocument, ConfigRuntimeApplyState, ConfigVersion, ConfigVersionDetail, ConfigVersions, DeleteConfigVersionResult, DeleteConfigVersionsResult, Overview, ServiceStatus, ValidationResult } from '../api/types'
-import { SETTING_SECTIONS, settingNeedsCapability, settingSupported } from '../config-editor/schema'
 import { exportConfig, readConfig } from '../config-model/document'
 import type { Model, Rule } from '../config-model/model'
 import { traceNames } from '../config-model/trace-names'
@@ -48,11 +47,6 @@ export const currentVersionId = computed(() => {
   return doc.value?.version_id ?? null
 })
 export const runtimeUnavailable = computed(() => doc.value?.runtime.status === 'unavailable' && !runtimeStopped.value)
-export const unsupportedFields = computed(() => SETTING_SECTIONS.flatMap((s) => s.fields)
-  .filter((f) => settingNeedsCapability(f, model.settings) && !settingSupported(f, runtimeCapabilities.value))
-  .map((f) => f.label))
-// 内核报了自己支持什么、草稿里却开着它没有的功能：服务端不收这份配置（开着也不起作用），所以先不让保存
-// The kernel reported what it supports and the draft switches on a feature it lacks: the server refuses the config (the switch would do nothing), so saving waits
 // 写出去的配置里有几条规则用到某种动作：和服务端 config_uses_action 同一个判断（后台刷新规则和每条规则的动作，含回答后检查的两组）。
 // 按写出的配置数，停用的规则（不写出）不算，回答后检查、高级规则、域名映射里的都算
 // How many rules in the exported config use an action type: the same test as the server's config_uses_action (the background refresh rule and every
@@ -103,31 +97,21 @@ export const cnameUse = computed((): { rules: Rule[]; untraced: number } => {
   }
   return { rules: [...found.values()], untraced }
 })
-export const blockedFields = computed(() => (!runtimeStopped.value && !runtimeUnavailable.value && !capabilityError.value
-  ? [...unsupportedFields.value, ...(!canCname.value && cnameInUse.value ? ['CNAME 回答'] : [])]
-  : []))
-// 不支持的设置在哪一组：「去基础设置」直接打开那一组 / Which group holds the unsupported settings, so 去基础设置 opens it directly
-export const unsupportedSection = computed(() => SETTING_SECTIONS.find((s) => s.fields.some((f) => settingNeedsCapability(f, model.settings) && !settingSupported(f, runtimeCapabilities.value)))?.id ?? '')
+// 内核报了自己支持什么、草稿里却有它不支持的 CNAME 回答：服务端不收这份配置，所以先不让保存
+// The kernel reported what it supports and the draft has CNAME answers it lacks: the server refuses the config, so saving waits
+export const cnameBlocked = computed(() => !runtimeStopped.value && !runtimeUnavailable.value && !capabilityError.value && !canCname.value && cnameInUse.value)
 // KixDNS 没启动、连不上、没报能力时，保存只存成待应用版本 / Saving only stores a pending version when KixDNS is down, unreachable or silent about capabilities
 export const deferSave = computed(() => runtimeStopped.value || runtimeUnavailable.value || Boolean(capabilityError.value))
 export const fileDiffers = computed(() => !hasPending.value && !hasApplyFailure.value && doc.value?.runtime.status === 'different')
-// 草稿里有内核不支持的东西时，现在应用 / 重试应用也只会被拒：不给这两个按钮 / With something the kernel does not support in the draft, 现在应用 and 重试应用 would only be refused: neither is offered
-// 被挡住时按一下说什么：设置要关掉，CNAME 要改成 IP / What a press says while blocked: settings are switched off, CNAME becomes an IP
-export const blockedHint = computed(() => {
-  const settings = blockedFields.value.filter((field) => field !== 'CNAME 回答')
-  const cname = settings.length < blockedFields.value.length
-  if (!settings.length) return '当前内核不支持 CNAME 回答，先改成 IP 再保存'
-  if (!cname) return `当前内核不支持：${settings.join('、')}，先关掉再保存`
-  return `当前内核不支持：${blockedFields.value.join('、')}。先关掉${settings.length > 1 ? '这些设置' : '这一项设置'}、CNAME 改成 IP，再保存`
-})
-// 被挡住时的那句提示只留一条，挡住的东西都处理掉了就收起 / Only one copy of the blocked hint, cleared once nothing blocks any more
+// 草稿里有内核不支持的 CNAME 回答时，现在应用 / 重试应用也只会被拒：不给这两个按钮 / With CNAME answers the kernel does not support in the draft, 现在应用 and 重试应用 would only be refused: neither is offered
+// 被挡住时按一下说一句，只留一条；CNAME 都改掉了就收起 / A press while blocked says so, one copy only, cleared once no CNAME answer blocks any more
 let blockedToast: number | null = null
 export function sayBlocked(): void {
-  blockedToast = useToast().info(blockedHint.value)
+  blockedToast = useToast().info('当前内核不支持 CNAME 回答，先改成 IP 再保存')
 }
-watch(() => blockedFields.value.length, (n) => { if (!n && blockedToast !== null) { useToast().dismiss(blockedToast); blockedToast = null } })
-export const canApplyNow = computed(() => (hasPending.value || hasApplyFailure.value || fileDiffers.value) && !deferSave.value && blockedFields.value.length === 0)
-export const canSave = computed(() => (dirty.value || canApplyNow.value) && blockedFields.value.length === 0)
+watch(cnameBlocked, (blocked) => { if (!blocked && blockedToast !== null) { useToast().dismiss(blockedToast); blockedToast = null } })
+export const canApplyNow = computed(() => (hasPending.value || hasApplyFailure.value || fileDiffers.value) && !deferSave.value && !cnameBlocked.value)
+export const canSave = computed(() => (dirty.value || canApplyNow.value) && !cnameBlocked.value)
 
 // ---------- 保存的几步 / the save's stages ----------
 export type SaveStage = 'idle' | 'checking' | 'validating' | 'applying' | 'done' | 'failed'
@@ -549,8 +533,8 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
   if (queued.value) return
   const waiting = checkRun
   if ((busy.value && !waiting) || !doc.value) return
-  // 被内核不支持的设置挡住时说一句，不默默不动 / Blocked by unsupported settings: say so instead of doing nothing
-  if (blockedFields.value.length) { sayBlocked(); return }
+  // 被内核不支持的 CNAME 回答挡住时说一句，不默默不动 / Blocked by unsupported CNAME answers: say so instead of doing nothing
+  if (cnameBlocked.value) { sayBlocked(); return }
   if (!canSave.value) return
   // 要写入的配置在这一刻定下来，复制一份：导出的结果和草稿共用数组，写入的请求要等校验完才打包，校验途中的修改会混进去、没校验就写进文件
   // The config to write is fixed now, as a copy: the export shares arrays with the draft and the write request is only built after validation,
@@ -685,7 +669,7 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     if (down && step === 'applying') unanswered = { content, sent, base, generation: draftGeneration(), sentAt, from, pending: pendingVersionId.value ?? null, version: doc.value?.version_id ?? null, inPlace }
     // 写进文件以后 KixDNS 没接受：版本已经存下了，只是没生效 / KixDNS refused after the write: the version is stored, it just did not take
     // 原地生效时服务端自己校验：没过、不支持、协议出错也会把这个版本记成没有生效，和写进去却没被接受一样说
-    // An in-place apply is validated by the server: a refusal, an unsupported setting or a protocol error also marks the version as not taken, so it is
+    // An in-place apply is validated by the server: a refusal, an unsupported CNAME answer or a protocol error also marks the version as not taken, so it is
     // worded like a write that KixDNS refused
     const failedInPlace = inPlace && error instanceof ApiError && ['config_validation_failed', 'unsupported_config_fields', 'kixdns_protocol_error'].includes(error.code)
     const writtenNotApplied = step === 'applying' && error instanceof ApiError && (['reload_failed', 'kixdns_rejected'].includes(error.code) || failedInPlace)

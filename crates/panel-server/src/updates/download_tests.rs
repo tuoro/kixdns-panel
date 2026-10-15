@@ -377,7 +377,9 @@ async fn a_config_the_release_cannot_run_is_refused_before_downloading() {
     let error = manager
         .install_resolved(
             &remote,
-            &serde_json::json!({"settings": {"statistics_enabled": true}, "pipelines": []}),
+            &serde_json::json!({
+                "pipelines": [{"id": "default", "rules": [{"actions": [{"type": "static_cname_response", "target": "origin.example."}]}]}]
+            }),
         )
         .await
         .unwrap_err();

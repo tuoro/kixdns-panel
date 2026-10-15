@@ -929,9 +929,9 @@ onBeforeUnmount(() => {
             <p v-else class="overview-empty">{{ runtimeState === 'stopped-empty' ? '尚无数据' : group.empty }}</p>
           </section>
         </div>
-        <!-- 下方配置卡已有「管理配置」，这里只说开关在哪，不再放第二个去同一处的按钮
-             The config card below already links to the config page; this says where the switch is instead of adding a second link -->
-        <UiEmpty v-else-if="stats" :icon="ChartColumn" title="查询排行没有打开" desc="在「基础设置 › 查询统计」里打开「启用查询排行」后，这里按客户端和域名列出请求量。" />
+        <!-- 旧内核要在配置里打开排行；面板不再给这个开关，新内核一直统计，所以出路是更新内核
+             Older kernels need rankings switched on in the config; the panel no longer offers that switch and newer kernels always rank, so the way out is a kernel update -->
+        <UiEmpty v-else-if="stats" :icon="ChartColumn" title="查询排行没有打开" desc="更新内核后会一直统计，这里按客户端和域名列出请求量。" />
         <p v-else-if="!statsError" class="overview-empty">{{ statsLoading ? '正在读取查询排行' : '查询排行暂不可用' }}</p>
       </section>
 

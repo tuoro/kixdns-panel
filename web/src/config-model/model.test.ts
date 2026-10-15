@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { andChains, compile, kernelAddress, ruleProblems, type Condition, type Model } from './model'
 import { cond, sampleModel } from './testing/samples'
-import { SETTING_SECTIONS, settingNeedsCapability } from '../config-editor/schema'
 import { foldChain } from './testing/kernel-sim'
 
 // 用照内核源码复刻的求值（kernel.ts foldChain），不在测试里另写一套理解 / Use the fold rebuilt from the kernel source (kernel.ts), not a second reading of it
@@ -181,28 +180,15 @@ describe('ruleProblems', () => {
   })
 })
 
-describe('按内核能力开的开关', () => {
-  // 关着时不写进配置：内核缺省就是关，写着反而让不支持它的内核整份拒绝；开着的照写，别的设置不动
-  // Off, they are left out: the kernel's default is off, and writing them only makes a kernel without the capability refuse the config; on, they are written; other settings are untouched
-  it('关着的不写进给内核的配置，开着的照写', () => {
+describe('旧版面板写下的查询排行设置', () => {
+  // 新内核不看它们，旧内核还按它们统计：配置里写着什么就照原样写回，开着关着都不动，别的设置也不动
+  // Newer kernels ignore them and older ones still rank by them: whatever the config says is written back as it is, on or off, and other settings are untouched
+  it('照原样写回', () => {
     const model = sampleModel()
-    model.settings = { ...model.settings, statistics_enabled: false, statistics_anonymize_client_ip: false, enable_tcp_fallback: false }
-    const off = compile(model).settings
-    expect(off).not.toHaveProperty('statistics_enabled')
-    expect(off).not.toHaveProperty('statistics_anonymize_client_ip')
-    expect(off).toHaveProperty('enable_tcp_fallback', false)
-    model.settings = { ...model.settings, statistics_enabled: true }
-    expect(compile(model).settings).toHaveProperty('statistics_enabled', true)
-  })
-
-  // 依附的开关照写（偏好留着），但上一级关着时用不到内核能力：不因为它挡住保存
-  // A dependent switch is written as set (the preference is kept), but with its parent off it needs no capability, so it does not block saving
-  it('上一级开关关着时，依附它的开关照写，但不算用到能力', () => {
-    const model = sampleModel()
-    model.settings = { ...model.settings, statistics_enabled: false, statistics_anonymize_client_ip: true }
-    expect(compile(model).settings).toHaveProperty('statistics_anonymize_client_ip', true)
-    const field = SETTING_SECTIONS.flatMap((s) => s.fields).find((f) => f.key === 'statistics_anonymize_client_ip')!
-    expect(settingNeedsCapability(field, model.settings)).toBe(false)
-    expect(settingNeedsCapability(field, { ...model.settings, statistics_enabled: true })).toBe(true)
+    model.settings = { ...model.settings, statistics_enabled: false, statistics_anonymize_client_ip: true, enable_tcp_fallback: false }
+    const settings = compile(model).settings
+    expect(settings).toHaveProperty('statistics_enabled', false)
+    expect(settings).toHaveProperty('statistics_anonymize_client_ip', true)
+    expect(settings).toHaveProperty('enable_tcp_fallback', false)
   })
 })

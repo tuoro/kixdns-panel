@@ -24,7 +24,7 @@
 
 | 配置能力 | 受控字段 | 运行时兼容别名 |
 | --- | --- | --- |
-| `config_query_stats_v1` | `settings.statistics_enabled`、`settings.statistics_anonymize_client_ip` | `stats_top_v1` |
+| `config_query_stats_v1` | 不再受控：`settings.statistics_enabled`、`settings.statistics_anonymize_client_ip` 只对旧内核起作用，面板不再提供这两个开关，也不因它们挡住保存（见控制协议的「查询统计配置」） | `stats_top_v1` |
 | `config_static_cname_response_v1` | 任一规则动作列表（`actions`、`response_actions_on_match`、`response_actions_on_miss`，含 `background_refresh_rule`）中的 `static_cname_response` | 无 |
 
 `static_cname_response` 是上游 KixDNS 自带的动作（固定 CNAME 应答），能力只声明这个二进制认得它；面板的域名映射和「固定 CNAME」动作都依赖它。不支持时，这个动作和域名映射模板不出现；已有的映射原样保留，域名映射页提示先更新或切换内核。字段类能力按 JSON Pointer 检查，动作类能力按动作的 `type` 检查。
@@ -33,8 +33,7 @@
 
 ## 失败行为
 
-- 不支持且配置中没有字段：表单隐藏该字段。
-- 不支持但字段已经存在：表单只读保留，JSON 原文不被改写。
+- 表单：不支持的动作不出现；已有的原样保留，页面提示先改掉或更新内核，JSON 原文不被改写。
 - 预验证、保存或恢复不兼容配置：返回 `422 unsupported_config_fields`。
 - 安装或切换到不兼容版本：在停止服务和替换二进制之前返回相同错误。
 - 缺少或无法读取能力声明：保守视为不支持，不静默删除字段。

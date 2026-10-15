@@ -56,8 +56,6 @@ let config: ConfigDocument = {
       cache_capacity: 20000,
       default_upstream: '1.1.1.1:53',
       upstream_timeout_ms: 1800,
-      statistics_enabled: true,
-      statistics_anonymize_client_ip: false,
       geoip_db_path: '/var/lib/kixdns-panel/geo/geoip-mmdb-4c425e120e43.mmdb',
       geosite_data_paths: ['/var/lib/kixdns-panel/geo/geosite-67b90a027f2c.dat'],
     },
@@ -472,8 +470,6 @@ function demoConfigVersion(id: number): Record<string, unknown> {
     pipelines.push({ id: 'blocked', rules: [{ name: 'deny-malware', matchers: [], actions: [] }] })
   } else if (id === 15) {
     settings.upstream_timeout_ms = 3000
-    delete settings.statistics_enabled
-    delete settings.statistics_anonymize_client_ip
     delete settings.geoip_db_path
     delete settings.geosite_data_paths
   }
@@ -728,6 +724,9 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (pathname === '/api/v1/stats/top' && method === 'GET') {
     queryStats.window_seconds = Number(url.searchParams.get('window')) || 86_400
+    // 旧内核、配置里没打开排行（kixdns:demo-stats-off）：新内核开了控制通道就一直统计，只有旧内核会这样回
+    // An older kernel with rankings off in its config (kixdns:demo-stats-off): newer kernels always rank once the control socket is open
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-stats-off') === 'true') return { ...queryStats, enabled: false, requests_observed: 0, dropped_updates: 0, clients: [], domains: [] } as T
     return queryStats as T
   }
   if (path === '/api/v1/stats/clear' && method === 'POST') {

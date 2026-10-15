@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ChevronLeft, ChevronRight, Plus, Search, X } from '@lucide/vue'
 import UiHelp from '../ui/UiHelp.vue'
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { SETTING_SECTIONS, settingShouldRender, settingSupported, settingValue, settingVisible, settingNeedsCapability, type SettingField, type SettingSection } from '../../config-editor/schema'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { SETTING_SECTIONS, settingValue, settingVisible, type SettingField, type SettingSection } from '../../config-editor/schema'
 import type { GlobalSettings } from '../../config-editor/types'
 import GeoDataEditor from './GeoDataEditor.vue'
 import UiDotText from '../ui/UiDotText.vue'
@@ -17,12 +17,9 @@ const version = defineModel<string | undefined>('version')
 // hiddenKeys: settings owned elsewhere stay out of this list (in the new config page 其余请求 decides the default upstream);
 // lead: a group listed first whose rows the caller supplies through the #lead slot. Both are optional.
 const props = defineProps<{
-  capabilities: string[]
   changed?: ReadonlySet<string>
   hiddenKeys?: readonly string[]
   lead?: { id: string; title: string; description: string; summary: string[]; changed?: boolean; help?: string }
-  // 先打开哪一组；不给就是最前面那组 / Which group opens first; the leading one when not given
-  initialGroup?: string
 }>()
 const shown = (field: SettingField) => !props.hiddenKeys?.includes(field.key)
 const search = ref('')
@@ -30,15 +27,8 @@ const searchInput = ref<HTMLInputElement>()
 // 左边一列分组、右边一组设置，和解析编排的「左列表、右检查器」同一种版式；手机上先看分组列表，点进去看一组。
 // Groups on the left and one group's settings on the right, the same layout as 解析编排's list and
 // inspector; a phone shows the group list first and opens one group at a time.
-const current = ref(props.initialGroup || (props.lead?.id ?? 'network'))
-// 刚按「关掉」的那几行先留着（写「已关闭」、按钮收起），离开这一组再消失：不然整组一下子空了，右边只剩白板
-// Rows just switched off with 关掉 stay (reading 已关闭, the button gone) until the group is left: otherwise the whole group vanishes at once and the pane goes blank
-const keptOff = reactive(new Set<string>())
-watch(current, () => keptOff.clear())
-// 从「去基础设置」过来时指名了一组：手机上直接打开那一组，不停在目录上 / Arriving from 去基础设置 names a group: on phones that group opens directly instead of the contents list
-const mobileOpen = ref(Boolean(props.initialGroup))
-// 已经开着时又指名了一组（页面上方的「去查询统计」）：换过去，手机上直接打开 / A group named while already open (去查询统计 above): switch to it, opening it directly on phones
-watch(() => props.initialGroup, (group) => { if (group) { current.value = group; mobileOpen.value = true } })
+const current = ref(props.lead?.id ?? 'network')
+const mobileOpen = ref(false)
 const mobileViewport = window.matchMedia('(max-width: 860px)')
 const isMobile = ref(mobileViewport.matches)
 function resize(event: MediaQueryListEvent): void { isMobile.value = event.matches }
@@ -48,12 +38,12 @@ const query = computed(() => search.value.trim().toLowerCase())
 const allFields = SETTING_SECTIONS.flatMap((section) => section.fields)
 
 const visibleSections = computed(() => SETTING_SECTIONS.map((section) => {
-  const available = section.fields.filter((field) => shown(field) && (supported(field) || settingNeedsCapability(field, settings.value) || keptOff.has(field.key)))
+  const available = section.fields.filter(shown)
   const matches = available.filter((field) => `${section.title} ${field.label} ${field.key}`.toLowerCase().includes(query.value))
   const relatedKeys = new Set(matches.flatMap((field) => [field.key, ...dependencyKeys(field)]))
   const fields = query.value
     ? available.filter((field) => relatedKeys.has(field.key))
-    : available.filter((field) => settingShouldRender(field, settings.value, props.capabilities))
+    : available.filter((field) => settingVisible(field, settings.value))
   return { ...section, fields, matchCount: matches.length }
 }).filter((section) => section.fields.length > 0))
 
@@ -110,7 +100,7 @@ const versionMatches = computed(() => !query.value || '格式版本 version 配�
 const currentGroup = computed(() => groups.value.find((group) => group.id === current.value) ?? groups.value[0]!)
 const navSections = computed(() => SETTING_SECTIONS.map((section) => ({
   ...section,
-  fields: section.fields.filter((field) => shown(field) && (supported(field) || settingNeedsCapability(field, settings.value) || keptOff.has(field.key)) && settingShouldRender(field, settings.value, props.capabilities)),
+  fields: section.fields.filter((field) => shown(field) && settingVisible(field, settings.value)),
 })).filter((section) => section.fields.length > 0))
 const currentSection = computed(() => navSections.value.find((section) => section.id === current.value))
 const paneSections = computed(() => (query.value ? visibleSections.value : currentSection.value ? [currentSection.value] : []))
@@ -140,7 +130,7 @@ function booleanState(field: SettingField): string {
 }
 
 function disabled(field: SettingField): boolean {
-  return !supported(field) || !settingVisible(field, settings.value)
+  return !settingVisible(field, settings.value)
 }
 
 function dependencyHint(field: SettingField): string {
@@ -149,31 +139,8 @@ function dependencyHint(field: SettingField): string {
   return `先打开「${labels.join('」或「')}」`
 }
 
-// 内核不支持的设置只读：值写成文字，旁边一个「内核不支持」标签（规范第 8 节）
-// A setting the kernel does not support is read-only: its value as text beside a 内核不支持 tag (spec section 8)
-function readonlyValue(field: SettingField): string {
-  const value = settings.value[field.key]
-  if (typeof value === 'boolean') return value ? '已开启' : '已关闭'
-  if (Array.isArray(value)) return value.join(', ') || '留空'
-  if (value === null || value === undefined || value === '') return field.nullable ? '自动' : '未设置'
-  return `${String(value)}${field.unit ? ` ${field.unit}` : ''}`
-}
-
 function setValue(key: string, value: unknown): void {
   settings.value = { ...settings.value, [key]: value }
-}
-// 内核不支持的设置开着时保存会被挡（开着也不起作用；关着的开关不写，见 settingWritten）；关掉或从配置里去掉，草稿才保存得了
-// A setting the kernel does not support blocks saving while it is on (it would do nothing; a switch that is off is not written, see settingWritten); switching it off or removing it lets the draft save
-function removeSetting(key: string): void {
-  const next = { ...settings.value }
-  delete next[key]
-  settings.value = next
-}
-// 开关关掉就不写进配置（同上）；别的写法只能从配置里去掉 / A switch turned off is not written (as above); anything else has to come out of the config
-function turnOff(field: SettingField): void {
-  keptOff.add(field.key)
-  if (field.type === 'boolean') setValue(field.key, false)
-  else removeSetting(field.key)
 }
 
 function scalarValue(field: SettingField): string | number {
@@ -233,10 +200,6 @@ function setListItem(field: SettingField, index: number, event: Event): void {
 function removeListItem(field: SettingField, index: number): void {
   setValue(field.key, listValue(field).filter((_, itemIndex) => itemIndex !== index))
 }
-
-function supported(field: SettingField): boolean {
-  return settingSupported(field, props.capabilities)
-}
 </script>
 
 <template>
@@ -265,11 +228,7 @@ function supported(field: SettingField): boolean {
           <!-- 一个设置一行：左边名字和一句说明，右边控件。数字的单位写在输入框里，占位写默认值。
                One setting per row: name and a one-line note on the left, the control on the right; a number's unit sits in the input and the placeholder states the default. -->
           <template v-for="field in section.fields" :key="field.key">
-            <div v-if="!supported(field)" class="ui-setrow ui-setrow--off">
-              <span class="ui-setrow__label"><span>{{ labelFor(field) }}<i v-if="changed?.has(field.key)" class="ui-dot ui-dot--ink settings-dot" aria-hidden="true"></i></span><code v-if="query" class="settings-row__key">{{ field.key }}</code></span>
-              <span class="settings-row__readonly"><code>{{ readonlyValue(field) }}</code><span class="ui-tag">内核不支持</span><button v-if="settingNeedsCapability(field, settings)" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button" @click="turnOff(field)">{{ field.type === 'boolean' ? '关掉' : '从配置里去掉' }}</button></span>
-            </div>
-            <label v-else-if="field.type === 'boolean'" class="ui-setrow ui-setrow--toggle" :class="{ 'ui-setrow--off': disabled(field) }">
+            <label v-if="field.type === 'boolean'" class="ui-setrow ui-setrow--toggle" :class="{ 'ui-setrow--off': disabled(field) }">
               <span class="ui-setrow__label"><span>{{ labelFor(field) }}<i v-if="changed?.has(field.key)" class="ui-dot ui-dot--ink settings-dot" aria-hidden="true"></i></span><small v-if="noteFor(field)">{{ noteFor(field) }}</small><code v-if="query" class="settings-row__key">{{ field.key }}</code></span>
               <span class="ui-switch"><small v-if="booleanState(field)">{{ booleanState(field) }}</small><input type="checkbox" role="switch" :checked="Boolean(settingValue(settings, field.key))" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :disabled="disabled(field)" @change="setBoolean(field, $event)"><i aria-hidden="true"></i></span>
             </label>
@@ -363,8 +322,6 @@ function supported(field: SettingField): boolean {
 .settings-empty { display: grid; justify-items: center; gap: var(--s-2); padding: var(--s-7) var(--s-4); text-align: center; }
 .settings-empty strong { color: var(--l-ink); font-size: var(--t-3); }
 .settings-empty p { margin: 0; color: var(--l-ink-3); font-size: var(--t-2); }
-.settings-row__readonly { min-width: 0; min-height: var(--h-md); display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); color: var(--l-ink-2); font-size: var(--t-2); }
-.settings-row__readonly code { font-family: var(--f-mono); overflow-wrap: anywhere; }
 .settings-row__key { color: var(--l-ink-3); font-family: var(--mono); font-size: var(--t-1); overflow-wrap: anywhere; }
 /* 12 号的等宽 key 字身矮、行框高，看起来在名字和框的正中间：只把画出来的字往上提 2，和名字下的说明一样离名字近（审计第八轮 T3）
    The 12px mono key has short glyphs in a tall line box and looked centred between its name and the box: only the drawn text rises 2, as
