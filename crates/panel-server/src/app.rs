@@ -27,6 +27,7 @@ const STATS_SNAPSHOT_24H_KEY: &str = "stats_snapshot_24h_v1";
 
 mod diagnostics;
 mod geo;
+mod querylog;
 mod updates;
 
 use geo::{
@@ -100,6 +101,7 @@ pub struct AppState {
     config_apply_lock: Arc<Mutex<()>>,
     dummy_password_hash: Arc<str>,
     recent_history: Arc<std::sync::Mutex<RecentHistory>>,
+    querylog: querylog::QueryLog,
 }
 
 #[derive(Debug, Deserialize)]
@@ -286,7 +288,8 @@ pub async fn run(settings: AppSettings) -> anyhow::Result<()> {
 /// 数据库、密码哈希或初始配置历史初始化失败时返回错误。
 pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
     ensure_database_parent(&settings.database_path)?;
-    let database = Database::open(settings.database_path).await?;
+    let database = Database::open(settings.database_path.clone()).await?;
+    let querylog = querylog::QueryLog::open(&settings.database_path, &database).await?;
     let config = ConfigStore::new(settings.config_path, database.clone());
     config.initialize_history().await?;
     let dummy_password_hash = hash_password("dummy-password-for-timing".to_owned()).await?;
@@ -335,11 +338,13 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         config_apply_lock: Arc::new(Mutex::new(())),
         dummy_password_hash: Arc::from(dummy_password_hash),
         recent_history: Arc::default(),
+        querylog,
     };
     spawn_geo_scheduler(state.clone());
     spawn_builtin_geosite_seed(state.clone());
     spawn_config_reconciler(state.clone());
     spawn_metrics_sampler(state.clone());
+    querylog::spawn_querylog_collector(state.clone());
     updates::spawn_legacy_kernel_replacement(state.clone());
     let api = api_router(state);
 
@@ -395,6 +400,7 @@ fn api_router(state: AppState) -> Router {
         .route("/config/versions/{id}/apply", post(apply_pending_config))
         .route("/cache/flush", post(flush_cache))
         .merge(diagnostics::routes())
+        .merge(querylog::routes())
         .merge(updates::routes())
         .fallback(not_found)
         .with_state(state)
@@ -1624,7 +1630,7 @@ fn map_control_error(error: ControlError) -> AppError {
             "kixdns_unavailable",
             normalize_control_unavailable_message(&message),
         ),
-        ControlError::Protocol(message) => {
+        ControlError::Protocol(message) | ControlError::TooLarge(message) => {
             AppError::ServiceUnavailable("kixdns_protocol_error", message)
         }
         ControlError::Unsupported(message) => {

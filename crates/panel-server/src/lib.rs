@@ -10,6 +10,7 @@ mod geo_data;
 mod geosite_catalog;
 mod operations;
 mod panel_update;
+mod querylog;
 mod recent_window;
 mod updates;
 

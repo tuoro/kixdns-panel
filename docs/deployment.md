@@ -186,6 +186,7 @@ sudo systemctl restart kixdns-panel.service
 | `/var/lib/kixdns-panel/versions/` | 已下载的 KixDNS 版本 |
 | `/var/lib/kixdns-panel/bundle/` | 安装包自带 KixDNS 的构建身份 |
 | `/var/lib/kixdns-panel/geo/` | 按内容摘要保存的 GeoIP/GeoSite 数据 |
+| `/var/lib/kixdns-panel/querylog/` | 查询日志（目录 `0700`、文件 `0600`）：每小时一段，过了这个小时压成 `.jsonl.gz` |
 | `/var/lib/kixdns-panel/github-token` | 可选 GitHub Token（`0600`） |
 | `/var/lib/kixdns-panel-update/` | 在线更新状态，root 写、面板只读 |
 | `/run/kixdns/admin.sock` | 增强控制通道（`0660`） |
@@ -194,7 +195,7 @@ sudo systemctl restart kixdns-panel.service
 | `/usr/share/kixdns-panel/web` | 前端静态资源 |
 | `/usr/share/kixdns-panel/geo` | 安装包自带的 GeoSite：`geosite.dat`、来源说明 `geosite.json` 和它的 GPL-3.0 许可证，面板升级时整体替换 |
 
-数据库有界：配置历史最多 100 条，审计事件最多 10,000 条，请求量采样每 60 秒一个、只留 25 小时，都在写入时顺带清理。
+数据库有界：配置历史最多 100 条，审计事件最多 10,000 条，请求量采样每 60 秒一个、只留 25 小时，都在写入时顺带清理。查询日志也有界：按保留时间（默认 90 天）和空间上限（默认 500 MB，按磁盘上实际占的算：过了的小时是压缩后的大小，正在写的这一小时还没压缩）删最早的那一段，两样都在查询日志的设置里改。
 
 ## 服务启停
 

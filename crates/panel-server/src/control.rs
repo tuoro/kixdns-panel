@@ -96,6 +96,24 @@ pub struct StatsClearResult {
     pub cleared: bool,
 }
 
+/// 内核查询日志的一页（`querylog_v1`）：`after` 之后的条目，按 `seq` 从小到大
+/// One page of the kernel's query log (`querylog_v1`): the entries after `after`, in ascending `seq`
+#[derive(Debug, Clone, Deserialize)]
+pub struct QueryLogPage {
+    /// 这个内核进程开始记的时刻（毫秒），换了进程就变 / When this kernel process started recording (ms); a new process changes it
+    pub instance: u64,
+    /// 最新一条的编号 / The newest number given out
+    pub newest_seq: u64,
+    /// 游标之后已经被挤掉或清掉、取不到了的条数 / Records after the cursor that were pushed out or cleared and are gone
+    pub missed: u64,
+    /// 同时在处理的请求太多、没记下的累计数 / The running count of requests not recorded because too many were in flight
+    #[serde(default)]
+    pub untracked: u64,
+    /// 还有，马上接着取 / More are waiting; fetch again right away
+    pub more: bool,
+    pub entries: Vec<serde_json::Map<String, Value>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiagnosticTrace {
     pub protocol_version: u8,
@@ -269,6 +287,10 @@ pub enum ControlError {
     Unavailable(String),
     #[error("读不懂 KixDNS 的回应：{0}")]
     Protocol(String),
+    /// 回应超过 8 MiB 的上限 / The reply is over the 8 MiB cap
+    #[error("KixDNS 的回应太大了：{0}")]
+    #[cfg_attr(not(unix), allow(dead_code))]
+    TooLarge(String),
     #[error("KixDNS 没有接受这份配置：{0}")]
     Rejected(String),
     #[error("KixDNS 不支持：{0}")]
@@ -308,6 +330,13 @@ impl ControlClient {
             "/v1/stats/top?window={window_seconds}&limit={limit}"
         ))
         .await
+    }
+
+    /// 取 `after` 之后的查询日志。每条最多带 64 步，一页 250 条也在 8 MiB 的应答上限以内。
+    /// Takes the query log after `after`. An entry carries at most 64 steps, so a page of 250 stays within the 8 MiB reply cap.
+    pub async fn querylog(&self, after: u64, limit: usize) -> Result<QueryLogPage, ControlError> {
+        self.get_json(&format!("/v1/querylog?after={after}&limit={limit}"))
+            .await
     }
 
     pub async fn clear_stats(&self) -> Result<StatsClearResult, ControlError> {
@@ -478,7 +507,13 @@ impl ControlClient {
         let bytes = Limited::new(response.into_body(), MAX_RESPONSE_BYTES)
             .collect()
             .await
-            .map_err(|error| ControlError::Protocol(format!("读取响应失败：{error}")))?
+            .map_err(|error| {
+                if error.is::<http_body_util::LengthLimitError>() {
+                    ControlError::TooLarge(format!("超过 {} MiB", MAX_RESPONSE_BYTES / 1024 / 1024))
+                } else {
+                    ControlError::Protocol(format!("读取响应失败：{error}"))
+                }
+            })?
             .to_bytes()
             .to_vec();
         if !status.is_success() {

@@ -588,6 +588,7 @@ async fn test_state(directory: &TempDir) -> super::AppState {
     let geo_data =
         crate::geo_data::GeoDataManager::new(database.clone(), &directory.path().join("geo"))
             .unwrap();
+    let database_for_querylog = database.clone();
     super::AppState {
         database,
         config,
@@ -608,6 +609,12 @@ async fn test_state(directory: &TempDir) -> super::AppState {
         config_apply_lock: Arc::new(tokio::sync::Mutex::new(())),
         dummy_password_hash: Arc::from("unused"),
         recent_history: Arc::default(),
+        querylog: super::querylog::QueryLog::open(
+            &directory.path().join("panel.db"),
+            &database_for_querylog,
+        )
+        .await
+        .unwrap(),
     }
 }
 
@@ -1977,4 +1984,527 @@ fn the_builtin_geosite_and_its_imported_copy_share_one_catalog() {
     assert_eq!(value["files"][0]["sha256"], sha256);
     assert_eq!(value["builtin"]["sha256"], sha256);
     assert_eq!(value["catalogs"].as_object().unwrap().len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// 查询日志 / The query log
+// ---------------------------------------------------------------------------
+
+/// 假内核的查询日志交接区：`ring` 里是还留着的那些，`newest` 是编到第几条了
+/// The fake kernel's query-log ring: `ring` holds what is still there, `newest` the last number given out
+struct FakeQueryLog {
+    instance: u64,
+    ring: Vec<Value>,
+    newest: u64,
+    untracked: u64,
+    capabilities: Vec<&'static str>,
+    /// 每次来取时要的条数 / How many records each take asked for
+    limits: Vec<usize>,
+    /// 一次要得比这多，应答就超过 8 MiB / Asking for more than this makes the reply exceed 8 MiB
+    oversize_above: Option<usize>,
+    /// 带着这一条时应答就超过 8 MiB / A reply carrying this record exceeds 8 MiB
+    oversize_seq: Option<u64>,
+}
+
+type SharedQueryLog = std::sync::Arc<std::sync::Mutex<FakeQueryLog>>;
+
+fn fake_query_log(ring: Vec<Value>) -> SharedQueryLog {
+    let newest = ring
+        .last()
+        .map_or(0, |entry| entry["seq"].as_u64().unwrap());
+    std::sync::Arc::new(std::sync::Mutex::new(FakeQueryLog {
+        instance: 100,
+        ring,
+        newest,
+        untracked: 0,
+        capabilities: vec!["querylog_v1"],
+        limits: Vec::new(),
+        oversize_above: None,
+        oversize_seq: None,
+    }))
+}
+
+/// 假的内核：报告磁盘上那份配置在用，按内核的规矩交出查询日志（`missed` 和 `more` 的算法一样）
+/// A fake kernel: it reports the config on disk as in use and hands out its query log by the kernel's rules (`missed`
+/// and `more` computed the same way)
+fn start_fake_querylog_kernel(
+    directory: &std::path::Path,
+    log: SharedQueryLog,
+) -> tokio::task::JoinHandle<()> {
+    use axum::extract::Query;
+    use axum::routing::get;
+    let socket = directory.join("admin.sock");
+    let config = directory.join("pipeline.json");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let health_log = log.clone();
+    let router = Router::new()
+        .route(
+            "/v1/health",
+            get(move || {
+                let capabilities = health_log.lock().unwrap().capabilities.clone();
+                async move {
+                    axum::Json(serde_json::json!({
+                        "protocol_version": 1, "status": "ok", "pid": 1, "version": "test", "upstream_commit": "test",
+                        "patchset": "p0", "started_at_unix": 0, "uptime_seconds": 1, "config_generation": 1,
+                        "capabilities": capabilities,
+                    }))
+                }
+            }),
+        )
+        .route(
+            "/v1/config/active",
+            get(move || {
+                let sha256 = crate::digest::sha256_hex(&std::fs::read(&config).unwrap());
+                async move {
+                    axum::Json(serde_json::json!({
+                        "protocol_version": 1, "generation": 1, "sha256": sha256, "loaded_at_unix": 0,
+                        "reload_sequence": 1, "last_reload": { "success": true, "error": null },
+                    }))
+                }
+            }),
+        )
+        .route(
+            "/v1/querylog",
+            get(move |Query(query): Query<std::collections::HashMap<String, u64>>| {
+                let mut log = log.lock().unwrap();
+                let after = query["after"];
+                let limit = usize::try_from(query["limit"]).unwrap();
+                log.limits.push(limit);
+                let seq = |entry: &Value| entry["seq"].as_u64().unwrap();
+                let first_kept = log.ring.first().map_or(log.newest + 1, seq);
+                let entries: Vec<Value> = log
+                    .ring
+                    .iter()
+                    .filter(|entry| seq(entry) > after)
+                    .take(limit)
+                    .cloned()
+                    .collect();
+                let more = entries.last().is_some_and(|entry| seq(entry) < log.newest);
+                let mut page = serde_json::json!({
+                    "protocol_version": 1, "instance": log.instance, "capacity": 4096, "newest_seq": log.newest,
+                    "missed": first_kept.saturating_sub(after + 1), "untracked": log.untracked, "more": more,
+                    "entries": entries,
+                });
+                let carries_huge = log
+                    .oversize_seq
+                    .is_some_and(|huge| entries.iter().any(|entry| seq(entry) == huge));
+                if carries_huge || log.oversize_above.is_some_and(|most| limit > most) {
+                    page["padding"] = Value::String("x".repeat(9 * 1024 * 1024));
+                }
+                async move { axum::Json(page) }
+            }),
+        );
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() })
+}
+
+/// 内核的一条查询记录 / One kernel query record
+fn kernel_entry(seq: u64, qname: &str, qtype: &str) -> Value {
+    serde_json::json!({
+        "seq": seq, "time_unix_ms": 1_792_065_600_000_u64 + seq, "client": "192.168.1.9", "transport": "udp",
+        "qname": qname, "qtype": qtype, "latency_us": 900, "status": "completed", "outcome": "forwarded",
+        "rcode": "NOERROR", "answers": ["93.184.215.14"], "pipeline": "main", "upstream": "1.1.1.1:53",
+        "steps": [{"at_us": 1, "kind": "upstream", "upstream": "1.1.1.1:53", "transport": "udp", "via": "udp",
+                   "result": "success", "latency_us": 800, "rcode": "NOERROR"}],
+    })
+}
+
+/// 「空地址」拦截回一个 HTTPS 查询：NOERROR、没有记录 / A 空地址 block answering an HTTPS query: NOERROR, no records
+fn blocked_https_entry(seq: u64) -> Value {
+    serde_json::json!({
+        "seq": seq, "time_unix_ms": 1_792_065_600_000_u64 + seq, "client": "192.168.1.9", "transport": "udp",
+        "qname": "ads.example", "qtype": "HTTPS", "latency_us": 40, "status": "completed", "outcome": "static",
+        "rcode": "NOERROR", "answers": [], "pipeline": "main", "rule": "block-ads",
+        "steps": [
+            {"at_us": 1, "kind": "pipeline", "pipeline": "main"},
+            {"at_us": 2, "kind": "rule", "pipeline": "main", "rule": "block-ads", "phase": "request", "decision": "static"},
+        ],
+    })
+}
+
+fn querylog_items(state: &super::AppState) -> Vec<Value> {
+    state
+        .querylog
+        .store
+        .as_ref()
+        .unwrap()
+        .read_page(&crate::querylog::PageQuery {
+            filter: crate::querylog::Filter::default(),
+            before: None,
+            limit: 500,
+            cutoff_ms: 0,
+        })
+        .items
+}
+
+/// 「拦截 · SERVFAIL」：内核把 SERVFAIL 排在固定回答前面，记成失败 / 「Block · SERVFAIL」: the kernel ranks SERVFAIL above a
+/// fixed answer and records a failure
+fn servfail_block_entry(seq: u64) -> Value {
+    serde_json::json!({
+        "seq": seq, "time_unix_ms": 1_792_065_600_000_u64 + seq, "client": "192.168.1.9", "transport": "udp",
+        "qname": "tracker.example", "qtype": "A", "latency_us": 40, "status": "completed", "outcome": "failed",
+        "rcode": "SERVFAIL", "answers": [], "pipeline": "main", "rule": "block-trackers",
+        "steps": [
+            {"at_us": 1, "kind": "pipeline", "pipeline": "main"},
+            {"at_us": 2, "kind": "rule", "pipeline": "main", "rule": "block-trackers", "phase": "request", "decision": "static"},
+        ],
+    })
+}
+
+fn querylog_ids(state: &super::AppState) -> Vec<u64> {
+    querylog_items(state)
+        .iter()
+        .map(|item| item["id"].as_u64().unwrap())
+        .collect()
+}
+
+/// 采集：普通条目原样记、按内核在用的配置分出拦截（「空地址」和「SERVFAIL」都是）、忽略的域名不记；交接区挤掉的
+/// 和没记下的合成一行漏记；内核换了进程就从头取，进程时刻碰巧一样也认得出来
+/// Collecting: ordinary entries are kept as they are, blocks are told apart by the config the kernel uses (空地址 and
+/// SERVFAIL alike), ignored domains are not recorded; what the ring dropped and what went unrecorded make one gap row;
+/// a restarted kernel is read from the start, even when its process time happens to match
+#[tokio::test]
+async fn the_collector_records_queries_gaps_and_follows_a_kernel_restart() {
+    let directory = tempdir().unwrap();
+    std::fs::write(
+        directory.path().join("pipeline.json"),
+        serde_json::json!({
+            "pipelines": [{"id": "main", "rules": [
+                {"name": "block-ads", "matchers": [{"type": "domain_suffix", "value": "ads.example"}],
+                 "actions": [{"type": "static_ip_response", "ip": "0.0.0.0,::"}]},
+                {"name": "block-trackers", "matchers": [{"type": "domain_suffix", "value": "tracker.example"}],
+                 "actions": [{"type": "static_response", "rcode": "SERVFAIL"}]},
+            ]}],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let state = test_state(&directory).await;
+    state
+        .querylog
+        .set_settings(crate::querylog::QueryLogSettings {
+            ignored_domains: vec!["ignored.test".to_owned()],
+            ..crate::querylog::QueryLogSettings::default()
+        });
+    let log = fake_query_log(vec![
+        kernel_entry(2, "a.example", "A"),
+        blocked_https_entry(3),
+        servfail_block_entry(4),
+        kernel_entry(5, "pixel.ignored.test", "A"),
+    ]);
+    log.lock().unwrap().untracked = 5;
+    let _kernel = start_fake_querylog_kernel(directory.path(), log.clone());
+    let mut collector = super::querylog::Collector::default();
+
+    // 交接区开头的 1 在面板来之前就挤掉了，那时面板还没开始记，不算漏记
+    // Record 1 left the ring before the panel came, when the panel was not recording yet: no gap
+    collector.tick(&state).await.unwrap();
+    let items = querylog_items(&state);
+    assert_eq!(
+        items.len(),
+        3,
+        "no gap, and the ignored domain is not recorded: {items:?}"
+    );
+    assert_eq!(items[0]["qname"], "tracker.example");
+    assert_eq!(
+        items[0]["outcome"], "blocked",
+        "a SERVFAIL block is a block"
+    );
+    assert_eq!(items[1]["qname"], "ads.example");
+    assert_eq!(
+        items[1]["outcome"], "blocked",
+        "told apart by the rule, not the empty answer"
+    );
+    assert_eq!(items[2]["outcome"], "forwarded");
+
+    // 交接区溢出：6、7 被挤掉，又有 2 个没记下 / The ring overflowed: 6 and 7 were pushed out, and 2 more went unrecorded
+    {
+        let mut log = log.lock().unwrap();
+        log.ring = vec![kernel_entry(8, "b.example", "AAAA")];
+        log.newest = 8;
+        log.untracked = 7;
+    }
+    collector.tick(&state).await.unwrap();
+    let items = querylog_items(&state);
+    assert_eq!(items[0]["qname"], "b.example");
+    assert_eq!(items[1]["gap"], 4);
+
+    // 内核重启：编号从 1 重新数 / The kernel restarted: numbering starts again at 1
+    {
+        let mut log = log.lock().unwrap();
+        log.instance = 200;
+        log.ring = vec![
+            kernel_entry(1, "after-restart.example", "A"),
+            kernel_entry(2, "c.example", "A"),
+            kernel_entry(3, "d.example", "A"),
+        ];
+        log.newest = 3;
+        log.untracked = 0;
+    }
+    collector.tick(&state).await.unwrap();
+    assert_eq!(querylog_items(&state)[0]["qname"], "d.example");
+    assert_eq!(querylog_ids(&state), [8, 7, 6, 5, 4, 3, 2, 1]);
+
+    // 又重启了，进程时刻碰巧一样：编号比游标还小，照样从头取
+    // Restarted again with the same process time: numbers below the cursor still give it away
+    {
+        let mut log = log.lock().unwrap();
+        log.ring = vec![kernel_entry(1, "same-instance.example", "A")];
+        log.newest = 1;
+    }
+    collector.tick(&state).await.unwrap();
+    assert_eq!(querylog_items(&state)[0]["qname"], "same-instance.example");
+    assert_eq!(
+        state.querylog.store.as_ref().unwrap().cursor(),
+        Some(crate::querylog::Cursor {
+            instance: 200,
+            seq: 1
+        })
+    );
+
+    // 没有新的就什么也不写 / Nothing new writes nothing
+    collector.tick(&state).await.unwrap();
+    assert_eq!(querylog_items(&state).len(), 9);
+}
+
+/// 一页超过 8 MiB 的应答上限时减半再取，不在同一个游标上卡住
+/// A page over the 8 MiB reply cap is taken again at half the size instead of sticking at the same cursor
+#[tokio::test]
+async fn the_collector_takes_smaller_pages_when_one_is_too_large() {
+    let directory = tempdir().unwrap();
+    let state = test_state(&directory).await;
+    let log = fake_query_log(vec![kernel_entry(1, "a.example", "A")]);
+    log.lock().unwrap().oversize_above = Some(100);
+    let _kernel = start_fake_querylog_kernel(directory.path(), log.clone());
+
+    super::querylog::Collector::default()
+        .tick(&state)
+        .await
+        .unwrap();
+    assert_eq!(log.lock().unwrap().limits, [250, 125, 62]);
+    assert_eq!(querylog_ids(&state), [1]);
+}
+
+/// 一条也放不下时往前跳过它，不在同一个游标上卡住：有游标时算一行漏记；还没有游标时不算，那时分不清是太大的
+/// 还是面板开始记之前就挤掉的
+/// A record that cannot fit even alone is skipped instead of sticking at the same cursor: with a cursor it counts as a
+/// gap row; without one it does not, since it cannot then be told from records pushed out before recording began
+#[tokio::test]
+async fn the_collector_skips_a_record_too_large_to_take() {
+    let directory = tempdir().unwrap();
+    let state = test_state(&directory).await;
+    let log = fake_query_log(vec![
+        kernel_entry(1, "huge.example", "A"),
+        kernel_entry(2, "a.example", "A"),
+    ]);
+    log.lock().unwrap().oversize_seq = Some(1);
+    let _kernel = start_fake_querylog_kernel(directory.path(), log.clone());
+    let mut collector = super::querylog::Collector::default();
+
+    collector.tick(&state).await.unwrap();
+    assert_eq!(
+        log.lock().unwrap().limits,
+        [250, 125, 62, 31, 15, 7, 3, 1, 1, 1],
+        "halved down to one, one probe for the process, then one at a time"
+    );
+    let items = querylog_items(&state);
+    assert_eq!(items.len(), 1, "no gap row on the first take: {items:?}");
+    assert_eq!(items[0]["qname"], "a.example");
+
+    {
+        let mut log = log.lock().unwrap();
+        log.ring = vec![
+            kernel_entry(3, "huge.example", "A"),
+            kernel_entry(4, "b.example", "A"),
+        ];
+        log.newest = 4;
+        log.oversize_seq = Some(3);
+        log.limits.clear();
+    }
+    collector.tick(&state).await.unwrap();
+    assert_eq!(
+        log.lock().unwrap().limits,
+        [250, 125, 62, 31, 15, 7, 3, 1, 1, 1]
+    );
+    let items = querylog_items(&state);
+    assert_eq!(items[0]["qname"], "b.example");
+    assert_eq!(
+        items[1]["gap"], 1,
+        "with a cursor the skipped record is a gap"
+    );
+    assert_eq!(
+        state.querylog.store.as_ref().unwrap().cursor(),
+        Some(crate::querylog::Cursor {
+            instance: 100,
+            seq: 4
+        })
+    );
+}
+
+/// 查询日志的目录打不开时面板照常启动，只是不记，接口说清楚 / With the query-log directory unusable the panel still starts,
+/// records nothing, and the endpoints say so
+#[tokio::test]
+async fn an_unusable_querylog_directory_does_not_stop_the_panel() {
+    let directory = tempdir().unwrap();
+    std::fs::write(directory.path().join("querylog"), b"not a directory").unwrap();
+    let state = test_state(&directory).await;
+    assert!(state.querylog.store.is_none());
+    let log = fake_query_log(vec![kernel_entry(1, "a.example", "A")]);
+    let _kernel = start_fake_querylog_kernel(directory.path(), log.clone());
+    super::querylog::Collector::default()
+        .tick(&state)
+        .await
+        .unwrap();
+    assert!(
+        log.lock().unwrap().limits.is_empty(),
+        "nothing to write to, so nothing is taken"
+    );
+}
+
+/// 内核不支持查询日志时不去取，页面也照实说不支持 / A kernel without the query log is not asked, and the page says so
+#[tokio::test]
+async fn the_collector_leaves_a_kernel_without_the_query_log_alone() {
+    let directory = tempdir().unwrap();
+    let state = test_state(&directory).await;
+    let log = fake_query_log(vec![kernel_entry(1, "a.example", "A")]);
+    log.lock().unwrap().capabilities = Vec::new();
+    let _kernel = start_fake_querylog_kernel(directory.path(), log.clone());
+    assert!(state.querylog.supported(), "unknown counts as supported");
+
+    super::querylog::Collector::default()
+        .tick(&state)
+        .await
+        .unwrap();
+    assert!(log.lock().unwrap().limits.is_empty());
+    assert!(!state.querylog.supported());
+    assert!(querylog_items(&state).is_empty());
+}
+
+async fn wait_for_querylog(context: &AuthenticatedApp, count: usize) -> Value {
+    for _ in 0..50 {
+        let page = get_json(context, "/api/v1/querylog").await;
+        if page["items"].as_array().unwrap().len() >= count {
+            return page;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("the collector never delivered {count} records");
+}
+
+async fn put_querylog_settings(context: &AuthenticatedApp, body: Value) -> (StatusCode, Value) {
+    let request = Request::put("/api/v1/querylog/settings")
+        .header(COOKIE, context.cookies.clone())
+        .header("x-csrf-token", context.csrf_token.clone())
+        .header(CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    send_json(context, request).await
+}
+
+/// 页面用的接口：后台任务每秒取一次，按条件筛，设置检查后存下并记审计，清空以后什么也不剩
+/// The page's endpoints: the background task takes once a second, reads filter, settings are checked, saved and
+/// audited, and nothing is left after clearing
+#[tokio::test]
+async fn the_querylog_endpoints_filter_save_settings_and_clear() {
+    let context = authenticated_app().await;
+    let log = fake_query_log(vec![
+        kernel_entry(1, "a.example", "A"),
+        blocked_https_entry(2),
+    ]);
+    let _kernel = start_fake_querylog_kernel(context.directory.path(), log);
+
+    let page = wait_for_querylog(&context, 2).await;
+    let anonymous = Request::get("/api/v1/querylog")
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        send_json(&context, anonymous).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let without_csrf = Request::post("/api/v1/querylog/clear")
+        .header(COOKIE, context.cookies.clone())
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        send_json(&context, without_csrf).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(page["supported"], true);
+    assert_eq!(page["newest_id"], 2);
+    assert_eq!(page["next_before"], Value::Null);
+    let blocked = get_json(&context, "/api/v1/querylog?outcomes=blocked,answered").await;
+    // 这份配置里没有这条规则：只看回答，NOERROR 又没有记录，算自定义回答
+    // The config has no such rule: by the answer alone, NOERROR with no records is a custom answer
+    assert_eq!(blocked["items"][0]["outcome"], "answered");
+    let by_domain = get_json(&context, "/api/v1/querylog?q=A.EXAMPLE&limit=1").await;
+    assert_eq!(by_domain["items"].as_array().unwrap().len(), 1);
+    assert_eq!(by_domain["items"][0]["qname"], "a.example");
+
+    for (path, code) in [
+        ("/api/v1/querylog?outcomes=lost", "querylog_filter_invalid"),
+        (
+            "/api/v1/querylog?rule=x&rule_phase=later",
+            "querylog_filter_invalid",
+        ),
+        ("/api/v1/querylog?limit=501", "querylog_limit_invalid"),
+    ] {
+        let request = Request::get(path)
+            .header(COOKIE, context.cookies.clone())
+            .body(Body::empty())
+            .unwrap();
+        let (status, body) = send_json(&context, request).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{path}");
+        assert_eq!(body["error"]["code"], code, "{path}");
+    }
+
+    let defaults = get_json(&context, "/api/v1/querylog/settings").await;
+    assert_eq!(defaults["retention_hours"], 2_160);
+    assert_eq!(defaults["max_bytes"], 500 * 1024 * 1024);
+    assert!(defaults["used_bytes"].as_u64().unwrap() > 0);
+    let (status, saved) = put_querylog_settings(
+        &context,
+        serde_json::json!({"retention_hours": 168, "ignored_domains": ["Tracker.Test."]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(saved["retention_hours"], 168);
+    assert_eq!(
+        saved["max_bytes"],
+        500 * 1024 * 1024,
+        "a partial save keeps the rest"
+    );
+    assert_eq!(
+        saved["ignored_domains"],
+        serde_json::json!(["tracker.test"])
+    );
+    // 只改一项，其余照旧 / Changing one setting keeps the others
+    let (status, again) =
+        put_querylog_settings(&context, serde_json::json!({"ignored_domains": []})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(again["retention_hours"], 168);
+    assert_eq!(again["ignored_domains"], serde_json::json!([]));
+    let (status, refused) =
+        put_querylog_settings(&context, serde_json::json!({"max_bytes": 1024})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(refused["error"]["code"], "querylog_settings_invalid");
+    let audit = get_json(&context, "/api/v1/audit?action_prefix=querylog").await;
+    assert_eq!(
+        audit["events"][1]["detail"],
+        "保留 7 天，最多 500 MB，忽略 1 个域名"
+    );
+    assert_eq!(
+        audit["events"][0]["detail"],
+        "保留 7 天，最多 500 MB，不忽略域名"
+    );
+
+    let request = Request::post("/api/v1/querylog/clear")
+        .header(COOKIE, context.cookies.clone())
+        .header("x-csrf-token", context.csrf_token.clone())
+        .body(Body::empty())
+        .unwrap();
+    let (status, cleared) = send_json(&context, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(cleared["used_bytes"], 0);
+    assert_eq!(cleared["oldest_unix_ms"], Value::Null);
+    let page = get_json(&context, "/api/v1/querylog").await;
+    assert!(page["items"].as_array().unwrap().is_empty());
 }
