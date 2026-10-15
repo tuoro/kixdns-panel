@@ -10,7 +10,7 @@ Linux 默认地址为 `/run/kixdns/admin.sock`。协议使用 Unix Socket 上的
 
 ### `GET /v1/health`
 
-返回进程状态、上游提交、发布版本（`release_version`、`release_commit`，只有 fork 发布的内核才有，其余为 `null`）、补丁集（旧的补丁集内核才有，fork 内核报 `unknown`）、启动时间、当前配置代数和能力列表 `capabilities`。客户端只能在对应能力存在时使用端点或写入受控字段。当前内核（fork 发布与 p28 相同）声明八项：
+返回进程状态、上游提交、发布版本（`release_version`、`release_commit`，只有 fork 发布的内核才有，其余为 `null`）、补丁集（旧的补丁集内核才有，fork 内核报 `unknown`）、启动时间、当前配置代数和能力列表 `capabilities`。客户端只能在对应能力存在时使用端点或写入受控字段。fork 发布的内核声明下面九项，p28 没有最后一项：
 
 - 配置能力：`config_query_stats_v1`（查询统计配置字段，见下文）、`config_static_cname_response_v1`（`static_cname_response` 动作，即固定 CNAME 应答，面板的域名映射用它）
 - `stats_top_v1`：查询排行端点
@@ -19,6 +19,7 @@ Linux 默认地址为 `/run/kixdns/admin.sock`。协议使用 Unix Socket 上的
 - `diagnostics_trace_candidate_v1`：增强版 p28 起，草稿试跑端点 `POST /v1/diagnostics/trace-candidate`
 - `metrics_upstream_precision_v1`：增强版 p21 起，`/v1/metrics` 提供 `aborted` 结果、上游耗时、响应码、实际传输、请求完成状态与过期缓存原因。面板只有看到它才计算上游健康并用剔除竞争落败的成功率公式，否则健康显示为未知
 - `metrics_upstream_response_latency_v1`：增强版 p25 起，`/v1/metrics` 另外提供只算拿到响应的上游耗时，面板用它计算平均耗时
+- `querylog_v1`：fork 内核 2026.10.14 起，查询日志端点 `GET /v1/querylog`
 
 运行时能力负责当前进程的配置门控。尚未启动的目标版本使用内核包内经 SHA-256 校验的 `KIXDNS_CAPABILITIES.json` 预检，完整规则见[配置能力契约](config-capabilities.md)。
 
@@ -87,6 +88,62 @@ Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致
 ### `POST /v1/stats/clear`
 
 清空全部查询排行。
+
+### `GET /v1/querylog`
+
+需要 `querylog_v1`。内核把查询记在内存里一个 4096 条的交接区，面板每秒按游标取走，写进自己的查询日志。
+
+**参数**
+
+- `after`：面板已经取到的最后一条 `seq`，第一次取时为 0；
+- `limit`：1–2000，默认 2000；
+- 其他参数一律返回 400 `querylog_query_invalid`。
+
+**应答**
+
+| 字段 | 含义 |
+| --- | --- |
+| `instance` | 内核进程开始记的时刻（毫秒），换了进程就变 |
+| `newest_seq` | 最新一条的编号 |
+| `missed` | 游标之后已经被挤掉或清掉、取不到的条数 |
+| `untracked` | 同时在处理的请求超过 4096 个、没记下的累计数 |
+| `more` | 还有没取完的，马上接着取 |
+| `entries` | 按 `seq` 从小到大的记录 |
+
+**记录**
+
+每条记录带：
+- `seq`、`time_unix_ms`（请求开始时刻）；
+- 完整的 `client`，`transport`；
+- `qname`、`qtype`；
+- `latency_us`、`status`（`completed` / `failed` / `cancelled`）、`outcome`；
+- 有应答时的 `rcode`，最多 8 条回答记录的 `answers`，可能的 `error`；
+- 最后进入的 `pipeline`、做出决定的 `rule`、回答的 `upstream`（转发时是回答的上游，用缓存时是缓存的来源）；
+- 最多 64 步的 `steps`。
+
+`outcome` 按顺序取第一个符合的：
+1. `cached`、`stale`：用了缓存；
+2. `failed`：SERVFAIL，或者引擎出错；
+3. `joined`：搭了别人的同一个查询；
+4. `static`：规则直接给的回答；
+5. `forwarded`：转发给了上游；
+6. `cancelled`：其余情况。
+
+`static` 包括拦截和自定义回答，由面板按做出决定的那条规则去分。
+
+`steps` 每步带 `at_us` 和 `kind`：
+- `pipeline`：进入一个 Pipeline；
+- `rule`：请求阶段命中的规则，或回答后检查评估过的规则（带 `matched`）；
+- `decision`：没有对应规则步骤的决定；
+- `cache`：查缓存的结果；
+- `joined`：搭了别人的查询；
+- `upstream`：问了一个上游，`result` 是 `success`、`rejected`、`error` 或 `aborted`（别的上游先答了）。
+
+**什么时候记**
+
+- 内核只在面板来取的那段时间里记：每次来取都会刷新时刻，超过 120 秒没人来取就停止记录并清空交接区，`seq` 照常往下数。面板停了一阵再回来时，按旧游标取会得到 `missed`，就是停之前没取走、后来被清掉的那些。
+- 后台刷新和诊断查询不记。
+- 内核重启后 `instance` 变了、`seq` 从 1 重新数，面板要从 `after=0` 重新取。
 
 ### `POST /v1/diagnostics/trace`
 
