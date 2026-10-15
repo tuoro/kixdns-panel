@@ -1,27 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import {
-  CONFIG_QUERY_STATS_V1,
-  SETTING_SECTIONS,
-  settingShouldRender,
-  settingSupported,
-} from './schema'
+import { SETTING_SECTIONS } from './schema'
 
-const statisticsField = SETTING_SECTIONS
-  .flatMap((section) => section.fields)
-  .find((field) => field.key === 'statistics_enabled')!
-
-describe('配置字段能力门控', () => {
-  it('接受正式能力和旧版运行时别名', () => {
-    expect(settingSupported(statisticsField, [CONFIG_QUERY_STATS_V1])).toBe(true)
-    expect(settingSupported(statisticsField, ['stats_top_v1'])).toBe(true)
-  })
-
-  it('隐藏不受支持且尚未存在的字段', () => {
-    expect(settingShouldRender(statisticsField, {}, [])).toBe(false)
-  })
-
-  it('只读保留配置中已经存在的不受支持字段', () => {
-    expect(settingShouldRender(statisticsField, { statistics_enabled: false }, [])).toBe(true)
+// 查询排行一直开着、客户端地址照原样记：基础设置里没有这两个开关
+// Rankings are always on with whole client addresses: the settings carry neither switch
+describe('查询排行没有开关', () => {
+  it('基础设置里没有统计和脱敏', () => {
+    const keys = SETTING_SECTIONS.flatMap((section) => section.fields.map((field) => field.key))
+    expect(keys).not.toContain('statistics_enabled')
+    expect(keys).not.toContain('statistics_anonymize_client_ip')
   })
 })
 

@@ -271,7 +271,7 @@ journalctl -u kixdns-panel-helper.service -n 200 --no-pager
 sudo systemctl restart kixdns-panel.service
 ```
 
-KixDNS 的 unit 以 `RUST_LOG=info,kixdns::engine::phases=warn` 运行：启动、重载、告警照常进 journal，逐请求的应答记录（`dns_response`、`dns_request_finished`）不进。每个查询一行会淹没日志页，还会把客户端 IP 和域名留在 journal 里，绕过查询统计的脱敏。临时排查需要逐条记录时，用 `sudo systemctl edit kixdns.service` 写入下面两行再重启 KixDNS；这个覆盖在 unit 之外，升级不会动它，查完记得再用同一命令删掉并重启：
+KixDNS 的 unit 以 `RUST_LOG=info,kixdns::engine::phases=warn` 运行：启动、重载、告警照常进 journal，逐请求的应答记录（`dns_response`、`dns_request_finished`）不进。每个查询一行会淹没日志页，还会把客户端 IP 和域名留在 journal 里。临时排查需要逐条记录时，用 `sudo systemctl edit kixdns.service` 写入下面两行再重启 KixDNS；这个覆盖在 unit 之外，升级不会动它，查完记得再用同一命令删掉并重启：
 
 ```ini
 [Service]

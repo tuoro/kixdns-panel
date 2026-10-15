@@ -112,6 +112,19 @@ test('请求分布按去向：不重复计数，主列表和规则组不单列 @
   await expect(distribution.locator('.overview-card-foot')).toHaveCount(0)
 })
 
+// 旧内核在配置里关着排行：面板不再给这个开关，提示说更新内核，不指向已经去掉的设置
+// An older kernel with rankings off in its config: the panel no longer offers the switch, so the notice says to update the kernel instead of naming the removed setting
+test('旧内核没打开查询排行：提示更新内核，不提基础设置 @responsive', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('kixdns:demo-stats-off', 'true'))
+  await openOverview(page)
+  await page.getByRole('tab', { name: '查询排行' }).click()
+  const panel = page.locator('#overview-panel-stats')
+  await expect(panel.getByText('查询排行没有打开', { exact: true })).toBeVisible()
+  await expect(panel).toContainText('更新内核后会一直统计')
+  await expect(panel).not.toContainText('基础设置')
+  await expect(panel.locator('.overview-toolbar')).toHaveCount(0)
+})
+
 test('查询排行保留时间窗口与带确认的清理操作', async ({ page }) => {
   await openOverview(page)
   await page.getByRole('tab', { name: '查询排行' }).click()

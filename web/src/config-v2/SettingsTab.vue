@@ -1,19 +1,15 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed } from 'vue'
 import SettingsEditor from '../components/config/SettingsEditor.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
 import { groupName } from '../config-model/model'
-import { changedSettingKeys, model, ui } from './store'
-import { runtimeCapabilities } from './useConfigDocument'
+import { changedSettingKeys, model } from './store'
 
-// 基础设置就是现在面板的那一页（监听、连接、缓存、过期缓存、流控、统计、Geo 数据），最前面多一组「规则默认值」。
+// 基础设置就是现在面板的那一页（监听、连接、缓存、过期缓存、流控、Geo 数据），最前面多一组「规则默认值」。
 // 「默认上游」不再单独出现：它由「其余请求」决定，生成配置时写成那个组的地址。
-// The settings tab is today's page (listeners, connections, cache, stale cache, flow control, stats, Geo data) with a 规则默认值
+// The settings tab is today's page (listeners, connections, cache, stale cache, flow control, Geo data) with a 规则默认值
 // group in front. 默认上游 no longer appears on its own: 其余请求 decides it, written as that group's addresses.
-const capabilities = computed(() => runtimeCapabilities.value)
-// 指名的那一组只用这一次：下次打开基础设置照常从头开始 / The named group is used once: the next visit to the settings starts as usual
-onMounted(() => { ui.settingsGroup = '' })
 // 有高级规则时「默认上游」照原样留着、能改：高级规则里的「允许」还按它走 / With advanced rules 默认上游 stays visible and editable: their allow still uses it
 const hidden = computed(() => ([...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].some((r) => r.raw) || model.rawPipelines?.length ? [] : ['default_upstream']))
 const blockItems = [{ value: 'NXDOMAIN', label: 'NXDOMAIN' }, { value: 'REFUSED', label: 'REFUSED' }, { value: 'zero', label: '空地址' }]
@@ -38,7 +34,7 @@ const lead = computed(() => ({
 
 <template>
   <section class="ui-card sets__card" aria-label="基础设置">
-    <SettingsEditor v-model="model.settings" v-model:version="model.format" :capabilities="capabilities" :changed="changedSettingKeys" :hidden-keys="hidden" :lead="lead" :initial-group="ui.settingsGroup">
+    <SettingsEditor v-model="model.settings" v-model:version="model.format" :changed="changedSettingKeys" :hidden-keys="hidden" :lead="lead">
       <template #lead>
         <div class="ui-setrow">
           <span class="ui-setrow__label"><span>拦截时怎么回应</span><small>规则选「拦截 · 沿用默认」时用这个。{{ blockNote[model.defaults.block] }}。</small></span>

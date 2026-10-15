@@ -211,24 +211,6 @@ test('停着又有待应用版本：窄一点的宽度下配置页、系统页�
   await expect.poll(headHeight).toBeLessThan(90)
 })
 
-// 「去基础设置」指名了出问题的那一组：手机上直接打开那一组，不停在目录上；只用这一次，下次进基础设置照常从目录开始
-// 去基础设置 names the group with the problem: on phones that group opens directly instead of the contents list; once only, so the next visit starts at the list as usual
-test('手机上「去基础设置」直接打开指名的那一组，只用一次 @responsive', async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== 'mobile', '只看手机的目录')
-  await page.goto('/config')
-  await expect(page.locator('.rcard').first()).toBeVisible()
-  await page.evaluate(async () => {
-    const { ui } = await import('/src/config-v2/store.ts')
-    ui.settingsGroup = 'statistics'
-  })
-  await page.getByRole('tab', { name: '基础设置', exact: true }).click()
-  await expect(page.locator('.settings')).toHaveClass(/settings--open/)
-  await expect(page.getByRole('button', { name: '全部设置' })).toBeVisible()
-  await page.getByRole('tab', { name: '规则', exact: true }).click()
-  await page.getByRole('tab', { name: '基础设置', exact: true }).click()
-  await expect(page.locator('.settings')).not.toHaveClass(/settings--open/)
-})
-
 // 保存途中又加的规则不在这次保存里：保存落地后它的「撤销」照样留着；保存之前那条的撤销收起（撤回去会改掉刚保存的东西）
 // A rule added during a save is not part of it: its 撤销 stays after the save lands, while the earlier rule's undo goes (undoing would change what was just saved)
 test('保存途中又改的那一处，保存落地后「撤销」还在', async ({ page }) => {
@@ -319,26 +301,6 @@ test('侧栏版最窄时，校验通过的保存条不把按钮挤出屏幕', as
     const save = (await bar.getByRole('button', { name: '保存并应用' }).boundingBox())!
     expect(save.x + save.width, `${width}`).toBeLessThanOrEqual(width)
   }
-})
-
-// 内核不支持的开关按「关掉」以后，那一行先留着写「已关闭」，这一组不会一下子空掉；离开这一组再消失
-// After 关掉 on a switch the kernel lacks, its row stays reading 已关闭, so the group never empties at once; it goes once the group is left
-test('不支持的开关按「关掉」后那一行留着写「已关闭」，设置面板不变空白', async ({ page }) => {
-  await page.goto('/config')
-  await expect(page.locator('.rcard').first()).toBeVisible()
-  await page.evaluate(async () => {
-    const doc = await import('/src/config-v2/useConfigDocument.ts')
-    doc.runtimeCapabilities.value = []
-    const { ui } = await import('/src/config-v2/store.ts')
-    ui.settingsGroup = 'statistics'
-  })
-  await page.getByRole('link', { name: '基础设置', exact: true }).first().click()
-  const off = page.getByRole('button', { name: '关掉', exact: true })
-  await expect(off).toBeVisible()
-  await off.click()
-  await expect(off).toHaveCount(0)
-  await expect(page.locator('.settings-row__readonly').first()).toContainText('已关闭')
-  await expect(page.locator('.settings').getByRole('heading', { level: 2 }).first()).toBeVisible()
 })
 
 // 手机上提示条的按钮在字下面单独一行，不压住字（只有一行字的提示条也一样）

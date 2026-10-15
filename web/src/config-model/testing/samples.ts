@@ -31,8 +31,6 @@ export function sampleModel(): Model {
       bind_tcp: '0.0.0.0:53',
       cache_capacity: 20000,
       upstream_timeout_ms: 1800,
-      statistics_enabled: true,
-      statistics_anonymize_client_ip: false,
       geoip_db_path: '/var/lib/kixdns-panel/geo/geoip-mmdb-4c425e120e43.mmdb',
       geosite_data_paths: ['/var/lib/kixdns-panel/geo/geosite-67b90a027f2c.dat'],
     },

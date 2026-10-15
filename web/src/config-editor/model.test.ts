@@ -193,7 +193,7 @@ describe('结构化配置模型', () => {
       }],
       settings: {
         future_second: 2,
-        statistics_enabled: true,
+        flow_control_enabled: true,
         cache_capacity: 10_000,
         future_first: 1,
         bind_udp: '0.0.0.0:5353',
@@ -212,7 +212,7 @@ describe('结构化配置模型', () => {
     expect(Object.keys(settings)).toEqual([
       'bind_udp',
       'cache_capacity',
-      'statistics_enabled',
+      'flow_control_enabled',
       'future_second',
       'future_first',
     ])

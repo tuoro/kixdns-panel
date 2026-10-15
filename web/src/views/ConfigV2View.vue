@@ -12,7 +12,6 @@ import { useConfirm } from '../composables/useConfirm'
 import { useConnection } from '../composables/useConnection'
 import { dismissUndoable, useToast } from '../composables/useToast'
 import { exportConfig, readConfig } from '../config-model/document'
-import { SETTING_SECTIONS } from '../config-editor/schema'
 import { compile, mappingIsIp, ruleTitle, type Model, type Rule, type UpstreamGroup } from '../config-model/model'
 import GroupEditor from '../config-v2/GroupEditor.vue'
 import HistoryDrawer from '../config-v2/HistoryDrawer.vue'
@@ -26,7 +25,7 @@ import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, discardDraft, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, bulkDeleting, busy, checkPending, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, rereadAndSay, runtimeStopped, runtimeUnavailable, unsupportedFields, cnameInUse, cnameUse, unsupportedSection } from '../config-v2/useConfigDocument'
+import { applyBusy, bulkDeleting, busy, checkPending, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, rereadAndSay, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse } from '../config-v2/useConfigDocument'
 import { useHelp } from '../composables/useHelp'
 import { useServiceStart } from '../composables/useServiceStart'
 import { registerLeaveGuard, takeAgreement } from '../composables/useLeaveGuard'
@@ -177,13 +176,11 @@ const notice = computed<Notice | null>(() => {
     const retry = canApplyNow.value && !unsaved.value && !panelDown.value && !conflict.value
     // 重试撞上「别处改过了」：再重试还是撞上，按钮换成重新读取 / A retry that met 别处改过了 would meet it again: the button becomes 重新读取
     const reread = conflict.value && !panelDown.value
-    // 挡住重试的是内核不支持的设置时，这一条也说清它和出路（不支持的那条提示排在后面，这时显示不出来） / When unsupported settings block the retry, this notice names them and the way out too (the unsupported notice ranks below and cannot show)
-    const blocked = !retry && unsupportedFields.value.length > 0
     const cause = failureCause(reason).replace(/。$/, '')
     // KixDNS 还停着：没有哪份配置「在用」，照实说停了；原因说它在确认前停了，启动后用之前那份 / KixDNS still stopped: no config is in use, so the stop is said; the cause says it stopped before confirming and the previous config runs on start
     const which = pendingVersionId.value ? `版本 #${pendingVersionId.value} ` : '上次保存的版本'
     const stoppedNow = runtimeStopped.value
-    return { tone: 'err', text: stoppedNow ? `${which}没有生效，KixDNS 已停止。` : `${which}没有生效，仍在用之前那份配置。`, detail: stoppedNow ? `${cause === 'KixDNS 在确认新配置前停了' ? '它在确认新配置前停了' : cause}；启动后会用之前那份配置` : reread ? `${cause}。这份配置在别处改过了，先重新读取。` : blocked ? `${cause}。当前内核不支持：${unsupportedFields.value.join('、')}，先在基础设置里关掉。` : cause, action: reread ? '重新读取' : retry ? '重试应用' : blocked && section.value !== 'settings' ? '去基础设置' : undefined, run: reread ? () => reload() : retry ? () => save('apply') : goUnsupported }
+    return { tone: 'err', text: stoppedNow ? `${which}没有生效，KixDNS 已停止。` : `${which}没有生效，仍在用之前那份配置。`, detail: stoppedNow ? `${cause === 'KixDNS 在确认新配置前停了' ? '它在确认新配置前停了' : cause}；启动后会用之前那份配置` : reread ? `${cause}。这份配置在别处改过了，先重新读取。` : cause, action: reread ? '重新读取' : retry ? '重试应用' : undefined, run: reread ? () => reload() : retry ? () => save('apply') : undefined }
   }
   // 连不上面板时由顶上的横幅说；连上以后核对的结果再说应用了没有 / While the panel is unreachable the banner speaks; once back, the check says whether it applied
   if (applyError.value && !panelDown.value) { const [text, ...detail] = applyError.value.split('\n'); return { tone: 'err', text: `${text}。`, detail: detail.join('\n') } }
@@ -195,22 +192,10 @@ const notice = computed<Notice | null>(() => {
   // 说出有几处，域名映射里有的就给去那里的按钮 / Say how many places, with a button to the domain mappings when some are there
   if (!canCname.value && cnameInUse.value && !capabilityError.value) {
     const them = cnamePlaces.value.total > 1 ? '它们' : '它'
-    // 同时还有开着的不支持的设置：一条提示把两件事都说了，保存条说的「有 N 项」和这里对得上 / Unsupported settings switched on as well: one notice says both, so the bar's 「有 N 项」 matches it
-    if (unsupportedFields.value.length) return { tone: 'warn', text: `当前内核不支持：${unsupportedFields.value.join('、')}、CNAME\u00a0回答。在基础设置里关掉${unsupportedFields.value.map((f) => `「${f}」`).join('、')}，把\u00a0${cnamePlaces.value.total}\u00a0处写成域名的回答改成 IP，或者更新内核。`, ...cnameWhere.value, action: section.value === 'settings' ? (cnamePlaces.value.mappings ? '去域名映射' : undefined) : '去基础设置', run: () => (section.value === 'settings' ? setTab('mapping') : goUnsupported()) }
     return { tone: 'warn', text: `当前内核不支持 CNAME\u00a0回答：有\u00a0${cnamePlaces.value.total}\u00a0处回答写的是域名，KixDNS 不会接受这份配置。把${them}改成 IP，或者更新内核。`, ...cnameWhere.value, action: cnamePlaces.value.mappings && section.value !== 'mapping' ? '去域名映射' : undefined, run: () => setTab('mapping') }
   }
-  // KixDNS 不接受带着它不支持的设置的配置：说清这一点和两条出路，按钮直接去基础设置 / KixDNS refuses a config carrying settings it does not support: say so with the two ways out, the button going straight to the settings
-  if (unsupportedFields.value.length) { const many = unsupportedFields.value.length > 1; return { tone: 'warn', text: `当前内核不支持：${unsupportedFields.value.join('、')}。开着也不起作用，关掉才能保存：在基础设置里点${many ? '' : '它旁边的'}「关掉」，或者更新内核。`, action: section.value === 'settings' ? (unsupportedTitle.value ? `去${unsupportedTitle.value}` : undefined) : '去基础设置', run: goUnsupported } }
   return null
 })
-// 已经在基础设置里时按钮直接点名那一组（「去查询统计」），设置编辑器跟着换过去 / Already in the settings, the button names the group (去查询统计) and the editor switches to it
-const unsupportedTitle = computed(() => SETTING_SECTIONS.find((group) => group.id === unsupportedSection.value)?.title ?? '')
-function goUnsupported(): void {
-  // 先清空再写：同一组再按一次也要换过去 / Cleared first: pressing again for the same group still switches
-  ui.settingsGroup = ''
-  void nextTick(() => { ui.settingsGroup = unsupportedSection.value })
-  setTab('settings')
-}
 // 写成域名的回答有几处：按看得见的东西数——认回来的规则、开着的写成域名的映射、认不回来的几处——和下面点名的对得上
 // How many answers are domains: counted in what the user sees — the rules traced back, enabled mappings answering with a domain, the places that do not trace
 // back — so it matches what is named below

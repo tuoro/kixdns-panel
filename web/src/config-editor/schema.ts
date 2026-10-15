@@ -21,11 +21,8 @@ export interface SettingField {
   wide?: boolean
   visibleWhen?: string
   visibleWhenAny?: string[]
-  requiresCapability?: string
-  legacyCapabilities?: string[]
 }
 
-export const CONFIG_QUERY_STATS_V1 = 'config_query_stats_v1'
 export const CONFIG_STATIC_CNAME_RESPONSE_V1 = 'config_static_cname_response_v1'
 
 export interface SettingSection {
@@ -131,16 +128,6 @@ export const SETTING_SECTIONS: SettingSection[] = [
       { key: 'flow_control_adjustment_interval_secs', label: '调整间隔 (s)', type: 'number', min: 1, unit: '秒', default: 5, visibleWhen: 'flow_control_enabled' },
     ],
   },
-  {
-    id: 'statistics',
-    title: '查询统计',
-    description: '查询排行与客户端隐私设置',
-    tone: 'ink',
-    fields: [
-      { key: 'statistics_enabled', label: '启用查询排行', type: 'boolean', default: false, title: '在内存中统计客户端和请求域名排行', requiresCapability: CONFIG_QUERY_STATS_V1, legacyCapabilities: ['stats_top_v1'] },
-      { key: 'statistics_anonymize_client_ip', label: '客户端 IP 脱敏', type: 'boolean', default: false, title: 'IPv4 按 /24、IPv6 按 /64 聚合', visibleWhen: 'statistics_enabled', requiresCapability: CONFIG_QUERY_STATS_V1, legacyCapabilities: ['stats_top_v1'] },
-    ],
-  },
 ]
 
 // 高级规则的表单也说面板的话：和规则卡片的读法、普通规则的条件同一套叫法；内核的写法留在 JSON 里
@@ -223,43 +210,3 @@ export function settingVisible(field: SettingField, settings: GlobalSettings): b
   return true
 }
 
-/**
- * 这一项会不会写进给内核的配置。按内核能力开的开关关着时不写：内核缺省就是关，写着反而让不支持它的内核整份拒绝（更新、回退到那样的内核也会被挡）
- * Whether this setting goes into the config the kernel reads. A capability-gated switch that is off is left out: the kernel's default is off, and
- * writing it only makes a kernel without the capability refuse the whole config (and blocks an update or rollback to such a kernel)
- */
-export function settingWritten(field: SettingField, settings: Readonly<Record<string, unknown>>): boolean {
-  if (!Object.prototype.hasOwnProperty.call(settings, field.key)) return false
-  return !(field.requiresCapability && field.type === 'boolean' && settings[field.key] === false)
-}
-
-/**
- * 这一项用不用得到内核的这项能力：写着、而且依附的上一级开着。排行关着时的「客户端 IP 脱敏」照写（偏好留着），但用不到能力，
- * 不该因为它挡住保存、更新或回退（服务端 config_capabilities.rs 同一条规则）
- * Whether this setting needs the kernel capability: written, and the switch it depends on is on. 客户端 IP 脱敏 with rankings off is still written
- * (the preference is kept) but needs no capability, so it must not block a save, update or rollback (the server's config_capabilities.rs has the same rule)
- */
-export function settingNeedsCapability(field: SettingField, settings: Readonly<Record<string, unknown>>): boolean {
-  return settingWritten(field, settings) && (!field.visibleWhen || Boolean(settings[field.visibleWhen]))
-}
-
-/** 实际写给内核的设置：去掉关着的、按能力开的开关 / The settings actually written for the kernel: capability-gated switches that are off are left out */
-export function writtenSettings(settings: Readonly<Record<string, unknown>>): Record<string, unknown> {
-  const fields = new Map(SETTING_SECTIONS.flatMap((section) => section.fields).map((field) => [field.key, field]))
-  return Object.fromEntries(Object.entries(settings).filter(([key]) => { const field = fields.get(key); return !field || settingWritten(field, settings) }))
-}
-
-export function settingSupported(field: SettingField, capabilities: readonly string[]): boolean {
-  if (!field.requiresCapability) return true
-  return capabilities.includes(field.requiresCapability)
-    || field.legacyCapabilities?.some((capability) => capabilities.includes(capability)) === true
-}
-
-export function settingShouldRender(
-  field: SettingField,
-  settings: GlobalSettings,
-  capabilities: readonly string[],
-): boolean {
-  if (settingSupported(field, capabilities)) return settingVisible(field, settings)
-  return Object.prototype.hasOwnProperty.call(settings, field.key)
-}

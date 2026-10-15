@@ -1,7 +1,6 @@
 import { computed, onBeforeUnmount, reactive, ref, shallowReactive, watch } from 'vue'
 import type { RuleCount, UpstreamCount } from '../api/types'
 import { dismissUndoable, useToast } from '../composables/useToast'
-import { writtenSettings } from '../config-editor/schema'
 import { recentWindowLabel, settledAttempts, upstreamBasis } from '../dashboard-presentation'
 import { readConfig, type ImportReport, type ReadResult } from '../config-model/document'
 import { normalizeAddress } from '../config-model/kernel'
@@ -49,10 +48,9 @@ export const changedRuleIds = computed(() => {
 })
 export const changedGroupIds = computed(() => changedIn(appliedModel.value.groups, model.groups))
 export const changedMappingIds = computed(() => changedIn(appliedModel.value.mappings, model.mappings))
-// 按实际写给内核的比（关着的、按能力开的开关不写）：JSON 视图读回来少了一个「关」不算改了一处 / Compared as actually written for the kernel (off capability-gated switches are not written): a JSON round trip dropping an 「off」 is not a change
 export const changedSettingKeys = computed(() => {
-  const before = writtenSettings(appliedModel.value.settings)
-  const after = writtenSettings(model.settings)
+  const before = appliedModel.value.settings
+  const after = model.settings
   const keys = new Set([...Object.keys(before), ...Object.keys(after)])
   const out = new Set([...keys].filter((k) => JSON.stringify(before[k]) !== JSON.stringify(after[k])))
   if (appliedModel.value.format !== model.format) out.add('version')
@@ -196,8 +194,7 @@ export function applyUpstreamStats(counts: UpstreamCount[], windowSeconds: numbe
 export const healthOf = (group: UpstreamGroup): GroupHealth | undefined => groupHealth.value.get(group.id)
 
 // ---------- 视图 / view ----------
-// settingsGroup：基础设置打开时先显示哪一组（从「去基础设置」过来时指到出问题的那一组） / settingsGroup: which settings group opens first (the one with the problem when arriving from 去基础设置)
-export const ui = reactive({ query: '', kind: '', tab: 'rules', mode: 'form' as 'form' | 'json', settingsGroup: '' })
+export const ui = reactive({ query: '', kind: '', tab: 'rules', mode: 'form' as 'form' | 'json' })
 
 // ---------- 引用 / references ----------
 export interface RuleList { rules: Rule[]; rest: Outcome; group: RuleGroup | null }
