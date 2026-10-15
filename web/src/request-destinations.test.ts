@@ -92,7 +92,7 @@ describe('请求最后去了哪', () => {
   it('配置里已经没有的 Pipeline 照原名单列；没有请求时一行都没有', () => {
     const s = setup()
     const { rows } = run(s, 50, [{ name: 'main', count: 50 }, { name: 'gone', count: 50 }], [])
-    expect(rows.map((r) => [r.label, r.mono, r.count])).toEqual([['gone', true, 50]])
+    expect(rows.map((r) => [r.label, r.count])).toEqual([['gone', 50]])
     expect(run(s, 0, [], []).rows).toEqual([])
   })
 })

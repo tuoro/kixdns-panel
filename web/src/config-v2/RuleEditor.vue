@@ -537,7 +537,7 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
                   <label class="ui-input erow__num"><i>IPv4 /</i><input v-model.number="draft.ecs.v4" type="number" min="0" max="32" aria-label="IPv4 前缀长度"></label>
                   <label class="ui-input erow__num"><i>IPv6 /</i><input v-model.number="draft.ecs.v6" type="number" min="0" max="128" aria-label="IPv6 前缀长度"></label>
                 </template>
-                <label v-else-if="draft.ecs && draft.ecs !== 'inherit' && draft.ecs.mode === 'static'" class="ui-input is-mono erow__subnet"><input v-model="draft.ecs.subnet" aria-label="固定子网" placeholder="203.0.113.0/24"></label>
+                <label v-else-if="draft.ecs && draft.ecs !== 'inherit' && draft.ecs.mode === 'static'" class="ui-input erow__subnet"><input v-model="draft.ecs.subnet" aria-label="固定子网" placeholder="203.0.113.0/24"></label>
               </div>
             </PhoneSheet>
             <PhoneSheet v-if="sheet === 'note'" title="备注" @close="sheet = null">
@@ -560,7 +560,7 @@ watch(() => draft.outcome.type, (type) => { if (type !== 'upstream') showErrors.
                   <label class="ui-input erow__num"><i>IPv4 /</i><input v-model.number="draft.ecs.v4" type="number" min="0" max="32" aria-label="IPv4 前缀长度"></label>
                   <label class="ui-input erow__num"><i>IPv6 /</i><input v-model.number="draft.ecs.v6" type="number" min="0" max="128" aria-label="IPv6 前缀长度"></label>
                 </template>
-                <label v-else-if="draft.ecs && draft.ecs !== 'inherit' && draft.ecs.mode === 'static'" class="ui-input is-mono erow__subnet"><input v-model="draft.ecs.subnet" aria-label="固定子网" placeholder="203.0.113.0/24"></label>
+                <label v-else-if="draft.ecs && draft.ecs !== 'inherit' && draft.ecs.mode === 'static'" class="ui-input erow__subnet"><input v-model="draft.ecs.subnet" aria-label="固定子网" placeholder="203.0.113.0/24"></label>
               </div>
             </div>
             <div class="ui-setrow">

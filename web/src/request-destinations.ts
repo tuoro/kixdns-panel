@@ -25,7 +25,7 @@ export interface KernelAction { type?: unknown; upstream?: unknown }
 export interface KernelRule { name?: unknown; actions?: unknown; response_actions_on_match?: unknown; response_actions_on_miss?: unknown }
 export interface KernelPipeline { id?: unknown; rules?: unknown }
 
-export interface DestinationRow { key: string; label: string; mono: boolean; count: number; share: number }
+export interface DestinationRow { key: string; label: string; count: number; share: number }
 export interface Destinations { rows: DestinationRow[]; caveats: string[] }
 
 const STATIC = new Set(['static_response', 'static_ip_response', 'static_cname_response', 'static_txt_response', 'deny'])
@@ -85,10 +85,9 @@ export function ownForwards(pipelines: readonly KernelPipeline[], model: Model):
 }
 
 /** 只转发、不属于上游组的列表叫什么：主列表说「主列表直接转发」，和概览一致 / What a list that forwards outside any group is called: the main list reads 主列表直接转发, as on the overview */
-export function ownForwardLabel(id: string, model: Model, names: TraceNames): { label: string; mono: boolean } {
-  if (id === mainPipelineId(model)) return { label: '主列表直接转发', mono: false }
-  const said = names.pipeline(id)
-  return { label: said ?? id, mono: !said }
+export function ownForwardLabel(id: string, model: Model, names: TraceNames): string {
+  if (id === mainPipelineId(model)) return '主列表直接转发'
+  return names.pipeline(id) ?? id
 }
 
 export function requestDestinations(input: {
@@ -107,8 +106,8 @@ export function requestDestinations(input: {
   const direct = directLabel(model)
   const caveats = new Set<string>()
   const rows = new Map<string, DestinationRow>()
-  const place = (key: string, label: string, mono: boolean, count: number) => {
-    const row = rows.get(key) ?? { key, label, mono, count: 0, share: 0 }
+  const place = (key: string, label: string, count: number) => {
+    const row = rows.get(key) ?? { key, label, count: 0, share: 0 }
     row.count += count
     rows.set(key, row)
   }
@@ -128,17 +127,17 @@ export function requestDestinations(input: {
     const sentOn = matches.filter((m) => m.pipeline === hit.name && m.phase === 'response' && leaving.has(m.rule)).reduce((sum, m) => sum + m.count, 0)
     if (rules.some((r) => leaves(r.response_actions_on_miss))) caveats.add('回答后检查的「否则」转走或直接回应的请求，仍算在原来的上游组')
     const count = Math.max(0, hit.count - sentOn)
-    if (hit.name === (model.mappingId ?? 'domain_mapping')) { place('mapping', '域名映射', false, count); placed += count; continue }
+    if (hit.name === (model.mappingId ?? 'domain_mapping')) { place('mapping', '域名映射', count); placed += count; continue }
     const forward = rules.map((r) => forwardOf(r.actions)).find(Boolean)
     // 只有直接回应、不转发的列表：算进「直接回应」，由总数减出来 / A list that only answers and never forwards: it lands in the direct row, which the total works out
     if (pipeline && !forward) continue
     const group = groupOf(hit.name)
-    if (group) place(`group:${group.id}`, `上游组「${group.name}」`, false, count)
-    else { const own = ownForwardLabel(hit.name, model, names); place(hit.name, own.label, own.mono, count) }
+    if (group) place(`group:${group.id}`, `上游组「${group.name}」`, count)
+    else place(hit.name, ownForwardLabel(hit.name, model, names), count)
     placed += count
   }
   const rest = Math.max(0, total - placed)
-  if (rest > 0) place('direct', direct, false, rest)
+  if (rest > 0) place('direct', direct, rest)
   const base = Math.max(total, placed)
   const list = [...rows.values()].filter((row) => row.count > 0).sort((a, b) => b.count - a.count)
   for (const row of list) row.share = base > 0 ? row.count / base : 0

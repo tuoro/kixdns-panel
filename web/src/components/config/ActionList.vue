@@ -74,7 +74,7 @@ function upstreamLabel(upstream: { upstream: string; transport: string }): strin
 
 // 已经在别处用过的上游：上游输入框右端的 ▾ 打开，选中同时填上游和协议
 // Upstreams already used elsewhere: the ▾ at the end of the upstream field opens them; picking one fills upstream and transport
-const existingItems = computed(() => existingUpstreams.value.map((upstream, index) => ({ value: String(index), label: upstreamLabel(upstream), mono: true })))
+const existingItems = computed(() => existingUpstreams.value.map((upstream, index) => ({ value: String(index), label: upstreamLabel(upstream) })))
 
 function useUpstream(action: ActionConfig, index: string): void {
   const upstream = existingUpstreams.value[Number(index)]
@@ -209,17 +209,17 @@ function move(index: number, direction: string): void {
           </template>
           <template v-else-if="action.type === 'static_ip_response'">
             <span class="ui-rows__plabel">IP</span>
-            <label class="ui-input"><input v-model="action.ip" class="mono" type="text" :aria-label="`动作 ${index + 1} IP`" placeholder="192.168.1.10" :aria-invalid="Boolean(visibleError(index, 'ip')) || undefined" :aria-describedby="errorId(index, 'ip')" @blur="touch(index, 'ip')"></label>
+            <label class="ui-input"><input v-model="action.ip" type="text" :aria-label="`动作 ${index + 1} IP`" placeholder="192.168.1.10" :aria-invalid="Boolean(visibleError(index, 'ip')) || undefined" :aria-describedby="errorId(index, 'ip')" @blur="touch(index, 'ip')"></label>
           </template>
           <template v-else-if="action.type === 'static_cname_response'">
             <span class="ui-rows__plabel">目标</span>
-            <label class="ui-input"><input v-model="action.target" class="mono" type="text" :aria-label="`动作 ${index + 1} CNAME 目标`" placeholder="origin.example" :aria-invalid="Boolean(visibleError(index, 'target')) || undefined" :aria-describedby="errorId(index, 'target')" @blur="touch(index, 'target')"></label>
+            <label class="ui-input"><input v-model="action.target" type="text" :aria-label="`动作 ${index + 1} CNAME 目标`" placeholder="origin.example" :aria-invalid="Boolean(visibleError(index, 'target')) || undefined" :aria-describedby="errorId(index, 'target')" @blur="touch(index, 'target')"></label>
             <span class="ui-rows__plabel">TTL</span>
             <label class="ui-input is-num"><input type="number" :value="action.ttl" min="0" max="4294967295" :aria-label="`动作 ${index + 1} CNAME TTL`" placeholder="300" :aria-invalid="Boolean(visibleError(index, 'ttl')) || undefined" :aria-describedby="errorId(index, 'ttl')" @input="setTtl(action, $event)" @blur="touch(index, 'ttl')"><em class="ui-setrow__unit">秒</em></label>
           </template>
           <template v-else-if="action.type === 'jump_to_pipeline'">
             <span class="ui-rows__plabel">转到</span>
-            <UiSelect v-model="action.pipeline" :mono="!pipelineName" :options="pipelineOptions(action)" :label="`动作 ${index + 1} 要转到的组`" :invalid="Boolean(visibleError(index, 'pipeline'))" />
+            <UiSelect v-model="action.pipeline" :options="pipelineOptions(action)" :label="`动作 ${index + 1} 要转到的组`" :invalid="Boolean(visibleError(index, 'pipeline'))" />
           </template>
           <template v-else-if="action.type === 'forward'">
             <span class="ui-rows__plabel is-top">上游</span>
@@ -229,7 +229,7 @@ function move(index: number, direction: string): void {
           </template>
           <template v-else-if="action.type === 'static_txt_response' || action.type === 'replace_txt_response'">
             <span class="ui-rows__plabel">文本</span>
-            <label class="ui-input"><input class="mono" type="text" :value="textValue(action)" :aria-label="`动作 ${index + 1} TXT 内容`" placeholder="多个值用逗号分隔" :aria-invalid="Boolean(visibleError(index, 'text')) || undefined" :aria-describedby="errorId(index, 'text')" @input="setText(action, $event)" @blur="touch(index, 'text')"></label>
+            <label class="ui-input"><input type="text" :value="textValue(action)" :aria-label="`动作 ${index + 1} TXT 内容`" placeholder="多个值用逗号分隔" :aria-invalid="Boolean(visibleError(index, 'text')) || undefined" :aria-describedby="errorId(index, 'text')" @input="setText(action, $event)" @blur="touch(index, 'text')"></label>
             <template v-if="action.type === 'static_txt_response'">
               <span class="ui-rows__plabel">TTL</span>
               <label class="ui-input is-num"><input type="number" :value="action.ttl" min="1" :aria-label="`动作 ${index + 1} TTL`" placeholder="300" @input="setTtl(action, $event)"><em class="ui-setrow__unit">秒</em></label>
@@ -250,7 +250,7 @@ function move(index: number, direction: string): void {
               <label class="ui-input is-num"><input type="number" :value="action.ecs.prefix_v6" min="0" max="128" aria-label="ECS IPv6 前缀" placeholder="56" @input="setEcsNumber(action, 'prefix_v6', $event)"><em class="ui-setrow__unit">IPv6</em></label>
             </template>
             <template v-if="action.ecs?.mode === 'static'">
-              <label class="ui-input"><input v-model="action.ecs.ip" class="mono" type="text" aria-label="ECS 固定 IP" placeholder="192.168.1.0"></label>
+              <label class="ui-input"><input v-model="action.ecs.ip" type="text" aria-label="ECS 固定 IP" placeholder="192.168.1.0"></label>
               <label class="ui-input is-num"><input type="number" :value="action.ecs.prefix" min="0" max="128" aria-label="ECS 固定前缀" placeholder="24" @input="setEcsNumber(action, 'prefix', $event)"><em class="ui-setrow__unit">位</em></label>
             </template>
           </div>

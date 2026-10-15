@@ -159,6 +159,7 @@
   --f-cjk: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC";
   --f-body: "Inter", var(--f-cjk), sans-serif;
   --f-display: var(--f-body);                              /* 标题与大数字 / headings and large figures */
+  /* 等宽只给代码、日志、JSON、差异、命令和哈希；域名、地址、名字这类字面量用正文字 / Mono only for code, logs, JSON, diffs, commands and hashes; literals such as domains, addresses and names use the body face */
   --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", var(--f-cjk), monospace;
 
   /* ---------- 控件高度 ----------

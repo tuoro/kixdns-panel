@@ -169,7 +169,7 @@ onBeforeUnmount(() => listen(false))
 </script>
 
 <template>
-  <div ref="field" class="chips ui-input is-mono" :class="{ 'chips--bad': invalid }" @click.self="input?.focus()">
+  <div ref="field" class="chips ui-input" :class="{ 'chips--bad': invalid }" @click.self="input?.focus()">
     <span v-for="(value, index) in modelValue" :key="value" class="chip" :class="{ 'chip--bad': !valid(value), 'chip--warn': valid(value) && warned(value) }" :title="chipTitle(value)">
       <span class="chip__text">{{ value }}</span>
       <UiMenu v-if="refinable(value)" :items="refineItems(value)" :label="`细分 ${categoryOf(value)!.name}`" :title="`细分 ${categoryOf(value)!.name}`" align="start" trigger-class="chip__refine" @select="refine(index, $event)"><ChevronDown :size="14" aria-hidden="true" /></UiMenu>

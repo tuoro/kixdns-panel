@@ -92,27 +92,6 @@ export function entryOf(record: QueryLogRecord): QueryLogEntry {
 
 export const itemOf = (item: QueryLogRecord | QueryLogGap): QueryLogItem => ('gap' in item ? item : entryOf(item))
 
-export interface Destination {
-  /** 去向筛选用的键 / The key the destination filter uses */
-  key: string
-  label: string
-  /** 认不出时是内核原名，用等宽 / A raw kernel name when not recognised, in mono */
-  mono: boolean
-}
-
-export function destinationOf(entry: QueryLogEntry, ctx: QueryLogContext | null): Destination {
-  if (entry.outcome === 'failed') return { key: 'failed', label: '失败', mono: false }
-  if (entry.outcome === 'blocked') return { key: 'blocked', label: '拦截', mono: false }
-  if (entry.outcome === 'answered') {
-    const mapping = ctx ? (ctx.model.mappingId ?? 'domain_mapping') : 'domain_mapping'
-    return entry.pipeline === mapping ? { key: 'mapped', label: '域名映射', mono: false } : { key: 'answered', label: '自定义回答', mono: false }
-  }
-  const group = ctx ? forwardGroups(ctx.pipelines, ctx.model)(entry.pipeline) : undefined
-  if (group) return { key: `group:${group.id}`, label: `上游组「${group.name}」`, mono: false }
-  if (!ctx) return { key: `pipeline:${entry.pipeline}`, label: entry.pipeline, mono: true }
-  return { key: `pipeline:${entry.pipeline}`, ...ownForwardLabel(entry.pipeline, ctx.model, ctx.names) }
-}
-
 /** 概览「请求分布」的一行在查询日志里对应哪个去向 / Which query-log destination a row of the overview's 请求分布 stands for */
 export function destinationOfRow(key: string, model: Model): string {
   if (key === 'mapping') return 'mapped'
@@ -143,7 +122,7 @@ export function destinationOptions(ctx: QueryLogContext | null): DestinationOpti
     const ids = pipelineIds.filter((id) => groupOf(id)?.id === g.id)
     if (ids.length) options.push({ value: `group:${g.id}`, label: `上游组「${g.name}」`, params: { pipelines: ids.join(','), outcomes: forwarded } })
   }
-  if (ctx) for (const id of ownForwards(ctx.pipelines, ctx.model)) options.push({ value: `pipeline:${id}`, label: ownForwardLabel(id, ctx.model, ctx.names).label, params: { pipelines: id, outcomes: forwarded } })
+  if (ctx) for (const id of ownForwards(ctx.pipelines, ctx.model)) options.push({ value: `pipeline:${id}`, label: ownForwardLabel(id, ctx.model, ctx.names), params: { pipelines: id, outcomes: forwarded } })
   const mapping = ctx?.model.mappingId ?? 'domain_mapping'
   const unmapped = pipelineIds.filter((id) => id !== mapping).join(',')
   options.push(
@@ -187,18 +166,17 @@ function ruleLabel(entry: QueryLogEntry, ctx: QueryLogContext | null): string | 
  * 「DIRECT (DOMAIN-SUFFIX apple.com)」). An upstream group is just its name, the column says it is a destination; a failed query still
  * names the group it went to, and the red dot says it failed.
  */
-export function routeOf(entry: QueryLogEntry, ctx: QueryLogContext | null): { where: string; mono: boolean; rule: string | null } {
+export function routeOf(entry: QueryLogEntry, ctx: QueryLogContext | null): { where: string; rule: string | null } {
   const rule = ruleLabel(entry, ctx)
-  if (entry.outcome === 'blocked') return { where: '拦截', mono: false, rule }
+  if (entry.outcome === 'blocked') return { where: '拦截', rule }
   if (entry.outcome === 'answered') {
     const mapping = ctx?.model.mappingId ?? 'domain_mapping'
-    return entry.pipeline === mapping ? { where: '域名映射', mono: false, rule: null } : { where: '自定义回答', mono: false, rule }
+    return entry.pipeline === mapping ? { where: '域名映射', rule: null } : { where: '自定义回答', rule }
   }
   const group = ctx ? forwardGroups(ctx.pipelines, ctx.model)(entry.pipeline) : undefined
-  if (group) return { where: group.name, mono: false, rule }
-  if (!ctx) return { where: entry.pipeline, mono: true, rule }
-  const own = ownForwardLabel(entry.pipeline, ctx.model, ctx.names)
-  return { where: own.label, mono: own.mono, rule }
+  if (group) return { where: group.name, rule }
+  if (!ctx) return { where: entry.pipeline, rule }
+  return { where: ownForwardLabel(entry.pipeline, ctx.model, ctx.names), rule }
 }
 
 /** 表格的回答一格：第一条记录加「+N」；没有记录时说为什么 / The table's answer cell: the first record plus 「+N」; without records, why */
@@ -311,7 +289,7 @@ export function timeText(unixMs: number, now: number = Date.now()): string {
 
 export interface StepRow { at: number; tone: 'ok' | 'err' | 'warn' | ''; idle: boolean; decides: boolean; lead: TextPart[]; note: TextPart[] }
 const t = (text: string): TextPart => ({ text })
-const m = (text: string): TextPart => ({ text, mono: true })
+const m = (text: string): TextPart => ({ text, literal: true })
 
 /** 规则直接回应、不再去别处的几种去向 / The destinations of a rule that replies itself instead of going elsewhere */
 const DIRECT = new Set(['block', 'answer', 'continue'])
@@ -386,7 +364,7 @@ export function stepRows(entry: QueryLogEntry, ctx: QueryLogContext | null): Ste
     } else if (step.kind === 'response') {
       const ok = step.rcode !== 'SERVFAIL' && entry.outcome !== 'failed'
       const records = entry.answers.length ? `，${entry.answers.length} 条记录` : ''
-      // 响应码和协议名是读数，不用等宽（和诊断页一样） / Response codes and protocol names are readings, not mono (as on the diagnostics page)
+      // 响应码和协议名是读数，不算字面值（和诊断页一样） / Response codes and protocol names are readings, not literals (as on the diagnostics page)
       row(step, [t(`${ok ? '回给客户端' : '回'} ${step.rcode ?? ''}${ok ? records : entry.error ? `：${entry.error}` : ''}`)], [], ok ? '' : 'err')
     }
   }

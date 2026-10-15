@@ -22,7 +22,7 @@ const parts = computed(() => props.text.split(/(「[^」]+」)/).map((piece) => 
 </script>
 
 <template>
-  <span class="rtext"><template v-for="(p, i) in parts" :key="i"><template v-if="p.rule !== undefined">「{{ JOIN }}<a class="ui-objlink ui-objlink--plain" href="#" @click.prevent="emit('rule', p.rule)">{{ p.text.slice(1, -1) }}</a>{{ JOIN }}」</template><template v-else-if="p.group !== undefined">「{{ JOIN }}<a class="ui-objlink ui-objlink--plain" href="#" @click.prevent="emit('group', p.group)">{{ p.text.slice(1, -1) }}</a>{{ JOIN }}」</template><template v-else>{{ p.text }}</template></template></span>
+  <span class="rtext"><template v-for="(p, i) in parts" :key="i"><template v-if="p.rule !== undefined">「{{ JOIN }}<a class="ui-objlink" href="#" @click.prevent="emit('rule', p.rule)">{{ p.text.slice(1, -1) }}</a>{{ JOIN }}」</template><template v-else-if="p.group !== undefined">「{{ JOIN }}<a class="ui-objlink" href="#" @click.prevent="emit('group', p.group)">{{ p.text.slice(1, -1) }}</a>{{ JOIN }}」</template><template v-else>{{ p.text }}</template></template></span>
 </template>
 
 <style>

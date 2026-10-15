@@ -164,7 +164,7 @@ function runImport(): void {
         <Plus class="rw__addicon" :size="16" aria-hidden="true" />
         <label class="rw__field rw__field--domain"><input ref="domainInput" v-model="add.domain" aria-label="要映射的域名" :placeholder="phone ? '添加域名映射：nas.home.arpa' : narrow ? '添加域名' : '添加域名：nas.home.arpa'" autocapitalize="off" spellcheck="false" @input="addError = ''"></label>
         <label class="rw__field rw__field--target"><input v-model="add.target" aria-label="回答的 IP 或域名" placeholder="回答：IP 或域名" autocapitalize="off" spellcheck="false" @input="addError = ''"></label>
-        <span class="rw__k rw__addkind" aria-live="polite"><span v-if="addKind" class="ui-tag ui-tag--mono">{{ addKind }}</span></span>
+        <span class="rw__k rw__addkind" aria-live="polite"><span v-if="addKind" class="ui-tag">{{ addKind }}</span></span>
         <button class="ui-btn ui-btn--secondary rw__submit" :class="{ 'ui-btn--sm': !phone }" type="submit" :disabled="!add.domain.trim() || !add.target.trim()">添加</button>
         <p v-if="addError" class="ui-field-error rw__adderr" role="alert">{{ addError }}</p>
       </form>
@@ -175,8 +175,8 @@ function runImport(): void {
           <li v-for="r in shown" :key="r.id" class="rw__row" :class="{ 'is-off': !r.enabled, 'is-editing': editing.id === r.id }" :data-rw="r.id">
             <template v-if="editing.id === r.id">
               <form class="rw__edit" @submit.prevent="commit(r)" @keydown.esc.prevent="cancelEdit(r)">
-                <label class="ui-input ui-input--sm is-mono"><input v-model="editing.domain" aria-label="域名" :aria-invalid="Boolean(editing.error) || undefined" :aria-describedby="editing.error ? 'rw-edit-err' : undefined" @input="editing.error = ''"></label>
-                <label class="ui-input ui-input--sm is-mono"><input v-model="editing.target" aria-label="回答" :aria-invalid="Boolean(editing.error) || undefined" :aria-describedby="editing.error ? 'rw-edit-err' : undefined" @input="editing.error = ''"></label>
+                <label class="ui-input ui-input--sm"><input v-model="editing.domain" aria-label="域名" :aria-invalid="Boolean(editing.error) || undefined" :aria-describedby="editing.error ? 'rw-edit-err' : undefined" @input="editing.error = ''"></label>
+                <label class="ui-input ui-input--sm"><input v-model="editing.target" aria-label="回答" :aria-invalid="Boolean(editing.error) || undefined" :aria-describedby="editing.error ? 'rw-edit-err' : undefined" @input="editing.error = ''"></label>
                 <label v-if="!splitList(editing.target).every(isIp)" class="ui-input ui-input--sm rw__ttl"><input v-model="editing.ttl" type="number" min="0" aria-label="TTL" placeholder="300"><i>秒</i></label>
                 <span v-else class="rw__ttl rw__ttl--fixed">TTL 300 秒</span>
                 <button class="ui-icon-btn ui-icon-btn--sm" type="submit" aria-label="保存" title="保存"><Check :size="14" /></button>
@@ -189,7 +189,7 @@ function runImport(): void {
               <!-- TTL 是回答的一部分，跟在回答后面；类型列只放类型 / The TTL belongs to the answer and follows it; the type column holds only the type -->
               <span class="rw__t">{{ r.target }}<span v-if="r.ttl !== null" class="rw__ttlnote">TTL {{ r.ttl }} 秒</span></span>
               <!-- 内核不支持 CNAME 时，提示条数到的那几处（启用的）标成警示色，停用的不算、照旧 / With CNAME unsupported, the rows the notice counts (enabled ones) take the warning colour; disabled ones do not count and stay plain -->
-              <span class="rw__k"><span class="ui-tag ui-tag--mono" :class="{ 'ui-tag--warn': unsupportedCname(r) }" :title="unsupportedCname(r) ? '当前内核不支持 CNAME 回答' : undefined">{{ kind(r) }}</span></span>
+              <span class="rw__k"><span class="ui-tag" :class="{ 'ui-tag--warn': unsupportedCname(r) }" :title="unsupportedCname(r) ? '当前内核不支持 CNAME 回答' : undefined">{{ kind(r) }}</span></span>
               <label class="ui-switch"><input v-model="r.enabled" type="checkbox" :aria-label="`启用 ${r.domain} 的映射`"><i></i></label>
               <UiMenu :items="rowMenu(r)" :label="`${r.domain} 的操作`" anchor=".rw__row" @select="act(r, $event)" />
             </template>
@@ -207,7 +207,7 @@ function runImport(): void {
             <span class="ui-input ui-input--area"><textarea v-model="importText" rows="7" autofocus aria-label="要导入的域名映射" placeholder="nas.home.arpa 192.168.1.10&#10;192.168.1.20 tv.home.arpa&#10;files.home.arpa nas.home.arpa"></textarea></span>
           </label>
           <ul v-if="parsed.length" class="rwi">
-            <li v-for="(p, i) in parsed" :key="i" :class="{ 'is-bad': p.problem }"><span class="is-mono">{{ p.domain || '—' }} → {{ p.target || '—' }}{{ p.ttl !== null ? ` · ${p.ttl} 秒` : '' }}</span><small v-if="p.problem">{{ p.problem }}</small></li>
+            <li v-for="(p, i) in parsed" :key="i" :class="{ 'is-bad': p.problem }"><span>{{ p.domain || '—' }} → {{ p.target || '—' }}{{ p.ttl !== null ? ` · ${p.ttl} 秒` : '' }}</span><small v-if="p.problem">{{ p.problem }}</small></li>
           </ul>
         </div>
         <footer class="pdialog__foot"><button class="ui-btn ui-btn--secondary" type="button" @click="leaveImport">取消</button><button class="ui-btn ui-btn--primary" type="submit" :disabled="!importable.length">{{ importable.length ? `导入 ${importable.length} 条` : '导入' }}</button></footer>

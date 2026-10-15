@@ -100,8 +100,6 @@ export interface ShareRow {
   label: string
   count: number
   share: number
-  /** 等宽：内核 id 这类机器值；换成配置页名字的行用正文字 / Mono for machine values such as kernel ids; rows renamed to the config page's names use body text */
-  mono?: boolean
 }
 
 const RCODE_LABELS: Record<string, string> = { NoError: 'NOERROR', NXDomain: 'NXDOMAIN', ServFail: 'SERVFAIL', Refused: 'REFUSED' }

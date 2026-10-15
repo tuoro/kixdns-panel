@@ -103,7 +103,7 @@ const rows = computed(() => {
 <template>
   <section class="ui-card tester ui-rise" aria-label="测试域名">
     <form class="tester__inputs" @submit.prevent="run">
-      <label class="ui-input is-mono tester__domain"><input ref="domainInput" v-model="domain" aria-label="要测试的域名" placeholder="www.example.com" autocapitalize="off" spellcheck="false"></label>
+      <label class="ui-input tester__domain"><input ref="domainInput" v-model="domain" aria-label="要测试的域名" placeholder="www.example.com" autocapitalize="off" spellcheck="false"></label>
       <UiSelect v-model="qtype" class="tester__qtype" :options="qtypes" label="查询类型" />
       <button class="ui-btn ui-btn--secondary tester__run" type="submit" :disabled="!domain.trim() || running || panelDown" :aria-busy="running || undefined"><span v-if="running" class="ui-spin" aria-hidden="true"></span>测试</button>
       <UiHelp topic="tester" />
@@ -111,7 +111,7 @@ const rows = computed(() => {
     </form>
     <!-- 第二行：客户端 IP、测哪份配置；内核不支持时不出现 / Second row: client IP and which config; absent when the kernel lacks them -->
     <div v-if="canClient || (canDraft && dirty)" class="tester__opts">
-      <label v-if="canClient" class="ui-input is-mono tester__client" :class="{ 'is-bad': clientProblem }"><input v-model="clientIp" aria-label="客户端 IP，可以不填" :aria-invalid="Boolean(clientProblem) || undefined" :aria-describedby="clientProblem ? 'tester-client-err' : undefined" placeholder="客户端 IP，可不填" autocapitalize="off" spellcheck="false" @keydown.enter.prevent="run"></label>
+      <label v-if="canClient" class="ui-input tester__client" :class="{ 'is-bad': clientProblem }"><input v-model="clientIp" aria-label="客户端 IP，可以不填" :aria-invalid="Boolean(clientProblem) || undefined" :aria-describedby="clientProblem ? 'tester-client-err' : undefined" placeholder="客户端 IP，可不填" autocapitalize="off" spellcheck="false" @keydown.enter.prevent="run"></label>
       <UiTabs v-if="canDraft && dirty" :model-value="target" class="tester__target" :items="targets" label="测哪份配置" variant="segment" @update:model-value="target = $event as 'draft' | 'live'" />
     </div>
     <p v-if="clientProblem" id="tester-client-err" class="ui-field-error tester__error">{{ clientProblem }}</p>
@@ -128,8 +128,8 @@ const rows = computed(() => {
           <span class="ui-step__time">{{ formatElapsed(row.elapsed) }}</span>
           <span class="ui-step__mark" aria-hidden="true"><Check v-if="row.tone === 'success' && row.decides" :size="12" /><X v-else-if="row.tone === 'danger'" :size="12" /><i v-else></i></span>
           <div class="ui-step__body">
-            <p class="ui-step__what"><template v-for="(part, at) in row.lead" :key="at"><code v-if="part.mono">{{ part.text }}</code><template v-else>{{ part.text }}</template></template></p>
-            <p v-if="row.note.length" class="ui-step__why"><template v-for="(part, at) in row.note" :key="at"><span v-if="part.label" class="ui-step__pair">{{ part.label }} <code v-if="part.mono">{{ part.text }}</code><template v-else>{{ part.text }}</template></span><code v-else-if="part.mono">{{ part.text }}</code><template v-else>{{ part.text }}</template></template></p>
+            <p class="ui-step__what"><template v-for="(part, at) in row.lead" :key="at"><span v-if="part.literal" class="ui-step__lit">{{ part.text }}</span><template v-else>{{ part.text }}</template></template></p>
+            <p v-if="row.note.length" class="ui-step__why"><template v-for="(part, at) in row.note" :key="at"><span v-if="part.label" class="ui-step__pair">{{ part.label }} <span v-if="part.literal" class="ui-step__lit">{{ part.text }}</span><template v-else>{{ part.text }}</template></span><span v-else-if="part.literal" class="ui-step__lit">{{ part.text }}</span><template v-else>{{ part.text }}</template></template></p>
           </div>
         </li>
       </ol>

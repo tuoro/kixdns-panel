@@ -125,7 +125,7 @@ function remove(): void {
             <li v-for="(a, i) in draft.addresses" :key="i" class="addr">
               <!-- 手机上每个地址一行小标题，删除放在标题右端，输入框都占满整宽 / On phones each address gets a small header with remove at its right end, so every field is full width -->
               <div class="addr__head"><span>地址 {{ i + 1 }}</span><button class="ui-icon-btn ui-icon-btn--sm" type="button" :aria-label="`删除第 ${i + 1} 个地址`" title="删除地址" :disabled="draft.addresses.length === 1" @click="draft.addresses.splice(i, 1)"><Trash2 :size="16" /></button></div>
-              <label class="ui-input is-mono addr__value"><input v-model="a.address" :aria-label="`第 ${i + 1} 个地址`" placeholder="https://dns.example/dns-query 或 223.5.5.5" autocapitalize="off" spellcheck="false"></label>
+              <label class="ui-input addr__value"><input v-model="a.address" :aria-label="`第 ${i + 1} 个地址`" placeholder="https://dns.example/dns-query 或 223.5.5.5" autocapitalize="off" spellcheck="false"></label>
               <UiSelect v-model="a.protocol" class="addr__proto" :options="protocolOptions(a.address)" :label="`第 ${i + 1} 个地址的协议`" />
               <button class="ui-icon-btn addr__x" type="button" :aria-label="`删除第 ${i + 1} 个地址`" title="删除地址" :disabled="draft.addresses.length === 1" @click="draft.addresses.splice(i, 1)"><Trash2 :size="16" /></button>
             </li>
@@ -143,7 +143,7 @@ function remove(): void {
               <label class="ui-input erow__num"><i>IPv6 /</i><input v-model.number="draft.ecs.v6" type="number" min="0" max="128" aria-label="IPv6 前缀长度"></label>
             </template>
           </div>
-          <label v-if="draft.ecs?.mode === 'static'" class="ui-input is-mono"><input v-model="draft.ecs.subnet" aria-label="固定子网" placeholder="203.0.113.0/24"></label>
+          <label v-if="draft.ecs?.mode === 'static'" class="ui-input"><input v-model="draft.ecs.subnet" aria-label="固定子网" placeholder="203.0.113.0/24"></label>
           <!-- 按所选的方式说：只有「发送客户端所在子网」会跳过内网客户端，固定子网对谁都发（内核 apply_ecs） / Said per choice: only 发送客户端所在子网 skips LAN clients; a fixed subnet is sent for everyone (kernel apply_ecs) -->
           <small class="pfield__hint">{{ draft.ecs?.mode === 'static' ? '每个请求都带上这个子网，内网客户端也一样。' : draft.ecs?.mode === 'client' ? '发送子网能让国内 CDN 回离客户端近的地址；内网客户端的请求不带子网。' : '发送子网能让国内 CDN 回离客户端近的地址。' }}</small>
         </div>
@@ -152,7 +152,7 @@ function remove(): void {
           <label class="pswitch"><span><b>备用组<UiHelp topic="fallback" /></b><small>这个组的回答不能用时，改问另一个组</small></span><span class="ui-switch"><input v-model="fallbackOn" type="checkbox" aria-label="使用备用组"><i></i></span></label>
           <div v-if="fallbackOn" class="fallback ui-rise">
             <label class="ui-checkbox"><input v-model="draft.fallback.onError" type="checkbox"><i></i>上游回 SERVFAIL 或 REFUSED</label>
-            <label class="ui-checkbox"><input v-model="draft.fallback.onPolluted" type="checkbox"><i></i><span>结果被污染 <small class="is-mono">{{ POLLUTED_CIDRS.join('、') }}</small></span></label>
+            <label class="ui-checkbox"><input v-model="draft.fallback.onPolluted" type="checkbox"><i></i><span>结果被污染 <small>{{ POLLUTED_CIDRS.join('、') }}</small></span></label>
             <div class="pfield__row"><span class="fallback__k">改问</span><UiSelect v-model="draft.fallback.group" class="pfield__grow" :options="otherGroups" label="备用组" /></div>
             <p class="ui-notice ui-notice--off"><Info :size="16" aria-hidden="true" /><span>上游全部超时或连不上时不会改问备用组：开了「过期后继续用旧结果」先回旧结果，没有就回 SERVFAIL。</span></p>
           </div>

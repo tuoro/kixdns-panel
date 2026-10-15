@@ -9,8 +9,6 @@ export interface UiMenuItem {
   icon?: Component
   danger?: boolean
   disabled?: boolean
-  // 项是机器值（地址、ID）时用等宽 / Mono when the item is a machine value (an address, an ID)
-  mono?: boolean
 }
 
 // 菜单：默认的触发按钮是「…」，也可以换成自己的内容（子项行的序号就是一个「调整顺序」菜单）。
@@ -172,7 +170,7 @@ defineExpose({ close: () => hide(false) })
       <p class="ui-menu__title" aria-hidden="true">{{ title ?? label }}</p>
       <template v-for="(item, index) in items" :key="item.value">
         <div v-if="item.danger && index > 0 && !items[index - 1]?.danger" class="ui-menu__sep" role="separator"></div>
-        <button class="ui-menu__item" :class="{ 'ui-menu__item--danger': item.danger, 'ui-menu__item--mono': item.mono }" type="button" role="menuitem" tabindex="-1" :disabled="item.disabled" @click="choose(item)">
+        <button class="ui-menu__item" :class="{ 'ui-menu__item--danger': item.danger }" type="button" role="menuitem" tabindex="-1" :disabled="item.disabled" @click="choose(item)">
           <component :is="item.icon" v-if="item.icon" :size="14" aria-hidden="true" />{{ item.label }}
         </button>
       </template>

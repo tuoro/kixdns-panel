@@ -399,12 +399,12 @@ onBeforeUnmount(clearSyncNotice)
     </template>
 
     <template v-else>
-      <label class="ui-setrow"><span class="ui-setrow__label"><span>GeoIP MMDB 文件<i v-if="changed?.has('geoip_db_path')" class="ui-dot ui-dot--ink geo-dot" aria-hidden="true"></i></span></span><span class="geo-path"><span class="ui-input"><input class="mono" type="text" :value="stringSetting('geoip_db_path')" aria-label="MMDB 文件路径" placeholder="如 /path/to/GeoLite2-Country.mmdb" @input="setStringSetting('geoip_db_path', $event)"></span><span aria-hidden="true"></span></span></label>
-      <label class="ui-setrow"><span class="ui-setrow__label"><span>GeoIP DAT 文件<i v-if="changed?.has('geoip_dat_path')" class="ui-dot ui-dot--ink geo-dot" aria-hidden="true"></i></span></span><span class="geo-path"><span class="ui-input"><input class="mono" type="text" :value="stringSetting('geoip_dat_path')" aria-label="GeoIP DAT 文件路径" placeholder="如 /path/to/geoip.dat" @input="setStringSetting('geoip_dat_path', $event)"></span><span aria-hidden="true"></span></span></label>
+      <label class="ui-setrow"><span class="ui-setrow__label"><span>GeoIP MMDB 文件<i v-if="changed?.has('geoip_db_path')" class="ui-dot ui-dot--ink geo-dot" aria-hidden="true"></i></span></span><span class="geo-path"><span class="ui-input"><input type="text" :value="stringSetting('geoip_db_path')" aria-label="MMDB 文件路径" placeholder="如 /path/to/GeoLite2-Country.mmdb" @input="setStringSetting('geoip_db_path', $event)"></span><span aria-hidden="true"></span></span></label>
+      <label class="ui-setrow"><span class="ui-setrow__label"><span>GeoIP DAT 文件<i v-if="changed?.has('geoip_dat_path')" class="ui-dot ui-dot--ink geo-dot" aria-hidden="true"></i></span></span><span class="geo-path"><span class="ui-input"><input type="text" :value="stringSetting('geoip_dat_path')" aria-label="GeoIP DAT 文件路径" placeholder="如 /path/to/geoip.dat" @input="setStringSetting('geoip_dat_path', $event)"></span><span aria-hidden="true"></span></span></label>
       <div class="ui-setrow geo-row">
         <span class="ui-setrow__label"><span>GeoSite 文件<i v-if="changed?.has('geosite_data_paths')" class="ui-dot ui-dot--ink geo-dot" aria-hidden="true"></i></span></span>
         <span class="geo-list">
-          <span v-for="(path, index) in listSetting('geosite_data_paths')" :key="index" class="geo-path"><span class="ui-input"><input class="mono" type="text" :value="path" placeholder="如 /path/to/geosite.dat" :aria-label="`GeoSite 文件路径 ${index + 1}`" @input="setLocalGeosite(index, $event)"></span><button class="ui-icon-btn" type="button" :title="`删除 GeoSite 路径 ${index + 1}`" :aria-label="`删除 GeoSite 路径 ${index + 1}`" @click="removeLocalGeosite(index)"><X :size="16" /></button></span>
+          <span v-for="(path, index) in listSetting('geosite_data_paths')" :key="index" class="geo-path"><span class="ui-input"><input type="text" :value="path" placeholder="如 /path/to/geosite.dat" :aria-label="`GeoSite 文件路径 ${index + 1}`" @input="setLocalGeosite(index, $event)"></span><button class="ui-icon-btn" type="button" :title="`删除 GeoSite 路径 ${index + 1}`" :aria-label="`删除 GeoSite 路径 ${index + 1}`" @click="removeLocalGeosite(index)"><X :size="16" /></button></span>
           <button class="ui-btn ui-btn--text ui-btn--sm geo-list__add" type="button" @click="addLocalGeosite"><Plus :size="14" aria-hidden="true" />添加路径</button>
         </span>
       </div>
@@ -426,15 +426,15 @@ onBeforeUnmount(clearSyncNotice)
 .geo-dot { margin-inline-start: var(--s-2); vertical-align: .1em; }
 .geo-list { min-width: 0; display: grid; gap: var(--s-4); }
 .geo-item { min-width: 0; display: grid; gap: var(--s-1); }
-/* 文件那一行：名字（等宽、名称）后面跟「大小 · 几天前」一整块，放不下就整块挪下去，不会有哪一行以「·」开头；× 固定在这一行的末尾
+/* 文件那一行：名字后面跟「大小 · 几天前」一整块，放不下就整块挪下去，不会有哪一行以「·」开头；× 固定在这一行的末尾
    The file line: the name, then 「size · how long ago」 as one unit that moves down whole, so no line starts with 「·」; the × stays at this line's end */
 .geo-file { min-height: var(--h-sm); display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--s-2); }
 .geo-file__main { min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--s-2); }
-.geo-file b { color: var(--l-ink); font-family: var(--f-mono); font-size: var(--t-3); font-weight: var(--w-medium); overflow-wrap: anywhere; }
+.geo-file b { color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-medium); overflow-wrap: anywhere; }
 .geo-file__meta { color: var(--l-ink-2); font-size: var(--t-2); white-space: nowrap; }
 /* 安装包那一行带一个按钮：手机上按钮比字高，字对着按钮中线，不跟普通文件行一样贴顶 / The package's line carries a button: on a phone the button is taller than the text, so the text centres on it instead of sitting at the top like a file line */
 .geo-file.geo-builtin { align-items: center; }
-/* 链接框：等宽 13 号，放不下就在「/」后面换行（UiUrlField） / The link box: 13px mono, wrapping after a "/" (UiUrlField) */
+/* 链接框：小一号，放不下就在「/」后面换行（UiUrlField） / The link box: a size down, wrapping after a "/" (UiUrlField) */
 .geo-link.ui-input--area { font-size: var(--t-2); }
 /* 「添加链接」「清理」往回收一格：图标落在框的左边线上（规范 6.5，审计 T9） / 添加链接 and 清理 pulled back so their icons sit on the box edge (spec 6.5, audit T9) */
 .geo-list__add { justify-self: start; margin-inline-start: calc(var(--s-3) * -1); }

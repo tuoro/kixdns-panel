@@ -115,7 +115,7 @@ export function kernelAddress(item: UpstreamAddress): string {
 // How each condition compares and how the list reads it: the editor's menus and the list summary share these words
 export interface OpDef { value: string; label: string; negate: boolean; regex?: boolean; txtMode?: 'exact' | 'prefix' | 'regex'; phrase?: string }
 // merge：并进另一个字段的运算里，不单独出现在字段下拉（「客户端 IP · 是内网」） / merge: folded into another field's comparisons instead of listed on its own (客户端 IP · 是内网)
-export interface FieldDef { label: string; subject?: string; merge?: string; ops: OpDef[]; values: boolean; placeholder: string; mono: boolean; upper?: boolean; suggest?: string; valid?: (v: string, c: { regex?: boolean; txtMode?: string }) => boolean; hint?: string }
+export interface FieldDef { label: string; subject?: string; merge?: string; ops: OpDef[]; values: boolean; placeholder: string; upper?: boolean; suggest?: string; valid?: (v: string, c: { regex?: boolean; txtMode?: string }) => boolean; hint?: string }
 const IS: OpDef[] = [{ value: 'is', label: '是', negate: false }, { value: 'not', label: '不是', negate: true }]
 const IN: OpDef[] = [{ value: 'is', label: '在', negate: false }, { value: 'not', label: '不在', negate: true }]
 const DOMAIN_OPS: OpDef[] = [
@@ -127,35 +127,35 @@ const domainValid = (v: string, c: { regex?: boolean }) => (c.regex ? validRegex
 // 内核按写的原样查分类，「geosite:cn」找不到 cn 这个分类，永远不命中 / The kernel looks the category up as written, so 「geosite:cn」 never finds cn and never matches
 const noGeositePrefix = (v: string): boolean => !/^geosite:/i.test(v)
 export const FIELD: Record<ConditionField, FieldDef> = {
-  domain: { label: '域名', ops: DOMAIN_OPS, values: true, placeholder: 'example.com，回车添加', mono: true, valid: domainValid },
+  domain: { label: '域名', ops: DOMAIN_OPS, values: true, placeholder: 'example.com，回车添加', valid: domainValid },
   // 行里叫 GeoSite（正式面板一直这么叫），句子里说「域名属于 GeoSite cn」 / The row says GeoSite (the production panel's name); sentences say 「域名属于 GeoSite cn」
-  geosite: { label: 'GeoSite', subject: '域名', ops: [{ value: 'is', label: '属于', phrase: '属于 GeoSite', negate: false }, { value: 'not', label: '不属于', phrase: '不属于 GeoSite', negate: true }], values: true, placeholder: '搜索分类，如 cn、google', mono: true, suggest: 'geosite', valid: noGeositePrefix },
-  client_ip: { label: '客户端 IP', ops: IN, values: true, placeholder: '192.168.1.0/24 或单个 IP', mono: true, valid: (v) => isCidr(v) },
-  client_country: { label: '客户端地区', ops: IS, values: true, placeholder: 'CN、HK…', mono: true, upper: true, suggest: 'country', valid: (v) => /^[a-z]{2}$|^[a-z0-9_-]{3,}$/i.test(v), hint: 'GeoIP 国家代码' },
-  client_private: { label: '客户端网络', merge: 'client_ip', ops: [{ value: 'is', label: '是内网', phrase: '客户端是内网', negate: false }, { value: 'not', label: '不是内网', phrase: '客户端不是内网', negate: true }], values: false, placeholder: '', mono: false },
+  geosite: { label: 'GeoSite', subject: '域名', ops: [{ value: 'is', label: '属于', phrase: '属于 GeoSite', negate: false }, { value: 'not', label: '不属于', phrase: '不属于 GeoSite', negate: true }], values: true, placeholder: '搜索分类，如 cn、google', suggest: 'geosite', valid: noGeositePrefix },
+  client_ip: { label: '客户端 IP', ops: IN, values: true, placeholder: '192.168.1.0/24 或单个 IP', valid: (v) => isCidr(v) },
+  client_country: { label: '客户端地区', ops: IS, values: true, placeholder: 'CN、HK…', upper: true, suggest: 'country', valid: (v) => /^[a-z]{2}$|^[a-z0-9_-]{3,}$/i.test(v), hint: 'GeoIP 国家代码' },
+  client_private: { label: '客户端网络', merge: 'client_ip', ops: [{ value: 'is', label: '是内网', phrase: '客户端是内网', negate: false }, { value: 'not', label: '不是内网', phrase: '客户端不是内网', negate: true }], values: false, placeholder: '' },
   // 记录类型是助记词，和响应码一样用正文字体 / Record types are mnemonics, in the body face like response codes
-  qtype: { label: '查询类型', ops: IS, values: true, placeholder: 'A、AAAA、PTR…', mono: false, upper: true, suggest: 'qtype' },
-  qclass: { label: '查询类别', ops: IS, values: true, placeholder: 'IN、CH、HS', mono: true, upper: true, suggest: 'qclass' },
-  edns: { label: 'EDNS', ops: [{ value: 'is', label: '带', phrase: '带 EDNS', negate: false }, { value: 'not', label: '不带', phrase: '不带 EDNS', negate: true }], values: false, placeholder: '', mono: false },
+  qtype: { label: '查询类型', ops: IS, values: true, placeholder: 'A、AAAA、PTR…', upper: true, suggest: 'qtype' },
+  qclass: { label: '查询类别', ops: IS, values: true, placeholder: 'IN、CH、HS', upper: true, suggest: 'qclass' },
+  edns: { label: 'EDNS', ops: [{ value: 'is', label: '带', phrase: '带 EDNS', negate: false }, { value: 'not', label: '不带', phrase: '不带 EDNS', negate: true }], values: false, placeholder: '' },
 }
 export const RESPONSE_FIELD: Record<ResponseField, FieldDef> = {
   // 响应码是助记词，正文字体（同诊断页、概览） / Response codes are mnemonics in the body face (as on diagnostics and the overview)
-  rcode: { label: '响应码', ops: IS, values: true, placeholder: 'SERVFAIL、NXDOMAIN…', mono: false, upper: true, suggest: 'rcode' },
-  answer_ip: { label: '回答的 IP', ops: IN, values: true, placeholder: '0.0.0.0/32、240.0.0.0/4…', mono: true, valid: (v) => isCidr(v) },
-  answer_country: { label: '回答 IP 的地区', ops: IS, values: true, placeholder: 'CN、US…', mono: true, upper: true, suggest: 'country' },
-  answer_private: { label: '回答 IP 的网络', merge: 'answer_ip', ops: [{ value: 'is', label: '是内网', phrase: '回答的是内网地址', negate: false }, { value: 'not', label: '不是内网', phrase: '回答的不是内网地址', negate: true }], values: false, placeholder: '', mono: false },
-  answer_type: { label: '回答的记录类型', ops: IS, values: true, placeholder: 'A、AAAA、CNAME…', mono: false, upper: true, suggest: 'qtype' },
-  upstream: { label: '回答来自', ops: IS, values: true, placeholder: '10.0.0.53:53', mono: true },
-  upstream_ip: { label: '上游 IP', ops: IN, values: true, placeholder: '10.0.0.0/8', mono: true, valid: (v) => isCidr(v) },
-  request_domain: { label: '请求的域名', ops: DOMAIN_OPS, values: true, placeholder: 'example.com', mono: true, valid: domainValid },
-  request_geosite: { label: '请求域名 GeoSite', subject: '请求的域名', ops: [{ value: 'is', label: '属于', phrase: '属于 GeoSite', negate: false }, { value: 'not', label: '不属于', phrase: '不属于 GeoSite', negate: true }], values: true, placeholder: '搜索分类，如 cn', mono: true, suggest: 'geosite', valid: noGeositePrefix },
+  rcode: { label: '响应码', ops: IS, values: true, placeholder: 'SERVFAIL、NXDOMAIN…', upper: true, suggest: 'rcode' },
+  answer_ip: { label: '回答的 IP', ops: IN, values: true, placeholder: '0.0.0.0/32、240.0.0.0/4…', valid: (v) => isCidr(v) },
+  answer_country: { label: '回答 IP 的地区', ops: IS, values: true, placeholder: 'CN、US…', upper: true, suggest: 'country' },
+  answer_private: { label: '回答 IP 的网络', merge: 'answer_ip', ops: [{ value: 'is', label: '是内网', phrase: '回答的是内网地址', negate: false }, { value: 'not', label: '不是内网', phrase: '回答的不是内网地址', negate: true }], values: false, placeholder: '' },
+  answer_type: { label: '回答的记录类型', ops: IS, values: true, placeholder: 'A、AAAA、CNAME…', upper: true, suggest: 'qtype' },
+  upstream: { label: '回答来自', ops: IS, values: true, placeholder: '10.0.0.53:53' },
+  upstream_ip: { label: '上游 IP', ops: IN, values: true, placeholder: '10.0.0.0/8', valid: (v) => isCidr(v) },
+  request_domain: { label: '请求的域名', ops: DOMAIN_OPS, values: true, placeholder: 'example.com', valid: domainValid },
+  request_geosite: { label: '请求域名 GeoSite', subject: '请求的域名', ops: [{ value: 'is', label: '属于', phrase: '属于 GeoSite', negate: false }, { value: 'not', label: '不属于', phrase: '不属于 GeoSite', negate: true }], values: true, placeholder: '搜索分类，如 cn', suggest: 'geosite', valid: noGeositePrefix },
   txt: { label: 'TXT 内容', ops: [
     { value: 'is', label: '等于', negate: false, txtMode: 'exact' }, { value: 'not', label: '不等于', negate: true, txtMode: 'exact' },
     { value: 'prefix', label: '开头是', negate: false, txtMode: 'prefix' }, { value: 'nprefix', label: '开头不是', negate: true, txtMode: 'prefix' },
     { value: 're', label: '匹配正则', negate: false, txtMode: 'regex' }, { value: 'nre', label: '不匹配正则', negate: true, txtMode: 'regex' },
-  ], values: true, placeholder: 'v=spf1，回车添加', mono: true, valid: (v, c) => (c.txtMode === 'regex' ? validRegex(v) : true) },
-  qclass: { label: '查询类别', ops: IS, values: true, placeholder: 'IN', mono: true, upper: true, suggest: 'qclass' },
-  edns: { label: '回答的 EDNS', ops: [{ value: 'is', label: '带', phrase: '回答带 EDNS', negate: false }, { value: 'not', label: '不带', phrase: '回答不带 EDNS', negate: true }], values: false, placeholder: '', mono: false },
+  ], values: true, placeholder: 'v=spf1，回车添加', valid: (v, c) => (c.txtMode === 'regex' ? validRegex(v) : true) },
+  qclass: { label: '查询类别', ops: IS, values: true, placeholder: 'IN', upper: true, suggest: 'qclass' },
+  edns: { label: '回答的 EDNS', ops: [{ value: 'is', label: '带', phrase: '回答带 EDNS', negate: false }, { value: 'not', label: '不带', phrase: '回答不带 EDNS', negate: true }], values: false, placeholder: '' },
 }
 export function opOf(def: FieldDef, c: { negate: boolean; regex?: boolean; txtMode?: string }): OpDef {
   return def.ops.find((o) => o.negate === c.negate && Boolean(o.regex) === Boolean(c.regex) && (o.txtMode ?? undefined) === (c.txtMode ?? undefined))
@@ -209,17 +209,16 @@ export function blockLabel(model: Model, response: BlockResponse): string {
   return r === 'zero' ? '0.0.0.0 / ::' : r === 'NOERROR' ? '空回答' : r
 }
 // 列表里那颗结果胶囊：动词 + 客户端实际收到什么 / The outcome pill in the list: the verb plus what the client actually gets
-export function outcomePill(model: Model, o: Outcome): { verb: string; value: string; mono: boolean; broken: boolean } {
+export function outcomePill(model: Model, o: Outcome): { verb: string; value: string; broken: boolean } {
   switch (o.type) {
-    case 'upstream': { const n = groupName(model, o.group); return { verb: '交给', value: n ?? '已删除的组', mono: false, broken: !n } }
-    // 响应码是助记词，正文字体；只有 0.0.0.0 / :: 这种地址才用等宽 / Response codes are mnemonics in the body face; only addresses such as 0.0.0.0 / :: are mono
-    case 'block': return { verb: '拦截', value: blockLabel(model, o.response), mono: (o.response === 'default' ? model.defaults.block : o.response) === 'zero', broken: false }
+    case 'upstream': { const n = groupName(model, o.group); return { verb: '交给', value: n ?? '已删除的组', broken: !n } }
+    case 'block': return { verb: '拦截', value: blockLabel(model, o.response), broken: false }
     case 'answer': {
       const kind = o.kind === 'ip' ? '' : o.kind === 'cname' ? 'CNAME ' : 'TXT '
-      return { verb: '回答', value: `${kind}${o.kind === 'txt' ? `"${o.value}"` : o.value.split(',').map((x) => x.trim()).filter(Boolean).join(', ') || '…'}`, mono: true, broken: !o.value.trim() }
+      return { verb: '回答', value: `${kind}${o.kind === 'txt' ? `"${o.value}"` : o.value.split(',').map((x) => x.trim()).filter(Boolean).join(', ') || '…'}`, broken: !o.value.trim() }
     }
-    case 'group': { const n = ruleGroupName(model, o.group); return { verb: '转到规则组', value: n ?? '已删除的规则组', mono: false, broken: !n } }
-    case 'continue': return { verb: '继续', value: '往下一条', mono: false, broken: false }
+    case 'group': { const n = ruleGroupName(model, o.group); return { verb: '转到规则组', value: n ?? '已删除的规则组', broken: !n } }
+    case 'continue': return { verb: '继续', value: '往下一条', broken: false }
   }
 }
 export function outcomeSentence(model: Model, o: Outcome): string {

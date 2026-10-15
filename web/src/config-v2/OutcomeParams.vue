@@ -45,7 +45,7 @@ const answerProblem = computed(() => {
     <template v-else-if="modelValue.type === 'answer'">
       <div class="oparams__line">
         <UiTabs :model-value="modelValue.kind" :items="kindItems" :label="`${label}：记录类型`" variant="segment" @update:model-value="set({ kind: $event, value: '', ttl: null })" />
-        <label class="ui-input oparams__value" :class="{ 'is-mono': modelValue.kind !== 'txt' }">
+        <label class="ui-input oparams__value">
           <input :value="modelValue.value" :aria-label="`${label}：回答内容`" :aria-invalid="(showErrors && Boolean(answerProblem)) || undefined" :aria-describedby="showErrors && answerProblem ? answerErrId : undefined" :placeholder="modelValue.kind === 'ip' ? '192.168.1.10, fd00::10' : modelValue.kind === 'cname' ? 'target.example.com' : '要回答的文字'" autocapitalize="off" spellcheck="false" @input="set({ value: ($event.target as HTMLInputElement).value })">
         </label>
         <label v-if="modelValue.kind !== 'ip'" class="ui-input oparams__ttl">

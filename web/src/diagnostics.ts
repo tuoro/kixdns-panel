@@ -91,11 +91,11 @@ export function humanizeTraceDetail(detail: string): string {
 }
 
 /**
- * 一句话里的一段；mono 是机器值（名字、地址、响应码），用等宽。带 label 的是一对「键 值」，排版时整对一起换行。
- * One run of a sentence; mono marks machine values. A part with a label is a
- * "key value" pair that wraps as one unit.
+ * 一句话里的一段；literal 是机器写法的值（名字、地址），和前后的中文之间留空格。带 label 的是一对「键 值」，排版时整对一起换行。
+ * One run of a sentence; literal marks a machine-written value (a name, an address), spaced from the words around it. A part
+ * with a label is a "key value" pair that wraps as one unit.
  */
-export interface TextPart { text: string; mono?: boolean; label?: string }
+export interface TextPart { text: string; literal?: boolean; label?: string }
 
 export interface StepView {
   /** 这一步做了什么，一句话。 / What the step did, in one sentence. */
@@ -105,18 +105,18 @@ export interface StepView {
 }
 
 const t = (text: string): TextPart => ({ text })
-const m = (text: string): TextPart => ({ text, mono: true })
+const m = (text: string): TextPart => ({ text, literal: true })
 const ASCII_ONLY = /^[\x20-\x7e\u00a0]+$/
-// 量和协议名不是字面值：「12 ms」「1」「DoH」用正文字，和结果栏、时间列一样；地址、名字、键才用等宽
-// Quantities and protocol names are not literals: 「12 ms」, 「1」 and 「DoH」 use the body face like the result bar and time column; addresses, names and keys stay mono
+// 量和协议名不是字面值：「12 ms」「1」「DoH」是读数，和结果栏、时间列一样；地址、名字、键才是
+// Quantities and protocol names are not literals: 「12 ms」, 「1」 and 「DoH」 are readings like the result bar and time column; addresses, names and keys are
 const MEASURE = /^\d+(\.\d+)?(\s*(ms|s|秒|个|条|次))?$/
 const PROTOCOL = /^(UDP|TCP|DoT|DoH|DoQ|DoH3|TLS|HTTPS)(\+(UDP|TCP))?$|^(NOERROR|NXDOMAIN|SERVFAIL|REFUSED|FORMERR|NOTIMP|NOTAUTH|NOTZONE|YXDOMAIN|YXRRSET|NXRRSET)$/i
 const isLiteral = (value: string) => ASCII_ONLY.test(value) && !MEASURE.test(value) && !PROTOCOL.test(value)
 
 /**
- * 细节里的「键：值；键：值」写成「键 值 · 键 值」，纯 ASCII 的字面值用等宽（量和协议名不算）；没有键的片段照原样。
+ * 细节里的「键：值；键：值」写成「键 值 · 键 值」，纯 ASCII 的值算字面值（量和协议名不算）；没有键的片段照原样。
  * 先经过 humanizeTraceDetail，所以 Some(Https)、false 这类写法已经翻过。
- * "key：value；key：value" becomes "key value · key value", ASCII literals in mono (not quantities or protocol names);
+ * "key：value；key：value" becomes "key value · key value", ASCII values marked as literals (not quantities or protocol names);
  * fragments without a key stay as they are. humanizeTraceDetail runs first.
  */
 export function detailParts(detail: string | null | undefined, skip: string[] = []): TextPart[] {
@@ -130,7 +130,7 @@ export function detailParts(detail: string | null | undefined, skip: string[] = 
     if (!rest.length) parts.push(t(fragment))
     // 键和值是一对，整对换行：窄屏上「监听器」和「default」曾被折到两行。
     // Key and value are one pair that wraps whole: a phone once split 监听器 and default across lines.
-    else parts.push({ label: key!.trim(), text: value, mono: isLiteral(value) })
+    else parts.push({ label: key!.trim(), text: value, literal: isLiteral(value) })
   }
   return parts
 }
@@ -141,10 +141,10 @@ function detailValue(detail: string | null | undefined, key: string): string | n
 }
 
 /**
- * 把内核的一步写成一句人话，名字单独用等宽。内核的标签有的是名字（default、geosite-global），
+ * 把内核的一步写成一句人话，名字单独标成字面值。内核的标签有的是名字（default、geosite-global），
  * 有的已经是一句话（准备转发到 X、管线 X 的规则缓存未命中）；以前在前面再加阶段名，就成了
  * 「上游 准备转发到 X」。认不出的写法退回「阶段名 标签」，不猜。
- * Writes one kernel step as a sentence with names in mono. Kernel labels are
+ * Writes one kernel step as a sentence with names marked as literals. Kernel labels are
  * sometimes a name and sometimes already a sentence; prefixing the stage name
  * produced stutters like "上游 准备转发到 X". Anything unrecognised falls back
  * to "stage label" rather than a guess.
@@ -160,8 +160,8 @@ export function forwardTarget(step: DnsTraceStep): string | null {
  * context.target 是上一次转发的目标：上游应答的正是它时不再重复地址，只写「应答 NOERROR」。
  * context.target is the last forward target: when the reply comes from it, the address is not repeated.
  */
-// 规则和规则组：认得出就写配置页上的名字（「」括起来的正文字），认不出才写内核的名字（等宽）
-// Rules and rule groups: the config page's name when recognised (body text in 「」), the kernel's name in mono otherwise
+// 规则和规则组：认得出就写配置页上的名字（「」括起来），认不出才写内核的名字（字面值）
+// Rules and rule groups: the config page's name when recognised (in 「」), the kernel's name as a literal otherwise
 export function ruleName(label: string, names?: TraceNames | null): TextPart[] {
   const title = names?.rule(label)
   return title ? [t(`「${title}」`)] : [m(label)]
@@ -170,17 +170,17 @@ function pipelineName(id: string, names?: TraceNames | null): TextPart[] {
   const said = names?.pipeline(id)
   return said ? [t(said)] : [t('规则组 '), m(id)]
 }
-// 等宽的名字和前后的中文之间留一个空格，正文字之间不留 / A space between a mono name and the text around it, none between runs of body text
-// 空格放在正文字那一边，等宽的名字里不带空格（复制出来是干净的名字） / The space goes on the body-text side, so a mono name never carries one (it copies clean)
+// 字面值和前后的中文之间留一个空格，中文之间不留 / A space between a literal and the text around it, none between runs of words
+// 空格放在中文那一边，字面值里不带空格（复制出来是干净的名字） / The space goes on the words' side, so a literal never carries one (it copies clean)
 function sentence(...runs: (TextPart | TextPart[])[]): TextPart[] {
   const parts = runs.flat().map((part) => ({ ...part }))
   const out: TextPart[] = []
   parts.forEach((part, i) => {
     out.push(part)
     const next = parts[i + 1]
-    if (!next || !(part.mono || next.mono) || /\s$/.test(part.text) || /^\s/.test(next.text)) return
-    if (!part.mono) part.text += ' '
-    else if (!next.mono) next.text = ` ${next.text}`
+    if (!next || !(part.literal || next.literal) || /\s$/.test(part.text) || /^\s/.test(next.text)) return
+    if (!part.literal) part.text += ' '
+    else if (!next.literal) next.text = ` ${next.text}`
     else out.push(t(' '))
   })
   return out
@@ -240,8 +240,8 @@ export function describeStep(step: DnsTraceStep, context: TraceContext = {}): St
     const heard = code && isDnsSuccess(code) ? [t('收到回答')] : [t(`回答 ${code}`)]
     if (status === 'succeeded' && code) return { lead: same ? heard : sentence(m(label), heard), note: detailParts(detail, ['响应码', '耗时']) }
     if (status === 'failed') return { lead: same ? [t('没有回答')] : sentence(m(label), t('没有回答')), note: detail ? [t(detail)] : [] }
-    // 同样的查询正在问上游：这次不另发，等它的回答。内核的说法本身就是一句中文，照正文写，不当成地址用等宽
-    // The same query is already out upstream: this one sends nothing and waits for that answer. The kernel's wording is a Chinese sentence, so it reads in the body face, not mono like an address
+    // 同样的查询正在问上游：这次不另发，等它的回答。内核的说法本身就是一句中文，照原话写，不当成地址
+    // The same query is already out upstream: this one sends nothing and waits for that answer. The kernel's wording is a Chinese sentence, so it stays words, not an address literal
     if (status === 'joined') return { lead: [t(label || '等候正在进行的同一个查询')], note }
   }
   const stageName = traceStageNames[stage]

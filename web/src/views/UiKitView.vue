@@ -69,7 +69,7 @@ function showNew(): void {
 <template>
   <div class="page ui-kit">
     <UiPageHeader title="系统" stack>
-      <template #meta><span class="ui-dots"><span class="ui-ph__lead"><span class="ui-dot"></span><span class="ui-mono">kixdns.service</span><span>正在运行</span></span><span>PID <span class="ui-mono">1428</span></span><span>已运行 3 天 8 小时</span></span></template>
+      <template #meta><span class="ui-dots"><span class="ui-ph__lead"><span class="ui-dot"></span><span>kixdns.service</span><span>正在运行</span></span><span>PID <span class="ui-num">1428</span></span><span>已运行 3 天 8 小时</span></span></template>
       <template #actions><button class="ui-btn ui-btn--secondary" type="button"><RotateCcw :size="16" />重启</button><button class="ui-btn ui-btn--danger" type="button"><Square :size="16" />停止</button></template>
     </UiPageHeader>
 
@@ -112,7 +112,7 @@ function showNew(): void {
       </div>
       <p class="ui-kit__label">跟在一行小字旁边：加 --inline，手机上看起来仍是 30，点按区域 44</p>
       <div class="ui-kit__row">
-        <span class="ui-kit__note">上一个版本 <span class="ui-mono">构建 #36374613990</span></span>
+        <span class="ui-kit__note">上一个版本 <span class="ui-num">构建 #36374613990</span></span>
         <button class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline" type="button">回退</button>
       </div>
     </UiSection>
@@ -121,9 +121,9 @@ function showNew(): void {
       <UiCard title="当前安装" desc="增强版运行时">
         <template #actions><span class="ui-tag ui-tag--ok">已安装</span></template>
         <dl class="ui-kv">
-          <div><dt>当前版本</dt><dd class="ui-mono">2026.10.13.2</dd></div>
+          <div><dt>当前版本</dt><dd class="ui-num">2026.10.13.2</dd></div>
           <div><dt>原版提交</dt><dd class="ui-mono">42981abe52ce</dd></div>
-          <div><dt>控制协议</dt><dd class="ui-mono">v1</dd></div>
+          <div><dt>控制协议</dt><dd>v1</dd></div>
           <div><dt>安装来源</dt><dd><a class="ui-link" href="#">原版源码</a></dd></div>
         </dl>
       </UiCard>
@@ -131,12 +131,12 @@ function showNew(): void {
         <template #title><span class="ui-tag ui-tag--ok">已生效</span></template>
         <template #actions><button class="ui-btn ui-btn--secondary ui-btn--sm" type="button">管理配置</button></template>
         <dl class="ui-strip">
-          <div><dt>配置代次</dt><dd class="ui-mono">#18</dd></div>
-          <div><dt>已应用</dt><dd class="ui-mono">24 次</dd></div>
+          <div><dt>配置代次</dt><dd class="ui-num">#18</dd></div>
+          <div><dt>已应用</dt><dd class="ui-num">24 次</dd></div>
           <div><dt>配置摘要</dt><dd class="ui-mono">45b9a1c0c7b551</dd></div>
-          <div><dt>内核</dt><dd class="ui-mono">2026.10.13.2</dd></div>
+          <div><dt>内核</dt><dd class="ui-num">2026.10.13.2</dd></div>
         </dl>
-        <template #foot><span>PID <span class="ui-mono">1428</span> · 统计为运行时累计值</span></template>
+        <template #foot><span>PID <span class="ui-num">1428</span> · 统计为运行时累计值</span></template>
       </UiCard>
     </div>
 
@@ -144,12 +144,12 @@ function showNew(): void {
       <div class="ui-kit__ledger">
         <div class="ui-rec-head"><span>上游</span><span>成功率</span><span>平均耗时</span><span>响应次数</span></div>
         <div class="ui-rec">
-          <div class="ui-rec__name"><span class="ui-dot"></span><span class="ui-mono">1.1.1.1:53</span><span class="ui-tag ui-tag--mono">udp</span></div>
+          <div class="ui-rec__name"><span class="ui-dot"></span><span>1.1.1.1:53</span><span class="ui-tag">UDP</span></div>
           <span class="ui-rec__n">99.7%</span><span class="ui-rec__n">12 ms</span><span class="ui-rec__n">18,320</span>
           <div class="ui-rec__meta ui-rec__phone">成功率 99.7% · 平均 12 ms · 18,320 次响应</div>
         </div>
         <div class="ui-rec">
-          <div class="ui-rec__name"><span class="ui-dot ui-dot--warn"></span><span class="ui-mono">dns.google/dns-query</span><span class="ui-tag ui-tag--mono">doh</span></div>
+          <div class="ui-rec__name"><span class="ui-dot ui-dot--warn"></span><span>dns.google/dns-query</span><span class="ui-tag">DoH</span></div>
           <span class="ui-rec__n">97.1%</span><span class="ui-rec__n">1.3 s</span><span class="ui-rec__n">1,114</span>
           <div class="ui-rec__meta ui-rec__phone">成功率 97.1% · 平均 1.3 s · 1,114 次响应</div>
         </div>

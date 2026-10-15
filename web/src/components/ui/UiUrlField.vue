@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-// 放网址、上游这类长机器值的框：等宽，放不下就换行、框跟着长高，不把后半截藏起来（规范 3.11）。
+// 放网址、上游这类长机器值的框：放不下就换行、框跟着长高，不把后半截藏起来（规范 3.11）。
 // 浏览器不会在「/」后面换行，只会在连字符处把 dns-query 拆开。这里在每个「/」和「,」后面放一个零宽空格（可以断），
 // 在每个「-」后面放一个零宽连接符（不能断），换行就只落在路径和地址的边界上；实在一整段都放不下才从中间断。
 // 这两种字符只在框里：传出去的值、复制和剪切出去的文字里都没有。放在 .ui-input.ui-input--area 里用，右端可以再放一个 .ui-input__affix。
-// A field for long machine values such as URLs and upstreams: mono, wrapping when it does not fit and growing with
+// A field for long machine values such as URLs and upstreams: wrapping when it does not fit and growing with
 // its content, never hiding the tail (spec 3.11). Browsers never break after "/" and happily split dns-query at its
 // hyphen. A zero-width space after each "/" and "," (a break) and a word joiner after each "-" (no break) put line
 // breaks on path and address boundaries only; a segment breaks inside only when it cannot fit a whole line. Both
