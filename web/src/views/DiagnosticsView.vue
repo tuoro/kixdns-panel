@@ -228,7 +228,7 @@ async function run(): Promise<void> {
           <p class="diag-status" role="status"><span class="ui-dot" :class="dotClass" aria-hidden="true"></span><code class="diag-code">{{ codeName }}</code></p>
           <div v-if="answers.length" class="diag-records" :class="{ 'diag-records--stack': !leadMode }">
             <span v-for="(answer, index) in answers" :key="index" class="diag-answer-row">
-              <code :title="answer.fields ? answer.fields.owner + ' · ' + answer.fields.dnsClass : undefined">{{ answer.fields?.data ?? answer.raw }}</code>
+              <span class="diag-record" :title="answer.fields ? answer.fields.owner + ' · ' + answer.fields.dnsClass : undefined">{{ answer.fields?.data ?? answer.raw }}</span>
               <span v-if="answer.fields && !uniformMeta" class="diag-record-meta"><UiDotText :parts="[answer.fields.type, `TTL ${answer.fields.ttl} 秒`]" /></span>
               <span v-else-if="!answer.fields" class="diag-record-meta">原始记录</span>
             </span>
@@ -249,16 +249,16 @@ async function run(): Promise<void> {
         <p class="diag-card-note">{{ steps.length ? '内核实际走过的步骤，时间从请求开始累计。' : '内核实际走过的步骤' }}</p>
         <!-- 每步的细节直接摊开：要点开才看得到的信息，等于没有显示。
              未命中的步骤灰掉但仍然占位——「没走缓存」本身就是信息。 -->
-        <!-- 每一步是一句话，名字用等宽；以前是「阶段名 + 内核标签」，标签本身是句子时就说两遍。
-             Each step is one sentence with names in mono; "stage + kernel label" said things twice when the label was already a sentence. -->
+        <!-- 每一步是一句话，名字单独标出；以前是「阶段名 + 内核标签」，标签本身是句子时就说两遍。
+             Each step is one sentence with names marked as literals; "stage + kernel label" said things twice when the label was already a sentence. -->
         <!-- 步骤用组件库的「结果说明」，配置页的测试域名也用同一套 / Steps use the kit's explanation, shared with the config page's tester -->
         <ol v-if="rows.length" class="ui-steps">
           <li v-for="(row, index) in rows" :key="index" class="ui-step" :class="[row.tone === 'success' && row.decides ? 'ui-step--ok' : row.tone === 'danger' ? 'ui-step--err' : row.tone === 'warning' ? 'ui-step--warn' : '', { 'ui-step--idle': row.idle }]">
             <span class="ui-step__time">{{ formatElapsed(row.elapsed) }}</span>
             <span class="ui-step__mark" aria-hidden="true"><Check v-if="row.tone === 'success' && row.decides" :size="12" /><X v-else-if="row.tone === 'danger'" :size="12" /><i v-else></i></span>
             <div class="ui-step__body">
-              <p class="ui-step__what"><template v-for="(part, at) in row.lead" :key="at"><code v-if="part.mono">{{ part.text }}</code><template v-else>{{ part.text }}</template></template></p>
-              <p v-if="row.note.length" class="ui-step__why"><template v-for="(part, at) in row.note" :key="at"><span v-if="part.label" class="ui-step__pair">{{ part.label }} <code v-if="part.mono">{{ part.text }}</code><template v-else>{{ part.text }}</template></span><code v-else-if="part.mono">{{ part.text }}</code><template v-else>{{ part.text }}</template></template></p>
+              <p class="ui-step__what"><template v-for="(part, at) in row.lead" :key="at"><span v-if="part.literal" class="ui-step__lit">{{ part.text }}</span><template v-else>{{ part.text }}</template></template></p>
+              <p v-if="row.note.length" class="ui-step__why"><template v-for="(part, at) in row.note" :key="at"><span v-if="part.label" class="ui-step__pair">{{ part.label }} <span v-if="part.literal" class="ui-step__lit">{{ part.text }}</span><template v-else>{{ part.text }}</template></span><span v-else-if="part.literal" class="ui-step__lit">{{ part.text }}</span><template v-else>{{ part.text }}</template></template></p>
             </div>
           </li>
         </ol>
@@ -275,7 +275,7 @@ async function run(): Promise<void> {
       <h2 class="ui-card__label">从一次查询开始</h2>
       <p class="diag-card-note">看回答、命中了哪条规则、问了哪个上游。可以先试一个例子：</p>
       <ul class="diag-tries">
-        <li v-for="example in examples" :key="example.domain + example.type"><button class="diag-try" type="button" :disabled="panelDown" @click="tryExample(example)"><span class="ui-mono">{{ example.domain }}</span><span class="diag-try__type">{{ example.type }}<ChevronRight :size="16" aria-hidden="true" /></span></button></li>
+        <li v-for="example in examples" :key="example.domain + example.type"><button class="diag-try" type="button" :disabled="panelDown" @click="tryExample(example)"><span class="diag-try__domain">{{ example.domain }}</span><span class="diag-try__type">{{ example.type }}<ChevronRight :size="16" aria-hidden="true" /></span></button></li>
       </ul>
     </section>
   </div>
@@ -302,7 +302,6 @@ async function run(): Promise<void> {
 }
 .diag-client.is-bad { border-color: var(--err-l); }
 .diag-client-err { margin: var(--s-2) 0 0; }
-.diag-query input { font-family: var(--f-mono); }
 .diag-run-mobile { display: none; }
 .diag-spinner { animation: ui-spin var(--m-spin) linear infinite; }
 
@@ -313,13 +312,13 @@ async function run(): Promise<void> {
 .diag-status { display: inline-flex; align-items: center; gap: var(--s-2); margin: 0; line-height: var(--lh-tight); }
 .diag-code { color: var(--l-ink); font-family: var(--f-body); font-size: var(--t-4); font-weight: var(--w-bold); }
 .diag-dot--nx { background: var(--l-ink-2); }
-/* 解析出的记录是这一行的主角：大一号的等宽字；两条记录之间一个分隔点 / The records lead the line in a size-up mono; a separator dot between two records */
+/* 解析出的记录是这一行的主角：大一号的粗字；两条记录之间一个分隔点 / The records lead the line, a size up and bold; a separator dot between two records */
 .diag-records { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-1) var(--s-2); min-width: 0; }
 .diag-records:not(.diag-records--stack) .diag-answer-row + .diag-answer-row::before { content: "·"; margin: 0; color: var(--l-ink-3); font-weight: var(--w-normal); }
 .diag-records--stack { flex-basis: 100%; flex-direction: column; order: 5; }
 .diag-answer-row { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--s-2); min-width: 0; }
-.diag-records code { max-width: 100%; color: var(--l-ink); font-family: var(--f-mono); font-size: var(--t-4); font-weight: var(--w-bold); white-space: pre-wrap; overflow-wrap: anywhere; }
-.diag-records--stack code { font-size: var(--t-3); font-weight: var(--w-normal); }
+.diag-record { max-width: 100%; color: var(--l-ink); font-size: var(--t-4); font-weight: var(--w-bold); white-space: pre-wrap; overflow-wrap: anywhere; }
+.diag-records--stack .diag-record { font-size: var(--t-3); font-weight: var(--w-normal); }
 .diag-record-meta { color: var(--l-ink-3); font-size: var(--t-2); }
 .diag-empty-answers { margin: 0; color: var(--l-ink-2); font-size: var(--t-3); }
 .diag-outcome-facts { margin: 0; color: var(--l-ink-3); font-size: var(--t-2); }
@@ -344,7 +343,7 @@ async function run(): Promise<void> {
 .diag-try { width: 100%; min-height: var(--h-touch); display: flex; align-items: center; justify-content: space-between; gap: var(--s-4); padding: 0; border: 0; background: none; color: var(--l-ink); font: inherit; text-align: left; cursor: pointer; }
 .diag-try__type { display: inline-flex; align-items: center; gap: var(--s-2); color: var(--l-ink-2); font-size: var(--t-2); }
 .diag-try__type svg { margin-right: -5px; }
-@media (hover: hover) { .diag-try:hover .ui-mono { text-decoration: underline; text-decoration-color: var(--l-line-strong); text-underline-offset: 3px; } }
+@media (hover: hover) { .diag-try:hover .diag-try__domain { text-decoration: underline; text-decoration-color: var(--l-line-strong); text-underline-offset: 3px; } }
 
 .diag-result { display: grid; gap: var(--s-5); }
 

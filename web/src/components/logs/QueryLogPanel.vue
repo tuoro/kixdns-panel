@@ -349,9 +349,9 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
     </header>
     <!-- 从别处带进来、或点「只看这个客户端」加上的筛选，一个一个能去掉 / Filters brought in from elsewhere or added by 只看这个客户端, each removable -->
     <div v-if="client || rule || upstream" class="qlog-filters">
-      <span v-if="client" class="qlog-filter">客户端 <code>{{ client }}</code><button type="button" :aria-label="`去掉筛选：客户端 ${client}`" @click="setQuery({ client: undefined })"><X :size="14" aria-hidden="true" /></button></span>
+      <span v-if="client" class="qlog-filter">客户端 <span class="qlog-lit">{{ client }}</span><button type="button" :aria-label="`去掉筛选：客户端 ${client}`" @click="setQuery({ client: undefined })"><X :size="14" aria-hidden="true" /></button></span>
       <span v-if="rule" class="qlog-filter">{{ rulePhase ? '回答后检查' : '规则' }}「{{ ruleTitle }}」<button type="button" :aria-label="`去掉筛选：规则 ${ruleTitle}`" @click="setQuery({ rule: undefined, in: undefined, phase: undefined })"><X :size="14" aria-hidden="true" /></button></span>
-      <span v-if="upstream" class="qlog-filter">问过上游 <code>{{ upstream }}</code><button type="button" :aria-label="`去掉筛选：上游 ${upstream}`" @click="setQuery({ upstream: undefined })"><X :size="14" aria-hidden="true" /></button></span>
+      <span v-if="upstream" class="qlog-filter">问过上游 <span class="qlog-lit">{{ upstream }}</span><button type="button" :aria-label="`去掉筛选：上游 ${upstream}`" @click="setQuery({ upstream: undefined })"><X :size="14" aria-hidden="true" /></button></span>
     </div>
     <!-- 表格和详情：宽屏上详情在表格下方，表格不变形；手机上详情从底边升起 / The table and the detail: on wide screens the detail sits under the table, which keeps its shape; on phones it rises from the bottom -->
     <div class="qlog-body">
@@ -368,7 +368,7 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
             <span class="qlog-c-client qlog-lit">{{ item.client }}</span>
             <span class="qlog-c-name"><span class="qlog-lit">{{ item.qname }}</span><span class="qlog-phone-type">{{ item.qtype === 'A' ? '' : item.qtype }}</span></span>
             <span class="qlog-c-type">{{ item.qtype }}</span>
-            <span class="qlog-c-dest"><span :class="{ 'qlog-lit': routeCell(item).mono }">{{ routeCell(item).where }}</span><span v-if="routeCell(item).rule" class="qlog-c-rule"> · {{ routeCell(item).rule }}</span></span>
+            <span class="qlog-c-dest"><span>{{ routeCell(item).where }}</span><span v-if="routeCell(item).rule" class="qlog-c-rule"> · {{ routeCell(item).rule }}</span></span>
             <span class="qlog-c-answer" :class="`is-${answerOf(item).tone || 'plain'}`"><span :class="{ 'qlog-lit': answerOf(item).literal }">{{ answerOf(item).text }}</span><span v-if="answerOf(item).more" class="qlog-more-n"> +{{ answerOf(item).more }}</span></span>
             <span class="qlog-c-source" :class="{ 'is-warn': sourceOf(item)?.tone === 'warn' }"><span v-if="sourceOf(item)" :class="{ 'qlog-lit': sourceOf(item)!.literal }" :title="sourceOf(item)!.full">{{ sourceOf(item)!.text }}</span></span>
             <span class="qlog-num qlog-c-latency" :class="{ 'is-slow': item.latency_ms >= SLOW_MS && item.outcome !== 'failed' }">{{ latencyText(item.latency_ms) }}</span>
@@ -405,8 +405,8 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
           <div v-if="detailTab === 'summary'" class="qlog-facts">
             <div v-for="fact in factsOf(current)" :key="fact.key" class="qlog-fact" :class="fact.tone && `is-${fact.tone}`">
               <span class="ui-lbl">{{ fact.label }}</span>
-              <p v-for="(line, at) in fact.lead" :key="at" class="qlog-fact__lead"><template v-for="(part, i) in line" :key="i"><span v-if="part.mono" class="qlog-lit">{{ part.text }}</span><template v-else>{{ part.text }}</template></template></p>
-              <p v-if="fact.sub.length" class="qlog-fact__sub"><template v-for="(part, i) in fact.sub" :key="i"><span v-if="part.mono" class="qlog-lit">{{ part.text }}</span><template v-else>{{ part.text }}</template></template></p>
+              <p v-for="(line, at) in fact.lead" :key="at" class="qlog-fact__lead"><template v-for="(part, i) in line" :key="i"><span v-if="part.literal" class="qlog-lit">{{ part.text }}</span><template v-else>{{ part.text }}</template></template></p>
+              <p v-if="fact.sub.length" class="qlog-fact__sub"><template v-for="(part, i) in fact.sub" :key="i"><span v-if="part.literal" class="qlog-lit">{{ part.text }}</span><template v-else>{{ part.text }}</template></template></p>
             </div>
           </div>
           <ol v-else class="ui-steps qlog-steps">
@@ -414,8 +414,8 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
               <span class="ui-step__time">{{ latencyText(row.at) }}</span>
               <span class="ui-step__mark" aria-hidden="true"><Check v-if="row.tone === 'ok' && row.decides" :size="12" /><X v-else-if="row.tone === 'err'" :size="12" /><i v-else></i></span>
               <div class="ui-step__body">
-                <p class="ui-step__what"><template v-for="(part, at) in row.lead" :key="at"><span v-if="part.mono" class="qlog-lit qlog-literal"><template v-for="(seg, i) in softBreakParts(part.text)" :key="i"><wbr v-if="i" /><span>{{ seg }}</span></template></span><template v-else>{{ part.text }}</template></template></p>
-                <p v-if="row.note.length" class="ui-step__why"><template v-for="(part, at) in row.note" :key="at"><span v-if="part.mono" class="qlog-lit qlog-literal"><template v-for="(seg, i) in softBreakParts(part.text)" :key="i"><wbr v-if="i" /><span>{{ seg }}</span></template></span><template v-else>{{ part.text }}</template></template></p>
+                <p class="ui-step__what"><template v-for="(part, at) in row.lead" :key="at"><span v-if="part.literal" class="qlog-lit qlog-literal"><template v-for="(seg, i) in softBreakParts(part.text)" :key="i"><wbr v-if="i" /><span>{{ seg }}</span></template></span><template v-else>{{ part.text }}</template></template></p>
+                <p v-if="row.note.length" class="ui-step__why"><template v-for="(part, at) in row.note" :key="at"><span v-if="part.literal" class="qlog-lit qlog-literal"><template v-for="(seg, i) in softBreakParts(part.text)" :key="i"><wbr v-if="i" /><span>{{ seg }}</span></template></span><template v-else>{{ part.text }}</template></template></p>
               </div>
             </li>
           </ol>
@@ -439,8 +439,8 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
         <div class="qlog-facts">
           <div v-for="fact in factsOf(current)" :key="fact.key" class="qlog-fact" :class="fact.tone && `is-${fact.tone}`">
             <span class="ui-lbl">{{ fact.label }}</span>
-            <p v-for="(line, at) in fact.lead" :key="at" class="qlog-fact__lead"><template v-for="(part, i) in line" :key="i"><span v-if="part.mono" class="qlog-lit">{{ part.text }}</span><template v-else>{{ part.text }}</template></template></p>
-            <p v-if="fact.sub.length" class="qlog-fact__sub"><template v-for="(part, i) in fact.sub" :key="i"><span v-if="part.mono" class="qlog-lit">{{ part.text }}</span><template v-else>{{ part.text }}</template></template></p>
+            <p v-for="(line, at) in fact.lead" :key="at" class="qlog-fact__lead"><template v-for="(part, i) in line" :key="i"><span v-if="part.literal" class="qlog-lit">{{ part.text }}</span><template v-else>{{ part.text }}</template></template></p>
+            <p v-if="fact.sub.length" class="qlog-fact__sub"><template v-for="(part, i) in fact.sub" :key="i"><span v-if="part.literal" class="qlog-lit">{{ part.text }}</span><template v-else>{{ part.text }}</template></template></p>
           </div>
         </div>
         <span class="ui-lbl qlog-sheet__label">处理过程</span>
@@ -449,8 +449,8 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
             <span class="ui-step__time">{{ latencyText(row.at) }}</span>
             <span class="ui-step__mark" aria-hidden="true"><Check v-if="row.tone === 'ok' && row.decides" :size="12" /><X v-else-if="row.tone === 'err'" :size="12" /><i v-else></i></span>
             <div class="ui-step__body">
-              <p class="ui-step__what"><template v-for="(part, at) in row.lead" :key="at"><span v-if="part.mono" class="qlog-lit qlog-literal"><template v-for="(seg, i) in softBreakParts(part.text)" :key="i"><wbr v-if="i" /><span>{{ seg }}</span></template></span><template v-else>{{ part.text }}</template></template></p>
-              <p v-if="row.note.length" class="ui-step__why"><template v-for="(part, at) in row.note" :key="at"><span v-if="part.mono" class="qlog-lit qlog-literal"><template v-for="(seg, i) in softBreakParts(part.text)" :key="i"><wbr v-if="i" /><span>{{ seg }}</span></template></span><template v-else>{{ part.text }}</template></template></p>
+              <p class="ui-step__what"><template v-for="(part, at) in row.lead" :key="at"><span v-if="part.literal" class="qlog-lit qlog-literal"><template v-for="(seg, i) in softBreakParts(part.text)" :key="i"><wbr v-if="i" /><span>{{ seg }}</span></template></span><template v-else>{{ part.text }}</template></template></p>
+              <p v-if="row.note.length" class="ui-step__why"><template v-for="(part, at) in row.note" :key="at"><span v-if="part.literal" class="qlog-lit qlog-literal"><template v-for="(seg, i) in softBreakParts(part.text)" :key="i"><wbr v-if="i" /><span>{{ seg }}</span></template></span><template v-else>{{ part.text }}</template></template></p>
             </div>
           </li>
         </ol>
@@ -589,7 +589,7 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
 .qlog-settings { display: grid; gap: var(--s-5); }
 .qlog-hours, .qlog-mb { max-width: 12rem; }
 .qlog-hours > span, .qlog-mb > span { color: var(--l-ink-3); font-size: var(--t-2); }
-.qlog-ignored { width: 100%; min-height: calc(var(--h-md) * 3); padding: var(--s-2) var(--s-3); font-family: var(--f-mono); font-size: var(--t-2); resize: vertical; }
+.qlog-ignored { width: 100%; min-height: calc(var(--h-md) * 3); padding: var(--s-2) var(--s-3); font-size: var(--t-2); resize: vertical; }
 .qlog-danger { display: grid; justify-items: start; gap: var(--s-1); padding-top: var(--s-4); border-top: 1px solid var(--l-hair); }
 .qlog-danger small { color: var(--l-ink-3); font-size: var(--t-1); }
 

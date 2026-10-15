@@ -11,6 +11,6 @@ const pill = computed(() => outcomePill(model, props.outcome))
 
 <template>
   <span class="opill" :class="{ 'opill--block': outcome.type === 'block', 'opill--pass': outcome.type === 'continue', 'opill--broken': pill.broken }" :title="`${pill.verb} · ${pill.value}`">
-    <span class="opill__verb">{{ pill.verb }}</span><span class="opill__val" :class="{ 'is-mono': pill.mono }">{{ pill.value }}</span>
+    <span class="opill__verb">{{ pill.verb }}</span><span class="opill__val">{{ pill.value }}</span>
   </span>
 </template>

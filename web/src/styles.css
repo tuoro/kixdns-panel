@@ -48,7 +48,7 @@ b, strong { font-weight: var(--w-bold); }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 a { color: inherit; }
 h1, h2, h3, p { margin: 0; }
-code, .mono { font-family: var(--f-mono); letter-spacing: 0; }
+code { font-family: var(--f-mono); letter-spacing: 0; }
 
 .app-shell { min-height: 100dvh; background: var(--canvas); }
 /* 底和字都跟主题翻：深色里底变浅，字跟着变深 / Ground and text both flip with the theme: in dark the ground turns light and the text dark */
@@ -103,7 +103,8 @@ code, .mono { font-family: var(--f-mono); letter-spacing: 0; }
 .notification-item__title strong { overflow: hidden; color: var(--l-ink); font-size: var(--t-3); text-overflow: ellipsis; white-space: nowrap; }
 .notification-item__title i { width: 6px; height: 6px; flex: 0 0 auto; background: var(--red); border-radius: 50%; }
 .notification-item__body p { margin-top: 3px; color: var(--l-ink-2); font-size: 12px; }
-.notification-item__body small { display: block; margin-top: 4px; overflow: hidden; color: var(--l-ink-3); font-family: var(--f-mono); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+/* 通知里的 Run 号和版本号用正文字体、等宽数字，和系统页一样 / Run numbers and versions in notifications use the body face with tabular figures, as on the system page */
+.notification-item__body small { display: block; margin-top: 4px; overflow: hidden; color: var(--l-ink-3); font-size: 12px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
 .notification-item__actions { min-height: 24px; display: flex; align-items: center; gap: 12px; margin-top: 8px; }
 .notification-item__actions a, .notification-item__actions button, .notification-item__actions span { display: inline-flex; align-items: center; gap: 3px; color: var(--green); background: transparent; border: 0; font-size: 12px; text-decoration: none; }
 .notification-item__actions button { padding: 3px 0; }
@@ -133,7 +134,6 @@ code, .mono { font-family: var(--f-mono); letter-spacing: 0; }
 .tag--success { color: var(--ok-l); background: var(--green-soft); border-color: var(--ok-line-l); }
 .tag--warning { color: var(--warn-l); background: var(--amber-soft); border-color: var(--warn-line-l); }
 .tag--danger { color: var(--err-l); background: var(--red-soft); border-color: var(--err-line-l); }
-.tag--muted { font-family: var(--f-mono); }
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th { padding: 10px 16px; color: var(--l-ink-2); background: var(--l-canvas); font-size: 12px; font-weight: 680; text-align: left; text-transform: uppercase; }
 td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk); white-space: nowrap; }
@@ -904,8 +904,6 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
 @media (max-width: 860px) { .notification-badge { top: 0; right: -3px; } }
 /* 行首的全角开括号「（」去掉自带的半格空白，左边和别的行对齐 / A full-width opening bracket at a line start drops its built-in half blank, so the line's left edge matches the others */
 body { text-spacing-trim: trim-start; }
-/* 通知里的 Run 号和版本号用正文字体、等宽数字，和系统页一样 / Run numbers and versions in notifications use the body face with tabular figures, as on the system page */
-.notification-item__body small { font-family: var(--f-body); font-variant-numeric: tabular-nums; }
 /* 更新行的说明和别处的说明行一样用「·」隔开（行首的点被裁掉，同 ui-dots） / Update-row facts are separated by 「·」 like every other meta line (a dot at a line start is clipped, as in ui-dots) */
 .update-row .ui-task__meta { --dots-gap: calc(8px + .4em); display: flex; flex-wrap: wrap; align-items: baseline; column-gap: var(--dots-gap); clip-path: inset(-.5em -1em -.5em calc(var(--s-1) * -1)); }
 .update-row .ui-task__meta > :not(.ui-task__error)::before { content: "·"; display: inline-block; width: var(--dots-gap); margin-inline-start: calc(var(--dots-gap) * -1); color: var(--l-ink-3); text-align: center; }

@@ -270,7 +270,7 @@ const breakable = softBreakParts
 // ---------- 三张分布卡：全是启动以来的累计，每行一个名字、「次数 · 占比」和一条细条 ----------
 // ---------- Three distribution cards: all lifetime totals, each row a name, 「count · share」 and a bar ----------
 // foot：数不准的地方照实写在卡片底下 / foot: where the counts cannot be exact, said under the rows
-interface ShareCard { key: string; title: string; note: string[]; mono?: boolean; rows: ShareRow[]; empty: string; foot?: string }
+interface ShareCard { key: string; title: string; note: string[]; rows: ShareRow[]; empty: string; foot?: string }
 // 请求分布按去向：每个请求只算在它最后停下的地方，主列表、规则组这种转交的列表不单列（见 request-destinations.ts）
 // Request distribution by destination: each request counts only where it finally stopped; lists that hand requests on are not listed (see request-destinations.ts)
 const destinations = computed(() => {
@@ -650,8 +650,6 @@ async function loadNames(): Promise<void> {
   } catch { routing.value = null; routingFailed.value = true }
 }
 const hitName = (label: string) => names.value?.rule(label) ?? null
-// 认不出的名字里，纯 ASCII 的（内核 id）用等宽，中文的（其余请求、域名映射 x）用正文字 / Of unrecognised names, pure ASCII ones (kernel ids) are mono and Chinese ones (其余请求, 域名映射 x) body text
-const machineName = (label: string) => /^[\x20-\x7e]+$/.test(label)
 const pipelineName = (id: string) => names.value?.pipeline(id) ?? null
 // 上游组和规则自带的转发 Pipeline 里那条规则（和 Pipeline 同名）不单列：它数的就是转进来的请求，和跳过去的那条规则重复
 // The rule inside an upstream group's or a rule's own forward pipeline (named after the pipeline) is not listed: it counts the requests sent there, repeating the rule that jumped
@@ -816,7 +814,7 @@ onBeforeUnmount(() => {
                   <span class="overview-row-name ov-jump-name">
                     <i class="ui-dot overview-dot" :class="`overview-dot--${item.health}`" role="img" :aria-label="healthLabel(item.health)"></i>
                     <!-- 地址最后一段和传输标签绑在一起折行，标签不会单独落到下一行 / The address's last segment and the transport tag wrap together, so the tag never drops to a line of its own -->
-                    <span class="overview-address"><template v-for="(part, index) in breakable(item.upstream).slice(0, -1)" :key="index"><span class="ui-mono">{{ part }}</span><wbr /></template><span class="overview-address-tail"><span class="ui-mono">{{ breakable(item.upstream).at(-1) }}</span><span class="overview-row-tag">{{ transportLabel(item.transport) }}</span></span></span>
+                    <span class="overview-address"><template v-for="(part, index) in breakable(item.upstream).slice(0, -1)" :key="index">{{ part }}<wbr /></template><span class="overview-address-tail"><span class="overview-address-end">{{ breakable(item.upstream).at(-1) }}</span><span class="overview-row-tag">{{ transportLabel(item.transport) }}</span></span></span>
                   </span>
                   <span class="overview-row-value">{{ hasLatency ? formatLatency(item.shown.avg_latency_ms) : formatPercent(upstreamSuccessRate(item.shown)) }}</span>
                   <p class="overview-row-sub ui-dots"><span v-if="hasLatency">成功率 <b :class="`overview-text--${item.health}`">{{ formatPercent(upstreamSuccessRate(item.shown)) }}</b></span><span>{{ formatNumber(item.settled) }} 次响应</span></p>
@@ -835,7 +833,7 @@ onBeforeUnmount(() => {
               <div v-if="card.rows.length" class="overview-rows">
                 <div v-for="row in card.rows" :key="row.key" class="overview-row" :class="{ 'ov-jumps': logLinks && routing }">
                   <RouterLink v-if="logLinks && routing" class="ov-jump" :to="destinationLog(row.key)" :aria-label="`在查询日志里看去了${row.label}的查询`" />
-                  <span class="overview-row-name ov-jump-name"><span :class="{ 'ui-mono': row.mono ?? card.mono }">{{ row.label }}</span></span>
+                  <span class="overview-row-name ov-jump-name"><span>{{ row.label }}</span></span>
                   <span class="overview-row-value">{{ formatNumber(row.count) }} · {{ formatPercent(row.share) }}</span>
                   <span class="overview-row-bar" aria-hidden="true"><i :style="{ width: `${row.share * 100}%` }"></i></span>
                 </div>
@@ -856,7 +854,7 @@ onBeforeUnmount(() => {
             </div>
             <div class="overview-rows">
               <div v-for="row in card.rows" :key="row.key" class="overview-row">
-                <span class="overview-row-name"><span :class="{ 'ui-mono': row.mono ?? card.mono }">{{ row.label }}</span></span>
+                <span class="overview-row-name"><span>{{ row.label }}</span></span>
                 <span class="overview-row-value">{{ formatNumber(row.count) }} · {{ formatPercent(row.share) }}</span>
                 <span class="overview-row-bar" aria-hidden="true"><i :style="{ width: `${row.share * 100}%` }"></i></span>
               </div>
@@ -873,7 +871,7 @@ onBeforeUnmount(() => {
               <!-- 读者来这里确认的是「现在跑的是哪个版本」：面板的配置版本号做主项（和配置页、历史版本同一个号），其余四项在细线下的摘要条里
                    What the reader checks here is which version is running: the panel's version number leads (the same number as the config page and history), and the other four sit in the strip under the hairline -->
               <template v-if="overview">
-                <p class="overview-config-lead"><span>配置版本</span><strong :class="{ 'ui-mono': runningVersion !== null }">{{ runningVersion !== null ? `#${runningVersion}` : '面板外的配置' }}</strong></p>
+                <p class="overview-config-lead"><span>配置版本</span><strong>{{ runningVersion !== null ? `#${runningVersion}` : '面板外的配置' }}</strong></p>
                 <p v-if="!overview.active_config.last_reload.success && overview.active_config.last_reload.error" class="overview-reload-error ui-mono">{{ overview.active_config.last_reload.error }}</p>
                 <!-- 每一对「名称 值」是一个不拆开的块，点在块之间；哈希照常用等宽 / Each name–value pair is one unbroken block with dots between blocks; hashes stay mono -->
                 <p class="overview-config-line ui-dots"><span>已应用 <span class="ui-num">{{ overview.active_config.reload_sequence }}</span> 次</span><span v-if="overview.health.release_version">内核 <span class="ui-num">{{ overview.health.release_version }}</span></span><span v-else>补丁集 <span class="ui-num">{{ overview.health.patchset ? `p${overview.health.patchset}` : '未记录' }}</span></span><span>配置摘要 <span class="ui-mono">{{ shortHash(overview.active_config.sha256, 14) }}</span></span><span>原版提交 <span class="ui-mono">{{ shortHash(overview.health.upstream_commit, 12) }}</span></span></p>
@@ -931,7 +929,7 @@ onBeforeUnmount(() => {
               <li v-for="(item, index) in displayStats[group.id]" :key="item.name" :class="{ 'ov-jumps': logLinks }">
                 <RouterLink v-if="logLinks" class="ov-jump" :to="rankingLog(group.id, item.name)" :aria-label="`在查询日志里看 ${item.name} 的查询`" />
                 <span class="overview-rank">{{ index + 1 }}</span>
-                <strong class="ui-mono ov-jump-name"><template v-for="(part, partIndex) in rankedParts(group.id, item.name)" :key="partIndex"><wbr v-if="partIndex" />{{ part }}</template></strong><span class="overview-rank-count">{{ formatNumber(item.count) }}</span>
+                <strong class="ov-jump-name"><template v-for="(part, partIndex) in rankedParts(group.id, item.name)" :key="partIndex"><wbr v-if="partIndex" />{{ part }}</template></strong><span class="overview-rank-count">{{ formatNumber(item.count) }}</span>
                 <i aria-hidden="true"><span :style="{ width: `${item.count / (group.id === 'clients' ? maxClient : maxDomain) * 100}%` }"></span></i>
               </li>
             </ol>
@@ -954,10 +952,10 @@ onBeforeUnmount(() => {
           <div v-for="rule in hitRows" :key="`${rule.pipeline}:${rule.phase}:${rule.rule}`" class="ui-rec overview-rule" :class="{ 'ov-jumps': logLinks }">
             <RouterLink v-if="logLinks" class="ov-jump" :to="ruleLog(rule)" :aria-label="`在查询日志里看命中「${hitName(rule.rule) ?? rule.rule}」的查询`" />
             <span class="overview-rule-phase"><span class="ui-tag" :class="{ 'overview-phase--request': rule.phase === 'request' }">{{ rule.phase === 'request' ? '请求' : '回答后' }}</span></span>
-            <strong class="overview-rule-name ov-jump-name" :class="{ 'ui-mono': !hitName(rule.rule) && machineName(rule.rule) }">{{ hitName(rule.rule) ?? rule.rule }}</strong>
-            <span class="overview-rule-pipeline" :class="{ 'ui-mono': !pipelineName(rule.pipeline) }">{{ pipelineName(rule.pipeline) ?? rule.pipeline }}</span>
+            <strong class="overview-rule-name ov-jump-name">{{ hitName(rule.rule) ?? rule.rule }}</strong>
+            <span class="overview-rule-pipeline">{{ pipelineName(rule.pipeline) ?? rule.pipeline }}</span>
             <span class="overview-rule-count">{{ formatNumber(rule.count) }}</span>
-            <p class="ui-rec__phone overview-rule-line"><span class="ui-tag" :class="{ 'overview-phase--request': rule.phase === 'request' }">{{ rule.phase === 'request' ? '请求' : '回答后' }}</span><span :class="{ 'ui-mono': !pipelineName(rule.pipeline) }">{{ pipelineName(rule.pipeline) ?? rule.pipeline }}</span></p>
+            <p class="ui-rec__phone overview-rule-line"><span class="ui-tag" :class="{ 'overview-phase--request': rule.phase === 'request' }">{{ rule.phase === 'request' ? '请求' : '回答后' }}</span><span>{{ pipelineName(rule.pipeline) ?? rule.pipeline }}</span></p>
           </div>
         </div>
         </section>
@@ -1069,13 +1067,12 @@ onBeforeUnmount(() => {
 .ov-jumps { position: relative; }
 .ov-jump { position: absolute; inset: calc(var(--s-1) * -1); z-index: 1; border-radius: var(--r-1); }
 .ov-jump:focus-visible { outline: 2px solid var(--focus); outline-offset: 0; }
-/* 上游地址的末段在 inline-flex 里，下划线传不进去，单独给等宽的那几段 / The address tail sits in an inline-flex the underline does not reach, so the mono parts take it themselves */
-@media (hover: hover) { .ov-jumps:has(> .ov-jump:hover) :is(.ov-jump-name, .ov-jump-name .overview-address-tail > .ui-mono) { text-decoration: underline; text-decoration-color: var(--l-edge-hover); text-underline-offset: 3px; } }
+/* 上游地址的末段在 inline-flex 里，下划线传不进去，单独给末段的地址 / The address tail sits in an inline-flex the underline does not reach, so the address's last part takes it itself */
+@media (hover: hover) { .ov-jumps:has(> .ov-jump:hover) :is(.ov-jump-name, .ov-jump-name .overview-address-tail > .overview-address-end) { text-decoration: underline; text-decoration-color: var(--l-edge-hover); text-underline-offset: 3px; } }
 .overview-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-1) var(--s-3); align-items: center; padding: var(--s-3) 0; border-top: 1px solid var(--l-hair); font-size: var(--t-3); }
 .overview-row:first-child { padding-top: var(--s-2); border-top: 0; }
 .overview-row:last-child { padding-bottom: 0; }
 .overview-row-name { display: flex; align-items: center; gap: var(--s-2); min-width: 0; font-weight: var(--w-medium); }
-.overview-row-name > .ui-mono, .overview-address .ui-mono { font-size: var(--t-3); }
 .overview-row-tag { color: var(--l-ink-3); font-size: var(--t-2); font-weight: var(--w-normal); }
 .overview-row-value { color: var(--l-ink-2); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
 .overview-row-bar { grid-column: 1 / -1; height: var(--s-1); overflow: hidden; border-radius: var(--r-full); background: var(--l-hair); }

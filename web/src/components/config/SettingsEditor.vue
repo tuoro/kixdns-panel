@@ -242,14 +242,14 @@ function removeListItem(field: SettingField, index: number): void {
             <label v-else class="ui-setrow" :class="{ 'ui-setrow--off': disabled(field) }">
               <span class="ui-setrow__label"><span>{{ labelFor(field) }}<i v-if="changed?.has(field.key)" class="ui-dot ui-dot--ink settings-dot" aria-hidden="true"></i></span><small v-if="noteFor(field)">{{ noteFor(field) }}</small><code v-if="query" class="settings-row__key">{{ field.key }}</code></span>
               <span class="ui-input ui-setrow__control">
-                <input v-if="field.type === 'text'" class="mono" type="text" :value="scalarValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :disabled="disabled(field)" @input="setText(field, $event)">
+                <input v-if="field.type === 'text'" type="text" :value="scalarValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :disabled="disabled(field)" @input="setText(field, $event)">
                 <input v-else-if="field.type === 'number'" type="number" :value="scalarValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :min="field.min" :max="field.max" :disabled="disabled(field)" @input="setNumber(field, $event)">
-                <input v-else class="mono" type="text" :value="csvValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :disabled="disabled(field)" @input="setCsv(field, $event)">
+                <input v-else type="text" :value="csvValue(field)" :placeholder="placeholderFor(field)" :aria-label="field.label" :aria-description="changed?.has(field.key) ? '已修改' : undefined" :disabled="disabled(field)" @input="setCsv(field, $event)">
                 <em v-if="field.unit" class="ui-setrow__unit">{{ field.unit }}</em>
               </span>
             </label>
           </template>
-          <label v-if="section.id === 'network' && versionMatches" class="ui-setrow"><span class="ui-setrow__label"><span>格式版本<i v-if="changed?.has('version')" class="ui-dot ui-dot--ink settings-dot" aria-hidden="true"></i></span><small>KixDNS 按它判断配置的写法</small><code v-if="query" class="settings-row__key">version</code></span><span class="ui-input ui-setrow__control"><input v-model="version" class="mono" type="text" aria-label="配置格式版本" :aria-description="changed?.has('version') ? '已修改' : undefined" placeholder="1.0"></span></label>
+          <label v-if="section.id === 'network' && versionMatches" class="ui-setrow"><span class="ui-setrow__label"><span>格式版本<i v-if="changed?.has('version')" class="ui-dot ui-dot--ink settings-dot" aria-hidden="true"></i></span><small>KixDNS 按它判断配置的写法</small><code v-if="query" class="settings-row__key">version</code></span><span class="ui-input ui-setrow__control"><input v-model="version" type="text" aria-label="配置格式版本" :aria-description="changed?.has('version') ? '已修改' : undefined" placeholder="1.0"></span></label>
         </div>
       </section>
 
@@ -317,7 +317,6 @@ function removeListItem(field: SettingField, index: number): void {
 .settings-rows > .ui-setrow--toggle:last-child :deep(.ui-switch) { margin-bottom: 0; }
 .settings-list { min-width: 0; display: grid; gap: var(--s-2); }
 .settings-list__row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s-1); }
-.settings-list__row input { font-family: var(--mono); }
 .settings-list__add { justify-self: start; }
 .settings-empty { display: grid; justify-items: center; gap: var(--s-2); padding: var(--s-7) var(--s-4); text-align: center; }
 .settings-empty strong { color: var(--l-ink); font-size: var(--t-3); }

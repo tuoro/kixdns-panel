@@ -116,7 +116,6 @@ a.ui-btn { text-decoration: none; }
 .ui-select { position: relative; padding: 0; }
 .ui-select select { width: 100%; min-width: 0; min-height: calc(var(--h-md) - 2px); padding: 0 calc(var(--s-3) + var(--size-icon) + var(--s-1)) 0 var(--s-3); border: 0; border-radius: inherit; background: transparent; color: var(--l-ink); font: inherit; font-size: var(--t-3); font-weight: var(--w-normal); appearance: none; cursor: pointer; outline: 0; }
 .ui-select > svg { position: absolute; right: var(--s-3); color: var(--l-ink-3); pointer-events: none; }
-.ui-select--mono select { font-family: var(--f-mono); }
 /* 输入框右端的小按钮（例如「选用已有上游」）：箭头和下拉框的箭头落在同一条竖线上
    A small button at the right end of an input (e.g. pick an existing upstream); its chevron lines up with a select's */
 .ui-input__affix { width: var(--h-sm); height: var(--h-sm); flex: 0 0 auto; display: inline-grid; place-items: center; margin-right: calc(var(--s-2) * -1); padding: 0; border: 0; border-radius: var(--r-1); background: none; color: var(--l-ink-3); cursor: pointer; transition: background-color var(--m-quick) var(--ease-out), color var(--m-quick) var(--ease-out); }
@@ -129,8 +128,8 @@ a.ui-btn { text-decoration: none; }
    A wrapping field (UiUrlField) for long machine values such as URLs and upstreams: it wraps and grows when needed, is as
    tall as a plain input on one line, and the ▾ at its end faces the first line */
 .ui-input--area { align-items: flex-start; padding-block: calc((var(--h-md) - 2px - 1lh) / 2); font-size: var(--t-3); line-height: var(--lh-base); }
-.ui-input--area textarea { flex: 1; min-width: 0; min-height: 1lh; padding: 0; border: 0; outline: 0; background: transparent; color: var(--l-ink); font-family: var(--f-mono); font-size: inherit; line-height: inherit; overflow: hidden; overflow-wrap: anywhere; resize: none; }
-.ui-input--area textarea::placeholder { color: var(--l-ink-3); font-family: var(--f-body); }
+.ui-input--area textarea { flex: 1; min-width: 0; min-height: 1lh; padding: 0; border: 0; outline: 0; background: transparent; color: var(--l-ink); font-size: inherit; line-height: inherit; overflow: hidden; overflow-wrap: anywhere; resize: none; }
+.ui-input--area textarea::placeholder { color: var(--l-ink-3); }
 .ui-input--area .ui-input__affix { margin-block: calc((1lh - var(--h-sm)) / 2); }
 .ui-select.ui-input--sm > svg { right: var(--s-2); }
 .ui-select select:disabled { cursor: not-allowed; }
@@ -208,12 +207,12 @@ a.ui-btn { text-decoration: none; }
 .ui-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: var(--s-3) var(--s-5); margin: 0; }
 .ui-strip dt { color: var(--l-ink-3); font-size: var(--t-1); }
 .ui-strip dd { margin: var(--s-1) 0 0; color: var(--l-ink); font-size: var(--t-3); overflow-wrap: anywhere; }
+/* 哈希、提交号这类要一个字一个字对的值 / Values checked character by character, such as hashes and commits */
 .ui-mono { font-family: var(--mono); font-size: var(--t-2); letter-spacing: 0; }
 
 /* ---------- 标签：一种样子；只有表达状态的才带底色 ---------- */
 /* 标签不描边：灰底是普通标签，浅绿、浅黄、浅红是状态；一行里的小方框不再一格一格地框起来 / Tags carry no outline: grey for plain, pale green, amber and red for status, so a row of tags is no longer a row of boxes */
 .ui-tag { min-height: var(--h-tag); display: inline-flex; align-items: center; padding: 0 var(--s-2); border: 0; border-radius: var(--r-1); background: var(--l-sunk); color: var(--l-ink-2); font-size: var(--t-1); font-weight: var(--w-medium); line-height: var(--lh-tight); white-space: nowrap; }
-.ui-tag--mono { font-family: var(--mono); }
 .ui-tag--ok { color: var(--ok-l); background: var(--ok-tint-l); }
 .ui-tag--warn { color: var(--warn-l); background: var(--warn-tint-l); }
 .ui-tag--err { color: var(--err-l); background: var(--err-tint-l); }
@@ -381,7 +380,7 @@ a.ui-btn { text-decoration: none; }
 /* 宽容器里 lead 只是一个分组：序号、运算、类型各占自己的格；窄容器里它变成一行 / On wide layouts the lead is only a grouping; in a narrow container it becomes one line */
 .ui-rows__lead { display: contents; }
 .ui-rows__row .ui-rows__ord { position: absolute; top: 0; left: calc(var(--s-5) * -1); width: var(--s-5); }
-.ui-rows__handle { width: 100%; height: var(--rows-handle); display: grid; place-items: center; padding: 0; border: 0; border-radius: var(--r-1); background: none; color: var(--l-ink-3); font-family: var(--f-mono); font-size: var(--t-1); font-variant-numeric: tabular-nums; cursor: pointer; transition: background-color var(--m-quick) var(--ease-out), color var(--m-quick) var(--ease-out); }
+.ui-rows__handle { width: 100%; height: var(--rows-handle); display: grid; place-items: center; padding: 0; border: 0; border-radius: var(--r-1); background: none; color: var(--l-ink-3); font-size: var(--t-1); font-variant-numeric: tabular-nums; cursor: pointer; transition: background-color var(--m-quick) var(--ease-out), color var(--m-quick) var(--ease-out); }
 .ui-rows__handle[aria-expanded="true"] { background: var(--l-sunk); color: var(--l-ink); }
 .ui-rows__grip { display: none; }
 /* 序号按钮在子项行里，也可以在别的能调整顺序的行里（加 .ui-reorder，例如映射表） / The ordinal button lives in sub-item rows or any reorderable row marked .ui-reorder (e.g. the mapping table) */
@@ -522,10 +521,8 @@ a.ui-btn { text-decoration: none; }
 @keyframes ui-savebar-in { from { opacity: 0; transform: translateY(var(--move-2)); } }
 @keyframes ui-sheet-in { from { opacity: 0; transform: translateY(var(--move-2)); } }
 
-/* ---------- 指向出错对象的链接：等宽，点了跳过去 ---------- */
-.ui-objlink { padding: 0; border: 0; background: none; color: var(--l-ink); font-family: var(--f-mono); font-size: inherit; white-space: nowrap; text-decoration: underline; text-decoration-color: var(--l-line-strong); text-underline-offset: 3px; cursor: pointer; }
-/* 链接文字是中文（「第 7 行第 5 列」）时用界面字 / Use the UI font when the link text is Chinese (第 7 行第 5 列) */
-.ui-objlink--plain { font-family: inherit; }
+/* ---------- 指向出错对象的链接：点了跳过去 ---------- */
+.ui-objlink { padding: 0; border: 0; background: none; color: var(--l-ink); font-size: inherit; white-space: nowrap; text-decoration: underline; text-decoration-color: var(--l-line-strong); text-underline-offset: 3px; cursor: pointer; }
 
 /* ---------- 页级提示：一次只一条；一句结论、一行原因、可选一个动作 ----------
    （.ui-banner 是日志的「新数据提示条」，这是另一个东西。）
@@ -558,7 +555,6 @@ a.ui-btn { text-decoration: none; }
    A menu item's icon takes its text colour rather than a lighter one of its own; only disabled and danger items change it (spec 5.2, audit round 6, D6) */
 .ui-menu__item:disabled > svg { color: var(--l-ink-3); }
 .ui-menu__item--danger, .ui-menu__item--danger > svg { color: var(--err-l); }
-.ui-menu__item--mono { font-family: var(--f-mono); }
 .ui-menu__sep { margin: var(--s-1) 0; border-top: 1px solid var(--l-hair); }
 .ui-menu-host { position: relative; display: inline-flex; }
 .ui-menu--pop { position: fixed; inset: auto; top: var(--menu-y, 0); left: var(--menu-x, 0); margin: 0; overflow: visible; }
@@ -840,8 +836,8 @@ button.ui-link { position: relative; min-height: 0; padding: 0; border: 0; backg
 .ui-step__body { min-width: 0; display: flex; flex-wrap: wrap; gap: 2px var(--s-3); align-items: baseline; }
 .ui-step__what { margin: 0; color: var(--l-ink); font-size: var(--t-2); font-weight: var(--w-medium); line-height: var(--s-5); overflow-wrap: anywhere; }
 .ui-step__why { margin: 0; color: var(--l-ink-3); font-size: var(--t-1); white-space: pre-wrap; overflow-wrap: anywhere; }
-.ui-step__what code, .ui-step__why code { display: inline-block; max-width: 100%; font-family: var(--f-mono); font-weight: var(--w-normal); overflow-wrap: anywhere; }
-.ui-step__why code { color: var(--l-ink-2); }
+/* 步骤里的字面量（域名、上游、规则名）和句子同一种字；补充一行里比旁边的说明深一档 / Literals in a step (domains, upstreams, rule names) share the sentence's face; in the detail line they sit a step darker than the words around them */
+.ui-step__why .ui-step__lit { color: var(--l-ink-2); }
 /* 一对「键 值」整对换行 / A key-value pair wraps as one unit */
 .ui-step__pair { display: inline-block; max-width: 100%; }
 .ui-step--idle .ui-step__what { color: var(--l-ink-3); font-weight: var(--w-normal); }

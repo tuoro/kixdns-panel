@@ -137,7 +137,7 @@ test('窄屏查询同行且标题、命中名不再海报化 @responsive', async
   // Exactly the 36 frame height: the global minimum on selects once pushed the frame 2px past it, and the whole row with it.
   expect(submit?.height).toBe(36)
   expect(await page.locator('.diag-heading h1').evaluate((el) => parseFloat(getComputedStyle(el).fontSize))).toBeLessThanOrEqual(22)
-  expect(await page.locator('.diag-answer-row code').first().evaluate((el) => parseFloat(getComputedStyle(el).fontSize))).toBeLessThanOrEqual(18)
+  expect(await page.locator('.diag-answer-row .diag-record').first().evaluate((el) => parseFloat(getComputedStyle(el).fontSize))).toBeLessThanOrEqual(18)
   await noOverflow(page)
 })
 
@@ -146,8 +146,8 @@ test('长 TXT 与未知记录原串可读，基础内核不虚构规则轨迹', 
   const raw = '无法识别的原始应答  \\  保留空格'
   await diagnosticFixture(page, { ...answerFixture, record_type: 'TXT', trace_supported: false, answers: ['example.com. 300 IN TXT ' + txt, raw] })
   await query(page)
-  expect(await page.locator('.diag-answer-row code').first().textContent()).toBe(txt)
-  expect(await page.locator('.diag-answer-row code').last().textContent()).toBe(raw)
+  expect(await page.locator('.diag-answer-row .diag-record').first().textContent()).toBe(txt)
+  expect(await page.locator('.diag-answer-row .diag-record').last().textContent()).toBe(raw)
   await expect(page.locator('.diag-trace-unavailable')).toContainText('当前内核仅支持基础查询')
   await expect(page.locator('.diagnostic-result .ui-step')).toHaveCount(0)
   await noOverflow(page)
@@ -199,14 +199,14 @@ test('真实内核轨迹：未命中的规则并成一行，「准备转发」�
   await noOverflow(page)
 })
 
-// 同一个查询正好在问上游：这次不另发，等那一次的回答。内核写的是一句中文，按正文显示，不像地址那样用等宽
-// The same query is already out upstream: this one waits for that answer. The kernel writes a Chinese sentence, shown in the body face, not mono like an address
+// 同一个查询正好在问上游：这次不另发，等那一次的回答。内核写的是一句中文，照原话显示，不像地址那样标成字面值
+// The same query is already out upstream: this one waits for that answer. The kernel writes a Chinese sentence, shown as words, not marked as a literal like an address
 test('等候正在进行的同一个查询写成一句话 @responsive', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('kixdns:demo-trace-joined', 'true'))
   await query(page)
   const joined = page.locator('.diag-trace .ui-step').filter({ hasText: '等候正在进行的同一个查询' })
   await expect(joined).toHaveCount(1)
-  await expect(joined.locator('.ui-mono, code')).toHaveCount(0)
+  await expect(joined.locator('.ui-step__lit')).toHaveCount(0)
   // 前一行仍是规则决定转给谁 / The row before still says where the rule meant to send it
   await expect(page.locator('.diag-trace')).toContainText('转发给 https://1.1.1.1/dns-query')
   await noOverflow(page)

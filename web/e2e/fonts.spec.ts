@@ -1,11 +1,11 @@
 import { expect, test } from '@playwright/test'
 
 // 打包的字体从本站加载、真的用在界面上；中文页面不会因此多下载任何东西。
-// 拉丁文字和数字是 Inter（一个可变字重文件覆盖 400–700），机器值是 IBM Plex Mono。
+// 拉丁文字和数字是 Inter（一个可变字重文件覆盖 400–700），域名、地址这类字面量也是；哈希和代码是 IBM Plex Mono。
 // The bundled fonts load from this origin and are actually in use; Chinese text
 // never pulls in anything beyond them. Latin text and digits are Inter (one
-// variable-weight file covering 400–700), machine values IBM Plex Mono.
-test('打包的字体从本站加载，拉丁文字、机器值各用各的字体 @responsive', async ({ page }) => {
+// variable-weight file covering 400–700), literals such as domains and addresses too; hashes and code are IBM Plex Mono.
+test('打包的字体从本站加载，正文和字面量用 Inter，哈希用等宽 @responsive', async ({ page }) => {
   const fontUrls: string[] = []
   page.on('request', (request) => {
     if (request.resourceType() === 'font') fontUrls.push(request.url())
@@ -13,14 +13,17 @@ test('打包的字体从本站加载，拉丁文字、机器值各用各的字�
 
   await page.goto('/')
   await expect(page.getByRole('heading', { level: 1, name: '概览' })).toBeVisible()
-  // 标题先于数据出现；等一个看得见的机器值（上游地址）渲染出来再读它的字体。
-  const machineValue = page.locator('.overview-address .ui-mono:visible').first()
-  await expect(machineValue).toBeVisible()
+  // 标题先于数据出现；等看得见的上游地址和配置摘要渲染出来再读它们的字体。
+  const address = page.locator('.overview-address:visible').first()
+  const hash = page.locator('.ui-mono:visible').first()
+  await expect(address).toBeVisible()
+  await expect(hash).toBeVisible()
 
   const family = (element: Element) => getComputedStyle(element).fontFamily.split(',')[0].replace(/"/g, '').trim()
   expect(await page.locator('body').evaluate(family)).toBe('Inter')
   expect(await page.getByRole('heading', { level: 1 }).evaluate(family)).toBe('Inter')
-  expect(await machineValue.evaluate(family)).toBe('IBM Plex Mono')
+  expect(await address.evaluate(family)).toBe('Inter')
+  expect(await hash.evaluate(family)).toBe('IBM Plex Mono')
 
   // Inter 是一个可变字重文件，400 和 700 都落到同一张「400 700」的字面 / Inter is one variable file: 400 and 700 both resolve to the single 「400 700」 face
   const loaded = await page.evaluate(async () => {

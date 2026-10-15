@@ -52,7 +52,7 @@ describe('把轨迹里的程序写法翻成人话', () => {
 })
 
 const plain = (parts: TextPart[]) => parts.map((part) => (part.label ? part.label + ' ' : '') + part.text).join('')
-const monos = (parts: TextPart[]) => parts.filter((part) => part.mono).map((part) => part.text)
+const literals = (parts: TextPart[]) => parts.filter((part) => part.literal).map((part) => part.text)
 const kstep = (stage: string, status: string, label: string, detail: string | null = null): DnsTraceStep => ({ stage, status, label, detail, elapsed_ms: 0 })
 
 describe('执行路径每一步写成一句话', () => {
@@ -82,11 +82,11 @@ describe('执行路径每一步写成一句话', () => {
     expect(plain(view.note)).toBe(note)
   })
 
-  it('名字和地址用等宽；响应码是助记词，和中文一样用正文字体', () => {
-    expect(monos(describeStep(kstep('upstream', 'succeeded', 'https://1.1.1.1/dns-query', '响应码：No Error；耗时：11 ms；截断：false')).lead)).toEqual(['https://1.1.1.1/dns-query'])
-    expect(monos(detailParts('剩余 TTL：120 秒'))).toEqual([])
+  it('名字和地址是字面值；响应码是助记词，不算', () => {
+    expect(literals(describeStep(kstep('upstream', 'succeeded', 'https://1.1.1.1/dns-query', '响应码：No Error；耗时：11 ms；截断：false')).lead)).toEqual(['https://1.1.1.1/dns-query'])
+    expect(literals(detailParts('剩余 TTL：120 秒'))).toEqual([])
     // 等候同一个查询是一句话，不是地址 / Waiting on the same query is a sentence, not an address
-    expect(monos(describeStep(kstep('upstream', 'joined', '等候正在进行的同一个查询')).lead)).toEqual([])
+    expect(literals(describeStep(kstep('upstream', 'joined', '等候正在进行的同一个查询')).lead)).toEqual([])
   })
 
   it('认不出的阶段和写法退回「阶段名 标签」，状态照翻', () => {
@@ -106,11 +106,11 @@ describe('连着的未命中规则并成一行', () => {
 
 describe('细节里的一对键值不拆开', () => {
   it('一对「键 值」是一段，排版时整对换行', () => {
-    expect(detailParts('客户端：192.168.1.23；监听器：default')).toEqual([{ label: '客户端', text: '192.168.1.23', mono: true }, { text: ' · ' }, { label: '监听标签', text: 'default', mono: true }])
+    expect(detailParts('客户端：192.168.1.23；监听器：default')).toEqual([{ label: '客户端', text: '192.168.1.23', literal: true }, { text: ' · ' }, { label: '监听标签', text: 'default', literal: true }])
     // 耗时、计数和协议名是量和名称，不是要照抄的字面值 / Durations, counts and protocol names are quantities and names, not literals to copy
-    expect(monos(detailParts('耗时：12 ms；匹配器数：1；传输：DoH；协议：TCP+UDP'))).toEqual([])
-    expect(monos(detailParts('响应码：NXDOMAIN；回退：SERVFAIL'))).toEqual([])
-    expect(monos(detailParts('规则：geosite-global；目标：1.1.1.1:53'))).toEqual(['geosite-global', '1.1.1.1:53'])
+    expect(literals(detailParts('耗时：12 ms；匹配器数：1；传输：DoH；协议：TCP+UDP'))).toEqual([])
+    expect(literals(detailParts('响应码：NXDOMAIN；回退：SERVFAIL'))).toEqual([])
+    expect(literals(detailParts('规则：geosite-global；目标：1.1.1.1:53'))).toEqual(['geosite-global', '1.1.1.1:53'])
   })
 })
 
@@ -164,9 +164,9 @@ describe('内核的名字换回配置页上的名字', () => {
     [kstep('rule', 'matched', '其余请求', '管线：main'), '没有规则命中，按「其余请求」处理'],
   ])('%#', (input, lead) => expect(plain(describeStep(input, { names }).lead)).toBe(lead))
 
-  it('认得出的名字用正文字，认不出的用等宽', () => {
-    expect(monos(describeStep(kstep('rule', 'matched', 'rule-3'), { names }).lead)).toEqual([])
-    expect(monos(describeStep(kstep('rule', 'matched', 'named'), { names }).lead)).toEqual(['named'])
+  it('认得出的名字写配置页上的叫法，认不出的写内核原名（字面值）', () => {
+    expect(literals(describeStep(kstep('rule', 'matched', 'rule-3'), { names }).lead)).toEqual([])
+    expect(literals(describeStep(kstep('rule', 'matched', 'named'), { names }).lead)).toEqual(['named'])
   })
 })
 

@@ -17,16 +17,14 @@ withDefaults(defineProps<{
   options: readonly UiSelectOption[]
   label: string
   size?: 'md' | 'sm'
-  // 选项是机器值（Pipeline ID、上游）时用等宽 / Use mono when the options are machine values
-  mono?: boolean
   disabled?: boolean
   invalid?: boolean
-}>(), { size: 'md', mono: false, disabled: false, invalid: false })
+}>(), { size: 'md', disabled: false, invalid: false })
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
 </script>
 
 <template>
-  <label class="ui-input ui-select" :class="{ 'ui-input--sm': size === 'sm', 'ui-select--mono': mono }">
+  <label class="ui-input ui-select" :class="{ 'ui-input--sm': size === 'sm' }">
     <select :value="modelValue ?? ''" :aria-label="label" :disabled="disabled" :aria-invalid="invalid || undefined" @change="emit('update:modelValue', ($event.target as HTMLSelectElement).value)">
       <option v-for="option in options" :key="option.value" :value="option.value" :disabled="option.disabled">{{ option.label }}</option>
     </select>

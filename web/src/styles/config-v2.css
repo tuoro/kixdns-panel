@@ -3,8 +3,6 @@
 
 /* ---------- 页面：外壳、工具行、保存条、JSON 视图、骨架、失败态 / page: shell, toolbar, save bar, JSON view, skeleton, failure ---------- */
 body { background: var(--l-canvas); }
-.is-mono, .is-mono input { font-family: var(--f-mono); }
-.ui-input.is-mono input { font-size: var(--t-2); }
 .cfg { display: grid; gap: var(--s-5); padding-bottom: calc(var(--s-8) + var(--s-6)); }
 .cfg__panel { min-width: 0; }
 .cfg__savebar { right: var(--s-6); bottom: var(--s-5); left: var(--s-6); max-width: 46rem; margin-inline: auto; }
@@ -382,7 +380,7 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
 .qadd { grid-template-columns: var(--s-6) minmax(0, 1fr) minmax(9rem, 12rem) auto; padding: var(--s-2) var(--s-4); }
 .qadd__icon { justify-self: center; color: var(--l-ink-3); }
 .qadd__input { min-width: 0; display: flex; }
-.qadd__input input { width: 100%; min-height: var(--h-sm); padding: 0; border: 0; outline: 0; background: transparent; color: var(--l-ink); font-family: var(--f-mono); font-size: var(--t-2); }
+.qadd__input input { width: 100%; min-height: var(--h-sm); padding: 0; border: 0; outline: 0; background: transparent; color: var(--l-ink); font-size: var(--t-2); }
 .qadd:focus-within { background: var(--l-canvas); }
 /* 不画输入框的添加行聚焦时：左边一条品牌色竖条、「+」变品牌色，和选中规则行同一种标记；只换底色太淡，几乎看不出焦点在这
    A borderless add row with focus: an accent bar on the left and an accent 「+」, the same mark as a selected rule row; the tint change alone was too faint to show where focus is */
@@ -764,7 +762,6 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
 .crow__head b { color: var(--l-ink); font-weight: var(--w-medium); }
 .crow__join { margin-right: var(--s-1); color: var(--l-ink-3); font-size: var(--t-2); font-style: normal; }
 .crow__vals { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; color: var(--l-ink-2); font-size: var(--t-2); line-height: var(--lh-base); overflow-wrap: anywhere; }
-.crow__vals.is-mono { font-family: var(--f-mono); font-size: var(--t-1); }
 .crow__vals.is-empty { color: var(--l-ink-3); }
 .crow.is-bad .crow__vals, .crow__err { color: var(--err-l); font-size: var(--t-2); }
 .crows + .crow, .crow + .crow, .after__custom > .crow { border-top: 1px solid var(--l-hair); }
@@ -787,9 +784,8 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
 .psheet .ui-pick { margin-block: calc(var(--s-2) * -1) 0; }
 /* 值标签输入 / chips input */
 .chips { min-height: var(--h-md); flex-wrap: wrap; gap: var(--s-1); padding-block: calc((var(--h-md) - 2px - var(--h-tag) - var(--s-1)) / 2); cursor: text; }
-.chips.is-mono input { font-family: var(--f-mono); font-size: var(--t-2); }
 .chips--bad { border-color: var(--err-l); }
-.chip { max-width: 100%; min-height: calc(var(--h-tag) + var(--s-1)); display: inline-flex; align-items: center; gap: 2px; padding-left: var(--s-2); border-radius: var(--r-1); background: var(--l-sunk); color: var(--l-ink); font-family: var(--f-mono); font-size: var(--t-1); }
+.chip { max-width: 100%; min-height: calc(var(--h-tag) + var(--s-1)); display: inline-flex; align-items: center; gap: 2px; padding-left: var(--s-2); border-radius: var(--r-1); background: var(--l-sunk); color: var(--l-ink); font-size: var(--t-1); }
 .chip__text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip__x:hover { color: var(--l-ink); }
 .chip--bad { background: var(--err-tint-l); color: var(--err-l); box-shadow: inset 0 0 0 1px var(--err-line-l); }
@@ -808,7 +804,6 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
 /* 每行借用列表的三列（subgrid）：名字、说明、数量上下对齐 / Each row borrows the list's three columns (subgrid), so names, notes and counts line up */
 .gsi__opt { min-height: var(--h-sm); display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: center; padding: 0 var(--s-2); border-radius: var(--r-1); font-size: var(--t-2); cursor: pointer; }
 .gsi__opt.is-active { background: var(--l-sunk); }
-.gsi__name { font-family: var(--f-mono); }
 .gsi__note { min-width: 0; overflow: hidden; color: var(--l-ink-2); text-overflow: ellipsis; white-space: nowrap; }
 .gsi__count { color: var(--l-ink-3); font-size: var(--t-1); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
 @media (max-width: 640px) {
@@ -982,7 +977,6 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
   /* 面包屑离标题 8 / The crumbs sit 8 above the title */
   .editor__crumbs { margin-bottom: calc(var(--s-2) * -1); }
 }
-.erow__num input { font-family: var(--f-mono); }
 .editor__delete-row { display: none; }
 @media (max-width: 640px) {
   /* 删除放到内容最后一行，底栏只有取消和完成 / Delete closes the content; the bar holds only 取消 and 完成 */
@@ -1067,7 +1061,6 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
 .cform__prow + .cform__prow { border-top: 1px solid var(--l-hair); }
 .cform__prow b { display: block; font-size: var(--t-3); font-weight: var(--w-medium); }
 .cform__prow b + span { display: block; margin-top: 2px; overflow-wrap: anywhere; color: var(--l-ink-2); font-size: var(--t-2); }
-.cform__prow .is-mono { font-family: var(--f-mono); }
 .cform__prow .is-empty { color: var(--l-ink-3); }
 /* 出错时只把值（或「还没填值」）标红，比较照常 / On an error only the values (or 还没填值) turn red; the comparison stays as is */
 .cform__prow.is-bad .cform__sum > span { color: var(--err-l); }
@@ -1339,7 +1332,7 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
 /* 同一排卡片等高：多出来的高度留在地址区里，最后一行说明都贴着卡片底边 / Cards in a row share one height: the spare height stays in the address block so every card's last line sits on its bottom edge */
 .gcard__addrs { gap: var(--s-1); }
 .gcard__proto { color: var(--l-ink-3); font-size: var(--t-1); font-weight: var(--w-medium); }
-.gcard__addr { overflow: hidden; color: var(--l-ink); font-family: var(--f-mono); font-size: var(--t-2); text-overflow: ellipsis; white-space: nowrap; }
+.gcard__addr { overflow: hidden; color: var(--l-ink); font-size: var(--t-2); text-overflow: ellipsis; white-space: nowrap; }
 .gcard__unused { flex: 0 0 auto; color: var(--l-ink-3); font-size: var(--t-2); white-space: nowrap; }
 /* 备用组：不再套一层灰底，选项直接排在开关下面；最后一句说明改成普通的提示字
    Fallback: no grey inset; the options sit right under the switch, and the closing note is plain helper text */
@@ -1495,7 +1488,7 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
 .rw__row:hover { background: var(--l-canvas); }
 .rw__row.is-off .rw__d, .rw__row.is-off .rw__t { color: var(--l-ink-3); }
 .rw__d:hover { text-decoration: underline; text-decoration-color: var(--l-line-strong); text-underline-offset: 3px; }
-.rw__t { min-width: 0; overflow: hidden; color: var(--l-ink-2); font-family: var(--f-mono); font-size: var(--t-2); text-overflow: ellipsis; white-space: nowrap; }
+.rw__t { min-width: 0; overflow: hidden; color: var(--l-ink-2); font-size: var(--t-2); text-overflow: ellipsis; white-space: nowrap; }
 .rw__k { display: flex; align-items: center; gap: var(--s-2); }
 .rw__row.is-editing { display: block; padding-block: var(--s-2); background: var(--l-canvas); }
 .rw__edit { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) 8rem var(--h-sm) var(--h-sm); column-gap: var(--s-2); row-gap: var(--s-1); align-items: center; }
@@ -1614,12 +1607,12 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
 .rw__add { grid-template-columns: var(--rw-cols); column-gap: var(--s-4); row-gap: var(--s-1); padding: var(--s-2) var(--s-5); }
 .rw__add:focus-within { background: var(--l-canvas); }
 .rw__field { min-width: 0; display: flex; }
-.rw__field input { width: 100%; min-height: var(--h-md); padding: 0; border: 0; outline: 0; background: transparent; color: var(--l-ink); font-family: var(--f-mono); font-size: var(--t-2); }
+.rw__field input { width: 100%; min-height: var(--h-md); padding: 0; border: 0; outline: 0; background: transparent; color: var(--l-ink); font-size: var(--t-2); }
 .rw__field input::placeholder { color: color-mix(in srgb, var(--l-ink-3) 72%, var(--l-surface)); font-family: var(--f-body); }
 .rw__add .rw__submit { grid-column: 4 / -1; justify-self: end; width: auto; padding: 0 var(--s-3); }
 .rw__adderr { grid-column: 1 / -1; margin: 0; padding-bottom: var(--s-1); }
 /* 域名是一行的标题：比回答重一级 / The domain is the row's title: one step heavier than the answer */
-.rw__d { min-width: 0; overflow: hidden; padding: 0; border: 0; background: none; color: var(--l-ink); font-family: var(--f-mono); font-size: var(--t-2); text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; font-weight: var(--w-medium); }
+.rw__d { min-width: 0; overflow: hidden; padding: 0; border: 0; background: none; color: var(--l-ink); font-size: var(--t-2); text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; font-weight: var(--w-medium); }
 /* 长域名只省略域名本身，后面「改过」的点一直看得见 / A long domain ellipsizes only the name, so the changed dot after it stays visible */
 .rw__d { display: flex; align-items: center; }
 .rw__dt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1671,7 +1664,6 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
 .rw__tools .rw__search { flex: 0 1 18rem; max-width: none; }
 .rw__import { margin-left: auto; padding-right: 0; }
 .rw__head { border-bottom: 1px solid var(--l-hair); color: var(--l-ink-3); font-size: var(--t-1); text-transform: uppercase; }
-.rw__k .ui-tag--mono { font-family: var(--f-mono); }
 @media (max-width: 640px) {
   .rw__tools { padding: var(--s-3) var(--s-4); }
   .rw__tools .rw__search { flex: 1 1 0; min-width: 0; }
@@ -1923,7 +1915,7 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
   .cfg__savebar .ui-savebar__status { gap: var(--s-2); }
 }
 /* 「已修改 N 处」能点开看改了哪些：正文字，下划线和别的对象链接一样 / 已修改 N 处 opens the review: body text with the underline other object links use */
-.savebar__review { color: inherit; font-family: inherit; }
+.savebar__review { color: inherit; }
 .savebar__review:hover { text-decoration-color: currentColor; }
 /* 页头里的「现在应用」是一行字、「启动」是小按钮：手机上点按区都补到 --h-touch / The header's 现在应用 (a word of text) and 启动 (a small button): on phones both hit areas grow to --h-touch */
 @media (max-width: 640px) {
