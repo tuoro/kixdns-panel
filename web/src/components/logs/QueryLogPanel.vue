@@ -549,8 +549,13 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
 .logs-page .qlog-stopped { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2) var(--s-3); }
 .logs-page .qlog-stream > .ui-banner { top: var(--h-md); }
 
-/* 详情在表格下方：页头、页签和四个去处一行、内容；16rem 高，概况正好放下，处理过程在里面滚 / The detail under the table: a head, one bar of tabs and four actions, the content; 16rem tall, the summary fits exactly and the steps scroll inside */
-.logs-page .qlog-pane { flex: 0 0 auto; height: 16rem; min-height: 0; display: flex; flex-direction: column; border-top: 1px solid var(--l-hair); background: var(--l-surface); }
+/*
+ * 详情在表格下方：页头、页签和四个去处一行、内容。占列表区一半多一点（16rem 到 28rem）：900 高的屏幕上处理过程常见的五步一屏放下，
+ * 再长的在里面滚；矮屏至少放下概况
+ * The detail under the table: a head, one bar of tabs and four actions, the content. A little over half the list area (16rem to
+ * 28rem): on a 900-tall screen the usual five steps fit, longer ones scroll inside; short screens still fit the summary
+ */
+.logs-page .qlog-pane { flex: 0 0 auto; height: clamp(16rem, 55%, 28rem); min-height: 0; display: flex; flex-direction: column; border-top: 1px solid var(--l-hair); background: var(--l-surface); }
 .qlog-pane__head { display: flex; align-items: flex-start; gap: var(--s-3); padding: var(--s-4) var(--s-5) var(--s-3); }
 .qlog-pane__titles { flex: 1 1 auto; min-width: 0; }
 .qlog-pane__titles h2, .qlog-sheet h2 { margin: 0; display: flex; align-items: baseline; gap: var(--s-2); color: var(--l-ink); font-size: var(--t-4); font-weight: var(--w-bold); line-height: var(--lh-tight); }
