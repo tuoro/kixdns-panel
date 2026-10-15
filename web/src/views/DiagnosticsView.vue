@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Check, ChevronDown, ChevronRight, LoaderCircle, Network, Power, TriangleAlert, X } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { CONFIG_WRITTEN_EVENT, apiRequest, isPanelDown, jsonBody } from '../api/client'
 import type { ConfigDocument, ConfigVersion, ConfigVersions, DnsDiagnostic, KixdnsKernel, Overview } from '../api/types'
 import { runningVersionId } from '../running-version'
@@ -27,7 +28,8 @@ const queryError = ref('')
 const queryPanelDown = ref(false)
 const types = ['A', 'AAAA', 'CNAME', 'MX', 'NS', 'TXT', 'SOA', 'PTR']
 // 记录类型用组件库的下拉框，和配置页同一个（规范 2.3） / The record type uses the kit select, the same as the config page (spec 2.3)
-const typeOptions = types.map((type) => ({ value: type, label: type }))
+// 查询日志带来的类型不在常用的几种里（比如 HTTPS）就加在最后：内核认得所有标准类型 / A type brought from the query log that is not among the common ones (HTTPS, say) is appended: the kernel knows every standard type
+const typeOptions = computed(() => (types.includes(recordType.value) ? types : [...types, recordType.value]).map((type) => ({ value: type, label: type })))
 const domainInput = ref<HTMLInputElement | null>(null)
 // 页头事实行里的「上次查询」：这一页里上一次查的域名和发出的时刻。配置版本不在诊断结果里，
 // 也没有页面之间共享的状态带着它，所以这里不写、不猜。
@@ -79,9 +81,25 @@ async function readPage(): Promise<void> {
   }
 }
 const onConfigWritten = () => void readPage()
+// 查询日志的「用诊断再测一次」带着域名、类型和客户端来（?domain=&type=&client=）：填好就查，参数用完就去掉
+// The query log's 用诊断再测一次 arrives with the domain, type and client (?domain=&type=&client=): filled in and run, the parameters dropped once used
+const route = useRoute()
+const router = useRouter()
+function takeAsked(): boolean {
+  const asked = typeof route.query.domain === 'string' ? route.query.domain.trim() : ''
+  if (!asked) return false
+  domain.value = asked
+  const type = typeof route.query.type === 'string' ? route.query.type.trim().toUpperCase() : ''
+  if (/^[A-Z0-9]{1,10}$/.test(type)) recordType.value = type
+  if (typeof route.query.client === 'string') clientIp.value = route.query.client.trim()
+  void router.replace({ query: {} })
+  return true
+}
 onMounted(() => {
   window.addEventListener(CONFIG_WRITTEN_EVENT, onConfigWritten)
-  void readPage()
+  const asked = takeAsked()
+  // 客户端那一栏要等内核报了能力才出现，所以先读页面再查 / The client field appears only once the kernel reports the capability, so the page is read before the run
+  void readPage().then(() => { if (asked) void run() })
 })
 onBeforeUnmount(() => window.removeEventListener(CONFIG_WRITTEN_EVENT, onConfigWritten))
 const clock = (date: Date) => date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })

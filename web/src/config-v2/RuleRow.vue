@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { FileText, GripVertical, ShieldCheck } from '@lucide/vue'
 import { computed } from 'vue'
+import { RouterLink } from 'vue-router'
 import UiMenu from '../components/ui/UiMenu.vue'
 import OutcomePill from './OutcomePill.vue'
 import { ruleGeositeTag } from '../config-model/geosite'
 import { conditionsText, rawMatchersText, ruleGroupName, ruleProblems, ruleTitle, type Rule } from '../config-model/model'
-import { changedRuleIds, hitsOf, model } from './store'
+import { changedRuleIds, hitsOf, model, ruleLogQuery } from './store'
 import { useGeositeCatalog } from './useGeosite'
 import { fmtCount } from './view'
 
@@ -79,7 +80,9 @@ function showGroup(): void {
       <span class="rrow__line"><span class="rrow__pill rrow__pill--inline" aria-hidden="true"><span v-if="rule.raw" class="opill opill--pass"><span class="opill__verb">高级</span></span><OutcomePill v-else :outcome="rule.outcome" /></span><span v-if="named" class="rrow__cond" :title="summary">{{ shownSummary }}</span><span v-else-if="rule.note" class="rrow__cond rrow__note">{{ rule.note }}</span></span>
     </button>
     <span class="rrow__pill"><span v-if="rule.raw" class="opill opill--pass" title="按内核写法原样保留"><span class="opill__verb">高级</span><span class="opill__val">按内核写法保留</span></span><button v-else-if="target" class="rrow__goto" type="button" :aria-label="`跳到规则组「${target}」`" @click="showGroup"><OutcomePill :outcome="rule.outcome" /></button><OutcomePill v-else :outcome="rule.outcome" /></span>
-    <span class="rrow__hits" :class="{ 'is-zero': !hits }" :title="`启动以来命中 ${hits.toLocaleString('en-US')} 次`"><span class="rrow__hits-label">命中 </span>{{ hits ? fmtCount(hits) : '—' }}</span>
+    <!-- 命中过的点进查询日志，只看这条规则的查询 / With hits, a click opens the query log filtered to this rule -->
+    <RouterLink v-if="hits" class="rrow__hits" :to="{ path: '/logs', query: ruleLogQuery(rule) }" :title="`启动以来命中 ${hits.toLocaleString('en-US')} 次，点开看查询日志`"><span class="rrow__hits-label">命中 </span>{{ fmtCount(hits) }}</RouterLink>
+    <span v-else class="rrow__hits is-zero" title="启动以来命中 0 次"><span class="rrow__hits-label">命中 </span>—</span>
     <label class="ui-switch rrow__switch"><input v-model="rule.enabled" type="checkbox" :aria-label="`启用规则：${title}`"><i></i></label>
     <span class="rrow__menu"><UiMenu :items="menu" :label="`规则「${title}」的操作`" :title="`第 ${index} 条 · ${title}`" anchor=".rrow" @select="emit('action', $event)" /></span>
   </li>

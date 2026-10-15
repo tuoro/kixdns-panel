@@ -30,9 +30,11 @@ import type {
   UpdateNotifications,
   PanelUpdateStartResponse,
   PanelUpdateStatus,
+  QueryLogSettings,
   ValidationResult,
 } from './types'
 import { demoGeositeCategories } from './mock-geosite'
+import { clearDemoQueryLog, demoQueryLogPage, demoQueryLogSettings, demoQueryLogSupported, setDemoQueryLogSettings } from './mock-querylog'
 
 const now = Math.floor(Date.now() / 1000)
 // 演示里已经「到来」的新日志行数，只在 kixdns:demo-log-growing 下增长。
@@ -205,7 +207,7 @@ const overview: Overview = {
     started_at_unix: now - 289420,
     uptime_seconds: 289420,
     config_generation: 18,
-    capabilities: ['stats_top_v1', 'config_static_cname_response_v1', 'metrics_upstream_precision_v1', 'diagnostics_trace_v1', 'diagnostics_trace_client_v1', 'diagnostics_trace_candidate_v1'],
+    capabilities: ['stats_top_v1', 'config_static_cname_response_v1', 'metrics_upstream_precision_v1', 'diagnostics_trace_v1', 'diagnostics_trace_client_v1', 'diagnostics_trace_candidate_v1', ...(demoQueryLogSupported() ? ['querylog_v1'] : [])],
   },
   active_config: activeConfig,
   metrics: {
@@ -721,6 +723,17 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     if (emptyFirstInstall) throw new Error('KixDNS 已停止')
     destinationsIfAsked()
     return overview as T
+  }
+  // 查询日志：按当前演示配置生成（kixdns:demo-querylog-unsupported 演示内核太旧） / The query log, generated from the current demo config (kixdns:demo-querylog-unsupported plays a kernel too old)
+  if (pathname === '/api/v1/querylog' && method === 'GET') return demoQueryLogPage(config.content as Record<string, unknown>, Date.now(), url.searchParams) as T
+  if (pathname === '/api/v1/querylog/settings' && method === 'GET') return demoQueryLogSettings(Date.now()) as T
+  if (pathname === '/api/v1/querylog/settings' && method === 'PUT') {
+    setDemoQueryLogSettings(JSON.parse(String(init?.body)) as Partial<QueryLogSettings>)
+    return demoQueryLogSettings(Date.now()) as T
+  }
+  if (pathname === '/api/v1/querylog/clear' && method === 'POST') {
+    clearDemoQueryLog()
+    return demoQueryLogSettings(Date.now()) as T
   }
   if (pathname === '/api/v1/stats/top' && method === 'GET') {
     queryStats.window_seconds = Number(url.searchParams.get('window')) || 86_400

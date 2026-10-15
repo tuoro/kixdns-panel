@@ -1,6 +1,6 @@
 import type { NamedCount, RuleCount } from './api/types'
 import { normalizeAddress, splitAddrs } from './config-model/kernel'
-import { kernelAddress, mainPipelineId, upstreamPipelineId, type Model, type Outcome, type Remedy } from './config-model/model'
+import { kernelAddress, mainPipelineId, upstreamPipelineId, type Model, type Outcome, type Remedy, type UpstreamGroup } from './config-model/model'
 import type { TraceNames } from './config-model/trace-names'
 
 // 概览的「请求分布」：每个请求最后去了哪。
@@ -41,7 +41,7 @@ const rulesOf = (pipeline: KernelPipeline | undefined): KernelRule[] => (Array.i
 const fingerprint = (addresses: string[]) => [...new Set(addresses.map((a) => normalizeAddress(a).toLowerCase()))].sort().join('|')
 
 // 在规则里直接回应的那些叫什么：看配置里实际用到了拦截、自定义回答中的哪几种 / What to call requests the rules answered themselves: the kinds of block and custom answer the config actually uses
-function directLabel(model: Model): string {
+export function directLabel(model: Model): string {
   const kinds = new Set<string>()
   const note = (o: Outcome | Remedy) => { if (o.type === 'block' || o.type === 'answer') kinds.add(o.type) }
   for (const r of [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)]) {
@@ -56,6 +56,41 @@ function directLabel(model: Model): string {
   return '直接回应'
 }
 
+/**
+ * 认出一个内核 Pipeline 转发给的是哪个上游组：先按组自己的 Pipeline，再按转发地址（规则自带的转发、导入的旧配置）。
+ * 概览的请求分布和查询日志用同一套认法，两边说的组一样。
+ * Which upstream group a kernel pipeline forwards to: by the group's own pipeline first, then by forward addresses (a rule's own
+ * forward, an imported old config). The overview's distribution and the query log share it, so both name the same group.
+ */
+export function forwardGroups(pipelines: readonly KernelPipeline[], model: Model): (pipelineId: string) => UpstreamGroup | undefined {
+  const byId = new Map(pipelines.filter((p) => typeof p.id === 'string').map((p) => [p.id as string, p]))
+  const groupByAddresses = new Map(model.groups.filter((g) => g.addresses.length).map((g) => [fingerprint(g.addresses.map(kernelAddress)), g]))
+  return (pipelineId) => {
+    const own = model.groups.find((g) => upstreamPipelineId(model, g.id) === pipelineId)
+    if (own) return own
+    const forward = rulesOf(byId.get(pipelineId)).map((r) => forwardOf(r.actions)).find(Boolean)
+    return forward && typeof forward.upstream === 'string' ? groupByAddresses.get(fingerprint(splitAddrs(forward.upstream))) : undefined
+  }
+}
+
+/** 不属于任何上游组、自己转发的列表：概览上各占一行，查询日志的去向筛选也列出来 / Lists that forward on their own, outside any upstream group: a row each on the overview, and options in the query log's destination filter */
+export function ownForwards(pipelines: readonly KernelPipeline[], model: Model): string[] {
+  const groupOf = forwardGroups(pipelines, model)
+  const mapping = model.mappingId ?? 'domain_mapping'
+  return pipelines.flatMap((p) => {
+    if (typeof p.id !== 'string' || p.id === mapping || groupOf(p.id)) return []
+    const rules = rulesOf(p)
+    return rules.some((r) => forwardOf(r.actions)) && !rules.some((r) => jumps(r.actions)) ? [p.id] : []
+  })
+}
+
+/** 只转发、不属于上游组的列表叫什么：主列表说「主列表直接转发」，和概览一致 / What a list that forwards outside any group is called: the main list reads 主列表直接转发, as on the overview */
+export function ownForwardLabel(id: string, model: Model, names: TraceNames): { label: string; mono: boolean } {
+  if (id === mainPipelineId(model)) return { label: '主列表直接转发', mono: false }
+  const said = names.pipeline(id)
+  return { label: said ?? id, mono: !said }
+}
+
 export function requestDestinations(input: {
   /** 启动以来的请求数（不含后台刷新，和 Pipeline 计数同一口径） / Requests since start (background refreshes excluded, as in the pipeline counts) */
   total: number
@@ -68,7 +103,7 @@ export function requestDestinations(input: {
 }): Destinations {
   const { total, hits, matches, pipelines, model, names } = input
   const byId = new Map(pipelines.filter((p) => typeof p.id === 'string').map((p) => [p.id as string, p]))
-  const groupByAddresses = new Map(model.groups.filter((g) => g.addresses.length).map((g) => [fingerprint(g.addresses.map(kernelAddress)), g]))
+  const groupOf = forwardGroups(pipelines, model)
   const direct = directLabel(model)
   const caveats = new Set<string>()
   const rows = new Map<string, DestinationRow>()
@@ -97,12 +132,9 @@ export function requestDestinations(input: {
     const forward = rules.map((r) => forwardOf(r.actions)).find(Boolean)
     // 只有直接回应、不转发的列表：算进「直接回应」，由总数减出来 / A list that only answers and never forwards: it lands in the direct row, which the total works out
     if (pipeline && !forward) continue
-    // 上游组先按它自己的 Pipeline 认；规则自带的转发和导入的旧配置按地址认 / An upstream group by its own pipeline first; a rule's own forward and imported old configs by address
-    const group = model.groups.find((g) => upstreamPipelineId(model, g.id) === hit.name)
-      ?? (forward && typeof forward.upstream === 'string' ? groupByAddresses.get(fingerprint(splitAddrs(forward.upstream))) : undefined)
+    const group = groupOf(hit.name)
     if (group) place(`group:${group.id}`, `上游组「${group.name}」`, false, count)
-    else if (pipeline && hit.name === mainPipelineId(model)) place(hit.name, '主列表直接转发', false, count)
-    else place(hit.name, said ?? hit.name, !said, count)
+    else { const own = ownForwardLabel(hit.name, model, names); place(hit.name, own.label, own.mono, count) }
     placed += count
   }
   const rest = Math.max(0, total - placed)

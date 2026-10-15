@@ -2,6 +2,7 @@
 import { useNarrowDesktop } from '../config-v2/phone'
 import { CircleAlert, Clock, Download, RefreshCw, ScrollText, Search } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { apiRequest } from '../api/client'
 import { useConnection } from '../composables/useConnection'
 import type { AuditEvent, AuditPage, LogEntry, LogsResponse } from '../api/types'
@@ -10,6 +11,7 @@ import UiEmpty from '../components/ui/UiEmpty.vue'
 import UiNewItemsBanner from '../components/ui/UiNewItemsBanner.vue'
 import UiPageHeader from '../components/ui/UiPageHeader.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
+import QueryLogPanel from '../components/logs/QueryLogPanel.vue'
 import { segmentLogMessage } from '../logs'
 import { actorName, errorMessage } from '../utils'
 // 侧栏版最窄的一档里审计搜索框只有 110 宽：占位换短的 / In the narrowest sidebar band the audit search is 110 wide, so its placeholder is shorter
@@ -17,8 +19,16 @@ const narrow = useNarrowDesktop()
 
 const entries = ref<LogEntry[]>([])
 const auditEvents = ref<AuditEvent[]>([])
-type LogMode = 'runtime' | 'audit'
-const mode = ref<LogMode>('runtime')
+// 页签写在地址栏里（?view=runtime / audit），别的页面跳进查询日志时带着筛选；不写就是查询日志
+// The tab lives in the address bar (?view=runtime / audit), so other pages can jump into the query log with filters; none means the query log
+type LogMode = 'query' | 'runtime' | 'audit'
+const route = useRoute()
+const router = useRouter()
+const viewOf = (value: unknown): LogMode => (value === 'runtime' || value === 'audit' ? value : 'query')
+const mode = ref<LogMode>(viewOf(route.query.view))
+watch(() => route.query.view, (value) => { if (viewOf(value) !== mode.value) switchMode(viewOf(value)) })
+// 查询日志自己报页头事实（最近一条、保存多久、已用多少） / The query log reports its own header facts (newest entry, retention, space used)
+const queryFacts = ref<string[] | 'loading' | null>('loading')
 const query = ref('')
 const auditQuery = ref('')
 const level = ref('all')
@@ -68,7 +78,7 @@ const filteredAudit = computed(() => {
 })
 // 分段跟着筛选结果算一次；放在模板里会让每次重绘都重新切一遍正文。
 const lines = computed(() => filtered.value.map((entry) => ({ entry, segments: segmentLogMessage(entry.message) })))
-const activeError = computed(() => mode.value === 'runtime' ? loadError.value : auditError.value)
+const activeError = computed(() => mode.value === 'query' ? '' : mode.value === 'runtime' ? loadError.value : auditError.value)
 const activeRequesting = computed(() => mode.value === 'runtime' ? requesting.value : auditRequesting.value)
 const activeCount = computed(() => mode.value === 'runtime' ? entries.value.length : auditEvents.value.length)
 
@@ -145,6 +155,7 @@ const auditOptions = [
 ]
 
 const viewItems = [
+  { value: 'query', label: '查询日志' },
   { value: 'runtime', label: '运行日志' },
   { value: 'audit', label: '操作审计' },
 ]
@@ -373,6 +384,8 @@ async function loadAudit(reset = true): Promise<void> {
 function switchMode(next: LogMode): void {
   mode.value = next
   if (next === 'audit' && auditEvents.value.length === 0) void loadAudit()
+  // 离开查询日志时它的筛选不带走 / Leaving the query log drops its filters
+  if (viewOf(route.query.view) !== next) void router.replace({ query: next === 'query' ? { ...route.query, view: undefined } : { view: next } })
 }
 
 function selectAuditCategory(value: string): void {
@@ -423,12 +436,20 @@ const waitingForPanel = computed(() => activeError.value !== '' && (panelDown.va
     <UiPageHeader title="日志">
       <template #meta>
         <!-- 来源在一个页签里不会变（页签已经说了），不再单列 / The source never changes within a tab (the tab already says it), so it is no longer a fact -->
-        <div v-if="factsReady" class="ui-facts logs-facts">
+        <!-- 查询日志：最近一条、保存多久、已用多少 / The query log: newest entry, retention, space used -->
+        <template v-if="mode === 'query'">
+          <template v-if="Array.isArray(queryFacts)">
+            <div class="ui-facts logs-facts"><div v-for="fact in queryFacts" :key="fact"><span class="ui-lbl">{{ fact.split(' ')[0] }}</span><b>{{ fact.split(' ').slice(1).join(' ') }}</b></div></div>
+            <span class="ui-ph__lead ui-ph__phone"><UiDotText :parts="queryFacts" /></span>
+          </template>
+          <span v-else-if="queryFacts === 'loading' && !panelDown" class="sk ui-ph__sk logs-skeleton-meta" role="status" aria-label="读取查询日志"></span>
+        </template>
+        <div v-else-if="factsReady" class="ui-facts logs-facts">
           <div><span class="ui-lbl">最近一条</span><b>{{ newest ?? '—' }}</b></div>
           <div v-if="mode === 'runtime'"><span class="ui-lbl">级别</span><b><UiDotText v-if="levelFacts.length" :parts="levelFacts" /><template v-else>{{ entries.length ? '无' : '—' }}</template></b></div>
         </div>
-        <span v-if="factsReady" class="ui-ph__lead ui-ph__phone"><UiDotText :parts="[`最近一条 ${newest ?? '—'}`, ...(mode === 'runtime' ? levelFacts : [])]" /></span>
-        <span v-else-if="!waitingForPanel && !(panelDown && activeCount === 0)" class="sk ui-ph__sk logs-skeleton-meta" role="status" aria-label="读取日志"></span>
+        <span v-if="mode !== 'query' && factsReady" class="ui-ph__lead ui-ph__phone"><UiDotText :parts="[`最近一条 ${newest ?? '—'}`, ...(mode === 'runtime' ? levelFacts : [])]" /></span>
+        <span v-else-if="mode !== 'query' && !waitingForPanel && !(panelDown && activeCount === 0)" class="sk ui-ph__sk logs-skeleton-meta" role="status" aria-label="读取日志"></span>
       </template>
     </UiPageHeader>
     <!-- 页签在卡片外面，和概览、配置同一种区块页签；查询日志做好后排在最前面
@@ -447,7 +468,8 @@ const waitingForPanel = computed(() => activeError.value !== '' && (panelDown.va
     <p v-else-if="waitingForPanel" class="ui-notice ui-notice--off logs-notice" role="status"><Clock :size="16" aria-hidden="true" /><span>连上面板后自动打开</span></p>
     <!-- 一张白卡：第一行是工具行，下面是列名和自己滚动的行；整页不滚
          One white card: the toolbar is its first row, then the column names and the rows, which scroll on their own; the page never does -->
-    <section v-if="!waitingForPanel" :id="`logs-panel-${mode}`" class="log-console ui-card" :class="{ 'log-console--blank': blank }" role="tabpanel" :aria-labelledby="`logs-tab-${mode}`">
+    <QueryLogPanel v-if="mode === 'query'" @facts="queryFacts = $event" />
+    <section v-else-if="!waitingForPanel" :id="`logs-panel-${mode}`" class="log-console ui-card" :class="{ 'log-console--blank': blank }" role="tabpanel" :aria-labelledby="`logs-tab-${mode}`">
       <!-- 工具行：搜索框、筛选分段、右端的图标按钮；手机上分段独占第二行
            The toolbar: search, the filter segment, icon buttons at the right end; on a phone the segment takes its own second row -->
       <header v-if="mode === 'runtime'" class="log-toolbar">
