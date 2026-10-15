@@ -87,8 +87,7 @@ a.ui-btn { text-decoration: none; }
 .ui-input { min-height: var(--h-md); display: flex; align-items: center; gap: var(--s-2); min-width: 0; padding: 0 var(--s-3); border: 1px solid var(--l-line-strong); border-radius: var(--r-2); background: var(--l-surface); color: var(--l-ink-3); transition: border-color var(--m-quick) var(--ease-out), box-shadow var(--m-quick) var(--ease-out); }
 .ui-input:focus-within { border-color: var(--l-ink-3); box-shadow: var(--ring-field); }
 .ui-input input { min-width: 0; flex: 1; padding: 0; border: 0; outline: 0; background: transparent; color: var(--l-ink); font-size: var(--t-3); }
-/* 值可以是等宽，占位说明是人话，用正文字体：等宽的中文字距会拉开。 / Values may be mono; a placeholder is words, in the body face, since mono spreads Chinese apart. */
-.ui-input input::placeholder { color: var(--l-ink-3); font-family: var(--f-body); }
+.ui-input input::placeholder { color: var(--l-ink-3); }
 /* 数字框不要浏览器自带的上下箭头：单位已经写在框里，箭头只会挤到它 / No native spinner on numbers: the unit sits in the box and the arrows only crowd it */
 /* 数量用界面字、数字等宽对齐，不用等宽字体：TTL、前缀长度、超时都是数量，不是机器值（规范 1.5，审计 T13、第五轮 M1）
    Quantities take the UI font with tabular digits, not the mono face: TTLs, prefix lengths and timeouts are quantities, not machine values (spec 1.5, audit T13, round 5 M1) */

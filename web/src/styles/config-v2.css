@@ -591,7 +591,7 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
 .rrow.is-off .rrow__cond, .rrow.is-off .rrow__hits { color: var(--l-ink-2); }
 .rrow.is-off .rrow__pill { opacity: .5; }
 .rrow.is-off .rrow__menu { opacity: .5; }
-.qadd__input input::placeholder { color: color-mix(in srgb, var(--l-ink-3) 72%, var(--l-surface)); font-family: var(--f-body); }
+.qadd__input input::placeholder { color: color-mix(in srgb, var(--l-ink-3) 72%, var(--l-surface)); }
 /* 停用的行变淡，但「改过还没保存」的点保持墨色：那正是要找的那一行 / A disabled row dims, but its unsaved dot stays ink: that is the row you are looking for */
 .rrow.is-off > .rrow__main { opacity: 1; }
 .rrow.is-off .rrow__name > :not(.rrow__changed), .rrow.is-off .rrow__line { opacity: .5; }
@@ -785,7 +785,7 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
 /* 值标签输入 / chips input */
 .chips { min-height: var(--h-md); flex-wrap: wrap; gap: var(--s-1); padding-block: calc((var(--h-md) - 2px - var(--h-tag) - var(--s-1)) / 2); cursor: text; }
 .chips--bad { border-color: var(--err-l); }
-.chip { max-width: 100%; min-height: calc(var(--h-tag) + var(--s-1)); display: inline-flex; align-items: center; gap: 2px; padding-left: var(--s-2); border-radius: var(--r-1); background: var(--l-sunk); color: var(--l-ink); font-size: var(--t-1); }
+.chip { max-width: 100%; min-height: calc(var(--h-tag) + var(--s-1)); display: inline-flex; align-items: center; gap: 2px; padding-left: var(--s-2); border-radius: var(--r-1); background: var(--l-sunk); color: var(--l-ink); font-size: var(--t-2); }
 .chip__text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip__x:hover { color: var(--l-ink); }
 .chip--bad { background: var(--err-tint-l); color: var(--err-l); box-shadow: inset 0 0 0 1px var(--err-line-l); }
@@ -1055,7 +1055,6 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
 .cform__help { margin: 0; color: var(--l-ink-3); font-size: var(--t-1); }
 /* 浏览器给带建议的输入框画的下拉箭头：建议照样弹，箭头不要 / The arrow browsers draw on inputs with suggestions: suggestions still pop, the arrow goes */
 .chips input::-webkit-calendar-picker-indicator { display: none !important; }
-.chips:not(.is-mono) .chip { font-family: var(--f-body); }
 /* 手机：一项一行，名字在上，下面「比较 值」，点开改 / Phones: one item per row, the name above 「comparison values」, tap to edit */
 .cform__prow { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) 16px; gap: var(--s-3); align-items: center; padding: var(--s-3) 0; border: 0; background: none; color: var(--l-ink); font: inherit; text-align: left; cursor: pointer; }
 .cform__prow + .cform__prow { border-top: 1px solid var(--l-hair); }
@@ -1181,7 +1180,7 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
 .rawed__head { display: flex; align-items: center; gap: var(--s-2); }
 .rawed__name { flex: 1 1 auto; min-width: 0; max-width: 20rem; }
 /* 名字框前面写明是内核里的名字，和上面的规则名分开 / The box says up front it is the name inside the kernel, apart from the rule name above */
-.rawed__name-label { flex: none; color: var(--l-ink-3); font-family: var(--f-body); font-size: var(--t-2); white-space: nowrap; }
+.rawed__name-label { flex: none; color: var(--l-ink-3); font-size: var(--t-2); white-space: nowrap; }
 .rawed__stage { display: grid; gap: var(--s-2); }
 .rawed__title { display: flex; align-items: center; gap: var(--s-2); margin: 0; font-size: var(--t-2); font-weight: var(--w-bold); color: var(--l-ink-2); }
 .rawed__relation { margin-left: auto; }
@@ -1488,7 +1487,7 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
 .rw__row:hover { background: var(--l-canvas); }
 .rw__row.is-off .rw__d, .rw__row.is-off .rw__t { color: var(--l-ink-3); }
 .rw__d:hover { text-decoration: underline; text-decoration-color: var(--l-line-strong); text-underline-offset: 3px; }
-.rw__t { min-width: 0; overflow: hidden; color: var(--l-ink-2); font-size: var(--t-2); text-overflow: ellipsis; white-space: nowrap; }
+.rw__t { min-width: 0; overflow: hidden; color: var(--l-ink-2); font-size: var(--t-3); text-overflow: ellipsis; white-space: nowrap; }
 .rw__k { display: flex; align-items: center; gap: var(--s-2); }
 .rw__row.is-editing { display: block; padding-block: var(--s-2); background: var(--l-canvas); }
 .rw__edit { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) 8rem var(--h-sm) var(--h-sm); column-gap: var(--s-2); row-gap: var(--s-1); align-items: center; }
@@ -1592,8 +1591,8 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
 .rw__row.is-off .rw__d { color: var(--l-ink); }
 .rw__row.is-off .rw__t { color: var(--l-ink-2); }
 @media (max-width: 640px) {
-  /* 映射的回答写全，太长就折行 / A mapping's answer is written in full, wrapping when long */
-  .rw__t { grid-area: t; overflow: visible; white-space: normal; overflow-wrap: anywhere; }
+  /* 映射的回答写全，太长就折行；在域名下面一行，小一号 / A mapping's answer is written in full, wrapping when long; on the line under the domain, a size down */
+  .rw__t { grid-area: t; overflow: visible; font-size: var(--t-2); white-space: normal; overflow-wrap: anywhere; }
 }
 /* 域名映射的添加行：和表格同一套列，字落在各列的起点；不画框，聚焦时整行灰底（同规则页的快速添加）
    The mapping add row: the table's own columns, text starting where each column starts; no boxes, the row greys on focus (as the rules tab's quick add) */
@@ -1607,12 +1606,12 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
 .rw__add { grid-template-columns: var(--rw-cols); column-gap: var(--s-4); row-gap: var(--s-1); padding: var(--s-2) var(--s-5); }
 .rw__add:focus-within { background: var(--l-canvas); }
 .rw__field { min-width: 0; display: flex; }
-.rw__field input { width: 100%; min-height: var(--h-md); padding: 0; border: 0; outline: 0; background: transparent; color: var(--l-ink); font-size: var(--t-2); }
-.rw__field input::placeholder { color: color-mix(in srgb, var(--l-ink-3) 72%, var(--l-surface)); font-family: var(--f-body); }
+.rw__field input { width: 100%; min-height: var(--h-md); padding: 0; border: 0; outline: 0; background: transparent; color: var(--l-ink); font-size: var(--t-3); }
+.rw__field input::placeholder { color: color-mix(in srgb, var(--l-ink-3) 72%, var(--l-surface)); }
 .rw__add .rw__submit { grid-column: 4 / -1; justify-self: end; width: auto; padding: 0 var(--s-3); }
 .rw__adderr { grid-column: 1 / -1; margin: 0; padding-bottom: var(--s-1); }
 /* 域名是一行的标题：比回答重一级 / The domain is the row's title: one step heavier than the answer */
-.rw__d { min-width: 0; overflow: hidden; padding: 0; border: 0; background: none; color: var(--l-ink); font-size: var(--t-2); text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; font-weight: var(--w-medium); }
+.rw__d { min-width: 0; overflow: hidden; padding: 0; border: 0; background: none; color: var(--l-ink); font-size: var(--t-3); text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; font-weight: var(--w-medium); }
 /* 长域名只省略域名本身，后面「改过」的点一直看得见 / A long domain ellipsizes only the name, so the changed dot after it stays visible */
 .rw__d { display: flex; align-items: center; }
 .rw__dt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1641,7 +1640,7 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
   /* 手机映射行上下各 12，和规则行同一个节奏 / Phone mapping rows take 12 above and below, the rules rows' rhythm */
   .rw__list .rw__row { padding-block: var(--s-3); }
 }
-.rw__t .rw__ttlnote { margin-left: var(--s-3); font-family: var(--f-body); }
+.rw__t .rw__ttlnote { margin-left: var(--s-3); }
 /* 映射添加行的「+」：宽屏挂在卡片左内边距里，字仍落在域名列上；手机放在行首，和规则页快速添加一样
    The mapping add row's +: on wide screens it hangs in the card's left padding so the text stays on the domain column; on phones it leads the row, as rules quick add does */
 /* 域名映射：添加是列表卡片的第一行，下面一条细线 / Mapping: add is the list card's first row, with a hairline below */
@@ -1654,8 +1653,6 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
   /* 手机：映射的添加行只有一行时字在 44 里居中（隐藏的行不留行距） / Phones: with one visible line the mapping add row centres its text in 44 (hidden lines leave no row gap) */
   .rw__add:not(.is-typing) { row-gap: 0; grid-template-areas: "icon domain domain domain"; }
 }
-/* 记录类型（A、AAAA、CNAME、MX）是助记词，和响应码、协议名一样用正文字体；等宽只给记录的值 / Record types are mnemonics like response codes and protocol names: the body face; mono is only for record values */
-.rw__k .ui-tag { font-family: var(--f-body); }
 /* 映射页的搜索框：输入框不按默认 20 字的宽度撑开工具行（Inter 下在 375 会出边） / The mapping page's search: the input never widens the tools row to its default 20-character width (past 375 under Inter) */
 .rw__search > input { width: 0; }
 /* 域名映射：工具行是卡片的第一行，和规则列表一样（搜索在左，批量导入是右端的文字按钮）；表头 11 号；类型标签等宽
