@@ -417,6 +417,9 @@ function download(): void {
 // attached, or it would keep running on other pages
 let alive = true
 onMounted(async () => {
+  // 直接打开（或刷新）操作审计页签：审计记录也要读，不然说「还没有操作记录」 / Opening (or reloading) the audit tab directly reads the
+  // audit events too, or it would claim there are none
+  if (mode.value === 'audit') void loadAudit()
   await load()
   if (!alive) return
   timer = window.setInterval(() => { void poll() }, 5000)
