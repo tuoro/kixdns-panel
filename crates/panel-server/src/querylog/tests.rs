@@ -51,6 +51,7 @@ fn everything() -> PageQuery {
     PageQuery {
         filter: Filter::default(),
         before: None,
+        after: None,
         limit: 500,
         cutoff_ms: 0,
     }
@@ -490,6 +491,55 @@ fn text_and_outcome_filters_match_like_the_page_describes() {
     assert_eq!(
         page.items[2]["outcome"], "blocked",
         "static is told apart for the page"
+    );
+}
+
+#[test]
+fn a_servfail_block_whose_rule_was_not_recognised_still_files_under_blocked() {
+    let directory = tempdir().unwrap();
+    let store = QueryLogStore::open(directory.path().join("querylog")).unwrap();
+    let failed = |seq: u64, error: Option<&str>| {
+        let mut entry = entry(seq, NOON, "ads.example", "192.168.1.20");
+        entry.insert("outcome".to_owned(), "failed".into());
+        entry.insert("rcode".to_owned(), "SERVFAIL".into());
+        entry.insert("answers".to_owned(), json!([]));
+        entry.insert(
+            "steps".to_owned(),
+            json!([{"at_us": 1, "kind": "rule", "pipeline": "main", "rule": "ads", "phase": "request", "decision": "static"}]),
+        );
+        if let Some(error) = error {
+            entry.insert("error".to_owned(), error.into());
+        }
+        Record::Entry {
+            instance: INSTANCE,
+            entry,
+            static_kind: None,
+        }
+    };
+    // 写入时认不出规则（static_kind 为空）的拦截，和 KixDNS 自己出错的一条 / A block whose rule was not recognised when
+    // written (no static_kind), and one that is KixDNS's own failure
+    store
+        .append(
+            &[failed(1, None), failed(2, Some("engine failed"))],
+            &settings(),
+            NOON,
+        )
+        .unwrap();
+    let only = |outcome: &str| {
+        filtered(
+            &store,
+            Filter {
+                outcomes: Some(set(&[outcome])),
+                ..Filter::default()
+            },
+        )
+    };
+    assert_eq!(only("blocked"), [1]);
+    assert_eq!(only("failed"), [2], "KixDNS's own failure stays failed");
+    let page = store.read_page(&everything());
+    assert_eq!(
+        page.items[1]["outcome"], "blocked",
+        "the page sees what the filter files"
     );
 }
 
@@ -1192,4 +1242,70 @@ fn a_clock_step_while_collecting_does_not_hide_the_record() {
         ..everything()
     });
     assert_eq!(ids(&page), [3, 2, 1]);
+}
+
+/// 页面轮询新查询：只看比见过的新的，跨段也在见过的那段停下；页头的「最近一条」不管筛选，清空后没有
+/// The page's poll for new queries: only records newer than the ones seen, stopping at the seen segment across
+/// segments; the header's newest time ignores the filter, and there is none after clearing
+#[test]
+fn polls_read_only_newer_records_and_the_newest_time_ignores_filters() {
+    let directory = tempdir().unwrap();
+    let root = directory.path().join("querylog");
+    let store = QueryLogStore::open(root.clone()).unwrap();
+    for (seq, at, qname) in [
+        (1, NOON + 1_000, "a.example"),
+        (2, NOON + 2_000, "b.example"),
+        (3, NOON + HOUR_MS + 1_000, "a.example"),
+        (4, NOON + HOUR_MS + 2_000, "b.example"),
+        (5, NOON + 2 * HOUR_MS + 1_000, "a.example"),
+    ] {
+        store
+            .append(&[record(seq, at, qname)], &settings(), at)
+            .unwrap();
+        store.maintain(&settings(), at).unwrap();
+    }
+    let newer = |after: u64, limit: usize, q: Option<&str>| {
+        store.read_page(&PageQuery {
+            after: Some(after),
+            limit,
+            filter: Filter {
+                q: q.map(str::to_owned),
+                ..Filter::default()
+            },
+            ..everything()
+        })
+    };
+    assert_eq!(ids(&newer(2, 500, None)), [5, 4, 3]);
+    assert_eq!(newer(2, 500, None).next_before, None);
+    assert_eq!(ids(&newer(5, 500, None)), Vec::<u64>::new());
+    // 新的比一页多：交回接着往前的地方，页面就知道不止这些 / More new ones than a page: where to go on is handed back,
+    // so the page knows there are more
+    let page = newer(1, 2, None);
+    assert_eq!(ids(&page), [5, 4]);
+    assert_eq!(page.next_before, Some(4));
+    assert_eq!(ids(&newer(2, 500, Some("a."))), [5, 3]);
+
+    // 最近一条的时间：筛不到也照样有，重新打开后还在 / The newest time: there even when the filter finds nothing, and
+    // still there after reopening
+    let nothing = newer(0, 500, Some("nothing.example"));
+    assert!(nothing.items.is_empty());
+    assert_eq!(nothing.newest_unix_ms, Some(NOON + 2 * HOUR_MS + 1_000));
+    drop(store);
+    let store = QueryLogStore::open(root).unwrap();
+    assert_eq!(
+        store.read_page(&everything()).newest_unix_ms,
+        Some(NOON + 2 * HOUR_MS + 1_000)
+    );
+    // 保留时间以外的不算 / Outside retention it does not count
+    assert_eq!(
+        store
+            .read_page(&PageQuery {
+                cutoff_ms: NOON + 3 * HOUR_MS,
+                ..everything()
+            })
+            .newest_unix_ms,
+        None
+    );
+    store.clear().unwrap();
+    assert_eq!(store.read_page(&everything()).newest_unix_ms, None);
 }

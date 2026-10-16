@@ -105,7 +105,7 @@ impl QueryLog {
         self.store.clone().ok_or_else(|| {
             AppError::ServiceUnavailable(
                 "querylog_unavailable",
-                "查询日志的目录打不开，原因写在面板的运行日志里".to_owned(),
+                "查询日志的目录打不开，原因在面板自己的日志里（journalctl -u kixdns-panel）；处理好以后重启面板".to_owned(),
             )
         })
     }
@@ -152,6 +152,8 @@ struct QueryLogQuery {
     rule_phase: Option<String>,
     upstream: Option<String>,
     before: Option<u64>,
+    /// 只要比它新的（页面轮询用） / Only newer than this (the page's poll)
+    after: Option<u64>,
     #[serde(default = "default_page_size")]
     limit: usize,
 }
@@ -203,6 +205,7 @@ async fn query_log(
     let page_query = PageQuery {
         filter,
         before: query.before,
+        after: query.after,
         limit: query.limit,
         cutoff_ms: now_ms().saturating_sub(u64::from(settings.retention_hours) * 3_600_000),
     };
@@ -367,12 +370,12 @@ fn settings_view(querylog: &QueryLog) -> SettingsView {
     }
 }
 
-/// 审计里的一句：保留多久、最多占多少、忽略几个域名 / One line for the audit log: how long, how much, how many ignored
+/// 审计里的一句，用设置页上的说法：保存多久、最多占用、不记录几个域名 / One line for the audit log in the settings' words: how long, how much, how many not recorded
 fn describe_settings(settings: &QueryLogSettings) -> String {
     let retention = if settings.retention_hours.is_multiple_of(24) {
-        format!("保留 {} 天", settings.retention_hours / 24)
+        format!("保存 {} 天", settings.retention_hours / 24)
     } else {
-        format!("保留 {} 小时", settings.retention_hours)
+        format!("保存 {} 小时", settings.retention_hours)
     };
     let mib = settings.max_bytes / (1024 * 1024);
     let cap = if mib.is_multiple_of(1024) {
@@ -381,8 +384,8 @@ fn describe_settings(settings: &QueryLogSettings) -> String {
         format!("最多 {mib} MB")
     };
     let ignored = match settings.ignored_domains.len() {
-        0 => "不忽略域名".to_owned(),
-        count => format!("忽略 {count} 个域名"),
+        0 => "每个域名都记".to_owned(),
+        count => format!("不记录 {count} 个域名"),
     };
     format!("{retention}，{cap}，{ignored}")
 }

@@ -190,10 +190,10 @@ impl QueryLogSettings {
     /// Errors speak the page's words.
     pub fn normalized(mut self) -> Result<Self, String> {
         if !(1..=MAX_RETENTION_HOURS).contains(&self.retention_hours) {
-            return Err(format!("保留时间要在 1 到 {MAX_RETENTION_HOURS} 小时之间"));
+            return Err(format!("保存多久要在 1 到 {MAX_RETENTION_HOURS} 小时之间"));
         }
         if !(MIN_MAX_BYTES..=MAX_MAX_BYTES).contains(&self.max_bytes) {
-            return Err("空间上限要在 10 MB 到 100 GB 之间".to_owned());
+            return Err("最多占用要在 10 MB 到 100 GB 之间".to_owned());
         }
         let mut seen = HashSet::new();
         let mut domains = Vec::new();
@@ -214,7 +214,7 @@ impl QueryLogSettings {
             }
         }
         if domains.len() > MAX_IGNORED_DOMAINS {
-            return Err(format!("忽略的域名最多 {MAX_IGNORED_DOMAINS} 个"));
+            return Err(format!("不记录的域名最多 {MAX_IGNORED_DOMAINS} 个"));
         }
         self.ignored_domains = domains;
         Ok(self)
@@ -414,12 +414,30 @@ fn outcome_of(record: &Map<String, Value>) -> &str {
             Some("answered") => "answered",
             _ => static_kind_from_answer(record).label(),
         },
-        // 「拦截 · SERVFAIL」：内核把 SERVFAIL 排在固定回答前面，记成了失败
-        // 「Block · SERVFAIL」: the kernel ranks SERVFAIL above a fixed answer and calls it failed
-        Some("failed") if kind == Some("blocked") => "blocked",
+        // 「拦截 · SERVFAIL」：内核把 SERVFAIL 排在固定回答前面，记成了失败。写入时认出了规则的照规则；认不出的（配置正在
+        // 应用或回滚、同名规则回答不一样）看记录本身，和页面的认法一样，列表和筛选才对得上
+        // 「Block · SERVFAIL」: the kernel ranks SERVFAIL above a fixed answer and calls it failed. A record whose rule was
+        // recognised when written follows it; one that was not (a config being applied or rolled back, same-named rules
+        // answering differently) is judged by itself, the way the page judges it, so the list and the filters agree
+        Some("failed") if kind == Some("blocked") || fixed_failure(record) => "blocked",
         Some(outcome) => outcome,
         None => "failed",
     }
+}
+
+/// 失败的记录里有一步是固定回答的决定、又不是内核自己出的错：面板自己的配置里，固定回 SERVFAIL 只来自拦截
+/// A failed record with a fixed-answer decision among its steps and no error of the kernel's own: in the panel's own
+/// configs a fixed SERVFAIL comes only from a block
+fn fixed_failure(record: &Map<String, Value>) -> bool {
+    record.get("error").is_none_or(Value::is_null)
+        && record
+            .get("steps")
+            .and_then(Value::as_array)
+            .is_some_and(|steps| {
+                steps
+                    .iter()
+                    .any(|step| step.get("decision").and_then(Value::as_str) == Some("static"))
+            })
 }
 
 /// 找不到定下回答的规则时，只能看回答本身：错误码不是 NOERROR、或者只回了 0.0.0.0 / :: 就算拦截
@@ -604,6 +622,9 @@ pub struct Page {
     pub next_before: Option<u64>,
     /// 最新一条的编号，有新的时它会变大 / The newest id, which grows when new records arrive
     pub newest_id: Option<u64>,
+    /// 整个日志最新一条的时间，不管筛选；保留时间以外的不算 / When the log's newest record was written, whatever the filter;
+    /// nothing outside retention counts
+    pub newest_unix_ms: Option<u64>,
     /// 这次找到哪一刻为止（扫到上限还没凑满一页时有用） / How far back this read got (useful when it stopped short)
     pub scanned_to_unix_ms: Option<u64>,
 }
@@ -614,6 +635,10 @@ pub struct Page {
 pub struct PageQuery {
     pub filter: Filter,
     pub before: Option<u64>,
+    /// 只看比它新的：页面轮询新查询时带上它见过的最新编号，扫到它就停，不必把整个筛选再扫一遍
+    /// Only records newer than this: the page polls for new queries with the newest id it has seen, and the scan stops
+    /// there instead of running the whole filter again
+    pub after: Option<u64>,
     pub limit: usize,
     pub cutoff_ms: u64,
 }
@@ -660,6 +685,8 @@ struct Inner {
     writer: Option<File>,
     next_id: u64,
     cursor: Option<Cursor>,
+    /// 最新一条记录的时间（页头的「最近一条」） / The newest record's time (the page header's 最近一条)
+    newest_ms: Option<u64>,
     /// 游标挪了、还没落到文件里（这一批全被忽略，或者内核换了进程）
     /// The cursor moved without reaching disk (a batch entirely ignored, or a kernel restart)
     cursor_dirty: bool,
@@ -779,6 +806,9 @@ impl QueryLogStore {
                 writer,
                 next_id: (last_id + 1).max(state.next_id).max(past_segments),
                 cursor,
+                newest_ms: last
+                    .as_ref()
+                    .and_then(|record| record.get("time_unix_ms").and_then(Value::as_u64)),
                 cursor_dirty: false,
                 state_saved: None,
             })),
@@ -867,6 +897,9 @@ impl QueryLogStore {
         inner.next_id = id;
         inner.cursor = cursor;
         inner.cursor_dirty = false;
+        if let Some(newest) = records.iter().filter_map(Record::time_unix_ms).max() {
+            inner.newest_ms = Some(inner.newest_ms.map_or(newest, |before| before.max(newest)));
+        }
         if let Some(last) = inner.segments.last_mut() {
             last.bytes += buffer.len() as u64;
         }
@@ -1114,11 +1147,12 @@ impl QueryLogStore {
     }
 
     fn read_page_within(&self, query: &PageQuery, budget: usize) -> Page {
-        let (segments, newest_id) = {
+        let (segments, newest_id, newest_ms) = {
             let inner = self.lock();
             (
                 inner.segments.clone(),
                 inner.segments.last().map(|_| inner.next_id - 1),
+                inner.segments.last().and(inner.newest_ms),
             )
         };
         let mut scan = Scan {
@@ -1151,7 +1185,11 @@ impl QueryLogStore {
             if let Err(error) = walked {
                 tracing::warn!(%error, segment = %segment.stem(), "查询日志有一段读不了，跳过");
             }
-            if scan.next_before.is_some() {
+            // 只看新的：这一段已经到了见过的编号，更早的段都不用看 / Only newer ones: this segment reaches the seen id, so no
+            // older segment needs reading
+            if scan.next_before.is_some()
+                || query.after.is_some_and(|after| segment.first_id <= after)
+            {
                 break;
             }
         }
@@ -1159,6 +1197,7 @@ impl QueryLogStore {
             items: scan.items,
             next_before: scan.next_before,
             newest_id,
+            newest_unix_ms: newest_ms.filter(|&newest| newest >= query.cutoff_ms),
             scanned_to_unix_ms: scan.scanned_to,
         }
     }
@@ -1192,6 +1231,11 @@ impl Scan<'_> {
             || head.time_unix_ms < self.query.cutoff_ms
         {
             return ControlFlow::Continue(());
+        }
+        // 段里从新往旧走：到了见过的编号，后面的都见过 / A segment is walked newest first: once at the seen id, the rest were
+        // seen too
+        if self.query.after.is_some_and(|after| head.id <= after) {
+            return ControlFlow::Break(());
         }
         if let Some(stopped) = self.stopped_at {
             // 停下之后还有一条能看的：交回停下的地方，下次接着找 / Something remains after the stop: hand back where it stopped

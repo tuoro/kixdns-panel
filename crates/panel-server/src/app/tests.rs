@@ -2130,6 +2130,7 @@ fn querylog_items(state: &super::AppState) -> Vec<Value> {
         .read_page(&crate::querylog::PageQuery {
             filter: crate::querylog::Filter::default(),
             before: None,
+            after: None,
             limit: 500,
             cutoff_ms: 0,
         })
@@ -2489,11 +2490,11 @@ async fn the_querylog_endpoints_filter_save_settings_and_clear() {
     let audit = get_json(&context, "/api/v1/audit?action_prefix=querylog").await;
     assert_eq!(
         audit["events"][1]["detail"],
-        "保留 7 天，最多 500 MB，忽略 1 个域名"
+        "保存 7 天，最多 500 MB，不记录 1 个域名"
     );
     assert_eq!(
         audit["events"][0]["detail"],
-        "保留 7 天，最多 500 MB，不忽略域名"
+        "保存 7 天，最多 500 MB，每个域名都记"
     );
 
     let request = Request::post("/api/v1/querylog/clear")

@@ -1,4 +1,6 @@
 import type { QueryLogGap, QueryLogOutcome, QueryLogPage, QueryLogRecord, QueryLogSettings, QueryLogStepRecord } from './types'
+import { ignoredDomains } from '../querylog'
+import { ApiError } from './client'
 
 // 演示用的查询日志：按当前演示配置里的内核 Pipeline 生成，去向、规则名、上游地址都和配置对得上；格式和面板接口一样（内核的说法），
 // 页面照样先换成显示用的记录。全是演示数据，不是谁的真实查询。
@@ -139,31 +141,51 @@ export function demoQueryLog(config: KConfig, now: number): Item[] {
         const src = pick(f.addresses)
         const latency = 0.2 + rnd() * 0.8
         steps.push({ at_us: us(latency * 0.6), kind: 'cache', result: 'fresh', source: src })
-        e = { ...base, latency_us: us(latency), status: 'completed', pipeline: f.id, rule: d.rule ?? undefined, outcome: 'cached', upstream: src, rcode: 'NOERROR', answers: answersFor(), steps }
+        // 记录里的规则是最后一次决定的那条：经过上游组时是组里面板生成的转发规则（和内核一样）
+        // The record's rule is the last decision's: through an upstream group that is the group's generated forward rule (as the kernel does)
+        e = { ...base, latency_us: us(latency), status: 'completed', pipeline: f.id, rule: f.rule, outcome: 'cached', upstream: src, rcode: 'NOERROR', answers: answersFor(), steps }
       } else if (roll < 0.535) {
         const latency = 4 + rnd() * 20
         steps.push({ at_us: 300, kind: 'cache', result: 'miss' }, { at_us: us(latency * 0.9), kind: 'joined' })
-        e = { ...base, latency_us: us(latency), status: 'completed', pipeline: f.id, rule: d.rule ?? undefined, outcome: 'joined', rcode: 'NOERROR', answers: answersFor(), steps }
+        e = { ...base, latency_us: us(latency), status: 'completed', pipeline: f.id, rule: f.rule, outcome: 'joined', rcode: 'NOERROR', answers: answersFor(), steps }
+      } else if (roll < 0.542) {
+        // 过期了就先回旧结果，不等上游（默认的过期缓存用法） / Served at once on expiry without waiting for an upstream (the default stale mode)
+        const src = pick(f.addresses)
+        const latency = 0.2 + rnd() * 0.4
+        steps.push({ at_us: us(latency * 0.6), kind: 'cache', result: 'stale', source: src })
+        e = { ...base, latency_us: us(latency), status: 'completed', pipeline: f.id, rule: f.rule, outcome: 'stale', upstream: src, rcode: 'NOERROR', answers: answersFor(), steps }
       } else if (roll < 0.55) {
-        // 上游全部超时：开了过期缓存先回旧结果 / Every upstream timed out: with stale serving on, the old answer goes back first
+        // 上游全部超时：开了过期缓存的回旧结果，没开的失败。出错原文在各个上游的步骤上（内核的英文）；记录本身不带原因，内核只在
+        // 自己出错时才写 / Every upstream timed out: with stale serving on the old answer goes back, otherwise it fails. The raw errors sit on
+        // each upstream step (the kernel's English); the record itself carries none, as the kernel writes one only for its own failures
         const latency = 1800 + rnd() * 40
         steps.push({ at_us: 300, kind: 'cache', result: 'miss' })
-        for (const a of f.addresses) steps.push(asked(a, 1800, 'error', { error: '超时' }))
+        for (const a of f.addresses) steps.push(asked(a, 1800, 'error', { error: 'upstream timeout' }))
         const stale = rnd() < 0.5
-        if (stale) steps.push({ at_us: us(latency), kind: 'cache', result: 'stale_timeout', source: f.addresses[0]! })
-        e = { ...base, latency_us: us(latency), status: 'completed', pipeline: f.id, rule: d.rule ?? undefined, outcome: stale ? 'stale' : 'failed', ...(stale ? { upstream: f.addresses[0]! } : { error: '上游全部超时' }), rcode: stale ? 'NOERROR' : 'SERVFAIL', answers: stale ? answersFor() : [], steps }
+        if (stale) steps.push({ at_us: us(latency), kind: 'cache', result: 'stale_failure', source: f.addresses[0]! })
+        e = { ...base, latency_us: us(latency), status: 'completed', pipeline: f.id, rule: f.rule, outcome: stale ? 'stale' : 'failed', ...(stale ? { upstream: f.addresses[0]! } : {}), rcode: stale ? 'NOERROR' : 'SERVFAIL', answers: stale ? answersFor() : [], steps }
       } else if (roll < 0.553) {
-        // 客户端等不及先走了 / The client gave up waiting
-        const latency = 900 + rnd() * 400
+        // 到了整体请求超时还没处理完：内核记成取消，客户端收到 SERVFAIL / Unfinished at the overall request timeout: the kernel records
+        // it as cancelled and the client gets SERVFAIL
+        const latency = 9000 + rnd() * 40
         steps.push({ at_us: 300, kind: 'cache', result: 'miss' })
-        e = { ...base, latency_us: us(latency), status: 'cancelled', pipeline: f.id, rule: d.rule ?? undefined, outcome: 'cancelled', answers: [], steps }
+        e = { ...base, latency_us: us(latency), status: 'cancelled', pipeline: f.id, rule: f.rule, outcome: 'cancelled', answers: [], steps }
       } else {
         steps.push({ at_us: 300, kind: 'cache', result: 'miss' })
         const times = f.addresses.map((a) => ({ a, ms: speed(a) * (rnd() < 0.03 ? 18 : 1) })).sort((x, y) => x.ms - y.ms)
         const winner = times[0]!
         // 先回的那个用上，其余的不再等（内核把它们记成 aborted，没有响应码） / The first answer is used and the rest are not waited for (the kernel records them as aborted, with no code)
         for (const t of times) steps.push(t === winner ? asked(t.a, t.ms, 'success', { rcode: 'NOERROR' }) : asked(t.a, winner.ms + 0.05, 'aborted', { latency_us: us(winner.ms + 0.05) }))
+        // 只有一个上游时，它回 SERVFAIL 内核记成成功应答、整条失败 / With a single upstream, a SERVFAIL reply is a successful answer
+        // to the kernel and the whole query fails
+        if (f.addresses.length === 1 && rnd() < 0.03) {
+          steps[steps.length - 1] = asked(winner.a, winner.ms, 'success', { rcode: 'SERVFAIL' })
+          items.push({ ...base, latency_us: us(winner.ms + 0.3), status: 'failed', pipeline: f.id, rule: f.rule, outcome: 'failed', rcode: 'SERVFAIL', answers: [], steps })
+          time -= 1_000 + Math.floor(rnd() * 14_000)
+          continue
+        }
         let final = f.id
+        let lastRule = f.rule
         let upstream = winner.a
         let latency = winner.ms + 0.4
         const check = f.checks[0]
@@ -177,12 +199,13 @@ export function demoQueryLog(config: KConfig, now: number): Item[] {
             const ms = latency + 30 + rnd() * 120
             steps.push({ at_us: us(latency + 0.1), kind: 'pipeline', pipeline: fb.id }, { at_us: us(latency + 0.12), kind: 'rule', pipeline: fb.id, rule: fb.rule, phase: 'request', decision: 'forward', target: fb.addresses.join(',') }, asked(a, ms, 'success', { rcode: 'NOERROR', latency_us: us(ms - latency) }))
             final = fb.id
+            lastRule = fb.rule
             upstream = a
             latency = ms + 0.3
           }
         }
         const rcode = rnd() < 0.03 ? 'NXDOMAIN' : 'NOERROR'
-        e = { ...base, latency_us: us(latency), status: 'completed', pipeline: final, rule: d.rule ?? undefined, outcome: 'forwarded', upstream, rcode, answers: rcode === 'NOERROR' ? answersFor() : [], steps }
+        e = { ...base, latency_us: us(latency), status: 'completed', pipeline: final, rule: lastRule, outcome: 'forwarded', upstream, rcode, answers: rcode === 'NOERROR' ? answersFor() : [], steps }
       }
     }
     items.push(e)
@@ -200,9 +223,13 @@ export const demoQueryLogSupported = (): boolean => typeof localStorage === 'und
 export function demoQueryLogSettings(now: number): QueryLogSettings {
   return { ...settings, oldest_unix_ms: settings.used_bytes ? now - 63 * 86_400_000 : null, supported: demoQueryLogSupported() }
 }
-/** 和服务端一样：只改给了的那几项，域名小写、去掉两头的点 / As the server does: only the given fields change, domains lowercased with the dots at both ends dropped */
+/** 和服务端一样：只改给了的那几项，检查不过回 400，域名小写、去掉两头的点 / As the server does: only the given fields change, a failed check answers 400, domains lowercased with the dots at both ends dropped */
 export function setDemoQueryLogSettings(next: Partial<QueryLogSettings>): void {
-  const domains = next.ignored_domains?.map((d) => d.trim().replace(/^\*\./, '').replace(/^\.+|\.+$/g, '').toLowerCase()).filter(Boolean)
+  if (next.retention_hours !== undefined && !(next.retention_hours >= 1 && next.retention_hours <= 8760)) throw new ApiError('保存多久要在 1 到 8760 小时之间', 400, 'querylog_settings_invalid')
+  if (next.max_bytes !== undefined && !(next.max_bytes >= 10 * 1024 * 1024 && next.max_bytes <= 100 * 1024 * 1024 * 1024)) throw new ApiError('最多占用要在 10 MB 到 100 GB 之间', 400, 'querylog_settings_invalid')
+  const checked = next.ignored_domains ? ignoredDomains(next.ignored_domains.join('\n')) : null
+  if (checked?.problem) throw new ApiError(checked.problem, 400, 'querylog_settings_invalid')
+  const domains = checked?.domains
   settings = { ...settings, ...(next.retention_hours === undefined ? {} : { retention_hours: next.retention_hours }), ...(next.max_bytes === undefined ? {} : { max_bytes: next.max_bytes }), ...(domains ? { ignored_domains: [...new Set(domains)] } : {}) }
 }
 export function clearDemoQueryLog(): void {
@@ -247,20 +274,23 @@ export function demoQueryLogPage(config: KConfig, now: number, params: URLSearch
     return true
   }
   const before = Number(params.get('before') ?? Infinity)
+  // 轮询只要比见过的新的 / A poll wants only records newer than the ones seen
+  const after = Number(params.get('after') ?? -1)
   const limit = Math.min(Number(params.get('limit') ?? 200), 500)
   const budget = Number((typeof localStorage === 'undefined' ? null : localStorage.getItem('kixdns:demo-querylog-scan-limit')) ?? Infinity)
   const items: Item[] = []
   let scanned = 0
   let scannedTo: number | null = null
   let lastScanned: number | null = null
-  for (const item of all.filter((x) => x.id < before)) {
-    if (scanned >= budget) return { items, next_before: lastScanned, newest_id, scanned_to_unix_ms: scannedTo, supported }
+  const newest_unix_ms = all[0]?.time_unix_ms ?? null
+  for (const item of all.filter((x) => x.id < before && x.id > after)) {
+    if (scanned >= budget) return { items, next_before: lastScanned, newest_id, newest_unix_ms, scanned_to_unix_ms: scannedTo, supported }
     scanned += 1
     scannedTo = item.time_unix_ms
     lastScanned = item.id
     if (!keep(item)) continue
-    if (items.length === limit) return { items, next_before: items[items.length - 1]!.id, newest_id, scanned_to_unix_ms: scannedTo, supported }
+    if (items.length === limit) return { items, next_before: items[items.length - 1]!.id, newest_id, newest_unix_ms, scanned_to_unix_ms: scannedTo, supported }
     items.push(item)
   }
-  return { items, next_before: null, newest_id, scanned_to_unix_ms: scannedTo, supported }
+  return { items, next_before: null, newest_id, newest_unix_ms, scanned_to_unix_ms: scannedTo, supported }
 }

@@ -582,6 +582,8 @@ export interface QueryLogPage {
   /** 再往前取时带上的编号；没有更早的为 null / The id to read further back from; null when nothing older exists */
   next_before: number | null
   newest_id: number | null
+  /** 整个日志最新一条的时间，不管筛选 / When the log's newest record was written, whatever the filter */
+  newest_unix_ms: number | null
   /** 这次往前找到了哪一刻（一次最多看那么多条，没凑满一页时有用） / How far back this read got (a read looks at only so much, useful when the page is short) */
   scanned_to_unix_ms: number | null
   /** 内核支持查询日志（能力 querylog_v1）；还不知道时也算支持 / The kernel has the query log (capability querylog_v1); unknown counts as yes */
@@ -615,6 +617,12 @@ export interface QueryLogStep {
   forward?: string
   /** cache：命中（新鲜或过期）还是没命中 / cache: a hit (fresh or stale) or a miss */
   cache?: 'fresh' | 'stale' | 'miss'
+  /**
+   * cache 是 stale 时为什么回了过期的：过期就先回（不等上游）、上游没在等待时间内回、上游都失败了
+   * Why a stale answer went back: served at once on expiry (no wait for an upstream), the upstream missed the client wait, or every
+   * upstream failed
+   */
+  stale?: 'now' | 'timeout' | 'failure'
   /** upstream：地址和协议；cache：答案原先来自哪 / upstream: address and protocol; cache: where the answer came from */
   upstream?: string
   transport?: string

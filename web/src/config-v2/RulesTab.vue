@@ -53,11 +53,21 @@ async function quickFromTester(domainName: string): Promise<void> { quick.text =
 // 查询日志的「为这个域名建规则」带着域名来（?quick=）：填进快速添加，地址栏里的参数用完就去掉 / The query log's 为这个域名建规则 arrives with the domain (?quick=): it goes into quick add, and the parameter leaves the address bar once used
 const route = useRoute()
 const router = useRouter()
-onMounted(() => {
+onMounted(async () => {
   const asked = typeof route.query.quick === 'string' ? route.query.quick.trim() : ''
   if (!asked) return
-  void quickFromTester(asked)
-  void router.replace({ query: { ...route.query, quick: undefined } })
+  quick.text = asked
+  quickOpen.value = true
+  // 光标等地址栏换完、框画出来以后再放进去：早放的会被换地址时的焦点处理拿走（规则列表读完之前框也还不在）
+  // The caret goes in once the address bar has changed and the field is drawn: placed earlier, it is taken by the route change's focus
+  // handling (and before the rule list loads the field is not there yet)
+  await router.replace({ query: { ...route.query, quick: undefined } })
+  await nextTick()
+  const stop = watch(quickInput, (field) => {
+    if (!field) return
+    field.focus()
+    void nextTick(() => stop())
+  }, { immediate: true })
 })
 
 // 新建就是一条空白规则：主按钮只干一件事，带知识的预设在用得到的地方（「回答后检查」的常用、GeoSite 的候选）
