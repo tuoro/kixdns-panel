@@ -406,7 +406,9 @@ function download(): void {
   const url = URL.createObjectURL(new Blob([content], { type: 'text/plain;charset=utf-8' }))
   const anchor = document.createElement('a')
   anchor.href = url
-  anchor.download = `kixdns-${mode.value}-${new Date().toISOString().slice(0, 10)}.log`
+  // 文件名用本地日期：北京时间零点到八点 toISOString 还是前一天 / The file name uses the local date: between midnight and 8 a.m. Beijing time toISOString is still the day before
+  const day = new Date()
+  anchor.download = `kixdns-${mode.value}-${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}.log`
   anchor.click()
   URL.revokeObjectURL(url)
 }

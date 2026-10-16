@@ -832,7 +832,7 @@ onBeforeUnmount(() => {
               </div>
               <div v-if="card.rows.length" class="overview-rows">
                 <div v-for="row in card.rows" :key="row.key" class="overview-row" :class="{ 'ov-jumps': logLinks && routing }">
-                  <RouterLink v-if="logLinks && routing" class="ov-jump" :to="destinationLog(row.key)" :aria-label="`在查询日志里看去了${row.label}的查询`" />
+                  <RouterLink v-if="logLinks && routing" class="ov-jump" :to="destinationLog(row.key)" :aria-label="`在查询日志里看去向是「${row.label}」的查询`" />
                   <span class="overview-row-name ov-jump-name"><span>{{ row.label }}</span></span>
                   <span class="overview-row-value">{{ formatNumber(row.count) }} · {{ formatPercent(row.share) }}</span>
                   <span class="overview-row-bar" aria-hidden="true"><i :style="{ width: `${row.share * 100}%` }"></i></span>
