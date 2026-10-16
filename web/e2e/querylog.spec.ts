@@ -72,6 +72,9 @@ test('往下读到漏记的那一段时照实说，有筛选时不出漏记行',
     return page.locator('.qlog-gap').count()
   }, { timeout: 10_000 }).toBe(1)
   await expect(page.locator('.qlog-gap')).toHaveText('这里漏记了 37 条：KixDNS 当时太忙没记下，或者面板没来得及取走')
+  // 一句话放在一个行内元素里：按词切开的几段不会变成并排的几栏 / One sentence in one inline element: the runs cut at words never
+  // become side-by-side columns
+  expect(await page.locator('.qlog-gap').evaluate((el) => el.children.length)).toBe(1)
   await page.getByLabel('按去向筛选').selectOption({ label: '失败' })
   await expect(page).toHaveURL(/dest=failed/)
   await expect(page.locator('.qlog-gap')).toHaveCount(0)

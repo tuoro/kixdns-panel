@@ -772,7 +772,7 @@ onBeforeUnmount(() => {
         <template v-for="(item, index) in entries" :key="item.id" v-memo="[item, dayBreak(index), selected === item.id, tabStop === item.id, ctx, phone, client]">
           <p v-if="dayBreak(index)" class="qlog-day"><span>{{ dayBreak(index) }}</span></p>
           <!-- 漏记的一段：照实说，不悄悄缺 / A gap: said plainly, never a silent hole -->
-          <p v-if="isGap(item)" class="qlog-gap" role="note"><template v-for="(run, k) in glued(gapText(item.gap))" :key="k"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></p>
+          <p v-if="isGap(item)" class="qlog-gap" role="note"><span><template v-for="(run, k) in glued(gapText(item.gap))" :key="k"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></span></p>
           <button v-else class="qlog-row" :class="{ 'is-selected': selected === item.id }" type="button" :data-id="item.id" :tabindex="tabStop === item.id ? 0 : -1" :aria-current="selected === item.id ? 'true' : undefined" @click="select(item.id)">
             <i class="ui-dot qlog-dot" :class="`qlog-dot--${statusOf(item).tone}`" role="img" :aria-label="statusOf(item).label"></i>
             <time class="qlog-c-time">{{ clockText(item.time_unix_ms) }}</time>
@@ -971,9 +971,12 @@ onBeforeUnmount(() => {
 }
 .logs-page .qlog-num { text-align: right; }
 /* 行：32 高，13 号字，隔行浅底；悬停一档灰，选中是品牌色的浅底加左边一条（隔行的底和选中的底不会混） / Rows: 32 tall, 13px, alternate rows tinted; hover one grey step, selected the accent tint plus a bar on the left (so it never blends with the stripes) */
-/* 看不见的行不排版：手机上打开详情时整页重算样式，几百行要几百毫秒 / Rows out of view skip layout: opening the phone sheet restyles the
-   whole page, which costs hundreds of milliseconds over hundreds of rows */
-.logs-page .qlog-row { content-visibility: auto; contain-intrinsic-size: auto var(--s-6); }
+/* 看不见的行不排版：手机上打开详情时整页重算样式，几百行要几百毫秒。占位高度是内容框的高（不含内边距、边框），也不记上一次量到的：
+   转屏以后不留着另一种布局的高度
+   Rows out of view skip layout: opening the phone sheet restyles the whole page, which costs hundreds of milliseconds over hundreds of
+   rows. The placeholder height is the content box's (without padding or border), and the last measured size is not remembered, so a
+   rotation never keeps the other layout's height */
+.logs-page .qlog-row { content-visibility: auto; contain-intrinsic-block-size: var(--s-6); }
 .logs-page .qlog-row { width: 100%; min-height: var(--s-6); border: 0; background: none; color: var(--l-ink-2); font-family: var(--f-body); font-size: var(--t-3); font-variant-numeric: tabular-nums; line-height: var(--log-line); text-align: left; cursor: pointer; }
 .logs-page .qlog-row:nth-child(even of .qlog-row) { background: var(--l-canvas); }
 .logs-page .qlog-row.is-selected { background: var(--accent-tint); box-shadow: inset 2px 0 0 var(--accent); }
@@ -1094,7 +1097,8 @@ onBeforeUnmount(() => {
   .logs-page .qlog-stream { overflow: visible; container-type: normal; }
   .logs-page .qlog-head { display: none; }
   .logs-page .qlog-row { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "name name time" "dot phone phone"; column-gap: var(--s-2); row-gap: 2px; padding: var(--s-2) var(--s-4); border-bottom: 1px solid var(--l-hair); }
-  .logs-page .qlog-row { contain-intrinsic-size: auto 59px; }
+  /* 59 高的行减去上下 8 的内边距和 1 的底边 / A 59-tall row less 8 of padding above and below and its 1px bottom border */
+  .logs-page .qlog-row { contain-intrinsic-block-size: 42px; }
   .logs-page .qlog-row:nth-child(even of .qlog-row) { background: none; }
   .logs-page .qlog-row.is-selected { background: var(--accent-tint); box-shadow: none; }
   .logs-page .qlog-dot { grid-area: dot; align-self: center; }
