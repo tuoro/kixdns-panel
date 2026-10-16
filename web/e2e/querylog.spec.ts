@@ -111,6 +111,8 @@ test('设置只有保存多久、最多占用和不记录的域名；清空以�
   expect(await size('#ql-hours-err')).toBe(await size('#ql-mb-hint'))
   await drawer.getByRole('button', { name: '保存', exact: true }).click()
   await expect(drawer).toBeVisible()
+  // 没保存成：焦点回到有错的框 / Not saved: focus goes back to the wrong field
+  await expect(drawer.getByLabel('保存多少小时')).toBeFocused()
   // 服务端不认的域名：说在那个框下面，不悄悄不保存 / A domain the server refuses is said under its field, never a silent no-save
   await drawer.getByLabel('不记录的域名').fill('例子.中国')
   await drawer.getByLabel('不记录的域名').blur()

@@ -266,8 +266,11 @@ function showFresh(): void {
       if (above < 0) window.scrollBy({ top: above })
     }
     await nextTick()
+    // 选中的那条还开着：焦点回到它，上下键接着从它走；没有选中才放在第一条 / With the selection still open, focus returns to it and the
+    // arrow keys go on from there; only without one does focus go to the first entry
     const first = entries.value.find((item) => !isGap(item))
-    if (first) rowEl(first.id)?.focus({ preventScroll: true })
+    const target = selected.value !== null && listed(selected.value) ? selected.value : first?.id
+    if (target !== undefined) rowEl(target)?.focus({ preventScroll: true })
   })
 }
 function onScroll(): void {
@@ -554,10 +557,16 @@ watch(() => route.query.settings, (value) => {
 })
 // 改了框里的内容，服务端上次说的错就不算了 / Editing a field clears what the server said about the last attempt
 watch(draft, () => { serverProblem.value = null }, { deep: true })
+// 保存没通过：焦点放到第一个有错的框上，读屏器接着读它下面的错 / A save that did not go through: focus goes to the first wrong field,
+// and a screen reader reads the error under it
+function focusProblem(): void {
+  void nextTick(() => drawer.value?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus())
+}
 async function saveSettings(): Promise<void> {
   touched.value.submitted = true
   serverProblem.value = null
-  if (!draftValid() || settingsBusy.value) return
+  if (settingsBusy.value) return
+  if (!draftValid()) { focusProblem(); return }
   const d = draft.value
   const next = {
     retention_hours: d.retention === 'custom' ? Number(d.customHours) : Number(d.retention),
@@ -576,6 +585,7 @@ async function saveSettings(): Promise<void> {
   } catch (error) {
     const text = errorMessage(error)
     serverProblem.value = { field: text.startsWith('保存多久') ? 'hours' : text.startsWith('最多占用') ? 'mb' : /域名/.test(text) ? 'ignored' : 'form', text }
+    focusProblem()
     return
   } finally {
     settingsBusy.value = false
@@ -707,7 +717,7 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
         <!-- 一次只往前找那么多：没凑满一页时说找到哪儿了，接着找由人决定，不悄悄扫完几十天 / A read searches only so far: when the page is short, say how far it got and let the reader decide to go on, instead of quietly scanning weeks -->
         <p v-else-if="stoppedAt !== null && nextBefore !== null && entries.length" class="qlog-more qlog-stopped" role="status"><span>只往前查到 {{ timeText(stoppedAt, today) }}</span><button class="ui-btn ui-btn--secondary ui-btn--sm qlog-continue" type="button" @click="continueOlder">继续往前查</button></p>
         <!-- 一条也还没找到就停下：整张空卡说清楚，按钮在里面 / Stopped before finding any: the empty card says so, with the button inside -->
-        <UiEmpty v-else-if="stoppedAt !== null && nextBefore !== null && !loading" :icon="FileSearch" title="还没找到符合条件的查询" :desc="`往前查到 ${timeText(stoppedAt, today)}，再往前还有`">
+        <UiEmpty v-else-if="stoppedAt !== null && nextBefore !== null && !loading" :icon="FileSearch" title="还没找到符合条件的查询" :desc="`往前查到 ${timeText(stoppedAt, today)}，更早的还没查`">
           <button class="ui-btn ui-btn--secondary qlog-continue" type="button" @click="continueOlder">继续往前查</button>
         </UiEmpty>
         <!-- 清空以后日志本来就是空的：不管有没有筛选，都说还没有查询 / After a clear the log is empty: whatever the filters, it says there are no queries yet -->
@@ -801,7 +811,7 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
     <form class="pdrawer__panel" novalidate @submit.prevent="saveSettings">
       <header class="pdrawer__head">
         <h2 id="ql-settings-title">查询日志设置</h2>
-        <button class="ui-icon-btn" type="button" aria-label="关闭" title="关闭" @click="drawer?.close()"><X :size="16" /></button>
+        <button class="ui-icon-btn" type="button" aria-label="关闭" title="关闭" :disabled="settingsBusy" @click="drawer?.close()"><X :size="16" /></button>
       </header>
       <div class="pdrawer__body qlog-settings">
         <!-- 每个框的问题写在它自己下面，框也标红 / Each field's problem sits under it, and the field turns red -->
