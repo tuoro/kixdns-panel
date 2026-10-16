@@ -105,7 +105,7 @@ impl QueryLog {
         self.store.clone().ok_or_else(|| {
             AppError::ServiceUnavailable(
                 "querylog_unavailable",
-                "查询日志的目录打不开，重启面板后再试；原因在面板自己的日志里（journalctl -u kixdns-panel）".to_owned(),
+                "查询日志的目录打不开，原因在面板自己的日志里（journalctl -u kixdns-panel）；处理好以后重启面板".to_owned(),
             )
         })
     }

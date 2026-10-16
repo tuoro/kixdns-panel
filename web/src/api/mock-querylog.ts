@@ -155,14 +155,15 @@ export function demoQueryLog(config: KConfig, now: number): Item[] {
         steps.push({ at_us: us(latency * 0.6), kind: 'cache', result: 'stale', source: src })
         e = { ...base, latency_us: us(latency), status: 'completed', pipeline: f.id, rule: f.rule, outcome: 'stale', upstream: src, rcode: 'NOERROR', answers: answersFor(), steps }
       } else if (roll < 0.55) {
-        // 上游全部超时：开了过期缓存的回旧结果，没开的失败；出错原文是内核的英文 / Every upstream timed out: with stale serving on the old
-        // answer goes back, otherwise it fails; the error text is the kernel's English
+        // 上游全部超时：开了过期缓存的回旧结果，没开的失败。出错原文在各个上游的步骤上（内核的英文）；记录本身不带原因，内核只在
+        // 自己出错时才写 / Every upstream timed out: with stale serving on the old answer goes back, otherwise it fails. The raw errors sit on
+        // each upstream step (the kernel's English); the record itself carries none, as the kernel writes one only for its own failures
         const latency = 1800 + rnd() * 40
         steps.push({ at_us: 300, kind: 'cache', result: 'miss' })
         for (const a of f.addresses) steps.push(asked(a, 1800, 'error', { error: 'upstream timeout' }))
         const stale = rnd() < 0.5
         if (stale) steps.push({ at_us: us(latency), kind: 'cache', result: 'stale_failure', source: f.addresses[0]! })
-        e = { ...base, latency_us: us(latency), status: 'completed', pipeline: f.id, rule: f.rule, outcome: stale ? 'stale' : 'failed', ...(stale ? { upstream: f.addresses[0]! } : { error: f.addresses.length > 1 ? 'all upstreams failed' : 'upstream timeout' }), rcode: stale ? 'NOERROR' : 'SERVFAIL', answers: stale ? answersFor() : [], steps }
+        e = { ...base, latency_us: us(latency), status: 'completed', pipeline: f.id, rule: f.rule, outcome: stale ? 'stale' : 'failed', ...(stale ? { upstream: f.addresses[0]! } : {}), rcode: stale ? 'NOERROR' : 'SERVFAIL', answers: stale ? answersFor() : [], steps }
       } else if (roll < 0.553) {
         // 到了整体请求超时还没处理完：内核记成取消，客户端收到 SERVFAIL / Unfinished at the overall request timeout: the kernel records
         // it as cancelled and the client gets SERVFAIL

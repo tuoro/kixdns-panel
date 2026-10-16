@@ -9,9 +9,8 @@ import { useConnection } from '../../composables/useConnection'
 import { useToast } from '../../composables/useToast'
 import { readConfig } from '../../config-model/document'
 import { traceNames } from '../../config-model/trace-names'
-import { answerOf, capProblem, clockText, dayText, destinationOptions, detailFacts, domainParts, glueText, hoursProblem, ignoredDomains, isGap, itemOf, latencyText, requestLine, routeOf, sinceText, SLOW_MS, sourceOf, statusOf, stepRows, timeText, type QueryLogContext } from '../../querylog'
+import { answerOf, capProblem, clockText, dayText, destinationOptions, detailFacts, domainParts, glueText, hoursProblem, ignoredDomains, isGap, itemOf, latencyText, literalParts, requestLine, routeOf, sinceText, SLOW_MS, sourceOf, statusOf, stepRows, timeText, type QueryLogContext } from '../../querylog'
 import type { KernelPipeline } from '../../request-destinations'
-import { softBreakParts } from '../../ui/soft-breaks'
 import { errorMessage } from '../../utils'
 // 设置抽屉沿用配置页的抽屉样式（正式落地时挪进组件库） / The settings drawer uses the config page's drawer styles (moved into the kit when this lands)
 import '../../styles/config-v2.css'
@@ -72,6 +71,9 @@ let timer: number | undefined
 // Each reload takes a new generation: a late answer from before (older pages and polls too) that does not match is dropped instead of
 // covering the new one
 let generation = 0
+// 服务端说过的最新编号：轮询只要比它新的，带筛选也只扫这之后的 / The newest id the server has reported: a poll asks only for newer
+// ones, so even a filtered poll scans only what came after it
+let seenId = 0
 // 连不上面板：和运行日志一样，什么都没读到时只留一句「连上面板后自动打开」；连上后马上重读，重读回来之前不闪红字
 // The panel unreachable: as in the runtime log, with nothing read only 连上面板后自动打开 stays; once connected it re-reads at
 // once, and no red notice flashes before that read answers
@@ -80,7 +82,11 @@ const reconnecting = ref(false)
 watch(panelDown, (now, before) => {
   if (!before || now) return
   reconnecting.value = true
-  void Promise.all([ctx.value ? null : loadContext(), load()]).finally(() => { reconnecting.value = false })
+  // 先读配置再读日志：地址栏里的去向要靠配置才认得出来 / The config before the log: a destination in the address bar is recognised only through it
+  void (async () => {
+    if (!ctx.value) await loadContext()
+    await load()
+  })().finally(() => { reconnecting.value = false })
 })
 const waitingForPanel = computed(() => loadError.value !== '' && (panelDown.value || reconnecting.value) && items.value.length === 0)
 
@@ -121,9 +127,12 @@ watch(() => route.query.q, (value) => {
 })
 const ruleTitle = computed(() => (rule.value ? (ctx.value?.names.rule(rule.value) ?? rule.value) : ''))
 const filtered = computed(() => Boolean(q.value.trim() || dest.value || client.value || rule.value || upstream.value))
+const searchInput = ref<HTMLInputElement | null>(null)
 function clearFilters(): void {
   q.value = ''
   setQuery({ q: undefined, dest: undefined, client: undefined, rule: undefined, in: undefined, phase: undefined, upstream: undefined })
+  // 按钮跟着空状态一起没了：焦点放进搜索框 / The button leaves with the empty state: focus goes to the search box
+  void nextTick(() => searchInput.value?.focus())
 }
 function params(extra: Record<string, string> = {}): string {
   const p = new URLSearchParams({ limit: String(PAGE), ...extra })
@@ -155,6 +164,7 @@ async function load(): Promise<void> {
     nextBefore.value = page.next_before
     stoppedAt.value = stoppedOf(page)
     newestMs.value = page.newest_unix_ms
+    seenId = page.newest_id ?? 0
     loadError.value = ''
     unavailable.value = false
     keepSelection()
@@ -203,19 +213,26 @@ const stoppedOf = (page: QueryLogPage) => (page.next_before !== null && page.ite
 // again. At the top with nothing selected they come straight in; while reading further down, with a row selected, or with more than a
 // page of them, they wait in the banner.
 async function poll(): Promise<void> {
-  today.value = Date.now()
+  // 跨了天才换「今天」：每次都换会让整张表每 5 秒重画一遍 / 「Today」 changes only across midnight: changing it every time would
+  // redraw the whole table every 5 seconds
+  const now = Date.now()
+  if (new Date(now).toDateString() !== new Date(today.value).toDateString()) today.value = now
   if (loading.value || !loaded.value || !supported.value || unavailable.value || document.hidden) return
   const mine = generation
   try {
-    const page = await apiRequest<QueryLogPage>(`/api/v1/querylog?${params({ after: String(items.value[0]?.id ?? 0) })}`)
+    const page = await apiRequest<QueryLogPage>(`/api/v1/querylog?${params({ after: String(seenId) })}`)
     if (mine !== generation || loading.value) return
     newestMs.value = page.newest_unix_ms
+    seenId = Math.max(seenId, page.newest_id ?? 0)
     const newer = page.items.map(itemOf)
-    if (!newer.length) return
+    // 还有没取完的（多过一页，或者扫到上限）：不往列表里塞，免得中间留洞 / More than was taken (over a page, or the scan limit): nothing
+    // goes into the list, so no hole is left in it
     const more = page.next_before !== null
-    if (!more && atTop.value && selected.value === null) { prepend(newer); return }
-    fresh.value = newer
-    freshMore.value = more
+    if (!newer.length && !more) return
+    if (!more && !fresh.value && atTop.value && selected.value === null) { prepend(newer); return }
+    const waiting = [...newer, ...(fresh.value ?? [])]
+    fresh.value = waiting.slice(0, PAGE)
+    freshMore.value = freshMore.value || more || waiting.length > PAGE
   } catch { /* 下一轮再试；连不上由顶上的横幅说 / Try again next round; an unreachable panel is the top banner's to say */ }
 }
 function prepend(newer: QueryLogItem[]): void {
@@ -227,7 +244,10 @@ function prepend(newer: QueryLogItem[]): void {
   stoppedAt.value = null
 }
 const freshCount = computed(() => (fresh.value ?? []).filter((item) => !isGap(item)).length)
-const freshLabel = computed(() => (freshMore.value ? `有 ${PAGE} 条以上新查询，点击显示` : freshCount.value ? `有 ${freshCount.value} 条新查询，点击显示` : null))
+const freshLabel = computed(() => {
+  if (freshMore.value) return freshCount.value >= PAGE ? `有 ${PAGE} 条以上新查询，点击显示` : '有新查询，点击显示'
+  return freshCount.value ? `有 ${freshCount.value} 条新查询，点击显示` : null
+})
 // 手机上列表不另开滚动框，整页滚：点开一行的处理过程比半屏高，套两层滚动看不全；顶部、到底都按页面算。
 // 宽屏照运行日志，列表自己滚，工具行一直在。
 // On phones the list has no scroller of its own and the page scrolls: an opened row's steps run taller than half a screen, and two
@@ -295,6 +315,7 @@ const detailTab = ref<'summary' | 'steps'>('summary')
 const DETAIL_TABS = [{ value: 'summary', label: '概况' }, { value: 'steps', label: '处理过程' }]
 const sheet = ref<HTMLDialogElement | null>(null)
 const rowEl = (id: number) => stream.value?.querySelector<HTMLButtonElement>(`.qlog-row[data-id="${id}"]`) ?? null
+const listed = (id: number) => items.value.some((item) => !isGap(item) && item.id === id)
 // 选中的那一条写在地址栏里（id）：从规则页、诊断页回来或者刷新，详情还开着 / The selected entry lives in the address bar (id): coming back
 // from the rules or diagnostics page, or reloading, finds the detail still open
 function writeId(id: number | null): void {
@@ -302,38 +323,86 @@ function writeId(id: number | null): void {
   if (said === (id === null ? null : String(id))) return
   void router.replace({ query: { ...route.query, id: id === null ? undefined : String(id) } })
 }
-function open(id: number): void {
+// 手机上点开详情在浏览历史里多记一步：返回手势（iPhone 左滑也一样）先关详情，再返回才离开页面
+// On phones opening the detail adds a history step: the back gesture (iPhone swipe-back too) closes the detail first, and only the next
+// one leaves the page
+let pushedSheet = false
+function open(id: number, how: { push?: boolean; focus?: boolean } = {}): void {
   selected.value = id
-  writeId(id)
+  if (phone.value && how.push) {
+    pushedSheet = true
+    void router.push({ query: { ...route.query, id: String(id) } })
+  } else writeId(id)
   if (phone.value) { void nextTick(() => { if (sheet.value && !sheet.value.open) sheet.value.showModal() }); return }
   // 详情升起来以后，选中的行不能被它盖住 / Once the detail rises, the selected row must not sit under it
-  void nextTick(() => rowEl(id)?.scrollIntoView({ block: 'nearest' }))
+  void nextTick(() => {
+    const row = rowEl(id)
+    row?.scrollIntoView({ block: 'nearest' })
+    if (how.focus) row?.focus({ preventScroll: true })
+  })
 }
 function select(id: number): void {
   if (selected.value === id) closeDetail()
-  else open(id)
+  else open(id, { push: true })
 }
-// 手机详情被 Esc、返回关掉：选中跟着清掉 / The phone sheet closed by Esc or back: the selection clears with it
+// 收起以后把地址栏里的 id 去掉：打开时记过一步历史的退回去，不然原地换掉 / After closing, the id leaves the address bar: a history step
+// added on opening is gone back over, otherwise the address is replaced in place
+function forget(): void {
+  if (pushedSheet) { pushedSheet = false; router.back() }
+  else writeId(null)
+}
+// 手机详情被 Esc、安卓的返回关掉：选中跟着清掉，焦点回到那一行 / The phone sheet closed by Esc or Android's back: the selection
+// clears with it and focus returns to the row
 function onSheetClose(): void {
-  if (selected.value === null) return
+  const was = selected.value
+  if (was === null) return
   selected.value = null
-  writeId(null)
+  forget()
+  void nextTick(() => rowEl(was)?.focus({ preventScroll: true }))
 }
 function closeDetail(restoreFocus = true): void {
   const was = selected.value
-  if (sheet.value?.open) sheet.value.close()
+  // 先清选中：关掉整屏详情时触发的 close 就不再重复收一遍 / The selection clears first, so the close event the sheet fires does nothing more
   selected.value = null
-  writeId(null)
+  if (sheet.value?.open) sheet.value.close()
+  if (was !== null) forget()
   if (restoreFocus && was !== null) void nextTick(() => rowEl(was)?.focus({ preventScroll: true }))
 }
-// 重读以后：选中的那条还在就接着开着，不在了才收起（手机上把空着的整屏详情也关掉）；地址栏里带着的那条第一次读到时打开
-// After a reload: the selected entry stays open while it is still listed and closes only when it is gone (on phones the emptied sheet
-// closes too); the one named in the address bar opens the first time it is read
+// 返回手势、浏览器后退把 id 退掉了：详情跟着关，不再动地址栏 / The back gesture or the browser's back took the id away: the detail
+// closes with it and the address bar is left alone
+watch(() => route.query.id, (id) => {
+  if (id !== undefined || selected.value === null) return
+  const was = selected.value
+  pushedSheet = false
+  selected.value = null
+  if (sheet.value?.open) sheet.value.close()
+  void nextTick(() => rowEl(was)?.focus({ preventScroll: true }))
+})
+// 手机和宽屏之间转过来（转屏）：选中的那条在手机上要有整屏详情 / Turning between phone and wide layouts: on a phone the selected entry
+// needs its sheet
+watch(phone, (now) => {
+  if (now && selected.value !== null) void nextTick(() => { if (sheet.value && !sheet.value.open) sheet.value.showModal() })
+})
+// 重读以后：选中的那条还在就接着开着，不在了才收起；地址栏里带着的那条第一次读到时打开，比第一页早的往前多读几页找它
+// After a reload: the selected entry stays open while it is still listed and closes only when it is gone; the one named in the address
+// bar opens the first time it is read, and one older than the first page is looked for a few pages back
 function keepSelection(): void {
+  const fromUrl = selected.value === null
   const wanted = selected.value ?? (route.query.id ? Number(route.query.id) : null)
-  if (wanted === null) return
-  if (items.value.some((item) => !isGap(item) && item.id === wanted)) { if (selected.value === null) open(wanted); return }
+  if (wanted === null || Number.isNaN(wanted)) return
+  if (listed(wanted)) { if (fromUrl) open(wanted, { focus: true }); return }
+  if (fromUrl) { const mine = generation; void nextTick(() => reveal(wanted, mine)); return }
   closeDetail(false)
+}
+async function reveal(wanted: number, mine: number): Promise<void> {
+  for (let page = 0; page < 5 && mine === generation && !listed(wanted) && nextBefore.value !== null; page++) {
+    const last = items.value[items.value.length - 1]
+    if (last && last.id < wanted) break
+    await loadOlder()
+  }
+  if (mine !== generation) return
+  if (listed(wanted)) open(wanted, { focus: true })
+  else writeId(null)
 }
 // 上下键在行之间移动，Esc 在表格和详情里任何地方都能关掉详情（和 Surge 的请求列表一样）
 // Up and down move between rows, and Esc closes the detail from anywhere in the table or the detail (as in Surge's request list)
@@ -342,7 +411,11 @@ function onKey(event: KeyboardEvent): void {
   if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
   if (!(event.target as HTMLElement | null)?.closest('.qlog-row')) return
   const list = items.value.filter((item): item is QueryLogEntry => !isGap(item))
-  const at = list.findIndex((item) => item.id === selected.value)
+  // 从选中的那行走；没有选中时从有焦点的那行走（关掉详情、继续往前查以后） / Move from the selected row, or from the focused one when
+  // nothing is selected (after closing the detail or 继续往前查)
+  const focused = Number((event.target as HTMLElement).closest('.qlog-row')?.getAttribute('data-id'))
+  const base = selected.value ?? (Number.isNaN(focused) ? null : focused)
+  const at = list.findIndex((item) => item.id === base)
   const next = list[at < 0 ? 0 : Math.min(list.length - 1, Math.max(0, at + (event.key === 'ArrowDown' ? 1 : -1)))]
   if (!next) return
   event.preventDefault()
@@ -365,7 +438,15 @@ function onlyClient(entry: QueryLogEntry): void {
   setQuery({ client: entry.client })
 }
 // 手机详情里点「只看这个客户端」：先收起详情再筛 / 只看这个客户端 in the phone detail: close the sheet first, then filter
-function onlyClientFromSheet(entry: QueryLogEntry): void { const at = entry.client; closeDetail(); setQuery({ client: at }) }
+function onlyClientFromSheet(entry: QueryLogEntry): void {
+  const at = entry.client
+  // 打开时记的那一步历史不退回，直接换成筛过的地址：返回就回到没筛的列表 / The history step added on opening is not gone back over but
+  // replaced with the filtered address, so back returns to the unfiltered list
+  pushedSheet = false
+  selected.value = null
+  if (sheet.value?.open) sheet.value.close()
+  setQuery({ client: at, id: undefined })
+}
 // 规则：打开规则页的快速添加，域名填好 / A rule: opens quick add on the rules page with the domain filled in
 const ruleLink = (entry: QueryLogEntry) => ({ path: '/config', query: { quick: entry.qname } })
 const diagLink = (entry: QueryLogEntry) => ({ path: '/diagnostics', query: { domain: entry.qname, type: entry.qtype, client: entry.client } })
@@ -374,7 +455,11 @@ const notRecorded = (qname: string) => Boolean(settings.value?.ignored_domains.s
 // 不再记录：先读一遍最新的设置再加，别处刚改过的不会被盖掉；撤销也只去掉这一个
 // Stop recording: the latest settings are read first and the domain added to them, so a change made elsewhere is not overwritten;
 // undo removes only this one
+// 连点两下只算一次 / A double click counts once
+let ignoring = false
 async function ignoreDomain(entry: QueryLogEntry): Promise<void> {
+  if (ignoring) return
+  ignoring = true
   try {
     const latest = await apiRequest<QueryLogSettings>('/api/v1/querylog/settings')
     settings.value = latest
@@ -383,6 +468,8 @@ async function ignoreDomain(entry: QueryLogEntry): Promise<void> {
     toast.undoable(`以后不再记录 ${entry.qname} 和它的子域名`, () => { void undoIgnore(entry.qname) })
   } catch (error) {
     toast.error(`没能改设置：${errorMessage(error)}`)
+  } finally {
+    ignoring = false
   }
 }
 async function undoIgnore(qname: string): Promise<void> {
@@ -446,7 +533,27 @@ async function openSettings(): Promise<void> {
   serverProblem.value = null
   await nextTick()
   drawer.value?.showModal()
+  // 手机上同详情一样记一步历史：返回手势先关设置 / On phones, as for the detail, a history step: the back gesture closes the settings first
+  if (phone.value) {
+    pushedDrawer = true
+    void router.push({ query: { ...route.query, settings: '1' } })
+  }
 }
+let pushedDrawer = false
+function onDrawerClose(): void {
+  if (!pushedDrawer) return
+  pushedDrawer = false
+  router.back()
+}
+// 正在保存时 Esc 不关：关了就看不到保存失败的提示 / Esc does not close while saving: closed, a failed save would go unseen
+function onDrawerCancel(event: Event): void { if (settingsBusy.value) event.preventDefault() }
+watch(() => route.query.settings, (value) => {
+  if (value !== undefined || !drawer.value?.open) return
+  pushedDrawer = false
+  drawer.value.close()
+})
+// 改了框里的内容，服务端上次说的错就不算了 / Editing a field clears what the server said about the last attempt
+watch(draft, () => { serverProblem.value = null }, { deep: true })
 async function saveSettings(): Promise<void> {
   touched.value.submitted = true
   serverProblem.value = null
@@ -508,7 +615,9 @@ watch([newestMs, today, loaded, loadError, items], () => {
   emit('facts', [`最近一条 ${newestMs.value ? timeText(newestMs.value, today.value) : '—'}`])
 }, { immediate: true })
 
-watch(() => [route.query.q, route.query.dest, route.query.client, route.query.rule, route.query.in, route.query.phase, route.query.upstream], () => { void load() })
+// 每个筛选各看各的：写 id、settings 这类不是筛选的参数不会触发重读 / Each filter is watched on its own, so writing a parameter that is
+// not a filter (id, settings) never triggers a reload
+watch([() => route.query.q, () => route.query.dest, () => route.query.client, () => route.query.rule, () => route.query.in, () => route.query.phase, () => route.query.upstream], () => { void load() })
 onMounted(async () => {
   // 配置、日志、设置一起读：日志先到就先画，名字等配置到了再换成配置页上的叫法；慢网络上少等两趟。地址栏里带着去向时先等配置，
   // 上游组这类去向要靠配置才认得出来
@@ -516,6 +625,8 @@ onMounted(async () => {
   // page's once the config arrives; on a slow network that saves two round trips. With a destination in the address bar the config comes
   // first, since destinations such as an upstream group are recognised only through it
   void apiRequest<QueryLogSettings>('/api/v1/querylog/settings').then((s) => { settings.value = s }, () => { /* 设置抽屉打开时再读 / Read again when the drawer opens */ })
+  // 刷新时地址栏里还挂着设置那一步：去掉，不自己打开 / A reload with the settings step still in the address bar: it is dropped, not reopened
+  if (route.query.settings !== undefined) setQuery({ settings: undefined })
   if (dest.value) {
     await loadContext()
     // 认不出的去向（比如删掉的组）：从地址栏去掉，不在空的下拉框下面悄悄列出全部 / A destination not recognised (a deleted group, say)
@@ -541,17 +652,19 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
   <div v-else-if="loadError && !panelDown && !reconnecting" class="ui-notice ui-notice--err logs-notice" role="alert">
     <CircleAlert :size="16" aria-hidden="true" />
     <span>{{ entries.length ? '数据可能已过期' : '读取失败' }}</span>
-    <small>{{ loadError }}</small>
+    <small><template v-for="(run, k) in glued(loadError)" :key="k"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></small>
     <!-- 目录打不开时重试没用，要重启面板 / With the directory unusable a retry cannot help; the panel needs a restart -->
     <button v-if="!unavailable" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="loading" @click="load">重试</button>
   </div>
   <p v-else-if="waitingForPanel" class="ui-notice ui-notice--off logs-notice" role="status"><Clock :size="16" aria-hidden="true" /><span>连上面板后自动打开</span></p>
   <!-- 换成了不支持查询日志的内核：以前记下的照样能看，上面说一句 / Switched to a kernel without the query log: what was recorded before can still be read, with a line above -->
   <p v-if="!supported && entries.length" class="ui-notice ui-notice--off logs-notice" role="status"><FileSearch :size="16" aria-hidden="true" /><span>当前内核不支持查询日志，下面是以前记下的；新的查询要更新内核后才会记录</span><RouterLink class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" to="/system">去系统页</RouterLink></p>
-  <section v-if="(supported || entries.length) && !waitingForPanel" class="log-console ui-card qlog" role="tabpanel" aria-labelledby="logs-tab-query">
+  <!-- 目录打不开、一条也没有：只留上面那条提示，不摆一排用不了的工具 / The directory unusable and nothing listed: only the notice above
+       stays, with no row of tools that cannot work -->
+  <section v-if="(supported || entries.length) && !waitingForPanel && !(unavailable && !entries.length)" class="log-console ui-card qlog" role="tabpanel" aria-labelledby="logs-tab-query">
     <!-- 工具行：搜索、去向、右端设置和下载 / The toolbar: search, destination, settings and download at the right end -->
     <header class="log-toolbar">
-      <label class="ui-input log-search"><Search :size="16" aria-hidden="true" /><input v-model="q" aria-label="搜索域名或客户端" placeholder="搜索域名或客户端" autocapitalize="off" spellcheck="false" /></label>
+      <label class="ui-input log-search"><Search :size="16" aria-hidden="true" /><input ref="searchInput" v-model="q" aria-label="搜索域名或客户端" placeholder="搜索域名或客户端" autocapitalize="off" spellcheck="false" /></label>
       <UiSelect class="qlog-dest" :model-value="dest" :options="options" label="按去向筛选" @update:model-value="setQuery({ dest: $event || undefined })" />
       <div class="log-toolbar__end">
         <button class="ui-btn ui-btn--secondary ui-btn--icon" type="button" title="查询日志设置" aria-label="查询日志设置" @click="openSettings"><SlidersHorizontal :size="16" aria-hidden="true" /></button>
@@ -562,17 +675,17 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
     <div v-if="client || rule || upstream" class="qlog-filters">
       <span v-if="client" class="qlog-filter">客户端 <span class="qlog-lit">{{ client }}</span><button type="button" :aria-label="`去掉筛选：客户端 ${client}`" @click="setQuery({ client: undefined })"><X :size="14" aria-hidden="true" /></button></span>
       <span v-if="rule" class="qlog-filter">{{ rulePhase ? '回答后检查' : '规则' }}「{{ ruleTitle }}」<button type="button" :aria-label="`去掉筛选：${rulePhase ? '回答后检查' : '规则'}「${ruleTitle}」`" @click="setQuery({ rule: undefined, in: undefined, phase: undefined })"><X :size="14" aria-hidden="true" /></button></span>
-      <span v-if="upstream" class="qlog-filter">问过上游 <span class="qlog-lit">{{ upstream }}</span><button type="button" :aria-label="`去掉筛选：上游 ${upstream}`" @click="setQuery({ upstream: undefined })"><X :size="14" aria-hidden="true" /></button></span>
+      <span v-if="upstream" class="qlog-filter">问过上游 <span class="qlog-lit">{{ upstream }}</span><button type="button" :aria-label="`去掉筛选：问过上游 ${upstream}`" @click="setQuery({ upstream: undefined })"><X :size="14" aria-hidden="true" /></button></span>
     </div>
     <!-- 表格和详情：宽屏上详情在表格下方，表格不变形；手机上详情从底边升起 / The table and the detail: on wide screens the detail sits under the table, which keeps its shape; on phones it rises from the bottom -->
     <div class="qlog-body" @keydown="onKey">
       <!-- 换筛选读回来之前旧的行变淡、点不了 / Until a filter change's read lands, the old rows fade and cannot be clicked -->
-      <div ref="stream" class="qlog-stream" :class="{ 'is-loading': loading && entries.length, 'is-one-client': Boolean(client), 'is-empty': !entries.length && !loading }" :aria-busy="loading || undefined" @scroll.passive="onScroll">
+      <div ref="stream" class="qlog-stream" :class="{ 'is-loading': loading && entries.length, 'is-one-client': Boolean(client), 'is-empty': !entries.length && !loading, 'has-banner': Boolean(freshLabel) }" :aria-busy="loading || undefined" @scroll.passive="onScroll">
         <div v-if="entries.length" class="qlog-head" aria-hidden="true"><span></span><span class="ui-lbl">时间</span><span class="ui-lbl qlog-head-client">客户端</span><span class="ui-lbl">域名</span><span class="ui-lbl qlog-head-type">类型</span><span class="ui-lbl">去向</span><span class="ui-lbl qlog-c-answer">回答</span><span class="ui-lbl qlog-c-source">来源</span><span class="ui-lbl qlog-num">耗时</span></div>
         <UiNewItemsBanner v-if="freshLabel" :label="freshLabel" :loading="loading" @show="showFresh" />
         <div v-if="loading && !entries.length" class="log-skeleton" role="status" aria-label="正在读取查询日志"><i v-for="n in 12" :key="n" class="sk"></i></div>
         <template v-for="(item, index) in entries" :key="item.id">
-          <p v-if="dayBreak(index)" class="qlog-day" role="separator">{{ dayBreak(index) }}</p>
+          <p v-if="dayBreak(index)" class="qlog-day">{{ dayBreak(index) }}</p>
           <!-- 漏记的一段：照实说，不悄悄缺 / A gap: said plainly, never a silent hole -->
           <p v-if="isGap(item)" class="qlog-gap" role="note">这里漏记了 {{ item.gap }} 条：KixDNS 当时太忙没记下，或者面板没来得及取走</p>
           <button v-else class="qlog-row" :class="{ 'is-selected': selected === item.id }" type="button" :data-id="item.id" :tabindex="tabStop === item.id ? 0 : -1" :aria-current="selected === item.id ? 'true' : undefined" @click="select(item.id)">
@@ -598,7 +711,7 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
           <button class="ui-btn ui-btn--secondary qlog-continue" type="button" @click="continueOlder">继续往前查</button>
         </UiEmpty>
         <!-- 清空以后日志本来就是空的：不管有没有筛选，都说还没有查询 / After a clear the log is empty: whatever the filters, it says there are no queries yet -->
-        <UiEmpty v-if="!loading && !entries.length && !loadError && stoppedAt === null" :icon="FileSearch" :title="filtered && newestMs !== null ? '没有符合条件的查询' : '还没有查询'" :desc="filtered && newestMs !== null ? '清空搜索，或去掉上面的筛选' : '有设备来解析域名，就会出现在这里。'">
+        <UiEmpty v-if="!loading && !entries.length && !loadError && stoppedAt === null" :icon="FileSearch" :title="filtered && newestMs !== null ? '没有符合条件的查询' : '还没有查询'" :desc="filtered && newestMs !== null ? (q.trim() ? '换个搜索词，或者清除筛选' : '清除筛选就能看到全部查询') : '有设备来解析域名，就会出现在这里。'">
           <button v-if="filtered && newestMs !== null" class="ui-btn ui-btn--secondary" type="button" @click="clearFilters">清除筛选</button>
         </UiEmpty>
       </div>
@@ -625,8 +738,8 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
           <div v-if="detailTab === 'summary'" class="qlog-facts">
             <div v-for="fact in factsOf(current)" :key="fact.key" class="qlog-fact" :class="fact.tone && `is-${fact.tone}`">
               <span class="ui-lbl">{{ fact.label }}</span>
-              <p v-for="(line, at) in fact.lead" :key="at" class="qlog-fact__lead"><template v-for="(part, i) in line" :key="i"><span v-if="part.literal" class="qlog-lit qlog-literal"><template v-for="(seg, j) in softBreakParts(part.text)" :key="j"><wbr v-if="j" /><span>{{ seg }}</span></template></span><template v-else><template v-for="(run, k) in glued(part.text)" :key="`g${k}`"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></template></template></p>
-              <p v-if="fact.sub.length" class="qlog-fact__sub"><template v-for="(part, i) in fact.sub" :key="i"><span v-if="part.literal" class="qlog-lit qlog-literal"><template v-for="(seg, j) in softBreakParts(part.text)" :key="j"><wbr v-if="j" /><span>{{ seg }}</span></template></span><template v-else><template v-for="(run, k) in glued(part.text)" :key="`g${k}`"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></template></template></p>
+              <p v-for="(line, at) in fact.lead" :key="at" class="qlog-fact__lead"><template v-for="(part, i) in line" :key="i"><span v-if="part.literal" class="qlog-lit qlog-literal"><template v-for="(seg, j) in literalParts(part.text)" :key="j"><wbr v-if="j" /><span :class="{ 'qlog-keep': seg.keep }">{{ seg.text }}</span></template></span><template v-else><template v-for="(run, k) in glued(part.text)" :key="`g${k}`"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></template></template></p>
+              <p v-if="fact.sub.length" class="qlog-fact__sub"><template v-for="(part, i) in fact.sub" :key="i"><span v-if="part.literal" class="qlog-lit qlog-literal"><template v-for="(seg, j) in literalParts(part.text)" :key="j"><wbr v-if="j" /><span :class="{ 'qlog-keep': seg.keep }">{{ seg.text }}</span></template></span><template v-else><template v-for="(run, k) in glued(part.text)" :key="`g${k}`"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></template></template></p>
             </div>
           </div>
           <ol v-else class="ui-steps qlog-steps">
@@ -634,8 +747,8 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
               <span class="ui-step__time">{{ latencyText(row.at) }}</span>
               <span class="ui-step__mark" aria-hidden="true"><Check v-if="row.tone === 'ok' && row.decides" :size="12" /><X v-else-if="row.tone === 'err'" :size="12" /><i v-else></i></span>
               <div class="ui-step__body">
-                <p class="ui-step__what"><template v-for="(part, at) in row.lead" :key="at"><span v-if="part.literal" class="qlog-lit qlog-literal"><template v-for="(seg, i) in softBreakParts(part.text)" :key="i"><wbr v-if="i" /><span>{{ seg }}</span></template></span><template v-else><template v-for="(run, k) in glued(part.text)" :key="`g${k}`"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></template></template></p>
-                <p v-if="row.note.length" class="ui-step__why"><template v-for="(part, at) in row.note" :key="at"><span v-if="part.literal" class="qlog-lit qlog-literal"><template v-for="(seg, i) in softBreakParts(part.text)" :key="i"><wbr v-if="i" /><span>{{ seg }}</span></template></span><template v-else><template v-for="(run, k) in glued(part.text)" :key="`g${k}`"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></template></template></p>
+                <p class="ui-step__what"><template v-for="(part, at) in row.lead" :key="at"><span v-if="part.literal" class="qlog-lit qlog-literal"><template v-for="(seg, i) in literalParts(part.text)" :key="i"><wbr v-if="i" /><span :class="{ 'qlog-keep': seg.keep }">{{ seg.text }}</span></template></span><template v-else><template v-for="(run, k) in glued(part.text)" :key="`g${k}`"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></template></template></p>
+                <p v-if="row.note.length" class="ui-step__why"><template v-for="(part, at) in row.note" :key="at"><span v-if="part.literal" class="qlog-lit qlog-literal"><template v-for="(seg, i) in literalParts(part.text)" :key="i"><wbr v-if="i" /><span :class="{ 'qlog-keep': seg.keep }">{{ seg.text }}</span></template></span><template v-else><template v-for="(run, k) in glued(part.text)" :key="`g${k}`"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></template></template></p>
               </div>
             </li>
           </ol>
@@ -659,8 +772,8 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
         <div class="qlog-facts">
           <div v-for="fact in factsOf(current)" :key="fact.key" class="qlog-fact" :class="fact.tone && `is-${fact.tone}`">
             <span class="ui-lbl">{{ fact.label }}</span>
-            <p v-for="(line, at) in fact.lead" :key="at" class="qlog-fact__lead"><template v-for="(part, i) in line" :key="i"><span v-if="part.literal" class="qlog-lit qlog-literal"><template v-for="(seg, j) in softBreakParts(part.text)" :key="j"><wbr v-if="j" /><span>{{ seg }}</span></template></span><template v-else><template v-for="(run, k) in glued(part.text)" :key="`g${k}`"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></template></template></p>
-            <p v-if="fact.sub.length" class="qlog-fact__sub"><template v-for="(part, i) in fact.sub" :key="i"><span v-if="part.literal" class="qlog-lit qlog-literal"><template v-for="(seg, j) in softBreakParts(part.text)" :key="j"><wbr v-if="j" /><span>{{ seg }}</span></template></span><template v-else><template v-for="(run, k) in glued(part.text)" :key="`g${k}`"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></template></template></p>
+            <p v-for="(line, at) in fact.lead" :key="at" class="qlog-fact__lead"><template v-for="(part, i) in line" :key="i"><span v-if="part.literal" class="qlog-lit qlog-literal"><template v-for="(seg, j) in literalParts(part.text)" :key="j"><wbr v-if="j" /><span :class="{ 'qlog-keep': seg.keep }">{{ seg.text }}</span></template></span><template v-else><template v-for="(run, k) in glued(part.text)" :key="`g${k}`"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></template></template></p>
+            <p v-if="fact.sub.length" class="qlog-fact__sub"><template v-for="(part, i) in fact.sub" :key="i"><span v-if="part.literal" class="qlog-lit qlog-literal"><template v-for="(seg, j) in literalParts(part.text)" :key="j"><wbr v-if="j" /><span :class="{ 'qlog-keep': seg.keep }">{{ seg.text }}</span></template></span><template v-else><template v-for="(run, k) in glued(part.text)" :key="`g${k}`"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></template></template></p>
           </div>
         </div>
         <span class="ui-lbl qlog-sheet__label">处理过程</span>
@@ -669,8 +782,8 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
             <span class="ui-step__time">{{ latencyText(row.at) }}</span>
             <span class="ui-step__mark" aria-hidden="true"><Check v-if="row.tone === 'ok' && row.decides" :size="12" /><X v-else-if="row.tone === 'err'" :size="12" /><i v-else></i></span>
             <div class="ui-step__body">
-              <p class="ui-step__what"><template v-for="(part, at) in row.lead" :key="at"><span v-if="part.literal" class="qlog-lit qlog-literal"><template v-for="(seg, i) in softBreakParts(part.text)" :key="i"><wbr v-if="i" /><span>{{ seg }}</span></template></span><template v-else><template v-for="(run, k) in glued(part.text)" :key="`g${k}`"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></template></template></p>
-              <p v-if="row.note.length" class="ui-step__why"><template v-for="(part, at) in row.note" :key="at"><span v-if="part.literal" class="qlog-lit qlog-literal"><template v-for="(seg, i) in softBreakParts(part.text)" :key="i"><wbr v-if="i" /><span>{{ seg }}</span></template></span><template v-else><template v-for="(run, k) in glued(part.text)" :key="`g${k}`"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></template></template></p>
+              <p class="ui-step__what"><template v-for="(part, at) in row.lead" :key="at"><span v-if="part.literal" class="qlog-lit qlog-literal"><template v-for="(seg, i) in literalParts(part.text)" :key="i"><wbr v-if="i" /><span :class="{ 'qlog-keep': seg.keep }">{{ seg.text }}</span></template></span><template v-else><template v-for="(run, k) in glued(part.text)" :key="`g${k}`"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></template></template></p>
+              <p v-if="row.note.length" class="ui-step__why"><template v-for="(part, at) in row.note" :key="at"><span v-if="part.literal" class="qlog-lit qlog-literal"><template v-for="(seg, i) in literalParts(part.text)" :key="i"><wbr v-if="i" /><span :class="{ 'qlog-keep': seg.keep }">{{ seg.text }}</span></template></span><template v-else><template v-for="(run, k) in glued(part.text)" :key="`g${k}`"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></template></template></p>
             </div>
           </li>
         </ol>
@@ -684,7 +797,7 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
     </div>
   </dialog>
 
-  <dialog ref="drawer" class="pdrawer qlog-drawer" aria-labelledby="ql-settings-title" @pointerdown="onPress" @click="onBackdrop($event, () => drawer?.close())">
+  <dialog ref="drawer" class="pdrawer qlog-drawer" aria-labelledby="ql-settings-title" @close="onDrawerClose" @cancel="onDrawerCancel" @pointerdown="onPress" @click="onBackdrop($event, () => { if (!settingsBusy) drawer?.close() })">
     <form class="pdrawer__panel" novalidate @submit.prevent="saveSettings">
       <header class="pdrawer__head">
         <h2 id="ql-settings-title">查询日志设置</h2>
@@ -716,7 +829,7 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
         <p v-if="problems.form" class="ui-field-error" role="alert">{{ problems.form }}</p>
       </div>
       <footer class="pdrawer__foot">
-        <button class="ui-btn ui-btn--secondary" type="button" @click="drawer?.close()">取消</button>
+        <button class="ui-btn ui-btn--secondary" type="button" :disabled="settingsBusy" @click="drawer?.close()">取消</button>
         <button class="ui-btn ui-btn--primary" type="submit" :disabled="settingsBusy" :aria-busy="settingsBusy || undefined">保存</button>
       </footer>
     </form>
@@ -753,7 +866,7 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
   .logs-page :is(.qlog-c-type, .qlog-head-type) { display: none; }
   .logs-page .qlog-c-name { display: flex; align-items: baseline; gap: var(--s-2); }
   .logs-page .qlog-c-name > .qlog-lit { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  .logs-page .qlog-phone-type { display: inline; flex: 0 0 auto; color: var(--l-ink-3); font-size: var(--t-1); }
+  .logs-page .qlog-row .qlog-phone-type { display: inline; flex: 0 0 auto; color: var(--l-ink-3); font-size: var(--t-1); }
 }
 /* 按客户端筛选时客户端一列每行都一样：收起来，让给域名 / Filtered by client, the client column repeats one address: it folds and gives its room to the domain */
 .logs-page .qlog-stream.is-one-client :is(.qlog-head, .qlog-row) { grid-template-columns: var(--size-dot) 4.25rem minmax(9rem, 1.6fr) 3rem minmax(8rem, 1fr) minmax(8.5rem, 1fr) minmax(8rem, .8fr) 3.75rem; }
@@ -770,7 +883,9 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
 .logs-page .qlog-row.is-selected :is(.qlog-c-time, .qlog-c-type, .qlog-c-rule, .qlog-more-n, .qlog-c-answer.is-muted) { color: var(--l-ink-2); }
 .logs-page .qlog-row:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 /* 换了筛选、新的还没读回来：旧的行变淡、点不了 / Filters changed and the new rows not back yet: the old rows fade and cannot be clicked */
-.logs-page .qlog-stream.is-loading .qlog-row { opacity: .5; pointer-events: none; }
+.logs-page .qlog-stream.is-loading :is(.qlog-row, .qlog-day, .qlog-gap) { opacity: .5; pointer-events: none; }
+/* 新查询的提示条也吸在顶上：逐行往上时行停在表头和提示条下面 / The new-queries banner sticks too: stepping up parks the row below both the head and the banner */
+.logs-page .qlog-stream.has-banner { scroll-padding-top: calc(var(--h-md) * 2 + 1px); }
 @media (hover: hover) { .logs-page .qlog-row:not(.is-selected):hover { background: var(--l-sunk); } }
 .logs-page .qlog-row > :not(.qlog-dot) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .logs-page .qlog-dot--off { background: var(--l-ink-3); }
@@ -787,7 +902,7 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
 /* 一行只有一个告警色：失败的行回答已经是红的，慢不再标琥珀 / One warning colour per row: a failed row's answer is red already, so its latency is not amber too */
 .logs-page .qlog-phone, .logs-page .qlog-phone-type { display: none; }
 /* 漏记的一段和日期分隔：和行一样 32 高 / A gap and a date divider: 32 tall like a row */
-.logs-page .qlog-gap { display: flex; align-items: center; min-height: var(--s-6); margin: 0; padding: 0 var(--s-5); background: var(--l-sunk); color: var(--l-ink-2); font-size: var(--t-2); }
+.logs-page .qlog-gap { display: flex; align-items: center; min-height: var(--s-6); margin: 0; padding: var(--s-1) var(--s-5); background: var(--l-sunk); color: var(--l-ink-2); font-size: var(--t-2); }
 .logs-page .qlog-day { display: flex; align-items: center; min-height: var(--s-6); margin: 0; padding: 0 var(--s-5); border-bottom: 1px solid var(--l-hair); color: var(--l-ink-3); font-size: var(--t-2); font-weight: var(--w-medium); }
 .logs-page .qlog-more { margin: 0; padding: var(--s-3) var(--s-5); color: var(--l-ink-3); font-size: var(--t-2); }
 /* 找到哪儿了、接着找：一行字后面跟按钮，窄了按钮换到下一行 / How far it got and going on: a line of text with the button after it, wrapping on narrow screens */
@@ -826,7 +941,6 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
 .qlog-fact.is-err .qlog-fact__lead { color: var(--err-l); }
 .qlog-fact.is-warn .qlog-fact__lead { color: var(--warn-l); }
 /* 步骤里的地址只在目录边界的「/」后面断，不在连字符处断 / An address in a step wraps only after a directory 「/」, never at a hyphen */
-.qlog-literal > span { white-space: nowrap; }
 /* 显示时不拆开的那几段（名字、常用词、句末两个字） / Runs kept whole on display (names, common words, the last two characters) */
 .qlog-keep { white-space: nowrap; }
 /* 详情窄（侧栏版 861–935、641–700）：三块概况并成一块，四个去处占满一行、两端对齐 / A narrow detail (861–935 and 641–700 with the
@@ -838,7 +952,9 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
   .qlog-pane__actions { flex: 1 1 100%; justify-content: space-between; margin-inline: calc(var(--s-2) * -1); }
 }
 
-.logs-page .qlog-filters { display: flex; flex-wrap: wrap; gap: var(--s-2); padding: var(--s-2) var(--s-5); border-bottom: 1px solid var(--l-hair); }
+/* 筛选标签那一行只占自己的高度：卡片里的 div 默认会被拉伸，列表短时会撑成一大块灰底 / The chip row takes only its own height: a div
+   in the card stretches by default, and with a short list it became a tall grey slab */
+.logs-page .qlog-filters { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: var(--s-2); padding: var(--s-2) var(--s-5); border-bottom: 1px solid var(--l-hair); }
 .logs-page .qlog-filter { display: inline-flex; align-items: center; gap: var(--s-1); padding-left: var(--s-2); border-radius: var(--r-1); background: var(--l-sunk); color: var(--l-ink); font-size: var(--t-2); }
 .logs-page .qlog-filter > button { position: relative; display: inline-grid; place-items: center; width: var(--h-sm); height: var(--h-sm); border: 0; border-radius: var(--r-1); background: none; color: var(--l-ink-3); cursor: pointer; }
 .logs-page .qlog-dest { flex: 0 1 13rem; min-width: 9rem; }

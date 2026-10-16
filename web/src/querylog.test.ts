@@ -3,7 +3,7 @@ import type { QueryLogRecord, QueryLogStepRecord } from './api/types'
 import { compile, upstreamPipelineId } from './config-model/model'
 import { sampleModel } from './config-model/testing/samples'
 import { traceNames } from './config-model/trace-names'
-import { answerOf, capProblem, detailFacts, domainParts, entryOf, errorWord, glueText, hoursProblem, ignoredDomains, latencyText, routeOf, sourceOf, statusOf, stepRows, timeText, upstreamHost, type QueryLogContext } from './querylog'
+import { answerOf, capProblem, dayText, detailFacts, domainParts, entryOf, errorWord, glueText, hoursProblem, ignoredDomains, latencyText, literalParts, routeOf, sourceOf, statusOf, stepRows, timeText, upstreamHost, type QueryLogContext } from './querylog'
 import type { KernelPipeline } from './request-destinations'
 
 function record(steps: QueryLogStepRecord[], extra: Partial<QueryLogRecord> = {}): QueryLogRecord {
@@ -145,7 +145,7 @@ describe('处理过程一步一句', () => {
       '9.9.9.9:53 回了 SERVFAIL，这个回答没用',
       '回答后检查「check」没命中，照用这个回答',
       '再往后的步骤太多，没有记下',
-      '到了整体请求超时，没处理完',
+      '没处理完就结束了',
     ])
   })
 
@@ -155,7 +155,7 @@ describe('处理过程一步一句', () => {
     expect(sourceOf(stale('stale'))).toMatchObject({ text: '过期缓存', tone: '' })
     expect(text(stepRows(stale('stale'), null)[0]!.lead)).toBe('缓存过期了，先回旧结果')
     expect(statusOf(stale('stale_timeout'))).toEqual({ tone: 'warn', label: '过期缓存' })
-    expect(text(stepRows(stale('stale_timeout'), null)[0]!.lead)).toBe('上游没在等待时间内回，先回过期的旧结果')
+    expect(text(stepRows(stale('stale_timeout'), null)[0]!.lead)).toBe('上游在「客户端等待」时间内没回，先回过期的旧结果')
     expect(text(detailFacts(stale('stale_failure'), null)[1]!.sub)).toBe('上游都失败了，回了过期的旧结果')
   })
 
@@ -186,8 +186,31 @@ describe('处理过程一步一句', () => {
     expect(answerOf(entry).text).toBe('超时')
     const failed = stepRows(entry, null)[0]!
     expect(text(failed.lead)).toBe('1.1.1.1:53 超时')
-    expect(text(failed.note)).toBe('UDP · upstream timeout')
+    // 原文单独一行，不和协议名用「·」接着 / The original alone on its line, not joined to the protocol with 「·」
+    expect(text(failed.note)).toBe('upstream timeout')
     expect(answerOf({ ...entry, error: 'something new' }).text).toBe('SERVFAIL')
+  })
+
+  it('上游失败时内核不在记录上写原因：原因从问过的上游的步骤里取', () => {
+    const entry = entryOf(record([
+      { at_us: 0, kind: 'pipeline', pipeline: 'main' },
+      { at_us: 9_000, kind: 'upstream', upstream: 'a', via: 'udp', result: 'error', error: 'upstream timeout', latency_us: 9_000 },
+      { at_us: 9_000, kind: 'upstream', upstream: 'b', via: 'udp', result: 'error', error: 'upstream timeout', latency_us: 9_000 },
+    ], { outcome: 'failed', status: 'failed', rcode: undefined, answers: [], error: undefined }))
+    expect(answerOf(entry).text).toBe('超时')
+    expect(text(detailFacts(entry, null)[1]!.sub)).toBe('问了 2 个上游：超时')
+    const one = entryOf(record([{ at_us: 0, kind: 'upstream', upstream: 'a', via: 'udp', result: 'error', latency_us: 9_000 }], { outcome: 'failed', status: 'failed', rcode: undefined, answers: [], error: undefined }))
+    expect(text(detailFacts(one, null)[1]!.sub)).toBe('问了 1 个上游：出错')
+  })
+
+  it('上游回了、KixDNS 自己处理时出错：不说没有上游回答，回了的那个不打勾', () => {
+    const entry = entryOf(record([
+      { at_us: 0, kind: 'upstream', upstream: 'a', via: 'udp', result: 'success', rcode: 'NOERROR', latency_us: 5_000 },
+    ], { outcome: 'failed', status: 'failed', rcode: 'SERVFAIL', answers: [], error: 'engine failed' }))
+    const who = detailFacts(entry, null)[1]!
+    expect(text(who.lead[0]!)).toBe('KixDNS 出错')
+    expect(text(who.sub)).toBe('上游回了，处理时出错：KixDNS 内部出错')
+    expect(stepRows(entry, null).some((row) => row.decides)).toBe(false)
   })
 
   it('回答后检查把上游的回答拦下：谁回答的是那条检查，先回的不打勾', () => {
@@ -239,6 +262,8 @@ describe('设置的检查和服务端一样', () => {
   it('不记录的域名按空白和逗号分开、整理、去重；中文域名要写成 xn-- 的形式', () => {
     expect(ignoredDomains('a.com, B.com，*.c.com、 a.com.\n d.com')).toEqual({ domains: ['a.com', 'b.com', 'c.com', 'd.com'], problem: '' })
     expect(ignoredDomains('例子.中国').problem).toContain('xn--')
+    // 贴了网址：说只填域名，不提中文域名 / A pasted URL: the hint says domain only, not the Chinese-domain one
+    expect(ignoredDomains('https://ads.example.com/x').problem).toBe('「https://ads.example.com/x」不是域名：只填域名，不带 https:// 和路径')
     expect(ignoredDomains(Array.from({ length: 1001 }, (_, i) => `d${i}.com`).join(' ')).problem).toBe('不记录的域名最多 1000 个')
   })
 })
@@ -246,7 +271,9 @@ describe('设置的检查和服务端一样', () => {
 describe('显示时的断行和时间', () => {
   const kept = (text: string) => glueText(text).filter((run) => run.keep).map((run) => run.text)
   it('短的「名字」和常用词不拆开，最后一个字不单独落一行；文字本身不变', () => {
-    expect(kept('交给上游组「国内」')).toEqual(['上游组', '「国内」'])
+    expect(kept('交给上游组「国内」')).toEqual(['交给', '上游组', '「国内」'])
+    // 句末两个字压在名字上时，名字一直延到句末，「里）」不单独落一行 / A sentence end overlapping a name extends it to the end
+    expect(kept('命中规则「国内」（在规则组「内网解析」里）')).toEqual(['「国内」', '规则组', '「内网解析」里）'])
     expect(kept('没等它回，另一个先回了')).toEqual(['没等它回', '另一个', '先回了'])
     expect(kept('缓存里有，直接回')).toEqual(['接回'])
     expect(kept('「这是一个超过十个字的很长的规则名」')).toEqual(['则名」'])
@@ -254,13 +281,32 @@ describe('显示时的断行和时间', () => {
   })
 
   it('标题里的域名只在点后面断，太长的一段才放开', () => {
-    expect(domainParts('use-application-dns.net')).toEqual([{ text: 'use-application-dns.', keep: true }, { text: 'net', keep: true }])
+    expect(domainParts('use-application-dns.net')).toEqual([{ text: 'use-application-dns.net', keep: true }])
+    // 最后两段连着：「com」不单独落一行 / The last two labels together: 「com」 never alone on a line
+    expect(domainParts('connectivitycheck.gstatic.com').map((part) => part.text)).toEqual(['connectivitycheck.', 'gstatic.com'])
     expect(domainParts('a1b2c3d4e5f6a7b8c9d0e1f2a3b4.example')[0]!.keep).toBe(false)
   })
 
   it('今天的只写时分秒，更早的带上「10 月 15 日」', () => {
     const now = new Date(2026, 9, 16, 2, 10).getTime()
     expect(timeText(new Date(2026, 9, 16, 1, 2, 3).getTime(), now)).toBe('01:02:03')
-    expect(timeText(new Date(2026, 9, 15, 23, 59, 58).getTime(), now)).toBe('10\u00a0月\u00a015\u00a0日 23:59:58')
+    expect(timeText(new Date(2026, 9, 15, 23, 59, 58).getTime(), now)).toBe('10\u00a0月\u00a015\u00a0日\u00a023:59:58')
+    // 不是今年的带上年：保存一年时去年的记录不会读成今年 / Another year carries the year: with a year of retention, last year's never reads as this one's
+    expect(dayText(new Date(2025, 11, 20).getTime(), now)).toBe('2025\u00a0年\u00a012\u00a0月\u00a020\u00a0日')
+  })
+
+  it('字面量在一串「/」「.」「:」「,」和空格的后面才断，「://」「::」中间不断；24 个字以内的一段不拆', () => {
+    expect(literalParts('https://dns.google/dns-query').map((part) => part.text)).toEqual(['https://', 'dns.', 'google/', 'dns-query'])
+    expect(literalParts('2408:8756::14').map((part) => part.text)).toEqual(['2408:', '8756::', '14'])
+    expect(literalParts('1 . alpn=h2,h3').map((part) => part.text)).toEqual(['1 . ', 'alpn=h2,', 'h3'])
+    expect(literalParts('a'.repeat(30))[0]!.keep).toBe(false)
+    expect(literalParts('https://dns.google/dns-query').map((part) => part.text).join('')).toBe('https://dns.google/dns-query')
+  })
+
+  it('耗时按四舍五入后的值挑单位', () => {
+    expect(latencyText(0.96)).toBe('1 ms')
+    expect(latencyText(0.94)).toBe('0.9 ms')
+    expect(latencyText(999.6)).toBe('1.0 s')
+    expect(latencyText(999.4)).toBe('999 ms')
   })
 })

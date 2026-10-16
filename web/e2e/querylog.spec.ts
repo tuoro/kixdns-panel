@@ -23,13 +23,13 @@ test('日志页先是查询日志：一行一条，点开看概况和处理过�
   if (testInfo.project.name === 'mobile') {
     const sheet = page.locator('dialog.qlog-sheet[open]')
     await expect(sheet.locator('.qlog-fact')).toHaveCount(3)
-    await expect(sheet.locator('.ui-step').last()).toContainText(/回给客户端|回 SERVFAIL|回答之前请求就没了/)
+    await expect(sheet.locator('.ui-step').last()).toContainText(/回给客户端|没处理完就结束了/)
     return
   }
   const pane = page.locator('.qlog-pane')
   await expect(pane.locator('.qlog-fact')).toHaveCount(3)
   await pane.getByRole('button', { name: '处理过程', exact: true }).click()
-  await expect(pane.locator('.ui-step').last()).toContainText(/回给客户端|回 SERVFAIL|回答之前请求就没了/)
+  await expect(pane.locator('.ui-step').last()).toContainText(/回给客户端|没处理完就结束了/)
   // 上下键逐条看，Esc 收起 / The arrow keys step through rows, Esc closes
   const first = await page.locator('.qlog-row').first().getAttribute('data-id')
   await page.locator('.qlog-row').first().focus()
@@ -202,4 +202,61 @@ test('没有符合条件的查询：一下清除全部筛选 @responsive', async
   await expect(page).not.toHaveURL(/q=|client=/)
   await expect(page.locator('.qlog-row').first()).toBeVisible()
   await expect(page.getByLabel('搜索域名或客户端')).toHaveValue('')
+})
+
+test('选中往前读到的那一页里的一条：列表不重读，读到的几页都还在', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', '桌面就够')
+  await openQueryLog(page)
+  const rows = page.locator('.qlog-row')
+  const firstPage = await rows.count()
+  await page.locator('.qlog-stream').evaluate((el) => { el.scrollTop = el.scrollHeight })
+  await expect.poll(() => rows.count()).toBeGreaterThan(firstPage)
+  const loaded = await rows.count()
+  const row = rows.nth(loaded - 3)
+  const id = (await row.getAttribute('data-id'))!
+  await row.click()
+  await expect(page).toHaveURL(new RegExp(`id=${id}`))
+  await page.waitForTimeout(800)
+  // 重读会退回到只有第一页；滚到底接着往前读是应该的，所以只会更多 / A reload would drop back to the first page; reading on at the
+  // bottom is expected, so the count only grows
+  expect(await rows.count()).toBeGreaterThanOrEqual(loaded)
+  await expect(page.locator('.qlog-row.is-selected')).toHaveAttribute('data-id', id)
+  await expect(page.locator('.qlog-pane')).toBeVisible()
+})
+
+test('手机上返回先关详情和设置，再返回才离开日志页 @responsive', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'mobile', '只有手机的详情和设置是整屏，记一步历史')
+  await useSampleConfig(page)
+  await page.goto('/')
+  await page.goto('/logs')
+  await expect(page.locator('.qlog-row').first()).toBeVisible()
+  const sheet = page.locator('dialog.qlog-sheet[open]')
+
+  // 返回手势关详情，留在日志页 / The back gesture closes the detail and stays on the log page
+  await page.locator('.qlog-row').first().click()
+  await expect(sheet).toBeVisible()
+  await expect(page).toHaveURL(/id=/)
+  await page.goBack()
+  await expect(sheet).toHaveCount(0)
+  await expect(page).toHaveURL(/\/logs$/)
+  await expect(page.locator('.qlog-row.is-selected')).toHaveCount(0)
+
+  // 点关闭按钮也退掉那一步：之后一次返回就离开日志页 / The close button goes back over that step too: one back afterwards leaves the page
+  await page.locator('.qlog-row').nth(1).click()
+  await expect(sheet).toBeVisible()
+  await sheet.getByRole('button', { name: '关闭', exact: true }).click()
+  await expect(sheet).toHaveCount(0)
+  await expect(page).toHaveURL(/\/logs$/)
+
+  // 设置也一样 / The settings the same
+  await page.getByRole('button', { name: '查询日志设置' }).click()
+  const drawer = page.locator('dialog.qlog-drawer[open]')
+  await expect(drawer).toBeVisible()
+  await expect(page).toHaveURL(/settings=1/)
+  await page.goBack()
+  await expect(drawer).toHaveCount(0)
+  await expect(page).toHaveURL(/\/logs$/)
+
+  await page.goBack()
+  await expect(page).not.toHaveURL(/\/logs/)
 })
