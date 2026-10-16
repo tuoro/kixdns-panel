@@ -82,7 +82,7 @@ test('每一步的细节直接摊开，缓存未命中不是故障 @responsive',
   // 程序内部的写法翻成人话：不出现 Some(Https)、false 和 hickory 的「No Error」。
   // Program-internal spellings become words: no Some(Https), false or hickory's "No Error".
   // 回答本身在结果栏里：这一行只说收到了；没截断不写 / The answer is in the result bar, so this row only says one came; not truncated goes unsaid
-  await expect(steps.nth(5).locator('.ui-step__what')).toHaveText('收到回答')
+  await expect(steps.nth(5).locator('.ui-step__what')).toHaveText('上游回了')
   await expect(steps.nth(5)).not.toContainText('截断')
   await expect(steps.nth(4)).toContainText('传输 DoH')
   await expect(page.locator('.diag-trace')).not.toContainText('Some(')
@@ -95,10 +95,11 @@ test('每一步的细节直接摊开，缓存未命中不是故障 @responsive',
   // A miss is neutral, never drawn as a failure: in the kit neutral means none of the ok / err / warn marks, and the grey is idle.
   await expect(steps.nth(2)).not.toHaveClass(/ui-step--(ok|err|warn)/)
   await expect(steps.nth(2)).toHaveClass(/ui-step--idle/)
-  await expect(steps.nth(2)).toContainText('未命中')
+  await expect(steps.nth(2)).toContainText('缓存里没有')
   // 每步一句话，不再是「阶段名 + 内核标签」把同一件事说两遍。
   // One sentence per step, no longer "stage + kernel label" saying the same thing twice.
-  await expect(steps.nth(2).locator('.ui-step__what')).toHaveText('响应缓存未命中')
+  // 和查询日志一个说法；后面问了上游才说「去问上游」 / The query log's wording; 「去问上游」 because upstreams were asked afterwards
+  await expect(steps.nth(2).locator('.ui-step__what')).toHaveText('缓存里没有，去问上游')
   await expect(steps.nth(4).locator('.ui-step__what')).toHaveText('转发给 https://1.1.1.1/dns-query')
   await noOverflow(page)
 })
@@ -161,7 +162,7 @@ test('缓存命中不显示伪规则，空 Answer 与截断状态仍清楚', asy
   await expect(page.locator('.diag-empty-answers')).toBeVisible()
   await expect(page.locator('.diag-outcome-facts')).toContainText('已截断')
   await expect(page.locator('.diag-trace .ui-step')).toHaveCount(1)
-  await expect(page.locator('.diag-trace .ui-step').first()).toContainText('命中响应缓存')
+  await expect(page.locator('.diag-trace .ui-step').first()).toContainText('缓存里有，直接回')
   await expect(page.locator('.diagnostic-result')).not.toContainText('命中规则')
   await noOverflow(page)
 })
@@ -185,13 +186,13 @@ test('真实内核轨迹：未命中的规则并成一行，「准备转发」�
   // Deciding to forward and sending are one event on one row; the reply row does not repeat the address.
   await expect(steps).toHaveCount(6)
   // 内核的 Pipeline id 换回配置页的名字：演示配置里 default 是上游组「default」那条 / The kernel's pipeline id becomes the config page's name: in the demo config default is upstream group 「default」's pipeline
-  await expect(steps.nth(1).locator('.ui-step__what')).toHaveText('上游组「default」的规则缓存未命中')
+  await expect(steps.nth(1).locator('.ui-step__what')).toHaveText('上游组「default」的规则缓存没命中')
   await expect(steps.nth(2)).toHaveClass(/ui-step--idle/)
-  await expect(steps.nth(2).locator('.ui-step__what')).toHaveText('3 条规则未命中')
+  await expect(steps.nth(2).locator('.ui-step__what')).toHaveText('3 条规则没命中')
   await expect(steps.nth(2).locator('.ui-step__why')).toHaveText('block-ads、geosite-cn、lan-hosts')
   await expect(steps.nth(4).locator('.ui-step__what')).toHaveText('转发给 https://1.1.1.1/dns-query')
   await expect(steps.nth(4).locator('.ui-step__time')).toHaveText('2 ms')
-  await expect(steps.nth(5).locator('.ui-step__what')).toHaveText('收到回答')
+  await expect(steps.nth(5).locator('.ui-step__what')).toHaveText('上游回了')
   // 超过一秒写成秒。 / Past a second, the time is in seconds.
   await expect(steps.nth(5).locator('.ui-step__time')).toHaveText('1.2 s')
   await expect(page.locator('.diag-trace')).not.toContainText('started')
@@ -199,12 +200,12 @@ test('真实内核轨迹：未命中的规则并成一行，「准备转发」�
   await noOverflow(page)
 })
 
-// 同一个查询正好在问上游：这次不另发，等那一次的回答。内核写的是一句中文，照原话显示，不像地址那样标成字面值
-// The same query is already out upstream: this one waits for that answer. The kernel writes a Chinese sentence, shown as words, not marked as a literal like an address
-test('等候正在进行的同一个查询写成一句话 @responsive', async ({ page }) => {
+// 同一个查询正好在问上游：这次不另发，等那一次的回答。和查询日志一个说法，是一句话，不像地址那样标成字面值
+// The same query is already out upstream: this one waits for that answer. Worded as in the query log, a sentence, not marked as a literal like an address
+test('同样的查询正在问上游：写成一句话，和查询日志一样 @responsive', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('kixdns:demo-trace-joined', 'true'))
   await query(page)
-  const joined = page.locator('.diag-trace .ui-step').filter({ hasText: '等候正在进行的同一个查询' })
+  const joined = page.locator('.diag-trace .ui-step').filter({ hasText: '同样的查询正在问上游，等它的结果' })
   await expect(joined).toHaveCount(1)
   await expect(joined.locator('.ui-step__lit')).toHaveCount(0)
   // 前一行仍是规则决定转给谁 / The row before still says where the rule meant to send it

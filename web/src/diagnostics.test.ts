@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { DnsTraceStep } from './api/types'
-import { humanizeTraceDetail, isDnsSuccess, parseDnsAnswer, responseCodeName, traceTone, describeStep, detailParts, formatElapsed, forwardTarget, groupTrace, hidePlumbing, type TextPart } from './diagnostics'
+import { asksUpstream, humanizeTraceDetail, missedRulesText, isDnsSuccess, parseDnsAnswer, responseCodeName, traceTone, describeStep, detailParts, formatElapsed, forwardTarget, groupTrace, hidePlumbing, type TextPart } from './diagnostics'
 
 describe('DNS 应答台账', () => {
   it.each([
@@ -60,26 +60,40 @@ describe('执行路径每一步写成一句话', () => {
   it.each([
     [kstep('request', 'parsed', 'A example.com', '客户端：192.168.1.23；监听器：default'), '请求 A example.com', '客户端 192.168.1.23 · 监听标签 default'],
     [kstep('pipeline', 'selected', 'default'), '进入规则组 default', ''],
-    [kstep('pipeline', 'jump', 'default -> cn'), '从规则组 default 跳到规则组 cn', ''],
-    [kstep('response_cache', 'miss', '响应缓存未命中', '管线：default'), '响应缓存未命中', ''],
-    [kstep('response_cache', 'fresh', '命中新鲜响应缓存', '剩余 TTL：120 秒'), '命中响应缓存', '剩余 TTL 120 秒'],
-    [kstep('response_cache', 'stale', '上游失败，返回过期缓存'), '上游失败，返回过期缓存', ''],
-    [kstep('rule_cache', 'miss', '管线 default 的规则缓存未命中'), '规则组 default 的规则缓存未命中', ''],
+    [kstep('pipeline', 'jump', 'default -> cn'), '规则组 default 交给规则组 cn', ''],
+    [kstep('response_cache', 'miss', '响应缓存未命中', '管线：default'), '缓存里没有', ''],
+    [kstep('response_cache', 'fresh', '命中新鲜响应缓存', '剩余 TTL：120 秒'), '缓存里有，直接回', '剩余 TTL 120 秒'],
+    [kstep('response_cache', 'stale', '上游失败，返回过期缓存'), '上游都失败了，回了过期的旧结果', ''],
+    [kstep('response_cache', 'stale', '客户端等待超时，返回过期缓存'), '上游在「客户端等待」时间内没回，先回过期的旧结果', ''],
+    [kstep('response_cache', 'stale', '命中过期响应缓存', '原始 TTL：60 秒'), '缓存过期了，先回旧结果', '原始 TTL 60 秒'],
+    [kstep('rule_cache', 'miss', '管线 default 的规则缓存未命中'), '规则组 default 的规则缓存没命中', ''],
     [kstep('rule_cache', 'hit', '命中管线 default 的规则缓存', '已匹配规则：geosite-global'), '命中规则组 default 的规则缓存', '已匹配规则 geosite-global'],
     [kstep('rule', 'matched', 'geosite-global', '管线：default；匹配器数：1'), '命中规则 geosite-global', ''],
-    [kstep('rule', 'missed', 'block-ads', '管线：default；匹配器数：2'), '规则 block-ads 未命中', ''],
+    [kstep('rule', 'missed', 'block-ads', '管线：default；匹配器数：2'), '规则 block-ads 没命中', ''],
+    [kstep('response_rule', 'matched', '响应匹配器 命中', '匹配器数：1'), '回答后检查命中', ''],
+    [kstep('response_rule', 'missed', '响应匹配器 未命中', '匹配器数：1'), '回答后检查没命中，照用这个回答', ''],
     [kstep('decision', 'selected', '规则 geosite-global 转发', '目标：https://1.1.1.1/dns-query；传输：Some(Https)'), '转发给 https://1.1.1.1/dns-query', '传输 DoH'],
-    [kstep('decision', 'selected', '静态响应 Non-Existent Domain', '答案记录数：0'), '直接返回 NXDOMAIN', ''],
-    [kstep('decision', 'selected', '跳转到管线 cn'), '跳转到规则组 cn', ''],
-    [kstep('upstream', 'started', '准备转发到 https://1.1.1.1/dns-query', '规则：geosite-global；传输：Some(Https)'), '发往 https://1.1.1.1/dns-query', '传输 DoH'],
-    [kstep('upstream', 'succeeded', 'https://1.1.1.1/dns-query', '响应码：No Error；耗时：11 ms；截断：false'), 'https://1.1.1.1/dns-query 收到回答', ''],
-    [kstep('upstream', 'succeeded', '8.8.8.8:53', '响应码：Server Failure；耗时：30 ms；截断：true'), '8.8.8.8:53 回答 SERVFAIL', '已截断'],
-    [kstep('upstream', 'failed', '8.8.8.8:53', 'request timed out'), '8.8.8.8:53 没有回答', 'request timed out'],
-    [kstep('upstream', 'joined', '等候正在进行的同一个查询'), '等候正在进行的同一个查询', ''],
+    [kstep('decision', 'selected', '静态响应 Non-Existent Domain', '答案记录数：0'), '直接回 NXDOMAIN', ''],
+    [kstep('decision', 'selected', '跳转到管线 cn'), '交给规则组 cn', ''],
+    [kstep('upstream', 'started', '准备转发到 https://1.1.1.1/dns-query', '规则：geosite-global；传输：Some(Https)'), '转发给 https://1.1.1.1/dns-query', '传输 DoH'],
+    [kstep('upstream', 'succeeded', 'https://1.1.1.1/dns-query', '响应码：No Error；耗时：11 ms；截断：false'), 'https://1.1.1.1/dns-query 回了', ''],
+    [kstep('upstream', 'succeeded', '8.8.8.8:53', '响应码：Server Failure；耗时：30 ms；截断：true'), '8.8.8.8:53 回了 SERVFAIL', '已截断'],
+    [kstep('upstream', 'failed', '8.8.8.8:53', 'request timed out'), '8.8.8.8:53 超时', 'request timed out'],
+    [kstep('upstream', 'failed', '8.8.8.8:53', 'something new'), '8.8.8.8:53 出错', 'something new'],
+    [kstep('upstream', 'joined', '等候正在进行的同一个查询'), '同样的查询正在问上游，等它的结果', ''],
   ])('%#', (input, lead, note) => {
     const view = describeStep(input)
     expect(plain(view.lead)).toBe(lead)
     expect(plain(view.note)).toBe(note)
+  })
+
+  it('缓存没命中：后来真的问了上游才说「去问上游」，被规则拦下的只说缓存里没有', () => {
+    const miss = kstep('response_cache', 'miss', '响应缓存未命中', '管线：default')
+    expect(plain(describeStep(miss, { asksUpstream: true }).lead)).toBe('缓存里没有，去问上游')
+    expect(plain(describeStep(miss, { asksUpstream: false }).lead)).toBe('缓存里没有')
+    expect(asksUpstream([miss, kstep('rule', 'matched', 'block-ads'), kstep('decision', 'selected', '静态响应 Non-Existent Domain')])).toBe(false)
+    expect(asksUpstream([miss, kstep('upstream', 'joined', '等候正在进行的同一个查询')])).toBe(true)
+    expect(missedRulesText(3)).toBe('3 条规则没命中')
   })
 
   it('名字和地址是字面值；响应码是助记词，不算', () => {
@@ -130,12 +144,15 @@ describe('转发和应答不把同一个地址说三遍', () => {
     expect(groupTrace([decision, other])).toHaveLength(2)
   })
 
-  it('回答来自刚转给的那个上游时只写「收到回答」，换了上游就照写地址', () => {
+  it('回答来自刚转给的那个上游时写「上游回了」，换了上游就照写地址；失败说原因', () => {
     expect(forwardTarget(decision)).toBe('https://1.1.1.1/dns-query')
     expect(forwardTarget(sent)).toBe('https://1.1.1.1/dns-query')
-    expect(plain(describeStep(reply, { target: 'https://1.1.1.1/dns-query' }).lead)).toBe('收到回答')
-    expect(plain(describeStep(reply, { target: '8.8.8.8:53' }).lead)).toBe('https://1.1.1.1/dns-query 收到回答')
-    expect(plain(describeStep(kstep('upstream', 'failed', 'https://1.1.1.1/dns-query', '超时'), { target: 'https://1.1.1.1/dns-query' }).lead)).toBe('没有回答')
+    expect(plain(describeStep(reply, { target: 'https://1.1.1.1/dns-query' }).lead)).toBe('上游回了')
+    expect(plain(describeStep(reply, { target: '8.8.8.8:53' }).lead)).toBe('https://1.1.1.1/dns-query 回了')
+    // 内核本来就写中文的原因照原话，下面不再重复一遍 / A cause the kernel already wrote in Chinese is used as it is, not repeated below
+    const timedOut = describeStep(kstep('upstream', 'failed', 'https://1.1.1.1/dns-query', '超时'), { target: 'https://1.1.1.1/dns-query' })
+    expect(plain(timedOut.lead)).toBe('超时')
+    expect(timedOut.note).toEqual([])
   })
 })
 
@@ -155,10 +172,10 @@ describe('内核的名字换回配置页上的名字', () => {
   }
   it.each([
     [kstep('pipeline', 'selected', 'main'), '进入主列表'],
-    [kstep('pipeline', 'jump', 'main -> group-g1'), '从主列表跳到规则组「内网」'],
-    [kstep('pipeline', 'jump', 'main -> other'), '从主列表跳到规则组 other'],
+    [kstep('pipeline', 'jump', 'main -> group-g1'), '主列表交给规则组「内网」'],
+    [kstep('pipeline', 'jump', 'main -> other'), '主列表交给规则组 other'],
     [kstep('rule', 'matched', 'rule-3'), '命中规则「域名是 example.org」'],
-    [kstep('rule', 'missed', 'named'), '规则 named 未命中'],
+    [kstep('rule', 'missed', 'named'), '规则 named 没命中'],
     [kstep('rule_cache', 'hit', '命中管线 main 的规则缓存'), '命中主列表的规则缓存'],
     [kstep('pipeline', 'selected', 'upstream-cn'), '进入主列表'],
     [kstep('rule', 'matched', '其余请求', '管线：main'), '没有规则命中，按「其余请求」处理'],

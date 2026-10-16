@@ -301,6 +301,15 @@ describe('处理过程一步一句', () => {
     expect(errorWord('parse upstream response: unexpected end of input reached')).toBe('上游的回答读不懂')
   })
 
+  it('内核先查缓存再看规则：被规则拦下的那条，缓存那一步不说「去问上游」', () => {
+    const blocked = entryOf(record([
+      { at_us: 0, kind: 'pipeline', pipeline: 'main' },
+      { at_us: 20, kind: 'cache', result: 'miss' },
+      { at_us: 50, kind: 'rule', pipeline: 'main', rule: 'ads', phase: 'request', matched: true, decision: 'static' },
+    ], { outcome: 'blocked', rcode: 'NXDOMAIN', answers: [], upstream: undefined }))
+    expect(stepRows(blocked, null).map((row) => text(row.lead))).toEqual(['缓存里没有', '命中规则「ads」，拦截', '回给客户端 NXDOMAIN'])
+  })
+
   it('拦截规则回 SERVFAIL：内核记成失败，页面照样当拦截说，不说没有回答', () => {
     const entry = entryOf(record([
       { at_us: 0, kind: 'pipeline', pipeline: 'main' },
