@@ -42,16 +42,29 @@ const ERROR_WORDS: [RegExp, string][] = [
   [/(?:read|write|send)\b.*failed|packet too short|response body/i, '收发出错'],
   [/engine failed/i, 'KixDNS 内部出错'],
 ]
-export function errorWord(raw: string): string | null {
-  // 双发（UDP 和 TCP 同时问）两路都没成：原因取说得出来的那一路 / Dual send (UDP and TCP at once) with both legs failed: the cause comes
-  // from the leg that names one
-  const both = /^(?:udp|tcp) (?:failed|task error): (.*?); (?:udp|tcp) (?:failed|task error): (.*)$/is.exec(raw)
-  if (both) {
-    const inner = [both[1]!, both[2]!].map((leg) => (/all udp attempts failed/i.test(leg) ? null : errorWord(leg))).find(Boolean)
-    return `UDP 和 TCP 都失败了${inner ? `：${inner}` : ''}`
-  }
-  const late = /^(udp|tcp) (?:failed|task error) and no time left for (udp|tcp)/i.exec(raw)
-  if (late) return `${late[1]!.toUpperCase()} 失败了，来不及再试 ${late[2]!.toUpperCase()}`
+/**
+ * 双发（UDP 和 TCP 同时发出）两路都没成时内核的几种写法：一路失败、另一路失败 / 出错 / 超时，或者一路失败时已经没时间等另一路。
+ * 返回说得出来的那一路的原因（都说不出时为 null）；不是双发的写法时为 undefined
+ * The kernel's shapes when both legs of a dual send (UDP and TCP sent at once) came to nothing: one leg failed and the other failed,
+ * errored or timed out, or one failed with no time left to wait for the other. Returns the cause from the leg that names one (null when
+ * neither does); undefined when the text is not a dual-send shape
+ */
+function dualCause(raw: string): string | null | undefined {
+  const head = /^(?:udp|tcp) (?:failed|task error)( and no time left for (?:udp|tcp))?: /i.exec(raw)
+  if (!head) return undefined
+  const rest = raw.slice(head[0].length)
+  const other = /; (?:udp|tcp) (?:(?:failed|task error): (.*)|(timed out))$/is.exec(rest)
+  if (!other && !head[1]) return undefined
+  const legs = [other ? rest.slice(0, other.index) : rest, other?.[1] ?? '']
+  // 「UDP 都没回」只说明那一路没回，不是原因 / 「all udp attempts failed」 only says that leg got nothing; it is not a cause
+  const said = legs.filter((leg) => leg && !/all udp attempts failed/i.test(leg)).map((leg) => errorWord(leg)).find(Boolean)
+  return said ?? (other?.[2] ? '超时' : null)
+}
+/** 内核的英文出错原因换成中文；short 时双发只给原因，列表那一格放得下 / The kernel's English error in Chinese; with short, a dual send
+ * gives only the cause, which fits the list's cell */
+export function errorWord(raw: string, short = false): string | null {
+  const dual = dualCause(raw)
+  if (dual !== undefined) return short && dual ? dual : `UDP 和 TCP 都没回${dual ? `：${dual}` : ''}`
   for (const [pattern, word] of ERROR_WORDS) {
     const found = pattern.exec(raw)
     if (found) return word.replace('$1', found[1] ?? '')
@@ -77,7 +90,9 @@ export function capProblem(text: string): string {
  */
 export function ignoredDomains(text: string): { domains: string[]; problem: string } {
   const domains: string[] = []
-  for (const raw of text.split(/[\s,，、]+/)) {
+  // 全角的字母、数字和句号（中文输入法常打出来的）先换成半角 / Full-width letters, digits and stops (easily typed with a Chinese input
+  // method) become half-width first
+  for (const raw of text.normalize('NFKC').replace(/。/g, '.').split(/[\s,，、]+/)) {
     const domain = raw.trim().replace(/^\*\./, '').replace(/^\.+|\.+$/g, '').toLowerCase()
     if (!domain) continue
     if (domain.length > 253 || !/^[a-z0-9._-]+$/.test(domain)) {
@@ -106,7 +121,12 @@ const usable = (rcode: string | undefined) => !rcode || rcode === 'NOERROR' || r
  * default when no rule matched, where an unmatched answer check goes) join their step, and the reply to the client is added last.
  */
 export function entryOf(record: QueryLogRecord): QueryLogEntry {
-  const outcome = record.outcome
+  // 拦截时回 SERVFAIL：内核记成失败，面板服务端写入时按规则认回拦截；认不出规则（配置对不上）时这里照样当拦截——面板自己的配置里，
+  // 固定回 SERVFAIL 只来自拦截
+  // A block answering SERVFAIL: the kernel records it as failed and the panel server turns it back into a block by its rule when writing;
+  // when the rule cannot be found (the configs differ) it is still read as a block here, since in the panel's own configs a fixed SERVFAIL
+  // comes only from a block
+  const outcome = record.outcome === 'failed' && !record.error && record.steps.some((step) => step.decision === 'static') ? 'blocked' : record.outcome
   const fixed = outcome === 'blocked' ? 'block' : 'answer'
   const steps: QueryLogStep[] = []
   let here = record.steps.find((step) => step.kind === 'pipeline')?.pipeline ?? record.pipeline ?? ''
@@ -285,13 +305,13 @@ function failureCause(entry: QueryLogEntry, asked: QueryLogStep[] = entry.steps)
     if (st.kind !== 'upstream' || st.result !== 'error') continue
     const word = st.error ? errorWord(st.error) : '出错'
     if (word) words.add(word)
-    else { words.add('出错'); raw.add(st.error!) }
+    else raw.add(st.error!)
   }
   return { word: [...words].join('、'), raw: [...raw] }
 }
 /** 列表里写得下的原因：认得出、又只有一个时写它，不然写响应码 / A cause short enough for the list: written when recognised and single, otherwise the code */
 function failureWord(entry: QueryLogEntry): string {
-  const known = entry.error ? [errorWord(entry.error)] : [...new Set(entry.steps.filter((st) => st.kind === 'upstream' && st.result === 'error').map((st) => (st.error ? errorWord(st.error) : null)))]
+  const known = entry.error ? [errorWord(entry.error, true)] : [...new Set(entry.steps.filter((st) => st.kind === 'upstream' && st.result === 'error').map((st) => (st.error ? errorWord(st.error, true) : null)))]
   return (known.length === 1 && known[0]) || entry.rcode || 'SERVFAIL'
 }
 
@@ -377,6 +397,9 @@ export function detailFacts(entry: QueryLogEntry, ctx: QueryLogContext | null): 
   const won = [...asked].reverse().find((st) => st.result === 'won')
   // 回答后检查把先回的结果否掉、改问别的列表 / An answer check rejected the first answer and asked another list
   const polluted = entry.steps.find((st) => st.kind === 'check' && st.matched && st.target !== undefined && !DIRECT.has(st.target))
+  // 上游组自己的检查是它的备用组（配置页这么叫），规则自带的才是回答后检查 / A check in an upstream group's own list is its 备用组 (as the
+  // config page calls it); only a rule's own check is a 回答后检查
+  const fallback = Boolean(polluted && ctx && forwardGroups(ctx.pipelines, ctx.model)(polluted.pipeline))
   let who: DetailFact
   if (entry.outcome === 'cached') who = { key: 'who', label: '谁回答的', lead: [[t('缓存')]], sub: entry.upstream ? [t('答案原先来自 '), m(entry.upstream)] : [], tone: '' }
   else if (entry.outcome === 'stale') who = { key: 'who', label: '谁回答的', lead: [[t('过期缓存')]], sub: [t(STALE_LONG[staleKind(entry)])], tone: staleKind(entry) === 'now' ? '' : 'warn' }
@@ -385,28 +408,32 @@ export function detailFacts(entry: QueryLogEntry, ctx: QueryLogContext | null): 
     // 回答后检查否掉先回的结果、改问了别处：只看改问以后问的上游 / An answer check rejected the first answer and asked elsewhere: only
     // the upstreams asked after it count
     const after = polluted ? asked.filter((st) => st.at_ms >= polluted.at_ms) : asked
-    const redirected = polluted ? '先回的结果没通过回答后检查；' : ''
+    const redirected = polluted ? (fallback ? '先回的结果不能用，按备用组改问；' : '先回的结果没通过回答后检查；') : ''
     const n = `${polluted ? '改问的' : '问了'} ${after.length} 个上游`
     // 上游回了、可回的是 SERVFAIL 这类用不上的，和上游根本没回分开说 / Upstreams that replied with something unusable (SERVFAIL and the
     // like) are told apart from upstreams that never replied
     const codes = [...new Set(after.filter((st) => st.result !== 'lost' && st.rcode && !usable(st.rcode)).map((st) => st.rcode!))]
-    const { word } = failureCause(entry, after)
+    const { word, raw } = failureCause(entry, after)
     // 只有记录上写了错才是 KixDNS 自己出错：内核只把自己的错写在记录上 / Only an error on the record is KixDNS's own: the kernel puts
     // nothing else there
     if (entry.error) {
       const replied = asked.some((st) => st.result === 'won') ? '上游回了，' : ''
       who = { key: 'who', label: '谁回答的', lead: [[t('KixDNS 出错')]], sub: [t(`${replied}${word ? `处理时出错：${word}` : 'KixDNS 处理时出错'}`)], tone: 'err' }
-    } else if (joinedFailure(entry) && !after.length) who = { key: 'who', label: '谁回答的', lead: [[t('共用')]], sub: [t('同样的查询正在问上游，那次没有上游回答')], tone: 'err' }
+    } else if (joinedFailure(entry) && !after.length) who = { key: 'who', label: '谁回答的', lead: [[t('共用')]], sub: [t('同样的查询正在问上游，那次没拿到能用的回答')], tone: 'err' }
     else if (codes.length) who = { key: 'who', label: '谁回答的', lead: [[t(`上游回了 ${codes.join('、')}`)]], sub: [t(`${redirected}${n}，没有能用的回答`)], tone: 'err' }
     else if (after.length) {
-      const lead = polluted ? '改问后没有上游回答' : after.some((st) => st.result === 'won') ? '没有能用的回答' : '没有上游回答'
-      who = { key: 'who', label: '谁回答的', lead: [[t(lead)]], sub: [t(`${redirected}${n}：${word || (after.length > 1 ? '都没回' : '没回')}`)], tone: 'err' }
-    } else who = { key: 'who', label: '谁回答的', lead: [[t(polluted ? '改问后没有回答' : '没有回答')]], sub: polluted ? [t('先回的结果没通过回答后检查')] : word ? [t(word)] : [], tone: 'err' }
+      const replied = after.some((st) => st.result === 'won')
+      const lead = polluted ? '改问后没有上游回答' : replied ? '没有能用的回答' : '没有上游回答'
+      // 有上游回了就不说「没回」 / With an upstream that replied, 「没回」 is never said
+      const tail = word || (raw.length ? '出错' : replied ? '' : after.length > 1 ? '都没回' : '没回')
+      who = { key: 'who', label: '谁回答的', lead: [[t(lead)]], sub: [t(`${redirected}${n}${tail ? `：${tail}` : ''}`)], tone: 'err' }
+    } else who = { key: 'who', label: '谁回答的', lead: [[t(polluted ? '改问后没有回答' : '没有回答')]], sub: polluted ? [t(fallback ? '先回的结果不能用，按备用组改问' : '先回的结果没通过回答后检查')] : word ? [t(word)] : [], tone: 'err' }
   } else if (entry.outcome === 'cancelled') who = { key: 'who', label: '谁回答的', lead: [[t('没处理完')]], sub: [t('多半是到了整体请求超时')], tone: 'warn' }
   else if (entry.outcome === 'forwarded' && won) {
     const late = asked.filter((st) => st.result === 'lost' && st.pipeline === won.pipeline).length
     const sub: TextPart[] = [t([won.transport, won.latency_ms !== undefined ? latencyText(won.latency_ms) : null].filter(Boolean).join(' · '))]
-    if (polluted) sub.push(t(`；先回的结果没通过回答后检查，改问${polluted.target && polluted.target !== 'continue' ? place(polluted.target) : '别的组'}`))
+    const elsewhere = polluted?.target && polluted.target !== 'continue' ? place(polluted.target) : '别的组'
+    if (polluted) sub.push(t(fallback ? `；先回的结果不能用，按备用组改问${elsewhere}` : `；先回的结果没通过回答后检查，改问${elsewhere}`))
     else if (late) sub.push(t(`；没再等同时问的另外\u00a0${late}\u00a0个上游`))
     who = { key: 'who', label: '谁回答的', lead: [[m(won.upstream ?? entry.upstream ?? '')]], sub, tone: '' }
   } else if (won) {
@@ -470,7 +497,7 @@ export function sinceText(unixMs: number, now: number = Date.now()): string {
 /** 显示时的一段：keep 的不在中间断行 / A run for display: one marked keep never breaks inside */
 export interface GlueRun { text: string; keep: boolean }
 // 括号里的一小句（「（在规则组「内网解析」里）」）整个不拆，「（在」不落在行尾 / A short aside in brackets stays whole, so 「（在」 never ends a line
-const KEEP_PATTERNS = [/（[^（）]{1,16}）/g, /「[^「」]{1,10}」/g, /上游组|规则组|上游|另一个|另外|客户端|直接回答|没等它回|先回了|改问|过期|交给|面板|来得及|收不到|xn--|journalctl -u [\w.-]+/g]
+const KEEP_PATTERNS = [/（[^（）]{1,16}）/g, /「[^「」]{1,10}」/g, /回答后检查|上游组|规则组|备用组|连不上|上游|另一个|另外|客户端|直接回答|没等它回|先回了|共用了|没通过|没有|能用|失败|结果|改问|过期|交给|面板|来得及|来不及|收不到|连字符|不带|xn--|journalctl -u [\w.-]+/g]
 /** 句末：最后一个字连同前一个字（和后面的括号、句号）不拆开 / A sentence's end: the last character stays with the one before it (and any closing bracket or stop) */
 const TAIL = /\S\p{Script=Han}[」。）]*$/u
 /**
@@ -612,7 +639,9 @@ export function stepRows(entry: QueryLogEntry, ctx: QueryLogContext | null): Ste
         const word = step.error ? errorWord(step.error) : null
         // 原文单独一行，不和协议名用「·」接在一起（原文换行时点不落在行尾） / The original goes alone on the line, not joined to the protocol
         // with 「·」 (so no dot ends a line when it wraps)
-        row(step, [where, t(` ${word ?? step.error ?? '出错'}`)], word && step.error ? [m(step.error)] : step.transport ? [t(step.transport)] : [], 'err')
+        // 认不出的原文不当一句话说：写「出错」，原文放在下面 / An unrecognised original is not used as the sentence: it says 出错, with the
+        // original below
+        row(step, [where, t(` ${word ?? '出错'}`)], step.error ? [m(step.error)] : step.transport ? [t(step.transport)] : [], 'err')
       }
     } else if (step.kind === 'check') {
       const action = then(step)
@@ -620,7 +649,7 @@ export function stepRows(entry: QueryLogEntry, ctx: QueryLogContext | null): Ste
       if (step.matched && step.target && !DIRECT.has(step.target)) {
         // 先回的那个答案被检查否掉了：它不再是定下结果的一步，不打勾 / The first answer was rejected by the check: no longer the deciding step, so no tick
         if (firstAnswer >= 0) rows[firstAnswer] = { ...rows[firstAnswer]!, tone: '', decides: false }
-        row(step, [t(`回答后检查${named}：这个回答不能用，改问${place(step.target)}`)], [], 'warn')
+        row(step, [t(`${groupOf(step.pipeline) ? '备用组' : `回答后检查${named}`}：这个回答不能用，改问${place(step.target)}`)], [], 'warn')
       } else if (step.matched || action.length) {
         // 检查把先回的答案拦下或换掉：那个答案不再是结果，不打勾 / The check blocked or replaced the first answer: that answer is no longer
         // the result, so no tick

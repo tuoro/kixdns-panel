@@ -321,15 +321,76 @@ test('手机上从诊断页回来、或者前进回到一条：详情开着，�
   await sheet.getByRole('button', { name: '关闭', exact: true }).click()
   await expect(sheet).toHaveCount(0)
   await expect(page).toHaveURL(/\/logs$/)
+  // 关掉以后列表停在那一条 / After closing, the list rests on that entry
+  await expect(page.locator('.qlog-row').first()).toBeInViewport()
   // 前进回到那一条：详情跟着开 / Forward onto that entry: the detail opens with it
   await page.goForward()
   await expect(page).toHaveURL(/id=/)
   await expect(sheet).toBeVisible()
   await page.goBack()
   await expect(sheet).toHaveCount(0)
+  // 设置也一样：前进回到设置那一步，设置跟着开 / The settings the same: forward onto the settings step opens them
+  await page.getByRole('button', { name: '查询日志设置' }).click()
+  const drawer = page.locator('dialog.qlog-drawer[open]')
+  await expect(drawer).toBeVisible()
+  await page.goBack()
+  await expect(drawer).toHaveCount(0)
+  await page.goForward()
+  await expect(page).toHaveURL(/settings=1/)
+  await expect(drawer).toBeVisible()
+  await page.goBack()
+  await expect(drawer).toHaveCount(0)
   // 再返回就离开日志页 / One more back leaves the log page
   await page.goBack()
   await expect(page).not.toHaveURL(/\/logs/)
+})
+
+test('窄窗口里表格改成每条两行：域名不被挤成几个字；矮屏幕上开着详情，列表还留着 5 行', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', '宽屏的事')
+  await page.setViewportSize({ width: 900, height: 900 })
+  await openQueryLog(page)
+  const stream = page.locator('.qlog-stream')
+  await expect(stream).toHaveClass(/is-narrow/)
+  await expect(page.locator('.qlog-head')).toBeHidden()
+  const row = page.locator('.qlog-row').first()
+  await expect(row.locator('.qlog-phone')).toBeVisible()
+  const cut = await page.locator('.qlog-row .qlog-c-name .qlog-lit').evaluateAll((names) => names.slice(0, 50).filter((n) => n.scrollWidth > n.clientWidth + 1).length)
+  expect(cut).toBe(0)
+
+  await page.setViewportSize({ width: 1280, height: 610 })
+  await expect(stream).not.toHaveClass(/is-narrow/)
+  await page.locator('.qlog-row').nth(2).click()
+  const pane = page.locator('.qlog-pane')
+  await expect(pane).toBeVisible()
+  const list = (await stream.boundingBox())!
+  const head = (await page.locator('.qlog-head').boundingBox())!
+  expect(list.height - head.height).toBeGreaterThanOrEqual(5 * 32)
+  // 详情整个在卡片里，不被裁掉 / The detail sits wholly inside the card, never clipped
+  const card = (await page.locator('.log-console.qlog').boundingBox())!
+  const box = (await pane.boundingBox())!
+  expect(box.y + box.height).toBeLessThanOrEqual(card.y + card.height + 0.5)
+})
+
+test('开着详情换了筛选：详情收起；用键盘点「不再记录这个域名」以后焦点在关闭按钮上，Esc 照样能关', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', '桌面就够')
+  await openQueryLog(page)
+  const row = page.locator('.qlog-row').filter({ has: page.locator('.qlog-dot--ok') }).first()
+  await row.click()
+  await expect(page.locator('.qlog-pane')).toBeVisible()
+  await page.getByLabel('按去向筛选').selectOption({ label: '拦截' })
+  await expect(page).toHaveURL(/dest=blocked/)
+  await expect(page.locator('.qlog-pane')).toHaveCount(0)
+
+  await page.getByLabel('按去向筛选').selectOption({ label: '全部去向' })
+  await expect(page).not.toHaveURL(/dest=/)
+  await page.locator('.qlog-row').first().click()
+  const ignore = page.locator('.qlog-pane').getByRole('button', { name: '不再记录这个域名' })
+  await ignore.focus()
+  await page.keyboard.press('Enter')
+  await expect(page.locator('.qlog-pane').getByRole('button', { name: '已不记录这个域名' })).toBeDisabled()
+  await expect(page.locator('.qlog-pane').getByRole('button', { name: '关闭详情' })).toBeFocused()
+  await page.keyboard.press('Escape')
+  await expect(page.locator('.qlog-pane')).toHaveCount(0)
 })
 
 test('连不上面板又连上：开着的第二页那条照旧开着；换了筛选的旧行一直淡着；认不出的去向从地址栏去掉', async ({ page }, testInfo) => {

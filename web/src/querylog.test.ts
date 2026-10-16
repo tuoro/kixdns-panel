@@ -116,7 +116,7 @@ describe('处理过程一步一句', () => {
     expect(said[3]).toBe('回给客户端 NOERROR，1 条记录')
   })
 
-  it('回答后检查否掉先回的结果时，先回的那一步不再打勾', () => {
+  it('上游组的备用组否掉先回的结果时，先回的那一步不再打勾；这一步叫备用组，和配置页一样', () => {
     const { ctx, abroad, cn } = context()
     const rows = stepRows(entryOf(record([
       { at_us: 0, kind: 'pipeline', pipeline: cn },
@@ -127,7 +127,7 @@ describe('处理过程一步一句', () => {
     ], { pipeline: abroad, latency_us: 40_300 })), ctx)
     const first = rows.find((row) => text(row.lead).startsWith('223.5.5.5'))!
     expect(first.decides).toBe(false)
-    expect(rows.map((row) => text(row.lead))).toContain('回答后检查：这个回答不能用，改问上游组「国外」')
+    expect(rows.map((row) => text(row.lead))).toContain('备用组：这个回答不能用，改问上游组「国外」')
   })
 
   it('回了 SERVFAIL 没用上、没有规则命中、检查没命中、没处理完、步骤太多都照实说', () => {
@@ -219,7 +219,7 @@ describe('处理过程一步一句', () => {
     expect(reply.note.map((part) => [part.text, Boolean(part.literal)])).toEqual([['原因：', false], ['unresolved pipeline jump', true]])
   })
 
-  it('回答后检查改问的上游失败了：不说 KixDNS 出错，只算改问以后的上游', () => {
+  it('备用组改问的上游失败了：不说 KixDNS 出错，只算改问以后的上游', () => {
     const { ctx, abroad, cn } = context()
     const entry = entryOf(record([
       { at_us: 0, kind: 'pipeline', pipeline: cn },
@@ -230,7 +230,9 @@ describe('处理过程一步一句', () => {
     ], { pipeline: abroad, outcome: 'failed', status: 'failed', rcode: 'SERVFAIL', answers: [], error: undefined }))
     const who = detailFacts(entry, ctx)[1]!
     expect(text(who.lead[0]!)).toBe('改问后没有上游回答')
-    expect(text(who.sub)).toBe('先回的结果没通过回答后检查；改问的 1 个上游：超时')
+    expect(text(who.sub)).toBe('先回的结果不能用，按备用组改问；改问的 1 个上游：超时')
+    // 认不出是哪个组的检查（没有配置）：照回答后检查说 / A check whose group cannot be told (no config): said as an answer check
+    expect(text(detailFacts(entry, null)[1]!.sub)).toBe('先回的结果没通过回答后检查；改问的 1 个上游：超时')
   })
 
   it('共用的那次查询失败了：共用那一步不打勾，谁回答的说共用的那次没有上游回答', () => {
@@ -240,7 +242,7 @@ describe('处理过程一步一句', () => {
     ], { outcome: 'failed', status: 'failed', rcode: 'SERVFAIL', answers: [], error: undefined, upstream: undefined }))
     const who = detailFacts(entry, null)[1]!
     expect(text(who.lead[0]!)).toBe('共用')
-    expect(text(who.sub)).toBe('同样的查询正在问上游，那次没有上游回答')
+    expect(text(who.sub)).toBe('同样的查询正在问上游，那次没拿到能用的回答')
     expect(sourceOf(entry)?.text).toBe('共用')
     const joined = stepRows(entry, null).find((row) => text(row.lead).startsWith('同样的查询'))!
     expect(joined).toMatchObject({ tone: 'warn', decides: false })
@@ -257,13 +259,43 @@ describe('处理过程一步一句', () => {
 
   it('UDP、TCP 双发和连接、证书、读不懂的回答这几种错误说对原因，不叫人去开已经开着的设置', () => {
     expect(errorWord('all udp attempts failed and tcp fallback disabled')).toBe('UDP 没有回答')
-    expect(errorWord('udp failed: all udp attempts failed and tcp fallback disabled; tcp failed: tcp connect timeout after 2000ms')).toBe('UDP 和 TCP 都失败了：连不上上游')
-    expect(errorWord('tcp failed: connection reset by peer; udp failed: all udp attempts failed and tcp fallback disabled')).toBe('UDP 和 TCP 都失败了：连接断了')
-    expect(errorWord('udp failed and no time left for tcp: all udp attempts failed and tcp fallback disabled')).toBe('UDP 失败了，来不及再试 TCP')
+    expect(errorWord('udp failed: all udp attempts failed and tcp fallback disabled; tcp failed: tcp connect timeout after 2000ms')).toBe('UDP 和 TCP 都没回：连不上上游')
+    expect(errorWord('tcp failed: connection reset by peer; udp failed: all udp attempts failed and tcp fallback disabled')).toBe('UDP 和 TCP 都没回：连接断了')
+    // 两路是同时发的：一路失败时没时间等另一路，也是两路都没回，不说「来不及再试」 / Both legs were sent at once: one failing with no time
+    // left for the other is still both coming to nothing, never 「too late to retry」
+    expect(errorWord('tcp failed and no time left for udp: tcp connect timeout after 2000ms')).toBe('UDP 和 TCP 都没回：连不上上游')
+    expect(errorWord('udp failed and no time left for tcp: all udp attempts failed and tcp fallback disabled')).toBe('UDP 和 TCP 都没回')
+    expect(errorWord('udp failed: all udp attempts failed and tcp fallback disabled; tcp timed out')).toBe('UDP 和 TCP 都没回：超时')
+    // 列表那一格只放原因 / The list's cell holds just the cause
+    expect(errorWord('udp failed: all udp attempts failed and tcp fallback disabled; tcp failed: tcp connect timeout after 2000ms', true)).toBe('连不上上游')
     expect(errorWord('doh request send failed: error sending request for url (https://x/dns-query): client error (Connect): tcp connect error: Connection refused')).toBe('连不上上游')
     expect(errorWord('doh request send failed: error sending request for url (https://x/dns-query): client error (Connect): dns error: failed to lookup address information')).toBe('连不上上游')
     expect(errorWord('doh request send failed: error sending request for url (https://x/dns-query): client error (Connect): invalid peer certificate: UnknownIssuer')).toBe('上游的证书不对')
     expect(errorWord('parse upstream response: unexpected end of input reached')).toBe('上游的回答读不懂')
+  })
+
+  it('拦截规则回 SERVFAIL：内核记成失败，页面照样当拦截说，不说没有回答', () => {
+    const entry = entryOf(record([
+      { at_us: 0, kind: 'pipeline', pipeline: 'main' },
+      { at_us: 50, kind: 'rule', pipeline: 'main', rule: 'ads', phase: 'request', matched: true, decision: 'static' },
+    ], { outcome: 'failed', status: 'completed', rcode: 'SERVFAIL', answers: [], error: undefined, upstream: undefined }))
+    expect(entry.outcome).toBe('blocked')
+    expect(routeOf(entry, null).where).toBe('拦截')
+    expect(stepRows(entry, null).map((row) => text(row.lead))).toEqual(['命中规则「ads」，拦截', '回给客户端 SERVFAIL'])
+    expect(text(detailFacts(entry, null)[1]!.lead[0]!)).toBe('规则直接回应')
+    // KixDNS 自己出错的不算 / KixDNS's own failure does not count
+    expect(entryOf(record([{ at_us: 50, kind: 'rule', pipeline: 'main', rule: 'ads', phase: 'request', matched: true, decision: 'static' }], { outcome: 'failed', status: 'failed', rcode: 'SERVFAIL', answers: [], error: 'engine failed' })).outcome).toBe('failed')
+  })
+
+  it('认不出的上游错误：这一步说「出错」、原文放在下面；回给客户端那一步只列原文', () => {
+    const entry = entryOf(record([
+      { at_us: 9_000, kind: 'upstream', upstream: 'tcp://1.1.1.1:53', via: 'tcp', result: 'error', error: 'TCP response canceled for upstream 1.1.1.1:53', latency_us: 9_000 },
+    ], { outcome: 'failed', status: 'failed', rcode: undefined, answers: [], error: undefined }))
+    const [step, reply] = stepRows(entry, null)
+    expect(text(step!.lead)).toBe('tcp://1.1.1.1:53 出错')
+    expect(step!.note).toEqual([{ text: 'TCP response canceled for upstream 1.1.1.1:53', literal: true }])
+    expect(reply!.note.map((part) => part.text)).toEqual(['原因：', 'TCP response canceled for upstream 1.1.1.1:53'])
+    expect(text(detailFacts(entry, null)[1]!.sub)).toBe('问了 1 个上游：出错')
   })
 
   it('回答后检查把上游的回答拦下：谁回答的是那条检查，先回的不打勾', () => {
@@ -321,6 +353,8 @@ describe('设置的检查和服务端一样', () => {
     expect(ignoredDomains('_dmarc.example.com').problem).toBe('')
     expect(ignoredDomains('ads!.com').problem).toBe('「ads!.com」不是域名：域名只能有字母、数字、点、连字符和下划线')
     expect(ignoredDomains('äds.com').problem).toBe('「äds.com」不是域名：带非英文字母的域名要先转成 xn-- 开头的写法')
+    // 中文输入法打出来的全角字母和句号先换成半角 / Full-width letters and stops from a Chinese input method become half-width first
+    expect(ignoredDomains('ａｄｓ.example.com ads。example。org')).toEqual({ domains: ['ads.example.com', 'ads.example.org'], problem: '' })
     expect(ignoredDomains(Array.from({ length: 1001 }, (_, i) => `d${i}.com`).join(' ')).problem).toBe('不记录的域名最多 1000 个')
   })
 })
@@ -332,7 +366,8 @@ describe('显示时的断行和时间', () => {
     // 句末两个字压在名字上时，名字一直延到句末，「里）」不单独落一行 / A sentence end overlapping a name extends it to the end
     // 括号里的一小句整个不拆，「（在」不落在行尾 / A short aside in brackets stays whole, so 「（在」 never ends a line
     expect(kept('命中规则「国内」（在规则组「内网解析」里）')).toEqual(['「国内」', '（在规则组「内网解析」里）'])
-    expect(kept('先回的结果没通过回答后检查，改问上游组「国外」')).toEqual(['改问', '上游组', '「国外」'])
+    expect(kept('先回的结果没通过回答后检查，改问上游组「国外」')).toEqual(['结果', '没通过', '回答后检查', '改问', '上游组', '「国外」'])
+    expect(kept('问了 2 个上游：连不上上游')).toEqual(['上游', '连不上', '上游'])
     expect(kept('没等它回，另一个先回了')).toEqual(['没等它回', '另一个', '先回了'])
     expect(kept('缓存里有，直接回')).toEqual(['接回'])
     expect(kept('「这是一个超过十个字的很长的规则名」')).toEqual(['则名」'])

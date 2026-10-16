@@ -95,8 +95,11 @@ async function loadWithDest(): Promise<void> {
   if (!ctx.value) await loadContext()
   if (!alive) return
   // 去掉去向以后由筛选的监听重读 / With the destination dropped, the filter watcher reads again
-  if (ctx.value && !options.value.some((o) => o.value === dest.value)) setQuery({ dest: undefined })
-  else await load()
+  if (ctx.value && !options.value.some((o) => o.value === dest.value)) {
+    // 上次读取失败的红字不再挂着：去掉去向以后马上重读 / The last read's failure is not left up: dropping the destination reads again at once
+    loadError.value = ''
+    setQuery({ dest: undefined })
+  } else await load()
 }
 const waitingForPanel = computed(() => loadError.value !== '' && (panelDown.value || reconnecting.value) && items.value.length === 0)
 
@@ -162,8 +165,16 @@ function params(extra: Record<string, string> = {}): string {
 // stay faded and cannot be clicked, and the notice says they are from before the filter
 const rowsFor = ref('')
 const staleRows = computed(() => items.value.length > 0 && rowsFor.value !== params())
+// 列出来的行都是这一个客户端的：收起客户端一列、第二行不写它。旧行（筛选前的）不算 / The listed rows all belong to the one client: the
+// client column folds and the second line leaves it out. Rows from before the filter do not count
+const oneClient = computed(() => Boolean(client.value) && !staleRows.value)
 async function load(): Promise<void> {
   const mine = ++generation
+  // 这次按哪套筛选读：记的是发出去时的，读的途中又改了也对得上；和上次读到的一样时，是同一份列表的重读（点新查询、重新连上、保存设置）
+  // The filters this read is sent with, recorded at sending so typing during the read cannot mismatch; the same as last time means a
+  // reload of the same list (the new-queries banner, a reconnect, a save)
+  const sent = params()
+  const sameFilter = rowsFor.value === sent
   loading.value = true
   // 换了筛选：旧的往前翻的位置、停在哪、攒着的新查询都作废 / New filters: the old paging position, the stop point and the waiting
   // queries are void
@@ -180,10 +191,10 @@ async function load(): Promise<void> {
     stoppedAt.value = stoppedOf(page)
     newestMs.value = page.newest_unix_ms
     seenId = page.newest_id ?? 0
-    rowsFor.value = params()
+    rowsFor.value = sent
     loadError.value = ''
     unavailable.value = false
-    keepSelection()
+    keepSelection(sameFilter)
   } catch (error) {
     if (mine !== generation) return
     loadError.value = errorMessage(error)
@@ -235,7 +246,7 @@ async function poll(): Promise<void> {
   // redraw the whole table every 5 seconds
   const now = Date.now()
   if (new Date(now).toDateString() !== new Date(today.value).toDateString()) today.value = now
-  if (loading.value || !loaded.value || !supported.value || unavailable.value || document.hidden) return
+  if (loading.value || staleRows.value || !loaded.value || !supported.value || unavailable.value || document.hidden) return
   const mine = generation
   try {
     const page = await apiRequest<QueryLogPage>(`/api/v1/querylog?${params({ after: String(seenId) })}`)
@@ -318,7 +329,7 @@ const phoneLine = (entry: QueryLogEntry) => {
   const source = sourceOf(entry)
   // 按客户端筛选时每行都是同一个地址：不再重复（和宽屏收起客户端一列一样） / Filtered by client, every row has the same address: it is
   // not repeated (as the wide table folds its client column)
-  return [routeCell(entry).where, ...(source && !source.literal ? [source.text] : []), latencyText(entry.latency_ms), ...(client.value ? [] : [entry.client])]
+  return [routeCell(entry).where, ...(source && !source.literal ? [source.text] : []), latencyText(entry.latency_ms), ...(oneClient.value ? [] : [entry.client])]
 }
 // 日期分隔：时间列只写时分秒，跨了天的地方插一行日期（最上面一条不是今天的也先写日期）
 // Date rows: the time column holds the clock only, and a row with the date goes where the day changes (above the first entry too when it
@@ -333,6 +344,15 @@ function dayBreak(index: number): string | null {
 
 // ---------- 选中和详情 / selection and the detail ----------
 const phone = usePhone()
+// 列表窄到 700 以下（宽屏上侧栏开着的窄窗口）：每条改成两行 / The list narrower than 700 (a narrow window with the sidebar on a wide
+// screen): each entry takes two lines
+const narrow = ref(false)
+const sizer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(([seen]) => { if (seen) narrow.value = seen.contentRect.width <= 700 })
+watch(stream, (el, was) => {
+  if (was) sizer?.unobserve(was)
+  if (el) sizer?.observe(el)
+})
+const isNarrow = computed(() => narrow.value && !phone.value)
 // 开着的那条单独留一份：重读以后它不在读到的这几页里（比如在第二页），详情照旧开着，等人自己关
 // The open entry is kept on its own: when a reload no longer lists it (it was on page two, say), the detail stays open until the reader
 // closes it
@@ -374,7 +394,16 @@ function open(id: number, how: { push?: boolean; focus?: boolean } = {}): void {
     writeId(id)
     if (phone.value && !pushedSheet && route.query.id === String(id)) pushedSheet = stepBehind('id')
   }
-  if (phone.value) { void nextTick(() => { if (sheet.value && !sheet.value.open) sheet.value.showModal() }); return }
+  // 手机：整屏详情后面的列表也滚到这一条，关掉时就停在它这儿（从别的页回来、刷新时它可能在很远的地方）
+  // Phones: the list behind the sheet scrolls to this entry too, so closing lands on it (coming back from another page or reloading, it
+  // may be far away)
+  if (phone.value) {
+    void nextTick(() => {
+      rowEl(id)?.scrollIntoView({ block: 'nearest' })
+      if (sheet.value && !sheet.value.open) sheet.value.showModal()
+    })
+    return
+  }
   // 详情升起来以后，选中的行不能被它盖住 / Once the detail rises, the selected row must not sit under it
   void nextTick(() => {
     const row = rowEl(id)
@@ -383,6 +412,8 @@ function open(id: number, how: { push?: boolean; focus?: boolean } = {}): void {
   })
 }
 function select(id: number): void {
+  // 换筛选之前的旧行：淡着、点不了，键盘也一样 / Rows from before a filter change: faded and not openable, by keyboard either
+  if (staleRows.value) return
   if (selected.value === id) closeDetail()
   else open(id, { push: true })
 }
@@ -434,16 +465,18 @@ watch(phone, (now) => {
 // 重读以后：选中的那条还在就接着开着，不在了才收起；地址栏里带着的那条第一次读到时打开，比第一页早的往前多读几页找它
 // After a reload: the selected entry stays open while it is still listed and closes only when it is gone; the one named in the address
 // bar opens the first time it is read, and one older than the first page is looked for a few pages back
-function keepSelection(): void {
+function keepSelection(sameFilter = true): void {
   const fromUrl = selected.value === null
   const wanted = selected.value ?? (route.query.id ? Number(route.query.id) : null)
   if (wanted === null || Number.isNaN(wanted)) return
   if (listed(wanted)) { if (fromUrl) open(wanted, { focus: true }); return }
   if (fromUrl) { const mine = generation; void nextTick(() => reveal(wanted, mine)); return }
-  // 开着的那条不在这几页里：读到了最早一条还没有，就是删掉了，收起；不然照旧开着（多读几页去找太费，带筛选时每页都要扫）
-  // The open entry is not on these pages: when the oldest has been read and it is not there, it was deleted, so the detail closes;
-  // otherwise it stays open (reading more pages to find it costs too much, a filtered page being a full scan each)
-  if (nextBefore.value === null) closeDetail(false)
+  // 开着的那条不在读到的这几页里：换了筛选就收起；同一份列表的重读里，读到了最早一条还没有（删掉了）才收起，不然照旧开着
+  // （多读几页去找太费，带筛选时每页都要扫）
+  // The open entry is not on the pages read: after a filter change the detail closes; in a reload of the same list it closes only when
+  // the oldest has been read without it (it was deleted), and otherwise stays open (reading more pages to find it costs too much, a
+  // filtered page being a full scan each)
+  if (!sameFilter || nextBefore.value === null) closeDetail(false)
 }
 async function reveal(wanted: number, mine: number): Promise<void> {
   for (let page = 0; page < 5 && mine === generation && !listed(wanted) && nextBefore.value !== null; page++) {
@@ -460,12 +493,13 @@ async function reveal(wanted: number, mine: number): Promise<void> {
 function onKey(event: KeyboardEvent): void {
   if (event.key === 'Escape' && selected.value !== null) { event.preventDefault(); closeDetail(); return }
   if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
-  if (!(event.target as HTMLElement | null)?.closest('.qlog-row')) return
+  if (staleRows.value || !(event.target as HTMLElement | null)?.closest('.qlog-row')) return
   const list = items.value.filter((item): item is QueryLogEntry => !isGap(item))
   // 从选中的那行走；没有选中时从有焦点的那行走（关掉详情、继续往前查以后） / Move from the selected row, or from the focused one when
   // nothing is selected (after closing the detail or 继续往前查)
   const focused = Number((event.target as HTMLElement).closest('.qlog-row')?.getAttribute('data-id'))
-  const base = selected.value ?? (Number.isNaN(focused) ? null : focused)
+  // 开着的那条不在列表里（留着的那一份）时也从有焦点的那行走 / Also from the focused row when the open entry is not listed (the held one)
+  const base = selected.value !== null && listed(selected.value) ? selected.value : Number.isNaN(focused) ? null : focused
   const at = list.findIndex((item) => item.id === base)
   const next = list[at < 0 ? 0 : Math.min(list.length - 1, Math.max(0, at + (event.key === 'ArrowDown' ? 1 : -1)))]
   if (!next) return
@@ -519,18 +553,18 @@ let ignoring = false
 async function ignoreDomain(entry: QueryLogEntry): Promise<void> {
   if (ignoring) return
   ignoring = true
+  // 按下的这个按钮：成功以后它变成停用的「已不记录」，焦点要在那之前挪走 / The button pressed: after success it turns into the disabled
+  // 已不记录, so focus has to move before that
+  const trigger = document.activeElement
   try {
     const latest = await apiRequest<QueryLogSettings>('/api/v1/querylog/settings')
     settings.value = latest
     if (notRecorded(entry.qname)) { toast.info(`已经不记录 ${entry.qname}`); return }
     settings.value = await putSettings({ ignored_domains: [...latest.ignored_domains, entry.qname] })
     toast.undoable(`以后不再记录 ${entry.qname} 和它的子域名`, () => { void undoIgnore(entry.qname) })
-    // 按钮变成停用的「已不记录」：焦点挪到详情的关闭按钮上，Esc 照样能关 / The button turns into the disabled 已不记录: focus moves to
-    // the detail's close button, so Esc still closes it
-    void nextTick(() => {
-      if (document.activeElement && document.activeElement !== document.body) return
-      document.querySelector<HTMLElement>('.qlog-pane__head .ui-icon-btn, dialog.qlog-sheet[open] .pdrawer__head .ui-icon-btn')?.focus()
-    })
+    // 焦点挪到详情的关闭按钮上（重画之前），Esc 照样能关 / Focus moves to the detail's close button (before the redraw), so Esc still
+    // closes it
+    if (trigger instanceof HTMLElement && document.activeElement === trigger) document.querySelector<HTMLElement>('.qlog-pane__head .ui-icon-btn, dialog.qlog-sheet[open] .pdrawer__head .ui-icon-btn')?.focus()
   } catch (error) {
     toast.error(`没能改设置：${errorMessage(error)}`)
   } finally {
@@ -583,7 +617,7 @@ const problems = computed(() => {
 })
 const draftValid = () => (draft.value.retention !== 'custom' || !hoursProblem(draft.value.customHours)) && !capProblem(draft.value.maxMb) && !ignoredDomains(draft.value.ignored).problem
 const mb = (bytes: number) => `${Math.round(bytes / 1048576)} MB`
-async function openSettings(): Promise<void> {
+async function openSettings(fromUrl = false): Promise<void> {
   let s: QueryLogSettings
   try {
     s = await apiRequest<QueryLogSettings>('/api/v1/querylog/settings')
@@ -598,8 +632,10 @@ async function openSettings(): Promise<void> {
   serverProblem.value = null
   await nextTick()
   drawer.value?.showModal()
-  // 手机上同详情一样记一步历史：返回手势先关设置 / On phones, as for the detail, a history step: the back gesture closes the settings first
-  if (phone.value) {
+  // 手机上同详情一样记一步历史：返回手势先关设置；从地址栏打开的（前进）那一步已经在了 / On phones, as for the detail, a history step:
+  // the back gesture closes the settings first; opened from the address bar (forward), that step is already there
+  if (phone.value && fromUrl) pushedDrawer = stepBehind('settings')
+  else if (phone.value) {
     pushedDrawer = true
     void router.push({ query: { ...route.query, settings: '1' } })
   }
@@ -613,7 +649,12 @@ function onDrawerClose(): void {
 // 正在保存时 Esc 不关：关了就看不到保存失败的提示 / Esc does not close while saving: closed, a failed save would go unseen
 function onDrawerCancel(event: Event): void { if (settingsBusy.value) event.preventDefault() }
 watch(() => route.query.settings, (value) => {
-  if (value !== undefined || !drawer.value?.open) return
+  // 前进键回到设置那一步：设置跟着开 / Forward onto the settings step: the settings open with it
+  if (value !== undefined) {
+    if (phone.value && loaded.value && !drawer.value?.open) void openSettings(true)
+    return
+  }
+  if (!drawer.value?.open) return
   pushedDrawer = false
   drawer.value.close()
 })
@@ -715,6 +756,7 @@ onMounted(async () => {
 })
 onBeforeUnmount(() => {
   alive = false
+  sizer?.disconnect()
   // 还在路上的读取一律作废 / Any read still on its way is void
   generation++
   window.clearInterval(timer)
@@ -750,7 +792,7 @@ onBeforeUnmount(() => {
       <label class="ui-input log-search"><Search :size="16" aria-hidden="true" /><input ref="searchInput" v-model="q" aria-label="搜索域名或客户端" placeholder="搜索域名或客户端" maxlength="253" autocapitalize="off" spellcheck="false" /></label>
       <UiSelect class="qlog-dest" :model-value="dest" :options="options" label="按去向筛选" @update:model-value="setQuery({ dest: $event || undefined })" />
       <div class="log-toolbar__end">
-        <button class="ui-btn ui-btn--secondary ui-btn--icon" type="button" title="查询日志设置" aria-label="查询日志设置" @click="openSettings"><SlidersHorizontal :size="16" aria-hidden="true" /></button>
+        <button class="ui-btn ui-btn--secondary ui-btn--icon" type="button" title="查询日志设置" aria-label="查询日志设置" @click="openSettings()"><SlidersHorizontal :size="16" aria-hidden="true" /></button>
         <button class="ui-btn ui-btn--secondary ui-btn--icon" type="button" title="下载已列出的查询" aria-label="下载已列出的查询" :disabled="!entries.length" @click="download"><Download :size="16" aria-hidden="true" /></button>
       </div>
     </header>
@@ -763,13 +805,13 @@ onBeforeUnmount(() => {
     <!-- 表格和详情：宽屏上详情在表格下方，表格不变形；手机上详情从底边升起 / The table and the detail: on wide screens the detail sits under the table, which keeps its shape; on phones it rises from the bottom -->
     <div class="qlog-body" @keydown="onKey">
       <!-- 换筛选读回来之前旧的行变淡、点不了 / Until a filter change's read lands, the old rows fade and cannot be clicked -->
-      <div ref="stream" class="qlog-stream" :class="{ 'is-loading': (loading && entries.length) || staleRows, 'is-one-client': Boolean(client), 'is-empty': !entries.length && !loading, 'has-banner': Boolean(freshLabel) }" :aria-busy="loading || undefined" @scroll.passive="onScroll">
+      <div ref="stream" class="qlog-stream" :class="{ 'is-loading': (loading && entries.length) || staleRows, 'is-one-client': oneClient, 'is-narrow': isNarrow, 'is-empty': !entries.length && !loading, 'has-banner': Boolean(freshLabel) }" :aria-busy="loading || undefined" @scroll.passive="onScroll">
         <div v-if="entries.length" class="qlog-head" aria-hidden="true"><span></span><span class="ui-lbl">时间</span><span class="ui-lbl qlog-head-client">客户端</span><span class="ui-lbl">域名</span><span class="ui-lbl qlog-head-type">类型</span><span class="ui-lbl">去向</span><span class="ui-lbl qlog-c-answer">回答</span><span class="ui-lbl qlog-c-source">来源</span><span class="ui-lbl qlog-num">耗时</span></div>
         <UiNewItemsBanner v-if="freshLabel" :label="freshLabel" :loading="loading" @show="showFresh" />
         <div v-if="loading && !entries.length" class="log-skeleton" role="status" aria-label="正在读取查询日志"><i v-for="n in 12" :key="n" class="sk"></i></div>
         <!-- 只有用到的东西变了的那几行才重画：选中一行只动两行，不是整张表 / Only rows whose inputs changed are redrawn: selecting a row
              touches two rows, not the whole table -->
-        <template v-for="(item, index) in entries" :key="item.id" v-memo="[item, dayBreak(index), selected === item.id, tabStop === item.id, ctx, phone, client]">
+        <template v-for="(item, index) in entries" :key="item.id" v-memo="[item, dayBreak(index), selected === item.id, tabStop === item.id, ctx, phone, isNarrow, oneClient]">
           <p v-if="dayBreak(index)" class="qlog-day"><span>{{ dayBreak(index) }}</span></p>
           <!-- 漏记的一段：照实说，不悄悄缺 / A gap: said plainly, never a silent hole -->
           <p v-if="isGap(item)" class="qlog-gap" role="note"><span><template v-for="(run, k) in glued(gapText(item.gap))" :key="k"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></span></p>
@@ -785,7 +827,7 @@ onBeforeUnmount(() => {
             <span class="qlog-num qlog-c-latency" :class="{ 'is-slow': item.latency_ms >= SLOW_MS && item.outcome !== 'failed' }">{{ latencyText(item.latency_ms) }}</span>
             <!-- 手机：第二行，只在手机上画（和下面的 640 断点一致），宽屏一页少画上千个元素 / phones: the second line, drawn on phones only (the
                  640 breakpoint below), sparing wide screens a thousand elements a page -->
-            <span v-if="phone" class="qlog-phone"><UiDotText :parts="phoneLine(item)" /></span>
+            <span v-if="phone || isNarrow" class="qlog-phone"><UiDotText :parts="phoneLine(item)" /></span>
           </button>
         </template>
         <p v-if="loadingOlder" class="qlog-more" role="status">正在读取更早的查询</p>
@@ -945,14 +987,6 @@ onBeforeUnmount(() => {
   .logs-page .qlog-head, .logs-page .qlog-row { grid-template-columns: var(--size-dot) 4.25rem 7.25rem minmax(8rem, 1.6fr) 3rem minmax(7.5rem, 1fr) 3.75rem; }
   .logs-page .qlog-stream:not(.is-one-client) .qlog-c-answer { display: none; }
 }
-/* 再窄：类型并进域名一格（和手机一样），时间、客户端收窄 / Narrower still: the type joins the domain cell (as on phones), time and client narrow */
-@container (max-width: 700px) {
-  .logs-page .qlog-head, .logs-page .qlog-row { grid-template-columns: var(--size-dot) 3.5rem 6rem minmax(0, 1.25fr) minmax(0, 1fr) 3.75rem; column-gap: var(--s-3); }
-  .logs-page :is(.qlog-c-type, .qlog-head-type) { display: none; }
-  .logs-page .qlog-c-name { display: flex; align-items: baseline; gap: var(--s-2); }
-  .logs-page .qlog-c-name > .qlog-lit { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  .logs-page .qlog-row .qlog-phone-type { display: inline; flex: 0 0 auto; color: var(--l-ink-3); font-size: var(--t-1); }
-}
 /* 按客户端筛选时客户端一列每行都一样：收起来，让出的宽度（132）给别的列，来源、回答也晚 132 才收。只管表格：手机的两行不受影响
    Filtered by client, the client column repeats one address: it folds, and the room it frees (132) lets the source and the answer stay
    132 narrower. Tables only: the phone's two-line rows are left alone */
@@ -967,8 +1001,28 @@ onBeforeUnmount(() => {
     .logs-page .qlog-stream.is-one-client :is(.qlog-head, .qlog-row) { grid-template-columns: var(--size-dot) 4.25rem minmax(8rem, 1.6fr) 3rem minmax(7.5rem, 1fr) 3.75rem; }
     .logs-page .qlog-stream.is-one-client .qlog-c-answer { display: none; }
   }
-  @container (max-width: 700px) { .logs-page .qlog-stream.is-one-client :is(.qlog-head, .qlog-row) { grid-template-columns: var(--size-dot) 3.5rem minmax(0, 1.25fr) minmax(0, 1fr) 3.75rem; } }
 }
+/* 表格窄到 700 以下（侧栏开着的窄窗口）：每条两行，和手机一样——第一行域名、类型和时间，第二行状态点和「去向 · 来源 · 耗时 · 客户端」；
+   表头不要了，域名不再被挤成几个字。是否窄由脚本量列表的宽度定（is-narrow），手机另有自己的样子
+   A table narrower than 700 (a narrow window with the sidebar): each entry takes two lines, as on phones — the domain, type and time,
+   then the status dot and 「destination · source · latency · client」; the head goes, and domains are no longer squeezed to a few
+   characters. Whether it is narrow is measured by script on the list's width (is-narrow); phones have their own look */
+.logs-page .qlog-stream.is-narrow .qlog-head { display: none; }
+.logs-page .qlog-stream.is-narrow .qlog-row { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "name name time" "dot phone phone"; column-gap: var(--s-2); row-gap: 2px; padding: var(--s-2) var(--s-5); contain-intrinsic-block-size: calc(var(--log-line) * 2 + 2px); }
+.logs-page .qlog-stream.is-narrow .qlog-row > :is(.qlog-c-client, .qlog-c-type, .qlog-c-dest, .qlog-c-answer, .qlog-c-source, .qlog-c-latency) { display: none; }
+.logs-page .qlog-stream.is-narrow .qlog-dot { grid-area: dot; align-self: center; }
+.logs-page .qlog-stream.is-narrow .qlog-c-name { grid-area: name; display: flex; align-items: baseline; gap: var(--s-2); }
+.logs-page .qlog-stream.is-narrow .qlog-c-name > .qlog-lit { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.logs-page .qlog-stream.is-narrow .qlog-phone-type { display: inline; flex: 0 0 auto; color: var(--l-ink-3); font-size: var(--t-1); }
+.logs-page .qlog-stream.is-narrow .qlog-c-time { grid-area: time; font-size: var(--t-2); }
+.logs-page .qlog-stream.is-narrow .qlog-phone { grid-area: phone; display: block; color: var(--l-ink-2); font-size: var(--t-2); }
+/* 没有表头：吸顶的提示条和日期行贴着列表的上边 / No head: the sticky banner and date row sit against the list's top */
+.logs-page .qlog-stream.is-narrow > .ui-banner, .logs-page .qlog-stream.is-narrow > .qlog-day { top: 0; }
+.logs-page .qlog-stream.is-narrow.has-banner > .qlog-day { top: var(--h-md); }
+.logs-page .qlog-stream.is-narrow { scroll-padding-top: 0; }
+.logs-page .qlog-stream.is-narrow:has(> .qlog-day) { scroll-padding-top: calc(var(--s-6) + 1px); }
+.logs-page .qlog-stream.is-narrow.has-banner { scroll-padding-top: calc(var(--h-md) + 1px); }
+.logs-page .qlog-stream.is-narrow.has-banner:has(> .qlog-day) { scroll-padding-top: calc(var(--h-md) + var(--s-6) + 1px); }
 .logs-page .qlog-num { text-align: right; }
 /* 行：32 高，13 号字，隔行浅底；悬停一档灰，选中是品牌色的浅底加左边一条（隔行的底和选中的底不会混） / Rows: 32 tall, 13px, alternate rows tinted; hover one grey step, selected the accent tint plus a bar on the left (so it never blends with the stripes) */
 /* 看不见的行不排版：手机上打开详情时整页重算样式，几百行要几百毫秒。占位高度是内容框的高（不含内边距、边框），也不记上一次量到的：
@@ -1029,7 +1083,20 @@ onBeforeUnmount(() => {
  * The detail under the table: a head, one bar of tabs and four actions, the content. A little over half the list area (16rem to
  * 28rem): on a 900-tall screen the usual five steps fit, longer ones scroll inside; short screens still fit the summary
  */
-.logs-page .qlog-pane { flex: 0 0 auto; height: clamp(16rem, 55%, 28rem); min-height: 0; display: flex; flex-direction: column; border-top: 1px solid var(--l-hair); background: var(--l-surface); container: qlog-pane / inline-size; }
+/* 屏幕矮时详情不把列表挤没：开着详情时列表至少留表头加 5 行，放不下就让卡片往下长、整页滚动。列表做尺寸隔离，算卡片最小高度时
+   只按这 5 行算，不按几百行的内容；卡片本身裁掉溢出（overflow: hidden），min-height: auto 对它算成 0，所以写成 min-content。
+   详情自己的最小高度（高度的下限 16rem）也写明，详情也做尺寸隔离，不然算最小高度时按它的全部内容算；卡片停在最小高度时，详情按 55%
+   多要的那部分让出来
+   On short screens the detail never squeezes the list out: with a detail open the list keeps its head and 5 rows, and when they do not
+   fit the card grows and the page scrolls. The list is size-contained, so the card's minimum counts those 5 rows rather than hundreds of
+   rows of content; the card clips its overflow (overflow: hidden), which makes min-height: auto resolve to 0, hence min-content. The
+   detail's own minimum (16rem, the floor of its height) is written out and the detail is size-contained too, or the minimum would count
+   its whole content; when the card sits at that minimum, the detail gives back what its 55% asks beyond it */
+.logs-page .qlog-body:has(> .qlog-pane) > .qlog-stream { contain: size; min-height: calc(var(--h-md) + 1px + 5 * var(--s-6)); }
+/* 两行的窄表格没有表头，一条 59 高：同样留 5 条 / The two-line narrow table has no head and 59-tall entries: 5 of them stay as well */
+.logs-page .qlog-body:has(> .qlog-pane) > .qlog-stream.is-narrow { min-height: calc(5 * (var(--log-line) * 2 + 2px + 2 * var(--s-2) + 1px)); }
+.logs-page .log-console.qlog:has(> .qlog-body > .qlog-pane) { min-height: min-content; }
+.logs-page .qlog-pane { flex: 0 1 auto; height: clamp(16rem, 55%, 28rem); min-height: 16rem; contain: size; display: flex; flex-direction: column; border-top: 1px solid var(--l-hair); background: var(--l-surface); container: qlog-pane / inline-size; }
 .qlog-pane__head { display: flex; align-items: flex-start; gap: var(--s-3); padding: var(--s-4) var(--s-5) var(--s-3); }
 .qlog-pane__titles { flex: 1 1 auto; min-width: 0; }
 .qlog-pane__titles h2, .qlog-sheet h2 { margin: 0; display: flex; align-items: baseline; gap: var(--s-2); color: var(--l-ink); font-size: var(--t-4); font-weight: var(--w-bold); line-height: var(--lh-tight); }
