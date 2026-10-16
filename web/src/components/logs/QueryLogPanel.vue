@@ -160,6 +160,19 @@ function params(extra: Record<string, string> = {}): string {
 }
 
 // ---------- 读取 / loading ----------
+// 开着的那条一定还在新结果里：新的筛选只是去掉了几项，或者加上 / 改成的是它自己的客户端、它对得上的搜索（「只看这个客户端」、去掉一个
+// 筛选、清空搜索）。去向这类要服务端才认得出的，变了就不算
+// The open entry is certainly in the new result: the new filters only drop some, or add or change to its own client or a search it
+// matches (只看这个客户端, removing a filter, clearing the search). Filters only the server can judge, such as the destination, do not
+// count once changed
+function stillMatches(entry: QueryLogEntry | null, before: string, after: string): boolean {
+  if (!entry) return false
+  const was = new URLSearchParams(before)
+  const has = (text: string, part: string) => text.toLowerCase().includes(part.toLowerCase())
+  return [...new URLSearchParams(after)].every(([key, value]) => was.get(key) === value
+    || (key === 'client' && value === entry.client)
+    || (key === 'q' && (has(entry.qname, value) || has(entry.client, value))))
+}
 // 列表里的行是按哪套筛选读的：和现在的对不上（换了筛选、那次读失败了）时行一直淡着、点不了，提示说这是筛选前的结果
 // Which filters the listed rows were read with: while they differ from the current ones (filters changed and that read failed), the rows
 // stay faded and cannot be clicked, and the notice says they are from before the filter
@@ -174,7 +187,7 @@ async function load(): Promise<void> {
   // The filters this read is sent with, recorded at sending so typing during the read cannot mismatch; the same as last time means a
   // reload of the same list (the new-queries banner, a reconnect, a save)
   const sent = params()
-  const sameFilter = rowsFor.value === sent
+  const sameFilter = rowsFor.value === sent || stillMatches(current.value, rowsFor.value, sent)
   loading.value = true
   // 换了筛选：旧的往前翻的位置、停在哪、攒着的新查询都作废 / New filters: the old paging position, the stop point and the waiting
   // queries are void
@@ -344,10 +357,12 @@ function dayBreak(index: number): string | null {
 
 // ---------- 选中和详情 / selection and the detail ----------
 const phone = usePhone()
-// 列表窄到 700 以下（宽屏上侧栏开着的窄窗口）：每条改成两行 / The list narrower than 700 (a narrow window with the sidebar on a wide
+// 列表窄到 776 以下（宽屏上侧栏开着的窄窗口）：每条改成两行 / The list narrower than 776 (a narrow window with the sidebar on a wide
 // screen): each entry takes two lines
 const narrow = ref(false)
-const sizer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(([seen]) => { if (seen) narrow.value = seen.contentRect.width <= 700 })
+// 表格的七列在 776 以下开始截断域名：从这里起换成两行 / Below 776 the seven-column table starts cutting domains: two lines take over there
+const NARROW = 776
+const sizer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(([seen]) => { if (seen) narrow.value = seen.contentRect.width <= NARROW })
 watch(stream, (el, was) => {
   if (was) sizer?.unobserve(was)
   if (el) sizer?.observe(el)
@@ -384,7 +399,7 @@ function stepBehind(param: 'id' | 'settings'): boolean {
   const back = (window.history.state as { back?: unknown } | null)?.back
   return typeof back === 'string' && back === router.resolve({ query: { ...route.query, [param]: undefined } }).fullPath
 }
-function open(id: number, how: { push?: boolean; focus?: boolean } = {}): void {
+function open(id: number, how: { push?: boolean; focus?: boolean; reveal?: boolean } = {}): void {
   selected.value = id
   held.value = items.value.find((item): item is QueryLogEntry => !isGap(item) && item.id === id) ?? held.value
   if (phone.value && how.push) {
@@ -409,19 +424,40 @@ function open(id: number, how: { push?: boolean; focus?: boolean } = {}): void {
     const row = rowEl(id)
     row?.scrollIntoView({ block: 'nearest' })
     if (how.focus) row?.focus({ preventScroll: true })
+    // 点开的：屏幕矮时详情在下面看不到，把它的页头和页签露出来（键盘逐条看时不动整页）/ Opened by a click: on short screens the
+    // detail lands below the fold, so its head and tabs are brought into view (stepping with the keyboard leaves the page alone)
+    if (how.reveal) requestAnimationFrame(() => document.querySelector('.qlog-pane__bar')?.scrollIntoView({ block: 'nearest' }))
   })
 }
 function select(id: number): void {
   // 换筛选之前的旧行：淡着、点不了，键盘也一样 / Rows from before a filter change: faded and not openable, by keyboard either
   if (staleRows.value) return
   if (selected.value === id) closeDetail()
-  else open(id, { push: true })
+  else open(id, { push: true, reveal: true })
 }
 // 收起以后把地址栏里的 id 去掉：打开时记过一步历史的退回去，不然原地换掉 / After closing, the id leaves the address bar: a history step
 // added on opening is gone back over, otherwise the address is replaced in place
-function forget(): void {
-  if (pushedSheet) { pushedSheet = false; router.back() }
-  else writeId(null)
+function forget(): boolean {
+  if (pushedSheet) { pushedSheet = false; router.back(); return true }
+  writeId(null)
+  return false
+}
+// 关掉以后回到那一行：焦点放回去，手机上把它滚到屏幕中间。退回一步历史时浏览器会把滚动恢复成打开那时的位置（这期间新查询把行往下推了），
+// 所以等那一步走完、再过一帧才滚
+// After closing, back to the row: focus returns to it, and on phones it scrolls to the middle of the screen. Going back a history step
+// makes the browser restore the scroll of when it was opened (new queries have pushed rows down since), so the scroll waits for that
+// step to land and one more frame
+function land(id: number, wait: 'tick' | 'frame' | 'route', focus = true): void {
+  const go = () => {
+    const row = rowEl(id)
+    if (focus) row?.focus({ preventScroll: true })
+    if (phone.value) row?.scrollIntoView({ block: 'center' })
+  }
+  if (wait === 'route') {
+    const stop = watch(() => route.fullPath, () => { stop(); requestAnimationFrame(go) })
+    return
+  }
+  void nextTick(() => (wait === 'frame' ? requestAnimationFrame(go) : go()))
 }
 // 手机详情被 Esc、安卓的返回关掉：选中跟着清掉，焦点回到那一行 / The phone sheet closed by Esc or Android's back: the selection
 // clears with it and focus returns to the row
@@ -429,16 +465,16 @@ function onSheetClose(): void {
   const was = selected.value
   if (was === null) return
   selected.value = null
-  forget()
-  void nextTick(() => rowEl(was)?.focus({ preventScroll: true }))
+  land(was, forget() ? 'route' : 'tick')
 }
 function closeDetail(restoreFocus = true): void {
   const was = selected.value
   // 先清选中：关掉整屏详情时触发的 close 就不再重复收一遍 / The selection clears first, so the close event the sheet fires does nothing more
   selected.value = null
   if (sheet.value?.open) sheet.value.close()
-  if (was !== null) forget()
-  if (restoreFocus && was !== null) void nextTick(() => rowEl(was)?.focus({ preventScroll: true }))
+  if (was === null) return
+  const back = forget()
+  if (restoreFocus) land(was, back ? 'route' : 'tick')
 }
 // 返回手势、浏览器后退把 id 退掉了：详情跟着关，不再动地址栏 / The back gesture or the browser's back took the id away: the detail
 // closes with it and the address bar is left alone
@@ -455,12 +491,24 @@ watch(() => route.query.id, (id) => {
   pushedSheet = false
   selected.value = null
   if (sheet.value?.open) sheet.value.close()
-  void nextTick(() => rowEl(was)?.focus({ preventScroll: true }))
+  land(was, 'frame')
 })
 // 手机和宽屏之间转过来（转屏）：选中的那条在手机上要有整屏详情 / Turning between phone and wide layouts: on a phone the selected entry
 // needs its sheet
 watch(phone, (now) => {
   if (now && selected.value !== null) void nextTick(() => { if (sheet.value && !sheet.value.open) sheet.value.showModal() })
+})
+// 版式变了（跨过两行表格的宽度、收起侧栏、转屏）：行高跟着变，选中的那一行滚回看得见的地方；从手机转成宽屏时整屏详情没了，焦点回到那一行
+// The layout changed (across the two-line width, the sidebar folding, a rotation): row heights change with it, so the selected row
+// scrolls back into view; turning from a phone to a wide screen removes the sheet, so focus returns to the row
+watch([isNarrow, phone], (_, [, wasPhone]) => {
+  const id = selected.value
+  if (id === null) return
+  void nextTick(() => {
+    const row = rowEl(id)
+    row?.scrollIntoView({ block: 'nearest' })
+    if (wasPhone && !phone.value && (!document.activeElement || document.activeElement === document.body)) row?.focus({ preventScroll: true })
+  })
 })
 // 重读以后：选中的那条还在就接着开着，不在了才收起；地址栏里带着的那条第一次读到时打开，比第一页早的往前多读几页找它
 // After a reload: the selected entry stays open while it is still listed and closes only when it is gone; the one named in the address
@@ -518,10 +566,11 @@ const factsOf = (entry: QueryLogEntry) => detailFacts(entry, ctx.value)
 const glued = glueText
 // 漏记的一段：数和「条」之间是不断行空格 / A gap: a no-break space between the number and 条
 const gapText = (n: number) => `这里漏记了\u00a0${n}\u00a0条：KixDNS 当时太忙没记下，或者面板没来得及取走`
-// 去掉一个筛选：按钮马上就没了，焦点先放到选中的那行上，没有选中就放进搜索框 / Removing a filter: the button is about to go, so focus moves
+// 去掉一个筛选：按钮马上就没了，焦点先放到选中的那行上，没有就放进搜索框 / Removing a filter: the button is about to go, so focus moves
 // first to the selected row, or to the search box when nothing is selected
 function dropFilter(patch: Record<string, undefined>): void {
-  ;(selected.value !== null ? rowEl(selected.value) : searchInput.value)?.focus({ preventScroll: true })
+  // 开着的那条不在列表里（留着的那一份）时也放进搜索框 / Also the search box when the open entry is not listed (the held one)
+  ;((selected.value !== null ? rowEl(selected.value) : null) ?? searchInput.value)?.focus({ preventScroll: true })
   setQuery(patch)
 }
 
@@ -1002,18 +1051,19 @@ onBeforeUnmount(() => {
     .logs-page .qlog-stream.is-one-client .qlog-c-answer { display: none; }
   }
 }
-/* 表格窄到 700 以下（侧栏开着的窄窗口）：每条两行，和手机一样——第一行域名、类型和时间，第二行状态点和「去向 · 来源 · 耗时 · 客户端」；
+/* 表格窄到 776 以下（侧栏开着的窄窗口）：每条两行，和手机一样——第一行域名、类型和时间，第二行状态点和「去向 · 来源 · 耗时 · 客户端」；
    表头不要了，域名不再被挤成几个字。是否窄由脚本量列表的宽度定（is-narrow），手机另有自己的样子
-   A table narrower than 700 (a narrow window with the sidebar): each entry takes two lines, as on phones — the domain, type and time,
+   A table narrower than 776 (a narrow window with the sidebar): each entry takes two lines, as on phones — the domain, type and time,
    then the status dot and 「destination · source · latency · client」; the head goes, and domains are no longer squeezed to a few
    characters. Whether it is narrow is measured by script on the list's width (is-narrow); phones have their own look */
 .logs-page .qlog-stream.is-narrow .qlog-head { display: none; }
-.logs-page .qlog-stream.is-narrow .qlog-row { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "name name time" "dot phone phone"; column-gap: var(--s-2); row-gap: 2px; padding: var(--s-2) var(--s-5); contain-intrinsic-block-size: calc(var(--log-line) * 2 + 2px); }
+.logs-page .qlog-stream.is-narrow .qlog-row { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "name name time" "dot phone phone"; column-gap: var(--s-2); row-gap: 2px; padding: var(--s-2) var(--s-5); }
 .logs-page .qlog-stream.is-narrow .qlog-row > :is(.qlog-c-client, .qlog-c-type, .qlog-c-dest, .qlog-c-answer, .qlog-c-source, .qlog-c-latency) { display: none; }
 .logs-page .qlog-stream.is-narrow .qlog-dot { grid-area: dot; align-self: center; }
 .logs-page .qlog-stream.is-narrow .qlog-c-name { grid-area: name; display: flex; align-items: baseline; gap: var(--s-2); }
 .logs-page .qlog-stream.is-narrow .qlog-c-name > .qlog-lit { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.logs-page .qlog-stream.is-narrow .qlog-phone-type { display: inline; flex: 0 0 auto; color: var(--l-ink-3); font-size: var(--t-1); }
+/* 类型小字的行高压成 1：有没有类型，行都是一样高 / The type's line height is 1: rows are one height with or without a type */
+.logs-page .qlog-stream.is-narrow .qlog-phone-type { display: inline; flex: 0 0 auto; color: var(--l-ink-3); font-size: var(--t-1); line-height: 1; }
 .logs-page .qlog-stream.is-narrow .qlog-c-time { grid-area: time; font-size: var(--t-2); }
 .logs-page .qlog-stream.is-narrow .qlog-phone { grid-area: phone; display: block; color: var(--l-ink-2); font-size: var(--t-2); }
 /* 没有表头：吸顶的提示条和日期行贴着列表的上边 / No head: the sticky banner and date row sit against the list's top */
@@ -1025,12 +1075,6 @@ onBeforeUnmount(() => {
 .logs-page .qlog-stream.is-narrow.has-banner:has(> .qlog-day) { scroll-padding-top: calc(var(--h-md) + var(--s-6) + 1px); }
 .logs-page .qlog-num { text-align: right; }
 /* 行：32 高，13 号字，隔行浅底；悬停一档灰，选中是品牌色的浅底加左边一条（隔行的底和选中的底不会混） / Rows: 32 tall, 13px, alternate rows tinted; hover one grey step, selected the accent tint plus a bar on the left (so it never blends with the stripes) */
-/* 看不见的行不排版：手机上打开详情时整页重算样式，几百行要几百毫秒。占位高度是内容框的高（不含内边距、边框），也不记上一次量到的：
-   转屏以后不留着另一种布局的高度
-   Rows out of view skip layout: opening the phone sheet restyles the whole page, which costs hundreds of milliseconds over hundreds of
-   rows. The placeholder height is the content box's (without padding or border), and the last measured size is not remembered, so a
-   rotation never keeps the other layout's height */
-.logs-page .qlog-row { content-visibility: auto; contain-intrinsic-block-size: var(--s-6); }
 .logs-page .qlog-row { width: 100%; min-height: var(--s-6); border: 0; background: none; color: var(--l-ink-2); font-family: var(--f-body); font-size: var(--t-3); font-variant-numeric: tabular-nums; line-height: var(--log-line); text-align: left; cursor: pointer; }
 .logs-page .qlog-row:nth-child(even of .qlog-row) { background: var(--l-canvas); }
 .logs-page .qlog-row.is-selected { background: var(--accent-tint); box-shadow: inset 2px 0 0 var(--accent); }
@@ -1092,10 +1136,23 @@ onBeforeUnmount(() => {
    rows of content; the card clips its overflow (overflow: hidden), which makes min-height: auto resolve to 0, hence min-content. The
    detail's own minimum (16rem, the floor of its height) is written out and the detail is size-contained too, or the minimum would count
    its whole content; when the card sits at that minimum, the detail gives back what its 55% asks beyond it */
-.logs-page .qlog-body:has(> .qlog-pane) > .qlog-stream { contain: size; min-height: calc(var(--h-md) + 1px + 5 * var(--s-6)); }
+/* 吸在顶上的新查询提示条、日期行也占地方：5 行另算 / A stuck new-queries banner and date row take room too: the 5 rows come on top */
+.logs-page .qlog-stream.has-banner { --qlog-banner: var(--h-md); }
+.logs-page .qlog-stream:has(> .qlog-day) { --qlog-day: var(--s-6); }
+.logs-page .qlog-body:has(> .qlog-pane) > .qlog-stream { contain: size; min-height: calc(var(--h-md) + 1px + 5 * var(--s-6) + var(--qlog-banner, 0px) + var(--qlog-day, 0px)); }
 /* 两行的窄表格没有表头，一条 59 高：同样留 5 条 / The two-line narrow table has no head and 59-tall entries: 5 of them stay as well */
-.logs-page .qlog-body:has(> .qlog-pane) > .qlog-stream.is-narrow { min-height: calc(5 * (var(--log-line) * 2 + 2px + 2 * var(--s-2) + 1px)); }
+.logs-page .qlog-body:has(> .qlog-pane) > .qlog-stream.is-narrow { min-height: calc(5 * (var(--log-line) * 2 + 2px + 2 * var(--s-2)) + var(--qlog-banner, 0px) + var(--qlog-day, 0px)); }
 .logs-page .log-console.qlog:has(> .qlog-body > .qlog-pane) { min-height: min-content; }
+/* 整页跟着卡片长，下面留的空白（底栏的位置）在卡片下面，不在卡片里面；侧栏也跟到底 / The page grows with the card, so the room left below
+   (the bottom nav's place) is under the card, not inside it, and the sidebar runs to the end */
+.logs-page:has(.qlog-pane) { min-height: min-content; }
+/* 有底栏的窄屏和手机：滚到一行时（键盘逐条看、关掉详情回到那一行）不停在顶栏和底栏下面 / Narrow screens with the bottom nav, and phones:
+   scrolling to a row (keyboard stepping, coming back to it after closing the detail) never parks it under the top bar or the bottom nav */
+@media (max-width: 860px) { :root:has(.qlog-stream) { scroll-padding: calc(var(--app-header-height) + var(--s-2)) 0 calc(var(--mobile-nav-height) + var(--s-2)); } }
+/* 「减少动态效果」把每个属性都变成 0.01 毫秒的过渡：最小高度会晚一帧才到，列表闪一下被压扁。这几块不要过渡
+   「Reduce motion」 turns every property into a 0.01 ms transition: the minimum height would land a frame late and the list would flash
+   squashed. These boxes take no transition */
+.logs-page :is(.log-console.qlog, .qlog-body, .qlog-stream, .qlog-pane) { transition: none; }
 .logs-page .qlog-pane { flex: 0 1 auto; height: clamp(16rem, 55%, 28rem); min-height: 16rem; contain: size; display: flex; flex-direction: column; border-top: 1px solid var(--l-hair); background: var(--l-surface); container: qlog-pane / inline-size; }
 .qlog-pane__head { display: flex; align-items: flex-start; gap: var(--s-3); padding: var(--s-4) var(--s-5) var(--s-3); }
 .qlog-pane__titles { flex: 1 1 auto; min-width: 0; }
@@ -1121,9 +1178,9 @@ onBeforeUnmount(() => {
 /* 步骤里的地址只在目录边界的「/」后面断，不在连字符处断 / An address in a step wraps only after a directory 「/」, never at a hyphen */
 /* 显示时不拆开的那几段（名字、常用词、句末两个字） / Runs kept whole on display (names, common words, the last two characters) */
 .qlog-keep { white-space: nowrap; }
-/* 详情窄（侧栏版 861–935、641–700）：三块概况并成一块，四个去处占满一行、两端对齐 / A narrow detail (861–935 and 641–700 with the
-   sidebar): the three blocks become one, and the four actions take a full row, flush at both ends */
-@container qlog-pane (max-width: 650px) {
+/* 详情窄（和列表换成两行同一个宽度）：三块概况并成一块，四个去处占满一行、两端对齐 / A narrow detail (at the width where the list
+   turns two-line): the three blocks become one, and the four actions take a full row, flush at both ends */
+@container qlog-pane (max-width: 776px) {
   .qlog-facts { grid-template-columns: minmax(0, 1fr); gap: 0; border-radius: var(--r-2); background: var(--l-canvas); }
   .qlog-fact { border-radius: 0; background: none; }
   .qlog-fact + .qlog-fact { border-top: 1px solid var(--l-hair); }
@@ -1164,8 +1221,13 @@ onBeforeUnmount(() => {
   .logs-page .qlog-stream { overflow: visible; container-type: normal; }
   .logs-page .qlog-head { display: none; }
   .logs-page .qlog-row { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "name name time" "dot phone phone"; column-gap: var(--s-2); row-gap: 2px; padding: var(--s-2) var(--s-4); border-bottom: 1px solid var(--l-hair); }
-  /* 59 高的行减去上下 8 的内边距和 1 的底边 / A 59-tall row less 8 of padding above and below and its 1px bottom border */
-  .logs-page .qlog-row { contain-intrinsic-block-size: 42px; }
+  /* 看不见的行不排版：打开整屏详情时整页重算样式，几百行要几百毫秒。只在手机上这样：浏览器会记住行上一次的高，宽屏上换版式（两行表格、
+     收侧栏）后留着另一种布局的高度。占位是内容框的高：59 高的行减去上下 8 的内边距和 1 的底边
+     Rows out of view skip layout: opening the sheet restyles the whole page, which costs hundreds of milliseconds over hundreds of rows.
+     Phones only: the browser remembers a row's last height, so on wide screens a layout change (the two-line table, the sidebar folding)
+     would keep the other layout's height. The placeholder is the content box: a 59-tall row less 8 of padding above and below and its
+     1px bottom border */
+  .logs-page .qlog-row { content-visibility: auto; contain-intrinsic-block-size: 42px; }
   .logs-page .qlog-row:nth-child(even of .qlog-row) { background: none; }
   .logs-page .qlog-row.is-selected { background: var(--accent-tint); box-shadow: none; }
   .logs-page .qlog-dot { grid-area: dot; align-self: center; }

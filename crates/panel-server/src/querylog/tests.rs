@@ -495,6 +495,55 @@ fn text_and_outcome_filters_match_like_the_page_describes() {
 }
 
 #[test]
+fn a_servfail_block_whose_rule_was_not_recognised_still_files_under_blocked() {
+    let directory = tempdir().unwrap();
+    let store = QueryLogStore::open(directory.path().join("querylog")).unwrap();
+    let failed = |seq: u64, error: Option<&str>| {
+        let mut entry = entry(seq, NOON, "ads.example", "192.168.1.20");
+        entry.insert("outcome".to_owned(), "failed".into());
+        entry.insert("rcode".to_owned(), "SERVFAIL".into());
+        entry.insert("answers".to_owned(), json!([]));
+        entry.insert(
+            "steps".to_owned(),
+            json!([{"at_us": 1, "kind": "rule", "pipeline": "main", "rule": "ads", "phase": "request", "decision": "static"}]),
+        );
+        if let Some(error) = error {
+            entry.insert("error".to_owned(), error.into());
+        }
+        Record::Entry {
+            instance: INSTANCE,
+            entry,
+            static_kind: None,
+        }
+    };
+    // 写入时认不出规则（static_kind 为空）的拦截，和 KixDNS 自己出错的一条 / A block whose rule was not recognised when
+    // written (no static_kind), and one that is KixDNS's own failure
+    store
+        .append(
+            &[failed(1, None), failed(2, Some("engine failed"))],
+            &settings(),
+            NOON,
+        )
+        .unwrap();
+    let only = |outcome: &str| {
+        filtered(
+            &store,
+            Filter {
+                outcomes: Some(set(&[outcome])),
+                ..Filter::default()
+            },
+        )
+    };
+    assert_eq!(only("blocked"), [1]);
+    assert_eq!(only("failed"), [2], "KixDNS's own failure stays failed");
+    let page = store.read_page(&everything());
+    assert_eq!(
+        page.items[1]["outcome"], "blocked",
+        "the page sees what the filter files"
+    );
+}
+
+#[test]
 fn rule_and_upstream_filters_match_the_hit_counts() {
     let (_directory, store) = filter_fixture();
     let only = |filter: Filter| filtered(&store, filter);

@@ -357,6 +357,11 @@ test('窄窗口里表格改成每条两行：域名不被挤成几个字；矮�
   const cut = await page.locator('.qlog-row .qlog-c-name .qlog-lit').evaluateAll((names) => names.slice(0, 50).filter((n) => n.scrollWidth > n.clientWidth + 1).length)
   expect(cut).toBe(0)
 
+  // 1024 宽的窗口开着侧栏，列表 728：七列会截断域名，也换成两行 / A 1024 window with the sidebar leaves a 728 list: seven columns would cut
+  // domains, so it is two lines too
+  await page.setViewportSize({ width: 1024, height: 900 })
+  await expect(stream).toHaveClass(/is-narrow/)
+
   await page.setViewportSize({ width: 1280, height: 610 })
   await expect(stream).not.toHaveClass(/is-narrow/)
   await page.locator('.qlog-row').nth(2).click()
@@ -457,4 +462,43 @@ test('去掉筛选、一路往前查到底：焦点落在说得通的地方，�
   }
   await expect(page.getByText('没有符合条件的查询')).toBeVisible()
   await expect(page.getByRole('button', { name: '清除筛选' })).toBeFocused()
+})
+
+test('有底栏的矮窗口：点开的详情露出页签，卡片不压在底栏下面，最后一步看得到', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', '宽屏的窄窗口')
+  await page.setViewportSize({ width: 700, height: 600 })
+  await openQueryLog(page)
+  await page.locator('.qlog-row').nth(2).click()
+  const nav = (await page.locator('.mobile-nav').boundingBox())!
+  const bar = (await page.locator('.qlog-pane__bar').boundingBox())!
+  expect(bar.y).toBeGreaterThanOrEqual(0)
+  expect(bar.y + bar.height).toBeLessThanOrEqual(nav.y)
+  await page.locator('.qlog-pane').getByRole('button', { name: '处理过程', exact: true }).click()
+  await page.locator('.qlog-pane__body').evaluate((el) => { el.scrollTop = el.scrollHeight })
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight))
+  const last = (await page.locator('.qlog-pane .ui-step').last().boundingBox())!
+  expect(last.y + last.height).toBeLessThanOrEqual(nav.y)
+  const card = (await page.locator('.log-console.qlog').boundingBox())!
+  expect(card.y + card.height).toBeLessThanOrEqual(nav.y)
+})
+
+test('只看这个客户端：开着的那条一定在筛过的结果里，详情照旧开着', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', '手机上这个按钮本来就先收起详情')
+  await openQueryLog(page)
+  const rows = page.locator('.qlog-row')
+  const firstPage = await rows.count()
+  await page.locator('.qlog-stream').evaluate((el) => { el.scrollTop = el.scrollHeight })
+  await expect.poll(() => rows.count()).toBeGreaterThan(firstPage)
+  const deep = rows.nth(firstPage + 100)
+  const id = (await deep.getAttribute('data-id'))!
+  await deep.click()
+  // 筛过的这次只扫最新的 100 条：开着的那条不在读到的第一页里 / The filtered read scans only the newest 100 records, so the open entry is
+  // not on the first page read
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-querylog-scan-limit', '100'))
+  await page.locator('.qlog-pane').getByRole('button', { name: '只看这个客户端' }).click()
+  await expect(page).toHaveURL(/client=/)
+  await expect(page.getByRole('button', { name: '继续往前查' })).toBeVisible()
+  expect(await page.locator(`.qlog-row[data-id="${id}"]`).count()).toBe(0)
+  await expect(page.locator('.qlog-pane')).toBeVisible()
+  await expect(page).toHaveURL(new RegExp(`id=${id}`))
 })

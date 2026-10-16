@@ -64,7 +64,9 @@ function dualCause(raw: string): string | null | undefined {
  * gives only the cause, which fits the list's cell */
 export function errorWord(raw: string, short = false): string | null {
   const dual = dualCause(raw)
-  if (dual !== undefined) return short && dual ? dual : `UDP 和 TCP 都没回${dual ? `：${dual}` : ''}`
+  // 原因用逗号接：放进「问了 N 个上游：…」「原因：…」里也不会两个冒号连着 / The cause follows a comma, so inside 「问了 N 个上游：…」 or
+  // 「原因：…」 no two colons stack
+  if (dual !== undefined) return short && dual ? dual : `UDP 和 TCP 都没回${dual ? `，${dual}` : ''}`
   for (const [pattern, word] of ERROR_WORDS) {
     const found = pattern.exec(raw)
     if (found) return word.replace('$1', found[1] ?? '')
@@ -425,7 +427,9 @@ export function detailFacts(entry: QueryLogEntry, ctx: QueryLogContext | null): 
       const replied = after.some((st) => st.result === 'won')
       const lead = polluted ? '改问后没有上游回答' : replied ? '没有能用的回答' : '没有上游回答'
       // 有上游回了就不说「没回」 / With an upstream that replied, 「没回」 is never said
-      const tail = word || (raw.length ? '出错' : replied ? '' : after.length > 1 ? '都没回' : '没回')
+      // 认得出的原因和认不出的「出错」一起说 / Recognised causes and an unrecognised 出错 are said together
+      const said = [...new Set([...(word ? word.split('、') : []), ...(raw.length ? ['出错'] : [])])].join('、')
+      const tail = said || (replied ? '' : after.length > 1 ? '都没回' : '没回')
       who = { key: 'who', label: '谁回答的', lead: [[t(lead)]], sub: [t(`${redirected}${n}${tail ? `：${tail}` : ''}`)], tone: 'err' }
     } else who = { key: 'who', label: '谁回答的', lead: [[t(polluted ? '改问后没有回答' : '没有回答')]], sub: polluted ? [t(fallback ? '先回的结果不能用，按备用组改问' : '先回的结果没通过回答后检查')] : word ? [t(word)] : [], tone: 'err' }
   } else if (entry.outcome === 'cancelled') who = { key: 'who', label: '谁回答的', lead: [[t('没处理完')]], sub: [t('多半是到了整体请求超时')], tone: 'warn' }
@@ -497,7 +501,7 @@ export function sinceText(unixMs: number, now: number = Date.now()): string {
 /** 显示时的一段：keep 的不在中间断行 / A run for display: one marked keep never breaks inside */
 export interface GlueRun { text: string; keep: boolean }
 // 括号里的一小句（「（在规则组「内网解析」里）」）整个不拆，「（在」不落在行尾 / A short aside in brackets stays whole, so 「（在」 never ends a line
-const KEEP_PATTERNS = [/（[^（）]{1,16}）/g, /「[^「」]{1,10}」/g, /回答后检查|上游组|规则组|备用组|连不上|上游|另一个|另外|客户端|直接回答|没等它回|先回了|共用了|没通过|没有|能用|失败|结果|改问|过期|交给|面板|来得及|来不及|收不到|连字符|不带|xn--|journalctl -u [\w.-]+/g]
+const KEEP_PATTERNS = [/（[^（）]{1,16}）/g, /「[^「」]{1,10}」/g, /回答后检查|上游组|规则组|备用组|连不上|上游|另一个|另外|客户端|直接回答|没等它回|先回了|共用了|没通过|都没回|没有|不能用|能用|失败|结果|改问|过期|交给|面板|来得及|来不及|收不到|连字符|不带|xn--|journalctl -u [\w.-]+/g]
 /** 句末：最后一个字连同前一个字（和后面的括号、句号）不拆开 / A sentence's end: the last character stays with the one before it (and any closing bracket or stop) */
 const TAIL = /\S\p{Script=Han}[」。）]*$/u
 /**
@@ -646,16 +650,21 @@ export function stepRows(entry: QueryLogEntry, ctx: QueryLogContext | null): Ste
     } else if (step.kind === 'check') {
       const action = then(step)
       const named = step.rule && !generated(step.pipeline) ? `「${ctx?.names.rule(step.rule) ?? step.rule}」` : ''
+      // 上游组自己的检查是它的备用组（配置页这么叫），命中没命中都这么叫 / A check in an upstream group's own list is its 备用组 (as the
+      // config page calls it), matched or not
+      const fallback = Boolean(groupOf(step.pipeline))
+      const checker = fallback ? '备用组' : `回答后检查${named}`
       if (step.matched && step.target && !DIRECT.has(step.target)) {
         // 先回的那个答案被检查否掉了：它不再是定下结果的一步，不打勾 / The first answer was rejected by the check: no longer the deciding step, so no tick
         if (firstAnswer >= 0) rows[firstAnswer] = { ...rows[firstAnswer]!, tone: '', decides: false }
-        row(step, [t(`${groupOf(step.pipeline) ? '备用组' : `回答后检查${named}`}：这个回答不能用，改问${place(step.target)}`)], [], 'warn')
-      } else if (step.matched || action.length) {
+        row(step, [t(`${checker}：这个回答不能用，改问${place(step.target)}`)], [], 'warn')
+      } else if (fallback && !step.matched) row(step, [t('备用组：这个回答能用，不用改问')], [], '', { idle: true })
+      else if (step.matched || action.length) {
         // 检查把先回的答案拦下或换掉：那个答案不再是结果，不打勾 / The check blocked or replaced the first answer: that answer is no longer
         // the result, so no tick
         if (step.matched && (step.target === 'block' || step.target === 'answer') && firstAnswer >= 0) rows[firstAnswer] = { ...rows[firstAnswer]!, tone: '', decides: false }
-        row(step, [t(`回答后检查${named}${step.matched ? '命中' : '没命中'}`), ...(step.forward ? [t('，照用这个回答')] : action)], [], step.target === 'block' ? 'err' : '')
-      } else row(step, [t(`回答后检查${named}没命中，照用这个回答`)], [], '', { idle: true })
+        row(step, [t(`${checker}${step.matched ? '命中' : '没命中'}`), ...(step.forward ? [t('，照用这个回答')] : action)], [], step.target === 'block' ? 'err' : '')
+      } else row(step, [t(`${checker}没命中，照用这个回答`)], [], '', { idle: true })
     } else if (step.kind === 'response') {
       truncated()
       const ok = step.rcode !== 'SERVFAIL' && entry.outcome !== 'failed'

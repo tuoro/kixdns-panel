@@ -414,12 +414,30 @@ fn outcome_of(record: &Map<String, Value>) -> &str {
             Some("answered") => "answered",
             _ => static_kind_from_answer(record).label(),
         },
-        // 「拦截 · SERVFAIL」：内核把 SERVFAIL 排在固定回答前面，记成了失败
-        // 「Block · SERVFAIL」: the kernel ranks SERVFAIL above a fixed answer and calls it failed
-        Some("failed") if kind == Some("blocked") => "blocked",
+        // 「拦截 · SERVFAIL」：内核把 SERVFAIL 排在固定回答前面，记成了失败。写入时认出了规则的照规则；认不出的（配置正在
+        // 应用或回滚、同名规则回答不一样）看记录本身，和页面的认法一样，列表和筛选才对得上
+        // 「Block · SERVFAIL」: the kernel ranks SERVFAIL above a fixed answer and calls it failed. A record whose rule was
+        // recognised when written follows it; one that was not (a config being applied or rolled back, same-named rules
+        // answering differently) is judged by itself, the way the page judges it, so the list and the filters agree
+        Some("failed") if kind == Some("blocked") || fixed_failure(record) => "blocked",
         Some(outcome) => outcome,
         None => "failed",
     }
+}
+
+/// 失败的记录里有一步是固定回答的决定、又不是内核自己出的错：面板自己的配置里，固定回 SERVFAIL 只来自拦截
+/// A failed record with a fixed-answer decision among its steps and no error of the kernel's own: in the panel's own
+/// configs a fixed SERVFAIL comes only from a block
+fn fixed_failure(record: &Map<String, Value>) -> bool {
+    record.get("error").is_none_or(Value::is_null)
+        && record
+            .get("steps")
+            .and_then(Value::as_array)
+            .is_some_and(|steps| {
+                steps
+                    .iter()
+                    .any(|step| step.get("decision").and_then(Value::as_str) == Some("static"))
+            })
 }
 
 /// 找不到定下回答的规则时，只能看回答本身：错误码不是 NOERROR、或者只回了 0.0.0.0 / :: 就算拦截

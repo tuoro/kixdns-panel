@@ -128,6 +128,14 @@ describe('处理过程一步一句', () => {
     const first = rows.find((row) => text(row.lead).startsWith('223.5.5.5'))!
     expect(first.decides).toBe(false)
     expect(rows.map((row) => text(row.lead))).toContain('备用组：这个回答不能用，改问上游组「国外」')
+    // 没命中时也叫备用组：一个机制一个名字 / Unmatched, it is still 备用组: one mechanism, one name
+    const kept = stepRows(entryOf(record([
+      { at_us: 0, kind: 'pipeline', pipeline: cn },
+      { at_us: 5_000, kind: 'upstream', upstream: '223.5.5.5', via: 'udp', result: 'success', latency_us: 5_000, rcode: 'NOERROR' },
+      { at_us: 5_100, kind: 'rule', pipeline: cn, rule: 'cn-forward', phase: 'response', matched: false },
+    ], { pipeline: cn })), ctx)
+    expect(kept.map((row) => text(row.lead))).toContain('备用组：这个回答能用，不用改问')
+    expect(kept.find((row) => text(row.lead).startsWith('223.5.5.5'))!.decides).toBe(true)
   })
 
   it('回了 SERVFAIL 没用上、没有规则命中、检查没命中、没处理完、步骤太多都照实说', () => {
@@ -259,13 +267,13 @@ describe('处理过程一步一句', () => {
 
   it('UDP、TCP 双发和连接、证书、读不懂的回答这几种错误说对原因，不叫人去开已经开着的设置', () => {
     expect(errorWord('all udp attempts failed and tcp fallback disabled')).toBe('UDP 没有回答')
-    expect(errorWord('udp failed: all udp attempts failed and tcp fallback disabled; tcp failed: tcp connect timeout after 2000ms')).toBe('UDP 和 TCP 都没回：连不上上游')
-    expect(errorWord('tcp failed: connection reset by peer; udp failed: all udp attempts failed and tcp fallback disabled')).toBe('UDP 和 TCP 都没回：连接断了')
+    expect(errorWord('udp failed: all udp attempts failed and tcp fallback disabled; tcp failed: tcp connect timeout after 2000ms')).toBe('UDP 和 TCP 都没回，连不上上游')
+    expect(errorWord('tcp failed: connection reset by peer; udp failed: all udp attempts failed and tcp fallback disabled')).toBe('UDP 和 TCP 都没回，连接断了')
     // 两路是同时发的：一路失败时没时间等另一路，也是两路都没回，不说「来不及再试」 / Both legs were sent at once: one failing with no time
     // left for the other is still both coming to nothing, never 「too late to retry」
-    expect(errorWord('tcp failed and no time left for udp: tcp connect timeout after 2000ms')).toBe('UDP 和 TCP 都没回：连不上上游')
+    expect(errorWord('tcp failed and no time left for udp: tcp connect timeout after 2000ms')).toBe('UDP 和 TCP 都没回，连不上上游')
     expect(errorWord('udp failed and no time left for tcp: all udp attempts failed and tcp fallback disabled')).toBe('UDP 和 TCP 都没回')
-    expect(errorWord('udp failed: all udp attempts failed and tcp fallback disabled; tcp timed out')).toBe('UDP 和 TCP 都没回：超时')
+    expect(errorWord('udp failed: all udp attempts failed and tcp fallback disabled; tcp timed out')).toBe('UDP 和 TCP 都没回，超时')
     // 列表那一格只放原因 / The list's cell holds just the cause
     expect(errorWord('udp failed: all udp attempts failed and tcp fallback disabled; tcp failed: tcp connect timeout after 2000ms', true)).toBe('连不上上游')
     expect(errorWord('doh request send failed: error sending request for url (https://x/dns-query): client error (Connect): tcp connect error: Connection refused')).toBe('连不上上游')
@@ -296,6 +304,12 @@ describe('处理过程一步一句', () => {
     expect(step!.note).toEqual([{ text: 'TCP response canceled for upstream 1.1.1.1:53', literal: true }])
     expect(reply!.note.map((part) => part.text)).toEqual(['原因：', 'TCP response canceled for upstream 1.1.1.1:53'])
     expect(text(detailFacts(entry, null)[1]!.sub)).toBe('问了 1 个上游：出错')
+    // 认得出的和认不出的一起：两样都说 / Recognised and unrecognised together: both are said
+    const mixed = entryOf(record([
+      { at_us: 9_000, kind: 'upstream', upstream: 'tcp://1.1.1.1:53', via: 'tcp', result: 'error', error: 'reader failed', latency_us: 9_000 },
+      { at_us: 9_000, kind: 'upstream', upstream: '8.8.8.8:53', via: 'udp', result: 'error', error: 'upstream timeout', latency_us: 9_000 },
+    ], { outcome: 'failed', status: 'failed', rcode: undefined, answers: [], error: undefined }))
+    expect(text(detailFacts(mixed, null)[1]!.sub)).toBe('问了 2 个上游：超时、出错')
   })
 
   it('回答后检查把上游的回答拦下：谁回答的是那条检查，先回的不打勾', () => {
@@ -368,6 +382,8 @@ describe('显示时的断行和时间', () => {
     expect(kept('命中规则「国内」（在规则组「内网解析」里）')).toEqual(['「国内」', '（在规则组「内网解析」里）'])
     expect(kept('先回的结果没通过回答后检查，改问上游组「国外」')).toEqual(['结果', '没通过', '回答后检查', '改问', '上游组', '「国外」'])
     expect(kept('问了 2 个上游：连不上上游')).toEqual(['上游', '连不上', '上游'])
+    expect(kept('问了 1 个上游：UDP 和 TCP 都没回，超时')).toEqual(['上游', '都没回', '超时'])
+    expect(kept('先回的结果不能用，按备用组改问')).toEqual(['结果', '不能用', '备用组', '改问'])
     expect(kept('没等它回，另一个先回了')).toEqual(['没等它回', '另一个', '先回了'])
     expect(kept('缓存里有，直接回')).toEqual(['接回'])
     expect(kept('「这是一个超过十个字的很长的规则名」')).toEqual(['则名」'])
