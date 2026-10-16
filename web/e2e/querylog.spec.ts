@@ -106,6 +106,9 @@ test('设置只有保存多久、最多占用和不记录的域名；清空以�
   await drawer.getByLabel('保存多少小时').blur()
   await expect(drawer.locator('#ql-hours-err')).toHaveText('保存多久填 1 到 8760 之间的整数小时')
   await expect(drawer.getByLabel('保存多少小时')).toHaveAttribute('aria-invalid', 'true')
+  // 错误不比下面的说明小 / An error is never smaller than the hint below it
+  const size = (id: string) => drawer.locator(id).evaluate((el) => getComputedStyle(el).fontSize)
+  expect(await size('#ql-hours-err')).toBe(await size('#ql-mb-hint'))
   await drawer.getByRole('button', { name: '保存', exact: true }).click()
   await expect(drawer).toBeVisible()
   // 服务端不认的域名：说在那个框下面，不悄悄不保存 / A domain the server refuses is said under its field, never a silent no-save
@@ -259,4 +262,35 @@ test('手机上返回先关详情和设置，再返回才离开日志页 @respon
 
   await page.goBack()
   await expect(page).not.toHaveURL(/\/logs/)
+})
+
+test('往前翻到更早的一天：日期行吸在表头（手机是顶栏）下面，一直看得到是哪天 @responsive', async ({ page }, testInfo) => {
+  // 过了午夜二十分钟：列表里有昨天的记录 / Twenty minutes past midnight: the list holds yesterday's entries
+  const now = new Date()
+  now.setHours(0, 20, 0, 0)
+  await page.clock.install({ time: now })
+  await openQueryLog(page)
+  const day = page.locator('.qlog-day').first()
+  await expect(day).toBeVisible()
+  const phone = testInfo.project.name === 'mobile'
+  await day.evaluate((el, onPhone) => {
+    const by = el.getBoundingClientRect().top + 400
+    if (onPhone) window.scrollBy(0, by)
+    else el.closest('.qlog-stream')!.scrollBy(0, by)
+  }, phone)
+  const under = phone ? page.locator('.app-header') : page.locator('.qlog-head')
+  await expect.poll(async () => Math.round((await day.boundingBox())!.y - ((await under.boundingBox())!.y + (await under.boundingBox())!.height))).toBe(0)
+})
+
+test('手机上按客户端筛选：每条还是两行，域名不被挤成几个字 @responsive', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'mobile', '桌面另有收列的规则')
+  await useSampleConfig(page)
+  await page.goto('/logs?client=192.168.1.8')
+  const row = page.locator('.qlog-row').first()
+  await expect(row).toBeVisible()
+  const name = await row.locator('.qlog-c-name').boundingBox()
+  const time = await row.locator('.qlog-c-time').boundingBox()
+  // 时间在右边，域名占住左边剩下的宽度 / The time sits on the right and the domain takes the rest of the left
+  expect(name!.width).toBeGreaterThan(200)
+  expect(time!.x).toBeGreaterThan(name!.x + name!.width - 1)
 })

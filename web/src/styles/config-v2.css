@@ -1965,10 +1965,11 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
   .cfg__savebar:not(.ui-savebar--err) .ui-savebar__status { flex: 1 1 100%; }
 }
 
-/* 成段的说明文字最小 12：设置的说明、抽屉里字段下面的提示、测试域名的说明。11 号只留给一两个字的小标签
-   Explanatory sentences are at least 12: setting notes, the hints under drawer fields, the tester's note. 11 stays for one- or two-word labels */
+/* 成段的说明文字最小 12：设置的说明、抽屉里字段下面的提示和错误、测试域名的说明。11 号只留给一两个字的小标签；抽屉里的错误不比下面的提示小
+   Explanatory sentences are at least 12: setting notes, the hints and errors under drawer fields, the tester's note. 11 stays for one- or
+   two-word labels; an error in a drawer is never smaller than the hint under it */
 @media (min-width: 641px) {
-  .ui-setrow__label small, .pfield__hint, .tester__hint { font-size: var(--t-2); }
+  .ui-setrow__label small, .pfield__hint, .pdrawer__body .ui-field-error, .tester__hint { font-size: var(--t-2); }
 }
 
 /* 手机工具行里只有图标的按钮（测试域名、新建规则、按结果筛选）：看起来 36，点按区域四边补到 44 / Icon-only toolbar buttons on phones (测试域名, 新建规则, 按结果筛选): they look 36, with a 44 hit area on every side */

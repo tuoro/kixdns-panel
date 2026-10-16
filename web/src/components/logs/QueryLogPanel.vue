@@ -685,7 +685,7 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
         <UiNewItemsBanner v-if="freshLabel" :label="freshLabel" :loading="loading" @show="showFresh" />
         <div v-if="loading && !entries.length" class="log-skeleton" role="status" aria-label="正在读取查询日志"><i v-for="n in 12" :key="n" class="sk"></i></div>
         <template v-for="(item, index) in entries" :key="item.id">
-          <p v-if="dayBreak(index)" class="qlog-day">{{ dayBreak(index) }}</p>
+          <p v-if="dayBreak(index)" class="qlog-day"><span>{{ dayBreak(index) }}</span></p>
           <!-- 漏记的一段：照实说，不悄悄缺 / A gap: said plainly, never a silent hole -->
           <p v-if="isGap(item)" class="qlog-gap" role="note">这里漏记了 {{ item.gap }} 条：KixDNS 当时太忙没记下，或者面板没来得及取走</p>
           <button v-else class="qlog-row" :class="{ 'is-selected': selected === item.id }" type="button" :data-id="item.id" :tabindex="tabStop === item.id ? 0 : -1" :aria-current="selected === item.id ? 'true' : undefined" @click="select(item.id)">
@@ -854,11 +854,11 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
 .logs-page .qlog-head { position: sticky; top: 0; z-index: 2; min-height: var(--h-md); border-bottom: 1px solid var(--l-hair); background: var(--l-surface); }
 @container (max-width: 1100px) {
   .logs-page .qlog-head, .logs-page .qlog-row { grid-template-columns: var(--size-dot) 4.25rem 7.25rem minmax(9rem, 1.6fr) 3rem minmax(8rem, 1.1fr) minmax(8.5rem, 1fr) 3.75rem; }
-  .logs-page .qlog-c-source { display: none; }
+  .logs-page .qlog-stream:not(.is-one-client) .qlog-c-source { display: none; }
 }
 @container (max-width: 900px) {
   .logs-page .qlog-head, .logs-page .qlog-row { grid-template-columns: var(--size-dot) 4.25rem 7.25rem minmax(8rem, 1.6fr) 3rem minmax(7.5rem, 1fr) 3.75rem; }
-  .logs-page .qlog-c-answer { display: none; }
+  .logs-page .qlog-stream:not(.is-one-client) .qlog-c-answer { display: none; }
 }
 /* 再窄：类型并进域名一格（和手机一样），时间、客户端收窄 / Narrower still: the type joins the domain cell (as on phones), time and client narrow */
 @container (max-width: 700px) {
@@ -868,12 +868,22 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
   .logs-page .qlog-c-name > .qlog-lit { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .logs-page .qlog-row .qlog-phone-type { display: inline; flex: 0 0 auto; color: var(--l-ink-3); font-size: var(--t-1); }
 }
-/* 按客户端筛选时客户端一列每行都一样：收起来，让给域名 / Filtered by client, the client column repeats one address: it folds and gives its room to the domain */
-.logs-page .qlog-stream.is-one-client :is(.qlog-head, .qlog-row) { grid-template-columns: var(--size-dot) 4.25rem minmax(9rem, 1.6fr) 3rem minmax(8rem, 1fr) minmax(8.5rem, 1fr) minmax(8rem, .8fr) 3.75rem; }
-.logs-page .qlog-stream.is-one-client :is(.qlog-c-client, .qlog-head-client) { display: none; }
-@container (max-width: 1100px) { .logs-page .qlog-stream.is-one-client :is(.qlog-head, .qlog-row) { grid-template-columns: var(--size-dot) 4.25rem minmax(9rem, 1.6fr) 3rem minmax(8rem, 1.1fr) minmax(8.5rem, 1fr) 3.75rem; } }
-@container (max-width: 900px) { .logs-page .qlog-stream.is-one-client :is(.qlog-head, .qlog-row) { grid-template-columns: var(--size-dot) 4.25rem minmax(8rem, 1.6fr) 3rem minmax(7.5rem, 1fr) 3.75rem; } }
-@container (max-width: 700px) { .logs-page .qlog-stream.is-one-client :is(.qlog-head, .qlog-row) { grid-template-columns: var(--size-dot) 3.5rem minmax(0, 1.25fr) minmax(0, 1fr) 3.75rem; } }
+/* 按客户端筛选时客户端一列每行都一样：收起来，让出的宽度（132）给别的列，来源、回答也晚 132 才收。只管表格：手机的两行不受影响
+   Filtered by client, the client column repeats one address: it folds, and the room it frees (132) lets the source and the answer stay
+   132 narrower. Tables only: the phone's two-line rows are left alone */
+@media (min-width: 641px) {
+  .logs-page .qlog-stream.is-one-client :is(.qlog-head, .qlog-row) { grid-template-columns: var(--size-dot) 4.25rem minmax(9rem, 1.6fr) 3rem minmax(8rem, 1fr) minmax(8.5rem, 1fr) minmax(8rem, .8fr) 3.75rem; }
+  .logs-page .qlog-stream.is-one-client :is(.qlog-c-client, .qlog-head-client) { display: none; }
+  @container (max-width: 968px) {
+    .logs-page .qlog-stream.is-one-client :is(.qlog-head, .qlog-row) { grid-template-columns: var(--size-dot) 4.25rem minmax(9rem, 1.6fr) 3rem minmax(8rem, 1.1fr) minmax(8.5rem, 1fr) 3.75rem; }
+    .logs-page .qlog-stream.is-one-client .qlog-c-source { display: none; }
+  }
+  @container (max-width: 768px) {
+    .logs-page .qlog-stream.is-one-client :is(.qlog-head, .qlog-row) { grid-template-columns: var(--size-dot) 4.25rem minmax(8rem, 1.6fr) 3rem minmax(7.5rem, 1fr) 3.75rem; }
+    .logs-page .qlog-stream.is-one-client .qlog-c-answer { display: none; }
+  }
+  @container (max-width: 700px) { .logs-page .qlog-stream.is-one-client :is(.qlog-head, .qlog-row) { grid-template-columns: var(--size-dot) 3.5rem minmax(0, 1.25fr) minmax(0, 1fr) 3.75rem; } }
+}
 .logs-page .qlog-num { text-align: right; }
 /* 行：32 高，13 号字，隔行浅底；悬停一档灰，选中是品牌色的浅底加左边一条（隔行的底和选中的底不会混） / Rows: 32 tall, 13px, alternate rows tinted; hover one grey step, selected the accent tint plus a bar on the left (so it never blends with the stripes) */
 .logs-page .qlog-row { width: 100%; min-height: var(--s-6); border: 0; background: none; color: var(--l-ink-2); font-family: var(--f-body); font-size: var(--t-3); font-variant-numeric: tabular-nums; line-height: var(--log-line); text-align: left; cursor: pointer; }
@@ -883,9 +893,15 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
 .logs-page .qlog-row.is-selected :is(.qlog-c-time, .qlog-c-type, .qlog-c-rule, .qlog-more-n, .qlog-c-answer.is-muted) { color: var(--l-ink-2); }
 .logs-page .qlog-row:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 /* 换了筛选、新的还没读回来：旧的行变淡、点不了 / Filters changed and the new rows not back yet: the old rows fade and cannot be clicked */
-.logs-page .qlog-stream.is-loading :is(.qlog-row, .qlog-day, .qlog-gap) { opacity: .5; pointer-events: none; }
+/* 吸在顶上的日期行只淡字不淡底：底一淡，下面滚过的行就透出来了 / The sticky date row fades its text, not its ground: a faded ground would show the
+   rows scrolling under it */
+.logs-page .qlog-stream.is-loading :is(.qlog-row, .qlog-gap, .qlog-day > span) { opacity: .5; pointer-events: none; }
 /* 新查询的提示条也吸在顶上：逐行往上时行停在表头和提示条下面 / The new-queries banner sticks too: stepping up parks the row below both the head and the banner */
 .logs-page .qlog-stream.has-banner { scroll-padding-top: calc(var(--h-md) * 2 + 1px); }
+/* 列表里有日期行（往前翻到了更早的一天）：行还要停在吸住的日期行下面 / With date rows in the list (an earlier day reached), rows also park below the
+   stuck date row */
+.logs-page .qlog-stream:has(> .qlog-day) { scroll-padding-top: calc(var(--h-md) + var(--s-6) + 1px); }
+.logs-page .qlog-stream.has-banner:has(> .qlog-day) { scroll-padding-top: calc(var(--h-md) * 2 + var(--s-6) + 1px); }
 @media (hover: hover) { .logs-page .qlog-row:not(.is-selected):hover { background: var(--l-sunk); } }
 .logs-page .qlog-row > :not(.qlog-dot) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .logs-page .qlog-dot--off { background: var(--l-ink-3); }
@@ -903,11 +919,15 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
 .logs-page .qlog-phone, .logs-page .qlog-phone-type { display: none; }
 /* 漏记的一段和日期分隔：和行一样 32 高 / A gap and a date divider: 32 tall like a row */
 .logs-page .qlog-gap { display: flex; align-items: center; min-height: var(--s-6); margin: 0; padding: var(--s-1) var(--s-5); background: var(--l-sunk); color: var(--l-ink-2); font-size: var(--t-2); }
-.logs-page .qlog-day { display: flex; align-items: center; min-height: var(--s-6); margin: 0; padding: 0 var(--s-5); border-bottom: 1px solid var(--l-hair); color: var(--l-ink-3); font-size: var(--t-2); font-weight: var(--w-medium); }
+/* 日期行吸在表头下面：往前翻到更早的一天时一直看得到是哪天，下一天的日期行上来就把它盖过去。今天的记录上面没有日期行，看今天时什么也不吸
+   The date row sticks under the column head: reading an earlier day keeps the day in view until the next day's row slides over it.
+   Today's entries have no date row, so nothing sticks while reading today */
+.logs-page .qlog-day { position: sticky; top: var(--h-md); z-index: 1; display: flex; align-items: center; min-height: var(--s-6); margin: 0; padding: 0 var(--s-5); border-bottom: 1px solid var(--l-hair); background: var(--l-surface); color: var(--l-ink-3); font-size: var(--t-2); font-weight: var(--w-medium); }
+.logs-page .qlog-stream.has-banner > .qlog-day { top: calc(var(--h-md) * 2); }
 .logs-page .qlog-more { margin: 0; padding: var(--s-3) var(--s-5); color: var(--l-ink-3); font-size: var(--t-2); }
 /* 找到哪儿了、接着找：一行字后面跟按钮，窄了按钮换到下一行 / How far it got and going on: a line of text with the button after it, wrapping on narrow screens */
 .logs-page .qlog-stopped { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2) var(--s-3); }
-.logs-page .qlog-stream > .ui-banner { top: var(--h-md); }
+.logs-page .qlog-stream > .ui-banner { top: var(--h-md); z-index: 2; }
 /* 一条也没有（还没找到、没有符合条件的、还没有查询）：说明在整块列表区里上下居中，不贴在顶上 / Nothing listed (none found yet, no
    match, no queries yet): the message sits in the middle of the list area, not stuck to its top */
 @media (min-width: 641px) { .logs-page .qlog-stream.is-empty { display: flex; flex-direction: column; justify-content: center; } }
@@ -999,6 +1019,8 @@ onBeforeUnmount(() => { window.clearInterval(timer); window.clearTimeout(typing)
   .logs-page .qlog-filter > button::before { position: absolute; inset: calc((var(--h-sm) - var(--h-touch)) / 2); content: ''; }
   .logs-page .qlog-dest { flex: 1 1 100%; order: 1; max-width: none; }
   .logs-page .qlog-stream > .ui-banner { top: var(--app-header-height); }
+  .logs-page .qlog-day { top: var(--app-header-height); }
+  .logs-page .qlog-stream.has-banner > .qlog-day { top: calc(var(--app-header-height) + var(--h-touch)); }
   .qlog-sheet .pdrawer__panel { height: calc(100% - var(--s-8)); }
   .qlog-sheet__body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: grid; align-content: start; gap: var(--s-3); padding: var(--s-4); }
   /* 页头：标题、状态、关闭一行，状态和标题第一行对齐 / The head: title, status and close on one row, the status level with the title's first line */
