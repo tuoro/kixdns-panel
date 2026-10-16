@@ -295,4 +295,102 @@ test('手机上按客户端筛选：每条还是两行，域名不被挤成几�
   // 时间在右边，域名占住左边剩下的宽度 / The time sits on the right and the domain takes the rest of the left
   expect(name!.width).toBeGreaterThan(200)
   expect(time!.x).toBeGreaterThan(name!.x + name!.width - 1)
+  // 第二行不再重复筛着的那个地址 / The second line no longer repeats the filtered address
+  await expect(row.locator('.qlog-phone')).not.toContainText('192.168.1.8')
+})
+
+const panelDown = (page: Page, down: boolean) => page.evaluate((on) => {
+  if (on) localStorage.setItem('kixdns:demo-panel-down', 'true')
+  else localStorage.removeItem('kixdns:demo-panel-down')
+}, down)
+
+test('手机上从诊断页回来、或者前进回到一条：详情开着，关掉时退回那一步，不留两个一样的 @responsive', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'mobile', '只有手机的详情记一步历史')
+  await useSampleConfig(page)
+  await page.goto('/')
+  await page.goto('/logs')
+  const sheet = page.locator('dialog.qlog-sheet[open]')
+  await page.locator('.qlog-row').first().click()
+  await sheet.getByRole('link', { name: '用诊断再测一次' }).click()
+  await expect(page).toHaveURL(/diagnostics/)
+  await page.goBack()
+  await expect(sheet).toBeVisible()
+  await sheet.getByRole('button', { name: '关闭', exact: true }).click()
+  await expect(sheet).toHaveCount(0)
+  await expect(page).toHaveURL(/\/logs$/)
+  // 前进回到那一条：详情跟着开 / Forward onto that entry: the detail opens with it
+  await page.goForward()
+  await expect(page).toHaveURL(/id=/)
+  await expect(sheet).toBeVisible()
+  await page.goBack()
+  await expect(sheet).toHaveCount(0)
+  // 再返回就离开日志页 / One more back leaves the log page
+  await page.goBack()
+  await expect(page).not.toHaveURL(/\/logs/)
+})
+
+test('连不上面板又连上：开着的第二页那条照旧开着；换了筛选的旧行一直淡着；认不出的去向从地址栏去掉', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', '桌面就够')
+  test.setTimeout(90_000)
+  const banner = page.locator('.conn__inner')
+  await openQueryLog(page)
+  // 第二页的一条开着，连上以后整个重读：它不在第一页，详情照旧开着 / An entry from page two is open and the reconnect re-reads
+  // everything: it is not on page one, and the detail stays open
+  const rows = page.locator('.qlog-row')
+  const firstPage = await rows.count()
+  await page.locator('.qlog-stream').evaluate((el) => { el.scrollTop = el.scrollHeight })
+  await expect.poll(() => rows.count()).toBeGreaterThan(firstPage)
+  const deep = rows.nth(firstPage + 5)
+  const id = (await deep.getAttribute('data-id'))!
+  await deep.click()
+  await expect(page.locator('.qlog-pane')).toBeVisible()
+  await panelDown(page, true)
+  await expect(banner).toBeVisible({ timeout: 12_000 })
+  await panelDown(page, false)
+  await expect(banner).toHaveCount(0, { timeout: 12_000 })
+  await expect(page.locator('.qlog-row').first()).toBeVisible()
+  await expect(page.locator('.qlog-pane')).toBeVisible()
+  await expect(page).toHaveURL(new RegExp(`id=${id}`))
+  // 整张表还是一个 Tab 停点 / The table is still a single Tab stop
+  expect(await page.locator('.qlog-row[tabindex="0"]').count()).toBe(1)
+
+  // 连不上时换筛选：读不到，旧的行淡着、点不了；连上以后是筛过的 / Filters changed while unreachable: the read fails and the old rows
+  // stay faded and unclickable; after reconnecting the list is the filtered one
+  await panelDown(page, true)
+  await page.getByLabel('搜索域名或客户端').fill('apple')
+  await expect(page).toHaveURL(/q=apple/)
+  await expect(banner).toBeVisible({ timeout: 12_000 })
+  await expect(page.locator('.qlog-stream')).toHaveClass(/is-loading/)
+  await panelDown(page, false)
+  await expect(banner).toHaveCount(0, { timeout: 12_000 })
+  await expect(page.locator('.qlog-stream')).not.toHaveClass(/is-loading/)
+  for (const name of await page.locator('.qlog-row .qlog-c-name').allTextContents()) expect(name.toLowerCase()).toContain('apple')
+  // 筛过的结果全读完了也没有那一条：详情收起 / The filtered result read to the end without that entry: the detail closes
+  await expect(page.locator('.qlog-pane')).toHaveCount(0)
+
+  // 连不上时打开一个认不出的去向：连上以后从地址栏去掉 / An unknown destination opened while unreachable leaves the address bar after reconnecting
+  await panelDown(page, true)
+  await page.goto('/logs?dest=group%3Adeleted')
+  await panelDown(page, false)
+  await expect(page.locator('.qlog-row').first()).toBeVisible({ timeout: 12_000 })
+  await expect(page).not.toHaveURL(/dest=/)
+})
+
+test('去掉筛选、一路往前查到底：焦点落在说得通的地方，不掉到设置按钮上', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', '键盘的事，桌面就够')
+  await useSampleConfig(page)
+  await page.goto('/logs?client=192.168.1.8')
+  await expect(page.locator('.qlog-row').first()).toBeVisible()
+  await page.getByRole('button', { name: '去掉筛选：客户端 192.168.1.8' }).click()
+  await expect(page.getByLabel('搜索域名或客户端')).toBeFocused()
+
+  await page.addInitScript(() => localStorage.setItem('kixdns:demo-querylog-scan-limit', '400'))
+  await page.goto('/logs?q=zzzz-nothing')
+  const more = page.getByRole('button', { name: '继续往前查' })
+  for (let i = 0; i < 30 && (await page.getByText('没有符合条件的查询').count()) === 0; i++) {
+    await more.click()
+    await expect(page.getByText('正在读取更早的查询')).toHaveCount(0)
+  }
+  await expect(page.getByText('没有符合条件的查询')).toBeVisible()
+  await expect(page.getByRole('button', { name: '清除筛选' })).toBeFocused()
 })

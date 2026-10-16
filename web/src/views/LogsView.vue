@@ -413,11 +413,15 @@ function download(): void {
   URL.revokeObjectURL(url)
 }
 
+// 第一次读取还在路上就离开了页面：不再挂上轮询，不然它在别的页一直跑 / Left the page while the first read was on its way: no poll is
+// attached, or it would keep running on other pages
+let alive = true
 onMounted(async () => {
   await load()
+  if (!alive) return
   timer = window.setInterval(() => { void poll() }, 5000)
 })
-onBeforeUnmount(() => window.clearInterval(timer))
+onBeforeUnmount(() => { alive = false; window.clearInterval(timer) })
 // 连上面板后马上重读当前这一栏，不等下一次轮询（操作审计本来不轮询，以前红字会一直挂着） / Once the panel answers again re-read the current tab at once instead of waiting for the next poll (the audit tab does not poll, so its red notice used to stay)
 // 重读回来之前上一次的「连不上」还挂在 activeError 上：这段时间照旧当作在等面板，不闪一下红字
 // Until that re-read answers, the old unreachable failure still sits in activeError: keep treating it as waiting for the panel, so no red notice flashes

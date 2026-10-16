@@ -25,10 +25,16 @@ const ms = (us: number | undefined) => (us ?? 0) / 1000
  */
 const ERROR_WORDS: [RegExp, string][] = [
   [/the upstream answered (\w+)/i, '上游回了 $1'],
+  [/parse upstream response/i, '上游的回答读不懂'],
   [/all upstreams failed/i, '上游都失败了'],
-  [/all udp attempts failed/i, 'UDP 失败了，又没开「UDP 失败改用 TCP」'],
+  // 只说 UDP 没回：这句也出现在双发和同批有 TCP 时，那时是内核自己不改用 TCP，不是设置没开
+  // Only that UDP got no answer: the same text appears with dual send and with TCP in the same batch, where the kernel itself skips TCP,
+  // not because the setting is off
+  [/all udp attempts failed/i, 'UDP 没有回答'],
   [/invalid (?:upstream address|doh url|dot upstream url|doq upstream|tls server name)|missing host|should not contain path/i, '上游地址有误'],
-  [/connect (?:failed|timeout)|resolve (?:failed|returned no addresses)/i, '连不上上游'],
+  // 证书不对也是在连接时报的：先认它 / A bad certificate is also reported while connecting: it is recognised first
+  [/certificate/i, '上游的证书不对'],
+  [/connect (?:failed|timeout|error)|client error \(connect\)|dns error|resolve (?:failed|returned no addresses)/i, '连不上上游'],
   [/timeout|timed out/i, '超时'],
   [/connection limit exceeded|no available dns ids/i, '连接上的请求满了'],
   [/tls handshake failed/i, 'TLS 握手失败'],
@@ -37,6 +43,15 @@ const ERROR_WORDS: [RegExp, string][] = [
   [/engine failed/i, 'KixDNS 内部出错'],
 ]
 export function errorWord(raw: string): string | null {
+  // 双发（UDP 和 TCP 同时问）两路都没成：原因取说得出来的那一路 / Dual send (UDP and TCP at once) with both legs failed: the cause comes
+  // from the leg that names one
+  const both = /^(?:udp|tcp) (?:failed|task error): (.*?); (?:udp|tcp) (?:failed|task error): (.*)$/is.exec(raw)
+  if (both) {
+    const inner = [both[1]!, both[2]!].map((leg) => (/all udp attempts failed/i.test(leg) ? null : errorWord(leg))).find(Boolean)
+    return `UDP 和 TCP 都失败了${inner ? `：${inner}` : ''}`
+  }
+  const late = /^(udp|tcp) (?:failed|task error) and no time left for (udp|tcp)/i.exec(raw)
+  if (late) return `${late[1]!.toUpperCase()} 失败了，来不及再试 ${late[2]!.toUpperCase()}`
   for (const [pattern, word] of ERROR_WORDS) {
     const found = pattern.exec(raw)
     if (found) return word.replace('$1', found[1] ?? '')
@@ -68,7 +83,10 @@ export function ignoredDomains(text: string): { domains: string[]; problem: stri
     if (domain.length > 253 || !/^[a-z0-9._-]+$/.test(domain)) {
       // 按错在哪给提示：贴了网址、写了中文、或者混进了别的字符 / The hint follows the mistake: a pasted URL, Chinese, or other characters
       const shown = raw.trim()
-      const hint = /[:/]/.test(shown) ? '只填域名，不带 https:// 和路径' : /[^\x00-\x7f]/.test(shown) ? '中文域名要先转成 xn-- 开头的写法' : '域名只能有字母、数字、点和连字符'
+      const hint = /[:/]/.test(shown) ? '只填域名，不带 https:// 和路径'
+        : /\p{Script=Han}/u.test(shown) ? '中文域名要先转成 xn-- 开头的写法'
+          : /[^\x00-\x7f]/.test(shown) ? '带非英文字母的域名要先转成 xn-- 开头的写法'
+            : '域名只能有字母、数字、点、连字符和下划线'
       return { domains, problem: `「${shown}」不是域名：${hint}` }
     }
     if (!domains.includes(domain)) domains.push(domain)
@@ -168,8 +186,13 @@ export function destinationOfRow(key: string, model: Model): string {
 export function sourceTag(entry: QueryLogEntry): string | null {
   if (entry.outcome === 'cached') return '缓存'
   if (entry.outcome === 'stale') return '过期缓存'
-  if (entry.outcome === 'joined') return '共用'
+  if (entry.outcome === 'joined' || joinedFailure(entry)) return '共用'
   return null
+}
+/** 共用了同样的查询的结果、那次失败了：内核把失败的结果交给每个等着的，记成失败 / Shared another query's result and that one failed: the
+ * kernel hands its failure to everyone waiting, recorded as failed */
+function joinedFailure(entry: QueryLogEntry): boolean {
+  return entry.outcome === 'failed' && entry.steps.some((st) => st.kind === 'joined')
 }
 
 /** 去向筛选：选项和对应的接口参数 / The destination filter: options and the API parameters they map to */
@@ -249,10 +272,22 @@ const STALE_LONG = { now: '缓存过期了，没等上游，先回了旧结果',
  * Why it failed: the record's own error when there is one (KixDNS's own failure), otherwise how each upstream asked failed; the kernel
  * puts only its own errors on the record
  */
-function failureCause(entry: QueryLogEntry): string {
-  if (entry.error) return errorWord(entry.error) ?? entry.error
-  const said = entry.steps.filter((st) => st.kind === 'upstream' && st.result === 'error').map((st) => (st.error ? (errorWord(st.error) ?? st.error) : '出错'))
-  return [...new Set(said)].join('、')
+function failureCause(entry: QueryLogEntry, asked: QueryLogStep[] = entry.steps): { word: string; raw: string[] } {
+  // 认不出的原文不放进句子里：只在回给客户端那一步下面原样列出，查问题时能搜 / Original text that is not recognised stays out of the
+  // sentences: it is listed as it is only under the reply step, where it can be searched for
+  if (entry.error) {
+    const word = errorWord(entry.error)
+    return word ? { word, raw: [] } : { word: '', raw: [entry.error] }
+  }
+  const words = new Set<string>()
+  const raw = new Set<string>()
+  for (const st of asked) {
+    if (st.kind !== 'upstream' || st.result !== 'error') continue
+    const word = st.error ? errorWord(st.error) : '出错'
+    if (word) words.add(word)
+    else { words.add('出错'); raw.add(st.error!) }
+  }
+  return { word: [...words].join('、'), raw: [...raw] }
 }
 /** 列表里写得下的原因：认得出、又只有一个时写它，不然写响应码 / A cause short enough for the list: written when recognised and single, otherwise the code */
 function failureWord(entry: QueryLogEntry): string {
@@ -305,18 +340,18 @@ export function upstreamHost(address: string): string {
 export function sourceOf(entry: QueryLogEntry): { text: string; full?: string; literal: boolean; tone: '' | 'warn' } | null {
   if (entry.outcome === 'cached') return { text: '缓存', literal: false, tone: '' }
   if (entry.outcome === 'stale') return { text: '过期缓存', literal: false, tone: staleKind(entry) === 'now' ? '' : 'warn' }
-  if (entry.outcome === 'joined') return { text: '共用', literal: false, tone: '' }
+  if (entry.outcome === 'joined' || joinedFailure(entry)) return { text: '共用', literal: false, tone: '' }
   if (entry.outcome === 'forwarded' && entry.upstream) return { text: upstreamHost(entry.upstream), full: entry.upstream, literal: true, tone: '' }
   return null
 }
 
 const TRANSPORTS: Record<string, string> = { udp: 'UDP', tcp: 'TCP', doh: 'DoH' }
 /** 详情页头第二行：客户端、协议、完整时间、耗时 / The detail head's second line: client, protocol, full time, latency */
-export function requestLine(entry: QueryLogEntry): string[] {
-  const d = new Date(entry.time_unix_ms)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  // 日期和时间之间也是不断行空格：窄处不把时间单独挤到下一行 / A no-break space between date and time too: a narrow line never pushes the clock alone onto the next
-  const when = `${d.getMonth() + 1}\u00a0月\u00a0${d.getDate()}\u00a0日\u00a0${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+export function requestLine(entry: QueryLogEntry, now: number = Date.now()): string[] {
+  // 日期和列表的日期行一个写法（不是今年的带上年）；日期和时间之间是不断行空格，窄处不把时间单独挤到下一行
+  // The date is written as in the list's date rows (with the year when not this year's); a no-break space between date and time keeps
+  // the clock from being pushed alone onto the next line
+  const when = `${dayText(entry.time_unix_ms, now)}\u00a0${clockText(entry.time_unix_ms)}`
   return [entry.client, ...(entry.transport ? [TRANSPORTS[entry.transport] ?? entry.transport] : []), when, `耗时\u00a0${latencyText(entry.latency_ms).replace(' ', '\u00a0')}`]
 }
 
@@ -347,16 +382,27 @@ export function detailFacts(entry: QueryLogEntry, ctx: QueryLogContext | null): 
   else if (entry.outcome === 'stale') who = { key: 'who', label: '谁回答的', lead: [[t('过期缓存')]], sub: [t(STALE_LONG[staleKind(entry)])], tone: staleKind(entry) === 'now' ? '' : 'warn' }
   else if (entry.outcome === 'joined') who = { key: 'who', label: '谁回答的', lead: [[t('共用')]], sub: [t('同样的查询正在问上游，共用了它的结果')], tone: '' }
   else if (entry.outcome === 'failed') {
+    // 回答后检查否掉先回的结果、改问了别处：只看改问以后问的上游 / An answer check rejected the first answer and asked elsewhere: only
+    // the upstreams asked after it count
+    const after = polluted ? asked.filter((st) => st.at_ms >= polluted.at_ms) : asked
+    const redirected = polluted ? '先回的结果没通过回答后检查；' : ''
+    const n = `${polluted ? '改问的' : '问了'} ${after.length} 个上游`
     // 上游回了、可回的是 SERVFAIL 这类用不上的，和上游根本没回分开说 / Upstreams that replied with something unusable (SERVFAIL and the
     // like) are told apart from upstreams that never replied
-    const codes = [...new Set(asked.filter((st) => st.result !== 'lost' && st.rcode && !usable(st.rcode)).map((st) => st.rcode!))]
-    const cause = failureCause(entry)
-    if (codes.length) who = { key: 'who', label: '谁回答的', lead: [[t(`上游回了 ${codes.join('、')}`)]], sub: [t(`问了 ${asked.length} 个上游，没有能用的回答`)], tone: 'err' }
-    // 上游回了能用的，KixDNS 自己处理时出了错 / An upstream gave a usable answer and KixDNS failed handling it
-    else if (asked.some((st) => st.result === 'won')) who = { key: 'who', label: '谁回答的', lead: [[t('KixDNS 出错')]], sub: [t(`上游回了，处理时出错${cause ? `：${cause}` : ''}`)], tone: 'err' }
-    else if (asked.length) who = { key: 'who', label: '谁回答的', lead: [[t('没有上游回答')]], sub: [t(`问了 ${asked.length} 个上游：${cause || (asked.length > 1 ? '都没回' : '没回')}`)], tone: 'err' }
-    else who = { key: 'who', label: '谁回答的', lead: [[t('没有回答')]], sub: cause ? [t(cause)] : [], tone: 'err' }
-  } else if (entry.outcome === 'cancelled') who = { key: 'who', label: '谁回答的', lead: [[t('没处理完')]], sub: [t('多半是到了整体请求超时，KixDNS 回了 SERVFAIL；客户端断开或 KixDNS 停止时什么也没回')], tone: 'warn' }
+    const codes = [...new Set(after.filter((st) => st.result !== 'lost' && st.rcode && !usable(st.rcode)).map((st) => st.rcode!))]
+    const { word } = failureCause(entry, after)
+    // 只有记录上写了错才是 KixDNS 自己出错：内核只把自己的错写在记录上 / Only an error on the record is KixDNS's own: the kernel puts
+    // nothing else there
+    if (entry.error) {
+      const replied = asked.some((st) => st.result === 'won') ? '上游回了，' : ''
+      who = { key: 'who', label: '谁回答的', lead: [[t('KixDNS 出错')]], sub: [t(`${replied}${word ? `处理时出错：${word}` : 'KixDNS 处理时出错'}`)], tone: 'err' }
+    } else if (joinedFailure(entry) && !after.length) who = { key: 'who', label: '谁回答的', lead: [[t('共用')]], sub: [t('同样的查询正在问上游，那次没有上游回答')], tone: 'err' }
+    else if (codes.length) who = { key: 'who', label: '谁回答的', lead: [[t(`上游回了 ${codes.join('、')}`)]], sub: [t(`${redirected}${n}，没有能用的回答`)], tone: 'err' }
+    else if (after.length) {
+      const lead = polluted ? '改问后没有上游回答' : after.some((st) => st.result === 'won') ? '没有能用的回答' : '没有上游回答'
+      who = { key: 'who', label: '谁回答的', lead: [[t(lead)]], sub: [t(`${redirected}${n}：${word || (after.length > 1 ? '都没回' : '没回')}`)], tone: 'err' }
+    } else who = { key: 'who', label: '谁回答的', lead: [[t(polluted ? '改问后没有回答' : '没有回答')]], sub: polluted ? [t('先回的结果没通过回答后检查')] : word ? [t(word)] : [], tone: 'err' }
+  } else if (entry.outcome === 'cancelled') who = { key: 'who', label: '谁回答的', lead: [[t('没处理完')]], sub: [t('多半是到了整体请求超时')], tone: 'warn' }
   else if (entry.outcome === 'forwarded' && won) {
     const late = asked.filter((st) => st.result === 'lost' && st.pipeline === won.pipeline).length
     const sub: TextPart[] = [t([won.transport, won.latency_ms !== undefined ? latencyText(won.latency_ms) : null].filter(Boolean).join(' · '))]
@@ -373,7 +419,7 @@ export function detailFacts(entry: QueryLogEntry, ctx: QueryLogContext | null): 
   const what: DetailFact = entry.outcome === 'failed'
     ? { key: 'what', label: '回答', lead: [[t(entry.rcode || 'SERVFAIL')]], sub: [t('服务器出错')], tone: 'err' }
     : entry.outcome === 'cancelled'
-      ? { key: 'what', label: '回答', lead: [[t('SERVFAIL')]], sub: [t('到了整体请求超时就回这个；客户端断开或 KixDNS 停止时什么也没回')], tone: '' }
+      ? { key: 'what', label: '回答', lead: [[t('SERVFAIL')]], sub: [t('超时时 KixDNS 回的；客户端断开或 KixDNS 停止时什么也没回')], tone: '' }
     : { key: 'what', label: '回答', lead: records.length ? records : [[t(answerOf(entry).text)]], sub: whatSub(entry) ? [t(whatSub(entry))] : [], tone: '' }
   return [{ key: 'where', label: '去向', lead: [[t(whereLead)]], sub: whereSub ? [t(whereSub)] : [], tone: '' }, who, what]
 }
@@ -423,7 +469,8 @@ export function sinceText(unixMs: number, now: number = Date.now()): string {
 
 /** 显示时的一段：keep 的不在中间断行 / A run for display: one marked keep never breaks inside */
 export interface GlueRun { text: string; keep: boolean }
-const KEEP_PATTERNS = [/「[^「」]{1,10}」/g, /上游组|规则组|上游|另一个|客户端|直接回答|没等它回|先回了|交给|面板|来得及|收不到|xn--|journalctl -u [\w.-]+/g]
+// 括号里的一小句（「（在规则组「内网解析」里）」）整个不拆，「（在」不落在行尾 / A short aside in brackets stays whole, so 「（在」 never ends a line
+const KEEP_PATTERNS = [/（[^（）]{1,16}）/g, /「[^「」]{1,10}」/g, /上游组|规则组|上游|另一个|另外|客户端|直接回答|没等它回|先回了|改问|过期|交给|面板|来得及|收不到|xn--|journalctl -u [\w.-]+/g]
 /** 句末：最后一个字连同前一个字（和后面的括号、句号）不拆开 / A sentence's end: the last character stays with the one before it (and any closing bracket or stop) */
 const TAIL = /\S\p{Script=Han}[」。）]*$/u
 /**
@@ -545,7 +592,9 @@ export function stepRows(entry: QueryLogEntry, ctx: QueryLogContext | null): Ste
       else if (step.cache === 'stale') row(step, [t(STALE_SHORT[step.stale ?? 'timeout'])], step.upstream ? [t('答案来自 '), m(step.upstream)] : [], step.stale === 'now' ? 'ok' : 'warn', { decides: true })
       else row(step, [t('缓存里没有，去问上游')], [], '', { idle: true })
     } else if (step.kind === 'joined') {
-      row(step, [t('同样的查询正在问上游，共用了它的结果')], [], 'ok', { decides: true })
+      // 共用的那次失败了：不打勾 / The shared query failed: no tick
+      if (entry.outcome === 'failed') row(step, [t('同样的查询正在问上游，共用了它的结果：失败了')], [], 'warn')
+      else row(step, [t('同样的查询正在问上游，共用了它的结果')], [], 'ok', { decides: true })
     } else if (step.kind === 'upstream') {
       const where = m(step.upstream ?? '')
       // 右边的时间已经是累计耗时，这里只写协议和响应码 / The time column already carries the cumulative latency, so this says only the protocol and code
@@ -582,9 +631,11 @@ export function stepRows(entry: QueryLogEntry, ctx: QueryLogContext | null): Ste
       truncated()
       const ok = step.rcode !== 'SERVFAIL' && entry.outcome !== 'failed'
       const records = entry.answers.length ? `，${recordCount(entry)}` : ''
-      const cause = ok ? '' : failureCause(entry)
+      const cause = ok ? { word: '', raw: [] } : failureCause(entry)
+      const why: TextPart[] = cause.word ? [t(`原因：${cause.word}`)] : cause.raw.length ? [t('原因：')] : []
+      cause.raw.forEach((raw, i) => why.push(...(i || cause.word ? [t('；')] : []), m(raw)))
       // 响应码和协议名是读数，不算字面值（和诊断页一样） / Response codes and protocol names are readings, not literals (as on the diagnostics page)
-      row(step, [t(`回给客户端 ${step.rcode ?? ''}${ok ? records : ''}`)], cause ? [t(`原因：${cause}`)] : [], ok ? '' : 'err')
+      row(step, [t(`回给客户端 ${step.rcode ?? ''}${ok ? records : ''}`)], why, ok ? '' : 'err')
     }
   }
   // 到了整体请求超时还没处理完（或者连接断了、KixDNS 停了）：内核记成取消，不编一个响应
@@ -592,7 +643,8 @@ export function stepRows(entry: QueryLogEntry, ctx: QueryLogContext | null): Ste
   // reply is made up
   if (entry.outcome === 'cancelled') {
     truncated()
-    rows.push({ at: entry.latency_ms, tone: 'warn', idle: false, decides: false, lead: [t('没处理完就结束了')], note: [t('到了整体请求超时，客户端收到 SERVFAIL；客户端断开或 KixDNS 停止时什么也没回')] })
+    // 为什么、客户端收到了什么，概况里各说一次，这里不再重复 / Why, and what the client got, are each said once in the summary, not again here
+    rows.push({ at: entry.latency_ms, tone: 'warn', idle: false, decides: false, lead: [t('没处理完就结束了')], note: [] })
   }
   return rows
 }
