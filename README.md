@@ -4,13 +4,13 @@
 
 ## 界面预览
 
-| 运行概览 | 配置管理 |
+| 运行概览 | 查询日志 |
 | :--: | :--: |
-| ![运行概览](docs/images/dashboard.png) | ![配置管理](docs/images/configuration.png) |
+| ![运行概览](docs/images/dashboard.png) | ![查询日志](docs/images/querylog.png) |
 
-| 系统 | DNS 诊断 |
+| 配置管理 | DNS 诊断 |
 | :--: | :--: |
-| ![系统](docs/images/system.png) | ![DNS 诊断](docs/images/diagnostics.png) |
+| ![配置管理](docs/images/configuration.png) | ![DNS 诊断](docs/images/diagnostics.png) |
 
 *截图来自本地演示环境，数据均为示例。*
 
@@ -19,17 +19,18 @@
 
 <p>
   <img src="docs/images/dashboard-mobile.png" alt="移动端运行概览" width="320" />
-  <img src="docs/images/configuration-mobile.png" alt="移动端配置编辑" width="320" />
+  <img src="docs/images/querylog-mobile.png" alt="移动端查询详情" width="320" />
 </p>
 
 </details>
 
 ## 能做什么
 
-- **运行概览**：请求量、完成率、耗时、请求量趋势、缓存命中、上游健康、Pipeline 与规则命中、查询排行
-- **配置管理**：结构化表单与原始 JSON 双向编辑，域名映射、GeoIP/GeoSite 数据托管（完整包自带 GeoSite）；保存前由 KixDNS 自身校验，热加载失败自动回滚，保留版本历史
-- **DNS 诊断**：对本机 KixDNS 发起查询，逐段展示命中的 Pipeline、规则、缓存与上游
-- **日志**：KixDNS journal 实时查看与操作审计
+- **运行概览**：查询量、成功率、缓存命中、延迟与每小时趋势，上游状态、请求分布、规则命中、查询排行
+- **配置管理**：规则、上游组、域名映射、基础设置用表单编辑，也可以直接改 JSON；GeoIP/GeoSite 数据托管（完整包自带 GeoSite）；保存前由 KixDNS 自身校验，热加载失败自动回滚，保留版本历史
+- **查询日志**：每一次查询从哪个客户端来、命中哪条规则、谁回答的、回了什么，逐步看处理过程；按域名或客户端搜索、按去向筛选，可以下载
+- **DNS 诊断**：对本机 KixDNS 发起查询，可以指定客户端 IP，逐步展示命中的规则、缓存与上游；改规则时可以先拿没保存的草稿试跑
+- **运行日志与操作审计**：KixDNS journal 实时查看，面板里的每次操作都有记录
 - **内核更新**：在面板内把 KixDNS 更新到 fork 最新发布的日期版本，或回到上一个，激活失败自动恢复
 - **面板自更新**：系统页一键更新到最新正式版，双重校验摘要，不动 KixDNS
 - **安全**：Argon2id 认证、HttpOnly 会话、CSRF 防护、登录限流；面板进程不以 root 运行

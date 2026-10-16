@@ -33,6 +33,7 @@ import type {
   QueryLogSettings,
   ValidationResult,
 } from './types'
+import { version as panelVersion } from '../../package.json'
 import { demoGeositeCategories } from './mock-geosite'
 import { clearDemoQueryLog, demoQueryLogPage, demoQueryLogSettings, demoQueryLogSupported, setDemoQueryLogSettings } from './mock-querylog'
 
@@ -362,12 +363,13 @@ function oldCopyIfAsked(): void {
   }
 }
 
-// 请求分布按去向（kixdns:demo-destinations）：样本配置写成面板格式，概览的计数照它一步步走出来——
+// 样本配置的演示（kixdns:demo-destinations，README 截图用的也是它）：样本配置写成面板格式，请求分布按去向，概览的计数照它一步步走出来——
 // 映射 2,140；主列表里拦截和自定义回答 9,620；公司 1,830、苹果服务 11,250（转发自带 ECS）、国内域名 41,900、内网反查 2,150（组里转公司 410、
 // 其余转路由器 1,740）、防 DNS 重绑定 18,400（自带检查拦下 12），其余 41,180 去国外；回答后检查：公司转国内 36，国内污染转国外 260，
 // 苹果服务的转发沿用国内的检查转国外 84。各去向合起来正好是总请求数，主列表和规则组只是路过
-// Request destinations (kixdns:demo-destinations): the sample config in the panel's format, with overview counts walked through it step by
-// step (the numbers above). The destinations add up to the total; the main list and the rule group are only passed through
+// The sample-config demo (kixdns:demo-destinations, which the README screenshots also use): the sample config in the panel's format, with
+// request destinations and overview counts walked through it step by step (the numbers above). The destinations add up to the total; the
+// main list and the rule group are only passed through
 let destinationsApplied = false
 function destinationsIfAsked(): void {
   if (destinationsApplied || typeof localStorage === 'undefined' || localStorage.getItem('kixdns:demo-destinations') !== 'true') return
@@ -389,6 +391,131 @@ function destinationsIfAsked(): void {
     hit('内网反查', 2_150), hit('公司内网', 1_830), hit('火狐 DoH 探测', 480), hit('版本查询', 40), hit('公司网段反查', 410, 'group-lan'),
     answered('upstream-cn', 260), answered(apple, 84), answered('upstream-corp', 36), answered(rebind, 12),
   ]
+  sampleFiguresFollow()
+}
+
+// 样本配置下其余的数也照它和这个总数来，页面之间对得上：启动 3 天 8 小时共 128,470 次，近 24 小时 38,350 次（同一条曲线的百分之一，
+// 日均量和累计、运行时长对得上）；缓存命中 83.6%，没命中的 20,740 次去问上游。上游就是样本里那 8 个：同一组的几个同时问，先回的那个用上，
+// 其余记成没等；响应码分布是各上游回答的合计。查询排行是近 24 小时的。内核是安装包带的那一版、面板是这一版，都没有更新。
+// Under the sample config every other figure follows it and the total, so the pages agree: 128,470 requests over 3 days 8 hours, 38,350
+// in the last 24 hours (the same curve at a hundredth, so the daily average matches the total and the uptime); an 83.6% cache hit rate,
+// with the 20,740 misses going upstream. The upstreams are the sample's eight: a group asks all of its addresses at once and takes the
+// first answer, the rest count as not waited for; the response-code card is the sum of their answers. The rankings cover the last 24
+// hours. The kernel is the one the package carries and the panel is this release, with no update for either.
+let sampleWorld = false
+function sampleFiguresFollow(): void {
+  sampleWorld = true
+  overview.trend = { ...requestTrend, points: requestTrend.points.map((point) => ({ ...point, requests: point.requests / 100 })), total: requestTrend.total / 100 }
+  // 次数依次是发出、成功、出错、拒绝、没等（同组别的先回了）；响应码依次是 NOERROR、NXDOMAIN、SERVFAIL，拒绝的就是 REFUSED
+  // Counts are sent, succeeded, failed, refused and not waited for (another in the group answered first); codes are NOERROR, NXDOMAIN and
+  // SERVFAIL, the refusals being REFUSED
+  const upstream = (name: string, transport: string, [attempts, success, errors, rejected, aborted]: number[], latency: number, [noError, nxDomain, servFail]: number[], recent: number[], recentLatency: number) => ({
+    upstream: name, transport, attempts: attempts!, success: success!, errors: errors!, rejected: rejected!, aborted: aborted!, avg_latency_ms: latency, tcp_fallbacks: 0,
+    rcodes: [{ name: 'NoError', count: noError! }, { name: 'NXDomain', count: nxDomain! }, ...(rejected ? [{ name: 'Refused', count: rejected }] : []), ...(servFail ? [{ name: 'ServFail', count: servFail }] : [])],
+    recent: { attempts: recent[0]!, success: recent[1]!, errors: recent[2]!, rejected: 0, aborted: recent[3]!, tcp_fallbacks: 0, avg_latency_ms: recentLatency },
+  })
+  Object.assign(overview.metrics, {
+    requests_inflight: 1,
+    cache_lookups_total: 126_330,
+    cache_hits_fresh: 104_180,
+    cache_hits_stale: 1_410,
+    cache_entries: 4_862,
+    upstreams: [
+      upstream('https://dns.google/dns-query', 'doh', [10_780, 6_120, 38, 0, 4_622], 31.4, [5_571, 541, 8], [172, 98, 0, 74], 29.8),
+      upstream('https://cloudflare-dns.com/dns-query', 'doh', [10_780, 4_646, 41, 0, 6_093], 36.2, [4_229, 411, 6], [172, 74, 0, 98], 34.1),
+      upstream('tcp+udp://223.5.5.5', 'tcp_udp', [9_546, 4_108, 11, 4, 5_423], 9.3, [3_801, 305, 2], [168, 61, 0, 107], 8.9),
+      upstream('tls://dns.alidns.com', 'dot', [9_546, 3_018, 15, 0, 6_513], 15.6, [2_790, 226, 2], [168, 55, 0, 113], 15.1),
+      upstream('https://doh.pub/dns-query', 'doh', [9_546, 2_410, 22, 0, 7_114], 17.8, [2_231, 176, 3], [168, 52, 0, 116], 17.2),
+      upstream('192.168.1.1:53', 'udp', [313, 311, 2, 0, 0], 1.6, [297, 14, 0], [3, 3, 0, 0], 1.4),
+      upstream('10.0.0.53:53', 'udp', [397, 241, 2, 0, 154], 2.9, [212, 29, 0], [4, 3, 0, 1], 2.7),
+      upstream('10.0.0.54:53', 'udp', [397, 154, 1, 0, 242], 3.4, [136, 18, 0], [4, 1, 0, 3], 3.6),
+    ],
+    requests_finished: { completed: 128_387, failed: 52, cancelled: 31 },
+    request_latency: { samples: 128_470, avg_ms: 4.6, within_10ms: 112_904, within_100ms: 127_881, within_1s: 128_392 },
+    request_latency_recent: { samples: 1_996, avg_ms: 4.3, within_10ms: 1_752, within_100ms: 1_987, within_1s: 1_994 },
+    cache_stale: { expired: 1_302, client_timeout: 94, upstream_failure: 14 },
+  })
+  Object.assign(queryStats, {
+    requests_observed: 38_350,
+    clients: [
+      { name: '192.168.1.12', count: 10_700 },
+      { name: '192.168.1.8', count: 7_956 },
+      { name: '192.168.1.27', count: 5_997 },
+      { name: '192.168.1.36', count: 3_827 },
+      { name: '192.168.1.5', count: 3_001 },
+    ],
+    domains: [
+      { name: 'api.github.com', count: 2_919 },
+      { name: 'dns.google', count: 2_546 },
+      { name: 'connectivitycheck.gstatic.com', count: 2_152 },
+      { name: 'gateway.icloud.com', count: 1_678 },
+      { name: 'clients4.google.com', count: 1_413 },
+    ],
+  })
+  const release = forkVersion(
+    638905512,
+    '2026.10.15.12',
+    '92b2b2c7e669235f24b1e0a752e7594dc4b2006e',
+    'sha256:2da45695bc6a13bc6be57b3f22ca160f1c97f12c5e5bfa431c9dcde0b1ba89c5',
+    '2026-10-15T15:07:23Z',
+    ['config_query_stats_v1', 'config_static_cname_response_v1'],
+  )
+  const before = forkVersion(
+    638010733,
+    '2026.10.14.2',
+    '22d9ff148fa56aea6d6612d00d9341e6c1b9f066',
+    'sha256:07e4da703dc6e467feaea2030e0ff651468ae07c07771cc8fa628322b2a62a9e',
+    '2026-10-14T01:34:26Z',
+    ['config_query_stats_v1', 'config_static_cname_response_v1'],
+  )
+  latestKixdnsVersion = release
+  activeKixdnsVersion = installedFromRelease(release, true, now - 289_420)
+  previousKixdnsVersion = installedFromRelease(before, false, now - 289_420 - 86_400)
+  overview.health = { ...overview.health, release_version: release.release_tag!, release_commit: release.commit }
+}
+
+// 样本配置下的诊断：照配置走一遍（和草稿试跑同一个模拟器），缓存里没有就问上游，同时问的几个里平均最快的那个先回
+// Diagnostics under the sample config: walked through the config (the draft trial's simulator); on a cache miss the upstreams are asked
+// and, of those asked together, the one fastest on average answers first
+async function sampleLiveTrace(domain: string, recordType: string, client: string): Promise<DnsDiagnostic> {
+  const kernel = config.content as { pipelines?: { id: string; rules?: { name: string; actions?: { type: string; upstream?: string }[] }[] }[] }
+  const { simulate } = await import('../config-model/testing/kernel-sim')
+  const sim = simulate(kernel as Parameters<typeof simulate>[0], { domain: domain.toLowerCase().replace(/\.$/, ''), client, qtype: recordType }, (upstreams) => ({
+    rcode: 'NOERROR', answers: [`${domain}. 300 IN A 104.18.26.120`, `${domain}. 300 IN A 104.18.27.120`], upstream: upstreams[0] ?? '',
+  }))
+  const trace: DnsDiagnostic['trace'] = [{ stage: 'request', status: 'parsed', label: `${recordType} ${domain}`, detail: `客户端：${client}；监听器：default`, elapsed_ms: 0 }]
+  let pipeline = ''
+  let target = ''
+  for (const step of sim.steps.filter((one) => one.phase === 'request')) {
+    // 入口之后的列表是跳过去的；内核先查响应缓存，再看规则 / Lists after the entry are jumped to; the kernel checks the response cache before the rules
+    if (!pipeline) trace.push({ stage: 'pipeline', status: 'selected', label: step.pipeline, detail: null, elapsed_ms: 0 }, { stage: 'response_cache', status: 'miss', label: '响应缓存未命中', detail: `管线：${step.pipeline}`, elapsed_ms: 0 })
+    else if (step.pipeline !== pipeline) trace.push({ stage: 'pipeline', status: 'jump', label: `${pipeline} -> ${step.pipeline}`, detail: null, elapsed_ms: 1 })
+    pipeline = step.pipeline
+    trace.push({ stage: 'rule', status: 'matched', label: step.rule, detail: `管线：${step.pipeline}；匹配器数：1`, elapsed_ms: 1 })
+    if (step.decision !== 'forward') {
+      if (step.decision !== 'jump') trace.push({ stage: 'decision', status: 'selected', label: `静态响应 ${sim.rcode}`, detail: `答案记录数：${sim.answers.length}`, elapsed_ms: 1 })
+      continue
+    }
+    target = kernel.pipelines?.find((one) => one.id === step.pipeline)?.rules?.find((rule) => rule.name === step.rule)?.actions?.find((action) => action.type === 'forward')?.upstream ?? ''
+    trace.push({ stage: 'decision', status: 'selected', label: `规则 ${step.rule} 转发`, detail: `目标：${target}`, elapsed_ms: 1 })
+  }
+  let elapsed = 1
+  if (target) {
+    const asked = target.split(',').map((one) => one.trim())
+    const latency = (address: string) => overview.metrics.upstreams.find((one) => one.upstream === address)?.avg_latency_ms ?? Infinity
+    const winner = [...asked].sort((left, right) => latency(left) - latency(right))[0]!
+    elapsed += Math.round(Number.isFinite(latency(winner)) ? latency(winner) : 12)
+    trace.push({ stage: 'upstream', status: 'succeeded', label: winner, detail: `响应码：No Error；耗时：${elapsed - 1} ms；截断：false`, elapsed_ms: elapsed })
+    for (const step of sim.steps.filter((one) => one.phase === 'response')) {
+      trace.push({ stage: 'response_rule', status: step.decision === 'match' ? 'matched' : 'missed', label: step.rule, detail: '匹配器数：1', elapsed_ms: elapsed })
+    }
+  }
+  const rcode = sim.rcode === 'NOERROR' ? 'No Error' : sim.rcode === 'NXDOMAIN' ? 'Non-Existent Domain' : sim.rcode === 'REFUSED' ? 'Query Refused' : sim.rcode
+  return {
+    server: 'KixDNS 内部执行链', domain, record_type: recordType, response_code: rcode, elapsed_ms: elapsed, truncated: false,
+    answers: sim.answers.map((a) => (a.includes(' IN ') ? a : `${domain}. 300 IN A ${a}`)),
+    trace_supported: true, trace_truncated: false, trace, client_ip: client, source: 'live',
+  }
 }
 
 // v4.0.0 写出来的、规则组带监听标签的配置（kixdns:demo-listener-group）：读进来时监听标签挪成高级入口，规则组照常显示
@@ -564,7 +691,7 @@ function forkVersion(
 // "update available" holds and the system page's from → to has two different ends; the newest version knows one more
 // config field, gained only by updating. The p28 kernel from before the panel moved to fork releases is still kept on the
 // host, so a rollback has somewhere to go.
-const latestKixdnsVersion = forkVersion(
+let latestKixdnsVersion = forkVersion(
   637381241,
   '2026.10.13.2',
   '527ae0a023c81094d80c949d844dbc7d1da85b32',
@@ -699,6 +826,8 @@ export async function mockRequest<T>(path: string, init?: RequestInit): Promise<
 
 async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
   const method = init?.method ?? 'GET'
+  // 样本配置一开始就到位：侧栏的版本、系统页可能先于概览读 / The sample config is in place from the start: the sidebar's versions and the system page may read before the overview
+  destinationsIfAsked()
   const url = new URL(path, 'http://panel.local')
   const pathname = url.pathname
   // 同上：让初始化页也能在演示里看到，否则它的用例只能永远跳过。
@@ -721,7 +850,6 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
   const emptyFirstInstall = typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-empty-first-install') === 'true'
   if (path === '/api/v1/overview') {
     if (emptyFirstInstall) throw new Error('KixDNS 已停止')
-    destinationsIfAsked()
     return overview as T
   }
   // 查询日志：按当前演示配置生成（kixdns:demo-querylog-unsupported 演示内核太旧） / The query log, generated from the current demo config (kixdns:demo-querylog-unsupported plays a kernel too old)
@@ -1158,6 +1286,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     // 演示里的草稿试跑：用测试用的内核模拟器按草稿算一遍（单独一个包，只在演示里加载）
     // The demo's draft trial: evaluate the draft with the tests' kernel simulator (its own chunk, loaded only in the demo)
     if (body.config) return (await mockDraftTrial(body.domain, body.record_type, client, body.config)) as T
+    if (sampleWorld) return (await sampleLiveTrace(body.domain, body.record_type, client)) as T
     return {
       server: 'KixDNS 内部执行链',
       domain: body.domain,
@@ -1212,7 +1341,18 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
         release_url: latestKixdnsVersion.build_url,
       },
       kixdns_error: kernelFailed ? KERNEL_CHECK_ERROR : null,
-      panel: {
+      panel: sampleWorld ? {
+        available: false,
+        current_version: panelVersion,
+        current_commit: '23f70420a74f229aa9755c93b0e0e1ae0c7d3316',
+        current_release: null,
+        latest_version: panelVersion,
+        published_at: '2026-10-16T08:00:00Z',
+        release_url: `https://github.com/tuoro/kixdns-panel/releases/tag/v${panelVersion}`,
+        artifact: 'kixdns-panel-linux-x86_64.zip',
+        artifact_digest: 'sha256:9280ba270e01d774e6944efdc435a685250e99f98c36a8cf406507a036c01ba4',
+        download_url: `https://github.com/tuoro/kixdns-panel/releases/download/v${panelVersion}/kixdns-panel-linux-x86_64.zip`,
+      } : {
         available: true,
         current_version: '1.0.0',
         current_commit: '23f70420a74f229aa9755c93b0e0e1ae0c7d3316',
