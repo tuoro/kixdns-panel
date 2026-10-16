@@ -442,16 +442,16 @@ function forget(): boolean {
   writeId(null)
   return false
 }
-// 关掉以后回到那一行：焦点放回去，手机上把它滚到屏幕中间。退回一步历史时浏览器会把滚动恢复成打开那时的位置（这期间新查询把行往下推了），
-// 所以等那一步走完、再过一帧才滚
-// After closing, back to the row: focus returns to it, and on phones it scrolls to the middle of the screen. Going back a history step
-// makes the browser restore the scroll of when it was opened (new queries have pushed rows down since), so the scroll waits for that
-// step to land and one more frame
+// 关掉以后回到那一行：焦点放回去，手机上它不在眼前（让顶栏、底栏挡住也算）才滚过去，本来看得见就不动。退回一步历史时浏览器会把滚动
+// 恢复成打开那时的位置（这期间新查询把行往下推了），所以等那一步走完、再过一帧才看
+// After closing, back to the row: focus returns to it, and on phones it is scrolled to only when it is out of view (hidden by the top
+// bar or the bottom nav counts), staying put when already visible. Going back a history step makes the browser restore the scroll of
+// when it was opened (new queries have pushed rows down since), so the check waits for that step to land and one more frame
 function land(id: number, wait: 'tick' | 'frame' | 'route', focus = true): void {
   const go = () => {
     const row = rowEl(id)
     if (focus) row?.focus({ preventScroll: true })
-    if (phone.value) row?.scrollIntoView({ block: 'center' })
+    if (phone.value) row?.scrollIntoView({ block: 'nearest' })
   }
   if (wait === 'route') {
     const stop = watch(() => route.fullPath, () => { stop(); requestAnimationFrame(go) })
@@ -1136,23 +1136,30 @@ onBeforeUnmount(() => {
    rows of content; the card clips its overflow (overflow: hidden), which makes min-height: auto resolve to 0, hence min-content. The
    detail's own minimum (16rem, the floor of its height) is written out and the detail is size-contained too, or the minimum would count
    its whole content; when the card sits at that minimum, the detail gives back what its 55% asks beyond it */
-/* 吸在顶上的新查询提示条、日期行也占地方：5 行另算 / A stuck new-queries banner and date row take room too: the 5 rows come on top */
-.logs-page .qlog-stream.has-banner { --qlog-banner: var(--h-md); }
+/* 吸在顶上的新查询提示条、日期行也占地方：5 行另算。提示条的位置一直留着——它随时会出现，出现时不该把详情往下推
+   A stuck new-queries banner and date row take room too: the 5 rows come on top. The banner's room is always kept, since it can appear
+   at any moment and must not push the detail down when it does */
 .logs-page .qlog-stream:has(> .qlog-day) { --qlog-day: var(--s-6); }
-.logs-page .qlog-body:has(> .qlog-pane) > .qlog-stream { contain: size; min-height: calc(var(--h-md) + 1px + 5 * var(--s-6) + var(--qlog-banner, 0px) + var(--qlog-day, 0px)); }
+.logs-page .qlog-body:has(> .qlog-pane) > .qlog-stream { contain: size; min-height: calc(var(--h-md) * 2 + 1px + 5 * var(--s-6) + var(--qlog-day, 0px)); }
 /* 两行的窄表格没有表头，一条 59 高：同样留 5 条 / The two-line narrow table has no head and 59-tall entries: 5 of them stay as well */
-.logs-page .qlog-body:has(> .qlog-pane) > .qlog-stream.is-narrow { min-height: calc(5 * (var(--log-line) * 2 + 2px + 2 * var(--s-2)) + var(--qlog-banner, 0px) + var(--qlog-day, 0px)); }
+.logs-page .qlog-body:has(> .qlog-pane) > .qlog-stream.is-narrow { min-height: calc(var(--h-md) + 5 * (var(--log-line) * 2 + 2px + 2 * var(--s-2)) + var(--qlog-day, 0px)); }
 .logs-page .log-console.qlog:has(> .qlog-body > .qlog-pane) { min-height: min-content; }
 /* 整页跟着卡片长，下面留的空白（底栏的位置）在卡片下面，不在卡片里面；侧栏也跟到底 / The page grows with the card, so the room left below
    (the bottom nav's place) is under the card, not inside it, and the sidebar runs to the end */
 .logs-page:has(.qlog-pane) { min-height: min-content; }
+/* 开着详情时整页不做滚动锚定：浏览器会拿列表里的某一行当锚，提示条一出现那一行在列表里往下挪，它就把整页跟着滚，详情被带着跑。
+   列表自己的锚定照旧
+   With a detail open the page does no scroll anchoring: the browser would take a row inside the list as its anchor, and when the banner
+   appears that row moves down inside the list, so it would scroll the whole page and drag the detail along. The list's own anchoring
+   stays */
+:root:has(.qlog-pane) { overflow-anchor: none; }
 /* 有底栏的窄屏和手机：滚到一行时（键盘逐条看、关掉详情回到那一行）不停在顶栏和底栏下面 / Narrow screens with the bottom nav, and phones:
    scrolling to a row (keyboard stepping, coming back to it after closing the detail) never parks it under the top bar or the bottom nav */
 @media (max-width: 860px) { :root:has(.qlog-stream) { scroll-padding: calc(var(--app-header-height) + var(--s-2)) 0 calc(var(--mobile-nav-height) + var(--s-2)); } }
 /* 「减少动态效果」把每个属性都变成 0.01 毫秒的过渡：最小高度会晚一帧才到，列表闪一下被压扁。这几块不要过渡
    「Reduce motion」 turns every property into a 0.01 ms transition: the minimum height would land a frame late and the list would flash
    squashed. These boxes take no transition */
-.logs-page :is(.log-console.qlog, .qlog-body, .qlog-stream, .qlog-pane) { transition: none; }
+.logs-page :is(.log-console.qlog, .qlog-body, .qlog-stream, .qlog-pane, .qlog-row, .qlog-day, .qlog-gap) { transition: none; }
 .logs-page .qlog-pane { flex: 0 1 auto; height: clamp(16rem, 55%, 28rem); min-height: 16rem; contain: size; display: flex; flex-direction: column; border-top: 1px solid var(--l-hair); background: var(--l-surface); container: qlog-pane / inline-size; }
 .qlog-pane__head { display: flex; align-items: flex-start; gap: var(--s-3); padding: var(--s-4) var(--s-5) var(--s-3); }
 .qlog-pane__titles { flex: 1 1 auto; min-width: 0; }
@@ -1178,9 +1185,11 @@ onBeforeUnmount(() => {
 /* 步骤里的地址只在目录边界的「/」后面断，不在连字符处断 / An address in a step wraps only after a directory 「/」, never at a hyphen */
 /* 显示时不拆开的那几段（名字、常用词、句末两个字） / Runs kept whole on display (names, common words, the last two characters) */
 .qlog-keep { white-space: nowrap; }
-/* 详情窄（和列表换成两行同一个宽度）：三块概况并成一块，四个去处占满一行、两端对齐 / A narrow detail (at the width where the list
-   turns two-line): the three blocks become one, and the four actions take a full row, flush at both ends */
-@container qlog-pane (max-width: 776px) {
+/* 详情窄（650 以下）：三块概况并成一块，四个去处占满一行、两端对齐。不跟着列表在 776 换：那一档详情只有 16rem 高，并成一列只看得见
+   第一块
+   A narrow detail (650 and below): the three blocks become one, and the four actions take a full row, flush at both ends. It does not
+   follow the list's switch at 776: in that band the detail is only 16rem tall, and one column would show only the first block */
+@container qlog-pane (max-width: 650px) {
   .qlog-facts { grid-template-columns: minmax(0, 1fr); gap: 0; border-radius: var(--r-2); background: var(--l-canvas); }
   .qlog-fact { border-radius: 0; background: none; }
   .qlog-fact + .qlog-fact { border-top: 1px solid var(--l-hair); }

@@ -232,6 +232,23 @@ test('选中往前读到的那一页里的一条：列表不重读，读到的�
   await expect(page.locator('.qlog-pane')).toBeVisible()
 })
 
+test('手机上点开再关掉看得见的那一条：列表不动 @responsive', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'mobile', '手机的整屏详情')
+  await openQueryLog(page)
+  await page.evaluate(() => window.scrollTo(0, 600))
+  const row = page.locator('.qlog-row').nth(12)
+  await expect(row).toBeInViewport()
+  const before = await page.evaluate(() => window.scrollY)
+  await row.click()
+  const sheet = page.locator('dialog.qlog-sheet[open]')
+  await expect(sheet).toBeVisible()
+  await sheet.getByRole('button', { name: '关闭', exact: true }).click()
+  await expect(sheet).toHaveCount(0)
+  await page.waitForTimeout(300)
+  expect(await page.evaluate(() => window.scrollY)).toBe(before)
+  await expect(row).toBeFocused()
+})
+
 test('手机上返回先关详情和设置，再返回才离开日志页 @responsive', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'mobile', '只有手机的详情和设置是整屏，记一步历史')
   await useSampleConfig(page)
@@ -359,8 +376,17 @@ test('窄窗口里表格改成每条两行：域名不被挤成几个字；矮�
 
   // 1024 宽的窗口开着侧栏，列表 728：七列会截断域名，也换成两行 / A 1024 window with the sidebar leaves a 728 list: seven columns would cut
   // domains, so it is two lines too
-  await page.setViewportSize({ width: 1024, height: 900 })
+  await page.setViewportSize({ width: 1024, height: 768 })
   await expect(stream).toHaveClass(/is-narrow/)
+  // 详情的三块概况在这一档还是并排，矮的详情里也都看得见 / The detail's three blocks stay side by side in this band, all visible in the
+  // short detail
+  await page.locator('.qlog-row').nth(1).click()
+  const body = (await page.locator('.qlog-pane__body').boundingBox())!
+  for (const fact of await page.locator('.qlog-pane .qlog-fact').all()) {
+    const box = (await fact.boundingBox())!
+    expect(box.y + box.height).toBeLessThanOrEqual(body.y + body.height + 0.5)
+  }
+  await page.locator('.qlog-pane').getByRole('button', { name: '关闭详情' }).click()
 
   await page.setViewportSize({ width: 1280, height: 610 })
   await expect(stream).not.toHaveClass(/is-narrow/)

@@ -1,5 +1,5 @@
 import type { QueryLogEntry, QueryLogGap, QueryLogItem, QueryLogRecord, QueryLogStep, QueryLogStepRecord } from './api/types'
-import { ruleGroupPipelineId, type Model } from './config-model/model'
+import { ruleGroupPipelineId, upstreamPipelineId, type Model } from './config-model/model'
 import type { TraceNames } from './config-model/trace-names'
 import type { TextPart } from './diagnostics'
 import { directLabel, forwardGroups, ownForwardLabel, ownForwards, type KernelPipeline } from './request-destinations'
@@ -204,6 +204,21 @@ export function destinationOfRow(key: string, model: Model): string {
   return key.startsWith('group:') ? key : `pipeline:${key}`
 }
 
+/**
+ * 这个列表里的回答后检查是不是上游组的备用组：上游组自己的列表，或者规则自带、回答处理「沿用上游组」的列表（面板把组的备用组抄了一份
+ * 进去）。规则「单独设置」的回答后检查不算，哪怕它转发给同一个组的地址
+ * Whether the answer check in this list is an upstream group's 备用组: the group's own list, or a rule's own list whose answer handling
+ * is 「沿用上游组」 (the panel copies the group's 备用组 into it). A rule's own 「单独设置」 check does not count, even when it forwards to
+ * the same group's addresses
+ */
+function isFallback(ctx: QueryLogContext | null, pipeline: string): boolean {
+  if (!ctx) return false
+  const { model } = ctx
+  if (model.groups.some((g) => upstreamPipelineId(model, g.id) === pipeline)) return true
+  const owner = [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].find((r) => `rule-${r.id}` === pipeline)
+  return owner?.response.mode === 'inherit'
+}
+
 /** 去向旁边的小标记：答案不是这次现问上游拿到的 / The small tag beside the destination: the answer did not come from asking an upstream just now */
 export function sourceTag(entry: QueryLogEntry): string | null {
   if (entry.outcome === 'cached') return '缓存'
@@ -401,7 +416,7 @@ export function detailFacts(entry: QueryLogEntry, ctx: QueryLogContext | null): 
   const polluted = entry.steps.find((st) => st.kind === 'check' && st.matched && st.target !== undefined && !DIRECT.has(st.target))
   // 上游组自己的检查是它的备用组（配置页这么叫），规则自带的才是回答后检查 / A check in an upstream group's own list is its 备用组 (as the
   // config page calls it); only a rule's own check is a 回答后检查
-  const fallback = Boolean(polluted && ctx && forwardGroups(ctx.pipelines, ctx.model)(polluted.pipeline))
+  const fallback = Boolean(polluted && isFallback(ctx, polluted.pipeline))
   let who: DetailFact
   if (entry.outcome === 'cached') who = { key: 'who', label: '谁回答的', lead: [[t('缓存')]], sub: entry.upstream ? [t('答案原先来自 '), m(entry.upstream)] : [], tone: '' }
   else if (entry.outcome === 'stale') who = { key: 'who', label: '谁回答的', lead: [[t('过期缓存')]], sub: [t(STALE_LONG[staleKind(entry)])], tone: staleKind(entry) === 'now' ? '' : 'warn' }
@@ -652,7 +667,7 @@ export function stepRows(entry: QueryLogEntry, ctx: QueryLogContext | null): Ste
       const named = step.rule && !generated(step.pipeline) ? `「${ctx?.names.rule(step.rule) ?? step.rule}」` : ''
       // 上游组自己的检查是它的备用组（配置页这么叫），命中没命中都这么叫 / A check in an upstream group's own list is its 备用组 (as the
       // config page calls it), matched or not
-      const fallback = Boolean(groupOf(step.pipeline))
+      const fallback = isFallback(ctx, step.pipeline)
       const checker = fallback ? '备用组' : `回答后检查${named}`
       if (step.matched && step.target && !DIRECT.has(step.target)) {
         // 先回的那个答案被检查否掉了：它不再是定下结果的一步，不打勾 / The first answer was rejected by the check: no longer the deciding step, so no tick

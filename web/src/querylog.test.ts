@@ -138,6 +138,25 @@ describe('处理过程一步一句', () => {
     expect(kept.find((row) => text(row.lead).startsWith('223.5.5.5'))!.decides).toBe(true)
   })
 
+  it('规则自带的列表：回答处理沿用上游组的叫备用组，单独设置的仍叫回答后检查', () => {
+    const { ctx } = context()
+    const rules = [...ctx.model.rules, ...ctx.model.ruleGroups.flatMap((g) => g.rules)]
+    const list = (name: string) => `rule-${rules.find((r) => r.name === name)!.id}`
+    const checked = (pipeline: string, check: Partial<QueryLogStepRecord>, extra: Partial<QueryLogRecord> = {}) => stepRows(entryOf(record([
+      { at_us: 0, kind: 'pipeline', pipeline },
+      { at_us: 5_000, kind: 'upstream', upstream: '1.1.1.1:53', via: 'udp', result: 'success', latency_us: 5_000, rcode: 'NOERROR' },
+      { at_us: 5_100, kind: 'rule', pipeline, rule: 'check', phase: 'response', ...check },
+    ], { pipeline, ...extra })), ctx).map((row) => text(row.lead))
+    // 苹果服务：单独设了 ECS、回答处理沿用上游组「国内」，自带的列表里抄着国内的备用组 / 苹果服务 sets its own ECS and keeps the group's
+    // answer handling, so its own list carries a copy of 国内's 备用组
+    expect(checked(list('苹果服务'), { matched: false })).toContain('备用组：这个回答能用，不用改问')
+    // 防 DNS 重绑定：回答后检查单独设置，转发给「国外」的地址也不算备用组 / 防 DNS 重绑定 sets its own answer check: forwarding to 国外's
+    // addresses does not make it a 备用组
+    const own = list('防 DNS 重绑定')
+    expect(checked(own, { matched: false })).toContain('回答后检查没命中，照用这个回答')
+    expect(checked(own, { matched: true, decision: 'static' }, { outcome: 'blocked', rcode: 'REFUSED', answers: [] })).toContain('回答后检查命中，拦截')
+  })
+
   it('回了 SERVFAIL 没用上、没有规则命中、检查没命中、没处理完、步骤太多都照实说', () => {
     const rows = stepRows(entryOf(record([
       { at_us: 0, kind: 'pipeline', pipeline: 'main' },
