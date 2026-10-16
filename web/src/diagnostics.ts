@@ -1,5 +1,6 @@
 import type { DnsTraceStep } from './api/types'
 import type { TraceNames } from './config-model/trace-names'
+import { errorWord, STALE_SHORT } from './querylog'
 
 const MAX_DNS_TTL = 4_294_967_295
 
@@ -24,7 +25,7 @@ export const traceStageNames: Record<string, string> = {
 }
 
 export const traceStatusNames: Record<string, string> = {
-  parsed: '已解析', selected: '已选择', matched: '命中', missed: '未命中', miss: '未命中',
+  parsed: '已解析', selected: '已选择', matched: '命中', missed: '没命中', miss: '没命中',
   hit: '命中', fresh: '缓存命中', stale: '续用旧结果', succeeded: '成功', failed: '失败', error: '错误',
   skipped: '已跳过', rejected: '已拒绝', started: '已发出', jump: '跳转',
 }
@@ -191,6 +192,19 @@ export interface TraceContext {
   target?: string | null
   /** 内核名字换回配置页名字的办法；没有就照原样 / How to turn kernel names back into the config page's; as they are without it */
   names?: TraceNames | null
+  /** 这次查询后来有没有问上游（或者等着同样的查询问） / Whether this query went on to ask upstreams (or waited on the same query asking) */
+  asksUpstream?: boolean
+}
+
+/** 后来有没有问上游：缓存没命中那一步据此说「去问上游」 / Whether upstreams were asked later: the cache-miss step says 「去问上游」 by it */
+export const asksUpstream = (steps: readonly DnsTraceStep[]): boolean => steps.some((step) => step.stage === 'upstream')
+/** 连着几条没命中的规则并成的一行 / The row that several consecutive unmatched rules fold into */
+export const missedRulesText = (count: number): string => `${count} 条规则没命中`
+// 内核写过期缓存的三种说法，换成查询日志里的那三句 / The kernel's three stale-cache labels, turned into the query log's three sentences
+const STALE_LABELS: Record<string, string> = {
+  命中过期响应缓存: STALE_SHORT.now,
+  '客户端等待超时，返回过期缓存': STALE_SHORT.timeout,
+  '上游失败，返回过期缓存': STALE_SHORT.failure,
 }
 
 export function describeStep(step: DnsTraceStep, context: TraceContext = {}): StepView {
@@ -203,17 +217,21 @@ export function describeStep(step: DnsTraceStep, context: TraceContext = {}): St
     const said = names?.entry(label)
     return { lead: said ? [t(`进入${said}`)] : sentence(t('进入'), pipelineName(label, names)), note }
   }
-  if (stage === 'pipeline' && status === 'jump' && (match = /^(.+?) -> (.+)$/.exec(label))) return { lead: sentence(t('从'), pipelineName(match[1]!, names), t('跳到'), pipelineName(match[2]!, names)), note }
+  // 步骤的说法和查询日志一样：从「用诊断再测一次」过来，同一件事是同一句话 / Steps read as in the query log: arriving from
+  // 用诊断再测一次, the same event is the same sentence
+  if (stage === 'pipeline' && status === 'jump' && (match = /^(.+?) -> (.+)$/.exec(label))) return { lead: sentence(pipelineName(match[1]!, names), t('交给'), pipelineName(match[2]!, names)), note }
   // 「管线 X」在上一步刚说过，细节里不再重复 / The pipeline was just named one step up, so the detail drops it
   if (stage === 'response_cache') {
     const rest = detailParts(detail, ['管线'])
-    if (['miss', 'missed'].includes(status)) return { lead: [t('响应缓存未命中')], note: rest }
-    if (['fresh', 'hit'].includes(status)) return { lead: [t('命中响应缓存')], note: rest }
-    return { lead: [t(label)], note: rest }
+    // 内核在看规则之前就查缓存：被规则拦下的也先记一笔没命中，所以后面真的问了上游才说「去问上游」
+    // The kernel checks the cache before the rules, so a query a rule blocks logs a miss first: 「去问上游」 only when upstreams were asked
+    if (['miss', 'missed'].includes(status)) return { lead: [t(context.asksUpstream ? '缓存里没有，去问上游' : '缓存里没有')], note: rest }
+    if (['fresh', 'hit'].includes(status)) return { lead: [t('缓存里有，直接回')], note: rest }
+    return { lead: [t(STALE_LABELS[label] ?? label)], note: rest }
   }
   if (stage === 'rule_cache') {
     if ((match = /^命中管线 (.+) 的规则缓存$/.exec(label))) return { lead: sentence(t('命中'), pipelineName(match[1]!, names), t('的规则缓存')), note }
-    if ((match = /^管线 (.+) 的规则缓存未命中$/.exec(label))) return { lead: sentence(pipelineName(match[1]!, names), t('的规则缓存未命中')), note }
+    if ((match = /^管线 (.+) 的规则缓存未命中$/.exec(label))) return { lead: sentence(pipelineName(match[1]!, names), t('的规则缓存没命中')), note }
   }
   // 匹配器数、答案记录数是内核的计数，读路径的人用不上 / Matcher and answer-record counts are kernel bookkeeping a reader of the path has no use for
   if (stage === 'rule' && status === 'matched') {
@@ -221,28 +239,39 @@ export function describeStep(step: DnsTraceStep, context: TraceContext = {}): St
     const said = names?.matched(label)
     return { lead: said ? [t(said)] : sentence(t('命中规则'), ruleName(label, names)), note: detailParts(detail, ['管线', '匹配器数']) }
   }
-  if (stage === 'rule' && ['missed', 'miss'].includes(status)) return { lead: sentence(t('规则'), ruleName(label, names), t('未命中')), note: detailParts(detail, ['管线', '匹配器数']) }
+  if (stage === 'rule' && ['missed', 'miss'].includes(status)) return { lead: sentence(t('规则'), ruleName(label, names), t('没命中')), note: detailParts(detail, ['管线', '匹配器数']) }
+  // 回答后检查：内核写「响应匹配器 命中 / 未命中」和匹配器数，读的人只要知道结果 / An answer check: the kernel writes 「响应匹配器 命中 /
+  // 未命中」 and the matcher count; the reader needs only the outcome
+  if (stage === 'response_rule' && status === 'matched') return { lead: [t('回答后检查命中')], note: detailParts(detail, ['匹配器数']) }
+  if (stage === 'response_rule' && ['missed', 'miss'].includes(status)) return { lead: [t('回答后检查没命中，照用这个回答')], note: detailParts(detail, ['匹配器数']) }
   if (stage === 'decision') {
     const target = detailValue(detail, '目标')
     // 转发是紧接着命中的那条规则做的，规则名上一行刚写过 / The forward is done by the rule matched one row up, already named there
     if ((match = /^规则 (.+) 转发$/.exec(label)) && target) return { lead: sentence(t('转发给'), m(target)), note: detailParts(detail, ['目标', '规则']) }
     // 响应码和协议名一样是助记词，不是要照抄的字面值：正文字体，和概览的响应码分布一致
     // Response codes are mnemonics like protocol names, not literals to copy: the body face, matching the overview's response-code distribution
-    if ((match = /^静态响应 (.+)$/.exec(label))) return { lead: [t(`直接返回 ${responseCodeName(match[1]!)}`)], note: detailParts(detail, ['答案记录数']) }
-    if ((match = /^跳转到管线 (.+)$/.exec(label))) return { lead: sentence(t('跳转到'), pipelineName(match[1]!, names)), note }
+    if ((match = /^静态响应 (.+)$/.exec(label))) return { lead: [t(`直接回 ${responseCodeName(match[1]!)}`)], note: detailParts(detail, ['答案记录数']) }
+    if ((match = /^跳转到管线 (.+)$/.exec(label))) return { lead: sentence(t('交给'), pipelineName(match[1]!, names)), note }
   }
   if (stage === 'upstream') {
-    if (status === 'started' && (match = /^准备转发到 (.+)$/.exec(label))) return { lead: sentence(t('发往'), m(match[1]!)), note: detailParts(detail, ['规则']) }
+    if (status === 'started' && (match = /^准备转发到 (.+)$/.exec(label))) return { lead: sentence(t('转发给'), m(match[1]!)), note: detailParts(detail, ['规则']) }
     const code = detailValue(detail, '响应码')
     const same = context.target === label
     // 回答本身和总耗时在结果栏和右边的时间列里，这一行只说收到了；不是 NOERROR 才写出响应码
     // The answer and the total time live in the result bar and the time column, so this row only says a reply came; the code is named only when it is not NOERROR
-    const heard = code && isDnsSuccess(code) ? [t('收到回答')] : [t(`回答 ${code}`)]
-    if (status === 'succeeded' && code) return { lead: same ? heard : sentence(m(label), heard), note: detailParts(detail, ['响应码', '耗时']) }
-    if (status === 'failed') return { lead: same ? [t('没有回答')] : sentence(m(label), t('没有回答')), note: detail ? [t(detail)] : [] }
+    // 刚转给的就是它：说「上游回了」，不再重复地址 / The one just forwarded to: 「上游回了」, without repeating the address
+    const heard = code && isDnsSuccess(code) ? '回了' : `回了 ${responseCodeName(code ?? '')}`
+    if (status === 'succeeded' && code) return { lead: same ? [t(`上游${heard}`)] : sentence(m(label), t(heard)), note: detailParts(detail, ['响应码', '耗时']) }
+    if (status === 'failed') {
+      // 失败说原因（超时、连不上……），内核的英文原文放在下面一行；本来就是中文的照原话 / A failure names its cause (timeout, no
+      // connection…) with the kernel's English below; text already in Chinese is used as it is
+      const known = detail ? errorWord(detail) : null
+      const word = known ?? (detail && !/[a-z]/i.test(detail) ? detail : '出错')
+      return { lead: same ? [t(word)] : sentence(m(label), t(word)), note: detail && word !== detail ? [m(detail)] : [] }
+    }
     // 同样的查询正在问上游：这次不另发，等它的回答。内核的说法本身就是一句中文，照原话写，不当成地址
     // The same query is already out upstream: this one sends nothing and waits for that answer. The kernel's wording is a Chinese sentence, so it stays words, not an address literal
-    if (status === 'joined') return { lead: [t(label || '等候正在进行的同一个查询')], note }
+    if (status === 'joined') return { lead: [t('同样的查询正在问上游，等它的结果')], note }
   }
   const stageName = traceStageNames[stage]
   // 不认识的阶段把阶段标识原样写上：新内核多出来的一步不能悄悄消失。

@@ -8,7 +8,7 @@ import UiSelect from '../components/ui/UiSelect.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
 import { compile, isIp } from '../config-model/model'
 import { traceNames } from '../config-model/trace-names'
-import { describeStep, forwardTarget, formatElapsed, groupTrace, hidePlumbing, isDnsSuccess, parseDnsAnswer, responseCodeName, ruleName, traceTone, type TextPart } from '../diagnostics'
+import { asksUpstream, describeStep, forwardTarget, formatElapsed, groupTrace, hidePlumbing, isDnsSuccess, missedRulesText, parseDnsAnswer, responseCodeName, ruleName, traceTone, type TextPart } from '../diagnostics'
 import { errorMessage } from '../utils'
 import { useConnection } from '../composables/useConnection'
 import { dirty, findRuleByName, model } from './store'
@@ -88,14 +88,16 @@ const stepIdle = (status: string) => ['miss', 'missed', 'skipped'].includes(stat
 const names = computed(() => traceNames(model))
 const rows = computed(() => {
   let target: string | null = null
-  return groupTrace(hidePlumbing(result.value?.trace_supported ? result.value.trace : [], names.value)).map((row) => {
+  const trace = result.value?.trace_supported ? result.value.trace : []
+  const asks = asksUpstream(trace)
+  return groupTrace(hidePlumbing(trace, names.value)).map((row) => {
     if (row.kind === 'step') {
-      const view = { ...describeStep(row.step, { target, names: names.value }), tone: traceTone(row.step.status), decides: row.step.stage === 'rule' && row.step.status === 'matched', idle: stepIdle(row.step.status), elapsed: (row.sent ?? row.step).elapsed_ms }
+      const view = { ...describeStep(row.step, { target, names: names.value, asksUpstream: asks }), tone: traceTone(row.step.status), decides: row.step.stage === 'rule' && row.step.status === 'matched', idle: stepIdle(row.step.status), elapsed: (row.sent ?? row.step).elapsed_ms }
       target = forwardTarget(row.sent ?? row.step) ?? target
       return view
     }
     const missed: TextPart[] = row.steps.flatMap((step, index) => [...(index ? [{ text: '、' }] : []), ...ruleName(step.label, names.value)])
-    return { lead: [{ text: `${row.steps.length} 条规则未命中` }], note: missed, tone: 'neutral' as const, decides: false, idle: true, elapsed: row.steps[row.steps.length - 1]!.elapsed_ms }
+    return { lead: [{ text: missedRulesText(row.steps.length) }], note: missed, tone: 'neutral' as const, decides: false, idle: true, elapsed: row.steps[row.steps.length - 1]!.elapsed_ms }
   })
 })
 </script>

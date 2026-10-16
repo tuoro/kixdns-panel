@@ -14,7 +14,7 @@ import { useServiceStart } from '../composables/useServiceStart'
 import { readConfig } from '../config-model/document'
 import { isIp } from '../config-model/model'
 import { traceNames, type TraceNames } from '../config-model/trace-names'
-import { describeStep, formatElapsed, forwardTarget, groupTrace, hidePlumbing, isDnsSuccess, parseDnsAnswer, responseCodeName, ruleName, traceTone, type TextPart } from '../diagnostics'
+import { asksUpstream, describeStep, formatElapsed, forwardTarget, groupTrace, hidePlumbing, isDnsSuccess, missedRulesText, parseDnsAnswer, responseCodeName, ruleName, traceTone, type TextPart } from '../diagnostics'
 import { errorMessage, formatKixdnsVersion } from '../utils'
 
 // 连不上面板时查询按了只会失败：先停用，横幅说为什么 / With the panel unreachable a query could only fail: disabled, the banner says why
@@ -128,16 +128,17 @@ const stepIdle = (status: string) => ['miss', 'missed', 'skipped'].includes(stat
 const rows = computed(() => {
   // 记着上一次转给了谁，上游应答时就不用再写一遍地址。 / Remember the last forward target so the reply need not repeat the address.
   let target: string | null = null
+  const asks = asksUpstream(steps.value)
   return groupTrace(hidePlumbing(steps.value, names.value)).map((row) => {
   if (row.kind === 'step') {
     // 只有命中规则这一步打勾：它定下了请求怎么走；应答成功是结果栏的事，节点用普通的点
     // Only the matched-rule step gets a check, since it decides the route; a successful reply belongs to the result band, so its node is a plain dot
-    const view = { ...describeStep(row.step, { target, names: names.value }), tone: traceTone(row.step.status), decides: row.step.stage === 'rule' && row.step.status === 'matched', idle: stepIdle(row.step.status), elapsed: (row.sent ?? row.step).elapsed_ms }
+    const view = { ...describeStep(row.step, { target, names: names.value, asksUpstream: asks }), tone: traceTone(row.step.status), decides: row.step.stage === 'rule' && row.step.status === 'matched', idle: stepIdle(row.step.status), elapsed: (row.sent ?? row.step).elapsed_ms }
     target = forwardTarget(row.sent ?? row.step) ?? target
     return view
   }
   const missed: TextPart[] = row.steps.flatMap((step, index) => [...(index ? [{ text: '、' }] : []), ...ruleName(step.label, names.value)])
-  return { lead: [{ text: `${row.steps.length} 条规则未命中` }], note: missed, tone: 'neutral' as const, decides: false, idle: true, elapsed: row.steps[row.steps.length - 1]!.elapsed_ms }
+  return { lead: [{ text: missedRulesText(row.steps.length) }], note: missed, tone: 'neutral' as const, decides: false, idle: true, elapsed: row.steps[row.steps.length - 1]!.elapsed_ms }
   })
 })
 
