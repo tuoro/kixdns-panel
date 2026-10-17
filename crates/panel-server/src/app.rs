@@ -25,6 +25,7 @@ const STATS_SNAPSHOT_1H_KEY: &str = "stats_snapshot_1h_v1";
 const STATS_SNAPSHOT_6H_KEY: &str = "stats_snapshot_6h_v1";
 const STATS_SNAPSHOT_24H_KEY: &str = "stats_snapshot_24h_v1";
 
+mod blocklist;
 mod diagnostics;
 mod geo;
 mod querylog;
@@ -33,7 +34,7 @@ mod updates;
 use geo::{
     cleanup_geo_data, get_builtin_geosite, get_geo_data, get_geo_data_schedule,
     get_geosite_categories, import_builtin_geosite, save_geo_data_schedule,
-    spawn_builtin_geosite_seed, spawn_geo_scheduler, sync_geo_data,
+    spawn_builtin_geosite_seed, sync_geo_data,
 };
 
 use crate::auth::{
@@ -41,8 +42,9 @@ use crate::auth::{
     hash_password, issue_session, token_hash, unix_timestamp, validate_password, validate_username,
     verify_csrf, verify_password,
 };
+use crate::blocklist_data::BlocklistManager;
 use crate::config_capabilities::ensure_config_supported;
-use crate::config_store::{ConfigError, ConfigStore, MAX_CONFIG_BYTES, SaveResult};
+use crate::config_store::{ConfigDocument, ConfigError, ConfigStore, MAX_CONFIG_BYTES, SaveResult};
 use crate::control::{
     ActiveConfig, CacheFlushResult, ControlClient, ControlError, Health, MetricsSnapshot,
     QueryStatsSnapshot, StatsClearResult, ValidationResult,
@@ -93,6 +95,7 @@ pub struct AppState {
     operations: Operations,
     updates: UpdateManager,
     geo_data: GeoDataManager,
+    blocklists: BlocklistManager,
     geosite_catalog: Arc<CatalogCache>,
     secure_cookie: bool,
     trusted_proxies: TrustedProxies,
@@ -318,6 +321,7 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
     if let Some(descriptor) = settings.builtin_geosite {
         geo_data = geo_data.with_builtin_geosite(descriptor);
     }
+    let blocklists = BlocklistManager::new(geo_data.clone(), database.clone());
     let state = AppState {
         database,
         config,
@@ -330,6 +334,7 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         .map_err(|error| anyhow::anyhow!(error))?,
         updates,
         geo_data,
+        blocklists,
         geosite_catalog: Arc::default(),
         secure_cookie: settings.secure_cookie,
         trusted_proxies: settings.trusted_proxies,
@@ -340,7 +345,7 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         recent_history: Arc::default(),
         querylog,
     };
-    spawn_geo_scheduler(state.clone());
+    spawn_update_scheduler(state.clone());
     spawn_builtin_geosite_seed(state.clone());
     spawn_config_reconciler(state.clone());
     spawn_metrics_sampler(state.clone());
@@ -399,6 +404,7 @@ fn api_router(state: AppState) -> Router {
         .route("/config/versions/{id}/restore", post(restore_config))
         .route("/config/versions/{id}/apply", post(apply_pending_config))
         .route("/cache/flush", post(flush_cache))
+        .merge(blocklist::routes())
         .merge(diagnostics::routes())
         .merge(querylog::routes())
         .merge(updates::routes())
@@ -1046,6 +1052,115 @@ async fn flush_cache(
     Ok(Json(result))
 }
 
+/// 面板自己改配置时以哪份为底：KixDNS 在运行时是当前的配置，没运行时是待应用的那份（没有就是当前的）。
+/// 同时给出 `KixDNS` 运行的情况。
+/// The config the panel changes on its own: the current one with `KixDNS` running, otherwise the
+/// pending one (or the current one without it). `KixDNS`'s running state comes along.
+async fn system_config_base(
+    state: &AppState,
+) -> anyhow::Result<(Result<ActiveConfig, ControlError>, ConfigDocument)> {
+    let runtime = state.control.active_config().await;
+    let base = if matches!(&runtime, Err(ControlError::Unavailable(_))) {
+        state.config.desired().await?
+    } else {
+        state.config.current().await?
+    };
+    Ok((runtime, base))
+}
+
+/// 面板自己改配置时的说法：改的是什么、配置版本的备注、审计动作和审计详情的开头。
+/// How the panel describes a config change it makes on its own: what changed, the version note,
+/// the audit action and the start of the audit detail.
+struct SystemConfigWrite<'a> {
+    /// 内核没接受时说它没接受什么 / What the kernel is said to have refused, when it refuses
+    subject: &'a str,
+    message: &'a str,
+    audit_action: &'a str,
+    audit_note: Option<String>,
+}
+
+/// 面板自己改一次配置（Geo 数据、拦截列表的更新）：`edit` 改好一份副本并说改没改。KixDNS 在运行时等它热加载，
+/// 不接受就退回上一版；没运行时存成待应用的版本。调用的一方拿着 `config_apply_lock`。
+/// A config change the panel makes on its own (Geo data and blocklist updates): `edit` changes a copy
+/// and says whether anything changed. With `KixDNS` running the change waits for its reload and is
+/// rolled back when refused; otherwise it is saved as a pending version. The caller holds
+/// `config_apply_lock`.
+async fn write_system_config(
+    state: &AppState,
+    write: &SystemConfigWrite<'_>,
+    edit: impl FnOnce(&mut Value) -> anyhow::Result<bool>,
+) -> anyhow::Result<()> {
+    let (runtime, previous) = system_config_base(state).await?;
+    let mut candidate = previous.content.clone();
+    if !edit(&mut candidate)? {
+        return Ok(());
+    }
+
+    let result = match runtime {
+        Ok(before_reload) => {
+            ensure_running_config_supported(state, &candidate).await?;
+            let validation = state.control.validate(&candidate).await?;
+            if !validation.valid {
+                anyhow::bail!("KixDNS 没有接受{}，仍在用之前的配置", write.subject);
+            }
+            let result = state
+                .config
+                .save(
+                    candidate,
+                    &previous.sha256,
+                    write.message.to_owned(),
+                    "system".to_owned(),
+                )
+                .await?;
+            if let Err(error) = state
+                .control
+                .wait_for_config(
+                    &result.sha256,
+                    before_reload.reload_sequence,
+                    std::time::Duration::from_secs(5),
+                )
+                .await
+            {
+                rollback_config(state, previous.content, &result.sha256, "system").await?;
+                anyhow::bail!(
+                    "KixDNS 没有接受{}，仍在用之前的配置：{}",
+                    write.subject,
+                    match &error {
+                        ControlError::Rejected(reason) => reason.clone(),
+                        other => reload_failure(other),
+                    }
+                );
+            }
+            result
+        }
+        Err(ControlError::Unavailable(_)) => {
+            state
+                .config
+                .save_pending(
+                    candidate,
+                    &previous.sha256,
+                    format!("{}（待 KixDNS 启动）", write.message),
+                    "system".to_owned(),
+                )
+                .await?
+        }
+        Err(error) => return Err(anyhow::Error::new(error)),
+    };
+    state
+        .database
+        .audit(
+            None,
+            write.audit_action.to_owned(),
+            match &write.audit_note {
+                Some(note) => format!("{note}，生成配置版本 #{}", result.version_id),
+                None => format!("生成配置版本 #{}", result.version_id),
+            },
+            unix_timestamp(),
+        )
+        .await?;
+    Ok(())
+}
+
 async fn rollback_config(
     state: &AppState,
     previous_content: Value,
@@ -1480,6 +1595,26 @@ fn scaled(delta: u64, position: i64, span: i64) -> u64 {
     .unwrap_or_default()
 }
 
+/// Geo 数据和拦截列表的自动更新：每 15 分钟看一次到没到时间，两样一前一后，不同时改配置
+/// The automatic update of Geo data and blocklists: every 15 minutes it checks whether one is due,
+/// running them one after the other so they never change the config at the same time
+fn spawn_update_scheduler(state: AppState) {
+    tokio::spawn(async move {
+        let start = tokio::time::Instant::now() + std::time::Duration::from_mins(1);
+        let mut ticker = tokio::time::interval_at(start, std::time::Duration::from_mins(15));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            if let Err(error) = geo::run_due_geo_schedule(&state).await {
+                tracing::warn!(error = ?error, "Geo 定时更新失败");
+            }
+            if let Err(error) = blocklist::run_due_blocklist_schedule(&state).await {
+                tracing::warn!(error = ?error, "拦截列表定时更新失败");
+            }
+        }
+    });
+}
+
 fn spawn_config_reconciler(state: AppState) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(5));
@@ -1679,6 +1814,16 @@ fn map_geo_data_error(error: GeoDataError) -> AppError {
         GeoDataError::Invalid(message) => AppError::BadRequest("geo_data_invalid", message),
         GeoDataError::Download(message) => {
             AppError::Unprocessable("geo_data_download_failed", message)
+        }
+        GeoDataError::Internal(error) => AppError::Internal(error),
+    }
+}
+
+fn map_blocklist_error(error: GeoDataError) -> AppError {
+    match error {
+        GeoDataError::Invalid(message) => AppError::BadRequest("blocklist_invalid", message),
+        GeoDataError::Download(message) => {
+            AppError::Unprocessable("blocklist_download_failed", message)
         }
         GeoDataError::Internal(error) => AppError::Internal(error),
     }

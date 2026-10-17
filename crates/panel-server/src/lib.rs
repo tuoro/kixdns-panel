@@ -1,5 +1,7 @@
 mod app;
 mod auth;
+mod blocklist;
+mod blocklist_data;
 mod config_capabilities;
 mod config_store;
 mod control;
