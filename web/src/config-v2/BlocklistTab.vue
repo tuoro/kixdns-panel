@@ -278,7 +278,7 @@ const blockText = computed(() => blockLabel(model, 'default'))
 .blp__item { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--s-3); min-height: var(--h-touch); padding: var(--s-2) var(--s-3); cursor: pointer; }
 .blp__item:hover { background: var(--l-canvas); }
 .blp__item.is-done { cursor: default; }
-.blp__item.is-done :is(b, small) { color: var(--l-ink-3); }
+.blp__item.is-done :is(b, small, .blp__meta) { color: var(--l-ink-3); }
 .blp__main { display: grid; gap: 1px; min-width: 0; }
 .blp__main b { color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-medium); }
 .blp__main small { color: var(--l-ink-3); font-size: var(--t-1); }
