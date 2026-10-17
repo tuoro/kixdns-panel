@@ -5,6 +5,7 @@ import { sampleModel } from '../config-model/testing/samples'
 import type {
   ActiveConfig,
   AuditPage,
+  BlocklistBuildRequest,
   AuthSession,
   ConfigApplyResult,
   ConfigDocument,
@@ -36,6 +37,7 @@ import type {
 import { version as panelVersion } from '../../package.json'
 import { demoGeositeCategories } from './mock-geosite'
 import { clearDemoQueryLog, demoQueryLogPage, demoQueryLogSettings, demoQueryLogSupported, setDemoQueryLogSettings } from './mock-querylog'
+import { demoBlocklists, demoBuildBlocklists, setDemoBlocklistSchedule } from './mock-blocklists'
 
 const now = Math.floor(Date.now() / 1000)
 // 演示里已经「到来」的新日志行数，只在 kixdns:demo-log-growing 下增长。
@@ -977,6 +979,9 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     }
     return geoDataSchedule as T
   }
+  if (path === '/api/v1/config/blocklists' && method === 'GET') return demoBlocklists() as T
+  if (path === '/api/v1/config/blocklists/build' && method === 'POST') return (await demoBuildBlocklists(JSON.parse(String(init?.body)) as BlocklistBuildRequest)) as T
+  if (path === '/api/v1/config/blocklists/schedule' && method === 'PUT') return setDemoBlocklistSchedule((JSON.parse(String(init?.body)) as { interval_hours: number | null }).interval_hours) as T
   if (path === '/api/v1/config/geo-data/sync' && method === 'POST') {
     const body = JSON.parse(String(init?.body)) as GeoDataSyncRequest
     const resource = (url: string, prefix: string, extension: string, index = 0) => ({

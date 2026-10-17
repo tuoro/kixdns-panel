@@ -5,14 +5,14 @@ import { recentWindowLabel, settledAttempts, upstreamBasis } from '../dashboard-
 import { readConfig, type ImportReport, type ReadResult } from '../config-model/document'
 import { normalizeAddress } from '../config-model/kernel'
 import { findKernelRule } from '../config-model/trace-names'
-import { kernelAddress, mainPipelineId, nextId, ruleGroupPipelineId, ruleTitle, type Model, type Outcome, type Remedy, type Rule, type RuleGroup, type UpstreamGroup } from '../config-model/model'
+import { emptyBlocklists, kernelAddress, mainPipelineId, nextId, ruleGroupPipelineId, ruleTitle, type Model, type Outcome, type Remedy, type Rule, type RuleGroup, type UpstreamGroup } from '../config-model/model'
 
 // 配置页的草稿：一份模型加上「上次读进来 / 保存成功时」的那份，改动按两者比出来。运行状态、保存流程在 useConfigDocument.ts。
 // The config page's draft: one model plus the one last loaded or saved, with changes computed between them. Runtime state and the
 // save flow live in useConfigDocument.ts.
 
 export function emptyModel(): Model {
-  return { format: '1.0', settings: {}, groups: [], rules: [], ruleGroups: [], mappings: [], rest: { type: 'upstream', group: '' }, defaults: { block: 'NXDOMAIN' } }
+  return { format: '1.0', settings: {}, groups: [], rules: [], ruleGroups: [], mappings: [], rest: { type: 'upstream', group: '' }, defaults: { block: 'NXDOMAIN' }, blocklists: emptyBlocklists() }
 }
 export const model = reactive<Model>(emptyModel())
 const applied = ref(JSON.stringify(model))
@@ -48,6 +48,7 @@ export const changedRuleIds = computed(() => {
 })
 export const changedGroupIds = computed(() => changedIn(appliedModel.value.groups, model.groups))
 export const changedMappingIds = computed(() => changedIn(appliedModel.value.mappings, model.mappings))
+export const changedSubscriptionIds = computed(() => changedIn(appliedModel.value.blocklists.subscriptions, model.blocklists.subscriptions))
 export const changedSettingKeys = computed(() => {
   const before = appliedModel.value.settings
   const after = model.settings
@@ -67,6 +68,7 @@ export const changeCount = computed(() => {
   const rgMeta = diff(before.ruleGroups.map((g) => ({ ...g, rules: [] })), model.ruleGroups.map((g) => ({ ...g, rules: [] })))
   return changedSettingKeys.value.size + diff(before.rules, model.rules, ruleShape) + order(before.rules, model.rules) + rgRules + rgMeta
     + diff(before.groups, model.groups) + diff(before.mappings, model.mappings) + order(before.mappings, model.mappings)
+    + blocklistChanges(before.blocklists, model.blocklists, diff, order)
     + (JSON.stringify(before.rest) !== JSON.stringify(model.rest) ? 1 : 0) + (JSON.stringify(before.defaults) !== JSON.stringify(model.defaults) ? 1 : 0)
     + (JSON.stringify(before.entries ?? null) !== JSON.stringify(model.entries ?? null) ? 1 : 0)
     + (JSON.stringify(before.trailingEntries ?? null) !== JSON.stringify(model.trailingEntries ?? null) ? 1 : 0)
@@ -75,6 +77,12 @@ export const changeCount = computed(() => {
     // the change raises nothing and ships silently with the next save
     + UNMODELLED.filter((k) => JSON.stringify(before[k] ?? null) !== JSON.stringify(model[k] ?? null)).length
 })
+// 拦截列表：每个订阅算一处，自己写的规则算一处；只换了合成的文件（立即更新）也算一处
+// Blocklists: each subscription is one place and the rules of one's own one more; a new merged file alone (立即更新) counts as one
+function blocklistChanges(before: Model['blocklists'], after: Model['blocklists'], diff: <T extends { id: number }>(a: T[], b: T[]) => number, order: (a: { id: number }[], b: { id: number }[]) => number): number {
+  const subscriptions = diff(before.subscriptions, after.subscriptions) + order(before.subscriptions, after.subscriptions)
+  return subscriptions + (before.custom !== after.custom ? 1 : 0) + (!subscriptions && before.file !== after.file ? 1 : 0)
+}
 export const dirty = computed(() => changeCount.value > 0)
 // 还没进草稿的修改也算「没保存」：规则编辑里没点「完成」的、JSON 视图里还没读回的。离开、刷新、重新读取、导入、保存条都只看 unsaved 这一个值
 // Edits not yet in the draft count as unsaved too: a rule edit not yet 完成 and JSON text not yet read back. Leaving, reloading,

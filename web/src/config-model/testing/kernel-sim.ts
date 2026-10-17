@@ -25,6 +25,11 @@ export const SIM_GEOSITE: Record<string, string[]> = {
   apple: ['apple.com', 'icloud.com', 'mzstatic.com'],
   google: ['google.com', 'youtube.com', 'gstatic.com'],
   'geolocation-!cn': ['google.com', 'github.com', 'wikipedia.org', 'localtest.me', 'example.com', 'example.org'],
+  // 拦截列表合并出的四个分类 / The four categories the blocklists merge into
+  'kixdns-panel-block': ['ads.example.net', 'tracker.example', 'shared.example', 'ok.ads.example.net'],
+  'kixdns-panel-allow': ['ok.ads.example.net', 'force.example'],
+  'kixdns-panel-block-important': ['force.example'],
+  'kixdns-panel-allow-important': ['vip.force.example'],
 }
 const suffixOf = (domain: string, suffix: string) => { const s = suffix.toLowerCase().replace(/^\./, '').replace(/\.$/, ''); return domain === s || domain.endsWith(`.${s}`) }
 export const inSimGeosite = (domain: string, cat: string) => (SIM_GEOSITE[cat.toLowerCase()] ?? []).some((s) => suffixOf(domain, s))

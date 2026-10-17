@@ -1,7 +1,7 @@
 import { expect, test, type Download, type Page } from '@playwright/test'
 
-// 配置页外壳上的几条流程：JSON 视图、下载、导入、放弃修改、侧栏里的四个配置入口。规则、上游组、域名映射、设置本身在 config-v2.spec.ts。
-// The config page shell's flows: the JSON view, download, import, discard, and the sidebar's four config entries. The rules, upstream
+// 配置页外壳上的几条流程：JSON 视图、下载、导入、放弃修改、侧栏里的五个配置入口。规则、上游组、域名映射、设置本身在 config-v2.spec.ts。
+// The config page shell's flows: the JSON view, download, import, discard, and the sidebar's five config entries. The rules, upstream
 // groups, mappings and settings themselves are covered in config-v2.spec.ts.
 
 async function open(page: Page, path = '/config'): Promise<void> {
@@ -132,9 +132,9 @@ test('放弃修改清掉保存条，提示里可以撤销', async ({ page }) => 
   await expect(page.locator('.cfg__savebar')).toContainText('已修改 1 处')
 })
 
-// 侧栏里配置的四项共用一条路由，?section= 说是哪一页；规则是默认页，不带参数；当前的那一项有 aria-current
-// The sidebar's four config items share one route and ?section= names the page; 规则 is the default without a parameter; the current item carries aria-current
-test('侧栏的四个配置入口切换分页，当前项带 aria-current', async ({ page }) => {
+// 侧栏里配置的五项共用一条路由，?section= 说是哪一页；规则是默认页，不带参数；当前的那一项有 aria-current
+// The sidebar's five config items share one route and ?section= names the page; 规则 is the default without a parameter; the current item carries aria-current
+test('侧栏的五个配置入口切换分页，当前项带 aria-current', async ({ page }) => {
   await open(page)
   const nav = page.locator('.desktop-nav')
   const current = () => nav.locator('a[aria-current="page"]')
@@ -142,6 +142,7 @@ test('侧栏的四个配置入口切换分页，当前项带 aria-current', asyn
   const sections: Array<[string, RegExp, string]> = [
     ['上游组', /section=upstreams/, '上游组'],
     ['域名映射', /section=mapping/, '域名映射'],
+    ['拦截列表', /section=blocklists/, '拦截列表'],
     ['基础设置', /section=settings/, '基础设置'],
   ]
   for (const [label, url, title] of sections) {

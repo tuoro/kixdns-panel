@@ -6,6 +6,7 @@ import { apiRequest, jsonBody } from '../api/client'
 import type { DnsDiagnostic } from '../api/types'
 import UiSelect from '../components/ui/UiSelect.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
+import { BLOCKLIST_PIPELINE } from '../config-model/blocklist'
 import { compile, isIp } from '../config-model/model'
 import { traceNames } from '../config-model/trace-names'
 import { asksUpstream, describeStep, forwardTarget, formatElapsed, groupTrace, hidePlumbing, isDnsSuccess, missedRulesText, parseDnsAnswer, responseCodeName, ruleName, traceTone, type TextPart } from '../diagnostics'
@@ -22,7 +23,7 @@ import { runtimeCapabilities } from './useConfigDocument'
 // The result reads like the diagnostics page: a verdict, then the path actually taken; the matched rule is reported so the list can mark it.
 // 连不上面板时测试按了只会失败：先停用（同诊断页） / With the panel unreachable a test could only fail: disabled (as on the diagnostics page)
 const { down: panelDown } = useConnection()
-const emit = defineEmits<{ close: []; matched: [ruleId: number | null, mapping: boolean]; quick: [domain: string] }>()
+const emit = defineEmits<{ close: []; matched: [ruleId: number | null, mapping: boolean, blocklist: boolean]; quick: [domain: string] }>()
 const domain = ref('')
 const qtype = ref('A')
 const qtypes = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'PTR', 'HTTPS', 'SRV'].map((v) => ({ value: v, label: v }))
@@ -60,12 +61,12 @@ async function run(): Promise<void> {
     const trace = result.value.trace_supported ? result.value.trace : []
     const hit = trace.find((s) => s.stage === 'rule' && s.status === 'matched')
     const rule = hit ? findRuleByName(hit.label) : undefined
-    const mapping = trace.some((s) => s.stage === 'pipeline' && s.status === 'selected' && s.label === (model.mappingId ?? 'domain_mapping'))
-    emit('matched', rule?.id ?? null, mapping)
+    const selected = (id: string) => trace.some((s) => s.stage === 'pipeline' && s.status === 'selected' && s.label === id)
+    emit('matched', rule?.id ?? null, selected(model.mappingId ?? 'domain_mapping'), selected(BLOCKLIST_PIPELINE))
   } catch (e) {
     result.value = null
     error.value = errorMessage(e)
-    emit('matched', null, false)
+    emit('matched', null, false, false)
   } finally {
     running.value = false
     domainInput.value?.focus()

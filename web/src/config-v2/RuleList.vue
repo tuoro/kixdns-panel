@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { ArrowDownToLine, ChevronRight, CornerDownRight } from '@lucide/vue'
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import { useToast } from '../composables/useToast'
 import RuleRow from './RuleRow.vue'
-import { conditionsText, outcomePill, mappingIsIp, type Outcome, type Rule, ruleTitle } from '../config-model/model'
+import { parseOwnRules } from '../config-model/blocklist'
+import { blockLabel, conditionsText, outcomePill, mappingIsIp, type Outcome, type Rule, ruleTitle } from '../config-model/model'
 import { model, newId } from './store'
+import { blocklists, loadBlocklists } from './useBlocklists'
 
 // 一列规则：主列表或一个规则组。最上面是先生效的域名映射（只在主列表），最下面钉着「其余请求」。
 // 拖手柄或用菜单调整顺序；筛选时不能拖，免得把看不见的规则挤乱。
@@ -20,9 +22,10 @@ const props = defineProps<{
   marks: Map<number, 'hit' | 'pass'>
   restMark: boolean
   mappingMark: boolean
+  blocklistMark?: boolean
   selected?: number | null
 }>()
-const emit = defineEmits<{ open: [id: number]; mappings: [] }>()
+const emit = defineEmits<{ open: [id: number]; mappings: []; blocklists: [] }>()
 const toast = useToast()
 
 const filtered = computed(() => props.query.trim() !== '' || props.kind !== '')
@@ -34,6 +37,18 @@ const visible = computed(() => props.rules.map((rule, i) => ({ rule, index: i + 
   return hay.includes(q)
 }))
 const liveMappings = computed(() => model.mappings.filter((r) => r.enabled))
+// 拦截列表排在域名映射后面、所有规则前面：启用了的订阅（已经合成了文件）和用得上的自己写的规则
+// The blocklists come after the mappings and before every rule: the enabled subscriptions (once a file is built) and the own rules in use
+// 下载没成功、没进合成文件的不算；还不知道各列表情况时按开着的算 / Lists that never downloaded are not in the file and do not count; before the statuses are known every enabled one does
+const liveLists = computed(() => (model.blocklists.file ? model.blocklists.subscriptions.filter((s) => s.enabled && (blocklists.status !== 'ok' || blocklists.sources[s.url]?.sha256)) : []))
+onMounted(() => { if (model.blocklists.subscriptions.length) void loadBlocklists() })
+const ownRules = computed(() => parseOwnRules(model.blocklists.custom).rules.length)
+const listSummary = computed(() => {
+  const names = liveLists.value.map((s) => s.name)
+  const lists = names.length <= 2 ? names.join('、') : `${names.slice(0, 2).join('、')} 等 ${names.length} 个列表`
+  return [lists, ownRules.value ? `自己写的 ${ownRules.value} 条` : ''].filter(Boolean).join('、')
+})
+const listShort = computed(() => [liveLists.value.length ? `${liveLists.value.length} 个列表` : '', ownRules.value ? `自己写的 ${ownRules.value} 条` : ''].filter(Boolean).join('、'))
 const mappingSummary = computed(() => {
   const names = liveMappings.value.map((r) => r.domain)
   return names.length <= 2 ? names.join('、') : `${names.slice(0, 2).join('、')} 等 ${names.length} 个域名`
@@ -126,6 +141,16 @@ onBeforeUnmount(() => window.removeEventListener('pointermove', onMove))
       <ChevronRight class="rpin__chev" :size="16" aria-hidden="true" />
       <span class="rrow__pill"><span class="opill"><span class="opill__verb">回答</span><span class="opill__val">{{ liveMappings.every(mappingIsIp) ? '固定 IP' : '固定 IP 或域名' }}</span></span></span>
       <span class="rpin__link"><button class="ui-link" type="button" @click="emit('mappings')">管理域名映射</button></span>
+    </div>
+    <div v-if="!inGroup && (liveLists.length || ownRules) && !filtered" class="rpin" :class="{ 'is-hit': blocklistMark }">
+      <span class="rrow__num"><CornerDownRight :size="14" aria-hidden="true" /></span>
+      <button class="rrow__main" type="button" @click="emit('blocklists')">
+        <span class="rrow__name"><b>拦截列表</b><span v-if="blocklistMark" class="ui-tag ui-tag--ok">命中</span></span>
+        <span class="rrow__cond"><span class="rpin__long">{{ listSummary }}，先于下面所有规则</span><span class="rpin__short">{{ listShort }}，先于下面所有规则</span></span>
+      </button>
+      <ChevronRight class="rpin__chev" :size="16" aria-hidden="true" />
+      <span class="rrow__pill"><span class="opill opill--block"><span class="opill__verb">拦截</span><span class="opill__val">{{ blockLabel(model, 'default') }}</span></span></span>
+      <span class="rpin__link"><button class="ui-link" type="button" @click="emit('blocklists')">管理拦截列表</button></span>
     </div>
     <ol ref="listEl" class="rlist__rows">
       <template v-for="(item, i) in visible" :key="item.rule.id">
