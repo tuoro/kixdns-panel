@@ -40,6 +40,8 @@ test('自己写的规则只指出用不上的行；规则页最上面多一行�
   await open(page)
   await subscribe(page, ['AdGuard DNS filter'])
   await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  // 宽屏的「内容」列写推荐的列表拦什么 / The wide 内容 column says what a suggested list blocks
+  await expect(page.locator('.bl__row', { hasText: 'AdGuard DNS filter' }).locator('.bl__about')).toHaveText('AdGuard 官方维护，广告和跟踪')
   await page.getByRole('textbox', { name: '自己写的规则，一行一条', exact: true }).fill('! 自己加的\n||ad.example.com^\n@@||s.example.com^\n||x.example^$client=10.0.0.1')
   const problems = page.locator('.bl__problem')
   await expect(problems).toHaveCount(1)

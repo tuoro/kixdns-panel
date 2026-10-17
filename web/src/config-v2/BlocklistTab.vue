@@ -29,6 +29,8 @@ onMounted(() => void loadBlocklists())
 const MAX_SUBSCRIPTIONS = 32
 const subscriptions = computed(() => model.blocklists.subscriptions)
 const host = (url: string) => { try { return new URL(url).host } catch { return url } }
+// 「内容」列：推荐的列表写它拦什么，自己粘贴的写链接 / The 内容 column: what a suggested list blocks, or the link one pasted
+const about = (s: Subscription) => PRESETS.find((p) => p.url === s.url)?.about ?? s.url.replace(/^https:\/\//, '')
 const statusOf = (s: Subscription) => blocklists.sources[s.url]
 const held = (s: Subscription) => Boolean(statusOf(s)?.sha256)
 const downloading = (s: Subscription) => blocklists.downloading.has(s.url)
@@ -43,7 +45,8 @@ const failed = computed(() => subscriptions.value.filter((s) => statusOf(s)?.las
 function failNote(s: Subscription): string {
   const status = statusOf(s)!
   const held = status.sha256 && status.downloaded_at
-  const tail = !held ? '点这一行「…」里的「立即更新」重新下载。' : status.rejected_sha256 ? '' : `还在用 ${formatAgo(status.downloaded_at! * 1000)}下载的那份。`
+  // 「重新下载」不拆开，折行时不剩「下载。」一小截 / 重新下载 stays together, so a wrap never leaves 下载。 alone
+  const tail = !held ? '点这一行「…」里的「立即更新」重\u2060新\u2060下\u2060载。' : status.rejected_sha256 ? '' : `还在用 ${formatAgo(status.downloaded_at! * 1000)}下载的那份。`
   return `${s.name}：${status.last_error}。${tail}`
 }
 
@@ -147,10 +150,11 @@ const blockText = computed(() => blockLabel(model, 'default'))
         <button class="ui-btn ui-btn--secondary" type="button" @click="openPresets"><ListPlus :size="16" aria-hidden="true" />推荐的列表</button>
       </UiEmpty>
       <template v-else>
-        <div class="bl__cols" aria-hidden="true"><span>列表</span><span>规则</span><span>更新</span><span>启用</span><span></span></div>
+        <div class="bl__cols" aria-hidden="true"><span>列表</span><span class="bl__col-about">内容</span><span>规则</span><span>更新</span><span class="bl__col-switch">启用</span><span></span></div>
         <ul class="bl__list">
           <li v-for="s in subscriptions" :key="s.id" class="bl__row" :class="{ 'is-off': !s.enabled }">
             <span class="bl__name"><b>{{ s.name }}<span v-if="changedSubscriptionIds.has(s.id)" class="ui-dot ui-dot--ink bl__changed" role="img" :aria-label="added(s) ? '新加的，还没保存' : '改过，还没保存'" :title="added(s) ? '新加的，还没保存' : '改过，还没保存'"></span></b><small>{{ host(s.url) }}</small></span>
+            <span class="bl__about" :title="about(s)">{{ about(s) }}</span>
             <span class="bl__rules"><span>{{ held(s) ? ruleCount(statusOf(s)!.summary.rules) : '—' }}</span><small v-if="held(s) && statusOf(s)!.summary.skipped">{{ fmtCount(statusOf(s)!.summary.skipped) }}&nbsp;条没用上</small></span>
             <span class="bl__when">
               <span v-if="downloading(s)" class="bl__busy"><RefreshCw :size="14" class="spin" aria-hidden="true" />下载中</span>
@@ -242,7 +246,7 @@ const blockText = computed(() => blockLabel(model, 'default'))
 .bl__list { margin: 0; padding: 0; list-style: none; }
 .bl__cols, .bl__row { display: grid; grid-template-columns: minmax(0, 1fr) 8rem 9rem var(--s-7) var(--h-sm); column-gap: var(--s-4); align-items: center; padding-inline: var(--s-5); }
 .bl__cols { min-height: var(--h-md); color: var(--l-ink-3); font-size: var(--t-1); border-bottom: 1px solid var(--l-hair); }
-.bl__cols > :nth-child(4) { text-align: center; }
+.bl__col-switch { text-align: center; }
 .bl__row { min-height: var(--h-touch); padding-block: var(--s-2); border-bottom: 1px solid var(--l-hair); }
 .bl__row:last-child { border-bottom: 0; }
 .bl__row:hover { background: var(--l-canvas); }
@@ -252,7 +256,17 @@ const blockText = computed(() => blockLabel(model, 'default'))
 .bl__name small, .bl__rules small, .bl__when small { overflow: hidden; color: var(--l-ink-3); font-size: var(--t-1); text-overflow: ellipsis; white-space: nowrap; }
 .bl__rules > span, .bl__when > span:not(.ui-tag) { color: var(--l-ink-2); font-size: var(--t-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .bl__when > .ui-tag { justify-self: start; }
-.bl__row.is-off :is(.bl__name b, .bl__rules > span, .bl__when > span) { color: var(--l-ink-3); }
+.bl__row.is-off :is(.bl__name b, .bl__about, .bl__rules > span, .bl__when > span) { color: var(--l-ink-3); }
+/* 宽屏中间放「内容」列：推荐的列表拦什么、自己粘贴的链接；名字下面就不再写来源网址。窄一些放不下，名字下面写来源网址
+   On wide screens the middle holds the 内容 column, what a suggested list blocks or the pasted link, and the name drops its host line;
+   narrower ones have no room for it and keep the host under the name */
+.bl__about, .bl__col-about { display: none; }
+.bl__about { overflow: hidden; color: var(--l-ink-2); font-size: var(--t-2); text-overflow: ellipsis; white-space: nowrap; }
+@media (min-width: 1180px) {
+  .bl__cols, .bl__row { grid-template-columns: minmax(0, 15rem) minmax(0, 1fr) 8rem 9rem var(--s-7) var(--h-sm); }
+  .bl__about, .bl__col-about { display: block; }
+  .bl__name small { display: none; }
+}
 .bl__note { display: flex; align-items: flex-start; gap: var(--s-2); margin: 0; padding: var(--s-3) var(--s-5); border-top: 1px solid var(--l-hair); color: var(--warn-l); font-size: var(--t-2); line-height: var(--lh-base); }
 .bl__note > svg { flex-shrink: 0; margin-top: calc((1lh - 14px) / 2); }
 .bl__own { display: grid; gap: var(--s-2); padding: 0 var(--s-5) var(--s-4); }
