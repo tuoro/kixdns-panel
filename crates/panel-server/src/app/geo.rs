@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::Json;
 use axum::extract::State;
@@ -10,17 +9,15 @@ use axum_extra::extract::CookieJar;
 use serde::{Deserialize, Serialize};
 
 use crate::auth::{authenticate, unix_timestamp, verify_csrf};
-use crate::control::ControlError;
 use crate::error::{AppError, AppResult};
 use crate::geo_data::{
     BuiltinGeosite, GeoDataCleanupResult, GeoDataManifest, GeoDataSchedule, GeoDataSyncRequest,
-    apply_manifest_paths,
+    apply_manifest_paths, is_blocklist_path,
 };
 use crate::geosite_catalog::{CatalogCache, GeositeCategory};
 
 use super::{
-    AppState, ensure_running_config_supported, map_config_error, map_geo_data_error,
-    rollback_config,
+    AppState, SystemConfigWrite, map_config_error, map_geo_data_error, write_system_config,
 };
 
 #[derive(Debug, Deserialize)]
@@ -130,8 +127,11 @@ pub(super) async fn get_geosite_categories(
         .collect();
     let manifest = state.geo_data.current().await.map_err(map_geo_data_error)?;
     paths.extend(manifest.geosite.into_iter().map(|resource| resource.path));
+    // 拦截列表合并的文件不列：它的标签归拦截列表页管，不在 GeoSite 分类里挑
+    // The blocklists' merged file is left out: its tags belong to the blocklist page, not to the
+    // `GeoSite` categories one picks from
     let mut seen = HashSet::new();
-    paths.retain(|path| seen.insert(path.clone()));
+    paths.retain(|path| !is_blocklist_path(path) && seen.insert(path.clone()));
     let builtin = state
         .geo_data
         .builtin_geosite_data()
@@ -273,14 +273,15 @@ pub(super) async fn seed_builtin_geosite(state: &AppState) -> anyhow::Result<()>
             state.geo_data.import_builtin_geosite().await?
         };
         let _apply_guard = state.config_apply_lock.lock().await;
-        write_geo_config(
+        write_system_config(
             state,
-            &manifest,
-            &GeoConfigWrite {
+            &SystemConfigWrite {
+                subject: "新的 Geo 数据",
                 message: "导入内置 GeoSite",
                 audit_action: "config.geo_data.import_builtin",
                 audit_note: Some(builtin_label(&builtin)),
             },
+            |candidate| Ok(apply_manifest_paths(candidate, &manifest)?),
         )
         .await?;
     }
@@ -321,6 +322,7 @@ pub(super) async fn get_geo_data_schedule(
     state
         .geo_data
         .schedule()
+        .get()
         .await
         .map(Json)
         .map_err(map_geo_data_error)
@@ -345,7 +347,8 @@ pub(super) async fn save_geo_data_schedule(
     }
     let schedule = state
         .geo_data
-        .set_schedule(request.interval_hours)
+        .schedule()
+        .set_interval(request.interval_hours)
         .await
         .map_err(map_geo_data_error)?;
     state
@@ -363,22 +366,8 @@ pub(super) async fn save_geo_data_schedule(
     Ok(Json(schedule))
 }
 
-pub(super) fn spawn_geo_scheduler(state: AppState) {
-    tokio::spawn(async move {
-        let start = tokio::time::Instant::now() + Duration::from_mins(1);
-        let mut ticker = tokio::time::interval_at(start, Duration::from_mins(15));
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            ticker.tick().await;
-            if let Err(error) = run_due_geo_schedule(&state).await {
-                tracing::warn!(error = ?error, "Geo 定时更新失败");
-            }
-        }
-    });
-}
-
 /// 定时更新的间隔，和页面上的选项同一种说法 / The schedule interval in the words the page's options use
-fn schedule_label(hours: u64) -> String {
+pub(super) fn schedule_label(hours: u64) -> String {
     match hours {
         24 => "每天".to_owned(),
         168 => "每周".to_owned(),
@@ -386,18 +375,19 @@ fn schedule_label(hours: u64) -> String {
     }
 }
 
-async fn run_due_geo_schedule(state: &AppState) -> anyhow::Result<()> {
+pub(super) async fn run_due_geo_schedule(state: &AppState) -> anyhow::Result<()> {
     let now = unix_timestamp();
-    let schedule = state.geo_data.schedule().await?;
+    let schedule = state.geo_data.schedule().get().await?;
     if !schedule.is_due(now) {
         return Ok(());
     }
-    state.geo_data.mark_schedule_attempt(now).await?;
+    state.geo_data.schedule().mark_attempt(now).await?;
     let result = apply_scheduled_geo_update(state).await;
     let error = result.as_ref().err().map(|error| format!("{error:#}"));
     state
         .geo_data
-        .mark_schedule_result(unix_timestamp(), error)
+        .schedule()
+        .mark_result(unix_timestamp(), error)
         .await?;
     result
 }
@@ -412,9 +402,10 @@ async fn apply_scheduled_geo_update(state: &AppState) -> anyhow::Result<()> {
     apply_synced_geo_data(state, &updated).await
 }
 
-/// 删除当前清单和所有保留配置版本都不引用的 Geo 文件；回滚到任一保留版本时，它引用的文件都还在。
-/// Delete Geo files that neither the current manifest nor any retained config version references;
-/// rolling back to any retained version still finds every file it points at.
+/// 删除当前清单、拦截列表和所有保留配置版本都不引用的 Geo 目录文件；回滚到任一保留版本时，它引用的文件都还在。
+/// Delete files in the Geo directory that neither the current manifest, the blocklists nor any
+/// retained config version references; rolling back to any retained version still finds every file
+/// it points at.
 async fn remove_unreferenced_geo_data(state: &AppState) -> AppResult<GeoDataCleanupResult> {
     let retained = state
         .config
@@ -422,10 +413,33 @@ async fn remove_unreferenced_geo_data(state: &AppState) -> AppResult<GeoDataClea
         .await
         .map_err(map_config_error)?;
     state
-        .geo_data
+        .blocklists
         .cleanup(&retained)
         .await
         .map_err(map_geo_data_error)
+}
+
+/// 定时更新以后清掉不再被引用的旧文件。每次更新都会下载新的内容寻址文件，不在这里清理，旧文件只会越积越多；
+/// 清理失败不影响已生效的更新，只记日志，下次运行会再试。`retained` 是在写配置的那把锁里读的保留版本，含刚保存的
+/// 那版；清理本身在锁外做，拦截列表正在下载时不拖住别人保存配置。
+/// Removes old files nothing references after a scheduled update. Every run downloads new
+/// content-addressed files, and without cleaning here the old ones only pile up; a failed cleanup
+/// does not undo an applied update, so it is logged and retried next run. `retained` holds the
+/// retained versions read under the lock of the config write, the version just saved among them;
+/// the cleanup itself runs outside it, so a blocklist download in progress does not hold up saves.
+pub(super) async fn clean_up_after_update(
+    state: &AppState,
+    retained: &[serde_json::Value],
+    what: &str,
+) {
+    match state.blocklists.cleanup(retained).await {
+        Ok(result) => tracing::info!(
+            removed_files = result.removed_files,
+            reclaimed_bytes = result.reclaimed_bytes,
+            "{what}定时更新后清理未引用的旧文件"
+        ),
+        Err(error) => tracing::warn!(error = ?error, "{what}定时更新后清理旧文件失败"),
+    }
 }
 
 /// 把刚同步好的 Geo 清单写进配置，再清掉不再被引用的旧文件。
@@ -434,121 +448,25 @@ pub(super) async fn apply_synced_geo_data(
     state: &AppState,
     updated: &GeoDataManifest,
 ) -> anyhow::Result<()> {
-    // 清理与写配置同在一把锁里，免得清理读到的保留版本和刚保存的版本错开。
-    // Cleanup runs under the same lock as the config write, so the retained versions it reads
-    // cannot miss the version just saved.
-    let _apply_guard = state.config_apply_lock.lock().await;
-    write_geo_config(
-        state,
-        updated,
-        &GeoConfigWrite {
-            message: "定时更新 Geo 数据",
-            audit_action: "config.geo_data.schedule.apply",
-            audit_note: None,
-        },
-    )
-    .await?;
-    // 每次定时更新都会下载新的内容寻址文件；不在这里清理，旧文件只会越积越多。
-    // 清理失败不影响已生效的更新，只记日志，下次运行会再试。
-    // Every scheduled run downloads new content-addressed files; without cleaning here the old
-    // ones only pile up. A failed cleanup does not undo an applied update: log it and retry next run.
-    match remove_unreferenced_geo_data(state).await {
-        Ok(result) => tracing::info!(
-            removed_files = result.removed_files,
-            reclaimed_bytes = result.reclaimed_bytes,
-            "Geo 定时更新后清理未引用的旧文件"
-        ),
-        Err(error) => tracing::warn!(error = ?error, "Geo 定时更新后清理旧文件失败"),
-    }
-    Ok(())
-}
-
-/// 面板自己把 Geo 清单写进配置时的说法：配置版本的备注、审计动作和审计详情的开头。
-/// How the panel describes writing a Geo manifest into the config on its own: the version note,
-/// the audit action and the start of the audit detail.
-struct GeoConfigWrite<'a> {
-    message: &'a str,
-    audit_action: &'a str,
-    audit_note: Option<String>,
-}
-
-async fn write_geo_config(
-    state: &AppState,
-    updated: &GeoDataManifest,
-    write: &GeoConfigWrite<'_>,
-) -> anyhow::Result<()> {
-    let runtime = state.control.active_config().await;
-    let previous = if matches!(&runtime, Err(ControlError::Unavailable(_))) {
-        state.config.desired().await?
-    } else {
-        state.config.current().await?
-    };
-    let mut candidate = previous.content.clone();
-    if !apply_manifest_paths(&mut candidate, updated)? {
-        return Ok(());
-    }
-
-    let result = match runtime {
-        Ok(before_reload) => {
-            ensure_running_config_supported(state, &candidate).await?;
-            let validation = state.control.validate(&candidate).await?;
-            if !validation.valid {
-                anyhow::bail!("KixDNS 没有接受新的 Geo 数据，仍在用之前的配置");
-            }
-            let result = state
-                .config
-                .save(
-                    candidate,
-                    &previous.sha256,
-                    write.message.to_owned(),
-                    "system".to_owned(),
-                )
-                .await?;
-            if let Err(error) = state
-                .control
-                .wait_for_config(
-                    &result.sha256,
-                    before_reload.reload_sequence,
-                    Duration::from_secs(5),
-                )
-                .await
-            {
-                rollback_config(state, previous.content, &result.sha256, "system").await?;
-                anyhow::bail!(
-                    "KixDNS 没有接受新的 Geo 数据，仍在用之前的配置：{}",
-                    match &error {
-                        ControlError::Rejected(reason) => reason.clone(),
-                        other => super::reload_failure(other),
-                    }
-                );
-            }
-            result
-        }
-        Err(ControlError::Unavailable(_)) => {
-            state
-                .config
-                .save_pending(
-                    candidate,
-                    &previous.sha256,
-                    format!("{}（待 KixDNS 启动）", write.message),
-                    "system".to_owned(),
-                )
-                .await?
-        }
-        Err(error) => return Err(anyhow::Error::new(error)),
-    };
-    state
-        .database
-        .audit(
-            None,
-            write.audit_action.to_owned(),
-            match &write.audit_note {
-                Some(note) => format!("{note}，生成配置版本 #{}", result.version_id),
-                None => format!("生成配置版本 #{}", result.version_id),
+    // 保留的版本和写配置在同一把锁里读，免得漏掉刚保存的版本
+    // The retained versions are read under the same lock as the config write, so they cannot miss
+    // the version just saved
+    let retained = {
+        let _apply_guard = state.config_apply_lock.lock().await;
+        write_system_config(
+            state,
+            &SystemConfigWrite {
+                subject: "新的 Geo 数据",
+                message: "定时更新 Geo 数据",
+                audit_action: "config.geo_data.schedule.apply",
+                audit_note: None,
             },
-            unix_timestamp(),
+            |candidate| Ok(apply_manifest_paths(candidate, updated)?),
         )
         .await?;
+        state.config.retained_contents().await?
+    };
+    clean_up_after_update(state, &retained, "Geo 数据").await;
     Ok(())
 }
 

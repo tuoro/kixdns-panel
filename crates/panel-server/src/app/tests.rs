@@ -511,6 +511,187 @@ async fn geo_data_api_requires_auth_and_rejects_insecure_urls() {
     assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
 }
 
+/// 定时更新拦截列表：配置里在用的文件换成新合成的（KixDNS 没运行时存成待应用的版本），换下的旧文件还被当前配置
+/// 引用，回滚时用得上，所以留着
+/// A scheduled blocklist update swaps the file the config uses for the newly built one (as a pending version while
+/// `KixDNS` is not running); the old file is still referenced by the current config, which a rollback needs, so it stays
+#[tokio::test]
+async fn a_scheduled_blocklist_update_swaps_the_file_in_the_config() {
+    use crate::blocklist_data::{BuildRequest, Subscription};
+
+    let directory = tempdir().unwrap();
+    std::fs::write(
+        directory.path().join("pipeline.json"),
+        r#"{"pipelines":[]}"#,
+    )
+    .unwrap();
+    let state = test_state(&directory).await;
+    // 指向本机的链接下载前就被拒，正好当作下载失败 / A link to this machine is refused before downloading, which stands
+    // in for a failed download
+    let url = "https://127.0.0.1/a.txt";
+    state
+        .blocklists
+        .hold_for_tests(url, "||ads.example^\n")
+        .await;
+    let old = state
+        .blocklists
+        .build(BuildRequest {
+            subscriptions: vec![Subscription {
+                url: url.to_owned(),
+                enabled: true,
+            }],
+            refresh: Vec::new(),
+        })
+        .await
+        .unwrap()
+        .path
+        .unwrap();
+    std::fs::write(
+        directory.path().join("pipeline.json"),
+        serde_json::json!({ "pipelines": [], "settings": { "geosite_data_paths": [old] } })
+            .to_string(),
+    )
+    .unwrap();
+    state
+        .blocklists
+        .hold_for_tests(url, "||ads.example^\n||more.example^\n")
+        .await;
+
+    let failed = super::blocklist::apply_scheduled_blocklist_update(&state)
+        .await
+        .unwrap();
+    assert_eq!(failed, 1);
+    let pending = state.config.desired().await.unwrap().content;
+    let new = pending["settings"]["geosite_data_paths"][0]
+        .as_str()
+        .unwrap();
+    assert_ne!(new, old);
+    assert!(
+        std::fs::read_to_string(new)
+            .unwrap()
+            .contains("domain:more.example")
+    );
+    assert!(
+        std::path::Path::new(&old).exists(),
+        "the current config still uses it"
+    );
+    let events = state
+        .database
+        .list_audit_events(
+            10,
+            None,
+            Some("config.blocklists.schedule.apply".to_owned()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(events.events.len(), 1);
+}
+
+/// 拦截列表的接口：不登录不给，改东西要带 CSRF，链接和自动更新的间隔写错了不收
+/// The blocklist endpoints: nothing without signing in, changes need the CSRF token, and bad links or intervals are
+/// refused
+#[tokio::test]
+async fn blocklist_api_requires_auth_and_checks_what_it_gets() {
+    let context = authenticated_app().await;
+    let send = |request: Request<Body>| context.app.clone().oneshot(request);
+    let json_body = |response: axum::response::Response| async move {
+        serde_json::from_slice::<Value>(&to_bytes(response.into_body(), 64 * 1024).await.unwrap())
+            .unwrap()
+    };
+
+    let unauthorized = send(
+        Request::get("/api/v1/config/blocklists")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+    let current = send(
+        Request::get("/api/v1/config/blocklists")
+            .header(COOKIE, context.cookies.clone())
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(current.status(), StatusCode::OK);
+    let current = json_body(current).await;
+    assert_eq!(current["sources"], serde_json::json!({}));
+    assert!(current["schedule"]["interval_hours"].is_null());
+
+    let build = |csrf: Option<&str>, body: &'static str| {
+        let mut request = Request::post("/api/v1/config/blocklists/build")
+            .header(CONTENT_TYPE, "application/json")
+            .header(COOKIE, context.cookies.clone());
+        if let Some(csrf) = csrf {
+            request = request.header("x-csrf-token", csrf);
+        }
+        request.body(Body::from(body)).unwrap()
+    };
+    let forbidden = send(build(None, r#"{"subscriptions":[]}"#)).await.unwrap();
+    assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+    let insecure = send(build(
+        Some(&context.csrf_token),
+        r#"{"subscriptions":[{"url":"http://lists.example/a.txt","enabled":true}]}"#,
+    ))
+    .await
+    .unwrap();
+    assert_eq!(insecure.status(), StatusCode::BAD_REQUEST);
+    let insecure = json_body(insecure).await;
+    assert_eq!(insecure["error"]["code"], "blocklist_invalid");
+    assert_eq!(insecure["error"]["message"], "拦截列表链接只能用 https://");
+    let empty = send(build(Some(&context.csrf_token), r#"{"subscriptions":[]}"#))
+        .await
+        .unwrap();
+    assert_eq!(empty.status(), StatusCode::OK);
+    assert_eq!(
+        json_body(empty).await,
+        serde_json::json!({ "path": null, "sources": {}, "failed": 0 })
+    );
+
+    let schedule = |interval: &'static str| {
+        Request::put("/api/v1/config/blocklists/schedule")
+            .header(CONTENT_TYPE, "application/json")
+            .header(COOKIE, context.cookies.clone())
+            .header("x-csrf-token", context.csrf_token.clone())
+            .body(Body::from(interval))
+            .unwrap()
+    };
+    let rejected = send(schedule(r#"{"interval_hours":12}"#)).await.unwrap();
+    assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+    let daily = send(schedule(r#"{"interval_hours":24}"#)).await.unwrap();
+    assert_eq!(daily.status(), StatusCode::OK);
+    assert_eq!(json_body(daily).await["interval_hours"], 24);
+    let audit = send(
+        Request::get("/api/v1/audit?action_prefix=config.blocklists")
+            .header(COOKIE, context.cookies.clone())
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    let audit = json_body(audit).await;
+    let events: Vec<(&str, &str)> = audit["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| {
+            (
+                event["action"].as_str().unwrap(),
+                event["detail"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        events,
+        [
+            ("config.blocklists.schedule", "每天"),
+            ("config.blocklists.build", "0\u{a0}个列表"),
+        ]
+    );
+}
+
 #[tokio::test]
 async fn geo_cleanup_requires_csrf_and_removes_unreferenced_files() {
     let context = authenticated_app().await;
@@ -588,6 +769,8 @@ async fn test_state(directory: &TempDir) -> super::AppState {
     let geo_data =
         crate::geo_data::GeoDataManager::new(database.clone(), &directory.path().join("geo"))
             .unwrap();
+    let blocklists =
+        crate::blocklist_data::BlocklistManager::new(geo_data.clone(), database.clone());
     let database_for_querylog = database.clone();
     super::AppState {
         database,
@@ -601,6 +784,7 @@ async fn test_state(directory: &TempDir) -> super::AppState {
         .unwrap(),
         updates,
         geo_data,
+        blocklists,
         geosite_catalog: Arc::default(),
         secure_cookie: false,
         trusted_proxies: TrustedProxies::default(),
@@ -1903,11 +2087,17 @@ async fn geosite_categories_come_from_the_files_the_config_names() {
     let local = context.directory.path().join("local.dat");
     std::fs::write(&local, &data).unwrap();
     let missing = context.directory.path().join("missing.dat");
+    // 拦截列表合并的文件不当 GeoSite 分类列出来 / The blocklists' merged file is not listed for its categories
+    let blocklist = context
+        .directory
+        .path()
+        .join("geo")
+        .join(format!("blocklist-{}.json", "e".repeat(64)));
     std::fs::write(
         context.directory.path().join("pipeline.json"),
         serde_json::json!({
             "pipelines": [],
-            "settings": { "geosite_data_paths": [local, "relative.dat", missing, local] },
+            "settings": { "geosite_data_paths": [local, "relative.dat", missing, local, blocklist] },
         })
         .to_string(),
     )

@@ -962,7 +962,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
   if (path === '/api/v1/config/geo-data/schedule' && method === 'GET') return geoDataSchedule as T
   if (path === '/api/v1/config/geo-data/schedule' && method === 'PUT') {
     const body = JSON.parse(String(init?.body)) as { interval_hours: number | null }
-    if (![null, 24, 168].includes(body.interval_hours)) throw new Error('Geo 自动更新仅支持每天或每周')
+    if (![null, 24, 168].includes(body.interval_hours)) throw new Error('Geo 数据的自动更新只能每天或每周')
     if (body.interval_hours !== null && !geoData.geoip_mmdb && !geoData.geoip_dat && geoData.geosite.length === 0) {
       throw new Error('请先配置并下载至少一个远程 Geo 数据源')
     }

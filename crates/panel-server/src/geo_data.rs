@@ -37,6 +37,7 @@ pub struct GeoDataManager {
     root: Arc<PathBuf>,
     sync_lock: Arc<Mutex<()>>,
     builtin_geosite: Option<Arc<PathBuf>>,
+    schedule: ScheduleStore,
 }
 
 /// 安装包自带的 GeoSite：说明文件 `geosite.json` 写着同目录下数据文件的来源、发布、摘要和大小。
@@ -80,6 +81,14 @@ pub struct GeoDataResource {
     pub sha256: String,
     pub size: u64,
     pub downloaded_at: i64,
+}
+
+/// 按内容存好的一个文件 / One file stored by content
+#[derive(Debug, Clone)]
+pub(crate) struct StoredFile {
+    pub path: PathBuf,
+    pub sha256: String,
+    pub size: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -150,6 +159,7 @@ impl GeoDataManager {
         let root =
             fs::canonicalize(root).map_err(|error| internal_io("规范化 Geo 数据目录", error))?;
         Ok(Self {
+            schedule: ScheduleStore::new(database.clone(), SCHEDULE_KEY, "Geo 数据"),
             database,
             root: Arc::new(root),
             sync_lock: Arc::new(Mutex::new(())),
@@ -226,27 +236,16 @@ impl GeoDataManager {
                 "内置 GeoSite 和它的说明对不上，安装包可能损坏了，重新安装面板"
             )));
         }
-        let mut temporary = Builder::new()
-            .prefix(".geo-builtin-")
-            .tempfile_in(self.root.as_ref())
-            .map_err(|error| internal_io("创建 Geo 数据临时文件", error))?;
-        #[cfg(unix)]
-        restrict_file_permissions(temporary.as_file())?;
-        std::io::Write::write_all(&mut temporary, &bytes)
-            .map_err(|error| internal_io("写入 Geo 数据", error))?;
-        temporary
-            .as_file()
-            .sync_all()
-            .map_err(|error| internal_io("持久化 Geo 数据", error))?;
-        let path = self
-            .root
-            .join(format!("{}-{sha256}.dat", ResourceKind::Site.prefix()));
-        persist_content_addressed(temporary, &path, &sha256, size).await?;
+        let file = self
+            .write_file(&bytes, |sha256| {
+                format!("{}-{sha256}.dat", ResourceKind::Site.prefix())
+            })
+            .await?;
         Ok(GeoDataResource {
             url: builtin.url.clone(),
-            path: path.to_string_lossy().into_owned(),
-            sha256,
-            size,
+            path: file.path.to_string_lossy().into_owned(),
+            sha256: file.sha256,
+            size: file.size,
             downloaded_at: unix_timestamp(),
         })
     }
@@ -309,66 +308,21 @@ impl GeoDataManager {
         Ok(manifest)
     }
 
-    pub async fn schedule(&self) -> Result<GeoDataSchedule, GeoDataError> {
-        let Some(value) = self.database.get_setting(SCHEDULE_KEY).await? else {
-            return Ok(GeoDataSchedule::default());
-        };
-        let mut schedule: GeoDataSchedule = serde_json::from_str(&value).map_err(|error| {
-            GeoDataError::Internal(anyhow::Error::new(error).context("Geo 定时更新设置已损坏"))
-        })?;
-        schedule.refresh_next_run();
-        Ok(schedule)
+    /// 自动更新的设置 / The automatic-update setting
+    pub(crate) fn schedule(&self) -> &ScheduleStore {
+        &self.schedule
     }
 
-    pub async fn set_schedule(
-        &self,
-        interval_hours: Option<u64>,
-    ) -> Result<GeoDataSchedule, GeoDataError> {
-        if !matches!(interval_hours, None | Some(24 | 168)) {
-            return Err(GeoDataError::Invalid(
-                "Geo 自动更新仅支持每天或每周".to_owned(),
-            ));
-        }
-        let mut schedule = self.schedule().await?;
-        if schedule.interval_hours == interval_hours {
-            return Ok(schedule);
-        }
-        schedule.interval_hours = interval_hours;
-        schedule.last_attempt_at = None;
-        schedule.last_error = None;
-        schedule.refresh_next_run();
-        self.store_schedule(&schedule).await?;
-        Ok(schedule)
-    }
-
-    pub async fn mark_schedule_attempt(&self, now: i64) -> Result<(), GeoDataError> {
-        let mut schedule = self.schedule().await?;
-        schedule.last_attempt_at = Some(now);
-        schedule.refresh_next_run();
-        self.store_schedule(&schedule).await
-    }
-
-    pub async fn mark_schedule_result(
-        &self,
-        now: i64,
-        error: Option<String>,
-    ) -> Result<(), GeoDataError> {
-        let mut schedule = self.schedule().await?;
-        if error.is_none() {
-            schedule.last_success_at = Some(now);
-        }
-        schedule.last_error = error.map(|message| message.chars().take(500).collect());
-        schedule.refresh_next_run();
-        self.store_schedule(&schedule).await
-    }
-
+    /// `also_keep` 是别处（拦截列表）还要用的文件 / `also_keep` holds files still needed elsewhere (the blocklists)
     pub async fn cleanup(
         &self,
         retained_configs: &[Value],
+        also_keep: HashSet<PathBuf>,
     ) -> Result<GeoDataCleanupResult, GeoDataError> {
         let _guard = self.sync_lock.lock().await;
         let manifest = self.current().await?;
-        let protected = protected_geo_paths(self.root.as_ref(), retained_configs, &manifest);
+        let mut protected = protected_geo_paths(self.root.as_ref(), retained_configs, &manifest);
+        protected.extend(also_keep);
         let root = Arc::clone(&self.root);
         tokio::task::spawn_blocking(move || cleanup_managed_files(&root, &protected))
             .await
@@ -382,9 +336,40 @@ impl GeoDataManager {
         raw_url: &str,
         kind: ResourceKind,
     ) -> Result<GeoDataResource, GeoDataError> {
-        let initial_url = parse_url(raw_url)?;
-        let (response, final_url) = request_with_safe_redirects(initial_url).await?;
-        validate_response(&response)?;
+        let file = self
+            .download_file(
+                raw_url,
+                "Geo 数据",
+                MAX_DOWNLOAD_BYTES,
+                |sha256, final_url| {
+                    format!("{}-{sha256}.{}", kind.prefix(), kind.extension(final_url))
+                },
+            )
+            .await?;
+        Ok(GeoDataResource {
+            url: raw_url.to_owned(),
+            path: file.path.to_string_lossy().into_owned(),
+            sha256: file.sha256,
+            size: file.size,
+            downloaded_at: unix_timestamp(),
+        })
+    }
+
+    /// 下载一个文件，按内容存进面板管理的目录：只走 https、不连内网地址，最多 `max_bytes` 字节。`what` 是报错时
+    /// 对这个文件的说法，`filename` 由内容摘要和最后落到的地址给出文件名。Geo 数据和拦截列表都走这里。
+    /// Downloads a file and stores it in the panel's directory by content: https only, no private addresses, at
+    /// most `max_bytes`. `what` names the file in error messages, and `filename` names it from its digest and
+    /// the address it finally came from. Geo data and blocklists both come through here.
+    pub(crate) async fn download_file(
+        &self,
+        raw_url: &str,
+        what: &str,
+        max_bytes: u64,
+        filename: impl FnOnce(&str, &Url) -> String,
+    ) -> Result<StoredFile, GeoDataError> {
+        let initial_url = parse_url(raw_url, what)?;
+        let (response, final_url) = request_with_safe_redirects(initial_url, what).await?;
+        validate_response(&response, what, max_bytes)?;
 
         let temporary = Builder::new()
             .prefix(".geo-download-")
@@ -402,16 +387,16 @@ impl GeoDataManager {
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|error| {
-                tracing::warn!(%error, "下载 Geo 数据时连接中断");
-                GeoDataError::Download("下载 Geo 数据时连接断了，稍后再试".to_owned())
+                tracing::warn!(%error, what, "下载时连接中断");
+                GeoDataError::Download(format!("{what}下载到一半连接断了，稍后再试"))
             })?;
             size = size
                 .checked_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX))
-                .ok_or_else(|| GeoDataError::Download("Geo 数据文件过大".to_owned()))?;
-            if size > MAX_DOWNLOAD_BYTES {
+                .ok_or_else(|| GeoDataError::Download(format!("{what}文件过大")))?;
+            if size > max_bytes {
                 return Err(GeoDataError::Download(format!(
-                    "Geo 数据文件不能超过 {} MiB",
-                    MAX_DOWNLOAD_BYTES / 1024 / 1024
+                    "{what}文件不能超过 {} MiB",
+                    max_bytes / 1024 / 1024
                 )));
             }
             hasher.update(&chunk);
@@ -421,7 +406,7 @@ impl GeoDataManager {
                 .map_err(|error| internal_io("写入 Geo 数据", error))?;
         }
         if size == 0 {
-            return Err(GeoDataError::Download("Geo 数据文件为空".to_owned()));
+            return Err(GeoDataError::Download(format!("{what}文件为空")));
         }
         writer
             .flush()
@@ -434,26 +419,40 @@ impl GeoDataManager {
         drop(writer);
 
         let sha256 = encode_hex(hasher.finalize());
-        let filename = format!("{}-{sha256}.{}", kind.prefix(), kind.extension(&final_url));
-        let path = self.root.join(filename);
+        let path = self.root.join(filename(&sha256, &final_url));
         persist_content_addressed(temporary, &path, &sha256, size).await?;
-
-        Ok(GeoDataResource {
-            url: raw_url.to_owned(),
-            path: path.to_string_lossy().into_owned(),
-            sha256,
-            size,
-            downloaded_at: unix_timestamp(),
-        })
+        Ok(StoredFile { path, sha256, size })
     }
 
-    async fn store_schedule(&self, schedule: &GeoDataSchedule) -> Result<(), GeoDataError> {
-        let serialized = serde_json::to_string(schedule)
-            .map_err(|error| GeoDataError::Internal(anyhow::Error::new(error)))?;
-        self.database
-            .set_setting(SCHEDULE_KEY, serialized, unix_timestamp())
-            .await?;
-        Ok(())
+    /// 把一段内容按内容存进面板管理的目录，文件名由内容摘要给出 / Stores bytes in the panel's directory by content,
+    /// the file named from the digest
+    pub(crate) async fn write_file(
+        &self,
+        bytes: &[u8],
+        filename: impl FnOnce(&str) -> String,
+    ) -> Result<StoredFile, GeoDataError> {
+        let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        let sha256 = encode_hex(Sha256::digest(bytes));
+        let mut temporary = Builder::new()
+            .prefix(".geo-write-")
+            .tempfile_in(self.root.as_ref())
+            .map_err(|error| internal_io("创建 Geo 数据临时文件", error))?;
+        #[cfg(unix)]
+        restrict_file_permissions(temporary.as_file())?;
+        std::io::Write::write_all(&mut temporary, bytes)
+            .map_err(|error| internal_io("写入 Geo 数据", error))?;
+        temporary
+            .as_file()
+            .sync_all()
+            .map_err(|error| internal_io("持久化 Geo 数据", error))?;
+        let path = self.root.join(filename(&sha256));
+        persist_content_addressed(temporary, &path, &sha256, size).await?;
+        Ok(StoredFile { path, sha256, size })
+    }
+
+    /// 面板管理的目录（Geo 数据和拦截列表都在这里） / The panel's directory, where Geo data and blocklists live
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
     }
 }
 
@@ -470,6 +469,91 @@ impl GeoDataSchedule {
                     .saturating_add(i64::try_from(hours.saturating_mul(3600)).unwrap_or(i64::MAX))
             })
         });
+    }
+}
+
+/// 存在数据库一个键下的自动更新设置：Geo 数据和拦截列表各一份 / An automatic-update setting under one database key: one for
+/// Geo data, one for the blocklists
+#[derive(Clone)]
+pub(crate) struct ScheduleStore {
+    database: Database,
+    key: &'static str,
+    /// 报错时对它的说法 / What error messages call it
+    what: &'static str,
+}
+
+impl ScheduleStore {
+    pub(crate) fn new(database: Database, key: &'static str, what: &'static str) -> Self {
+        Self {
+            database,
+            key,
+            what,
+        }
+    }
+
+    pub(crate) async fn get(&self) -> Result<GeoDataSchedule, GeoDataError> {
+        let Some(value) = self.database.get_setting(self.key).await? else {
+            return Ok(GeoDataSchedule::default());
+        };
+        let mut schedule: GeoDataSchedule = serde_json::from_str(&value).map_err(|error| {
+            GeoDataError::Internal(
+                anyhow::Error::new(error).context(format!("{}的自动更新设置已损坏", self.what)),
+            )
+        })?;
+        schedule.refresh_next_run();
+        Ok(schedule)
+    }
+
+    pub(crate) async fn set_interval(
+        &self,
+        interval_hours: Option<u64>,
+    ) -> Result<GeoDataSchedule, GeoDataError> {
+        if !matches!(interval_hours, None | Some(24 | 168)) {
+            return Err(GeoDataError::Invalid(format!(
+                "{}的自动更新只能每天或每周",
+                self.what
+            )));
+        }
+        let mut schedule = self.get().await?;
+        if schedule.interval_hours == interval_hours {
+            return Ok(schedule);
+        }
+        schedule.interval_hours = interval_hours;
+        schedule.last_attempt_at = None;
+        schedule.last_error = None;
+        schedule.refresh_next_run();
+        self.store(&schedule).await?;
+        Ok(schedule)
+    }
+
+    pub(crate) async fn mark_attempt(&self, now: i64) -> Result<(), GeoDataError> {
+        let mut schedule = self.get().await?;
+        schedule.last_attempt_at = Some(now);
+        schedule.refresh_next_run();
+        self.store(&schedule).await
+    }
+
+    pub(crate) async fn mark_result(
+        &self,
+        now: i64,
+        error: Option<String>,
+    ) -> Result<(), GeoDataError> {
+        let mut schedule = self.get().await?;
+        if error.is_none() {
+            schedule.last_success_at = Some(now);
+        }
+        schedule.last_error = error.map(|message| message.chars().take(500).collect());
+        schedule.refresh_next_run();
+        self.store(&schedule).await
+    }
+
+    async fn store(&self, schedule: &GeoDataSchedule) -> Result<(), GeoDataError> {
+        let serialized = serde_json::to_string(schedule)
+            .map_err(|error| GeoDataError::Internal(anyhow::Error::new(error)))?;
+        self.database
+            .set_setting(self.key, serialized, unix_timestamp())
+            .await?;
+        Ok(())
     }
 }
 
@@ -525,8 +609,8 @@ fn load_builtin_geosite(
     if parsed.file.is_empty() || parsed.file.contains(['/', '\\']) || parsed.file.starts_with('.') {
         return Err(invalid("文件名"));
     }
-    parse_url(&parsed.url).map_err(|_| invalid("下载链接"))?;
-    parse_url(&parsed.release_url).map_err(|_| invalid("发布页链接"))?;
+    parse_url(&parsed.url, "GeoSite").map_err(|_| invalid("下载链接"))?;
+    parse_url(&parsed.release_url, "GeoSite").map_err(|_| invalid("发布页链接"))?;
     if parsed.release.is_empty()
         || parsed.release.len() > 64
         || !parsed
@@ -584,6 +668,16 @@ pub fn apply_manifest_paths(
     let before = settings.clone();
     set_optional_path(settings, "geoip_db_path", manifest.geoip_mmdb.as_ref());
     set_optional_path(settings, "geoip_dat_path", manifest.geoip_dat.as_ref());
+    // 拦截列表合并出的文件也在这一项里，但不归 Geo 数据管：原样留在后面
+    // The blocklists' merged file sits in this list too but is not Geo data's to manage: it stays, after them
+    let blocklists: Vec<Value> = settings
+        .get("geosite_data_paths")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|path| path.as_str().is_some_and(is_blocklist_path))
+        .cloned()
+        .collect();
     settings.insert(
         "geosite_data_paths".to_owned(),
         Value::Array(
@@ -591,6 +685,7 @@ pub fn apply_manifest_paths(
                 .geosite
                 .iter()
                 .map(|resource| Value::String(resource.path.clone()))
+                .chain(blocklists)
                 .collect(),
         ),
     );
@@ -692,26 +787,42 @@ fn cleanup_managed_files(
     Ok(result)
 }
 
+/// 是不是拦截列表合并出的文件（`blocklist-<摘要>.json`） / Whether a path is the blocklists' merged file
+/// (`blocklist-<digest>.json`)
+pub(crate) fn is_blocklist_path(path: &str) -> bool {
+    Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| is_digest_name(name, "blocklist-", &["json"]))
+}
+
 fn is_managed_geo_filename(name: &str) -> bool {
     [
         ("geoip-mmdb-", &["mmdb"][..]),
         ("geoip-dat-", &["dat", "json"][..]),
         ("geosite-", &["dat", "json"][..]),
+        // 拦截列表：合并给内核的文件，和下载下来的原始列表 / Blocklists: the merged file for the kernel, and the raw lists as downloaded
+        ("blocklist-", &["json"][..]),
+        ("blocklist-src-", &["txt"][..]),
     ]
     .iter()
-    .any(|(prefix, extensions)| {
-        let Some(rest) = name.strip_prefix(prefix) else {
-            return false;
-        };
-        let Some((digest, extension)) = rest.rsplit_once('.') else {
-            return false;
-        };
-        digest.len() == 64
-            && digest
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            && extensions.contains(&extension)
-    })
+    .any(|(prefix, extensions)| is_digest_name(name, prefix, extensions))
+}
+
+/// 文件名是不是 `<prefix><64 位十六进制摘要>.<extensions 之一>` / Whether a file name reads
+/// `<prefix><64 hex digest>.<one of extensions>`
+fn is_digest_name(name: &str, prefix: &str, extensions: &[&str]) -> bool {
+    let Some(rest) = name.strip_prefix(prefix) else {
+        return false;
+    };
+    let Some((digest, extension)) = rest.rsplit_once('.') else {
+        return false;
+    };
+    digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        && extensions.contains(&extension)
 }
 
 fn normalize_optional_url(value: Option<String>) -> Result<Option<String>, GeoDataError> {
@@ -719,7 +830,7 @@ fn normalize_optional_url(value: Option<String>) -> Result<Option<String>, GeoDa
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
         .map(|value| {
-            parse_url(&value)?;
+            parse_url(&value, "Geo 数据")?;
             Ok(value)
         })
         .transpose()
@@ -733,7 +844,7 @@ fn normalize_geosite_urls(values: Vec<String>) -> Result<Vec<String>, GeoDataErr
         if value.is_empty() || !unique.insert(value.clone()) {
             continue;
         }
-        parse_url(&value)?;
+        parse_url(&value, "Geo 数据")?;
         normalized.push(value);
     }
     if normalized.len() > MAX_GEOSITE_FILES {
@@ -744,31 +855,34 @@ fn normalize_geosite_urls(values: Vec<String>) -> Result<Vec<String>, GeoDataErr
     Ok(normalized)
 }
 
-fn parse_url(value: &str) -> Result<Url, GeoDataError> {
+/// 检查一个下载链接：只收 https、不带用户名密码；`what` 是报错时对它的说法 / Checks a download link: https only,
+/// no user name or password; `what` names it in error messages
+pub(crate) fn parse_url(value: &str, what: &str) -> Result<Url, GeoDataError> {
     if value.len() > MAX_URL_BYTES {
-        return Err(GeoDataError::Invalid("Geo 数据链接过长".to_owned()));
+        return Err(GeoDataError::Invalid(format!("{what}链接过长")));
     }
     let url =
-        Url::parse(value).map_err(|_| GeoDataError::Invalid("Geo 数据链接写得不对".to_owned()))?;
+        Url::parse(value).map_err(|_| GeoDataError::Invalid(format!("{what}链接写得不对")))?;
     if url.scheme() != "https" {
-        return Err(GeoDataError::Invalid(
-            "Geo 数据链接只能用 https://".to_owned(),
-        ));
+        return Err(GeoDataError::Invalid(format!("{what}链接只能用 https://")));
     }
     if !url.username().is_empty() || url.password().is_some() {
-        return Err(GeoDataError::Invalid(
-            "Geo 数据链接不能包含用户名或密码".to_owned(),
-        ));
+        return Err(GeoDataError::Invalid(format!(
+            "{what}链接不能包含用户名或密码"
+        )));
     }
     if url.host().is_none() {
-        return Err(GeoDataError::Invalid("Geo 数据链接缺少主机名".to_owned()));
+        return Err(GeoDataError::Invalid(format!("{what}链接缺少主机名")));
     }
     Ok(url)
 }
 
-async fn request_with_safe_redirects(mut url: Url) -> Result<(Response, Url), GeoDataError> {
+async fn request_with_safe_redirects(
+    mut url: Url,
+    what: &str,
+) -> Result<(Response, Url), GeoDataError> {
     for redirect_count in 0..=MAX_REDIRECTS {
-        let (host, address) = resolve_public_address(&url).await?;
+        let (host, address) = resolve_public_address(&url, what).await?;
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_mins(2))
@@ -779,35 +893,37 @@ async fn request_with_safe_redirects(mut url: Url) -> Result<(Response, Url), Ge
             .build()
             .map_err(|error| GeoDataError::Internal(anyhow::Error::new(error)))?;
         let response = client.get(url.clone()).send().await.map_err(|error| {
-            tracing::warn!(%error, %url, "连不上 Geo 数据地址");
-            GeoDataError::Download(format!("连不上 {host}，下载 Geo 数据失败，稍后再试"))
+            tracing::warn!(%error, %url, what, "连不上下载地址");
+            GeoDataError::Download(format!("连不上 {host}，{what}没下载成功，稍后再试"))
         })?;
         if !response.status().is_redirection() {
             return Ok((response, url));
         }
         if redirect_count == MAX_REDIRECTS {
-            return Err(GeoDataError::Download(
-                "Geo 数据链接重定向次数过多".to_owned(),
-            ));
+            return Err(GeoDataError::Download(format!("{what}链接重定向次数过多")));
         }
         let location = response
             .headers()
             .get(LOCATION)
             .and_then(|value| value.to_str().ok())
-            .ok_or_else(|| GeoDataError::Download("Geo 数据重定向缺少目标地址".to_owned()))?;
+            .ok_or_else(|| GeoDataError::Download(format!("{what}重定向缺少目标地址")))?;
         url = parse_url(
             url.join(location)
-                .map_err(|_| GeoDataError::Download("Geo 数据重定向地址无效".to_owned()))?
+                .map_err(|_| GeoDataError::Download(format!("{what}重定向地址无效")))?
                 .as_str(),
+            what,
         )?;
     }
     unreachable!("重定向循环总会返回")
 }
 
-async fn resolve_public_address(url: &Url) -> Result<(String, SocketAddr), GeoDataError> {
+async fn resolve_public_address(
+    url: &Url,
+    what: &str,
+) -> Result<(String, SocketAddr), GeoDataError> {
     let host = url
         .host_str()
-        .ok_or_else(|| GeoDataError::Invalid("Geo 数据链接缺少主机名".to_owned()))?
+        .ok_or_else(|| GeoDataError::Invalid(format!("{what}链接缺少主机名")))?
         .trim_end_matches('.')
         .to_owned();
     let port = url.port_or_known_default().unwrap_or(443);
@@ -816,22 +932,20 @@ async fn resolve_public_address(url: &Url) -> Result<(String, SocketAddr), GeoDa
     } else {
         tokio::net::lookup_host((host.as_str(), port))
             .await
-            .map_err(|error| GeoDataError::Download(format!("解析 Geo 数据主机失败：{error}")))?
+            .map_err(|error| GeoDataError::Download(format!("{what}主机解析失败：{error}")))?
             .collect::<Vec<_>>()
     };
     addresses.sort_unstable();
     addresses.dedup();
     if addresses.is_empty() {
-        return Err(GeoDataError::Download(
-            "Geo 数据主机没有可用地址".to_owned(),
-        ));
+        return Err(GeoDataError::Download(format!("{what}主机没有可用地址")));
     }
     if let Some(address) = addresses
         .iter()
         .find(|address| !is_allowed_download_ip(address.ip()))
     {
         return Err(GeoDataError::Invalid(format!(
-            "Geo 数据主机 {host} 解析到不允许的地址 {}，链接不能指向本机、私网或保留地址",
+            "{what}主机 {host} 解析到不允许的地址 {}，链接不能指向本机、私网或保留地址",
             address.ip()
         )));
     }
@@ -884,10 +998,10 @@ fn is_public_ipv6(ip: Ipv6Addr) -> bool {
     global_unicast && !documentation && !teredo && !six_to_four
 }
 
-fn validate_response(response: &Response) -> Result<(), GeoDataError> {
+fn validate_response(response: &Response, what: &str, max_bytes: u64) -> Result<(), GeoDataError> {
     if response.status() != StatusCode::OK {
         return Err(GeoDataError::Download(format!(
-            "Geo 数据服务器返回 HTTP {}",
+            "{what}服务器返回 HTTP {}",
             response.status().as_u16()
         )));
     }
@@ -896,11 +1010,11 @@ fn validate_response(response: &Response) -> Result<(), GeoDataError> {
         .get(CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok())
-        .is_some_and(|size| size > MAX_DOWNLOAD_BYTES)
+        .is_some_and(|size| size > max_bytes)
     {
         return Err(GeoDataError::Download(format!(
-            "Geo 数据文件不能超过 {} MiB",
-            MAX_DOWNLOAD_BYTES / 1024 / 1024
+            "{what}文件不能超过 {} MiB",
+            max_bytes / 1024 / 1024
         )));
     }
     if response
@@ -909,9 +1023,9 @@ fn validate_response(response: &Response) -> Result<(), GeoDataError> {
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.to_ascii_lowercase().starts_with("text/html"))
     {
-        return Err(GeoDataError::Download(
-            "Geo 数据链接打开的是网页，填文件的直接下载链接".to_owned(),
-        ));
+        return Err(GeoDataError::Download(format!(
+            "{what}链接打开的是网页，填文件的直接下载链接"
+        )));
     }
     Ok(())
 }
@@ -1038,9 +1152,9 @@ mod tests {
 
     #[test]
     fn only_accepts_safe_https_urls() {
-        assert!(parse_url("https://example.com/geosite.dat").is_ok());
-        assert!(parse_url("http://example.com/geosite.dat").is_err());
-        assert!(parse_url("https://user:secret@example.com/geosite.dat").is_err());
+        assert!(parse_url("https://example.com/geosite.dat", "Geo 数据").is_ok());
+        assert!(parse_url("http://example.com/geosite.dat", "Geo 数据").is_err());
+        assert!(parse_url("https://user:secret@example.com/geosite.dat", "Geo 数据").is_err());
     }
 
     #[test]
@@ -1102,7 +1216,7 @@ mod tests {
 
     #[test]
     fn preserves_json_extension_for_supported_resources() {
-        let url = parse_url("https://example.com/geosite.json").unwrap();
+        let url = parse_url("https://example.com/geosite.json", "Geo 数据").unwrap();
         assert_eq!(ResourceKind::Site.extension(&url), "json");
         assert_eq!(ResourceKind::IpDat.extension(&url), "json");
         assert_eq!(ResourceKind::Mmdb.extension(&url), "mmdb");
@@ -1172,6 +1286,35 @@ mod tests {
         assert!(unknown.exists());
     }
 
+    /// Geo 同步改写 `GeoSite` 文件时，拦截列表合并的文件原样留在后面；名字像、但不是面板生成的不算
+    /// A Geo sync rewriting the `GeoSite` files leaves the blocklists' merged file in place after them; a look-alike
+    /// name the panel did not produce does not count
+    #[test]
+    fn a_geo_sync_keeps_the_blocklist_file() {
+        let blocklist = format!(
+            "/var/lib/kixdns-panel/geo/blocklist-{}.json",
+            "e".repeat(64)
+        );
+        let manifest = GeoDataManifest {
+            geosite: vec![GeoDataResource {
+                url: "https://example.com/geosite.dat".to_owned(),
+                path: "/var/lib/kixdns-panel/geo/geosite-new.dat".to_owned(),
+                sha256: "a".repeat(64),
+                size: 42,
+                downloaded_at: 1,
+            }],
+            ..GeoDataManifest::default()
+        };
+        let mut content = serde_json::json!({
+            "settings": { "geosite_data_paths": [blocklist, "/etc/old.dat", "/etc/blocklist-mine.json"] }
+        });
+        assert!(apply_manifest_paths(&mut content, &manifest).unwrap());
+        assert_eq!(
+            content["settings"]["geosite_data_paths"],
+            serde_json::json!(["/var/lib/kixdns-panel/geo/geosite-new.dat", blocklist])
+        );
+    }
+
     #[test]
     fn applies_manifest_paths_and_reuses_remote_sources() {
         let resource = GeoDataResource {
@@ -1215,22 +1358,22 @@ mod tests {
         let manager = GeoDataManager::new(database, &directory.path().join("geo")).unwrap();
 
         assert!(matches!(
-            manager.set_schedule(Some(12)).await,
+            manager.schedule().set_interval(Some(12)).await,
             Err(GeoDataError::Invalid(_))
         ));
-        let enabled = manager.set_schedule(Some(24)).await.unwrap();
+        let enabled = manager.schedule().set_interval(Some(24)).await.unwrap();
         assert_eq!(enabled.interval_hours, Some(24));
-        manager.mark_schedule_attempt(1_000).await.unwrap();
-        manager.mark_schedule_result(1_001, None).await.unwrap();
+        manager.schedule().mark_attempt(1_000).await.unwrap();
+        manager.schedule().mark_result(1_001, None).await.unwrap();
 
-        let unchanged = manager.set_schedule(Some(24)).await.unwrap();
+        let unchanged = manager.schedule().set_interval(Some(24)).await.unwrap();
         assert_eq!(unchanged.last_attempt_at, Some(1_000));
         assert_eq!(unchanged.last_success_at, Some(1_001));
         assert_eq!(unchanged.next_run_at, Some(87_400));
         assert!(!unchanged.is_due(87_399));
         assert!(unchanged.is_due(87_400));
 
-        let disabled = manager.set_schedule(None).await.unwrap();
+        let disabled = manager.schedule().set_interval(None).await.unwrap();
         assert_eq!(disabled.interval_hours, None);
         assert_eq!(disabled.next_run_at, None);
         assert!(!disabled.is_due(i64::MAX));
