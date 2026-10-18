@@ -8,6 +8,13 @@ import type { BlocklistBuildRequest, BlocklistBuildResult, BlocklistSource, Bloc
 // Suggested lists take their measured counts and any other link a round number; a link containing fail pretends its download
 // failed. All demo data.
 
+// 演示别的情况（localStorage 里设成 true）/ Other states for the demo (set to true in localStorage):
+// - kixdns:demo-blocklists-unreadable：读不到各个列表的情况 / the list statuses cannot be read
+// - kixdns:demo-blocklist-refresh-fails：点名重新下载的都没下载成功，下载过的接着用原来那份 / every named re-download fails, and a list
+//   downloaded before keeps its copy
+// - kixdns:demo-blocklist-schedule-failed：开着自动更新时，上次有一个列表没更新上 / with automatic updates on, one list failed to update last time
+const flag = (name: string): boolean => typeof localStorage !== 'undefined' && localStorage.getItem(name) === 'true'
+
 const sources = new Map<string, BlocklistSource>()
 let schedule: GeoDataSchedule = { interval_hours: null, last_attempt_at: null, last_success_at: null, last_error: null, next_run_at: null }
 
@@ -40,6 +47,11 @@ function summaryOf(url: string): BlocklistSummary {
 }
 
 export function demoBlocklists(): BlocklistState {
+  if (flag('kixdns:demo-blocklists-unreadable')) throw new ApiError('读不到拦截列表的情况，稍后再试', 503, 'blocklist_unavailable')
+  if (flag('kixdns:demo-blocklist-schedule-failed') && schedule.interval_hours !== null) {
+    const now = Math.floor(Date.now() / 1000)
+    return { sources: Object.fromEntries(sources), schedule: { ...schedule, last_attempt_at: now - 3 * 3600, last_error: '1\u00a0个列表没更新上，接着用上一份' } }
+  }
   return { sources: Object.fromEntries(sources), schedule }
 }
 
@@ -57,7 +69,7 @@ export async function demoBuildBlocklists(request: BlocklistBuildRequest): Promi
   let failed = 0
   for (const url of fetch) {
     const held = sources.get(url)
-    if (url.includes('fail')) {
+    if (url.includes('fail') || (refresh.has(url) && flag('kixdns:demo-blocklist-refresh-fails'))) {
       failed += 1
       sources.set(url, { ...(held ?? { sha256: null, downloaded_at: null, summary: { rules: 0, skipped: 0, samples: [] }, rejected_sha256: null }), last_error: `连不上 ${new URL(url).host}，拦截列表没下载成功，稍后再试`, last_attempt_at: now })
       continue
