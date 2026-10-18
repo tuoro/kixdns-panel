@@ -150,7 +150,7 @@ pub(super) async fn run_due_blocklist_schedule(state: &AppState) -> anyhow::Resu
     let outcome = apply_scheduled_blocklist_update(state).await;
     let error = match &outcome {
         Ok(0) => None,
-        Ok(failed) => Some(format!("{failed}\u{a0}个列表没更新上，接着用上一份")),
+        Ok(failed) => Some(format!("{failed}\u{a0}个列表没更新上，仍用原来那份")),
         Err(error) => Some(format!("{error:#}")),
     };
     state

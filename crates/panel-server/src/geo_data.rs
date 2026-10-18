@@ -920,12 +920,19 @@ async fn request_with_safe_redirects(
             .get(LOCATION)
             .and_then(|value| value.to_str().ok())
             .ok_or_else(|| GeoDataError::download(what, "重定向缺少目标地址", false))?;
-        url = parse_url(
-            url.join(location)
-                .map_err(|_| GeoDataError::download(what, "重定向地址无效", false))?
-                .as_str(),
-            what,
-        )?;
+        let next = url
+            .join(location)
+            .map_err(|_| GeoDataError::download(what, "重定向地址无效", false))?;
+        // 用户给的是 https 链接，是网站把下载转去了别处：照实说，不说「链接只能用 https://」 / The user gave an https link and the site
+        // sent the download elsewhere: say so, rather than 链接只能用 https://
+        if next.scheme() != "https" {
+            return Err(GeoDataError::download(
+                what,
+                "网站把下载转到了 http:// 地址，面板只走 https://",
+                false,
+            ));
+        }
+        url = parse_url(next.as_str(), what)?;
     }
     unreachable!("重定向循环总会返回")
 }
@@ -948,7 +955,7 @@ async fn resolve_public_address(
             .map_err(|error| {
                 // 系统的原话（英文）只进日志 / The system's own words (in English) go to the log only
                 tracing::warn!(%error, %host, what, "下载地址的域名解析失败");
-                GeoDataError::download(what, format!("找不到 {host}：域名解析失败"), true)
+                GeoDataError::download(what, format!("找不到 {host}（域名解析失败）"), true)
             })?
             .collect::<Vec<_>>()
     };

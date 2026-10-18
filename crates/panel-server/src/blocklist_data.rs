@@ -27,6 +27,8 @@ use crate::geo_data::{
 };
 
 const STATE_KEY: &str = "blocklist_state";
+/// 下载出错时对它的说法 / What it is called in download errors
+const WHAT: &str = "拦截列表";
 const SCHEDULE_KEY: &str = "blocklist_schedule";
 /// 一个列表的大小上限：最大的主流列表约 6 MiB / The size limit for one list: the largest common lists are about 6 MiB
 const MAX_LIST_BYTES: u64 = 64 * 1024 * 1024;
@@ -113,7 +115,7 @@ pub struct BuildResult {
 pub struct Refresh {
     /// 换掉的文件：`(旧文件, 新文件)`；内容没变时为 None / The file replaced, as `(old, new)`; None when nothing changed
     pub replaced: Option<(String, String)>,
-    /// 没更新上、接着用上一份的列表数 / How many lists failed to update and keep their previous copy
+    /// 没更新上、仍用原来那份的列表数 / How many lists failed to update and keep their previous copy
     pub failed: usize,
 }
 
@@ -207,7 +209,7 @@ impl BlocklistManager {
         };
         let sources = read_file_sources(Path::new(&old)).await?.ok_or_else(|| {
             GeoDataError::Invalid(
-                "正在用的拦截列表文件读不出它的来源：到「拦截列表」点「全部更新」".to_owned(),
+                "正在用的文件读不出是哪些列表合成的，点上面的「全部更新」重新合成".to_owned(),
             )
         })?;
         let _guard = self.lock.lock().await;
@@ -400,7 +402,7 @@ impl BlocklistManager {
     ) -> Result<Fetched, GeoDataError> {
         let file = match self
             .geo
-            .download_file(url, "拦截列表", MAX_LIST_BYTES, |sha256, _| {
+            .download_file(url, WHAT, MAX_LIST_BYTES, |sha256, _| {
                 format!("blocklist-src-{sha256}.txt")
             })
             .await
@@ -410,7 +412,14 @@ impl BlocklistManager {
             // 页面上这一行已经写着是哪个列表、没下载成功：只记原因本身 / The page's row already names the list and says the
             // download failed: only the cause itself is kept
             Err(GeoDataError::Download { cause, .. }) => return Ok(Fetched::Failed(cause)),
-            Err(GeoDataError::Invalid(reason)) => return Ok(Fetched::Failed(reason)),
+            // 这一类原因以「拦截列表」开头，页面上那一行已经写着是哪个列表 / These reasons open with 拦截列表, and the page's row already names the list
+            Err(GeoDataError::Invalid(reason)) => {
+                return Ok(Fetched::Failed(
+                    reason
+                        .strip_prefix(WHAT)
+                        .map_or(reason.clone(), str::to_owned),
+                ));
+            }
         };
         let path = file.path.clone();
         let read =
@@ -569,9 +578,9 @@ fn shrink_reason(rules: usize, sha256: &str, previous: Option<&SourceStatus>) ->
         return None;
     }
     Some(format!(
-        "这次下载的规则比上一份少了一半以上（{}\u{a0}条变成 {}\u{a0}条），先接着用上一份；下次下载还是这样就换上",
-        grouped(before),
-        grouped(rules)
+        "新下载的只有 {}\u{a0}条，不到上一份 {}\u{a0}条的一半，先不换；下次还是这样就换上",
+        grouped(rules),
+        grouped(before)
     ))
 }
 
@@ -788,11 +797,13 @@ mod tests {
             (kept.sha256.as_deref(), kept.summary.rules),
             (Some(sha_a.as_str()), 1)
         );
+        // 原因不带「拦截列表」开头：页面上那一行已经写着是哪个列表 / The reason does not open with 拦截列表: the page's row
+        // already names the list
         assert!(
             kept.last_error
                 .as_deref()
                 .unwrap()
-                .starts_with("拦截列表主机"),
+                .starts_with("主机 127.0.0.1 解析到不允许的地址"),
             "{kept:?}"
         );
         let never = &result.sources[C];
@@ -1052,7 +1063,7 @@ mod tests {
         assert_eq!(
             shrink_reason(52_318, &smaller, Some(&large)).as_deref(),
             Some(
-                "这次下载的规则比上一份少了一半以上（185,803\u{a0}条变成 52,318\u{a0}条），先接着用上一份；下次下载还是这样就换上"
+                "新下载的只有 52,318\u{a0}条，不到上一份 185,803\u{a0}条的一半，先不换；下次还是这样就换上"
             )
         );
         assert_eq!(grouped(0), "0");
