@@ -47,12 +47,15 @@ const ownRules = computed(() => parseOwnRules(model.blocklists.custom).rules.len
 // alone, with no list, block nothing
 const blocking = computed(() => blocklistEntries(model).length > 0)
 // 列表名之间用顿号，和自己写的规则之间用逗号，不让「自己写的」读成又一个列表 / 顿号 between list names and a comma before the own rules, so they do not read as one more list
-// 自己粘贴、没有标题的列表只写文件名；前两个名字太长时也只说几个列表，免得「等 N 个列表，自己写的规则」被截掉
-// A pasted list without a title shows its file name only; when the first two names run long the row just counts the lists, so 「等 N 个列表，自己写的规则」
-// is not cut off
+// 自己粘贴、没有标题的列表只写文件名，和上面域名映射那一行一样举两个名字；两个名字按显示宽度算（中文一个字算 1、拉丁字母算 0.55）超过 24 时，
+// 只说几个列表，免得「等 N 个列表，自己写的规则」被截掉。窄屏用只说几个列表的那一句
+// A pasted list without a title shows its file name only, naming two as the mapping row above does; when the two run past 24 by display width (a Chinese
+// character counting 1, a Latin letter 0.55) the row just counts the lists, so 「等 N 个列表，自己写的规则」 is not cut off. Narrow screens use the line
+// that just counts the lists
+const displayWidth = (text: string) => [...text].reduce((n, c) => n + (c.charCodeAt(0) < 0x2e80 ? 0.55 : 1), 0)
 const listSummary = computed(() => {
   const names = liveLists.value.map((s) => shortName(s.name, s.url))
-  if (names.slice(0, 2).join('').length > 24) return listShort.value
+  if (displayWidth(names.slice(0, 2).join('、')) > 24) return listShort.value
   const lists = names.length <= 2 ? names.join('、') : `${names.slice(0, 2).join('、')} 等 ${names.length} 个列表`
   return [lists, ownRules.value ? `自己写的规则 ${ownRules.value} 条` : ''].filter(Boolean).join('，')
 })

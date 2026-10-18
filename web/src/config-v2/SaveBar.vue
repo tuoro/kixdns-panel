@@ -9,7 +9,7 @@ import DraftReviewDialog from './DraftReviewDialog.vue'
 import RuleText from './RuleText.vue'
 import { usePhone, useTightSaveBar } from './phone'
 import { changeCount, dialogEdits, discardWithUndo, editorEdited, model } from './store'
-import { busy, cnameBlocked, pendingVersionId, queued, rereading, saveInFlight, sayBlocked, conflict, deferNote, deferSave, editTouched, elapsed, note, origin, save, saveMessage, stage, validate, validation, verdict } from './useConfigDocument'
+import { busy, waitingForBuild, cnameBlocked, pendingVersionId, queued, rereading, saveInFlight, sayBlocked, conflict, deferNote, deferSave, editTouched, elapsed, note, origin, save, saveMessage, stage, validate, validation, verdict } from './useConfigDocument'
 
 // 保存条只替草稿说话：有改动才升起来，保存完一会儿就收起。两步：先校验，再写入并热加载；任何一步失败都停住，原因里的规则能点。
 // KixDNS 没启动、连不上、不报能力时只存成待应用版本。Ctrl/Cmd+S 等于点保存。进度和结果都来自 useConfigDocument。
@@ -136,7 +136,8 @@ function discard(): void {
     <footer v-if="visible" ref="bar" class="ui-savebar cfg__savebar" :inert="rereading || undefined" :aria-busy="rereading || undefined" :class="{ 'ui-savebar--err': draftStage === 'failed' || Boolean(jsonError) || cnameBlocked, 'savebar--wrap': draftStage === 'done' && pending }">
       <p :key="draftStage === 'failed' ? `f-${note}` : 'state'" ref="statusLine" tabindex="-1" data-focus-landing class="ui-savebar__status" :class="{ 'ui-shake': draftStage === 'failed' }" :role="draftStage === 'failed' || jsonError ? 'alert' : 'status'">
         <template v-if="draftStage === 'done'"><svg class="ui-check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5" /></svg><span class="ui-savebar__detail"><UiDotText :parts="note.split(' · ')" /></span></template>
-        <template v-else-if="draftStage === 'building'"><span class="ui-spin" aria-hidden="true"></span><span class="ui-savebar__detail">等拦截列表合成</span></template>
+        <!-- 保存的第 0 步、或者校验之前在等拦截列表合成：都照实写在等它，走秒 / A save's step 0, or a check, waiting for the blocklists' build: both say so, with the time running -->
+        <template v-else-if="draftStage === 'building' || (waitingForBuild && draftStage === 'checking')"><span class="ui-spin" aria-hidden="true"></span><span class="ui-savebar__detail"><UiDotText :parts="['等拦截列表合成', ...(elapsed ? [elapsed] : [])]" /></span></template>
         <!-- 排在单独的「校验」后面的保存：状态和直接保存一样写「第 1 步 · 校验」，不和「保存中」各说各的 / A save queued behind a lone 校验 reads 「第 1 步 · 校验」 like a direct save, not 「校验中」 beside 保存中 -->
         <template v-else-if="draftStage === 'checking' && !queued"><span class="ui-spin" aria-hidden="true"></span><span class="ui-savebar__detail">校验中</span></template>
         <template v-else-if="draftStage === 'validating' || draftStage === 'checking'"><span class="ui-spin" aria-hidden="true"></span><span class="ui-savebar__detail"><UiDotText :parts="['第 1 步', '校验', ...(elapsed ? [elapsed] : [])]" /></span></template>

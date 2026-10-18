@@ -1,5 +1,6 @@
 import { conditionsText, ecsText, fallbackSentence, outcomeSentence, PROTOCOL_LABEL, effectiveProtocol, rawMatchersText, remedySentence, responseConditionText, withShi, type Blocklists, type Model, type Rule, type Subscription, type UpstreamGroup, ruleTitle } from './model'
 import { SETTING_SECTIONS, type SettingField } from '../config-editor/schema'
+import { shortName } from './blocklist'
 
 // 设置的改动写基础设置页上的名字和单位（「上游超时」「1800 毫秒」），认不出的键才照原样写
 // A settings change uses the name and unit from the settings page (上游超时, 1800 毫秒); only an unknown key is written as it is
@@ -154,12 +155,14 @@ export function diffModels(now: Model, then: Model, toward: 'save' | 'restore' =
 // different merged file alone says the lists were downloaded again
 function blocklistDiff(blocks: DiffBlock[], now: Blocklists, then: Blocklists, toward: 'save' | 'restore'): void {
   const facts = (x: Subscription) => ({ 链接: x.url, 状态: x.enabled ? '启用' : '已停用' })
-  for (const x of now.subscriptions) if (!then.subscriptions.some((y) => y.url === x.url)) blocks.push({ kind: '去掉', title: `拦截列表「${x.name}」`, lines: Object.entries(facts(x)).map(([k, v]) => ({ sign: '-', text: `${k}：${v}` })) })
+  // 标题里默认名只写文件名：下一行就是完整链接 / A default name shows its file part in the title: the full link is on the next line
+  const title = (x: Subscription) => `拦截列表「${shortName(x.name, x.url)}」`
+  for (const x of now.subscriptions) if (!then.subscriptions.some((y) => y.url === x.url)) blocks.push({ kind: '去掉', title: title(x), lines: Object.entries(facts(x)).map(([k, v]) => ({ sign: '-', text: `${k}：${v}` })) })
   for (const x of then.subscriptions) {
     const old = now.subscriptions.find((y) => y.url === x.url)
-    if (!old) { blocks.push({ kind: '加上', title: `拦截列表「${x.name}」`, lines: Object.entries(facts(x)).map(([k, v]) => ({ sign: '+', text: `${k}：${v}` })) }); continue }
+    if (!old) { blocks.push({ kind: '加上', title: title(x), lines: Object.entries(facts(x)).map(([k, v]) => ({ sign: '+', text: `${k}：${v}` })) }); continue }
     const lines = changed(facts(old), facts(x))
-    if (lines.length) blocks.push({ kind: '改了', title: `拦截列表「${x.name}」`, lines })
+    if (lines.length) blocks.push({ kind: '改了', title: title(x), lines })
   }
   const links = (b: Blocklists) => b.subscriptions.map((x) => `${x.url}${x.enabled}`).sort().join()
   // 保存草稿时换上的是新下载的那份，恢复旧版本时换回的是那时下载的 / Saving the draft brings in the newer download, restoring an old version brings back the one of its day

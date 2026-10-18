@@ -328,6 +328,8 @@ export interface BlocklistSource {
   summary: BlocklistSummary
   /** 最近一次下载没成功的原因；成功以后清掉 / Why the latest download failed; cleared once one succeeds */
   last_error: string | null
+  /** 这次失败重下可能就好（连接一类）；链接不对、文件读不懂时为 false / Whether downloading again may help (connection trouble); false for a wrong link or an unreadable file */
+  retryable?: boolean
   last_attempt_at: number | null
   rejected_sha256: string | null
 }

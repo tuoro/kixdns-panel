@@ -3,10 +3,10 @@ import { ApiError } from './client'
 import type { BlocklistBuildRequest, BlocklistBuildResult, BlocklistSource, BlocklistState, BlocklistSummary, GeoDataSchedule } from './types'
 
 // 演示用的拦截列表：和服务端一样按链接记每个列表的情况（不在请求里的也留着，服务端要到清理时才删），合成文件按启用的列表取名，
-// 不论先后。推荐的列表用实测的条数，别的链接给一个整数，几个常见的自己粘贴的列表带着标题；链接里带 fail 的装作下载失败。全是演示数据。
+// 不论先后。推荐的列表用实测的条数，别的链接给一个整数，几个常见的自己粘贴的列表带着标题；链接里带 fail 的装作连不上，带 missing 的装作 404。全是演示数据。
 // The demo blocklists: like the server, each list's status is kept by link (those outside the request too, which the server drops only at
 // cleanup), and the merged file is named after the enabled lists in any order. Suggested lists take their measured counts, any other link a
-// round number, and a few commonly pasted lists carry titles; a link containing fail pretends its download failed. All demo data.
+// round number, and a few commonly pasted lists carry titles; a link containing fail pretends it cannot connect and one containing missing pretends a 404. All demo data.
 
 // 演示别的情况（localStorage 里设成 true）/ Other states for the demo (set to true in localStorage):
 // - kixdns:demo-blocklists-unreadable：读不到各个列表的情况 / the list statuses cannot be read
@@ -57,7 +57,7 @@ export function demoBlocklists(): BlocklistState {
   if (flag('kixdns:demo-blocklists-unreadable')) throw new ApiError('读不到拦截列表的情况，稍后再试', 503, 'blocklist_unavailable')
   if (flag('kixdns:demo-blocklist-schedule-failed') && schedule.interval_hours !== null) {
     const now = Math.floor(Date.now() / 1000)
-    return { sources: Object.fromEntries(sources), schedule: { ...schedule, last_attempt_at: now - 3 * 3600, last_error: '1\u00a0个列表没更新上，接着用上一份' } }
+    return { sources: Object.fromEntries(sources), schedule: { ...schedule, last_attempt_at: now - 3 * 3600, last_error: '1\u00a0个列表没更新上，仍用原来那份' } }
   }
   return { sources: Object.fromEntries(sources), schedule }
 }
@@ -76,12 +76,15 @@ export async function demoBuildBlocklists(request: BlocklistBuildRequest): Promi
   let failed = 0
   for (const url of fetch) {
     const held = sources.get(url)
-    if (url.includes('fail') || (refresh.has(url) && flag('kixdns:demo-blocklist-refresh-fails'))) {
+    // 链接里带 missing 的装作 404：重下也没用 / A link containing missing pretends a 404: downloading again will not help
+    const missing = url.includes('missing')
+    if (missing || url.includes('fail') || (refresh.has(url) && flag('kixdns:demo-blocklist-refresh-fails'))) {
       failed += 1
-      sources.set(url, { ...(held ?? { sha256: null, downloaded_at: null, summary: { rules: 0, skipped: 0, samples: [] }, rejected_sha256: null }), last_error: `连不上 ${new URL(url).host}`, last_attempt_at: now })
+      const cause = missing ? '服务器返回 HTTP 404，链接可能失效了' : `连不上 ${new URL(url).host}`
+      sources.set(url, { ...(held ?? { sha256: null, downloaded_at: null, summary: { rules: 0, skipped: 0, samples: [] }, rejected_sha256: null }), last_error: cause, retryable: !missing, last_attempt_at: now })
       continue
     }
-    sources.set(url, { sha256: digest(`${url}@${now}`), downloaded_at: now, summary: summaryOf(url), last_error: null, last_attempt_at: now, rejected_sha256: null })
+    sources.set(url, { sha256: digest(`${url}@${now}`), downloaded_at: now, summary: summaryOf(url), last_error: null, retryable: false, last_attempt_at: now, rejected_sha256: null })
   }
   const used = request.subscriptions.filter((s) => s.enabled).map((s) => s.url.trim()).sort().map((url) => sources.get(url)?.sha256).filter((sha): sha is string => Boolean(sha))
   return {

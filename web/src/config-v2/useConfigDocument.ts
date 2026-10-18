@@ -10,7 +10,7 @@ import { useConnection } from '../composables/useConnection'
 import { useSession } from '../composables/useSession'
 import { dismissUndoable, toastMark, useToast } from '../composables/useToast'
 import { errorMessage } from '../utils'
-import { needsBuild, settleBlocklists, type BuildProblem } from './useBlocklists'
+import { dismissBuildToast, needsBuild, settleBlocklists, type BuildProblem } from './useBlocklists'
 import { appliedSnapshot, findRuleByName, applyHits, applyUpstreamStats, changeCount, dialogEdits, dirty, draftGeneration, editorEdited, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, replaceModel, reportOpen, unsaved } from './store'
 
 // 配置页和面板服务之间的事：读配置和历史、KixDNS 的运行状态和能力、校验、保存并热加载、现在应用。
@@ -134,6 +134,8 @@ export const busy = computed(() => ['building', 'checking', 'validating', 'apply
 export const queued = ref(false)
 // 真的在保存（校验、写入，或者排在单独的「校验」后面），不是单独点的「校验」：这时换掉草稿的操作要等它做完
 // A save really running (validate, then write, or queued behind a lone 校验), not a lone 校验: actions that replace the draft wait for it
+// 保存的第 0 步或校验之前在等拦截列表合成：保存条照实写在等什么 / A save's step 0 or a check is waiting for the blocklists' build: the save bar says what it waits for
+export const waitingForBuild = ref(false)
 export const saveInFlight = computed(() => queued.value || stage.value === 'building' || stage.value === 'validating' || stage.value === 'applying')
 export const elapsed = computed(() => {
   const seconds = (clock.value - startedAt.value) / 1000
@@ -403,11 +405,18 @@ async function runCheck(): Promise<ValidationResult | null> {
   if (deferSave.value || conflict.value) return null
   origin.value = 'draft'
   startStage('checking')
-  // 校验一份旧的拦截列表文件没有意义：先等它按现在的订阅合成好 / Checking a stale blocklist file means nothing: wait for it to be built for the current subscriptions first
+  // 校验一份旧的拦截列表文件没有意义：先等它按现在的订阅合成好；没合成好时说的是校验没做成，不是配置没通过
+  // Checking a stale blocklist file means nothing: wait for it to be built for the current subscriptions first; when that fails the check did not run,
+  // which is not the config failing it
   if (needsBuild()) {
-    const problem = await settleBlocklists()
+    dismissBuildToast()
+    let problem: BuildProblem | null
+    waitingForBuild.value = true
+    try { problem = await settleBlocklists() } finally { waitingForBuild.value = false }
+    // 等的时候先前排着的合成失败了，那条提示也收起：保存条接着说 / A build queued before that failed while waiting: its toast goes too, the save bar takes over
+    dismissBuildToast()
     if (problem) {
-      verdict.value = problem.down ? '连不上面板' : '没有通过校验'
+      verdict.value = problem.down ? '连不上面板' : '没有校验'
       finishStage('failed', buildProblemNote(problem, '校验'))
       return null
     }
@@ -562,23 +571,57 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
   const sentAt = toastMark()
   const settledBefore = settledCount
   inFlight = JSON.stringify(draft)
+  const kept = '草稿留在配\u2060置\u2060页'
+  // 按完就离开了、这次没存成：草稿留着等回来，用提示说为什么没存 / Left right after pressing and this save failed: the draft is kept for the return and a
+  // toast says why nothing was saved
+  const sayAway = (text: string) => {
+    if (viewing || abandoned) return
+    keepDraftForReturn()
+    dismissAwayToast()
+    awayToast = useToast().error(text)
+  }
+  if (waiting) {
+    // 单独的「校验」还没回来时按的保存：从这一刻起就是一次保存（按钮写「保存中」、换掉草稿的操作停用、离开时照保存途中问），等校验回来接着存
+    // Save pressed while a lone 校验 is out: from now on it is a save (the button reads 保存中, draft-replacing actions are disabled, leaving asks as
+    // during a save), and it carries on once the check returns
+    queued.value = true
+    try { await waiting } finally { queued.value = false }
+    // 校验没过（被拒、KixDNS 停了、连不上）：停在那句结论上，不接着存；退出登录时放下了这份草稿也不存
+    // The check failed (rejected, KixDNS stopped, unreachable): stop at that verdict instead of saving; nor save a draft let go at sign-out
+    if (stage.value === 'failed') {
+      sayAway(verdict.value === 'KixDNS 已停止' ? `配置没有保存：KixDNS 已停止。${kept}，可以先存成待应用版本`
+        : verdict.value === '连不上面板' ? `配置没有保存：连不上面板。${kept}，连上后再保存`
+          // 校验在等拦截列表合成时就停了，没送去校验 / The check stopped while waiting for the blocklists' build and never ran
+          : verdict.value === '没有校验' ? `配置没有保存：${sentence(note.value)}。${kept}`
+          : `配置没有保存：没有通过校验。${kept}。${note.value}`)
+    }
+    if (stage.value === 'failed' || abandoned || busy.value || !doc.value) { inFlight = null; abandoned = false; return }
+  }
   // 第 0 步：拦截列表的文件还没按这份草稿的订阅合成好时，先等它落地，再只把文件换进按下时的草稿。等的时候就算保存途中：按钮写「保存中」，
-  // 离开不问、回来不重读，这时改的照样算「之后改的」；订阅在等的时候又变了就停下说一句，不写入一个对不上的文件
+  // 离开不问、回来不重读，这时改的照样算「之后改的」；订阅在等的时候又变了就停下说一句，不写入一个对不上的文件。排在单独的「校验」后面时，
+  // 等校验回来再进这一步，中间不会有一段不算保存的空档
   // Step 0: when the blocklists' file is not yet built for this draft's subscriptions, wait for it to land, then swap only the file into the draft as
   // pressed. The wait already counts as the save under way: the button reads 保存中, leaving does not ask and returning does not re-read, and edits made
-  // meanwhile count as made after it; if the subscriptions change while waiting it stops and says so, rather than writing a file that does not match
+  // meanwhile count as made after it; if the subscriptions change while waiting it stops and says so, rather than writing a file that does not match.
+  // Queued behind a lone 校验, it starts once the check is back, leaving no gap where the save does not count as under way
   const key = blocklistKey(draft.blocklists)
   if (from === 'draft' && draft.blocklists.builtFor !== key) {
-    if (waiting) queued.value = true
-    else { origin.value = 'draft'; startStage('building') }
+    origin.value = 'draft'
+    startStage('building')
+    dismissBuildToast()
     let problem: BuildProblem | null
-    try { problem = await settleBlocklists() } finally { queued.value = false }
+    waitingForBuild.value = true
+    try { problem = await settleBlocklists() } finally { waitingForBuild.value = false }
+    dismissBuildToast()
     if (!problem && (blocklistKey(model.blocklists) !== key || model.blocklists.builtFor !== key)) problem = { reason: '', down: false, changed: true }
     if (abandoned || problem) {
       inFlight = null
       if (abandoned) { abandoned = false; finishStage('idle'); return }
-      verdict.value = problem!.down ? '连不上面板' : '没有保存成功'
+      verdict.value = problem!.down ? '连不上面板' : problem!.changed ? '没有保存' : '没有保存成功'
       finishStage('failed', buildProblemNote(problem!, '保存'))
+      sayAway(problem!.down ? `配置没有保存：连不上面板。${kept}，连上后再保存`
+        : problem!.changed ? `配置没有保存：等合成的时候订阅又变了。${kept}，回去再保存一次`
+          : `配置没有保存：拦截列表没有合成好（${problem!.reason}）。${kept}，${problem!.fixable ? '改好再保存' : '回去再保存一次'}`)
       return
     }
     // 名字在页面上改不了：等的时候变了，是下载带来的标题，跟着文件一起存 / Names cannot be edited on the page: one that changed while waiting is the
@@ -590,29 +633,8 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
   const content: unknown = JSON.parse(JSON.stringify(exportConfig(draft)))
   const sent = JSON.stringify(draft)
   inFlight = sent
-  let prechecked = false
-  if (waiting) {
-    // 单独的「校验」还没回来时按的保存：从这一刻起就是一次保存（按钮写「保存中」、换掉草稿的操作停用、离开时照保存途中问），等校验回来接着存
-    // Save pressed while a lone 校验 is out: from now on it is a save (the button reads 保存中, draft-replacing actions are disabled, leaving asks as
-    // during a save), and it carries on once the check returns
-    queued.value = true
-    try { await waiting } finally { queued.value = false }
-    // 校验没过（被拒、KixDNS 停了、连不上）：停在那句结论上，不接着存；退出登录时放下了这份草稿也不存。
-    // 按完就离开了：和直接保存失败一样，草稿留着等回来、用提示说为什么没存
-    // The check failed (rejected, KixDNS stopped, unreachable): stop at that verdict instead of saving; nor save a draft let go at sign-out.
-    // Left right after pressing: as with a direct save that fails, the draft is kept for the return and a toast says why nothing was saved
-    if (stage.value === 'failed' && !viewing && !abandoned) {
-      keepDraftForReturn()
-      dismissAwayToast()
-      const kept = '草稿留在配\u2060置\u2060页'
-      awayToast = useToast().error(verdict.value === 'KixDNS 已停止' ? `配置没有保存：KixDNS 已停止。${kept}，可以先存成待应用版本`
-        : verdict.value === '连不上面板' ? `配置没有保存：连不上面板。${kept}，连上后再保存`
-          : `配置没有保存：没有通过校验。${kept}。${note.value}`)
-    }
-    if (stage.value === 'failed' || abandoned || busy.value || !doc.value) { inFlight = null; abandoned = false; return }
-    // 校验过的正是要写的这一份：不再校验第二遍 / What was checked is exactly what will be written: no second check
-    prechecked = checkedContent === JSON.stringify(content)
-  }
+  // 单独校验过的正是要写的这一份：不再校验第二遍 / What the lone check validated is exactly what will be written: no second check
+  const prechecked = waiting !== null && checkedContent === JSON.stringify(content)
   origin.value = from
   // 按之前提示条上已经挂着「没有生效」：这一下是重试；结果用重试的话说（等失败以后再看，那时运行状态已经换成这一次的了）
   // 没有生效 was already showing when this was pressed: it is a retry, and its outcome is worded as one (looking after the failure would see this run's state)
@@ -781,7 +803,9 @@ export const applyNow = () => void save('apply')
 /** 等拦截列表合成没成时保存条下面那句 / The line under the save bar when waiting for the blocklists' build failed */
 function buildProblemNote(problem: BuildProblem, what: '保存' | '校验'): string {
   if (problem.down) return `拦截列表还没合成好，连上后再${what}`
-  if (problem.changed) return `订阅在等合成时又改过，再${what}一次`
+  if (problem.changed) return `等合成的时候订阅又变了，再${what}一次`
+  // 服务端拒绝了这组订阅：再试一样，要先改好 / The server refused these subscriptions: trying again changes nothing until they are fixed
+  if (problem.fixable) return `拦截列表没有合成好（${problem.reason}），改好再${what}`
   return `拦截列表没有合成好（${problem.reason}），再${what}一次会重新合成`
 }
 // 键排好序再比，存进去和读出来的键顺序不同也算一样 / Compared with keys sorted, so a different key order on the way back still counts as the same

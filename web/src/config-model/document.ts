@@ -1,3 +1,4 @@
+import { normalUrl } from './blocklist'
 import { importKernel, type ImportNote } from './importer'
 import type { KConfigLike } from './kernel'
 import { blocklistKey, compile, emptyBlocklists, ruleGroupPipelineId, type Model, type RawEntry, type RuleGroup } from './model'
@@ -51,8 +52,9 @@ function withoutListeners(model: Model): Model {
 // Models from before the blocklists lack them: an empty one is added on read. One without builtFor is taken as built for its current subscriptions
 const withBlocklists = (model: Model): Model => {
   if (!model.blocklists) return { ...model, blocklists: emptyBlocklists() }
-  // 同一个链接订阅了两次（以前的撤销能做出来）只留第一个 / A link subscribed twice (an earlier undo could make that) keeps only the first
-  const subscriptions = model.blocklists.subscriptions.filter((s, i, all) => all.findIndex((x) => x.url === s.url) === i)
+  // 同一个链接订阅了两次（以前的撤销能做出来，或者写法不同，比如末尾多一个 /）只留第一个 / A link subscribed twice (an earlier undo could make that,
+  // or two spellings such as a trailing /) keeps only the first
+  const subscriptions = model.blocklists.subscriptions.filter((s, i, all) => all.findIndex((x) => normalUrl(x.url) === normalUrl(s.url)) === i)
   const blocklists = { ...model.blocklists, subscriptions }
   return { ...model, blocklists: typeof blocklists.builtFor === 'string' ? blocklists : { ...blocklists, builtFor: blocklistKey(blocklists) } }
 }

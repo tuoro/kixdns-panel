@@ -7,7 +7,7 @@ import type { DnsDiagnostic } from '../api/types'
 import UiSelect from '../components/ui/UiSelect.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
 import { ownBlockFor, type OwnRule } from '../config-model/blocklist'
-import { blocklistPipelineId, compile, isIp } from '../config-model/model'
+import { blocklistPipelineId, compile, isIp, type Model } from '../config-model/model'
 import { traceNames } from '../config-model/trace-names'
 import { asksUpstream, describeStep, forwardTarget, formatElapsed, groupTrace, hidePlumbing, isDnsSuccess, missedRulesText, parseDnsAnswer, responseCodeName, ruleName, traceTone, type TextPart } from '../diagnostics'
 import { errorMessage } from '../utils'
@@ -69,6 +69,7 @@ async function run(): Promise<void> {
     const rule = hit ? findRuleByName(hit.label) : undefined
     const selected = (id: string) => trace.some((s) => s.stage === 'pipeline' && s.status === 'selected' && s.label === id)
     const tried = testsDraft.value ? model : appliedModel.value
+    testedModel.value = testsDraft.value ? null : tried
     byBlocklist.value = selected(blocklistPipelineId(tried))
     tested.value = name.toLowerCase().replace(/\.$/, '')
     ownBlock.value = byBlocklist.value ? ownBlockFor(tried.blocklists.custom, tested.value) : null
@@ -97,7 +98,10 @@ const verdict = computed(() => {
 // 执行路径的每一行，和诊断页同一种整理：连着的未命中规则并成一行，只有命中规则那一步打勾 / The path's rows, folded as on the diagnostics page: consecutive misses share a row, only the matched rule gets a check
 const stepIdle = (status: string) => ['miss', 'missed', 'skipped'].includes(status)
 // 路径里的规则和规则组写配置页上的名字，不写内核的 rule-1、main / The path names rules and rule groups as the config page does, not as the kernel's rule-1 or main
-const names = computed(() => traceNames(model))
+// 执行路径按测的那份配置起名：测正在用的配置时用保存过的那份，不用草稿 / The path is named after the config tested: the saved one when testing what
+// runs, not the draft
+const testedModel = ref<Model | null>(null)
+const names = computed(() => traceNames(testedModel.value ?? model))
 const rows = computed(() => {
   let target: string | null = null
   const trace = result.value?.trace_supported ? result.value.trace : []
@@ -135,7 +139,7 @@ const rows = computed(() => {
     <div v-else-if="result" class="tester__out" role="status">
       <div class="tester__result" :class="{ 'is-warn': !ok }">
         <p class="tester__verdict"><span v-if="result.source === 'draft'" class="ui-tag tester__tag">草稿</span>{{ verdict }}</p>
-        <p v-if="byBlocklist && ownBlock" class="tester__allow">是<span class="nowrap">「自己写的规则」</span>第 {{ ownBlock.line }} 行拦的：要放行，删掉那一行</p>
+        <p v-if="byBlocklist && ownBlock" class="tester__allow"><span class="nowrap">「自己写的规则」</span>第 {{ ownBlock.line }} 行拦着它。要放行，删掉那一行；订阅的列表也有它时，再写 <code>@@||{{ tested }}^</code></p>
         <p v-else-if="byBlocklist" class="tester__allow">拦截列表先于规则：要放行，在<span class="nowrap">「自己写的规则」</span>里写 <code>@@||{{ tested }}^</code></p>
         <button v-else class="ui-btn ui-btn--secondary ui-btn--sm" type="button" @click="emit('quick', domain.trim())"><Plus :size="14" aria-hidden="true" />为这个域名加一条</button>
       </div>

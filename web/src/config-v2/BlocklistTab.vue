@@ -33,17 +33,18 @@ onBeforeUnmount(() => { mounted = false })
 const subscriptions = computed(() => model.blocklists.subscriptions)
 const host = (url: string) => { try { return new URL(url).host } catch { return url } }
 const presetOf = (s: Subscription) => PRESETS.find((p) => p.url === s.url)
-// 「内容」列：推荐的列表写它拦什么，自己粘贴的写链接；链接长的写主机和最后两段，截短时几行不会一模一样（完整的在悬停提示里）
-// The 内容 column: what a suggested list blocks, or the link one pasted; a long link shows its host and last two segments, so cut-short rows do not all
-// read the same (the whole link is in the hover tip)
+// 「内容」列：推荐的列表写它拦什么，自己粘贴的写链接的最后两段在前、主机在后（和默认名「文件名 · 主机」一个写法）：截短时截掉的是大家一样的主机，
+// 能区分各行的尾巴留着（完整的链接在悬停提示里）
+// The 内容 column: what a suggested list blocks, or for a pasted one the link's last two segments first and the host after (as the default 「file name ·
+// host」 name reads): cutting short then drops the host all rows share and keeps the tail that tells them apart (the whole link is in the hover tip)
 const link = (s: Subscription) => s.url.replace(/^https:\/\//, '')
 function about(s: Subscription): string {
   const preset = presetOf(s)
   if (preset) return preset.about
   try {
     const url = new URL(s.url)
-    const parts = url.pathname.split('/').filter(Boolean)
-    return parts.length > 2 ? `${url.host}/…/${decodeURI(parts.slice(-2).join('/'))}` : link(s)
+    const tail = url.pathname.split('/').filter(Boolean).slice(-2).join('/')
+    return tail ? `${decodeURI(tail)}\u00a0·\u00a0${url.host}` : url.host
   } catch { return link(s) }
 }
 // 窄屏名字下面的来源：主机名；名字里已经有主机名时写目录，只有一级文件名、或者没有路径时不写
@@ -76,20 +77,29 @@ const spaced = (text: string) => (/^\d/.test(text) ? ` ${text}` : text)
 // without repeating a name the cause already gives; for those without any copy the end says once how to download again (a failed one is
 // not retried on its own); one still holding a copy already says on its row which copy it keeps
 // 默认名「文件名 · 主机」而原因里已经有这个主机时，只写文件名 / A default 「file name · host」 name whose cause already gives the host shows the file name only
-const failures = computed(() => subscriptions.value.filter((s) => s.enabled && statusOf(s)?.last_error && !downloading(s)).map((s) => {
+// 关着的列表也列着，名字后面标「关着」：它们不在用，但下载出了什么问题照样要找得到
+// Switched-off lists are listed too, marked 关着 after the name: they are not in use, but what went wrong with their download should still be findable
+const failures = computed(() => subscriptions.value.filter((s) => statusOf(s)?.last_error && !downloading(s)).map((s) => {
   const cause = statusOf(s)!.last_error!.replace(/[。.]\s*$/, '')
   const short = shortName(s.name, s.url)
   const label = short !== s.name && cause.includes(host(s.url)) ? short : s.name
-  return { id: s.id, name: cause.includes(s.name) ? '' : label, label, cause, held: held(s) }
+  return { id: s.id, name: cause.includes(s.name) ? '' : label, label, off: !s.enabled, cause, held: held(s), retryable: Boolean(statusOf(s)!.retryable) }
 }))
-// 末尾只为一份都没有的说怎么重新下载：只有一个列表出错时说「这一行」，几个里只有一个要重下时点名，几个都要时说「各自那一行」
-// The end says how to download again only for those with no copy: 「this row」 when one list failed, the list named when one of several needs it,
-// 「each of those rows」 when several do
+// 末尾只为一份都没有的说怎么办：重下可能就好的，只有一个列表出错时说「这一行」，几个里只有一个时点名，几个时指那几行的标签；重下也没用的（链接不对、
+// 文件读不懂）都是这种时，说删掉换个链接
+// The end says what to do only for those with no copy: where downloading again may help, 「this row」 when one list failed, the list named when one of
+// several, the rows' tag when several; when all of them would not get better by downloading again (a wrong link, an unreadable file), it says to
+// remove it and paste another link
 const retryLead = computed(() => {
   const none = failures.value.filter((f) => !f.held)
-  if (!none.length) return null
-  const row = failures.value.length === 1 ? '这一行' : none.length === 1 ? `「${none[0]!.label}」那一行` : '各自那一行'
+  const retry = none.filter((f) => f.retryable)
+  if (!retry.length) return null
+  const row = failures.value.length === 1 ? '这一行' : retry.length === 1 ? `「${retry[0]!.label}」那一行` : '标着「没下载成功」的那几行'
   return `要重新下载，点${row}「…」里的`
+})
+const wrongLink = computed(() => {
+  const none = failures.value.filter((f) => !f.held)
+  return none.length > 0 && none.every((f) => !f.retryable)
 })
 
 const rowMenu = (s: Subscription) => {
@@ -105,6 +115,8 @@ const skippedOf = ref<Subscription | null>(null)
 const skippedDialog = ref<HTMLDialogElement | null>(null)
 const samples = computed(() => (skippedOf.value ? statusOf(skippedOf.value)?.summary.samples ?? [] : []))
 const sampleText = (line: BlocklistSkippedLine) => skipText({ reason: line.reason, modifier: line.modifier } as Skip)
+// 原因里的 $修饰符 按代码的样子写，和写法提示一致 / A $modifier in a reason is set as code, as in the syntax hints
+const reasonParts = (text: string) => text.split(/(\$[a-z-]+)/).filter(Boolean).map((part) => ({ text: part, code: part.startsWith('$') }))
 function act(s: Subscription, value: string): void {
   if (value === 'update') void updateNow([s.url])
   else if (value === 'skipped') { skippedOf.value = s; skippedDialog.value?.showModal() }
@@ -116,11 +128,12 @@ function act(s: Subscription, value: string): void {
     // several and undoing them in turn keeps the order
     const next = list[at + 1]
     list.splice(at, 1)
-    deleteToasts.set(s.url, toast.undoable(`已删除「${s.name}」`, () => {
+    // 正文里默认名只写文件名：刚点的就是这一行，主机不带新东西 / In prose a default name shows its file part: the row was just pressed, the host adds nothing
+    deleteToasts.set(s.url, toast.undoable(`已删除「${shortName(s.name, s.url)}」`, () => {
       deleteToasts.delete(s.url)
       const now = model.blocklists.subscriptions
       // 删掉以后又加了回来：不再插第二个 / Added back since the delete: no second copy goes in
-      if (now.some((x) => x.url === s.url)) { toast.info(`「${s.name}」已经在列表里了`); return }
+      if (now.some((x) => x.url === s.url)) { toast.info(`「${shortName(s.name, s.url)}」已经在列表里了`); return }
       const before = next ? now.indexOf(next) : -1
       now.splice(before >= 0 ? before : Math.min(at, now.length), 0, s)
     }))
@@ -137,27 +150,32 @@ const busy = computed(() => subscriptions.value.some(downloading))
 // 立即更新 and 全部更新: with nothing else edited in the draft, the new copy is saved and takes effect as soon as it lands, as the automatic
 // update does; with unsaved edits in the draft, the new copy goes into the draft and is saved with it
 const withoutFile = () => JSON.stringify({ ...model, blocklists: { ...model.blocklists, file: null } })
-async function updateNow(urls: string[]): Promise<void> {
+async function updateNow(urls: string[], button: '立即更新' | '全部更新' = '立即更新'): Promise<void> {
   const direct = !unsaved.value && !saveInFlight.value
   const before = model.blocklists.file
   const rest = withoutFile()
   const result = await rebuildBlocklists(urls)
-  // 没下成的，合成那边已经说了原因 / One that did not download already had its reason said by the build
-  if (result.outcome === 'failed') return
-  if (result.outcome === 'dropped') { toast.info('草稿换过了，这次下载的没有用上；要用新的一份，再点一次「立即更新」'); return }
+  // 没下成的，合成那边已经说了原因；点名的列表在下载途中都删掉了，删除提示已经说过 / One that did not download already had its reason said by the build;
+  // when every list named was removed while downloading, the delete toast has said all there is
+  if (result.outcome === 'failed' || !urls.some((url) => subscriptions.value.some((s) => s.url === url))) return
+  // 下载途中放弃了修改、或者恢复了别的版本 / The edits were discarded, or another version restored, while it downloaded
+  if (result.outcome === 'dropped') { toast.info(`草稿已经换掉，这次下载的没有放进去；要用新的一份，再点一次「${button}」`); return }
   if (result.outcome === 'superseded') { toast.info('新的一份会和刚才的修改一起放进草稿，保存后生效'); return }
   if (model.blocklists.file === before) {
     if (urls.some((url) => blocklists.sources[url]?.last_error)) return
     // 关着的列表不进合成的文件：下好了也不变 / A switched-off list stays out of the merged file: a fresh download changes nothing
-    const off = subscriptions.value.find((s) => urls.length === 1 && s.url === urls[0] && !s.enabled)
-    toast.info(off ? `新的一份已下载；「${off.name}」关着，打开后用上` : urls.length > 1 ? '下载的都和在用的一样，已经是最新的' : '下载的和在用的一样，已经是最新的')
+    const named = subscriptions.value.filter((s) => urls.includes(s.url))
+    const off = named.length === 1 && !named[0]!.enabled ? named[0] : undefined
+    toast.info(off ? `新的一份已下载；「${shortName(off.name, off.url)}」没启用，启用后用上`
+      : named.length > 1 && named.every((s) => !s.enabled) ? '新的一份已下载；列表都没启用，启用后用上'
+        : named.length > 1 ? '下载的都和在用的一样，已经是最新的' : '下载的和在用的一样，已经是最新的')
     return
   }
   if (!direct || withoutFile() !== rest || saveInFlight.value) { toast.info('新的一份已放进草稿，保存后生效'); return }
   await save('draft', '手动更新拦截列表')
   if (mounted && stage.value === 'done') toast.success(`已换上新下载的列表（版本 #${doc.value?.version_id}）`)
 }
-const updateAll = () => void updateNow(subscriptions.value.map((s) => s.url))
+const updateAll = () => void updateNow(subscriptions.value.map((s) => s.url), '全部更新')
 
 // 添加：粘贴链接，或者从推荐的里挑；加上以后马上下载，保存以后生效 / Adding: paste a link or pick suggested lists; the download starts at once and it takes effect on save
 const addUrl = ref('')
@@ -194,7 +212,8 @@ const subscribed = (url: string) => subscriptions.value.some((s) => normalUrl(s.
 const full = (url: string) => !picked.value.includes(url) && picked.value.length >= room.value
 const roomShort = computed(() => room.value < PRESETS.filter((p) => !subscribed(p.url)).length)
 // 名额提示跟着勾选变：还能选几个，满了说怎么办 / The room hint follows the ticks: how many more can be picked, and what to do once full
-const roomHint = computed(() => (room.value <= 0 ? `已经订阅了 ${MAX_SUBSCRIPTIONS} 个列表，要加新的，先删掉一个。` : `最多订阅 ${MAX_SUBSCRIPTIONS} 个列表，这次还能选 ${room.value - picked.value.length} 个。`))
+const roomHint = computed(() => (room.value <= 0 ? `已经订阅了 ${MAX_SUBSCRIPTIONS} 个列表，要加新的，先删掉一个。`
+  : room.value - picked.value.length <= 0 ? `最多订阅 ${MAX_SUBSCRIPTIONS} 个列表，这次的名额已经选满。` : `最多订阅 ${MAX_SUBSCRIPTIONS} 个列表，这次还能选 ${room.value - picked.value.length} 个。`))
 const memoryText = (mib: number) => (mib < 1 ? '内存不到 1\u00a0MiB' : `内存约 ${mib}\u00a0MiB`)
 function openPresets(): void {
   picked.value = []
@@ -263,7 +282,7 @@ const blockText = computed(() => blockLabel(model, 'default'))
       </form>
       <!-- 配置里用着一份拦截列表、却没记下是哪些列表合成的（从别处读进来的）：照实说，不像是什么都没开 / The config uses a blocklist file but did not record
            which lists built it (read in from elsewhere): say so, rather than look as if nothing were on -->
-      <UiEmpty v-if="!subscriptions.length" :icon="ShieldBan" title="还没有订阅拦截列表" :desc="model.blocklists.file ? '配置里还用着一份拦截列表，但没记下是哪些列表合成的；订阅以后会换成新的。' : '从推荐的列表里挑一个，或者在上面粘贴 AdGuard、Adblock 规则和 hosts 文件的链接。'">
+      <UiEmpty v-if="!subscriptions.length" :icon="ShieldBan" title="还没有订阅拦截列表" :desc="model.blocklists.file ? '配置里还用着一份拦截列表，但没记下是哪些列表合成的；订阅以后会换成新的。' : '从推荐的列表里挑一个，或者在上面粘贴 AdGuard、Adblock 规则和 hosts\u00a0文件的链接。'">
         <button class="ui-btn ui-btn--secondary" type="button" @click="openPresets"><ListPlus :size="16" aria-hidden="true" />推荐的列表</button>
       </UiEmpty>
       <template v-else>
@@ -296,8 +315,9 @@ const blockText = computed(() => blockLabel(model, 'default'))
         <div v-if="failures.length" class="bl__note">
           <TriangleAlert :size="14" aria-hidden="true" />
           <div class="bl__causes">
-            <p v-for="f in failures" :key="f.id"><b v-if="f.name">{{ f.name }}：</b>{{ f.cause }}。</p>
+            <p v-for="f in failures" :key="f.id"><b v-if="f.name">{{ f.name }}<template v-if="f.off">（关着）</template>：</b>{{ f.cause }}。</p>
             <p v-if="retryLead">{{ retryLead }}<span class="nowrap">「立即更新」。</span></p>
+            <p v-else-if="wrongLink">链接不对的话，先删掉它，再粘贴新的链接。</p>
           </div>
         </div>
         <p v-if="blocklists.status === 'failed' && subscriptions.some(unknown)" class="bl__note"><TriangleAlert :size="14" aria-hidden="true" />读不到各个列表下载得怎么样；订阅照常保存，稍后刷新页面再看。</p>
@@ -312,7 +332,7 @@ const blockText = computed(() => blockLabel(model, 'default'))
         <label class="ui-input ui-input--area bl__text"><textarea v-model="model.blocklists.custom" :rows="customRows" aria-label="自己写的规则，一行一条" spellcheck="false" autocapitalize="off" placeholder="||ads.example.com^&#10;@@||cdn.example.com^"></textarea></label>
         <p class="bl__syntax"><span><code>||example.com^</code>拦截它和子域名</span><span><code>@@||example.com^</code>放行它和子域名</span><span><code>example.com</code>只拦它本身</span></p>
         <ul v-if="problems.length" class="bl__problems" aria-label="没用上的行">
-          <li v-for="p in problems" :key="p.line" class="bl__problem"><span class="bl__lineno">第 {{ p.line }} 行</span><span class="bl__what"><s>{{ p.text }}</s> <span>{{ p.problem }}</span></span></li>
+          <li v-for="p in problems" :key="p.line" class="bl__problem"><span class="bl__lineno">第 {{ p.line }} 行</span><span class="bl__what"><s>{{ p.text }}</s> <span><template v-for="(part, i) in reasonParts(p.problem)" :key="i"><code v-if="part.code">{{ part.text }}</code><template v-else>{{ part.text }}</template></template></span></span></li>
         </ul>
       </div>
     </section>
@@ -347,7 +367,7 @@ const blockText = computed(() => blockLabel(model, 'default'))
             </li>
           </ul>
           <p v-if="roomShort" class="pfield__hint">{{ roomHint }}</p>
-          <p class="blp__more">其他 AdGuard、Adblock 写法的列表和 hosts 文件也能用：<a class="ui-link" href="https://adguard-dns.io/kb/general/dns-filtering-syntax/" target="_blank" rel="noreferrer">AdGuard 写法说明（英文）<ExternalLink :size="14" aria-hidden="true" /></a></p>
+          <p class="blp__more">其他 AdGuard、Adblock 写法的列表和 hosts&nbsp;文件也能用：<a class="ui-link" href="https://adguard-dns.io/kb/general/dns-filtering-syntax/" target="_blank" rel="noreferrer">AdGuard 写法说明（英文）<ExternalLink :size="14" aria-hidden="true" /></a></p>
         </div>
         <footer class="pdialog__foot"><button class="ui-btn ui-btn--secondary" type="button" @click="presetDialog?.close()">取消</button><button class="ui-btn ui-btn--primary" type="submit" :disabled="!picked.length">{{ picked.length ? `订阅 ${picked.length} 个` : '订阅' }}</button></footer>
       </form>
@@ -359,7 +379,7 @@ const blockText = computed(() => blockLabel(model, 'default'))
         <div class="pdialog__body">
           <p class="pfield__hint">这些规则 DNS 用不上或者还不支持，整条跳过；其余的照常生效。<template v-if="skippedOf && (statusOf(skippedOf)?.summary.skipped ?? 0) > samples.length">下面只列出前 {{ samples.length }} 条。</template></p>
           <ul class="bl__problems">
-            <li v-for="line in samples" :key="line.line" class="bl__problem"><span class="bl__lineno">第 {{ line.line }} 行</span><span class="bl__what"><s>{{ line.text }}</s> <span>{{ sampleText(line) }}</span></span></li>
+            <li v-for="line in samples" :key="line.line" class="bl__problem"><span class="bl__lineno">第 {{ line.line }} 行</span><span class="bl__what"><s>{{ line.text }}</s> <span><template v-for="(part, i) in reasonParts(sampleText(line))" :key="i"><code v-if="part.code">{{ part.text }}</code><template v-else>{{ part.text }}</template></template></span></span></li>
           </ul>
         </div>
         <footer class="pdialog__foot"><button class="ui-btn ui-btn--secondary" type="button" @click="skippedDialog?.close()">关闭</button></footer>
@@ -451,6 +471,7 @@ const blockText = computed(() => blockLabel(model, 'default'))
 .bl__problem { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: baseline; }
 .bl__lineno { color: var(--l-ink-3); font-variant-numeric: tabular-nums; }
 .bl__what > span { word-break: keep-all; overflow-wrap: anywhere; }
+.bl__what code { padding: 0 var(--s-1); border-radius: var(--r-1); background: var(--l-sunk); color: var(--l-ink-2); font-family: var(--f-mono); font-size: var(--t-1); }
 .bl__problem s { margin-right: var(--s-1); color: var(--l-ink-3); font-family: var(--f-mono); font-size: var(--t-1); overflow-wrap: anywhere; }
 .bl__warn { color: var(--warn-l) !important; white-space: normal !important; }
 .bl__sets { padding: var(--s-2) var(--s-5); }
