@@ -62,8 +62,18 @@ export function dismissBuildToast(): void {
   if (staleToast !== null) useToast().dismiss(staleToast)
   staleToast = null
 }
-// 下载失败的那条提示：每次合成只留一条，新的换掉旧的 / The failed-download toast: one per build, a new one replacing the old
+// 下载失败的那条提示：每次合成只留一条，新的换掉旧的；它说到的列表有一个不再出错（删掉、放弃修改、重新下载好了）就收起，表格下面照样列着还在出错的
+// The failed-download toast: one per build, a new one replacing the old; it goes once a list it spoke of no longer fails (removed, discarded, downloaded
+// fine since), the lists still failing staying listed under the table
 let failToast: number | null = null
+let failToastUrls: string[] = []
+const failingUrls = () => model.blocklists.subscriptions.filter((s) => blocklists.sources[s.url]?.last_error).map((s) => s.url)
+function dismissFailToast(): void {
+  if (failToast !== null) useToast().dismiss(failToast)
+  failToast = null
+  failToastUrls = []
+}
+watch(failingUrls, (now) => { if (failToastUrls.some((url) => !now.includes(url))) dismissFailToast() })
 
 // 一次接一次地合成。落地时订阅又变了，这次的文件不填：后面那次会填。只是重新合成（没点名下载）、而草稿里的文件已经对得上时也不填，
 // 比如放弃修改以后，免得刚放弃就又多出一处「另一次下载的列表」
@@ -97,7 +107,7 @@ export function rebuildBlocklists(refresh: string[] = [], quiet = false): Promis
       blocklists.buildError = ''
       dismissBuildToast()
       nameByTitle()
-      sayFailures(fetching.filter((url) => (result.sources[url]?.last_attempt_at ?? null) !== triedBefore.get(url)), result.sources)
+      sayFailures(fetching.filter((url) => (result.sources[url]?.last_attempt_at ?? null) !== triedBefore.get(url)), result.sources, refresh)
       if (refresh.length && draftGeneration() !== generation) return { outcome: 'dropped' }
       if (blocklistKey(model.blocklists) !== key) return { outcome: 'superseded' }
       if (!refresh.length && !needsBuild()) return { outcome: 'current' }
@@ -117,7 +127,11 @@ export function rebuildBlocklists(refresh: string[] = [], quiet = false): Promis
       // A named download (立即更新) says it did not download; one the subscriptions set off: nothing while unreachable (the banner says so and a
       // build follows on reconnecting), nothing while a save or check waits (the save bar says it), any other cause says one line
       if (refresh.length) useToast().error(`没能重新下载：${error}`)
-      else if (!down && !quiet) staleToast = useToast().error(fixable ? `拦截列表没有重新合成（${error}），改好再保存` : `拦截列表没有重新合成（${error}），保存前会再试一次`)
+      else if (!down && !quiet) {
+        // 上一次合成失败的那条换成这条：原因不同时不留两条 / This one replaces the previous failed build's toast: a different cause leaves no second one
+        dismissBuildToast()
+        staleToast = useToast().error(fixable ? `拦截列表没有重新合成（${error}），改好再保存` : `拦截列表没有重新合成（${error}），保存前会再试一次`)
+      }
       return { outcome: 'failed', error, down, fixable }
     }
   })
@@ -141,18 +155,19 @@ function nameByTitle(): void {
   }
 }
 
-// 这次下载的里有没成功的就说一句，只一句，换掉上一句：数的是现在表格下面列着的所有出错的列表（关着的也在，标着「关着」），没下载成功的和没更新上的
-// 分开说。合成途中删掉的不算。只点名更新了一个关着的列表时，直接说它的原因
+// 这次下载的里有没成功的就说一句，只一句，换掉上一句：数的是现在表格下面列着的所有出错的列表（停用的也在，标着「已停用」），没下载成功的和没更新上的
+// 分开说。合成途中删掉的不算。点名更新了一个列表（立即更新）、或者只下载了一个停用的列表，它没成时直接说它的原因：点了一个就回答这一个
 // When this build's downloads include failures, one toast says so, replacing the previous one: it counts every failing list now listed under the table
-// (switched-off ones too, marked as such), telling failed downloads apart from failed updates. Lists removed meanwhile do not count. A single switched-off
-// list updated by name gets its reason said directly
-function sayFailures(fetched: string[], sources: Record<string, BlocklistSource>): void {
+// (disabled ones too, marked as such), telling failed downloads apart from failed updates. Lists removed meanwhile do not count. A single list updated by
+// name (立即更新), or a single disabled list downloaded, that fails gets its reason said directly: one pressed is one answered
+function sayFailures(fetched: string[], sources: Record<string, BlocklistSource>, refresh: string[]): void {
   const subscription = (url: string) => model.blocklists.subscriptions.find((s) => s.url === url)
   const failed = fetched.filter((url) => sources[url]?.last_error && subscription(url))
   if (!failed.length) return
-  if (failToast !== null) useToast().dismiss(failToast)
-  const only = failed.length === 1 && fetched.length === 1 ? subscription(failed[0]!) : undefined
-  if (only && !only.enabled) {
+  dismissFailToast()
+  const one = failed.length === 1 ? subscription(failed[0]!) : undefined
+  const only = one && (refresh.length === 1 ? refresh[0] === one.url : fetched.length === 1 && !one.enabled) ? one : undefined
+  if (only) {
     const status = sources[only.url]!
     const cause = status.last_error!.replace(/[。.]\s*$/, '')
     // 原因里已经有主机时，默认名只写文件名 / With the host already in the cause, a default name shows its file part
@@ -160,6 +175,7 @@ function sayFailures(fetched: string[], sources: Record<string, BlocklistSource>
     try { host = new URL(only.url).host } catch { /* 链接已经查过 / the link was checked */ }
     const name = host && cause.includes(host) ? shortName(only.name, only.url) : only.name
     failToast = useToast().error(`「${name}」${status.sha256 ? '没更新上' : '没下载成功'}：${cause}`)
+    failToastUrls = [only.url]
     return
   }
   const failing = model.blocklists.subscriptions.map((s) => blocklists.sources[s.url]).filter((s): s is BlocklistSource => Boolean(s?.last_error))
@@ -167,6 +183,7 @@ function sayFailures(fetched: string[], sources: Record<string, BlocklistSource>
   const none = failing.length - held
   const what = none && held ? `${none}\u00a0个列表没下载成功，${held}\u00a0个没更新上` : none ? `${none}\u00a0个列表没下载成功` : `${held}\u00a0个列表没更新上`
   failToast = useToast().error(`${what}，原因写在列表下面`)
+  failToastUrls = failingUrls()
 }
 
 /** 等合成没成：原因、是不是连不上面板、是不是订阅在等的时候又变了、是不是要先改好 / Why waiting for a build failed: the reason, whether the panel was

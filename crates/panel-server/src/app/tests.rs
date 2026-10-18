@@ -640,7 +640,10 @@ async fn blocklist_api_requires_auth_and_checks_what_it_gets() {
     assert_eq!(insecure.status(), StatusCode::BAD_REQUEST);
     let insecure = json_body(insecure).await;
     assert_eq!(insecure["error"]["code"], "blocklist_invalid");
-    assert_eq!(insecure["error"]["message"], "拦截列表链接只能用 https://");
+    assert_eq!(
+        insecure["error"]["message"],
+        "拦截列表「http://lists.example/a.txt」：链接只能用 https://"
+    );
     let empty = send(build(Some(&context.csrf_token), r#"{"subscriptions":[]}"#))
         .await
         .unwrap();

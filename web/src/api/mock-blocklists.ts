@@ -66,7 +66,7 @@ export async function demoBuildBlocklists(request: BlocklistBuildRequest): Promi
   const urls = [...new Set(request.subscriptions.map((s) => s.url.trim()))]
   if (urls.length > MAX_SUBSCRIPTIONS) throw new ApiError(`拦截列表最多订阅 ${MAX_SUBSCRIPTIONS} 个`, 400, 'blocklist_invalid')
   const bad = urls.find((url) => !url.startsWith('https://'))
-  if (bad !== undefined) throw new ApiError('拦截列表链接只能用 https://', 400, 'blocklist_invalid')
+  if (bad !== undefined) throw new ApiError(`拦截列表「${bad}」：链接只能用 https://`, 400, 'blocklist_invalid')
   const refresh = new Set(request.refresh)
   // 和服务端一样：从没试过的才自己下载，试过没成功的等点名 / As on the server: only lists never tried download on their own; failed ones wait to be named
   const fetch = urls.filter((url) => refresh.has(url) || !sources.has(url))
@@ -80,7 +80,7 @@ export async function demoBuildBlocklists(request: BlocklistBuildRequest): Promi
     const missing = url.includes('missing')
     if (missing || url.includes('fail') || (refresh.has(url) && flag('kixdns:demo-blocklist-refresh-fails'))) {
       failed += 1
-      const cause = missing ? '服务器返回 HTTP 404，链接可能失效了' : `连不上 ${new URL(url).host}`
+      const cause = missing ? '服务器返回 HTTP 404，链接可能失效了' : `连不上 ${new URL(url).host}`
       sources.set(url, { ...(held ?? { sha256: null, downloaded_at: null, summary: { rules: 0, skipped: 0, samples: [] }, rejected_sha256: null }), last_error: cause, retryable: !missing, last_attempt_at: now })
       continue
     }

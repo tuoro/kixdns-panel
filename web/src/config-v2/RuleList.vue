@@ -3,6 +3,7 @@ import { ArrowDownToLine, ChevronRight, CornerDownRight } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import { useToast } from '../composables/useToast'
+import FitLine from './FitLine.vue'
 import RuleRow from './RuleRow.vue'
 import { parseOwnRules, shortName } from '../config-model/blocklist'
 import { blockLabel, blocklistEntries, conditionsText, outcomePill, mappingIsIp, type Outcome, type Rule, ruleTitle } from '../config-model/model'
@@ -46,23 +47,29 @@ const ownRules = computed(() => parseOwnRules(model.blocklists.custom).rules.len
 // 内核里真有拦截列表的入口才显示这一行：只写了放行、又没有列表时什么也不拦 / The row shows only when the kernel really gets blocklist entries: allows
 // alone, with no list, block nothing
 const blocking = computed(() => blocklistEntries(model).length > 0)
-// 列表名之间用顿号，和自己写的规则之间用逗号，不让「自己写的」读成又一个列表 / 顿号 between list names and a comma before the own rules, so they do not read as one more list
-// 自己粘贴、没有标题的列表只写文件名，和上面域名映射那一行一样举两个名字；两个名字按显示宽度算（中文一个字算 1、拉丁字母算 0.55）超过 24 时，
-// 只说几个列表，免得「等 N 个列表，自己写的规则」被截掉。窄屏用只说几个列表的那一句
-// A pasted list without a title shows its file name only, naming two as the mapping row above does; when the two run past 24 by display width (a Chinese
-// character counting 1, a Latin letter 0.55) the row just counts the lists, so 「等 N 个列表，自己写的规则」 is not cut off. Narrow screens use the line
-// that just counts the lists
-const displayWidth = (text: string) => [...text].reduce((n, c) => n + (c.charCodeAt(0) < 0x2e80 ? 0.55 : 1), 0)
-const listSummary = computed(() => {
-  const names = liveLists.value.map((s) => shortName(s.name, s.url))
-  if (displayWidth(names.slice(0, 2).join('、')) > 24) return listShort.value
-  const lists = names.length <= 2 ? names.join('、') : `${names.slice(0, 2).join('、')} 等 ${names.length} 个列表`
-  return [lists, ownRules.value ? `自己写的规则 ${ownRules.value} 条` : ''].filter(Boolean).join('，')
-})
-const listShort = computed(() => [liveLists.value.length ? `${liveLists.value.length} 个列表` : '', ownRules.value ? `自己写的规则 ${ownRules.value} 条` : ''].filter(Boolean).join('，'))
-const mappingSummary = computed(() => {
-  const names = liveMappings.value.map((r) => r.domain)
-  return names.length <= 2 ? names.join('、') : `${names.slice(0, 2).join('、')} 等 ${names.length} 个域名`
+// 这两行各有几种说法，从长到短，这一格放得下哪种用哪种：先丢句尾（「↳」和排在最上面已经说了先于规则），再把名字换成个数
+// Each of the two rows has wordings from longest to shortest and uses the first the cell fits: the tail goes first (the 「↳」 and the top position
+// already say they come before the rules), then the names give way to a count
+const TAIL = '，先于下面所有规则'
+const withTail = (lines: string[]) => lines.flatMap((line) => [`${line}${TAIL}`, line])
+const named = (names: string[], unit: string) => (names.length <= 2 ? names.join('、') : `${names.slice(0, 2).join('、')} 等 ${names.length} 个${unit}`)
+const mappingLines = computed(() => withTail([named(liveMappings.value.map((r) => r.domain), '域名'), `${liveMappings.value.length} 个域名`]))
+// 列表名之间用顿号，和自己写的规则之间用逗号，不让「自己写的」读成又一个列表；自己粘贴、没有标题的列表只写文件名
+// 顿号 between list names and a comma before the own rules, so they do not read as one more list; a pasted list without a title shows its file name only
+// 配置里有合成的文件、却没记下订阅（导入的内核配置）时照实说；开着的列表都还没下载成功、或者都停用了、文件还没换掉时也一样
+// A merged file with no subscriptions recorded (an imported kernel config) is said as it is, and so are enabled lists none of which downloaded yet, or
+// lists all disabled while the file is not yet replaced
+const listLines = computed(() => {
+  const own = ownRules.value
+  const join = (lists: string, mine: string) => [lists, own ? mine : ''].filter(Boolean).join('，')
+  const lists = liveLists.value
+  if (!lists.length) {
+    const subs = model.blocklists.subscriptions
+    const what = !model.blocklists.file ? '' : !subs.length ? '一份没记下来源的列表' : subs.some((s) => s.enabled) ? '列表还没下载成功' : '列表都已停用'
+    return [...withTail([join(what, `自己写的规则 ${own} 条`)]), join(what, `自己写的 ${own} 条`)]
+  }
+  return [...withTail([join(named(lists.map((s) => shortName(s.name, s.url)), '列表'), `自己写的规则 ${own} 条`), join(`${lists.length} 个列表`, `自己写的规则 ${own} 条`)]),
+    join(`${lists.length} 个列表`, `自己写的 ${own} 条`)]
 })
 
 // 其余请求：交给哪个上游组，或者拦截 / The catch-all: which upstream group, or block
@@ -147,7 +154,7 @@ onBeforeUnmount(() => window.removeEventListener('pointermove', onMove))
       <span class="rrow__num"><CornerDownRight :size="14" aria-hidden="true" /></span>
       <button class="rrow__main" type="button" @click="emit('mappings')">
         <span class="rrow__name"><b>域名映射</b><span v-if="mappingMark" class="ui-tag ui-tag--ok">命中</span></span>
-        <span class="rrow__cond"><span class="rpin__long">{{ mappingSummary }}，先于下面所有规则</span><span class="rpin__short">{{ liveMappings.length }} 个域名，先于下面所有规则</span></span>
+        <FitLine class="rrow__cond" :variants="mappingLines" />
       </button>
       <ChevronRight class="rpin__chev" :size="16" aria-hidden="true" />
       <span class="rrow__pill"><span class="opill"><span class="opill__verb">回答</span><span class="opill__val">{{ liveMappings.every(mappingIsIp) ? '固定 IP' : '固定 IP 或域名' }}</span></span></span>
@@ -157,7 +164,7 @@ onBeforeUnmount(() => window.removeEventListener('pointermove', onMove))
       <span class="rrow__num"><CornerDownRight :size="14" aria-hidden="true" /></span>
       <button class="rrow__main" type="button" @click="emit('blocklists')">
         <span class="rrow__name"><b>拦截列表</b><span v-if="blocklistMark" class="ui-tag ui-tag--ok">命中</span></span>
-        <span class="rrow__cond"><span class="rpin__long">{{ listSummary }}，先于下面所有规则</span><span class="rpin__short">{{ listShort }}，先于下面所有规则</span></span>
+        <FitLine class="rrow__cond" :variants="listLines" />
       </button>
       <ChevronRight class="rpin__chev" :size="16" aria-hidden="true" />
       <span class="rrow__pill"><span class="opill opill--block"><span class="opill__verb">拦截</span><span class="opill__val">{{ blockLabel(model, 'default') }}</span></span></span>

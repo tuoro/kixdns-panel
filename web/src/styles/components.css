@@ -904,6 +904,8 @@ button.ui-link { position: relative; min-height: 0; padding: 0; border: 0; backg
 .ui-checkbox input:checked + i { border-color: var(--accent); background: var(--accent); }
 /* 勾着又不能改的框是灰的：看得出它定了 / A box ticked and fixed is grey: it reads as settled */
 .ui-checkbox input:checked:disabled + i { border-color: var(--l-ink-3); background: var(--l-ink-3); }
+/* 灰底上的勾用面板底色：深色下也看得清 / The tick on the grey uses the surface colour, so it stays clear in dark mode too */
+.ui-checkbox input:checked:disabled + i::after { border-color: var(--l-surface); }
 .ui-pick__opt input:checked { border-color: var(--accent); }
 .ui-pick__opt input::before { background: var(--accent); }
 .ui-tabs__tab[aria-selected="true"] { color: var(--accent); }

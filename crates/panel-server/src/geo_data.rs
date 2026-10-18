@@ -1043,7 +1043,7 @@ fn validate_response(response: &Response, what: &str, max_bytes: u64) -> Result<
         return Err(GeoDataError::download(
             what,
             format!(
-                "服务器返回 HTTP {}{}",
+                "服务器返回 HTTP\u{a0}{}{}",
                 status.as_u16(),
                 if gone { "，链接可能失效了" } else { "" }
             ),

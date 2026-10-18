@@ -76,6 +76,22 @@ describe('拦截列表读回来 / blocklists read back', () => {
     expect(back.model.blocklists).toEqual(model.blocklists)
   })
 
+  it('同一个链接两种写法只留一个：第一个的位置和名字，有一个启用就启用，不用重新合成 / one link in two spellings keeps one: the first\'s place and name, enabled if either is, needing no new build', () => {
+    const model = withLists()
+    model.blocklists.subscriptions = [
+      { id: 900, name: 'OISD big', url: 'https://big.oisd.nl/', enabled: false },
+      { id: 901, name: 'lists.example', url: 'https://lists.example/hosts', enabled: false },
+      { id: 902, name: 'big.oisd.nl', url: 'https://big.oisd.nl', enabled: true },
+    ]
+    model.blocklists.builtFor = blocklistKey(model.blocklists)
+    const back = readConfig(JSON.parse(JSON.stringify(exportConfig(model))) as Record<string, unknown>).model.blocklists
+    expect(back.subscriptions).toEqual([
+      { id: 900, name: 'OISD big', url: 'https://big.oisd.nl', enabled: true },
+      { id: 901, name: 'lists.example', url: 'https://lists.example/hosts', enabled: false },
+    ])
+    expect(blocklistKey(back)).toBe(back.builtFor)
+  })
+
   it('没记合成给谁的旧草稿，当作文件就是按现在的订阅合成的 / an older draft without builtFor is taken as built for its subscriptions', () => {
     const model = withLists()
     const cfg = JSON.parse(JSON.stringify(exportConfig(model))) as { panel: { model: { blocklists: Record<string, unknown> } } }

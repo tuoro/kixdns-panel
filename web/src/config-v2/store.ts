@@ -113,6 +113,10 @@ export const UNMODELLED = ['mainId', 'mappingId', 'mainExtra', 'rawPipelines', '
 const generation = ref(0)
 export const draftGeneration = (): number => generation.value
 export function replaceModel(next: Model): void {
+  // 换进来的和草稿一模一样（比如回到配置页时重读到同一份文件）：什么都不动，开着的抽屉、在路上的下载照旧认这份草稿
+  // What comes in equals the draft (the same file re-read on returning to the config page, say): nothing moves, and open drawers and downloads under way
+  // still take it as their draft
+  if (JSON.stringify(next) === JSON.stringify(model)) return
   // 草稿整份换掉，旧草稿上的撤销提示一起收起 / The draft is replaced wholesale, so undo messages about the old one go too
   dismissUndoable()
   generation.value += 1
@@ -121,6 +125,9 @@ export function replaceModel(next: Model): void {
   Object.assign(model, copy)
 }
 export function markApplied(): void { applied.value = JSON.stringify(model) }
+/** 草稿里用户自己改的部分：面板自己填进去的合成文件、合成记录和下载带来的标题不算 / The part of a draft the user edited: the merged file, its build record and
+ * titles a download brought, which the panel fills in itself, do not count */
+export const userPart = (m: Model): string => JSON.stringify({ ...m, blocklists: { ...m.blocklists, file: null, builtFor: '', subscriptions: m.blocklists.subscriptions.map(({ name: _name, ...s }) => s) } })
 export function discardDraft(): void { replaceModel(appliedModel.value) }
 // 放弃草稿，提示里能撤销：保存条和手机页头的「…」都走这里 / Discard the draft with an undo in the toast: used by the save bar and the phone header's 「…」
 export function discardWithUndo(onlyUnfolded?: string): void {

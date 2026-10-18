@@ -218,7 +218,7 @@ impl BlocklistManager {
         };
         let sources = read_file_sources(Path::new(&old)).await?.ok_or_else(|| {
             GeoDataError::Invalid(
-                "正在用的文件读不出是哪些列表合成的；订阅列表、或者点「全部更新」以后会重新合成"
+                "正在用的文件读不出是哪些列表合成的，自动更新没法更新它；加一个订阅，或者点「全部更新」，就会重新合成"
                     .to_owned(),
             )
         })?;
@@ -613,6 +613,16 @@ fn grouped(n: usize) -> String {
     out
 }
 
+/// 报错里写出的链接：太长时只留开头 / A link as an error message shows it: only its start when it is long
+fn shown_url(url: &str) -> String {
+    const SHOWN: usize = 80;
+    if url.chars().count() <= SHOWN {
+        url.to_owned()
+    } else {
+        format!("{}…", url.chars().take(SHOWN).collect::<String>())
+    }
+}
+
 /// 链接去掉首尾空白、检查写法，重复的只留第一个 / Links trimmed and checked, repeats keeping only the first
 fn normalize_subscriptions(
     subscriptions: Vec<Subscription>,
@@ -626,7 +636,15 @@ fn normalize_subscriptions(
     let mut normalized = Vec::with_capacity(subscriptions.len());
     for subscription in subscriptions {
         let url = subscription.url.trim().to_owned();
-        parse_url(&url, "拦截列表")?;
+        // 拒绝时说出是哪个链接：页面上订阅有十几个时才找得到 / A refusal names the link, so it can be found among a dozen subscriptions
+        parse_url(&url, WHAT).map_err(|error| match error {
+            GeoDataError::Invalid(reason) => GeoDataError::Invalid(format!(
+                "{WHAT}「{}」：{}",
+                shown_url(&url),
+                reason.strip_prefix(WHAT).unwrap_or(&reason)
+            )),
+            other => other,
+        })?;
         if seen.insert(url.clone()) {
             normalized.push(Subscription {
                 url,

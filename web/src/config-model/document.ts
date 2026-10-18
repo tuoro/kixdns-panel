@@ -52,9 +52,15 @@ function withoutListeners(model: Model): Model {
 // Models from before the blocklists lack them: an empty one is added on read. One without builtFor is taken as built for its current subscriptions
 const withBlocklists = (model: Model): Model => {
   if (!model.blocklists) return { ...model, blocklists: emptyBlocklists() }
-  // 同一个链接订阅了两次（以前的撤销能做出来，或者写法不同，比如末尾多一个 /）只留第一个 / A link subscribed twice (an earlier undo could make that,
-  // or two spellings such as a trailing /) keeps only the first
-  const subscriptions = model.blocklists.subscriptions.filter((s, i, all) => all.findIndex((x) => normalUrl(x.url) === normalUrl(s.url)) === i)
+  // 同一个链接订阅了两次（以前的撤销能做出来，或者写法不同，比如末尾多一个 /）只留一个：位置、编号和名字是第一个的；有一个启用就算启用，链接也用启用的
+  // 那个的写法，和合成的文件对得上，读进来不用重新合成
+  // A link subscribed twice (an earlier undo could make that, or two spellings such as a trailing /) keeps one: the first's place, id and name; it is
+  // enabled when any of them is, with the enabled one's spelling, so it matches the merged file and reading it in needs no new build
+  const all = model.blocklists.subscriptions
+  const subscriptions = all.filter((s, i) => all.findIndex((x) => normalUrl(x.url) === normalUrl(s.url)) === i).map((s) => {
+    const on = all.find((x) => x.enabled && normalUrl(x.url) === normalUrl(s.url))
+    return on && on !== s ? { ...s, url: on.url, enabled: true } : s
+  })
   const blocklists = { ...model.blocklists, subscriptions }
   return { ...model, blocklists: typeof blocklists.builtFor === 'string' ? blocklists : { ...blocklists, builtFor: blocklistKey(blocklists) } }
 }

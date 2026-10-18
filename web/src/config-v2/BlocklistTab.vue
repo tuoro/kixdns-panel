@@ -33,14 +33,17 @@ onBeforeUnmount(() => { mounted = false })
 const subscriptions = computed(() => model.blocklists.subscriptions)
 const host = (url: string) => { try { return new URL(url).host } catch { return url } }
 const presetOf = (s: Subscription) => PRESETS.find((p) => p.url === s.url)
-// 「内容」列：推荐的列表写它拦什么，自己粘贴的写链接的最后两段在前、主机在后（和默认名「文件名 · 主机」一个写法）：截短时截掉的是大家一样的主机，
-// 能区分各行的尾巴留着（完整的链接在悬停提示里）
-// The 内容 column: what a suggested list blocks, or for a pasted one the link's last two segments first and the host after (as the default 「file name ·
-// host」 name reads): cutting short then drops the host all rows share and keeps the tail that tells them apart (the whole link is in the hover tip)
+// 「内容」列：推荐的列表写它拦什么；自己粘贴的补上名字里没有的：名字是标题时，写链接的最后两段在前、主机在后（和默认名「文件名 · 主机」一个写法），
+// 截短时截掉的是大家一样的主机，能区分各行的尾巴留着；名字里已经有主机时（默认名），和窄屏名字下面那行一样只写目录，没有目录写「—」。完整的链接在悬停提示里
+// The 内容 column: what a suggested list blocks; for a pasted one, what its name leaves out: under a title, the link's last two segments first and the
+// host after (as the default 「file name · host」 name reads), so cutting short drops the host all rows share and keeps the tail that tells them
+// apart; once the name holds the host (a default name), only the directory, as under the name on narrow screens, or — without one. The whole link is
+// in the hover tip
 const link = (s: Subscription) => s.url.replace(/^https:\/\//, '')
 function about(s: Subscription): string {
   const preset = presetOf(s)
   if (preset) return preset.about
+  if (s.name.includes(host(s.url))) return source(s) || '—'
   try {
     const url = new URL(s.url)
     const tail = url.pathname.split('/').filter(Boolean).slice(-2).join('/')
@@ -71,35 +74,44 @@ const ruleCount = (n: number) => (n >= 1e4 ? `${fmtCount(n)}条` : `${fmtCount(n
 const ago = (seconds: number) => formatAgo(seconds)
 const spaced = (text: string) => (/^\d/.test(text) ? ` ${text}` : text)
 
-// 没下载成功、没更新上的列表（关掉的不算，它们不在用），合成一块说：每个一行「名字：原因」，原因里已经点了名字的不再重复；
-// 一份都没有的，末尾说一次怎么重新下载（没下载成功的不会自己再下）；有一份在用的，行上已经写着仍用哪份
-// Lists that failed to download or update (switched-off ones not, they are not in use), said in one block: a line each of 「name: cause」,
-// without repeating a name the cause already gives; for those without any copy the end says once how to download again (a failed one is
-// not retried on its own); one still holding a copy already says on its row which copy it keeps
+// 没下载成功、没更新上的列表合成一块说：每个一行「名字：原因」，原因里已经点了名字的不再重复；有一份在用的，行上已经写着仍用哪份
+// Lists that failed to download or update, said in one block: a line each of 「name: cause」, without repeating a name the cause already gives; one
+// still holding a copy already says on its row which copy it keeps
 // 默认名「文件名 · 主机」而原因里已经有这个主机时，只写文件名 / A default 「file name · host」 name whose cause already gives the host shows the file name only
-// 关着的列表也列着，名字后面标「关着」：它们不在用，但下载出了什么问题照样要找得到
-// Switched-off lists are listed too, marked 关着 after the name: they are not in use, but what went wrong with their download should still be findable
+// 停用的列表也列着，排在后面、颜色淡下去，名字后面标「已停用」：它们不在用，但下载出了什么问题照样要找得到
+// Disabled lists are listed too, after the others and dimmed, marked 已停用 after the name: they are not in use, but what went wrong with their
+// download should still be findable
+// stuck：重新下载也是一样的（链接失效、打开的是网页、文件太大或是空的），下载过的也算；规则少了一半那种不算，下次还是这样就会换上
+// stuck: downloading again gets the same (a dead link, a web page, a file too big or empty), held copies included; not a list that shrank by half,
+// which goes in if the next download looks the same
 const failures = computed(() => subscriptions.value.filter((s) => statusOf(s)?.last_error && !downloading(s)).map((s) => {
-  const cause = statusOf(s)!.last_error!.replace(/[。.]\s*$/, '')
+  const status = statusOf(s)!
+  const cause = status.last_error!.replace(/[。.]\s*$/, '')
   const short = shortName(s.name, s.url)
   const label = short !== s.name && cause.includes(host(s.url)) ? short : s.name
-  return { id: s.id, name: cause.includes(s.name) ? '' : label, label, off: !s.enabled, cause, held: held(s), retryable: Boolean(statusOf(s)!.retryable) }
-}))
-// 末尾只为一份都没有的说怎么办：重下可能就好的，只有一个列表出错时说「这一行」，几个里只有一个时点名，几个时指那几行的标签；重下也没用的（链接不对、
-// 文件读不懂）都是这种时，说删掉换个链接
-// The end says what to do only for those with no copy: where downloading again may help, 「this row」 when one list failed, the list named when one of
-// several, the rows' tag when several; when all of them would not get better by downloading again (a wrong link, an unreadable file), it says to
-// remove it and paste another link
-const retryLead = computed(() => {
-  const none = failures.value.filter((f) => !f.held)
-  const retry = none.filter((f) => f.retryable)
-  if (!retry.length) return null
-  const row = failures.value.length === 1 ? '这一行' : retry.length === 1 ? `「${retry[0]!.label}」那一行` : '标着「没下载成功」的那几行'
-  return `要重新下载，点${row}「…」里的`
+  const off = !s.enabled
+  return { id: s.id, name: cause.includes(s.name) && !off ? '' : label, label, off, cause, held: held(s), retryable: Boolean(status.retryable), stuck: !status.retryable && !status.rejected_sha256 }
+}).sort((a, b) => Number(a.off) - Number(b.off)))
+// 末尾按怎么办分两句，可以同时出现：先说重下也没用、要换链接的那几个，再说一份都没有、重下可能就好的那几个（没下载成功的不会自己再下）。
+// 只有一个列表出错时说「这一行」「它」，三个以内点名，再多时说个数或者指那几行的标签
+// The end says what to do in two sentences that may both appear: first those downloading again will not fix, which need another link, then those
+// with no copy where downloading again may help (a failed one is not retried on its own). With one failing list it says 「this row」 and 「it」, up to
+// three it names them, beyond that it counts them or points at the rows' tag
+const names = (list: { label: string }[]) => list.map((f) => `「${f.label}」`).join('')
+const stuckLine = computed(() => {
+  const stuck = failures.value.filter((f) => f.stuck)
+  if (!stuck.length) return ''
+  const them = stuck.length === 1 ? '它' : '它们'
+  const who = stuck.length === failures.value.length ? '' : stuck.length <= 3 ? names(stuck) : `其中 ${stuck.length}\u00a0个`
+  return `${who}重新下载也是一样：要换链接，先删掉${them}，再粘贴新的。`
 })
-const wrongLink = computed(() => {
-  const none = failures.value.filter((f) => !f.held)
-  return none.length > 0 && none.every((f) => !f.retryable)
+const retryLead = computed(() => {
+  const retry = failures.value.filter((f) => !f.held && f.retryable)
+  if (!retry.length) return null
+  const rows = ['', '那一行', '那两行', '那三行']
+  const row = failures.value.length === 1 ? '这一行' : retry.length <= 3 ? `${names(retry)}${rows[retry.length]}`
+    : stuckLine.value ? '其余标着「没下载成功」的那几行' : '标着「没下载成功」的那几行'
+  return `要重新下载，点${row}「…」里的`
 })
 
 const rowMenu = (s: Subscription) => {
@@ -116,7 +128,7 @@ const skippedDialog = ref<HTMLDialogElement | null>(null)
 const samples = computed(() => (skippedOf.value ? statusOf(skippedOf.value)?.summary.samples ?? [] : []))
 const sampleText = (line: BlocklistSkippedLine) => skipText({ reason: line.reason, modifier: line.modifier } as Skip)
 // 原因里的 $修饰符 按代码的样子写，和写法提示一致 / A $modifier in a reason is set as code, as in the syntax hints
-const reasonParts = (text: string) => text.split(/(\$[a-z-]+)/).filter(Boolean).map((part) => ({ text: part, code: part.startsWith('$') }))
+const reasonParts = (text: string) => text.split(/(\$[a-z0-9_-]+|@@\S+)/).filter(Boolean).map((part) => ({ text: part, code: /^(\$|@@)/.test(part) }))
 function act(s: Subscription, value: string): void {
   if (value === 'update') void updateNow([s.url])
   else if (value === 'skipped') { skippedOf.value = s; skippedDialog.value?.showModal() }
@@ -159,15 +171,15 @@ async function updateNow(urls: string[], button: '立即更新' | '全部更新'
   // when every list named was removed while downloading, the delete toast has said all there is
   if (result.outcome === 'failed' || !urls.some((url) => subscriptions.value.some((s) => s.url === url))) return
   // 下载途中放弃了修改、或者恢复了别的版本 / The edits were discarded, or another version restored, while it downloaded
-  if (result.outcome === 'dropped') { toast.info(`草稿已经换掉，这次下载的没有放进去；要用新的一份，再点一次「${button}」`); return }
+  if (result.outcome === 'dropped') { toast.info(`下载途中草稿换掉了，这次下载的没有放进草稿；要用新的一份，再点一次「${button}」`); return }
   if (result.outcome === 'superseded') { toast.info('新的一份会和刚才的修改一起放进草稿，保存后生效'); return }
   if (model.blocklists.file === before) {
     if (urls.some((url) => blocklists.sources[url]?.last_error)) return
-    // 关着的列表不进合成的文件：下好了也不变 / A switched-off list stays out of the merged file: a fresh download changes nothing
+    // 停用的列表不进合成的文件：下好了也不变 / A disabled list stays out of the merged file: a fresh download changes nothing
     const named = subscriptions.value.filter((s) => urls.includes(s.url))
     const off = named.length === 1 && !named[0]!.enabled ? named[0] : undefined
-    toast.info(off ? `新的一份已下载；「${shortName(off.name, off.url)}」没启用，启用后用上`
-      : named.length > 1 && named.every((s) => !s.enabled) ? '新的一份已下载；列表都没启用，启用后用上'
+    toast.info(off ? `新的一份已下载；「${shortName(off.name, off.url)}」已停用，启用后用上`
+      : named.length > 1 && named.every((s) => !s.enabled) ? '新的一份已下载；列表都已停用，启用后用上'
         : named.length > 1 ? '下载的都和在用的一样，已经是最新的' : '下载的和在用的一样，已经是最新的')
     return
   }
@@ -208,6 +220,8 @@ function addFromUrl(): void {
 const presetDialog = ref<HTMLDialogElement | null>(null)
 const picked = ref<string[]>([])
 const subscribed = (url: string) => subscriptions.value.some((s) => normalUrl(s.url) === url)
+// 已订阅的勾着、不能改，用共用复选框「勾着又禁用」的样子 / Subscribed ones are ticked and fixed, in the shared checkbox's ticked-and-disabled look
+const pick = (url: string, on: boolean) => { picked.value = on ? [...picked.value, url] : picked.value.filter((u) => u !== url) }
 // 名额用完：没勾的不能再勾 / Out of room: items not ticked cannot be ticked
 const full = (url: string) => !picked.value.includes(url) && picked.value.length >= room.value
 const roomShort = computed(() => room.value < PRESETS.filter((p) => !subscribed(p.url)).length)
@@ -256,7 +270,7 @@ const scheduleHint = computed(() => {
   const s = schedule.value
   if (!s) return blocklists.status === 'failed' ? '读不到自动更新的设置，稍后刷新页面再看' : ''
   if (!s.interval_hours) return '开了以后按时更新已保存的列表'
-  return savedLists.value ? '' : '保存了开着的列表以后才会开始更新'
+  return savedLists.value ? '' : '保存了启用的列表以后才会开始更新'
 })
 const blockText = computed(() => blockLabel(model, 'default'))
 </script>
@@ -291,7 +305,7 @@ const blockText = computed(() => blockLabel(model, 'default'))
           <ul class="bl__list">
             <li v-for="s in subscriptions" :key="s.id" class="bl__row" :class="{ 'is-off': !s.enabled }">
               <span class="bl__name">
-                <span class="bl__nm"><b>{{ s.name }}</b><span v-if="changedSubscriptionIds.has(s.id)" class="ui-dot ui-dot--ink bl__changed" role="img" :aria-label="added(s) ? '新加的，还没保存' : '改过，还没保存'" :title="added(s) ? '新加的，还没保存' : '改过，还没保存'"></span></span>
+                <span class="bl__nm"><b :title="s.name">{{ s.name }}</b><span v-if="changedSubscriptionIds.has(s.id)" class="ui-dot ui-dot--ink bl__changed" role="img" :aria-label="added(s) ? '新加的，还没保存' : '改过，还没保存'" :title="added(s) ? '新加的，还没保存' : '改过，还没保存'"></span></span>
                 <small v-if="source(s)">{{ source(s) }}</small>
               </span>
               <span class="bl__about" :title="presetOf(s) ? about(s) : link(s)">{{ about(s) }}</span>
@@ -315,9 +329,9 @@ const blockText = computed(() => blockLabel(model, 'default'))
         <div v-if="failures.length" class="bl__note">
           <TriangleAlert :size="14" aria-hidden="true" />
           <div class="bl__causes">
-            <p v-for="f in failures" :key="f.id"><b v-if="f.name">{{ f.name }}<template v-if="f.off">（关着）</template>：</b>{{ f.cause }}。</p>
+            <p v-for="f in failures" :key="f.id" :class="{ 'is-off': f.off }"><b v-if="f.name">{{ f.name }}</b><template v-if="f.off">（已停用）</template><template v-if="f.name">：</template>{{ f.cause }}。</p>
+            <p v-if="stuckLine">{{ stuckLine }}</p>
             <p v-if="retryLead">{{ retryLead }}<span class="nowrap">「立即更新」。</span></p>
-            <p v-else-if="wrongLink">链接不对的话，先删掉它，再粘贴新的链接。</p>
           </div>
         </div>
         <p v-if="blocklists.status === 'failed' && subscriptions.some(unknown)" class="bl__note"><TriangleAlert :size="14" aria-hidden="true" />读不到各个列表下载得怎么样；订阅照常保存，稍后刷新页面再看。</p>
@@ -360,7 +374,7 @@ const blockText = computed(() => blockLabel(model, 'default'))
           <ul class="blp">
             <li v-for="p in PRESETS" :key="p.url" class="blp__row">
               <label class="blp__item" :class="{ 'is-done': subscribed(p.url), 'is-full': full(p.url) && !subscribed(p.url) }">
-                <span class="ui-checkbox"><input v-model="picked" type="checkbox" :value="p.url" :disabled="subscribed(p.url) || full(p.url)"><i></i></span>
+                <span class="ui-checkbox"><input type="checkbox" :checked="subscribed(p.url) || picked.includes(p.url)" :disabled="subscribed(p.url) || full(p.url)" @change="pick(p.url, ($event.target as HTMLInputElement).checked)"><i></i></span>
                 <span class="blp__main"><b>{{ p.name }}</b><small>{{ p.about }}</small></span>
                 <span class="blp__meta"><template v-if="subscribed(p.url)">已订阅</template><UiDotText v-else :parts="[ruleCount(p.rules), memoryText(p.memory)]" /></span>
               </label>
@@ -457,6 +471,7 @@ const blockText = computed(() => blockLabel(model, 'default'))
 .bl__causes { display: grid; gap: 2px; min-width: 0; }
 .bl__causes p { margin: 0; overflow-wrap: anywhere; }
 .bl__causes b { font-weight: var(--w-medium); }
+.bl__causes p.is-off { color: var(--l-ink-3); }
 .bl__own { display: grid; gap: var(--s-2); padding: 0 var(--s-5) var(--s-4); }
 .bl__text textarea { font-family: var(--f-mono); font-size: var(--t-2); white-space: pre; overflow-x: auto; overflow-wrap: normal; }
 .bl__busy { display: inline-flex; align-items: center; gap: var(--s-1); }
@@ -487,8 +502,6 @@ const blockText = computed(() => blockLabel(model, 'default'))
 .blp__item:is(.is-done, .is-full) { cursor: default; }
 .blp__item:is(.is-done, .is-full) :is(b, small, .blp__meta) { color: var(--l-ink-3); }
 /* 已订阅的画成灰色的「已勾」：它已经在里面了 / A subscribed one is drawn as a grey tick: it is already in */
-.blp__item.is-done .ui-checkbox i { border-color: var(--l-ink-3); background: var(--l-ink-3); }
-.blp__item.is-done .ui-checkbox i::after { width: var(--s-2); height: var(--s-1); border: solid var(--l-surface); border-width: 0 0 2px 2px; transform: translateY(-1px) rotate(-45deg); content: ''; }
 .blp__main { display: grid; gap: 1px; min-width: 0; }
 .blp__main b { color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-medium); }
 .blp__main small { color: var(--l-ink-3); font-size: var(--t-1); }

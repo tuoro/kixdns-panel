@@ -292,11 +292,15 @@ test('校验途中又改了订阅再保存：校验回来后照常等合成、�
   await expect(page.locator('.rpin', { hasText: '拦截列表' })).toContainText('AdGuard DNS filter，自己写的规则 1 条')
 })
 
-test('链接不对（404）时不叫人重新下载，说删掉换个链接', async ({ page }) => {
+test('重下也没用（404）时不叫人重新下载，说删掉换个链接；和能重下的一起时两句各说各的', async ({ page }) => {
   await open(page)
   await page.getByLabel('列表的链接').fill('https://lists.example.org/missing/hosts.txt')
   await page.getByRole('button', { name: '添加', exact: true }).click()
   await expect(page.locator('.bl__causes')).toContainText('服务器返回 HTTP 404，链接可能失效了', { timeout: 5000 })
-  await expect(page.locator('.bl__causes')).toContainText('链接不对的话，先删掉它，再粘贴新的链接。')
+  await expect(page.locator('.bl__causes')).toContainText('重新下载也是一样：要换链接，先删掉它，再粘贴新的。')
   await expect(page.locator('.bl__causes')).not.toContainText('立即更新')
+  await page.getByLabel('列表的链接').fill('https://lists.example.org/fail/other.txt')
+  await page.getByRole('button', { name: '添加', exact: true }).click()
+  await expect(page.locator('.bl__causes')).toContainText('「hosts.txt · lists.example.org」重新下载也是一样：要换链接，先删掉它，再粘贴新的。', { timeout: 5000 })
+  await expect(page.locator('.bl__causes')).toContainText('要重新下载，点「other.txt」那一行「…」里的「立即更新」。')
 })

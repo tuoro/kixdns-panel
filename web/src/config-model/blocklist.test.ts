@@ -37,7 +37,7 @@ describe('rules of one\'s own', () => {
     ])
     expect(problems).toEqual([
       { line: 4, text: '||t.example^$client=192.168.1.20', problem: '还不支持 $client' },
-      { line: 5, text: '||x.example^$badfilter', problem: '这里用不上 $badfilter：要放行，写一行 @@ 开头的' },
+      { line: 5, text: '||x.example^$badfilter', problem: '这里用不上 $badfilter：要放行，写成 @@||x.example^' },
     ])
   })
 

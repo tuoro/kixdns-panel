@@ -231,7 +231,8 @@ export function parseOwnRules(text: string): { rules: OwnRule[]; problems: OwnPr
     if (parsed.kind === 'ignored') continue
     const problem = (text: string) => problems.push({ line, text: raw.trim(), problem: text })
     if (parsed.kind === 'skipped') { problem(skipText(parsed.skip)); continue }
-    if (parsed.kind === 'badfilter') { problem('这里用不上 $badfilter：要放行，写一行 @@ 开头的'); continue }
+    // 照着这一行写出放行的那条；本来就是放行的，不想放行就删掉它 / The allow rule is written out from this line; one that already allows is simply removed
+    if (parsed.kind === 'badfilter') { problem(parsed.rule.startsWith('@@') ? '这里用不上 $badfilter：不想放行它，删掉这一行' : `这里用不上 $badfilter：要放行，写成 @@${parsed.rule}`); continue }
     if (over || rules.length + parsed.rules.length > MAX_OWN_RULES) {
       overCount += parsed.rules.length
       if (!over) { over = { line, text: raw.trim(), problem: '' }; problems.push(over) }

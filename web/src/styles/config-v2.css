@@ -352,7 +352,7 @@ body { background: var(--l-canvas); }
 a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-hover); text-underline-offset: 3px; }
 @media (hover: hover) { a.rrow__hits:hover { color: var(--l-ink); text-decoration-color: var(--l-ink); } }
 .rrow__menu { display: flex; justify-content: flex-end; }
-.rrow__pill.rrow__pill--inline, .rpin__short, .rpin__chev { display: none; }
+.rrow__pill.rrow__pill--inline, .rpin__chev { display: none; }
 .rpin__link, .rpin__rest { grid-column: 4 / -1; justify-self: end; }
 .rpin__rest { grid-column: 3 / -1; justify-self: stretch; max-width: 22rem; }
 .rlist__none { margin: 0; padding: var(--s-5) var(--s-4); border-bottom: 1px solid var(--l-hair); color: var(--l-ink-3); font-size: var(--t-2); text-align: center; }
@@ -414,7 +414,7 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
   /* 点按区按按钮自己的大小往外补到 44：按钮比 44 大的那一边不动（映射行的按钮比规则行的小，按固定差值补会不够） / The hit area grows from the button's own size to 44; a side already past 44 stays put (the mapping row's button is smaller than the rule row's, so a fixed offset fell short) */
   .rrow__menu .ui-icon-btn::before, .rw__row > .ui-menu-host .ui-icon-btn::before { position: absolute; inset: calc(min(0px, (100% - var(--h-touch)) / 2)); content: ''; }
   .rpin { grid-template-columns: var(--s-5) minmax(0, 1fr) auto; grid-template-areas: "num main chev"; }
-  .rpin .rrow__pill:not(.rpin__rest), .rpin__link, .rpin__long { display: none; }
+  .rpin .rrow__pill:not(.rpin__rest), .rpin__link { display: none; }
   .rpin__rest { grid-area: pill; justify-self: start; max-width: none; width: 100%; }
   .ups > .toolbar .toolbar__lead { flex: 1 1 0; }
   /* 页签说明和右边的按钮并排，不各占一行 / A tab's lead sits beside its button instead of each taking a row */
@@ -479,8 +479,7 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
   .rrow__switch { align-self: start; grid-area: switch; justify-self: end; margin-top: calc((var(--s-5) - var(--switch-h)) / 2); }
   .rcard__order { padding: var(--s-3) var(--s-4); display: none; }
   .rpin:not(.rpin--rest) .rrow__main { display: flex; align-items: baseline; gap: var(--s-2); }
-  .rpin:not(.rpin--rest) .rrow__cond { white-space: nowrap; }
-  .rpin__short { display: inline; color: var(--l-ink-3); }
+  .rpin:not(.rpin--rest) .rrow__cond { white-space: nowrap; color: var(--l-ink-3); }
 }
 /* ============================================================================
    v2 第三轮审查后的修正 / Corrections after review round 3

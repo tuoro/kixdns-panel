@@ -26,7 +26,7 @@ import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, discardDraft, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, bulkDeleting, busy, checkPending, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, rereadAndSay, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse } from '../config-v2/useConfigDocument'
+import { applyBusy, bulkDeleting, busy, checkPending, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, rereadAndSay, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse } from '../config-v2/useConfigDocument'
 import { useHelp } from '../composables/useHelp'
 import { useServiceStart } from '../composables/useServiceStart'
 import { registerLeaveGuard, takeAgreement } from '../composables/useLeaveGuard'
@@ -406,7 +406,10 @@ async function reload(ask = true): Promise<void> {
 const askLeave = async (purpose?: 'signout'): Promise<boolean> => {
   const labels = purpose === 'signout' ? { confirmLabel: '放弃并退出', cancelLabel: '先不退出' } : { confirmLabel: '放弃修改', cancelLabel: '继续编辑' }
   // 正在保存、之后没再改：保存照常做完，结果会用提示说，不问「放弃」（问了也放弃不了） / Saving with nothing changed since: the save finishes and a toast tells its outcome, so no 放弃 question (it could not discard anyway)
-  if (!unsaved.value || onlySaving()) return true
+  if (!unsaved.value) return true
+  // 记下是因为保存在跑才放行的：页面卸下之前保存就失败了，也照「人已经走了」留草稿、说原因 / Note that the save let this leave through: a failure before
+  // the page unmounts still keeps the draft and says why, as for someone already gone
+  if (onlySaving()) { leavingDuringSave(); return true }
   if (!dirty.value && !jsonDirty.value) return confirm.ask({ title: `放弃${editorEdited.value ? '这条规则' : [...dialogEdits.values()][0] ?? '这条规则'}的修改`, body: '刚才在这里改的内容不会写进草稿。', ...labels, destructive: true })
   // 正在保存时又改过：正在保存的那份照常落地，丢掉的只是之后改的 / Edited again during a save: the part being saved still lands, only the later edits are dropped
   // 同意了就把草稿退回正在保存的那一份：保存没成功时回来看到的正是它，不会冒出说好丢掉的那几处 / On agreement the draft goes back to the one being saved: a failed save brings back exactly that, not the edits agreed to drop

@@ -8,7 +8,7 @@ import { useToast } from '../composables/useToast'
 import DraftReviewDialog from './DraftReviewDialog.vue'
 import RuleText from './RuleText.vue'
 import { usePhone, useTightSaveBar } from './phone'
-import { changeCount, dialogEdits, discardWithUndo, editorEdited, model } from './store'
+import { changeCount, dialogEdits, discardWithUndo, editorEdited, model, userPart } from './store'
 import { busy, waitingForBuild, cnameBlocked, pendingVersionId, queued, rereading, saveInFlight, sayBlocked, conflict, deferNote, deferSave, editTouched, elapsed, note, origin, save, saveMessage, stage, validate, validation, verdict } from './useConfigDocument'
 
 // 保存条只替草稿说话：有改动才升起来，保存完一会儿就收起。两步：先校验，再写入并热加载；任何一步失败都停住，原因里的规则能点。
@@ -37,7 +37,7 @@ const validated = computed(() => (draftStage.value === 'idle' && validation.valu
 // 有新改动就清掉上一次的结果 / A new edit clears the previous result
 watch(() => JSON.stringify(model), () => { validation.value = null })
 // 合成落地换上文件不算再改一笔：保存没成的那句留着，不一闪就没 / A build landing with its file is no fresh edit: a failed save's line stays instead of flashing away
-watch(() => JSON.stringify({ ...model, blocklists: { ...model.blocklists, file: null, builtFor: '' } }), () => editTouched())
+watch(() => userPart(model), () => editTouched())
 
 function onKey(event: KeyboardEvent): void {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {

@@ -11,7 +11,7 @@ import { useSession } from '../composables/useSession'
 import { dismissUndoable, toastMark, useToast } from '../composables/useToast'
 import { errorMessage } from '../utils'
 import { dismissBuildToast, needsBuild, settleBlocklists, type BuildProblem } from './useBlocklists'
-import { appliedSnapshot, findRuleByName, applyHits, applyUpstreamStats, changeCount, dialogEdits, dirty, draftGeneration, editorEdited, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, replaceModel, reportOpen, unsaved } from './store'
+import { appliedSnapshot, userPart, findRuleByName, applyHits, applyUpstreamStats, changeCount, dialogEdits, dirty, draftGeneration, editorEdited, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, replaceModel, reportOpen, unsaved } from './store'
 
 // 配置页和面板服务之间的事：读配置和历史、KixDNS 的运行状态和能力、校验、保存并热加载、现在应用。
 // 草稿本身在 store.ts；这里只管「文件」和「运行」。所有状态是模块级的，页面和保存条共用同一份。
@@ -395,6 +395,9 @@ export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: str
 // 单独点的「校验」还没回来时按了保存：等它回来再保存，不吞掉这一下 / Save pressed while a lone 校验 is still out: the save waits for it instead of swallowing the press
 let checkRun: Promise<ValidationResult | null> | null = null
 let checkedContent: string | null = null
+// 排着的保存遇上的、单独校验等合成时没成的原因：离开以后的提示按它说 / Why the build a lone check waited on failed, for a save queued behind it: the away toast
+// is worded by it
+let checkBuildProblem: BuildProblem | null = null
 export async function validate(): Promise<ValidationResult | null> {
   if (checkRun) return checkRun
   checkRun = runCheck()
@@ -405,6 +408,7 @@ async function runCheck(): Promise<ValidationResult | null> {
   if (deferSave.value || conflict.value) return null
   origin.value = 'draft'
   startStage('checking')
+  checkBuildProblem = null
   // 校验一份旧的拦截列表文件没有意义：先等它按现在的订阅合成好；没合成好时说的是校验没做成，不是配置没通过
   // Checking a stale blocklist file means nothing: wait for it to be built for the current subscriptions first; when that fails the check did not run,
   // which is not the config failing it
@@ -416,8 +420,11 @@ async function runCheck(): Promise<ValidationResult | null> {
     // 等的时候先前排着的合成失败了，那条提示也收起：保存条接着说 / A build queued before that failed while waiting: its toast goes too, the save bar takes over
     dismissBuildToast()
     if (problem) {
-      verdict.value = problem.down ? '连不上面板' : '没有校验'
-      finishStage('failed', buildProblemNote(problem, '校验'))
+      // 有保存排在后面：它按的是保存，按保存来说（和第 0 步一样） / A save queued behind: it was a save that was pressed, so it is told as a save (as in step 0)
+      const asSave = queued.value
+      checkBuildProblem = asSave ? problem : null
+      verdict.value = problem.down ? '连不上面板' : asSave ? (problem.changed ? '没有保存' : '没有保存成功') : '没有校验'
+      finishStage('failed', buildProblemNote(problem, asSave ? '保存' : '校验'))
       return null
     }
   }
@@ -534,14 +541,22 @@ export function setViewing(open: boolean): boolean {
   if (!open && unanswered?.from === 'apply' && awayToast === null && signedIn()) awayToast = useToast().error(`不知道${unanswered.pending ? `版本 #${unanswered.pending} ` : '配置'}应用了没有：连不上面板。连上后会自己核对`)
   const keep = open && keepOnReturn
   if (open) {
+    leftDuringSave = false
     dropKeptDraft()
     dismissAwayToast()
   }
   return keep
 }
 /** 草稿里没保存的就是正在保存的那一份：离开不用问 / Everything unsaved is the draft being saved right now: leaving need not ask */
-export const onlySaving = (): boolean => busy.value && origin.value === 'draft' && inFlight === JSON.stringify(model)
+// 比的是用户自己改的部分：等合成时面板填进去的文件和标题不算「之后改的」 / Compares the user's own edits: the file and titles the panel fills in while
+// waiting for a build are not 「edits made after」
+export const onlySaving = (): boolean => busy.value && origin.value === 'draft' && inFlight !== null && userPart(JSON.parse(inFlight) as Model) === userPart(model)
   && !editorEdited.value && !jsonEdited.value && dialogEdits.size === 0
+// 保存途中、没再改过，离开已经放行（页面还没卸下）：之后的结果照「人已经走了」处理 / A leave let through during a save with nothing edited since (the page not yet
+// unmounted): what follows is handled as if the user were gone
+let leftDuringSave = false
+export function leavingDuringSave(): void { leftDuringSave = true }
+const away = (): boolean => !viewing || leftDuringSave
 const sentence = (text: string) => text.replace(/[。.]\s*$/, '')
 
 // origin：保存草稿（保存栏报进度）或应用已经保存的版本（页头报进度，出错进提示）。有改动、或者要应用和运行配置不同的文件，
@@ -575,7 +590,7 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
   // 按完就离开了、这次没存成：草稿留着等回来，用提示说为什么没存 / Left right after pressing and this save failed: the draft is kept for the return and a
   // toast says why nothing was saved
   const sayAway = (text: string) => {
-    if (viewing || abandoned) return
+    if (!away() || abandoned) return
     keepDraftForReturn()
     dismissAwayToast()
     awayToast = useToast().error(text)
@@ -589,11 +604,11 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
     // 校验没过（被拒、KixDNS 停了、连不上）：停在那句结论上，不接着存；退出登录时放下了这份草稿也不存
     // The check failed (rejected, KixDNS stopped, unreachable): stop at that verdict instead of saving; nor save a draft let go at sign-out
     if (stage.value === 'failed') {
-      sayAway(verdict.value === 'KixDNS 已停止' ? `配置没有保存：KixDNS 已停止。${kept}，可以先存成待应用版本`
-        : verdict.value === '连不上面板' ? `配置没有保存：连不上面板。${kept}，连上后再保存`
-          // 校验在等拦截列表合成时就停了，没送去校验 / The check stopped while waiting for the blocklists' build and never ran
-          : verdict.value === '没有校验' ? `配置没有保存：${sentence(note.value)}。${kept}`
-          : `配置没有保存：没有通过校验。${kept}。${note.value}`)
+      // 校验在等拦截列表合成时就停了：和第 0 步没成一样说 / The check stopped while waiting for the blocklists' build: told as a failed step 0
+      sayAway(checkBuildProblem ? buildAwayText(checkBuildProblem, kept)
+        : verdict.value === 'KixDNS 已停止' ? `配置没有保存：KixDNS 已停止。${kept}，可以先存成待应用版本`
+          : verdict.value === '连不上面板' ? `配置没有保存：连不上面板。${kept}，连上后再保存`
+            : `配置没有保存：没有通过校验。${kept}。${note.value}`)
     }
     if (stage.value === 'failed' || abandoned || busy.value || !doc.value) { inFlight = null; abandoned = false; return }
   }
@@ -619,9 +634,7 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
       if (abandoned) { abandoned = false; finishStage('idle'); return }
       verdict.value = problem!.down ? '连不上面板' : problem!.changed ? '没有保存' : '没有保存成功'
       finishStage('failed', buildProblemNote(problem!, '保存'))
-      sayAway(problem!.down ? `配置没有保存：连不上面板。${kept}，连上后再保存`
-        : problem!.changed ? `配置没有保存：等合成的时候订阅又变了。${kept}，回去再保存一次`
-          : `配置没有保存：拦截列表没有合成好（${problem!.reason}）。${kept}，${problem!.fixable ? '改好再保存' : '回去再保存一次'}`)
+      sayAway(buildAwayText(problem!, kept))
       return
     }
     // 名字在页面上改不了：等的时候变了，是下载带来的标题，跟着文件一起存 / Names cannot be edited on the page: one that changed while waiting is the
@@ -702,7 +715,7 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
     // 保存途中离开了配置页：没有保存条报结果，用提示说；退出登录时放下了这份草稿就不说（确认框说过「不再告诉你结果」）
     // Left the config page mid-save: no save bar reports it, so a toast does; not after sign-out let the draft go (the confirm said no result would follow)
     // 离开以后重试应用被先存着：同样说出存的是哪一版的内容 / A retry kept as pending while away: say whose content it stored, as on the page
-    else if (!viewing && !abandoned) useToast().success(applyResultState(result) === 'pending' ? (retrying ? retriedPending : pendingText) : `版本 #${result.version_id} 已生效`)
+    else if (away() && !abandoned) useToast().success(applyResultState(result) === 'pending' ? (retrying ? retriedPending : pendingText) : `版本 #${result.version_id} 已生效`)
     announceWritten()
   } catch (error) {
     // 会话过期：页面会回到登录页，这里不挂「没通过校验」 / Session expired: the page goes back to the login page; no 没有通过校验 here
@@ -781,7 +794,7 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
         }
       }
     }
-    else if (!viewing && !abandoned) {
+    else if (away() && !abandoned) {
       // 动词跟着实际发生了什么走（和保存条的判定一样），不跟着停在哪一步；内核的原话放最后
       // The verb follows what actually happened (as the save bar's verdict does), not the step it stopped at; the kernel's own words go last
       if (!writtenNotApplied) keepDraftForReturn()
@@ -800,6 +813,12 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
   }
 }
 export const applyNow = () => void save('apply')
+/** 等拦截列表合成没成、人已经离开配置页时那条提示 / The toast when waiting for the blocklists' build failed with the user away from the config page */
+function buildAwayText(problem: BuildProblem, kept: string): string {
+  if (problem.down) return `配置没有保存：连不上面板。${kept}，连上后再保存`
+  if (problem.changed) return `配置没有保存：等合成的时候订阅又变了。${kept}，回去再保存一次`
+  return `配置没有保存：拦截列表没有合成好（${problem.reason}）。${kept}，${problem.fixable ? '改好再保存' : '回去再保存一次'}`
+}
 /** 等拦截列表合成没成时保存条下面那句 / The line under the save bar when waiting for the blocklists' build failed */
 function buildProblemNote(problem: BuildProblem, what: '保存' | '校验'): string {
   if (problem.down) return `拦截列表还没合成好，连上后再${what}`
