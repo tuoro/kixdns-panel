@@ -28,7 +28,9 @@ import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, discardOnLeave, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
 import { applyBusy, bulkDeleting, busy, checkPending, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, stayedDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, rereadAndSay, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse } from '../config-v2/useConfigDocument'
 import { dismissBlocklistToasts } from '../config-v2/useBlocklists'
+import { carryUpdate } from '../config-v2/updateCarry'
 import { useHelp } from '../composables/useHelp'
+import { useSession } from '../composables/useSession'
 import { useServiceStart } from '../composables/useServiceStart'
 import { registerLeaveGuard, takeAgreement } from '../composables/useLeaveGuard'
 import '../styles/config-v2.css'
@@ -43,6 +45,7 @@ const JsonEditor = defineAsyncComponent(() => import('../components/JsonEditor.v
 const route = useRoute()
 const help = useHelp()
 const router = useRouter()
+const session = useSession()
 const toast = useToast()
 const confirm = useConfirm()
 const phone = usePhone()
@@ -405,6 +408,8 @@ async function reload(ask = true): Promise<void> {
 // With only a rule edit not yet 完成, or an open drawer's edits, the question names that one thing; with draft or JSON edits it is about the whole draft
 // purpose 是 signout 时按钮写「放弃并退出 / 先不退出」，和在别处退出登录时一样 / With purpose signout the buttons read 放弃并退出 / 先不退出, as when signing out from elsewhere
 const askLeave = async (purpose?: 'signout'): Promise<boolean> => {
+  // 每问一次重新算：上一次退出登录没成功时留下的不算数 / Each ask starts afresh: what a failed sign-out left behind no longer counts
+  signoutDrop = false
   const labels = purpose === 'signout' ? { confirmLabel: '放弃并退出', cancelLabel: '先不退出' } : { confirmLabel: '放弃修改', cancelLabel: '继续编辑' }
   // 正在保存、之后没再改：保存照常做完，结果会用提示说，不问「放弃」（问了也放弃不了） / Saving with nothing changed since: the save finishes and a toast tells its outcome, so no 放弃 question (it could not discard anyway)
   if (!unsaved.value) return true
@@ -428,10 +433,18 @@ const askLeave = async (purpose?: 'signout'): Promise<boolean> => {
   // keeps edits; and a 立即更新 under way lands on a clean draft and takes effect directly, as with no edits. They go once the page change has really
   // happened (see afterEach below), and stay if it does not. Signing out drops nothing: once the session ends the next visit's read replaces the draft
   // anyway, and a failed sign-out keeps the edits. Only with 现在应用 still running do they go at once, since its re-read would keep them
-  if (agreed && purpose === 'signout') { if (applyBusy.value) discardOnLeave() }
+  // 退出登录：等会话真的结束了再丢（见下面的 watch），退出没成功时修改还在
+  // Signing out: the edits go once the session has really ended (see the watch below), and stay if the sign-out fails
+  if (agreed && purpose === 'signout') { if (applyBusy.value) discardOnLeave(); else signoutDrop = true }
   else if (agreed) agreedDrop = discardOnLeave
   return agreed
 }
+let signoutDrop = false
+watch(() => session.authenticated.value, (now) => {
+  if (now || !signoutDrop) return
+  signoutDrop = false
+  discardOnLeave()
+})
 // 同意离开时要丢掉的修改，等换页成了再丢 / Edits agreed to drop on leaving, dropped once the page change succeeds
 let agreedDrop: (() => void) | null = null
 const releaseGuard = registerLeaveGuard(askLeave, () => unsaved.value)
@@ -444,7 +457,9 @@ const stopAfterEach = router.afterEach((_to, _from, failure) => {
   const drop = agreedDrop
   agreedDrop = null
   if (failure) { stayedDuringSave(); return }
-  if (drop) { drop(); dismissBlocklistToasts() }
+  // 放弃的是用户自己的修改，不是立即更新：下好、还没存上的那份照样直接生效（updateCarry.ts） / What was dropped are the user's own edits, not 立即更新:
+  // a download that landed and is not saved yet still takes effect (updateCarry.ts)
+  if (drop) { drop(); dismissBlocklistToasts(); void carryUpdate() }
 })
 const stopOnError = router.onError(() => { agreedDrop = null; stayedDuringSave() })
 // 提示条的按钮做事期间停用，焦点跟着掉到页面上：做完没人接住焦点时，回到这个按钮（还在的话），不在了就落在提示条上

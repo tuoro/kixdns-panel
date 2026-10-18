@@ -150,8 +150,10 @@ const rows = computed(() => {
     <div v-else-if="result" class="tester__out" role="status">
       <div class="tester__result" :class="{ 'is-warn': !ok }">
         <p class="tester__verdict"><span v-if="result.source === 'draft'" class="ui-tag tester__tag">草稿</span>{{ verdict }}</p>
-        <p v-if="byBlocklist && ownBlock?.only" class="tester__allow"><span class="nowrap">「自己写的规则」</span>第 {{ ownBlock.line }} 行拦着它。要放行，删掉那一行；订阅的列表也有它时，再写 <code>@@||{{ tested }}^</code></p>
-        <p v-else-if="byBlocklist && ownBlock" class="tester__allow"><span class="nowrap">「自己写的规则」</span>第 {{ ownBlock.line }} 行 <code>{{ ownBlock.text }}</code> {{ ownBlock.exact ? '拦着它' : '连它一起拦着' }}<template v-if="ownBlock.more">，还有 {{ ownBlock.more }} 行也拦着</template>。{{ ownBlock.exact ? '要放行' : '只放行它' }}，在<span class="nowrap">「自己写的规则」</span>里写 <code>@@||{{ tested }}^</code></p>
+        <!-- 都引出拦着它的那一行原文；自己写的放行写在哪一行都优先，所以只说「加一行」 / Every form quotes the line that blocks it; an own allow wins
+             wherever it is written, so it just says 「add a line」 -->
+        <p v-if="byBlocklist && ownBlock?.only" class="tester__allow"><span class="nowrap">「自己写的规则」</span>第 {{ ownBlock.line }} 行 <code>{{ ownBlock.text }}</code> 拦着它。要放行，删掉这一行；订阅的列表也有它时，再加一行 <code>@@||{{ tested }}^</code></p>
+        <p v-else-if="byBlocklist && ownBlock" class="tester__allow"><span class="nowrap">「自己写的规则」</span>第 {{ ownBlock.line }} 行 <code>{{ ownBlock.text }}</code> {{ ownBlock.exact ? '拦着它' : '连它一起拦着' }}<template v-if="ownBlock.more">，还有 {{ ownBlock.more }} 行也拦着</template>。{{ ownBlock.exact ? '要放行' : '只放行它' }}，加一行 <code>@@||{{ tested }}^</code></p>
         <p v-else-if="byBlocklist" class="tester__allow">拦截列表先于规则：要放行，在<span class="nowrap">「自己写的规则」</span>里写 <code>@@||{{ tested }}^</code></p>
         <button v-else class="ui-btn ui-btn--secondary ui-btn--sm" type="button" @click="emit('quick', domain.trim())"><Plus :size="14" aria-hidden="true" />为这个域名加一条</button>
       </div>

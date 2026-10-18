@@ -62,7 +62,10 @@ const mappingLines = computed(() => [named(liveMappings.value.map((r) => r.domai
 const listLines = computed(() => {
   const own = ownRules.value
   const join = (lists: string, mine: string) => [lists, own ? mine : ''].filter(Boolean).join('，')
-  const forms = (...lists: string[]) => [...lists.map((l) => join(l, `自己写的规则 ${own} 条`)), join(lists.at(-1) ?? '', `自己写的 ${own} 条`), join(lists.at(-1) ?? '', `自己的 ${own} 条`)]
+  // 最后一种只写列表个数（没有列表时只写自己的几条）：「命中」标签挤窄了这一格时，宁可少说一项，也不截在数字中间
+  // The last form gives only the list count (or only one's own count without lists): when the 命中 tag narrows the cell, one item fewer beats a number
+  // cut in half
+  const forms = (...lists: string[]) => [...lists.map((l) => join(l, `自己写的规则 ${own} 条`)), join(lists.at(-1) ?? '', `自己写的 ${own} 条`), join(lists.at(-1) ?? '', `自己的 ${own} 条`), lists.at(-1) || `自己的 ${own} 条`]
   const lists = liveLists.value
   if (!lists.length) {
     const subs = model.blocklists.subscriptions

@@ -5,8 +5,8 @@ import { recentWindowLabel, settledAttempts, upstreamBasis } from '../dashboard-
 import { readConfig, type ImportReport, type ReadResult } from '../config-model/document'
 import { normalizeAddress } from '../config-model/kernel'
 import { findKernelRule } from '../config-model/trace-names'
-import { normalUrl } from '../config-model/blocklist'
-import { blocklistKey, emptyBlocklists, kernelAddress, mainPipelineId, nextId, ruleGroupPipelineId, ruleTitle, type Model, type Outcome, type Remedy, type Rule, type RuleGroup, type Subscription, type UpstreamGroup } from '../config-model/model'
+import { isDefaultName, normalUrl, uniqueSubscriptionName } from '../config-model/blocklist'
+import { emptyBlocklists, kernelAddress, mainPipelineId, nextId, ruleGroupPipelineId, ruleTitle, type Model, type Outcome, type Remedy, type Rule, type RuleGroup, type Subscription, type UpstreamGroup } from '../config-model/model'
 
 // 配置页的草稿：一份模型加上「上次读进来 / 保存成功时」的那份，改动按两者比出来。运行状态、保存流程在 useConfigDocument.ts。
 // The config page's draft: one model plus the one last loaded or saved, with changes computed between them. Runtime state and the
@@ -159,12 +159,11 @@ export function replaceOnLeave(next: Model): void {
   replaceModel(next)
   if (generation.value !== before) leaveDiscards.set(generation.value, before)
 }
-// 放弃的是用户自己的修改：草稿里的合成文件是按已保存的那组订阅合成的（立即更新刚下好的），就留着，下面接着直接生效
-// What is dropped are the user's own edits: a merged file built for the saved subscriptions (立即更新 just landed) stays, to take effect right after
+// 离开时放弃修改：草稿退回已保存的那份。立即更新下好、还没存上的那份由 updateCarry.ts 接着处理（服务端还存着它，再合成一次就有）
+// Dropping edits on leaving: the draft goes back to the saved one. A 立即更新 download that landed and is not saved yet is carried on by updateCarry.ts
+// (the server still holds it, and one more build brings it back)
 export function discardOnLeave(): void {
-  const next = appliedModel.value
-  const built = model.blocklists.builtFor === blocklistKey(next.blocklists) && model.blocklists.file !== next.blocklists.file
-  replaceOnLeave(built ? { ...next, blocklists: { ...next.blocklists, file: model.blocklists.file, builtFor: model.blocklists.builtFor } } : next)
+  replaceOnLeave(appliedModel.value)
 }
 /** 草稿从 `then` 那一代起没换过，或者只隔着离开时的放弃 / Whether the draft is unreplaced since generation `then`, or only through discards on leaving */
 export function sameDraftSince(then: number): boolean {
@@ -197,11 +196,27 @@ export const importReport = ref<ImportReport | null>(null)
 export const importSource = ref('')
 export const reportOpen = ref(false)
 
+// 放回去的订阅（撤销删除、删掉又加回来）：编号或名字已经被草稿里别的订阅占了就换一个，两行不会同编号、同名。带标题的名字前面加主机，默认名照起名的规矩往上加
+// A subscription put back (undoing a delete, adding back a removed one): an id or name another subscription in the draft now holds is replaced, so no two
+// rows share either. A title gets the host in front, a default name goes up by the naming rule
+export function placeBack(s: Subscription): Subscription {
+  const list = model.blocklists.subscriptions
+  const names = new Set(list.map((x) => x.name))
+  const id = list.some((x) => x.id === s.id) ? newId() : s.id
+  if (!names.has(s.name)) return id === s.id ? s : { ...s, id }
+  let host = ''
+  try { host = new URL(s.url).host } catch { /* 链接已经查过 / the link was checked */ }
+  const hosted = `${host}\u00a0·\u00a0${s.name}`
+  return { ...s, id, name: !isDefaultName(s.name, s.url) && !names.has(hosted) ? hosted : uniqueSubscriptionName(s.url, names) }
+}
+
 // ---------- 编号 / ids ----------
-// 模型里现有编号之后往上数；读进新的一份时重新对齐 / Counts up from the model's existing ids, realigned whenever a new model is read
+// 模型里现有编号之后往上数；读进新的一份时重新对齐。已保存那份里的编号也不再发出去：删掉一个再加别的，撤销时不会撞上
+// Counts up from the model's existing ids, realigned whenever a new model is read. Ids in the saved copy are never handed out either: removing one and
+// adding another cannot collide with it on undo
 let counter = 0
 export function newId(): number {
-  counter = Math.max(counter, nextId(model))
+  counter = Math.max(counter, nextId(model), nextId(appliedModel.value))
   return counter++
 }
 

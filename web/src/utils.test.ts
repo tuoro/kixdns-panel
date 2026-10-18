@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { errorMessage, formatAgo, formatDuration, formatKixdnsVersion, formatPercent, formatSmallPercent, formatVersionTime, helpRuns, shortHash, upstreamSuccessRate } from './utils'
+import { errorMessage, formatAgo, formatDuration, formatKixdnsVersion, formatPercent, formatSmallPercent, formatVersionTime, helpRuns, hyphenRuns, shortHash, upstreamSuccessRate } from './utils'
 
 describe('界面格式化工具', () => {
   it('生成稳定且紧凑的运行指标', () => {
@@ -97,6 +97,18 @@ describe('formatAgo', () => {
     expect(formatAgo(now / 1000 - 5 * 60, now)).toBe('5 分钟前')
     expect(formatAgo(now / 1000 - 3 * 3600, now)).toBe('3 小时前')
     expect(formatAgo(now / 1000 - 3 * 86_400 - 60, now)).toBe('3 天前')
+  })
+})
+
+describe('hyphenRuns', () => {
+  it('带连字符的词各自连住，原文不变 / hyphenated words are glued runs and the text is unchanged', () => {
+    const text = '要重新下载，点「fail-hosts.txt」那一行；连不上 anti-ad.net，写 @@||own-block.example^'
+    const runs = hyphenRuns(text)
+    expect(runs.map((r) => r.text).join('')).toBe(text)
+    // 紧挨着的引号、句末标点跟着连住 / Quotes and closing punctuation next to it go along
+    expect(runs.filter((r) => r.glue).map((r) => r.text)).toEqual(['「fail-hosts.txt」', 'anti-ad.net，', '@@||own-block.example^'])
+    // 太长的不连，免得窄屏上撑出去 / Too long a word stays unglued, lest it overflow a narrow screen
+    expect(hyphenRuns('连不上 very-long-subdomain-name.example.org。').some((r) => r.glue)).toBe(false)
   })
 })
 

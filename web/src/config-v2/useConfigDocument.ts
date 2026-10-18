@@ -3,6 +3,7 @@ import { ApiError, CONFIG_WRITTEN_EVENT, apiRequest, isPanelDown, jsonBody } fro
 import { useConfirm } from '../composables/useConfirm'
 import { registerHeldDraft } from '../composables/useLeaveGuard'
 import type { ConfigApplyResult, ConfigDocument, ConfigRuntimeApplyState, ConfigVersion, ConfigVersionDetail, ConfigVersions, DeleteConfigVersionResult, DeleteConfigVersionsResult, Overview, ServiceStatus, ValidationResult } from '../api/types'
+import { normalUrl } from '../config-model/blocklist'
 import { exportConfig, readConfig } from '../config-model/document'
 import { blocklistKey, type Model, type Rule } from '../config-model/model'
 import { traceNames } from '../config-model/trace-names'
@@ -11,7 +12,7 @@ import { useSession } from '../composables/useSession'
 import { dismissUndoable, toastMark, useToast } from '../composables/useToast'
 import { errorMessage } from '../utils'
 import { dismissBuildToast, needsBuild, settleBlocklists, type BuildProblem } from './useBlocklists'
-import { appliedSnapshot, changesBesidesFile, replaceOnLeave, findRuleByName, applyHits, applyUpstreamStats, changeCount, dialogEdits, dirty, draftGeneration, editorEdited, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, replaceModel, reportOpen, unsaved } from './store'
+import { appliedModel, appliedSnapshot, changesBesidesFile, replaceOnLeave, findRuleByName, applyHits, applyUpstreamStats, changeCount, dialogEdits, dirty, draftGeneration, editorEdited, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, replaceModel, reportOpen, unsaved } from './store'
 
 // 配置页和面板服务之间的事：读配置和历史、KixDNS 的运行状态和能力、校验、保存并热加载、现在应用。
 // 草稿本身在 store.ts；这里只管「文件」和「运行」。所有状态是模块级的，页面和保存条共用同一份。
@@ -526,7 +527,16 @@ if (typeof window !== 'undefined') window.addEventListener('beforeunload', (even
 // 会话过期或退出登录时放下这份草稿：离开那条提示一起收起；还在路上的那次保存不再把草稿留下、也不再弹「草稿留在配置页」
 // Let go of the held draft on session expiry or sign-out: its away toast goes too, and a save still on its way no longer keeps the draft or says 草稿留在配置页
 let abandoned = false
-registerHeldDraft(draftHeldAway, () => inFlight !== null && origin.value === 'draft', () => { keepOnReturn = false; dismissAwayToast(); if (inFlight !== null) abandoned = true }, () => useConfirm().ask({
+// 同意放下草稿退出登录：会话真的结束了再丢掉内存里的修改，再登录时读不到面板也不会冒出来；退出没成功时修改还在
+// Agreed to let the draft go and sign out: the edits in memory go once the session has really ended, so they cannot reappear when the read fails after
+// signing in again; a failed sign-out keeps them
+let dropOnSessionEnd = false
+watch(() => useSession().authenticated.value, (now) => {
+  if (now || !dropOnSessionEnd) return
+  dropOnSessionEnd = false
+  replaceOnLeave(appliedModel.value)
+})
+registerHeldDraft(draftHeldAway, () => inFlight !== null && origin.value === 'draft', () => { keepOnReturn = false; dismissAwayToast(); dropOnSessionEnd = true; if (inFlight !== null) abandoned = true }, () => useConfirm().ask({
   title: '放弃配置页的草稿',
   body: busy.value ? '配置页的保存还没做完。退出登录以后不再告诉你结果，没存上的修改也会丢掉。' : '配置页有一份没保存成功的修改，还没存到面板上，退出登录以后就没了。',
   confirmLabel: '放弃并退出',
@@ -550,11 +560,12 @@ export function dropEditsAfterSave(): void {
 export function keepDraftWhileAway(): void {
   if (away()) keepDraftForReturn()
 }
-/** 正在做的保存或「现在应用」做完（成没成都算） / Resolves once the save or 现在应用 under way has finished (either way) */
-export function whenSaveSettles(): Promise<void> {
+/** 正在做的保存、「现在应用」、恢复版本、删除版本和重新读取都做完（成没成都算） / Resolves once the save, 现在应用, version restore, version delete
+ * and re-read under way have all finished (either way) */
+export function whenDraftSettles(): Promise<void> {
   return new Promise((resolve) => {
-    if (!saveInFlight.value) { resolve(); return }
-    const stop = watch(saveInFlight, (running) => { if (!running) { stop(); resolve() } })
+    if (!draftBusy.value) { resolve(); return }
+    const stop = watch(draftBusy, (running) => { if (!running) { stop(); resolve() } })
   })
 }
 function dismissAwayToast(): void {
@@ -598,7 +609,17 @@ const sentence = (text: string) => text.replace(/[。.]\s*$/, '')
 // origin: saving the draft (the save bar reports) or applying a saved version (the header reports, errors go to a notice). With
 // changes, or a file that differs from what runs, and KixDNS running, validate on its own first: a failure stops at step 1 with no version written.
 // versionNote gives a save the panel starts itself (a manual blocklist update) its version note, leaving the note field as it is
-export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: string): Promise<void> {
+// 最近一次写入的结果：生效了还是存成待应用 / How the latest write ended: applied, or stored as pending
+let lastWrite: { version: number; state: 'applied' | 'pending' } | null = null
+export const lastSaveWrite = () => lastWrite
+/**
+ * 人不在配置页时，这次保存的结果怎么说。默认说「版本 #N 已生效」「配置没有保存：…草稿留在配置页」；立即更新这类面板替人做的保存说清是什么
+ * How this save's outcome is told with the user off the config page. By default 「版本 #N 已生效」 and 「配置没有保存：…草稿留在配置页」; a save the panel makes on
+ * the user's behalf (立即更新) says what it was
+ */
+export interface SaveWords { done?: (version: number) => string; pending?: (version: number) => string; failed?: string; kept?: string }
+export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: string, words?: SaveWords): Promise<void> {
+  lastWrite = null
   // 排着的那次已经算数：再按一下不另起一次 / A queued save already counts: another press starts nothing new
   if (queued.value) return
   const waiting = checkRun
@@ -620,11 +641,12 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
   const settledBefore = settledCount
   inFlight = JSON.stringify(draft)
   saveStarts += 1
-  const kept = '草稿留在配\u2060置\u2060页'
+  const kept = words?.kept ?? '草稿留在配\u2060置\u2060页'
   // 按完就离开了、这次没存成：草稿留着等回来，用提示说为什么没存 / Left right after pressing and this save failed: the draft is kept for the return and a
   // toast says why nothing was saved
-  const sayAway = (text: string) => {
+  const sayAway = (said: string) => {
     if (!away() || abandoned) return
+    const text = words?.failed ? said.replace(/^配置没有保存：/, words.failed) : said
     keepDraftForReturn()
     dismissAwayToast()
     awayToast = useToast().error(text)
@@ -673,8 +695,10 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
     }
     // 名字在页面上改不了：等的时候变了，是下载带来的标题，跟着文件一起存 / Names cannot be edited on the page: one that changed while waiting is the
     // title the download brought, saved along with the file
-    const names = new Map(model.blocklists.subscriptions.map((s) => [s.id, s.name]))
-    const subscriptions = draft.blocklists.subscriptions.map((s) => ({ ...s, name: names.get(s.id) ?? s.name }))
+    // 按规整后的链接对名字，和改动数一个口径：编号重了也不会把一个列表的名字换成另一个的 / Names are matched by normal link, as the change count is: a
+    // repeated id can never give one list another's name
+    const names = new Map(model.blocklists.subscriptions.map((s) => [normalUrl(s.url), s.name]))
+    const subscriptions = draft.blocklists.subscriptions.map((s) => ({ ...s, name: names.get(normalUrl(s.url)) ?? s.name }))
     draft = { ...draft, blocklists: { ...draft.blocklists, subscriptions, file: model.blocklists.file, builtFor: key } }
   }
   const content: unknown = JSON.parse(JSON.stringify(exportConfig(draft)))
@@ -728,6 +752,7 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
     const pendingText = `已存成待应用版本 #${result.version_id}，${pendingWhen()}自\u2060动\u2060应\u2060用`
     // 保存途中又改了的：说一句那几处还没保存，不让「已生效」盖过它们 / Edits made during the save: say they are not saved yet, so 已生效 does not cover them
     const later = changeCount.value ? ` · 之后改的 ${changeCount.value} 处还没保存` : jsonEdited.value ? ' · JSON 里之后改的还没保存' : ''
+    lastWrite = { version: result.version_id, state: applyResultState(result) }
     finishStage('done', `${applyResultState(result) === 'pending' ? pendingText : `已生效 · 版本 #${result.version_id}`}${later}`)
     // 从提示条按的「重试应用」没有保存条报结果：成功了说一句，不让提示条悄悄消失 / 重试应用 from the notice has no save bar to report: say it worked instead of the notice just vanishing
     // 每次写入都存成新版本：「现在应用」按的是 #18，生效的是 #19，用恢复版本的说法交代一句 / Every write is stored as a new version: 现在应用 was pressed on #18 and #19 took effect, said in the restore wording
@@ -749,7 +774,7 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
     // 保存途中离开了配置页：没有保存条报结果，用提示说；退出登录时放下了这份草稿就不说（确认框说过「不再告诉你结果」）
     // Left the config page mid-save: no save bar reports it, so a toast does; not after sign-out let the draft go (the confirm said no result would follow)
     // 离开以后重试应用被先存着：同样说出存的是哪一版的内容 / A retry kept as pending while away: say whose content it stored, as on the page
-    else if (away() && !abandoned) useToast().success(applyResultState(result) === 'pending' ? (retrying ? retriedPending : pendingText) : `版本 #${result.version_id} 已生效`)
+    else if (away() && !abandoned) useToast().success(applyResultState(result) === 'pending' ? (retrying ? retriedPending : words?.pending?.(result.version_id) ?? pendingText) : words?.done?.(result.version_id) ?? `版本 #${result.version_id} 已生效`)
     announceWritten()
   } catch (error) {
     // 会话过期：页面会回到登录页，这里不挂「没通过校验」 / Session expired: the page goes back to the login page; no 没有通过校验 here
@@ -760,7 +785,7 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
     if (isConflict(error) && await alreadySaved(content, sent)) return
     // 撞上的「别处」其实是自己回应丢了的那次保存：把对照的那份换成它，再接着存这次多改的 / The 别处 met is this page's own save whose answer was lost: rebase onto it and go on saving what changed since
     // 保存途中连上、后台的核对先一步认出了那次保存（文件散列已经换成它）：同样接着存 / Reconnected mid-save and the background check got there first (the file hash already moved to it): carry on saving all the same
-    if (isConflict(error) && (await settleUnanswered(false) || settledCount !== settledBefore)) { finishStage('idle'); return save(from) }
+    if (isConflict(error) && (await settleUnanswered(false) || settledCount !== settledBefore)) { finishStage('idle'); return save(from, versionNote, words) }
     // 原地生效撞上别处的版本：没什么要保存的（「现在应用」只在没有修改时给），直接读入并说一句；途中又改了的，冲突归保存条说
     // An in-place apply met another writer's version: nothing needs saving (现在应用 is offered only without edits), so read it in and say so; with edits made
     // meanwhile the save bar owns the conflict
@@ -851,14 +876,17 @@ export const applyNow = () => void save('apply')
 function buildAwayText(problem: BuildProblem, kept: string): string {
   if (problem.down) return `配置没有保存：连不上面板。${kept}，连上后再保存`
   if (problem.changed) return `配置没有保存：等合成的时候订阅又变了。${kept}，回去再保存一次`
-  return `配置没有保存：拦截列表没有合成好（${problem.reason}）。${kept}，${problem.remove ? '删掉它再保存' : problem.fixable ? '改好再保存' : '回去再保存一次'}`
+  // 被拒的是某一个列表：原因里已经点了它的名字，说删掉这个列表 / One list was refused: the reason already names it, so it says to remove that list
+  if (problem.remove) return `配置没有保存：${problem.reason}。${kept}，删掉这个列表再保存`
+  return `配置没有保存：拦截列表没有合成好（${problem.reason}）。${kept}，${problem.fixable ? '改好再保存' : '回去再保存一次'}`
 }
 /** 等拦截列表合成没成时保存条下面那句 / The line under the save bar when waiting for the blocklists' build failed */
 function buildProblemNote(problem: BuildProblem, what: '保存' | '校验'): string {
   if (problem.down) return `拦截列表还没合成好，连上后再${what}`
   if (problem.changed) return `等合成的时候订阅又变了，再${what}一次`
   // 服务端拒绝了这组订阅：再试一样，要先改好 / The server refused these subscriptions: trying again changes nothing until they are fixed
-  if (problem.fixable) return `拦截列表没有合成好（${problem.reason}），${problem.remove ? '删掉它' : '改好'}再${what}`
+  if (problem.remove) return `${problem.reason}，删掉这个列表再${what}`
+  if (problem.fixable) return `拦截列表没有合成好（${problem.reason}），改好再${what}`
   return `拦截列表没有合成好（${problem.reason}），再${what}一次会重新合成`
 }
 // 键排好序再比，存进去和读出来的键顺序不同也算一样 / Compared with keys sorted, so a different key order on the way back still counts as the same
@@ -1096,6 +1124,9 @@ export const restoredCount = ref(0)
 export const rereading = computed(() => (loading.value && doc.value !== null) || restoring.value !== null)
 export const deleting = ref<number | null>(null)
 export const bulkDeleting = ref(false)
+/** 有会改面板上那份文件、或者换掉草稿的事在做：保存、「现在应用」、恢复版本、删除版本、重新读取 / Something that moves the file on the panel or replaces the
+ * draft is under way: a save, 现在应用, a restore, a version delete, a re-read */
+export const draftBusy = computed(() => saveInFlight.value || rereading.value || deleting.value !== null || bulkDeleting.value)
 // 版本的完整内容（比较用） / A version's full content (for comparing)
 export const versionDetail = (id: number) => apiRequest<ConfigVersionDetail>(`/api/v1/config/versions/${id}`)
 // 恢复：用那个版本的内容生成一个新版本并应用；回来重读整页 / Restore: a new version from that content, applied; the page reloads after

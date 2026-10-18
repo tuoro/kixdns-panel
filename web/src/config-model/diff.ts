@@ -20,7 +20,10 @@ function settingText(value: unknown, field: SettingField | undefined): string {
 // What differs between two configs, in the page's own words (规则「x」：结果从…改成…), never JSON. The direction is "what restoring that
 // version does": from the current one to that version.
 export interface DiffLine { sign: '-' | '+'; text: string }
-export interface DiffBlock { kind: '加上' | '去掉' | '改了' | '移动'; title: string; lines: DiffLine[]; note?: string }
+// aside：只是一句说明，不是一处不同，不算进「N 处不同」 / aside: a note only, not a difference, so it is not counted in 「N 处不同」
+export interface DiffBlock { kind: '加上' | '去掉' | '改了' | '移动'; title: string; lines: DiffLine[]; note?: string; aside?: boolean }
+/** 真正的不同有几处：说明不算 / How many real differences: notes do not count */
+export const differences = (blocks: DiffBlock[]): number => blocks.filter((b) => !b.aside).length
 
 // 高级规则读它的内核条件，和规则列表里那一行一样；JSON 只用来比较，不给人看 / An advanced rule reads as its kernel conditions, like its row in the rule list; the JSON is compared, never shown
 function rawSummary(r: Rule): string {
@@ -173,7 +176,11 @@ function blocklistDiff(blocks: DiffBlock[], now: Blocklists, then: Blocklists, t
   // restore direction still says the lists enabled on both sides go back to that day's contents
   const shared = now.subscriptions.some((x) => x.enabled && then.subscriptions.some((y) => y.enabled && same(x, y)))
   if (now.file !== then.file && links(now) === links(then)) blocks.push({ kind: '改了', title: '拦截列表', lines: [], note: toward === 'restore' ? '列表内容换回这个版本当时下载的那份' : '列表重新下载过，保存后换成新的那份' })
-  else if (now.file !== then.file && toward === 'restore' && shared) blocks.push({ kind: '改了', title: '拦截列表', lines: [], note: '两边都启用的列表用这个版本当时那份；其间重新下载过的，内容会换回当时的' })
+  // 订阅也变了：两边都启用的那几个有没有重新下载过分不出来，只在拦截列表那几块最后说一句，不算一处不同
+  // The subscriptions changed too: whether the lists on both sides were downloaded again cannot be told, so it is one note after the blocklist blocks,
+  // not a difference
+  const aside: DiffBlock | null = now.file !== then.file && links(now) !== links(then) && toward === 'restore' && shared
+    ? { kind: '改了', title: '拦截列表', lines: [], note: '两边都启用的列表，之后重新下载过的，内容也换回这个版本当时下载的那份', aside: true } : null
   const rows = (text: string) => text.split('\n').map((l) => l.trim()).filter(Boolean)
   const before = rows(now.custom)
   const after = rows(then.custom)
@@ -182,6 +189,7 @@ function blocklistDiff(blocks: DiffBlock[], now: Blocklists, then: Blocklists, t
   // 只挪了行、加减了空行：拦的不变，可原文变了，照样要存 / Lines only moved, or blank lines added or removed: nothing blocked changes, but the text did
   // and is still saved
   else if (now.custom !== then.custom) blocks.push({ kind: '改了', title: '拦截列表 · 自己写的规则', lines: [], note: '只调了顺序或空行，拦截的不变' })
+  if (aside) blocks.push(aside)
 }
 function kernelLines(a: unknown, b: unknown): DiffLine[] {
   return [...(a === undefined || a === null ? [] : [{ sign: '-' as const, text: JSON.stringify(a) }]), ...(b === undefined || b === null ? [] : [{ sign: '+' as const, text: JSON.stringify(b) }])]

@@ -92,6 +92,19 @@ describe('拦截列表读回来 / blocklists read back', () => {
     expect(blocklistKey(back)).toBe(back.builtFor)
   })
 
+  it('编号重复的订阅读进来换一个新编号 / a repeated subscription id gets a new one on read', () => {
+    const model = withLists()
+    model.blocklists.subscriptions = [
+      { id: 900, name: 'AdGuard DNS filter', url: 'https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt', enabled: true },
+      { id: 900, name: 'anti-AD', url: 'https://anti-ad.net/easylist.txt', enabled: true },
+    ]
+    model.blocklists.builtFor = blocklistKey(model.blocklists)
+    const back = readConfig(JSON.parse(JSON.stringify(exportConfig(model))) as Record<string, unknown>).model.blocklists.subscriptions
+    expect(back.map((s) => s.name)).toEqual(['AdGuard DNS filter', 'anti-AD'])
+    expect(new Set(back.map((s) => s.id)).size).toBe(2)
+    expect(back[0]!.id).toBe(900)
+  })
+
   it('没记合成给谁的旧草稿，当作文件就是按现在的订阅合成的 / an older draft without builtFor is taken as built for its subscriptions', () => {
     const model = withLists()
     const cfg = JSON.parse(JSON.stringify(exportConfig(model))) as { panel: { model: { blocklists: Record<string, unknown> } } }

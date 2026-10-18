@@ -1733,7 +1733,9 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
 .tester__result { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-2) var(--s-4); padding: var(--s-3) var(--s-4); border-radius: var(--r-2); background: var(--ok-tint-l); }
 .tester__result.is-warn { background: var(--warn-tint-l); }
 .tester__allow { margin: 0; color: var(--l-ink-2); font-size: var(--t-2); overflow-wrap: anywhere; }
-.tester__allow code { padding: 0 var(--s-1); border-radius: var(--r-1); background: color-mix(in srgb, var(--l-surface) 70%, transparent); font-family: var(--f-mono); font-size: var(--t-1); }
+/* 要照抄的规则是一整块：放不下时整块换到下一行，比一行还长才在里面断开，底色和圆角跟着这一块 / A rule to copy is one block: it moves whole to the next
+   line when it does not fit and only breaks inside when longer than a line, its ground and corners going with the block */
+.tester__allow code { display: inline-block; max-width: 100%; padding: 0 var(--s-1); border-radius: var(--r-1); background: color-mix(in srgb, var(--l-surface) 70%, transparent); font-family: var(--f-mono); font-size: var(--t-1); vertical-align: baseline; }
 .tester__verdict { min-width: 0; margin: 0; font-size: var(--t-3); font-weight: var(--w-bold); overflow-wrap: anywhere; }
 .tester__steps { margin: 0; }
 @media (max-width: 640px) {
@@ -1773,6 +1775,8 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
 .diffd__sign { display: inline-block; width: 1.2em; color: var(--l-ink-2); font-family: var(--f-mono); text-align: center; }
 .diffd__block h3 { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-1) var(--s-2); margin: 0 0 var(--s-2); color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-bold); }
 .diffd__block h3 small { color: var(--l-ink-3); font-size: var(--t-2); font-weight: var(--w-normal); }
+/* 说明不是一处不同：没有「改了」和横线，一句淡色的话 / A note is not a difference: no 改了 and no rule, one muted sentence */
+.diffd__aside { margin: 0; color: var(--l-ink-3); font-size: var(--t-2); }
 .diffd__kind { padding: 0 var(--s-2); border: 1px solid var(--l-hair); border-radius: var(--r-1); color: var(--l-ink-2); font-size: var(--t-1); font-weight: var(--w-medium); }
 .diffd__block ul { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
 .diffd__block li { padding: var(--s-1) var(--s-2); border-radius: var(--r-1); color: var(--l-ink); font-size: var(--t-2); line-height: var(--lh-base); overflow-wrap: anywhere; }

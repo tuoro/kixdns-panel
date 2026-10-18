@@ -128,13 +128,32 @@ export function keepTail(text: string, size = 5): [string, string] {
   return [text.slice(0, -size), text.slice(-size)]
 }
 
+/**
+ * 一句话里带连字符的词（列表名、主机名、修饰符）各自连成一块，不在连字符后面断开；别的地方照常折行。紧挨着的引号、句末标点跟着连住，不会单独
+ * 落到行首。太长的词（超过 24 个字符）不连，免得窄屏上撑出去。不往文字里加看不见的字符，复制出来和原文一样
+ * Splits a sentence so each hyphenated word (a list name, a host, a modifier) is one glued run that never breaks after its hyphen, the rest wrapping as usual.
+ * Quotes and closing punctuation next to it are glued along, so they never start a line alone. Words over 24 characters stay unglued, lest they overflow a
+ * narrow screen. No invisible characters go into the text, so a copy reads as the original
+ */
+export function hyphenRuns(text: string): Array<{ text: string; glue: boolean }> {
+  const runs: Array<{ text: string; glue: boolean }> = []
+  let at = 0
+  for (const m of text.matchAll(/「?([$\w.|@^/]*\w-[\w.|@^/-]*[\w^])[」。，：；）]*/g)) {
+    if (m[1]!.length > 24) continue
+    if (m.index > at) runs.push({ text: text.slice(at, m.index), glue: false })
+    runs.push({ text: m[0], glue: true })
+    at = m.index + m[0].length
+  }
+  if (at < text.length) runs.push({ text: text.slice(at), glue: false })
+  return runs
+}
 // 帮助段落按「整块」排：段尾几个字连在一起（同 keepTail），10 个字以内的「…」也连在一起，不把「公司内网」「转到规则组」拆到两行；
-// 引号跨在段尾的切口上时，切口挪到引号前面。这是面板自己给名字、引号加的连接规则，不是分词
+// 带连字符的写法（$third-party）整个连住，不在连字符后面断开；引号跨在段尾的切口上时，切口挪到引号前面。这是面板自己给名字、引号加的连接规则，不是分词
 // A help paragraph is laid out in glued runs: its last few characters stay together (as keepTail does), and so does every 「…」 of up to 10 characters, so
-// 「公司内网」 or 「转到规则组」 never splits across lines; a quote straddling the tail cut moves the cut to the quote's start. This is the panel's own glue
-// rule for names and quotes, not segmentation
+// 「公司内网」 or 「转到规则组」 never splits across lines; a hyphenated token ($third-party) stays whole instead of breaking after the hyphen; a quote
+// straddling the tail cut moves the cut to the quote's start. This is the panel's own glue rule for names and quotes, not segmentation
 export function helpRuns(text: string, size = 5): Array<{ text: string; glue: boolean }> {
-  const quotes = [...text.matchAll(/「[^「」]{1,10}」/g)].map((m) => [m.index, m.index + m[0].length] as const)
+  const quotes = [...text.matchAll(/「[^「」]{1,10}」|[$\w.|@^/]*\w-[\w.|@^/-]*[\w^]/g)].map((m) => [m.index, m.index + m[0].length] as const)
   let cut = text.length > size * 2 ? text.length - size : text.length
   for (const [start, end] of quotes) if (start < cut && end > cut) cut = start
   const runs: Array<{ text: string; glue: boolean }> = []

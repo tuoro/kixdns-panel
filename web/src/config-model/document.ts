@@ -1,7 +1,7 @@
 import { normalUrl } from './blocklist'
 import { importKernel, type ImportNote } from './importer'
 import type { KConfigLike } from './kernel'
-import { blocklistKey, compile, emptyBlocklists, ruleGroupPipelineId, type Model, type RawEntry, type RuleGroup } from './model'
+import { blocklistKey, compile, emptyBlocklists, nextId, ruleGroupPipelineId, type Model, type RawEntry, type RuleGroup } from './model'
 
 // 配置文件里存的样子：内核配置 + 顶层 panel 键。内核和面板服务都不认 panel 这个键，也不会拒绝它（内核的 PipelineConfig 没开
 // deny_unknown_fields，面板服务只按内核能力校验）。panel 里放整份模型和一个指向内核部分的散列：打开时散列对得上就直接用模型，
@@ -57,9 +57,16 @@ const withBlocklists = (model: Model): Model => {
   // A link subscribed twice (an earlier undo could make that, or two spellings such as a trailing /) keeps one: the first's place, id and name; it is
   // enabled when any of them is, with the enabled one's spelling, so it matches the merged file and reading it in needs no new build
   const all = model.blocklists.subscriptions
+  // 编号重复的（以前的撤销能做出来）换一个新的：同编号的两个会互相标「改过」，保存时还会对错名字 / A repeated id (an earlier undo could make one) gets a new
+  // one: two with one id mark each other as edited, and a save could match the wrong name
+  const seen = new Set<number>()
+  let next = nextId(model)
   const subscriptions = all.filter((s, i) => all.findIndex((x) => normalUrl(x.url) === normalUrl(s.url)) === i).map((s) => {
     const on = all.find((x) => x.enabled && normalUrl(x.url) === normalUrl(s.url))
-    return on && on !== s ? { ...s, url: on.url, enabled: true } : s
+    const one = on && on !== s ? { ...s, url: on.url, enabled: true } : s
+    const id = seen.has(one.id) ? next++ : one.id
+    seen.add(id)
+    return id === one.id ? one : { ...one, id }
   })
   const blocklists = { ...model.blocklists, subscriptions }
   return { ...model, blocklists: typeof blocklists.builtFor === 'string' ? blocklists : { ...blocklists, builtFor: blocklistKey(blocklists) } }

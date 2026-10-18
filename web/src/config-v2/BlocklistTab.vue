@@ -10,13 +10,14 @@ import UiMenu from '../components/ui/UiMenu.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import { useSession } from '../composables/useSession'
 import { useToast } from '../composables/useToast'
-import { checkSubscriptionUrl, defaultNameDepth, MAX_SUBSCRIPTIONS, normalUrl, parseOwnRules, PRESETS, shortName, skipText, uniqueSubscriptionName, type Skip } from '../config-model/blocklist'
+import { checkSubscriptionUrl, MAX_SUBSCRIPTIONS, normalUrl, parseOwnRules, PRESETS, shortName, skipText, uniqueSubscriptionName, type Skip } from '../config-model/blocklist'
 import { blockLabel, type Subscription } from '../config-model/model'
 import { formatAgo, formatVersionTime } from '../utils'
+import GlueText from './GlueText.vue'
 import { usePhone } from './phone'
-import { appliedModel, changedSubscriptionIds, changesBesidesFile, dialogEdits, draftGeneration, editorEdited, jsonEdited, model, newId, unsaved } from './store'
-import { blocklists, loadBlocklists, rebuildBlocklists, saveBlocklistSchedule } from './useBlocklists'
-import { doc, keepDraftWhileAway, pageAway, save, saveInFlight, stage, whenSaveSettles } from './useConfigDocument'
+import { appliedModel, changedSubscriptionIds, draftGeneration, model, newId, placeBack } from './store'
+import { blocklists, loadBlocklists, rebuildBlocklists, saveBlocklistSchedule, sayDrafted } from './useBlocklists'
+import { carryUpdate, noteLanded } from './updateCarry'
 import { fmtCount } from './view'
 
 // 拦截列表：订阅的列表一行一个，像域名映射那样一张卡片；下面是自己写的规则和两项设置。订阅和自己写的规则都在草稿里，
@@ -50,18 +51,23 @@ function about(s: Subscription): string {
     return tail ? `${decodeURI(tail)}\u00a0·\u00a0${url.host}` : url.host
   } catch { return link(s) }
 }
-// 窄屏名字下面的来源：主机名；名字里已经有主机名时写目录，只有一级文件名、或者没有路径时不写。名字里已经带着几级目录（同名时的默认名）时，
-// 只写再往上的那几级
-// The source under the name on narrow screens: the host; once the name holds the host, the directory, or nothing for a bare file name or no path. When
-// the name already carries some directories (a default name made unique), only the levels above them
+// 窄屏名字下面的来源：主机名；名字里已经有主机名时写完整的目录，只有一级文件名、或者没有路径时不写。同名时名字里带了几级目录也照样写完整的：
+// 这一列（和「内容」列）的意思不随行变，永远是「它在哪个目录」，同名的几行差在哪里一眼对得上
+// The source under the name on narrow screens: the host; once the name holds the host, the whole directory, or nothing for a bare file name or no path.
+// A default name made unique with some directories still gets the whole directory: the column (and 内容) always means 「which directory it is in」, so
+// same-named rows differ where the eye looks
 function source(s: Subscription): string {
   const name = host(s.url)
   if (!s.name.includes(name)) return name
   try {
-    const segments = decodeURI(new URL(s.url).pathname).split('/').filter(Boolean)
-    const carried = Math.max(1, defaultNameDepth(s.name, s.url))
-    const dirs = segments.slice(0, Math.max(0, segments.length - carried))
-    return dirs.length ? `/${dirs.join('/')}/` : ''
+    const url = new URL(s.url)
+    const path = decodeURI(url.pathname)
+    const dir = path.slice(0, path.lastIndexOf('/') + 1)
+    // 链接带查询串、名字里又没写的，跟在目录后面：只差查询串的两个列表也分得开 / A query string the name leaves out follows the directory, so two lists
+    // differing only by it can be told apart
+    let query = url.search
+    try { query = decodeURIComponent(query) } catch { /* 写坏的百分号转义照原样用 / a malformed percent escape is used as written */ }
+    return `${dir === '/' ? '' : dir}${query && !s.name.includes(query) ? query : ''}`
   } catch { return '' }
 }
 const statusOf = (s: Subscription) => blocklists.sources[s.url]
@@ -132,8 +138,22 @@ const skippedOf = ref<Subscription | null>(null)
 const skippedDialog = ref<HTMLDialogElement | null>(null)
 const samples = computed(() => (skippedOf.value ? statusOf(skippedOf.value)?.summary.samples ?? [] : []))
 const sampleText = (line: BlocklistSkippedLine) => skipText({ reason: line.reason, modifier: line.modifier } as Skip)
-// 原因里的 $修饰符 按代码的样子写，和写法提示一致 / A $modifier in a reason is set as code, as in the syntax hints
-const reasonParts = (text: string) => text.split(/(\$[a-z0-9_-]+|@@\S+)/).filter(Boolean).map((part) => ({ text: part, code: /^(\$|@@)/.test(part) }))
+// 原因里的 $修饰符、@@ 写法和「写成」后面给出的规则按代码的样子写，和写法提示一致；短的代码不折开；「DNS 用不上」连在一起，不单剩「用不上」一行
+// A $modifier, an @@ rule and the rule given after 写成 in a reason are set as code, as in the syntax hints; short code stays whole; 「DNS 用不上」 stays
+// together, so 用不上 never sits alone on a line
+const REASON_PARTS = /\$[a-z0-9_-]+|@@\S+|(?<=写成 )\S+|DNS 用不上/g
+function reasonParts(text: string): Array<{ text: string; code: boolean; whole: boolean }> {
+  const parts: Array<{ text: string; code: boolean; whole: boolean }> = []
+  let at = 0
+  for (const m of text.matchAll(REASON_PARTS)) {
+    if (m.index > at) parts.push({ text: text.slice(at, m.index), code: false, whole: false })
+    const code = m[0] !== 'DNS 用不上'
+    parts.push({ text: m[0], code, whole: !code || m[0].length <= 24 })
+    at = m.index + m[0].length
+  }
+  if (at < text.length) parts.push({ text: text.slice(at), code: false, whole: false })
+  return parts
+}
 function act(s: Subscription, value: string): void {
   if (value === 'update') void updateNow([s.url])
   else if (value === 'skipped') { skippedOf.value = s; skippedDialog.value?.showModal() }
@@ -150,9 +170,9 @@ function act(s: Subscription, value: string): void {
       deleteToasts.delete(s.url)
       const now = model.blocklists.subscriptions
       // 删掉以后又加了回来：不再插第二个 / Added back since the delete: no second copy goes in
-      if (now.some((x) => x.url === s.url)) { toast.info(`「${shortName(s.name, s.url)}」已经在列表里了`); return }
+      if (now.some((x) => normalUrl(x.url) === normalUrl(s.url))) { toast.info(`「${shortName(s.name, s.url)}」已经在列表里了`); return }
       const before = next ? now.indexOf(next) : -1
-      now.splice(before >= 0 ? before : Math.min(at, now.length), 0, s)
+      now.splice(before >= 0 ? before : Math.min(at, now.length), 0, placeBack(s))
     }))
   }
 }
@@ -171,7 +191,7 @@ const busy = computed(() => subscriptions.value.some(downloading))
 async function updateNow(urls: string[], button: '立即更新' | '全部更新' = '立即更新'): Promise<void> {
   const before = model.blocklists.file
   const generation = draftGeneration()
-  let result = await rebuildBlocklists(urls)
+  const result = await rebuildBlocklists(urls)
   // 下载途中会话过期了：已经在登录页上，不再保存，也不说话 / The session expired during the download: the login page is up, so nothing is saved or said
   if (!session.authenticated.value) return
   // 没下成的，合成那边已经说了原因；点名的列表在下载途中都删掉了，删除提示已经说过 / One that did not download already had its reason said by the build;
@@ -179,13 +199,17 @@ async function updateNow(urls: string[], button: '立即更新' | '全部更新'
   if (result.outcome === 'failed' || !urls.some((url) => subscriptions.value.some((s) => s.url === url))) return
   // 下载途中放弃了修改、或者恢复了别的版本 / The edits were discarded, or another version restored, while it downloaded
   if (result.outcome === 'dropped') { toast.info(`下载途中草稿换掉了，这次下载的没有放进草稿；要用新的一份，再点一次「${button}」`); return }
-  // 订阅在途中变了，而草稿只隔着离开时的放弃（放弃的修改里有订阅的增删开关）：服务端已经存着刚下好的那份，按放弃以后的订阅再合成一次，接着照常生效
-  // The subscriptions changed meanwhile and only a discard on leaving lies between (the dropped edits added, removed or switched lists): the server
-  // already holds the fresh download, so it builds once more for the subscriptions left after the discard and carries on as usual
-  if (result.outcome === 'superseded' && draftGeneration() !== generation) result = await rebuildBlocklists([], false, true)
-  if (result.outcome === 'failed' || result.outcome === 'dropped') return
-  // 还是这份草稿：新的一份跟着刚才的修改一起放进草稿 / Still the same draft: the new copy goes in along with the edits just made
-  if (result.outcome === 'superseded') { toast.info('新的一份会和刚才的修改一起放进草稿，保存后生效'); return }
+  // 订阅在途中变了。还是这份草稿：新的一份跟着刚才的修改一起放进草稿（接着那次合成会把它填进来）；草稿只隔着离开时的放弃（放弃的修改里有订阅的
+  // 增删开关）：照常收场，下面会按放弃以后的订阅再合成一次
+  // The subscriptions changed meanwhile. Still the same draft: the new copy goes in along with the edits just made (the build that follows fills it in);
+  // only a discard on leaving lies between (the dropped edits added, removed or switched lists): it ends as usual, building once more below for the
+  // subscriptions left after the discard
+  if (result.outcome === 'superseded') {
+    noteLanded()
+    if (draftGeneration() === generation) { sayDrafted('新的一份会和刚才的修改一起放进草稿，保存后生效'); return }
+    await carryUpdate(button, true)
+    return
+  }
   if (model.blocklists.file === before) {
     if (urls.some((url) => blocklists.sources[url]?.last_error)) return
     // 停用的列表不进合成的文件：下好了也不变 / A disabled list stays out of the merged file: a fresh download changes nothing
@@ -196,27 +220,10 @@ async function updateNow(urls: string[], button: '立即更新' | '全部更新'
         : named.length > 1 ? '下载的都和在用的一样，已经是最新的' : '下载的和在用的一样，已经是最新的')
     return
   }
-  // 保存或「现在应用」正在做：等它做完再看。按下保存时等着合成的那次保存，已经把新的一份一起存上了
-  // A save or 现在应用 is under way: look once it finishes. A save pressed while the build was pending already stored the new copy along with it
-  if (saveInFlight.value) {
-    await whenSaveSettles()
-    if (!session.authenticated.value || !unsaved.value) return
-  }
-  // 有没有别的修改和保存条一个口径：面板填进去的合成文件不算；删了又加回来、改了又改回这种保存条说没改的，这里也算干净
-  // Other edits by the save bar's yardstick: the merged file the panel fills in does not count, and what the save bar calls unchanged (removed and added
-  // back, edited and reverted) is clean here too
-  const clean = changesBesidesFile(appliedModel.value, model) === 0 && !editorEdited.value && !jsonEdited.value && dialogEdits.size === 0
-  if (!clean) {
-    // 人不在配置页：回来时留着这份草稿，不让回来那次读把新的一份冲掉 / Off the config page: the draft is kept for the return, so its read does not wash the
-    // new copy away
-    if (pageAway()) { keepDraftWhileAway(); toast.info('新的一份已放进草稿，回到配置页保存后生效') } else toast.info('新的一份已放进草稿，保存后生效')
-    return
-  }
-  await save('draft', '手动更新拦截列表')
-  // 看的是人在不在配置页上，不是这个组件还在不在：离开又回来时是另一个组件，照样要说；不在页上时保存自己会说「版本 #N 已生效」
-  // What counts is whether the user is on the config page, not whether this component lives: after leaving and coming back another one does and still
-  // should say it; off the page the save itself says 版本 #N 已生效
-  if (!pageAway() && stage.value === 'done') toast.success(`已换上新下载的列表（版本 #${doc.value?.version_id}）`)
+  // 新的一份进了草稿：存不存、怎么说，和离开时放弃以后走同一处（updateCarry.ts） / The new copy is in the draft: whether it is saved and what is said goes
+  // through the same place as after a discard on leaving (updateCarry.ts)
+  noteLanded()
+  await carryUpdate(button, true)
 }
 const updateAll = () => void updateNow(subscriptions.value.map((s) => s.url), '全部更新')
 
@@ -235,10 +242,9 @@ function subscribe(urls: string[]): void {
     // 默认名和已有的重名（同一个主机、同名文件）时一级一级往上带目录，正文和提示里分得出 / A default name already taken (same host, same file name)
     // carries directories one level at a time, so prose and toasts can tell them apart
     const name = uniqueSubscriptionName(url, new Set(model.blocklists.subscriptions.map((x) => x.name)))
-    // 原来的编号已经被草稿里别的订阅占了（导入了另一台面板的配置）：换一个新的 / The old id is already taken by another subscription in the draft (a
-    // config imported from another panel): it gets a new one
-    const free = before && !model.blocklists.subscriptions.some((x) => x.id === before.id)
-    model.blocklists.subscriptions.push(before ? { ...before, ...(free ? {} : { id: newId() }), enabled: true } : { id: newId(), name, url, enabled: true })
+    // 加回来的沿用原来的编号和名字；被草稿里别的订阅占了就换一个（见 placeBack） / One added back keeps its id and name, replaced when another
+    // subscription in the draft holds them (see placeBack)
+    model.blocklists.subscriptions.push(before ? placeBack({ ...before, enabled: true }) : { id: newId(), name, url, enabled: true })
     // 以前没下载成功过的，加回来时再下载一次 / One that never downloaded downloads again when added back
     const status = blocklists.sources[url]
     if (status?.last_error && !status.sha256) retry.push(url)
@@ -368,9 +374,9 @@ const blockText = computed(() => blockLabel(model, 'default'))
         <div v-if="failures.length" class="bl__note">
           <TriangleAlert :size="14" aria-hidden="true" />
           <div class="bl__causes">
-            <p v-for="f in failures" :key="f.id" :class="{ 'is-off': f.off }"><b v-if="f.name">{{ f.name }}</b><template v-if="f.off">（已停用）</template><template v-if="f.name">：</template>{{ f.cause }}。</p>
-            <p v-if="stuckLine" class="bl__todo" :class="{ 'is-off': stuckLine.off }">{{ stuckLine.text }}</p>
-            <p v-if="retryLead" class="bl__todo" :class="{ 'is-off': retryLead.off }">{{ retryLead.text }}<span class="nowrap">「立即更新」。</span></p>
+            <p v-for="f in failures" :key="f.id" :class="{ 'is-off': f.off }"><b v-if="f.name"><GlueText :text="f.name" /></b><template v-if="f.off">（已停用）</template><template v-if="f.name">：</template><GlueText :text="`${f.cause}。`" /></p>
+            <p v-if="stuckLine" class="bl__todo" :class="{ 'is-off': stuckLine.off }"><GlueText :text="stuckLine.text" /></p>
+            <p v-if="retryLead" class="bl__todo" :class="{ 'is-off': retryLead.off }"><GlueText :text="retryLead.text" /><span class="nowrap">「立即更新」。</span></p>
           </div>
         </div>
         <p v-if="blocklists.status === 'failed' && subscriptions.some(unknown)" class="bl__note"><TriangleAlert :size="14" aria-hidden="true" />读不到各个列表下载得怎么样；订阅照常保存，稍后刷新页面再看。</p>
@@ -385,7 +391,7 @@ const blockText = computed(() => blockLabel(model, 'default'))
         <label class="ui-input ui-input--area bl__text"><textarea v-model="model.blocklists.custom" :rows="customRows" aria-label="自己写的规则，一行一条" spellcheck="false" autocapitalize="off" placeholder="||ads.example.com^&#10;@@||cdn.example.com^"></textarea></label>
         <p class="bl__syntax"><span><code>||example.com^</code>拦截它和子域名</span><span><code>@@||example.com^</code>放行它和子域名</span><span><code>example.com</code>只拦它本身</span></p>
         <ul v-if="problems.length" class="bl__problems" aria-label="没用上的行">
-          <li v-for="p in problems" :key="p.line" class="bl__problem"><span class="bl__lineno">第 {{ p.line }} 行</span><span class="bl__what"><s>{{ p.text }}</s> <span><template v-for="(part, i) in reasonParts(p.problem)" :key="i"><code v-if="part.code">{{ part.text }}</code><template v-else>{{ part.text }}</template></template></span></span></li>
+          <li v-for="p in problems" :key="p.line" class="bl__problem"><span class="bl__lineno">第 {{ p.line }} 行</span><span class="bl__what"><s>{{ p.text }}</s> <span><template v-for="(part, i) in reasonParts(p.problem)" :key="i"><code v-if="part.code" :class="{ nowrap: part.whole }">{{ part.text }}</code><span v-else-if="part.whole" class="nowrap">{{ part.text }}</span><template v-else>{{ part.text }}</template></template></span></span></li>
         </ul>
       </div>
     </section>
@@ -432,7 +438,7 @@ const blockText = computed(() => blockLabel(model, 'default'))
         <div class="pdialog__body">
           <p class="pfield__hint">这些规则 DNS 用不上或者还不支持，整条跳过；其余的照常生效。<template v-if="skippedOf && (statusOf(skippedOf)?.summary.skipped ?? 0) > samples.length">下面只列出前 {{ samples.length }} 条。</template></p>
           <ul class="bl__problems">
-            <li v-for="line in samples" :key="line.line" class="bl__problem"><span class="bl__lineno">第 {{ line.line }} 行</span><span class="bl__what"><s>{{ line.text }}</s> <span><template v-for="(part, i) in reasonParts(sampleText(line))" :key="i"><code v-if="part.code">{{ part.text }}</code><template v-else>{{ part.text }}</template></template></span></span></li>
+            <li v-for="line in samples" :key="line.line" class="bl__problem"><span class="bl__lineno">第 {{ line.line }} 行</span><span class="bl__what"><s>{{ line.text }}</s> <span><template v-for="(part, i) in reasonParts(sampleText(line))" :key="i"><code v-if="part.code" :class="{ nowrap: part.whole }">{{ part.text }}</code><span v-else-if="part.whole" class="nowrap">{{ part.text }}</span><template v-else>{{ part.text }}</template></template></span></span></li>
           </ul>
         </div>
         <footer class="pdialog__foot"><button class="ui-btn ui-btn--secondary" type="button" @click="skippedDialog?.close()">关闭</button></footer>
@@ -510,7 +516,7 @@ const blockText = computed(() => blockLabel(model, 'default'))
 .bl__note { display: flex; align-items: flex-start; gap: var(--s-2); margin: 0; padding: var(--s-3) var(--s-5); border-top: 1px solid var(--l-hair); color: var(--warn-l); font-size: var(--t-2); line-height: var(--lh-base); }
 .bl__note > svg { flex-shrink: 0; margin-top: calc((1lh - 14px) / 2); }
 .bl__causes { display: grid; gap: 2px; min-width: 0; }
-.bl__causes p { margin: 0; overflow-wrap: anywhere; }
+.bl__causes p { max-width: 60em; margin: 0; overflow-wrap: anywhere; }
 .bl__causes b { font-weight: var(--w-medium); }
 .bl__causes p.is-off { color: var(--l-ink-3); }
 /* 「怎么办」那两句和上面各条「出了什么事」分开一点 / The 「what to do」 sentences sit a little apart from the 「what happened」 lines above */
@@ -529,7 +535,7 @@ const blockText = computed(() => blockLabel(model, 'default'))
 .bl__problem { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: baseline; }
 .bl__lineno { color: var(--l-ink-3); font-variant-numeric: tabular-nums; }
 .bl__what > span { word-break: keep-all; overflow-wrap: anywhere; }
-.bl__what code { padding: 0 var(--s-1); border-radius: var(--r-1); background: var(--l-sunk); color: var(--l-ink-2); font-family: var(--f-mono); font-size: var(--t-1); }
+.bl__what code { -webkit-box-decoration-break: clone; box-decoration-break: clone; padding: 0 var(--s-1); border-radius: var(--r-1); background: var(--l-sunk); color: var(--l-ink-2); font-family: var(--f-mono); font-size: var(--t-1); }
 .bl__problem s { margin-right: var(--s-1); color: var(--l-ink-3); font-family: var(--f-mono); font-size: var(--t-1); overflow-wrap: anywhere; }
 .bl__warn { color: var(--warn-l) !important; white-space: normal !important; }
 .bl__sets { padding: var(--s-2) var(--s-5); }

@@ -93,6 +93,15 @@ export function dismissBlocklistToasts(): void {
   dismissBuildToast()
   dismissFailToast()
   dismissRefreshToast()
+  if (draftedToast !== null) useToast().dismiss(draftedToast)
+  draftedToast = null
+}
+// 「新的一份已放进草稿」那条：放弃草稿离开时它说的就不对了，一起收起 / The 「new copy in the draft」 toast: dropping the draft on leaving makes it untrue, so
+// it goes along
+let draftedToast: number | null = null
+export function sayDrafted(text: string): void {
+  if (draftedToast !== null) useToast().dismiss(draftedToast)
+  draftedToast = useToast().info(text)
 }
 // 退出登录或会话过期：和配置页别的提示一样，拦截列表的几条也收起，登录页上不挂着它们 / Signing out or the session expiring: like the config page's other
 // toasts, the blocklist ones go too, so none hangs on the login page
@@ -155,7 +164,11 @@ export function rebuildBlocklists(refresh: string[] = [], quiet = false, force =
       // when long): it becomes that list's name on the page, a long link taking several lines on a phone
       const quoted = fixable ? /^「([^」]+)」/.exec(error)?.[1] : undefined
       const refused = quoted ? model.blocklists.subscriptions.find((s) => s.url === quoted || (quoted.endsWith('…') && s.url.startsWith(quoted.slice(0, -1)))) : undefined
-      if (refused) error = error.replace(`「${quoted}」`, `「${shortName(refused.name, refused.url)}」`)
+      // 「「bad.txt」的链接只能用 https://」：名字放进句子里，不再括号里套引号再套冒号 / The name goes into the sentence rather than quote-in-colon inside brackets
+      if (refused) {
+        const rest = error.slice(`「${quoted}」：`.length)
+        error = `「${shortName(refused.name, refused.url)}」${rest.startsWith('链接') ? `的${rest}` : `：${rest}`}`
+      }
       const remove = Boolean(refused)
       blocklists.buildError = error
       // 点名下载的（立即更新）说没下载成；订阅变化引起的：连不上时不说（横幅说着，连上后会自动补上），保存、校验在等时不说（保存条说），
@@ -171,7 +184,7 @@ export function rebuildBlocklists(refresh: string[] = [], quiet = false, force =
       else if (!down && !quiet) {
         // 上一次合成失败的那条换成这条：原因不同时不留两条 / This one replaces the previous failed build's toast: a different cause leaves no second one
         dismissBuildToast()
-        staleToast = useToast().error(`拦截列表没有重新合成（${error}），${remove ? '删掉它再保存' : fixable ? '改好再保存' : '保存前会再试一次'}`)
+        staleToast = useToast().error(remove ? `${error}，删掉这个列表再保存` : `拦截列表没有重新合成（${error}），${fixable ? '改好再保存' : '保存前会再试一次'}`)
       }
       return { outcome: 'failed', error, down, fixable, remove }
     }
@@ -189,10 +202,16 @@ function nameByTitle(): void {
   for (const s of model.blocklists.subscriptions) {
     const title = blocklists.sources[s.url]?.summary.title
     if (!title || saved.has(normalUrl(s.url)) || !isDefaultName(s.name, s.url)) continue
-    const taken = model.blocklists.subscriptions.some((x) => x !== s && x.name === title)
+    const names = new Set(model.blocklists.subscriptions.filter((x) => x !== s).map((x) => x.name))
     // 主机写在前面：截短时截掉的是大家一样的标题 / The host goes first: cutting short drops the title they share
+    // 加了主机还重名（同一个主机上几个同标题的列表）就再加编号 / Still taken with the host (several same-titled lists on one host): a number follows
     let name = title
-    if (taken) { try { name = `${new URL(s.url).host}\u00a0·\u00a0${title}` } catch { /* 链接已经查过，不会读不出 / the link was checked and always parses */ } }
+    if (names.has(name)) {
+      let host = ''
+      try { host = new URL(s.url).host } catch { /* 链接已经查过，不会读不出 / the link was checked and always parses */ }
+      name = `${host}\u00a0·\u00a0${title}`
+      for (let n = 2; names.has(name); n++) name = `${host}\u00a0·\u00a0${title} (${n})`
+    }
     if (s.name !== name) s.name = name
   }
 }
@@ -248,6 +267,7 @@ const { down } = useConnection()
 watch(down, (isDown) => {
   if (isDown) return
   if (refreshToastDown) dismissRefreshToast()
+  if (scheduleToastDown) dismissScheduleToast()
   if (needsBuild()) void rebuildBlocklists()
 })
 
@@ -256,6 +276,9 @@ watch(down, (isDown) => {
 // 没改成的那条提示：再改一次时收起，不和下一次的结果叠在一起 / The toast for a change that failed: it goes on the next attempt instead of stacking
 // with that one's result
 let scheduleToast: number | null = null
+// 因为连不上面板没改成的：连上时收起，和「没能重新下载」一样（下拉框已经退回原值，横幅也说了连上） / One that failed because the panel was unreachable
+// goes on reconnecting, as 没能重新下载 does (the select is already back to its value and the banner says the panel is back)
+let scheduleToastDown = false
 function dismissScheduleToast(): void {
   if (scheduleToast !== null) useToast().dismiss(scheduleToast)
   scheduleToast = null
@@ -270,6 +293,7 @@ export async function saveBlocklistSchedule(hours: number | null): Promise<boole
   } catch (e) {
     // 会话过期：已经回到登录页，不说 / The session expired: the login page is up, nothing to say
     if (e instanceof ApiError && e.status === 401) return false
+    scheduleToastDown = isPanelDown(e)
     scheduleToast = useToast().error(`拦截列表的自动更新没改成「${label}」${isPanelDown(e) ? '' : `（${errorMessage(e).replace(/[。.]\s*$/, '')}）`}`)
     return false
   }

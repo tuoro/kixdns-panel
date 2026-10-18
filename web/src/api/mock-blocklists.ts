@@ -70,8 +70,10 @@ export async function demoBuildBlocklists(request: BlocklistBuildRequest): Promi
   const refresh = new Set(request.refresh)
   // 和服务端一样：从没试过的才自己下载，试过没成功的等点名 / As on the server: only lists never tried download on their own; failed ones wait to be named
   const fetch = urls.filter((url) => refresh.has(url) || !sources.has(url))
-  // 有要下载的就慢一点，好看清「下载中」 / Slower when something downloads, so 下载中 shows
-  await new Promise((resolve) => setTimeout(resolve, fetch.length ? 1600 : 300))
+  // 有要下载的就慢一点，好看清「下载中」；kixdns:demo-download-slow 给出毫秒数时按它 / Slower when something downloads, so 下载中 shows;
+  // kixdns:demo-download-slow sets the milliseconds when given
+  const slow = typeof localStorage !== 'undefined' ? Number(localStorage.getItem('kixdns:demo-download-slow')) || 1600 : 1600
+  await new Promise((resolve) => setTimeout(resolve, fetch.length ? slow : 300))
   const now = Math.floor(Date.now() / 1000)
   let failed = 0
   for (const url of fetch) {
