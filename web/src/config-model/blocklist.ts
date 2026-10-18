@@ -28,7 +28,7 @@ export interface Match { kind: MatchKind; value: string }
 export interface ListRule { allow: boolean; important: boolean; match: Match }
 export type Skip =
   | { reason: 'cosmetic' | 'hosts-address' | 'bad-regex' | 'too-many-patterns' | 'url-path' | 'unreadable' }
-  | { reason: 'unsupported-modifier' | 'unknown-modifier'; modifier: string }
+  | { reason: 'unsupported-modifier' | 'browser-modifier' | 'unknown-modifier'; modifier: string }
 export type Line =
   | { kind: 'ignored' }
   | { kind: 'rules'; rules: ListRule[] }
@@ -40,6 +40,10 @@ export type Line =
 const LOCAL_NAMES = new Set(['localhost', 'localhost.localdomain', 'local', 'broadcasthost', 'ip6-localhost', 'ip6-loopback', 'ip6-localnet', 'ip6-mcastprefix', 'ip6-allnodes', 'ip6-allrouters', 'ip6-allhosts', '0.0.0.0'])
 // 认识、但还不支持的修饰符 / Modifiers known but not yet supported
 const UNSUPPORTED_MODIFIERS = new Set(['client', 'ctag', 'dnstype', 'dnsrewrite', 'denyallow', 'respgeo'])
+// 只管网页里的请求（第三方、脚本、图片……）的修饰符：DNS 查询里没有这些信息，带它们的规则整条不用。和服务端同一份名单
+// Modifiers about requests inside web pages (third-party, scripts, images…): a DNS query carries none of that, so rules with them go unused
+// whole. The same list as the server's
+const BROWSER_MODIFIERS = new Set(['third-party', '3p', 'first-party', '1p', 'script', 'image', 'stylesheet', 'css', 'media', 'font', 'object', 'xmlhttprequest', 'xhr', 'subdocument', 'frame', 'document', 'doc', 'popup', 'websocket', 'ping', 'other', 'domain', 'match-case', 'redirect', 'removeparam', 'csp'])
 const COSMETIC_MARKS = ['##', '#@#', '#?#', '#$#', '#%#', '$$']
 
 /** 读一行规则 / Reads one line */
@@ -63,6 +67,7 @@ export function parseLine(raw: string): Line {
     if (name === 'important') important = true
     else if (!name) return { kind: 'skipped', skip: { reason: 'unreadable' } }
     else if (UNSUPPORTED_MODIFIERS.has(name)) return { kind: 'skipped', skip: { reason: 'unsupported-modifier', modifier: name } }
+    else if (BROWSER_MODIFIERS.has(name)) return { kind: 'skipped', skip: { reason: 'browser-modifier', modifier: name } }
     else return { kind: 'skipped', skip: { reason: 'unknown-modifier', modifier: name } }
     kept.push(modifier)
   }
@@ -209,6 +214,7 @@ export function skipText(skip: Skip): string {
     case 'cosmetic': return '只对浏览器有用，DNS 用不上'
     case 'hosts-address': return '写的是别的地址：要回答这个地址，用「域名映射」'
     case 'unsupported-modifier': return `还不支持 $${skip.modifier}`
+    case 'browser-modifier': return `$${skip.modifier} 只对浏览器有用，DNS 用不上`
     case 'unknown-modifier': return `认不出 $${skip.modifier}`
     case 'bad-regex': return 'KixDNS 的正则不支持这种写法（前后断言、反向引用等）'
     case 'too-many-patterns': return '这个列表的通配符和正则规则超过 1000 条，多的没用上'
@@ -231,8 +237,17 @@ export function parseOwnRules(text: string): { rules: OwnRule[]; problems: OwnPr
     if (parsed.kind === 'ignored') continue
     const problem = (text: string) => problems.push({ line, text: raw.trim(), problem: text })
     if (parsed.kind === 'skipped') { problem(skipText(parsed.skip)); continue }
-    // 照着这一行写出放行的那条；本来就是放行的，不想放行就删掉它 / The allow rule is written out from this line; one that already allows is simply removed
-    if (parsed.kind === 'badfilter') { problem(parsed.rule.startsWith('@@') ? '这里用不上 $badfilter：不想放行它，删掉这一行' : `这里用不上 $badfilter：要放行，写成 @@${parsed.rule}`); continue }
+    // 照着这一行写出想要的那条：拦截带 $badfilter 是想放行它，放行带 $badfilter 是想拦下它。修饰符都去掉：自己写的规则里放行总是优先，
+    // $important 改不了什么
+    // The rule meant is written out from this line: a block with $badfilter means to allow the name, an allow with it means to block it. Modifiers
+    // are dropped: among one's own rules allows always win, and $important changes nothing
+    if (parsed.kind === 'badfilter') {
+      const allows = parsed.rule.startsWith('@@')
+      const body = allows ? parsed.rule.slice(2) : parsed.rule
+      const pattern = splitModifiers(body)?.[0] ?? body
+      problem(allows ? `这里用不上 $badfilter：要拦下它，写成 ${pattern}` : `这里用不上 $badfilter：要放行，写成 @@${pattern}`)
+      continue
+    }
     if (over || rules.length + parsed.rules.length > MAX_OWN_RULES) {
       overCount += parsed.rules.length
       if (!over) { over = { line, text: raw.trim(), problem: '' }; problems.push(over) }
@@ -251,13 +266,16 @@ function covers(match: Match, name: string): boolean {
   try { return new RegExp(match.value.replace(/^\(\?i\)/, ''), 'i').test(name) } catch { return false }
 }
 
-/** 自己写的规则里拦下这个域名的那一条（同时有放行管着它时为 null：放行优先） / The rule of one's own that blocks this name (null when an allow also covers it: allows come first) */
-export function ownBlockFor(text: string, domain: string): OwnRule | null {
+/** 自己写的规则里拦下这个域名的那几条，按行的先后（同时有放行管着它时为空：放行优先） / The rules of one's own that block this name, in line order
+ * (none when an allow also covers it: allows come first) */
+export function ownBlocksFor(text: string, domain: string): OwnRule[] {
   const name = domain.trim().toLowerCase().replace(/\.$/, '')
   const rules = parseOwnRules(text).rules
-  if (rules.some((r) => r.allow && covers(r.match, name))) return null
-  return rules.find((r) => !r.allow && covers(r.match, name)) ?? null
+  if (rules.some((r) => r.allow && covers(r.match, name))) return []
+  return rules.filter((r) => !r.allow && covers(r.match, name))
 }
+/** 这条规则管的正好是这个域名（不是上级域名、通配或正则） / Whether this rule is about exactly this name (not a parent, a wildcard or a regex) */
+export const coversOnly = (match: Match, domain: string): boolean => match.kind !== 'regex' && match.value === domain.trim().toLowerCase().replace(/\.$/, '')
 
 /** 自己写的一条规则在入口里的条件 / One rule of one's own as an entry condition */
 export function ownMatcher(match: Match): KMatcher {
@@ -291,30 +309,34 @@ export const PRESETS: Preset[] = [
 ]
 
 /**
- * 订阅的名字：推荐的列表用它的名字，别的先用「文件名 · 主机」（链接没有路径时只用主机）；下载下来带着标题时页面再换成标题
+ * 订阅的名字：推荐的列表用它的名字，别的先用「文件名 · 主机」（链接没有路径时只用主机）；下载下来带着标题时页面再换成标题。
+ * `withDir` 时文件名前面带上最后一级目录（「fail/hosts.txt · 主机」），和已有的默认名重名时用
  * A subscription's name: a suggested list's own, otherwise 「file name · host」 (the host alone when the link has no path); once the download
- * brings a title the page switches to it
+ * brings a title the page switches to it. With `withDir` the file name carries its last directory (「fail/hosts.txt · host」), for when the default
+ * name is already taken
  */
-export function subscriptionName(url: string): string {
+export function subscriptionName(url: string, withDir = false): string {
   const preset = PRESETS.find((p) => p.url === url)
   if (preset) return preset.name
   try {
     const link = new URL(url)
-    const last = link.pathname.split('/').filter(Boolean).pop() ?? ''
-    let file = last
-    try { file = decodeURIComponent(last) } catch { /* 写坏的百分号转义照原样用 / a malformed percent escape is used as written */ }
+    const parts = link.pathname.split('/').filter(Boolean).slice(withDir ? -2 : -1)
+    let file = parts.join('/')
+    try { file = decodeURIComponent(file) } catch { /* 写坏的百分号转义照原样用 / a malformed percent escape is used as written */ }
     // 「·」两边不折行：整个名字要折就一起折到下一行，「·」不挂在行尾 / No break around 「·」: the whole name wraps together, never leaving 「·」 at a line end
     return file ? `${file}${NAME_JOIN}${link.host}` : link.host
   } catch {
     return url
   }
 }
+/** 是不是面板起的默认名（带不带目录都算） / Whether a name is the panel's default one (with or without the directory) */
+export const isDefaultName = (name: string, url: string): boolean => name === subscriptionName(url) || name === subscriptionName(url, true)
 
 const NAME_JOIN = '\u00a0·\u00a0'
 /** 默认名「文件名 · 主机」里的文件名，用在已经写着主机的地方；起过名、带标题的照原样 / The file part of a default 「file name · host」 name, for places
  * that already give the host; a name with a title or of one's own stays as it is */
 export function shortName(name: string, url: string): string {
-  return name === subscriptionName(url) && name.includes(NAME_JOIN) ? name.slice(0, name.indexOf(NAME_JOIN)) : name
+  return isDefaultName(name, url) && name.includes(NAME_JOIN) ? name.slice(0, name.indexOf(NAME_JOIN)) : name
 }
 
 /** 检查要订阅的链接，和服务端的规矩一样；通过时给出规整的写法（主机名小写，没写路径补上 `/`） / Checks a link to subscribe to by the server's rules; on success gives its normal form (host lower-cased, a missing path filled in as `/`) */

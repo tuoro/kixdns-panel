@@ -314,7 +314,10 @@ let loadFailedDown = false
 // own：文件是这一页自己挪的（写进去了却没生效、删了待应用的版本），留着的草稿换到新文件上；没有 own 时文件变了就是别处改的，进冲突状态
 // own: this page moved the file itself (written but not taken, a pending version deleted), so a kept draft moves onto the new file; without own a changed
 // file was changed elsewhere and the conflict state follows
-export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: string; fresh?: boolean; own?: boolean } = {}): Promise<void> {
+// returning: 回到配置页时的那次读。读的途中草稿自己变了（不在页上时下载落地，填进了文件）而面板上的文件没变，就留着草稿
+// returning: the read on coming back to the config page. When the draft moved by itself while reading (a download landed while away and filled in its
+// file) and the file on the panel did not change, the draft stays
+export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: string; fresh?: boolean; own?: boolean; returning?: boolean } = {}): Promise<void> {
   // 已经有一次读在路上：只有同样静默的读才等它就算数；保存（sent）、要保留草稿的、要整份换上的（恢复版本）和「重新读取」都得看到之后的文件——
   // 那次读是之前发的，等它回来再读一次（以前恢复版本拿到的是之前那次读，页面停在恢复前的文件上，提示却说恢复好了）
   // A read is already out: only another plain quiet read counts it as its own; a save's read (sent), a keep-draft read, a fresh read (a restore) and 重新读取
@@ -330,6 +333,8 @@ export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: str
   // 发出时文件的散列：读回来之前有一次写（保存落地）把它挪了，这次读到的就是旧的，不拿它盖掉 / The file hash when sent: if a write (a landed save) moved it before this read returns, what was read is stale and must not overwrite it
   const shaAtStart = doc.value?.sha256
   const writesAtStart = writeCount
+  const savesAtStart = saveStarts
+  const modelAtStart = JSON.stringify(model)
   pendingLoad = (async () => {
     const [nextDoc, history, overview, service] = await Promise.all([
       apiRequest<ConfigDocument>('/api/v1/config'),
@@ -339,7 +344,10 @@ export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: str
     ])
     // 读的时候文件已经被这边的一次写挪过了：读到的是旧文件，只当没读（写的那一方会自己再读） / The file was moved by a write from this page while reading: what came back is stale, so it is dropped (the writer reads again itself)
     // 原地生效不挪散列：再按写的次数看一眼 / An in-place apply does not move the hash, so the write count is checked too
-    if (options.sent === undefined && doc.value && ((shaAtStart !== undefined && doc.value.sha256 !== shaAtStart) || writeCount !== writesAtStart)) return
+    // 读的途中开始了一次保存（比如立即更新落地后直接保存）也一样：那次保存发出的草稿比读到的新，做完会自己再读，这次读到的不拿来换草稿
+    // Likewise when a save started while reading (立即更新 landing and saving at once, say): the draft it sent is newer than what was read, and it reads
+    // again when done, so this read does not replace the draft
+    if (options.sent === undefined && doc.value && ((shaAtStart !== undefined && doc.value.sha256 !== shaAtStart) || writeCount !== writesAtStart || saveStarts !== savesAtStart)) return
     docWrites = writesAtStart
     applyRuntime(nextDoc, overview, service)
     const previous = doc.value
@@ -372,6 +380,9 @@ export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: str
       if (options.sent !== undefined || nextDoc.sha256 !== previousSha) rebaseApplied(readConfig(nextDoc.content, model).model)
     } else if (options.quiet && nextDoc.sha256 === previousSha) {
       // 文件没变（连上后的静默重读）：不把草稿整份换掉，开着的规则编辑不会自己关上 / The file is unchanged (the quiet re-read after a reconnect): the draft is not replaced, so an open rule editor does not close by itself
+    } else if (options.returning && !unsavedAtStart && nextDoc.sha256 === previousSha && JSON.stringify(model) !== modelAtStart) {
+      // 回来的途中下载落地、填进了草稿：文件没变，读到的那份比草稿旧，不拿它换 / A download landed into the draft during the return's read: the file did
+      // not change and what was read is older than the draft, so it does not replace it
     } else {
       const read = loadContent(nextDoc.content, model)
       if (read.source === 'imported' && read.report && (read.report.stats.raw || read.report.notes.some((n) => n.level === 'warn'))) {
@@ -463,6 +474,8 @@ async function runCheck(): Promise<ValidationResult | null> {
 // as the save bar (it used to name the previous one from the stale list)
 // 这一页写过几次（保存、应用、恢复、删除版本）：写之前发出的读回来时认得出自己过时了 / How many writes this page made (save, apply, restore, delete): a read sent before a write knows it is stale when it lands
 let writeCount = 0
+// 开始过几次保存：读回来时用来认出读的途中开始的保存 / How many saves have started: lets a returning read spot a save that began while it was out
+let saveStarts = 0
 // 页面上的文件是这一页写到第几次以后读的：写进去以后那次重读失败了，它就落在后面，这时文件「变了」可能是自己写的，不说「别处改过了」
 // After how many of this page's writes the file on the page was read: when the re-read after a write failed it lags behind, and a file that 「moved」 may be
 // this page's own write, so 别处改过了 is not said
@@ -556,7 +569,12 @@ export const onlySaving = (): boolean => busy.value && origin.value === 'draft' 
 // unmounted): what follows is handled as if the user were gone
 let leftDuringSave = false
 export function leavingDuringSave(): void { leftDuringSave = true }
+// 换页没成（被取消、被别的换页顶掉）：人还在配置页上，记号清掉 / The page change did not happen (cancelled, or overtaken by another): the user is still on
+// the config page and the mark goes
+export function stayedDuringSave(): void { leftDuringSave = false }
 const away = (): boolean => !viewing || leftDuringSave
+/** 人已经不在配置页上（或者正要离开）：保存的结果由提示说 / The user is off the config page (or on the way out): a save's outcome is told by a toast */
+export const pageAway = (): boolean => away()
 const sentence = (text: string) => text.replace(/[。.]\s*$/, '')
 
 // origin：保存草稿（保存栏报进度）或应用已经保存的版本（页头报进度，出错进提示）。有改动、或者要应用和运行配置不同的文件，
@@ -586,6 +604,7 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
   const sentAt = toastMark()
   const settledBefore = settledCount
   inFlight = JSON.stringify(draft)
+  saveStarts += 1
   const kept = '草稿留在配\u2060置\u2060页'
   // 按完就离开了、这次没存成：草稿留着等回来，用提示说为什么没存 / Left right after pressing and this save failed: the draft is kept for the return and a
   // toast says why nothing was saved
@@ -817,14 +836,14 @@ export const applyNow = () => void save('apply')
 function buildAwayText(problem: BuildProblem, kept: string): string {
   if (problem.down) return `配置没有保存：连不上面板。${kept}，连上后再保存`
   if (problem.changed) return `配置没有保存：等合成的时候订阅又变了。${kept}，回去再保存一次`
-  return `配置没有保存：拦截列表没有合成好（${problem.reason}）。${kept}，${problem.fixable ? '改好再保存' : '回去再保存一次'}`
+  return `配置没有保存：拦截列表没有合成好（${problem.reason}）。${kept}，${problem.remove ? '删掉它再保存' : problem.fixable ? '改好再保存' : '回去再保存一次'}`
 }
 /** 等拦截列表合成没成时保存条下面那句 / The line under the save bar when waiting for the blocklists' build failed */
 function buildProblemNote(problem: BuildProblem, what: '保存' | '校验'): string {
   if (problem.down) return `拦截列表还没合成好，连上后再${what}`
   if (problem.changed) return `等合成的时候订阅又变了，再${what}一次`
   // 服务端拒绝了这组订阅：再试一样，要先改好 / The server refused these subscriptions: trying again changes nothing until they are fixed
-  if (problem.fixable) return `拦截列表没有合成好（${problem.reason}），改好再${what}`
+  if (problem.fixable) return `拦截列表没有合成好（${problem.reason}），${problem.remove ? '删掉它' : '改好'}再${what}`
   return `拦截列表没有合成好（${problem.reason}），再${what}一次会重新合成`
 }
 // 键排好序再比，存进去和读出来的键顺序不同也算一样 / Compared with keys sorted, so a different key order on the way back still counts as the same

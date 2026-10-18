@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { checkSubscriptionUrl, MAX_OWN_RULES, ownMatcher, ownRuleText, parseLine, parseOwnRules, shortName, skipText, subscriptionName, type Line } from './blocklist'
+import { checkSubscriptionUrl, coversOnly, MAX_OWN_RULES, ownBlocksFor, ownMatcher, ownRuleText, parseLine, parseOwnRules, shortName, skipText, subscriptionName, type Line } from './blocklist'
 
 interface Case {
   line: string
@@ -41,6 +41,23 @@ describe('rules of one\'s own', () => {
     ])
   })
 
+  it('writes out the rule meant by a $badfilter line, without modifiers', () => {
+    const { problems } = parseOwnRules('@@||h.example^$badfilter\n||i.example^$important,badfilter')
+    expect(problems.map((p) => p.problem)).toEqual([
+      '这里用不上 $badfilter：要拦下它，写成 ||h.example^',
+      '这里用不上 $badfilter：要放行，写成 @@||i.example^',
+    ])
+  })
+
+  it('finds every own line blocking a name, and whether one is about exactly that name', () => {
+    const text = '||ads.example.net^\nok.ads.example.net\n@@||allowed.example^\n||x.allowed.example^'
+    expect(ownBlocksFor(text, 'ok.ads.example.net').map((r) => r.line)).toEqual([1, 2])
+    expect(coversOnly(ownBlocksFor(text, 'ok.ads.example.net')[0]!.match, 'ok.ads.example.net')).toBe(false)
+    expect(coversOnly(ownBlocksFor(text, 'OK.ads.example.net.')[1]!.match, 'OK.ads.example.net.')).toBe(true)
+    // 自己写的放行管着它时，自己写的拦截拦不下 / With an own allow covering it, no own block stops it
+    expect(ownBlocksFor(text, 'x.allowed.example')).toEqual([])
+  })
+
   it('takes no more than the limit and points out the overflow once', () => {
     const text = Array.from({ length: MAX_OWN_RULES + 3 }, (_, i) => `||n${i}.example^`).join('\n')
     const { rules, problems } = parseOwnRules(text)
@@ -62,6 +79,7 @@ describe('rules of one\'s own', () => {
 
 it('says why a list line went unused', () => {
   expect(skipText({ reason: 'unsupported-modifier', modifier: 'dnstype' })).toBe('还不支持 $dnstype')
+  expect(skipText({ reason: 'browser-modifier', modifier: 'third-party' })).toBe('$third-party 只对浏览器有用，DNS 用不上')
   expect(skipText({ reason: 'too-many-patterns' })).toContain('1000')
 })
 
@@ -73,6 +91,10 @@ it('names a subscription by the suggested list, or by file name and host', () =>
   // 已经写着主机的地方只用文件名；起过名的照原样 / Where the host is already given only the file name is used; a name of one's own stays
   expect(shortName(subscriptionName('https://lists.example.org/a/filter.txt'), 'https://lists.example.org/a/filter.txt')).toBe('filter.txt')
   expect(shortName('HaGeZi Light', 'https://lists.example.org/a/filter.txt')).toBe('HaGeZi Light')
+  // 和已有的默认名重名时带上最后一级目录，正文里也带着 / A taken default name carries its last directory, in prose too
+  const second = subscriptionName('https://lists.example.org/fail/filter.txt', true)
+  expect(second).toBe('fail/filter.txt\u00a0·\u00a0lists.example.org')
+  expect(shortName(second, 'https://lists.example.org/fail/filter.txt')).toBe('fail/filter.txt')
 })
 
 it('checks a link to subscribe to as the server does', () => {

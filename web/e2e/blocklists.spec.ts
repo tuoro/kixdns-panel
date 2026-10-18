@@ -50,7 +50,7 @@ test('自己写的规则只指出用不上的行；规则页最上面多一行�
 
   await page.locator('.desktop-nav').getByRole('link', { name: '规则', exact: true }).click()
   const pin = page.locator('.rpin', { hasText: '拦截列表' })
-  await expect(pin).toContainText('AdGuard DNS filter，自己写的规则 2 条，先于下面所有规则')
+  await expect(pin).toContainText('AdGuard DNS filter，自己写的规则 2 条')
   await expect(pin.locator('.opill')).toContainText('拦截')
   await pin.getByRole('button', { name: '管理拦截列表', exact: true }).click()
   await expect(page).toHaveURL(/section=blocklists/)
@@ -78,7 +78,7 @@ test('删掉一个订阅能撤销；关掉一个以后重新合成，规则页�
   await page.locator('.toast').getByRole('button', { name: '撤销', exact: true }).click()
   await expect(page.locator('.bl__row')).toHaveCount(2)
   await page.locator('.desktop-nav').getByRole('link', { name: '规则', exact: true }).click()
-  await expect(page.locator('.rpin', { hasText: '拦截列表' })).toContainText('AdGuard DNS filter，先于下面所有规则')
+  await expect(page.locator('.rpin', { hasText: '拦截列表' })).toContainText('AdGuard DNS filter')
 })
 
 test('合成还没回来就保存：等合成落地再存，存下的文件就是按现在的订阅合成的', async ({ page }) => {
@@ -97,7 +97,7 @@ test('合成还没回来就保存：等合成落地再存，存下的文件就�
   await page.waitForTimeout(1000)
   await expect(page.locator('.cfg__savebar', { hasText: /还没保存|已修改/ })).toHaveCount(0)
   await page.locator('.desktop-nav').getByRole('link', { name: '规则', exact: true }).click()
-  await expect(page.locator('.rpin', { hasText: '拦截列表' })).toContainText('AdGuard DNS filter，先于下面所有规则')
+  await expect(page.locator('.rpin', { hasText: '拦截列表' })).toContainText('AdGuard DNS filter')
 })
 
 test('立即更新：草稿没有别的修改时直接存成新版本；有修改时放进草稿', async ({ page }) => {
@@ -206,7 +206,7 @@ test('先点校验再点保存：保存也等合成落地，存下的文件对�
   await page.waitForTimeout(1000)
   await expect(page.locator('.cfg__savebar', { hasText: /还没保存|已修改/ })).toHaveCount(0)
   await page.locator('.desktop-nav').getByRole('link', { name: '规则', exact: true }).click()
-  await expect(page.locator('.rpin', { hasText: '拦截列表' })).toContainText('AdGuard DNS filter，先于下面所有规则')
+  await expect(page.locator('.rpin', { hasText: '拦截列表' })).toContainText('AdGuard DNS filter')
 })
 
 test('等合成时离开配置页、马上回来：不问也不重读，这次保存照常做完', async ({ page }) => {
@@ -253,6 +253,53 @@ test('连不上面板时立即更新：只说没能重新下载，不再说列�
   await expect(page.locator('.toast', { hasText: '没能重新下载：连不上面板' })).toBeVisible({ timeout: 5000 })
   await expect(page.locator('.toast', { hasText: /最新|没有变化/ })).toHaveCount(0)
   await page.evaluate(() => localStorage.removeItem('kixdns:demo-panel-down'))
+  // 再下一次成功了：那条红色提示收起，不和成功的提示叠在一起 / The next download succeeds: the red toast goes instead of stacking with the success
+  await page.waitForTimeout(1100)
+  await page.locator('.bl__row', { hasText: 'AdGuard DNS filter' }).getByRole('button', { name: 'AdGuard DNS filter 的操作', exact: true }).click()
+  await page.getByRole('menuitem', { name: '立即更新', exact: true }).click()
+  await expect(page.locator('.toast', { hasText: '已换上新下载的列表' })).toBeVisible({ timeout: 8000 })
+  await expect(page.locator('.toast', { hasText: '没能重新下载' })).toHaveCount(0)
+})
+
+test('立即更新途中离开又回来、回来时那次读晚于下载落地：存上的就是草稿里的，没有多出修改', async ({ page }) => {
+  await open(page)
+  await subscribe(page, ['AdGuard DNS filter'])
+  await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  await page.getByRole('button', { name: '保存并应用', exact: true }).click()
+  await expect(page.locator('.cfg__savebar')).toContainText('已生效')
+  await page.waitForTimeout(1100)
+  // 读要 1.5 秒：回来时的那次读一定晚于 1.6 秒的下载落地 / Reads take 1.5 s, so the return's read always lands after the 1.6 s download
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-read-slow', 'true'))
+  await page.locator('.bl__row', { hasText: 'AdGuard DNS filter' }).getByRole('button', { name: 'AdGuard DNS filter 的操作', exact: true }).click()
+  await page.getByRole('menuitem', { name: '立即更新', exact: true }).click()
+  // 真的离开了配置页（页面卸下），再回来 / Really off the config page (the page unmounted), then back
+  await page.locator('.desktop-nav').getByRole('link', { name: '日志', exact: true }).click()
+  await expect(page.locator('.cfg__panel')).toHaveCount(0)
+  await page.locator('.desktop-nav').getByRole('link', { name: '拦截列表', exact: true }).click()
+  await expect(page.locator('.toast', { hasText: '已换上新下载的列表' })).toBeVisible({ timeout: 10000 })
+  await page.waitForTimeout(2000)
+  await expect(page.locator('.cfg__savebar', { hasText: /还没保存|已修改/ })).toHaveCount(0)
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-read-slow'))
+})
+
+test('有修改时立即更新、离开时选了放弃修改：下好就直接存成新版本，回来没有修改', async ({ page }) => {
+  await open(page)
+  await subscribe(page, ['AdGuard DNS filter'])
+  await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  await page.getByRole('button', { name: '保存并应用', exact: true }).click()
+  await expect(page.locator('.cfg__savebar')).toContainText('已生效')
+  await page.waitForTimeout(1100)
+  await page.getByRole('textbox', { name: '自己写的规则，一行一条', exact: true }).fill('||ad.example.com^')
+  await page.locator('.bl__row', { hasText: 'AdGuard DNS filter' }).getByRole('button', { name: 'AdGuard DNS filter 的操作', exact: true }).click()
+  await page.getByRole('menuitem', { name: '立即更新', exact: true }).click()
+  await page.locator('.desktop-nav').getByRole('link', { name: '日志', exact: true }).click()
+  await page.getByRole('alertdialog').getByRole('button', { name: '放弃修改', exact: true }).click()
+  await expect(page.locator('.toast', { hasText: /版本 #\d+ 已生效/ })).toBeVisible({ timeout: 8000 })
+  await expect(page.locator('.toast', { hasText: '放进草稿' })).toHaveCount(0)
+  await page.locator('.desktop-nav').getByRole('link', { name: '拦截列表', exact: true }).click()
+  await expect(page.locator('.bl__row', { hasText: 'AdGuard DNS filter' })).toBeVisible()
+  await expect(page.locator('.cfg__savebar', { hasText: /还没保存|已修改/ })).toHaveCount(0, { timeout: 5000 })
+  await expect(page.getByRole('textbox', { name: '自己写的规则，一行一条', exact: true })).toHaveValue('')
 })
 
 test('等合成时离开、这时面板断了：草稿留着，提示说清，回来还在', async ({ page }) => {

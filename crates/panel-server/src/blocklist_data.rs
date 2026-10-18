@@ -218,7 +218,7 @@ impl BlocklistManager {
         };
         let sources = read_file_sources(Path::new(&old)).await?.ok_or_else(|| {
             GeoDataError::Invalid(
-                "正在用的文件读不出是哪些列表合成的，自动更新没法更新它；加一个订阅，或者点「全部更新」，就会重新合成"
+                "正在用的文件读不出是哪些列表合成的，没法更新；订阅列表并保存以后，就会换成新合成的"
                     .to_owned(),
             )
         })?;

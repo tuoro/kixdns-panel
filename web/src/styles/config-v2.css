@@ -479,7 +479,9 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
   .rrow__switch { align-self: start; grid-area: switch; justify-self: end; margin-top: calc((var(--s-5) - var(--switch-h)) / 2); }
   .rcard__order { padding: var(--s-3) var(--s-4); display: none; }
   .rpin:not(.rpin--rest) .rrow__main { display: flex; align-items: baseline; gap: var(--s-2); }
-  .rpin:not(.rpin--rest) .rrow__cond { white-space: nowrap; color: var(--l-ink-3); }
+  /* 占满名字后面剩下的宽度：旁边空出地方时（拖宽、「命中」收起）这一格跟着变宽，换回长的说法 / Takes all the width after the name: when room frees
+     up (a wider window, the 命中 tag gone) the cell grows with it and goes back to a longer wording */
+  .rpin:not(.rpin--rest) .rrow__cond { flex: 1 1 0; white-space: nowrap; color: var(--l-ink-3); }
 }
 /* ============================================================================
    v2 第三轮审查后的修正 / Corrections after review round 3

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ExternalLink, ListPlus, Plus, RefreshCw, ShieldBan, TriangleAlert, X } from '@lucide/vue'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import type { BlocklistSkippedLine } from '../api/types'
 import UiDotText from '../components/ui/UiDotText.vue'
@@ -8,14 +8,15 @@ import UiEmpty from '../components/ui/UiEmpty.vue'
 import UiHelp from '../components/ui/UiHelp.vue'
 import UiMenu from '../components/ui/UiMenu.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
+import { useSession } from '../composables/useSession'
 import { useToast } from '../composables/useToast'
 import { checkSubscriptionUrl, MAX_SUBSCRIPTIONS, normalUrl, parseOwnRules, PRESETS, shortName, skipText, subscriptionName, type Skip } from '../config-model/blocklist'
 import { blockLabel, type Subscription } from '../config-model/model'
 import { formatAgo, formatVersionTime } from '../utils'
 import { usePhone } from './phone'
-import { appliedModel, changedSubscriptionIds, model, newId, unsaved } from './store'
+import { appliedModel, changedSubscriptionIds, dialogEdits, editorEdited, jsonEdited, model, newId, userPart } from './store'
 import { blocklists, loadBlocklists, rebuildBlocklists, saveBlocklistSchedule } from './useBlocklists'
-import { doc, save, saveInFlight, stage } from './useConfigDocument'
+import { doc, pageAway, save, saveInFlight, stage } from './useConfigDocument'
 import { fmtCount } from './view'
 
 // 拦截列表：订阅的列表一行一个，像域名映射那样一张卡片；下面是自己写的规则和两项设置。订阅和自己写的规则都在草稿里，
@@ -26,9 +27,8 @@ import { fmtCount } from './view'
 const router = useRouter()
 const phone = usePhone()
 const toast = useToast()
+const session = useSession()
 onMounted(() => void loadBlocklists())
-let mounted = true
-onBeforeUnmount(() => { mounted = false })
 
 const subscriptions = computed(() => model.blocklists.subscriptions)
 const host = (url: string) => { try { return new URL(url).host } catch { return url } }
@@ -93,25 +93,26 @@ const failures = computed(() => subscriptions.value.filter((s) => statusOf(s)?.l
   return { id: s.id, name: cause.includes(s.name) && !off ? '' : label, label, off, cause, held: held(s), retryable: Boolean(status.retryable), stuck: !status.retryable && !status.rejected_sha256 }
 }).sort((a, b) => Number(a.off) - Number(b.off)))
 // 末尾按怎么办分两句，可以同时出现：先说重下也没用、要换链接的那几个，再说一份都没有、重下可能就好的那几个（没下载成功的不会自己再下）。
-// 只有一个列表出错时说「这一行」「它」，三个以内点名，再多时说个数或者指那几行的标签
+// 只有一个列表出错时说「这一行」「它」，五个以内点名，再多时说个数或者指那几行的标签。说到的列表都已停用时，这一句也淡下去
 // The end says what to do in two sentences that may both appear: first those downloading again will not fix, which need another link, then those
 // with no copy where downloading again may help (a failed one is not retried on its own). With one failing list it says 「this row」 and 「it」, up to
-// three it names them, beyond that it counts them or points at the rows' tag
+// five it names them, beyond that it counts them or points at the rows' tag. A sentence about disabled lists only is dimmed like them
+const NAMED = 5
 const names = (list: { label: string }[]) => list.map((f) => `「${f.label}」`).join('')
 const stuckLine = computed(() => {
   const stuck = failures.value.filter((f) => f.stuck)
-  if (!stuck.length) return ''
+  if (!stuck.length) return null
   const them = stuck.length === 1 ? '它' : '它们'
-  const who = stuck.length === failures.value.length ? '' : stuck.length <= 3 ? names(stuck) : `其中 ${stuck.length}\u00a0个`
-  return `${who}重新下载也是一样：要换链接，先删掉${them}，再粘贴新的。`
+  const who = stuck.length === failures.value.length ? '' : stuck.length <= NAMED ? names(stuck) : `其中 ${stuck.length}\u00a0个`
+  return { text: `${who}重新下载也是一样：要换链接，先删掉${them}，再粘贴新的。`, off: stuck.every((f) => f.off) }
 })
 const retryLead = computed(() => {
   const retry = failures.value.filter((f) => !f.held && f.retryable)
   if (!retry.length) return null
-  const rows = ['', '那一行', '那两行', '那三行']
-  const row = failures.value.length === 1 ? '这一行' : retry.length <= 3 ? `${names(retry)}${rows[retry.length]}`
+  const rows = ['', '那一行', '那两行', '那三行', '那四行', '那五行']
+  const row = failures.value.length === 1 ? '这一行' : retry.length <= NAMED ? `${names(retry)}${rows[retry.length]}`
     : stuckLine.value ? '其余标着「没下载成功」的那几行' : '标着「没下载成功」的那几行'
-  return `要重新下载，点${row}「…」里的`
+  return { text: `要重新下载，点${row}「…」里的`, off: retry.every((f) => f.off) }
 })
 
 const rowMenu = (s: Subscription) => {
@@ -158,15 +159,16 @@ const toggle = (s: Subscription, on: boolean) => { s.enabled = on }
 // 只看还在的订阅：删掉的那个下完之前，「全部更新」不陪它灰着 / Only subscriptions still present count: one deleted mid-download does not keep 全部更新 grey
 const busy = computed(() => subscriptions.value.some(downloading))
 
-// 立即更新、全部更新：草稿里没有别的修改时，新的一份下好就直接保存生效，和自动更新一样；草稿里有没保存的修改时，新的一份放进草稿，跟它一起保存
+// 立即更新、全部更新：草稿里没有别的修改时，新的一份下好就直接保存生效，和自动更新一样；草稿里有没保存的修改时，新的一份放进草稿，跟它一起保存。
+// 有没有别的修改看的是落地那一刻：按下时有、离开配置页时同意放弃了的，这时已经是干净的草稿
 // 立即更新 and 全部更新: with nothing else edited in the draft, the new copy is saved and takes effect as soon as it lands, as the automatic
-// update does; with unsaved edits in the draft, the new copy goes into the draft and is saved with it
-const withoutFile = () => JSON.stringify({ ...model, blocklists: { ...model.blocklists, file: null } })
+// update does; with unsaved edits in the draft, the new copy goes into the draft and is saved with it. Other edits are judged when it lands: edits
+// present at the press but agreed away on leaving the config page leave a clean draft by then
 async function updateNow(urls: string[], button: '立即更新' | '全部更新' = '立即更新'): Promise<void> {
-  const direct = !unsaved.value && !saveInFlight.value
   const before = model.blocklists.file
-  const rest = withoutFile()
   const result = await rebuildBlocklists(urls)
+  // 下载途中会话过期了：已经在登录页上，不再保存，也不说话 / The session expired during the download: the login page is up, so nothing is saved or said
+  if (!session.authenticated.value) return
   // 没下成的，合成那边已经说了原因；点名的列表在下载途中都删掉了，删除提示已经说过 / One that did not download already had its reason said by the build;
   // when every list named was removed while downloading, the delete toast has said all there is
   if (result.outcome === 'failed' || !urls.some((url) => subscriptions.value.some((s) => s.url === url))) return
@@ -183,9 +185,13 @@ async function updateNow(urls: string[], button: '立即更新' | '全部更新'
         : named.length > 1 ? '下载的都和在用的一样，已经是最新的' : '下载的和在用的一样，已经是最新的')
     return
   }
-  if (!direct || withoutFile() !== rest || saveInFlight.value) { toast.info('新的一份已放进草稿，保存后生效'); return }
+  const clean = userPart(model) === userPart(appliedModel.value) && !editorEdited.value && !jsonEdited.value && dialogEdits.size === 0 && !saveInFlight.value
+  if (!clean) { toast.info('新的一份已放进草稿，保存后生效'); return }
   await save('draft', '手动更新拦截列表')
-  if (mounted && stage.value === 'done') toast.success(`已换上新下载的列表（版本 #${doc.value?.version_id}）`)
+  // 看的是人在不在配置页上，不是这个组件还在不在：离开又回来时是另一个组件，照样要说；不在页上时保存自己会说「版本 #N 已生效」
+  // What counts is whether the user is on the config page, not whether this component lives: after leaving and coming back another one does and still
+  // should say it; off the page the save itself says 版本 #N 已生效
+  if (!pageAway() && stage.value === 'done') toast.success(`已换上新下载的列表（版本 #${doc.value?.version_id}）`)
 }
 const updateAll = () => void updateNow(subscriptions.value.map((s) => s.url), '全部更新')
 
@@ -201,7 +207,11 @@ function subscribe(urls: string[]): void {
     if (pending !== undefined) { toast.dismiss(pending); deleteToasts.delete(url) }
     // 删掉又加回来的沿用原来的 id 和名字，不算新加的 / One removed and added back keeps its id and name, so it does not count as new
     const before = saved.find((x) => normalUrl(x.url) === url)
-    model.blocklists.subscriptions.push(before ? { ...before, enabled: true } : { id: newId(), name: subscriptionName(url), url, enabled: true })
+    // 默认名和已有的重名（同一个主机、同名文件）时带上最后一级目录，正文和提示里分得出 / A default name already taken (same host, same file name)
+    // carries its last directory, so prose and toasts can tell them apart
+    const plain = subscriptionName(url)
+    const name = model.blocklists.subscriptions.some((x) => x.name === plain) ? subscriptionName(url, true) : plain
+    model.blocklists.subscriptions.push(before ? { ...before, enabled: true } : { id: newId(), name, url, enabled: true })
     // 以前没下载成功过的，加回来时再下载一次 / One that never downloaded downloads again when added back
     const status = blocklists.sources[url]
     if (status?.last_error && !status.sha256) retry.push(url)
@@ -309,6 +319,7 @@ const blockText = computed(() => blockLabel(model, 'default'))
                 <small v-if="source(s)">{{ source(s) }}</small>
               </span>
               <span class="bl__about" :title="presetOf(s) ? about(s) : link(s)">{{ about(s) }}</span>
+              <span class="bl__meta">
               <span class="bl__rules"><span class="bl__sr">规则</span><span>{{ held(s) ? ruleCount(statusOf(s)!.summary.rules) : '—' }}</span><small v-if="held(s) && statusOf(s)!.summary.skipped">{{ fmtCount(statusOf(s)!.summary.skipped) }}&nbsp;条没用上</small></span>
               <span class="bl__when" aria-live="polite">
                 <span class="bl__sr">更新</span>
@@ -318,6 +329,7 @@ const blockText = computed(() => blockLabel(model, 'default'))
                 <span v-else-if="statusOf(s)?.downloaded_at">{{ ago(statusOf(s)!.downloaded_at!) }}<span class="bl__updated">更新</span></span>
                 <span v-else>{{ blocklists.status === 'loading' ? '…' : '还没下载' }}</span>
                 <small v-if="s.enabled && !downloading(s) && statusOf(s)?.last_error && held(s) && statusOf(s)?.downloaded_at">仍用{{ spaced(ago(statusOf(s)!.downloaded_at!)) }}那份</small>
+              </span>
               </span>
               <span class="bl__acts">
                 <label class="ui-switch"><input :checked="s.enabled" type="checkbox" :aria-label="`启用 ${s.name}`" @change="toggle(s, ($event.target as HTMLInputElement).checked)"><i></i></label>
@@ -330,8 +342,8 @@ const blockText = computed(() => blockLabel(model, 'default'))
           <TriangleAlert :size="14" aria-hidden="true" />
           <div class="bl__causes">
             <p v-for="f in failures" :key="f.id" :class="{ 'is-off': f.off }"><b v-if="f.name">{{ f.name }}</b><template v-if="f.off">（已停用）</template><template v-if="f.name">：</template>{{ f.cause }}。</p>
-            <p v-if="stuckLine">{{ stuckLine }}</p>
-            <p v-if="retryLead">{{ retryLead }}<span class="nowrap">「立即更新」。</span></p>
+            <p v-if="stuckLine" class="bl__todo" :class="{ 'is-off': stuckLine.off }">{{ stuckLine.text }}</p>
+            <p v-if="retryLead" class="bl__todo" :class="{ 'is-off': retryLead.off }">{{ retryLead.text }}<span class="nowrap">「立即更新」。</span></p>
           </div>
         </div>
         <p v-if="blocklists.status === 'failed' && subscriptions.some(unknown)" class="bl__note"><TriangleAlert :size="14" aria-hidden="true" />读不到各个列表下载得怎么样；订阅照常保存，稍后刷新页面再看。</p>
@@ -432,6 +444,8 @@ const blockText = computed(() => blockLabel(model, 'default'))
 .bl__acts { display: flex; align-items: center; gap: var(--s-4); }
 /* 「…」的三个点和上面「添加」按钮的右边对齐，和域名映射一样 / The three dots line up with the right edge of 添加 above, as in the mapping list */
 .bl__acts :deep(.ui-icon-btn) { margin-right: calc((var(--h-sm) - var(--size-icon)) / -2 - 3px); }
+/* 条数和更新两格：宽屏上各占表格的一列，手机上是第二行 / The count and update cells: a table column each when wide, the second line on phones */
+.bl__meta { display: contents; }
 .bl__name, .bl__when { min-width: 0; display: grid; gap: 1px; }
 /* 名字截短时，表示还没保存的小圆点照样在 / When the name is cut short, the unsaved dot still shows */
 .bl__nm { display: flex; align-items: center; gap: var(--s-2); min-width: 0; }
@@ -472,6 +486,8 @@ const blockText = computed(() => blockLabel(model, 'default'))
 .bl__causes p { margin: 0; overflow-wrap: anywhere; }
 .bl__causes b { font-weight: var(--w-medium); }
 .bl__causes p.is-off { color: var(--l-ink-3); }
+/* 「怎么办」那两句和上面各条「出了什么事」分开一点 / The 「what to do」 sentences sit a little apart from the 「what happened」 lines above */
+.bl__causes p:not(.bl__todo) + .bl__todo { margin-top: var(--s-1); }
 .bl__own { display: grid; gap: var(--s-2); padding: 0 var(--s-5) var(--s-4); }
 .bl__text textarea { font-family: var(--f-mono); font-size: var(--t-2); white-space: pre; overflow-x: auto; overflow-wrap: normal; }
 .bl__busy { display: inline-flex; align-items: center; gap: var(--s-1); }
@@ -529,10 +545,11 @@ const blockText = computed(() => blockLabel(model, 'default'))
   .bl__name { grid-area: n; }
   /* 手机上不写来源网址：每个列表两行，名字一行，条数和更新时间一行 / No source host on phones: two lines per list, the name, then the count and update time */
   .bl__name small { display: none; }
-  /* 第二行的两段都横跨整行，一左一右：长的更新状态不再把上面「…」那一列撑宽 / Both parts of the second line span the row, one left
-     and one right, so a long update state no longer widens the 「…」 column above */
-  .bl__rules { grid-area: 2 / 1 / 3 / 4; justify-self: start; }
-  .bl__when { grid-area: 2 / 1 / 3 / 4; justify-self: end; display: flex; gap: var(--s-2); align-items: baseline; min-width: 0; }
+  /* 第二行横跨整行，条数靠左、更新状态靠右：长的更新状态不再把上面「…」那一列撑宽；两段放不下时更新状态整段换到下一行靠右，不叠在一起
+     The second line spans the row, the count on the left and the update state on the right, so a long update state no longer widens the 「…」
+     column above; when the two do not fit, the update state moves whole to a line of its own on the right instead of overlapping */
+  .bl__meta { grid-area: 2 / 1 / 3 / 4; display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; column-gap: var(--s-3); row-gap: var(--s-1); min-width: 0; }
+  .bl__when { display: flex; gap: var(--s-2); align-items: baseline; min-width: 0; margin-left: auto; }
   .bl__rules > span, .bl__when > span:not(.ui-tag) { font-size: var(--t-2); }
   /* 没有表头，「刚刚」后面写上「更新」 / With no head, 刚刚 is followed by 更新 */
   .bl__updated { display: inline; }

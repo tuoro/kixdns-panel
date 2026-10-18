@@ -25,8 +25,9 @@ import SaveBar from '../config-v2/SaveBar.vue'
 import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
-import { dialogEdits, dirty, discardDraft, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, bulkDeleting, busy, checkPending, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, rereadAndSay, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse } from '../config-v2/useConfigDocument'
+import { dialogEdits, dirty, discardOnLeave, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
+import { applyBusy, bulkDeleting, busy, checkPending, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, stayedDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, rereadAndSay, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse } from '../config-v2/useConfigDocument'
+import { dismissBlocklistToasts } from '../config-v2/useBlocklists'
 import { useHelp } from '../composables/useHelp'
 import { useServiceStart } from '../composables/useServiceStart'
 import { registerLeaveGuard, takeAgreement } from '../composables/useLeaveGuard'
@@ -420,13 +421,19 @@ const askLeave = async (purpose?: 'signout'): Promise<boolean> => {
     return agreed
   }
   const agreed = await confirm.ask({ title: '放弃未保存的修改', body: '当前的配置草稿会被丢弃，已经生效的配置不受影\u2060响。', ...labels, destructive: true })
-  // 「现在应用」还在做：回到配置页时它没做完，那次重读不会发生，应用自己的重读又留着修改。同意了就马上丢掉，回来时看不到说好丢掉的修改
-  // 现在应用 is still running: on a return before it ends the page skips its read, and the apply's own re-read keeps edits. On agreement they go at once, so a
-  // return never shows the edits agreed to drop
-  if (agreed && applyBusy.value) discardDraft()
+  // 同意了就马上丢掉，不等回来时重读：「现在应用」还在做时回来不会重读，应用自己的重读又留着修改；在路上的「立即更新」落地时看到的也是干净的草稿，
+  // 照没有修改时那样直接生效
+  // On agreement the edits go at once instead of on the return's read: with 现在应用 still running a return skips its read and the apply's own re-read
+  // keeps edits; and a 立即更新 under way lands on a clean draft and takes effect directly, as with no edits
+  if (agreed) discardOnLeave()
+  // 拦截列表的几条提示说的是这份草稿，草稿丢了就一起收起，不跟到别的页上 / The blocklist toasts speak of this draft: with it dropped they go too,
+  // rather than follow to the next page
+  if (agreed) dismissBlocklistToasts()
   return agreed
 }
 const releaseGuard = registerLeaveGuard(askLeave, () => unsaved.value)
+// 保存途中放行的换页没成：人还在这一页 / A page change let through during a save did not happen: the user is still on this page
+const stopAfterEach = router.afterEach((_to, _from, failure) => { if (failure) stayedDuringSave() })
 // 提示条的按钮做事期间停用，焦点跟着掉到页面上：做完没人接住焦点时，回到这个按钮（还在的话），不在了就落在提示条上
 // The notice's button is disabled while it works and focus falls to the page: when nothing caught it afterwards, it returns to the button if still there, else to the notice
 async function runNotice(): Promise<void> {
@@ -449,12 +456,12 @@ onMounted(() => {
   // A kept draft that met 别处改过了: refresh the runtime only and leave the file hash and baseline for 重新读取 (as when it happens on the page);
   // otherwise 放弃修改 would count the other writer's change as one's own
   if (keep && conflict.value) void refreshRuntime().catch(() => undefined)
-  else if (!busy.value) void load(keep ? { quiet: true, keepDraft: true } : {})
+  else if (!busy.value) void load(keep ? { quiet: true, keepDraft: true } : { returning: true })
   window.addEventListener('beforeunload', beforeUnload)
 })
 const beforeUnload = (e: BeforeUnloadEvent) => { if (unsaved.value) { e.preventDefault(); e.returnValue = '' } }
 // 带「撤销」的提示只对这一页的草稿有用：离开时一起收起（会话过期跳到登录页时也不会留着） / Undo toasts only make sense for this page's draft: they go when it unmounts (including a jump to the login page on session expiry)
-onBeforeUnmount(() => { setViewing(false); window.removeEventListener('beforeunload', beforeUnload); releaseGuard(); dismissUndoable(); ui.mode = 'form'; jsonEdited.value = false })
+onBeforeUnmount(() => { setViewing(false); window.removeEventListener('beforeunload', beforeUnload); releaseGuard(); stopAfterEach(); dismissUndoable(); ui.mode = 'form'; jsonEdited.value = false })
 onBeforeRouteLeave(async () => takeAgreement() || askLeave())
 // 换分区、或者从整页编辑按返回：规则编辑里没点「完成」的修改先问一句；同意了就关掉编辑
 // Switching section, or pressing back out of the full-page editor: first ask about rule edits not yet 完成; once agreed the editor closes

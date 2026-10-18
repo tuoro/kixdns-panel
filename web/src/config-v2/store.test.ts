@@ -39,6 +39,37 @@ describe('保存条的计数和「改了哪些」说的是同一件事', () => {
   })
 })
 
+// 订阅按规整后的链接认：另一台面板导出的配置里编号、名字、链接写法不同，不算修改；开关、增删才算，计数和「改了哪些」一致
+// Subscriptions are matched by normal link: different ids, names or link spellings in a config exported by another panel are no change; on/off and
+// adding or removing are, with the count and the review agreeing
+describe('订阅的改动按链接认 / subscription changes go by link', () => {
+  const withLists = (): Model => {
+    const m = demoModel()
+    m.blocklists = { ...m.blocklists, subscriptions: [
+      { id: 1, name: 'OISD big', url: 'https://big.oisd.nl/', enabled: true },
+      { id: 2, name: 'anti-AD', url: 'https://anti-ad.net/easylist.txt', enabled: true },
+    ] }
+    return m
+  }
+  beforeEach(() => resetTo(withLists()))
+
+  it('编号、名字、链接写法不同不算修改', () => {
+    model.blocklists.subscriptions = [
+      { id: 7, name: 'anti-AD 列表', url: 'https://ANTI-AD.net/easylist.txt', enabled: true },
+      { id: 8, name: 'big.oisd.nl', url: 'https://big.oisd.nl', enabled: true },
+    ]
+    expect(changeCount.value).toBe(0)
+    expect(diffModels(appliedModel.value, model)).toEqual([])
+  })
+
+  it('停用一个、加一个各算一处，「改了哪些」也列出来', () => {
+    model.blocklists.subscriptions[1]!.enabled = false
+    model.blocklists.subscriptions.push({ id: 3, name: 'AdAway', url: 'https://adaway.org/hosts.txt', enabled: true })
+    expect(changeCount.value).toBe(2)
+    expect(diffModels(appliedModel.value, model).map((b) => b.kind)).toEqual(['改了', '加上'])
+  })
+})
+
 // 看不见、也不写进配置的字段变了不算修改：关着的日志的级别、没打开的回答后检查、条件的内部编号、改动时间
 // Fields that are neither shown nor written do not count: the level of a log that is off, an unused response check, condition ids, the edit time
 const invisible: [string, (m: Model) => void][] = [

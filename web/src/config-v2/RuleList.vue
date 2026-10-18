@@ -47,29 +47,28 @@ const ownRules = computed(() => parseOwnRules(model.blocklists.custom).rules.len
 // 内核里真有拦截列表的入口才显示这一行：只写了放行、又没有列表时什么也不拦 / The row shows only when the kernel really gets blocklist entries: allows
 // alone, with no list, block nothing
 const blocking = computed(() => blocklistEntries(model).length > 0)
-// 这两行各有几种说法，从长到短，这一格放得下哪种用哪种：先丢句尾（「↳」和排在最上面已经说了先于规则），再把名字换成个数
-// Each of the two rows has wordings from longest to shortest and uses the first the cell fits: the tail goes first (the 「↳」 and the top position
-// already say they come before the rules), then the names give way to a count
-const TAIL = '，先于下面所有规则'
-const withTail = (lines: string[]) => lines.flatMap((line) => [`${line}${TAIL}`, line])
+// 这两行各有几种说法，从长到短，这一格放得下哪种用哪种：名字放不下时换成个数。不写「先于下面所有规则」：「↳」和排在最上面已经说了
+// Each of the two rows has wordings from longest to shortest and uses the first the cell fits: names give way to a count when they do not fit. No
+// 「先于下面所有规则」: the 「↳」 and the top position already say so
 const named = (names: string[], unit: string) => (names.length <= 2 ? names.join('、') : `${names.slice(0, 2).join('、')} 等 ${names.length} 个${unit}`)
-const mappingLines = computed(() => withTail([named(liveMappings.value.map((r) => r.domain), '域名'), `${liveMappings.value.length} 个域名`]))
+const mappingLines = computed(() => [named(liveMappings.value.map((r) => r.domain), '域名'), `${liveMappings.value.length} 个域名`])
 // 列表名之间用顿号，和自己写的规则之间用逗号，不让「自己写的」读成又一个列表；自己粘贴、没有标题的列表只写文件名
 // 顿号 between list names and a comma before the own rules, so they do not read as one more list; a pasted list without a title shows its file name only
-// 配置里有合成的文件、却没记下订阅（导入的内核配置）时照实说；开着的列表都还没下载成功、或者都停用了、文件还没换掉时也一样
-// A merged file with no subscriptions recorded (an imported kernel config) is said as it is, and so are enabled lists none of which downloaded yet, or
-// lists all disabled while the file is not yet replaced
+// 配置里有合成的文件、却没记下订阅（导入的内核配置）时照实说；开着的列表都还没下载好（下载中或没成功）、或者都停用了、文件还没换掉时也一样。
+// 最后两种更短的只在手机最窄时用上
+// A merged file with no subscriptions recorded (an imported kernel config) is said as it is, and so are enabled lists none of which has downloaded
+// yet (downloading or failed), or lists all disabled while the file is not yet replaced. The last two, shorter wordings only come into play on the
+// narrowest phones
 const listLines = computed(() => {
   const own = ownRules.value
   const join = (lists: string, mine: string) => [lists, own ? mine : ''].filter(Boolean).join('，')
+  const forms = (...lists: string[]) => [...lists.map((l) => join(l, `自己写的规则 ${own} 条`)), join(lists.at(-1) ?? '', `自己写的 ${own} 条`), join(lists.at(-1) ?? '', `自己的 ${own} 条`)]
   const lists = liveLists.value
   if (!lists.length) {
     const subs = model.blocklists.subscriptions
-    const what = !model.blocklists.file ? '' : !subs.length ? '一份没记下来源的列表' : subs.some((s) => s.enabled) ? '列表还没下载成功' : '列表都已停用'
-    return [...withTail([join(what, `自己写的规则 ${own} 条`)]), join(what, `自己写的 ${own} 条`)]
+    return forms(!model.blocklists.file ? '' : !subs.length ? '一份没记下来源的列表' : subs.some((s) => s.enabled) ? '列表还没下载好' : '列表都已停用')
   }
-  return [...withTail([join(named(lists.map((s) => shortName(s.name, s.url)), '列表'), `自己写的规则 ${own} 条`), join(`${lists.length} 个列表`, `自己写的规则 ${own} 条`)]),
-    join(`${lists.length} 个列表`, `自己写的 ${own} 条`)]
+  return forms(named(lists.map((s) => shortName(s.name, s.url)), '列表'), `${lists.length} 个列表`)
 })
 
 // 其余请求：交给哪个上游组，或者拦截 / The catch-all: which upstream group, or block

@@ -6,7 +6,7 @@ import { apiRequest, jsonBody } from '../api/client'
 import type { DnsDiagnostic } from '../api/types'
 import UiSelect from '../components/ui/UiSelect.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
-import { ownBlockFor, type OwnRule } from '../config-model/blocklist'
+import { coversOnly, ownBlocksFor } from '../config-model/blocklist'
 import { blocklistPipelineId, compile, isIp, type Model } from '../config-model/model'
 import { traceNames } from '../config-model/trace-names'
 import { asksUpstream, describeStep, forwardTarget, formatElapsed, groupTrace, hidePlumbing, isDnsSuccess, missedRulesText, parseDnsAnswer, responseCodeName, ruleName, traceTone, type TextPart } from '../diagnostics'
@@ -48,8 +48,13 @@ const testsDraft = computed(() => canDraft.value && dirty.value && target.value 
 // (the blocklists come before the rules), so instead of 为这个域名加一条 the result says how to let it through
 const byBlocklist = ref(false)
 const tested = ref('')
-// 是自己写的规则拦下的：该删掉那一行，不是再写一行放行 / Stopped by a rule of one's own: that line should go, rather than an allow be added
-const ownBlock = ref<OwnRule | null>(null)
+// 是自己写的规则拦下的：只有一行、管的又正好是这个域名时，删掉那一行最干净；管的是上级域名、通配或正则，或者不止一行拦着时，删掉会连别的一起放开
+// （或者还被别的行拦着），改说再写一行放行，自己写的放行先于自己写的拦截
+// Stopped by a rule of one's own: with one line about exactly this name, removing it is cleanest; for a parent name, a wildcard or a regex, or more
+// than one line, removing it would let others through too (or another line would still block), so the hint says to add an allow, which comes
+// before one's own blocks
+interface OwnHit { line: number; text: string; exact: boolean; only: boolean; more: number }
+const ownBlock = ref<OwnHit | null>(null)
 async function run(): Promise<void> {
   const name = domain.value.trim()
   if (!name || running.value || clientProblem.value) return
@@ -72,7 +77,10 @@ async function run(): Promise<void> {
     testedModel.value = testsDraft.value ? null : tried
     byBlocklist.value = selected(blocklistPipelineId(tried))
     tested.value = name.toLowerCase().replace(/\.$/, '')
-    ownBlock.value = byBlocklist.value ? ownBlockFor(tried.blocklists.custom, tested.value) : null
+    const blocks = byBlocklist.value ? ownBlocksFor(tried.blocklists.custom, tested.value) : []
+    const first = blocks[0]
+    const lines = new Set(blocks.map((b) => b.line)).size
+    ownBlock.value = first ? { line: first.line, text: tried.blocklists.custom.split('\n')[first.line - 1]?.trim() ?? '', exact: coversOnly(first.match, tested.value), only: lines === 1 && coversOnly(first.match, tested.value), more: lines - 1 } : null
     emit('matched', rule?.id ?? null, selected(model.mappingId ?? 'domain_mapping'), byBlocklist.value)
   } catch (e) {
     result.value = null
@@ -139,7 +147,8 @@ const rows = computed(() => {
     <div v-else-if="result" class="tester__out" role="status">
       <div class="tester__result" :class="{ 'is-warn': !ok }">
         <p class="tester__verdict"><span v-if="result.source === 'draft'" class="ui-tag tester__tag">草稿</span>{{ verdict }}</p>
-        <p v-if="byBlocklist && ownBlock" class="tester__allow"><span class="nowrap">「自己写的规则」</span>第 {{ ownBlock.line }} 行拦着它。要放行，删掉那一行；订阅的列表也有它时，再写 <code>@@||{{ tested }}^</code></p>
+        <p v-if="byBlocklist && ownBlock?.only" class="tester__allow"><span class="nowrap">「自己写的规则」</span>第 {{ ownBlock.line }} 行拦着它。要放行，删掉那一行；订阅的列表也有它时，再写 <code>@@||{{ tested }}^</code></p>
+        <p v-else-if="byBlocklist && ownBlock" class="tester__allow"><span class="nowrap">「自己写的规则」</span>第 {{ ownBlock.line }} 行 <code>{{ ownBlock.text }}</code> {{ ownBlock.exact ? '拦着它' : '连它一起拦着' }}<template v-if="ownBlock.more">，还有 {{ ownBlock.more }} 行也拦着</template>。{{ ownBlock.exact ? '要放行' : '只放行它' }}，在<span class="nowrap">「自己写的规则」</span>里写 <code>@@||{{ tested }}^</code></p>
         <p v-else-if="byBlocklist" class="tester__allow">拦截列表先于规则：要放行，在<span class="nowrap">「自己写的规则」</span>里写 <code>@@||{{ tested }}^</code></p>
         <button v-else class="ui-btn ui-btn--secondary ui-btn--sm" type="button" @click="emit('quick', domain.trim())"><Plus :size="14" aria-hidden="true" />为这个域名加一条</button>
       </div>

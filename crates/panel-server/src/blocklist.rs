@@ -57,6 +57,38 @@ const UNSUPPORTED_MODIFIERS: [&str; 6] = [
     "respgeo",
 ];
 
+/// 只管网页里的请求（第三方、脚本、图片……）的修饰符：DNS 查询里没有这些信息，带它们的规则整条不用。和页面同一份名单
+/// Modifiers about requests inside web pages (third-party, scripts, images…): a DNS query carries none of that, so
+/// rules with them go unused whole. The same list as the page's
+const BROWSER_MODIFIERS: [&str; 26] = [
+    "third-party",
+    "3p",
+    "first-party",
+    "1p",
+    "script",
+    "image",
+    "stylesheet",
+    "css",
+    "media",
+    "font",
+    "object",
+    "xmlhttprequest",
+    "xhr",
+    "subdocument",
+    "frame",
+    "document",
+    "doc",
+    "popup",
+    "websocket",
+    "ping",
+    "other",
+    "domain",
+    "match-case",
+    "redirect",
+    "removeparam",
+    "csp",
+];
+
 /// 一条规则管哪些域名 / Which names one rule covers
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Match {
@@ -88,6 +120,8 @@ pub enum Skip {
     HostsAddress,
     /// 认识、但还不支持的修饰符 / A modifier known but not yet supported
     UnsupportedModifier(String),
+    /// 只对浏览器有用的修饰符 / A modifier for browsers only
+    BrowserModifier(String),
     /// 不认识的修饰符：照 `AdGuard` 的说明整条不用 / A modifier not known at all: the rule is ignored whole, as `AdGuard`
     /// specifies
     UnknownModifier(String),
@@ -160,6 +194,9 @@ pub fn parse_line(raw: &str) -> Line {
             "" => return Line::Skipped(Skip::Unreadable),
             _ if UNSUPPORTED_MODIFIERS.contains(&name.as_str()) => {
                 return Line::Skipped(Skip::UnsupportedModifier(name));
+            }
+            _ if BROWSER_MODIFIERS.contains(&name.as_str()) => {
+                return Line::Skipped(Skip::BrowserModifier(name));
             }
             _ => return Line::Skipped(Skip::UnknownModifier(name)),
         }
@@ -646,6 +683,7 @@ mod tests {
             Skip::Cosmetic => ("cosmetic", None),
             Skip::HostsAddress => ("hosts-address", None),
             Skip::UnsupportedModifier(name) => ("unsupported-modifier", Some(name)),
+            Skip::BrowserModifier(name) => ("browser-modifier", Some(name)),
             Skip::UnknownModifier(name) => ("unknown-modifier", Some(name)),
             Skip::BadRegex => ("bad-regex", None),
             Skip::TooManyPatterns => ("too-many-patterns", None),

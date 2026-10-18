@@ -5,7 +5,8 @@ import { recentWindowLabel, settledAttempts, upstreamBasis } from '../dashboard-
 import { readConfig, type ImportReport, type ReadResult } from '../config-model/document'
 import { normalizeAddress } from '../config-model/kernel'
 import { findKernelRule } from '../config-model/trace-names'
-import { emptyBlocklists, kernelAddress, mainPipelineId, nextId, ruleGroupPipelineId, ruleTitle, type Model, type Outcome, type Remedy, type Rule, type RuleGroup, type UpstreamGroup } from '../config-model/model'
+import { normalUrl } from '../config-model/blocklist'
+import { emptyBlocklists, kernelAddress, mainPipelineId, nextId, ruleGroupPipelineId, ruleTitle, type Model, type Outcome, type Remedy, type Rule, type RuleGroup, type Subscription, type UpstreamGroup } from '../config-model/model'
 
 // 配置页的草稿：一份模型加上「上次读进来 / 保存成功时」的那份，改动按两者比出来。运行状态、保存流程在 useConfigDocument.ts。
 // The config page's draft: one model plus the one last loaded or saved, with changes computed between them. Runtime state and the
@@ -48,7 +49,15 @@ export const changedRuleIds = computed(() => {
 })
 export const changedGroupIds = computed(() => changedIn(appliedModel.value.groups, model.groups))
 export const changedMappingIds = computed(() => changedIn(appliedModel.value.mappings, model.mappings))
-export const changedSubscriptionIds = computed(() => changedIn(appliedModel.value.blocklists.subscriptions, model.blocklists.subscriptions))
+// 订阅按规整后的链接认，只看在不在、开没开：编号和名字是面板起的，导入另一台面板导出的配置时会不同，和「改了哪些」一个口径
+// Subscriptions are matched by their normal link and judged only on presence and on/off: ids and names are the panel's own and differ in a config
+// exported by another panel, the same yardstick as the review
+const subscriptionKey = (s: Subscription) => normalUrl(s.url)
+function changedSubscriptions(before: Subscription[], after: Subscription[]): Subscription[] {
+  const was = new Map(before.map((s) => [subscriptionKey(s), s.enabled]))
+  return after.filter((s) => was.get(subscriptionKey(s)) !== s.enabled)
+}
+export const changedSubscriptionIds = computed(() => new Set(changedSubscriptions(appliedModel.value.blocklists.subscriptions, model.blocklists.subscriptions).map((s) => s.id)))
 export const changedSettingKeys = computed(() => {
   const before = appliedModel.value.settings
   const after = model.settings
@@ -68,7 +77,7 @@ export const changeCount = computed(() => {
   const rgMeta = diff(before.ruleGroups.map((g) => ({ ...g, rules: [] })), model.ruleGroups.map((g) => ({ ...g, rules: [] })))
   return changedSettingKeys.value.size + diff(before.rules, model.rules, ruleShape) + order(before.rules, model.rules) + rgRules + rgMeta
     + diff(before.groups, model.groups) + diff(before.mappings, model.mappings) + order(before.mappings, model.mappings)
-    + blocklistChanges(before.blocklists, model.blocklists, diff)
+    + blocklistChanges(before.blocklists, model.blocklists)
     + (JSON.stringify(before.rest) !== JSON.stringify(model.rest) ? 1 : 0) + (JSON.stringify(before.defaults) !== JSON.stringify(model.defaults) ? 1 : 0)
     + (JSON.stringify(before.entries ?? null) !== JSON.stringify(model.entries ?? null) ? 1 : 0)
     + (JSON.stringify(before.trailingEntries ?? null) !== JSON.stringify(model.trailingEntries ?? null) ? 1 : 0)
@@ -80,8 +89,9 @@ export const changeCount = computed(() => {
 // 拦截列表：每个订阅算一处，自己写的规则算一处；只换了合成的文件（立即更新）也算一处。订阅的先后不影响拦什么，不算
 // Blocklists: each subscription is one place and the rules of one's own one more; a new merged file alone (立即更新) counts as one. The order of
 // subscriptions does not change what is blocked, so it does not count
-function blocklistChanges(before: Model['blocklists'], after: Model['blocklists'], diff: <T extends { id: number }>(a: T[], b: T[]) => number): number {
-  const subscriptions = diff(before.subscriptions, after.subscriptions)
+function blocklistChanges(before: Model['blocklists'], after: Model['blocklists']): number {
+  const now = new Set(after.subscriptions.map(subscriptionKey))
+  const subscriptions = changedSubscriptions(before.subscriptions, after.subscriptions).length + before.subscriptions.filter((s) => !now.has(subscriptionKey(s))).length
   return subscriptions + (before.custom !== after.custom ? 1 : 0) + (!subscriptions && before.file !== after.file ? 1 : 0)
 }
 export const dirty = computed(() => changeCount.value > 0)
@@ -129,6 +139,21 @@ export function markApplied(): void { applied.value = JSON.stringify(model) }
  * titles a download brought, which the panel fills in itself, do not count */
 export const userPart = (m: Model): string => JSON.stringify({ ...m, blocklists: { ...m.blocklists, file: null, builtFor: '', subscriptions: m.blocklists.subscriptions.map(({ name: _name, ...s }) => s) } })
 export function discardDraft(): void { replaceModel(appliedModel.value) }
+// 离开配置页时同意放弃的那几次换草稿：在路上的下载（立即更新）照样认换过的草稿，放弃的是别的修改，不是这次更新。值是换之前的那一代
+// The draft replacements agreed to when leaving the config page: a download under way (立即更新) still takes the new draft as its own, since what was
+// dropped was the other edits, not this update. The value is the generation before
+const leaveDiscards = new Map<number, number>()
+export function discardOnLeave(): void {
+  const before = generation.value
+  replaceModel(appliedModel.value)
+  if (generation.value !== before) leaveDiscards.set(generation.value, before)
+}
+/** 草稿从 `then` 那一代起没换过，或者只隔着离开时的放弃 / Whether the draft is unreplaced since generation `then`, or only through discards on leaving */
+export function sameDraftSince(then: number): boolean {
+  let now = generation.value
+  while (now !== then && leaveDiscards.has(now)) now = leaveDiscards.get(now)!
+  return now === then
+}
 // 放弃草稿，提示里能撤销：保存条和手机页头的「…」都走这里 / Discard the draft with an undo in the toast: used by the save bar and the phone header's 「…」
 export function discardWithUndo(onlyUnfolded?: string): void {
   const draft = JSON.stringify(model)
