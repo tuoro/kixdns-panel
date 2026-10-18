@@ -138,6 +138,9 @@ a.ui-btn { text-decoration: none; }
 .ui-checkbox input { position: absolute; width: var(--size-check); height: var(--size-check); margin: 0; opacity: 0; cursor: pointer; }
 .ui-checkbox i { width: var(--size-check); height: var(--size-check); flex: 0 0 auto; display: grid; place-items: center; border: 1px solid var(--l-line-strong); border-radius: var(--r-1); background: var(--l-surface); transition: background var(--m-quick) var(--ease-out), border-color var(--m-quick) var(--ease-out); }
 .ui-checkbox input:checked + i { border-color: var(--l-ink); background: var(--l-ink); }
+/* 不能勾的框看得出来：浅灰底、淡边 / A box that cannot be ticked looks it: a pale ground and a faint edge */
+.ui-checkbox input:disabled { cursor: default; }
+.ui-checkbox input:disabled + i { border-color: var(--l-hair); background: var(--l-sunk); }
 .ui-checkbox input:checked + i::after { content: ""; width: var(--s-2); height: var(--s-1); border: solid var(--d-ink); border-width: 0 0 2px 2px; transform: translateY(-1px) rotate(-45deg); }
 /* 原生 input 透明，焦点环画在方框上 / The native input is transparent, so the ring goes on the box */
 .ui-checkbox input:focus-visible + i { outline: 2px solid var(--focus); outline-offset: 2px; }
@@ -644,7 +647,7 @@ a.ui-btn { text-decoration: none; }
   .ui-tabs { gap: 0; }
   /* 页签按字宽分剩下的地方：字数不同时字与字的间距也一样（等宽的格子会让短的两边空出一大块） / Tabs share the room left by their text width, so
      the gaps between labels stay even when their lengths differ (equal cells leave wide margins around short ones) */
-  .ui-tabs__tab { flex: 1 1 auto; min-height: var(--h-touch); padding-bottom: 0; text-align: center; }
+  .ui-tabs__tab { flex: 1 1 auto; min-width: var(--h-touch); min-height: var(--h-touch); padding-bottom: 0; text-align: center; }
   .ui-seg { display: flex; }
   .ui-seg__opt, .ui-seg--sm .ui-seg__opt { flex: 1; min-height: calc(var(--h-md) - 4px); padding-inline: var(--s-1); }
   /* 分段的每一格看起来 32，点按区域越过外框上下各补 4，和按钮一样到 44 / Each segment cell looks 32; its tap area reaches past the frame by 4 above and below, 44 like a button */
