@@ -50,26 +50,45 @@ const words = (button: string): SaveWords => ({
   conflict: `新下载的拦截列表没能存上：这份配置在别处改过了；回到配置页重新读取，再点一次「${button}」`,
   kept: '它留在配置页的草稿里',
   again: `再点一次「${button}」`,
+  conflictHere: conflictHere(button),
+  // 保存栏已经写着「不在现在的配置里 · 这份配置在别处改过了」：只说它没说的那一步（用户定的） / The save bar already says 「not in the current config ·
+  // changed elsewhere」: only the step it lacks (the user's call)
+  overwrittenHere: `新下载的拦截列表：先重新读取，再点一次「${button}」`,
+  returnTo: (text) => { returnSay = text },
+  // 草稿换过以后，离开时放弃的补存还会不会来说结果：和 run() 认不认这份草稿一个口径 / Whether, after the draft was replaced, a make-up save from a discard
+  // on leaving will still tell the result: the same yardstick run() uses to recognise the draft
+  madeUp: () => stillOurs(),
 })
 // 在配置页上撞上「别处改过了」：重新读取会换掉草稿，新的一份跟着没了，所以说要再点一次（不说「已放进草稿」） / Meeting 别处改过了 on the config page:
 // re-reading replaces the draft and the new copy with it, so it says to press again (not that the copy is in the draft)
 const conflictHere = (button: string) => `新的一份存不上：这份配置在别处改过了；先重新读取，再点一次「${button}」`
 // 没存上的那条红色提示：保存栏的失败、冲突过去了（再改、再存、放弃、重新读取）就收起 / The red not-saved toast goes once the save bar's failure or conflict
 // is over (another edit or save, a discard, a re-read)
-watch(() => stage.value === 'failed' || conflict.value, (stuck) => { if (!stuck) dismissDraftedFailure() })
+watch(() => stage.value === 'failed' || conflict.value, (stuck) => { if (stuck) return; dismissDraftedFailure(); returnSay = null })
+// 离开以后说了冲突（「…没能存上 / 也没存上：回到配置页重新读取…」「…不在现在的配置里…」）时，回到配置页要换上的页上说法（用户定的）
+// The on-page wording to put up on returning to the config page after a conflict was told away (「…not saved / not saved either: re-read on the config
+// page…」, 「…not in the current config…」) (the user's call)
+let returnSay: string | null = null
+/** 留着的草稿回到配置页、冲突还在时（配置页打开时调）：换上页上的说法，放在拦截列表那一格里，冲突过去、离开时放弃、会话结束都会收起
+ * When a kept draft returns to the config page with the conflict still there (called as the page opens): the on-page wording goes up in the blocklist
+ * slot, which clears once the conflict is over, on a discard on leaving and at a session end */
+export function returnedToPage(): void {
+  if (returnSay !== null && conflict.value) sayDrafted(returnSay, true)
+}
 
 // 一次一次地收场：正在收场时又落地一次，排在后面再看一遍，不并进前一次 / One ending at a time: a landing while another ends is queued and looked at
 // afterwards, not merged into it
 let carrying: Promise<void> = Promise.resolve()
 /**
  * 落地的那一次还没存上时，看草稿干不干净，干净就存。`fromLanding` 是落地时那一次：草稿在下载途中被换掉（放弃修改、恢复版本）要说一句；
- * 离开时调用的那次不说，那时草稿早先在页上被换掉是人自己做的
+ * 离开时调用的那次不说，那时草稿早先在页上被换掉是人自己做的。`same`：下到的和草稿里那份没存上的一样（又点了一次），有别的修改时不说「放进」
  * With the landed download unsaved, checks whether the draft is clean and saves if so. `fromLanding` marks the call on landing: a draft replaced during the
- * download (a discard, a restore) is worth a sentence; the call on leaving says nothing, since an earlier replacement on the page was the user's own doing
+ * download (a discard, a restore) is worth a sentence; the call on leaving says nothing, since an earlier replacement on the page was the user's own doing.
+ * `same`: the download matches the unsaved copy already in the draft (pressed again), so with other edits it does not say 「put in」
  */
-export function carryUpdate(fromLanding = false): Promise<void> {
+export function carryUpdate(fromLanding = false, same = false): Promise<void> {
   // 一次出错不能卡住后面的：排队的链接住错误 / One failure must not stall the rest: the queue swallows its errors
-  carrying = carrying.then(() => run(fromLanding)).catch(() => undefined)
+  carrying = carrying.then(() => run(fromLanding, same)).catch(() => undefined)
   return carrying
 }
 
@@ -87,21 +106,36 @@ watch(() => useSession().authenticated.value, (now) => {
   if (now) return
   landed = null
   retryWhenBack = false
+  returnSay = null
 })
 
-async function run(fromLanding: boolean): Promise<void> {
+async function run(fromLanding: boolean, same: boolean): Promise<void> {
   const toast = useToast()
   const session = useSession()
+  // 等的时候正在跑的保存可能就存上了这份文件，已保存文件的 watch 会先把 landed 清掉：先记下这一次是谁 / A save under way may store this very file while it
+  // waits, and the saved-file watch clears landed first: note which landing this is
+  const pressed = landed
+  const sameAsSaved = () => pressed?.file != null && appliedModel.value.blocklists.file === pressed.file
+  // 点的那一下还没有回答（下到的和刚存上的一样）：照实说 / The press has had no answer yet (the download matches what was just saved): say so plainly
+  const sayAlreadySaved = () => {
+    if (fromLanding && !pageAway() && pressed) toast.info(pressed.button === '全部更新' ? '下载的都和刚存上的一样，已经是最新的' : '下载的和刚存上的一样，已经是最新的')
+  }
   // 保存、「现在应用」、恢复、删除版本、重新读取正在做：等它做完再看 / A save, 现在应用, a restore, a version delete or a re-read is under way: look once done
   for (let round = 0; round < 3; round++) {
     if (draftBusy.value) await whenDraftSettles()
-    if (!landed || !session.authenticated.value) return
+    if (!session.authenticated.value) return
+    // 等的时候这份文件跟着别的保存存上了，watch 已经清掉了 landed / This file got saved along with another save while waiting, and the watch already cleared landed
+    if (!landed) { if (sameAsSaved()) sayAlreadySaved(); return }
     // 正是这份文件存上了（跟着别的保存一起，或者前一次收场存的） / This very file got saved (along with another save, or by the previous ending)
-    if (landed.file !== null && appliedModel.value.blocklists.file === landed.file) { landed = null; return }
+    if (landed.file !== null && appliedModel.value.blocklists.file === landed.file) {
+      if (landed === pressed) sayAlreadySaved()
+      landed = null
+      return
+    }
     if (!stillOurs()) {
       const button = landed.button
       landed = null
-      if (fromLanding) toast.info(`下载途中草稿换掉了，这次下载的没有放进草稿；要用新的一份，再点一次「${button}」`)
+      if (fromLanding) sayDrafted(`下载途中草稿换掉了，这次下载的没有放进草稿；要用新的一份，再点一次「${button}」`)
       return
     }
     // 草稿里没有这份新文件了（离开时放弃了修改，或者丢掉了保存开始后改的）：服务端还存着刚下好的那份，按现在的订阅再合成一次
@@ -124,14 +158,19 @@ async function run(fromLanding: boolean): Promise<void> {
   // this one only says the new download was not saved either
   if (conflict.value) {
     if (!pageAway()) sayDrafted(conflictHere(button), true)
-    else sayDrafted(conflictToldAway() ? `新下载的拦截列表也没存上：回到配置页重新读取，${words(button).again}` : words(button).conflict!, true)
+    else {
+      sayDrafted(conflictToldAway() ? `新下载的拦截列表也没存上：回到配置页重新读取，${words(button).again}` : words(button).conflict!, true)
+      returnSay = conflictHere(button)
+    }
     return
   }
   if (!clean) {
     // 人不在配置页：回来时留着这份草稿，不让回来那次读把新的一份冲掉 / Off the config page: the draft is kept for the return, so its read does not wash the
     // new copy away
-    if (!pageAway()) sayDrafted('新的一份已放进草稿，保存后生效')
-    else { keepDraftWhileAway(); toast.info('新下载的拦截列表已放进草稿，回到配置页保存后生效') }
+    // 下到的和草稿里那份一样（上次没存上又点了一次）：不说「放进」，草稿什么都没变 / The download matches the draft's copy (pressed again after one that
+    // did not save): not 「put in」, since the draft did not change
+    if (!pageAway()) sayDrafted(same ? '新的一份已经在草稿里，保存后生效' : '新的一份已放进草稿，保存后生效')
+    else { keepDraftWhileAway(); sayDrafted(same ? '新下载的拦截列表：已经在草稿里，回到配置页保存后生效' : '新下载的拦截列表已放进草稿，回到配置页保存后生效') }
     return
   }
   await save('draft', '手动更新拦截列表', words(button))

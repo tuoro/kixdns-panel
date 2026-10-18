@@ -740,6 +740,26 @@ test('现在应用的回应丢了：连上以后按待应用的还在不在核�
   await expect.poll(() => toastTexts(page), { timeout: 8000 }).toContain(`刚才那次应用：版本 #${pending} 已生效`)
 })
 
+// 离开配置页以后保存成功的提示也是配置页的结果：会话结束时一起收起，不带到登录页上
+// The success toast of a save that finished after leaving the config page is a config-page outcome too: it goes when the session ends, not onto the login page
+test('离开以后保存成功的提示：会话结束时收起，不留在登录页', async ({ page }) => {
+  await page.goto('/config')
+  await addRule(page, 'away-success.example')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-save-slow', 'true'))
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar).toContainText('写入并应用')
+  await page.getByRole('link', { name: '日志', exact: true }).click()
+  await expect.poll(async () => (await toastTexts(page)).some((text) => /^版本 #\d+ 已生效$/.test(text)), { timeout: 5000 }).toBe(true)
+  await page.evaluate(async () => {
+    const { SESSION_EXPIRED_EVENT } = await import('/src/api/client.ts')
+    window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT))
+  })
+  await expect(page).toHaveURL(/\/login/)
+  expect((await toastTexts(page)).filter((text) => text.includes('已生效'))).toEqual([])
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
+})
+
 // 现在应用的回应丢了、人去了别的页、断线时别处又存了一版：连上以后「不知道…应用了没有」换成核对的结果，不悄悄收掉
 // 现在应用 lost its answer, the user went to another page, and another version was saved elsewhere meanwhile: once back, 「不知道…应用了没有」 is replaced by
 // the check's result instead of quietly going away

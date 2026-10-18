@@ -28,7 +28,7 @@ import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, discardOnLeave, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
 import { applyBusy, bulkDeleting, busy, checkPending, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, stayedDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, rereadAndSay, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse } from '../config-v2/useConfigDocument'
 import { dismissBlocklistToasts } from '../config-v2/useBlocklists'
-import { carryUpdate, refreshLanded } from '../config-v2/updateCarry'
+import { carryUpdate, refreshLanded, returnedToPage } from '../config-v2/updateCarry'
 import { useHelp } from '../composables/useHelp'
 import { useSession } from '../composables/useSession'
 import { useServiceStart } from '../composables/useServiceStart'
@@ -483,7 +483,8 @@ onMounted(() => {
   // 否则「放弃修改」会把别处的改动也算成自己的
   // A kept draft that met 别处改过了: refresh the runtime only and leave the file hash and baseline for 重新读取 (as when it happens on the page);
   // otherwise 放弃修改 would count the other writer's change as one's own
-  if (keep && conflict.value) void refreshRuntime().catch(() => undefined)
+  // 离开以后说过「存不上」的立即更新：冲突还在，提示换成页上的说法 / A 立即更新 told 存不上 away: the conflict is still there, so the toast takes the on-page wording
+  if (keep && conflict.value) { void refreshRuntime().catch(() => undefined); returnedToPage() }
   else if (!busy.value) void load(keep ? { quiet: true, keepDraft: true } : { returning: true })
   window.addEventListener('beforeunload', beforeUnload)
 })

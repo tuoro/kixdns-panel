@@ -257,7 +257,7 @@ describe('内核给的英文原因', () => {
   it('标明是 KixDNS 的原话，内核 id 后面注上页面上的叫法', async () => {
     const { kernelWords } = await import('./useConfigDocument')
     const said = kernelWords('pipeline "main" references unknown upstream group "fast"')
-    expect(said.startsWith('KixDNS 的原话：')).toBe(true)
+    expect(said.startsWith('KixDNS\u00a0的原话：')).toBe(true)
     expect(said).toContain('"main"（主列表）')
     expect(said).toContain('"fast"')
     expect(kernelWords('KixDNS 已停止')).toBe('KixDNS 已停止')

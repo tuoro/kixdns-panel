@@ -113,10 +113,14 @@ describe('hyphenRuns', () => {
 
   it('提示条另外连住版本号、「名字」的和「再点一次「按钮」」 / toasts also glue the version number, 「name」的 and 「再点一次「button」」', () => {
     const glued = (text: string) => toastRuns(text).filter((r) => r.glue).map((r) => r.text)
-    expect(glued('新下载的拦截列表：已存成待应用版本\u00a0#20，KixDNS 就绪后自动应用')).toEqual(['版本\u00a0#20'])
+    expect(glued('新下载的拦截列表：已存成待应用版本\u00a0#20，KixDNS 就绪后自动应用')).toEqual(['版本\u00a0#20，', 'KixDNS 就'])
     expect(glued('「bad.txt」的链接只能用 https://，删掉这个列表再保存')).toEqual(['「bad.txt」的'])
     // 按钮名不单独落到最后一行 / The button name never sits alone on the last line
     expect(glued('新的一份存不上：这份配置在别处改过了；先重新读取，再点一次「全部更新」')).toEqual(['再点一次「全部更新」'])
+    // 版本号带着后面的状态词，KixDNS 带着后面一个字 / The version number keeps its state word, and KixDNS the character after it
+    expect(glued('新下载的拦截列表已经存上了：版本 #20 已生效')).toEqual(['版本 #20 已生效'])
+    expect(glued('新下载的拦截列表：存成了版本 #20，没有生效。KixDNS 没有接受这份配置')).toEqual(['版本 #20，', 'KixDNS 没'])
+    expect(glued('它留在配置页的草稿里。KixDNS\u00a0的原话：pipeline "main"')).toEqual(['KixDNS\u00a0的'])
     // 默认名单独拿出来，按「·」折行 / A default name is taken out to wrap at 「·」
     expect(toastRuns('「hosts.txt\u00a0·\u00a0lists.example.org」没下载成功').find((r) => r.name)?.name).toEqual({ name: 'hosts.txt\u00a0·\u00a0lists.example.org', suffix: '' })
   })

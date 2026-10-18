@@ -20,6 +20,7 @@ import { usePhone } from './phone'
 import { appliedModel, changedSubscriptionIds, draftGeneration, model, newId, placeBack } from './store'
 import { blocklists, loadBlocklists, rebuildBlocklists, saveBlocklistSchedule, sayDrafted } from './useBlocklists'
 import { carryUpdate, noteLanded } from './updateCarry'
+import { hasApplyFailure, hasPending } from './useConfigDocument'
 import { fmtCount } from './view'
 
 // 拦截列表：订阅的列表一行一个，像域名映射那样一张卡片；下面是自己写的规则和两项设置。订阅和自己写的规则都在草稿里，
@@ -134,9 +135,10 @@ const retryLead = computed(() => {
   if (!retry.length) return null
   const rows = ['', '那一行', '那两行', '那三行', '那四行', '那五行']
   const off = retry.every((f) => f.off)
-  if (failures.value.length === 1) return { before: '要重新下载，点这一行「…」里的', names: [] as string[], after: '', off }
-  if (retry.length <= named.value) return { before: '要重新下载，点', names: retry.map((f) => f.label), after: `${rows[retry.length]}「…」里的`, off }
-  return { before: `要重新下载，点${stuckLine.value ? '其余标着「没下载成功」的那几行' : '标着「没下载成功」的那几行'}「…」里的`, names: [] as string[], after: '', off }
+  if (failures.value.length === 1) return { before: '要重新下载，点这一行', names: [] as string[], after: '', off }
+  if (retry.length <= named.value) return { before: '要重新下载，点', names: retry.map((f) => f.label), after: rows[retry.length]!, off }
+  // 「「没下载成功」的」连住，后面能断：「的」不落到行首 / 「「没下载成功」的」 is glued with a break after it, so 的 never starts a line
+  return { before: `要重新下载，点${stuckLine.value ? '其余标着' : '标着'}`, tag: '「没下载成功」的', names: [] as string[], after: '那几行', off }
 })
 
 const rowMenu = (s: Subscription) => {
@@ -229,9 +231,20 @@ async function updateNow(urls: string[], button: '立即更新' | '全部更新'
     // 停用的列表不进合成的文件：下好了也不变 / A disabled list stays out of the merged file: a fresh download changes nothing
     const named = subscriptions.value.filter((s) => urls.includes(s.url))
     const off = named.length === 1 && !named[0]!.enabled ? named[0] : undefined
-    toast.info(off ? `新的一份已下载；「${shortName(off.name, off.url)}」已停用，启用后用上`
-      : named.length > 1 && named.every((s) => !s.enabled) ? '新的一份已下载；列表都已停用，启用后用上'
-        : named.length > 1 ? '下载的都和在用的一样，已经是最新的' : '下载的和在用的一样，已经是最新的')
+    if (off || (named.length > 1 && named.every((s) => !s.enabled))) {
+      toast.info(off ? `新的一份已下载；「${shortName(off.name, off.url)}」已停用，启用后用上` : '新的一份已下载；列表都已停用，启用后用上')
+      return
+    }
+    // 草稿里的文件本来就和已保存的不同（上次下好的没存上，或者订阅改过、合成过）：这次下到的一样，也照落地收场，草稿干净就直接存（用户定的）；
+    // 不说「和在用的一样」，在用的是已保存的那份
+    // The draft's file already differs from the saved one (the last download did not save, or the subscriptions changed and were built): this download
+    // matching it still ends as a landing, saved at once when the draft is clean (the user's call); never 「same as in use」, since what is in use is the
+    // saved one
+    if (before !== appliedModel.value.blocklists.file) { noteLanded(button); await carryUpdate(true, true); return }
+    // 已保存的是待应用版本、或者存了没生效时它不在用：说「已保存的」 / When what is saved is pending, or saved but not taken, it is not in use: say 「the
+    // saved one」
+    const which = hasPending.value || hasApplyFailure.value ? '已保存的' : '在用的'
+    toast.info(named.length > 1 ? `下载的都和${which}一样，已经是最新的` : `下载的和${which}一样，已经是最新的`)
     return
   }
   // 新的一份进了草稿：存不存、怎么说，和离开时放弃以后走同一处（updateCarry.ts） / The new copy is in the draft: whether it is saved and what is said goes
@@ -393,7 +406,7 @@ const blockText = computed(() => blockLabel(model, 'default'))
                  glued to the second so it never starts a line -->
             <p v-for="f in failures" :key="f.id" v-line-dots :class="{ 'is-off': f.off }"><NameText v-if="f.name" :name="f.name" bold :suffix="f.off ? '（已停用）：' : '：'" /><template v-else-if="f.off">（已停用）</template><GlueText :text="`${f.cause}。`" /></p>
             <p v-if="stuckLine" v-line-dots class="bl__todo" :class="{ 'is-off': stuckLine.off }"><GlueText :text="stuckLine.before" /><NameText v-for="(n, i) in stuckLine.names" :key="i" :name="n" quoted whole /><GlueText :text="stuckLine.after" /></p>
-            <p v-if="retryLead" v-line-dots class="bl__todo" :class="{ 'is-off': retryLead.off }"><GlueText :text="retryLead.before" /><NameText v-for="(n, i) in retryLead.names" :key="i" :name="n" quoted whole /><GlueText :text="retryLead.after" /><span class="nowrap">「立即更新」。</span></p>
+            <p v-if="retryLead" v-line-dots class="bl__todo" :class="{ 'is-off': retryLead.off }"><GlueText :text="retryLead.before" /><template v-if="retryLead.tag"><span class="nowrap">{{ retryLead.tag }}</span><wbr></template><NameText v-for="(n, i) in retryLead.names" :key="i" :name="n" quoted whole /><GlueText :text="retryLead.after" /><span class="nowrap">「…」里的「立即更新」。</span></p>
           </div>
         </div>
         <p v-if="blocklists.status === 'failed' && subscriptions.some(unknown)" class="bl__note"><TriangleAlert :size="14" aria-hidden="true" /><span>读不到各个列表下载得怎么样；<span class="nowrap">订阅照常保存，</span><span class="nowrap">稍后刷新页面再看。</span></span></p>
