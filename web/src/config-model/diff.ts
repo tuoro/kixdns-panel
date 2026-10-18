@@ -149,10 +149,11 @@ export function diffModels(now: Model, then: Model): DiffBlock[] {
   }
   return blocks
 }
-// 拦截列表：订阅按链接比，自己写的规则按行比；只换了合成的文件说一句是另一次下载的
-// Blocklists: subscriptions compare by link and the rules of one's own by line; a different merged file alone says it is another download
+// 拦截列表：订阅按链接比（标题已经写着名字，事实里不再写），自己写的规则按行比；只换了合成的文件说一句是重新下载的
+// Blocklists: subscriptions compare by link (the title already gives the name, so the facts leave it out) and the rules of one's own by line; a
+// different merged file alone says the lists were downloaded again
 function blocklistDiff(blocks: DiffBlock[], now: Blocklists, then: Blocklists): void {
-  const facts = (x: Subscription) => ({ 名称: x.name, 链接: x.url, 状态: x.enabled ? '启用' : '已停用' })
+  const facts = (x: Subscription) => ({ 链接: x.url, 状态: x.enabled ? '启用' : '已停用' })
   for (const x of now.subscriptions) if (!then.subscriptions.some((y) => y.url === x.url)) blocks.push({ kind: '去掉', title: `拦截列表「${x.name}」`, lines: Object.entries(facts(x)).map(([k, v]) => ({ sign: '-', text: `${k}：${v}` })) })
   for (const x of then.subscriptions) {
     const old = now.subscriptions.find((y) => y.url === x.url)
@@ -161,12 +162,15 @@ function blocklistDiff(blocks: DiffBlock[], now: Blocklists, then: Blocklists): 
     if (lines.length) blocks.push({ kind: '改了', title: `拦截列表「${x.name}」`, lines })
   }
   const links = (b: Blocklists) => b.subscriptions.map((x) => `${x.url}${x.enabled}`).sort().join()
-  if (now.file !== then.file && links(now) === links(then)) blocks.push({ kind: '改了', title: '订阅的列表内容', lines: [], note: '用的是另一次下载的列表' })
+  if (now.file !== then.file && links(now) === links(then)) blocks.push({ kind: '改了', title: '拦截列表', lines: [], note: '列表重新下载过，换成新的那份' })
   const rows = (text: string) => text.split('\n').map((l) => l.trim()).filter(Boolean)
   const before = rows(now.custom)
   const after = rows(then.custom)
   const lines = [...before.filter((l) => !after.includes(l)).map((text) => ({ sign: '-' as const, text })), ...after.filter((l) => !before.includes(l)).map((text) => ({ sign: '+' as const, text }))]
-  if (lines.length) blocks.push({ kind: '改了', title: '自己写的拦截规则', lines })
+  if (lines.length) blocks.push({ kind: '改了', title: '拦截列表 · 自己写的规则', lines })
+  // 只挪了行、加减了空行：拦的不变，可原文变了，照样要存 / Lines only moved, or blank lines added or removed: nothing blocked changes, but the text did
+  // and is still saved
+  else if (now.custom !== then.custom) blocks.push({ kind: '改了', title: '拦截列表 · 自己写的规则', lines: [], note: '只调了顺序或空行，拦截的不变' })
 }
 function kernelLines(a: unknown, b: unknown): DiffLine[] {
   return [...(a === undefined || a === null ? [] : [{ sign: '-' as const, text: JSON.stringify(a) }]), ...(b === undefined || b === null ? [] : [{ sign: '+' as const, text: JSON.stringify(b) }])]

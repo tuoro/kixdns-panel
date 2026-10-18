@@ -19,6 +19,8 @@ export const BLOCKLIST_PIPELINE = 'blocklist'
 export const BLOCKLIST_RULE = '拦截列表'
 /** 自己写的规则最多这么多条，再多请用订阅 / The most rules of one's own; beyond that, use a subscription */
 export const MAX_OWN_RULES = 1000
+/** 最多订阅这么多个列表，和服务端一样 / The most lists one can subscribe to, as on the server */
+export const MAX_SUBSCRIPTIONS = 32
 
 export type MatchKind = 'suffix' | 'exact' | 'regex'
 /** 一条规则管哪些域名：域名和子域名、只有域名本身、按正则匹配整个域名 / Which names a rule covers: a name and its subdomains, the name only, or a regex over the whole name */
@@ -219,16 +221,25 @@ export function skipText(skip: Skip): string {
 export function parseOwnRules(text: string): { rules: OwnRule[]; problems: OwnProblem[] } {
   const rules: OwnRule[] = []
   const problems: OwnProblem[] = []
-  text.split('\n').forEach((raw, index) => {
+  // 超过上限的只指出第一行，后面的一起算进那一条：贴进一个大列表时不刷出几千行一样的原因 / Past the limit only the first line is pointed out and
+  // the rest are counted into it, so pasting a big list does not flood thousands of identical reasons
+  let over: OwnProblem | null = null
+  let overCount = 0
+  for (const [index, raw] of text.split('\n').entries()) {
     const line = index + 1
     const parsed = parseLine(raw)
-    if (parsed.kind === 'ignored') return
+    if (parsed.kind === 'ignored') continue
     const problem = (text: string) => problems.push({ line, text: raw.trim(), problem: text })
-    if (parsed.kind === 'skipped') return problem(skipText(parsed.skip))
-    if (parsed.kind === 'badfilter') return problem('这里用不上 $badfilter：要放行，写一行 @@ 开头的')
-    if (rules.length + parsed.rules.length > MAX_OWN_RULES) return problem(`自己写的规则最多 ${MAX_OWN_RULES} 条，多的没用上；大列表请用订阅`)
+    if (parsed.kind === 'skipped') { problem(skipText(parsed.skip)); continue }
+    if (parsed.kind === 'badfilter') { problem('这里用不上 $badfilter：要放行，写一行 @@ 开头的'); continue }
+    if (over || rules.length + parsed.rules.length > MAX_OWN_RULES) {
+      overCount += parsed.rules.length
+      if (!over) { over = { line, text: raw.trim(), problem: '' }; problems.push(over) }
+      continue
+    }
     for (const r of parsed.rules) rules.push({ line, allow: r.allow, match: r.match })
-  })
+  }
+  if (over) over.problem = `从这一行起的 ${overCount.toLocaleString('en-US')}\u00a0条没用上：自己写的规则最多 ${MAX_OWN_RULES.toLocaleString('en-US')}\u00a0条，大列表请用订阅`
   return { rules, problems }
 }
 
@@ -263,9 +274,32 @@ export const PRESETS: Preset[] = [
   { name: 'AdAway', url: 'https://adaway.org/hosts.txt', about: '手机应用里的广告，hosts 格式', rules: 6_540, memory: 1 },
 ]
 
-/** 订阅的名字：推荐的列表用它的名字，别的用链接的主机名 / A subscription's name: a suggested list's own, otherwise the link's host */
+/**
+ * 订阅的名字：推荐的列表用它的名字，别的先用「文件名 · 主机」（链接没有路径时只用主机）；下载下来带着标题时页面再换成标题
+ * A subscription's name: a suggested list's own, otherwise 「file name · host」 (the host alone when the link has no path); once the download
+ * brings a title the page switches to it
+ */
 export function subscriptionName(url: string): string {
   const preset = PRESETS.find((p) => p.url === url)
   if (preset) return preset.name
-  try { return new URL(url).host } catch { return url }
+  try {
+    const link = new URL(url)
+    const last = link.pathname.split('/').filter(Boolean).pop() ?? ''
+    let file = last
+    try { file = decodeURIComponent(last) } catch { /* 写坏的百分号转义照原样用 / a malformed percent escape is used as written */ }
+    return file ? `${file} · ${link.host}` : link.host
+  } catch {
+    return url
+  }
+}
+
+/** 检查要订阅的链接，和服务端的规矩一样；通过时给出规整的写法（主机名小写，没写路径补上 `/`） / Checks a link to subscribe to by the server's rules; on success gives its normal form (host lower-cased, a missing path filled in as `/`) */
+export function checkSubscriptionUrl(raw: string): { url: string } | { problem: string } {
+  let link: URL
+  try { link = new URL(raw) } catch { return { problem: '链接写得不对' } }
+  if (link.protocol !== 'https:') return { problem: '链接只能用 https://' }
+  if (link.username || link.password) return { problem: '链接不能包含用户名或密码' }
+  if (!link.hostname) return { problem: '链接缺少主机名' }
+  if (new TextEncoder().encode(link.href).length > 4096) return { problem: '链接过长' }
+  return { url: link.href }
 }

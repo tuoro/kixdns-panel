@@ -63,12 +63,17 @@ export interface RawEntry { pipeline: string; matchers: Record<string, unknown>[
 export interface Mapping { id: number; domain: string; target: string; ttl: number | null; enabled: boolean }
 export interface Defaults { block: 'NXDOMAIN' | 'REFUSED' | 'zero' }
 // 拦截列表：订阅的列表（名字、链接、开关）和自己写的规则在草稿里，保存后生效；file 是面板服务端按启用的列表合成的 GeoSite
-// 文件，订阅一变由页面请服务端重新合成，换上新的路径
+// 文件，订阅一变由页面请服务端重新合成，换上新的路径。builtFor 记着 file 是按哪组列表合成的（见 blocklistKey）：它和订阅对不上时
+// 文件是旧的，页面要重新合成，保存要等它
 // Blocklists: the subscribed lists (name, link, switch) and the rules of one's own live in the draft and take effect on save; file is
-// the GeoSite file the panel server builds from the enabled lists, rebuilt at the page's request whenever the subscriptions change
+// the GeoSite file the panel server builds from the enabled lists, rebuilt at the page's request whenever the subscriptions change.
+// builtFor records which lists file was built for (see blocklistKey): when it disagrees with the subscriptions the file is stale, the
+// page builds again and a save waits for it
 export interface Subscription { id: number; name: string; url: string; enabled: boolean }
-export interface Blocklists { subscriptions: Subscription[]; file: string | null; custom: string }
-export const emptyBlocklists = (): Blocklists => ({ subscriptions: [], file: null, custom: '' })
+export interface Blocklists { subscriptions: Subscription[]; file: string | null; custom: string; builtFor: string }
+export const emptyBlocklists = (): Blocklists => ({ subscriptions: [], file: null, custom: '', builtFor: '' })
+/** 合成的文件取决于哪些列表：启用的链接，不论先后 / What the merged file depends on: the enabled links, in any order */
+export const blocklistKey = (b: Pick<Blocklists, 'subscriptions'>): string => b.subscriptions.filter((s) => s.enabled).map((s) => s.url).sort().join('\n')
 // settings 是内核的全局设置（监听、缓存、Geo 数据……），原样写进配置；只有 default_upstream 由「其余请求」决定
 // settings are the kernel's global settings (listeners, cache, Geo data…), written as they are; only default_upstream follows 其余请求
 export interface Model {
@@ -534,6 +539,7 @@ export function compile(model: Model): KernelConfig {
   pipelines.push({ ...model.mainExtra, id: mainPipelineId(model), rules: main })
   const select: KernelConfig['pipeline_select'] = live.length ? [{ pipeline: mappingId, matcher_operator: 'and', matchers: live.map((r, i) => ({ type: 'domain_suffix', value: r.domain.trim(), operator: i ? 'or' : 'and' })) }] : []
   const blocking = blocklistEntries(model)
+  const blocklistAt = pipelines.length
   if (blocking.length) {
     pipelines.push({ id: BLOCKLIST_PIPELINE, rules: [emptyRule(BLOCKLIST_RULE, outcomeActions(model, { type: 'block', response: 'default' }))] })
     select.push(...blocking)
@@ -548,6 +554,16 @@ export function compile(model: Model): KernelConfig {
   for (const r of [...model.rules, ...model.ruleGroups.flatMap((rg) => rg.rules)]) {
     const own = r.enabled ? rulePipeline(model, r) : null
     if (own) pipelines.push(own)
+  }
+  // JSON 里手改过、认不出来的拦截列表照原样留下时，它的 Pipeline 可能已经叫 blocklist：这一个就换个不重名的 id
+  // When a hand-edited blocklist that could not be recognised stays as it was, its pipeline may already be called blocklist: this one
+  // takes an id nothing else uses
+  if (blocking.length) {
+    const taken = new Set(pipelines.filter((_, i) => i !== blocklistAt).map((p) => p.id))
+    let id = BLOCKLIST_PIPELINE
+    for (let n = 2; taken.has(id); n++) id = `${BLOCKLIST_PIPELINE}-${n}`
+    pipelines[blocklistAt]!.id = id
+    for (const e of blocking) e.pipeline = id
   }
   select.push({ pipeline: mainPipelineId(model), matcher_operator: 'and', matchers: [] })
   select.push(...(model.trailingEntries ?? []).map((e) => JSON.parse(JSON.stringify({ matcher_operator: 'and', ...e })) as KernelConfig['pipeline_select'][number]))

@@ -44,6 +44,10 @@ watch(dirty, (now) => { if (!now) target.value = 'live' })
 const targets = [{ value: 'draft', label: '测草稿' }, { value: 'live', label: '测正在用的' }]
 const testsDraft = computed(() => canDraft.value && dirty.value && target.value === 'draft')
 
+// 拦截列表拦下的：规则管不到它（拦截列表排在规则前面），不给「为这个域名加一条」，说怎么放行 / Stopped by the blocklists: no rule can reach it
+// (the blocklists come before the rules), so instead of 为这个域名加一条 the result says how to let it through
+const byBlocklist = ref(false)
+const tested = ref('')
 async function run(): Promise<void> {
   const name = domain.value.trim()
   if (!name || running.value || clientProblem.value) return
@@ -62,9 +66,12 @@ async function run(): Promise<void> {
     const hit = trace.find((s) => s.stage === 'rule' && s.status === 'matched')
     const rule = hit ? findRuleByName(hit.label) : undefined
     const selected = (id: string) => trace.some((s) => s.stage === 'pipeline' && s.status === 'selected' && s.label === id)
-    emit('matched', rule?.id ?? null, selected(model.mappingId ?? 'domain_mapping'), selected(BLOCKLIST_PIPELINE))
+    byBlocklist.value = selected(BLOCKLIST_PIPELINE)
+    tested.value = name.toLowerCase().replace(/\.$/, '')
+    emit('matched', rule?.id ?? null, selected(model.mappingId ?? 'domain_mapping'), byBlocklist.value)
   } catch (e) {
     result.value = null
+    byBlocklist.value = false
     error.value = errorMessage(e)
     emit('matched', null, false, false)
   } finally {
@@ -124,7 +131,8 @@ const rows = computed(() => {
     <div v-else-if="result" class="tester__out" role="status">
       <div class="tester__result" :class="{ 'is-warn': !ok }">
         <p class="tester__verdict"><span v-if="result.source === 'draft'" class="ui-tag tester__tag">草稿</span>{{ verdict }}</p>
-        <button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" @click="emit('quick', domain.trim())"><Plus :size="14" aria-hidden="true" />为这个域名加一条</button>
+        <p v-if="byBlocklist" class="tester__allow">拦截列表先于规则：要放行，在「自己写的规则」里写 <code>@@||{{ tested }}^</code></p>
+        <button v-else class="ui-btn ui-btn--secondary ui-btn--sm" type="button" @click="emit('quick', domain.trim())"><Plus :size="14" aria-hidden="true" />为这个域名加一条</button>
       </div>
       <ol v-if="rows.length" class="ui-steps tester__steps">
         <li v-for="(row, i) in rows" :key="i" class="ui-step" :class="[row.tone === 'success' && row.decides ? 'ui-step--ok' : row.tone === 'danger' ? 'ui-step--err' : row.tone === 'warning' ? 'ui-step--warn' : '', { 'ui-step--idle': row.idle }]">

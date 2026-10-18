@@ -1,6 +1,6 @@
 import { importKernel, type ImportNote } from './importer'
 import type { KConfigLike } from './kernel'
-import { compile, emptyBlocklists, ruleGroupPipelineId, type Model, type RawEntry, type RuleGroup } from './model'
+import { blocklistKey, compile, emptyBlocklists, ruleGroupPipelineId, type Model, type RawEntry, type RuleGroup } from './model'
 
 // 配置文件里存的样子：内核配置 + 顶层 panel 键。内核和面板服务都不认 panel 这个键，也不会拒绝它（内核的 PipelineConfig 没开
 // deny_unknown_fields，面板服务只按内核能力校验）。panel 里放整份模型和一个指向内核部分的散列：打开时散列对得上就直接用模型，
@@ -47,8 +47,12 @@ function withoutListeners(model: Model): Model {
   return { ...model, ruleGroups, ...(moved.length ? { entries: [...moved, ...(model.entries ?? [])] } : {}) }
 }
 
-// 拦截列表之前的模型没有这一项：读进来补一份空的 / Models from before the blocklists lack them: an empty one is added on read
-const withBlocklists = (model: Model): Model => (model.blocklists ? model : { ...model, blocklists: emptyBlocklists() })
+// 拦截列表之前的模型没有这一项：读进来补一份空的。没记 builtFor 的，当作文件就是按现在的订阅合成的
+// Models from before the blocklists lack them: an empty one is added on read. One without builtFor is taken as built for its current subscriptions
+const withBlocklists = (model: Model): Model => {
+  if (!model.blocklists) return { ...model, blocklists: emptyBlocklists() }
+  return typeof model.blocklists.builtFor !== 'string' ? { ...model, blocklists: { ...model.blocklists, builtFor: blocklistKey(model.blocklists) } } : model
+}
 
 export function readConfig(cfg: Record<string, unknown>, prev?: Model): ReadResult {
   const panel = cfg.panel as Partial<PanelBlock> | undefined

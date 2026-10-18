@@ -68,7 +68,7 @@ export const changeCount = computed(() => {
   const rgMeta = diff(before.ruleGroups.map((g) => ({ ...g, rules: [] })), model.ruleGroups.map((g) => ({ ...g, rules: [] })))
   return changedSettingKeys.value.size + diff(before.rules, model.rules, ruleShape) + order(before.rules, model.rules) + rgRules + rgMeta
     + diff(before.groups, model.groups) + diff(before.mappings, model.mappings) + order(before.mappings, model.mappings)
-    + blocklistChanges(before.blocklists, model.blocklists, diff, order)
+    + blocklistChanges(before.blocklists, model.blocklists, diff)
     + (JSON.stringify(before.rest) !== JSON.stringify(model.rest) ? 1 : 0) + (JSON.stringify(before.defaults) !== JSON.stringify(model.defaults) ? 1 : 0)
     + (JSON.stringify(before.entries ?? null) !== JSON.stringify(model.entries ?? null) ? 1 : 0)
     + (JSON.stringify(before.trailingEntries ?? null) !== JSON.stringify(model.trailingEntries ?? null) ? 1 : 0)
@@ -77,10 +77,11 @@ export const changeCount = computed(() => {
     // the change raises nothing and ships silently with the next save
     + UNMODELLED.filter((k) => JSON.stringify(before[k] ?? null) !== JSON.stringify(model[k] ?? null)).length
 })
-// 拦截列表：每个订阅算一处，自己写的规则算一处；只换了合成的文件（立即更新）也算一处
-// Blocklists: each subscription is one place and the rules of one's own one more; a new merged file alone (立即更新) counts as one
-function blocklistChanges(before: Model['blocklists'], after: Model['blocklists'], diff: <T extends { id: number }>(a: T[], b: T[]) => number, order: (a: { id: number }[], b: { id: number }[]) => number): number {
-  const subscriptions = diff(before.subscriptions, after.subscriptions) + order(before.subscriptions, after.subscriptions)
+// 拦截列表：每个订阅算一处，自己写的规则算一处；只换了合成的文件（立即更新）也算一处。订阅的先后不影响拦什么，不算
+// Blocklists: each subscription is one place and the rules of one's own one more; a new merged file alone (立即更新) counts as one. The order of
+// subscriptions does not change what is blocked, so it does not count
+function blocklistChanges(before: Model['blocklists'], after: Model['blocklists'], diff: <T extends { id: number }>(a: T[], b: T[]) => number): number {
+  const subscriptions = diff(before.subscriptions, after.subscriptions)
   return subscriptions + (before.custom !== after.custom ? 1 : 0) + (!subscriptions && before.file !== after.file ? 1 : 0)
 }
 export const dirty = computed(() => changeCount.value > 0)

@@ -684,6 +684,12 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
   /* 域名映射那一行压成一行 48 / The domain-mapping row folds to one 48px line */
   /* 域名映射那一行：去掉左边的竖条，箭头和字居中对齐 / The domain-mapping row: no left bar, the chevron centred with the text */
   .rpin:not(.rpin--rest) { background: var(--l-canvas); min-height: var(--s-7); box-shadow: none; align-items: center; padding-block: 6px; }
+  /* 名字不截，长出来的从后面那句的末尾省略；命中时照样是绿底 / The name is never cut: what runs long is elided from the end of the line after it;
+     a hit still shows its green ground */
+  .rpin:not(.rpin--rest) .rrow__name { flex: none; }
+  .rpin:not(.rpin--rest) .rrow__main { min-width: 0; }
+  .rpin:not(.rpin--rest) .rrow__cond { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .rpin.is-hit:not(.rpin--rest) { background: var(--ok-tint-l); }
 }
 /* 标题到说明的墨迹间距统一为 10：规则组区块、第一次用 / The title-to-description ink gap is 10 everywhere: the rule-group section and first run */
 .rgroups__desc { margin-top: 0; }
@@ -1725,6 +1731,8 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
 .tester__out { display: grid; gap: var(--s-3); }
 .tester__result { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-2) var(--s-4); padding: var(--s-3) var(--s-4); border-radius: var(--r-2); background: var(--ok-tint-l); }
 .tester__result.is-warn { background: var(--warn-tint-l); }
+.tester__allow { margin: 0; color: var(--l-ink-2); font-size: var(--t-2); overflow-wrap: anywhere; }
+.tester__allow code { font-family: var(--f-mono); font-size: var(--t-1); }
 .tester__verdict { min-width: 0; margin: 0; font-size: var(--t-3); font-weight: var(--w-bold); overflow-wrap: anywhere; }
 .tester__steps { margin: 0; }
 @media (max-width: 640px) {

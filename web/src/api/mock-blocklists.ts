@@ -1,12 +1,12 @@
-import { PRESETS } from '../config-model/blocklist'
+import { MAX_SUBSCRIPTIONS, PRESETS } from '../config-model/blocklist'
 import { ApiError } from './client'
 import type { BlocklistBuildRequest, BlocklistBuildResult, BlocklistSource, BlocklistState, BlocklistSummary, GeoDataSchedule } from './types'
 
-// 演示用的拦截列表：和服务端一样按链接记每个列表的情况，合成文件按启用的列表取名。推荐的列表用实测的条数，别的链接给一个整数；
-// 链接里带 fail 的装作下载失败。全是演示数据。
-// The demo blocklists: like the server, each list's status is kept by link and the merged file is named after the enabled lists.
-// Suggested lists take their measured counts and any other link a round number; a link containing fail pretends its download
-// failed. All demo data.
+// 演示用的拦截列表：和服务端一样按链接记每个列表的情况（不在请求里的也留着，服务端要到清理时才删），合成文件按启用的列表取名，
+// 不论先后。推荐的列表用实测的条数，别的链接给一个整数，几个常见的自己粘贴的列表带着标题；链接里带 fail 的装作下载失败。全是演示数据。
+// The demo blocklists: like the server, each list's status is kept by link (those outside the request too, which the server drops only at
+// cleanup), and the merged file is named after the enabled lists in any order. Suggested lists take their measured counts, any other link a
+// round number, and a few commonly pasted lists carry titles; a link containing fail pretends its download failed. All demo data.
 
 // 演示别的情况（localStorage 里设成 true）/ Other states for the demo (set to true in localStorage):
 // - kixdns:demo-blocklists-unreadable：读不到各个列表的情况 / the list statuses cannot be read
@@ -43,7 +43,14 @@ function summaryOf(url: string): BlocklistSummary {
       ],
     }
   }
-  return { rules: preset?.rules ?? 52_318, skipped: 0, samples: [] }
+  const title = Object.entries(TITLES).find(([path]) => url.endsWith(path))?.[1]
+  return { rules: preset?.rules ?? 52_318, skipped: 0, samples: [], ...(title ? { title } : {}) }
+}
+// 几个常见列表开头写的标题 / The titles a few common lists open with
+const TITLES: Record<string, string> = {
+  '/hagezi/dns-blocklists/main/adblock/light.txt': "HaGeZi's Light DNS Blocklist",
+  '/hagezi/dns-blocklists/main/adblock/tif.txt': "HaGeZi's Threat Intelligence Feeds DNS Blocklist",
+  '/badmojr/1Hosts/master/Lite/adblock.txt': '1Hosts (Lite)',
 }
 
 export function demoBlocklists(): BlocklistState {
@@ -57,9 +64,9 @@ export function demoBlocklists(): BlocklistState {
 
 export async function demoBuildBlocklists(request: BlocklistBuildRequest): Promise<BlocklistBuildResult> {
   const urls = [...new Set(request.subscriptions.map((s) => s.url.trim()))]
+  if (urls.length > MAX_SUBSCRIPTIONS) throw new ApiError(`拦截列表最多订阅 ${MAX_SUBSCRIPTIONS} 个`, 400, 'blocklist_invalid')
   const bad = urls.find((url) => !url.startsWith('https://'))
   if (bad !== undefined) throw new ApiError('拦截列表链接只能用 https://', 400, 'blocklist_invalid')
-  for (const url of [...sources.keys()]) if (!urls.includes(url)) sources.delete(url)
   const refresh = new Set(request.refresh)
   // 和服务端一样：从没试过的才自己下载，试过没成功的等点名 / As on the server: only lists never tried download on their own; failed ones wait to be named
   const fetch = urls.filter((url) => refresh.has(url) || !sources.has(url))
@@ -71,12 +78,12 @@ export async function demoBuildBlocklists(request: BlocklistBuildRequest): Promi
     const held = sources.get(url)
     if (url.includes('fail') || (refresh.has(url) && flag('kixdns:demo-blocklist-refresh-fails'))) {
       failed += 1
-      sources.set(url, { ...(held ?? { sha256: null, downloaded_at: null, summary: { rules: 0, skipped: 0, samples: [] }, rejected_sha256: null }), last_error: `连不上 ${new URL(url).host}，拦截列表没下载成功，稍后再试`, last_attempt_at: now })
+      sources.set(url, { ...(held ?? { sha256: null, downloaded_at: null, summary: { rules: 0, skipped: 0, samples: [] }, rejected_sha256: null }), last_error: `连不上 ${new URL(url).host}`, last_attempt_at: now })
       continue
     }
     sources.set(url, { sha256: digest(`${url}@${now}`), downloaded_at: now, summary: summaryOf(url), last_error: null, last_attempt_at: now, rejected_sha256: null })
   }
-  const used = request.subscriptions.filter((s) => s.enabled).map((s) => sources.get(s.url.trim())?.sha256).filter((sha): sha is string => Boolean(sha))
+  const used = request.subscriptions.filter((s) => s.enabled).map((s) => s.url.trim()).sort().map((url) => sources.get(url)?.sha256).filter((sha): sha is string => Boolean(sha))
   return {
     path: used.length ? `/var/lib/kixdns-panel/geo/blocklist-${digest(used.join(','))}.json` : null,
     sources: Object.fromEntries(urls.flatMap((url) => { const s = sources.get(url); return s ? [[url, s] as const] : [] })),
@@ -88,7 +95,9 @@ export function setDemoBlocklistSchedule(hours: number | null): GeoDataSchedule 
   if (![null, 24, 168].includes(hours)) throw new ApiError('拦截列表的自动更新只能每天或每周', 400, 'blocklist_invalid')
   if (schedule.interval_hours !== hours) {
     const now = Math.floor(Date.now() / 1000)
-    schedule = { interval_hours: hours as 24 | 168 | null, last_attempt_at: null, last_success_at: schedule.last_success_at, last_error: null, next_run_at: hours === null ? null : now + hours * 3600 }
+    // 和服务端一样：刚开时还没更新过，下一轮（十几分钟内）就更新 / As on the server: just switched on, it has not run yet and updates on the next
+    // round, within a quarter of an hour
+    schedule = { interval_hours: hours as 24 | 168 | null, last_attempt_at: null, last_success_at: schedule.last_success_at, last_error: null, next_run_at: hours === null ? null : now }
   }
   return schedule
 }

@@ -10,6 +10,7 @@ import { useConnection } from '../composables/useConnection'
 import { useSession } from '../composables/useSession'
 import { dismissUndoable, toastMark, useToast } from '../composables/useToast'
 import { errorMessage } from '../utils'
+import { needsBuild, settleBlocklists } from './useBlocklists'
 import { appliedSnapshot, findRuleByName, applyHits, applyUpstreamStats, changeCount, dialogEdits, dirty, draftGeneration, editorEdited, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, replaceModel, reportOpen, unsaved } from './store'
 
 // 配置页和面板服务之间的事：读配置和历史、KixDNS 的运行状态和能力、校验、保存并热加载、现在应用。
@@ -525,12 +526,27 @@ export const onlySaving = (): boolean => busy.value && origin.value === 'draft' 
 const sentence = (text: string) => text.replace(/[。.]\s*$/, '')
 
 // origin：保存草稿（保存栏报进度）或应用已经保存的版本（页头报进度，出错进提示）。有改动、或者要应用和运行配置不同的文件，
-// 而且 KixDNS 在运行时，先单独校验一次：没过就停在第 1 步，不写入任何版本。
+// 而且 KixDNS 在运行时，先单独校验一次：没过就停在第 1 步，不写入任何版本。versionNote 给面板自己发起的保存（手动更新拦截列表）
+// 带上版本备注，不动备注栏里写着的
 // origin: saving the draft (the save bar reports) or applying a saved version (the header reports, errors go to a notice). With
 // changes, or a file that differs from what runs, and KixDNS running, validate on its own first: a failure stops at step 1 with no version written.
-export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
+// versionNote gives a save the panel starts itself (a manual blocklist update) its version note, leaving the note field as it is
+export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: string): Promise<void> {
   // 排着的那次已经算数：再按一下不另起一次 / A queued save already counts: another press starts nothing new
   if (queued.value) return
+  // 拦截列表的文件还没按现在的订阅合成好：先等它落地（按钮照保存途中显示），还不行就停在这里、说出原因，不写入一个对不上的文件
+  // The blocklists' file is not yet built for the current subscriptions: wait for it to land first (the button shows the save under way), and
+  // if it still fails stop here with the reason rather than writing a file that does not match
+  if (from === 'draft' && needsBuild() && doc.value && !busy.value) {
+    queued.value = true
+    let problem: string | null
+    try { problem = await settleBlocklists() } finally { queued.value = false }
+    if (problem !== null) {
+      verdict.value = '没有保存成功'
+      finishStage('failed', `拦截列表还没合成好：${problem.replace(/[。.]\s*$/, '')}。再保存一次会重新合成`)
+      return
+    }
+  }
   const waiting = checkRun
   if ((busy.value && !waiting) || !doc.value) return
   // 被内核不支持的 CNAME 回答挡住时说一句，不默默不动 / Blocked by unsupported CNAME answers: say so instead of doing nothing
@@ -596,11 +612,11 @@ export async function save(from: 'draft' | 'apply' = 'draft'): Promise<void> {
     }
     // 「现在应用」没有备注栏：原地生效的版本备注本来就在；另存新版本时带上待应用版本的备注，生效的那个版本照样写着它是什么
     // 现在应用 has no note field: a version put into effect in place keeps its own note; a new version carries the pending one's note, so the version that runs still says what it is
-    const message = inPlace ? pendingNote(failedBefore) : saveMessage.value.trim() || (from === 'apply' ? pendingNote(failedBefore) : '')
+    const message = inPlace ? pendingNote(failedBefore) : versionNote ?? (saveMessage.value.trim() || (from === 'apply' ? pendingNote(failedBefore) : ''))
     const result = inPlace
       ? await apiRequest<ConfigApplyResult>(`/api/v1/config/versions/${failedBefore}/apply`, { method: 'POST' })
       : await apiRequest<ConfigApplyResult>('/api/v1/config', { method: 'PUT', ...jsonBody({ content, expected_sha256: expected, message }) })
-    saveMessage.value = ''
+    if (versionNote === undefined) saveMessage.value = ''
     // 写入成功就先记下：文件的散列和版本换成这次的，对照的那份换成发出去的草稿。之后的重读失败了，也不会把已保存的算成修改、下次保存也不会撞上自己
     // Record the write at once: the file hash and version become this save's, and the baseline becomes the draft that was sent. If the re-read after it fails,
     // nothing saved counts as a change and the next save does not collide with itself

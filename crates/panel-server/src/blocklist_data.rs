@@ -612,7 +612,9 @@ fn normalize_subscriptions(
     Ok(normalized)
 }
 
-/// 配置里拦截列表合并出的那个文件 / The blocklists' merged file a config uses
+/// 配置里拦截列表合并出的那个文件：页面总把它排在最后，前面还有的是认不出、照原样留下的旧文件
+/// The blocklists' merged file a config uses: the page always puts it last, and one before it is an old file that
+/// could not be recognised and was kept as it was
 #[must_use]
 pub fn blocklist_path(config: &Value) -> Option<String> {
     config
@@ -620,7 +622,7 @@ pub fn blocklist_path(config: &Value) -> Option<String> {
         .as_array()?
         .iter()
         .filter_map(Value::as_str)
-        .find(|path| is_blocklist_path(path))
+        .rfind(|path| is_blocklist_path(path))
         .map(str::to_owned)
 }
 

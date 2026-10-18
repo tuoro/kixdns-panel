@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { MAX_OWN_RULES, ownMatcher, ownRuleText, parseLine, parseOwnRules, skipText, subscriptionName, type Line } from './blocklist'
+import { checkSubscriptionUrl, MAX_OWN_RULES, ownMatcher, ownRuleText, parseLine, parseOwnRules, skipText, subscriptionName, type Line } from './blocklist'
 
 interface Case {
   line: string
@@ -41,11 +41,11 @@ describe('rules of one\'s own', () => {
     ])
   })
 
-  it('takes no more than the limit', () => {
-    const text = Array.from({ length: MAX_OWN_RULES + 1 }, (_, i) => `||n${i}.example^`).join('\n')
+  it('takes no more than the limit and points out the overflow once', () => {
+    const text = Array.from({ length: MAX_OWN_RULES + 3 }, (_, i) => `||n${i}.example^`).join('\n')
     const { rules, problems } = parseOwnRules(text)
     expect(rules).toHaveLength(MAX_OWN_RULES)
-    expect(problems.map((p) => p.line)).toEqual([MAX_OWN_RULES + 1])
+    expect(problems).toEqual([{ line: MAX_OWN_RULES + 1, text: `||n${MAX_OWN_RULES}.example^`, problem: '从这一行起的 3\u00a0条没用上：自己写的规则最多 1,000\u00a0条，大列表请用订阅' }])
   })
 
   it('writes each kind as an entry condition and reads it back', () => {
@@ -65,7 +65,17 @@ it('says why a list line went unused', () => {
   expect(skipText({ reason: 'too-many-patterns' })).toContain('1000')
 })
 
-it('names a subscription by the suggested list or the link host', () => {
+it('names a subscription by the suggested list, or by file name and host', () => {
   expect(subscriptionName('https://big.oisd.nl/')).toBe('OISD big')
-  expect(subscriptionName('https://lists.example.org/a/filter.txt')).toBe('lists.example.org')
+  expect(subscriptionName('https://lists.example.org/a/filter.txt')).toBe('filter.txt · lists.example.org')
+  expect(subscriptionName('https://lists.example.org/a/%E5%B9%BF%E5%91%8A.txt')).toBe('广告.txt · lists.example.org')
+  expect(subscriptionName('https://lists.example.org/')).toBe('lists.example.org')
+})
+
+it('checks a link to subscribe to as the server does', () => {
+  expect(checkSubscriptionUrl('https://BIG.oisd.nl')).toEqual({ url: 'https://big.oisd.nl/' })
+  expect(checkSubscriptionUrl('http://lists.example.org/a.txt')).toEqual({ problem: '链接只能用 https://' })
+  expect(checkSubscriptionUrl('https://user:secret@lists.example.org/a.txt')).toEqual({ problem: '链接不能包含用户名或密码' })
+  expect(checkSubscriptionUrl('lists.example.org/a.txt')).toEqual({ problem: '链接写得不对' })
+  expect(checkSubscriptionUrl(`https://lists.example.org/${'a'.repeat(4100)}`)).toEqual({ problem: '链接过长' })
 })

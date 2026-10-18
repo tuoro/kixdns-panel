@@ -65,7 +65,8 @@ export function traceNames(model: Model): TraceNames {
     entry: (id) => (upstreamIds.has(id) ? '主列表' : pipeline(id)),
     matched: (label) => {
       if (label === '其余请求') return '没有规则命中，按「其余请求」处理'
-      if (label === BLOCKLIST_RULE) return '命中拦截列表'
+      // 上一步已经写着「进入拦截列表」，这一步不再重复名字 / The step before already reads 进入拦截列表, so this one does not repeat the name
+      if (label === BLOCKLIST_RULE) return '在要拦截的域名里'
       const group = model.ruleGroups.find((g) => label === `${g.name}·其余`)
       if (group) return `规则组「${group.name}」里没有规则命中，按「其余请求」处理`
       const mapped = /^域名映射 (.+)$/.exec(label)?.[1]

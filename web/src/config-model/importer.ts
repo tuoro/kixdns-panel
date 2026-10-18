@@ -1,7 +1,7 @@
 import { BLOCKLIST_PIPELINE, BLOCKLIST_RULE, ownMatcher, ownRuleText, parseOwnRules, TAG_ALLOW, TAG_ALLOW_IMPORTANT, TAG_BLOCK, TAG_BLOCK_IMPORTANT } from './blocklist'
 import { effectiveOps, normalizeAddress, type KAction, type KConfigLike, type KMatcher, type KPipelineLike, type KRuleLike, type KSelectorLike } from './kernel'
 import {
-  blocklistEntries, emptyBlocklists, isIp, kernelAddress, POLLUTED_CIDRS, splitList,
+  blocklistEntries, blocklistKey, emptyBlocklists, isIp, kernelAddress, POLLUTED_CIDRS, splitList,
   type Blocklists, type BlockResponse, type Condition, type Ecs, type Mapping, type Model, type Outcome, type Protocol, type Remedy, type ResponseCondition,
   type ResponseHandling, type Rule, type RuleGroup, type UpstreamAddress, type UpstreamGroup, nextId as nextFreeId } from './model'
 
@@ -331,23 +331,30 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
   // ---------- 拦截列表：域名映射后面、进只回拦截的 Pipeline 的那几个入口 / blocklists: the entries after the mappings into the pipeline that only blocks ----------
   let blocklists: Blocklists = emptyBlocklists()
   let blocklistPipeline: string | undefined
-  const blp = byId.get(BLOCKLIST_PIPELINE)
+  // 一般叫 blocklist；和手改过的旧 Pipeline 重名时编出来的是 blocklist-2 这样的（见 compile） / Usually blocklist; when it clashed with an old
+  // hand-edited pipeline, compile named it blocklist-2 and so on
+  const blId = pre[0] && /^blocklist(?:-\d+)?$/.test(pre[0].pipeline) ? pre[0].pipeline : BLOCKLIST_PIPELINE
+  const blp = byId.get(blId)
   const blRule = blp?.rules?.length === 1 ? blp.rules[0]! : undefined
   const blockAction = blRule?.actions?.length === 1 ? staticOutcome(blRule.actions[0]!) : null
   if (blRule && blRule.name === BLOCKLIST_RULE && isTrueChain(blRule.matchers) && blockAction?.type === 'block' && Object.keys(blRule).every((k) => RULE_KEYS.has(k))
     && !(blRule.response_actions_on_match ?? []).length && !(blRule.response_actions_on_miss ?? []).length
-    && Object.keys(blp!).every((k) => k === 'id' || k === 'rules') && (refs.get(BLOCKLIST_PIPELINE) ?? []).every((r) => r.from === 'entry')) {
-    const count = pre.findIndex((e) => e.pipeline !== BLOCKLIST_PIPELINE)
+    && Object.keys(blp!).every((k) => k === 'id' || k === 'rules') && (refs.get(blId) ?? []).every((r) => r.from === 'entry')) {
+    const count = pre.findIndex((e) => e.pipeline !== blId)
     const leading = count < 0 ? pre : pre.slice(0, count)
     const found = readBlocklistEntries(leading, settings, prev)
-    if (found && leading.length === (refs.get(BLOCKLIST_PIPELINE) ?? []).length) {
+    if (found && leading.length === (refs.get(blId) ?? []).length) {
       blocklists = found.blocklists
-      blocklistPipeline = BLOCKLIST_PIPELINE
+      blocklistPipeline = blId
       pre = pre.slice(leading.length)
       if (found.file) settings.geosite_data_paths = (settings.geosite_data_paths as unknown[]).filter((p) => p !== found.file)
-      if (found.file && !prev) note('配置里用着一个拦截列表文件，但没有带着订阅了哪些列表；到「拦截列表」重新添加订阅以后，才能更新它', 'warn')
+      if (found.file && !prev) note('配置里用着一个拦截列表文件，但没记下是哪些列表合成的；在「拦截列表」重新订阅以后才能更新它', 'warn')
     }
   }
+  // 拦截列表的入口在 JSON 里改过、认不出来：照原样读成别的，说一句，不让拦截列表页像是什么都没开
+  // The blocklist entries were edited in the JSON and cannot be recognised: they are read as something else, and a note says so, so the
+  // blocklist page does not look as if nothing were on
+  if (!blocklistPipeline && blp && blRule?.name === BLOCKLIST_RULE) note('拦截列表的入口在别处改过，认不出来，已照原样读成规则；要在「拦截列表」里管理，先删掉这些规则', 'warn')
   // 上一份的拦截列表没写出入口（都关着、自己写的规则一条也用不上）时，内核里没有它的痕迹：原样接回来
   // When the previous blocklists wrote no entry (all switched off, no rule of one's own in use) the kernel holds no trace of them: they come back as they were
   if (!blocklistPipeline && prev && !blocklistEntries(prev).length) blocklists = { ...clone(prev.blocklists), file: null }
@@ -720,7 +727,9 @@ function readBlocklistEntries(entries: KSelectorLike[], settings: Record<string,
   const order = kinds.join(',')
   if (!['own', 'important,list', 'own,important,list'].includes(order)) return null
   const paths = Array.isArray(settings.geosite_data_paths) ? (settings.geosite_data_paths as unknown[]) : []
-  const file = order.endsWith('list') ? paths.find((p): p is string => typeof p === 'string' && /(^|\/)blocklist-[0-9a-f]{64}\.json$/.test(p)) : null
+  // 面板合成的文件总是排在最后（见 compile）；前面还有一个的话是认不出、照原样留下的旧文件 / The panel's file always comes last (see compile); one
+  // before it is an old file that could not be recognised and was kept as it was
+  const file = order.endsWith('list') ? [...paths].reverse().find((p): p is string => typeof p === 'string' && /(^|\/)blocklist-[0-9a-f]{64}\.json$/.test(p)) : null
   if (file === undefined) return null
   // 上一份的原文写出来和入口里的一样就用原文：注释、写法和没用上的行都留着 / The previous text when it writes what the entries hold: comments, spelling and unused lines all stay
   const prevOwn = prev ? parseOwnRules(prev.blocklists.custom).rules : []
@@ -728,5 +737,7 @@ function readBlocklistEntries(entries: KSelectorLike[], settings: Record<string,
   const custom = prev && writes(prevOwn) === JSON.stringify([ownBlocks, ownAllows ?? []])
     ? prev.blocklists.custom
     : [...ownBlocks.map((m) => ownRuleText(m, false)), ...(ownAllows ?? []).map((m) => ownRuleText(m, true))].join('\n')
-  return { blocklists: { subscriptions: clone(prev?.blocklists.subscriptions ?? []), file: file ?? null, custom }, file: file ?? null }
+  const subscriptions = clone(prev?.blocklists.subscriptions ?? [])
+  // 配置里的文件就是按这些订阅合成的（定时更新换的文件也一样） / The config's file was built for these subscriptions (so is one the scheduled update swapped in)
+  return { blocklists: { subscriptions, file: file ?? null, custom, builtFor: blocklistKey({ subscriptions }) }, file: file ?? null }
 }

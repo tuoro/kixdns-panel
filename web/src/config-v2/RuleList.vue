@@ -5,7 +5,7 @@ import UiSelect from '../components/ui/UiSelect.vue'
 import { useToast } from '../composables/useToast'
 import RuleRow from './RuleRow.vue'
 import { parseOwnRules } from '../config-model/blocklist'
-import { blockLabel, conditionsText, outcomePill, mappingIsIp, type Outcome, type Rule, ruleTitle } from '../config-model/model'
+import { blockLabel, blocklistEntries, conditionsText, outcomePill, mappingIsIp, type Outcome, type Rule, ruleTitle } from '../config-model/model'
 import { model, newId } from './store'
 import { blocklists, loadBlocklists } from './useBlocklists'
 
@@ -43,12 +43,16 @@ const liveMappings = computed(() => model.mappings.filter((r) => r.enabled))
 const liveLists = computed(() => (model.blocklists.file ? model.blocklists.subscriptions.filter((s) => s.enabled && (blocklists.status !== 'ok' || blocklists.sources[s.url]?.sha256)) : []))
 onMounted(() => { if (model.blocklists.subscriptions.length) void loadBlocklists() })
 const ownRules = computed(() => parseOwnRules(model.blocklists.custom).rules.length)
+// 内核里真有拦截列表的入口才显示这一行：只写了放行、又没有列表时什么也不拦 / The row shows only when the kernel really gets blocklist entries: allows
+// alone, with no list, block nothing
+const blocking = computed(() => blocklistEntries(model).length > 0)
+// 列表名之间用顿号，和自己写的规则之间用逗号，不让「自己写的」读成又一个列表 / 顿号 between list names and a comma before the own rules, so they do not read as one more list
 const listSummary = computed(() => {
   const names = liveLists.value.map((s) => s.name)
   const lists = names.length <= 2 ? names.join('、') : `${names.slice(0, 2).join('、')} 等 ${names.length} 个列表`
-  return [lists, ownRules.value ? `自己写的 ${ownRules.value} 条` : ''].filter(Boolean).join('、')
+  return [lists, ownRules.value ? `自己写的规则 ${ownRules.value} 条` : ''].filter(Boolean).join('，')
 })
-const listShort = computed(() => [liveLists.value.length ? `${liveLists.value.length} 个列表` : '', ownRules.value ? `自己写的 ${ownRules.value} 条` : ''].filter(Boolean).join('、'))
+const listShort = computed(() => [liveLists.value.length ? `${liveLists.value.length} 个列表` : '', ownRules.value ? `自己写的规则 ${ownRules.value} 条` : ''].filter(Boolean).join('，'))
 const mappingSummary = computed(() => {
   const names = liveMappings.value.map((r) => r.domain)
   return names.length <= 2 ? names.join('、') : `${names.slice(0, 2).join('、')} 等 ${names.length} 个域名`
@@ -142,7 +146,7 @@ onBeforeUnmount(() => window.removeEventListener('pointermove', onMove))
       <span class="rrow__pill"><span class="opill"><span class="opill__verb">回答</span><span class="opill__val">{{ liveMappings.every(mappingIsIp) ? '固定 IP' : '固定 IP 或域名' }}</span></span></span>
       <span class="rpin__link"><button class="ui-link" type="button" @click="emit('mappings')">管理域名映射</button></span>
     </div>
-    <div v-if="!inGroup && (liveLists.length || ownRules) && !filtered" class="rpin" :class="{ 'is-hit': blocklistMark }">
+    <div v-if="!inGroup && blocking && !filtered" class="rpin" :class="{ 'is-hit': blocklistMark }">
       <span class="rrow__num"><CornerDownRight :size="14" aria-hidden="true" /></span>
       <button class="rrow__main" type="button" @click="emit('blocklists')">
         <span class="rrow__name"><b>拦截列表</b><span v-if="blocklistMark" class="ui-tag ui-tag--ok">命中</span></span>
