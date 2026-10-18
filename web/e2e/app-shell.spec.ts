@@ -5,12 +5,12 @@ test('共享导航在桌面和手机均能到达所有页面 @responsive', async
   const mobile = testInfo.project.name === 'mobile'
   const navigation = page.getByRole('navigation', { name: mobile ? '移动端导航' : '主导航', exact: true })
   await expect(navigation).toBeVisible()
-  // 桌面侧栏分组：配置的四个子页各一项，规则是默认页不带参数 / The desktop sidebar's groups: one item per config sub-page, 规则 the default without a parameter
-  await expect(navigation.getByRole('link')).toHaveCount(mobile ? 5 : 8)
+  // 桌面侧栏分组：配置的五个子页各一项，规则是默认页不带参数 / The desktop sidebar's groups: one item per config sub-page, 规则 the default without a parameter
+  await expect(navigation.getByRole('link')).toHaveCount(mobile ? 5 : 9)
   await expect(page.locator('.sidebar')).toHaveCount(0)
   const pages = mobile
     ? [['配置', '/config'], ['日志', '/logs'], ['诊断', '/diagnostics'], ['系统', '/system'], ['概览', '/']]
-    : [['规则', '/config'], ['上游组', '/config\\?section=upstreams'], ['域名映射', '/config\\?section=mapping'], ['基础设置', '/config\\?section=settings'], ['规则', '/config'], ['日志', '/logs'], ['诊断', '/diagnostics'], ['系统', '/system'], ['概览', '/']]
+    : [['规则', '/config'], ['上游组', '/config\\?section=upstreams'], ['域名映射', '/config\\?section=mapping'], ['拦截列表', '/config\\?section=blocklists'], ['基础设置', '/config\\?section=settings'], ['规则', '/config'], ['日志', '/logs'], ['诊断', '/diagnostics'], ['系统', '/system'], ['概览', '/']]
   for (const [name, path] of pages) {
     await navigation.getByRole('link', { name, exact: true }).click()
     await expect(page).toHaveURL(new RegExp(`${path}$`))

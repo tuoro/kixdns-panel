@@ -58,6 +58,10 @@ struct BlocklistState {
     /// cleanup until it is written into the config
     #[serde(default)]
     last_refreshed: Option<String>,
+    /// 页面最近一次合成时订阅的列表：草稿里删掉又放弃修改时，它们的情况还在 / The lists the page subscribed to when
+    /// it last built: removed in a draft and then discarded, their status is still there
+    #[serde(default)]
+    requested: Vec<String>,
 }
 
 /// 一个列表（按链接）最近一份读得怎么样 / How the latest copy of one list (by link) read
@@ -160,30 +164,36 @@ impl BlocklistManager {
         Ok(())
     }
 
-    /// 按页面给的订阅合成一个文件：没下载过的、和 `refresh` 点名的先下载，再把启用的合并。一个列表下载失败不挡别的：它照用
-    /// 上一份（没有就不算进去），原因记在它自己的情况里。不在请求里的列表不再记。
-    /// Builds a file for the page's subscriptions: lists never downloaded, and those `refresh` names, download first,
+    /// 按页面给的订阅合成一个文件：从没试过下载的、和 `refresh` 点名的先下载，再把启用的合并。一个列表下载失败不挡别的：它照用
+    /// 上一份（没有就不算进去），原因记在它自己的情况里。不在请求里的列表的情况等清理时再看要不要留。
+    /// Builds a file for the page's subscriptions: lists never tried, and those `refresh` names, download first,
     /// then the enabled ones merge. One failed download does not hold up the rest: that list keeps its previous copy
-    /// (or is left out without one), and the reason goes into its own status. Lists outside the request are no
-    /// longer kept.
+    /// (or is left out without one), and the reason goes into its own status. Whether to keep the status of lists
+    /// outside the request is left to cleanup.
     pub async fn build(&self, request: BuildRequest) -> Result<BuildResult, GeoDataError> {
         let subscriptions = normalize_subscriptions(request.subscriptions)?;
         let refresh: HashSet<&str> = request.refresh.iter().map(|url| url.trim()).collect();
         let _guard = self.lock.lock().await;
         let mut state = self.state().await?;
-        state.sources.retain(|url, _| {
-            subscriptions
-                .iter()
-                .any(|subscription| subscription.url == *url)
-        });
         let (path, failed) = self
             .update(&mut state, &subscriptions, |url| refresh.contains(url))
             .await?;
         state.last_built.clone_from(&path);
+        state.requested = subscriptions
+            .iter()
+            .map(|subscription| subscription.url.clone())
+            .collect();
         self.store(&state).await?;
+        let sources = subscriptions
+            .iter()
+            .filter_map(|subscription| {
+                let status = state.sources.get(&subscription.url)?;
+                Some((subscription.url.clone(), status.clone()))
+            })
+            .collect();
         Ok(BuildResult {
             path,
-            sources: state.sources,
+            sources,
             failed,
         })
     }
@@ -217,11 +227,11 @@ impl BlocklistManager {
         Ok(Some(Refresh { replaced, failed }))
     }
 
-    /// 正在用的文件里有、记录里却没有一份的列表（页面在没保存的草稿里删了它），按文件里记的那份补回记录：定时更新下载
-    /// 失败时它照用这一份，不会从配置里掉出去
-    /// Lists the file in use names but the records hold no copy of (the page removed them in an unsaved draft) get
-    /// their records back from the copy the file names, so a failed scheduled download keeps that copy instead of
-    /// dropping the list from the config
+    /// 正在用的文件里有、记录里却没有一份的列表（比如面板的数据库换过），按文件里记的那份补回记录：定时更新下载失败时
+    /// 它照用这一份，不会从配置里掉出去
+    /// Lists the file in use names but the records hold no copy of (the panel's database was replaced, say) get their
+    /// records back from the copy the file names, so a failed scheduled download keeps that copy instead of dropping
+    /// the list from the config
     async fn recall_sources(
         &self,
         state: &mut BlocklistState,
@@ -274,20 +284,42 @@ impl BlocklistManager {
         Ok(())
     }
 
-    /// 清理 Geo 目录：Geo 数据和拦截列表都不再用的文件删掉 / Cleans the Geo directory, removing files neither Geo data
-    /// nor the blocklists still use
+    /// 清理 Geo 目录：Geo 数据和拦截列表都不再用的文件删掉。页面最近一次请求里没有、保留的配置版本也没用到的列表，情况不再记
+    /// Cleans the Geo directory, removing files neither Geo data nor the blocklists still use. Lists neither in the
+    /// page's latest request nor used by a retained config version are no longer recorded
     pub async fn cleanup(
         &self,
         retained_configs: &[Value],
     ) -> Result<GeoDataCleanupResult, GeoDataError> {
         let _guard = self.lock.lock().await;
-        let keep = self.protected_paths(retained_configs).await?;
+        let mut state = self.state().await?;
+        let mut retained_sources = Vec::new();
+        for path in retained_configs
+            .iter()
+            .filter_map(blocklist_path)
+            .collect::<HashSet<_>>()
+        {
+            retained_sources.extend(
+                read_file_sources(Path::new(&path))
+                    .await?
+                    .unwrap_or_default(),
+            );
+        }
+        let before = state.sources.len();
+        state.sources.retain(|url, _| {
+            state.requested.contains(url)
+                || retained_sources.iter().any(|source| source.url == *url)
+        });
+        if state.sources.len() != before {
+            self.store(&state).await?;
+        }
+        let keep = self.protected_paths(&state, &retained_sources);
         self.geo.cleanup(retained_configs, keep).await
     }
 
-    /// 下载 `subscriptions` 里还没有一份的、和 `refresh` 说要重下的，再合并启用的。返回合成的文件和没下载成功的列表数。
-    /// Downloads the lists in `subscriptions` that have no copy yet or that `refresh` names, then merges the enabled
-    /// ones. Returns the file built and how many lists failed to download.
+    /// 下载 `subscriptions` 里还要下载的（见 [`Self::needs_download`]）和 `refresh` 说要重下的，再合并启用的。返回合成的文件和没下载成功的列表数。
+    /// Downloads the lists in `subscriptions` that still need it (see [`Self::needs_download`]) or that `refresh` names,
+    /// then merges the enabled ones. Returns the file built and how many lists failed to download.
     async fn update(
         &self,
         state: &mut BlocklistState,
@@ -297,7 +329,7 @@ impl BlocklistManager {
         let mut fetch = Vec::new();
         for subscription in subscriptions {
             let status = state.sources.get(&subscription.url);
-            if refresh(&subscription.url) || !self.holds_copy(status).await {
+            if refresh(&subscription.url) || self.needs_download(status).await {
                 fetch.push((&subscription.url, status.cloned()));
             }
         }
@@ -338,11 +370,18 @@ impl BlocklistManager {
         Ok((path, failed))
     }
 
-    async fn holds_copy(&self, status: Option<&SourceStatus>) -> bool {
-        let Some(sha256) = status.and_then(|status| status.sha256.as_deref()) else {
+    /// 没点名重下时还要下载的：从没试过的，和记着一份、文件却不在了的。试过没下载成功的等点名再下：不然开关别的列表时
+    /// 也要陪着它等到下载超时
+    /// What downloads without being named: lists never tried, and those recorded with a copy whose file is gone. A list
+    /// whose download failed waits to be named: otherwise switching any other list would wait out its download timeout
+    async fn needs_download(&self, status: Option<&SourceStatus>) -> bool {
+        let Some(status) = status else {
+            return true;
+        };
+        let Some(sha256) = status.sha256.as_deref() else {
             return false;
         };
-        tokio::fs::metadata(self.raw_path(sha256))
+        !tokio::fs::metadata(self.raw_path(sha256))
             .await
             .is_ok_and(|metadata| metadata.is_file())
     }
@@ -457,31 +496,25 @@ impl BlocklistManager {
     /// 清理时要留下的文件：页面和定时更新最近合成的、每个列表在用的那份，和保留的配置版本用到的合并文件里记的来源
     /// Files cleanup must keep: the ones the page and the scheduled update built last, each list's copy in use, and the
     /// sources recorded in the merged files that retained config versions use
-    async fn protected_paths(
+    fn protected_paths(
         &self,
-        retained_configs: &[Value],
-    ) -> Result<HashSet<PathBuf>, GeoDataError> {
-        let state = self.state().await?;
-        let mut keep: HashSet<PathBuf> = state
+        state: &BlocklistState,
+        retained_sources: &[SourceRef],
+    ) -> HashSet<PathBuf> {
+        state
             .last_built
             .iter()
             .chain(&state.last_refreshed)
             .map(PathBuf::from)
-            .collect();
-        keep.extend(
-            state
-                .sources
-                .values()
-                .filter_map(|status| status.sha256.as_deref())
-                .map(|sha256| self.raw_path(sha256)),
-        );
-        let merged: HashSet<String> = retained_configs.iter().filter_map(blocklist_path).collect();
-        for path in merged {
-            if let Some(sources) = read_file_sources(Path::new(&path)).await? {
-                keep.extend(sources.iter().map(|source| self.raw_path(&source.sha256)));
-            }
-        }
-        Ok(keep)
+            .chain(
+                state
+                    .sources
+                    .values()
+                    .filter_map(|status| status.sha256.as_deref())
+                    .chain(retained_sources.iter().map(|source| source.sha256.as_str()))
+                    .map(|sha256| self.raw_path(sha256)),
+            )
+            .collect()
     }
 }
 
@@ -705,6 +738,9 @@ mod tests {
         let without_b = build(&manager, vec![subscription(A, false)], &[]).await;
         assert_eq!(without_b.path, None, "nothing enabled, nothing merged");
         assert_eq!(without_b.sources.keys().collect::<Vec<_>>(), [A]);
+        // B 的情况留到清理：草稿里删掉又放弃时还看得到 / B's status stays until cleanup, seen again when a draft
+        // removing it is discarded
+        assert!(manager.state().await.unwrap().sources.contains_key(B));
         assert_eq!(manager.state().await.unwrap().last_built, None);
     }
 
@@ -739,6 +775,17 @@ mod tests {
         let never = &result.sources[C];
         assert_eq!((never.sha256.as_deref(), never.downloaded_at), (None, None));
         assert!(never.last_error.is_some());
+        // 没点名就不再试：开关别的列表不用陪着它等 / Not tried again unless named: switching other lists does not wait on it
+        let again = build(
+            &manager,
+            vec![subscription(A, false), subscription(C, true)],
+            &[],
+        )
+        .await;
+        assert_eq!(
+            again.failed, 0,
+            "a retried download would have failed again"
+        );
         let json = std::fs::read(result.path.unwrap()).unwrap();
         assert_eq!(
             blocklist::read_sources(&json),
@@ -828,7 +875,7 @@ mod tests {
             .root()
             .join(format!("blocklist-{}.json", "f".repeat(64)));
         std::fs::write(&stray, "{}").unwrap();
-        // 只剩 A：B、C 的记录不再留 / Only A is left: B and C are no longer recorded
+        // 页面只剩 A；C 还在保留的版本里 / The page holds A alone; C is still in a retained version
         let built = build(&manager, vec![subscription(A, true)], &[])
             .await
             .path
@@ -838,6 +885,12 @@ mod tests {
         let result = manager.cleanup(&[retained]).await.unwrap();
         assert_eq!(result.removed_files, 2, "{result:?}");
         assert!(!stray.exists() && !manager.raw_path(&sha_b).exists());
+        let recorded: Vec<String> = manager.state().await.unwrap().sources.into_keys().collect();
+        assert_eq!(
+            recorded,
+            [A, C],
+            "B is in neither the latest request nor a retained version"
+        );
         for kept in [
             PathBuf::from(built),
             retained_file,
@@ -888,11 +941,11 @@ mod tests {
         assert!(Path::new(&new).exists() && !Path::new(&old).exists());
     }
 
-    /// 页面在没保存的草稿里删掉的列表，正在用的配置还在用：定时更新下载失败时照用文件里记的那份，不从配置里掉出去
-    /// A list removed in an unsaved draft is still in the config in use: when its scheduled download fails, the copy the
-    /// file names stays and the list does not drop out of the config
+    /// 正在用的配置里有、记录却丢了的列表：定时更新下载失败时照用文件里记的那份，不从配置里掉出去
+    /// A list the config in use holds but whose record was lost: when its scheduled download fails, the copy the file
+    /// names stays and the list does not drop out of the config
     #[tokio::test]
-    async fn a_list_removed_in_a_draft_stays_in_the_scheduled_update() {
+    async fn a_lost_record_comes_back_from_the_file_in_use() {
         let directory = tempdir().unwrap();
         let manager = manager(directory.path()).await;
         manager.hold_for_tests(A, "||ads.example^\n").await;
@@ -905,8 +958,10 @@ mod tests {
         .await
         .path
         .unwrap();
-        build(&manager, vec![subscription(A, true)], &[]).await;
-        assert!(!manager.state().await.unwrap().sources.contains_key(C));
+        // 记录丢了，比如面板的数据库换过 / The record is lost, the panel's database replaced, say
+        let mut state = manager.state().await.unwrap();
+        state.sources.remove(C);
+        manager.store(&state).await.unwrap();
         let config = json!({ "settings": { "geosite_data_paths": [in_use] } });
 
         let refresh = manager.refresh_running(&config).await.unwrap().unwrap();

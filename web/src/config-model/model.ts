@@ -1,3 +1,4 @@
+import { BLOCKLIST_PIPELINE, BLOCKLIST_RULE, ownMatcher, parseOwnRules, TAG_ALLOW, TAG_ALLOW_IMPORTANT, TAG_BLOCK, TAG_BLOCK_IMPORTANT } from './blocklist'
 import { toTree, treeText } from './condTree'
 // 配置页的数据模型：上游组配一次，规则引用组名；规则组、域名映射、默认值也在这里。compile() 把它落成内核配置，
 // importer.ts 把内核配置读回来，document.ts 负责和配置文件之间的存取。
@@ -61,6 +62,13 @@ export interface RuleGroup { id: string; name: string; note: string; rules: Rule
 export interface RawEntry { pipeline: string; matchers: Record<string, unknown>[]; matcher_operator?: string }
 export interface Mapping { id: number; domain: string; target: string; ttl: number | null; enabled: boolean }
 export interface Defaults { block: 'NXDOMAIN' | 'REFUSED' | 'zero' }
+// 拦截列表：订阅的列表（名字、链接、开关）和自己写的规则在草稿里，保存后生效；file 是面板服务端按启用的列表合成的 GeoSite
+// 文件，订阅一变由页面请服务端重新合成，换上新的路径
+// Blocklists: the subscribed lists (name, link, switch) and the rules of one's own live in the draft and take effect on save; file is
+// the GeoSite file the panel server builds from the enabled lists, rebuilt at the page's request whenever the subscriptions change
+export interface Subscription { id: number; name: string; url: string; enabled: boolean }
+export interface Blocklists { subscriptions: Subscription[]; file: string | null; custom: string }
+export const emptyBlocklists = (): Blocklists => ({ subscriptions: [], file: null, custom: '' })
 // settings 是内核的全局设置（监听、缓存、Geo 数据……），原样写进配置；只有 default_upstream 由「其余请求」决定
 // settings are the kernel's global settings (listeners, cache, Geo data…), written as they are; only default_upstream follows 其余请求
 export interface Model {
@@ -72,6 +80,7 @@ export interface Model {
   mappings: Mapping[]
   rest: Outcome
   defaults: Defaults
+  blocklists: Blocklists
   // 以下只在导入旧配置时出现：主列表原来的 Pipeline ID、高级入口、原样保留的 Pipeline、认不出的顶层键
   // Only present after importing an older config: the main list's original pipeline ID, advanced entries, pipelines kept verbatim, unknown top-level keys
   mainId?: string
@@ -287,6 +296,7 @@ export function nextId(model: Model): number {
   walk(model.rules)
   for (const rg of model.ruleGroups) walk(rg.rules)
   for (const x of model.mappings) ids.push(x.id)
+  for (const x of model.blocklists.subscriptions) ids.push(x.id)
   return Math.max(0, ...ids) + 1
 }
 
@@ -491,6 +501,27 @@ export function kernelRuleCount(rule: Rule): number {
   return (groups.length ? groups : [[]]).reduce((n, g) => n + andChains(g.flatMap(requestTerms), { type: 'any' }).length, 0)
 }
 
+/**
+ * 拦截列表的入口，排在域名映射后面、高级入口前面，都进只回拦截的那个 Pipeline。自己写的放行比什么都优先，所以每个入口都减掉它们；
+ * 自己写的拦截列表里的放行管不了；列表里带 `$important` 的拦截只有带 `$important` 的放行管得了；其余的拦截减掉列表里所有放行
+ * The blocklists' entries, after the mappings and before the advanced entries, all into the pipeline that only blocks. The rules
+ * of one's own that allow come first of all, so every entry takes them off; one's own blocks are beyond the lists' allows; a
+ * list's `$important` block yields only to `$important` allows; every other block yields to all the lists' allows
+ */
+export function blocklistEntries(model: Model): KernelConfig['pipeline_select'] {
+  const own = parseOwnRules(model.blocklists.custom).rules
+  const allows = own.filter((r) => r.allow).map((r): KMatcher => ({ ...ownMatcher(r.match), operator: 'and_not' }))
+  const blocks = own.filter((r) => !r.allow).map((r, i): KMatcher => ({ ...ownMatcher(r.match), operator: i ? 'or' : 'and' }))
+  const entry = (matchers: KMatcher[]) => ({ pipeline: BLOCKLIST_PIPELINE, matcher_operator: 'and', matchers: [...matchers, ...allows] })
+  const tag = (value: string, operator: string): KMatcher => ({ type: 'geo_site', value, operator })
+  const entries = blocks.length ? [entry(blocks)] : []
+  if (model.blocklists.file) {
+    entries.push(entry([tag(TAG_BLOCK_IMPORTANT, 'and'), tag(TAG_ALLOW_IMPORTANT, 'and_not')]))
+    entries.push(entry([tag(TAG_BLOCK, 'and'), tag(TAG_ALLOW, 'and_not'), tag(TAG_ALLOW_IMPORTANT, 'and_not')]))
+  }
+  return entries
+}
+
 export function compile(model: Model): KernelConfig {
   const pipelines: KernelConfig['pipelines'] = []
   for (const g of model.groups) pipelines.push(forwardPipeline(model, upstreamPipelineId(model, g.id), g.id, g.ecs, groupFallback(model, g) ?? {}))
@@ -502,7 +533,12 @@ export function compile(model: Model): KernelConfig {
   const main = [...model.rules.filter((r) => r.enabled).flatMap((r) => kernelRules(model, r)), emptyRule('其余请求', outcomeActions(model, model.rest))]
   pipelines.push({ ...model.mainExtra, id: mainPipelineId(model), rules: main })
   const select: KernelConfig['pipeline_select'] = live.length ? [{ pipeline: mappingId, matcher_operator: 'and', matchers: live.map((r, i) => ({ type: 'domain_suffix', value: r.domain.trim(), operator: i ? 'or' : 'and' })) }] : []
-  // 入口顺序：域名映射、高级入口、主列表 / Entry order: domain mappings, advanced entries, the main list
+  const blocking = blocklistEntries(model)
+  if (blocking.length) {
+    pipelines.push({ id: BLOCKLIST_PIPELINE, rules: [emptyRule(BLOCKLIST_RULE, outcomeActions(model, { type: 'block', response: 'default' }))] })
+    select.push(...blocking)
+  }
+  // 入口顺序：域名映射、拦截列表、高级入口、主列表 / Entry order: domain mappings, blocklists, advanced entries, the main list
   for (const rg of model.ruleGroups) {
     const id = ruleGroupPipelineId(model, rg.id)
     pipelines.push({ ...rg.extra, id, rules: [...rg.rules.filter((r) => r.enabled).flatMap((r) => kernelRules(model, r)), emptyRule(`${rg.name}·其余`, outcomeActions(model, rg.rest))] })
@@ -520,7 +556,11 @@ export function compile(model: Model): KernelConfig {
   // 有高级规则或原样保留的 Pipeline 时不改：它们里面的「允许」还按原来的默认上游走 / Left alone when advanced rules or kept pipelines exist: their allow still means the original default
   const keepDefault = Boolean(model.rawPipelines?.length) || [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].some((r) => r.raw)
   const restGroup = !keepDefault && model.rest.type === 'upstream' ? model.groups.find((g) => g.id === (model.rest as { group: string }).group) : undefined
-  const settings = { ...model.settings, ...(restGroup?.addresses.length ? { default_upstream: restGroup.addresses.map(kernelAddress).join(', ') } : {}) }
+  const settings: Record<string, unknown> = { ...model.settings, ...(restGroup?.addresses.length ? { default_upstream: restGroup.addresses.map(kernelAddress).join(', ') } : {}) }
+  // 拦截列表合成的文件排在 Geo 数据的 GeoSite 后面，和面板服务端同步 Geo 数据时的写法一样 / The blocklists' file follows Geo data's GeoSite files, as the panel server writes them when syncing Geo data
+  if (model.blocklists.file) {
+    settings.geosite_data_paths = [...(Array.isArray(settings.geosite_data_paths) ? settings.geosite_data_paths : []), model.blocklists.file]
+  }
   return { ...model.extra, version: model.format, settings, pipeline_select: select, pipelines }
 }
 

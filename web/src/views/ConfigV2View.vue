@@ -16,6 +16,7 @@ import { compile, mappingIsIp, ruleTitle, type Model, type Rule, type UpstreamGr
 import GroupEditor from '../config-v2/GroupEditor.vue'
 import HistoryDrawer from '../config-v2/HistoryDrawer.vue'
 import ImportReportDialog from '../config-v2/ImportReportDialog.vue'
+import BlocklistTab from '../config-v2/BlocklistTab.vue'
 import MappingTab from '../config-v2/MappingTab.vue'
 import RuleEditor, { type EditorResume } from '../config-v2/RuleEditor.vue'
 import RulesTab from '../config-v2/RulesTab.vue'
@@ -46,7 +47,7 @@ const confirm = useConfirm()
 const phone = usePhone()
 const compact = useCompact()
 const wide = useWide()
-const tabs = [{ value: 'rules', label: '规则' }, { value: 'upstreams', label: '上游组' }, { value: 'mapping', label: '域名映射' }, { value: 'settings', label: '基础设置' }]
+const tabs = [{ value: 'rules', label: '规则' }, { value: 'upstreams', label: '上游组' }, { value: 'mapping', label: '域名映射' }, { value: 'blocklists', label: '拦截列表' }, { value: 'settings', label: '基础设置' }]
 const section = computed(() => (tabs.some((t) => t.value === route.query.section) ? String(route.query.section) : 'rules'))
 watch(section, (s) => { ui.tab = s }, { immediate: true })
 const pageTitle = computed(() => (compact.value || ui.mode === 'json' ? '配置' : tabs.find((t) => t.value === section.value)?.label ?? '配置'))
@@ -571,6 +572,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
       </div>
       <UpstreamsTab v-else-if="section === 'upstreams'" @edit="groupEditor = { id: $event }" @rules="showGroupRules" />
       <MappingTab v-else-if="section === 'mapping'" />
+      <BlocklistTab v-else-if="section === 'blocklists'" />
       <SettingsTab v-else />
     </div>
     <SaveBar v-if="ready" :json-error="jsonError" :json-dirty="jsonDirty" :flush="flush" @rule="openRule($event, null)" @group="groupEditor = { id: $event }" @reveal="(l: number, c: number) => jsonEditor?.reveal(l, c)" @reload="reload()" @download="downloadJson" @discarded="afterDiscard" />

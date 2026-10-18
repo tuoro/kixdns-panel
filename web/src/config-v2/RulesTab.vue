@@ -46,9 +46,10 @@ const kinds = [{ value: '', label: '全部结果' }, { value: 'upstream', label:
 const testing = ref(false)
 const matchedRule = ref<number | null>(null)
 const matchedMapping = ref(false)
+const matchedBlocklist = ref(false)
 const marks = computed(() => new Map<number, 'hit' | 'pass'>(matchedRule.value === null ? [] : [[matchedRule.value, 'hit']]))
-function onMatched(ruleId: number | null, mapping: boolean): void { matchedRule.value = ruleId; matchedMapping.value = mapping }
-function toggleTester(): void { testing.value = !testing.value; if (!testing.value) onMatched(null, false) }
+function onMatched(ruleId: number | null, mapping: boolean, blocklist: boolean): void { matchedRule.value = ruleId; matchedMapping.value = mapping; matchedBlocklist.value = blocklist }
+function toggleTester(): void { testing.value = !testing.value; if (!testing.value) onMatched(null, false, false) }
 async function quickFromTester(domainName: string): Promise<void> { quick.text = domainName; quickOpen.value = true; await nextTick(); quickInput.value?.focus() }
 // 查询日志的「为这个域名建规则」带着域名来（?quick=）：填进快速添加，地址栏里的参数用完就去掉 / The query log's 为这个域名建规则 arrives with the domain (?quick=): it goes into quick add, and the parameter leaves the address bar once used
 const route = useRoute()
@@ -339,7 +340,7 @@ function saveEntries(): void {
           <p v-if="quickHint" class="qadd__hint" :class="{ 'is-err': !ok }" role="status">{{ quickHint }}</p>
         </form>
         <p class="rcard__order">从上往下判断，第一条决定结果的规则生效。</p>
-        <RuleList :rules="model.rules" :owner="model" :in-group="false" :query="query" :kind="kind" :marks="marks" :selected="selected" :rest-mark="false" :mapping-mark="matchedMapping" @open="emit('open', $event, null)" @mappings="emit('tab', 'mapping')">
+        <RuleList :rules="model.rules" :owner="model" :in-group="false" :query="query" :kind="kind" :marks="marks" :selected="selected" :rest-mark="false" :mapping-mark="matchedMapping" :blocklist-mark="matchedBlocklist" @open="emit('open', $event, null)" @mappings="emit('tab', 'mapping')" @blocklists="emit('tab', 'blocklists')">
           <template #empty><div class="rcard__empty"><ListFilter :size="16" aria-hidden="true" /><span>{{ phone ? '还没有规则，所有请求都按最下面的「其余请求」处理。用上面一行添加，或点\u00a0+\u00a0新建规则。' : '还没有规则，所有请求都按最下面的「其余请求」处理。点「快速添加」或「新建规则」开始。' }}</span></div></template>
         </RuleList>
       </section>

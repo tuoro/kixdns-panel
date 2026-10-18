@@ -1,4 +1,4 @@
-import { conditionsText, ecsText, fallbackSentence, outcomeSentence, PROTOCOL_LABEL, effectiveProtocol, rawMatchersText, remedySentence, responseConditionText, withShi, type Model, type Rule, type UpstreamGroup, ruleTitle } from './model'
+import { conditionsText, ecsText, fallbackSentence, outcomeSentence, PROTOCOL_LABEL, effectiveProtocol, rawMatchersText, remedySentence, responseConditionText, withShi, type Blocklists, type Model, type Rule, type Subscription, type UpstreamGroup, ruleTitle } from './model'
 import { SETTING_SECTIONS, type SettingField } from '../config-editor/schema'
 
 // 设置的改动写基础设置页上的名字和单位（「上游超时」「1800 毫秒」），认不出的键才照原样写
@@ -121,6 +121,7 @@ export function diffModels(now: Model, then: Model): DiffBlock[] {
     if (!old) blocks.push({ kind: '加上', title: `域名映射 ${x.domain}`, lines: [{ sign: '+', text: mapping(x) }] })
     else if (mapping(old) !== mapping(x)) blocks.push({ kind: '改了', title: `域名映射 ${x.domain}`, lines: [{ sign: '-', text: mapping(old) }, { sign: '+', text: mapping(x) }] })
   }
+  blocklistDiff(blocks, now.blocklists, then.blocklists)
   for (const k of new Set([...Object.keys(now.settings), ...Object.keys(then.settings)])) {
     const a = now.settings[k]
     const b = then.settings[k]
@@ -147,6 +148,25 @@ export function diffModels(now: Model, then: Model): DiffBlock[] {
     blocks.push({ kind: '改了', title: '其他内核设置', lines: kernelLines(now[key], then[key]) })
   }
   return blocks
+}
+// 拦截列表：订阅按链接比，自己写的规则按行比；只换了合成的文件说一句是另一次下载的
+// Blocklists: subscriptions compare by link and the rules of one's own by line; a different merged file alone says it is another download
+function blocklistDiff(blocks: DiffBlock[], now: Blocklists, then: Blocklists): void {
+  const facts = (x: Subscription) => ({ 名称: x.name, 链接: x.url, 状态: x.enabled ? '启用' : '已停用' })
+  for (const x of now.subscriptions) if (!then.subscriptions.some((y) => y.url === x.url)) blocks.push({ kind: '去掉', title: `拦截列表「${x.name}」`, lines: Object.entries(facts(x)).map(([k, v]) => ({ sign: '-', text: `${k}：${v}` })) })
+  for (const x of then.subscriptions) {
+    const old = now.subscriptions.find((y) => y.url === x.url)
+    if (!old) { blocks.push({ kind: '加上', title: `拦截列表「${x.name}」`, lines: Object.entries(facts(x)).map(([k, v]) => ({ sign: '+', text: `${k}：${v}` })) }); continue }
+    const lines = changed(facts(old), facts(x))
+    if (lines.length) blocks.push({ kind: '改了', title: `拦截列表「${x.name}」`, lines })
+  }
+  const links = (b: Blocklists) => b.subscriptions.map((x) => `${x.url}${x.enabled}`).sort().join()
+  if (now.file !== then.file && links(now) === links(then)) blocks.push({ kind: '改了', title: '订阅的列表内容', lines: [], note: '用的是另一次下载的列表' })
+  const rows = (text: string) => text.split('\n').map((l) => l.trim()).filter(Boolean)
+  const before = rows(now.custom)
+  const after = rows(then.custom)
+  const lines = [...before.filter((l) => !after.includes(l)).map((text) => ({ sign: '-' as const, text })), ...after.filter((l) => !before.includes(l)).map((text) => ({ sign: '+' as const, text }))]
+  if (lines.length) blocks.push({ kind: '改了', title: '自己写的拦截规则', lines })
 }
 function kernelLines(a: unknown, b: unknown): DiffLine[] {
   return [...(a === undefined || a === null ? [] : [{ sign: '-' as const, text: JSON.stringify(a) }]), ...(b === undefined || b === null ? [] : [{ sign: '+' as const, text: JSON.stringify(b) }])]

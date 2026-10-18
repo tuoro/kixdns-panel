@@ -1,3 +1,4 @@
+import { BLOCKLIST_PIPELINE, BLOCKLIST_RULE } from './blocklist'
 import { mainPipelineId, ruleGroupPipelineId, ruleTitle, upstreamPipelineId, type Model, type Rule } from './model'
 
 // 执行路径里内核用的名字（rule-12、main、group-g1、upstream-cn）换回配置页上看到的名字。认不出的返回 null，照原样显示。
@@ -51,6 +52,7 @@ export function traceNames(model: Model): TraceNames {
   const pipeline = (id: string): string | null => {
     if (id === mainPipelineId(model)) return '主列表'
     if (id === (model.mappingId ?? 'domain_mapping')) return '域名映射'
+    if (id === BLOCKLIST_PIPELINE) return '拦截列表'
     const group = model.ruleGroups.find((g) => ruleGroupPipelineId(model, g.id) === id)
     if (group) return `规则组「${group.name}」`
     const upstream = model.groups.find((g) => upstreamPipelineId(model, g.id) === id)
@@ -63,6 +65,7 @@ export function traceNames(model: Model): TraceNames {
     entry: (id) => (upstreamIds.has(id) ? '主列表' : pipeline(id)),
     matched: (label) => {
       if (label === '其余请求') return '没有规则命中，按「其余请求」处理'
+      if (label === BLOCKLIST_RULE) return '命中拦截列表'
       const group = model.ruleGroups.find((g) => label === `${g.name}·其余`)
       if (group) return `规则组「${group.name}」里没有规则命中，按「其余请求」处理`
       const mapped = /^域名映射 (.+)$/.exec(label)?.[1]
