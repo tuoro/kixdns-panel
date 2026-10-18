@@ -642,7 +642,9 @@ a.ui-btn { text-decoration: none; }
   .ui-icon-btn, .ui-icon-btn--sm { position: relative; width: var(--h-md); height: var(--h-md); }
   .ui-icon-btn::before { position: absolute; inset: calc(min(0px, (100% - var(--h-touch)) / 2)); content: ''; }
   .ui-tabs { gap: 0; }
-  .ui-tabs__tab { flex: 1; min-height: var(--h-touch); padding-bottom: 0; text-align: center; }
+  /* 页签按字宽分剩下的地方：字数不同时字与字的间距也一样（等宽的格子会让短的两边空出一大块） / Tabs share the room left by their text width, so
+     the gaps between labels stay even when their lengths differ (equal cells leave wide margins around short ones) */
+  .ui-tabs__tab { flex: 1 1 auto; min-height: var(--h-touch); padding-bottom: 0; text-align: center; }
   .ui-seg { display: flex; }
   .ui-seg__opt, .ui-seg--sm .ui-seg__opt { flex: 1; min-height: calc(var(--h-md) - 4px); padding-inline: var(--s-1); }
   /* 分段的每一格看起来 32，点按区域越过外框上下各补 4，和按钮一样到 44 / Each segment cell looks 32; its tap area reaches past the frame by 4 above and below, 44 like a button */
@@ -720,6 +722,12 @@ a.ui-btn { text-decoration: none; }
   .ui-menu--pop .ui-menu__sep { margin-inline: var(--s-3); }
   .ui-menu--pop:popover-open { animation: ui-sheet-in var(--m-base) var(--ease-out); }
   .ui-menu--pop::backdrop { background: var(--scrim); }
+  /* 弹层的遮罩不接点按（点下去会落到下面的开关上）：从弹层往上铺一屏透明的接住，点在它上面就是点在弹层上。跟着弹层定位，滑入动画的
+     transform 也不会把它缩成弹层那么大
+     The popover's backdrop takes no taps (they would land on the switch beneath): a transparent layer reaching a screen up from the popover
+     catches them, and a tap on it is a tap on the popover. It is placed off the popover, so the slide-in's transform cannot shrink it to the
+     popover's size */
+  .ui-menu--pop::before { position: absolute; inset: -100vh 0 0; z-index: -1; content: ''; }
   .ui-menu__title { display: block; margin: 0; overflow: hidden; padding: var(--s-2) var(--s-3) var(--s-1); color: var(--l-ink-2); font-size: var(--t-2); text-overflow: ellipsis; white-space: nowrap; }
   .ui-menu__item { min-height: var(--h-touch); padding-inline: var(--s-3); font-size: var(--t-3); }
   .ui-savebar { flex-wrap: wrap; padding-inline: var(--s-4); }

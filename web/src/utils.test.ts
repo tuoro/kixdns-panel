@@ -79,6 +79,11 @@ describe('formatVersionTime', () => {
     expect(formatVersionTime(at(2026, 8, 25, 0, 0), now)).toBe('昨天 00:00')
   })
 
+  it('明天的时间写明天，后天起写日期', () => {
+    expect(formatVersionTime(at(2026, 8, 27, 8, 21), now)).toBe('明天 08:21')
+    expect(formatVersionTime(at(2026, 8, 28, 8, 21), now)).toBe('09/28 08:21')
+  })
+
   it('今年更早的只写月日和时间，往年写年月日', () => {
     expect(formatVersionTime(at(2026, 8, 24, 18, 46), now)).toBe('09/24 18:46')
     expect(formatVersionTime(at(2025, 11, 31, 23, 59), now)).toBe('2025/12/31')

@@ -113,12 +113,21 @@ function toggle(event: MouseEvent): void {
 function onOutside(event: PointerEvent): void {
   const target = event.target as Node
   if (target === trigger.value || trigger.value?.contains(target)) return
-  // 手机上点的是弹层外面的遮罩：事件落在弹层元素自己身上，但位置在它的框外
-  // On a phone a tap on the backdrop lands on the popover element itself, outside its box
-  if (target === list.value) {
-    const box = list.value.getBoundingClientRect()
-    if (event.clientY >= box.top && event.clientY <= box.bottom && event.clientX >= box.left && event.clientX <= box.right) return
-  } else if (list.value?.contains(target)) return
+  // 落在弹层自己身上的（手机上包括它铺满屏幕的那层遮罩）交给 onSheetClick / One landing on the popover itself (on a phone, its full-screen layer
+  // too) is left to onSheetClick
+  if (list.value?.contains(target)) return
+  hide(false)
+}
+
+// 手机上点暗处：弹层铺着一层透明的遮罩接住这一下（见 components.css），等这一下的 click 落在弹层上再收起，并且不再往外传。在按下时就收起的话，
+// 抬起时弹层已经不在，click 会落到下面的开关或页签上
+// A tap on the dark area on a phone: the popover spreads a transparent layer that catches it (see components.css), and closes on that tap's click,
+// which then goes no further. Closing on press would leave nothing there on release, and the click would land on the switch or tab beneath
+function onSheetClick(event: MouseEvent): void {
+  if (!list.value || event.target !== list.value) return
+  const box = list.value.getBoundingClientRect()
+  if (event.clientY >= box.top && event.clientY <= box.bottom && event.clientX >= box.left && event.clientX <= box.right) return
+  event.stopPropagation()
   hide(false)
 }
 
@@ -166,7 +175,7 @@ defineExpose({ close: () => hide(false) })
     <button ref="trigger" :class="triggerClass ?? ['ui-icon-btn', { 'ui-icon-btn--sm': size === 'sm' }]" type="button" :aria-label="label" :title="label" aria-haspopup="menu" :aria-expanded="open" :aria-controls="id" @pointerdown="onTriggerPointerDown" @click="toggle">
       <slot><MoreHorizontal :size="size === 'sm' ? 14 : 16" aria-hidden="true" /></slot>
     </button>
-    <div v-if="open" :id="id" ref="list" popover="manual" class="ui-menu ui-menu--pop" role="menu" tabindex="-1" :aria-label="label" @keydown="onKey">
+    <div v-if="open" :id="id" ref="list" popover="manual" class="ui-menu ui-menu--pop" role="menu" tabindex="-1" :aria-label="label" @keydown="onKey" @click="onSheetClick">
       <p class="ui-menu__title" aria-hidden="true">{{ title ?? label }}</p>
       <template v-for="(item, index) in items" :key="item.value">
         <div v-if="item.danger && index > 0 && !items[index - 1]?.danger" class="ui-menu__sep" role="separator"></div>

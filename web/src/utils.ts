@@ -58,6 +58,8 @@ export function formatVersionTime(timestamp: number, now: number = Date.now()): 
   const day = 86_400_000
   if (date.getTime() >= startOfToday && date.getTime() < startOfToday + day) return `今天 ${time}`
   if (date.getTime() >= startOfToday - day && date.getTime() < startOfToday) return `昨天 ${time}`
+  // 下次自动更新这类将来的时间 / Times ahead, such as the next automatic update
+  if (date.getTime() >= startOfToday + day && date.getTime() < startOfToday + 2 * day) return `明天 ${time}`
   if (date.getFullYear() === today.getFullYear()) return `${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${time}`
   return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())}`
 }
