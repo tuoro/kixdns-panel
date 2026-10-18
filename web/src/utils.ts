@@ -136,10 +136,11 @@ export function keepTail(text: string, size = 5): [string, string] {
  * and only breaks inside when longer than a line, lest it overflow a narrow screen. No invisible characters go into the text, so a copy reads as the original
  */
 const HYPHEN_WORD = /「?([$\w.|@^/]*\w-[\w.|@^/-]*[\w^])[」。，：；）]*/g
-// 提示条里另外连住「版本 #N」和「「名字」的」：版本号不拆开，「的」不落到行首；默认名「「文件名 · 主机」」单独拿出来（name），交给 NameText 按「·」折行
-// Toasts also glue 「版本 #N」 and 「「name」的」: no split version number, no 的 starting a line; a default name 「「file · host」」 is taken out on its own (name)
-// for NameText to wrap at 「·」
-const TOAST_GLUE = /(「[^「」]+?\u00a0·\u00a0[^「」]+?」的?)|(版本[ \u00a0]#\d+)|(「[^「」]{1,24}」的)|「?([$\w.|@^/]*\w-[\w.|@^/-]*[\w^])[」。，：；）]*/g
+// 提示条里另外连住「版本 #N」「「名字」的」和「再点一次「按钮」」：版本号不拆开，「的」不落到行首，按钮名不单独落到最后一行；
+// 默认名「「文件名 · 主机」」单独拿出来（name），交给 NameText 按「·」折行
+// Toasts also glue 「版本 #N」, 「「name」的」 and 「再点一次「button」」: no split version number, no 的 starting a line, no button name alone on the last
+// line; a default name 「「file · host」」 is taken out on its own (name) for NameText to wrap at 「·」
+const TOAST_GLUE = /(「[^「」]+?\u00a0·\u00a0[^「」]+?」的?)|(版本[ \u00a0]#\d+)|(「[^「」]{1,24}」的)|「?([$\w.|@^/]*\w-[\w.|@^/-]*[\w^])[」。，：；）]*|(再点一次「[^「」]{1,12}」)/g
 export type GlueRun = { text: string; glue: boolean; long?: boolean; name?: { name: string; suffix: string } }
 function glueRuns(text: string, pattern: RegExp, word: (m: RegExpMatchArray) => string | undefined, name?: (m: RegExpMatchArray) => GlueRun['name']): GlueRun[] {
   const runs: GlueRun[] = []

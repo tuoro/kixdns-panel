@@ -95,13 +95,26 @@ export function dismissBlocklistToasts(): void {
   dismissRefreshToast()
   if (draftedToast !== null) useToast().dismiss(draftedToast)
   draftedToast = null
+  draftedFailed = false
 }
-// 「新的一份已放进草稿」那条：放弃草稿离开时它说的就不对了，一起收起 / The 「new copy in the draft」 toast: dropping the draft on leaving makes it untrue, so
-// it goes along
+// 说立即更新那份新文件怎么样了的那条（放进了草稿、没存上）：放弃草稿离开时它说的就不对了，一起收起；一次只挂一条，新的换掉旧的
+// The toast on how 立即更新's new file fared (put in the draft, not saved): dropping the draft on leaving makes it untrue, so it goes along; one at a
+// time, the newer replacing the older
 let draftedToast: number | null = null
-export function sayDrafted(text: string): void {
+// 挂着的那条是没存上的红色提示：保存栏的失败、冲突过去了它就过时了 / The one up is the red not-saved toast: it is stale once the save bar's failure or
+// conflict is over
+let draftedFailed = false
+export function sayDrafted(text: string, failed = false): void {
   if (draftedToast !== null) useToast().dismiss(draftedToast)
-  draftedToast = useToast().info(text)
+  draftedToast = failed ? useToast().error(text) : useToast().info(text)
+  draftedFailed = failed
+}
+/** 没存上的那条红色提示收起（说的失败已经过去了） / Clears the red not-saved toast (the failure it spoke of is over) */
+export function dismissDraftedFailure(): void {
+  if (!draftedFailed) return
+  if (draftedToast !== null) useToast().dismiss(draftedToast)
+  draftedToast = null
+  draftedFailed = false
 }
 // 退出登录或会话过期：和配置页别的提示一样，拦截列表的几条也收起，登录页上不挂着它们 / Signing out or the session expiring: like the config page's other
 // toasts, the blocklist ones go too, so none hangs on the login page

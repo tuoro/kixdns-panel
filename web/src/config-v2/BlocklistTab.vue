@@ -363,7 +363,7 @@ const blockText = computed(() => blockLabel(model, 'default'))
             <li v-for="s in subscriptions" :key="s.id" class="bl__row" :class="{ 'is-off': !s.enabled }">
               <span class="bl__name">
                 <span class="bl__nm"><b :title="s.name">{{ s.name }}</b><span v-if="changedSubscriptionIds.has(s.id)" class="ui-dot ui-dot--ink bl__changed" role="img" :aria-label="added(s) ? '新加的，还没保存' : '改过，还没保存'" :title="added(s) ? '新加的，还没保存' : '改过，还没保存'"></span></span>
-                <small v-if="source(s)"><span v-if="dirSplit(source(s))" class="bl__dir"><span>{{ dirSplit(source(s))!.head }}</span><span>{{ dirSplit(source(s))!.tail }}</span></span><template v-else>{{ source(s) }}</template></small>
+                <small v-if="source(s)" :title="link(s)"><span v-if="dirSplit(source(s))" class="bl__dir"><span>{{ dirSplit(source(s))!.head }}</span><span>{{ dirSplit(source(s))!.tail }}</span></span><template v-else>{{ source(s) }}</template></small>
               </span>
               <span class="bl__about" :title="presetOf(s) ? about(s) : link(s)"><span v-if="dirSplit(about(s))" class="bl__dir"><span>{{ dirSplit(about(s))!.head }}</span><span>{{ dirSplit(about(s))!.tail }}</span></span><template v-else>{{ about(s) }}</template></span>
               <span class="bl__meta">
@@ -392,8 +392,8 @@ const blockText = computed(() => blockLabel(model, 'default'))
                  The name splits at 「·」 into file and host, wrapping only between them (the 「·」 sits at the end of the first and hides at a wrap), the colon
                  glued to the second so it never starts a line -->
             <p v-for="f in failures" :key="f.id" v-line-dots :class="{ 'is-off': f.off }"><NameText v-if="f.name" :name="f.name" bold :suffix="f.off ? '（已停用）：' : '：'" /><template v-else-if="f.off">（已停用）</template><GlueText :text="`${f.cause}。`" /></p>
-            <p v-if="stuckLine" v-line-dots class="bl__todo" :class="{ 'is-off': stuckLine.off }"><GlueText :text="stuckLine.before" /><NameText v-for="(n, i) in stuckLine.names" :key="i" :name="n" quoted /><GlueText :text="stuckLine.after" /></p>
-            <p v-if="retryLead" v-line-dots class="bl__todo" :class="{ 'is-off': retryLead.off }"><GlueText :text="retryLead.before" /><NameText v-for="(n, i) in retryLead.names" :key="i" :name="n" quoted /><GlueText :text="retryLead.after" /><span class="nowrap">「立即更新」。</span></p>
+            <p v-if="stuckLine" v-line-dots class="bl__todo" :class="{ 'is-off': stuckLine.off }"><GlueText :text="stuckLine.before" /><NameText v-for="(n, i) in stuckLine.names" :key="i" :name="n" quoted whole /><GlueText :text="stuckLine.after" /></p>
+            <p v-if="retryLead" v-line-dots class="bl__todo" :class="{ 'is-off': retryLead.off }"><GlueText :text="retryLead.before" /><NameText v-for="(n, i) in retryLead.names" :key="i" :name="n" quoted whole /><GlueText :text="retryLead.after" /><span class="nowrap">「立即更新」。</span></p>
           </div>
         </div>
         <p v-if="blocklists.status === 'failed' && subscriptions.some(unknown)" class="bl__note"><TriangleAlert :size="14" aria-hidden="true" /><span>读不到各个列表下载得怎么样；<span class="nowrap">订阅照常保存，</span><span class="nowrap">稍后刷新页面再看。</span></span></p>
@@ -522,7 +522,9 @@ const blockText = computed(() => blockLabel(model, 'default'))
 /* 目录前面几级可截，最后一级不截 / The leading levels of a directory may be cut, the last one never */
 .bl__dir { display: flex; min-width: 0; }
 .bl__dir > :first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bl__dir > :last-child { flex: none; white-space: nowrap; }
+/* 最后一级本身比格子还宽时，前面几级留一个「…」的宽度，最后一级自己也截短带「…」，不在右边被硬切掉 / When the last level alone is wider than the cell, the
+   leading levels keep room for one 「…」 and the last level is cut short with its own 「…」 instead of being clipped hard at the right */
+.bl__dir > :last-child { flex: none; max-width: calc(100% - 1.2em); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bl__about { overflow: hidden; color: var(--l-ink-2); font-size: var(--t-3); text-overflow: ellipsis; white-space: nowrap; }
 /* 特别长的名字和链接截短，不把别的列挤走 / Very long names and links are cut short rather than squeezing the other columns */
 .bl__name { max-width: 18rem; }

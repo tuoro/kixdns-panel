@@ -164,6 +164,12 @@ export function editTouched(): void {
   if (conflict.value) return
   if (stage.value === 'done' || stage.value === 'failed') finishStage('idle')
 }
+// 草稿整份换过（放弃、撤销放弃、导入、离开时放弃、退出时放下）也算：上一份草稿的结论过时了，哪怕只差一份合成的文件。放在这里而不是保存条里：
+// 离开时放弃那会儿保存条正在卸下，回来时不能还挂着旧的失败。同步跑：换完紧接着说的新结论不会被它冲掉
+// A wholesale replacement (a discard, its undo, an import, a discard on leaving, a draft let go at sign-out) counts too: the previous draft's verdict is
+// stale, even when only a built file differed. It lives here rather than in the save bar: during a discard on leaving the bar is unmounting, and the
+// old failure must not greet the return. It runs synchronously, so a verdict set right after a replacement is not wiped by it
+watch(draftGeneration, () => editTouched(), { flush: 'sync' })
 
 // ---------- 页头 / header ----------
 // wide：宽屏「状态」标签下面写的（缺省是 lead，再缺省是整句）；手机上没有标签，写 lead 和整句
@@ -331,6 +337,9 @@ export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: str
   }
   if (!options.quiet) loading.value = true
   const unsavedAtStart = unsaved.value
+  // 读之前草稿里已经有一份没存上的合成文件（立即更新没存上）：「重新读取」问过要丢掉，会话结束时说过没留下 / Before the read the draft already held a built
+  // file not saved (立即更新 that did not save): 重新读取 asked to drop it, and a session end said it was not kept
+  const fileUnsavedAtStart = model.blocklists.file !== appliedModel.value.blocklists.file
   // 发出时文件的散列：读回来之前有一次写（保存落地）把它挪了，这次读到的就是旧的，不拿它盖掉 / The file hash when sent: if a write (a landed save) moved it before this read returns, what was read is stale and must not overwrite it
   const shaAtStart = doc.value?.sha256
   const writesAtStart = writeCount
@@ -368,9 +377,12 @@ export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: str
     // 读进草稿：散列对得上就是面板写的那份；对不上（手改过）会重新导入并给报告 / Into the draft: the hash matching means the panel wrote it; otherwise it is re-imported with a report
     // 重新读进来的是另一份草稿：上一份草稿的失败和冲突不再适用 / What is read in is a different draft: the previous draft's failure and conflict no longer apply
     // 整份换上（fresh，恢复版本）也一样：之前那次读刚说的「别处改过了」随草稿一起换掉 / A fresh read (a restore) likewise: a 别处改过了 just raised by the earlier read goes with the draft it was about
-    // 「…没有应用」那条提示说的是刚换掉的那份文件：读进来的是另一份了，一起收起
-    // The 「…没有应用」 notice was about the file just replaced: what is read in is another, so it goes too
-    if (!options.quiet || options.fresh) { conflict.value = false; applyError.value = ''; applyFailedDown = false; if (stage.value === 'failed' || stage.value === 'done') finishStage('idle') }
+    // 「…没有应用」那条提示说的是刚换掉的那份文件，人在页上时保存条报不到的那条结果提示（立即更新不知道存上没有、被别处盖掉）说的是刚换掉的草稿：
+    // 读进来的是另一份了，一起收起。不在页上时那条提示由核对它的那条路自己换掉
+    // The 「…没有应用」 notice was about the file just replaced, and on the page the outcome toast the save bar cannot speak for (立即更新 not known to have
+    // saved, or overwritten elsewhere) was about the draft just replaced: what is read in is another, so they go too. Away from the page that toast is
+    // replaced by the path that checks it
+    if (!options.quiet || options.fresh) { conflict.value = false; applyError.value = ''; applyFailedDown = false; if (viewing) dismissAwayToast(); if (stage.value === 'failed' || stage.value === 'done') finishStage('idle') }
     // 保存之后（sent）一律只换对照的那份：草稿里的对象不换，开着的抽屉、规则面板拿着的还是同一个对象（以前整份换掉，保存途中打开的上游组抽屉会改到别的组）。
     // 写进文件再读回来和草稿一样（store.test 里有往返测试），所以没再改过时「已修改」归零
     // After a save (sent) only the baseline moves: the draft's objects stay, so an open drawer or rule panel still holds the same object (replacing them
@@ -382,13 +394,14 @@ export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: str
       if (options.sent !== undefined || nextDoc.sha256 !== previousSha) rebaseApplied(readConfig(nextDoc.content, model).model)
     } else if (options.quiet && nextDoc.sha256 === previousSha) {
       // 文件没变（连上后的静默重读）：不把草稿整份换掉，开着的规则编辑不会自己关上 / The file is unchanged (the quiet re-read after a reconnect): the draft is not replaced, so an open rule editor does not close by itself
-    } else if (!options.quiet && !options.fresh && nextDoc.sha256 === previousSha && changesBesidesFile(appliedModel.value, model) === 0
+    } else if (!options.quiet && !options.fresh && !fileUnsavedAtStart && nextDoc.sha256 === previousSha && changesBesidesFile(appliedModel.value, model) === 0
       && model.blocklists.file !== appliedModel.value.blocklists.file) {
-      // 回到配置页、或者点了「重新读取」，草稿和面板上的只差一份新合成的文件（立即更新在读之前或读的途中落地）：面板上的文件没变，读到的那份比草稿旧，
-      // 不拿它换，那次立即更新照常存成版本
-      // Returning to the config page, or 重新读取 pressed, with the draft differing from the panel only by a newly built file (立即更新 landing before or
-      // during the read): the file on the panel did not change and what was read is older than the draft, so it does not replace it and that 立即更新 is saved
-      // as usual
+      // 回到配置页、或者点了「重新读取」，读的途中立即更新落地，草稿和面板上的只差这份新合成的文件：面板上的文件没变，读到的那份比草稿旧，不拿它换，
+      // 那次立即更新照常存成版本。读之前文件就没存上（立即更新没存上）：「重新读取」问过要丢掉、会话结束时说过没留下，照常换掉
+      // Returning to the config page, or 重新读取 pressed, with 立即更新 landing during the read so the draft differs from the panel only by that newly built
+      // file: the file on the panel did not change and what was read is older than the draft, so it does not replace it and that 立即更新 is saved as usual.
+      // With the file already unsaved before the read (立即更新 that did not save), 重新读取 asked to drop it and a session end said it was not kept, so it
+      // is replaced as usual
     } else {
       const read = loadContent(nextDoc.content, model)
       if (read.source === 'imported' && read.report && (read.report.stats.raw || read.report.notes.some((n) => n.level === 'warn'))) {
@@ -508,17 +521,22 @@ function applyResultState(result: ConfigApplyResult): 'applied' | 'pending' {
 let viewing = false
 let keepOnReturn = false
 let inFlight: string | null = null
-// 离开以后报保存结果的那条失败提示：回到配置页时保存条接着说，它就收起 / The failure toast raised after leaving: it goes when the config page reopens and the save bar takes over
+// 保存条报不到的那条结果提示：离开以后的失败，或者面板替人做的保存（立即更新）在页上回应丢了时的「不知道存上没有」。回到配置页时保存条接着说，
+// 它就收起；核对完换成结果
+// The outcome toast the save bar cannot speak for: a failure after leaving, or 不知道存上没有 when a save made on the user's behalf (立即更新) lost its
+// answer on the page. It goes when the config page reopens and the save bar takes over, and the check replaces it with the result
 let awayToast: number | null = null
+// 那条提示说的是「这份配置在别处改过了」 / That toast says 这份配置在别处改过了
+let awayConflict = false
 // 回应丢了的那次保存（写进去没有不知道）：连上以后、或者下一次保存撞上「别处改过了」时，拿面板上的配置和它比一比
 // The save whose answer was lost (written or not, unknown): once reconnected, or when the next save meets 别处改过了, compare the panel's config with it
 // from / pending：丢的是保存还是「现在应用」，当时待应用的是哪个版本——核对的结果按它来说 / from / pending: whether the lost request was a save or 现在应用, and which version was pending — the result is worded by it
 // version：发出时文件的版本号——「现在应用」发的就是待应用的那份文件，比内容认不出写没写进去，要看版本号动没动
 // version: the file's version when sent — 现在应用 sends the pending file itself, so the content cannot tell whether it was written; the version number moving can
 // inPlace：丢的是让待应用版本原地生效的那次（编号不动），写没写进去看待应用的还在不在 / inPlace: the lost request put the pending version into effect in place (the number does not move), so whether it landed is read from whether that version is still pending
-// subject：这次保存是面板替人做的（立即更新）时它的主语，核对以后照它说 / subject: the subject when the save was made on the user's behalf (立即更新), so the
-// check afterwards says it that way
-let unanswered: { content: unknown; sent: string; base: string; generation: number; sentAt: number; from: 'draft' | 'apply'; pending: number | null; version: number | null; inPlace: boolean; subject?: string } | null = null
+// words：这次保存是面板替人做的（立即更新）时它的说法，核对以后照它说 / words: how a save made on the user's behalf (立即更新) is worded, so the check
+// afterwards says it that way
+let unanswered: { content: unknown; sent: string; base: string; generation: number; sentAt: number; from: 'draft' | 'apply'; pending: number | null; version: number | null; inPlace: boolean; words?: SaveWords } | null = null
 const announceWritten = () => { if (typeof window !== 'undefined') window.dispatchEvent(new Event(CONFIG_WRITTEN_EVENT)) }
 // 不在配置页时草稿还在内存里（正在保存，或者没保存成功留着）：刷新、关掉浏览器先问一句；配置页开着时由它自己问
 // Away from the config page with a draft still in memory (a save in flight, or one that failed and is kept): reloading or closing the browser asks first; while
@@ -588,6 +606,7 @@ export function whenDraftSettles(): Promise<void> {
 function dismissAwayToast(): void {
   if (awayToast !== null) useToast().dismiss(awayToast)
   awayToast = null
+  awayConflict = false
 }
 /** 配置页打开（true）或离开（false）；打开时返回要不要留着草稿 / The config page opened (true) or left (false); on open, returns whether to keep the draft */
 export function setViewing(open: boolean): boolean {
@@ -629,16 +648,24 @@ const sentence = (text: string) => text.replace(/[。.]\s*$/, '')
 // 最近一次写入的结果：生效了还是存成待应用 / How the latest write ended: applied, or stored as pending
 let lastWrite: { version: number; state: 'applied' | 'pending' } | null = null
 export const lastSaveWrite = () => lastWrite
+// 最近一次保存写入时回应丢了（存没存上不知道，连上后核对） / The latest save lost its answer while writing (landed or not is unknown, checked once back)
+let lastLost = false
+export const lastSaveLost = () => lastLost
+/** 离开以后已经有一条提示说了「这份配置在别处改过了」，还开着 / A toast raised away from the page already says 这份配置在别处改过了 and is still up */
+export const conflictToldAway = (): boolean => awayConflict && conflict.value && useToast().messages.value.some((m) => m.id === awayToast)
 /**
  * 人不在配置页时，这次保存的结果怎么说。默认说「版本 #N 已生效」「配置没有保存：…草稿留在配置页」；立即更新这类面板替人做的保存说清是什么
  * How this save's outcome is told with the user off the config page. By default 「版本 #N 已生效」 and 「配置没有保存：…草稿留在配置页」; a save the panel makes on
  * the user's behalf (立即更新) says what it was
  */
-// subject：没存上、存了没生效时句子的主语（默认「配置」）；conflict：撞上「别处改过了」时整句的说法 / subject: the subject of the not-saved and
-// saved-not-applied sentences (by default 配置); conflict: the whole sentence for 别处改过了
-export interface SaveWords { done?: (version: number) => string; pending?: (version: number) => string; subject?: string; conflict?: string; kept?: string }
+// subject：没存上、存了没生效时句子的主语（默认「配置」）；conflict：撞上「别处改过了」时整句的说法；kept：草稿留在哪儿；again：别处改过了、
+// 重新读取以后要再做什么
+// subject: the subject of the not-saved and saved-not-applied sentences (by default 配置); conflict: the whole sentence for 别处改过了; kept: where the
+// draft stays; again: what to do once more after re-reading a config changed elsewhere
+export interface SaveWords { done?: (version: number) => string; pending?: (version: number) => string; subject?: string; conflict?: string; kept?: string; again?: string }
 export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: string, words?: SaveWords): Promise<void> {
   lastWrite = null
+  lastLost = false
   // 排着的那次已经算数：再按一下不另起一次 / A queued save already counts: another press starts nothing new
   if (queued.value) return
   const waiting = checkRun
@@ -681,7 +708,7 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
     if (stage.value === 'failed') {
       // 校验在等拦截列表合成时就停了：和第 0 步没成一样说 / The check stopped while waiting for the blocklists' build: told as a failed step 0
       sayAway(checkBuildProblem ? buildAwayText(checkBuildProblem, kept)
-        : verdict.value === 'KixDNS 已停止' ? `配置没有保存：KixDNS 已停止。${kept}，可以先存成待应用版本`
+        : verdict.value === 'KixDNS 已停止' ? `配置没有保存：KixDNS\u00a0已停止。${kept}，可以先存成待应用版本`
           : verdict.value === '连不上面板' ? `配置没有保存：连不上面板。${kept}，连上后再保存`
             : `配置没有保存：没有通过校验。${kept}。${note.value}`)
     }
@@ -758,9 +785,10 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
     // nothing saved counts as a change and the next save does not collide with itself
     if (doc.value) doc.value = { ...doc.value, sha256: result.sha256, version_id: result.version_id }
     recordWrite(result, message)
-    // 这次保存落地了：之前回应丢了的那次已经被它盖过，记录不再有用（留着会在以后哪次连上时冒出一句不相干的提示）
-    // This save landed: an earlier lost-answer save is superseded, so its record goes (kept, it would surface at some later unrelated reconnect)
-    unanswered = null
+    // 这次保存落地了：之前回应丢了的那次已经被它盖过，记录不再有用（留着会在以后哪次连上时冒出一句不相干的提示）；说它「不知道存上没有」的那条也过时了
+    // This save landed: an earlier lost-answer save is superseded, so its record goes (kept, it would surface at some later unrelated reconnect), and so
+    // does the toast saying whether it landed is unknown
+    if (unanswered) { unanswered = null; dismissAwayToast() }
     rebaseApplied(JSON.parse(sent) as Model)
     validation.value = null
     // 保存落地后，草稿定下来之前的「撤销」都过时了：撤回去会改掉刚保存的东西；保存途中又改的那几处，撤销照样管用，留着
@@ -816,12 +844,19 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
       await load({ quiet: true, fresh: true })
       const text = `版本 #${failedBefore} 没有应用：这份配置在别处改\u2060过\u2060了，${doc.value?.version_id ? `已读入版本\u00a0#${doc.value.version_id}` : '已重新读取'}`
       if (viewing) useToast().info(text)
-      else if (signedIn()) { dismissAwayToast(); awayToast = useToast().error(text) }
+      else if (signedIn()) { dismissAwayToast(); awayToast = useToast().error(text); awayConflict = true }
       return
     }
     const reason = friendlyRuntimeError(error)
     const down = isPanelDown(error)
-    if (down && step === 'applying') unanswered = { content, sent, base, generation: draftGeneration(), sentAt, from, pending: pendingVersionId.value ?? null, version: doc.value?.version_id ?? null, inPlace, subject: words?.subject }
+    if (down && step === 'applying') {
+      unanswered = { content, sent, base, generation: draftGeneration(), sentAt, from, pending: pendingVersionId.value ?? null, version: doc.value?.version_id ?? null, inPlace, words }
+      lastLost = true
+      // 面板替人做的保存（立即更新）在页上回应丢了：人是在某一行的「…」里点的，离保存条远，说一句不知道存上没有，连上后核对完换成结果（和离开以后一样）
+      // A save made on the user's behalf (立即更新) lost its answer on the page: it was pressed in a row's 「…」, far from the save bar, so a toast says
+      // whether it landed is unknown, and the check after reconnecting replaces it with the result (as away from the page)
+      if (words?.subject && !away() && signedIn()) { dismissAwayToast(); awayToast = useToast().error(`${words.subject}：不知道存上没有，连不上面板。连上后会自己核对`) }
+    }
     // 写进文件以后 KixDNS 没接受：版本已经存下了，只是没生效 / KixDNS refused after the write: the version is stored, it just did not take
     // 原地生效时服务端自己校验：没过、不支持、协议出错也会把这个版本记成没有生效，和写进去却没被接受一样说
     // An in-place apply is validated by the server: a refusal, an unsupported CNAME answer or a protocol error also marks the version as not taken, so it is
@@ -886,10 +921,11 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
       const notApplied = words?.subject ? `${words.subject}存成了${stored ? `版本 #${stored}` : '新版本'}，没有生效` : `${stored ? `版本 #${stored} ` : '配置'}保存了，没有生效`
       awayToast = useToast().error(writtenNotApplied ? `${notApplied}。${sentence(failureCause(reason))}。回到配\u2060置\u2060页可以重试应用`
         : conflict.value ? words?.conflict ?? `${lead}这份配置在别处改\u2060过\u2060了。${kept}，回去重新读取后再改`
-          : stopped ? `${lead}KixDNS 已停止。${kept}，可以先存成待应用版本`
-            : down && step === 'applying' ? `不知道${words?.subject ?? '配置'}存上没有：连不上面板。${kept}，连上后会自己核对`
+          : stopped ? `${lead}KixDNS\u00a0已停止。${kept}，可以先存成待应用版本`
+            : down && step === 'applying' ? (words?.subject ? `${words.subject}：不知道存上没有，连不上面板。${kept}，连上后会自己核对` : `不知道配置存上没有：连不上面板。${kept}，连上后会自己核对`)
               : down ? `${lead}连不上面板。${kept}，连上后再保存`
                 : step === 'validating' ? `${lead}没有通过校验。${kept}。${reason}` : `${lead}${sentence(reason)}。${kept}`)
+      awayConflict = conflict.value && !writtenNotApplied
     }
   } finally {
     inFlight = null
@@ -957,8 +993,13 @@ async function settleOnce(announce: boolean): Promise<boolean> {
   // Compared even after the draft was replaced wholesale (discard then undo, an import): the file on the panel and the baseline do not depend on how the
   // draft came about; only the 已经保存过了 line needs the draft to be the same one
   const sameDraft = lost.generation === draftGeneration()
-  // 面板替人做的保存（立即更新）照它的主语说 / A save made on the user's behalf (立即更新) is told by its subject
-  const lostSave = lost.subject ?? '刚才那次保存'
+  // 面板替人做的保存（立即更新）照它的说法说 / A save made on the user's behalf (立即更新) is told in its own words
+  const words = lost.words
+  const lostSave = words?.subject ?? '刚才那次保存'
+  // 它在页上丢了回应时挂着「不知道存上没有」：结果出来了就收起，下面在页上也说出结果（保存条离点的那一行远） / With its answer lost on the page it put
+  // up 不知道存上没有: now the result is in, that goes, and the result is said on the page below too (the save bar is far from the row pressed)
+  const toldHere = viewing && words?.subject !== undefined
+  if (toldHere) dismissAwayToast()
   // 丢的是「现在应用」：结果按应用说，不说「保存」（那时没有保存条，也没有要保存的东西） / The lost request was 现在应用: the result is worded as an apply, not a save (there was no save bar and nothing to save)
   const applying = lost.from === 'apply'
   const pendingName = lost.pending ? `版本 #${lost.pending} ` : '待应用的版本'
@@ -985,7 +1026,7 @@ async function settleOnce(announce: boolean): Promise<boolean> {
       await load({ quiet: true, fresh: true })
       const read = doc.value?.version_id ? `，已读入版本\u00a0#${doc.value.version_id}` : '，已重新读取'
       if (viewing && announce) useToast().info(`刚才那次应用不在现在的配置里：这份配置在别处改\u2060过\u2060了${read}`)
-      else if (!viewing && awayToast !== null) { dismissAwayToast(); awayToast = useToast().error(`刚才那次应用不在现在的配置里：这份配置在别处改\u2060过\u2060了${read}`) }
+      else if (!viewing && awayToast !== null) { dismissAwayToast(); awayToast = useToast().error(`刚才那次应用不在现在的配置里：这份配置在别处改\u2060过\u2060了${read}`); awayConflict = true }
       return false
     }
     if (changedElsewhere && inFlight === null) {
@@ -1000,13 +1041,25 @@ async function settleOnce(announce: boolean): Promise<boolean> {
     // 草稿里又有修改时页头不给「现在应用」（让给保存条）：说保存会带上它，不指一个看不见的按钮
     // With edits in the draft the header offers no 现在应用 (it gives way to the save bar): say a save takes it along instead of pointing at a missing button
     const applyAgain = unsaved.value ? '；它的内容会和你的修改一起保存生效' : '，可以再点「现在应用」'
-    if (viewing && announce && !changedElsewhere) useToast().info(applying ? `${pendingName}还没有应用${applyAgain}` : `${lostSave}没有存上，可以再保存`)
+    // 面板替人做的保存（立即更新），草稿之后整份换过（离开时、在页上放弃）：那份草稿不在了，不说「它留在草稿里」「可以再保存」，只收起「不知道存上没有」；
+    // 离开时放弃的，补存会自己说结果；在页上放弃的，是人自己不要了
+    // A save made on the user's behalf (立即更新) whose draft was since replaced wholesale (a discard on leaving or on the page): that draft is gone, so
+    // nothing says 「it stays in the draft」 or 「save again」, only 不知道存上没有 goes; after a discard on leaving the make-up save tells its own result,
+    // and one discarded on the page was the user's own choice
+    const gone = words !== undefined && !sameDraft
+    if (viewing && announce && !changedElsewhere && !gone) useToast().info(applying ? `${pendingName}还没有应用${applyAgain}` : `${lostSave}没有存上，可以再保存`)
+    // 面板替人做的保存被别处盖掉：冲突由保存条说，这里补上重新读取以后要再做什么 / A save made on the user's behalf was overwritten elsewhere: the bar says
+    // the conflict, and this adds what to do once more after re-reading
+    if (toldHere && announce && changedElsewhere && inFlight === null && words?.again && !gone) { awayToast = useToast().error(`${lostSave}：不在现在的配置里，这份配置在别处改过了；先重新读取，${words.again}`); awayConflict = true }
     // 不在配置页时，「不知道存上没有」那条提示换成核对的结果 / Away from the config page, the 不知道存上没有 toast is replaced by the result
-    if (!viewing && awayToast !== null) {
+    if (!viewing && awayToast !== null && gone) dismissAwayToast()
+    else if (!viewing && awayToast !== null) {
       dismissAwayToast()
+      awayConflict = changedElsewhere
       awayToast = useToast().error(applying
         ? (changedElsewhere ? '刚才那次应用不在现在的配置里：这份配置在别处改\u2060过\u2060了，回到配\u2060置\u2060页重新读取' : `${pendingName}还没有应用，${unsaved.value ? '回到配\u2060置\u2060页保存时，它的内容会和你的修改一起生效' : '回到配\u2060置\u2060页可以再点「现在应用」'}`)
-        : changedElsewhere ? `${lostSave}不在现在的配置里：这份配置在别处改\u2060过\u2060了。草稿留在配\u2060置\u2060页，回去重新读取后再改` : `${lostSave}没有存上。草稿留在配\u2060置\u2060页，回去再保存`)
+        : changedElsewhere ? (words?.again ? `${lostSave}：不在现在的配置里，这份配置在别处改过了；回到配置页重新读取，${words.again}` : `${lostSave}不在现在的配置里：这份配置在别处改\u2060过\u2060了。草稿留在配\u2060置\u2060页，回去重新读取后再改`)
+          : `${lostSave}没有存上。${words?.kept ?? '草稿留在配\u2060置\u2060页'}，回去再保存`)
     }
     return false
   }
@@ -1036,7 +1089,7 @@ async function settleOnce(announce: boolean): Promise<boolean> {
   if (applying && inFlight === null && stage.value === 'failed' && origin.value === 'apply') finishStage('idle')
   // 不在配置页，或者在页上但草稿已经整份换过（保存条说不了「已经保存过了」），或者丢的是「现在应用」：用提示说
   // Away from the page, or on it with the draft replaced wholesale (the bar cannot say 已经保存过了), or the lost request was 现在应用: a toast says it
-  if (!viewing || (announce && (!sameDraft || applying))) {
+  if (!viewing || (announce && (!sameDraft || applying || toldHere))) {
     dismissAwayToast()
     // 说出它现在生效了没有（核对时已经读过一遍运行状态） / Say whether it is in effect now (the runtime was just read during the check)
     // 应用存成了新版本：开头就说出新编号，后面只说结果（和恢复版本、重试应用一样交代编号）；原地生效的编号没变，照常说「版本 #N …」

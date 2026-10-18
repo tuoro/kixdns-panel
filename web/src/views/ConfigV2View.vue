@@ -185,7 +185,7 @@ const notice = computed<Notice | null>(() => {
     // KixDNS 还停着：没有哪份配置「在用」，照实说停了；原因说它在确认前停了，启动后用之前那份 / KixDNS still stopped: no config is in use, so the stop is said; the cause says it stopped before confirming and the previous config runs on start
     const which = pendingVersionId.value ? `版本 #${pendingVersionId.value} ` : '上次保存的版本'
     const stoppedNow = runtimeStopped.value
-    return { tone: 'err', text: stoppedNow ? `${which}没有生效，KixDNS 已停止。` : `${which}没有生效，仍在用之前那份配置。`, detail: stoppedNow ? `${cause === 'KixDNS 在确认新配置前停了' ? '它在确认新配置前停了' : cause}；启动后会用之前那份配置` : reread ? `${cause}。这份配置在别处改过了，先重新读取。` : cause, action: reread ? '重新读取' : retry ? '重试应用' : undefined, run: reread ? () => reload() : retry ? () => save('apply') : undefined }
+    return { tone: 'err', text: stoppedNow ? `${which}没有生效，KixDNS\u00a0已停止。` : `${which}没有生效，仍在用之前那份配置。`, detail: stoppedNow ? `${cause === 'KixDNS 在确认新配置前停了' ? '它在确认新配置前停了' : cause}；启动后会用之前那份配置` : reread ? `${cause}。这份配置在别处改过了，先重新读取。` : cause, action: reread ? '重新读取' : retry ? '重试应用' : undefined, run: reread ? () => reload() : retry ? () => save('apply') : undefined }
   }
   // 连不上面板时由顶上的横幅说；连上以后核对的结果再说应用了没有 / While the panel is unreachable the banner speaks; once back, the check says whether it applied
   if (applyError.value && !panelDown.value) { const [text, ...detail] = applyError.value.split('\n'); return { tone: 'err', text: `${text}。`, detail: detail.join('\n') } }

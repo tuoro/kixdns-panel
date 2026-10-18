@@ -819,6 +819,9 @@ button.ui-link { position: relative; min-height: 0; padding: 0; border: 0; backg
 /* 一长串连住的词：放不下时整块换到下一行，比一行还长才在里面断开 / A long glued word: it moves whole to the next line when it does not fit, and only breaks
    inside when longer than a line */
 .glue-block { display: inline-block; max-width: 100%; }
+/* 宽屏上一个列表名整个放得下一行就不拆开，一串名字里不会有一个被拆成两行；手机上照旧在「·」处折 / On wide screens a list name that fits a line is never
+   split, so no name in a row of them breaks in two; phones still wrap at 「·」 */
+@media (min-width: 641px) { .name-whole { display: inline-block; max-width: 100%; } }
 /* 占位字比次要文字淡一档，不会被读成已经填好的值 / Placeholders are one step lighter than secondary text, so they never read as filled-in values */
 .ui-input input::placeholder, .ui-input--area textarea::placeholder { color: color-mix(in srgb, var(--l-ink-3) 72%, var(--l-surface)); }
 /* 禁用的次要、危险按钮：边还看得见，字变灰，不再整体褪成一块看不清的影子 / Disabled secondary and danger buttons keep a visible edge with grey text instead of fading into a faint shape */

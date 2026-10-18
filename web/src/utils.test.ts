@@ -111,10 +111,12 @@ describe('hyphenRuns', () => {
     expect(hyphenRuns('连不上 very-long-subdomain-name.example.org。').find((r) => r.glue)).toEqual({ text: 'very-long-subdomain-name.example.org。', glue: true, long: true })
   })
 
-  it('提示条另外连住版本号和「名字」的 / toasts also glue the version number and 「name」的', () => {
+  it('提示条另外连住版本号、「名字」的和「再点一次「按钮」」 / toasts also glue the version number, 「name」的 and 「再点一次「button」」', () => {
     const glued = (text: string) => toastRuns(text).filter((r) => r.glue).map((r) => r.text)
     expect(glued('新下载的拦截列表：已存成待应用版本\u00a0#20，KixDNS 就绪后自动应用')).toEqual(['版本\u00a0#20'])
     expect(glued('「bad.txt」的链接只能用 https://，删掉这个列表再保存')).toEqual(['「bad.txt」的'])
+    // 按钮名不单独落到最后一行 / The button name never sits alone on the last line
+    expect(glued('新的一份存不上：这份配置在别处改过了；先重新读取，再点一次「全部更新」')).toEqual(['再点一次「全部更新」'])
     // 默认名单独拿出来，按「·」折行 / A default name is taken out to wrap at 「·」
     expect(toastRuns('「hosts.txt\u00a0·\u00a0lists.example.org」没下载成功').find((r) => r.name)?.name).toEqual({ name: 'hosts.txt\u00a0·\u00a0lists.example.org', suffix: '' })
   })

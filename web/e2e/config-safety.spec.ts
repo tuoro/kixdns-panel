@@ -740,6 +740,33 @@ test('现在应用的回应丢了：连上以后按待应用的还在不在核�
   await expect.poll(() => toastTexts(page), { timeout: 8000 }).toContain(`刚才那次应用：版本 #${pending} 已生效`)
 })
 
+// 现在应用的回应丢了、人去了别的页、断线时别处又存了一版：连上以后「不知道…应用了没有」换成核对的结果，不悄悄收掉
+// 现在应用 lost its answer, the user went to another page, and another version was saved elsewhere meanwhile: once back, 「不知道…应用了没有」 is replaced by
+// the check's result instead of quietly going away
+test('现在应用的回应丢了、离开以后别处改过：连上以后说那次应用不在现在的配置里', async ({ page }) => {
+  const pending = await savePending(page, 'apply-lost-away.example', '离开以后')
+  await page.evaluate(() => {
+    window.addEventListener('kixdns:panel-unreachable', () => localStorage.setItem('kixdns:demo-panel-down', 'true'), { capture: true, once: true })
+    localStorage.setItem('kixdns:demo-put-answer-lost', 'true')
+  })
+  await page.getByRole('button', { name: '现在应用', exact: true }).click()
+  await expect(page.locator('.conn__inner')).toBeVisible()
+  await page.getByRole('link', { name: '日志', exact: true }).click()
+  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain(`不知道版本 #${pending} 应用了没有：连不上面板。连上后会自己核对`)
+  // 别处直接存了一版 / Another version is saved elsewhere
+  await page.evaluate(async () => {
+    const url = performance.getEntriesByType('resource').map((e) => e.name).filter((n) => n.includes('/src/api/mock.ts')).pop()!
+    const { mockRequest } = await import(url)
+    const current = await mockRequest('/api/v1/config')
+    const content = JSON.parse(JSON.stringify(current.content))
+    content.settings = { ...content.settings, cache_capacity: 4321 }
+    await mockRequest('/api/v1/config', { method: 'PUT', body: JSON.stringify({ content, expected_sha256: current.sha256, message: '别处' }) })
+  })
+  await reconnect(page)
+  await expect.poll(async () => (await toastTexts(page)).some((text) => text.startsWith('刚才那次应用不在现在的配置里：这份配置在别处改过了')), { timeout: 8000 }).toBe(true)
+  expect(await toastTexts(page)).not.toContain(`不知道版本 #${pending} 应用了没有：连不上面板。连上后会自己核对`)
+})
+
 test('现在应用没送到面板：连上以后说还没有应用，不说成功', async ({ page }) => {
   const pending = await savePending(page, 'in-place-unsent.example', '没送到')
   // 面板这时已经连不上了，页面还不知道：按下去的请求根本没到 / The panel is already unreachable and the page does not know yet: the request never arrives

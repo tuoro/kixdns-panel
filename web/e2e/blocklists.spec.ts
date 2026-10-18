@@ -569,3 +569,273 @@ test('失败说明末尾：手机上最多点名两个，宽屏点名到五个 @
   await expect(causes).toContainText('要重新下载，点「d.txt」那一行「…」里的「立即更新」。')
 })
 
+
+// 页上点立即更新、校验被拒：红色提示指到保存栏，失败过去了就收起；放弃修改、重新读取都回到干净的页面，同意放弃以后离开也不再补存
+// 立即更新 on the page, rejected at validation: the red toast points to the save bar and goes once the failure is over; 放弃修改 and 重新读取 both return
+// to a clean page, and once a drop was agreed, leaving saves nothing later
+test('立即更新在页上没存上：失败过去了提示就收起；放弃修改、重新读取都回到干净的页面', async ({ page }) => {
+  await open(page)
+  await subscribe(page, ['AdGuard DNS filter'])
+  await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用', exact: true }).click()
+  await expect(bar).toContainText('已生效')
+  const failed = page.locator('.toast', { hasText: '新下载的拦截列表没能存上，原因写在保存栏' })
+  const updateFails = async () => {
+    await page.waitForTimeout(1100)
+    await page.evaluate(() => localStorage.setItem('kixdns:demo-validate-reject', 'true'))
+    await page.locator('.bl__row', { hasText: 'AdGuard DNS filter' }).getByRole('button', { name: 'AdGuard DNS filter 的操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '立即更新', exact: true }).click()
+    await expect(failed).toBeVisible({ timeout: 6000 })
+    await expect(bar).toContainText('没有通过校验')
+  }
+  // 自己再按一次保存，这次存上了 / Saved by hand the second time
+  await updateFails()
+  await bar.getByRole('button', { name: '保存并应用', exact: true }).click()
+  await expect(bar).toContainText('已生效')
+  await expect(failed).toHaveCount(0)
+  // 放弃修改：保存栏收起，不停在说那份已经不在的草稿的「没有通过校验」上 / 放弃修改: the bar folds away instead of staying on 没有通过校验 about a draft gone
+  await updateFails()
+  await bar.getByRole('button', { name: '放弃修改', exact: true }).click()
+  await expect(bar).toHaveCount(0)
+  await expect(failed).toHaveCount(0)
+  // 重新读取并同意放弃：换成面板上的那份，和确认框说的一样；离开时也不再补存 / Re-read and agree to drop: the panel's copy comes in, as the confirm said,
+  // and leaving saves nothing later
+  await updateFails()
+  const toasts = await trackToasts(page)
+  await page.getByRole('button', { name: '更多配置操作', exact: true }).click()
+  await page.getByRole('menuitem', { name: '重新读取配置', exact: true }).click()
+  await page.getByRole('alertdialog').getByRole('button', { name: '放弃修改并重新读取', exact: true }).click()
+  // 读的时候保存栏也收着：读完再看 / The bar is hidden while reading too: look once the read is done
+  await expect.poll(() => page.evaluate(async () => (await import('/src/config-v2/useConfigDocument.ts')).loading.value)).toBe(false)
+  await expect(bar).toHaveCount(0)
+  await expect(failed).toHaveCount(0)
+  // 之后一次无关的离开时放弃：那次没存上的新文件已经同意不要了，不补存，也不说草稿换掉了 / A later unrelated discard on leaving: the unsaved new file was
+  // already agreed away, so nothing is saved and nothing says the draft was replaced
+  await page.getByRole('textbox', { name: '自己写的规则，一行一条', exact: true }).fill('||after-reread.example^')
+  await page.locator('.desktop-nav').getByRole('link', { name: '日志', exact: true }).click()
+  await page.getByRole('alertdialog').getByRole('button', { name: '放弃修改', exact: true }).click()
+  await expect(page).toHaveURL(/\/logs/)
+  await page.waitForTimeout(3000)
+  expect(await toasts()).not.toContain('已换上新下载的拦截列表')
+  expect(await toasts()).not.toContain('草稿换掉了')
+})
+
+// 写进去了、回应没回来：人在页上，先说不知道存上没有（不说没能存上），连上核对完换成结果
+// Written but the answer never came back, with the user on the page: first it says whether it landed is unknown (not that it failed), and the check
+// after reconnecting replaces that with the result
+test('立即更新在页上存的时候回应丢了：先说不知道存上没有，连上核对完换成结果', async ({ page }) => {
+  await open(page)
+  await subscribe(page, ['AdGuard DNS filter'])
+  await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用', exact: true }).click()
+  await expect(bar).toContainText('已生效')
+  await page.waitForTimeout(1100)
+  const toasts = await trackToasts(page)
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-put-answer-lost', 'true'))
+  await page.locator('.bl__row', { hasText: 'AdGuard DNS filter' }).getByRole('button', { name: 'AdGuard DNS filter 的操作', exact: true }).click()
+  await page.getByRole('menuitem', { name: '立即更新', exact: true }).click()
+  const unknown = page.locator('.toast', { hasText: '新下载的拦截列表：不知道存上没有，连不上面板。连上后会自己核对' })
+  await expect(unknown).toBeVisible({ timeout: 6000 })
+  await expect(page.locator('.conn__inner')).toHaveCount(0, { timeout: 10_000 })
+  await expect(page.locator('.toast', { hasText: /新下载的拦截列表已经存上了：版本 #\d+ 已生效/ })).toBeVisible({ timeout: 8000 })
+  await expect(unknown).toHaveCount(0)
+  expect(await toasts()).not.toContain('没能存上')
+})
+
+// 新的一份跟着订阅变化一起存上了（存下的文件不是落地的那份，可里面带着它）：之后别处又换了服务端的副本，离开时放弃也不再替人存一个「手动更新拦截列表」
+// The new copy was saved along with a subscription change (the saved file is not the one landed, but it carries it): after the server's copy is swapped
+// elsewhere, a discard on leaving no longer saves a 「手动更新拦截列表」 for the user
+test('新的一份跟着订阅变化一起存上以后，离开时放弃不再补存', async ({ page }) => {
+  await open(page)
+  await subscribe(page, ['AdGuard DNS filter', 'anti-AD'])
+  await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用', exact: true }).click()
+  await expect(bar).toContainText('已生效')
+  await page.waitForTimeout(1100)
+  const own = page.getByRole('textbox', { name: '自己写的规则，一行一条', exact: true })
+  await own.fill('||carried.example^')
+  await page.locator('.bl__row', { hasText: 'AdGuard DNS filter' }).getByRole('button', { name: 'AdGuard DNS filter 的操作', exact: true }).click()
+  await page.getByRole('menuitem', { name: '立即更新', exact: true }).click()
+  await expect(page.locator('.toast', { hasText: '新的一份已放进草稿，保存后生效' })).toBeVisible({ timeout: 5000 })
+  // 停用 anti-AD：再合成出来的文件也带着刚下好的那份，一起保存 / Switch anti-AD off: the rebuilt file carries the fresh copy too, saved together
+  await page.getByRole('checkbox', { name: /^启用 anti-AD/ }).evaluate((e: HTMLElement) => e.click())
+  await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  await bar.getByRole('button', { name: '保存并应用', exact: true }).click()
+  await expect(bar).toContainText('已生效', { timeout: 8000 })
+  // 像另一台设备点了立即更新：服务端换了 AdGuard 的副本，没写配置 / As if another device pressed 立即更新: the server's AdGuard copy changes, no config written
+  await page.waitForTimeout(1100)
+  await page.evaluate(async () => {
+    const { apiRequest } = await import('/src/api/client.ts')
+    const { model } = await import('/src/config-v2/store.ts')
+    const subscriptions = model.blocklists.subscriptions.map((s) => ({ url: s.url, enabled: s.enabled }))
+    const adguard = model.blocklists.subscriptions.find((s) => s.name === 'AdGuard DNS filter')!.url
+    await apiRequest('/api/v1/config/blocklists/build', { method: 'POST', body: JSON.stringify({ subscriptions, refresh: [adguard] }) })
+  })
+  const toasts = await trackToasts(page)
+  await own.fill('||later.example^')
+  await page.locator('.desktop-nav').getByRole('link', { name: '日志', exact: true }).click()
+  await page.getByRole('alertdialog').getByRole('button', { name: '放弃修改', exact: true }).click()
+  await expect(page).toHaveURL(/\/logs/)
+  await page.waitForTimeout(3500)
+  expect(await toasts()).not.toContain('已换上新下载的拦截列表')
+})
+
+// 新的一份放进草稿以后在配置页上退出登录：会话结束时它一起放下，再登录以后离开时放弃，不会存出上一个会话的那次下载（用户定的）
+// Signing out on the config page with the new copy in the draft: it goes when the session ends, so after signing in again a discard on leaving does not
+// save the previous session's download (the user's call)
+test('立即更新放进草稿以后退出登录：再登录以后离开时放弃，不补存上一个会话的那次', async ({ page }) => {
+  await open(page)
+  await subscribe(page, ['AdGuard DNS filter'])
+  await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用', exact: true }).click()
+  await expect(bar).toContainText('已生效')
+  await page.waitForTimeout(1100)
+  const own = page.getByRole('textbox', { name: '自己写的规则，一行一条', exact: true })
+  await own.fill('||before-signout.example^')
+  await page.locator('.bl__row', { hasText: 'AdGuard DNS filter' }).getByRole('button', { name: 'AdGuard DNS filter 的操作', exact: true }).click()
+  await page.getByRole('menuitem', { name: '立即更新', exact: true }).click()
+  await expect(page.locator('.toast', { hasText: '新的一份已放进草稿，保存后生效' })).toBeVisible({ timeout: 5000 })
+  await page.locator('.account-button').click()
+  await page.getByRole('button', { name: '退出登录' }).click()
+  await page.getByRole('alertdialog', { name: '放弃未保存的修改' }).getByRole('button', { name: '放弃并退出' }).click()
+  await expect(page).toHaveURL(/\/login/)
+  await page.getByLabel('用户名').fill('admin')
+  await page.getByLabel('密码', { exact: true }).fill('demo-password')
+  await page.getByRole('button', { name: '登录', exact: true }).click()
+  await page.locator('.desktop-nav').getByRole('link', { name: '拦截列表', exact: true }).click()
+  await expect(page.locator('.bl__row', { hasText: 'AdGuard DNS filter' })).toBeVisible()
+  // 等回来那次读读完，不然它会把下面写的冲掉 / Wait for the read on coming back, or it washes away what is typed below
+  await expect.poll(() => page.evaluate(async () => (await import('/src/config-v2/useConfigDocument.ts')).loading.value)).toBe(false)
+  await expect(bar).toHaveCount(0)
+  const toasts = await trackToasts(page)
+  await own.fill('||after-signin.example^')
+  await expect(bar).toContainText('已修改 1 处')
+  await page.locator('.desktop-nav').getByRole('link', { name: '日志', exact: true }).click()
+  await page.getByRole('alertdialog').getByRole('button', { name: '放弃修改', exact: true }).click()
+  await expect(page).toHaveURL(/\/logs/)
+  await page.waitForTimeout(3500)
+  expect(await toasts()).not.toContain('已换上新下载的拦截列表')
+})
+
+// 页上立即更新、存的时候撞上「别处改过了」：重新读取会换掉草稿，新的一份跟着没了，所以说要再点一次；重新读取以后这条收起
+// 立即更新 on the page meets 别处改过了 when saving: re-reading replaces the draft and the new copy with it, so it says to press again; once re-read
+// the toast goes
+test('立即更新在页上撞上别处改过了：说先重新读取再点一次，重新读取以后提示收起', async ({ page }) => {
+  await open(page)
+  await subscribe(page, ['AdGuard DNS filter'])
+  await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用', exact: true }).click()
+  await expect(bar).toContainText('已生效')
+  await page.waitForTimeout(1100)
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-save-conflict', 'true'))
+  await page.locator('.bl__row', { hasText: 'AdGuard DNS filter' }).getByRole('button', { name: 'AdGuard DNS filter 的操作', exact: true }).click()
+  await page.getByRole('menuitem', { name: '立即更新', exact: true }).click()
+  const told = page.locator('.toast', { hasText: '新的一份存不上：这份配置在别处改过了；先重新读取，再点一次「立即更新」' })
+  await expect(told).toBeVisible({ timeout: 6000 })
+  await expect(bar).toContainText('这份配置在别处改过了')
+  await bar.getByRole('button', { name: '重新读取', exact: true }).click()
+  await page.getByRole('alertdialog').getByRole('button', { name: '放弃修改并重新读取', exact: true }).click()
+  await expect.poll(() => page.evaluate(async () => (await import('/src/config-v2/useConfigDocument.ts')).loading.value)).toBe(false)
+  await expect(told).toHaveCount(0)
+  await expect(bar).toHaveCount(0)
+})
+
+// 立即更新在页上没存上，离开时同意放弃：那条指到保存栏的红色提示跟着收起（别的页上没有保存栏），新的一份照样直接存成版本（用户定的）
+// 立即更新 not saved on the page, then a discard agreed on leaving: the red toast pointing to the save bar goes along (other pages have none), and the new
+// copy is still saved directly as a version (the user's call)
+test('立即更新在页上没存上以后离开并放弃：红色提示跟着收起，新的一份照样存成版本', async ({ page }) => {
+  await open(page)
+  await subscribe(page, ['AdGuard DNS filter'])
+  await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用', exact: true }).click()
+  await expect(bar).toContainText('已生效')
+  await page.waitForTimeout(1100)
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-validate-reject', 'true'))
+  await page.locator('.bl__row', { hasText: 'AdGuard DNS filter' }).getByRole('button', { name: 'AdGuard DNS filter 的操作', exact: true }).click()
+  await page.getByRole('menuitem', { name: '立即更新', exact: true }).click()
+  const failed = page.locator('.toast', { hasText: '新下载的拦截列表没能存上，原因写在保存栏' })
+  await expect(failed).toBeVisible({ timeout: 6000 })
+  await page.locator('.desktop-nav').getByRole('link', { name: '日志', exact: true }).click()
+  await page.getByRole('alertdialog').getByRole('button', { name: '放弃修改', exact: true }).click()
+  await expect(page).toHaveURL(/\/logs/)
+  await expect(page.locator('.toast', { hasText: '已换上新下载的拦截列表' })).toBeVisible({ timeout: 8000 })
+  await expect(failed).toHaveCount(0)
+})
+
+// 立即更新在页上没存上，会话过期再登录：登录页说了「没有留下来」，回来时草稿就换成面板上的那份
+// 立即更新 not saved on the page, then the session expires and the user signs in again: the login page said nothing was kept, so the draft comes back as the
+// panel's copy
+test('立即更新在页上没存上、会话过期再登录：草稿换成面板上的那份', async ({ page }) => {
+  await open(page)
+  await subscribe(page, ['AdGuard DNS filter'])
+  await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用', exact: true }).click()
+  await expect(bar).toContainText('已生效')
+  await page.waitForTimeout(1100)
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-validate-reject', 'true'))
+  await page.locator('.bl__row', { hasText: 'AdGuard DNS filter' }).getByRole('button', { name: 'AdGuard DNS filter 的操作', exact: true }).click()
+  await page.getByRole('menuitem', { name: '立即更新', exact: true }).click()
+  await expect(bar).toContainText('没有通过校验', { timeout: 6000 })
+  await page.evaluate(async () => {
+    const { SESSION_EXPIRED_EVENT } = await import('/src/api/client.ts')
+    window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT))
+  })
+  await expect(page).toHaveURL(/\/login\?/)
+  await page.getByLabel('用户名').fill('admin')
+  await page.getByLabel('密码', { exact: true }).fill('demo-password')
+  await page.getByRole('button', { name: '登录', exact: true }).click()
+  await expect(page.locator('.bl__row', { hasText: 'AdGuard DNS filter' })).toBeVisible()
+  await expect.poll(() => page.evaluate(async () => (await import('/src/config-v2/useConfigDocument.ts')).loading.value)).toBe(false)
+  await expect(bar).toHaveCount(0)
+})
+
+// 页上立即更新、写入那一刻连不上面板（请求没送到，没写进去），人离开并同意放弃：连上以后只说补存的结果，不说「它留在配置页的草稿里」（草稿已经放弃了）
+// 立即更新 on the page, the panel unreachable the moment it writes (the request never arrived, nothing written), then the user leaves agreeing to discard:
+// once back only the make-up save's result is said, not 「it stays in the config page's draft」 (that draft was discarded)
+test('立即更新在页上写入时连不上、其实没写进去，离开并放弃：连上以后只说补存的结果', async ({ page }) => {
+  await page.addInitScript(() => performance.setResourceTimingBufferSize(20000))
+  await open(page)
+  await subscribe(page, ['AdGuard DNS filter'])
+  await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用', exact: true }).click()
+  await expect(bar).toContainText('已生效')
+  await page.waitForTimeout(1100)
+  // 写入这一步开始的那一刻让面板不答话：写入的请求送不到 / The instant the write step starts the panel stops answering: the write never arrives
+  await page.evaluate(async () => {
+    const entries = performance.getEntriesByType('resource').map((e) => e.name)
+    const vue = await import(entries.find((n) => n.includes('/node_modules/.vite/deps/vue.js'))!)
+    const document = await import(entries.filter((n) => n.includes('/src/config-v2/useConfigDocument.ts')).pop()!)
+    let armed = true
+    vue.watch(document.stage, (stage: string) => {
+      if (stage !== 'applying' || !armed) return
+      armed = false
+      localStorage.setItem('kixdns:demo-panel-down', 'true')
+      window.dispatchEvent(new Event('kixdns:panel-unreachable'))
+    }, { flush: 'sync' })
+  })
+  const toasts = await trackToasts(page)
+  await page.locator('.bl__row', { hasText: 'AdGuard DNS filter' }).getByRole('button', { name: 'AdGuard DNS filter 的操作', exact: true }).click()
+  await page.getByRole('menuitem', { name: '立即更新', exact: true }).click()
+  const unknown = page.locator('.toast', { hasText: '新下载的拦截列表：不知道存上没有' })
+  await expect(unknown).toBeVisible({ timeout: 6000 })
+  await page.locator('.desktop-nav').getByRole('link', { name: '日志', exact: true }).click()
+  await page.getByRole('alertdialog').getByRole('button', { name: '放弃修改', exact: true }).click()
+  await expect(page).toHaveURL(/\/logs/)
+  await page.evaluate(async () => {
+    localStorage.removeItem('kixdns:demo-panel-down')
+    const url = performance.getEntriesByType('resource').map((e) => e.name).filter((n) => n.includes('/src/composables/useConnection.ts')).pop()!
+    void (await import(url)).useConnection().retry()
+  })
+  await expect.poll(toasts, { timeout: 12000 }).toContain('已换上新下载的拦截列表')
+  await page.waitForTimeout(1000)
+  expect(await toasts()).not.toContain('它留在配置页的草稿里')
+  await expect(unknown).toHaveCount(0)
+})
