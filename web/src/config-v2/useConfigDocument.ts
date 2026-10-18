@@ -4,13 +4,13 @@ import { useConfirm } from '../composables/useConfirm'
 import { registerHeldDraft } from '../composables/useLeaveGuard'
 import type { ConfigApplyResult, ConfigDocument, ConfigRuntimeApplyState, ConfigVersion, ConfigVersionDetail, ConfigVersions, DeleteConfigVersionResult, DeleteConfigVersionsResult, Overview, ServiceStatus, ValidationResult } from '../api/types'
 import { exportConfig, readConfig } from '../config-model/document'
-import type { Model, Rule } from '../config-model/model'
+import { blocklistKey, type Model, type Rule } from '../config-model/model'
 import { traceNames } from '../config-model/trace-names'
 import { useConnection } from '../composables/useConnection'
 import { useSession } from '../composables/useSession'
 import { dismissUndoable, toastMark, useToast } from '../composables/useToast'
 import { errorMessage } from '../utils'
-import { needsBuild, settleBlocklists } from './useBlocklists'
+import { needsBuild, settleBlocklists, type BuildProblem } from './useBlocklists'
 import { appliedSnapshot, findRuleByName, applyHits, applyUpstreamStats, changeCount, dialogEdits, dirty, draftGeneration, editorEdited, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, replaceModel, reportOpen, unsaved } from './store'
 
 // 配置页和面板服务之间的事：读配置和历史、KixDNS 的运行状态和能力、校验、保存并热加载、现在应用。
@@ -115,7 +115,8 @@ export const canApplyNow = computed(() => (hasPending.value || hasApplyFailure.v
 export const canSave = computed(() => (dirty.value || canApplyNow.value) && !cnameBlocked.value)
 
 // ---------- 保存的几步 / the save's stages ----------
-export type SaveStage = 'idle' | 'checking' | 'validating' | 'applying' | 'done' | 'failed'
+// building：保存的第 0 步，等拦截列表按这份草稿的订阅合成好 / building: a save's step 0, waiting for the blocklists to be built for this draft's subscriptions
+export type SaveStage = 'idle' | 'building' | 'checking' | 'validating' | 'applying' | 'done' | 'failed'
 export const stage = ref<SaveStage>('idle')
 // 这一次是保存草稿（保存栏报进度）还是应用已保存的版本（页头报进度） / Whether this run saves the draft (the save bar reports) or applies a saved version (the header reports)
 export const origin = ref<'draft' | 'apply'>('draft')
@@ -128,12 +129,12 @@ const startedAt = ref(0)
 const clock = ref(0)
 let clockTimer: ReturnType<typeof setInterval> | undefined
 let settleTimer: ReturnType<typeof setTimeout> | undefined
-export const busy = computed(() => ['checking', 'validating', 'applying'].includes(stage.value))
+export const busy = computed(() => ['building', 'checking', 'validating', 'applying'].includes(stage.value))
 // 单独的「校验」还没回来时按了保存：这一下排在校验后面，从按下起就算一次保存 / Save pressed while a lone 校验 is out: it waits behind the check and counts as a save from the press
 export const queued = ref(false)
 // 真的在保存（校验、写入，或者排在单独的「校验」后面），不是单独点的「校验」：这时换掉草稿的操作要等它做完
 // A save really running (validate, then write, or queued behind a lone 校验), not a lone 校验: actions that replace the draft wait for it
-export const saveInFlight = computed(() => queued.value || stage.value === 'validating' || stage.value === 'applying')
+export const saveInFlight = computed(() => queued.value || stage.value === 'building' || stage.value === 'validating' || stage.value === 'applying')
 export const elapsed = computed(() => {
   const seconds = (clock.value - startedAt.value) / 1000
   return busy.value && seconds >= 1 ? `已用 ${seconds.toFixed(1)} 秒` : ''
@@ -402,6 +403,15 @@ async function runCheck(): Promise<ValidationResult | null> {
   if (deferSave.value || conflict.value) return null
   origin.value = 'draft'
   startStage('checking')
+  // 校验一份旧的拦截列表文件没有意义：先等它按现在的订阅合成好 / Checking a stale blocklist file means nothing: wait for it to be built for the current subscriptions first
+  if (needsBuild()) {
+    const problem = await settleBlocklists()
+    if (problem) {
+      verdict.value = problem.down ? '连不上面板' : '没有通过校验'
+      finishStage('failed', buildProblemNote(problem, '校验'))
+      return null
+    }
+  }
   // 记下校验的是哪一份：排在后面的保存要写的正是这一份时，不再校验第二遍 / Note which content is checked: a save queued behind it that writes exactly this need not check it twice
   const checked = JSON.stringify(exportConfig(model))
   checkedContent = null
@@ -534,29 +544,15 @@ const sentence = (text: string) => text.replace(/[。.]\s*$/, '')
 export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: string): Promise<void> {
   // 排着的那次已经算数：再按一下不另起一次 / A queued save already counts: another press starts nothing new
   if (queued.value) return
-  // 拦截列表的文件还没按现在的订阅合成好：先等它落地（按钮照保存途中显示），还不行就停在这里、说出原因，不写入一个对不上的文件
-  // The blocklists' file is not yet built for the current subscriptions: wait for it to land first (the button shows the save under way), and
-  // if it still fails stop here with the reason rather than writing a file that does not match
-  if (from === 'draft' && needsBuild() && doc.value && !busy.value) {
-    queued.value = true
-    let problem: string | null
-    try { problem = await settleBlocklists() } finally { queued.value = false }
-    if (problem !== null) {
-      verdict.value = '没有保存成功'
-      finishStage('failed', `拦截列表还没合成好：${problem.replace(/[。.]\s*$/, '')}。再保存一次会重新合成`)
-      return
-    }
-  }
   const waiting = checkRun
   if ((busy.value && !waiting) || !doc.value) return
   // 被内核不支持的 CNAME 回答挡住时说一句，不默默不动 / Blocked by unsupported CNAME answers: say so instead of doing nothing
   if (cnameBlocked.value) { sayBlocked(); return }
   if (!canSave.value) return
-  // 要写入的配置在这一刻定下来，复制一份：导出的结果和草稿共用数组，写入的请求要等校验完才打包，校验途中的修改会混进去、没校验就写进文件
-  // The config to write is fixed now, as a copy: the export shares arrays with the draft and the write request is only built after validation,
+  // 要写入的草稿在按下这一刻定下来，复制一份：导出的结果和草稿共用数组，写入的请求要等校验完才打包，校验途中的修改会混进去、没校验就写进文件
+  // The draft to write is fixed at the press, as a copy: the export shares arrays with the draft and the write request is only built after validation,
   // so an edit made during validation would slip in and be written unvalidated
-  const content: unknown = JSON.parse(JSON.stringify(exportConfig(model)))
-  const sent = JSON.stringify(model)
+  let draft = JSON.parse(JSON.stringify(model)) as Model
   // 对照的版本也定在这一刻：等候和校验途中文件换了（比如恢复了一个版本），写入照样按冲突处理，不悄悄盖在上面
   // The version written against is fixed now too: if the file changed while waiting or validating (a version restored, say), the write still meets a conflict instead of landing on top
   const expected = doc.value.sha256
@@ -565,6 +561,34 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
   // 发出去的草稿定在这一刻：之后的修改（校验途中的也算）不在这次保存里，它们的撤销保存后照样留着 / The draft sent is fixed at this moment: edits after it (during validation too) are not in this save, and their undos stay after it lands
   const sentAt = toastMark()
   const settledBefore = settledCount
+  inFlight = JSON.stringify(draft)
+  // 第 0 步：拦截列表的文件还没按这份草稿的订阅合成好时，先等它落地，再只把文件换进按下时的草稿。等的时候就算保存途中：按钮写「保存中」，
+  // 离开不问、回来不重读，这时改的照样算「之后改的」；订阅在等的时候又变了就停下说一句，不写入一个对不上的文件
+  // Step 0: when the blocklists' file is not yet built for this draft's subscriptions, wait for it to land, then swap only the file into the draft as
+  // pressed. The wait already counts as the save under way: the button reads 保存中, leaving does not ask and returning does not re-read, and edits made
+  // meanwhile count as made after it; if the subscriptions change while waiting it stops and says so, rather than writing a file that does not match
+  const key = blocklistKey(draft.blocklists)
+  if (from === 'draft' && draft.blocklists.builtFor !== key) {
+    if (waiting) queued.value = true
+    else { origin.value = 'draft'; startStage('building') }
+    let problem: BuildProblem | null
+    try { problem = await settleBlocklists() } finally { queued.value = false }
+    if (!problem && (blocklistKey(model.blocklists) !== key || model.blocklists.builtFor !== key)) problem = { reason: '', down: false, changed: true }
+    if (abandoned || problem) {
+      inFlight = null
+      if (abandoned) { abandoned = false; finishStage('idle'); return }
+      verdict.value = problem!.down ? '连不上面板' : '没有保存成功'
+      finishStage('failed', buildProblemNote(problem!, '保存'))
+      return
+    }
+    // 名字在页面上改不了：等的时候变了，是下载带来的标题，跟着文件一起存 / Names cannot be edited on the page: one that changed while waiting is the
+    // title the download brought, saved along with the file
+    const names = new Map(model.blocklists.subscriptions.map((s) => [s.id, s.name]))
+    const subscriptions = draft.blocklists.subscriptions.map((s) => ({ ...s, name: names.get(s.id) ?? s.name }))
+    draft = { ...draft, blocklists: { ...draft.blocklists, subscriptions, file: model.blocklists.file, builtFor: key } }
+  }
+  const content: unknown = JSON.parse(JSON.stringify(exportConfig(draft)))
+  const sent = JSON.stringify(draft)
   inFlight = sent
   let prechecked = false
   if (waiting) {
@@ -754,6 +778,12 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
   }
 }
 export const applyNow = () => void save('apply')
+/** 等拦截列表合成没成时保存条下面那句 / The line under the save bar when waiting for the blocklists' build failed */
+function buildProblemNote(problem: BuildProblem, what: '保存' | '校验'): string {
+  if (problem.down) return `拦截列表还没合成好，连上后再${what}`
+  if (problem.changed) return `订阅在等合成时又改过，再${what}一次`
+  return `拦截列表没有合成好（${problem.reason}），再${what}一次会重新合成`
+}
 // 键排好序再比，存进去和读出来的键顺序不同也算一样 / Compared with keys sorted, so a different key order on the way back still counts as the same
 const canonical = (value: unknown) => JSON.stringify(value, (_key, item: unknown) => (item && typeof item === 'object' && !Array.isArray(item) ? Object.fromEntries(Object.entries(item as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : item))
 async function alreadySaved(content: unknown, sent: string): Promise<boolean> {

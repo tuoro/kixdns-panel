@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ExternalLink, ListPlus, Plus, RefreshCw, ShieldBan, TriangleAlert, X } from '@lucide/vue'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import type { BlocklistSkippedLine } from '../api/types'
 import UiDotText from '../components/ui/UiDotText.vue'
@@ -9,14 +9,14 @@ import UiHelp from '../components/ui/UiHelp.vue'
 import UiMenu from '../components/ui/UiMenu.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import { useToast } from '../composables/useToast'
-import { checkSubscriptionUrl, MAX_SUBSCRIPTIONS, parseOwnRules, PRESETS, skipText, subscriptionName, type Skip } from '../config-model/blocklist'
+import { checkSubscriptionUrl, MAX_SUBSCRIPTIONS, normalUrl, parseOwnRules, PRESETS, shortName, skipText, subscriptionName, type Skip } from '../config-model/blocklist'
 import { blockLabel, type Subscription } from '../config-model/model'
 import { formatAgo, formatVersionTime } from '../utils'
 import { usePhone } from './phone'
 import { appliedModel, changedSubscriptionIds, model, newId, unsaved } from './store'
 import { blocklists, loadBlocklists, rebuildBlocklists, saveBlocklistSchedule } from './useBlocklists'
-import { save, saveInFlight } from './useConfigDocument'
-import { fmtCount, keepTail } from './view'
+import { doc, save, saveInFlight, stage } from './useConfigDocument'
+import { fmtCount } from './view'
 
 // 拦截列表：订阅的列表一行一个，像域名映射那样一张卡片；下面是自己写的规则和两项设置。订阅和自己写的规则都在草稿里，
 // 保存以后生效；列表下载、合并由面板服务端做，自动更新也在服务端。订阅一变，useBlocklists 就请服务端重新合成。
@@ -27,17 +27,35 @@ const router = useRouter()
 const phone = usePhone()
 const toast = useToast()
 onMounted(() => void loadBlocklists())
+let mounted = true
+onBeforeUnmount(() => { mounted = false })
 
 const subscriptions = computed(() => model.blocklists.subscriptions)
 const host = (url: string) => { try { return new URL(url).host } catch { return url } }
 const presetOf = (s: Subscription) => PRESETS.find((p) => p.url === s.url)
-// 「内容」列：推荐的列表写它拦什么，自己粘贴的写链接 / The 内容 column: what a suggested list blocks, or the link one pasted
-const about = (s: Subscription) => presetOf(s)?.about ?? s.url.replace(/^https:\/\//, '')
-// 窄屏名字下面的来源：主机名；名字里已经有主机名时写路径 / The source under the name on narrow screens: the host, or the path once the name holds the host
+// 「内容」列：推荐的列表写它拦什么，自己粘贴的写链接；链接长的写主机和最后两段，截短时几行不会一模一样（完整的在悬停提示里）
+// The 内容 column: what a suggested list blocks, or the link one pasted; a long link shows its host and last two segments, so cut-short rows do not all
+// read the same (the whole link is in the hover tip)
+const link = (s: Subscription) => s.url.replace(/^https:\/\//, '')
+function about(s: Subscription): string {
+  const preset = presetOf(s)
+  if (preset) return preset.about
+  try {
+    const url = new URL(s.url)
+    const parts = url.pathname.split('/').filter(Boolean)
+    return parts.length > 2 ? `${url.host}/…/${decodeURI(parts.slice(-2).join('/'))}` : link(s)
+  } catch { return link(s) }
+}
+// 窄屏名字下面的来源：主机名；名字里已经有主机名时写目录，只有一级文件名、或者没有路径时不写
+// The source under the name on narrow screens: the host; once the name holds the host, the directory, or nothing for a bare file name or no path
 function source(s: Subscription): string {
   const name = host(s.url)
   if (!s.name.includes(name)) return name
-  try { return decodeURI(new URL(s.url).pathname) } catch { return s.url }
+  try {
+    const path = decodeURI(new URL(s.url).pathname)
+    const dir = path.slice(0, path.lastIndexOf('/') + 1)
+    return dir === '/' ? '' : dir
+  } catch { return '' }
 }
 const statusOf = (s: Subscription) => blocklists.sources[s.url]
 const held = (s: Subscription) => Boolean(statusOf(s)?.sha256)
@@ -57,13 +75,21 @@ const spaced = (text: string) => (/^\d/.test(text) ? ` ${text}` : text)
 // Lists that failed to download or update (switched-off ones not, they are not in use), said in one block: a line each of 「name: cause」,
 // without repeating a name the cause already gives; for those without any copy the end says once how to download again (a failed one is
 // not retried on its own); one still holding a copy already says on its row which copy it keeps
+// 默认名「文件名 · 主机」而原因里已经有这个主机时，只写文件名 / A default 「file name · host」 name whose cause already gives the host shows the file name only
 const failures = computed(() => subscriptions.value.filter((s) => s.enabled && statusOf(s)?.last_error && !downloading(s)).map((s) => {
   const cause = statusOf(s)!.last_error!.replace(/[。.]\s*$/, '')
-  return { id: s.id, name: cause.includes(s.name) ? '' : s.name, cause, held: held(s) }
+  const short = shortName(s.name, s.url)
+  const label = short !== s.name && cause.includes(host(s.url)) ? short : s.name
+  return { id: s.id, name: cause.includes(s.name) ? '' : label, label, cause, held: held(s) }
 }))
-const retryTail = computed(() => {
-  if (!failures.value.some((f) => !f.held)) return null
-  return keepTail(`要重新下载，点${failures.value.length === 1 ? '这' : '那'}一行「…」里的「立即更新」。`)
+// 末尾只为一份都没有的说怎么重新下载：只有一个列表出错时说「这一行」，几个里只有一个要重下时点名，几个都要时说「各自那一行」
+// The end says how to download again only for those with no copy: 「this row」 when one list failed, the list named when one of several needs it,
+// 「each of those rows」 when several do
+const retryLead = computed(() => {
+  const none = failures.value.filter((f) => !f.held)
+  if (!none.length) return null
+  const row = failures.value.length === 1 ? '这一行' : none.length === 1 ? `「${none[0]!.label}」那一行` : '各自那一行'
+  return `要重新下载，点${row}「…」里的`
 })
 
 const rowMenu = (s: Subscription) => {
@@ -90,13 +116,19 @@ function act(s: Subscription, value: string): void {
     // several and undoing them in turn keeps the order
     const next = list[at + 1]
     list.splice(at, 1)
-    toast.undoable(`已删除「${s.name}」`, () => {
+    deleteToasts.set(s.url, toast.undoable(`已删除「${s.name}」`, () => {
+      deleteToasts.delete(s.url)
       const now = model.blocklists.subscriptions
+      // 删掉以后又加了回来：不再插第二个 / Added back since the delete: no second copy goes in
+      if (now.some((x) => x.url === s.url)) { toast.info(`「${s.name}」已经在列表里了`); return }
       const before = next ? now.indexOf(next) : -1
       now.splice(before >= 0 ? before : Math.min(at, now.length), 0, s)
-    })
+    }))
   }
 }
+// 删除提示还开着的链接：加回来时收起那条提示，它的撤销已经没有意义 / Links whose delete toast is still up: adding one back clears that toast, its undo
+// no longer makes sense
+const deleteToasts = new Map<string, number>()
 const toggle = (s: Subscription, on: boolean) => { s.enabled = on }
 // 只看还在的订阅：删掉的那个下完之前，「全部更新」不陪它灰着 / Only subscriptions still present count: one deleted mid-download does not keep 全部更新 grey
 const busy = computed(() => subscriptions.value.some(downloading))
@@ -109,14 +141,21 @@ async function updateNow(urls: string[]): Promise<void> {
   const direct = !unsaved.value && !saveInFlight.value
   const before = model.blocklists.file
   const rest = withoutFile()
-  await rebuildBlocklists(urls)
+  const result = await rebuildBlocklists(urls)
+  // 没下成的，合成那边已经说了原因 / One that did not download already had its reason said by the build
+  if (result.outcome === 'failed') return
+  if (result.outcome === 'dropped') { toast.info('草稿换过了，这次下载的没有用上；要用新的一份，再点一次「立即更新」'); return }
+  if (result.outcome === 'superseded') { toast.info('新的一份会和刚才的修改一起放进草稿，保存后生效'); return }
   if (model.blocklists.file === before) {
-    // 没出错、文件也没变：下载的和在用的一样 / No failure and the same file: the download matches what is in use
-    if (!urls.some((url) => blocklists.sources[url]?.last_error)) toast.info(urls.length > 1 ? '列表都没有变化，不用更新' : '列表没有变化，不用更新')
+    if (urls.some((url) => blocklists.sources[url]?.last_error)) return
+    // 关着的列表不进合成的文件：下好了也不变 / A switched-off list stays out of the merged file: a fresh download changes nothing
+    const off = subscriptions.value.find((s) => urls.length === 1 && s.url === urls[0] && !s.enabled)
+    toast.info(off ? `新的一份已下载；「${off.name}」关着，打开后用上` : urls.length > 1 ? '下载的都和在用的一样，已经是最新的' : '下载的和在用的一样，已经是最新的')
     return
   }
   if (!direct || withoutFile() !== rest || saveInFlight.value) { toast.info('新的一份已放进草稿，保存后生效'); return }
   await save('draft', '手动更新拦截列表')
+  if (mounted && stage.value === 'done') toast.success(`已换上新下载的列表（版本 #${doc.value?.version_id}）`)
 }
 const updateAll = () => void updateNow(subscriptions.value.map((s) => s.url))
 
@@ -128,8 +167,10 @@ function subscribe(urls: string[]): void {
   const saved = appliedModel.value.blocklists.subscriptions
   const retry: string[] = []
   for (const url of urls.slice(0, Math.max(0, room.value))) {
+    const pending = deleteToasts.get(url)
+    if (pending !== undefined) { toast.dismiss(pending); deleteToasts.delete(url) }
     // 删掉又加回来的沿用原来的 id 和名字，不算新加的 / One removed and added back keeps its id and name, so it does not count as new
-    const before = saved.find((x) => x.url === url)
+    const before = saved.find((x) => normalUrl(x.url) === url)
     model.blocklists.subscriptions.push(before ? { ...before, enabled: true } : { id: newId(), name: subscriptionName(url), url, enabled: true })
     // 以前没下载成功过的，加回来时再下载一次 / One that never downloaded downloads again when added back
     const status = blocklists.sources[url]
@@ -142,16 +183,18 @@ function addFromUrl(): void {
   if (!raw) return
   const checked = checkSubscriptionUrl(raw)
   if ('problem' in checked) addError.value = checked.problem
-  else if (subscriptions.value.some((s) => s.url === checked.url)) addError.value = '已经订阅了这个列表'
-  else if (room.value <= 0) addError.value = `最多订阅 ${MAX_SUBSCRIPTIONS} 个列表`
+  else if (subscriptions.value.some((s) => normalUrl(s.url) === checked.url)) addError.value = '已经订阅了这个列表'
+  else if (room.value <= 0) addError.value = `已经订阅了 ${MAX_SUBSCRIPTIONS} 个列表，先删掉一个再加`
   else { subscribe([checked.url]); addUrl.value = ''; addError.value = '' }
 }
 const presetDialog = ref<HTMLDialogElement | null>(null)
 const picked = ref<string[]>([])
-const subscribed = (url: string) => subscriptions.value.some((s) => s.url === url)
+const subscribed = (url: string) => subscriptions.value.some((s) => normalUrl(s.url) === url)
 // 名额用完：没勾的不能再勾 / Out of room: items not ticked cannot be ticked
 const full = (url: string) => !picked.value.includes(url) && picked.value.length >= room.value
 const roomShort = computed(() => room.value < PRESETS.filter((p) => !subscribed(p.url)).length)
+// 名额提示跟着勾选变：还能选几个，满了说怎么办 / The room hint follows the ticks: how many more can be picked, and what to do once full
+const roomHint = computed(() => (room.value <= 0 ? `已经订阅了 ${MAX_SUBSCRIPTIONS} 个列表，要加新的，先删掉一个。` : `最多订阅 ${MAX_SUBSCRIPTIONS} 个列表，这次还能选 ${room.value - picked.value.length} 个。`))
 const memoryText = (mib: number) => (mib < 1 ? '内存不到 1\u00a0MiB' : `内存约 ${mib}\u00a0MiB`)
 function openPresets(): void {
   picked.value = []
@@ -194,7 +237,7 @@ const scheduleHint = computed(() => {
   const s = schedule.value
   if (!s) return blocklists.status === 'failed' ? '读不到自动更新的设置，稍后刷新页面再看' : ''
   if (!s.interval_hours) return '开了以后按时更新已保存的列表'
-  return savedLists.value ? '' : '保存了列表以后才会开始更新'
+  return savedLists.value ? '' : '保存了开着的列表以后才会开始更新'
 })
 const blockText = computed(() => blockLabel(model, 'default'))
 </script>
@@ -230,9 +273,9 @@ const blockText = computed(() => blockLabel(model, 'default'))
             <li v-for="s in subscriptions" :key="s.id" class="bl__row" :class="{ 'is-off': !s.enabled }">
               <span class="bl__name">
                 <span class="bl__nm"><b>{{ s.name }}</b><span v-if="changedSubscriptionIds.has(s.id)" class="ui-dot ui-dot--ink bl__changed" role="img" :aria-label="added(s) ? '新加的，还没保存' : '改过，还没保存'" :title="added(s) ? '新加的，还没保存' : '改过，还没保存'"></span></span>
-                <small>{{ source(s) }}</small>
+                <small v-if="source(s)">{{ source(s) }}</small>
               </span>
-              <span class="bl__about" :title="about(s)">{{ about(s) }}</span>
+              <span class="bl__about" :title="presetOf(s) ? about(s) : link(s)">{{ about(s) }}</span>
               <span class="bl__rules"><span class="bl__sr">规则</span><span>{{ held(s) ? ruleCount(statusOf(s)!.summary.rules) : '—' }}</span><small v-if="held(s) && statusOf(s)!.summary.skipped">{{ fmtCount(statusOf(s)!.summary.skipped) }}&nbsp;条没用上</small></span>
               <span class="bl__when" aria-live="polite">
                 <span class="bl__sr">更新</span>
@@ -241,7 +284,7 @@ const blockText = computed(() => blockLabel(model, 'default'))
                 <span v-else-if="statusOf(s)?.last_error" class="ui-tag ui-tag--warn" :title="statusOf(s)!.last_error!">{{ held(s) ? '没更新上' : '没下载成功' }}</span>
                 <span v-else-if="statusOf(s)?.downloaded_at">{{ ago(statusOf(s)!.downloaded_at!) }}<span class="bl__updated">更新</span></span>
                 <span v-else>{{ blocklists.status === 'loading' ? '…' : '还没下载' }}</span>
-                <small v-if="!downloading(s) && statusOf(s)?.last_error && held(s) && statusOf(s)?.downloaded_at">仍用{{ spaced(ago(statusOf(s)!.downloaded_at!)) }}那份</small>
+                <small v-if="s.enabled && !downloading(s) && statusOf(s)?.last_error && held(s) && statusOf(s)?.downloaded_at">仍用{{ spaced(ago(statusOf(s)!.downloaded_at!)) }}那份</small>
               </span>
               <span class="bl__acts">
                 <label class="ui-switch"><input :checked="s.enabled" type="checkbox" :aria-label="`启用 ${s.name}`" @change="toggle(s, ($event.target as HTMLInputElement).checked)"><i></i></label>
@@ -254,7 +297,7 @@ const blockText = computed(() => blockLabel(model, 'default'))
           <TriangleAlert :size="14" aria-hidden="true" />
           <div class="bl__causes">
             <p v-for="f in failures" :key="f.id"><b v-if="f.name">{{ f.name }}：</b>{{ f.cause }}。</p>
-            <p v-if="retryTail">{{ retryTail[0] }}<span class="nowrap">{{ retryTail[1] }}</span></p>
+            <p v-if="retryLead">{{ retryLead }}<span class="nowrap">「立即更新」。</span></p>
           </div>
         </div>
         <p v-if="blocklists.status === 'failed' && subscriptions.some(unknown)" class="bl__note"><TriangleAlert :size="14" aria-hidden="true" />读不到各个列表下载得怎么样；订阅照常保存，稍后刷新页面再看。</p>
@@ -269,7 +312,7 @@ const blockText = computed(() => blockLabel(model, 'default'))
         <label class="ui-input ui-input--area bl__text"><textarea v-model="model.blocklists.custom" :rows="customRows" aria-label="自己写的规则，一行一条" spellcheck="false" autocapitalize="off" placeholder="||ads.example.com^&#10;@@||cdn.example.com^"></textarea></label>
         <p class="bl__syntax"><span><code>||example.com^</code>拦截它和子域名</span><span><code>@@||example.com^</code>放行它和子域名</span><span><code>example.com</code>只拦它本身</span></p>
         <ul v-if="problems.length" class="bl__problems" aria-label="没用上的行">
-          <li v-for="p in problems" :key="p.line" class="bl__problem"><span class="bl__lineno">第 {{ p.line }} 行</span><s>{{ p.text }}</s><span>{{ p.problem }}</span></li>
+          <li v-for="p in problems" :key="p.line" class="bl__problem"><span class="bl__lineno">第 {{ p.line }} 行</span><span class="bl__what"><s>{{ p.text }}</s> <span>{{ p.problem }}</span></span></li>
         </ul>
       </div>
     </section>
@@ -303,8 +346,8 @@ const blockText = computed(() => blockLabel(model, 'default'))
               </label>
             </li>
           </ul>
-          <p v-if="roomShort" class="pfield__hint">最多订阅 {{ MAX_SUBSCRIPTIONS }} 个列表，还能再订阅 {{ Math.max(0, room) }} 个。</p>
-          <a class="blp__more" href="https://adguard-dns.io/kb/general/dns-filtering-syntax/" target="_blank" rel="noreferrer">其他 AdGuard、Adblock 写法的列表和 hosts 文件也能用：写法说明（英文）<ExternalLink :size="14" aria-hidden="true" /></a>
+          <p v-if="roomShort" class="pfield__hint">{{ roomHint }}</p>
+          <p class="blp__more">其他 AdGuard、Adblock 写法的列表和 hosts 文件也能用：<a class="ui-link" href="https://adguard-dns.io/kb/general/dns-filtering-syntax/" target="_blank" rel="noreferrer">AdGuard 写法说明（英文）<ExternalLink :size="14" aria-hidden="true" /></a></p>
         </div>
         <footer class="pdialog__foot"><button class="ui-btn ui-btn--secondary" type="button" @click="presetDialog?.close()">取消</button><button class="ui-btn ui-btn--primary" type="submit" :disabled="!picked.length">{{ picked.length ? `订阅 ${picked.length} 个` : '订阅' }}</button></footer>
       </form>
@@ -316,7 +359,7 @@ const blockText = computed(() => blockLabel(model, 'default'))
         <div class="pdialog__body">
           <p class="pfield__hint">这些规则 DNS 用不上或者还不支持，整条跳过；其余的照常生效。<template v-if="skippedOf && (statusOf(skippedOf)?.summary.skipped ?? 0) > samples.length">下面只列出前 {{ samples.length }} 条。</template></p>
           <ul class="bl__problems">
-            <li v-for="line in samples" :key="line.line" class="bl__problem"><span class="bl__lineno">第 {{ line.line }} 行</span><s>{{ line.text }}</s><span>{{ sampleText(line) }}</span></li>
+            <li v-for="line in samples" :key="line.line" class="bl__problem"><span class="bl__lineno">第 {{ line.line }} 行</span><span class="bl__what"><s>{{ line.text }}</s> <span>{{ sampleText(line) }}</span></span></li>
           </ul>
         </div>
         <footer class="pdialog__foot"><button class="ui-btn ui-btn--secondary" type="button" @click="skippedDialog?.close()">关闭</button></footer>
@@ -338,7 +381,7 @@ const blockText = computed(() => blockLabel(model, 'default'))
 .bl__url { flex: 1 1 0; min-width: 0; }
 .bl__url input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--l-ink); font-size: var(--t-3); }
 .bl__url input::placeholder { color: var(--l-ink-3); }
-.bl__adderr { flex: 1 0 100%; margin: 0; padding-left: calc(16px + var(--s-3)); }
+.bl__adderr { flex: 1 0 100%; margin: 0; }
 /* 表头和每一行共用一套列（subgrid）：每列宽到这一列最宽的内容，剩下的宽度平均分到列与列之间。开关和「…」都是对这一行的操作，
    合成最后一列，挨在一起靠右
    The head and every row share one set of columns (subgrid): each column is as wide as its widest content, and what is left is
@@ -367,6 +410,8 @@ const blockText = computed(() => blockLabel(model, 'default'))
 /* 更新列留出最宽的状态那么宽：「全部更新」时列不横移 / The update column keeps room for its widest state, so 全部更新 does not shift the columns */
 .bl__when { min-width: 4.5rem; }
 .bl__when > .ui-tag { justify-self: start; }
+/* 关着的列表不在用：出错的标签也淡一档 / A switched-off list is not in use: its failure tag dims too */
+.bl__row.is-off .bl__when > .ui-tag { background: var(--l-sunk); color: var(--l-ink-3); }
 .bl__updated { display: none; }
 .bl__row.is-off :is(.bl__nm b, .bl__about, .bl__rules > span, .bl__when > span) { color: var(--l-ink-3); }
 /* 读屏用的列名：表头对读屏是隐藏的 / Column names for screen readers, to whom the head is hidden */
@@ -384,6 +429,8 @@ const blockText = computed(() => blockLabel(model, 'default'))
   .bl__table { grid-template-columns: minmax(0, max-content) minmax(0, max-content) repeat(3, max-content); }
   .bl__about, .bl__col-about { display: block; }
   .bl__name small { display: none; }
+  /* 和「4 条没用上」一样：「没更新上」和「仍用…那份」写在同一行，每行一样高 / As with 「4 条没用上」: 没更新上 and 仍用…那份 share a line, so every row is the same height */
+  .bl__when { display: flex; align-items: baseline; gap: var(--s-2); }
 }
 .bl__note { display: flex; align-items: flex-start; gap: var(--s-2); margin: 0; padding: var(--s-3) var(--s-5); border-top: 1px solid var(--l-hair); color: var(--warn-l); font-size: var(--t-2); line-height: var(--lh-base); }
 .bl__note > svg { flex-shrink: 0; margin-top: calc((1lh - 14px) / 2); }
@@ -397,10 +444,14 @@ const blockText = computed(() => blockLabel(model, 'default'))
 .bl__syntax > span { display: inline-flex; align-items: baseline; gap: var(--s-1); white-space: nowrap; }
 .bl__syntax code { padding: 0 var(--s-1); border-radius: var(--r-1); background: var(--l-sunk); color: var(--l-ink-2); font-family: var(--f-mono); }
 .bl__problems { display: grid; gap: var(--s-1); margin: 0; padding: 0; list-style: none; color: var(--l-ink-2); font-size: var(--t-2); }
-.bl__problem { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-1) var(--s-2); }
-/* 行号等宽、留够「第 1000 行」：规则文字从同一处开始 / Line numbers in even digits with room for 「第 1000 行」, so the rule text starts in one place */
-.bl__lineno { min-width: 4.6em; color: var(--l-ink-3); font-variant-numeric: tabular-nums; }
-.bl__problem s { color: var(--l-ink-3); font-family: var(--f-mono); font-size: var(--t-1); overflow-wrap: anywhere; }
+/* 整张清单共用一列行号（多少位都对齐），规则和原因挂在后面那一列，折行也不掉到行号底下
+   The whole list shares one column of line numbers (aligned however many digits), with the rule and its reason in the next column, so a wrap never
+   drops under the line number */
+.bl__problems { grid-template-columns: max-content minmax(0, 1fr); column-gap: var(--s-2); }
+.bl__problem { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: baseline; }
+.bl__lineno { color: var(--l-ink-3); font-variant-numeric: tabular-nums; }
+.bl__what > span { word-break: keep-all; overflow-wrap: anywhere; }
+.bl__problem s { margin-right: var(--s-1); color: var(--l-ink-3); font-family: var(--f-mono); font-size: var(--t-1); overflow-wrap: anywhere; }
 .bl__warn { color: var(--warn-l) !important; white-space: normal !important; }
 .bl__sets { padding: var(--s-2) var(--s-5); }
 .bl__sets .ui-setrow { grid-template-columns: minmax(0, 300px) minmax(0, 320px); }
@@ -413,20 +464,27 @@ const blockText = computed(() => blockLabel(model, 'default'))
 .blp__item { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--s-3); min-height: var(--h-touch); padding: var(--s-2) var(--s-3); cursor: pointer; }
 @media (hover: hover) { .blp__item:hover { background: var(--l-canvas); } }
 .blp__item:is(.is-done, .is-full) { cursor: default; }
-.blp__item.is-done :is(b, small, .blp__meta) { color: var(--l-ink-3); }
+.blp__item:is(.is-done, .is-full) :is(b, small, .blp__meta) { color: var(--l-ink-3); }
+/* 已订阅的画成灰色的「已勾」：它已经在里面了 / A subscribed one is drawn as a grey tick: it is already in */
+.blp__item.is-done .ui-checkbox i { border-color: var(--l-ink-3); background: var(--l-ink-3); }
+.blp__item.is-done .ui-checkbox i::after { width: var(--s-2); height: var(--s-1); border: solid var(--l-surface); border-width: 0 0 2px 2px; transform: translateY(-1px) rotate(-45deg); content: ''; }
 .blp__main { display: grid; gap: 1px; min-width: 0; }
 .blp__main b { color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-medium); }
 .blp__main small { color: var(--l-ink-3); font-size: var(--t-1); }
 /* 条数和内存是数值，按数据的字号 / Count and memory are values, set as data */
 .blp__meta { color: var(--l-ink-2); font-size: var(--t-2); text-align: right; font-variant-numeric: tabular-nums; }
-.blp__more { display: inline-flex; align-items: center; gap: var(--s-1); color: var(--l-ink-2); font-size: var(--t-2); }
-.blp__more svg { flex: none; }
+.blp__more { margin: 0; color: var(--l-ink-2); font-size: var(--t-2); }
+/* 图标跟在链接的字后面，折行时不单独挂到最右边 / The icon follows the link text and never hangs alone at the far right when it wraps */
+.blp__more svg { display: inline; margin-left: var(--s-1); vertical-align: -2px; }
 @media (max-width: 640px) {
   .bl__head { padding: var(--s-4) var(--s-4) var(--s-2); }
   .bl__tools { margin-left: calc(var(--s-2) * -1); }
   .bl__add { padding: 0 var(--s-4); min-height: var(--h-touch); }
-  .bl__url input { min-height: var(--h-touch); }
-  .bl__adderr { padding-bottom: var(--s-2); }
+  /* 整栏 44 都点得中（全站给输入框的 36 写得更具体，这里也要写到那么具体） / The whole 44 bar takes the tap (the site-wide 36 for inputs is more
+     specific, so this has to be as specific) */
+  .bl__card .bl__add .bl__url input { min-height: var(--h-touch); }
+  /* 手机上「+」图标在：出错的话和输入的字对齐 / On phones the 「+」 icon shows: an error lines up with the typed text */
+  .bl__adderr { padding: 0 0 var(--s-2) calc(16px + var(--s-3)); }
   .bl__cols { display: none; }
   .bl__table, .bl__list { display: block; }
   /* 第一行名字、「…」和开关并排，第二行规则数和更新时间；上下留白和域名映射一样，「…」不把第一行撑高
@@ -448,17 +506,21 @@ const blockText = computed(() => blockLabel(model, 'default'))
   .bl__acts > .ui-switch { grid-area: switch; justify-self: end; }
   .bl__acts > :deep(.ui-menu-host) { grid-area: menu; }
   .bl__note { padding-inline: var(--s-4); }
+  /* 一条折成两行时，条与条之间空开一点，分得出哪段是哪条 / With an item over two lines, items are spaced a little apart so each reads as one */
+  .bl__causes { gap: var(--s-1); }
   .bl__own { padding-inline: var(--s-4); }
   /* 每条问题固定两行：第一行行号和原因，第二行划掉的原文；条与条之间空开 / Each problem keeps two lines, the line number and reason, then the struck
      text; items are spaced apart */
-  .bl__problems { row-gap: var(--s-3); }
-  .bl__problem { row-gap: 2px; }
-  .bl__lineno { min-width: 0; }
-  .bl__problem s { order: 2; flex-basis: 100%; }
-  .bl__problem > span:last-child { flex: 1 1 0; min-width: 0; }
+  .bl__problems { display: grid; grid-template-columns: minmax(0, 1fr); row-gap: var(--s-3); }
+  .bl__problem { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--s-2); grid-column: auto; }
+  .bl__what { display: contents; }
+  .bl__problem s { order: 2; flex-basis: 100%; margin-right: 0; }
+  .bl__what > span { flex: 1 1 0; min-width: 0; }
   .bl__sets { padding-inline: var(--s-4); }
   .bl__sets .ui-setrow { grid-template-columns: minmax(0, 1fr); }
-  .blp__item { grid-template-columns: auto minmax(0, 1fr); row-gap: 2px; }
+  /* 三行一项时复选框对着名字那一行，不对着中间 / With three lines an item's checkbox faces the name line, not the middle */
+  .blp__item { grid-template-columns: auto minmax(0, 1fr); row-gap: 2px; align-items: start; }
+  .blp__item .ui-checkbox { margin-top: calc((var(--t-3) * var(--lh-base) - var(--size-check)) / 2); }
   .blp__meta { grid-column: 2; text-align: left; }
 }
 </style>

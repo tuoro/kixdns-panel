@@ -1,5 +1,5 @@
-import { BLOCKLIST_PIPELINE, BLOCKLIST_RULE } from './blocklist'
-import { mainPipelineId, ruleGroupPipelineId, ruleTitle, upstreamPipelineId, type Model, type Rule } from './model'
+import { BLOCKLIST_RULE } from './blocklist'
+import { blocklistPipelineId, mainPipelineId, ruleGroupPipelineId, ruleTitle, upstreamPipelineId, type Model, type Rule } from './model'
 
 // 执行路径里内核用的名字（rule-12、main、group-g1、upstream-cn）换回配置页上看到的名字。认不出的返回 null，照原样显示。
 // Turns the kernel's names in a trace (rule-12, main, group-g1, upstream-cn) back into the names the config page shows. Anything not
@@ -45,6 +45,7 @@ export function findKernelRule(model: Model, label: string): Rule | undefined {
 
 export function traceNames(model: Model): TraceNames {
   const upstreamIds = new Set(model.groups.map((g) => upstreamPipelineId(model, g.id)))
+  const blocklistId = blocklistPipelineId(model)
   const ownRule = (id: string): Rule | undefined => {
     const own = /^rule-(\d+)$/.exec(id)?.[1]
     return own === undefined ? undefined : allRules(model).find((r) => r.id === Number(own))
@@ -52,7 +53,7 @@ export function traceNames(model: Model): TraceNames {
   const pipeline = (id: string): string | null => {
     if (id === mainPipelineId(model)) return '主列表'
     if (id === (model.mappingId ?? 'domain_mapping')) return '域名映射'
-    if (id === BLOCKLIST_PIPELINE) return '拦截列表'
+    if (id === blocklistId) return '拦截列表'
     const group = model.ruleGroups.find((g) => ruleGroupPipelineId(model, g.id) === id)
     if (group) return `规则组「${group.name}」`
     const upstream = model.groups.find((g) => upstreamPipelineId(model, g.id) === id)
@@ -66,7 +67,7 @@ export function traceNames(model: Model): TraceNames {
     matched: (label) => {
       if (label === '其余请求') return '没有规则命中，按「其余请求」处理'
       // 上一步已经写着「进入拦截列表」，这一步不再重复名字 / The step before already reads 进入拦截列表, so this one does not repeat the name
-      if (label === BLOCKLIST_RULE) return '在要拦截的域名里'
+      if (label === BLOCKLIST_RULE) return '要拦截的域名里有它'
       const group = model.ruleGroups.find((g) => label === `${g.name}·其余`)
       if (group) return `规则组「${group.name}」里没有规则命中，按「其余请求」处理`
       const mapped = /^域名映射 (.+)$/.exec(label)?.[1]

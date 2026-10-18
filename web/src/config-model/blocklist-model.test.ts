@@ -119,7 +119,7 @@ describe('拦截列表读回来 / blocklists read back', () => {
     expect(model.blocklists.file).toBeNull()
     expect(model.settings.geosite_data_paths).toContain(FILE)
     expect(behaviourCheck(cfg, compile(model) as KConfigLike).mismatches).toEqual([])
-    expect(notes.some((n) => n.level === 'warn' && n.text.includes('拦截列表的入口在别处改过'))).toBe(true)
+    expect(notes.some((n) => n.level === 'warn' && n.text.includes('拦截列表的入口在面板外改过'))).toBe(true)
 
     // 这时再订阅：新的拦截列表换个不重名的 Pipeline，存下再读回来照样认得 / Subscribing now: the new blocklists take a pipeline id nothing
     // else uses, and still read back once saved

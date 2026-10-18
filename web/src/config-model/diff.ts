@@ -91,7 +91,7 @@ function listDiff(blocks: DiffBlock[], now: Model, then: Model, a: Rule[], b: Ru
   }
 }
 
-export function diffModels(now: Model, then: Model): DiffBlock[] {
+export function diffModels(now: Model, then: Model, toward: 'save' | 'restore' = 'save'): DiffBlock[] {
   const blocks: DiffBlock[] = []
   listDiff(blocks, now, then, now.rules, then.rules, '')
   if (JSON.stringify(now.rest) !== JSON.stringify(then.rest)) blocks.push({ kind: '改了', title: '其余请求', lines: [{ sign: '-', text: outcomeSentence(now, now.rest) }, { sign: '+', text: outcomeSentence(then, then.rest) }] })
@@ -121,7 +121,7 @@ export function diffModels(now: Model, then: Model): DiffBlock[] {
     if (!old) blocks.push({ kind: '加上', title: `域名映射 ${x.domain}`, lines: [{ sign: '+', text: mapping(x) }] })
     else if (mapping(old) !== mapping(x)) blocks.push({ kind: '改了', title: `域名映射 ${x.domain}`, lines: [{ sign: '-', text: mapping(old) }, { sign: '+', text: mapping(x) }] })
   }
-  blocklistDiff(blocks, now.blocklists, then.blocklists)
+  blocklistDiff(blocks, now.blocklists, then.blocklists, toward)
   for (const k of new Set([...Object.keys(now.settings), ...Object.keys(then.settings)])) {
     const a = now.settings[k]
     const b = then.settings[k]
@@ -152,7 +152,7 @@ export function diffModels(now: Model, then: Model): DiffBlock[] {
 // 拦截列表：订阅按链接比（标题已经写着名字，事实里不再写），自己写的规则按行比；只换了合成的文件说一句是重新下载的
 // Blocklists: subscriptions compare by link (the title already gives the name, so the facts leave it out) and the rules of one's own by line; a
 // different merged file alone says the lists were downloaded again
-function blocklistDiff(blocks: DiffBlock[], now: Blocklists, then: Blocklists): void {
+function blocklistDiff(blocks: DiffBlock[], now: Blocklists, then: Blocklists, toward: 'save' | 'restore'): void {
   const facts = (x: Subscription) => ({ 链接: x.url, 状态: x.enabled ? '启用' : '已停用' })
   for (const x of now.subscriptions) if (!then.subscriptions.some((y) => y.url === x.url)) blocks.push({ kind: '去掉', title: `拦截列表「${x.name}」`, lines: Object.entries(facts(x)).map(([k, v]) => ({ sign: '-', text: `${k}：${v}` })) })
   for (const x of then.subscriptions) {
@@ -162,7 +162,8 @@ function blocklistDiff(blocks: DiffBlock[], now: Blocklists, then: Blocklists): 
     if (lines.length) blocks.push({ kind: '改了', title: `拦截列表「${x.name}」`, lines })
   }
   const links = (b: Blocklists) => b.subscriptions.map((x) => `${x.url}${x.enabled}`).sort().join()
-  if (now.file !== then.file && links(now) === links(then)) blocks.push({ kind: '改了', title: '拦截列表', lines: [], note: '列表重新下载过，换成新的那份' })
+  // 保存草稿时换上的是新下载的那份，恢复旧版本时换回的是那时下载的 / Saving the draft brings in the newer download, restoring an old version brings back the one of its day
+  if (now.file !== then.file && links(now) === links(then)) blocks.push({ kind: '改了', title: '拦截列表', lines: [], note: toward === 'restore' ? '列表内容换回这个版本当时下载的那份' : '列表重新下载过，保存后换成新的那份' })
   const rows = (text: string) => text.split('\n').map((l) => l.trim()).filter(Boolean)
   const before = rows(now.custom)
   const after = rows(then.custom)

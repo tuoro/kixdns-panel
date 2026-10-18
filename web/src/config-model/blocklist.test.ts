@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { checkSubscriptionUrl, MAX_OWN_RULES, ownMatcher, ownRuleText, parseLine, parseOwnRules, skipText, subscriptionName, type Line } from './blocklist'
+import { checkSubscriptionUrl, MAX_OWN_RULES, ownMatcher, ownRuleText, parseLine, parseOwnRules, shortName, skipText, subscriptionName, type Line } from './blocklist'
 
 interface Case {
   line: string
@@ -67,15 +67,19 @@ it('says why a list line went unused', () => {
 
 it('names a subscription by the suggested list, or by file name and host', () => {
   expect(subscriptionName('https://big.oisd.nl/')).toBe('OISD big')
-  expect(subscriptionName('https://lists.example.org/a/filter.txt')).toBe('filter.txt · lists.example.org')
-  expect(subscriptionName('https://lists.example.org/a/%E5%B9%BF%E5%91%8A.txt')).toBe('广告.txt · lists.example.org')
+  expect(subscriptionName('https://lists.example.org/a/filter.txt')).toBe('filter.txt\u00a0·\u00a0lists.example.org')
+  expect(subscriptionName('https://lists.example.org/a/%E5%B9%BF%E5%91%8A.txt')).toBe('广告.txt\u00a0·\u00a0lists.example.org')
   expect(subscriptionName('https://lists.example.org/')).toBe('lists.example.org')
+  // 已经写着主机的地方只用文件名；起过名的照原样 / Where the host is already given only the file name is used; a name of one's own stays
+  expect(shortName(subscriptionName('https://lists.example.org/a/filter.txt'), 'https://lists.example.org/a/filter.txt')).toBe('filter.txt')
+  expect(shortName('HaGeZi Light', 'https://lists.example.org/a/filter.txt')).toBe('HaGeZi Light')
 })
 
 it('checks a link to subscribe to as the server does', () => {
   expect(checkSubscriptionUrl('https://BIG.oisd.nl')).toEqual({ url: 'https://big.oisd.nl/' })
   expect(checkSubscriptionUrl('http://lists.example.org/a.txt')).toEqual({ problem: '链接只能用 https://' })
   expect(checkSubscriptionUrl('https://user:secret@lists.example.org/a.txt')).toEqual({ problem: '链接不能包含用户名或密码' })
-  expect(checkSubscriptionUrl('lists.example.org/a.txt')).toEqual({ problem: '链接写得不对' })
+  expect(checkSubscriptionUrl('lists.example.org/a.txt')).toEqual({ problem: '链接要写全，以 https:// 开头' })
+  expect(checkSubscriptionUrl('https://exa mple.org/a.txt')).toEqual({ problem: '链接写得不对' })
   expect(checkSubscriptionUrl(`https://lists.example.org/${'a'.repeat(4100)}`)).toEqual({ problem: '链接过长' })
 })

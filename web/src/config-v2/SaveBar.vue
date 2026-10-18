@@ -35,7 +35,9 @@ const noteOpen = ref(false)
 // JSON 视图里又改了还没收进草稿：「校验通过」说的不是现在这份 / JSON edited and not yet folded: 校验通过 would not be about what is there now
 const validated = computed(() => (draftStage.value === 'idle' && validation.value && changeCount.value > 0 && !props.jsonDirty ? validation.value : null))
 // 有新改动就清掉上一次的结果 / A new edit clears the previous result
-watch(() => JSON.stringify(model), () => { editTouched(); validation.value = null })
+watch(() => JSON.stringify(model), () => { validation.value = null })
+// 合成落地换上文件不算再改一笔：保存没成的那句留着，不一闪就没 / A build landing with its file is no fresh edit: a failed save's line stays instead of flashing away
+watch(() => JSON.stringify({ ...model, blocklists: { ...model.blocklists, file: null, builtFor: '' } }), () => editTouched())
 
 function onKey(event: KeyboardEvent): void {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
@@ -100,7 +102,7 @@ const applyingNote = computed(() => `正在应用${pendingVersionId.value ? `版
 const saving = computed(() => (busy.value && stage.value !== 'checking' && origin.value === 'draft') || queued.value)
 // 保存还在跑（写入落地以后、重读完之前草稿已经算干净了）：按钮一直留着写「保存中」，不在说「第 2 步」时消失
 // The save is still running (after the write lands and before the re-read the draft already counts as clean): the button stays, reading 保存中, instead of vanishing mid-「第 2 步」
-const inSave = computed(() => draftStage.value === 'validating' || draftStage.value === 'applying' || queued.value)
+const inSave = computed(() => draftStage.value === 'building' || draftStage.value === 'validating' || draftStage.value === 'applying' || queued.value)
 useBarHeight(bar, '--savebar-h')
 // 保存开始时焦点挪到保存按钮（上面会出「保存中」），只在焦点本来就在保存条上或者没落在任何地方时：正在输入框里打字的人不被拽走。
 // 单独的「校验」不挪到保存按钮：再按一下 Enter 或按住不放就成了保存并应用，焦点放到状态那一行
@@ -134,6 +136,7 @@ function discard(): void {
     <footer v-if="visible" ref="bar" class="ui-savebar cfg__savebar" :inert="rereading || undefined" :aria-busy="rereading || undefined" :class="{ 'ui-savebar--err': draftStage === 'failed' || Boolean(jsonError) || cnameBlocked, 'savebar--wrap': draftStage === 'done' && pending }">
       <p :key="draftStage === 'failed' ? `f-${note}` : 'state'" ref="statusLine" tabindex="-1" data-focus-landing class="ui-savebar__status" :class="{ 'ui-shake': draftStage === 'failed' }" :role="draftStage === 'failed' || jsonError ? 'alert' : 'status'">
         <template v-if="draftStage === 'done'"><svg class="ui-check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5" /></svg><span class="ui-savebar__detail"><UiDotText :parts="note.split(' · ')" /></span></template>
+        <template v-else-if="draftStage === 'building'"><span class="ui-spin" aria-hidden="true"></span><span class="ui-savebar__detail">等拦截列表合成</span></template>
         <!-- 排在单独的「校验」后面的保存：状态和直接保存一样写「第 1 步 · 校验」，不和「保存中」各说各的 / A save queued behind a lone 校验 reads 「第 1 步 · 校验」 like a direct save, not 「校验中」 beside 保存中 -->
         <template v-else-if="draftStage === 'checking' && !queued"><span class="ui-spin" aria-hidden="true"></span><span class="ui-savebar__detail">校验中</span></template>
         <template v-else-if="draftStage === 'validating' || draftStage === 'checking'"><span class="ui-spin" aria-hidden="true"></span><span class="ui-savebar__detail"><UiDotText :parts="['第 1 步', '校验', ...(elapsed ? [elapsed] : [])]" /></span></template>

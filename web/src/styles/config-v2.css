@@ -1732,7 +1732,7 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
 .tester__result { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-2) var(--s-4); padding: var(--s-3) var(--s-4); border-radius: var(--r-2); background: var(--ok-tint-l); }
 .tester__result.is-warn { background: var(--warn-tint-l); }
 .tester__allow { margin: 0; color: var(--l-ink-2); font-size: var(--t-2); overflow-wrap: anywhere; }
-.tester__allow code { font-family: var(--f-mono); font-size: var(--t-1); }
+.tester__allow code { padding: 0 var(--s-1); border-radius: var(--r-1); background: color-mix(in srgb, var(--l-surface) 70%, transparent); font-family: var(--f-mono); font-size: var(--t-1); }
 .tester__verdict { min-width: 0; margin: 0; font-size: var(--t-3); font-weight: var(--w-bold); overflow-wrap: anywhere; }
 .tester__steps { margin: 0; }
 @media (max-width: 640px) {

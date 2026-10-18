@@ -62,7 +62,7 @@ async function openDiff(v: ConfigVersion): Promise<void> {
     const detail = await versionDetail(v.id)
     // 等的时候关掉了或换了一个版本，这份就不要了 / Closed or switched to another version meanwhile: this one is dropped
     if (preview.value?.id !== v.id) return
-    blocks.value = diffModels(appliedModel.value, readConfig(detail.content).model)
+    blocks.value = diffModels(appliedModel.value, readConfig(detail.content).model, 'restore')
   } catch (error) {
     toast.error(errorMessage(error))
     if (preview.value?.id === v.id) closeDiff()

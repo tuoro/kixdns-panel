@@ -243,6 +243,21 @@ export function parseOwnRules(text: string): { rules: OwnRule[]; problems: OwnPr
   return { rules, problems }
 }
 
+/** 一条规则管不管这个域名（已经是小写、去掉末尾点的） / Whether a rule covers this name (already lower-cased, no trailing dot) */
+function covers(match: Match, name: string): boolean {
+  if (match.kind === 'suffix') return name === match.value || name.endsWith(`.${match.value}`)
+  if (match.kind === 'exact') return name === match.value
+  try { return new RegExp(match.value.replace(/^\(\?i\)/, ''), 'i').test(name) } catch { return false }
+}
+
+/** 自己写的规则里拦下这个域名的那一条（同时有放行管着它时为 null：放行优先） / The rule of one's own that blocks this name (null when an allow also covers it: allows come first) */
+export function ownBlockFor(text: string, domain: string): OwnRule | null {
+  const name = domain.trim().toLowerCase().replace(/\.$/, '')
+  const rules = parseOwnRules(text).rules
+  if (rules.some((r) => r.allow && covers(r.match, name))) return null
+  return rules.find((r) => !r.allow && covers(r.match, name)) ?? null
+}
+
 /** 自己写的一条规则在入口里的条件 / One rule of one's own as an entry condition */
 export function ownMatcher(match: Match): KMatcher {
   if (match.kind === 'suffix') return { type: 'domain_suffix', value: match.value }
@@ -287,19 +302,39 @@ export function subscriptionName(url: string): string {
     const last = link.pathname.split('/').filter(Boolean).pop() ?? ''
     let file = last
     try { file = decodeURIComponent(last) } catch { /* 写坏的百分号转义照原样用 / a malformed percent escape is used as written */ }
-    return file ? `${file} · ${link.host}` : link.host
+    // 「·」两边不折行：整个名字要折就一起折到下一行，「·」不挂在行尾 / No break around 「·」: the whole name wraps together, never leaving 「·」 at a line end
+    return file ? `${file}${NAME_JOIN}${link.host}` : link.host
   } catch {
     return url
   }
 }
 
+const NAME_JOIN = '\u00a0·\u00a0'
+/** 默认名「文件名 · 主机」里的文件名，用在已经写着主机的地方；起过名、带标题的照原样 / The file part of a default 「file name · host」 name, for places
+ * that already give the host; a name with a title or of one's own stays as it is */
+export function shortName(name: string, url: string): string {
+  return name === subscriptionName(url) && name.includes(NAME_JOIN) ? name.slice(0, name.indexOf(NAME_JOIN)) : name
+}
+
 /** 检查要订阅的链接，和服务端的规矩一样；通过时给出规整的写法（主机名小写，没写路径补上 `/`） / Checks a link to subscribe to by the server's rules; on success gives its normal form (host lower-cased, a missing path filled in as `/`) */
 export function checkSubscriptionUrl(raw: string): { url: string } | { problem: string } {
   let link: URL
-  try { link = new URL(raw) } catch { return { problem: '链接写得不对' } }
+  try { link = new URL(raw) } catch {
+    // 没写协议、补上 https:// 就对的，照实说 / One with no scheme that reads once https:// is added is told so
+    if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) return { problem: '链接写得不对' }
+    try { new URL(`https://${raw}`); return { problem: '链接要写全，以 https:// 开头' } } catch { return { problem: '链接写得不对' } }
+  }
   if (link.protocol !== 'https:') return { problem: '链接只能用 https://' }
   if (link.username || link.password) return { problem: '链接不能包含用户名或密码' }
   if (!link.hostname) return { problem: '链接缺少主机名' }
   if (new TextEncoder().encode(link.href).length > 4096) return { problem: '链接过长' }
-  return { url: link.href }
+  // 页内的 #片段 和空的 ? 不改下载的内容：去掉，同一个列表才认得出来 / A #fragment or an empty ? does not change what downloads: dropped, so the same list is recognised
+  link.hash = ''
+  return { url: link.href.replace(/\?$/, '') }
+}
+
+/** 订阅链接规整以后的写法，用来认出同一个列表；读不懂的照原样 / A subscription link in its normal form, to recognise the same list; one that does not parse stays as it is */
+export function normalUrl(raw: string): string {
+  const checked = checkSubscriptionUrl(raw)
+  return 'url' in checked ? checked.url : raw
 }

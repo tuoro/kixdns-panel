@@ -4,7 +4,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import { useToast } from '../composables/useToast'
 import RuleRow from './RuleRow.vue'
-import { parseOwnRules } from '../config-model/blocklist'
+import { parseOwnRules, shortName } from '../config-model/blocklist'
 import { blockLabel, blocklistEntries, conditionsText, outcomePill, mappingIsIp, type Outcome, type Rule, ruleTitle } from '../config-model/model'
 import { model, newId } from './store'
 import { blocklists, loadBlocklists } from './useBlocklists'
@@ -47,8 +47,12 @@ const ownRules = computed(() => parseOwnRules(model.blocklists.custom).rules.len
 // alone, with no list, block nothing
 const blocking = computed(() => blocklistEntries(model).length > 0)
 // 列表名之间用顿号，和自己写的规则之间用逗号，不让「自己写的」读成又一个列表 / 顿号 between list names and a comma before the own rules, so they do not read as one more list
+// 自己粘贴、没有标题的列表只写文件名；前两个名字太长时也只说几个列表，免得「等 N 个列表，自己写的规则」被截掉
+// A pasted list without a title shows its file name only; when the first two names run long the row just counts the lists, so 「等 N 个列表，自己写的规则」
+// is not cut off
 const listSummary = computed(() => {
-  const names = liveLists.value.map((s) => s.name)
+  const names = liveLists.value.map((s) => shortName(s.name, s.url))
+  if (names.slice(0, 2).join('').length > 24) return listShort.value
   const lists = names.length <= 2 ? names.join('、') : `${names.slice(0, 2).join('、')} 等 ${names.length} 个列表`
   return [lists, ownRules.value ? `自己写的规则 ${ownRules.value} 条` : ''].filter(Boolean).join('，')
 })

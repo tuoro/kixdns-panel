@@ -51,7 +51,10 @@ function withoutListeners(model: Model): Model {
 // Models from before the blocklists lack them: an empty one is added on read. One without builtFor is taken as built for its current subscriptions
 const withBlocklists = (model: Model): Model => {
   if (!model.blocklists) return { ...model, blocklists: emptyBlocklists() }
-  return typeof model.blocklists.builtFor !== 'string' ? { ...model, blocklists: { ...model.blocklists, builtFor: blocklistKey(model.blocklists) } } : model
+  // 同一个链接订阅了两次（以前的撤销能做出来）只留第一个 / A link subscribed twice (an earlier undo could make that) keeps only the first
+  const subscriptions = model.blocklists.subscriptions.filter((s, i, all) => all.findIndex((x) => x.url === s.url) === i)
+  const blocklists = { ...model.blocklists, subscriptions }
+  return { ...model, blocklists: typeof blocklists.builtFor === 'string' ? blocklists : { ...blocklists, builtFor: blocklistKey(blocklists) } }
 }
 
 export function readConfig(cfg: Record<string, unknown>, prev?: Model): ReadResult {

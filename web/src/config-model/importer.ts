@@ -354,7 +354,7 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
   // 拦截列表的入口在 JSON 里改过、认不出来：照原样读成别的，说一句，不让拦截列表页像是什么都没开
   // The blocklist entries were edited in the JSON and cannot be recognised: they are read as something else, and a note says so, so the
   // blocklist page does not look as if nothing were on
-  if (!blocklistPipeline && blp && blRule?.name === BLOCKLIST_RULE) note('拦截列表的入口在别处改过，认不出来，已照原样读成规则；要在「拦截列表」里管理，先删掉这些规则', 'warn')
+  if (!blocklistPipeline && blp && blRule?.name === BLOCKLIST_RULE) note('拦截列表的入口在面板外改过，认不出来，已原样读成规则列表最前面的几条；要回到「拦截列表」里管理，先删掉这几条，再重新订阅', 'warn')
   // 上一份的拦截列表没写出入口（都关着、自己写的规则一条也用不上）时，内核里没有它的痕迹：原样接回来
   // When the previous blocklists wrote no entry (all switched off, no rule of one's own in use) the kernel holds no trace of them: they come back as they were
   if (!blocklistPipeline && prev && !blocklistEntries(prev).length) blocklists = { ...clone(prev.blocklists), file: null }

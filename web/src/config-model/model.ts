@@ -513,11 +513,11 @@ export function kernelRuleCount(rule: Rule): number {
  * of one's own that allow come first of all, so every entry takes them off; one's own blocks are beyond the lists' allows; a
  * list's `$important` block yields only to `$important` allows; every other block yields to all the lists' allows
  */
-export function blocklistEntries(model: Model): KernelConfig['pipeline_select'] {
+export function blocklistEntries(model: Model, pipeline = BLOCKLIST_PIPELINE): KernelConfig['pipeline_select'] {
   const own = parseOwnRules(model.blocklists.custom).rules
   const allows = own.filter((r) => r.allow).map((r): KMatcher => ({ ...ownMatcher(r.match), operator: 'and_not' }))
   const blocks = own.filter((r) => !r.allow).map((r, i): KMatcher => ({ ...ownMatcher(r.match), operator: i ? 'or' : 'and' }))
-  const entry = (matchers: KMatcher[]) => ({ pipeline: BLOCKLIST_PIPELINE, matcher_operator: 'and', matchers: [...matchers, ...allows] })
+  const entry = (matchers: KMatcher[]) => ({ pipeline, matcher_operator: 'and', matchers: [...matchers, ...allows] })
   const tag = (value: string, operator: string): KMatcher => ({ type: 'geo_site', value, operator })
   const entries = blocks.length ? [entry(blocks)] : []
   if (model.blocklists.file) {
@@ -525,6 +525,24 @@ export function blocklistEntries(model: Model): KernelConfig['pipeline_select'] 
     entries.push(entry([tag(TAG_BLOCK, 'and'), tag(TAG_ALLOW, 'and_not'), tag(TAG_ALLOW_IMPORTANT, 'and_not')]))
   }
   return entries
+}
+
+/**
+ * 拦截列表那个 Pipeline 的 id：一般是 blocklist；JSON 里手改过、认不出的旧拦截列表还留着同名的 Pipeline 时，换成 blocklist-2 这样不重名的。
+ * 编配置、测试域名和执行路径都用它
+ * The blocklists' pipeline id: usually blocklist; when a hand-edited old blocklist that could not be recognised still keeps a pipeline of that
+ * name, one nothing else uses such as blocklist-2. Compiling, the domain tester and the trace all use it
+ */
+export function blocklistPipelineId(model: Model): string {
+  const rules = [...model.rules, ...model.ruleGroups.flatMap((rg) => rg.rules)].filter((r) => r.enabled)
+  const taken = new Set<string>([
+    ...model.groups.map((g) => upstreamPipelineId(model, g.id)), model.mappingId ?? 'domain_mapping', mainPipelineId(model),
+    ...model.ruleGroups.map((rg) => ruleGroupPipelineId(model, rg.id)), ...(model.rawPipelines ?? []).map((p) => String(p.id)),
+    ...rules.flatMap((r) => rulePipeline(model, r)?.id ?? []),
+  ])
+  let id = BLOCKLIST_PIPELINE
+  for (let n = 2; taken.has(id); n++) id = `${BLOCKLIST_PIPELINE}-${n}`
+  return id
 }
 
 export function compile(model: Model): KernelConfig {
@@ -538,10 +556,10 @@ export function compile(model: Model): KernelConfig {
   const main = [...model.rules.filter((r) => r.enabled).flatMap((r) => kernelRules(model, r)), emptyRule('其余请求', outcomeActions(model, model.rest))]
   pipelines.push({ ...model.mainExtra, id: mainPipelineId(model), rules: main })
   const select: KernelConfig['pipeline_select'] = live.length ? [{ pipeline: mappingId, matcher_operator: 'and', matchers: live.map((r, i) => ({ type: 'domain_suffix', value: r.domain.trim(), operator: i ? 'or' : 'and' })) }] : []
-  const blocking = blocklistEntries(model)
-  const blocklistAt = pipelines.length
+  const blocklistId = blocklistPipelineId(model)
+  const blocking = blocklistEntries(model, blocklistId)
   if (blocking.length) {
-    pipelines.push({ id: BLOCKLIST_PIPELINE, rules: [emptyRule(BLOCKLIST_RULE, outcomeActions(model, { type: 'block', response: 'default' }))] })
+    pipelines.push({ id: blocklistId, rules: [emptyRule(BLOCKLIST_RULE, outcomeActions(model, { type: 'block', response: 'default' }))] })
     select.push(...blocking)
   }
   // 入口顺序：域名映射、拦截列表、高级入口、主列表 / Entry order: domain mappings, blocklists, advanced entries, the main list
@@ -554,16 +572,6 @@ export function compile(model: Model): KernelConfig {
   for (const r of [...model.rules, ...model.ruleGroups.flatMap((rg) => rg.rules)]) {
     const own = r.enabled ? rulePipeline(model, r) : null
     if (own) pipelines.push(own)
-  }
-  // JSON 里手改过、认不出来的拦截列表照原样留下时，它的 Pipeline 可能已经叫 blocklist：这一个就换个不重名的 id
-  // When a hand-edited blocklist that could not be recognised stays as it was, its pipeline may already be called blocklist: this one
-  // takes an id nothing else uses
-  if (blocking.length) {
-    const taken = new Set(pipelines.filter((_, i) => i !== blocklistAt).map((p) => p.id))
-    let id = BLOCKLIST_PIPELINE
-    for (let n = 2; taken.has(id); n++) id = `${BLOCKLIST_PIPELINE}-${n}`
-    pipelines[blocklistAt]!.id = id
-    for (const e of blocking) e.pipeline = id
   }
   select.push({ pipeline: mainPipelineId(model), matcher_operator: 'and', matchers: [] })
   select.push(...(model.trailingEntries ?? []).map((e) => JSON.parse(JSON.stringify({ matcher_operator: 'and', ...e })) as KernelConfig['pipeline_select'][number]))
