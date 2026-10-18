@@ -8,4 +8,4 @@ const props = defineProps<{ text: string }>()
 const runs = computed(() => hyphenRuns(props.text))
 </script>
 
-<template><template v-for="(run, i) in runs" :key="i"><span v-if="run.glue" class="nowrap">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></template>
+<template><template v-for="(run, i) in runs" :key="i"><span v-if="run.glue" :class="run.long ? 'glue-block' : 'nowrap'">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></template>

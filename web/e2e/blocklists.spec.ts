@@ -516,3 +516,56 @@ test('新的一份已经放进草稿、之后又加了一个列表，离开时�
   await expect(page.locator('.cfg__savebar', { hasText: /还没保存|已修改/ })).toHaveCount(0, { timeout: 5000 })
 })
 
+test('保存慢的时候连着点两个列表的立即更新：两次都存成版本，最后没有修改', async ({ page }) => {
+  await open(page)
+  await subscribe(page, ['AdGuard DNS filter', 'anti-AD'])
+  await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  await page.getByRole('button', { name: '保存并应用', exact: true }).click()
+  await expect(page.locator('.cfg__savebar')).toContainText('已生效')
+  await page.waitForTimeout(1100)
+  const toasts = await trackToasts(page)
+  // 保存要 3 秒：第二份落在第一份的保存途中 / Saving takes 3 s: the second copy lands during the first one's save
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-save-slow', '3000'))
+  for (const name of ['AdGuard DNS filter', 'anti-AD']) {
+    await page.locator('.bl__row', { hasText: name }).getByRole('button', { name: `${name} 的操作`, exact: true }).click()
+    await page.getByRole('menuitem', { name: '立即更新', exact: true }).click()
+    await page.waitForTimeout(300)
+  }
+  await expect.poll(async () => ((await toasts()).match(/已换上新下载的拦截列表/g) ?? []).length, { timeout: 20000 }).toBe(2)
+  await expect(page.locator('.cfg__savebar', { hasText: /还没保存|已修改/ })).toHaveCount(0, { timeout: 8000 })
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
+})
+
+test('草稿干净时点重新读取，立即更新落在读的途中：照常存成版本', async ({ page }) => {
+  await open(page)
+  await subscribe(page, ['AdGuard DNS filter'])
+  await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  await page.getByRole('button', { name: '保存并应用', exact: true }).click()
+  await expect(page.locator('.cfg__savebar')).toContainText('已生效')
+  await page.waitForTimeout(1100)
+  const toasts = await trackToasts(page)
+  await page.locator('.bl__row', { hasText: 'AdGuard DNS filter' }).getByRole('button', { name: 'AdGuard DNS filter 的操作', exact: true }).click()
+  await page.getByRole('menuitem', { name: '立即更新', exact: true }).click()
+  // 读要 1.5 秒：1.6 秒的下载落在这次重新读取的途中 / Reads take 1.5 s: the 1.6 s download lands during this re-read
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-read-slow', 'true'))
+  await page.waitForTimeout(600)
+  await page.getByRole('button', { name: '更多配置操作' }).click()
+  await page.getByRole('menuitem', { name: '重新读取配置' }).click()
+  await expect.poll(toasts, { timeout: 12000 }).toContain('已换上新下载的拦截列表')
+  expect(await toasts()).not.toContain('草稿换掉了')
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-read-slow'))
+})
+
+test('失败说明末尾：手机上最多点名两个，宽屏点名到五个 @responsive', async ({ page }) => {
+  await open(page)
+  for (const url of ['https://lists.example.org/missing/a.txt', 'https://lists.example.org/missing/b.txt', 'https://lists.example.org/missing/c.txt', 'https://lists.example.org/fail/d.txt']) {
+    await page.getByLabel('列表的链接').fill(url)
+    await page.getByRole('button', { name: '添加', exact: true }).click()
+    await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  }
+  const causes = page.locator('.bl__causes')
+  if ((page.viewportSize()?.width ?? 1440) < 640) await expect(causes).toContainText('其中 3 个重新下载也是一样')
+  else await expect(causes).toContainText('「a.txt · lists.example.org」「b.txt · lists.example.org」「c.txt · lists.example.org」重新下载也是一样')
+  await expect(causes).toContainText('要重新下载，点「d.txt」那一行「…」里的「立即更新」。')
+})
+

@@ -20,8 +20,9 @@ function settingText(value: unknown, field: SettingField | undefined): string {
 // What differs between two configs, in the page's own words (规则「x」：结果从…改成…), never JSON. The direction is "what restoring that
 // version does": from the current one to that version.
 export interface DiffLine { sign: '-' | '+'; text: string }
-// aside：只是一句说明，不是一处不同，不算进「N 处不同」 / aside: a note only, not a difference, so it is not counted in 「N 处不同」
-export interface DiffBlock { kind: '加上' | '去掉' | '改了' | '移动'; title: string; lines: DiffLine[]; note?: string; aside?: boolean }
+// aside：只是一句说明，不是一处不同，不算进「N 处不同」，排在所有块后面；code：行是规则原文，用等宽字 / aside: a note only, not a difference, so it is not
+// counted in 「N 处不同」 and goes after every block; code: the lines are rule text, set in mono
+export interface DiffBlock { kind: '加上' | '去掉' | '改了' | '移动'; title: string; lines: DiffLine[]; note?: string; aside?: boolean; code?: boolean }
 /** 真正的不同有几处：说明不算 / How many real differences: notes do not count */
 export const differences = (blocks: DiffBlock[]): number => blocks.filter((b) => !b.aside).length
 
@@ -151,7 +152,9 @@ export function diffModels(now: Model, then: Model, toward: 'save' | 'restore' =
     if (JSON.stringify(now[key] ?? null) === JSON.stringify(then[key] ?? null)) continue
     blocks.push({ kind: '改了', title: '其他内核设置', lines: kernelLines(now[key], then[key]) })
   }
-  return blocks
+  // 说明排在所有块后面，不夹在两处不同中间读成下一块的引子 / Notes go after every block, rather than sit between two differences and read as the
+  // next one's lead-in
+  return [...blocks.filter((b) => !b.aside), ...blocks.filter((b) => b.aside)]
 }
 // 拦截列表：订阅按规整后的链接比（标题已经写着名字，事实里不再写），自己写的规则按行比；只换了合成的文件说一句是重新下载的
 // Blocklists: subscriptions compare by normal link (the title already gives the name, so the facts leave it out) and the rules of one's own by line; a
@@ -185,7 +188,7 @@ function blocklistDiff(blocks: DiffBlock[], now: Blocklists, then: Blocklists, t
   const before = rows(now.custom)
   const after = rows(then.custom)
   const lines = [...before.filter((l) => !after.includes(l)).map((text) => ({ sign: '-' as const, text })), ...after.filter((l) => !before.includes(l)).map((text) => ({ sign: '+' as const, text }))]
-  if (lines.length) blocks.push({ kind: '改了', title: '拦截列表 · 自己写的规则', lines })
+  if (lines.length) blocks.push({ kind: '改了', title: '拦截列表 · 自己写的规则', lines, code: true })
   // 只挪了行、加减了空行：拦的不变，可原文变了，照样要存 / Lines only moved, or blank lines added or removed: nothing blocked changes, but the text did
   // and is still saved
   else if (now.custom !== then.custom) blocks.push({ kind: '改了', title: '拦截列表 · 自己写的规则', lines: [], note: '只调了顺序或空行，拦截的不变' })

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { errorMessage, formatAgo, formatDuration, formatKixdnsVersion, formatPercent, formatSmallPercent, formatVersionTime, helpRuns, hyphenRuns, shortHash, upstreamSuccessRate } from './utils'
+import { errorMessage, formatAgo, formatDuration, formatKixdnsVersion, formatPercent, formatSmallPercent, formatVersionTime, helpRuns, hyphenRuns, shortHash, toastRuns, upstreamSuccessRate } from './utils'
 
 describe('界面格式化工具', () => {
   it('生成稳定且紧凑的运行指标', () => {
@@ -107,8 +107,16 @@ describe('hyphenRuns', () => {
     expect(runs.map((r) => r.text).join('')).toBe(text)
     // 紧挨着的引号、句末标点跟着连住 / Quotes and closing punctuation next to it go along
     expect(runs.filter((r) => r.glue).map((r) => r.text)).toEqual(['「fail-hosts.txt」', 'anti-ad.net，', '@@||own-block.example^'])
-    // 太长的不连，免得窄屏上撑出去 / Too long a word stays unglued, lest it overflow a narrow screen
-    expect(hyphenRuns('连不上 very-long-subdomain-name.example.org。').some((r) => r.glue)).toBe(false)
+    // 太长的整块换行，不撑出去 / Too long a word moves whole, without overflowing
+    expect(hyphenRuns('连不上 very-long-subdomain-name.example.org。').find((r) => r.glue)).toEqual({ text: 'very-long-subdomain-name.example.org。', glue: true, long: true })
+  })
+
+  it('提示条另外连住版本号和「名字」的 / toasts also glue the version number and 「name」的', () => {
+    const glued = (text: string) => toastRuns(text).filter((r) => r.glue).map((r) => r.text)
+    expect(glued('新下载的拦截列表：已存成待应用版本\u00a0#20，KixDNS 就绪后自动应用')).toEqual(['版本\u00a0#20'])
+    expect(glued('「bad.txt」的链接只能用 https://，删掉这个列表再保存')).toEqual(['「bad.txt」的'])
+    // 默认名单独拿出来，按「·」折行 / A default name is taken out to wrap at 「·」
+    expect(toastRuns('「hosts.txt\u00a0·\u00a0lists.example.org」没下载成功').find((r) => r.name)?.name).toEqual({ name: 'hosts.txt\u00a0·\u00a0lists.example.org', suffix: '' })
   })
 })
 

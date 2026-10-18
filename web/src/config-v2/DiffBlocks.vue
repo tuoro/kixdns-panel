@@ -14,7 +14,7 @@ defineProps<{ blocks: DiffBlock[] }>()
   <p v-if="b.aside" class="diffd__aside">{{ b.title }}：{{ b.note }}</p>
   <section v-else class="diffd__block">
     <h3><span class="diffd__kind">{{ b.kind }}</span><span><GlueText :text="b.title" /></span><small v-if="b.note">{{ b.note }}</small></h3>
-    <ul><li v-for="(l, j) in b.lines" :key="j" :class="l.sign === '+' ? 'is-add' : 'is-del'"><span class="diffd__sign" aria-hidden="true">{{ l.sign === '+' ? '+' : '−' }}</span><span class="visually-hidden">{{ l.sign === '+' ? '加上' : '去掉' }}</span>{{ l.text }}</li></ul>
+    <ul :class="{ diffd__code: b.code }"><li v-for="(l, j) in b.lines" :key="j" :class="l.sign === '+' ? 'is-add' : 'is-del'"><span class="diffd__sign" aria-hidden="true">{{ l.sign === '+' ? '+' : '−' }}</span><span class="visually-hidden">{{ l.sign === '+' ? '加上' : '去掉' }}</span>{{ l.text }}</li></ul>
   </section>
   </template>
 </template>

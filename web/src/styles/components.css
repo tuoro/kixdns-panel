@@ -32,6 +32,8 @@
 .ui-dots > :first-child::before { content: none; }
 /* 句子里的「·」（line-dots.ts）：折行正好落在它后面时藏起来 / A 「·」 inside a sentence (line-dots.ts), hidden when a wrap falls right after it */
 [data-line-dot][data-line-end] { visibility: hidden; }
+/* 名字里的「·」是名字的一部分：跟名字同色 / The 「·」 inside a name is part of the name: it takes the name's colour */
+.name-dot[data-line-dot] { color: inherit; }
 
 /* ---------- 状态点 ---------- */
 .ui-dot { width: var(--size-dot); height: var(--size-dot); flex: 0 0 auto; display: inline-block; border-radius: var(--r-full); background: var(--ok-mark-l); }
@@ -814,6 +816,9 @@ button.ui-link { position: relative; min-height: 0; padding: 0; border: 0; backg
 .ui-switch input:checked + i { background: var(--l-ink-2); }
 .ui-ph__actions .ui-menu-host > .ui-icon-btn { width: var(--h-md); height: var(--h-md); }
 .nowrap { white-space: nowrap; }
+/* 一长串连住的词：放不下时整块换到下一行，比一行还长才在里面断开 / A long glued word: it moves whole to the next line when it does not fit, and only breaks
+   inside when longer than a line */
+.glue-block { display: inline-block; max-width: 100%; }
 /* 占位字比次要文字淡一档，不会被读成已经填好的值 / Placeholders are one step lighter than secondary text, so they never read as filled-in values */
 .ui-input input::placeholder, .ui-input--area textarea::placeholder { color: color-mix(in srgb, var(--l-ink-3) 72%, var(--l-surface)); }
 /* 禁用的次要、危险按钮：边还看得见，字变灰，不再整体褪成一块看不清的影子 / Disabled secondary and danger buttons keep a visible edge with grey text instead of fading into a faint shape */

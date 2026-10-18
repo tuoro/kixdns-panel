@@ -115,6 +115,20 @@ test('有没保存的修改时退出登录：先问，选先不退出就还登�
   await expect(page.locator('.cfg__savebar')).toContainText('已生效')
 })
 
+// 同意放弃并退出，可退出没成功（连不上面板）：人还登录着、还在配置页，修改还在 / Agreed to drop and sign out, but the sign-out failed (panel unreachable):
+// still signed in, still on the config page, the edits still there
+test('有修改时退出登录、同意放弃，退出没成功：修改还在', async ({ page }) => {
+  await page.goto('/config')
+  await addRule(page, 'stay.example')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-panel-down', 'true'))
+  await page.locator('.account-button').click()
+  await page.getByRole('button', { name: '退出登录' }).click()
+  await page.getByRole('alertdialog', { name: '放弃未保存的修改' }).getByRole('button', { name: '放弃并退出' }).click()
+  await expect(page).toHaveURL(/\/config/)
+  await expect(page.locator('.cfg__savebar')).toContainText('已修改')
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-panel-down'))
+})
+
 test('别处先存了一个版本：保存停住，可以下载自己的修改，重新读取前先问', async ({ page }) => {
   await page.addInitScript(() => { if (!sessionStorage.getItem('conflict-armed')) { sessionStorage.setItem('conflict-armed', '1'); localStorage.setItem('kixdns:demo-save-conflict', 'true') } })
   await page.goto('/config')

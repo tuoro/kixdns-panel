@@ -28,7 +28,7 @@ import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, discardOnLeave, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
 import { applyBusy, bulkDeleting, busy, checkPending, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, stayedDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, rereadAndSay, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse } from '../config-v2/useConfigDocument'
 import { dismissBlocklistToasts } from '../config-v2/useBlocklists'
-import { carryUpdate } from '../config-v2/updateCarry'
+import { carryUpdate, refreshLanded } from '../config-v2/updateCarry'
 import { useHelp } from '../composables/useHelp'
 import { useSession } from '../composables/useSession'
 import { useServiceStart } from '../composables/useServiceStart'
@@ -459,7 +459,7 @@ const stopAfterEach = router.afterEach((_to, _from, failure) => {
   if (failure) { stayedDuringSave(); return }
   // 放弃的是用户自己的修改，不是立即更新：下好、还没存上的那份照样直接生效（updateCarry.ts） / What was dropped are the user's own edits, not 立即更新:
   // a download that landed and is not saved yet still takes effect (updateCarry.ts)
-  if (drop) { drop(); dismissBlocklistToasts(); void carryUpdate() }
+  if (drop) { refreshLanded(); drop(); dismissBlocklistToasts(); void carryUpdate() }
 })
 const stopOnError = router.onError(() => { agreedDrop = null; stayedDuringSave() })
 // 提示条的按钮做事期间停用，焦点跟着掉到页面上：做完没人接住焦点时，回到这个按钮（还在的话），不在了就落在提示条上

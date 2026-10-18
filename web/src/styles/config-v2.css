@@ -1777,6 +1777,8 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
 .diffd__block h3 small { color: var(--l-ink-3); font-size: var(--t-2); font-weight: var(--w-normal); }
 /* 说明不是一处不同：没有「改了」和横线，一句淡色的话 / A note is not a difference: no 改了 and no rule, one muted sentence */
 .diffd__aside { margin: 0; color: var(--l-ink-3); font-size: var(--t-2); }
+/* 自己写的规则那一块的行是规则原文：等宽字，「||」不粘成一根粗线 / The own-rules block's lines are rule text: mono, so 「||」 does not run into one thick line */
+.diffd__block .diffd__code li { font-family: var(--f-mono); font-size: var(--t-1); }
 .diffd__kind { padding: 0 var(--s-2); border: 1px solid var(--l-hair); border-radius: var(--r-1); color: var(--l-ink-2); font-size: var(--t-1); font-weight: var(--w-medium); }
 .diffd__block ul { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
 .diffd__block li { padding: var(--s-1) var(--s-2); border-radius: var(--r-1); color: var(--l-ink); font-size: var(--t-2); line-height: var(--lh-base); overflow-wrap: anywhere; }

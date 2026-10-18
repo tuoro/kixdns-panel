@@ -544,7 +544,7 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
 /* 短的界面文字也按词换行，和提示条、提示一样：确认框正文、空状态、字段提示、规则摘要、登录说明不把「新建规则」「影响」这样的词拆到两行；长段的帮助说明不在内
    Short UI prose wraps by words too, as notices and toasts do: confirm bodies, empty states, field hints, the rule summary and the sign-in note never split words
    such as 新建规则 or 影响 across lines; long help paragraphs are left out */
-:is(.confirm__dialog > p, .confirm__items, .ui-empty__desc, .rcard__empty, .rgroups__none, .overview-empty, .overview-config-empty, .hist__empty, .settings-empty, .notification-empty, .ups__empty, .cform__empty, .cform__help, .pfield__hint, .tester__hint, .qadd__hint, .rw__hint, .credential-hint, .reading__lead, .reading__more, .auth-security, .cfg__json-note, .ecard__desc, .imp__notes li > span, .diag-card-note, .rcard__meta, .rgroups__desc, .bl__causes p, .tester__allow, .blp__more, .ui-savebar__status small) { word-break: keep-all; overflow-wrap: anywhere; }
+:is(.confirm__dialog > p, .confirm__items, .ui-empty__desc, .rcard__empty, .rgroups__none, .overview-empty, .overview-config-empty, .hist__empty, .settings-empty, .notification-empty, .ups__empty, .cform__empty, .cform__help, .pfield__hint, .tester__hint, .qadd__hint, .rw__hint, .credential-hint, .reading__lead, .reading__more, .auth-security, .cfg__json-note, .ecard__desc, .imp__notes li > span, .diag-card-note, .rcard__meta, .rgroups__desc, .bl__causes p, .tester__allow, .blp__more, .ui-savebar__status small, .bl__warn, .diffd__aside) { word-break: keep-all; overflow-wrap: anywhere; }
 .toast > svg { margin-top: calc((1lh - 18px) / 2); }
 .toast > .icon-button { margin-block: calc((1lh - 32px) / 2); }
 .toast > .toast-undo { margin-block: calc((1lh - 26px) / 2); }

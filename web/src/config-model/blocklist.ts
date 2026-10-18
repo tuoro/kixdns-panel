@@ -252,7 +252,12 @@ export function parseOwnRules(text: string): { rules: OwnRule[]; problems: OwnPr
       const allows = parsed.rule.startsWith('@@')
       const body = allows ? parsed.rule.slice(2) : parsed.rule
       const pattern = splitModifiers(body)?.[0] ?? body
-      problem(allows ? `这里用不上 $badfilter：要拦下它，写成 ${pattern}` : `这里用不上 $badfilter：要放行，写成 @@${pattern}`)
+      const meant = allows ? pattern : `@@${pattern}`
+      // 给出的那条自己也用不上（比如正则里有前后断言）：直接说它的原因，不教一条照抄了也没用的 / The rule it would give is itself unusable (a regex with
+      // lookaround, say): its reason is said directly, rather than a rule that would not work if copied
+      const check = parseLine(meant)
+      if (check.kind === 'skipped') { problem(skipText(check.skip)); continue }
+      problem(allows ? `这里用不上 $badfilter：要拦下它，写成 ${meant}` : `这里用不上 $badfilter：要放行，写成 ${meant}`)
       continue
     }
     if (over || rules.length + parsed.rules.length > MAX_OWN_RULES) {

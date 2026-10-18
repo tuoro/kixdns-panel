@@ -13,7 +13,9 @@ import { useToast } from '../composables/useToast'
 import { checkSubscriptionUrl, MAX_SUBSCRIPTIONS, normalUrl, parseOwnRules, PRESETS, shortName, skipText, uniqueSubscriptionName, type Skip } from '../config-model/blocklist'
 import { blockLabel, type Subscription } from '../config-model/model'
 import { formatAgo, formatVersionTime } from '../utils'
+import { vLineDots } from '../line-dots'
 import GlueText from './GlueText.vue'
+import NameText from './NameText.vue'
 import { usePhone } from './phone'
 import { appliedModel, changedSubscriptionIds, draftGeneration, model, newId, placeBack } from './store'
 import { blocklists, loadBlocklists, rebuildBlocklists, saveBlocklistSchedule, sayDrafted } from './useBlocklists'
@@ -70,6 +72,13 @@ function source(s: Subscription): string {
     return `${dir === '/' ? '' : dir}${query && !s.name.includes(query) ? query : ''}`
   } catch { return '' }
 }
+// 目录写法（/a/b/c/）分成前面几级和最后一级：截短时截前面，分开同名文件的最后一级一直看得到
+// A directory (/a/b/c/) splits into its leading levels and the last one: cutting short cuts the front, so the last level, which tells same-named files
+// apart, always shows
+function dirSplit(text: string): { head: string; tail: string } | null {
+  const m = /^(\/(?:[^/?]+\/)*)([^/?]+\/(?:\?.*)?)$/.exec(text)
+  return m && m[1] !== '/' ? { head: m[1]!, tail: m[2]! } : null
+}
 const statusOf = (s: Subscription) => blocklists.sources[s.url]
 const held = (s: Subscription) => Boolean(statusOf(s)?.sha256)
 const downloading = (s: Subscription) => blocklists.downloading.has(s.url)
@@ -107,22 +116,27 @@ const failures = computed(() => subscriptions.value.filter((s) => statusOf(s)?.l
 // The end says what to do in two sentences that may both appear: first those downloading again will not fix, which need another link, then those
 // with no copy where downloading again may help (a failed one is not retried on its own). With one failing list it says 「this row」 and 「it」, up to
 // five it names them, beyond that it counts them or points at the rows' tag. A sentence about disabled lists only is dimmed like them
-const NAMED = 5
-const names = (list: { label: string }[]) => list.map((f) => `「${f.label}」`).join('')
+// 点名到几个：手机上两个（再多就是一列名字，和上面各条开头重复），宽屏五个（用户定的） / How many are named: two on phones (more becomes a column of names
+// repeating the lines above), five when wide (the user's call)
+const named = computed(() => (phone.value ? 2 : 5))
+// 两句都分成：名字前面的话、点到的名字（用 NameText 排，和上面各条一样折行）、名字后面的话 / Both sentences split into the words before the names, the
+// names (laid out by NameText, wrapping as the lines above do) and the words after
 const stuckLine = computed(() => {
   const stuck = failures.value.filter((f) => f.stuck)
   if (!stuck.length) return null
   const them = stuck.length === 1 ? '它' : '它们'
-  const who = stuck.length === failures.value.length ? '' : stuck.length <= NAMED ? names(stuck) : `其中 ${stuck.length}\u00a0个`
-  return { text: `${who}重新下载也是一样：要换链接，先删掉${them}，再粘贴新的。`, off: stuck.every((f) => f.off) }
+  const all = stuck.length === failures.value.length
+  const naming = !all && stuck.length <= named.value
+  return { before: all || naming ? '' : `其中 ${stuck.length}\u00a0个`, names: naming ? stuck.map((f) => f.label) : [], after: `重新下载也是一样：要换链接，先删掉${them}，再粘贴新的。`, off: stuck.every((f) => f.off) }
 })
 const retryLead = computed(() => {
   const retry = failures.value.filter((f) => !f.held && f.retryable)
   if (!retry.length) return null
   const rows = ['', '那一行', '那两行', '那三行', '那四行', '那五行']
-  const row = failures.value.length === 1 ? '这一行' : retry.length <= NAMED ? `${names(retry)}${rows[retry.length]}`
-    : stuckLine.value ? '其余标着「没下载成功」的那几行' : '标着「没下载成功」的那几行'
-  return { text: `要重新下载，点${row}「…」里的`, off: retry.every((f) => f.off) }
+  const off = retry.every((f) => f.off)
+  if (failures.value.length === 1) return { before: '要重新下载，点这一行「…」里的', names: [] as string[], after: '', off }
+  if (retry.length <= named.value) return { before: '要重新下载，点', names: retry.map((f) => f.label), after: `${rows[retry.length]}「…」里的`, off }
+  return { before: `要重新下载，点${stuckLine.value ? '其余标着「没下载成功」的那几行' : '标着「没下载成功」的那几行'}「…」里的`, names: [] as string[], after: '', off }
 })
 
 const rowMenu = (s: Subscription) => {
@@ -205,9 +219,9 @@ async function updateNow(urls: string[], button: '立即更新' | '全部更新'
   // only a discard on leaving lies between (the dropped edits added, removed or switched lists): it ends as usual, building once more below for the
   // subscriptions left after the discard
   if (result.outcome === 'superseded') {
-    noteLanded()
-    if (draftGeneration() === generation) { sayDrafted('新的一份会和刚才的修改一起放进草稿，保存后生效'); return }
-    await carryUpdate(button, true)
+    noteLanded(button, false)
+    if (draftGeneration() === generation) { sayDrafted('新的一份放进了草稿，和刚才的修改一起保存后生效'); return }
+    await carryUpdate(true)
     return
   }
   if (model.blocklists.file === before) {
@@ -222,8 +236,8 @@ async function updateNow(urls: string[], button: '立即更新' | '全部更新'
   }
   // 新的一份进了草稿：存不存、怎么说，和离开时放弃以后走同一处（updateCarry.ts） / The new copy is in the draft: whether it is saved and what is said goes
   // through the same place as after a discard on leaving (updateCarry.ts)
-  noteLanded()
-  await carryUpdate(button, true)
+  noteLanded(button)
+  await carryUpdate(true)
 }
 const updateAll = () => void updateNow(subscriptions.value.map((s) => s.url), '全部更新')
 
@@ -349,9 +363,9 @@ const blockText = computed(() => blockLabel(model, 'default'))
             <li v-for="s in subscriptions" :key="s.id" class="bl__row" :class="{ 'is-off': !s.enabled }">
               <span class="bl__name">
                 <span class="bl__nm"><b :title="s.name">{{ s.name }}</b><span v-if="changedSubscriptionIds.has(s.id)" class="ui-dot ui-dot--ink bl__changed" role="img" :aria-label="added(s) ? '新加的，还没保存' : '改过，还没保存'" :title="added(s) ? '新加的，还没保存' : '改过，还没保存'"></span></span>
-                <small v-if="source(s)">{{ source(s) }}</small>
+                <small v-if="source(s)"><span v-if="dirSplit(source(s))" class="bl__dir"><span>{{ dirSplit(source(s))!.head }}</span><span>{{ dirSplit(source(s))!.tail }}</span></span><template v-else>{{ source(s) }}</template></small>
               </span>
-              <span class="bl__about" :title="presetOf(s) ? about(s) : link(s)">{{ about(s) }}</span>
+              <span class="bl__about" :title="presetOf(s) ? about(s) : link(s)"><span v-if="dirSplit(about(s))" class="bl__dir"><span>{{ dirSplit(about(s))!.head }}</span><span>{{ dirSplit(about(s))!.tail }}</span></span><template v-else>{{ about(s) }}</template></span>
               <span class="bl__meta">
               <span class="bl__rules"><span class="bl__sr">规则</span><span>{{ held(s) ? ruleCount(statusOf(s)!.summary.rules) : '—' }}</span><small v-if="held(s) && statusOf(s)!.summary.skipped">{{ fmtCount(statusOf(s)!.summary.skipped) }}&nbsp;条没用上</small></span>
               <span class="bl__when" aria-live="polite">
@@ -374,12 +388,15 @@ const blockText = computed(() => blockLabel(model, 'default'))
         <div v-if="failures.length" class="bl__note">
           <TriangleAlert :size="14" aria-hidden="true" />
           <div class="bl__causes">
-            <p v-for="f in failures" :key="f.id" :class="{ 'is-off': f.off }"><b v-if="f.name"><GlueText :text="f.name" /></b><template v-if="f.off">（已停用）</template><template v-if="f.name">：</template><GlueText :text="`${f.cause}。`" /></p>
-            <p v-if="stuckLine" class="bl__todo" :class="{ 'is-off': stuckLine.off }"><GlueText :text="stuckLine.text" /></p>
-            <p v-if="retryLead" class="bl__todo" :class="{ 'is-off': retryLead.off }"><GlueText :text="retryLead.text" /><span class="nowrap">「立即更新」。</span></p>
+            <!-- 名字按「·」分成文件名和主机两段，只在两段之间折行（「·」贴在前一段末尾，折行时藏起来），冒号和后一段连住，不落到行首
+                 The name splits at 「·」 into file and host, wrapping only between them (the 「·」 sits at the end of the first and hides at a wrap), the colon
+                 glued to the second so it never starts a line -->
+            <p v-for="f in failures" :key="f.id" v-line-dots :class="{ 'is-off': f.off }"><NameText v-if="f.name" :name="f.name" bold :suffix="f.off ? '（已停用）：' : '：'" /><template v-else-if="f.off">（已停用）</template><GlueText :text="`${f.cause}。`" /></p>
+            <p v-if="stuckLine" v-line-dots class="bl__todo" :class="{ 'is-off': stuckLine.off }"><GlueText :text="stuckLine.before" /><NameText v-for="(n, i) in stuckLine.names" :key="i" :name="n" quoted /><GlueText :text="stuckLine.after" /></p>
+            <p v-if="retryLead" v-line-dots class="bl__todo" :class="{ 'is-off': retryLead.off }"><GlueText :text="retryLead.before" /><NameText v-for="(n, i) in retryLead.names" :key="i" :name="n" quoted /><GlueText :text="retryLead.after" /><span class="nowrap">「立即更新」。</span></p>
           </div>
         </div>
-        <p v-if="blocklists.status === 'failed' && subscriptions.some(unknown)" class="bl__note"><TriangleAlert :size="14" aria-hidden="true" />读不到各个列表下载得怎么样；订阅照常保存，稍后刷新页面再看。</p>
+        <p v-if="blocklists.status === 'failed' && subscriptions.some(unknown)" class="bl__note"><TriangleAlert :size="14" aria-hidden="true" /><span>读不到各个列表下载得怎么样；<span class="nowrap">订阅照常保存，</span><span class="nowrap">稍后刷新页面再看。</span></span></p>
       </template>
     </section>
 
@@ -502,6 +519,10 @@ const blockText = computed(() => blockLabel(model, 'default'))
    On wide screens the middle holds the 内容 column, what a suggested list blocks or the pasted link, and the name drops its host line;
    narrower ones have no room for it and keep the host under the name */
 .bl__about, .bl__col-about { display: none; }
+/* 目录前面几级可截，最后一级不截 / The leading levels of a directory may be cut, the last one never */
+.bl__dir { display: flex; min-width: 0; }
+.bl__dir > :first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bl__dir > :last-child { flex: none; white-space: nowrap; }
 .bl__about { overflow: hidden; color: var(--l-ink-2); font-size: var(--t-3); text-overflow: ellipsis; white-space: nowrap; }
 /* 特别长的名字和链接截短，不把别的列挤走 / Very long names and links are cut short rather than squeezing the other columns */
 .bl__name { max-width: 18rem; }
@@ -541,7 +562,12 @@ const blockText = computed(() => blockLabel(model, 'default'))
 .bl__sets { padding: var(--s-2) var(--s-5); }
 .bl__sets .ui-setrow { grid-template-columns: minmax(0, 300px) minmax(0, 320px); }
 .bl__sets .ui-setrow + .ui-setrow { border-top: 1px solid var(--l-hair); }
-.bl__answer { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-1) var(--s-3); min-height: var(--h-md); }
+/* 右边只有一行字、没有框：对着左边标题和说明两行的中间，不贴着标题那一行（下拉框的框本身盖住两行，照通用的写法对齐标题）
+   Only a line of text on the right, no box: it sits at the middle of the label's title and hint lines rather than on the title line (a select's box
+   covers both lines, so it keeps the usual alignment with the title) */
+/* 左边标签顶上留着和输入框对齐的空（padding-top）；补上同样的上边距，对准的是两行字的正中，不是带着空的整块 / The label keeps a top gap to line up with
+   input boxes (padding-top); the same top margin here centres on the two text lines, not on the whole box with its gap */
+.bl__answer { display: flex; flex-wrap: wrap; align-items: center; align-self: center; gap: var(--s-1) var(--s-3); min-height: var(--h-md); margin-top: calc((var(--h-md) - 1lh) / 2); }
 .bl__answer b { color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-medium); }
 @media (min-width: 641px) { .bl__dialog { width: min(36rem, calc(100% - var(--s-6))); } }
 .blp { display: grid; margin: 0; padding: 0; list-style: none; border: 1px solid var(--l-hair); border-radius: var(--r-2); }
@@ -602,6 +628,8 @@ const blockText = computed(() => blockLabel(model, 'default'))
   .bl__what > span { flex: 1 1 0; min-width: 0; }
   .bl__sets { padding-inline: var(--s-4); }
   .bl__sets .ui-setrow { grid-template-columns: minmax(0, 1fr); }
+  /* 手机上标签和值上下排，标签顶上不留空，这里也不补 / On phones label and value stack and the label keeps no top gap, so none is added here */
+  .bl__answer { margin-top: 0; }
   /* 三行一项时复选框对着名字那一行，不对着中间 / With three lines an item's checkbox faces the name line, not the middle */
   .blp__item { grid-template-columns: auto minmax(0, 1fr); row-gap: 2px; align-items: start; }
   .blp__item .ui-checkbox { margin-top: calc((var(--t-3) * var(--lh-base) - var(--size-check)) / 2); }

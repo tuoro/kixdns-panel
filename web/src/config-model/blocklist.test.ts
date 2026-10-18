@@ -49,6 +49,11 @@ describe('rules of one\'s own', () => {
     ])
   })
 
+  it('says the meant rule\'s own reason when it would be unusable too', () => {
+    const { problems } = parseOwnRules('/ads?\\.(?=x)example/$badfilter')
+    expect(problems.map((p) => p.problem)).toEqual([skipText({ reason: 'bad-regex' })])
+  })
+
   it('finds every own line blocking a name, and whether one is about exactly that name', () => {
     const text = '||ads.example.net^\nok.ads.example.net\n@@||allowed.example^\n||x.allowed.example^'
     expect(ownBlocksFor(text, 'ok.ads.example.net').map((r) => r.line)).toEqual([1, 2])

@@ -82,7 +82,7 @@ export async function demoBuildBlocklists(request: BlocklistBuildRequest): Promi
     const missing = url.includes('missing')
     if (missing || url.includes('fail') || (refresh.has(url) && flag('kixdns:demo-blocklist-refresh-fails'))) {
       failed += 1
-      const cause = missing ? '服务器返回 HTTP 404，链接可能失效了' : `连不上 ${new URL(url).host}`
+      const cause = missing ? '服务器返回 HTTP\u00a0404，链接可能失效了' : `连不上 ${new URL(url).host}`
       sources.set(url, { ...(held ?? { sha256: null, downloaded_at: null, summary: { rules: 0, skipped: 0, samples: [] }, rejected_sha256: null }), last_error: cause, retryable: !missing, last_attempt_at: now })
       continue
     }
