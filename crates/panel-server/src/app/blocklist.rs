@@ -10,7 +10,9 @@ use axum_extra::extract::CookieJar;
 use serde::{Deserialize, Serialize};
 
 use crate::auth::{authenticate, unix_timestamp, verify_csrf};
-use crate::blocklist_data::{BuildRequest, BuildResult, SourceStatus, replace_blocklist_path};
+use crate::blocklist_data::{
+    BuildRequest, BuildResult, SourceStatus, blocklist_path, replace_blocklist_path,
+};
 use crate::error::{AppError, AppResult};
 use crate::geo_data::GeoDataSchedule;
 
@@ -135,6 +137,13 @@ pub(super) async fn run_due_blocklist_schedule(state: &AppState) -> anyhow::Resu
     let now = unix_timestamp();
     let schedule = state.blocklists.schedule().get().await?;
     if !schedule.is_due(now) {
+        return Ok(());
+    }
+    // 配置里还没用拦截列表时没有可更新的：不算一次更新，也不记成功，保存了列表以后才开始
+    // With no blocklists in the config there is nothing to update: it counts as no run and records no success, starting
+    // once lists are saved
+    let (_, base) = system_config_base(state).await?;
+    if blocklist_path(&base.content).is_none() {
         return Ok(());
     }
     state.blocklists.schedule().mark_attempt(now).await?;

@@ -207,7 +207,7 @@ impl BlocklistManager {
         };
         let sources = read_file_sources(Path::new(&old)).await?.ok_or_else(|| {
             GeoDataError::Invalid(
-                "正在用的拦截列表文件读不出它的来源，在拦截列表页重新保存一次".to_owned(),
+                "正在用的拦截列表文件读不出它的来源：到「拦截列表」点「全部更新」".to_owned(),
             )
         })?;
         let _guard = self.lock.lock().await;
@@ -407,7 +407,10 @@ impl BlocklistManager {
         {
             Ok(file) => file,
             Err(GeoDataError::Internal(error)) => return Err(GeoDataError::Internal(error)),
-            Err(error) => return Ok(Fetched::Failed(error.to_string())),
+            // 页面上这一行已经写着是哪个列表、没下载成功：只记原因本身 / The page's row already names the list and says the
+            // download failed: only the cause itself is kept
+            Err(GeoDataError::Download { cause, .. }) => return Ok(Fetched::Failed(cause)),
+            Err(GeoDataError::Invalid(reason)) => return Ok(Fetched::Failed(reason)),
         };
         let path = file.path.clone();
         let read =
@@ -441,7 +444,7 @@ impl BlocklistManager {
         subscriptions: &[Subscription],
         state: &BlocklistState,
     ) -> Result<Option<String>, GeoDataError> {
-        let sources: Vec<SourceRef> = subscriptions
+        let mut sources: Vec<SourceRef> = subscriptions
             .iter()
             .filter(|subscription| subscription.enabled)
             .filter_map(|subscription| {
@@ -452,6 +455,9 @@ impl BlocklistManager {
                 })
             })
             .collect();
+        // 订阅的先后不影响拦什么：按链接排好，同一组列表总是合出同一个文件 / The order of subscriptions does not change what
+        // is blocked: sorted by link, the same lists always merge into the same file
+        sources.sort_by(|a, b| a.url.cmp(&b.url));
         if sources.is_empty() {
             return Ok(None);
         }
@@ -563,8 +569,23 @@ fn shrink_reason(rules: usize, sha256: &str, previous: Option<&SourceStatus>) ->
         return None;
     }
     Some(format!(
-        "这次下载的规则比上一份少了一半以上（{before} 条变成 {rules} 条），先接着用上一份；下次下载还是这样就换上"
+        "这次下载的规则比上一份少了一半以上（{}\u{a0}条变成 {}\u{a0}条），先接着用上一份；下次下载还是这样就换上",
+        grouped(before),
+        grouped(rules)
     ))
+}
+
+/// 数字每三位加一个逗号，和页面上的条数写法一样 / A number with a comma every three digits, as the page writes counts
+fn grouped(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
 }
 
 /// 链接去掉首尾空白、检查写法，重复的只留第一个 / Links trimmed and checked, repeats keeping only the first
@@ -1017,12 +1038,25 @@ mod tests {
             None,
             "exactly half is kept"
         );
+        assert!(shrink_reason(1, &smaller, Some(&held)).is_some());
+        // 条数和页面上一样每三位加逗号 / Counts carry a comma every three digits, as on the page
+        let large = SourceStatus {
+            summary: ListSummary {
+                rules: 185_803,
+                ..ListSummary::default()
+            },
+            ..held.clone()
+        };
         assert_eq!(
-            shrink_reason(1, &smaller, Some(&held)).as_deref(),
+            shrink_reason(52_318, &smaller, Some(&large)).as_deref(),
             Some(
-                "这次下载的规则比上一份少了一半以上（4 条变成 1 条），先接着用上一份；下次下载还是这样就换上"
+                "这次下载的规则比上一份少了一半以上（185,803\u{a0}条变成 52,318\u{a0}条），先接着用上一份；下次下载还是这样就换上"
             )
         );
+        assert_eq!(grouped(0), "0");
+        assert_eq!(grouped(999), "999");
+        assert_eq!(grouped(1_000), "1,000");
+        assert_eq!(grouped(1_234_567), "1,234,567");
         let held_back = SourceStatus {
             rejected_sha256: Some(smaller.clone()),
             ..held.clone()

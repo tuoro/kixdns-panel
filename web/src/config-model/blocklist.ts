@@ -25,7 +25,7 @@ export type MatchKind = 'suffix' | 'exact' | 'regex'
 export interface Match { kind: MatchKind; value: string }
 export interface ListRule { allow: boolean; important: boolean; match: Match }
 export type Skip =
-  | { reason: 'cosmetic' | 'hosts-address' | 'bad-regex' | 'too-many-patterns' | 'unreadable' }
+  | { reason: 'cosmetic' | 'hosts-address' | 'bad-regex' | 'too-many-patterns' | 'url-path' | 'unreadable' }
   | { reason: 'unsupported-modifier' | 'unknown-modifier'; modifier: string }
 export type Line =
   | { kind: 'ignored' }
@@ -140,7 +140,9 @@ function parsePattern(pattern: string): Match | Skip {
   const exact = normalizeDomain(lower)
   if (exact) return { kind: 'exact', value: exact }
   const regex = patternRegex(lower)
-  return regex === null ? { reason: 'unreadable' } : { kind: 'regex', value: regex }
+  // 带网址路径的（`||example.com/ads.js`）只对浏览器有用：DNS 查询里没有路径 / One with a URL path (`||example.com/ads.js`) is for browsers only: a DNS query carries no path
+  if (regex === null) return { reason: lower.includes('/') ? 'url-path' : 'unreadable' }
+  return { kind: 'regex', value: regex }
 }
 
 /** 内核按 Rust 的正则读：前后断言、反向引用这些写法它不认 / The kernel reads Rust regex syntax, which has no lookaround or backreferences */
@@ -171,6 +173,8 @@ function patternRegex(pattern: string): string | null {
   const end = ['^|', '^', '|'].find((e) => rest.endsWith(e))
   const body = end === undefined ? rest : rest.slice(0, -end.length)
   if (!/[a-z0-9]/i.test(body)) return null
+  // 锚定的开头是点、或者中间空着一级（`||.example^`、`ads..example`），永远匹配不上 / A dot at an anchored start, or an empty label inside (`||.example^`, `ads..example`), could never match
+  if (body.includes('..') || (start && body.startsWith('.'))) return null
   let regex = start
   for (const c of body) {
     if (c === '*') regex += '.*'
@@ -204,8 +208,9 @@ export function skipText(skip: Skip): string {
     case 'hosts-address': return '写的是别的地址：要回答这个地址，用「域名映射」'
     case 'unsupported-modifier': return `还不支持 $${skip.modifier}`
     case 'unknown-modifier': return `认不出 $${skip.modifier}`
-    case 'bad-regex': return '内核的正则不支持这种写法（前后断言、反向引用等）'
+    case 'bad-regex': return 'KixDNS 的正则不支持这种写法（前后断言、反向引用等）'
     case 'too-many-patterns': return '这个列表的通配符和正则规则超过 1000 条，多的没用上'
+    case 'url-path': return '带网址路径，只对浏览器有用，DNS 用不上'
     case 'unreadable': return '看不懂这一行'
   }
 }

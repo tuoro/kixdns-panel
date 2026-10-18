@@ -318,7 +318,8 @@ export interface GeoDataSchedule {
 
 /** 拦截列表里没用上的一行（服务端最多给前 20 行） / One unused line of a blocklist (the server gives the first 20 at most) */
 export interface BlocklistSkippedLine { line: number; text: string; reason: string; modifier?: string }
-export interface BlocklistSummary { rules: number; skipped: number; samples: BlocklistSkippedLine[] }
+/** title：列表开头注释里写的标题（`! Title: …`），没有时不带 / title: the title in the list's opening comments (`! Title: …`), absent without one */
+export interface BlocklistSummary { rules: number; skipped: number; samples: BlocklistSkippedLine[]; title?: string }
 /** 一个订阅的列表（按链接）最近一份读得怎么样 / How the latest copy of one subscribed list (by link) read */
 export interface BlocklistSource {
   /** 在用的那一份；还没下载成功过时为 null / The copy in use; null until a download succeeds */
