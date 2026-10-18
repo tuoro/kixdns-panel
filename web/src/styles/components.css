@@ -647,7 +647,7 @@ a.ui-btn { text-decoration: none; }
   .ui-tabs { gap: 0; }
   /* 页签按字宽分剩下的地方：字数不同时字与字的间距也一样（等宽的格子会让短的两边空出一大块） / Tabs share the room left by their text width, so
      the gaps between labels stay even when their lengths differ (equal cells leave wide margins around short ones) */
-  .ui-tabs__tab { flex: 1 1 auto; min-width: var(--h-touch); min-height: var(--h-touch); padding-bottom: 0; text-align: center; }
+  .ui-tabs__tab { flex: 1 1 auto; min-height: var(--h-touch); padding-bottom: 0; text-align: center; }
   .ui-seg { display: flex; }
   .ui-seg__opt, .ui-seg--sm .ui-seg__opt { flex: 1; min-height: calc(var(--h-md) - 4px); padding-inline: var(--s-1); }
   /* 分段的每一格看起来 32，点按区域越过外框上下各补 4，和按钮一样到 44 / Each segment cell looks 32; its tap area reaches past the frame by 4 above and below, 44 like a button */
@@ -902,6 +902,8 @@ button.ui-link { position: relative; min-height: 0; padding: 0; border: 0; backg
 .ui-link { color: var(--accent); text-decoration-color: var(--accent-soft); }
 .ui-switch input:checked + i { background: var(--accent); }
 .ui-checkbox input:checked + i { border-color: var(--accent); background: var(--accent); }
+/* 勾着又不能改的框是灰的：看得出它定了 / A box ticked and fixed is grey: it reads as settled */
+.ui-checkbox input:checked:disabled + i { border-color: var(--l-ink-3); background: var(--l-ink-3); }
 .ui-pick__opt input:checked { border-color: var(--accent); }
 .ui-pick__opt input::before { background: var(--accent); }
 .ui-tabs__tab[aria-selected="true"] { color: var(--accent); }
