@@ -150,7 +150,8 @@ const blockText = computed(() => blockLabel(model, 'default'))
         <button class="ui-btn ui-btn--secondary" type="button" @click="openPresets"><ListPlus :size="16" aria-hidden="true" />推荐的列表</button>
       </UiEmpty>
       <template v-else>
-        <div class="bl__cols" aria-hidden="true"><span>列表</span><span class="bl__col-about">内容</span><span>规则</span><span>更新</span><span class="bl__col-switch">启用</span><span></span></div>
+        <div class="bl__table">
+        <div class="bl__cols" aria-hidden="true"><span>列表</span><span class="bl__col-about">内容</span><span>规则</span><span>更新</span><span>启用</span></div>
         <ul class="bl__list">
           <li v-for="s in subscriptions" :key="s.id" class="bl__row" :class="{ 'is-off': !s.enabled }">
             <span class="bl__name"><b>{{ s.name }}<span v-if="changedSubscriptionIds.has(s.id)" class="ui-dot ui-dot--ink bl__changed" role="img" :aria-label="added(s) ? '新加的，还没保存' : '改过，还没保存'" :title="added(s) ? '新加的，还没保存' : '改过，还没保存'"></span></b><small>{{ host(s.url) }}</small></span>
@@ -163,10 +164,13 @@ const blockText = computed(() => blockLabel(model, 'default'))
               <span v-else>{{ blocklists.status === 'loading' ? '…' : '还没下载' }}</span>
               <small v-if="!downloading(s) && statusOf(s)?.last_error && statusOf(s)?.downloaded_at">在用 {{ formatAgo(statusOf(s)!.downloaded_at! * 1000) }}的</small>
             </span>
-            <label class="ui-switch"><input :checked="s.enabled" type="checkbox" :aria-label="`启用 ${s.name}`" @change="toggle(s, ($event.target as HTMLInputElement).checked)"><i></i></label>
-            <UiMenu :items="rowMenu(s)" :label="`${s.name} 的操作`" anchor=".bl__row" @select="act(s, $event)" />
+            <span class="bl__acts">
+              <label class="ui-switch"><input :checked="s.enabled" type="checkbox" :aria-label="`启用 ${s.name}`" @change="toggle(s, ($event.target as HTMLInputElement).checked)"><i></i></label>
+              <UiMenu :items="rowMenu(s)" :label="`${s.name} 的操作`" anchor=".bl__row" @select="act(s, $event)" />
+            </span>
           </li>
         </ul>
+        </div>
         <p v-for="s in failed" :key="s.id" class="bl__note"><TriangleAlert :size="14" aria-hidden="true" />{{ failNote(s) }}</p>
         <p v-if="blocklists.status === 'failed'" class="bl__note"><TriangleAlert :size="14" aria-hidden="true" />读不到各个列表下载得怎么样；订阅照常保存，稍后刷新页面再看。</p>
       </template>
@@ -243,14 +247,20 @@ const blockText = computed(() => blockLabel(model, 'default'))
 .bl__url input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--l-ink); font-size: var(--t-3); }
 .bl__url input::placeholder { color: var(--l-ink-3); }
 .bl__error { margin: 0; padding: var(--s-2) var(--s-5); border-bottom: 1px solid var(--l-hair); color: var(--err-l); font-size: var(--t-2); }
+/* 表头和每一行共用一套列（subgrid）：每列宽到这一列最宽的内容，剩下的宽度平均分到列与列之间。开关和「…」都是对这一行的操作，
+   合成最后一列，挨在一起靠右
+   The head and every row share one set of columns (subgrid): each column is as wide as its widest content, and what is left is
+   split evenly between the columns. The switch and 「…」 both act on the row, so they make up the last column together, side by
+   side at the right */
+.bl__table { display: grid; grid-template-columns: minmax(0, max-content) repeat(3, max-content); justify-content: space-between; column-gap: var(--s-6); }
 .bl__list { margin: 0; padding: 0; list-style: none; }
-.bl__cols, .bl__row { display: grid; grid-template-columns: minmax(0, 1fr) 8rem 9rem var(--s-7) var(--h-sm); column-gap: var(--s-4); align-items: center; padding-inline: var(--s-5); }
+.bl__cols, .bl__list, .bl__row { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; }
+.bl__cols, .bl__row { align-items: center; padding-inline: var(--s-5); }
 .bl__cols { min-height: var(--h-md); color: var(--l-ink-3); font-size: var(--t-1); border-bottom: 1px solid var(--l-hair); }
-.bl__col-switch { text-align: center; }
 .bl__row { min-height: var(--h-touch); padding-block: var(--s-2); border-bottom: 1px solid var(--l-hair); }
 .bl__row:last-child { border-bottom: 0; }
 .bl__row:hover { background: var(--l-canvas); }
-.bl__row > .ui-switch { justify-self: center; }
+.bl__acts { display: flex; align-items: center; gap: var(--s-4); }
 .bl__name, .bl__rules, .bl__when { min-width: 0; display: grid; gap: 1px; }
 .bl__name b { overflow: hidden; color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-medium); text-overflow: ellipsis; white-space: nowrap; }
 .bl__name small, .bl__rules small, .bl__when small { overflow: hidden; color: var(--l-ink-3); font-size: var(--t-1); text-overflow: ellipsis; white-space: nowrap; }
@@ -262,8 +272,11 @@ const blockText = computed(() => blockLabel(model, 'default'))
    narrower ones have no room for it and keep the host under the name */
 .bl__about, .bl__col-about { display: none; }
 .bl__about { overflow: hidden; color: var(--l-ink-2); font-size: var(--t-2); text-overflow: ellipsis; white-space: nowrap; }
+/* 特别长的名字和链接截短，不把别的列挤走 / Very long names and links are cut short rather than squeezing the other columns */
+.bl__name { max-width: 18rem; }
+.bl__about { max-width: 24rem; }
 @media (min-width: 1180px) {
-  .bl__cols, .bl__row { grid-template-columns: minmax(0, 15rem) minmax(0, 1fr) 8rem 9rem var(--s-7) var(--h-sm); }
+  .bl__table { grid-template-columns: minmax(0, max-content) minmax(0, max-content) repeat(3, max-content); }
   .bl__about, .bl__col-about { display: block; }
   .bl__name small { display: none; }
 }
@@ -305,6 +318,7 @@ const blockText = computed(() => blockLabel(model, 'default'))
   .bl__add { padding: var(--s-2) var(--s-4); }
   .bl__error { padding-inline: var(--s-4); }
   .bl__cols { display: none; }
+  .bl__table, .bl__list { display: block; }
   /* 第一行名字、「…」和开关并排，第二行规则数和更新时间 / Name, 「…」 and the switch first, then the rule count and update time */
   .bl__row { grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "n menu switch"; row-gap: var(--s-1); padding: var(--s-2) var(--s-4); }
   .bl__name { grid-area: n; }
@@ -315,8 +329,9 @@ const blockText = computed(() => blockLabel(model, 'default'))
   .bl__rules { grid-area: 2 / 1 / 3 / 4; justify-self: start; display: flex; gap: var(--s-2); align-items: baseline; }
   .bl__when { grid-area: 2 / 1 / 3 / 4; justify-self: end; display: flex; gap: var(--s-2); align-items: baseline; }
   .bl__rules > span, .bl__when > span:not(.ui-tag) { font-size: var(--t-2); }
-  .bl__row > .ui-switch { grid-area: switch; justify-self: end; }
-  .bl__row > :deep(.ui-menu-host) { grid-area: menu; }
+  .bl__acts { display: contents; }
+  .bl__acts > .ui-switch { grid-area: switch; justify-self: end; }
+  .bl__acts > :deep(.ui-menu-host) { grid-area: menu; }
   .bl__note { padding-inline: var(--s-4); }
   .bl__own { padding-inline: var(--s-4); }
   .bl__sets { padding-inline: var(--s-4); }
