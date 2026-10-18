@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { diffModels } from '../config-model/diff'
-import { ruleTitle, type Model } from '../config-model/model'
+import { blocklistKey, ruleTitle, type Model } from '../config-model/model'
 import { exportConfig, readConfig } from '../config-model/document'
 import { LEGACY_MESSY, LEGACY_TEMPLATES, demoModel, sampleModel } from '../config-model/testing/samples'
-import { appliedModel, changeCount, copyReplaceBlocker, groupUsers, model, oldPanelCopies, rebaseApplied, replaceWithCopy, resetTo } from './store'
+import { appliedModel, changeCount, changesBesidesFile, copyReplaceBlocker, discardOnLeave, draftGeneration, groupUsers, model, oldPanelCopies, rebaseApplied, replaceModel, replaceWithCopy, resetTo, sameDraftSince } from './store'
 
 // 保存条数出来的每一处修改，「改了哪些」里都要看得到：以前改监听标签时保存条说改了 1 处，对比却说「一样」
 // Every change the save bar counts must show in the review: setting a listener tag once read 「已修改 1 处」 while the review said nothing changed
@@ -60,6 +60,30 @@ describe('订阅的改动按链接认 / subscription changes go by link', () => 
     ]
     expect(changeCount.value).toBe(0)
     expect(diffModels(appliedModel.value, model)).toEqual([])
+  })
+
+  it('「除了合成文件还改了几处」和保存条一个口径：删了又加回来、改了又改回都算没改，只换文件也不算', () => {
+    const [a, b] = model.blocklists.subscriptions
+    model.blocklists.subscriptions = [b!, a!]
+    model.rules[0]!.edited = '2030-01-01T00:00:00Z'
+    model.blocklists.file = '/var/lib/kixdns-panel/geo/blocklist-new.json'
+    expect(changesBesidesFile(appliedModel.value, model)).toBe(0)
+    model.blocklists.custom = '||x.example^'
+    expect(changesBesidesFile(appliedModel.value, model)).toBe(1)
+  })
+
+  it('离开时放弃：按已保存的订阅合成好的新文件留着，在路上的下载照样认这份草稿；别的换草稿就不认', () => {
+    const then = draftGeneration()
+    model.blocklists.custom = '||x.example^'
+    // 落地的合成填进文件和合成记录（按已保存的那组订阅） / A landing build fills in the file and its record (for the saved subscriptions)
+    model.blocklists.file = '/var/lib/kixdns-panel/geo/blocklist-new.json'
+    model.blocklists.builtFor = blocklistKey(model.blocklists)
+    discardOnLeave()
+    expect(model.blocklists.custom).toBe(appliedModel.value.blocklists.custom)
+    expect(model.blocklists.file).toBe('/var/lib/kixdns-panel/geo/blocklist-new.json')
+    expect(sameDraftSince(then)).toBe(true)
+    replaceModel({ ...appliedModel.value, blocklists: { ...appliedModel.value.blocklists, custom: '||y.example^' } })
+    expect(sameDraftSince(then)).toBe(false)
   })
 
   it('停用一个、加一个各算一处，「改了哪些」也列出来', () => {

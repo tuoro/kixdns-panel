@@ -1,9 +1,10 @@
 import { reactive, watch } from 'vue'
 import { ApiError, apiRequest, isPanelDown, jsonBody } from '../api/client'
 import type { BlocklistBuildResult, BlocklistSource, BlocklistState, GeoDataSchedule } from '../api/types'
-import { isDefaultName, shortName } from '../config-model/blocklist'
+import { isDefaultName, normalUrl, shortName } from '../config-model/blocklist'
 import { blocklistKey } from '../config-model/model'
 import { useConnection } from '../composables/useConnection'
+import { useSession } from '../composables/useSession'
 import { useToast } from '../composables/useToast'
 import { errorMessage } from '../utils'
 import { appliedModel, draftGeneration, model, sameDraftSince } from './store'
@@ -69,6 +70,8 @@ export function dismissBuildToast(): void {
 // fine since), the lists still failing staying listed under the table
 let failToast: number | null = null
 let failToastUrls: string[] = []
+// 会话过期以后才落地的结果不说：已经在登录页上了 / Results landing after the session expired say nothing: the login page is up
+const signedIn = () => useSession().authenticated.value
 const failingUrls = () => model.blocklists.subscriptions.filter((s) => blocklists.sources[s.url]?.last_error).map((s) => s.url)
 function dismissFailToast(): void {
   if (failToast !== null) useToast().dismiss(failToast)
@@ -91,6 +94,13 @@ export function dismissBlocklistToasts(): void {
   dismissFailToast()
   dismissRefreshToast()
 }
+// 退出登录或会话过期：和配置页别的提示一样，拦截列表的几条也收起，登录页上不挂着它们 / Signing out or the session expiring: like the config page's other
+// toasts, the blocklist ones go too, so none hangs on the login page
+watch(() => useSession().authenticated.value, (now) => {
+  if (now) return
+  dismissBlocklistToasts()
+  dismissScheduleToast()
+})
 
 // 一次接一次地合成。落地时订阅又变了，这次的文件不填：后面那次会填。只是重新合成（没点名下载）、而草稿里的文件已经对得上时也不填，
 // 比如放弃修改以后，免得刚放弃就又多出一处「另一次下载的列表」
@@ -103,7 +113,9 @@ let queue: Promise<unknown> = Promise.resolve()
  * Builds again for the draft's subscriptions; links in `refresh` download again. With `quiet` a failed build raises no toast: a save or a check is
  * waiting on it and the save bar says it
  */
-export function rebuildBlocklists(refresh: string[] = [], quiet = false): Promise<BuildOutcome> {
+// force：草稿里的文件已经对得上也再合成一次，用上服务端刚下好的那份 / force: build again even when the draft's file already matches, to take in the copy the
+// server just downloaded
+export function rebuildBlocklists(refresh: string[] = [], quiet = false, force = false): Promise<BuildOutcome> {
   // 排队时就定下：放弃修改、恢复版本以后，之前点名的下载不再填进换过的草稿 / Fixed when queued: after a discard or a restore, a download named before
   // no longer fills the replaced draft
   const generation = draftGeneration()
@@ -112,7 +124,7 @@ export function rebuildBlocklists(refresh: string[] = [], quiet = false): Promis
   for (const url of fetching) blocklists.downloading.add(url)
   const run = queue.then(async (): Promise<BuildOutcome> => {
     if (refresh.length && !sameDraftSince(generation)) return { outcome: 'dropped' }
-    if (!refresh.length && !needsBuild()) return { outcome: 'current' }
+    if (!refresh.length && !force && !needsBuild()) return { outcome: 'current' }
     const subscriptions = subscriptionsSent()
     const key = blocklistKey(model.blocklists)
     // 这次之前每个链接最后一次试着下载的时间：落地后变了的才是这次下载的 / When each link was last tried before this build: those that changed by
@@ -128,7 +140,7 @@ export function rebuildBlocklists(refresh: string[] = [], quiet = false): Promis
       sayFailures(fetching.filter((url) => (result.sources[url]?.last_attempt_at ?? null) !== triedBefore.get(url)), result.sources, refresh)
       if (refresh.length && !sameDraftSince(generation)) return { outcome: 'dropped' }
       if (blocklistKey(model.blocklists) !== key) return { outcome: 'superseded' }
-      if (!refresh.length && !needsBuild()) return { outcome: 'current' }
+      if (!refresh.length && !force && !needsBuild()) return { outcome: 'current' }
       model.blocklists.file = result.path
       model.blocklists.builtFor = key
       return { outcome: 'filled' }
@@ -150,6 +162,7 @@ export function rebuildBlocklists(refresh: string[] = [], quiet = false): Promis
       // 别的原因说一句
       // A named download (立即更新) says it did not download; one the subscriptions set off: nothing while unreachable (the banner says so and a
       // build follows on reconnecting), nothing while a save or check waits (the save bar says it), any other cause says one line
+      if (!signedIn()) return { outcome: 'failed', error, down, fixable, remove }
       if (refresh.length) {
         dismissRefreshToast()
         refreshToast = useToast().error(`没能重新下载：${error}`)
@@ -171,10 +184,11 @@ export function rebuildBlocklists(refresh: string[] = [], quiet = false): Promis
 // A pasted list not yet saved takes the title its download carries (`! Title: …`) as its name; renamed or saved ones stay as they are. A title
 // another list already has gets the host after it
 function nameByTitle(): void {
-  const saved = new Set(appliedModel.value.blocklists.subscriptions.map((s) => s.id))
+  // 已经保存过的按规整后的链接认，和改动数一个口径 / Saved ones are matched by normal link, as the change count is
+  const saved = new Set(appliedModel.value.blocklists.subscriptions.map((s) => normalUrl(s.url)))
   for (const s of model.blocklists.subscriptions) {
     const title = blocklists.sources[s.url]?.summary.title
-    if (!title || saved.has(s.id) || !isDefaultName(s.name, s.url)) continue
+    if (!title || saved.has(normalUrl(s.url)) || !isDefaultName(s.name, s.url)) continue
     const taken = model.blocklists.subscriptions.some((x) => x !== s && x.name === title)
     // 主机写在前面：截短时截掉的是大家一样的标题 / The host goes first: cutting short drops the title they share
     let name = title
@@ -191,7 +205,7 @@ function nameByTitle(): void {
 function sayFailures(fetched: string[], sources: Record<string, BlocklistSource>, refresh: string[]): void {
   const subscription = (url: string) => model.blocklists.subscriptions.find((s) => s.url === url)
   const failed = fetched.filter((url) => sources[url]?.last_error && subscription(url))
-  if (!failed.length) return
+  if (!failed.length || !signedIn()) return
   dismissFailToast()
   const one = failed.length === 1 ? subscription(failed[0]!) : undefined
   const only = one && (refresh.length === 1 ? refresh[0] === one.url : fetched.length === 1 && !one.enabled) ? one : undefined
@@ -239,14 +253,24 @@ watch(down, (isDown) => {
 
 /** 改自动更新；成功返回 true，没改成说出原因（连不上面板时横幅已经说了，不再接原因） / Changes the automatic update; true on success, and on failure
  * says why (with the panel unreachable the banner already says it, so no reason follows) */
+// 没改成的那条提示：再改一次时收起，不和下一次的结果叠在一起 / The toast for a change that failed: it goes on the next attempt instead of stacking
+// with that one's result
+let scheduleToast: number | null = null
+function dismissScheduleToast(): void {
+  if (scheduleToast !== null) useToast().dismiss(scheduleToast)
+  scheduleToast = null
+}
 export async function saveBlocklistSchedule(hours: number | null): Promise<boolean> {
   const label = hours === null ? '关闭' : hours === 24 ? '每天' : '每周'
+  dismissScheduleToast()
   try {
     blocklists.schedule = await apiRequest<GeoDataSchedule>('/api/v1/config/blocklists/schedule', { method: 'PUT', ...jsonBody({ interval_hours: hours }) })
     useToast().success(hours === null ? '拦截列表的自动更新已关闭' : `拦截列表的自动更新已设为${label}`)
     return true
   } catch (e) {
-    useToast().error(`拦截列表的自动更新没改成「${label}」${isPanelDown(e) ? '' : `（${errorMessage(e).replace(/[。.]\s*$/, '')}）`}`)
+    // 会话过期：已经回到登录页，不说 / The session expired: the login page is up, nothing to say
+    if (e instanceof ApiError && e.status === 401) return false
+    scheduleToast = useToast().error(`拦截列表的自动更新没改成「${label}」${isPanelDown(e) ? '' : `（${errorMessage(e).replace(/[。.]\s*$/, '')}）`}`)
     return false
   }
 }

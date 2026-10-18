@@ -43,7 +43,14 @@ const UNSUPPORTED_MODIFIERS = new Set(['client', 'ctag', 'dnstype', 'dnsrewrite'
 // 只管网页里的请求（第三方、脚本、图片……）的修饰符：DNS 查询里没有这些信息，带它们的规则整条不用。和服务端同一份名单
 // Modifiers about requests inside web pages (third-party, scripts, images…): a DNS query carries none of that, so rules with them go unused
 // whole. The same list as the server's
-const BROWSER_MODIFIERS = new Set(['third-party', '3p', 'first-party', '1p', 'script', 'image', 'stylesheet', 'css', 'media', 'font', 'object', 'xmlhttprequest', 'xhr', 'subdocument', 'frame', 'document', 'doc', 'popup', 'websocket', 'ping', 'other', 'domain', 'match-case', 'redirect', 'removeparam', 'csp'])
+const BROWSER_MODIFIERS = new Set([
+  'third-party', '3p', 'first-party', '1p', 'script', 'image', 'stylesheet', 'css', 'media', 'font',
+  'object', 'xmlhttprequest', 'xhr', 'subdocument', 'frame', 'document', 'doc', 'popup', 'websocket', 'ping',
+  'other', 'domain', 'match-case', 'redirect', 'removeparam', 'csp', 'generichide', 'genericblock', 'elemhide', 'ehide',
+  'ghide', 'shide', 'specifichide', 'content', 'jsinject', 'urlblock', 'extension', 'stealth', 'cookie', 'rewrite',
+  'sitekey', 'header', 'all', 'redirect-rule', 'empty', 'mp4', 'replace', 'jsonprune', 'hls', 'strict-first-party',
+  'strict-third-party', 'method', 'to', 'permissions', 'referrerpolicy', 'removeheader',
+])
 const COSMETIC_MARKS = ['##', '#@#', '#?#', '#$#', '#%#', '$$']
 
 /** 读一行规则 / Reads one line */
@@ -310,18 +317,18 @@ export const PRESETS: Preset[] = [
 
 /**
  * 订阅的名字：推荐的列表用它的名字，别的先用「文件名 · 主机」（链接没有路径时只用主机）；下载下来带着标题时页面再换成标题。
- * `withDir` 时文件名前面带上最后一级目录（「fail/hosts.txt · 主机」），和已有的默认名重名时用
+ * `depth` 是带几级路径：1 只有文件名，2 再带上一级目录（「fail/hosts.txt · 主机」），超过路径的段数时带上查询串。和已有的名字重名时往上加
  * A subscription's name: a suggested list's own, otherwise 「file name · host」 (the host alone when the link has no path); once the download
- * brings a title the page switches to it. With `withDir` the file name carries its last directory (「fail/hosts.txt · host」), for when the default
- * name is already taken
+ * brings a title the page switches to it. `depth` is how many path levels it carries: 1 the file name alone, 2 with one directory above
+ * (「fail/hosts.txt · host」), more than the path has adds the query string. It goes up when the name is already taken
  */
-export function subscriptionName(url: string, withDir = false): string {
+export function subscriptionName(url: string, depth = 1): string {
   const preset = PRESETS.find((p) => p.url === url)
   if (preset) return preset.name
   try {
     const link = new URL(url)
-    const parts = link.pathname.split('/').filter(Boolean).slice(withDir ? -2 : -1)
-    let file = parts.join('/')
+    const segments = link.pathname.split('/').filter(Boolean)
+    let file = `${segments.slice(-depth).join('/')}${segments.length && depth > segments.length ? link.search : ''}`
     try { file = decodeURIComponent(file) } catch { /* 写坏的百分号转义照原样用 / a malformed percent escape is used as written */ }
     // 「·」两边不折行：整个名字要折就一起折到下一行，「·」不挂在行尾 / No break around 「·」: the whole name wraps together, never leaving 「·」 at a line end
     return file ? `${file}${NAME_JOIN}${link.host}` : link.host
@@ -329,8 +336,31 @@ export function subscriptionName(url: string, withDir = false): string {
     return url
   }
 }
-/** 是不是面板起的默认名（带不带目录都算） / Whether a name is the panel's default one (with or without the directory) */
-export const isDefaultName = (name: string, url: string): boolean => name === subscriptionName(url) || name === subscriptionName(url, true)
+const pathDepth = (url: string): number => { try { return new URL(url).pathname.split('/').filter(Boolean).length } catch { return 0 } }
+// 加上编号的默认名：编号写在「·」前面，正文里只写文件那部分时也带着 / A default name with a number: it goes before 「·」, so prose quoting only the file
+// part still carries it
+const numbered = (name: string, n: number): string => (name.includes(NAME_JOIN) ? name.replace(NAME_JOIN, ` (${n})${NAME_JOIN}`) : `${name} (${n})`)
+/**
+ * 和已有的名字都不重的默认名：一级一级往上带目录，带完路径还重就带上查询串，再重就加编号
+ * A default name unlike every name taken: directories are added one level at a time, then the query string, then a number
+ */
+export function uniqueSubscriptionName(url: string, taken: Set<string>): string {
+  const deepest = pathDepth(url) + 1
+  for (let depth = 1; depth <= deepest; depth++) {
+    const name = subscriptionName(url, depth)
+    if (!taken.has(name)) return name
+  }
+  const base = subscriptionName(url, deepest)
+  for (let n = 2; ; n++) if (!taken.has(numbered(base, n))) return numbered(base, n)
+}
+/** 默认名带了几级路径；不是面板起的默认名时为 0 / How many path levels a default name carries; 0 when it is not the panel's default name */
+export function defaultNameDepth(name: string, url: string): number {
+  const plain = name.replace(/ \(\d+\)(?=\u00a0·\u00a0|$)/, '')
+  for (let depth = 1; depth <= pathDepth(url) + 1; depth++) if (plain === subscriptionName(url, depth)) return depth
+  return 0
+}
+/** 是不是面板起的默认名（带几级目录、有没有编号都算） / Whether a name is the panel's default one (however many directories, numbered or not) */
+export const isDefaultName = (name: string, url: string): boolean => defaultNameDepth(name, url) > 0
 
 const NAME_JOIN = '\u00a0·\u00a0'
 /** 默认名「文件名 · 主机」里的文件名，用在已经写着主机的地方；起过名、带标题的照原样 / The file part of a default 「file name · host」 name, for places

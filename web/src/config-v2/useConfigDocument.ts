@@ -11,7 +11,7 @@ import { useSession } from '../composables/useSession'
 import { dismissUndoable, toastMark, useToast } from '../composables/useToast'
 import { errorMessage } from '../utils'
 import { dismissBuildToast, needsBuild, settleBlocklists, type BuildProblem } from './useBlocklists'
-import { appliedSnapshot, userPart, findRuleByName, applyHits, applyUpstreamStats, changeCount, dialogEdits, dirty, draftGeneration, editorEdited, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, replaceModel, reportOpen, unsaved } from './store'
+import { appliedSnapshot, changesBesidesFile, replaceOnLeave, findRuleByName, applyHits, applyUpstreamStats, changeCount, dialogEdits, dirty, draftGeneration, editorEdited, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, replaceModel, reportOpen, unsaved } from './store'
 
 // 配置页和面板服务之间的事：读配置和历史、KixDNS 的运行状态和能力、校验、保存并热加载、现在应用。
 // 草稿本身在 store.ts；这里只管「文件」和「运行」。所有状态是模块级的，页面和保存条共用同一份。
@@ -344,10 +344,12 @@ export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: str
     ])
     // 读的时候文件已经被这边的一次写挪过了：读到的是旧文件，只当没读（写的那一方会自己再读） / The file was moved by a write from this page while reading: what came back is stale, so it is dropped (the writer reads again itself)
     // 原地生效不挪散列：再按写的次数看一眼 / An in-place apply does not move the hash, so the write count is checked too
-    // 读的途中开始了一次保存（比如立即更新落地后直接保存）也一样：那次保存发出的草稿比读到的新，做完会自己再读，这次读到的不拿来换草稿
-    // Likewise when a save started while reading (立即更新 landing and saving at once, say): the draft it sent is newer than what was read, and it reads
-    // again when done, so this read does not replace the draft
-    if (options.sent === undefined && doc.value && ((shaAtStart !== undefined && doc.value.sha256 !== shaAtStart) || writeCount !== writesAtStart || saveStarts !== savesAtStart)) return
+    // 回到配置页的那次读，途中开始了一次保存（立即更新落地后直接保存）也一样：那次保存发出的草稿比读到的新，这次读到的不拿来换草稿。
+    // 只管这一种读：恢复版本、重新读取这些自己要换草稿的读，不能因为别的保存开始了就作废（保存在写入前停下时不会再读）
+    // Likewise for the read on returning to the config page when a save started meanwhile (立即更新 landing and saving at once): the draft it sent is
+    // newer than what was read, so the read does not replace the draft. Only this read: reads meant to replace the draft (a restore, 重新读取) must not be
+    // voided by another save starting, since a save that stops before writing reads nothing again
+    if (options.sent === undefined && doc.value && ((shaAtStart !== undefined && doc.value.sha256 !== shaAtStart) || writeCount !== writesAtStart || (options.returning && saveStarts !== savesAtStart))) return
     docWrites = writesAtStart
     applyRuntime(nextDoc, overview, service)
     const previous = doc.value
@@ -540,7 +542,20 @@ function dropKeptDraft(): void {
 /** 离开时同意丢掉保存开始以后改的：草稿退回正在保存的那一份，保存没成功时回来看到的就是它 / Agreed to drop the edits made after the save began: the draft goes back to the one being saved, which is what a failed save brings back */
 export function dropEditsAfterSave(): void {
   // 「现在应用」不是保存草稿：没有「正在保存的那一份」可以退回 / 现在应用 is not a draft save: there is no 「the one being saved」 to go back to
-  if (inFlight !== null && origin.value === 'draft') replaceModel(JSON.parse(inFlight) as Model)
+  // 记作离开时的换草稿：在路上的立即更新照样认它 / Counted as a replacement on leaving: a 立即更新 under way still takes it as its draft
+  if (inFlight !== null && origin.value === 'draft') replaceOnLeave(JSON.parse(inFlight) as Model)
+}
+/** 人不在配置页时，草稿里有要留到回来的东西（立即更新放进去的新文件）：回来时不重读掉它 / With the user off the config page, the draft holds something
+ * to keep for the return (a new file 立即更新 put in): the return does not re-read it away */
+export function keepDraftWhileAway(): void {
+  if (away()) keepDraftForReturn()
+}
+/** 正在做的保存或「现在应用」做完（成没成都算） / Resolves once the save or 现在应用 under way has finished (either way) */
+export function whenSaveSettles(): Promise<void> {
+  return new Promise((resolve) => {
+    if (!saveInFlight.value) { resolve(); return }
+    const stop = watch(saveInFlight, (running) => { if (!running) { stop(); resolve() } })
+  })
 }
 function dismissAwayToast(): void {
   if (awayToast !== null) useToast().dismiss(awayToast)
@@ -563,7 +578,7 @@ export function setViewing(open: boolean): boolean {
 /** 草稿里没保存的就是正在保存的那一份：离开不用问 / Everything unsaved is the draft being saved right now: leaving need not ask */
 // 比的是用户自己改的部分：等合成时面板填进去的文件和标题不算「之后改的」 / Compares the user's own edits: the file and titles the panel fills in while
 // waiting for a build are not 「edits made after」
-export const onlySaving = (): boolean => busy.value && origin.value === 'draft' && inFlight !== null && userPart(JSON.parse(inFlight) as Model) === userPart(model)
+export const onlySaving = (): boolean => busy.value && origin.value === 'draft' && inFlight !== null && changesBesidesFile(JSON.parse(inFlight) as Model, model) === 0
   && !editorEdited.value && !jsonEdited.value && dialogEdits.size === 0
 // 保存途中、没再改过，离开已经放行（页面还没卸下）：之后的结果照「人已经走了」处理 / A leave let through during a save with nothing edited since (the page not yet
 // unmounted): what follows is handled as if the user were gone

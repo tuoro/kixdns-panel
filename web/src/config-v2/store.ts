@@ -6,7 +6,7 @@ import { readConfig, type ImportReport, type ReadResult } from '../config-model/
 import { normalizeAddress } from '../config-model/kernel'
 import { findKernelRule } from '../config-model/trace-names'
 import { normalUrl } from '../config-model/blocklist'
-import { emptyBlocklists, kernelAddress, mainPipelineId, nextId, ruleGroupPipelineId, ruleTitle, type Model, type Outcome, type Remedy, type Rule, type RuleGroup, type Subscription, type UpstreamGroup } from '../config-model/model'
+import { blocklistKey, emptyBlocklists, kernelAddress, mainPipelineId, nextId, ruleGroupPipelineId, ruleTitle, type Model, type Outcome, type Remedy, type Rule, type RuleGroup, type Subscription, type UpstreamGroup } from '../config-model/model'
 
 // 配置页的草稿：一份模型加上「上次读进来 / 保存成功时」的那份，改动按两者比出来。运行状态、保存流程在 useConfigDocument.ts。
 // The config page's draft: one model plus the one last loaded or saved, with changes computed between them. Runtime state and the
@@ -58,24 +58,33 @@ function changedSubscriptions(before: Subscription[], after: Subscription[]): Su
   return after.filter((s) => was.get(subscriptionKey(s)) !== s.enabled)
 }
 export const changedSubscriptionIds = computed(() => new Set(changedSubscriptions(appliedModel.value.blocklists.subscriptions, model.blocklists.subscriptions).map((s) => s.id)))
-export const changedSettingKeys = computed(() => {
-  const before = appliedModel.value.settings
-  const after = model.settings
+function settingKeysChanged(then: Model, now: Model): Set<string> {
+  const before = then.settings
+  const after = now.settings
   const keys = new Set([...Object.keys(before), ...Object.keys(after)])
   const out = new Set([...keys].filter((k) => JSON.stringify(before[k]) !== JSON.stringify(after[k])))
-  if (appliedModel.value.format !== model.format) out.add('version')
+  if (then.format !== now.format) out.add('version')
   return out
-})
+}
+export const changedSettingKeys = computed(() => settingKeysChanged(appliedModel.value, model))
 // 改了几处：按对象数，改一条规则算一处，删掉的也算 / How many places changed: per object, one edited rule is one place, deletions count too
-export const changeCount = computed(() => {
-  const before = appliedModel.value
+export const changeCount = computed(() => countChanges(appliedModel.value, model))
+/**
+ * 除了面板自己填进去的合成文件（和它的合成记录），`now` 比 `base` 还改了几处，和保存条一个口径：
+ * 立即更新落地时看草稿里有没有别的修改，保存途中看之后有没有再改，都用它
+ * How many places `now` changed from `base` besides the merged file the panel fills in (and its build record), by the save bar's yardstick: used to see
+ * whether the draft holds other edits when 立即更新 lands, and whether anything was edited since a save began
+ */
+export const changesBesidesFile = (base: Model, now: Model): number =>
+  countChanges(base, { ...now, blocklists: { ...now.blocklists, file: base.blocklists.file, builtFor: base.blocklists.builtFor } })
+function countChanges(before: Model, model: Model): number {
   const diff = <T extends { id: string | number }>(a: T[], b: T[], shape?: (x: T) => string) => changedIn(a, b, shape).size + a.filter((x) => !b.some((y) => y.id === x.id)).length
   // 顺序只比两边都有的那些：删一条再加一条不算挪过，和「改了哪些」一致 / Order compares only items on both sides: deleting one and adding another is not a move, matching the review
   const shared = (x: { id: string | number }[], y: { id: string | number }[]) => x.filter((i) => y.some((j) => j.id === i.id)).map((i) => i.id).join()
   const order = (a: { id: string | number }[], b: { id: string | number }[]) => (shared(a, b) !== shared(b, a) ? 1 : 0)
   const rgRules = model.ruleGroups.reduce((n, g) => { const p = before.ruleGroups.find((x) => x.id === g.id); return n + diff(p?.rules ?? [], g.rules, ruleShape) + order(p?.rules ?? [], g.rules) }, 0)
   const rgMeta = diff(before.ruleGroups.map((g) => ({ ...g, rules: [] })), model.ruleGroups.map((g) => ({ ...g, rules: [] })))
-  return changedSettingKeys.value.size + diff(before.rules, model.rules, ruleShape) + order(before.rules, model.rules) + rgRules + rgMeta
+  return settingKeysChanged(before, model).size + diff(before.rules, model.rules, ruleShape) + order(before.rules, model.rules) + rgRules + rgMeta
     + diff(before.groups, model.groups) + diff(before.mappings, model.mappings) + order(before.mappings, model.mappings)
     + blocklistChanges(before.blocklists, model.blocklists)
     + (JSON.stringify(before.rest) !== JSON.stringify(model.rest) ? 1 : 0) + (JSON.stringify(before.defaults) !== JSON.stringify(model.defaults) ? 1 : 0)
@@ -85,7 +94,7 @@ export const changeCount = computed(() => {
     // Kernel parts the form does not model (top-level keys edited in the JSON view, pipelines kept verbatim and so on) count too: otherwise
     // the change raises nothing and ships silently with the next save
     + UNMODELLED.filter((k) => JSON.stringify(before[k] ?? null) !== JSON.stringify(model[k] ?? null)).length
-})
+}
 // 拦截列表：每个订阅算一处，自己写的规则算一处；只换了合成的文件（立即更新）也算一处。订阅的先后不影响拦什么，不算
 // Blocklists: each subscription is one place and the rules of one's own one more; a new merged file alone (立即更新) counts as one. The order of
 // subscriptions does not change what is blocked, so it does not count
@@ -143,10 +152,19 @@ export function discardDraft(): void { replaceModel(appliedModel.value) }
 // The draft replacements agreed to when leaving the config page: a download under way (立即更新) still takes the new draft as its own, since what was
 // dropped was the other edits, not this update. The value is the generation before
 const leaveDiscards = new Map<number, number>()
-export function discardOnLeave(): void {
+/** 离开配置页时同意的换草稿（放弃修改、丢掉保存开始后改的）：在路上的下载照样认它 / A draft replacement agreed to when leaving the config page (放弃修改,
+ * dropping edits made after a save began): downloads under way still take it as their draft */
+export function replaceOnLeave(next: Model): void {
   const before = generation.value
-  replaceModel(appliedModel.value)
+  replaceModel(next)
   if (generation.value !== before) leaveDiscards.set(generation.value, before)
+}
+// 放弃的是用户自己的修改：草稿里的合成文件是按已保存的那组订阅合成的（立即更新刚下好的），就留着，下面接着直接生效
+// What is dropped are the user's own edits: a merged file built for the saved subscriptions (立即更新 just landed) stays, to take effect right after
+export function discardOnLeave(): void {
+  const next = appliedModel.value
+  const built = model.blocklists.builtFor === blocklistKey(next.blocklists) && model.blocklists.file !== next.blocklists.file
+  replaceOnLeave(built ? { ...next, blocklists: { ...next.blocklists, file: model.blocklists.file, builtFor: model.blocklists.builtFor } } : next)
 }
 /** 草稿从 `then` 那一代起没换过，或者只隔着离开时的放弃 / Whether the draft is unreplaced since generation `then`, or only through discards on leaving */
 export function sameDraftSince(then: number): boolean {

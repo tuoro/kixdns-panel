@@ -173,7 +173,7 @@ function blocklistDiff(blocks: DiffBlock[], now: Blocklists, then: Blocklists, t
   // restore direction still says the lists enabled on both sides go back to that day's contents
   const shared = now.subscriptions.some((x) => x.enabled && then.subscriptions.some((y) => y.enabled && same(x, y)))
   if (now.file !== then.file && links(now) === links(then)) blocks.push({ kind: '改了', title: '拦截列表', lines: [], note: toward === 'restore' ? '列表内容换回这个版本当时下载的那份' : '列表重新下载过，保存后换成新的那份' })
-  else if (now.file !== then.file && toward === 'restore' && shared) blocks.push({ kind: '改了', title: '拦截列表', lines: [], note: '两边都启用的列表，内容也换回这个版本当时下载的那份' })
+  else if (now.file !== then.file && toward === 'restore' && shared) blocks.push({ kind: '改了', title: '拦截列表', lines: [], note: '两边都启用的列表用这个版本当时那份；其间重新下载过的，内容会换回当时的' })
   const rows = (text: string) => text.split('\n').map((l) => l.trim()).filter(Boolean)
   const before = rows(now.custom)
   const after = rows(then.custom)

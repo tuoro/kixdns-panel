@@ -417,23 +417,36 @@ const askLeave = async (purpose?: 'signout'): Promise<boolean> => {
   // 只有保存草稿才有「正在保存的那份」；「现在应用」途中改的，问的就是整份草稿 / Only a draft save has 「the one being saved」; edits during 现在应用 are asked about as the whole draft
   if (saveInFlight.value && origin.value === 'draft') {
     const agreed = await confirm.ask({ title: '放弃保存开始后改的内容', body: '正在保存的那份照常保存；保存开始以后改的会丢掉。', ...labels, destructive: true })
-    if (agreed) dropEditsAfterSave()
+    if (agreed && purpose !== 'signout') agreedDrop = dropEditsAfterSave
     return agreed
   }
   const agreed = await confirm.ask({ title: '放弃未保存的修改', body: '当前的配置草稿会被丢弃，已经生效的配置不受影\u2060响。', ...labels, destructive: true })
-  // 同意了就马上丢掉，不等回来时重读：「现在应用」还在做时回来不会重读，应用自己的重读又留着修改；在路上的「立即更新」落地时看到的也是干净的草稿，
-  // 照没有修改时那样直接生效
-  // On agreement the edits go at once instead of on the return's read: with 现在应用 still running a return skips its read and the apply's own re-read
-  // keeps edits; and a 立即更新 under way lands on a clean draft and takes effect directly, as with no edits
-  if (agreed) discardOnLeave()
-  // 拦截列表的几条提示说的是这份草稿，草稿丢了就一起收起，不跟到别的页上 / The blocklist toasts speak of this draft: with it dropped they go too,
-  // rather than follow to the next page
-  if (agreed) dismissBlocklistToasts()
+  // 同意了就丢掉，不等回来时重读：「现在应用」还在做时回来不会重读，应用自己的重读又留着修改；在路上的「立即更新」落地时看到的也是干净的草稿，
+  // 照没有修改时那样直接生效。等换页真的成了再丢（见下面的 afterEach），没成就留着
+  // 退出登录不丢：会话一结束，再进配置页那次读本来就会换掉草稿；退出没成功时修改还在。只有「现在应用」还在做时马上丢，它做完的重读会留着修改
+  // On agreement the edits go without waiting for the return's read: with 现在应用 still running a return skips its read and the apply's own re-read
+  // keeps edits; and a 立即更新 under way lands on a clean draft and takes effect directly, as with no edits. They go once the page change has really
+  // happened (see afterEach below), and stay if it does not. Signing out drops nothing: once the session ends the next visit's read replaces the draft
+  // anyway, and a failed sign-out keeps the edits. Only with 现在应用 still running do they go at once, since its re-read would keep them
+  if (agreed && purpose === 'signout') { if (applyBusy.value) discardOnLeave() }
+  else if (agreed) agreedDrop = discardOnLeave
   return agreed
 }
+// 同意离开时要丢掉的修改，等换页成了再丢 / Edits agreed to drop on leaving, dropped once the page change succeeds
+let agreedDrop: (() => void) | null = null
 const releaseGuard = registerLeaveGuard(askLeave, () => unsaved.value)
-// 保存途中放行的换页没成：人还在这一页 / A page change let through during a save did not happen: the user is still on this page
-const stopAfterEach = router.afterEach((_to, _from, failure) => { if (failure) stayedDuringSave() })
+// 换页成了：丢掉同意丢掉的修改，拦截列表那几条说这份草稿的提示一起收起（afterEach 在页面卸下之前跑，在路上的下载落地时看到的已经是丢过的草稿）。
+// 换页没成（取消、被顶掉、被拦下、页面文件加载失败）：什么都不丢，保存途中放行的记号也清掉，人还在这一页
+// The page change succeeded: the edits agreed to drop go, and with them the blocklist toasts about this draft (afterEach runs before the page unmounts,
+// so a download landing later sees the draft already dropped). It did not (cancelled, overtaken, blocked, its page file failed to load): nothing is
+// dropped and the mark set by a leave let through during a save goes, the user still being on this page
+const stopAfterEach = router.afterEach((_to, _from, failure) => {
+  const drop = agreedDrop
+  agreedDrop = null
+  if (failure) { stayedDuringSave(); return }
+  if (drop) { drop(); dismissBlocklistToasts() }
+})
+const stopOnError = router.onError(() => { agreedDrop = null; stayedDuringSave() })
 // 提示条的按钮做事期间停用，焦点跟着掉到页面上：做完没人接住焦点时，回到这个按钮（还在的话），不在了就落在提示条上
 // The notice's button is disabled while it works and focus falls to the page: when nothing caught it afterwards, it returns to the button if still there, else to the notice
 async function runNotice(): Promise<void> {
@@ -461,7 +474,7 @@ onMounted(() => {
 })
 const beforeUnload = (e: BeforeUnloadEvent) => { if (unsaved.value) { e.preventDefault(); e.returnValue = '' } }
 // 带「撤销」的提示只对这一页的草稿有用：离开时一起收起（会话过期跳到登录页时也不会留着） / Undo toasts only make sense for this page's draft: they go when it unmounts (including a jump to the login page on session expiry)
-onBeforeUnmount(() => { setViewing(false); window.removeEventListener('beforeunload', beforeUnload); releaseGuard(); stopAfterEach(); dismissUndoable(); ui.mode = 'form'; jsonEdited.value = false })
+onBeforeUnmount(() => { setViewing(false); window.removeEventListener('beforeunload', beforeUnload); releaseGuard(); stopAfterEach(); stopOnError(); dismissUndoable(); ui.mode = 'form'; jsonEdited.value = false })
 onBeforeRouteLeave(async () => takeAgreement() || askLeave())
 // 换分区、或者从整页编辑按返回：规则编辑里没点「完成」的修改先问一句；同意了就关掉编辑
 // Switching section, or pressing back out of the full-page editor: first ask about rule edits not yet 完成; once agreed the editor closes

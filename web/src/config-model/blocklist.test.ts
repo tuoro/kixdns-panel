@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { checkSubscriptionUrl, coversOnly, MAX_OWN_RULES, ownBlocksFor, ownMatcher, ownRuleText, parseLine, parseOwnRules, shortName, skipText, subscriptionName, type Line } from './blocklist'
+import { checkSubscriptionUrl, coversOnly, defaultNameDepth, isDefaultName, uniqueSubscriptionName, MAX_OWN_RULES, ownBlocksFor, ownMatcher, ownRuleText, parseLine, parseOwnRules, shortName, skipText, subscriptionName, type Line } from './blocklist'
 
 interface Case {
   line: string
@@ -92,9 +92,27 @@ it('names a subscription by the suggested list, or by file name and host', () =>
   expect(shortName(subscriptionName('https://lists.example.org/a/filter.txt'), 'https://lists.example.org/a/filter.txt')).toBe('filter.txt')
   expect(shortName('HaGeZi Light', 'https://lists.example.org/a/filter.txt')).toBe('HaGeZi Light')
   // 和已有的默认名重名时带上最后一级目录，正文里也带着 / A taken default name carries its last directory, in prose too
-  const second = subscriptionName('https://lists.example.org/fail/filter.txt', true)
+  const second = subscriptionName('https://lists.example.org/fail/filter.txt', 2)
   expect(second).toBe('fail/filter.txt\u00a0·\u00a0lists.example.org')
   expect(shortName(second, 'https://lists.example.org/fail/filter.txt')).toBe('fail/filter.txt')
+})
+
+it('makes a default name unique: directories one level at a time, then the query string, then a number', () => {
+  const j = '\u00a0·\u00a0'
+  const taken = (...names: string[]) => new Set(names)
+  // 最后一级目录也一样（GitHub raw 常见）：再往上带一级 / The last directory alike too (common on GitHub raw): one more level up
+  const third = 'https://raw.githubusercontent.com/c/repo/master/hosts'
+  expect(uniqueSubscriptionName(third, taken(`hosts${j}raw.githubusercontent.com`, `master/hosts${j}raw.githubusercontent.com`))).toBe(`repo/master/hosts${j}raw.githubusercontent.com`)
+  // 只有查询串不同 / Only the query differs
+  expect(uniqueSubscriptionName('https://h.example/list.txt?type=ads', taken(`list.txt${j}h.example`))).toBe(`list.txt?type=ads${j}h.example`)
+  // 根目录下的同名文件：没有目录可带，加编号；编号在「·」前面，正文里也带着 / A same-named file at the root: no directory to add, so a number, before 「·」 so prose
+  // keeps it
+  const numbered = uniqueSubscriptionName('https://h.example/hosts.txt', taken(`hosts.txt${j}h.example`))
+  expect(numbered).toBe(`hosts.txt (2)${j}h.example`)
+  expect(shortName(numbered, 'https://h.example/hosts.txt')).toBe('hosts.txt (2)')
+  expect(defaultNameDepth(numbered, 'https://h.example/hosts.txt')).toBe(1)
+  expect(defaultNameDepth(`repo/master/hosts${j}raw.githubusercontent.com`, third)).toBe(3)
+  expect(isDefaultName('HaGeZi Light', third)).toBe(false)
 })
 
 it('checks a link to subscribe to as the server does', () => {

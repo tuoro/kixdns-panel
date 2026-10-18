@@ -60,7 +60,7 @@ const UNSUPPORTED_MODIFIERS: [&str; 6] = [
 /// 只管网页里的请求（第三方、脚本、图片……）的修饰符：DNS 查询里没有这些信息，带它们的规则整条不用。和页面同一份名单
 /// Modifiers about requests inside web pages (third-party, scripts, images…): a DNS query carries none of that, so
 /// rules with them go unused whole. The same list as the page's
-const BROWSER_MODIFIERS: [&str; 26] = [
+const BROWSER_MODIFIERS: [&str; 56] = [
     "third-party",
     "3p",
     "first-party",
@@ -87,6 +87,36 @@ const BROWSER_MODIFIERS: [&str; 26] = [
     "redirect",
     "removeparam",
     "csp",
+    "generichide",
+    "genericblock",
+    "elemhide",
+    "ehide",
+    "ghide",
+    "shide",
+    "specifichide",
+    "content",
+    "jsinject",
+    "urlblock",
+    "extension",
+    "stealth",
+    "cookie",
+    "rewrite",
+    "sitekey",
+    "header",
+    "all",
+    "redirect-rule",
+    "empty",
+    "mp4",
+    "replace",
+    "jsonprune",
+    "hls",
+    "strict-first-party",
+    "strict-third-party",
+    "method",
+    "to",
+    "permissions",
+    "referrerpolicy",
+    "removeheader",
 ];
 
 /// 一条规则管哪些域名 / Which names one rule covers

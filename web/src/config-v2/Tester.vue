@@ -6,7 +6,7 @@ import { apiRequest, jsonBody } from '../api/client'
 import type { DnsDiagnostic } from '../api/types'
 import UiSelect from '../components/ui/UiSelect.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
-import { coversOnly, ownBlocksFor } from '../config-model/blocklist'
+import { coversOnly, ownBlocksFor, parseOwnRules } from '../config-model/blocklist'
 import { blocklistPipelineId, compile, isIp, type Model } from '../config-model/model'
 import { traceNames } from '../config-model/trace-names'
 import { asksUpstream, describeStep, forwardTarget, formatElapsed, groupTrace, hidePlumbing, isDnsSuccess, missedRulesText, parseDnsAnswer, responseCodeName, ruleName, traceTone, type TextPart } from '../diagnostics'
@@ -80,7 +80,10 @@ async function run(): Promise<void> {
     const blocks = byBlocklist.value ? ownBlocksFor(tried.blocklists.custom, tested.value) : []
     const first = blocks[0]
     const lines = new Set(blocks.map((b) => b.line)).size
-    ownBlock.value = first ? { line: first.line, text: tried.blocklists.custom.split('\n')[first.line - 1]?.trim() ?? '', exact: coversOnly(first.match, tested.value), only: lines === 1 && coversOnly(first.match, tested.value), more: lines - 1 } : null
+    // 那一行只管这一个域名才叫人删：hosts 写法一行写几个域名时，删掉那一行会连带放开同一行的别的 / Removing the line is offered only when it holds this
+    // one name: a hosts line naming several would let the others through too
+    const alone = first ? parseOwnRules(tried.blocklists.custom).rules.filter((r) => r.line === first.line).length === 1 : false
+    ownBlock.value = first ? { line: first.line, text: tried.blocklists.custom.split('\n')[first.line - 1]?.trim() ?? '', exact: coversOnly(first.match, tested.value), only: lines === 1 && alone && coversOnly(first.match, tested.value), more: lines - 1 } : null
     emit('matched', rule?.id ?? null, selected(model.mappingId ?? 'domain_mapping'), byBlocklist.value)
   } catch (e) {
     result.value = null

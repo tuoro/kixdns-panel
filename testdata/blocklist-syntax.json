@@ -48,6 +48,8 @@
     { "line": "||example.com^$third-party", "skip": "browser-modifier", "modifier": "third-party" },
     { "line": "||example.com^$1p", "skip": "browser-modifier", "modifier": "1p" },
     { "line": "||example.com^$~script", "skip": "browser-modifier", "modifier": "script" },
+    { "line": "@@||example.com^$generichide", "skip": "browser-modifier", "modifier": "generichide" },
+    { "line": "||example.com^$all", "skip": "browser-modifier", "modifier": "all" },
     { "line": "||example.com^$nonsense", "skip": "unknown-modifier", "modifier": "nonsense" },
     { "line": "example.com##.banner", "skip": "cosmetic" },
     { "line": "example.com#@#.banner", "skip": "cosmetic" },

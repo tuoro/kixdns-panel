@@ -10,13 +10,13 @@ import UiMenu from '../components/ui/UiMenu.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import { useSession } from '../composables/useSession'
 import { useToast } from '../composables/useToast'
-import { checkSubscriptionUrl, MAX_SUBSCRIPTIONS, normalUrl, parseOwnRules, PRESETS, shortName, skipText, subscriptionName, type Skip } from '../config-model/blocklist'
+import { checkSubscriptionUrl, defaultNameDepth, MAX_SUBSCRIPTIONS, normalUrl, parseOwnRules, PRESETS, shortName, skipText, uniqueSubscriptionName, type Skip } from '../config-model/blocklist'
 import { blockLabel, type Subscription } from '../config-model/model'
 import { formatAgo, formatVersionTime } from '../utils'
 import { usePhone } from './phone'
-import { appliedModel, changedSubscriptionIds, dialogEdits, editorEdited, jsonEdited, model, newId, userPart } from './store'
+import { appliedModel, changedSubscriptionIds, changesBesidesFile, dialogEdits, draftGeneration, editorEdited, jsonEdited, model, newId, unsaved } from './store'
 import { blocklists, loadBlocklists, rebuildBlocklists, saveBlocklistSchedule } from './useBlocklists'
-import { doc, pageAway, save, saveInFlight, stage } from './useConfigDocument'
+import { doc, keepDraftWhileAway, pageAway, save, saveInFlight, stage, whenSaveSettles } from './useConfigDocument'
 import { fmtCount } from './view'
 
 // 拦截列表：订阅的列表一行一个，像域名映射那样一张卡片；下面是自己写的规则和两项设置。订阅和自己写的规则都在草稿里，
@@ -50,15 +50,18 @@ function about(s: Subscription): string {
     return tail ? `${decodeURI(tail)}\u00a0·\u00a0${url.host}` : url.host
   } catch { return link(s) }
 }
-// 窄屏名字下面的来源：主机名；名字里已经有主机名时写目录，只有一级文件名、或者没有路径时不写
-// The source under the name on narrow screens: the host; once the name holds the host, the directory, or nothing for a bare file name or no path
+// 窄屏名字下面的来源：主机名；名字里已经有主机名时写目录，只有一级文件名、或者没有路径时不写。名字里已经带着几级目录（同名时的默认名）时，
+// 只写再往上的那几级
+// The source under the name on narrow screens: the host; once the name holds the host, the directory, or nothing for a bare file name or no path. When
+// the name already carries some directories (a default name made unique), only the levels above them
 function source(s: Subscription): string {
   const name = host(s.url)
   if (!s.name.includes(name)) return name
   try {
-    const path = decodeURI(new URL(s.url).pathname)
-    const dir = path.slice(0, path.lastIndexOf('/') + 1)
-    return dir === '/' ? '' : dir
+    const segments = decodeURI(new URL(s.url).pathname).split('/').filter(Boolean)
+    const carried = Math.max(1, defaultNameDepth(s.name, s.url))
+    const dirs = segments.slice(0, Math.max(0, segments.length - carried))
+    return dirs.length ? `/${dirs.join('/')}/` : ''
   } catch { return '' }
 }
 const statusOf = (s: Subscription) => blocklists.sources[s.url]
@@ -67,7 +70,8 @@ const downloading = (s: Subscription) => blocklists.downloading.has(s.url)
 // 读不到各个列表的情况时，没有记录的那些说不出下载得怎样：写「—」，不说「还没下载」
 // With the statuses unreadable, a list without a record cannot say how its download went: it reads —, not 还没下载
 const unknown = (s: Subscription) => blocklists.status === 'failed' && !statusOf(s)
-const added = (s: Subscription) => !appliedModel.value.blocklists.subscriptions.some((x) => x.id === s.id)
+// 按规整后的链接认，和改动数一个口径 / Matched by normal link, as the change count is
+const added = (s: Subscription) => !appliedModel.value.blocklists.subscriptions.some((x) => normalUrl(x.url) === normalUrl(s.url))
 // 「18.6 万条」「6,540 条」：带单位时不再隔空格 / 「18.6 万条」, 「6,540 条」: no space once a unit is there
 const ruleCount = (n: number) => (n >= 1e4 ? `${fmtCount(n)}条` : `${fmtCount(n)}\u00a0条`)
 // 时间都是秒；「3 天前」前面空一格，「刚刚」不空 / Times are in seconds; 「3 天前」 takes a space before it, 「刚刚」 none
@@ -166,7 +170,8 @@ const busy = computed(() => subscriptions.value.some(downloading))
 // present at the press but agreed away on leaving the config page leave a clean draft by then
 async function updateNow(urls: string[], button: '立即更新' | '全部更新' = '立即更新'): Promise<void> {
   const before = model.blocklists.file
-  const result = await rebuildBlocklists(urls)
+  const generation = draftGeneration()
+  let result = await rebuildBlocklists(urls)
   // 下载途中会话过期了：已经在登录页上，不再保存，也不说话 / The session expired during the download: the login page is up, so nothing is saved or said
   if (!session.authenticated.value) return
   // 没下成的，合成那边已经说了原因；点名的列表在下载途中都删掉了，删除提示已经说过 / One that did not download already had its reason said by the build;
@@ -174,6 +179,12 @@ async function updateNow(urls: string[], button: '立即更新' | '全部更新'
   if (result.outcome === 'failed' || !urls.some((url) => subscriptions.value.some((s) => s.url === url))) return
   // 下载途中放弃了修改、或者恢复了别的版本 / The edits were discarded, or another version restored, while it downloaded
   if (result.outcome === 'dropped') { toast.info(`下载途中草稿换掉了，这次下载的没有放进草稿；要用新的一份，再点一次「${button}」`); return }
+  // 订阅在途中变了，而草稿只隔着离开时的放弃（放弃的修改里有订阅的增删开关）：服务端已经存着刚下好的那份，按放弃以后的订阅再合成一次，接着照常生效
+  // The subscriptions changed meanwhile and only a discard on leaving lies between (the dropped edits added, removed or switched lists): the server
+  // already holds the fresh download, so it builds once more for the subscriptions left after the discard and carries on as usual
+  if (result.outcome === 'superseded' && draftGeneration() !== generation) result = await rebuildBlocklists([], false, true)
+  if (result.outcome === 'failed' || result.outcome === 'dropped') return
+  // 还是这份草稿：新的一份跟着刚才的修改一起放进草稿 / Still the same draft: the new copy goes in along with the edits just made
   if (result.outcome === 'superseded') { toast.info('新的一份会和刚才的修改一起放进草稿，保存后生效'); return }
   if (model.blocklists.file === before) {
     if (urls.some((url) => blocklists.sources[url]?.last_error)) return
@@ -185,8 +196,22 @@ async function updateNow(urls: string[], button: '立即更新' | '全部更新'
         : named.length > 1 ? '下载的都和在用的一样，已经是最新的' : '下载的和在用的一样，已经是最新的')
     return
   }
-  const clean = userPart(model) === userPart(appliedModel.value) && !editorEdited.value && !jsonEdited.value && dialogEdits.size === 0 && !saveInFlight.value
-  if (!clean) { toast.info('新的一份已放进草稿，保存后生效'); return }
+  // 保存或「现在应用」正在做：等它做完再看。按下保存时等着合成的那次保存，已经把新的一份一起存上了
+  // A save or 现在应用 is under way: look once it finishes. A save pressed while the build was pending already stored the new copy along with it
+  if (saveInFlight.value) {
+    await whenSaveSettles()
+    if (!session.authenticated.value || !unsaved.value) return
+  }
+  // 有没有别的修改和保存条一个口径：面板填进去的合成文件不算；删了又加回来、改了又改回这种保存条说没改的，这里也算干净
+  // Other edits by the save bar's yardstick: the merged file the panel fills in does not count, and what the save bar calls unchanged (removed and added
+  // back, edited and reverted) is clean here too
+  const clean = changesBesidesFile(appliedModel.value, model) === 0 && !editorEdited.value && !jsonEdited.value && dialogEdits.size === 0
+  if (!clean) {
+    // 人不在配置页：回来时留着这份草稿，不让回来那次读把新的一份冲掉 / Off the config page: the draft is kept for the return, so its read does not wash the
+    // new copy away
+    if (pageAway()) { keepDraftWhileAway(); toast.info('新的一份已放进草稿，回到配置页保存后生效') } else toast.info('新的一份已放进草稿，保存后生效')
+    return
+  }
   await save('draft', '手动更新拦截列表')
   // 看的是人在不在配置页上，不是这个组件还在不在：离开又回来时是另一个组件，照样要说；不在页上时保存自己会说「版本 #N 已生效」
   // What counts is whether the user is on the config page, not whether this component lives: after leaving and coming back another one does and still
@@ -207,11 +232,13 @@ function subscribe(urls: string[]): void {
     if (pending !== undefined) { toast.dismiss(pending); deleteToasts.delete(url) }
     // 删掉又加回来的沿用原来的 id 和名字，不算新加的 / One removed and added back keeps its id and name, so it does not count as new
     const before = saved.find((x) => normalUrl(x.url) === url)
-    // 默认名和已有的重名（同一个主机、同名文件）时带上最后一级目录，正文和提示里分得出 / A default name already taken (same host, same file name)
-    // carries its last directory, so prose and toasts can tell them apart
-    const plain = subscriptionName(url)
-    const name = model.blocklists.subscriptions.some((x) => x.name === plain) ? subscriptionName(url, true) : plain
-    model.blocklists.subscriptions.push(before ? { ...before, enabled: true } : { id: newId(), name, url, enabled: true })
+    // 默认名和已有的重名（同一个主机、同名文件）时一级一级往上带目录，正文和提示里分得出 / A default name already taken (same host, same file name)
+    // carries directories one level at a time, so prose and toasts can tell them apart
+    const name = uniqueSubscriptionName(url, new Set(model.blocklists.subscriptions.map((x) => x.name)))
+    // 原来的编号已经被草稿里别的订阅占了（导入了另一台面板的配置）：换一个新的 / The old id is already taken by another subscription in the draft (a
+    // config imported from another panel): it gets a new one
+    const free = before && !model.blocklists.subscriptions.some((x) => x.id === before.id)
+    model.blocklists.subscriptions.push(before ? { ...before, ...(free ? {} : { id: newId() }), enabled: true } : { id: newId(), name, url, enabled: true })
     // 以前没下载成功过的，加回来时再下载一次 / One that never downloaded downloads again when added back
     const status = blocklists.sources[url]
     if (status?.last_error && !status.sha256) retry.push(url)
@@ -306,7 +333,7 @@ const blockText = computed(() => blockLabel(model, 'default'))
       </form>
       <!-- 配置里用着一份拦截列表、却没记下是哪些列表合成的（从别处读进来的）：照实说，不像是什么都没开 / The config uses a blocklist file but did not record
            which lists built it (read in from elsewhere): say so, rather than look as if nothing were on -->
-      <UiEmpty v-if="!subscriptions.length" :icon="ShieldBan" title="还没有订阅拦截列表" :desc="model.blocklists.file ? '配置里还用着一份拦截列表，但没记下是哪些列表合成的；订阅以后会换成新的。' : '从推荐的列表里挑一个，或者在上面粘贴 AdGuard、Adblock 规则和 hosts\u00a0文件的链接。'">
+      <UiEmpty v-if="!subscriptions.length" :icon="ShieldBan" title="还没有订阅拦截列表" :desc="model.blocklists.file ? '配置里还用着一份拦截列表，但没记下是哪些列表合成的；订阅列表并保存以后，会换成新合成的。' : '从推荐的列表里挑一个，或者在上面粘贴 AdGuard、Adblock 规则和 hosts\u00a0文件的链接。'">
         <button class="ui-btn ui-btn--secondary" type="button" @click="openPresets"><ListPlus :size="16" aria-hidden="true" />推荐的列表</button>
       </UiEmpty>
       <template v-else>
