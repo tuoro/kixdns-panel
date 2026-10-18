@@ -76,6 +76,11 @@ pub struct SourceStatus {
     pub summary: ListSummary,
     /// 最近一次下载失败的原因；成功以后清掉 / Why the latest download failed; cleared once one succeeds
     pub last_error: Option<String>,
+    /// 这次失败重下可能就好（连接、服务器一时的问题）；链接不对、文件读不懂时为 false，页面就不叫人重下
+    /// Whether downloading again may help this failure (connection or passing server trouble); false for a wrong link or an
+    /// unreadable file, so the page does not suggest downloading again
+    #[serde(default)]
+    pub retryable: bool,
     pub last_attempt_at: Option<i64>,
     /// 因为规则少了一半以上没换上的那一份：下次下载还是它，就当列表真变小了，换上 / The copy not taken because it
     /// held under half the rules: when the next download is the same copy, the list really shrank and it is taken
@@ -123,8 +128,12 @@ pub struct Refresh {
 /// copy that reads, one held back for holding under half the rules, or why it failed
 enum Fetched {
     Read(StoredFile, ListSummary),
-    Shrank { sha256: String, reason: String },
-    Failed(String),
+    Shrank {
+        sha256: String,
+        reason: String,
+    },
+    /// 原因，和重下可能就好吗 / The reason, and whether downloading again may help
+    Failed(String, bool),
 }
 
 impl BlocklistManager {
@@ -209,7 +218,8 @@ impl BlocklistManager {
         };
         let sources = read_file_sources(Path::new(&old)).await?.ok_or_else(|| {
             GeoDataError::Invalid(
-                "正在用的文件读不出是哪些列表合成的，点上面的「全部更新」重新合成".to_owned(),
+                "正在用的文件读不出是哪些列表合成的；订阅列表、或者点「全部更新」以后会重新合成"
+                    .to_owned(),
             )
         })?;
         let _guard = self.lock.lock().await;
@@ -353,17 +363,20 @@ impl BlocklistManager {
                     status.downloaded_at = Some(now);
                     status.summary = summary;
                     status.last_error = None;
+                    status.retryable = false;
                     status.rejected_sha256 = None;
                 }
                 Fetched::Shrank { sha256, reason } => {
                     tracing::warn!(url = %url, reason = %reason, "拦截列表这次下载的规则少了一半以上");
                     status.last_error = Some(reason);
+                    status.retryable = false;
                     status.rejected_sha256 = Some(sha256);
                     failed += 1;
                 }
-                Fetched::Failed(reason) => {
+                Fetched::Failed(reason, retryable) => {
                     tracing::warn!(url = %url, reason = %reason, "拦截列表没下载成功");
                     status.last_error = Some(reason.chars().take(MAX_ERROR_CHARS).collect());
+                    status.retryable = retryable;
                     failed += 1;
                 }
             }
@@ -411,13 +424,16 @@ impl BlocklistManager {
             Err(GeoDataError::Internal(error)) => return Err(GeoDataError::Internal(error)),
             // 页面上这一行已经写着是哪个列表、没下载成功：只记原因本身 / The page's row already names the list and says the
             // download failed: only the cause itself is kept
-            Err(GeoDataError::Download { cause, .. }) => return Ok(Fetched::Failed(cause)),
+            Err(GeoDataError::Download { cause, retry, .. }) => {
+                return Ok(Fetched::Failed(cause, retry));
+            }
             // 这一类原因以「拦截列表」开头，页面上那一行已经写着是哪个列表 / These reasons open with 拦截列表, and the page's row already names the list
             Err(GeoDataError::Invalid(reason)) => {
                 return Ok(Fetched::Failed(
                     reason
                         .strip_prefix(WHAT)
                         .map_or(reason.clone(), str::to_owned),
+                    false,
                 ));
             }
         };
@@ -435,7 +451,7 @@ impl BlocklistManager {
                 })?;
         let summary = match read {
             Ok(summary) => summary,
-            Err(reason) => return Ok(Fetched::Failed(reason)),
+            Err(reason) => return Ok(Fetched::Failed(reason, false)),
         };
         Ok(match shrink_reason(summary.rules, &file.sha256, previous) {
             Some(reason) => Fetched::Shrank {
@@ -806,6 +822,8 @@ mod tests {
                 .starts_with("主机 127.0.0.1 解析到不允许的地址"),
             "{kept:?}"
         );
+        // 链接指向不允许的地址，重下也没用 / A link pointing at a disallowed address does not get better by downloading again
+        assert!(!kept.retryable);
         let never = &result.sources[C];
         assert_eq!((never.sha256.as_deref(), never.downloaded_at), (None, None));
         assert!(never.last_error.is_some());
