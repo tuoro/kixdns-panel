@@ -32,6 +32,9 @@ watch(() => appliedModel.value.blocklists.file, (file) => {
 export function noteLanded(button: string, known = true): void {
   landed = { generation: draftGeneration(), file: known ? model.blocklists.file : null, button }
 }
+/** 落地了、还没存上的那一次还在，草稿也还是它的（文件还不知道时也算） / The landing not saved yet is still there and the draft is still its own (a file
+ * not known yet included) */
+export const unsavedLanding = (): boolean => stillOurs()
 /** 离开之前：草稿里还是落地的那份文件（中间在页上放弃又撤销过也算），就从现在这一代接着认 / Before leaving: when the draft still holds the landed file (a
  * discard on the page undone since counts too), it is recognised from the current generation on */
 export function refreshLanded(): void {
@@ -81,14 +84,16 @@ export function returnedToPage(): void {
 let carrying: Promise<void> = Promise.resolve()
 /**
  * 落地的那一次还没存上时，看草稿干不干净，干净就存。`fromLanding` 是落地时那一次：草稿在下载途中被换掉（放弃修改、恢复版本）要说一句；
- * 离开时调用的那次不说，那时草稿早先在页上被换掉是人自己做的。`same`：下到的和草稿里那份没存上的一样（又点了一次），有别的修改时不说「放进」
+ * 离开时调用的那次不说，那时草稿早先在页上被换掉是人自己做的。`put`：有别的修改时怎么说：same 是下到的和草稿里那份没存上的一样（又点了一次），
+ * 不说「放进」；withEdits 是下载途中订阅改过，说跟刚才的修改一起保存
  * With the landed download unsaved, checks whether the draft is clean and saves if so. `fromLanding` marks the call on landing: a draft replaced during the
  * download (a discard, a restore) is worth a sentence; the call on leaving says nothing, since an earlier replacement on the page was the user's own doing.
- * `same`: the download matches the unsaved copy already in the draft (pressed again), so with other edits it does not say 「put in」
+ * `put`: how it is said with other edits: same when the download matches the unsaved copy already in the draft (pressed again), not 「put in」; withEdits
+ * when the subscriptions changed mid-download, saved along with those edits
  */
-export function carryUpdate(fromLanding = false, same = false): Promise<void> {
+export function carryUpdate(fromLanding = false, put: 'same' | 'withEdits' | null = null): Promise<void> {
   // 一次出错不能卡住后面的：排队的链接住错误 / One failure must not stall the rest: the queue swallows its errors
-  carrying = carrying.then(() => run(fromLanding, same)).catch(() => undefined)
+  carrying = carrying.then(() => run(fromLanding, put)).catch(() => undefined)
   return carrying
 }
 
@@ -109,7 +114,7 @@ watch(() => useSession().authenticated.value, (now) => {
   returnSay = null
 })
 
-async function run(fromLanding: boolean, same: boolean): Promise<void> {
+async function run(fromLanding: boolean, put: 'same' | 'withEdits' | null): Promise<void> {
   const toast = useToast()
   const session = useSession()
   // 等的时候正在跑的保存可能就存上了这份文件，已保存文件的 watch 会先把 landed 清掉：先记下这一次是谁 / A save under way may store this very file while it
@@ -169,8 +174,8 @@ async function run(fromLanding: boolean, same: boolean): Promise<void> {
     // new copy away
     // 下到的和草稿里那份一样（上次没存上又点了一次）：不说「放进」，草稿什么都没变 / The download matches the draft's copy (pressed again after one that
     // did not save): not 「put in」, since the draft did not change
-    if (!pageAway()) sayDrafted(same ? '新的一份已经在草稿里，保存后生效' : '新的一份已放进草稿，保存后生效')
-    else { keepDraftWhileAway(); sayDrafted(same ? '新下载的拦截列表：已经在草稿里，回到配置页保存后生效' : '新下载的拦截列表已放进草稿，回到配置页保存后生效') }
+    if (!pageAway()) sayDrafted(put === 'same' ? '新的一份已经在草稿里，保存后生效' : put === 'withEdits' ? '新的一份放进了草稿，和刚才的修改一起保存后生效' : '新的一份已放进草稿，保存后生效')
+    else { keepDraftWhileAway(); sayDrafted(put === 'same' ? '新下载的拦截列表：已经在草稿里，回到配置页保存后生效' : '新下载的拦截列表已放进草稿，回到配置页保存后生效') }
     return
   }
   await save('draft', '手动更新拦截列表', words(button))

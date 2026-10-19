@@ -73,7 +73,12 @@ body { background: var(--l-canvas); }
 .savebar__note-text { max-width: 14rem; overflow: hidden; color: var(--l-ink-2); font-size: var(--t-2); text-overflow: ellipsis; white-space: nowrap; }
 .is-aside { visibility: hidden; }
 .savebar__save { min-width: 7.5rem; }
-.savebar__acts { display: inline-flex; gap: var(--s-1); margin-left: var(--s-1); }
+.savebar__acts { display: inline-flex; gap: var(--s-1); }
+/* 「下载草稿」「重新读取」是小号文字按钮：退回它们的内边距和边框，折到下一行时字和上面的标题对齐；和说明同一行时，拉开的距离挪到说明右边，照旧 25
+   下载草稿 and 重新读取 are small text buttons: their padding and border are pulled back so, wrapped to the next line, their words line up with the title above;
+   on the same line as the sentence the gap moves to the sentence's right, 25 as before */
+.cfg__savebar .savebar__acts { margin-left: calc((var(--s-3) + 1px) * -1); }
+@media (min-width: 641px) { .cfg__savebar .ui-savebar__status:has(.savebar__acts) > small { margin-right: calc(var(--s-3) + 1px + var(--s-1)); } }
 .cfg__savebar .ui-savebar__status small { color: var(--l-ink-2); font-size: var(--t-2); }
 .cfg__savebar.ui-savebar--err { flex-wrap: wrap; justify-content: flex-end; }
 .cfg__savebar.ui-savebar--err .ui-savebar__status { flex: 1 1 100%; }
@@ -2009,10 +2014,11 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
 }
 @media (max-width: 640px) {
   .cfg__savebar.savebar--wrap .ui-savebar__detail, .cfg__savebar.ui-savebar--err .ui-savebar__detail { white-space: normal; }
-  /* 冲突时「下载草稿」「重新读取」在手机上自成一行：退回小号文字按钮 12 的内边距，字和上面的说明对齐 / In a conflict on phones 下载草稿 and 重新读取 take a line of their own: the small text buttons' 12 padding is pulled back so their words line up with the text above */
+  /* 手机上贴着屏幕左边：只退回内边距，留下 1px 边框，键盘焦点框不被屏幕切掉 / On phones it sits at the screen's left edge: only the padding is pulled
+     back, keeping the 1px border, so the keyboard focus ring is not cut off by the screen */
   .cfg__savebar .savebar__acts { margin-left: calc(var(--s-3) * -1); }
-  /* 两个链接总是自己一行：561–640 时放得下也不跟在说明后面（往回收的那 12 是按自己一行算的） / The two links always take their own line: at 561–640 they would fit after the
-     sentence, but the 12 pulled back assumes a line of their own */
+  /* 两个链接总是自己一行：561–640 时放得下也不跟在说明后面（往回收的内边距是按自己一行算的） / The two links always take their own line: at 561–640 they would fit
+     after the sentence, but the padding pulled back assumes a line of their own */
   .cfg__savebar .savebar__acts { flex-basis: 100%; }
 }
 .cfg__savebar .ui-savebar__status:focus { outline: none; }

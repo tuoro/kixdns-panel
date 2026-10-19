@@ -1135,3 +1135,258 @@ test('提示条：「名字」的后面能折，KixDNS 的后面不能折', asyn
   const breaks = await page.locator('.toast > span').evaluateAll((spans) => spans.map((span) => [...span.querySelectorAll('wbr')].map((w) => w.previousSibling?.textContent ?? '')))
   expect(breaks).toEqual([['「ads-and-trackers.txt」的'], []])
 })
+
+// 订阅里留着一个总是下载失败的列表，全部更新没存上以后再点：其余的下到的一样，也照落地收场、照常存（用户定的），不一声不响
+// With a list that always fails left in the subscriptions, 全部更新 again after one that did not save: the rest download the same, yet it still ends as a
+// landing and saves (the user's call), never silently
+test('有列表总下载失败时，全部更新没存上以后再点：照常存成版本', async ({ page }) => {
+  await open(page)
+  await subscribe(page, ['AdGuard DNS filter'])
+  await page.getByLabel('列表的链接').fill('https://lists.example.org/fail/always.txt')
+  await page.getByRole('button', { name: '添加', exact: true }).click()
+  await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用', exact: true }).click()
+  await expect(bar).toContainText('已生效', { timeout: 8000 })
+  await page.clock.setFixedTime(new Date(Date.now() + 5000))
+  const all = page.getByRole('button', { name: '全部更新', exact: true }).first()
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-validate-reject', 'true'))
+  await all.click()
+  const failed = page.locator('.toast', { hasText: '新下载的拦截列表没能存上，原因写在保存栏' })
+  await expect(failed).toBeVisible({ timeout: 8000 })
+  await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  await all.click()
+  await expect(page.locator('.toast', { hasText: '已换上新下载的拦截列表' })).toBeVisible({ timeout: 10_000 })
+  await expect(failed).toHaveCount(0)
+})
+
+// 草稿里只改过订阅（关掉一个列表），点另一个的立即更新、下到的没变：说和上次下载的一样，不说有新的一份（用户定的）
+// Only the subscriptions changed in the draft (one list switched off), 立即更新 on another and the download is unchanged: it says the same as last downloaded,
+// not that there is a new copy (the user's call)
+test('只改过订阅、立即更新下到的没变：说和上次下载的一样', async ({ page }) => {
+  await open(page)
+  // 定住时间：之后每次下到的都一样（演示的下载按秒变） / With the time fixed every later download is the same (demo downloads change by the second)
+  await page.clock.setFixedTime(new Date(Date.now() + 5000))
+  await subscribe(page, ['AdGuard DNS filter', 'anti-AD'])
+  await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用', exact: true }).click()
+  await expect(bar).toContainText('已生效')
+  const toasts = await trackToasts(page)
+  // 关掉以后马上点：重新合成还没落地也一样（合成的文件变了是因为订阅，不是下到了新东西） / Pressed right after switching off: the same while the rebuild has
+  // not landed (the merged file changes because of the subscriptions, not because anything new was downloaded)
+  await page.getByRole('checkbox', { name: /^启用 anti-AD/ }).evaluate((e: HTMLElement) => e.click())
+  await page.locator('.bl__row', { hasText: 'AdGuard DNS filter' }).getByRole('button', { name: 'AdGuard DNS filter 的操作', exact: true }).click()
+  await page.getByRole('menuitem', { name: '立即更新', exact: true }).click()
+  await expect(page.locator('.toast', { hasText: '下载的和上次下载的一样，已经是最新的' })).toBeVisible({ timeout: 6000 })
+  await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  await page.getByRole('button', { name: '全部更新', exact: true }).first().click()
+  await expect(page.locator('.toast', { hasText: '下载的都和上次下载的一样，已经是最新的' })).toBeVisible({ timeout: 6000 })
+  expect(await toasts()).not.toContain('新的一份')
+  await expect(bar).toContainText('已修改 1 处')
+})
+
+// 上次下好的那份没存上，这时点一个总下载失败的列表的立即更新：只说它没下载成功，不顺手把上次那份存了
+// The copy downloaded last time did not save, and 立即更新 is pressed on a list that always fails: only its failure is said, and the earlier copy is not
+// saved along the way
+for (const discard of [false, true]) test(`上次那份没存上时${discard ? '（又在页上放弃了）' : ''}点一个总下载失败的列表：只说没下载成功，不顺手存`, async ({ page }) => {
+  await open(page)
+  await subscribe(page, ['AdGuard DNS filter'])
+  await page.getByLabel('列表的链接').fill('https://lists.example.org/fail/always.txt')
+  await page.getByRole('button', { name: '添加', exact: true }).click()
+  await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用', exact: true }).click()
+  await expect(bar).toContainText('已生效', { timeout: 8000 })
+  await page.waitForTimeout(1100)
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-validate-reject', 'true'))
+  await page.locator('.bl__row', { hasText: 'AdGuard DNS filter' }).getByRole('button', { name: 'AdGuard DNS filter 的操作', exact: true }).click()
+  await page.getByRole('menuitem', { name: '立即更新', exact: true }).click()
+  await expect(page.locator('.toast', { hasText: '新下载的拦截列表没能存上，原因写在保存栏' })).toBeVisible({ timeout: 6000 })
+  // 在页上放弃以后，服务端仍留着比在用的新的那一份：点失败的列表也不能把它存出去 / After a discard on the page the server still holds the newer copy:
+  // pressing the failing list must not save it either
+  if (discard) await bar.getByRole('button', { name: '放弃修改', exact: true }).click()
+  const toasts = await trackToasts(page)
+  await page.locator('.bl__row', { hasText: 'always.txt' }).getByRole('button', { name: /的操作$/ }).click()
+  await page.getByRole('menuitem', { name: '立即更新', exact: true }).click()
+  await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  await page.waitForTimeout(1500)
+  expect(await toasts()).toContain('没下载成功')
+  expect(await toasts()).not.toContain('已换上新下载的拦截列表')
+  if (!discard) await expect(bar).toContainText('没有通过校验')
+})
+
+// 离开以后先后两条成功：自己那次保存的「版本 #N 已生效」不被后来立即更新的「已换上…」顶掉
+// Two results in a row away from the page: the user's own 「版本 #N 已生效」 is not pushed out by the 「已换上…」 of 立即更新 that follows
+test('离开以后连着两条成功提示：前一条不被后一条顶掉', async ({ page }) => {
+  await open(page)
+  await subscribe(page, ['AdGuard DNS filter'])
+  await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用', exact: true }).click()
+  await expect(bar).toContainText('已生效')
+  await page.waitForTimeout(1100)
+  await page.getByRole('textbox', { name: '自己写的规则，一行一条', exact: true }).fill('||mine.example^')
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-download-slow', '2500'); localStorage.setItem('kixdns:demo-save-slow', '800') })
+  await page.locator('.bl__row', { hasText: 'AdGuard DNS filter' }).getByRole('button', { name: 'AdGuard DNS filter 的操作', exact: true }).click()
+  await page.getByRole('menuitem', { name: '立即更新', exact: true }).click()
+  await bar.getByRole('button', { name: '保存并应用', exact: true }).click()
+  await page.locator('.desktop-nav').getByRole('link', { name: '日志', exact: true }).click()
+  await expect(page).toHaveURL(/\/logs/)
+  const mine = page.locator('.toast', { hasText: /^版本 #\d+ 已生效$/ })
+  await expect(mine).toBeVisible({ timeout: 5000 })
+  await expect(page.locator('.toast', { hasText: '已换上新下载的拦截列表' })).toBeVisible({ timeout: 8000 })
+  await expect(mine).toBeVisible()
+  await page.evaluate(() => { localStorage.removeItem('kixdns:demo-download-slow'); localStorage.removeItem('kixdns:demo-save-slow') })
+})
+
+// 下载途中在页上放弃了修改，照提示再点一次：服务端已经有比草稿新的那一份，这次下到的和它一样也是新东西，照常存成版本
+// Edits discarded on the page mid-download, then pressed again as told: the server already holds a copy newer than the draft's, so a download matching it is
+// still new and is saved as a version
+test('下载途中放弃了修改、照提示再点一次立即更新：照常存成版本', async ({ page }) => {
+  await open(page)
+  await subscribe(page, ['AdGuard DNS filter'])
+  await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用', exact: true }).click()
+  await expect(bar).toContainText('已生效')
+  // 定住时间：两次下到的一样，又都比已保存的新 / With the time fixed both downloads match each other and are newer than the saved copy
+  await page.clock.setFixedTime(new Date(Date.now() + 5000))
+  await page.getByRole('textbox', { name: '自己写的规则，一行一条', exact: true }).fill('||mine.example^')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-download-slow', '2000'))
+  const update = async () => {
+    await page.locator('.bl__row', { hasText: 'AdGuard DNS filter' }).getByRole('button', { name: 'AdGuard DNS filter 的操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '立即更新', exact: true }).click()
+  }
+  await update()
+  await bar.getByRole('button', { name: '放弃修改', exact: true }).click()
+  await expect(page.locator('.toast', { hasText: '下载途中草稿换掉了，这次下载的没有放进草稿；要用新的一份，再点一次「立即更新」' })).toBeVisible({ timeout: 6000 })
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-download-slow'))
+  const toasts = await trackToasts(page)
+  await update()
+  await expect(page.locator('.toast', { hasText: '已换上新下载的拦截列表' })).toBeVisible({ timeout: 8000 })
+  expect(await toasts()).not.toContain('已经是最新的')
+  await expect(page.locator('.cfg__savebar', { hasText: /还没保存|已修改/ })).toHaveCount(0)
+})
+
+// 下载途中改了订阅、下到的和上次一样：订阅的改动自己会合成，不说「新的一份放进了草稿」
+// The subscriptions changed mid-download and the download matches the last one: the subscription edit builds by itself, so it does not say a new copy went
+// into the draft
+test('下载途中改了订阅、下到的没变：说和上次下载的一样', async ({ page }) => {
+  await open(page)
+  await page.clock.setFixedTime(new Date(Date.now() + 5000))
+  await subscribe(page, ['AdGuard DNS filter', 'anti-AD'])
+  await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用', exact: true }).click()
+  await expect(bar).toContainText('已生效')
+  const toasts = await trackToasts(page)
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-download-slow', '1500'))
+  await page.locator('.bl__row', { hasText: 'AdGuard DNS filter' }).getByRole('button', { name: 'AdGuard DNS filter 的操作', exact: true }).click()
+  await page.getByRole('menuitem', { name: '立即更新', exact: true }).click()
+  await page.getByRole('checkbox', { name: /^启用 anti-AD/ }).evaluate((e: HTMLElement) => e.click())
+  await expect(page.locator('.toast', { hasText: '下载的和上次下载的一样，已经是最新的' })).toBeVisible({ timeout: 6000 })
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-download-slow'))
+  expect(await toasts()).not.toContain('新的一份')
+  await expect(bar).toContainText('已修改 1 处')
+})
+
+// 下载途中把这个列表停用了：说它已停用、启用后用上；再启用，草稿和已保存的只差这份新文件，再点一次照常存成版本
+// The list switched off mid-download: it says it is off and takes effect once on; switched back on, the draft differs from the saved config only by the new
+// file, and pressing again saves it as a version
+test('下载途中停用了这个列表：说已停用；再启用后点一次照常存', async ({ page }) => {
+  await open(page)
+  await subscribe(page, ['AdGuard DNS filter'])
+  await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用', exact: true }).click()
+  await expect(bar).toContainText('已生效')
+  await page.clock.setFixedTime(new Date(Date.now() + 5000))
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-download-slow', '1500'))
+  const update = async () => {
+    await page.locator('.bl__row', { hasText: 'AdGuard DNS filter' }).getByRole('button', { name: 'AdGuard DNS filter 的操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '立即更新', exact: true }).click()
+  }
+  const toggle = () => page.getByRole('checkbox', { name: /^启用 AdGuard DNS filter/ }).evaluate((e: HTMLElement) => e.click())
+  await update()
+  await toggle()
+  await expect(page.locator('.toast', { hasText: '新的一份已下载；「AdGuard DNS filter」已停用，启用后用上' })).toBeVisible({ timeout: 6000 })
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-download-slow'))
+  await toggle()
+  await expect.poll(() => page.evaluate(async () => (await import('/src/config-v2/useBlocklists.ts')).needsBuild())).toBe(false)
+  await update()
+  await expect(page.locator('.toast', { hasText: '已换上新下载的拦截列表' })).toBeVisible({ timeout: 8000 })
+  await expect(page.locator('.cfg__savebar', { hasText: /还没保存|已修改/ })).toHaveCount(0)
+})
+
+// 连着点两个列表的立即更新（第二个排在后面），然后停用第一个；两份都没变：第二个说和上次下载的一样，不说有新的一份
+// 立即更新 on two lists in a row (the second queued), then the first switched off; neither copy changed: the second says the same as last downloaded, not that
+// a new copy arrived
+test('连着两个立即更新、中间停用了一个，下到的都没变：不说有新的一份', async ({ page }) => {
+  await open(page)
+  await page.clock.setFixedTime(new Date(Date.now() + 5000))
+  await subscribe(page, ['AdGuard DNS filter', 'anti-AD'])
+  await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用', exact: true }).click()
+  await expect(bar).toContainText('已生效')
+  const toasts = await trackToasts(page)
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-download-slow', '1200'))
+  for (const name of ['anti-AD', 'AdGuard DNS filter']) {
+    await page.locator('.bl__row', { hasText: name }).getByRole('button', { name: `${name} 的操作`, exact: true }).click()
+    await page.getByRole('menuitem', { name: '立即更新', exact: true }).click()
+  }
+  await page.getByRole('checkbox', { name: /^启用 anti-AD/ }).evaluate((e: HTMLElement) => e.click())
+  await expect.poll(toasts, { timeout: 10_000 }).toContain('下载的和上次下载的一样，已经是最新的')
+  await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-download-slow'))
+  await page.waitForTimeout(500)
+  expect(await toasts()).not.toContain('新的一份已放进草稿')
+  expect(await toasts()).not.toContain('已换上')
+  await expect(bar).toContainText('已修改 1 处')
+})
+
+// 上次那份没存上、再点一次下到的一样：下载途中改了订阅和按下前就改了，说的一样（新的一份已经在草稿里）
+// The last copy did not save and pressing again downloads the same: changing the subscriptions mid-download says the same as changing them before the press
+// (the new copy is already in the draft)
+test('没存上以后再点一次、下载途中改了订阅：说新的一份已经在草稿里', async ({ page }) => {
+  await open(page)
+  await subscribe(page, ['AdGuard DNS filter', 'anti-AD'])
+  await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用', exact: true }).click()
+  await expect(bar).toContainText('已生效')
+  await page.clock.setFixedTime(new Date(Date.now() + 5000))
+  const update = async () => {
+    await page.locator('.bl__row', { hasText: 'AdGuard DNS filter' }).getByRole('button', { name: 'AdGuard DNS filter 的操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '立即更新', exact: true }).click()
+  }
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-validate-reject', 'true'))
+  await update()
+  await expect(page.locator('.toast', { hasText: '新下载的拦截列表没能存上，原因写在保存栏' })).toBeVisible({ timeout: 6000 })
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-download-slow', '1500'))
+  await update()
+  await page.getByRole('checkbox', { name: /^启用 anti-AD/ }).evaluate((e: HTMLElement) => e.click())
+  await expect(page.locator('.toast', { hasText: '新的一份已经在草稿里，保存后生效' })).toBeVisible({ timeout: 8000 })
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-download-slow'))
+})
+
+// 全部更新途中删掉那个总下载失败的列表，其余的下到的没变：照样回答一句，不只剩「已删除」
+// The always-failing list removed during 全部更新, the rest downloading the same: the press still gets an answer, not just 「已删除」
+test('全部更新途中删掉总下载失败的列表：照样回答一句', async ({ page }) => {
+  await open(page)
+  await page.clock.setFixedTime(new Date(Date.now() + 5000))
+  await subscribe(page, ['AdGuard DNS filter'])
+  await page.getByLabel('列表的链接').fill('https://lists.example.org/fail/always.txt')
+  await page.getByRole('button', { name: '添加', exact: true }).click()
+  await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用', exact: true }).click()
+  await expect(bar).toContainText('已生效', { timeout: 8000 })
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-download-slow', '1500'))
+  await page.getByRole('button', { name: '全部更新', exact: true }).first().click()
+  await page.locator('.bl__row', { hasText: 'always.txt' }).getByRole('button', { name: /的操作$/ }).click()
+  await page.getByRole('menuitem', { name: '删除', exact: true }).click()
+  await expect(page.locator('.toast', { hasText: '下载的都和上次下载的一样，已经是最新的' })).toBeVisible({ timeout: 8000 })
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-download-slow'))
+})

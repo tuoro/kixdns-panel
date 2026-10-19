@@ -521,10 +521,11 @@ function applyResultState(result: ConfigApplyResult): 'applied' | 'pending' {
 let viewing = false
 let keepOnReturn = false
 let inFlight: string | null = null
-// 保存条报不到的那条结果提示：离开以后的失败，或者面板替人做的保存（立即更新）在页上回应丢了时的「不知道存上没有」。回到配置页时保存条接着说，
-// 它就收起；核对完换成结果
-// The outcome toast the save bar cannot speak for: a failure after leaving, or 不知道存上没有 when a save made on the user's behalf (立即更新) lost its
-// answer on the page. It goes when the config page reopens and the save bar takes over, and the check replaces it with the result
+// 保存条报不到的那条结果提示：离开以后的结果和失败，或者面板替人做的保存（立即更新）在页上回应丢了时的「不知道存上没有」。失败和「不知道」在回到
+// 配置页、保存条接着说时收起，核对完换成结果；成功、待应用这些自己会收起（见 awayResults）
+// The outcome toast the save bar cannot speak for: a result or failure after leaving, or 不知道存上没有 when a save made on the user's behalf (立即更新) lost
+// its answer on the page. A failure or 不知道 goes when the config page reopens and the save bar takes over, and the check replaces it with the result; an
+// applied or pending result goes by itself (see awayResults)
 let awayToast: number | null = null
 // 那条提示说的是「这份配置在别处改过了」 / That toast says 这份配置在别处改过了
 let awayConflict = false
@@ -603,17 +604,29 @@ export function whenDraftSettles(): Promise<void> {
     const stop = watch(draftBusy, (running) => { if (!running) { stop(); resolve() } })
   })
 }
-/** 人不在配置页时说的结果记成那条提示：回到配置页、会话结束时一起收起（退出时确认框说过不再告诉你结果） / A result told away from the config page becomes
- * that toast, so returning to the page or a session end clears it (the sign-out confirm said no result would follow) */
+/** 人不在配置页时说的结果记成那条提示：先前的「不知道」、失败跟着过时收起；会话结束时一起收起（退出时确认框说过不再告诉你结果） / A result told away
+ * from the config page becomes that toast: an earlier 不知道 or failure is stale and goes; a session end clears them all (the sign-out confirm said no result
+ * would follow) */
+// 离开以后说过的结果（成功、待应用这些会自己收起的）：会话结束时一起收起；它们之间不互相顶掉，各自到时收起
+// Results told away from the page (the self-dismissing ones: applied, pending): all cleared at a session end; they never push each other out, each going in
+// its own time
+const awayResults = new Set<number>()
 function tellAway(id: number): void {
   if (!away()) return
-  // 同一句已经开着时提示条给回的是同一个编号：不能先把它收掉 / With the same sentence already up the toast hands back the same id: it must not be cleared first
+  const toasts = useToast().messages.value
+  for (const old of awayResults) if (!toasts.some((m) => m.id === old)) awayResults.delete(old)
+  // 先前那条「不知道…」或者没成的说法过时了，收掉（先前的结果照样留着，见 dismissAwayToast）。同一句已经开着时提示条给回的是同一个编号：不能先把它收掉
+  // An earlier 「不知道…」 or failure is stale and goes (an earlier result stays, see dismissAwayToast). With the same sentence already up the toast hands back
+  // the same id: it must not be cleared first
   if (awayToast !== id) dismissAwayToast()
+  if (toasts.find((m) => m.id === id)?.kind !== 'error') awayResults.add(id)
   awayToast = id
   awayConflict = false
 }
 function dismissAwayToast(): void {
-  if (awayToast !== null) useToast().dismiss(awayToast)
+  // 结果提示自己会收起，不被后来的说法顶掉（会话结束时另外一起收） / A result toast goes by itself and is not pushed out by what comes later (a session end
+  // clears it separately)
+  if (awayToast !== null && !awayResults.has(awayToast)) useToast().dismiss(awayToast)
   awayToast = null
   awayConflict = false
 }
@@ -622,7 +635,7 @@ export function setViewing(open: boolean): boolean {
   viewing = open
   // 「现在应用」断线时还在配置页、随后离开：这时就挂上「不知道…应用了没有」，连上后的核对才有一条可以换掉（以前离开后什么都不说）
   // 现在应用 was cut off on the page and the user then leaves: raise 「不知道…应用了没有」 now, so the check after reconnecting has a toast to replace (nothing was said away before)
-  if (!open && unanswered?.from === 'apply' && awayToast === null && signedIn()) awayToast = useToast().error(`不知道${unanswered.pending ? `版本 #${unanswered.pending} ` : '配置'}应用了没有：连不上面板。连上后会自己核对`)
+  if (!open && unanswered?.from === 'apply' && (awayToast === null || awayResults.has(awayToast)) && signedIn()) awayToast = useToast().error(`不知道${unanswered.pending ? `版本 #${unanswered.pending} ` : '配置'}应用了没有：连不上面板。连上后会自己核对`)
   const keep = open && keepOnReturn
   if (open) {
     leftDuringSave = false
@@ -838,7 +851,7 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
       const notYet = `版本 #${result.version_id} 还没有应用：${runtimeStopped.value ? 'KixDNS\u00a0已停止，启动后自动应用' : 'KixDNS\u00a0没有回应，就绪后自动应用'}`
       // 后台几秒内就会补上：离开后也用会自己收起的提示，不挂一条很快就过时的红色提示 / The background pass catches up within seconds: away too it is a self-dismissing info toast, not a red one that soon goes stale
       if (viewing) useToast().info(notYet)
-      else if (signedIn()) { dismissAwayToast(); awayToast = useToast().info(notYet) }
+      else if (signedIn()) tellAway(useToast().info(notYet))
     }
     // 退出登录或会话过期以后，「现在应用」的结果不再报（应用没有草稿可丢，确认框也不问它） / After sign-out or expiry the outcome of 现在应用 is not reported (an apply has no draft to lose, and the confirm does not ask about it)
     else if (from === 'apply' && applyResultState(result) === 'applied') { if (signedIn()) tellAway(useToast().success(failedBefore && failedBefore !== result.version_id ? `已应用版本 #${failedBefore} 的内容，当前版本\u00a0#${result.version_id}` : `版本 #${result.version_id} 已生效`)) }
@@ -1154,6 +1167,8 @@ let retryToast: number | null = null
 watch(useSession().authenticated, (now) => {
   if (now) return
   dismissAwayToast()
+  for (const id of awayResults) useToast().dismiss(id)
+  awayResults.clear()
   if (retryToast !== null) { useToast().dismiss(retryToast); retryToast = null }
 })
 /**

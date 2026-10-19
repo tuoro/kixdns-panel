@@ -11,15 +11,15 @@ import UiSelect from '../components/ui/UiSelect.vue'
 import { useSession } from '../composables/useSession'
 import { useToast } from '../composables/useToast'
 import { checkSubscriptionUrl, MAX_SUBSCRIPTIONS, normalUrl, parseOwnRules, PRESETS, shortName, skipText, uniqueSubscriptionName, type Skip } from '../config-model/blocklist'
-import { blockLabel, type Subscription } from '../config-model/model'
+import { blockLabel, blocklistKey, type Subscription } from '../config-model/model'
 import { formatAgo, formatVersionTime } from '../utils'
 import { vLineDots } from '../line-dots'
 import GlueText from './GlueText.vue'
 import NameText from './NameText.vue'
 import { usePhone } from './phone'
-import { appliedModel, changedSubscriptionIds, draftGeneration, model, newId, placeBack } from './store'
-import { blocklists, loadBlocklists, rebuildBlocklists, saveBlocklistSchedule, sayDrafted } from './useBlocklists'
-import { carryUpdate, noteLanded } from './updateCarry'
+import { appliedModel, changedSubscriptionIds, changesBesidesFile, model, newId, placeBack } from './store'
+import { blocklists, loadBlocklists, rebuildBlocklists, saveBlocklistSchedule, settleBlocklists } from './useBlocklists'
+import { carryUpdate, noteLanded, unsavedLanding } from './updateCarry'
 import { hasApplyFailure, hasPending } from './useConfigDocument'
 import { fmtCount } from './view'
 
@@ -205,52 +205,73 @@ const busy = computed(() => subscriptions.value.some(downloading))
 // update does; with unsaved edits in the draft, the new copy goes into the draft and is saved with it. Other edits are judged when it lands: edits
 // present at the press but agreed away on leaving the config page leave a clean draft by then
 async function updateNow(urls: string[], button: '立即更新' | '全部更新' = '立即更新'): Promise<void> {
-  const before = model.blocklists.file
-  const generation = draftGeneration()
+  // 这一下有没有带来新东西：草稿的文件在按下时、合成以后都是按同一组订阅合成的，就看文件变没变（服务端可能早有比草稿新的一份，比如下载途中放弃过）；
+  // 中间订阅改过，文件会因为订阅而变，只好看点名的列表下到的内容变没变（按下时有记录的比记录；没有记录的，按下时读得到各个列表的情况才算新）
+  // Whether this press brought anything new: when the draft's file was built for the same subscriptions at the press and after the build, it is whether the
+  // file changed (the server may already hold a copy newer than the draft's, after a discard mid-download say); with the subscriptions changed in between,
+  // the file changes because of them, so it falls back to whether the named lists' content changed (against the record at the press; without one, it counts
+  // as new only if the statuses were readable at the press)
+  const fileBefore = model.blocklists.file
+  const keyBefore = blocklistKey(model.blocklists)
+  const builtBefore = model.blocklists.builtFor === keyBefore
+  const knownBefore = blocklists.status === 'ok'
+  const recorded = new Map(urls.filter((url) => url in blocklists.sources).map((url) => [url, blocklists.sources[url]!.sha256]))
+  const copyOf = (url: string) => blocklists.sources[url]?.sha256 ?? null
+  const changedLists = () => subscriptions.value.some((s) => urls.includes(s.url) && s.enabled && copyOf(s.url) !== null
+    && (recorded.has(s.url) ? copyOf(s.url) !== recorded.get(s.url) : knownBefore))
   const result = await rebuildBlocklists(urls)
   // 下载途中会话过期了：已经在登录页上，不再保存，也不说话 / The session expired during the download: the login page is up, so nothing is saved or said
   if (!session.authenticated.value) return
-  // 没下成的，合成那边已经说了原因；点名的列表在下载途中都删掉了，删除提示已经说过 / One that did not download already had its reason said by the build;
-  // when every list named was removed while downloading, the delete toast has said all there is
-  if (result.outcome === 'failed' || !urls.some((url) => subscriptions.value.some((s) => s.url === url))) return
+  // 没下成的，合成那边已经说了原因 / One that did not download already had its reason said by the build
+  if (result.outcome === 'failed') return
   // 下载途中放弃了修改、或者恢复了别的版本 / The edits were discarded, or another version restored, while it downloaded
   if (result.outcome === 'dropped') { toast.info(`下载途中草稿换掉了，这次下载的没有放进草稿；要用新的一份，再点一次「${button}」`); return }
-  // 订阅在途中变了。还是这份草稿：新的一份跟着刚才的修改一起放进草稿（接着那次合成会把它填进来）；草稿只隔着离开时的放弃（放弃的修改里有订阅的
-  // 增删开关）：照常收场，下面会按放弃以后的订阅再合成一次
-  // The subscriptions changed meanwhile. Still the same draft: the new copy goes in along with the edits just made (the build that follows fills it in);
-  // only a discard on leaving lies between (the dropped edits added, removed or switched lists): it ends as usual, building once more below for the
-  // subscriptions left after the discard
-  if (result.outcome === 'superseded') {
-    noteLanded(button, false)
-    if (draftGeneration() === generation) { sayDrafted('新的一份放进了草稿，和刚才的修改一起保存后生效'); return }
-    await carryUpdate(true)
+  // 下载途中订阅变了：等它按新的订阅合成好，再照同一套规矩看（这时只能看点名的列表下到的内容） / The subscriptions changed meanwhile: wait for the build for
+  // the new subscriptions, then judge by the same rules (only the named lists' content can tell now)
+  const superseded = result.outcome === 'superseded'
+  if (superseded) {
+    await settleBlocklists()
+    if (!session.authenticated.value) return
+  }
+  // 点名的列表都在下载途中删掉了：删除提示已经说过 / Every list named was removed meanwhile: the delete toast has said all there is
+  const named = subscriptions.value.filter((s) => urls.includes(s.url))
+  if (!named.length) return
+  // 还在的列表有没下成的：合成那边已经说了原因（途中删掉的不算） / A list still subscribed did not download: the build already said why (one removed
+  // meanwhile does not count)
+  const failed = named.some((s) => blocklists.sources[s.url]?.last_error)
+  const someDownloaded = named.some((s) => s.enabled && !blocklists.sources[s.url]?.last_error)
+  const same = urls.length > 1 ? '下载的都和上次下载的一样，已经是最新的' : '下载的和上次下载的一样，已经是最新的'
+  // 点名的都已停用（也可能是下载途中停用的）：停用的列表不进合成的文件，下好了也不变；没下成时合成那边已经说了
+  // Every named list is disabled (perhaps switched off mid-download): a disabled list stays out of the merged file, so a fresh download changes nothing; a
+  // failed one was already told by the build
+  if (named.every((s) => !s.enabled)) {
+    if (!failed) toast.info(named.length === 1 ? `新的一份已下载；「${shortName(named[0]!.name, named[0]!.url)}」已停用，启用后用上` : '新的一份已下载；列表都已停用，启用后用上')
     return
   }
-  if (model.blocklists.file === before) {
-    if (urls.some((url) => blocklists.sources[url]?.last_error)) return
-    // 停用的列表不进合成的文件：下好了也不变 / A disabled list stays out of the merged file: a fresh download changes nothing
-    const named = subscriptions.value.filter((s) => urls.includes(s.url))
-    const off = named.length === 1 && !named[0]!.enabled ? named[0] : undefined
-    if (off || (named.length > 1 && named.every((s) => !s.enabled))) {
-      toast.info(off ? `新的一份已下载；「${shortName(off.name, off.url)}」已停用，启用后用上` : '新的一份已下载；列表都已停用，启用后用上')
-      return
-    }
-    // 草稿里的文件本来就和已保存的不同（上次下好的没存上，或者订阅改过、合成过）：这次下到的一样，也照落地收场，草稿干净就直接存（用户定的）；
-    // 不说「和在用的一样」，在用的是已保存的那份
-    // The draft's file already differs from the saved one (the last download did not save, or the subscriptions changed and were built): this download
-    // matching it still ends as a landing, saved at once when the draft is clean (the user's call); never 「same as in use」, since what is in use is the
-    // saved one
-    if (before !== appliedModel.value.blocklists.file) { noteLanded(button); await carryUpdate(true, true); return }
-    // 已保存的是待应用版本、或者存了没生效时它不在用：说「已保存的」 / When what is saved is pending, or saved but not taken, it is not in use: say 「the
-    // saved one」
-    const which = hasPending.value || hasApplyFailure.value ? '已保存的' : '在用的'
-    toast.info(named.length > 1 ? `下载的都和${which}一样，已经是最新的` : `下载的和${which}一样，已经是最新的`)
+  const fresh = !superseded && builtBefore && model.blocklists.builtFor === keyBefore ? model.blocklists.file !== fileBefore : changedLists()
+  // 草稿和已保存的只差拦截列表的文件：草稿里留着比在用的新的一份（上次没存上、下载途中放弃过、定时更新没写进配置）
+  // The draft differs from the saved config only by the blocklist file: it holds copies newer than those in use (a save that did not land, a discard
+  // mid-download, a scheduled update not written into the config)
+  const onlyFileDiffers = model.blocklists.file !== appliedModel.value.blocklists.file && changesBesidesFile(appliedModel.value, model) === 0
+  // 下到了新东西、草稿里留着没存上的新的一份：照落地收场，草稿干净就直接存，有别的修改就放进草稿（用户定的）。要有点名的列表下成了才算这一下的结果：
+  // 都没下成时只由合成那边说失败，不顺手存别的
+  // Something new came, or the draft holds a newer copy not saved: it ends as a landing, saved at once when the draft is clean and put into the draft
+  // otherwise (the user's call). It takes a named list that did download to count as this press's outcome: when none did, only the build's failure is said
+  // and nothing else is saved along the way
+  if (someDownloaded && (fresh || onlyFileDiffers || unsavedLanding())) {
+    // 订阅中间变过时文件可能还没合成上这一份：记成文件还不知道，收场时草稿里没有就再合成一次（updateCarry.ts） / With the subscriptions changed in between
+    // the file may not carry this copy yet: it is noted as not known, and the ending builds again if the draft lacks it (updateCarry.ts)
+    noteLanded(button, !superseded)
+    await carryUpdate(true, superseded && fresh ? 'withEdits' : fresh ? null : 'same')
     return
   }
-  // 新的一份进了草稿：存不存、怎么说，和离开时放弃以后走同一处（updateCarry.ts） / The new copy is in the draft: whether it is saved and what is said goes
-  // through the same place as after a discard on leaving (updateCarry.ts)
-  noteLanded(button)
-  await carryUpdate(true)
+  if (failed) return
+  // 没有新东西。草稿里的文件和已保存的不同（订阅改过）：说「和上次下载的一样」（用户定的）；已保存的是待应用版本、或者存了没生效时它不在用，说「已保存的」
+  // Nothing new. The draft's file differs from the saved one (the subscriptions changed): say 「same as last downloaded」 (the user's call); when what is saved
+  // is pending, or saved but not taken, it is not in use, so say 「the saved one」
+  if (model.blocklists.file !== appliedModel.value.blocklists.file || superseded) { toast.info(same); return }
+  const which = hasPending.value || hasApplyFailure.value ? '已保存的' : '在用的'
+  toast.info(urls.length > 1 ? `下载的都和${which}一样，已经是最新的` : `下载的和${which}一样，已经是最新的`)
 }
 const updateAll = () => void updateNow(subscriptions.value.map((s) => s.url), '全部更新')
 

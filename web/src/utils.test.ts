@@ -119,6 +119,9 @@ describe('hyphenRuns', () => {
     expect(glued('新的一份存不上：这份配置在别处改过了；先重新读取，再点一次「全部更新」')).toEqual(['再点一次「全部更新」'])
     // 版本号带着后面的状态词，KixDNS 带着后面一个字 / The version number keeps its state word, and KixDNS the character after it
     expect(glued('新下载的拦截列表已经存上了：版本 #20 已生效')).toEqual(['版本 #20 已生效'])
+    // 「）」不连进去：行尾的它能压成半宽，一行放得下的不被挤成两行 / 「）」 stays out: at a line end it can shrink to half width, so what fits one line is not
+    // pushed to two
+    expect(glued('已换上新下载的拦截列表（版本 #20）')).toEqual(['版本 #20'])
     expect(glued('新下载的拦截列表：存成了版本 #20，没有生效。KixDNS 没有接受这份配置')).toEqual(['版本 #20，', 'KixDNS 没'])
     expect(glued('它留在配置页的草稿里。KixDNS\u00a0的原话：pipeline "main"')).toEqual(['KixDNS\u00a0的'])
     // 默认名单独拿出来，按「·」折行 / A default name is taken out to wrap at 「·」

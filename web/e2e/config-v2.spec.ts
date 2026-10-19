@@ -272,11 +272,13 @@ test('手机保存条：校验通过不压按钮，冲突时只留下载和重�
   await expect(bar).toContainText('这份配置在别处改过了')
   await expect(bar.getByRole('button', { name: '保存并应用' })).toHaveCount(0)
   await expect(bar.locator('.savebar__note-toggle')).toHaveCount(0)
-  const words = await bar.locator('.ui-savebar__status small').evaluate((el) => el.getBoundingClientRect().left)
-  const download = await bar.getByRole('button', { name: '下载草稿' }).evaluate((el) => {
+  // 失败时这一行会晃一下：等晃完，两处在同一刻量（分两次量，忙的时候会各量到晃动的不同位置） / The line shakes on failure: wait for it to end and measure
+  // both at the same moment (measured apart, a busy run caught them at different points of the shake)
+  const { words, download } = await bar.locator('.ui-savebar__status').evaluate(async (status) => {
+    await Promise.all(status.getAnimations({ subtree: true }).map((animation) => animation.finished))
     const range = document.createRange()
-    range.selectNodeContents(el)
-    return range.getBoundingClientRect().left
+    range.selectNodeContents([...status.querySelectorAll('button')].find((b) => b.textContent?.includes('下载草稿'))!)
+    return { words: status.querySelector('small')!.getBoundingClientRect().left, download: range.getBoundingClientRect().left }
   })
   expect(Math.abs(download - words)).toBeLessThanOrEqual(1)
 })
