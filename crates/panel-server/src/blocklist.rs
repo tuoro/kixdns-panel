@@ -57,6 +57,68 @@ const UNSUPPORTED_MODIFIERS: [&str; 6] = [
     "respgeo",
 ];
 
+/// 只管网页里的请求（第三方、脚本、图片……）的修饰符：DNS 查询里没有这些信息，带它们的规则整条不用。和页面同一份名单
+/// Modifiers about requests inside web pages (third-party, scripts, images…): a DNS query carries none of that, so
+/// rules with them go unused whole. The same list as the page's
+const BROWSER_MODIFIERS: [&str; 56] = [
+    "third-party",
+    "3p",
+    "first-party",
+    "1p",
+    "script",
+    "image",
+    "stylesheet",
+    "css",
+    "media",
+    "font",
+    "object",
+    "xmlhttprequest",
+    "xhr",
+    "subdocument",
+    "frame",
+    "document",
+    "doc",
+    "popup",
+    "websocket",
+    "ping",
+    "other",
+    "domain",
+    "match-case",
+    "redirect",
+    "removeparam",
+    "csp",
+    "generichide",
+    "genericblock",
+    "elemhide",
+    "ehide",
+    "ghide",
+    "shide",
+    "specifichide",
+    "content",
+    "jsinject",
+    "urlblock",
+    "extension",
+    "stealth",
+    "cookie",
+    "rewrite",
+    "sitekey",
+    "header",
+    "all",
+    "redirect-rule",
+    "empty",
+    "mp4",
+    "replace",
+    "jsonprune",
+    "hls",
+    "strict-first-party",
+    "strict-third-party",
+    "method",
+    "to",
+    "permissions",
+    "referrerpolicy",
+    "removeheader",
+];
+
 /// 一条规则管哪些域名 / Which names one rule covers
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Match {
@@ -88,6 +150,8 @@ pub enum Skip {
     HostsAddress,
     /// 认识、但还不支持的修饰符 / A modifier known but not yet supported
     UnsupportedModifier(String),
+    /// 只对浏览器有用的修饰符 / A modifier for browsers only
+    BrowserModifier(String),
     /// 不认识的修饰符：照 `AdGuard` 的说明整条不用 / A modifier not known at all: the rule is ignored whole, as `AdGuard`
     /// specifies
     UnknownModifier(String),
@@ -97,6 +161,9 @@ pub enum Skip {
     /// 这个列表的通配符和正则规则已经用满 [`MAX_PATTERNS_PER_LIST`] 条 / The list has used up its
     /// [`MAX_PATTERNS_PER_LIST`] wildcard and regex rules
     TooManyPatterns,
+    /// 带网址路径（`||example.com/ads.js`）：只对浏览器有用，DNS 查询里没有路径 / A rule with a URL path
+    /// (`||example.com/ads.js`): only browsers can use it, since a DNS query carries no path
+    UrlPath,
     /// 看不懂这一行 / A line that cannot be read
     Unreadable,
 }
@@ -157,6 +224,9 @@ pub fn parse_line(raw: &str) -> Line {
             "" => return Line::Skipped(Skip::Unreadable),
             _ if UNSUPPORTED_MODIFIERS.contains(&name.as_str()) => {
                 return Line::Skipped(Skip::UnsupportedModifier(name));
+            }
+            _ if BROWSER_MODIFIERS.contains(&name.as_str()) => {
+                return Line::Skipped(Skip::BrowserModifier(name));
             }
             _ => return Line::Skipped(Skip::UnknownModifier(name)),
         }
@@ -288,7 +358,11 @@ fn parse_pattern(pattern: &str) -> Result<Match, Skip> {
     }
     pattern_regex(&lower)
         .map(Match::Regex)
-        .ok_or(Skip::Unreadable)
+        .ok_or(if lower.contains('/') {
+            Skip::UrlPath
+        } else {
+            Skip::Unreadable
+        })
 }
 
 /// `AdGuard` 的规则不分大小写，内核拿小写的域名去比：写了大写字母（转义里的不算）的正则加上 `(?i)`，不然永远匹配
@@ -331,6 +405,11 @@ fn pattern_regex(pattern: &str) -> Option<String> {
         None => (rest, ""),
     };
     if !body.chars().any(|c| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    // 锚定的开头是点、或者中间空着一级（`||.example^`、`ads..example`），永远匹配不上 / A dot at an anchored start, or an
+    // empty label inside (`||.example^`, `ads..example`), could never match
+    if body.contains("..") || (!start.is_empty() && body.starts_with('.')) {
         return None;
     }
     let mut regex = String::with_capacity(start.len() + body.len() * 2 + end.len());
@@ -394,6 +473,25 @@ pub struct ListSummary {
     pub skipped: usize,
     /// 没用上的前几行，给页面举例 / The first few unused lines, as examples for the page
     pub samples: Vec<SkippedLine>,
+    /// 列表开头注释里写的标题（`! Title: …`、`# Title: …`）：自己粘贴的列表用它起名 / The title in the list's opening
+    /// comments (`! Title: …`, `# Title: …`), which names a pasted list
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+/// 标题只在前这么多行里找，最长这么多字 / A title is looked for only in these first lines, and kept to this many characters
+const TITLE_LINES: usize = 50;
+const TITLE_CHARS: usize = 80;
+
+/// 注释行里的标题；不是 `Title:` 这一行时为 None / The title on a comment line; None unless the line is `Title:`
+fn header_title(raw: &str) -> Option<String> {
+    let rest = raw.trim().strip_prefix(['!', '#'])?.trim_start();
+    let (key, value) = rest.split_once(':')?;
+    if !key.trim_end().eq_ignore_ascii_case("title") {
+        return None;
+    }
+    let title: String = value.trim().chars().take(TITLE_CHARS).collect();
+    (!title.is_empty()).then_some(title)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -419,6 +517,9 @@ fn scan(text: &str, badfilters: &HashSet<String>, mut on_rule: impl FnMut(Rule))
     let mut summary = ListSummary::default();
     let mut patterns = 0;
     for (index, raw) in lines(text).enumerate() {
+        if index < TITLE_LINES && summary.title.is_none() {
+            summary.title = header_title(raw);
+        }
         if badfilters.contains(raw.trim()) {
             continue;
         }
@@ -612,9 +713,11 @@ mod tests {
             Skip::Cosmetic => ("cosmetic", None),
             Skip::HostsAddress => ("hosts-address", None),
             Skip::UnsupportedModifier(name) => ("unsupported-modifier", Some(name)),
+            Skip::BrowserModifier(name) => ("browser-modifier", Some(name)),
             Skip::UnknownModifier(name) => ("unknown-modifier", Some(name)),
             Skip::BadRegex => ("bad-regex", None),
             Skip::TooManyPatterns => ("too-many-patterns", None),
+            Skip::UrlPath => ("url-path", None),
             Skip::Unreadable => ("unreadable", None),
         }
     }
@@ -771,6 +874,33 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&summary.samples[0]).unwrap(),
             serde_json::json!({ "line": 2, "text": "||x0.example^$client=10.0.0.0", "reason": "unsupported-modifier", "modifier": "client" })
+        );
+    }
+
+    #[test]
+    fn a_title_in_the_opening_comments_names_the_list() {
+        let adblock = "[Adblock Plus]\n! Title: HaGeZi's Pro DNS Blocklist\n! Expires: 1 day\n||ads.example^\n";
+        assert_eq!(
+            summarize(adblock).title.as_deref(),
+            Some("HaGeZi's Pro DNS Blocklist")
+        );
+        let hosts = "# Title: StevenBlack/hosts\n#\n0.0.0.0 ads.example\n";
+        assert_eq!(summarize(hosts).title.as_deref(), Some("StevenBlack/hosts"));
+        // 没有标题、标题空着、或者很靠后的不算 / No title, an empty one, or one far down does not count
+        assert_eq!(summarize("||ads.example^\n").title, None);
+        assert_eq!(summarize("! Title:\n||ads.example^\n").title, None);
+        let late = format!("{}! Title: Late\n", "||ads.example^\n".repeat(TITLE_LINES));
+        assert_eq!(summarize(&late).title, None);
+        // 记录里没有标题时不写这一项，旧记录照样读得进来 / With no title the field is left out, and old records still read
+        let summary: ListSummary =
+            serde_json::from_value(serde_json::json!({ "rules": 1, "skipped": 0, "samples": [] }))
+                .unwrap();
+        assert_eq!(summary.title, None);
+        assert!(
+            serde_json::to_value(&summary)
+                .unwrap()
+                .get("title")
+                .is_none()
         );
     }
 }

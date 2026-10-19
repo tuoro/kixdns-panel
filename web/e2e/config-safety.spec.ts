@@ -115,6 +115,20 @@ test('有没保存的修改时退出登录：先问，选先不退出就还登�
   await expect(page.locator('.cfg__savebar')).toContainText('已生效')
 })
 
+// 同意放弃并退出，可退出没成功（连不上面板）：人还登录着、还在配置页，修改还在 / Agreed to drop and sign out, but the sign-out failed (panel unreachable):
+// still signed in, still on the config page, the edits still there
+test('有修改时退出登录、同意放弃，退出没成功：修改还在', async ({ page }) => {
+  await page.goto('/config')
+  await addRule(page, 'stay.example')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-panel-down', 'true'))
+  await page.locator('.account-button').click()
+  await page.getByRole('button', { name: '退出登录' }).click()
+  await page.getByRole('alertdialog', { name: '放弃未保存的修改' }).getByRole('button', { name: '放弃并退出' }).click()
+  await expect(page).toHaveURL(/\/config/)
+  await expect(page.locator('.cfg__savebar')).toContainText('已修改')
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-panel-down'))
+})
+
 test('别处先存了一个版本：保存停住，可以下载自己的修改，重新读取前先问', async ({ page }) => {
   await page.addInitScript(() => { if (!sessionStorage.getItem('conflict-armed')) { sessionStorage.setItem('conflict-armed', '1'); localStorage.setItem('kixdns:demo-save-conflict', 'true') } })
   await page.goto('/config')
@@ -724,6 +738,53 @@ test('现在应用的回应丢了：连上以后按待应用的还在不在核�
   await expect(page.locator('.conn__inner')).toBeVisible()
   await reconnect(page)
   await expect.poll(() => toastTexts(page), { timeout: 8000 }).toContain(`刚才那次应用：版本 #${pending} 已生效`)
+})
+
+// 离开配置页以后保存成功的提示也是配置页的结果：会话结束时一起收起，不带到登录页上
+// The success toast of a save that finished after leaving the config page is a config-page outcome too: it goes when the session ends, not onto the login page
+test('离开以后保存成功的提示：会话结束时收起，不留在登录页', async ({ page }) => {
+  await page.goto('/config')
+  await addRule(page, 'away-success.example')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-save-slow', 'true'))
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar).toContainText('写入并应用')
+  await page.getByRole('link', { name: '日志', exact: true }).click()
+  await expect.poll(async () => (await toastTexts(page)).some((text) => /^版本 #\d+ 已生效$/.test(text)), { timeout: 5000 }).toBe(true)
+  await page.evaluate(async () => {
+    const { SESSION_EXPIRED_EVENT } = await import('/src/api/client.ts')
+    window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT))
+  })
+  await expect(page).toHaveURL(/\/login/)
+  expect((await toastTexts(page)).filter((text) => text.includes('已生效'))).toEqual([])
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
+})
+
+// 现在应用的回应丢了、人去了别的页、断线时别处又存了一版：连上以后「不知道…应用了没有」换成核对的结果，不悄悄收掉
+// 现在应用 lost its answer, the user went to another page, and another version was saved elsewhere meanwhile: once back, 「不知道…应用了没有」 is replaced by
+// the check's result instead of quietly going away
+test('现在应用的回应丢了、离开以后别处改过：连上以后说那次应用不在现在的配置里', async ({ page }) => {
+  const pending = await savePending(page, 'apply-lost-away.example', '离开以后')
+  await page.evaluate(() => {
+    window.addEventListener('kixdns:panel-unreachable', () => localStorage.setItem('kixdns:demo-panel-down', 'true'), { capture: true, once: true })
+    localStorage.setItem('kixdns:demo-put-answer-lost', 'true')
+  })
+  await page.getByRole('button', { name: '现在应用', exact: true }).click()
+  await expect(page.locator('.conn__inner')).toBeVisible()
+  await page.getByRole('link', { name: '日志', exact: true }).click()
+  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain(`不知道版本 #${pending} 应用了没有：连不上面板。连上后会自己核对`)
+  // 别处直接存了一版 / Another version is saved elsewhere
+  await page.evaluate(async () => {
+    const url = performance.getEntriesByType('resource').map((e) => e.name).filter((n) => n.includes('/src/api/mock.ts')).pop()!
+    const { mockRequest } = await import(url)
+    const current = await mockRequest('/api/v1/config')
+    const content = JSON.parse(JSON.stringify(current.content))
+    content.settings = { ...content.settings, cache_capacity: 4321 }
+    await mockRequest('/api/v1/config', { method: 'PUT', body: JSON.stringify({ content, expected_sha256: current.sha256, message: '别处' }) })
+  })
+  await reconnect(page)
+  await expect.poll(async () => (await toastTexts(page)).some((text) => text.startsWith('刚才那次应用不在现在的配置里：这份配置在别处改过了')), { timeout: 8000 }).toBe(true)
+  expect(await toastTexts(page)).not.toContain(`不知道版本 #${pending} 应用了没有：连不上面板。连上后会自己核对`)
 })
 
 test('现在应用没送到面板：连上以后说还没有应用，不说成功', async ({ page }) => {

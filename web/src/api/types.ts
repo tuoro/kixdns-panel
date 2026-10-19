@@ -316,6 +316,33 @@ export interface GeoDataSchedule {
   next_run_at: number | null
 }
 
+/** 拦截列表里没用上的一行（服务端最多给前 20 行） / One unused line of a blocklist (the server gives the first 20 at most) */
+export interface BlocklistSkippedLine { line: number; text: string; reason: string; modifier?: string }
+/** title：列表开头注释里写的标题（`! Title: …`），没有时不带 / title: the title in the list's opening comments (`! Title: …`), absent without one */
+export interface BlocklistSummary { rules: number; skipped: number; samples: BlocklistSkippedLine[]; title?: string }
+/** 一个订阅的列表（按链接）最近一份读得怎么样 / How the latest copy of one subscribed list (by link) read */
+export interface BlocklistSource {
+  /** 在用的那一份；还没下载成功过时为 null / The copy in use; null until a download succeeds */
+  sha256: string | null
+  downloaded_at: number | null
+  summary: BlocklistSummary
+  /** 最近一次下载没成功的原因；成功以后清掉 / Why the latest download failed; cleared once one succeeds */
+  last_error: string | null
+  /** 这次失败重下可能就好（连接一类）；链接不对、文件读不懂时为 false / Whether downloading again may help (connection trouble); false for a wrong link or an unreadable file */
+  retryable?: boolean
+  last_attempt_at: number | null
+  rejected_sha256: string | null
+}
+export interface BlocklistState { sources: Record<string, BlocklistSource>; schedule: GeoDataSchedule }
+export interface BlocklistBuildRequest { subscriptions: { url: string; enabled: boolean }[]; refresh: string[] }
+export interface BlocklistBuildResult {
+  /** 合并出的文件；启用的列表一个都还没有、或者合起来没有要拦截的时为 null / The merged file; null while no enabled list has a copy, or when they block nothing together */
+  path: string | null
+  sources: Record<string, BlocklistSource>
+  /** 这次没下载成功的列表数 / How many lists failed to download this time */
+  failed: number
+}
+
 export interface CacheFlushResult {
   protocol_version: number
   response_entries_before: number

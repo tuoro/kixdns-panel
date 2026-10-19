@@ -73,7 +73,12 @@ body { background: var(--l-canvas); }
 .savebar__note-text { max-width: 14rem; overflow: hidden; color: var(--l-ink-2); font-size: var(--t-2); text-overflow: ellipsis; white-space: nowrap; }
 .is-aside { visibility: hidden; }
 .savebar__save { min-width: 7.5rem; }
-.savebar__acts { display: inline-flex; gap: var(--s-1); margin-left: var(--s-1); }
+.savebar__acts { display: inline-flex; gap: var(--s-1); }
+/* 「下载草稿」「重新读取」是小号文字按钮：退回它们的内边距和边框，折到下一行时字和上面的标题对齐；和说明同一行时，拉开的距离挪到说明右边，照旧 25
+   下载草稿 and 重新读取 are small text buttons: their padding and border are pulled back so, wrapped to the next line, their words line up with the title above;
+   on the same line as the sentence the gap moves to the sentence's right, 25 as before */
+.cfg__savebar .savebar__acts { margin-left: calc((var(--s-3) + 1px) * -1); }
+@media (min-width: 641px) { .cfg__savebar .ui-savebar__status:has(.savebar__acts) > small { margin-right: calc(var(--s-3) + 1px + var(--s-1)); } }
 .cfg__savebar .ui-savebar__status small { color: var(--l-ink-2); font-size: var(--t-2); }
 .cfg__savebar.ui-savebar--err { flex-wrap: wrap; justify-content: flex-end; }
 .cfg__savebar.ui-savebar--err .ui-savebar__status { flex: 1 1 100%; }
@@ -352,7 +357,7 @@ body { background: var(--l-canvas); }
 a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-hover); text-underline-offset: 3px; }
 @media (hover: hover) { a.rrow__hits:hover { color: var(--l-ink); text-decoration-color: var(--l-ink); } }
 .rrow__menu { display: flex; justify-content: flex-end; }
-.rrow__pill.rrow__pill--inline, .rpin__short, .rpin__chev { display: none; }
+.rrow__pill.rrow__pill--inline, .rpin__chev { display: none; }
 .rpin__link, .rpin__rest { grid-column: 4 / -1; justify-self: end; }
 .rpin__rest { grid-column: 3 / -1; justify-self: stretch; max-width: 22rem; }
 .rlist__none { margin: 0; padding: var(--s-5) var(--s-4); border-bottom: 1px solid var(--l-hair); color: var(--l-ink-3); font-size: var(--t-2); text-align: center; }
@@ -414,7 +419,7 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
   /* 点按区按按钮自己的大小往外补到 44：按钮比 44 大的那一边不动（映射行的按钮比规则行的小，按固定差值补会不够） / The hit area grows from the button's own size to 44; a side already past 44 stays put (the mapping row's button is smaller than the rule row's, so a fixed offset fell short) */
   .rrow__menu .ui-icon-btn::before, .rw__row > .ui-menu-host .ui-icon-btn::before { position: absolute; inset: calc(min(0px, (100% - var(--h-touch)) / 2)); content: ''; }
   .rpin { grid-template-columns: var(--s-5) minmax(0, 1fr) auto; grid-template-areas: "num main chev"; }
-  .rpin .rrow__pill:not(.rpin__rest), .rpin__link, .rpin__long { display: none; }
+  .rpin .rrow__pill:not(.rpin__rest), .rpin__link { display: none; }
   .rpin__rest { grid-area: pill; justify-self: start; max-width: none; width: 100%; }
   .ups > .toolbar .toolbar__lead { flex: 1 1 0; }
   /* 页签说明和右边的按钮并排，不各占一行 / A tab's lead sits beside its button instead of each taking a row */
@@ -479,8 +484,9 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
   .rrow__switch { align-self: start; grid-area: switch; justify-self: end; margin-top: calc((var(--s-5) - var(--switch-h)) / 2); }
   .rcard__order { padding: var(--s-3) var(--s-4); display: none; }
   .rpin:not(.rpin--rest) .rrow__main { display: flex; align-items: baseline; gap: var(--s-2); }
-  .rpin:not(.rpin--rest) .rrow__cond { white-space: nowrap; }
-  .rpin__short { display: inline; color: var(--l-ink-3); }
+  /* 占满名字后面剩下的宽度：旁边空出地方时（拖宽、「命中」收起）这一格跟着变宽，换回长的说法 / Takes all the width after the name: when room frees
+     up (a wider window, the 命中 tag gone) the cell grows with it and goes back to a longer wording */
+  .rpin:not(.rpin--rest) .rrow__cond { flex: 1 1 0; white-space: nowrap; color: var(--l-ink-3); }
 }
 /* ============================================================================
    v2 第三轮审查后的修正 / Corrections after review round 3
@@ -684,6 +690,12 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
   /* 域名映射那一行压成一行 48 / The domain-mapping row folds to one 48px line */
   /* 域名映射那一行：去掉左边的竖条，箭头和字居中对齐 / The domain-mapping row: no left bar, the chevron centred with the text */
   .rpin:not(.rpin--rest) { background: var(--l-canvas); min-height: var(--s-7); box-shadow: none; align-items: center; padding-block: 6px; }
+  /* 名字不截，长出来的从后面那句的末尾省略；命中时照样是绿底 / The name is never cut: what runs long is elided from the end of the line after it;
+     a hit still shows its green ground */
+  .rpin:not(.rpin--rest) .rrow__name { flex: none; }
+  .rpin:not(.rpin--rest) .rrow__main { min-width: 0; }
+  .rpin:not(.rpin--rest) .rrow__cond { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .rpin.is-hit:not(.rpin--rest) { background: var(--ok-tint-l); }
 }
 /* 标题到说明的墨迹间距统一为 10：规则组区块、第一次用 / The title-to-description ink gap is 10 everywhere: the rule-group section and first run */
 .rgroups__desc { margin-top: 0; }
@@ -1725,6 +1737,10 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
 .tester__out { display: grid; gap: var(--s-3); }
 .tester__result { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-2) var(--s-4); padding: var(--s-3) var(--s-4); border-radius: var(--r-2); background: var(--ok-tint-l); }
 .tester__result.is-warn { background: var(--warn-tint-l); }
+.tester__allow { margin: 0; color: var(--l-ink-2); font-size: var(--t-2); overflow-wrap: anywhere; }
+/* 要照抄的规则是一整块：放不下时整块换到下一行，比一行还长才在里面断开，底色和圆角跟着这一块 / A rule to copy is one block: it moves whole to the next
+   line when it does not fit and only breaks inside when longer than a line, its ground and corners going with the block */
+.tester__allow code { display: inline-block; max-width: 100%; padding: 0 var(--s-1); border-radius: var(--r-1); background: color-mix(in srgb, var(--l-surface) 70%, transparent); font-family: var(--f-mono); font-size: var(--t-1); vertical-align: baseline; }
 .tester__verdict { min-width: 0; margin: 0; font-size: var(--t-3); font-weight: var(--w-bold); overflow-wrap: anywhere; }
 .tester__steps { margin: 0; }
 @media (max-width: 640px) {
@@ -1764,6 +1780,10 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
 .diffd__sign { display: inline-block; width: 1.2em; color: var(--l-ink-2); font-family: var(--f-mono); text-align: center; }
 .diffd__block h3 { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-1) var(--s-2); margin: 0 0 var(--s-2); color: var(--l-ink); font-size: var(--t-3); font-weight: var(--w-bold); }
 .diffd__block h3 small { color: var(--l-ink-3); font-size: var(--t-2); font-weight: var(--w-normal); }
+/* 说明不是一处不同：没有「改了」和横线，一句淡色的话 / A note is not a difference: no 改了 and no rule, one muted sentence */
+.diffd__aside { margin: 0; color: var(--l-ink-3); font-size: var(--t-2); }
+/* 自己写的规则那一块的行是规则原文：等宽字，「||」不粘成一根粗线 / The own-rules block's lines are rule text: mono, so 「||」 does not run into one thick line */
+.diffd__block .diffd__code li { font-family: var(--f-mono); font-size: var(--t-1); }
 .diffd__kind { padding: 0 var(--s-2); border: 1px solid var(--l-hair); border-radius: var(--r-1); color: var(--l-ink-2); font-size: var(--t-1); font-weight: var(--w-medium); }
 .diffd__block ul { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
 .diffd__block li { padding: var(--s-1) var(--s-2); border-radius: var(--r-1); color: var(--l-ink); font-size: var(--t-2); line-height: var(--lh-base); overflow-wrap: anywhere; }
@@ -1994,10 +2014,11 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
 }
 @media (max-width: 640px) {
   .cfg__savebar.savebar--wrap .ui-savebar__detail, .cfg__savebar.ui-savebar--err .ui-savebar__detail { white-space: normal; }
-  /* 冲突时「下载草稿」「重新读取」在手机上自成一行：退回小号文字按钮 12 的内边距，字和上面的说明对齐 / In a conflict on phones 下载草稿 and 重新读取 take a line of their own: the small text buttons' 12 padding is pulled back so their words line up with the text above */
+  /* 手机上贴着屏幕左边：只退回内边距，留下 1px 边框，键盘焦点框不被屏幕切掉 / On phones it sits at the screen's left edge: only the padding is pulled
+     back, keeping the 1px border, so the keyboard focus ring is not cut off by the screen */
   .cfg__savebar .savebar__acts { margin-left: calc(var(--s-3) * -1); }
-  /* 两个链接总是自己一行：561–640 时放得下也不跟在说明后面（往回收的那 12 是按自己一行算的） / The two links always take their own line: at 561–640 they would fit after the
-     sentence, but the 12 pulled back assumes a line of their own */
+  /* 两个链接总是自己一行：561–640 时放得下也不跟在说明后面（往回收的内边距是按自己一行算的） / The two links always take their own line: at 561–640 they would fit
+     after the sentence, but the padding pulled back assumes a line of their own */
   .cfg__savebar .savebar__acts { flex-basis: 100%; }
 }
 .cfg__savebar .ui-savebar__status:focus { outline: none; }

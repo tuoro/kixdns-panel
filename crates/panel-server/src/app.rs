@@ -1812,8 +1812,8 @@ fn default_stats_limit() -> usize {
 fn map_geo_data_error(error: GeoDataError) -> AppError {
     match error {
         GeoDataError::Invalid(message) => AppError::BadRequest("geo_data_invalid", message),
-        GeoDataError::Download(message) => {
-            AppError::Unprocessable("geo_data_download_failed", message)
+        error @ GeoDataError::Download { .. } => {
+            AppError::Unprocessable("geo_data_download_failed", error.to_string())
         }
         GeoDataError::Internal(error) => AppError::Internal(error),
     }
@@ -1822,8 +1822,8 @@ fn map_geo_data_error(error: GeoDataError) -> AppError {
 fn map_blocklist_error(error: GeoDataError) -> AppError {
     match error {
         GeoDataError::Invalid(message) => AppError::BadRequest("blocklist_invalid", message),
-        GeoDataError::Download(message) => {
-            AppError::Unprocessable("blocklist_download_failed", message)
+        error @ GeoDataError::Download { .. } => {
+            AppError::Unprocessable("blocklist_download_failed", error.to_string())
         }
         GeoDataError::Internal(error) => AppError::Internal(error),
     }

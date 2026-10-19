@@ -119,10 +119,28 @@ pub struct GeoDataSchedule {
 pub enum GeoDataError {
     #[error("{0}")]
     Invalid(String),
-    #[error("{0}")]
-    Download(String),
+    /// 下载没成功：`what` 是下的什么，`cause` 是原因本身，`retry` 时原因是连接一类、稍后再试可能就好。拦截列表的每一行已经写着
+    /// 是哪个列表，只用 `cause`
+    /// A download failed: `what` names what was downloaded, `cause` is the reason alone, and `retry` marks a connection-type cause
+    /// that may clear up later. Each blocklist row already names its list, so it uses `cause` alone
+    #[error("{what}没下载成功：{cause}{}", if *.retry { "，稍后再试" } else { "" })]
+    Download {
+        what: String,
+        cause: String,
+        retry: bool,
+    },
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
+}
+
+impl GeoDataError {
+    fn download(what: &str, cause: impl Into<String>, retry: bool) -> Self {
+        Self::Download {
+            what: what.to_owned(),
+            cause: cause.into(),
+            retry,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -388,16 +406,11 @@ impl GeoDataManager {
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|error| {
                 tracing::warn!(%error, what, "下载时连接中断");
-                GeoDataError::Download(format!("{what}下载到一半连接断了，稍后再试"))
+                GeoDataError::download(what, "下载到一半连接断了", true)
             })?;
-            size = size
-                .checked_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX))
-                .ok_or_else(|| GeoDataError::Download(format!("{what}文件过大")))?;
+            size = size.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
             if size > max_bytes {
-                return Err(GeoDataError::Download(format!(
-                    "{what}文件不能超过 {} MiB",
-                    max_bytes / 1024 / 1024
-                )));
+                return Err(too_large(what, max_bytes));
             }
             hasher.update(&chunk);
             writer
@@ -406,7 +419,7 @@ impl GeoDataManager {
                 .map_err(|error| internal_io("写入 Geo 数据", error))?;
         }
         if size == 0 {
-            return Err(GeoDataError::Download(format!("{what}文件为空")));
+            return Err(GeoDataError::download(what, "文件是空的", false));
         }
         writer
             .flush()
@@ -894,25 +907,32 @@ async fn request_with_safe_redirects(
             .map_err(|error| GeoDataError::Internal(anyhow::Error::new(error)))?;
         let response = client.get(url.clone()).send().await.map_err(|error| {
             tracing::warn!(%error, %url, what, "连不上下载地址");
-            GeoDataError::Download(format!("连不上 {host}，{what}没下载成功，稍后再试"))
+            GeoDataError::download(what, format!("连不上 {host}"), true)
         })?;
         if !response.status().is_redirection() {
             return Ok((response, url));
         }
         if redirect_count == MAX_REDIRECTS {
-            return Err(GeoDataError::Download(format!("{what}链接重定向次数过多")));
+            return Err(GeoDataError::download(what, "链接重定向次数过多", false));
         }
         let location = response
             .headers()
             .get(LOCATION)
             .and_then(|value| value.to_str().ok())
-            .ok_or_else(|| GeoDataError::Download(format!("{what}重定向缺少目标地址")))?;
-        url = parse_url(
-            url.join(location)
-                .map_err(|_| GeoDataError::Download(format!("{what}重定向地址无效")))?
-                .as_str(),
-            what,
-        )?;
+            .ok_or_else(|| GeoDataError::download(what, "重定向缺少目标地址", false))?;
+        let next = url
+            .join(location)
+            .map_err(|_| GeoDataError::download(what, "重定向地址无效", false))?;
+        // 用户给的是 https 链接，是网站把下载转去了别处：照实说，不说「链接只能用 https://」 / The user gave an https link and the site
+        // sent the download elsewhere: say so, rather than 链接只能用 https://
+        if next.scheme() != "https" {
+            return Err(GeoDataError::download(
+                what,
+                "网站把下载转到了 http:// 地址，面板只走 https://",
+                false,
+            ));
+        }
+        url = parse_url(next.as_str(), what)?;
     }
     unreachable!("重定向循环总会返回")
 }
@@ -932,13 +952,21 @@ async fn resolve_public_address(
     } else {
         tokio::net::lookup_host((host.as_str(), port))
             .await
-            .map_err(|error| GeoDataError::Download(format!("{what}主机解析失败：{error}")))?
+            .map_err(|error| {
+                // 系统的原话（英文）只进日志 / The system's own words (in English) go to the log only
+                tracing::warn!(%error, %host, what, "下载地址的域名解析失败");
+                GeoDataError::download(what, format!("找不到 {host}（域名解析失败）"), true)
+            })?
             .collect::<Vec<_>>()
     };
     addresses.sort_unstable();
     addresses.dedup();
     if addresses.is_empty() {
-        return Err(GeoDataError::Download(format!("{what}主机没有可用地址")));
+        return Err(GeoDataError::download(
+            what,
+            format!("{host} 没有可用的地址"),
+            true,
+        ));
     }
     if let Some(address) = addresses
         .iter()
@@ -998,12 +1026,29 @@ fn is_public_ipv6(ip: Ipv6Addr) -> bool {
     global_unicast && !documentation && !teredo && !six_to_four
 }
 
+fn too_large(what: &str, max_bytes: u64) -> GeoDataError {
+    GeoDataError::download(
+        what,
+        format!("文件超过 {}\u{a0}MiB", max_bytes / 1024 / 1024),
+        false,
+    )
+}
+
 fn validate_response(response: &Response, what: &str, max_bytes: u64) -> Result<(), GeoDataError> {
-    if response.status() != StatusCode::OK {
-        return Err(GeoDataError::Download(format!(
-            "{what}服务器返回 HTTP {}",
-            response.status().as_u16()
-        )));
+    let status = response.status();
+    if status != StatusCode::OK {
+        // 404、410 是链接失效，重下也没用；5xx、429 是服务器那头一时的问题 / 404 and 410 mean the link is gone and
+        // downloading again will not help; 5xx and 429 are passing trouble on the server's side
+        let gone = matches!(status, StatusCode::NOT_FOUND | StatusCode::GONE);
+        return Err(GeoDataError::download(
+            what,
+            format!(
+                "服务器返回 HTTP\u{a0}{}{}",
+                status.as_u16(),
+                if gone { "，链接可能失效了" } else { "" }
+            ),
+            status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS,
+        ));
     }
     if response
         .headers()
@@ -1012,10 +1057,7 @@ fn validate_response(response: &Response, what: &str, max_bytes: u64) -> Result<
         .and_then(|value| value.parse::<u64>().ok())
         .is_some_and(|size| size > max_bytes)
     {
-        return Err(GeoDataError::Download(format!(
-            "{what}文件不能超过 {} MiB",
-            max_bytes / 1024 / 1024
-        )));
+        return Err(too_large(what, max_bytes));
     }
     if response
         .headers()
@@ -1023,9 +1065,11 @@ fn validate_response(response: &Response, what: &str, max_bytes: u64) -> Result<
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.to_ascii_lowercase().starts_with("text/html"))
     {
-        return Err(GeoDataError::Download(format!(
-            "{what}链接打开的是网页，填文件的直接下载链接"
-        )));
+        return Err(GeoDataError::download(
+            what,
+            "链接打开的是网页，要填文件的直接下载链接",
+            false,
+        ));
     }
     Ok(())
 }
@@ -1149,6 +1193,22 @@ mod tests {
     };
     use crate::db::Database;
     use crate::digest::sha256_hex;
+
+    /// 下载出错的说法：前面说下的是什么，连接一类的原因再说一句稍后再试
+    /// How a failed download reads: what was downloaded comes first, and a connection-type cause adds 稍后再试
+    #[test]
+    fn a_failed_download_names_what_and_why() {
+        let gone = GeoDataError::download("Geo 数据", "服务器返回 HTTP 404，链接可能失效了", false);
+        assert_eq!(
+            gone.to_string(),
+            "Geo 数据没下载成功：服务器返回 HTTP 404，链接可能失效了"
+        );
+        let down = GeoDataError::download("拦截列表", "连不上 lists.example.org", true);
+        assert_eq!(
+            down.to_string(),
+            "拦截列表没下载成功：连不上 lists.example.org，稍后再试"
+        );
+    }
 
     #[test]
     fn only_accepts_safe_https_urls() {

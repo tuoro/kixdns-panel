@@ -6,12 +6,13 @@ import { apiRequest, jsonBody } from '../api/client'
 import type { DnsDiagnostic } from '../api/types'
 import UiSelect from '../components/ui/UiSelect.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
-import { compile, isIp } from '../config-model/model'
+import { coversOnly, ownBlocksFor, parseOwnRules } from '../config-model/blocklist'
+import { blocklistPipelineId, compile, isIp, type Model } from '../config-model/model'
 import { traceNames } from '../config-model/trace-names'
 import { asksUpstream, describeStep, forwardTarget, formatElapsed, groupTrace, hidePlumbing, isDnsSuccess, missedRulesText, parseDnsAnswer, responseCodeName, ruleName, traceTone, type TextPart } from '../diagnostics'
 import { errorMessage } from '../utils'
 import { useConnection } from '../composables/useConnection'
-import { dirty, findRuleByName, model } from './store'
+import { appliedModel, dirty, findRuleByName, model } from './store'
 import { runtimeCapabilities } from './useConfigDocument'
 
 // 测试域名：走一遍 KixDNS 的配置（诊断接口）。内核 p28 起可以测还没保存的草稿（子进程试跑，不碰正在用的配置），也可以假装来自
@@ -22,7 +23,7 @@ import { runtimeCapabilities } from './useConfigDocument'
 // The result reads like the diagnostics page: a verdict, then the path actually taken; the matched rule is reported so the list can mark it.
 // 连不上面板时测试按了只会失败：先停用（同诊断页） / With the panel unreachable a test could only fail: disabled (as on the diagnostics page)
 const { down: panelDown } = useConnection()
-const emit = defineEmits<{ close: []; matched: [ruleId: number | null, mapping: boolean]; quick: [domain: string] }>()
+const emit = defineEmits<{ close: []; matched: [ruleId: number | null, mapping: boolean, blocklist: boolean]; quick: [domain: string] }>()
 const domain = ref('')
 const qtype = ref('A')
 const qtypes = ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'PTR', 'HTTPS', 'SRV'].map((v) => ({ value: v, label: v }))
@@ -43,6 +44,17 @@ watch(dirty, (now) => { if (!now) target.value = 'live' })
 const targets = [{ value: 'draft', label: '测草稿' }, { value: 'live', label: '测正在用的' }]
 const testsDraft = computed(() => canDraft.value && dirty.value && target.value === 'draft')
 
+// 拦截列表拦下的：规则管不到它（拦截列表排在规则前面），不给「为这个域名加一条」，说怎么放行 / Stopped by the blocklists: no rule can reach it
+// (the blocklists come before the rules), so instead of 为这个域名加一条 the result says how to let it through
+const byBlocklist = ref(false)
+const tested = ref('')
+// 是自己写的规则拦下的：只有一行、管的又正好是这个域名时，删掉那一行最干净；管的是上级域名、通配或正则，或者不止一行拦着时，删掉会连别的一起放开
+// （或者还被别的行拦着），改说再写一行放行，自己写的放行先于自己写的拦截
+// Stopped by a rule of one's own: with one line about exactly this name, removing it is cleanest; for a parent name, a wildcard or a regex, or more
+// than one line, removing it would let others through too (or another line would still block), so the hint says to add an allow, which comes
+// before one's own blocks
+interface OwnHit { line: number; text: string; exact: boolean; only: boolean; more: number }
+const ownBlock = ref<OwnHit | null>(null)
 async function run(): Promise<void> {
   const name = domain.value.trim()
   if (!name || running.value || clientProblem.value) return
@@ -60,12 +72,24 @@ async function run(): Promise<void> {
     const trace = result.value.trace_supported ? result.value.trace : []
     const hit = trace.find((s) => s.stage === 'rule' && s.status === 'matched')
     const rule = hit ? findRuleByName(hit.label) : undefined
-    const mapping = trace.some((s) => s.stage === 'pipeline' && s.status === 'selected' && s.label === (model.mappingId ?? 'domain_mapping'))
-    emit('matched', rule?.id ?? null, mapping)
+    const selected = (id: string) => trace.some((s) => s.stage === 'pipeline' && s.status === 'selected' && s.label === id)
+    const tried = testsDraft.value ? model : appliedModel.value
+    testedModel.value = testsDraft.value ? null : tried
+    byBlocklist.value = selected(blocklistPipelineId(tried))
+    tested.value = name.toLowerCase().replace(/\.$/, '')
+    const blocks = byBlocklist.value ? ownBlocksFor(tried.blocklists.custom, tested.value) : []
+    const first = blocks[0]
+    const lines = new Set(blocks.map((b) => b.line)).size
+    // 那一行只管这一个域名才叫人删：hosts 写法一行写几个域名时，删掉那一行会连带放开同一行的别的 / Removing the line is offered only when it holds this
+    // one name: a hosts line naming several would let the others through too
+    const alone = first ? parseOwnRules(tried.blocklists.custom).rules.filter((r) => r.line === first.line).length === 1 : false
+    ownBlock.value = first ? { line: first.line, text: tried.blocklists.custom.split('\n')[first.line - 1]?.trim() ?? '', exact: coversOnly(first.match, tested.value), only: lines === 1 && alone && coversOnly(first.match, tested.value), more: lines - 1 } : null
+    emit('matched', rule?.id ?? null, selected(model.mappingId ?? 'domain_mapping'), byBlocklist.value)
   } catch (e) {
     result.value = null
+    byBlocklist.value = false
     error.value = errorMessage(e)
-    emit('matched', null, false)
+    emit('matched', null, false, false)
   } finally {
     running.value = false
     domainInput.value?.focus()
@@ -85,7 +109,10 @@ const verdict = computed(() => {
 // 执行路径的每一行，和诊断页同一种整理：连着的未命中规则并成一行，只有命中规则那一步打勾 / The path's rows, folded as on the diagnostics page: consecutive misses share a row, only the matched rule gets a check
 const stepIdle = (status: string) => ['miss', 'missed', 'skipped'].includes(status)
 // 路径里的规则和规则组写配置页上的名字，不写内核的 rule-1、main / The path names rules and rule groups as the config page does, not as the kernel's rule-1 or main
-const names = computed(() => traceNames(model))
+// 执行路径按测的那份配置起名：测正在用的配置时用保存过的那份，不用草稿 / The path is named after the config tested: the saved one when testing what
+// runs, not the draft
+const testedModel = ref<Model | null>(null)
+const names = computed(() => traceNames(testedModel.value ?? model))
 const rows = computed(() => {
   let target: string | null = null
   const trace = result.value?.trace_supported ? result.value.trace : []
@@ -123,7 +150,12 @@ const rows = computed(() => {
     <div v-else-if="result" class="tester__out" role="status">
       <div class="tester__result" :class="{ 'is-warn': !ok }">
         <p class="tester__verdict"><span v-if="result.source === 'draft'" class="ui-tag tester__tag">草稿</span>{{ verdict }}</p>
-        <button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" @click="emit('quick', domain.trim())"><Plus :size="14" aria-hidden="true" />为这个域名加一条</button>
+        <!-- 都引出拦着它的那一行原文；自己写的放行写在哪一行都优先，所以只说「加一行」 / Every form quotes the line that blocks it; an own allow wins
+             wherever it is written, so it just says 「add a line」 -->
+        <p v-if="byBlocklist && ownBlock?.only" class="tester__allow"><span class="nowrap">「自己写的规则」</span>第&nbsp;{{ ownBlock.line }}&nbsp;行 <code>{{ ownBlock.text }}</code> 拦着它。要放行，删掉这一行；订阅的列表也有它时，再加一行 <code>@@||{{ tested }}^</code></p>
+        <p v-else-if="byBlocklist && ownBlock" class="tester__allow"><span class="nowrap">「自己写的规则」</span>第&nbsp;{{ ownBlock.line }}&nbsp;行 <code>{{ ownBlock.text }}</code> {{ ownBlock.exact ? '拦着它' : '连它一起拦着' }}<template v-if="ownBlock.more">，还有&nbsp;{{ ownBlock.more }}&nbsp;行也拦着</template>。{{ ownBlock.exact ? '要放行' : '只放行它' }}，加一行 <code>@@||{{ tested }}^</code></p>
+        <p v-else-if="byBlocklist" class="tester__allow">拦截列表先于规则：要放行，<span class="nowrap">在「自己写的规则」里</span>加一行 <code>@@||{{ tested }}^</code></p>
+        <button v-else class="ui-btn ui-btn--secondary ui-btn--sm" type="button" @click="emit('quick', domain.trim())"><Plus :size="14" aria-hidden="true" />为这个域名加一条</button>
       </div>
       <ol v-if="rows.length" class="ui-steps tester__steps">
         <li v-for="(row, i) in rows" :key="i" class="ui-step" :class="[row.tone === 'success' && row.decides ? 'ui-step--ok' : row.tone === 'danger' ? 'ui-step--err' : row.tone === 'warning' ? 'ui-step--warn' : '', { 'ui-step--idle': row.idle }]">

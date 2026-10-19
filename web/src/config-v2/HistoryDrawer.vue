@@ -8,13 +8,13 @@ import { useConfirm } from '../composables/useConfirm'
 import { useConnection } from '../composables/useConnection'
 import { useSession } from '../composables/useSession'
 import { useToast } from '../composables/useToast'
-import { diffModels, type DiffBlock } from '../config-model/diff'
+import { diffModels, differences, type DiffBlock } from '../config-model/diff'
 import DiffBlocks from './DiffBlocks.vue'
 import { readConfig } from '../config-model/document'
 import { actorName, errorMessage, formatVersionTime } from '../utils'
 import RuleText from './RuleText.vue'
 import { appliedModel, unsaved } from './store'
-import { bulkDeleting, currentVersionId, deferSave, deleteVersion, saveInFlight, deleteVersions, deleting, failureCause, friendlyRuntimeError, pendingWhen, restoreVersion, restoring, versionDetail, versions } from './useConfigDocument'
+import { bulkDeleting, currentVersionId, deferSave, deleteVersion, saveInFlight, whenDraftSettles, deleteVersions, deleting, failureCause, friendlyRuntimeError, pendingWhen, restoreVersion, restoring, versionDetail, versions } from './useConfigDocument'
 // 关上后焦点回到打开它的控件 / Focus returns to the opener on close
 useReturnFocus()
 
@@ -62,7 +62,7 @@ async function openDiff(v: ConfigVersion): Promise<void> {
     const detail = await versionDetail(v.id)
     // 等的时候关掉了或换了一个版本，这份就不要了 / Closed or switched to another version meanwhile: this one is dropped
     if (preview.value?.id !== v.id) return
-    blocks.value = diffModels(appliedModel.value, readConfig(detail.content).model)
+    blocks.value = diffModels(appliedModel.value, readConfig(detail.content).model, 'restore')
   } catch (error) {
     toast.error(errorMessage(error))
     if (preview.value?.id === v.id) closeDiff()
@@ -80,6 +80,10 @@ async function restore(v: ConfigVersion): Promise<void> {
   })
   if (!ok) return
   closeDiff()
+  // 确认框开着的时候配置页开始了保存（立即更新下好以后直接存）：等它做完、读回新的那份再恢复，不和它撞成「别处改过了」
+  // A save began on the config page while the confirm was open (立即更新 saving as it lands): the restore waits for it and its re-read, rather than collide
+  // with it as 别处改过了
+  await whenDraftSettles()
   // 恢复途中退出登录或会话过期：结果不再报（和保存途中退出一样），登录页上不冒出配置页的提示
   // Signed out or expired mid-restore: the outcome is not reported (as with a save), so no config-page toast appears on the login page
   const session = useSession()
@@ -94,6 +98,8 @@ async function remove(v: ConfigVersion): Promise<void> {
   if (isCurrent(v)) { toast.error('正在用的版本不能删除：先恢复别的版本'); return }
   const ok = await confirm.ask({ title: `删除配置版本 #${v.id}`, body: '删除后找不回来。当前生效的配置不受影响。', confirmLabel: '删除这个版本', items: [`#${v.id} · ${v.message || '未填写备注'}`], destructive: true })
   if (!ok) return
+  // 和恢复一样，等配置页正在做的保存做完 / As with a restore, wait for a save under way on the config page
+  await whenDraftSettles()
   try {
     await deleteVersion(v)
     toast.success(`配置版本 #${v.id} 已删除`)
@@ -106,6 +112,7 @@ async function removePicked(): Promise<void> {
   const list = versions.value.filter((v) => picked.value.includes(v.id))
   const ok = await confirm.ask({ title: `删除 ${list.length} 个历史版本`, body: '删除后找不回来。当前生效的配置不受影响。', confirmLabel: `删除 ${list.length} 个版本`, items: list.map((v) => `#${v.id} · ${v.message || '未填写备注'}`), destructive: true })
   if (!ok) return
+  await whenDraftSettles()
   try {
     const count = await deleteVersions(list.map((v) => v.id))
     toast.success(`已删除 ${count} 个配置版本`)
@@ -168,7 +175,7 @@ function onRuleLink(id: number): void { dialog.value?.close(); emit('rule', id) 
       <div v-if="preview" class="pdialog__panel diffd__panel">
         <header class="pdialog__head">
           <!-- 全文还没到时只有谁、什么时候；比较的那句等算出来再接在前面 / Until the content arrives only who and when; the comparison phrase joins in front once computed -->
-          <div class="pdrawer__titles"><h2 id="diff-title">#{{ preview.id }} · {{ preview.message || '未填写备注' }}</h2><p><template v-if="blocks">{{ blocks.length ? `和当前比，${blocks.length} 处不同` : '和当前一样' }} · </template>{{ actorName(preview.actor) }} · {{ formatVersionTime(preview.created_at) }}</p></div>
+          <div class="pdrawer__titles"><h2 id="diff-title">#{{ preview.id }} · {{ preview.message || '未填写备注' }}</h2><p><template v-if="blocks">{{ differences(blocks) ? `和当前比，${differences(blocks)} 处不同` : '和当前一样' }} · </template>{{ actorName(preview.actor) }} · {{ formatVersionTime(preview.created_at) }}</p></div>
           <button class="ui-icon-btn" type="button" aria-label="关闭比较" @click="closeDiff"><X :size="16" /></button>
         </header>
         <div class="pdialog__body diffd__body">

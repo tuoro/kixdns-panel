@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use crate::auth::{authenticate, unix_timestamp, verify_csrf};
 use crate::error::{AppError, AppResult};
 use crate::geo_data::{
-    BuiltinGeosite, GeoDataCleanupResult, GeoDataManifest, GeoDataSchedule, GeoDataSyncRequest,
-    apply_manifest_paths, is_blocklist_path,
+    BuiltinGeosite, GeoDataCleanupResult, GeoDataError, GeoDataManifest, GeoDataSchedule,
+    GeoDataSyncRequest, apply_manifest_paths, is_blocklist_path,
 };
 use crate::geosite_catalog::{CatalogCache, GeositeCategory};
 
@@ -375,6 +375,16 @@ pub(super) fn schedule_label(hours: u64) -> String {
     }
 }
 
+/// 自动更新记下的原因：下载出错只记原因本身。页面前面已经写着「上次自动更新失败」，到点也会自己再跑，不再说「没下载成功」「稍后再试」
+/// The reason the automatic update records: a failed download keeps only its cause. The page already prefixes 上次自动更新失败, and the update
+/// runs again on its own when due, so 没下载成功 and 稍后再试 are not repeated
+fn schedule_error(error: &anyhow::Error) -> String {
+    match error.downcast_ref::<GeoDataError>() {
+        Some(GeoDataError::Download { cause, .. }) => cause.clone(),
+        _ => format!("{error:#}"),
+    }
+}
+
 pub(super) async fn run_due_geo_schedule(state: &AppState) -> anyhow::Result<()> {
     let now = unix_timestamp();
     let schedule = state.geo_data.schedule().get().await?;
@@ -383,7 +393,7 @@ pub(super) async fn run_due_geo_schedule(state: &AppState) -> anyhow::Result<()>
     }
     state.geo_data.schedule().mark_attempt(now).await?;
     let result = apply_scheduled_geo_update(state).await;
-    let error = result.as_ref().err().map(|error| format!("{error:#}"));
+    let error = result.as_ref().err().map(schedule_error);
     state
         .geo_data
         .schedule()

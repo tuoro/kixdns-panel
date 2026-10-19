@@ -27,6 +27,8 @@ use crate::geo_data::{
 };
 
 const STATE_KEY: &str = "blocklist_state";
+/// 下载出错时对它的说法 / What it is called in download errors
+const WHAT: &str = "拦截列表";
 const SCHEDULE_KEY: &str = "blocklist_schedule";
 /// 一个列表的大小上限：最大的主流列表约 6 MiB / The size limit for one list: the largest common lists are about 6 MiB
 const MAX_LIST_BYTES: u64 = 64 * 1024 * 1024;
@@ -58,6 +60,10 @@ struct BlocklistState {
     /// cleanup until it is written into the config
     #[serde(default)]
     last_refreshed: Option<String>,
+    /// 页面最近一次合成时订阅的列表：草稿里删掉又放弃修改时，它们的情况还在 / The lists the page subscribed to when
+    /// it last built: removed in a draft and then discarded, their status is still there
+    #[serde(default)]
+    requested: Vec<String>,
 }
 
 /// 一个列表（按链接）最近一份读得怎么样 / How the latest copy of one list (by link) read
@@ -70,6 +76,11 @@ pub struct SourceStatus {
     pub summary: ListSummary,
     /// 最近一次下载失败的原因；成功以后清掉 / Why the latest download failed; cleared once one succeeds
     pub last_error: Option<String>,
+    /// 这次失败重下可能就好（连接、服务器一时的问题）；链接不对、文件读不懂时为 false，页面就不叫人重下
+    /// Whether downloading again may help this failure (connection or passing server trouble); false for a wrong link or an
+    /// unreadable file, so the page does not suggest downloading again
+    #[serde(default)]
+    pub retryable: bool,
     pub last_attempt_at: Option<i64>,
     /// 因为规则少了一半以上没换上的那一份：下次下载还是它，就当列表真变小了，换上 / The copy not taken because it
     /// held under half the rules: when the next download is the same copy, the list really shrank and it is taken
@@ -109,7 +120,7 @@ pub struct BuildResult {
 pub struct Refresh {
     /// 换掉的文件：`(旧文件, 新文件)`；内容没变时为 None / The file replaced, as `(old, new)`; None when nothing changed
     pub replaced: Option<(String, String)>,
-    /// 没更新上、接着用上一份的列表数 / How many lists failed to update and keep their previous copy
+    /// 没更新上、仍用原来那份的列表数 / How many lists failed to update and keep their previous copy
     pub failed: usize,
 }
 
@@ -117,8 +128,12 @@ pub struct Refresh {
 /// copy that reads, one held back for holding under half the rules, or why it failed
 enum Fetched {
     Read(StoredFile, ListSummary),
-    Shrank { sha256: String, reason: String },
-    Failed(String),
+    Shrank {
+        sha256: String,
+        reason: String,
+    },
+    /// 原因，和重下可能就好吗 / The reason, and whether downloading again may help
+    Failed(String, bool),
 }
 
 impl BlocklistManager {
@@ -160,30 +175,36 @@ impl BlocklistManager {
         Ok(())
     }
 
-    /// 按页面给的订阅合成一个文件：没下载过的、和 `refresh` 点名的先下载，再把启用的合并。一个列表下载失败不挡别的：它照用
-    /// 上一份（没有就不算进去），原因记在它自己的情况里。不在请求里的列表不再记。
-    /// Builds a file for the page's subscriptions: lists never downloaded, and those `refresh` names, download first,
+    /// 按页面给的订阅合成一个文件：从没试过下载的、和 `refresh` 点名的先下载，再把启用的合并。一个列表下载失败不挡别的：它照用
+    /// 上一份（没有就不算进去），原因记在它自己的情况里。不在请求里的列表的情况等清理时再看要不要留。
+    /// Builds a file for the page's subscriptions: lists never tried, and those `refresh` names, download first,
     /// then the enabled ones merge. One failed download does not hold up the rest: that list keeps its previous copy
-    /// (or is left out without one), and the reason goes into its own status. Lists outside the request are no
-    /// longer kept.
+    /// (or is left out without one), and the reason goes into its own status. Whether to keep the status of lists
+    /// outside the request is left to cleanup.
     pub async fn build(&self, request: BuildRequest) -> Result<BuildResult, GeoDataError> {
         let subscriptions = normalize_subscriptions(request.subscriptions)?;
         let refresh: HashSet<&str> = request.refresh.iter().map(|url| url.trim()).collect();
         let _guard = self.lock.lock().await;
         let mut state = self.state().await?;
-        state.sources.retain(|url, _| {
-            subscriptions
-                .iter()
-                .any(|subscription| subscription.url == *url)
-        });
         let (path, failed) = self
             .update(&mut state, &subscriptions, |url| refresh.contains(url))
             .await?;
         state.last_built.clone_from(&path);
+        state.requested = subscriptions
+            .iter()
+            .map(|subscription| subscription.url.clone())
+            .collect();
         self.store(&state).await?;
+        let sources = subscriptions
+            .iter()
+            .filter_map(|subscription| {
+                let status = state.sources.get(&subscription.url)?;
+                Some((subscription.url.clone(), status.clone()))
+            })
+            .collect();
         Ok(BuildResult {
             path,
-            sources: state.sources,
+            sources,
             failed,
         })
     }
@@ -197,7 +218,8 @@ impl BlocklistManager {
         };
         let sources = read_file_sources(Path::new(&old)).await?.ok_or_else(|| {
             GeoDataError::Invalid(
-                "正在用的拦截列表文件读不出它的来源，在拦截列表页重新保存一次".to_owned(),
+                "正在用的文件没记下是哪些列表合成的，没法更新；订阅列表并保存以后，会换成新合成的"
+                    .to_owned(),
             )
         })?;
         let _guard = self.lock.lock().await;
@@ -217,11 +239,11 @@ impl BlocklistManager {
         Ok(Some(Refresh { replaced, failed }))
     }
 
-    /// 正在用的文件里有、记录里却没有一份的列表（页面在没保存的草稿里删了它），按文件里记的那份补回记录：定时更新下载
-    /// 失败时它照用这一份，不会从配置里掉出去
-    /// Lists the file in use names but the records hold no copy of (the page removed them in an unsaved draft) get
-    /// their records back from the copy the file names, so a failed scheduled download keeps that copy instead of
-    /// dropping the list from the config
+    /// 正在用的文件里有、记录里却没有一份的列表（比如面板的数据库换过），按文件里记的那份补回记录：定时更新下载失败时
+    /// 它照用这一份，不会从配置里掉出去
+    /// Lists the file in use names but the records hold no copy of (the panel's database was replaced, say) get their
+    /// records back from the copy the file names, so a failed scheduled download keeps that copy instead of dropping
+    /// the list from the config
     async fn recall_sources(
         &self,
         state: &mut BlocklistState,
@@ -274,20 +296,42 @@ impl BlocklistManager {
         Ok(())
     }
 
-    /// 清理 Geo 目录：Geo 数据和拦截列表都不再用的文件删掉 / Cleans the Geo directory, removing files neither Geo data
-    /// nor the blocklists still use
+    /// 清理 Geo 目录：Geo 数据和拦截列表都不再用的文件删掉。页面最近一次请求里没有、保留的配置版本也没用到的列表，情况不再记
+    /// Cleans the Geo directory, removing files neither Geo data nor the blocklists still use. Lists neither in the
+    /// page's latest request nor used by a retained config version are no longer recorded
     pub async fn cleanup(
         &self,
         retained_configs: &[Value],
     ) -> Result<GeoDataCleanupResult, GeoDataError> {
         let _guard = self.lock.lock().await;
-        let keep = self.protected_paths(retained_configs).await?;
+        let mut state = self.state().await?;
+        let mut retained_sources = Vec::new();
+        for path in retained_configs
+            .iter()
+            .filter_map(blocklist_path)
+            .collect::<HashSet<_>>()
+        {
+            retained_sources.extend(
+                read_file_sources(Path::new(&path))
+                    .await?
+                    .unwrap_or_default(),
+            );
+        }
+        let before = state.sources.len();
+        state.sources.retain(|url, _| {
+            state.requested.contains(url)
+                || retained_sources.iter().any(|source| source.url == *url)
+        });
+        if state.sources.len() != before {
+            self.store(&state).await?;
+        }
+        let keep = self.protected_paths(&state, &retained_sources);
         self.geo.cleanup(retained_configs, keep).await
     }
 
-    /// 下载 `subscriptions` 里还没有一份的、和 `refresh` 说要重下的，再合并启用的。返回合成的文件和没下载成功的列表数。
-    /// Downloads the lists in `subscriptions` that have no copy yet or that `refresh` names, then merges the enabled
-    /// ones. Returns the file built and how many lists failed to download.
+    /// 下载 `subscriptions` 里还要下载的（见 [`Self::needs_download`]）和 `refresh` 说要重下的，再合并启用的。返回合成的文件和没下载成功的列表数。
+    /// Downloads the lists in `subscriptions` that still need it (see [`Self::needs_download`]) or that `refresh` names,
+    /// then merges the enabled ones. Returns the file built and how many lists failed to download.
     async fn update(
         &self,
         state: &mut BlocklistState,
@@ -297,7 +341,7 @@ impl BlocklistManager {
         let mut fetch = Vec::new();
         for subscription in subscriptions {
             let status = state.sources.get(&subscription.url);
-            if refresh(&subscription.url) || !self.holds_copy(status).await {
+            if refresh(&subscription.url) || self.needs_download(status).await {
                 fetch.push((&subscription.url, status.cloned()));
             }
         }
@@ -319,17 +363,20 @@ impl BlocklistManager {
                     status.downloaded_at = Some(now);
                     status.summary = summary;
                     status.last_error = None;
+                    status.retryable = false;
                     status.rejected_sha256 = None;
                 }
                 Fetched::Shrank { sha256, reason } => {
                     tracing::warn!(url = %url, reason = %reason, "拦截列表这次下载的规则少了一半以上");
                     status.last_error = Some(reason);
+                    status.retryable = false;
                     status.rejected_sha256 = Some(sha256);
                     failed += 1;
                 }
-                Fetched::Failed(reason) => {
+                Fetched::Failed(reason, retryable) => {
                     tracing::warn!(url = %url, reason = %reason, "拦截列表没下载成功");
                     status.last_error = Some(reason.chars().take(MAX_ERROR_CHARS).collect());
+                    status.retryable = retryable;
                     failed += 1;
                 }
             }
@@ -338,11 +385,18 @@ impl BlocklistManager {
         Ok((path, failed))
     }
 
-    async fn holds_copy(&self, status: Option<&SourceStatus>) -> bool {
-        let Some(sha256) = status.and_then(|status| status.sha256.as_deref()) else {
+    /// 没点名重下时还要下载的：从没试过的，和记着一份、文件却不在了的。试过没下载成功的等点名再下：不然开关别的列表时
+    /// 也要陪着它等到下载超时
+    /// What downloads without being named: lists never tried, and those recorded with a copy whose file is gone. A list
+    /// whose download failed waits to be named: otherwise switching any other list would wait out its download timeout
+    async fn needs_download(&self, status: Option<&SourceStatus>) -> bool {
+        let Some(status) = status else {
+            return true;
+        };
+        let Some(sha256) = status.sha256.as_deref() else {
             return false;
         };
-        tokio::fs::metadata(self.raw_path(sha256))
+        !tokio::fs::metadata(self.raw_path(sha256))
             .await
             .is_ok_and(|metadata| metadata.is_file())
     }
@@ -361,14 +415,27 @@ impl BlocklistManager {
     ) -> Result<Fetched, GeoDataError> {
         let file = match self
             .geo
-            .download_file(url, "拦截列表", MAX_LIST_BYTES, |sha256, _| {
+            .download_file(url, WHAT, MAX_LIST_BYTES, |sha256, _| {
                 format!("blocklist-src-{sha256}.txt")
             })
             .await
         {
             Ok(file) => file,
             Err(GeoDataError::Internal(error)) => return Err(GeoDataError::Internal(error)),
-            Err(error) => return Ok(Fetched::Failed(error.to_string())),
+            // 页面上这一行已经写着是哪个列表、没下载成功：只记原因本身 / The page's row already names the list and says the
+            // download failed: only the cause itself is kept
+            Err(GeoDataError::Download { cause, retry, .. }) => {
+                return Ok(Fetched::Failed(cause, retry));
+            }
+            // 这一类原因以「拦截列表」开头，页面上那一行已经写着是哪个列表 / These reasons open with 拦截列表, and the page's row already names the list
+            Err(GeoDataError::Invalid(reason)) => {
+                return Ok(Fetched::Failed(
+                    reason
+                        .strip_prefix(WHAT)
+                        .map_or(reason.clone(), str::to_owned),
+                    false,
+                ));
+            }
         };
         let path = file.path.clone();
         let read =
@@ -384,7 +451,7 @@ impl BlocklistManager {
                 })?;
         let summary = match read {
             Ok(summary) => summary,
-            Err(reason) => return Ok(Fetched::Failed(reason)),
+            Err(reason) => return Ok(Fetched::Failed(reason, false)),
         };
         Ok(match shrink_reason(summary.rules, &file.sha256, previous) {
             Some(reason) => Fetched::Shrank {
@@ -402,7 +469,7 @@ impl BlocklistManager {
         subscriptions: &[Subscription],
         state: &BlocklistState,
     ) -> Result<Option<String>, GeoDataError> {
-        let sources: Vec<SourceRef> = subscriptions
+        let mut sources: Vec<SourceRef> = subscriptions
             .iter()
             .filter(|subscription| subscription.enabled)
             .filter_map(|subscription| {
@@ -413,6 +480,9 @@ impl BlocklistManager {
                 })
             })
             .collect();
+        // 订阅的先后不影响拦什么：按链接排好，同一组列表总是合出同一个文件 / The order of subscriptions does not change what
+        // is blocked: sorted by link, the same lists always merge into the same file
+        sources.sort_by(|a, b| a.url.cmp(&b.url));
         if sources.is_empty() {
             return Ok(None);
         }
@@ -457,31 +527,25 @@ impl BlocklistManager {
     /// 清理时要留下的文件：页面和定时更新最近合成的、每个列表在用的那份，和保留的配置版本用到的合并文件里记的来源
     /// Files cleanup must keep: the ones the page and the scheduled update built last, each list's copy in use, and the
     /// sources recorded in the merged files that retained config versions use
-    async fn protected_paths(
+    fn protected_paths(
         &self,
-        retained_configs: &[Value],
-    ) -> Result<HashSet<PathBuf>, GeoDataError> {
-        let state = self.state().await?;
-        let mut keep: HashSet<PathBuf> = state
+        state: &BlocklistState,
+        retained_sources: &[SourceRef],
+    ) -> HashSet<PathBuf> {
+        state
             .last_built
             .iter()
             .chain(&state.last_refreshed)
             .map(PathBuf::from)
-            .collect();
-        keep.extend(
-            state
-                .sources
-                .values()
-                .filter_map(|status| status.sha256.as_deref())
-                .map(|sha256| self.raw_path(sha256)),
-        );
-        let merged: HashSet<String> = retained_configs.iter().filter_map(blocklist_path).collect();
-        for path in merged {
-            if let Some(sources) = read_file_sources(Path::new(&path)).await? {
-                keep.extend(sources.iter().map(|source| self.raw_path(&source.sha256)));
-            }
-        }
-        Ok(keep)
+            .chain(
+                state
+                    .sources
+                    .values()
+                    .filter_map(|status| status.sha256.as_deref())
+                    .chain(retained_sources.iter().map(|source| source.sha256.as_str()))
+                    .map(|sha256| self.raw_path(sha256)),
+            )
+            .collect()
     }
 }
 
@@ -530,8 +594,33 @@ fn shrink_reason(rules: usize, sha256: &str, previous: Option<&SourceStatus>) ->
         return None;
     }
     Some(format!(
-        "这次下载的规则比上一份少了一半以上（{before} 条变成 {rules} 条），先接着用上一份；下次下载还是这样就换上"
+        "新下载的只有 {}\u{a0}条，不到上一份 {}\u{a0}条的一半，先不换；下次还是这样就换上",
+        grouped(rules),
+        grouped(before)
     ))
+}
+
+/// 数字每三位加一个逗号，和页面上的条数写法一样 / A number with a comma every three digits, as the page writes counts
+fn grouped(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// 报错里写出的链接：太长时只留开头 / A link as an error message shows it: only its start when it is long
+fn shown_url(url: &str) -> String {
+    const SHOWN: usize = 80;
+    if url.chars().count() <= SHOWN {
+        url.to_owned()
+    } else {
+        format!("{}…", url.chars().take(SHOWN).collect::<String>())
+    }
 }
 
 /// 链接去掉首尾空白、检查写法，重复的只留第一个 / Links trimmed and checked, repeats keeping only the first
@@ -547,7 +636,15 @@ fn normalize_subscriptions(
     let mut normalized = Vec::with_capacity(subscriptions.len());
     for subscription in subscriptions {
         let url = subscription.url.trim().to_owned();
-        parse_url(&url, "拦截列表")?;
+        // 拒绝时说出是哪个链接：页面上订阅有十几个时才找得到 / A refusal names the link, so it can be found among a dozen subscriptions
+        parse_url(&url, WHAT).map_err(|error| match error {
+            GeoDataError::Invalid(reason) => GeoDataError::Invalid(format!(
+                "{WHAT}「{}」：{}",
+                shown_url(&url),
+                reason.strip_prefix(WHAT).unwrap_or(&reason)
+            )),
+            other => other,
+        })?;
         if seen.insert(url.clone()) {
             normalized.push(Subscription {
                 url,
@@ -558,7 +655,9 @@ fn normalize_subscriptions(
     Ok(normalized)
 }
 
-/// 配置里拦截列表合并出的那个文件 / The blocklists' merged file a config uses
+/// 配置里拦截列表合并出的那个文件：页面总把它排在最后，前面还有的是认不出、照原样留下的旧文件
+/// The blocklists' merged file a config uses: the page always puts it last, and one before it is an old file that
+/// could not be recognised and was kept as it was
 #[must_use]
 pub fn blocklist_path(config: &Value) -> Option<String> {
     config
@@ -566,7 +665,7 @@ pub fn blocklist_path(config: &Value) -> Option<String> {
         .as_array()?
         .iter()
         .filter_map(Value::as_str)
-        .find(|path| is_blocklist_path(path))
+        .rfind(|path| is_blocklist_path(path))
         .map(str::to_owned)
 }
 
@@ -705,6 +804,9 @@ mod tests {
         let without_b = build(&manager, vec![subscription(A, false)], &[]).await;
         assert_eq!(without_b.path, None, "nothing enabled, nothing merged");
         assert_eq!(without_b.sources.keys().collect::<Vec<_>>(), [A]);
+        // B 的情况留到清理：草稿里删掉又放弃时还看得到 / B's status stays until cleanup, seen again when a draft
+        // removing it is discarded
+        assert!(manager.state().await.unwrap().sources.contains_key(B));
         assert_eq!(manager.state().await.unwrap().last_built, None);
     }
 
@@ -729,16 +831,31 @@ mod tests {
             (kept.sha256.as_deref(), kept.summary.rules),
             (Some(sha_a.as_str()), 1)
         );
+        // 原因不带「拦截列表」开头：页面上那一行已经写着是哪个列表 / The reason does not open with 拦截列表: the page's row
+        // already names the list
         assert!(
             kept.last_error
                 .as_deref()
                 .unwrap()
-                .starts_with("拦截列表主机"),
+                .starts_with("主机 127.0.0.1 解析到不允许的地址"),
             "{kept:?}"
         );
+        // 链接指向不允许的地址，重下也没用 / A link pointing at a disallowed address does not get better by downloading again
+        assert!(!kept.retryable);
         let never = &result.sources[C];
         assert_eq!((never.sha256.as_deref(), never.downloaded_at), (None, None));
         assert!(never.last_error.is_some());
+        // 没点名就不再试：开关别的列表不用陪着它等 / Not tried again unless named: switching other lists does not wait on it
+        let again = build(
+            &manager,
+            vec![subscription(A, false), subscription(C, true)],
+            &[],
+        )
+        .await;
+        assert_eq!(
+            again.failed, 0,
+            "a retried download would have failed again"
+        );
         let json = std::fs::read(result.path.unwrap()).unwrap();
         assert_eq!(
             blocklist::read_sources(&json),
@@ -828,7 +945,7 @@ mod tests {
             .root()
             .join(format!("blocklist-{}.json", "f".repeat(64)));
         std::fs::write(&stray, "{}").unwrap();
-        // 只剩 A：B、C 的记录不再留 / Only A is left: B and C are no longer recorded
+        // 页面只剩 A；C 还在保留的版本里 / The page holds A alone; C is still in a retained version
         let built = build(&manager, vec![subscription(A, true)], &[])
             .await
             .path
@@ -838,6 +955,12 @@ mod tests {
         let result = manager.cleanup(&[retained]).await.unwrap();
         assert_eq!(result.removed_files, 2, "{result:?}");
         assert!(!stray.exists() && !manager.raw_path(&sha_b).exists());
+        let recorded: Vec<String> = manager.state().await.unwrap().sources.into_keys().collect();
+        assert_eq!(
+            recorded,
+            [A, C],
+            "B is in neither the latest request nor a retained version"
+        );
         for kept in [
             PathBuf::from(built),
             retained_file,
@@ -888,11 +1011,11 @@ mod tests {
         assert!(Path::new(&new).exists() && !Path::new(&old).exists());
     }
 
-    /// 页面在没保存的草稿里删掉的列表，正在用的配置还在用：定时更新下载失败时照用文件里记的那份，不从配置里掉出去
-    /// A list removed in an unsaved draft is still in the config in use: when its scheduled download fails, the copy the
-    /// file names stays and the list does not drop out of the config
+    /// 正在用的配置里有、记录却丢了的列表：定时更新下载失败时照用文件里记的那份，不从配置里掉出去
+    /// A list the config in use holds but whose record was lost: when its scheduled download fails, the copy the file
+    /// names stays and the list does not drop out of the config
     #[tokio::test]
-    async fn a_list_removed_in_a_draft_stays_in_the_scheduled_update() {
+    async fn a_lost_record_comes_back_from_the_file_in_use() {
         let directory = tempdir().unwrap();
         let manager = manager(directory.path()).await;
         manager.hold_for_tests(A, "||ads.example^\n").await;
@@ -905,8 +1028,10 @@ mod tests {
         .await
         .path
         .unwrap();
-        build(&manager, vec![subscription(A, true)], &[]).await;
-        assert!(!manager.state().await.unwrap().sources.contains_key(C));
+        // 记录丢了，比如面板的数据库换过 / The record is lost, the panel's database replaced, say
+        let mut state = manager.state().await.unwrap();
+        state.sources.remove(C);
+        manager.store(&state).await.unwrap();
         let config = json!({ "settings": { "geosite_data_paths": [in_use] } });
 
         let refresh = manager.refresh_running(&config).await.unwrap().unwrap();
@@ -962,12 +1087,25 @@ mod tests {
             None,
             "exactly half is kept"
         );
+        assert!(shrink_reason(1, &smaller, Some(&held)).is_some());
+        // 条数和页面上一样每三位加逗号 / Counts carry a comma every three digits, as on the page
+        let large = SourceStatus {
+            summary: ListSummary {
+                rules: 185_803,
+                ..ListSummary::default()
+            },
+            ..held.clone()
+        };
         assert_eq!(
-            shrink_reason(1, &smaller, Some(&held)).as_deref(),
+            shrink_reason(52_318, &smaller, Some(&large)).as_deref(),
             Some(
-                "这次下载的规则比上一份少了一半以上（4 条变成 1 条），先接着用上一份；下次下载还是这样就换上"
+                "新下载的只有 52,318\u{a0}条，不到上一份 185,803\u{a0}条的一半，先不换；下次还是这样就换上"
             )
         );
+        assert_eq!(grouped(0), "0");
+        assert_eq!(grouped(999), "999");
+        assert_eq!(grouped(1_000), "1,000");
+        assert_eq!(grouped(1_234_567), "1,234,567");
         let held_back = SourceStatus {
             rejected_sha256: Some(smaller.clone()),
             ..held.clone()

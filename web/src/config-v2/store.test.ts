@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { diffModels } from '../config-model/diff'
-import { ruleTitle, type Model } from '../config-model/model'
+import { diffModels, differences } from '../config-model/diff'
+import { blocklistKey, ruleTitle, type Model } from '../config-model/model'
 import { exportConfig, readConfig } from '../config-model/document'
 import { LEGACY_MESSY, LEGACY_TEMPLATES, demoModel, sampleModel } from '../config-model/testing/samples'
-import { appliedModel, changeCount, copyReplaceBlocker, groupUsers, model, oldPanelCopies, rebaseApplied, replaceWithCopy, resetTo } from './store'
+import { appliedModel, changeCount, changesBesidesFile, newId, placeBack, copyReplaceBlocker, discardOnLeave, draftGeneration, groupUsers, model, oldPanelCopies, rebaseApplied, replaceModel, replaceWithCopy, resetTo, sameDraftSince } from './store'
 
 // 保存条数出来的每一处修改，「改了哪些」里都要看得到：以前改监听标签时保存条说改了 1 处，对比却说「一样」
 // Every change the save bar counts must show in the review: setting a listener tag once read 「已修改 1 处」 while the review said nothing changed
@@ -36,6 +36,95 @@ describe('保存条的计数和「改了哪些」说的是同一件事', () => {
   it('没改就两边都是 0', () => {
     expect(changeCount.value).toBe(0)
     expect(diffModels(appliedModel.value, model)).toEqual([])
+  })
+})
+
+// 订阅按规整后的链接认：另一台面板导出的配置里编号、名字、链接写法不同，不算修改；开关、增删才算，计数和「改了哪些」一致
+// Subscriptions are matched by normal link: different ids, names or link spellings in a config exported by another panel are no change; on/off and
+// adding or removing are, with the count and the review agreeing
+describe('订阅的改动按链接认 / subscription changes go by link', () => {
+  const withLists = (): Model => {
+    const m = demoModel()
+    m.blocklists = { ...m.blocklists, subscriptions: [
+      { id: 1, name: 'OISD big', url: 'https://big.oisd.nl/', enabled: true },
+      { id: 2, name: 'anti-AD', url: 'https://anti-ad.net/easylist.txt', enabled: true },
+    ] }
+    return m
+  }
+  beforeEach(() => resetTo(withLists()))
+
+  it('编号、名字、链接写法不同不算修改', () => {
+    model.blocklists.subscriptions = [
+      { id: 7, name: 'anti-AD 列表', url: 'https://ANTI-AD.net/easylist.txt', enabled: true },
+      { id: 8, name: 'big.oisd.nl', url: 'https://big.oisd.nl', enabled: true },
+    ]
+    expect(changeCount.value).toBe(0)
+    expect(diffModels(appliedModel.value, model)).toEqual([])
+  })
+
+  it('「除了合成文件还改了几处」和保存条一个口径：删了又加回来、改了又改回都算没改，只换文件也不算', () => {
+    const [a, b] = model.blocklists.subscriptions
+    model.blocklists.subscriptions = [b!, a!]
+    model.rules[0]!.edited = '2030-01-01T00:00:00Z'
+    model.blocklists.file = '/var/lib/kixdns-panel/geo/blocklist-new.json'
+    expect(changesBesidesFile(appliedModel.value, model)).toBe(0)
+    model.blocklists.custom = '||x.example^'
+    expect(changesBesidesFile(appliedModel.value, model)).toBe(1)
+  })
+
+  it('离开时放弃：草稿退回已保存的那份，在路上的下载照样认这份草稿；别的换草稿就不认', () => {
+    const then = draftGeneration()
+    model.blocklists.custom = '||x.example^'
+    model.blocklists.file = '/var/lib/kixdns-panel/geo/blocklist-new.json'
+    model.blocklists.builtFor = blocklistKey(model.blocklists)
+    discardOnLeave()
+    expect(JSON.stringify(model)).toBe(JSON.stringify(appliedModel.value))
+    expect(sameDraftSince(then)).toBe(true)
+    replaceModel({ ...appliedModel.value, blocklists: { ...appliedModel.value.blocklists, custom: '||y.example^' } })
+    expect(sameDraftSince(then)).toBe(false)
+  })
+
+  it('删掉全配置里编号最大的那个再加新的：新编号不和已保存的撞，撤销时不会两个同编号', () => {
+    const m = withLists()
+    m.blocklists.subscriptions[1]!.id = 99999
+    resetTo(m)
+    const removed = model.blocklists.subscriptions.pop()!
+    expect(newId()).toBeGreaterThan(removed.id)
+  })
+
+  it('放回去的订阅编号或名字被占了就换一个：不会两行同编号、同名', () => {
+    const [a, b] = model.blocklists.subscriptions
+    // 编号被占：换新编号 / Id taken: a fresh id
+    const sameId = placeBack({ id: b!.id, name: 'AdAway', url: 'https://adaway.org/hosts.txt', enabled: true })
+    expect(sameId.id).not.toBe(b!.id)
+    expect(sameId.name).toBe('AdAway')
+    // 带标题的名字被占：前面加主机 / A title taken: the host goes in front
+    const sameTitle = placeBack({ id: 777, name: a!.name, url: 'https://mirror.example.org/oisd.txt', enabled: true })
+    expect(sameTitle.name).toBe(`mirror.example.org\u00a0·\u00a0${a!.name}`)
+    // 默认名被占：照起名的规矩往上带目录 / A default name taken: directories go up by the naming rule
+    model.blocklists.subscriptions.push({ id: 778, name: 'hosts.txt\u00a0·\u00a0lists.example.org', url: 'https://lists.example.org/c/hosts.txt', enabled: true })
+    const sameDefault = placeBack({ id: 779, name: 'hosts.txt\u00a0·\u00a0lists.example.org', url: 'https://lists.example.org/a/hosts.txt', enabled: true })
+    expect(sameDefault.name).toBe('a/hosts.txt\u00a0·\u00a0lists.example.org')
+    // 都没被占：原样放回 / Nothing taken: put back as it was
+    const free = { id: 780, name: 'free.txt\u00a0·\u00a0lists.example.org', url: 'https://lists.example.org/free.txt', enabled: true }
+    expect(placeBack(free)).toBe(free)
+  })
+
+  it('停用一个、加一个各算一处，「改了哪些」也列出来', () => {
+    model.blocklists.subscriptions[1]!.enabled = false
+    model.blocklists.subscriptions.push({ id: 3, name: 'AdAway', url: 'https://adaway.org/hosts.txt', enabled: true })
+    expect(changeCount.value).toBe(2)
+    expect(diffModels(appliedModel.value, model).map((b) => b.kind)).toEqual(['改了', '加上'])
+  })
+
+  it('恢复方向：订阅也变了、文件不同时，说明不算一处不同 / restore direction: with subscriptions changed too the note is not a difference', () => {
+    const then = JSON.parse(JSON.stringify(model)) as Model
+    then.blocklists.subscriptions = then.blocklists.subscriptions.slice(0, 1)
+    then.blocklists.file = '/var/lib/kixdns-panel/geo/blocklist-old.json'
+    model.blocklists.file = '/var/lib/kixdns-panel/geo/blocklist-new.json'
+    const blocks = diffModels(model, then, 'restore')
+    expect(blocks.some((b) => b.aside)).toBe(true)
+    expect(differences(blocks)).toBe(1)
   })
 })
 
@@ -168,7 +257,7 @@ describe('内核给的英文原因', () => {
   it('标明是 KixDNS 的原话，内核 id 后面注上页面上的叫法', async () => {
     const { kernelWords } = await import('./useConfigDocument')
     const said = kernelWords('pipeline "main" references unknown upstream group "fast"')
-    expect(said.startsWith('KixDNS 的原话：')).toBe(true)
+    expect(said.startsWith('KixDNS\u00a0的原话：')).toBe(true)
     expect(said).toContain('"main"（主列表）')
     expect(said).toContain('"fast"')
     expect(kernelWords('KixDNS 已停止')).toBe('KixDNS 已停止')

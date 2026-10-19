@@ -58,6 +58,22 @@ const views: View[] = [
     }
     await expect(page.locator('.rw__row')).toHaveCount(2)
   } },
+  // 两个订阅（从推荐的列表挑，等下载完）和三行自己写的规则，其中一行用不上 / Two subscriptions (picked from the suggested lists, once
+  // downloaded) and three rules of one's own, one of them unused
+  { name: '拦截列表', path: '/config?section=blocklists', open: async (page) => {
+    await page.getByRole('button', { name: '推荐的列表', exact: true }).first().click()
+    const dialog = page.locator('dialog[open]')
+    for (const name of ['AdGuard DNS filter', 'anti-AD']) await dialog.locator('.blp__item', { hasText: name }).click()
+    await dialog.getByRole('button', { name: '订阅 2 个', exact: true }).click()
+    await expect(page.locator('.bl__row')).toHaveCount(2)
+    await expect(page.locator('.bl__busy')).toHaveCount(0, { timeout: 5000 })
+    await page.getByRole('textbox', { name: '自己写的规则，一行一条', exact: true }).fill('||ad.example.com^\n@@||s.example.com^\n||x.example^$client=10.0.0.1')
+    await expect(page.locator('.bl__problem')).toHaveCount(1)
+  } },
+  { name: '推荐的列表', path: '/config?section=blocklists', dialog: true, open: async (page) => {
+    await page.getByRole('button', { name: '推荐的列表', exact: true }).first().click()
+    await expect(page.locator('dialog[open] .blp__item')).toHaveCount(6)
+  } },
   // 设置页在 860 以下先是分组目录，点进「规则默认值」才看到设置行 / Below 860 the settings page is a group list first; 规则默认值 opens the rows
   { name: '基础设置', path: '/config?section=settings', open: async (page) => {
     if ((page.viewportSize()?.width ?? 1440) <= 860) await page.getByRole('button', { name: /规则默认值/ }).click()
@@ -247,17 +263,19 @@ test.describe('F 横线', () => {
   // 抽屉和对话框：头尾（pdrawer__head、pdrawer__foot、pdialog__head、pdialog__foot），抽屉里字段之间（pfield），历史版本行之间（hist__row）。
   // 右栏编辑器：每个区块的上沿和底栏的上沿（ecard、editor__foot）。手机编辑器：行与行之间（crow）、「添加条件」的上沿（cform__padd）、内核 JSON 折叠标题的上沿（summary）。
   // 设置行之间（ui-setrow）、手机上设置分组目录的行之间（settings-nav__item）、手机页签的底线和落在它上面的指示块（ui-tabs、ui-tabs__ind）。
+  // 拦截列表：和域名映射同一种表，表头、每一行、下载失败的提示和添加出错的提示（bl__cols、bl__row、bl__note、bl__error）；推荐的列表里项与项之间（blp__row）。
   // The rules each view may show, each checked in the DOM to be a deliberate 1px --l-hair line (the assertion below carries the line's shape after
   // its name); boxes (all four sides) are not rules. Rules list: the tools row, head, quick-add row and each rule row (rcard__tools, rlist__head, qadd,
   // rrow). Mappings: tools, add row, head and rows (rw__tools, rw__add, rw__head, rw__row). Group cards: the address list's edges (gcard__addrs).
   // Drawers and dialogs: head and foot (pdrawer__head, pdrawer__foot, pdialog__head, pdialog__foot), between a drawer's fields (pfield), between
   // history rows (hist__row). The inspector: each section's top and the footer's top (ecard, editor__foot). The phone editor: between rows (crow), above
   // 添加条件 (cform__padd), above the kernel JSON fold's summary (summary). Setting rows (ui-setrow), phone settings group rows (settings-nav__item),
-  // the phone tab baseline with its indicator (ui-tabs, ui-tabs__ind).
+  // the phone tab baseline with its indicator (ui-tabs, ui-tabs__ind). Blocklists: the same table as the mappings, its head, rows, the
+  // failed-download note and the add error (bl__cols, bl__row, bl__note, bl__error); between items of the suggested lists (blp__row).
   const allowed = [
     'rcard__tools', 'rlist__head', 'qadd', 'rrow', 'rw__tools', 'rw__add', 'rw__head', 'rw__row', 'gcard__addrs',
     'pdrawer__head', 'pdrawer__foot', 'pdialog__head', 'pdialog__foot', 'pfield', 'hist__row', 'ecard', 'editor__foot', 'crow', 'cform__padd', 'summary',
-    'ui-setrow', 'settings-nav__item', 'ui-tabs', 'ui-tabs__ind',
+    'ui-setrow', 'settings-nav__item', 'ui-tabs', 'ui-tabs__ind', 'bl__cols', 'bl__row', 'bl__note', 'bl__error', 'blp__row',
   ]
   for (const view of views) {
     test(`${view.name}：可见的横线只有允许的那几种 @responsive`, async ({ page }) => {

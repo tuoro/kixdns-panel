@@ -58,6 +58,8 @@ export function formatVersionTime(timestamp: number, now: number = Date.now()): 
   const day = 86_400_000
   if (date.getTime() >= startOfToday && date.getTime() < startOfToday + day) return `今天 ${time}`
   if (date.getTime() >= startOfToday - day && date.getTime() < startOfToday) return `昨天 ${time}`
+  // 下次自动更新这类将来的时间 / Times ahead, such as the next automatic update
+  if (date.getTime() >= startOfToday + day && date.getTime() < startOfToday + 2 * day) return `明天 ${time}`
   if (date.getFullYear() === today.getFullYear()) return `${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${time}`
   return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())}`
 }
@@ -126,13 +128,47 @@ export function keepTail(text: string, size = 5): [string, string] {
   return [text.slice(0, -size), text.slice(-size)]
 }
 
+/**
+ * 一句话里带连字符的词（列表名、主机名、修饰符）各自连成一块，不在连字符后面断开；别的地方照常折行。紧挨着的引号、句末标点跟着连住，不会单独
+ * 落到行首。超过 24 个字符的（long）整块换到下一行，比一行还长才在里面断开，免得窄屏上撑出去。不往文字里加看不见的字符，复制出来和原文一样
+ * Splits a sentence so each hyphenated word (a list name, a host, a modifier) is one glued run that never breaks after its hyphen, the rest wrapping as usual.
+ * Quotes and closing punctuation next to it are glued along, so they never start a line alone. One over 24 characters (long) moves whole to the next line
+ * and only breaks inside when longer than a line, lest it overflow a narrow screen. No invisible characters go into the text, so a copy reads as the original
+ */
+const HYPHEN_WORD = /「?([$\w.|@^/]*\w-[\w.|@^/-]*[\w^])[」。，：；）]*/g
+// 提示条里另外连住「版本 #N」（带着后面的「已生效」「待应用」「没有生效」）、「「名字」的」「再点一次「按钮」」和「KixDNS」与后面的一个字：版本号和
+// 状态词不拆开，「的」不落到行首，按钮名不单独落到最后一行，KixDNS 不挂在行尾；默认名「「文件名 · 主机」」单独拿出来（name），交给 NameText 按「·」折行
+// Toasts also glue 「版本 #N」 (with a following 已生效, 待应用 or 没有生效), 「「name」的」, 「再点一次「button」」 and 「KixDNS」 with the character after it:
+// no version split from its state, no 的 starting a line, no button name alone on the last line, no KixDNS left at a line end; a default name
+// 「「file · host」」 is taken out on its own (name) for NameText to wrap at 「·」
+const TOAST_GLUE = /(「[^「」]+?\u00a0·\u00a0[^「」]+?」的?)|(版本[ \u00a0]#\d+(?:[ \u00a0](?:已生效|待应用|没有生效))?[。，：；]*)|(「[^「」]{1,24}」的)|「?([$\w.|@^/]*\w-[\w.|@^/-]*[\w^])[」。，：；）]*|(再点一次「[^「」]{1,12}」)|(KixDNS[ \u00a0][\u4e00-\u9fff])/g
+export type GlueRun = { text: string; glue: boolean; long?: boolean; name?: { name: string; suffix: string } }
+function glueRuns(text: string, pattern: RegExp, word: (m: RegExpMatchArray) => string | undefined, name?: (m: RegExpMatchArray) => GlueRun['name']): GlueRun[] {
+  const runs: GlueRun[] = []
+  let at = 0
+  for (const m of text.matchAll(pattern)) {
+    if (m.index > at) runs.push({ text: text.slice(at, m.index), glue: false })
+    const hyphenated = word(m)
+    const named = name?.(m)
+    runs.push({ text: m[0], glue: true, ...(hyphenated !== undefined && hyphenated.length > 24 ? { long: true } : {}), ...(named ? { name: named } : {}) })
+    at = m.index + m[0].length
+  }
+  if (at < text.length) runs.push({ text: text.slice(at), glue: false })
+  return runs
+}
+export const hyphenRuns = (text: string): GlueRun[] => glueRuns(text, HYPHEN_WORD, (m) => m[1])
+export const toastRuns = (text: string): GlueRun[] => glueRuns(text, TOAST_GLUE, (m) => m[4], (m) => {
+  if (!m[1]) return undefined
+  const suffix = m[1].endsWith('的') ? '的' : ''
+  return { name: m[1].slice(1, m[1].length - 1 - suffix.length), suffix }
+})
 // 帮助段落按「整块」排：段尾几个字连在一起（同 keepTail），10 个字以内的「…」也连在一起，不把「公司内网」「转到规则组」拆到两行；
-// 引号跨在段尾的切口上时，切口挪到引号前面。这是面板自己给名字、引号加的连接规则，不是分词
+// 带连字符的写法（$third-party）整个连住，不在连字符后面断开；引号跨在段尾的切口上时，切口挪到引号前面。这是面板自己给名字、引号加的连接规则，不是分词
 // A help paragraph is laid out in glued runs: its last few characters stay together (as keepTail does), and so does every 「…」 of up to 10 characters, so
-// 「公司内网」 or 「转到规则组」 never splits across lines; a quote straddling the tail cut moves the cut to the quote's start. This is the panel's own glue
-// rule for names and quotes, not segmentation
+// 「公司内网」 or 「转到规则组」 never splits across lines; a hyphenated token ($third-party) stays whole instead of breaking after the hyphen; a quote
+// straddling the tail cut moves the cut to the quote's start. This is the panel's own glue rule for names and quotes, not segmentation
 export function helpRuns(text: string, size = 5): Array<{ text: string; glue: boolean }> {
-  const quotes = [...text.matchAll(/「[^「」]{1,10}」/g)].map((m) => [m.index, m.index + m[0].length] as const)
+  const quotes = [...text.matchAll(/「[^「」]{1,10}」|[$\w.|@^/]*\w-[\w.|@^/-]*[\w^]/g)].map((m) => [m.index, m.index + m[0].length] as const)
   let cut = text.length > size * 2 ? text.length - size : text.length
   for (const [start, end] of quotes) if (start < cut && end > cut) cut = start
   const runs: Array<{ text: string; glue: boolean }> = []

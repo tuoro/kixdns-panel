@@ -32,6 +32,8 @@
 .ui-dots > :first-child::before { content: none; }
 /* 句子里的「·」（line-dots.ts）：折行正好落在它后面时藏起来 / A 「·」 inside a sentence (line-dots.ts), hidden when a wrap falls right after it */
 [data-line-dot][data-line-end] { visibility: hidden; }
+/* 名字里的「·」是名字的一部分：跟名字同色 / The 「·」 inside a name is part of the name: it takes the name's colour */
+.name-dot[data-line-dot] { color: inherit; }
 
 /* ---------- 状态点 ---------- */
 .ui-dot { width: var(--size-dot); height: var(--size-dot); flex: 0 0 auto; display: inline-block; border-radius: var(--r-full); background: var(--ok-mark-l); }
@@ -138,6 +140,9 @@ a.ui-btn { text-decoration: none; }
 .ui-checkbox input { position: absolute; width: var(--size-check); height: var(--size-check); margin: 0; opacity: 0; cursor: pointer; }
 .ui-checkbox i { width: var(--size-check); height: var(--size-check); flex: 0 0 auto; display: grid; place-items: center; border: 1px solid var(--l-line-strong); border-radius: var(--r-1); background: var(--l-surface); transition: background var(--m-quick) var(--ease-out), border-color var(--m-quick) var(--ease-out); }
 .ui-checkbox input:checked + i { border-color: var(--l-ink); background: var(--l-ink); }
+/* 不能勾的框看得出来：浅灰底、淡边 / A box that cannot be ticked looks it: a pale ground and a faint edge */
+.ui-checkbox input:disabled { cursor: default; }
+.ui-checkbox input:disabled + i { border-color: var(--l-hair); background: var(--l-sunk); }
 .ui-checkbox input:checked + i::after { content: ""; width: var(--s-2); height: var(--s-1); border: solid var(--d-ink); border-width: 0 0 2px 2px; transform: translateY(-1px) rotate(-45deg); }
 /* 原生 input 透明，焦点环画在方框上 / The native input is transparent, so the ring goes on the box */
 .ui-checkbox input:focus-visible + i { outline: 2px solid var(--focus); outline-offset: 2px; }
@@ -642,7 +647,9 @@ a.ui-btn { text-decoration: none; }
   .ui-icon-btn, .ui-icon-btn--sm { position: relative; width: var(--h-md); height: var(--h-md); }
   .ui-icon-btn::before { position: absolute; inset: calc(min(0px, (100% - var(--h-touch)) / 2)); content: ''; }
   .ui-tabs { gap: 0; }
-  .ui-tabs__tab { flex: 1; min-height: var(--h-touch); padding-bottom: 0; text-align: center; }
+  /* 页签按字宽分剩下的地方：字数不同时字与字的间距也一样（等宽的格子会让短的两边空出一大块） / Tabs share the room left by their text width, so
+     the gaps between labels stay even when their lengths differ (equal cells leave wide margins around short ones) */
+  .ui-tabs__tab { flex: 1 1 auto; min-height: var(--h-touch); padding-bottom: 0; text-align: center; }
   .ui-seg { display: flex; }
   .ui-seg__opt, .ui-seg--sm .ui-seg__opt { flex: 1; min-height: calc(var(--h-md) - 4px); padding-inline: var(--s-1); }
   /* 分段的每一格看起来 32，点按区域越过外框上下各补 4，和按钮一样到 44 / Each segment cell looks 32; its tap area reaches past the frame by 4 above and below, 44 like a button */
@@ -720,6 +727,12 @@ a.ui-btn { text-decoration: none; }
   .ui-menu--pop .ui-menu__sep { margin-inline: var(--s-3); }
   .ui-menu--pop:popover-open { animation: ui-sheet-in var(--m-base) var(--ease-out); }
   .ui-menu--pop::backdrop { background: var(--scrim); }
+  /* 弹层的遮罩不接点按（点下去会落到下面的开关上）：从弹层往上铺一屏透明的接住，点在它上面就是点在弹层上。跟着弹层定位，滑入动画的
+     transform 也不会把它缩成弹层那么大
+     The popover's backdrop takes no taps (they would land on the switch beneath): a transparent layer reaching a screen up from the popover
+     catches them, and a tap on it is a tap on the popover. It is placed off the popover, so the slide-in's transform cannot shrink it to the
+     popover's size */
+  .ui-menu--pop::before { position: absolute; inset: -100vh 0 0; z-index: -1; content: ''; }
   .ui-menu__title { display: block; margin: 0; overflow: hidden; padding: var(--s-2) var(--s-3) var(--s-1); color: var(--l-ink-2); font-size: var(--t-2); text-overflow: ellipsis; white-space: nowrap; }
   .ui-menu__item { min-height: var(--h-touch); padding-inline: var(--s-3); font-size: var(--t-3); }
   .ui-savebar { flex-wrap: wrap; padding-inline: var(--s-4); }
@@ -803,6 +816,12 @@ button.ui-link { position: relative; min-height: 0; padding: 0; border: 0; backg
 .ui-switch input:checked + i { background: var(--l-ink-2); }
 .ui-ph__actions .ui-menu-host > .ui-icon-btn { width: var(--h-md); height: var(--h-md); }
 .nowrap { white-space: nowrap; }
+/* 一长串连住的词：放不下时整块换到下一行，比一行还长才在里面断开 / A long glued word: it moves whole to the next line when it does not fit, and only breaks
+   inside when longer than a line */
+.glue-block { display: inline-block; max-width: 100%; }
+/* 宽屏上一个列表名整个放得下一行就不拆开，一串名字里不会有一个被拆成两行；手机上照旧在「·」处折 / On wide screens a list name that fits a line is never
+   split, so no name in a row of them breaks in two; phones still wrap at 「·」 */
+@media (min-width: 641px) { .name-whole { display: inline-block; max-width: 100%; } }
 /* 占位字比次要文字淡一档，不会被读成已经填好的值 / Placeholders are one step lighter than secondary text, so they never read as filled-in values */
 .ui-input input::placeholder, .ui-input--area textarea::placeholder { color: color-mix(in srgb, var(--l-ink-3) 72%, var(--l-surface)); }
 /* 禁用的次要、危险按钮：边还看得见，字变灰，不再整体褪成一块看不清的影子 / Disabled secondary and danger buttons keep a visible edge with grey text instead of fading into a faint shape */
@@ -891,6 +910,10 @@ button.ui-link { position: relative; min-height: 0; padding: 0; border: 0; backg
 .ui-link { color: var(--accent); text-decoration-color: var(--accent-soft); }
 .ui-switch input:checked + i { background: var(--accent); }
 .ui-checkbox input:checked + i { border-color: var(--accent); background: var(--accent); }
+/* 勾着又不能改的框是灰的：看得出它定了 / A box ticked and fixed is grey: it reads as settled */
+.ui-checkbox input:checked:disabled + i { border-color: var(--l-ink-3); background: var(--l-ink-3); }
+/* 灰底上的勾用面板底色：深色下也看得清 / The tick on the grey uses the surface colour, so it stays clear in dark mode too */
+.ui-checkbox input:checked:disabled + i::after { border-color: var(--l-surface); }
 .ui-pick__opt input:checked { border-color: var(--accent); }
 .ui-pick__opt input::before { background: var(--accent); }
 .ui-tabs__tab[aria-selected="true"] { color: var(--accent); }

@@ -1,6 +1,7 @@
+import { normalUrl } from './blocklist'
 import { importKernel, type ImportNote } from './importer'
 import type { KConfigLike } from './kernel'
-import { compile, ruleGroupPipelineId, type Model, type RawEntry, type RuleGroup } from './model'
+import { blocklistKey, compile, emptyBlocklists, nextId, ruleGroupPipelineId, type Model, type RawEntry, type RuleGroup } from './model'
 
 // 配置文件里存的样子：内核配置 + 顶层 panel 键。内核和面板服务都不认 panel 这个键，也不会拒绝它（内核的 PipelineConfig 没开
 // deny_unknown_fields，面板服务只按内核能力校验）。panel 里放整份模型和一个指向内核部分的散列：打开时散列对得上就直接用模型，
@@ -47,10 +48,35 @@ function withoutListeners(model: Model): Model {
   return { ...model, ruleGroups, ...(moved.length ? { entries: [...moved, ...(model.entries ?? [])] } : {}) }
 }
 
+// 拦截列表之前的模型没有这一项：读进来补一份空的。没记 builtFor 的，当作文件就是按现在的订阅合成的
+// Models from before the blocklists lack them: an empty one is added on read. One without builtFor is taken as built for its current subscriptions
+const withBlocklists = (model: Model): Model => {
+  if (!model.blocklists) return { ...model, blocklists: emptyBlocklists() }
+  // 同一个链接订阅了两次（以前的撤销能做出来，或者写法不同，比如末尾多一个 /）只留一个：位置、编号和名字是第一个的；有一个启用就算启用，链接也用启用的
+  // 那个的写法，和合成的文件对得上，读进来不用重新合成
+  // A link subscribed twice (an earlier undo could make that, or two spellings such as a trailing /) keeps one: the first's place, id and name; it is
+  // enabled when any of them is, with the enabled one's spelling, so it matches the merged file and reading it in needs no new build
+  const all = model.blocklists.subscriptions
+  // 编号重复的（以前的撤销能做出来）换一个新的：同编号的两个会互相标「改过」，保存时还会对错名字 / A repeated id (an earlier undo could make one) gets a new
+  // one: two with one id mark each other as edited, and a save could match the wrong name
+  const seen = new Set<number>()
+  let next = nextId(model)
+  const subscriptions = all.filter((s, i) => all.findIndex((x) => normalUrl(x.url) === normalUrl(s.url)) === i).map((s) => {
+    const on = all.find((x) => x.enabled && normalUrl(x.url) === normalUrl(s.url))
+    const one = on && on !== s ? { ...s, url: on.url, enabled: true } : s
+    const id = seen.has(one.id) ? next++ : one.id
+    seen.add(id)
+    return id === one.id ? one : { ...one, id }
+  })
+  const blocklists = { ...model.blocklists, subscriptions }
+  return { ...model, blocklists: typeof blocklists.builtFor === 'string' ? blocklists : { ...blocklists, builtFor: blocklistKey(blocklists) } }
+}
+
 export function readConfig(cfg: Record<string, unknown>, prev?: Model): ReadResult {
   const panel = cfg.panel as Partial<PanelBlock> | undefined
   const kernel = kernelPart(cfg)
-  if (panel && panel.v === PANEL_FORMAT && panel.model && panel.hash === panelHash(kernel)) return { model: withoutListeners(panel.model), source: 'panel', report: null }
-  const result = importKernel(kernel, panel?.model ?? prev)
+  if (panel && panel.v === PANEL_FORMAT && panel.model && panel.hash === panelHash(kernel)) return { model: withBlocklists(withoutListeners(panel.model)), source: 'panel', report: null }
+  const base = panel?.model ?? prev
+  const result = importKernel(kernel, base && withBlocklists(base))
   return { model: result.model, source: 'imported', report: { notes: result.notes, stats: result.stats } }
 }

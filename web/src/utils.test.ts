@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { errorMessage, formatAgo, formatDuration, formatKixdnsVersion, formatPercent, formatSmallPercent, formatVersionTime, helpRuns, shortHash, upstreamSuccessRate } from './utils'
+import { errorMessage, formatAgo, formatDuration, formatKixdnsVersion, formatPercent, formatSmallPercent, formatVersionTime, helpRuns, hyphenRuns, shortHash, toastRuns, upstreamSuccessRate } from './utils'
 
 describe('界面格式化工具', () => {
   it('生成稳定且紧凑的运行指标', () => {
@@ -79,6 +79,11 @@ describe('formatVersionTime', () => {
     expect(formatVersionTime(at(2026, 8, 25, 0, 0), now)).toBe('昨天 00:00')
   })
 
+  it('明天的时间写明天，后天起写日期', () => {
+    expect(formatVersionTime(at(2026, 8, 27, 8, 21), now)).toBe('明天 08:21')
+    expect(formatVersionTime(at(2026, 8, 28, 8, 21), now)).toBe('09/28 08:21')
+  })
+
   it('今年更早的只写月日和时间，往年写年月日', () => {
     expect(formatVersionTime(at(2026, 8, 24, 18, 46), now)).toBe('09/24 18:46')
     expect(formatVersionTime(at(2025, 11, 31, 23, 59), now)).toBe('2025/12/31')
@@ -92,6 +97,35 @@ describe('formatAgo', () => {
     expect(formatAgo(now / 1000 - 5 * 60, now)).toBe('5 分钟前')
     expect(formatAgo(now / 1000 - 3 * 3600, now)).toBe('3 小时前')
     expect(formatAgo(now / 1000 - 3 * 86_400 - 60, now)).toBe('3 天前')
+  })
+})
+
+describe('hyphenRuns', () => {
+  it('带连字符的词各自连住，原文不变 / hyphenated words are glued runs and the text is unchanged', () => {
+    const text = '要重新下载，点「fail-hosts.txt」那一行；连不上 anti-ad.net，写 @@||own-block.example^'
+    const runs = hyphenRuns(text)
+    expect(runs.map((r) => r.text).join('')).toBe(text)
+    // 紧挨着的引号、句末标点跟着连住 / Quotes and closing punctuation next to it go along
+    expect(runs.filter((r) => r.glue).map((r) => r.text)).toEqual(['「fail-hosts.txt」', 'anti-ad.net，', '@@||own-block.example^'])
+    // 太长的整块换行，不撑出去 / Too long a word moves whole, without overflowing
+    expect(hyphenRuns('连不上 very-long-subdomain-name.example.org。').find((r) => r.glue)).toEqual({ text: 'very-long-subdomain-name.example.org。', glue: true, long: true })
+  })
+
+  it('提示条另外连住版本号、「名字」的和「再点一次「按钮」」 / toasts also glue the version number, 「name」的 and 「再点一次「button」」', () => {
+    const glued = (text: string) => toastRuns(text).filter((r) => r.glue).map((r) => r.text)
+    expect(glued('新下载的拦截列表：已存成待应用版本\u00a0#20，KixDNS 就绪后自动应用')).toEqual(['版本\u00a0#20，', 'KixDNS 就'])
+    expect(glued('「bad.txt」的链接只能用 https://，删掉这个列表再保存')).toEqual(['「bad.txt」的'])
+    // 按钮名不单独落到最后一行 / The button name never sits alone on the last line
+    expect(glued('新的一份存不上：这份配置在别处改过了；先重新读取，再点一次「全部更新」')).toEqual(['再点一次「全部更新」'])
+    // 版本号带着后面的状态词，KixDNS 带着后面一个字 / The version number keeps its state word, and KixDNS the character after it
+    expect(glued('新下载的拦截列表已经存上了：版本 #20 已生效')).toEqual(['版本 #20 已生效'])
+    // 「）」不连进去：行尾的它能压成半宽，一行放得下的不被挤成两行 / 「）」 stays out: at a line end it can shrink to half width, so what fits one line is not
+    // pushed to two
+    expect(glued('已换上新下载的拦截列表（版本 #20）')).toEqual(['版本 #20'])
+    expect(glued('新下载的拦截列表：存成了版本 #20，没有生效。KixDNS 没有接受这份配置')).toEqual(['版本 #20，', 'KixDNS 没'])
+    expect(glued('它留在配置页的草稿里。KixDNS\u00a0的原话：pipeline "main"')).toEqual(['KixDNS\u00a0的'])
+    // 默认名单独拿出来，按「·」折行 / A default name is taken out to wrap at 「·」
+    expect(toastRuns('「hosts.txt\u00a0·\u00a0lists.example.org」没下载成功').find((r) => r.name)?.name).toEqual({ name: 'hosts.txt\u00a0·\u00a0lists.example.org', suffix: '' })
   })
 })
 

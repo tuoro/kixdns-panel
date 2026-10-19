@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowRightLeft, Bell, Check, Cpu, FileText, Keyboard, LayoutGrid, List, LogOut, Monitor, Moon, PanelsTopLeft, RefreshCw, Server, Settings, SlidersHorizontal, Stethoscope, Sun } from '@lucide/vue'
+import { ArrowRightLeft, Bell, Check, Cpu, FileText, Keyboard, LayoutGrid, List, LogOut, Monitor, Moon, PanelsTopLeft, RefreshCw, Server, Settings, ShieldBan, SlidersHorizontal, Stethoscope, Sun } from '@lucide/vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { useHelp } from '../composables/useHelp'
@@ -64,6 +64,7 @@ const navGroups: Array<{ label: string; items: NavItem[] }> = [
     { to: '/config', label: '规则', icon: List },
     { to: '/config', label: '上游组', icon: Server, section: 'upstreams' },
     { to: '/config', label: '域名映射', icon: ArrowRightLeft, section: 'mapping' },
+    { to: '/config', label: '拦截列表', icon: ShieldBan, section: 'blocklists' },
     { to: '/config', label: '基础设置', icon: SlidersHorizontal, section: 'settings' },
   ] },
   { label: '观察', items: [{ to: '/logs', label: '日志', icon: FileText }, { to: '/diagnostics', label: '诊断', icon: Stethoscope }] },

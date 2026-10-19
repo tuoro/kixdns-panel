@@ -1,5 +1,5 @@
 import type { Condition, Model, Rule } from '../model'
-import { inheritResponse } from '../model'
+import { emptyBlocklists, inheritResponse } from '../model'
 import type { KConfigLike } from '../kernel'
 
 // 测试用的示例配置：一个家里加公司 VPN 的网络，以及几份旧格式的内核配置。都是示例，不是谁的真实数据。
@@ -67,6 +67,7 @@ export function sampleModel(): Model {
     ],
     rest: { type: 'upstream', group: 'abroad' },
     defaults: { block: 'NXDOMAIN' },
+    blocklists: emptyBlocklists(),
   }
 }
 

@@ -104,6 +104,8 @@ test('保存的回应丢了：连上后直接说「已经保存过了」，不�
   const bar = page.locator('.cfg__savebar')
   await bar.getByRole('button', { name: '保存并应用' }).click()
   await expect(bar).toContainText('连不上面板')
+  // 写入那一步断的：不知道存上没有，不叫人再存一次 / Cut off at the write: whether it landed is unknown, so nobody is asked to save again
+  await expect(bar).toContainText('不知道存上没有，连上后会自己核对')
   // 连上以后只变一次：从「连不上面板」直接到「已经保存过了」，中间不闪「校验通过 · 可以保存」 / Back online it changes once: from 连不上面板 straight to 已经保存过了, no 校验通过 · 可以保存 flashing between
   await page.evaluate(() => {
     const w = window as unknown as { sawReady: boolean }
