@@ -1,15 +1,16 @@
 name: Audit dependencies
 
 # 依赖审计原本只在改到代码的 PR 或发版时顺带跑，新公布的 RustSec / npm 漏洞可能几周都没人看到，
-# 等到一个无关的 PR 突然变红才发现。这里每周按当前 main 的锁文件查一次；失败的运行本身就是提醒，
-# 不自动开 issue。
+# 等到一个无关的 PR 突然变红才发现。这里每天按当前 main 的锁文件查一次（每周一次时，紧急公告会晚
+# 好几天才看到）；失败的运行本身就是提醒，不自动开 issue。
 # Dependency audits used to run only on PRs touching code or at release time, so a newly published
 # RustSec or npm advisory could sit unseen for weeks until an unrelated PR turned red. This checks the
-# lock files on main once a week; a failed run is the signal, no issue is opened automatically.
+# lock files on main once a day (once a week let an urgent advisory go unseen for days); a failed run is the
+# signal, no issue is opened automatically.
 
 on:
   schedule:
-    - cron: "41 4 * * 1"
+    - cron: "41 4 * * *"
   workflow_dispatch:
 
 permissions:
@@ -48,7 +49,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24.12.0
+          node-version: 24.22.1
 
       # 只看随面板发布的运行时依赖；开发依赖不进安装包。Rust 审计失败时这一步照样跑，一次运行看全两边。
       # Only runtime dependencies ship in the package; dev dependencies do not. This still runs when the
