@@ -37,6 +37,47 @@ test('账户弹层支持 Escape 恢复焦点、外部关闭和退出登录', asy
   await expect(page.locator('.app-shell')).toHaveCount(0)
 })
 
+// 宽屏上侧栏和内容列合成一页、整体居中，两边留白一样宽；保存条正好盖住内容列，提示在内容列的右下角。窄于这一页时和原来一样贴满
+// On a wide screen the sidebar and the content column form one page centred with equal margins; the save bar covers the content
+// column exactly and the toast sits at the column's bottom right. Narrower than the page, everything fills the window as before
+test('宽屏上侧栏和内容合成一页居中，保存条和提示跟着页面 @responsive', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', '手机没有侧栏 / phones have no sidebar')
+  for (const width of [1440, 2560]) {
+    await page.setViewportSize({ width, height: 1000 })
+    await page.goto('/config')
+    await page.getByRole('button', { name: '快速添加' }).click()
+    const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+    await quick.fill('example.org')
+    await quick.press('Enter')
+    await expect(page.locator('.toast')).toHaveCount(1)
+    await expect(page.locator('.cfg__savebar')).toBeVisible()
+    const box = await page.evaluate(() => {
+      const rect = (selector: string) => document.querySelector(selector)!.getBoundingClientRect()
+      const main = document.querySelector('.workspace__main')!
+      return {
+        vw: document.documentElement.clientWidth,
+        side: rect('.app-header'),
+        main: main.getBoundingClientRect(),
+        mainMax: parseFloat(getComputedStyle(main).maxWidth),
+        gutter: parseFloat(getComputedStyle(main).paddingRight),
+        bar: rect('.cfg__savebar'),
+        toast: rect('.toast-stack'),
+      }
+    })
+    expect(box.side.right).toBe(box.main.left)
+    if (width === 1440) {
+      expect(box.side.left).toBe(0)
+      expect(box.main.right).toBe(box.vw)
+    } else {
+      expect(box.main.width).toBe(box.mainMax)
+      expect(box.side.left).toBeGreaterThan(0)
+      expect(box.side.left).toBe(box.vw - box.main.right)
+    }
+    expect([box.bar.left, box.bar.right]).toEqual([box.main.left, box.main.right])
+    expect(box.toast.right).toBe(box.main.right - box.gutter)
+  }
+})
+
 test('键盘跳至内容后标题整个在视口里，不被侧栏或任何固定元素盖住', async ({ page }) => {
   await page.goto('/')
   await expect(page.locator('main h1')).toBeVisible()

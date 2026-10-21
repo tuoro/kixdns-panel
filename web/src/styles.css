@@ -952,9 +952,15 @@ body { text-spacing-trim: trim-start; }
    labels, notifications and account at the bottom.
    ============================================================================ */
 :root { --side-w: 232px; --inspector-w: 27rem; }
+/* 宽屏上侧栏和内容列合成一页、整体居中，两边留白，屏幕再宽也不会一边空着（像书页）。--frame-inset 是页面离视口左右边的距离，
+   给固定定位的东西用：它们的百分比按视口算，窄于这一页时为 0
+   On wide screens the sidebar and the content column form one page centred as a whole with margins on both sides, so a wider
+   screen never leaves one side empty (like a book page). --frame-inset is the page's distance from the viewport's left and right
+   edges, for fixed-position elements, whose percentages use the viewport; it is 0 when the viewport is narrower than the page */
+:root { --main-w: calc(1280px + var(--s-6) * 2); --frame-w: calc(var(--side-w) + var(--main-w)); --frame-inset: max(0px, (100% - var(--frame-w)) / 2); }
 .app-shell { background: var(--l-canvas); }
 @media (min-width: 861px) {
-  .app-shell { display: grid; grid-template-columns: var(--side-w) minmax(0, 1fr); }
+  .app-shell { display: grid; grid-template-columns: var(--side-w) minmax(0, var(--main-w)); justify-content: center; }
   .app-header { position: sticky; top: 0; z-index: 40; height: 100dvh; min-height: 0; display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: var(--s-5) var(--s-3) var(--s-4); border-bottom: 0; border-right: 1px solid var(--l-hair); background: var(--l-canvas); }
   /* 左内边距和导航项一样 12：K 的竖条和下面的导航图标对在一列 / The same 12 left inset as the nav items, so the K's stem lines up with the nav icons below */
   .app-brand { min-height: 0; gap: 10px; margin-bottom: var(--s-4); padding: 0 var(--s-3); }
@@ -973,7 +979,7 @@ body { text-spacing-trim: trim-start; }
   .desktop-nav a.nav-sub { height: var(--h-sm); padding-left: calc(var(--s-3) + var(--h-sm)); }
   .app-header__actions { justify-self: auto; margin-top: auto; padding-top: var(--s-3); border-top: 1px solid var(--l-hair); }
   .workspace { min-height: 100dvh; }
-  .workspace__main { max-width: calc(1280px + var(--s-6) * 2); margin: 0; padding: var(--s-6) var(--s-6) var(--s-7); scroll-margin-top: 0; }
+  .workspace__main { max-width: var(--main-w); margin: 0; padding: var(--s-6) var(--s-6) var(--s-7); scroll-margin-top: 0; }
   /* 弹层从侧栏底部往右弹 / Popovers open to the right from the sidebar's foot */
   .notification-popover, .account-popover { top: auto; right: auto; bottom: 0; left: calc(100% + var(--s-2)); }
   .notification-popover { bottom: calc(var(--s-2) * -1); }
@@ -1015,15 +1021,17 @@ body { text-spacing-trim: trim-start; }
 }
 
 /* ---------- 提示条的位置：全站一个规矩 / Where toasts sit: one rule for the whole site ----------
-   桌面右下角，不盖页头和主按钮；页面底部有吸底的保存条时抬到它上面。手机在底部导航上方，保存条或整页编辑器的底栏在时再抬一层。
-   Desktop: bottom right, clear of the header and its primary button; lifted above a sticky save bar when one is there. Phones: above the
-   bottom navigation, lifted again over a save bar or a full-page editor's footer. */
-.toast-stack { top: auto; bottom: var(--s-6); right: var(--s-6); }
+   桌面在页面的右下角（宽屏上页面居中，提示跟着页面，不跑到屏幕另一头），不盖页头和主按钮；页面底部有吸底的保存条时抬到它上面。
+   手机在底部导航上方，保存条或整页编辑器的底栏在时再抬一层。
+   Desktop: the page's bottom right (on a wide screen the page is centred and the toast stays with it, not at the far side of the
+   screen), clear of the header and its primary button; lifted above a sticky save bar when one is there. Phones: above the bottom
+   navigation, lifted again over a save bar or a full-page editor's footer. */
+.toast-stack { top: auto; bottom: var(--s-6); right: calc(var(--frame-inset) + var(--s-6)); }
 /* 抬多高按条的实际高度（useBarHeight 量出来写在根元素上），量到之前按一行算 / Lift by the bar's measured height (useBarHeight writes it on the root); one line until measured */
 body:has(.cfg__savebar) .toast-stack { bottom: calc(var(--savebar-h, calc(var(--h-md) + var(--s-3) * 2)) + var(--s-4)); }
 body:has(.editor:not(.editor--inspector)) .toast-stack { bottom: calc(var(--editor-foot-h, calc(var(--h-md) + var(--s-3) * 2)) + var(--s-4)); }
 /* 检查器开着时提示条让到它左边，不盖它的「完成」 / With the inspector open the toast moves left of it, never over its 完成 button */
-@media (min-width: 1360px) { body:has(.rules-split.is-open) .toast-stack { right: calc(var(--s-6) + var(--inspector-w) + var(--s-5)); } }
+@media (min-width: 1360px) { body:has(.rules-split.is-open) .toast-stack { right: calc(var(--frame-inset) + var(--s-6) + var(--inspector-w) + var(--s-5)); } }
 @media (max-width: 860px) {
   .toast-stack { top: auto; right: var(--s-4); bottom: calc(var(--mobile-nav-height) + var(--s-3)); width: calc(100vw - var(--s-4) * 2); }
   body:has(.cfg__savebar) .toast-stack { bottom: calc(var(--mobile-nav-height) + var(--savebar-h, calc(var(--h-md) + var(--s-2) * 2)) + var(--s-3)); }
