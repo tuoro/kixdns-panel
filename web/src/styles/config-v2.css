@@ -241,11 +241,13 @@ body { background: var(--l-canvas); }
    Direct children of the page grid never size to their content: Inter is wider than Archivo, and an input's default width pushed the tools row and the title row past 375 (audit page-overflow) */
 .page > *, .rules-split > * { min-width: 0; }
 @media (min-width: 861px) {
-  /* 固定在底部的保存条从侧栏右边起，不钻到侧栏下面；左右内边距和内容列对齐（.workspace__main 最宽 1280，左右各 32）
-     The fixed save bar starts at the sidebar's right edge instead of running under it; its padding lines up with the content column (.workspace__main is at most 1280 wide, 32 at each side) */
-  .cfg__savebar { left: var(--side-w); }
-  /* 固定定位的百分比按整个视口算，要先扣掉侧栏，右边才和内容列对齐（1440 宽时曾差出 96） / A fixed element's percentages use the whole viewport, so the sidebar comes off first or the right edge misses the content column (96 short at 1440) */
-  .cfg__savebar.ui-savebar { padding-inline: var(--s-6) max(var(--s-6), calc(100% - var(--side-w) - 1280px - var(--s-6))); }
+  /* 固定在底部的保存条正好盖住内容列：从侧栏右边起，到页面右边止，不钻到侧栏下面，宽屏上也不伸进两边的留白；
+     左右内边距和内容列一样，按钮和内容对齐（页面怎么居中见 styles.css 的 --frame-inset）
+     The fixed save bar covers the content column exactly: from the sidebar's right edge to the page's right edge, never under the
+     sidebar nor into the side margins of a wide screen; its side padding matches the column, so the buttons line up with the
+     content (how the page is centred: --frame-inset in styles.css) */
+  .cfg__savebar { left: calc(var(--frame-inset) + var(--side-w)); right: var(--frame-inset); }
+  .cfg__savebar.ui-savebar { padding-inline: var(--s-6); }
 }
 
 /* ---------- 第一次用 / first use ---------- */
