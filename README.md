@@ -2,34 +2,15 @@
 
 [KixDNS](https://github.com/olicesx/kixdns) 的 Web 管理面板。内核来自 fork [tuoro/kixdns](https://github.com/tuoro/kixdns) 按日期版本发布的增强版：上游加修复，再加面板接口；面板只通过本机控制协议与 DNS 数据面通信。
 
-## 界面预览
+## 在线演示
 
-**[在线演示](https://tuoro.github.io/kixdns-panel/)**：不用安装，直接在浏览器里点着看。数据都是假的，改动只留在你的浏览器里。
-
-| 运行概览 | 查询日志 |
-| :--: | :--: |
-| ![运行概览](docs/images/dashboard.png) | ![查询日志](docs/images/querylog.png) |
-
-| 配置管理 | DNS 诊断 |
-| :--: | :--: |
-| ![配置管理](docs/images/configuration.png) | ![DNS 诊断](docs/images/diagnostics.png) |
-
-*截图来自本地演示环境，数据均为示例。*
-
-<details>
-<summary>移动端预览</summary>
-
-<p>
-  <img src="docs/images/dashboard-mobile.png" alt="移动端运行概览" width="320" />
-  <img src="docs/images/querylog-mobile.png" alt="移动端查询详情" width="320" />
-</p>
-
-</details>
+**[打开在线演示](https://tuoro.github.io/kixdns-panel/)**：不用安装，直接在浏览器里点着看概览、规则、拦截列表、查询日志、诊断这些页面，桌面和手机都能用。数据都是假的，改动只留在你的浏览器里，刷新就恢复。
 
 ## 能做什么
 
 - **运行概览**：查询量、成功率、缓存命中、延迟与每小时趋势，上游状态、请求分布、规则命中、查询排行
-- **配置管理**：规则、上游组、域名映射、基础设置用表单编辑，也可以直接改 JSON；GeoIP/GeoSite 数据托管（完整包自带 GeoSite）；保存前由 KixDNS 自身校验，热加载失败自动回滚，保留版本历史
+- **配置管理**：规则、上游组、域名映射、拦截列表、基础设置用表单编辑，也可以直接改 JSON；GeoIP/GeoSite 数据托管（完整包自带 GeoSite）；保存前由 KixDNS 自身校验，热加载失败自动回滚，保留版本历史
+- **拦截列表**：订阅 AdGuard、Adblock 写法的广告拦截列表和 hosts 文件，也可以自己写规则；按天或按周自动更新，下载失败照实说用的是哪天的那份
 - **查询日志**：每一次查询从哪个客户端来、命中哪条规则、谁回答的、回了什么，逐步看处理过程；按域名或客户端搜索、按去向筛选，可以下载
 - **DNS 诊断**：对本机 KixDNS 发起查询，可以指定客户端 IP，逐步展示命中的规则、缓存与上游；改规则时可以先拿没保存的草稿试跑
 - **运行日志与操作审计**：KixDNS journal 实时查看，面板里的每次操作都有记录
