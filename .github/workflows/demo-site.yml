@@ -1,0 +1,75 @@
+name: Demo site
+
+# 在线演示：main 上前端有改动时，用演示模式把面板编成一份纯静态网页，发布到 GitHub Pages。
+# 数据全是前端自带的假数据，不连任何服务器；编的是公开演示站那一版（VITE_PUBLIC_DEMO），顶上写明这是演示。
+# The online demo: when the frontend changes on main, the panel is built in demo mode as a plain static site and published to
+# GitHub Pages. All data is the frontend's own made-up data and nothing talks to a server; this is the public demo-site build
+# (VITE_PUBLIC_DEMO), which says at the top that it is a demo.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - ".github/workflows/demo-site.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 新的一次发布顶掉还没发完的旧的 / A newer publish replaces one still in progress
+concurrency:
+  group: demo-site
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build demo site
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout panel repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.22.1
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci
+
+      # 相对路径：站点在 /kixdns-panel/ 下面；演示模式在正式编译里用 #/ 路由，静态托管不用回退页
+      # Relative paths: the site lives under /kixdns-panel/; demo mode routes with #/ in production builds, so static hosting needs no fallback page
+      - name: Build demo site
+        working-directory: web
+        env:
+          VITE_DEMO_MODE: "true"
+          VITE_PUBLIC_DEMO: "true"
+        run: npx vite build --base ./ --outDir dist-demo
+
+      - name: Upload demo site
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: web/dist-demo
+
+  deploy:
+    name: Publish demo site
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Publish to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

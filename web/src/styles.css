@@ -1118,5 +1118,5 @@ body:has(.editor:not(.editor--inspector)) .toast-stack { bottom: calc(var(--edit
   .account-button::before { inset: calc(min(0px, (100% - var(--h-touch)) / 2)) calc(100% - var(--h-touch) + var(--s-1)) calc(min(0px, (100% - var(--h-touch)) / 2)) calc(var(--s-1) * -1); }
 }
 
-/* 登录页的过期提示条：和标题、表单各隔一档 / The login page's expiry notice: one step from the heading and from the form */
-.auth-expired { margin: calc(var(--s-5) * -1 + var(--s-3)) 0 var(--s-5); }
+/* 登录页的过期提示条和在线演示的说明：和标题、表单各隔一档 / The login page's expiry notice and the online demo's note: one step from the heading and from the form */
+.auth-expired, .auth-demo { margin: calc(var(--s-5) * -1 + var(--s-3)) 0 var(--s-5); }

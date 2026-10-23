@@ -4,6 +4,8 @@
 
 ## 界面预览
 
+**[在线演示](https://tuoro.github.io/kixdns-panel/)**：不用安装，直接在浏览器里点着看。数据都是假的，改动只留在你的浏览器里。
+
 | 运行概览 | 查询日志 |
 | :--: | :--: |
 | ![运行概览](docs/images/dashboard.png) | ![查询日志](docs/images/querylog.png) |

@@ -374,7 +374,9 @@ function oldCopyIfAsked(): void {
 // main list and the rule group are only passed through
 let destinationsApplied = false
 function destinationsIfAsked(): void {
-  if (destinationsApplied || typeof localStorage === 'undefined' || localStorage.getItem('kixdns:demo-destinations') !== 'true') return
+  // 公开的在线演示站一打开就是这一套，前后对得上的数比默认那套好看懂 / The public demo site opens on this one: figures that agree are easier to follow than the default set
+  const asked = import.meta.env.VITE_PUBLIC_DEMO === 'true' || (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-destinations') === 'true')
+  if (destinationsApplied || !asked) return
   destinationsApplied = true
   const model = sampleModel()
   config = { ...config, content: exportConfig(model) }

@@ -6,6 +6,7 @@ import { useHelp } from '../composables/useHelp'
 import { useSession } from '../composables/useSession'
 import BrandMark from './BrandMark.vue'
 import ConnectionBanner from './ConnectionBanner.vue'
+import DemoNote from './DemoNote.vue'
 import HelpDrawer from './HelpDrawer.vue'
 import type { HelpPage } from '../help/topics'
 import { useToast } from '../composables/useToast'
@@ -14,6 +15,8 @@ import { THEME_CHOICES, useTheme, type ThemeChoice } from '../composables/useThe
 import { useUpdateNotifications, type UpdateNoticeItem } from '../composables/useUpdateNotifications'
 import { errorMessage, isTyping } from '../utils'
 
+// 编公开演示站时打开（VITE_PUBLIC_DEMO），本地开发和测试用的演示模式里不显示 / On in the public demo-site build (VITE_PUBLIC_DEMO), off in the demo mode used for development and tests
+const publicDemo = import.meta.env.VITE_PUBLIC_DEMO === 'true'
 const route = useRoute()
 const router = useRouter()
 const session = useSession()
@@ -238,6 +241,7 @@ onBeforeUnmount(() => {
       </div>
     </header>
     <div class="workspace">
+      <DemoNote v-if="publicDemo" />
       <ConnectionBanner />
       <main id="main-content" class="workspace__main" tabindex="-1">
         <div v-if="!hasPageHeading" class="page-heading"><h1>{{ title }}</h1></div>
