@@ -365,11 +365,11 @@ function oldCopyIfAsked(): void {
   }
 }
 
-// 样本配置的演示（kixdns:demo-destinations，README 截图用的也是它）：样本配置写成面板格式，请求分布按去向，概览的计数照它一步步走出来——
+// 样本配置的演示（kixdns:demo-destinations，公开的在线演示站用的也是它）：样本配置写成面板格式，请求分布按去向，概览的计数照它一步步走出来——
 // 映射 2,140；主列表里拦截和自定义回答 9,620；公司 1,830、苹果服务 11,250（转发自带 ECS）、国内域名 41,900、内网反查 2,150（组里转公司 410、
 // 其余转路由器 1,740）、防 DNS 重绑定 18,400（自带检查拦下 12），其余 41,180 去国外；回答后检查：公司转国内 36，国内污染转国外 260，
 // 苹果服务的转发沿用国内的检查转国外 84。各去向合起来正好是总请求数，主列表和规则组只是路过
-// The sample-config demo (kixdns:demo-destinations, which the README screenshots also use): the sample config in the panel's format, with
+// The sample-config demo (kixdns:demo-destinations, which the public demo site also uses): the sample config in the panel's format, with
 // request destinations and overview counts walked through it step by step (the numbers above). The destinations add up to the total; the
 // main list and the rule group are only passed through
 let destinationsApplied = false
