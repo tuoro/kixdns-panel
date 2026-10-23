@@ -5,6 +5,7 @@
 # Node.js
 node_modules/
 web/dist/
+web/dist-demo/
 web/.vite/
 
 # Python

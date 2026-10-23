@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Clock, Eye, EyeOff, ShieldCheck, TriangleAlert } from '@lucide/vue'
+import { Clock, Eye, EyeOff, MonitorPlay, ShieldCheck, TriangleAlert } from '@lucide/vue'
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useSession } from '../composables/useSession'
@@ -17,6 +17,8 @@ const visible = ref(false)
 const submitting = ref(false)
 const error = ref('')
 const isSetup = computed(() => props.mode === 'setup')
+// 公开的在线演示里登录只是走个过场：说一句随便填就能进 / In the public online demo signing in is a formality: say that anything gets you in
+const publicDemo = import.meta.env.VITE_PUBLIC_DEMO === 'true'
 // 会话过期被送回来时说为什么；配置页上有没保存的修改时照实说丢了 / Sent back by an expired session: say why, and say plainly when unsaved config edits were lost
 const expiredNote = computed(() => {
   if (isSetup.value || !route.query.expired) return ''
@@ -54,6 +56,7 @@ async function submit(): Promise<void> {
       <!-- 会话过期被送回来：一条提示条说清，丢了没保存的修改时是醒目的黄色（这是读者最关心的一句），只是过期时是灰色
            Sent back by an expired session: a notice says so, amber when unsaved edits were lost (the sentence the reader cares about most), grey when it only expired -->
       <p v-if="expiredNote" class="ui-notice auth-expired" :class="{ 'ui-notice--off': route.query.expired !== 'draft' }" role="status"><component :is="route.query.expired === 'draft' ? TriangleAlert : Clock" :size="16" aria-hidden="true" /><span>登录已过期</span><small>{{ expiredNote }}</small></p>
+      <p v-if="publicDemo && !isSetup" class="ui-notice ui-notice--off auth-demo" role="note"><MonitorPlay :size="16" aria-hidden="true" /><span>在线演示</span><small>用户名随便填三个字以上，密码随便填，就能进去看。</small></p>
       <form @submit.prevent="submit">
         <label>用户名<input v-model.trim="username" name="username" autocomplete="username" minlength="3" maxlength="64" required autofocus /></label>
         <label>密码
