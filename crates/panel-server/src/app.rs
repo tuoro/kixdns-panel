@@ -196,6 +196,12 @@ struct ConfigRuntimeState {
     declared_capabilities: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pending_error: Option<String>,
+    /// 改过、要重启 `KixDNS` 才生效的设置；没有、或者内核不报告时省略
+    ///
+    /// The settings changed that take a restart of `KixDNS` to apply; left out when
+    /// there are none or the kernel does not report them
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    restart_pending: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -589,6 +595,7 @@ async fn get_config(
         });
     let runtime = match state.control.active_config().await {
         Ok(active) => ConfigRuntimeState {
+            restart_pending: active.restart_pending.clone().unwrap_or_default(),
             status: pending_status.unwrap_or(if active.sha256 == document.sha256 {
                 "active"
             } else {
@@ -617,6 +624,7 @@ async fn get_config(
             pending_error: pending
                 .as_ref()
                 .and_then(|summary| summary.apply_error.clone()),
+            restart_pending: Vec::new(),
         },
     };
     Ok(Json(ConfigDocumentResponse {

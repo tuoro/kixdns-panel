@@ -26,6 +26,21 @@ export const loading = ref(true)
 export const loadError = ref('')
 export const capabilityError = ref('')
 export const runtimeStopped = ref(false)
+// 改过、要重启 KixDNS 才生效的设置（内核的设置名）。KixDNS 停着时不算：启动它就全用上了
+// Settings changed that take a restart of KixDNS to apply (the kernel's names). Not while KixDNS is stopped: starting it applies them all
+export const restartPending = computed(() => (runtimeStopped.value ? [] : doc.value?.runtime.restart_pending ?? []))
+// 提示里一个版本生效了怎么说：还有改过的设置要重启才生效时说「已应用」，再说要重启，不说「已生效」（保存条同样换成「已应用」，要重启的由提示条说）
+// How a toast says a version took effect: with changed settings still waiting for a restart it reads 已应用 plus the restart, never 已生效
+// (the save bar likewise switches to 已应用, and the notice says what needs the restart)
+function inEffect(lead = '已'): string {
+  return restartPending.value.length ? `${lead}应用${restartTail()}` : `${lead}生效`
+}
+function restartTail(): string {
+  return restartPending.value.length ? '，改过的设置要重启 KixDNS 才生效' : ''
+}
+function appliedWords(versionId: number): string {
+  return `版本 #${versionId} ${inEffect()}`
+}
 export const runtimeCapabilities = ref<string[]>([])
 // 从页头「现在应用」「校验并应用」发起、又没走到服务端记录失败的那一步时的原因 / The reason when an apply from the header failed before the server could record it
 export const applyError = ref('')
@@ -837,7 +852,9 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
     // 保存途中又改了的：说一句那几处还没保存，不让「已生效」盖过它们 / Edits made during the save: say they are not saved yet, so 已生效 does not cover them
     const later = changeCount.value ? ` · 之后改的 ${changeCount.value} 处还没保存` : jsonEdited.value ? ' · JSON 里之后改的还没保存' : ''
     lastWrite = { version: result.version_id, state: applyResultState(result) }
-    finishStage('done', `${applyResultState(result) === 'pending' ? pendingText : `已生效 · 版本 #${result.version_id}`}${later}`)
+    // 还有改过的设置要重启才生效时说「已应用」不说「已生效」，是哪些由上面的提示条说 / With changed settings still waiting for a restart it says 已应用, not 已生效; the notice above says which
+    const applied = `${restartPending.value.length ? '已应用' : '已生效'} · 版本 #${result.version_id}`
+    finishStage('done', `${applyResultState(result) === 'pending' ? pendingText : applied}${later}`)
     // 从提示条按的「重试应用」没有保存条报结果：成功了说一句，不让提示条悄悄消失 / 重试应用 from the notice has no save bar to report: say it worked instead of the notice just vanishing
     // 每次写入都存成新版本：「现在应用」按的是 #18，生效的是 #19，用恢复版本的说法交代一句 / Every write is stored as a new version: 现在应用 was pressed on #18 and #19 took effect, said in the restore wording
     // 原地生效时服务端先存着没动（KixDNS 连不上或停了）：没有应用，照实说，不说「已存成」（它本来就是待应用的）
@@ -854,13 +871,13 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
       else if (signedIn()) tellAway(useToast().info(notYet))
     }
     // 退出登录或会话过期以后，「现在应用」的结果不再报（应用没有草稿可丢，确认框也不问它） / After sign-out or expiry the outcome of 现在应用 is not reported (an apply has no draft to lose, and the confirm does not ask about it)
-    else if (from === 'apply' && applyResultState(result) === 'applied') { if (signedIn()) tellAway(useToast().success(failedBefore && failedBefore !== result.version_id ? `已应用版本 #${failedBefore} 的内容，当前版本\u00a0#${result.version_id}` : `版本 #${result.version_id} 已生效`)) }
+    else if (from === 'apply' && applyResultState(result) === 'applied') { if (signedIn()) tellAway(useToast().success(failedBefore && failedBefore !== result.version_id ? `已应用版本 #${failedBefore} 的内容，当前版本\u00a0#${result.version_id}${restartTail()}` : appliedWords(result.version_id))) }
     // 保存途中离开了配置页：没有保存条报结果，用提示说；退出登录时放下了这份草稿就不说（确认框说过「不再告诉你结果」）
     // Left the config page mid-save: no save bar reports it, so a toast does; not after sign-out let the draft go (the confirm said no result would follow)
     // 离开以后重试应用被先存着：同样说出存的是哪一版的内容 / A retry kept as pending while away: say whose content it stored, as on the page
     // 给了说法的待应用用 info，和在页上一样 / A pending result with given words is an info toast, as on the page
     else if (away() && !abandoned && applyResultState(result) === 'pending' && words?.pending && !retrying) tellAway(useToast().info(words.pending(result.version_id)))
-    else if (away() && !abandoned) tellAway(useToast().success(applyResultState(result) === 'pending' ? (retrying ? retriedPending : pendingText) : words?.done?.(result.version_id) ?? `版本 #${result.version_id} 已生效`))
+    else if (away() && !abandoned) tellAway(useToast().success(applyResultState(result) === 'pending' ? (retrying ? retriedPending : pendingText) : words?.done?.(result.version_id) ?? appliedWords(result.version_id)))
     announceWritten()
   } catch (error) {
     // 会话过期：页面会回到登录页，这里不挂「没通过校验」 / Session expired: the page goes back to the login page; no 没有通过校验 here
@@ -1153,7 +1170,7 @@ async function settleOnce(announce: boolean): Promise<boolean> {
     const which = stored || !version ? '' : `${version} `
     const said = hasApplyFailure.value ? useToast().error(`${opening}：${which}没有生效，${viewing ? '可以重试应用' : '回到配\u2060置\u2060页可以重试应用'}`)
       : hasPending.value ? useToast().success(`${opening}：${which}待应用，${pendingWhen()}自\u2060动\u2060应\u2060用`)
-      : useToast().success(stored ? `${opening}：已生效` : version ? `${opening}：${version} 已生效` : applying ? `${opening}已经生效` : opening)
+      : useToast().success(stored ? `${opening}：${inEffect()}` : version ? `${opening}：${version} ${inEffect()}` : applying ? `${opening}${inEffect('已经')}` : opening)
     tellAway(said)
     // 草稿里没有别的修改了：不用再留着、也不用拦着刷新 / Nothing else is unsaved in the draft: no need to keep it or to guard reloads
     if (!unsaved.value) dropKeptDraft()
@@ -1231,7 +1248,7 @@ export async function rereadAndSay(edited: boolean): Promise<void> {
   if (joined || !caughtUp || !viewing || !signedIn()) return
   // 读进来的文件没有对应的版本号时不写半截编号 / A file read in with no version number does not get half a number
   if (before !== undefined && doc.value.sha256 !== before && !unsaved.value) useToast().info(`这份配置在别处改\u2060过\u2060了，${doc.value.version_id ? `已读入版本\u00a0#${doc.value.version_id}` : '已重新读取'}`)
-  else if (waited !== null && !hasPending.value && !hasApplyFailure.value && !conflict.value && doc.value.sha256 === before) useToast().success(`版本 #${waited} 已生效`)
+  else if (waited !== null && !hasPending.value && !hasApplyFailure.value && !conflict.value && doc.value.sha256 === before) useToast().success(appliedWords(waited))
 }
 /** 等待应用的版本时每 5 秒看一眼 / The 5-second look while a version is pending */
 export async function checkPending(): Promise<void> {

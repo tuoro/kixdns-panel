@@ -119,6 +119,7 @@ describe('hyphenRuns', () => {
     expect(glued('新的一份存不上：这份配置在别处改过了；先重新读取，再点一次「全部更新」')).toEqual(['再点一次「全部更新」'])
     // 版本号带着后面的状态词，KixDNS 带着后面一个字 / The version number keeps its state word, and KixDNS the character after it
     expect(glued('新下载的拦截列表已经存上了：版本 #20 已生效')).toEqual(['版本 #20 已生效'])
+    expect(glued('版本 #20 已应用，改过的设置要重启 KixDNS 才生效')).toEqual(['版本 #20 已应用，', 'KixDNS 才'])
     // 「）」不连进去：行尾的它能压成半宽，一行放得下的不被挤成两行 / 「）」 stays out: at a line end it can shrink to half width, so what fits one line is not
     // pushed to two
     expect(glued('已换上新下载的拦截列表（版本 #20）')).toEqual(['版本 #20'])

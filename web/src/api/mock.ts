@@ -1,6 +1,7 @@
 import { ApiError, PANEL_UNREACHABLE_EVENT } from './client'
 import { exportConfig, panelHash, PANEL_FORMAT, readConfig } from '../config-model/document'
 import { compile } from '../config-model/model'
+import { SETTING_SECTIONS } from '../config-editor/schema'
 import { sampleModel } from '../config-model/testing/samples'
 import type {
   ActiveConfig,
@@ -643,6 +644,41 @@ function removeConfigVersions(ids: number[], unavailable: boolean): void {
 }
 
 let serviceRunning = true
+// kixdns:demo-restart-no-answer：重启以后 KixDNS 起不来（比如绑不上新改的监听地址），systemd 每隔几秒重试；再启动、重启一次才好
+// kixdns:demo-restart-no-answer: after a restart KixDNS does not come up (say it cannot bind the newly changed listen address) and
+// systemd keeps retrying every few seconds; the next start or restart brings it back
+let restartNoAnswer = false
+const serviceNow = () => restartNoAnswer
+  ? { unit: 'kixdns.service', active_state: 'activating', sub_state: 'auto-restart', main_pid: 0 }
+  : { unit: 'kixdns.service', active_state: serviceRunning ? 'active' : 'inactive', sub_state: serviceRunning ? 'running' : 'dead', main_pid: serviceRunning ? 1428 : 0 }
+
+// 模拟的 KixDNS 启动时读到的设置：只在启动时读取的那些（和内核 GlobalSettings::restart_pending 同一份名单）到重启前一直是这些值，
+// 和生效的配置不同就报 restart_pending，和真内核一样；没写的按表单里的默认值比
+// The settings the simulated KixDNS started with: the ones read only at startup (the same list as the kernel's
+// GlobalSettings::restart_pending) keep these values until a restart, and differing from the active config they are reported in
+// restart_pending, as the real kernel does; an unset one compares as the form's default
+const RESTART_ONLY = [
+  'bind_udp', 'bind_tcp', 'bind_doh', 'doh_tls_cert', 'doh_tls_key', 'doh_path', 'cache_capacity', 'cache_max_ttl', 'dashmap_shards',
+  'udp_pool_size', 'tcp_pool_size', 'doh_pool_size', 'doh_health_check_error_threshold', 'dot_pool_size', 'doq_pool_size',
+  'tcp_health_check_error_threshold', 'tcp_connection_max_age_seconds', 'tcp_connection_idle_timeout_seconds',
+  'doq_connection_idle_timeout_seconds', 'doq_keepalive_interval_ms', 'doq_enable_0rtt', 'flow_control_enabled',
+  'flow_control_initial_permits', 'flow_control_min_permits', 'flow_control_max_permits', 'flow_control_latency_threshold_ms',
+  'flow_control_adjustment_interval_secs',
+]
+const settingDefault = (key: string) => SETTING_SECTIONS.flatMap((section) => section.fields).find((field) => field.key === key)?.default
+const settingsOf = (content: Record<string, unknown>) => (content.settings ?? {}) as Record<string, unknown>
+// 第一次读配置时才记下：演示开关会在那时换掉整份配置（样本配置、旧版写法），换完的才是 KixDNS 启动时读到的
+// Recorded on the first config read: demo switches replace the whole config then (the sample config, the old format), and the
+// replaced one is what KixDNS started with
+let startedWith: Record<string, unknown> | null = null
+function restartPendingNow(): string[] {
+  // 只有文件就是生效的那份时才比得了：待应用、失败时文件里不是 KixDNS 在用的 / Comparable only when the file is the active one
+  if (!startedWith || config.runtime.status !== 'active') return []
+  const started = startedWith
+  const now = settingsOf(config.content)
+  const effective = (settings: Record<string, unknown>, key: string) => JSON.stringify(settings[key] ?? settingDefault(key) ?? null)
+  return RESTART_ONLY.filter((key) => effective(now, key) !== effective(started, key))
+}
 // 在线更新失败只在置上这个标记时演示，和 kixdns:demo-empty-first-install 是同一套做法。
 // A failed online update is shown only under this flag, mirroring kixdns:demo-empty-first-install.
 let panelUpdateStatus: PanelUpdateStatus = typeof localStorage !== 'undefined'
@@ -854,7 +890,10 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
   const emptyFirstInstall = typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-empty-first-install') === 'true'
   if (path === '/api/v1/overview') {
     if (emptyFirstInstall) throw new Error('KixDNS 已停止')
-    return overview as T
+    // 起不来的 KixDNS 只剩上次读到的快照，服务正在重试 / A KixDNS that does not come up leaves only the last snapshot, with the service retrying
+    if (restartNoAnswer) return { ...overview, live: false, service_active: false } as T
+    const restartPending = restartPendingNow()
+    return (restartPending.length ? { ...overview, active_config: { ...overview.active_config, restart_pending: restartPending } } : overview) as T
   }
   // 查询日志：按当前演示配置生成（kixdns:demo-querylog-unsupported 演示内核太旧） / The query log, generated from the current demo config (kixdns:demo-querylog-unsupported plays a kernel too old)
   if (pathname === '/api/v1/querylog' && method === 'GET') return demoQueryLogPage(config.content as Record<string, unknown>, Date.now(), url.searchParams) as T
@@ -882,11 +921,15 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (path === '/api/v1/service' && method === 'GET') {
     if (emptyFirstInstall) return { unit: 'kixdns.service', active_state: 'inactive', sub_state: 'dead', main_pid: 0 } as T
-    return { unit: 'kixdns.service', active_state: serviceRunning ? 'active' : 'inactive', sub_state: serviceRunning ? 'running' : 'dead', main_pid: serviceRunning ? 1428 : 0 } as T
+    return serviceNow() as T
   }
   if (path.startsWith('/api/v1/service/') && method === 'POST') {
     serviceRunning = !path.endsWith('/stop')
-    return { unit: 'kixdns.service', active_state: serviceRunning ? 'active' : 'inactive', sub_state: serviceRunning ? 'running' : 'dead', main_pid: serviceRunning ? 1428 : 0 } as T
+    // 启动、重启以后 KixDNS 读的是现在的配置 / After a start or restart KixDNS reads the config as it is now
+    if (serviceRunning) startedWith = structuredClone(settingsOf(config.content))
+    restartNoAnswer = path.endsWith('/restart') && typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-restart-no-answer') === 'true'
+    if (restartNoAnswer) localStorage.removeItem('kixdns:demo-restart-no-answer')
+    return serviceNow() as T
   }
   if (path === '/api/v1/kixdns/kernel' && method === 'GET') {
     return demoKernel() as T
@@ -921,7 +964,10 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     changeElsewhereIfAsked()
     backgroundAppliesIfAsked()
     elsewherePendingIfAsked()
-    return config as T
+    startedWith ??= structuredClone(settingsOf(config.content))
+    const restartPending = restartPendingNow()
+    if (restartNoAnswer) return { ...config, runtime: { ...config.runtime, status: 'unavailable', apply_state: 'unavailable' } } as T
+    return { ...config, runtime: { ...config.runtime, ...(restartPending.length ? { restart_pending: restartPending } : {}) } } as T
   }
   if (path === '/api/v1/config/geo-data' && method === 'GET') {
     geositeEmptyIfAsked()

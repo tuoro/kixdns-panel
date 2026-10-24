@@ -35,6 +35,8 @@ export interface ActiveConfig {
     success: boolean
     error: string | null
   }
+  /** 配置里改过、要重启 KixDNS 才生效的设置（内核的设置名）；旧内核不报告 */
+  restart_pending?: string[]
 }
 
 export interface NamedCount {
@@ -192,6 +194,8 @@ export interface ConfigDocument {
     apply_state?: ConfigRuntimeApplyState
     declared_capabilities?: string[]
     pending_error?: string | null
+    /** 改过、要重启 KixDNS 才生效的设置（内核的设置名）；没有或内核不报告时省略 */
+    restart_pending?: string[]
   }
 }
 

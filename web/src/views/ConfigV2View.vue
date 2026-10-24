@@ -26,12 +26,13 @@ import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, discardOnLeave, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, bulkDeleting, busy, checkPending, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, stayedDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, rereadAndSay, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse } from '../config-v2/useConfigDocument'
+import { applyBusy, bulkDeleting, busy, checkPending, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, stayedDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, rereadAndSay, restartPending, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse } from '../config-v2/useConfigDocument'
 import { dismissBlocklistToasts } from '../config-v2/useBlocklists'
 import { carryUpdate, refreshLanded, returnedToPage } from '../config-v2/updateCarry'
 import { useHelp } from '../composables/useHelp'
 import { useSession } from '../composables/useSession'
-import { useServiceStart } from '../composables/useServiceStart'
+import { useServiceRestart, useServiceStart } from '../composables/useServiceStart'
+import { settingNames } from '../config-editor/schema'
 import { registerLeaveGuard, takeAgreement } from '../composables/useLeaveGuard'
 import '../styles/config-v2.css'
 // JSON 编辑器（CodeMirror）只在用到时才加载：配置页的首包不带它 / The JSON editor (CodeMirror) loads on first use, so the config page's first chunk leaves it out
@@ -191,6 +192,9 @@ const notice = computed<Notice | null>(() => {
   if (applyError.value && !panelDown.value) { const [text, ...detail] = applyError.value.split('\n'); return { tone: 'err', text: `${text}。`, detail: detail.join('\n') } }
   // 警告排在说明前面：永远不命中的规则比导入说明要紧 / Warnings rank above information: a rule that never matches matters more than the import notes
   if (geoPrefixed.value) return { tone: 'warn', text: `${geoPrefixed.value} 个 GeoSite 条件多写了「geosite:」前缀，内核找不到对应的分类，永远不会命中。`, action: '去掉前缀', run: stripPrefix }
+  // 改过、要重启才生效的设置：KixDNS 还在用启动时的值，按钮就地重启（连不上面板时由横幅说） / Settings that take a restart: KixDNS still runs
+  // the values it started with, and the button restarts it right here (with the panel unreachable the banner speaks)
+  if (restartPending.value.length && !panelDown.value) return { tone: 'warn', text: `改过的设置要重启 KixDNS 才生效：${settingNames(restartPending.value)}。`, action: '重启 KixDNS', run: restartForSettings }
   if (importReport.value && !reportOpen.value && importReport.value.stats.raw) return { tone: 'off', text: `这份配置是按内核格式读进来的，${importReport.value.stats.raw} 条规则原样保留为高级规则。`, action: '查看导入说明', run: () => { reportOpen.value = true } }
   // 没运行、连不上时页头已经说了，功能列表拿不到是它的结果，不另起一条 / When stopped or unreachable the header says so; the missing feature list follows from it
   if (capabilityError.value && !runtimeStopped.value && !runtimeUnavailable.value) return { tone: 'off', text: 'KixDNS 没有报告它支持哪些功能：新功能先按不支持处理，保存后先存成待应用版本。' }
@@ -531,6 +535,21 @@ watch(watchingPending, (on) => {
   pendingTimer = on ? window.setInterval(() => { void checkPending().catch(() => undefined) }, 5000) : undefined
 }, { immediate: true })
 onBeforeUnmount(() => window.clearInterval(pendingTimer))
+const { restarting, restart } = useServiceRestart()
+// 照系统页的「重启」先确认再重启（待应用版本那句也照它说）；等到 KixDNS 回来再整份读一遍，提示随之消失。等不到时也读一遍，页头照读到的说
+// Confirmed first as on the system page (with its wording for a pending version); once KixDNS is back the whole page is read again and
+// the notice goes with it. When it does not come back the page is still read, and the header says what was found
+async function restartForSettings(): Promise<void> {
+  const waiting = hasPending.value && pendingVersionId.value ? `重启后应用待应用的版本 #${pendingVersionId.value}。` : ''
+  if (!await confirm.ask({
+    title: '重启 KixDNS 服务',
+    body: `服务会短暂中断，缓存会清空。重启后生效的设置：${settingNames(restartPending.value)}。${waiting}`,
+    confirmLabel: '重启服务',
+  })) return
+  if (restarting.value) return
+  await restart()
+  try { await rereadAndSay(unsaved.value) } catch { /* 页头下次读取时再更新 / the header updates on the next read */ }
+}
 async function startKixdns(): Promise<void> {
   if (!(await start())) return
   // 草稿有修改时只刷新运行状态，不重读文件，免得把草稿换掉；启动时待应用的版本生效了，和每 5 秒那次看一样说一句
@@ -576,7 +595,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10" /><path d="M12 8v4M12 16h.01" /></svg>
       <span>{{ notice.text }}</span>
       <small v-if="notice.detail"><RuleText :text="notice.detail" :links="notice.links" @rule="openRule($event, null)" @group="groupEditor = { id: $event }" /></small>
-      <button v-if="notice.action" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="applyBusy || rereading" @click="runNotice">{{ notice.action }}</button>
+      <button v-if="notice.action" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="applyBusy || rereading || restarting" :aria-busy="(restarting && notice.run === restartForSettings) || undefined" @click="runNotice"><span v-if="restarting && notice.run === restartForSettings" class="ui-spin" aria-hidden="true"></span>{{ notice.action }}</button>
     </div>
 
     <!-- 只由菜单里的「导入 JSON」打开：不进 Tab 顺序，读屏也不念一个没名字的「选择文件」 / Opened only by 导入 JSON in the menu: out of the Tab order, and screen readers do not announce a nameless "choose file" -->

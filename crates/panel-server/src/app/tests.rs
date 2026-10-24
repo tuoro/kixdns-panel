@@ -1910,6 +1910,74 @@ fn start_fake_kixdns(directory: &std::path::Path, valid: bool) -> tokio::task::J
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() })
 }
 
+/// 假的 `KixDNS`：报告磁盘上那份配置在用，`restart_pending` 照给出的写（None 时像旧内核一样不写）
+/// A fake `KixDNS` reporting the config on disk as in use, with `restart_pending` as given (left out, as an
+/// older kernel does, when None)
+fn start_fake_kixdns_reporting_restart(
+    directory: &std::path::Path,
+    restart_pending: Option<Value>,
+) -> tokio::task::JoinHandle<()> {
+    use axum::routing::get;
+    let socket = directory.join("admin.sock");
+    let config = directory.join("pipeline.json");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let router = Router::new()
+        .route(
+            "/v1/health",
+            get(|| async {
+                axum::Json(serde_json::json!({
+                    "protocol_version": 1, "status": "ok", "pid": 1, "version": "test", "upstream_commit": "test",
+                    "patchset": "p0", "started_at_unix": 0, "uptime_seconds": 1, "config_generation": 1, "capabilities": [],
+                }))
+            }),
+        )
+        .route(
+            "/v1/config/active",
+            get(move || {
+                let mut active = serde_json::json!({
+                    "protocol_version": 1, "generation": 1,
+                    "sha256": crate::digest::sha256_hex(&std::fs::read(&config).unwrap()), "loaded_at_unix": 0,
+                    "reload_sequence": 1, "last_reload": { "success": true, "error": null },
+                });
+                if let Some(pending) = &restart_pending {
+                    active["restart_pending"] = pending.clone();
+                }
+                async move { axum::Json(active) }
+            }),
+        );
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() })
+}
+
+/// 内核报来的「改过、要重启才生效的设置」原样交给配置页；没有、或者旧内核不报时不写这一项
+/// The settings the kernel reports as changed and waiting for a restart reach the config page as they are; with
+/// none, or from an older kernel that does not report them, the field is left out
+#[tokio::test]
+async fn config_runtime_carries_the_settings_waiting_for_a_restart() {
+    let context = authenticated_app().await;
+    let kixdns = start_fake_kixdns_reporting_restart(
+        context.directory.path(),
+        Some(serde_json::json!(["bind_udp", "cache_capacity"])),
+    );
+    let document = get_json(&context, "/api/v1/config").await;
+    assert_eq!(document["runtime"]["status"], "active");
+    assert_eq!(
+        document["runtime"]["restart_pending"],
+        serde_json::json!(["bind_udp", "cache_capacity"])
+    );
+    kixdns.abort();
+    let _ = kixdns.await;
+
+    for reported in [Some(serde_json::json!([])), None] {
+        let _ = std::fs::remove_file(context.directory.path().join("admin.sock"));
+        let kixdns = start_fake_kixdns_reporting_restart(context.directory.path(), reported);
+        let document = get_json(&context, "/api/v1/config").await;
+        assert_eq!(document["runtime"]["status"], "active");
+        assert!(document["runtime"].get("restart_pending").is_none());
+        kixdns.abort();
+        let _ = kixdns.await;
+    }
+}
+
 async fn send_json(context: &AuthenticatedApp, request: Request<Body>) -> (StatusCode, Value) {
     let response = context.app.clone().oneshot(request).await.unwrap();
     let status = response.status();

@@ -300,7 +300,9 @@ const rules = computed(() => [...(displayOverview.value?.metrics.rules ?? [])].s
 const configTag = computed(() => {
   if (!overview.value) return { label: '未运行', tone: '' }
   if (runtimeUnavailable.value) return { label: '运行快照', tone: '' }
-  const tag = overview.value.active_config.last_reload.success ? { label: '已生效', tone: 'ok' } : { label: '应用失败', tone: 'warn' }
+  // 改过的设置还要重启才生效时不说「已生效」，和配置页的提示条一致 / With changed settings still waiting for a restart it does not say 已生效, matching the config page's notice
+  const tag = !overview.value.active_config.last_reload.success ? { label: '应用失败', tone: 'warn' }
+    : overview.value.active_config.restart_pending?.length ? { label: '待重启', tone: 'warn' } : { label: '已生效', tone: 'ok' }
   // 连不上面板时这是上次读到的结论：照写，但不上色，和页头的「状态未知」一致 / While the panel is unreachable this is the last-read verdict: still written, but uncoloured, matching 状态未知 in the header
   return panelDown.value ? { ...tag, tone: '' } : tag
 })

@@ -47,6 +47,12 @@ pub struct ActiveConfig {
     pub loaded_at_unix: u64,
     pub reload_sequence: u64,
     pub last_reload: ReloadResult,
+    /// 配置里改过、要重启 `KixDNS` 才生效的设置（内核的设置名）；不报告它的内核为 `None`
+    ///
+    /// Settings the configuration changed that take a restart of `KixDNS` to apply (the
+    /// kernel's setting names); `None` from a kernel that does not report it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart_pending: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

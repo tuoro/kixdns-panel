@@ -130,6 +130,23 @@ export const SETTING_SECTIONS: SettingSection[] = [
   },
 ]
 
+// 内核报来的设置名在页面上叫什么：表单里的名字去掉括号里的单位；表单里没有的（只能在 JSON 里改）照写内核的名字
+// What a setting name the kernel reports is called on the page: the form's label without the bracketed unit; one the form
+// lacks (editable in JSON only) keeps the kernel's name
+export function settingName(key: string): string {
+  const field = SETTING_SECTIONS.flatMap((section) => section.fields).find((item) => item.key === key)
+  return field ? field.label.replace(/\s*\([^)]*\)$/, '') : key
+}
+
+// 一串设置名，放在句末冒号后面用（名字可能以字母开头、结尾，挨着标点就不用另外隔空格）：三个以内都写出来，再多写前三个和一共几项
+// A run of setting names, for use after a colon at the end of a sentence (a name may start or end with a letter, and next to
+// punctuation it needs no extra space): up to three are all written out, beyond that the first three and how many in all
+export function settingNames(keys: string[]): string {
+  // 一个名字里不断行（手机上「UDP」和「监听地址」曾被拆到两行） / A name never breaks inside (on a phone 「UDP」 and 「监听地址」 were split across lines)
+  const names = keys.map((key) => settingName(key).replace(/ /g, '\u00a0'))
+  return names.length > 3 ? `${names.slice(0, 3).join('、')}等\u00a0${names.length}\u00a0项` : names.join('、')
+}
+
 // 高级规则的表单也说面板的话：和规则卡片的读法、普通规则的条件同一套叫法；内核的写法留在 JSON 里
 // The advanced-rule form speaks the panel's words too: the same names as the rule reading and plain conditions; the kernel's spelling stays in the JSON tab
 export const MATCH_OPERATORS: SelectOption[] = [
