@@ -288,6 +288,37 @@ const configVersionContents = new Map(
   versions.versions.map((version) => [version.id, demoConfigVersion(version.id)]),
 )
 
+// 写进去了，KixDNS 却没接受：真面板会放回旧文件、把这个版本记成没有生效，再回错误（保存、重试应用、恢复版本都走这里）
+// - kixdns:demo-apply-failed：重载失败，回 422 reload_failed；
+// - kixdns:demo-apply-invalid：KixDNS 的校验说不行，回 422 config_validation_failed，原因和服务端存下的同一句
+// Written, but KixDNS did not take it: a real panel puts the old file back, records the version as failed, then answers with an error
+// (saves, 重试应用 and restores all come here)
+// - kixdns:demo-apply-failed: the reload failed, answering 422 reload_failed;
+// - kixdns:demo-apply-invalid: KixDNS's own check said no, answering 422 config_validation_failed with the cause the server stores
+// 没给版本号时（恢复版本）只在真被拒时才占一个 / Without a version id (a restore) one is taken only when it is really refused
+function refuseWriteIfAsked(content: Record<string, unknown>, sha: string, given: number | null, createdAt: number, message: string): void {
+  if (typeof localStorage === 'undefined') return
+  const failed = localStorage.getItem('kixdns:demo-apply-failed') === 'true'
+  const invalid = localStorage.getItem('kixdns:demo-apply-invalid') === 'true'
+  if (!failed && !invalid) return
+  localStorage.removeItem(failed ? 'kixdns:demo-apply-failed' : 'kixdns:demo-apply-invalid')
+  const versionId = given ?? ++nextConfigVersionId
+  const error = failed ? 'KixDNS 没有接受这份配置：upstream "fast" did not answer the health check，仍在用之前的配置' : 'KixDNS 没有接受这份配置，先改好校验里列出的问题'
+  // 真面板读回来的版本号是这个没生效的版本（desired() 返回它） / A real panel reads back the failed version's id (desired() returns it)
+  config = {
+    ...config,
+    content,
+    sha256: sha,
+    modified_at: createdAt,
+    version_id: versionId,
+    pending: { version_id: versionId, sha256: sha, message, actor: 'admin', created_at: createdAt, error },
+    runtime: { ...config.runtime, status: 'failed', apply_state: 'failed', pending_error: error },
+  }
+  versions.versions.unshift({ id: versionId, sha256: sha, message, actor: 'admin', created_at: createdAt, apply_state: 'failed', apply_error: error })
+  configVersionContents.set(versionId, structuredClone(content))
+  throw new ApiError(error, 422, failed ? 'reload_failed' : 'config_validation_failed')
+}
+
 // 拿一个旧版本的内容存成新版本并生效：恢复版本，和演示里「别处恢复了一个版本」都走这里
 // Store an old version's content as a new, active version: used by restore and by the demo's "someone elsewhere restored a version"
 function activateCopy(sourceId: number, content: Record<string, unknown>, message: string): ConfigApplyResult {
@@ -1285,25 +1316,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     const versionId = ++nextConfigVersionId
     const createdAt = Math.floor(Date.now() / 1000)
     const message = body.message?.trim() || '更新配置'
-    // kixdns:demo-apply-failed：写进去了，KixDNS 却没接受（真面板会放回旧文件、把这个版本记成没有生效，回 422 reload_failed）
-    // kixdns:demo-apply-failed: written, but KixDNS did not take it (a real panel puts the old file back, records the version as failed and answers 422 reload_failed)
-    if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-apply-failed') === 'true') {
-      localStorage.removeItem('kixdns:demo-apply-failed')
-      const error = 'KixDNS 没有接受这份配置：upstream "fast" did not answer the health check，仍在用之前的配置'
-      // 真面板读回来的版本号是这个没生效的版本（desired() 返回它） / A real panel reads back the failed version's id (desired() returns it)
-      config = {
-        ...config,
-        content: body.content,
-        sha256: nextSha,
-        modified_at: createdAt,
-        version_id: versionId,
-        pending: { version_id: versionId, sha256: nextSha, message, actor: 'admin', created_at: createdAt, error },
-        runtime: { ...config.runtime, status: 'failed', apply_state: 'failed', pending_error: error },
-      }
-      versions.versions.unshift({ id: versionId, sha256: nextSha, message, actor: 'admin', created_at: createdAt, apply_state: 'failed', apply_error: error })
-      configVersionContents.set(versionId, structuredClone(body.content))
-      throw new ApiError(error, 422, 'reload_failed')
-    }
+    refuseWriteIfAsked(body.content, nextSha, versionId, createdAt, message)
     // kixdns:demo-save-pending：KixDNS 在运行，这次保存时却没及时回应，先存成待应用（真面板后台每 5 秒会自己补上；演示里留着，好按「现在应用」）
     // kixdns:demo-save-pending: KixDNS is running but did not answer in time for this save, so it is stored as pending (a real panel's background
     // pass applies it within 5 seconds; the demo leaves it, so 现在应用 can be pressed)
@@ -1432,6 +1445,9 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     if (!sourceVersion || !content) throw new Error('配置文件不存在')
     // KixDNS 起不来：恢复也只存成待应用 / KixDNS down: a restore is only kept as pending too
     if (restartNoAnswer) return storePending(structuredClone(content), `rest${Date.now().toString(16)}`.padEnd(64, '0').slice(0, 64), ++nextConfigVersionId, Math.floor(Date.now() / 1000), `恢复为版本 #${sourceId}`) as T
+    // 和真面板一样：恢复先把旧内容存成新版本，再应用；被拒时那一版照样记成没有生效 / As on a real panel, a restore stores the old
+    // content as a new version first and then applies it; when refused, that version is recorded as failed all the same
+    refuseWriteIfAsked(structuredClone(content), `rest${Date.now().toString(16)}`.padEnd(64, '0').slice(0, 64), null, Math.floor(Date.now() / 1000), `恢复为版本 #${sourceId}`)
     return activateCopy(sourceId, content, `恢复为版本 #${sourceId}`) as T
   }
   if (path === '/api/v1/cache/flush') {

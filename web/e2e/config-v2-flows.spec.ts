@@ -85,6 +85,43 @@ test('JSON 视图：显示内核配置，改了设置回到表单算一处修改
   await expect(page.locator('.cfg__savebar')).toContainText('已修改 1 处')
 })
 
+// 在 JSON 视图里改了，又恢复一个版本、恢复被拒：恢复问过「没保存的修改会丢失」，被拒时草稿也整份换成读回来的那份，JSON 里的修改跟着
+// 丢掉；回到表单不冒出「已修改」，一保存就把恢复改回去
+// Edited in the JSON view, then a restore that is refused: the restore asked 没保存的修改会丢失, and when refused the draft is still
+// replaced wholesale by what was read, so the JSON edit goes too; back in the form no 已修改 appears that a save would use to undo it
+test('JSON 视图里有修改时恢复版本被拒：JSON 也换成读回来的那份，回到表单没有修改', async ({ page }) => {
+  await open(page)
+  await more(page, '查看 JSON')
+  const line = page.locator('.cm-line', { hasText: '"cache_capacity": 20000' })
+  const number = await line.evaluate((element) => {
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT)
+    for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
+      const at = node.data.indexOf('20000')
+      if (at < 0) continue
+      const range = document.createRange()
+      range.setStart(node, at)
+      range.setEnd(node, at + 5)
+      const box = range.getBoundingClientRect()
+      return { x: box.left + box.width / 2, y: box.top + box.height / 2 }
+    }
+    return null
+  })
+  await page.mouse.dblclick(number!.x, number!.y)
+  await page.keyboard.type('30000')
+  await expect(page.locator('.cfg__savebar')).toContainText('JSON 有修改')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-apply-failed', 'true'))
+  await more(page, '历史版本')
+  await page.locator('.hist__row', { hasText: '#17' }).locator('.hist__menu button[aria-haspopup]').click()
+  await page.locator('[role=menuitem]', { hasText: '恢复为这个版本' }).click()
+  await page.locator('dialog.confirm[open]').getByRole('button', { name: /恢复为版本 #17/ }).click()
+  await expect(page.locator('.toast', { hasText: '没有生效' })).toBeVisible({ timeout: 5000 })
+  await page.keyboard.press('Escape')
+  await expect(page.locator('.cm-line', { hasText: '"cache_capacity": 30000' })).toHaveCount(0)
+  await more(page, '回到表单')
+  await expect(page.locator('.cfg__json')).toHaveCount(0)
+  await expect(page.locator('.cfg__savebar', { hasText: '已修改' })).toHaveCount(0)
+})
+
 // 下载的是配置文件存的样子：内核配置加顶层 panel（面板自己的模型和散列）
 // The download is what the config file holds: the kernel config plus a top-level panel (the panel's own model and hash)
 test('下载 JSON：文件带顶层 panel，内核部分照原样', async ({ page }) => {

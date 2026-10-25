@@ -886,6 +886,35 @@ test('重试应用被拒、回应却丢了，人在配置页上：连上以后�
   expect(await toastTexts(page)).not.toContain('不知道重试应用了没有：连不上面板。连上后会自己核对')
 })
 
+
+test('重试应用被拒、回应却丢了、人已离开：连上以后和回应回来时说同一句，带上原因', async ({ page }) => {
+  await page.route(/\/src\/api\/client\.ts(?:\?.*)?$/, async (route) => {
+    if (route.request().url().includes('lose-retry')) return route.continue()
+    await route.fulfill({ contentType: 'application/javascript', body: `
+      export * from '/src/api/client.ts?lose-retry';
+      import { apiRequest as original, ApiError, PANEL_UNREACHABLE_EVENT } from '/src/api/client.ts?lose-retry';
+      export async function apiRequest(path, init) {
+        try { return await original(path, init) } catch (error) {
+          if (String(path) !== '/api/v1/config' || init?.method !== 'PUT' || error?.code !== 'reload_failed' || localStorage.getItem('e2e:lose-retry') !== 'true') throw error;
+          localStorage.removeItem('e2e:lose-retry');
+          localStorage.setItem('kixdns:demo-panel-down', 'true');
+          window.dispatchEvent(new Event(PANEL_UNREACHABLE_EVENT));
+          throw new ApiError('连不上面板：网络断了，或者面板正在重启。稍后再试。', 0, 'network_unreachable');
+        }
+      }
+    ` })
+  })
+  const pending = await failOnce(page, 'retry-refused-lost.example')
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-apply-failed', 'true'); localStorage.setItem('e2e:lose-retry', 'true') })
+  await page.locator('.cfg__notice').getByRole('button', { name: '重试应用', exact: true }).click()
+  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('不知道重试应用了没有：连不上面板。连上后会自己核对')
+  await page.getByRole('link', { name: '日志', exact: true }).click()
+  await expect(page).toHaveURL(/\/logs/)
+  await reconnect(page)
+  // 接住「不知道重试应用了没有」，离开时这条是唯一说原因的地方 / Answers 「不知道重试应用了没有」; away, this is the only place giving the cause
+  await expect.poll(() => toastTexts(page), { timeout: 8000 }).toContain(`重试也没有生效，存成了版本 #${pending + 1}。KixDNS 没有接受这份配置：upstream "fast" did not answer the health check`)
+  expect((await toastTexts(page)).some((text) => text.startsWith('刚才那次应用') || text.startsWith('不知道重试'))).toBe(false)
+})
 test('重试应用没送到面板：连上以后说没送到，指「重试应用」，不说还没有应用', async ({ page }) => {
   const pending = await failOnce(page, 'retry-unsent.example')
   await page.evaluate(() => localStorage.setItem('kixdns:demo-panel-down', 'true'))
@@ -1070,6 +1099,43 @@ test('重试应用没送到、改了草稿、连上时 KixDNS 不答：不指「
   await reconnect(page)
   await expect.poll(() => toastTexts(page), { timeout: 8000 }).toContain('重试没有送到面板；保存时会带上那一版的内容')
   await page.evaluate(() => localStorage.removeItem('e2e:kixdns-silent'))
+})
+
+// 恢复版本也被拒：服务端已经把旧内容存成了新的一版、记成没有生效。页面跟着重读，先前的「重试也没有生效」收起，提示条说新的那一版，
+// 再按「重试应用」不撞上「别处改过了」（那是这一页自己的恢复）
+// A restore refused too: the server has stored the old content as a new version and recorded it as not taken. The page reads again,
+// the earlier 「重试也没有生效」 goes, the notice names the new version, and 重试应用 does not meet 别处改过了 (that was this page's own
+// restore)
+test('重试被拒以后恢复一个版本，恢复也被拒：页面跟着服务端，再重试不说别处改过了', async ({ page }) => {
+  const pending = await failOnce(page, 'retry-then-restore.example')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-apply-failed', 'true'))
+  await page.locator('.cfg__notice').getByRole('button', { name: '重试应用', exact: true }).click()
+  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain(`重试也没有生效，存成了版本 #${pending + 1}`)
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-apply-failed', 'true'))
+  await page.getByRole('button', { name: '更多配置操作' }).click()
+  await page.getByRole('menuitem', { name: '历史版本' }).click()
+  await page.locator('.hist__row', { hasText: '#17' }).locator('.hist__menu button[aria-haspopup]').click()
+  await page.locator('[role=menuitem]', { hasText: '恢复为这个版本' }).click()
+  await page.locator('dialog.confirm[open]').getByRole('button', { name: /恢复为版本 #17/ }).click()
+  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain(`版本\u00a0#17\u00a0的内容\u200b存成了版本\u00a0#${pending + 2}，没有生效`)
+  expect((await toastTexts(page)).filter((text) => text.startsWith('重试也没有生效'))).toEqual([])
+  await page.keyboard.press('Escape')
+  await expect(page.locator('.cfg__notice')).toContainText(`版本 #${pending + 2} 没有生效`)
+  await page.locator('.cfg__notice').getByRole('button', { name: '重试应用', exact: true }).click()
+  await expect(page.locator('.cfg__notice')).toHaveCount(0, { timeout: 8000 })
+  expect((await toastTexts(page)).some((text) => text.includes('别处改过了'))).toBe(false)
+})
+
+// 重试被 KixDNS 的校验拒绝：服务端照样存下一版、记成没有生效，和别的被拒一样说「重试也没有生效，存成了版本 #N」，原因只由提示条说
+// A retry refused by KixDNS's own check: the server still stores a version and records it as not taken, so it reads like the other
+// refusals, 「重试也没有生效，存成了版本 #N」, with the cause given by the notice alone
+test('重试应用被 KixDNS 的校验拒绝：说存成了哪一版、没有生效，不说「重试没有成功」', async ({ page }) => {
+  const pending = await failOnce(page, 'retry-invalid.example')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-apply-invalid', 'true'))
+  await page.locator('.cfg__notice').getByRole('button', { name: '重试应用', exact: true }).click()
+  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain(`重试也没有生效，存成了版本 #${pending + 1}`)
+  expect((await toastTexts(page)).some((text) => text.startsWith('重试没有成功'))).toBe(false)
+  await expect(page.locator('.cfg__notice')).toContainText(`版本 #${pending + 1} 没有生效`)
 })
 
 // 被拒、回应丢了、人已离开，连上时 KixDNS 不答：不指配置页上没有的「重试应用」 / Refused, answer lost, user away, and KixDNS silent on

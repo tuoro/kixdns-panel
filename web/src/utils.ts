@@ -148,7 +148,7 @@ const HYPHEN_WORD = /「?([$\w.|@^/]*\w-[\w.|@^/-]*[\w^])[」。，：；）]*/g
 // Toasts also glue 「版本 #N」 (with a following 已生效, 已应用, 待应用 or 没有生效), 「「name」的」, 「再点一次「button」」 and 「KixDNS」 with the character after it:
 // no version split from its state, no 的 starting a line, no button name alone on the last line, no KixDNS left at a line end; a default name
 // 「「file · host」」 is taken out on its own (name) for NameText to wrap at 「·」
-const TOAST_GLUE = /(「[^「」]+?\u00a0·\u00a0[^「」]+?」的?)|(版本[ \u00a0]#\d+(?:[ \u00a0](?:已生效|已应用|待应用|没有生效))?[。，：；]*)|(「[^「」]{1,24}」的[，：；。]?)|「?([$\w.|@^/]*\w-[\w.|@^/-]*[\w^])[」。，：；）]*|(再点(?:一次)?「[^「」]{1,12}」)|(KixDNS[ \u00a0][\u4e00-\u9fff])|((?:写进配置文件|(?:设置|修改)已(?:生效|应用)|才生效|一起(?:保存)?生效|还?没有应用)[。，：；]*)|((?:退回的设置和待应用的修改|退回的设置|待应用的修改)[，：；。]*)|([\u4e00-\u9fff][，：；。])/g
+const TOAST_GLUE = /(「[^「」]+?\u00a0·\u00a0[^「」]+?」的?)|(版本[ \u00a0]#\d+(?:[ \u00a0](?:已生效|已应用|待应用|没有生效))?[。，：；]*)|(「[^「」]{1,24}」的[，：；。]?)|「?([$\w.|@^/]*\w-[\w.|@^/-]*[\w^])[」。，：；）]*|(再点(?:一次)?「[^「」]{1,12}」)|(KixDNS[ \u00a0][\u4e00-\u9fff])|((?:写进配置文件|(?:设置|修改)已(?:生效|应用)|才生效|一起(?:保存)?生效|还?没有应用|停了|这份配置)[。，：；]*)|((?:退回的设置和待应用的修改|退回的设置|待应用的修改)[，：；。]*)|([\u4e00-\u9fff][，：；。])/g
 export type GlueRun = { text: string; glue: boolean; long?: boolean; name?: { name: string; suffix: string }; breakAfter?: boolean; parts?: GlueRun[]; lead?: boolean }
 // 保存条、提示条这类按词换行（keep-all）的短句里，「版本 #N」「之后改的 N 处」整块不拆：只在显示时放进不折行的一块，文字里不加看不见的
 // 字符，复制出来和原文一样 / In short keep-all lines such as the save bar and notices, 「版本 #N」 and 「之后改的 N 处」 never split: they are

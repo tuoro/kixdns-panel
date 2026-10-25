@@ -119,14 +119,18 @@ describe('hyphenRuns', () => {
     expect(glued('「bad.txt」的链接只能用 https://，删掉这个列表再保存')).toEqual(['「bad.txt」的'])
     expect(glued('「bad.txt」的，删掉这个列表再保存')).toEqual(['「bad.txt」的，'])
     // 按钮名不单独落到最后一行 / The button name never sits alone on the last line
-    expect(glued('新的一份存不上：这份配置在别处改过了；先重新读取，再点一次「全部更新」')).toEqual(['再点一次「全部更新」'])
+    expect(glued('新的一份存不上：这份配置在别处改过了；先重新读取，再点一次「全部更新」')).toEqual(['这份配置', '再点一次「全部更新」'])
+    // 「这份配置」「停了」连成一个词：服务端原话、面板自己的说法在窄屏上不切在词中间 / 这份配置 and 停了 stay whole, so the server's
+    // words and the panel's own never cut mid-word on a narrow screen
+    expect(glued('KixDNS 没有接受这份配置：upstream "fast" did not answer the health check')).toEqual(['KixDNS 没', '这份配置：'])
+    expect(glued('KixDNS 在确认新配置前停了')).toEqual(['KixDNS 在', '停了'])
     // 版本号带着后面的状态词，KixDNS 带着后面一个字 / The version number keeps its state word, and KixDNS the character after it
     expect(glued('新下载的拦截列表已经存上了：版本 #20 已生效')).toEqual(['版本 #20 已生效'])
     expect(glued('版本 #20 已应用，改过的设置要重启 KixDNS 才生效')).toEqual(['版本 #20 已应用，', 'KixDNS 才'])
     // 「）」不连进去：行尾的它能压成半宽，一行放得下的不被挤成两行 / 「）」 stays out: at a line end it can shrink to half width, so what fits one line is not
     // pushed to two
     expect(glued('已换上新下载的拦截列表（版本 #20）')).toEqual(['版本 #20'])
-    expect(glued('新下载的拦截列表：存成了版本 #20，没有生效。KixDNS 没有接受这份配置')).toEqual(['版本 #20，', 'KixDNS 没'])
+    expect(glued('新下载的拦截列表：存成了版本 #20，没有生效。KixDNS 没有接受这份配置')).toEqual(['版本 #20，', 'KixDNS 没', '这份配置'])
     expect(glued('它留在配置页的草稿里。KixDNS\u00a0的原话：pipeline "main"')).toEqual(['KixDNS\u00a0的'])
     // 句尾常见的词整块连住，末行不只剩一个字 / Common endings stay whole, so the last line never holds one character alone
     expect(glued('KixDNS 启动失败，可以到配置页把版本\u00a0#19\u00a0写进配置文件')).toEqual(['KixDNS 启', '版本\u00a0#19', '写进配置文件'])

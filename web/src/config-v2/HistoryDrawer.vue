@@ -14,7 +14,7 @@ import { readConfig } from '../config-model/document'
 import { actorName, errorMessage, formatVersionTime } from '../utils'
 import RuleText from './RuleText.vue'
 import { appliedModel, unsaved } from './store'
-import { bulkDeleting, currentVersionId, deferSave, deleteVersion, saveInFlight, whenDraftSettles, deleteVersions, deleting, failureCause, friendlyRuntimeError, pendingAfter, restoreVersion, restoring, versionDetail, versions } from './useConfigDocument'
+import { bulkDeleting, currentVersionId, deferSave, deleteVersion, saveInFlight, whenDraftSettles, deleteVersions, deleting, failureCause, friendlyRuntimeError, pendingAfter, restoreVersion, sayNotTaken, restoring, versionDetail, versions } from './useConfigDocument'
 // 关上后焦点回到打开它的控件 / Focus returns to the opener on close
 useReturnFocus()
 
@@ -89,7 +89,10 @@ async function restore(v: ConfigVersion): Promise<void> {
   const session = useSession()
   try {
     const r = await restoreVersion(v.id)
-    if (session.authenticated.value) toast.success(r.state === 'pending' ? `版本\u00a0#${v.id}\u00a0的内容\u200b存成了待应用版本\u00a0#${r.versionId}，${pendingAfter()}` : `已恢复为版本 #${v.id} 的内容，当前版本\u00a0#${r.versionId}`)
+    // 被拒：那一版已经存下、没有生效，原因由提示条说 / Refused: that version is stored and did not take, and the notice gives the cause
+    if (!session.authenticated.value) return
+    if (r.state === 'failed') sayNotTaken(`版本\u00a0#${v.id}\u00a0的内容\u200b存成了版本\u00a0#${r.versionId}，没有生效`)
+    else toast.success(r.state === 'pending' ? `版本\u00a0#${v.id}\u00a0的内容\u200b存成了待应用版本\u00a0#${r.versionId}，${pendingAfter()}` : `已恢复为版本 #${v.id} 的内容，当前版本\u00a0#${r.versionId}`)
   } catch (error) {
     if (session.authenticated.value) toast.error(`没有恢复版本 #${v.id}：${friendlyRuntimeError(error)}`)
   }
