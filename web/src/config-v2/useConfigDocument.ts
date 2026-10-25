@@ -8,6 +8,7 @@ import { exportConfig, readConfig } from '../config-model/document'
 import { blocklistKey, type Model, type Rule } from '../config-model/model'
 import { traceNames } from '../config-model/trace-names'
 import { useConnection } from '../composables/useConnection'
+import { kixdnsBack, restartingKixdns } from '../composables/useServiceStart'
 import { useSession } from '../composables/useSession'
 import { dismissUndoable, toastMark, useToast } from '../composables/useToast'
 import { errorMessage } from '../utils'
@@ -26,20 +27,33 @@ export const loading = ref(true)
 export const loadError = ref('')
 export const capabilityError = ref('')
 export const runtimeStopped = ref(false)
+// systemd 正在启动它（包括起不来、每隔几秒重试的时候）：不是停着，页头不给「启动」 / systemd is starting it (including the
+// retries every few seconds when it does not come up): not stopped, so the header offers no 启动
+export const runtimeStarting = ref(false)
 // 改过、要重启 KixDNS 才生效的设置（内核的设置名）。KixDNS 停着时不算：启动它就全用上了
 // Settings changed that take a restart of KixDNS to apply (the kernel's names). Not while KixDNS is stopped: starting it applies them all
 export const restartPending = computed(() => (runtimeStopped.value ? [] : doc.value?.runtime.restart_pending ?? []))
-// 提示里一个版本生效了怎么说：还有改过的设置要重启才生效时说「已应用」，再说要重启，不说「已生效」（保存条同样换成「已应用」，要重启的由提示条说）
-// How a toast says a version took effect: with changed settings still waiting for a restart it reads 已应用 plus the restart, never 已生效
-// (the save bar likewise switches to 已应用, and the notice says what needs the restart)
-function inEffect(lead = '已'): string {
-  return restartPending.value.length ? `${lead}应用${restartTail()}` : `${lead}生效`
-}
+// 重启后 KixDNS 没回来时，可以退回的设置和它们上次启动时的值（服务端只在这时给） / When KixDNS has not come back from a
+// restart, the settings that can go back and the values they last started with (the server gives these only then)
+export const restartRollback = computed(() => doc.value?.runtime.restart_rollback ?? null)
+// 提示里一个版本生效了怎么说：还有改过的设置要重启才生效时说「已应用」，不说「已生效」。要重启的哪几项由提示条说；人不在配置页、
+// 看不到提示条时，后面补一句（不点名：那时说不清是哪一次改的）
+// How a toast says a version took effect: with changed settings still waiting for a restart it reads 已应用, never 已生效. The
+// notice says which settings; away from the config page, where no notice shows, a clause follows (unnamed: by then it is
+// unclear which edit they came from)
 function restartTail(): string {
-  return restartPending.value.length ? '，改过的设置要重启 KixDNS 才生效' : ''
+  return restartPending.value.length && away() ? '，有些设置要重启 KixDNS 才生效' : ''
+}
+function inEffect(): string {
+  return restartPending.value.length ? `已应用${restartTail()}` : '已生效'
 }
 function appliedWords(versionId: number): string {
   return `版本 #${versionId} ${inEffect()}`
+}
+// 带着「要重启」那句的是还有事要办，用普通提示，不打勾 / With the restart clause there is still something to do: a plain toast,
+// not a tick
+function effectToast(text: string, withTail = Boolean(restartTail())): number {
+  return withTail ? useToast().info(text) : useToast().success(text)
 }
 export const runtimeCapabilities = ref<string[]>([])
 // 从页头「现在应用」「校验并应用」发起、又没走到服务端记录失败的那一步时的原因 / The reason when an apply from the header failed before the server could record it
@@ -185,12 +199,18 @@ export function editTouched(): void {
 // stale, even when only a built file differed. It lives here rather than in the save bar: during a discard on leaving the bar is unmounting, and the
 // old failure must not greet the return. It runs synchronously, so a verdict set right after a replacement is not wiped by it
 watch(draftGeneration, () => editTouched(), { flush: 'sync' })
+// 保存条还说着「已应用」时要重启的都用上了（重启回来、或者改回了原值）：那句过时了，回到平常
+// The bar still says 已应用 when nothing waits for a restart any more (back from a restart, or changed back): that is stale, so back to idle
+watch(() => restartPending.value.length === 0, (none) => { if (none && stage.value === 'done' && note.value.startsWith('已应用')) finishStage('idle') })
 
 // ---------- 页头 / header ----------
 // wide：宽屏「状态」标签下面写的（缺省是 lead，再缺省是整句）；手机上没有标签，写 lead 和整句
 // wide: what sits under the 状态 label on wide screens (lead by default, else the whole line); phones have no label and show lead plus the line
 export interface HeaderStatus { tone: 'ok' | 'warn' | 'err' | 'off'; lead?: string; before: string; version?: number; after?: string; wide?: string[] }
 export const headerStatus = computed<HeaderStatus>(() => {
+  // 重启后没回来、能退回改过的设置：先说这件事，提示条给退回的按钮 / Not back from a restart, with changed settings that can go
+  // back: this comes first, and the notice holds the button
+  if (restartRollback.value) return { tone: 'err', before: 'KixDNS 没有起来', wide: ['没有起来'] }
   // 应用失败、KixDNS 又停着：先说停了，旁边的「启动」读作启动 KixDNS，不是启动那份失败的配置 / Failed and KixDNS stopped: the stop comes first, so 启动 beside it reads as starting KixDNS, not the failed config
   if (hasApplyFailure.value) return runtimeStopped.value ? { tone: 'off', lead: 'KixDNS 已停止', before: '应用失败', wide: ['已停止', '应用失败'] } : { tone: 'err', before: '配置应用失败' }
   if (hasPending.value) {
@@ -202,6 +222,9 @@ export const headerStatus = computed<HeaderStatus>(() => {
   }
   // 宽屏「状态」标签下面写「已停止」，和「运行中」「未知」一样不带主语，900 宽左右那一排才放得下 / Under the wide 状态 label it reads 已停止, without a subject like 运行中 and 未知, so the row fits around 900
   if (runtimeStopped.value) return { tone: 'off', before: 'KixDNS 已停止', wide: ['已停止'] }
+  // systemd 正在启动、还没连上：和概览一样说「正在启动」，不说停了 / systemd is starting it and it is not reachable yet: 正在启动
+  // as on the overview, not stopped
+  if (runtimeStarting.value && !doc.value?.runtime.active_sha256) return { tone: 'warn', before: 'KixDNS 正在启动', wide: ['正在启动'] }
   if (doc.value?.runtime.status === 'active') return currentVersionId.value ? { tone: 'ok', lead: '运行中', before: '版本 #', version: currentVersionId.value } : { tone: 'ok', before: '运行中' }
   if (fileDiffers.value) return { tone: 'warn', before: '文件与运行配置不同' }
   return { tone: 'off', before: '运行状态不可用' }
@@ -211,7 +234,10 @@ export const headerStatus = computed<HeaderStatus>(() => {
 const { down: panelDown } = useConnection()
 export const headerLine = computed<HeaderStatus>(() => {
   // 宽屏的「状态」标签下面只写「未知」，不说两遍「状态」 / Under the wide 状态 label it reads 未知 only, not 状态 twice
-  if (!applyBusy.value) return panelDown.value ? { tone: 'off', before: '状态未知', wide: ['未知'] } : headerStatus.value
+  if (!applyBusy.value && panelDown.value) return { tone: 'off', before: '状态未知', wide: ['未知'] }
+  // 等 KixDNS 从重启回来：和「应用中」一样转圈 / Waiting for KixDNS to come back from a restart: a spinner like 应用中
+  if (restartingKixdns.value) return { tone: 'warn', before: '正在重启' }
+  if (!applyBusy.value) return headerStatus.value
   const verb = stage.value === 'validating' ? '校验中' : '应用中'
   return pendingVersionId.value ? { tone: 'warn', before: '版本 #', version: pendingVersionId.value, after: ` ${verb}` } : { tone: 'warn', before: verb }
 })
@@ -221,7 +247,7 @@ export const headerAction = computed(() => {
   // 恢复、重新读取、删除版本、保存还在收尾时也不给：别的操作都在等它们，按了只会撞上它们，或者什么都不发生（保存途中按下会被吞掉）；冲突时先重新读取
   // Nor during a restore, a re-read, a version delete or a save still finishing: everything else waits for those, and a press would collide with them or do
   // nothing at all (a press during a save is swallowed); in a conflict, re-read first
-  if (!canApplyNow.value || unsaved.value || hasApplyFailure.value || panelDown.value || conflict.value || busy.value || rereading.value || deleting.value !== null || bulkDeleting.value) return ''
+  if (!canApplyNow.value || unsaved.value || hasApplyFailure.value || panelDown.value || conflict.value || busy.value || rereading.value || deleting.value !== null || bulkDeleting.value || restartingKixdns.value) return ''
   return fileDiffers.value ? '校验并应用' : '现在应用'
 })
 export const deferNote = computed(() => {
@@ -264,12 +290,17 @@ const isConflict = (error: unknown) => error instanceof ApiError && error.code =
 // ---------- 读 / load ----------
 function applyRuntime(nextDoc: ConfigDocument, overview: Overview | null, service: ServiceStatus | null): void {
   const declared = nextDoc.runtime.declared_capabilities ?? []
+  // 读到 KixDNS 活着：「重启后没有回应」那条错误过时了 / KixDNS read alive: the 重启后没有回应 error is stale
+  if (nextDoc.runtime.active_sha256) kixdnsBack()
   if (overview) {
-    runtimeStopped.value = !overview.live && (service?.active_state === 'inactive' || overview.service_active === false)
+    const unit = service?.active_state
+    runtimeStopped.value = !overview.live && (unit ? !['active', 'activating', 'reloading'].includes(unit) : overview.service_active === false)
+    runtimeStarting.value = !overview.live && unit === 'activating'
     runtimeCapabilities.value = overview.live ? overview.health.capabilities : declared
     capabilityError.value = overview.live || declared.length > 0 ? '' : 'KixDNS 实时能力暂不可用'
   } else {
     runtimeStopped.value = service?.active_state === 'inactive'
+    runtimeStarting.value = service?.active_state === 'activating'
     runtimeCapabilities.value = declared
     if (!runtimeStopped.value && !capabilityError.value && declared.length === 0) capabilityError.value = 'KixDNS 实时能力暂不可用'
   }
@@ -852,8 +883,11 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
     // 保存途中又改了的：说一句那几处还没保存，不让「已生效」盖过它们 / Edits made during the save: say they are not saved yet, so 已生效 does not cover them
     const later = changeCount.value ? ` · 之后改的 ${changeCount.value} 处还没保存` : jsonEdited.value ? ' · JSON 里之后改的还没保存' : ''
     lastWrite = { version: result.version_id, state: applyResultState(result) }
-    // 还有改过的设置要重启才生效时说「已应用」不说「已生效」，是哪些由上面的提示条说 / With changed settings still waiting for a restart it says 已应用, not 已生效; the notice above says which
-    const applied = `${restartPending.value.length ? '已应用' : '已生效'} · 版本 #${result.version_id}`
+    // 还有改过的设置要重启才生效时说「已应用」不说「已生效」，后面跟「待重启」：手机上提示条常在视口外，这是屏上唯一看得到的一句；
+    // 是哪些由提示条说
+    // With changed settings still waiting for a restart it says 已应用, not 已生效, followed by 待重启: on a phone the notice is often
+    // off screen and this is the one line in view; the notice says which
+    const applied = restartPending.value.length ? `已应用 · 版本 #${result.version_id} · 待重启` : `已生效 · 版本 #${result.version_id}`
     finishStage('done', `${applyResultState(result) === 'pending' ? pendingText : applied}${later}`)
     // 从提示条按的「重试应用」没有保存条报结果：成功了说一句，不让提示条悄悄消失 / 重试应用 from the notice has no save bar to report: say it worked instead of the notice just vanishing
     // 每次写入都存成新版本：「现在应用」按的是 #18，生效的是 #19，用恢复版本的说法交代一句 / Every write is stored as a new version: 现在应用 was pressed on #18 and #19 took effect, said in the restore wording
@@ -871,12 +905,13 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
       else if (signedIn()) tellAway(useToast().info(notYet))
     }
     // 退出登录或会话过期以后，「现在应用」的结果不再报（应用没有草稿可丢，确认框也不问它） / After sign-out or expiry the outcome of 现在应用 is not reported (an apply has no draft to lose, and the confirm does not ask about it)
-    else if (from === 'apply' && applyResultState(result) === 'applied') { if (signedIn()) tellAway(useToast().success(failedBefore && failedBefore !== result.version_id ? `已应用版本 #${failedBefore} 的内容，当前版本\u00a0#${result.version_id}${restartTail()}` : appliedWords(result.version_id))) }
+    else if (from === 'apply' && applyResultState(result) === 'applied') { if (signedIn()) tellAway(effectToast(failedBefore && failedBefore !== result.version_id ? `已应用版本 #${failedBefore} 的内容，当前版本\u00a0#${result.version_id}${restartTail()}` : appliedWords(result.version_id))) }
     // 保存途中离开了配置页：没有保存条报结果，用提示说；退出登录时放下了这份草稿就不说（确认框说过「不再告诉你结果」）
     // Left the config page mid-save: no save bar reports it, so a toast does; not after sign-out let the draft go (the confirm said no result would follow)
     // 离开以后重试应用被先存着：同样说出存的是哪一版的内容 / A retry kept as pending while away: say whose content it stored, as on the page
     // 给了说法的待应用用 info，和在页上一样 / A pending result with given words is an info toast, as on the page
     else if (away() && !abandoned && applyResultState(result) === 'pending' && words?.pending && !retrying) tellAway(useToast().info(words.pending(result.version_id)))
+    else if (away() && !abandoned && applyResultState(result) !== 'pending' && !words?.done) tellAway(effectToast(appliedWords(result.version_id)))
     else if (away() && !abandoned) tellAway(useToast().success(applyResultState(result) === 'pending' ? (retrying ? retriedPending : pendingText) : words?.done?.(result.version_id) ?? appliedWords(result.version_id)))
     announceWritten()
   } catch (error) {
@@ -1170,7 +1205,10 @@ async function settleOnce(announce: boolean): Promise<boolean> {
     const which = stored || !version ? '' : `${version} `
     const said = hasApplyFailure.value ? useToast().error(`${opening}：${which}没有生效，${viewing ? '可以重试应用' : '回到配\u2060置\u2060页可以重试应用'}`)
       : hasPending.value ? useToast().success(`${opening}：${which}待应用，${pendingWhen()}自\u2060动\u2060应\u2060用`)
-      : useToast().success(stored ? `${opening}：${inEffect()}` : version ? `${opening}：${version} ${inEffect()}` : applying ? `${opening}${inEffect('已经')}` : opening)
+      // 面板替人做的保存（words）照旧说「已生效」：要重启的设置和它无关；应用没有编号时不说「已经应用」，说「已经完成」
+      // A save the panel made (words) still says 已生效: the settings waiting for a restart have nothing to do with it; an apply
+      // without a number reads 已经完成 rather than 已经应用
+      : effectToast(stored ? `${opening}：${words ? '已生效' : inEffect()}` : version ? `${opening}：${version} ${words ? '已生效' : inEffect()}` : applying ? `${opening}${restartPending.value.length ? `已经完成${restartTail()}` : '已经生效'}` : opening, !words && Boolean(restartTail()))
     tellAway(said)
     // 草稿里没有别的修改了：不用再留着、也不用拦着刷新 / Nothing else is unsaved in the draft: no need to keep it or to guard reloads
     if (!unsaved.value) dropKeptDraft()
@@ -1252,8 +1290,9 @@ export async function rereadAndSay(edited: boolean): Promise<void> {
 }
 /** 等待应用的版本时每 5 秒看一眼 / The 5-second look while a version is pending */
 export async function checkPending(): Promise<void> {
-  // 有一次读在路上（删除版本、恢复、连上后的重读）：这一下跳过，下一次再看 / A read is out (a version delete, a restore, a reconnect read): skip this tick and look next time
-  if (pendingLoad) return
+  // 有一次读在路上（删除版本、恢复、连上后的重读）：这一下跳过，下一次再看；等重启回来时由重启那边读 / A read is out (a version
+  // delete, a restore, a reconnect read): skip this tick and look next time; while a restart is awaited, the restart does the reading
+  if (pendingLoad || restartingKixdns.value) return
   await rereadAndSay(unsaved.value)
 }
 // 待应用版本的备注：文档里带着就用它，否则到历史里找 / The pending version's note: from the document when it carries one, otherwise from the history
@@ -1283,6 +1322,21 @@ export const draftBusy = computed(() => saveInFlight.value || rereading.value ||
 // 版本的完整内容（比较用） / A version's full content (for comparing)
 export const versionDetail = (id: number) => apiRequest<ConfigVersionDetail>(`/api/v1/config/versions/${id}`)
 // 恢复：用那个版本的内容生成一个新版本并应用；回来重读整页 / Restore: a new version from that content, applied; the page reloads after
+// 这一页自己改了文件（退回重启前改过的设置）：读回来不说「别处改过了」，别的页跟着重读
+// This page changed the file itself (putting the settings back after a restart): the read-back does not say 别处改过了, and other pages re-read
+export async function readAfterOwnWrite(): Promise<void> {
+  writeCount += 1
+  await load({ quiet: true, fresh: true })
+  announceWritten()
+}
+// 这一页马上要改文件（发出退回之前）：途中每 5 秒那一遍读到的新文件是自己写的 / This page is about to change the file (before
+// the rollback goes out): a new file the 5-second pass reads meanwhile is its own write
+export function beginOwnWrite(): void {
+  writeCount += 1
+}
+// 配置页开着没有：等重启的时候离开了，结果由提示说 / Whether the config page is open: one left while a restart was awaited has its
+// outcome told by a toast
+export const isViewing = (): boolean => viewing
 export async function restoreVersion(id: number): Promise<{ state: 'applied' | 'pending'; versionId: number }> {
   if (!doc.value) throw new Error('配置还没读进来')
   restoring.value = id

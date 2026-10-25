@@ -17,7 +17,8 @@ import UiPageHeader from '../components/ui/UiPageHeader.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
 import { useConfirm } from '../composables/useConfirm'
 import { useConnection } from '../composables/useConnection'
-import { useServiceStart } from '../composables/useServiceStart'
+import { kixdnsBack, useServiceStart } from '../composables/useServiceStart'
+import { serviceLabel as labelOfService, serviceTone as toneOfService, type ServiceTone } from '../service-state'
 import { useToast } from '../composables/useToast'
 import { HEALTH_LABELS, cacheComposition, rcodeDistribution, latencyBasis, recentWindowLabel, settledAttempts, upstreamBasis, upstreamHealth } from '../dashboard-presentation'
 import type { ShareRow, UpstreamHealth } from '../dashboard-presentation'
@@ -74,20 +75,9 @@ const maxDomain = computed(() => Math.max(1, ...(stats.value?.domains.map((item)
 
 // ---------- 页头：按服务状态写事实，和系统页同一种写法 ----------
 // ---------- Header: facts by service state, written as on the system page ----------
-type Tone = 'ok' | 'warn' | 'err' | 'off'
-const serviceTone = computed<Tone>(() => {
-  const current = service.value
-  if (!current) return 'off'
-  if (current.active_state === 'active') return 'ok'
-  if (current.active_state === 'failed') return 'err'
-  if (['activating', 'reloading', 'deactivating'].includes(current.active_state) || current.sub_state === 'auto-restart') return 'warn'
-  return 'off'
-})
-const serviceLabel = computed(() => {
-  const current = service.value
-  if (current?.active_state === 'deactivating') return '正在停止'
-  return { ok: '运行中', warn: '正在启动', err: '启动失败', off: '已停止' }[serviceTone.value]
-})
+type Tone = ServiceTone
+const serviceTone = computed<Tone>(() => toneOfService(service.value))
+const serviceLabel = computed(() => labelOfService(service.value))
 // 连不上面板时，上次读到的状态已经不能当真：点变灰，写「状态未知」，不再写「已运行」，连上后恢复（顶上的横幅说为什么）；
 // 配置版本和「更新于」照写——后者正说明这些数是什么时候读到的
 // While the panel is unreachable the last state read can no longer be trusted: the dot turns grey and reads 状态未知 and 已运行 is
@@ -301,7 +291,9 @@ const configTag = computed(() => {
   if (!overview.value) return { label: '未运行', tone: '' }
   if (runtimeUnavailable.value) return { label: '运行快照', tone: '' }
   // 改过的设置还要重启才生效时不说「已生效」，和配置页的提示条一致 / With changed settings still waiting for a restart it does not say 已生效, matching the config page's notice
-  const tag = !overview.value.active_config.last_reload.success ? { label: '应用失败', tone: 'warn' }
+  // 应用失败是红色，和配置页一样；待重启是琥珀色：两种轻重不同，不靠三个字分 / A failed apply is red as on the config page and
+  // 待重启 amber: two different weights, not told apart by three characters alone
+  const tag = !overview.value.active_config.last_reload.success ? { label: '应用失败', tone: 'err' }
     : overview.value.active_config.restart_pending?.length ? { label: '待重启', tone: 'warn' } : { label: '已生效', tone: 'ok' }
   // 连不上面板时这是上次读到的结论：照写，但不上色，和页头的「状态未知」一致 / While the panel is unreachable this is the last-read verdict: still written, but uncoloured, matching 状态未知 in the header
   return panelDown.value ? { ...tag, tone: '' } : tag
@@ -345,6 +337,8 @@ function load(silent = false): Promise<void> {
     if (versionsResult.status === 'fulfilled') versions.value = versionsResult.value.versions
     if (overviewResult.status === 'fulfilled') {
       overview.value = overviewResult.value
+      // KixDNS 活着：「没有回应」那条错误过时了，和配置页一样收起 / KixDNS is alive: the 没有回应 error is stale, dismissed as on the config page
+      if (overviewResult.value.live) kixdnsBack()
       overviewError.value = ''
       loadedAt.value = Date.now()
     } else overviewError.value = errorMessage(overviewResult.reason)

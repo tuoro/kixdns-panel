@@ -30,10 +30,13 @@ import UiDotText from '../components/ui/UiDotText.vue'
 import UiTask, { type UiTaskState } from '../components/ui/UiTask.vue'
 import { useConfirm } from '../composables/useConfirm'
 import { useConnection } from '../composables/useConnection'
+import { useServiceRestart, useServiceStart } from '../composables/useServiceStart'
 import { useToast } from '../composables/useToast'
 import { useUpdateStatus } from '../composables/useUpdateStatus'
 import { errorMessage, formatDate, formatKixdnsVersion, shortHash } from '../utils'
 import { switchConfirmBody, switchedMessage } from '../version-switch'
+import { settingNames } from '../config-editor/schema'
+import { serviceLabel as labelOfService, serviceTone as toneOfService } from '../service-state'
 
 type KernelAction = 'update' | 'rollback'
 
@@ -87,6 +90,10 @@ const PANEL_UPDATE_DISMISSED_KEY = 'kixdns:panel-update-failure-dismissed'
 const dismissedPanelUpdateFailure = ref(readDismissedPanelUpdateFailure())
 
 const running = computed(() => service.value?.active_state === 'active')
+// 和概览同一套说法：systemd 正在重试是「正在启动」，不是「已停止」 / The overview's words: a service systemd is retrying is
+// 正在启动, not 已停止
+const serviceTone = computed(() => toneOfService(service.value))
+const serviceWords = computed(() => labelOfService(service.value))
 // 连不上面板时，上次读到的服务状态不能当真：点变灰，写「状态未知」，连上后恢复（同概览）
 // While the panel is unreachable the last service state read cannot be trusted: the dot turns grey and reads 状态未知, restored on reconnect (as on the overview)
 const { down: panelDown } = useConnection()
@@ -425,9 +432,12 @@ async function control(action: ServiceAction): Promise<void> {
   const names: Record<ServiceAction, string> = { start: '启动', stop: '停止', restart: '重启' }
   // 重启以后面板只接着应用还在等的版本；应用失败过的不会再试（旧配置已经放回去了），那时说清楚，指到配置页的「重试应用」（读不到配置就不提）
   // After a restart the panel applies only a version still waiting; one that failed is not retried (the old file was put back), so say that and point to 重试应用 on the config page (left out if the config cannot be read)
-  const pending = action === 'restart' ? (await apiRequest<ConfigDocument>('/api/v1/config').catch(() => null))?.pending : null
+  // 改过、要重启才生效的设置也说出来，和配置页的重启同一句 / The settings waiting for a restart are named too, in the config page's words
+  const config = action === 'restart' ? await apiRequest<ConfigDocument>('/api/v1/config').catch(() => null) : null
+  const pending = config?.pending
   const pendingId = pending?.version_id
-  const restartNote = !pendingId ? '' : pending?.error ? `版本 #${pendingId} 没有生效，重启后仍用之前那份配置；要再试，到配置页点「重试应用」。` : `重启后应用待应用的版本 #${pendingId}。`
+  const restartNames = config?.runtime.restart_pending?.length ? `重启后生效的设置：${settingNames(config.runtime.restart_pending, { all: true })}。` : ''
+  const restartNote = restartNames + (!pendingId ? '' : pending?.error ? `版本\u00a0#${pendingId} 没有生效，重启后仍用之前那份配置；要再试，到配置页点「重试应用」。` : `重启后应用待应用的版本\u00a0#${pendingId}。`)
   if ((action === 'stop' || action === 'restart') && !await confirm.ask({
     title: `${names[action]} KixDNS 服务`,
     body: action === 'stop'
@@ -438,15 +448,25 @@ async function control(action: ServiceAction): Promise<void> {
   })) return
   serviceAction.value = action
   try {
-    service.value = await apiRequest<ServiceStatus>(`/api/v1/service/${action}`, { method: 'POST' })
+    // 启动、重启和别处同一个做法：等 KixDNS 回来再说结果，起不来的不说成已经启动；重启期间配置页也知道在重启
+    // A start or restart works as everywhere else: the outcome is told once KixDNS is back, so one that never comes up is not called
+    // started, and while it restarts the config page knows
+    if (action === 'restart') await restart()
+    else if (action === 'start') await start()
+    else {
+      service.value = await apiRequest<ServiceStatus>('/api/v1/service/stop', { method: 'POST' })
+      toast.success('KixDNS 服务已停止')
+    }
     serviceError.value = ''
-    toast.success(`KixDNS 服务已${names[action]}`)
+    await loadService(true)
   } catch (error) {
     toast.error(errorMessage(error))
   } finally {
     serviceAction.value = null
   }
 }
+const { restart } = useServiceRestart()
+const { start } = useServiceStart()
 
 // 更新只装这一页看到的那个最新版本：确认框里写的版本就是要装的版本，期间又发布了新版本时服务端会拒绝。
 // An update installs only the newest version this page showed, so the version in the
@@ -531,13 +551,13 @@ onBeforeUnmount(() => {
         <div v-if="service || kernel || panelVersion" class="ui-facts system-facts">
           <div v-if="service">
             <span class="ui-lbl">服务</span>
-            <b :title="panelDown ? '状态未知' : running ? '正在运行' : '已停止'"><span class="ui-dot" :class="{ 'ui-dot--off': !running || panelDown }" aria-hidden="true"></span>{{ service.unit }}<small v-if="panelDown">状态未知</small><template v-else><small v-if="!running">已停止</small><small v-if="unusualServiceState" class="ui-mono">{{ unusualServiceState }}</small></template></b>
+            <b :title="panelDown ? '状态未知' : running ? '正在运行' : serviceWords"><span class="ui-dot" :class="panelDown ? 'ui-dot--off' : serviceTone === 'ok' ? '' : `ui-dot--${serviceTone}`" aria-hidden="true"></span>{{ service.unit }}<small v-if="panelDown">状态未知</small><template v-else><small v-if="!running">{{ serviceWords }}</small><small v-if="unusualServiceState" class="ui-mono">{{ unusualServiceState }}</small></template></b>
           </div>
           <div v-if="service?.main_pid && !panelDown" class="system-fact-pid"><span class="ui-lbl">PID</span><b>{{ service.main_pid }}</b></div>
           <div v-if="panelVersion"><span class="ui-lbl">面板版本</span><b>{{ panelVersion }}</b></div>
           <div v-if="kernel"><span class="ui-lbl">内核</span><b>{{ installed ? formatKixdnsVersion(activeVersion) : '还没安装' }}</b></div>
         </div>
-        <span v-if="service || kernel || panelVersion" class="ui-ph__lead ui-ph__phone"><span v-if="service" class="ui-dot" :class="{ 'ui-dot--off': !running || panelDown }" aria-hidden="true"></span><UiDotText :parts="[...(service ? [panelDown ? '状态未知' : running ? '运行中' : '已停止'] : []), ...(panelVersion ? [`面板 ${panelVersion}`] : []), ...(kernel ? [kernelPhoneLabel] : [])]" /></span>
+        <span v-if="service || kernel || panelVersion" class="ui-ph__lead ui-ph__phone"><span v-if="service" class="ui-dot" :class="panelDown ? 'ui-dot--off' : serviceTone === 'ok' ? '' : `ui-dot--${serviceTone}`" aria-hidden="true"></span><UiDotText :parts="[...(service ? [panelDown ? '状态未知' : serviceWords] : []), ...(panelVersion ? [`面板 ${panelVersion}`] : []), ...(kernel ? [kernelPhoneLabel] : [])]" /></span>
         <span v-else-if="loadingService" class="sk ui-ph__sk system-skeleton-meta" role="status" aria-label="读取服务状态"></span>
         <span v-else>服务状态暂不可用</span>
       </template>

@@ -26,13 +26,13 @@ import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, discardOnLeave, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, bulkDeleting, busy, checkPending, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, stayedDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, rereadAndSay, restartPending, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse } from '../config-v2/useConfigDocument'
+import { applyBusy, bulkDeleting, busy, checkPending, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, stayedDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, beginOwnWrite, isViewing, readAfterOwnWrite, rereadAndSay, restartPending, restartRollback, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse } from '../config-v2/useConfigDocument'
 import { dismissBlocklistToasts } from '../config-v2/useBlocklists'
 import { carryUpdate, refreshLanded, returnedToPage } from '../config-v2/updateCarry'
 import { useHelp } from '../composables/useHelp'
 import { useSession } from '../composables/useSession'
-import { useServiceRestart, useServiceStart } from '../composables/useServiceStart'
-import { settingNames } from '../config-editor/schema'
+import { restartingKixdns, useServiceRestart, useServiceStart } from '../composables/useServiceStart'
+import { settingNames, settingValues } from '../config-editor/schema'
 import { registerLeaveGuard, takeAgreement } from '../composables/useLeaveGuard'
 import '../styles/config-v2.css'
 // JSON 编辑器（CodeMirror）只在用到时才加载：配置页的首包不带它 / The JSON editor (CodeMirror) loads on first use, so the config page's first chunk leaves it out
@@ -176,6 +176,15 @@ interface Notice { tone: 'err' | 'warn' | 'off'; text: string; detail?: string; 
 const notice = computed<Notice | null>(() => {
   // 连不上面板时由顶上的横幅说，这里不复述 / With the panel unreachable the banner says it; no second copy here
   if (loadError.value && doc.value && !panelDown.value) return { tone: 'err', text: '读取配置失败，下面是上一次读到的内容。', detail: loadError.value, action: '重试', run: () => void reload(true) }
+  // 重启后没回来：多半是改过的设置用不了（新的监听地址被占着），退回它们上次正常启动时的值再重启。草稿有没保存的修改时先保存：
+  // 退回改的是存下的那份，不动草稿 / Not back from a restart: most likely a changed setting cannot be used (a new listen address is
+  // taken), so put them back to the values it last started with and restart. With unsaved edits, save first: the rollback changes the
+  // saved config, not the draft
+  if (restartRollback.value && !panelDown.value) {
+    const keys = Object.keys(restartRollback.value)
+    const text = `重启后 KixDNS 没有起来，改过的设置可能用不了：${settingNames(keys)}。`
+    return unsaved.value ? { tone: 'err', text, detail: '先保存草稿里的修改，再退回这些设置' } : { tone: 'err', text, action: '退回原来的设置并重启', run: rollbackSettings }
+  }
   if (hasApplyFailure.value) {
     const reason = doc.value?.runtime.pending_error || doc.value?.pending?.error || 'KixDNS 没有给出原因。'
     // 草稿有修改时不给「重试应用」：那时保存的是草稿，重试会把草稿当成失败的那个版本发出去 / No retry while the draft has changes: saving then sends the draft, not the version that failed
@@ -194,7 +203,7 @@ const notice = computed<Notice | null>(() => {
   if (geoPrefixed.value) return { tone: 'warn', text: `${geoPrefixed.value} 个 GeoSite 条件多写了「geosite:」前缀，内核找不到对应的分类，永远不会命中。`, action: '去掉前缀', run: stripPrefix }
   // 改过、要重启才生效的设置：KixDNS 还在用启动时的值，按钮就地重启（连不上面板时由横幅说） / Settings that take a restart: KixDNS still runs
   // the values it started with, and the button restarts it right here (with the panel unreachable the banner speaks)
-  if (restartPending.value.length && !panelDown.value) return { tone: 'warn', text: `改过的设置要重启 KixDNS 才生效：${settingNames(restartPending.value)}。`, action: '重启 KixDNS', run: restartForSettings }
+  if (restartPending.value.length && !panelDown.value) return { tone: 'warn', text: `改过的设置要重启 KixDNS\u00a0才生效：${settingNames(restartPending.value)}。`, action: '重启 KixDNS', run: restartForSettings }
   if (importReport.value && !reportOpen.value && importReport.value.stats.raw) return { tone: 'off', text: `这份配置是按内核格式读进来的，${importReport.value.stats.raw} 条规则原样保留为高级规则。`, action: '查看导入说明', run: () => { reportOpen.value = true } }
   // 没运行、连不上时页头已经说了，功能列表拿不到是它的结果，不另起一条 / When stopped or unreachable the header says so; the missing feature list follows from it
   if (capabilityError.value && !runtimeStopped.value && !runtimeUnavailable.value) return { tone: 'off', text: 'KixDNS 没有报告它支持哪些功能：新功能先按不支持处理，保存后先存成待应用版本。' }
@@ -535,20 +544,47 @@ watch(watchingPending, (on) => {
   pendingTimer = on ? window.setInterval(() => { void checkPending().catch(() => undefined) }, 5000) : undefined
 }, { immediate: true })
 onBeforeUnmount(() => window.clearInterval(pendingTimer))
-const { restarting, restart } = useServiceRestart()
-// 照系统页的「重启」先确认再重启（待应用版本那句也照它说）；等到 KixDNS 回来再整份读一遍，提示随之消失。等不到时也读一遍，页头照读到的说
-// Confirmed first as on the system page (with its wording for a pending version); once KixDNS is back the whole page is read again and
-// the notice goes with it. When it does not come back the page is still read, and the header says what was found
+const { restart } = useServiceRestart()
+// 重启、退回的按钮在保存还没做完时按不下：保存途中重启，KixDNS 会在确认新配置前断开，好好的版本被记成没有生效
+// The restart and rollback buttons hold while a save is still finishing: a restart mid-save drops KixDNS before it confirms the new
+// config, and a sound version would be recorded as not taken
+const restarts = () => notice.value?.run === restartForSettings || notice.value?.run === rollbackSettings
+const noticeRestarting = computed(() => restartingKixdns.value && restarts())
+const noticeHeld = computed(() => applyBusy.value || rereading.value || restartingKixdns.value || (restarts() && (saveInFlight.value || busy.value)))
+// 退回期间页面不能改：回来以后整份换上退回后的文件，途中改的会悄悄丢掉（和「重新读取」时一样）
+// The page cannot be edited during a rollback: on return the rolled-back file replaces the page, and edits made meanwhile
+// would be lost silently (as during 重新读取)
+const rollingBack = ref(false)
+// 照系统页的「重启」先确认再重启，确认框写全要重启的设置（提示条只写前三项），待应用版本那句也照系统页说；等 KixDNS 回来、整份读完
+// 才说已重启，提示条随之消失
+// Confirmed first as on the system page, with every setting waiting for the restart in the dialog (the notice names only three) and the
+// system page's words for a pending version; 已重启 is said once KixDNS is back and the page is read again, and the notice goes with it
 async function restartForSettings(): Promise<void> {
-  const waiting = hasPending.value && pendingVersionId.value ? `重启后应用待应用的版本 #${pendingVersionId.value}。` : ''
+  const waiting = hasPending.value && pendingVersionId.value ? `重启后应用待应用的版本\u00a0#${pendingVersionId.value}。` : ''
   if (!await confirm.ask({
     title: '重启 KixDNS 服务',
-    body: `服务会短暂中断，缓存会清空。重启后生效的设置：${settingNames(restartPending.value)}。${waiting}`,
+    body: `服务会短暂中断，缓存会清空。重启后生效的设置：${settingNames(restartPending.value, { all: true })}。${waiting}`,
     confirmLabel: '重启服务',
   })) return
-  if (restarting.value) return
-  await restart()
-  try { await rereadAndSay(unsaved.value) } catch { /* 页头下次读取时再更新 / the header updates on the next read */ }
+  await restart({ afterBack: () => rereadAndSay(unsaved.value), onConfigPage: isViewing })
+}
+// 退回：只把那几项改回 KixDNS 上次正常启动时的值，写进文件再重启；文件是这一页改的，读回来不说「别处改过了」
+// Rolling back: only those settings go back to the values KixDNS last started with, written to the file before a restart; this page
+// changed the file, so the read-back does not say 别处改过了
+async function rollbackSettings(): Promise<void> {
+  const values = restartRollback.value
+  if (!values) return
+  if (!await confirm.ask({
+    title: '退回原来的设置',
+    body: `只把这几项改回 KixDNS 上次正常启动时的值，再重启：${settingValues(values)}。`,
+    confirmLabel: '退回并重启',
+  })) return
+  rollingBack.value = true
+  try {
+    await restart({ rollback: true, beforeSend: beginOwnWrite, afterBack: readAfterOwnWrite, onConfigPage: isViewing })
+  } finally {
+    rollingBack.value = false
+  }
 }
 async function startKixdns(): Promise<void> {
   if (!(await start())) return
@@ -567,25 +603,25 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
         <span v-if="!ready && !loadError" class="sk ui-ph__sk cfg__status-sk"></span>
         <!-- 宽屏：标题下一排事实（状态、配置版本、规则数、上游组数）；手机：一行状态 / Wide: a facts row under the title (state, config version, rule count, upstream groups); phones: one status line -->
         <!-- 没读到配置时宽屏也是这一排，只写状态；版本、规则数、上游组数等读到再写 / Without a config read the wide header keeps this row with the state only; version, rule and group counts wait for the read -->
-        <span v-else-if="!phone && !firstRun" class="ui-facts cfg__facts" :class="{ 'cfg__facts--long': (headerLine.wide?.length ?? 0) > 1, 'cfg__facts--fail': hasApplyFailure }" :role="applyBusy ? 'status' : undefined">
-          <span><span class="ui-lbl">状态</span><b><span v-if="applyBusy" class="ui-spin cfg__spin" aria-hidden="true"></span><span v-else class="ui-dot" :class="headerLine.tone === 'ok' ? '' : `ui-dot--${headerLine.tone}`" aria-hidden="true"></span><UiDotText :parts="headerLine.wide ?? [headerLine.lead ?? `${headerLine.before}${headerLine.version ?? ''}${headerLine.after ?? ''}`]" /><button v-if="headerAction && ready && !applyBusy" class="cfg__head-action" type="button" @click="applyNow">{{ headerAction }}</button><span v-else-if="applyBusy && ready" class="cfg__head-action is-held" aria-hidden="true">现在应用</span><button v-else-if="runtimeStopped && ready && !panelDown" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline cfg__head-start" type="button" :disabled="starting" @click="startKixdns">启动</button></b></span>
+        <span v-else-if="!phone && !firstRun" class="ui-facts cfg__facts" :class="{ 'cfg__facts--long': (headerLine.wide?.length ?? 0) > 1, 'cfg__facts--fail': hasApplyFailure }" :role="applyBusy || restartingKixdns ? 'status' : undefined">
+          <span><span class="ui-lbl">状态</span><b><span v-if="applyBusy || restartingKixdns" class="ui-spin cfg__spin" aria-hidden="true"></span><span v-else class="ui-dot" :class="headerLine.tone === 'ok' ? '' : `ui-dot--${headerLine.tone}`" aria-hidden="true"></span><UiDotText :parts="headerLine.wide ?? [headerLine.lead ?? `${headerLine.before}${headerLine.version ?? ''}${headerLine.after ?? ''}`]" /><button v-if="headerAction && ready && !applyBusy" class="cfg__head-action" type="button" @click="applyNow">{{ headerAction }}</button><span v-else-if="applyBusy && ready" class="cfg__head-action is-held" aria-hidden="true">现在应用</span><button v-else-if="runtimeStopped && ready && !panelDown && !restartRollback" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline cfg__head-start" type="button" :disabled="starting" @click="startKixdns">启动</button></b></span>
           <template v-if="doc">
           <span><span class="ui-lbl">配置版本</span><b>{{ versionLabel }}</b></span>
           <span class="cfg__fact-rules"><span class="ui-lbl">规则</span><b>{{ ruleCount }} 条</b></span>
           <span class="cfg__fact-groups"><span class="ui-lbl">上游组</span><b>{{ model.groups.length }} 个</b></span>
           </template>
         </span>
-        <span v-else class="ui-ph__lead" :role="applyBusy ? 'status' : undefined">
-          <span v-if="applyBusy" class="ui-spin cfg__spin" aria-hidden="true"></span>
+        <span v-else class="ui-ph__lead" :role="applyBusy || restartingKixdns ? 'status' : undefined">
+          <span v-if="applyBusy || restartingKixdns" class="ui-spin cfg__spin" aria-hidden="true"></span>
           <span v-else class="ui-dot" :class="headerLine.tone === 'ok' ? '' : `ui-dot--${headerLine.tone}`" aria-hidden="true"></span>
           <UiDotText :parts="[headerLine.lead ?? '', `${headerLine.before}${headerLine.version ?? ''}${headerLine.after ?? ''}`].filter(Boolean)" />
           <button v-if="headerAction && ready && !applyBusy" class="cfg__head-action" type="button" @click="applyNow">{{ headerAction }}</button><span v-else-if="applyBusy && ready" class="cfg__head-action is-held" aria-hidden="true">现在应用</span>
-          <button v-else-if="runtimeStopped && ready && !panelDown" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline cfg__head-start" type="button" :disabled="starting" @click="startKixdns">启动</button>
+          <button v-else-if="runtimeStopped && ready && !panelDown && !restartRollback" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline cfg__head-start" type="button" :disabled="starting" @click="startKixdns">启动</button>
         </span>
       </template>
       <template v-if="!firstRun" #actions>
         <!-- 当前页签自己的操作（规则页的「新建规则」）从页签组件传送到这里 / The current tab's own actions (the rules tab's 新建规则) teleport here from the tab component -->
-        <span id="cfg-actions" class="cfg__page-acts" :inert="rereading || undefined"></span>
+        <span id="cfg-actions" class="cfg__page-acts" :inert="rereading || rollingBack || undefined"></span>
         <UiTabs v-if="ui.mode === 'json'" class="cfg__mode" :model-value="ui.mode" :items="modes" label="配置视图" variant="segment" @update:model-value="setMode" />
         <UiMenu class="cfg__more" :items="moreItems" label="更多配置操作" title="配置" @select="pickMore" />
       </template>
@@ -595,7 +631,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10" /><path d="M12 8v4M12 16h.01" /></svg>
       <span>{{ notice.text }}</span>
       <small v-if="notice.detail"><RuleText :text="notice.detail" :links="notice.links" @rule="openRule($event, null)" @group="groupEditor = { id: $event }" /></small>
-      <button v-if="notice.action" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="applyBusy || rereading || restarting" :aria-busy="(restarting && notice.run === restartForSettings) || undefined" @click="runNotice"><span v-if="restarting && notice.run === restartForSettings" class="ui-spin" aria-hidden="true"></span>{{ notice.action }}</button>
+      <button v-if="notice.action" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="noticeHeld" :aria-busy="noticeRestarting || undefined" @click="runNotice"><span v-if="noticeRestarting" class="ui-spin" aria-hidden="true"></span>{{ notice.action }}</button>
     </div>
 
     <!-- 只由菜单里的「导入 JSON」打开：不进 Tab 顺序，读屏也不念一个没名字的「选择文件」 / Opened only by 导入 JSON in the menu: out of the Tab order, and screen readers do not announce a nameless "choose file" -->
@@ -618,12 +654,12 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
       <p class="cfg__failed-reason">{{ loadError }}</p>
       <button class="ui-btn ui-btn--secondary" type="button" @click="reload(false)"><RefreshCw :size="16" aria-hidden="true" />重试</button>
     </div>
-    <div v-else-if="ui.mode === 'json'" class="cfg__json ui-fade" :inert="rereading || undefined" :aria-busy="rereading || undefined">
+    <div v-else-if="ui.mode === 'json'" class="cfg__json ui-fade" :inert="rereading || rollingBack || undefined" :aria-busy="rereading || rollingBack || undefined">
       <p class="cfg__json-note">这里是 KixDNS 读的配置，可以直接改。切回表单时会重新读一遍；规则名、备注、停用的规则这些面板自己的信息另外保存，不在这里。</p>
       <JsonEditor ref="jsonEditor" v-model="jsonText" class="cfg__json-editor" :error-line="jsonError?.line" />
     </div>
     <!-- 重新读取、恢复版本读回来之前不让改：读回来的会整份换掉草稿 / No edits until a re-read or restore comes back: what comes back replaces the draft -->
-    <div v-else :id="`cfg-panel-${section}`" class="cfg__panel" role="tabpanel" :aria-labelledby="`cfg-tab-${section}`" :inert="rereading || undefined" :aria-busy="rereading || undefined">
+    <div v-else :id="`cfg-panel-${section}`" class="cfg__panel" role="tabpanel" :aria-labelledby="`cfg-tab-${section}`" :inert="rereading || rollingBack || undefined" :aria-busy="rereading || rollingBack || undefined">
       <div v-if="section === 'rules'" class="rules-split" :class="{ 'is-open': inspector }">
         <RulesTab :selected="editor?.ruleId ?? null" @open="openRule" @tab="setTab" @edit-group="groupEditor = { id: $event }" @import="!saveInFlight && fileInput?.click()" />
         <RuleEditor v-if="inspector && editor" ref="editorRef" :key="`${editor.ruleId}-${editor.groupId}-${editor.nonce ?? 0}`" inspector :rule-id="editor.ruleId" :group-id="editor.groupId" :template="editor.template" :resume="editor.resume" @close="closeRule" @reopen="reopenRule" @saved="ruleSaved" @deleted="ruleDeleted" @edit-group="groupEditor = { id: $event }" />

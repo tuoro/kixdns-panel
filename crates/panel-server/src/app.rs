@@ -29,6 +29,7 @@ mod blocklist;
 mod diagnostics;
 mod geo;
 mod querylog;
+mod restart;
 mod updates;
 
 use geo::{
@@ -202,6 +203,12 @@ struct ConfigRuntimeState {
     /// there are none or the kernel does not report them
     #[serde(skip_serializing_if = "Vec::is_empty")]
     restart_pending: Vec<String>,
+    /// 重启后 `KixDNS` 没回来时，可以退回的设置和它们上次启动时的值（`null` 是没写、用默认值）；其余时候省略
+    ///
+    /// When `KixDNS` has not come back from a restart, the settings that can be put back and the values they last
+    /// started with (`null` for unset, on the default); left out otherwise
+    #[serde(skip_serializing_if = "Option::is_none")]
+    restart_rollback: Option<std::collections::BTreeMap<String, Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -409,6 +416,7 @@ fn api_router(state: AppState) -> Router {
         )
         .route("/config/versions/{id}/restore", post(restore_config))
         .route("/config/versions/{id}/apply", post(apply_pending_config))
+        .route("/config/restart-rollback", post(restart::roll_back))
         .route("/cache/flush", post(flush_cache))
         .merge(blocklist::routes())
         .merge(diagnostics::routes())
@@ -593,8 +601,25 @@ async fn get_config(
             CONFIG_APPLY_FAILED => "failed",
             _ => "pending",
         });
-    let runtime = match state.control.active_config().await {
+    let active = state.control.active_config().await;
+    if let Ok(active) = &active {
+        // 有待应用版本时这里读到的不是正式文件，不拿来记启动时的设置 / With a pending version this document is not the
+        // formal file, so it is not used to record the starting settings
+        restart::note_live(&state, active, pending.is_none().then_some(&document)).await;
+    }
+    // 连不上时退回看的是正式文件：有待应用版本时它不是这里读到的那份 / While unreachable the rollback looks at the formal
+    // file, which is not the document read here when a version is pending
+    let rollback = match (&active, &pending) {
+        (Ok(_), _) => None,
+        (Err(_), None) => restart::offer(&state, &document).await,
+        (Err(_), Some(_)) => match state.config.current().await {
+            Ok(formal) => restart::offer(&state, &formal).await,
+            Err(_) => None,
+        },
+    };
+    let runtime = match active {
         Ok(active) => ConfigRuntimeState {
+            restart_rollback: None,
             restart_pending: active.restart_pending.clone().unwrap_or_default(),
             status: pending_status.unwrap_or(if active.sha256 == document.sha256 {
                 "active"
@@ -625,6 +650,7 @@ async fn get_config(
                 .as_ref()
                 .and_then(|summary| summary.apply_error.clone()),
             restart_pending: Vec::new(),
+            restart_rollback: rollback,
         },
     };
     Ok(Json(ConfigDocumentResponse {
@@ -656,6 +682,7 @@ async fn overview(
     );
     match results {
         (Ok(health), Ok(active_config), Ok(mut metrics)) => {
+            restart::note_live(&state, &active_config, None).await;
             state
                 .recent_history
                 .lock()

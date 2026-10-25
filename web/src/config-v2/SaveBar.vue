@@ -4,6 +4,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import UiNumber from '../components/ui/UiNumber.vue'
 import UiDotText from '../components/ui/UiDotText.vue'
 import { useBarHeight } from '../composables/useBarHeight'
+import { restartingKixdns } from '../composables/useServiceStart'
 import { useToast } from '../composables/useToast'
 import DraftReviewDialog from './DraftReviewDialog.vue'
 import RuleText from './RuleText.vue'
@@ -48,6 +49,7 @@ function onKey(event: KeyboardEvent): void {
     if (rereading.value) { toast.info('正在读取配置，读完再保存'); return }
     // 页头的「现在应用」在跑：这时保存不了草稿，说一句，不让按键没反应 / The header's 现在应用 is running: the draft cannot be saved now, so say so instead of swallowing the key
     if (applying.value) { toast.info(applyingNote.value); return }
+    if (restartingKixdns.value) { toast.info(RESTARTING_NOTE); return }
     // 单独的「校验」还没回来时照样保存（等它回来接着存）；真的在保存时不重复 / During a lone 校验 the save still goes (it waits for the check); during a real save it is not repeated
     if (saveInFlight.value) return
     if (props.jsonError) toast.info('JSON 写错了，改好才能保存')
@@ -59,10 +61,15 @@ function onKey(event: KeyboardEvent): void {
     else toast.info('没有要保存的修改')
   }
 }
+const RESTARTING_NOTE = 'KixDNS 正在重启，回来以后再保存'
 function saveDraft(): void {
   // 页头的「现在应用」还在跑：按钮看着停用，点了说一句为什么（和 Ctrl+S 一样；手机上看不到 title）
   // The header's 现在应用 is still running: the button looks disabled and a tap says why (as Ctrl+S does; phones never show the title)
   if (applying.value) { toast.info(applyingNote.value); return }
+  // 正在等 KixDNS 从重启回来：这时存，KixDNS 会在确认新配置前断开，好好的版本被记成没有生效；等它回来再存
+  // Waiting for KixDNS to come back from a restart: a save now would lose KixDNS before it confirms the config and record a sound
+  // version as not taken, so it waits for the restart
+  if (restartingKixdns.value) { toast.info(RESTARTING_NOTE); return }
   if (props.flush && !props.flush('save')) return
   void save('draft')
 }
@@ -170,7 +177,7 @@ function discard(): void {
         <button v-if="!deferSave && !conflict && pending && !cnameBlocked" class="ui-btn ui-btn--secondary savebar__check" :class="{ 'is-aside': busy }" type="button" :inert="busy" @click="check"><ShieldCheck :size="16" aria-hidden="true" />校验</button>
         <!-- 别处先存了新版本时再保存只会再失败一次：先重新读取 / After someone else saved, saving again only fails again: reload first -->
         <!-- 手机上冲突时不留灰掉的保存和备注：这时只能下载或重新读取，省下一整行 / On phones a conflict drops the greyed save and 备注: only download or reload can happen then, which saves a whole row -->
-        <button v-if="!(phone && conflict && draftStage === 'failed')" ref="saveButton" class="ui-btn ui-btn--primary savebar__save config-save-button" type="button" :aria-busy="busy || undefined" :disabled="conflict && draftStage === 'failed'" :aria-disabled="applying || undefined" :title="applying ? applyingNote : undefined" @click="saveDraft"><span v-if="saving" class="ui-spin" aria-hidden="true"></span>{{ saving ? '保存中' : saveLabel }}</button>
+        <button v-if="!(phone && conflict && draftStage === 'failed')" ref="saveButton" class="ui-btn ui-btn--primary savebar__save config-save-button" type="button" :aria-busy="busy || undefined" :disabled="conflict && draftStage === 'failed'" :aria-disabled="applying || restartingKixdns || undefined" :title="applying ? applyingNote : restartingKixdns ? RESTARTING_NOTE : undefined" @click="saveDraft"><span v-if="saving" class="ui-spin" aria-hidden="true"></span>{{ saving ? '保存中' : saveLabel }}</button>
       </template>
     </footer>
   </Transition>

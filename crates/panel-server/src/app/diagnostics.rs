@@ -80,11 +80,20 @@ async fn service_action(
     let session = authenticate(&state.database, &jar).await?;
     verify_csrf(&session, &jar, &headers)?;
     let parsed = ServiceAction::parse(&action).map_err(map_operation_error)?;
-    let status = state
+    // 重启、停止的那一下拿着配置锁：还在路上的保存先做完；之后的保存探测不到 KixDNS，照规矩存成待应用，不会在它断开时
+    // 被记成没有生效 / A restart or stop holds the config lock while it is sent: a save under way finishes first, and a
+    // later one finds KixDNS gone and is kept as pending as usual, instead of being recorded as not taken when it drops
+    let apply_guard = if matches!(parsed, ServiceAction::Restart | ServiceAction::Stop) {
+        Some(state.config_apply_lock.lock().await)
+    } else {
+        None
+    };
+    state
         .operations
-        .service_action(parsed)
+        .service_request(parsed)
         .await
         .map_err(map_operation_error)?;
+    drop(apply_guard);
     if matches!(parsed, ServiceAction::Start | ServiceAction::Restart) {
         let reconcile_state = state.clone();
         tokio::spawn(async move {
@@ -93,6 +102,11 @@ async fn service_action(
             }
         });
     }
+    let status = state
+        .operations
+        .service_status()
+        .await
+        .map_err(map_operation_error)?;
     state
         .database
         .audit(

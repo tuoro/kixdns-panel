@@ -216,6 +216,13 @@ impl Operations {
         self.service_status().await
     }
 
+    /// 只发服务动作，不再读一遍状态（调用方自己等 `KixDNS` 回来） / Send the service action only, without reading the
+    /// status back (the caller waits for `KixDNS` itself)
+    #[cfg(unix)]
+    pub async fn service_request(&self, action: ServiceAction) -> Result<(), OperationError> {
+        self.helper_request(action.argument()).await
+    }
+
     #[cfg(unix)]
     pub async fn start_panel_update(&self) -> Result<(), OperationError> {
         self.helper_request("panel-update").await
@@ -273,6 +280,12 @@ impl Operations {
         &self,
         _action: ServiceAction,
     ) -> Result<ServiceStatus, OperationError> {
+        Err(OperationError::Unsupported)
+    }
+
+    #[cfg(not(unix))]
+    #[allow(clippy::unused_async)]
+    pub async fn service_request(&self, _action: ServiceAction) -> Result<(), OperationError> {
         Err(OperationError::Unsupported)
     }
 

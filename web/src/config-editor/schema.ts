@@ -130,21 +130,50 @@ export const SETTING_SECTIONS: SettingSection[] = [
   },
 ]
 
-// 内核报来的设置名在页面上叫什么：表单里的名字去掉括号里的单位；表单里没有的（只能在 JSON 里改）照写内核的名字
-// What a setting name the kernel reports is called on the page: the form's label without the bracketed unit; one the form
-// lacks (editable in JSON only) keeps the kernel's name
+// 内核报来的设置名在页面上叫什么：表单里的名字去掉括号里的单位；表单里没有、只能在 JSON 里改的，照「TCP 错误阈值」那样起名，
+// 再没有的照写内核的名字
+// What a setting name the kernel reports is called on the page: the form's label without the bracketed unit; one the form lacks
+// (editable in JSON only) is named like TCP 错误阈值, and anything else keeps the kernel's name
+const JSON_ONLY_NAMES: Record<string, string> = { doh_health_check_error_threshold: 'DoH 错误阈值' }
+const FORM_FIELDS = SETTING_SECTIONS.flatMap((section) => section.fields)
 export function settingName(key: string): string {
-  const field = SETTING_SECTIONS.flatMap((section) => section.fields).find((item) => item.key === key)
-  return field ? field.label.replace(/\s*\([^)]*\)$/, '') : key
+  const field = FORM_FIELDS.find((item) => item.key === key)
+  return field ? field.label.replace(/\s*\([^)]*\)$/, '') : JSON_ONLY_NAMES[key] ?? key
 }
 
-// 一串设置名，放在句末冒号后面用（名字可能以字母开头、结尾，挨着标点就不用另外隔空格）：三个以内都写出来，再多写前三个和一共几项
+// 一串设置名，放在句末冒号后面用（名字可能以字母开头、结尾，挨着标点就不用另外隔空格）：
+// - 按表单里的先后排，和人在表单里看到的一样；
+// - 自动限流那几项离开分组标题就看不懂（「延迟阈值」「调整间隔」），合成一项「自动限流」；
+// - 提示条里三个以内都写出来，再多写前三个和一共几项；确认框（all）全写
 // A run of setting names, for use after a colon at the end of a sentence (a name may start or end with a letter, and next to
-// punctuation it needs no extra space): up to three are all written out, beyond that the first three and how many in all
-export function settingNames(keys: string[]): string {
-  // 一个名字里不断行（手机上「UDP」和「监听地址」曾被拆到两行） / A name never breaks inside (on a phone 「UDP」 and 「监听地址」 were split across lines)
-  const names = keys.map((key) => settingName(key).replace(/ /g, '\u00a0'))
-  return names.length > 3 ? `${names.slice(0, 3).join('、')}等\u00a0${names.length}\u00a0项` : names.join('、')
+// punctuation it needs no extra space):
+// - in the form's order, as the reader sees them there;
+// - the flow-control ones mean nothing without their group title (延迟阈值, 调整间隔), so they merge into one 自动限流;
+// - a notice writes up to three, beyond that the first three and how many in all; the confirm dialog (all) writes every one
+export function settingNames(keys: readonly string[], options: { all?: boolean } = {}): string {
+  const order = (key: string) => { const at = FORM_FIELDS.findIndex((field) => field.key === key); return at < 0 ? FORM_FIELDS.length : at }
+  const names = [...new Set([...keys].sort((a, b) => order(a) - order(b)).map((key) => (key.startsWith('flow_control_') ? '自动限流' : settingName(key))))]
+    // 一个名字里不断行（手机上「UDP」和「监听地址」曾被拆到两行） / A name never breaks inside (on a phone 「UDP」 and 「监听地址」 were split across lines)
+    .map((name) => name.replace(/ /g, '\u00a0'))
+  return names.length > 3 && !options.all ? `${names.slice(0, 3).join('、')}等\u00a0${names.length}\u00a0项` : names.join('、')
+}
+
+// 退回时说清每一项改回什么，带上表单里的单位：「UDP 监听地址 0.0.0.0:53」「DoQ 保活间隔 15000 毫秒」；没写的说默认是多少
+// （「缓存容量 默认 10000 条」），表单里没有默认值的说「默认值」；自动限流照样合成一项，只说改回
+// When rolling back, say what each setting goes back to, with the form's unit: 「UDP 监听地址 0.0.0.0:53」「DoQ 保活间隔 15000 毫秒」;
+// an unset one says its default (「缓存容量 默认 10000 条」), or 「默认值」 when the form has none; flow control merges into one as
+// above and just goes back
+export function settingValues(values: Record<string, unknown>): string {
+  const order = (key: string) => { const at = FORM_FIELDS.findIndex((field) => field.key === key); return at < 0 ? FORM_FIELDS.length : at }
+  const shown = (key: string, value: unknown) => {
+    const field = FORM_FIELDS.find((item) => item.key === key)
+    const unit = field?.unit ? ` ${field.unit}` : ''
+    if (value === null || value === undefined) return field?.default === undefined ? '（默认值）' : ` 默认 ${String(field.default)}${unit}`
+    return typeof value === 'boolean' ? ` ${value ? '开启' : '关闭'}` : ` ${String(value)}${unit}`
+  }
+  const items = [...new Set(Object.keys(values).sort((a, b) => order(a) - order(b)).map((key) => (key.startsWith('flow_control_') ? '自动限流' : `${settingName(key)}${shown(key, values[key])}`)))]
+  // 一项里不断行 / No break inside an item
+  return items.map((item) => item.replace(/ /g, '\u00a0')).join('、')
 }
 
 // 高级规则的表单也说面板的话：和规则卡片的读法、普通规则的条件同一套叫法；内核的写法留在 JSON 里

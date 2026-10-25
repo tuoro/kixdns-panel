@@ -196,6 +196,8 @@ export interface ConfigDocument {
     pending_error?: string | null
     /** 改过、要重启 KixDNS 才生效的设置（内核的设置名）；没有或内核不报告时省略 */
     restart_pending?: string[]
+    /** 重启后 KixDNS 没回来时，可以退回的设置和它们上次启动时的值（null 是没写、用默认值）；其余时候省略 */
+    restart_rollback?: Record<string, unknown>
   }
 }
 

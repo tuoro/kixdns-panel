@@ -58,10 +58,12 @@ const stopped = ref(false)
 const { starting, start } = useServiceStart()
 async function startKixdns(): Promise<void> {
   if (!(await start())) return
-  stopped.value = false
-  // 刚启动的内核报什么能力要重新问一次：客户端 IP 那一栏靠它 / Ask the freshly started kernel for its capabilities again: the client IP field depends on them
+  // 刚启动的内核报什么能力要重新问一次：客户端 IP 那一栏靠它；等到最后没起来的，照读到的说还停着
+  // Ask the freshly started kernel for its capabilities again: the client IP field depends on them; one that never came up is
+  // still said to be stopped, as read
   try {
     const overview = await apiRequest<Overview>('/api/v1/overview')
+    stopped.value = !overview.live
     activeSha.value = overview.active_config?.sha256 ?? null
     canClient.value = Boolean(overview.live && overview.health?.capabilities.includes('diagnostics_trace_client_v1'))
   } catch { /* 下次进页面再读 / read again on the next visit */ }
