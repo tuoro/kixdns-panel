@@ -9,6 +9,7 @@ import { blocklistKey, type Model, type Rule } from '../config-model/model'
 import { traceNames } from '../config-model/trace-names'
 import { useConnection } from '../composables/useConnection'
 import { kixdnsBack, restartingKixdns } from '../composables/useServiceStart'
+import { serviceTone } from '../service-state'
 import { useSession } from '../composables/useSession'
 import { dismissUndoable, toastMark, useToast } from '../composables/useToast'
 import { errorMessage } from '../utils'
@@ -30,6 +31,12 @@ export const runtimeStopped = ref(false)
 // systemd 正在启动它（包括起不来、每隔几秒重试的时候）：不是停着，页头不给「启动」 / systemd is starting it (including the
 // retries every few seconds when it does not come up): not stopped, so the header offers no 启动
 export const runtimeStarting = ref(false)
+// 最近读到的服务状态：起不来、systemd 正在重试时页头和概览、系统页一样说「启动失败」 / The service state last read: when it
+// does not come up and systemd retries, the header says 启动失败 like the overview and the system page
+const runtimeService = ref<ServiceStatus | null>(null)
+// 起不来：systemd 放弃了、正在重试，或者服务端看出来；KixDNS 又确实连不上 / Not coming up: systemd gave up or retries, or the
+// server sees it; and KixDNS is indeed unreachable
+export const runtimeDown = computed(() => serviceTone(runtimeService.value) === 'err' && !doc.value?.runtime.active_sha256)
 // 改过、要重启 KixDNS 才生效的设置（内核的设置名）。KixDNS 停着时不算：启动它就全用上了
 // Settings changed that take a restart of KixDNS to apply (the kernel's names). Not while KixDNS is stopped: starting it applies them all
 export const restartPending = computed(() => (runtimeStopped.value ? [] : doc.value?.runtime.restart_pending ?? []))
@@ -77,7 +84,12 @@ export const currentVersionId = computed(() => {
   if (hasPending.value || hasApplyFailure.value) return null
   return doc.value?.version_id ?? null
 })
-export const runtimeUnavailable = computed(() => doc.value?.runtime.status === 'unavailable' && !runtimeStopped.value)
+// 连不上 KixDNS：只有活着的 KixDNS 报得出 active_sha256；有待应用、应用失败的版本时运行状态那一栏照样写 pending、failed，
+// 不能拿来认（起不来、又存过待应用版本时，页面不该当它在线、给出「现在应用」）
+// KixDNS unreachable: only a live KixDNS reports active_sha256, while with a pending or failed version the runtime status still
+// reads pending or failed and proves nothing (down with a pending version stored, the page must not treat it as online and
+// offer 现在应用)
+export const runtimeUnavailable = computed(() => doc.value !== null && !doc.value.runtime.active_sha256 && !runtimeStopped.value)
 // 写出去的配置里有几条规则用到某种动作：和服务端 config_uses_action 同一个判断（后台刷新规则和每条规则的动作，含回答后检查的两组）。
 // 按写出的配置数，停用的规则（不写出）不算，回答后检查、高级规则、域名映射里的都算
 // How many rules in the exported config use an action type: the same test as the server's config_uses_action (the background refresh rule and every
@@ -202,6 +214,9 @@ watch(draftGeneration, () => editTouched(), { flush: 'sync' })
 // 保存条还说着「已应用」时要重启的都用上了（重启回来、或者改回了原值）：那句过时了，回到平常
 // The bar still says 已应用 when nothing waits for a restart any more (back from a restart, or changed back): that is stale, so back to idle
 watch(() => restartPending.value.length === 0, (none) => { if (none && stage.value === 'done' && note.value.startsWith('已应用')) finishStage('idle') })
+// 保存条还说着「已存成待应用」时那一版生效了（重启回来时顺手应用）：同样过时了 / The bar still says 已存成待应用 when that version
+// took effect (applied on return from a restart): equally stale
+watch(hasPending, (now) => { if (!now && stage.value === 'done' && note.value.startsWith('已存成待应用')) finishStage('idle') })
 
 // ---------- 页头 / header ----------
 // wide：宽屏「状态」标签下面写的（缺省是 lead，再缺省是整句）；手机上没有标签，写 lead 和整句
@@ -210,20 +225,29 @@ export interface HeaderStatus { tone: 'ok' | 'warn' | 'err' | 'off'; lead?: stri
 export const headerStatus = computed<HeaderStatus>(() => {
   // 重启后没回来、能退回改过的设置：先说这件事，提示条给退回的按钮 / Not back from a restart, with changed settings that can go
   // back: this comes first, and the notice holds the button
-  if (restartRollback.value) return { tone: 'err', before: 'KixDNS 没有起来', wide: ['没有起来'] }
+  if (restartRollback.value) return { tone: 'err', before: 'KixDNS 启动失败', wide: ['启动失败'] }
+  // 起不来（systemd 放弃了、正在重试，或者服务端看出来）：和概览、系统页一样说「启动失败」，红色；有待应用、应用失败的版本时
+  // 接在后面说 / Not coming up (systemd gave up or retries, or the server sees it): 启动失败 in red, as on the overview and the system
+  // page; a pending or failed version follows it
+  const failedUnit = runtimeDown.value
   // 应用失败、KixDNS 又停着：先说停了，旁边的「启动」读作启动 KixDNS，不是启动那份失败的配置 / Failed and KixDNS stopped: the stop comes first, so 启动 beside it reads as starting KixDNS, not the failed config
-  if (hasApplyFailure.value) return runtimeStopped.value ? { tone: 'off', lead: 'KixDNS 已停止', before: '应用失败', wide: ['已停止', '应用失败'] } : { tone: 'err', before: '配置应用失败' }
+  if (hasApplyFailure.value) {
+    if (failedUnit) return { tone: 'err', lead: 'KixDNS 启动失败', before: '应用失败', wide: ['启动失败', '应用失败'] }
+    return runtimeStopped.value ? { tone: 'off', lead: 'KixDNS 已停止', before: '应用失败', wide: ['已停止', '应用失败'] } : { tone: 'err', before: '配置应用失败' }
+  }
   if (hasPending.value) {
     const waiting = pendingVersionId.value ? { before: '版本 #', version: pendingVersionId.value, after: ' 待应用' } : { before: '配置待应用' }
+    if (failedUnit) return { tone: 'err', lead: 'KixDNS 启动失败', ...waiting, wide: ['启动失败', '待应用'] }
     if (!runtimeStopped.value) return { tone: 'warn', ...waiting }
     // KixDNS 停着时先说停了，再说哪个版本在等：后面的「启动」读作启动 KixDNS，不是启动这个版本（宽屏版本号已经在旁边的「配置版本」里）
     // With KixDNS stopped, say so first and then which version waits: the 启动 after it reads as starting KixDNS, not this version
     return { tone: 'off', lead: 'KixDNS 已停止', ...waiting, wide: ['已停止', '待应用'] }
   }
+  if (failedUnit) return { tone: 'err', before: 'KixDNS 启动失败', wide: ['启动失败'] }
   // 宽屏「状态」标签下面写「已停止」，和「运行中」「未知」一样不带主语，900 宽左右那一排才放得下 / Under the wide 状态 label it reads 已停止, without a subject like 运行中 and 未知, so the row fits around 900
   if (runtimeStopped.value) return { tone: 'off', before: 'KixDNS 已停止', wide: ['已停止'] }
-  // systemd 正在启动、还没连上：和概览一样说「正在启动」，不说停了 / systemd is starting it and it is not reachable yet: 正在启动
-  // as on the overview, not stopped
+  // systemd 真在启动、还没连上：说「正在启动」，不说停了 / systemd is really starting it and it is not reachable yet: 正在启动,
+  // not stopped
   if (runtimeStarting.value && !doc.value?.runtime.active_sha256) return { tone: 'warn', before: 'KixDNS 正在启动', wide: ['正在启动'] }
   if (doc.value?.runtime.status === 'active') return currentVersionId.value ? { tone: 'ok', lead: '运行中', before: '版本 #', version: currentVersionId.value } : { tone: 'ok', before: '运行中' }
   if (fileDiffers.value) return { tone: 'warn', before: '文件与运行配置不同' }
@@ -236,7 +260,7 @@ export const headerLine = computed<HeaderStatus>(() => {
   // 宽屏的「状态」标签下面只写「未知」，不说两遍「状态」 / Under the wide 状态 label it reads 未知 only, not 状态 twice
   if (!applyBusy.value && panelDown.value) return { tone: 'off', before: '状态未知', wide: ['未知'] }
   // 等 KixDNS 从重启回来：和「应用中」一样转圈 / Waiting for KixDNS to come back from a restart: a spinner like 应用中
-  if (restartingKixdns.value) return { tone: 'warn', before: '正在重启' }
+  if (restartingKixdns.value) return { tone: 'warn', before: 'KixDNS 正在重启', wide: ['正在重启'] }
   if (!applyBusy.value) return headerStatus.value
   const verb = stage.value === 'validating' ? '校验中' : '应用中'
   return pendingVersionId.value ? { tone: 'warn', before: '版本 #', version: pendingVersionId.value, after: ` ${verb}` } : { tone: 'warn', before: verb }
@@ -292,6 +316,7 @@ function applyRuntime(nextDoc: ConfigDocument, overview: Overview | null, servic
   const declared = nextDoc.runtime.declared_capabilities ?? []
   // 读到 KixDNS 活着：「重启后没有回应」那条错误过时了 / KixDNS read alive: the 重启后没有回应 error is stale
   if (nextDoc.runtime.active_sha256) kixdnsBack()
+  runtimeService.value = service
   if (overview) {
     const unit = service?.active_state
     runtimeStopped.value = !overview.live && (unit ? !['active', 'activating', 'reloading'].includes(unit) : overview.service_active === false)
@@ -1328,6 +1353,13 @@ export async function readAfterOwnWrite(): Promise<void> {
   writeCount += 1
   await load({ quiet: true, fresh: true })
   announceWritten()
+}
+// 重启回来以后读一遍：有修改时只刷新运行状态，没有就整份静默重读；回来时应用了的版本由重启那条提示说，这里不再说
+// The read after a restart comes back: with edits only the runtime is refreshed, otherwise a whole quiet re-read; a version applied
+// on return is told by the restart's toast, so nothing is said here
+export async function readQuietly(): Promise<void> {
+  if (unsaved.value) await refreshRuntime()
+  else await load({ quiet: true })
 }
 // 这一页马上要改文件（发出退回之前）：途中每 5 秒那一遍读到的新文件是自己写的 / This page is about to change the file (before
 // the rollback goes out): a new file the 5-second pass reads meanwhile is its own write

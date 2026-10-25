@@ -63,6 +63,9 @@ use crate::updates::{UpdateError, UpdateManager, UpdateSettings};
 
 #[derive(Debug, Clone)]
 pub struct AppSettings {
+    /// 读服务状态用的 systemctl，不给就是系统里的那个（测试用） / The systemctl that reads the service state; the system's one
+    /// when not given (for tests)
+    pub systemctl: Option<PathBuf>,
     pub bind: SocketAddr,
     pub database_path: PathBuf,
     pub config_path: PathBuf,
@@ -228,6 +231,12 @@ struct OverviewResponse {
     /// unreachable its counters are frozen while the samples are still current.
     #[serde(default)]
     trend: RequestTrend,
+    /// 和配置页同一份：`KixDNS` 起不来、可以退回改过的设置时，那几项和它们上次启动时的值；其余时候省略
+    ///
+    /// The same as the config page's: when `KixDNS` does not come up and changed settings can go back, those settings
+    /// and the values they last started with; left out otherwise
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    restart_rollback: Option<std::collections::BTreeMap<String, Value>>,
 }
 
 /// 一个整点桶内的请求数。
@@ -339,12 +348,18 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         database,
         config,
         control: ControlClient::new(settings.control_socket),
-        operations: Operations::new(
-            settings.service_unit,
-            settings.service_helper_socket,
-            settings.diagnostic_server,
-        )
-        .map_err(|error| anyhow::anyhow!(error))?,
+        operations: {
+            let operations = Operations::new(
+                settings.service_unit,
+                settings.service_helper_socket,
+                settings.diagnostic_server,
+            )
+            .map_err(|error| anyhow::anyhow!(error))?;
+            match &settings.systemctl {
+                Some(program) => operations.with_systemctl(&program.to_string_lossy()),
+                None => operations,
+            }
+        },
         updates,
         geo_data,
         blocklists,
@@ -360,6 +375,9 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
     };
     spawn_update_scheduler(state.clone());
     spawn_builtin_geosite_seed(state.clone());
+    // 面板自己启动（包括主机重启）也是一次新的尝试：重启前留下的「起不来」不算 / The panel's own start (a host reboot
+    // included) is a new attempt too: a failure left from before does not count
+    restart::new_attempt(&state).await;
     spawn_config_reconciler(state.clone());
     spawn_metrics_sampler(state.clone());
     querylog::spawn_querylog_collector(state.clone());
@@ -601,19 +619,17 @@ async fn get_config(
             CONFIG_APPLY_FAILED => "failed",
             _ => "pending",
         });
-    let active = state.control.active_config().await;
-    if let Ok(active) = &active {
-        // 有待应用版本时这里读到的不是正式文件，不拿来记启动时的设置 / With a pending version this document is not the
-        // formal file, so it is not used to record the starting settings
-        restart::note_live(&state, active, pending.is_none().then_some(&document)).await;
+    let (health, active) = tokio::join!(state.control.health(), state.control.active_config());
+    if let (Ok(health), Ok(active)) = (&health, &active) {
+        restart::note_alive(&state, health, active).await;
     }
     // 连不上时退回看的是正式文件：有待应用版本时它不是这里读到的那份 / While unreachable the rollback looks at the formal
     // file, which is not the document read here when a version is pending
     let rollback = match (&active, &pending) {
         (Ok(_), _) => None,
-        (Err(_), None) => restart::offer(&state, &document).await,
+        (Err(_), None) => restart::offer(&state, &document.content).await,
         (Err(_), Some(_)) => match state.config.current().await {
-            Ok(formal) => restart::offer(&state, &formal).await,
+            Ok(formal) => restart::offer(&state, &formal.content).await,
             Err(_) => None,
         },
     };
@@ -682,7 +698,7 @@ async fn overview(
     );
     match results {
         (Ok(health), Ok(active_config), Ok(mut metrics)) => {
-            restart::note_live(&state, &active_config, None).await;
+            restart::note_alive(&state, &health, &active_config).await;
             state
                 .recent_history
                 .lock()
@@ -700,6 +716,7 @@ async fn overview(
                 service_active: Some(true),
                 captured_at_unix: u64::try_from(unix_timestamp()).unwrap_or_default(),
                 trend: load_request_trend(&state).await,
+                restart_rollback: None,
             };
             if let Ok(serialized) = serde_json::to_string(&snapshot)
                 && let Err(error) = state
@@ -723,6 +740,10 @@ async fn overview(
                             .ok()
                             .map(|status| status.active_state == "active");
                         snapshot.trend = load_request_trend(&state).await;
+                        snapshot.restart_rollback = match state.config.current().await {
+                            Ok(formal) => restart::offer(&state, &formal.content).await,
+                            Err(_) => None,
+                        };
                         return Ok(Json(snapshot));
                     }
                     Err(error) => tracing::warn!(%error, "忽略损坏的概览运行快照"),
@@ -1345,6 +1366,12 @@ async fn activate_candidate(
             return Err(map_control_error(error));
         }
     };
+    // 重载是要重启的名单从空变成不空的唯一入口：重载前先记一笔，刚起来的进程启动时的值不会被这次重载盖过去
+    // A reload is the only way the list of settings waiting for a restart goes from empty to not: noting the moment before it
+    // keeps a freshly started process's starting values from being overtaken by this reload
+    if let Ok(health) = state.control.health().await {
+        restart::note_alive(state, &health, &before_reload).await;
+    }
     state
         .config
         .write_pending(result.version_id)
@@ -1656,6 +1683,10 @@ fn spawn_config_reconciler(state: AppState) {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             ticker.tick().await;
+            // 没有人开着页面时也记 KixDNS 启动时的设置、起没起来；先看再应用，刚起来的进程启动时的值先记下
+            // Record KixDNS's starting settings and whether it came up even with no page open; looked at before applying, so a
+            // freshly started process's starting values are noted first
+            restart::observe(&state).await;
             if let Err(error) = reconcile_pending(&state).await {
                 tracing::warn!(error = ?error, "待应用配置收敛失败");
             }
@@ -1671,6 +1702,12 @@ async fn reconcile_pending(state: &AppState) -> anyhow::Result<()> {
         return Ok(());
     }
     let _apply_guard = state.config_apply_lock.lock().await;
+    apply_waiting_locked(state).await
+}
+
+/// 拿着配置锁时应用还在等的待应用版本（重启前那一下也用它） / Apply the version still pending while the config lock is held
+/// (also used just before a restart)
+async fn apply_waiting_locked(state: &AppState) -> anyhow::Result<()> {
     let Some(pending) = state.config.pending().await? else {
         return Ok(());
     };

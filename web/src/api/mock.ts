@@ -661,7 +661,7 @@ function rollbackValues(): Record<string, unknown> | null {
   return keys.length ? Object.fromEntries(keys.map((key) => [key, startedWith?.[key] ?? null])) : null
 }
 const serviceNow = () => restartNoAnswer
-  ? { unit: 'kixdns.service', active_state: 'activating', sub_state: 'auto-restart', main_pid: 0 }
+  ? { unit: 'kixdns.service', active_state: 'activating', sub_state: 'auto-restart', main_pid: 0, did_not_come_up: true }
   : { unit: 'kixdns.service', active_state: serviceRunning ? 'active' : 'inactive', sub_state: serviceRunning ? 'running' : 'dead', main_pid: serviceRunning ? 1428 : 0 }
 
 // 模拟的 KixDNS 启动时读到的设置：只在启动时读取的那些（和内核 GlobalSettings::restart_pending 同一份名单）到重启前一直是这些值，
@@ -907,8 +907,12 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
   const emptyFirstInstall = typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-empty-first-install') === 'true'
   if (path === '/api/v1/overview') {
     if (emptyFirstInstall) throw new Error('KixDNS 已停止')
-    // 起不来的 KixDNS 只剩上次读到的快照，服务正在重试 / A KixDNS that does not come up leaves only the last snapshot, with the service retrying
-    if (restartNoAnswer) return { ...overview, live: false, service_active: false } as T
+    // 起不来的 KixDNS 只剩上次读到的快照，服务正在重试；能退回时和配置页一样带上 / A KixDNS that does not come up leaves only the
+    // last snapshot, with the service retrying; a rollback on offer comes along as on the config page
+    if (restartNoAnswer) {
+      const rollback = rollbackValues()
+      return { ...overview, live: false, service_active: false, ...(rollback ? { restart_rollback: rollback } : {}) } as T
+    }
     const restartPending = restartPendingNow()
     return (restartPending.length ? { ...overview, active_config: { ...overview.active_config, restart_pending: restartPending } } : overview) as T
   }
@@ -942,6 +946,12 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (path.startsWith('/api/v1/service/') && method === 'POST') {
     const stopping = path.endsWith('/stop')
+    // 和真服务端一样：KixDNS 还在时，重启前先应用还在等的待应用版本 / As on the real server: with KixDNS still there, a pending
+    // version still waiting is applied before the restart
+    if (path.endsWith('/restart') && serviceRunning && !restartNoAnswer && config.pending?.version_id && !config.pending.error) {
+      applyPendingInPlace(config.pending.version_id)
+      restartPendingNow()
+    }
     const failsNow = path.endsWith('/restart') && typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-restart-no-answer') === 'true'
     if (failsNow) {
       localStorage.removeItem('kixdns:demo-restart-no-answer')
@@ -1159,9 +1169,16 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     restartNoAnswer = false
     failingKeys = []
     serviceRunning = true
-    // 回来的 KixDNS 读的就是这一份 / The KixDNS that comes back reads this one
-    startedWith = structuredClone(settings)
-    activeSettings = structuredClone(settings)
+    // 回来的 KixDNS 读的是正式文件：上次在用的那份改回这几项（待应用版本里的修改要等它应用了才算）
+    // The KixDNS that comes back reads the formal file: the one last in use with these settings put back (the pending version's
+    // edits count only once it is applied)
+    const formal = { ...(activeSettings ?? settings) }
+    for (const [key, value] of Object.entries(values)) {
+      if (value === null) delete formal[key]
+      else formal[key] = value
+    }
+    startedWith = structuredClone(formal)
+    activeSettings = structuredClone(formal)
     config = { ...config, runtime: { ...config.runtime, active_sha256: sha } }
     activeConfig.sha256 = sha
     return { version_id: result.version_id } as T

@@ -40,9 +40,11 @@ describe('提示条里的设置名', () => {
     const five = ['bind_udp', 'bind_tcp', 'cache_capacity', 'tcp_pool_size', 'doq_pool_size']
     expect(settingNames(five, { all: true })).toBe('UDP\u00a0监听地址、TCP\u00a0监听地址、TCP\u00a0连接池、DoQ\u00a0连接池、缓存容量')
   })
-  it('退回时写出每一项改回的值，带单位；没写的说默认是多少；自动限流只写一项', () => {
-    expect(settingValues({ bind_udp: '0.0.0.0:53', cache_capacity: null, doq_keepalive_interval_ms: 15000, doq_enable_0rtt: false, flow_control_enabled: false, flow_control_max_permits: 512 }))
-      .toBe('UDP\u00a0监听地址\u00a00.0.0.0:53、DoQ\u00a0保活间隔\u00a015000\u00a0毫秒、DoQ\u00a00-RTT\u00a0关闭、缓存容量\u00a0默认\u00a010000\u00a0条、自动限流')
-    expect(settingValues({ doh_health_check_error_threshold: null })).toBe('DoH\u00a0错误阈值（默认值）')
+  it('退回时写出每一项改回的值，带单位；没写的照表单说默认是什么；自动限流合成一项', () => {
+    expect(settingValues({ bind_udp: '0.0.0.0:53', cache_capacity: null, doq_keepalive_interval_ms: 15000, doq_enable_0rtt: null, bind_doh: null, dashmap_shards: null }))
+      .toBe('UDP\u00a0监听地址 0.0.0.0:53、DoH\u00a0监听地址 留空、DoQ\u00a0保活间隔 15000\u00a0毫秒、DoQ\u00a00-RTT 默认开启、缓存容量 默认\u00a010000\u00a0条、缓存分片数 自动')
+    expect(settingValues({ flow_control_enabled: null, flow_control_max_permits: 512 })).toBe('自动限流 关闭')
+    expect(settingValues({ flow_control_max_permits: 512 })).toBe('自动限流的几项数值')
+    expect(settingValues({ doh_health_check_error_threshold: null })).toBe('DoH\u00a0错误阈值 默认值')
   })
 })

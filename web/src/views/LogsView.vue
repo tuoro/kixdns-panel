@@ -202,6 +202,7 @@ const ACTION_NAMES: Record<string, string> = {
   'auth.reset_admin': '重置管理员',
   'config.save': '保存配置',
   'config.restore': '恢复配置版本',
+  'config.restart_rollback': '退回改过的设置',
   'config.apply': '应用配置版本',
   'config.auto_rollback': '自动退回上一版',
   'config.version.delete': '删除配置版本',

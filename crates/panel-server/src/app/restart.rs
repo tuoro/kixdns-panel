@@ -3,12 +3,18 @@
 //! 这些设置（监听地址等）改了照常重载，`KixDNS` 却还用启动时的值，所以一份能重载的配置照样可能在重启时起不来，
 //! 比如新的监听地址被别的程序占着。那时 `KixDNS` 连不上，保存只能存成待应用、等它回来，于是走进死路。
 //!
-//! 这里只记 `KixDNS` 活着时报来的事实：
-//! - 它启动时用的设置：它在跑、没有设置等着重启、文件就是它在用的那份、而且已经稳稳跑了一阵时，文件里的设置就是；
-//! - 它最后报的那几项要重启才生效的设置。
+//! 这里只记 `KixDNS` 报来的事实，按进程认，由服务端自己记（后台每 5 秒那一遍、配置页和概览的每次读）：
+//! - **参考进程**是最近一个稳稳起来的进程：同一个进程隔几秒被看见两次才算稳（起不来的进程只在绑监听前应答几毫秒，
+//!   和加载多久无关）。新进程一稳就换成参考，不管知不知道它启动时的值；
+//! - **启动时的值**：一个进程报「没有设置等着重启」、正式文件又是它在用的那份时，文件里的设置就是它启动时的值。
+//!   参考进程的这份不知道时，不给退回；
+//! - 参考进程最后报的**要重启才生效的设置**；
+//! - **起不来的记号**：连不上时服务失败、或者 systemd 正在重试，就记住；systemd 重试的那一下服务是 `active`，只看
+//!   当下的状态会时有时无。面板发起的每次启动、重启、退回前后都清掉（那是一次新的尝试；请求途中读到的还是上一次的状态），
+//!   面板自己启动时、见到稳的进程时也清。内核更新时的重启不经过这里，新内核加载那几秒要等见到稳的进程才清。
 //!
-//! 起没起来不靠谁发起了重启来判断（配置页、系统页、内核更新、主机重启都一样）：`KixDNS` 连不上、服务在失败或者
-//! systemd 正在重试、正式文件里那几项又和启动时的值不同时，配置页就能把它们写回文件再重启。
+//! 给不给退回、接不接受退回用同一个判断：`KixDNS` 连不上、有起不来的记号、服务没被干净地停掉、正式文件里那几项
+//! 又和启动时的值不同。不看是谁发起的重启（配置页、系统页、内核更新、主机重启都一样）。
 //!
 //! When `KixDNS` does not come back from a restart, put the settings that were changed and took a restart back to
 //! the values it last started with. Those settings (listen addresses and the like) reload as usual while `KixDNS`
@@ -16,14 +22,23 @@
 //! listen address is taken by another program. `KixDNS` is then unreachable, a save can only be kept as pending
 //! until it returns, and there is no way out.
 //!
-//! Only facts reported by a live `KixDNS` are recorded here:
-//! - the settings it started with: while it runs with nothing waiting for a restart, the file is the one in use and
-//!   it has run steadily for a while, the file's settings are those;
-//! - the settings it last reported as waiting for a restart.
+//! Only what `KixDNS` reports is recorded here, per process, by the server itself (the 5-second background pass and
+//! every read by the config page or the overview):
+//! - the **reference process** is the latest one that came up steadily: one process seen twice a few seconds apart
+//!   (a process that cannot come up answers only for milliseconds before binding, however long it loaded). A new
+//!   process becomes the reference once steady, whether or not its starting values are known;
+//! - its **starting values**: when a process reports nothing waiting for a restart and the formal file is the one it
+//!   uses, the file's settings are what it started with. When the reference's are unknown, no rollback is offered;
+//! - the **settings waiting for a restart** the reference last reported;
+//! - the **did-not-come-up mark**: set when, unreachable, the service failed or systemd is retrying it; during a retry
+//!   the service reads `active`, so the state of the moment alone would come and go. Cleared before and after every
+//!   start, restart or rollback the panel sends (a new attempt; what is read during the request is still the last
+//!   attempt's state), on the panel's own start, and when a steady process is seen. A restart during a kernel update
+//!   does not pass here, so while the new kernel loads it is cleared only once a steady process is seen.
 //!
-//! Whether it came up does not depend on who restarted it (the config page, the system page, a kernel update or a
-//! host reboot alike): with `KixDNS` unreachable, the service failed or being retried by systemd, and those settings
-//! in the formal file differing from their starting values, the config page can write them back and restart.
+//! Offering a rollback and accepting one use the same test: `KixDNS` unreachable, the mark set, the service not
+//! cleanly stopped, and those settings in the formal file differing from their starting values. Who restarted it does
+//! not matter (the config page, the system page, a kernel update or a host reboot alike).
 
 use std::collections::BTreeMap;
 
@@ -33,32 +48,49 @@ use axum::http::HeaderMap;
 use axum_extra::extract::CookieJar;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use tokio::sync::Mutex;
 
 use crate::auth::{authenticate, unix_timestamp, verify_csrf};
-use crate::config_store::ConfigDocument;
-use crate::control::ActiveConfig;
+use crate::control::{ActiveConfig, Health};
 use crate::db::CONFIG_APPLY_PENDING;
 use crate::error::{AppError, AppResult};
 use crate::operations::{ServiceAction, ServiceStatus};
 
 use super::{AppState, map_config_error, map_operation_error, reconcile_pending};
 
-const STARTUP_KEY: &str = "kixdns_startup_settings_v1";
-/// 配置刚载入的那几秒不拿来记启动时的值：内核先开控制通道、后绑监听，起不来的新进程也会短暂应答
-///
-/// The first seconds after a config load are not used to record the starting values: the kernel opens its control
-/// channel before binding its listeners, so a new process that cannot come up may still answer briefly
-const STEADY_SECONDS: i64 = 10;
+const STARTUP_KEY: &str = "kixdns_startup_settings_v2";
+/// 没发布过的旧格式，第一次写新格式时删掉 / An unreleased older format, removed on the first write of the new one
+const OLD_STARTUP_KEY: &str = "kixdns_startup_settings_v1";
+/// 同一个进程隔这么久被看见两次才算稳 / How far apart one process must be seen twice to count as steady
+const STEADY_SECONDS: u64 = 3;
+/// 读、改、写记录串行：后台那一遍、配置页、概览的读会同时跑 / Reads, changes and writes of the record are serialised: the
+/// background pass and the config page's and overview's reads run at the same time
+static RECORD_LOCK: Mutex<()> = Mutex::const_new(());
 
-/// `KixDNS` 上次正常启动时用的设置、那份文件的散列，和它最后报的要重启才生效的设置
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct Process {
+    pid: u32,
+    started_at: u64,
+}
+
+/// 还没稳的最新进程：第一次看见时它活了多久、它启动时的值（知道的话）
 ///
-/// The settings `KixDNS` last started with properly, the hash of that file, and the settings it last reported as
-/// waiting for a restart
-#[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
+/// The newest process not yet steady: how long it had run when first seen, and its starting values when known
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Watch {
+    process: Process,
+    first_uptime: u64,
+    settings: Option<Map<String, Value>>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 struct Startup {
-    sha256: String,
-    settings: Map<String, Value>,
+    process: Option<Process>,
+    settings: Option<Map<String, Value>>,
     restart_pending: Vec<String>,
+    watching: Option<Watch>,
+    down: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -66,13 +98,29 @@ pub(super) struct RollbackResponse {
     version_id: i64,
 }
 
+/// 读不到记录时为 `None`（那就不改它）；坏掉的记录当成空的 / `None` when the record cannot be read (it is then left
+/// alone); a damaged record counts as empty
 async fn load(state: &AppState) -> Option<Startup> {
-    let stored = state.database.get_setting(STARTUP_KEY).await.ok()??;
-    serde_json::from_str(&stored).ok()
+    match state.database.get_setting(STARTUP_KEY).await {
+        Ok(Some(stored)) => Some(serde_json::from_str(&stored).unwrap_or_default()),
+        Ok(None) => Some(Startup::default()),
+        Err(error) => {
+            tracing::warn!(%error, "无法读取 KixDNS 启动时的设置");
+            None
+        }
+    }
 }
 
-async fn store(state: &AppState, startup: &Startup) {
-    if let Ok(serialized) = serde_json::to_string(startup)
+async fn update(state: &AppState, change: impl FnOnce(Startup) -> Startup) {
+    let _guard = RECORD_LOCK.lock().await;
+    let Some(before) = load(state).await else {
+        return;
+    };
+    let next = change(before.clone());
+    if next == before {
+        return;
+    }
+    if let Ok(serialized) = serde_json::to_string(&next)
         && let Err(error) = state
             .database
             .set_setting(STARTUP_KEY, serialized, unix_timestamp())
@@ -80,65 +128,54 @@ async fn store(state: &AppState, startup: &Startup) {
     {
         tracing::warn!(%error, "无法记下 KixDNS 启动时的设置");
     }
-}
-
-/// 读到一次活着的 `KixDNS` 以后记下它报的事实。`formal` 只在它就是正式文件时给（有待应用版本时读到的不是）
-///
-/// After reading a live `KixDNS`, record what it reported. `formal` is given only when it is the formal file (with a
-/// pending version the document read is not)
-pub(super) async fn note_live(
-    state: &AppState,
-    active: &ActiveConfig,
-    formal: Option<&ConfigDocument>,
-) {
-    let Some(reported) = &active.restart_pending else {
-        return;
-    };
-    let stored = load(state).await;
-    let next = if reported.is_empty() {
-        let steady = unix_timestamp()
-            .saturating_sub(i64::try_from(active.loaded_at_unix).unwrap_or(i64::MAX))
-            >= STEADY_SECONDS;
-        match formal {
-            Some(formal) if steady && active.sha256 == formal.sha256 => Startup {
-                sha256: formal.sha256.clone(),
-                settings: settings_of(&formal.content),
-                restart_pending: Vec::new(),
-            },
-            _ => return,
-        }
-    } else {
-        let Some(stored) = &stored else { return };
-        Startup {
-            sha256: stored.sha256.clone(),
-            settings: stored.settings.clone(),
-            restart_pending: reported.clone(),
-        }
-    };
-    if stored.as_ref() != Some(&next) {
-        store(state, &next).await;
+    if before == Startup::default() {
+        let _ = state.database.delete_setting(OLD_STARTUP_KEY).await;
     }
 }
 
-/// 可以退回的设置和它们上次启动时的值（`null` 是没写、用默认值）：`KixDNS` 最后报过要重启的、正式文件里仍和启动时
-/// 不同的那几项
+/// 读到一个活着的进程。`formal` 是正式文件里的设置，只在它报「没有设置等着重启」、文件又是它在用的那份时给
 ///
-/// The settings that can go back with the values they last started with (`null` for unset, on the default): those
-/// `KixDNS` last reported as waiting for a restart that still differ from their starting values in the formal file
-fn rollback_values(startup: &Startup, formal: &Value) -> Option<BTreeMap<String, Value>> {
-    let now = settings_of(formal);
-    let values: BTreeMap<String, Value> = startup
-        .restart_pending
-        .iter()
-        .filter(|key| now.get(*key) != startup.settings.get(*key))
-        .map(|key| {
-            (
-                key.clone(),
-                startup.settings.get(key).cloned().unwrap_or(Value::Null),
-            )
-        })
-        .collect();
-    (!values.is_empty()).then_some(values)
+/// A live process was read. `formal` is the formal file's settings, given only when it reports nothing waiting for a
+/// restart and the file is the one it uses
+fn seen_alive(
+    mut startup: Startup,
+    health: &Health,
+    active: &ActiveConfig,
+    formal: Option<Map<String, Value>>,
+) -> Startup {
+    let process = Process {
+        pid: health.pid,
+        started_at: health.started_at_unix,
+    };
+    let reported = active.restart_pending.clone().unwrap_or_default();
+    if startup.process.as_ref() == Some(&process) {
+        if formal.is_some() {
+            startup.settings = formal;
+        }
+        startup.restart_pending = reported;
+        startup.down = false;
+        return startup;
+    }
+    let mut watch = match startup.watching.take() {
+        Some(watch) if watch.process == process => watch,
+        _ => Watch {
+            process: process.clone(),
+            first_uptime: health.uptime_seconds,
+            settings: None,
+        },
+    };
+    if formal.is_some() {
+        watch.settings = formal;
+    }
+    if health.uptime_seconds.saturating_sub(watch.first_uptime) >= STEADY_SECONDS {
+        startup.process = Some(watch.process);
+        startup.settings = watch.settings;
+        startup.restart_pending = reported;
+        startup.down = false;
+    } else {
+        startup.watching = Some(watch);
+    }
+    startup
 }
 
 /// 服务确实没在跑：失败了，或者 systemd 正在隔几秒重试。还在加载（比如读一份大的 `GeoSite`）时不算
@@ -150,16 +187,109 @@ fn did_not_come_up(service: &ServiceStatus) -> bool {
         || (service.active_state == "activating" && service.sub_state == "auto-restart")
 }
 
-/// `KixDNS` 连不上时给配置页的：服务确实起不来、又有可以退回的设置时才给 / For the config page while `KixDNS` is
-/// unreachable: given only when the service really does not come up and there are settings to put back
-pub(super) async fn offer(
-    state: &AppState,
-    formal: &ConfigDocument,
-) -> Option<BTreeMap<String, Value>> {
-    let startup = load(state).await?;
-    let values = rollback_values(&startup, &formal.content)?;
+/// 读到活着的 `KixDNS` 以后记下它报的事实 / After reading a live `KixDNS`, record what it reported
+pub(super) async fn note_alive(state: &AppState, health: &Health, active: &ActiveConfig) {
+    // 只有它报「没有设置等着重启」时才用得上正式文件 / The formal file is of use only when nothing waits for a restart
+    let formal = if active.restart_pending.as_deref() == Some(&[]) {
+        match state.config.current().await {
+            Ok(formal) if formal.sha256 == active.sha256 => Some(settings_of(&formal.content)),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    update(state, |startup| seen_alive(startup, health, active, formal)).await;
+}
+
+/// `KixDNS` 连不上时看一眼服务：起不来就记住 / With `KixDNS` unreachable, look at the service and remember a failure to
+/// come up
+async fn note_unreachable(state: &AppState) -> Option<ServiceStatus> {
     let service = state.operations.service_status().await.ok()?;
-    did_not_come_up(&service).then_some(values)
+    if did_not_come_up(&service) {
+        update(state, |startup| Startup {
+            down: true,
+            ..startup
+        })
+        .await;
+    }
+    Some(service)
+}
+
+/// 后台每 5 秒那一遍：没有人开着配置页、概览时也照样记 / The 5-second background pass: recorded even with no config page
+/// or overview open
+pub(super) async fn observe(state: &AppState) {
+    match tokio::join!(state.control.health(), state.control.active_config()) {
+        (Ok(health), Ok(active)) => note_alive(state, &health, &active).await,
+        _ => {
+            note_unreachable(state).await;
+        }
+    }
+}
+
+/// 一次新的尝试（启动、重启、退回，面板自己启动时也算）：上一次起不来的结论不算到它头上
+///
+/// A new attempt (a start, restart or rollback, and the panel's own start): the last attempt's failure is not held
+/// against it
+pub(super) async fn new_attempt(state: &AppState) {
+    update(state, |startup| Startup {
+        down: false,
+        ..startup
+    })
+    .await;
+}
+
+/// 给服务状态用的：起不来（当下失败或重试，或者有记号、服务没停、`KixDNS` 连不上）
+///
+/// For the service status: not coming up (failing or being retried right now, or the mark set with the service not
+/// stopped and `KixDNS` unreachable)
+pub(super) async fn not_up(state: &AppState, service: &ServiceStatus) -> bool {
+    if did_not_come_up(service) {
+        update(state, |startup| Startup {
+            down: true,
+            ..startup
+        })
+        .await;
+        return true;
+    }
+    service.active_state != "inactive"
+        && load(state).await.is_some_and(|startup| startup.down)
+        && state.control.active_config().await.is_err()
+}
+
+/// 可以退回的设置和它们上次启动时的值（`null` 是没写、用默认值）：参考进程最后报过要重启的、正式文件里仍和启动时
+/// 不同的那几项；启动时的值不知道时没有
+///
+/// The settings that can go back with the values they last started with (`null` for unset, on the default): those the
+/// reference process last reported as waiting for a restart that still differ from their starting values in the formal
+/// file; none when the starting values are unknown
+fn rollback_values(startup: &Startup, formal: &Value) -> Option<BTreeMap<String, Value>> {
+    let started = startup.settings.as_ref()?;
+    let now = settings_of(formal);
+    let values: BTreeMap<String, Value> = startup
+        .restart_pending
+        .iter()
+        .filter(|key| now.get(*key) != started.get(*key))
+        .map(|key| {
+            (
+                key.clone(),
+                started.get(key).cloned().unwrap_or(Value::Null),
+            )
+        })
+        .collect();
+    (!values.is_empty()).then_some(values)
+}
+
+/// `KixDNS` 连不上时给配置页、概览的，也是退回接口接受的条件：有起不来的记号、服务没被干净地停掉、还有可以退回的设置
+///
+/// For the config page and the overview while `KixDNS` is unreachable, and the condition the rollback accepts: the mark
+/// set, the service not cleanly stopped, and settings to put back
+pub(super) async fn offer(state: &AppState, formal: &Value) -> Option<BTreeMap<String, Value>> {
+    let service = note_unreachable(state).await?;
+    let startup = load(state).await?;
+    if !startup.down || service.active_state == "inactive" {
+        return None;
+    }
+    rollback_values(&startup, formal)
 }
 
 /// 把那几项写回启动时的值，直接写进正式文件再重启（`KixDNS` 不在，没法让它先校验）。改的只是正式文件，也就是这次
@@ -186,13 +316,11 @@ pub(super) async fn roll_back(
         ));
     }
     let formal = state.config.current().await.map_err(map_config_error)?;
-    let Some(values) = load(&state)
-        .await
-        .and_then(|startup| rollback_values(&startup, &formal.content))
-    else {
+    let Some(values) = offer(&state, &formal.content).await else {
         return Err(AppError::Conflict(
             "restart_rollback_missing",
-            "没有可以退回的设置：改过的设置已经和上次启动时一样".to_owned(),
+            "没有可以退回的设置：KixDNS 没有在起不来，或者改过的设置已经和上次启动时一样"
+                .to_owned(),
         ));
     };
     let desired = state.config.desired().await.map_err(map_config_error)?;
@@ -231,11 +359,14 @@ pub(super) async fn roll_back(
             .map_err(map_config_error)?,
         None => written,
     };
+    new_attempt(&state).await;
     state
         .operations
         .service_request(ServiceAction::Restart)
         .await
         .map_err(map_operation_error)?;
+    // 请求途中读到的旧状态不算这一次的 / An old state read during the request does not count against this attempt
+    new_attempt(&state).await;
     let reconcile_state = state.clone();
     tokio::spawn(async move {
         if let Err(error) = reconcile_pending(&reconcile_state).await {
@@ -298,15 +429,137 @@ mod tests {
 
     use super::*;
 
-    fn startup(settings: &Value, restart_pending: &[&str]) -> Startup {
-        Startup {
-            sha256: "s".to_owned(),
-            settings: settings.as_object().cloned().unwrap_or_default(),
-            restart_pending: restart_pending
-                .iter()
-                .map(|key| (*key).to_owned())
-                .collect(),
+    fn health(pid: u32, uptime_seconds: u64) -> Health {
+        serde_json::from_value(json!({
+            "protocol_version": 1, "status": "ok", "pid": pid, "version": "test", "upstream_commit": "test",
+            "patchset": "p0", "started_at_unix": u64::from(pid) * 100, "uptime_seconds": uptime_seconds,
+            "config_generation": 1, "capabilities": [],
+        }))
+        .unwrap()
+    }
+
+    fn active(restart_pending: Option<&[&str]>) -> ActiveConfig {
+        let mut active = json!({
+            "protocol_version": 1, "generation": 1, "sha256": "s", "loaded_at_unix": 0, "reload_sequence": 1,
+            "last_reload": { "success": true, "error": null },
+        });
+        if let Some(pending) = restart_pending {
+            active["restart_pending"] = json!(pending);
         }
+        serde_json::from_value(active).unwrap()
+    }
+
+    fn settings(value: &Value) -> Map<String, Value> {
+        value.as_object().cloned().unwrap()
+    }
+
+    fn put_back(startup: &Startup, file: &Value) -> Option<BTreeMap<String, Value>> {
+        rollback_values(startup, &json!({ "settings": file }))
+    }
+
+    /// 重启成功后很快又改了同一项：记下的是这次启动时的值；起不来的进程只应答一下，成不了参考
+    /// The same setting changed again soon after a successful restart: the values recorded are this start's; a process
+    /// that cannot come up answers only once and never becomes the reference
+    #[test]
+    fn the_reference_follows_each_process_that_came_up() {
+        let a = json!({ "bind_udp": "0.0.0.0:53" });
+        let b = json!({ "bind_udp": "0.0.0.0:5300" });
+        let c = json!({ "bind_udp": "0.0.0.0:5301" });
+        // 面板升级时 A 已经跑了很久：隔几秒看见两次就成参考 / A has run for long when the panel is upgraded: seen twice a
+        // few seconds apart, it becomes the reference
+        let mut startup = seen_alive(
+            Startup::default(),
+            &health(1, 86_400),
+            &active(Some(&[])),
+            Some(settings(&a)),
+        );
+        startup = seen_alive(
+            startup,
+            &health(1, 86_405),
+            &active(Some(&[])),
+            Some(settings(&a)),
+        );
+        assert_eq!(startup.settings, Some(settings(&a)));
+        // 改成 B、重启：新进程刚起来时记下 B，一秒后马上又改成 C（重载了，名单不为空）；几秒后再被看见，B 是它的值
+        // Changed to B and restarted: the new process records B on first sight, and a second later C is saved (reloaded,
+        // so the list is not empty); seen again seconds later, B is its value
+        startup = seen_alive(
+            startup,
+            &health(2, 1),
+            &active(Some(&[])),
+            Some(settings(&b)),
+        );
+        assert_eq!(startup.settings, Some(settings(&a)));
+        startup = seen_alive(startup, &health(2, 5), &active(Some(&["bind_udp"])), None);
+        assert_eq!(startup.settings, Some(settings(&b)));
+        assert_eq!(startup.restart_pending, ["bind_udp"]);
+        // 重启后 C 绑不上：起不来的进程只应答一下，成不了参考 / Restarted and C cannot bind: the failing process answers once and
+        // never becomes the reference
+        startup = seen_alive(
+            startup,
+            &health(3, 9),
+            &active(Some(&[])),
+            Some(settings(&c)),
+        );
+        startup.down = true;
+        let b_back = Some(BTreeMap::from([(
+            "bind_udp".to_owned(),
+            json!("0.0.0.0:5300"),
+        )]));
+        assert_eq!(put_back(&startup, &c), b_back);
+        // 改回 A 也退回 B / Changed back to A, it still goes back to B
+        assert_eq!(put_back(&startup, &a), b_back);
+        // 起不来的记号要稳的进程才清 / Only a steady process clears the mark
+        assert!(seen_alive(startup.clone(), &health(4, 1), &active(Some(&[])), None).down);
+        let later = seen_alive(
+            seen_alive(startup, &health(4, 1), &active(Some(&[])), None),
+            &health(4, 6),
+            &active(Some(&[])),
+            None,
+        );
+        assert!(!later.down);
+    }
+
+    /// 停着时改、存成待应用、启动：起来的进程读的是正式文件，应用待应用版本以后名单不为空，它照样成参考、带着启动时的值
+    /// Edited while stopped, kept as pending, then started: the process reads the formal file, and after the pending
+    /// version is applied the list is not empty; it still becomes the reference with its starting values
+    #[test]
+    fn a_start_with_a_pending_version_still_records_the_starting_values() {
+        let a = json!({ "bind_udp": "0.0.0.0:53" });
+        let mut startup = seen_alive(
+            Startup::default(),
+            &health(2, 0),
+            &active(Some(&[])),
+            Some(settings(&a)),
+        );
+        startup = seen_alive(startup, &health(2, 4), &active(Some(&["bind_udp"])), None);
+        assert_eq!(startup.settings, Some(settings(&a)));
+        assert_eq!(startup.restart_pending, ["bind_udp"]);
+    }
+
+    /// 稳稳起来却不知道启动时的值（旧内核不报名单）：它照样换成参考，以后起不来也不拿更早的值去退
+    /// Steadily up with unknown starting values (an old kernel that reports no list): it still becomes the reference, and a
+    /// later failure does not roll back to older values
+    #[test]
+    fn an_unknown_start_replaces_the_old_reference() {
+        let a = json!({ "bind_udp": "0.0.0.0:53" });
+        let mut startup = Startup {
+            process: Some(Process {
+                pid: 1,
+                started_at: 100,
+            }),
+            settings: Some(settings(&a)),
+            restart_pending: vec!["bind_udp".to_owned()],
+            ..Startup::default()
+        };
+        startup = seen_alive(startup, &health(2, 30), &active(None), None);
+        startup = seen_alive(startup, &health(2, 40), &active(None), None);
+        startup.down = true;
+        assert_eq!(startup.settings, None);
+        assert_eq!(
+            put_back(&startup, &json!({ "bind_udp": "0.0.0.0:5300" })),
+            None
+        );
     }
 
     /// 只退最后报过要重启、文件里仍和启动时不同的那几项；退过的、改回原值的不再提
@@ -314,21 +567,27 @@ mod tests {
     /// changed back are not offered
     #[test]
     fn offers_only_the_reported_settings_that_still_differ() {
-        let started = startup(
-            &json!({ "bind_udp": "0.0.0.0:53", "min_ttl": 0 }),
-            &["bind_udp", "cache_capacity"],
-        );
-        let file = json!({ "settings": { "bind_udp": "0.0.0.0:5300", "cache_capacity": 30000, "min_ttl": 30 } });
+        let started = Startup {
+            settings: Some(settings(&json!({ "bind_udp": "0.0.0.0:53", "min_ttl": 0 }))),
+            restart_pending: vec!["bind_udp".to_owned(), "cache_capacity".to_owned()],
+            ..Startup::default()
+        };
+        let file = json!({ "bind_udp": "0.0.0.0:5300", "cache_capacity": 30000, "min_ttl": 30 });
         assert_eq!(
-            rollback_values(&started, &file),
+            put_back(&started, &file),
             Some(BTreeMap::from([
                 ("bind_udp".to_owned(), json!("0.0.0.0:53")),
                 ("cache_capacity".to_owned(), Value::Null),
             ]))
         );
-        let put_back = json!({ "settings": { "bind_udp": "0.0.0.0:53", "min_ttl": 30 } });
-        assert_eq!(rollback_values(&started, &put_back), None);
-        assert_eq!(rollback_values(&startup(&json!({}), &[]), &file), None);
+        assert_eq!(
+            put_back(
+                &started,
+                &json!({ "bind_udp": "0.0.0.0:53", "min_ttl": 30 })
+            ),
+            None
+        );
+        assert_eq!(put_back(&Startup::default(), &file), None);
     }
 
     /// 起不来才算：失败、或者 systemd 正在重试；还在加载、停着都不算
@@ -340,6 +599,7 @@ mod tests {
             active_state: active.to_owned(),
             sub_state: sub.to_owned(),
             main_pid: 0,
+            did_not_come_up: false,
         };
         assert!(did_not_come_up(&status("failed", "failed")));
         assert!(did_not_come_up(&status("activating", "auto-restart")));

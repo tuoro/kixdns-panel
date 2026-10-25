@@ -1,6 +1,6 @@
 import { ref } from 'vue'
 import { apiRequest, isPanelDown } from '../api/client'
-import type { ConfigDocument, ServiceStatus } from '../api/types'
+import type { ConfigApplyResult, ConfigDocument, ServiceStatus } from '../api/types'
 import { errorMessage } from '../utils'
 import { useSession } from './useSession'
 import { useToast } from './useToast'
@@ -37,6 +37,9 @@ export async function waitForKixdns(): Promise<{ outcome: 'back' | 'silent' | 'g
       return null
     })
     if (!session.authenticated.value) return { outcome: 'gone', doc: null }
+    // 服务端已经看出它起不来、能退回：不用等满十五秒 / The server already sees it is not coming up and can roll back: no need
+    // to wait out the fifteen seconds
+    if (doc?.runtime.restart_rollback) return { outcome: 'silent', doc }
     if (doc?.runtime.active_sha256 && seen) {
       kixdnsBack()
       return { outcome: 'back', doc }
@@ -56,12 +59,17 @@ export function kixdnsBack(): void {
   useToast().dismiss(silentToast)
   silentToast = null
 }
+// 到了配置页、提示条已经在说能退回：「到配置页退回」那条提示过时了 / On the config page with the notice already offering the
+// rollback: the 「到配置页退回」 toast is stale
+export const dismissNoAnswer = kixdnsBack
 /** 等不到它回来时说的话；重启后起不来、配置页能退回改过的设置时指过去 / What is said when it does not come back; after a restart
  *  with changed settings the config page can put back, it points there */
-export function sayNoAnswer(verb: '启动' | '重启', doc: ConfigDocument | null, onConfigPage = false): void {
-  // 在配置页上、能退回时由提示条说，不另起一条 / On the config page with a rollback on offer the notice says it, with no second copy
-  if (doc?.runtime.restart_rollback && onConfigPage) return
-  const text = doc?.runtime.restart_rollback ? `KixDNS ${verb}后没有起来，可以到配置页退回改过的设置` : `KixDNS ${verb}后没有回应，查看日志了解原因`
+export function sayNoAnswer(verb: '启动' | '重启', doc: ConfigDocument | null, rollbackShown = false): void {
+  // 这一页的提示条已经在说能退回（配置页、概览、诊断）：不另起一条 / This page's notice already offers the rollback (the config
+  // page, the overview, diagnostics): no second copy
+  if (doc?.runtime.restart_rollback && rollbackShown) return
+  // 起不来、能退回时和各页页头一样叫「启动失败」 / Not coming up with a rollback on offer, it is 启动失败 as in every page header
+  const text = doc?.runtime.restart_rollback ? 'KixDNS 启动失败，可以到配置页退回改过的设置' : `KixDNS ${verb}后没有回应，查看日志了解原因`
   kixdnsBack()
   silentToast = useToast().error(text)
 }
@@ -72,14 +80,15 @@ export function sayNoAnswer(verb: '启动' | '重启', doc: ConfigDocument | nul
 export function useServiceStart() {
   const toast = useToast()
   const starting = ref(false)
-  async function start(): Promise<ServiceStatus | null> {
+  async function start(options: { rollbackShown?: () => boolean } = {}): Promise<ServiceStatus | null> {
     if (starting.value) return null
     starting.value = true
     try {
       const status = await apiRequest<ServiceStatus>('/api/v1/service/start', { method: 'POST' })
       const { outcome, doc } = await waitForKixdns()
-      if (outcome === 'back') toast.success('KixDNS 服务已启动')
-      else if (outcome === 'silent') sayNoAnswer('启动', doc)
+      const applied = outcome === 'back' ? await applyWaiting(doc) : null
+      if (outcome === 'back') toast.success(applied ? `KixDNS 服务已启动，${applied}` : 'KixDNS 服务已启动')
+      else if (outcome === 'silent') sayNoAnswer('启动', doc, options.rollbackShown?.() ?? false)
       return status
     } catch (error) {
       toast.error(errorMessage(error))
@@ -94,6 +103,10 @@ export function useServiceStart() {
 // 正在重启、等 KixDNS 回来：页头写「正在重启」，保存、应用先等它 / Restarting and waiting for KixDNS: the header reads
 // 正在重启, and saving or applying waits for it
 export const restartingKixdns = ref(false)
+// 正在退回改过的设置：回来以后整份换上退回后的文件，配置页这期间不能改（离开再回来的那一页也一样）
+// Rolling back the changed settings: the rolled-back file replaces the page on return, so the config page cannot be edited
+// meanwhile (a page opened again after leaving included)
+export const rollingBackKixdns = ref(false)
 
 // 在说「改过的设置要重启才生效」的地方直接重启 KixDNS（配置页），确认由调用方先问。`afterBack` 在它回来以后、说「已重启」之前跑
 // （整份重读），读完才放开按钮；还能退回改过的设置时，`rollback` 为真，改调退回的接口
@@ -105,31 +118,45 @@ export const restartingKixdns = ref(false)
 // Back with a pending version still waiting (the confirm promised 重启后应用, or the rollback stored one): it is applied on the
 // spot rather than waiting for the 5-second background pass, so 待应用 does not hang in the header right after 已重启; a failure
 // is left to that pass
-async function applyWaiting(doc: ConfigDocument | null): Promise<void> {
+// 只有真的应用了才算（KixDNS 又连不上时服务端照样回 200，只是还待应用）；说「已生效」还是「已应用」照它报的要不要重启
+// Only a real apply counts (with KixDNS unreachable again the server still answers 200, just still pending); whether it reads
+// 已生效 or 已应用 follows whether it reports settings waiting for a restart
+async function applyWaiting(doc: ConfigDocument | null): Promise<string | null> {
   const pending = doc?.pending
-  if (!pending?.version_id || pending.error) return
-  await apiRequest(`/api/v1/config/versions/${pending.version_id}/apply`, { method: 'POST' }).catch(() => undefined)
+  if (!pending?.version_id || pending.error) return null
+  const id = pending.version_id
+  const result = await apiRequest<ConfigApplyResult>(`/api/v1/config/versions/${id}/apply`, { method: 'POST' }).catch(() => null)
+  if (result?.apply_state !== 'applied') return null
+  return `版本\u00a0#${id} ${result.active_config?.restart_pending?.length ? '已应用' : '已生效'}`
 }
 
 export function useServiceRestart() {
   const toast = useToast()
-  async function restart(options: { beforeSend?: () => void; afterBack?: () => Promise<void>; onConfigPage?: () => boolean; rollback?: boolean } = {}): Promise<'back' | 'silent' | 'gone' | 'failed'> {
+  async function restart(options: { beforeSend?: () => void; afterBack?: () => Promise<void>; rollbackShown?: () => boolean; rollback?: boolean } = {}): Promise<'back' | 'silent' | 'gone' | 'failed'> {
     if (restartingKixdns.value) return 'failed'
     restartingKixdns.value = true
+    rollingBackKixdns.value = Boolean(options.rollback)
     try {
       options.beforeSend?.()
       await apiRequest(options.rollback ? '/api/v1/config/restart-rollback' : '/api/v1/service/restart', { method: 'POST' })
       const { outcome, doc } = await waitForKixdns()
-      if (outcome === 'back') await applyWaiting(doc)
+      const applied = outcome === 'back' ? await applyWaiting(doc) : null
       await options.afterBack?.().catch(() => undefined)
-      if (outcome === 'back') toast.success(options.rollback ? '已退回原来的设置，KixDNS 服务已重启' : 'KixDNS 服务已重启')
-      else if (outcome === 'silent') sayNoAnswer('重启', doc, options.onConfigPage?.() ?? false)
+      // 回来时顺手应用了待应用的版本：一条提示说完，不另起「版本 #N 已生效」 / A pending version applied on return: one toast
+      // says both, with no separate 版本 #N 已生效
+      const restarted = options.rollback ? '已退回原来的设置，KixDNS 服务已重启' : 'KixDNS 服务已重启'
+      if (outcome === 'back') toast.success(applied ? `${restarted}，${applied}` : restarted)
+      else if (outcome === 'silent') sayNoAnswer('重启', doc, options.rollbackShown?.() ?? false)
       return outcome
     } catch (error) {
       toast.error(errorMessage(error))
+      // 没发出去或者被拒（比如退回时它已经回来了）：照样重读，页面不留着过时的状态 / Not sent or refused (say it was already
+      // back when the rollback arrived): the page is read again all the same, so no stale state stays
+      await options.afterBack?.().catch(() => undefined)
       return 'failed'
     } finally {
       restartingKixdns.value = false
+      rollingBackKixdns.value = false
     }
   }
   return { restart }

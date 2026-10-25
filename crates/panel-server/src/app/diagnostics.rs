@@ -13,7 +13,8 @@ use crate::operations::{
 };
 
 use super::{
-    AppState, map_config_error, map_control_error, map_operation_error, reconcile_pending,
+    AppState, apply_waiting_locked, map_config_error, map_control_error, map_operation_error,
+    reconcile_pending, restart,
 };
 
 const DIAGNOSTICS_TRACE_CAPABILITY: &str = "diagnostics_trace_v1";
@@ -63,12 +64,13 @@ async fn service_status(
     jar: CookieJar,
 ) -> AppResult<Json<ServiceStatus>> {
     authenticate(&state.database, &jar).await?;
-    state
+    let mut status = state
         .operations
         .service_status()
         .await
-        .map(Json)
-        .map_err(map_operation_error)
+        .map_err(map_operation_error)?;
+    status.did_not_come_up = restart::not_up(&state, &status).await;
+    Ok(Json(status))
 }
 
 async fn service_action(
@@ -88,11 +90,30 @@ async fn service_action(
     } else {
         None
     };
+    // 启动、重启是一次新的尝试：上一次起不来的结论不算到它头上 / A start or restart is a new attempt: the last failure is
+    // not held against it
+    if matches!(parsed, ServiceAction::Start | ServiceAction::Restart) {
+        restart::new_attempt(&state).await;
+    }
+    if matches!(parsed, ServiceAction::Restart) && state.control.active_config().await.is_ok() {
+        // KixDNS 还在：先应用还在等的待应用版本，一次重启就把它里面要重启才生效的设置也用上；再记一遍它报的名单
+        // KixDNS is still there: apply the version still pending first, so one restart also brings in the settings
+        // in it that take a restart; then note the list it reports once more
+        if let Err(error) = apply_waiting_locked(&state).await {
+            tracing::warn!(error = ?error, "重启前应用待应用配置失败");
+        }
+        restart::observe(&state).await;
+    }
     state
         .operations
         .service_request(parsed)
         .await
         .map_err(map_operation_error)?;
+    // 服务助手等 systemd 做完才回：请求途中读到的旧状态（上一次的重试）不算这一次的 / The service helper answers once systemd
+    // is done: an old state read during the request (the last attempt's retry) does not count against this one
+    if matches!(parsed, ServiceAction::Start | ServiceAction::Restart) {
+        restart::new_attempt(&state).await;
+    }
     drop(apply_guard);
     if matches!(parsed, ServiceAction::Start | ServiceAction::Restart) {
         let reconcile_state = state.clone();

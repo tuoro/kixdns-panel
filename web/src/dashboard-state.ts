@@ -14,7 +14,9 @@ function serviceStopped(overview: Overview | null, service: ServiceStatus | null
 // 启动失败、正在启动、正在停止：服务没在正常运行，读不到数据是因为它，不是面板和内核之间断了
 // Failed, starting or stopping: the service is not running normally, which is why there is no data — not a broken link to the kernel
 function serviceNotRunning(service: ServiceStatus | null): boolean {
-  return ['failed', 'activating', 'deactivating'].includes(service?.active_state ?? '')
+  // 服务端看出它起不来时也算（systemd 重试的那一下服务是 active） / Also when the server sees it not coming up (during a systemd
+  // retry the service reads active)
+  return Boolean(service?.did_not_come_up) || ['failed', 'activating', 'deactivating'].includes(service?.active_state ?? '')
 }
 
 export function dashboardRuntimeState(

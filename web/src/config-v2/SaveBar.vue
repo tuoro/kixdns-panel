@@ -24,6 +24,9 @@ const emit = defineEmits<{ rule: [id: number]; group: [id: string]; reveal: [lin
 const toast = useToast()
 // 手机上主按钮只写「保存」，给「已修改 N 处」留出一行 / On a phone the main button just says 保存, leaving room for 已修改 N 处
 const phone = usePhone()
+// 手机上保存条放不下「保存后等连上 KixDNS 再应用」那半句（会画到按钮下面）：按钮已经写着「保存为待应用」，不写它
+// On a phone the bar cannot fit 「保存后等连上 KixDNS 再应用」 (it ran under the buttons): the button already reads 保存为待应用, so it
+// is left out
 const tight = useTightSaveBar()
 
 // 页头发起的「现在应用」不进保存条 / An apply started from the header never shows in the bar
@@ -61,7 +64,7 @@ function onKey(event: KeyboardEvent): void {
     else toast.info('没有要保存的修改')
   }
 }
-const RESTARTING_NOTE = 'KixDNS 正在重启，回来以后再保存'
+const RESTARTING_NOTE = 'KixDNS 正在重启，重启完再保存'
 function saveDraft(): void {
   // 页头的「现在应用」还在跑：按钮看着停用，点了说一句为什么（和 Ctrl+S 一样；手机上看不到 title）
   // The header's 现在应用 is still running: the button looks disabled and a tap says why (as Ctrl+S does; phones never show the title)
@@ -159,8 +162,8 @@ function discard(): void {
         <!-- 有内核不支持的 CNAME 回答：保存不了，页面上方的提示说是哪几处 / CNAME answers the kernel does not support: saving cannot happen, and the notice above names them -->
         <template v-else-if="cnameBlocked"><span class="ui-savebar__verdict">保存不了</span><small>内核不支持 CNAME 回答，见页面上方</small></template>
         <template v-else-if="validated"><span class="ui-dot" aria-hidden="true"></span><span class="ui-savebar__detail"><UiDotText :parts="tight ? ['校验通过'] : ['校验通过', '可以保存']" /></span></template>
-        <template v-else-if="changeCount === 0"><span class="ui-dot ui-dot--ink" aria-hidden="true"></span><span class="ui-savebar__detail">{{ jsonDirty ? 'JSON 有修改' : '右侧规则的修改还没放进草稿' }}<small v-if="deferSave"> · {{ deferNote }}</small></span></template>
-        <template v-else><span class="ui-dot ui-dot--ink" aria-hidden="true"></span><span class="ui-savebar__detail"><button class="ui-objlink savebar__review" type="button" aria-haspopup="dialog" title="看看改了哪些" @click="review">已修改 <b class="ui-savebar__count"><UiNumber :value="String(changeCount)" /></b> 处</button><small v-if="deferSave"> · {{ deferNote }}</small></span></template>
+        <template v-else-if="changeCount === 0"><span class="ui-dot ui-dot--ink" aria-hidden="true"></span><span class="ui-savebar__detail">{{ jsonDirty ? 'JSON 有修改' : '右侧规则的修改还没放进草稿' }}<small v-if="deferSave && !phone"> · {{ deferNote }}</small></span></template>
+        <template v-else><span class="ui-dot ui-dot--ink" aria-hidden="true"></span><span class="ui-savebar__detail"><button class="ui-objlink savebar__review" type="button" aria-haspopup="dialog" title="看看改了哪些" @click="review">已修改 <b class="ui-savebar__count"><UiNumber :value="String(changeCount)" /></b> 处</button><small v-if="deferSave && !phone"> · {{ deferNote }}</small></span></template>
       </p>
       <!-- JSON 写错时只留「放弃修改」：改不好也能回到草稿 / With broken JSON only 放弃修改 stays, so the way back to the draft is always there -->
       <button v-if="jsonError && !phone" class="ui-btn ui-btn--secondary savebar__discard" type="button" @click="discard">放弃修改</button>

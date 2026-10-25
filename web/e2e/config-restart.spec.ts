@@ -82,16 +82,17 @@ test('重启以后 KixDNS 没起来：页头和提示条照实说，退回改过
   await page.getByRole('alertdialog').getByRole('button', { name: '重启服务', exact: true }).click()
   // 等它回来的时候按钮一直按不下，页头写「正在重启」 / While waiting the button stays held and the header reads 正在重启
   await expect(notice.getByRole('button', { name: '重启 KixDNS', exact: true })).toHaveAttribute('aria-busy', 'true')
-  await expect(page.getByText('正在重启', { exact: true }).locator('visible=true')).toHaveCount(1)
+  await expect(page.getByText(/正在重启$/).locator('visible=true')).toHaveCount(1)
   await expect(page.getByText('KixDNS 服务已重启')).toHaveCount(0)
   // 一直往前拨钟，直到等满十五秒：配置页上由提示条说，不另起提示 / Move the clock on until the fifteen seconds are up: on the
   // config page the notice says it, with no toast besides
   await expect(async () => {
     await page.clock.fastForward(2_000)
-    await expect(notice).toContainText(/重启后 KixDNS 没有起来，改过的设置可能用不了：UDP\s监听地址。/, { timeout: 300 })
+    await expect(notice).toContainText(/可能是改过的设置让 KixDNS\s起不来：UDP\s监听地址。/, { timeout: 300 })
   }).toPass()
   await expect(page.locator('.toast', { hasText: '没有' })).toHaveCount(0)
-  await expect(page.getByText(/没有起来$/).locator('visible=true').first()).toBeVisible()
+  // 状态由页头说，和概览、系统页同一个词 / The header says the state, in the same word as the overview and the system page
+  await expect(page.getByText(/启动失败$/).locator('visible=true').first()).toBeVisible()
 
   await notice.getByRole('button', { name: '退回原来的设置并重启', exact: true }).click()
   const confirm = page.getByRole('alertdialog')
@@ -112,7 +113,7 @@ test('重启以后 KixDNS 没起来：页头和提示条照实说，退回改过
   await expect(page.locator('.toast', { hasText: '已生效' })).toHaveCount(0)
 })
 
-test('重启以后 KixDNS 没起来：在系统页再启动一次照样起不来，退回的出路还在 @responsive', async ({ page }) => {
+test('重启以后 KixDNS 没起来：在系统页再重启一次照样起不来，退回的出路还在 @responsive', async ({ page }) => {
   await page.clock.install()
   await saveListenerChange(page)
   await page.evaluate(() => localStorage.setItem('kixdns:demo-restart-no-answer', 'true'))
@@ -121,21 +122,28 @@ test('重启以后 KixDNS 没起来：在系统页再启动一次照样起不来
   await page.getByRole('alertdialog').getByRole('button', { name: '重启服务', exact: true }).click()
   await expect(async () => {
     await page.clock.fastForward(2_000)
-    await expect(notice).toContainText('重启后 KixDNS 没有起来', { timeout: 300 })
+    await expect(notice).toContainText('可能是改过的设置让 KixDNS', { timeout: 300 })
   }).toPass()
-  // 去系统页再启动一次：文件没变，照样起不来；系统页和概览一样说「正在启动」，不说「已停止」
-  // Start once more from the system page: the file is unchanged, so it fails again; the system page says 正在启动 as the overview
-  // does, not 已停止
+  // 系统页和配置页、概览一样说「启动失败」；systemd 在重试时给「重启」「停止」，不给「启动」
+  // The system page says 启动失败 as the config page and overview do; while systemd retries it offers 重启 and 停止, not 启动
   await page.getByRole('link', { name: '系统', exact: true }).locator('visible=true').first().click()
-  await expect(page.getByText('正在启动').locator('visible=true').first()).toBeVisible()
-  await page.getByRole('button', { name: '启动', exact: true }).click()
-  await expect(async () => {
-    await page.clock.fastForward(2_000)
-    await expect(page.locator('.toast', { hasText: 'KixDNS 启动后没有起来，可以到配置页退回改过的设置' })).toBeVisible({ timeout: 300 })
-  }).toPass()
-  await expect(page.getByText('KixDNS 服务已启动')).toHaveCount(0)
+  await expect(page.getByText('启动失败').locator('visible=true').first()).toBeVisible()
+  await expect(page.getByRole('button', { name: '启动', exact: true })).toHaveCount(0)
+  await page.getByRole('button', { name: '重启', exact: true }).click()
+  await page.getByRole('alertdialog').getByRole('button', { name: '重启服务', exact: true }).click()
+  // 文件没变，照样起不来；服务端一看出来就说，不等满十五秒 / The file is unchanged, so it fails again; said as soon as the server
+  // sees it, without waiting out fifteen seconds
+  const away = page.locator('.toast', { hasText: 'KixDNS 启动失败，可以到配置页退回改过的设置' })
+  await expect(away).toBeVisible()
+  await expect(page.getByText('KixDNS 服务已重启')).toHaveCount(0)
+  // 诊断页也一样说「启动失败」，指到配置页 / The diagnostics page says 启动失败 too and points to the config page
+  await page.getByRole('link', { name: '诊断', exact: true }).locator('visible=true').first().click()
+  await expect(page.locator('.ui-notice', { hasText: 'KixDNS 启动失败' })).toBeVisible()
+  await expect(page.getByRole('link', { name: '去配置页', exact: true })).toBeVisible()
   await page.getByRole('link', { name: /^(配置|基础设置)$/ }).locator('visible=true').first().click()
   await expect(notice.getByRole('button', { name: '退回原来的设置并重启', exact: true })).toBeVisible()
+  // 到了配置页，提示条在说，那条提示收起 / On the config page the notice speaks, so the toast goes
+  await expect(away).toHaveCount(0)
 })
 
 test('重启以后 KixDNS 没起来时：草稿有修改先保存，存成待应用以后才能退回 @responsive', async ({ page }) => {
@@ -147,14 +155,38 @@ test('重启以后 KixDNS 没起来时：草稿有修改先保存，存成待应
   await page.getByRole('alertdialog').getByRole('button', { name: '重启服务', exact: true }).click()
   await expect(async () => {
     await page.clock.fastForward(2_000)
-    await expect(notice).toContainText('重启后 KixDNS 没有起来', { timeout: 300 })
+    await expect(notice).toContainText('可能是改过的设置让 KixDNS', { timeout: 300 })
   }).toPass()
   // 草稿有修改时先保存：退回改的是存下的那份 / With edits in the draft, save first: the rollback changes the saved config
   await page.getByLabel('上游超时 (ms)', { exact: true }).fill('2500')
-  await expect(notice).toContainText('先保存草稿里的修改，再退回这些设置')
+  await expect(notice).toContainText('先保存或放弃草稿里的修改，再退回这些设置')
   await expect(notice.getByRole('button')).toHaveCount(0)
   // KixDNS 不在：只能存成待应用 / KixDNS is not there: it can only be kept as pending
   await page.locator('.cfg__savebar').getByRole('button', { name: '保存为待应用' }).click()
   await expect(page.locator('.cfg__savebar')).toContainText('待应用版本')
   await expect(notice.getByRole('button', { name: '退回原来的设置并重启', exact: true })).toBeVisible()
+  // 起不来时有了待应用版本，也不当它在线：页头不给「现在应用」，再改一笔照样只能存成待应用
+  // Down with a pending version, it is still not treated as online: no 现在应用 in the header, and another edit can only be
+  // kept as pending
+  await expect(page.getByRole('button', { name: '现在应用', exact: true })).toHaveCount(0)
+  await page.getByLabel('上游超时 (ms)', { exact: true }).fill('2600')
+  await expect(page.locator('.cfg__savebar').getByRole('button', { name: '保存为待应用' })).toBeVisible()
+})
+
+test('有待应用的版本时重启：重启前先应用它，回来只说一句，页头不挂「待应用」 @responsive', async ({ page }) => {
+  await saveListenerChange(page)
+  // 再改一项、这次保存时 KixDNS 没及时回应，先存成待应用 / One more edit, kept as pending because KixDNS did not answer in time
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-save-pending', 'true'))
+  await page.getByLabel('TCP 监听地址', { exact: true }).fill('0.0.0.0:5300')
+  await page.locator('.cfg__savebar').getByRole('button', { name: '保存并应用' }).click()
+  await expect(page.locator('.cfg__savebar')).toContainText('待应用版本')
+  const notice = page.locator('.cfg__notice')
+  await notice.getByRole('button', { name: '重启 KixDNS', exact: true }).click()
+  const confirm = page.getByRole('alertdialog')
+  await expect(confirm).toContainText(/重启前先应用待应用的版本\s#\d+。/)
+  await confirm.getByRole('button', { name: '重启服务', exact: true }).click()
+  await expect(page.getByText('KixDNS 服务已重启')).toBeVisible()
+  await expect(notice).toHaveCount(0)
+  await expect(page.getByText(/待应用/).locator('visible=true')).toHaveCount(0)
+  await expect(page.locator('.toast', { hasText: '已生效' })).toHaveCount(0)
 })

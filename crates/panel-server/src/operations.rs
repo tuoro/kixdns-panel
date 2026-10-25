@@ -17,6 +17,10 @@ pub struct Operations {
     #[cfg_attr(not(unix), allow(dead_code))]
     service_helper_socket: PathBuf,
     diagnostic_server: SocketAddr,
+    /// 读服务状态用的 systemctl；测试里换成一个照文件回答的假程序 / The systemctl used to read the service state; tests swap in
+    /// a fake one that answers from a file
+    #[cfg_attr(not(unix), allow(dead_code))]
+    systemctl: Arc<str>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -25,6 +29,12 @@ pub struct ServiceStatus {
     pub active_state: String,
     pub sub_state: String,
     pub main_pid: u32,
+    /// `KixDNS` 起不来（失败、systemd 在重试，或者重试的那一下）：由服务状态接口补上，各页据此一样说「启动失败」
+    ///
+    /// `KixDNS` does not come up (failed, retried by systemd, or the moment of a retry): filled in by the service status
+    /// endpoint, so every page says 启动失败 alike
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub did_not_come_up: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -182,13 +192,20 @@ impl Operations {
             service_unit: Arc::from(service_unit),
             service_helper_socket,
             diagnostic_server,
+            systemctl: Arc::from("systemctl"),
         })
+    }
+
+    #[must_use]
+    pub fn with_systemctl(mut self, program: &str) -> Self {
+        self.systemctl = Arc::from(program);
+        self
     }
 
     #[cfg(unix)]
     pub async fn service_status(&self) -> Result<ServiceStatus, OperationError> {
         let output = run_command(
-            "systemctl",
+            &self.systemctl,
             &[
                 "show",
                 self.service_unit.as_ref(),
@@ -323,7 +340,7 @@ impl Operations {
         ];
         let (journal, unit_state) = tokio::join!(
             run_command("journalctl", &arguments, Duration::from_secs(10)),
-            run_command("systemctl", &show_arguments, Duration::from_secs(10))
+            run_command(&self.systemctl, &show_arguments, Duration::from_secs(10))
         );
         let mut page = parse_journal_page(&journal?, before_cursor, limit);
         page.notice = unit_state
@@ -483,6 +500,7 @@ fn parse_service_status(unit: &str, output: &str) -> Result<ServiceStatus, Opera
         sub_state: sub_state
             .ok_or_else(|| OperationError::Failed("systemctl 缺少 SubState".to_owned()))?,
         main_pid: main_pid.unwrap_or(0),
+        did_not_come_up: false,
     })
 }
 

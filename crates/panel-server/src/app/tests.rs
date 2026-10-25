@@ -32,7 +32,21 @@ async fn test_app() -> (TempDir, Router) {
     let web_root = directory.path().join("web");
     std::fs::create_dir(&web_root).unwrap();
     std::fs::write(web_root.join("index.html"), "<main>KixDNS Panel</main>").unwrap();
+    // 假的 systemctl：照目录里的 unit-state 回答，没有就是停着 / A fake systemctl: answers from unit-state in the directory,
+    // stopped when there is none
+    let systemctl = directory.path().join("systemctl");
+    std::fs::write(
+        &systemctl,
+        "#!/bin/sh\ncat \"$(dirname \"$0\")/unit-state\" 2>/dev/null || printf 'ActiveState=inactive\\nSubState=dead\\nMainPID=0\\n'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        &systemctl,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
     let app = build_app(AppSettings {
+        systemctl: Some(systemctl),
         bind: "127.0.0.1:0".parse().unwrap(),
         database_path: directory.path().join("panel.db"),
         config_path,
@@ -1920,15 +1934,25 @@ fn start_fake_kixdns_reporting_restart(
     use axum::routing::get;
     let socket = directory.join("admin.sock");
     let config = directory.join("pipeline.json");
+    let health_dir = directory.to_path_buf();
     let listener = tokio::net::UnixListener::bind(&socket).unwrap();
     let router = Router::new()
         .route(
             "/v1/health",
-            get(|| async {
-                axum::Json(serde_json::json!({
-                    "protocol_version": 1, "status": "ok", "pid": 1, "version": "test", "upstream_commit": "test",
-                    "patchset": "p0", "started_at_unix": 0, "uptime_seconds": 1, "config_generation": 1, "capabilities": [],
-                }))
+            get(move || {
+                // 进程号和已运行时长照目录里的文件回答，测试用它们演一个新进程、一段时间过去
+                // The process id and uptime come from files in the directory, so a test can play a new process and time
+                // passing
+                let read = |name: &str, default: u64| {
+                    std::fs::read_to_string(health_dir.join(name)).ok().and_then(|text| text.trim().parse().ok()).unwrap_or(default)
+                };
+                let pid = read("kernel-pid", 1);
+                let body = serde_json::json!({
+                    "protocol_version": 1, "status": "ok", "pid": pid, "version": "test", "upstream_commit": "test",
+                    "patchset": "p0", "started_at_unix": pid * 100, "uptime_seconds": read("kernel-uptime", 60),
+                    "config_generation": 1, "capabilities": [],
+                });
+                async move { axum::Json(body) }
             }),
         )
         .route(
@@ -2818,6 +2842,23 @@ fn write_pipeline(directory: &std::path::Path, content: &Value) {
     .unwrap();
 }
 
+fn set_unit(directory: &std::path::Path, active: &str, sub: &str) {
+    std::fs::write(
+        directory.join("unit-state"),
+        format!("ActiveState={active}\nSubState={sub}\nMainPID=0\n"),
+    )
+    .unwrap();
+}
+
+/// 让假 `KixDNS` 当一个稳稳跑着的进程被看见两次（隔 4 秒） / Have the fake `KixDNS` seen twice as one steadily running process
+/// (4 seconds apart)
+async fn seen_steady(context: &AuthenticatedApp, directory: &std::path::Path) {
+    std::fs::write(directory.join("kernel-uptime"), "60").unwrap();
+    get_json(context, "/api/v1/config").await;
+    std::fs::write(directory.join("kernel-uptime"), "64").unwrap();
+    get_json(context, "/api/v1/config").await;
+}
+
 /// 改了监听地址、重启后起不来：退回只改正式文件里那一项、别的修改留着，写进文件再重启；再按一次就没有可退的了
 /// A listen address changed and the restart does not come up: the rollback changes only that setting in the formal
 /// file, keeps every other edit, writes the file and restarts; pressed again there is nothing left to put back
@@ -2826,16 +2867,14 @@ async fn a_restart_that_does_not_come_back_can_put_the_changed_settings_back() {
     let context = authenticated_app().await;
     let directory = context.directory.path();
     let (_helper, actions) = start_fake_helper(directory);
+    set_unit(directory, "active", "running");
     write_pipeline(
         directory,
         &serde_json::json!({ "settings": { "bind_udp": "0.0.0.0:53" }, "pipelines": [] }),
     );
-    // 没有要重启的、文件就是在用的那份：记下启动时的值 / Nothing waits for a restart and the file is in use: the
-    // starting values are recorded
     let kixdns = start_fake_kixdns_reporting_restart(directory, Some(serde_json::json!([])));
-    get_json(&context, "/api/v1/config").await;
+    seen_steady(&context, directory).await;
     stop_fake_kixdns(directory, kixdns).await;
-    // KixDNS 在跑时还没有可退的 / Nothing to put back while KixDNS runs
     write_pipeline(
         directory,
         &serde_json::json!({ "settings": { "bind_udp": "0.0.0.0:5300", "min_ttl": 30 }, "pipelines": [] }),
@@ -2843,10 +2882,19 @@ async fn a_restart_that_does_not_come_back_can_put_the_changed_settings_back() {
     let kixdns =
         start_fake_kixdns_reporting_restart(directory, Some(serde_json::json!(["bind_udp"])));
     get_json(&context, "/api/v1/config").await;
+    // KixDNS 在跑时没有可退的 / Nothing to put back while KixDNS runs
     let (status, _) = post_empty(&context, "/api/v1/config/restart-rollback").await;
     assert_eq!(status, StatusCode::CONFLICT);
-    // 新进程绑不上新地址，连不上 / The new process cannot bind the new address and is unreachable
+    // 新进程绑不上新地址，systemd 在重试 / The new process cannot bind the new address and systemd retries
     stop_fake_kixdns(directory, kixdns).await;
+    set_unit(directory, "activating", "auto-restart");
+    let document = get_json(&context, "/api/v1/config").await;
+    assert_eq!(
+        document["runtime"]["restart_rollback"],
+        serde_json::json!({ "bind_udp": "0.0.0.0:53" })
+    );
+    let service = get_json(&context, "/api/v1/service").await;
+    assert_eq!(service["did_not_come_up"], true);
 
     let (status, payload) = post_empty(&context, "/api/v1/config/restart-rollback").await;
     assert_eq!(status, StatusCode::OK, "{payload}");
@@ -2863,20 +2911,22 @@ async fn a_restart_that_does_not_come_back_can_put_the_changed_settings_back() {
     assert_eq!(status, StatusCode::CONFLICT);
 }
 
-/// 起不来时存下的待应用版本没校验过：不写进正式文件，改好同样几项另存成新的待应用版本，等 `KixDNS` 回来再校验
-/// A pending version saved while it is down was never checked: it is not written to the formal file; the same settings
-/// are changed in it and it is stored as a new pending version, checked once `KixDNS` is back
+/// 一次新的启动、重启是新的尝试：它还在加载（服务 active、连不上）时不提上一次的起不来，退回也不接受；
+/// 下一次 systemd 重试被看见时才又给出
+/// A new start or restart is a new attempt: while it loads (service active, unreachable) the last failure is not
+/// raised and a rollback is refused; it is offered again only once the next systemd retry is seen
 #[tokio::test]
-async fn the_rollback_keeps_an_unchecked_pending_version_out_of_the_formal_file() {
+async fn a_new_attempt_does_not_inherit_the_last_failure() {
     let context = authenticated_app().await;
     let directory = context.directory.path();
     let (_helper, _actions) = start_fake_helper(directory);
+    set_unit(directory, "active", "running");
     write_pipeline(
         directory,
         &serde_json::json!({ "settings": {}, "pipelines": [] }),
     );
     let kixdns = start_fake_kixdns_reporting_restart(directory, Some(serde_json::json!([])));
-    get_json(&context, "/api/v1/config").await;
+    seen_steady(&context, directory).await;
     stop_fake_kixdns(directory, kixdns).await;
     write_pipeline(
         directory,
@@ -2886,6 +2936,61 @@ async fn the_rollback_keeps_an_unchecked_pending_version_out_of_the_formal_file(
         start_fake_kixdns_reporting_restart(directory, Some(serde_json::json!(["cache_capacity"])));
     get_json(&context, "/api/v1/config").await;
     stop_fake_kixdns(directory, kixdns).await;
+    set_unit(directory, "activating", "auto-restart");
+    let document = get_json(&context, "/api/v1/config").await;
+    assert_eq!(
+        document["runtime"]["restart_rollback"],
+        serde_json::json!({ "cache_capacity": null })
+    );
+
+    // 占端口的程序停了，再重启一次：新进程还在加载 / The program holding the port stopped and it is restarted once more:
+    // the new process is still loading
+    set_unit(directory, "active", "running");
+    post_empty(&context, "/api/v1/service/restart").await;
+    let document = get_json(&context, "/api/v1/config").await;
+    assert!(document["runtime"].get("restart_rollback").is_none());
+    assert!(
+        get_json(&context, "/api/v1/service")
+            .await
+            .get("did_not_come_up")
+            .is_none()
+    );
+    let (status, _) = post_empty(&context, "/api/v1/config/restart-rollback").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    // 下一次重试被看见：又起不来了 / The next retry is seen: it failed again
+    set_unit(directory, "activating", "auto-restart");
+    let document = get_json(&context, "/api/v1/config").await;
+    assert_eq!(
+        document["runtime"]["restart_rollback"],
+        serde_json::json!({ "cache_capacity": null })
+    );
+}
+
+/// 起不来时存下的待应用版本没校验过：不写进正式文件，改好同样几项另存成新的待应用版本，等 `KixDNS` 回来再校验
+/// A pending version saved while it is down was never checked: it is not written to the formal file; the same settings
+/// are changed in it and it is stored as a new pending version, checked once `KixDNS` is back
+#[tokio::test]
+async fn the_rollback_keeps_an_unchecked_pending_version_out_of_the_formal_file() {
+    let context = authenticated_app().await;
+    let directory = context.directory.path();
+    let (_helper, _actions) = start_fake_helper(directory);
+    set_unit(directory, "active", "running");
+    write_pipeline(
+        directory,
+        &serde_json::json!({ "settings": {}, "pipelines": [] }),
+    );
+    let kixdns = start_fake_kixdns_reporting_restart(directory, Some(serde_json::json!([])));
+    seen_steady(&context, directory).await;
+    stop_fake_kixdns(directory, kixdns).await;
+    write_pipeline(
+        directory,
+        &serde_json::json!({ "settings": { "cache_capacity": 30000 }, "pipelines": [] }),
+    );
+    let kixdns =
+        start_fake_kixdns_reporting_restart(directory, Some(serde_json::json!(["cache_capacity"])));
+    get_json(&context, "/api/v1/config").await;
+    stop_fake_kixdns(directory, kixdns).await;
+    set_unit(directory, "activating", "auto-restart");
     let waiting = save_pending(&context, "edited-while-down", "起不来时改的").await;
 
     let (status, payload) = post_empty(&context, "/api/v1/config/restart-rollback").await;

@@ -30,7 +30,7 @@ import UiDotText from '../components/ui/UiDotText.vue'
 import UiTask, { type UiTaskState } from '../components/ui/UiTask.vue'
 import { useConfirm } from '../composables/useConfirm'
 import { useConnection } from '../composables/useConnection'
-import { useServiceRestart, useServiceStart } from '../composables/useServiceStart'
+import { restartingKixdns, useServiceRestart, useServiceStart } from '../composables/useServiceStart'
 import { useToast } from '../composables/useToast'
 import { useUpdateStatus } from '../composables/useUpdateStatus'
 import { errorMessage, formatDate, formatKixdnsVersion, shortHash } from '../utils'
@@ -89,11 +89,20 @@ let panelUpdateBaseline = ''
 const PANEL_UPDATE_DISMISSED_KEY = 'kixdns:panel-update-failure-dismissed'
 const dismissedPanelUpdateFailure = ref(readDismissedPanelUpdateFailure())
 
-const running = computed(() => service.value?.active_state === 'active')
+// 服务端看出它起不来时不算在运行（systemd 重试的那一下服务是 active） / Not running when the server sees it not coming up (during
+// a systemd retry the service reads active)
+const running = computed(() => service.value?.active_state === 'active' && !service.value.did_not_come_up)
 // 和概览同一套说法：systemd 正在重试是「正在启动」，不是「已停止」 / The overview's words: a service systemd is retrying is
 // 正在启动, not 已停止
 const serviceTone = computed(() => toneOfService(service.value))
-const serviceWords = computed(() => labelOfService(service.value))
+// 等 KixDNS 从重启回来（这一页或配置页发起的）：和配置页页头一样转圈、写「正在重启」，PID 先不写
+// Waiting for KixDNS to come back from a restart (sent from this page or the config page): a spinner and 正在重启 as in the
+// config page's header, with no PID yet
+const serviceWords = computed(() => (restartingKixdns.value ? '正在重启' : labelOfService(service.value)))
+// systemd 正在启动它（包括起不来、隔几秒重试）：给「重启」「停止」（停止能打断重试），不给「启动」
+// systemd is starting it (including retries every few seconds when it does not come up): 重启 and 停止 (stopping ends the
+// retries), not 启动
+const startable = computed(() => !running.value && !['active', 'activating', 'reloading'].includes(service.value?.active_state ?? ''))
 // 连不上面板时，上次读到的服务状态不能当真：点变灰，写「状态未知」，连上后恢复（同概览）
 // While the panel is unreachable the last service state read cannot be trusted: the dot turns grey and reads 状态未知, restored on reconnect (as on the overview)
 const { down: panelDown } = useConnection()
@@ -105,7 +114,10 @@ const waitingForPanel = computed(() => panelDown.value && !service.value && !ker
 // 自动重启这类不寻常的状态，systemd 的原始写法才多带了信息。
 // "正在运行 · active/running" and "已停止 · inactive/dead" say one thing twice; only
 // unusual states such as activating or auto-restart carry information in systemd's own words.
+// 服务端看出它起不来时不写 systemd 的原话：重试那一下它是 active/running，跟着闪只会添乱 / Not systemd's own words when the server
+// sees it not coming up: during a retry it reads active/running, and flickering along only confuses
 const unusualServiceState = computed(() => {
+  if (service.value?.did_not_come_up) return ''
   const state = service.value ? `${service.value.active_state}/${service.value.sub_state}` : ''
   return state && !['active/running', 'inactive/dead'].includes(state) ? state : ''
 })
@@ -432,12 +444,14 @@ async function control(action: ServiceAction): Promise<void> {
   const names: Record<ServiceAction, string> = { start: '启动', stop: '停止', restart: '重启' }
   // 重启以后面板只接着应用还在等的版本；应用失败过的不会再试（旧配置已经放回去了），那时说清楚，指到配置页的「重试应用」（读不到配置就不提）
   // After a restart the panel applies only a version still waiting; one that failed is not retried (the old file was put back), so say that and point to 重试应用 on the config page (left out if the config cannot be read)
-  // 改过、要重启才生效的设置也说出来，和配置页的重启同一句 / The settings waiting for a restart are named too, in the config page's words
+  // 改过、要重启才生效的设置也说出来，和配置页的重启同一句；KixDNS 还在时服务端重启前先应用待应用的版本，连不上时回来再应用
+  // The settings waiting for a restart are named too, in the config page's words; with KixDNS still there the server applies the
+  // pending version before the restart, and when it is unreachable the version is applied once it is back
   const config = action === 'restart' ? await apiRequest<ConfigDocument>('/api/v1/config').catch(() => null) : null
   const pending = config?.pending
   const pendingId = pending?.version_id
   const restartNames = config?.runtime.restart_pending?.length ? `重启后生效的设置：${settingNames(config.runtime.restart_pending, { all: true })}。` : ''
-  const restartNote = restartNames + (!pendingId ? '' : pending?.error ? `版本\u00a0#${pendingId} 没有生效，重启后仍用之前那份配置；要再试，到配置页点「重试应用」。` : `重启后应用待应用的版本\u00a0#${pendingId}。`)
+  const restartNote = restartNames + (!pendingId ? '' : pending?.error ? `版本\u00a0#${pendingId} 没有生效，重启后仍用之前那份配置；要再试，到配置页点「重试应用」。` : config?.runtime.active_sha256 ? `重启前先应用待应用的版本\u00a0#${pendingId}。` : `重启后应用待应用的版本\u00a0#${pendingId}。`)
   if ((action === 'stop' || action === 'restart') && !await confirm.ask({
     title: `${names[action]} KixDNS 服务`,
     body: action === 'stop'
@@ -551,23 +565,23 @@ onBeforeUnmount(() => {
         <div v-if="service || kernel || panelVersion" class="ui-facts system-facts">
           <div v-if="service">
             <span class="ui-lbl">服务</span>
-            <b :title="panelDown ? '状态未知' : running ? '正在运行' : serviceWords"><span class="ui-dot" :class="panelDown ? 'ui-dot--off' : serviceTone === 'ok' ? '' : `ui-dot--${serviceTone}`" aria-hidden="true"></span>{{ service.unit }}<small v-if="panelDown">状态未知</small><template v-else><small v-if="!running">{{ serviceWords }}</small><small v-if="unusualServiceState" class="ui-mono">{{ unusualServiceState }}</small></template></b>
+            <b :title="panelDown ? '状态未知' : running && !restartingKixdns ? '正在运行' : serviceWords"><span v-if="restartingKixdns && !panelDown" class="ui-spin system-spin" aria-hidden="true"></span><span v-else class="ui-dot" :class="panelDown ? 'ui-dot--off' : serviceTone === 'ok' ? '' : `ui-dot--${serviceTone}`" aria-hidden="true"></span>{{ service.unit }}<small v-if="panelDown">状态未知</small><template v-else><small v-if="!running || restartingKixdns">{{ serviceWords }}</small><small v-if="unusualServiceState" class="ui-mono">{{ unusualServiceState }}</small></template></b>
           </div>
-          <div v-if="service?.main_pid && !panelDown" class="system-fact-pid"><span class="ui-lbl">PID</span><b>{{ service.main_pid }}</b></div>
+          <div v-if="service?.main_pid && !panelDown && !restartingKixdns" class="system-fact-pid"><span class="ui-lbl">PID</span><b>{{ service.main_pid }}</b></div>
           <div v-if="panelVersion"><span class="ui-lbl">面板版本</span><b>{{ panelVersion }}</b></div>
           <div v-if="kernel"><span class="ui-lbl">内核</span><b>{{ installed ? formatKixdnsVersion(activeVersion) : '还没安装' }}</b></div>
         </div>
-        <span v-if="service || kernel || panelVersion" class="ui-ph__lead ui-ph__phone"><span v-if="service" class="ui-dot" :class="panelDown ? 'ui-dot--off' : serviceTone === 'ok' ? '' : `ui-dot--${serviceTone}`" aria-hidden="true"></span><UiDotText :parts="[...(service ? [panelDown ? '状态未知' : serviceWords] : []), ...(panelVersion ? [`面板 ${panelVersion}`] : []), ...(kernel ? [kernelPhoneLabel] : [])]" /></span>
+        <span v-if="service || kernel || panelVersion" class="ui-ph__lead ui-ph__phone"><span v-if="service && restartingKixdns && !panelDown" class="ui-spin system-spin" aria-hidden="true"></span><span v-else-if="service" class="ui-dot" :class="panelDown ? 'ui-dot--off' : serviceTone === 'ok' ? '' : `ui-dot--${serviceTone}`" aria-hidden="true"></span><UiDotText :parts="[...(service ? [panelDown ? '状态未知' : serviceWords] : []), ...(panelVersion ? [`面板 ${panelVersion}`] : []), ...(kernel ? [kernelPhoneLabel] : [])]" /></span>
         <span v-else-if="loadingService" class="sk ui-ph__sk system-skeleton-meta" role="status" aria-label="读取服务状态"></span>
         <span v-else>服务状态暂不可用</span>
       </template>
       <!-- 服务状态读回来之前，手机上先留出按钮那一行（灰块），读到以后内容不往下跳 / Before the service status arrives, phones keep the button row's place (a grey slab), so the content does not jump when it lands -->
       <template v-if="service || loadingService" #actions>
         <template v-if="!service"><span class="sk system-actions-sk" aria-hidden="true"></span><span class="sk system-actions-sk" aria-hidden="true"></span></template>
-        <button v-else-if="!running" class="ui-btn ui-btn--secondary" type="button" :disabled="!installed || serviceAction !== null || panelDown" @click="control('start')"><Play :size="16" />启动</button>
+        <button v-else-if="startable" class="ui-btn ui-btn--secondary" type="button" :disabled="!installed || serviceAction !== null || panelDown || restartingKixdns" @click="control('start')"><Play :size="16" />启动</button>
         <template v-else>
-          <button class="ui-btn ui-btn--secondary" type="button" :disabled="!installed || serviceAction !== null || panelDown" @click="control('restart')"><RotateCw :size="16" :class="{ spin: serviceAction === 'restart' }" />重启</button>
-          <button class="ui-btn ui-btn--danger" type="button" :disabled="serviceAction !== null || panelDown" @click="control('stop')"><Square :size="16" />停止</button>
+          <button class="ui-btn ui-btn--secondary" type="button" :disabled="!installed || serviceAction !== null || panelDown || restartingKixdns" @click="control('restart')"><RotateCw :size="16" :class="{ spin: serviceAction === 'restart' }" />重启</button>
+          <button class="ui-btn ui-btn--danger" type="button" :disabled="serviceAction !== null || panelDown || restartingKixdns" @click="control('stop')"><Square :size="16" />停止</button>
         </template>
       </template>
     </UiPageHeader>
@@ -733,6 +747,9 @@ onBeforeUnmount(() => {
 </template>
 
 <style>
+/* 等重启时页头的转圈：和配置页页头同一个尺寸、同一个间距 / The header spinner while a restart is awaited: the config page header's size and spacing */
+.system-spin { width: var(--size-icon-sm); height: var(--size-icon-sm); }
+:is(.ui-facts b, .ui-ph__lead) > .system-spin { margin-right: calc(var(--s-1) - var(--s-2)); align-self: center; }
 /* 系统页只引用 tokens.css 的变量；零件来自 components.css，这里只管页头的事实行和三张卡片的结构。
    旧的 .system-* / .install-* / .credential-* 规则还在 styles.css 里，落地时清理；这里覆盖到的以这里为准。
    Tokens only; the parts come from components.css and this lays out the header's facts row and the three cards.

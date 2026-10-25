@@ -168,10 +168,14 @@ export interface Overview {
   service_active: boolean | null
   captured_at_unix: number
   trend: RequestTrend
+  /** KixDNS 起不来、可以退回改过的设置时，那几项和它们上次启动时的值（和配置页同一份）；其余时候省略 */
+  restart_rollback?: Record<string, unknown>
 }
 
 export interface ServiceStatus {
   unit: string
+  /** KixDNS 起不来（失败、systemd 在重试，或者重试的那一下）：服务端补上，各页据此说「启动失败」 */
+  did_not_come_up?: boolean
   active_state: string
   sub_state: string
   main_pid: number

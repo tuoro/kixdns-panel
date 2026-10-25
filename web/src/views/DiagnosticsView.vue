@@ -1,16 +1,17 @@
 <script setup lang="ts">
-import { Check, ChevronDown, ChevronRight, LoaderCircle, Network, Power, TriangleAlert, X } from '@lucide/vue'
+import { Check, ChevronDown, ChevronRight, CircleX, LoaderCircle, Network, Power, TriangleAlert, X } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { CONFIG_WRITTEN_EVENT, apiRequest, isPanelDown, jsonBody } from '../api/client'
-import type { ConfigDocument, ConfigVersion, ConfigVersions, DnsDiagnostic, KixdnsKernel, Overview } from '../api/types'
+import type { ConfigDocument, ConfigVersion, ConfigVersions, DnsDiagnostic, KixdnsKernel, Overview, ServiceStatus } from '../api/types'
 import { runningVersionId } from '../running-version'
 import UiDotText from '../components/ui/UiDotText.vue'
 import UiEmpty from '../components/ui/UiEmpty.vue'
 import UiPageHeader from '../components/ui/UiPageHeader.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import { useConnection } from '../composables/useConnection'
-import { useServiceStart } from '../composables/useServiceStart'
+import { dismissNoAnswer, useServiceStart } from '../composables/useServiceStart'
+import { serviceTone } from '../service-state'
 import { readConfig } from '../config-model/document'
 import { isIp } from '../config-model/model'
 import { traceNames, type TraceNames } from '../config-model/trace-names'
@@ -55,9 +56,14 @@ const clientProblem = computed(() => (clientIp.value.trim() && !isIp(clientIp.va
 const names = shallowRef<TraceNames | null>(null)
 // KixDNS 没在运行时先说一句，免得查了才知道 / Say so up front when KixDNS is not running, rather than after a failed query
 const stopped = ref(false)
+// 起不来（服务失败、systemd 在重试）：和各页一样说「启动失败」，不说停了、不给「启动」；能退回改过的设置时指到配置页
+// Not coming up (the service failed or systemd retries): 启动失败 as on every page, not stopped and with no 启动; with changed
+// settings that can go back, it points to the config page
+const failedUp = ref<{ rollback: boolean } | null>(null)
 const { starting, start } = useServiceStart()
 async function startKixdns(): Promise<void> {
-  if (!(await start())) return
+  // 起不来、能退回时这一页的提示条会说 / Not coming up with a rollback on offer, this page's notice says so
+  if (!(await start({ rollbackShown: () => true }))) return
   // 刚启动的内核报什么能力要重新问一次：客户端 IP 那一栏靠它；等到最后没起来的，照读到的说还停着
   // Ask the freshly started kernel for its capabilities again: the client IP field depends on them; one that never came up is
   // still said to be stopped, as read
@@ -70,12 +76,16 @@ async function startKixdns(): Promise<void> {
 }
 // 页头的版本和「按草稿单独跑一次」都靠这几样；配置写进了新版本就重读 / The header's version and the draft trial rely on these; re-read when a new config version is written
 async function readPage(): Promise<void> {
-  const [overview, kernel, config, history] = await Promise.allSettled([apiRequest<Overview>('/api/v1/overview'), apiRequest<KixdnsKernel>('/api/v1/kixdns/kernel'), apiRequest<ConfigDocument>('/api/v1/config'), apiRequest<ConfigVersions>('/api/v1/config/versions')])
+  const [overview, kernel, config, history, service] = await Promise.allSettled([apiRequest<Overview>('/api/v1/overview'), apiRequest<KixdnsKernel>('/api/v1/kixdns/kernel'), apiRequest<ConfigDocument>('/api/v1/config'), apiRequest<ConfigVersions>('/api/v1/config/versions'), apiRequest<ServiceStatus>('/api/v1/service')])
   if (history.status === 'fulfilled') versions.value = history.value.versions
   if (overview.status === 'fulfilled') {
     activeSha.value = overview.value.active_config?.sha256 ?? null
     canClient.value = Boolean(overview.value.live && overview.value.health?.capabilities.includes('diagnostics_trace_client_v1'))
-    stopped.value = overview.value.service_active === false
+    const down = !overview.value.live && service.status === 'fulfilled' && serviceTone(service.value) === 'err'
+    failedUp.value = down ? { rollback: Boolean(overview.value.restart_rollback) } : null
+    // 这一页的提示条在说能退回：「到配置页退回」那条提示收起 / This page's notice offers the rollback: the 「到配置页退回」 toast goes
+    if (failedUp.value?.rollback) dismissNoAnswer()
+    stopped.value = !down && overview.value.service_active === false
   }
   if (kernel.status === 'fulfilled' && kernel.value.binary_present) kernelLabel.value = formatKixdnsVersion(kernel.value.active)
   if (config.status === 'fulfilled') {
@@ -212,7 +222,8 @@ async function run(): Promise<void> {
     </section>
 
     <!-- KixDNS 停着时先说一句，并且就地能启动 / When KixDNS is stopped, say so first and offer to start it here -->
-    <div v-if="stopped" class="ui-notice ui-notice--off" role="status"><Power :size="16" aria-hidden="true" /><span>KixDNS 已停止</span><small>启动后才能查询</small><button class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="starting" :aria-busy="starting || undefined" @click="startKixdns"><span v-if="starting" class="ui-spin" aria-hidden="true"></span>启动 KixDNS</button></div>
+    <div v-if="failedUp" class="ui-notice ui-notice--err" role="status"><CircleX :size="16" aria-hidden="true" /><span>KixDNS 启动失败</span><small>{{ failedUp.rollback ? '可能是改过的设置让 KixDNS\u00a0起不来，到配置页可以退回' : '查看日志了解启动失败的原因' }}</small><RouterLink class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" :to="failedUp.rollback ? '/config?section=settings' : '/logs?view=runtime'">{{ failedUp.rollback ? '去配置页' : '查看日志' }}</RouterLink></div>
+    <div v-else-if="stopped" class="ui-notice ui-notice--off" role="status"><Power :size="16" aria-hidden="true" /><span>KixDNS 已停止</span><small>启动后才能查询</small><button class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="starting" :aria-busy="starting || undefined" @click="startKixdns"><span v-if="starting" class="ui-spin" aria-hidden="true"></span>启动 KixDNS</button></div>
     <!-- 等待时给骨架而不是转圈：骨架的分块和结果一致，数据到达时版面不跳。 -->
     <div v-if="running" class="diag-skeleton" role="status" aria-label="正在等待 DNS 响应">
       <div class="sk diag-skeleton-verdict"></div>

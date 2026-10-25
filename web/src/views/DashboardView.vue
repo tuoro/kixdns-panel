@@ -17,8 +17,9 @@ import UiPageHeader from '../components/ui/UiPageHeader.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
 import { useConfirm } from '../composables/useConfirm'
 import { useConnection } from '../composables/useConnection'
-import { kixdnsBack, useServiceStart } from '../composables/useServiceStart'
+import { dismissNoAnswer, kixdnsBack, useServiceStart } from '../composables/useServiceStart'
 import { serviceLabel as labelOfService, serviceTone as toneOfService, type ServiceTone } from '../service-state'
+import { settingNames } from '../config-editor/schema'
 import { useToast } from '../composables/useToast'
 import { HEALTH_LABELS, cacheComposition, rcodeDistribution, latencyBasis, recentWindowLabel, settledAttempts, upstreamBasis, upstreamHealth } from '../dashboard-presentation'
 import type { ShareRow, UpstreamHealth } from '../dashboard-presentation'
@@ -89,6 +90,9 @@ const headLabel = computed(() => (panelDown.value ? '状态未知' : service.val
 // 「运行中 · active/running」是同一件事说两遍；只有不寻常的状态，systemd 的原始写法才多带了信息（同系统页）。
 // "运行中 · active/running" says one thing twice; only unusual states carry information in systemd's own words (as on the system page).
 const unusualServiceState = computed(() => {
+  // 服务端看出它起不来时不写 systemd 的原话（重试那一下是 active/running，跟着闪） / Not systemd's words when the server sees it
+  // not coming up (a retry reads active/running and would flicker)
+  if (service.value?.did_not_come_up) return ''
   const current = service.value
   const state = current ? `${current.active_state}/${current.sub_state}` : ''
   return state && !['active/running', 'inactive/dead'].includes(state) ? state : ''
@@ -131,7 +135,12 @@ const notice = computed<PageNotice | null>(() => {
   const serviceTitle = tone === 'err' ? 'KixDNS 启动失败' : tone === 'warn' ? `KixDNS ${serviceLabel.value}` : ''
   // 原因按状态说接下来会怎样：启动失败指去日志；正在启动说完成后自动更新；正在停止不许诺什么
   // The reason says what comes next by state: a failure points to the logs, a start updates on completion, a stop promises nothing
-  const serviceNotice = (shown: string): PageNotice => tone === 'err'
+  // 起不来、又有可以退回的设置：指到配置页（那里的提示条能退回），不指日志 / Not coming up with changed settings that can go back:
+  // point to the config page (its notice can put them back) rather than the logs
+  const rollback = overview.value?.restart_rollback
+  const serviceNotice = (shown: string): PageNotice => tone === 'err' && rollback
+    ? { tone: 'err', icon: CircleX, title: serviceTitle, reason: reasonOf(shown, `可能是改过的设置让 KixDNS 起不来：${settingNames(Object.keys(rollback))}`, '到配置页可以退回'), action: 'config' }
+    : tone === 'err'
     ? { tone: 'err', icon: CircleX, title: serviceTitle, reason: reasonOf(shown, '查看日志了解启动失败的原因'), action: 'logs' }
     : { tone: 'warn', icon: CircleAlert, title: serviceTitle, reason: reasonOf(shown, service.value?.active_state === 'activating' ? '启动完成后概览会自动更新' : '') }
   switch (runtimeState.value) {
@@ -144,6 +153,9 @@ const notice = computed<PageNotice | null>(() => {
         ? serviceNotice(`显示停止前${snapshot}的快照`)
         : { tone: 'off', icon: Power, title: 'KixDNS 已停止', reason: reasonOf(`显示停止前${snapshot}的快照`, '「启动\u00a0KixDNS」\u2060后概览会自动更新'), action: 'start' }
     case 'unavailable-snapshot':
+      // systemd 重试的那一下服务是 active：服务端看出它起不来时照「启动失败」说 / During a systemd retry the service reads active:
+      // when the server sees it not coming up, it is told as 启动失败
+      if (tone === 'err') return serviceNotice(`显示${snapshot}的快照`)
       return { tone: 'warn', icon: CircleAlert, title: '实时数据暂不可用', reason: reasonOf(overviewError.value || 'KixDNS 暂时没有回应', serviceErrorPart, `显示${snapshot}的快照，恢复后会自动更新`), action: 'retry' }
     case 'unavailable':
       return { tone: 'err', icon: CircleX, title: '读不到运行数据', reason: reasonOf(overviewError.value, serviceErrorPart, '页面每 15 秒自动重试'), action: 'retry' }
@@ -339,6 +351,9 @@ function load(silent = false): Promise<void> {
       overview.value = overviewResult.value
       // KixDNS 活着：「没有回应」那条错误过时了，和配置页一样收起 / KixDNS is alive: the 没有回应 error is stale, dismissed as on the config page
       if (overviewResult.value.live) kixdnsBack()
+      // 概览的提示条在说能退回：「到配置页退回」那条提示收起 / The overview's notice offers the rollback: the 「到配置页退回」 toast
+      // goes
+      else if (overviewResult.value.restart_rollback) dismissNoAnswer()
       overviewError.value = ''
       loadedAt.value = Date.now()
     } else overviewError.value = errorMessage(overviewResult.reason)
@@ -399,7 +414,8 @@ async function refreshAll(): Promise<void> {
 // 停着的时候在说它停着的地方就能启动，不用先去系统页 / Start it right where the page says it is stopped, without a trip to the system page
 const { starting, start } = useServiceStart()
 async function startService(): Promise<void> {
-  const status = await start()
+  // 起不来、能退回时概览的提示条会说，不另弹提示 / Not coming up with a rollback on offer, the overview's notice says so, with no toast
+  const status = await start({ rollbackShown: () => true })
   if (!status) return
   service.value = status
   await refreshAll()

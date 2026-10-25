@@ -158,22 +158,43 @@ export function settingNames(keys: readonly string[], options: { all?: boolean }
   return names.length > 3 && !options.all ? `${names.slice(0, 3).join('、')}等\u00a0${names.length}\u00a0项` : names.join('、')
 }
 
-// 退回时说清每一项改回什么，带上表单里的单位：「UDP 监听地址 0.0.0.0:53」「DoQ 保活间隔 15000 毫秒」；没写的说默认是多少
-// （「缓存容量 默认 10000 条」），表单里没有默认值的说「默认值」；自动限流照样合成一项，只说改回
-// When rolling back, say what each setting goes back to, with the form's unit: 「UDP 监听地址 0.0.0.0:53」「DoQ 保活间隔 15000 毫秒」;
-// an unset one says its default (「缓存容量 默认 10000 条」), or 「默认值」 when the form has none; flow control merges into one as
-// above and just goes back
+// 退回时说清每一项改回什么：「UDP 监听地址 0.0.0.0:53」「DoQ 保活间隔 15000 毫秒」；没写的照表单说默认是什么——有默认值的
+// 「默认 10000 条」「默认开启」，没有的照占位说「自动」「留空」。自动限流合成一项：开关在名单里时说开关改回什么，只有几项数值时
+// 说「自动限流的几项数值」。名字里、「数字 单位」里不断行，名字和值之间可以断（长路径整段换行，不从中间拆）
+// When rolling back, say what each setting goes back to: 「UDP 监听地址 0.0.0.0:53」「DoQ 保活间隔 15000 毫秒」; an unset one says what
+// the default is, as the form does — 「默认 10000 条」「默认开启」 where there is one, otherwise the placeholder's 「自动」「留空」. Flow
+// control merges into one: with its switch in the list it says what the switch goes back to, with only numbers 「自动限流的几项数值」.
+// No break inside a name or a 「number unit」; a break may fall between name and value (a long path moves down whole instead of
+// splitting)
 export function settingValues(values: Record<string, unknown>): string {
+  const glue = (text: string) => text.replace(/ /g, '\u00a0')
   const order = (key: string) => { const at = FORM_FIELDS.findIndex((field) => field.key === key); return at < 0 ? FORM_FIELDS.length : at }
-  const shown = (key: string, value: unknown) => {
+  const switchWord = (on: boolean) => (on ? '开启' : '关闭')
+  const valueOf = (key: string, value: unknown): string => {
     const field = FORM_FIELDS.find((item) => item.key === key)
     const unit = field?.unit ? ` ${field.unit}` : ''
-    if (value === null || value === undefined) return field?.default === undefined ? '（默认值）' : ` 默认 ${String(field.default)}${unit}`
-    return typeof value === 'boolean' ? ` ${value ? '开启' : '关闭'}` : ` ${String(value)}${unit}`
+    if (value === null || value === undefined) {
+      if (!field) return '默认值'
+      if (typeof field.default === 'boolean') return `默认${switchWord(field.default)}`
+      if (field.default !== undefined) return glue(`默认 ${String(field.default)}${unit}`)
+      return field.placeholder?.includes('自动') ? '自动' : '留空'
+    }
+    return typeof value === 'boolean' ? switchWord(value) : glue(`${String(value)}${unit}`)
   }
-  const items = [...new Set(Object.keys(values).sort((a, b) => order(a) - order(b)).map((key) => (key.startsWith('flow_control_') ? '自动限流' : `${settingName(key)}${shown(key, values[key])}`)))]
-  // 一项里不断行 / No break inside an item
-  return items.map((item) => item.replace(/ /g, '\u00a0')).join('、')
+  const keys = Object.keys(values).sort((a, b) => order(a) - order(b))
+  const items: string[] = []
+  let flowDone = false
+  for (const key of keys) {
+    if (key.startsWith('flow_control_')) {
+      if (flowDone) continue
+      flowDone = true
+      const enabled = values.flow_control_enabled
+      items.push('flow_control_enabled' in values ? `自动限流 ${switchWord(enabled === null || enabled === undefined ? false : Boolean(enabled))}` : '自动限流的几项数值')
+      continue
+    }
+    items.push(`${glue(settingName(key))} ${valueOf(key, values[key])}`)
+  }
+  return items.join('、')
 }
 
 // 高级规则的表单也说面板的话：和规则卡片的读法、普通规则的条件同一套叫法；内核的写法留在 JSON 里
