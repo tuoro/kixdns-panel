@@ -8,7 +8,7 @@ import { exportConfig, readConfig } from '../config-model/document'
 import { blocklistKey, type Model, type Rule } from '../config-model/model'
 import { traceNames } from '../config-model/trace-names'
 import { useConnection } from '../composables/useConnection'
-import { ROLLBACK_LABELS, configPageOpen, noteRead, restartingKixdns, startingKixdns, type RollbackOrigin } from '../composables/useServiceStart'
+import { ROLLBACK_LABELS, configPageOpen, nameWith, noteRead, restartingKixdns, startingKixdns, versionName, type RollbackOrigin } from '../composables/useServiceStart'
 import { serviceTone } from '../service-state'
 import { useSession } from '../composables/useSession'
 import { dismissUndoable, toastMark, useToast } from '../composables/useToast'
@@ -56,6 +56,17 @@ function inEffect(): string {
 }
 // 退回写下的版本用户没见过，不报编号，和重启回来的提示同一个叫法 / A version a rollback wrote is one nobody saw: no number, in the
 // same words as the toast on return from a restart
+// 说待应用版本的句子里怎么叫它（「版本 #N 没有应用」这一类）：退回写下的不报编号，按它是什么叫；当前状态的陈述（配置版本、历史）
+// 照旧写编号。「现在应用」「重试应用」只在 KixDNS 在时才有，那时退回的设置已经在用，真正在应用的只有带上的修改：这些句子用
+// carried（「待应用的修改」）
+// How sentences about a pending version name it (「版本 #N 没有应用」 and the like): one a rollback wrote has no number and
+// is named by what it is; statements of the current state (配置版本, the history) keep the number. 现在应用 and 重试应用 exist
+// only while KixDNS runs, when the settings put back are in use already and only the carried edits are being applied: those
+// sentences pass carried (待应用的修改)
+function pendingPhrase(id: number | null | undefined, origin?: RollbackOrigin | null, failed = false, fallback = '配置'): string {
+  if (!id) return fallback
+  return origin ? versionName(id, origin, failed) : `版本 #${id} `
+}
 function appliedWords(versionId: number, origin?: RollbackOrigin): string {
   return origin ? `${ROLLBACK_LABELS[origin]}${inEffect()}` : `版本 #${versionId} ${inEffect()}`
 }
@@ -267,8 +278,9 @@ export const headerLine = computed<HeaderStatus>(() => {
   if (!applyBusy.value) return headerStatus.value
   const verb = stage.value === 'validating' ? '校验中' : '应用中'
   // 退回写下的版本不报编号 / A version a rollback wrote goes without its number
+  // 页头用短名，和「退回的设置待应用」同一个叫法 / The header takes the short name, as in 退回的设置待应用
   const origin = doc.value?.pending?.from_rollback
-  if (origin) return { tone: 'warn', before: `${ROLLBACK_LABELS[origin]}${verb}` }
+  if (origin && pendingVersionId.value) return { tone: 'warn', before: `${versionName(pendingVersionId.value, origin, true)}${verb}` }
   return pendingVersionId.value ? { tone: 'warn', before: '版本 #', version: pendingVersionId.value, after: ` ${verb}` } : { tone: 'warn', before: verb }
 })
 // 待应用时「现在应用」，文件和运行配置不同时「校验并应用」；有要保存的修改时让给保存栏 / 现在应用 when pending, 校验并应用 when the file differs; with changes to save it gives way to the save bar
@@ -618,7 +630,7 @@ let awayConflict = false
 // inPlace：丢的是让待应用版本原地生效的那次（编号不动），写没写进去看待应用的还在不在 / inPlace: the lost request put the pending version into effect in place (the number does not move), so whether it landed is read from whether that version is still pending
 // words：这次保存是面板替人做的（立即更新）时它的说法，核对以后照它说 / words: how a save made on the user's behalf (立即更新) is worded, so the check
 // afterwards says it that way
-let unanswered: { content: unknown; sent: string; base: string; generation: number; sentAt: number; from: 'draft' | 'apply'; pending: number | null; version: number | null; inPlace: boolean; words?: SaveWords } | null = null
+let unanswered: { content: unknown; sent: string; base: string; generation: number; sentAt: number; from: 'draft' | 'apply'; pending: number | null; origin: RollbackOrigin | null; version: number | null; inPlace: boolean; words?: SaveWords } | null = null
 const announceWritten = () => { if (typeof window !== 'undefined') window.dispatchEvent(new Event(CONFIG_WRITTEN_EVENT)) }
 // 不在配置页时草稿还在内存里（正在保存，或者没保存成功留着）：刷新、关掉浏览器先问一句；配置页开着时由它自己问
 // Away from the config page with a draft still in memory (a save in flight, or one that failed and is kept): reloading or closing the browser asks first; while
@@ -717,7 +729,7 @@ export function setViewing(open: boolean): boolean {
   configPageOpen.value = open
   // 「现在应用」断线时还在配置页、随后离开：这时就挂上「不知道…应用了没有」，连上后的核对才有一条可以换掉（以前离开后什么都不说）
   // 现在应用 was cut off on the page and the user then leaves: raise 「不知道…应用了没有」 now, so the check after reconnecting has a toast to replace (nothing was said away before)
-  if (!open && unanswered?.from === 'apply' && (awayToast === null || awayResults.has(awayToast)) && signedIn()) awayToast = useToast().error(`不知道${unanswered.pending ? `版本 #${unanswered.pending} ` : '配置'}应用了没有：连不上面板。连上后会自己核对`)
+  if (!open && unanswered?.from === 'apply' && (awayToast === null || awayResults.has(awayToast)) && signedIn()) awayToast = useToast().error(`不知道${pendingPhrase(unanswered.pending, unanswered.origin, true)}应用了没有：连不上面板。连上后会自己核对`)
   const keep = open && keepOnReturn
   if (open) {
     leftDuringSave = false
@@ -933,16 +945,16 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
     // 「重试应用」被服务端先存着（KixDNS 这会儿没回应）：提示条一下子没了，说一句它存成了哪个待应用版本
     // 重试应用 kept by the server (KixDNS not answering just now): the notice simply vanishes, so say which pending version it became
     // 「版本 #N 的内容」连成一块，后面可以断开 / 「版本 #N 的内容」 is one block, with a break allowed after it
-    const retriedPending = `版本\u00a0#${failedBefore}\u00a0的内容\u200b存成了待应用版本\u00a0#${result.version_id}，${pendingAfter()}`
+    const retriedPending = pressedOrigin && failedBefore ? `${versionName(failedBefore, pressedOrigin, true)}存成了版本\u00a0#${result.version_id}，${pendingAfter()}` : `版本\u00a0#${failedBefore}\u00a0的内容\u200b存成了待应用版本\u00a0#${result.version_id}，${pendingAfter()}`
     if (retrying && applyResultState(result) === 'pending' && viewing) useToast().info(retriedPending)
     else if (inPlace && applyResultState(result) === 'pending') {
-      const notYet = `版本 #${result.version_id} 还没有应用：${runtimeDown.value || restartRollback.value ? `KixDNS\u00a0启动失败，${pendingAfter()}` : runtimeStopped.value ? 'KixDNS\u00a0已停止，启动后自动应用' : 'KixDNS\u00a0没有回应，就绪后自动应用'}`
+      const notYet = `${pendingPhrase(result.version_id, pressedOrigin, true)}还没有应用：${runtimeDown.value || restartRollback.value ? `KixDNS\u00a0启动失败，${pendingAfter()}` : runtimeStopped.value ? 'KixDNS\u00a0已停止，启动后自动应用' : 'KixDNS\u00a0没有回应，就绪后自动应用'}`
       // 后台几秒内就会补上：离开后也用会自己收起的提示，不挂一条很快就过时的红色提示 / The background pass catches up within seconds: away too it is a self-dismissing info toast, not a red one that soon goes stale
       if (viewing) useToast().info(notYet)
       else if (signedIn()) tellAway(useToast().info(notYet))
     }
     // 退出登录或会话过期以后，「现在应用」的结果不再报（应用没有草稿可丢，确认框也不问它） / After sign-out or expiry the outcome of 现在应用 is not reported (an apply has no draft to lose, and the confirm does not ask about it)
-    else if (from === 'apply' && applyResultState(result) === 'applied') { if (signedIn()) tellAway(effectToast(failedBefore && failedBefore !== result.version_id ? `已应用版本 #${failedBefore} 的内容，当前版本\u00a0#${result.version_id}${restartTail()}` : appliedWords(result.version_id, inPlace ? pressedOrigin : undefined))) }
+    else if (from === 'apply' && applyResultState(result) === 'applied') { if (signedIn()) tellAway(effectToast(failedBefore && failedBefore !== result.version_id ? `${pressedOrigin ? nameWith(versionName(failedBefore, pressedOrigin, true), restartPending.value.length ? '已应用' : '已生效') : `已应用版本 #${failedBefore} 的内容`}，当前版本\u00a0#${result.version_id}${restartTail()}` : appliedWords(result.version_id, inPlace ? pressedOrigin : undefined))) }
     // 保存途中离开了配置页：没有保存条报结果，用提示说；退出登录时放下了这份草稿就不说（确认框说过「不再告诉你结果」）
     // Left the config page mid-save: no save bar reports it, so a toast does; not after sign-out let the draft go (the confirm said no result would follow)
     // 离开以后重试应用被先存着：同样说出存的是哪一版的内容 / A retry kept as pending while away: say whose content it stored, as on the page
@@ -968,7 +980,7 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
       finishStage('idle')
       if (unsaved.value) { enterStaleBase(); return }
       await load({ quiet: true, fresh: true })
-      const text = `版本 #${failedBefore} 没有应用：这份配置在别处改\u2060过\u2060了，${doc.value?.version_id ? `已读入版本\u00a0#${doc.value.version_id}` : '已重新读取'}`
+      const text = `${pendingPhrase(failedBefore, pressedOrigin, true)}没有应用：这份配置在别处改\u2060过\u2060了，${doc.value?.version_id ? `已读入版本\u00a0#${doc.value.version_id}` : '已重新读取'}`
       if (viewing) useToast().info(text)
       else if (signedIn()) { dismissAwayToast(); awayToast = useToast().error(text); awayConflict = true }
       return
@@ -976,7 +988,7 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
     const reason = friendlyRuntimeError(error)
     const down = isPanelDown(error)
     if (down && step === 'applying') {
-      unanswered = { content, sent, base, generation: draftGeneration(), sentAt, from, pending: pendingVersionId.value ?? null, version: doc.value?.version_id ?? null, inPlace, words }
+      unanswered = { content, sent, base, generation: draftGeneration(), sentAt, from, pending: pendingVersionId.value ?? null, origin: doc.value?.pending?.from_rollback ?? null, version: doc.value?.version_id ?? null, inPlace, words }
       lastLost = true
       // 面板替人做的保存（立即更新）在页上回应丢了：人是在某一行的「…」里点的，离保存条远，说一句不知道存上没有，连上后核对完换成结果（和离开以后一样）
       // A save made on the user's behalf (立即更新) lost its answer on the page: it was pressed in a row's 「…」, far from the save bar, so a toast says
@@ -1007,7 +1019,7 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
       // 「现在应用」的结果：页面上由提示条说，离开了用提示说；开头都是「版本 #N …」，原因单独成句（服务端的原因自己带冒号）
       // The outcome of 现在应用: the notice says it on the page, a toast when away; both open with 「版本 #N …」 and the cause is its own sentence (the server's
       // causes carry their own colon)
-      const which = (id: number | null | undefined) => (id ? `版本 #${id} ` : '配置')
+      const which = (id: number | null | undefined) => pendingPhrase(id, id === failedBefore ? pressedOrigin : id === doc.value?.pending?.version_id ? doc.value?.pending?.from_rollback : undefined, true)
       if (retrying) {
         // 已经挂着「没有生效」时按的「重试应用」：提示条的话和刚才一样，所以另说一句这次重试的结果；重试存成了新版本时说出新编号
         // 撞上冲突时提示条已经换成「重新读取」并写明原因，不再另弹一条说同一句
@@ -1129,7 +1141,7 @@ async function settleOnce(announce: boolean): Promise<boolean> {
   if (toldHere) dismissAwayToast()
   // 丢的是「现在应用」：结果按应用说，不说「保存」（那时没有保存条，也没有要保存的东西） / The lost request was 现在应用: the result is worded as an apply, not a save (there was no save bar and nothing to save)
   const applying = lost.from === 'apply'
-  const pendingName = lost.pending ? `版本 #${lost.pending} ` : '待应用的版本'
+  const pendingName = pendingPhrase(lost.pending, lost.origin, false, '待应用的版本')
   // 「现在应用」没写进去时文件还是那份待应用的，内容和发出去的一模一样：版本号没动就是没写进去（以前当成写进去了，还说「待应用，就绪后自动应用」）
   // When 现在应用 was not written the file is still the pending one, identical to what was sent: an unmoved version number means it was not written (it used to
   // count as written and even said 待应用, 就绪后自动应用)
@@ -1239,13 +1251,16 @@ async function settleOnce(announce: boolean): Promise<boolean> {
     // in-place apply kept its number, so it reads 版本 #N … as usual
     const stored = applying && !lost.inPlace
     const opening = stored ? (version ? `刚才那次应用存成了${version}` : '刚才那次应用存上了') : applying ? '刚才那次应用' : `${lostSave}已经存上了`
-    const which = stored || !version ? '' : `${version} `
+    // 原地应用的是退回写下的那一版：照它是什么叫，不报编号 / An in-place apply of a version a rollback wrote: named by what it is,
+    // without its number
+    const named = !stored && lost.inPlace && lost.origin && current.version_id ? versionName(current.version_id, lost.origin, true) : null
+    const which = stored || !version ? '' : named ?? `${version} `
     const said = hasApplyFailure.value ? useToast().error(`${opening}：${which}没有生效，${viewing ? '可以重试应用' : '回到配\u2060置\u2060页可以重试应用'}`)
       : hasPending.value ? useToast().success(`${opening}：${which}待应用，${pendingAfter()}`)
       // 面板替人做的保存（words）照旧说「已生效」：要重启的设置和它无关；应用没有编号时不说「已经应用」，说「已经完成」
       // A save the panel made (words) still says 已生效: the settings waiting for a restart have nothing to do with it; an apply
       // without a number reads 已经完成 rather than 已经应用
-      : effectToast(stored ? `${opening}：${words ? '已生效' : inEffect()}` : version ? `${opening}：${version} ${words ? '已生效' : inEffect()}` : applying ? `${opening}${restartPending.value.length ? `已经完成${restartTail()}` : '已经生效'}` : opening, !words && Boolean(restartTail()))
+      : effectToast(stored ? `${opening}：${words ? '已生效' : inEffect()}` : named ? `${opening}：${named}${words ? '已生效' : inEffect()}` : version ? `${opening}：${version} ${words ? '已生效' : inEffect()}` : applying ? `${opening}${restartPending.value.length ? `已经完成${restartTail()}` : '已经生效'}` : opening, !words && Boolean(restartTail()))
     tellAway(said)
     // 草稿里没有别的修改了：不用再留着、也不用拦着刷新 / Nothing else is unsaved in the draft: no need to keep it or to guard reloads
     if (!unsaved.value) dropKeptDraft()

@@ -117,6 +117,12 @@ test('重启以后 KixDNS 没起来：页头和提示条照实说，退回原来
   const row = page.locator('.audit-line', { hasText: '退回原来的设置' })
   await expect(row).toContainText(/UDP\s监听地址，版本 #\d+/)
   await expect(row).not.toContainText('bind_udp')
+  // 这一行照常折行，不撑出卡片、不让日志区横向滚动 / The row wraps as usual, without overflowing the card or scrolling the log sideways
+  expect(await row.evaluate((line) => {
+    let box: HTMLElement | null = line as HTMLElement
+    while (box) { if (box.scrollWidth > box.clientWidth + 1) return false; box = box.parentElement }
+    return true
+  })).toBe(true)
 })
 
 test('重启以后 KixDNS 没起来：在系统页再重启一次照样起不来，退回的出路还在 @responsive', async ({ page }) => {
@@ -250,7 +256,7 @@ test('起不来、又没有可以退回的设置：指到日志；存了待应�
   await page.locator('.cfg__savebar').getByRole('button', { name: '保存为待应用' }).click()
   await expect(page.locator('.cfg__savebar')).toContainText(/已存成待应用版本 #\d+，KixDNS\s启动后\u2060自\u2060动\u2060应\u2060用/)
   await expect(page.locator('.cfg__savebar')).not.toContainText('写进配置文件')
-  await expect(notice).toContainText(/版本\s#\d+\s还没写进配置文件，KixDNS\s启动时读不到它。/)
+  await expect(notice).toContainText(/版本\s#\d+\s要写进配置文件，KixDNS\s启动时才读得到它。/)
   // 别的页面同样指到配置页：系统页、概览的提示条都给「去配置页」 / Other pages point to the config page too: the system page and
   // overview notices both offer 去配置页
   await page.getByRole('link', { name: '系统', exact: true }).locator('visible=true').first().click()
@@ -352,7 +358,7 @@ test('退回的确认框开着时撤销放弃、找回了修改：不退回，�
   await expect(page.getByLabel('UDP 监听地址', { exact: true })).toHaveValue('0.0.0.0:5300')
   await expect(page.locator('.toast', { hasText: '已退回' })).toHaveCount(0)
   // 按了却没发：说一句，不悄悄关掉 / Pressed but not sent: a line says so, rather than the dialog just closing
-  await expect(page.locator('.toast', { hasText: '草稿里又有了没保存的修改' })).toHaveText(['草稿里又有了没保存的修改，没有退回：先保存或放弃这些修改'])
+  await expect(page.locator('.toast', { hasText: '没有退回' })).toHaveText(['没有退回：草稿里还有修改没保存'])
 })
 
 test('别的页按了「启动」、等它回来时，配置页页头也转圈、写「正在启动」 @responsive', async ({ page }) => {

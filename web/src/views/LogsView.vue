@@ -76,6 +76,15 @@ function auditDetail(event: AuditEvent, plain = false): string {
   const text = auditDetailGlued(event)
   return plain ? text.replace(/\u00a0/g, ' ').replace(/\u2060/g, '') : text
 }
+// 显示时把每个设置名、每个「版本 #N」各连成一块，只在「、」「，」后折行（名字里、版本号里不断开）
+// For display, each setting name and each 「版本 #N」 is one glued run, wrapping only after 「、」 or 「，」 (never inside a name or a number)
+function auditParts(event: AuditEvent): Array<{ text: string; glue: boolean }> {
+  const text = auditDetailGlued(event)
+  if (event.action !== 'config.restart_rollback') return [{ text, glue: false }]
+  // 比一行还长的段不强行连住（面板不认识、原样显示的内核键名），免得在窄屏上撑出去 / A part longer than a line is not glued (a kernel
+  // key the panel does not know, shown as it is), lest it overflow a narrow screen
+  return text.split(/(?<=[、，])/).map((part) => ({ text: part, glue: part.length <= 20 }))
+}
 function auditDetailGlued(event: AuditEvent): string {
   if (event.action !== 'config.restart_rollback') return event.detail
   const cut = event.detail.indexOf('，')
@@ -562,7 +571,7 @@ const waitingForPanel = computed(() => activeError.value !== '' && (panelDown.va
         <div v-if="skeletonAudit" class="log-skeleton" role="status" aria-label="正在读取审计记录"><i v-for="n in 6" :key="n" class="sk"></i></div>
         <template v-else>
           <div v-for="event in filteredAudit" :key="event.id" class="log-line audit-line">
-            <time>{{ auditTimestamp(event.created_at) }}</time><strong>{{ actorName(event.actor) }}</strong><span class="audit-action" :class="{ 'ui-mono': !actionName(event.action) }" :title="actionName(event.action) ? event.action : undefined">{{ actionName(event.action) ?? event.action }}</span><p><span v-if="failed(event.action)" class="ui-tag ui-tag--err">失败</span>{{ auditDetail(event) }}</p>
+            <time>{{ auditTimestamp(event.created_at) }}</time><strong>{{ actorName(event.actor) }}</strong><span class="audit-action" :class="{ 'ui-mono': !actionName(event.action) }" :title="actionName(event.action) ? event.action : undefined">{{ actionName(event.action) ?? event.action }}</span><p><span v-if="failed(event.action)" class="ui-tag ui-tag--err">失败</span><span><template v-for="(part, k) in auditParts(event)" :key="k"><span v-if="part.glue" class="nowrap">{{ part.text }}</span><template v-else>{{ part.text }}</template></template></span></p>
           </div>
           <button v-if="auditCursor !== null && !auditQuery" class="log-more" type="button" :disabled="auditRequesting" @click="loadAudit(false)"><RefreshCw :size="14" :class="{ spin: auditLoading }" aria-hidden="true" />加载更多</button>
           <UiEmpty v-if="filteredAudit.length === 0 && !auditError" :icon="ScrollText" :title="auditFiltered ? '没有符合条件的审计记录' : '还没有操作记录'" :desc="auditFiltered ? '清空搜索，或把类别切回「全部」' : '登录、保存配置、更新和重启服务都会记在这里。'" />

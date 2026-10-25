@@ -4,13 +4,13 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import UiNumber from '../components/ui/UiNumber.vue'
 import UiDotText from '../components/ui/UiDotText.vue'
 import { useBarHeight } from '../composables/useBarHeight'
-import { restartingKixdns } from '../composables/useServiceStart'
+import { restartingKixdns, versionName } from '../composables/useServiceStart'
 import { useToast } from '../composables/useToast'
 import DraftReviewDialog from './DraftReviewDialog.vue'
 import RuleText from './RuleText.vue'
 import { usePhone, useTightSaveBar } from './phone'
 import { changeCount, dialogEdits, discardWithUndo, editorEdited, model, userPart } from './store'
-import { busy, waitingForBuild, cnameBlocked, pendingVersionId, queued, rereading, saveInFlight, sayBlocked, conflict, deferNote, deferSave, editTouched, elapsed, note, origin, save, saveMessage, stage, validate, validation, verdict } from './useConfigDocument'
+import { busy, doc, waitingForBuild, cnameBlocked, pendingVersionId, queued, rereading, saveInFlight, sayBlocked, conflict, deferNote, deferSave, editTouched, elapsed, note, origin, save, saveMessage, stage, validate, validation, verdict } from './useConfigDocument'
 
 // 保存条只替草稿说话：有改动才升起来，保存完一会儿就收起。两步：先校验，再写入并热加载；任何一步失败都停住，原因里的规则能点。
 // KixDNS 没启动、连不上、不报能力时只存成待应用版本。Ctrl/Cmd+S 等于点保存。进度和结果都来自 useConfigDocument。
@@ -107,7 +107,10 @@ function closeReview(): void {
 const saveLabel = computed(() => (deferSave.value ? '保存为待应用' : '保存并应用'))
 // 页头的「现在应用」在跑（不是这条保存条的保存） / The header's 现在应用 is running (not this bar's save)
 const applying = computed(() => busy.value && origin.value === 'apply')
-const applyingNote = computed(() => `正在应用${pendingVersionId.value ? `版本 #${pendingVersionId.value}` : '待应用的版本'}，应用完再保存`)
+// 退回写下的版本不报编号，和页头同一个短名 / A version a rollback wrote has no number: the header's short name
+// 「现在应用」只在 KixDNS 在时才有，那时真正在应用的是带上的修改 / 现在应用 exists only while KixDNS runs, when what is being applied
+// is the carried edits
+const applyingNote = computed(() => `正在应用${doc.value?.pending?.from_rollback && pendingVersionId.value ? versionName(pendingVersionId.value, doc.value.pending.from_rollback, true) : pendingVersionId.value ? `版本 #${pendingVersionId.value}` : '待应用的版本'}，应用完再保存`)
 // 在写入这份草稿，或者排在单独的「校验」后面等着写：按钮写「保存中」；页头在应用时不算 / Writing this draft, or queued behind a lone 校验 to write: the button reads 保存中; the header's apply does not count
 const saving = computed(() => (busy.value && stage.value !== 'checking' && origin.value === 'draft') || queued.value)
 // 保存还在跑（写入落地以后、重读完之前草稿已经算干净了）：按钮一直留着写「保存中」，不在说「第 2 步」时消失
