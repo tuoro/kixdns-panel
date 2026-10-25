@@ -149,6 +149,9 @@ describe('hyphenRuns', () => {
     // into a glue-block
     expect(toastRuns('退回的设置和待应用的修改还没有应用：KixDNS 没有回应，就绪后自动应用')[0]!.lead).toBe(true)
     expect(toastRuns('KixDNS 服务已重启，退回的设置和待应用的修改已生效').find((r) => r.parts)?.lead).toBeUndefined()
+    // 连块吃掉了标点前那个字（「KixDNS 后」）时，普通字里的标点后面也有断点 / When a glued run takes the character before a mark
+    // (「KixDNS 后」), the mark in plain text gets its break point too
+    expect(units('重试没有送到面板，连上\u00a0KixDNS\u00a0后，可以再点「重试应用」')).toBe('重试没有送到面[板，]/连上\u00a0[KixDNS\u00a0后]，/可以[再点「重试应用」]')
     // 标点后的断点在开引号前不放，「；「」才挤得紧 / No break point after punctuation before an opening quote, so 「；「」 closes up
     expect(units('新的一份已下载；「anti-ad.txt」还没有放进草稿')).toBe('新的一份已下[载；][「anti-ad.txt」]还没有放进草稿')
     // 名字自己带着标点：后面本来就能断，不再往后连 / A name carrying its punctuation can already break after it, so nothing after is glued

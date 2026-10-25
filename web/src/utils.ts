@@ -170,22 +170,25 @@ function glueRuns(text: string, pattern: RegExp, word: (m: RegExpMatchArray) => 
 }
 export const hyphenRuns = (text: string): GlueRun[] => glueRuns(text, HYPHEN_WORD, (m) => m[1])
 // 提示的断行，在 Chromium 和 WebKit（Safari）上都要成立：
-// - 断点只有空格和显式的 <wbr>：以「，：；。」结尾的连块后面都放一个 <wbr>（WebKit 按词换行时不在中文标点处断，Chromium 那里本来就能断，
-//   多放一个不多出断点）；
+// - 断点只有空格和显式的断点（显示成生成的零宽空格，见 styles.css 的 .brk）。每个「，：；。」后面都放一个，不管它在连块里还是普通字里：
+//   WebKit 按词换行时不在中文标点处断；Chromium 那里本来就能断，多放一个不多出断点；
 // - 退回的叫法没有空格、整块连住，它所在的那一段（两处断点之间）名字前面那截、后面那截也各连成一块；
-// - 中间没有断点的几个相邻连块合成一串（parts），显示时整串放进一个 glue-block（inline-block，最宽一行），串里用 <wbr> 隔开：整串先作为
-//   一个整体换行，比一行还宽时才在串里、只在块和块之间断开（一句开头的那一串留在行内，见 chained）。不能只靠「放不下才硬切」：WebKit 在两个相邻的不折行块之间不硬切，提示会伸出
-//   屏幕；也不能只在名字后面加 <wbr>：它随时可用，宽一点的屏上会抢在前面的标点之前，拆成「…已重启，退回的设置和待应用的修改 / 已生效」
+// - 中间没有断点的几个相邻连块合成一串（parts），显示时整串放进一个 glue-block（inline-block，最宽一行），串里块和块之间放断点：整串
+//   先作为一个整体换行，比一行还宽时才在串里、只在块和块之间断开（一句开头的那一串留在行内，见 chained）。
+// 不能只靠「放不下才硬切」：WebKit 在两个相邻的不折行块之间不硬切，提示会伸出屏幕。也不能只在名字后面加断点：它随时可用，宽一点的屏上
+// 会抢在前面的标点之前，拆成「…已重启，退回的设置和待应用的修改 / 已生效」
 // Toast line breaking has to hold in both Chromium and WebKit (Safari):
-// - the only break points are spaces and explicit <wbr>: one follows every glued run ending in 「，：；。」 (WebKit's keep-all does not
-//   break at CJK punctuation; Chromium already does, so the extra one adds no break point there);
+// - the only break points are spaces and explicit ones (shown as a generated zero-width space, see .brk in styles.css). One follows
+//   every 「，：；。」, in a glued run or in plain text: WebKit's keep-all does not break at CJK punctuation, while Chromium already
+//   does, so the extra one adds no break point there;
 // - the rollback's names have no space and stay whole, and the parts of a name's stretch (between two break points) before and after
 //   it are glued too;
 // - adjacent glued runs with no break point between them form a chain (parts), shown as one glue-block (inline-block, at most a line
-//   wide) with <wbr> between its members: the chain moves as a whole, and only when wider than a line does it break inside, between
-//   members only (a chain opening the text stays inline, see chained). Relying on a cut only when nothing fits fails in WebKit, which never cuts between two adjacent no-wrap runs, so the
-//   toast overflows; a <wbr> after the name alone fails too: always available, on a wider screen it wins over the punctuation before
-//   it and splits 「…已重启，退回的设置和待应用的修改 / 已生效」
+//   wide) with break points between its members: the chain moves as a whole, and only when wider than a line does it break inside,
+//   between members only (a chain opening the text stays inline, see chained).
+// Relying on a cut only when nothing fits fails in WebKit, which never cuts between two adjacent no-wrap runs, so the toast overflows. A
+// break point after the name alone fails too: always available, on a wider screen it wins over the punctuation before it and splits
+// 「…已重启，退回的设置和待应用的修改 / 已生效」
 const ROLLBACK_NAME = /^(?:退回的设置和待应用的修改|退回的设置|待应用的修改)$/
 const STRETCH_END = /[，：；。 ]/
 const ENDS_AT_PUNCTUATION = /[，：；。]$/
@@ -204,8 +207,11 @@ export const toastRuns = (text: string): GlueRun[] => {
   // 标点后的断点：后面紧跟开引号时不放，「；「」这样相邻的标点才挤得紧（Chromium 隔着断点不挤；开引号前本来就能断）
   // The break point after punctuation is left out before an opening quote, so adjacent marks such as 「；「」 still close up
   // (Chromium does not close them up across a break point, and a break is allowed before an opening quote anyway)
-  const out = chained(runs)
-  return out.map((run, k) => (run.glue && !run.name && ENDS_AT_PUNCTUATION.test(run.text) && !/^[「『（《“]/.test(out[k + 1]?.text ?? '') ? { ...run, breakAfter: true } : run))
+  // 普通字也在每个标点后切开：WebKit 只认显式的断点，连块吃掉了标点前那个字（「KixDNS 后」）时，标点就落在普通字里
+  // Plain text is split after every punctuation mark too: WebKit honours explicit break points only, and when a glued run takes the
+  // character before a mark (「KixDNS 后」) the mark lands in plain text
+  const out = chained(runs).flatMap((run): GlueRun[] => (run.glue ? [run] : run.text.split(/(?<=[，：；。])/).map((text) => ({ text, glue: false }))))
+  return out.map((run, k) => (!run.name && ENDS_AT_PUNCTUATION.test(run.text) && !/^[「『（《“]/.test(out[k + 1]?.text ?? '') ? { ...run, breakAfter: true } : run))
 }
 // 第一个断点以后（含）的位置，按 UTF-16 数，和 slice 一致 / Where the break points are, counted in UTF-16 as slice counts
 const breaksIn = (text: string) => [...text.matchAll(new RegExp(STRETCH_END, 'g'))].map((m) => m.index)

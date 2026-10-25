@@ -338,12 +338,15 @@ const friendlyRuntimeError = (error: unknown) => friendlyRuntimeMessage(errorMes
 // A version that did not take because KixDNS stopped before confirming the new config: it is recorded as not taken and will not apply by itself on start, so
 // it must not read 启动后再应用
 export const failureCause = (message: string): string => (STOPPED.test(message) ? 'KixDNS 在确认新配置前停了' : friendlyRuntimeMessage(message)).replace(/[，,]\s*仍在用之前的配置。?$/, '')
-// 应用被拒时服务端给这一版存下的原因：回应里的原话，KixDNS 拒绝的那种前面加服务端的说法；说不准的给 null
-// The cause the server stores for a refused version: the answer's own words, with the server's lead-in for a KixDNS rejection; null
-// when it cannot be told
+// 应用被拒时服务端给这一版存下的原因：回应里的原话，KixDNS 拒绝、读不懂回应的那两种前面加服务端的说法；别的给 null
+// The cause the server stores for a refused version: the answer's own words, with the server's lead-in for a KixDNS rejection or an
+// unreadable reply; null otherwise
 function storedCause(error: ApiError): string | null {
   if (['reload_failed', 'config_validation_failed', 'unsupported_config_fields'].includes(error.code)) return error.message
   if (error.code === 'kixdns_rejected') return `KixDNS 没有接受这份配置：${error.message}`
+  // 读不懂回应的那一类服务端有两种存法，照常见的那种记；回应太大的那种（少见）重读回来改正 / A protocol error is stored one of two
+  // ways: the common one is recorded, and the rare reply-too-large one is corrected by the re-read
+  if (error.code === 'kixdns_protocol_error') return `读不懂 KixDNS 的回应：${error.message}`
   return null
 }
 const shouldRefreshAfterSaveError = (error: unknown) => error instanceof ApiError && ['unsupported_config_fields', 'config_validation_failed', 'reload_failed', 'kixdns_rejected'].includes(error.code)
@@ -527,7 +530,7 @@ export function load(options: { quiet?: boolean; keepDraft?: boolean; sent?: str
     loadError.value = ''
     loadFailedDown = false
     // 重新读取成功：「重试没有成功：…先重新读取」那条提示说的事已经办了 / Re-read done: the 「重试没有成功：…先重新读取」 toast's advice has been taken
-    if (!options.quiet && retryToast !== null) { useToast().dismiss(retryToast); retryToast = null }
+    if (!options.quiet) dropRetryToast()
   })().catch((error: unknown) => { loadError.value = errorMessage(error); loadFailedDown = isPanelDown(error) }).finally(() => { loading.value = loudWaiting > 0; pendingLoad = null })
   return pendingLoad
 }
@@ -613,8 +616,6 @@ let docWrites = 0
 function recordWrite(result: ConfigApplyResult, message: string): void {
   writeCount += 1
   const applied = applyResultState(result) === 'applied'
-  // 生效了：先前那条「重试也没有生效」过时了 / In effect: an earlier 「重试也没有生效」 is stale
-  if (applied && retryToast !== null) { useToast().dismiss(retryToast); retryToast = null }
   if (doc.value) {
     doc.value = applied
       ? { ...doc.value, pending: null, runtime: { ...doc.value.runtime, status: 'active', active_sha256: result.sha256, apply_state: 'active', pending_error: null } }
@@ -756,7 +757,10 @@ export function setViewing(open: boolean): boolean {
   // 丢的是「重试应用」：「不知道重试应用了没有」那条已经在说，不再挂第二条，交给离开时的提示槽，连上后的核对照样换掉它
   // A lost 重试应用: 「不知道重试应用了没有」 already says it, so no second toast; it moves to the away slot, and the check after
   // reconnecting replaces it all the same
-  if (!open && unanswered?.from === 'apply' && unanswered.retrying && retryToast !== null && signedIn()) { dismissAwayToast(); awayToast = retryToast; retryToast = null }
+  if (!open && unanswered?.from === 'apply' && unanswered.retrying && retryToast !== null && signedIn()) handRetryAway()
+  // 在页上说的重试结果只补充提示条（原因由提示条说）：离开配置页时一起收起，不带着一句没头没尾的话到别的页 / A retry outcome told on the
+  // page only adds to the notice (which gives the cause): it goes when the config page is left, rather than following with half a story
+  if (!open) dropRetryToast()
   if (!open && unanswered?.from === 'apply' && !unanswered.retrying && (awayToast === null || awayResults.has(awayToast)) && signedIn()) awayToast = useToast().error(notKnownApplied(unanswered.pending, unanswered.origin))
   const keep = open && keepOnReturn
   if (open) {
@@ -915,6 +919,9 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
   // 按之前提示条上已经挂着「没有生效」：这一下是重试；结果用重试的话说（等失败以后再看，那时运行状态已经换成这一次的了）
   // 没有生效 was already showing when this was pressed: it is a retry, and its outcome is worded as one (looking after the failure would see this run's state)
   const retrying = from === 'apply' && hasApplyFailure.value
+  // 再按一次「重试应用」：上一次的结果收起，提示条还在说没有生效，什么都不会漏说 / 重试应用 pressed again: the previous outcome goes;
+  // the notice still says it did not take, so nothing goes unsaid
+  if (retrying) dropRetryToast()
   const failedBefore = pendingVersionId.value
   const pressedOrigin = doc.value?.pending?.from_rollback
   // 「现在应用」一个待应用的版本：让它原地生效（服务端和后台每 5 秒做的一样），不另存一个内容相同的新版本；编号、备注都不变。
@@ -1041,9 +1048,8 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
     // 原地应用被拒：先在本地记下这一版没有生效，再放下「应用中」。不然重读回来之前页头会闪一下「待应用 · 现在应用」，按钮还能按（和成功时
     // recordWrite 先记下一个道理）/ An in-place apply refused: record locally that this version did not take before 应用中 goes.
     // Otherwise the header flashes 待应用 · 现在应用, with the button live, until the re-read lands (as recordWrite records a success first)
-    // 记下的原因要和服务端存下的一字不差，重读回来提示条才不换字：只在能确定时记（「读不懂 KixDNS 的回应」那一类服务端有两种存法，等重读）
-    // The recorded cause must match what the server stored, or the notice changes its words when the re-read lands: it is recorded
-    // only when certain (a protocol error is stored one of two ways, so that one waits for the re-read)
+    // 记下的原因要和服务端存下的一样，重读回来提示条才不换字（见 storedCause） / The recorded cause must match what the server
+    // stored, or the notice changes its words when the re-read lands (see storedCause)
     const cause = error instanceof ApiError ? storedCause(error) : null
     if (inPlace && writtenNotApplied && doc.value?.pending?.version_id === failedBefore && cause !== null) {
       doc.value = { ...doc.value, pending: { ...doc.value.pending, error: cause }, runtime: { ...doc.value.runtime, status: 'failed', apply_state: 'failed', pending_error: cause } }
@@ -1069,10 +1075,13 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
         // was stored as one; on a conflict the notice already offers 重新读取 with the reason, so no toast repeats it
         const stored = writtenNotApplied && pendingVersionId.value && pendingVersionId.value !== failedBefore ? `，存成了版本 #${pendingVersionId.value}` : ''
         // 写入时断线：不知道重试写进去没有，连上后的核对会换掉这一条 / Cut off while writing: whether the retry landed is unknown, and the check after reconnecting replaces this
-        if (!conflict.value && signedIn()) retryToast = useToast().error(writtenNotApplied ? `重试也没有生效${stored}。${failureCause(reason)}` : down && step === 'applying' ? '不知道重试应用了没有：连不上面板。连上后会自己核对' : step === 'validating' ? `重试没有通过校验。${reason}` : `重试没有成功。${reason}`)
+        // 原因：在页上提示条已经写着，提示只说重试过了、没成、存成了哪一版；离开时提示是唯一说原因的地方，带上它 / The cause: on the
+        // page the notice already gives it, so the toast only says the retry ran, did not take and which version it became; away the toast
+        // is the only place that gives the cause, so it carries it
+        if (!conflict.value && signedIn()) sayRetry(useToast().error(writtenNotApplied ? `重试也没有生效${stored}${viewing ? '' : `。${failureCause(reason)}`}` : down && step === 'applying' ? '不知道重试应用了没有：连不上面板。连上后会自己核对' : step === 'validating' ? `重试没有通过校验。${reason}` : `重试没有成功。${reason}`))
         // 人已经离开：这条交给离开时的提示槽，核对的结果和别的说法会换掉它 / Already away: this goes to the away slot, where the
         // check's result and what is said later replace it
-        if (!viewing && retryToast !== null) { dismissAwayToast(); awayToast = retryToast; retryToast = null }
+        if (!viewing && retryToast !== null) handRetryAway()
       } else {
         // 写进去了却没生效：提示条的「版本 #N 没有生效」管这件事，不再另挂一条 / Written but not taken: the notice's 版本 #N 没有生效 owns it, no second notice
         if (!writtenNotApplied) {
@@ -1172,7 +1181,7 @@ async function settleOnce(announce: boolean): Promise<boolean> {
   if (!current) return false
   unanswered = null
   // 「不知道重试应用了没有」那条由下面核对的结果换掉 / The 「不知道重试应用了没有」 toast is replaced by the result below
-  if (lost.from === 'apply' && retryToast !== null) { useToast().dismiss(retryToast); retryToast = null }
+  if (lost.from === 'apply') dropRetryToast()
   // 草稿整份换过（放弃又撤销、导入）也照样比：面板上的文件和对照的那份跟草稿是怎么来的无关；只有「已经保存过了」这句要草稿还是那一份
   // Compared even after the draft was replaced wholesale (discard then undo, an import): the file on the panel and the baseline do not depend on how the
   // draft came about; only the 已经保存过了 line needs the draft to be the same one
@@ -1235,7 +1244,7 @@ async function settleOnce(announce: boolean): Promise<boolean> {
     // 草稿里又有修改时页头不给「现在应用」（让给保存条）：说保存会带上它，不指一个看不见的按钮；KixDNS 不在时也不给，说它什么时候自己应用
     // With edits in the draft the header offers no 现在应用 (it gives way to the save bar): say a save takes it along instead of pointing at a missing button;
     // with KixDNS absent there is none either, so say when it applies by itself
-    const applyAgain = !kixdnsIn ? `，${pendingAfter()}` : unsaved.value ? '；它的内容会和你的修改一起保存生效' : '，可以再点「现在应用」'
+    const applyAgain = !kixdnsIn ? `，${appliesWhen(current.runtime)}` : unsaved.value ? '；它的内容会和你的修改一起保存生效' : '，可以再点「现在应用」'
     // 面板替人做的保存（立即更新），草稿之后整份换过（离开时、在页上放弃）：那份草稿不在了，不说「它留在草稿里」「可以再保存」，只收起「不知道存上没有」；
     // 离开时放弃的，补存会自己说结果；在页上放弃的，是人自己不要了
     // A save made on the user's behalf (立即更新) whose draft was since replaced wholesale (a discard on leaving or on the page): that draft is gone, so
@@ -1247,12 +1256,13 @@ async function settleOnce(announce: boolean): Promise<boolean> {
     const pageDiscarded = gone && !(words?.madeUp?.() ?? false)
     // 丢的是「重试应用」：那一版是没有生效、不是还没有应用，页上的按钮也是「重试应用」 / The lost request was 重试应用: that version did
     // not take rather than not yet applied, and the button on the page is 重试应用
-    // 只在提示条真会给「重试应用」时才指它：按这次读回来的状态（页面上的状态还是断线前的），KixDNS 在、草稿没有修改；草稿有修改时说保存会
-    // 带上它；KixDNS 不在时只说没送到（这时保存只能存成待应用，也不说「一起保存生效」）
-    // Point at 重试应用 only when the notice will offer it, judged on the state just read (the page's is still from before the
-    // outage): KixDNS in and no edits in the draft; with edits say a save takes it along; with KixDNS absent only that it did not
-    // arrive (a save can then only be kept as pending, so 一起保存生效 is not said either)
-    const retryAgain = !kixdnsIn ? '' : unsaved.value ? '；那一版的内容会和你的修改一起保存生效' : '，可以再点「重试应用」'
+    // 按这次读回来的状态说下一步（页面上的状态还是断线前的）。草稿有修改时提示条不给「重试应用」，只说保存会带上那一版的内容，不许它生效
+    // （它刚被拒过）；没有修改、KixDNS 在时提示条会给按钮；KixDNS 不在时说它回来以后再点（没有生效的版本不会自己再试）
+    // The next step is told from the state just read (the page's is still from before the outage). With edits in the draft the notice
+    // offers no 重试应用, so only that a save takes that version's content along, with no promise it takes (it was just refused);
+    // without edits and with KixDNS in the notice offers the button; with KixDNS absent, to press it once KixDNS is back (a refused
+    // version is never retried by itself)
+    const retryAgain = unsaved.value ? '；保存时会带上那一版的内容' : !kixdnsIn ? `，${backWhen(current.runtime)}，可以再点「重试应用」` : '，可以再点「重试应用」'
     if (viewing && announce && !changedElsewhere && !gone) useToast().info(applying ? (lost.retrying ? `重试没有送到面板${retryAgain}` : `${pendingName}还没有应用${applyAgain}`) : `${lostSave}没有存上，可以再保存`)
     // 面板替人做的保存被别处盖掉：冲突和原因由保存条说，这里只说保存条没说的那一步（用户定的） / A save made on the user's behalf was overwritten
     // elsewhere: the bar says the conflict and why, so this only gives the step the bar lacks (the user's call)
@@ -1273,13 +1283,15 @@ async function settleOnce(announce: boolean): Promise<boolean> {
       // and the background catches up within seconds. As when the answer says it was kept, a self-dismissing toast says when it
       // applies by itself, not a red one that soon goes stale and points back at a button on the config page
       dismissAwayToast()
-      tellAway(useToast().info(`${pendingName}还没有应用，${pendingAfter()}`))
+      // KixDNS 在：后台每 5 秒那一遍几秒内就补上；不在时照页面的状态说什么时候 / KixDNS in: the background pass catches up within
+      // seconds; absent, when is said from the page's state
+      tellAway(useToast().info(`${pendingName}还没有应用，${appliesWhen(current.runtime)}`))
     } else if (!viewing && awayToast !== null) {
       dismissAwayToast()
       awayConflict = changedElsewhere
       if (changedElsewhere && words?.overwrittenHere) words.returnTo?.(words.overwrittenHere)
       awayToast = useToast().error(applying
-        ? (changedElsewhere ? '刚才那次应用不在现在的配置里：这份配置在别处改\u2060过\u2060了，回到配\u2060置\u2060页重新读取' : lost.retrying ? `重试没有送到面板${!kixdnsIn ? '' : unsaved.value ? '；回到配\u2060置\u2060页保存时，那一版的内容会和你的修改一起生效' : '，回到配\u2060置\u2060页可以再点「重试应用」'}` : `${pendingName}还没有应用，${unsaved.value ? '回到配\u2060置\u2060页保存时，它的内容会和你的修改一起生效' : kixdnsIn ? '回到配\u2060置\u2060页可以再点「现在应用」' : pendingAfter()}`)
+        ? (changedElsewhere ? '刚才那次应用不在现在的配置里：这份配置在别处改\u2060过\u2060了，回到配\u2060置\u2060页重新读取' : lost.retrying ? `重试没有送到面板${unsaved.value ? '；回到配\u2060置\u2060页保存时，会带上那一版的内容' : !kixdnsIn ? `，${backWhen(current.runtime)}，可以回到配\u2060置\u2060页再点「重试应用」` : '，回到配\u2060置\u2060页可以再点「重试应用」'}` : `${pendingName}还没有应用，${unsaved.value ? '回到配\u2060置\u2060页保存时，它的内容会和你的修改一起生效' : kixdnsIn ? '回到配\u2060置\u2060页可以再点「现在应用」' : pendingAfter()}`)
         : changedElsewhere ? (words?.again ? `${lostSave}：不在现在的配置里，这份配置在别处改过了；回到配置页重新读取，${words.again}` : `${lostSave}不在现在的配置里：这份配置在别处改\u2060过\u2060了。草稿留在配\u2060置\u2060页，回去重新读取后再改`)
           : `${lostSave}没有存上。${words?.kept ?? '草稿留在配\u2060置\u2060页'}，回去再保存`)
     }
@@ -1326,16 +1338,17 @@ async function settleOnce(announce: boolean): Promise<boolean> {
     // 在页上核对出没有生效：提示条（带「重试应用」）已经在说这件事，不另弹一条要手动关的（没丢回应的那次被拒也只由提示条说）；离开时用提示说
     // Found not taken while on the page: the notice (with 重试应用) already says it, so no second toast to close by hand (a refusal whose
     // answer arrived is told by the notice alone too); away, a toast says it
-    // 丢了回应的「重试应用」在页上又被拒：提示条读起来和按下之前一样，照回应回来时那次重试的说法另说一句（记进 retryToast，重新读取、
-    // 会话结束时一起收起） / A lost 重试应用 refused again while on the page: the notice reads as it did before the press, so the
-    // retry's result is said as when its answer arrives (kept in retryToast, which goes on 重新读取 and at a session end)
+    // 丢了回应的「重试应用」在页上又被拒：提示条读起来和按下之前一样，照回应回来时那次重试的说法另说一句，原因交给提示条（记进
+    // retryToast，重新读取、会话结束时一起收起） / A lost 重试应用 refused again while on the page: the notice reads as it did before
+    // the press, so the retry's result is said as when its answer arrives, leaving the cause to the notice (kept in retryToast, which
+    // goes on 重新读取 and at a session end)
     if (viewing && hasApplyFailure.value && lost.retrying && signedIn()) {
       const now = current.pending?.version_id ?? current.version_id
       const storedAs = now && now !== lost.pending ? `，存成了版本 #${now}` : ''
-      retryToast = useToast().error(`重试也没有生效${storedAs}。${failureCause(current.runtime.pending_error || current.pending?.error || 'KixDNS 没有给出原因。')}`)
+      sayRetry(useToast().error(`重试也没有生效${storedAs}`))
     }
     if (!(viewing && hasApplyFailure.value)) {
-      const said = hasApplyFailure.value ? useToast().error(`${opening}：${which}没有生效，回到配\u2060置\u2060页可以重试应用`)
+      const said = hasApplyFailure.value ? useToast().error(`${opening}：${which}没有生效，${kixdnsIn ? '回到配\u2060置\u2060页可以重试应用' : `${backWhen(current.runtime)}，可以回到配\u2060置\u2060页重试应用`}`)
         : hasPending.value ? useToast().success(`${opening}：${which}待应用，${pendingAfter()}`)
         // 面板替人做的保存（words）照旧说「已生效」：要重启的设置和它无关；应用没有编号时不说「已经应用」，说「已经完成」
         // A save the panel made (words) still says 已生效: the settings waiting for a restart have nothing to do with it; an apply
@@ -1350,6 +1363,36 @@ async function settleOnce(announce: boolean): Promise<boolean> {
 }
 // 「重试应用」撞上冲突时的提示：重新读取以后它说的就过时了 / The toast from a 重试应用 that met a conflict: stale once the config is re-read
 let retryToast: number | null = null
+// 「重试应用」的提示只说最近那一次，说的是「这一版没有生效」：说新的之前先收起旧的（错误提示不会自己消失，旧的留着就和现在的状态对不上）。
+// 同一句已经开着时提示条给回的是同一个编号，不收。它说的那一版记在 retryVersion 里，见下面的 watch
+// A 重试应用 toast speaks only of the latest retry, and says 「this version did not take」: the old one goes before a new one is said
+// (error toasts never go by themselves, and a stale one contradicts the present state). With the same sentence already up the toast
+// hands back the same id, which is kept. The version it speaks of is kept in retryVersion, see the watch below
+let retryVersion: number | null = null
+function sayRetry(id: number): void {
+  if (retryToast !== null && retryToast !== id) useToast().dismiss(retryToast)
+  retryToast = id
+  retryVersion = failedVersion.value
+}
+function dropRetryToast(): void {
+  if (retryToast !== null) useToast().dismiss(retryToast)
+  retryToast = null
+  retryVersion = null
+}
+// 人不在配置页：这条交给离开时的提示槽，核对的结果和别的说法会换掉它 / Away from the config page: it goes to the away slot, where
+// the check's result and what is said later replace it
+function handRetryAway(): void {
+  dismissAwayToast()
+  awayToast = retryToast
+  retryToast = null
+  retryVersion = null
+}
+// 页面上没有生效的那一版：没有失败时是 null / The version on the page that did not take: null when nothing failed
+const failedVersion = computed(() => (hasApplyFailure.value ? pendingVersionId.value : null))
+// 按状态收，不按事件：页面上已经没有失败、或者失败的已经不是它说的那一版（恢复了版本、删了它、别的保存写进去了、重试成功或存成待应用），
+// 它就过时了，收起 / Dismissed by state, not by event: once the page has no failure, or the failure is no longer the version it
+// speaks of (a version restored, that one deleted, another save written, the retry taking or being kept as pending), it is stale and goes
+watch(failedVersion, (failed) => { if (retryToast !== null && failed !== retryVersion) dropRetryToast() }, { flush: 'sync' })
 // 退出登录或会话过期：配置页留在别处的结果提示一起收起，登录页上不再挂着它们（以前只收起草稿那条）
 // Sign-out or expiry: the config page's outcome toasts left on other pages go too, so none hangs on the login page (only the held-draft one used to)
 watch(useSession().authenticated, (now) => {
@@ -1357,7 +1400,7 @@ watch(useSession().authenticated, (now) => {
   dismissAwayToast()
   for (const id of awayResults) useToast().dismiss(id)
   awayResults.clear()
-  if (retryToast !== null) { useToast().dismiss(retryToast); retryToast = null }
+  dropRetryToast()
 })
 /**
  * 重新连上面板以后：「连不上面板」那句已经不对了，收起；没读到配置的整页重读；有没保存的修改时只刷新运行状态（草稿和文件散列不动，
@@ -1442,6 +1485,18 @@ function pendingNote(id: number | null): string {
  *  it. The way out of writing it into the file is said only by the notice (which holds the button), not repeated here */
 // short：保存条上放不下长句，「退回」不带宾语；别处（提示、确认框）说全 / short: the save bar cannot hold the long form, so 退回
 // goes without its object there; elsewhere (toasts, confirms) it is said in full
+// 按刚读回来的状态说 KixDNS 回来的那一刻：起不来、停着说「启动后」，不答说「连上 KixDNS 后」（停没停看最近读到的服务状态，配置里没有）
+// When KixDNS comes back, told from the state just read: 启动后 when it does not come up or is stopped, 连上 KixDNS 后 when it does not
+// answer (whether it is stopped comes from the service state last read; the config does not carry it)
+function backWhen(runtime: ConfigDocument['runtime']): string {
+  return runtime.did_not_come_up || runtimeStopped.value ? 'KixDNS\u00a0启动后' : '连上\u00a0KixDNS\u00a0后'
+}
+// 待应用的版本什么时候自己应用，按刚读回来的状态说：KixDNS 在时后台那一遍几秒内就补上 / When a pending version applies by itself,
+// told from the state just read: with KixDNS in the background pass catches up within seconds
+function appliesWhen(runtime: ConfigDocument['runtime']): string {
+  if (runtime.restart_rollback) return '退回原来的设置时一起应用'
+  return runtime.active_sha256 ? '几秒内会自动应用' : `${backWhen(runtime)}\u2060自\u2060动\u2060应\u2060用`
+}
 export function pendingAfter(short = false): string {
   if (restartRollback.value) return short ? '退回时一起应用' : '退回原来的设置时一起应用'
   // 「…启动后」和「自动应用」连住：窄屏上整句断在「，」后面，不把「自动应用」单独留到第二行 / 「…启动后」 stays with 自动应用: on

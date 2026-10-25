@@ -1121,10 +1121,11 @@ test('立即更新写入时连不上、在页上放弃又撤销，再离开并�
   expect(await toasts()).not.toContain('新下载的拦截列表没有存上')
 })
 
-// 提示条：「「名字」的」后面能折（不然后面一长串汉字只能硬切），连住的「KixDNS 的」后面不能折（「的原话」不拆开）；以标点结尾的连块后面
-// 也各有一个断点（WebKit 按词换行时不在中文标点处断）
+// 提示条：「「名字」的」后面能折（不然后面一长串汉字只能硬切），连住的「KixDNS 的」后面不能折（「的原话」不拆开）；每个「，：；。」后面
+// 也各有一个断点，连块里、普通字里都一样（WebKit 按词换行时不在中文标点处断）
 // Toasts: a break is allowed after 「「name」的」 (else the CJK run after it could only be cut hard), not after a glued 「KixDNS 的」 (「的原话」
-// stays whole); a glued run ending in punctuation has a break point after it too (WebKit's keep-all does not break at CJK punctuation)
+// stays whole); every 「，：；。」 has a break point after it too, in a glued run or plain text alike (WebKit's keep-all does not break at
+// CJK punctuation)
 test('提示条：「名字」的后面能折，KixDNS 的后面不能折', async ({ page }) => {
   await page.goto('/logs')
   await page.evaluate(async () => {
@@ -1134,8 +1135,8 @@ test('提示条：「名字」的后面能折，KixDNS 的后面不能折', asyn
     useToast().error('配置没有保存：没有通过校验。KixDNS\u00a0的原话：pipeline "main" references unknown upstream group "fast"')
   })
   await expect(page.locator('.toast')).toHaveCount(2)
-  const breaks = await page.locator('.toast > span').evaluateAll((spans) => spans.map((span) => [...span.querySelectorAll('wbr')].map((w) => w.previousSibling?.textContent ?? '')))
-  expect(breaks).toEqual([['「ads-and-trackers.txt」的'], ['存：', '验。', '话：']])
+  const breaks = await page.locator('.toast > span').evaluateAll((spans) => spans.map((span) => [...span.querySelectorAll('.brk')].map((w) => w.previousSibling?.textContent ?? '')))
+  expect(breaks).toEqual([['「ads-and-trackers.txt」的', '链接只能用 https://，'], ['存：', '验。', '话：']])
   expect(breaks[1]!.some((before) => before.startsWith('KixDNS'))).toBe(false)
 })
 
