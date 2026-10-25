@@ -148,7 +148,7 @@ const HYPHEN_WORD = /「?([$\w.|@^/]*\w-[\w.|@^/-]*[\w^])[」。，：；）]*/g
 // Toasts also glue 「版本 #N」 (with a following 已生效, 已应用, 待应用 or 没有生效), 「「name」的」, 「再点一次「button」」 and 「KixDNS」 with the character after it:
 // no version split from its state, no 的 starting a line, no button name alone on the last line, no KixDNS left at a line end; a default name
 // 「「file · host」」 is taken out on its own (name) for NameText to wrap at 「·」
-const TOAST_GLUE = /(「[^「」]+?\u00a0·\u00a0[^「」]+?」的?)|(版本[ \u00a0]#\d+(?:[ \u00a0](?:已生效|已应用|待应用|没有生效))?[。，：；]*)|(「[^「」]{1,24}」的[，：；。]?)|「?([$\w.|@^/]*\w-[\w.|@^/-]*[\w^])[」。，：；）]*|(再点(?:一次)?「[^「」]{1,12}」)|(KixDNS[ \u00a0][\u4e00-\u9fff])|((?:写进配置文件|(?:设置|修改)已(?:生效|应用)|才生效|一起(?:保存)?生效|还?没有应用|停了|这份配置)[。，：；]*)|((?:退回的设置和待应用的修改|退回的设置|待应用的修改)[，：；。]*)|([\u4e00-\u9fff][，：；。])/g
+const TOAST_GLUE = /(「[^「」]+?\u00a0·\u00a0[^「」]+?」的?)|(版本[ \u00a0]#\d+(?:[ \u00a0](?:已生效|已应用|待应用|没有生效))?[。，：；]*)|(「[^「」]{1,24}」的[，：；。]?)|「?([$\w.|@^/]*\w-[\w.|@^/-]*[\w^])[」。，：；）]*|(再点(?:一次)?「[^「」]{1,12}」)|(KixDNS[ \u00a0][\u4e00-\u9fff])|((?:写进配置文件|(?:设置|修改)已(?:生效|应用)|才生效|一起(?:保存)?生效|还?没有应用|停了|这份(?:配置|文件)|读不懂[ \u00a0]KixDNS[ \u00a0]的回应|没有通过[ \u00a0]KixDNS[ \u00a0]的校验)[。，：；]*)|((?:退回的设置和待应用的修改|退回的设置|待应用的修改)[，：；。]*)|([\u4e00-\u9fff][，：；。])/g
 export type GlueRun = { text: string; glue: boolean; long?: boolean; name?: { name: string; suffix: string }; breakAfter?: boolean; parts?: GlueRun[]; lead?: boolean }
 // 保存条、提示条这类按词换行（keep-all）的短句里，「版本 #N」「之后改的 N 处」整块不拆：只在显示时放进不折行的一块，文字里不加看不见的
 // 字符，复制出来和原文一样 / In short keep-all lines such as the save bar and notices, 「版本 #N」 and 「之后改的 N 处」 never split: they are
@@ -195,7 +195,19 @@ const ENDS_AT_PUNCTUATION = /[，：；。]$/
 // 手机最窄时一行放得下的字数，少报一点：连起来比这长的就不连，免得撑出去 / About as many characters as the narrowest phone line
 // holds, erring low: a glued part longer than this is left as it is, lest it overflow
 const PHONE_LINE = 12
+// 文字里写着的零宽断点（「版本 #N 的内容\u200b存成了…」）显示成 .brk，不留在文字里，复制出来是原文
+// A zero-width break written into the text (「版本 #N 的内容\u200b存成了…」) is shown as a .brk and left out of the text, so a copy reads
+// as the original
 export const toastRuns = (text: string): GlueRun[] => {
+  const pieces = text.split('\u200b')
+  return pieces.flatMap((piece, i) => {
+    const runs = piece ? pieceRuns(piece, i === 0) : []
+    if (i < pieces.length - 1 && runs.length) runs[runs.length - 1] = { ...runs[runs.length - 1]!, breakAfter: true }
+    return runs
+  })
+}
+// opens：这一段是不是整句的开头（只有句首的串留在行内） / opens: whether this piece opens the whole text (only a chain there stays inline)
+function pieceRuns(text: string, opens: boolean): GlueRun[] {
   const runs = glueRuns(text, TOAST_GLUE, (m) => m[4], (m) => {
     if (!m[1]) return undefined
     const suffix = m[1].endsWith('的') ? '的' : ''
@@ -210,7 +222,7 @@ export const toastRuns = (text: string): GlueRun[] => {
   // 普通字也在每个标点后切开：WebKit 只认显式的断点，连块吃掉了标点前那个字（「KixDNS 后」）时，标点就落在普通字里
   // Plain text is split after every punctuation mark too: WebKit honours explicit break points only, and when a glued run takes the
   // character before a mark (「KixDNS 后」) the mark lands in plain text
-  const out = chained(runs).flatMap((run): GlueRun[] => (run.glue ? [run] : run.text.split(/(?<=[，：；。])/).map((text) => ({ text, glue: false }))))
+  const out = chained(runs, opens).flatMap((run): GlueRun[] => (run.glue ? [run] : run.text.split(/(?<=[，：；。])/).map((text) => ({ text, glue: false }))))
   return out.map((run, k) => (!run.name && ENDS_AT_PUNCTUATION.test(run.text) && !/^[「『（《“]/.test(out[k + 1]?.text ?? '') ? { ...run, breakAfter: true } : run))
 }
 // 第一个断点以后（含）的位置，按 UTF-16 数，和 slice 一致 / Where the break points are, counted in UTF-16 as slice counts
@@ -260,14 +272,14 @@ function gluedBeside(runs: GlueRun[], i: number): number {
 }
 // 中间没有断点的相邻连块合成一串；默认名、长的连字符词、「「名字」的」自己排，不进串 / Adjacent glued runs with no break point between
 // them form a chain; a default name, a long hyphenated word and 「「name」的」 lay themselves out and stay out
-function chained(runs: GlueRun[]): GlueRun[] {
+function chained(runs: GlueRun[], opens: boolean): GlueRun[] {
   const out: GlueRun[] = []
   let chain: GlueRun[] = []
   // 一句开头的那一串前面没有别的字和它抢一行，留在行内（只在块之间放断点）：放进 glue-block 的话，它折成两行就占满整行，后面放得下的
   // 那一段也被挤到下一行 / A chain opening the text has nothing before it competing for its line, so it stays inline (with break
   // points between members only): in a glue-block, once it wraps it takes the whole width and pushes what would fit after it down
   const flush = () => {
-    if (chain.length > 1) out.push({ text: chain.map((run) => run.text).join(''), glue: true, parts: chain, ...(out.length === 0 ? { lead: true } : {}) })
+    if (chain.length > 1) out.push({ text: chain.map((run) => run.text).join(''), glue: true, parts: chain, ...(opens && out.length === 0 ? { lead: true } : {}) })
     else out.push(...chain)
     chain = []
   }

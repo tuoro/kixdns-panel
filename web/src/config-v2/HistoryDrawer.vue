@@ -94,7 +94,9 @@ async function restore(v: ConfigVersion): Promise<void> {
     if (r.state === 'failed') sayNotTaken(`版本\u00a0#${v.id}\u00a0的内容\u200b存成了版本\u00a0#${r.versionId}，没有生效`)
     else toast.success(r.state === 'pending' ? `版本\u00a0#${v.id}\u00a0的内容\u200b存成了待应用版本\u00a0#${r.versionId}，${pendingAfter()}` : `已恢复为版本 #${v.id} 的内容，当前版本\u00a0#${r.versionId}`)
   } catch (error) {
-    if (session.authenticated.value) toast.error(`没有恢复版本 #${v.id}：${friendlyRuntimeError(error)}`)
+    // 原因照「没有生效」那几处的说法（校验没过说成「没有通过 KixDNS 的校验」） / The cause as the 没有生效 messages put it (a failed
+    // check reads 没有通过 KixDNS 的校验)
+    if (session.authenticated.value) toast.error(`没有恢复版本 #${v.id}：${failureCause(friendlyRuntimeError(error))}`)
   }
 }
 async function remove(v: ConfigVersion): Promise<void> {

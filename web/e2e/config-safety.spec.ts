@@ -1117,7 +1117,8 @@ test('重试被拒以后恢复一个版本，恢复也被拒：页面跟着服�
   await page.locator('.hist__row', { hasText: '#17' }).locator('.hist__menu button[aria-haspopup]').click()
   await page.locator('[role=menuitem]', { hasText: '恢复为这个版本' }).click()
   await page.locator('dialog.confirm[open]').getByRole('button', { name: /恢复为版本 #17/ }).click()
-  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain(`版本\u00a0#17\u00a0的内容\u200b存成了版本\u00a0#${pending + 2}，没有生效`)
+  // 「的内容」后面的断点显示时才放，文字里没有零宽空格 / The break after 的内容 is placed when shown; the text carries no zero-width space
+  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain(`版本\u00a0#17\u00a0的内容存成了版本\u00a0#${pending + 2}，没有生效`)
   expect((await toastTexts(page)).filter((text) => text.startsWith('重试也没有生效'))).toEqual([])
   await page.keyboard.press('Escape')
   await expect(page.locator('.cfg__notice')).toContainText(`版本 #${pending + 2} 没有生效`)
@@ -1136,6 +1137,111 @@ test('重试应用被 KixDNS 的校验拒绝：说存成了哪一版、没有生
   await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain(`重试也没有生效，存成了版本 #${pending + 1}`)
   expect((await toastTexts(page)).some((text) => text.startsWith('重试没有成功'))).toBe(false)
   await expect(page.locator('.cfg__notice')).toContainText(`版本 #${pending + 1} 没有生效`)
+  // 原因说成没有通过 KixDNS 的校验：不把「没有生效」再说一遍，也不指一张这里没有的问题列表 / The cause reads as failing KixDNS's check:
+  // not 没有生效 said again, nor a list of problems that is not here
+  await expect(page.locator('.cfg__notice')).toContainText('没有通过 KixDNS 的校验')
+  await expect(page.locator('.cfg__notice')).not.toContainText('先改好校验里列出的问题')
+})
+
+// 现在应用被拒、回应丢了、人已离开，KixDNS 在：连上以后和回应回来时说同一句，带上原因 / 现在应用 refused, answer lost, user away,
+// KixDNS in: once back it reads as when the answer arrives, cause included
+test('现在应用被拒、回应丢了、人已离开：连上以后和回应回来时说同一句，带上原因', async ({ page }) => {
+  await page.route(/\/src\/api\/client\.ts(?:\?.*)?$/, async (route) => {
+    if (route.request().url().includes('lose-apply')) return route.continue()
+    await route.fulfill({ contentType: 'application/javascript', body: `
+      export * from '/src/api/client.ts?lose-apply';
+      import { apiRequest as original, ApiError, PANEL_UNREACHABLE_EVENT } from '/src/api/client.ts?lose-apply';
+      export async function apiRequest(path, init) {
+        try { return await original(path, init) } catch (error) {
+          if (!/\\/apply$/.test(String(path)) || error?.code !== 'reload_failed' || localStorage.getItem('e2e:lose-refusal') !== 'true') throw error;
+          localStorage.removeItem('e2e:lose-refusal');
+          localStorage.setItem('kixdns:demo-panel-down', 'true');
+          window.dispatchEvent(new Event(PANEL_UNREACHABLE_EVENT));
+          throw new ApiError('连不上面板：网络断了，或者面板正在重启。稍后再试。', 0, 'network_unreachable');
+        }
+      }
+    ` })
+  })
+  const pending = await savePending(page, 'in-place-refused-away-in.example', '被拒、离开')
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-apply-failed', 'true'); localStorage.setItem('e2e:lose-refusal', 'true') })
+  await page.getByRole('button', { name: '现在应用', exact: true }).click()
+  await expect(page.locator('.conn__inner')).toBeVisible()
+  await page.getByRole('link', { name: '日志', exact: true }).click()
+  await expect(page).toHaveURL(/\/logs/)
+  await reconnect(page)
+  await expect.poll(() => toastTexts(page), { timeout: 8000 }).toContain(`版本 #${pending} 没有生效。KixDNS 没有接受这份配置：upstream "fast" did not answer the health check。回到配置页可以重试应用`)
+  expect((await toastTexts(page)).some((text) => text.startsWith('刚才那次'))).toBe(false)
+})
+
+// 「校验并应用」（手改过的文件）没送到、断线期间 KixDNS 停了：启动时读的正是这份文件，不指启动以后不会出现的按钮
+// 校验并应用 (a hand-edited file) never arrived and KixDNS stopped meanwhile: it reads this very file on start, so no pointing at a
+// button that will not be there afterwards
+test('校验并应用没送到、断线期间 KixDNS 停了：说启动后会读这份文件，不指「校验并应用」', async ({ page }) => {
+  await page.route(/\/src\/api\/client\.ts(?:\?.*)?$/, async (route) => {
+    if (route.request().url().includes('file-differs')) return route.continue()
+    await route.fulfill({ contentType: 'application/javascript', body: `
+      export * from '/src/api/client.ts?file-differs';
+      import { apiRequest as original } from '/src/api/client.ts?file-differs';
+      import { ApiError, PANEL_UNREACHABLE_EVENT } from '/src/api/client.ts?file-differs';
+      export async function apiRequest(path, init) {
+        // 写入那一步断线、没到服务端（校验照常过）：这样才走到丢了回应以后的核对 / Cut off at the write, which never reaches the server (the
+        // check passes as usual): only then does the check after a lost answer run
+        if (String(path) === '/api/v1/config' && init?.method === 'PUT' && localStorage.getItem('e2e:drop-write') === 'true') {
+          localStorage.removeItem('e2e:drop-write');
+          localStorage.setItem('kixdns:demo-panel-down', 'true');
+          window.dispatchEvent(new Event(PANEL_UNREACHABLE_EVENT));
+          throw new ApiError('连不上面板：网络断了，或者面板正在重启。稍后再试。', 0, 'network_unreachable');
+        }
+        const result = await original(path, init);
+        // 停着时也没有在用的那份配置，和真服务端一样 / Stopped, no config is in use either, as on the real server
+        if (String(path) === '/api/v1/config' && !init?.method) return { ...result, runtime: { ...result.runtime, status: 'different', ...(localStorage.getItem('e2e:kixdns-stopped') === 'true' ? { active_sha256: null } : {}) } };
+        if (String(path) === '/api/v1/service' && localStorage.getItem('e2e:kixdns-stopped') === 'true') return { ...result, active_state: 'inactive' };
+        return result;
+      }
+    ` })
+  })
+  await page.goto('/config')
+  const check = page.getByRole('button', { name: '校验并应用', exact: true }).locator('visible=true').first()
+  await expect(check).toBeVisible({ timeout: 8000 })
+  await page.evaluate(() => localStorage.setItem('e2e:drop-write', 'true'))
+  await check.click()
+  await expect(page.locator('.conn__inner')).toBeVisible()
+  await page.evaluate(() => localStorage.setItem('e2e:kixdns-stopped', 'true'))
+  await reconnect(page)
+  await expect.poll(() => toastTexts(page), { timeout: 8000 }).toContain('配置还没有应用，KixDNS\u00a0启动后会读这份文件')
+  await page.evaluate(() => localStorage.removeItem('e2e:kixdns-stopped'))
+})
+
+// 回应丢了的那次保存，连上以后第一次核对读配置失败、5 秒后读到：保存条最后说已经保存过了，「读取配置失败」也跟着撤，谁先做完核对都一样
+// A save whose answer was lost, with the first check after the reconnect failing to read and the next one 5 seconds later landing: the
+// save bar ends on 已经保存过了 and 读取配置失败 goes too, whichever look finished the check
+test('保存的回应丢了、连上以后第一次核对读不到配置：读到以后说已经保存过了，读取失败的说法也撤掉', async ({ page }) => {
+  await page.route(/\/src\/api\/client\.ts(?:\?.*)?$/, async (route) => {
+    if (route.request().url().includes('read-fails-once')) return route.continue()
+    await route.fulfill({ contentType: 'application/javascript', body: `
+      export * from '/src/api/client.ts?read-fails-once';
+      import { apiRequest as original, ApiError } from '/src/api/client.ts?read-fails-once';
+      export async function apiRequest(path, init) {
+        if (String(path) === '/api/v1/config' && !init?.method && localStorage.getItem('e2e:read-fails-once') === 'true') {
+          localStorage.removeItem('e2e:read-fails-once');
+          throw new ApiError('面板内部出错', 500, 'internal_error');
+        }
+        return original(path, init);
+      }
+    ` })
+  })
+  await page.goto('/config')
+  await addRule(page, 'read-fails-once.example')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-put-answer-lost', 'true'))
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar).toContainText('不知道存上没有')
+  await page.evaluate(() => localStorage.setItem('e2e:read-fails-once', 'true'))
+  await reconnect(page)
+  // 核对还没读到时，保存条照旧说不知道存上没有，不先说可以保存 / Until the check reads, the bar keeps 不知道存上没有 rather than offering a save
+  await expect(bar).toContainText('不知道存上没有')
+  await expect(bar).toContainText(/已经保存过了/, { timeout: 12_000 })
+  await expect(page.getByText('读取配置失败')).toHaveCount(0)
 })
 
 // 被拒、回应丢了、人已离开，连上时 KixDNS 不答：不指配置页上没有的「重试应用」 / Refused, answer lost, user away, and KixDNS silent on
@@ -1170,7 +1276,7 @@ test('现在应用被拒、回应丢了、人已离开，连上时 KixDNS 不答
   await page.evaluate(() => localStorage.setItem('e2e:kixdns-silent', 'true'))
   await reconnect(page)
   // KixDNS 不答（不是停着、也不是起不来）：说连上它以后 / KixDNS silent (neither stopped nor failing to come up): once it is reached
-  await expect.poll(() => toastTexts(page), { timeout: 8000 }).toContain(`刚才那次应用：版本 #${pending} 没有生效，连上\u00a0KixDNS\u00a0后，可以回到配置页重试应用`)
+  await expect.poll(() => toastTexts(page), { timeout: 8000 }).toContain(`版本 #${pending} 没有生效。KixDNS 没有接受这份配置：upstream "fast" did not answer the health check。连上\u00a0KixDNS\u00a0后，可以回到配置页重试应用`)
   await page.evaluate(() => localStorage.removeItem('e2e:kixdns-silent'))
 })
 

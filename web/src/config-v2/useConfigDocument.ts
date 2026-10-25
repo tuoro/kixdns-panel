@@ -337,9 +337,12 @@ const friendlyRuntimeError = (error: unknown) => friendlyRuntimeMessage(errorMes
 // 版本没生效是因为 KixDNS 在确认新配置之前停了：这个版本已经记成没有生效，不会等它启动再自己应用，不能说成「启动后再应用」
 // A version that did not take because KixDNS stopped before confirming the new config: it is recorded as not taken and will not apply by itself on start, so
 // it must not read 启动后再应用
-// 「先改好校验里列出的问题」是服务端给校验没过时的说法；说「没有生效」的地方没有那张列表，去掉这半句 / 「先改好校验里列出的问题」 is
-// the server's wording for a failed check; where 没有生效 is said there is no such list, so that half goes
-export const failureCause = (message: string): string => (STOPPED.test(message) ? 'KixDNS 在确认新配置前停了' : friendlyRuntimeMessage(message)).replace(/[，,]\s*仍在用之前的配置。?$/, '').replace(/，先改好校验里列出的问题。?$/, '')
+// 校验没过时服务端说「KixDNS 没有接受这份配置，先改好校验里列出的问题」：说「没有生效」的地方没有那张列表，而前半句只是把「没有生效」又说
+// 一遍，所以说成「没有通过 KixDNS 的校验」，和面板自己的「没有通过校验」同一个词 / For a failed check the server says 「KixDNS 没有接受这份
+// 配置，先改好校验里列出的问题」: where 没有生效 is said there is no such list, and the first half only restates 没有生效, so it reads
+// 没有通过 KixDNS 的校验, the panel's own word for a failed check
+export const failureCause = (message: string): string => (STOPPED.test(message) ? 'KixDNS 在确认新配置前停了' : NOT_VALID.test(message) ? '没有通过 KixDNS 的校验' : friendlyRuntimeMessage(message)).replace(/[，,]\s*仍在用之前的配置。?$/, '')
+const NOT_VALID = /^KixDNS 没有接受这份配置，先改好校验里列出的问题。?$/
 // 应用被拒时服务端给这一版存下的原因：回应里的原话，KixDNS 拒绝、读不懂回应的那两种前面加服务端的说法；别的给 null
 // The cause the server stores for a refused version: the answer's own words, with the server's lead-in for a KixDNS rejection or an
 // unreadable reply; null otherwise
@@ -788,6 +791,16 @@ const away = (): boolean => !viewing || leftDuringSave
 /** 人已经不在配置页上（或者正要离开）：保存的结果由提示说 / The user is off the config page (or on the way out): a save's outcome is told by a toast */
 export const pageAway = (): boolean => away()
 const sentence = (text: string) => text.replace(/[。.]\s*$/, '')
+// 写进去了、没有生效、人不在配置页时的那一句：开头说哪一版、怎么存的，接 KixDNS 给的原因，再接回去以后的出路。回应回来、回应丢了以后的核对
+// 都用它，两条路一字不差 / The sentence for written, not taken, with the user away from the config page: which version and how it was
+// stored, then KixDNS's cause, then the way out on return. Both the answer-arrived path and the check after a lost answer use it, so
+// the two match word for word
+function notTakenAway(head: string, cause: string, next?: string): string {
+  // KixDNS 在确认前停了：回去时没有「重试应用」，要等它启动 / KixDNS stopped before confirming: there is no 重试应用 on return until it
+  // starts
+  const way = next ?? (STOPPED.test(cause) ? 'KixDNS\u00a0启动后，可以回到配\u2060置\u2060页重试应用' : '回到配\u2060置\u2060页可以重试应用')
+  return `${head}。${sentence(failureCause(cause))}。${way}`
+}
 
 // origin：保存草稿（保存栏报进度）或应用已经保存的版本（页头报进度，出错进提示）。有改动、或者要应用和运行配置不同的文件，
 // 而且 KixDNS 在运行时，先单独校验一次：没过就停在第 1 步，不写入任何版本。versionNote 给面板自己发起的保存（手动更新拦截列表）
@@ -1099,7 +1112,7 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
         if (!viewing && signedIn()) {
           dismissAwayToast()
           awayToast = useToast().error(stopped ? `KixDNS 已停止：${failedBefore === null ? '启动后会读这份文件' : '待应用的版本启动后自动应用'}`
-            : writtenNotApplied ? `${failedBefore && pendingVersionId.value && pendingVersionId.value !== failedBefore ? `存成了版本 #${pendingVersionId.value}，` : which(pendingVersionId.value)}没有生效。${sentence(failureCause(cause ?? reason))}。回到配\u2060置\u2060页可以重试应用`
+            : writtenNotApplied ? notTakenAway(`${failedBefore && pendingVersionId.value && pendingVersionId.value !== failedBefore ? `存成了版本 #${pendingVersionId.value}，` : which(pendingVersionId.value)}没有生效`, cause ?? reason)
               : down && step === 'applying' ? notKnownApplied(failedBefore, originOf(failedBefore))
                 : down ? `${which(failedBefore)}没有应用：连不上面板。连上后回配\u2060置\u2060页再应用`
                   : step === 'validating' ? `${which(failedBefore)}没有应用。配置文件没有通过校验。${reason}` : `${which(failedBefore)}没有应用。${reason}`)
@@ -1116,7 +1129,7 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
       const lead = words?.subject ? `${words.subject}没能存上：` : '配置没有保存：'
       const stored = pendingVersionId.value
       const notApplied = words?.subject ? `${words.subject}：存成了${stored ? `版本 #${stored}` : '新版本'}，没有生效` : `${stored ? `版本 #${stored} ` : '配置'}保存了，没有生效`
-      awayToast = useToast().error(writtenNotApplied ? `${notApplied}。${sentence(failureCause(cause ?? reason))}。回到配\u2060置\u2060页可以重试应用`
+      awayToast = useToast().error(writtenNotApplied ? notTakenAway(notApplied, cause ?? reason)
         : conflict.value ? words?.conflict ?? `${lead}这份配置在别处改\u2060过\u2060了。${kept}，回去重新读取后再改`
           : stopped ? `${lead}KixDNS\u00a0已停止。${kept}，可以先存成待应用版本`
             : down && step === 'applying' ? (words?.subject ? `${words.subject}：不知道存上没有，连不上面板。${kept}，连上后会自己核对` : `不知道配置存上没有：连不上面板。${kept}，连上后会自己核对`)
@@ -1176,8 +1189,19 @@ let settledCount = 0
 function settleUnanswered(announce: boolean): Promise<boolean> {
   if (settling) return settling
   if (!unanswered) return Promise.resolve(false)
-  settling = settleOnce(announce).finally(() => { settling = null })
+  // 核对完了（读到了配置）：收尾跟着核对走，不跟着是谁发起的（连上面板、每 5 秒那次看、保存撞上冲突都可能先做完）
+  // Once checked (the config was read), the clean-up follows the check, not whoever started it (a reconnect, the 5-second look or a
+  // save meeting a conflict may each get there first)
+  settling = settleOnce(announce).then((done) => { if (!unanswered) checkedOut(); return done }).finally(() => { settling = null })
   return settling
+}
+// 断线时挂着的几句，核对完、或者根本没有要核对的才撤：保存条的「连不上面板 · 不知道存上没有」、因为读不到而挂着的「读取配置失败」、
+// 「现在应用」因为连不上没成的那条 / What was left up by the outage goes only once checked, or when there was nothing to check: the save bar's
+// 连不上面板 · 不知道存上没有, a 读取配置失败 left by a failing read, and the 现在应用 failure from being unreachable
+function checkedOut(): void {
+  if (stage.value === 'failed' && verdict.value === '连不上面板') finishStage('idle')
+  if (settleSetLoadError) { loadError.value = ''; settleSetLoadError = false }
+  if (applyFailedDown) { applyError.value = ''; applyFailedDown = false }
 }
 async function settleOnce(announce: boolean): Promise<boolean> {
   const lost = unanswered
@@ -1185,8 +1209,9 @@ async function settleOnce(announce: boolean): Promise<boolean> {
   // 服务状态一起读：配置里分不出 KixDNS 停着还是不答，说「什么时候再试」要看它（页面上的还是断线前的）
   // The service state is read alongside: the config cannot tell a stopped KixDNS from a silent one, and 「when to try again」 needs it (the
   // page's is still from before the outage)
-  const [current, service] = await Promise.all([apiRequest<ConfigDocument>('/api/v1/config').catch(() => null), apiRequest<ServiceStatus>('/api/v1/service').catch(() => null)])
+  const [current, service] = await Promise.all([apiRequest<ConfigDocument>('/api/v1/config').catch((error: unknown) => { settleReadError = error; return null }), apiRequest<ServiceStatus>('/api/v1/service').catch(() => null)])
   if (!current) return false
+  settleReadError = null
   const stoppedNow = service ? ['inactive', 'failed'].includes(service.active_state ?? '') : runtimeStopped.value
   unanswered = null
   // 「不知道重试应用了没有」那条由下面核对的结果换掉 / The 「不知道重试应用了没有」 toast is replaced by the result below
@@ -1276,7 +1301,10 @@ async function settleOnce(announce: boolean): Promise<boolean> {
     // 校验并应用 (a hand-edited file with no pending version): called 配置 as the 「不知道配置应用了没有」 said during the outage, with the
     // button named as the header does
     const checking = applying && !lost.inPlace && !lost.retrying
-    const checkAgain = unsaved.value ? '；保存时会带上它的内容' : !kixdnsIn ? `，${backWhen(current.runtime, stoppedNow)}，可以再点「校验并应用」` : '，可以再点「校验并应用」'
+    // 停着、起不来：KixDNS 启动时读的正是这份文件，启动以后不会再有这个按钮 / Stopped or failing to come up: KixDNS reads this very file on
+    // start, so the button will not be there afterwards
+    const readsOnStart = current.runtime.did_not_come_up || stoppedNow
+    const checkAgain = unsaved.value ? '；保存时会带上文件里的改动' : readsOnStart ? '，KixDNS\u00a0启动后会读这份文件' : !kixdnsIn ? `，${backWhen(current.runtime, stoppedNow)}，可以再点「校验并应用」` : '，可以再点「校验并应用」'
     if (viewing && announce && !changedElsewhere && !gone) useToast().info(applying ? (lost.retrying ? `重试没有送到面板${retryAgain}` : checking ? `配置还没有应用${checkAgain}` : `${pendingName}还没有应用${applyAgain}`) : `${lostSave}没有存上，可以再保存`)
     // 面板替人做的保存被别处盖掉：冲突和原因由保存条说，这里只说保存条没说的那一步（用户定的） / A save made on the user's behalf was overwritten
     // elsewhere: the bar says the conflict and why, so this only gives the step the bar lacks (the user's call)
@@ -1308,7 +1336,7 @@ async function settleOnce(announce: boolean): Promise<boolean> {
         ? (changedElsewhere ? '刚才那次应用不在现在的配置里：这份配置在别处改\u2060过\u2060了，回到配\u2060置\u2060页重新读取' : lost.retrying ? `重试没有送到面板${unsaved.value ? '；回到配\u2060置\u2060页保存时，会带上那一版的内容' : !kixdnsIn ? `，${backWhen(current.runtime, stoppedNow)}，可以回到配\u2060置\u2060页再点「重试应用」` : '，回到配\u2060置\u2060页可以再点「重试应用」'}`
           // 原地应用的那一种由上面那一支说（会自己补上），走到这里的只剩「校验并应用」 / An in-place apply is told by the branch above
           // (it catches up by itself), so only 校验并应用 reaches here
-          : `配置还没有应用${unsaved.value ? '；回到配\u2060置\u2060页保存时，会带上它的内容' : !kixdnsIn ? `，${backWhen(current.runtime, stoppedNow)}，可以回到配\u2060置\u2060页再点「校验并应用」` : '，回到配\u2060置\u2060页可以再点「校验并应用」'}`)
+          : `配置还没有应用${unsaved.value ? '；回到配\u2060置\u2060页保存时，会带上文件里的改动' : current.runtime.did_not_come_up || stoppedNow ? '，KixDNS\u00a0启动后会读这份文件' : !kixdnsIn ? `，${backWhen(current.runtime, stoppedNow)}，可以回到配\u2060置\u2060页再点「校验并应用」` : '，回到配\u2060置\u2060页可以再点「校验并应用」'}`)
         : changedElsewhere ? (words?.again ? `${lostSave}：不在现在的配置里，这份配置在别处改过了；回到配置页重新读取，${words.again}` : `${lostSave}不在现在的配置里：这份配置在别处改\u2060过\u2060了。草稿留在配\u2060置\u2060页，回去重新读取后再改`)
           : `${lostSave}没有存上。${words?.kept ?? '草稿留在配\u2060置\u2060页'}，回去再保存`)
     }
@@ -1369,7 +1397,12 @@ async function settleOnce(announce: boolean): Promise<boolean> {
       const said = hasApplyFailure.value && lost.retrying ? useToast().error(`${retryRefused}。${failureCause(current.runtime.pending_error || current.pending?.error || 'KixDNS 没有给出原因。')}`)
         // 后半句只指回去时确实有的出路：草稿有修改时提示条不给「重试应用」，保存会带上那一版 / The second half points only at a way
         // out that will be there on return: with edits in the draft the notice offers no 重试应用, and a save takes that version along
-        : hasApplyFailure.value ? useToast().error(`${opening}：${which}没有生效${unsaved.value ? '；回到配\u2060置\u2060页保存时，会带上那一版的内容' : kixdnsIn ? '，回到配\u2060置\u2060页可以重试应用' : `，${backWhen(current.runtime, stoppedNow)}，可以回到配\u2060置\u2060页重试应用`}`)
+        // 开头和原因照回应回来时那一句（notTakenAway）；后半句按这一刻的状态分，连上时 KixDNS 可能已经不在 / The opening and cause as
+        // when the answer arrives (notTakenAway); the second half follows the state now, as KixDNS may be gone by the reconnect
+        : hasApplyFailure.value ? useToast().error(notTakenAway(
+          applying ? `${lost.pending !== null && !lost.inPlace && current.version_id !== lost.pending ? `存成了${version}，` : named ?? (version ? `${version} ` : '配置')}没有生效` : words?.subject ? `${words.subject}：存成了${version || '新版本'}，没有生效` : `${version ? `${version} ` : '配置'}保存了，没有生效`,
+          current.runtime.pending_error || current.pending?.error || 'KixDNS 没有给出原因。',
+          unsaved.value ? '回到配\u2060置\u2060页保存时，会带上那一版的内容' : kixdnsIn ? undefined : `${backWhen(current.runtime, stoppedNow)}，可以回到配\u2060置\u2060页重试应用`))
         : hasPending.value ? useToast().success(`${opening}：${which}待应用，${pendingAfter()}`)
         // 面板替人做的保存（words）照旧说「已生效」：要重启的设置和它无关；应用没有编号时不说「已经应用」，说「已经完成」
         // A save the panel made (words) still says 已生效: the settings waiting for a restart have nothing to do with it; an apply
@@ -1422,6 +1455,11 @@ watch(useSession().authenticated, (now) => {
   for (const id of awayResults) useToast().dismiss(id)
   awayResults.clear()
   dropRetryToast()
+  // 回应丢了的那次请求不再核对：会话结束时确认框说过不再告诉你结果；排着的再试也停掉，不在登录页上每 5 秒读一次
+  // The lost request is no longer checked: the sign-out confirm said its result would not be told; the queued retry stops too, rather
+  // than reading every 5 seconds on the login page
+  unanswered = null
+  if (settleAgain !== null) { clearTimeout(settleAgain); settleAgain = null }
 })
 /**
  * 重新连上面板以后：「连不上面板」那句已经不对了，收起；没读到配置的整页重读；有没保存的修改时只刷新运行状态（草稿和文件散列不动，
@@ -1430,18 +1468,26 @@ watch(useSession().authenticated, (now) => {
  * runtime is refreshed (the draft and the file hash stay, so changes made elsewhere still surface at save), otherwise the whole document is re-read
  */
 let settleAgain: ReturnType<typeof setTimeout> | null = null
+// 上一次核对读配置时的错误：读到了就清掉；settleSetLoadError：「读取配置失败」是核对读不到时挂上的，核对读到了由它撤
+// The error of the last check's config read, cleared once one lands; settleSetLoadError: the 读取配置失败 was put up by a failing check,
+// so a landing check takes it down
+let settleReadError: unknown = null
+let settleSetLoadError = false
 export async function panelBack(): Promise<void> {
   // 「连不上面板」那句等回应丢了的那次保存核对完再撤：先撤的话，中间会闪一下「校验通过 · 可以保存」（上次校验的结果），再变成「已经保存过了」
   // The 连不上面板 verdict goes only after a lost save has been checked: clearing it first flashed 「校验通过 · 可以保存」 (the last validation) before 已经保存过了
   const clearStale = () => { if (stage.value === 'failed' && verdict.value === '连不上面板') finishStage('idle') }
+  // 回应丢了的那次还没核对时，这几句由核对自己撤（见 checkedOut） / With the lost request still unchecked, the check clears these
+  // itself (see checkedOut)
   // 不在配置页时也做：离开期间连上的，回来时保存条不再说「连不上面板」，回应丢了的那次保存照样核对；配置页从没打开过就什么都不读
   // Done away from the config page too: after a reconnect while away the save bar no longer says 连不上面板 on return, and a lost save is still checked;
   // nothing is read when the config page was never opened
   if ((!viewing && !doc.value) || busy.value) { clearStale(); return }
   if (!doc.value) { clearStale(); await load(); return }
   const settled = await settleUnanswered(true)
-  clearStale()
-  if (applyFailedDown) { applyError.value = ''; applyFailedDown = false }
+  // 还没核对上时保存条照旧说「不知道存上没有」：撤了会说「校验通过 · 可以保存」，一按就撞上自己的写入 / Until checked the save bar keeps
+  // 不知道存上没有: clearing it would say 校验通过 · 可以保存, and a press would then meet this page's own write
+  if (!unanswered) checkedOut()
   if (settled) return
   // 核对没读到（读回一个不算「连不上」的错误）：回应丢了的那次还没有答案，先不重读——重读会把页面换成新的样子，「不知道…」被当成过时收起，
   // 自己那次写入还会被说成「别处改过了」。下一次核对不一定会来（每 5 秒那次只在有待应用的版本时跑），所以隔 5 秒自己再试，同一时间只排一个
@@ -1449,7 +1495,10 @@ export async function panelBack(): Promise<void> {
   // the page to the new state, retire 「不知道…」 as stale and call one's own write 别处改过了. A next check may never come (the 5-second
   // look runs only with a version pending), so it tries again itself in 5 seconds, with one try queued at a time
   if (unanswered) {
-    settleAgain ??= setTimeout(() => { settleAgain = null; if (unanswered && !panelDown.value) void panelBack() }, 5000)
+    // 读不到配置：照读取失败说（提示条说「读取配置失败」），不假装一切照常 / The config could not be read: said as a failed read (the
+    // notice says 读取配置失败) rather than pretending all is well
+    if (settleReadError !== null && !isPanelDown(settleReadError)) { loadError.value = errorMessage(settleReadError); settleSetLoadError = true }
+    settleAgain ??= setTimeout(() => { settleAgain = null; if (unanswered && !panelDown.value && signedIn()) void panelBack() }, 5000)
     return
   }
   // 断线期间后台让待应用的版本生效了、或者别处换了文件：和每 5 秒那次看一样说一句（以前只有「已重新连上面板」）
@@ -1590,6 +1639,7 @@ export function beginOwnWrite(): void {
 export async function restoreVersion(id: number): Promise<{ state: 'applied' | 'pending' | 'failed'; versionId: number }> {
   if (!doc.value) throw new Error('配置还没读进来')
   restoring.value = id
+  const failedBeforeRestore = failedVersion.value
   try {
     const result = await apiRequest<ConfigApplyResult>(`/api/v1/config/versions/${id}/restore`, { method: 'POST', ...jsonBody({ expected_sha256: doc.value.sha256 }) })
     writeCount += 1
@@ -1604,9 +1654,10 @@ export async function restoreVersion(id: number): Promise<{ state: 'applied' | '
     if (!(error instanceof ApiError) || !WRITTEN_REFUSALS.includes(error.code)) throw error
     writeCount += 1
     await load({ quiet: true, fresh: true })
-    // 重读没读到那一版的失败（重读本身失败了）：说不出存成了哪一版，照原来的错误说 / The re-read did not bring that failure (it
-    // failed itself): which version it became cannot be told, so the original error is said
-    if (failedVersion.value === null) throw error
+    // 重读没读到那一版的失败（重读本身失败了，页面上还是之前那一版没有生效）：说不出存成了哪一版，照原来的错误说 / The re-read did not
+    // bring that failure (it failed itself, and the page still shows the earlier version as not taken): which version it became cannot
+    // be told, so the original error is said
+    if (failedVersion.value === null || failedVersion.value === failedBeforeRestore) throw error
     // 草稿已经整份换成读回来的那份，和恢复落地一样告诉页面（JSON 视图里同意丢掉的修改跟着换掉） / The draft has been replaced wholesale
     // by what was read, so the page is told as when a restore lands (the JSON edits the user agreed to drop go with it)
     restoredCount.value += 1
@@ -1623,7 +1674,7 @@ const WRITTEN_REFUSALS = ['reload_failed', 'kixdns_rejected', 'config_validation
 export function sayNotTaken(text: string): void {
   // 人已经离开配置页（恢复途中走开）：看不到提示条，原因由这条说；不放进页上的提示槽 / The user has left the config page (walked away
   // mid-restore): no notice is in sight, so this says the cause, and it stays out of the page's slot
-  if (!viewing) { tellAway(useToast().error(`${text}。${failureCause(doc.value?.runtime.pending_error || doc.value?.pending?.error || 'KixDNS 没有给出原因。')}`)); return }
+  if (!viewing) { tellAway(useToast().error(notTakenAway(text, doc.value?.runtime.pending_error || doc.value?.pending?.error || 'KixDNS 没有给出原因。'))); return }
   sayRetry(useToast().error(text))
 }
 async function refreshVersions(removesDesired: boolean): Promise<void> {

@@ -124,6 +124,7 @@ describe('hyphenRuns', () => {
     // words and the panel's own never cut mid-word on a narrow screen
     expect(glued('KixDNS 没有接受这份配置：upstream "fast" did not answer the health check')).toEqual(['KixDNS 没', '这份配置：'])
     expect(glued('KixDNS 在确认新配置前停了')).toEqual(['KixDNS 在', '停了'])
+    expect(glued('配置还没有应用，KixDNS\u00a0启动后会读这份文件')).toEqual(['还没有应用，', 'KixDNS\u00a0启', '这份文件'])
     // 版本号带着后面的状态词，KixDNS 带着后面一个字 / The version number keeps its state word, and KixDNS the character after it
     expect(glued('新下载的拦截列表已经存上了：版本 #20 已生效')).toEqual(['版本 #20 已生效'])
     expect(glued('版本 #20 已应用，改过的设置要重启 KixDNS 才生效')).toEqual(['版本 #20 已应用，', 'KixDNS 才'])

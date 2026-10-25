@@ -1,10 +1,10 @@
 import { expect, test } from '@playwright/test'
 
-// 提示里退回的叫法：只在这几处折行——标点或空格后、退回的叫法前后、几个连住的词（「一起（保存）生效」「才生效」「停了」「这份配置」）和按钮名「再点「…」」前面、文字里原有的零宽断点后；
+// 提示里退回的叫法：只在这几处折行——标点或空格后、退回的叫法前后、几个连住的词（「一起（保存）生效」「才生效」「停了」「这份配置」「这份文件」）和按钮名「再点「…」」前面、文字里原有的零宽断点后；
 // 不切进词里，也不撑出去。能断在哪由这里自己定，不从被测的分块推出来。句子照代码的拼法写（带不换行空格和 U+2060）。这里只跑
 // Chromium；WebKit 另用 WebKitGTK 量过（见审计记录）
 // Rollback names in toasts: lines break only here — after punctuation or a space, before or after a rollback name, and before a few
-// glued words (一起（保存）生效, 才生效, 停了, 这份配置) and the button name 「再点「…」」, and after a zero-width break already in the text; never inside a word and never overflowing. Where a break may
+// glued words (一起（保存）生效, 才生效, 停了, 这份配置, 这份文件) and the button name 「再点「…」」, and after a zero-width break already in the text; never inside a word and never overflowing. Where a break may
 // fall is decided here, not derived from the runs under test. The sentences are spelled as the code builds them (with no-break spaces
 // and U+2060). Only Chromium runs here; WebKit was measured separately with WebKitGTK (see the audit notes)
 const SENTENCES = [
@@ -37,11 +37,18 @@ const SENTENCES = [
   '不知道配置应用了没有：连不上面板。连上后会自己核对',
   '刚才那次应用：版本 #19 没有生效；回到配\u2060置\u2060页保存时，会带上那一版的内容',
   '重试也没有生效。KixDNS 在确认新配置前停了',
+  '版本 #19 没有生效。KixDNS 没有接受这份配置：upstream "fast" did not answer the health check。连上\u00a0KixDNS\u00a0后，可以回到配\u2060置\u2060页重试应用',
+  '版本 #19 保存了，没有生效。没有通过 KixDNS 的校验。回到配\u2060置\u2060页可以重试应用',
+  '配置还没有应用，KixDNS\u00a0启动后会读这份文件',
+  '配置还没有应用；回到配\u2060置\u2060页保存时，会带上文件里的改动',
+  '版本\u00a0#17\u00a0的内容\u200b存成了版本\u00a0#19，没有生效。没有通过 KixDNS 的校验。回到配\u2060置\u2060页可以重试应用',
+  '版本 #19 没有生效。读不懂 KixDNS 的回应：unexpected end of input。回到配\u2060置\u2060页可以重试应用',
 ]
 const WIDTHS = [...Array.from({ length: 111 }, (_, i) => 300 + i * 2), 640, 1024]
 
 test('提示里退回的叫法：只在该断的地方折行，不撑出去', async ({ page }) => {
-  test.setTimeout(120_000)
+  // 句子多、宽度扫得密，跑一遍要两分多钟 / Many sentences across a dense width sweep take over two minutes
+  test.setTimeout(300_000)
   await page.goto('/')
   await page.waitForLoadState('networkidle')
   const problems: string[] = []
@@ -51,17 +58,25 @@ test('提示里退回的叫法：只在该断的地方折行，不撑出去', as
       const { useToast } = await import('/src/composables/useToast.ts')
       const toast = useToast()
       const found: string[] = []
-      for (const text of texts) {
+      for (let text of texts) {
         for (const message of [...toast.messages.value]) toast.dismiss(message.id)
         toast.error(text)
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
         const el = [...document.querySelectorAll('.toast')].pop()!
         const box = el.querySelector(':scope > span') as HTMLElement
+        // 文字里写着的零宽断点显示时换成断点、不留在文字里：照显示出来的文字量，原来那个位置算可以断 / A zero-width break written in the
+        // text is rendered as a break point and left out: measured against the shown text, with that spot allowed
+        const zw: number[] = []
+        for (let k = 0, kept = 0; k < text.length; k += 1) { if (text[k] === '\u200b') zw.push(kept); else kept += 1 }
+        text = text.replace(/\u200b/g, '')
+        if (box.textContent !== text) found.push(`${window.innerWidth} 宽，文字里多了别的字符：「${box.textContent}」`)
         // 可以断的地方 / Where a break may fall
-        const allowed = new Set<number>()
+        const allowed = new Set<number>(zw)
         for (const m of text.matchAll(/退回的设置和待应用的修改|退回的设置|待应用的修改/g)) { allowed.add(m.index); allowed.add(m.index + m[0].length) }
-        for (const m of text.matchAll(/一起(?:保存)?生效|才生效|停了|这份配置|再点「/g)) allowed.add(m.index)
-        for (let k = 1; k < text.length; k += 1) if (/[，：；。 \u200b]/.test(text[k - 1]!) || text[k] === ' ') allowed.add(k)
+        for (const m of text.matchAll(/一起(?:保存)?生效|才生效|停了|这份(?:配置|文件)|读不懂 KixDNS 的回应|再点「/g)) allowed.add(m.index)
+        for (let k = 1; k < text.length; k += 1) if (/[，：；。 ]/.test(text[k - 1]!) || text[k] === ' ') allowed.add(k)
+        // 连成一块的词组里面的空格不算断点 / A space inside a glued phrase is no break point
+        for (const m of text.matchAll(/读不懂 KixDNS 的回应|没有通过 KixDNS 的校验/g)) for (let k = m.index + 1; k < m.index + m[0].length; k += 1) allowed.delete(k)
         const range = document.createRange()
         let index = 0
         let top: number | null = null
