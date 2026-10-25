@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { vLineDots } from '../../line-dots'
+import { numberRuns } from '../../utils'
 
 // 一句「甲 · 乙 · 丙」：各段照常折行，「·」贴在前一段末尾，折行落在它后面时藏起来（见 line-dots.ts）
 // A sentence 「甲 · 乙 · 丙」: the parts wrap as usual, each 「·」 holds on to the part before it and hides when a wrap
@@ -15,5 +16,5 @@ const dot = (part: string) => (CLOSING.test(part) ? '\u2060\u00b7' : '\u00a0\u00
 </script>
 
 <template>
-  <span v-line-dots class="ui-dot-text"><template v-for="(part, index) in parts" :key="index"><template v-if="index > 0">{{ ' ' }}</template><span :class="{ nowrap: part.length <= SHORT }">{{ part }}<span v-if="index < parts.length - 1" data-line-dot>{{ dot(part) }}</span></span></template></span>
+  <span v-line-dots class="ui-dot-text"><template v-for="(part, index) in parts" :key="index"><template v-if="index > 0">{{ ' ' }}</template><span :class="{ nowrap: part.length <= SHORT }"><template v-for="(run, k) in numberRuns(part)" :key="k"><span v-if="run.glue" class="nowrap">{{ run.text }}</span><template v-else>{{ run.text }}</template></template><span v-if="index < parts.length - 1" data-line-dot>{{ dot(part) }}</span></span></template></span>
 </template>

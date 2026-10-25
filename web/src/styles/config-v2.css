@@ -2014,6 +2014,10 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
   .cfg__savebar.savebar--wrap .ui-savebar__status > .ui-check { flex: 0 0 auto; margin-top: calc((var(--t-3) * var(--lh-base) - var(--size-icon)) / 2); }
   .cfg__savebar.savebar--wrap .ui-savebar__detail { flex: 1 1 auto; }
 }
+/* 按「启动」以后焦点落在页头状态那一格（role=status，会读出来，转圈说明在做）：和保存条状态那个落点一样不画框
+   After 启动 focus lands on the header's status cell (role=status, read out, with a spinner showing the work): no ring, like the save
+   bar's status landing */
+.cfg__facts:focus, .cfg .ui-ph__lead:focus { outline: none; }
 /* 641–860 宽一句长说明折成两行时，前面的点留在第一行字前面，字在它右边折行，不让点单独占一行；一行时和居中一样高
    Between 641 and 860, when a long status wraps, the dot stays before its first line and the text wraps beside it, never leaving the
    dot alone on a line; on one line it sits as high as when centred */

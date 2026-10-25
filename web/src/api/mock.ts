@@ -974,9 +974,10 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     const stopping = path.endsWith('/stop')
     // 和真服务端一样：KixDNS 还在时，重启前先应用还在等的待应用版本 / As on the real server: with KixDNS still there, a pending
     // version still waiting is applied before the restart
-    let appliedBefore: { version_id: number; apply_state: string } | null = null
+    let appliedBefore: { version_id: number; apply_state: string; from_rollback?: string } | null = null
     if (path.endsWith('/restart') && serviceRunning && !restartNoAnswer && config.pending?.version_id && !config.pending.error) {
-      appliedBefore = { version_id: config.pending.version_id, apply_state: 'applied' }
+      // 和真服务端一样带上退回的标记 / The rollback mark comes along, as on the real server
+      appliedBefore = { version_id: config.pending.version_id, apply_state: 'applied', ...(config.pending.from_rollback ? { from_rollback: config.pending.from_rollback } : {}) }
       applyPendingInPlace(config.pending.version_id)
       restartPendingNow()
     }

@@ -33,6 +33,7 @@ import { useHelp } from '../composables/useHelp'
 import { useSession } from '../composables/useSession'
 import { backUnconfirmed, dismissRefused, downShownHere, nameWith, readBeforeTelling, restartingKixdns, rollingBackKixdns, startingKixdns, useServiceRestart, useServiceStart, versionName } from '../composables/useServiceStart'
 import { settingNames, settingValues } from '../config-editor/schema'
+import { numberRuns } from '../utils'
 import { registerLeaveGuard, takeAgreement } from '../composables/useLeaveGuard'
 import '../styles/config-v2.css'
 // JSON 编辑器（CodeMirror）只在用到时才加载：配置页的首包不带它 / The JSON editor (CodeMirror) loads on first use, so the config page's first chunk leaves it out
@@ -586,7 +587,12 @@ const { restart } = useServiceRestart()
 // The restart and rollback buttons hold while a save is still finishing: a restart mid-save drops KixDNS before it confirms the new
 // config, and a sound version would be recorded as not taken
 const restarts = () => [restartForSettings, rollbackSettings, writePendingIn].includes(notice.value?.run as never)
-const noticeRestarting = computed(() => restartingKixdns.value && restarts())
+// 响应式：提示条的按钮只在这一页发起的那次转圈，别处发起的重启只让它停用 / Reactive: the notice's button spins only for an action this
+// page sent; a restart sent elsewhere only holds it
+// 按计数：套着发起时，里面那次结束不提前清掉 / Counted: when nested, the inner one ending does not clear it early
+const actingCount = ref(0)
+const actingHere = computed(() => actingCount.value > 0)
+const noticeRestarting = computed(() => restartingKixdns.value && actingHere.value && restarts())
 const noticeHeld = computed(() => applyBusy.value || rereading.value || restartingKixdns.value || startingKixdns.value || (restarts() && (saveInFlight.value || busy.value)))
 // 退回期间页面不能改：回来以后整份换上退回后的文件，途中改的会悄悄丢掉（和「重新读取」时一样）
 // The page cannot be edited during a rollback: on return the rolled-back file replaces the page, and edits made meanwhile
@@ -598,7 +604,14 @@ const rollingBack = rollingBackKixdns
 watch(() => ready.value && Boolean(notice.value?.down), (shown) => { downShownHere.value = shown }, { immediate: true, flush: 'sync' })
 // 提示条在说某一版没有生效：别处带来的「…没有生效，到配置页看原因」提示交棒，收起 / The notice says a version did not take: the
 // 「…没有生效，到配置页看原因」 toast brought from elsewhere hands over and goes
-watch(() => ready.value && Boolean(notice.value?.failure), (shown) => { if (shown) dismissRefused() }, { immediate: true, flush: 'sync' })
+// 那一版已经不算失败（别处另存并应用了新的）也收起：这时配置页上没有失败可看 / Also once that version no longer counts as failed
+// (another writer stored and applied a new one): the config page then has no failure to show
+// 只按这次进来以后读到的说：离开时留在模块里的文档是上次的样子，按它判断会先收起、提示条过一会儿才出来；读失败时也不收（提示条只说读取失败）
+// Judged only on what was read since this mount: the document left in the module is how it was last time, so judging by it would
+// dismiss first and show the notice later; a failed read does not dismiss either (the notice then only says the read failed)
+const readSinceMount = ref(false)
+watch(doc, () => { readSinceMount.value = true }, { flush: 'sync' })
+watch(() => readSinceMount.value && ready.value && (Boolean(notice.value?.failure) || !hasApplyFailure.value), (stale) => { if (stale) dismissRefused() }, { immediate: true, flush: 'sync' })
 onBeforeUnmount(() => { downShownHere.value = false })
 // 函数声明：提示条在声明之前就可能读到它（回到配置页时已经读好） / A declaration: the notice may read it before this line (on return,
 // with the page already read)
@@ -610,12 +623,11 @@ function openLogs(): void { void router.push('/logs?view=runtime') }
 // 别的页发起的启动、重启、退回结束时，这一页也先安静地重读再说结果（有修改时只刷新运行状态）；这一页自己发起的由它的 afterBack
 // 读，不读两遍 / When a start, restart or rollback sent from another page ends, this page also reads again quietly before the
 // outcome is said (only the runtime with edits); one this page sent is read by its own afterBack, not twice
-let actingHere = false
 async function ownAction<T>(work: () => Promise<T>): Promise<T> {
-  actingHere = true
-  try { return await work() } finally { actingHere = false }
+  actingCount.value += 1
+  try { return await work() } finally { actingCount.value -= 1 }
 }
-const stopReading = readBeforeTelling(async () => { if (!actingHere) await readFresh().catch(() => undefined) })
+const stopReading = readBeforeTelling(async () => { if (!actingHere.value) await readFresh().catch(() => undefined) })
 onBeforeUnmount(stopReading)
 // 确认框开着时草稿又有了修改：不发，照实说一句，提示条已经换回「先保存或放弃」 / The draft gained edits while the confirm was
 // open: nothing is sent, and a line says so; the notice is back to 「先保存或放弃」
@@ -626,7 +638,9 @@ async function restartForSettings(): Promise<void> {
   // KixDNS 还在：服务端重启前先应用待应用的版本，一次重启就全用上 / KixDNS is still there: the server applies the pending version
   // before the restart, so one restart brings it all in
   const origin = doc.value?.pending?.from_rollback
-  const waiting = hasPending.value && pendingVersionId.value ? `重启前先应用${origin ? versionName(pendingVersionId.value, origin) : `待应用的版本\u00a0#${pendingVersionId.value}`}。` : ''
+  // 这个确认框只在 KixDNS 在时出现：退回的设置已经在用，先应用的只有带上的修改 / This confirm shows only while KixDNS runs: the
+  // settings put back are in use, so only the carried edits are applied first
+  const waiting = hasPending.value && pendingVersionId.value ? `重启前先应用${origin ? versionName(pendingVersionId.value, origin, true) : `待应用的版本\u00a0#${pendingVersionId.value}`}。` : ''
   // 草稿里没保存的修改不在这次重启里 / Unsaved edits in the draft are not part of this restart
   const draft = unsaved.value ? '草稿里没保存的修改不算在内。' : ''
   if (!await confirm.ask({
@@ -634,7 +648,7 @@ async function restartForSettings(): Promise<void> {
     body: `服务会短暂中断，缓存会清空。${waiting}重启后生效的设置：${settingNames(restartPending.value, { all: true })}。${draft}`,
     confirmLabel: '重启服务',
   })) return
-  await ownAction(() => restart({ afterBack: readQuietly }))
+  await ownAction(() => restart({ afterBack: readQuietly, wasAlive: true }))
 }
 // 退回：只把那几项改回 KixDNS 上次正常启动时的值，写进文件再重启；文件是这一页改的，读回来不说「别处改过了」
 // Rolling back: only those settings go back to the values KixDNS last started with, written to the file before a restart; this page
@@ -647,7 +661,7 @@ async function rollbackSettings(): Promise<void> {
   // not written back with it: both are said
   const one = new Set(Object.keys(values).map((key) => (key.startsWith('flow_control_') ? 'flow_control' : key))).size === 1
   const rest = hasPending.value && pendingVersionId.value ? `待应用的版本\u00a0#${pendingVersionId.value}\u00a0里${one ? '这一项' : '这几项'}也改回，其他修改都保留。`
-    : hasApplyFailure.value && pendingVersionId.value ? `其他修改都保留；${nameWith(versionName(pendingVersionId.value, doc.value?.pending?.from_rollback, true), '没有生效')}，里面的修改不算在内。`
+    : hasApplyFailure.value && pendingVersionId.value ? (doc.value?.pending?.from_rollback ? '其他修改都保留；没有生效的那笔修改不算在内。' : `其他修改都保留；${nameWith(versionName(pendingVersionId.value, null, true), '没有生效')}，里面的修改不算在内。`)
     : '其他修改都保留。'
   if (!await confirm.ask({
     title: '退回原来的设置',
@@ -722,7 +736,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
     <div v-if="notice && ready" class="ui-notice cfg__notice" tabindex="-1" :class="notice.tone === 'err' ? 'ui-notice--err' : notice.tone === 'off' ? 'ui-notice--off' : ''" :role="notice.tone === 'err' ? 'alert' : 'status'">
       <!-- 红色的用带叉的圆圈，和概览、诊断页一样 / The red one takes the crossed circle, as on the overview and diagnostics -->
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10" /><path v-if="notice.tone === 'err'" d="m15 9-6 6M9 9l6 6" /><path v-else d="M12 8v4M12 16h.01" /></svg>
-      <span>{{ notice.text }}</span>
+      <span><template v-for="(run, k) in numberRuns(notice.text)" :key="k"><span v-if="run.glue" class="nowrap">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></span>
       <small v-if="notice.detail"><RuleText :text="notice.detail" :links="notice.links" @rule="openRule($event, null)" @group="groupEditor = { id: $event }" /></small>
       <button v-if="notice.action" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="noticeHeld" :aria-busy="noticeRestarting || undefined" @click="runNotice"><span v-if="noticeRestarting" class="ui-spin" aria-hidden="true"></span>{{ notice.action }}</button>
     </div>

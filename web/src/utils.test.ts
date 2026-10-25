@@ -112,9 +112,12 @@ describe('hyphenRuns', () => {
   })
 
   it('提示条另外连住版本号、「名字」的和「再点一次「按钮」」 / toasts also glue the version number, 「name」的 and 「再点一次「button」」', () => {
-    const glued = (text: string) => toastRuns(text).filter((r) => r.glue).map((r) => r.text)
+    // 「一个字＋标点」那一类单独测，这里只比前面几类 / The 「character + punctuation」 runs are tested on their own; here only the
+    // other kinds are compared
+    const glued = (text: string) => toastRuns(text).filter((r) => r.glue && !/^[\u4e00-\u9fff][，：；。]$/.test(r.text)).map((r) => r.text)
     expect(glued('新下载的拦截列表：已存成待应用版本\u00a0#20，KixDNS 就绪后自动应用')).toEqual(['版本\u00a0#20，', 'KixDNS 就'])
     expect(glued('「bad.txt」的链接只能用 https://，删掉这个列表再保存')).toEqual(['「bad.txt」的'])
+    expect(glued('「bad.txt」的，删掉这个列表再保存')).toEqual(['「bad.txt」的，'])
     // 按钮名不单独落到最后一行 / The button name never sits alone on the last line
     expect(glued('新的一份存不上：这份配置在别处改过了；先重新读取，再点一次「全部更新」')).toEqual(['再点一次「全部更新」'])
     // 版本号带着后面的状态词，KixDNS 带着后面一个字 / The version number keeps its state word, and KixDNS the character after it
@@ -128,6 +131,12 @@ describe('hyphenRuns', () => {
     // 句尾常见的词整块连住，末行不只剩一个字 / Common endings stay whole, so the last line never holds one character alone
     expect(glued('KixDNS 启动失败，可以到配置页把版本\u00a0#19\u00a0写进配置文件')).toEqual(['KixDNS 启', '版本\u00a0#19', '写进配置文件'])
     expect(glued('KixDNS 服务已重启，退回的设置和待应用的修改已生效')).toEqual(['KixDNS 服', '修改已生效'])
+    // 「，：；。」和前一个字连住：硬切时标点不落到行首 / 「，：；。」 stay with the character before: a forced break never starts a line
+    // with punctuation
+    const pairs = toastRuns('不知道待应用的修改应用了没有：连不上面板。连上后会自己核对').filter((r) => r.glue).map((r) => r.text)
+    expect(pairs).toEqual(['有：', '板。'])
+    expect(toastRuns('已退回原来的设置，KixDNS 服务已重启；待应用的修改里，有些设置要再重启一次才生效').filter((r) => r.glue).map((r) => r.text)).toEqual(['置，', 'KixDNS 服', '启；', '里，', '才生效'])
+    expect(toastRuns('一句话').map((r) => r.text).join('')).toBe('一句话')
     // 默认名单独拿出来，按「·」折行 / A default name is taken out to wrap at 「·」
     expect(toastRuns('「hosts.txt\u00a0·\u00a0lists.example.org」没下载成功').find((r) => r.name)?.name).toEqual({ name: 'hosts.txt\u00a0·\u00a0lists.example.org', suffix: '' })
   })

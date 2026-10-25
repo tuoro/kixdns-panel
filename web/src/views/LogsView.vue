@@ -76,14 +76,17 @@ function auditDetail(event: AuditEvent, plain = false): string {
   const text = auditDetailGlued(event)
   return plain ? text.replace(/\u00a0/g, ' ').replace(/\u2060/g, '') : text
 }
-// 显示时把每个设置名、每个「版本 #N」各连成一块，只在「、」「，」后折行（名字里、版本号里不断开）
-// For display, each setting name and each 「版本 #N」 is one glued run, wrapping only after 「、」 or 「，」 (never inside a name or a number)
+// 显示时连成几块，只在块和块之间折行：每个设置名（带后面的「、」「，」）、每个「版本 #N」（带后面的标点）、「待应用的修改另存为」；
+// 最长的一块也放得进最窄的详情栏
+// For display the text is glued into runs that only wrap between each other: each setting name (with its following 「、」 or 「，」),
+// each 「版本 #N」 (with its punctuation) and 「待应用的修改另存为」; the longest run still fits the narrowest detail column
 function auditParts(event: AuditEvent): Array<{ text: string; glue: boolean }> {
   const text = auditDetailGlued(event)
   if (event.action !== 'config.restart_rollback') return [{ text, glue: false }]
-  // 比一行还长的段不强行连住（面板不认识、原样显示的内核键名），免得在窄屏上撑出去 / A part longer than a line is not glued (a kernel
-  // key the panel does not know, shown as it is), lest it overflow a narrow screen
-  return text.split(/(?<=[、，])/).map((part) => ({ text: part, glue: part.length <= 20 }))
+  const cut = text.indexOf('，')
+  const names = cut < 0 ? [] : text.slice(0, cut + 1).split(/(?<=、)/).map((name) => ({ text: name, glue: name.length <= 16 }))
+  const rest = (cut < 0 ? text : text.slice(cut + 1)).split(/(版本[ \u00a0]#\d+[，。]?|待应用的修改另存为)/).filter(Boolean).map((part) => ({ text: part, glue: /^(?:版本[ \u00a0]#\d+|待应用的修改另存为$)/.test(part) }))
+  return [...names, ...rest]
 }
 function auditDetailGlued(event: AuditEvent): string {
   if (event.action !== 'config.restart_rollback') return event.detail

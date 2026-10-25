@@ -73,6 +73,13 @@ export function dismissRefused(): void {
   for (const id of refusedToasts) useToast().dismiss(id)
   refusedToasts.clear()
 }
+// 退出登录、会话过期：「启动失败」「没有生效」这两类错误提示都收起，不留在登录页上 / Signed out or expired: the 启动失败 and
+// 没有生效 error toasts both go, rather than staying on the sign-in page
+watch(() => useSession().authenticated.value, (signedIn) => {
+  if (signedIn) return
+  dismissRefused()
+  kixdnsBack()
+})
 // 从连不上变成连上，要连着两次读到才算回来：起不来的循环里新进程会短暂应答。在那之前各页接着看，「启动失败」那条提示也先留着。
 // 配置页、概览、诊断、系统页每次读完都报一声；停着不算连不上
 // Going from unreachable to reachable counts as back only after two reads in a row: in a loop that never comes up a new process
@@ -205,11 +212,15 @@ export const rollingBackKixdns = ref(false)
 // 按服务端标的来认，不看备注 / Told by the server's mark, not by the note
 export const ROLLBACK_LABELS = { settings: '退回的设置', settings_and_pending: '退回的设置和待应用的修改' } as const
 export type RollbackOrigin = keyof typeof ROLLBACK_LABELS
-/** 给用户看的地方怎么称呼一个待应用的版本：退回写下的不报编号（没有生效的只会是带上的那笔修改）；别的写「版本 #N」
- *  How a pending version is named wherever users read it: one a rollback wrote has no number (if it did not take, it can only be
- *  the edits carried along); any other reads 版本 #N */
-export function versionName(id: number, origin?: RollbackOrigin | null, failed = false): string {
-  if (origin === 'settings_and_pending' && failed) return '待应用的修改'
+/** 给用户看的地方怎么称呼一个待应用的版本，按状态不按按钮：退回写下的不报编号。带上修改的那一版，KixDNS 在的时候（退回的设置
+ *  已经在用）、或者没有生效时（只会是带上的那笔修改），只剩带上的修改，叫「待应用的修改」（carried）；KixDNS 不在、等它回来时，
+ *  两样一起才用上，叫全名。别的写「版本 #N」
+ *  How a pending version is named wherever users read it, by state rather than by button: one a rollback wrote has no number.
+ *  For the version carrying pending edits, while KixDNS runs (the settings put back are in use) or when it did not take (it can only
+ *  be the carried edits), only the carried edits are left and it reads 待应用的修改 (carried); while KixDNS is not there and both
+ *  come in together on its return, the full name. Any other reads 版本 #N */
+export function versionName(id: number, origin?: RollbackOrigin | null, carried = false): string {
+  if (origin === 'settings_and_pending' && carried) return '待应用的修改'
   return origin ? ROLLBACK_LABELS[origin] : `版本\u00a0#${id}`
 }
 /** 名字接状态词：编号后面空一格，退回的叫法紧接 / A name followed by its state word: a space after a number, none after the
@@ -220,7 +231,9 @@ export function nameWith(name: string, state: string): string {
 // refused：KixDNS 回来了，却不接受这一版（回来时那次应用被拒） / refused: KixDNS is back but refused this version (the apply on
 // return was rejected)
 interface Applied { id: number; waits: boolean; name: string; refused?: boolean }
-async function applyWaiting(doc: ConfigDocument | null, pendingSeen: PendingSeen | null): Promise<Applied | null> {
+// wasAlive：KixDNS 在这次启动、重启之前就在跑（退回的设置那时已经在用），用上的只有带上的修改 / wasAlive: KixDNS was running before
+// this start or restart (the settings put back were in use then), so only the carried edits came in
+async function applyWaiting(doc: ConfigDocument | null, pendingSeen: PendingSeen | null, wasAlive = false): Promise<Applied | null> {
   const pending = doc?.pending
   // 等的途中还在等、这会儿带着错误：后台那一遍先试过、被拒了，同样算回来时那次应用被拒 / Waiting while it was awaited and carrying
   // an error now: the background pass tried first and was refused, which counts as the apply on return being refused just the same
@@ -234,7 +247,7 @@ async function applyWaiting(doc: ConfigDocument | null, pendingSeen: PendingSeen
     .catch(() => apiRequest<ConfigDocument>('/api/v1/config').then((read) => (read.pending?.version_id === id && read.pending.error ? 'refused' as const : null), () => null))
   if (result === 'refused') return { id, waits: false, name: versionName(id, origin, true), refused: true }
   if (result?.apply_state !== 'applied') return null
-  return { id, waits: Boolean(result.active_config?.restart_pending?.length), name: versionName(id, origin) }
+  return { id, waits: Boolean(result.active_config?.restart_pending?.length), name: versionName(id, origin, wasAlive) }
 }
 // 回来时一条提示说完。应用了的版本照它报的说「已生效」或「已应用」；配置页外的「已应用」补上「有些设置要重启」，用普通提示。
 // 重启前那一下被拒了的版本也在这一条里说，配置页外指到那里看原因（配置页的提示条写着原因）
@@ -263,15 +276,17 @@ function sayBack(done: string, applied: Applied | null, refused: string | null =
 // - 普通重启；
 // - `rollback`：先把改过的设置退回上次正常启动时的值；
 // - `writePending`：先把待应用的版本写进配置文件。
-// `afterBack` 在它回来以后、说结果之前跑（整份重读），读完才放开按钮
+// `afterBack` 在它回来以后、说结果之前跑（整份重读），读完才放开按钮。
+// `wasAlive` 是确认框按 KixDNS 在不在说的那份判断：结果照同一份叫待应用的版本
 // Restart KixDNS; the caller asks for confirmation first. Three ways:
 // - a plain restart;
 // - `rollback`: put the changed settings back to the values it last started with first;
 // - `writePending`: write the pending version into the config file first.
-// `afterBack` runs once it is back and before the outcome is said (the whole page is read again), and the button is released after it
+// `afterBack` runs once it is back and before the outcome is said (the whole page is read again), and the button is released after it.
+// `wasAlive` is the confirm's own judgement of whether KixDNS was in: the outcome names the pending version by the same one
 export function useServiceRestart() {
   const toast = useToast()
-  async function restart(options: { beforeSend?: () => void; afterBack?: () => Promise<void>; rollback?: { hadPending: boolean }; writePending?: number } = {}): Promise<'back' | 'silent' | 'gone' | 'failed'> {
+  async function restart(options: { beforeSend?: () => void; afterBack?: () => Promise<void>; rollback?: { hadPending: boolean }; writePending?: number; wasAlive?: boolean } = {}): Promise<'back' | 'silent' | 'gone' | 'failed'> {
     // 启动还在等时不另起重启 / No restart while a start is still awaited
     if (restartingKixdns.value || startingKixdns.value) return 'failed'
     restartingKixdns.value = true
@@ -286,7 +301,9 @@ export function useServiceRestart() {
       const sent = await apiRequest<{ applied_before?: { version_id: number; apply_state: string; from_rollback?: RollbackOrigin } }>(path, { method: 'POST', ...(options.writePending ? jsonBody({ version_id: options.writePending }) : {}) })
       const before = sent?.applied_before
       const { outcome, doc, pendingSeen } = await waitForKixdns()
-      const applied = outcome === 'back' ? await applyWaiting(doc, pendingSeen) ?? (before?.apply_state === 'applied' ? { id: before.version_id, waits: false, name: versionName(before.version_id, before.from_rollback) } : null) : null
+      // 确认框没说时：服务端重启前应用过（applied_before）就说明 KixDNS 那时在跑 / Without the confirm's word: an apply before the
+      // restart (applied_before) means KixDNS was running then
+      const applied = outcome === 'back' ? await applyWaiting(doc, pendingSeen, options.wasAlive ?? Boolean(before)) ?? (before?.apply_state === 'applied' ? { id: before.version_id, waits: false, name: versionName(before.version_id, before.from_rollback, options.wasAlive ?? true) } : null) : null
       await readPages(options.afterBack)
       // 等完、读完，重启就结束了：先放下「正在重启」，各页的提示条换成读到的样子（起不来时说「启动失败」），再说结果
       // Waited and read, the restart is over: 正在重启 goes first and each page's notice turns to what was read (启动失败 when it
@@ -302,7 +319,7 @@ export function useServiceRestart() {
         // restart too, a clause follows away from the config page (on it the notice says so)
         // 要再重启的那半句用「；」隔开，和被拒那句同一个结构 / The restart clause is set off with 「；」, in the refused sentence's shape
         const tail = applied?.waits && !configPageOpen.value
-        const carried = tail ? '已退回原来的设置，KixDNS 服务已重启；待应用的修改里有些设置要再重启一次才生效' : '已退回原来的设置，KixDNS 服务已重启，待应用的修改也用上了'
+        const carried = tail ? '已退回原来的设置，KixDNS 服务已重启；待应用的修改里，有些设置要再重启一次才生效' : '已退回原来的设置，KixDNS 服务已重启，待应用的修改也用上了'
         // 带上的修改被拒了：照实说，配置页外用不会自己消失的错误提示 / The carried edits were refused: said as they are, away from
         // the config page in an error toast that stays
         if (outcome === 'back' && options.rollback.hadPending && applied?.refused) {

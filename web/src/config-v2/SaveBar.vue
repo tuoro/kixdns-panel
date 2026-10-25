@@ -4,7 +4,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import UiNumber from '../components/ui/UiNumber.vue'
 import UiDotText from '../components/ui/UiDotText.vue'
 import { useBarHeight } from '../composables/useBarHeight'
-import { restartingKixdns, versionName } from '../composables/useServiceStart'
+import { restartingKixdns } from '../composables/useServiceStart'
 import { useToast } from '../composables/useToast'
 import DraftReviewDialog from './DraftReviewDialog.vue'
 import RuleText from './RuleText.vue'
@@ -110,7 +110,12 @@ const applying = computed(() => busy.value && origin.value === 'apply')
 // 退回写下的版本不报编号，和页头同一个短名 / A version a rollback wrote has no number: the header's short name
 // 「现在应用」只在 KixDNS 在时才有，那时真正在应用的是带上的修改 / 现在应用 exists only while KixDNS runs, when what is being applied
 // is the carried edits
-const applyingNote = computed(() => `正在应用${doc.value?.pending?.from_rollback && pendingVersionId.value ? versionName(pendingVersionId.value, doc.value.pending.from_rollback, true) : pendingVersionId.value ? `版本 #${pendingVersionId.value}` : '待应用的版本'}，应用完再保存`)
+const applyingNote = computed(() => {
+  const origin = doc.value?.pending?.from_rollback
+  // 和页头「修改应用中」同一个叫法 / The header's 修改应用中 name
+  const what = origin === 'settings_and_pending' ? '修改' : origin ? '退回的设置' : pendingVersionId.value ? `版本 #${pendingVersionId.value}` : '待应用的版本'
+  return `正在应用${what}，应用完再保存`
+})
 // 在写入这份草稿，或者排在单独的「校验」后面等着写：按钮写「保存中」；页头在应用时不算 / Writing this draft, or queued behind a lone 校验 to write: the button reads 保存中; the header's apply does not count
 const saving = computed(() => (busy.value && stage.value !== 'checking' && origin.value === 'draft') || queued.value)
 // 保存还在跑（写入落地以后、重读完之前草稿已经算干净了）：按钮一直留着写「保存中」，不在说「第 2 步」时消失

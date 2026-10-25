@@ -482,7 +482,9 @@ async function control(action: ServiceAction): Promise<void> {
   const failedNote = pendingId && pending?.error ? `${nameWith(versionName(pendingId, origin, true), '没有生效')}，重启后仍用之前那份配置${down ? '' : '；要再试，到配置页点\u2060「重试应用」'}。` : ''
   const waitingNote = !pendingId || pending?.error ? ''
     : down ? (config?.runtime.pending_writable ? `起来以后就用上${waitingName}；还是不行的话，可以到配置页把它写进配置文件。` : rollback ? `起来以后就用上${waitingName}。` : '')
-    : config?.runtime.active_sha256 ? `重启前先应用${waitingName}。` : `重启后应用${waitingName}。`
+    // KixDNS 在：退回的设置已经在用，先应用的只有带上的修改 / KixDNS runs: the settings put back are in use, so only the carried
+    // edits are applied first
+    : config?.runtime.active_sha256 ? `重启前先应用${origin && pendingId ? versionName(pendingId, origin, true) : waitingName}。` : `重启后应用${waitingName}。`
   const restartBody = down
     ? `KixDNS\u00a0现在起不来，重启会再试一次。${rollback ? `可能是改过的设置导致的，可以到配置页退回：${settingNames(Object.keys(rollback))}。` : ''}${waitingNote}${failedNote}`
     : `服务会短暂中断，缓存会清空。${waitingNote}${restartNames}${failedNote}`
@@ -501,7 +503,9 @@ async function control(action: ServiceAction): Promise<void> {
     // started, and while it restarts the config page knows
     // 等完先读服务状态再说结果（见下面登记的重读）：起不来时这一页的提示条先说，不另弹提示 / The service state is read after the
     // wait, before the outcome is said (the read registered below): not coming up, this page's notice says it first with no toast
-    if (action === 'restart') await restart()
+    // 结果和确认框按同一份判断叫待应用的版本；没读到配置时确认框没说它，交给服务端的回应 / The outcome names the pending version by
+    // the confirm's own judgement; with no config read the confirm did not name it, so the server's answer decides
+    if (action === 'restart') await restart({ wasAlive: config ? !down && Boolean(config.runtime.active_sha256) : undefined })
     else if (action === 'start') await start()
     else {
       service.value = await apiRequest<ServiceStatus>('/api/v1/service/stop', { method: 'POST' })

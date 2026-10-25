@@ -397,3 +397,140 @@ test('退回以后还是起不来、之后重启起来了：提示说退回的�
   await page.getByRole('alertdialog').getByRole('button', { name: '重启服务', exact: true }).click()
   await expect(page.locator('.toast', { hasText: 'KixDNS 服务已重启' })).toHaveText(['KixDNS 服务已重启，退回的设置已生效'])
 })
+
+// 改了监听地址、重启后起不来，再存一笔待应用的修改：退回时把它一起带上。applyOnReturn 是回来时那次应用的演示开关
+// The listener changed and the restart did not come up, then one more edit was kept as pending: the rollback carries it along.
+// applyOnReturn is the demo flag for the apply on return
+async function rollBackCarryingEdits(page: Page, applyOnReturn: string): Promise<void> {
+  await page.clock.install()
+  await saveListenerChange(page)
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-restart-no-answer', 'true'))
+  const notice = page.locator('.cfg__notice')
+  await notice.getByRole('button', { name: '重启 KixDNS', exact: true }).click()
+  await page.getByRole('alertdialog').getByRole('button', { name: '重启服务', exact: true }).click()
+  await expect(async () => {
+    await page.clock.fastForward(2_000)
+    await expect(notice).toContainText('可能是改过的设置让 KixDNS', { timeout: 300 })
+  }).toPass()
+  await page.getByLabel('上游超时 (ms)', { exact: true }).fill('2500')
+  await page.locator('.cfg__savebar').getByRole('button', { name: '保存为待应用' }).click()
+  await expect(page.locator('.cfg__savebar')).toContainText('退回时一起应用')
+  await page.evaluate((flag) => localStorage.setItem(flag, 'true'), applyOnReturn)
+  await notice.getByRole('button', { name: '退回原来的设置并重启', exact: true }).click()
+  await page.getByRole('alertdialog').getByRole('button', { name: '退回并重启', exact: true }).click()
+}
+
+// 回来时那次应用面板内部出错：什么都没写，也不算被拒，KixDNS 在、带上的修改还待应用 / The apply on return meets an internal panel
+// error: nothing written and not a refusal, so KixDNS is up with the carried edits still pending
+async function upWithCarriedEdits(page: Page): Promise<void> {
+  await rollBackCarryingEdits(page, 'kixdns:demo-apply-error')
+  await expect(page.locator('.toast', { hasText: '已退回原来的设置' })).toHaveText(['已退回原来的设置，KixDNS 服务已重启'])
+  // 退回的设置已经在用，页头只说修改 / The settings put back are in use, so the header speaks only of the edits
+  await expect(page.getByText('修改待应用', { exact: true }).locator('visible=true').first()).toBeVisible()
+  await expect(page.getByText(/退回的设置/).locator('visible=true')).toHaveCount(0)
+}
+
+test('退回带上的修改回来时没应用上、KixDNS 在：页头「修改待应用」，现在应用时「修改应用中」，结果说待应用的修改已生效 @responsive', async ({ page }) => {
+  await upWithCarriedEdits(page)
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-save-slow', '2500'))
+  await page.getByRole('button', { name: '现在应用', exact: true }).locator('visible=true').first().click()
+  await expect(page.getByText('修改应用中', { exact: true }).locator('visible=true').first()).toBeVisible()
+  // 应用途中想保存：说在应用修改，不报退回写下的编号 / Saving mid-apply: it says the edits are being applied, without the number the
+  // rollback stored
+  await page.getByLabel('上游超时 (ms)', { exact: true }).fill('2600')
+  // 按钮这时只是看着停用（aria-disabled），点了说为什么 / The button only looks disabled now (aria-disabled), and a press says why
+  await page.locator('.cfg__savebar').getByRole('button', { name: '保存并应用' }).click({ force: true })
+  await expect(page.locator('.toast', { hasText: '正在应用' })).toHaveText(['正在应用修改，应用完再保存'])
+  await page.clock.fastForward(2_600)
+  await expect(page.locator('.toast', { hasText: '已生效' })).toHaveText(['待应用的修改已生效'])
+  await expect(page.getByText(/待应用$|应用中$/).locator('visible=true')).toHaveCount(0)
+  // 页头回到运行中：宽屏是状态格，手机是页头那一行 / The header is back to 运行中: the status cell when wide, the header line on phones
+  await expect(page.locator('.cfg__facts, .cfg .ui-ph__lead').locator('visible=true').first()).toContainText(/(?:^|状态\s*)运行中/)
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
+})
+
+const reconnect = (page: Page) => page.evaluate(async () => {
+  localStorage.removeItem('kixdns:demo-panel-down')
+  // 装了假时钟，performance 里查不到加载过的模块，直接按路径取（和页面用的是同一个） / With the fake clock installed performance lists
+  // no loaded modules, so the module is taken by its path (the same one the page uses)
+  const connection = await import('/src/composables/useConnection.ts')
+  void connection.useConnection().retry()
+})
+
+test('退回带上的修改、KixDNS 在时「现在应用」的回应丢了：连上后核对只说一句已生效，不另挂「还没有应用」 @responsive', async ({ page }) => {
+  await upWithCarriedEdits(page)
+  await page.evaluate(() => {
+    window.addEventListener('kixdns:panel-unreachable', () => localStorage.setItem('kixdns:demo-panel-down', 'true'), { capture: true, once: true })
+    localStorage.setItem('kixdns:demo-put-answer-lost', 'true')
+  })
+  await page.getByRole('button', { name: '现在应用', exact: true }).locator('visible=true').first().click()
+  await expect(page.locator('.conn__inner')).toBeVisible()
+  await reconnect(page)
+  // 原地应用不比内容，只看文件还是不是那一版：退回写下的这一版也认得出已经生效 / An in-place apply is checked by the version in the
+  // file, not the content: the version a rollback wrote is recognised as in effect too
+  await expect(page.locator('.toast', { hasText: '刚才那次应用' })).toHaveText(['刚才那次应用：待应用的修改已生效'], { timeout: 8000 })
+  await expect(page.locator('.toast', { hasText: '还没有应用' })).toHaveCount(0)
+  await expect(page.locator('.cfg__notice', { hasText: '没有应用' })).toHaveCount(0)
+  await expect(page.getByText(/待应用$/).locator('visible=true')).toHaveCount(0)
+})
+
+test('退回带上的修改、按「现在应用」马上离开、回应丢了：先说不知道待应用的修改应用了没有，连上后换成结果', async ({ page }) => {
+  await upWithCarriedEdits(page)
+  await page.evaluate(() => {
+    window.addEventListener('kixdns:panel-unreachable', () => localStorage.setItem('kixdns:demo-panel-down', 'true'), { capture: true, once: true })
+    localStorage.setItem('kixdns:demo-save-slow', '4000')
+    localStorage.setItem('kixdns:demo-put-answer-lost', 'true')
+  })
+  await page.getByRole('button', { name: '现在应用', exact: true }).click()
+  await page.getByRole('link', { name: '概览', exact: true }).locator('visible=true').first().click()
+  // 到了概览才断：离开以后回应才丢的那条路 / Cut off only once on the overview: the path where the answer is lost after leaving
+  await expect(page).toHaveURL(/\/$/)
+  await expect(page.locator('.toast', { hasText: '不知道' })).toHaveCount(0)
+  await page.clock.fastForward(4_100)
+  await expect(page.locator('.toast', { hasText: '不知道' })).toHaveText(['不知道待应用的修改应用了没有：连不上面板。连上后会自己核对'])
+  // 退回的叫法没有空格，「不知道」后面留了断点（toHaveText 会去掉零宽空格，这里看原文） / The rollback's name has no space, so a break point
+  // follows 不知道 (toHaveText drops zero-width spaces, so the raw text is read)
+  expect(await page.locator('.toast', { hasText: '不知道' }).evaluate((toast) => toast.textContent)).toContain('不知道\u200b待应用的修改')
+  await reconnect(page)
+  await expect(page.locator('.toast', { hasText: '那次应用' })).toHaveText([/^刚才那次应用：待应用的修改已生效/], { timeout: 8000 })
+  await expect(page.locator('.toast', { hasText: '不知道' })).toHaveCount(0)
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
+})
+
+test('别处重启时带上的修改被拒，进配置页：红色提示等提示条说出没有生效才收起，读得慢也一样', async ({ page }) => {
+  await rollBackCarryingEdits(page, 'kixdns:demo-still-down')
+  await expect(page.locator('.toast', { hasText: '还是起不来' })).toBeVisible()
+  await page.getByRole('link', { name: '系统', exact: true }).locator('visible=true').first().click()
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-apply-failed', 'true'))
+  await page.getByRole('button', { name: '重启', exact: true }).click()
+  await page.getByRole('alertdialog').getByRole('button', { name: '重启服务', exact: true }).click()
+  const refused = page.locator('.toast', { hasText: '到配置页看原因' })
+  await expect(refused).toHaveText(['KixDNS 服务已重启，待应用的修改没有生效，到配置页看原因'])
+  // 收起的那一刻提示条已经在说没有生效（以前按上次留下的文档当场收起，提示条读完才出来）/ At the moment it goes the notice already
+  // says it did not take (it used to go at once, judged by the document left from last time, before the notice was read)
+  await page.evaluate(() => {
+    const w = window as unknown as { goneBeforeNotice?: boolean }
+    const toast = [...document.querySelectorAll('.toast')].find((e) => e.textContent?.includes('到配置页看原因'))!
+    new MutationObserver((_, observer) => {
+      if (toast.isConnected && !toast.className.includes('leave')) return
+      w.goneBeforeNotice = !document.querySelector('.cfg__notice')?.textContent?.includes('没有生效')
+      observer.disconnect()
+    }).observe(document.body, { subtree: true, childList: true, attributes: true })
+    localStorage.setItem('kixdns:demo-read-slow', 'true')
+  })
+  await page.getByRole('link', { name: /^(?:配置|基础设置)$/ }).locator('visible=true').first().click()
+  await expect(page.locator('.cfg__notice')).toContainText('没有生效', { timeout: 5000 })
+  await expect(refused).toHaveCount(0)
+  expect(await page.evaluate(() => (window as unknown as { goneBeforeNotice?: boolean }).goneBeforeNotice)).toBe(false)
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-read-slow'))
+})
+
+test('配置页外收到「…没有生效，到配置页看原因」以后退出登录：登录页上不留着它', async ({ page }) => {
+  await rollBackCarryingEdits(page, 'kixdns:demo-apply-failed')
+  await page.getByRole('link', { name: '概览', exact: true }).locator('visible=true').first().click()
+  await expect(page.locator('.toast', { hasText: '到配置页看原因' })).toHaveText(['已退回原来的设置，KixDNS 服务已重启；待应用的修改没有生效，到配置页看原因'])
+  await page.getByRole('button', { name: /^账户：/ }).click()
+  await page.getByRole('dialog', { name: '账户', exact: true }).getByRole('button', { name: '退出登录', exact: true }).click()
+  await expect(page).toHaveURL(/\/login/)
+  await expect(page.locator('.toast', { hasText: '没有生效' })).toHaveCount(0)
+})
