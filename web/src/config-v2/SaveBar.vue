@@ -112,8 +112,11 @@ const applying = computed(() => busy.value && origin.value === 'apply')
 // is the carried edits
 const applyingNote = computed(() => {
   const origin = doc.value?.pending?.from_rollback
-  // 和页头「修改应用中」同一个叫法 / The header's 修改应用中 name
-  const what = origin === 'settings_and_pending' ? '修改' : origin ? '退回的设置' : pendingVersionId.value ? `版本 #${pendingVersionId.value}` : '待应用的版本'
+  // 带上的修改用规则里的全称「待应用的修改」：提示挨着保存条的「已修改 N 处」，只说「修改」会读成在应用刚改的那几处；倒过来说，免得一句三个「应用」
+  // The carried edits take the rule's full 待应用的修改: the toast sits by the save bar's 已修改 N 处, where a bare 修改 would read as
+  // the edits just made; the sentence is turned round so it does not say 应用 three times
+  if (origin === 'settings_and_pending') return '待应用的修改正在应用，完成后再保存'
+  const what = origin ? '退回的设置' : pendingVersionId.value ? `版本 #${pendingVersionId.value}` : '待应用的版本'
   return `正在应用${what}，应用完再保存`
 })
 // 在写入这份草稿，或者排在单独的「校验」后面等着写：按钮写「保存中」；页头在应用时不算 / Writing this draft, or queued behind a lone 校验 to write: the button reads 保存中; the header's apply does not count

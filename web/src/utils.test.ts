@@ -114,7 +114,7 @@ describe('hyphenRuns', () => {
   it('提示条另外连住版本号、「名字」的和「再点一次「按钮」」 / toasts also glue the version number, 「name」的 and 「再点一次「button」」', () => {
     // 「一个字＋标点」那一类单独测，这里只比前面几类 / The 「character + punctuation」 runs are tested on their own; here only the
     // other kinds are compared
-    const glued = (text: string) => toastRuns(text).filter((r) => r.glue && !/^[\u4e00-\u9fff][，：；。]$/.test(r.text)).map((r) => r.text)
+    const glued = (text: string) => toastRuns(text).flatMap((r) => r.parts ?? [r]).filter((r) => r.glue && !/^[\u4e00-\u9fff][，：；。]$/.test(r.text)).map((r) => r.text)
     expect(glued('新下载的拦截列表：已存成待应用版本\u00a0#20，KixDNS 就绪后自动应用')).toEqual(['版本\u00a0#20，', 'KixDNS 就'])
     expect(glued('「bad.txt」的链接只能用 https://，删掉这个列表再保存')).toEqual(['「bad.txt」的'])
     expect(glued('「bad.txt」的，删掉这个列表再保存')).toEqual(['「bad.txt」的，'])
@@ -130,12 +130,43 @@ describe('hyphenRuns', () => {
     expect(glued('它留在配置页的草稿里。KixDNS\u00a0的原话：pipeline "main"')).toEqual(['KixDNS\u00a0的'])
     // 句尾常见的词整块连住，末行不只剩一个字 / Common endings stay whole, so the last line never holds one character alone
     expect(glued('KixDNS 启动失败，可以到配置页把版本\u00a0#19\u00a0写进配置文件')).toEqual(['KixDNS 启', '版本\u00a0#19', '写进配置文件'])
-    expect(glued('KixDNS 服务已重启，退回的设置和待应用的修改已生效')).toEqual(['KixDNS 服', '修改已生效'])
+    expect(glued('待应用的修改还没有应用，可以再点「现在应用」')).toEqual(['待应用的修改', '还没有应用，', '再点「现在应用」'])
+    // 退回的叫法没有空格：名字整块连住，名字前面那截、后面那截（到这一段的标点为止）也各连成一块；中间没有断点的相邻连块合成一串，
+    // 整串先作为一个整体换行，比一行还宽时才在串里、块和块之间断开。以标点结尾的连块后面放断点（WebKit 不在中文标点处断）
+    // The rollback's names have no space: a name stays whole, and the parts of its stretch before and after it (up to the stretch's
+    // punctuation) are glued too; adjacent glued runs with no break point between them form a chain, which moves as a whole and
+    // breaks inside, between members, only when wider than a line. A glued run ending in punctuation gets a break point after it
+    // (WebKit does not break at CJK punctuation)
+    // 「{a|b}」是一串（显示成一个 glue-block，块之间可断）；「[a]」是单独一块；「/」是后面放的断点 / 「{a|b}」 is a chain (one
+    // glue-block, breakable between members); 「[a]」 a single run; 「/」 a break point placed after it
+    const units = (text: string) => toastRuns(text).map((r) => `${r.parts ? `{${r.parts.map((part) => part.text).join('|')}}` : r.glue ? `[${r.text}]` : r.text}${r.breakAfter ? '/' : ''}`).join('')
+    expect(units('KixDNS 服务已重启，退回的设置和待应用的修改已生效')).toBe('[KixDNS 服]务已重[启，]/{退回的设置和待应用的修改|已生效}')
+    expect(units('不知道待应用的修改应用了没有：连不上面板。连上后会自己核对')).toBe('{不知道|待应用的修改|应用了没有：}/连不上面[板。]/连上后会自己核对')
+    expect(units('退回的设置和待应用的修改还没有应用：KixDNS 没有回应，就绪后自动应用')).toBe('{退回的设置和待应用的修改|还没有应用：}/[KixDNS 没]有回[应，]/就绪后自动应用')
+    expect(units('待应用的修改存成了版本\u00a0#22，KixDNS\u00a0就绪后自动应用')).toBe('{待应用的修改|存成了版本\u00a0#22，}/[KixDNS\u00a0就]绪后自动应用')
+    expect(units('已退回原来的设置，KixDNS 服务已重启；待应用的修改也已应用，有些设置要再重启一次才生效')).toBe('已退回原来的设[置，]/[KixDNS 服]务已重[启；]/{待应用的修改|也已应用，}/有些设置要再重启一次[才生效]')
+    // 一句开头的那一串留在行内（lead），句中的串放进 glue-block / A chain opening the text stays inline (lead), one mid-sentence goes
+    // into a glue-block
+    expect(toastRuns('退回的设置和待应用的修改还没有应用：KixDNS 没有回应，就绪后自动应用')[0]!.lead).toBe(true)
+    expect(toastRuns('KixDNS 服务已重启，退回的设置和待应用的修改已生效').find((r) => r.parts)?.lead).toBeUndefined()
+    // 标点后的断点在开引号前不放，「；「」才挤得紧 / No break point after punctuation before an opening quote, so 「；「」 closes up
+    expect(units('新的一份已下载；「anti-ad.txt」还没有放进草稿')).toBe('新的一份已下[载；][「anti-ad.txt」]还没有放进草稿')
+    // 名字自己带着标点：后面本来就能断，不再往后连 / A name carrying its punctuation can already break after it, so nothing after is glued
+    expect(units('退回的设置，其他照旧')).toBe('[退回的设置，]/其他照旧')
+    // 中间带空格的连块不拆；名字后面的空格不连进去，仍是断点 / A glued run with a space inside is never split; a space after a name is
+    // not glued in and stays a break point
+    expect(units('待应用的修改KixDNS 没有回应')).toBe('{待应用的修改|KixDNS 没}有回应')
+    expect(units('待应用的修改 KixDNS 就绪')).toBe('[待应用的修改] [KixDNS 就]绪')
+    // 不含退回叫法的句子只多了标点后的断点；「「名字」的」后面照旧留断点 / A sentence without a rollback name only gains the break points
+    // after punctuation; 「「name」的」 keeps its break point
+    expect(units('不知道版本 #19 应用了没有：连不上面板。连上后会自己核对')).toBe('不知道[版本 #19] 应用了没[有：]/连不上面[板。]/连上后会自己核对')
+    expect(units('「bad.txt」的链接只能用 https://')).toBe('[「bad.txt」的]/链接只能用 https://')
+    // 句尾的「一起保存生效」整块连住，末行不只剩「效」 / 一起保存生效 at the end stays whole, so the last line never holds 效 alone
+    expect(units('待应用的修改还没有应用；它的内容会和你的修改一起保存生效')).toBe('{待应用的修改|还没有应用；}/它的内容会和你的修改[一起保存生效]')
     // 「，：；。」和前一个字连住：硬切时标点不落到行首 / 「，：；。」 stay with the character before: a forced break never starts a line
     // with punctuation
-    const pairs = toastRuns('不知道待应用的修改应用了没有：连不上面板。连上后会自己核对').filter((r) => r.glue).map((r) => r.text)
-    expect(pairs).toEqual(['有：', '板。'])
-    expect(toastRuns('已退回原来的设置，KixDNS 服务已重启；待应用的修改里，有些设置要再重启一次才生效').filter((r) => r.glue).map((r) => r.text)).toEqual(['置，', 'KixDNS 服', '启；', '里，', '才生效'])
+    const pairs = toastRuns('不知道版本 #19 应用了没有：连不上面板。连上后会自己核对').filter((r) => r.glue).map((r) => r.text)
+    expect(pairs).toEqual(['版本 #19', '有：', '板。'])
     expect(toastRuns('一句话').map((r) => r.text).join('')).toBe('一句话')
     // 默认名单独拿出来，按「·」折行 / A default name is taken out to wrap at 「·」
     expect(toastRuns('「hosts.txt\u00a0·\u00a0lists.example.org」没下载成功').find((r) => r.name)?.name).toEqual({ name: 'hosts.txt\u00a0·\u00a0lists.example.org', suffix: '' })

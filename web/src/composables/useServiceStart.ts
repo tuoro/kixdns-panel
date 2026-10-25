@@ -317,9 +317,13 @@ export function useServiceRestart() {
         // they took effect too
         // 带上的修改里也有要重启的设置时，配置页外补一句（配置页上提示条会说） / With settings in the carried edits that take a
         // restart too, a clause follows away from the config page (on it the notice says so)
-        // 要再重启的那半句用「；」隔开，和被拒那句同一个结构 / The restart clause is set off with 「；」, in the refused sentence's shape
+        // 和 sayBack 一样分「已生效」「已应用」：带上的修改里有要重启的设置时说「已应用」；配置页外再补要重启那半句（用「；」隔开，和被拒那句
+        // 同一个结构），这时还有事要办，不打勾 / As sayBack does, 已生效 and 已应用 are told apart: with settings in the carried edits that
+        // take a restart it reads 已应用; away from the config page the restart clause follows (set off with 「；」 in the refused
+        // sentence's shape), and with something still to do there is no tick
         const tail = applied?.waits && !configPageOpen.value
-        const carried = tail ? '已退回原来的设置，KixDNS 服务已重启；待应用的修改里，有些设置要再重启一次才生效' : '已退回原来的设置，KixDNS 服务已重启，待应用的修改也用上了'
+        const carried = tail ? '已退回原来的设置，KixDNS 服务已重启；待应用的修改也已应用，有些设置要再重启一次才生效'
+          : `已退回原来的设置，KixDNS 服务已重启，待应用的修改也${applied?.waits ? '已应用' : '已生效'}`
         // 带上的修改被拒了：照实说，配置页外用不会自己消失的错误提示 / The carried edits were refused: said as they are, away from
         // the config page in an error toast that stays
         if (outcome === 'back' && options.rollback.hadPending && applied?.refused) {

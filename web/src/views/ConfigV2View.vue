@@ -530,8 +530,11 @@ onMounted(() => {
   // A kept draft that met 别处改过了: refresh the runtime only and leave the file hash and baseline for 重新读取 (as when it happens on the page);
   // otherwise 放弃修改 would count the other writer's change as one's own
   // 离开以后说过「存不上」的立即更新：冲突还在，提示换成页上的说法 / A 立即更新 told 存不上 away: the conflict is still there, so the toast takes the on-page wording
-  if (keep && conflict.value) { void refreshRuntime().catch(() => undefined); returnedToPage() }
-  else if (!busy.value) void load(keep ? { quiet: true, keepDraft: true } : { returning: true })
+  // 这次进来的那次读结束了（成功、失败都算）：红色提示交棒要等它，见下面 dismissRefused 那段 / This mount's read is over (landed or
+  // failed): the red toast's hand-over waits for it, see dismissRefused below
+  const readOver = () => { mountReadOver.value = true }
+  if (keep && conflict.value) { void refreshRuntime().catch(() => undefined).then(readOver); returnedToPage() }
+  else if (!busy.value) void load(keep ? { quiet: true, keepDraft: true } : { returning: true }).then(readOver, readOver)
   window.addEventListener('beforeunload', beforeUnload)
 })
 const beforeUnload = (e: BeforeUnloadEvent) => { if (unsaved.value) { e.preventDefault(); e.returnValue = '' } }
@@ -606,12 +609,16 @@ watch(() => ready.value && Boolean(notice.value?.down), (shown) => { downShownHe
 // 「…没有生效，到配置页看原因」 toast brought from elsewhere hands over and goes
 // 那一版已经不算失败（别处另存并应用了新的）也收起：这时配置页上没有失败可看 / Also once that version no longer counts as failed
 // (another writer stored and applied a new one): the config page then has no failure to show
-// 只按这次进来以后读到的说：离开时留在模块里的文档是上次的样子，按它判断会先收起、提示条过一会儿才出来；读失败时也不收（提示条只说读取失败）
-// Judged only on what was read since this mount: the document left in the module is how it was last time, so judging by it would
-// dismiss first and show the notice later; a failed read does not dismiss either (the notice then only says the read failed)
+// 交棒要等这次进来的那次读结束：进页那一刻 ready 还是上次留下的，紧接着那次读又把提示条藏起来，按那一刻判断就会先收起、提示条过一会儿
+// 才出来。读结束以后，提示条在说没有生效就交棒（读不到时它说的是上次读到的，照样算）；「已经没有失败」只按这次读到的说，读失败时不因此收
+// The hand-over waits for this mount's read to end: at mount ready is still the last visit's, and the read right after hides the
+// notice, so judging then would dismiss first and show the notice later. Once the read is over, the toast hands over if the
+// notice says it did not take (when the read failed it says what was read last time, which still counts); 「no failure any more」
+// is judged only on what this read brought, so a failed read does not dismiss on that ground
+const mountReadOver = ref(false)
 const readSinceMount = ref(false)
-watch(doc, () => { readSinceMount.value = true }, { flush: 'sync' })
-watch(() => readSinceMount.value && ready.value && (Boolean(notice.value?.failure) || !hasApplyFailure.value), (stale) => { if (stale) dismissRefused() }, { immediate: true, flush: 'sync' })
+watch(doc, () => { readSinceMount.value = true; mountReadOver.value = true }, { flush: 'sync' })
+watch(() => mountReadOver.value && ready.value && (Boolean(notice.value?.failure) || (readSinceMount.value && !hasApplyFailure.value)), (stale) => { if (stale) dismissRefused() }, { immediate: true, flush: 'sync' })
 onBeforeUnmount(() => { downShownHere.value = false })
 // 函数声明：提示条在声明之前就可能读到它（回到配置页时已经读好） / A declaration: the notice may read it before this line (on return,
 // with the page already read)

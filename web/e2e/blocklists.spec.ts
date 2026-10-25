@@ -1121,8 +1121,10 @@ test('立即更新写入时连不上、在页上放弃又撤销，再离开并�
   expect(await toasts()).not.toContain('新下载的拦截列表没有存上')
 })
 
-// 提示条：「「名字」的」后面能折（不然后面一长串汉字只能硬切），连住的「KixDNS 的」后面不能折（「的原话」不拆开）
-// Toasts: a break is allowed after 「「name」的」 (else the CJK run after it could only be cut hard), not after a glued 「KixDNS 的」 (「的原话」 stays whole)
+// 提示条：「「名字」的」后面能折（不然后面一长串汉字只能硬切），连住的「KixDNS 的」后面不能折（「的原话」不拆开）；以标点结尾的连块后面
+// 也各有一个断点（WebKit 按词换行时不在中文标点处断）
+// Toasts: a break is allowed after 「「name」的」 (else the CJK run after it could only be cut hard), not after a glued 「KixDNS 的」 (「的原话」
+// stays whole); a glued run ending in punctuation has a break point after it too (WebKit's keep-all does not break at CJK punctuation)
 test('提示条：「名字」的后面能折，KixDNS 的后面不能折', async ({ page }) => {
   await page.goto('/logs')
   await page.evaluate(async () => {
@@ -1133,7 +1135,8 @@ test('提示条：「名字」的后面能折，KixDNS 的后面不能折', asyn
   })
   await expect(page.locator('.toast')).toHaveCount(2)
   const breaks = await page.locator('.toast > span').evaluateAll((spans) => spans.map((span) => [...span.querySelectorAll('wbr')].map((w) => w.previousSibling?.textContent ?? '')))
-  expect(breaks).toEqual([['「ads-and-trackers.txt」的'], []])
+  expect(breaks).toEqual([['「ads-and-trackers.txt」的'], ['存：', '验。', '话：']])
+  expect(breaks[1]!.some((before) => before.startsWith('KixDNS'))).toBe(false)
 })
 
 // 订阅里留着一个总是下载失败的列表，全部更新没存上以后再点：其余的下到的一样，也照落地收场、照常存（用户定的），不一声不响

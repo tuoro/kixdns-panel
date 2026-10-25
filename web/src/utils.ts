@@ -139,15 +139,17 @@ const HYPHEN_WORD = /「?([$\w.|@^/]*\w-[\w.|@^/-]*[\w^])[」。，：；）]*/g
 // 提示条里另外连住「版本 #N」（带着后面的「已生效」「已应用」「待应用」「没有生效」）、「「名字」的」「再点一次「按钮」」和「KixDNS」与后面的一个字：版本号和
 // 状态词不拆开，「的」不落到行首，按钮名不单独落到最后一行，KixDNS 不挂在行尾；默认名「「文件名 · 主机」」单独拿出来（name），交给 NameText 按「·」折行。
 // 句尾常见的几个词也整块连住（「写进配置文件」「设置已生效」「修改已生效」「才生效」），末行不只剩一个字（中文不按字数切：「修改已生效」切在四个字会拆开「修改」）。
-// 「，：；。」都和前一个字连住（「「名字」的」后面的也连上）：一长串字被迫硬切时，标点不落到行首
+// 「，：；。」都和前一个字连住（「「名字」的」后面的也连上）：一长串字被迫硬切时，标点不落到行首。「还没有应用」「没有应用」也是句尾词，
+// 「再点「按钮」」（有没有「一次」都算）整块连住
 // Common sentence endings are glued whole too (写进配置文件, 设置已生效, 修改已生效, 才生效), so the last line never holds one character alone (Chinese is
 // not cut by count: four characters from the end of 修改已生效 would split 修改). Every 「，：；。」 also stays with the character before it (after a
-// 「「name」的」 too), so a forced break in a long run never puts punctuation at a line's start
+// 「「name」的」 too), so a forced break in a long run never puts punctuation at a line's start. 还没有应用 and 没有应用 are sentence
+// endings too, and 「再点「button」」 (with or without 一次) stays whole
 // Toasts also glue 「版本 #N」 (with a following 已生效, 已应用, 待应用 or 没有生效), 「「name」的」, 「再点一次「button」」 and 「KixDNS」 with the character after it:
 // no version split from its state, no 的 starting a line, no button name alone on the last line, no KixDNS left at a line end; a default name
 // 「「file · host」」 is taken out on its own (name) for NameText to wrap at 「·」
-const TOAST_GLUE = /(「[^「」]+?\u00a0·\u00a0[^「」]+?」的?)|(版本[ \u00a0]#\d+(?:[ \u00a0](?:已生效|已应用|待应用|没有生效))?[。，：；]*)|(「[^「」]{1,24}」的[，：；。]?)|「?([$\w.|@^/]*\w-[\w.|@^/-]*[\w^])[」。，：；）]*|(再点一次「[^「」]{1,12}」)|(KixDNS[ \u00a0][\u4e00-\u9fff])|((?:写进配置文件|(?:设置|修改)已(?:生效|应用)|才生效)[。，：；]*)|([\u4e00-\u9fff][，：；。])/g
-export type GlueRun = { text: string; glue: boolean; long?: boolean; name?: { name: string; suffix: string } }
+const TOAST_GLUE = /(「[^「」]+?\u00a0·\u00a0[^「」]+?」的?)|(版本[ \u00a0]#\d+(?:[ \u00a0](?:已生效|已应用|待应用|没有生效))?[。，：；]*)|(「[^「」]{1,24}」的[，：；。]?)|「?([$\w.|@^/]*\w-[\w.|@^/-]*[\w^])[」。，：；）]*|(再点(?:一次)?「[^「」]{1,12}」)|(KixDNS[ \u00a0][\u4e00-\u9fff])|((?:写进配置文件|(?:设置|修改)已(?:生效|应用)|才生效|一起(?:保存)?生效|还?没有应用)[。，：；]*)|((?:退回的设置和待应用的修改|退回的设置|待应用的修改)[，：；。]*)|([\u4e00-\u9fff][，：；。])/g
+export type GlueRun = { text: string; glue: boolean; long?: boolean; name?: { name: string; suffix: string }; breakAfter?: boolean; parts?: GlueRun[]; lead?: boolean }
 // 保存条、提示条这类按词换行（keep-all）的短句里，「版本 #N」「之后改的 N 处」整块不拆：只在显示时放进不折行的一块，文字里不加看不见的
 // 字符，复制出来和原文一样 / In short keep-all lines such as the save bar and notices, 「版本 #N」 and 「之后改的 N 处」 never split: they are
 // only put in a run that does not wrap when shown, with no invisible characters in the text, so a copy reads as the original
@@ -167,11 +169,111 @@ function glueRuns(text: string, pattern: RegExp, word: (m: RegExpMatchArray) => 
   return runs
 }
 export const hyphenRuns = (text: string): GlueRun[] => glueRuns(text, HYPHEN_WORD, (m) => m[1])
-export const toastRuns = (text: string): GlueRun[] => glueRuns(text, TOAST_GLUE, (m) => m[4], (m) => {
-  if (!m[1]) return undefined
-  const suffix = m[1].endsWith('的') ? '的' : ''
-  return { name: m[1].slice(1, m[1].length - 1 - suffix.length), suffix }
-})
+// 提示的断行，在 Chromium 和 WebKit（Safari）上都要成立：
+// - 断点只有空格和显式的 <wbr>：以「，：；。」结尾的连块后面都放一个 <wbr>（WebKit 按词换行时不在中文标点处断，Chromium 那里本来就能断，
+//   多放一个不多出断点）；
+// - 退回的叫法没有空格、整块连住，它所在的那一段（两处断点之间）名字前面那截、后面那截也各连成一块；
+// - 中间没有断点的几个相邻连块合成一串（parts），显示时整串放进一个 glue-block（inline-block，最宽一行），串里用 <wbr> 隔开：整串先作为
+//   一个整体换行，比一行还宽时才在串里、只在块和块之间断开（一句开头的那一串留在行内，见 chained）。不能只靠「放不下才硬切」：WebKit 在两个相邻的不折行块之间不硬切，提示会伸出
+//   屏幕；也不能只在名字后面加 <wbr>：它随时可用，宽一点的屏上会抢在前面的标点之前，拆成「…已重启，退回的设置和待应用的修改 / 已生效」
+// Toast line breaking has to hold in both Chromium and WebKit (Safari):
+// - the only break points are spaces and explicit <wbr>: one follows every glued run ending in 「，：；。」 (WebKit's keep-all does not
+//   break at CJK punctuation; Chromium already does, so the extra one adds no break point there);
+// - the rollback's names have no space and stay whole, and the parts of a name's stretch (between two break points) before and after
+//   it are glued too;
+// - adjacent glued runs with no break point between them form a chain (parts), shown as one glue-block (inline-block, at most a line
+//   wide) with <wbr> between its members: the chain moves as a whole, and only when wider than a line does it break inside, between
+//   members only (a chain opening the text stays inline, see chained). Relying on a cut only when nothing fits fails in WebKit, which never cuts between two adjacent no-wrap runs, so the
+//   toast overflows; a <wbr> after the name alone fails too: always available, on a wider screen it wins over the punctuation before
+//   it and splits 「…已重启，退回的设置和待应用的修改 / 已生效」
+const ROLLBACK_NAME = /^(?:退回的设置和待应用的修改|退回的设置|待应用的修改)$/
+const STRETCH_END = /[，：；。 ]/
+const ENDS_AT_PUNCTUATION = /[，：；。]$/
+// 手机最窄时一行放得下的字数，少报一点：连起来比这长的就不连，免得撑出去 / About as many characters as the narrowest phone line
+// holds, erring low: a glued part longer than this is left as it is, lest it overflow
+const PHONE_LINE = 12
+export const toastRuns = (text: string): GlueRun[] => {
+  const runs = glueRuns(text, TOAST_GLUE, (m) => m[4], (m) => {
+    if (!m[1]) return undefined
+    const suffix = m[1].endsWith('的') ? '的' : ''
+    return { name: m[1].slice(1, m[1].length - 1 - suffix.length), suffix }
+  }).map((run) => (run.glue && run.text.endsWith('」的') ? { ...run, breakAfter: true } : run))
+  for (let i = 0; i < runs.length; i += 1) {
+    if (runs[i]!.glue && ROLLBACK_NAME.test(runs[i]!.text)) i = gluedBeside(runs, i)
+  }
+  // 标点后的断点：后面紧跟开引号时不放，「；「」这样相邻的标点才挤得紧（Chromium 隔着断点不挤；开引号前本来就能断）
+  // The break point after punctuation is left out before an opening quote, so adjacent marks such as 「；「」 still close up
+  // (Chromium does not close them up across a break point, and a break is allowed before an opening quote anyway)
+  const out = chained(runs)
+  return out.map((run, k) => (run.glue && !run.name && ENDS_AT_PUNCTUATION.test(run.text) && !/^[「『（《“]/.test(out[k + 1]?.text ?? '') ? { ...run, breakAfter: true } : run))
+}
+// 第一个断点以后（含）的位置，按 UTF-16 数，和 slice 一致 / Where the break points are, counted in UTF-16 as slice counts
+const breaksIn = (text: string) => [...text.matchAll(new RegExp(STRETCH_END, 'g'))].map((m) => m.index)
+// 把第 i 块（名字）前后到这一段断点为止的字各连成一块，原地改 runs，返回名字现在的位置。只切普通的字；别的连块（默认名、长的连字符词、
+// 中间带空格的「KixDNS 没」这类）不拆，碰到就停。空格本身不连进去，它仍是断点 / Glue the text on each side of run i (a name) up to its
+// stretch's break points, each into one run, in place; returns where the name now sits. Only plain text is split; other glued runs (a
+// default name, a long hyphenated word, one with a space inside such as 「KixDNS 没」) are never split, and the gluing stops at them. A
+// space itself is never glued in: it stays a break point
+function gluedBeside(runs: GlueRun[], i: number): number {
+  const stops = (run: GlueRun) => Boolean(run.name || run.long || run.breakAfter) || (run.glue && breaksIn(run.text).some((k) => k < run.text.length - 1))
+  // 前面：往回到上一个断点（断点留在原处） / Before: back to the previous break point (which stays where it is)
+  let from = i
+  while (from > 0 && !stops(runs[from - 1]!)) {
+    const prev = runs[from - 1]!
+    const ends = breaksIn(prev.text)
+    if (ends.length === 0) { from -= 1; continue }
+    const last = ends[ends.length - 1]!
+    if (last < prev.text.length - 1) {
+      runs.splice(from - 1, 1, { text: prev.text.slice(0, last + 1), glue: false }, { text: prev.text.slice(last + 1), glue: false })
+      i += 1
+    }
+    break
+  }
+  const head = runs.slice(from, i).map((run) => run.text).join('')
+  if (head && head.length <= PHONE_LINE) {
+    runs.splice(from, i - from, { text: head, glue: true })
+    i = from + 1
+  }
+  // 后面：往前到下一个断点（标点连进去，空格不连）；名字自己带着标点时，后面本来就能断 / After: on to the next break point (taking a
+  // punctuation mark along, not a space); a name carrying its own punctuation can already break after it
+  if (STRETCH_END.test(runs[i]!.text.slice(-1))) return i
+  let to = i + 1
+  while (to < runs.length && !stops(runs[to]!)) {
+    const next = runs[to]!
+    const ends = breaksIn(next.text)
+    if (ends.length === 0) { to += 1; continue }
+    const cut = next.text[ends[0]!] === ' ' ? ends[0]! : ends[0]! + 1
+    if (cut === 0) break
+    if (cut < next.text.length) runs.splice(to, 1, { text: next.text.slice(0, cut), glue: false }, { text: next.text.slice(cut), glue: false })
+    to += 1
+    break
+  }
+  const tail = runs.slice(i + 1, to).map((run) => run.text).join('')
+  if (tail && tail.length <= PHONE_LINE) runs.splice(i + 1, to - i - 1, { text: tail, glue: true })
+  return i
+}
+// 中间没有断点的相邻连块合成一串；默认名、长的连字符词、「「名字」的」自己排，不进串 / Adjacent glued runs with no break point between
+// them form a chain; a default name, a long hyphenated word and 「「name」的」 lay themselves out and stay out
+function chained(runs: GlueRun[]): GlueRun[] {
+  const out: GlueRun[] = []
+  let chain: GlueRun[] = []
+  // 一句开头的那一串前面没有别的字和它抢一行，留在行内（只在块之间放断点）：放进 glue-block 的话，它折成两行就占满整行，后面放得下的
+  // 那一段也被挤到下一行 / A chain opening the text has nothing before it competing for its line, so it stays inline (with break
+  // points between members only): in a glue-block, once it wraps it takes the whole width and pushes what would fit after it down
+  const flush = () => {
+    if (chain.length > 1) out.push({ text: chain.map((run) => run.text).join(''), glue: true, parts: chain, ...(out.length === 0 ? { lead: true } : {}) })
+    else out.push(...chain)
+    chain = []
+  }
+  for (const run of runs) {
+    const joins = run.glue && !run.name && !run.long && !run.breakAfter
+    if (!joins) { flush(); out.push(run); continue }
+    chain.push(run)
+    if (STRETCH_END.test(run.text.slice(-1))) flush()
+  }
+  flush()
+  return out
+}
 // 帮助段落按「整块」排：段尾几个字连在一起（同 keepTail），10 个字以内的「…」也连在一起，不把「公司内网」「转到规则组」拆到两行；
 // 带连字符的写法（$third-party）整个连住，不在连字符后面断开；引号跨在段尾的切口上时，切口挪到引号前面。这是面板自己给名字、引号加的连接规则，不是分词
 // A help paragraph is laid out in glued runs: its last few characters stay together (as keepTail does), and so does every 「…」 of up to 10 characters, so

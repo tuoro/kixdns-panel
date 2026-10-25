@@ -400,8 +400,8 @@ test('退回以后还是起不来、之后重启起来了：提示说退回的�
 
 // 改了监听地址、重启后起不来，再存一笔待应用的修改：退回时把它一起带上。applyOnReturn 是回来时那次应用的演示开关
 // The listener changed and the restart did not come up, then one more edit was kept as pending: the rollback carries it along.
-// applyOnReturn is the demo flag for the apply on return
-async function rollBackCarryingEdits(page: Page, applyOnReturn: string): Promise<void> {
+// applyOnReturn is the demo flag for the apply on return; carried is the edit kept as pending
+async function rollBackCarryingEdits(page: Page, applyOnReturn: string, carried = { label: '上游超时 (ms)', value: '2500' }): Promise<void> {
   await page.clock.install()
   await saveListenerChange(page)
   await page.evaluate(() => localStorage.setItem('kixdns:demo-restart-no-answer', 'true'))
@@ -412,7 +412,7 @@ async function rollBackCarryingEdits(page: Page, applyOnReturn: string): Promise
     await page.clock.fastForward(2_000)
     await expect(notice).toContainText('可能是改过的设置让 KixDNS', { timeout: 300 })
   }).toPass()
-  await page.getByLabel('上游超时 (ms)', { exact: true }).fill('2500')
+  await page.getByLabel(carried.label, { exact: true }).fill(carried.value)
   await page.locator('.cfg__savebar').getByRole('button', { name: '保存为待应用' }).click()
   await expect(page.locator('.cfg__savebar')).toContainText('退回时一起应用')
   await page.evaluate((flag) => localStorage.setItem(flag, 'true'), applyOnReturn)
@@ -430,17 +430,47 @@ async function upWithCarriedEdits(page: Page): Promise<void> {
   await expect(page.getByText(/退回的设置/).locator('visible=true')).toHaveCount(0)
 }
 
+test('退回带上的修改、回来时应用成了：一条提示说退回了、重启了、待应用的修改也已生效，页头不挂待应用 @responsive', async ({ page }) => {
+  // 回来时那次应用照常：不设演示开关 / The apply on return goes as usual: no demo flag
+  await rollBackCarryingEdits(page, 'e2e:no-demo-flag')
+  // 和别处一样说「已生效」（带上的修改里没有要重启的设置），不说「用上了」 / 已生效 as elsewhere (no restart-only setting in the carried
+  // edits), not 用上了
+  await expect(page.locator('.toast', { hasText: '已退回原来的设置' })).toHaveText(['已退回原来的设置，KixDNS 服务已重启，待应用的修改也已生效'])
+  await expect(page.locator('.toast--success', { hasText: '已退回原来的设置' })).toHaveCount(1)
+  await expect(page.getByText(/待应用$/).locator('visible=true')).toHaveCount(0)
+})
+
+// 带上的修改里也有要重启的设置（TCP 监听地址）：和重启回来的提示一样说「已应用」；配置页外补一句还要再重启一次，不打勾
+// The carried edits hold a restart-only setting too (TCP 监听地址): 已应用, as the toast on return from a restart says; away from the
+// config page a clause adds that one more restart is needed, without a tick
+test('退回带上的修改里有要重启的设置、回来时应用成了：在配置页上说也已应用，要重启的由提示条说 @responsive', async ({ page }) => {
+  await rollBackCarryingEdits(page, 'e2e:no-demo-flag', { label: 'TCP 监听地址', value: '0.0.0.0:5300' })
+  await expect(page.locator('.toast', { hasText: '已退回原来的设置' })).toHaveText(['已退回原来的设置，KixDNS 服务已重启，待应用的修改也已应用'])
+  // 和重启回来的提示一样：配置页上带勾（还要做的那件事由提示条说） / As the toast on return from a restart: a tick on the config page
+  // (the notice says what is still to do)
+  await expect(page.locator('.toast--success', { hasText: '已退回原来的设置' })).toHaveCount(1)
+  // 要重启的是哪一项由提示条说 / The notice says which setting takes the restart
+  await expect(page.locator('.cfg__notice')).toContainText(/改过的设置要重启 KixDNS\s才生效：TCP\s监听地址/)
+})
+
+test('退回带上的修改里有要重启的设置、人离开了配置页：回来时提示补一句还要再重启一次', async ({ page }) => {
+  await rollBackCarryingEdits(page, 'e2e:no-demo-flag', { label: 'TCP 监听地址', value: '0.0.0.0:5300' })
+  await page.getByRole('link', { name: '概览', exact: true }).locator('visible=true').first().click()
+  await expect(page.locator('.toast', { hasText: '已退回原来的设置' })).toHaveText(['已退回原来的设置，KixDNS 服务已重启；待应用的修改也已应用，有些设置要再重启一次才生效'])
+  await expect(page.locator('.toast--info', { hasText: '已退回原来的设置' })).toHaveCount(1)
+})
+
 test('退回带上的修改回来时没应用上、KixDNS 在：页头「修改待应用」，现在应用时「修改应用中」，结果说待应用的修改已生效 @responsive', async ({ page }) => {
   await upWithCarriedEdits(page)
   await page.evaluate(() => localStorage.setItem('kixdns:demo-save-slow', '2500'))
   await page.getByRole('button', { name: '现在应用', exact: true }).locator('visible=true').first().click()
   await expect(page.getByText('修改应用中', { exact: true }).locator('visible=true').first()).toBeVisible()
-  // 应用途中想保存：说在应用修改，不报退回写下的编号 / Saving mid-apply: it says the edits are being applied, without the number the
-  // rollback stored
+  // 应用途中想保存：说在应用待应用的修改（不和保存条的「已修改 1 处」撞名），不报退回写下的编号 / Saving mid-apply: it says the
+  // pending edits are being applied (not to be confused with the save bar's 已修改 1 处), without the number the rollback stored
   await page.getByLabel('上游超时 (ms)', { exact: true }).fill('2600')
   // 按钮这时只是看着停用（aria-disabled），点了说为什么 / The button only looks disabled now (aria-disabled), and a press says why
   await page.locator('.cfg__savebar').getByRole('button', { name: '保存并应用' }).click({ force: true })
-  await expect(page.locator('.toast', { hasText: '正在应用' })).toHaveText(['正在应用修改，应用完再保存'])
+  await expect(page.locator('.toast', { hasText: '正在应用' })).toHaveText(['待应用的修改正在应用，完成后再保存'])
   await page.clock.fastForward(2_600)
   await expect(page.locator('.toast', { hasText: '已生效' })).toHaveText(['待应用的修改已生效'])
   await expect(page.getByText(/待应用$|应用中$/).locator('visible=true')).toHaveCount(0)
@@ -488,9 +518,28 @@ test('退回带上的修改、按「现在应用」马上离开、回应丢了�
   await expect(page.locator('.toast', { hasText: '不知道' })).toHaveCount(0)
   await page.clock.fastForward(4_100)
   await expect(page.locator('.toast', { hasText: '不知道' })).toHaveText(['不知道待应用的修改应用了没有：连不上面板。连上后会自己核对'])
-  // 退回的叫法没有空格，「不知道」后面留了断点（toHaveText 会去掉零宽空格，这里看原文） / The rollback's name has no space, so a break point
-  // follows 不知道 (toHaveText drops zero-width spaces, so the raw text is read)
-  expect(await page.locator('.toast', { hasText: '不知道' }).evaluate((toast) => toast.textContent)).toContain('不知道\u200b待应用的修改')
+  // 退回的叫法没有空格：名字和它前后各连成一块，窄屏上只切在名字后面（「不知道待应用的修改 / 应用了没有：」，「不知道」不单独占一行），
+  // 文字里不加看不见的字符 / The rollback's name has no space: it and each side of it are glued, so a narrow screen cuts only after
+  // the name (「不知道待应用的修改 / 应用了没有：」, never 「不知道」 alone), and the text carries no invisible characters
+  await page.setViewportSize({ width: 320, height: 800 })
+  expect(await page.locator('.toast', { hasText: '不知道' }).evaluate((toast) => {
+    const box = toast.querySelector(':scope > span') as HTMLElement
+    const range = document.createRange()
+    const rows: Array<{ top: number; text: string }> = []
+    const walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT)
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const text = node.textContent ?? ''
+      for (let i = 0; i < text.length; i += 1) {
+        range.setStart(node, i); range.setEnd(node, i + 1)
+        const top = Math.round(range.getBoundingClientRect().top)
+        const row = rows[rows.length - 1]
+        if (row && top <= row.top + 4) row.text += text[i]
+        else rows.push({ top, text: text[i]! })
+      }
+    }
+    return { first: rows[0]?.text, invisible: /[\u200b\u2060]/.test(box.textContent ?? '') }
+  })).toEqual({ first: '不知道待应用的修改', invisible: false })
+  await page.setViewportSize({ width: 1440, height: 1000 })
   await reconnect(page)
   await expect(page.locator('.toast', { hasText: '那次应用' })).toHaveText([/^刚才那次应用：待应用的修改已生效/], { timeout: 8000 })
   await expect(page.locator('.toast', { hasText: '不知道' })).toHaveCount(0)
@@ -520,6 +569,30 @@ test('别处重启时带上的修改被拒，进配置页：红色提示等提�
   })
   await page.getByRole('link', { name: /^(?:配置|基础设置)$/ }).locator('visible=true').first().click()
   await expect(page.locator('.cfg__notice')).toContainText('没有生效', { timeout: 5000 })
+  await expect(refused).toHaveCount(0)
+  expect(await page.evaluate(() => (window as unknown as { goneBeforeNotice?: boolean }).goneBeforeNotice)).toBe(false)
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-read-slow'))
+})
+
+test('退回时带上的修改被拒、人已离开，回到配置页：红色提示等这次读完、提示条说出没有生效才收起', async ({ page }) => {
+  await rollBackCarryingEdits(page, 'kixdns:demo-apply-failed')
+  await page.getByRole('link', { name: '概览', exact: true }).locator('visible=true').first().click()
+  const refused = page.locator('.toast', { hasText: '到配置页看原因' })
+  await expect(refused).toHaveText(['已退回原来的设置，KixDNS 服务已重启；待应用的修改没有生效，到配置页看原因'])
+  // 这时模块里的文档已经带着失败：进页那一刻按它判断，就会先收起，提示条要等这次读完才出来 / The module's document already holds the
+  // failure: judged at mount, the toast would go first and the notice show only once this read ends
+  await page.evaluate(() => {
+    const w = window as unknown as { goneBeforeNotice?: boolean }
+    const toast = [...document.querySelectorAll('.toast')].find((e) => e.textContent?.includes('到配置页看原因'))!
+    new MutationObserver((_, observer) => {
+      if (toast.isConnected && !toast.className.includes('leave')) return
+      w.goneBeforeNotice = !document.querySelector('.cfg__notice')?.textContent?.includes('没有生效')
+      observer.disconnect()
+    }).observe(document.body, { subtree: true, childList: true, attributes: true })
+    localStorage.setItem('kixdns:demo-read-slow', 'true')
+  })
+  await page.getByRole('link', { name: /^(?:配置|基础设置)$/ }).locator('visible=true').first().click()
+  await expect(page.locator('.cfg__notice')).toContainText('没有生效', { timeout: 8000 })
   await expect(refused).toHaveCount(0)
   expect(await page.evaluate(() => (window as unknown as { goneBeforeNotice?: boolean }).goneBeforeNotice)).toBe(false)
   await page.evaluate(() => localStorage.removeItem('kixdns:demo-read-slow'))

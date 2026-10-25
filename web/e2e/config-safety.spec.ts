@@ -798,6 +798,181 @@ test('现在应用没送到面板：连上以后说还没有应用，不说成�
   await expect(page.locator('main .ui-ph')).toContainText(`版本 #${pending} 待应用`)
 })
 
+// 没送到、人随后离开：待应用的版本还在，后台会自己补上，所以用会自己收起的提示说什么时候自己应用，不挂一条要手动关、还指回配置页按钮的红色提示
+// Never arrived and the user then left: the pending version is still there and the background catches up, so a self-dismissing toast
+// says when it applies by itself, not a red one to close by hand that points back at a button on the config page
+test('现在应用没送到面板、人随后离开：连上以后用会自己收起的提示说还没有应用、什么时候自己应用', async ({ page }) => {
+  const pending = await savePending(page, 'in-place-unsent-away.example', '没送到又离开')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-panel-down', 'true'))
+  await page.getByRole('button', { name: '现在应用', exact: true }).click()
+  await expect(page.locator('.conn__inner')).toBeVisible()
+  await page.getByRole('link', { name: '日志', exact: true }).click()
+  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain(`不知道版本 #${pending} 应用了没有：连不上面板。连上后会自己核对`)
+  await reconnect(page)
+  await expect.poll(() => toastTexts(page), { timeout: 8000 }).toContain(`版本 #${pending} 还没有应用，KixDNS\u00a0就绪后自动应用`)
+  await expect(page.locator('.toast--info', { hasText: '还没有应用' })).toHaveCount(1)
+  await expect(page.locator('.toast--error')).toHaveCount(0)
+})
+
+// 回应丢了、其实到了服务端被拒、人在配置页上：提示条（带「重试应用」）说没有生效，不另弹一条说同一件事的红色提示
+// The answer was lost though the server got it and refused it, with the user on the config page: the notice (with 重试应用) says it
+// did not take, and no red toast repeats it
+test('现在应用被拒、回应却丢了，人在配置页上：连上以后只由提示条说没有生效', async ({ page }) => {
+  // 被拒的回应换成断线：服务端已经记下没有生效，页面只知道连不上 / The refusal's answer is swapped for an outage: the server has
+  // recorded the refusal, the page only knows it could not reach the panel
+  await page.route(/\/src\/api\/client\.ts(?:\?.*)?$/, async (route) => {
+    if (route.request().url().includes('lose-refusal')) return route.continue()
+    await route.fulfill({ contentType: 'application/javascript', body: `
+      export * from '/src/api/client.ts?lose-refusal';
+      import { apiRequest as original, ApiError, PANEL_UNREACHABLE_EVENT } from '/src/api/client.ts?lose-refusal';
+      export async function apiRequest(path, init) {
+        try { return await original(path, init) } catch (error) {
+          if (!/\\/apply$/.test(String(path)) || error?.code !== 'reload_failed' || localStorage.getItem('e2e:lose-refusal') !== 'true') throw error;
+          localStorage.removeItem('e2e:lose-refusal');
+          localStorage.setItem('kixdns:demo-panel-down', 'true');
+          window.dispatchEvent(new Event(PANEL_UNREACHABLE_EVENT));
+          throw new ApiError('连不上面板：网络断了，或者面板正在重启。稍后再试。', 0, 'network_unreachable');
+        }
+      }
+    ` })
+  })
+  const pending = await savePending(page, 'in-place-refused-lost.example', '被拒又丢了回应')
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-apply-failed', 'true'); localStorage.setItem('e2e:lose-refusal', 'true') })
+  await page.getByRole('button', { name: '现在应用', exact: true }).click()
+  await expect(page.locator('.conn__inner')).toBeVisible()
+  await reconnect(page)
+  await expect(page.locator('.cfg__notice')).toContainText(`版本 #${pending} 没有生效`, { timeout: 8000 })
+  await expect(page.locator('.cfg__notice').getByRole('button', { name: '重试应用', exact: true })).toBeVisible()
+  await expect(page.locator('main .ui-ph')).toContainText('应用失败')
+  await expect(page.locator('.toast', { hasText: '没有生效' })).toHaveCount(0)
+})
+
+// 「重试应用」丢了回应：提示条读起来和按下之前一样，所以核对的结果另说一句，照回应回来时那次重试的说法；没送到就说没送到，指「重试应用」
+// 重试应用 lost its answer: the notice reads as it did before the press, so the check's result is said separately, in the words of a
+// retry whose answer arrived; one that never arrived says so and points at 重试应用
+async function failOnce(page: Page, domain: string): Promise<number> {
+  const pending = await savePending(page, domain, '先没有生效')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-apply-failed', 'true'))
+  await page.getByRole('button', { name: '现在应用', exact: true }).click()
+  await expect(page.locator('.cfg__notice')).toContainText(`版本 #${pending} 没有生效`)
+  return pending
+}
+test('重试应用被拒、回应却丢了，人在配置页上：连上以后说重试也没有生效、存成了哪一版', async ({ page }) => {
+  await page.route(/\/src\/api\/client\.ts(?:\?.*)?$/, async (route) => {
+    if (route.request().url().includes('lose-retry')) return route.continue()
+    await route.fulfill({ contentType: 'application/javascript', body: `
+      export * from '/src/api/client.ts?lose-retry';
+      import { apiRequest as original, ApiError, PANEL_UNREACHABLE_EVENT } from '/src/api/client.ts?lose-retry';
+      export async function apiRequest(path, init) {
+        try { return await original(path, init) } catch (error) {
+          if (String(path) !== '/api/v1/config' || init?.method !== 'PUT' || error?.code !== 'reload_failed' || localStorage.getItem('e2e:lose-retry') !== 'true') throw error;
+          localStorage.removeItem('e2e:lose-retry');
+          localStorage.setItem('kixdns:demo-panel-down', 'true');
+          window.dispatchEvent(new Event(PANEL_UNREACHABLE_EVENT));
+          throw new ApiError('连不上面板：网络断了，或者面板正在重启。稍后再试。', 0, 'network_unreachable');
+        }
+      }
+    ` })
+  })
+  const pending = await failOnce(page, 'retry-refused-lost.example')
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-apply-failed', 'true'); localStorage.setItem('e2e:lose-retry', 'true') })
+  await page.locator('.cfg__notice').getByRole('button', { name: '重试应用', exact: true }).click()
+  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('不知道重试应用了没有：连不上面板。连上后会自己核对')
+  await reconnect(page)
+  await expect(page.locator('.cfg__notice')).toContainText(`版本 #${pending + 1} 没有生效`, { timeout: 8000 })
+  await expect.poll(async () => (await toastTexts(page)).filter((text) => text.startsWith(`重试也没有生效，存成了版本 #${pending + 1}。`)).length, { timeout: 5000 }).toBe(1)
+  expect(await toastTexts(page)).not.toContain('不知道重试应用了没有：连不上面板。连上后会自己核对')
+})
+
+test('重试应用没送到面板：连上以后说没送到，指「重试应用」，不说还没有应用', async ({ page }) => {
+  const pending = await failOnce(page, 'retry-unsent.example')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-panel-down', 'true'))
+  await page.locator('.cfg__notice').getByRole('button', { name: '重试应用', exact: true }).click()
+  await expect(page.locator('.conn__inner')).toBeVisible()
+  await reconnect(page)
+  await expect.poll(() => toastTexts(page), { timeout: 8000 }).toContain('重试没有送到面板，可以再点「重试应用」')
+  expect((await toastTexts(page)).some((text) => text.includes('还没有应用'))).toBe(false)
+  await expect(page.locator('.cfg__notice')).toContainText(`版本 #${pending} 没有生效`)
+})
+
+test('重试应用没送到面板、断线时又改了草稿：连上以后不指「重试应用」，说保存时会带上那一版', async ({ page }) => {
+  const pending = await failOnce(page, 'retry-unsent-edited.example')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-panel-down', 'true'))
+  await page.locator('.cfg__notice').getByRole('button', { name: '重试应用', exact: true }).click()
+  await expect(page.locator('.conn__inner')).toBeVisible()
+  await addRule(page, 'edited-meanwhile.example')
+  await reconnect(page)
+  await expect.poll(() => toastTexts(page), { timeout: 8000 }).toContain('重试没有送到面板；那一版的内容会和你的修改一起保存生效')
+  // 这时提示条不给「重试应用」，保存条管保存 / The notice offers no 重试应用 now; the save bar handles the save
+  await expect(page.locator('.cfg__notice')).toContainText(`版本 #${pending} 没有生效`)
+  await expect(page.locator('.cfg__notice').getByRole('button', { name: '重试应用', exact: true })).toHaveCount(0)
+  await expect(page.locator('.cfg__savebar').getByRole('button', { name: '保存并应用' })).toBeVisible()
+})
+
+// 「重试应用」没送到、人离开了配置页：「不知道重试应用了没有」换成核对的结果，不是一声不响地收掉（在页上断线后离开、离开以后才断，两条路）
+// 重试应用 never arrived and the user left the config page: 「不知道重试应用了没有」 is replaced by the check's result instead of quietly
+// going (cut off on the page and then left, or cut off only once away: two paths)
+test('重试应用没送到面板、随后离开配置页：连上以后说没送到，指回配置页的「重试应用」', async ({ page }) => {
+  await failOnce(page, 'retry-unsent-left.example')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-panel-down', 'true'))
+  await page.locator('.cfg__notice').getByRole('button', { name: '重试应用', exact: true }).click()
+  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('不知道重试应用了没有：连不上面板。连上后会自己核对')
+  await page.getByRole('link', { name: '日志', exact: true }).click()
+  await reconnect(page)
+  await expect.poll(() => toastTexts(page), { timeout: 8000 }).toContain('重试没有送到面板，回到配置页可以再点「重试应用」')
+  expect(await toastTexts(page)).not.toContain('不知道重试应用了没有：连不上面板。连上后会自己核对')
+})
+
+test('按了重试应用马上离开、离开以后才断线：连上以后说没送到，不是一声不响', async ({ page }) => {
+  // 那次重试晚一点再断，而且根本没到服务端 / The retry is cut off a little later and never reaches the server
+  await page.route(/\/src\/api\/client\.ts(?:\?.*)?$/, async (route) => {
+    if (route.request().url().includes('drop-retry')) return route.continue()
+    await route.fulfill({ contentType: 'application/javascript', body: `
+      export * from '/src/api/client.ts?drop-retry';
+      import { apiRequest as original, ApiError, PANEL_UNREACHABLE_EVENT } from '/src/api/client.ts?drop-retry';
+      export async function apiRequest(path, init) {
+        if (String(path) !== '/api/v1/config' || init?.method !== 'PUT' || localStorage.getItem('e2e:drop-retry') !== 'true') return original(path, init);
+        localStorage.removeItem('e2e:drop-retry');
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        localStorage.setItem('kixdns:demo-panel-down', 'true');
+        window.dispatchEvent(new Event(PANEL_UNREACHABLE_EVENT));
+        throw new ApiError('连不上面板：网络断了，或者面板正在重启。稍后再试。', 0, 'network_unreachable');
+      }
+    ` })
+  })
+  await failOnce(page, 'retry-dropped-away.example')
+  await page.evaluate(() => localStorage.setItem('e2e:drop-retry', 'true'))
+  await page.locator('.cfg__notice').getByRole('button', { name: '重试应用', exact: true }).click()
+  await page.getByRole('link', { name: '日志', exact: true }).click()
+  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('不知道重试应用了没有：连不上面板。连上后会自己核对')
+  await reconnect(page)
+  await expect.poll(() => toastTexts(page), { timeout: 8000 }).toContain('重试没有送到面板，回到配置页可以再点「重试应用」')
+  expect(await toastTexts(page)).not.toContain('不知道重试应用了没有：连不上面板。连上后会自己核对')
+})
+
+// 被拒以后页头直接换成应用失败：重读回来之前不闪「待应用 · 现在应用」，也没有一个还能按的「现在应用」
+// After a refusal the header goes straight to 应用失败: no 待应用 · 现在应用 flash before the re-read lands, and no 现在应用 left to press
+test('现在应用被拒：页头直接说应用失败，重读回来之前不再给「现在应用」', async ({ page }) => {
+  await savePending(page, 'in-place-refused-flash.example', '被拒不闪')
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-apply-failed', 'true'); localStorage.setItem('kixdns:demo-read-slow', 'true') })
+  await page.getByRole('button', { name: '现在应用', exact: true }).click()
+  // 从按下到页头说应用失败，每一帧都看：有没有一个能按的「现在应用」 / Every frame from the press until the header says 应用失败: is
+  // there a 现在应用 that can be pressed
+  const offered = await page.evaluate(() => new Promise<boolean>((resolve) => {
+    let seen = false
+    const look = () => {
+      const button = [...document.querySelectorAll<HTMLButtonElement>('main button')].find((b) => b.textContent?.trim() === '现在应用' && b.offsetParent !== null)
+      if (button && !button.disabled && button.getAttribute('aria-disabled') !== 'true' && !button.closest('[inert]')) seen = true
+      if (document.querySelector('main .ui-ph')?.textContent?.includes('应用失败')) resolve(seen)
+      else requestAnimationFrame(look)
+    }
+    requestAnimationFrame(look)
+  }))
+  expect(offered).toBe(false)
+  await expect(page.locator('.cfg__notice')).toContainText('没有生效')
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-read-slow'))
+})
+
 // 有待应用的版本时离开再回到配置页：页面照常出来（以前每 5 秒看一眼的那段在声明前读了连接状态，整页空白）
 // Leaving and returning to the config page with a version pending: the page renders (the 5-second watcher used to read the connection state before its
 // declaration, leaving a blank page)
