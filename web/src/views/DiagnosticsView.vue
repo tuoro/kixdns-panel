@@ -59,7 +59,7 @@ const stopped = ref(false)
 // 起不来（服务失败、systemd 在重试）：和各页一样说「启动失败」，不说停了、不给「启动」；能退回改过的设置时指到配置页
 // Not coming up (the service failed or systemd retries): 启动失败 as on every page, not stopped and with no 启动; with changed
 // settings that can go back, it points to the config page
-const failedUp = ref<{ rollback: boolean } | null>(null)
+const failedUp = ref<{ rollback: boolean; writable: number | null } | null>(null)
 const { starting, start } = useServiceStart()
 async function startKixdns(): Promise<void> {
   // 等完先读运行状态（见下面登记的重读），再说结果：刚启动的内核报什么能力要重新问（客户端 IP 那一栏靠它）；起不来时提示条先换成
@@ -75,13 +75,22 @@ let statusRead: Promise<void> | null = null
 function readStatus(): Promise<void> {
   statusRead ??= (async () => {
     const [overview, service] = await Promise.allSettled([apiRequest<Overview>('/api/v1/overview'), apiRequest<ServiceStatus>('/api/v1/service')])
-    if (overview.status !== 'fulfilled') return
-    activeSha.value = overview.value.active_config?.sha256 ?? null
-    canClient.value = Boolean(overview.value.live && overview.value.health?.capabilities.includes('diagnostics_trace_client_v1'))
-    const down = !overview.value.live && service.status === 'fulfilled' && serviceTone(service.value) === 'err'
-    failedUp.value = down ? { rollback: Boolean(overview.value.restart_rollback) } : null
-    stopped.value = !down && overview.value.service_active === false
-    noteRead(overview.value.live, service.status === 'fulfilled' ? service.value.active_state === 'inactive' : overview.value.service_active === false)
+    const read = overview.status === 'fulfilled' ? overview.value : null
+    const unit = service.status === 'fulfilled' ? service.value : null
+    if (!read && !unit) return
+    if (read) {
+      activeSha.value = read.active_config?.sha256 ?? null
+      canClient.value = Boolean(read.live && read.health?.capabilities.includes('diagnostics_trace_client_v1'))
+    }
+    // 首次装好就起不来时还没有概览快照（概览读不到）：照服务状态说，出路也在服务状态里
+    // When it never came up there is no overview snapshot yet (the overview read fails): the service state speaks, and holds the
+    // way out too
+    const live = Boolean(read?.live)
+    const down = !live && unit !== null && serviceTone(unit) === 'err'
+    failedUp.value = down ? { rollback: Boolean(unit.restart_rollback), writable: unit.pending_writable ?? null } : null
+    stopped.value = !down && (unit ? unit.active_state === 'inactive' : read?.service_active === false)
+    // systemd 放弃了（failed）也不会再起来，和停着一样算 / systemd giving up (failed) will not come back either, so it counts as stopped
+    noteRead(live, unit ? ['inactive', 'failed'].includes(unit.active_state) : read?.service_active === false)
   })().finally(() => { statusRead = null })
   return statusRead
 }
@@ -129,7 +138,9 @@ watch(() => failedUp.value !== null || backUnconfirmed.value, (watching) => {
 }, { immediate: true })
 // 别的页面发起的启动、重启、退回结束时，这一页也先重读运行状态再说结果 / When a start, restart or rollback sent from another page
 // ends, this page also reads the runtime state again before the outcome is said
-const stopReading = readBeforeTelling(readStatus)
+// 不搭还在路上的那次读：它可能是在服务端看出起不来之前发的 / Not riding on a read still out: it may have been sent before the
+// server saw it not coming up
+const stopReading = readBeforeTelling(async () => { await statusRead?.catch(() => undefined); await readStatus() })
 onBeforeUnmount(() => { window.clearInterval(downTimer); stopReading(); downShownHere.value = false })
 const clock = (date: Date) => date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
 const steps = computed(() => result.value?.trace_supported ? result.value.trace : [])
@@ -239,8 +250,8 @@ async function run(): Promise<void> {
     </section>
 
     <!-- KixDNS 停着时先说一句，并且就地能启动 / When KixDNS is stopped, say so first and offer to start it here -->
-    <div v-if="failedUp" class="ui-notice ui-notice--err" role="status"><CircleX :size="16" aria-hidden="true" /><span>KixDNS 启动失败</span><small>{{ failedUp.rollback ? '可能是改过的设置让 KixDNS\u00a0起不来，可以退回' : '查看日志了解启动失败的原因' }}</small><RouterLink class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" :to="failedUp.rollback ? '/config?section=settings' : '/logs?view=runtime'">{{ failedUp.rollback ? '去配置页' : '查看日志' }}</RouterLink></div>
-    <div v-else-if="stopped" class="ui-notice ui-notice--off" role="status"><Power :size="16" aria-hidden="true" /><span>KixDNS 已停止</span><small>启动后才能查询</small><button class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="starting" :aria-busy="starting || undefined" @click="startKixdns"><span v-if="starting" class="ui-spin" aria-hidden="true"></span>启动 KixDNS</button></div>
+    <div v-if="failedUp" class="ui-notice ui-notice--err" role="status"><CircleX :size="16" aria-hidden="true" /><span>KixDNS 启动失败</span><small>{{ failedUp.rollback ? '可能是改过的设置让 KixDNS\u00a0起不来，可以退回。' : failedUp.writable ? `版本\u00a0#${failedUp.writable}\u00a0还没写进配置文件，可以到配置页写进去。` : '起不来的原因在运行日志里。' }}</small><RouterLink class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" :to="failedUp.rollback || failedUp.writable ? '/config?section=settings' : '/logs?view=runtime'">{{ failedUp.rollback || failedUp.writable ? '去配置页' : '查看日志' }}</RouterLink></div>
+    <div v-else-if="stopped" class="ui-notice ui-notice--off" role="status"><Power :size="16" aria-hidden="true" /><span>KixDNS 已停止</span><small>启动后才能查询。</small><button class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="starting" :aria-busy="starting || undefined" @click="startKixdns"><span v-if="starting" class="ui-spin" aria-hidden="true"></span>启动 KixDNS</button></div>
     <!-- 等待时给骨架而不是转圈：骨架的分块和结果一致，数据到达时版面不跳。 -->
     <div v-if="running" class="diag-skeleton" role="status" aria-label="正在等待 DNS 响应">
       <div class="sk diag-skeleton-verdict"></div>

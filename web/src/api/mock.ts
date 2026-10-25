@@ -668,6 +668,9 @@ let downWithoutRollback = false
 // meanwhile too). As on the real server the version written stays pending, already in the file, to be confirmed once KixDNS is
 // up; one more restart afterwards brings it back
 let pendingInFile = false
+// 和真服务端同一个判断：起不来、不能退回、待应用的版本在等、还不在配置文件里 / The real server's test: down, nothing to put back,
+// a pending version waiting that is not in the file yet
+const writableNow = (): number | null => (restartNoAnswer && !rollbackValues() && !pendingInFile && config.pending?.version_id && !config.pending.error ? config.pending.version_id : null)
 const stillDownAsked = () => {
   if (typeof localStorage === 'undefined' || localStorage.getItem('kixdns:demo-still-down') !== 'true') return false
   localStorage.removeItem('kixdns:demo-still-down')
@@ -683,8 +686,11 @@ function rollbackValues(): Record<string, unknown> | null {
   const keys = failingKeys.filter((key) => JSON.stringify(now[key] ?? null) !== JSON.stringify(startedWith?.[key] ?? null))
   return keys.length ? Object.fromEntries(keys.map((key) => [key, startedWith?.[key] ?? null])) : null
 }
+// 起不来时服务状态带着出路（和真服务端一样）：可以退回的设置、可以写进配置文件的待应用版本
+// While it does not come up the service state carries the way out, as on the real server: settings that can go back, a pending
+// version that can be written into the file
 const serviceNow = () => restartNoAnswer
-  ? { unit: 'kixdns.service', active_state: 'activating', sub_state: 'auto-restart', main_pid: 0, did_not_come_up: true }
+  ? { unit: 'kixdns.service', active_state: 'activating', sub_state: 'auto-restart', main_pid: 0, did_not_come_up: true, ...(rollbackValues() ? { restart_rollback: rollbackValues() } : {}), ...(writableNow() ? { pending_writable: writableNow() } : {}) }
   : { unit: 'kixdns.service', active_state: serviceRunning ? 'active' : 'inactive', sub_state: serviceRunning ? 'running' : 'dead', main_pid: serviceRunning ? 1428 : 0 }
 
 // 模拟的 KixDNS 启动时读到的设置：只在启动时读取的那些（和内核 GlobalSettings::restart_pending 同一份名单）到重启前一直是这些值，
@@ -930,12 +936,9 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
   const emptyFirstInstall = typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-empty-first-install') === 'true'
   if (path === '/api/v1/overview') {
     if (emptyFirstInstall) throw new Error('KixDNS 已停止')
-    // 起不来的 KixDNS 只剩上次读到的快照，服务正在重试；能退回时和配置页一样带上 / A KixDNS that does not come up leaves only the
-    // last snapshot, with the service retrying; a rollback on offer comes along as on the config page
-    if (restartNoAnswer) {
-      const rollback = rollbackValues()
-      return { ...overview, live: false, service_active: false, ...(rollback ? { restart_rollback: rollback } : {}) } as T
-    }
+    // 起不来的 KixDNS 只剩上次读到的快照，服务正在重试；出路在服务状态里 / A KixDNS that does not come up leaves only the last
+    // snapshot, with the service retrying; the way out is in the service state
+    if (restartNoAnswer) return { ...overview, live: false, service_active: false } as T
     const restartPending = restartPendingNow()
     return (restartPending.length ? { ...overview, active_config: { ...overview.active_config, restart_pending: restartPending } } : overview) as T
   }
@@ -1048,7 +1051,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     if (restartNoAnswer) {
       const status = config.pending ? (config.pending.error ? 'failed' : 'pending') : 'unavailable'
       const rollback = rollbackValues()
-      return { ...config, runtime: { ...config.runtime, status, apply_state: config.pending ? config.runtime.apply_state : 'unavailable', active_sha256: null, generation: null, did_not_come_up: true, ...(pendingInFile && config.pending ? { pending_in_file: true } : {}), ...(rollback ? { restart_rollback: rollback } : {}) } } as T
+      return { ...config, runtime: { ...config.runtime, status, apply_state: config.pending ? config.runtime.apply_state : 'unavailable', active_sha256: null, generation: null, did_not_come_up: true, ...(writableNow() ? { pending_writable: writableNow() } : {}), ...(rollback ? { restart_rollback: rollback } : {}) } } as T
     }
     return { ...config, runtime: { ...config.runtime, ...(restartPending.length ? { restart_pending: restartPending } : {}) } } as T
   }
@@ -1207,6 +1210,9 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     content.settings = settings
     const sha = `back${Date.now().toString(16)}`.padEnd(64, '0').slice(0, 64)
     const result = storePending(content, sha, ++nextConfigVersionId, Math.floor(Date.now() / 1000), carried ? '退回原来的设置（含待应用的修改）' : '退回原来的设置')
+    // 和真服务端一样标出这是退回写下的，页面不报它的编号 / Marked as the rollback's, as on the real server, so pages give no
+    // number for it
+    if (config.pending) config.pending = { ...config.pending, from_rollback: carried ? 'settings_and_pending' : 'settings' }
     if (stillDownAsked()) {
       // 退回写进了文件，还是起不来：没有可退回的了，那一版留在待应用 / The rollback is in the file and it still fails: nothing
       // left to put back, and that version stays pending
@@ -1239,12 +1245,12 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
   if (path === '/api/v1/config/restart-with-pending' && method === 'POST') {
     const refuse = (message: string) => new ApiError(message, 409, 'restart_pending_write_needless')
     const asked = (JSON.parse(String(init?.body ?? '{}')) as { version_id?: number }).version_id
-    if (!restartNoAnswer && serviceRunning) throw refuse('KixDNS 已经在运行，不用写进配置文件')
-    if (!restartNoAnswer) throw refuse('KixDNS 现在不是启动失败，没有写进配置文件')
-    if (rollbackValues()) throw refuse('现在可以退回原来的设置，没有写进配置文件')
+    if (!restartNoAnswer && serviceRunning) throw refuse('没有写进配置文件：KixDNS 已经在运行')
+    if (!restartNoAnswer) throw refuse('没有写进配置文件：KixDNS 没有启动失败')
+    if (rollbackValues()) throw refuse('没有写进配置文件：现在可以退回原来的设置')
     const id = config.pending && !config.pending.error ? config.pending.version_id : null
-    if (!id || id !== asked) throw refuse('待应用的版本已经变了，没有写进配置文件')
-    if (pendingInFile) throw refuse(`版本 #${id} 已经写进配置文件了`)
+    if (!id || id !== asked) throw refuse('没有写进配置文件：待应用的版本已经变了')
+    if (pendingInFile) throw refuse(`版本 #${id} 已经在配置文件里了`)
     if (stillDownAsked()) {
       pendingInFile = true
       return { version_id: id } as T

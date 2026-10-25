@@ -2905,6 +2905,13 @@ async fn a_restart_that_does_not_come_back_can_put_the_changed_settings_back() {
     );
     let service = get_json(&context, "/api/v1/service").await;
     assert_eq!(service["did_not_come_up"], true);
+    // 服务状态带着同一份出路，各页不用读概览也知道 / The service state carries the same way out, so pages know it without
+    // the overview
+    assert_eq!(
+        service["restart_rollback"],
+        serde_json::json!({ "bind_udp": "0.0.0.0:53" })
+    );
+    assert!(service.get("pending_writable").is_none());
     // 能退回时不写进配置文件：页面这时不给那个按钮 / No write into the file while a rollback is on offer: the page does not
     // offer that button then
     let (status, refused) = post_json(
@@ -2916,7 +2923,7 @@ async fn a_restart_that_does_not_come_back_can_put_the_changed_settings_back() {
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(
         refused["error"]["message"],
-        "现在可以退回原来的设置，没有写进配置文件"
+        "没有写进配置文件：现在可以退回原来的设置"
     );
 
     let (status, payload) = post_empty(&context, "/api/v1/config/restart-rollback").await;
@@ -2930,12 +2937,14 @@ async fn a_restart_that_does_not_come_back_can_put_the_changed_settings_back() {
     );
     let document = get_json(&context, "/api/v1/config").await;
     assert_eq!(document["pending"]["version_id"], payload["version_id"]);
+    // 退回写下的那一版：页面据此不报编号 / The version the rollback wrote: pages give no number for it by this
+    assert_eq!(document["pending"]["from_rollback"], "settings");
     let (status, _) = post_empty(&context, "/api/v1/config/restart-rollback").await;
     assert_eq!(status, StatusCode::CONFLICT);
     // 退回以后还是起不来：退回存的那一版已经在配置文件里，不用再写 / Still down after the rollback: the version it stored is
     // in the config file already, with nothing more to write
     assert_eq!(document["runtime"]["did_not_come_up"], true);
-    assert_eq!(document["runtime"]["pending_in_file"], true);
+    assert!(document["runtime"].get("pending_writable").is_none());
     let (status, refused) = post_json(
         &context,
         "/api/v1/config/restart-with-pending",
@@ -2945,7 +2954,7 @@ async fn a_restart_that_does_not_come_back_can_put_the_changed_settings_back() {
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(
         refused["error"]["message"],
-        format!("版本 #{} 已经写进配置文件了", payload["version_id"])
+        format!("版本 #{} 已经在配置文件里了", payload["version_id"])
     );
 }
 
@@ -3054,6 +3063,41 @@ async fn the_rollback_keeps_an_unchecked_pending_version_out_of_the_formal_file(
             .get("cache_capacity")
             .is_none()
     );
+    // 退回以后还是起不来：带上的修改不给写进配置文件，等 KixDNS 起来再应用 / Still down after the rollback: the carried
+    // edits are not offered for writing into the file, and apply once KixDNS is up
+    let document = get_json(&context, "/api/v1/config").await;
+    assert_eq!(document["runtime"]["did_not_come_up"], true);
+    assert_eq!(document["pending"]["version_id"], id);
+    assert!(document["runtime"].get("pending_writable").is_none());
+    let (status, refused) = post_json(
+        &context,
+        "/api/v1/config/restart-with-pending",
+        &serde_json::json!({ "version_id": id }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(
+        refused["error"]["message"],
+        "没有写进配置文件：退回时带上的修改等 KixDNS 起来再应用"
+    );
+    assert_eq!(document["pending"]["from_rollback"], "settings_and_pending");
+    // 删掉带上的那一版，再存一版：编号被复用，内容不同，照常可以写进去，也不算退回写下的 / Delete the carried version and save
+    // another: the id is reused with different content, so it can be written in as usual and is not taken for the rollback's
+    let request = Request::delete(format!("/api/v1/config/versions/{id}"))
+        .header(CONTENT_TYPE, "application/json")
+        .header(COOKIE, context.cookies.clone())
+        .header("x-csrf-token", context.csrf_token.clone())
+        .body(Body::from(
+            serde_json::json!({ "expected_sha256": document["sha256"] }).to_string(),
+        ))
+        .unwrap();
+    let (status, deleted) = send_json(&context, request).await;
+    assert_eq!(status, StatusCode::OK, "{deleted}");
+    let later = save_pending(&context, "edited-after-rollback", "退回以后改的").await;
+    assert_eq!(later, id);
+    let document = get_json(&context, "/api/v1/config").await;
+    assert_eq!(document["runtime"]["pending_writable"], later);
+    assert!(document["pending"].get("from_rollback").is_none());
 }
 
 /// 起不来、又没有可退回的设置：配置读到 `did_not_come_up`；把待应用版本写进正式文件再重启，文件就是那一版
@@ -3072,7 +3116,7 @@ async fn a_pending_version_can_be_written_into_the_file_when_kixdns_does_not_com
     let document = get_json(&context, "/api/v1/config").await;
     assert_eq!(document["runtime"]["did_not_come_up"], true);
     assert!(document["runtime"].get("restart_rollback").is_none());
-    assert!(document["runtime"].get("pending_in_file").is_none());
+    assert!(document["runtime"].get("pending_writable").is_none());
     let write = |version_id: i64| {
         let context = &context;
         async move {
@@ -3092,11 +3136,16 @@ async fn a_pending_version_can_be_written_into_the_file_when_kixdns_does_not_com
     // version saved after the confirm stops it
     let confirmed = save_pending(&context, "first-fix", "起不来时改的").await;
     let waiting = save_pending(&context, "fixed-while-down", "起不来时改好的").await;
+    let document = get_json(&context, "/api/v1/config").await;
+    assert_eq!(document["runtime"]["pending_writable"], waiting);
+    assert!(document["pending"].get("from_rollback").is_none());
+    let service = get_json(&context, "/api/v1/service").await;
+    assert_eq!(service["pending_writable"], waiting);
     let (status, refused) = write(confirmed).await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(
         refused["error"]["message"],
-        "待应用的版本已经变了，没有写进配置文件"
+        "没有写进配置文件：待应用的版本已经变了"
     );
     let (status, payload) = write(waiting).await;
     assert_eq!(status, StatusCode::OK, "{payload}");
@@ -3109,12 +3158,12 @@ async fn a_pending_version_can_be_written_into_the_file_when_kixdns_does_not_com
     // version stays pending, the page no longer offers the write, and the server does not write again
     let document = get_json(&context, "/api/v1/config").await;
     assert_eq!(document["pending"]["version_id"], waiting);
-    assert_eq!(document["runtime"]["pending_in_file"], true);
+    assert!(document["runtime"].get("pending_writable").is_none());
     let (status, refused) = write(waiting).await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(
         refused["error"]["message"],
-        format!("版本 #{waiting} 已经写进配置文件了")
+        format!("版本 #{waiting} 已经在配置文件里了")
     );
     assert_eq!(actions.lock().unwrap().as_slice(), ["restart"]);
     // 停着的服务不算起不来 / A stopped service does not count as not coming up

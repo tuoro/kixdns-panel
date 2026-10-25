@@ -2014,8 +2014,21 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
   .cfg__savebar.savebar--wrap .ui-savebar__status > .ui-check { flex: 0 0 auto; margin-top: calc((var(--t-3) * var(--lh-base) - var(--size-icon)) / 2); }
   .cfg__savebar.savebar--wrap .ui-savebar__detail { flex: 1 1 auto; }
 }
+/* 641–860 宽一句长说明折成两行时，前面的点留在第一行字前面，字在它右边折行，不让点单独占一行；一行时和居中一样高
+   Between 641 and 860, when a long status wraps, the dot stays before its first line and the text wraps beside it, never leaving the
+   dot alone on a line; on one line it sits as high as when centred */
+@media (min-width: 641px) and (max-width: 860px) {
+  .cfg__savebar:not(.ui-savebar--err) .ui-savebar__status:has(> .ui-dot) { flex-wrap: nowrap; align-items: flex-start; padding-top: calc((var(--h-md) - var(--t-3) * var(--lh-base)) / 2); }
+  .cfg__savebar:not(.ui-savebar--err) .ui-savebar__status:has(> .ui-dot) > .ui-dot { margin-top: calc((var(--t-3) * var(--lh-base) - var(--size-dot)) / 2); }
+}
 @media (max-width: 640px) {
   .cfg__savebar.savebar--wrap .ui-savebar__detail, .cfg__savebar.ui-savebar--err .ui-savebar__detail { white-space: normal; }
+  /* 存完的那句话（「已存成待应用版本 #N，…」）放不下时折行，不被屏幕切掉；对勾留在第一行字前面。只有「已修改 N 处」不拆
+     The sentence after a save (「已存成待应用版本 #N，…」) wraps when it does not fit instead of being cut by the screen, with the check
+     before its first line; only 已修改 N 处 never splits */
+  .cfg__savebar:not(.ui-savebar--err) .ui-savebar__status:has(> .ui-check) { align-items: flex-start; }
+  .cfg__savebar:not(.ui-savebar--err) .ui-savebar__status:has(> .ui-check) > .ui-check { flex: 0 0 auto; margin-top: calc((var(--t-3) * var(--lh-base) - var(--size-icon)) / 2); }
+  .cfg__savebar:not(.ui-savebar--err) .ui-savebar__status:has(> .ui-check) > .ui-savebar__detail { flex: 1 1 auto; white-space: normal; }
   /* 手机上贴着屏幕左边：只退回内边距，留下 1px 边框，键盘焦点框不被屏幕切掉 / On phones it sits at the screen's left edge: only the padding is pulled
      back, keeping the 1px border, so the keyboard focus ring is not cut off by the screen */
   .cfg__savebar .savebar__acts { margin-left: calc(var(--s-3) * -1); }

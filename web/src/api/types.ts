@@ -168,8 +168,6 @@ export interface Overview {
   service_active: boolean | null
   captured_at_unix: number
   trend: RequestTrend
-  /** KixDNS 起不来、可以退回改过的设置时，那几项和它们上次启动时的值（和配置页同一份）；其余时候省略 */
-  restart_rollback?: Record<string, unknown>
 }
 
 export interface ServiceStatus {
@@ -179,6 +177,10 @@ export interface ServiceStatus {
   active_state: string
   sub_state: string
   main_pid: number
+  /** 起不来时可以退回的设置和它们上次启动时的值（和配置页同一份）；其余时候省略 */
+  restart_rollback?: Record<string, unknown>
+  /** 起不来、不能退回时可以写进配置文件的待应用版本（和配置页同一份）；其余时候省略 */
+  pending_writable?: number
 }
 
 export interface ConfigDocument {
@@ -204,8 +206,8 @@ export interface ConfigDocument {
     restart_rollback?: Record<string, unknown>
     /** 服务端看出 KixDNS 起不来（连不上、systemd 放弃了或在重试）；能不能退回都会带；其余时候省略 */
     did_not_come_up?: boolean
-    /** 起不来时，待应用的版本已经在配置文件里（退回、写进配置文件以后还是起不来）；其余时候省略 */
-    pending_in_file?: boolean
+    /** 起不来、不能退回时，可以写进配置文件的待应用版本（已经在文件里的、退回时带上的修改都不算）；其余时候省略 */
+    pending_writable?: number
   }
 }
 
@@ -219,6 +221,8 @@ export interface PendingConfig {
   actor?: string
   created_at?: number
   error?: string | null
+  /** 退回写下的版本：settings 只改回那几项，settings_and_pending 带上了待应用的修改；页面不报它的编号 */
+  from_rollback?: 'settings' | 'settings_and_pending'
 }
 
 export interface ConfigVersion {

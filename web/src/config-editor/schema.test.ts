@@ -40,10 +40,13 @@ describe('提示条里的设置名', () => {
     const five = ['bind_udp', 'bind_tcp', 'cache_capacity', 'tcp_pool_size', 'doq_pool_size']
     expect(settingNames(five, { all: true })).toBe('UDP\u00a0监听地址、TCP\u00a0监听地址、TCP\u00a0连接池、DoQ\u00a0连接池、缓存容量')
   })
+  it('名字里的连字符后不断行 / no break after a hyphen in a name', () => {
+    expect(settingNames(['doq_enable_0rtt'])).toBe('DoQ\u00a00-\u2060RTT')
+  })
   it('退回时写出每一项改回的值，带单位；没写的照表单说默认是什么；自动限流合成一项', () => {
     // 名字和值粘在一起，只有长的值（路径）可以和名字分开 / Name and value stay together; only a long value (a path) may part from its name
     expect(settingValues({ bind_udp: '0.0.0.0:53', cache_capacity: null, doq_keepalive_interval_ms: 15000, doq_enable_0rtt: null, bind_doh: null, dashmap_shards: null }))
-      .toBe('UDP\u00a0监听地址\u00a00.0.0.0:53、DoH\u00a0监听地址\u00a0留空、DoQ\u00a0保活间隔\u00a015000\u00a0毫秒、DoQ\u00a00-RTT\u00a0默认开启、缓存容量\u00a0默认\u00a010000\u00a0条、缓存分片数\u00a0自动')
+      .toBe('UDP\u00a0监听地址\u00a00.0.0.0:53、DoH\u00a0监听地址\u00a0留空、DoQ\u00a0保活间隔\u00a015000\u00a0毫秒、DoQ\u00a00-\u2060RTT\u00a0默认开启、缓存容量\u00a0默认\u00a010000\u00a0条、缓存分片数\u00a0自动')
     expect(settingValues({ doh_tls_cert: '/etc/kixdns/certs/home.pem' })).toBe('DoH\u00a0TLS\u00a0证书 /etc/kixdns/certs/home.pem')
     expect(settingValues({ flow_control_enabled: null, flow_control_max_permits: 512 })).toBe('自动限流\u00a0默认关闭')
     expect(settingValues({ flow_control_enabled: true })).toBe('自动限流\u00a0开启')

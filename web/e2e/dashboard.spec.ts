@@ -638,7 +638,7 @@ test('服务启动失败时，页级提示和页头说同一件事，不说「�
   await expect(notice).toHaveClass(/ui-notice--err/)
   // 启动失败指去日志，并给出去日志页的动作；它没有停过，快照不说「停止前」 / A failure points to the logs and offers the way
   // there; it never stopped, so the snapshot does not say 停止前
-  await expect(notice.locator('small')).toHaveText(/^显示 \d{2}:\d{2} 的快照；查看日志了解启动失败的原因。$/)
+  await expect(notice.locator('small')).toHaveText(/^显示 \d{2}:\d{2} 的快照；起不来的原因在运行日志里。$/)
   await expect(notice.getByRole('link', { name: '查看日志', exact: true })).toHaveAttribute('href', '/logs?view=runtime')
 })
 
@@ -713,7 +713,7 @@ test('第一次启动就失败、还没有任何数据：提示说启动失败�
   await expect(page.locator('.overview-heading .ui-ph__meta')).toContainText('启动失败')
   // 和首次安装一样保留完整布局：页签、配置卡和去配置页的入口都在，提示给出去日志页的动作
   // The full layout stays as on first install: tabs, the config card and its way to the config page, plus a way to the logs in the notice
-  await expect(notice.locator('small')).toHaveText('还没有运行数据；查看日志了解启动失败的原因。')
+  await expect(notice.locator('small')).toHaveText('还没有运行数据；起不来的原因在运行日志里。')
   await expect(notice.getByRole('link', { name: '查看日志', exact: true })).toBeVisible()
   await expect(page.getByRole('tab', { name: '运行情况', exact: true })).toBeVisible()
   await expect(page.getByRole('heading', { name: '运行配置', exact: true })).toBeVisible()

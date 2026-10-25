@@ -16,6 +16,11 @@
 //! 给不给退回、接不接受退回用同一个判断：`KixDNS` 连不上、有起不来的记号、服务没被干净地停掉、正式文件里那几项
 //! 又和启动时的值不同。不看是谁发起的重启（配置页、系统页、内核更新、主机重启都一样）。
 //!
+//! 起不来又不能退回时，在等的待应用版本可以直接写进正式文件再重启（`KixDNS` 不在，没法先校验）。给不给、接不接受也是
+//! 同一个判断（`writable_pending`）：那一版还不在文件里，也不是退回时带上的修改——退回以后还是起不来，原因多半在配置
+//! 外面，那笔修改等 `KixDNS` 起来再应用。退回写下的两版（只改回那几项的、带上待应用修改的）连同散列记在一处，删掉的
+//! 编号被新版本复用也认得出；页面据此不报这两版的编号。
+//!
 //! When `KixDNS` does not come back from a restart, put the settings that were changed and took a restart back to
 //! the values it last started with. Those settings (listen addresses and the like) reload as usual while `KixDNS`
 //! keeps the values it started with, so a config that reloads fine can still fail at a restart, say when the new
@@ -39,6 +44,13 @@
 //! Offering a rollback and accepting one use the same test: `KixDNS` unreachable, the mark set, the service not
 //! cleanly stopped, and those settings in the formal file differing from their starting values. Who restarted it does
 //! not matter (the config page, the system page, a kernel update or a host reboot alike).
+//!
+//! Down with nothing to put back, the pending version still waiting can be written straight into the formal file
+//! before a restart (`KixDNS` is not there to check it first). Offering and accepting that share one test as well
+//! (`writable_pending`): the version is not in the file yet and is not the edits a rollback carried along — still down
+//! after a rollback, the cause most likely lies outside the config, and those edits apply once `KixDNS` is up. The two
+//! versions a rollback writes (only those settings put back, and the one carrying the pending edits) are recorded with
+//! their hashes, so a deleted id reused by a new version is not mistaken for them; pages give no number for them.
 
 use std::collections::BTreeMap;
 
@@ -51,6 +63,7 @@ use serde_json::{Map, Value};
 use tokio::sync::Mutex;
 
 use crate::auth::{authenticate, unix_timestamp, verify_csrf};
+use crate::config_store::ConfigDocument;
 use crate::control::{ActiveConfig, Health};
 use crate::db::CONFIG_APPLY_PENDING;
 use crate::error::{AppError, AppResult};
@@ -61,6 +74,95 @@ use super::{AppState, map_config_error, map_operation_error, reconcile_pending};
 const STARTUP_KEY: &str = "kixdns_startup_settings_v2";
 /// 没发布过的旧格式，第一次写新格式时删掉 / An unreleased older format, removed on the first write of the new one
 const OLD_STARTUP_KEY: &str = "kixdns_startup_settings_v1";
+/// 最近一次退回写下的版本 / The versions the latest rollback wrote
+const ROLLED_BACK_KEY: &str = "kixdns_rollback_versions_v1";
+
+/// 一个版本的编号和散列：编号会被复用，两样一起才认得准 / A version's id and hash: ids are reused, so both are needed
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct Stamp {
+    id: i64,
+    sha256: String,
+}
+
+/// 退回写下的两版：写进正式文件、只改回那几项的一版；有待应用的修改时，带上它另存的一版
+/// The two versions a rollback writes: the one written to the formal file with only those settings put back, and,
+/// with pending edits, the one carrying them
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct RolledBack {
+    written: Option<Stamp>,
+    carried: Option<Stamp>,
+}
+
+/// 一个版本是不是退回写下的 / Whether a version is one a rollback wrote
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum RollbackOrigin {
+    /// 只改回那几项 / Only those settings put back
+    Settings,
+    /// 改回那几项，带上待应用的修改 / Those settings put back, carrying the pending edits
+    SettingsAndPending,
+}
+
+/// 读不到记录时是 `None`，没有记录时是空的 / `None` when the record cannot be read, empty when there is none
+async fn rolled_back(state: &AppState) -> Option<RolledBack> {
+    match state.database.get_setting(ROLLED_BACK_KEY).await {
+        Ok(Some(stored)) => Some(serde_json::from_str(&stored).unwrap_or_default()),
+        Ok(None) => Some(RolledBack::default()),
+        Err(error) => {
+            tracing::warn!(%error, "无法读取退回写下的版本");
+            None
+        }
+    }
+}
+
+/// 记下这次退回写下的两版，换掉上一次的 / Record the two versions this rollback wrote, replacing the last rollback's
+async fn remember_rollback(state: &AppState, written: Stamp, carried: Option<Stamp>) {
+    let record = RolledBack {
+        written: Some(written),
+        carried,
+    };
+    if let Ok(serialized) = serde_json::to_string(&record)
+        && let Err(error) = state
+            .database
+            .set_setting(ROLLED_BACK_KEY, serialized, unix_timestamp())
+            .await
+    {
+        tracing::warn!(%error, "无法记下退回写下的版本");
+    }
+}
+
+/// 这个版本是不是退回写下的 / Whether this version is one a rollback wrote
+pub(super) async fn rollback_origin(
+    state: &AppState,
+    id: i64,
+    sha256: &str,
+) -> Option<RollbackOrigin> {
+    let record = rolled_back(state).await?;
+    let stamp = Stamp {
+        id,
+        sha256: sha256.to_owned(),
+    };
+    if record.carried.as_ref() == Some(&stamp) {
+        Some(RollbackOrigin::SettingsAndPending)
+    } else if record.written.as_ref() == Some(&stamp) {
+        Some(RollbackOrigin::Settings)
+    } else {
+        None
+    }
+}
+
+/// 为什么不能写进配置文件 / Why it cannot be written into the config file
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum NotWritable {
+    /// 没有在等的待应用版本 / No pending version waiting
+    NoPending,
+    /// 这一版已经在文件里 / That version is in the file already
+    InFile(i64),
+    /// 这一版是退回时带上的修改 / That version is the edits a rollback carried along
+    Carried,
+    /// 读不到待应用的版本或退回的记录：不给写 / The pending version or the rollback record cannot be read: no write
+    Unknown,
+}
 /// 同一个进程隔这么久被看见两次才算稳 / How far apart one process must be seen twice to count as steady
 const STEADY_SECONDS: u64 = 3;
 /// 读、改、写记录串行：后台那一遍、配置页、概览的读会同时跑 / Reads, changes and writes of the record are serialised: the
@@ -360,6 +462,10 @@ pub(super) async fn roll_back(
         .write_pending(written.version_id)
         .await
         .map_err(map_config_error)?;
+    let written_stamp = Stamp {
+        id: written.version_id,
+        sha256: written.sha256.clone(),
+    };
     let result = match waiting {
         Some(content) => state
             .config
@@ -373,6 +479,11 @@ pub(super) async fn roll_back(
             .map_err(map_config_error)?,
         None => written,
     };
+    let carried = (result.version_id != written_stamp.id).then(|| Stamp {
+        id: result.version_id,
+        sha256: result.sha256.clone(),
+    });
+    remember_rollback(&state, written_stamp, carried).await;
     new_attempt(&state).await;
     state
         .operations
@@ -406,6 +517,59 @@ pub(super) async fn roll_back(
     }))
 }
 
+/// 起不来、又不能退回时，可以写进配置文件的待应用版本：在等的待应用版本，还不在文件里，也不是退回时带上的修改（退回
+/// 以后还是起不来，原因多半在配置外面，那笔修改等 `KixDNS` 起来再应用）。调用方先确认起不来、不能退回；页面给不给
+/// 「写进配置文件并重启」、接口接不接受都看它
+///
+/// When it does not come up and nothing can go back, the pending version that can be written into the config file: one
+/// still waiting, not in the file yet, and not the edits a rollback carried along (still down after a rollback, the
+/// cause most likely lies outside the config, and those edits apply once `KixDNS` is up). The caller first establishes
+/// that it is down with nothing to put back; whether the page offers 写进配置文件并重启 and whether the endpoint accepts it
+/// both follow this
+pub(super) async fn writable_pending(
+    state: &AppState,
+    formal: &ConfigDocument,
+) -> Result<i64, NotWritable> {
+    let pending = match state.config.pending().await {
+        Ok(Some(pending)) if pending.apply_state == CONFIG_APPLY_PENDING => pending,
+        Ok(_) => return Err(NotWritable::NoPending),
+        Err(error) => {
+            tracing::warn!(%error, "无法读取待应用的版本");
+            return Err(NotWritable::Unknown);
+        }
+    };
+    if pending.sha256 == formal.sha256 {
+        return Err(NotWritable::InFile(pending.id));
+    }
+    let record = rolled_back(state).await.ok_or(NotWritable::Unknown)?;
+    let stamp = Stamp {
+        id: pending.id,
+        sha256: pending.sha256,
+    };
+    if record.carried.as_ref() == Some(&stamp) {
+        return Err(NotWritable::Carried);
+    }
+    Ok(stamp.id)
+}
+
+/// 服务状态接口用：已经知道起不来时，可以退回的设置、可以写进配置文件的待应用版本（和配置页同一份）
+/// For the service status endpoint, once it is known not to come up: the settings that can go back and the pending
+/// version that can be written into the config file (the config page's)
+pub(super) async fn ways_out(state: &AppState) -> (Option<BTreeMap<String, Value>>, Option<i64>) {
+    let Ok(formal) = state.config.current().await else {
+        return (None, None);
+    };
+    let rollback = load(state)
+        .await
+        .and_then(|startup| rollback_values(&startup, &formal.content));
+    let writable = if rollback.is_none() {
+        writable_pending(state, &formal).await.ok()
+    } else {
+        None
+    };
+    (rollback, writable)
+}
+
 /// 写进配置文件的是页面确认过的那个待应用版本 / The pending version the page confirmed is the one written
 #[derive(Debug, Deserialize)]
 pub(super) struct WritePendingRequest {
@@ -437,15 +601,15 @@ pub(super) async fn restart_with_pending(
         ))
     };
     if state.control.active_config().await.is_ok() {
-        return refuse("KixDNS 已经在运行，不用写进配置文件".to_owned());
+        return refuse("没有写进配置文件：KixDNS 已经在运行".to_owned());
     }
     let formal = state.config.current().await.map_err(map_config_error)?;
     let (down, rollback) = unreachable(&state, &formal.content).await;
     if !down {
-        return refuse("KixDNS 现在不是启动失败，没有写进配置文件".to_owned());
+        return refuse("没有写进配置文件：KixDNS 没有启动失败".to_owned());
     }
     if rollback.is_some() {
-        return refuse("现在可以退回原来的设置，没有写进配置文件".to_owned());
+        return refuse("没有写进配置文件：现在可以退回原来的设置".to_owned());
     }
     let pending = state
         .config
@@ -454,10 +618,22 @@ pub(super) async fn restart_with_pending(
         .map_err(AppError::Internal)?
         .filter(|pending| pending.apply_state == CONFIG_APPLY_PENDING);
     let Some(pending) = pending.filter(|pending| pending.id == request.version_id) else {
-        return refuse("待应用的版本已经变了，没有写进配置文件".to_owned());
+        return refuse("没有写进配置文件：待应用的版本已经变了".to_owned());
     };
-    if pending.sha256 == formal.sha256 {
-        return refuse(format!("版本 #{} 已经写进配置文件了", pending.id));
+    match writable_pending(&state, &formal).await {
+        Ok(id) if id == pending.id => {}
+        Ok(_) | Err(NotWritable::NoPending) => {
+            return refuse("没有写进配置文件：待应用的版本已经变了".to_owned());
+        }
+        Err(NotWritable::InFile(id)) => {
+            return refuse(format!("版本 #{id} 已经在配置文件里了"));
+        }
+        Err(NotWritable::Carried) => {
+            return refuse("没有写进配置文件：退回时带上的修改等 KixDNS 起来再应用".to_owned());
+        }
+        Err(NotWritable::Unknown) => {
+            return refuse("没有写进配置文件：面板读不到自己的记录，稍后再试".to_owned());
+        }
     }
     state
         .config
@@ -482,7 +658,7 @@ pub(super) async fn restart_with_pending(
         .audit(
             Some(session.username),
             "config.write_pending_restart".to_owned(),
-            format!("#{}", pending.id),
+            format!("版本 #{}", pending.id),
             unix_timestamp(),
         )
         .await
@@ -700,6 +876,8 @@ mod tests {
             sub_state: sub.to_owned(),
             main_pid: 0,
             did_not_come_up: false,
+            restart_rollback: None,
+            pending_writable: None,
         };
         assert!(did_not_come_up(&status("failed", "failed")));
         assert!(did_not_come_up(&status("activating", "auto-restart")));

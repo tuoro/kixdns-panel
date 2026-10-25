@@ -189,6 +189,9 @@ struct PendingConfigResponse {
     created_at: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    /// 退回写下的版本：页面不报它的编号 / A version a rollback wrote: pages give no number for it
+    #[serde(skip_serializing_if = "Option::is_none")]
+    from_rollback: Option<restart::RollbackOrigin>,
 }
 
 #[derive(Debug, Serialize)]
@@ -218,12 +221,14 @@ struct ConfigRuntimeState {
     /// page waiting on a restart stops waiting
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     did_not_come_up: bool,
-    /// 起不来时，待应用的版本已经在配置文件里（退回、写进配置文件以后还是起不来）：`KixDNS` 起来就会确认它，不用再写
+    /// 起不来、不能退回时，可以写进配置文件的待应用版本；已经在文件里、退回时带上的修改都不算（见
+    /// `restart::writable_pending`）；其余时候省略
     ///
-    /// While it does not come up, the pending version is in the config file already (still down after a rollback or a
-    /// write into the file): `KixDNS` confirms it once it is up, and there is nothing more to write
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pending_in_file: bool,
+    /// While it does not come up with nothing to put back, the pending version that can be written into the config file;
+    /// one in the file already or edits a rollback carried along do not count (see `restart::writable_pending`); left
+    /// out otherwise
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending_writable: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -243,12 +248,6 @@ struct OverviewResponse {
     /// unreachable its counters are frozen while the samples are still current.
     #[serde(default)]
     trend: RequestTrend,
-    /// 和配置页同一份：`KixDNS` 起不来、可以退回改过的设置时，那几项和它们上次启动时的值；其余时候省略
-    ///
-    /// The same as the config page's: when `KixDNS` does not come up and changed settings can go back, those settings
-    /// and the values they last started with; left out otherwise
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    restart_rollback: Option<std::collections::BTreeMap<String, Value>>,
 }
 
 /// 一个整点桶内的请求数。
@@ -641,25 +640,30 @@ async fn get_config(
     }
     // 连不上时退回看的是正式文件：有待应用版本时它不是这里读到的那份 / While unreachable the rollback looks at the formal
     // file, which is not the document read here when a version is pending
-    let (did_not_come_up, rollback, pending_in_file) = match (&active, &pending) {
-        (Ok(_), _) => (false, None, false),
+    let (did_not_come_up, rollback, pending_writable) = match (&active, &pending) {
+        (Ok(_), _) => (false, None, None),
         (Err(_), None) => {
             let (down, rollback) = restart::unreachable(&state, &document.content).await;
-            (down, rollback, false)
+            (down, rollback, None)
         }
-        (Err(_), Some(summary)) => match state.config.current().await {
+        (Err(_), Some(_)) => match state.config.current().await {
             Ok(formal) => {
                 let (down, rollback) = restart::unreachable(&state, &formal.content).await;
-                (down, rollback, down && formal.sha256 == summary.sha256)
+                let writable = if down && rollback.is_none() {
+                    restart::writable_pending(&state, &formal).await.ok()
+                } else {
+                    None
+                };
+                (down, rollback, writable)
             }
-            Err(_) => (false, None, false),
+            Err(_) => (false, None, None),
         },
     };
     let runtime = match active {
         Ok(active) => ConfigRuntimeState {
             restart_rollback: None,
             did_not_come_up: false,
-            pending_in_file: false,
+            pending_writable: None,
             restart_pending: active.restart_pending.clone().unwrap_or_default(),
             status: pending_status.unwrap_or(if active.sha256 == document.sha256 {
                 "active"
@@ -692,8 +696,12 @@ async fn get_config(
             restart_pending: Vec::new(),
             restart_rollback: rollback,
             did_not_come_up,
-            pending_in_file,
+            pending_writable,
         },
+    };
+    let from_rollback = match &pending {
+        Some(summary) => restart::rollback_origin(&state, summary.id, &summary.sha256).await,
+        None => None,
     };
     Ok(Json(ConfigDocumentResponse {
         content: document.content,
@@ -707,6 +715,7 @@ async fn get_config(
             actor: summary.actor,
             created_at: summary.created_at,
             error: summary.apply_error,
+            from_rollback,
         }),
         runtime,
     }))
@@ -742,7 +751,6 @@ async fn overview(
                 service_active: Some(true),
                 captured_at_unix: u64::try_from(unix_timestamp()).unwrap_or_default(),
                 trend: load_request_trend(&state).await,
-                restart_rollback: None,
             };
             if let Ok(serialized) = serde_json::to_string(&snapshot)
                 && let Err(error) = state
@@ -766,10 +774,6 @@ async fn overview(
                             .ok()
                             .map(|status| status.active_state == "active");
                         snapshot.trend = load_request_trend(&state).await;
-                        snapshot.restart_rollback = match state.config.current().await {
-                            Ok(formal) => restart::offer(&state, &formal.content).await,
-                            Err(_) => None,
-                        };
                         return Ok(Json(snapshot));
                     }
                     Err(error) => tracing::warn!(%error, "忽略损坏的概览运行快照"),

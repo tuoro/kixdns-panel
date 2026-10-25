@@ -70,6 +70,9 @@ async fn service_status(
         .await
         .map_err(map_operation_error)?;
     status.did_not_come_up = restart::not_up(&state, &status).await;
+    if status.did_not_come_up {
+        (status.restart_rollback, status.pending_writable) = restart::ways_out(&state).await;
+    }
     Ok(Json(status))
 }
 

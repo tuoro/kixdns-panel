@@ -35,6 +35,18 @@ pub struct ServiceStatus {
     /// endpoint, so every page says 启动失败 alike
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub did_not_come_up: bool,
+    /// 起不来时可以退回的设置和它们上次启动时的值（和配置页同一份）：由服务状态接口补上，各页据此给出路
+    ///
+    /// While it does not come up, the settings that can go back and their starting values (the config page's): filled
+    /// in by the service status endpoint, so every page offers the way out
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restart_rollback: Option<std::collections::BTreeMap<String, Value>>,
+    /// 起不来、不能退回时可以写进配置文件的待应用版本（和配置页同一份）：由服务状态接口补上
+    ///
+    /// While it does not come up with nothing to put back, the pending version that can be written into the config
+    /// file (the config page's): filled in by the service status endpoint
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_writable: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -501,6 +513,8 @@ fn parse_service_status(unit: &str, output: &str) -> Result<ServiceStatus, Opera
             .ok_or_else(|| OperationError::Failed("systemctl 缺少 SubState".to_owned()))?,
         main_pid: main_pid.unwrap_or(0),
         did_not_come_up: false,
+        restart_rollback: None,
+        pending_writable: None,
     })
 }
 

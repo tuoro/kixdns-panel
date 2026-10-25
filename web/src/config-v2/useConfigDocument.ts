@@ -272,8 +272,8 @@ export const headerAction = computed(() => {
   return fileDiffers.value ? '校验并应用' : '现在应用'
 })
 export const deferNote = computed(() => {
-  if (restartRollback.value) return '保存后随退回原来的设置一起应用'
-  if (runtimeDown.value) return '保存后等 KixDNS 启动再应用，也可以写进配置文件'
+  if (restartRollback.value) return '保存后随退回一起应用'
+  if (runtimeDown.value) return '保存后等 KixDNS 启动再应用'
   if (runtimeStopped.value) return '保存后等 KixDNS 启动再应用'
   if (runtimeUnavailable.value) return '保存后等连上 KixDNS 再应用'
   if (capabilityError.value) return 'KixDNS 没有报告它支持哪些功能，保存后先存成待应用版本'
@@ -904,7 +904,7 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
     dismissUndoable(sentAt)
     await load({ quiet: true, keepDraft: true, sent })
     // 「就绪后 / 启动后」看读回来以后的运行状态，不看按下时的 / 就绪后 / 启动后 follows the runtime as read back, not as it was at the press
-    const pendingText = `已存成待应用版本 #${result.version_id}，${pendingAfter()}`
+    const pendingText = `已存成待应用版本 #${result.version_id}，${pendingAfter(true)}`
     // 保存途中又改了的：说一句那几处还没保存，不让「已生效」盖过它们 / Edits made during the save: say they are not saved yet, so 已生效 does not cover them
     const later = changeCount.value ? ` · 之后改的 ${changeCount.value} 处还没保存` : jsonEdited.value ? ' · JSON 里之后改的还没保存' : ''
     lastWrite = { version: result.version_id, state: applyResultState(result) }
@@ -1324,15 +1324,15 @@ export async function checkPending(): Promise<void> {
 function pendingNote(id: number | null): string {
   return doc.value?.pending?.message || (id ? versions.value.find((v) => v.id === id)?.message ?? '' : '')
 }
-/** 待应用的版本接下来怎么用上：KixDNS 起来就自动应用；起不来时把另一条路也说出来——能退回就随退回一起应用，不能退回、
- *  又还没写进配置文件的，也可以写进去（已经写进去的不再提）
- *  How a pending version will be used next: it applies by itself once KixDNS is up; not coming up, the other way is said too —
- *  with a rollback on offer it applies with it, and without one, if it is not in the file yet, it can be written there (one in
- *  the file already is not mentioned) */
-export function pendingAfter(): string {
-  if (restartRollback.value) return '退回原来的设置时一起应用'
-  const writable = runtimeDown.value && !doc.value?.runtime.pending_in_file
-  return `${pendingWhen()}自\u2060动\u2060应\u2060用${writable ? '，也可以写进配置文件' : ''}`
+/** 待应用的版本接下来怎么用上：KixDNS 起来就自动应用；能退回时随退回一起应用。写进配置文件那条出路只由提示条说（那里有
+ *  按钮），这里不再说一遍
+ *  How a pending version will be used next: it applies by itself once KixDNS is up, and with a rollback on offer it applies with
+ *  it. The way out of writing it into the file is said only by the notice (which holds the button), not repeated here */
+// short：保存条上放不下长句，「退回」不带宾语；别处（提示、确认框）说全 / short: the save bar cannot hold the long form, so 退回
+// goes without its object there; elsewhere (toasts, confirms) it is said in full
+export function pendingAfter(short = false): string {
+  if (restartRollback.value) return short ? '退回时一起应用' : '退回原来的设置时一起应用'
+  return `${pendingWhen()}自\u2060动\u2060应\u2060用`
 }
 /** 待应用的版本什么时候自动应用：说出等的是什么 / When a pending version applies by itself: name what it waits for */
 export function pendingWhen(): string {

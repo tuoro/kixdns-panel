@@ -150,11 +150,15 @@ export function settingName(key: string): string {
 // - in the form's order, as the reader sees them there;
 // - the flow-control ones mean nothing without their group title (延迟阈值, 调整间隔), so they merge into one 自动限流;
 // - a notice writes up to three, beyond that the first three and how many in all; the confirm dialog (all) writes every one
+// 名字里不断行：空格换成不换行空格，连字符后面接一个词连接符（手机上「DoQ 0-RTT」曾被拆成「DoQ 0-」「RTT」）
+// A name never breaks inside: spaces become no-break spaces and a word joiner follows each hyphen (on a phone 「DoQ 0-RTT」 was split
+// into 「DoQ 0-」 and 「RTT」)
+const glueName = (name: string) => name.replace(/ /g, '\u00a0').replace(/-/g, '-\u2060')
 export function settingNames(keys: readonly string[], options: { all?: boolean } = {}): string {
   const order = (key: string) => { const at = FORM_FIELDS.findIndex((field) => field.key === key); return at < 0 ? FORM_FIELDS.length : at }
   const names = [...new Set([...keys].sort((a, b) => order(a) - order(b)).map((key) => (key.startsWith('flow_control_') ? '自动限流' : settingName(key))))]
     // 一个名字里不断行（手机上「UDP」和「监听地址」曾被拆到两行） / A name never breaks inside (on a phone 「UDP」 and 「监听地址」 were split across lines)
-    .map((name) => name.replace(/ /g, '\u00a0'))
+    .map(glueName)
   return names.length > 3 && !options.all ? `${names.slice(0, 3).join('、')}等\u00a0${names.length}\u00a0项` : names.join('、')
 }
 
@@ -194,7 +198,7 @@ export function settingValues(values: Record<string, unknown>): string {
       continue
     }
     const value = valueOf(key, values[key])
-    items.push(`${glue(settingName(key))}${value.includes('/') || value.length > 16 ? ' ' : '\u00a0'}${value}`)
+    items.push(`${glueName(settingName(key))}${value.includes('/') || value.length > 16 ? ' ' : '\u00a0'}${value}`)
   }
   return items.join('、')
 }

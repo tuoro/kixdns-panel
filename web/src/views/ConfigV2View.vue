@@ -31,7 +31,7 @@ import { dismissBlocklistToasts } from '../config-v2/useBlocklists'
 import { carryUpdate, refreshLanded, returnedToPage } from '../config-v2/updateCarry'
 import { useHelp } from '../composables/useHelp'
 import { useSession } from '../composables/useSession'
-import { backUnconfirmed, downShownHere, restartingKixdns, rollingBackKixdns, useServiceRestart, useServiceStart } from '../composables/useServiceStart'
+import { backUnconfirmed, downShownHere, restartingKixdns, rollingBackKixdns, startingKixdns, useServiceRestart, useServiceStart } from '../composables/useServiceStart'
 import { settingNames, settingValues } from '../config-editor/schema'
 import { registerLeaveGuard, takeAgreement } from '../composables/useLeaveGuard'
 import '../styles/config-v2.css'
@@ -218,9 +218,11 @@ const notice = computed<Notice | null>(() => {
   // says so); with edits in the draft, save or discard first, as the page is read again whole afterwards. Without one, or with
   // it in the file already (still down after a rollback or a write), it points to the logs
   if (runtimeDown.value && !panelDown.value) {
-    const waiting = hasPending.value && !doc.value?.runtime.pending_in_file ? pendingVersionId.value : null
-    if (!waiting) return { tone: 'err', text: '查看日志了解启动失败的原因。', action: '查看日志', run: openLogs, down: true }
-    const text = `KixDNS\u00a0启动时读的是配置文件，版本\u00a0#${waiting} 还没写进去。`
+    const waiting = hasPending.value ? doc.value?.runtime.pending_writable ?? null : null
+    if (!waiting) return { tone: 'err', text: '起不来的原因在运行日志里。', action: '查看日志', run: openLogs, down: true }
+    // 写的途中文件已经写好了，只是还在等 KixDNS：照实说正在写 / Midway the file is written already and KixDNS is awaited: say it
+    // is being written
+    const text = rollingBackKixdns.value ? `正在把版本\u00a0#${waiting}\u00a0写进配置文件，重启\u00a0KixDNS。` : `版本\u00a0#${waiting}\u00a0还没写进配置文件，KixDNS\u00a0启动时用不上它。`
     return unsaved.value && !rollingBackKixdns.value ? { tone: 'err', text, detail: '先保存或放弃草稿里的修改，再写进配置文件', down: true } : { tone: 'err', text, action: '写进配置文件并重启', run: writePendingIn, down: true }
   }
   // 警告排在说明前面：永远不命中的规则比导入说明要紧 / Warnings rank above information: a rule that never matches matters more than the import notes
@@ -579,7 +581,7 @@ const { restart } = useServiceRestart()
 // config, and a sound version would be recorded as not taken
 const restarts = () => [restartForSettings, rollbackSettings, writePendingIn].includes(notice.value?.run as never)
 const noticeRestarting = computed(() => restartingKixdns.value && restarts())
-const noticeHeld = computed(() => applyBusy.value || rereading.value || restartingKixdns.value || (restarts() && (saveInFlight.value || busy.value)))
+const noticeHeld = computed(() => applyBusy.value || rereading.value || restartingKixdns.value || startingKixdns.value || (restarts() && (saveInFlight.value || busy.value)))
 // 退回期间页面不能改：回来以后整份换上退回后的文件，途中改的会悄悄丢掉（和「重新读取」时一样）
 // The page cannot be edited during a rollback: on return the rolled-back file replaces the page, and edits made meanwhile
 // would be lost silently (as during 重新读取)
@@ -619,14 +621,18 @@ async function rollbackSettings(): Promise<void> {
   // The pending version gets the same settings put back (the server changes and stores it again); a version that was refused is
   // not written back with it: both are said
   const one = new Set(Object.keys(values).map((key) => (key.startsWith('flow_control_') ? 'flow_control' : key))).size === 1
-  const rest = hasPending.value && pendingVersionId.value ? `待应用的版本\u00a0#${pendingVersionId.value} 里${one ? '这一项' : '这几项'}也改回，其他修改都保留。`
-    : hasApplyFailure.value && pendingVersionId.value ? `其他修改都保留；版本\u00a0#${pendingVersionId.value} 没有生效，里面的修改不算在内。`
+  const rest = hasPending.value && pendingVersionId.value ? `待应用的版本\u00a0#${pendingVersionId.value}\u00a0里${one ? '这一项' : '这几项'}也改回，其他修改都保留。`
+    : hasApplyFailure.value && pendingVersionId.value ? `其他修改都保留；版本\u00a0#${pendingVersionId.value}\u00a0没有生效，里面的修改不算在内。`
     : '其他修改都保留。'
   if (!await confirm.ask({
     title: '退回原来的设置',
     body: `改回 KixDNS 上次正常启动时的值：${settingValues(values)}。${rest}`,
     confirmLabel: '退回并重启',
   })) return
+  // 确认框开着时草稿又有了修改（点了提示里的「撤销」）：不发，提示条换回「先保存或放弃」，不悄悄冲掉那笔修改
+  // The draft gained edits while the confirm was open (an 撤销 in a toast): nothing is sent and the notice turns back to
+  // 「先保存或放弃」, rather than the edits being silently wiped
+  if (unsaved.value) return
   await restart({ rollback: { hadPending: hasPending.value }, beforeSend: beginOwnWrite, afterBack: readAfterOwnWrite })
 }
 // 把待应用的版本写进配置文件再重启：KixDNS 不在，没法先校验，确认框照实说；文件是这一页改的，读回来不说「别处改过了」
@@ -636,10 +642,11 @@ async function writePendingIn(): Promise<void> {
   const id = pendingVersionId.value
   if (!id) return
   if (!await confirm.ask({
-    title: `把版本\u00a0#${id} 写进配置文件`,
+    title: `把版本\u00a0#${id}\u00a0写进配置文件`,
     body: 'KixDNS 不在，没法先校验这份配置：直接写进配置文件，再重启。还是起不来的话，改好再写一次。',
     confirmLabel: '写进并重启',
   })) return
+  if (unsaved.value) return
   await restart({ writePending: id, beforeSend: beginOwnWrite, afterBack: readAfterOwnWrite })
 }
 async function startKixdns(): Promise<void> {

@@ -113,7 +113,7 @@ const metaTail = computed<'live' | 'snapshot' | ''>(() => (runtimeState.value ==
 
 // ---------- 页级提示：一次只出一条，读取错误写进原因行 ----------
 // ---------- Page notice: one at a time, a read error goes in its reason line ----------
-interface PageNotice { tone: 'warn' | 'err' | 'off'; icon: typeof CircleAlert; title: string; reason: string; action?: 'retry' | 'config' | 'rollback' | 'logs' | 'start'; phoneOnly?: boolean }
+interface PageNotice { tone: 'warn' | 'err' | 'off'; icon: typeof CircleAlert; title: string; reason: string; action?: 'retry' | 'config' | 'fix' | 'logs' | 'start'; phoneOnly?: boolean }
 // 原因行把几条读取错误和一句「接下来会怎样」连成一段 / The reason line joins the read errors and one sentence on what happens next
 function reasonOf(...parts: string[]): string {
   return parts.filter(Boolean).map((part) => part.replace(/[。；;.]$/, '')).join('；') + '。'
@@ -137,11 +137,16 @@ const notice = computed<PageNotice | null>(() => {
   // The reason says what comes next by state: a failure points to the logs, a start updates on completion, a stop promises nothing
   // 起不来、又有可以退回的设置：指到配置页（那里的提示条能退回），不指日志 / Not coming up with changed settings that can go back:
   // point to the config page (its notice can put them back) rather than the logs
-  const rollback = overview.value?.restart_rollback
+  // 不能退回、有还没写进配置文件的待应用版本时同样指到配置页（那里能写进去） / With nothing to put back and a pending version not
+  // yet in the file, it points to the config page too (where it can be written in)
+  const rollback = service.value?.restart_rollback
+  const writable = service.value?.pending_writable
   const serviceNotice = (shown: string): PageNotice => tone === 'err' && rollback
-    ? { tone: 'err', icon: CircleX, title: serviceTitle, reason: reasonOf(shown, `可能是改过的设置让 KixDNS 起不来，可以退回：${settingNames(Object.keys(rollback))}`), action: 'rollback' }
+    ? { tone: 'err', icon: CircleX, title: serviceTitle, reason: reasonOf(shown, `可能是改过的设置让 KixDNS\u00a0起不来，可以退回：${settingNames(Object.keys(rollback))}`), action: 'fix' }
+    : tone === 'err' && writable
+    ? { tone: 'err', icon: CircleX, title: serviceTitle, reason: reasonOf(shown, `版本\u00a0#${writable}\u00a0还没写进配置文件，可以到配置页写进去`), action: 'fix' }
     : tone === 'err'
-    ? { tone: 'err', icon: CircleX, title: serviceTitle, reason: reasonOf(shown, '查看日志了解启动失败的原因'), action: 'logs' }
+    ? { tone: 'err', icon: CircleX, title: serviceTitle, reason: reasonOf(shown, '起不来的原因在运行日志里'), action: 'logs' }
     : { tone: 'warn', icon: CircleAlert, title: serviceTitle, reason: reasonOf(shown, service.value?.active_state === 'activating' ? '启动完成后概览会自动更新' : '') }
   switch (runtimeState.value) {
     case 'stopped-empty':
@@ -353,7 +358,7 @@ function load(silent = false): Promise<void> {
       // 和配置页一样：连着两次读到活着才算回来，「启动失败」那条提示才收 / As on the config page: back takes two live reads in a
       // row, and only then does the 启动失败 toast go
       const unit = serviceResult.status === 'fulfilled' ? serviceResult.value.active_state : null
-      noteRead(overviewResult.value.live, unit ? unit === 'inactive' : overviewResult.value.service_active === false)
+      noteRead(overviewResult.value.live, unit ? ['inactive', 'failed'].includes(unit) : overviewResult.value.service_active === false)
       overviewError.value = ''
       loadedAt.value = Date.now()
     } else overviewError.value = errorMessage(overviewResult.reason)
@@ -421,7 +426,9 @@ async function startService(): Promise<void> {
 }
 // 不管是哪一页发起的启动、重启、退回，结束时概览先重读再说结果 / Whichever page sent the start, restart or rollback, the overview
 // reads again when it ends, before the outcome is said
-const stopReading = readBeforeTelling(() => load(true))
+// 不搭还在路上的那次读：它可能是在服务端看出起不来之前发的 / Not riding on a read still out: it may have been sent before the
+// server saw it not coming up
+const stopReading = readBeforeTelling(async () => { await pendingLoad?.catch(() => undefined); await load(true) })
 // 提示条在说起不来：别处带来的「启动失败」提示收起，这一页等出来的也不另弹 / The notice says it does not come up: a 启动失败 toast
 // brought from elsewhere is dismissed, and one this page waited out is not raised
 watch(() => notice.value?.title === 'KixDNS 启动失败', (shown) => { downShownHere.value = shown }, { immediate: true, flush: 'sync' })
@@ -760,8 +767,9 @@ onBeforeUnmount(() => {
       <small v-if="notice.reason">{{ notice.reason }}</small>
       <button v-if="notice.action === 'retry'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="requesting" @click="refreshAll">重试</button>
       <RouterLink v-else-if="notice.action === 'config'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" to="/config">管理配置</RouterLink>
-      <!-- 退回在设置分区的提示条里，和诊断页同一个去处 / The rollback is in the settings section's notice, the same place diagnostics goes -->
-      <RouterLink v-else-if="notice.action === 'rollback'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" to="/config?section=settings">去配置页</RouterLink>
+      <!-- 退回、写进配置文件在设置分区的提示条里，和诊断页同一个去处 / Rolling back and writing into the file are in the settings
+           section's notice, the same place diagnostics goes -->
+      <RouterLink v-else-if="notice.action === 'fix'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" to="/config?section=settings">去配置页</RouterLink>
       <!-- 启动失败的原因在运行日志里，直接打开那一页签（日志页默认是查询日志） / Why it failed to start is in the runtime log, so that tab opens directly (the logs page defaults to the query log) -->
       <RouterLink v-else-if="notice.action === 'logs'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" to="/logs?view=runtime">查看日志</RouterLink>
       <button v-else-if="notice.action === 'start'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="starting" :aria-busy="starting || undefined" @click="startService"><span v-if="starting" class="ui-spin" aria-hidden="true"></span>启动 KixDNS</button>
