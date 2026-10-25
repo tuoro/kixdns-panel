@@ -1743,6 +1743,9 @@ async fn reconcile_pending(state: &AppState) -> anyhow::Result<()> {
 pub(crate) struct WaitingApplied {
     version_id: i64,
     apply_state: &'static str,
+    /// 退回写下的版本：页面不报它的编号 / A version a rollback wrote: pages give no number for it
+    #[serde(skip_serializing_if = "Option::is_none")]
+    from_rollback: Option<restart::RollbackOrigin>,
 }
 
 /// 拿着配置锁时应用还在等的待应用版本（重启前那一下也用它） / Apply the version still pending while the config lock is held
@@ -1755,6 +1758,7 @@ async fn apply_waiting_locked(state: &AppState) -> anyhow::Result<Option<Waiting
         return Ok(None);
     }
     let content = state.config.version(pending.id).await?.content;
+    let from_rollback = restart::rollback_origin(state, pending.id, &pending.sha256).await;
     let result = SaveResult {
         version_id: pending.id,
         sha256: pending.sha256,
@@ -1778,6 +1782,7 @@ async fn apply_waiting_locked(state: &AppState) -> anyhow::Result<Option<Waiting
     Ok(Some(WaitingApplied {
         version_id: pending.id,
         apply_state,
+        from_rollback,
     }))
 }
 

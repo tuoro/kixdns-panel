@@ -137,11 +137,14 @@ export function keepTail(text: string, size = 5): [string, string] {
  */
 const HYPHEN_WORD = /「?([$\w.|@^/]*\w-[\w.|@^/-]*[\w^])[」。，：；）]*/g
 // 提示条里另外连住「版本 #N」（带着后面的「已生效」「已应用」「待应用」「没有生效」）、「「名字」的」「再点一次「按钮」」和「KixDNS」与后面的一个字：版本号和
-// 状态词不拆开，「的」不落到行首，按钮名不单独落到最后一行，KixDNS 不挂在行尾；默认名「「文件名 · 主机」」单独拿出来（name），交给 NameText 按「·」折行
+// 状态词不拆开，「的」不落到行首，按钮名不单独落到最后一行，KixDNS 不挂在行尾；默认名「「文件名 · 主机」」单独拿出来（name），交给 NameText 按「·」折行。
+// 句尾常见的几个词也整块连住（「写进配置文件」「设置已生效」「修改已生效」），末行不只剩一个字（中文不按字数切：「修改已生效」切在四个字会拆开「修改」）
+// Common sentence endings are glued whole too (写进配置文件, 设置已生效, 修改已生效), so the last line never holds one character alone (Chinese is not cut
+// by count: four characters from the end of 修改已生效 would split 修改)
 // Toasts also glue 「版本 #N」 (with a following 已生效, 已应用, 待应用 or 没有生效), 「「name」的」, 「再点一次「button」」 and 「KixDNS」 with the character after it:
 // no version split from its state, no 的 starting a line, no button name alone on the last line, no KixDNS left at a line end; a default name
 // 「「file · host」」 is taken out on its own (name) for NameText to wrap at 「·」
-const TOAST_GLUE = /(「[^「」]+?\u00a0·\u00a0[^「」]+?」的?)|(版本[ \u00a0]#\d+(?:[ \u00a0](?:已生效|已应用|待应用|没有生效))?[。，：；]*)|(「[^「」]{1,24}」的)|「?([$\w.|@^/]*\w-[\w.|@^/-]*[\w^])[」。，：；）]*|(再点一次「[^「」]{1,12}」)|(KixDNS[ \u00a0][\u4e00-\u9fff])/g
+const TOAST_GLUE = /(「[^「」]+?\u00a0·\u00a0[^「」]+?」的?)|(版本[ \u00a0]#\d+(?:[ \u00a0](?:已生效|已应用|待应用|没有生效))?[。，：；]*)|(「[^「」]{1,24}」的)|「?([$\w.|@^/]*\w-[\w.|@^/-]*[\w^])[」。，：；）]*|(再点一次「[^「」]{1,12}」)|(KixDNS[ \u00a0][\u4e00-\u9fff])|((?:写进配置文件|(?:设置|修改)已(?:生效|应用))[。，：；]*)/g
 export type GlueRun = { text: string; glue: boolean; long?: boolean; name?: { name: string; suffix: string } }
 function glueRuns(text: string, pattern: RegExp, word: (m: RegExpMatchArray) => string | undefined, name?: (m: RegExpMatchArray) => GlueRun['name']): GlueRun[] {
   const runs: GlueRun[] = []

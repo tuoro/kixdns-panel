@@ -1195,6 +1195,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
   // applied. The demo has no separate formal file, so pending edits stay in this one as well
   if (path === '/api/v1/config/restart-rollback' && method === 'POST') {
     const values = rollbackValues()
+    if (!restartNoAnswer && serviceRunning) throw new ApiError('没有退回：KixDNS 已经在运行', 409, 'restart_rollback_missing')
     if (!restartNoAnswer || !values) throw new ApiError('现在没有要退回的设置', 409, 'restart_rollback_missing')
     // 没有生效的版本不带上：从上次生效的那一版改起，和真服务端一样 / A refused version is not carried along: the change starts from
     // the version last applied, as on the real server
@@ -1210,6 +1211,9 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     content.settings = settings
     const sha = `back${Date.now().toString(16)}`.padEnd(64, '0').slice(0, 64)
     const result = storePending(content, sha, ++nextConfigVersionId, Math.floor(Date.now() / 1000), carried ? '退回原来的设置（含待应用的修改）' : '退回原来的设置')
+    // 操作记录和真服务端同一个写法：设置写内核的名字，日志页翻成面板上的叫法 / The audit row as the real server writes it: settings
+    // by the kernel's names, which the logs page turns into the panel's
+    auditEvents.unshift({ id: Math.max(...auditEvents.map((event) => event.id)) + 1, actor: 'admin', action: 'config.restart_rollback', detail: `${Object.keys(values).join('、')}，版本 #${result.version_id}`, created_at: Math.floor(Date.now() / 1000) })
     // 和真服务端一样标出这是退回写下的，页面不报它的编号 / Marked as the rollback's, as on the real server, so pages give no
     // number for it
     if (config.pending) config.pending = { ...config.pending, from_rollback: carried ? 'settings_and_pending' : 'settings' }

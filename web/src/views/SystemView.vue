@@ -31,7 +31,7 @@ import UiDotText from '../components/ui/UiDotText.vue'
 import UiTask, { type UiTaskState } from '../components/ui/UiTask.vue'
 import { useConfirm } from '../composables/useConfirm'
 import { useConnection } from '../composables/useConnection'
-import { backUnconfirmed, downShownHere, noteRead, readBeforeTelling, restartingKixdns, startingKixdns, useServiceRestart, useServiceStart } from '../composables/useServiceStart'
+import { backUnconfirmed, downShownHere, nameWith, noteRead, readBeforeTelling, restartingKixdns, startingKixdns, useServiceRestart, useServiceStart, versionName } from '../composables/useServiceStart'
 import { useToast } from '../composables/useToast'
 import { useUpdateStatus } from '../composables/useUpdateStatus'
 import { errorMessage, formatDate, formatKixdnsVersion, shortHash } from '../utils'
@@ -476,10 +476,13 @@ async function control(action: ServiceAction): Promise<void> {
   const pendingId = pending?.version_id
   const rollback = config?.runtime.restart_rollback
   const restartNames = config?.runtime.restart_pending?.length ? `重启后生效的设置：${settingNames(config.runtime.restart_pending, { all: true })}。` : ''
-  const failedNote = pendingId && pending?.error ? `版本\u00a0#${pendingId}\u00a0没有生效，重启后仍用之前那份配置${down ? '' : '；要再试，到配置页点「重试应用」'}。` : ''
+  // 退回写下的版本不报编号 / A version a rollback wrote goes without its number
+  const origin = pending?.from_rollback
+  const waitingName = pendingId ? (origin ? versionName(pendingId, origin) : `待应用的版本\u00a0#${pendingId}`) : ''
+  const failedNote = pendingId && pending?.error ? `${nameWith(versionName(pendingId, origin, true), '没有生效')}，重启后仍用之前那份配置${down ? '' : '；要再试，到配置页点\u2060「重试应用」'}。` : ''
   const waitingNote = !pendingId || pending?.error ? ''
-    : down ? (config?.runtime.pending_writable ? `起来以后就用上待应用的版本\u00a0#${pendingId}；还是不行的话，可以到配置页把它写进配置文件。` : rollback ? `起来以后就用上待应用的版本\u00a0#${pendingId}。` : '')
-    : config?.runtime.active_sha256 ? `重启前先应用待应用的版本\u00a0#${pendingId}。` : `重启后应用待应用的版本\u00a0#${pendingId}。`
+    : down ? (config?.runtime.pending_writable ? `起来以后就用上${waitingName}；还是不行的话，可以到配置页把它写进配置文件。` : rollback ? `起来以后就用上${waitingName}。` : '')
+    : config?.runtime.active_sha256 ? `重启前先应用${waitingName}。` : `重启后应用${waitingName}。`
   const restartBody = down
     ? `KixDNS\u00a0现在起不来，重启会再试一次。${rollback ? `可能是改过的设置导致的，可以到配置页退回：${settingNames(Object.keys(rollback))}。` : ''}${waitingNote}${failedNote}`
     : `服务会短暂中断，缓存会清空。${waitingNote}${restartNames}${failedNote}`
@@ -633,7 +636,7 @@ onBeforeUnmount(() => {
       <!-- 服务状态读回来之前，手机上先留出按钮那一行（灰块），读到以后内容不往下跳 / Before the service status arrives, phones keep the button row's place (a grey slab), so the content does not jump when it lands -->
       <template v-if="service || loadingService" #actions>
         <template v-if="!service"><span class="sk system-actions-sk" aria-hidden="true"></span><span class="sk system-actions-sk" aria-hidden="true"></span></template>
-        <button v-else-if="startable" class="ui-btn ui-btn--secondary" type="button" :disabled="!installed || serviceAction !== null || panelDown || waitingBack" @click="control('start')"><Play :size="16" />启动</button>
+        <button v-else-if="startable" class="ui-btn ui-btn--secondary" type="button" :disabled="!installed || serviceAction !== null || panelDown || waitingBack" @click="control('start')"><span v-if="serviceAction === 'start'" class="ui-spin" aria-hidden="true"></span><Play v-else :size="16" />启动</button>
         <template v-else>
           <button class="ui-btn ui-btn--secondary" type="button" :disabled="!installed || serviceAction !== null || panelDown || waitingBack" @click="control('restart')"><RotateCw :size="16" :class="{ spin: serviceAction === 'restart' }" />重启</button>
           <button class="ui-btn ui-btn--danger" type="button" :disabled="serviceAction !== null || panelDown || waitingBack" @click="control('stop')"><Square :size="16" />停止</button>

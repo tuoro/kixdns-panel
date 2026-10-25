@@ -8,7 +8,7 @@ import { exportConfig, readConfig } from '../config-model/document'
 import { blocklistKey, type Model, type Rule } from '../config-model/model'
 import { traceNames } from '../config-model/trace-names'
 import { useConnection } from '../composables/useConnection'
-import { configPageOpen, noteRead, restartingKixdns } from '../composables/useServiceStart'
+import { ROLLBACK_LABELS, configPageOpen, noteRead, restartingKixdns, startingKixdns, type RollbackOrigin } from '../composables/useServiceStart'
 import { serviceTone } from '../service-state'
 import { useSession } from '../composables/useSession'
 import { dismissUndoable, toastMark, useToast } from '../composables/useToast'
@@ -54,8 +54,10 @@ function restartTail(): string {
 function inEffect(): string {
   return restartPending.value.length ? `已应用${restartTail()}` : '已生效'
 }
-function appliedWords(versionId: number): string {
-  return `版本 #${versionId} ${inEffect()}`
+// 退回写下的版本用户没见过，不报编号，和重启回来的提示同一个叫法 / A version a rollback wrote is one nobody saw: no number, in the
+// same words as the toast on return from a restart
+function appliedWords(versionId: number, origin?: RollbackOrigin): string {
+  return origin ? `${ROLLBACK_LABELS[origin]}${inEffect()}` : `版本 #${versionId} ${inEffect()}`
 }
 // 带着「要重启」那句的是还有事要办，用普通提示，不打勾 / With the restart clause there is still something to do: a plain toast,
 // not a tick
@@ -233,7 +235,8 @@ export const headerStatus = computed<HeaderStatus>(() => {
     return runtimeStopped.value ? { tone: 'off', lead: 'KixDNS 已停止', before: '应用失败', wide: ['已停止', '应用失败'] } : { tone: 'err', before: '配置应用失败' }
   }
   if (hasPending.value) {
-    const waiting = pendingVersionId.value ? { before: '版本 #', version: pendingVersionId.value, after: ' 待应用' } : { before: '配置待应用' }
+    // 退回写下的版本不报编号 / A version a rollback wrote goes without its number
+    const waiting = doc.value?.pending?.from_rollback ? { before: '退回的设置待应用' } : pendingVersionId.value ? { before: '版本 #', version: pendingVersionId.value, after: ' 待应用' } : { before: '配置待应用' }
     if (failedUnit) return { tone: 'err', lead: 'KixDNS 启动失败', ...waiting, wide: ['启动失败', '待应用'] }
     if (!runtimeStopped.value) return { tone: 'warn', ...waiting }
     // KixDNS 停着时先说停了，再说哪个版本在等：后面的「启动」读作启动 KixDNS，不是启动这个版本（宽屏版本号已经在旁边的「配置版本」里）
@@ -258,8 +261,14 @@ export const headerLine = computed<HeaderStatus>(() => {
   if (!applyBusy.value && panelDown.value) return { tone: 'off', before: '状态未知', wide: ['未知'] }
   // 等 KixDNS 从重启回来：和「应用中」一样转圈 / Waiting for KixDNS to come back from a restart: a spinner like 应用中
   if (restartingKixdns.value) return { tone: 'warn', before: 'KixDNS 正在重启', wide: ['正在重启'] }
+  // 等启动的 KixDNS 回来（这一页或别的页按的「启动」）：和系统页一样转圈、写「正在启动」 / Waiting for a started KixDNS (启动
+  // pressed here or elsewhere): a spinner and 正在启动, as on the system page
+  if (startingKixdns.value) return { tone: 'warn', before: 'KixDNS 正在启动', wide: ['正在启动'] }
   if (!applyBusy.value) return headerStatus.value
   const verb = stage.value === 'validating' ? '校验中' : '应用中'
+  // 退回写下的版本不报编号 / A version a rollback wrote goes without its number
+  const origin = doc.value?.pending?.from_rollback
+  if (origin) return { tone: 'warn', before: `${ROLLBACK_LABELS[origin]}${verb}` }
   return pendingVersionId.value ? { tone: 'warn', before: '版本 #', version: pendingVersionId.value, after: ` ${verb}` } : { tone: 'warn', before: verb }
 })
 // 待应用时「现在应用」，文件和运行配置不同时「校验并应用」；有要保存的修改时让给保存栏 / 现在应用 when pending, 校验并应用 when the file differs; with changes to save it gives way to the save bar
@@ -268,7 +277,7 @@ export const headerAction = computed(() => {
   // 恢复、重新读取、删除版本、保存还在收尾时也不给：别的操作都在等它们，按了只会撞上它们，或者什么都不发生（保存途中按下会被吞掉）；冲突时先重新读取
   // Nor during a restore, a re-read, a version delete or a save still finishing: everything else waits for those, and a press would collide with them or do
   // nothing at all (a press during a save is swallowed); in a conflict, re-read first
-  if (!canApplyNow.value || unsaved.value || hasApplyFailure.value || panelDown.value || conflict.value || busy.value || rereading.value || deleting.value !== null || bulkDeleting.value || restartingKixdns.value) return ''
+  if (!canApplyNow.value || unsaved.value || hasApplyFailure.value || panelDown.value || conflict.value || busy.value || rereading.value || deleting.value !== null || bulkDeleting.value || restartingKixdns.value || startingKixdns.value) return ''
   return fileDiffers.value ? '校验并应用' : '现在应用'
 })
 export const deferNote = computed(() => {
@@ -321,7 +330,9 @@ function applyRuntime(nextDoc: ConfigDocument, overview: Overview | null, servic
     runtimeCapabilities.value = overview.live ? overview.health.capabilities : declared
     capabilityError.value = overview.live || declared.length > 0 ? '' : 'KixDNS 实时能力暂不可用'
   } else {
-    runtimeStopped.value = service?.active_state === 'inactive'
+    // systemd 放弃了（failed）也不会自己再起来，和有概览时一样算停着 / systemd giving up (failed) will not come back by itself
+    // either, so it counts as stopped, as with an overview
+    runtimeStopped.value = ['inactive', 'failed'].includes(service?.active_state ?? '')
     runtimeStarting.value = service?.active_state === 'activating'
     runtimeCapabilities.value = declared
     if (!runtimeStopped.value && !capabilityError.value && declared.length === 0) capabilityError.value = 'KixDNS 实时能力暂不可用'
@@ -865,6 +876,7 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
   // 没有生效 was already showing when this was pressed: it is a retry, and its outcome is worded as one (looking after the failure would see this run's state)
   const retrying = from === 'apply' && hasApplyFailure.value
   const failedBefore = pendingVersionId.value
+  const pressedOrigin = doc.value?.pending?.from_rollback
   // 「现在应用」一个待应用的版本：让它原地生效（服务端和后台每 5 秒做的一样），不另存一个内容相同的新版本；编号、备注都不变。
   // 「重试应用」（应用失败过的）和「校验并应用」（手改过、没有对应版本的文件）照旧写一个新版本
   // 现在应用 on a pending version puts it into effect in place (as the server's background pass does every 5 seconds) instead of storing an identical
@@ -930,7 +942,7 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
       else if (signedIn()) tellAway(useToast().info(notYet))
     }
     // 退出登录或会话过期以后，「现在应用」的结果不再报（应用没有草稿可丢，确认框也不问它） / After sign-out or expiry the outcome of 现在应用 is not reported (an apply has no draft to lose, and the confirm does not ask about it)
-    else if (from === 'apply' && applyResultState(result) === 'applied') { if (signedIn()) tellAway(effectToast(failedBefore && failedBefore !== result.version_id ? `已应用版本 #${failedBefore} 的内容，当前版本\u00a0#${result.version_id}${restartTail()}` : appliedWords(result.version_id))) }
+    else if (from === 'apply' && applyResultState(result) === 'applied') { if (signedIn()) tellAway(effectToast(failedBefore && failedBefore !== result.version_id ? `已应用版本 #${failedBefore} 的内容，当前版本\u00a0#${result.version_id}${restartTail()}` : appliedWords(result.version_id, inPlace ? pressedOrigin : undefined))) }
     // 保存途中离开了配置页：没有保存条报结果，用提示说；退出登录时放下了这份草稿就不说（确认框说过「不再告诉你结果」）
     // Left the config page mid-save: no save bar reports it, so a toast does; not after sign-out let the draft go (the confirm said no result would follow)
     // 离开以后重试应用被先存着：同样说出存的是哪一版的内容 / A retry kept as pending while away: say whose content it stored, as on the page
@@ -1294,6 +1306,7 @@ export async function rereadAndSay(edited: boolean): Promise<void> {
   const joined = pendingLoad !== null
   const before = doc.value?.sha256
   const waited = pendingVersionId.value
+  const waitedOrigin = doc.value?.pending?.from_rollback
   const writesAtStart = writeCount
   // 页面上的文件读在这一页最近一次写之后：否则文件「变了」可能是自己写的 / The file on the page was read after this page's latest write: otherwise a 「moved」 file may be its own write
   const caughtUp = docWrites === writesAtStart
@@ -1311,13 +1324,13 @@ export async function rereadAndSay(edited: boolean): Promise<void> {
   if (joined || !caughtUp || !viewing || !signedIn()) return
   // 读进来的文件没有对应的版本号时不写半截编号 / A file read in with no version number does not get half a number
   if (before !== undefined && doc.value.sha256 !== before && !unsaved.value) useToast().info(`这份配置在别处改\u2060过\u2060了，${doc.value.version_id ? `已读入版本\u00a0#${doc.value.version_id}` : '已重新读取'}`)
-  else if (waited !== null && !hasPending.value && !hasApplyFailure.value && !conflict.value && doc.value.sha256 === before) useToast().success(appliedWords(waited))
+  else if (waited !== null && !hasPending.value && !hasApplyFailure.value && !conflict.value && doc.value.sha256 === before) useToast().success(appliedWords(waited, waitedOrigin))
 }
 /** 等待应用的版本时每 5 秒看一眼 / The 5-second look while a version is pending */
 export async function checkPending(): Promise<void> {
   // 有一次读在路上（删除版本、恢复、连上后的重读）：这一下跳过，下一次再看；等重启回来时由重启那边读 / A read is out (a version
   // delete, a restore, a reconnect read): skip this tick and look next time; while a restart is awaited, the restart does the reading
-  if (pendingLoad || restartingKixdns.value) return
+  if (pendingLoad || restartingKixdns.value || startingKixdns.value) return
   await rereadAndSay(unsaved.value)
 }
 // 待应用版本的备注：文档里带着就用它，否则到历史里找 / The pending version's note: from the document when it carries one, otherwise from the history
@@ -1332,7 +1345,9 @@ function pendingNote(id: number | null): string {
 // goes without its object there; elsewhere (toasts, confirms) it is said in full
 export function pendingAfter(short = false): string {
   if (restartRollback.value) return short ? '退回时一起应用' : '退回原来的设置时一起应用'
-  return `${pendingWhen()}自\u2060动\u2060应\u2060用`
+  // 「…启动后」和「自动应用」连住：窄屏上整句断在「，」后面，不把「自动应用」单独留到第二行 / 「…启动后」 stays with 自动应用: on
+  // narrow screens the sentence breaks after 「，」 rather than leaving 自动应用 alone on the second line
+  return `${pendingWhen()}\u2060自\u2060动\u2060应\u2060用`
 }
 /** 待应用的版本什么时候自动应用：说出等的是什么 / When a pending version applies by itself: name what it waits for */
 export function pendingWhen(): string {
@@ -1368,6 +1383,13 @@ export async function readAfterOwnWrite(): Promise<void> {
 // 重启回来以后读一遍：有修改时只刷新运行状态，没有就整份静默重读；回来时应用了的版本由重启那条提示说，这里不再说
 // The read after a restart comes back: with edits only the runtime is refreshed, otherwise a whole quiet re-read; a version applied
 // on return is told by the restart's toast, so nothing is said here
+/** 安静地重读，但不搭还在路上的那次：它可能是在服务端看出结果之前发的（说启动、重启的结果之前用） / A quiet re-read that does not
+ *  ride on one still out, which may have been sent before the server saw the outcome (used before a start's or restart's outcome
+ *  is said) */
+export async function readFresh(): Promise<void> {
+  await pendingLoad?.catch(() => undefined)
+  await readQuietly()
+}
 export async function readQuietly(): Promise<void> {
   if (unsaved.value) await refreshRuntime()
   else await load({ quiet: true })

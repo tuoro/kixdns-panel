@@ -666,7 +666,7 @@ test('应用失败的版本：重启确认框不说「重启后应用」', async
   await page.getByRole('link', { name: '系统', exact: true }).first().click()
   await page.getByRole('button', { name: '重启', exact: true }).click()
   const dialog = page.locator('dialog.confirm[open]')
-  await expect(dialog).toContainText('没有生效，重启后仍用之前那份配置；要再试，到配置页点「重试应用」')
+  await expect(dialog).toContainText('没有生效，重启后仍用之前那份配置；要再试，到配置页点\u2060「重试应用」')
   await expect(dialog).not.toContainText('重启后应用待应用的版本')
   await page.keyboard.press('Escape')
 })

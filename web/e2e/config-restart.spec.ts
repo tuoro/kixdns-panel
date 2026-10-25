@@ -112,6 +112,11 @@ test('重启以后 KixDNS 没起来：页头和提示条照实说，退回原来
   await expect(page.getByText(/待应用/).locator('visible=true')).toHaveCount(0)
   await page.clock.fastForward(6_000)
   await expect(page.locator('.toast', { hasText: '已生效' })).toHaveCount(0)
+  // 操作记录写设置名，不写内核的键名 / The audit row names the setting, not the kernel's key
+  await page.evaluate(() => { history.pushState(history.state, '', '/logs?view=audit'); dispatchEvent(new PopStateEvent('popstate', { state: history.state })) })
+  const row = page.locator('.audit-line', { hasText: '退回原来的设置' })
+  await expect(row).toContainText(/UDP\s监听地址，版本 #\d+/)
+  await expect(row).not.toContainText('bind_udp')
 })
 
 test('重启以后 KixDNS 没起来：在系统页再重启一次照样起不来，退回的出路还在 @responsive', async ({ page }) => {
@@ -243,9 +248,9 @@ test('起不来、又没有可以退回的设置：指到日志；存了待应�
   await page.getByRole('button', { name: /基础与监听/ }).locator('visible=true').first().click()
   await page.getByLabel('上游超时 (ms)', { exact: true }).fill('2500')
   await page.locator('.cfg__savebar').getByRole('button', { name: '保存为待应用' }).click()
-  await expect(page.locator('.cfg__savebar')).toContainText(/已存成待应用版本 #\d+，KixDNS\s启动后自\u2060动\u2060应\u2060用/)
+  await expect(page.locator('.cfg__savebar')).toContainText(/已存成待应用版本 #\d+，KixDNS\s启动后\u2060自\u2060动\u2060应\u2060用/)
   await expect(page.locator('.cfg__savebar')).not.toContainText('写进配置文件')
-  await expect(notice).toContainText(/版本\s#\d+\s还没写进配置文件，KixDNS\s启动时用不上它。/)
+  await expect(notice).toContainText(/版本\s#\d+\s还没写进配置文件，KixDNS\s启动时读不到它。/)
   // 别的页面同样指到配置页：系统页、概览的提示条都给「去配置页」 / Other pages point to the config page too: the system page and
   // overview notices both offer 去配置页
   await page.getByRole('link', { name: '系统', exact: true }).locator('visible=true').first().click()
@@ -346,6 +351,24 @@ test('退回的确认框开着时撤销放弃、找回了修改：不退回，�
   await expect(page.getByLabel('上游超时 (ms)', { exact: true })).toHaveValue('2600')
   await expect(page.getByLabel('UDP 监听地址', { exact: true })).toHaveValue('0.0.0.0:5300')
   await expect(page.locator('.toast', { hasText: '已退回' })).toHaveCount(0)
+  // 按了却没发：说一句，不悄悄关掉 / Pressed but not sent: a line says so, rather than the dialog just closing
+  await expect(page.locator('.toast', { hasText: '草稿里又有了没保存的修改' })).toHaveText(['草稿里又有了没保存的修改，没有退回：先保存或放弃这些修改'])
+})
+
+test('别的页按了「启动」、等它回来时，配置页页头也转圈、写「正在启动」 @responsive', async ({ page }) => {
+  // 演示停掉以后配置页仍报在运行（老局限），所以从系统页按「启动」，等待中切到配置页 / The demo still reports the config page as
+  // running after a stop (a known limit), so 启动 is pressed on the system page and the config page is opened while it waits
+  await page.clock.install()
+  await page.goto('/system')
+  await page.getByRole('button', { name: '停止', exact: true }).click()
+  await page.getByRole('alertdialog').getByRole('button', { name: '停止服务', exact: true }).click()
+  await page.getByRole('button', { name: '启动', exact: true }).click()
+  await expect(page.getByText('正在启动').locator('visible=true').first()).toBeVisible()
+  await page.getByRole('link', { name: /^(配置|规则)$/ }).locator('visible=true').first().click()
+  await expect(page.getByText(/正在启动$/).locator('visible=true').first()).toBeVisible()
+  await page.clock.fastForward(2_000)
+  await expect(page.locator('.toast', { hasText: 'KixDNS 服务已启动' })).toBeVisible()
+  await expect(page.getByText(/正在启动$/).locator('visible=true')).toHaveCount(0)
 })
 
 test('退回以后还是起不来、之后重启起来了：提示说退回的设置已生效，不报退回存的编号 @responsive', async ({ page }) => {

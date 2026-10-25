@@ -144,7 +144,7 @@ export function useServiceStart() {
   const starting = ref(false)
   async function start(options: { afterBack?: () => Promise<void> } = {}): Promise<ServiceStatus | null> {
     // 重启还在等时不另起启动 / No start while a restart is still awaited
-    if (starting.value || restartingKixdns.value) return null
+    if (starting.value || startingKixdns.value || restartingKixdns.value) return null
     starting.value = true
     startingKixdns.value = true
     try {
@@ -186,36 +186,55 @@ export const rollingBackKixdns = ref(false)
 // 退回存的那几版是面板自己生成的，用户没见过：提示里不报编号，说「退回的设置」 / The versions a rollback stores are the panel's
 // own, never seen by the user: a toast gives no number for them and says 退回的设置
 // 按服务端标的来认，不看备注 / Told by the server's mark, not by the note
-const ROLLBACK_LABELS = { settings: '退回的设置', settings_and_pending: '退回的设置和待应用的修改' } as const
-interface Applied { id: number; waits: boolean; label: string }
+export const ROLLBACK_LABELS = { settings: '退回的设置', settings_and_pending: '退回的设置和待应用的修改' } as const
+export type RollbackOrigin = keyof typeof ROLLBACK_LABELS
+/** 给用户看的地方怎么称呼一个待应用的版本：退回写下的不报编号（没有生效的只会是带上的那笔修改）；别的写「版本 #N」
+ *  How a pending version is named wherever users read it: one a rollback wrote has no number (if it did not take, it can only be
+ *  the edits carried along); any other reads 版本 #N */
+export function versionName(id: number, origin?: RollbackOrigin | null, failed = false): string {
+  if (origin === 'settings_and_pending' && failed) return '待应用的修改'
+  return origin ? ROLLBACK_LABELS[origin] : `版本\u00a0#${id}`
+}
+/** 名字接状态词：编号后面空一格，退回的叫法紧接 / A name followed by its state word: a space after a number, none after the
+ *  rollback's names */
+export function nameWith(name: string, state: string): string {
+  return name.startsWith('版本') ? `${name}\u00a0${state}` : `${name}${state}`
+}
+// refused：KixDNS 回来了，却不接受这一版（回来时那次应用被拒） / refused: KixDNS is back but refused this version (the apply on
+// return was rejected)
+interface Applied { id: number; waits: boolean; name: string; refused?: boolean }
+const REFUSED = ['reload_failed', 'kixdns_rejected', 'config_validation_failed', 'unsupported_config_fields']
 async function applyWaiting(doc: ConfigDocument | null, pendingSeen: PendingSeen | null): Promise<Applied | null> {
   const pending = doc?.pending
   if (pending?.error) return null
   const id = pending?.version_id ?? pendingSeen?.id
   if (!id) return null
   const origin = pending?.version_id ? pending.from_rollback : pendingSeen?.origin
-  const result = await apiRequest<ConfigApplyResult>(`/api/v1/config/versions/${id}/apply`, { method: 'POST' }).catch(() => null)
+  const result = await apiRequest<ConfigApplyResult>(`/api/v1/config/versions/${id}/apply`, { method: 'POST' })
+    .catch((error: unknown) => (error instanceof ApiError && REFUSED.includes(error.code) ? 'refused' as const : null))
+  if (result === 'refused') return { id, waits: false, name: versionName(id, origin, true), refused: true }
   if (result?.apply_state !== 'applied') return null
-  return { id, waits: Boolean(result.active_config?.restart_pending?.length), label: origin ? ROLLBACK_LABELS[origin] : `版本\u00a0#${id}\u00a0` }
+  return { id, waits: Boolean(result.active_config?.restart_pending?.length), name: versionName(id, origin) }
 }
 // 回来时一条提示说完。应用了的版本照它报的说「已生效」或「已应用」；配置页外的「已应用」补上「有些设置要重启」，用普通提示。
 // 重启前那一下被拒了的版本也在这一条里说，配置页外指到那里看原因（配置页的提示条写着原因）
 // One toast says it on return. An applied version reads 已生效 or 已应用 as it reports; away from the config page 已应用 gets the
 // 「有些设置要重启」 clause and a plain toast. A version refused just before the restart is told in the same toast, pointing away
 // from the config page to it for the reason (the config page's notice gives the reason)
-function sayBack(done: string, applied: Applied | null, refused: number | null = null): void {
+function sayBack(done: string, applied: Applied | null, refused: string | null = null): void {
   const toast = useToast()
   // 没有生效是错误：配置页外用不会自己消失的错误提示；配置页上提示条写着原因，用普通提示 / Not taking is an error: away from
   // the config page an error toast that stays; on it the notice gives the reason, so a plain toast
-  if (refused !== null) {
-    if (configPageOpen.value) toast.info(`${done}，版本\u00a0#${refused}\u00a0没有生效`)
-    else toast.error(`${done}，版本\u00a0#${refused}\u00a0没有生效，到配置页看原因`)
+  const notTaken = refused ?? (applied?.refused ? applied.name : null)
+  if (notTaken !== null) {
+    if (configPageOpen.value) toast.info(`${done}，${nameWith(notTaken, '没有生效')}`)
+    else toast.error(`${done}，${nameWith(notTaken, '没有生效')}，到配置页看原因`)
     return
   }
   if (!applied) { toast.success(done); return }
   const away = applied.waits && !configPageOpen.value
-  const again = done.endsWith('已重启') ? '再重启一次' : '重启 KixDNS'
-  const text = `${done}，${applied.label}${applied.waits ? '已应用' : '已生效'}${away ? `，有些设置要${again}才生效` : ''}`
+  const again = done.endsWith('已重启') ? '再重启一次' : '重启 KixDNS\u00a0'
+  const text = `${done}，${nameWith(applied.name, applied.waits ? '已应用' : '已生效')}${away ? `，有些设置要${again}才生效` : ''}`
   if (away) toast.info(text)
   else toast.success(text)
 }
@@ -244,10 +263,10 @@ export function useServiceRestart() {
       // version before the restart, and the answer says how it went
       // 写进配置文件的是确认框里说的那一版：期间换了，服务端拒绝 / The version written is the one the confirm named: if it
       // changed meanwhile the server refuses
-      const sent = await apiRequest<{ applied_before?: { version_id: number; apply_state: string } }>(path, { method: 'POST', ...(options.writePending ? jsonBody({ version_id: options.writePending }) : {}) })
+      const sent = await apiRequest<{ applied_before?: { version_id: number; apply_state: string; from_rollback?: RollbackOrigin } }>(path, { method: 'POST', ...(options.writePending ? jsonBody({ version_id: options.writePending }) : {}) })
       const before = sent?.applied_before
       const { outcome, doc, pendingSeen } = await waitForKixdns()
-      const applied = outcome === 'back' ? await applyWaiting(doc, pendingSeen) ?? (before?.apply_state === 'applied' ? { id: before.version_id, waits: false, label: `版本\u00a0#${before.version_id}\u00a0` } : null) : null
+      const applied = outcome === 'back' ? await applyWaiting(doc, pendingSeen) ?? (before?.apply_state === 'applied' ? { id: before.version_id, waits: false, name: versionName(before.version_id, before.from_rollback) } : null) : null
       await readPages(options.afterBack)
       // 等完、读完，重启就结束了：先放下「正在重启」，各页的提示条换成读到的样子（起不来时说「启动失败」），再说结果
       // Waited and read, the restart is over: 正在重启 goes first and each page's notice turns to what was read (启动失败 when it
@@ -258,12 +277,25 @@ export function useServiceRestart() {
         // 退回自己存的那一版人没见过，不报它的编号；带着待应用的修改时说那笔修改也生效了
         // The version the rollback stored is one nobody saw, so its number is not given; with pending edits carried along, say
         // they took effect too
-        if (outcome === 'back') toast.success(options.rollback.hadPending && applied ? '已退回原来的设置，KixDNS 服务已重启，待应用的修改也用上了' : '已退回原来的设置，KixDNS 服务已重启')
+        // 带上的修改里也有要重启的设置时，配置页外补一句（配置页上提示条会说） / With settings in the carried edits that take a
+        // restart too, a clause follows away from the config page (on it the notice says so)
+        const tail = applied?.waits && !configPageOpen.value ? '，有些设置要再重启一次才生效' : ''
+        const carried = `已退回原来的设置，KixDNS 服务已重启，待应用的修改也用上了${tail}`
+        // 带上的修改被拒了：照实说，配置页外用不会自己消失的错误提示 / The carried edits were refused: said as they are, away from
+        // the config page in an error toast that stays
+        if (outcome === 'back' && options.rollback.hadPending && applied?.refused) {
+          const text = `已退回原来的设置，KixDNS 服务已重启；${nameWith(applied.name, '没有生效')}`
+          if (configPageOpen.value) toast.info(text)
+          else toast.error(`${text}，到配置页看原因`)
+        } else if (outcome === 'back' && options.rollback.hadPending && applied) {
+          if (tail) toast.info(carried)
+          else toast.success(carried)
+        } else if (outcome === 'back') toast.success('已退回原来的设置，KixDNS 服务已重启')
         else if (outcome === 'silent') sayStillDown('已退回原来的设置')
       } else if (options.writePending) {
         if (outcome === 'back') toast.success(`版本\u00a0#${options.writePending}\u00a0已写进配置文件，KixDNS 服务已重启`)
         else if (outcome === 'silent') sayStillDown(`版本\u00a0#${options.writePending}\u00a0已写进配置文件`)
-      } else if (outcome === 'back') sayBack('KixDNS 服务已重启', applied, before?.apply_state === 'failed' ? before.version_id : null)
+      } else if (outcome === 'back') sayBack('KixDNS 服务已重启', applied, before?.apply_state === 'failed' ? versionName(before.version_id, before.from_rollback, true) : null)
       else if (outcome === 'silent') sayNoAnswer('重启', doc)
       return outcome
     } catch (error) {

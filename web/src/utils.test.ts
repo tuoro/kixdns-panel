@@ -125,6 +125,9 @@ describe('hyphenRuns', () => {
     expect(glued('已换上新下载的拦截列表（版本 #20）')).toEqual(['版本 #20'])
     expect(glued('新下载的拦截列表：存成了版本 #20，没有生效。KixDNS 没有接受这份配置')).toEqual(['版本 #20，', 'KixDNS 没'])
     expect(glued('它留在配置页的草稿里。KixDNS\u00a0的原话：pipeline "main"')).toEqual(['KixDNS\u00a0的'])
+    // 句尾常见的词整块连住，末行不只剩一个字 / Common endings stay whole, so the last line never holds one character alone
+    expect(glued('KixDNS 启动失败，可以到配置页把版本\u00a0#19\u00a0写进配置文件')).toEqual(['KixDNS 启', '版本\u00a0#19', '写进配置文件'])
+    expect(glued('KixDNS 服务已重启，退回的设置和待应用的修改已生效')).toEqual(['KixDNS 服', '修改已生效'])
     // 默认名单独拿出来，按「·」折行 / A default name is taken out to wrap at 「·」
     expect(toastRuns('「hosts.txt\u00a0·\u00a0lists.example.org」没下载成功').find((r) => r.name)?.name).toEqual({ name: 'hosts.txt\u00a0·\u00a0lists.example.org', suffix: '' })
   })

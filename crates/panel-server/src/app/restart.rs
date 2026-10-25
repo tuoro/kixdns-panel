@@ -115,6 +115,20 @@ async fn rolled_back(state: &AppState) -> Option<RolledBack> {
     }
 }
 
+/// 操作记录里退回这一行的详情：设置名写内核的名字（日志页翻成面板上的叫法），报写进配置文件的那一版，带上修改另存的
+/// 那一版接在后面
+///
+/// The audit detail of a rollback: settings by the kernel's names (the logs page turns them into the panel's), the version
+/// written into the file, and after it the one carrying the pending edits
+fn rollback_detail(values: &BTreeMap<String, Value>, written: i64, result: i64) -> String {
+    let keys = values.keys().cloned().collect::<Vec<_>>().join("、");
+    if result == written {
+        format!("{keys}，版本 #{written}")
+    } else {
+        format!("{keys}，版本 #{written}，待应用的修改另存为版本 #{result}")
+    }
+}
+
 /// 记下这次退回写下的两版，换掉上一次的 / Record the two versions this rollback wrote, replacing the last rollback's
 async fn remember_rollback(state: &AppState, written: Stamp, carried: Option<Stamp>) {
     let record = RolledBack {
@@ -429,7 +443,7 @@ pub(super) async fn roll_back(
     if state.control.active_config().await.is_ok() {
         return Err(AppError::Conflict(
             "restart_rollback_missing",
-            "KixDNS 已经在运行，不用退回".to_owned(),
+            "没有退回：KixDNS 已经在运行".to_owned(),
         ));
     }
     let formal = state.config.current().await.map_err(map_config_error)?;
@@ -479,6 +493,7 @@ pub(super) async fn roll_back(
             .map_err(map_config_error)?,
         None => written,
     };
+    let written_id = written_stamp.id;
     let carried = (result.version_id != written_stamp.id).then(|| Stamp {
         id: result.version_id,
         sha256: result.sha256.clone(),
@@ -503,11 +518,7 @@ pub(super) async fn roll_back(
         .audit(
             Some(session.username),
             "config.restart_rollback".to_owned(),
-            format!(
-                "{}，生成版本 #{}",
-                values.keys().cloned().collect::<Vec<_>>().join("、"),
-                result.version_id
-            ),
+            rollback_detail(&values, written_id, result.version_id),
             unix_timestamp(),
         )
         .await
@@ -631,8 +642,13 @@ pub(super) async fn restart_with_pending(
         Err(NotWritable::Carried) => {
             return refuse("没有写进配置文件：退回时带上的修改等 KixDNS 起来再应用".to_owned());
         }
+        // 读库出错是错误，不是状态变了：另一个错误码，页面用不会自己消失的错误提示 / A database read error is an error, not
+        // a moved state: a code of its own, so the page shows an error toast that stays
         Err(NotWritable::Unknown) => {
-            return refuse("没有写进配置文件：面板读不到自己的记录，稍后再试".to_owned());
+            return Err(AppError::Conflict(
+                "restart_pending_write_failed",
+                "没有写进配置文件：面板读取数据出错，稍后再试".to_owned(),
+            ));
         }
     }
     state
@@ -704,6 +720,24 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// 操作记录里退回的详情：报写进文件的那一版，带上修改另存的那一版接在后面 / The rollback's audit detail: the version
+    /// written into the file, with the one carrying the pending edits after it
+    #[test]
+    fn the_rollback_detail_names_the_version_written_and_the_one_carried() {
+        let values = BTreeMap::from([
+            ("bind_udp".to_owned(), json!("0.0.0.0:53")),
+            ("cache_capacity".to_owned(), Value::Null),
+        ]);
+        assert_eq!(
+            rollback_detail(&values, 20, 20),
+            "bind_udp、cache_capacity，版本 #20"
+        );
+        assert_eq!(
+            rollback_detail(&values, 20, 21),
+            "bind_udp、cache_capacity，版本 #20，待应用的修改另存为版本 #21"
+        );
+    }
 
     fn health(pid: u32, uptime_seconds: u64) -> Health {
         serde_json::from_value(json!({
