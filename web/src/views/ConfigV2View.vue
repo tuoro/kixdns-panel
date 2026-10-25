@@ -26,12 +26,12 @@ import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, discardOnLeave, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, bulkDeleting, busy, checkPending, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, stayedDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, beginOwnWrite, isViewing, readAfterOwnWrite, readQuietly, restartPending, restartRollback, runtimeDown, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse } from '../config-v2/useConfigDocument'
+import { applyBusy, bulkDeleting, busy, checkPending, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, stayedDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, beginOwnWrite, readAfterOwnWrite, readQuietly, restartPending, restartRollback, runtimeDown, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse } from '../config-v2/useConfigDocument'
 import { dismissBlocklistToasts } from '../config-v2/useBlocklists'
 import { carryUpdate, refreshLanded, returnedToPage } from '../config-v2/updateCarry'
 import { useHelp } from '../composables/useHelp'
 import { useSession } from '../composables/useSession'
-import { dismissNoAnswer, restartingKixdns, rollingBackKixdns, useServiceRestart, useServiceStart } from '../composables/useServiceStart'
+import { backUnconfirmed, downShownHere, restartingKixdns, rollingBackKixdns, useServiceRestart, useServiceStart } from '../composables/useServiceStart'
 import { settingNames, settingValues } from '../config-editor/schema'
 import { registerLeaveGuard, takeAgreement } from '../composables/useLeaveGuard'
 import '../styles/config-v2.css'
@@ -172,7 +172,9 @@ function groupDeleted(group: UpstreamGroup, index: number): void {
 // ---------- 通知条：一次只说一件事 / the notice strip: one thing at a time ----------
 const geoPrefixed = computed(() => [...model.rules, ...model.ruleGroups.flatMap((g) => g.rules)].flatMap((r) => r.conditions.flat()).filter((c) => c.field === 'geosite' && c.values.some((v) => /^geosite:/i.test(v))).length)
 // links：说明里「」中的显示名对到规则编号（CNAME 提示点名的规则） / links: display titles in 「」 within the detail mapped to rule ids (the rules the CNAME notice names)
-interface Notice { tone: 'err' | 'warn' | 'off'; text: string; detail?: string; links?: Record<string, number>; action?: string; run?: () => void | Promise<void> }
+// down：这一条在说 KixDNS 起不来，别处带来的「启动失败」提示就不另说 / down: this one says KixDNS does not come up, so a 启动失败 toast
+// brought from elsewhere is not said again
+interface Notice { tone: 'err' | 'warn' | 'off'; text: string; detail?: string; links?: Record<string, number>; action?: string; run?: () => void | Promise<void>; down?: boolean }
 const notice = computed<Notice | null>(() => {
   // 连不上面板时由顶上的横幅说，这里不复述 / With the panel unreachable the banner says it; no second copy here
   if (loadError.value && doc.value && !panelDown.value) return { tone: 'err', text: '读取配置失败，下面是上一次读到的内容。', detail: loadError.value, action: '重试', run: () => void reload(true) }
@@ -184,7 +186,7 @@ const notice = computed<Notice | null>(() => {
   if (restartRollback.value && !panelDown.value) {
     const keys = Object.keys(restartRollback.value)
     const text = `可能是改过的设置让 KixDNS\u00a0起不来：${settingNames(keys)}。`
-    return unsaved.value && !rollingBackKixdns.value ? { tone: 'err', text, detail: '先保存或放弃草稿里的修改，再退回这些设置' } : { tone: 'err', text, action: '退回原来的设置并重启', run: rollbackSettings }
+    return unsaved.value && !rollingBackKixdns.value ? { tone: 'err', text, detail: '先保存或放弃草稿里的修改，再退回这些设置', down: true } : { tone: 'err', text, action: '退回原来的设置并重启', run: rollbackSettings, down: true }
   }
   if (hasApplyFailure.value) {
     const reason = doc.value?.runtime.pending_error || doc.value?.pending?.error || 'KixDNS 没有给出原因。'
@@ -200,10 +202,27 @@ const notice = computed<Notice | null>(() => {
     const downNow = runtimeDown.value
     const stoppedNow = runtimeStopped.value && !downNow
     const why = cause === 'KixDNS 在确认新配置前停了' ? '它在确认新配置前停了' : cause
-    return { tone: 'err', text: downNow ? `${which}没有生效。` : stoppedNow ? `${which}没有生效，KixDNS\u00a0已停止。` : `${which}没有生效，仍在用之前那份配置。`, detail: downNow ? `${why}；KixDNS 起来以后用之前那份配置` : stoppedNow ? `${why}；启动后会用之前那份配置` : reread ? `${cause}。这份配置在别处改过了，先重新读取。` : cause, action: reread ? '重新读取' : retry ? '重试应用' : undefined, run: reread ? () => reload() : retry ? () => save('apply') : undefined }
+    // 起不来时重试不了（应用要 KixDNS 在），出路是看日志 / Not coming up there is nothing to retry (applying needs KixDNS), and the
+    // way out is the logs
+    if (downNow) return { tone: 'err', text: `${which}没有生效。`, detail: `${why}；KixDNS 启动后会用之前那份配置`, action: '查看日志', run: openLogs, down: true }
+    return { tone: 'err', text: stoppedNow ? `${which}没有生效，KixDNS\u00a0已停止。` : `${which}没有生效，仍在用之前那份配置。`, detail: stoppedNow ? `${why}；启动后会用之前那份配置` : reread ? `${cause}。这份配置在别处改过了，先重新读取。` : cause, action: reread ? '重新读取' : retry ? '重试应用' : undefined, run: reread ? () => reload() : retry ? () => save('apply') : undefined }
   }
   // 连不上面板时由顶上的横幅说；连上以后核对的结果再说应用了没有 / While the panel is unreachable the banner speaks; once back, the check says whether it applied
   if (applyError.value && !panelDown.value) { const [text, ...detail] = applyError.value.split('\n'); return { tone: 'err', text: `${text}。`, detail: detail.join('\n') } }
+  // 起不来、又没有可以退回的设置：状态由页头说（「启动失败」）。存了还没写进配置文件的待应用版本时给出路——KixDNS 启动时读的
+  // 是配置文件，起不来就轮不到待应用的版本，直接写进去再重启（KixDNS 不在，没法先校验，确认框照实说）；草稿有修改时先保存或
+  // 放弃，写完整份重读。没有、或者已经写进去了（退回、写进去以后还是起不来）时指到日志
+  // Not coming up with nothing to put back: the header says the state (启动失败). With a pending version stored that is not in
+  // the config file yet there is a way out — KixDNS reads the file when it starts, so while it does not come up the pending
+  // version never gets its turn, and this writes it in before a restart (KixDNS is not there to check it first, and the confirm
+  // says so); with edits in the draft, save or discard first, as the page is read again whole afterwards. Without one, or with
+  // it in the file already (still down after a rollback or a write), it points to the logs
+  if (runtimeDown.value && !panelDown.value) {
+    const waiting = hasPending.value && !doc.value?.runtime.pending_in_file ? pendingVersionId.value : null
+    if (!waiting) return { tone: 'err', text: '查看日志了解启动失败的原因。', action: '查看日志', run: openLogs, down: true }
+    const text = `KixDNS\u00a0启动时读的是配置文件，版本\u00a0#${waiting} 还没写进去。`
+    return unsaved.value && !rollingBackKixdns.value ? { tone: 'err', text, detail: '先保存或放弃草稿里的修改，再写进配置文件', down: true } : { tone: 'err', text, action: '写进配置文件并重启', run: writePendingIn, down: true }
+  }
   // 警告排在说明前面：永远不命中的规则比导入说明要紧 / Warnings rank above information: a rule that never matches matters more than the import notes
   if (geoPrefixed.value) return { tone: 'warn', text: `${geoPrefixed.value} 个 GeoSite 条件多写了「geosite:」前缀，内核找不到对应的分类，永远不会命中。`, action: '去掉前缀', run: stripPrefix }
   // 改过、要重启才生效的设置：KixDNS 还在用启动时的值，按钮就地重启（连不上面板时由横幅说） / Settings that take a restart: KixDNS still runs
@@ -539,10 +558,12 @@ const { down: panelDown } = useConnection()
 // Declared after panelDown: the watcher runs at once and would read it before its declaration (a blank page on return).
 // A pending version with KixDNS running again: the panel's background pass puts it into effect (or finds it refused) every 5 seconds. The page looks at the
 // runtime every 5 seconds too until it is no longer pending, so the header does not keep a stale 「待应用 · 现在应用」 and a failure does not hide behind 待应用
-// KixDNS 连不上、又没停着时也这样看（systemd 下一次重试可能就起来了，页头、提示条不该一直说它起不来）
+// KixDNS 连不上、又没停着时也这样看（systemd 下一次重试可能就起来了，页头、提示条不该一直说它起不来）；刚连上的那一次也接着看
+// （起不来的循环里新进程会短暂应答，要连着两次读到才算回来）
 // Also while KixDNS is unreachable and not stopped (the next systemd retry may bring it up, and the header and notice must not keep
-// saying it cannot)
-const watchingPending = computed(() => ready.value && ((hasPending.value && !deferSave.value) || runtimeUnavailable.value) && !busy.value && !panelDown.value && !rereading.value && deleting.value === null && !bulkDeleting.value)
+// saying it cannot), and on past the first read that finds it (in a loop that never comes up a new process answers briefly, so
+// back takes two reads in a row)
+const watchingPending = computed(() => ready.value && ((hasPending.value && !deferSave.value) || runtimeUnavailable.value || backUnconfirmed.value) && !busy.value && !panelDown.value && !rereading.value && deleting.value === null && !bulkDeleting.value)
 let pendingTimer: number | undefined
 watch(watchingPending, (on) => {
   window.clearInterval(pendingTimer)
@@ -556,16 +577,21 @@ const { restart } = useServiceRestart()
 // 重启、退回的按钮在保存还没做完时按不下：保存途中重启，KixDNS 会在确认新配置前断开，好好的版本被记成没有生效
 // The restart and rollback buttons hold while a save is still finishing: a restart mid-save drops KixDNS before it confirms the new
 // config, and a sound version would be recorded as not taken
-const restarts = () => notice.value?.run === restartForSettings || notice.value?.run === rollbackSettings
+const restarts = () => [restartForSettings, rollbackSettings, writePendingIn].includes(notice.value?.run as never)
 const noticeRestarting = computed(() => restartingKixdns.value && restarts())
 const noticeHeld = computed(() => applyBusy.value || rereading.value || restartingKixdns.value || (restarts() && (saveInFlight.value || busy.value)))
 // 退回期间页面不能改：回来以后整份换上退回后的文件，途中改的会悄悄丢掉（和「重新读取」时一样）
 // The page cannot be edited during a rollback: on return the rolled-back file replaces the page, and edits made meanwhile
 // would be lost silently (as during 重新读取)
 const rollingBack = rollingBackKixdns
-// 提示条在说能退回：从别处带过来的「到配置页退回」提示收起 / The notice offers the rollback: a 「到配置页退回」 toast brought
-// from elsewhere is dismissed
-watch(restartRollback, (offered) => { if (offered) dismissNoAnswer() }, { immediate: true })
+// 提示条在说起不来：从别处带过来的「启动失败」提示收起，这一页等出来的也不另弹。同步记下：重启回来读完紧接着就要看它
+// The notice says it does not come up: a 启动失败 toast brought from elsewhere is dismissed, and one this page waited out is not
+// raised. Kept in sync: right after the read on return from a restart it is looked at
+watch(() => ready.value && Boolean(notice.value?.down), (shown) => { downShownHere.value = shown }, { immediate: true, flush: 'sync' })
+onBeforeUnmount(() => { downShownHere.value = false })
+// 函数声明：提示条在声明之前就可能读到它（回到配置页时已经读好） / A declaration: the notice may read it before this line (on return,
+// with the page already read)
+function openLogs(): void { void router.push('/logs?view=runtime') }
 // 照系统页的「重启」先确认再重启，确认框写全要重启的设置（提示条只写前三项），待应用版本那句也照系统页说；等 KixDNS 回来、整份读完
 // 才说已重启，提示条随之消失
 // Confirmed first as on the system page, with every setting waiting for the restart in the dialog (the notice names only three) and the
@@ -574,12 +600,14 @@ async function restartForSettings(): Promise<void> {
   // KixDNS 还在：服务端重启前先应用待应用的版本，一次重启就全用上 / KixDNS is still there: the server applies the pending version
   // before the restart, so one restart brings it all in
   const waiting = hasPending.value && pendingVersionId.value ? `重启前先应用待应用的版本\u00a0#${pendingVersionId.value}。` : ''
+  // 草稿里没保存的修改不在这次重启里 / Unsaved edits in the draft are not part of this restart
+  const draft = unsaved.value ? '草稿里没保存的修改不算在内。' : ''
   if (!await confirm.ask({
     title: '重启 KixDNS 服务',
-    body: `服务会短暂中断，缓存会清空。重启后生效的设置：${settingNames(restartPending.value, { all: true })}。${waiting}`,
+    body: `服务会短暂中断，缓存会清空。${waiting}重启后生效的设置：${settingNames(restartPending.value, { all: true })}。${draft}`,
     confirmLabel: '重启服务',
   })) return
-  await restart({ afterBack: readQuietly, rollbackShown: isViewing })
+  await restart({ afterBack: readQuietly })
 }
 // 退回：只把那几项改回 KixDNS 上次正常启动时的值，写进文件再重启；文件是这一页改的，读回来不说「别处改过了」
 // Rolling back: only those settings go back to the values KixDNS last started with, written to the file before a restart; this page
@@ -587,21 +615,39 @@ async function restartForSettings(): Promise<void> {
 async function rollbackSettings(): Promise<void> {
   const values = restartRollback.value
   if (!values) return
-  // 没有生效的版本不跟着写回（它被内核拒过），说一句 / A version that was refused is not written back with it, and this says so
-  const failed = hasApplyFailure.value && pendingVersionId.value ? `，没有生效的版本\u00a0#${pendingVersionId.value} 除外` : ''
+  // 待应用的版本里这几项也一起改回（服务端改好再另存）；没有生效的版本不跟着写回（它被内核拒过）：都说一句
+  // The pending version gets the same settings put back (the server changes and stores it again); a version that was refused is
+  // not written back with it: both are said
+  const one = new Set(Object.keys(values).map((key) => (key.startsWith('flow_control_') ? 'flow_control' : key))).size === 1
+  const rest = hasPending.value && pendingVersionId.value ? `待应用的版本\u00a0#${pendingVersionId.value} 里${one ? '这一项' : '这几项'}也改回，其他修改都保留。`
+    : hasApplyFailure.value && pendingVersionId.value ? `其他修改都保留；版本\u00a0#${pendingVersionId.value} 没有生效，里面的修改不算在内。`
+    : '其他修改都保留。'
   if (!await confirm.ask({
     title: '退回原来的设置',
-    body: `改回 KixDNS 上次正常启动时的值：${settingValues(values)}。其他修改都保留${failed}。`,
+    body: `改回 KixDNS 上次正常启动时的值：${settingValues(values)}。${rest}`,
     confirmLabel: '退回并重启',
   })) return
-  await restart({ rollback: true, beforeSend: beginOwnWrite, afterBack: readAfterOwnWrite, rollbackShown: isViewing })
+  await restart({ rollback: { hadPending: hasPending.value }, beforeSend: beginOwnWrite, afterBack: readAfterOwnWrite })
+}
+// 把待应用的版本写进配置文件再重启：KixDNS 不在，没法先校验，确认框照实说；文件是这一页改的，读回来不说「别处改过了」
+// Write the pending version into the config file and restart: KixDNS is not there to check it first, and the confirm says so; this
+// page changed the file, so the read-back does not say 别处改过了
+async function writePendingIn(): Promise<void> {
+  const id = pendingVersionId.value
+  if (!id) return
+  if (!await confirm.ask({
+    title: `把版本\u00a0#${id} 写进配置文件`,
+    body: 'KixDNS 不在，没法先校验这份配置：直接写进配置文件，再重启。还是起不来的话，改好再写一次。',
+    confirmLabel: '写进并重启',
+  })) return
+  await restart({ writePending: id, beforeSend: beginOwnWrite, afterBack: readAfterOwnWrite })
 }
 async function startKixdns(): Promise<void> {
-  if (!(await start({ rollbackShown: isViewing }))) return
-  // 草稿有修改时只刷新运行状态，不重读文件，免得把草稿换掉；启动时应用了的待应用版本由启动那条提示说，这里不再说
-  // With edits in the draft only the runtime state is refreshed, so the draft is not replaced; a pending version applied on start is told by the start's toast, so
-  // nothing more is said here
-  try { await readQuietly() } catch { /* 页头下次读取时再更新 / the header updates on the next read */ }
+  // 草稿有修改时只刷新运行状态，不重读文件，免得把草稿换掉；启动时应用了的待应用版本由启动那条提示说，这里不再说。读在说结果之前：
+  // 起不来时提示条先说 / With edits in the draft only the runtime state is refreshed, so the draft is not replaced; a pending version
+  // applied on start is told by the start's toast, so nothing more is said here. The read comes before the outcome is said: not
+  // coming up, the notice says it first
+  await start({ afterBack: readQuietly })
 }
 const versionLabel = computed(() => { const id = pendingVersionId.value ?? currentVersionId.value ?? doc.value?.version_id; return id === null || id === undefined ? '—' : `#${id}` })
 </script>
@@ -639,7 +685,8 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
     </UiPageHeader>
 
     <div v-if="notice && ready" class="ui-notice cfg__notice" tabindex="-1" :class="notice.tone === 'err' ? 'ui-notice--err' : notice.tone === 'off' ? 'ui-notice--off' : ''" :role="notice.tone === 'err' ? 'alert' : 'status'">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10" /><path d="M12 8v4M12 16h.01" /></svg>
+      <!-- 红色的用带叉的圆圈，和概览、诊断页一样 / The red one takes the crossed circle, as on the overview and diagnostics -->
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10" /><path v-if="notice.tone === 'err'" d="m15 9-6 6M9 9l6 6" /><path v-else d="M12 8v4M12 16h.01" /></svg>
       <span>{{ notice.text }}</span>
       <small v-if="notice.detail"><RuleText :text="notice.detail" :links="notice.links" @rule="openRule($event, null)" @group="groupEditor = { id: $event }" /></small>
       <button v-if="notice.action" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="noticeHeld" :aria-busy="noticeRestarting || undefined" @click="runNotice"><span v-if="noticeRestarting" class="ui-spin" aria-hidden="true"></span>{{ notice.action }}</button>

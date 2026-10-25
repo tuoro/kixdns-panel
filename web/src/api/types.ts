@@ -202,6 +202,10 @@ export interface ConfigDocument {
     restart_pending?: string[]
     /** 重启后 KixDNS 没回来时，可以退回的设置和它们上次启动时的值（null 是没写、用默认值）；其余时候省略 */
     restart_rollback?: Record<string, unknown>
+    /** 服务端看出 KixDNS 起不来（连不上、systemd 放弃了或在重试）；能不能退回都会带；其余时候省略 */
+    did_not_come_up?: boolean
+    /** 起不来时，待应用的版本已经在配置文件里（退回、写进配置文件以后还是起不来）；其余时候省略 */
+    pending_in_file?: boolean
   }
 }
 

@@ -284,12 +284,27 @@ fn rollback_values(startup: &Startup, formal: &Value) -> Option<BTreeMap<String,
 /// For the config page and the overview while `KixDNS` is unreachable, and the condition the rollback accepts: the mark
 /// set, the service not cleanly stopped, and settings to put back
 pub(super) async fn offer(state: &AppState, formal: &Value) -> Option<BTreeMap<String, Value>> {
-    let service = note_unreachable(state).await?;
-    let startup = load(state).await?;
+    unreachable(state, formal).await.1
+}
+
+/// `KixDNS` 连不上时：它是不是起不来（有记号、服务没被干净地停掉），以及能退回的设置。不能退回的起不来也照样说
+///
+/// With `KixDNS` unreachable: whether it is not coming up (the mark set, the service not cleanly stopped), and the
+/// settings that can go back. A failure with nothing to put back is said all the same
+pub(super) async fn unreachable(
+    state: &AppState,
+    formal: &Value,
+) -> (bool, Option<BTreeMap<String, Value>>) {
+    let Some(service) = note_unreachable(state).await else {
+        return (false, None);
+    };
+    let Some(startup) = load(state).await else {
+        return (false, None);
+    };
     if !startup.down || service.active_state == "inactive" {
-        return None;
+        return (false, None);
     }
-    rollback_values(&startup, formal)
+    (true, rollback_values(&startup, formal))
 }
 
 /// 把那几项写回启动时的值，直接写进正式文件再重启（`KixDNS` 不在，没法让它先校验）。改的只是正式文件，也就是这次
@@ -319,8 +334,7 @@ pub(super) async fn roll_back(
     let Some(values) = offer(&state, &formal.content).await else {
         return Err(AppError::Conflict(
             "restart_rollback_missing",
-            "没有可以退回的设置：KixDNS 没有在起不来，或者改过的设置已经和上次启动时一样"
-                .to_owned(),
+            "现在没有要退回的设置".to_owned(),
         ));
     };
     let desired = state.config.desired().await.map_err(map_config_error)?;
@@ -336,7 +350,7 @@ pub(super) async fn roll_back(
         .save_pending(
             with_values(formal.content.clone(), &values)?,
             &desired.sha256,
-            "退回重启前改过的设置".to_owned(),
+            "退回原来的设置".to_owned(),
             session.username.clone(),
         )
         .await
@@ -352,7 +366,7 @@ pub(super) async fn roll_back(
             .save_pending(
                 with_values(content, &values)?,
                 &written.sha256,
-                "退回重启前改过的设置（含待应用的修改）".to_owned(),
+                "退回原来的设置（含待应用的修改）".to_owned(),
                 session.username.clone(),
             )
             .await
@@ -389,6 +403,92 @@ pub(super) async fn roll_back(
         .map_err(AppError::Internal)?;
     Ok(Json(RollbackResponse {
         version_id: result.version_id,
+    }))
+}
+
+/// 写进配置文件的是页面确认过的那个待应用版本 / The pending version the page confirmed is the one written
+#[derive(Debug, Deserialize)]
+pub(super) struct WritePendingRequest {
+    version_id: i64,
+}
+
+/// 起不来、又没有可以退回的设置时，把还在等的待应用版本直接写进正式文件再重启：`KixDNS` 启动时读的是正式文件，
+/// 起不来就轮不到待应用的版本（`KixDNS` 不在，没法让它先校验，页面照实说）。还是起不来的话，改好再写一次。
+/// 能退回时、那一版已经在文件里时、待应用的版本换过时都不接受，和页面给不给这个按钮同一个判断
+///
+/// Not coming up with nothing to put back: write the pending version still waiting straight into the formal file and
+/// restart. `KixDNS` reads the formal file when it starts, so while it does not come up the pending version never gets
+/// its turn (`KixDNS` is not there to check it first, and the page says so). If it still does not come up, edit and
+/// write again. Refused while a rollback is on offer, when that version is in the file already, or when the pending
+/// version changed meanwhile: the same test as whether the page offers the button
+pub(super) async fn restart_with_pending(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Json(request): Json<WritePendingRequest>,
+) -> AppResult<Json<RollbackResponse>> {
+    let session = authenticate(&state.database, &jar).await?;
+    verify_csrf(&session, &jar, &headers)?;
+    let _apply_guard = state.config_apply_lock.lock().await;
+    let refuse = |message: String| {
+        Err(AppError::Conflict(
+            "restart_pending_write_needless",
+            message,
+        ))
+    };
+    if state.control.active_config().await.is_ok() {
+        return refuse("KixDNS 已经在运行，不用写进配置文件".to_owned());
+    }
+    let formal = state.config.current().await.map_err(map_config_error)?;
+    let (down, rollback) = unreachable(&state, &formal.content).await;
+    if !down {
+        return refuse("KixDNS 现在不是启动失败，没有写进配置文件".to_owned());
+    }
+    if rollback.is_some() {
+        return refuse("现在可以退回原来的设置，没有写进配置文件".to_owned());
+    }
+    let pending = state
+        .config
+        .pending()
+        .await
+        .map_err(AppError::Internal)?
+        .filter(|pending| pending.apply_state == CONFIG_APPLY_PENDING);
+    let Some(pending) = pending.filter(|pending| pending.id == request.version_id) else {
+        return refuse("待应用的版本已经变了，没有写进配置文件".to_owned());
+    };
+    if pending.sha256 == formal.sha256 {
+        return refuse(format!("版本 #{} 已经写进配置文件了", pending.id));
+    }
+    state
+        .config
+        .write_pending(pending.id)
+        .await
+        .map_err(map_config_error)?;
+    new_attempt(&state).await;
+    state
+        .operations
+        .service_request(ServiceAction::Restart)
+        .await
+        .map_err(map_operation_error)?;
+    new_attempt(&state).await;
+    let reconcile_state = state.clone();
+    tokio::spawn(async move {
+        if let Err(error) = reconcile_pending(&reconcile_state).await {
+            tracing::warn!(error = ?error, "写进配置文件重启后确认配置失败");
+        }
+    });
+    state
+        .database
+        .audit(
+            Some(session.username),
+            "config.write_pending_restart".to_owned(),
+            format!("#{}", pending.id),
+            unix_timestamp(),
+        )
+        .await
+        .map_err(AppError::Internal)?;
+    Ok(Json(RollbackResponse {
+        version_id: pending.id,
     }))
 }
 

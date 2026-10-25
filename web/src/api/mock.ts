@@ -321,7 +321,12 @@ function activateCopy(sourceId: number, content: Record<string, unknown>, messag
     apply_error: null,
   })
   configVersionContents.set(versionId, structuredClone(content))
-  return { version_id: versionId, sha256: config.sha256, apply_state: 'applied', active_config: activeConfig } as ConfigApplyResult
+  return { version_id: versionId, sha256: config.sha256, apply_state: 'applied', active_config: activeNow() } as ConfigApplyResult
+}
+// 应用的回应和真服务端一样带上要重启才生效的设置 / An apply's answer carries the settings waiting for a restart, as the real server's does
+function activeNow(): typeof activeConfig {
+  const restartPending = restartPendingNow()
+  return restartPending.length ? { ...activeConfig, restart_pending: restartPending } : activeConfig
 }
 
 // kixdns:demo-changed-elsewhere：下一次读配置或「现在应用」之前，另一处（别的浏览器、别的管理员）恢复了一个旧版本，演示「这份配置在别处改过了」
@@ -556,6 +561,8 @@ async function saveSlowIfAsked(): Promise<void> {
 
 // 把一份内容存成待应用的新版本：KixDNS 在运行，只是还没接 / Store content as a new pending version: KixDNS runs and has just not taken it yet
 function storePending(content: Record<string, unknown>, sha: string, versionId: number, createdAt: number, message: string): ConfigApplyResult {
+  // 新存的一版不在配置文件里 / A newly stored version is not in the config file
+  pendingInFile = false
   config = {
     ...config,
     content,
@@ -650,6 +657,22 @@ let serviceRunning = true
 // systemd keeps retrying every few seconds. As on a real panel it stays down while the file is unchanged: a save is only kept as
 // pending and another start or restart does not help; the config page's 退回原来的设置并重启 brings it back
 let restartNoAnswer = false
+// kixdns:demo-restart-no-answer 写成 no-rollback：起不来、又没有可以退回的设置（比如从没见过它正常启动）。不管文件怎么改，启动、
+// 重启都起不来，只有把待应用的版本写进配置文件再重启才回来
+// kixdns:demo-restart-no-answer set to no-rollback: down with nothing to put back (say it was never seen starting properly).
+// Whatever the file says, a start or restart fails; only writing the pending version into the file and restarting brings it back
+let downWithoutRollback = false
+// kixdns:demo-still-down：下一次退回或写进配置文件以后还是起不来（比如那个端口这期间也被占了）。和真服务端一样，写进去的那一版
+// 留在待应用、已经在配置文件里，等 KixDNS 起来再确认；之后再重启一次就回来了
+// kixdns:demo-still-down: after the next rollback or write into the file it still does not come up (say that port got taken
+// meanwhile too). As on the real server the version written stays pending, already in the file, to be confirmed once KixDNS is
+// up; one more restart afterwards brings it back
+let pendingInFile = false
+const stillDownAsked = () => {
+  if (typeof localStorage === 'undefined' || localStorage.getItem('kixdns:demo-still-down') !== 'true') return false
+  localStorage.removeItem('kixdns:demo-still-down')
+  return true
+}
 // 让它起不来的那几项（重启前要重启才生效的）：文件里它们和启动时的值不同，启动、重启就照样起不来，停了再启动也一样
 // The settings that keep it down (those waiting for the failed restart): while they differ from the starting values in the file,
 // a start or restart fails again, after a stop too
@@ -948,18 +971,31 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     const stopping = path.endsWith('/stop')
     // 和真服务端一样：KixDNS 还在时，重启前先应用还在等的待应用版本 / As on the real server: with KixDNS still there, a pending
     // version still waiting is applied before the restart
+    let appliedBefore: { version_id: number; apply_state: string } | null = null
     if (path.endsWith('/restart') && serviceRunning && !restartNoAnswer && config.pending?.version_id && !config.pending.error) {
+      appliedBefore = { version_id: config.pending.version_id, apply_state: 'applied' }
       applyPendingInPlace(config.pending.version_id)
       restartPendingNow()
     }
-    const failsNow = path.endsWith('/restart') && typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-restart-no-answer') === 'true'
-    if (failsNow) {
+    const failsNow = path.endsWith('/restart') && typeof localStorage !== 'undefined' ? localStorage.getItem('kixdns:demo-restart-no-answer') : null
+    if (failsNow === 'true' || failsNow === 'no-rollback') {
       localStorage.removeItem('kixdns:demo-restart-no-answer')
-      failingKeys = restartPendingNow()
+      downWithoutRollback = failsNow === 'no-rollback'
+      failingKeys = downWithoutRollback ? [] : restartPendingNow()
       restartNoAnswer = true
     } else if (stopping) {
       restartNoAnswer = false
-    } else if (rollbackValues()) {
+    } else if (pendingInFile && config.pending?.version_id) {
+      // 写进去还是起不来的那一版：这次起来了，读的就是它；和真服务端一样留在待应用，等页面或后台那一遍确认
+      // The version written while it stayed down: up this time and reading it; as on the real server it stays pending until the
+      // page or the background pass confirms it
+      restartNoAnswer = false
+      downWithoutRollback = false
+      pendingInFile = false
+      failingKeys = []
+      startedWith = structuredClone(settingsOf(config.content))
+      activeSettings = structuredClone(startedWith)
+    } else if (rollbackValues() || downWithoutRollback) {
       // 文件里让它起不来的设置还在：照样起不来 / The settings that keep it down are still in the file: it fails again
       restartNoAnswer = true
     } else {
@@ -969,7 +1005,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
       startedWith = structuredClone(settingsOf(config.content))
     }
     serviceRunning = !stopping
-    return serviceNow() as T
+    return (appliedBefore ? { ...serviceNow(), applied_before: appliedBefore } : serviceNow()) as T
   }
   if (path === '/api/v1/kixdns/kernel' && method === 'GET') {
     return demoKernel() as T
@@ -1012,7 +1048,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     if (restartNoAnswer) {
       const status = config.pending ? (config.pending.error ? 'failed' : 'pending') : 'unavailable'
       const rollback = rollbackValues()
-      return { ...config, runtime: { ...config.runtime, status, apply_state: config.pending ? config.runtime.apply_state : 'unavailable', active_sha256: null, generation: null, ...(rollback ? { restart_rollback: rollback } : {}) } } as T
+      return { ...config, runtime: { ...config.runtime, status, apply_state: config.pending ? config.runtime.apply_state : 'unavailable', active_sha256: null, generation: null, did_not_come_up: true, ...(pendingInFile && config.pending ? { pending_in_file: true } : {}), ...(rollback ? { restart_rollback: rollback } : {}) } } as T
     }
     return { ...config, runtime: { ...config.runtime, ...(restartPending.length ? { restart_pending: restartPending } : {}) } } as T
   }
@@ -1156,8 +1192,13 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
   // applied. The demo has no separate formal file, so pending edits stay in this one as well
   if (path === '/api/v1/config/restart-rollback' && method === 'POST') {
     const values = rollbackValues()
-    if (!restartNoAnswer || !values) throw new ApiError('没有可以退回的设置：改过的设置已经和上次启动时一样', 409, 'restart_rollback_missing')
-    const content = structuredClone(config.content)
+    if (!restartNoAnswer || !values) throw new ApiError('现在没有要退回的设置', 409, 'restart_rollback_missing')
+    // 没有生效的版本不带上：从上次生效的那一版改起，和真服务端一样 / A refused version is not carried along: the change starts from
+    // the version last applied, as on the real server
+    const carried = Boolean(config.pending && !config.pending.error)
+    const appliedId = versions.versions.find((v) => v.apply_state === 'applied')?.id
+    const base = config.pending?.error && appliedId !== undefined ? configVersionContents.get(appliedId) ?? config.content : config.content
+    const content = structuredClone(base)
     const settings = { ...settingsOf(content) }
     for (const [key, value] of Object.entries(values)) {
       if (value === null) delete settings[key]
@@ -1165,7 +1206,16 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     }
     content.settings = settings
     const sha = `back${Date.now().toString(16)}`.padEnd(64, '0').slice(0, 64)
-    const result = storePending(content, sha, ++nextConfigVersionId, Math.floor(Date.now() / 1000), '退回重启前改过的设置')
+    const result = storePending(content, sha, ++nextConfigVersionId, Math.floor(Date.now() / 1000), carried ? '退回原来的设置（含待应用的修改）' : '退回原来的设置')
+    if (stillDownAsked()) {
+      // 退回写进了文件，还是起不来：没有可退回的了，那一版留在待应用 / The rollback is in the file and it still fails: nothing
+      // left to put back, and that version stays pending
+      failingKeys = []
+      downWithoutRollback = true
+      pendingInFile = true
+      startedWith = structuredClone(settingsOf(content))
+      return { version_id: result.version_id } as T
+    }
     restartNoAnswer = false
     failingKeys = []
     serviceRunning = true
@@ -1182,6 +1232,33 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     config = { ...config, runtime: { ...config.runtime, active_sha256: sha } }
     activeConfig.sha256 = sha
     return { version_id: result.version_id } as T
+  }
+  // 把待应用的版本写进配置文件再重启：和真服务端同样的两道拒绝；写进去以后，让它起不来的那几项还在就照样起不来
+  // Write the pending version into the file and restart: the real server's two refusals; once written, it still fails while the
+  // settings that keep it down are there
+  if (path === '/api/v1/config/restart-with-pending' && method === 'POST') {
+    const refuse = (message: string) => new ApiError(message, 409, 'restart_pending_write_needless')
+    const asked = (JSON.parse(String(init?.body ?? '{}')) as { version_id?: number }).version_id
+    if (!restartNoAnswer && serviceRunning) throw refuse('KixDNS 已经在运行，不用写进配置文件')
+    if (!restartNoAnswer) throw refuse('KixDNS 现在不是启动失败，没有写进配置文件')
+    if (rollbackValues()) throw refuse('现在可以退回原来的设置，没有写进配置文件')
+    const id = config.pending && !config.pending.error ? config.pending.version_id : null
+    if (!id || id !== asked) throw refuse('待应用的版本已经变了，没有写进配置文件')
+    if (pendingInFile) throw refuse(`版本 #${id} 已经写进配置文件了`)
+    if (stillDownAsked()) {
+      pendingInFile = true
+      return { version_id: id } as T
+    }
+    downWithoutRollback = false
+    applyPendingInPlace(id)
+    activeSettings = structuredClone(settingsOf(config.content))
+    if (!rollbackValues()) {
+      restartNoAnswer = false
+      failingKeys = []
+      startedWith = structuredClone(settingsOf(config.content))
+    }
+    serviceRunning = true
+    return { version_id: id } as T
   }
   if (path === '/api/v1/config' && method === 'PUT') {
     const body = JSON.parse(String(init?.body)) as { content: Record<string, unknown>; expected_sha256: string; message?: string }
@@ -1296,7 +1373,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
       window.dispatchEvent(new Event(PANEL_UNREACHABLE_EVENT))
       throw new ApiError('连不上面板：网络断了，或者面板正在重启。稍后再试。', 0, 'network_unreachable')
     }
-    return { version_id: versionId, sha256: config.sha256, apply_state: 'applied', active_config: activeConfig } as ConfigApplyResult as T
+    return { version_id: versionId, sha256: config.sha256, apply_state: 'applied', active_config: activeNow() } as ConfigApplyResult as T
   }
   // 让待应用的版本原地生效：不新建版本，编号和备注都不变；已经生效了照实回，待应用的换了就是冲突（和真面板一样）
   // Put the pending version into effect in place: no new version, its number and note stay; already in effect answers so, and a changed pending
@@ -1312,7 +1389,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
       localStorage.removeItem('kixdns:demo-apply-error')
       throw new ApiError('面板内部出错', 500, 'internal_error')
     }
-    if (!config.pending && config.version_id === id) return { version_id: id, sha256: config.sha256, apply_state: 'applied', active_config: activeConfig } as ConfigApplyResult as T
+    if (!config.pending && config.version_id === id) return { version_id: id, sha256: config.sha256, apply_state: 'applied', active_config: activeNow() } as ConfigApplyResult as T
     // 刚试过、没有生效的这一版：照它记下的原因说（和真面板一样），不说别处改过 / This version just tried and refused: say why, as the real panel does, not 别处改过
     if (config.pending?.version_id === id && config.pending.error) throw new ApiError(config.pending.error, 422, 'reload_failed')
     if (config.pending?.version_id !== id) throw new ApiError('这份配置在别处改过了，先重新读取', 409, 'config_conflict')
@@ -1332,7 +1409,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
       window.dispatchEvent(new Event(PANEL_UNREACHABLE_EVENT))
       throw new ApiError('连不上面板：网络断了，或者面板正在重启。稍后再试。', 0, 'network_unreachable')
     }
-    return { version_id: id, sha256: config.sha256, apply_state: 'applied', active_config: activeConfig } as ConfigApplyResult as T
+    return { version_id: id, sha256: config.sha256, apply_state: 'applied', active_config: activeNow() } as ConfigApplyResult as T
   }
   const restoreMatch = pathname.match(/^\/api\/v1\/config\/versions\/(\d+)\/restore$/)
   if (restoreMatch && method === 'POST') {

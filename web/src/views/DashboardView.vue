@@ -17,7 +17,7 @@ import UiPageHeader from '../components/ui/UiPageHeader.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
 import { useConfirm } from '../composables/useConfirm'
 import { useConnection } from '../composables/useConnection'
-import { dismissNoAnswer, kixdnsBack, useServiceStart } from '../composables/useServiceStart'
+import { backUnconfirmed, downShownHere, noteRead, readBeforeTelling, useServiceStart } from '../composables/useServiceStart'
 import { serviceLabel as labelOfService, serviceTone as toneOfService, type ServiceTone } from '../service-state'
 import { settingNames } from '../config-editor/schema'
 import { useToast } from '../composables/useToast'
@@ -113,7 +113,7 @@ const metaTail = computed<'live' | 'snapshot' | ''>(() => (runtimeState.value ==
 
 // ---------- 页级提示：一次只出一条，读取错误写进原因行 ----------
 // ---------- Page notice: one at a time, a read error goes in its reason line ----------
-interface PageNotice { tone: 'warn' | 'err' | 'off'; icon: typeof CircleAlert; title: string; reason: string; action?: 'retry' | 'config' | 'logs' | 'start'; phoneOnly?: boolean }
+interface PageNotice { tone: 'warn' | 'err' | 'off'; icon: typeof CircleAlert; title: string; reason: string; action?: 'retry' | 'config' | 'rollback' | 'logs' | 'start'; phoneOnly?: boolean }
 // 原因行把几条读取错误和一句「接下来会怎样」连成一段 / The reason line joins the read errors and one sentence on what happens next
 function reasonOf(...parts: string[]): string {
   return parts.filter(Boolean).map((part) => part.replace(/[。；;.]$/, '')).join('；') + '。'
@@ -139,7 +139,7 @@ const notice = computed<PageNotice | null>(() => {
   // point to the config page (its notice can put them back) rather than the logs
   const rollback = overview.value?.restart_rollback
   const serviceNotice = (shown: string): PageNotice => tone === 'err' && rollback
-    ? { tone: 'err', icon: CircleX, title: serviceTitle, reason: reasonOf(shown, `可能是改过的设置让 KixDNS 起不来：${settingNames(Object.keys(rollback))}`, '到配置页可以退回'), action: 'config' }
+    ? { tone: 'err', icon: CircleX, title: serviceTitle, reason: reasonOf(shown, `可能是改过的设置让 KixDNS 起不来，可以退回：${settingNames(Object.keys(rollback))}`), action: 'rollback' }
     : tone === 'err'
     ? { tone: 'err', icon: CircleX, title: serviceTitle, reason: reasonOf(shown, '查看日志了解启动失败的原因'), action: 'logs' }
     : { tone: 'warn', icon: CircleAlert, title: serviceTitle, reason: reasonOf(shown, service.value?.active_state === 'activating' ? '启动完成后概览会自动更新' : '') }
@@ -149,8 +149,9 @@ const notice = computed<PageNotice | null>(() => {
         ? serviceNotice('还没有运行数据')
         : { tone: 'off', icon: Power, title: 'KixDNS 已停止', reason: reasonOf('还没有运行数据', '「启动\u00a0KixDNS」\u2060后概览会自动更新'), action: 'start' }
     case 'stopped-snapshot':
+      // 起不来不是停了：不说「停止前」 / Not coming up is not a stop: no 停止前
       return serviceTitle
-        ? serviceNotice(`显示停止前${snapshot}的快照`)
+        ? serviceNotice(tone === 'err' ? `显示${snapshot}的快照` : `显示停止前${snapshot}的快照`)
         : { tone: 'off', icon: Power, title: 'KixDNS 已停止', reason: reasonOf(`显示停止前${snapshot}的快照`, '「启动\u00a0KixDNS」\u2060后概览会自动更新'), action: 'start' }
     case 'unavailable-snapshot':
       // systemd 重试的那一下服务是 active：服务端看出它起不来时照「启动失败」说 / During a systemd retry the service reads active:
@@ -349,11 +350,10 @@ function load(silent = false): Promise<void> {
     if (versionsResult.status === 'fulfilled') versions.value = versionsResult.value.versions
     if (overviewResult.status === 'fulfilled') {
       overview.value = overviewResult.value
-      // KixDNS 活着：「没有回应」那条错误过时了，和配置页一样收起 / KixDNS is alive: the 没有回应 error is stale, dismissed as on the config page
-      if (overviewResult.value.live) kixdnsBack()
-      // 概览的提示条在说能退回：「到配置页退回」那条提示收起 / The overview's notice offers the rollback: the 「到配置页退回」 toast
-      // goes
-      else if (overviewResult.value.restart_rollback) dismissNoAnswer()
+      // 和配置页一样：连着两次读到活着才算回来，「启动失败」那条提示才收 / As on the config page: back takes two live reads in a
+      // row, and only then does the 启动失败 toast go
+      const unit = serviceResult.status === 'fulfilled' ? serviceResult.value.active_state : null
+      noteRead(overviewResult.value.live, unit ? unit === 'inactive' : overviewResult.value.service_active === false)
       overviewError.value = ''
       loadedAt.value = Date.now()
     } else overviewError.value = errorMessage(overviewResult.reason)
@@ -414,12 +414,18 @@ async function refreshAll(): Promise<void> {
 // 停着的时候在说它停着的地方就能启动，不用先去系统页 / Start it right where the page says it is stopped, without a trip to the system page
 const { starting, start } = useServiceStart()
 async function startService(): Promise<void> {
-  // 起不来、能退回时概览的提示条会说，不另弹提示 / Not coming up with a rollback on offer, the overview's notice says so, with no toast
-  const status = await start({ rollbackShown: () => true })
-  if (!status) return
-  service.value = status
-  await refreshAll()
+  // 等完先重读（见下面登记的重读），再说结果：起不来时概览的提示条先说，不另弹提示；服务状态也是重读的那份，不拿启动时那份盖掉
+  // Read again after the wait (the read registered below), before the outcome is said: not coming up, the overview's notice says
+  // it first with no toast; the service state is the one read again, not overwritten by the one the start returned
+  if (await start()) await loadStats(true)
 }
+// 不管是哪一页发起的启动、重启、退回，结束时概览先重读再说结果 / Whichever page sent the start, restart or rollback, the overview
+// reads again when it ends, before the outcome is said
+const stopReading = readBeforeTelling(() => load(true))
+// 提示条在说起不来：别处带来的「启动失败」提示收起，这一页等出来的也不另弹 / The notice says it does not come up: a 启动失败 toast
+// brought from elsewhere is dismissed, and one this page waited out is not raised
+watch(() => notice.value?.title === 'KixDNS 启动失败', (shown) => { downShownHere.value = shown }, { immediate: true, flush: 'sync' })
+onBeforeUnmount(() => { downShownHere.value = false })
 
 async function setStatsWindow(windowSeconds: number): Promise<void> {
   if (statsWindow.value === windowSeconds) return
@@ -696,6 +702,14 @@ onMounted(async () => {
   timer = window.setInterval(() => void load(true), 15000)
   statsTimer = window.setInterval(() => void loadStats(true), 60000)
 })
+// 刚连上、还没连着两次读到时每 5 秒读一次：起不来的循环里碰上一次短暂应答，不写 15 秒「运行中」
+// Every 5 seconds while reachable but not yet seen twice in a row: one brief answer inside a loop that never comes up does not
+// read 运行中 for 15 seconds
+let confirmTimer: number | undefined
+watch(backUnconfirmed, (on) => {
+  window.clearInterval(confirmTimer)
+  confirmTimer = on && !unmounted ? window.setInterval(() => void load(true), 5000) : undefined
+}, { immediate: true })
 // 连上面板后马上重读，不等下一次 15 秒的定时刷新 / Once the panel answers again re-read at once instead of waiting for the next 15-second tick
 watch(panelDown, (now, before) => { if (before && !now && !unmounted) { void loadNames(); void load(true); void loadStats(true) } })
 onBeforeUnmount(() => {
@@ -704,6 +718,8 @@ onBeforeUnmount(() => {
   unmounted = true
   window.clearInterval(timer)
   window.clearInterval(statsTimer)
+  window.clearInterval(confirmTimer)
+  stopReading()
 })
 </script>
 
@@ -744,6 +760,8 @@ onBeforeUnmount(() => {
       <small v-if="notice.reason">{{ notice.reason }}</small>
       <button v-if="notice.action === 'retry'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="requesting" @click="refreshAll">重试</button>
       <RouterLink v-else-if="notice.action === 'config'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" to="/config">管理配置</RouterLink>
+      <!-- 退回在设置分区的提示条里，和诊断页同一个去处 / The rollback is in the settings section's notice, the same place diagnostics goes -->
+      <RouterLink v-else-if="notice.action === 'rollback'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" to="/config?section=settings">去配置页</RouterLink>
       <!-- 启动失败的原因在运行日志里，直接打开那一页签（日志页默认是查询日志） / Why it failed to start is in the runtime log, so that tab opens directly (the logs page defaults to the query log) -->
       <RouterLink v-else-if="notice.action === 'logs'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" to="/logs?view=runtime">查看日志</RouterLink>
       <button v-else-if="notice.action === 'start'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="starting" :aria-busy="starting || undefined" @click="startService"><span v-if="starting" class="ui-spin" aria-hidden="true"></span>启动 KixDNS</button>

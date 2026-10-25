@@ -160,12 +160,13 @@ export function settingNames(keys: readonly string[], options: { all?: boolean }
 
 // 退回时说清每一项改回什么：「UDP 监听地址 0.0.0.0:53」「DoQ 保活间隔 15000 毫秒」；没写的照表单说默认是什么——有默认值的
 // 「默认 10000 条」「默认开启」，没有的照占位说「自动」「留空」。自动限流合成一项：开关在名单里时说开关改回什么，只有几项数值时
-// 说「自动限流的几项数值」。名字里、「数字 单位」里不断行，名字和值之间可以断（长路径整段换行，不从中间拆）
+// 说「自动限流的几项数值」。名字里、「数字 单位」里不断行；名字和值是一个读的单位，也粘在一起，只有长的值（路径、超过
+// 16 个字符）可以和名字分开，整段换到下一行，不从中间拆
 // When rolling back, say what each setting goes back to: 「UDP 监听地址 0.0.0.0:53」「DoQ 保活间隔 15000 毫秒」; an unset one says what
 // the default is, as the form does — 「默认 10000 条」「默认开启」 where there is one, otherwise the placeholder's 「自动」「留空」. Flow
 // control merges into one: with its switch in the list it says what the switch goes back to, with only numbers 「自动限流的几项数值」.
-// No break inside a name or a 「number unit」; a break may fall between name and value (a long path moves down whole instead of
-// splitting)
+// No break inside a name or a 「number unit」; name and value are read as one and stay together too, and only a long value (a
+// path, over 16 characters) may part from its name, moving down whole instead of splitting
 export function settingValues(values: Record<string, unknown>): string {
   const glue = (text: string) => text.replace(/ /g, '\u00a0')
   const order = (key: string) => { const at = FORM_FIELDS.findIndex((field) => field.key === key); return at < 0 ? FORM_FIELDS.length : at }
@@ -189,10 +190,11 @@ export function settingValues(values: Record<string, unknown>): string {
       if (flowDone) continue
       flowDone = true
       const enabled = values.flow_control_enabled
-      items.push('flow_control_enabled' in values ? `自动限流 ${switchWord(enabled === null || enabled === undefined ? false : Boolean(enabled))}` : '自动限流的几项数值')
+      items.push('flow_control_enabled' in values ? `自动限流\u00a0${valueOf('flow_control_enabled', enabled)}` : '自动限流的几项数值')
       continue
     }
-    items.push(`${glue(settingName(key))} ${valueOf(key, values[key])}`)
+    const value = valueOf(key, values[key])
+    items.push(`${glue(settingName(key))}${value.includes('/') || value.length > 16 ? ' ' : '\u00a0'}${value}`)
   }
   return items.join('、')
 }

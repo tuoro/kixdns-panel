@@ -2834,6 +2834,16 @@ async fn post_empty(context: &AuthenticatedApp, path: &str) -> (StatusCode, Valu
     send_json(context, request).await
 }
 
+async fn post_json(context: &AuthenticatedApp, path: &str, body: &Value) -> (StatusCode, Value) {
+    let request = Request::post(path)
+        .header(CONTENT_TYPE, "application/json")
+        .header(COOKIE, context.cookies.clone())
+        .header("x-csrf-token", context.csrf_token.clone())
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    send_json(context, request).await
+}
+
 fn write_pipeline(directory: &std::path::Path, content: &Value) {
     std::fs::write(
         directory.join("pipeline.json"),
@@ -2895,6 +2905,19 @@ async fn a_restart_that_does_not_come_back_can_put_the_changed_settings_back() {
     );
     let service = get_json(&context, "/api/v1/service").await;
     assert_eq!(service["did_not_come_up"], true);
+    // 能退回时不写进配置文件：页面这时不给那个按钮 / No write into the file while a rollback is on offer: the page does not
+    // offer that button then
+    let (status, refused) = post_json(
+        &context,
+        "/api/v1/config/restart-with-pending",
+        &serde_json::json!({ "version_id": 1 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(
+        refused["error"]["message"],
+        "现在可以退回原来的设置，没有写进配置文件"
+    );
 
     let (status, payload) = post_empty(&context, "/api/v1/config/restart-rollback").await;
     assert_eq!(status, StatusCode::OK, "{payload}");
@@ -2909,6 +2932,21 @@ async fn a_restart_that_does_not_come_back_can_put_the_changed_settings_back() {
     assert_eq!(document["pending"]["version_id"], payload["version_id"]);
     let (status, _) = post_empty(&context, "/api/v1/config/restart-rollback").await;
     assert_eq!(status, StatusCode::CONFLICT);
+    // 退回以后还是起不来：退回存的那一版已经在配置文件里，不用再写 / Still down after the rollback: the version it stored is
+    // in the config file already, with nothing more to write
+    assert_eq!(document["runtime"]["did_not_come_up"], true);
+    assert_eq!(document["runtime"]["pending_in_file"], true);
+    let (status, refused) = post_json(
+        &context,
+        "/api/v1/config/restart-with-pending",
+        &serde_json::json!({ "version_id": payload["version_id"] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(
+        refused["error"]["message"],
+        format!("版本 #{} 已经写进配置文件了", payload["version_id"])
+    );
 }
 
 /// 一次新的启动、重启是新的尝试：它还在加载（服务 active、连不上）时不提上一次的起不来，退回也不接受；
@@ -3015,5 +3053,108 @@ async fn the_rollback_keeps_an_unchecked_pending_version_out_of_the_formal_file(
         version["content"]["settings"]
             .get("cache_capacity")
             .is_none()
+    );
+}
+
+/// 起不来、又没有可退回的设置：配置读到 `did_not_come_up`；把待应用版本写进正式文件再重启，文件就是那一版
+/// Not coming up with nothing to put back: the config read carries `did_not_come_up`; writing the pending version into
+/// the formal file and restarting leaves the file as that version
+#[tokio::test]
+async fn a_pending_version_can_be_written_into_the_file_when_kixdns_does_not_come_up() {
+    let context = authenticated_app().await;
+    let directory = context.directory.path();
+    let (_helper, actions) = start_fake_helper(directory);
+    write_pipeline(
+        directory,
+        &serde_json::json!({ "settings": { "bind_udp": "192.0.2.7:53" }, "pipelines": [] }),
+    );
+    set_unit(directory, "activating", "auto-restart");
+    let document = get_json(&context, "/api/v1/config").await;
+    assert_eq!(document["runtime"]["did_not_come_up"], true);
+    assert!(document["runtime"].get("restart_rollback").is_none());
+    assert!(document["runtime"].get("pending_in_file").is_none());
+    let write = |version_id: i64| {
+        let context = &context;
+        async move {
+            post_json(
+                context,
+                "/api/v1/config/restart-with-pending",
+                &serde_json::json!({ "version_id": version_id }),
+            )
+            .await
+        }
+    };
+    // 没有待应用版本时不用这样做 / Needless without a pending version
+    let (status, _) = write(1).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // 写的是页面确认过的那一版：确认以后又存了一版，就不写 / The version the page confirmed is the one written: another
+    // version saved after the confirm stops it
+    let confirmed = save_pending(&context, "first-fix", "起不来时改的").await;
+    let waiting = save_pending(&context, "fixed-while-down", "起不来时改好的").await;
+    let (status, refused) = write(confirmed).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(
+        refused["error"]["message"],
+        "待应用的版本已经变了，没有写进配置文件"
+    );
+    let (status, payload) = write(waiting).await;
+    assert_eq!(status, StatusCode::OK, "{payload}");
+    assert_eq!(payload["version_id"], waiting);
+    assert_eq!(actions.lock().unwrap().as_slice(), ["restart"]);
+    let written: Value =
+        serde_json::from_slice(&std::fs::read(directory.join("pipeline.json")).unwrap()).unwrap();
+    assert_eq!(written["pipelines"][0]["id"], "fixed-while-down");
+    // 写进去还是起不来：那一版留在待应用，页面不再给写进去的出路，服务端也不再写一次 / Still down after the write: the
+    // version stays pending, the page no longer offers the write, and the server does not write again
+    let document = get_json(&context, "/api/v1/config").await;
+    assert_eq!(document["pending"]["version_id"], waiting);
+    assert_eq!(document["runtime"]["pending_in_file"], true);
+    let (status, refused) = write(waiting).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(
+        refused["error"]["message"],
+        format!("版本 #{waiting} 已经写进配置文件了")
+    );
+    assert_eq!(actions.lock().unwrap().as_slice(), ["restart"]);
+    // 停着的服务不算起不来 / A stopped service does not count as not coming up
+    set_unit(directory, "inactive", "dead");
+    let document = get_json(&context, "/api/v1/config").await;
+    assert!(document["runtime"].get("did_not_come_up").is_none());
+}
+
+/// `KixDNS` 还在时重启：先应用还在等的待应用版本，回应里说它生效了没有；没有在等的版本时不带这一项
+/// A restart with `KixDNS` still there applies the version still pending first, and the answer says how it went; with
+/// no version waiting the field is left out
+#[tokio::test]
+async fn a_restart_applies_the_waiting_version_first_and_says_how_it_went() {
+    let context = authenticated_app().await;
+    let directory = context.directory.path();
+    let (_helper, actions) = start_fake_helper(directory);
+    set_unit(directory, "active", "running");
+    let pending = save_pending(&context, "before-restart", "重启前应用").await;
+    let kixdns = start_fake_kixdns(directory, true);
+    let (status, payload) = post_empty(&context, "/api/v1/service/restart").await;
+    assert_eq!(status, StatusCode::OK, "{payload}");
+    assert_eq!(
+        payload["applied_before"],
+        serde_json::json!({ "version_id": pending, "apply_state": "applied" })
+    );
+    assert_eq!(payload["active_state"], "active");
+    let written: Value =
+        serde_json::from_slice(&std::fs::read(directory.join("pipeline.json")).unwrap()).unwrap();
+    assert_eq!(written["pipelines"][0]["id"], "before-restart");
+    let (_, payload) = post_empty(&context, "/api/v1/service/restart").await;
+    assert!(payload.get("applied_before").is_none(), "{payload}");
+    assert_eq!(actions.lock().unwrap().as_slice(), ["restart", "restart"]);
+
+    // 内核不接受那一版：说没有生效 / The kernel refuses that version: it is said not to have taken
+    stop_fake_kixdns(directory, kixdns).await;
+    let refused = save_pending(&context, "refused", "内核不接受").await;
+    let _kixdns = start_fake_kixdns(directory, false);
+    let (_, payload) = post_empty(&context, "/api/v1/service/restart").await;
+    assert_eq!(
+        payload["applied_before"],
+        serde_json::json!({ "version_id": refused, "apply_state": "failed" })
     );
 }

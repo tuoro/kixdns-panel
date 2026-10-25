@@ -212,6 +212,18 @@ struct ConfigRuntimeState {
     /// started with (`null` for unset, on the default); left out otherwise
     #[serde(skip_serializing_if = "Option::is_none")]
     restart_rollback: Option<std::collections::BTreeMap<String, Value>>,
+    /// 连不上时 `KixDNS` 起不来（不看能不能退回）；各页据此说「启动失败」，等重启的页面据此不再等
+    ///
+    /// While unreachable, `KixDNS` is not coming up (whether or not anything can go back); pages say 启动失败 by it and a
+    /// page waiting on a restart stops waiting
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    did_not_come_up: bool,
+    /// 起不来时，待应用的版本已经在配置文件里（退回、写进配置文件以后还是起不来）：`KixDNS` 起来就会确认它，不用再写
+    ///
+    /// While it does not come up, the pending version is in the config file already (still down after a rollback or a
+    /// write into the file): `KixDNS` confirms it once it is up, and there is nothing more to write
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pending_in_file: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -435,6 +447,10 @@ fn api_router(state: AppState) -> Router {
         .route("/config/versions/{id}/restore", post(restore_config))
         .route("/config/versions/{id}/apply", post(apply_pending_config))
         .route("/config/restart-rollback", post(restart::roll_back))
+        .route(
+            "/config/restart-with-pending",
+            post(restart::restart_with_pending),
+        )
         .route("/cache/flush", post(flush_cache))
         .merge(blocklist::routes())
         .merge(diagnostics::routes())
@@ -625,17 +641,25 @@ async fn get_config(
     }
     // 连不上时退回看的是正式文件：有待应用版本时它不是这里读到的那份 / While unreachable the rollback looks at the formal
     // file, which is not the document read here when a version is pending
-    let rollback = match (&active, &pending) {
-        (Ok(_), _) => None,
-        (Err(_), None) => restart::offer(&state, &document.content).await,
-        (Err(_), Some(_)) => match state.config.current().await {
-            Ok(formal) => restart::offer(&state, &formal.content).await,
-            Err(_) => None,
+    let (did_not_come_up, rollback, pending_in_file) = match (&active, &pending) {
+        (Ok(_), _) => (false, None, false),
+        (Err(_), None) => {
+            let (down, rollback) = restart::unreachable(&state, &document.content).await;
+            (down, rollback, false)
+        }
+        (Err(_), Some(summary)) => match state.config.current().await {
+            Ok(formal) => {
+                let (down, rollback) = restart::unreachable(&state, &formal.content).await;
+                (down, rollback, down && formal.sha256 == summary.sha256)
+            }
+            Err(_) => (false, None, false),
         },
     };
     let runtime = match active {
         Ok(active) => ConfigRuntimeState {
             restart_rollback: None,
+            did_not_come_up: false,
+            pending_in_file: false,
             restart_pending: active.restart_pending.clone().unwrap_or_default(),
             status: pending_status.unwrap_or(if active.sha256 == document.sha256 {
                 "active"
@@ -667,6 +691,8 @@ async fn get_config(
                 .and_then(|summary| summary.apply_error.clone()),
             restart_pending: Vec::new(),
             restart_rollback: rollback,
+            did_not_come_up,
+            pending_in_file,
         },
     };
     Ok(Json(ConfigDocumentResponse {
@@ -1702,27 +1728,53 @@ async fn reconcile_pending(state: &AppState) -> anyhow::Result<()> {
         return Ok(());
     }
     let _apply_guard = state.config_apply_lock.lock().await;
-    apply_waiting_locked(state).await
+    apply_waiting_locked(state).await.map(|_| ())
+}
+
+/// 拿着配置锁时那一下应用了哪个版本、结果怎样（`applied`、`pending`、`failed`）；重启回来时系统页照它说
+///
+/// Which version an apply under the config lock took up and how it went (`applied`, `pending`, `failed`); the system page
+/// says so on return from a restart
+#[derive(Debug, Serialize)]
+pub(crate) struct WaitingApplied {
+    version_id: i64,
+    apply_state: &'static str,
 }
 
 /// 拿着配置锁时应用还在等的待应用版本（重启前那一下也用它） / Apply the version still pending while the config lock is held
 /// (also used just before a restart)
-async fn apply_waiting_locked(state: &AppState) -> anyhow::Result<()> {
+async fn apply_waiting_locked(state: &AppState) -> anyhow::Result<Option<WaitingApplied>> {
     let Some(pending) = state.config.pending().await? else {
-        return Ok(());
+        return Ok(None);
     };
     if pending.apply_state != CONFIG_APPLY_PENDING {
-        return Ok(());
+        return Ok(None);
     }
     let content = state.config.version(pending.id).await?.content;
     let result = SaveResult {
         version_id: pending.id,
         sha256: pending.sha256,
     };
-    if let Err(error) = apply_pending_candidate(state, &content, result).await {
-        tracing::warn!(error = ?error, "待应用配置应用失败");
-    }
-    Ok(())
+    let apply_state = match apply_pending_candidate(state, &content, result).await {
+        Ok(response) => response.apply_state,
+        Err(error) => {
+            tracing::warn!(error = ?error, "待应用配置应用失败");
+            // 只有记成没有生效的才报没有生效；别的出错它还在等，之后照常应用 / Reported as refused only when recorded
+            // so; on any other error it is still waiting and is applied later as usual
+            let recorded = state.config.pending().await.ok().flatten();
+            if recorded.is_some_and(|summary| {
+                summary.id == pending.id && summary.apply_state == CONFIG_APPLY_FAILED
+            }) {
+                CONFIG_APPLY_FAILED
+            } else {
+                CONFIG_APPLY_PENDING
+            }
+        }
+    };
+    Ok(Some(WaitingApplied {
+        version_id: pending.id,
+        apply_state,
+    }))
 }
 
 async fn ensure_running_config_supported(state: &AppState, content: &Value) -> AppResult<()> {

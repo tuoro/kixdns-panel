@@ -636,8 +636,9 @@ test('服务启动失败时，页级提示和页头说同一件事，不说「�
   await expect(notice).toContainText('KixDNS 启动失败')
   await expect(notice).not.toContainText('已停止')
   await expect(notice).toHaveClass(/ui-notice--err/)
-  // 启动失败指去日志，并给出去日志页的动作 / A failure points to the logs and offers the way there
-  await expect(notice.locator('small')).toHaveText(/^显示停止前 \d{2}:\d{2} 的快照；查看日志了解启动失败的原因。$/)
+  // 启动失败指去日志，并给出去日志页的动作；它没有停过，快照不说「停止前」 / A failure points to the logs and offers the way
+  // there; it never stopped, so the snapshot does not say 停止前
+  await expect(notice.locator('small')).toHaveText(/^显示 \d{2}:\d{2} 的快照；查看日志了解启动失败的原因。$/)
   await expect(notice.getByRole('link', { name: '查看日志', exact: true })).toHaveAttribute('href', '/logs?view=runtime')
 })
 

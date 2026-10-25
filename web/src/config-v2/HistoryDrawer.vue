@@ -14,7 +14,7 @@ import { readConfig } from '../config-model/document'
 import { actorName, errorMessage, formatVersionTime } from '../utils'
 import RuleText from './RuleText.vue'
 import { appliedModel, unsaved } from './store'
-import { bulkDeleting, currentVersionId, deferSave, deleteVersion, saveInFlight, whenDraftSettles, deleteVersions, deleting, failureCause, friendlyRuntimeError, pendingWhen, restoreVersion, restoring, versionDetail, versions } from './useConfigDocument'
+import { bulkDeleting, currentVersionId, deferSave, deleteVersion, saveInFlight, whenDraftSettles, deleteVersions, deleting, failureCause, friendlyRuntimeError, pendingAfter, restoreVersion, restoring, versionDetail, versions } from './useConfigDocument'
 // 关上后焦点回到打开它的控件 / Focus returns to the opener on close
 useReturnFocus()
 
@@ -73,7 +73,7 @@ async function restore(v: ConfigVersion): Promise<void> {
   const ok = await confirm.ask({
     title: `恢复为版本 #${v.id}`,
     // KixDNS 停着或连不上时恢复出来的新版本先存成待应用，和恢复后的提示说的一样 / With KixDNS stopped or unreachable the restored version is stored as pending, as the toast after it says
-    body: `${unsaved.value ? '没保存的修改会丢失。' : ''}会用版本 #${v.id} 的内容生成一个新版本，${deferSave.value ? `${pendingWhen()}自动应用` : '并立即应用'}；现在这一版留在历史里，随时可以再恢复。`,
+    body: `${unsaved.value ? '没保存的修改会丢失。' : ''}会用版本 #${v.id} 的内容生成一个新版本，${deferSave.value ? `${pendingAfter()}` : '并立即应用'}；现在这一版留在历史里，随时可以再恢复。`,
     confirmLabel: `恢复为版本 #${v.id}`,
     // 会丢掉草稿时按会丢东西处理：焦点放在取消上 / When it drops the draft it is treated as losing something: focus starts on cancel
     destructive: unsaved.value,
@@ -89,7 +89,7 @@ async function restore(v: ConfigVersion): Promise<void> {
   const session = useSession()
   try {
     const r = await restoreVersion(v.id)
-    if (session.authenticated.value) toast.success(r.state === 'pending' ? `版本\u00a0#${v.id}\u00a0的内容\u200b存成了待应用版本\u00a0#${r.versionId}，${pendingWhen()}自\u2060动\u2060应\u2060用` : `已恢复为版本 #${v.id} 的内容，当前版本\u00a0#${r.versionId}`)
+    if (session.authenticated.value) toast.success(r.state === 'pending' ? `版本\u00a0#${v.id}\u00a0的内容\u200b存成了待应用版本\u00a0#${r.versionId}，${pendingAfter()}` : `已恢复为版本 #${v.id} 的内容，当前版本\u00a0#${r.versionId}`)
   } catch (error) {
     if (session.authenticated.value) toast.error(`没有恢复版本 #${v.id}：${friendlyRuntimeError(error)}`)
   }

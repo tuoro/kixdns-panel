@@ -3,7 +3,7 @@ use axum::http::HeaderMap;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use axum_extra::extract::CookieJar;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::auth::{authenticate, unix_timestamp, verify_csrf};
 use crate::db::AuditPage;
@@ -13,8 +13,8 @@ use crate::operations::{
 };
 
 use super::{
-    AppState, apply_waiting_locked, map_config_error, map_control_error, map_operation_error,
-    reconcile_pending, restart,
+    AppState, WaitingApplied, apply_waiting_locked, map_config_error, map_control_error,
+    map_operation_error, reconcile_pending, restart,
 };
 
 const DIAGNOSTICS_TRACE_CAPABILITY: &str = "diagnostics_trace_v1";
@@ -73,12 +73,24 @@ async fn service_status(
     Ok(Json(status))
 }
 
+/// 启动、重启、停止以后的服务状态；重启前应用了待应用的版本时带上它的结果
+///
+/// The service state after a start, restart or stop, with the outcome of the pending version applied just before a
+/// restart when there was one
+#[derive(Serialize)]
+struct ServiceActionResponse {
+    #[serde(flatten)]
+    status: ServiceStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    applied_before: Option<WaitingApplied>,
+}
+
 async fn service_action(
     State(state): State<AppState>,
     Path(action): Path<String>,
     jar: CookieJar,
     headers: HeaderMap,
-) -> AppResult<Json<ServiceStatus>> {
+) -> AppResult<Json<ServiceActionResponse>> {
     let session = authenticate(&state.database, &jar).await?;
     verify_csrf(&session, &jar, &headers)?;
     let parsed = ServiceAction::parse(&action).map_err(map_operation_error)?;
@@ -95,12 +107,14 @@ async fn service_action(
     if matches!(parsed, ServiceAction::Start | ServiceAction::Restart) {
         restart::new_attempt(&state).await;
     }
+    let mut applied_before = None;
     if matches!(parsed, ServiceAction::Restart) && state.control.active_config().await.is_ok() {
         // KixDNS 还在：先应用还在等的待应用版本，一次重启就把它里面要重启才生效的设置也用上；再记一遍它报的名单
         // KixDNS is still there: apply the version still pending first, so one restart also brings in the settings
         // in it that take a restart; then note the list it reports once more
-        if let Err(error) = apply_waiting_locked(&state).await {
-            tracing::warn!(error = ?error, "重启前应用待应用配置失败");
+        match apply_waiting_locked(&state).await {
+            Ok(applied) => applied_before = applied,
+            Err(error) => tracing::warn!(error = ?error, "重启前应用待应用配置失败"),
         }
         restart::observe(&state).await;
     }
@@ -138,7 +152,10 @@ async fn service_action(
         )
         .await
         .map_err(AppError::Internal)?;
-    Ok(Json(status))
+    Ok(Json(ServiceActionResponse {
+        status,
+        applied_before,
+    }))
 }
 
 async fn logs(

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {
+  CircleX,
   Clock,
   Cpu,
   ExternalLink,
@@ -19,6 +20,7 @@ import type {
   ConfigDocument,
   GithubTokenStatus,
   KixdnsKernel,
+  Overview,
   PanelUpdateStartResponse,
   PanelUpdateStatus,
   ServiceAction,
@@ -30,7 +32,7 @@ import UiDotText from '../components/ui/UiDotText.vue'
 import UiTask, { type UiTaskState } from '../components/ui/UiTask.vue'
 import { useConfirm } from '../composables/useConfirm'
 import { useConnection } from '../composables/useConnection'
-import { restartingKixdns, useServiceRestart, useServiceStart } from '../composables/useServiceStart'
+import { backUnconfirmed, downShownHere, noteRead, readBeforeTelling, restartingKixdns, useServiceRestart, useServiceStart } from '../composables/useServiceStart'
 import { useToast } from '../composables/useToast'
 import { useUpdateStatus } from '../composables/useUpdateStatus'
 import { errorMessage, formatDate, formatKixdnsVersion, shortHash } from '../utils'
@@ -103,6 +105,10 @@ const serviceWords = computed(() => (restartingKixdns.value ? '正在重启' : l
 // systemd is starting it (including retries every few seconds when it does not come up): 重启 and 停止 (stopping ends the
 // retries), not 启动
 const startable = computed(() => !running.value && !['active', 'activating', 'reloading'].includes(service.value?.active_state ?? ''))
+// 起不来时和概览、诊断页一样在页头下面放一条提示：可能的原因和出路（能退回去配置页，不能就看日志）
+// Not coming up, a notice under the header as on the overview and diagnostics: the likely cause and the way out (the config
+// page when settings can go back, the logs otherwise)
+const rollbackOffered = ref(false)
 // 连不上面板时，上次读到的服务状态不能当真：点变灰，写「状态未知」，连上后恢复（同概览）
 // While the panel is unreachable the last service state read cannot be trusted: the dot turns grey and reads 状态未知, restored on reconnect (as on the overview)
 const { down: panelDown } = useConnection()
@@ -406,8 +412,16 @@ function loadService(silent = false): Promise<void> {
   if (pendingService) return pendingService
   loadingService.value = true
   pendingService = (async () => {
-    service.value = await apiRequest<ServiceStatus>('/api/v1/service')
+    const next = await apiRequest<ServiceStatus>('/api/v1/service')
+    // 起不来时问一句有没有可以退回的设置（和概览同一份），提示条照它指去配置页或日志 / Not coming up, ask whether any
+    // settings can go back (the overview's answer), and the notice points to the config page or the logs by it
+    rollbackOffered.value = toneOfService(next) === 'err'
+      && Boolean(await apiRequest<Overview>('/api/v1/overview').then((overview) => overview.restart_rollback, () => null))
+    service.value = next
     serviceError.value = ''
+    // 服务在跑只能大致说明它活着：重启途中新进程还在加载时也是在跑，那时由等重启的那一边认 / A running service only roughly
+    // says it is alive: during a restart the loading process runs too, and then the side waiting on the restart decides
+    if (!restartingKixdns.value) noteRead(next.active_state === 'active' && !next.did_not_come_up, next.active_state === 'inactive')
   })().catch((error: unknown) => {
     serviceError.value = `服务状态：${errorMessage(error)}`
     if (!silent && service.value) toast.error(serviceError.value)
@@ -447,16 +461,29 @@ async function control(action: ServiceAction): Promise<void> {
   // 改过、要重启才生效的设置也说出来，和配置页的重启同一句；KixDNS 还在时服务端重启前先应用待应用的版本，连不上时回来再应用
   // The settings waiting for a restart are named too, in the config page's words; with KixDNS still there the server applies the
   // pending version before the restart, and when it is unreachable the version is applied once it is back
+  // 起不来时服务本来就断着：不说「短暂中断」，重启是再试一次，停止是让 systemd 别再重试；能退回改过的设置时指到配置页；
+  // 待应用的版本 KixDNS 起来就应用，不能退回、又还没写进配置文件的，再说一句可以到配置页写进去
+  // Not coming up, the service is down already: no 「短暂中断」; a restart tries once more and a stop has systemd stop retrying;
+  // with changed settings that can go back it points to the config page; a pending version applies once KixDNS is up, and
+  // without a rollback, when it is not in the file yet, a clause says it can be written there on the config page
+  const down = serviceTone.value === 'err'
   const config = action === 'restart' ? await apiRequest<ConfigDocument>('/api/v1/config').catch(() => null) : null
   const pending = config?.pending
   const pendingId = pending?.version_id
+  const rollback = config?.runtime.restart_rollback
   const restartNames = config?.runtime.restart_pending?.length ? `重启后生效的设置：${settingNames(config.runtime.restart_pending, { all: true })}。` : ''
-  const restartNote = restartNames + (!pendingId ? '' : pending?.error ? `版本\u00a0#${pendingId} 没有生效，重启后仍用之前那份配置；要再试，到配置页点「重试应用」。` : config?.runtime.active_sha256 ? `重启前先应用待应用的版本\u00a0#${pendingId}。` : `重启后应用待应用的版本\u00a0#${pendingId}。`)
+  const failedNote = pendingId && pending?.error ? `版本\u00a0#${pendingId} 没有生效，重启后仍用之前那份配置${down ? '' : '；要再试，到配置页点「重试应用」'}。` : ''
+  const waitingNote = !pendingId || pending?.error ? ''
+    : down ? `KixDNS 启动后应用待应用的版本\u00a0#${pendingId}${rollback || config?.runtime.pending_in_file ? '' : '；还是起不来的话，可以到配置页把它写进配置文件'}。`
+    : config?.runtime.active_sha256 ? `重启前先应用待应用的版本\u00a0#${pendingId}。` : `重启后应用待应用的版本\u00a0#${pendingId}。`
+  const restartBody = down
+    ? `KixDNS 现在起不来，重启会再试一次。${rollback ? `可能是改过的设置让它起不来，可以到配置页退回：${settingNames(Object.keys(rollback))}。` : ''}${waitingNote}${failedNote}`
+    : `服务会短暂中断，缓存会清空。${waitingNote}${restartNames}${failedNote}`
   if ((action === 'stop' || action === 'restart') && !await confirm.ask({
     title: `${names[action]} KixDNS 服务`,
     body: action === 'stop'
-      ? '停止期间，用 KixDNS 解析的设备都查不到域名，直到重新启动。配置不变，缓存会清空。'
-      : `服务会短暂中断，缓存会清空。${restartNote}`,
+      ? (down ? '停止后 systemd 不再重试启动 KixDNS。配置不变。' : '停止期间，用 KixDNS 解析的设备都查不到域名，直到重新启动。配置不变，缓存会清空。')
+      : restartBody,
     confirmLabel: `${names[action]}服务`,
     destructive: action === 'stop',
   })) return
@@ -465,6 +492,8 @@ async function control(action: ServiceAction): Promise<void> {
     // 启动、重启和别处同一个做法：等 KixDNS 回来再说结果，起不来的不说成已经启动；重启期间配置页也知道在重启
     // A start or restart works as everywhere else: the outcome is told once KixDNS is back, so one that never comes up is not called
     // started, and while it restarts the config page knows
+    // 等完先读服务状态再说结果（见下面登记的重读）：起不来时这一页的提示条先说，不另弹提示 / The service state is read after the
+    // wait, before the outcome is said (the read registered below): not coming up, this page's notice says it first with no toast
     if (action === 'restart') await restart()
     else if (action === 'start') await start()
     else {
@@ -541,8 +570,28 @@ onMounted(loadPage)
 // 连上面板后整页重读一次，不用人去点重试 / Once the panel answers again the whole page re-reads, with nobody pressing 重试
 watch(panelDown, (now, before) => { if (before && !now) loadPage() })
 
+const downNotice = computed(() => (service.value && serviceTone.value === 'err' && !panelDown.value && !restartingKixdns.value ? { rollback: rollbackOffered.value } : null))
+// 提示条在说起不来：别处带来的「启动失败」提示收起，这一页等出来的也不另弹
+// The notice says it does not come up: a 启动失败 toast brought from elsewhere is dismissed, and one this page waited out is not
+// raised
+watch(() => downNotice.value !== null, (shown) => { downShownHere.value = shown }, { immediate: true, flush: 'sync' })
+// 起不来、或者刚连上还没连着两次读到时每 5 秒看一次服务：systemd 哪次重试起来了提示条跟着收，起不来的循环里碰上一次短暂应答也
+// 不就此停下 / While it does not come up, or is reachable but not yet seen twice in a row, the service is looked at every 5
+// seconds: the notice goes once a systemd retry comes up, and one brief answer inside a loop that never comes up does not stop it
+let downTimer: ReturnType<typeof setInterval> | undefined
+watch(() => downNotice.value !== null || backUnconfirmed.value, (watching) => {
+  clearInterval(downTimer)
+  downTimer = watching ? setInterval(() => { void loadService(true) }, 5000) : undefined
+}, { immediate: true })
+// 别的页面发起的启动、重启、退回结束时，这一页也先重读再说结果 / When a start, restart or rollback sent from another page ends,
+// this page also reads again before the outcome is said
+const stopReading = readBeforeTelling(() => loadService(true))
+
 onBeforeUnmount(() => {
   if (panelUpdateTimer) clearTimeout(panelUpdateTimer)
+  clearInterval(downTimer)
+  stopReading()
+  downShownHere.value = false
 })
 </script>
 
@@ -588,6 +637,8 @@ onBeforeUnmount(() => {
 
     <!-- 什么都没读到就连不上了：标题下面一句，卡片先不画（缓存的更新卡读不到内核会写成「还没安装」，那是错的）
          Nothing read before the panel went away: one line under the title and no cards yet (the cached update card, without the kernel, would say 还没安装, which is wrong) -->
+    <!-- 和诊断页同一条：说状态、可能的原因和出路 / The same notice as on diagnostics: the state, the likely cause and the way out -->
+    <div v-if="downNotice" class="ui-notice ui-notice--err" role="status"><CircleX :size="16" aria-hidden="true" /><span>KixDNS 启动失败</span><small>{{ downNotice.rollback ? '可能是改过的设置让 KixDNS\u00a0起不来，可以退回' : '查看日志了解启动失败的原因' }}</small><RouterLink class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" :to="downNotice.rollback ? '/config?section=settings' : '/logs?view=runtime'">{{ downNotice.rollback ? '去配置页' : '查看日志' }}</RouterLink></div>
     <p v-if="waitingForPanel" class="ui-notice ui-notice--off system-wait" role="status"><Clock :size="16" aria-hidden="true" /><span>连上面板后自动打开</span></p>
     <template v-else>
     <!-- 卡片都是概览那套：小标签一行，右端一个标签或按钮；内容是细线隔开的行 / Every card follows the overview: a small label line with a tag or button at its end; rows between hairlines -->

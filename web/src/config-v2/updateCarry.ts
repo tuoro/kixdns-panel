@@ -4,7 +4,7 @@ import { useSession } from '../composables/useSession'
 import { useToast } from '../composables/useToast'
 import { appliedModel, changesBesidesFile, dialogEdits, draftGeneration, editorEdited, jsonEdited, model, sameDraftSince } from './store'
 import { dismissDraftedFailure, rebuildBlocklists, sayDrafted } from './useBlocklists'
-import { conflict, conflictToldAway, draftBusy, keepDraftWhileAway, lastSaveLost, lastSaveWrite, pageAway, pendingWhen, save, stage, whenDraftSettles, type SaveWords } from './useConfigDocument'
+import { conflict, conflictToldAway, draftBusy, keepDraftWhileAway, lastSaveLost, lastSaveWrite, pageAway, pendingAfter, save, stage, whenDraftSettles, type SaveWords } from './useConfigDocument'
 
 // 立即更新下好以后怎么收场，放在一处：落地时、离开时放弃了修改以后、保存途中丢掉了之后改的以后，都走这里。
 // 规矩只有一条：草稿里除了这份新文件没有别的修改，就直接存成「手动更新拦截列表」；有别的修改就留在草稿里，跟着下次保存。
@@ -48,7 +48,7 @@ const NB = '\u00a0'
 const words = (button: string): SaveWords => ({
   done: (version) => `已换上新下载的拦截列表（版本${NB}#${version}）`,
   // 「：」给提示条一个能折行的地方，版本号不会被拆开 / The 「：」 gives the toast a place to wrap, so the version number is never split
-  pending: (version) => `新下载的拦截列表：已存成待应用版本${NB}#${version}，${pendingWhen()}自动应用`,
+  pending: (version) => `新下载的拦截列表：已存成待应用版本${NB}#${version}，${pendingAfter()}`,
   subject: '新下载的拦截列表',
   conflict: `新下载的拦截列表没能存上：这份配置在别处改过了；回到配置页重新读取，再点一次「${button}」`,
   kept: '它留在配置页的草稿里',

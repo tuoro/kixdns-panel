@@ -8,7 +8,7 @@ import { exportConfig, readConfig } from '../config-model/document'
 import { blocklistKey, type Model, type Rule } from '../config-model/model'
 import { traceNames } from '../config-model/trace-names'
 import { useConnection } from '../composables/useConnection'
-import { kixdnsBack, restartingKixdns } from '../composables/useServiceStart'
+import { configPageOpen, noteRead, restartingKixdns } from '../composables/useServiceStart'
 import { serviceTone } from '../service-state'
 import { useSession } from '../composables/useSession'
 import { dismissUndoable, toastMark, useToast } from '../composables/useToast'
@@ -36,7 +36,7 @@ export const runtimeStarting = ref(false)
 const runtimeService = ref<ServiceStatus | null>(null)
 // 起不来：systemd 放弃了、正在重试，或者服务端看出来；KixDNS 又确实连不上 / Not coming up: systemd gave up or retries, or the
 // server sees it; and KixDNS is indeed unreachable
-export const runtimeDown = computed(() => serviceTone(runtimeService.value) === 'err' && !doc.value?.runtime.active_sha256)
+export const runtimeDown = computed(() => (serviceTone(runtimeService.value) === 'err' || Boolean(doc.value?.runtime.did_not_come_up)) && !doc.value?.runtime.active_sha256)
 // 改过、要重启 KixDNS 才生效的设置（内核的设置名）。KixDNS 停着时不算：启动它就全用上了
 // Settings changed that take a restart of KixDNS to apply (the kernel's names). Not while KixDNS is stopped: starting it applies them all
 export const restartPending = computed(() => (runtimeStopped.value ? [] : doc.value?.runtime.restart_pending ?? []))
@@ -223,13 +223,10 @@ watch(hasPending, (now) => { if (!now && stage.value === 'done' && note.value.st
 // wide: what sits under the 状态 label on wide screens (lead by default, else the whole line); phones have no label and show lead plus the line
 export interface HeaderStatus { tone: 'ok' | 'warn' | 'err' | 'off'; lead?: string; before: string; version?: number; after?: string; wide?: string[] }
 export const headerStatus = computed<HeaderStatus>(() => {
-  // 重启后没回来、能退回改过的设置：先说这件事，提示条给退回的按钮 / Not back from a restart, with changed settings that can go
-  // back: this comes first, and the notice holds the button
-  if (restartRollback.value) return { tone: 'err', before: 'KixDNS 启动失败', wide: ['启动失败'] }
   // 起不来（systemd 放弃了、正在重试，或者服务端看出来）：和概览、系统页一样说「启动失败」，红色；有待应用、应用失败的版本时
   // 接在后面说 / Not coming up (systemd gave up or retries, or the server sees it): 启动失败 in red, as on the overview and the system
   // page; a pending or failed version follows it
-  const failedUnit = runtimeDown.value
+  const failedUnit = runtimeDown.value || restartRollback.value !== null
   // 应用失败、KixDNS 又停着：先说停了，旁边的「启动」读作启动 KixDNS，不是启动那份失败的配置 / Failed and KixDNS stopped: the stop comes first, so 启动 beside it reads as starting KixDNS, not the failed config
   if (hasApplyFailure.value) {
     if (failedUnit) return { tone: 'err', lead: 'KixDNS 启动失败', before: '应用失败', wide: ['启动失败', '应用失败'] }
@@ -275,6 +272,8 @@ export const headerAction = computed(() => {
   return fileDiffers.value ? '校验并应用' : '现在应用'
 })
 export const deferNote = computed(() => {
+  if (restartRollback.value) return '保存后随退回原来的设置一起应用'
+  if (runtimeDown.value) return '保存后等 KixDNS 启动再应用，也可以写进配置文件'
   if (runtimeStopped.value) return '保存后等 KixDNS 启动再应用'
   if (runtimeUnavailable.value) return '保存后等连上 KixDNS 再应用'
   if (capabilityError.value) return 'KixDNS 没有报告它支持哪些功能，保存后先存成待应用版本'
@@ -314,8 +313,6 @@ const isConflict = (error: unknown) => error instanceof ApiError && error.code =
 // ---------- 读 / load ----------
 function applyRuntime(nextDoc: ConfigDocument, overview: Overview | null, service: ServiceStatus | null): void {
   const declared = nextDoc.runtime.declared_capabilities ?? []
-  // 读到 KixDNS 活着：「重启后没有回应」那条错误过时了 / KixDNS read alive: the 重启后没有回应 error is stale
-  if (nextDoc.runtime.active_sha256) kixdnsBack()
   runtimeService.value = service
   if (overview) {
     const unit = service?.active_state
@@ -329,6 +326,8 @@ function applyRuntime(nextDoc: ConfigDocument, overview: Overview | null, servic
     runtimeCapabilities.value = declared
     if (!runtimeStopped.value && !capabilityError.value && declared.length === 0) capabilityError.value = 'KixDNS 实时能力暂不可用'
   }
+  // 认定活着要连着两次读到；认定以后「启动失败」那条提示收起 / Alive takes two reads in a row; once it is, the 启动失败 toast goes
+  noteRead(Boolean(nextDoc.runtime.active_sha256), runtimeStopped.value)
 }
 // 只刷新运行状态，不碰草稿和文件的散列：草稿有修改时（比如在页头启动 KixDNS 之后）用它，保存时照样能发现别处的改动
 // Refresh only the runtime state, leaving the draft and the file hash alone: used while the draft has edits (after starting KixDNS from
@@ -704,6 +703,7 @@ function dismissAwayToast(): void {
 /** 配置页打开（true）或离开（false）；打开时返回要不要留着草稿 / The config page opened (true) or left (false); on open, returns whether to keep the draft */
 export function setViewing(open: boolean): boolean {
   viewing = open
+  configPageOpen.value = open
   // 「现在应用」断线时还在配置页、随后离开：这时就挂上「不知道…应用了没有」，连上后的核对才有一条可以换掉（以前离开后什么都不说）
   // 现在应用 was cut off on the page and the user then leaves: raise 「不知道…应用了没有」 now, so the check after reconnecting has a toast to replace (nothing was said away before)
   if (!open && unanswered?.from === 'apply' && (awayToast === null || awayResults.has(awayToast)) && signedIn()) awayToast = useToast().error(`不知道${unanswered.pending ? `版本 #${unanswered.pending} ` : '配置'}应用了没有：连不上面板。连上后会自己核对`)
@@ -904,7 +904,7 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
     dismissUndoable(sentAt)
     await load({ quiet: true, keepDraft: true, sent })
     // 「就绪后 / 启动后」看读回来以后的运行状态，不看按下时的 / 就绪后 / 启动后 follows the runtime as read back, not as it was at the press
-    const pendingText = `已存成待应用版本 #${result.version_id}，${pendingWhen()}自\u2060动\u2060应\u2060用`
+    const pendingText = `已存成待应用版本 #${result.version_id}，${pendingAfter()}`
     // 保存途中又改了的：说一句那几处还没保存，不让「已生效」盖过它们 / Edits made during the save: say they are not saved yet, so 已生效 does not cover them
     const later = changeCount.value ? ` · 之后改的 ${changeCount.value} 处还没保存` : jsonEdited.value ? ' · JSON 里之后改的还没保存' : ''
     lastWrite = { version: result.version_id, state: applyResultState(result) }
@@ -921,10 +921,10 @@ export async function save(from: 'draft' | 'apply' = 'draft', versionNote?: stri
     // 「重试应用」被服务端先存着（KixDNS 这会儿没回应）：提示条一下子没了，说一句它存成了哪个待应用版本
     // 重试应用 kept by the server (KixDNS not answering just now): the notice simply vanishes, so say which pending version it became
     // 「版本 #N 的内容」连成一块，后面可以断开 / 「版本 #N 的内容」 is one block, with a break allowed after it
-    const retriedPending = `版本\u00a0#${failedBefore}\u00a0的内容\u200b存成了待应用版本\u00a0#${result.version_id}，${pendingWhen()}自\u2060动\u2060应\u2060用`
+    const retriedPending = `版本\u00a0#${failedBefore}\u00a0的内容\u200b存成了待应用版本\u00a0#${result.version_id}，${pendingAfter()}`
     if (retrying && applyResultState(result) === 'pending' && viewing) useToast().info(retriedPending)
     else if (inPlace && applyResultState(result) === 'pending') {
-      const notYet = `版本 #${result.version_id} 还没有应用：${runtimeStopped.value ? 'KixDNS\u00a0已停止，启动后自动应用' : 'KixDNS\u00a0没有回应，就绪后自动应用'}`
+      const notYet = `版本 #${result.version_id} 还没有应用：${runtimeDown.value || restartRollback.value ? `KixDNS\u00a0启动失败，${pendingAfter()}` : runtimeStopped.value ? 'KixDNS\u00a0已停止，启动后自动应用' : 'KixDNS\u00a0没有回应，就绪后自动应用'}`
       // 后台几秒内就会补上：离开后也用会自己收起的提示，不挂一条很快就过时的红色提示 / The background pass catches up within seconds: away too it is a self-dismissing info toast, not a red one that soon goes stale
       if (viewing) useToast().info(notYet)
       else if (signedIn()) tellAway(useToast().info(notYet))
@@ -1229,7 +1229,7 @@ async function settleOnce(announce: boolean): Promise<boolean> {
     const opening = stored ? (version ? `刚才那次应用存成了${version}` : '刚才那次应用存上了') : applying ? '刚才那次应用' : `${lostSave}已经存上了`
     const which = stored || !version ? '' : `${version} `
     const said = hasApplyFailure.value ? useToast().error(`${opening}：${which}没有生效，${viewing ? '可以重试应用' : '回到配\u2060置\u2060页可以重试应用'}`)
-      : hasPending.value ? useToast().success(`${opening}：${which}待应用，${pendingWhen()}自\u2060动\u2060应\u2060用`)
+      : hasPending.value ? useToast().success(`${opening}：${which}待应用，${pendingAfter()}`)
       // 面板替人做的保存（words）照旧说「已生效」：要重启的设置和它无关；应用没有编号时不说「已经应用」，说「已经完成」
       // A save the panel made (words) still says 已生效: the settings waiting for a restart have nothing to do with it; an apply
       // without a number reads 已经完成 rather than 已经应用
@@ -1324,10 +1324,21 @@ export async function checkPending(): Promise<void> {
 function pendingNote(id: number | null): string {
   return doc.value?.pending?.message || (id ? versions.value.find((v) => v.id === id)?.message ?? '' : '')
 }
+/** 待应用的版本接下来怎么用上：KixDNS 起来就自动应用；起不来时把另一条路也说出来——能退回就随退回一起应用，不能退回、
+ *  又还没写进配置文件的，也可以写进去（已经写进去的不再提）
+ *  How a pending version will be used next: it applies by itself once KixDNS is up; not coming up, the other way is said too —
+ *  with a rollback on offer it applies with it, and without one, if it is not in the file yet, it can be written there (one in
+ *  the file already is not mentioned) */
+export function pendingAfter(): string {
+  if (restartRollback.value) return '退回原来的设置时一起应用'
+  const writable = runtimeDown.value && !doc.value?.runtime.pending_in_file
+  return `${pendingWhen()}自\u2060动\u2060应\u2060用${writable ? '，也可以写进配置文件' : ''}`
+}
 /** 待应用的版本什么时候自动应用：说出等的是什么 / When a pending version applies by itself: name what it waits for */
 export function pendingWhen(): string {
   // 主语和「后」连住：手机上不拆成「连上 KixDNS / 后自动应用」 / The subject stays glued to 后, so phones never split 「连上 KixDNS / 后自动应用」
-  if (runtimeStopped.value) return 'KixDNS\u00a0启动后'
+  // 起不来和停着一样说「启动后」 / Not coming up reads 启动后, as stopped does
+  if (runtimeStopped.value || runtimeDown.value) return 'KixDNS\u00a0启动后'
   if (runtimeUnavailable.value) return '连上\u00a0KixDNS\u00a0后'
   return 'KixDNS\u00a0就绪后'
 }
@@ -1366,9 +1377,6 @@ export async function readQuietly(): Promise<void> {
 export function beginOwnWrite(): void {
   writeCount += 1
 }
-// 配置页开着没有：等重启的时候离开了，结果由提示说 / Whether the config page is open: one left while a restart was awaited has its
-// outcome told by a toast
-export const isViewing = (): boolean => viewing
 export async function restoreVersion(id: number): Promise<{ state: 'applied' | 'pending'; versionId: number }> {
   if (!doc.value) throw new Error('配置还没读进来')
   restoring.value = id
