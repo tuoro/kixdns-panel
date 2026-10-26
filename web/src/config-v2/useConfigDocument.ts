@@ -1621,7 +1621,7 @@ async function settleOnce(announce: boolean): Promise<boolean> {
     // start, so the button will not be there afterwards
     const readsOnStart = current.runtime.did_not_come_up || stoppedNow
     const checkAgain = unsaved.value ? '；保存时会带上文件里的改动' : readsOnStart ? '，KixDNS\u00a0启动后会读这份文件' : !kixdnsIn ? `，${backWhen(current.runtime, stoppedNow)}，可以再点「校验并应用」` : '，可以再点「校验并应用」'
-    if (viewing && announce && !changedElsewhere && !gone) pageResult = useToast().info(applying ? (lost.retrying ? `重试没有送到面板${retryAgain}` : checking ? `配置还没有应用${checkAgain}` : `${pendingName}还没有应用${applyAgain}`) : `${lostSave}没有存上${unsaved.value ? '，可以再保存' : ''}`)
+    if (viewing && announce && !changedElsewhere && !gone) pageResult = useToast().info(applying ? (lost.retrying ? `重试没有送到面板${retryAgain}` : checking ? `配置还没有应用${checkAgain}` : `${pendingName}还没有应用${applyAgain}`) : `${lostSave}\u200b没有存上${unsaved.value ? '，可以再保存' : ''}`)
     // 面板替人做的保存被别处盖掉：冲突和原因由保存条说，这里只说保存条没说的那一步（用户定的） / A save made on the user's behalf was overwritten
     // elsewhere: the bar says the conflict and why, so this only gives the step the bar lacks (the user's call)
     // 放在拦截列表那一格里：冲突过去、离开时放弃、会话结束时都收起 / Said in the blocklist slot: it goes once the conflict is over, on a discard on leaving,
@@ -1630,11 +1630,11 @@ async function settleOnce(announce: boolean): Promise<boolean> {
     // 在页上放弃了修改、其实又没写进去：说「不知道」时许过会核对，照实回一句，人走了也一样（离开时放弃的，补存会自己说结果）
     // Discarded on the page and in fact not written: 不知道 promised a check, so it answers plainly, away too (one discarded on leaving has its make-up save
     // tell the result)
-    if (toldHere && announce && pageDiscarded && !changedElsewhere) useToast().info(`${lostSave}没有存上`)
+    if (toldHere && announce && pageDiscarded && !changedElsewhere) useToast().info(`${lostSave}\u200b没有存上`)
     // 不在配置页时，「不知道存上没有」那条提示换成核对的结果 / Away from the config page, the 不知道存上没有 toast is replaced by the result
     if (!viewing && awayToast !== null && gone) {
       dismissAwayToast()
-      if (pageDiscarded && !changedElsewhere) tellAway(useToast().info(`${lostSave}没有存上`))
+      if (pageDiscarded && !changedElsewhere) tellAway(useToast().info(`${lostSave}\u200b没有存上`))
     } else if (!viewing && awayToast !== null && applying && lost.inPlace && !changedElsewhere) {
       // 原地应用没写进去：待应用的版本还在，后台几秒内会自己补上。和回应回来说「先存着」时一样用会自己收起的提示，说它什么时候自己应用，
       // 不挂一条很快就过时、还指回配置页按钮的红色提示 / An in-place apply that was not written: the pending version is still there
