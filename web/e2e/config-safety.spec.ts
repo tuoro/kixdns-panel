@@ -1887,10 +1887,38 @@ test('锁着时离开那一问开着时核对出没存上：同意离开以后�
   await expect.poll(() => toastTexts(page), { timeout: 12_000 }).toContain('刚才那次保存没有存上，可以再保存')
   await ask.getByRole('button', { name: '放弃修改', exact: true }).click()
   await expect(page).toHaveURL(/\/logs/)
-  await expect.poll(() => toastTexts(page)).toContain('配置页的草稿还没保存，回去再保存')
+  await expect.poll(() => toastTexts(page)).toContain('刚才那次保存没有存上。草稿留在配置页，回去再保存')
+  // 页上说过的那句不跟过来 / What was said on the page does not follow
+  expect(await toastTexts(page)).not.toContain('刚才那次保存没有存上，可以再保存')
   await page.locator('.desktop-nav').getByRole('link', { name: '规则', exact: true }).click()
   await expect(page.locator('[data-rule]', { hasText: 'lock-ask-race.example' })).toHaveCount(1)
   await expect(page.locator('.cfg__savebar')).toContainText(/已修改/)
+})
+
+// 同一条路，核对出存上了、草稿里没有别的修改：同意离开以后照离开以后的说法说结果，不是什么都不说
+// The same path with the check finding the save landed and nothing else in the draft: after agreeing to leave, the result is told as it
+// is away, rather than nothing at all
+test('锁着时离开那一问开着时核对出存上了：同意离开以后照样说结果', async ({ page }) => {
+  await readSequence(page)
+  await page.goto('/config')
+  await addRule(page, 'lock-ask-landed.example')
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-save-slow', '3000'); localStorage.setItem('kixdns:demo-put-answer-lost', 'true') })
+  await page.locator('.cfg__savebar').getByRole('button', { name: '保存并应用' }).click()
+  await page.getByRole('link', { name: '上游组', exact: true }).locator('visible=true').first().click()
+  await page.locator('.gcard__name').first().click()
+  const drawer = page.locator('dialog[open]')
+  await expect(drawer).toBeVisible()
+  await expect(page.locator('.cfg__notice')).toContainText('刚才那次保存不知道存上没有。', { timeout: 8000 })
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-panel-down', 'true'); localStorage.removeItem('kixdns:demo-save-slow') })
+  await drawer.getByLabel('名称').fill('没放进草稿')
+  await page.evaluate(() => document.querySelector<HTMLAnchorElement>('.desktop-nav a[href="/logs"]')!.click())
+  const ask = page.getByRole('alertdialog')
+  await expect(ask).toContainText('草稿留着，核对完会说结果。')
+  await reconnect(page)
+  await expect(page.locator('.cfg__savebar')).toContainText(/已经保存过了/, { timeout: 12_000 })
+  await ask.getByRole('button', { name: '放弃修改', exact: true }).click()
+  await expect(page).toHaveURL(/\/logs/)
+  await expect.poll(async () => (await toastTexts(page)).some((text) => /^刚才那次保存已经存上了：版本 #\d+ 已生效$/.test(text))).toBe(true)
 })
 
 // 滚到下面按的保存、回应丢了：保存条收起，提示条吸顶、焦点在它上面，页面不跳，屏上看得到为什么点不动
@@ -1918,6 +1946,34 @@ test('滚到下面按保存、回应丢了：提示条吸顶，焦点在提示�
   await reconnect(page)
   await expect(page.locator('.cfg__savebar')).toContainText(/已经保存过了/, { timeout: 12_000 })
   await expect(notice).not.toHaveClass(/cfg__notice--stuck/)
+})
+
+// 滚到中段时锁住、解开：提示条进出视口上方，正看着的那一行不跟着跳（页面自己补回滚动）
+// Locking and unlocking while scrolled mid-page: the notice comes and goes above the viewport, and the row being looked at does not jump
+// (the page restores the scroll itself)
+test('滚到中段时锁住、解开：正看着的那一行不跳', async ({ page }) => {
+  await readSequence(page)
+  const rules = Array.from({ length: 20 }, (_, i) => ({ name: `r${i + 1}`, matchers: [{ type: 'domain_suffix', value: `site${i + 1}.example` }], actions: [{ type: 'forward', upstream: '1.1.1.1:53' }] }))
+  const config = { version: '1.0', settings: {}, pipeline_select: [{ pipeline: 'main', matchers: [] }], pipelines: [{ id: 'main', rules }] }
+  await page.goto('/config')
+  await expect(page.locator('.rcard')).toBeVisible()
+  await page.locator('input[type="file"]').setInputFiles({ name: 'many.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(config)) })
+  if (await page.locator('dialog[open]').count()) await page.keyboard.press('Escape')
+  const row = page.locator('[data-rule]', { hasText: 'site10.example' })
+  await row.scrollIntoViewIfNeeded()
+  await page.evaluate(() => window.scrollBy(0, 120))
+  const top = () => row.evaluate((el) => Math.round(el.getBoundingClientRect().top))
+  const before = await top()
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-put-answer-lost', 'true'))
+  await page.locator('.cfg__savebar').getByRole('button', { name: '保存并应用' }).click()
+  await expect(page.locator('.cfg__notice')).toContainText('刚才那次保存不知道存上没有。')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-panel-down', 'true'))
+  // 保存条淡出以后也不往下掉 / Nor does it drop once the save bar has faded
+  await page.waitForTimeout(400)
+  expect(Math.abs(await top() - before)).toBeLessThanOrEqual(2)
+  await reconnect(page)
+  await expect(page.locator('.cfg__savebar')).toContainText(/已经保存过了/, { timeout: 12_000 })
+  expect(Math.abs(await top() - before)).toBeLessThanOrEqual(2)
 })
 
 // 文件还在选的时候页面锁住了（选好时才轮到导入）：不导入，说一句为什么；草稿和锁都不动

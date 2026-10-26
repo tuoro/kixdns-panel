@@ -10,6 +10,7 @@ import UiPageHeader from '../components/ui/UiPageHeader.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
 import { useConfirm } from '../composables/useConfirm'
 import { useConnection } from '../composables/useConnection'
+import { useBarHeight } from '../composables/useBarHeight'
 import { dismissUndoable, useToast } from '../composables/useToast'
 import { exportConfig, readConfig } from '../config-model/document'
 import { compile, mappingIsIp, ruleTitle, type Model, type Rule, type UpstreamGroup } from '../config-model/model'
@@ -26,14 +27,14 @@ import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, discardOnLeave, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, bulkDeleting, busy, checkFirst, checkInstead, checkPending, heldLostSave, promiseDraftKept, lostWrite, lostWriteWhy, pageLocked, refuseWhileLocked, whenSettledOrLocked, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, stayedDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, beginOwnWrite, readAfterOwnWrite, readFresh, readQuietly, restartPending, restartRollback, runtimeDown, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse } from '../config-v2/useConfigDocument'
+import { applyBusy, bulkDeleting, busy, checkFirst, checkInstead, checkPending, heldLostSave, leaveMark, promiseDraftKept, lostWrite, lostWriteWhy, pageLocked, refuseWhileLocked, whenSettledOrLocked, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, stayedDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, beginOwnWrite, readAfterOwnWrite, readFresh, readQuietly, restartPending, restartRollback, runtimeDown, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse } from '../config-v2/useConfigDocument'
 import { dismissBlocklistToasts } from '../config-v2/useBlocklists'
 import { carryUpdate, refreshLanded, returnedToPage } from '../config-v2/updateCarry'
 import { useHelp } from '../composables/useHelp'
 import { useSession } from '../composables/useSession'
 import { backUnconfirmed, dismissRefused, downShownHere, nameWith, readBeforeTelling, restartingKixdns, rollingBackKixdns, startingKixdns, useServiceRestart, useServiceStart, versionName } from '../composables/useServiceStart'
 import { settingNames, settingValues } from '../config-editor/schema'
-import { numberRuns } from '../utils'
+import { noticeRuns } from '../utils'
 import { registerLeaveGuard, takeAgreement } from '../composables/useLeaveGuard'
 import '../styles/config-v2.css'
 // JSON 编辑器（CodeMirror）只在用到时才加载：配置页的首包不带它 / The JSON editor (CodeMirror) loads on first use, so the config page's first chunk leaves it out
@@ -199,10 +200,11 @@ const notice = computed<Notice | null>(() => {
     const why = lostWriteWhy.value
     const cause = loadError.value.replace(/[。.]\s*$/, '')
     const detail = why === 'down' ? '连上后会自己核对' : why === 'checking' ? '正在核对' : cause ? `读不到配置：${cause}。读到后会自己核对` : '读不到配置。读到后会自己核对'
-    // 三种原因都给「重试」，提示条的高度不随原因变：连不上时是重新连面板（和横幅上那个一样），正在核对时按住，读不到配置时再核对一次
-    // 重试 for all three reasons, so the notice keeps its height as the reason changes: unreachable, it reconnects (as the banner's does);
-    // checking, it is held; with the config unreadable, it checks once more
-    return { tone: 'err', text: `${lostWrite.value.head}。`, detail, action: '重试', run: why === 'down' ? () => retryConnection() : () => reload(true), held: why === 'checking' }
+    // 连上以后都有「重试」，提示条的高度不随原因变；只有读不到配置时能按（再核对一次），正在核对时按住。连不上时不放：横幅上有同一个，它收起
+    // 的那一帧提示条才变高，人只看到一次变动 / Once back, 重试 shows for every reason, so the notice keeps its height; it can be pressed only
+    // with the config unreadable (to check once more), and is held while checking. Not while unreachable: the banner has the same one, and
+    // the notice grows in the very frame the banner goes, a single change to see
+    return { tone: 'err', text: `${lostWrite.value.head}。`, detail, action: why === 'down' ? undefined : '重试', run: () => reload(true), held: why === 'checking' }
   }
   if (loadError.value && doc.value && !panelDown.value) return { tone: 'err', text: '读取配置失败，下面是上一次读到的内容。', detail: loadError.value, action: '重试', run: () => reload(true) }
   // 起不来：多半是改过的设置让它起不来（新的监听地址被占着），退回它们上次正常启动时的值再重启。状态由页头说（「启动失败」），
@@ -544,10 +546,11 @@ const askLeave = async (purpose?: 'signout'): Promise<boolean> => {
   if (heldLostSave()) {
     if (!jsonDirty.value && !editorEdited.value && dialogEdits.size === 0) return true
     const what = jsonDirty.value ? ' JSON 里' : editorEdited.value ? '这条规则' : [...dialogEdits.values()][0] ?? '这条规则'
+    const mark = leaveMark()
     const agreed = await confirm.ask({ title: `放弃${what}的修改`, body: '刚才在这里改的内容不会写进草稿。草稿留着，核对完会说结果。', ...labels, destructive: true })
     // 问着的时候核对可能说完了：照说过的「草稿留着」，离开时把草稿留到回来（见 promiseDraftKept） / The check may finish while this is
     // asked: as promised, the draft is kept for the return on leaving (see promiseDraftKept)
-    if (agreed) promiseDraftKept()
+    if (agreed) promiseDraftKept(mark)
     return agreed
   }
   const agreed = await confirm.ask({ title: '放弃未保存的修改', body: '当前的配置草稿会被丢弃，已经生效的配置不受影\u2060响。', ...labels, destructive: true })
@@ -607,6 +610,24 @@ async function runNotice(): Promise<void> {
 // 页面锁住那一刻：保存条收起，按下的按钮跟着没了，焦点交给提示条（锁着时它吸顶，滚到哪里都看得到，见 cfg__notice--stuck）
 // The moment the page locks: the save bar folds away with the button just pressed, and the focus goes to the notice (stuck to the top
 // while locked, so it shows wherever the page is scrolled, see cfg__notice--stuck)
+// 锁住、解开、锁着时提示条变高变矮：视口上方的高度变了，内容不跟着跳。变化之前记下内容区的顶，DOM 换完把滚动补回差值（WebKit 没有 scroll
+// anchoring，Chromium 的在这里也补不全）；在页顶时不补 / Locking, unlocking and the notice growing or shrinking while locked change the
+// height above the viewport, and the content does not jump with it: the content area's top is noted before the change and the scroll is
+// restored by the difference once the DOM has changed (WebKit has no scroll anchoring, and Chromium's does not cover this fully); not at
+// the top of the page
+watch([pageLocked, lostWriteWhy], () => {
+  const content = document.querySelector<HTMLElement>('.cfg__panel, .cfg__json')
+  if (!content || window.scrollY === 0) return
+  const before = content.getBoundingClientRect().top
+  void nextTick(() => {
+    const moved = content.getBoundingClientRect().top - before
+    if (Math.abs(moved) >= 1) window.scrollBy(0, moved)
+  })
+}, { flush: 'pre' })
+// 吸顶时把提示条的高写到 --notice-h 上：宽屏右栏让到它下面 / While stuck the notice's height goes to --notice-h, so the wide inspector
+// sits below it
+const noticeEl = ref<HTMLElement | null>(null)
+useBarHeight(computed(() => (pageLocked.value ? noticeEl.value : null)), '--notice-h')
 watch(pageLocked, (locked) => {
   if (!locked) return
   void nextTick(() => {
@@ -666,7 +687,7 @@ watch(section, () => { editor.value = null; void nextTick(() => window.scrollTo(
 // Start KixDNS where the header says it is stopped; afterwards the runtime state is reread, and a pending version turns the header action into 现在应用
 const { starting, start } = useServiceStart()
 // 连不上面板时页头写「状态未知」，「启动」也收起：按了也只会失败 / While the panel is unreachable the header reads 状态未知 and 启动 is withdrawn: pressing it could only fail
-const { down: panelDown, retry: retryConnection } = useConnection()
+const { down: panelDown } = useConnection()
 // 放在 panelDown 声明之后：watch 立刻就跑，放在前面会在声明前读到它（回到配置页时整页空白）。
 // 有待应用的版本、KixDNS 又在运行：面板后台每 5 秒会自己让它生效（或者发现它不行）。页面跟着每 5 秒看一眼运行状态，直到它不再是待应用的，
 // 免得页头一直挂着过时的「待应用 · 现在应用」，失败了也藏在「待应用」后面
@@ -853,10 +874,10 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
       </template>
     </UiPageHeader>
 
-    <div v-if="notice && ready" class="ui-notice cfg__notice" tabindex="-1" :class="[notice.tone === 'err' ? 'ui-notice--err' : notice.tone === 'off' ? 'ui-notice--off' : '', { 'cfg__notice--stuck': pageLocked }]" :role="notice.tone === 'err' ? 'alert' : 'status'">
+    <div v-if="notice && ready" ref="noticeEl" class="ui-notice cfg__notice" tabindex="-1" :class="[notice.tone === 'err' ? 'ui-notice--err' : notice.tone === 'off' ? 'ui-notice--off' : '', { 'cfg__notice--stuck': pageLocked }]" :role="notice.tone === 'err' ? 'alert' : 'status'">
       <!-- 红色的用带叉的圆圈，和概览、诊断页一样 / The red one takes the crossed circle, as on the overview and diagnostics -->
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10" /><path v-if="notice.tone === 'err'" d="m15 9-6 6M9 9l6 6" /><path v-else d="M12 8v4M12 16h.01" /></svg>
-      <span><template v-for="(run, k) in numberRuns(notice.text)" :key="k"><span v-if="run.glue" class="nowrap">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></span>
+      <span><template v-for="(run, k) in noticeRuns(notice.text)" :key="k"><span v-if="run.glue" class="nowrap">{{ run.text }}</span><template v-else>{{ run.text }}<span v-if="run.breakAfter" class="brk" aria-hidden="true"></span></template></template></span>
       <small v-if="notice.detail"><RuleText :text="notice.detail" :links="notice.links" breaks @rule="openRule($event, null)" @group="openGroup($event)" /></small>
       <button v-if="notice.action" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="noticeHeld" :aria-busy="noticeRestarting || undefined" @click="runNotice"><span v-if="noticeRestarting" class="ui-spin" aria-hidden="true"></span>{{ notice.action }}</button>
     </div>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { errorMessage, formatAgo, formatDuration, formatKixdnsVersion, formatPercent, formatSmallPercent, formatVersionTime, helpRuns, hyphenRuns, shortHash, toastRuns, upstreamSuccessRate } from './utils'
+import { errorMessage, formatAgo, formatDuration, formatKixdnsVersion, formatPercent, formatSmallPercent, formatVersionTime, helpRuns, hyphenRuns, noticeRuns, shortHash, toastRuns, upstreamSuccessRate } from './utils'
 
 describe('界面格式化工具', () => {
   it('生成稳定且紧凑的运行指标', () => {
@@ -101,6 +101,13 @@ describe('formatAgo', () => {
 })
 
 describe('hyphenRuns', () => {
+  it('提示条标题在「，：；。、」后面能断，「版本 #N」整块，原文不变 / notice titles break after 「，：；。、」 with 「版本 #N」 whole and the text unchanged', () => {
+    const text = '改过的设置要重启 KixDNS\u00a0才生效：UDP\u00a0监听地址、TCP\u00a0监听地址。'
+    const runs = noticeRuns(text)
+    expect(runs.map((r) => r.text).join('')).toBe(text)
+    expect(runs.filter((r) => r.breakAfter).map((r) => r.text.slice(-1))).toEqual(['：', '、'])
+    expect(noticeRuns('不知道版本 #19 应用了没有。').filter((r) => r.glue).map((r) => r.text)).toEqual(['版本 #19'])
+  })
   it('带连字符的词各自连住，原文不变 / hyphenated words are glued runs and the text is unchanged', () => {
     const text = '要重新下载，点「fail-hosts.txt」那一行；连不上 anti-ad.net，写 @@||own-block.example^'
     const runs = hyphenRuns(text)

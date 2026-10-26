@@ -157,6 +157,20 @@ export type GlueRun = { text: string; glue: boolean; long?: boolean; name?: { na
 // only put in a run that does not wrap when shown, with no invisible characters in the text, so a copy reads as the original
 const NUMBER_GLUE = /版本[ \u00a0]#\d+|之后改的[ \u00a0]\d+[ \u00a0]处/g
 export const numberRuns = (text: string): GlueRun[] => glueRuns(text, NUMBER_GLUE, () => undefined)
+// 断点放在这些标点后面：WebKit 按词换行时不在中文标点处断，设置名单（「A、B、C」，名字里是不换行空格）会连成一个词、从名字中间切
+// Break points follow these marks: WebKit's keep-all does not break at CJK punctuation, so a list of setting names (「A、B、C」, with
+// no-break spaces inside each name) would become one word and be cut mid-name
+export const BREAK_MARKS = /[，：；。、]/
+/** 一般的字在 BREAK_MARKS 后面切开、放断点（breakAfter，显示成 .brk）；后面紧跟开引号时不放，最后一块也不放。连块不动
+ * Plain text is split after BREAK_MARKS with a break point (breakAfter, shown as .brk); none right before an opening quote or after the
+ * last run. Glued runs stay as they are */
+export function withBreaks(runs: GlueRun[]): GlueRun[] {
+  const out = runs.flatMap((run): GlueRun[] => (run.glue ? [run] : run.text.split(/(?<=[，：；。、])/).map((text) => ({ text, glue: false }))))
+  return out.map((run, k) => (!run.glue && /[，：；。、]$/.test(run.text) && k < out.length - 1 && !/^[「『（《“]/.test(out[k + 1]!.text) ? { ...run, breakAfter: true } : run))
+}
+/** 提示条标题：「版本 #N」「之后改的 N 处」整块不拆，标点后面能断 / A notice title: 「版本 #N」 and 「之后改的 N 处」 stay whole, with breaks after
+ * punctuation */
+export const noticeRuns = (text: string): GlueRun[] => withBreaks(numberRuns(text))
 function glueRuns(text: string, pattern: RegExp, word: (m: RegExpMatchArray) => string | undefined, name?: (m: RegExpMatchArray) => GlueRun['name']): GlueRun[] {
   const runs: GlueRun[] = []
   let at = 0

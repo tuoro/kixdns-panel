@@ -734,7 +734,7 @@ function notKnownTail(kept?: string): string {
 // its words follow the reason, with the id unchanged (see rewordNotKnown)
 const notKnownToasts = new Map<number, () => string>()
 // 离开以后保存的回应丢了时那一句 / The sentence for a save whose answer was lost after leaving
-const notKnownSaved = (subject: string | undefined, kept: string) => () => `${subject ? `${subject}：不知道存上没有，` : '刚才那次保存\u200b不知道存上没有：'}${notKnownTail(kept)}`
+const notKnownSaved = (subject: string | undefined, kept: string) => () => `${subject ?? '刚才那次保存'}\u200b不知道存上没有：${notKnownTail(kept)}`
 function sayNotKnown(text: () => string): number {
   const open = useToast().messages.value
   for (const id of notKnownToasts.keys()) if (!open.some((m) => m.id === id)) notKnownToasts.delete(id)
@@ -866,16 +866,28 @@ function dismissAwayToast(): void {
 export function setViewing(open: boolean): boolean {
   viewing = open
   configPageOpen.value = open
-  // 锁着时离开那一问说过「草稿留着」，问着的时候核对说完了（记录作废）：照说过的把草稿留到回来，说一句它还没保存
-  // The locked leave question said the draft stays, and the check finished while it was asked (the record gone): the draft is kept for
-  // the return as promised, and a line says it is not saved
-  if (!open && keptByAsk && !heldLostSave() && dirty.value && signedIn()) {
-    keepDraftForReturn()
+  // 锁着时离开那一问说过「草稿留着，核对完会说结果」，问着的时候核对说完了（记录作废）：照离开以后的说法说结果，草稿里还有没保存的就留到
+  // 回来。页上说过的那句（「没有存上，可以再保存」）不跟着走 / The locked leave question said the draft stays and the result will be
+  // told, and the check finished while it was asked (the record gone): the result is told as it is away, and a draft with unsaved edits is
+  // kept for the return. What was said on the page (没有存上，可以再保存) does not follow
+  if (!open && keptByAsk && !heldLostSave() && signedIn()) {
+    const { version: before, subject } = keptByAsk
+    const lostSave = subject ?? '刚才那次保存'
+    const now = doc.value?.version_id ?? null
+    const held = dirty.value
+    if (held) keepDraftForReturn()
     dismissAwayToast()
-    awayToast = useToast().error(conflict.value ? '这份配置在别处改\u2060过\u2060了。草稿留在配\u2060置\u2060页，回去重新读取后再改' : '配\u2060置\u2060页的草稿还没保存，回去再保存')
-    awayConflict = conflict.value
+    if (pageResult !== null) { useToast().dismiss(pageResult); pageResult = null }
+    const later = held && changeCount.value ? `；之后改的 ${changeCount.value} 处留在配\u2060置\u2060页，还没保存` : ''
+    if (conflict.value) { awayToast = useToast().error(`${lostSave}不在现在的配置里：这份配置在别处改\u2060过\u2060了。草稿留在配\u2060置\u2060页，回去重新读取后再改`); awayConflict = true }
+    else if (now === null || now === before) { if (held) awayToast = useToast().error(`${lostSave}没有存上。草稿留在配\u2060置\u2060页，回去再保存`) }
+    else if (hasApplyFailure.value) awayToast = useToast().error(notTakenAway(subject ? `${subject}：存成了版本 #${now}，没有生效` : `版本 #${now} 保存了，没有生效`, doc.value?.runtime.pending_error || doc.value?.pending?.error || 'KixDNS 没有给出原因。'))
+    else {
+      const opening = `${lostSave}${subject ? '\u200b' : ''}已经存上了：`
+      tellAway(hasPending.value ? useToast().success(`${opening}版本 #${now} 待应用，${pendingAfter()}${later}`) : effectToast(`${opening}版本 #${now} ${subject ? '已生效' : inEffect()}${later}`, !subject && Boolean(restartTail())))
+    }
   }
-  if (!open) keptByAsk = false
+  if (!open) keptByAsk = null
   // 「现在应用」断线时还在配置页、随后离开：这时就挂上「不知道…应用了没有」，连上后的核对才有一条可以换掉（以前离开后什么都不说）
   // 现在应用 was cut off on the page and the user then leaves: raise 「不知道…应用了没有」 now, so the check after reconnecting has a toast to replace (nothing was said away before)
   // 丢的是「重试应用」：在页上由提示条说，离开时挂一条提示，连上后的核对换掉它 / A lost 重试应用: told by the notice on the page; leaving
@@ -915,10 +927,14 @@ let leftDuringSave = false
 export function leavingDuringSave(): void { leftDuringSave = true }
 // 换页没成（被取消、被别的换页顶掉）：人还在配置页上，记号清掉 / The page change did not happen (cancelled, or overtaken by another): the user is still on
 // the config page and the mark goes
-export function stayedDuringSave(): void { leftDuringSave = false; keptByAsk = false }
-// 锁着时离开那一问同意了：见 setViewing / The locked leave question was agreed to: see setViewing
-let keptByAsk = false
-export function promiseDraftKept(): void { keptByAsk = true }
+export function stayedDuringSave(): void { leftDuringSave = false; keptByAsk = null }
+// 锁着时离开那一问同意了：问的时候是哪一次写入（写入前的版本号、替人保存时的说法），见 setViewing / The locked leave question was agreed
+// to: which write it was asked about (the version before it, and the wording of a save made on the user's behalf), see setViewing
+type LeaveMark = { version: number | null; subject?: string }
+let keptByAsk: LeaveMark | null = null
+/** 问之前记下：问着的时候核对可能说完、记录作废 / Noted before asking: the check may finish and void the record meanwhile */
+export const leaveMark = (): LeaveMark | null => (unanswered ? { version: unanswered.version, subject: unanswered.words?.subject } : null)
+export function promiseDraftKept(mark: LeaveMark | null): void { keptByAsk = mark }
 const away = (): boolean => !viewing || leftDuringSave
 /** 人已经不在配置页上（或者正要离开）：保存的结果由提示说 / The user is off the config page (or on the way out): a save's outcome is told by a toast */
 export const pageAway = (): boolean => away()
@@ -1345,6 +1361,9 @@ async function alreadySaved(content: unknown, sent: string, words?: SaveWords, f
 // One check at a time: a reconnect, the 5-second look, a return to the config page and 重试 may come together, and all wait for the same
 // check instead of starting another
 let settling: Promise<boolean> | null = null
+// 在配置页上说的「没有存上」那一条：同意离开时收起，离开以后另说 / The 没有存上 said on the config page: it goes when leaving is agreed,
+// and the result is told again away
+let pageResult: number | null = null
 // 核对已经读到配置、正在说结果的那条记录 / The record whose check has read the config and is telling the result
 let concluded: LostWrite | null = null
 // 核对正在路上：提示条的「重试」这时按住，按下去有动静 / A check is under way: the notice's 重试 is held meanwhile, so a press shows
@@ -1581,7 +1600,7 @@ async function settleOnce(announce: boolean): Promise<boolean> {
     // start, so the button will not be there afterwards
     const readsOnStart = current.runtime.did_not_come_up || stoppedNow
     const checkAgain = unsaved.value ? '；保存时会带上文件里的改动' : readsOnStart ? '，KixDNS\u00a0启动后会读这份文件' : !kixdnsIn ? `，${backWhen(current.runtime, stoppedNow)}，可以再点「校验并应用」` : '，可以再点「校验并应用」'
-    if (viewing && announce && !changedElsewhere && !gone) useToast().info(applying ? (lost.retrying ? `重试没有送到面板${retryAgain}` : checking ? `配置还没有应用${checkAgain}` : `${pendingName}还没有应用${applyAgain}`) : `${lostSave}没有存上${unsaved.value ? '，可以再保存' : ''}`)
+    if (viewing && announce && !changedElsewhere && !gone) pageResult = useToast().info(applying ? (lost.retrying ? `重试没有送到面板${retryAgain}` : checking ? `配置还没有应用${checkAgain}` : `${pendingName}还没有应用${applyAgain}`) : `${lostSave}没有存上${unsaved.value ? '，可以再保存' : ''}`)
     // 面板替人做的保存被别处盖掉：冲突和原因由保存条说，这里只说保存条没说的那一步（用户定的） / A save made on the user's behalf was overwritten
     // elsewhere: the bar says the conflict and why, so this only gives the step the bar lacks (the user's call)
     // 放在拦截列表那一格里：冲突过去、离开时放弃、会话结束时都收起 / Said in the blocklist slot: it goes once the conflict is over, on a discard on leaving,

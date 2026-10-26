@@ -871,7 +871,7 @@ test('立即更新在页上写入时连不上、其实没写进去，离开：�
   await page.locator('.desktop-nav').getByRole('link', { name: '日志', exact: true }).click()
   await expect(page).toHaveURL(/\/logs/)
   await expect(page.getByRole('alertdialog')).toHaveCount(0)
-  await expect.poll(toasts, { timeout: 5000 }).toContain('新下载的拦截列表：不知道存上没有，连不上面板。它留在配置页的草稿里，连上后会自己核对')
+  await expect.poll(toasts, { timeout: 5000 }).toContain('新下载的拦截列表不知道存上没有：连不上面板。它留在配置页的草稿里，连上后会自己核对')
   await page.evaluate(async () => {
     localStorage.removeItem('kixdns:demo-panel-down')
     const url = performance.getEntriesByType('resource').map((e) => e.name).filter((n) => n.includes('/src/composables/useConnection.ts')).pop()!
@@ -1019,7 +1019,7 @@ test('离开以后核对出被别处盖掉，回到配置页再离开并放弃�
   await page.getByRole('menuitem', { name: '立即更新', exact: true }).click()
   await page.locator('.desktop-nav').getByRole('link', { name: '日志', exact: true }).click()
   await expect(page).toHaveURL(/\/logs/)
-  await expect(page.locator('.toast', { hasText: '新下载的拦截列表：不知道存上没有' })).toBeVisible({ timeout: 8000 })
+  await expect(page.locator('.toast', { hasText: '新下载的拦截列表不知道存上没有' })).toBeVisible({ timeout: 8000 })
   await page.evaluate(async () => {
     localStorage.removeItem('kixdns:demo-download-slow')
     localStorage.setItem('kixdns:demo-changed-elsewhere', 'true')

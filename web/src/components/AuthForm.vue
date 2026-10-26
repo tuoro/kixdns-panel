@@ -34,7 +34,9 @@ const expiredNote = computed((): string[] => {
   // fall after 配置保存 and after each 「，。」: a long CJK run under keep-all has no break point and is cut mid-word on narrow screens,
   // and WebKit does not break at CJK punctuation
   if (route.query.expired === 'unknown') return ['刚才那次配置保存', '不知道存上没有，没存上的修改没有留下来。登录后回到刚才的页面。']
-  return [route.query.expired === 'draft' ? '刚才没保存的配置修改没有留下来。登录后回到刚才的页面。' : '登录后回到刚才的页面。']
+  // 「配置修改」后面也能断：前半句没有标点，最窄的屏上会从词中间切 / A break may follow 配置修改 too: the first half has no punctuation and
+  // the narrowest screens would cut it mid-word
+  return route.query.expired === 'draft' ? ['刚才没保存的配置修改', '没有留下来。登录后回到刚才的页面。'] : ['登录后回到刚才的页面。']
 })
 
 async function submit(): Promise<void> {
