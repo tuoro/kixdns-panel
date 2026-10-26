@@ -10,7 +10,7 @@ import DraftReviewDialog from './DraftReviewDialog.vue'
 import RuleText from './RuleText.vue'
 import { usePhone, useTightSaveBar } from './phone'
 import { changeCount, dialogEdits, discardWithUndo, editorEdited, model, userPart } from './store'
-import { busy, doc, waitingForBuild, cnameBlocked, pendingVersionId, queued, rereading, saveInFlight, sayBlocked, conflict, deferNote, deferSave, editTouched, elapsed, note, origin, save, saveBarLost, saveMessage, stage, validate, validation, verdict } from './useConfigDocument'
+import { busy, doc, waitingForBuild, cnameBlocked, pendingVersionId, queued, rereading, saveInFlight, sayBlocked, conflict, deferNote, deferSave, editTouched, elapsed, note, origin, save, saveMessage, pageLocked, refuseWhileLocked, stage, validate, validation, verdict } from './useConfigDocument'
 
 // 保存条只替草稿说话：有改动才升起来，保存完一会儿就收起。两步：先校验，再写入并热加载；任何一步失败都停住，原因里的规则能点。
 // KixDNS 没启动、连不上、不报能力时只存成待应用版本。Ctrl/Cmd+S 等于点保存。进度和结果都来自 useConfigDocument。
@@ -33,7 +33,9 @@ const tight = useTightSaveBar()
 const draftStage = computed(() => (origin.value === 'draft' ? stage.value : 'idle'))
 // 还没进草稿的修改也让保存条升起：JSON 里的、右侧面板里没点「完成」的 / Edits not yet in the draft raise the bar too: the JSON view's and the side panel's not yet 完成
 const pending = computed(() => changeCount.value > 0 || Boolean(props.jsonDirty) || editorEdited.value)
-const visible = computed(() => pending.value || draftStage.value !== 'idle' || Boolean(props.jsonError))
+// 页面锁着（回应丢了的那次写入还没核对）：保存条收起，这件事由提示条说 / The page is locked (a lost write still unchecked): the bar folds
+// away and the notice speaks of it
+const visible = computed(() => !pageLocked.value && (pending.value || draftStage.value !== 'idle' || Boolean(props.jsonError)))
 const noteOpen = ref(false)
 // 单独点过「校验」且之后没再改：说一句校验通过 / After a lone 校验 with no edit since: say it passed
 // JSON 视图里又改了还没收进草稿：「校验通过」说的不是现在这份 / JSON edited and not yet folded: 校验通过 would not be about what is there now
@@ -46,6 +48,9 @@ watch(() => userPart(model), () => editTouched())
 function onKey(event: KeyboardEvent): void {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
     event.preventDefault()
+    // 页面锁着：保存条收着，按键不保存，说一句为什么；浏览器的「保存网页」也不弹 / The page is locked: the bar is folded away and the key
+    // saves nothing but says why, nor does the browser's Save Page open
+    if (refuseWhileLocked('保存')) return
     // 弹层开着时不替它保存，但说一句该怎么做，不让按键没反应 / With a dialog open the bar does not save for it, but says what to do instead of swallowing the key
     if (document.querySelector('dialog[open]')) { toast.info(dialogEdits.size ? '先点窗口里的按钮把修改放进草稿，再保存' : '先关掉这个窗口，再保存'); return }
     // 恢复版本、重新读取还在读：读回来的会换掉草稿，等它读完 / A restore or re-read is reading: what comes back replaces the draft, so wait for it
@@ -66,6 +71,9 @@ function onKey(event: KeyboardEvent): void {
 }
 const RESTARTING_NOTE = 'KixDNS 正在重启，重启完再保存'
 function saveDraft(): void {
+  // 「查看修改」开着时页面锁住了：它的保存按钮还在，按了说一句 / The page locked with 查看修改 open: its save button is still there, and a
+  // press says why
+  if (refuseWhileLocked('保存')) return
   // 页头的「现在应用」还在跑：按钮看着停用，点了说一句为什么（和 Ctrl+S 一样；手机上看不到 title）
   // The header's 现在应用 is still running: the button looks disabled and a tap says why (as Ctrl+S does; phones never show the title)
   if (applying.value) { toast.info(applyingNote.value); return }
@@ -155,7 +163,7 @@ function discard(): void {
   <Transition name="cfg-savebar">
     <!-- 恢复版本还在读：读回来的会换掉草稿，保存条也先不能按（和下面的列表一样调淡） / A restore is still reading: what comes back replaces the draft, so the bar takes no presses either (dimmed like the list) -->
     <footer v-if="visible" ref="bar" class="ui-savebar cfg__savebar" :inert="rereading || undefined" :aria-busy="rereading || undefined" :class="{ 'ui-savebar--err': draftStage === 'failed' || Boolean(jsonError) || cnameBlocked, 'savebar--wrap': draftStage === 'done' && pending }">
-      <p :key="draftStage === 'failed' ? (saveBarLost ? 'f-lost' : `f-${note}`) : 'state'" ref="statusLine" tabindex="-1" data-focus-landing class="ui-savebar__status" :class="{ 'ui-shake': draftStage === 'failed' }" :role="draftStage === 'failed' || jsonError ? 'alert' : 'status'">
+      <p :key="draftStage === 'failed' ? `f-${note}` : 'state'" ref="statusLine" tabindex="-1" data-focus-landing class="ui-savebar__status" :class="{ 'ui-shake': draftStage === 'failed' }" :role="draftStage === 'failed' || jsonError ? 'alert' : 'status'">
         <template v-if="draftStage === 'done'"><svg class="ui-check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5" /></svg><span class="ui-savebar__detail"><UiDotText :parts="note.split(' · ')" /></span></template>
         <!-- 保存的第 0 步、或者校验之前在等拦截列表合成：都照实写在等它，走秒 / A save's step 0, or a check, waiting for the blocklists' build: both say so, with the time running -->
         <template v-else-if="draftStage === 'building' || (waitingForBuild && draftStage === 'checking')"><span class="ui-spin" aria-hidden="true"></span><span class="ui-savebar__detail"><UiDotText :parts="['等拦截列表合成', ...(elapsed ? [elapsed] : [])]" /></span></template>

@@ -132,11 +132,14 @@ describe('hyphenRuns', () => {
     // number; a very long number is not glued
     expect(glued('timeout 5-second step')).toEqual(['5-second'])
     expect(glued('serial 12345678901234')).toEqual([])
-    // 数字后面接的不是空白、中文标点或句尾时不连（「12:30」不拆开）；连住的那一块整块换行 / Not glued when the number is followed by
-    // anything but a space, CJK punctuation or the end (12:30 stays whole); the glued block wraps as one
-    expect(glued('since 12:30 today')).toEqual([])
-    // 括号收在数字后面的连进去（右括号不落到行首） / A closing bracket right after the number is glued in (it never starts a line)
-    expect(glued('bind failed (os error 98)')).toEqual(['error 98)'])
+    // 带冒号、小数点的数连在一起（「12:30」不拆开），紧跟的英文标点也连进去；连住的那一块整块换行 / A number with a colon or a decimal point
+    // stays together (12:30 is not split), with English punctuation right after it glued in; the glued block wraps as one
+    expect(glued('since 12:30 today')).toEqual(['since 12:30'])
+    expect(glued('at line 3, column 14.')).toEqual(['line 3,', 'column 14.'])
+    expect(glued('bind 0.0.0.0:53 failed')).toEqual(['bind 0.0.0.0:53'])
+    // 短的英文括号整个连住（括号不单独留在行尾或落到行首） / A short English parenthetical stays whole (no bracket left at a line end or
+    // starting a line)
+    expect(glued('bind failed (os error 98)')).toEqual(['(os error 98)'])
     expect(glued('拉取失败（HTTP 404）')).toEqual(['（HTTP 404）'])
     expect(toastRuns('at line 1 column 1').filter((r) => r.glue).map((r) => r.long)).toEqual([true, true])
     expect(glued('配置还没有应用，KixDNS\u00a0启动后会读这份文件')).toEqual(['还没有应用，', 'KixDNS\u00a0启', '这份文件'])

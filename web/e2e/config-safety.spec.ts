@@ -376,7 +376,9 @@ test('保存途中离开：保存还没做完时刷新浏览器先问', async ({
 test('保存途中离开时丢掉之后的修改：保存没成功回来也不再出现', async ({ page }) => {
   await page.goto('/config')
   await addRule(page, 'saving.example')
-  await page.evaluate(() => { localStorage.setItem('kixdns:demo-save-slow', 'true'); localStorage.setItem('kixdns:demo-save-conflict', 'true') })
+  // 保存要慢到人离开时还在做：1.5 秒在机器忙时不够，保存先在页上做完，离开以后就没有提示了 / The save must still be running when the user
+  // leaves: 1.5 seconds is not enough on a busy machine, the save then finishes on the page and nothing is told away
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-save-slow', '4000'); localStorage.setItem('kixdns:demo-save-conflict', 'true') })
   const bar = page.locator('.cfg__savebar')
   await bar.getByRole('button', { name: '保存并应用' }).click()
   await expect(bar).toContainText('写入并应用')
@@ -639,7 +641,9 @@ test('保存途中退出登录并放弃：登录页不再说那次保存的结�
   test.skip(testInfo.project.name === 'mobile', '账户菜单在宽屏的顶栏')
   await page.goto('/config')
   await addRule(page, 'signout.example')
-  await page.evaluate(() => localStorage.setItem('kixdns:demo-save-slow', 'true'))
+  // 保存要慢到走到退出登录的确认框时还在做（1.5 秒在机器忙时不够） / The save must still be running when the sign-out confirm opens (1.5
+  // seconds is not enough on a busy machine)
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-save-slow', '4000'))
   const bar = page.locator('.cfg__savebar')
   await bar.getByRole('button', { name: '保存并应用' }).click()
   await expect(bar).toContainText('写入并应用')
@@ -649,8 +653,8 @@ test('保存途中退出登录并放弃：登录页不再说那次保存的结�
   await expect(page.locator('dialog.confirm[open]')).toContainText('退出登录以后不再告诉你结果')
   await page.locator('dialog.confirm[open]').getByRole('button', { name: '放弃并退出' }).click()
   await expect(page).toHaveURL(/\/login/)
-  // 慢保存要 1.5 秒才落地：等它落地以后再看 / The slow save takes 1.5 s to land: look after it has
-  await page.waitForTimeout(2500)
+  // 慢保存要 4 秒才落地：等它落地以后再看 / The slow save takes 4 s to land: look after it has
+  await page.waitForTimeout(5000)
   expect((await toastTexts(page)).filter((text) => text.includes('已生效'))).toEqual([])
   await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
 })
@@ -878,7 +882,9 @@ test('重试应用被拒、回应却丢了，人在配置页上：连上以后�
   const pending = await failOnce(page, 'retry-refused-lost.example')
   await page.evaluate(() => { localStorage.setItem('kixdns:demo-apply-failed', 'true'); localStorage.setItem('e2e:lose-retry', 'true') })
   await page.locator('.cfg__notice').getByRole('button', { name: '重试应用', exact: true }).click()
-  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('不知道重试应用了没有：连不上面板。连上后会自己核对')
+  // 在页上由提示条说，断线时也说（「连不上面板」由横幅说） / On the page the notice says it, during the outage too (the banner says 连不上面板)
+  await expect(page.locator('.cfg__notice')).toContainText('不知道重试应用了没有。')
+  await expect(page.locator('.cfg__notice')).toContainText('连上后会自己核对')
   await reconnect(page)
   await expect(page.locator('.cfg__notice')).toContainText(`版本 #${pending + 1} 没有生效`, { timeout: 8000 })
   // 原因由提示条说，提示只交代重试的结果和编号 / The notice gives the cause; the toast only tells the retry's outcome and number
@@ -907,7 +913,9 @@ test('重试应用被拒、回应却丢了、人已离开：连上以后和回�
   const pending = await failOnce(page, 'retry-refused-lost.example')
   await page.evaluate(() => { localStorage.setItem('kixdns:demo-apply-failed', 'true'); localStorage.setItem('e2e:lose-retry', 'true') })
   await page.locator('.cfg__notice').getByRole('button', { name: '重试应用', exact: true }).click()
-  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('不知道重试应用了没有：连不上面板。连上后会自己核对')
+  // 在页上由提示条说，断线时也说（「连不上面板」由横幅说） / On the page the notice says it, during the outage too (the banner says 连不上面板)
+  await expect(page.locator('.cfg__notice')).toContainText('不知道重试应用了没有。')
+  await expect(page.locator('.cfg__notice')).toContainText('连上后会自己核对')
   await page.getByRole('link', { name: '日志', exact: true }).click()
   await expect(page).toHaveURL(/\/logs/)
   await reconnect(page)
@@ -926,21 +934,6 @@ test('重试应用没送到面板：连上以后说没送到，指「重试应�
   await expect(page.locator('.cfg__notice')).toContainText(`版本 #${pending} 没有生效`)
 })
 
-test('重试应用没送到面板、断线时又改了草稿：连上以后不指「重试应用」，只说保存时会带上那一版', async ({ page }) => {
-  const pending = await failOnce(page, 'retry-unsent-edited.example')
-  await page.evaluate(() => localStorage.setItem('kixdns:demo-panel-down', 'true'))
-  await page.locator('.cfg__notice').getByRole('button', { name: '重试应用', exact: true }).click()
-  await expect(page.locator('.conn__inner')).toBeVisible()
-  await addRule(page, 'edited-meanwhile.example')
-  await reconnect(page)
-  // 那一版刚被拒过：只说保存会带上它，不许它生效 / That version was just refused: only that a save takes it along, no promise it takes
-  await expect.poll(() => toastTexts(page), { timeout: 8000 }).toContain('重试没有送到面板；保存时会带上那一版的内容')
-  // 这时提示条不给「重试应用」，保存条管保存 / The notice offers no 重试应用 now; the save bar handles the save
-  await expect(page.locator('.cfg__notice')).toContainText(`版本 #${pending} 没有生效`)
-  await expect(page.locator('.cfg__notice').getByRole('button', { name: '重试应用', exact: true })).toHaveCount(0)
-  await expect(page.locator('.cfg__savebar').getByRole('button', { name: '保存并应用' })).toBeVisible()
-})
-
 // 「重试应用」没送到、人离开了配置页：「不知道重试应用了没有」换成核对的结果，不是一声不响地收掉（在页上断线后离开、离开以后才断，两条路）
 // 重试应用 never arrived and the user left the config page: 「不知道重试应用了没有」 is replaced by the check's result instead of quietly
 // going (cut off on the page and then left, or cut off only once away: two paths)
@@ -948,7 +941,9 @@ test('重试应用没送到面板、随后离开配置页：连上以后说没�
   await failOnce(page, 'retry-unsent-left.example')
   await page.evaluate(() => localStorage.setItem('kixdns:demo-panel-down', 'true'))
   await page.locator('.cfg__notice').getByRole('button', { name: '重试应用', exact: true }).click()
-  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('不知道重试应用了没有：连不上面板。连上后会自己核对')
+  // 在页上由提示条说，断线时也说（「连不上面板」由横幅说） / On the page the notice says it, during the outage too (the banner says 连不上面板)
+  await expect(page.locator('.cfg__notice')).toContainText('不知道重试应用了没有。')
+  await expect(page.locator('.cfg__notice')).toContainText('连上后会自己核对')
   await page.getByRole('link', { name: '日志', exact: true }).click()
   // 真离开了配置页再连上：离开前要走一遍离页检查，不等的话核对会在配置页上做 / Reconnect only once the config page is really left:
   // leaving runs the leave guard first, and without the wait the check runs on the config page
@@ -1074,33 +1069,6 @@ test('页上说的「重试也没有生效」：离开配置页时收起，不�
   expect((await toastTexts(page)).filter((text) => text.startsWith('重试也没有生效'))).toEqual([])
 })
 
-// 重试没送到、断线时改了草稿、连上时 KixDNS 不答：草稿有修改时提示条不给「重试应用」，只说保存会带上那一版
-// The retry never arrived, the draft was edited meanwhile, and KixDNS is silent on reconnect: with edits the notice offers no 重试应用,
-// so only that a save takes that version along
-test('重试应用没送到、改了草稿、连上时 KixDNS 不答：不指「重试应用」，只说保存时会带上那一版', async ({ page }) => {
-  await page.route(/\/src\/api\/client\.ts(?:\?.*)?$/, async (route) => {
-    if (route.request().url().includes('silent-kixdns')) return route.continue()
-    await route.fulfill({ contentType: 'application/javascript', body: `
-      export * from '/src/api/client.ts?silent-kixdns';
-      import { apiRequest as original } from '/src/api/client.ts?silent-kixdns';
-      export async function apiRequest(path, init) {
-        const result = await original(path, init);
-        if (String(path) === '/api/v1/config' && !init?.method && localStorage.getItem('e2e:kixdns-silent') === 'true') return { ...result, runtime: { ...result.runtime, active_sha256: null } };
-        return result;
-      }
-    ` })
-  })
-  await failOnce(page, 'retry-unsent-edited-silent.example')
-  await page.evaluate(() => localStorage.setItem('kixdns:demo-panel-down', 'true'))
-  await page.locator('.cfg__notice').getByRole('button', { name: '重试应用', exact: true }).click()
-  await expect(page.locator('.conn__inner')).toBeVisible()
-  await addRule(page, 'edited-meanwhile-silent.example')
-  await page.evaluate(() => localStorage.setItem('e2e:kixdns-silent', 'true'))
-  await reconnect(page)
-  await expect.poll(() => toastTexts(page), { timeout: 8000 }).toContain('重试没有送到面板；保存时会带上那一版的内容')
-  await page.evaluate(() => localStorage.removeItem('e2e:kixdns-silent'))
-})
-
 // 恢复版本也被拒：服务端已经把旧内容存成了新的一版、记成没有生效。页面跟着重读，先前的「重试也没有生效」收起，提示条说新的那一版，
 // 再按「重试应用」不撞上「别处改过了」（那是这一页自己的恢复）
 // A restore refused too: the server has stored the old content as a new version and recorded it as not taken. The page reads again,
@@ -1212,7 +1180,9 @@ test('校验并应用没送到、断线期间 KixDNS 停了：说启动后会读
   await page.evaluate(() => localStorage.removeItem('e2e:kixdns-stopped'))
 })
 
-// 读配置第一次失败：照「面板内部出错」答，之后照常 / The first config read fails with 面板内部出错, then all is as usual
+// 读配置第一次失败：照「面板内部出错」答，紧接着那次读版本列表也失败（不然核对会照 KixDNS 在跑的那一版下结论），之后照常
+// The first config read fails with 面板内部出错, and so does the version-list read right after it (or the check would settle from the
+// version KixDNS runs), then all is as usual
 const readFailsOnce = (page: Page) => page.route(/\/src\/api\/client\.ts(?:\?.*)?$/, async (route) => {
   if (route.request().url().includes('read-fails-once')) return route.continue()
   await route.fulfill({ contentType: 'application/javascript', body: `
@@ -1221,6 +1191,11 @@ const readFailsOnce = (page: Page) => page.route(/\/src\/api\/client\.ts(?:\?.*)
     export async function apiRequest(path, init) {
       if (String(path) === '/api/v1/config' && !init?.method && localStorage.getItem('e2e:read-fails-once') === 'true') {
         localStorage.removeItem('e2e:read-fails-once');
+        localStorage.setItem('e2e:versions-next-fails', 'true');
+        throw new ApiError('面板内部出错', 500, 'internal_error');
+      }
+      if (String(path) === '/api/v1/config/versions' && localStorage.getItem('e2e:versions-next-fails') === 'true') {
+        localStorage.removeItem('e2e:versions-next-fails');
         throw new ApiError('面板内部出错', 500, 'internal_error');
       }
       return original(path, init);
@@ -1238,32 +1213,37 @@ test('保存的回应丢了、连上以后第一次核对读不到配置：读�
   await page.evaluate(() => localStorage.setItem('kixdns:demo-put-answer-lost', 'true'))
   const bar = page.locator('.cfg__savebar')
   await bar.getByRole('button', { name: '保存并应用' }).click()
-  await expect(bar).toContainText('不知道存上没有')
-  // 给这一行做个记号：换字时它不重建（不抖、不重念） / Mark the line: changing the words does not rebuild it (no shake, not read out again)
-  await bar.locator('.ui-savebar__status').evaluate((el) => { (el as HTMLElement).dataset.mark = 'kept' })
+  // 结果不知道：页面锁住，保存条收起，只由提示条说 / The outcome is unknown: the page locks, the save bar folds away, and only the notice
+  // speaks
+  await expect(page.locator('.cfg__notice')).toContainText('刚才那次保存不知道存上没有。')
+  await expect(page.locator('.cfg__panel')).toHaveAttribute('aria-busy', 'true')
+  await expect(bar).toHaveCount(0)
   await page.evaluate(() => localStorage.setItem('e2e:read-fails-once', 'true'))
   await reconnect(page)
-  // 核对还没读到时，保存条照旧说不知道存上没有，不先说可以保存 / Until the check reads, the bar keeps 不知道存上没有 rather than offering a save
-  await expect(bar).toContainText('不知道存上没有')
-  // 读不到配置时不再说连不上面板：正上方已经是「已重新连上面板」，原因由提示条说 / With the config unreadable nothing says 连不上面板
-  // any more: 已重新连上面板 is right above, and the notice gives the cause
-  await expect(page.locator('.cfg__notice')).toContainText('读取配置失败')
-  await expect(bar.locator('.ui-savebar__verdict')).toHaveText('不知道存上没有')
-  await expect(bar).toContainText('读到配置后会自己核对')
-  await expect(bar).not.toContainText('连不上面板')
-  await expect(bar.locator('.ui-savebar__status')).toHaveAttribute('data-mark', 'kept')
-  await expect(bar).toContainText(/已经保存过了/, { timeout: 12_000 })
+  // 读不到配置：原因跟着那一句，不另挂「读取配置失败」，不再说连不上面板 / The config cannot be read: the cause goes with that sentence, with no
+  // separate 读取配置失败 and no more 连不上面板
+  await expect(page.locator('.cfg__notice')).toContainText('读不到配置：面板内部出错。读到后会自己核对')
   await expect(page.getByText('读取配置失败')).toHaveCount(0)
+  await expect(page.locator('.cfg__notice')).not.toContainText('连不上面板')
+  // 读到以后解开，由保存条说结果 / Once read the page unlocks and the save bar tells the result
+  await expect(bar).toContainText(/已经保存过了/, { timeout: 12_000 })
+  await expect(page.locator('.cfg__panel')).not.toHaveAttribute('aria-busy', 'true')
+  await expect(page.locator('.cfg__notice', { hasText: '不知道' })).toHaveCount(0)
 })
 
 // 读写照几个记号出错 / Reads and writes fail as a few marks say:
 // - e2e:read-seq：读配置一次一次来，「1」失败、「0」照常 / config reads one at a time, 1 failing and 0 as usual;
-// - e2e:read-fails：记号在时读配置都失败 / while set, every config read fails;
+// - e2e:read-fails：记号在时读配置、读版本列表都失败（面板无从知道那次写入怎样了） / while set, every config and version-list read fails
+//   (the panel has no way to tell what became of the write);
+// - e2e:config-only-fails：只有读配置失败，概览照常 / only config reads fail, the overview answers;
 // - e2e:drop-write：下一次写配置没到面板就断线 / the next config write is cut off before reaching the panel;
 // - e2e:lose-refusal：写入被拒时回应丢掉 / a refused write loses its answer;
 // - e2e:silent-after-refusal：写入被拒以后 KixDNS 不答（读到的配置里没有在用的那份） / after a refused write KixDNS is silent (the config
 //   read has none in use);
-// - e2e:read-delay：读配置先等这么多毫秒 / config reads wait this many milliseconds first
+// - e2e:read-delay：读配置先等这么多毫秒 / config reads wait this many milliseconds first;
+// - e2e:versions-next-fails：读配置失败以后，紧接着那次读版本列表也失败（不然核对会照 KixDNS 在跑的那一版下结论） / after a failed config
+//   read the next version-list read fails too (or the check would settle from the version KixDNS runs);
+// - e2e:overview-fails：记号在时读概览失败 / while set, overview reads fail
 const readSequence = (page: Page) => page.route(/\/src\/api\/client\.ts(?:\?.*)?$/, async (route) => {
   if (route.request().url().includes('read-seq')) return route.continue()
   await route.fulfill({ contentType: 'application/javascript', body: `
@@ -1282,11 +1262,13 @@ const readSequence = (page: Page) => page.route(/\/src\/api\/client\.ts(?:\?.*)?
         const seq = localStorage.getItem('e2e:read-seq') ?? '';
         if (seq) {
           localStorage.setItem('e2e:read-seq', seq.slice(1));
-          if (seq[0] === '1') throw new ApiError('面板内部出错', 500, 'internal_error');
+          if (seq[0] === '1') { localStorage.setItem('e2e:versions-next-fails', 'true'); throw new ApiError('面板内部出错', 500, 'internal_error') }
         }
-        if (localStorage.getItem('e2e:read-fails') === 'true') throw new ApiError('面板内部出错', 500, 'internal_error');
+        if (localStorage.getItem('e2e:read-fails') === 'true' || localStorage.getItem('e2e:config-only-fails') === 'true') throw new ApiError('面板内部出错', 500, 'internal_error');
       }
       if (write && localStorage.getItem('e2e:drop-write') === 'true') { localStorage.removeItem('e2e:drop-write'); throw cut() }
+      if (String(path) === '/api/v1/overview' && localStorage.getItem('e2e:overview-fails') === 'true') throw new ApiError('面板内部出错', 500, 'internal_error');
+      if (String(path) === '/api/v1/config/versions' && (localStorage.getItem('e2e:read-fails') === 'true' || localStorage.getItem('e2e:versions-next-fails') === 'true')) { localStorage.removeItem('e2e:versions-next-fails'); throw new ApiError('面板内部出错', 500, 'internal_error') }
       let result;
       try { result = await original(path, init) } catch (error) {
         if (write && error?.code === 'reload_failed' && localStorage.getItem('e2e:silent-after-refusal') === 'true') { localStorage.removeItem('e2e:silent-after-refusal'); localStorage.setItem('e2e:kixdns-silent', 'true') }
@@ -1311,7 +1293,7 @@ test('保存被拒、回应丢了，核对读到以后整页重读又失败：�
   await page.evaluate(() => { localStorage.setItem('kixdns:demo-apply-failed', 'true'); localStorage.setItem('e2e:lose-refusal', 'true') })
   const bar = page.locator('.cfg__savebar')
   await bar.getByRole('button', { name: '保存并应用' }).click()
-  await expect(bar).toContainText('不知道存上没有')
+  await expect(page.locator('.cfg__notice')).toContainText('刚才那次保存不知道存上没有。')
   await page.evaluate(() => localStorage.setItem('e2e:read-seq', '101'))
   await reconnect(page)
   // 核对隔 5 秒再试才读到 / The check reads only on its try 5 seconds later
@@ -1327,34 +1309,6 @@ test('保存被拒、回应丢了，核对读到以后整页重读又失败：�
   await expect(bar).not.toContainText('别处改过了')
 })
 
-// 核对读不到配置时又改一处再保存：撞上的冲突多半就是自己那次写入，不说「别处改过了」，照不知道存上没有说；读到以后说已经保存过了
-// Another edit saved while the check cannot read the config: the conflict met is most likely one's own write, so not 别处改过了 but
-// 不知道存上没有; once read, 已经保存过了
-test('保存的回应丢了、核对读不到配置时再改一处保存：不说别处改过了，读到以后说已经保存过了', async ({ page }) => {
-  await readSequence(page)
-  await page.goto('/config')
-  await addRule(page, 'unreadable-save-again.example')
-  await page.evaluate(() => localStorage.setItem('kixdns:demo-put-answer-lost', 'true'))
-  const bar = page.locator('.cfg__savebar')
-  await bar.getByRole('button', { name: '保存并应用' }).click()
-  await expect(bar).toContainText('不知道存上没有')
-  await page.evaluate(() => localStorage.setItem('e2e:read-fails', 'true'))
-  await reconnect(page)
-  await expect(page.locator('.cfg__notice')).toContainText('读取配置失败')
-  await addRule(page, 'unreadable-save-again-2.example')
-  await page.evaluate(() => {
-    const w = window as unknown as { sawConflict: boolean }
-    w.sawConflict = false
-    new MutationObserver(() => { if (document.querySelector('.cfg__savebar')?.textContent?.includes('别处改过了')) w.sawConflict = true }).observe(document.body, { subtree: true, childList: true, characterData: true })
-  })
-  await bar.getByRole('button', { name: '保存并应用' }).click()
-  await expect(bar.locator('.ui-savebar__verdict')).toHaveText('不知道存上没有')
-  await expect(bar).toContainText('读到配置后会自己核对')
-  await page.evaluate(() => localStorage.removeItem('e2e:read-fails'))
-  await expect(bar).toContainText(/已经保存过了.*之后改的\s1\s处还没保存/, { timeout: 12_000 })
-  expect(await page.evaluate(() => (window as unknown as { sawConflict: boolean }).sawConflict)).toBe(false)
-})
-
 // 保存没送到、核对读不到配置时按「重试」：这一按就是核对，核对出没存上就到此为止，不再问要不要放弃修改
 // 重试 while the unsent save cannot be checked: the press is the check, and finding it not landed ends there without asking to drop the
 // edits
@@ -1365,33 +1319,15 @@ test('保存没送到、核对读不到配置时按「重试」：说没有存�
   await page.evaluate(() => localStorage.setItem('e2e:drop-write', 'true'))
   const bar = page.locator('.cfg__savebar')
   await bar.getByRole('button', { name: '保存并应用' }).click()
-  await expect(bar).toContainText('不知道存上没有')
+  await expect(page.locator('.cfg__notice')).toContainText('刚才那次保存不知道存上没有。')
   await page.evaluate(() => localStorage.setItem('e2e:read-seq', '1'))
   await reconnect(page)
   const notice = page.locator('.cfg__notice')
-  await expect(notice).toContainText('读取配置失败')
+  await expect(notice).toContainText('读不到配置：')
   await notice.getByRole('button', { name: '重试', exact: true }).click()
   await expect.poll(() => toastTexts(page), { timeout: 3000 }).toContain('刚才那次保存没有存上，可以再保存')
   await expect(page.getByText('放弃修改并重新读取')).toHaveCount(0)
   await expect(page.locator('[data-rule]', { hasText: 'unsent-retry.example' })).toBeVisible()
-})
-
-// 断线时放弃了修改、核对出那次保存没送到：只说没有存上，不说「可以再保存」（已经没有东西可存）
-// The edits were discarded during the outage and the check finds the save never arrived: only 没有存上, not 可以再保存 (nothing is left to
-// save)
-test('保存没送到、断线时放弃了修改：连上以后只说没有存上', async ({ page }) => {
-  await readSequence(page)
-  await page.goto('/config')
-  await addRule(page, 'unsent-discarded.example')
-  await page.evaluate(() => localStorage.setItem('e2e:drop-write', 'true'))
-  const bar = page.locator('.cfg__savebar')
-  await bar.getByRole('button', { name: '保存并应用' }).click()
-  await expect(bar).toContainText('不知道存上没有')
-  await bar.getByRole('button', { name: '放弃修改' }).click()
-  await expect(page.locator('[data-rule]', { hasText: 'unsent-discarded.example' })).toHaveCount(0)
-  await reconnect(page)
-  await expect.poll(() => toastTexts(page), { timeout: 8000 }).toContain('刚才那次保存没有存上')
-  expect(await toastTexts(page)).not.toContain('刚才那次保存没有存上，可以再保存')
 })
 
 // 保存被拒、回应回来时人已离开、KixDNS 这时不答：后半句照读回来的状态说，和回应丢了那条路一样
@@ -1443,7 +1379,7 @@ test('校验并应用的回应丢了、核对读不到配置：页头不给校�
       export * from '/src/api/client.ts?differs-lost';
       import { apiRequest as original, ApiError } from '/src/api/client.ts?differs-lost';
       export async function apiRequest(path, init) {
-        if (String(path) === '/api/v1/config' && !init?.method && localStorage.getItem('e2e:read-fails') === 'true') throw new ApiError('面板内部出错', 500, 'internal_error');
+        if (/^\\/api\\/v1\\/config(?:\\/versions(?:\\/\\d+)?)?$/.test(String(path)) && !init?.method && localStorage.getItem('e2e:read-fails') === 'true') throw new ApiError('面板内部出错', 500, 'internal_error');
         const result = await original(path, init);
         if (String(path) === '/api/v1/config' && !init?.method && localStorage.getItem('e2e:written') !== 'true') return { ...result, runtime: { ...result.runtime, status: 'different' } };
         return result;
@@ -1465,49 +1401,21 @@ test('校验并应用的回应丢了、核对读不到配置：页头不给校�
   await expect(page.locator('.cfg__notice', { hasText: /没有应用|别处改过了|不知道/ })).toHaveCount(0)
 })
 
-// 等核对、读不到配置时又改一处保存，这次停在校验：保存条照「没有通过校验」说，不把自己那次写入说成别处改过了；核对以后也不叫人重新读取
-// Another edit saved during the wait, stopping at validation: the bar keeps 没有通过校验 and never calls one's own write 别处改过了; after the
-// check nothing asks for a re-read
-test('保存被拒、回应丢了、核对读不到时再保存又没通过校验：不说别处改过了，核对以后不叫人重新读取', async ({ page }) => {
-  await readSequence(page)
-  await page.goto('/config')
-  await addRule(page, 'refused-lost-reject.example')
-  await page.evaluate(() => { localStorage.setItem('kixdns:demo-apply-failed', 'true'); localStorage.setItem('e2e:lose-refusal', 'true') })
-  const bar = page.locator('.cfg__savebar')
-  await bar.getByRole('button', { name: '保存并应用' }).click()
-  await expect(bar).toContainText('不知道存上没有')
-  await page.evaluate(() => localStorage.setItem('e2e:read-seq', '1'))
-  await reconnect(page)
-  await expect(bar).toContainText('读到配置后会自己核对')
-  await page.evaluate(() => {
-    const w = window as unknown as { sawConflict: boolean }
-    w.sawConflict = false
-    new MutationObserver(() => { if (document.querySelector('.cfg__savebar, .cfg__notice') && [...document.querySelectorAll('.cfg__savebar, .cfg__notice')].some((el) => el.textContent?.includes('别处改过了'))) w.sawConflict = true }).observe(document.body, { subtree: true, childList: true, characterData: true })
-  })
-  await addRule(page, 'refused-lost-reject-2.example')
-  await page.evaluate(() => localStorage.setItem('kixdns:demo-validate-reject', 'true'))
-  await bar.getByRole('button', { name: '保存并应用' }).click()
-  await expect(bar.locator('.ui-savebar__verdict')).toHaveText('没有通过校验')
-  await expect(page.locator('.cfg__notice')).toContainText('没有生效', { timeout: 12_000 })
-  await expect(page.locator('.cfg__notice')).not.toContainText('先重新读取')
-  await expect(page.locator('.cfg__notice').getByRole('button', { name: '重新读取' })).toHaveCount(0)
-  expect(await page.evaluate(() => (window as unknown as { sawConflict: boolean }).sawConflict)).toBe(false)
-})
-
 // 连上以后、核对回来之前：保存条说正在核对，不再说连不上面板 / Back in touch and before the check returns: the bar says 正在核对, no longer
 // 连不上面板
-test('保存的回应丢了，连上以后核对还在读：保存条说正在核对', async ({ page }) => {
+test('保存的回应丢了，连上以后核对还在读：提示条说正在核对', async ({ page }) => {
   await readSequence(page)
   await page.goto('/config')
   await addRule(page, 'lost-checking.example')
   await page.evaluate(() => localStorage.setItem('kixdns:demo-put-answer-lost', 'true'))
   const bar = page.locator('.cfg__savebar')
   await bar.getByRole('button', { name: '保存并应用' }).click()
-  await expect(bar).toContainText('连不上面板')
+  // 连不上：「连不上面板」由横幅说，这里只说连上后会核对 / Unreachable: the banner says 连不上面板, this only says it is checked once back
+  await expect(page.locator('.cfg__notice')).toContainText('连上后会自己核对')
   await page.evaluate(() => localStorage.setItem('e2e:read-delay', '2000'))
   await reconnect(page)
-  await expect(bar.locator('.ui-savebar__verdict')).toHaveText('不知道存上没有')
-  await expect(bar).toContainText('正在核对')
+  await expect(page.locator('.cfg__notice')).toContainText('刚才那次保存不知道存上没有。')
+  await expect(page.locator('.cfg__notice')).toContainText('正在核对')
   await page.evaluate(() => localStorage.removeItem('e2e:read-delay'))
   await expect(bar).toContainText(/已经保存过了/, { timeout: 8000 })
 })
@@ -1520,7 +1428,7 @@ test('核对读不到配置时按「重试」：核对在路上时按钮按住',
   await page.evaluate(() => localStorage.setItem('kixdns:demo-put-answer-lost', 'true'))
   const bar = page.locator('.cfg__savebar')
   await bar.getByRole('button', { name: '保存并应用' }).click()
-  await expect(bar).toContainText('不知道存上没有')
+  await expect(page.locator('.cfg__notice')).toContainText('刚才那次保存不知道存上没有。')
   await page.evaluate(() => localStorage.setItem('e2e:read-seq', '1'))
   await reconnect(page)
   const retry = page.locator('.cfg__notice').getByRole('button', { name: '重试', exact: true })
@@ -1541,43 +1449,16 @@ test('保存的回应丢了、核对读不到时离开配置页：不问放弃�
   await page.evaluate(() => localStorage.setItem('kixdns:demo-put-answer-lost', 'true'))
   const bar = page.locator('.cfg__savebar')
   await bar.getByRole('button', { name: '保存并应用' }).click()
-  await expect(bar).toContainText('不知道存上没有')
+  await expect(page.locator('.cfg__notice')).toContainText('刚才那次保存不知道存上没有。')
   await page.evaluate(() => localStorage.setItem('e2e:read-fails', 'true'))
   await reconnect(page)
-  await expect(bar).toContainText('读到配置后会自己核对')
+  await expect(page.locator('.cfg__notice')).toContainText('读到后会自己核对')
   await page.getByRole('link', { name: '日志', exact: true }).click()
   await expect(page).toHaveURL(/\/logs/)
   await expect(page.getByRole('alertdialog')).toHaveCount(0)
   await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('不知道配置存上没有：读不到配置。草稿留在配置页，读到后会自己核对')
   await page.evaluate(() => localStorage.removeItem('e2e:read-fails'))
   await expect.poll(async () => (await toastTexts(page)).some((text) => text.startsWith('刚才那次保存已经存上了')), { timeout: 12_000 }).toBe(true)
-})
-
-// 那次保存之后又改过再离开：只问之后改的；同意以后回到配置页，那次保存的内容还在，之后改的没了
-// Leaving after further edits: only those are asked about; once agreed, back on the config page the lost save's content is still there and
-// the later edit is gone
-test('保存的回应丢了、之后又改一处再离开：只问之后改的，回来时那次保存的内容还在', async ({ page }) => {
-  await readSequence(page)
-  await page.goto('/config')
-  await addRule(page, 'lost-leave-kept.example')
-  await page.evaluate(() => localStorage.setItem('kixdns:demo-put-answer-lost', 'true'))
-  const bar = page.locator('.cfg__savebar')
-  await bar.getByRole('button', { name: '保存并应用' }).click()
-  await expect(bar).toContainText('不知道存上没有')
-  await page.evaluate(() => localStorage.setItem('e2e:read-fails', 'true'))
-  await reconnect(page)
-  await expect(bar).toContainText('读到配置后会自己核对')
-  await addRule(page, 'lost-leave-later.example')
-  await page.getByRole('link', { name: '日志', exact: true }).click()
-  const dialog = page.getByRole('alertdialog')
-  await expect(dialog).toContainText('放弃之后改的内容')
-  await expect(dialog).toContainText('刚才那次保存照常核对；之后改的会丢掉。')
-  await dialog.getByRole('button', { name: '放弃修改', exact: true }).click()
-  await expect(page).toHaveURL(/\/logs/)
-  await page.getByRole('link', { name: '规则', exact: true }).click()
-  await expect(page.locator('[data-rule]', { hasText: 'lost-leave-kept.example' })).toBeVisible()
-  await expect(page.locator('[data-rule]', { hasText: 'lost-leave-later.example' })).toHaveCount(0)
-  await page.evaluate(() => localStorage.removeItem('e2e:read-fails'))
 })
 
 // 保存途中离开、回应丢了、还没核对时在别的页退出登录：确认框说不知道存上没有，不说「没保存成功」
@@ -1605,85 +1486,6 @@ test('离开时保存的回应丢了、还没核对时退出登录：确认框�
   await page.evaluate(() => { localStorage.removeItem('kixdns:demo-save-slow'); localStorage.removeItem('e2e:read-fails') })
 })
 
-// 回应丢了的那次保存其实存上了、核对读不到时再按一次保存：认出已经保存过了，记录跟着作废，页头不再停在未知
-// The lost save did land, and saving again while the check cannot read recognises it as saved: the record goes and the header no longer
-// stays unknown
-test('保存的回应丢了、核对读不到时再按保存认出已经保存过了：页头不再写未知', async ({ page }) => {
-  await readSequence(page)
-  await page.goto('/config')
-  await addRule(page, 'lost-already-saved.example')
-  await page.evaluate(() => localStorage.setItem('kixdns:demo-put-answer-lost', 'true'))
-  const bar = page.locator('.cfg__savebar')
-  await bar.getByRole('button', { name: '保存并应用' }).click()
-  await expect(bar).toContainText('不知道存上没有')
-  // 核对读不到、再按保存时那两次读读得到 / The check cannot read; the two reads of the second press do
-  await page.evaluate(() => localStorage.setItem('e2e:read-seq', '100'))
-  await reconnect(page)
-  await expect(bar).toContainText('读到配置后会自己核对')
-  await expect(page.locator('main .ui-ph')).toContainText('未知')
-  await bar.getByRole('button', { name: '保存并应用' }).click()
-  await expect(bar).toContainText(/已经保存过了/)
-  // 之后读又不行了：没有记录要核对，页头也不靠 5 秒后那次核对才回来 / Reads fail again afterwards: with no record left to check, the header
-  // does not depend on the check 5 seconds later to come back
-  await page.evaluate(() => localStorage.setItem('e2e:read-fails', 'true'))
-  await page.waitForTimeout(6000)
-  await expect(page.locator('main .ui-ph')).not.toContainText('未知')
-  await page.evaluate(() => localStorage.removeItem('e2e:read-fails'))
-})
-
-// 在页上放弃了那次保存的草稿再离开：草稿已经不是那一份，不留着、不挂「草稿留在配置页」
-// The draft of the lost save discarded on the page, then leaving: the draft is no longer that one, so nothing is kept and no 草稿留在配置页
-test('保存的回应丢了、在页上放弃修改再离开：不说草稿留在配置页', async ({ page }) => {
-  await readSequence(page)
-  await page.goto('/config')
-  await addRule(page, 'lost-discard-leave.example')
-  await page.evaluate(() => localStorage.setItem('kixdns:demo-put-answer-lost', 'true'))
-  const bar = page.locator('.cfg__savebar')
-  await bar.getByRole('button', { name: '保存并应用' }).click()
-  await expect(bar).toContainText('不知道存上没有')
-  await page.evaluate(() => localStorage.setItem('e2e:read-fails', 'true'))
-  await reconnect(page)
-  await expect(bar).toContainText('读到配置后会自己核对')
-  await bar.getByRole('button', { name: '放弃修改' }).click()
-  await expect(page.locator('[data-rule]', { hasText: 'lost-discard-leave.example' })).toHaveCount(0)
-  await page.getByRole('link', { name: '日志', exact: true }).click()
-  await expect(page).toHaveURL(/\/logs/)
-  await page.waitForTimeout(500)
-  expect((await toastTexts(page)).some((text) => text.includes('草稿留在配置页'))).toBe(false)
-  await page.evaluate(() => localStorage.removeItem('e2e:read-fails'))
-})
-
-// 那次保存还没核对时又存一次，存的途中再改再离开：问的是「放弃保存开始后改的内容」，草稿退回在路上的那一份，不退回更早那次
-// Saving again while the lost save is unchecked, then editing and leaving mid-save: the question is 放弃保存开始后改的内容, and the draft
-// goes back to the save under way, not the older lost one
-test('保存的回应丢了、又保存一次、途中再改再离开：问的是放弃保存开始后改的内容', async ({ page }) => {
-  await readSequence(page)
-  await page.goto('/config')
-  await addRule(page, 'lost-then-save.example')
-  await page.evaluate(() => localStorage.setItem('kixdns:demo-put-answer-lost', 'true'))
-  const bar = page.locator('.cfg__savebar')
-  await bar.getByRole('button', { name: '保存并应用' }).click()
-  await expect(bar).toContainText('不知道存上没有')
-  await reconnect(page)
-  await expect(bar).toContainText(/已经保存过了/, { timeout: 8000 })
-  await addRule(page, 'lost-then-save-2.example')
-  await page.evaluate(() => { localStorage.setItem('kixdns:demo-put-answer-lost', 'true') })
-  await bar.getByRole('button', { name: '保存并应用' }).click()
-  await expect(bar).toContainText('不知道存上没有')
-  await page.evaluate(() => { localStorage.setItem('e2e:read-fails', 'true') })
-  await reconnect(page)
-  await expect(bar).toContainText('读到配置后会自己核对')
-  await addRule(page, 'lost-then-save-3.example', 'block')
-  await page.evaluate(() => localStorage.setItem('kixdns:demo-save-slow', '4000'))
-  await bar.getByRole('button', { name: '保存并应用' }).click()
-  await expect(bar).toContainText('写入并应用')
-  await addRule(page, 'lost-then-save-4.example', 'block')
-  await page.getByRole('link', { name: '日志', exact: true }).click()
-  await expect(page.getByRole('alertdialog')).toContainText('放弃保存开始后改的内容')
-  await page.getByRole('alertdialog').getByRole('button', { name: '继续编辑', exact: true }).click()
-  await page.evaluate(() => { localStorage.removeItem('kixdns:demo-save-slow'); localStorage.removeItem('e2e:read-fails') })
-})
-
 // 「重试应用」在页上丢了回应：连上以后由提示条说不知道（带原因），提示里那条收起，不说两遍
 // 重试应用 lost its answer on the page: once back the notice says it is unknown (with the cause) and the toast goes, so it is not said twice
 test('重试应用在页上丢了回应、核对读不到：提示条说不知道重试应用了没有，提示收起', async ({ page }) => {
@@ -1691,7 +1493,9 @@ test('重试应用在页上丢了回应、核对读不到：提示条说不知�
   const pending = await failOnce(page, 'retry-lost-unreadable.example')
   await page.evaluate(() => { localStorage.setItem('kixdns:demo-apply-failed', 'true'); localStorage.setItem('e2e:lose-refusal', 'true') })
   await page.locator('.cfg__notice').getByRole('button', { name: '重试应用', exact: true }).click()
-  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('不知道重试应用了没有：连不上面板。连上后会自己核对')
+  // 在页上由提示条说，断线时也说（「连不上面板」由横幅说） / On the page the notice says it, during the outage too (the banner says 连不上面板)
+  await expect(page.locator('.cfg__notice')).toContainText('不知道重试应用了没有。')
+  await expect(page.locator('.cfg__notice')).toContainText('连上后会自己核对')
   await page.evaluate(() => localStorage.setItem('e2e:read-fails', 'true'))
   await reconnect(page)
   const notice = page.locator('.cfg__notice')
@@ -1700,42 +1504,6 @@ test('重试应用在页上丢了回应、核对读不到：提示条说不知�
   expect((await toastTexts(page)).some((text) => text.startsWith('不知道重试应用了没有'))).toBe(false)
   await page.evaluate(() => localStorage.removeItem('e2e:read-fails'))
   await expect.poll(async () => (await toastTexts(page)).filter((text) => text === `重试也没有生效，存成了版本 #${pending + 1}`).length, { timeout: 12_000 }).toBe(1)
-})
-
-// 页头来的写入丢了回应、核对读不到时改一处保存：这次确定没存上，保存条照实说，核对完再存；不说不知道存上没有
-// A header write lost its answer and the check cannot read; an edit is saved: this save certainly did not land, so the bar says that and
-// to save after the check, not 不知道存上没有
-test('校验并应用的回应丢了、核对读不到时改一处保存：说没有保存成功，核对完再保存', async ({ page }) => {
-  await page.route(/\/src\/api\/client\.ts(?:\?.*)?$/, async (route) => {
-    if (route.request().url().includes('differs-save')) return route.continue()
-    await route.fulfill({ contentType: 'application/javascript', body: `
-      export * from '/src/api/client.ts?differs-save';
-      import { apiRequest as original, ApiError } from '/src/api/client.ts?differs-save';
-      export async function apiRequest(path, init) {
-        if (String(path) === '/api/v1/config' && !init?.method && localStorage.getItem('e2e:read-fails') === 'true') throw new ApiError('面板内部出错', 500, 'internal_error');
-        const result = await original(path, init);
-        if (String(path) === '/api/v1/config' && !init?.method && localStorage.getItem('e2e:written') !== 'true') return { ...result, runtime: { ...result.runtime, status: 'different' } };
-        return result;
-      }
-    ` })
-  })
-  await page.goto('/config')
-  const check = page.getByRole('button', { name: '校验并应用', exact: true }).locator('visible=true').first()
-  await expect(check).toBeVisible({ timeout: 8000 })
-  await page.evaluate(() => { localStorage.setItem('kixdns:demo-put-answer-lost', 'true'); localStorage.setItem('e2e:written', 'true') })
-  await check.click()
-  await expect(page.locator('.conn__inner')).toBeVisible()
-  await page.evaluate(() => localStorage.setItem('e2e:read-fails', 'true'))
-  await reconnect(page)
-  await expect(page.locator('.cfg__notice')).toContainText('不知道配置应用了没有。')
-  await addRule(page, 'header-lost-save.example')
-  const bar = page.locator('.cfg__savebar')
-  await bar.getByRole('button', { name: '保存并应用' }).click()
-  await expect(bar.locator('.ui-savebar__verdict')).toHaveText('没有保存成功')
-  await expect(bar).toContainText('刚才那次应用还没核对，核对完再保存')
-  await page.evaluate(() => localStorage.removeItem('e2e:read-fails'))
-  await expect(bar).toContainText(/已修改\s1\s处/, { timeout: 12_000 })
-  await expect(bar).not.toContainText('别处改过了')
 })
 
 // 回应丢了的那次保存还没核对时会话过期：登录页说不知道存上没有，不说「没保存的修改没有留下来」
@@ -1748,38 +1516,42 @@ test('保存的回应丢了、还没核对时会话过期：登录页说不知�
   await page.evaluate(() => localStorage.setItem('kixdns:demo-put-answer-lost', 'true'))
   const bar = page.locator('.cfg__savebar')
   await bar.getByRole('button', { name: '保存并应用' }).click()
-  await expect(bar).toContainText('不知道存上没有')
+  await expect(page.locator('.cfg__notice')).toContainText('刚才那次保存不知道存上没有。')
   await page.evaluate(() => localStorage.setItem('e2e:read-fails', 'true'))
   await reconnect(page)
-  await expect(bar).toContainText('读到配置后会自己核对')
+  await expect(page.locator('.cfg__notice')).toContainText('读到后会自己核对')
   await page.evaluate(() => window.dispatchEvent(new Event('kixdns:session-expired')))
   await expect(page).toHaveURL(/\/login\?/)
   expect(new URL(page.url()).searchParams.get('expired')).toBe('unknown')
-  await expect(page.locator('.auth-expired small')).toHaveText('不知道刚才那次配置保存存上没有，没存上的修改没有留下来。登录后回到刚才的页面。')
+  await expect(page.locator('.auth-expired small')).toHaveText('刚才那次配置保存不知道存上没有，没存上的修改没有留下来。登录后回到刚才的页面。')
+  // 和草稿丢了那种一样用黄底三角（不是灰底时钟） / The yellow triangle, as when a draft is lost (not the grey clock)
+  await expect(page.locator('.auth-expired')).not.toHaveClass(/ui-notice--off/)
   await page.evaluate(() => localStorage.removeItem('e2e:read-fails'))
 })
 
-// 核对认出存上了、整页重读慢：保存条那一句和它的按钮一起换，不先少了「放弃修改」、还说着不知道存上没有
-// The check finds the save landed and the whole re-read is slow: the save bar's line and its buttons change together, never losing 放弃修改
-// while still saying 不知道存上没有
-test('保存的回应丢了、核对认出存上了、重读慢：保存条的字和按钮一起换', async ({ page }) => {
+// 核对认出存上了、整页重读慢：锁住的页面、提示条的「不知道」和保存条的结果在同一帧换，不会一边还说不知道、一边已经出了保存条
+// The check finds the save landed and the whole re-read is slow: the locked page, the notice's 「不知道」 and the save bar's result change in
+// the same frame, never 不知道 still showing while the save bar is already out
+test('保存的回应丢了、核对认出存上了、重读慢：提示条和保存条同一帧换', async ({ page }) => {
   await readSequence(page)
   await page.goto('/config')
   await addRule(page, 'lost-slow-reread.example')
   await page.evaluate(() => localStorage.setItem('kixdns:demo-put-answer-lost', 'true'))
   const bar = page.locator('.cfg__savebar')
   await bar.getByRole('button', { name: '保存并应用' }).click()
-  await expect(bar).toContainText('不知道存上没有')
-  await expect(bar.getByRole('button', { name: '放弃修改' })).toBeVisible()
-  // 每一帧看一次（画出来的才算）：保存条还说不知道存上没有时，「放弃修改」不能先没了 / Checked every frame (only what is painted counts):
-  // while the bar still says 不知道存上没有, 放弃修改 must not be gone first
+  await expect(page.locator('.cfg__notice')).toContainText('刚才那次保存不知道存上没有。')
+  await expect(bar).toHaveCount(0)
+  // 每一帧看一次（画出来的才算） / Checked every frame (only what is painted counts)
   await page.evaluate(() => {
     const w = window as unknown as { split: string[] }
     w.split = []
     const look = () => {
-      const el = document.querySelector('.cfg__savebar')
-      if (el?.textContent?.includes('不知道存上没有') && ![...el.querySelectorAll('button')].some((b) => b.textContent?.includes('放弃修改'))) w.split.push(el.textContent)
-      if (!el?.textContent?.includes('已经保存过了')) requestAnimationFrame(look)
+      const unknown = document.querySelector('.cfg__notice')?.textContent?.includes('不知道') ?? false
+      const barText = document.querySelector('.cfg__savebar')?.textContent ?? ''
+      const locked = document.querySelector('.cfg__panel')?.getAttribute('aria-busy') === 'true'
+      if (unknown && barText) w.split.push(`不知道 + 保存条：${barText}`)
+      if (!unknown && locked) w.split.push('不说不知道了，页面还锁着')
+      if (!barText.includes('已经保存过了')) requestAnimationFrame(look)
     }
     requestAnimationFrame(look)
     localStorage.setItem('e2e:read-delay', '1000')
@@ -1790,98 +1562,253 @@ test('保存的回应丢了、核对认出存上了、重读慢：保存条的�
   await page.evaluate(() => localStorage.removeItem('e2e:read-delay'))
 })
 
-// 那次保存其实没送到、之后又改过再离开、同意只丢之后改的：那次保存的草稿照样留到回来，核对出没存上时说回去再保存，回来时草稿还在
-// The save never arrived, later edits were made and leaving drops only those: that save's draft is still kept for the return, the check
-// says to save again, and the draft is there on return
-test('保存没送到、之后又改一处再离开、只丢之后改的：草稿留到回来，核对出没存上时说回去再保存', async ({ page }) => {
+// 读不到配置、KixDNS 在跑的正是那次写入：照「存上了、已生效」说，和概览说的一样，不挂「不知道」
+// The config cannot be read and KixDNS runs that very write: told as landed and in effect, as the overview says, with no 「不知道」 left up
+test('现在应用的回应丢了、配置一直读不到、KixDNS 在跑的就是它：在概览上说已生效，不说不知道', async ({ page }) => {
   await readSequence(page)
-  await page.goto('/config')
-  await addRule(page, 'unsent-leave-kept.example')
-  await page.evaluate(() => localStorage.setItem('e2e:drop-write', 'true'))
-  const bar = page.locator('.cfg__savebar')
-  await bar.getByRole('button', { name: '保存并应用' }).click()
-  await expect(bar).toContainText('不知道存上没有')
-  await page.evaluate(() => localStorage.setItem('e2e:read-fails', 'true'))
+  const pending = await savePending(page, 'apply-lost-running.example', '读不到却在跑')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-put-answer-lost', 'true'))
+  await page.getByRole('button', { name: '现在应用', exact: true }).click()
+  await expect(page.locator('.conn__inner')).toBeVisible()
+  await page.getByRole('link', { name: '概览', exact: true }).locator('visible=true').first().click()
+  await page.evaluate(() => localStorage.setItem('e2e:config-only-fails', 'true'))
   await reconnect(page)
-  await expect(bar).toContainText('读到配置后会自己核对')
-  await addRule(page, 'unsent-leave-later.example', 'block')
-  await page.getByRole('link', { name: '日志', exact: true }).click()
-  await page.getByRole('alertdialog').getByRole('button', { name: '放弃修改', exact: true }).click()
-  await expect(page).toHaveURL(/\/logs/)
-  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('不知道配置存上没有：读不到配置。草稿留在配置页，读到后会自己核对')
-  await page.evaluate(() => localStorage.removeItem('e2e:read-fails'))
-  await expect.poll(() => toastTexts(page), { timeout: 12_000 }).toContain('刚才那次保存没有存上。草稿留在配置页，回去再保存')
-  await page.getByRole('link', { name: '规则', exact: true }).click()
-  await expect(page.locator('[data-rule]', { hasText: 'unsent-leave-kept.example' })).toBeVisible()
-  await expect(page.locator('[data-rule]', { hasText: 'unsent-leave-later.example' })).toHaveCount(0)
+  await expect.poll(() => toastTexts(page), { timeout: 8000 }).toContain(`刚才那次应用：版本 #${pending} 已生效`)
+  expect((await toastTexts(page)).some((text) => text.startsWith('不知道'))).toBe(false)
+  await page.evaluate(() => localStorage.removeItem('e2e:config-only-fails'))
 })
 
-// 核对读到了、整页重读还在路上时按「放弃修改」：修改其实已经存上，草稿跟着存上的那一份走，不留一处会撤掉它的「修改」
-// 放弃修改 pressed after the check read the config, with the re-read still under way: the edits did land, so the draft follows the landed
-// version and keeps no 「change」 that would undo it
-test('保存的回应丢了、核对读到以后重读途中放弃修改：草稿跟着存上的那一份走', async ({ page }) => {
+// 没有生效的那一版之后又改了保存、回应丢了：断线时、核对时提示条都不照断线前说「仍在用之前那份配置」
+// After a version that did not take, an edit is saved and its answer lost: neither during the outage nor during the check does the notice
+// repeat 仍在用之前那份配置 from before
+test('没有生效以后改一处保存、回应丢了：提示条不再说仍在用之前那份配置', async ({ page }) => {
   await readSequence(page)
-  await page.goto('/config')
-  await addRule(page, 'lost-discard-reread.example')
+  await failOnce(page, 'failed-then-save-lost.example')
+  await addRule(page, 'failed-then-save-lost-2.example', 'block')
   await page.evaluate(() => localStorage.setItem('kixdns:demo-put-answer-lost', 'true'))
   const bar = page.locator('.cfg__savebar')
   await bar.getByRole('button', { name: '保存并应用' }).click()
-  await expect(bar).toContainText('不知道存上没有')
-  await page.evaluate(() => localStorage.setItem('e2e:read-seq', '1'))
-  await reconnect(page)
-  await expect(bar).toContainText('读到配置后会自己核对')
-  // 5 秒后那次核对读得慢：读到以后保存条换成「正在核对」，这时整页重读还要 1.5 秒 / The check 5 seconds on reads slowly: once read the bar
-  // says 正在核对, and the whole re-read takes another 1.5 seconds
+  await expect(page.locator('.cfg__notice')).toContainText('刚才那次保存不知道存上没有。')
+  await expect(page.locator('.cfg__notice', { hasText: '仍在用之前那份配置' })).toHaveCount(0)
   await page.evaluate(() => localStorage.setItem('e2e:read-delay', '1500'))
-  await expect(bar).toContainText('正在核对', { timeout: 10_000 })
-  await bar.getByRole('button', { name: '放弃修改' }).click()
+  await reconnect(page)
+  await expect(page.locator('.cfg__notice')).toContainText('正在核对')
+  await expect(page.locator('.cfg__notice', { hasText: '仍在用之前那份配置' })).toHaveCount(0)
   await page.evaluate(() => localStorage.removeItem('e2e:read-delay'))
-  await expect.poll(async () => (await toastTexts(page)).some((text) => text.startsWith('刚才那次保存已经存上了')), { timeout: 8000 }).toBe(true)
-  await expect(page.locator('[data-rule]', { hasText: 'lost-discard-reread.example' })).toBeVisible()
-  await expect(page.locator('.cfg__savebar', { hasText: '之后改的' })).toHaveCount(0)
+  await expect(bar).toContainText(/已经保存过了/, { timeout: 8000 })
 })
 
-// 页头来的写入还没核对时保存、按完就离开：这次没存上，草稿留到回来，离开时说一句
-// Saving while a header write is unchecked and leaving right after: this save did not land, the draft is kept for the return and a toast says
-// so away
-test('校验并应用的回应丢了、核对读不到时保存并马上离开：说配置没有保存，草稿留到回来', async ({ page }) => {
-  await page.route(/\/src\/api\/client\.ts(?:\?.*)?$/, async (route) => {
-    if (route.request().url().includes('differs-leave')) return route.continue()
-    await route.fulfill({ contentType: 'application/javascript', body: `
-      export * from '/src/api/client.ts?differs-leave';
-      import { apiRequest as original, ApiError } from '/src/api/client.ts?differs-leave';
-      export async function apiRequest(path, init) {
-        if (String(path) === '/api/v1/config' && !init?.method && localStorage.getItem('e2e:read-fails') === 'true') throw new ApiError('面板内部出错', 500, 'internal_error');
-        const result = await original(path, init);
-        if (String(path) === '/api/v1/config' && !init?.method && localStorage.getItem('e2e:written') !== 'true') return { ...result, runtime: { ...result.runtime, status: 'different' } };
-        return result;
-      }
-    ` })
-  })
+// 「重试应用」的回应丢了、还连不上：提示条不再说「仍在用之前那份配置」，不知道由提示说
+// 重试应用 lost its answer and the panel is still unreachable: the notice no longer says 仍在用之前那份配置; the toast says it is unknown
+test('重试应用的回应丢了、还连不上：提示条不再说仍在用之前那份配置', async ({ page }) => {
+  await readSequence(page)
+  await failOnce(page, 'retry-lost-down.example')
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-apply-failed', 'true'); localStorage.setItem('e2e:lose-refusal', 'true') })
+  await page.locator('.cfg__notice').getByRole('button', { name: '重试应用', exact: true }).click()
+  // 在页上由提示条说，断线时也说（「连不上面板」由横幅说） / On the page the notice says it, during the outage too (the banner says 连不上面板)
+  await expect(page.locator('.cfg__notice')).toContainText('不知道重试应用了没有。')
+  await expect(page.locator('.cfg__notice')).toContainText('连上后会自己核对')
+  await expect(page.locator('.cfg__notice', { hasText: '仍在用之前那份配置' })).toHaveCount(0)
+})
+
+// 从读不到配置到读到：「读取配置失败」和结果同一刻换，中间不空出一段（页面不先跳一下再出新的提示条）；每一帧看
+// From unreadable to read: 读取配置失败 changes at the same moment as the result, with no gap between (the page does not jump before the new
+// notice comes); checked every frame
+test('保存被拒、回应丢了、读不到配置以后读到：提示条中间不空掉', async ({ page }) => {
+  await readSequence(page)
   await page.goto('/config')
-  const check = page.getByRole('button', { name: '校验并应用', exact: true }).locator('visible=true').first()
-  await expect(check).toBeVisible({ timeout: 8000 })
-  await page.evaluate(() => { localStorage.setItem('kixdns:demo-put-answer-lost', 'true'); localStorage.setItem('e2e:written', 'true') })
-  await check.click()
-  await expect(page.locator('.conn__inner')).toBeVisible()
-  await page.evaluate(() => localStorage.setItem('e2e:read-fails', 'true'))
-  await reconnect(page)
-  await expect(page.locator('.cfg__notice')).toContainText('不知道配置应用了没有。')
-  await addRule(page, 'header-lost-leave.example')
-  await page.evaluate(() => localStorage.setItem('kixdns:demo-save-slow', 'true'))
+  await addRule(page, 'refused-lost-nogap.example')
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-apply-failed', 'true'); localStorage.setItem('e2e:lose-refusal', 'true') })
   const bar = page.locator('.cfg__savebar')
   await bar.getByRole('button', { name: '保存并应用' }).click()
-  await expect(bar).toContainText('写入并应用')
-  await page.getByRole('link', { name: '日志', exact: true }).click()
+  await expect(page.locator('.cfg__notice')).toContainText('刚才那次保存不知道存上没有。')
+  await page.evaluate(() => localStorage.setItem('e2e:read-seq', '1'))
+  await reconnect(page)
+  await expect(page.locator('.cfg__notice')).toContainText('读不到配置：')
+  await page.evaluate(() => {
+    const w = window as unknown as { gaps: number; done: boolean }
+    w.gaps = 0
+    w.done = false
+    const look = () => {
+      const text = document.querySelector('.cfg__notice')?.textContent ?? ''
+      if (!text) w.gaps += 1
+      if (text.includes('没有生效')) { w.done = true; return }
+      requestAnimationFrame(look)
+    }
+    requestAnimationFrame(look)
+    localStorage.setItem('e2e:read-delay', '800')
+  })
+  await expect.poll(() => page.evaluate(() => (window as unknown as { done: boolean }).done), { timeout: 12_000 }).toBe(true)
+  expect(await page.evaluate(() => (window as unknown as { gaps: number }).gaps)).toBe(0)
+  await page.evaluate(() => localStorage.removeItem('e2e:read-delay'))
+})
+
+// 读不到配置时，后台每 5 秒那次核对不按住提示条的「重试」：只有人按了才按住 / With the config unreadable, the background check every 5
+// seconds does not hold the notice's 重试: only a press does
+test('读不到配置时，后台的核对不让「重试」一灰一灰', async ({ page }) => {
+  await readSequence(page)
+  await page.goto('/config')
+  await addRule(page, 'retry-no-flicker.example')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-put-answer-lost', 'true'))
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(page.locator('.cfg__notice')).toContainText('刚才那次保存不知道存上没有。')
+  await page.evaluate(() => localStorage.setItem('e2e:read-fails', 'true'))
+  await reconnect(page)
+  const retry = page.locator('.cfg__notice').getByRole('button', { name: '重试', exact: true })
+  await expect(retry).toBeEnabled()
+  await page.evaluate(() => {
+    const w = window as unknown as { held: number }
+    w.held = 0
+    const end = performance.now() + 7000
+    const look = () => {
+      const button = [...document.querySelectorAll<HTMLButtonElement>('.cfg__notice button')].find((b) => b.textContent?.trim() === '重试')
+      if (button?.disabled) w.held += 1
+      if (performance.now() < end) requestAnimationFrame(look)
+    }
+    requestAnimationFrame(look)
+  })
+  await page.waitForTimeout(7500)
+  expect(await page.evaluate(() => (window as unknown as { held: number }).held)).toBe(0)
+  await page.evaluate(() => localStorage.removeItem('e2e:read-fails'))
+})
+
+// 读不到配置、KixDNS 在跑的正是那次保存：在配置页上也照「已经保存过了」说，页头、历史跟着换成那一版
+// The config cannot be read and KixDNS runs that very save: on the config page too it reads 已经保存过了, with the header and the history
+// following that version
+test('保存的回应丢了、配置读不到、KixDNS 在跑的就是它：在页上说已经保存过了，历史里有那一版', async ({ page }) => {
+  await readSequence(page)
+  await page.goto('/config')
+  await addRule(page, 'save-lost-running.example')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-put-answer-lost', 'true'))
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(page.locator('.cfg__notice')).toContainText('刚才那次保存不知道存上没有。')
+  await page.evaluate(() => localStorage.setItem('e2e:config-only-fails', 'true'))
+  await reconnect(page)
+  await expect(bar).toContainText(/已经保存过了[\s·]+版本\s#\d+/, { timeout: 8000 })
+  const saved = Number((await bar.textContent())!.match(/版本\s#(\d+)/)![1])
+  await expect(page.locator('main .ui-ph')).toContainText(`#${saved}`)
+  await expect(page.locator('main .ui-ph')).not.toContainText('未知')
+  await page.getByRole('button', { name: '更多配置操作' }).click()
+  await page.getByRole('menuitem', { name: '历史版本' }).click()
+  await expect(page.locator('.hist__row', { hasText: `#${saved}` })).toBeVisible()
+  await page.evaluate(() => localStorage.removeItem('e2e:config-only-fails'))
+})
+
+// 回应丢了、结果不知道：配置页锁住——内容点不了，「更多」里会改草稿、写入的几项停用，Ctrl+S 不保存、说一句为什么，撤销提示收起，页头写未知；
+// 核对说完解开
+// The answer was lost and the outcome is unknown: the config page locks — the content cannot be used, the 更多 items that change or write
+// the draft are disabled, Ctrl+S saves nothing but says why, undo toasts go and the header reads unknown; once checked it unlocks
+test('保存的回应丢了：配置页锁住，核对说完再解开', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', '宽屏上看「更多」菜单和快速添加')
+  await readSequence(page)
+  await page.goto('/config')
+  await addRule(page, 'lock.example')
+  await expect(page.locator('.toast', { hasText: '撤销' })).toHaveCount(1)
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-put-answer-lost', 'true'); localStorage.setItem('e2e:read-fails', 'true') })
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  const notice = page.locator('.cfg__notice')
+  await expect(notice).toContainText('刚才那次保存不知道存上没有。')
+  await reconnect(page)
+  await expect(notice).toContainText('读不到配置：面板内部出错。读到后会自己核对')
+  // 锁住那一刻撤销提示就收起（不是等它八秒后自己消失） / Undo toasts go the moment it locks (not when they expire after eight seconds)
+  await expect(page.locator('.toast', { hasText: '撤销' })).toHaveCount(0, { timeout: 1000 })
+  await expect(page.locator('main .ui-ph')).toContainText('未知')
+  await expect(page.locator('.cfg__panel')).toHaveAttribute('aria-busy', 'true')
+  await expect(page.locator('.cfg__panel')).toHaveAttribute('inert', '')
+  // 页头的页面操作（新建规则、测试域名）也一起锁住 / The page actions in the header (新建规则, 测试域名) are locked too
+  await expect(page.locator('#cfg-actions')).toHaveAttribute('inert', '')
+  await expect(bar).toHaveCount(0)
+  await page.getByRole('button', { name: '更多配置操作' }).click()
+  for (const name of ['历史版本', '查看 JSON', '导入 JSON', '重新读取配置']) await expect(page.getByRole('menuitem', { name })).toBeDisabled()
+  await expect(page.getByRole('menuitem', { name: '下载 JSON' })).toBeEnabled()
+  await page.keyboard.press('Escape')
+  // Ctrl+S 不保存，说一句为什么；快捷键 n 不打开新建规则 / Ctrl+S saves nothing but says why; the n shortcut opens no new rule
+  await page.keyboard.press('Control+s')
+  await expect.poll(() => toastTexts(page)).toContain('没有保存：刚才那次保存不知道存上没有，核对完再试')
+  await page.keyboard.press('n')
+  await page.waitForTimeout(500)
+  expect((await toastTexts(page)).some((text) => text.includes('没有要保存的修改'))).toBe(false)
+  await expect(page.locator('.cfg__savebar')).toHaveCount(0)
+  await expect(page.locator('.editor')).toHaveCount(0)
+  expect(await page.evaluate(async () => (await import(performance.getEntriesByType('resource').map((e) => e.name).filter((n) => n.includes('/src/config-v2/useConfigDocument.ts')).pop()!)).stage.value)).toBe('idle')
+  await page.evaluate(() => localStorage.removeItem('e2e:read-fails'))
+  await expect(bar).toContainText(/已经保存过了/, { timeout: 12_000 })
+  await expect(page.locator('.cfg__panel')).not.toHaveAttribute('aria-busy', 'true')
+  await expect(page.locator('main .ui-ph')).not.toContainText('未知')
+})
+
+// 保存还在路上时打开了上游组抽屉，随后回应丢了、页面锁住：抽屉照常改完，改的放进草稿；核对说完，保存条说已经保存过了、之后改的那一处还没保存
+// The upstream group drawer opened while a save was under way, then the answer was lost and the page locked: the drawer is finished as
+// usual and its edit goes into the draft; once checked the save bar says it was already saved, with the later edit still unsaved
+test('保存途中开着上游组抽屉、回应丢了：抽屉照常改完，核对说完算一处修改', async ({ page }) => {
+  await readSequence(page)
+  await page.goto('/config')
+  await addRule(page, 'lock-drawer.example')
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-save-slow', '3000'); localStorage.setItem('kixdns:demo-put-answer-lost', 'true') })
+  await page.locator('.cfg__savebar').getByRole('button', { name: '保存并应用' }).click()
+  await expect(page.locator('.cfg__savebar')).toContainText('写入并应用')
+  await page.getByRole('link', { name: '上游组', exact: true }).locator('visible=true').first().click()
+  await page.locator('.gcard__name').first().click()
+  const drawer = page.locator('dialog[open]')
+  await expect(drawer).toBeVisible()
+  await expect(page.locator('.cfg__notice')).toContainText('刚才那次保存不知道存上没有。', { timeout: 8000 })
+  await expect(page.locator('.cfg__panel')).toHaveAttribute('inert', '')
+  await drawer.getByLabel('名称').fill('锁住时改的')
+  await drawer.getByRole('button', { name: '完成', exact: true }).click()
+  await expect(page.locator('dialog[open]')).toHaveCount(0)
+  await expect(page.locator('.cfg__savebar')).toHaveCount(0)
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
+  await reconnect(page)
+  await expect(page.locator('.cfg__savebar')).toContainText(/已经保存过了[\s·]+版本\s#\d+[\s·]+之后改的 1 处还没保存/, { timeout: 12_000 })
+  await expect(page.locator('.cfg__savebar')).toContainText(/已修改\s*1\s*处/, { timeout: 5000 })
+  await expect(page.locator('.gcard__name', { hasText: '锁住时改的' })).toBeVisible()
+})
+
+// 页面锁着时，锁住以前开着的上游组抽屉里还有没放进草稿的修改：离开时只问那一样，说草稿留着
+// With the page locked, the upstream group drawer opened before the lock holds an edit not yet in the draft: leaving asks about that one
+// alone and says the draft stays
+test('保存的回应丢了、抽屉里还有没放进草稿的修改时离开：只问那一样，说草稿留着', async ({ page }) => {
+  await readSequence(page)
+  await page.goto('/config')
+  await addRule(page, 'lock-leave.example')
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-save-slow', '3000'); localStorage.setItem('kixdns:demo-put-answer-lost', 'true') })
+  await page.locator('.cfg__savebar').getByRole('button', { name: '保存并应用' }).click()
+  await expect(page.locator('.cfg__savebar')).toContainText('写入并应用')
+  await page.getByRole('link', { name: '上游组', exact: true }).locator('visible=true').first().click()
+  await page.locator('.gcard__name').first().click()
+  const drawer = page.locator('dialog[open]')
+  await expect(drawer).toBeVisible()
+  await expect(page.locator('.cfg__notice')).toContainText('刚才那次保存不知道存上没有。', { timeout: 8000 })
+  await drawer.getByLabel('名称').fill('没放进草稿')
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
+  // 抽屉是模态的，点不到导航：直接点链接元素 / The drawer is modal and the nav cannot be clicked: the link element is clicked directly
+  await page.evaluate(() => document.querySelector<HTMLAnchorElement>('.desktop-nav a[href="/logs"]')!.click())
+  const ask = page.getByRole('alertdialog')
+  await expect(ask).toContainText('放弃这个上游组的修改')
+  await expect(ask).toContainText('刚才在这里改的内容还没放进草稿，离开就没了。草稿留着，核对完会说结果。')
+  await ask.getByRole('button', { name: '放弃修改', exact: true }).click()
   await expect(page).toHaveURL(/\/logs/)
-  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('配置没有保存：刚才那次应用还没核对。草稿留在配置页，核对完再保存')
-  // 读恢复、核对说完那次应用的结果以后再回去：草稿是留下来的那一份，不是回来时没读到才剩下的 / Back only after reads recover and the check
-  // has told the apply's result: the draft is the one kept, not one left over because the return could not read
-  await page.evaluate(() => { localStorage.removeItem('kixdns:demo-save-slow'); localStorage.removeItem('e2e:read-fails') })
-  await expect.poll(async () => (await toastTexts(page)).some((text) => /^刚才那次应用存成了版本 #\d+/.test(text)), { timeout: 12_000 }).toBe(true)
-  await page.getByRole('link', { name: '规则', exact: true }).click()
-  await expect(page.locator('[data-rule]', { hasText: 'header-lost-leave.example' })).toBeVisible()
-  await expect(page.locator('.cfg__savebar')).toContainText(/已修改/)
+})
+
+// 文件还在选的时候页面锁住了（选好时才轮到导入）：不导入，说一句为什么；草稿和锁都不动
+// The page locked while the file was still being picked (the import only comes due once picked): nothing is imported and a line says
+// why; the draft and the lock stay as they are
+test('保存的回应丢了、页面锁着时才选好要导入的文件：不导入，说一句为什么', async ({ page }) => {
+  await readSequence(page)
+  await page.goto('/config')
+  await addRule(page, 'lock-import.example')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-put-answer-lost', 'true'))
+  await page.locator('.cfg__savebar').getByRole('button', { name: '保存并应用' }).click()
+  await expect(page.locator('.cfg__notice')).toContainText('刚才那次保存不知道存上没有。')
+  const config = { version: '1.0', settings: {}, pipeline_select: [{ pipeline: 'main', matchers: [] }], pipelines: [{ id: 'main', rules: [] }] }
+  await page.locator('input[type="file"]').setInputFiles({ name: 'late.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(config)) })
+  await expect.poll(() => toastTexts(page)).toContain('没有导入 late.json：刚才那次保存不知道存上没有，核对完再试')
+  await expect(page.locator('dialog[open]')).toHaveCount(0)
+  await expect(page.locator('[data-rule]', { hasText: 'lock-import.example' })).toHaveCount(1)
+  await expect(page.locator('.cfg__panel')).toHaveAttribute('inert', '')
 })
 
 // 存上了的那一种：整页重读失败时，页头和保存条照核对读到的那一版说 / The landed kind: with the re-read failing, the header and the bar
@@ -1893,7 +1820,7 @@ test('保存的回应丢了，核对读到以后整页重读又失败：页头�
   await page.evaluate(() => localStorage.setItem('kixdns:demo-put-answer-lost', 'true'))
   const bar = page.locator('.cfg__savebar')
   await bar.getByRole('button', { name: '保存并应用' }).click()
-  await expect(bar).toContainText('不知道存上没有')
+  await expect(page.locator('.cfg__notice')).toContainText('刚才那次保存不知道存上没有。')
   await page.evaluate(() => localStorage.setItem('e2e:read-seq', '101'))
   await reconnect(page)
   await expect(bar).toContainText(/已经保存过了[\s·]+版本\s#\d+/, { timeout: 12_000 })
@@ -1911,11 +1838,11 @@ test('保存的回应丢了、核对读不到配置时按「重试」：再核�
   await page.evaluate(() => localStorage.setItem('kixdns:demo-put-answer-lost', 'true'))
   const bar = page.locator('.cfg__savebar')
   await bar.getByRole('button', { name: '保存并应用' }).click()
-  await expect(bar).toContainText('不知道存上没有')
+  await expect(page.locator('.cfg__notice')).toContainText('刚才那次保存不知道存上没有。')
   await page.evaluate(() => localStorage.setItem('e2e:read-fails-once', 'true'))
   await reconnect(page)
   const notice = page.locator('.cfg__notice')
-  await expect(notice).toContainText('读取配置失败')
+  await expect(notice).toContainText('读不到配置：')
   await notice.getByRole('button', { name: '重试', exact: true }).click()
   // 比 5 秒后自己再试早：是这一按核对出来的 / Sooner than the try 5 seconds later: this press did the check
   await expect(bar).toContainText(/已经保存过了/, { timeout: 3000 })

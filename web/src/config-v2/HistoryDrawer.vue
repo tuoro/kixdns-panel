@@ -14,7 +14,7 @@ import { readConfig } from '../config-model/document'
 import { actorName, errorMessage, formatVersionTime } from '../utils'
 import RuleText from './RuleText.vue'
 import { appliedModel, unsaved } from './store'
-import { bulkDeleting, currentVersionId, lostWrite, deferSave, deleteVersion, saveInFlight, whenDraftSettles, deleteVersions, deleting, failureCause, friendlyRuntimeError, pendingAfter, restoreVersion, sayNotTaken, restoring, versionDetail, versions } from './useConfigDocument'
+import { bulkDeleting, currentVersionId, lostWrite, deferSave, deleteVersion, saveInFlight, whenSettledOrLocked, refuseWhileLocked, deleteVersions, deleting, failureCause, friendlyRuntimeError, pendingAfter, restoreVersion, sayNotTaken, restoring, versionDetail, versions } from './useConfigDocument'
 // 关上后焦点回到打开它的控件 / Focus returns to the opener on close
 useReturnFocus()
 
@@ -85,7 +85,10 @@ async function restore(v: ConfigVersion): Promise<void> {
   // 确认框开着的时候配置页开始了保存（立即更新下好以后直接存）：等它做完、读回新的那份再恢复，不和它撞成「别处改过了」
   // A save began on the config page while the confirm was open (立即更新 saving as it lands): the restore waits for it and its re-read, rather than collide
   // with it as 别处改过了
-  await whenDraftSettles()
+  // 那次保存的回应丢了、页面锁住：不恢复，说一句（不等核对，那时人可能已经走了） / That save lost its answer and the page locked: no restore, and a
+  // line says why (no waiting for the check, by which time the user may have left)
+  await whenSettledOrLocked()
+  if (refuseWhileLocked(`恢复版本 #${v.id}`)) return
   // 恢复途中退出登录或会话过期：结果不再报（和保存途中退出一样），登录页上不冒出配置页的提示
   // Signed out or expired mid-restore: the outcome is not reported (as with a save), so no config-page toast appears on the login page
   const session = useSession()
@@ -105,8 +108,10 @@ async function remove(v: ConfigVersion): Promise<void> {
   if (isCurrent(v)) { toast.error('正在用的版本不能删除：先恢复别的版本'); return }
   const ok = await confirm.ask({ title: `删除配置版本 #${v.id}`, body: '删除后找不回来。当前生效的配置不受影响。', confirmLabel: '删除这个版本', items: [`#${v.id} · ${v.message || '未填写备注'}`], destructive: true })
   if (!ok) return
-  // 和恢复一样，等配置页正在做的保存做完 / As with a restore, wait for a save under way on the config page
-  await whenDraftSettles()
+  // 和恢复一样，等配置页正在做的保存做完，页面锁住就不删 / As with a restore, wait for a save under way on the config page, and delete
+  // nothing once the page locks
+  await whenSettledOrLocked()
+  if (refuseWhileLocked(`删除版本 #${v.id}`)) return
   try {
     await deleteVersion(v)
     toast.success(`配置版本 #${v.id} 已删除`)
@@ -119,7 +124,8 @@ async function removePicked(): Promise<void> {
   const list = versions.value.filter((v) => picked.value.includes(v.id))
   const ok = await confirm.ask({ title: `删除 ${list.length} 个历史版本`, body: '删除后找不回来。当前生效的配置不受影响。', confirmLabel: `删除 ${list.length} 个版本`, items: list.map((v) => `#${v.id} · ${v.message || '未填写备注'}`), destructive: true })
   if (!ok) return
-  await whenDraftSettles()
+  await whenSettledOrLocked()
+  if (refuseWhileLocked('删除所选版本')) return
   try {
     const count = await deleteVersions(list.map((v) => v.id))
     toast.success(`已删除 ${count} 个配置版本`)

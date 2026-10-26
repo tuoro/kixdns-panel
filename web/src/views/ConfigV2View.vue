@@ -26,7 +26,7 @@ import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, discardOnLeave, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, bulkDeleting, busy, checkFirst, checkInstead, checkPending, checkRunning, dropEditsAfterLost, lostDraftSave, lostWrite, lostWriteWhy, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, stayedDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, beginOwnWrite, readAfterOwnWrite, readFresh, readQuietly, restartPending, restartRollback, runtimeDown, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse } from '../config-v2/useConfigDocument'
+import { applyBusy, bulkDeleting, busy, checkFirst, checkInstead, checkPending, heldLostSave, lostWrite, lostWriteWhy, pageLocked, refuseWhileLocked, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, stayedDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, beginOwnWrite, readAfterOwnWrite, readFresh, readQuietly, restartPending, restartRollback, runtimeDown, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse } from '../config-v2/useConfigDocument'
 import { dismissBlocklistToasts } from '../config-v2/useBlocklists'
 import { carryUpdate, refreshLanded, returnedToPage } from '../config-v2/updateCarry'
 import { useHelp } from '../composables/useHelp'
@@ -95,6 +95,9 @@ const editorRef = ref<InstanceType<typeof RuleEditor> | null>(null)
 async function openRule(ruleId: number | null, groupId: string | null, template?: Partial<Rule>): Promise<void> {
   // 重新读取、恢复版本还在读：读回来的会整份换掉草稿，这时打开的编辑会落在旧的上面（快捷键 n、提示条里的规则名都走这里） / A re-read or restore is reading: what comes back replaces the draft, so an editor opened now would sit on the old one (the n shortcut and the notice's rule names come through here)
   if (rereading.value) return
+  // 页面锁着（回应丢了的写入还没核对）：不打开编辑（窄屏的整页编辑器在锁住的区域外面，快捷键 n 也走这里） / The page is locked (a lost write
+  // unchecked): no editor opens (the narrow full-page editor sits outside the locked area, and the n shortcut comes here too)
+  if (pageLocked.value) return
   if (ui.mode === 'json' && !leaveJson()) return
   if (editor.value && (ruleId === null || editor.value.ruleId !== ruleId) && !(await editorRef.value?.confirmDiscard() ?? true)) return
   editor.value = { ruleId, groupId, template }
@@ -179,15 +182,18 @@ const geoPrefixed = computed(() => [...model.rules, ...model.ruleGroups.flatMap(
 interface Notice { tone: 'err' | 'warn' | 'off'; text: string; detail?: string; links?: Record<string, number>; action?: string; run?: () => void | Promise<void>; down?: boolean; failure?: boolean }
 const notice = computed<Notice | null>(() => {
   // 连不上面板时由顶上的横幅说，这里不复述 / With the panel unreachable the banner says it; no second copy here
-  // 页头来的写入（现在应用、校验并应用、重试应用）回应丢了、还没核对：没有保存条，由这里说不知道；读不到配置时原因跟着它，不另说「读取配置失败」
-  // A write from the header (现在应用, 校验并应用, 重试应用) lost its answer and is unchecked: with no save bar, this says it is unknown;
-  // with the config unreadable the cause goes with it rather than a separate 读取配置失败
-  if (lostWrite.value?.from === 'apply' && doc.value && !panelDown.value) {
-    const unreadable = lostWriteWhy.value === 'unreadable'
+  // 一次写入（保存、现在应用、校验并应用、重试应用）回应丢了、还没核对：页面锁着，只由这里说不知道，断线时也说（「连不上面板」由横幅说，这里
+  // 只说连上后会核对）；读不到配置时原因跟着它，不另说「读取配置失败」
+  // A write (a save, 现在应用, 校验并应用, 重试应用) lost its answer and is unchecked: the page is locked and only this says it is unknown,
+  // during the outage too (the banner says 连不上面板, so this only says it is checked once back); with the config unreadable the cause goes
+  // with it rather than a separate 读取配置失败
+  if (lostWrite.value && doc.value) {
+    const why = lostWriteWhy.value
     const cause = loadError.value.replace(/[。.]\s*$/, '')
-    return { tone: 'err', text: `${lostWrite.value.head}。`, detail: !unreadable ? '正在核对' : cause ? `读不到配置：${cause}。读到后会自己核对` : '读不到配置。读到后会自己核对', action: unreadable ? '重试' : undefined, run: () => void reload(true) }
+    const detail = why === 'down' ? '连上后会自己核对' : why === 'checking' ? '正在核对' : cause ? `读不到配置：${cause}。读到后会自己核对` : '读不到配置。读到后会自己核对'
+    return { tone: 'err', text: `${lostWrite.value.head}。`, detail, action: why === 'unreadable' ? '重试' : undefined, run: () => reload(true) }
   }
-  if (loadError.value && doc.value && !panelDown.value) return { tone: 'err', text: '读取配置失败，下面是上一次读到的内容。', detail: loadError.value, action: '重试', run: () => void reload(true) }
+  if (loadError.value && doc.value && !panelDown.value) return { tone: 'err', text: '读取配置失败，下面是上一次读到的内容。', detail: loadError.value, action: '重试', run: () => reload(true) }
   // 起不来：多半是改过的设置让它起不来（新的监听地址被占着），退回它们上次正常启动时的值再重启。状态由页头说（「启动失败」），
   // 这里只说原因和出路；草稿有没保存的修改时先保存或放弃：退回改的是存下的那份，不动草稿
   // Not coming up: most likely a changed setting keeps it down (a new listen address is taken), so put them back to the values it
@@ -198,10 +204,12 @@ const notice = computed<Notice | null>(() => {
     const text = `可能是改过的设置让 KixDNS\u00a0起不来：${settingNames(keys)}。`
     return unsaved.value && !rollingBackKixdns.value ? { tone: 'err', text, detail: '先保存或放弃草稿里的修改，再退回这些设置', down: true } : { tone: 'err', text, action: '退回原来的设置并重启', run: rollbackSettings, down: true }
   }
+  // 回应丢了的那次写入还没核对时轮不到这里（第一支说「不知道」），不照断线前读到的说没有生效 / A lost write still unchecked never gets
+  // here (the first branch says 「不知道」), so nothing calls it not taken from what was read before the outage
   if (hasApplyFailure.value) {
     const reason = doc.value?.runtime.pending_error || doc.value?.pending?.error || 'KixDNS 没有给出原因。'
     // 草稿有修改时不给「重试应用」：那时保存的是草稿，重试会把草稿当成失败的那个版本发出去 / No retry while the draft has changes: saving then sends the draft, not the version that failed
-    const retry = canApplyNow.value && !unsaved.value && !panelDown.value && !conflict.value && !lostWrite.value
+    const retry = canApplyNow.value && !unsaved.value && !panelDown.value && !conflict.value
     // 重试撞上「别处改过了」：再重试还是撞上，按钮换成重新读取 / A retry that met 别处改过了 would meet it again: the button becomes 重新读取
     const reread = conflict.value && !panelDown.value
     const cause = failureCause(reason).replace(/。$/, '')
@@ -377,21 +385,27 @@ function flush(purpose: 'save' | 'fold'): boolean {
   return true
 }
 function setMode(m: string): void { if (m === 'json') void enterJson(); else leaveJson() }
-const modes = [{ value: 'form', label: '表单', icon: Settings2 }, { value: 'json', label: 'JSON', icon: Braces }]
+// 从 JSON 回到表单要重新读一遍文字：读配置、退回设置、页面锁着时都不行，三处入口（切换、「回到表单」、菜单）一个条件
+// Going back from JSON to the form re-reads the text: not while reading, rolling back or locked, one condition for all three ways (the
+// switch, 回到表单 and the menu)
+const jsonExitBlocked = computed(() => rereading.value || rollingBack.value || pageLocked.value)
+const modes = computed(() => [{ value: 'form', label: '表单', icon: Settings2, disabled: jsonExitBlocked.value }, { value: 'json', label: 'JSON', icon: Braces }])
 // 重新读取、恢复版本还在读：会换掉草稿、读草稿的几项都等它读完（以前恢复途中还能导入，读回来悄悄盖掉；「重试应用」会让恢复撞上自己写的版本）
 // While 重新读取 or a restore is reading, the items that replace or read the draft wait for it (an import during a restore used to be silently overwritten
 // when the read landed, and 重试应用 made the restore collide with the version this page had just written)
+// 页面锁着时，会改草稿、换草稿、写入的几项都停用（历史里也写不了）；下载照常 / While the page is locked the items that change, replace or write
+// the draft are disabled (the history cannot write either); downloading stays
 const moreItems = computed(() => [
-  { value: 'history', label: '历史版本', icon: History, disabled: !ready.value || rereading.value },
-  { value: 'mode', label: ui.mode === 'json' ? '回到表单' : '查看 JSON', icon: ui.mode === 'json' ? Settings2 : Braces, disabled: !ready.value || rereading.value },
+  { value: 'history', label: '历史版本', icon: History, disabled: !ready.value || rereading.value || pageLocked.value },
+  { value: 'mode', label: ui.mode === 'json' ? '回到表单' : '查看 JSON', icon: ui.mode === 'json' ? Settings2 : Braces, disabled: !ready.value || (ui.mode === 'json' ? jsonExitBlocked.value : rereading.value || pageLocked.value) },
   // 保存途中不导入：导入会换掉草稿，和重新读取一样等保存做完 / No import during a save: it replaces the draft, so it waits for the save like 重新读取
-  { value: 'import', label: '导入 JSON', icon: FileUp, disabled: !ready.value || saveInFlight.value || rereading.value },
+  { value: 'import', label: '导入 JSON', icon: FileUp, disabled: !ready.value || saveInFlight.value || rereading.value || pageLocked.value },
   { value: 'download', label: '下载 JSON', icon: Download, disabled: !ready.value },
   // 连不上面板时读不到，按了只会失败 / Unreachable panel: the read can only fail
   // 保存途中也不重新读取：读进来的会被那次保存覆盖，「之后改的」就成了撤回刚保存的 / Not during a save either: the read would be overtaken by that save, and 之后改的 would become a revert of what was just saved
-  { value: 'reload', label: '重新读取配置', icon: RefreshCw, disabled: loading.value || panelDown.value || saveInFlight.value || rereading.value },
+  { value: 'reload', label: '重新读取配置', icon: RefreshCw, disabled: loading.value || panelDown.value || saveInFlight.value || rereading.value || pageLocked.value },
   // 手机的保存条放不下「放弃修改」，放在这里；桌面的保存条上有（冲突时那里只有「重新读取」） / The phone save bar has no room for 放弃修改, so it lives here; the desktop bar shows it (in a conflict it offers 重新读取 instead)
-  ...(phone.value && unsaved.value ? [{ value: 'discard', label: '放弃修改', icon: Undo2, disabled: saveInFlight.value || rereading.value }] : []),
+  ...(phone.value && unsaved.value ? [{ value: 'discard', label: '放弃修改', icon: Undo2, disabled: saveInFlight.value || rereading.value || pageLocked.value }] : []),
   { value: 'help', label: '帮助', icon: CircleHelp },
 ])
 function pickMore(value: string): void {
@@ -422,7 +436,17 @@ async function importFile(event: Event): Promise<void> {
   // 合法的 JSON 不一定是 KixDNS 配置：最外层要是对象，至少有 settings、pipelines 这类内核认的键 / Valid JSON is not necessarily a KixDNS config: the top level must be an object with at least one key the kernel reads
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) { toast.error(`${file.name} 不是 KixDNS 配置：最外层要是 { … }`); return }
   if (!['version', 'settings', 'pipelines', 'pipeline_select'].some((key) => key in parsed)) { toast.error(`${file.name} 不是 KixDNS 配置：里面没有 settings、pipelines 这些内容`); return }
+  // 选文件、确认的时候页面可能锁住了、开始了保存或重新读取（菜单里的导入这时停用）：到这一步不导入，说一句
+  // The page may have locked, or a save or re-read begun, while the file was being picked or the confirm was open (the menu's import is
+  // disabled then): nothing is imported at this point, and a line says why
+  const held = (): boolean => {
+    if (refuseWhileLocked(`导入 ${file.name}`)) return true
+    if (saveInFlight.value || rereading.value) toast.info(`没有导入 ${file.name}：${saveInFlight.value ? '保存还没做完，做完再导入' : '正在读取配置，读完再导入'}`)
+    return saveInFlight.value || rereading.value
+  }
+  if (held()) return
   if (unsaved.value && !(await confirm.ask({ title: '放弃未保存的修改', body: '导入的文件会替换现在的草稿，没保存的修改会丢失。', confirmLabel: '放弃修改并导入', destructive: true }))) return
+  if (held()) return
   const before = JSON.parse(JSON.stringify(model)) as Model
   const { model: next, report } = readConfig(parsed, model)
   replaceModel(next)
@@ -435,12 +459,19 @@ async function importFile(event: Event): Promise<void> {
 // 刚导入的文件能在随后弹出的导入说明里撤销；关掉说明后再打开就不提供了，那时撤销会连带丢掉之后的修改
 // The file just imported can be undone from the report that follows; reopened later it is not offered, since undo would also drop the edits made since
 const undoImport = ref<(() => void) | null>(null)
+// 说明开着时页面锁住了：撤销会整份换掉草稿，不做，说一句；核对说完还能撤销 / The page locked with the report open: an undo would replace the
+// draft wholesale, so it is not done and a line says why; it can still be undone once checked
+function undoImportNow(): void {
+  if (!refuseWhileLocked('撤销导入')) undoImport.value?.()
+}
 function downloadJson(): void {
   if (ui.mode === 'json' && jsonError.value) { toast.error('JSON 写错了，改好再下载'); return }
   // 右侧规则里没点「完成」的修改也是草稿的一部分：先收进来再下载（冲突时下载完就要重新读取，漏掉它就丢了）；写得不完整就先说
   // Edits in the side panel not yet 完成 are part of the draft too: fold them in before downloading (in a conflict the download is followed by 重新读取, which
   // would lose them); when the rule is incomplete, say so first
-  if (ui.mode !== 'json' && editor.value && editorRef.value && !editorRef.value.commit(inspector.value, '下载')) return
+  // 页面锁着时右栏也锁着：不替它收，下载的是草稿现在的样子 / With the page locked the side panel is locked too: it is not folded in, and the
+  // download is the draft as it stands
+  if (ui.mode !== 'json' && editor.value && editorRef.value && !pageLocked.value && !editorRef.value.commit(inspector.value, '下载')) return
   const data = ui.mode === 'json' ? jsonText.value : JSON.stringify(exportConfig(model), null, 2)
   const a = document.createElement('a')
   a.href = URL.createObjectURL(new Blob([data], { type: 'application/json' }))
@@ -483,22 +514,21 @@ const askLeave = async (purpose?: 'signout'): Promise<boolean> => {
     if (agreed && purpose !== 'signout') agreedDrop = dropEditsAfterSave
     return agreed
   }
-  // 回应丢了的那次保存还没核对：存没存上不知道，不说成「未保存」。之后没再改，不问，草稿留到回来，离开以后由提示说核对的结果；之后又改过，
-  // 只问之后改的。退出登录照实说不再告诉结果
-  // The lost save still unchecked: whether it landed is unknown, so it is not called unsaved. With nothing edited since, nothing is asked:
-  // the draft is kept for the return and a toast tells the check's result away; with later edits only those are asked about. Signing out
-  // says plainly that no result will follow
-  const lost = lostDraftSave()
-  if (lost && purpose === 'signout') {
+  // 回应丢了的那次保存还没核对（页面锁着）：存没存上不知道，不说成「未保存」；离开不问，草稿留到回来，离开以后由提示说核对的结果。
+  // 退出登录照实说不再告诉结果
+  // The lost save still unchecked (the page is locked): whether it landed is unknown, so it is not called unsaved; leaving asks nothing,
+  // the draft is kept for the return and a toast tells the check's result away. Signing out says plainly that no result will follow
+  if (heldLostSave() && purpose === 'signout') {
     const agreed = await confirm.ask({ title: '放弃这份草稿', body: '刚才那次保存不知道存上没有。退出登录以后不再告诉你结果，没存上的修改也会丢掉。', ...labels, destructive: true })
     if (agreed) signoutDrop = true
     return agreed
   }
-  if (lost && !lost.laterEdits) return true
-  if (lost) {
-    const agreed = await confirm.ask({ title: '放弃之后改的内容', body: '刚才那次保存照常核对；之后改的会丢掉。', ...labels, destructive: true })
-    if (agreed) agreedDrop = () => dropEditsAfterLost(lost.sent)
-    return agreed
+  // 只有还没收进草稿的修改（JSON 里的、右栏没点完成的、对话框里的）会丢：问那一样 / Only edits not yet in the draft (in the JSON view, an
+  // unfinished side panel, a dialog) would be lost: ask about those
+  if (heldLostSave()) {
+    if (!jsonDirty.value && !editorEdited.value && dialogEdits.size === 0) return true
+    const what = jsonDirty.value ? ' JSON 里' : editorEdited.value ? '这条规则' : [...dialogEdits.values()][0] ?? '这条规则'
+    return confirm.ask({ title: `放弃${what}的修改`, body: '刚才在这里改的内容还没放进草稿，离开就没了。草稿留着，核对完会说结果。', ...labels, destructive: true })
   }
   const agreed = await confirm.ask({ title: '放弃未保存的修改', body: '当前的配置草稿会被丢弃，已经生效的配置不受影\u2060响。', ...labels, destructive: true })
   // 同意了就丢掉，不等回来时重读：「现在应用」还在做时回来不会重读，应用自己的重读又留着修改；在路上的「立即更新」落地时看到的也是干净的草稿，
@@ -539,8 +569,12 @@ const stopAfterEach = router.afterEach((_to, _from, failure) => {
 const stopOnError = router.onError(() => { agreedDrop = null; stayedDuringSave() })
 // 提示条的按钮做事期间停用，焦点跟着掉到页面上：做完没人接住焦点时，回到这个按钮（还在的话），不在了就落在提示条上
 // The notice's button is disabled while it works and focus falls to the page: when nothing caught it afterwards, it returns to the button if still there, else to the notice
+// 人按了提示条的按钮、它还在做：按住（后台每 5 秒那次核对不算，按钮不跟着它一灰一灰） / The notice's button was pressed and its work
+// runs: held meanwhile (the background check every 5 seconds does not count, so the button does not flicker with it)
+const noticePressed = ref(false)
 async function runNotice(): Promise<void> {
-  await notice.value?.run?.()
+  noticePressed.value = true
+  try { await notice.value?.run?.() } finally { noticePressed.value = false }
   await nextTick()
   if (document.activeElement && document.activeElement !== document.body) return
   const box = document.querySelector<HTMLElement>('.cfg__notice')
@@ -631,7 +665,7 @@ const restarts = () => [restartForSettings, rollbackSettings, writePendingIn].in
 const actingCount = ref(0)
 const actingHere = computed(() => actingCount.value > 0)
 const noticeRestarting = computed(() => restartingKixdns.value && actingHere.value && restarts())
-const noticeHeld = computed(() => applyBusy.value || rereading.value || (checkRunning.value && notice.value?.action === '重试') || restartingKixdns.value || startingKixdns.value || (restarts() && (saveInFlight.value || busy.value)))
+const noticeHeld = computed(() => applyBusy.value || rereading.value || noticePressed.value || restartingKixdns.value || startingKixdns.value || (restarts() && (saveInFlight.value || busy.value)))
 // 退回期间页面不能改：回来以后整份换上退回后的文件，途中改的会悄悄丢掉（和「重新读取」时一样）
 // The page cannot be edited during a rollback: on return the rolled-back file replaces the page, and edits made meanwhile
 // would be lost silently (as during 重新读取)
@@ -690,6 +724,9 @@ async function restartForSettings(): Promise<void> {
     body: `服务会短暂中断，缓存会清空。${waiting}重启后生效的设置：${settingNames(restartPending.value, { all: true })}。${draft}`,
     confirmLabel: '重启服务',
   })) return
+  // 确认框开着时页面锁住了（又一次写入的回应丢了）：不发，说一句；退回、写进文件也一样 / The page locked while the confirm was open
+  // (another write lost its answer): nothing is sent and a line says why; rolling back and writing the file alike
+  if (refuseWhileLocked('重启')) return
   await ownAction(() => restart({ afterBack: readQuietly, wasAlive: true }))
 }
 // 退回：只把那几项改回 KixDNS 上次正常启动时的值，写进文件再重启；文件是这一页改的，读回来不说「别处改过了」
@@ -713,6 +750,7 @@ async function rollbackSettings(): Promise<void> {
   // 确认框开着时草稿又有了修改（点了提示里的「撤销」）：不发，提示条换回「先保存或放弃」，不悄悄冲掉那笔修改
   // The draft gained edits while the confirm was open (an 撤销 in a toast): nothing is sent and the notice turns back to
   // 「先保存或放弃」, rather than the edits being silently wiped
+  if (refuseWhileLocked('退回')) return
   if (unsaved.value) { draftChangedMeanwhile('退回'); return }
   await ownAction(() => restart({ rollback: { hadPending: hasPending.value }, beforeSend: beginOwnWrite, afterBack: readAfterOwnWrite }))
 }
@@ -727,6 +765,7 @@ async function writePendingIn(): Promise<void> {
     body: 'KixDNS 不在，没法先校验这份配置：直接写进配置文件，再重启。还是起不来的话，改好再写一次。',
     confirmLabel: '写进并重启',
   })) return
+  if (refuseWhileLocked('写进配置文件')) return
   if (unsaved.value) { draftChangedMeanwhile('写进配置文件'); return }
   await ownAction(() => restart({ writePending: id, beforeSend: beginOwnWrite, afterBack: readAfterOwnWrite }))
 }
@@ -769,7 +808,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
       </template>
       <template v-if="!firstRun" #actions>
         <!-- 当前页签自己的操作（规则页的「新建规则」）从页签组件传送到这里 / The current tab's own actions (the rules tab's 新建规则) teleport here from the tab component -->
-        <span id="cfg-actions" class="cfg__page-acts" :inert="rereading || rollingBack || undefined"></span>
+        <span id="cfg-actions" class="cfg__page-acts" :inert="rereading || rollingBack || pageLocked || undefined"></span>
         <UiTabs v-if="ui.mode === 'json'" class="cfg__mode" :model-value="ui.mode" :items="modes" label="配置视图" variant="segment" @update:model-value="setMode" />
         <UiMenu class="cfg__more" :items="moreItems" label="更多配置操作" title="配置" @select="pickMore" />
       </template>
@@ -779,7 +818,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
       <!-- 红色的用带叉的圆圈，和概览、诊断页一样 / The red one takes the crossed circle, as on the overview and diagnostics -->
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10" /><path v-if="notice.tone === 'err'" d="m15 9-6 6M9 9l6 6" /><path v-else d="M12 8v4M12 16h.01" /></svg>
       <span><template v-for="(run, k) in numberRuns(notice.text)" :key="k"><span v-if="run.glue" class="nowrap">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></span>
-      <small v-if="notice.detail"><RuleText :text="notice.detail" :links="notice.links" @rule="openRule($event, null)" @group="groupEditor = { id: $event }" /></small>
+      <small v-if="notice.detail"><RuleText :text="notice.detail" :links="notice.links" breaks @rule="openRule($event, null)" @group="groupEditor = { id: $event }" /></small>
       <button v-if="notice.action" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="noticeHeld" :aria-busy="noticeRestarting || undefined" @click="runNotice"><span v-if="noticeRestarting" class="ui-spin" aria-hidden="true"></span>{{ notice.action }}</button>
     </div>
 
@@ -788,7 +827,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
     <!-- 侧栏收起时（≤860）分区页签在这一行；宽屏上分区在侧栏里，这一行只在 JSON 视图时出现（≥861 由 CSS 藏起页签）
          With the sidebar folded (≤860) the section tabs sit on this row; on wide screens sections live in the sidebar and the row shows only in the JSON view (CSS hides the tabs at ≥861) -->
     <div v-if="!firstRun && (compact || ui.mode === 'json')" class="cfg__nav" :class="{ 'cfg__nav--json': ui.mode === 'json' }">
-      <div v-if="ui.mode === 'json'" class="cfg__whole"><h2>完整配置</h2><button class="ui-btn ui-btn--text ui-btn--sm ui-btn--inline cfg__to-form" type="button" :disabled="rereading" @click="setMode('form')">回到表单</button></div>
+      <div v-if="ui.mode === 'json'" class="cfg__whole"><h2>完整配置</h2><button class="ui-btn ui-btn--text ui-btn--sm ui-btn--inline cfg__to-form" type="button" :disabled="jsonExitBlocked" @click="setMode('form')">回到表单</button></div>
       <UiTabs v-else class="cfg__tabs" :model-value="section" :items="tabs" label="配置分类" id-prefix="cfg" @update:model-value="setTab" />
     </div>
 
@@ -803,12 +842,13 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
       <p class="cfg__failed-reason">{{ loadError }}</p>
       <button class="ui-btn ui-btn--secondary" type="button" @click="reload(false)"><RefreshCw :size="16" aria-hidden="true" />重试</button>
     </div>
-    <div v-else-if="ui.mode === 'json'" class="cfg__json ui-fade" :inert="rereading || rollingBack || undefined" :aria-busy="rereading || rollingBack || undefined">
+    <div v-else-if="ui.mode === 'json'" class="cfg__json ui-fade" :inert="rereading || rollingBack || pageLocked || undefined" :aria-busy="rereading || rollingBack || pageLocked || undefined">
       <p class="cfg__json-note">这里是 KixDNS 读的配置，可以直接改。切回表单时会重新读一遍；规则名、备注、停用的规则这些面板自己的信息另外保存，不在这里。</p>
       <JsonEditor ref="jsonEditor" v-model="jsonText" class="cfg__json-editor" :error-line="jsonError?.line" />
     </div>
-    <!-- 重新读取、恢复版本读回来之前不让改：读回来的会整份换掉草稿 / No edits until a re-read or restore comes back: what comes back replaces the draft -->
-    <div v-else :id="`cfg-panel-${section}`" class="cfg__panel" role="tabpanel" :aria-labelledby="`cfg-tab-${section}`" :inert="rereading || rollingBack || undefined" :aria-busy="rereading || rollingBack || undefined">
+    <!-- 重新读取、恢复版本读回来之前不让改：读回来的会整份换掉草稿；回应丢了的写入还没核对时也不让改（页面锁着） / No edits until a re-read or restore comes
+         back: what comes back replaces the draft; nor while a lost write is unchecked (the page is locked) -->
+    <div v-else :id="`cfg-panel-${section}`" class="cfg__panel" role="tabpanel" :aria-labelledby="`cfg-tab-${section}`" :inert="rereading || rollingBack || pageLocked || undefined" :aria-busy="rereading || rollingBack || pageLocked || undefined">
       <div v-if="section === 'rules'" class="rules-split" :class="{ 'is-open': inspector }">
         <RulesTab :selected="editor?.ruleId ?? null" @open="openRule" @tab="setTab" @edit-group="groupEditor = { id: $event }" @import="!saveInFlight && fileInput?.click()" />
         <RuleEditor v-if="inspector && editor" ref="editorRef" :key="`${editor.ruleId}-${editor.groupId}-${editor.nonce ?? 0}`" inspector :rule-id="editor.ruleId" :group-id="editor.groupId" :template="editor.template" :resume="editor.resume" @close="closeRule" @reopen="reopenRule" @saved="ruleSaved" @deleted="ruleDeleted" @edit-group="groupEditor = { id: $event }" />
@@ -822,5 +862,5 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
   </div>
   <GroupEditor v-if="groupEditor" :key="groupEditor.id ?? 'new'" :group-id="groupEditor.id" @close="groupEditor = null" @saved="groupSaved" @deleted="groupDeleted" />
   <HistoryDrawer v-if="historyOpen" :compare-with="historyOpen.compare" @close="historyOpen = null" @rule="historyOpen = null; openRule($event, null)" />
-  <ImportReportDialog v-if="reportOpen && importReport" :undo="Boolean(undoImport)" @close="reportOpen = false; undoImport = null" @undo="undoImport?.()" />
+  <ImportReportDialog v-if="reportOpen && importReport" :undo="Boolean(undoImport)" @close="reportOpen = false; undoImport = null" @undo="undoImportNow" />
 </template>

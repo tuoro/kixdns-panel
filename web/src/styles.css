@@ -545,7 +545,7 @@ td { padding: 12px 16px; color: var(--l-ink); border-top: 1px solid var(--l-sunk
    复制出来还是原文
    Break points in toasts are a generated zero-width space rather than <wbr>: with two or more <wbr> on a line followed by a no-wrap
    run, WebKit paints a stretch of text twice. Generated content is not part of the text, so a copy still reads as the original */
-.toast .brk::after { content: "\200b"; }
+.toast .brk::after, .ui-notice .brk::after { content: "\200b"; }
 /* 短的界面文字也按词换行，和提示条、提示一样：确认框正文、空状态、字段提示、规则摘要、登录说明、保存条的说明不把「新建规则」「影响」「启动后」这样的词拆到两行；长段的帮助说明不在内
    Short UI prose wraps by words too, as notices and toasts do: confirm bodies, empty states, field hints, the rule summary and the sign-in note never split words
    such as 新建规则 or 影响 across lines; long help paragraphs are left out */

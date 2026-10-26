@@ -59,6 +59,8 @@ const SENTENCES = [
   '新下载的拦截列表：不知道存上没有，读到配置后会自己核对',
   '重试没有成功。KixDNS 的原话：bind 0.0.0.0:53 failed (os error 98)',
   '拦截列表没有更新：拉取失败（HTTP 404），过一会儿再试',
+  '重试也没有生效。读不懂 KixDNS 的回应：trailing characters at line 3, column 14。回到配\u2060置\u2060页可以重试应用',
+  '不知道版本 #19 应用了没有：读不到配置。读到后会自己核对',
 ]
 const WIDTHS = [...Array.from({ length: 111 }, (_, i) => 300 + i * 2), 640, 1024]
 
@@ -89,10 +91,10 @@ test('提示里退回的叫法：只在该断的地方折行，不撑出去', as
         // 可以断的地方 / Where a break may fall
         const allowed = new Set<number>(zw)
         for (const m of text.matchAll(/退回的设置和待应用的修改|退回的设置|待应用的修改/g)) { allowed.add(m.index); allowed.add(m.index + m[0].length) }
-        for (const m of text.matchAll(/一起(?:保存)?生效|才生效|停了|这份(?:配置|文件)|新配置|读不懂 KixDNS 的回应|再点「|[（(]\b[A-Za-z]{1,12} \d{1,6}[)）]?(?=[\s，：；。]|$)/g)) allowed.add(m.index)
+        for (const m of text.matchAll(/一起(?:保存)?生效|才生效|停了|这份(?:配置|文件)|新配置|读不懂 KixDNS 的回应|再点「|[（(][A-Za-z0-9 .:_/-]{1,24}[)）]/g)) allowed.add(m.index)
         for (let k = 1; k < text.length; k += 1) if (/[，：；。 ]/.test(text[k - 1]!) || text[k] === ' ') allowed.add(k)
         // 连成一块的词组里面的空格不算断点 / A space inside a glued phrase is no break point
-        for (const m of text.matchAll(/读不懂 KixDNS 的回应|没有通过 KixDNS 的校验|[（(]?\b[A-Za-z]{1,12} \d{1,6}[)）]?(?=[\s，：；。]|$)/g)) for (let k = m.index + 1; k < m.index + m[0].length; k += 1) allowed.delete(k)
+        for (const m of text.matchAll(/读不懂 KixDNS 的回应|没有通过 KixDNS 的校验|[（(][A-Za-z0-9 .:_/-]{1,24}[)）]|\b[A-Za-z]{1,12} \d{1,6}(?:[.:]\d{1,6}){0,4}(?=[\s，：；。.,;:!?)）]|$)/g)) for (let k = m.index + 1; k < m.index + m[0].length; k += 1) allowed.delete(k)
         const range = document.createRange()
         let index = 0
         let top: number | null = null

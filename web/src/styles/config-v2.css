@@ -7,7 +7,9 @@ body { background: var(--l-canvas); }
 .cfg__panel { min-width: 0; }
 .cfg__savebar { right: var(--s-6); bottom: var(--s-5); left: var(--s-6); max-width: 46rem; margin-inline: auto; }
 .cfg-savebar-enter-active { animation: ui-savebar-in var(--m-base) var(--ease-out); }
-.cfg-savebar-leave-active { transition: opacity var(--m-quick) var(--ease-out), transform var(--m-quick) var(--ease-out); }
+/* 收起途中的保存条不接点击：页面锁住那一刻它还在淡出，「放弃修改」不该还能按 / A save bar on its way out takes no clicks: at the moment the page
+   locks it is still fading, and 放弃修改 must not be pressable */
+.cfg-savebar-leave-active { transition: opacity var(--m-quick) var(--ease-out), transform var(--m-quick) var(--ease-out); pointer-events: none; }
 .cfg-savebar-leave-to { opacity: 0; transform: translateY(var(--move-2)); }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); margin-bottom: var(--s-4); }
 .toolbar__search { flex: 0 1 22rem; }
