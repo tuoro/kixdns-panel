@@ -125,7 +125,8 @@ async function run(fromLanding: boolean, put: 'same' | 'withEdits' | null): Prom
   const sayAlreadySaved = () => {
     if (fromLanding && !pageAway() && pressed) toast.info(pressed.button === '全部更新' ? '下载的都和刚存上的一样，已经是最新的' : '下载的和刚存上的一样，已经是最新的')
   }
-  // 保存、「现在应用」、恢复、删除版本、重新读取正在做：等它做完再看 / A save, 现在应用, a restore, a version delete or a re-read is under way: look once done
+  // 保存、「现在应用」、恢复、删除版本、重新读取正在做，或者页面锁着：等它做完、等解开再看 / A save, 现在应用, a restore, a version delete or a
+  // re-read is under way, or the page is locked: look once done and unlocked
   for (let round = 0; round < 3; round++) {
     if (draftBusy.value) await whenDraftSettles()
     if (!session.authenticated.value) return

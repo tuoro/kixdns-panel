@@ -686,7 +686,9 @@ function setUnanswered(record: LostWrite | null, head = ''): void {
   unanswered = record
   lostWrite.value = record ? { from: record.from, head } : null
   checkUnreadable.value = false
-  // 页面这就锁住：撤销会去改草稿，一起收起 / The page locks now: an undo would change the draft, so they go
+  // 页面这就锁住：放弃、导入这类撤销会整份换掉草稿，一起收起（锁着时窗口里新出的撤销只改一处，照常能按） / The page locks now: undos of
+  // a discard or an import would replace the draft wholesale, so they go (an undo raised in a window while locked changes one thing and
+  // still works)
   if (record) dismissUndoable()
 }
 // 结果不知道期间配置页锁住：页面不接新的修改，不能保存、应用、恢复；只有提示条说这件事（见 ConfigV2View 的 notice）。锁住以前就开着的窗口
@@ -696,9 +698,11 @@ function setUnanswered(record: LostWrite | null, head = ''): void {
 // and count as edits once checked (the check does not care how the draft came about)
 export const pageLocked = computed(() => lostWrite.value !== null)
 /**
- * 锁住以前就点下、到锁着才轮到的写入（确认框开着、文件还在选）：这一步不做，说一句为什么；锁着返回 true。what 是没做的那件事
- * A write pressed before the lock that only comes due while locked (a confirm still open, a file still being picked): it is not done and
- * a line says why; returns true when locked. what is the thing not done
+ * 锁着时轮到的写入：锁住以前点下、这时才轮到的（确认框开着、文件还在选），和锁着时还按得到的（Ctrl+S、「查看修改」里的保存）。这一步不做，
+ * 说一句为什么；锁着返回 true。what 是没做的那件事
+ * A write that comes due while locked: one pressed before the lock that only now comes due (a confirm still open, a file still being
+ * picked), or one still pressable while locked (Ctrl+S, the save in 查看修改). It is not done and a line says why; returns true when
+ * locked. what is the thing not done
  */
 export function refuseWhileLocked(what: string): boolean {
   if (!lostWrite.value) return false
@@ -804,8 +808,8 @@ export function dropEditsAfterSave(): void {
 export function keepDraftWhileAway(): void {
   if (away()) keepDraftForReturn()
 }
-/** 正在做的保存、「现在应用」、恢复版本、删除版本和重新读取都做完（成没成都算） / Resolves once the save, 现在应用, version restore, version delete
- * and re-read under way have all finished (either way) */
+/** 正在做的保存、「现在应用」、恢复版本、删除版本和重新读取都做完（成没成都算），页面锁着时等到解开 / Resolves once the save, 现在应用, version
+ * restore, version delete and re-read under way have all finished (either way), and a locked page has unlocked */
 export function whenDraftSettles(): Promise<void> {
   return new Promise((resolve) => {
     if (!draftBusy.value) { resolve(); return }
@@ -860,7 +864,7 @@ export function setViewing(open: boolean): boolean {
   // 在页上说的重试结果只补充提示条（原因由提示条说）：离开配置页时一起收起，不带着一句没头没尾的话到别的页 / A retry outcome told on the
   // page only adds to the notice (which gives the cause): it goes when the config page is left, rather than following with half a story
   if (!open) dropRetryToast()
-  // 回应丢了的那次保存还没核对时离开（页面锁着，离开不问）：草稿留到回来，挂上「不知道…存上没有」，核对的结果会换掉它
+  // 回应丢了的那次保存还没核对时离开（页面锁着，没有还没放进草稿的修改就不问）：草稿留到回来，挂上「不知道…存上没有」，核对的结果会换掉它
   // Leaving with a lost save still unchecked (the page is locked, leaving asks nothing): the draft is kept for the return and
   // 不知道…存上没有 goes up, to be replaced by the check's result
   if (!open && heldLostSave() && signedIn()) {
@@ -1631,8 +1635,13 @@ async function settleOnce(announce: boolean): Promise<boolean> {
   // A save is running on the page: the bar is left to it; landed but not taken: the notice above (with 重试应用) owns it and the bar steps aside instead of
   // showing a tick under a red notice; 现在应用 has no save bar, so a toast says its result
   if (announce && sameNow && inFlight === null && !applying) {
-    const later = changeCount.value ? ` · 之后改的 ${changeCount.value} 处还没保存` : ''
-    if (hasApplyFailure.value && !changeCount.value) finishStage('idle')
+    const later = changeCount.value ? ` · 之后改的 ${changeCount.value} 处还没保存` : jsonEdited.value ? ' · JSON 里之后改的还没保存' : ''
+    // 没生效、草稿里还有之后改的：和回应回来时一样，保存条说「保存了，没有生效」和原因 / Not taken with later edits in the draft: as when
+    // the answer arrives, the bar says 保存了，没有生效 and why
+    if (hasApplyFailure.value && changeCount.value) {
+      verdict.value = '保存了，没有生效'
+      finishStage('failed', failureCause(current.runtime.pending_error || current.pending?.error || 'KixDNS 没有给出原因。'))
+    } else if (hasApplyFailure.value) finishStage('idle')
     else finishStage('done', `${version ? `已经保存过了 · ${version}` : '已经保存过了'}${later}`)
   }
   if (applying && inFlight === null && stage.value === 'failed' && origin.value === 'apply') finishStage('idle')
@@ -1663,6 +1672,10 @@ async function settleOnce(announce: boolean): Promise<boolean> {
     const now = current.pending?.version_id ?? current.version_id
     const retryRefused = `重试也没有生效${now && now !== lost.pending ? `，存成了版本 #${now}` : ''}`
     if (viewing && hasApplyFailure.value && lost.retrying && signedIn()) sayRetry(useToast().error(retryRefused))
+    // 锁着时在窗口里改完、放进草稿的还没保存：离开以后也照保存条那样说，不让「已生效」盖过它们（没生效的那句本来就说保存时会带上）
+    // Edits finished in a window while locked are still unsaved: away, they are said as the save bar says them, so 已生效 does not cover
+    // them (the not-taken sentence already says a save takes them along)
+    const kept = !viewing && !applying && changeCount.value ? `；之后改的 ${changeCount.value} 处留在配\u2060置\u2060页，还没保存` : ''
     if (!(viewing && hasApplyFailure.value)) {
       const said = hasApplyFailure.value && lost.retrying ? useToast().error(`${retryRefused}。${failureCause(current.runtime.pending_error || current.pending?.error || 'KixDNS 没有给出原因。')}`)
         // 后半句只指回去时确实有的出路：草稿有修改时提示条不给「重试应用」，保存会带上那一版 / The second half points only at a way
@@ -1672,11 +1685,11 @@ async function settleOnce(announce: boolean): Promise<boolean> {
         : hasApplyFailure.value ? useToast().error(notTakenAway(
           applying ? `${!lost.inPlace && version && current.version_id !== lost.pending ? `配置存成了${version}，` : named ?? (version ? `${version} ` : '配置')}没有生效` : words?.subject ? `${words.subject}：存成了${version || '新版本'}，没有生效` : `${version ? `${version} ` : '配置'}保存了，没有生效`,
           current.runtime.pending_error || current.pending?.error || 'KixDNS 没有给出原因。', current.runtime, stoppedNow))
-        : hasPending.value ? useToast().success(`${opening}：${which}待应用，${pendingAfter()}`)
+        : hasPending.value ? useToast().success(`${opening}：${which}待应用，${pendingAfter()}${kept}`)
         // 面板替人做的保存（words）照旧说「已生效」：要重启的设置和它无关；应用没有编号时不说「已经应用」，说「已经完成」
         // A save the panel made (words) still says 已生效: the settings waiting for a restart have nothing to do with it; an apply
         // without a number reads 已经完成 rather than 已经应用
-        : effectToast(stored ? `${opening}：${words ? '已生效' : inEffect()}` : named ? `${opening}：${named}${words ? '已生效' : inEffect()}` : version ? `${opening}：${version} ${words ? '已生效' : inEffect()}` : applying ? `${opening}${restartPending.value.length ? `已经完成${restartTail()}` : '已经生效'}` : opening, !words && Boolean(restartTail()))
+        : effectToast(`${stored ? `${opening}：${words ? '已生效' : inEffect()}` : named ? `${opening}：${named}${words ? '已生效' : inEffect()}` : version ? `${opening}：${version} ${words ? '已生效' : inEffect()}` : applying ? `${opening}${restartPending.value.length ? `已经完成${restartTail()}` : '已经生效'}` : opening}${kept}`, !words && Boolean(restartTail()))
       tellAway(said)
     }
     // 草稿里没有别的修改了：不用再留着、也不用拦着刷新 / Nothing else is unsaved in the draft: no need to keep it or to guard reloads

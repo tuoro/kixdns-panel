@@ -517,10 +517,12 @@ test('恢复的确认框开着时立即更新的回应丢了：确认以后不�
   const confirm = page.locator('dialog.confirm[open]')
   await expect(confirm).toBeVisible()
   await expect(page.locator('.cfg__notice')).toContainText('不知道存上没有', { timeout: 10_000 })
+  // 一直连不上：确认那一步不赶演示面板 5 秒后自己连上 / Kept unreachable, so the confirm need not beat the demo panel reconnecting after 5 seconds
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-panel-down', 'true'))
   await confirm.getByRole('button', { name: `恢复为版本 #${withList}` }).click()
   await expect.poll(toasts, { timeout: 3000 }).toMatch(new RegExp(`没有恢复版本 #${withList}：[^|]*核对完再试`))
   expect(await toasts()).not.toContain('已恢复为版本')
-  await page.evaluate(() => localStorage.removeItem('kixdns:demo-download-slow'))
+  await page.evaluate(() => { localStorage.removeItem('kixdns:demo-download-slow'); localStorage.removeItem('kixdns:demo-panel-down') })
 })
 
 test('新的一份已经放进草稿、之后又加了一个列表，离开时放弃：照样直接存成版本', async ({ page }) => {

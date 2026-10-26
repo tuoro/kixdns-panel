@@ -14,7 +14,7 @@ import { readConfig } from '../config-model/document'
 import { actorName, errorMessage, formatVersionTime } from '../utils'
 import RuleText from './RuleText.vue'
 import { appliedModel, unsaved } from './store'
-import { bulkDeleting, currentVersionId, lostWrite, deferSave, deleteVersion, saveInFlight, whenSettledOrLocked, refuseWhileLocked, deleteVersions, deleting, failureCause, friendlyRuntimeError, pendingAfter, restoreVersion, sayNotTaken, restoring, versionDetail, versions } from './useConfigDocument'
+import { bulkDeleting, currentVersionId, deferSave, deleteVersion, saveInFlight, whenSettledOrLocked, refuseWhileLocked, deleteVersions, deleting, failureCause, friendlyRuntimeError, pendingAfter, restoreVersion, sayNotTaken, restoring, versionDetail, versions } from './useConfigDocument'
 // 关上后焦点回到打开它的控件 / Focus returns to the opener on close
 useReturnFocus()
 
@@ -39,9 +39,9 @@ let slowTimer: ReturnType<typeof setTimeout> | undefined
 onBeforeUnmount(() => clearTimeout(slowTimer))
 // 有哪个版本正在恢复或删除时，菜单里的操作都停一停 / While any version is being restored or deleted the menu actions wait
 // 配置页正在保存时也算忙：恢复会和那次保存撞上，变成「别处改过了」 / A save running on the config page counts as busy too: a restore would collide with it and read as 别处改过了
-// 回应丢了的那次写入还没核对时也不恢复、不删：结果不知道时再写，只会撞上它 / Nor restore or delete while a lost write is unchecked: writing
-// while the outcome is unknown would only meet it
-const busy = computed(() => restoring.value !== null || deleting.value !== null || bulkDeleting.value || saveInFlight.value || lostWrite.value !== null)
+// 回应丢了的那次写入还没核对时按钮照常在，按了说一句为什么不做（见 restore、remove），和「查看修改」里的保存一样 / While a lost write is
+// unchecked the buttons stay and a press says why nothing happens (see restore, remove), as the save in 查看修改 does
+const busy = computed(() => restoring.value !== null || deleting.value !== null || bulkDeleting.value || saveInFlight.value)
 
 const isCurrent = (v: ConfigVersion) => v.id === currentVersionId.value
 const deletable = computed(() => versions.value.filter((v) => !isCurrent(v)))
@@ -72,6 +72,7 @@ async function openDiff(v: ConfigVersion): Promise<void> {
 }
 function closeDiff(): void { diffDialog.value?.close(); preview.value = null; blocks.value = null }
 async function restore(v: ConfigVersion): Promise<void> {
+  if (refuseWhileLocked(`恢复版本 #${v.id}`)) return
   const ok = await confirm.ask({
     title: `恢复为版本 #${v.id}`,
     // KixDNS 停着或连不上时恢复出来的新版本先存成待应用，和恢复后的提示说的一样 / With KixDNS stopped or unreachable the restored version is stored as pending, as the toast after it says
@@ -106,6 +107,7 @@ async function restore(v: ConfigVersion): Promise<void> {
 }
 async function remove(v: ConfigVersion): Promise<void> {
   if (isCurrent(v)) { toast.error('正在用的版本不能删除：先恢复别的版本'); return }
+  if (refuseWhileLocked(`删除版本 #${v.id}`)) return
   const ok = await confirm.ask({ title: `删除配置版本 #${v.id}`, body: '删除后找不回来。当前生效的配置不受影响。', confirmLabel: '删除这个版本', items: [`#${v.id} · ${v.message || '未填写备注'}`], destructive: true })
   if (!ok) return
   // 和恢复一样，等配置页正在做的保存做完，页面锁住就不删 / As with a restore, wait for a save under way on the config page, and delete
@@ -122,6 +124,7 @@ async function remove(v: ConfigVersion): Promise<void> {
 }
 async function removePicked(): Promise<void> {
   const list = versions.value.filter((v) => picked.value.includes(v.id))
+  if (refuseWhileLocked('删除所选版本')) return
   const ok = await confirm.ask({ title: `删除 ${list.length} 个历史版本`, body: '删除后找不回来。当前生效的配置不受影响。', confirmLabel: `删除 ${list.length} 个版本`, items: list.map((v) => `#${v.id} · ${v.message || '未填写备注'}`), destructive: true })
   if (!ok) return
   await whenSettledOrLocked()

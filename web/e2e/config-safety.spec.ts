@@ -1755,6 +1755,9 @@ test('保存途中开着上游组抽屉、回应丢了：抽屉照常改完，�
   const drawer = page.locator('dialog[open]')
   await expect(drawer).toBeVisible()
   await expect(page.locator('.cfg__notice')).toContainText('刚才那次保存不知道存上没有。', { timeout: 8000 })
+  // 一直连不上，直到测试自己重连：锁着的那几步不赶演示面板 5 秒后自己连上 / Kept unreachable until the test reconnects, so the locked steps
+  // need not beat the demo panel reconnecting by itself after 5 seconds
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-panel-down', 'true'))
   await expect(page.locator('.cfg__panel')).toHaveAttribute('inert', '')
   await drawer.getByLabel('名称').fill('锁住时改的')
   await drawer.getByRole('button', { name: '完成', exact: true }).click()
@@ -1782,6 +1785,9 @@ test('保存的回应丢了、抽屉里还有没放进草稿的修改时离开�
   const drawer = page.locator('dialog[open]')
   await expect(drawer).toBeVisible()
   await expect(page.locator('.cfg__notice')).toContainText('刚才那次保存不知道存上没有。', { timeout: 8000 })
+  // 一直连不上，直到测试自己重连：锁着的那几步不赶演示面板 5 秒后自己连上 / Kept unreachable until the test reconnects, so the locked steps
+  // need not beat the demo panel reconnecting by itself after 5 seconds
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-panel-down', 'true'))
   await drawer.getByLabel('名称').fill('没放进草稿')
   await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
   // 抽屉是模态的，点不到导航：直接点链接元素 / The drawer is modal and the nav cannot be clicked: the link element is clicked directly
@@ -1791,6 +1797,61 @@ test('保存的回应丢了、抽屉里还有没放进草稿的修改时离开�
   await expect(ask).toContainText('刚才在这里改的内容还没放进草稿，离开就没了。草稿留着，核对完会说结果。')
   await ask.getByRole('button', { name: '放弃修改', exact: true }).click()
   await expect(page).toHaveURL(/\/logs/)
+})
+
+// 锁着时在抽屉里改完、放进了草稿，人随后离开：核对出存上了，提示照保存条那样说之后改的那一处还留在配置页
+// Edited in the drawer while locked, folded into the draft, then left: when the check finds the save landed, the toast says, as the
+// save bar would, that the later edit is still on the config page
+test('锁着时在抽屉里改完再离开，核对出存上了：提示说之后改的还留在配置页', async ({ page }) => {
+  await readSequence(page)
+  await page.goto('/config')
+  await addRule(page, 'lock-away.example')
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-save-slow', '3000'); localStorage.setItem('kixdns:demo-put-answer-lost', 'true') })
+  await page.locator('.cfg__savebar').getByRole('button', { name: '保存并应用' }).click()
+  await expect(page.locator('.cfg__savebar')).toContainText('写入并应用')
+  await page.getByRole('link', { name: '上游组', exact: true }).locator('visible=true').first().click()
+  await page.locator('.gcard__name').first().click()
+  const drawer = page.locator('dialog[open]')
+  await expect(drawer).toBeVisible()
+  await expect(page.locator('.cfg__notice')).toContainText('刚才那次保存不知道存上没有。', { timeout: 8000 })
+  // 一直连不上，直到测试自己重连：锁着的那几步不赶演示面板 5 秒后自己连上 / Kept unreachable until the test reconnects, so the locked steps
+  // need not beat the demo panel reconnecting by itself after 5 seconds
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-panel-down', 'true'))
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
+  await drawer.getByLabel('名称').fill('锁住时改的')
+  await drawer.getByRole('button', { name: '完成', exact: true }).click()
+  await expect(page.locator('dialog[open]')).toHaveCount(0)
+  await page.locator('.desktop-nav').getByRole('link', { name: '日志', exact: true }).click()
+  await expect(page).toHaveURL(/\/logs/)
+  await reconnect(page)
+  await expect.poll(async () => (await toastTexts(page)).some((text) => /^刚才那次保存已经存上了：版本 #\d+ 已生效；之后改的 1 处留在配置页，还没保存$/.test(text)), { timeout: 12_000 }).toBe(true)
+})
+
+// 保存写进去了、KixDNS 没接受，回应又丢了；锁着时在抽屉里改完：核对完保存条和回应回来时一样说「保存了，没有生效」，不在红色提示条下面打勾
+// The save was written and KixDNS refused it, and the answer was lost; the drawer was finished while locked: once checked the bar says
+// 保存了，没有生效 as when the answer arrives, with no tick under the red notice
+test('保存被拒、回应丢了，锁着时在抽屉里改完：核对完保存条说保存了没有生效', async ({ page }) => {
+  await readSequence(page)
+  await page.goto('/config')
+  await addRule(page, 'lock-refused.example')
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-save-slow', '3000'); localStorage.setItem('kixdns:demo-apply-failed', 'true'); localStorage.setItem('e2e:lose-refusal', 'true') })
+  const bar = page.locator('.cfg__savebar')
+  await bar.getByRole('button', { name: '保存并应用' }).click()
+  await expect(bar).toContainText('写入并应用')
+  await page.getByRole('link', { name: '上游组', exact: true }).locator('visible=true').first().click()
+  await page.locator('.gcard__name').first().click()
+  const drawer = page.locator('dialog[open]')
+  await expect(drawer).toBeVisible()
+  await expect(page.locator('.cfg__notice')).toContainText('刚才那次保存不知道存上没有。', { timeout: 8000 })
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-save-slow'))
+  await drawer.getByLabel('名称').fill('锁住时改的')
+  await drawer.getByRole('button', { name: '完成', exact: true }).click()
+  await expect(page.locator('dialog[open]')).toHaveCount(0)
+  await reconnect(page)
+  await expect(bar).toContainText('保存了，没有生效', { timeout: 12_000 })
+  await expect(bar).toContainText('did not answer the health check')
+  await expect(bar).not.toContainText('已经保存过了')
+  await expect(page.locator('.cfg__notice')).toContainText('没有生效')
 })
 
 // 文件还在选的时候页面锁住了（选好时才轮到导入）：不导入，说一句为什么；草稿和锁都不动
@@ -1803,6 +1864,9 @@ test('保存的回应丢了、页面锁着时才选好要导入的文件：不�
   await page.evaluate(() => localStorage.setItem('kixdns:demo-put-answer-lost', 'true'))
   await page.locator('.cfg__savebar').getByRole('button', { name: '保存并应用' }).click()
   await expect(page.locator('.cfg__notice')).toContainText('刚才那次保存不知道存上没有。')
+  // 一直连不上，直到测试自己重连：锁着的那几步不赶演示面板 5 秒后自己连上 / Kept unreachable until the test reconnects, so the locked steps
+  // need not beat the demo panel reconnecting by itself after 5 seconds
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-panel-down', 'true'))
   const config = { version: '1.0', settings: {}, pipeline_select: [{ pipeline: 'main', matchers: [] }], pipelines: [{ id: 'main', rules: [] }] }
   await page.locator('input[type="file"]').setInputFiles({ name: 'late.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(config)) })
   await expect.poll(() => toastTexts(page)).toContain('没有导入 late.json：刚才那次保存不知道存上没有，核对完再试')

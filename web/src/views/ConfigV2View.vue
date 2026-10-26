@@ -26,7 +26,7 @@ import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, discardOnLeave, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, bulkDeleting, busy, checkFirst, checkInstead, checkPending, heldLostSave, lostWrite, lostWriteWhy, pageLocked, refuseWhileLocked, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, stayedDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, beginOwnWrite, readAfterOwnWrite, readFresh, readQuietly, restartPending, restartRollback, runtimeDown, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse } from '../config-v2/useConfigDocument'
+import { applyBusy, bulkDeleting, busy, checkFirst, checkInstead, checkPending, heldLostSave, lostWrite, lostWriteWhy, pageLocked, refuseWhileLocked, whenSettledOrLocked, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, stayedDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, beginOwnWrite, readAfterOwnWrite, readFresh, readQuietly, restartPending, restartRollback, runtimeDown, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse } from '../config-v2/useConfigDocument'
 import { dismissBlocklistToasts } from '../config-v2/useBlocklists'
 import { carryUpdate, refreshLanded, returnedToPage } from '../config-v2/updateCarry'
 import { useHelp } from '../composables/useHelp'
@@ -100,6 +100,8 @@ async function openRule(ruleId: number | null, groupId: string | null, template?
   if (pageLocked.value) return
   if (ui.mode === 'json' && !leaveJson()) return
   if (editor.value && (ruleId === null || editor.value.ruleId !== ruleId) && !(await editorRef.value?.confirmDiscard() ?? true)) return
+  // 确认框开着时锁住了：不开新的编辑 / Locked while the confirm was open: no new editor opens
+  if (pageLocked.value) return
   editor.value = { ruleId, groupId, template }
   // 宽屏的面板贴在列表旁边，不跳回页顶，列表停在原处 / On wide screens the panel sits beside the list, so the list keeps its place
   if (!(wide.value && section.value === 'rules')) {
@@ -167,6 +169,11 @@ watch(inspector, (now, before) => {
 function groupSaved(group: UpstreamGroup, isNew: boolean): void {
   groupEditor.value = null
   toast.success(isNew ? `已新建上游组「${group.name}」` : `已更新「${group.name}」`)
+}
+// 打开上游组抽屉：锁着时不开新的，说一句（锁住以前开着的整页编辑器里还点得到「在上游组里修改」） / Open the upstream group drawer: no new one
+// while locked, and a line says why (the full-page editor open since before the lock still offers 在上游组里修改)
+function openGroup(id: string | null): void {
+  if (!refuseWhileLocked('打开上游组')) groupEditor.value = { id }
 }
 function groupDeleted(group: UpstreamGroup, index: number): void {
   groupEditor.value = null
@@ -485,6 +492,9 @@ async function reload(ask = true): Promise<void> {
   // checkInstead)
   if (await checkInstead()) return
   if (ask && unsaved.value && !(await confirm.ask({ title: '放弃未保存的修改', body: '重新读取会丢掉没保存的修改。', confirmLabel: '放弃修改并重新读取', destructive: true }))) return
+  // 确认框开着时又有一次写入的回应丢了：这一按就是去核对，不整份重读 / Another write lost its answer while the confirm was open: the press
+  // becomes the check, with no whole re-read
+  if (await checkInstead()) return
   editor.value = null
   ui.mode = 'form'
   await load()
@@ -724,8 +734,11 @@ async function restartForSettings(): Promise<void> {
     body: `服务会短暂中断，缓存会清空。${waiting}重启后生效的设置：${settingNames(restartPending.value, { all: true })}。${draft}`,
     confirmLabel: '重启服务',
   })) return
-  // 确认框开着时页面锁住了（又一次写入的回应丢了）：不发，说一句；退回、写进文件也一样 / The page locked while the confirm was open
-  // (another write lost its answer): nothing is sent and a line says why; rolling back and writing the file alike
+  // 确认框开着时开始的保存（立即更新的补存）先做完：保存途中重启，KixDNS 会在确认新配置前断开。页面锁住了（那次写入的回应丢了）就不发，
+  // 说一句；退回、写进文件也一样 / A save begun while the confirm was open (立即更新's make-up save) finishes first: restarting mid-save
+  // would lose KixDNS before it confirms the config. Once the page has locked (that write lost its answer) nothing is sent and a line says
+  // why; rolling back and writing the file alike
+  await whenSettledOrLocked()
   if (refuseWhileLocked('重启')) return
   await ownAction(() => restart({ afterBack: readQuietly, wasAlive: true }))
 }
@@ -750,6 +763,7 @@ async function rollbackSettings(): Promise<void> {
   // 确认框开着时草稿又有了修改（点了提示里的「撤销」）：不发，提示条换回「先保存或放弃」，不悄悄冲掉那笔修改
   // The draft gained edits while the confirm was open (an 撤销 in a toast): nothing is sent and the notice turns back to
   // 「先保存或放弃」, rather than the edits being silently wiped
+  await whenSettledOrLocked()
   if (refuseWhileLocked('退回')) return
   if (unsaved.value) { draftChangedMeanwhile('退回'); return }
   await ownAction(() => restart({ rollback: { hadPending: hasPending.value }, beforeSend: beginOwnWrite, afterBack: readAfterOwnWrite }))
@@ -765,6 +779,7 @@ async function writePendingIn(): Promise<void> {
     body: 'KixDNS 不在，没法先校验这份配置：直接写进配置文件，再重启。还是起不来的话，改好再写一次。',
     confirmLabel: '写进并重启',
   })) return
+  await whenSettledOrLocked()
   if (refuseWhileLocked('写进配置文件')) return
   if (unsaved.value) { draftChangedMeanwhile('写进配置文件'); return }
   await ownAction(() => restart({ writePending: id, beforeSend: beginOwnWrite, afterBack: readAfterOwnWrite }))
@@ -783,7 +798,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
 </script>
 
 <template>
-  <RuleEditor v-if="editor && !inspector" ref="editorRef" :key="`${editor.ruleId}-${editor.groupId}-${editor.nonce ?? 0}`" :rule-id="editor.ruleId" :group-id="editor.groupId" :template="editor.template" :resume="editor.resume" @close="closeRule" @reopen="reopenRule" @saved="ruleSaved" @deleted="ruleDeleted" @edit-group="groupEditor = { id: $event }" />
+  <RuleEditor v-if="editor && !inspector" ref="editorRef" :key="`${editor.ruleId}-${editor.groupId}-${editor.nonce ?? 0}`" :rule-id="editor.ruleId" :group-id="editor.groupId" :template="editor.template" :resume="editor.resume" @close="closeRule" @reopen="reopenRule" @saved="ruleSaved" @deleted="ruleDeleted" @edit-group="openGroup($event)" />
   <div v-else class="page cfg">
     <UiPageHeader :title="pageTitle">
       <template #meta>
@@ -818,7 +833,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
       <!-- 红色的用带叉的圆圈，和概览、诊断页一样 / The red one takes the crossed circle, as on the overview and diagnostics -->
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10" /><path v-if="notice.tone === 'err'" d="m15 9-6 6M9 9l6 6" /><path v-else d="M12 8v4M12 16h.01" /></svg>
       <span><template v-for="(run, k) in numberRuns(notice.text)" :key="k"><span v-if="run.glue" class="nowrap">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></span>
-      <small v-if="notice.detail"><RuleText :text="notice.detail" :links="notice.links" breaks @rule="openRule($event, null)" @group="groupEditor = { id: $event }" /></small>
+      <small v-if="notice.detail"><RuleText :text="notice.detail" :links="notice.links" breaks @rule="openRule($event, null)" @group="openGroup($event)" /></small>
       <button v-if="notice.action" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="noticeHeld" :aria-busy="noticeRestarting || undefined" @click="runNotice"><span v-if="noticeRestarting" class="ui-spin" aria-hidden="true"></span>{{ notice.action }}</button>
     </div>
 
@@ -850,15 +865,15 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
          back: what comes back replaces the draft; nor while a lost write is unchecked (the page is locked) -->
     <div v-else :id="`cfg-panel-${section}`" class="cfg__panel" role="tabpanel" :aria-labelledby="`cfg-tab-${section}`" :inert="rereading || rollingBack || pageLocked || undefined" :aria-busy="rereading || rollingBack || pageLocked || undefined">
       <div v-if="section === 'rules'" class="rules-split" :class="{ 'is-open': inspector }">
-        <RulesTab :selected="editor?.ruleId ?? null" @open="openRule" @tab="setTab" @edit-group="groupEditor = { id: $event }" @import="!saveInFlight && fileInput?.click()" />
-        <RuleEditor v-if="inspector && editor" ref="editorRef" :key="`${editor.ruleId}-${editor.groupId}-${editor.nonce ?? 0}`" inspector :rule-id="editor.ruleId" :group-id="editor.groupId" :template="editor.template" :resume="editor.resume" @close="closeRule" @reopen="reopenRule" @saved="ruleSaved" @deleted="ruleDeleted" @edit-group="groupEditor = { id: $event }" />
+        <RulesTab :selected="editor?.ruleId ?? null" @open="openRule" @tab="setTab" @edit-group="openGroup($event)" @import="!saveInFlight && fileInput?.click()" />
+        <RuleEditor v-if="inspector && editor" ref="editorRef" :key="`${editor.ruleId}-${editor.groupId}-${editor.nonce ?? 0}`" inspector :rule-id="editor.ruleId" :group-id="editor.groupId" :template="editor.template" :resume="editor.resume" @close="closeRule" @reopen="reopenRule" @saved="ruleSaved" @deleted="ruleDeleted" @edit-group="openGroup($event)" />
       </div>
-      <UpstreamsTab v-else-if="section === 'upstreams'" @edit="groupEditor = { id: $event }" @rules="showGroupRules" />
+      <UpstreamsTab v-else-if="section === 'upstreams'" @edit="openGroup($event)" @rules="showGroupRules" />
       <MappingTab v-else-if="section === 'mapping'" />
       <BlocklistTab v-else-if="section === 'blocklists'" />
       <SettingsTab v-else />
     </div>
-    <SaveBar v-if="ready" :json-error="jsonError" :json-dirty="jsonDirty" :flush="flush" @rule="openRule($event, null)" @group="groupEditor = { id: $event }" @reveal="(l: number, c: number) => jsonEditor?.reveal(l, c)" @reload="reload()" @download="downloadJson" @discarded="afterDiscard" />
+    <SaveBar v-if="ready" :json-error="jsonError" :json-dirty="jsonDirty" :flush="flush" @rule="openRule($event, null)" @group="openGroup($event)" @reveal="(l: number, c: number) => jsonEditor?.reveal(l, c)" @reload="reload()" @download="downloadJson" @discarded="afterDiscard" />
   </div>
   <GroupEditor v-if="groupEditor" :key="groupEditor.id ?? 'new'" :group-id="groupEditor.id" @close="groupEditor = null" @saved="groupSaved" @deleted="groupDeleted" />
   <HistoryDrawer v-if="historyOpen" :compare-with="historyOpen.compare" @close="historyOpen = null" @rule="historyOpen = null; openRule($event, null)" />
