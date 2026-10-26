@@ -17,7 +17,9 @@ import UiPageHeader from '../components/ui/UiPageHeader.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
 import { useConfirm } from '../composables/useConfirm'
 import { useConnection } from '../composables/useConnection'
-import { useServiceStart } from '../composables/useServiceStart'
+import { backUnconfirmed, downShownHere, noteRead, readBeforeTelling, useServiceStart } from '../composables/useServiceStart'
+import { serviceLabel as labelOfService, serviceTone as toneOfService, type ServiceTone } from '../service-state'
+import { settingNames } from '../config-editor/schema'
 import { useToast } from '../composables/useToast'
 import { HEALTH_LABELS, cacheComposition, rcodeDistribution, latencyBasis, recentWindowLabel, settledAttempts, upstreamBasis, upstreamHealth } from '../dashboard-presentation'
 import type { ShareRow, UpstreamHealth } from '../dashboard-presentation'
@@ -25,6 +27,7 @@ import { dashboardRuntimeState, emptyOverview, emptyQueryStats, hasStaleDashboar
 import { sparkline } from '../trend'
 import { softBreakParts } from '../ui/soft-breaks'
 import { errorMessage, formatDuration, formatNumber, formatPercent, shortHash, upstreamSuccessRate } from '../utils'
+import GlueText from '../config-v2/GlueText.vue'
 
 const overview = ref<Overview | null>(null)
 const service = ref<ServiceStatus | null>(null)
@@ -74,20 +77,9 @@ const maxDomain = computed(() => Math.max(1, ...(stats.value?.domains.map((item)
 
 // ---------- 页头：按服务状态写事实，和系统页同一种写法 ----------
 // ---------- Header: facts by service state, written as on the system page ----------
-type Tone = 'ok' | 'warn' | 'err' | 'off'
-const serviceTone = computed<Tone>(() => {
-  const current = service.value
-  if (!current) return 'off'
-  if (current.active_state === 'active') return 'ok'
-  if (current.active_state === 'failed') return 'err'
-  if (['activating', 'reloading', 'deactivating'].includes(current.active_state) || current.sub_state === 'auto-restart') return 'warn'
-  return 'off'
-})
-const serviceLabel = computed(() => {
-  const current = service.value
-  if (current?.active_state === 'deactivating') return '正在停止'
-  return { ok: '运行中', warn: '正在启动', err: '启动失败', off: '已停止' }[serviceTone.value]
-})
+type Tone = ServiceTone
+const serviceTone = computed<Tone>(() => toneOfService(service.value))
+const serviceLabel = computed(() => labelOfService(service.value))
 // 连不上面板时，上次读到的状态已经不能当真：点变灰，写「状态未知」，不再写「已运行」，连上后恢复（顶上的横幅说为什么）；
 // 配置版本和「更新于」照写——后者正说明这些数是什么时候读到的
 // While the panel is unreachable the last state read can no longer be trusted: the dot turns grey and reads 状态未知 and 已运行 is
@@ -99,6 +91,9 @@ const headLabel = computed(() => (panelDown.value ? '状态未知' : service.val
 // 「运行中 · active/running」是同一件事说两遍；只有不寻常的状态，systemd 的原始写法才多带了信息（同系统页）。
 // "运行中 · active/running" says one thing twice; only unusual states carry information in systemd's own words (as on the system page).
 const unusualServiceState = computed(() => {
+  // 服务端看出它起不来时不写 systemd 的原话（重试那一下是 active/running，跟着闪） / Not systemd's words when the server sees it
+  // not coming up (a retry reads active/running and would flicker)
+  if (service.value?.did_not_come_up) return ''
   const current = service.value
   const state = current ? `${current.active_state}/${current.sub_state}` : ''
   return state && !['active/running', 'inactive/dead'].includes(state) ? state : ''
@@ -119,7 +114,7 @@ const metaTail = computed<'live' | 'snapshot' | ''>(() => (runtimeState.value ==
 
 // ---------- 页级提示：一次只出一条，读取错误写进原因行 ----------
 // ---------- Page notice: one at a time, a read error goes in its reason line ----------
-interface PageNotice { tone: 'warn' | 'err' | 'off'; icon: typeof CircleAlert; title: string; reason: string; action?: 'retry' | 'config' | 'logs' | 'start'; phoneOnly?: boolean }
+interface PageNotice { tone: 'warn' | 'err' | 'off'; icon: typeof CircleAlert; title: string; reason: string; action?: 'retry' | 'config' | 'fix' | 'logs' | 'start'; phoneOnly?: boolean }
 // 原因行把几条读取错误和一句「接下来会怎样」连成一段 / The reason line joins the read errors and one sentence on what happens next
 function reasonOf(...parts: string[]): string {
   return parts.filter(Boolean).map((part) => part.replace(/[。；;.]$/, '')).join('；') + '。'
@@ -141,8 +136,18 @@ const notice = computed<PageNotice | null>(() => {
   const serviceTitle = tone === 'err' ? 'KixDNS 启动失败' : tone === 'warn' ? `KixDNS ${serviceLabel.value}` : ''
   // 原因按状态说接下来会怎样：启动失败指去日志；正在启动说完成后自动更新；正在停止不许诺什么
   // The reason says what comes next by state: a failure points to the logs, a start updates on completion, a stop promises nothing
-  const serviceNotice = (shown: string): PageNotice => tone === 'err'
-    ? { tone: 'err', icon: CircleX, title: serviceTitle, reason: reasonOf(shown, '查看日志了解启动失败的原因'), action: 'logs' }
+  // 起不来、又有可以退回的设置：指到配置页（那里的提示条能退回），不指日志 / Not coming up with changed settings that can go back:
+  // point to the config page (its notice can put them back) rather than the logs
+  // 不能退回、有还没写进配置文件的待应用版本时同样指到配置页（那里能写进去） / With nothing to put back and a pending version not
+  // yet in the file, it points to the config page too (where it can be written in)
+  const rollback = service.value?.restart_rollback
+  const writable = service.value?.pending_writable
+  const serviceNotice = (shown: string): PageNotice => tone === 'err' && rollback
+    ? { tone: 'err', icon: CircleX, title: serviceTitle, reason: reasonOf(shown, `可能是改过的设置让 KixDNS\u00a0起不来，可以退回：${settingNames(Object.keys(rollback))}`), action: 'fix' }
+    : tone === 'err' && writable
+    ? { tone: 'err', icon: CircleX, title: serviceTitle, reason: reasonOf(shown, `版本\u00a0#${writable}\u00a0还没写进配置文件，可以到配置页写进去`), action: 'fix' }
+    : tone === 'err'
+    ? { tone: 'err', icon: CircleX, title: serviceTitle, reason: reasonOf(shown, '起不来的原因在运行日志里'), action: 'logs' }
     : { tone: 'warn', icon: CircleAlert, title: serviceTitle, reason: reasonOf(shown, service.value?.active_state === 'activating' ? '启动完成后概览会自动更新' : '') }
   switch (runtimeState.value) {
     case 'stopped-empty':
@@ -150,10 +155,14 @@ const notice = computed<PageNotice | null>(() => {
         ? serviceNotice('还没有运行数据')
         : { tone: 'off', icon: Power, title: 'KixDNS 已停止', reason: reasonOf('还没有运行数据', '「启动\u00a0KixDNS」\u2060后概览会自动更新'), action: 'start' }
     case 'stopped-snapshot':
+      // 起不来不是停了：不说「停止前」 / Not coming up is not a stop: no 停止前
       return serviceTitle
-        ? serviceNotice(`显示停止前${snapshot}的快照`)
+        ? serviceNotice(tone === 'err' ? `显示${snapshot}的快照` : `显示停止前${snapshot}的快照`)
         : { tone: 'off', icon: Power, title: 'KixDNS 已停止', reason: reasonOf(`显示停止前${snapshot}的快照`, '「启动\u00a0KixDNS」\u2060后概览会自动更新'), action: 'start' }
     case 'unavailable-snapshot':
+      // systemd 重试的那一下服务是 active：服务端看出它起不来时照「启动失败」说 / During a systemd retry the service reads active:
+      // when the server sees it not coming up, it is told as 启动失败
+      if (tone === 'err') return serviceNotice(`显示${snapshot}的快照`)
       return { tone: 'warn', icon: CircleAlert, title: '实时数据暂不可用', reason: reasonOf(overviewError.value || 'KixDNS 暂时没有回应', serviceErrorPart, `显示${snapshot}的快照，恢复后会自动更新`), action: 'retry' }
     case 'unavailable':
       return { tone: 'err', icon: CircleX, title: '读不到运行数据', reason: reasonOf(overviewError.value, serviceErrorPart, '页面每 15 秒自动重试'), action: 'retry' }
@@ -300,7 +309,11 @@ const rules = computed(() => [...(displayOverview.value?.metrics.rules ?? [])].s
 const configTag = computed(() => {
   if (!overview.value) return { label: '未运行', tone: '' }
   if (runtimeUnavailable.value) return { label: '运行快照', tone: '' }
-  const tag = overview.value.active_config.last_reload.success ? { label: '已生效', tone: 'ok' } : { label: '应用失败', tone: 'warn' }
+  // 改过的设置还要重启才生效时不说「已生效」，和配置页的提示条一致 / With changed settings still waiting for a restart it does not say 已生效, matching the config page's notice
+  // 应用失败是红色，和配置页一样；待重启是琥珀色：两种轻重不同，不靠三个字分 / A failed apply is red as on the config page and
+  // 待重启 amber: two different weights, not told apart by three characters alone
+  const tag = !overview.value.active_config.last_reload.success ? { label: '应用失败', tone: 'err' }
+    : overview.value.active_config.restart_pending?.length ? { label: '待重启', tone: 'warn' } : { label: '已生效', tone: 'ok' }
   // 连不上面板时这是上次读到的结论：照写，但不上色，和页头的「状态未知」一致 / While the panel is unreachable this is the last-read verdict: still written, but uncoloured, matching 状态未知 in the header
   return panelDown.value ? { ...tag, tone: '' } : tag
 })
@@ -343,6 +356,10 @@ function load(silent = false): Promise<void> {
     if (versionsResult.status === 'fulfilled') versions.value = versionsResult.value.versions
     if (overviewResult.status === 'fulfilled') {
       overview.value = overviewResult.value
+      // 和配置页一样：连着两次读到活着才算回来，「启动失败」那条提示才收 / As on the config page: back takes two live reads in a
+      // row, and only then does the 启动失败 toast go
+      const unit = serviceResult.status === 'fulfilled' ? serviceResult.value.active_state : null
+      noteRead(overviewResult.value.live, unit ? ['inactive', 'failed'].includes(unit) : overviewResult.value.service_active === false)
       overviewError.value = ''
       loadedAt.value = Date.now()
     } else overviewError.value = errorMessage(overviewResult.reason)
@@ -403,11 +420,20 @@ async function refreshAll(): Promise<void> {
 // 停着的时候在说它停着的地方就能启动，不用先去系统页 / Start it right where the page says it is stopped, without a trip to the system page
 const { starting, start } = useServiceStart()
 async function startService(): Promise<void> {
-  const status = await start()
-  if (!status) return
-  service.value = status
-  await refreshAll()
+  // 等完先重读（见下面登记的重读），再说结果：起不来时概览的提示条先说，不另弹提示；服务状态也是重读的那份，不拿启动时那份盖掉
+  // Read again after the wait (the read registered below), before the outcome is said: not coming up, the overview's notice says
+  // it first with no toast; the service state is the one read again, not overwritten by the one the start returned
+  if (await start()) await loadStats(true)
 }
+// 不管是哪一页发起的启动、重启、退回，结束时概览先重读再说结果 / Whichever page sent the start, restart or rollback, the overview
+// reads again when it ends, before the outcome is said
+// 不搭还在路上的那次读：它可能是在服务端看出起不来之前发的 / Not riding on a read still out: it may have been sent before the
+// server saw it not coming up
+const stopReading = readBeforeTelling(async () => { await pendingLoad?.catch(() => undefined); await load(true) })
+// 提示条在说起不来：别处带来的「启动失败」提示收起，这一页等出来的也不另弹 / The notice says it does not come up: a 启动失败 toast
+// brought from elsewhere is dismissed, and one this page waited out is not raised
+watch(() => notice.value?.title === 'KixDNS 启动失败', (shown) => { downShownHere.value = shown }, { immediate: true, flush: 'sync' })
+onBeforeUnmount(() => { downShownHere.value = false })
 
 async function setStatsWindow(windowSeconds: number): Promise<void> {
   if (statsWindow.value === windowSeconds) return
@@ -684,6 +710,14 @@ onMounted(async () => {
   timer = window.setInterval(() => void load(true), 15000)
   statsTimer = window.setInterval(() => void loadStats(true), 60000)
 })
+// 刚连上、还没连着两次读到时每 5 秒读一次：起不来的循环里碰上一次短暂应答，不写 15 秒「运行中」
+// Every 5 seconds while reachable but not yet seen twice in a row: one brief answer inside a loop that never comes up does not
+// read 运行中 for 15 seconds
+let confirmTimer: number | undefined
+watch(backUnconfirmed, (on) => {
+  window.clearInterval(confirmTimer)
+  confirmTimer = on && !unmounted ? window.setInterval(() => void load(true), 5000) : undefined
+}, { immediate: true })
 // 连上面板后马上重读，不等下一次 15 秒的定时刷新 / Once the panel answers again re-read at once instead of waiting for the next 15-second tick
 watch(panelDown, (now, before) => { if (before && !now && !unmounted) { void loadNames(); void load(true); void loadStats(true) } })
 onBeforeUnmount(() => {
@@ -692,6 +726,8 @@ onBeforeUnmount(() => {
   unmounted = true
   window.clearInterval(timer)
   window.clearInterval(statsTimer)
+  window.clearInterval(confirmTimer)
+  stopReading()
 })
 </script>
 
@@ -729,9 +765,14 @@ onBeforeUnmount(() => {
     <div v-if="notice" class="ui-notice overview-notice" :class="[notice.tone === 'warn' ? '' : `ui-notice--${notice.tone}`, { 'overview-notice--phone': notice.phoneOnly }]" :role="notice.tone === 'err' ? 'alert' : 'status'">
       <component :is="notice.icon" :size="16" aria-hidden="true" />
       <span>{{ notice.title }}</span>
-      <small v-if="notice.reason">{{ notice.reason }}</small>
+      <!-- 原因里可能有设置名单：标点后能断，WebKit 上不从名字中间切 / The reason may list settings: breaks after punctuation, so WebKit
+           does not cut a name -->
+      <small v-if="notice.reason"><GlueText :text="notice.reason" breaks /></small>
       <button v-if="notice.action === 'retry'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="requesting" @click="refreshAll">重试</button>
       <RouterLink v-else-if="notice.action === 'config'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" to="/config">管理配置</RouterLink>
+      <!-- 退回、写进配置文件在设置分区的提示条里，和诊断页同一个去处 / Rolling back and writing into the file are in the settings
+           section's notice, the same place diagnostics goes -->
+      <RouterLink v-else-if="notice.action === 'fix'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" to="/config?section=settings">去配置页</RouterLink>
       <!-- 启动失败的原因在运行日志里，直接打开那一页签（日志页默认是查询日志） / Why it failed to start is in the runtime log, so that tab opens directly (the logs page defaults to the query log) -->
       <RouterLink v-else-if="notice.action === 'logs'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" to="/logs?view=runtime">查看日志</RouterLink>
       <button v-else-if="notice.action === 'start'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="starting" :aria-busy="starting || undefined" @click="startService"><span v-if="starting" class="ui-spin" aria-hidden="true"></span>启动 KixDNS</button>

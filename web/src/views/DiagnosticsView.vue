@@ -1,16 +1,17 @@
 <script setup lang="ts">
-import { Check, ChevronDown, ChevronRight, LoaderCircle, Network, Power, TriangleAlert, X } from '@lucide/vue'
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+import { Check, ChevronDown, ChevronRight, CircleX, LoaderCircle, Network, Power, TriangleAlert, X } from '@lucide/vue'
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { CONFIG_WRITTEN_EVENT, apiRequest, isPanelDown, jsonBody } from '../api/client'
-import type { ConfigDocument, ConfigVersion, ConfigVersions, DnsDiagnostic, KixdnsKernel, Overview } from '../api/types'
+import type { ConfigDocument, ConfigVersion, ConfigVersions, DnsDiagnostic, KixdnsKernel, Overview, ServiceStatus } from '../api/types'
 import { runningVersionId } from '../running-version'
 import UiDotText from '../components/ui/UiDotText.vue'
 import UiEmpty from '../components/ui/UiEmpty.vue'
 import UiPageHeader from '../components/ui/UiPageHeader.vue'
 import UiSelect from '../components/ui/UiSelect.vue'
 import { useConnection } from '../composables/useConnection'
-import { useServiceStart } from '../composables/useServiceStart'
+import { backUnconfirmed, downShownHere, noteRead, readBeforeTelling, useServiceStart } from '../composables/useServiceStart'
+import { serviceTone } from '../service-state'
 import { readConfig } from '../config-model/document'
 import { isIp } from '../config-model/model'
 import { traceNames, type TraceNames } from '../config-model/trace-names'
@@ -55,26 +56,48 @@ const clientProblem = computed(() => (clientIp.value.trim() && !isIp(clientIp.va
 const names = shallowRef<TraceNames | null>(null)
 // KixDNS 没在运行时先说一句，免得查了才知道 / Say so up front when KixDNS is not running, rather than after a failed query
 const stopped = ref(false)
+// 起不来（服务失败、systemd 在重试）：和各页一样说「启动失败」，不说停了、不给「启动」；能退回改过的设置时指到配置页
+// Not coming up (the service failed or systemd retries): 启动失败 as on every page, not stopped and with no 启动; with changed
+// settings that can go back, it points to the config page
+const failedUp = ref<{ rollback: boolean; writable: number | null } | null>(null)
 const { starting, start } = useServiceStart()
 async function startKixdns(): Promise<void> {
-  if (!(await start())) return
-  stopped.value = false
-  // 刚启动的内核报什么能力要重新问一次：客户端 IP 那一栏靠它 / Ask the freshly started kernel for its capabilities again: the client IP field depends on them
-  try {
-    const overview = await apiRequest<Overview>('/api/v1/overview')
-    activeSha.value = overview.active_config?.sha256 ?? null
-    canClient.value = Boolean(overview.live && overview.health?.capabilities.includes('diagnostics_trace_client_v1'))
-  } catch { /* 下次进页面再读 / read again on the next visit */ }
+  // 等完先读运行状态（见下面登记的重读），再说结果：刚启动的内核报什么能力要重新问（客户端 IP 那一栏靠它）；起不来时提示条先换成
+  // 「启动失败」，不另弹提示 / The runtime state is read after the wait (the read registered below), before the outcome is said: the
+  // freshly started kernel is asked for its capabilities (the client IP field depends on them); not coming up, the notice turns to
+  // 启动失败 first with no toast
+  await start()
+}
+// 运行状态：在不在跑、起没起来、支持哪些能力、跑的是哪一份。起不来时每 5 秒读的只有这两样；上一次没回来就不再发
+// The runtime state: whether it runs or fails to come up, its capabilities, which config it runs. While it does not come up only
+// these two are read every 5 seconds, and none is sent while the last is still out
+let statusRead: Promise<void> | null = null
+function readStatus(): Promise<void> {
+  statusRead ??= (async () => {
+    const [overview, service] = await Promise.allSettled([apiRequest<Overview>('/api/v1/overview'), apiRequest<ServiceStatus>('/api/v1/service')])
+    const read = overview.status === 'fulfilled' ? overview.value : null
+    const unit = service.status === 'fulfilled' ? service.value : null
+    if (!read && !unit) return
+    if (read) {
+      activeSha.value = read.active_config?.sha256 ?? null
+      canClient.value = Boolean(read.live && read.health?.capabilities.includes('diagnostics_trace_client_v1'))
+    }
+    // 首次装好就起不来时还没有概览快照（概览读不到）：照服务状态说，出路也在服务状态里
+    // When it never came up there is no overview snapshot yet (the overview read fails): the service state speaks, and holds the
+    // way out too
+    const live = Boolean(read?.live)
+    const down = !live && unit !== null && serviceTone(unit) === 'err'
+    failedUp.value = down ? { rollback: Boolean(unit.restart_rollback), writable: unit.pending_writable ?? null } : null
+    stopped.value = !down && (unit ? unit.active_state === 'inactive' : read?.service_active === false)
+    // systemd 放弃了（failed）也不会再起来，和停着一样算 / systemd giving up (failed) will not come back either, so it counts as stopped
+    noteRead(live, unit ? ['inactive', 'failed'].includes(unit.active_state) : read?.service_active === false)
+  })().finally(() => { statusRead = null })
+  return statusRead
 }
 // 页头的版本和「按草稿单独跑一次」都靠这几样；配置写进了新版本就重读 / The header's version and the draft trial rely on these; re-read when a new config version is written
 async function readPage(): Promise<void> {
-  const [overview, kernel, config, history] = await Promise.allSettled([apiRequest<Overview>('/api/v1/overview'), apiRequest<KixdnsKernel>('/api/v1/kixdns/kernel'), apiRequest<ConfigDocument>('/api/v1/config'), apiRequest<ConfigVersions>('/api/v1/config/versions')])
+  const [, kernel, config, history] = await Promise.allSettled([readStatus(), apiRequest<KixdnsKernel>('/api/v1/kixdns/kernel'), apiRequest<ConfigDocument>('/api/v1/config'), apiRequest<ConfigVersions>('/api/v1/config/versions')])
   if (history.status === 'fulfilled') versions.value = history.value.versions
-  if (overview.status === 'fulfilled') {
-    activeSha.value = overview.value.active_config?.sha256 ?? null
-    canClient.value = Boolean(overview.value.live && overview.value.health?.capabilities.includes('diagnostics_trace_client_v1'))
-    stopped.value = overview.value.service_active === false
-  }
   if (kernel.status === 'fulfilled' && kernel.value.binary_present) kernelLabel.value = formatKixdnsVersion(kernel.value.active)
   if (config.status === 'fulfilled') {
     try { names.value = traceNames(readConfig(config.value.content).model) } catch { names.value = null }
@@ -102,6 +125,23 @@ onMounted(() => {
   void readPage().then(() => { if (asked) void run() })
 })
 onBeforeUnmount(() => window.removeEventListener(CONFIG_WRITTEN_EVENT, onConfigWritten))
+// 提示条在说起不来：别处带来的「启动失败」提示收起，这一页等出来的也不另弹；起不来时每 5 秒看一次，systemd 哪次重试起来了，
+// 提示条跟着收 / The notice says it does not come up: a 启动失败 toast brought from elsewhere is dismissed, and one this page waited
+// out is not raised; while it does not come up the page looks every 5 seconds, so the notice goes once a systemd retry comes up
+watch(() => failedUp.value !== null, (shown) => { downShownHere.value = shown }, { immediate: true, flush: 'sync' })
+// 刚连上还没连着两次读到时也接着看：起不来的循环里碰上一次短暂应答不就此停下 / Also while reachable but not yet seen twice in
+// a row: one brief answer inside a loop that never comes up does not stop it
+let downTimer: number | undefined
+watch(() => failedUp.value !== null || backUnconfirmed.value, (watching) => {
+  window.clearInterval(downTimer)
+  downTimer = watching ? window.setInterval(() => { void readStatus() }, 5000) : undefined
+}, { immediate: true })
+// 别的页面发起的启动、重启、退回结束时，这一页也先重读运行状态再说结果 / When a start, restart or rollback sent from another page
+// ends, this page also reads the runtime state again before the outcome is said
+// 不搭还在路上的那次读：它可能是在服务端看出起不来之前发的 / Not riding on a read still out: it may have been sent before the
+// server saw it not coming up
+const stopReading = readBeforeTelling(async () => { await statusRead?.catch(() => undefined); await readStatus() })
+onBeforeUnmount(() => { window.clearInterval(downTimer); stopReading(); downShownHere.value = false })
 const clock = (date: Date) => date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
 const steps = computed(() => result.value?.trace_supported ? result.value.trace : [])
 const answers = computed(() => result.value?.answers.map((raw) => ({ raw, fields: parseDnsAnswer(raw) })) ?? [])
@@ -210,7 +250,8 @@ async function run(): Promise<void> {
     </section>
 
     <!-- KixDNS 停着时先说一句，并且就地能启动 / When KixDNS is stopped, say so first and offer to start it here -->
-    <div v-if="stopped" class="ui-notice ui-notice--off" role="status"><Power :size="16" aria-hidden="true" /><span>KixDNS 已停止</span><small>启动后才能查询</small><button class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="starting" :aria-busy="starting || undefined" @click="startKixdns"><span v-if="starting" class="ui-spin" aria-hidden="true"></span>启动 KixDNS</button></div>
+    <div v-if="failedUp" class="ui-notice ui-notice--err" role="status"><CircleX :size="16" aria-hidden="true" /><span>KixDNS 启动失败</span><small>{{ failedUp.rollback ? '可能是改过的设置让 KixDNS\u00a0起不来，可以退回。' : failedUp.writable ? `版本\u00a0#${failedUp.writable}\u00a0还没写进配置文件，可以到配置页写进去。` : '起不来的原因在运行日志里。' }}</small><RouterLink class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" :to="failedUp.rollback || failedUp.writable ? '/config?section=settings' : '/logs?view=runtime'">{{ failedUp.rollback || failedUp.writable ? '去配置页' : '查看日志' }}</RouterLink></div>
+    <div v-else-if="stopped" class="ui-notice ui-notice--off" role="status"><Power :size="16" aria-hidden="true" /><span>KixDNS 已停止</span><small>启动后才能查询。</small><button class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="starting" :aria-busy="starting || undefined" @click="startKixdns"><span v-if="starting" class="ui-spin" aria-hidden="true"></span>启动 KixDNS</button></div>
     <!-- 等待时给骨架而不是转圈：骨架的分块和结果一致，数据到达时版面不跳。 -->
     <div v-if="running" class="diag-skeleton" role="status" aria-label="正在等待 DNS 响应">
       <div class="sk diag-skeleton-verdict"></div>

@@ -1,6 +1,7 @@
 import { ApiError, PANEL_UNREACHABLE_EVENT } from './client'
 import { exportConfig, panelHash, PANEL_FORMAT, readConfig } from '../config-model/document'
 import { compile } from '../config-model/model'
+import { SETTING_SECTIONS } from '../config-editor/schema'
 import { sampleModel } from '../config-model/testing/samples'
 import type {
   ActiveConfig,
@@ -287,6 +288,37 @@ const configVersionContents = new Map(
   versions.versions.map((version) => [version.id, demoConfigVersion(version.id)]),
 )
 
+// 写进去了，KixDNS 却没接受：真面板会放回旧文件、把这个版本记成没有生效，再回错误（保存、重试应用、恢复版本都走这里）
+// - kixdns:demo-apply-failed：重载失败，回 422 reload_failed；
+// - kixdns:demo-apply-invalid：KixDNS 的校验说不行，回 422 config_validation_failed，原因和服务端存下的同一句
+// Written, but KixDNS did not take it: a real panel puts the old file back, records the version as failed, then answers with an error
+// (saves, 重试应用 and restores all come here)
+// - kixdns:demo-apply-failed: the reload failed, answering 422 reload_failed;
+// - kixdns:demo-apply-invalid: KixDNS's own check said no, answering 422 config_validation_failed with the cause the server stores
+// 没给版本号时（恢复版本）只在真被拒时才占一个 / Without a version id (a restore) one is taken only when it is really refused
+function refuseWriteIfAsked(content: Record<string, unknown>, sha: string, given: number | null, createdAt: number, message: string): void {
+  if (typeof localStorage === 'undefined') return
+  const failed = localStorage.getItem('kixdns:demo-apply-failed') === 'true'
+  const invalid = localStorage.getItem('kixdns:demo-apply-invalid') === 'true'
+  if (!failed && !invalid) return
+  localStorage.removeItem(failed ? 'kixdns:demo-apply-failed' : 'kixdns:demo-apply-invalid')
+  const versionId = given ?? ++nextConfigVersionId
+  const error = failed ? 'KixDNS 没有接受这份配置：upstream "fast" did not answer the health check，仍在用之前的配置' : 'KixDNS 没有接受这份配置，先改好校验里列出的问题'
+  // 真面板读回来的版本号是这个没生效的版本（desired() 返回它） / A real panel reads back the failed version's id (desired() returns it)
+  config = {
+    ...config,
+    content,
+    sha256: sha,
+    modified_at: createdAt,
+    version_id: versionId,
+    pending: { version_id: versionId, sha256: sha, message, actor: 'admin', created_at: createdAt, error },
+    runtime: { ...config.runtime, status: 'failed', apply_state: 'failed', pending_error: error },
+  }
+  versions.versions.unshift({ id: versionId, sha256: sha, message, actor: 'admin', created_at: createdAt, apply_state: 'failed', apply_error: error })
+  configVersionContents.set(versionId, structuredClone(content))
+  throw new ApiError(error, 422, failed ? 'reload_failed' : 'config_validation_failed')
+}
+
 // 拿一个旧版本的内容存成新版本并生效：恢复版本，和演示里「别处恢复了一个版本」都走这里
 // Store an old version's content as a new, active version: used by restore and by the demo's "someone elsewhere restored a version"
 function activateCopy(sourceId: number, content: Record<string, unknown>, message: string): ConfigApplyResult {
@@ -320,7 +352,12 @@ function activateCopy(sourceId: number, content: Record<string, unknown>, messag
     apply_error: null,
   })
   configVersionContents.set(versionId, structuredClone(content))
-  return { version_id: versionId, sha256: config.sha256, apply_state: 'applied', active_config: activeConfig } as ConfigApplyResult
+  return { version_id: versionId, sha256: config.sha256, apply_state: 'applied', active_config: activeNow() } as ConfigApplyResult
+}
+// 应用的回应和真服务端一样带上要重启才生效的设置 / An apply's answer carries the settings waiting for a restart, as the real server's does
+function activeNow(): typeof activeConfig {
+  const restartPending = restartPendingNow()
+  return restartPending.length ? { ...activeConfig, restart_pending: restartPending } : activeConfig
 }
 
 // kixdns:demo-changed-elsewhere：下一次读配置或「现在应用」之前，另一处（别的浏览器、别的管理员）恢复了一个旧版本，演示「这份配置在别处改过了」
@@ -555,6 +592,8 @@ async function saveSlowIfAsked(): Promise<void> {
 
 // 把一份内容存成待应用的新版本：KixDNS 在运行，只是还没接 / Store content as a new pending version: KixDNS runs and has just not taken it yet
 function storePending(content: Record<string, unknown>, sha: string, versionId: number, createdAt: number, message: string): ConfigApplyResult {
+  // 新存的一版不在配置文件里 / A newly stored version is not in the config file
+  pendingInFile = false
   config = {
     ...config,
     content,
@@ -643,6 +682,80 @@ function removeConfigVersions(ids: number[], unavailable: boolean): void {
 }
 
 let serviceRunning = true
+// kixdns:demo-restart-no-answer：重启以后 KixDNS 起不来（比如绑不上新改的监听地址），systemd 每隔几秒重试。和真面板一样，
+// 文件不改就一直起不来：这时的保存只存成待应用，再启动、重启也没用；配置页的「退回原来的设置并重启」才把它救回来
+// kixdns:demo-restart-no-answer: after a restart KixDNS does not come up (say it cannot bind the newly changed listen address) and
+// systemd keeps retrying every few seconds. As on a real panel it stays down while the file is unchanged: a save is only kept as
+// pending and another start or restart does not help; the config page's 退回原来的设置并重启 brings it back
+let restartNoAnswer = false
+// kixdns:demo-restart-no-answer 写成 no-rollback：起不来、又没有可以退回的设置（比如从没见过它正常启动）。不管文件怎么改，启动、
+// 重启都起不来，只有把待应用的版本写进配置文件再重启才回来
+// kixdns:demo-restart-no-answer set to no-rollback: down with nothing to put back (say it was never seen starting properly).
+// Whatever the file says, a start or restart fails; only writing the pending version into the file and restarting brings it back
+let downWithoutRollback = false
+// kixdns:demo-still-down：下一次退回或写进配置文件以后还是起不来（比如那个端口这期间也被占了）。和真服务端一样，写进去的那一版
+// 留在待应用、已经在配置文件里，等 KixDNS 起来再确认；之后再重启一次就回来了
+// kixdns:demo-still-down: after the next rollback or write into the file it still does not come up (say that port got taken
+// meanwhile too). As on the real server the version written stays pending, already in the file, to be confirmed once KixDNS is
+// up; one more restart afterwards brings it back
+let pendingInFile = false
+// 和真服务端同一个判断：起不来、不能退回、待应用的版本在等、还不在配置文件里 / The real server's test: down, nothing to put back,
+// a pending version waiting that is not in the file yet
+const writableNow = (): number | null => (restartNoAnswer && !rollbackValues() && !pendingInFile && config.pending?.version_id && !config.pending.error ? config.pending.version_id : null)
+const stillDownAsked = () => {
+  if (typeof localStorage === 'undefined' || localStorage.getItem('kixdns:demo-still-down') !== 'true') return false
+  localStorage.removeItem('kixdns:demo-still-down')
+  return true
+}
+// 让它起不来的那几项（重启前要重启才生效的）：文件里它们和启动时的值不同，启动、重启就照样起不来，停了再启动也一样
+// The settings that keep it down (those waiting for the failed restart): while they differ from the starting values in the file,
+// a start or restart fails again, after a stop too
+let failingKeys: string[] = []
+// 可以退回的那几项和它们启动时的值 / The settings that can go back with their starting values
+function rollbackValues(): Record<string, unknown> | null {
+  const now = settingsOf(config.content)
+  const keys = failingKeys.filter((key) => JSON.stringify(now[key] ?? null) !== JSON.stringify(startedWith?.[key] ?? null))
+  return keys.length ? Object.fromEntries(keys.map((key) => [key, startedWith?.[key] ?? null])) : null
+}
+// 起不来时服务状态带着出路（和真服务端一样）：可以退回的设置、可以写进配置文件的待应用版本
+// While it does not come up the service state carries the way out, as on the real server: settings that can go back, a pending
+// version that can be written into the file
+const serviceNow = () => restartNoAnswer
+  ? { unit: 'kixdns.service', active_state: 'activating', sub_state: 'auto-restart', main_pid: 0, did_not_come_up: true, ...(rollbackValues() ? { restart_rollback: rollbackValues() } : {}), ...(writableNow() ? { pending_writable: writableNow() } : {}) }
+  : { unit: 'kixdns.service', active_state: serviceRunning ? 'active' : 'inactive', sub_state: serviceRunning ? 'running' : 'dead', main_pid: serviceRunning ? 1428 : 0 }
+
+// 模拟的 KixDNS 启动时读到的设置：只在启动时读取的那些（和内核 GlobalSettings::restart_pending 同一份名单）到重启前一直是这些值，
+// 和生效的配置不同就报 restart_pending，和真内核一样；没写的按表单里的默认值比
+// The settings the simulated KixDNS started with: the ones read only at startup (the same list as the kernel's
+// GlobalSettings::restart_pending) keep these values until a restart, and differing from the active config they are reported in
+// restart_pending, as the real kernel does; an unset one compares as the form's default
+const RESTART_ONLY = [
+  'bind_udp', 'bind_tcp', 'bind_doh', 'doh_tls_cert', 'doh_tls_key', 'doh_path', 'cache_capacity', 'cache_max_ttl', 'dashmap_shards',
+  'udp_pool_size', 'tcp_pool_size', 'doh_pool_size', 'doh_health_check_error_threshold', 'dot_pool_size', 'doq_pool_size',
+  'tcp_health_check_error_threshold', 'tcp_connection_max_age_seconds', 'tcp_connection_idle_timeout_seconds',
+  'doq_connection_idle_timeout_seconds', 'doq_keepalive_interval_ms', 'doq_enable_0rtt', 'flow_control_enabled',
+  'flow_control_initial_permits', 'flow_control_min_permits', 'flow_control_max_permits', 'flow_control_latency_threshold_ms',
+  'flow_control_adjustment_interval_secs',
+]
+const settingDefault = (key: string) => SETTING_SECTIONS.flatMap((section) => section.fields).find((field) => field.key === key)?.default
+const settingsOf = (content: Record<string, unknown>) => (content.settings ?? {}) as Record<string, unknown>
+// 第一次读配置时才记下：演示开关会在那时换掉整份配置（样本配置、旧版写法），换完的才是 KixDNS 启动时读到的
+// Recorded on the first config read: demo switches replace the whole config then (the sample config, the old format), and the
+// replaced one is what KixDNS started with
+let startedWith: Record<string, unknown> | null = null
+// KixDNS 在用的那份的设置：有待应用、失败的版本时，草稿那份不是它在用的，比的是上一次生效的那份
+// The settings of the config KixDNS uses: with a pending or failed version the draft one is not in use, so the last applied one is compared
+let activeSettings: Record<string, unknown> | null = null
+function restartPendingNow(): string[] {
+  if (config.runtime.status === 'active') activeSettings = structuredClone(settingsOf(config.content))
+  // KixDNS 停着、起不来时不报：真面板那时读不到它，名单省略 / Nothing while KixDNS is stopped or down: a real panel cannot read it
+  // then, and the list is left out
+  if (!startedWith || !activeSettings || !serviceRunning || restartNoAnswer) return []
+  const started = startedWith
+  const now = activeSettings
+  const effective = (settings: Record<string, unknown>, key: string) => JSON.stringify(settings[key] ?? settingDefault(key) ?? null)
+  return RESTART_ONLY.filter((key) => effective(now, key) !== effective(started, key))
+}
 // 在线更新失败只在置上这个标记时演示，和 kixdns:demo-empty-first-install 是同一套做法。
 // A failed online update is shown only under this flag, mirroring kixdns:demo-empty-first-install.
 let panelUpdateStatus: PanelUpdateStatus = typeof localStorage !== 'undefined'
@@ -854,7 +967,11 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
   const emptyFirstInstall = typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-empty-first-install') === 'true'
   if (path === '/api/v1/overview') {
     if (emptyFirstInstall) throw new Error('KixDNS 已停止')
-    return overview as T
+    // 起不来的 KixDNS 只剩上次读到的快照，服务正在重试；出路在服务状态里 / A KixDNS that does not come up leaves only the last
+    // snapshot, with the service retrying; the way out is in the service state
+    if (restartNoAnswer) return { ...overview, live: false, service_active: false } as T
+    const restartPending = restartPendingNow()
+    return (restartPending.length ? { ...overview, active_config: { ...overview.active_config, restart_pending: restartPending } } : overview) as T
   }
   // 查询日志：按当前演示配置生成（kixdns:demo-querylog-unsupported 演示内核太旧） / The query log, generated from the current demo config (kixdns:demo-querylog-unsupported plays a kernel too old)
   if (pathname === '/api/v1/querylog' && method === 'GET') return demoQueryLogPage(config.content as Record<string, unknown>, Date.now(), url.searchParams) as T
@@ -882,11 +999,48 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (path === '/api/v1/service' && method === 'GET') {
     if (emptyFirstInstall) return { unit: 'kixdns.service', active_state: 'inactive', sub_state: 'dead', main_pid: 0 } as T
-    return { unit: 'kixdns.service', active_state: serviceRunning ? 'active' : 'inactive', sub_state: serviceRunning ? 'running' : 'dead', main_pid: serviceRunning ? 1428 : 0 } as T
+    return serviceNow() as T
   }
   if (path.startsWith('/api/v1/service/') && method === 'POST') {
-    serviceRunning = !path.endsWith('/stop')
-    return { unit: 'kixdns.service', active_state: serviceRunning ? 'active' : 'inactive', sub_state: serviceRunning ? 'running' : 'dead', main_pid: serviceRunning ? 1428 : 0 } as T
+    const stopping = path.endsWith('/stop')
+    // 和真服务端一样：KixDNS 还在时，重启前先应用还在等的待应用版本 / As on the real server: with KixDNS still there, a pending
+    // version still waiting is applied before the restart
+    let appliedBefore: { version_id: number; apply_state: string; from_rollback?: string } | null = null
+    if (path.endsWith('/restart') && serviceRunning && !restartNoAnswer && config.pending?.version_id && !config.pending.error) {
+      // 和真服务端一样带上退回的标记 / The rollback mark comes along, as on the real server
+      appliedBefore = { version_id: config.pending.version_id, apply_state: 'applied', ...(config.pending.from_rollback ? { from_rollback: config.pending.from_rollback } : {}) }
+      applyPendingInPlace(config.pending.version_id)
+      restartPendingNow()
+    }
+    const failsNow = path.endsWith('/restart') && typeof localStorage !== 'undefined' ? localStorage.getItem('kixdns:demo-restart-no-answer') : null
+    if (failsNow === 'true' || failsNow === 'no-rollback') {
+      localStorage.removeItem('kixdns:demo-restart-no-answer')
+      downWithoutRollback = failsNow === 'no-rollback'
+      failingKeys = downWithoutRollback ? [] : restartPendingNow()
+      restartNoAnswer = true
+    } else if (stopping) {
+      restartNoAnswer = false
+    } else if (pendingInFile && config.pending?.version_id) {
+      // 写进去还是起不来的那一版：这次起来了，读的就是它；和真服务端一样留在待应用，等页面或后台那一遍确认
+      // The version written while it stayed down: up this time and reading it; as on the real server it stays pending until the
+      // page or the background pass confirms it
+      restartNoAnswer = false
+      downWithoutRollback = false
+      pendingInFile = false
+      failingKeys = []
+      startedWith = structuredClone(settingsOf(config.content))
+      activeSettings = structuredClone(startedWith)
+    } else if (rollbackValues() || downWithoutRollback) {
+      // 文件里让它起不来的设置还在：照样起不来 / The settings that keep it down are still in the file: it fails again
+      restartNoAnswer = true
+    } else {
+      // 启动、重启以后 KixDNS 读的是现在的配置 / After a start or restart KixDNS reads the config as it is now
+      restartNoAnswer = false
+      failingKeys = []
+      startedWith = structuredClone(settingsOf(config.content))
+    }
+    serviceRunning = !stopping
+    return (appliedBefore ? { ...serviceNow(), applied_before: appliedBefore } : serviceNow()) as T
   }
   if (path === '/api/v1/kixdns/kernel' && method === 'GET') {
     return demoKernel() as T
@@ -921,7 +1075,17 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     changeElsewhereIfAsked()
     backgroundAppliesIfAsked()
     elsewherePendingIfAsked()
-    return config as T
+    startedWith ??= structuredClone(settingsOf(config.content))
+    const restartPending = restartPendingNow()
+    // 和真服务端一样：连不上时有待应用、失败的版本照写 pending、failed，active_sha256 为空，能退回时给出那几项
+    // As on the real server: unreachable with a pending or failed version still reads pending or failed, active_sha256 is empty, and
+    // the settings that can go back come along
+    if (restartNoAnswer) {
+      const status = config.pending ? (config.pending.error ? 'failed' : 'pending') : 'unavailable'
+      const rollback = rollbackValues()
+      return { ...config, runtime: { ...config.runtime, status, apply_state: config.pending ? config.runtime.apply_state : 'unavailable', active_sha256: null, generation: null, did_not_come_up: true, ...(writableNow() ? { pending_writable: writableNow() } : {}), ...(rollback ? { restart_rollback: rollback } : {}) } } as T
+    }
+    return { ...config, runtime: { ...config.runtime, ...(restartPending.length ? { restart_pending: restartPending } : {}) } } as T
   }
   if (path === '/api/v1/config/geo-data' && method === 'GET') {
     geositeEmptyIfAsked()
@@ -1056,6 +1220,88 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     const pipelines = Array.isArray(content.pipelines) ? content.pipelines : []
     return { protocol_version: 1, valid: true, pipeline_count: pipelines.length, rule_count: 1 } as T
   }
+  // 退回重启前改过的设置：和真服务端一样只改那几项、存成待应用版本写进文件，再重启；回来的 KixDNS 用的是它，等页面「现在应用」
+  // （或后台那一遍）记成已生效。演示里没有单独的正式文件，待应用版本里的修改照样留在这一份里
+  // Put back the settings changed before the restart: as on the real server only those change, stored as a pending version that is
+  // written to the file before a restart; KixDNS comes back on it and the page's apply (or the background pass) records it as
+  // applied. The demo has no separate formal file, so pending edits stay in this one as well
+  if (path === '/api/v1/config/restart-rollback' && method === 'POST') {
+    const values = rollbackValues()
+    if (!restartNoAnswer && serviceRunning) throw new ApiError('没有退回：KixDNS 已经在运行', 409, 'restart_rollback_missing')
+    if (!restartNoAnswer || !values) throw new ApiError('现在没有要退回的设置', 409, 'restart_rollback_missing')
+    // 没有生效的版本不带上：从上次生效的那一版改起，和真服务端一样 / A refused version is not carried along: the change starts from
+    // the version last applied, as on the real server
+    const carried = Boolean(config.pending && !config.pending.error)
+    const appliedId = versions.versions.find((v) => v.apply_state === 'applied')?.id
+    const base = config.pending?.error && appliedId !== undefined ? configVersionContents.get(appliedId) ?? config.content : config.content
+    const content = structuredClone(base)
+    const settings = { ...settingsOf(content) }
+    for (const [key, value] of Object.entries(values)) {
+      if (value === null) delete settings[key]
+      else settings[key] = value
+    }
+    content.settings = settings
+    const sha = `back${Date.now().toString(16)}`.padEnd(64, '0').slice(0, 64)
+    const result = storePending(content, sha, ++nextConfigVersionId, Math.floor(Date.now() / 1000), carried ? '退回原来的设置（含待应用的修改）' : '退回原来的设置')
+    // 操作记录和真服务端同一个写法：设置写内核的名字，日志页翻成面板上的叫法 / The audit row as the real server writes it: settings
+    // by the kernel's names, which the logs page turns into the panel's
+    auditEvents.unshift({ id: Math.max(...auditEvents.map((event) => event.id)) + 1, actor: 'admin', action: 'config.restart_rollback', detail: `${Object.keys(values).join('、')}，版本 #${result.version_id}`, created_at: Math.floor(Date.now() / 1000) })
+    // 和真服务端一样标出这是退回写下的，页面不报它的编号 / Marked as the rollback's, as on the real server, so pages give no
+    // number for it
+    if (config.pending) config.pending = { ...config.pending, from_rollback: carried ? 'settings_and_pending' : 'settings' }
+    if (stillDownAsked()) {
+      // 退回写进了文件，还是起不来：没有可退回的了，那一版留在待应用 / The rollback is in the file and it still fails: nothing
+      // left to put back, and that version stays pending
+      failingKeys = []
+      downWithoutRollback = true
+      pendingInFile = true
+      startedWith = structuredClone(settingsOf(content))
+      return { version_id: result.version_id } as T
+    }
+    restartNoAnswer = false
+    failingKeys = []
+    serviceRunning = true
+    // 回来的 KixDNS 读的是正式文件：上次在用的那份改回这几项（待应用版本里的修改要等它应用了才算）
+    // The KixDNS that comes back reads the formal file: the one last in use with these settings put back (the pending version's
+    // edits count only once it is applied)
+    const formal = { ...(activeSettings ?? settings) }
+    for (const [key, value] of Object.entries(values)) {
+      if (value === null) delete formal[key]
+      else formal[key] = value
+    }
+    startedWith = structuredClone(formal)
+    activeSettings = structuredClone(formal)
+    config = { ...config, runtime: { ...config.runtime, active_sha256: sha } }
+    activeConfig.sha256 = sha
+    return { version_id: result.version_id } as T
+  }
+  // 把待应用的版本写进配置文件再重启：和真服务端同样的两道拒绝；写进去以后，让它起不来的那几项还在就照样起不来
+  // Write the pending version into the file and restart: the real server's two refusals; once written, it still fails while the
+  // settings that keep it down are there
+  if (path === '/api/v1/config/restart-with-pending' && method === 'POST') {
+    const refuse = (message: string) => new ApiError(message, 409, 'restart_pending_write_needless')
+    const asked = (JSON.parse(String(init?.body ?? '{}')) as { version_id?: number }).version_id
+    if (!restartNoAnswer && serviceRunning) throw refuse('没有写进配置文件：KixDNS 已经在运行')
+    if (!restartNoAnswer) throw refuse('没有写进配置文件：KixDNS 没有启动失败')
+    if (rollbackValues()) throw refuse('没有写进配置文件：现在可以退回原来的设置')
+    const id = config.pending && !config.pending.error ? config.pending.version_id : null
+    if (!id || id !== asked) throw refuse('没有写进配置文件：待应用的版本已经变了')
+    if (pendingInFile) throw refuse(`版本 #${id} 已经在配置文件里了`)
+    if (stillDownAsked()) {
+      pendingInFile = true
+      return { version_id: id } as T
+    }
+    downWithoutRollback = false
+    applyPendingInPlace(id)
+    activeSettings = structuredClone(settingsOf(config.content))
+    if (!rollbackValues()) {
+      restartNoAnswer = false
+      failingKeys = []
+      startedWith = structuredClone(settingsOf(config.content))
+    }
+    serviceRunning = true
+    return { version_id: id } as T
+  }
   if (path === '/api/v1/config' && method === 'PUT') {
     const body = JSON.parse(String(init?.body)) as { content: Record<string, unknown>; expected_sha256: string; message?: string }
     // 和真服务一样带 config_conflict，页面才认得出是别处先存了；kixdns:demo-save-conflict 让下一次保存撞上，演示这个状态
@@ -1070,25 +1316,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     const versionId = ++nextConfigVersionId
     const createdAt = Math.floor(Date.now() / 1000)
     const message = body.message?.trim() || '更新配置'
-    // kixdns:demo-apply-failed：写进去了，KixDNS 却没接受（真面板会放回旧文件、把这个版本记成没有生效，回 422 reload_failed）
-    // kixdns:demo-apply-failed: written, but KixDNS did not take it (a real panel puts the old file back, records the version as failed and answers 422 reload_failed)
-    if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-apply-failed') === 'true') {
-      localStorage.removeItem('kixdns:demo-apply-failed')
-      const error = 'KixDNS 没有接受这份配置：upstream "fast" did not answer the health check，仍在用之前的配置'
-      // 真面板读回来的版本号是这个没生效的版本（desired() 返回它） / A real panel reads back the failed version's id (desired() returns it)
-      config = {
-        ...config,
-        content: body.content,
-        sha256: nextSha,
-        modified_at: createdAt,
-        version_id: versionId,
-        pending: { version_id: versionId, sha256: nextSha, message, actor: 'admin', created_at: createdAt, error },
-        runtime: { ...config.runtime, status: 'failed', apply_state: 'failed', pending_error: error },
-      }
-      versions.versions.unshift({ id: versionId, sha256: nextSha, message, actor: 'admin', created_at: createdAt, apply_state: 'failed', apply_error: error })
-      configVersionContents.set(versionId, structuredClone(body.content))
-      throw new ApiError(error, 422, 'reload_failed')
-    }
+    refuseWriteIfAsked(body.content, nextSha, versionId, createdAt, message)
     // kixdns:demo-save-pending：KixDNS 在运行，这次保存时却没及时回应，先存成待应用（真面板后台每 5 秒会自己补上；演示里留着，好按「现在应用」）
     // kixdns:demo-save-pending: KixDNS is running but did not answer in time for this save, so it is stored as pending (a real panel's background
     // pass applies it within 5 seconds; the demo leaves it, so 现在应用 can be pressed)
@@ -1096,6 +1324,8 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
       localStorage.removeItem('kixdns:demo-save-pending')
       return storePending(body.content, nextSha, versionId, createdAt, message) as T
     }
+    // KixDNS 起不来时和真面板一样只存成待应用 / With KixDNS down, as on a real panel, it is only kept as pending
+    if (restartNoAnswer) return storePending(body.content, nextSha, versionId, createdAt, message) as T
     if (emptyFirstInstall) {
       config = {
         ...config,
@@ -1167,7 +1397,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
       window.dispatchEvent(new Event(PANEL_UNREACHABLE_EVENT))
       throw new ApiError('连不上面板：网络断了，或者面板正在重启。稍后再试。', 0, 'network_unreachable')
     }
-    return { version_id: versionId, sha256: config.sha256, apply_state: 'applied', active_config: activeConfig } as ConfigApplyResult as T
+    return { version_id: versionId, sha256: config.sha256, apply_state: 'applied', active_config: activeNow() } as ConfigApplyResult as T
   }
   // 让待应用的版本原地生效：不新建版本，编号和备注都不变；已经生效了照实回，待应用的换了就是冲突（和真面板一样）
   // Put the pending version into effect in place: no new version, its number and note stay; already in effect answers so, and a changed pending
@@ -1183,10 +1413,12 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
       localStorage.removeItem('kixdns:demo-apply-error')
       throw new ApiError('面板内部出错', 500, 'internal_error')
     }
-    if (!config.pending && config.version_id === id) return { version_id: id, sha256: config.sha256, apply_state: 'applied', active_config: activeConfig } as ConfigApplyResult as T
+    if (!config.pending && config.version_id === id) return { version_id: id, sha256: config.sha256, apply_state: 'applied', active_config: activeNow() } as ConfigApplyResult as T
     // 刚试过、没有生效的这一版：照它记下的原因说（和真面板一样），不说别处改过 / This version just tried and refused: say why, as the real panel does, not 别处改过
     if (config.pending?.version_id === id && config.pending.error) throw new ApiError(config.pending.error, 422, 'reload_failed')
     if (config.pending?.version_id !== id) throw new ApiError('这份配置在别处改过了，先重新读取', 409, 'config_conflict')
+    // KixDNS 起不来：和真面板一样还是待应用 / KixDNS down: still pending, as on a real panel
+    if (restartNoAnswer) return { version_id: id, sha256: config.sha256, apply_state: 'pending' } as ConfigApplyResult as T
     if (typeof localStorage !== 'undefined' && localStorage.getItem('kixdns:demo-apply-failed') === 'true') {
       localStorage.removeItem('kixdns:demo-apply-failed')
       const error = 'KixDNS 没有接受这份配置：upstream "fast" did not answer the health check，仍在用之前的配置'
@@ -1201,7 +1433,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
       window.dispatchEvent(new Event(PANEL_UNREACHABLE_EVENT))
       throw new ApiError('连不上面板：网络断了，或者面板正在重启。稍后再试。', 0, 'network_unreachable')
     }
-    return { version_id: id, sha256: config.sha256, apply_state: 'applied', active_config: activeConfig } as ConfigApplyResult as T
+    return { version_id: id, sha256: config.sha256, apply_state: 'applied', active_config: activeNow() } as ConfigApplyResult as T
   }
   const restoreMatch = pathname.match(/^\/api\/v1\/config\/versions\/(\d+)\/restore$/)
   if (restoreMatch && method === 'POST') {
@@ -1211,6 +1443,11 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
     const sourceVersion = versions.versions.find((version) => version.id === sourceId)
     const content = configVersionContents.get(sourceId)
     if (!sourceVersion || !content) throw new Error('配置文件不存在')
+    // KixDNS 起不来：恢复也只存成待应用 / KixDNS down: a restore is only kept as pending too
+    if (restartNoAnswer) return storePending(structuredClone(content), `rest${Date.now().toString(16)}`.padEnd(64, '0').slice(0, 64), ++nextConfigVersionId, Math.floor(Date.now() / 1000), `恢复为版本 #${sourceId}`) as T
+    // 和真面板一样：恢复先把旧内容存成新版本，再应用；被拒时那一版照样记成没有生效 / As on a real panel, a restore stores the old
+    // content as a new version first and then applies it; when refused, that version is recorded as failed all the same
+    refuseWriteIfAsked(structuredClone(content), `rest${Date.now().toString(16)}`.padEnd(64, '0').slice(0, 64), null, Math.floor(Date.now() / 1000), `恢复为版本 #${sourceId}`)
     return activateCopy(sourceId, content, `恢复为版本 #${sourceId}`) as T
   }
   if (path === '/api/v1/cache/flush') {

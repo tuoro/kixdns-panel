@@ -25,7 +25,7 @@ import { usePhone } from './phone'
 import PhoneSheet from './PhoneSheet.vue'
 import RawRuleEditor from './RawRuleEditor.vue'
 import { editorEditedBy, hitsOf, listOf, model, newId, ruleShape } from './store'
-import { runtimeCapabilities } from './useConfigDocument'
+import { pageLocked, refuseWhileLocked, runtimeCapabilities } from './useConfigDocument'
 import { MOD } from '../help/topics'
 import { editedText, groupBrief } from './view'
 // JSON 编辑器（CodeMirror）只在用到时才加载：配置页的首包不带它 / The JSON editor (CodeMirror) loads on first use, so the config page's first chunk leaves it out
@@ -79,11 +79,15 @@ watch(() => (original ? list.value.indexOf(original) : -1), (now) => {
 // Esc 返回、Ctrl/Cmd+Enter 完成；对话框开着时不抢 / Esc goes back, Ctrl/Cmd+Enter finishes; not while a dialog is open
 function onKey(event: KeyboardEvent): void {
   if (document.querySelector('dialog[open]')) return
+  // 页面锁着时右栏在锁住的区域里，按键也不动它（Ctrl+S 由保存条说为什么）；整页编辑器锁住以前就开着，照常改完
+  // While the page is locked the side panel sits in the locked area, so keys leave it alone too (the save bar explains Ctrl+S); the
+  // full-page editor was open before the lock and is finished as usual
+  if (props.inspector && pageLocked.value) return
   if (event.key === 'Escape' && !(event.target instanceof HTMLElement && event.target.closest('[role="menu"]'))) { event.preventDefault(); void leave() }
   else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); done() }
   // 整页编辑时保存条不在：Ctrl+S 说一句该怎么做，不让浏览器弹「另存网页」；面板里的 Ctrl+S 交给保存条
   // In the full-page editor the save bar is not on screen: Ctrl+S says what to do instead of opening the browser's save-page dialog; in the panel the save bar handles it
-  else if (!props.inspector && event.key.toLowerCase() === 's' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); toast.info(`先点「${original ? '完成' : '新建'}」把这条规则放进草稿，再保存`) }
+  else if (!props.inspector && event.key.toLowerCase() === 's' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); if (!refuseWhileLocked('保存')) toast.info(`先点「${original ? '完成' : '新建'}」把这条规则放进草稿，再保存`) }
 }
 onMounted(() => window.addEventListener('keydown', onKey))
 onBeforeUnmount(() => window.removeEventListener('keydown', onKey))

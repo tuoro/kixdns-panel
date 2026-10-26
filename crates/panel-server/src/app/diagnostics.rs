@@ -3,7 +3,7 @@ use axum::http::HeaderMap;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use axum_extra::extract::CookieJar;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::auth::{authenticate, unix_timestamp, verify_csrf};
 use crate::db::AuditPage;
@@ -13,7 +13,8 @@ use crate::operations::{
 };
 
 use super::{
-    AppState, map_config_error, map_control_error, map_operation_error, reconcile_pending,
+    AppState, WaitingApplied, apply_waiting_locked, map_config_error, map_control_error,
+    map_operation_error, reconcile_pending, restart,
 };
 
 const DIAGNOSTICS_TRACE_CAPABILITY: &str = "diagnostics_trace_v1";
@@ -63,12 +64,28 @@ async fn service_status(
     jar: CookieJar,
 ) -> AppResult<Json<ServiceStatus>> {
     authenticate(&state.database, &jar).await?;
-    state
+    let mut status = state
         .operations
         .service_status()
         .await
-        .map(Json)
-        .map_err(map_operation_error)
+        .map_err(map_operation_error)?;
+    status.did_not_come_up = restart::not_up(&state, &status).await;
+    if status.did_not_come_up {
+        (status.restart_rollback, status.pending_writable) = restart::ways_out(&state).await;
+    }
+    Ok(Json(status))
+}
+
+/// 启动、重启、停止以后的服务状态；重启前应用了待应用的版本时带上它的结果
+///
+/// The service state after a start, restart or stop, with the outcome of the pending version applied just before a
+/// restart when there was one
+#[derive(Serialize)]
+struct ServiceActionResponse {
+    #[serde(flatten)]
+    status: ServiceStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    applied_before: Option<WaitingApplied>,
 }
 
 async fn service_action(
@@ -76,15 +93,45 @@ async fn service_action(
     Path(action): Path<String>,
     jar: CookieJar,
     headers: HeaderMap,
-) -> AppResult<Json<ServiceStatus>> {
+) -> AppResult<Json<ServiceActionResponse>> {
     let session = authenticate(&state.database, &jar).await?;
     verify_csrf(&session, &jar, &headers)?;
     let parsed = ServiceAction::parse(&action).map_err(map_operation_error)?;
-    let status = state
+    // 重启、停止的那一下拿着配置锁：还在路上的保存先做完；之后的保存探测不到 KixDNS，照规矩存成待应用，不会在它断开时
+    // 被记成没有生效 / A restart or stop holds the config lock while it is sent: a save under way finishes first, and a
+    // later one finds KixDNS gone and is kept as pending as usual, instead of being recorded as not taken when it drops
+    let apply_guard = if matches!(parsed, ServiceAction::Restart | ServiceAction::Stop) {
+        Some(state.config_apply_lock.lock().await)
+    } else {
+        None
+    };
+    // 启动、重启是一次新的尝试：上一次起不来的结论不算到它头上 / A start or restart is a new attempt: the last failure is
+    // not held against it
+    if matches!(parsed, ServiceAction::Start | ServiceAction::Restart) {
+        restart::new_attempt(&state).await;
+    }
+    let mut applied_before = None;
+    if matches!(parsed, ServiceAction::Restart) && state.control.active_config().await.is_ok() {
+        // KixDNS 还在：先应用还在等的待应用版本，一次重启就把它里面要重启才生效的设置也用上；再记一遍它报的名单
+        // KixDNS is still there: apply the version still pending first, so one restart also brings in the settings
+        // in it that take a restart; then note the list it reports once more
+        match apply_waiting_locked(&state).await {
+            Ok(applied) => applied_before = applied,
+            Err(error) => tracing::warn!(error = ?error, "重启前应用待应用配置失败"),
+        }
+        restart::observe(&state).await;
+    }
+    state
         .operations
-        .service_action(parsed)
+        .service_request(parsed)
         .await
         .map_err(map_operation_error)?;
+    // 服务助手等 systemd 做完才回：请求途中读到的旧状态（上一次的重试）不算这一次的 / The service helper answers once systemd
+    // is done: an old state read during the request (the last attempt's retry) does not count against this one
+    if matches!(parsed, ServiceAction::Start | ServiceAction::Restart) {
+        restart::new_attempt(&state).await;
+    }
+    drop(apply_guard);
     if matches!(parsed, ServiceAction::Start | ServiceAction::Restart) {
         let reconcile_state = state.clone();
         tokio::spawn(async move {
@@ -93,6 +140,11 @@ async fn service_action(
             }
         });
     }
+    let status = state
+        .operations
+        .service_status()
+        .await
+        .map_err(map_operation_error)?;
     state
         .database
         .audit(
@@ -103,7 +155,10 @@ async fn service_action(
         )
         .await
         .map_err(AppError::Internal)?;
-    Ok(Json(status))
+    Ok(Json(ServiceActionResponse {
+        status,
+        applied_before,
+    }))
 }
 
 async fn logs(

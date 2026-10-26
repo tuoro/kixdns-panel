@@ -14,6 +14,7 @@ import UiTabs from '../components/ui/UiTabs.vue'
 import QueryLogPanel from '../components/logs/QueryLogPanel.vue'
 import { segmentLogMessage } from '../logs'
 import { actorName, errorMessage } from '../utils'
+import { settingNames } from '../config-editor/schema'
 // 侧栏版最窄的一档里审计搜索框只有 110 宽：占位换短的 / In the narrowest sidebar band the audit search is 110 wide, so its placeholder is shorter
 const narrow = useNarrowDesktop()
 
@@ -66,6 +67,34 @@ const filtered = computed(() => entries.value.filter((entry) => {
   const needle = query.value.toLowerCase()
   return !needle || entry.message.toLowerCase().includes(needle) || entry.source.toLowerCase().includes(needle)
 }))
+// 退回那一行的详情里设置名是内核的写法（bind_udp）：照页面上的叫法写（UDP 监听地址） / A rollback row's detail names settings the
+// kernel's way (bind_udp): written as the page calls them (UDP 监听地址)
+// plain：搜索、下载用纯文本——不换行空格换回空格、去掉词连接符，照页面上看到的字就搜得到，复制出来也一样
+// plain: search and download take plain text — no-break spaces back to spaces and word joiners dropped, so what the page shows can be
+// searched for and copies out the same
+function auditDetail(event: AuditEvent, plain = false): string {
+  const text = auditDetailGlued(event)
+  return plain ? text.replace(/\u00a0/g, ' ').replace(/\u2060/g, '') : text
+}
+// 显示时连成几块，只在块和块之间折行：每个设置名（带后面的「、」「，」）、每个「版本 #N」（带后面的标点）、「待应用的修改另存为」；
+// 最长的一块也放得进最窄的详情栏
+// For display the text is glued into runs that only wrap between each other: each setting name (with its following 「、」 or 「，」),
+// each 「版本 #N」 (with its punctuation) and 「待应用的修改另存为」; the longest run still fits the narrowest detail column
+function auditParts(event: AuditEvent): Array<{ text: string; glue: boolean }> {
+  const text = auditDetailGlued(event)
+  if (event.action !== 'config.restart_rollback') return [{ text, glue: false }]
+  const cut = text.indexOf('，')
+  const names = cut < 0 ? [] : text.slice(0, cut + 1).split(/(?<=、)/).map((name) => ({ text: name, glue: name.length <= 16 }))
+  const rest = (cut < 0 ? text : text.slice(cut + 1)).split(/(版本[ \u00a0]#\d+[，。]?|待应用的修改另存为)/).filter(Boolean).map((part) => ({ text: part, glue: /^(?:版本[ \u00a0]#\d+|待应用的修改另存为$)/.test(part) }))
+  return [...names, ...rest]
+}
+function auditDetailGlued(event: AuditEvent): string {
+  if (event.action !== 'config.restart_rollback') return event.detail
+  const cut = event.detail.indexOf('，')
+  const keys = cut < 0 ? [] : event.detail.slice(0, cut).split('、')
+  if (!keys.length || keys.some((key) => !/^[a-z0-9_]+$/.test(key))) return event.detail
+  return `${settingNames(keys, { all: true })}${event.detail.slice(cut)}`
+}
 const filteredAudit = computed(() => {
   const needle = auditQuery.value.trim().toLowerCase()
   if (!needle) return auditEvents.value
@@ -73,6 +102,7 @@ const filteredAudit = computed(() => {
     event.action.toLowerCase().includes(needle)
     || (actionName(event.action) ?? '').includes(needle)
     || event.detail.toLowerCase().includes(needle)
+    || auditDetail(event, true).toLowerCase().includes(needle)
     || actorName(event.actor).toLowerCase().includes(needle),
   )
 })
@@ -202,6 +232,8 @@ const ACTION_NAMES: Record<string, string> = {
   'auth.reset_admin': '重置管理员',
   'config.save': '保存配置',
   'config.restore': '恢复配置版本',
+  'config.restart_rollback': '退回原来的设置',
+  'config.write_pending_restart': '写进配置文件并重启',
   'config.apply': '应用配置版本',
   'config.auto_rollback': '自动退回上一版',
   'config.version.delete': '删除配置版本',
@@ -405,7 +437,7 @@ function retry(): void {
 function download(): void {
   const content = mode.value === 'runtime'
     ? filtered.value.map((entry) => `${timestamp(entry.timestamp_unix_micros)} [${label(entry.priority)}] ${entry.source}: ${entry.message}`).join('\n')
-    : filteredAudit.value.map((event) => `${auditTimestamp(event.created_at)} [${actorName(event.actor)}] ${event.action}: ${event.detail}`).join('\n')
+    : filteredAudit.value.map((event) => `${auditTimestamp(event.created_at)} [${actorName(event.actor)}] ${event.action}: ${auditDetail(event, true)}`).join('\n')
   const url = URL.createObjectURL(new Blob([content], { type: 'text/plain;charset=utf-8' }))
   const anchor = document.createElement('a')
   anchor.href = url
@@ -542,7 +574,7 @@ const waitingForPanel = computed(() => activeError.value !== '' && (panelDown.va
         <div v-if="skeletonAudit" class="log-skeleton" role="status" aria-label="正在读取审计记录"><i v-for="n in 6" :key="n" class="sk"></i></div>
         <template v-else>
           <div v-for="event in filteredAudit" :key="event.id" class="log-line audit-line">
-            <time>{{ auditTimestamp(event.created_at) }}</time><strong>{{ actorName(event.actor) }}</strong><span class="audit-action" :class="{ 'ui-mono': !actionName(event.action) }" :title="actionName(event.action) ? event.action : undefined">{{ actionName(event.action) ?? event.action }}</span><p><span v-if="failed(event.action)" class="ui-tag ui-tag--err">失败</span>{{ event.detail }}</p>
+            <time>{{ auditTimestamp(event.created_at) }}</time><strong>{{ actorName(event.actor) }}</strong><span class="audit-action" :class="{ 'ui-mono': !actionName(event.action) }" :title="actionName(event.action) ? event.action : undefined">{{ actionName(event.action) ?? event.action }}</span><p><span v-if="failed(event.action)" class="ui-tag ui-tag--err">失败</span><span><template v-for="(part, k) in auditParts(event)" :key="k"><span v-if="part.glue" class="nowrap">{{ part.text }}</span><template v-else>{{ part.text }}</template></template></span></p>
           </div>
           <button v-if="auditCursor !== null && !auditQuery" class="log-more" type="button" :disabled="auditRequesting" @click="loadAudit(false)"><RefreshCw :size="14" :class="{ spin: auditLoading }" aria-hidden="true" />加载更多</button>
           <UiEmpty v-if="filteredAudit.length === 0 && !auditError" :icon="ScrollText" :title="auditFiltered ? '没有符合条件的审计记录' : '还没有操作记录'" :desc="auditFiltered ? '清空搜索，或把类别切回「全部」' : '登录、保存配置、更新和重启服务都会记在这里。'" />

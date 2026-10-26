@@ -4,12 +4,13 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import UiNumber from '../components/ui/UiNumber.vue'
 import UiDotText from '../components/ui/UiDotText.vue'
 import { useBarHeight } from '../composables/useBarHeight'
+import { restartingKixdns } from '../composables/useServiceStart'
 import { useToast } from '../composables/useToast'
 import DraftReviewDialog from './DraftReviewDialog.vue'
 import RuleText from './RuleText.vue'
 import { usePhone, useTightSaveBar } from './phone'
 import { changeCount, dialogEdits, discardWithUndo, editorEdited, model, userPart } from './store'
-import { busy, waitingForBuild, cnameBlocked, pendingVersionId, queued, rereading, saveInFlight, sayBlocked, conflict, deferNote, deferSave, editTouched, elapsed, note, origin, save, saveMessage, stage, validate, validation, verdict } from './useConfigDocument'
+import { busy, doc, waitingForBuild, cnameBlocked, pendingVersionId, queued, rereading, saveInFlight, sayBlocked, conflict, deferNote, deferSave, editTouched, elapsed, note, origin, save, saveMessage, pageLocked, refuseWhileLocked, saveBarShown, stage, validate, validation, verdict } from './useConfigDocument'
 
 // 保存条只替草稿说话：有改动才升起来，保存完一会儿就收起。两步：先校验，再写入并热加载；任何一步失败都停住，原因里的规则能点。
 // KixDNS 没启动、连不上、不报能力时只存成待应用版本。Ctrl/Cmd+S 等于点保存。进度和结果都来自 useConfigDocument。
@@ -23,13 +24,20 @@ const emit = defineEmits<{ rule: [id: number]; group: [id: string]; reveal: [lin
 const toast = useToast()
 // 手机上主按钮只写「保存」，给「已修改 N 处」留出一行 / On a phone the main button just says 保存, leaving room for 已修改 N 处
 const phone = usePhone()
+// 手机上保存条放不下「保存后等连上 KixDNS 再应用」那半句（会画到按钮下面）：按钮已经写着「保存为待应用」，不写它
+// On a phone the bar cannot fit 「保存后等连上 KixDNS 再应用」 (it ran under the buttons): the button already reads 保存为待应用, so it
+// is left out
 const tight = useTightSaveBar()
 
 // 页头发起的「现在应用」不进保存条 / An apply started from the header never shows in the bar
 const draftStage = computed(() => (origin.value === 'draft' ? stage.value : 'idle'))
 // 还没进草稿的修改也让保存条升起：JSON 里的、右侧面板里没点「完成」的 / Edits not yet in the draft raise the bar too: the JSON view's and the side panel's not yet 完成
 const pending = computed(() => changeCount.value > 0 || Boolean(props.jsonDirty) || editorEdited.value)
-const visible = computed(() => pending.value || draftStage.value !== 'idle' || Boolean(props.jsonError))
+// 页面锁着（回应丢了的那次写入还没核对）：保存条收起，这件事由提示条说 / The page is locked (a lost write still unchecked): the bar folds
+// away and the notice speaks of it
+const visible = computed(() => !pageLocked.value && (pending.value || draftStage.value !== 'idle' || Boolean(props.jsonError)))
+watch(visible, (now) => { saveBarShown.value = now }, { immediate: true })
+onBeforeUnmount(() => { saveBarShown.value = false })
 const noteOpen = ref(false)
 // 单独点过「校验」且之后没再改：说一句校验通过 / After a lone 校验 with no edit since: say it passed
 // JSON 视图里又改了还没收进草稿：「校验通过」说的不是现在这份 / JSON edited and not yet folded: 校验通过 would not be about what is there now
@@ -42,12 +50,19 @@ watch(() => userPart(model), () => editTouched())
 function onKey(event: KeyboardEvent): void {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
     event.preventDefault()
+    // 页面锁着：保存条收着，按键不保存，说一句为什么；浏览器的「保存网页」也不弹 / The page is locked: the bar is folded away and the key
+    // saves nothing but says why, nor does the browser's Save Page open
+    // 锁着、草稿里也没有要保存的（丢的是「现在应用」）：照平常说没有要保存的修改 / Locked with nothing to save in the draft (the lost
+    // request was 现在应用): said as usual, nothing to save
+    if (pageLocked.value && !pending.value && !dialogEdits.size) { toast.info('没有要保存的修改'); return }
+    if (refuseWhileLocked('保存')) return
     // 弹层开着时不替它保存，但说一句该怎么做，不让按键没反应 / With a dialog open the bar does not save for it, but says what to do instead of swallowing the key
     if (document.querySelector('dialog[open]')) { toast.info(dialogEdits.size ? '先点窗口里的按钮把修改放进草稿，再保存' : '先关掉这个窗口，再保存'); return }
     // 恢复版本、重新读取还在读：读回来的会换掉草稿，等它读完 / A restore or re-read is reading: what comes back replaces the draft, so wait for it
     if (rereading.value) { toast.info('正在读取配置，读完再保存'); return }
     // 页头的「现在应用」在跑：这时保存不了草稿，说一句，不让按键没反应 / The header's 现在应用 is running: the draft cannot be saved now, so say so instead of swallowing the key
     if (applying.value) { toast.info(applyingNote.value); return }
+    if (restartingKixdns.value) { toast.info(RESTARTING_NOTE); return }
     // 单独的「校验」还没回来时照样保存（等它回来接着存）；真的在保存时不重复 / During a lone 校验 the save still goes (it waits for the check); during a real save it is not repeated
     if (saveInFlight.value) return
     if (props.jsonError) toast.info('JSON 写错了，改好才能保存')
@@ -59,10 +74,18 @@ function onKey(event: KeyboardEvent): void {
     else toast.info('没有要保存的修改')
   }
 }
+const RESTARTING_NOTE = 'KixDNS 正在重启，重启完再保存'
 function saveDraft(): void {
+  // 「查看修改」开着时页面锁住了：它的保存按钮还在，按了说一句 / The page locked with 查看修改 open: its save button is still there, and a
+  // press says why
+  if (refuseWhileLocked('保存')) return
   // 页头的「现在应用」还在跑：按钮看着停用，点了说一句为什么（和 Ctrl+S 一样；手机上看不到 title）
   // The header's 现在应用 is still running: the button looks disabled and a tap says why (as Ctrl+S does; phones never show the title)
   if (applying.value) { toast.info(applyingNote.value); return }
+  // 正在等 KixDNS 从重启回来：这时存，KixDNS 会在确认新配置前断开，好好的版本被记成没有生效；等它回来再存
+  // Waiting for KixDNS to come back from a restart: a save now would lose KixDNS before it confirms the config and record a sound
+  // version as not taken, so it waits for the restart
+  if (restartingKixdns.value) { toast.info(RESTARTING_NOTE); return }
   if (props.flush && !props.flush('save')) return
   void save('draft')
 }
@@ -97,7 +120,18 @@ function closeReview(): void {
 const saveLabel = computed(() => (deferSave.value ? '保存为待应用' : '保存并应用'))
 // 页头的「现在应用」在跑（不是这条保存条的保存） / The header's 现在应用 is running (not this bar's save)
 const applying = computed(() => busy.value && origin.value === 'apply')
-const applyingNote = computed(() => `正在应用${pendingVersionId.value ? `版本 #${pendingVersionId.value}` : '待应用的版本'}，应用完再保存`)
+// 退回写下的版本不报编号，和页头同一个短名 / A version a rollback wrote has no number: the header's short name
+// 「现在应用」只在 KixDNS 在时才有，那时真正在应用的是带上的修改 / 现在应用 exists only while KixDNS runs, when what is being applied
+// is the carried edits
+const applyingNote = computed(() => {
+  const origin = doc.value?.pending?.from_rollback
+  // 带上的修改用规则里的全称「待应用的修改」：提示挨着保存条的「已修改 N 处」，只说「修改」会读成在应用刚改的那几处；倒过来说，免得一句三个「应用」
+  // The carried edits take the rule's full 待应用的修改: the toast sits by the save bar's 已修改 N 处, where a bare 修改 would read as
+  // the edits just made; the sentence is turned round so it does not say 应用 three times
+  if (origin === 'settings_and_pending') return '待应用的修改正在应用，完成后再保存'
+  const what = origin ? '退回的设置' : pendingVersionId.value ? `版本 #${pendingVersionId.value}` : '待应用的版本'
+  return `正在应用${what}，应用完再保存`
+})
 // 在写入这份草稿，或者排在单独的「校验」后面等着写：按钮写「保存中」；页头在应用时不算 / Writing this draft, or queued behind a lone 校验 to write: the button reads 保存中; the header's apply does not count
 const saving = computed(() => (busy.value && stage.value !== 'checking' && origin.value === 'draft') || queued.value)
 // 保存还在跑（写入落地以后、重读完之前草稿已经算干净了）：按钮一直留着写「保存中」，不在说「第 2 步」时消失
@@ -152,8 +186,8 @@ function discard(): void {
         <!-- 有内核不支持的 CNAME 回答：保存不了，页面上方的提示说是哪几处 / CNAME answers the kernel does not support: saving cannot happen, and the notice above names them -->
         <template v-else-if="cnameBlocked"><span class="ui-savebar__verdict">保存不了</span><small>内核不支持 CNAME 回答，见页面上方</small></template>
         <template v-else-if="validated"><span class="ui-dot" aria-hidden="true"></span><span class="ui-savebar__detail"><UiDotText :parts="tight ? ['校验通过'] : ['校验通过', '可以保存']" /></span></template>
-        <template v-else-if="changeCount === 0"><span class="ui-dot ui-dot--ink" aria-hidden="true"></span><span class="ui-savebar__detail">{{ jsonDirty ? 'JSON 有修改' : '右侧规则的修改还没放进草稿' }}<small v-if="deferSave"> · {{ deferNote }}</small></span></template>
-        <template v-else><span class="ui-dot ui-dot--ink" aria-hidden="true"></span><span class="ui-savebar__detail"><button class="ui-objlink savebar__review" type="button" aria-haspopup="dialog" title="看看改了哪些" @click="review">已修改 <b class="ui-savebar__count"><UiNumber :value="String(changeCount)" /></b> 处</button><small v-if="deferSave"> · {{ deferNote }}</small></span></template>
+        <template v-else-if="changeCount === 0"><span class="ui-dot ui-dot--ink" aria-hidden="true"></span><span class="ui-savebar__detail">{{ jsonDirty ? 'JSON 有修改' : '右侧规则的修改还没放进草稿' }}<small v-if="deferSave && !phone"> · {{ deferNote }}</small></span></template>
+        <template v-else><span class="ui-dot ui-dot--ink" aria-hidden="true"></span><span class="ui-savebar__detail"><button class="ui-objlink savebar__review" type="button" aria-haspopup="dialog" title="看看改了哪些" @click="review">已修改 <b class="ui-savebar__count"><UiNumber :value="String(changeCount)" /></b> 处</button><small v-if="deferSave && !phone"> · {{ deferNote }}</small></span></template>
       </p>
       <!-- JSON 写错时只留「放弃修改」：改不好也能回到草稿 / With broken JSON only 放弃修改 stays, so the way back to the draft is always there -->
       <button v-if="jsonError && !phone" class="ui-btn ui-btn--secondary savebar__discard" type="button" @click="discard">放弃修改</button>
@@ -170,7 +204,7 @@ function discard(): void {
         <button v-if="!deferSave && !conflict && pending && !cnameBlocked" class="ui-btn ui-btn--secondary savebar__check" :class="{ 'is-aside': busy }" type="button" :inert="busy" @click="check"><ShieldCheck :size="16" aria-hidden="true" />校验</button>
         <!-- 别处先存了新版本时再保存只会再失败一次：先重新读取 / After someone else saved, saving again only fails again: reload first -->
         <!-- 手机上冲突时不留灰掉的保存和备注：这时只能下载或重新读取，省下一整行 / On phones a conflict drops the greyed save and 备注: only download or reload can happen then, which saves a whole row -->
-        <button v-if="!(phone && conflict && draftStage === 'failed')" ref="saveButton" class="ui-btn ui-btn--primary savebar__save config-save-button" type="button" :aria-busy="busy || undefined" :disabled="conflict && draftStage === 'failed'" :aria-disabled="applying || undefined" :title="applying ? applyingNote : undefined" @click="saveDraft"><span v-if="saving" class="ui-spin" aria-hidden="true"></span>{{ saving ? '保存中' : saveLabel }}</button>
+        <button v-if="!(phone && conflict && draftStage === 'failed')" ref="saveButton" class="ui-btn ui-btn--primary savebar__save config-save-button" type="button" :aria-busy="busy || undefined" :disabled="conflict && draftStage === 'failed'" :aria-disabled="applying || restartingKixdns || undefined" :title="applying ? applyingNote : restartingKixdns ? RESTARTING_NOTE : undefined" @click="saveDraft"><span v-if="saving" class="ui-spin" aria-hidden="true"></span>{{ saving ? '保存中' : saveLabel }}</button>
       </template>
     </footer>
   </Transition>

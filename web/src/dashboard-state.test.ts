@@ -20,6 +20,11 @@ describe('概览运行状态', () => {
     expect(hasStaleDashboardData(state)).toBe(false)
   })
 
+  it('起不来又没有快照：systemd 重试那一下服务是 active，服务端看出来时照样按「未运行」保留版式，不在两种说法之间跳', () => {
+    const retrying = { ...stoppedService, active_state: 'active', sub_state: 'running', did_not_come_up: true }
+    expect(dashboardRuntimeState(null, retrying)).toBe('stopped-empty')
+  })
+
   it('仅在实际存在历史快照时标记数据过期', () => {
     const state = dashboardRuntimeState(snapshot, stoppedService)
 

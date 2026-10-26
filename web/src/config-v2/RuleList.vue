@@ -9,6 +9,7 @@ import { parseOwnRules, shortName } from '../config-model/blocklist'
 import { blockLabel, blocklistEntries, conditionsText, outcomePill, mappingIsIp, type Outcome, type Rule, ruleTitle } from '../config-model/model'
 import { model, newId } from './store'
 import { blocklists, loadBlocklists } from './useBlocklists'
+import { pageLocked } from './useConfigDocument'
 
 // 一列规则：主列表或一个规则组。最上面是先生效的域名映射（只在主列表），最下面钉着「其余请求」。
 // 拖手柄或用菜单调整顺序；筛选时不能拖，免得把看不见的规则挤乱。
@@ -137,7 +138,8 @@ function endDrag(): void {
   const to = dropAt.value
   dragging.value = null
   dropAt.value = null
-  if (id === null || to === null) return
+  // 拖到一半时页面锁住了（回应丢了的写入还没核对）：这次拖动作罢 / The page locked mid-drag (a lost write unchecked): this drag is dropped
+  if (id === null || to === null || pageLocked.value) return
   const list = props.rules
   const from = list.findIndex((r) => r.id === id)
   const rule = list[from]!

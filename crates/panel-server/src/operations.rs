@@ -17,6 +17,10 @@ pub struct Operations {
     #[cfg_attr(not(unix), allow(dead_code))]
     service_helper_socket: PathBuf,
     diagnostic_server: SocketAddr,
+    /// 读服务状态用的 systemctl；测试里换成一个照文件回答的假程序 / The systemctl used to read the service state; tests swap in
+    /// a fake one that answers from a file
+    #[cfg_attr(not(unix), allow(dead_code))]
+    systemctl: Arc<str>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -25,6 +29,24 @@ pub struct ServiceStatus {
     pub active_state: String,
     pub sub_state: String,
     pub main_pid: u32,
+    /// `KixDNS` 起不来（失败、systemd 在重试，或者重试的那一下）：由服务状态接口补上，各页据此一样说「启动失败」
+    ///
+    /// `KixDNS` does not come up (failed, retried by systemd, or the moment of a retry): filled in by the service status
+    /// endpoint, so every page says 启动失败 alike
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub did_not_come_up: bool,
+    /// 起不来时可以退回的设置和它们上次启动时的值（和配置页同一份）：由服务状态接口补上，各页据此给出路
+    ///
+    /// While it does not come up, the settings that can go back and their starting values (the config page's): filled
+    /// in by the service status endpoint, so every page offers the way out
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restart_rollback: Option<std::collections::BTreeMap<String, Value>>,
+    /// 起不来、不能退回时可以写进配置文件的待应用版本（和配置页同一份）：由服务状态接口补上
+    ///
+    /// While it does not come up with nothing to put back, the pending version that can be written into the config
+    /// file (the config page's): filled in by the service status endpoint
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_writable: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -182,13 +204,20 @@ impl Operations {
             service_unit: Arc::from(service_unit),
             service_helper_socket,
             diagnostic_server,
+            systemctl: Arc::from("systemctl"),
         })
+    }
+
+    #[must_use]
+    pub fn with_systemctl(mut self, program: &str) -> Self {
+        self.systemctl = Arc::from(program);
+        self
     }
 
     #[cfg(unix)]
     pub async fn service_status(&self) -> Result<ServiceStatus, OperationError> {
         let output = run_command(
-            "systemctl",
+            &self.systemctl,
             &[
                 "show",
                 self.service_unit.as_ref(),
@@ -214,6 +243,13 @@ impl Operations {
     ) -> Result<ServiceStatus, OperationError> {
         self.helper_request(action.argument()).await?;
         self.service_status().await
+    }
+
+    /// 只发服务动作，不再读一遍状态（调用方自己等 `KixDNS` 回来） / Send the service action only, without reading the
+    /// status back (the caller waits for `KixDNS` itself)
+    #[cfg(unix)]
+    pub async fn service_request(&self, action: ServiceAction) -> Result<(), OperationError> {
+        self.helper_request(action.argument()).await
     }
 
     #[cfg(unix)]
@@ -278,6 +314,12 @@ impl Operations {
 
     #[cfg(not(unix))]
     #[allow(clippy::unused_async)]
+    pub async fn service_request(&self, _action: ServiceAction) -> Result<(), OperationError> {
+        Err(OperationError::Unsupported)
+    }
+
+    #[cfg(not(unix))]
+    #[allow(clippy::unused_async)]
     pub async fn start_panel_update(&self) -> Result<(), OperationError> {
         Err(OperationError::Unsupported)
     }
@@ -310,7 +352,7 @@ impl Operations {
         ];
         let (journal, unit_state) = tokio::join!(
             run_command("journalctl", &arguments, Duration::from_secs(10)),
-            run_command("systemctl", &show_arguments, Duration::from_secs(10))
+            run_command(&self.systemctl, &show_arguments, Duration::from_secs(10))
         );
         let mut page = parse_journal_page(&journal?, before_cursor, limit);
         page.notice = unit_state
@@ -470,6 +512,9 @@ fn parse_service_status(unit: &str, output: &str) -> Result<ServiceStatus, Opera
         sub_state: sub_state
             .ok_or_else(|| OperationError::Failed("systemctl 缺少 SubState".to_owned()))?,
         main_pid: main_pid.unwrap_or(0),
+        did_not_come_up: false,
+        restart_rollback: None,
+        pending_writable: None,
     })
 }
 

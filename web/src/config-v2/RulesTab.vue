@@ -16,6 +16,7 @@ import Tester from './Tester.vue'
 import { draftGeneration, listOf, model, newId, ruleGroupUsers, trackDialogEdits, ui } from './store'
 import { useGeositeCatalog } from './useGeosite'
 import { isTyping } from '../utils'
+import { pageLocked } from './useConfigDocument'
 // JSON 编辑器（CodeMirror）只在用到时才加载：配置页的首包不带它 / The JSON editor (CodeMirror) loads on first use, so the config page's first chunk leaves it out
 const JsonEditor = defineAsyncComponent(() => import('../components/JsonEditor.vue'))
 
@@ -36,7 +37,7 @@ function onPageKey(event: KeyboardEvent): void {
   if (isTyping(event.target)) return
   if (document.querySelector('dialog[open]')) return
   if (event.key === '/') { event.preventDefault(); searchInput.value?.focus() }
-  else if (event.key === 'n') { event.preventDefault(); emit('open', null, null) }
+  else if (event.key === 'n' && !pageLocked.value) { event.preventDefault(); emit('open', null, null) }
 }
 onMounted(() => window.addEventListener('keydown', onPageKey))
 onBeforeUnmount(() => window.removeEventListener('keydown', onPageKey))

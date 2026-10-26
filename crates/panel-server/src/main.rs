@@ -151,6 +151,7 @@ impl Args {
             .transpose()
             .context("KIXDNS_INSTALLED_SOURCE_ID 必须是正整数")?;
         Ok(AppSettings {
+            systemctl: None,
             bind: args.bind,
             database_path: args.database,
             config_path: args.config,

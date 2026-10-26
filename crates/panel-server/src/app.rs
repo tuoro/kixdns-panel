@@ -29,6 +29,7 @@ mod blocklist;
 mod diagnostics;
 mod geo;
 mod querylog;
+mod restart;
 mod updates;
 
 use geo::{
@@ -62,6 +63,9 @@ use crate::updates::{UpdateError, UpdateManager, UpdateSettings};
 
 #[derive(Debug, Clone)]
 pub struct AppSettings {
+    /// 读服务状态用的 systemctl，不给就是系统里的那个（测试用） / The systemctl that reads the service state; the system's one
+    /// when not given (for tests)
+    pub systemctl: Option<PathBuf>,
     pub bind: SocketAddr,
     pub database_path: PathBuf,
     pub config_path: PathBuf,
@@ -185,6 +189,9 @@ struct PendingConfigResponse {
     created_at: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    /// 退回写下的版本：页面不报它的编号 / A version a rollback wrote: pages give no number for it
+    #[serde(skip_serializing_if = "Option::is_none")]
+    from_rollback: Option<restart::RollbackOrigin>,
 }
 
 #[derive(Debug, Serialize)]
@@ -196,6 +203,32 @@ struct ConfigRuntimeState {
     declared_capabilities: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pending_error: Option<String>,
+    /// 改过、要重启 `KixDNS` 才生效的设置；没有、或者内核不报告时省略
+    ///
+    /// The settings changed that take a restart of `KixDNS` to apply; left out when
+    /// there are none or the kernel does not report them
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    restart_pending: Vec<String>,
+    /// 重启后 `KixDNS` 没回来时，可以退回的设置和它们上次启动时的值（`null` 是没写、用默认值）；其余时候省略
+    ///
+    /// When `KixDNS` has not come back from a restart, the settings that can be put back and the values they last
+    /// started with (`null` for unset, on the default); left out otherwise
+    #[serde(skip_serializing_if = "Option::is_none")]
+    restart_rollback: Option<std::collections::BTreeMap<String, Value>>,
+    /// 连不上时 `KixDNS` 起不来（不看能不能退回）；各页据此说「启动失败」，等重启的页面据此不再等
+    ///
+    /// While unreachable, `KixDNS` is not coming up (whether or not anything can go back); pages say 启动失败 by it and a
+    /// page waiting on a restart stops waiting
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    did_not_come_up: bool,
+    /// 起不来、不能退回时，可以写进配置文件的待应用版本；已经在文件里、退回时带上的修改都不算（见
+    /// `restart::writable_pending`）；其余时候省略
+    ///
+    /// While it does not come up with nothing to put back, the pending version that can be written into the config file;
+    /// one in the file already or edits a rollback carried along do not count (see `restart::writable_pending`); left
+    /// out otherwise
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending_writable: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -326,12 +359,18 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
         database,
         config,
         control: ControlClient::new(settings.control_socket),
-        operations: Operations::new(
-            settings.service_unit,
-            settings.service_helper_socket,
-            settings.diagnostic_server,
-        )
-        .map_err(|error| anyhow::anyhow!(error))?,
+        operations: {
+            let operations = Operations::new(
+                settings.service_unit,
+                settings.service_helper_socket,
+                settings.diagnostic_server,
+            )
+            .map_err(|error| anyhow::anyhow!(error))?;
+            match &settings.systemctl {
+                Some(program) => operations.with_systemctl(&program.to_string_lossy()),
+                None => operations,
+            }
+        },
         updates,
         geo_data,
         blocklists,
@@ -347,6 +386,9 @@ pub async fn build_app(settings: AppSettings) -> anyhow::Result<Router> {
     };
     spawn_update_scheduler(state.clone());
     spawn_builtin_geosite_seed(state.clone());
+    // 面板自己启动（包括主机重启）也是一次新的尝试：重启前留下的「起不来」不算 / The panel's own start (a host reboot
+    // included) is a new attempt too: a failure left from before does not count
+    restart::new_attempt(&state).await;
     spawn_config_reconciler(state.clone());
     spawn_metrics_sampler(state.clone());
     querylog::spawn_querylog_collector(state.clone());
@@ -403,6 +445,11 @@ fn api_router(state: AppState) -> Router {
         )
         .route("/config/versions/{id}/restore", post(restore_config))
         .route("/config/versions/{id}/apply", post(apply_pending_config))
+        .route("/config/restart-rollback", post(restart::roll_back))
+        .route(
+            "/config/restart-with-pending",
+            post(restart::restart_with_pending),
+        )
         .route("/cache/flush", post(flush_cache))
         .merge(blocklist::routes())
         .merge(diagnostics::routes())
@@ -587,8 +634,37 @@ async fn get_config(
             CONFIG_APPLY_FAILED => "failed",
             _ => "pending",
         });
-    let runtime = match state.control.active_config().await {
+    let (health, active) = tokio::join!(state.control.health(), state.control.active_config());
+    if let (Ok(health), Ok(active)) = (&health, &active) {
+        restart::note_alive(&state, health, active).await;
+    }
+    // 连不上时退回看的是正式文件：有待应用版本时它不是这里读到的那份 / While unreachable the rollback looks at the formal
+    // file, which is not the document read here when a version is pending
+    let (did_not_come_up, rollback, pending_writable) = match (&active, &pending) {
+        (Ok(_), _) => (false, None, None),
+        (Err(_), None) => {
+            let (down, rollback) = restart::unreachable(&state, &document.content).await;
+            (down, rollback, None)
+        }
+        (Err(_), Some(_)) => match state.config.current().await {
+            Ok(formal) => {
+                let (down, rollback) = restart::unreachable(&state, &formal.content).await;
+                let writable = if down && rollback.is_none() {
+                    restart::writable_pending(&state, &formal).await.ok()
+                } else {
+                    None
+                };
+                (down, rollback, writable)
+            }
+            Err(_) => (false, None, None),
+        },
+    };
+    let runtime = match active {
         Ok(active) => ConfigRuntimeState {
+            restart_rollback: None,
+            did_not_come_up: false,
+            pending_writable: None,
+            restart_pending: active.restart_pending.clone().unwrap_or_default(),
             status: pending_status.unwrap_or(if active.sha256 == document.sha256 {
                 "active"
             } else {
@@ -617,7 +693,15 @@ async fn get_config(
             pending_error: pending
                 .as_ref()
                 .and_then(|summary| summary.apply_error.clone()),
+            restart_pending: Vec::new(),
+            restart_rollback: rollback,
+            did_not_come_up,
+            pending_writable,
         },
+    };
+    let from_rollback = match &pending {
+        Some(summary) => restart::rollback_origin(&state, summary.id, &summary.sha256).await,
+        None => None,
     };
     Ok(Json(ConfigDocumentResponse {
         content: document.content,
@@ -631,6 +715,7 @@ async fn get_config(
             actor: summary.actor,
             created_at: summary.created_at,
             error: summary.apply_error,
+            from_rollback,
         }),
         runtime,
     }))
@@ -648,6 +733,7 @@ async fn overview(
     );
     match results {
         (Ok(health), Ok(active_config), Ok(mut metrics)) => {
+            restart::note_alive(&state, &health, &active_config).await;
             state
                 .recent_history
                 .lock()
@@ -1310,6 +1396,12 @@ async fn activate_candidate(
             return Err(map_control_error(error));
         }
     };
+    // 重载是要重启的名单从空变成不空的唯一入口：重载前先记一笔，刚起来的进程启动时的值不会被这次重载盖过去
+    // A reload is the only way the list of settings waiting for a restart goes from empty to not: noting the moment before it
+    // keeps a freshly started process's starting values from being overtaken by this reload
+    if let Ok(health) = state.control.health().await {
+        restart::note_alive(state, &health, &before_reload).await;
+    }
     state
         .config
         .write_pending(result.version_id)
@@ -1621,6 +1713,10 @@ fn spawn_config_reconciler(state: AppState) {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             ticker.tick().await;
+            // 没有人开着页面时也记 KixDNS 启动时的设置、起没起来；先看再应用，刚起来的进程启动时的值先记下
+            // Record KixDNS's starting settings and whether it came up even with no page open; looked at before applying, so a
+            // freshly started process's starting values are noted first
+            restart::observe(&state).await;
             if let Err(error) = reconcile_pending(&state).await {
                 tracing::warn!(error = ?error, "待应用配置收敛失败");
             }
@@ -1636,21 +1732,58 @@ async fn reconcile_pending(state: &AppState) -> anyhow::Result<()> {
         return Ok(());
     }
     let _apply_guard = state.config_apply_lock.lock().await;
+    apply_waiting_locked(state).await.map(|_| ())
+}
+
+/// 拿着配置锁时那一下应用了哪个版本、结果怎样（`applied`、`pending`、`failed`）；重启回来时系统页照它说
+///
+/// Which version an apply under the config lock took up and how it went (`applied`, `pending`, `failed`); the system page
+/// says so on return from a restart
+#[derive(Debug, Serialize)]
+pub(crate) struct WaitingApplied {
+    version_id: i64,
+    apply_state: &'static str,
+    /// 退回写下的版本：页面不报它的编号 / A version a rollback wrote: pages give no number for it
+    #[serde(skip_serializing_if = "Option::is_none")]
+    from_rollback: Option<restart::RollbackOrigin>,
+}
+
+/// 拿着配置锁时应用还在等的待应用版本（重启前那一下也用它） / Apply the version still pending while the config lock is held
+/// (also used just before a restart)
+async fn apply_waiting_locked(state: &AppState) -> anyhow::Result<Option<WaitingApplied>> {
     let Some(pending) = state.config.pending().await? else {
-        return Ok(());
+        return Ok(None);
     };
     if pending.apply_state != CONFIG_APPLY_PENDING {
-        return Ok(());
+        return Ok(None);
     }
     let content = state.config.version(pending.id).await?.content;
+    let from_rollback = restart::rollback_origin(state, pending.id, &pending.sha256).await;
     let result = SaveResult {
         version_id: pending.id,
         sha256: pending.sha256,
     };
-    if let Err(error) = apply_pending_candidate(state, &content, result).await {
-        tracing::warn!(error = ?error, "待应用配置应用失败");
-    }
-    Ok(())
+    let apply_state = match apply_pending_candidate(state, &content, result).await {
+        Ok(response) => response.apply_state,
+        Err(error) => {
+            tracing::warn!(error = ?error, "待应用配置应用失败");
+            // 只有记成没有生效的才报没有生效；别的出错它还在等，之后照常应用 / Reported as refused only when recorded
+            // so; on any other error it is still waiting and is applied later as usual
+            let recorded = state.config.pending().await.ok().flatten();
+            if recorded.is_some_and(|summary| {
+                summary.id == pending.id && summary.apply_state == CONFIG_APPLY_FAILED
+            }) {
+                CONFIG_APPLY_FAILED
+            } else {
+                CONFIG_APPLY_PENDING
+            }
+        }
+    };
+    Ok(Some(WaitingApplied {
+        version_id: pending.id,
+        apply_state,
+        from_rollback,
+    }))
 }
 
 async fn ensure_running_config_supported(state: &AppState, content: &Value) -> AppResult<()> {

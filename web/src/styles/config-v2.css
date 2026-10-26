@@ -7,7 +7,9 @@ body { background: var(--l-canvas); }
 .cfg__panel { min-width: 0; }
 .cfg__savebar { right: var(--s-6); bottom: var(--s-5); left: var(--s-6); max-width: 46rem; margin-inline: auto; }
 .cfg-savebar-enter-active { animation: ui-savebar-in var(--m-base) var(--ease-out); }
-.cfg-savebar-leave-active { transition: opacity var(--m-quick) var(--ease-out), transform var(--m-quick) var(--ease-out); }
+/* 收起途中的保存条不接点击：页面锁住那一刻它还在淡出，「放弃修改」不该还能按 / A save bar on its way out takes no clicks: at the moment the page
+   locks it is still fading, and 放弃修改 must not be pressable */
+.cfg-savebar-leave-active { transition: opacity var(--m-quick) var(--ease-out), transform var(--m-quick) var(--ease-out); pointer-events: none; }
 .cfg-savebar-leave-to { opacity: 0; transform: translateY(var(--move-2)); }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); margin-bottom: var(--s-4); }
 .toolbar__search { flex: 0 1 22rem; }
@@ -36,6 +38,18 @@ body { background: var(--l-canvas); }
 /* 页头里传送过来的按钮（新建规则、测试域名）跟着调淡：它们的容器是 display: contents，自己挂不上透明度 / The buttons teleported into the header (新建规则, 测试域名) dim too: their container is display: contents and cannot carry opacity */
 .cfg__page-acts[inert] > * { opacity: .6; transition: opacity var(--m-quick) var(--ease-out); }
 .cfg__notice { margin-top: calc(var(--s-1) * -1); }
+/* 锁着时提示条吸顶，贴在顶栏和断线横幅下面：内容点不动的原因一直看得到，滚到下面按的保存、回去看改的那一项时都在。--stick-gap 是它和
+   顶栏（横幅）之间的距离 / While locked the notice sticks below the header and the outage banner, so why the content does not respond
+   stays in sight, for a save pressed far down and when going back to the edited row. --stick-gap is its distance from the header (banner) */
+.cfg__notice--stuck { --stick-gap: var(--s-2); position: sticky; top: calc(var(--app-header-height) + var(--conn-h, 0px) + var(--stick-gap)); z-index: 30; }
+@media (min-width: 861px) { .cfg__notice--stuck { top: calc(var(--conn-h, 0px) + var(--stick-gap)); } }
+/* 真浮在滚过去的内容上面时（不在页顶原位）才有下沿：一条细线和一层淡影，和提示条一样宽；上沿改成直角，上面一条画布色盖住到顶栏的缝（多
+   盖 1 px，横幅高度取整留下的缝也在里面）。在原位时它下面没有东西可盖，照平常的样子
+   Only when it really floats over content scrolling past (not in place at the top) does it get a lower edge: a hairline and a faint
+   shadow as wide as the notice; the top corners go square and a strip of canvas colour covers the gap up to the header (1 px more, so
+   the gap left by the rounded banner height is in it). In place there is nothing beneath to cover, so it looks as usual */
+.cfg__notice--floating { border-top-left-radius: 0; border-top-right-radius: 0; box-shadow: 0 1px 0 var(--l-hair), 0 var(--s-2) var(--s-5) var(--shadow-bar-tint); }
+.cfg__notice--floating::before { content: ""; position: absolute; left: -1px; right: -1px; bottom: 100%; height: calc(var(--stick-gap) + 1px); background: var(--l-canvas); }
 .cfg__notice .ui-objlink, .ui-savebar .ui-objlink { font-size: inherit; color: inherit; text-decoration-color: currentColor; }
 .cfg__json { display: grid; gap: var(--s-3); }
 .cfg__json-note { max-width: 52em; margin: 0; color: var(--l-ink-3); font-size: var(--t-2); }
@@ -160,7 +174,7 @@ body { background: var(--l-canvas); }
   /* 保存条贴在底栏上面、整宽，顶边一条细线；和底栏之间不再露出滚动的内容
      The save bar docks on top of the tab bar, full width with a hairline on top; no scrolling content shows between them */
   .cfg__savebar { right: 0; left: 0; bottom: var(--mobile-nav-height); max-width: none; border-width: 1px 0 0; border-radius: 0; box-shadow: none; }
-  .workspace__main:has(.cfg__savebar) { padding-bottom: calc(var(--mobile-nav-height) + var(--h-md) + var(--s-2) * 2 + var(--s-4)); }
+  .workspace__main:has(.cfg__savebar, .cfg--hold-bottom) { padding-bottom: calc(var(--mobile-nav-height) + var(--h-md) + var(--s-2) * 2 + var(--s-4)); }
   /* 保存条两个文字按钮同宽 / The save bar's two text buttons share a width */
   .cfg__savebar .savebar__note-toggle, .cfg__savebar .savebar__check { min-width: 3.5rem; }
   .cfg .ui-ph__actions .cfg__history { width: var(--h-md); min-height: var(--h-md); padding: 0; color: var(--l-ink-2); border-color: var(--l-line-strong); background: var(--l-surface); box-shadow: var(--shadow-xs); }
@@ -185,8 +199,10 @@ body { background: var(--l-canvas); }
   /* 规则页工具只占一行：搜索 + 筛选、测试、新建三个图标按钮 / The rules toolbar is one row: search plus three icon buttons (filter, test, new) */
   .rules > .toolbar { flex-wrap: nowrap; margin-bottom: var(--s-4); }
 }
-/* 没有保存条时页面底部不再预留它的位置 / Without a save bar the page no longer reserves room for it */
-.cfg:not(:has(.cfg__savebar)) { padding-bottom: 0; }
+/* 没有保存条时页面底部不再预留它的位置；锁着时、解开后保存条还没回来时照留（cfg--hold-bottom），页面不变短，滚到底时不往下掉 / Without a
+   save bar the page no longer reserves room for it; while locked, and unlocked until the bar comes back, the room stays (cfg--hold-bottom),
+   so the page does not shrink and drop when scrolled to the end */
+.cfg:not(.cfg--hold-bottom):not(:has(.cfg__savebar)) { padding-bottom: 0; }
 @media (min-width: 641px) {
   /* 保存条：备注框紧跟在「已修改 N 处」后面，把剩下的宽度用掉，左边不再悬在半空 / The save bar: the note field follows 已修改 N 处 directly and takes the remaining width, so its left edge no longer floats */
   .cfg__savebar:not(.ui-savebar--err) .ui-savebar__status { flex: 0 0 auto; margin-right: var(--s-4); }
@@ -233,6 +249,9 @@ body { background: var(--l-canvas); }
   /* 面板开着时列表窄了：结果那一列最窄 9rem、命中 4rem，名字那一列才留得住 / With the inspector open the list is narrower: the result column bottoms at 9rem and hits at 4rem, so the name column keeps its room */
   .rules-split.is-open :is(.rlist, .rcard) { --rl-num: var(--s-6); --rl-cols: var(--rl-num) minmax(0, 1.5fr) minmax(9rem, 1fr) 4rem var(--s-7) var(--h-sm); }
   /* 面板跟着滚：顶部留页边距，太高时自己滚 / The inspector sticks: a page margin above, scrolling inside when taller than the viewport */
+  /* 右栏开着时，吸顶的提示条只占左边列表那一栏、和右栏顶齐平：不压在右栏上，右栏也不用让 / With the inspector open, the stuck notice
+     takes only the list column, level with the inspector's top: it never covers the inspector, which need not move */
+  .cfg:has(.rules-split.is-open) .cfg__notice--stuck { --stick-gap: var(--s-6); margin-right: calc(var(--inspector-w) + var(--s-5)); }
   .rules-split > .editor--inspector { position: sticky; top: calc(var(--s-6) + var(--conn-h, 0px)); max-height: calc(100dvh - var(--s-6) * 2 - var(--conn-h, 0px)); overflow: auto; overscroll-behavior: contain; }
 }
 .rules-split.is-open .rlist__order { display: none; }
@@ -1926,7 +1945,7 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
   .cfg__savebar .savebar__note-toggle .ui-btn__chev { display: none; }
   .cfg__savebar .savebar__note { display: none; }
   .cfg__savebar .savebar__note.is-open { display: flex; flex: 1 1 100%; order: 3; width: auto; }
-  .workspace__main:has(.cfg__savebar) { padding-bottom: calc(var(--mobile-nav-height) + var(--h-md) + var(--s-3) * 2 + var(--s-4)); }
+  .workspace__main:has(.cfg__savebar, .cfg--hold-bottom) { padding-bottom: calc(var(--mobile-nav-height) + var(--h-md) + var(--s-3) * 2 + var(--s-4)); }
 }
 /* 手机上主按钮不留 7.5rem 的最小宽度：那会把「已修改 N 处」挤到和「备注」重叠 / On phones the primary button drops its 7.5rem minimum, which squeezed 已修改 N 处 into the 备注 button */
 @media (max-width: 640px) {
@@ -2014,8 +2033,29 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
   .cfg__savebar.savebar--wrap .ui-savebar__status > .ui-check { flex: 0 0 auto; margin-top: calc((var(--t-3) * var(--lh-base) - var(--size-icon)) / 2); }
   .cfg__savebar.savebar--wrap .ui-savebar__detail { flex: 1 1 auto; }
 }
+/* 按「启动」以后焦点落在页头状态那一格（role=status，会读出来，转圈说明在做）：和保存条状态那个落点一样不画框
+   After 启动 focus lands on the header's status cell (role=status, read out, with a spinner showing the work): no ring, like the save
+   bar's status landing */
+.cfg__facts:focus, .cfg .ui-ph__lead:focus { outline: none; }
+/* 锁住时焦点交给提示条（读屏会读到原因）：和页头状态一样不画框，浮起时框会被上面盖缝的那一条切掉上沿 / The focus goes to the notice when
+   it locks (a screen reader reads the reason): no ring, as with the header state; floating, the strip covering the gap would cut off the
+   ring's top */
+.cfg__notice:focus { outline: none; }
+/* 641–860 宽一句长说明折成两行时，前面的点留在第一行字前面，字在它右边折行，不让点单独占一行；一行时和居中一样高
+   Between 641 and 860, when a long status wraps, the dot stays before its first line and the text wraps beside it, never leaving the
+   dot alone on a line; on one line it sits as high as when centred */
+@media (min-width: 641px) and (max-width: 860px) {
+  .cfg__savebar:not(.ui-savebar--err) .ui-savebar__status:has(> .ui-dot) { flex-wrap: nowrap; align-items: flex-start; padding-top: calc((var(--h-md) - var(--t-3) * var(--lh-base)) / 2); }
+  .cfg__savebar:not(.ui-savebar--err) .ui-savebar__status:has(> .ui-dot) > .ui-dot { margin-top: calc((var(--t-3) * var(--lh-base) - var(--size-dot)) / 2); }
+}
 @media (max-width: 640px) {
   .cfg__savebar.savebar--wrap .ui-savebar__detail, .cfg__savebar.ui-savebar--err .ui-savebar__detail { white-space: normal; }
+  /* 存完的那句话（「已存成待应用版本 #N，…」）放不下时折行，不被屏幕切掉；对勾留在第一行字前面。只有「已修改 N 处」不拆
+     The sentence after a save (「已存成待应用版本 #N，…」) wraps when it does not fit instead of being cut by the screen, with the check
+     before its first line; only 已修改 N 处 never splits */
+  .cfg__savebar:not(.ui-savebar--err) .ui-savebar__status:has(> .ui-check) { align-items: flex-start; }
+  .cfg__savebar:not(.ui-savebar--err) .ui-savebar__status:has(> .ui-check) > .ui-check { flex: 0 0 auto; margin-top: calc((var(--t-3) * var(--lh-base) - var(--size-icon)) / 2); }
+  .cfg__savebar:not(.ui-savebar--err) .ui-savebar__status:has(> .ui-check) > .ui-savebar__detail { flex: 1 1 auto; white-space: normal; }
   /* 手机上贴着屏幕左边：只退回内边距，留下 1px 边框，键盘焦点框不被屏幕切掉 / On phones it sits at the screen's left edge: only the padding is pulled
      back, keeping the 1px border, so the keyboard focus ring is not cut off by the screen */
   .cfg__savebar .savebar__acts { margin-left: calc(var(--s-3) * -1); }

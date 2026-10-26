@@ -130,6 +130,79 @@ export const SETTING_SECTIONS: SettingSection[] = [
   },
 ]
 
+// 内核报来的设置名在页面上叫什么：表单里的名字去掉括号里的单位；表单里没有、只能在 JSON 里改的，照「TCP 错误阈值」那样起名，
+// 再没有的照写内核的名字
+// What a setting name the kernel reports is called on the page: the form's label without the bracketed unit; one the form lacks
+// (editable in JSON only) is named like TCP 错误阈值, and anything else keeps the kernel's name
+const JSON_ONLY_NAMES: Record<string, string> = { doh_health_check_error_threshold: 'DoH 错误阈值' }
+const FORM_FIELDS = SETTING_SECTIONS.flatMap((section) => section.fields)
+export function settingName(key: string): string {
+  const field = FORM_FIELDS.find((item) => item.key === key)
+  return field ? field.label.replace(/\s*\([^)]*\)$/, '') : JSON_ONLY_NAMES[key] ?? key
+}
+
+// 一串设置名，放在句末冒号后面用（名字可能以字母开头、结尾，挨着标点就不用另外隔空格）：
+// - 按表单里的先后排，和人在表单里看到的一样；
+// - 自动限流那几项离开分组标题就看不懂（「延迟阈值」「调整间隔」），合成一项「自动限流」；
+// - 提示条里三个以内都写出来，再多写前三个和一共几项；确认框（all）全写
+// A run of setting names, for use after a colon at the end of a sentence (a name may start or end with a letter, and next to
+// punctuation it needs no extra space):
+// - in the form's order, as the reader sees them there;
+// - the flow-control ones mean nothing without their group title (延迟阈值, 调整间隔), so they merge into one 自动限流;
+// - a notice writes up to three, beyond that the first three and how many in all; the confirm dialog (all) writes every one
+// 名字里不断行：空格换成不换行空格，连字符后面接一个词连接符（手机上「DoQ 0-RTT」曾被拆成「DoQ 0-」「RTT」）
+// A name never breaks inside: spaces become no-break spaces and a word joiner follows each hyphen (on a phone 「DoQ 0-RTT」 was split
+// into 「DoQ 0-」 and 「RTT」)
+const glueName = (name: string) => name.replace(/ /g, '\u00a0').replace(/-/g, '-\u2060')
+export function settingNames(keys: readonly string[], options: { all?: boolean } = {}): string {
+  const order = (key: string) => { const at = FORM_FIELDS.findIndex((field) => field.key === key); return at < 0 ? FORM_FIELDS.length : at }
+  const names = [...new Set([...keys].sort((a, b) => order(a) - order(b)).map((key) => (key.startsWith('flow_control_') ? '自动限流' : settingName(key))))]
+    // 一个名字里不断行（手机上「UDP」和「监听地址」曾被拆到两行） / A name never breaks inside (on a phone 「UDP」 and 「监听地址」 were split across lines)
+    .map(glueName)
+  return names.length > 3 && !options.all ? `${names.slice(0, 3).join('、')}等\u00a0${names.length}\u00a0项` : names.join('、')
+}
+
+// 退回时说清每一项改回什么：「UDP 监听地址 0.0.0.0:53」「DoQ 保活间隔 15000 毫秒」；没写的照表单说默认是什么——有默认值的
+// 「默认 10000 条」「默认开启」，没有的照占位说「自动」「留空」。自动限流合成一项：开关在名单里时说开关改回什么，只有几项数值时
+// 说「自动限流的几项数值」。名字里、「数字 单位」里不断行；名字和值是一个读的单位，也粘在一起，只有长的值（路径、超过
+// 16 个字符）可以和名字分开，整段换到下一行，不从中间拆
+// When rolling back, say what each setting goes back to: 「UDP 监听地址 0.0.0.0:53」「DoQ 保活间隔 15000 毫秒」; an unset one says what
+// the default is, as the form does — 「默认 10000 条」「默认开启」 where there is one, otherwise the placeholder's 「自动」「留空」. Flow
+// control merges into one: with its switch in the list it says what the switch goes back to, with only numbers 「自动限流的几项数值」.
+// No break inside a name or a 「number unit」; name and value are read as one and stay together too, and only a long value (a
+// path, over 16 characters) may part from its name, moving down whole instead of splitting
+export function settingValues(values: Record<string, unknown>): string {
+  const glue = (text: string) => text.replace(/ /g, '\u00a0')
+  const order = (key: string) => { const at = FORM_FIELDS.findIndex((field) => field.key === key); return at < 0 ? FORM_FIELDS.length : at }
+  const switchWord = (on: boolean) => (on ? '开启' : '关闭')
+  const valueOf = (key: string, value: unknown): string => {
+    const field = FORM_FIELDS.find((item) => item.key === key)
+    const unit = field?.unit ? ` ${field.unit}` : ''
+    if (value === null || value === undefined) {
+      if (!field) return '默认值'
+      if (typeof field.default === 'boolean') return `默认${switchWord(field.default)}`
+      if (field.default !== undefined) return glue(`默认 ${String(field.default)}${unit}`)
+      return field.placeholder?.includes('自动') ? '自动' : '留空'
+    }
+    return typeof value === 'boolean' ? switchWord(value) : glue(`${String(value)}${unit}`)
+  }
+  const keys = Object.keys(values).sort((a, b) => order(a) - order(b))
+  const items: string[] = []
+  let flowDone = false
+  for (const key of keys) {
+    if (key.startsWith('flow_control_')) {
+      if (flowDone) continue
+      flowDone = true
+      const enabled = values.flow_control_enabled
+      items.push('flow_control_enabled' in values ? `自动限流\u00a0${valueOf('flow_control_enabled', enabled)}` : '自动限流的几项数值')
+      continue
+    }
+    const value = valueOf(key, values[key])
+    items.push(`${glueName(settingName(key))}${value.includes('/') || value.length > 16 ? ' ' : '\u00a0'}${value}`)
+  }
+  return items.join('、')
+}
+
 // 高级规则的表单也说面板的话：和规则卡片的读法、普通规则的条件同一套叫法；内核的写法留在 JSON 里
 // The advanced-rule form speaks the panel's words too: the same names as the rule reading and plain conditions; the kernel's spelling stays in the JSON tab
 export const MATCH_OPERATORS: SelectOption[] = [

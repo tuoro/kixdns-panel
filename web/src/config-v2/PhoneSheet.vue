@@ -2,9 +2,9 @@
 import { X } from '@lucide/vue'
 import { onMounted, ref } from 'vue'
 
-// 手机上的编辑弹层：贴着屏幕底边，标题、内容、「完成」。改动当场写进草稿，「完成」、点外面或 Esc 都只是收起。
+// 手机上的编辑弹层：贴着屏幕底边，标题、内容、「完成」。改动当场写进正在编辑的那条规则，「完成」、点外面或 Esc 都只是收起。
 // 只在要编辑时挂上，挂上就打开。
-// The phone edit sheet: pinned to the bottom edge with a title, content and 完成. Edits land in the draft as they are made, so
+// The phone edit sheet: pinned to the bottom edge with a title, content and 完成. Edits land in the rule being edited as they are made, so
 // 完成, a tap outside and Esc all just close it. Mounted only while editing, and opens as it mounts.
 defineProps<{ title: string }>()
 const emit = defineEmits<{ close: [] }>()

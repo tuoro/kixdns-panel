@@ -32,13 +32,27 @@ async fn test_app() -> (TempDir, Router) {
     let web_root = directory.path().join("web");
     std::fs::create_dir(&web_root).unwrap();
     std::fs::write(web_root.join("index.html"), "<main>KixDNS Panel</main>").unwrap();
+    // 假的 systemctl：照目录里的 unit-state 回答，没有就是停着 / A fake systemctl: answers from unit-state in the directory,
+    // stopped when there is none
+    let systemctl = directory.path().join("systemctl");
+    std::fs::write(
+        &systemctl,
+        "#!/bin/sh\ncat \"$(dirname \"$0\")/unit-state\" 2>/dev/null || printf 'ActiveState=inactive\\nSubState=dead\\nMainPID=0\\n'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        &systemctl,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
     let app = build_app(AppSettings {
+        systemctl: Some(systemctl),
         bind: "127.0.0.1:0".parse().unwrap(),
         database_path: directory.path().join("panel.db"),
         config_path,
         control_socket: directory.path().join("admin.sock"),
         service_unit: "kixdns.service".to_owned(),
-        service_helper_socket: "/run/kixdns-panel/control.sock".into(),
+        service_helper_socket: directory.path().join("helper.sock"),
         diagnostic_server: "127.0.0.1:53".parse().unwrap(),
         kernel_repository: "tuoro/kixdns".to_owned(),
         installed_source: None,
@@ -1910,6 +1924,84 @@ fn start_fake_kixdns(directory: &std::path::Path, valid: bool) -> tokio::task::J
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() })
 }
 
+/// 假的 `KixDNS`：报告磁盘上那份配置在用，`restart_pending` 照给出的写（None 时像旧内核一样不写）
+/// A fake `KixDNS` reporting the config on disk as in use, with `restart_pending` as given (left out, as an
+/// older kernel does, when None)
+fn start_fake_kixdns_reporting_restart(
+    directory: &std::path::Path,
+    restart_pending: Option<Value>,
+) -> tokio::task::JoinHandle<()> {
+    use axum::routing::get;
+    let socket = directory.join("admin.sock");
+    let config = directory.join("pipeline.json");
+    let health_dir = directory.to_path_buf();
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let router = Router::new()
+        .route(
+            "/v1/health",
+            get(move || {
+                // 进程号和已运行时长照目录里的文件回答，测试用它们演一个新进程、一段时间过去
+                // The process id and uptime come from files in the directory, so a test can play a new process and time
+                // passing
+                let read = |name: &str, default: u64| {
+                    std::fs::read_to_string(health_dir.join(name)).ok().and_then(|text| text.trim().parse().ok()).unwrap_or(default)
+                };
+                let pid = read("kernel-pid", 1);
+                let body = serde_json::json!({
+                    "protocol_version": 1, "status": "ok", "pid": pid, "version": "test", "upstream_commit": "test",
+                    "patchset": "p0", "started_at_unix": pid * 100, "uptime_seconds": read("kernel-uptime", 60),
+                    "config_generation": 1, "capabilities": [],
+                });
+                async move { axum::Json(body) }
+            }),
+        )
+        .route(
+            "/v1/config/active",
+            get(move || {
+                let mut active = serde_json::json!({
+                    "protocol_version": 1, "generation": 1,
+                    "sha256": crate::digest::sha256_hex(&std::fs::read(&config).unwrap()), "loaded_at_unix": 0,
+                    "reload_sequence": 1, "last_reload": { "success": true, "error": null },
+                });
+                if let Some(pending) = &restart_pending {
+                    active["restart_pending"] = pending.clone();
+                }
+                async move { axum::Json(active) }
+            }),
+        );
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() })
+}
+
+/// 内核报来的「改过、要重启才生效的设置」原样交给配置页；没有、或者旧内核不报时不写这一项
+/// The settings the kernel reports as changed and waiting for a restart reach the config page as they are; with
+/// none, or from an older kernel that does not report them, the field is left out
+#[tokio::test]
+async fn config_runtime_carries_the_settings_waiting_for_a_restart() {
+    let context = authenticated_app().await;
+    let kixdns = start_fake_kixdns_reporting_restart(
+        context.directory.path(),
+        Some(serde_json::json!(["bind_udp", "cache_capacity"])),
+    );
+    let document = get_json(&context, "/api/v1/config").await;
+    assert_eq!(document["runtime"]["status"], "active");
+    assert_eq!(
+        document["runtime"]["restart_pending"],
+        serde_json::json!(["bind_udp", "cache_capacity"])
+    );
+    kixdns.abort();
+    let _ = kixdns.await;
+
+    for reported in [Some(serde_json::json!([])), None] {
+        let _ = std::fs::remove_file(context.directory.path().join("admin.sock"));
+        let kixdns = start_fake_kixdns_reporting_restart(context.directory.path(), reported);
+        let document = get_json(&context, "/api/v1/config").await;
+        assert_eq!(document["runtime"]["status"], "active");
+        assert!(document["runtime"].get("restart_pending").is_none());
+        kixdns.abort();
+        let _ = kixdns.await;
+    }
+}
+
 async fn send_json(context: &AuthenticatedApp, request: Request<Body>) -> (StatusCode, Value) {
     let response = context.app.clone().oneshot(request).await.unwrap();
     let status = response.status();
@@ -2701,4 +2793,417 @@ async fn the_querylog_endpoints_filter_save_settings_and_clear() {
     assert_eq!(cleared["oldest_unix_ms"], Value::Null);
     let page = get_json(&context, "/api/v1/querylog").await;
     assert!(page["items"].as_array().unwrap().is_empty());
+}
+
+/// 假的服务助手：每个请求回「OK」，收到的动作依次记下 / A fake service helper: answers OK to every request and
+/// keeps the actions it received in order
+fn start_fake_helper(
+    directory: &std::path::Path,
+) -> (
+    tokio::task::JoinHandle<()>,
+    std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::UnixListener::bind(directory.join("helper.sock")).unwrap();
+    let actions = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = std::sync::Arc::clone(&actions);
+    let task = tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut action = String::new();
+            stream.read_to_string(&mut action).await.unwrap();
+            seen.lock().unwrap().push(action);
+            stream.write_all(b"OK\n").await.unwrap();
+        }
+    });
+    (task, actions)
+}
+
+async fn stop_fake_kixdns(directory: &std::path::Path, kixdns: tokio::task::JoinHandle<()>) {
+    kixdns.abort();
+    let _ = kixdns.await;
+    let _ = std::fs::remove_file(directory.join("admin.sock"));
+}
+
+async fn post_empty(context: &AuthenticatedApp, path: &str) -> (StatusCode, Value) {
+    let request = Request::post(path)
+        .header(COOKIE, context.cookies.clone())
+        .header("x-csrf-token", context.csrf_token.clone())
+        .body(Body::empty())
+        .unwrap();
+    send_json(context, request).await
+}
+
+async fn post_json(context: &AuthenticatedApp, path: &str, body: &Value) -> (StatusCode, Value) {
+    let request = Request::post(path)
+        .header(CONTENT_TYPE, "application/json")
+        .header(COOKIE, context.cookies.clone())
+        .header("x-csrf-token", context.csrf_token.clone())
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    send_json(context, request).await
+}
+
+fn write_pipeline(directory: &std::path::Path, content: &Value) {
+    std::fs::write(
+        directory.join("pipeline.json"),
+        serde_json::to_vec_pretty(content).unwrap(),
+    )
+    .unwrap();
+}
+
+fn set_unit(directory: &std::path::Path, active: &str, sub: &str) {
+    std::fs::write(
+        directory.join("unit-state"),
+        format!("ActiveState={active}\nSubState={sub}\nMainPID=0\n"),
+    )
+    .unwrap();
+}
+
+/// 让假 `KixDNS` 当一个稳稳跑着的进程被看见两次（隔 4 秒） / Have the fake `KixDNS` seen twice as one steadily running process
+/// (4 seconds apart)
+async fn seen_steady(context: &AuthenticatedApp, directory: &std::path::Path) {
+    std::fs::write(directory.join("kernel-uptime"), "60").unwrap();
+    get_json(context, "/api/v1/config").await;
+    std::fs::write(directory.join("kernel-uptime"), "64").unwrap();
+    get_json(context, "/api/v1/config").await;
+}
+
+/// 改了监听地址、重启后起不来：退回只改正式文件里那一项、别的修改留着，写进文件再重启；再按一次就没有可退的了
+/// A listen address changed and the restart does not come up: the rollback changes only that setting in the formal
+/// file, keeps every other edit, writes the file and restarts; pressed again there is nothing left to put back
+#[tokio::test]
+async fn a_restart_that_does_not_come_back_can_put_the_changed_settings_back() {
+    let context = authenticated_app().await;
+    let directory = context.directory.path();
+    let (_helper, actions) = start_fake_helper(directory);
+    set_unit(directory, "active", "running");
+    write_pipeline(
+        directory,
+        &serde_json::json!({ "settings": { "bind_udp": "0.0.0.0:53" }, "pipelines": [] }),
+    );
+    let kixdns = start_fake_kixdns_reporting_restart(directory, Some(serde_json::json!([])));
+    seen_steady(&context, directory).await;
+    stop_fake_kixdns(directory, kixdns).await;
+    write_pipeline(
+        directory,
+        &serde_json::json!({ "settings": { "bind_udp": "0.0.0.0:5300", "min_ttl": 30 }, "pipelines": [] }),
+    );
+    let kixdns =
+        start_fake_kixdns_reporting_restart(directory, Some(serde_json::json!(["bind_udp"])));
+    get_json(&context, "/api/v1/config").await;
+    // KixDNS 在跑时没有可退的 / Nothing to put back while KixDNS runs
+    let (status, _) = post_empty(&context, "/api/v1/config/restart-rollback").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    // 新进程绑不上新地址，systemd 在重试 / The new process cannot bind the new address and systemd retries
+    stop_fake_kixdns(directory, kixdns).await;
+    set_unit(directory, "activating", "auto-restart");
+    let document = get_json(&context, "/api/v1/config").await;
+    assert_eq!(
+        document["runtime"]["restart_rollback"],
+        serde_json::json!({ "bind_udp": "0.0.0.0:53" })
+    );
+    let service = get_json(&context, "/api/v1/service").await;
+    assert_eq!(service["did_not_come_up"], true);
+    // 服务状态带着同一份出路，各页不用读概览也知道 / The service state carries the same way out, so pages know it without
+    // the overview
+    assert_eq!(
+        service["restart_rollback"],
+        serde_json::json!({ "bind_udp": "0.0.0.0:53" })
+    );
+    assert!(service.get("pending_writable").is_none());
+    // 能退回时不写进配置文件：页面这时不给那个按钮 / No write into the file while a rollback is on offer: the page does not
+    // offer that button then
+    let (status, refused) = post_json(
+        &context,
+        "/api/v1/config/restart-with-pending",
+        &serde_json::json!({ "version_id": 1 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(
+        refused["error"]["message"],
+        "没有写进配置文件：现在可以退回原来的设置"
+    );
+
+    let (status, payload) = post_empty(&context, "/api/v1/config/restart-rollback").await;
+    assert_eq!(status, StatusCode::OK, "{payload}");
+    assert_eq!(actions.lock().unwrap().as_slice(), ["restart"]);
+    let written: Value =
+        serde_json::from_slice(&std::fs::read(directory.join("pipeline.json")).unwrap()).unwrap();
+    assert_eq!(
+        written["settings"],
+        serde_json::json!({ "bind_udp": "0.0.0.0:53", "min_ttl": 30 })
+    );
+    let document = get_json(&context, "/api/v1/config").await;
+    assert_eq!(document["pending"]["version_id"], payload["version_id"]);
+    // 退回写下的那一版：页面据此不报编号 / The version the rollback wrote: pages give no number for it by this
+    assert_eq!(document["pending"]["from_rollback"], "settings");
+    let (status, _) = post_empty(&context, "/api/v1/config/restart-rollback").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    // 退回以后还是起不来：退回存的那一版已经在配置文件里，不用再写 / Still down after the rollback: the version it stored is
+    // in the config file already, with nothing more to write
+    assert_eq!(document["runtime"]["did_not_come_up"], true);
+    assert!(document["runtime"].get("pending_writable").is_none());
+    let (status, refused) = post_json(
+        &context,
+        "/api/v1/config/restart-with-pending",
+        &serde_json::json!({ "version_id": payload["version_id"] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(
+        refused["error"]["message"],
+        format!("版本 #{} 已经在配置文件里了", payload["version_id"])
+    );
+}
+
+/// 一次新的启动、重启是新的尝试：它还在加载（服务 active、连不上）时不提上一次的起不来，退回也不接受；
+/// 下一次 systemd 重试被看见时才又给出
+/// A new start or restart is a new attempt: while it loads (service active, unreachable) the last failure is not
+/// raised and a rollback is refused; it is offered again only once the next systemd retry is seen
+#[tokio::test]
+async fn a_new_attempt_does_not_inherit_the_last_failure() {
+    let context = authenticated_app().await;
+    let directory = context.directory.path();
+    let (_helper, _actions) = start_fake_helper(directory);
+    set_unit(directory, "active", "running");
+    write_pipeline(
+        directory,
+        &serde_json::json!({ "settings": {}, "pipelines": [] }),
+    );
+    let kixdns = start_fake_kixdns_reporting_restart(directory, Some(serde_json::json!([])));
+    seen_steady(&context, directory).await;
+    stop_fake_kixdns(directory, kixdns).await;
+    write_pipeline(
+        directory,
+        &serde_json::json!({ "settings": { "cache_capacity": 30000 }, "pipelines": [] }),
+    );
+    let kixdns =
+        start_fake_kixdns_reporting_restart(directory, Some(serde_json::json!(["cache_capacity"])));
+    get_json(&context, "/api/v1/config").await;
+    stop_fake_kixdns(directory, kixdns).await;
+    set_unit(directory, "activating", "auto-restart");
+    let document = get_json(&context, "/api/v1/config").await;
+    assert_eq!(
+        document["runtime"]["restart_rollback"],
+        serde_json::json!({ "cache_capacity": null })
+    );
+
+    // 占端口的程序停了，再重启一次：新进程还在加载 / The program holding the port stopped and it is restarted once more:
+    // the new process is still loading
+    set_unit(directory, "active", "running");
+    post_empty(&context, "/api/v1/service/restart").await;
+    let document = get_json(&context, "/api/v1/config").await;
+    assert!(document["runtime"].get("restart_rollback").is_none());
+    assert!(
+        get_json(&context, "/api/v1/service")
+            .await
+            .get("did_not_come_up")
+            .is_none()
+    );
+    let (status, _) = post_empty(&context, "/api/v1/config/restart-rollback").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    // 下一次重试被看见：又起不来了 / The next retry is seen: it failed again
+    set_unit(directory, "activating", "auto-restart");
+    let document = get_json(&context, "/api/v1/config").await;
+    assert_eq!(
+        document["runtime"]["restart_rollback"],
+        serde_json::json!({ "cache_capacity": null })
+    );
+}
+
+/// 起不来时存下的待应用版本没校验过：不写进正式文件，改好同样几项另存成新的待应用版本，等 `KixDNS` 回来再校验
+/// A pending version saved while it is down was never checked: it is not written to the formal file; the same settings
+/// are changed in it and it is stored as a new pending version, checked once `KixDNS` is back
+#[tokio::test]
+async fn the_rollback_keeps_an_unchecked_pending_version_out_of_the_formal_file() {
+    let context = authenticated_app().await;
+    let directory = context.directory.path();
+    let (_helper, _actions) = start_fake_helper(directory);
+    set_unit(directory, "active", "running");
+    write_pipeline(
+        directory,
+        &serde_json::json!({ "settings": {}, "pipelines": [] }),
+    );
+    let kixdns = start_fake_kixdns_reporting_restart(directory, Some(serde_json::json!([])));
+    seen_steady(&context, directory).await;
+    stop_fake_kixdns(directory, kixdns).await;
+    write_pipeline(
+        directory,
+        &serde_json::json!({ "settings": { "cache_capacity": 30000 }, "pipelines": [] }),
+    );
+    let kixdns =
+        start_fake_kixdns_reporting_restart(directory, Some(serde_json::json!(["cache_capacity"])));
+    get_json(&context, "/api/v1/config").await;
+    stop_fake_kixdns(directory, kixdns).await;
+    set_unit(directory, "activating", "auto-restart");
+    let waiting = save_pending(&context, "edited-while-down", "起不来时改的").await;
+
+    let (status, payload) = post_empty(&context, "/api/v1/config/restart-rollback").await;
+    assert_eq!(status, StatusCode::OK, "{payload}");
+    // 正式文件是原来那份退回这一项，没有待应用版本里的修改 / The formal file is the previous one with this setting put
+    // back, without the pending version's edits
+    let written: Value =
+        serde_json::from_slice(&std::fs::read(directory.join("pipeline.json")).unwrap()).unwrap();
+    assert_eq!(
+        written,
+        serde_json::json!({ "settings": {}, "pipelines": [] })
+    );
+    let id = payload["version_id"].as_i64().unwrap();
+    assert!(id > waiting);
+    let version = get_json(&context, &format!("/api/v1/config/versions/{id}")).await;
+    assert_eq!(version["apply_state"], "pending");
+    assert_eq!(
+        version["content"]["pipelines"][0]["id"],
+        "edited-while-down"
+    );
+    assert!(
+        version["content"]["settings"]
+            .get("cache_capacity")
+            .is_none()
+    );
+    // 退回以后还是起不来：带上的修改不给写进配置文件，等 KixDNS 起来再应用 / Still down after the rollback: the carried
+    // edits are not offered for writing into the file, and apply once KixDNS is up
+    let document = get_json(&context, "/api/v1/config").await;
+    assert_eq!(document["runtime"]["did_not_come_up"], true);
+    assert_eq!(document["pending"]["version_id"], id);
+    assert!(document["runtime"].get("pending_writable").is_none());
+    let (status, refused) = post_json(
+        &context,
+        "/api/v1/config/restart-with-pending",
+        &serde_json::json!({ "version_id": id }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(
+        refused["error"]["message"],
+        "没有写进配置文件：退回时带上的修改等 KixDNS 起来再应用"
+    );
+    assert_eq!(document["pending"]["from_rollback"], "settings_and_pending");
+    // 删掉带上的那一版，再存一版：编号被复用，内容不同，照常可以写进去，也不算退回写下的 / Delete the carried version and save
+    // another: the id is reused with different content, so it can be written in as usual and is not taken for the rollback's
+    let request = Request::delete(format!("/api/v1/config/versions/{id}"))
+        .header(CONTENT_TYPE, "application/json")
+        .header(COOKIE, context.cookies.clone())
+        .header("x-csrf-token", context.csrf_token.clone())
+        .body(Body::from(
+            serde_json::json!({ "expected_sha256": document["sha256"] }).to_string(),
+        ))
+        .unwrap();
+    let (status, deleted) = send_json(&context, request).await;
+    assert_eq!(status, StatusCode::OK, "{deleted}");
+    let later = save_pending(&context, "edited-after-rollback", "退回以后改的").await;
+    assert_eq!(later, id);
+    let document = get_json(&context, "/api/v1/config").await;
+    assert_eq!(document["runtime"]["pending_writable"], later);
+    assert!(document["pending"].get("from_rollback").is_none());
+}
+
+/// 起不来、又没有可退回的设置：配置读到 `did_not_come_up`；把待应用版本写进正式文件再重启，文件就是那一版
+/// Not coming up with nothing to put back: the config read carries `did_not_come_up`; writing the pending version into
+/// the formal file and restarting leaves the file as that version
+#[tokio::test]
+async fn a_pending_version_can_be_written_into_the_file_when_kixdns_does_not_come_up() {
+    let context = authenticated_app().await;
+    let directory = context.directory.path();
+    let (_helper, actions) = start_fake_helper(directory);
+    write_pipeline(
+        directory,
+        &serde_json::json!({ "settings": { "bind_udp": "192.0.2.7:53" }, "pipelines": [] }),
+    );
+    set_unit(directory, "activating", "auto-restart");
+    let document = get_json(&context, "/api/v1/config").await;
+    assert_eq!(document["runtime"]["did_not_come_up"], true);
+    assert!(document["runtime"].get("restart_rollback").is_none());
+    assert!(document["runtime"].get("pending_writable").is_none());
+    let write = |version_id: i64| {
+        let context = &context;
+        async move {
+            post_json(
+                context,
+                "/api/v1/config/restart-with-pending",
+                &serde_json::json!({ "version_id": version_id }),
+            )
+            .await
+        }
+    };
+    // 没有待应用版本时不用这样做 / Needless without a pending version
+    let (status, _) = write(1).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // 写的是页面确认过的那一版：确认以后又存了一版，就不写 / The version the page confirmed is the one written: another
+    // version saved after the confirm stops it
+    let confirmed = save_pending(&context, "first-fix", "起不来时改的").await;
+    let waiting = save_pending(&context, "fixed-while-down", "起不来时改好的").await;
+    let document = get_json(&context, "/api/v1/config").await;
+    assert_eq!(document["runtime"]["pending_writable"], waiting);
+    assert!(document["pending"].get("from_rollback").is_none());
+    let service = get_json(&context, "/api/v1/service").await;
+    assert_eq!(service["pending_writable"], waiting);
+    let (status, refused) = write(confirmed).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(
+        refused["error"]["message"],
+        "没有写进配置文件：待应用的版本已经变了"
+    );
+    let (status, payload) = write(waiting).await;
+    assert_eq!(status, StatusCode::OK, "{payload}");
+    assert_eq!(payload["version_id"], waiting);
+    assert_eq!(actions.lock().unwrap().as_slice(), ["restart"]);
+    let written: Value =
+        serde_json::from_slice(&std::fs::read(directory.join("pipeline.json")).unwrap()).unwrap();
+    assert_eq!(written["pipelines"][0]["id"], "fixed-while-down");
+    // 写进去还是起不来：那一版留在待应用，页面不再给写进去的出路，服务端也不再写一次 / Still down after the write: the
+    // version stays pending, the page no longer offers the write, and the server does not write again
+    let document = get_json(&context, "/api/v1/config").await;
+    assert_eq!(document["pending"]["version_id"], waiting);
+    assert!(document["runtime"].get("pending_writable").is_none());
+    let (status, refused) = write(waiting).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(
+        refused["error"]["message"],
+        format!("版本 #{waiting} 已经在配置文件里了")
+    );
+    assert_eq!(actions.lock().unwrap().as_slice(), ["restart"]);
+    // 停着的服务不算起不来 / A stopped service does not count as not coming up
+    set_unit(directory, "inactive", "dead");
+    let document = get_json(&context, "/api/v1/config").await;
+    assert!(document["runtime"].get("did_not_come_up").is_none());
+}
+
+/// `KixDNS` 还在时重启：先应用还在等的待应用版本，回应里说它生效了没有；没有在等的版本时不带这一项
+/// A restart with `KixDNS` still there applies the version still pending first, and the answer says how it went; with
+/// no version waiting the field is left out
+#[tokio::test]
+async fn a_restart_applies_the_waiting_version_first_and_says_how_it_went() {
+    let context = authenticated_app().await;
+    let directory = context.directory.path();
+    let (_helper, actions) = start_fake_helper(directory);
+    set_unit(directory, "active", "running");
+    let pending = save_pending(&context, "before-restart", "重启前应用").await;
+    let kixdns = start_fake_kixdns(directory, true);
+    let (status, payload) = post_empty(&context, "/api/v1/service/restart").await;
+    assert_eq!(status, StatusCode::OK, "{payload}");
+    assert_eq!(
+        payload["applied_before"],
+        serde_json::json!({ "version_id": pending, "apply_state": "applied" })
+    );
+    assert_eq!(payload["active_state"], "active");
+    let written: Value =
+        serde_json::from_slice(&std::fs::read(directory.join("pipeline.json")).unwrap()).unwrap();
+    assert_eq!(written["pipelines"][0]["id"], "before-restart");
+    let (_, payload) = post_empty(&context, "/api/v1/service/restart").await;
+    assert!(payload.get("applied_before").is_none(), "{payload}");
+    assert_eq!(actions.lock().unwrap().as_slice(), ["restart", "restart"]);
+
+    // 内核不接受那一版：说没有生效 / The kernel refuses that version: it is said not to have taken
+    stop_fake_kixdns(directory, kixdns).await;
+    let refused = save_pending(&context, "refused", "内核不接受").await;
+    let _kixdns = start_fake_kixdns(directory, false);
+    let (_, payload) = post_empty(&context, "/api/v1/service/restart").await;
+    assert_eq!(
+        payload["applied_before"],
+        serde_json::json!({ "version_id": refused, "apply_state": "failed" })
+    );
 }

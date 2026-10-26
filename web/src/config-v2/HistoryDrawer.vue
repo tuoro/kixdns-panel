@@ -14,7 +14,7 @@ import { readConfig } from '../config-model/document'
 import { actorName, errorMessage, formatVersionTime } from '../utils'
 import RuleText from './RuleText.vue'
 import { appliedModel, unsaved } from './store'
-import { bulkDeleting, currentVersionId, deferSave, deleteVersion, saveInFlight, whenDraftSettles, deleteVersions, deleting, failureCause, friendlyRuntimeError, pendingWhen, restoreVersion, restoring, versionDetail, versions } from './useConfigDocument'
+import { bulkDeleting, currentVersionId, deferSave, deleteVersion, saveInFlight, whenSettledOrLocked, refuseWhileLocked, deleteVersions, deleting, failureCause, friendlyRuntimeError, pendingAfter, restoreVersion, sayNotTaken, restoring, versionDetail, versions } from './useConfigDocument'
 // 关上后焦点回到打开它的控件 / Focus returns to the opener on close
 useReturnFocus()
 
@@ -39,6 +39,8 @@ let slowTimer: ReturnType<typeof setTimeout> | undefined
 onBeforeUnmount(() => clearTimeout(slowTimer))
 // 有哪个版本正在恢复或删除时，菜单里的操作都停一停 / While any version is being restored or deleted the menu actions wait
 // 配置页正在保存时也算忙：恢复会和那次保存撞上，变成「别处改过了」 / A save running on the config page counts as busy too: a restore would collide with it and read as 别处改过了
+// 回应丢了的那次写入还没核对时按钮照常在，按了说一句为什么不做（见 restore、remove），和「查看修改」里的保存一样 / While a lost write is
+// unchecked the buttons stay and a press says why nothing happens (see restore, remove), as the save in 查看修改 does
 const busy = computed(() => restoring.value !== null || deleting.value !== null || bulkDeleting.value || saveInFlight.value)
 
 const isCurrent = (v: ConfigVersion) => v.id === currentVersionId.value
@@ -70,10 +72,11 @@ async function openDiff(v: ConfigVersion): Promise<void> {
 }
 function closeDiff(): void { diffDialog.value?.close(); preview.value = null; blocks.value = null }
 async function restore(v: ConfigVersion): Promise<void> {
+  if (refuseWhileLocked(`恢复版本 #${v.id}`)) return
   const ok = await confirm.ask({
     title: `恢复为版本 #${v.id}`,
     // KixDNS 停着或连不上时恢复出来的新版本先存成待应用，和恢复后的提示说的一样 / With KixDNS stopped or unreachable the restored version is stored as pending, as the toast after it says
-    body: `${unsaved.value ? '没保存的修改会丢失。' : ''}会用版本 #${v.id} 的内容生成一个新版本，${deferSave.value ? `${pendingWhen()}自动应用` : '并立即应用'}；现在这一版留在历史里，随时可以再恢复。`,
+    body: `${unsaved.value ? '没保存的修改会丢失。' : ''}会用版本 #${v.id} 的内容生成一个新版本，${deferSave.value ? `${pendingAfter()}` : '并立即应用'}；现在这一版留在历史里，随时可以再恢复。`,
     confirmLabel: `恢复为版本 #${v.id}`,
     // 会丢掉草稿时按会丢东西处理：焦点放在取消上 / When it drops the draft it is treated as losing something: focus starts on cancel
     destructive: unsaved.value,
@@ -83,23 +86,34 @@ async function restore(v: ConfigVersion): Promise<void> {
   // 确认框开着的时候配置页开始了保存（立即更新下好以后直接存）：等它做完、读回新的那份再恢复，不和它撞成「别处改过了」
   // A save began on the config page while the confirm was open (立即更新 saving as it lands): the restore waits for it and its re-read, rather than collide
   // with it as 别处改过了
-  await whenDraftSettles()
+  // 那次保存的回应丢了、页面锁住：不恢复，说一句（不等核对，那时人可能已经走了） / That save lost its answer and the page locked: no restore, and a
+  // line says why (no waiting for the check, by which time the user may have left)
+  await whenSettledOrLocked()
+  if (refuseWhileLocked(`恢复版本 #${v.id}`)) return
   // 恢复途中退出登录或会话过期：结果不再报（和保存途中退出一样），登录页上不冒出配置页的提示
   // Signed out or expired mid-restore: the outcome is not reported (as with a save), so no config-page toast appears on the login page
   const session = useSession()
   try {
     const r = await restoreVersion(v.id)
-    if (session.authenticated.value) toast.success(r.state === 'pending' ? `版本\u00a0#${v.id}\u00a0的内容\u200b存成了待应用版本\u00a0#${r.versionId}，${pendingWhen()}自\u2060动\u2060应\u2060用` : `已恢复为版本 #${v.id} 的内容，当前版本\u00a0#${r.versionId}`)
+    // 被拒：那一版已经存下、没有生效，原因由提示条说 / Refused: that version is stored and did not take, and the notice gives the cause
+    if (!session.authenticated.value) return
+    if (r.state === 'failed') sayNotTaken(`版本\u00a0#${v.id}\u00a0的内容\u200b存成了版本\u00a0#${r.versionId}，没有生效`)
+    else toast.success(r.state === 'pending' ? `版本\u00a0#${v.id}\u00a0的内容\u200b存成了待应用版本\u00a0#${r.versionId}，${pendingAfter()}` : `已恢复为版本 #${v.id} 的内容，当前版本\u00a0#${r.versionId}`)
   } catch (error) {
-    if (session.authenticated.value) toast.error(`没有恢复版本 #${v.id}：${friendlyRuntimeError(error)}`)
+    // 原因照「没有生效」那几处的说法（校验没过说成「没有通过 KixDNS 的校验」） / The cause as the 没有生效 messages put it (a failed
+    // check reads 没有通过 KixDNS 的校验)
+    if (session.authenticated.value) toast.error(`没有恢复版本 #${v.id}：${failureCause(friendlyRuntimeError(error))}`)
   }
 }
 async function remove(v: ConfigVersion): Promise<void> {
   if (isCurrent(v)) { toast.error('正在用的版本不能删除：先恢复别的版本'); return }
+  if (refuseWhileLocked(`删除版本 #${v.id}`)) return
   const ok = await confirm.ask({ title: `删除配置版本 #${v.id}`, body: '删除后找不回来。当前生效的配置不受影响。', confirmLabel: '删除这个版本', items: [`#${v.id} · ${v.message || '未填写备注'}`], destructive: true })
   if (!ok) return
-  // 和恢复一样，等配置页正在做的保存做完 / As with a restore, wait for a save under way on the config page
-  await whenDraftSettles()
+  // 和恢复一样，等配置页正在做的保存做完，页面锁住就不删 / As with a restore, wait for a save under way on the config page, and delete
+  // nothing once the page locks
+  await whenSettledOrLocked()
+  if (refuseWhileLocked(`删除版本 #${v.id}`)) return
   try {
     await deleteVersion(v)
     toast.success(`配置版本 #${v.id} 已删除`)
@@ -110,9 +124,11 @@ async function remove(v: ConfigVersion): Promise<void> {
 }
 async function removePicked(): Promise<void> {
   const list = versions.value.filter((v) => picked.value.includes(v.id))
+  if (refuseWhileLocked('删除所选版本')) return
   const ok = await confirm.ask({ title: `删除 ${list.length} 个历史版本`, body: '删除后找不回来。当前生效的配置不受影响。', confirmLabel: `删除 ${list.length} 个版本`, items: list.map((v) => `#${v.id} · ${v.message || '未填写备注'}`), destructive: true })
   if (!ok) return
-  await whenDraftSettles()
+  await whenSettledOrLocked()
+  if (refuseWhileLocked('删除所选版本')) return
   try {
     const count = await deleteVersions(list.map((v) => v.id))
     toast.success(`已删除 ${count} 个配置版本`)
