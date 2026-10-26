@@ -26,7 +26,7 @@ import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, discardOnLeave, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, bulkDeleting, busy, checkPending, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, stayedDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, beginOwnWrite, readAfterOwnWrite, readFresh, readQuietly, restartPending, restartRollback, runtimeDown, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse } from '../config-v2/useConfigDocument'
+import { applyBusy, bulkDeleting, busy, checkFirst, checkInstead, checkPending, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, stayedDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, beginOwnWrite, readAfterOwnWrite, readFresh, readQuietly, restartPending, restartRollback, runtimeDown, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse } from '../config-v2/useConfigDocument'
 import { dismissBlocklistToasts } from '../config-v2/useBlocklists'
 import { carryUpdate, refreshLanded, returnedToPage } from '../config-v2/updateCarry'
 import { useHelp } from '../composables/useHelp'
@@ -441,6 +441,10 @@ function downloadJson(): void {
   URL.revokeObjectURL(a.href)
 }
 async function reload(ask = true): Promise<void> {
+  // 回应丢了的那次写入还没核对：「重试」「重新读取」就是去核对，结果由核对说，不问要不要丢掉修改（见 checkInstead）
+  // A lost write is still unchecked: 重试 and 重新读取 are the check, which tells the result, and nothing asks to drop the edits (see
+  // checkInstead)
+  if (await checkInstead()) return
   if (ask && unsaved.value && !(await confirm.ask({ title: '放弃未保存的修改', body: '重新读取会丢掉没保存的修改。', confirmLabel: '放弃修改并重新读取', destructive: true }))) return
   editor.value = null
   ui.mode = 'form'
@@ -533,8 +537,14 @@ onMounted(() => {
   // 这次进来的那次读结束了（成功、失败都算）：红色提示交棒要等它，见下面 dismissRefused 那段 / This mount's read is over (landed or
   // failed): the red toast's hand-over waits for it, see dismissRefused below
   const readOver = () => { mountReadOver.value = true }
-  if (keep && conflict.value) { void refreshRuntime().catch(() => undefined).then(readOver); returnedToPage() }
-  else if (!busy.value) void load(keep ? { quiet: true, keepDraft: true } : { returning: true }).then(readOver, readOver)
+  // 回应丢了的那次写入还没核对：先核对，核对出存上了或核对不了，这次读交给它（见 checkFirst）；有没有冲突照核对以后的说
+  // A lost write still unchecked: check it first, and when it was found landed or could not be checked, leave this read to it (see
+  // checkFirst); whether there is a conflict is judged after the check
+  const read = (): Promise<unknown> | undefined => {
+    if (keep && conflict.value) { returnedToPage(); return refreshRuntime().catch(() => undefined) }
+    return load(keep ? { quiet: true, keepDraft: true } : { returning: true })
+  }
+  if ((keep && conflict.value) || !busy.value) void checkFirst().then((checked) => (checked ? undefined : read())).then(readOver, readOver)
   window.addEventListener('beforeunload', beforeUnload)
 })
 const beforeUnload = (e: BeforeUnloadEvent) => { if (unsaved.value) { e.preventDefault(); e.returnValue = '' } }

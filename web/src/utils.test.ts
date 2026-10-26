@@ -120,10 +120,18 @@ describe('hyphenRuns', () => {
     expect(glued('「bad.txt」的，删掉这个列表再保存')).toEqual(['「bad.txt」的，'])
     // 按钮名不单独落到最后一行 / The button name never sits alone on the last line
     expect(glued('新的一份存不上：这份配置在别处改过了；先重新读取，再点一次「全部更新」')).toEqual(['这份配置', '再点一次「全部更新」'])
-    // 「这份配置」「停了」连成一个词：服务端原话、面板自己的说法在窄屏上不切在词中间 / 这份配置 and 停了 stay whole, so the server's
+    // 「这份配置」「新配置」「停了」连成一个词：服务端原话、面板自己的说法在窄屏上不切在词中间 / 这份配置, 新配置 and 停了 stay whole, so the server's
     // words and the panel's own never cut mid-word on a narrow screen
     expect(glued('KixDNS 没有接受这份配置：upstream "fast" did not answer the health check')).toEqual(['KixDNS 没', '这份配置：'])
-    expect(glued('KixDNS 在确认新配置前停了')).toEqual(['KixDNS 在', '停了'])
+    expect(glued('KixDNS 在确认新配置前停了')).toEqual(['KixDNS 在', '新配置', '停了'])
+    expect(glued('KixDNS 没有及时确认新配置。回到配置页可以重试应用')).toEqual(['KixDNS 没', '新配置。'])
+    // 英文原话里的「词 + 数字」不拆开，两组之间的空格照样能断 / A word and its number in English wording stay together, and the space
+    // between two such pairs still breaks
+    expect(glued('读不懂 KixDNS 的回应：expected value at line 1 column 1')).toEqual(['读不懂 KixDNS 的回应：', 'line 1', 'column 1'])
+    // 连字符词照旧整个连住，不被「词 + 数字」抢走；很长的数字不连 / A hyphenated word still stays whole rather than being taken by word +
+    // number; a very long number is not glued
+    expect(glued('timeout 5-second step')).toEqual(['5-second'])
+    expect(glued('serial 12345678901234')).toEqual([])
     expect(glued('配置还没有应用，KixDNS\u00a0启动后会读这份文件')).toEqual(['还没有应用，', 'KixDNS\u00a0启', '这份文件'])
     // 版本号带着后面的状态词，KixDNS 带着后面一个字 / The version number keeps its state word, and KixDNS the character after it
     expect(glued('新下载的拦截列表已经存上了：版本 #20 已生效')).toEqual(['版本 #20 已生效'])

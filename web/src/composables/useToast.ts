@@ -47,6 +47,12 @@ function dismiss(id: number): void {
   messages.value = messages.value.filter((message) => message.id !== id)
 }
 
+// 换掉一条还开着的提示的文字：编号不变，记着它的一方照样能收起它 / Replace the words of a message still showing: the id stays, so whoever
+// holds it can still clear it
+function reword(id: number, message: string): void {
+  messages.value = messages.value.map((item) => (item.id === id ? { ...item, message } : item))
+}
+
 function runUndo(id: number): void {
   const target = messages.value.find((message) => message.id === id)
   target?.undo?.()
@@ -100,6 +106,7 @@ export function useToast() {
   return {
     messages: readonly(messages),
     dismiss,
+    reword,
     runUndo,
     // 返回这一条的 id：发出提示的页面可以在它过时的时候自己收起（比如草稿已经保存）。
     // Returns the id so the page that raised a message can clear it once stale (a draft that has been saved).

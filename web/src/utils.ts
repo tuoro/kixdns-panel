@@ -140,15 +140,17 @@ const HYPHEN_WORD = /「?([$\w.|@^/]*\w-[\w.|@^/-]*[\w^])[」。，：；）]*/g
 // 状态词不拆开，「的」不落到行首，按钮名不单独落到最后一行，KixDNS 不挂在行尾；默认名「「文件名 · 主机」」单独拿出来（name），交给 NameText 按「·」折行。
 // 句尾常见的几个词也整块连住（「写进配置文件」「设置已生效」「修改已生效」「才生效」），末行不只剩一个字（中文不按字数切：「修改已生效」切在四个字会拆开「修改」）。
 // 「，：；。」都和前一个字连住（「「名字」的」后面的也连上）：一长串字被迫硬切时，标点不落到行首。「还没有应用」「没有应用」也是句尾词，
-// 「再点「按钮」」（有没有「一次」都算）整块连住
+// 「再点「按钮」」（有没有「一次」都算）整块连住；「这份配置」「新配置」不从「配」「置」中间切开。英文原话里「词 + 数字」（「line 1」「column 1」）
+// 也连住，数字不单独落到最后一行
 // Common sentence endings are glued whole too (写进配置文件, 设置已生效, 修改已生效, 才生效), so the last line never holds one character alone (Chinese is
 // not cut by count: four characters from the end of 修改已生效 would split 修改). Every 「，：；。」 also stays with the character before it (after a
 // 「「name」的」 too), so a forced break in a long run never puts punctuation at a line's start. 还没有应用 and 没有应用 are sentence
-// endings too, and 「再点「button」」 (with or without 一次) stays whole
+// endings too, and 「再点「button」」 (with or without 一次) stays whole; 这份配置 and 新配置 are never cut between 配 and 置. In English
+// wording a word and its number (line 1, column 1) stay together too, so a number never sits alone on the last line
 // Toasts also glue 「版本 #N」 (with a following 已生效, 已应用, 待应用 or 没有生效), 「「name」的」, 「再点一次「button」」 and 「KixDNS」 with the character after it:
 // no version split from its state, no 的 starting a line, no button name alone on the last line, no KixDNS left at a line end; a default name
 // 「「file · host」」 is taken out on its own (name) for NameText to wrap at 「·」
-const TOAST_GLUE = /(「[^「」]+?\u00a0·\u00a0[^「」]+?」的?)|(版本[ \u00a0]#\d+(?:[ \u00a0](?:已生效|已应用|待应用|没有生效))?[。，：；]*)|(「[^「」]{1,24}」的[，：；。]?)|「?([$\w.|@^/]*\w-[\w.|@^/-]*[\w^])[」。，：；）]*|(再点(?:一次)?「[^「」]{1,12}」)|(KixDNS[ \u00a0][\u4e00-\u9fff])|((?:写进配置文件|(?:设置|修改)已(?:生效|应用)|才生效|一起(?:保存)?生效|还?没有应用|停了|这份(?:配置|文件)|读不懂[ \u00a0]KixDNS[ \u00a0]的回应|没有通过[ \u00a0]KixDNS[ \u00a0]的校验)[。，：；]*)|((?:退回的设置和待应用的修改|退回的设置|待应用的修改)[，：；。]*)|([\u4e00-\u9fff][，：；。])/g
+const TOAST_GLUE = /(「[^「」]+?\u00a0·\u00a0[^「」]+?」的?)|(版本[ \u00a0]#\d+(?:[ \u00a0](?:已生效|已应用|待应用|没有生效))?[。，：；]*)|(「[^「」]{1,24}」的[，：；。]?)|「?([$\w.|@^/]*\w-[\w.|@^/-]*[\w^])[」。，：；）]*|(再点(?:一次)?「[^「」]{1,12}」)|(KixDNS[ \u00a0][\u4e00-\u9fff])|((?:写进配置文件|(?:设置|修改)已(?:生效|应用)|才生效|一起(?:保存)?生效|还?没有应用|停了|这份(?:配置|文件)|新配置|读不懂[ \u00a0]KixDNS[ \u00a0]的回应|没有通过[ \u00a0]KixDNS[ \u00a0]的校验)[。，：；]*)|((?:退回的设置和待应用的修改|退回的设置|待应用的修改)[，：；。]*)|([\u4e00-\u9fff][，：；。])|(\b[A-Za-z]{1,12}[ \u00a0]\d{1,6}(?![\w.-])[，：；。]*)/g
 export type GlueRun = { text: string; glue: boolean; long?: boolean; name?: { name: string; suffix: string }; breakAfter?: boolean; parts?: GlueRun[]; lead?: boolean }
 // 保存条、提示条这类按词换行（keep-all）的短句里，「版本 #N」「之后改的 N 处」整块不拆：只在显示时放进不折行的一块，文字里不加看不见的
 // 字符，复制出来和原文一样 / In short keep-all lines such as the save bar and notices, 「版本 #N」 and 「之后改的 N 处」 never split: they are

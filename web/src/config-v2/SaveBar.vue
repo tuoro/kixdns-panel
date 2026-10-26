@@ -10,7 +10,7 @@ import DraftReviewDialog from './DraftReviewDialog.vue'
 import RuleText from './RuleText.vue'
 import { usePhone, useTightSaveBar } from './phone'
 import { changeCount, dialogEdits, discardWithUndo, editorEdited, model, userPart } from './store'
-import { busy, doc, waitingForBuild, cnameBlocked, pendingVersionId, queued, rereading, saveInFlight, sayBlocked, conflict, deferNote, deferSave, editTouched, elapsed, note, origin, save, saveMessage, stage, validate, validation, verdict } from './useConfigDocument'
+import { busy, doc, waitingForBuild, cnameBlocked, pendingVersionId, queued, rereading, saveInFlight, sayBlocked, conflict, deferNote, deferSave, editTouched, elapsed, note, origin, save, saveBarLost, saveMessage, stage, validate, validation, verdict } from './useConfigDocument'
 
 // 保存条只替草稿说话：有改动才升起来，保存完一会儿就收起。两步：先校验，再写入并热加载；任何一步失败都停住，原因里的规则能点。
 // KixDNS 没启动、连不上、不报能力时只存成待应用版本。Ctrl/Cmd+S 等于点保存。进度和结果都来自 useConfigDocument。
@@ -155,7 +155,7 @@ function discard(): void {
   <Transition name="cfg-savebar">
     <!-- 恢复版本还在读：读回来的会换掉草稿，保存条也先不能按（和下面的列表一样调淡） / A restore is still reading: what comes back replaces the draft, so the bar takes no presses either (dimmed like the list) -->
     <footer v-if="visible" ref="bar" class="ui-savebar cfg__savebar" :inert="rereading || undefined" :aria-busy="rereading || undefined" :class="{ 'ui-savebar--err': draftStage === 'failed' || Boolean(jsonError) || cnameBlocked, 'savebar--wrap': draftStage === 'done' && pending }">
-      <p :key="draftStage === 'failed' ? `f-${note}` : 'state'" ref="statusLine" tabindex="-1" data-focus-landing class="ui-savebar__status" :class="{ 'ui-shake': draftStage === 'failed' }" :role="draftStage === 'failed' || jsonError ? 'alert' : 'status'">
+      <p :key="draftStage === 'failed' ? (saveBarLost ? 'f-lost' : `f-${note}`) : 'state'" ref="statusLine" tabindex="-1" data-focus-landing class="ui-savebar__status" :class="{ 'ui-shake': draftStage === 'failed' }" :role="draftStage === 'failed' || jsonError ? 'alert' : 'status'">
         <template v-if="draftStage === 'done'"><svg class="ui-check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5" /></svg><span class="ui-savebar__detail"><UiDotText :parts="note.split(' · ')" /></span></template>
         <!-- 保存的第 0 步、或者校验之前在等拦截列表合成：都照实写在等它，走秒 / A save's step 0, or a check, waiting for the blocklists' build: both say so, with the time running -->
         <template v-else-if="draftStage === 'building' || (waitingForBuild && draftStage === 'checking')"><span class="ui-spin" aria-hidden="true"></span><span class="ui-savebar__detail"><UiDotText :parts="['等拦截列表合成', ...(elapsed ? [elapsed] : [])]" /></span></template>
