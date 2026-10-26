@@ -21,24 +21,28 @@ export function registerLeaveGuard(ask: Ask, hasPending: () => boolean): () => v
  * Leave without asking (on session expiry): lets the page change right after it pass, and returns whether unsaved work was left behind.
  * With no page registered nothing is recorded, so no agreement lingers
  */
-export function leaveWithoutAsking(): boolean {
+export function leaveWithoutAsking(): false | 'draft' | 'unknown' {
   // 不在页面上、只在内存里的草稿也算：会话过期时它一样留不下来，就此放下；配置页开着、保存还在路上也放下，那次保存的结果不再报
   // A draft held only in memory, away from its page, counts too: it cannot survive the expiry either, so it is let go; so is a save still on its way
   // with the config page open, and its result is no longer reported
+  // 草稿是一次回应丢了、还没核对的保存：存没存上不知道，登录页照实说（unknown） / The draft is a save whose answer was lost and is unchecked:
+  // whether it landed is unknown, and the login page says so (unknown)
+  const unknown = held?.unknown() ?? false
   const heldLost = held?.has() ?? false
   const savingLost = held?.saving() ?? false
   if (heldLost || savingLost) held?.drop()
-  if (!current) return heldLost
-  agreed = true
-  return (pending?.() ?? false) || heldLost || savingLost
+  const lost = current ? (pending?.() ?? false) || heldLost || savingLost : heldLost
+  if (current) agreed = true
+  return lost ? (unknown ? 'unknown' : 'draft') : false
 }
 
 // 页面已经离开、草稿还在内存里（离开配置页时还在保存，或者没保存成功留着）：登记一下，会话过期时知道有它
 // A page already left with its draft still in memory (a save in flight when leaving the config page, or a failed one kept): registered so session expiry knows about it
-let held: { has: () => boolean; saving: () => boolean; drop: () => void; ask: Ask } | null = null
-/** saving：配置页的保存还在路上（不管页面开没开着） / saving: the config page's save is still on its way (whether or not the page is open) */
-export function registerHeldDraft(has: () => boolean, saving: () => boolean, drop: () => void, ask: Ask): void {
-  held = { has, saving, drop, ask }
+let held: { has: () => boolean; saving: () => boolean; unknown: () => boolean; drop: () => void; ask: Ask } | null = null
+/** saving：配置页的保存还在路上（不管页面开没开着）；unknown：草稿是一次回应丢了、还没核对的保存 / saving: the config page's save is still
+ * on its way (whether or not the page is open); unknown: the draft is a save whose answer was lost and is still unchecked */
+export function registerHeldDraft(has: () => boolean, saving: () => boolean, unknown: () => boolean, drop: () => void, ask: Ask): void {
+  held = { has, saving, unknown, drop, ask }
 }
 
 /** 先问登记过的页面；没有登记就直接放行。 / Ask the registered page first; pass straight through when none is registered. */

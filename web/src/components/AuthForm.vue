@@ -25,6 +25,8 @@ const error = ref('')
 // 会话过期被送回来时说为什么；配置页上有没保存的修改时照实说丢了 / Sent back by an expired session: say why, and say plainly when unsaved config edits were lost
 const expiredNote = computed(() => {
   if (isSetup.value || !route.query.expired) return ''
+  // unknown：那份修改是一次回应丢了、还没核对的保存，存没存上不知道 / unknown: those edits were a save whose answer was lost and never checked
+  if (route.query.expired === 'unknown') return '不知道刚才那次配置保存存上没有，没存上的修改没有留下来。登录后回到刚才的页面。'
   return route.query.expired === 'draft' ? '刚才没保存的配置修改没有留下来。登录后回到刚才的页面。' : '登录后回到刚才的页面。'
 })
 

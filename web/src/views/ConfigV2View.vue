@@ -26,7 +26,7 @@ import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, discardOnLeave, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, bulkDeleting, busy, checkFirst, checkInstead, checkPending, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, stayedDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, beginOwnWrite, readAfterOwnWrite, readFresh, readQuietly, restartPending, restartRollback, runtimeDown, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse } from '../config-v2/useConfigDocument'
+import { applyBusy, bulkDeleting, busy, checkFirst, checkInstead, checkPending, checkRunning, dropEditsAfterLost, lostDraftSave, lostWrite, lostWriteWhy, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, stayedDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, beginOwnWrite, readAfterOwnWrite, readFresh, readQuietly, restartPending, restartRollback, runtimeDown, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse } from '../config-v2/useConfigDocument'
 import { dismissBlocklistToasts } from '../config-v2/useBlocklists'
 import { carryUpdate, refreshLanded, returnedToPage } from '../config-v2/updateCarry'
 import { useHelp } from '../composables/useHelp'
@@ -179,6 +179,14 @@ const geoPrefixed = computed(() => [...model.rules, ...model.ruleGroups.flatMap(
 interface Notice { tone: 'err' | 'warn' | 'off'; text: string; detail?: string; links?: Record<string, number>; action?: string; run?: () => void | Promise<void>; down?: boolean; failure?: boolean }
 const notice = computed<Notice | null>(() => {
   // 连不上面板时由顶上的横幅说，这里不复述 / With the panel unreachable the banner says it; no second copy here
+  // 页头来的写入（现在应用、校验并应用、重试应用）回应丢了、还没核对：没有保存条，由这里说不知道；读不到配置时原因跟着它，不另说「读取配置失败」
+  // A write from the header (现在应用, 校验并应用, 重试应用) lost its answer and is unchecked: with no save bar, this says it is unknown;
+  // with the config unreadable the cause goes with it rather than a separate 读取配置失败
+  if (lostWrite.value?.from === 'apply' && doc.value && !panelDown.value) {
+    const unreadable = lostWriteWhy.value === 'unreadable'
+    const cause = loadError.value.replace(/[。.]\s*$/, '')
+    return { tone: 'err', text: `${lostWrite.value.head}。`, detail: !unreadable ? '正在核对' : cause ? `读不到配置：${cause}。读到后会自己核对` : '读不到配置。读到后会自己核对', action: unreadable ? '重试' : undefined, run: () => void reload(true) }
+  }
   if (loadError.value && doc.value && !panelDown.value) return { tone: 'err', text: '读取配置失败，下面是上一次读到的内容。', detail: loadError.value, action: '重试', run: () => void reload(true) }
   // 起不来：多半是改过的设置让它起不来（新的监听地址被占着），退回它们上次正常启动时的值再重启。状态由页头说（「启动失败」），
   // 这里只说原因和出路；草稿有没保存的修改时先保存或放弃：退回改的是存下的那份，不动草稿
@@ -193,7 +201,7 @@ const notice = computed<Notice | null>(() => {
   if (hasApplyFailure.value) {
     const reason = doc.value?.runtime.pending_error || doc.value?.pending?.error || 'KixDNS 没有给出原因。'
     // 草稿有修改时不给「重试应用」：那时保存的是草稿，重试会把草稿当成失败的那个版本发出去 / No retry while the draft has changes: saving then sends the draft, not the version that failed
-    const retry = canApplyNow.value && !unsaved.value && !panelDown.value && !conflict.value
+    const retry = canApplyNow.value && !unsaved.value && !panelDown.value && !conflict.value && !lostWrite.value
     // 重试撞上「别处改过了」：再重试还是撞上，按钮换成重新读取 / A retry that met 别处改过了 would meet it again: the button becomes 重新读取
     const reread = conflict.value && !panelDown.value
     const cause = failureCause(reason).replace(/。$/, '')
@@ -475,6 +483,23 @@ const askLeave = async (purpose?: 'signout'): Promise<boolean> => {
     if (agreed && purpose !== 'signout') agreedDrop = dropEditsAfterSave
     return agreed
   }
+  // 回应丢了的那次保存还没核对：存没存上不知道，不说成「未保存」。之后没再改，不问，草稿留到回来，离开以后由提示说核对的结果；之后又改过，
+  // 只问之后改的。退出登录照实说不再告诉结果
+  // The lost save still unchecked: whether it landed is unknown, so it is not called unsaved. With nothing edited since, nothing is asked:
+  // the draft is kept for the return and a toast tells the check's result away; with later edits only those are asked about. Signing out
+  // says plainly that no result will follow
+  const lost = lostDraftSave()
+  if (lost && purpose === 'signout') {
+    const agreed = await confirm.ask({ title: '放弃这份草稿', body: '刚才那次保存不知道存上没有。退出登录以后不再告诉你结果，没存上的修改也会丢掉。', ...labels, destructive: true })
+    if (agreed) signoutDrop = true
+    return agreed
+  }
+  if (lost && !lost.laterEdits) return true
+  if (lost) {
+    const agreed = await confirm.ask({ title: '放弃之后改的内容', body: '刚才那次保存照常核对；之后改的会丢掉。', ...labels, destructive: true })
+    if (agreed) agreedDrop = () => dropEditsAfterLost(lost.sent)
+    return agreed
+  }
   const agreed = await confirm.ask({ title: '放弃未保存的修改', body: '当前的配置草稿会被丢弃，已经生效的配置不受影\u2060响。', ...labels, destructive: true })
   // 同意了就丢掉，不等回来时重读：「现在应用」还在做时回来不会重读，应用自己的重读又留着修改；在路上的「立即更新」落地时看到的也是干净的草稿，
   // 照没有修改时那样直接生效。等换页真的成了再丢（见下面的 afterEach），没成就留着
@@ -606,7 +631,7 @@ const restarts = () => [restartForSettings, rollbackSettings, writePendingIn].in
 const actingCount = ref(0)
 const actingHere = computed(() => actingCount.value > 0)
 const noticeRestarting = computed(() => restartingKixdns.value && actingHere.value && restarts())
-const noticeHeld = computed(() => applyBusy.value || rereading.value || restartingKixdns.value || startingKixdns.value || (restarts() && (saveInFlight.value || busy.value)))
+const noticeHeld = computed(() => applyBusy.value || rereading.value || (checkRunning.value && notice.value?.action === '重试') || restartingKixdns.value || startingKixdns.value || (restarts() && (saveInFlight.value || busy.value)))
 // 退回期间页面不能改：回来以后整份换上退回后的文件，途中改的会悄悄丢掉（和「重新读取」时一样）
 // The page cannot be edited during a rollback: on return the rolled-back file replaces the page, and edits made meanwhile
 // would be lost silently (as during 重新读取)
@@ -726,8 +751,8 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
         <span v-if="!ready && !loadError" class="sk ui-ph__sk cfg__status-sk"></span>
         <!-- 宽屏：标题下一排事实（状态、配置版本、规则数、上游组数）；手机：一行状态 / Wide: a facts row under the title (state, config version, rule count, upstream groups); phones: one status line -->
         <!-- 没读到配置时宽屏也是这一排，只写状态；版本、规则数、上游组数等读到再写 / Without a config read the wide header keeps this row with the state only; version, rule and group counts wait for the read -->
-        <span v-else-if="!phone && !firstRun" class="ui-facts cfg__facts" :class="{ 'cfg__facts--long': (headerLine.wide?.length ?? 0) > 1, 'cfg__facts--fail': hasApplyFailure }" tabindex="-1" :role="applyBusy || restartingKixdns || startingKixdns ? 'status' : undefined">
-          <span><span class="ui-lbl">状态</span><b><span v-if="applyBusy || ((restartingKixdns || startingKixdns) && !panelDown)" class="ui-spin cfg__spin" aria-hidden="true"></span><span v-else class="ui-dot" :class="headerLine.tone === 'ok' ? '' : `ui-dot--${headerLine.tone}`" aria-hidden="true"></span><UiDotText :parts="headerLine.wide ?? [headerLine.lead ?? `${headerLine.before}${headerLine.version ?? ''}${headerLine.after ?? ''}`]" /><button v-if="headerAction && ready && !applyBusy" class="cfg__head-action" type="button" @click="applyNow">{{ headerAction }}</button><span v-else-if="applyBusy && ready" class="cfg__head-action is-held" aria-hidden="true">现在应用</span><button v-else-if="runtimeStopped && ready && !panelDown && !restartRollback && !startingKixdns" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline cfg__head-start" type="button" :disabled="starting" @click="startKixdns">启动</button></b></span>
+        <span v-else-if="!phone && !firstRun" class="ui-facts cfg__facts" :class="{ 'cfg__facts--long': (headerLine.wide?.length ?? 0) > 1, 'cfg__facts--fail': hasApplyFailure && !lostWrite }" tabindex="-1" :role="applyBusy || restartingKixdns || startingKixdns ? 'status' : undefined">
+          <span><span class="ui-lbl">状态</span><b><span v-if="applyBusy || ((restartingKixdns || startingKixdns) && !panelDown)" class="ui-spin cfg__spin" aria-hidden="true"></span><span v-else class="ui-dot" :class="headerLine.tone === 'ok' ? '' : `ui-dot--${headerLine.tone}`" aria-hidden="true"></span><UiDotText :parts="headerLine.wide ?? [headerLine.lead ?? `${headerLine.before}${headerLine.version ?? ''}${headerLine.after ?? ''}`]" /><button v-if="headerAction && ready && !applyBusy" class="cfg__head-action" type="button" @click="applyNow">{{ headerAction }}</button><span v-else-if="applyBusy && ready" class="cfg__head-action is-held" aria-hidden="true">现在应用</span><button v-else-if="runtimeStopped && ready && !panelDown && !lostWrite && !restartRollback && !startingKixdns" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline cfg__head-start" type="button" :disabled="starting" @click="startKixdns">启动</button></b></span>
           <template v-if="doc">
           <span><span class="ui-lbl">配置版本</span><b>{{ versionLabel }}</b></span>
           <span class="cfg__fact-rules"><span class="ui-lbl">规则</span><b>{{ ruleCount }} 条</b></span>
@@ -739,7 +764,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
           <span v-else class="ui-dot" :class="headerLine.tone === 'ok' ? '' : `ui-dot--${headerLine.tone}`" aria-hidden="true"></span>
           <UiDotText :parts="[headerLine.lead ?? '', `${headerLine.before}${headerLine.version ?? ''}${headerLine.after ?? ''}`].filter(Boolean)" />
           <button v-if="headerAction && ready && !applyBusy" class="cfg__head-action" type="button" @click="applyNow">{{ headerAction }}</button><span v-else-if="applyBusy && ready" class="cfg__head-action is-held" aria-hidden="true">现在应用</span>
-          <button v-else-if="runtimeStopped && ready && !panelDown && !restartRollback && !startingKixdns" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline cfg__head-start" type="button" :disabled="starting" @click="startKixdns">启动</button>
+          <button v-else-if="runtimeStopped && ready && !panelDown && !lostWrite && !restartRollback && !startingKixdns" class="ui-btn ui-btn--secondary ui-btn--sm ui-btn--inline cfg__head-start" type="button" :disabled="starting" @click="startKixdns">启动</button>
         </span>
       </template>
       <template v-if="!firstRun" #actions>

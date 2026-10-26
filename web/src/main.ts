@@ -36,7 +36,7 @@ window.addEventListener(SESSION_EXPIRED_EVENT, () => {
   useConfirm().settle(false)
   useHelp().hide()
   const lost = leaveWithoutAsking()
-  void router.replace({ path: '/login', query: { redirect: route.fullPath, expired: lost ? 'draft' : '1' } }).finally(() => { takeAgreement() })
+  void router.replace({ path: '/login', query: { redirect: route.fullPath, expired: lost || '1' } }).finally(() => { takeAgreement() })
 })
 
 const staleChunks = createStaleChunkRecovery({

@@ -1,10 +1,10 @@
 import { expect, test } from '@playwright/test'
 
 // 提示里退回的叫法：只在这几处折行——标点或空格后、退回的叫法前后、几个连住的词（「一起（保存）生效」「才生效」「停了」「这份配置」「这份文件」「新配置」）和按钮名「再点「…」」前面、文字里原有的零宽断点后；
-// 英文原话里「词 + 数字」中间的空格不算断点；不切进词里，也不撑出去。能断在哪由这里自己定，不从被测的分块推出来。句子照代码的拼法写（带不换行空格和 U+2060）。这里只跑
+// 英文原话里「词 + 数字」中间的空格不算断点，连着括号时可以断在左括号前面；不切进词里，也不撑出去。能断在哪由这里自己定，不从被测的分块推出来。句子照代码的拼法写（带不换行空格和 U+2060）。这里只跑
 // Chromium；WebKit 另用 WebKitGTK 量过（见审计记录）
 // Rollback names in toasts: lines break only here — after punctuation or a space, before or after a rollback name, and before a few
-// glued words (一起（保存）生效, 才生效, 停了, 这份配置, 这份文件, 新配置) and the button name 「再点「…」」, and after a zero-width break already in the text; the space between an English word and its number is no break point; never inside a word and never overflowing. Where a break may
+// glued words (一起（保存）生效, 才生效, 停了, 这份配置, 这份文件, 新配置) and the button name 「再点「…」」, and after a zero-width break already in the text; the space between an English word and its number is no break point, and with a bracket attached a break may fall before the opening one; never inside a word and never overflowing. Where a break may
 // fall is decided here, not derived from the runs under test. The sentences are spelled as the code builds them (with no-break spaces
 // and U+2060). Only Chromium runs here; WebKit was measured separately with WebKitGTK (see the audit notes)
 const SENTENCES = [
@@ -53,6 +53,12 @@ const SENTENCES = [
   '新下载的拦截列表：不知道存上没有，读不到配置。草稿留在配\u2060置\u2060页，读到后会自己核对',
   '不知道待应用的修改应用了没有：读不到配置。读到后会自己核对',
   '不知道重试应用了没有：读不到配置。读到后会自己核对',
+  '不知道配置存上没有：正在核对。草稿留在配\u2060置\u2060页',
+  '不知道版本 #19 应用了没有：正在核对',
+  '新下载的拦截列表：不知道存上没有，正在核对',
+  '新下载的拦截列表：不知道存上没有，读到配置后会自己核对',
+  '重试没有成功。KixDNS 的原话：bind 0.0.0.0:53 failed (os error 98)',
+  '拦截列表没有更新：拉取失败（HTTP 404），过一会儿再试',
 ]
 const WIDTHS = [...Array.from({ length: 111 }, (_, i) => 300 + i * 2), 640, 1024]
 
@@ -83,10 +89,10 @@ test('提示里退回的叫法：只在该断的地方折行，不撑出去', as
         // 可以断的地方 / Where a break may fall
         const allowed = new Set<number>(zw)
         for (const m of text.matchAll(/退回的设置和待应用的修改|退回的设置|待应用的修改/g)) { allowed.add(m.index); allowed.add(m.index + m[0].length) }
-        for (const m of text.matchAll(/一起(?:保存)?生效|才生效|停了|这份(?:配置|文件)|新配置|读不懂 KixDNS 的回应|再点「/g)) allowed.add(m.index)
+        for (const m of text.matchAll(/一起(?:保存)?生效|才生效|停了|这份(?:配置|文件)|新配置|读不懂 KixDNS 的回应|再点「|[（(]\b[A-Za-z]{1,12} \d{1,6}[)）]?(?=[\s，：；。]|$)/g)) allowed.add(m.index)
         for (let k = 1; k < text.length; k += 1) if (/[，：；。 ]/.test(text[k - 1]!) || text[k] === ' ') allowed.add(k)
         // 连成一块的词组里面的空格不算断点 / A space inside a glued phrase is no break point
-        for (const m of text.matchAll(/读不懂 KixDNS 的回应|没有通过 KixDNS 的校验|[A-Za-z]+ \d+\b/g)) for (let k = m.index + 1; k < m.index + m[0].length; k += 1) allowed.delete(k)
+        for (const m of text.matchAll(/读不懂 KixDNS 的回应|没有通过 KixDNS 的校验|[（(]?\b[A-Za-z]{1,12} \d{1,6}[)）]?(?=[\s，：；。]|$)/g)) for (let k = m.index + 1; k < m.index + m[0].length; k += 1) allowed.delete(k)
         const range = document.createRange()
         let index = 0
         let top: number | null = null

@@ -150,7 +150,7 @@ const HYPHEN_WORD = /「?([$\w.|@^/]*\w-[\w.|@^/-]*[\w^])[」。，：；）]*/g
 // Toasts also glue 「版本 #N」 (with a following 已生效, 已应用, 待应用 or 没有生效), 「「name」的」, 「再点一次「button」」 and 「KixDNS」 with the character after it:
 // no version split from its state, no 的 starting a line, no button name alone on the last line, no KixDNS left at a line end; a default name
 // 「「file · host」」 is taken out on its own (name) for NameText to wrap at 「·」
-const TOAST_GLUE = /(「[^「」]+?\u00a0·\u00a0[^「」]+?」的?)|(版本[ \u00a0]#\d+(?:[ \u00a0](?:已生效|已应用|待应用|没有生效))?[。，：；]*)|(「[^「」]{1,24}」的[，：；。]?)|「?([$\w.|@^/]*\w-[\w.|@^/-]*[\w^])[」。，：；）]*|(再点(?:一次)?「[^「」]{1,12}」)|(KixDNS[ \u00a0][\u4e00-\u9fff])|((?:写进配置文件|(?:设置|修改)已(?:生效|应用)|才生效|一起(?:保存)?生效|还?没有应用|停了|这份(?:配置|文件)|新配置|读不懂[ \u00a0]KixDNS[ \u00a0]的回应|没有通过[ \u00a0]KixDNS[ \u00a0]的校验)[。，：；]*)|((?:退回的设置和待应用的修改|退回的设置|待应用的修改)[，：；。]*)|([\u4e00-\u9fff][，：；。])|(\b[A-Za-z]{1,12}[ \u00a0]\d{1,6}(?![\w.-])[，：；。]*)/g
+const TOAST_GLUE = /(「[^「」]+?\u00a0·\u00a0[^「」]+?」的?)|(版本[ \u00a0]#\d+(?:[ \u00a0](?:已生效|已应用|待应用|没有生效))?[。，：；]*)|(「[^「」]{1,24}」的[，：；。]?)|「?([$\w.|@^/]*\w-[\w.|@^/-]*[\w^])[」。，：；）]*|(再点(?:一次)?「[^「」]{1,12}」)|(KixDNS[ \u00a0][\u4e00-\u9fff])|((?:写进配置文件|(?:设置|修改)已(?:生效|应用)|才生效|一起(?:保存)?生效|还?没有应用|停了|这份(?:配置|文件)|新配置|读不懂[ \u00a0]KixDNS[ \u00a0]的回应|没有通过[ \u00a0]KixDNS[ \u00a0]的校验)[。，：；]*)|((?:退回的设置和待应用的修改|退回的设置|待应用的修改)[，：；。]*)|([\u4e00-\u9fff][，：；。])|([（(]?\b[A-Za-z]{1,12}[ \u00a0]\d{1,6}[)）]?(?=[\s，：；。]|$)[，：；。]*)/g
 export type GlueRun = { text: string; glue: boolean; long?: boolean; name?: { name: string; suffix: string }; breakAfter?: boolean; parts?: GlueRun[]; lead?: boolean }
 // 保存条、提示条这类按词换行（keep-all）的短句里，「版本 #N」「之后改的 N 处」整块不拆：只在显示时放进不折行的一块，文字里不加看不见的
 // 字符，复制出来和原文一样 / In short keep-all lines such as the save bar and notices, 「版本 #N」 and 「之后改的 N 处」 never split: they are
@@ -194,6 +194,11 @@ export const hyphenRuns = (text: string): GlueRun[] => glueRuns(text, HYPHEN_WOR
 const ROLLBACK_NAME = /^(?:退回的设置和待应用的修改|退回的设置|待应用的修改)$/
 const STRETCH_END = /[，：；。 ]/
 const ENDS_AT_PUNCTUATION = /[，：；。]$/
+// 紧挨着的括号连进去，不单独留在行尾或落到行首 / Brackets right next to it are glued in, so none is left at a line end or starts a line
+// 英文原话里的「词 + 数字」整块换行（inline-block）：WebKit 不把不折行块前面的空格当断点，挤在行尾时会伸进关闭按钮前的空白
+// A word and its number in English wording wrap as one block (inline-block): WebKit does not take the space before a no-wrap run as a
+// break point, so squeezed at a line end it would reach into the space before the close button
+const WORD_NUMBER = /^[（(]?[A-Za-z]{1,12}[ \u00a0]\d{1,6}[)）]?[，：；。]*$/
 // 手机最窄时一行放得下的字数，少报一点：连起来比这长的就不连，免得撑出去 / About as many characters as the narrowest phone line
 // holds, erring low: a glued part longer than this is left as it is, lest it overflow
 const PHONE_LINE = 12
@@ -214,7 +219,7 @@ function pieceRuns(text: string, opens: boolean): GlueRun[] {
     if (!m[1]) return undefined
     const suffix = m[1].endsWith('的') ? '的' : ''
     return { name: m[1].slice(1, m[1].length - 1 - suffix.length), suffix }
-  }).map((run) => (run.glue && run.text.endsWith('」的') ? { ...run, breakAfter: true } : run))
+  }).map((run) => (run.glue && run.text.endsWith('」的') ? { ...run, breakAfter: true } : run.glue && WORD_NUMBER.test(run.text) ? { ...run, long: true } : run))
   for (let i = 0; i < runs.length; i += 1) {
     if (runs[i]!.glue && ROLLBACK_NAME.test(runs[i]!.text)) i = gluedBeside(runs, i)
   }
