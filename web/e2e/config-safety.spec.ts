@@ -1266,7 +1266,13 @@ const readSequence = (page: Page) => page.route(/\/src\/api\/client\.ts(?:\?.*)?
         }
         if (localStorage.getItem('e2e:read-fails') === 'true' || localStorage.getItem('e2e:config-only-fails') === 'true') throw new ApiError('面板内部出错', 500, 'internal_error');
       }
-      if (write && localStorage.getItem('e2e:drop-write') === 'true') { localStorage.removeItem('e2e:drop-write'); throw cut() }
+      if (write && localStorage.getItem('e2e:drop-write') === 'true') {
+        localStorage.removeItem('e2e:drop-write');
+        const wait = Number(localStorage.getItem('e2e:drop-write-after') ?? 0);
+        localStorage.removeItem('e2e:drop-write-after');
+        if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+        throw cut();
+      }
       if (String(path) === '/api/v1/overview' && localStorage.getItem('e2e:overview-fails') === 'true') throw new ApiError('面板内部出错', 500, 'internal_error');
       if (String(path) === '/api/v1/config/versions' && (localStorage.getItem('e2e:read-fails') === 'true' || localStorage.getItem('e2e:versions-next-fails') === 'true')) { localStorage.removeItem('e2e:versions-next-fails'); throw new ApiError('面板内部出错', 500, 'internal_error') }
       let result;
@@ -1431,6 +1437,8 @@ test('核对读不到配置时按「重试」：核对在路上时按钮按住',
   await expect(page.locator('.cfg__notice')).toContainText('刚才那次保存不知道存上没有。')
   await page.evaluate(() => localStorage.setItem('e2e:read-seq', '1'))
   await reconnect(page)
+  // 先等到读不到配置（连不上、正在核对时也有「重试」） / First wait for the unreadable config (重试 shows while unreachable and checking too)
+  await expect(page.locator('.cfg__notice')).toContainText('读不到配置：')
   const retry = page.locator('.cfg__notice').getByRole('button', { name: '重试', exact: true })
   await expect(retry).toBeEnabled()
   await page.evaluate(() => localStorage.setItem('e2e:read-delay', '1500'))
@@ -1456,7 +1464,7 @@ test('保存的回应丢了、核对读不到时离开配置页：不问放弃�
   await page.getByRole('link', { name: '日志', exact: true }).click()
   await expect(page).toHaveURL(/\/logs/)
   await expect(page.getByRole('alertdialog')).toHaveCount(0)
-  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('不知道配置存上没有：读不到配置。草稿留在配置页，读到后会自己核对')
+  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('刚才那次保存不知道存上没有：读不到配置。草稿留在配置页，读到后会自己核对')
   await page.evaluate(() => localStorage.removeItem('e2e:read-fails'))
   await expect.poll(async () => (await toastTexts(page)).some((text) => text.startsWith('刚才那次保存已经存上了')), { timeout: 12_000 }).toBe(true)
 })
@@ -1474,10 +1482,10 @@ test('离开时保存的回应丢了、还没核对时退出登录：确认框�
   await expect(bar).toContainText('写入并应用')
   await page.getByRole('link', { name: '日志', exact: true }).click()
   await expect(page).toHaveURL(/\/logs/)
-  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('不知道配置存上没有：连不上面板。草稿留在配置页，连上后会自己核对')
+  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('刚才那次保存不知道存上没有：连不上面板。草稿留在配置页，连上后会自己核对')
   await page.evaluate(() => localStorage.setItem('e2e:read-fails', 'true'))
   await reconnect(page)
-  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('不知道配置存上没有：读不到配置。草稿留在配置页，读到后会自己核对')
+  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('刚才那次保存不知道存上没有：读不到配置。草稿留在配置页，读到后会自己核对')
   await page.getByRole('button', { name: /^账户：/ }).click()
   await page.getByRole('dialog', { name: '账户', exact: true }).getByRole('button', { name: '退出登录', exact: true }).click()
   const dialog = page.getByRole('alertdialog')
@@ -1655,6 +1663,8 @@ test('读不到配置时，后台的核对不让「重试」一灰一灰', async
   await expect(page.locator('.cfg__notice')).toContainText('刚才那次保存不知道存上没有。')
   await page.evaluate(() => localStorage.setItem('e2e:read-fails', 'true'))
   await reconnect(page)
+  // 先等到读不到配置（连不上、正在核对时也有「重试」） / First wait for the unreadable config (重试 shows while unreachable and checking too)
+  await expect(page.locator('.cfg__notice')).toContainText('读不到配置：')
   const retry = page.locator('.cfg__notice').getByRole('button', { name: '重试', exact: true })
   await expect(retry).toBeEnabled()
   await page.evaluate(() => {
@@ -1794,7 +1804,7 @@ test('保存的回应丢了、抽屉里还有没放进草稿的修改时离开�
   await page.evaluate(() => document.querySelector<HTMLAnchorElement>('.desktop-nav a[href="/logs"]')!.click())
   const ask = page.getByRole('alertdialog')
   await expect(ask).toContainText('放弃这个上游组的修改')
-  await expect(ask).toContainText('刚才在这里改的内容还没放进草稿，离开就没了。草稿留着，核对完会说结果。')
+  await expect(ask).toContainText('刚才在这里改的内容不会写进草稿。草稿留着，核对完会说结果。')
   await ask.getByRole('button', { name: '放弃修改', exact: true }).click()
   await expect(page).toHaveURL(/\/logs/)
 })
@@ -1852,6 +1862,62 @@ test('保存被拒、回应丢了，锁着时在抽屉里改完：核对完保�
   await expect(bar).toContainText('did not answer the health check')
   await expect(bar).not.toContainText('已经保存过了')
   await expect(page.locator('.cfg__notice')).toContainText('没有生效')
+})
+
+// 锁着时离开那一问说过「草稿留着」，问着的时候连上了、核对出没存上：同意离开以后照说过的把草稿留到回来，离开以后说一句它还没保存
+// The locked leave question said the draft stays, and while it was asked the panel came back and the check found the save did not land:
+// agreeing to leave still keeps the draft for the return as promised, and a line away says it is not saved
+test('锁着时离开那一问开着时核对出没存上：同意离开以后草稿照说过的留到回来', async ({ page }) => {
+  await readSequence(page)
+  await page.goto('/config')
+  await addRule(page, 'lock-ask-race.example')
+  // 写入 3 秒后才断开、没送到面板：这段时间里先开好抽屉 / The write is cut after 3 seconds without reaching the panel: the drawer opens meanwhile
+  await page.evaluate(() => { localStorage.setItem('e2e:drop-write', 'true'); localStorage.setItem('e2e:drop-write-after', '3000') })
+  await page.locator('.cfg__savebar').getByRole('button', { name: '保存并应用' }).click()
+  await page.getByRole('link', { name: '上游组', exact: true }).locator('visible=true').first().click()
+  await page.locator('.gcard__name').first().click()
+  const drawer = page.locator('dialog[open]')
+  await expect(drawer).toBeVisible()
+  await expect(page.locator('.cfg__notice')).toContainText('刚才那次保存不知道存上没有。', { timeout: 8000 })
+  await drawer.getByLabel('名称').fill('没放进草稿')
+  await page.evaluate(() => document.querySelector<HTMLAnchorElement>('.desktop-nav a[href="/logs"]')!.click())
+  const ask = page.getByRole('alertdialog')
+  await expect(ask).toContainText('草稿留着，核对完会说结果。')
+  await reconnect(page)
+  await expect.poll(() => toastTexts(page), { timeout: 12_000 }).toContain('刚才那次保存没有存上，可以再保存')
+  await ask.getByRole('button', { name: '放弃修改', exact: true }).click()
+  await expect(page).toHaveURL(/\/logs/)
+  await expect.poll(() => toastTexts(page)).toContain('配置页的草稿还没保存，回去再保存')
+  await page.locator('.desktop-nav').getByRole('link', { name: '规则', exact: true }).click()
+  await expect(page.locator('[data-rule]', { hasText: 'lock-ask-race.example' })).toHaveCount(1)
+  await expect(page.locator('.cfg__savebar')).toContainText(/已修改/)
+})
+
+// 滚到下面按的保存、回应丢了：保存条收起，提示条吸顶、焦点在它上面，页面不跳，屏上看得到为什么点不动
+// A save pressed far down loses its answer: the save bar folds away and the notice sticks to the top with the focus on it, the page does
+// not jump, and the screen shows why nothing responds
+test('滚到下面按保存、回应丢了：提示条吸顶，焦点在提示条上', async ({ page }) => {
+  await readSequence(page)
+  // 二十条规则的配置：列表比一屏长，滚到底以后页顶的提示条在屏幕外 / A config with twenty rules: the list is longer than a screen, so
+  // scrolled to the end the notice at the top is off screen
+  const rules = Array.from({ length: 20 }, (_, i) => ({ name: `r${i + 1}`, matchers: [{ type: 'domain_suffix', value: `site${i + 1}.example` }], actions: [{ type: 'forward', upstream: '1.1.1.1:53' }] }))
+  const config = { version: '1.0', settings: {}, pipeline_select: [{ pipeline: 'main', matchers: [] }], pipelines: [{ id: 'main', rules }] }
+  await page.goto('/config')
+  await expect(page.locator('.rcard')).toBeVisible()
+  await page.locator('input[type="file"]').setInputFiles({ name: 'many.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(config)) })
+  if (await page.locator('dialog[open]').count()) await page.keyboard.press('Escape')
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-put-answer-lost', 'true'); window.scrollTo(0, document.documentElement.scrollHeight) })
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(300)
+  await page.locator('.cfg__savebar').getByRole('button', { name: '保存并应用' }).click()
+  const notice = page.locator('.cfg__notice')
+  await expect(notice).toContainText('刚才那次保存不知道存上没有。')
+  await expect(notice).toBeInViewport({ ratio: 1 })
+  await expect(notice).toBeFocused()
+  expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0)
+  // 解开以后回到原位 / Back in place once unlocked
+  await reconnect(page)
+  await expect(page.locator('.cfg__savebar')).toContainText(/已经保存过了/, { timeout: 12_000 })
+  await expect(notice).not.toHaveClass(/cfg__notice--stuck/)
 })
 
 // 文件还在选的时候页面锁住了（选好时才轮到导入）：不导入，说一句为什么；草稿和锁都不动
@@ -1927,10 +1993,10 @@ test('离开时保存的回应丢了、核对读不到配置：提示说读不�
   await expect(bar).toContainText('写入并应用')
   await page.getByRole('link', { name: '日志', exact: true }).click()
   await expect(page).toHaveURL(/\/logs/)
-  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('不知道配置存上没有：连不上面板。草稿留在配置页，连上后会自己核对')
+  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('刚才那次保存不知道存上没有：连不上面板。草稿留在配置页，连上后会自己核对')
   await page.evaluate(() => localStorage.setItem('e2e:read-fails-once', 'true'))
   await reconnect(page)
-  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('不知道配置存上没有：读不到配置。草稿留在配置页，读到后会自己核对')
+  await expect.poll(() => toastTexts(page), { timeout: 5000 }).toContain('刚才那次保存不知道存上没有：读不到配置。草稿留在配置页，读到后会自己核对')
   expect((await toastTexts(page)).some((text) => text.includes('连不上面板'))).toBe(false)
   // 记下保存条有没有说过「别处改过了」 / Record whether the save bar ever says 别处改过了
   await page.evaluate(() => {

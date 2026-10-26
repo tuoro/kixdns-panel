@@ -50,6 +50,9 @@ function onKey(event: KeyboardEvent): void {
     event.preventDefault()
     // 页面锁着：保存条收着，按键不保存，说一句为什么；浏览器的「保存网页」也不弹 / The page is locked: the bar is folded away and the key
     // saves nothing but says why, nor does the browser's Save Page open
+    // 锁着、草稿里也没有要保存的（丢的是「现在应用」）：照平常说没有要保存的修改 / Locked with nothing to save in the draft (the lost
+    // request was 现在应用): said as usual, nothing to save
+    if (pageLocked.value && !pending.value && !dialogEdits.size) { toast.info('没有要保存的修改'); return }
     if (refuseWhileLocked('保存')) return
     // 弹层开着时不替它保存，但说一句该怎么做，不让按键没反应 / With a dialog open the bar does not save for it, but says what to do instead of swallowing the key
     if (document.querySelector('dialog[open]')) { toast.info(dialogEdits.size ? '先点窗口里的按钮把修改放进草稿，再保存' : '先关掉这个窗口，再保存'); return }

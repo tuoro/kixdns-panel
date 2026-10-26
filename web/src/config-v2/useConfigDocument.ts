@@ -706,9 +706,19 @@ export const pageLocked = computed(() => lostWrite.value !== null)
  */
 export function refuseWhileLocked(what: string): boolean {
   if (!lostWrite.value) return false
-  useToast().info(`没有${what}：${lostWrite.value.head}，核对完再试`)
+  // 主语后面能断（「新下载的拦截列表 / 不知道存上没有」）：中间没有标点，窄屏上会从词中间切 / A break may follow the subject (「新下载的
+  // 拦截列表 / 不知道存上没有」): with no punctuation between, a narrow screen would cut mid-word
+  refusals.add(useToast().info(`没有${what}：${lostWrite.value.head.replace(/(?<=.)不知道/, '\u200b不知道')}，核对完再试`))
   return true
 }
+// 说「核对完再试」的那几条：核对说完、会话结束时一起收起（那时它说的就过时了） / The 核对完再试 toasts: they go once the check has told its
+// result or the session ends (what they say is stale by then)
+const refusals = new Set<number>()
+function dropRefusals(): void {
+  for (const id of refusals) useToast().dismiss(id)
+  refusals.clear()
+}
+watch(lostWrite, (now) => { if (!now) dropRefusals() })
 // 为什么还不知道：连不上面板，连上了、正在核对，核对读不到配置 / Why it is still unknown: the panel is unreachable, it is back and the
 // check is running, or the check cannot read the config
 export const lostWriteWhy = computed<'down' | 'checking' | 'unreadable'>(() => (panelDown.value ? 'down' : checkUnreadable.value ? 'unreadable' : 'checking'))
@@ -724,7 +734,7 @@ function notKnownTail(kept?: string): string {
 // its words follow the reason, with the id unchanged (see rewordNotKnown)
 const notKnownToasts = new Map<number, () => string>()
 // 离开以后保存的回应丢了时那一句 / The sentence for a save whose answer was lost after leaving
-const notKnownSaved = (subject: string | undefined, kept: string) => () => `${subject ? `${subject}：不知道存上没有，` : '不知道配置存上没有：'}${notKnownTail(kept)}`
+const notKnownSaved = (subject: string | undefined, kept: string) => () => `${subject ? `${subject}：不知道存上没有，` : '刚才那次保存\u200b不知道存上没有：'}${notKnownTail(kept)}`
 function sayNotKnown(text: () => string): number {
   const open = useToast().messages.value
   for (const id of notKnownToasts.keys()) if (!open.some((m) => m.id === id)) notKnownToasts.delete(id)
@@ -778,7 +788,7 @@ registerHeldDraft(draftHeldAway, () => inFlight !== null && origin.value === 'dr
   return useConfirm().ask({
     title: '放弃配置页的草稿',
     body: busy.value ? '配置页的保存还没做完。退出登录以后不再告诉你结果，没存上的修改也会丢掉。'
-      : heldLostSave() ? '配置页刚才那次保存不知道存上没有。退出登录以后不再告诉你结果，没存上的修改也会丢掉。'
+      : heldLostSave() ? `${lostWrite.value?.head.startsWith('刚才') === false ? lostWrite.value.head : '配置页刚才那次保存不知道存上没有'}。退出登录以后不再告诉你结果，没存上的修改也会丢掉。`
         : '配置页有一份没保存成功的修改，还没存到面板上，退出登录以后就没了。',
     confirmLabel: '放弃并退出',
     cancelLabel: '先不退出',
@@ -856,6 +866,16 @@ function dismissAwayToast(): void {
 export function setViewing(open: boolean): boolean {
   viewing = open
   configPageOpen.value = open
+  // 锁着时离开那一问说过「草稿留着」，问着的时候核对说完了（记录作废）：照说过的把草稿留到回来，说一句它还没保存
+  // The locked leave question said the draft stays, and the check finished while it was asked (the record gone): the draft is kept for
+  // the return as promised, and a line says it is not saved
+  if (!open && keptByAsk && !heldLostSave() && dirty.value && signedIn()) {
+    keepDraftForReturn()
+    dismissAwayToast()
+    awayToast = useToast().error(conflict.value ? '这份配置在别处改\u2060过\u2060了。草稿留在配\u2060置\u2060页，回去重新读取后再改' : '配\u2060置\u2060页的草稿还没保存，回去再保存')
+    awayConflict = conflict.value
+  }
+  if (!open) keptByAsk = false
   // 「现在应用」断线时还在配置页、随后离开：这时就挂上「不知道…应用了没有」，连上后的核对才有一条可以换掉（以前离开后什么都不说）
   // 现在应用 was cut off on the page and the user then leaves: raise 「不知道…应用了没有」 now, so the check after reconnecting has a toast to replace (nothing was said away before)
   // 丢的是「重试应用」：在页上由提示条说，离开时挂一条提示，连上后的核对换掉它 / A lost 重试应用: told by the notice on the page; leaving
@@ -895,7 +915,10 @@ let leftDuringSave = false
 export function leavingDuringSave(): void { leftDuringSave = true }
 // 换页没成（被取消、被别的换页顶掉）：人还在配置页上，记号清掉 / The page change did not happen (cancelled, or overtaken by another): the user is still on
 // the config page and the mark goes
-export function stayedDuringSave(): void { leftDuringSave = false }
+export function stayedDuringSave(): void { leftDuringSave = false; keptByAsk = false }
+// 锁着时离开那一问同意了：见 setViewing / The locked leave question was agreed to: see setViewing
+let keptByAsk = false
+export function promiseDraftKept(): void { keptByAsk = true }
 const away = (): boolean => !viewing || leftDuringSave
 /** 人已经不在配置页上（或者正要离开）：保存的结果由提示说 / The user is off the config page (or on the way out): a save's outcome is told by a toast */
 export const pageAway = (): boolean => away()
@@ -1303,7 +1326,8 @@ async function alreadySaved(content: unknown, sent: string, words?: SaveWords, f
   // 人已经离开：结果由提示说，和核对出存上了时一样 / Already away: a toast tells the result, as when the check finds it landed
   if (away() && signedIn()) {
     const version = current.version_id ? `版本 #${current.version_id} ` : ''
-    const head = `${words?.subject ?? (from === 'apply' ? '刚才那次应用' : '刚才那次保存')}已经存上了：${version}`
+    // 面板替人做的保存，主语后面能断（「新下载的拦截列表 / 已经存上了」） / For a save the panel made, a break may follow the subject
+    const head = `${words?.subject ? `${words.subject}\u200b` : from === 'apply' ? '刚才那次应用' : '刚才那次保存'}已经存上了：${version}`
     const notTaken = words?.subject ? `${words.subject}：存成了${version.trim() || '新版本'}，没有生效` : `${version || '配置'}${from === 'apply' ? '' : '保存了，'}没有生效`
     tellAway(hasApplyFailure.value ? useToast().error(notTakenAway(notTaken, doc.value?.runtime.pending_error || doc.value?.pending?.error || 'KixDNS 没有给出原因。'))
       : hasPending.value ? useToast().success(`${head}待应用，${pendingAfter()}`)
@@ -1654,7 +1678,9 @@ async function settleOnce(announce: boolean): Promise<boolean> {
     // An apply stored as a new version: the opening names it and the rest says the outcome (numbers are accounted for as restore and retry do); an
     // in-place apply kept its number, so it reads 版本 #N … as usual
     const stored = applying && !lost.inPlace
-    const opening = stored ? (version ? `刚才那次应用存成了${version}` : '刚才那次应用存上了') : applying ? '刚才那次应用' : `${lostSave}已经存上了`
+    // 面板替人做的保存，主语后面能断（「新下载的拦截列表 / 已经存上了」）：中间没有标点，最窄的屏上会从词中间切 / For a save the panel made,
+    // a break may follow the subject: with no punctuation between, the narrowest screens would cut mid-word
+    const opening = stored ? (version ? `刚才那次应用存成了${version}` : '刚才那次应用存上了') : applying ? '刚才那次应用' : `${lostSave}${words?.subject ? '\u200b' : ''}已经存上了`
     // 原地应用的是退回写下的那一版：照它是什么叫，不报编号 / An in-place apply of a version a rollback wrote: named by what it is,
     // without its number
     const named = !stored && lost.inPlace && lost.origin && current.version_id ? versionName(current.version_id, lost.origin, true) : null
@@ -1737,6 +1763,7 @@ watch(useSession().authenticated, (now) => {
   for (const id of awayResults) useToast().dismiss(id)
   awayResults.clear()
   dropRetryToast()
+  dropRefusals()
   // 回应丢了的那次请求不再核对：会话结束时确认框说过不再告诉你结果；排着的再试也停掉，不在登录页上每 5 秒读一次
   // The lost request is no longer checked: the sign-out confirm said its result would not be told; the queued retry stops too, rather
   // than reading every 5 seconds on the login page

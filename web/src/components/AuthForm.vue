@@ -4,6 +4,7 @@ import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useSession } from '../composables/useSession'
 import { errorMessage } from '../utils'
+import GlueText from '../config-v2/GlueText.vue'
 import BrandMark from './BrandMark.vue'
 
 const props = defineProps<{ mode: 'login' | 'setup' }>()
@@ -29,8 +30,9 @@ const draftLost = computed(() => route.query.expired === 'draft' || route.query.
 const expiredNote = computed((): string[] => {
   if (isSetup.value || !route.query.expired) return []
   // unknown：那份修改是一次回应丢了、还没核对的保存，存没存上不知道 / unknown: those edits were a save whose answer was lost and never checked
-  // 「配置保存」后面能断：一长串中文按词换行时没有断点，窄屏上会从词中间硬切 / A break may fall after 配置保存: a long CJK run under keep-all has
-  // no break point and is cut mid-word on narrow screens
+  // 「配置保存」后面和每个「，。」后面能断：一长串中文按词换行时没有断点，窄屏上会从词中间硬切，WebKit 也不在中文标点处断 / Breaks may
+  // fall after 配置保存 and after each 「，。」: a long CJK run under keep-all has no break point and is cut mid-word on narrow screens,
+  // and WebKit does not break at CJK punctuation
   if (route.query.expired === 'unknown') return ['刚才那次配置保存', '不知道存上没有，没存上的修改没有留下来。登录后回到刚才的页面。']
   return [route.query.expired === 'draft' ? '刚才没保存的配置修改没有留下来。登录后回到刚才的页面。' : '登录后回到刚才的页面。']
 })
@@ -65,7 +67,7 @@ async function submit(): Promise<void> {
       </div>
       <!-- 会话过期被送回来：一条提示条说清，丢了没保存的修改时是醒目的黄色（这是读者最关心的一句），只是过期时是灰色
            Sent back by an expired session: a notice says so, amber when unsaved edits were lost (the sentence the reader cares about most), grey when it only expired -->
-      <p v-if="expiredNote.length" class="ui-notice auth-expired" :class="{ 'ui-notice--off': !draftLost }" role="status"><component :is="draftLost ? TriangleAlert : Clock" :size="16" aria-hidden="true" /><span>登录已过期</span><small><template v-for="(part, k) in expiredNote" :key="k"><wbr v-if="k">{{ part }}</template></small></p>
+      <p v-if="expiredNote.length" class="ui-notice auth-expired" :class="{ 'ui-notice--off': !draftLost }" role="status"><component :is="draftLost ? TriangleAlert : Clock" :size="16" aria-hidden="true" /><span>登录已过期</span><small><template v-for="(part, k) in expiredNote" :key="k"><span v-if="k" class="brk" aria-hidden="true"></span><GlueText :text="part" breaks /></template></small></p>
       <p v-if="demoSignIn" class="ui-notice ui-notice--off auth-demo" role="note"><MonitorPlay :size="16" aria-hidden="true" /><span>在线演示</span><small>演示账号已填好，直接登录即可。</small></p>
       <form @submit.prevent="submit">
         <label>用户名<input v-model.trim="username" name="username" autocomplete="username" minlength="3" maxlength="64" required :autofocus="!demoSignIn" /></label>

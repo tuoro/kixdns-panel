@@ -38,6 +38,12 @@ body { background: var(--l-canvas); }
 /* 页头里传送过来的按钮（新建规则、测试域名）跟着调淡：它们的容器是 display: contents，自己挂不上透明度 / The buttons teleported into the header (新建规则, 测试域名) dim too: their container is display: contents and cannot carry opacity */
 .cfg__page-acts[inert] > * { opacity: .6; transition: opacity var(--m-quick) var(--ease-out); }
 .cfg__notice { margin-top: calc(var(--s-1) * -1); }
+/* 锁着时提示条吸顶，贴在顶栏和断线横幅下面：内容点不动的原因一直看得到，滚到下面按的保存、回去看改的那一项时都在。上面那一截用画布色盖住，
+   滚过去的内容不从缝里露出来 / While locked the notice sticks below the header and the outage banner, so why the content does not
+   respond stays in sight, for a save pressed far down and when going back to the edited row. The strip above is covered in the canvas
+   colour, so content scrolling past does not show through the gap */
+.cfg__notice--stuck { position: sticky; top: calc(var(--app-header-height) + var(--conn-h, 0px) + var(--s-2)); z-index: 30; box-shadow: 0 calc(var(--s-2) * -1) 0 var(--l-canvas); }
+@media (min-width: 861px) { .cfg__notice--stuck { top: calc(var(--conn-h, 0px) + var(--s-2)); } }
 .cfg__notice .ui-objlink, .ui-savebar .ui-objlink { font-size: inherit; color: inherit; text-decoration-color: currentColor; }
 .cfg__json { display: grid; gap: var(--s-3); }
 .cfg__json-note { max-width: 52em; margin: 0; color: var(--l-ink-3); font-size: var(--t-2); }

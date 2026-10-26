@@ -26,7 +26,7 @@ import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, discardOnLeave, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, bulkDeleting, busy, checkFirst, checkInstead, checkPending, heldLostSave, lostWrite, lostWriteWhy, pageLocked, refuseWhileLocked, whenSettledOrLocked, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, stayedDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, beginOwnWrite, readAfterOwnWrite, readFresh, readQuietly, restartPending, restartRollback, runtimeDown, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse } from '../config-v2/useConfigDocument'
+import { applyBusy, bulkDeleting, busy, checkFirst, checkInstead, checkPending, heldLostSave, promiseDraftKept, lostWrite, lostWriteWhy, pageLocked, refuseWhileLocked, whenSettledOrLocked, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, stayedDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, beginOwnWrite, readAfterOwnWrite, readFresh, readQuietly, restartPending, restartRollback, runtimeDown, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse } from '../config-v2/useConfigDocument'
 import { dismissBlocklistToasts } from '../config-v2/useBlocklists'
 import { carryUpdate, refreshLanded, returnedToPage } from '../config-v2/updateCarry'
 import { useHelp } from '../composables/useHelp'
@@ -186,7 +186,8 @@ const geoPrefixed = computed(() => [...model.rules, ...model.ruleGroups.flatMap(
 // down：这一条在说 KixDNS 起不来，别处带来的「启动失败」提示就不另说 / down: this one says KixDNS does not come up, so a 启动失败 toast
 // brought from elsewhere is not said again
 // failure：这一条在说某一版没有生效 / failure: this one says a version did not take
-interface Notice { tone: 'err' | 'warn' | 'off'; text: string; detail?: string; links?: Record<string, number>; action?: string; run?: () => void | Promise<void>; down?: boolean; failure?: boolean }
+// held：按钮这时按住（停用的样子），位置照留 / held: the button is held for now (looks disabled), keeping its place
+interface Notice { tone: 'err' | 'warn' | 'off'; text: string; detail?: string; links?: Record<string, number>; action?: string; run?: () => void | Promise<void>; down?: boolean; failure?: boolean; held?: boolean }
 const notice = computed<Notice | null>(() => {
   // 连不上面板时由顶上的横幅说，这里不复述 / With the panel unreachable the banner says it; no second copy here
   // 一次写入（保存、现在应用、校验并应用、重试应用）回应丢了、还没核对：页面锁着，只由这里说不知道，断线时也说（「连不上面板」由横幅说，这里
@@ -198,7 +199,10 @@ const notice = computed<Notice | null>(() => {
     const why = lostWriteWhy.value
     const cause = loadError.value.replace(/[。.]\s*$/, '')
     const detail = why === 'down' ? '连上后会自己核对' : why === 'checking' ? '正在核对' : cause ? `读不到配置：${cause}。读到后会自己核对` : '读不到配置。读到后会自己核对'
-    return { tone: 'err', text: `${lostWrite.value.head}。`, detail, action: why === 'unreadable' ? '重试' : undefined, run: () => reload(true) }
+    // 三种原因都给「重试」，提示条的高度不随原因变：连不上时是重新连面板（和横幅上那个一样），正在核对时按住，读不到配置时再核对一次
+    // 重试 for all three reasons, so the notice keeps its height as the reason changes: unreachable, it reconnects (as the banner's does);
+    // checking, it is held; with the config unreadable, it checks once more
+    return { tone: 'err', text: `${lostWrite.value.head}。`, detail, action: '重试', run: why === 'down' ? () => retryConnection() : () => reload(true), held: why === 'checking' }
   }
   if (loadError.value && doc.value && !panelDown.value) return { tone: 'err', text: '读取配置失败，下面是上一次读到的内容。', detail: loadError.value, action: '重试', run: () => reload(true) }
   // 起不来：多半是改过的设置让它起不来（新的监听地址被占着），退回它们上次正常启动时的值再重启。状态由页头说（「启动失败」），
@@ -529,7 +533,9 @@ const askLeave = async (purpose?: 'signout'): Promise<boolean> => {
   // The lost save still unchecked (the page is locked): whether it landed is unknown, so it is not called unsaved; leaving asks nothing,
   // the draft is kept for the return and a toast tells the check's result away. Signing out says plainly that no result will follow
   if (heldLostSave() && purpose === 'signout') {
-    const agreed = await confirm.ask({ title: '放弃这份草稿', body: '刚才那次保存不知道存上没有。退出登录以后不再告诉你结果，没存上的修改也会丢掉。', ...labels, destructive: true })
+    // 头一句照提示条说（立即更新替人做的保存说「新下载的拦截列表…」） / The first sentence as the notice says it (a save 立即更新 made reads
+    // 新下载的拦截列表…)
+    const agreed = await confirm.ask({ title: '放弃这份草稿', body: `${lostWrite.value?.head ?? '刚才那次保存不知道存上没有'}。退出登录以后不再告诉你结果，没存上的修改也会丢掉。`, ...labels, destructive: true })
     if (agreed) signoutDrop = true
     return agreed
   }
@@ -538,7 +544,11 @@ const askLeave = async (purpose?: 'signout'): Promise<boolean> => {
   if (heldLostSave()) {
     if (!jsonDirty.value && !editorEdited.value && dialogEdits.size === 0) return true
     const what = jsonDirty.value ? ' JSON 里' : editorEdited.value ? '这条规则' : [...dialogEdits.values()][0] ?? '这条规则'
-    return confirm.ask({ title: `放弃${what}的修改`, body: '刚才在这里改的内容还没放进草稿，离开就没了。草稿留着，核对完会说结果。', ...labels, destructive: true })
+    const agreed = await confirm.ask({ title: `放弃${what}的修改`, body: '刚才在这里改的内容不会写进草稿。草稿留着，核对完会说结果。', ...labels, destructive: true })
+    // 问着的时候核对可能说完了：照说过的「草稿留着」，离开时把草稿留到回来（见 promiseDraftKept） / The check may finish while this is
+    // asked: as promised, the draft is kept for the return on leaving (see promiseDraftKept)
+    if (agreed) promiseDraftKept()
+    return agreed
   }
   const agreed = await confirm.ask({ title: '放弃未保存的修改', body: '当前的配置草稿会被丢弃，已经生效的配置不受影\u2060响。', ...labels, destructive: true })
   // 同意了就丢掉，不等回来时重读：「现在应用」还在做时回来不会重读，应用自己的重读又留着修改；在路上的「立即更新」落地时看到的也是干净的草稿，
@@ -581,15 +591,29 @@ const stopOnError = router.onError(() => { agreedDrop = null; stayedDuringSave()
 // The notice's button is disabled while it works and focus falls to the page: when nothing caught it afterwards, it returns to the button if still there, else to the notice
 // 人按了提示条的按钮、它还在做：按住（后台每 5 秒那次核对不算，按钮不跟着它一灰一灰） / The notice's button was pressed and its work
 // runs: held meanwhile (the background check every 5 seconds does not count, so the button does not flicker with it)
-const noticePressed = ref(false)
+// 记的是按下的那一条（按钮和那一句）：提示条换成别的一条以后，新的按钮不接着按住；确认框开着时也不按住，背后的按钮不跟着变灰
+// What is kept is the notice pressed (its button and sentence): once the notice turns into another one, the new button is not held; nor
+// is it held while a confirm is open, so the button behind does not grey out
+const noticePressed = ref<string | null>(null)
+const noticeKey = computed(() => (notice.value ? `${notice.value.action ?? ''}|${notice.value.text}` : ''))
 async function runNotice(): Promise<void> {
-  noticePressed.value = true
-  try { await notice.value?.run?.() } finally { noticePressed.value = false }
+  noticePressed.value = noticeKey.value
+  try { await notice.value?.run?.() } finally { noticePressed.value = null }
   await nextTick()
   if (document.activeElement && document.activeElement !== document.body) return
   const box = document.querySelector<HTMLElement>('.cfg__notice')
   ;(box?.querySelector<HTMLElement>('.ui-notice__action:not(:disabled)') ?? box)?.focus()
 }
+// 页面锁住那一刻：保存条收起，按下的按钮跟着没了，焦点交给提示条（锁着时它吸顶，滚到哪里都看得到，见 cfg__notice--stuck）
+// The moment the page locks: the save bar folds away with the button just pressed, and the focus goes to the notice (stuck to the top
+// while locked, so it shows wherever the page is scrolled, see cfg__notice--stuck)
+watch(pageLocked, (locked) => {
+  if (!locked) return
+  void nextTick(() => {
+    const box = document.querySelector<HTMLElement>('.cfg__notice')
+    box?.focus({ preventScroll: true })
+  })
+})
 onMounted(() => {
   ui.mode = 'form'
   // 刷新后编辑器不在了，地址里的 ?rule= 也去掉 / After a reload the editor is gone, so ?rule= leaves the address too
@@ -642,7 +666,7 @@ watch(section, () => { editor.value = null; void nextTick(() => window.scrollTo(
 // Start KixDNS where the header says it is stopped; afterwards the runtime state is reread, and a pending version turns the header action into 现在应用
 const { starting, start } = useServiceStart()
 // 连不上面板时页头写「状态未知」，「启动」也收起：按了也只会失败 / While the panel is unreachable the header reads 状态未知 and 启动 is withdrawn: pressing it could only fail
-const { down: panelDown } = useConnection()
+const { down: panelDown, retry: retryConnection } = useConnection()
 // 放在 panelDown 声明之后：watch 立刻就跑，放在前面会在声明前读到它（回到配置页时整页空白）。
 // 有待应用的版本、KixDNS 又在运行：面板后台每 5 秒会自己让它生效（或者发现它不行）。页面跟着每 5 秒看一眼运行状态，直到它不再是待应用的，
 // 免得页头一直挂着过时的「待应用 · 现在应用」，失败了也藏在「待应用」后面
@@ -675,7 +699,7 @@ const restarts = () => [restartForSettings, rollbackSettings, writePendingIn].in
 const actingCount = ref(0)
 const actingHere = computed(() => actingCount.value > 0)
 const noticeRestarting = computed(() => restartingKixdns.value && actingHere.value && restarts())
-const noticeHeld = computed(() => applyBusy.value || rereading.value || noticePressed.value || restartingKixdns.value || startingKixdns.value || (restarts() && (saveInFlight.value || busy.value)))
+const noticeHeld = computed(() => applyBusy.value || rereading.value || Boolean(notice.value?.held) || (noticePressed.value === noticeKey.value && !confirm.pending.value) || restartingKixdns.value || startingKixdns.value || (restarts() && (saveInFlight.value || busy.value)))
 // 退回期间页面不能改：回来以后整份换上退回后的文件，途中改的会悄悄丢掉（和「重新读取」时一样）
 // The page cannot be edited during a rollback: on return the rolled-back file replaces the page, and edits made meanwhile
 // would be lost silently (as during 重新读取)
@@ -829,7 +853,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
       </template>
     </UiPageHeader>
 
-    <div v-if="notice && ready" class="ui-notice cfg__notice" tabindex="-1" :class="notice.tone === 'err' ? 'ui-notice--err' : notice.tone === 'off' ? 'ui-notice--off' : ''" :role="notice.tone === 'err' ? 'alert' : 'status'">
+    <div v-if="notice && ready" class="ui-notice cfg__notice" tabindex="-1" :class="[notice.tone === 'err' ? 'ui-notice--err' : notice.tone === 'off' ? 'ui-notice--off' : '', { 'cfg__notice--stuck': pageLocked }]" :role="notice.tone === 'err' ? 'alert' : 'status'">
       <!-- 红色的用带叉的圆圈，和概览、诊断页一样 / The red one takes the crossed circle, as on the overview and diagnostics -->
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10" /><path v-if="notice.tone === 'err'" d="m15 9-6 6M9 9l6 6" /><path v-else d="M12 8v4M12 16h.01" /></svg>
       <span><template v-for="(run, k) in numberRuns(notice.text)" :key="k"><span v-if="run.glue" class="nowrap">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></span>

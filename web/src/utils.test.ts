@@ -137,6 +137,7 @@ describe('hyphenRuns', () => {
     expect(glued('since 12:30 today')).toEqual(['since 12:30'])
     expect(glued('at line 3, column 14.')).toEqual(['line 3,', 'column 14.'])
     expect(glued('bind 0.0.0.0:53 failed')).toEqual(['bind 0.0.0.0:53'])
+    expect(glued('刚才那次保存已经存上了：版本 #19 已生效；之后改的 1 处留在配置页，还没保存')).toEqual(['版本 #19 已生效；', '之后改的 1 处'])
     // 短的英文括号整个连住（括号不单独留在行尾或落到行首） / A short English parenthetical stays whole (no bracket left at a line end or
     // starting a line)
     expect(glued('bind failed (os error 98)')).toEqual(['(os error 98)'])

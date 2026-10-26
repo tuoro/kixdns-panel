@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { useConfirm } from '../composables/useConfirm'
 import UiDotText from './ui/UiDotText.vue'
+import GlueText from '../config-v2/GlueText.vue'
 
 const confirm = useConfirm()
 const confirmButton = ref<HTMLButtonElement | null>(null)
@@ -94,7 +95,9 @@ const bodyText = computed(() => confirm.pending.value?.body ?? '')
   >
     <section v-if="confirm.pending.value" class="confirm__dialog">
       <h2 id="confirm-title">{{ confirm.pending.value.title }}</h2>
-      <p id="confirm-body">{{ bodyText }}</p>
+      <!-- 正文在每个「，：；。」后面放断点：WebKit 按词换行时不在中文标点处断，整句会从词中间切 / The body takes a break point after each
+           「，：；。」: WebKit's keep-all does not break at CJK punctuation and would cut the sentence mid-word -->
+      <p id="confirm-body"><GlueText :text="bodyText" breaks /></p>
       <ul v-if="confirm.pending.value.items?.length" class="confirm__items">
         <!-- 「#12 · 备注」这样的项按「·」分段：点不在行首，折行落在它后面时藏起来 / Items such as 「#12 · note」 split at their 「·」: never at a line start, hidden when a wrap falls right after it -->
         <li v-for="item in confirm.pending.value.items" :key="item"><UiDotText :parts="item.split('\u00a0· ')" /></li>
