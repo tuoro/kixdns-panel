@@ -27,6 +27,7 @@ import { dashboardRuntimeState, emptyOverview, emptyQueryStats, hasStaleDashboar
 import { sparkline } from '../trend'
 import { softBreakParts } from '../ui/soft-breaks'
 import { errorMessage, formatDuration, formatNumber, formatPercent, shortHash, upstreamSuccessRate } from '../utils'
+import GlueText from '../config-v2/GlueText.vue'
 
 const overview = ref<Overview | null>(null)
 const service = ref<ServiceStatus | null>(null)
@@ -764,7 +765,9 @@ onBeforeUnmount(() => {
     <div v-if="notice" class="ui-notice overview-notice" :class="[notice.tone === 'warn' ? '' : `ui-notice--${notice.tone}`, { 'overview-notice--phone': notice.phoneOnly }]" :role="notice.tone === 'err' ? 'alert' : 'status'">
       <component :is="notice.icon" :size="16" aria-hidden="true" />
       <span>{{ notice.title }}</span>
-      <small v-if="notice.reason">{{ notice.reason }}</small>
+      <!-- 原因里可能有设置名单：标点后能断，WebKit 上不从名字中间切 / The reason may list settings: breaks after punctuation, so WebKit
+           does not cut a name -->
+      <small v-if="notice.reason"><GlueText :text="notice.reason" breaks /></small>
       <button v-if="notice.action === 'retry'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" type="button" :disabled="requesting" @click="refreshAll">重试</button>
       <RouterLink v-else-if="notice.action === 'config'" class="ui-btn ui-btn--secondary ui-btn--sm ui-notice__action" to="/config">管理配置</RouterLink>
       <!-- 退回、写进配置文件在设置分区的提示条里，和诊断页同一个去处 / Rolling back and writing into the file are in the settings

@@ -14,7 +14,7 @@ import { useSession } from '../composables/useSession'
 import { dismissUndoable, toastMark, useToast } from '../composables/useToast'
 import { errorMessage } from '../utils'
 import { runningVersionId } from '../running-version'
-import { dismissBuildToast, needsBuild, sayDrafted, settleBlocklists, type BuildProblem } from './useBlocklists'
+import { dismissBuildToast, dismissDraftedFailure, needsBuild, sayDrafted, settleBlocklists, type BuildProblem } from './useBlocklists'
 import { appliedModel, appliedSnapshot, changesBesidesFile, replaceOnLeave, findRuleByName, applyHits, applyUpstreamStats, changeCount, dialogEdits, dirty, draftGeneration, editorEdited, importReport, importSource, jsonEdited, loadContent, model, rebaseApplied, replaceModel, reportOpen, unsaved } from './store'
 
 // 配置页和面板服务之间的事：读配置和历史、KixDNS 的运行状态和能力、校验、保存并热加载、现在应用。
@@ -871,23 +871,32 @@ export function setViewing(open: boolean): boolean {
   // told, and the check finished while it was asked (the record gone): the result is told as it is away, and a draft with unsaved edits is
   // kept for the return. What was said on the page (没有存上，可以再保存) does not follow
   if (!open && keptByAsk && !heldLostSave() && signedIn()) {
-    const { version: before, subject } = keptByAsk
+    const { version: before, words } = keptByAsk
+    const subject = words?.subject
     const lostSave = subject ?? '刚才那次保存'
     const now = doc.value?.version_id ?? null
     const held = dirty.value
     if (held) keepDraftForReturn()
     dismissAwayToast()
-    if (pageResult !== null) { useToast().dismiss(pageResult); pageResult = null }
     const later = held && changeCount.value ? `；之后改的 ${changeCount.value} 处留在配\u2060置\u2060页，还没保存` : ''
-    if (conflict.value) { awayToast = useToast().error(`${lostSave}不在现在的配置里：这份配置在别处改\u2060过\u2060了。草稿留在配\u2060置\u2060页，回去重新读取后再改`); awayConflict = true }
-    else if (now === null || now === before) { if (held) awayToast = useToast().error(`${lostSave}没有存上。草稿留在配\u2060置\u2060页，回去再保存`) }
-    else if (hasApplyFailure.value) awayToast = useToast().error(notTakenAway(subject ? `${subject}：存成了版本 #${now}，没有生效` : `版本 #${now} 保存了，没有生效`, doc.value?.runtime.pending_error || doc.value?.pending?.error || 'KixDNS 没有给出原因。'))
+    // 照平常离开那样：页上那条（立即更新的「先重新读取，再点一次」）收起，回到配置页时再换上 / As when leaving normally: the one on the
+    // page (立即更新's 「先重新读取，再点一次」) goes, and comes back on return to the config page
+    if (conflict.value) {
+      dismissDraftedFailure()
+      if (words?.overwrittenHere) words.returnTo?.(words.overwrittenHere)
+      awayToast = useToast().error(notLandedAway(lostSave, words, true))
+      awayConflict = true
+    } else if (now === null || now === before) { if (held) awayToast = useToast().error(notLandedAway(lostSave, words, false)) }
+    else if (hasApplyFailure.value) awayToast = useToast().error(notTakenAway(subject ? `${subject}：存成了版本 #${now}，没有生效` : `版本 #${now} 保存了，没有生效`, doc.value?.runtime.pending_error || doc.value?.pending?.error || 'KixDNS 没有给出原因。', doc.value?.runtime, runtimeStopped.value, held))
     else {
       const opening = `${lostSave}${subject ? '\u200b' : ''}已经存上了：`
       tellAway(hasPending.value ? useToast().success(`${opening}版本 #${now} 待应用，${pendingAfter()}${later}`) : effectToast(`${opening}版本 #${now} ${subject ? '已生效' : inEffect()}${later}`, !subject && Boolean(restartTail())))
     }
   }
   if (!open) keptByAsk = null
+  // 在配置页上说的「没有存上，可以再保存」「…还没有应用，可以再点…」只对这一页说：离开时收起，和页上的重试结果一样 / What was said on the
+  // config page (没有存上，可以再保存, …还没有应用，可以再点…) speaks to this page only: it goes on leaving, as the on-page retry result does
+  if (!open && pageResult !== null) { useToast().dismiss(pageResult); pageResult = null }
   // 「现在应用」断线时还在配置页、随后离开：这时就挂上「不知道…应用了没有」，连上后的核对才有一条可以换掉（以前离开后什么都不说）
   // 现在应用 was cut off on the page and the user then leaves: raise 「不知道…应用了没有」 now, so the check after reconnecting has a toast to replace (nothing was said away before)
   // 丢的是「重试应用」：在页上由提示条说，离开时挂一条提示，连上后的核对换掉它 / A lost 重试应用: told by the notice on the page; leaving
@@ -930,10 +939,10 @@ export function leavingDuringSave(): void { leftDuringSave = true }
 export function stayedDuringSave(): void { leftDuringSave = false; keptByAsk = null }
 // 锁着时离开那一问同意了：问的时候是哪一次写入（写入前的版本号、替人保存时的说法），见 setViewing / The locked leave question was agreed
 // to: which write it was asked about (the version before it, and the wording of a save made on the user's behalf), see setViewing
-type LeaveMark = { version: number | null; subject?: string }
+type LeaveMark = { version: number | null; words?: SaveWords }
 let keptByAsk: LeaveMark | null = null
 /** 问之前记下：问着的时候核对可能说完、记录作废 / Noted before asking: the check may finish and void the record meanwhile */
-export const leaveMark = (): LeaveMark | null => (unanswered ? { version: unanswered.version, subject: unanswered.words?.subject } : null)
+export const leaveMark = (): LeaveMark | null => (unanswered ? { version: unanswered.version, words: unanswered.words } : null)
 export function promiseDraftKept(mark: LeaveMark | null): void { keptByAsk = mark }
 const away = (): boolean => !viewing || leftDuringSave
 /** 人已经不在配置页上（或者正要离开）：保存的结果由提示说 / The user is off the config page (or on the way out): a save's outcome is told by a toast */
@@ -949,8 +958,10 @@ const sentence = (text: string) => text.replace(/[。.]\s*$/, '')
 // 重试应用, so only that a save takes that version's content along, with no promise it takes (it was just refused); with KixDNS in the
 // notice offers the button; with KixDNS absent, once it is back (a refused version is never retried by itself). One state, one
 // sentence on both paths
-function notTakenAway(head: string, cause: string, runtime = doc.value?.runtime, stopped = runtimeStopped.value): string {
-  const way = unsaved.value ? '回到配\u2060置\u2060页保存时，会带上那一版的内容'
+// edited：回去时草稿里还有要保存的（离开那一问要丢掉的那一样不算） / edited: the draft still holds something to save on return (not
+// counting what the leave question is about to drop)
+function notTakenAway(head: string, cause: string, runtime = doc.value?.runtime, stopped = runtimeStopped.value, edited = unsaved.value): string {
+  const way = edited ? '回到配\u2060置\u2060页保存时，会带上那一版的内容'
     : !runtime || runtime.active_sha256 ? '回到配\u2060置\u2060页可以重试应用' : `${backWhen(runtime, stopped)}，可以回到配\u2060置\u2060页重试应用`
   return `${head}。${sentence(failureCause(cause))}。${way}`
 }
@@ -1370,6 +1381,13 @@ let concluded: LostWrite | null = null
 export const checkRunning = ref(false)
 // 「现在应用」因为连不上面板没成功：连上以后那条提示就不对了 / 现在应用 failed because the panel was unreachable: once back, that notice is stale
 let applyFailedDown = false
+// 保存没存上、或者不在现在的配置里时，离开以后的那一句：平常离开、离开那一问开着时核对说完都用它，同一个说法只拼一次。主语后面能断
+// The sentence away for a save that did not land or is not in the current config: used when leaving normally and when the check finished
+// while the leave question was open, so one wording is built once. A break may follow the subject
+function notLandedAway(lostSave: string, words: SaveWords | undefined, changedElsewhere: boolean): string {
+  return changedElsewhere ? (words?.again ? `${lostSave}：不在现在的配置里，这份配置在别处改过了；回到配置页重新读取，${words.again}` : `${lostSave}\u200b不在现在的配置里：这份配置在别处改\u2060过\u2060了。草稿留在配\u2060置\u2060页，回去重新读取后再改`)
+    : `${lostSave}没有存上。${words?.kept ?? '草稿留在配\u2060置\u2060页'}，回去再保存`
+}
 function settleUnanswered(announce: boolean): Promise<boolean> {
   if (settling) return settling
   if (!unanswered) return Promise.resolve(false)
@@ -1632,8 +1650,7 @@ async function settleOnce(announce: boolean): Promise<boolean> {
           // 原地应用的那一种由上面那一支说（会自己补上），走到这里的只剩「校验并应用」 / An in-place apply is told by the branch above
           // (it catches up by itself), so only 校验并应用 reaches here
           : `配置还没有应用${unsaved.value ? '；回到配\u2060置\u2060页保存时，会带上文件里的改动' : current.runtime.did_not_come_up || stoppedNow ? '，KixDNS\u00a0启动后会读这份文件' : !kixdnsIn ? `，${backWhen(current.runtime, stoppedNow)}，可以回到配\u2060置\u2060页再点「校验并应用」` : '，回到配\u2060置\u2060页可以再点「校验并应用」'}`)
-        : changedElsewhere ? (words?.again ? `${lostSave}：不在现在的配置里，这份配置在别处改过了；回到配置页重新读取，${words.again}` : `${lostSave}不在现在的配置里：这份配置在别处改\u2060过\u2060了。草稿留在配\u2060置\u2060页，回去重新读取后再改`)
-          : `${lostSave}没有存上。${words?.kept ?? '草稿留在配\u2060置\u2060页'}，回去再保存`)
+        : notLandedAway(lostSave, words, changedElsewhere))
     }
     return false
   }

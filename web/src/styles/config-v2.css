@@ -38,14 +38,18 @@ body { background: var(--l-canvas); }
 /* 页头里传送过来的按钮（新建规则、测试域名）跟着调淡：它们的容器是 display: contents，自己挂不上透明度 / The buttons teleported into the header (新建规则, 测试域名) dim too: their container is display: contents and cannot carry opacity */
 .cfg__page-acts[inert] > * { opacity: .6; transition: opacity var(--m-quick) var(--ease-out); }
 .cfg__notice { margin-top: calc(var(--s-1) * -1); }
-/* 锁着时提示条吸顶，贴在顶栏和断线横幅下面：内容点不动的原因一直看得到，滚到下面按的保存、回去看改的那一项时都在。四周一圈画布色（上面多
-   盖 1 px，横幅高度取整留下的缝也盖住；圆角外面的两角也在里面），下沿一条细线和一层淡影，看得出它浮在滚过去的内容上面
-   While locked the notice sticks below the header and the outage banner, so why the content does not respond stays in sight, for a save
-   pressed far down and when going back to the edited row. A band of canvas colour surrounds it (1 px more above, covering the gap left by
-   the rounded banner height, and the corners outside its radius), with a hairline and a faint shadow along the bottom, so it reads as a
-   layer above the content scrolling past */
-.cfg__notice--stuck { position: sticky; top: calc(var(--app-header-height) + var(--conn-h, 0px) + var(--s-2)); z-index: 30; box-shadow: 0 -1px 0 calc(var(--s-2) + 1px) var(--l-canvas), 0 0 0 calc(var(--s-2) + 1px) var(--l-hair), 0 calc(var(--s-2) * 2) var(--s-5) var(--shadow-bar-tint); }
-@media (min-width: 861px) { .cfg__notice--stuck { top: calc(var(--conn-h, 0px) + var(--s-2)); } }
+/* 锁着时提示条吸顶，贴在顶栏和断线横幅下面：内容点不动的原因一直看得到，滚到下面按的保存、回去看改的那一项时都在。--stick-gap 是它和
+   顶栏（横幅）之间的距离 / While locked the notice sticks below the header and the outage banner, so why the content does not respond
+   stays in sight, for a save pressed far down and when going back to the edited row. --stick-gap is its distance from the header (banner) */
+.cfg__notice--stuck { --stick-gap: var(--s-2); position: sticky; top: calc(var(--app-header-height) + var(--conn-h, 0px) + var(--stick-gap)); z-index: 30; }
+@media (min-width: 861px) { .cfg__notice--stuck { top: calc(var(--conn-h, 0px) + var(--stick-gap)); } }
+/* 真浮在滚过去的内容上面时（不在页顶原位）才有下沿：一条细线和一层淡影，和提示条一样宽；上沿改成直角，上面一条画布色盖住到顶栏的缝（多
+   盖 1 px，横幅高度取整留下的缝也在里面）。在原位时它下面没有东西可盖，照平常的样子
+   Only when it really floats over content scrolling past (not in place at the top) does it get a lower edge: a hairline and a faint
+   shadow as wide as the notice; the top corners go square and a strip of canvas colour covers the gap up to the header (1 px more, so
+   the gap left by the rounded banner height is in it). In place there is nothing beneath to cover, so it looks as usual */
+.cfg__notice--floating { border-top-left-radius: 0; border-top-right-radius: 0; box-shadow: 0 1px 0 var(--l-hair), 0 var(--s-2) var(--s-5) var(--shadow-bar-tint); }
+.cfg__notice--floating::before { content: ""; position: absolute; left: -1px; right: -1px; bottom: 100%; height: calc(var(--stick-gap) + 1px); background: var(--l-canvas); }
 .cfg__notice .ui-objlink, .ui-savebar .ui-objlink { font-size: inherit; color: inherit; text-decoration-color: currentColor; }
 .cfg__json { display: grid; gap: var(--s-3); }
 .cfg__json-note { max-width: 52em; margin: 0; color: var(--l-ink-3); font-size: var(--t-2); }
@@ -244,9 +248,9 @@ body { background: var(--l-canvas); }
   /* 面板开着时列表窄了：结果那一列最窄 9rem、命中 4rem，名字那一列才留得住 / With the inspector open the list is narrower: the result column bottoms at 9rem and hits at 4rem, so the name column keeps its room */
   .rules-split.is-open :is(.rlist, .rcard) { --rl-num: var(--s-6); --rl-cols: var(--rl-num) minmax(0, 1.5fr) minmax(9rem, 1fr) 4rem var(--s-7) var(--h-sm); }
   /* 面板跟着滚：顶部留页边距，太高时自己滚 / The inspector sticks: a page margin above, scrolling inside when taller than the viewport */
-  /* 锁着时让到吸顶的提示条下面（--notice-h 是它的高），规则名和关闭按钮不被盖住 / While locked it sits below the stuck notice
-     (--notice-h is its height), so the rule name and close button are not covered */
-  .cfg:has(.cfg__notice--stuck) .rules-split > .editor--inspector { top: calc(var(--conn-h, 0px) + var(--notice-h, 0px) + var(--s-2) * 3); max-height: calc(100dvh - var(--conn-h, 0px) - var(--notice-h, 0px) - var(--s-2) * 3 - var(--s-6)); }
+  /* 右栏开着时，吸顶的提示条只占左边列表那一栏、和右栏顶齐平：不压在右栏上，右栏也不用让 / With the inspector open, the stuck notice
+     takes only the list column, level with the inspector's top: it never covers the inspector, which need not move */
+  .cfg:has(.rules-split.is-open) .cfg__notice--stuck { --stick-gap: var(--s-6); margin-right: calc(var(--inspector-w) + var(--s-5)); }
   .rules-split > .editor--inspector { position: sticky; top: calc(var(--s-6) + var(--conn-h, 0px)); max-height: calc(100dvh - var(--s-6) * 2 - var(--conn-h, 0px)); overflow: auto; overscroll-behavior: contain; }
 }
 .rules-split.is-open .rlist__order { display: none; }

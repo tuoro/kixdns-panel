@@ -10,7 +10,6 @@ import UiPageHeader from '../components/ui/UiPageHeader.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
 import { useConfirm } from '../composables/useConfirm'
 import { useConnection } from '../composables/useConnection'
-import { useBarHeight } from '../composables/useBarHeight'
 import { dismissUndoable, useToast } from '../composables/useToast'
 import { exportConfig, readConfig } from '../config-model/document'
 import { compile, mappingIsIp, ruleTitle, type Model, type Rule, type UpstreamGroup } from '../config-model/model'
@@ -604,30 +603,72 @@ async function runNotice(): Promise<void> {
   try { await notice.value?.run?.() } finally { noticePressed.value = null }
   await nextTick()
   if (document.activeElement && document.activeElement !== document.body) return
+  // 焦点挪过去时不滚动页面（锁着时按的，解开以后提示条回到页顶原位）；提示条没了就落在页头的状态上 / Moving the focus never scrolls the
+  // page (pressed while locked, the notice is back in place at the top once unlocked); with the notice gone it lands on the header's state
   const box = document.querySelector<HTMLElement>('.cfg__notice')
-  ;(box?.querySelector<HTMLElement>('.ui-notice__action:not(:disabled)') ?? box)?.focus()
+  ;(box?.querySelector<HTMLElement>('.ui-notice__action:not(:disabled)') ?? box ?? document.querySelector<HTMLElement>('.cfg__facts, .cfg .ui-ph__lead'))?.focus({ preventScroll: true })
 }
 // 页面锁住那一刻：保存条收起，按下的按钮跟着没了，焦点交给提示条（锁着时它吸顶，滚到哪里都看得到，见 cfg__notice--stuck）
 // The moment the page locks: the save bar folds away with the button just pressed, and the focus goes to the notice (stuck to the top
 // while locked, so it shows wherever the page is scrolled, see cfg__notice--stuck)
-// 锁住、解开、锁着时提示条变高变矮：视口上方的高度变了，内容不跟着跳。变化之前记下内容区的顶，DOM 换完把滚动补回差值（WebKit 没有 scroll
-// anchoring，Chromium 的在这里也补不全）；在页顶时不补 / Locking, unlocking and the notice growing or shrinking while locked change the
-// height above the viewport, and the content does not jump with it: the content area's top is noted before the change and the scroll is
-// restored by the difference once the DOM has changed (WebKit has no scroll anchoring, and Chromium's does not cover this fully); not at
-// the top of the page
-watch([pageLocked, lostWriteWhy], () => {
+// 锁住、解开、提示条变高变矮、断线横幅进出：内容区上面的高度变了，正看着的内容不跟着跳。变之前记下内容区在页面里的位置，之后 0.6 秒里它
+// 每一帧一动，就把滚动补回同样的差；这段时间关掉浏览器自己的滚动锚定，两个引擎一个做法（WebKit 没有，Chromium 的在这里补不全）。在页顶时
+// 不补 / Locking, unlocking, the notice growing or shrinking and the outage banner coming or going change the height above the content,
+// and what is being looked at does not jump: the content area's place in the page is noted first, and for 0.6 s every frame it moves
+// the scroll follows by the same amount, with the browser's own scroll anchoring off meanwhile so both engines behave alike (WebKit has
+// none, and Chromium's does not cover this). Not at the top of the page
+// 已经在补的时候又来一次（横幅先出来、紧接着锁住）：只往后延，不重记位置，不然头一次还没补的那一截就丢了 / Another change while one is
+// being held (the banner first, the lock right after): the window is only extended, the place is not noted again, or the part not yet
+// made up for would be lost
+let holding: { content: HTMLElement; until: number } | null = null
+let holdFrame = 0
+function holdContent(): void {
   const content = document.querySelector<HTMLElement>('.cfg__panel, .cfg__json')
-  if (!content || window.scrollY === 0) return
-  const before = content.getBoundingClientRect().top
-  void nextTick(() => {
-    const moved = content.getBoundingClientRect().top - before
-    if (Math.abs(moved) >= 1) window.scrollBy(0, moved)
-  })
-}, { flush: 'pre' })
-// 吸顶时把提示条的高写到 --notice-h 上：宽屏右栏让到它下面 / While stuck the notice's height goes to --notice-h, so the wide inspector
-// sits below it
+  if (!content) return
+  if (holding?.content === content) { holding.until = performance.now() + 600; return }
+  const hold = { content, until: performance.now() + 600 }
+  holding = hold
+  const place = () => content.getBoundingClientRect().top + window.scrollY
+  let last = place()
+  // 补完以后的滚动位置：浏览器自己挪过的（滚到底时页面变短被夹住）不再补一遍，人自己滚的照样算 / The scroll position after each
+  // adjustment: what the browser already moved (clamped as the page shrinks at the bottom) is not made up for twice, and the user's own
+  // scrolling still counts
+  let lastY = window.scrollY
+  const root = document.documentElement
+  cancelAnimationFrame(holdFrame)
+  root.style.overflowAnchor = 'none'
+  const look = (): void => {
+    const now = content.isConnected ? place() : last
+    if (Math.abs(now - last) >= 0.5 && lastY > 0) window.scrollTo(0, lastY + now - last)
+    last = now
+    lastY = window.scrollY
+    // 浮不浮起来也在这几帧里看：锁住那一刻就画对，不晚两帧 / Floating is checked in these frames too, so it is right the moment it locks
+    lookFloating()
+    if (content.isConnected && performance.now() < hold.until) { holdFrame = requestAnimationFrame(look); return }
+    holding = null
+    root.style.removeProperty('overflow-anchor')
+  }
+  holdFrame = requestAnimationFrame(look)
+}
+watch([pageLocked, lostWriteWhy, useConnection().down], holdContent, { flush: 'sync' })
+onBeforeUnmount(() => { cancelAnimationFrame(holdFrame); holding = null; document.documentElement.style.removeProperty('overflow-anchor') })
+// 吸顶的提示条真浮在内容上面时（到了吸顶的位置、不在原位）才画下沿，见 cfg__notice--floating；滚动时看一眼 / The stuck notice gets its lower
+// edge only while it really floats (at its sticky place, not in place), see cfg__notice--floating; checked on scroll
 const noticeEl = ref<HTMLElement | null>(null)
-useBarHeight(computed(() => (pageLocked.value ? noticeEl.value : null)), '--notice-h')
+const noticeFloating = ref(false)
+let floatFrame = 0
+function lookFloating(): void {
+  floatFrame = 0
+  const box = noticeEl.value
+  noticeFloating.value = Boolean(box && pageLocked.value && box.getBoundingClientRect().top <= parseFloat(getComputedStyle(box).top) + 0.5)
+}
+const onFloatScroll = (): void => { if (!floatFrame) floatFrame = requestAnimationFrame(lookFloating) }
+// 进页面时也看：锁着时离开、还锁着时回来 / Also on entering the page: left while locked and back while still locked
+watch(pageLocked, (locked) => {
+  if (locked) { window.addEventListener('scroll', onFloatScroll, { passive: true }); window.addEventListener('resize', onFloatScroll); void nextTick(lookFloating) }
+  else { window.removeEventListener('scroll', onFloatScroll); window.removeEventListener('resize', onFloatScroll); noticeFloating.value = false }
+}, { immediate: true })
+onBeforeUnmount(() => { window.removeEventListener('scroll', onFloatScroll); window.removeEventListener('resize', onFloatScroll); cancelAnimationFrame(floatFrame) })
 watch(pageLocked, (locked) => {
   if (!locked) return
   void nextTick(() => {
@@ -874,7 +915,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
       </template>
     </UiPageHeader>
 
-    <div v-if="notice && ready" ref="noticeEl" class="ui-notice cfg__notice" tabindex="-1" :class="[notice.tone === 'err' ? 'ui-notice--err' : notice.tone === 'off' ? 'ui-notice--off' : '', { 'cfg__notice--stuck': pageLocked }]" :role="notice.tone === 'err' ? 'alert' : 'status'">
+    <div v-if="notice && ready" ref="noticeEl" class="ui-notice cfg__notice" tabindex="-1" :class="[notice.tone === 'err' ? 'ui-notice--err' : notice.tone === 'off' ? 'ui-notice--off' : '', { 'cfg__notice--stuck': pageLocked, 'cfg__notice--floating': noticeFloating }]" :role="notice.tone === 'err' ? 'alert' : 'status'">
       <!-- 红色的用带叉的圆圈，和概览、诊断页一样 / The red one takes the crossed circle, as on the overview and diagnostics -->
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10" /><path v-if="notice.tone === 'err'" d="m15 9-6 6M9 9l6 6" /><path v-else d="M12 8v4M12 16h.01" /></svg>
       <span><template v-for="(run, k) in noticeRuns(notice.text)" :key="k"><span v-if="run.glue" class="nowrap">{{ run.text }}</span><template v-else>{{ run.text }}<span v-if="run.breakAfter" class="brk" aria-hidden="true"></span></template></template></span>

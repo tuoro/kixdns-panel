@@ -1942,6 +1942,12 @@ test('滚到下面按保存、回应丢了：提示条吸顶，焦点在提示�
   await expect(notice).toBeInViewport({ ratio: 1 })
   await expect(notice).toBeFocused()
   expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0)
+  // 浮在内容上面时才有下沿；回到页顶、在原位时没有 / The lower edge only while floating over content; none in place at the top
+  await expect(notice).toHaveClass(/cfg__notice--floating/)
+  await page.evaluate(() => window.scrollTo(0, 0))
+  await expect(notice).not.toHaveClass(/cfg__notice--floating/)
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight))
+  await expect(notice).toHaveClass(/cfg__notice--floating/)
   // 解开以后回到原位 / Back in place once unlocked
   await reconnect(page)
   await expect(page.locator('.cfg__savebar')).toContainText(/已经保存过了/, { timeout: 12_000 })
@@ -1974,6 +1980,58 @@ test('滚到中段时锁住、解开：正看着的那一行不跳', async ({ pa
   await reconnect(page)
   await expect(page.locator('.cfg__savebar')).toContainText(/已经保存过了/, { timeout: 12_000 })
   expect(Math.abs(await top() - before)).toBeLessThanOrEqual(2)
+})
+
+// 滚到底时锁住、断线横幅进出、解开：正看着的那一行不往下掉（页面变短被夹住的那一截不补两遍）
+// Locking, the outage banner coming and going and unlocking while scrolled to the end: the row being looked at does not drop (the part
+// clamped as the page shrinks is not made up for twice)
+test('滚到底时锁住、解开：正看着的那一行不往下掉', async ({ page }) => {
+  await readSequence(page)
+  const rules = Array.from({ length: 20 }, (_, i) => ({ name: `r${i + 1}`, matchers: [{ type: 'domain_suffix', value: `site${i + 1}.example` }], actions: [{ type: 'forward', upstream: '1.1.1.1:53' }] }))
+  const config = { version: '1.0', settings: {}, pipeline_select: [{ pipeline: 'main', matchers: [] }], pipelines: [{ id: 'main', rules }] }
+  await page.goto('/config')
+  await expect(page.locator('.rcard')).toBeVisible()
+  await page.locator('input[type="file"]').setInputFiles({ name: 'many.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(config)) })
+  if (await page.locator('dialog[open]').count()) await page.keyboard.press('Escape')
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight))
+  const row = page.locator('[data-rule]', { hasText: 'site20.example' })
+  const top = () => row.evaluate((el) => Math.round(el.getBoundingClientRect().top))
+  const before = await top()
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-put-answer-lost', 'true'))
+  await page.locator('.cfg__savebar').getByRole('button', { name: '保存并应用' }).click()
+  await expect(page.locator('.cfg__notice')).toContainText('刚才那次保存不知道存上没有。')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-panel-down', 'true'))
+  await page.waitForTimeout(700)
+  expect(Math.abs(await top() - before)).toBeLessThanOrEqual(2)
+  await reconnect(page)
+  await expect(page.locator('.cfg__savebar')).toContainText(/已经保存过了/, { timeout: 12_000 })
+  await page.waitForTimeout(700)
+  expect(Math.abs(await top() - before)).toBeLessThanOrEqual(2)
+})
+
+// 锁着时离开、还锁着时回来：滚下去以后提示条照样浮起、画下沿 / Left while locked and back while still locked: scrolled down, the notice
+// still floats with its lower edge
+test('锁着时离开、还锁着时回来：提示条照样浮起', async ({ page }) => {
+  await readSequence(page)
+  const rules = Array.from({ length: 20 }, (_, i) => ({ name: `r${i + 1}`, matchers: [{ type: 'domain_suffix', value: `site${i + 1}.example` }], actions: [{ type: 'forward', upstream: '1.1.1.1:53' }] }))
+  const config = { version: '1.0', settings: {}, pipeline_select: [{ pipeline: 'main', matchers: [] }], pipelines: [{ id: 'main', rules }] }
+  await page.goto('/config')
+  await expect(page.locator('.rcard')).toBeVisible()
+  await page.locator('input[type="file"]').setInputFiles({ name: 'many.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(config)) })
+  if (await page.locator('dialog[open]').count()) await page.keyboard.press('Escape')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-put-answer-lost', 'true'))
+  await page.locator('.cfg__savebar').getByRole('button', { name: '保存并应用' }).click()
+  await expect(page.locator('.cfg__notice')).toContainText('刚才那次保存不知道存上没有。')
+  await page.evaluate(() => localStorage.setItem('kixdns:demo-panel-down', 'true'))
+  await page.locator('.desktop-nav').getByRole('link', { name: '日志', exact: true }).click()
+  await expect(page).toHaveURL(/\/logs/)
+  await page.locator('.desktop-nav').getByRole('link', { name: '规则', exact: true }).click()
+  const notice = page.locator('.cfg__notice')
+  await expect(notice).toContainText('刚才那次保存不知道存上没有。')
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight))
+  await expect(notice).toHaveClass(/cfg__notice--floating/)
+  await expect(notice).toBeInViewport({ ratio: 1 })
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-panel-down'))
 })
 
 // 文件还在选的时候页面锁住了（选好时才轮到导入）：不导入，说一句为什么；草稿和锁都不动

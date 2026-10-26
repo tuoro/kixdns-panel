@@ -486,7 +486,7 @@ async function control(action: ServiceAction): Promise<void> {
     // edits are applied first
     : config?.runtime.active_sha256 ? `重启前先应用${origin && pendingId ? versionName(pendingId, origin, true) : waitingName}。` : `重启后应用${waitingName}。`
   const restartBody = down
-    ? `KixDNS\u00a0现在起不来，重启会再试一次。${rollback ? `可能是改过的设置导致的，可以到配置页退回：${settingNames(Object.keys(rollback))}。` : ''}${waitingNote}${failedNote}`
+    ? `KixDNS\u00a0现在起不来，重启会再试一次。${rollback ? `可能是改过的设置导致的，可以到配置页退回：${settingNames(Object.keys(rollback), { all: true })}。` : ''}${waitingNote}${failedNote}`
     : `服务会短暂中断，缓存会清空。${waitingNote}${restartNames}${failedNote}`
   if ((action === 'stop' || action === 'restart') && !await confirm.ask({
     title: `${names[action]} KixDNS 服务`,
