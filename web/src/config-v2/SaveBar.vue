@@ -10,7 +10,7 @@ import DraftReviewDialog from './DraftReviewDialog.vue'
 import RuleText from './RuleText.vue'
 import { usePhone, useTightSaveBar } from './phone'
 import { changeCount, dialogEdits, discardWithUndo, editorEdited, model, userPart } from './store'
-import { busy, doc, waitingForBuild, cnameBlocked, pendingVersionId, queued, rereading, saveInFlight, sayBlocked, conflict, deferNote, deferSave, editTouched, elapsed, note, origin, save, saveMessage, pageLocked, refuseWhileLocked, stage, validate, validation, verdict } from './useConfigDocument'
+import { busy, doc, waitingForBuild, cnameBlocked, pendingVersionId, queued, rereading, saveInFlight, sayBlocked, conflict, deferNote, deferSave, editTouched, elapsed, note, origin, save, saveMessage, pageLocked, refuseWhileLocked, saveBarShown, stage, validate, validation, verdict } from './useConfigDocument'
 
 // 保存条只替草稿说话：有改动才升起来，保存完一会儿就收起。两步：先校验，再写入并热加载；任何一步失败都停住，原因里的规则能点。
 // KixDNS 没启动、连不上、不报能力时只存成待应用版本。Ctrl/Cmd+S 等于点保存。进度和结果都来自 useConfigDocument。
@@ -36,6 +36,8 @@ const pending = computed(() => changeCount.value > 0 || Boolean(props.jsonDirty)
 // 页面锁着（回应丢了的那次写入还没核对）：保存条收起，这件事由提示条说 / The page is locked (a lost write still unchecked): the bar folds
 // away and the notice speaks of it
 const visible = computed(() => !pageLocked.value && (pending.value || draftStage.value !== 'idle' || Boolean(props.jsonError)))
+watch(visible, (now) => { saveBarShown.value = now }, { immediate: true })
+onBeforeUnmount(() => { saveBarShown.value = false })
 const noteOpen = ref(false)
 // 单独点过「校验」且之后没再改：说一句校验通过 / After a lone 校验 with no edit since: say it passed
 // JSON 视图里又改了还没收进草稿：「校验通过」说的不是现在这份 / JSON edited and not yet folded: 校验通过 would not be about what is there now

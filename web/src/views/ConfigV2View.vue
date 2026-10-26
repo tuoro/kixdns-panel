@@ -26,7 +26,7 @@ import SettingsTab from '../config-v2/SettingsTab.vue'
 import UpstreamsTab from '../config-v2/UpstreamsTab.vue'
 import { useCompact, usePhone, useWide } from '../config-v2/phone'
 import { dialogEdits, dirty, discardOnLeave, sectionEdits, discardWithUndo, editorEdited, importReport, importSource, jsonEdited, model, replaceModel, reportOpen, ui, unsaved } from '../config-v2/store'
-import { applyBusy, bulkDeleting, busy, checkFirst, checkInstead, checkPending, heldLostSave, leaveMark, promiseDraftKept, lostWrite, lostWriteWhy, pageLocked, refuseWhileLocked, whenSettledOrLocked, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, stayedDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, beginOwnWrite, readAfterOwnWrite, readFresh, readQuietly, restartPending, restartRollback, runtimeDown, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse } from '../config-v2/useConfigDocument'
+import { applyBusy, bulkDeleting, busy, checkFirst, checkInstead, checkPending, heldLostSave, leaveMark, saveBarShown, promiseDraftKept, lostWrite, lostWriteWhy, pageLocked, refuseWhileLocked, whenSettledOrLocked, deleting, deferSave, hasPending, origin, rereading, restoredCount, conflict, dropEditsAfterSave, saveInFlight, onlySaving, leavingDuringSave, stayedDuringSave, setViewing, applyError, applyNow, canApplyNow, canCname, capabilityError, currentVersionId, doc, failureCause, hasApplyFailure, headerAction, headerLine, load, loadError, save, loading, pendingVersionId, refreshRuntime, beginOwnWrite, readAfterOwnWrite, readFresh, readQuietly, restartPending, restartRollback, runtimeDown, runtimeStopped, runtimeUnavailable, cnameInUse, cnameUse } from '../config-v2/useConfigDocument'
 import { dismissBlocklistToasts } from '../config-v2/useBlocklists'
 import { carryUpdate, refreshLanded, returnedToPage } from '../config-v2/updateCarry'
 import { useHelp } from '../composables/useHelp'
@@ -669,13 +669,33 @@ watch(pageLocked, (locked) => {
   else { window.removeEventListener('scroll', onFloatScroll); window.removeEventListener('resize', onFloatScroll); noticeFloating.value = false }
 }, { immediate: true })
 onBeforeUnmount(() => { window.removeEventListener('scroll', onFloatScroll); window.removeEventListener('resize', onFloatScroll); cancelAnimationFrame(floatFrame) })
-watch(pageLocked, (locked) => {
-  if (!locked) return
+watch(pageLocked, (locked, was) => {
+  if (locked) {
+    void nextTick(() => {
+      const box = document.querySelector<HTMLElement>('.cfg__notice')
+      box?.focus({ preventScroll: true })
+    })
+    return
+  }
+  if (!was) return
+  // 解开那一刻焦点在视口外（提示条回到页顶原位）、保存条带着结果出来：交给它的状态那一行，和回应正常回来时一样，不滚动页面。没有保存条时
+  // 不挪：交给能按、能打字的控件，空格会落进去 / At the moment it unlocks, with the focus off screen (the notice back in place at the top)
+  // and the save bar back with a result: the focus goes to its status line, as when the answer arrives, without scrolling. Without a save
+  // bar it stays: handed to a control or a field, a space press would land in it
   void nextTick(() => {
-    const box = document.querySelector<HTMLElement>('.cfg__notice')
-    box?.focus({ preventScroll: true })
+    const inView = (el: Element) => { const box = el.getBoundingClientRect(); return box.bottom > 0 && box.top < window.innerHeight }
+    const active = document.activeElement
+    if (active && active !== document.body && inView(active)) return
+    const status = document.querySelector<HTMLElement>('.cfg__savebar .ui-savebar__status')
+    if (status && inView(status)) status.focus({ preventScroll: true })
   })
 })
+// 锁住时页面底部留着保存条的位置；解开时保存条没回来（被拒、现在应用这一类）也先留着，等下一次保存条出来、或者离开配置页再收，页底的内容不往下掉
+// While locked the page keeps the save bar's room at the bottom; unlocked with no bar coming back (a refusal, the 现在应用 kind) it stays
+// until the next time the bar shows or the config page is left, so content at the bottom does not drop
+const holdBottom = ref(false)
+watch(pageLocked, (locked) => { if (locked) holdBottom.value = true }, { immediate: true })
+watch(saveBarShown, (shown) => { if (shown && !pageLocked.value) holdBottom.value = false })
 onMounted(() => {
   ui.mode = 'form'
   // 刷新后编辑器不在了，地址里的 ?rule= 也去掉 / After a reload the editor is gone, so ?rule= leaves the address too
@@ -885,7 +905,7 @@ const versionLabel = computed(() => { const id = pendingVersionId.value ?? curre
 
 <template>
   <RuleEditor v-if="editor && !inspector" ref="editorRef" :key="`${editor.ruleId}-${editor.groupId}-${editor.nonce ?? 0}`" :rule-id="editor.ruleId" :group-id="editor.groupId" :template="editor.template" :resume="editor.resume" @close="closeRule" @reopen="reopenRule" @saved="ruleSaved" @deleted="ruleDeleted" @edit-group="openGroup($event)" />
-  <div v-else class="page cfg">
+  <div v-else class="page cfg" :class="{ 'cfg--hold-bottom': holdBottom }">
     <UiPageHeader :title="pageTitle">
       <template #meta>
         <span v-if="!ready && !loadError" class="sk ui-ph__sk cfg__status-sk"></span>

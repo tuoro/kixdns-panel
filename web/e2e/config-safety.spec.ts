@@ -2007,6 +2007,8 @@ test('滚到底时锁住、解开：正看着的那一行不往下掉', async ({
   await expect(page.locator('.cfg__savebar')).toContainText(/已经保存过了/, { timeout: 12_000 })
   await page.waitForTimeout(700)
   expect(Math.abs(await top() - before)).toBeLessThanOrEqual(2)
+  // 保存条带着结果回来：留着的底部位置交还给它 / The save bar is back with the result: the kept room is handed back to it
+  await expect(page.locator('.cfg')).not.toHaveClass(/cfg--hold-bottom/)
 })
 
 // 锁着时离开、还锁着时回来：滚下去以后提示条照样浮起、画下沿 / Left while locked and back while still locked: scrolled down, the notice
@@ -2032,6 +2034,64 @@ test('锁着时离开、还锁着时回来：提示条照样浮起', async ({ pa
   await expect(notice).toHaveClass(/cfg__notice--floating/)
   await expect(notice).toBeInViewport({ ratio: 1 })
   await page.evaluate(() => localStorage.removeItem('kixdns:demo-panel-down'))
+})
+
+// 滚到底时保存被拒、回应丢了，解开时保存条不回来（草稿里没有别的修改）：底部的位置先留着，那一行不往下掉，等保存条出来才收
+// Scrolled to the end, a refused save loses its answer and on unlocking no save bar comes back (nothing else in the draft): the room at
+// the bottom stays so the row does not drop, until the save bar shows
+test('滚到底时保存被拒、回应丢了，解开时没有保存条：那一行不掉，底部位置等保存条出来才收', async ({ page }) => {
+  await readSequence(page)
+  const rules = Array.from({ length: 20 }, (_, i) => ({ name: `r${i + 1}`, matchers: [{ type: 'domain_suffix', value: `site${i + 1}.example` }], actions: [{ type: 'forward', upstream: '1.1.1.1:53' }] }))
+  const config = { version: '1.0', settings: {}, pipeline_select: [{ pipeline: 'main', matchers: [] }], pipelines: [{ id: 'main', rules }] }
+  await page.goto('/config')
+  await expect(page.locator('.rcard')).toBeVisible()
+  await page.locator('input[type="file"]').setInputFiles({ name: 'many.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(config)) })
+  if (await page.locator('dialog[open]').count()) await page.keyboard.press('Escape')
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight))
+  const row = page.locator('[data-rule]', { hasText: 'site20.example' })
+  const top = () => row.evaluate((el) => Math.round(el.getBoundingClientRect().top))
+  const before = await top()
+  await page.evaluate(() => { localStorage.setItem('kixdns:demo-apply-failed', 'true'); localStorage.setItem('e2e:lose-refusal', 'true') })
+  await page.locator('.cfg__savebar').getByRole('button', { name: '保存并应用' }).click()
+  await expect(page.locator('.cfg__notice')).toContainText('刚才那次保存不知道存上没有。')
+  await reconnect(page)
+  await expect(page.locator('.cfg__notice')).toContainText('没有生效', { timeout: 12_000 })
+  await expect(page.locator('.cfg__savebar')).toHaveCount(0)
+  await page.waitForTimeout(700)
+  expect(Math.abs(await top() - before)).toBeLessThanOrEqual(2)
+  // 留着的底部位置等保存条真的出来才收：解开以后还留着，加一条规则、保存条出来时才交还 / The kept room goes only once the save bar really
+  // shows: still there after unlocking, handed back when adding a rule brings the save bar
+  await expect(page.locator('.cfg')).toHaveClass(/cfg--hold-bottom/)
+  await addRule(page, 'after-refused.example', 'block')
+  await expect(page.locator('.cfg__savebar')).toBeVisible()
+  await expect(page.locator('.cfg')).not.toHaveClass(/cfg--hold-bottom/)
+})
+
+// 页面只往下滚了一点时断线（不锁）：横幅插进来，正看着的那一行不跳，连上以后也回到原处 / The panel goes unreachable with the page
+// scrolled down a little (no lock): the banner comes in, the row being looked at does not jump, and it is back in place once reconnected
+test('页面只往下滚了一点时断线又连上：正看着的那一行不跳', async ({ page }) => {
+  const rules = Array.from({ length: 20 }, (_, i) => ({ name: `r${i + 1}`, matchers: [{ type: 'domain_suffix', value: `site${i + 1}.example` }], actions: [{ type: 'forward', upstream: '1.1.1.1:53' }] }))
+  const config = { version: '1.0', settings: {}, pipeline_select: [{ pipeline: 'main', matchers: [] }], pipelines: [{ id: 'main', rules }] }
+  await page.goto('/config')
+  await expect(page.locator('.rcard')).toBeVisible()
+  await page.locator('input[type="file"]').setInputFiles({ name: 'many.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(config)) })
+  if (await page.locator('dialog[open]').count()) await page.keyboard.press('Escape')
+  await page.evaluate(() => window.scrollTo(0, 20))
+  const row = page.locator('[data-rule]', { hasText: 'site3.example' })
+  const top = () => row.evaluate((el) => Math.round(el.getBoundingClientRect().top))
+  const before = await top()
+  await page.evaluate(async () => {
+    localStorage.setItem('kixdns:demo-panel-down', 'true')
+    const url = performance.getEntriesByType('resource').map((e) => e.name).filter((n) => n.includes('/src/composables/useConnection.ts')).pop()!
+    await (await import(url)).useConnection().retry()
+  })
+  await expect(page.locator('.conn__inner')).toBeVisible()
+  await page.waitForTimeout(700)
+  expect(Math.abs(await top() - before)).toBeLessThanOrEqual(2)
+  await reconnect(page)
+  await expect(page.locator('.conn__inner')).toHaveCount(0)
+  await page.waitForTimeout(700)
+  expect(Math.abs(await top() - before)).toBeLessThanOrEqual(2)
 })
 
 // 文件还在选的时候页面锁住了（选好时才轮到导入）：不导入，说一句为什么；草稿和锁都不动

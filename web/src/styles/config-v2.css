@@ -174,7 +174,7 @@ body { background: var(--l-canvas); }
   /* 保存条贴在底栏上面、整宽，顶边一条细线；和底栏之间不再露出滚动的内容
      The save bar docks on top of the tab bar, full width with a hairline on top; no scrolling content shows between them */
   .cfg__savebar { right: 0; left: 0; bottom: var(--mobile-nav-height); max-width: none; border-width: 1px 0 0; border-radius: 0; box-shadow: none; }
-  .workspace__main:has(.cfg__savebar, .cfg__notice--stuck) { padding-bottom: calc(var(--mobile-nav-height) + var(--h-md) + var(--s-2) * 2 + var(--s-4)); }
+  .workspace__main:has(.cfg__savebar, .cfg--hold-bottom) { padding-bottom: calc(var(--mobile-nav-height) + var(--h-md) + var(--s-2) * 2 + var(--s-4)); }
   /* 保存条两个文字按钮同宽 / The save bar's two text buttons share a width */
   .cfg__savebar .savebar__note-toggle, .cfg__savebar .savebar__check { min-width: 3.5rem; }
   .cfg .ui-ph__actions .cfg__history { width: var(--h-md); min-height: var(--h-md); padding: 0; color: var(--l-ink-2); border-color: var(--l-line-strong); background: var(--l-surface); box-shadow: var(--shadow-xs); }
@@ -199,9 +199,10 @@ body { background: var(--l-canvas); }
   /* 规则页工具只占一行：搜索 + 筛选、测试、新建三个图标按钮 / The rules toolbar is one row: search plus three icon buttons (filter, test, new) */
   .rules > .toolbar { flex-wrap: nowrap; margin-bottom: var(--s-4); }
 }
-/* 没有保存条时页面底部不再预留它的位置；锁着时保存条收起也照留，页面不变短，滚到底时不往下掉 / Without a save bar the page no longer reserves
-   room for it; while locked the bar folds away but the room stays, so the page does not shrink and drop when scrolled to the end */
-.cfg:not(:has(.cfg__savebar, .cfg__notice--stuck)) { padding-bottom: 0; }
+/* 没有保存条时页面底部不再预留它的位置；锁着时、解开后保存条还没回来时照留（cfg--hold-bottom），页面不变短，滚到底时不往下掉 / Without a
+   save bar the page no longer reserves room for it; while locked, and unlocked until the bar comes back, the room stays (cfg--hold-bottom),
+   so the page does not shrink and drop when scrolled to the end */
+.cfg:not(.cfg--hold-bottom):not(:has(.cfg__savebar)) { padding-bottom: 0; }
 @media (min-width: 641px) {
   /* 保存条：备注框紧跟在「已修改 N 处」后面，把剩下的宽度用掉，左边不再悬在半空 / The save bar: the note field follows 已修改 N 处 directly and takes the remaining width, so its left edge no longer floats */
   .cfg__savebar:not(.ui-savebar--err) .ui-savebar__status { flex: 0 0 auto; margin-right: var(--s-4); }
@@ -1944,7 +1945,7 @@ a.rrow__hits { text-decoration: underline; text-decoration-color: var(--l-edge-h
   .cfg__savebar .savebar__note-toggle .ui-btn__chev { display: none; }
   .cfg__savebar .savebar__note { display: none; }
   .cfg__savebar .savebar__note.is-open { display: flex; flex: 1 1 100%; order: 3; width: auto; }
-  .workspace__main:has(.cfg__savebar, .cfg__notice--stuck) { padding-bottom: calc(var(--mobile-nav-height) + var(--h-md) + var(--s-3) * 2 + var(--s-4)); }
+  .workspace__main:has(.cfg__savebar, .cfg--hold-bottom) { padding-bottom: calc(var(--mobile-nav-height) + var(--h-md) + var(--s-3) * 2 + var(--s-4)); }
 }
 /* 手机上主按钮不留 7.5rem 的最小宽度：那会把「已修改 N 处」挤到和「备注」重叠 / On phones the primary button drops its 7.5rem minimum, which squeezed 已修改 N 处 into the 备注 button */
 @media (max-width: 640px) {

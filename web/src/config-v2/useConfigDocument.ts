@@ -697,6 +697,9 @@ function setUnanswered(record: LostWrite | null, head = ''): void {
 // speaks of it (see notice in ConfigV2View). A window already open before the lock is finished as usual: its edits go into the draft
 // and count as edits once checked (the check does not care how the draft came about)
 export const pageLocked = computed(() => lostWrite.value !== null)
+// 保存条这一刻在不在屏上（SaveBar 自己报）：锁住以后留着的底部位置，等它真的出来才收 / Whether the save bar is on screen right now (reported
+// by SaveBar): the bottom room kept since the lock goes only once it really shows
+export const saveBarShown = ref(false)
 /**
  * 锁着时轮到的写入：锁住以前点下、这时才轮到的（确认框开着、文件还在选），和锁着时还按得到的（Ctrl+S、「查看修改」里的保存）。这一步不做，
  * 说一句为什么；锁着返回 true。what 是没做的那件事
@@ -1386,7 +1389,7 @@ let applyFailedDown = false
 // while the leave question was open, so one wording is built once. A break may follow the subject
 function notLandedAway(lostSave: string, words: SaveWords | undefined, changedElsewhere: boolean): string {
   return changedElsewhere ? (words?.again ? `${lostSave}：不在现在的配置里，这份配置在别处改过了；回到配置页重新读取，${words.again}` : `${lostSave}\u200b不在现在的配置里：这份配置在别处改\u2060过\u2060了。草稿留在配\u2060置\u2060页，回去重新读取后再改`)
-    : `${lostSave}没有存上。${words?.kept ?? '草稿留在配\u2060置\u2060页'}，回去再保存`
+    : `${lostSave}\u200b没有存上。${words?.kept ?? '草稿留在配\u2060置\u2060页'}，回去再保存`
 }
 function settleUnanswered(announce: boolean): Promise<boolean> {
   if (settling) return settling
