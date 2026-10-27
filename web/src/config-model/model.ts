@@ -20,11 +20,11 @@ export interface UpstreamGroup {
 }
 
 export type ConditionField = 'domain' | 'geosite' | 'client_ip' | 'client_country' | 'client_private' | 'qtype' | 'qclass' | 'edns'
-export interface Condition { id: number; field: ConditionField; negate: boolean; regex?: boolean; values: string[] }
+export interface Condition { id: number; field: ConditionField; negate: boolean; regex?: boolean; exact?: boolean; values: string[] }
 
 export type ResponseField = 'rcode' | 'answer_ip' | 'answer_country' | 'answer_private' | 'answer_type' | 'upstream' | 'upstream_ip'
   | 'request_domain' | 'request_geosite' | 'txt' | 'qclass' | 'edns'
-export interface ResponseCondition { id: number; field: ResponseField; negate: boolean; regex?: boolean; txtMode?: 'exact' | 'prefix' | 'regex'; values: string[] }
+export interface ResponseCondition { id: number; field: ResponseField; negate: boolean; regex?: boolean; exact?: boolean; txtMode?: 'exact' | 'prefix' | 'regex'; values: string[] }
 
 export type BlockResponse = 'default' | 'NXDOMAIN' | 'REFUSED' | 'SERVFAIL' | 'NOERROR' | 'zero'
 export type Outcome =
@@ -127,21 +127,26 @@ export function kernelAddress(item: UpstreamAddress): string {
 
 // 每种条件能怎么比、列表里怎么读：编辑器的下拉和列表摘要用同一份措辞
 // How each condition compares and how the list reads it: the editor's menus and the list summary share these words
-export interface OpDef { value: string; label: string; negate: boolean; regex?: boolean; txtMode?: 'exact' | 'prefix' | 'regex'; phrase?: string }
+export interface OpDef { value: string; label: string; negate: boolean; regex?: boolean; exact?: boolean; txtMode?: 'exact' | 'prefix' | 'regex'; phrase?: string }
 // merge：并进另一个字段的运算里，不单独出现在字段下拉（「客户端 IP · 是内网」） / merge: folded into another field's comparisons instead of listed on its own (客户端 IP · 是内网)
-export interface FieldDef { label: string; subject?: string; merge?: string; ops: OpDef[]; values: boolean; placeholder: string; upper?: boolean; suggest?: string; valid?: (v: string, c: { regex?: boolean; txtMode?: string }) => boolean; hint?: string }
+export interface FieldDef { label: string; subject?: string; merge?: string; ops: OpDef[]; values: boolean; placeholder: string; upper?: boolean; suggest?: string; valid?: (v: string, c: { regex?: boolean; exact?: boolean; txtMode?: string }) => boolean;
+  // 值写错时说清是哪种错，没有就用笼统的那句 / Says which mistake the values make; without it the general line is used
+  explain?: (c: { regex?: boolean; exact?: boolean; values: string[] }) => string | null; hint?: string }
 const IS: OpDef[] = [{ value: 'is', label: '是', negate: false }, { value: 'not', label: '不是', negate: true }]
 const IN: OpDef[] = [{ value: 'is', label: '在', negate: false }, { value: 'not', label: '不在', negate: true }]
+// 「属于」是这个名字和它下面的所有子域名，「就是」只算这个名字本身 / 「属于」 is the name and every subdomain under it, 「就是」 the name itself only
 const DOMAIN_OPS: OpDef[] = [
-  { value: 'is', label: '是（含子域名）', phrase: '是', negate: false }, { value: 'not', label: '不是', negate: true },
+  { value: 'is', label: '属于', negate: false }, { value: 'not', label: '不属于', negate: true },
+  { value: 'exact', label: '就是', negate: false, exact: true }, { value: 'nexact', label: '不是', negate: true, exact: true },
   { value: 're', label: '匹配正则', negate: false, regex: true }, { value: 'nre', label: '不匹配正则', negate: true, regex: true },
 ]
 const validRegex = (v: string) => { try { new RegExp(v.replace(/^\(\?i\)/, '')); return true } catch { return false } }
-const domainValid = (v: string, c: { regex?: boolean }) => (c.regex ? validRegex(v) : isDomain(v))
+// 「就是」配 *. 自相矛盾：通配符说的是子域名 / 「就是」 with *. contradicts itself: the wildcard speaks of subdomains
+const domainValid = (v: string, c: { regex?: boolean; exact?: boolean }) => (c.regex ? validRegex(v) : isDomain(v) && !(c.exact && v.startsWith('*.')))
 // 内核按写的原样查分类，「geosite:cn」找不到 cn 这个分类，永远不命中 / The kernel looks the category up as written, so 「geosite:cn」 never finds cn and never matches
 const noGeositePrefix = (v: string): boolean => !/^geosite:/i.test(v)
 export const FIELD: Record<ConditionField, FieldDef> = {
-  domain: { label: '域名', ops: DOMAIN_OPS, values: true, placeholder: 'example.com，回车添加', valid: domainValid },
+  domain: { label: '域名', ops: DOMAIN_OPS, values: true, placeholder: 'example.com，回车添加', valid: domainValid, explain: (c) => exactWildcardProblem(c) },
   // 行里叫 GeoSite（正式面板一直这么叫），句子里说「域名属于 GeoSite cn」 / The row says GeoSite (the production panel's name); sentences say 「域名属于 GeoSite cn」
   geosite: { label: 'GeoSite', subject: '域名', ops: [{ value: 'is', label: '属于', phrase: '属于 GeoSite', negate: false }, { value: 'not', label: '不属于', phrase: '不属于 GeoSite', negate: true }], values: true, placeholder: '搜索分类，如 cn、google', suggest: 'geosite', valid: noGeositePrefix },
   client_ip: { label: '客户端 IP', ops: IN, values: true, placeholder: '192.168.1.0/24 或单个 IP', valid: (v) => isCidr(v) },
@@ -161,7 +166,7 @@ export const RESPONSE_FIELD: Record<ResponseField, FieldDef> = {
   answer_type: { label: '回答的记录类型', ops: IS, values: true, placeholder: 'A、AAAA、CNAME…', upper: true, suggest: 'qtype' },
   upstream: { label: '回答来自', ops: IS, values: true, placeholder: '10.0.0.53:53' },
   upstream_ip: { label: '上游 IP', ops: IN, values: true, placeholder: '10.0.0.0/8', valid: (v) => isCidr(v) },
-  request_domain: { label: '请求的域名', ops: DOMAIN_OPS, values: true, placeholder: 'example.com', valid: domainValid },
+  request_domain: { label: '请求的域名', ops: DOMAIN_OPS, values: true, placeholder: 'example.com', valid: domainValid, explain: (c) => exactWildcardProblem(c) },
   request_geosite: { label: '请求域名 GeoSite', subject: '请求的域名', ops: [{ value: 'is', label: '属于', phrase: '属于 GeoSite', negate: false }, { value: 'not', label: '不属于', phrase: '不属于 GeoSite', negate: true }], values: true, placeholder: '搜索分类，如 cn', suggest: 'geosite', valid: noGeositePrefix },
   txt: { label: 'TXT 内容', ops: [
     { value: 'is', label: '等于', negate: false, txtMode: 'exact' }, { value: 'not', label: '不等于', negate: true, txtMode: 'exact' },
@@ -171,8 +176,8 @@ export const RESPONSE_FIELD: Record<ResponseField, FieldDef> = {
   qclass: { label: '查询类别', ops: IS, values: true, placeholder: 'IN', upper: true, suggest: 'qclass' },
   edns: { label: '回答的 EDNS', ops: [{ value: 'is', label: '带', phrase: '回答带 EDNS', negate: false }, { value: 'not', label: '不带', phrase: '回答不带 EDNS', negate: true }], values: false, placeholder: '' },
 }
-export function opOf(def: FieldDef, c: { negate: boolean; regex?: boolean; txtMode?: string }): OpDef {
-  return def.ops.find((o) => o.negate === c.negate && Boolean(o.regex) === Boolean(c.regex) && (o.txtMode ?? undefined) === (c.txtMode ?? undefined))
+export function opOf(def: FieldDef, c: { negate: boolean; regex?: boolean; exact?: boolean; txtMode?: string }): OpDef {
+  return def.ops.find((o) => o.negate === c.negate && Boolean(o.regex) === Boolean(c.regex) && Boolean(o.exact) === Boolean(c.exact) && (o.txtMode ?? undefined) === (c.txtMode ?? undefined))
     ?? def.ops.find((o) => o.negate === c.negate) ?? def.ops[0]!
 }
 
@@ -180,7 +185,7 @@ function joinValues(values: string[]): string {
   if (values.length <= 3) return values.join('、')
   return `${values.slice(0, 2).join('、')} 等 ${values.length} 个`
 }
-function phrase(def: FieldDef, c: { negate: boolean; regex?: boolean; txtMode?: string; values: string[] }): string {
+function phrase(def: FieldDef, c: { negate: boolean; regex?: boolean; exact?: boolean; txtMode?: string; values: string[] }): string {
   const op = opOf(def, c)
   if (!def.values) return op.phrase ?? `${def.label}${op.label}`
   const subject = def.subject ?? def.label
@@ -196,7 +201,7 @@ export function conditionsText(groups: Condition[][]): string {
 
 // 内核原样的条件链读成一句话（高级规则和高级入口用） / A verbatim kernel chain read as a sentence (for advanced rules and entries)
 const RAW_LABEL: Record<string, string> = {
-  any: '所有请求', listener_label: '监听标签是', client_ip: '客户端 IP 在', domain_suffix: '域名是', domain_regex: '域名匹配正则', geo_site: '域名属于 GeoSite', geo_site_not: '域名不属于 GeoSite',
+  any: '所有请求', listener_label: '监听标签是', client_ip: '客户端 IP 在', domain_suffix: '域名属于', domain_exact: '域名就是', domain_regex: '域名匹配正则', geo_site: '域名属于 GeoSite', geo_site_not: '域名不属于 GeoSite',
   geoip_country: '客户端地区是', geoip_private: '客户端内网', qtype: '查询类型是', qclass: '查询类别是', edns_present: '带 EDNS',
 }
 export function rawMatchersText(matchers: Record<string, unknown>[] | undefined, ruleOp?: string): string {
@@ -272,10 +277,17 @@ const IPV6 = /^[0-9a-f]{0,4}(:[0-9a-f]{0,4}){2,7}$/i
 export const isIp = (v: string) => IPV4.test(v) || IPV6.test(v)
 export const isCidr = (v: string) => { const [ip, len] = v.split('/'); return isIp(ip ?? '') && (len === undefined || /^\d{1,3}$/.test(len)) }
 export const isDomain = (v: string) => /^(\*\.)?[a-z0-9_-]+(\.[a-z0-9_-]+)*\.?$/i.test(v)
+// 「属于」本身就含子域名，*. 写不写一样 / 「属于」 already covers subdomains, so *. changes nothing
+export const withoutWildcard = (v: string) => v.replace(/^\*\./, '')
 
-export function valueProblem(def: FieldDef, c: { values: string[]; regex?: boolean; txtMode?: string }): string | null {
+// 域名「就是」写了 *.：通配符说的是子域名，和「就是」矛盾，直接说怎么改 / 域名 就是 with *.: a wildcard speaks of subdomains, which 就是 excludes, so say how to fix it
+export const exactWildcardProblem = (c: { regex?: boolean; exact?: boolean; values: string[] }): string | null =>
+  !c.regex && c.exact && c.values.some((v) => v.startsWith('*.')) ? '「就是」只算这个名字本身，*. 要改用「属于」' : null
+export function valueProblem(def: FieldDef, c: { values: string[]; regex?: boolean; exact?: boolean; txtMode?: string }): string | null {
   if (!def.values) return null
   if (!c.values.length) return `「${def.label}」还没填值`
+  const why = def.explain?.(c)
+  if (why) return why
   if (def.valid && !c.values.every((v) => def.valid!(v, c))) return `「${def.label}」里有写错的值（标红的那个）`
   return null
 }
@@ -343,9 +355,11 @@ interface Term { negative: boolean; any: KMatcher[] }
 function requestTerms(c: Condition): Term[] {
   const v = c.values.map((x) => x.trim()).filter(Boolean)
   switch (c.field) {
-    case 'domain':
-      if (c.negate) return v.map((x) => ({ negative: true, any: [c.regex ? { type: 'domain_regex', value: x } : { type: 'domain_suffix', value: x.replace(/^\*\./, '') }] }))
-      return [{ negative: false, any: v.map((x) => (c.regex ? { type: 'domain_regex', value: x } : { type: 'domain_suffix', value: x.replace(/^\*\./, '') })) }]
+    case 'domain': {
+      const make = (x: string): KMatcher => (c.regex ? { type: 'domain_regex', value: x } : c.exact ? { type: 'domain_exact', value: x } : { type: 'domain_suffix', value: withoutWildcard(x) })
+      if (c.negate) return v.map((x) => ({ negative: true, any: [make(x)] }))
+      return [{ negative: false, any: v.map(make) }]
+    }
     case 'geosite':
       if (c.negate) return v.map((x) => ({ negative: true, any: [{ type: 'geo_site', value: x }] }))
       return [{ negative: false, any: v.map((x) => ({ type: 'geo_site', value: x })) }]
@@ -367,7 +381,7 @@ function responseTerms(c: ResponseCondition): Term[] {
     case 'answer_type': return each((x) => ({ type: 'response_type', value: x.toUpperCase() }))
     case 'upstream': return each((x) => ({ type: 'upstream_equals', value: x }))
     case 'qclass': return each((x) => ({ type: 'response_qclass', value: x.toUpperCase() }))
-    case 'request_domain': return each((x) => (c.regex ? { type: 'request_domain_regex', value: x } : { type: 'request_domain_suffix', value: x }))
+    case 'request_domain': return each((x) => (c.regex ? { type: 'request_domain_regex', value: x } : c.exact ? { type: 'request_domain_exact', value: x } : { type: 'request_domain_suffix', value: withoutWildcard(x) }))
     case 'request_geosite': return v.map((x) => ({ negative: false, any: [{ type: c.negate ? 'response_request_domain_geosite_not' : 'response_request_domain_geosite', value: x }] }))
     case 'txt': return each((x) => ({ type: 'response_txt_content', mode: c.txtMode ?? 'exact', value: x }))
     case 'answer_ip': return [{ negative: c.negate, any: [{ type: 'response_answer_ip', cidr: v.map(cidrOf).join(',') }] }]

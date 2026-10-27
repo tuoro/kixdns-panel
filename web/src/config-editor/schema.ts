@@ -216,7 +216,8 @@ export const MATCH_OPERATORS: SelectOption[] = [
 const SELECTOR_MATCHERS: MatcherDefinition[] = [
   { value: 'listener_label', label: '监听标签', fields: ['value'] },
   { value: 'client_ip', label: '客户端 IP', fields: ['cidr'] },
-  { value: 'domain_suffix', label: '域名（含子域名）', fields: ['value'] },
+  { value: 'domain_suffix', label: '域名属于', fields: ['value'] },
+  { value: 'domain_exact', label: '域名就是', fields: ['value'] },
   { value: 'domain_regex', label: '域名匹配正则', fields: ['value'] },
   { value: 'any', label: '所有请求', fields: [] },
   { value: 'qclass', label: '查询类别', fields: ['value'] },
@@ -232,7 +233,8 @@ const REQUEST_MATCHERS: MatcherDefinition[] = SELECTOR_MATCHERS.filter((item) =>
 
 const RESPONSE_MATCHERS: MatcherDefinition[] = [
   { value: 'upstream_equals', label: '回答来自', fields: ['value'] },
-  { value: 'request_domain_suffix', label: '请求的域名（含子域名）', fields: ['value'] },
+  { value: 'request_domain_suffix', label: '请求的域名属于', fields: ['value'] },
+  { value: 'request_domain_exact', label: '请求的域名就是', fields: ['value'] },
   { value: 'request_domain_regex', label: '请求的域名匹配正则', fields: ['value'] },
   { value: 'response_type', label: '回答的记录类型', fields: ['value'] },
   { value: 'response_rcode', label: '响应码', fields: ['value'] },

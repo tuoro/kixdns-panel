@@ -10,6 +10,8 @@ const matcherHints: Record<string, MatcherHint> = {
   listener_label: { label: '标签', example: '监听标签' },
   domain_suffix: { label: '域名', example: 'example.com' },
   request_domain_suffix: { label: '域名', example: 'example.com' },
+  domain_exact: { label: '域名', example: 'api.example.com' },
+  request_domain_exact: { label: '域名', example: 'api.example.com' },
   domain_regex: { label: '正则', example: '^api\\.example\\.com\\.?$', help: '正则里的点要写成 \\.' },
   request_domain_regex: { label: '正则', example: '^api\\.example\\.com\\.?$', help: '正则里的点要写成 \\.' },
   qtype: { label: '类型', example: 'A' },

@@ -39,7 +39,7 @@ describe('规则语义摘要', () => {
     expect(summarizeMatchers([
       { type: 'domain_suffix', operator: 'and', value: '.example' },
       { type: 'client_ip', operator: 'and_not', cidr: '192.0.2.0/24' },
-    ], 'and', 'request')).toBe('域名是 .example（含子域名） 且非 客户端 IP 属于 192.0.2.0/24')
+    ], 'and', 'request')).toBe('域名属于 .example 且非 客户端 IP 属于 192.0.2.0/24')
   })
 
   it('准确摘要主要动作并保留未知动作类型', () => {

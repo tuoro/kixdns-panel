@@ -1,7 +1,7 @@
 import { normalUrl } from './blocklist'
 import { importKernel, type ImportNote } from './importer'
 import type { KConfigLike } from './kernel'
-import { blocklistKey, compile, emptyBlocklists, nextId, ruleGroupPipelineId, type Model, type RawEntry, type RuleGroup } from './model'
+import { blocklistKey, compile, emptyBlocklists, nextId, ruleGroupPipelineId, withoutWildcard, type Model, type RawEntry, type Rule, type RuleGroup } from './model'
 
 // 配置文件里存的样子：内核配置 + 顶层 panel 键。内核和面板服务都不认 panel 这个键，也不会拒绝它（内核的 PipelineConfig 没开
 // deny_unknown_fields，面板服务只按内核能力校验）。panel 里放整份模型和一个指向内核部分的散列：打开时散列对得上就直接用模型，
@@ -48,6 +48,23 @@ function withoutListeners(model: Model): Model {
   return { ...model, ruleGroups, ...(moved.length ? { entries: [...moved, ...(model.entries ?? [])] } : {}) }
 }
 
+// 以前域名「属于」的值能写成 *.example.com，生成配置时才去掉 *.，界面上却一直显示着，看着像只管子域名。读进来就去掉，界面上看到的
+// 就是实际匹配的范围：规则的条件生成的内核配置不变，只是同一个值写了两遍（*.x 和 x）的只留一个。回答条件里的请求域名以前原样写 *.x，
+// 内核按字面比后缀，一直匹配不到；现在和规则一样写 x，下次保存起按 x 和它的子域名算
+// The 域名 属于 values used to keep *.example.com, dropped only when the config was built, so the page showed a wildcard
+// that read as subdomains only. It is dropped on read, so the page shows what actually matches: the kernel config built from a
+// rule's conditions is unchanged, except that a value written twice (*.x and x) is kept once. The request domain in answer
+// conditions used to be written as *.x, which the kernel compares as a literal suffix and so never matched; it is now written
+// as x like the rules, covering x and its subdomains from the next save
+function withoutWildcards(model: Model): Model {
+  const plain = <C extends { field: string; regex?: boolean; exact?: boolean; values: string[] }>(c: C): C =>
+    (c.field === 'domain' || c.field === 'request_domain') && !c.regex && !c.exact && c.values.some((v) => v.startsWith('*.'))
+      ? { ...c, values: [...new Set(c.values.map(withoutWildcard))] }
+      : c
+  const rule = (r: Rule): Rule => ({ ...r, conditions: r.conditions.map((g) => g.map(plain)), response: { ...r.response, conditions: r.response.conditions.map(plain) } })
+  return { ...model, rules: model.rules.map(rule), ruleGroups: model.ruleGroups.map((g) => ({ ...g, rules: g.rules.map(rule) })) }
+}
+
 // 拦截列表之前的模型没有这一项：读进来补一份空的。没记 builtFor 的，当作文件就是按现在的订阅合成的
 // Models from before the blocklists lack them: an empty one is added on read. One without builtFor is taken as built for its current subscriptions
 const withBlocklists = (model: Model): Model => {
@@ -75,7 +92,7 @@ const withBlocklists = (model: Model): Model => {
 export function readConfig(cfg: Record<string, unknown>, prev?: Model): ReadResult {
   const panel = cfg.panel as Partial<PanelBlock> | undefined
   const kernel = kernelPart(cfg)
-  if (panel && panel.v === PANEL_FORMAT && panel.model && panel.hash === panelHash(kernel)) return { model: withBlocklists(withoutListeners(panel.model)), source: 'panel', report: null }
+  if (panel && panel.v === PANEL_FORMAT && panel.model && panel.hash === panelHash(kernel)) return { model: withoutWildcards(withBlocklists(withoutListeners(panel.model))), source: 'panel', report: null }
   const base = panel?.model ?? prev
   const result = importKernel(kernel, base && withBlocklists(base))
   return { model: result.model, source: 'imported', report: { notes: result.notes, stats: result.stats } }

@@ -12,7 +12,7 @@ export interface CondTree { match: Match; items: CondItem[] }
 
 export const isGroup = (item: CondItem): item is CondGroup => 'group' in item
 
-const same = (a: Condition, b: Condition) => a.field === b.field && a.negate === b.negate && Boolean(a.regex) === Boolean(b.regex) && a.values.length === b.values.length && a.values.every((v, i) => v === b.values[i])
+const same = (a: Condition, b: Condition) => a.field === b.field && a.negate === b.negate && Boolean(a.regex) === Boolean(b.regex) && Boolean(a.exact) === Boolean(b.exact) && a.values.length === b.values.length && a.values.every((v, i) => v === b.values[i])
 
 // 组里一个条件也没有就当它不存在：空组不会让整条规则什么都匹配不上 / An empty group counts as absent, so it never makes the whole rule match nothing
 function clausesOf(item: CondItem): Condition[][] {
