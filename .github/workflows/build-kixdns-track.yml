@@ -142,13 +142,13 @@ jobs:
       # prebuilt release at the same version with its SHA-256 checked. fallback: none fails loudly
       # instead of silently compiling from source again when no prebuilt binary exists.
       - name: Install dependency auditor
-        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-audit@0.22.2
           fallback: none
 
       - name: Cache enhanced build
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
         with:
           workspaces: |
             . -> target
@@ -295,7 +295,7 @@ jobs:
           targets: ${{ matrix.platform.target }}
 
       - name: Cache enhanced build
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
         with:
           workspaces: |
             . -> target
