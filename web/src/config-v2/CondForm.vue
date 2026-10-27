@@ -7,7 +7,7 @@ import UiSelect from '../components/ui/UiSelect.vue'
 import UiTabs from '../components/ui/UiTabs.vue'
 import { newOf, opPart, SUGGEST, type AnyCond } from '../config-model/condKinds'
 import { bangNote, geositeWarning, uncheckedNote } from '../config-model/geosite'
-import { opOf, valueProblem, type FieldDef } from '../config-model/model'
+import { exactWildcardProblem, opOf, valueProblem, withoutWildcard, type FieldDef } from '../config-model/model'
 import ChipsInput from './ChipsInput.vue'
 import GeositeInput from './GeositeInput.vue'
 import { usePhone } from './phone'
@@ -80,11 +80,41 @@ const setMatch = (match: string) => emit('update:modelValue', { ...props.modelVa
 function patch(i: number, part: Partial<AnyCond>): void {
   setItems(props.modelValue.items.map((c, j) => (j === i && !isGroup(c) ? { ...c, ...part } : c)))
 }
+// 域名「属于」本身就含子域名：写进来的 *. 去掉，框下面说一句为什么。「就是」不收 *.，标红
+// 域名 属于 covers subdomains already: a *. written in is dropped, with a line under the field saying why. 就是 refuses *. and marks it red
+const isDomainField = (c: AnyCond) => c.field === 'domain' || c.field === 'request_domain'
+const coversSubdomains = (c: AnyCond) => isDomainField(c) && !c.regex && !c.exact
+const wildcardDropped = ref(new Set<number>())
+const wildcardNote = (c: AnyCond) => (coversSubdomains(c) && wildcardDropped.value.has(c.id) ? '「属于」已经包含子域名，*. 不用写' : null)
+// 「就是」配 *. 当场说清楚，不等保存 / 就是 with *. is explained at once, not only on save
+const wildcardConflict = (c: AnyCond) => (isDomainField(c) ? exactWildcardProblem(c) : null)
+// 提示只说刚才那一下：下一次改这个条件时就收起 / The note speaks of that one edit only: the next change to the condition takes it away
+function withSubdomainsCovered(c: AnyCond, part: Partial<AnyCond>): Partial<AnyCond> {
+  const next = { ...c, ...part }
+  const dropped = new Set(wildcardDropped.value)
+  const strip = coversSubdomains(next) && next.values.some((v) => v.startsWith('*.'))
+  if (strip) dropped.add(c.id)
+  else dropped.delete(c.id)
+  wildcardDropped.value = dropped
+  return strip ? { ...part, values: [...new Set(next.values.map(withoutWildcard))] } : part
+}
+function setValues(i: number, values: string[]): void {
+  const item = props.modelValue.items[i]
+  if (item && !isGroup(item)) patch(i, withSubdomainsCovered(item, { values }))
+}
 function setOp(i: number, value: string): void {
   const item = props.modelValue.items[i]
   if (!item || isGroup(item)) return
   const next = def(item).ops.find((o) => o.value === value)
-  if (next) patch(i, opPart(next))
+  if (next) patch(i, withSubdomainsCovered(item, opPart(next)))
+}
+// 手机编辑页底下那句：域名先说范围，再说填几个怎么算 / The line under the phone editor: for domains the reach first, then how several values count
+function sheetHelp(c: AnyCond): string {
+  const count = c.negate ? '可以填几个，全都不符合才算' : '可以填几个，符合其中一个就算'
+  // 红字已经说了「就是」管多大，这里不再重复 / The red line already says what 就是 covers, so it is not repeated here
+  if (!isDomainField(c) || c.regex || wildcardConflict(c)) return count
+  // 刚去掉过 *. 时用那句说明代替范围，不把子域名说两遍 / Right after a *. was dropped its note stands in for the reach, so subdomains are not said twice
+  return `${c.exact ? '只算这个名字本身，不含子域名' : (wildcardNote(c) ?? '包括它下面的所有子域名')}。${count}`
 }
 function patchGroup(i: number, tree: AnyTree): void {
   setItems(props.modelValue.items.map((c, j) => (j === i && isGroup(c) ? { ...c, match: tree.match, items: tree.items.filter((x): x is AnyCond => !isGroup(x)) } : c)))
@@ -138,8 +168,10 @@ function addGroup(): void {
             <p v-if="geoUnchecked(item)" class="ui-field-note">{{ geoUnchecked(item) }}</p>
           </GeositeInput>
           <template v-else>
-            <ChipsInput :model-value="item.values" :describedby="problem(item) ? errId(i) : undefined" :label="def(item).label" :placeholder="def(item).placeholder" :suggestions="SUGGEST[item.field] ?? []" :upper="def(item).upper" :spaces="item.field === 'txt'" :valid="valid(item)" :invalid="Boolean(problem(item))" @update:model-value="patch(i, { values: $event })" />
+            <ChipsInput :model-value="item.values" :describedby="problem(item) ? errId(i) : undefined" :label="def(item).label" :placeholder="def(item).placeholder" :suggestions="SUGGEST[item.field] ?? []" :upper="def(item).upper" :spaces="item.field === 'txt'" :valid="valid(item)" :invalid="Boolean(problem(item))" @update:model-value="setValues(i, $event)" />
             <p v-if="problem(item)" :id="errId(i)" class="ui-field-error">{{ problem(item) }}</p>
+            <p v-else-if="wildcardConflict(item)" class="ui-field-error">{{ wildcardConflict(item) }}</p>
+            <p v-else-if="wildcardNote(item)" class="ui-field-note">{{ wildcardNote(item) }}</p>
           </template>
         </div>
         <span v-else />
@@ -161,8 +193,9 @@ function addGroup(): void {
         <p v-if="geoNote(editingCond)" class="ui-field-note">{{ geoNote(editingCond) }}</p>
         <p v-if="geoUnchecked(editingCond)" class="ui-field-note">{{ geoUnchecked(editingCond) }}</p>
       </GeositeInput>
-      <ChipsInput v-else :model-value="editingCond.values" :label="def(editingCond).label" :placeholder="def(editingCond).placeholder" :suggestions="SUGGEST[editingCond.field] ?? []" :upper="def(editingCond).upper" :spaces="editingCond.field === 'txt'" :valid="valid(editingCond)" :invalid="Boolean(problem(editingCond))" @update:model-value="patch(editing!, { values: $event })" />
-      <p class="cform__help">{{ op(editingCond).negate ? '可以填几个，全都不符合才算' : '可以填几个，符合其中一个就算' }}</p>
+      <ChipsInput v-else :model-value="editingCond.values" :label="def(editingCond).label" :placeholder="def(editingCond).placeholder" :suggestions="SUGGEST[editingCond.field] ?? []" :upper="def(editingCond).upper" :spaces="editingCond.field === 'txt'" :valid="valid(editingCond)" :invalid="Boolean(problem(editingCond))" @update:model-value="setValues(editing!, $event)" />
+      <p v-if="wildcardConflict(editingCond)" class="ui-field-error">{{ wildcardConflict(editingCond) }}</p>
+      <p class="cform__help">{{ sheetHelp(editingCond) }}</p>
     </template>
     <template #foot><button class="ui-btn ui-btn--text psheet__delete" type="button" @click="remove(editing!)"><Trash2 :size="16" aria-hidden="true" />删除</button></template>
   </PhoneSheet>

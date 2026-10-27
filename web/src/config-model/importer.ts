@@ -86,6 +86,7 @@ function requestCondition(l: Lit): Condition {
   const v = String(m.value ?? '')
   switch (m.type) {
     case 'domain_suffix': return { id: cid(), field: 'domain', negate: neg, regex: false, values: [v] }
+    case 'domain_exact': return { id: cid(), field: 'domain', negate: neg, regex: false, exact: true, values: [v] }
     case 'domain_regex': return { id: cid(), field: 'domain', negate: neg, regex: true, values: [v] }
     case 'geo_site': return { id: cid(), field: 'geosite', negate: neg, values: [v] }
     case 'geo_site_not': return { id: cid(), field: 'geosite', negate: !neg, values: [v] }
@@ -108,6 +109,7 @@ function responseCondition(l: Lit): ResponseCondition {
     case 'upstream_equals': return c('upstream', [v])
     case 'response_qclass': return c('qclass', [v.toUpperCase()])
     case 'request_domain_suffix': return c('request_domain', [v])
+    case 'request_domain_exact': return c('request_domain', [v], { exact: true })
     case 'request_domain_regex': return c('request_domain', [v], { regex: true })
     case 'response_request_domain_geosite': return c('request_geosite', [v])
     case 'response_request_domain_geosite_not': return { ...c('request_geosite', [v]), negate: !neg }
@@ -123,9 +125,9 @@ function responseCondition(l: Lit): ResponseCondition {
 // 同一组里同一种「不是」并成一条（几个值都不是）；只差一个肯定条件的几组并成一组（几个值任一） /
 // Within a group, negations of one kind merge (none of the values); groups differing in one positive condition merge (any of the values)
 const condsKey = (c: Condition[][]) => c.map((g) => g.map(fullKey).sort().join('&')).sort().join('|')
-const condKey = (c: { field: string; negate: boolean; regex?: boolean }) => `${c.field}|${c.negate}|${Boolean(c.regex)}`
-const fullKey = (c: { field: string; negate: boolean; regex?: boolean; values: string[] }) => `${condKey(c)}|${[...c.values].sort().join(',')}`
-function mergeNegatives<C extends { field: string; negate: boolean; regex?: boolean; values: string[] }>(conds: C[]): C[] {
+const condKey = (c: { field: string; negate: boolean; regex?: boolean; exact?: boolean }) => `${c.field}|${c.negate}|${Boolean(c.regex)}|${Boolean(c.exact)}`
+const fullKey = (c: { field: string; negate: boolean; regex?: boolean; exact?: boolean; values: string[] }) => `${condKey(c)}|${[...c.values].sort().join(',')}`
+function mergeNegatives<C extends { field: string; negate: boolean; regex?: boolean; exact?: boolean; values: string[] }>(conds: C[]): C[] {
   const out: C[] = []
   for (const c of conds) {
     const same = c.negate && c.values.length ? out.find((o) => o.negate && o.values.length && condKey(o) === condKey(c)) : undefined

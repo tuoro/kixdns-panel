@@ -41,7 +41,8 @@ export function summarizeMatcher(matcher: MatcherConfig, scope: MatcherScope): s
     case 'any': return '所有请求'
     case 'listener_label': return `监听标签是 ${value}`
     case 'client_ip': return `客户端 IP 属于 ${cidr}`
-    case 'domain_suffix': return `域名是 ${value}（含子域名）`
+    case 'domain_suffix': return `域名属于 ${value}`
+    case 'domain_exact': return `域名就是 ${value}`
     case 'domain_regex': return `域名匹配正则 ${value}`
     case 'qclass': return `查询类别是 ${value}`
     case 'edns_present': return expectation(matcher, '请求带 EDNS', '请求不带 EDNS')
@@ -51,7 +52,8 @@ export function summarizeMatcher(matcher: MatcherConfig, scope: MatcherScope): s
     case 'geoip_private': return expectation(matcher, '客户端是内网', '客户端不是内网')
     case 'qtype': return `查询类型是 ${value}`
     case 'upstream_equals': return `回答来自 ${value}`
-    case 'request_domain_suffix': return `请求的域名是 ${value}（含子域名）`
+    case 'request_domain_suffix': return `请求的域名属于 ${value}`
+    case 'request_domain_exact': return `请求的域名就是 ${value}`
     case 'request_domain_regex': return `请求的域名匹配正则 ${value}`
     case 'response_type': return `回答的记录类型是 ${value}`
     case 'response_rcode': return `响应码是 ${value}`

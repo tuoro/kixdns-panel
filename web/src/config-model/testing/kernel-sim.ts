@@ -31,6 +31,7 @@ export const SIM_GEOSITE: Record<string, string[]> = {
   'kixdns-panel-block-important': ['force.example'],
   'kixdns-panel-allow-important': ['vip.force.example'],
 }
+const exactOf = (domain: string, name: string) => domain === name.toLowerCase().replace(/\.$/, '')
 const suffixOf = (domain: string, suffix: string) => { const s = suffix.toLowerCase().replace(/^\./, '').replace(/\.$/, ''); return domain === s || domain.endsWith(`.${s}`) }
 export const inSimGeosite = (domain: string, cat: string) => (SIM_GEOSITE[cat.toLowerCase()] ?? []).some((s) => suffixOf(domain, s))
 
@@ -58,6 +59,7 @@ function requestMatch(m: KMatcher, q: SimQuery): boolean {
     case 'any': return true
     case 'listener_label': return (q.listener ?? 'default') === value
     case 'domain_suffix': return suffixOf(domain, value)
+    case 'domain_exact': return exactOf(domain, value)
     case 'domain_regex': return regexOf(value)?.test(domain) ?? false
     case 'client_ip': return String(m.cidr ?? '').split(',').some((c) => c.trim() && ipInCidr(q.client, c))
     case 'geoip_country': return codes(m).includes(countryOf(q.client))
@@ -78,6 +80,7 @@ function responseMatch(m: KMatcher, q: SimQuery, r: UpstreamReply): boolean {
   switch (m.type) {
     case 'upstream_equals': return r.upstream === value
     case 'request_domain_suffix': return suffixOf(domain, value)
+    case 'request_domain_exact': return exactOf(domain, value)
     case 'request_domain_regex': return regexOf(value)?.test(domain) ?? false
     case 'response_upstream_ip': return cidrs.some((c) => ipInCidr(r.upstream.replace(/^[a-z+_]+:/, '').split(':')[0] ?? '', c))
     case 'response_answer_ip': return ips.some((ip) => cidrs.some((c) => ipInCidr(ip, c)))
@@ -226,7 +229,7 @@ export function checkQueries(cfg: KConfigLike, limit = Infinity): SimQuery[] {
     if (Array.isArray(v)) v.forEach(walk)
     else if (v && typeof v === 'object') {
       const o = v as Record<string, unknown>
-      if ((o.type === 'domain_suffix' || o.type === 'request_domain_suffix') && typeof o.value === 'string' && o.value) { domains.add(o.value); domains.add(`www.${o.value}`) }
+      if (['domain_suffix', 'request_domain_suffix', 'domain_exact', 'request_domain_exact'].includes(String(o.type)) && typeof o.value === 'string' && o.value) { domains.add(o.value); domains.add(`www.${o.value}`) }
       Object.values(o).forEach(walk)
     }
   }

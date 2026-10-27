@@ -12,7 +12,7 @@ export const RCODE_SUGGESTIONS = ['NOERROR', 'SERVFAIL', 'NXDOMAIN', 'REFUSED', 
 // The condition form's 添加条件 menu lists fields only (域名, 客户端 IP …), ordered domain / query / client; 是 / 不是 / regex is
 // changed in a small menu under the row's name instead of a long list of 「排除域名」「域名正则」 entries. Request conditions (a rule's
 // 如果) and answer conditions (上游回答后) each have an order over one shared form.
-export interface AnyCond { id: number; field: string; negate: boolean; regex?: boolean; txtMode?: 'exact' | 'prefix' | 'regex'; values: string[] }
+export interface AnyCond { id: number; field: string; negate: boolean; regex?: boolean; exact?: boolean; txtMode?: 'exact' | 'prefix' | 'regex'; values: string[] }
 
 export const REQUEST_ORDER = ['domain', 'geosite', 'qtype', 'qclass', 'edns', 'client_ip', 'client_country', 'client_private']
 export const RESPONSE_ORDER = ['rcode', 'answer_ip', 'answer_country', 'answer_private', 'answer_type', 'txt', 'upstream', 'upstream_ip', 'request_domain', 'request_geosite', 'qclass', 'edns']
@@ -23,9 +23,9 @@ export const SUGGEST: Record<string, readonly string[]> = {
 }
 
 // 一个运算落到条件上：是不是排除、是不是正则、TXT 怎么比 / One comparison applied to a condition: whether it excludes, whether it is a regex, how TXT compares
-export const opPart = (op: OpDef): Pick<AnyCond, 'negate' | 'regex' | 'txtMode'> => ({ negate: op.negate, regex: Boolean(op.regex), txtMode: op.txtMode })
+export const opPart = (op: OpDef): Pick<AnyCond, 'negate' | 'regex' | 'exact' | 'txtMode'> => ({ negate: op.negate, regex: Boolean(op.regex), exact: Boolean(op.exact), txtMode: op.txtMode })
 
-// 新条件用这个字段的第一种比较（域名「是（含子域名）」、客户端 IP「在」） / A new condition takes the field's first comparison (域名 是（含子域名）, 客户端 IP 在)
+// 新条件用这个字段的第一种比较（域名「属于」、客户端 IP「在」） / A new condition takes the field's first comparison (域名 属于, 客户端 IP 在)
 export function newOf(field: string, id: number, fields: Record<string, FieldDef>): AnyCond {
   return { id, field, ...opPart(fields[field]!.ops[0]!), values: [] }
 }

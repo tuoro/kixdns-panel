@@ -485,8 +485,8 @@ test('内核不支持 CNAME 时，提示点名写成域名的规则', async ({ p
   const notice = page.locator('.cfg__notice')
   // 名字两头的引号用连接符粘着，比文字时先去掉（连同不换行空格） / The quotes are glued to the names with word joiners, removed (with no-break spaces) before comparing
   const plain = () => notice.evaluate((el) => el.textContent!.replace(/\u2060/g, '').replace(/\u00a0/g, ' '))
-  await expect.poll(plain).toContain('写成域名的有：规则「域名是 a.example.com」「域名是 b.example.com」等 3 条')
-  await notice.getByRole('link', { name: '域名是 b.example.com' }).click()
+  await expect.poll(plain).toContain('写成域名的有：规则「域名属于 a.example.com」「域名属于 b.example.com」等 3 条')
+  await notice.getByRole('link', { name: '域名属于 b.example.com' }).click()
   await expect(page.locator('.editor')).toBeVisible()
   await expect(page.locator('.editor')).toContainText('b.example.com')
   await expect(page.locator('.editor')).toContainText('这条选了 CNAME')
