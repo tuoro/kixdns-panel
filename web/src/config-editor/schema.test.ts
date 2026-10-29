@@ -11,6 +11,16 @@ describe('查询排行没有开关', () => {
   })
 })
 
+// 内核的 TCP、DoT 连接一出错就重建，这一项不起作用，不摆在表单里让人调 / The kernel rebuilds a TCP or DoT connection on its first error, so the
+// setting has no effect and the form does not offer it
+describe('TCP 错误阈值不在表单里', () => {
+  it('基础设置里没有这一项，说起它时还叫 TCP 错误阈值', () => {
+    const keys = SETTING_SECTIONS.flatMap((section) => section.fields.map((field) => field.key))
+    expect(keys).not.toContain('tcp_health_check_error_threshold')
+    expect(settingName('tcp_health_check_error_threshold')).toBe('TCP 错误阈值')
+  })
+})
+
 describe('高级规则的选项说面板的话', () => {
   // 允许留下的英文：协议、记录类型、响应码这些本来就这么叫的 / English allowed to stay: names that are spelled this way anyway
   const ALLOWED = new Set(['GeoSite', 'GeoIP', 'EDNS', 'TXT', 'CNAME', 'REFUSED', 'NXDOMAIN', 'TTL', 'MMDB', 'DAT'])
@@ -26,6 +36,7 @@ describe('提示条里的设置名', () => {
   it('用表单里的名字、去掉单位；只能在 JSON 里改的照表单的叫法起名', () => {
     expect(settingName('tcp_connection_max_age_seconds')).toBe('TCP 最大存活')
     expect(settingName('doh_health_check_error_threshold')).toBe('DoH 错误阈值')
+    expect(settingName('tcp_health_check_error_threshold')).toBe('TCP 错误阈值')
     expect(settingName('some_future_setting')).toBe('some_future_setting')
   })
   it('三个以内都写出来，再多写前三个和一共几项；一个名字里不断行', () => {
