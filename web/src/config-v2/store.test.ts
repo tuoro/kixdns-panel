@@ -367,3 +367,16 @@ describe('旧版面板留下的副本', () => {
     expect(copyReplaceBlocker(pair.copy, pair.original)).toBe('高级规则或高级入口里引用了它')
   })
 })
+
+// 表单里没有的设置照样留在配置里，对比里用它的名字 / A setting the form lacks stays in the config, and the diff names it
+describe('只能在 JSON 里改的设置', () => {
+  it('TCP 错误阈值读进来、写出去都原样保留，对比里叫它的名字', () => {
+    const base = demoModel()
+    base.settings = { ...base.settings, tcp_health_check_error_threshold: 5 }
+    const back = readConfig(JSON.parse(JSON.stringify(exportConfig(base))) as Record<string, unknown>).model
+    expect(back.settings.tcp_health_check_error_threshold).toBe(5)
+    expect((exportConfig(back).settings as Record<string, unknown>).tcp_health_check_error_threshold).toBe(5)
+    const then = { ...back, settings: { ...back.settings, tcp_health_check_error_threshold: 2 } }
+    expect(diffModels(back, then).map((b) => b.title)).toEqual(['TCP 错误阈值'])
+  })
+})

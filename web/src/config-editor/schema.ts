@@ -71,7 +71,7 @@ export const SETTING_SECTIONS: SettingSection[] = [
   {
     id: 'transport',
     title: '连接与传输',
-    description: '连接池、健康检查与连接保活',
+    description: '连接池、连接存活与保活',
     tone: 'ink',
     fields: [
       { key: 'udp_pool_size', label: 'UDP 连接池', type: 'number', min: 1, unit: '个连接', default: 64 },
@@ -79,7 +79,6 @@ export const SETTING_SECTIONS: SettingSection[] = [
       { key: 'doh_pool_size', label: 'DoH 连接池', type: 'number', min: 1, unit: '个连接', default: 8 },
       { key: 'dot_pool_size', label: 'DoT 连接池', type: 'number', min: 1, unit: '个连接', default: 64 },
       { key: 'doq_pool_size', label: 'DoQ 连接池', type: 'number', min: 1, unit: '个连接', default: 16 },
-      { key: 'tcp_health_check_error_threshold', label: 'TCP 错误阈值', type: 'number', min: 0, unit: '次', default: 3 },
       { key: 'tcp_connection_max_age_seconds', label: 'TCP 最大存活 (s)', type: 'number', min: 0, unit: '秒', default: 300 },
       { key: 'tcp_connection_idle_timeout_seconds', label: 'TCP 空闲超时 (s)', type: 'number', min: 0, unit: '秒', default: 60 },
       { key: 'doq_connection_idle_timeout_seconds', label: 'DoQ 空闲超时 (s)', type: 'number', min: 0, unit: '秒', default: 60 },
@@ -130,11 +129,12 @@ export const SETTING_SECTIONS: SettingSection[] = [
   },
 ]
 
-// 内核报来的设置名在页面上叫什么：表单里的名字去掉括号里的单位；表单里没有、只能在 JSON 里改的，照「TCP 错误阈值」那样起名，
-// 再没有的照写内核的名字
+// 内核报来的设置名在页面上叫什么：表单里的名字去掉括号里的单位；表单里没有、只能在 JSON 里改的，在这里起名，再没有的照写内核的名字。
+// TCP 错误阈值不放进表单：内核的 TCP、DoT 连接一出错就重建，这一项不起作用（见内核文档），配置里写了的值原样保留
 // What a setting name the kernel reports is called on the page: the form's label without the bracketed unit; one the form lacks
-// (editable in JSON only) is named like TCP 错误阈值, and anything else keeps the kernel's name
-const JSON_ONLY_NAMES: Record<string, string> = { doh_health_check_error_threshold: 'DoH 错误阈值' }
+// (editable in JSON only) is named here, and anything else keeps the kernel's name. TCP 错误阈值 stays out of the form: the kernel
+// rebuilds a TCP or DoT connection on its first error, so the setting has no effect (see the kernel docs); a value in the config is kept as it is
+const JSON_ONLY_NAMES: Record<string, string> = { doh_health_check_error_threshold: 'DoH 错误阈值', tcp_health_check_error_threshold: 'TCP 错误阈值' }
 const FORM_FIELDS = SETTING_SECTIONS.flatMap((section) => section.fields)
 export function settingName(key: string): string {
   const field = FORM_FIELDS.find((item) => item.key === key)
