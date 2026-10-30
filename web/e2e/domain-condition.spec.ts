@@ -42,3 +42,30 @@ test('域名条件：「属于」去掉 *. 并说明，下次改就收起；「�
   await expect(chips).toHaveText(['example.net', 'example.org', 'example.edu'])
   await expect(name).toHaveAttribute('placeholder', /^域名属于 example\.net、example\.org/)
 })
+
+// 快速添加的域名是「属于」：不并进只有「就是」条件的规则，*. 去掉 / A quick-added domain means 属于: it never joins a rule whose
+// only condition is 就是, and *. is dropped
+test('快速添加不并进「就是」规则，*. 去掉', async ({ page }, testInfo) => {
+  const mobile = testInfo.project.name === 'mobile'
+  await page.goto('/config?v2=1')
+  await expect(page.locator('main h1')).toBeVisible()
+  if (!mobile) await page.getByRole('button', { name: '快速添加' }).click()
+  const quick = page.getByLabel('快速添加：域名、GeoSite 或 IP 网段')
+  await quick.fill('api.example.com')
+  await quick.press('Enter')
+  const rows = page.locator('[data-rule]')
+  await expect(rows).toHaveCount(1)
+  await rows.first().locator('.rrow__main').click()
+  await page.locator('.editor .cform__row').first().locator('select').selectOption('exact')
+  await page.getByRole('button', { name: '完成', exact: true }).click()
+  await expect(rows.first()).toContainText('域名就是 api.example.com')
+
+  if (!mobile && !(await quick.isVisible())) await page.getByRole('button', { name: '快速添加' }).click()
+  await quick.fill('example.org *.example.net')
+  await expect(page.locator('.qadd__hint')).toContainText('新建一条规则：域名属于 example.org、example.net')
+  await quick.press('Enter')
+  await expect(rows).toHaveCount(2)
+  await expect(rows.first()).not.toContainText('example.org')
+  await expect(rows.nth(1)).toContainText('example.org')
+  await expect(rows.nth(1)).not.toContainText('*.')
+})

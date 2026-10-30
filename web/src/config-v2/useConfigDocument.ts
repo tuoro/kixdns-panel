@@ -333,7 +333,12 @@ export function friendlyRuntimeMessage(message: string): string {
  * 内核给的英文原因（pipeline "main" references unknown upstream group "fast"）照原话给，但标明是 KixDNS 的原话，引号里的内核 id 换成页面上的叫法
  * The kernel's English reason (pipeline "main" references unknown upstream group "fast") is kept verbatim but marked as KixDNS's own words, with quoted kernel ids turned into the page's names
  */
+// 2026.10.27.22 之前的内核不认识「就是」（domain_exact、request_domain_exact），整份配置读不进去：说清楚怎么办，不只给原话
+// Kernels before 2026.10.27.22 do not know 「就是」 (domain_exact, request_domain_exact) and cannot read the whole config: say what to
+// do, not just the raw words
+const OLD_KERNEL_EXACT = /unknown variant `(?:request_)?domain_exact`/
 export function kernelWords(message: string): string {
+  if (OLD_KERNEL_EXACT.test(message)) return '这个版本的 KixDNS 内核还不认识「就是」：到系统页更新内核，或者把「就是」改回「属于」'
   if (/[\u4e00-\u9fff]/.test(message) || !/[A-Za-z]{3,}/.test(message)) return message
   const names = traceNames(model)
   return `KixDNS\u00a0的原话：${message.replace(/"([\w.-]+)"/g, (whole, id: string) => { const name = names.pipeline(id); return name ? `${whole}（${name}）` : whole })}`

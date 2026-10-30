@@ -9,7 +9,7 @@ import UiSelect from '../components/ui/UiSelect.vue'
 import { useConfirm } from '../composables/useConfirm'
 import { useToast } from '../composables/useToast'
 import { GEOSITE_COMMON, geositeIssue } from '../config-model/geosite'
-import { isCidr, isDomain, newRule, outcomeSentence, rawMatchersText, ruleGroupPipelineId, type Condition, type Outcome, type Rule, type RuleGroup, ruleTitle } from '../config-model/model'
+import { conditionText, isCidr, isDomain, newRule, outcomeSentence, rawMatchersText, ruleGroupPipelineId, withoutWildcard, type Condition, type Outcome, type Rule, type RuleGroup, ruleTitle } from '../config-model/model'
 import { useNarrowDesktop, usePhone } from './phone'
 import RuleList from './RuleList.vue'
 import Tester from './Tester.vue'
@@ -102,20 +102,24 @@ const parsed = computed<{ field: Condition['field']; values: string[] } | { erro
   const kinds = new Set(tokens.map(kindOf))
   if (kinds.size > 1) return { error: '一次只加一种：域名、GeoSite 或 IP 网段' }
   const field = [...kinds][0]!
-  const values = tokens.map((t) => (field === 'geosite' ? t.replace(/^geosite:/i, '').toLowerCase() : t))
+  // 域名的 *. 和条件编辑里一样去掉：「属于」本来就含子域名 / A domain's *. is dropped as in the condition editor: 「属于」 already covers
+  // subdomains
+  const values = [...new Set(tokens.map((t) => (field === 'geosite' ? t.replace(/^geosite:/i, '').toLowerCase() : field === 'domain' ? withoutWildcard(t) : t)))]
   const missing = field === 'geosite' ? values.find((v) => geositeIssue(v, geosite.value)?.kind === 'category' || geositeIssue(v, geosite.value)?.kind === 'attribute') : undefined
   if (missing) return { error: `当前 GeoSite 数据里没有「${missing}」` }
   return { field, values }
 })
 const ok = computed(() => (parsed.value && !('error' in parsed.value) ? parsed.value : null))
 const LABEL: Record<string, string> = { domain: '域名', geosite: 'GeoSite', client_ip: '客户端 IP' }
-// 已有一条只有这一个条件、结果一样的规则，就并进去 / A rule with just this one condition kind and the same outcome takes the values
+// 已有一条只有这一个条件、结果一样的规则，就并进去；「就是」只算名字本身，快速添加的域名是「属于」，不并进去
+// A rule with just this one condition kind and the same outcome takes the values; 「就是」 counts the name itself only, while quick add
+// means 「属于」, so it never takes them
 const mergeInto = computed(() => {
   const p = ok.value
   if (!p) return null
   const out = JSON.stringify(quickOutcome())
   return model.rules.find((r) => r.enabled && !r.raw && r.conditions.length === 1 && r.conditions[0]!.length === 1 && r.conditions[0]![0]!.field === p.field && !r.conditions[0]![0]!.negate && !r.conditions[0]![0]!.regex
-    && JSON.stringify(r.outcome) === out && !r.log.enabled && r.ecs === 'inherit' && r.response.mode === 'inherit') ?? null
+    && !r.conditions[0]![0]!.exact && JSON.stringify(r.outcome) === out && !r.log.enabled && r.ecs === 'inherit' && r.response.mode === 'inherit') ?? null
 })
 const quickHint = computed(() => {
   if (!parsed.value) return ''
@@ -124,7 +128,8 @@ const quickHint = computed(() => {
   const sentence = outcomeSentence(model, quickOutcome())
   // 「GeoSite」「客户端 IP」这类以拉丁字母结尾的名字后面空一格再接中文 / A name ending in Latin letters (GeoSite, 客户端 IP) takes a space before the Chinese that follows
   const label = /[A-Za-z]$/.test(LABEL[p.field] ?? '') ? `${LABEL[p.field]} ` : LABEL[p.field]
-  return mergeInto.value ? `加到「${ruleTitle(mergeInto.value)}」里：${label}多 ${p.values.length} 个，${sentence}` : `新建一条规则：${label}是 ${p.values.join('、')}，${sentence}`
+  // 新建的那条和规则列表里一样说（域名属于 x、域名属于 GeoSite cn、客户端 IP 在 …） / The new rule is said as the rule list says it
+  return mergeInto.value ? `加到「${ruleTitle(mergeInto.value)}」里：${label}多 ${p.values.length} 个，${sentence}` : `新建一条规则：${conditionText(cond(p.field, p.values))}，${sentence}`
 })
 function quickAdd(): void {
   const p = ok.value

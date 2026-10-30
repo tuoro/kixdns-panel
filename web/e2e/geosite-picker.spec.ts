@@ -95,7 +95,7 @@ test('快速添加认得数据里的分类，数据里没有的直接说', async
   const hint = page.locator('.qadd__hint')
   // bilibili 不在原来那 11 个常用分类里，现在照样认成 GeoSite / bilibili was not among the old 11 common categories and is now recognised all the same
   await quick.fill('bilibili')
-  await expect(hint).toContainText('新建一条规则：GeoSite 是 bilibili')
+  await expect(hint).toContainText('新建一条规则：域名属于 GeoSite bilibili')
   await quick.fill('geosite:googel')
   await expect(hint).toHaveText('当前 GeoSite 数据里没有「googel」')
   await expect(hint).toHaveClass(/is-err/)

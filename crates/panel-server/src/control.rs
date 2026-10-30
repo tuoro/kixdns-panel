@@ -282,6 +282,9 @@ pub struct UpstreamTally {
     pub errors: u64,
     pub rejected: u64,
     pub aborted: u64,
+    /// 旧版面板存下的概览快照里没有这一项，读出来按 0 算
+    /// Overview snapshots saved by older panels lack it; it reads back as 0
+    #[serde(default)]
     pub throttled: u64,
     pub tcp_fallbacks: u64,
     pub avg_latency_ms: Option<f64>,
@@ -1087,6 +1090,17 @@ kixdns_upstream_latency_ms_count{upstream="8.8.8.8:53",transport="udp"} 2
         assert!(metrics.recent_window_seconds.is_none());
         assert!(metrics.request_latency_recent.is_none());
         assert!(replied.recent.is_none());
+    }
+
+    /// 旧版面板存下的概览快照里，最近一段的计数没有 throttled：照样读得出来，按 0 算
+    /// An overview snapshot saved by an older panel has no throttled in its recent counts: it still reads, as 0
+    #[test]
+    fn reads_a_recent_tally_saved_without_throttled() {
+        let tally: super::UpstreamTally = serde_json::from_str(
+            r#"{"attempts":12,"success":9,"errors":1,"rejected":0,"aborted":2,"tcp_fallbacks":0,"avg_latency_ms":4.5}"#,
+        )
+        .expect("an older snapshot's tally reads");
+        assert_eq!((tally.attempts, tally.aborted, tally.throttled), (12, 2, 0));
     }
 
     #[test]
