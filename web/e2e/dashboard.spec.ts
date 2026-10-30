@@ -255,6 +255,10 @@ test('上游状态一行一个上游，错误和拒绝数收进这一行的提�
   expect(title).toContain('错误 52')
   expect(title).toContain('拒绝 28')
   expect(title).not.toContain('28,230')
+  // 限速只有 DoH 会有：DoH 那一行的提示写限速次数，UDP 那一行不写 / Only DoH is rate limited: the DoH row's title gives the count, the
+  // UDP row's does not
+  expect(title).not.toContain('限速')
+  expect(await rows.nth(2).getAttribute('title')).toContain('限速 0')
   // 每行同样三样东西：地址、耗时、「成功率 · 次响应」；耗时不再画一条细条；手机不换成另一套行
   // Every row shows the same three things: address, latency, 「success rate · responses」; no latency bar; a phone does not switch to another row design
   for (const row of [rows.nth(0), rows.nth(1), rows.nth(2)]) {

@@ -236,9 +236,9 @@ const overview: Overview = {
       { pipeline: 'default', rule: 'accept-noerror', phase: 'response', count: 7_664_009 },
     ],
     upstreams: [
-      { upstream: '1.1.1.1:53', transport: 'udp', attempts: 5_932_118, success: 5_901_774, errors: 28_230, rejected: 2_114, aborted: 0, avg_latency_ms: 12.4, rcodes: [{ name: 'NoError', count: 5_301_774 }, { name: 'NXDomain', count: 588_620 }, { name: 'ServFail', count: 11_380 }, { name: 'Refused', count: 2_114 }], tcp_fallbacks: 17_796, recent: { attempts: 18_320, success: 18_240, errors: 52, rejected: 28, aborted: 0, tcp_fallbacks: 61, avg_latency_ms: 11.9 } },
-      { upstream: '223.5.5.5:53', transport: 'tcp_udp', attempts: 3_008_779, success: 1_491_664, errors: 15_909, rejected: 1_206, aborted: 1_500_000, avg_latency_ms: 9.1, rcodes: [{ name: 'NoError', count: 1_340_012 }, { name: 'NXDomain', count: 151_652 }, { name: 'Refused', count: 1_206 }], tcp_fallbacks: 0, recent: { attempts: 9_410, success: 4_690, errors: 21, rejected: 3, aborted: 4_696, tcp_fallbacks: 0, avg_latency_ms: 8.7 } },
-      { upstream: 'dns.google/dns-query', transport: 'doh', attempts: 1_114_083, success: 1_104_572, errors: 8_780, rejected: 731, aborted: 0, avg_latency_ms: 28.6, rcodes: [{ name: 'NoError', count: 1_060_120 }, { name: 'NXDomain', count: 42_452 }, { name: 'Refused', count: 731 }], tcp_fallbacks: 0, recent: { attempts: 34, success: 32, errors: 1, rejected: 1, aborted: 0, tcp_fallbacks: 0, avg_latency_ms: 31.2 } },
+      { upstream: '1.1.1.1:53', transport: 'udp', attempts: 5_932_118, success: 5_901_774, errors: 28_230, rejected: 2_114, aborted: 0, throttled: 0, avg_latency_ms: 12.4, rcodes: [{ name: 'NoError', count: 5_301_774 }, { name: 'NXDomain', count: 588_620 }, { name: 'ServFail', count: 11_380 }, { name: 'Refused', count: 2_114 }], tcp_fallbacks: 17_796, recent: { attempts: 18_320, success: 18_240, errors: 52, rejected: 28, aborted: 0, throttled: 0, tcp_fallbacks: 61, avg_latency_ms: 11.9 } },
+      { upstream: '223.5.5.5:53', transport: 'tcp_udp', attempts: 3_008_779, success: 1_491_664, errors: 15_909, rejected: 1_206, aborted: 1_500_000, throttled: 0, avg_latency_ms: 9.1, rcodes: [{ name: 'NoError', count: 1_340_012 }, { name: 'NXDomain', count: 151_652 }, { name: 'Refused', count: 1_206 }], tcp_fallbacks: 0, recent: { attempts: 9_410, success: 4_690, errors: 21, rejected: 3, aborted: 4_696, throttled: 0, tcp_fallbacks: 0, avg_latency_ms: 8.7 } },
+      { upstream: 'dns.google/dns-query', transport: 'doh', attempts: 1_114_083, success: 1_104_572, errors: 8_780, rejected: 731, aborted: 0, throttled: 0, avg_latency_ms: 28.6, rcodes: [{ name: 'NoError', count: 1_060_120 }, { name: 'NXDomain', count: 42_452 }, { name: 'Refused', count: 731 }], tcp_fallbacks: 0, recent: { attempts: 34, success: 32, errors: 1, rejected: 1, aborted: 0, throttled: 0, tcp_fallbacks: 0, avg_latency_ms: 31.2 } },
     ],
     requests_finished: { completed: 12_796_002, failed: 38_541, cancelled: 12_849 },
     request_latency: { samples: 12_847_392, avg_ms: 13.8, within_10ms: 10_021_000, within_100ms: 12_501_318, within_1s: 12_790_000 },
@@ -447,13 +447,14 @@ let sampleWorld = false
 function sampleFiguresFollow(): void {
   sampleWorld = true
   overview.trend = { ...requestTrend, points: requestTrend.points.map((point) => ({ ...point, requests: point.requests / 100 })), total: requestTrend.total / 100 }
-  // 次数依次是发出、成功、出错、拒绝、没等（同组别的先回了）；响应码依次是 NOERROR、NXDOMAIN、SERVFAIL，拒绝的就是 REFUSED
+  // 次数依次是发出、成功、出错、拒绝、没等（同组别的先回了）；响应码依次是 NOERROR、NXDOMAIN、SERVFAIL，拒绝的就是 REFUSED；最后是被限速的
+  // 次数（启动以来、最近），只有回过 HTTP 429 的 DoH 才有
   // Counts are sent, succeeded, failed, refused and not waited for (another in the group answered first); codes are NOERROR, NXDOMAIN and
-  // SERVFAIL, the refusals being REFUSED
-  const upstream = (name: string, transport: string, [attempts, success, errors, rejected, aborted]: number[], latency: number, [noError, nxDomain, servFail]: number[], recent: number[], recentLatency: number) => ({
-    upstream: name, transport, attempts: attempts!, success: success!, errors: errors!, rejected: rejected!, aborted: aborted!, avg_latency_ms: latency, tcp_fallbacks: 0,
+  // SERVFAIL, the refusals being REFUSED; last come the rate-limited counts (lifetime, recent), only for a DoH server that answered HTTP 429
+  const upstream = (name: string, transport: string, [attempts, success, errors, rejected, aborted]: number[], latency: number, [noError, nxDomain, servFail]: number[], recent: number[], recentLatency: number, [throttled, recentThrottled] = [0, 0]) => ({
+    upstream: name, transport, attempts: attempts!, success: success!, errors: errors!, rejected: rejected!, aborted: aborted!, throttled, avg_latency_ms: latency, tcp_fallbacks: 0,
     rcodes: [{ name: 'NoError', count: noError! }, { name: 'NXDomain', count: nxDomain! }, ...(rejected ? [{ name: 'Refused', count: rejected }] : []), ...(servFail ? [{ name: 'ServFail', count: servFail }] : [])],
-    recent: { attempts: recent[0]!, success: recent[1]!, errors: recent[2]!, rejected: 0, aborted: recent[3]!, tcp_fallbacks: 0, avg_latency_ms: recentLatency },
+    recent: { attempts: recent[0]!, success: recent[1]!, errors: recent[2]!, rejected: 0, aborted: recent[3]!, throttled: recentThrottled, tcp_fallbacks: 0, avg_latency_ms: recentLatency },
   })
   Object.assign(overview.metrics, {
     requests_inflight: 1,
@@ -466,7 +467,7 @@ function sampleFiguresFollow(): void {
       upstream('https://cloudflare-dns.com/dns-query', 'doh', [10_780, 4_646, 41, 0, 6_093], 36.2, [4_229, 411, 6], [172, 74, 0, 98], 34.1),
       upstream('tcp+udp://223.5.5.5', 'tcp_udp', [9_546, 4_108, 11, 4, 5_423], 9.3, [3_801, 305, 2], [168, 61, 0, 107], 8.9),
       upstream('tls://dns.alidns.com', 'dot', [9_546, 3_018, 15, 0, 6_513], 15.6, [2_790, 226, 2], [168, 55, 0, 113], 15.1),
-      upstream('https://doh.pub/dns-query', 'doh', [9_546, 2_410, 22, 0, 7_114], 17.8, [2_231, 176, 3], [168, 52, 0, 116], 17.2),
+      upstream('https://doh.pub/dns-query', 'doh', [9_546, 2_410, 22, 0, 6_734], 17.8, [2_231, 176, 3], [168, 52, 0, 107], 17.2, [380, 9]),
       upstream('192.168.1.1:53', 'udp', [313, 311, 2, 0, 0], 1.6, [297, 14, 0], [3, 3, 0, 0], 1.4),
       upstream('10.0.0.53:53', 'udp', [397, 241, 2, 0, 154], 2.9, [212, 29, 0], [4, 3, 0, 1], 2.7),
       upstream('10.0.0.54:53', 'udp', [397, 154, 1, 0, 242], 3.4, [136, 18, 0], [4, 1, 0, 3], 3.6),

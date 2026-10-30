@@ -27,13 +27,13 @@ export const traceStageNames: Record<string, string> = {
 export const traceStatusNames: Record<string, string> = {
   parsed: '已解析', selected: '已选择', matched: '命中', missed: '没命中', miss: '没命中',
   hit: '命中', fresh: '缓存命中', stale: '续用旧结果', succeeded: '成功', failed: '失败', error: '错误',
-  skipped: '已跳过', rejected: '已拒绝', started: '已发出', jump: '跳转',
+  skipped: '已跳过', rejected: '已拒绝', started: '已发出', jump: '跳转', throttled: '被限速',
 }
 
 export function traceTone(status: string): 'success' | 'warning' | 'danger' | 'neutral' {
   if (['matched', 'hit', 'fresh', 'succeeded'].includes(status)) return 'success'
   if (['failed', 'error'].includes(status)) return 'danger'
-  if (status === 'stale') return 'warning'
+  if (status === 'stale' || status === 'throttled') return 'warning'
   return 'neutral'
 }
 
@@ -269,6 +269,12 @@ export function describeStep(step: DnsTraceStep, context: TraceContext = {}): St
       const word = known ?? (detail && !/[a-z]/i.test(detail) ? detail : '出错')
       return { lead: same ? [t(word)] : sentence(m(label), t(word)), note: detail && word !== detail ? [m(detail)] : [] }
     }
+    // 回了限速（HTTP 429）：不算出错；内核的说明（几时再问它）放在下面一行 / Answered with a rate limit (HTTP 429): not a failure; the
+    // kernel's note (when it is asked again) goes on the line below
+    if (status === 'throttled') return { lead: same ? [t('被限速了')] : sentence(m(label), t('被限速了')), note: detailParts(detail) }
+    // 它刚回过限速、还在暂停，同组有别的上游可问，这次没问它 / It just answered with a rate limit and is still paused; the group had
+    // others to ask, so it was not asked this time
+    if (status === 'skipped') return { lead: sentence(m(label), t('正在限速，这次没问它')), note: [] }
     // 同样的查询正在问上游：这次不另发，等它的回答。内核的说法本身就是一句中文，照原话写，不当成地址
     // The same query is already out upstream: this one sends nothing and waits for that answer. The kernel's wording is a Chinese sentence, so it stays words, not an address literal
     if (status === 'joined') return { lead: [t('同样的查询正在问上游，等它的结果')], note }

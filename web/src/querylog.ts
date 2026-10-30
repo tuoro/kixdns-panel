@@ -115,11 +115,13 @@ export function ignoredDomains(text: string): { domains: string[]; problem: stri
 const usable = (rcode: string | undefined) => !rcode || rcode === 'NOERROR' || rcode === 'NXDOMAIN'
 
 /**
- * 接口给的是内核的说法：耗时是微秒，回答后检查是 phase 为 response 的规则，上游的结果是 success / aborted / rejected / error。
+ * 接口给的是内核的说法：耗时是微秒，回答后检查是 phase 为 response 的规则，上游的结果是 success / aborted / rejected / error / throttled，
+ * 正在限速、这次没问的上游单记一步 upstream_skipped。
  * 这里换成页面画的样子；内核单记的决定（没有规则命中时列表的默认去处、回答后检查没命中时的去处）并到对应的那一步上，
  * 最后补上回给客户端的那一步。
  * The API speaks the kernel's terms: latencies in microseconds, answer checks as rules whose phase is response, upstream results as
- * success / aborted / rejected / error. This turns them into what the page draws; decisions the kernel records on their own (a list's
+ * success / aborted / rejected / error / throttled, and an upstream left out while rate limited is a step of its own, upstream_skipped.
+ * This turns them into what the page draws; decisions the kernel records on their own (a list's
  * default when no rule matched, where an unmatched answer check goes) join their step, and the reply to the client is added last.
  */
 export function entryOf(record: QueryLogRecord): QueryLogEntry {
@@ -164,9 +166,11 @@ export function entryOf(record: QueryLogRecord): QueryLogEntry {
     } else if (step.kind === 'joined') {
       steps.push({ at_ms, kind: 'joined', pipeline: here })
     } else if (step.kind === 'upstream') {
-      const result = step.result === 'success' ? 'won' : step.result === 'aborted' ? 'lost' : step.result === 'rejected' ? 'rejected' : 'error'
+      const result = step.result === 'success' ? 'won' : step.result === 'aborted' ? 'lost' : step.result === 'rejected' ? 'rejected' : step.result === 'throttled' ? 'throttled' : 'error'
       const protocol = step.via ?? step.transport
       steps.push({ at_ms, kind: 'upstream', pipeline: here, upstream: step.upstream, transport: protocol ? (TRANSPORT_NAMES[protocol] ?? protocol) : undefined, result, rcode: step.rcode, latency_ms: ms(step.latency_us), error: step.error })
+    } else if (step.kind === 'upstream_skipped') {
+      steps.push({ at_ms, kind: 'skipped', pipeline: here, upstream: step.upstream, transport: step.transport ? (TRANSPORT_NAMES[step.transport] ?? step.transport) : undefined })
     }
   }
   const latency = ms(record.latency_us)
@@ -319,8 +323,8 @@ function failureCause(entry: QueryLogEntry, asked: QueryLogStep[] = entry.steps)
   const words = new Set<string>()
   const raw = new Set<string>()
   for (const st of asked) {
-    if (st.kind !== 'upstream' || st.result !== 'error') continue
-    const word = st.error ? errorWord(st.error) : '出错'
+    if (st.kind !== 'upstream' || (st.result !== 'error' && st.result !== 'throttled')) continue
+    const word = st.result === 'throttled' ? '被限速' : st.error ? errorWord(st.error) : '出错'
     if (word) words.add(word)
     else raw.add(st.error!)
   }
@@ -328,7 +332,7 @@ function failureCause(entry: QueryLogEntry, asked: QueryLogStep[] = entry.steps)
 }
 /** 列表里写得下的原因：认得出、又只有一个时写它，不然写响应码 / A cause short enough for the list: written when recognised and single, otherwise the code */
 function failureWord(entry: QueryLogEntry): string {
-  const known = entry.error ? [errorWord(entry.error, true)] : [...new Set(entry.steps.filter((st) => st.kind === 'upstream' && st.result === 'error').map((st) => (st.error ? errorWord(st.error, true) : null)))]
+  const known = entry.error ? [errorWord(entry.error, true)] : [...new Set(entry.steps.filter((st) => st.kind === 'upstream' && (st.result === 'error' || st.result === 'throttled')).map((st) => (st.result === 'throttled' ? '被限速' : st.error ? errorWord(st.error, true) : null)))]
   return (known.length === 1 && known[0]) || entry.rcode || 'SERVFAIL'
 }
 
@@ -516,7 +520,7 @@ export function sinceText(unixMs: number, now: number = Date.now()): string {
 /** 显示时的一段：keep 的不在中间断行 / A run for display: one marked keep never breaks inside */
 export interface GlueRun { text: string; keep: boolean }
 // 括号里的一小句（「（在规则组「内网解析」里）」）整个不拆，「（在」不落在行尾 / A short aside in brackets stays whole, so 「（在」 never ends a line
-const KEEP_PATTERNS = [/（[^（）]{1,16}）/g, /「[^「」]{1,10}」/g, /回答后检查|上游组|规则组|备用组|连不上|上游|另一个|另外|客户端|直接回答|没等它回|先回了|共用了|没通过|都没回|没有|不能用|能用|失败|结果|改问|过期|交给|面板|来得及|来不及|收不到|连字符|不带|xn--|journalctl -u [\w.-]+/g]
+const KEEP_PATTERNS = [/（[^（）]{1,16}）/g, /「[^「」]{1,10}」/g, /回答后检查|上游组|规则组|备用组|连不上|上游|另一个|另外|客户端|直接回答|没等它回|先回了|共用了|没通过|都没回|没有|不能用|能用|失败|结果|改问|过期|交给|面板|来得及|来不及|收不到|连字符|不带|正在限速|被限速了|这次没问它|xn--|journalctl -u [\w.-]+/g]
 /** 句末：最后一个字连同前一个字（和后面的括号、句号）不拆开 / A sentence's end: the last character stays with the one before it (and any closing bracket or stop) */
 const TAIL = /\S\p{Script=Han}[」。）]*$/u
 /**
@@ -657,6 +661,9 @@ export function stepRows(entry: QueryLogEntry, ctx: QueryLogContext | null): Ste
       // 别的上游先回了，不再等它：它没回，也就没有响应码 / Another upstream answered first, so this one was not waited for: it did not reply, and has no code
       else if (step.result === 'lost') row(step, [where, t(' 没等它回，另一个先回了')], [t(step.transport ?? '')].filter((p) => p.text), '', { idle: true })
       else if (step.result === 'rejected') row(step, [where, t(` 回了 ${step.rcode ?? '错误'}，这个回答没用`)], [t(step.transport ?? '')].filter((p) => p.text), 'warn')
+      // 回了限速（HTTP 429）：没给回答，KixDNS 接下来一小会儿不再问它 / Answered with a rate limit (HTTP 429): no answer, and KixDNS leaves it
+      // out for a short while
+      else if (step.result === 'throttled') row(step, [where, t(' 被限速了')], [t([step.transport, 'HTTP 429'].filter(Boolean).join(' · '))], 'warn')
       else {
         // 出错原因换成中文，原文留在下面一行，查问题时能搜 / The cause in Chinese, with the original below for searching
         const word = step.error ? errorWord(step.error) : null
@@ -666,6 +673,10 @@ export function stepRows(entry: QueryLogEntry, ctx: QueryLogContext | null): Ste
         // original below
         row(step, [where, t(` ${word ?? '出错'}`)], step.error ? [m(step.error)] : step.transport ? [t(step.transport)] : [], 'err')
       }
+    } else if (step.kind === 'skipped') {
+      // 它刚回过限速，还在暂停：同一组里有别的上游可问，这次就没问它 / It had just answered with a rate limit and is still paused: the
+      // group had others to ask, so it was not asked this time
+      row(step, [m(step.upstream ?? ''), t(' 正在限速，这次没问它')], [t(step.transport ?? '')].filter((p) => p.text), '', { idle: true })
     } else if (step.kind === 'check') {
       const action = then(step)
       const named = step.rule && !generated(step.pipeline) ? `「${ctx?.names.rule(step.rule) ?? step.rule}」` : ''

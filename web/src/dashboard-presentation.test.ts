@@ -4,8 +4,8 @@ import { MIN_HEALTH_SAMPLES, cacheComposition, latencyBands, latencyBasis, laten
 import { emptyOverview } from './dashboard-state'
 
 describe('上游健康与分布', () => {
-  const base = { upstream: '1.1.1.1:53', transport: 'udp', errors: 0, rejected: 0, rcodes: [], tcp_fallbacks: 0, recent: null }
-  const tally = { errors: 0, rejected: 0, aborted: 0, tcp_fallbacks: 0 }
+  const base = { upstream: '1.1.1.1:53', transport: 'udp', errors: 0, rejected: 0, throttled: 0, rcodes: [], tcp_fallbacks: 0, recent: null }
+  const tally = { errors: 0, rejected: 0, aborted: 0, throttled: 0, tcp_fallbacks: 0 }
 
   it('按成功率与平均耗时分三档，竞争落败不计入，样本不足时观察中', () => {
     expect(upstreamHealth({ ...base, attempts: 100, success: 100, aborted: 0, avg_latency_ms: 12 })).toBe('healthy')
@@ -17,12 +17,19 @@ describe('上游健康与分布', () => {
     expect(upstreamHealth({ ...base, attempts: 100, success: 100, aborted: 0, avg_latency_ms: 1_500 })).toBe('degraded')
     expect(upstreamHealth({ ...base, attempts: 100, success: 90, errors: 10, aborted: 0, avg_latency_ms: 12 })).toBe('unhealthy')
     expect(upstreamHealth({ ...base, attempts: 100, success: 100, aborted: 0, avg_latency_ms: 2_400 })).toBe('unhealthy')
-    expect(settledAttempts({ attempts: 100, aborted: 60 })).toBe(40)
+    expect(settledAttempts({ attempts: 100, aborted: 60, throttled: 0 })).toBe(40)
   })
 
   it('SERVFAIL、REFUSED 不算上游失败', () => {
     // 四成查询上游如实回了 SERVFAIL：上游在正常工作，出问题的是那些域名
     expect(upstreamHealth({ ...base, attempts: 100, success: 60, rejected: 40, aborted: 0, avg_latency_ms: 20 })).toBe('healthy')
+  })
+
+  it('被限速既不算成功也不算失败，也不算一次响应', () => {
+    // 四成尝试回了 HTTP 429：成功率只看拿到结果的那些，上游照样健康 / Four in ten attempts got HTTP 429: the success rate looks only at
+    // attempts with a result, and the upstream stays healthy
+    expect(upstreamHealth({ ...base, attempts: 100, success: 60, throttled: 40, aborted: 0, avg_latency_ms: 20 })).toBe('healthy')
+    expect(settledAttempts({ attempts: 100, aborted: 20, throttled: 30 })).toBe(50)
   })
 
   it('最近一小时响应够多时只看最近一小时', () => {

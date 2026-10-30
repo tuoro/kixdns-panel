@@ -246,6 +246,11 @@ pub struct UpstreamCount {
     /// 并发竞争中被取消的尝试；增强版 p19 起上报，旧版本缺省为 0。
     #[serde(default)]
     pub aborted: u64,
+    /// 上游回了限速（DoH 的 HTTP 429）的尝试：既不算成功也不算失败；认得限速的内核才上报，更早的缺省为 0。
+    /// Attempts the upstream answered with a rate limit (`DoH` HTTP 429): neither a success nor a failure; only kernels that know
+    /// rate limits report them, 0 for older ones.
+    #[serde(default)]
+    pub throttled: u64,
     /// 已结算尝试的平均耗时（毫秒）；增强版 p20 起提供。
     #[serde(default)]
     pub avg_latency_ms: Option<f64>,
@@ -277,6 +282,7 @@ pub struct UpstreamTally {
     pub errors: u64,
     pub rejected: u64,
     pub aborted: u64,
+    pub throttled: u64,
     pub tcp_fallbacks: u64,
     pub avg_latency_ms: Option<f64>,
 }
@@ -716,6 +722,7 @@ impl MetricsBuilder {
                             Some("error") => entry.errors = value,
                             Some("rejected") => entry.rejected = value,
                             Some("aborted") => entry.aborted = value,
+                            Some("throttled") => entry.throttled = value,
                             _ => {}
                         }
                     }
@@ -953,6 +960,9 @@ kixdns_upstream_results_total{upstream="1.1.1.1:53",transport="udp",result="succ
 kixdns_upstream_attempts_total{upstream="8.8.8.8:53",transport="udp"} 9
 kixdns_upstream_results_total{upstream="8.8.8.8:53",transport="udp",result="aborted"} 8
 kixdns_upstream_results_total{upstream="8.8.8.8:53",transport="udp",result="error"} 1
+kixdns_upstream_attempts_total{upstream="dns.example/dns-query",transport="doh"} 5
+kixdns_upstream_results_total{upstream="dns.example/dns-query",transport="doh",result="success"} 2
+kixdns_upstream_results_total{upstream="dns.example/dns-query",transport="doh",result="throttled"} 3
 kixdns_cache_stale_total{reason="expired"} 1
 kixdns_cache_stale_total{reason="client_timeout"} 0
 kixdns_cache_stale_total{reason="upstream_failure"} 0
@@ -985,6 +995,16 @@ kixdns_upstream_via_total{upstream="1.1.1.1:53",transport="udp",via="tcp"} 2
         assert_eq!(metrics.upstreams[1].attempts, 9);
         assert_eq!(metrics.upstreams[1].aborted, 8);
         assert_eq!(metrics.upstreams[1].errors, 1);
+        assert_eq!(metrics.upstreams[1].throttled, 0);
+        assert_eq!(metrics.upstreams[2].upstream, "dns.example/dns-query");
+        assert_eq!(
+            (
+                metrics.upstreams[2].success,
+                metrics.upstreams[2].errors,
+                metrics.upstreams[2].throttled
+            ),
+            (2, 0, 3)
+        );
         assert_eq!(metrics.cache_stale.expired, 1);
         assert_eq!(metrics.requests_finished.completed, 40);
         assert_eq!(metrics.requests_finished.cancelled, 1);

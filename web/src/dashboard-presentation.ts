@@ -90,9 +90,9 @@ export function latencyHealth(latency: RequestLatency): UpstreamHealth {
 
 export const HEALTH_LABELS: Record<UpstreamHealth, string> = { pending: '观察中', healthy: '健康', degraded: '降级', unhealthy: '异常' }
 
-/** 已得到结果的尝试数：不含并发竞争中被取消的。 */
-export function settledAttempts(item: Pick<UpstreamTally, 'attempts' | 'aborted'>): number {
-  return Math.max(0, item.attempts - item.aborted)
+/** 已得到结果的尝试数：不含并发竞争中被取消的，也不含被限速的（没有给出 DNS 回答）。 */
+export function settledAttempts(item: Pick<UpstreamTally, 'attempts' | 'aborted' | 'throttled'>): number {
+  return Math.max(0, item.attempts - item.aborted - item.throttled)
 }
 
 export interface ShareRow {

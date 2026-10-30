@@ -64,7 +64,7 @@ Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致
 - `kixdns_cache_stale_total{reason="expired|client_timeout|upstream_failure"}`：过期缓存命中的原因拆分，三者之和等于 `kixdns_cache_hits_total{kind="stale"}`。
 - `kixdns_requests_finished_total{status="completed|failed|cancelled"}`：请求完成状态，不含后台刷新。
 - `kixdns_request_latency_ms_bucket{le="10|50|100|500|1000|+Inf"}`、`kixdns_request_latency_ms_sum`、`kixdns_request_latency_ms_count`：端到端耗时直方图与累计值（毫秒，`_sum` 保留三位小数）。
-- `kixdns_upstream_latency_ms_sum{upstream,transport}`、`kixdns_upstream_latency_ms_count{upstream,transport}`：已得到结果的上游尝试累计耗时与次数，不含 `aborted`。
+- `kixdns_upstream_latency_ms_sum{upstream,transport}`、`kixdns_upstream_latency_ms_count{upstream,transport}`：已得到结果的上游尝试累计耗时与次数，不含 `aborted` 和 `throttled`。
 - `kixdns_upstream_response_latency_ms_sum{upstream,transport}`、`kixdns_upstream_response_latency_ms_count{upstream,transport}`：只算拿到响应的尝试，即 `success` 与 `rejected`；超时和连接错误的 `error` 不计入，否则一次超时就把整段超时时长加进平均耗时。
 - `kixdns_upstream_rcodes_total{upstream,rcode}`：上游应答的响应码计数，`rcode` 为 hickory 的变体名（`NoError`、`NXDomain`、`ServFail`、`Refused` 等）。
 - `kixdns_upstream_via_total{upstream,transport,via}`：`transport` 为该地址选定的传输，`via` 为实际带回答案的传输；`transport="udp"` 且 `via="tcp"` 即 TCP 兜底。
@@ -137,7 +137,8 @@ Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致
 - `decision`：没有对应规则步骤的决定；
 - `cache`：查缓存的结果；
 - `joined`：搭了别人的查询；
-- `upstream`：问了一个上游，`result` 是 `success`、`rejected`、`error` 或 `aborted`（别的上游先答了）。
+- `upstream`：问了一个上游，`result` 是 `success`、`rejected`、`error`、`aborted`（别的上游先答了）或 `throttled`（回了限速，DoH 的 HTTP 429；`error` 里是原文）；
+- `upstream_skipped`：同一次转发里有别的上游可问，这个上游刚回过限速、还在暂停，这次没问它，带 `upstream`、`transport` 和 `reason`（目前只有 `throttled`）。它不是一次尝试，不进任何计数；不认识这一步的旧面板会跳过它。
 
 **什么时候记**
 
@@ -174,7 +175,7 @@ Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致
 - Pipeline 命中表示一次请求选择或跳转进入该 Pipeline。
 - 规则命中表示匹配器链结果为真；`phase` 为 `request` 或 `response`。
 - 上游 attempt 表示一次已配置的上游操作，result 表示该操作最终结果，而不是规则中的 Forward 动作数。`tcp_udp` 的内部 TCP 回退属于同一次操作。
-- `result` 取值为 `success`、`error`、`rejected`、`aborted`，attempt 与 result 一一对应。`aborted` 表示多上游并发竞争中被更快的上游抢先应答而取消的尝试，它既不是成功也不是失败；`rejected` 表示上游回了 SERVFAIL 或 REFUSED、结果被丢弃，上游本身在正常应答，这些响应码已经计入响应码分布。因此面板的上游成功率是 `success / (success + error)`：只有超时和连接错误算失败，竞争落败和被拒绝的应答都不进分母——把 `aborted` 算进去会让同一规则下的上游按应答先后瓜分成功率，把 `rejected` 算进去则会让上游替它解析不了的域名背锅。增强版 p19 之前不上报 `aborted`，落败的尝试没有任何 result。
+- `result` 取值为 `success`、`error`、`rejected`、`aborted`、`throttled`，attempt 与 result 一一对应。`throttled` 表示上游回了限速（DoH 的 HTTP 429）：没有 DNS 回答，既不算成功也不算失败，不进成功率分母，也不算一次响应、不计耗时；内核随后让这个上游暂停一小会儿（服务器给了 `Retry-After` 就按它，限在 1 到 60 秒，没给就 1 秒），暂停期间同一次转发里还有别的上游时就不问它。认得限速之前的内核把 429 记成 `error`。`aborted` 表示多上游并发竞争中被更快的上游抢先应答而取消的尝试，它既不是成功也不是失败；`rejected` 表示上游回了 SERVFAIL 或 REFUSED、结果被丢弃，上游本身在正常应答，这些响应码已经计入响应码分布。因此面板的上游成功率是 `success / (success + error)`：只有超时和连接错误算失败，竞争落败和被拒绝的应答都不进分母——把 `aborted` 算进去会让同一规则下的上游按应答先后瓜分成功率，把 `rejected` 算进去则会让上游替它解析不了的域名背锅。增强版 p19 之前不上报 `aborted`，落败的尝试没有任何 result。
 - 并发数覆盖进入异步处理至响应完成的请求，不包含已在同步快速路径返回的请求。面板首页不再展示并发数，该序列仅保留给外部消费者。
 - 上游平均耗时以 `kixdns_upstream_response_latency_ms_sum / _count` 计算，只算拿到响应的尝试；增强版 p25 之前没有这组序列，退回 `kixdns_upstream_latency_ms_sum / _count`，其中含超时时长。
 - 以上计数都从 KixDNS 启动起累加。面板每分钟采样一次，存在内存里，概览用当前值减去一小时内最早的采样，得到最近一小时的计数（`/api/v1/overview` 中每个上游的 `recent`、`metrics.request_latency_recent`，窗口长度为 `metrics.recent_window_seconds`）；KixDNS 一小时内重启过时直接用它启动以来的计数。面板重启后前几分钟没有窗口，退回累计值。
