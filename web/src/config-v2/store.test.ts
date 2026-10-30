@@ -262,6 +262,15 @@ describe('内核给的英文原因', () => {
     expect(said).toContain('"fast"')
     expect(kernelWords('KixDNS 已停止')).toBe('KixDNS 已停止')
   })
+
+  it('旧内核不认识「就是」：说清楚怎么办，不只给原话', async () => {
+    const { kernelWords } = await import('./useConfigDocument')
+    // 2026.10.27.19 的原话 / Kernel 2026.10.27.19's own words
+    const raw = 'parse config JSON: unknown variant `domain_exact`, expected one of `any`, `domain_suffix`, `domain_regex` at line 1 column 225'
+    expect(kernelWords(raw)).toBe('这个版本的 KixDNS 内核还不认识「就是」：到系统页更新内核，或者把「就是」改回「属于」')
+    expect(kernelWords(raw.replace('`domain_exact`', '`request_domain_exact`'))).toContain('还不认识「就是」')
+    expect(kernelWords(raw.replace('`domain_exact`', '`domain_exacts`'))).toContain('KixDNS\u00a0的原话')
+  })
 })
 
 // 旧版面板编辑被两处共用的组时复制出「原名-copy」，只改了其余请求；回答后检查还指着原来的组
