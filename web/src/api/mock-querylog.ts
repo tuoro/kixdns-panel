@@ -1,6 +1,7 @@
 import type { QueryLogGap, QueryLogOutcome, QueryLogPage, QueryLogRecord, QueryLogSettings, QueryLogStepRecord } from './types'
 import { ignoredDomains } from '../querylog'
 import { ApiError } from './client'
+import { demoAddress, demoChain } from './mock-geoip'
 
 // 演示用的查询日志：按当前演示配置里的内核 Pipeline 生成，去向、规则名、上游地址都和配置对得上；格式和面板接口一样（内核的说法），
 // 页面照样先换成显示用的记录。全是演示数据，不是谁的真实查询。
@@ -33,8 +34,9 @@ const DOMESTIC = ['www.baidu.com', 'www.qq.com', 'weixin.qq.com', 'api.bilibili.
 const APPLE = ['gateway.icloud.com', 'www.apple.com', 'is1-ssl.mzstatic.com', 'p55-caldav.icloud.com', 'gsa.apple.com']
 const CORP = ['git.corp.example', 'wiki.corp.internal', 'mail.corp.example']
 const ADS = ['ad.doubleclick.net', 'googleads.g.doubleclick.net', 'pagead2.googlesyndication.com', 'app-measurement.com', 'adservice.google.com', 'sdk.e.qq.com']
-// 和演示的查询排行同一批客户端，从排行点进来有结果 / The same clients as the demo rankings, so a jump from there finds entries
-const CLIENTS = ['192.168.1.12', '192.168.1.8', '192.168.1.27', '192.168.1.36', '192.168.1.5', 'fd00::1c']
+// 前六个和演示的查询排行同一批客户端，从排行点进来有结果；最后一个是在外面用 DoH 连回来的手机
+// The first six are the demo rankings' clients, so a jump from there finds entries; the last is a phone connecting back over DoH from outside
+const CLIENTS = ['192.168.1.12', '192.168.1.8', '192.168.1.27', '192.168.1.36', '192.168.1.5', 'fd00::1c', '117.136.12.76']
 
 interface Forward { id: string; rule: string; addresses: string[]; checks: { rule: string; target: string }[] }
 interface Destination { pipeline: string; rule: string | null; /** 规则所在的列表 / The list the rule sits in */ from: string; forward?: Forward; kind: 'forward' | 'block' | 'answer'; names: string[]; qtype?: string; answer?: string; rcode?: string; weight: number }
@@ -110,11 +112,10 @@ export function demoQueryLog(config: KConfig, now: number): Item[] {
     const qname = pick(d.names)
     const qtype = d.qtype ?? (rnd() < 0.2 ? 'AAAA' : rnd() < 0.08 ? 'HTTPS' : 'A')
     const client = pick(CLIENTS)
-    const transport = client.includes(':') ? 'udp' : rnd() < 0.08 ? 'doh' : rnd() < 0.06 ? 'tcp' : 'udp'
+    const transport = client === '117.136.12.76' ? 'doh' : client.includes(':') ? 'udp' : rnd() < 0.08 ? 'doh' : rnd() < 0.06 ? 'tcp' : 'udp'
     const steps: QueryLogStepRecord[] = [{ at_us: 0, kind: 'pipeline', pipeline: entry }]
     const base = { id, seq: 90_000 + id, time_unix_ms: time, client, transport, qname, qtype } as const
-    const ip4 = () => `${pick([104, 142, 151, 172, 183, 203, 220])}.${Math.floor(rnd() * 255)}.${Math.floor(rnd() * 255)}.${Math.floor(rnd() * 254) + 1}`
-    const answersFor = () => (qtype === 'AAAA' ? [`2408:8756:${Math.floor(rnd() * 9999)}::${Math.floor(rnd() * 99)}`] : qtype === 'PTR' ? ['router.home.arpa.'] : qtype === 'HTTPS' ? [] : Array.from({ length: 1 + Math.floor(rnd() * 2) }, ip4))
+    const answersFor = () => (qtype === 'AAAA' ? [...demoChain(qname), demoAddress(qname, 'AAAA', rnd)].filter(Boolean) : qtype === 'PTR' ? ['router.home.arpa.'] : qtype === 'HTTPS' ? [] : [...demoChain(qname), ...Array.from({ length: 1 + Math.floor(rnd() * (demoChain(qname).length ? 4 : 2)) }, () => demoAddress(qname, 'A', rnd))])
     let e: QueryLogRecord
     // 进到规则组：先是入口里转过去的那条规则 / Entering a rule group: first the entry rule that handed the request over
     const enterList = (to: string): QueryLogStepRecord[] => [...(handoffs.has(to) ? [{ at_us: 30, kind: 'rule' as const, pipeline: entry, rule: handoffs.get(to)!, phase: 'request' as const, decision: 'jump' as const, target: to }] : []), { at_us: 50, kind: 'pipeline' as const, pipeline: to }]

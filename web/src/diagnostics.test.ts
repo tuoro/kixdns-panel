@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { DnsTraceStep } from './api/types'
-import { asksUpstream, humanizeTraceDetail, missedRulesText, isDnsSuccess, parseDnsAnswer, responseCodeName, traceTone, describeStep, detailParts, formatElapsed, forwardTarget, groupTrace, hidePlumbing, type TextPart } from './diagnostics'
+import { answeredByUpstream, asksUpstream, noteRuns, humanizeTraceDetail, missedRulesText, isDnsSuccess, parseDnsAnswer, responseCodeName, traceTone, describeStep, detailParts, formatElapsed, forwardTarget, groupTrace, hidePlumbing, type TextPart } from './diagnostics'
 
 describe('DNS 应答台账', () => {
   it.each([
@@ -208,5 +208,31 @@ describe('转发用的那条规则不单列', () => {
       kstep('decision', 'forward', '规则 rule-3 转发', '目标：1.1.1.1:53'),
     ]
     expect(hidePlumbing(steps, names).map((step) => step.label)).toEqual(['苹果服务', '规则 rule-3 转发'])
+  })
+})
+
+describe('回答是不是上游给的（只有它标地区）', () => {
+  it.each([
+    ['上游回了', [kstep('upstream', 'succeeded', 'https://1.1.1.1/dns-query')], true],
+    ['等到了同一个查询的回答', [kstep('upstream', 'joined', '等候正在进行的同一个查询')], true],
+    ['缓存里有', [kstep('response_cache', 'fresh', '命中新鲜响应缓存')], true],
+    ['过期缓存', [kstep('response_cache', 'stale', '上游失败，返回过期缓存')], true],
+    ['规则直接回', [kstep('response_cache', 'miss', '响应缓存未命中'), kstep('decision', 'selected', '静态响应 No Error', '答案记录数：1')], false],
+    ['上游回了，回答后检查换成了静态回应', [kstep('upstream', 'succeeded', 'https://1.1.1.1/dns-query'), kstep('response_rule', 'matched', '响应匹配器 命中'), kstep('decision', 'selected', '静态响应 No Error')], false],
+    ['上游都失败了', [kstep('upstream', 'failed', 'https://1.1.1.1/dns-query')], false],
+  ])('%s', (_, steps, expected) => {
+    expect(answeredByUpstream(steps)).toBe(expected)
+  })
+
+  it('公网客户端的地区跟在客户端地址后面，监听标签不带', () => {
+    const view = describeStep(kstep('request', 'parsed', 'A example.com', '客户端：117.136.12.76；监听器：default'), { clientRegion: 'CN' })
+    expect(view.note.filter((part) => part.region)).toEqual([{ label: '客户端', text: '117.136.12.76', literal: true, region: 'CN' }])
+  })
+})
+
+describe('细节里的「·」贴在前一段末尾', () => {
+  it('分隔点并进前一段，后一段前面空一格，最后一段后面没有点', () => {
+    const runs = noteRuns(detailParts('客户端：117.136.12.76；监听器：default；传输：Some(Https)'))
+    expect(runs.map((run) => [run.part.label, run.dot, run.space])).toEqual([['客户端', true, false], ['监听标签', true, true], ['传输', false, true]])
   })
 })

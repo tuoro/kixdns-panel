@@ -2246,6 +2246,64 @@ async fn geosite_categories_come_from_the_files_the_config_names() {
     );
 }
 
+/// 查询详情和诊断给地址标地区：按正在用的配置里的 `GeoIP` 数据现查，相对路径不读；地址写错、太多、没写都是 400；
+/// 不登录不给。
+/// Regions for the addresses of a query detail or a diagnosis: looked up in the live config's `GeoIP` data, with a
+/// relative path left unread; a malformed, overlong or empty address list is a 400; nothing without signing in.
+#[tokio::test]
+async fn ip_regions_come_from_the_live_configs_geoip_data() {
+    use crate::protobuf::test_data::{bytes_field, varint};
+
+    let context = authenticated_app().await;
+    let mut network = bytes_field(1, &[1, 2, 3, 0]);
+    network.extend(varint(2 << 3));
+    network.extend(varint(24));
+    let mut entry = bytes_field(1, b"cn");
+    entry.extend(bytes_field(2, &network));
+    let dat = context.directory.path().join("geoip.dat");
+    std::fs::write(&dat, bytes_field(1, &entry)).unwrap();
+    let configure = |path: Value| {
+        std::fs::write(
+            context.directory.path().join("pipeline.json"),
+            serde_json::json!({ "pipelines": [], "settings": { "geoip_dat_path": path } })
+                .to_string(),
+        )
+        .unwrap();
+    };
+    configure(serde_json::json!(dat));
+    let path = "/api/v1/geoip/regions?ips=1.2.3.4,10.0.0.1,%20203.0.113.9";
+
+    let unauthorized = context
+        .app
+        .clone()
+        .oneshot(Request::get(path).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+    assert_eq!(
+        get_json(&context, path).await,
+        serde_json::json!({ "regions": [{ "codes": ["CN"] }, { "local": true }, null] })
+    );
+    configure(serde_json::json!("geoip.dat"));
+    assert_eq!(
+        get_json(&context, path).await,
+        serde_json::json!({ "regions": [null, { "local": true }, null] }),
+        "a relative path is not read"
+    );
+
+    let many = vec!["1.1.1.1"; 33].join(",");
+    for query in ["ips=", "ips=1.2.3.4,example.com", &format!("ips={many}")] {
+        let request = Request::get(format!("/api/v1/geoip/regions?{query}"))
+            .header(COOKIE, context.cookies.clone())
+            .body(Body::empty())
+            .unwrap();
+        let (status, body) = send_json(&context, request).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{query}");
+        assert_eq!(body["error"]["code"], "ip_regions_invalid", "{query}");
+    }
+}
+
 /// 内置那份和导入后的副本内容一样：分类只放一份，两边都指向它。
 /// The built-in file and its imported copy hold the same bytes: the categories appear once and both point at them.
 #[test]

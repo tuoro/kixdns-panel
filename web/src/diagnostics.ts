@@ -96,7 +96,8 @@ export function humanizeTraceDetail(detail: string): string {
  * One run of a sentence; literal marks a machine-written value (a name, an address), spaced from the words around it. A part
  * with a label is a "key value" pair that wraps as one unit.
  */
-export interface TextPart { text: string; literal?: boolean; label?: string }
+export interface TextPart { text: string; literal?: boolean; label?: string; /** 地址后面跟着的地区，见 ip-region.ts / The region following an address, see ip-region.ts */ region?: string }
+
 
 export interface StepView {
   /** 这一步做了什么，一句话。 / What the step did, in one sentence. */
@@ -134,6 +135,17 @@ export function detailParts(detail: string | null | undefined, skip: string[] = 
     else parts.push({ label: key!.trim(), text: value, literal: isLiteral(value) })
   }
   return parts
+}
+
+// 细节里的「·」贴在前一段末尾，折行时不落在行首、不挂在行尾（见 line-dots.ts） / A 「·」 in a detail sticks to the run before it, so a wrap
+// never starts a line with it or leaves it hanging (see line-dots.ts)
+export function noteRuns(note: TextPart[]): { part: TextPart; dot: boolean; space: boolean }[] {
+  const runs: { part: TextPart; dot: boolean; space: boolean }[] = []
+  for (const part of note) {
+    if (part.text === ' · ' && !part.label && runs.length) runs[runs.length - 1]!.dot = true
+    else runs.push({ part, dot: false, space: Boolean(runs.at(-1)?.dot) })
+  }
+  return runs
 }
 
 function detailValue(detail: string | null | undefined, key: string): string | null {
@@ -188,12 +200,31 @@ function sentence(...runs: (TextPart | TextPart[])[]): TextPart[] {
 }
 
 export interface TraceContext {
+  /** 客户端的地区（面板按 GeoIP 数据查的） / The client's region (looked up by the panel in the GeoIP data) */
+  clientRegion?: string
   /** 上一次转发的目标 / The last forward target */
   target?: string | null
   /** 内核名字换回配置页名字的办法；没有就照原样 / How to turn kernel names back into the config page's; as they are without it */
   names?: TraceNames | null
   /** 这次查询后来有没有问上游（或者等着同样的查询问） / Whether this query went on to ask upstreams (or waited on the same query asking) */
   asksUpstream?: boolean
+}
+
+/**
+ * 回来的回答是不是上游给的：上游回了、等到了同一个查询的回答、或者用了缓存（缓存里的也是上游给的）；之后又被规则的静态回应换掉的不算。
+ * 只有上游给的回答才标地区，规则自己回的地址是自己配的
+ * Whether the answer came from upstream: an upstream replied, the same query's reply was waited for, or the cache answered (the
+ * cache holds upstream answers too); one a rule's static response replaced afterwards does not count. Only upstream answers get
+ * regions, as the addresses a rule answers are one's own config
+ */
+export function answeredByUpstream(steps: readonly DnsTraceStep[]): boolean {
+  let upstream = false
+  for (const step of steps) {
+    if (step.stage === 'upstream' && ['succeeded', 'joined'].includes(step.status)) upstream = true
+    else if (step.stage === 'response_cache' && ['fresh', 'hit', 'stale'].includes(step.status)) upstream = true
+    else if (step.stage === 'decision' && step.label.startsWith('静态响应')) upstream = false
+  }
+  return upstream
 }
 
 /** 后来有没有问上游：缓存没命中那一步据此说「去问上游」 / Whether upstreams were asked later: the cache-miss step says 「去问上游」 by it */
@@ -212,7 +243,9 @@ export function describeStep(step: DnsTraceStep, context: TraceContext = {}): St
   const names = context.names
   const note = detailParts(detail)
   let match: RegExpExecArray | null
-  if (stage === 'request' && status === 'parsed') return { lead: sentence(t('请求'), m(label)), note }
+  if (stage === 'request' && status === 'parsed') {
+    return { lead: sentence(t('请求'), m(label)), note: context.clientRegion ? note.map((part) => (part.label === '客户端' ? { ...part, region: context.clientRegion } : part)) : note }
+  }
   if (stage === 'pipeline' && status === 'selected') {
     const said = names?.entry(label)
     return { lead: said ? [t(`进入${said}`)] : sentence(t('进入'), pipelineName(label, names)), note }
