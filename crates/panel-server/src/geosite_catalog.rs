@@ -18,6 +18,7 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 
 use crate::digest::sha256_hex;
+use crate::protobuf::{Fields, Value};
 
 /// 读分类时接受的最大文件，和下载 Geo 数据的上限一样 / The largest file read for categories, the same as the Geo download limit
 const MAX_CATALOG_BYTES: u64 = 128 * 1024 * 1024;
@@ -267,106 +268,10 @@ fn parse_json(data: &[u8]) -> Result<Vec<GeositeCategory>, String> {
     Ok(finish(tallies))
 }
 
-enum Value<'a> {
-    Number,
-    Bytes(&'a [u8]),
-}
-
-/// protobuf 的字段，一个一个读出来；越界、截断和不认识的线型都报错，不会读到别处去
-/// protobuf fields one at a time; running past the end, truncation and unknown wire types are errors
-struct Fields<'a> {
-    data: &'a [u8],
-    position: usize,
-    failed: bool,
-}
-
-impl<'a> Fields<'a> {
-    fn new(data: &'a [u8]) -> Self {
-        Self {
-            data,
-            position: 0,
-            failed: false,
-        }
-    }
-
-    fn varint(&mut self) -> Result<u64, String> {
-        let mut value = 0_u64;
-        for shift in (0..64).step_by(7) {
-            let byte = *self.data.get(self.position).ok_or("数字在文件结尾处断开")?;
-            self.position += 1;
-            value |= u64::from(byte & 0x7f) << shift;
-            if byte < 0x80 {
-                return Ok(value);
-            }
-        }
-        Err("数字太长".to_owned())
-    }
-
-    fn skip(&mut self, length: usize) -> Result<&'a [u8], String> {
-        let end = self
-            .position
-            .checked_add(length)
-            .filter(|end| *end <= self.data.len())
-            .ok_or("内容超出了文件长度")?;
-        let bytes = &self.data[self.position..end];
-        self.position = end;
-        Ok(bytes)
-    }
-
-    fn next_field(&mut self) -> Result<(u64, Value<'a>), String> {
-        let key = self.varint()?;
-        let number = key >> 3;
-        match key & 7 {
-            0 => {
-                self.varint()?;
-                Ok((number, Value::Number))
-            }
-            1 => self.skip(8).map(|_| (number, Value::Number)),
-            2 => {
-                let length = usize::try_from(self.varint()?).map_err(|_| "长度太大")?;
-                self.skip(length).map(|bytes| (number, Value::Bytes(bytes)))
-            }
-            5 => self.skip(4).map(|_| (number, Value::Number)),
-            wire => Err(format!("不认识的字段类型 {wire}")),
-        }
-    }
-}
-
-impl<'a> Iterator for Fields<'a> {
-    type Item = Result<(u64, Value<'a>), String>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.failed || self.position >= self.data.len() {
-            return None;
-        }
-        let field = self.next_field();
-        self.failed = field.is_err();
-        Some(field)
-    }
-}
-
 /// 测试里拼 `GeoSiteList` 用（面板接口的测试也用它） / Builds `GeoSiteList` bytes for tests, the panel API tests included
 #[cfg(test)]
 pub(crate) mod test_data {
-    pub(crate) fn varint(mut value: u64) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        loop {
-            let byte = (value & 0x7f) as u8;
-            value >>= 7;
-            if value == 0 {
-                bytes.push(byte);
-                return bytes;
-            }
-            bytes.push(byte | 0x80);
-        }
-    }
-
-    pub(crate) fn bytes_field(number: u64, payload: &[u8]) -> Vec<u8> {
-        let mut field = varint(number << 3 | 2);
-        field.extend(varint(payload.len() as u64));
-        field.extend_from_slice(payload);
-        field
-    }
+    use crate::protobuf::test_data::{bytes_field, varint};
 
     pub(crate) fn domain(value: &str, attributes: &[&str]) -> Vec<u8> {
         let mut message = varint(1 << 3);

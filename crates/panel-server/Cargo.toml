@@ -23,6 +23,7 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 hickory-proto = "0.26"
 idna = "1"
 ipnet = "2"
+maxminddb = "0.27"
 prometheus-parse = "0.2"
 regex-syntax = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
@@ -43,6 +44,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 zip = { version = "9.0", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
+maxminddb-writer = "0.1"
 tower = { version = "0.5", features = ["util"] }
 
 [lints]

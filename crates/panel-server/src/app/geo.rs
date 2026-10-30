@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum_extra::extract::CookieJar;
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,7 @@ use crate::geo_data::{
     GeoDataSyncRequest, apply_manifest_paths, is_blocklist_path,
 };
 use crate::geosite_catalog::{CatalogCache, GeositeCategory};
+use crate::ip_region::{GeoIpFiles, IpRegion, MAX_ADDRESSES, regions};
 
 use super::{
     AppState, SystemConfigWrite, map_config_error, map_geo_data_error, write_system_config,
@@ -111,6 +112,68 @@ pub(super) struct GeositeCategories {
 /// being edited (pending first), the manifest and the package hold. Only paths the panel already knows are
 /// read, never paths sent by the page; a local path typed into the draft and not yet saved is reported by
 /// the page as readable after saving.
+#[derive(Debug, Deserialize)]
+pub(super) struct IpRegionsQuery {
+    /// 用逗号隔开的地址 / Addresses separated by commas
+    ips: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct IpRegionsResponse {
+    /// 和请求里的地址一一对应；查不到的是 null / One per address asked, in order; null for one the data does not place
+    regions: Vec<Option<IpRegion>>,
+}
+
+/// 查询详情和诊断给地址标地区：按正在用的配置里的 `GeoIP` 数据现查，查完就放（见 `ip_region`）。只读配置里写的路径，
+/// 不接受页面传来的路径；相对路径不读，面板不知道 `KixDNS` 从哪个目录找它
+/// Regions for the addresses of a query detail or a diagnosis: looked up in the `GeoIP` data of the live config and
+/// dropped after (see `ip_region`). Only the paths in the config are read, never paths sent by the page; a relative
+/// path is not read, since the panel cannot know which directory `KixDNS` resolves it from
+pub(super) async fn get_ip_regions(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Query(query): Query<IpRegionsQuery>,
+) -> AppResult<Json<IpRegionsResponse>> {
+    authenticate(&state.database, &jar).await?;
+    let ips = query
+        .ips
+        .split(',')
+        .map(|ip| ip.trim().parse::<std::net::IpAddr>())
+        .collect::<Result<Vec<_>, _>>()
+        .ok()
+        .filter(|ips| !ips.is_empty() && ips.len() <= MAX_ADDRESSES)
+        .ok_or_else(|| {
+            AppError::BadRequest(
+                "ip_regions_invalid",
+                format!("要查的地址写得不对，一次最多 {MAX_ADDRESSES} 个，用逗号隔开"),
+            )
+        })?;
+    let config = state.config.current().await.map_err(map_config_error)?;
+    let path = |key: &str| {
+        config
+            .content
+            .pointer(&format!("/settings/{key}"))
+            .and_then(serde_json::Value::as_str)
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+    };
+    let (mmdb, dat) = (path("geoip_db_path"), path("geoip_dat_path"));
+    // 读盘在阻塞线程里做：DAT 要从头读一遍，十几 MB 的文件几十毫秒 / Disk work runs on a blocking thread: a DAT is read
+    // through, tens of milliseconds for a file of a dozen MB
+    let regions = tokio::task::spawn_blocking(move || {
+        regions(
+            &ips,
+            &GeoIpFiles {
+                mmdb: mmdb.as_deref(),
+                dat: dat.as_deref(),
+            },
+        )
+    })
+    .await
+    .map_err(|error| AppError::Internal(anyhow::Error::new(error)))?;
+    Ok(Json(IpRegionsResponse { regions }))
+}
+
 pub(super) async fn get_geosite_categories(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -232,7 +295,7 @@ fn builtin_label(builtin: &BuiltinGeosite) -> String {
     format!("geosite.dat\u{a0}{}", builtin.release)
 }
 
-/// 全新安装的首次启动：配置里还没有任何 `GeoSite` 时导入内置的那份，并写进配置（KixDNS 还没启动时
+/// 全新安装的首次启动：配置里还没有任何 `GeoSite` 时导入内置的那份，并写进配置（`KixDNS` 还没启动时
 /// 存成待应用的版本）。只更新过面板的主机没有这个标记，由用户自己决定要不要导入。
 /// The first start of a fresh install: with no `GeoSite` in the config yet, import the built-in one
 /// and write it into the config (as a pending version while `KixDNS` has not started). Hosts that only

@@ -34,7 +34,7 @@ mod updates;
 
 use geo::{
     cleanup_geo_data, get_builtin_geosite, get_geo_data, get_geo_data_schedule,
-    get_geosite_categories, import_builtin_geosite, save_geo_data_schedule,
+    get_geosite_categories, get_ip_regions, import_builtin_geosite, save_geo_data_schedule,
     spawn_builtin_geosite_seed, sync_geo_data,
 };
 
@@ -437,6 +437,7 @@ fn api_router(state: AppState) -> Router {
             "/config/geo-data/schedule",
             get(get_geo_data_schedule).put(save_geo_data_schedule),
         )
+        .route("/geoip/regions", get(get_ip_regions))
         .route("/config/versions", get(config_versions))
         .route("/config/versions/bulk", delete(delete_config_versions))
         .route(

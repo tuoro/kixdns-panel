@@ -403,6 +403,19 @@ export interface AuditPage {
   next_cursor: number | null
 }
 
+/**
+ * 一个地址的地区：内网（和内核「回答的是内网地址」一个判断），或者 GeoIP 数据给它的代码——一般一个国家代码；用 MMDB 时也可能是 GOOGLE 这类名字；
+ * DAT 里同一个地址列在几个国家下时是几个
+ * An address's region: local (judged as the kernel's 回答的是内网地址 judges it), or the codes the GeoIP data gives it — usually one country
+ * code; with an MMDB possibly a name such as GOOGLE; several when a DAT lists the address under several countries
+ */
+export type IpRegion = { local: true } | { codes: string[] }
+
+/** GET /api/v1/geoip/regions?ips=…：和问的地址一一对应，查不到的为 null / One per address asked, in order; null for one the data does not place */
+export interface IpRegionsResponse {
+  regions: Array<IpRegion | null>
+}
+
 export interface DnsDiagnostic {
   server: string
   domain: string

@@ -3,7 +3,7 @@ import type { QueryLogRecord, QueryLogStepRecord } from './api/types'
 import { compile, upstreamPipelineId } from './config-model/model'
 import { sampleModel } from './config-model/testing/samples'
 import { traceNames } from './config-model/trace-names'
-import { answerOf, capProblem, dayText, detailFacts, domainParts, entryOf, errorWord, glueText, hoursProblem, ignoredDomains, latencyText, literalParts, requestLine, routeOf, sourceOf, statusOf, stepRows, timeText, upstreamHost, type QueryLogContext } from './querylog'
+import { answerOf, capProblem, dayText, detailFacts, domainParts, entryOf, errorWord, glueText, hoursProblem, ignoredDomains, latencyText, literalParts, regionAddresses, requestLine, routeOf, sourceOf, statusOf, stepRows, timeText, upstreamHost, type QueryLogContext } from './querylog'
 import type { KernelPipeline } from './request-destinations'
 
 function record(steps: QueryLogStepRecord[], extra: Partial<QueryLogRecord> = {}): QueryLogRecord {
@@ -496,5 +496,38 @@ describe('显示时的断行和时间', () => {
     expect(latencyText(0.94)).toBe('0.9 ms')
     expect(latencyText(999.6)).toBe('1.0 s')
     expect(latencyText(999.4)).toBe('999 ms')
+  })
+})
+
+describe('详情里地址的地区', () => {
+  const chain = { answers: ['www.example.com.cdn.net.', '93.184.215.14', '2606:2800:21f::1', '93.184.215.15', '93.184.215.16'] }
+  const regions = new Map([
+    ['93.184.215.14', { codes: ['US'] }],
+    ['2606:2800:21f::1', { codes: ['CN', 'HK'] }],
+    ['192.168.1.9', { local: true as const }],
+    ['117.136.12.76', { codes: ['CN'] }],
+  ])
+  const regionOf = (ip: string) => regions.get(ip)
+
+  it('只问上游回答里列出来的地址（前 4 条）和客户端；规则自己回的、拦截的不问', () => {
+    expect(regionAddresses(entryOf(record([], chain)))).toEqual(['93.184.215.14', '2606:2800:21f::1', '93.184.215.15', '192.168.1.9'])
+    for (const outcome of ['cached', 'stale', 'joined'] as const) expect(regionAddresses(entryOf(record([], { ...chain, outcome })))).toHaveLength(4)
+    for (const outcome of ['answered', 'blocked'] as const) {
+      expect(regionAddresses(entryOf(record([], { outcome, answers: ['10.0.0.1'] })))).toEqual(['192.168.1.9'])
+    }
+  })
+
+  it('地区跟在地址后面，CNAME 不标，自己配的回答不标', () => {
+    const lines = detailFacts(entryOf(record([], chain)), null, regionOf)[2]!.lead
+    expect(lines.map((line) => line[0]!.region)).toEqual([undefined, 'US', 'CN/HK', undefined])
+    const answered = detailFacts(entryOf(record([], { outcome: 'answered', answers: ['93.184.215.14'] })), null, regionOf)[2]!.lead
+    expect(answered[0]![0]!.region).toBeUndefined()
+  })
+
+  it('公网客户端在标题下写地区，内网客户端不写', () => {
+    const now = 1_792_065_600_000
+    expect(requestLine(entryOf(record([])), now, regionOf)[0]).toBe('192.168.1.9')
+    expect(requestLine(entryOf(record([], { client: '117.136.12.76' })), now, regionOf)[0]).toBe('117.136.12.76\u00a0CN')
+    expect(requestLine(entryOf(record([], { client: '117.136.12.76' })), now)[0]).toBe('117.136.12.76')
   })
 })

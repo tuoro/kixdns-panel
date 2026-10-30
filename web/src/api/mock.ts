@@ -37,6 +37,7 @@ import type {
 } from './types'
 import { version as panelVersion } from '../../package.json'
 import { demoGeositeCategories } from './mock-geosite'
+import { demoAddress, demoChain, demoKnows, demoRegionsOf } from './mock-geoip'
 import { clearDemoQueryLog, demoQueryLogPage, demoQueryLogSettings, demoQueryLogSupported, setDemoQueryLogSettings } from './mock-querylog'
 import { demoBlocklists, demoBuildBlocklists, setDemoBlocklistSchedule } from './mock-blocklists'
 
@@ -516,6 +517,23 @@ function sampleFiguresFollow(): void {
   overview.health = { ...overview.health, release_version: release.release_tag!, release_commit: release.commit }
 }
 
+// 演示诊断的回答：认得的名字是它常见的 CNAME 再加两个地址，别的照旧回两个固定地址；每次都一样
+// The demo trial's answer: a known name gets its usual CNAMEs and then two addresses, any other the two fixed addresses as before; the
+// same every time
+function demoTrialAnswers(domain: string, recordType: string): string[] {
+  const name = domain.toLowerCase().replace(/\.$/, '')
+  if (!demoKnows(name)) return [`${domain}. 300 IN A 104.18.26.120`, `${domain}. 300 IN A 104.18.27.120`]
+  let seed = 7
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647 }
+  const type = recordType === 'AAAA' ? 'AAAA' : 'A'
+  const chain = demoChain(name)
+  const owners = [`${name}.`, ...chain]
+  return [
+    ...chain.map((target, at) => `${owners[at]} 300 IN CNAME ${target}`),
+    ...[0, 1].slice(0, type === 'AAAA' ? 1 : 2).map(() => demoAddress(name, type, rnd)).filter(Boolean).map((address) => `${owners.at(-1)} 300 IN ${type} ${address}`),
+  ]
+}
+
 // 样本配置下的诊断：照配置走一遍（和草稿试跑同一个模拟器），缓存里没有就问上游，同时问的几个里平均最快的那个先回
 // Diagnostics under the sample config: walked through the config (the draft trial's simulator); on a cache miss the upstreams are asked
 // and, of those asked together, the one fastest on average answers first
@@ -523,7 +541,7 @@ async function sampleLiveTrace(domain: string, recordType: string, client: strin
   const kernel = config.content as { pipelines?: { id: string; rules?: { name: string; actions?: { type: string; upstream?: string }[] }[] }[] }
   const { simulate } = await import('../config-model/testing/kernel-sim')
   const sim = simulate(kernel as Parameters<typeof simulate>[0], { domain: domain.toLowerCase().replace(/\.$/, ''), client, qtype: recordType }, (upstreams) => ({
-    rcode: 'NOERROR', answers: [`${domain}. 300 IN A 104.18.26.120`, `${domain}. 300 IN A 104.18.27.120`], upstream: upstreams[0] ?? '',
+    rcode: 'NOERROR', answers: demoTrialAnswers(domain, recordType), upstream: upstreams[0] ?? '',
   }))
   const trace: DnsDiagnostic['trace'] = [{ stage: 'request', status: 'parsed', label: `${recordType} ${domain}`, detail: `客户端：${client}；监听器：default`, elapsed_ms: 0 }]
   let pipeline = ''
@@ -1525,6 +1543,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
       next_cursor: matching.length > limit ? events.at(-1)?.id ?? null : null,
     } as AuditPage as T
   }
+  if (pathname === '/api/v1/geoip/regions' && method === 'GET') return { regions: demoRegionsOf((url.searchParams.get('ips') ?? '').split(',')) } as T
   if (path === '/api/v1/diagnostics/dns') {
     const body = JSON.parse(String(init?.body)) as { domain: string; record_type: string; client_ip?: string; config?: Record<string, unknown> }
     const client = body.client_ip ?? '127.0.0.1'
@@ -1539,7 +1558,7 @@ async function mockAnswer<T>(path: string, init?: RequestInit): Promise<T> {
       response_code: 'No Error',
       elapsed_ms: 12,
       truncated: false,
-      answers: [`${body.domain}. 300 IN A 104.18.26.120`, `${body.domain}. 300 IN A 104.18.27.120`],
+      answers: demoTrialAnswers(body.domain, body.record_type),
       trace_supported: true,
       trace_truncated: false,
       trace: [

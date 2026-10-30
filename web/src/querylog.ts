@@ -1,7 +1,8 @@
 import type { QueryLogEntry, QueryLogGap, QueryLogItem, QueryLogRecord, QueryLogStep, QueryLogStepRecord } from './api/types'
-import { ruleGroupPipelineId, upstreamPipelineId, type Model } from './config-model/model'
+import { isIp, ruleGroupPipelineId, upstreamPipelineId, type Model } from './config-model/model'
 import type { TraceNames } from './config-model/trace-names'
 import type { TextPart } from './diagnostics'
+import { clientRegionText, regionText, type RegionOf } from './ip-region'
 import { directLabel, forwardGroups, ownForwardLabel, ownForwards, type KernelPipeline } from './request-destinations'
 
 // 查询日志一条记录怎么说：去向和概览的「请求分布」同一套（上游组、拦截、自定义回答、域名映射、失败），处理过程一步一句，
@@ -388,12 +389,13 @@ export function sourceOf(entry: QueryLogEntry): { text: string; full?: string; l
 
 const TRANSPORTS: Record<string, string> = { udp: 'UDP', tcp: 'TCP', doh: 'DoH' }
 /** 详情页头第二行：客户端、协议、完整时间、耗时 / The detail head's second line: client, protocol, full time, latency */
-export function requestLine(entry: QueryLogEntry, now: number = Date.now()): string[] {
+export function requestLine(entry: QueryLogEntry, now: number = Date.now(), regionOf?: RegionOf): string[] {
   // 日期和列表的日期行一个写法（不是今年的带上年）；日期和时间之间是不断行空格，窄处不把时间单独挤到下一行
   // The date is written as in the list's date rows (with the year when not this year's); a no-break space between date and time keeps
   // the clock from being pushed alone onto the next line
   const when = `${dayText(entry.time_unix_ms, now)}\u00a0${clockText(entry.time_unix_ms)}`
-  return [entry.client, ...(entry.transport ? [TRANSPORTS[entry.transport] ?? entry.transport] : []), when, `耗时\u00a0${latencyText(entry.latency_ms).replace(' ', '\u00a0')}`]
+  const region = clientRegionText(regionOf?.(entry.client))
+  return [region ? `${entry.client}\u00a0${region}` : entry.client, ...(entry.transport ? [TRANSPORTS[entry.transport] ?? entry.transport] : []), when, `耗时\u00a0${latencyText(entry.latency_ms).replace(' ', '\u00a0')}`]
 }
 
 /**
@@ -401,7 +403,19 @@ export function requestLine(entry: QueryLogEntry, now: number = Date.now()): str
  * The detail's summary: three blocks, each leading with one fact and a smaller line under it — where it went, who answered, what came back.
  */
 export interface DetailFact { key: string; label: string; lead: TextPart[][]; sub: TextPart[]; tone: '' | 'warn' | 'err' }
-export function detailFacts(entry: QueryLogEntry, ctx: QueryLogContext | null): DetailFact[] {
+/**
+ * 详情里要标地区的地址：上游给的回答（缓存里的、合并等到的、过期的也是上游给的）里列出来的那几个地址，加上客户端。规则自己回的、拦截时回的地址是
+ * 自己配的，不标
+ * The detail's addresses to mark with a region: those listed in an answer that came from upstream (cached, joined or stale answers
+ * did too), plus the client. Addresses a rule answered or a block returned are one's own config and are not marked
+ */
+export function regionAddresses(entry: QueryLogEntry): string[] {
+  return [...(fromUpstream(entry) ? entry.answers.slice(0, 4).filter(isIp) : []), entry.client]
+}
+
+const fromUpstream = (entry: QueryLogEntry) => ['forwarded', 'cached', 'stale', 'joined'].includes(entry.outcome)
+
+export function detailFacts(entry: QueryLogEntry, ctx: QueryLogContext | null, regionOf?: RegionOf): DetailFact[] {
   const route = routeOf(entry, ctx)
   const place = (pipeline: string) => {
     const g = ctx ? forwardGroups(ctx.pipelines, ctx.model)(pipeline) : undefined
@@ -465,7 +479,7 @@ export function detailFacts(entry: QueryLogEntry, ctx: QueryLogContext | null): 
     who = { key: 'who', label: '谁回答的', lead: [[t('回答后检查')]], sub: [t(`上游回了，回答后检查${entry.outcome === 'blocked' ? '把它拦下了' : '换成了自定义回答'}`)], tone: '' }
   } else who = { key: 'who', label: '谁回答的', lead: [[t('规则直接回应')]], sub: [t('没有问上游')], tone: '' }
   // 回答了什么 / what came back
-  const records = entry.answers.slice(0, 4).map((a) => [m(a)])
+  const records = entry.answers.slice(0, 4).map((a): TextPart[] => [{ ...m(a), region: (fromUpstream(entry) && regionText(regionOf?.(a))) || undefined }])
   const what: DetailFact = entry.outcome === 'failed'
     ? { key: 'what', label: '回答', lead: [[t(entry.rcode || 'SERVFAIL')]], sub: [t('服务器出错')], tone: 'err' }
     : entry.outcome === 'cancelled'

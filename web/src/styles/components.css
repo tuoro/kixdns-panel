@@ -1011,3 +1011,7 @@ button.ui-link { position: relative; min-height: 0; padding: 0; border: 0; backg
   .ui-notice:not(:has(> small)) { align-items: center; }
   .ui-notice:not(:has(> small)) > svg { align-self: start; }
 }
+
+/* 地址后面的地区代码（US、CN/HK、内网）：紧跟着地址，比它小一号、淡一档、不加粗，换行时和地址不分开
+   The region after an address (US, CN/HK, 内网): right after it, a size smaller, a shade lighter, never bold, never wrapped away from it */
+.ui-region { margin-left: .4em; color: var(--l-ink-3); font-family: var(--f-body); font-size: var(--t-2); font-weight: var(--w-normal); letter-spacing: .02em; white-space: nowrap; }

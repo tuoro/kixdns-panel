@@ -3,7 +3,7 @@ import { Check, ChevronDown, ChevronRight, CircleX, LoaderCircle, Network, Power
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { CONFIG_WRITTEN_EVENT, apiRequest, isPanelDown, jsonBody } from '../api/client'
-import type { ConfigDocument, ConfigVersion, ConfigVersions, DnsDiagnostic, KixdnsKernel, Overview, ServiceStatus } from '../api/types'
+import type { ConfigDocument, ConfigVersion, ConfigVersions, DnsDiagnostic, IpRegion, KixdnsKernel, Overview, ServiceStatus } from '../api/types'
 import { runningVersionId } from '../running-version'
 import UiDotText from '../components/ui/UiDotText.vue'
 import UiEmpty from '../components/ui/UiEmpty.vue'
@@ -15,7 +15,9 @@ import { serviceTone } from '../service-state'
 import { readConfig } from '../config-model/document'
 import { isIp } from '../config-model/model'
 import { traceNames, type TraceNames } from '../config-model/trace-names'
-import { asksUpstream, describeStep, formatElapsed, forwardTarget, groupTrace, hidePlumbing, isDnsSuccess, missedRulesText, parseDnsAnswer, responseCodeName, ruleName, traceTone, type TextPart } from '../diagnostics'
+import { answeredByUpstream, asksUpstream, describeStep, noteRuns, formatElapsed, forwardTarget, groupTrace, hidePlumbing, isDnsSuccess, missedRulesText, parseDnsAnswer, responseCodeName, ruleName, traceTone, type TextPart } from '../diagnostics'
+import { clientRegionText, knownRegions, lookupRegions, regionText } from '../ip-region'
+import { vLineDots } from '../line-dots'
 import { errorMessage, formatKixdnsVersion } from '../utils'
 
 // 连不上面板时查询按了只会失败：先停用，横幅说为什么 / With the panel unreachable a query could only fail: disabled, the banner says why
@@ -144,7 +146,31 @@ const stopReading = readBeforeTelling(async () => { await statusRead?.catch(() =
 onBeforeUnmount(() => { window.clearInterval(downTimer); stopReading(); downShownHere.value = false })
 const clock = (date: Date) => date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
 const steps = computed(() => result.value?.trace_supported ? result.value.trace : [])
-const answers = computed(() => result.value?.answers.map((raw) => ({ raw, fields: parseDnsAnswer(raw) })) ?? [])
+// 回答里的地址和客户端的地区：结果一出来先用记住的，其余去问面板；又查了一次，晚到的作废。只标上游给的回答
+// Regions for the answer's addresses and the client: the remembered ones as soon as the result shows, the rest asked of the panel;
+// a late answer is void once another query runs. Only upstream answers are marked
+const regions = shallowRef(new Map<string, IpRegion | null>())
+const addressOf = (raw: string) => {
+  const fields = parseDnsAnswer(raw)
+  return fields && ['A', 'AAAA'].includes(fields.type) && isIp(fields.data) ? fields.data : null
+}
+watch(result, (value) => {
+  const addresses = value
+    ? [...(answeredByUpstream(value.trace) ? value.answers.map(addressOf).filter((ip): ip is string => ip !== null) : []), ...(value.client_ip ? [value.client_ip] : [])]
+    : []
+  regions.value = knownRegions(addresses)
+  if (!value || regions.value.size === new Set(addresses).size) return
+  void lookupRegions(addresses).then((found) => {
+    if (result.value === value) regions.value = found
+  })
+})
+const answers = computed(() => {
+  const upstream = result.value ? answeredByUpstream(result.value.trace) : false
+  return result.value?.answers.map((raw) => {
+    const address = upstream ? addressOf(raw) : null
+    return { raw, fields: parseDnsAnswer(raw), region: address ? regionText(regions.value.get(address)) : '' }
+  }) ?? []
+})
 const successful = computed(() => result.value !== null && isDnsSuccess(result.value.response_code))
 const codeName = computed(() => (result.value ? responseCodeName(result.value.response_code) : ''))
 // 状态点只说结果：有应答绿，域名不存在灰，服务端出错红 / The dot speaks only of the outcome: answered green, no such domain grey, a server-side failure red
@@ -162,6 +188,10 @@ const uniformMeta = computed(() => {
 // 值都不长时横排成大字；有长 TXT 或认不出的原串时竖排、正常字号。
 // Short values flow in large type; a long TXT or an unparsed record stacks at normal size.
 const leadMode = computed(() => answers.value.every((answer) => answer.fields && answer.fields.data.length <= 45))
+// 类型、TTL 不全一样时（常见的是先一条 CNAME 再是地址）一条一行，各条的类型、TTL（和地区）跟在后面；横排时各条的说明挤成一串，分不清哪句说哪条
+// When types or TTLs differ (commonly a CNAME, then the addresses) each record takes its own line with its type and TTL (and region) after
+// it; flowed in one line, each record's notes ran together and no one could tell which belonged to which
+const rowsMode = computed(() => leadMode.value && !uniformMeta.value)
 const stepIdle = (status: string) => ['miss', 'missed', 'skipped'].includes(status)
 // 执行路径的每一行：一句话、一行细节、语气和时刻。连着的未命中规则并成一行。
 // Each row of the path: a sentence, a detail line, a tone and a time. Consecutive missed rules share one row.
@@ -173,7 +203,7 @@ const rows = computed(() => {
   if (row.kind === 'step') {
     // 只有命中规则这一步打勾：它定下了请求怎么走；应答成功是结果栏的事，节点用普通的点
     // Only the matched-rule step gets a check, since it decides the route; a successful reply belongs to the result band, so its node is a plain dot
-    const view = { ...describeStep(row.step, { target, names: names.value, asksUpstream: asks }), tone: traceTone(row.step.status), decides: row.step.stage === 'rule' && row.step.status === 'matched', idle: stepIdle(row.step.status), elapsed: (row.sent ?? row.step).elapsed_ms }
+    const view = { ...describeStep(row.step, { target, names: names.value, asksUpstream: asks, clientRegion: (result.value?.client_ip && clientRegionText(regions.value.get(result.value.client_ip))) || undefined }), tone: traceTone(row.step.status), decides: row.step.stage === 'rule' && row.step.status === 'matched', idle: stepIdle(row.step.status), elapsed: (row.sent ?? row.step).elapsed_ms }
     target = forwardTarget(row.sent ?? row.step) ?? target
     return view
   }
@@ -268,10 +298,10 @@ async function run(): Promise<void> {
         <div class="diag-outcome-head">
           <!-- 结论先读：状态点加响应码，然后是回答；原始响应的开关在这一行的右端 / The verdict reads first: a status dot and the response code, then the answers; the raw-response toggle ends the line -->
           <p class="diag-status" role="status"><span class="ui-dot" :class="dotClass" aria-hidden="true"></span><code class="diag-code">{{ codeName }}</code></p>
-          <div v-if="answers.length" class="diag-records" :class="{ 'diag-records--stack': !leadMode }">
+          <div v-if="answers.length" class="diag-records" :class="{ 'diag-records--stack': !leadMode, 'diag-records--rows': rowsMode, 'ui-dots': leadMode && !rowsMode }">
             <span v-for="(answer, index) in answers" :key="index" class="diag-answer-row">
-              <span class="diag-record" :title="answer.fields ? answer.fields.owner + ' · ' + answer.fields.dnsClass : undefined">{{ answer.fields?.data ?? answer.raw }}</span>
-              <span v-if="answer.fields && !uniformMeta" class="diag-record-meta"><UiDotText :parts="[answer.fields.type, `TTL ${answer.fields.ttl} 秒`]" /></span>
+              <span class="diag-record" :title="answer.fields ? answer.fields.owner + ' · ' + answer.fields.dnsClass : undefined">{{ answer.fields?.data ?? answer.raw }}<span v-if="answer.region && uniformMeta" class="ui-region">{{ answer.region }}</span></span>
+              <span v-if="answer.fields && !uniformMeta" class="diag-record-meta"><UiDotText :parts="[...(answer.region ? [answer.region] : []), answer.fields.type, `TTL ${answer.fields.ttl} 秒`]" /></span>
               <span v-else-if="!answer.fields" class="diag-record-meta">原始记录</span>
             </span>
           </div>
@@ -300,7 +330,7 @@ async function run(): Promise<void> {
             <span class="ui-step__mark" aria-hidden="true"><Check v-if="row.tone === 'success' && row.decides" :size="12" /><X v-else-if="row.tone === 'danger'" :size="12" /><i v-else></i></span>
             <div class="ui-step__body">
               <p class="ui-step__what"><template v-for="(part, at) in row.lead" :key="at"><span v-if="part.literal" class="ui-step__lit">{{ part.text }}</span><template v-else>{{ part.text }}</template></template></p>
-              <p v-if="row.note.length" class="ui-step__why"><template v-for="(part, at) in row.note" :key="at"><span v-if="part.label" class="ui-step__pair">{{ part.label }} <span v-if="part.literal" class="ui-step__lit">{{ part.text }}</span><template v-else>{{ part.text }}</template></span><span v-else-if="part.literal" class="ui-step__lit">{{ part.text }}</span><template v-else>{{ part.text }}</template></template></p>
+              <p v-if="row.note.length" v-line-dots class="ui-step__why"><template v-for="(run, at) in noteRuns(row.note)" :key="at"><template v-if="run.space">{{ ' ' }}</template><span v-if="run.part.label" class="ui-step__pair">{{ run.part.label }} <span v-if="run.part.literal" class="ui-step__lit">{{ run.part.text }}</span><template v-else>{{ run.part.text }}</template><span v-if="run.part.region" class="ui-region">{{ run.part.region }}</span><span v-if="run.dot" data-line-dot>&nbsp;·</span></span><template v-else><span v-if="run.part.literal" class="ui-step__lit">{{ run.part.text }}</span><template v-else>{{ run.part.text }}</template><span v-if="run.dot" data-line-dot>&nbsp;·</span></template></template></p>
             </div>
           </li>
         </ol>
@@ -356,8 +386,12 @@ async function run(): Promise<void> {
 .diag-dot--nx { background: var(--l-ink-2); }
 /* 解析出的记录是这一行的主角：大一号的粗字；两条记录之间一个分隔点 / The records lead the line, a size up and bold; a separator dot between two records */
 .diag-records { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-1) var(--s-2); min-width: 0; }
-.diag-records:not(.diag-records--stack) .diag-answer-row + .diag-answer-row::before { content: "·"; margin: 0; color: var(--l-ink-3); font-weight: var(--w-normal); }
-.diag-records--stack { flex-basis: 100%; flex-direction: column; order: 5; }
+/* 横排时用组件库的 ui-dots：折行时点不落在行首；行里的项不能是 inline-flex / Flowed records use the kit's ui-dots, so a wrap never starts a line
+   with a dot; the items must not be inline-flex there */
+.diag-records.ui-dots { column-gap: var(--dots-gap); }
+.diag-records.ui-dots > .diag-answer-row { display: block; }
+.diag-records.ui-dots > .diag-answer-row::before { font-weight: var(--w-normal); }
+.diag-records--stack, .diag-records--rows { flex-basis: 100%; flex-direction: column; order: 5; }
 .diag-answer-row { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--s-2); min-width: 0; }
 .diag-record { max-width: 100%; color: var(--l-ink); font-size: var(--t-4); font-weight: var(--w-bold); white-space: pre-wrap; overflow-wrap: anywhere; }
 .diag-records--stack .diag-record { font-size: var(--t-3); font-weight: var(--w-normal); }

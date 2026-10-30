@@ -3,13 +3,14 @@ import { Check, CircleAlert, Clock, Download, FileSearch, Search, SlidersHorizon
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { ApiError, apiRequest, isPanelDown } from '../../api/client'
-import type { ConfigDocument, QueryLogEntry, QueryLogItem, QueryLogPage, QueryLogSettings } from '../../api/types'
+import type { ConfigDocument, IpRegion, QueryLogEntry, QueryLogItem, QueryLogPage, QueryLogSettings } from '../../api/types'
 import { useConfirm } from '../../composables/useConfirm'
 import { useConnection } from '../../composables/useConnection'
 import { useToast } from '../../composables/useToast'
 import { readConfig } from '../../config-model/document'
 import { traceNames } from '../../config-model/trace-names'
-import { answerOf, capProblem, clockText, dayText, destinationOptions, detailFacts, domainParts, glueText, hoursProblem, ignoredDomains, isGap, itemOf, latencyText, literalParts, requestLine, routeOf, sinceText, SLOW_MS, sourceOf, statusOf, stepRows, timeText, type QueryLogContext } from '../../querylog'
+import { knownRegions, lookupRegions } from '../../ip-region'
+import { answerOf, capProblem, clockText, dayText, destinationOptions, detailFacts, domainParts, glueText, hoursProblem, ignoredDomains, isGap, itemOf, latencyText, literalParts, regionAddresses, requestLine, routeOf, sinceText, SLOW_MS, sourceOf, statusOf, stepRows, timeText, type QueryLogContext } from '../../querylog'
 import type { KernelPipeline } from '../../request-destinations'
 import { errorMessage } from '../../utils'
 // 设置抽屉沿用配置页的抽屉样式（正式落地时挪进组件库） / The settings drawer uses the config page's drawer styles (moved into the kit when this lands)
@@ -376,6 +377,24 @@ const current = computed(() => {
   if (selected.value === null) return null
   return items.value.find((item): item is QueryLogEntry => !isGap(item) && item.id === selected.value) ?? (held.value?.id === selected.value ? held.value : null)
 })
+// 详情里地址的地区：打开一条就先用记住的，其余停一下再去问面板（按着方向键一路往下时不必每条都问）；换了一条，晚到的作废
+// Regions for the detail's addresses: an opened entry shows the remembered ones at once and asks the panel for the rest after a
+// short pause (stepping down with the arrow keys need not ask for every entry); once another entry opens, a late answer is void
+const regions = shallowRef(new Map<string, IpRegion | null>())
+let regionTimer: number | undefined
+watch(() => current.value?.id, () => {
+  window.clearTimeout(regionTimer)
+  const entry = current.value
+  const addresses = entry ? regionAddresses(entry) : []
+  regions.value = knownRegions(addresses)
+  if (!entry || regions.value.size === new Set(addresses).size) return
+  regionTimer = window.setTimeout(() => {
+    void lookupRegions(addresses).then((found) => {
+      if (current.value?.id === entry.id) regions.value = found
+    })
+  }, 150)
+}, { immediate: true })
+const regionOf = (ip: string) => regions.value.get(ip)
 const detailTab = ref<'summary' | 'steps'>('summary')
 const DETAIL_TABS = [{ value: 'summary', label: '概况' }, { value: 'steps', label: '处理过程' }]
 const sheet = ref<HTMLDialogElement | null>(null)
@@ -560,7 +579,7 @@ function onKey(event: KeyboardEvent): void {
   })
 }
 const rowsOf = (entry: QueryLogEntry) => stepRows(entry, ctx.value)
-const factsOf = (entry: QueryLogEntry) => detailFacts(entry, ctx.value)
+const factsOf = (entry: QueryLogEntry) => detailFacts(entry, ctx.value, regionOf)
 // 手机断行：短的「名字」和几个常用词不拆开，最后一个字不单独落一行 / Phone line breaks: short 「names」 and a few common words stay
 // whole, and the last character never sits alone on a line
 const glued = glueText
@@ -810,6 +829,7 @@ onBeforeUnmount(() => {
   generation++
   window.clearInterval(timer)
   window.clearTimeout(typing)
+  window.clearTimeout(regionTimer)
   window.removeEventListener('scroll', onScroll)
 })
 </script>
@@ -896,7 +916,7 @@ onBeforeUnmount(() => {
         <header class="qlog-pane__head">
           <div class="qlog-pane__titles">
             <h2><span class="qlog-lit">{{ current.qname }}</span><span class="qlog-pane__type">{{ current.qtype }}</span></h2>
-            <p><UiDotText :parts="requestLine(current)" /></p>
+            <p><UiDotText :parts="requestLine(current, undefined, regionOf)" /></p>
           </div>
           <span class="ui-tag" :class="{ 'ui-tag--ok': statusOf(current).tone === 'ok', 'ui-tag--warn': statusOf(current).tone === 'warn', 'ui-tag--err': statusOf(current).tone === 'err' }">{{ statusOf(current).label }}</span>
           <button class="ui-icon-btn" type="button" aria-label="关闭详情" title="关闭详情（Esc）" @click="closeDetail()"><X :size="16" aria-hidden="true" /></button>
@@ -914,8 +934,8 @@ onBeforeUnmount(() => {
           <div v-if="detailTab === 'summary'" class="qlog-facts">
             <div v-for="fact in factsOf(current)" :key="fact.key" class="qlog-fact" :class="fact.tone && `is-${fact.tone}`">
               <span class="ui-lbl">{{ fact.label }}</span>
-              <p v-for="(line, at) in fact.lead" :key="at" class="qlog-fact__lead"><template v-for="(part, i) in line" :key="i"><span v-if="part.literal" class="qlog-lit qlog-literal"><template v-for="(seg, j) in literalParts(part.text)" :key="j"><wbr v-if="j" /><span :class="{ 'qlog-keep': seg.keep }">{{ seg.text }}</span></template></span><template v-else><template v-for="(run, k) in glued(part.text)" :key="`g${k}`"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></template></template></p>
-              <p v-if="fact.sub.length" class="qlog-fact__sub"><template v-for="(part, i) in fact.sub" :key="i"><span v-if="part.literal" class="qlog-lit qlog-literal"><template v-for="(seg, j) in literalParts(part.text)" :key="j"><wbr v-if="j" /><span :class="{ 'qlog-keep': seg.keep }">{{ seg.text }}</span></template></span><template v-else><template v-for="(run, k) in glued(part.text)" :key="`g${k}`"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></template></template></p>
+              <p v-for="(line, at) in fact.lead" :key="at" class="qlog-fact__lead"><template v-for="(part, i) in line" :key="i"><span v-if="part.literal" class="qlog-lit qlog-literal"><template v-for="(seg, j) in literalParts(part.text)" :key="j"><wbr v-if="j" /><span :class="{ 'qlog-keep': seg.keep }">{{ seg.text }}</span></template><span v-if="part.region" class="ui-region">{{ part.region }}</span></span><template v-else><template v-for="(run, k) in glued(part.text)" :key="`g${k}`"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></template></template></p>
+              <p v-if="fact.sub.length" class="qlog-fact__sub"><template v-for="(part, i) in fact.sub" :key="i"><span v-if="part.literal" class="qlog-lit qlog-literal"><template v-for="(seg, j) in literalParts(part.text)" :key="j"><wbr v-if="j" /><span :class="{ 'qlog-keep': seg.keep }">{{ seg.text }}</span></template><span v-if="part.region" class="ui-region">{{ part.region }}</span></span><template v-else><template v-for="(run, k) in glued(part.text)" :key="`g${k}`"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></template></template></p>
             </div>
           </div>
           <ol v-else class="ui-steps qlog-steps">
@@ -939,7 +959,7 @@ onBeforeUnmount(() => {
       <header class="pdrawer__head">
         <div class="pdrawer__titles">
           <h2 id="ql-detail-title"><span class="qlog-lit"><template v-for="(seg, i) in domainParts(current.qname)" :key="i"><wbr v-if="i" /><span :class="{ 'qlog-keep': seg.keep }">{{ seg.text }}</span></template></span><span class="qlog-pane__type">{{ current.qtype }}</span></h2>
-          <p><UiDotText :parts="requestLine(current)" /></p>
+          <p><UiDotText :parts="requestLine(current, undefined, regionOf)" /></p>
         </div>
         <span class="ui-tag" :class="{ 'ui-tag--ok': statusOf(current).tone === 'ok', 'ui-tag--warn': statusOf(current).tone === 'warn', 'ui-tag--err': statusOf(current).tone === 'err' }">{{ statusOf(current).label }}</span>
         <button class="ui-icon-btn" type="button" aria-label="关闭" title="关闭" @click="closeDetail()"><X :size="16" /></button>
@@ -948,8 +968,8 @@ onBeforeUnmount(() => {
         <div class="qlog-facts">
           <div v-for="fact in factsOf(current)" :key="fact.key" class="qlog-fact" :class="fact.tone && `is-${fact.tone}`">
             <span class="ui-lbl">{{ fact.label }}</span>
-            <p v-for="(line, at) in fact.lead" :key="at" class="qlog-fact__lead"><template v-for="(part, i) in line" :key="i"><span v-if="part.literal" class="qlog-lit qlog-literal"><template v-for="(seg, j) in literalParts(part.text)" :key="j"><wbr v-if="j" /><span :class="{ 'qlog-keep': seg.keep }">{{ seg.text }}</span></template></span><template v-else><template v-for="(run, k) in glued(part.text)" :key="`g${k}`"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></template></template></p>
-            <p v-if="fact.sub.length" class="qlog-fact__sub"><template v-for="(part, i) in fact.sub" :key="i"><span v-if="part.literal" class="qlog-lit qlog-literal"><template v-for="(seg, j) in literalParts(part.text)" :key="j"><wbr v-if="j" /><span :class="{ 'qlog-keep': seg.keep }">{{ seg.text }}</span></template></span><template v-else><template v-for="(run, k) in glued(part.text)" :key="`g${k}`"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></template></template></p>
+            <p v-for="(line, at) in fact.lead" :key="at" class="qlog-fact__lead"><template v-for="(part, i) in line" :key="i"><span v-if="part.literal" class="qlog-lit qlog-literal"><template v-for="(seg, j) in literalParts(part.text)" :key="j"><wbr v-if="j" /><span :class="{ 'qlog-keep': seg.keep }">{{ seg.text }}</span></template><span v-if="part.region" class="ui-region">{{ part.region }}</span></span><template v-else><template v-for="(run, k) in glued(part.text)" :key="`g${k}`"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></template></template></p>
+            <p v-if="fact.sub.length" class="qlog-fact__sub"><template v-for="(part, i) in fact.sub" :key="i"><span v-if="part.literal" class="qlog-lit qlog-literal"><template v-for="(seg, j) in literalParts(part.text)" :key="j"><wbr v-if="j" /><span :class="{ 'qlog-keep': seg.keep }">{{ seg.text }}</span></template><span v-if="part.region" class="ui-region">{{ part.region }}</span></span><template v-else><template v-for="(run, k) in glued(part.text)" :key="`g${k}`"><span v-if="run.keep" class="qlog-keep">{{ run.text }}</span><template v-else>{{ run.text }}</template></template></template></template></p>
           </div>
         </div>
         <span class="ui-lbl qlog-sheet__label">处理过程</span>
