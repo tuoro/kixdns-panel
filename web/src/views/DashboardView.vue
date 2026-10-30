@@ -266,9 +266,12 @@ function healthLabel(health: UpstreamHealth): string {
 function fallbackShare(item: { transport: string; settled: number; shown: { tcp_fallbacks: number } }): string {
   return item.transport === 'udp' && item.settled > 0 ? formatPercent(item.shown.tcp_fallbacks / item.settled) : '—'
 }
-// 错误、拒绝、TCP 兜底是排查时才看的数，收进这一行的悬停提示里 / Errors, refusals and TCP fallback are troubleshooting figures and live in the row's hover title
-function upstreamTitle(item: { transport: string; settled: number; shown: { success: number; errors: number; rejected: number; tcp_fallbacks: number } }): string {
+// 错误、拒绝、限速、TCP 兜底是排查时才看的数，收进这一行的悬停提示里；限速只有 DoH 会有，TCP 兜底只有 UDP 会有
+// Errors, refusals, rate limits and TCP fallback are troubleshooting figures and live in the row's hover title; only DoH is rate limited,
+// only UDP falls back to TCP
+function upstreamTitle(item: { transport: string; settled: number; shown: { success: number; errors: number; rejected: number; throttled: number; tcp_fallbacks: number } }): string {
   const parts = [`成功 ${formatNumber(item.shown.success)}`, `错误 ${formatNumber(item.shown.errors)}`, `拒绝 ${formatNumber(item.shown.rejected)}`]
+  if (item.transport === 'doh') parts.push(`限速 ${formatNumber(item.shown.throttled)}`)
   if (item.transport === 'udp') parts.push(`TCP 兜底 ${fallbackShare(item)}`)
   return parts.join('，')
 }

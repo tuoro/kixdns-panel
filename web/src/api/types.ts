@@ -60,6 +60,8 @@ export interface UpstreamCount {
   rejected: number
   /** 并发竞争中被取消的尝试，不计入成功率分母。 */
   aborted: number
+  /** 上游回了限速（DoH 的 HTTP 429）的尝试：没有给出 DNS 回答，既不算成功也不算失败。 */
+  throttled: number
   /** 平均耗时（毫秒）：增强版 p25 起只算拿到响应的尝试，更早的含超时；旧增强版为 null。 */
   avg_latency_ms: number | null
   /** 按响应码计数，按次数降序。 */
@@ -77,6 +79,7 @@ export interface UpstreamTally {
   errors: number
   rejected: number
   aborted: number
+  throttled: number
   tcp_fallbacks: number
   avg_latency_ms: number | null
 }
@@ -571,7 +574,7 @@ export type QueryLogOutcome = 'forwarded' | 'cached' | 'stale' | 'joined' | 'blo
 export interface QueryLogStepRecord {
   /** 从请求开始累计的微秒 / Microseconds since the request started */
   at_us: number
-  kind: 'pipeline' | 'rule' | 'decision' | 'cache' | 'joined' | 'upstream'
+  kind: 'pipeline' | 'rule' | 'decision' | 'cache' | 'joined' | 'upstream' | 'upstream_skipped'
   pipeline?: string
   rule?: string
   phase?: 'request' | 'response'
@@ -581,8 +584,11 @@ export interface QueryLogStepRecord {
   /** 跳去的列表，或者转发的上游 / The list jumped to, or the upstream forwarded to */
   target?: string
   /** cache：命中（新鲜、过期）还是没命中；source 是缓存的答案原先来自哪 / cache: a hit (fresh, stale) or a miss; source is where the cached answer came from */
-  result?: 'fresh' | 'stale' | 'stale_timeout' | 'stale_failure' | 'miss' | 'success' | 'rejected' | 'error' | 'aborted'
+  result?: 'fresh' | 'stale' | 'stale_timeout' | 'stale_failure' | 'miss' | 'success' | 'rejected' | 'error' | 'aborted' | 'throttled'
   source?: string
+  /** upstream_skipped：为什么这次没问它（它刚回过限速，还在暂停） / upstream_skipped: why it was not asked this time (it had just
+   * answered with a rate limit and is still paused) */
+  reason?: 'throttled'
   /** upstream：地址、配置的协议、实际用的协议 / upstream: the address, the configured protocol, the protocol actually used */
   upstream?: string
   transport?: string
@@ -652,7 +658,7 @@ export interface QueryLogSettings {
 export interface QueryLogStep {
   /** 从请求开始累计的毫秒 / Milliseconds since the request started */
   at_ms: number
-  kind: 'pipeline' | 'rule' | 'cache' | 'joined' | 'upstream' | 'check' | 'response'
+  kind: 'pipeline' | 'rule' | 'cache' | 'joined' | 'upstream' | 'skipped' | 'check' | 'response'
   pipeline: string
   /** rule、check：内核里的规则名；没有规则命中、按列表的默认去处时没有 / rule, check: the kernel rule name; absent when no rule matched and the list's default applied */
   rule?: string
@@ -668,13 +674,13 @@ export interface QueryLogStep {
    * upstream failed
    */
   stale?: 'now' | 'timeout' | 'failure'
-  /** upstream：地址和协议；cache：答案原先来自哪 / upstream: address and protocol; cache: where the answer came from */
+  /** upstream、skipped：地址和协议；cache：答案原先来自哪 / upstream, skipped: address and protocol; cache: where the answer came from */
   upstream?: string
   transport?: string
-  /** upstream：先回的那个、被丢下的（别的先回了）、回了却没用的（SERVFAIL、REFUSED）、出错的
+  /** upstream：先回的那个、被丢下的（别的先回了）、回了却没用的（SERVFAIL、REFUSED）、出错的、回了限速的（HTTP 429）
    * upstream: the one that answered first, one dropped because another answered first, one whose reply was not used (SERVFAIL,
-   * REFUSED), one that failed */
-  result?: 'won' | 'lost' | 'rejected' | 'error'
+   * REFUSED), one that failed, one that answered with a rate limit (HTTP 429) */
+  result?: 'won' | 'lost' | 'rejected' | 'error' | 'throttled'
   rcode?: string
   latency_ms?: number
   error?: string

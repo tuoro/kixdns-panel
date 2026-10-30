@@ -174,8 +174,17 @@ export function demoQueryLog(config: KConfig, now: number): Item[] {
         steps.push({ at_us: 300, kind: 'cache', result: 'miss' })
         const times = f.addresses.map((a) => ({ a, ms: speed(a) * (rnd() < 0.03 ? 18 : 1) })).sort((x, y) => x.ms - y.ms)
         const winner = times[0]!
+        // 同组里的 doh.pub 偶尔在限速：回了 HTTP 429，或者刚回过、这次没问它。由已经取过的随机数定，不多取，别的查询照旧
+        // doh.pub in the same group is now and then rate limiting: it answers HTTP 429, or it just did and is left out this time. Decided
+        // from a number already drawn, so no extra draw and the other queries stay as they were
+        const limited = times.find((t) => t !== winner && t.a.includes('doh.pub'))
+        const limit = limited ? Math.floor(winner.ms * 1000) % 29 : -1
         // 先回的那个用上，其余的不再等（内核把它们记成 aborted，没有响应码） / The first answer is used and the rest are not waited for (the kernel records them as aborted, with no code)
-        for (const t of times) steps.push(t === winner ? asked(t.a, t.ms, 'success', { rcode: 'NOERROR' }) : asked(t.a, winner.ms + 0.05, 'aborted', { latency_us: us(winner.ms + 0.05) }))
+        for (const t of times) {
+          if (t === limited && limit === 0) steps.push(asked(t.a, winner.ms * 0.6, 'throttled', { error: 'doh http status 429 Too Many Requests' }))
+          else if (t === limited && limit === 1) steps.push({ at_us: 310, kind: 'upstream_skipped', upstream: t.a, transport: 'doh', reason: 'throttled' })
+          else steps.push(t === winner ? asked(t.a, t.ms, 'success', { rcode: 'NOERROR' }) : asked(t.a, winner.ms + 0.05, 'aborted', { latency_us: us(winner.ms + 0.05) }))
+        }
         // 只有一个上游时，它回 SERVFAIL 内核记成成功应答、整条失败 / With a single upstream, a SERVFAIL reply is a successful answer
         // to the kernel and the whole query fails
         if (f.addresses.length === 1 && rnd() < 0.03) {

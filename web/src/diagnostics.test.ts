@@ -26,6 +26,7 @@ describe('DNS 应答台账', () => {
 describe('轨迹语气与响应码', () => {
   it.each(['miss', 'missed', 'unknown'])('%s 不是故障', (status) => expect(traceTone(status)).toBe('neutral'))
   it('明确失败才用故障状态', () => expect(traceTone('failed')).toBe('danger'))
+  it('被限速是提醒，不是故障', () => expect(traceTone('throttled')).toBe('warning'))
   it.each(['No Error', 'NOERROR'])('识别响应码 %s', (code) => expect(isDnsSuccess(code)).toBe(true))
   it('不把 NXDOMAIN 画成成功应答', () => expect(isDnsSuccess('NXDOMAIN')).toBe(false))
 })
@@ -81,6 +82,8 @@ describe('执行路径每一步写成一句话', () => {
     [kstep('upstream', 'failed', '8.8.8.8:53', 'request timed out'), '8.8.8.8:53 超时', 'request timed out'],
     [kstep('upstream', 'failed', '8.8.8.8:53', 'something new'), '8.8.8.8:53 出错', 'something new'],
     [kstep('upstream', 'joined', '等候正在进行的同一个查询'), '同样的查询正在问上游，等它的结果', ''],
+    [kstep('upstream', 'throttled', 'https://doh.pub/dns-query', 'HTTP 状态码：429；暂停：1 秒'), 'https://doh.pub/dns-query 被限速了', 'HTTP 状态码 429 · 暂停 1 秒'],
+    [kstep('upstream', 'skipped', 'https://doh.pub/dns-query', '正在限速，这次没问它'), 'https://doh.pub/dns-query 正在限速，这次没问它', ''],
   ])('%#', (input, lead, note) => {
     const view = describeStep(input)
     expect(plain(view.lead)).toBe(lead)

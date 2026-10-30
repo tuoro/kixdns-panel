@@ -49,6 +49,16 @@ describe('接口记录换成显示用的记录', () => {
     expect(entry.steps[4]).toMatchObject({ upstream: 'c' })
   })
 
+  it('回了限速的上游和正在限速、这次没问的上游各有说法', () => {
+    const entry = entryOf(record([
+      { at_us: 0, kind: 'pipeline', pipeline: 'main' },
+      { at_us: 1, kind: 'upstream_skipped', upstream: 'https://doh.pub/dns-query', transport: 'doh', reason: 'throttled' },
+      { at_us: 2, kind: 'upstream', upstream: 'https://dns.alidns.com/dns-query', transport: 'doh', via: 'doh', result: 'throttled', error: 'doh http status 429 Too Many Requests', latency_us: 2 },
+    ], { outcome: 'stale' }))
+    expect(entry.steps[1]).toMatchObject({ kind: 'skipped', upstream: 'https://doh.pub/dns-query', transport: 'DoH', pipeline: 'main' })
+    expect(entry.steps[2]).toMatchObject({ kind: 'upstream', result: 'throttled' })
+  })
+
   it('规则的决定：跳去的列表、转发的上游、直接回应按结果分拦截和回答', () => {
     const steps: QueryLogStepRecord[] = [
       { at_us: 0, kind: 'pipeline', pipeline: 'main' },
@@ -216,6 +226,42 @@ describe('处理过程一步一句', () => {
     // 原文单独一行，不和协议名用「·」接着 / The original alone on its line, not joined to the protocol with 「·」
     expect(text(failed.note)).toBe('upstream timeout')
     expect(answerOf({ ...entry, error: 'something new' }).text).toBe('SERVFAIL')
+  })
+
+  it('被限速的上游说「被限速了」，正在限速没问的说「这次没问它」；都不算出错，只问到它时原因写被限速', () => {
+    const { ctx, cn } = context()
+    const won = entryOf(record([
+      { at_us: 0, kind: 'pipeline', pipeline: cn },
+      { at_us: 10, kind: 'rule', pipeline: cn, rule: `${cn}-forward`, phase: 'request', decision: 'forward', target: 'https://doh.pub/dns-query,https://dns.alidns.com/dns-query' },
+      { at_us: 6_000, kind: 'upstream', upstream: 'https://doh.pub/dns-query', transport: 'doh', via: 'doh', result: 'throttled', error: 'doh http status 429 Too Many Requests', latency_us: 5_900 },
+      { at_us: 9_000, kind: 'upstream', upstream: 'https://dns.alidns.com/dns-query', transport: 'doh', via: 'doh', result: 'success', latency_us: 8_900, rcode: 'NOERROR' },
+    ], { pipeline: cn, latency_us: 9_400, upstream: 'https://dns.alidns.com/dns-query' }))
+    const rows = stepRows(won, ctx)
+    expect(rows.map((row) => text(row.lead))).toEqual(['https://doh.pub/dns-query 被限速了', 'https://dns.alidns.com/dns-query 先回', '回给客户端 NOERROR，1 条记录'])
+    expect(rows[0]).toMatchObject({ tone: 'warn', decides: false })
+    expect(text(rows[0]!.note)).toBe('DoH · HTTP 429')
+    expect(rows[1]).toMatchObject({ tone: 'ok', decides: true })
+    expect(text(detailFacts(won, ctx)[1]!.lead[0]!)).toBe('https://dns.alidns.com/dns-query')
+
+    const skipped = stepRows(entryOf(record([
+      { at_us: 0, kind: 'pipeline', pipeline: cn },
+      { at_us: 10, kind: 'rule', pipeline: cn, rule: `${cn}-forward`, phase: 'request', decision: 'forward', target: 'https://doh.pub/dns-query,https://dns.alidns.com/dns-query' },
+      { at_us: 20, kind: 'upstream_skipped', upstream: 'https://doh.pub/dns-query', transport: 'doh', reason: 'throttled' },
+      { at_us: 9_000, kind: 'upstream', upstream: 'https://dns.alidns.com/dns-query', transport: 'doh', via: 'doh', result: 'success', latency_us: 8_900, rcode: 'NOERROR' },
+    ], { pipeline: cn, latency_us: 9_400, upstream: 'https://dns.alidns.com/dns-query' })), ctx)
+    expect(skipped.map((row) => text(row.lead))).toEqual(['https://doh.pub/dns-query 正在限速，这次没问它', 'https://dns.alidns.com/dns-query 回了', '回给客户端 NOERROR，1 条记录'])
+    expect(skipped[0]).toMatchObject({ tone: '', idle: true })
+    expect(text(skipped[0]!.note)).toBe('DoH')
+
+    // 只问到被限速的那个、整条失败：原因是被限速，不说没回 / Only the rate-limited one was asked and the query failed: the cause is the
+    // rate limit, not 没回
+    const failed = entryOf(record([
+      { at_us: 0, kind: 'pipeline', pipeline: 'main' },
+      { at_us: 30_000, kind: 'upstream', upstream: 'https://doh.pub/dns-query', transport: 'doh', via: 'doh', result: 'throttled', error: 'doh http status 429 Too Many Requests', latency_us: 30_000 },
+    ], { outcome: 'failed', status: 'failed', rcode: undefined, answers: [], error: undefined, latency_us: 30_400 }))
+    expect(answerOf(failed).text).toBe('被限速')
+    expect(text(detailFacts(failed, null)[1]!.sub)).toBe('问了 1 个上游：被限速')
+    expect(text(stepRows(failed, null).at(-1)!.note)).toBe('原因：被限速')
   })
 
   it('上游失败时内核不在记录上写原因：原因从问过的上游的步骤里取', () => {
@@ -414,6 +460,8 @@ describe('显示时的断行和时间', () => {
     expect(kept('先回的结果不能用，按备用组改问')).toEqual(['结果', '不能用', '备用组', '改问'])
     expect(kept('没等它回，另一个先回了')).toEqual(['没等它回', '另一个', '先回了'])
     expect(kept('缓存里有，直接回')).toEqual(['接回'])
+    expect(kept(' 正在限速，这次没问它')).toEqual(['正在限速', '这次没问它'])
+    expect(kept(' 被限速了')).toEqual(['被限速了'])
     expect(kept('「这是一个超过十个字的很长的规则名」')).toEqual(['则名」'])
     expect(glueText('交给上游组「国内」').map((run) => run.text).join('')).toBe('交给上游组「国内」')
   })
