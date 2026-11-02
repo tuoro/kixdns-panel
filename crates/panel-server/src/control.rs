@@ -119,6 +119,10 @@ pub struct QueryLogWait {
     /// No record past this number (`querylog_until_v1`): with a stretch before it pushed out, the page still does not
     /// hand over the next page's records
     pub until: Option<u64>,
+    /// 要编好的记录（`querylog_records_v1`）：内核把交接区里的字节原样交出来，不再写成 JSON
+    /// Ask for the encoded records (`querylog_records_v1`): the kernel hands over the ring's bytes as they are
+    /// instead of writing them as JSON
+    pub records: bool,
     /// 攒不满一页时最多等多久 / How long the kernel may wait at most while a page has not filled
     pub wait: Duration,
 }
@@ -138,6 +142,9 @@ fn querylog_request(after: u64, limit: usize, waiting: Option<QueryLogWait>) -> 
         }
         if let Some(stored) = waiting.stored {
             let _ = write!(path, "&stored={stored}");
+        }
+        if waiting.records {
+            path.push_str("&format=records1");
         }
         let _ = write!(path, "&wait_ms={}", waiting.wait.as_millis());
         timeout += waiting.wait;
@@ -176,6 +183,14 @@ pub enum QueryLogEntries {
     Text { page: String, at: usize },
     /// 各条的原文，照写下来（见 `querylog::KernelEntry`）/ Each record's text, written as it is (see `querylog::KernelEntry`)
     Raw(Vec<Box<serde_json::value::RawValue>>),
+    /// 内核编好的记录（`querylog_records_v1`）：整页原文，第一条的序号，各条在原文里的位置
+    /// The kernel's encoded records (`querylog_records_v1`): the page's body, the first record's number, and
+    /// where each record sits in the body
+    Records {
+        page: Vec<u8>,
+        first: u64,
+        records: Vec<std::ops::Range<usize>>,
+    },
 }
 
 impl QueryLogEntries {
@@ -190,6 +205,22 @@ impl QueryLogEntries {
                 Ok(serde_json::from_str::<WholeQueryLogPage>(&page)?.entries)
             }
             Self::Raw(entries) => Ok(entries),
+            Self::Records {
+                page,
+                first,
+                records,
+            } => (first..)
+                .zip(records)
+                .map(|(seq, range)| {
+                    let mut json = Vec::new();
+                    crate::querylog_records::write_record(seq, &page[range], &mut json)
+                        .ok_or_else(|| {
+                            serde::de::Error::custom(format!("第 {seq} 条编好的记录读不通"))
+                        })?;
+                    let text = String::from_utf8(json).map_err(serde::de::Error::custom)?;
+                    serde_json::value::RawValue::from_string(text)
+                })
+                .collect(),
         }
     }
 }
@@ -229,6 +260,9 @@ impl QueryLogPage {
         // 前面那几项都是数字和真假，键名不会出现在字符串里 / The items before are numbers and booleans, so the key
         // cannot sit inside a string
         const KEY: &str = ",\"entries\":[";
+        if body.starts_with(crate::querylog_records::MAGIC) {
+            return Self::parse_records(body);
+        }
         let page = match String::from_utf8(body) {
             Ok(page) => page,
             Err(error) => return Self::parse_whole(error.into_bytes()),
@@ -253,6 +287,27 @@ impl QueryLogPage {
             entries: QueryLogEntries::Text {
                 at: key + KEY.len(),
                 page,
+            },
+        })
+    }
+
+    /// 内核编好的记录（`querylog_records_v1`）的一页 / A page of the kernel's encoded records
+    /// (`querylog_records_v1`)
+    fn parse_records(body: Vec<u8>) -> Result<Self, (serde_json::Error, Vec<u8>)> {
+        let Some(head) = crate::querylog_records::RecordsPage::read(&body) else {
+            return Err((serde::de::Error::custom("编好的记录这一页读不通"), body));
+        };
+        Ok(Self {
+            protocol_version: head.protocol_version,
+            instance: head.instance,
+            newest_seq: head.newest_seq,
+            missed: head.missed,
+            untracked: head.untracked,
+            more: head.more,
+            entries: QueryLogEntries::Records {
+                page: body,
+                first: head.first,
+                records: head.records,
             },
         })
     }
@@ -1184,6 +1239,7 @@ mod tests {
             instance,
             stored: None,
             until: None,
+            records: false,
             wait: Duration::from_secs(1),
         };
         assert_eq!(
@@ -1216,12 +1272,13 @@ mod tests {
                 Some(QueryLogWait {
                     stored: Some(4),
                     until: Some(509),
+                    records: true,
                     wait: Duration::ZERO,
                     ..waiting(Some(100))
                 })
             ),
             (
-                "/v1/querylog?after=9&limit=500&until=509&instance=100&stored=4&wait_ms=0"
+                "/v1/querylog?after=9&limit=500&until=509&instance=100&stored=4&format=records1&wait_ms=0"
                     .to_owned(),
                 REQUEST_TIMEOUT
             )

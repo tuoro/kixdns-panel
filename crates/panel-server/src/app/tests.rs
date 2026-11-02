@@ -2354,6 +2354,11 @@ struct FakeQueryLog {
     slow_takes: Vec<SlowTake>,
     /// 说认 `until` 却不照着办，交得比要的多 / Claims `until` but ignores it, handing over more than asked
     ignores_until: bool,
+    /// 从头来要编好的记录时交的一页（内核生成的样本）/ The page handed over when encoded records are asked for from the
+    /// start (a sample the kernel generated)
+    records_sample: Option<Vec<u8>>,
+    /// 来要编好的记录的次数 / How many takes asked for encoded records
+    records_takes: usize,
 }
 
 /// 每次来取时的游标、只要到哪一条、游标所属的进程、说存好到哪一条、让内核等多久（毫秒）/ Each take's cursor, the
@@ -2399,7 +2404,34 @@ fn fake_query_log(ring: Vec<Value>) -> SharedQueryLog {
         oversize_seq: None,
         slow_takes: Vec::new(),
         ignores_until: false,
+        records_sample: None,
+        records_takes: 0,
     }))
+}
+
+/// 编好的记录那种写法的一页：从头来要时是样本，别的时候一条也没有
+/// A page in the encoded-records way: the sample when asked from the start, otherwise no records
+fn fake_records_page(log: &FakeQueryLog, after: u64) -> Vec<u8> {
+    fn number(page: &mut Vec<u8>, mut value: u64) {
+        while value >= 0x80 {
+            page.push(value.to_le_bytes()[0] | 0x80);
+            value >>= 7;
+        }
+        page.push(value.to_le_bytes()[0]);
+    }
+    if after == 0
+        && let Some(sample) = &log.records_sample
+    {
+        return sample.clone();
+    }
+    let mut page = crate::querylog_records::MAGIC.to_vec();
+    for value in [1, log.instance, 16_384, log.newest, 0, log.untracked] {
+        number(&mut page, value);
+    }
+    page.push(0);
+    number(&mut page, after + 1);
+    number(&mut page, 0);
+    page
 }
 
 /// 按内核的规矩交出一页 / Hands out a page by the kernel's rules
@@ -2453,6 +2485,7 @@ fn start_fake_querylog_kernel(
     log: SharedQueryLog,
 ) -> tokio::task::JoinHandle<()> {
     use axum::extract::Query;
+    use axum::response::IntoResponse;
     use axum::routing::get;
     let socket = directory.join("admin.sock");
     let config = directory.join("pipeline.json");
@@ -2486,9 +2519,15 @@ fn start_fake_querylog_kernel(
         )
         .route(
             "/v1/querylog",
-            get(move |Query(query): Query<std::collections::HashMap<String, u64>>| {
+            get(move |Query(query): Query<std::collections::HashMap<String, String>>| {
                 let log = log.clone();
                 async move {
+                    let records = query.contains_key("format");
+                    let query: std::collections::HashMap<String, u64> = query
+                        .into_iter()
+                        .filter(|(key, _)| key != "format")
+                        .map(|(key, value)| (key, value.parse().unwrap()))
+                        .collect();
                     let slow = {
                         let mut log = log.lock().unwrap();
                         let at = log
@@ -2512,8 +2551,17 @@ fn start_fake_querylog_kernel(
                         log.newest = ring.last().map_or(0, |entry| entry["seq"].as_u64().unwrap());
                         log.ring = ring;
                     }
-                    let page = fake_querylog_page(&mut log.lock().unwrap(), &query);
-                    axum::Json(page)
+                    let mut log = log.lock().unwrap();
+                    // 和真内核一样：不认得的参数回 400 / As a real kernel does: a parameter it does not know gets 400
+                    if records && !log.capabilities.contains(&"querylog_records_v1") {
+                        return StatusCode::BAD_REQUEST.into_response();
+                    }
+                    let page = fake_querylog_page(&mut log, &query);
+                    if records {
+                        log.records_takes += 1;
+                        return fake_records_page(&log, query["after"]).into_response();
+                    }
+                    axum::Json(page).into_response()
                 }
             }),
         );
@@ -3057,6 +3105,69 @@ async fn a_restart_drops_the_gap_not_yet_written() {
         .chain(trail("after-restart.example", 1..=300))
         .collect();
     assert_eq!(querylog_trail(&state), expected);
+}
+
+/// 内核交来编好的记录时，面板带着 `format=records1` 去取，存下的就是内核写的 JSON（内核生成的样本逐条对照），只是多了
+/// 面板自己的编号、结果换成面板的叫法。下一轮接着取时也带着它
+/// With a kernel handing over encoded records the panel asks with `format=records1`, and what it stores is the JSON
+/// the kernel writes (compared record by record with a sample the kernel generated), plus the panel's own id and the
+/// outcome in the panel's words. The next round asks the same way
+#[tokio::test]
+async fn encoded_records_are_stored_as_the_kernel_writes_them() {
+    const RECORDS: &[u8] = include_bytes!("../../tests/fixtures/querylog-records1.bin");
+    const TEXT: &str = include_str!("../../tests/fixtures/querylog-records1.json");
+    let directory = tempdir().unwrap();
+    std::fs::write(directory.path().join("pipeline.json"), "{}").unwrap();
+    let state = test_state(&directory).await;
+    let log = fake_query_log(Vec::new());
+    {
+        let mut log = log.lock().unwrap();
+        log.capabilities = RANGES
+            .iter()
+            .copied()
+            .chain(["querylog_records_v1"])
+            .collect();
+        log.instance = 1_792_065_000_000;
+        log.newest = 150;
+        log.records_sample = Some(RECORDS.to_vec());
+    }
+    let _kernel = start_fake_querylog_kernel(directory.path(), log.clone());
+    let mut collector = super::querylog::Collector::default();
+    collector.tick(&state).await.unwrap();
+    collector.tick(&state).await.unwrap();
+    let expected: Value = serde_json::from_str(TEXT).unwrap();
+    let expected = expected["entries"].as_array().unwrap();
+    let mut items = querylog_items(&state);
+    items.reverse();
+    assert_eq!(items.len(), expected.len());
+    let without_panel_words = |item: &Value| {
+        let mut item = item.as_object().unwrap().clone();
+        item.remove("id");
+        item.remove("outcome");
+        item
+    };
+    for (item, expected) in items.iter().zip(expected) {
+        assert_eq!(without_panel_words(item), without_panel_words(expected));
+    }
+    {
+        let mut log = log.lock().unwrap();
+        assert_eq!(
+            log.takes.iter().map(|take| take.after).collect::<Vec<_>>(),
+            [0, 150]
+        );
+        assert_eq!(log.records_takes, 2, "every take asks for encoded records");
+        log.newest = 2_000;
+    }
+    // 积压时照样几页同时取 / A backlog is still taken several pages at once
+    collector.tick(&state).await.unwrap();
+    collector.tick(&state).await.unwrap();
+    let log = log.lock().unwrap();
+    assert!(
+        log.takes.iter().any(|take| take.until == Some(650)),
+        "{:?}",
+        log.takes
+    );
+    assert_eq!(log.records_takes, log.takes.len());
 }
 
 /// 内核的一条查询记录 / One kernel query record

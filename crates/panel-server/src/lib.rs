@@ -15,6 +15,7 @@ mod operations;
 mod panel_update;
 mod protobuf;
 mod querylog;
+mod querylog_records;
 mod recent_window;
 mod updates;
 
