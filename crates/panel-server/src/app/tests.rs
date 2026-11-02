@@ -2343,10 +2343,20 @@ struct FakeQueryLog {
     capabilities: Vec<&'static str>,
     /// 每次来取时要的条数 / How many records each take asked for
     limits: Vec<usize>,
+    /// 每次来取时的游标、游标所属的进程、让内核等多久（毫秒）/ Each take's cursor, the process the cursor belongs to,
+    /// and how long it let the kernel wait (ms)
+    takes: Vec<FakeTake>,
     /// 一次要得比这多，应答就超过 8 MiB / Asking for more than this makes the reply exceed 8 MiB
     oversize_above: Option<usize>,
     /// 带着这一条时应答就超过 8 MiB / A reply carrying this record exceeds 8 MiB
     oversize_seq: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FakeTake {
+    after: u64,
+    instance: Option<u64>,
+    wait_ms: Option<u64>,
 }
 
 type SharedQueryLog = std::sync::Arc<std::sync::Mutex<FakeQueryLog>>;
@@ -2362,6 +2372,7 @@ fn fake_query_log(ring: Vec<Value>) -> SharedQueryLog {
         untracked: 0,
         capabilities: vec!["querylog_v1"],
         limits: Vec::new(),
+        takes: Vec::new(),
         oversize_above: None,
         oversize_seq: None,
     }))
@@ -2413,6 +2424,11 @@ fn start_fake_querylog_kernel(
                 let after = query["after"];
                 let limit = usize::try_from(query["limit"]).unwrap();
                 log.limits.push(limit);
+                log.takes.push(FakeTake {
+                    after,
+                    instance: query.get("instance").copied(),
+                    wait_ms: query.get("wait_ms").copied(),
+                });
                 let seq = |entry: &Value| entry["seq"].as_u64().unwrap();
                 let first_kept = log.ring.first().map_or(log.newest + 1, seq);
                 let entries: Vec<Value> = log
@@ -2516,10 +2532,112 @@ async fn the_collector_comes_back_sooner_while_records_keep_coming() {
     }
     let pause = collector.tick(&state).await.unwrap();
     assert!(pause < std::time::Duration::from_secs(1), "{pause:?}");
+    assert!(
+        log.lock()
+            .unwrap()
+            .takes
+            .iter()
+            .all(|take| take.instance.is_none() && take.wait_ms.is_none()),
+        "a kernel that cannot wait is never asked to"
+    );
     assert_eq!(
         collector.tick(&state).await.unwrap(),
         std::time::Duration::from_secs(1)
     );
+}
+
+/// 内核会等着交时：一页要 500 条，带上游标所属的内核进程，让内核最多等一秒；取到了就马上接着取，空手而回时隔满
+/// 一秒。内核换了进程，从头取时带的是新进程
+/// With a kernel that can make the panel wait, a page asks for 500, names the kernel process the cursor
+/// belongs to and lets the kernel wait a second at most; having taken records the panel takes again at once, and coming
+/// back empty it lets the second pass. Once the kernel has restarted, taking from the start names the new process
+#[tokio::test]
+async fn a_kernel_that_can_wait_is_asked_to() {
+    let directory = tempdir().unwrap();
+    std::fs::write(directory.path().join("pipeline.json"), "{}").unwrap();
+    let state = test_state(&directory).await;
+    let log = fake_query_log(
+        (1..=3)
+            .map(|seq| kernel_entry(seq, "a.example", "A"))
+            .collect(),
+    );
+    log.lock().unwrap().capabilities = vec!["querylog_v1", "querylog_wait_v1"];
+    let _kernel = start_fake_querylog_kernel(directory.path(), log.clone());
+    let mut collector = super::querylog::Collector::default();
+    assert_eq!(
+        collector.tick(&state).await.unwrap(),
+        std::time::Duration::ZERO
+    );
+    let pause = collector.tick(&state).await.unwrap();
+    assert!(pause > std::time::Duration::from_millis(500), "{pause:?}");
+    {
+        let mut log = log.lock().unwrap();
+        log.instance = 200;
+        log.ring = vec![kernel_entry(1, "after-restart.example", "A")];
+        log.newest = 1;
+    }
+    collector.tick(&state).await.unwrap();
+    let take = |after, instance| FakeTake {
+        after,
+        instance,
+        wait_ms: Some(1_000),
+    };
+    let log = log.lock().unwrap();
+    assert_eq!(
+        log.takes,
+        [
+            take(0, None),
+            take(3, Some(100)),
+            take(3, Some(100)),
+            take(0, Some(200))
+        ]
+    );
+    assert_eq!(log.limits, [500; 4]);
+    assert_eq!(querylog_items(&state).len(), 4);
+}
+
+/// 会等着交的内核也一样：一条也放不下时先探是哪个进程，这一问不带游标所属的进程，也不让内核等——带了的话，内核会把
+/// 探的那个大序号之前的全当存好了删掉
+/// With a kernel that can wait as well, a record that cannot fit even alone first has the panel probe which process this
+/// is, and the probe names no process and lets the kernel wait for nothing; were it to name one, the kernel would take
+/// everything before the probe's huge number as stored and delete it
+#[tokio::test]
+async fn a_waiting_kernel_is_probed_without_a_cursor() {
+    let directory = tempdir().unwrap();
+    let state = test_state(&directory).await;
+    let log = fake_query_log(vec![kernel_entry(1, "a.example", "A")]);
+    log.lock().unwrap().capabilities = vec!["querylog_v1", "querylog_wait_v1"];
+    let _kernel = start_fake_querylog_kernel(directory.path(), log.clone());
+    let mut collector = super::querylog::Collector::default();
+    collector.tick(&state).await.unwrap();
+    {
+        let mut log = log.lock().unwrap();
+        log.ring = vec![
+            kernel_entry(2, "huge.example", "A"),
+            kernel_entry(3, "b.example", "A"),
+        ];
+        log.newest = 3;
+        log.oversize_seq = Some(2);
+        log.takes.clear();
+    }
+    collector.tick(&state).await.unwrap();
+    let probe = FakeTake {
+        after: u64::MAX / 2,
+        instance: None,
+        wait_ms: None,
+    };
+    let takes = log.lock().unwrap().takes.clone();
+    assert_eq!(takes.iter().filter(|take| **take == probe).count(), 1);
+    assert!(
+        takes
+            .iter()
+            .filter(|take| **take != probe)
+            .all(|take| take.instance == Some(100) && take.wait_ms == Some(1_000)),
+        "{takes:?}"
+    );
+    let items = querylog_items(&state);
+    assert_eq!(items[0]["qname"], "b.example");
+    assert_eq!(items[1]["gap"], 1);
 }
 
 /// 内核的一条查询记录 / One kernel query record

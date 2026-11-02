@@ -20,7 +20,7 @@ use serde_json::Value;
 use serde_json::value::RawValue;
 
 use crate::auth::{authenticate, unix_timestamp, verify_csrf};
-use crate::control::{ControlError, QueryLogPage as KernelPage};
+use crate::control::{ControlError, QueryLogPage as KernelPage, QueryLogWait};
 use crate::db::Database;
 use crate::error::{AppError, AppResult};
 use crate::querylog::{
@@ -31,13 +31,26 @@ use crate::querylog::{
 use super::AppState;
 
 const QUERYLOG_CAPABILITY: &str = "querylog_v1";
+/// 内核会等着交：攒不满一页时先挂着，攒满或到时间再回 / The kernel can make the panel wait: short of a page it holds the
+/// request until the page fills or the time is up
+const QUERYLOG_WAIT_CAPABILITY: &str = "querylog_wait_v1";
 const SETTINGS_KEY: &str = "querylog_settings_v1";
-/// 一次向内核要多少条：每条最多 64 步，250 条也在控制接口 8 MiB 的应答上限以内
-/// How many records to ask the kernel for at once: an entry has at most 64 steps, so 250 stay within the control
-/// socket's 8 MiB reply cap
+/// 一次向不会等的内核要多少条：每条最多 64 步，250 条也在控制接口 8 MiB 的应答上限以内
+/// How many records to ask a kernel that cannot wait for at once: an entry has at most 64 steps, so 250 stay within
+/// the control socket's 8 MiB reply cap
 const KERNEL_PAGE: usize = 250;
-/// 一秒最多接着取这么多页，比内核的 4096 条交接区多 / At most this many pages a second, more than the kernel's 4096-record ring
+/// 一轮最多接着取这么多页：一页 250 条时一轮 5000 条，比不会等的内核那 4096 条的交接区多
+/// At most this many pages a round: at 250 a page that is 5000 records, more than the 4096-record ring of a kernel that
+/// cannot wait
 const PAGES_PER_TICK: usize = 20;
+/// 内核会等着交时一页取多少：流量一来，攒满这么多就交出来。内核拼一页 JSON 的那几毫秒里，它那颗核答不了 DNS，
+/// 一页小些，DNS 的尾延迟就低；每秒四万条也只取八十来次
+/// How many records a page holds from a kernel that can make the panel wait: once traffic brings this many, it hands
+/// them over. While the kernel builds a page's JSON, its core answers no DNS for those milliseconds, so smaller pages
+/// keep DNS tail latency low; even forty thousand records a second take only some eighty pages
+const WAITING_PAGE: usize = 500;
+/// 内核会等着交时，攒不满一页最多等多久 / How long a kernel that can make the panel wait holds a page that has not filled
+const WAIT: Duration = Duration::from_secs(1);
 /// 没有积压时多久取一次，也是收拾（保留时间、空间上限）的间隔
 /// How often to collect with nothing piling up, and how often to tidy (retention, space cap)
 const COLLECT_EVERY: Duration = Duration::from_secs(1);
@@ -444,6 +457,8 @@ fn next_round(taken: usize, since: Option<Duration>, more: bool) -> Duration {
 pub(super) struct Collector {
     capability_checked: Option<Instant>,
     supported: bool,
+    /// 内核会等着交（`querylog_wait_v1`）/ The kernel can make the panel wait (`querylog_wait_v1`)
+    waits: bool,
     rules: Option<(String, Arc<RuleIndex>)>,
     rules_checked: Option<Instant>,
     untracked: Option<(u64, u64)>,
@@ -511,16 +526,28 @@ impl Collector {
             .replace(started)
             .map(|previous| started - previous);
         let (mut taken, mut more) = (0, false);
+        let full_page = if self.waits {
+            WAITING_PAGE
+        } else {
+            KERNEL_PAGE
+        };
         let mut walk = Walk {
             cursor: store.cursor(),
-            page_size: KERNEL_PAGE,
+            full_page,
+            page_size: full_page,
             pages: 0,
             skipped: 0,
             skips_count: true,
         };
         while walk.pages < PAGES_PER_TICK {
             let after = walk.cursor.map_or(0, |cursor| cursor.seq);
-            let mut page = match state.control.querylog(after, walk.page_size).await {
+            // 内核攒不满一页才会等：「还有」时接着取的那几页本来就是满的 / The kernel waits only short of a page: the pages
+            // taken next for 「more」 are full anyway
+            let waiting = self.waits.then(|| QueryLogWait {
+                instance: walk.cursor.map(|cursor| cursor.instance),
+                wait: WAIT,
+            });
+            let mut page = match state.control.querylog(after, walk.page_size, waiting).await {
                 Ok(page) => page,
                 // 一页超过 8 MiB 的应答上限：减半再取 / A page over the 8 MiB reply cap: take half as many
                 Err(ControlError::TooLarge(_)) if walk.page_size > 1 => {
@@ -539,7 +566,7 @@ impl Collector {
                 }
             };
             walk.pages += 1;
-            walk.page_size = KERNEL_PAGE;
+            walk.page_size = walk.full_page;
             // 内核换了进程：它的编号从头数，按旧游标取会漏掉开头那些，从头再取一次。进程的时刻碰巧一样时，编号比游标
             // 还小也说明换过了
             // The kernel restarted: its numbers start over and the old cursor would skip the first ones, so take again
@@ -552,19 +579,7 @@ impl Collector {
                 continue;
             }
             let settings = state.querylog.settings();
-            let entries = match std::mem::take(&mut page.entries)
-                .into_iter()
-                .map(|raw| Scanned::read(raw, &settings))
-                .collect::<Result<Vec<_>, _>>()
-            {
-                Ok(entries) => entries,
-                Err(error) => {
-                    self.capability_checked = None;
-                    return Err(
-                        ControlError::Protocol(format!("查询日志里有一条读不懂：{error}")).into(),
-                    );
-                }
-            };
+            let entries = self.read_entries(&mut page, &settings)?;
             taken += entries.len();
             more = page.more;
             let rules = if entries.iter().any(|entry| entry.candidate != Candidate::No) {
@@ -602,7 +617,47 @@ impl Collector {
             };
             write(store, vec![gap], state.querylog.settings()).await?;
         }
-        Ok(next_round(taken, since, more))
+        Ok(self.pause(taken, started, since, more))
+    }
+
+    /// 一页的记录只读面板要看的几项（见 [`Scanned::read`]）；有一条读不懂就当内核出了问题，下回先重新问它支持什么
+    /// A page's records read for the items the panel looks at (see [`Scanned::read`]); one that cannot be read
+    /// means trouble with the kernel, whose support is asked again next time
+    fn read_entries(
+        &mut self,
+        page: &mut KernelPage,
+        settings: &QueryLogSettings,
+    ) -> Result<Vec<Scanned>, CollectError> {
+        std::mem::take(&mut page.entries)
+            .into_iter()
+            .map(|raw| Scanned::read(raw, settings))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                self.capability_checked = None;
+                ControlError::Protocol(format!("查询日志里有一条读不懂：{error}")).into()
+            })
+    }
+
+    /// 下一轮隔多久。内核替面板等着：取到了就马上接着取；空手而回时至少隔满一个等待时间，内核没真等也不会空转。
+    /// 内核不会等时按速率算（见 [`next_round`]）
+    /// How long until the next round. A kernel waiting for the panel: having taken records it takes again at
+    /// once; coming back empty, it lets a whole wait pass, so a kernel that did not wait cannot make it spin. A
+    /// kernel that cannot wait goes by the rate (see [`next_round`])
+    fn pause(
+        &self,
+        taken: usize,
+        started: Instant,
+        since: Option<Duration>,
+        more: bool,
+    ) -> Duration {
+        if !self.waits {
+            return next_round(taken, since, more);
+        }
+        if taken > 0 {
+            Duration::ZERO
+        } else {
+            WAIT.saturating_sub(started.elapsed())
+        }
     }
 
     /// 内核支不支持查询日志：隔一会儿问一次，结果也告诉页面 / Whether the kernel has the query log: asked now and then, the
@@ -613,10 +668,14 @@ impl Collector {
             .is_none_or(|checked| checked.elapsed() >= CAPABILITY_RECHECK)
         {
             let health = state.control.health().await?;
-            self.supported = health
-                .capabilities
-                .iter()
-                .any(|capability| capability == QUERYLOG_CAPABILITY);
+            let has = |wanted: &str| {
+                health
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability == wanted)
+            };
+            self.supported = has(QUERYLOG_CAPABILITY);
+            self.waits = has(QUERYLOG_WAIT_CAPABILITY);
             state.querylog.support.store(
                 if self.supported {
                     SUPPORT_YES
@@ -645,7 +704,9 @@ impl Collector {
     ) -> Result<(), CollectError> {
         walk.pages += 1;
         let instance = if walk.skipped == 0 {
-            let probe = match state.control.querylog(u64::MAX / 2, 1).await {
+            // 不说游标是哪个进程的：这一问不是存好了什么，内核不能删 / The cursor's process goes unsaid: this question
+            // says nothing was stored, and the kernel must delete nothing
+            let probe = match state.control.querylog(u64::MAX / 2, 1, None).await {
                 Ok(probe) => probe,
                 Err(error) => {
                     self.capability_checked = None;
@@ -679,7 +740,7 @@ impl Collector {
         let fresh = Cursor { instance, seq: 0 };
         store.set_cursor(fresh);
         walk.cursor = Some(fresh);
-        walk.page_size = KERNEL_PAGE;
+        walk.page_size = walk.full_page;
         walk.skipped = 0;
         self.untracked = Some((instance, 0));
     }
@@ -897,6 +958,8 @@ impl<'de> Deserialize<'de> for Present {
 /// 一轮采集走到哪儿了 / How far one round of collecting has got
 struct Walk {
     cursor: Option<Cursor>,
+    /// 一页满满的条数 / How many records a full page holds
+    full_page: usize,
     page_size: usize,
     pages: usize,
     /// 这一轮跳过的、一条也放不下的记录，合成一行漏记 / Records skipped this round because not even one fits, made into one gap row
