@@ -3,7 +3,7 @@
 //! [`QueryLogStore`], and the page reads back through them with filters.
 
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, RwLock};
@@ -33,6 +33,14 @@ const QUERYLOG_CAPABILITY: &str = "querylog_v1";
 /// 内核会等着交：攒不满一页时先挂着，攒满或到时间再回 / The kernel can make the panel wait: short of a page it holds the
 /// request until the page fills or the time is up
 const QUERYLOG_WAIT_CAPABILITY: &str = "querylog_wait_v1";
+/// 内核分得清存好的和取走的：面板说存好到哪一条，内核只删这些，于是几页可以同时取
+/// The kernel tells what is stored from what is taken: it deletes only what the panel says is stored, so several pages
+/// can be taken at once
+const QUERYLOG_STORED_CAPABILITY: &str = "querylog_stored_v1";
+/// 内核能只交到某个序号为止：同时取的相邻几页，前面被挤掉一截时也各管各的，不重叠
+/// The kernel can stop at a given number: neighbouring pages taken at once keep to their own ranges and never overlap,
+/// even with a stretch before them pushed out
+const QUERYLOG_UNTIL_CAPABILITY: &str = "querylog_until_v1";
 const SETTINGS_KEY: &str = "querylog_settings_v1";
 /// 一次向不会等的内核要多少条：每条最多 64 步，250 条也在控制接口 8 MiB 的应答上限以内
 /// How many records to ask a kernel that cannot wait for at once: an entry has at most 64 steps, so 250 stay within
@@ -50,6 +58,13 @@ const PAGES_PER_TICK: usize = 20;
 const WAITING_PAGE: usize = 500;
 /// 内核会等着交时，攒不满一页最多等多久 / How long a kernel that can make the panel wait holds a page that has not filled
 const WAIT: Duration = Duration::from_secs(1);
+/// 积压时同时要着几页：每页在后台线程上读，几页一起读；写还是按编号一页接一页
+/// How many pages are asked for at once while records pile up: each is read on a blocking thread, several together;
+/// writing still goes one page after another, in order
+const IN_FLIGHT: usize = 4;
+/// 几页同时取时，一轮最多要这么多页（三万二千条），然后照常收拾一次
+/// At most this many pages a round when several are taken at once (32,000 records), then tidying comes round as usual
+const PIPELINE_PAGES: usize = 64;
 /// 没有积压时多久取一次，也是收拾（保留时间、空间上限）的间隔
 /// How often to collect with nothing piling up, and how often to tidy (retention, space cap)
 const COLLECT_EVERY: Duration = Duration::from_secs(1);
@@ -455,9 +470,11 @@ fn next_round(taken: usize, since: Option<Duration>, more: bool) -> Duration {
 #[derive(Default)]
 pub(super) struct Collector {
     capability_checked: Option<Instant>,
-    supported: bool,
-    /// 内核会等着交（`querylog_wait_v1`）/ The kernel can make the panel wait (`querylog_wait_v1`)
-    waits: bool,
+    handover: Handover,
+    /// 内核上回说的最新编号，连同是哪个进程：这之前的页不用等，可以先要着
+    /// The newest number the kernel last gave, with its process: pages before it need no waiting and can be asked for
+    /// ahead
+    newest: Option<(u64, u64)>,
     rules: Option<(String, Arc<RuleIndex>)>,
     rules_checked: Option<Instant>,
     untracked: Option<(u64, u64)>,
@@ -471,6 +488,23 @@ pub(super) struct Collector {
     /// version's plain segments are compressed, which can take a second or two, and collecting must not stop to wait
     /// for it, or the kernel's hand-off ring would fill
     tidying: Option<tokio::task::JoinHandle<()>>,
+}
+
+/// 内核怎么交查询日志，一级比一级多 / How the kernel hands over its query log, each level adding to the last
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Handover {
+    /// 没有查询日志 / No query log
+    #[default]
+    None,
+    /// 按游标交（`querylog_v1`）/ By cursor (`querylog_v1`)
+    Cursor,
+    /// 还会等着交（`querylog_wait_v1`）/ Also waiting for the panel (`querylog_wait_v1`)
+    Waits,
+    /// 还只删面板说存好了的、能只交到某个序号为止，于是相邻的几页可以同时取（`querylog_stored_v1`、
+    /// `querylog_until_v1`）
+    /// Also deleting only what the panel says is stored and stopping at a given number, so neighbouring pages can be
+    /// taken at once (`querylog_stored_v1`, `querylog_until_v1`)
+    Ranges,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -526,12 +560,22 @@ impl Collector {
             .round_started
             .replace(started)
             .map(|previous| started - previous);
-        let (mut taken, mut more) = (0, false);
-        let full_page = if self.waits {
-            WAITING_PAGE
-        } else {
-            KERNEL_PAGE
-        };
+        let mut taken = 0;
+        // 已经有游标时几页同时取；面板第一次取、一页超过应答上限时照一页页的办法
+        // With a cursor already, several pages are taken at once; the panel's very first take and a page over the reply
+        // cap go the page-by-page way
+        if self.handover == Handover::Ranges
+            && let Some(cursor) = store.cursor()
+        {
+            let (moved, too_large) = self.collect_parallel(state, store, cursor).await?;
+            if !too_large {
+                return Ok(self.pause(moved, started, since, false));
+            }
+            taken = moved;
+        }
+        let mut more = false;
+        let waits = self.handover >= Handover::Waits;
+        let full_page = if waits { WAITING_PAGE } else { KERNEL_PAGE };
         let mut walk = Walk {
             cursor: store.cursor(),
             full_page,
@@ -544,8 +588,10 @@ impl Collector {
             let after = walk.cursor.map_or(0, |cursor| cursor.seq);
             // 内核攒不满一页才会等：「还有」时接着取的那几页本来就是满的 / The kernel waits only short of a page: the pages
             // taken next for 「more」 are full anyway
-            let waiting = self.waits.then(|| QueryLogWait {
+            let waiting = waits.then(|| QueryLogWait {
                 instance: walk.cursor.map(|cursor| cursor.instance),
+                stored: None,
+                until: None,
                 wait: WAIT,
             });
             let mut page = match state.control.querylog(after, walk.page_size, waiting).await {
@@ -576,33 +622,19 @@ impl Collector {
                 cursor.instance != page.instance || page.newest_seq < cursor.seq
             });
             if restarted && after != 0 {
-                self.start_over(store, &mut walk, page.instance);
+                walk.start_over(self.start_over(store, page.instance));
                 continue;
             }
             let settings = state.querylog.settings();
-            let entries = self.read_entries(&mut page, &settings)?;
+            let entries =
+                read_entries(&mut page, &settings).map_err(|error| self.unreadable(&error))?;
             taken += entries.len();
             more = page.more;
-            let rules = if entries.iter().any(|entry| entry.candidate != Candidate::No) {
-                self.rules(state).await
-            } else {
-                None
-            };
             let oversized = if walk.skips_count { walk.skipped } else { 0 };
-            let (records, next, untracked) = self.records(
-                &page,
-                entries,
-                walk.cursor,
-                after,
-                rules.as_deref(),
-                oversized,
-            );
-            write(store, records, settings).await?;
-            // 写成了才算报过：写失败的那一批下回连同没记下的数一起再来 / Counted as reported only once written: a failed
-            // batch comes back next time together with its unrecorded count
-            self.untracked = Some(untracked);
+            let next = self
+                .store_page(state, store, &page, entries, walk.cursor, oversized)
+                .await?;
             walk.skipped = 0;
-            store.set_cursor(next);
             walk.cursor = Some(next);
             if !page.more {
                 break;
@@ -621,35 +653,157 @@ impl Collector {
         Ok(self.pause(taken, started, since, more))
     }
 
-    /// 一页的记录只读面板要看的几项（见 [`Scanned::read`]）；有一条读不懂就当内核出了问题，下回先重新问它支持什么
-    /// A page's records read for the items the panel looks at (see [`Scanned::read`]); one that cannot be read
-    /// means trouble with the kernel, whose support is asked again next time
-    fn read_entries(
+    /// 积压时几页同时取：已知攒满了的页先要着，每页只到它自己的末尾（`until`），同时最多 [`IN_FLIGHT`] 页，各自在
+    /// 后台线程读好；写还是按编号一页接一页，写好一页游标才往前挪。每次都告诉内核存好到哪一条，内核只删这些，要着
+    /// 还没写的不算。只有不知道有没有的那页让内核等，它回来之前不再往后要。整页都被挤掉了的，漏掉的并进下一行，和
+    /// 后面的记录一起写。一页的起点和游标对不上（不该有），后面要着的都不要了，从游标重新要。交回游标挪了多远，和是
+    /// 不是有一页超过了应答上限、余下的要照一页页的办法取
+    /// Several pages taken at once while records pile up: pages known to be full are asked for ahead, each only up to
+    /// its own end (`until`), at most [`IN_FLIGHT`] at a time, each read on a blocking thread; writing still goes one
+    /// page after another in order, and the cursor moves only once a page is written. Every request tells the kernel
+    /// how far is stored, and it deletes only that, not what is asked for and not yet written. Only the page not known
+    /// to exist lets the kernel wait, and nothing further is asked for until it returns. Pages pushed out whole have
+    /// their gap folded into the next row, written with the records after them. A page that does not start at the
+    /// cursor (which should not happen) drops all asked for after it, and asking starts again at the cursor. Returns
+    /// how far the cursor moved, and whether a page was over the reply cap so the rest must go the page-by-page way
+    async fn collect_parallel(
         &mut self,
-        page: &mut KernelPage,
-        settings: &QueryLogSettings,
-    ) -> Result<Vec<Scanned>, CollectError> {
-        let entries = std::mem::replace(&mut page.entries, QueryLogEntries::Raw(Vec::new()));
-        // 整页原文一遍读完；读不下去就整页照常解析，再一条条读 / The page's text read in one pass; failing that, the
-        // page is parsed whole and read record by record
-        let entries = match entries {
-            QueryLogEntries::Text { page, at } => match Scanned::read_text(&page, at, settings) {
-                Some(entries) => return Ok(entries),
-                None => QueryLogEntries::Text { page, at }.into_raw(),
-            },
-            entries @ QueryLogEntries::Raw(_) => entries.into_raw(),
+        state: &AppState,
+        store: &QueryLogStore,
+        mut cursor: Cursor,
+    ) -> Result<(usize, bool), CollectError> {
+        let mut in_flight = InFlight::default();
+        let (mut moved, mut asked, mut caught_up) = (0, 0, false);
+        // 整页都被挤掉了、还没写下的那几页：最后一页，和更早几页漏掉的条数。游标写下时才存，中途出错的话下一轮从存下的
+        // 游标重取，内核照样说漏了几条
+        // Pages pushed out whole and not yet written: the last of them, and how many the earlier ones missed. The
+        // cursor is saved only once written, so after an error midway the next round takes again from the saved one
+        // and the kernel tells the gap once more
+        let mut gone: Option<(KernelPage, u64, u64)> = None;
+        loop {
+            let mut next = in_flight.next().unwrap_or(cursor.seq);
+            while !caught_up
+                && !in_flight.waiting()
+                && in_flight.0.len() < IN_FLIGHT
+                && asked < PIPELINE_PAGES
+            {
+                let full = self.newest.is_some_and(|(instance, newest)| {
+                    instance == cursor.instance && newest >= next + WAITING_PAGE as u64
+                });
+                // 存好的说写下了的游标：整页被挤掉、还没写下的那几页不算 / What is stored is the cursor written down:
+                // pages pushed out whole and not yet written do not count
+                let stored = store.cursor().map_or(0, |stored| stored.seq);
+                in_flight.0.push_back((
+                    next,
+                    !full,
+                    fetch(state, cursor.instance, stored, next, !full),
+                ));
+                asked += 1;
+                next += WAITING_PAGE as u64;
+            }
+            let Some((after, _, fetching)) = in_flight.0.pop_front() else {
+                break;
+            };
+            let (page, entries) = match fetching.await? {
+                Ok(fetched) => fetched,
+                // 整页被挤掉、还没写下的那几页不写：一页页取的时候从存下的游标重取，内核照样说漏了几条
+                // Pages pushed out whole and not yet written are left: the page-by-page way takes again from the
+                // saved cursor, and the kernel tells the gap once more
+                Err(CollectError::Control(ControlError::TooLarge(_))) => {
+                    return Ok((usize::try_from(moved).unwrap_or(usize::MAX), true));
+                }
+                Err(error @ CollectError::Control(_)) => {
+                    self.capability_checked = None;
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            };
+            self.newest = Some(match self.newest {
+                Some((instance, newest)) if instance == page.instance => {
+                    (instance, newest.max(page.newest_seq))
+                }
+                _ => (page.instance, page.newest_seq),
+            });
+            // 起点和游标对不上，只会是前面那页交得比要的多，越过了它的末尾：后面要着的都和它重叠，不要了。先对起点：
+            // 先要着的一页可能比它前面那页拼得早，那时的最新编号比现在的游标还小，不说明内核换过进程
+            // A start off the cursor can only mean the page before handed over more than asked, past its end: the
+            // pages asked for after it overlap it and are dropped. The start is checked first: a page asked for ahead
+            // may have been built before the one in front of it, with a newest number below today's cursor, which
+            // does not mean the kernel restarted
+            if after != cursor.seq {
+                in_flight.clear();
+                continue;
+            }
+            let restarted = cursor.instance != page.instance || page.newest_seq < cursor.seq;
+            if restarted && after != 0 {
+                in_flight.clear();
+                gone = None;
+                self.newest = Some((page.instance, page.newest_seq));
+                cursor = self.start_over(store, page.instance);
+                continue;
+            }
+            let entries = entries.map_err(|error| self.unreadable(&error))?;
+            caught_up = !page.more;
+            let earlier = gone
+                .as_ref()
+                .map_or(0, |(gone, _, earlier)| earlier + gone.missed);
+            let next = if entries.is_empty() && page.missed > 0 {
+                let next = Cursor {
+                    seq: after + page.missed,
+                    ..cursor
+                };
+                gone = Some((page, after, earlier));
+                next
+            } else {
+                gone = None;
+                self.store_page(state, store, &page, entries, Some(cursor), earlier)
+                    .await?
+            };
+            moved += next.seq.saturating_sub(cursor.seq);
+            cursor = next;
+        }
+        if let Some((page, after, earlier)) = gone {
+            let at = Cursor {
+                seq: after,
+                ..cursor
+            };
+            self.store_page(state, store, &page, Vec::new(), Some(at), earlier)
+                .await?;
+        }
+        Ok((usize::try_from(moved).unwrap_or(usize::MAX), false))
+    }
+
+    /// 读好的一页写下，交回这一页之后的游标 / Writes a page that has been read; returns the cursor past it
+    async fn store_page(
+        &mut self,
+        state: &AppState,
+        store: &QueryLogStore,
+        page: &KernelPage,
+        entries: Vec<Scanned>,
+        cursor: Option<Cursor>,
+        oversized: u64,
+    ) -> Result<Cursor, CollectError> {
+        let rules = if entries.iter().any(|entry| entry.candidate != Candidate::No) {
+            self.rules(state).await
+        } else {
+            None
         };
-        entries
-            .and_then(|entries| {
-                entries
-                    .into_iter()
-                    .map(|raw| Scanned::read(raw.into(), settings))
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .map_err(|error| {
-                self.capability_checked = None;
-                ControlError::Protocol(format!("查询日志里有一条读不懂：{error}")).into()
-            })
+        let after = cursor.map_or(0, |cursor| cursor.seq);
+        let (records, next, untracked) =
+            self.records(page, entries, cursor, after, rules.as_deref(), oversized);
+        write(store, records, state.querylog.settings()).await?;
+        // 写成了才算报过：写失败的那一批下回连同没记下的数一起再来 / Counted as reported only once written: a failed
+        // batch comes back next time together with its unrecorded count
+        self.untracked = Some(untracked);
+        store.set_cursor(next);
+        Ok(next)
+    }
+
+    /// 有一条读不懂就当内核出了问题，下回先重新问它支持什么 / A record that cannot be read means trouble with the
+    /// kernel, whose support is asked again next time
+    fn unreadable(&mut self, error: &serde_json::Error) -> CollectError {
+        self.capability_checked = None;
+        ControlError::Protocol(format!("查询日志里有一条读不懂：{error}")).into()
     }
 
     /// 下一轮隔多久。内核替面板等着：取到了就马上接着取；空手而回时至少隔满一个等待时间，内核没真等也不会空转。
@@ -664,7 +818,7 @@ impl Collector {
         since: Option<Duration>,
         more: bool,
     ) -> Duration {
-        if !self.waits {
+        if self.handover < Handover::Waits {
             return next_round(taken, since, more);
         }
         if taken > 0 {
@@ -688,10 +842,17 @@ impl Collector {
                     .iter()
                     .any(|capability| capability == wanted)
             };
-            self.supported = has(QUERYLOG_CAPABILITY);
-            self.waits = has(QUERYLOG_WAIT_CAPABILITY);
+            self.handover = if !has(QUERYLOG_CAPABILITY) {
+                Handover::None
+            } else if !has(QUERYLOG_WAIT_CAPABILITY) {
+                Handover::Cursor
+            } else if has(QUERYLOG_STORED_CAPABILITY) && has(QUERYLOG_UNTIL_CAPABILITY) {
+                Handover::Ranges
+            } else {
+                Handover::Waits
+            };
             state.querylog.support.store(
-                if self.supported {
+                if self.handover > Handover::None {
                     SUPPORT_YES
                 } else {
                     SUPPORT_NO
@@ -700,7 +861,7 @@ impl Collector {
             );
             self.capability_checked = Some(Instant::now());
         }
-        Ok(self.supported)
+        Ok(self.handover > Handover::None)
     }
 
     /// 一条也放不下：应答这么大，说明游标后面确实有记录，游标往前挪一格。挪过的若是早被挤掉的，本来也该算漏记。
@@ -731,7 +892,7 @@ impl Collector {
                 .cursor
                 .is_some_and(|cursor| cursor.instance != probe.instance)
             {
-                self.start_over(store, walk, probe.instance);
+                walk.start_over(self.start_over(store, probe.instance));
                 return Ok(());
             }
             walk.skips_count = walk.cursor.is_some();
@@ -749,14 +910,13 @@ impl Collector {
         Ok(())
     }
 
-    /// 内核换了进程：从它的第一条重新取 / The kernel restarted: take again from its first record
-    fn start_over(&mut self, store: &QueryLogStore, walk: &mut Walk, instance: u64) {
+    /// 内核换了进程：从它的第一条重新取，交回新的游标 / The kernel restarted: take again from its first record;
+    /// returns the new cursor
+    fn start_over(&mut self, store: &QueryLogStore, instance: u64) -> Cursor {
         let fresh = Cursor { instance, seq: 0 };
         store.set_cursor(fresh);
-        walk.cursor = Some(fresh);
-        walk.page_size = walk.full_page;
-        walk.skipped = 0;
         self.untracked = Some((instance, 0));
+        fresh
     }
 
     /// 一页内核记录变成要写下的几条，外加取完这一页后的游标和内核没记下的累计数
@@ -833,7 +993,10 @@ impl Collector {
                 static_kind,
             });
         }
-        (records, next, (page.instance, page.untracked))
+        // 几页同时取时，后写的一页可能先拼好、累计数反而小：只往大里记，不然下一页会把差的那些再算一遍
+        // With several pages taken at once, a page written later may have been built earlier with a smaller count: it
+        // is only ever raised, or the next page would count the difference again
+        (records, next, (page.instance, page.untracked.max(base)))
     }
 
     /// 内核正在用的配置建的规则表；内核换了配置（摘要变了）才重建，和磁盘上的对不上时不用它
@@ -1035,6 +1198,105 @@ struct Walk {
     /// Skips made before the panel had a cursor do not count: it cannot tell then whether they were too large or pushed
     /// out before it began
     skips_count: bool,
+}
+
+impl Walk {
+    /// 内核换了进程，从新的游标取：页回到满满一页，跳过的不再算 / The kernel restarted and taking goes on from the new
+    /// cursor: back to full pages, the skips no longer counted
+    fn start_over(&mut self, fresh: Cursor) {
+        self.cursor = Some(fresh);
+        self.page_size = self.full_page;
+        self.skipped = 0;
+    }
+}
+
+/// 一页内核记录和读好的那几项；读不懂时交回错误，等轮到这一页时再说
+/// A kernel page and its records as read; one that cannot be read gives the error, dealt with when the page's turn comes
+type Fetched = Result<(KernelPage, serde_json::Result<Vec<Scanned>>), CollectError>;
+
+/// 积压时先要着的那几页，按编号排着：每页的起点、是不是让内核等着的那页；丢下时没回来的都不要了
+/// The pages asked for ahead while records pile up, in order: each page's start and whether it lets the kernel wait;
+/// dropped, those not back yet are abandoned
+#[derive(Default)]
+struct InFlight(VecDeque<(u64, bool, tokio::task::JoinHandle<Fetched>)>);
+
+impl InFlight {
+    /// 下一页从哪儿要；一页也没要着时为 None / Where the next page is asked from; None with no page asked for
+    fn next(&self) -> Option<u64> {
+        self.0
+            .back()
+            .map(|(after, _, _)| after + WAITING_PAGE as u64)
+    }
+
+    /// 最后要的那页让内核等着：它回来之前不知道后面还有没有 / The last page asked for lets the kernel wait: until it
+    /// returns, whether more follow is unknown
+    fn waiting(&self) -> bool {
+        self.0.back().is_some_and(|(_, waits, _)| *waits)
+    }
+
+    fn clear(&mut self) {
+        for (_, _, fetching) in self.0.drain(..) {
+            fetching.abort();
+        }
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
+
+/// 在后台要一页、回来就在后台线程读好。告诉内核游标是 `instance` 这个进程的、存好到 `stored`。`waits` 的那页让
+/// 内核攒不满一页先等着；别的页已知攒满了，只要到这一页的末尾
+/// Asks for a page in the background and reads it on a blocking thread once it arrives. The kernel is told the cursor
+/// belongs to process `instance` and everything up to `stored` is stored. The page that `waits` lets the kernel hold
+/// it while it has not filled; the others are known to be full and ask only up to their own end
+fn fetch(
+    state: &AppState,
+    instance: u64,
+    stored: u64,
+    after: u64,
+    waits: bool,
+) -> tokio::task::JoinHandle<Fetched> {
+    let control = state.control.clone();
+    let settings = state.querylog.settings();
+    let waiting = QueryLogWait {
+        instance: Some(instance),
+        stored: Some(stored),
+        until: (!waits).then_some(after + WAITING_PAGE as u64),
+        wait: if waits { WAIT } else { Duration::ZERO },
+    };
+    tokio::spawn(async move {
+        let mut page = control.querylog(after, WAITING_PAGE, Some(waiting)).await?;
+        Ok(tokio::task::spawn_blocking(move || {
+            let entries = read_entries(&mut page, &settings);
+            (page, entries)
+        })
+        .await?)
+    })
+}
+
+/// 一页的记录只读面板要看的几项（见 [`Scanned::read`]）/ A page's records read for the items the panel looks at (see
+/// [`Scanned::read`])
+fn read_entries(
+    page: &mut KernelPage,
+    settings: &QueryLogSettings,
+) -> serde_json::Result<Vec<Scanned>> {
+    let entries = std::mem::replace(&mut page.entries, QueryLogEntries::Raw(Vec::new()));
+    // 整页原文一遍读完；读不下去就整页照常解析，再一条条读 / The page's text read in one pass; failing that, the page is
+    // parsed whole and read record by record
+    let entries = match entries {
+        QueryLogEntries::Text { page, at } => match Scanned::read_text(&page, at, settings) {
+            Some(entries) => return Ok(entries),
+            None => QueryLogEntries::Text { page, at }.into_raw(),
+        },
+        entries @ QueryLogEntries::Raw(_) => entries.into_raw(),
+    };
+    entries?
+        .into_iter()
+        .map(|raw| Scanned::read(raw.into(), settings))
+        .collect()
 }
 
 async fn write(
