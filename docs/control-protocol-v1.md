@@ -22,7 +22,7 @@ Linux 默认地址为 `/run/kixdns/admin.sock`。协议使用 Unix Socket 上的
 - `querylog_v1`：fork 内核 2026.10.14 起，查询日志端点 `GET /v1/querylog`
 - `querylog_wait_v1`：fork 内核 2026.11.02.9 起，取查询日志时可以带 `instance` 和 `wait_ms`（见下文）
 - `querylog_stored_v1`：fork 内核 2026.11.02.11 起，取查询日志时可以带 `stored`，内核只删面板说存好了的；几个等着的请求各自会被叫醒（见下文）
-- `querylog_until_v1`：取查询日志时可以带 `until`，只交到这个序号为止（见下文）
+- `querylog_until_v1`：fork 内核 2026.11.02.12 起，取查询日志时可以带 `until`，只交到这个序号为止（见下文）
 
 运行时能力负责当前进程的配置门控。尚未启动的目标版本使用内核包内经 SHA-256 校验的 `KIXDNS_CAPABILITIES.json` 预检，完整规则见[配置能力契约](config-capabilities.md)。
 
