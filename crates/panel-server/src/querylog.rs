@@ -30,6 +30,7 @@ use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 use serde_json::{Map, Value};
 
 /// 默认保留 90 天 / Kept for 90 days by default
@@ -89,13 +90,92 @@ impl StaticKind {
     }
 }
 
+/// 内核给的一条查询：原文照写，面板只读出编号和时刻。内核每秒可能交来几万条，拆成 JSON 树再写回去，
+/// 比内核答这些查询还费 CPU
+/// One query from the kernel: its text is written as it came, the panel reading only its number and
+/// time. The kernel may hand over tens of thousands a second, and taking each apart into a JSON tree
+/// to write it back cost more CPU than the kernel spent answering them
+#[derive(Debug, Clone)]
+pub struct KernelEntry {
+    seq: Option<u64>,
+    time_unix_ms: Option<u64>,
+    /// 一个 JSON 对象的原文，没有面板自己写的 `id`、`instance`、`static_kind`
+    /// The text of one JSON object, without the `id`, `instance` and `static_kind` the panel writes itself
+    raw: Box<RawValue>,
+}
+
+impl KernelEntry {
+    /// 原文 `raw` 是一个对象，不带面板自己的字段名；编号和时刻是从里面读出来的
+    /// `raw` is an object without the panel's own field names; the number and time were read from it
+    #[must_use]
+    pub fn new(raw: Box<RawValue>, seq: Option<u64>, time_unix_ms: Option<u64>) -> Self {
+        Self {
+            seq,
+            time_unix_ms,
+            raw,
+        }
+    }
+
+    /// 从解析好的字段来：去掉面板自己的字段名，其余按原来的顺序
+    /// From parsed fields: the panel's own field names go, the rest keep their order
+    #[must_use]
+    pub fn from_map(mut entry: Map<String, Value>) -> Self {
+        entry.retain(|key, _| !matches!(key.as_str(), "id" | "instance" | "static_kind"));
+        let field = |key: &str| entry.get(key).and_then(Value::as_u64);
+        let (seq, time_unix_ms) = (field("seq"), field("time_unix_ms"));
+        let raw = serde_json::value::to_raw_value(&entry)
+            .expect("a map of JSON values always serializes");
+        Self::new(raw, seq, time_unix_ms)
+    }
+
+    #[must_use]
+    pub fn seq(&self) -> Option<u64> {
+        self.seq
+    }
+
+    #[must_use]
+    pub fn time_unix_ms(&self) -> Option<u64> {
+        self.time_unix_ms
+    }
+
+    /// 原文解析成字段 / The text parsed into fields
+    ///
+    /// # Errors
+    /// 原文不是一个 JSON 对象时 / When the text is not a JSON object
+    pub fn fields(&self) -> serde_json::Result<Map<String, Value>> {
+        serde_json::from_str(self.raw.get())
+    }
+
+    /// 写成存储的一行：`id`、`instance`，内核的字段，有就再加 `static_kind`
+    /// Written as one stored line: `id`, `instance`, the kernel's fields, then `static_kind` when there is one
+    fn write_line(
+        &self,
+        id: u64,
+        instance: u64,
+        static_kind: Option<StaticKind>,
+        out: &mut Vec<u8>,
+    ) {
+        let object = self.raw.get();
+        let inner = object[1..object.len() - 1].trim();
+        out.extend_from_slice(format!("{{\"id\":{id},\"instance\":{instance}").as_bytes());
+        if !inner.is_empty() {
+            out.push(b',');
+            out.extend_from_slice(inner.as_bytes());
+        }
+        if let Some(kind) = static_kind {
+            out.extend_from_slice(format!(",\"static_kind\":\"{}\"", kind.label()).as_bytes());
+        }
+        out.push(b'}');
+    }
+}
+
 /// 要写下的一条 / One record to write
 #[derive(Debug, Clone)]
 pub enum Record {
-    /// 内核给的一条查询，字段原样保留 / One query from the kernel, its fields kept as they are
+    /// 内核给的一条查询 / One query from the kernel
     Entry {
         instance: u64,
-        entry: Map<String, Value>,
+        entry: KernelEntry,
         static_kind: Option<StaticKind>,
     },
     /// 这里漏记了几条；`seq` 是漏记之后的游标 / This many went unrecorded here; `seq` is the cursor after the gap
@@ -110,7 +190,7 @@ pub enum Record {
 impl Record {
     fn time_unix_ms(&self) -> Option<u64> {
         match self {
-            Self::Entry { entry, .. } => entry.get("time_unix_ms").and_then(Value::as_u64),
+            Self::Entry { entry, .. } => entry.time_unix_ms,
             Self::Gap { time_unix_ms, .. } => Some(*time_unix_ms),
         }
     }
@@ -119,7 +199,7 @@ impl Record {
         match self {
             Self::Entry {
                 instance, entry, ..
-            } => entry.get("seq").and_then(Value::as_u64).map(|seq| Cursor {
+            } => entry.seq.map(|seq| Cursor {
                 instance: *instance,
                 seq,
             }),
@@ -130,24 +210,16 @@ impl Record {
         }
     }
 
-    fn to_line(&self, id: u64) -> Map<String, Value> {
-        let mut line = Map::new();
-        line.insert("id".to_owned(), id.into());
+    /// 写成存储的一行（不带换行）/ Written as one stored line (without the newline)
+    fn write_line(&self, id: u64, out: &mut Vec<u8>) -> serde_json::Result<()> {
         match self {
             Self::Entry {
                 instance,
                 entry,
                 static_kind,
             } => {
-                line.insert("instance".to_owned(), (*instance).into());
-                for (key, value) in entry {
-                    if !matches!(key.as_str(), "id" | "instance" | "static_kind") {
-                        line.insert(key.clone(), value.clone());
-                    }
-                }
-                if let Some(kind) = static_kind {
-                    line.insert("static_kind".to_owned(), kind.label().into());
-                }
+                entry.write_line(id, *instance, *static_kind, out);
+                Ok(())
             }
             Self::Gap {
                 instance,
@@ -155,13 +227,15 @@ impl Record {
                 time_unix_ms,
                 count,
             } => {
+                let mut line = Map::new();
+                line.insert("id".to_owned(), id.into());
                 line.insert("instance".to_owned(), (*instance).into());
                 line.insert("seq".to_owned(), (*seq).into());
                 line.insert("time_unix_ms".to_owned(), (*time_unix_ms).into());
                 line.insert("gap".to_owned(), (*count).into());
+                serde_json::to_writer(out, &line)
             }
         }
-        line
     }
 }
 
@@ -877,7 +951,7 @@ impl QueryLogStore {
         let mut id = inner.next_id;
         let mut cursor = inner.cursor;
         for record in records {
-            serde_json::to_writer(&mut buffer, &record.to_line(id))?;
+            record.write_line(id, &mut buffer)?;
             buffer.push(b'\n');
             id += 1;
             cursor = record.cursor().or(cursor);

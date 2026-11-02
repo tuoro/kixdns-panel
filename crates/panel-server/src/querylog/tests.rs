@@ -4,8 +4,8 @@ use serde_json::{Map, Value, json};
 use tempfile::tempdir;
 
 use super::{
-    Cursor, Filter, HOUR_MS, MIB, PageQuery, QueryLogSettings, QueryLogStore, Record, RuleFilter,
-    RuleIndex, StaticKind, static_kind_from_answer,
+    Cursor, Filter, HOUR_MS, KernelEntry, MIB, PageQuery, QueryLogSettings, QueryLogStore, Record,
+    RuleFilter, RuleIndex, StaticKind, static_kind_from_answer,
 };
 
 /// 2026-10-15 12:00 UTC 整点 / 2026-10-15 12:00 UTC on the hour
@@ -38,7 +38,7 @@ fn entry(seq: u64, time: u64, qname: &str, client: &str) -> Map<String, Value> {
 fn record(seq: u64, time: u64, qname: &str) -> Record {
     Record::Entry {
         instance: INSTANCE,
-        entry: entry(seq, time, qname, "192.168.1.9"),
+        entry: KernelEntry::from_map(entry(seq, time, qname, "192.168.1.9")),
         static_kind: None,
     }
 }
@@ -293,7 +293,7 @@ fn the_space_cap_drops_the_oldest_and_ids_and_cursor_survive_an_empty_store() {
                 );
                 Record::Entry {
                     instance: INSTANCE,
-                    entry,
+                    entry: KernelEntry::from_map(entry),
                     static_kind: None,
                 }
             })
@@ -426,12 +426,12 @@ fn filter_fixture() -> (tempfile::TempDir, QueryLogStore) {
         record(1, NOON, "a.example"),
         Record::Entry {
             instance: INSTANCE,
-            entry: blocked,
+            entry: KernelEntry::from_map(blocked),
             static_kind: Some(StaticKind::Blocked),
         },
         Record::Entry {
             instance: INSTANCE,
-            entry: checked,
+            entry: KernelEntry::from_map(checked),
             static_kind: None,
         },
         Record::Gap {
@@ -512,7 +512,7 @@ fn a_servfail_block_whose_rule_was_not_recognised_still_files_under_blocked() {
         }
         Record::Entry {
             instance: INSTANCE,
-            entry,
+            entry: KernelEntry::from_map(entry),
             static_kind: None,
         }
     };
@@ -1046,7 +1046,7 @@ fn the_segment_being_written_reads_back_across_its_blocks() {
             );
             Record::Entry {
                 instance: INSTANCE,
-                entry,
+                entry: KernelEntry::from_map(entry),
                 static_kind: None,
             }
         })
@@ -1308,4 +1308,116 @@ fn polls_read_only_newer_records_and_the_newest_time_ignores_filters() {
     );
     store.clear().unwrap();
     assert_eq!(store.read_page(&everything()).newest_unix_ms, None);
+}
+
+/// 这一行在旧的写法下是什么样：面板的 `id`、`instance`，内核的字段（去掉面板自己的字段名），最后 `static_kind`
+/// The line as the old way wrote it: the panel's `id` and `instance`, the kernel's fields (without the panel's
+/// own field names), `static_kind` last
+fn line_the_old_way(
+    id: u64,
+    entry: &Map<String, Value>,
+    static_kind: Option<StaticKind>,
+) -> Map<String, Value> {
+    let mut line = Map::new();
+    line.insert("id".to_owned(), id.into());
+    line.insert("instance".to_owned(), INSTANCE.into());
+    for (key, value) in entry {
+        if !matches!(key.as_str(), "id" | "instance" | "static_kind") {
+            line.insert(key.clone(), value.clone());
+        }
+    }
+    if let Some(kind) = static_kind {
+        line.insert("static_kind".to_owned(), kind.label().into());
+    }
+    line
+}
+
+/// 写下的一行和它的字段顺序 / A written line and its field order
+fn written(record: &Record, id: u64) -> (Map<String, Value>, Vec<String>) {
+    let mut out = Vec::new();
+    record.write_line(id, &mut out).unwrap();
+    let line: Map<String, Value> = serde_json::from_slice(&out).unwrap();
+    let order = line.keys().cloned().collect();
+    (line, order)
+}
+
+/// 内核的一条记录照原文写下：字段、值和顺序都和原来拆开再写回去的一样，转义照原文留着
+/// A kernel record is written from its text: fields, values and order are those of the old way that
+/// took it apart and wrote it back, and its escapes stay as they came
+#[test]
+fn a_kernel_record_is_written_from_its_text() {
+    let text = r#"{"seq":5,"time_unix_ms":1792065600005,"qname":"caf\u00e9.example","outcome":"static","answers":[],"steps":[{"kind":"rule","decision":"static"}]}"#;
+    let fields: Map<String, Value> = serde_json::from_str(text).unwrap();
+    for static_kind in [None, Some(StaticKind::Blocked)] {
+        let record = Record::Entry {
+            instance: INSTANCE,
+            entry: KernelEntry::new(
+                serde_json::value::RawValue::from_string(text.to_owned()).unwrap(),
+                Some(5),
+                Some(1_792_065_600_005),
+            ),
+            static_kind,
+        };
+        let (line, order) = written(&record, 42);
+        let expected = line_the_old_way(42, &fields, static_kind);
+        assert_eq!(line, expected);
+        assert_eq!(order, expected.keys().cloned().collect::<Vec<_>>());
+        assert_eq!(line["qname"], "café.example");
+    }
+    let mut out = Vec::new();
+    Record::Entry {
+        instance: INSTANCE,
+        entry: KernelEntry::new(
+            serde_json::value::RawValue::from_string(text.to_owned()).unwrap(),
+            Some(5),
+            None,
+        ),
+        static_kind: None,
+    }
+    .write_line(1, &mut out)
+    .unwrap();
+    assert!(
+        String::from_utf8(out).unwrap().contains(r"caf\u00e9"),
+        "the escape stays as the kernel wrote it"
+    );
+}
+
+/// 内核的记录里碰巧有面板自己的字段名：去掉它们，其余照原来的顺序；空对象只剩面板的两项
+/// A kernel record that happens to carry the panel's own field names: they go and the rest keep their order;
+/// an empty object leaves only the panel's two
+#[test]
+fn the_panels_own_field_names_are_dropped_from_a_kernel_record() {
+    let fields = object(json!({
+        "id": 9, "seq": 3, "instance": 1, "qname": "a.example", "static_kind": "answered", "time_unix_ms": 4,
+    }));
+    let record = Record::Entry {
+        instance: INSTANCE,
+        entry: KernelEntry::from_map(fields.clone()),
+        static_kind: Some(StaticKind::Answered),
+    };
+    let (line, order) = written(&record, 42);
+    let expected = line_the_old_way(42, &fields, Some(StaticKind::Answered));
+    assert_eq!(line, expected);
+    assert_eq!(
+        order,
+        [
+            "id",
+            "instance",
+            "seq",
+            "qname",
+            "time_unix_ms",
+            "static_kind"
+        ]
+    );
+    assert_eq!(record.cursor().map(|cursor| cursor.seq), Some(3));
+    assert_eq!(record.time_unix_ms(), Some(4));
+
+    let empty = Record::Entry {
+        instance: INSTANCE,
+        entry: KernelEntry::from_map(Map::new()),
+        static_kind: None,
+    };
+    let mut out = Vec::new();
+    empty.write_line(1, &mut out).unwrap();
+    assert_eq!(String::from_utf8(out).unwrap(), r#"{"id":1,"instance":7}"#);
 }

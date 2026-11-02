@@ -106,6 +106,7 @@ pub struct StatsClearResult {
 /// One page of the kernel's query log (`querylog_v1`): the entries after `after`, in ascending `seq`
 #[derive(Debug, Clone, Deserialize)]
 pub struct QueryLogPage {
+    pub protocol_version: u8,
     /// 这个内核进程开始记的时刻（毫秒），换了进程就变 / When this kernel process started recording (ms); a new process changes it
     pub instance: u64,
     /// 最新一条的编号 / The newest number given out
@@ -117,7 +118,8 @@ pub struct QueryLogPage {
     pub untracked: u64,
     /// 还有，马上接着取 / More are waiting; fetch again right away
     pub more: bool,
-    pub entries: Vec<serde_json::Map<String, Value>>,
+    /// 各条的原文，照写下来（见 `querylog::KernelEntry`）/ Each record's text, written as it is (see `querylog::KernelEntry`)
+    pub entries: Vec<Box<serde_json::value::RawValue>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -349,9 +351,24 @@ impl ControlClient {
 
     /// 取 `after` 之后的查询日志。每条最多带 64 步，一页 250 条也在 8 MiB 的应答上限以内。
     /// Takes the query log after `after`. An entry carries at most 64 steps, so a page of 250 stays within the 8 MiB reply cap.
+    /// 一页可能有几 MB，只解析一遍：协议版本也从这一遍里读，解析不了时再看是不是版本不对
+    /// A page may run to megabytes, so it is parsed once: the protocol version is read in the same
+    /// pass, and only when that fails is the version checked on its own
     pub async fn querylog(&self, after: u64, limit: usize) -> Result<QueryLogPage, ControlError> {
-        self.get_json(&format!("/v1/querylog?after={after}&limit={limit}"))
-            .await
+        let path = format!("/v1/querylog?after={after}&limit={limit}");
+        let (_, body) = self.request("GET", &path, Vec::new()).await?;
+        let page: QueryLogPage = serde_json::from_slice(&body).map_err(|error| {
+            match serde_json::from_slice::<ProtocolEnvelope>(&body) {
+                Ok(envelope) if envelope.protocol_version != CONTROL_PROTOCOL_VERSION => {
+                    unsupported_protocol(&path, envelope.protocol_version)
+                }
+                _ => ControlError::Protocol(format!("解析 {path} 响应失败：{error}")),
+            }
+        })?;
+        if page.protocol_version != CONTROL_PROTOCOL_VERSION {
+            return Err(unsupported_protocol(&path, page.protocol_version));
+        }
+        Ok(page)
     }
 
     pub async fn clear_stats(&self) -> Result<StatsClearResult, ControlError> {
@@ -587,13 +604,16 @@ where
     let envelope: ProtocolEnvelope = serde_json::from_slice(body)
         .map_err(|error| ControlError::Protocol(format!("解析 {path} 响应失败：{error}")))?;
     if envelope.protocol_version != CONTROL_PROTOCOL_VERSION {
-        return Err(ControlError::Protocol(format!(
-            "{path} 使用不受支持的控制协议 v{}，面板仅支持 v{CONTROL_PROTOCOL_VERSION}",
-            envelope.protocol_version
-        )));
+        return Err(unsupported_protocol(path, envelope.protocol_version));
     }
     serde_json::from_slice(body)
         .map_err(|error| ControlError::Protocol(format!("解析 {path} 响应失败：{error}")))
+}
+
+fn unsupported_protocol(path: &str, version: u8) -> ControlError {
+    ControlError::Protocol(format!(
+        "{path} 使用不受支持的控制协议 v{version}，面板仅支持 v{CONTROL_PROTOCOL_VERSION}"
+    ))
 }
 
 fn parse_metrics(text: &str) -> Result<MetricsSnapshot, ControlError> {
