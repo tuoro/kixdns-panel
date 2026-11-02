@@ -110,6 +110,15 @@ pub struct QueryLogWait {
     /// The kernel process the cursor belongs to: if it is this kernel's own, the kernel deletes everything up to
     /// `after` (the panel has stored it); if another process's, the kernel answers at once without waiting
     pub instance: Option<u64>,
+    /// 面板存好到哪一条（`querylog_stored_v1`）：给了它，内核只删到这里，`after` 只说从哪往后取。面板同时取着好几段
+    /// 时取到哪和存到哪不是一回事
+    /// The record the panel has stored up to (`querylog_stored_v1`): given it, the kernel deletes only up to here and
+    /// `after` only says where to take from. A panel taking several ranges at once has taken further than it stored
+    pub stored: Option<u64>,
+    /// 只取到这个序号为止（`querylog_until_v1`）：前面被挤掉了一截时，这一页也不越界交出下一页的记录
+    /// No record past this number (`querylog_until_v1`): with a stretch before it pushed out, the page still does not
+    /// hand over the next page's records
+    pub until: Option<u64>,
     /// 攒不满一页时最多等多久 / How long the kernel may wait at most while a page has not filled
     pub wait: Duration,
 }
@@ -121,8 +130,14 @@ fn querylog_request(after: u64, limit: usize, waiting: Option<QueryLogWait>) -> 
     let mut path = format!("/v1/querylog?after={after}&limit={limit}");
     let mut timeout = REQUEST_TIMEOUT;
     if let Some(waiting) = waiting {
+        if let Some(until) = waiting.until {
+            let _ = write!(path, "&until={until}");
+        }
         if let Some(instance) = waiting.instance {
             let _ = write!(path, "&instance={instance}");
+        }
+        if let Some(stored) = waiting.stored {
+            let _ = write!(path, "&stored={stored}");
         }
         let _ = write!(path, "&wait_ms={}", waiting.wait.as_millis());
         timeout += waiting.wait;
@@ -1167,6 +1182,8 @@ mod tests {
         );
         let waiting = |instance| QueryLogWait {
             instance,
+            stored: None,
+            until: None,
             wait: Duration::from_secs(1),
         };
         assert_eq!(
@@ -1179,6 +1196,35 @@ mod tests {
         assert_eq!(
             querylog_request(0, 2_000, Some(waiting(None))).0,
             "/v1/querylog?after=0&limit=2000&wait_ms=1000"
+        );
+        assert_eq!(
+            querylog_request(
+                9,
+                500,
+                Some(QueryLogWait {
+                    stored: Some(4),
+                    ..waiting(Some(100))
+                })
+            )
+            .0,
+            "/v1/querylog?after=9&limit=500&instance=100&stored=4&wait_ms=1000"
+        );
+        assert_eq!(
+            querylog_request(
+                9,
+                500,
+                Some(QueryLogWait {
+                    stored: Some(4),
+                    until: Some(509),
+                    wait: Duration::ZERO,
+                    ..waiting(Some(100))
+                })
+            ),
+            (
+                "/v1/querylog?after=9&limit=500&until=509&instance=100&stored=4&wait_ms=0"
+                    .to_owned(),
+                REQUEST_TIMEOUT
+            )
         );
     }
 

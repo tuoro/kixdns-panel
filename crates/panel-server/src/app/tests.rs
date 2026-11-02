@@ -2350,13 +2350,35 @@ struct FakeQueryLog {
     oversize_above: Option<usize>,
     /// 带着这一条时应答就超过 8 MiB / A reply carrying this record exceeds 8 MiB
     oversize_seq: Option<u64>,
+    /// 拼得慢的那几页 / The pages slow to build
+    slow_takes: Vec<SlowTake>,
+    /// 说认 `until` 却不照着办，交得比要的多 / Claims `until` but ignores it, handing over more than asked
+    ignores_until: bool,
 }
 
+/// 每次来取时的游标、只要到哪一条、游标所属的进程、说存好到哪一条、让内核等多久（毫秒）/ Each take's cursor, the
+/// last number it asked for, the process the cursor belongs to, how far it says is stored, and how long it let the
+/// kernel wait (ms)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FakeTake {
     after: u64,
+    until: Option<u64>,
     instance: Option<u64>,
+    stored: Option<u64>,
     wait_ms: Option<u64>,
+}
+
+/// 内核拼这一页拼得慢：从这个游标来取时先等这么多毫秒，这期间换成了这个进程、交接区里只剩这些（换了进程，或者前面
+/// 被挤掉了一截），没记下的累计到了这么多。别的页照常马上回
+/// The kernel is slow to build this page: a take from this cursor waits this many milliseconds first, and meanwhile
+/// the process becomes this one with only these records left in the ring (a restart, or a stretch at the front pushed
+/// out) and the unrecorded count reaches this. Other pages are answered at once as usual
+struct SlowTake {
+    after: u64,
+    delay_ms: u64,
+    instance: u64,
+    ring: Vec<Value>,
+    untracked: u64,
 }
 
 type SharedQueryLog = std::sync::Arc<std::sync::Mutex<FakeQueryLog>>;
@@ -2375,7 +2397,52 @@ fn fake_query_log(ring: Vec<Value>) -> SharedQueryLog {
         takes: Vec::new(),
         oversize_above: None,
         oversize_seq: None,
+        slow_takes: Vec::new(),
+        ignores_until: false,
     }))
+}
+
+/// 按内核的规矩交出一页 / Hands out a page by the kernel's rules
+fn fake_querylog_page(
+    log: &mut FakeQueryLog,
+    query: &std::collections::HashMap<String, u64>,
+) -> Value {
+    let after = query["after"];
+    let limit = usize::try_from(query["limit"]).unwrap();
+    log.limits.push(limit);
+    let asked = query.get("until").copied();
+    log.takes.push(FakeTake {
+        after,
+        until: asked,
+        instance: query.get("instance").copied(),
+        stored: query.get("stored").copied(),
+        wait_ms: query.get("wait_ms").copied(),
+    });
+    let until = asked.filter(|_| !log.ignores_until);
+    let seq = |entry: &Value| entry["seq"].as_u64().unwrap();
+    let first_kept = log.ring.first().map_or(log.newest + 1, seq);
+    let entries: Vec<Value> = log
+        .ring
+        .iter()
+        .filter(|entry| seq(entry) > after && until.is_none_or(|until| seq(entry) <= until))
+        .take(limit)
+        .cloned()
+        .collect();
+    let missed = first_kept
+        .saturating_sub(after + 1)
+        .min(until.map_or(u64::MAX, |until| until.saturating_sub(after)));
+    let more = after + missed + (entries.len() as u64) < log.newest;
+    let mut page = serde_json::json!({
+        "protocol_version": 1, "instance": log.instance, "capacity": 4096, "newest_seq": log.newest,
+        "missed": missed, "untracked": log.untracked, "more": more, "entries": entries,
+    });
+    let carries_huge = log
+        .oversize_seq
+        .is_some_and(|huge| entries.iter().any(|entry| seq(entry) == huge));
+    if carries_huge || log.oversize_above.is_some_and(|most| limit > most) {
+        page["padding"] = Value::String("x".repeat(9 * 1024 * 1024));
+    }
+    page
 }
 
 /// 假的内核：报告磁盘上那份配置在用，按内核的规矩交出查询日志（`missed` 和 `more` 的算法一样）
@@ -2420,37 +2487,34 @@ fn start_fake_querylog_kernel(
         .route(
             "/v1/querylog",
             get(move |Query(query): Query<std::collections::HashMap<String, u64>>| {
-                let mut log = log.lock().unwrap();
-                let after = query["after"];
-                let limit = usize::try_from(query["limit"]).unwrap();
-                log.limits.push(limit);
-                log.takes.push(FakeTake {
-                    after,
-                    instance: query.get("instance").copied(),
-                    wait_ms: query.get("wait_ms").copied(),
-                });
-                let seq = |entry: &Value| entry["seq"].as_u64().unwrap();
-                let first_kept = log.ring.first().map_or(log.newest + 1, seq);
-                let entries: Vec<Value> = log
-                    .ring
-                    .iter()
-                    .filter(|entry| seq(entry) > after)
-                    .take(limit)
-                    .cloned()
-                    .collect();
-                let more = entries.last().is_some_and(|entry| seq(entry) < log.newest);
-                let mut page = serde_json::json!({
-                    "protocol_version": 1, "instance": log.instance, "capacity": 4096, "newest_seq": log.newest,
-                    "missed": first_kept.saturating_sub(after + 1), "untracked": log.untracked, "more": more,
-                    "entries": entries,
-                });
-                let carries_huge = log
-                    .oversize_seq
-                    .is_some_and(|huge| entries.iter().any(|entry| seq(entry) == huge));
-                if carries_huge || log.oversize_above.is_some_and(|most| limit > most) {
-                    page["padding"] = Value::String("x".repeat(9 * 1024 * 1024));
+                let log = log.clone();
+                async move {
+                    let slow = {
+                        let mut log = log.lock().unwrap();
+                        let at = log
+                            .slow_takes
+                            .iter()
+                            .position(|slow| slow.after == query["after"]);
+                        at.map(|at| log.slow_takes.remove(at))
+                    };
+                    if let Some(SlowTake {
+                        delay_ms,
+                        instance,
+                        ring,
+                        untracked,
+                        ..
+                    }) = slow
+                    {
+                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                        let mut log = log.lock().unwrap();
+                        log.instance = instance;
+                        log.untracked = untracked;
+                        log.newest = ring.last().map_or(0, |entry| entry["seq"].as_u64().unwrap());
+                        log.ring = ring;
+                    }
+                    let page = fake_querylog_page(&mut log.lock().unwrap(), &query);
+                    axum::Json(page)
                 }
-                async move { axum::Json(page) }
             }),
         );
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() })
@@ -2535,7 +2599,7 @@ async fn the_collector_comes_back_sooner_while_records_keep_coming() {
             .unwrap()
             .takes
             .iter()
-            .all(|take| take.instance.is_none() && take.wait_ms.is_none()),
+            .all(|take| take.instance.is_none() && take.stored.is_none() && take.wait_ms.is_none()),
         "a kernel that cannot wait is never asked to"
     );
     assert_eq!(
@@ -2575,9 +2639,13 @@ async fn a_kernel_that_can_wait_is_asked_to() {
         log.newest = 1;
     }
     collector.tick(&state).await.unwrap();
+    // 内核不分存好的和取走的：一页页取，不说存好到哪 / A kernel that does not tell stored from taken: page by page,
+    // without saying how far is stored
     let take = |after, instance| FakeTake {
         after,
+        until: None,
         instance,
+        stored: None,
         wait_ms: Some(1_000),
     };
     let log = log.lock().unwrap();
@@ -2595,47 +2663,400 @@ async fn a_kernel_that_can_wait_is_asked_to() {
 }
 
 /// 会等着交的内核也一样：一条也放不下时先探是哪个进程，这一问不带游标所属的进程，也不让内核等——带了的话，内核会把
-/// 探的那个大序号之前的全当存好了删掉
+/// 探的那个大序号之前的全当存好了删掉。分得清存好的和取走的内核，几页同时取时碰上这一页，余下的也照一页页的办法
 /// With a kernel that can wait as well, a record that cannot fit even alone first has the panel probe which process this
 /// is, and the probe names no process and lets the kernel wait for nothing; were it to name one, the kernel would take
-/// everything before the probe's huge number as stored and delete it
+/// everything before the probe's huge number as stored and delete it. With a kernel that tells stored from taken, the
+/// several pages taken at once meet this one and the rest goes the page-by-page way too. A kernel that tells stored
+/// from taken but cannot stop at a given number is taken page by page
 #[tokio::test]
 async fn a_waiting_kernel_is_probed_without_a_cursor() {
-    let directory = tempdir().unwrap();
-    let state = test_state(&directory).await;
+    for capabilities in [
+        vec!["querylog_v1", "querylog_wait_v1"],
+        vec!["querylog_v1", "querylog_wait_v1", "querylog_stored_v1"],
+        RANGES.to_vec(),
+    ] {
+        let stores = capabilities == RANGES;
+        let directory = tempdir().unwrap();
+        let state = test_state(&directory).await;
+        let log = fake_query_log(vec![kernel_entry(1, "a.example", "A")]);
+        log.lock().unwrap().capabilities = capabilities;
+        let _kernel = start_fake_querylog_kernel(directory.path(), log.clone());
+        let mut collector = super::querylog::Collector::default();
+        collector.tick(&state).await.unwrap();
+        {
+            let mut log = log.lock().unwrap();
+            log.ring = vec![
+                kernel_entry(2, "huge.example", "A"),
+                kernel_entry(3, "b.example", "A"),
+            ];
+            log.newest = 3;
+            log.oversize_seq = Some(2);
+            log.takes.clear();
+        }
+        collector.tick(&state).await.unwrap();
+        let probe = FakeTake {
+            after: u64::MAX / 2,
+            until: None,
+            instance: None,
+            stored: None,
+            wait_ms: None,
+        };
+        let takes = log.lock().unwrap().takes.clone();
+        assert_eq!(takes.iter().filter(|take| **take == probe).count(), 1);
+        assert!(
+            takes
+                .iter()
+                .filter(|take| **take != probe)
+                .all(|take| take.instance == Some(100) && take.wait_ms == Some(1_000)),
+            "{takes:?}"
+        );
+        assert_eq!(
+            takes.iter().any(|take| take.stored == Some(1)),
+            stores,
+            "{takes:?}"
+        );
+        let items = querylog_items(&state);
+        assert_eq!(items[0]["qname"], "b.example");
+        assert_eq!(items[1]["gap"], 1);
+    }
+}
+
+/// 能同时交相邻几段的内核声明的 / What a kernel that can hand over neighbouring ranges at once declares
+const RANGES: [&str; 4] = [
+    "querylog_v1",
+    "querylog_wait_v1",
+    "querylog_stored_v1",
+    "querylog_until_v1",
+];
+
+/// 能同时交相邻几段的内核，查询日志里已经有一条、游标在 1 / A kernel that can hand over neighbouring ranges at once,
+/// with one record already in the query log and the cursor at 1
+async fn stored_kernel_after_one(
+    directory: &tempfile::TempDir,
+) -> (
+    super::AppState,
+    SharedQueryLog,
+    super::querylog::Collector,
+    tokio::task::JoinHandle<()>,
+) {
+    std::fs::write(directory.path().join("pipeline.json"), "{}").unwrap();
+    let state = test_state(directory).await;
     let log = fake_query_log(vec![kernel_entry(1, "a.example", "A")]);
-    log.lock().unwrap().capabilities = vec!["querylog_v1", "querylog_wait_v1"];
-    let _kernel = start_fake_querylog_kernel(directory.path(), log.clone());
+    log.lock().unwrap().capabilities = RANGES.to_vec();
+    let kernel = start_fake_querylog_kernel(directory.path(), log.clone());
     let mut collector = super::querylog::Collector::default();
+    collector.tick(&state).await.unwrap();
+    (state, log, collector, kernel)
+}
+
+/// 查询日志里的全部，从旧到新：每条是域名和编号，漏记是条数 / Everything in the query log, oldest first: a record as its
+/// domain and number, a gap as its count
+fn querylog_trail(state: &super::AppState) -> Vec<String> {
+    let store = state.querylog.store.as_ref().unwrap();
+    let mut items = Vec::new();
+    let mut before = None;
+    loop {
+        let page = store.read_page(&crate::querylog::PageQuery {
+            filter: crate::querylog::Filter::default(),
+            before,
+            after: None,
+            limit: 500,
+            cutoff_ms: 0,
+        });
+        items.extend(page.items);
+        match page.next_before {
+            Some(next) => before = Some(next),
+            None => break,
+        }
+    }
+    items
+        .iter()
+        .rev()
+        .map(|item| match item.get("gap") {
+            Some(gap) => format!("gap {gap}"),
+            None => format!("{} {}", item["qname"].as_str().unwrap(), item["seq"]),
+        })
+        .collect()
+}
+
+fn trail(qname: &str, seqs: std::ops::RangeInclusive<u64>) -> impl Iterator<Item = String> {
+    seqs.map(move |seq| format!("{qname} {seq}"))
+}
+
+/// 积压时几页同时取：已知攒满了的先要着，只要到这一页的末尾，不让内核等；只有不知道有没有的那页让内核等。每次都说
+/// 存好到哪一条——先要着的那几页说的是已经写好的那一条，落在它们自己的起点后面。写还是按编号，一条不重、一条不少
+/// A backlog is taken several pages at once: pages known to be full are asked for ahead, only up to their own end and
+/// without letting the kernel wait, and only the page not known to exist lets it wait. Every take says how far is
+/// stored, and the pages asked for ahead name the last one written, behind their own starts. Writing still goes in
+/// order, nothing twice and nothing missing
+#[tokio::test]
+async fn a_backlog_is_taken_several_pages_at_once() {
+    let directory = tempdir().unwrap();
+    let (state, log, mut collector, _kernel) = stored_kernel_after_one(&directory).await;
+    {
+        let mut log = log.lock().unwrap();
+        log.ring
+            .extend((2..=5_001).map(|seq| kernel_entry(seq, "a.example", "A")));
+        log.newest = 5_001;
+        log.takes.clear();
+    }
+    assert_eq!(
+        collector.tick(&state).await.unwrap(),
+        std::time::Duration::ZERO
+    );
+    let mut takes = log.lock().unwrap().takes.clone();
+    takes.sort_by_key(|take| take.after);
+    let ahead = |after, stored| FakeTake {
+        after,
+        until: Some(after + 500),
+        instance: Some(100),
+        stored: Some(stored),
+        wait_ms: Some(0),
+    };
+    let waiting = |after, stored| FakeTake {
+        until: None,
+        wait_ms: Some(1_000),
+        ..ahead(after, stored)
+    };
+    assert_eq!(
+        takes,
+        [
+            waiting(1, 1),
+            ahead(501, 501),
+            ahead(1_001, 501),
+            ahead(1_501, 501),
+            ahead(2_001, 501),
+            ahead(2_501, 1_001),
+            ahead(3_001, 1_501),
+            ahead(3_501, 2_001),
+            ahead(4_001, 2_501),
+            ahead(4_501, 3_001),
+            waiting(5_001, 3_501),
+        ]
+    );
+    assert_eq!(
+        querylog_trail(&state),
+        trail("a.example", 1..=5_001).collect::<Vec<_>>()
+    );
+}
+
+/// 先要着的几页里，最前面那页拼得慢，这期间交接区前面被挤掉了一大截：它那一段整段不在了，记成一行漏记；后面那几页
+/// 早就拼好了，各管各的一段，照常写下。下一轮接着往后，整段整段不在了的并成一行漏记，和后面的记录一起写。一条不重
+/// Among the pages asked for ahead, the one in front is slow to build, and meanwhile a long stretch at the front of
+/// the ring is pushed out: its range is gone whole and becomes one gap row, while the pages behind it, built long
+/// before, each keep to their own range and are written as usual. The next round goes on, and the ranges gone whole
+/// fold into one gap row written with the records after them. Nothing comes twice
+#[tokio::test]
+async fn a_range_pushed_out_is_a_gap_and_the_ranges_after_it_are_kept() {
+    let directory = tempdir().unwrap();
+    let (state, log, mut collector, _kernel) = stored_kernel_after_one(&directory).await;
+    {
+        let mut log = log.lock().unwrap();
+        log.ring
+            .extend((2..=2_001).map(|seq| kernel_entry(seq, "a.example", "A")));
+        log.newest = 2_001;
+        log.slow_takes = vec![SlowTake {
+            after: 501,
+            delay_ms: 200,
+            instance: 100,
+            ring: (5_001..=7_000)
+                .map(|seq| kernel_entry(seq, "a.example", "A"))
+                .collect(),
+            untracked: 0,
+        }];
+    }
+    collector.tick(&state).await.unwrap();
+    collector.tick(&state).await.unwrap();
+    let expected: Vec<String> = trail("a.example", 1..=501)
+        .chain(["gap 500".to_owned()])
+        .chain(trail("a.example", 1_002..=2_001))
+        .chain(["gap 2999".to_owned()])
+        .chain(trail("a.example", 5_001..=7_000))
+        .collect();
+    assert_eq!(querylog_trail(&state), expected);
+}
+
+/// 内核说认 `until` 却交得比要的多：最前面那页拼得慢，这期间前面被挤掉了一大截，它越界交了后面几页的记录。后面那几页
+/// 早就拼好了，起点和游标对不上，不要了——那时的最新编号比现在的游标还小，也不当成内核换了进程——从游标重新要。一条不重
+/// A kernel that claims `until` but hands over more than asked: the page in front is slow to build, a long stretch at
+/// the front is pushed out meanwhile, and it hands over the records of the pages after it. Those pages, built long
+/// before, do not start at the cursor and are dropped (their newest number, below today's cursor, is not taken for a
+/// restart), and asking starts again at the cursor. Nothing comes twice
+#[tokio::test]
+async fn pages_that_do_not_start_at_the_cursor_are_dropped() {
+    let directory = tempdir().unwrap();
+    let (state, log, mut collector, _kernel) = stored_kernel_after_one(&directory).await;
+    {
+        let mut log = log.lock().unwrap();
+        log.ignores_until = true;
+        log.ring
+            .extend((2..=2_001).map(|seq| kernel_entry(seq, "a.example", "A")));
+        log.newest = 2_001;
+        log.slow_takes = vec![SlowTake {
+            after: 501,
+            delay_ms: 200,
+            instance: 100,
+            ring: (5_001..=7_000)
+                .map(|seq| kernel_entry(seq, "a.example", "A"))
+                .collect(),
+            untracked: 0,
+        }];
+    }
+    collector.tick(&state).await.unwrap();
+    let expected: Vec<String> = trail("a.example", 1..=501)
+        .chain(["gap 4499".to_owned()])
+        .chain(trail("a.example", 5_001..=7_000))
+        .collect();
+    assert_eq!(querylog_trail(&state), expected);
+}
+
+/// 几页同时取时内核换了进程：最前面那页拼得慢，回来时已是新进程。后面要着的旧进程的几页都不要了，从新进程的第一条
+/// 重新取，告诉它的是新进程和还没存下它的任何一条
+/// The kernel restarts while several pages are taken at once: the page in front is slow to build and comes back from
+/// the new process. The old process's pages asked for behind it are dropped, and taking starts again from the new
+/// process's first record, telling it the new process and that none of its records is stored yet
+#[tokio::test]
+async fn a_restart_among_pages_asked_for_ahead_starts_over() {
+    let directory = tempdir().unwrap();
+    let (state, log, mut collector, _kernel) = stored_kernel_after_one(&directory).await;
+    {
+        let mut log = log.lock().unwrap();
+        log.ring
+            .extend((2..=2_001).map(|seq| kernel_entry(seq, "a.example", "A")));
+        log.newest = 2_001;
+        log.slow_takes = vec![SlowTake {
+            after: 501,
+            delay_ms: 200,
+            instance: 200,
+            ring: (1..=800)
+                .map(|seq| kernel_entry(seq, "after-restart.example", "A"))
+                .collect(),
+            untracked: 0,
+        }];
+    }
+    collector.tick(&state).await.unwrap();
+    let expected: Vec<String> = trail("a.example", 1..=501)
+        .chain(trail("after-restart.example", 1..=800))
+        .collect();
+    assert_eq!(querylog_trail(&state), expected);
+    let mut restarted: Vec<FakeTake> = log
+        .lock()
+        .unwrap()
+        .takes
+        .iter()
+        .filter(|take| take.instance == Some(200))
+        .copied()
+        .collect();
+    restarted.sort_by_key(|take| take.after);
+    let take = |after, until, wait_ms| FakeTake {
+        after,
+        until,
+        instance: Some(200),
+        stored: Some(0),
+        wait_ms: Some(wait_ms),
+    };
+    assert_eq!(restarted, [take(0, Some(500), 0), take(500, None, 1_000)]);
+}
+
+/// 先要着的几页里，最前面那页拼得慢，这期间有 7 个请求没记下：后面那几页拼得早，累计数还是 0。没记下的只记一行，
+/// 下一轮累计数没变时也不再记
+/// Among the pages asked for ahead, the one in front is slow to build, and meanwhile 7 requests go unrecorded: the
+/// pages behind it were built earlier, with the count still at 0. The unrecorded ones make a single row, and the next
+/// round, with the count unchanged, adds none
+#[tokio::test]
+async fn pages_built_earlier_do_not_count_the_unrecorded_twice() {
+    let directory = tempdir().unwrap();
+    let (state, log, mut collector, _kernel) = stored_kernel_after_one(&directory).await;
+    let ring = |last| {
+        (1..=last)
+            .map(|seq| kernel_entry(seq, "a.example", "A"))
+            .collect::<Vec<_>>()
+    };
+    {
+        let mut log = log.lock().unwrap();
+        log.ring = ring(2_001);
+        log.newest = 2_001;
+        log.slow_takes = vec![SlowTake {
+            after: 501,
+            delay_ms: 200,
+            instance: 100,
+            ring: ring(2_001),
+            untracked: 7,
+        }];
+    }
     collector.tick(&state).await.unwrap();
     {
         let mut log = log.lock().unwrap();
-        log.ring = vec![
-            kernel_entry(2, "huge.example", "A"),
-            kernel_entry(3, "b.example", "A"),
-        ];
-        log.newest = 3;
-        log.oversize_seq = Some(2);
-        log.takes.clear();
+        log.ring = ring(2_100);
+        log.newest = 2_100;
     }
     collector.tick(&state).await.unwrap();
-    let probe = FakeTake {
-        after: u64::MAX / 2,
-        instance: None,
-        wait_ms: None,
-    };
-    let takes = log.lock().unwrap().takes.clone();
-    assert_eq!(takes.iter().filter(|take| **take == probe).count(), 1);
-    assert!(
-        takes
-            .iter()
-            .filter(|take| **take != probe)
-            .all(|take| take.instance == Some(100) && take.wait_ms == Some(1_000)),
-        "{takes:?}"
+    let expected: Vec<String> = trail("a.example", 1..=501)
+        .chain(["gap 7".to_owned()])
+        .chain(trail("a.example", 502..=2_100))
+        .collect();
+    assert_eq!(querylog_trail(&state), expected);
+}
+
+/// 面板不在时内核清空了交接区：取回来一条也没有，只知道漏了多少，这一轮结束时照样记成一行漏记。游标挪了就马上接着取
+/// The kernel emptied its ring while the panel was away: nothing comes back but how many are gone, and that still
+/// becomes a gap row when the round ends. With the cursor moved, the next round comes at once
+#[tokio::test]
+async fn a_ring_emptied_meanwhile_is_one_gap_row() {
+    let directory = tempdir().unwrap();
+    let (state, log, mut collector, _kernel) = stored_kernel_after_one(&directory).await;
+    {
+        let mut log = log.lock().unwrap();
+        log.ring.clear();
+        log.newest = 3_000;
+    }
+    assert_eq!(
+        collector.tick(&state).await.unwrap(),
+        std::time::Duration::ZERO
     );
-    let items = querylog_items(&state);
-    assert_eq!(items[0]["qname"], "b.example");
-    assert_eq!(items[1]["gap"], 1);
+    collector.tick(&state).await.unwrap();
+    assert_eq!(querylog_trail(&state), ["a.example 1", "gap 2999"]);
+}
+
+/// 整段被挤掉、漏记还没写下时内核换了进程：旧进程漏掉的不算到新进程头上
+/// The kernel restarts while a range pushed out whole is not yet written: the old process's gap is not put on the new
+/// one
+#[tokio::test]
+async fn a_restart_drops_the_gap_not_yet_written() {
+    let directory = tempdir().unwrap();
+    let (state, log, mut collector, _kernel) = stored_kernel_after_one(&directory).await;
+    {
+        let mut log = log.lock().unwrap();
+        log.ring
+            .extend((2..=2_001).map(|seq| kernel_entry(seq, "a.example", "A")));
+        log.newest = 2_001;
+        log.slow_takes = vec![
+            SlowTake {
+                after: 501,
+                delay_ms: 200,
+                instance: 100,
+                ring: (5_001..=7_000)
+                    .map(|seq| kernel_entry(seq, "a.example", "A"))
+                    .collect(),
+                untracked: 0,
+            },
+            SlowTake {
+                after: 1_001,
+                delay_ms: 400,
+                instance: 200,
+                ring: (1..=300)
+                    .map(|seq| kernel_entry(seq, "after-restart.example", "A"))
+                    .collect(),
+                untracked: 0,
+            },
+        ];
+    }
+    collector.tick(&state).await.unwrap();
+    let expected: Vec<String> = trail("a.example", 1..=501)
+        .chain(trail("after-restart.example", 1..=300))
+        .collect();
+    assert_eq!(querylog_trail(&state), expected);
 }
 
 /// 内核的一条查询记录 / One kernel query record

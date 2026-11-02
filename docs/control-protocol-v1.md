@@ -21,6 +21,8 @@ Linux 默认地址为 `/run/kixdns/admin.sock`。协议使用 Unix Socket 上的
 - `metrics_upstream_response_latency_v1`：增强版 p25 起，`/v1/metrics` 另外提供只算拿到响应的上游耗时，面板用它计算平均耗时
 - `querylog_v1`：fork 内核 2026.10.14 起，查询日志端点 `GET /v1/querylog`
 - `querylog_wait_v1`：fork 内核 2026.11.02.9 起，取查询日志时可以带 `instance` 和 `wait_ms`（见下文）
+- `querylog_stored_v1`：fork 内核 2026.11.02.11 起，取查询日志时可以带 `stored`，内核只删面板说存好了的；几个等着的请求各自会被叫醒（见下文）
+- `querylog_until_v1`：取查询日志时可以带 `until`，只交到这个序号为止（见下文）
 
 运行时能力负责当前进程的配置门控。尚未启动的目标版本使用内核包内经 SHA-256 校验的 `KIXDNS_CAPABILITIES.json` 预检，完整规则见[配置能力契约](config-capabilities.md)。
 
@@ -98,15 +100,24 @@ Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致
 
 - `after`：面板已经取到的最后一条 `seq`，第一次取时为 0；
 - `limit`：1–2000，默认 2000；
+- `until`（需要 `querylog_until_v1`）：只交 `seq` 不超过它的记录。`after` 之后被挤掉了一截时，这一页也不越界交出 `until` 之后的记录，`missed` 只算到 `until` 为止。面板同时取相邻的几段时，各段因此互不重叠；
 - `instance`（需要 `querylog_wait_v1`）：游标所属的内核进程，就是取到游标那一页应答里的 `instance`。
   - 是这个内核进程的：面板已经把 `after` 及以前的记录存好了，内核把它们从交接区删掉。
   - 是别的进程的：一条不删，也不等，马上回。
   - 不带：一条不删。
   - 面板拿一个远大于 `newest_seq` 的 `after` 探问是哪个进程时，不能带它；
-- `wait_ms`（需要 `querylog_wait_v1`）：0–5000。`after` 之后攒不满 `limit` 条时，最多等这么久再回，攒满马上回；
+- `stored`（需要 `querylog_stored_v1`，和 `instance` 一起才起作用）：面板已经存好到哪一条。带了它，内核删的是 `stored` 和 `after` 里小的那个及以前的记录，于是面板可以同时取几页：后面几页的 `after` 走在前头，`stored` 停在写好的那一条。不带时照旧把 `after` 当作存好了；
+- `wait_ms`（需要 `querylog_wait_v1`）：0–5000。`after` 之后攒不满 `limit` 条（带了 `until` 时，到它为止的还没齐）时，最多等这么久再回，攒满马上回；
 - 其他参数一律返回 400 `querylog_query_invalid`。
 
 面板对声明了 `querylog_wait_v1` 的内核一直挂着一个请求：一页 500 条，带上 `instance` 和 `wait_ms=1000`，取到了马上接着取。对其他内核按速率来取，最长隔一秒，一页 250 条。
+
+对同时声明了 `querylog_stored_v1` 和 `querylog_until_v1` 的内核，面板已经有游标时几页同时取：
+- 内核上回说的 `newest_seq` 已经过了一页末尾的，这几页先要着，带 `until`（这一页的末尾）和 `wait_ms=0`，同时最多 4 页；
+- 不知道有没有的那页不带 `until`，带 `wait_ms=1000`，它回来之前不再往后要；
+- 每页都带 `stored`，是已经写下的最后一条；
+- 写还是按 `seq` 一页接一页。整段都被挤掉了的几页，漏掉的条数并成一行，和后面的记录一起写；
+- 面板第一次取，或者有一页超过 8 MiB 的应答上限时，照一页页的办法。
 
 **应答**
 
@@ -116,7 +127,7 @@ Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致
 | `newest_seq` | 最新一条的编号 |
 | `missed` | 游标之后已经被挤掉或清掉、取不到的条数 |
 | `untracked` | 同时在处理的请求超过上限（声明 `querylog_wait_v1` 的内核是 16384 个，之前是 4096 个）、没记下的累计数 |
-| `more` | 还有没取完的，马上接着取 |
+| `more` | 这一页交到的地方之后还有，马上接着取 |
 | `entries` | 按 `seq` 从小到大的记录 |
 
 **记录**
