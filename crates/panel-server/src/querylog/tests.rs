@@ -101,21 +101,16 @@ fn reads_newest_first_with_panel_ids_and_resumes_after_reopening() {
         })
     );
 
-    // 断电留下半行：重新打开时截掉，编号和游标接着上次 / Half a line left by a power loss is cut on reopening; ids and the
-    // cursor carry on
+    // 写到一半断了电，最后一块只写下一半（块头说有 36 字节，后面只有 2 个）。重新打开时这段照样读到写完的那页，
+    // 不再接着写；编号和游标接着上次
+    // A power loss mid-write left half a block (its header promises 36 bytes and only 2 follow). On reopening the
+    // segment still reads up to its last whole page and is not continued; ids and the cursor carry on
     drop(store);
-    let segment = std::fs::read_dir(&root)
-        .unwrap()
-        .map(|item| item.unwrap().path())
-        .find(|path| {
-            path.extension()
-                .is_some_and(|extension| extension == "jsonl")
-        })
-        .unwrap();
+    let segment = segment_files(&root).remove(0);
     let mut bytes = std::fs::read(&segment).unwrap();
-    bytes.extend_from_slice(b"{\"id\":4,\"instance\":7,\"se");
+    bytes.extend_from_slice(&[0x25, 0x01, 0x00, b'{', b'"']);
     std::fs::write(&segment, bytes).unwrap();
-    let store = QueryLogStore::open(root).unwrap();
+    let store = QueryLogStore::open(root.clone()).unwrap();
     assert_eq!(
         store.cursor(),
         Some(Cursor {
@@ -123,14 +118,38 @@ fn reads_newest_first_with_panel_ids_and_resumes_after_reopening() {
             seq: 43
         })
     );
+    assert_eq!(ids(&store.read_page(&everything())), [3, 2, 1]);
     store
         .append(&[record(44, NOON + 3, "d.example")], &settings(), NOON + 20)
         .unwrap();
     assert_eq!(ids(&store.read_page(&everything())), [4, 3, 2, 1]);
+    assert_eq!(
+        segment_files(&root).len(),
+        2,
+        "the cut-off segment is not continued"
+    );
+}
+
+/// 一个 zstd 段的帧：收尾了几帧，后面还有没有没收尾的 / A zstd segment's frames: how many are finished, and whether an
+/// unfinished one follows
+fn frames(path: &std::path::Path) -> (usize, bool) {
+    let bytes = std::fs::read(path).unwrap();
+    let mut start = 0;
+    let mut finished = 0;
+    while start < bytes.len() {
+        match zstd::zstd_safe::find_frame_compressed_size(&bytes[start..]) {
+            Ok(length) if length > 0 => {
+                finished += 1;
+                start += length;
+            }
+            _ => return (finished, true),
+        }
+    }
+    (finished, false)
 }
 
 #[test]
-fn a_new_hour_opens_a_new_segment_and_the_old_one_is_compressed() {
+fn a_new_hour_opens_a_new_segment_and_closes_the_old_one() {
     let directory = tempdir().unwrap();
     let root = directory.path().join("querylog");
     let store = QueryLogStore::open(root.clone()).unwrap();
@@ -148,21 +167,23 @@ fn a_new_hour_opens_a_new_segment_and_the_old_one_is_compressed() {
             .unwrap();
         store.maintain(&settings(), at).unwrap();
     }
-    let mut names: Vec<String> = std::fs::read_dir(&root)
-        .unwrap()
-        .map(|item| item.unwrap().file_name().into_string().unwrap())
-        .filter(|name| name.contains("jsonl"))
-        .collect();
-    names.sort();
-    assert_eq!(names.len(), 3);
-    let suffix = |name: &str, ending: &str| name.to_ascii_lowercase().ends_with(ending);
-    assert!(suffix(&names[0], ".jsonl.gz") && suffix(&names[1], ".jsonl.gz"));
+    let files = segment_files(&root);
+    assert_eq!(files.len(), 3);
     assert!(
-        suffix(&names[2], ".jsonl"),
-        "the hour being written stays plain"
+        files
+            .iter()
+            .all(|file| file.to_string_lossy().ends_with(".jsonl.zst")),
+        "{files:?}"
+    );
+    assert_eq!(frames(&files[0]), (1, false), "a closed hour is finished");
+    assert_eq!(frames(&files[1]), (1, false));
+    assert_eq!(
+        frames(&files[2]),
+        (0, true),
+        "the hour being written is still open"
     );
 
-    // 跨压缩段往前翻 / Paging back across compressed segments
+    // 跨段往前翻 / Paging back across segments
     let page = store.read_page(&PageQuery {
         limit: 1,
         ..everything()
@@ -183,7 +204,7 @@ fn a_new_hour_opens_a_new_segment_and_the_old_one_is_compressed() {
     assert_eq!(ids(&page), [1]);
     assert_eq!(page.next_before, None);
 
-    // 重新打开：压缩段照样读，游标来自最新一段 / Reopened: compressed segments still read, the cursor comes from the newest
+    // 重新打开：每段照样读，游标来自最新一段 / Reopened: every segment still reads, the cursor comes from the newest
     drop(store);
     let store = QueryLogStore::open(root).unwrap();
     assert_eq!(ids(&store.read_page(&everything())), [3, 2, 1]);
@@ -196,38 +217,74 @@ fn a_new_hour_opens_a_new_segment_and_the_old_one_is_compressed() {
     );
 }
 
+/// 旧版写下的一行记录 / One record line as an older version wrote it
+fn older_line(id: u64, time: u64) -> String {
+    format!(
+        "{{\"id\":{id},\"instance\":7,\"seq\":{id},\"time_unix_ms\":{time},\"qname\":\"old.example\"}}\n"
+    )
+}
+
 #[test]
-fn reopening_after_a_crash_mid_compression_keeps_one_copy() {
+fn an_older_versions_plain_segment_is_compressed_and_a_crash_mid_way_keeps_one_copy() {
     let directory = tempdir().unwrap();
     let root = directory.path().join("querylog");
+    std::fs::create_dir_all(&root).unwrap();
+    // 旧版正在写的那段：纯文本，最后断电留下半行 / An older version's segment being written: plain text, ending in half a
+    // line from a power loss
+    let plain = root.join(format!("{NOON:013}-{:016}.jsonl", 1));
+    let zst = root.join(format!("{NOON:013}-{:016}.jsonl.zst", 1));
+    let text = format!(
+        "{}{}{{\"id\":3,\"inst",
+        older_line(1, NOON),
+        older_line(2, NOON + 1)
+    );
+    std::fs::write(&plain, &text).unwrap();
     let store = QueryLogStore::open(root.clone()).unwrap();
+    assert_eq!(ids(&store.read_page(&everything())), [2, 1]);
+    store.maintain(&settings(), NOON).unwrap();
+    assert!(zst.exists() && !plain.exists());
+    assert_eq!(frames(&zst), (1, false));
+    assert_eq!(ids(&store.read_page(&everything())), [2, 1]);
     store
-        .append(&[record(1, NOON, "x.example")], &settings(), NOON)
+        .append(&[record(3, NOON + 2, "new.example")], &settings(), NOON + 2)
         .unwrap();
-    store.maintain(&settings(), NOON + HOUR_MS).unwrap();
+    assert_eq!(
+        ids(&store.read_page(&everything())),
+        [3, 2, 1],
+        "new records go to a segment of their own"
+    );
     drop(store);
+
     // 压好了、纯文本还没删，旁边还有一个半截的临时文件 / Compressed, the plain copy not yet removed, and a half-written temporary file
-    let gz = std::fs::read_dir(&root)
-        .unwrap()
-        .map(|item| item.unwrap().path())
-        .find(|path| {
-            path.to_string_lossy()
-                .to_ascii_lowercase()
-                .ends_with(".jsonl.gz")
-        })
+    std::fs::write(&plain, &text).unwrap();
+    std::fs::write(root.join("x.jsonl.zst.tmp"), b"half").unwrap();
+    let store = QueryLogStore::open(root.clone()).unwrap();
+    assert!(!plain.exists() && zst.exists());
+    assert!(!root.join("x.jsonl.zst.tmp").exists());
+    assert_eq!(ids(&store.read_page(&everything())), [3, 2, 1]);
+}
+
+#[test]
+fn an_older_versions_gzip_segment_still_reads() {
+    use std::io::Write as _;
+    let directory = tempdir().unwrap();
+    let root = directory.path().join("querylog");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder
+        .write_all(format!("{}{}", older_line(1, NOON), older_line(2, NOON + 1)).as_bytes())
         .unwrap();
-    let plain = gz.with_extension("");
     std::fs::write(
-        &plain,
-        b"{\"id\":1,\"instance\":7,\"seq\":1,\"time_unix_ms\":0}\n",
+        root.join(format!("{NOON:013}-{:016}.jsonl.gz", 1)),
+        encoder.finish().unwrap(),
     )
     .unwrap();
-    std::fs::write(root.join("x.jsonl.gz.tmp"), b"half").unwrap();
-
-    let store = QueryLogStore::open(root.clone()).unwrap();
-    assert!(!plain.exists() && gz.exists());
-    assert!(!root.join("x.jsonl.gz.tmp").exists());
-    assert_eq!(ids(&store.read_page(&everything())), [1]);
+    let store = QueryLogStore::open(root).unwrap();
+    assert_eq!(ids(&store.read_page(&everything())), [2, 1]);
+    store
+        .append(&[record(3, NOON + 2, "new.example")], &settings(), NOON + 2)
+        .unwrap();
+    assert_eq!(ids(&store.read_page(&everything())), [3, 2, 1]);
 }
 
 #[test]
@@ -820,7 +877,10 @@ fn segment_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut files: Vec<_> = std::fs::read_dir(root)
         .unwrap()
         .map(|item| item.unwrap().path())
-        .filter(|path| path.to_string_lossy().contains(".jsonl"))
+        .filter(|path| {
+            let name = path.to_string_lossy();
+            name.contains(".jsonl") && !name.ends_with(".tmp")
+        })
         .collect();
     files.sort();
     files
@@ -872,17 +932,17 @@ fn reopening_follows_ids_even_when_the_clock_stepped_back() {
 fn a_failed_compression_still_lets_retention_and_the_cap_run() {
     let directory = tempdir().unwrap();
     let root = directory.path().join("querylog");
-    let store = QueryLogStore::open(root.clone()).unwrap();
+    std::fs::create_dir_all(&root).unwrap();
     let hour = QueryLogSettings {
         retention_hours: 1,
         ..settings()
     };
-    store
-        .append(&[record(1, NOON, "a.example")], &hour, NOON)
-        .unwrap();
-    // 让第一段压缩不了：它的临时文件名被一个目录占着 / The first segment cannot compress: a directory holds its temporary name
-    let first = segment_files(&root).remove(0);
-    std::fs::create_dir(format!("{}.gz.tmp", first.display())).unwrap();
+    // 旧版留下的纯文本段压不了：它的临时文件名被一个目录占着 / An older version's plain segment cannot compress: a
+    // directory holds its temporary name
+    let first = root.join(format!("{NOON:013}-{:016}.jsonl", 1));
+    std::fs::write(&first, older_line(1, NOON)).unwrap();
+    std::fs::create_dir(format!("{}.zst.tmp", first.display())).unwrap();
+    let store = QueryLogStore::open(root.clone()).unwrap();
     for (seq, at) in [(2, NOON + HOUR_MS + 1), (3, NOON + 2 * HOUR_MS + 1)] {
         store
             .append(&[record(seq, at, "x.example")], &hour, at)
@@ -1017,7 +1077,7 @@ fn an_empty_segment_left_by_a_power_loss_is_removed() {
         .unwrap();
     drop(store);
     // 新开的一段还没写就断电了，编号和下一段会一样 / A new segment lost power before its first write; its id equals the next one's
-    let empty = root.join(format!("{:013}-{:016}.jsonl", NOON + HOUR_MS, 2));
+    let empty = root.join(format!("{:013}-{:016}.jsonl.zst", NOON + HOUR_MS, 2));
     std::fs::write(&empty, b"").unwrap();
     let store = QueryLogStore::open(root.clone()).unwrap();
     assert!(!empty.exists());
@@ -1031,27 +1091,27 @@ fn an_empty_segment_left_by_a_power_loss_is_removed() {
     assert_eq!(ids(&store.read_page(&everything())), [2, 1]);
 }
 
-#[test]
-fn the_segment_being_written_reads_back_across_its_blocks() {
-    let directory = tempdir().unwrap();
-    let store = QueryLogStore::open(directory.path().join("querylog")).unwrap();
-    let batch: Vec<Record> = (1..=1_500)
-        .map(|seq| {
-            let mut entry = entry(seq, NOON + seq, "x.example", "192.168.1.9");
-            // 第 700 条比两块还长 / Record 700 is longer than two blocks
-            let length = if seq == 700 { 700_000 } else { 700 };
-            entry.insert(
-                "error".to_owned(),
-                Value::String(format!("{seq}:{}", "e".repeat(length))),
-            );
-            Record::Entry {
-                instance: INSTANCE,
-                entry: KernelEntry::from_map(entry),
-                static_kind: None,
-            }
-        })
-        .collect();
-    store.append(&batch, &settings(), NOON).unwrap();
+/// 一大批记录，第 700 条特别长 / A big batch of records, record 700 especially long
+fn long_batch(seqs: std::ops::RangeInclusive<u64>) -> Vec<Record> {
+    seqs.map(|seq| {
+        let mut entry = entry(seq, NOON + seq, "x.example", "192.168.1.9");
+        entry.insert("error".to_owned(), Value::String(long_error(seq)));
+        Record::Entry {
+            instance: INSTANCE,
+            entry: KernelEntry::from_map(entry),
+            static_kind: None,
+        }
+    })
+    .collect()
+}
+
+fn long_error(id: u64) -> String {
+    let length = if id == 700 { 700_000 } else { 700 };
+    format!("{id}:{}", "e".repeat(length))
+}
+
+/// 一页一页从新往旧翻完，每条都完整 / Pages through from newest to oldest, every record whole
+fn read_all(store: &QueryLogStore) -> Vec<u64> {
     let mut seen = Vec::new();
     let mut before = None;
     loop {
@@ -1062,20 +1122,100 @@ fn the_segment_being_written_reads_back_across_its_blocks() {
         });
         for item in &page.items {
             let id = item["id"].as_u64().unwrap();
-            let length = if id == 700 { 700_000 } else { 700 };
-            assert_eq!(
-                item["error"],
-                format!("{id}:{}", "e".repeat(length)),
-                "record {id} is whole"
-            );
+            assert_eq!(item["error"], long_error(id), "record {id} is whole");
             seen.push(id);
         }
         match page.next_before {
             Some(next) => before = Some(next),
-            None => break,
+            None => return seen,
         }
     }
-    assert_eq!(seen, (1..=1_500).rev().collect::<Vec<u64>>());
+}
+
+#[test]
+fn the_segment_being_written_reads_back_across_its_frames() {
+    let directory = tempdir().unwrap();
+    let root = directory.path().join("querylog");
+    let store = QueryLogStore::open(root.clone()).unwrap();
+    // 一批 500 条约 0.6 MiB（第 700 条一条就 0.7 MiB）：12 批写下好几帧 / A batch of 500 is about 0.6 MiB (record 700
+    // alone is 0.7 MiB): 12 batches make several frames
+    for batch in 0..12u64 {
+        store
+            .append(
+                &long_batch(batch * 500 + 1..=batch * 500 + 500),
+                &settings(),
+                NOON,
+            )
+            .unwrap();
+    }
+    let file = segment_files(&root).remove(0);
+    let (finished, open) = frames(&file);
+    assert!(finished >= 2 && open, "{finished} frames, open {open}");
+    assert_eq!(read_all(&store), (1..=6_000).rev().collect::<Vec<u64>>());
+    store.maintain(&settings(), NOON + HOUR_MS).unwrap();
+    assert!(
+        store.usage().bytes < 7 * MIB / 10,
+        "compressed: {}",
+        store.usage().bytes
+    );
+    assert_eq!(read_all(&store), (1..=6_000).rev().collect::<Vec<u64>>());
+}
+
+#[test]
+fn an_older_versions_plain_segment_reads_back_across_its_blocks() {
+    let directory = tempdir().unwrap();
+    let root = directory.path().join("querylog");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut text = Vec::new();
+    for (id, record) in (1..=1_500).zip(long_batch(1..=1_500)) {
+        let Record::Entry { entry, .. } = record else {
+            unreachable!()
+        };
+        let mut line = entry.fields().unwrap();
+        line.insert("id".to_owned(), id.into());
+        serde_json::to_writer(&mut text, &line).unwrap();
+        text.push(b'\n');
+    }
+    std::fs::write(root.join(format!("{NOON:013}-{:016}.jsonl", 1)), text).unwrap();
+    let store = QueryLogStore::open(root).unwrap();
+    assert_eq!(read_all(&store), (1..=1_500).rev().collect::<Vec<u64>>());
+}
+
+#[test]
+fn a_failed_write_cuts_the_segment_back_and_the_next_batch_opens_a_new_one() {
+    let directory = tempdir().unwrap();
+    let root = directory.path().join("querylog");
+    let store = QueryLogStore::open(root.clone()).unwrap();
+    store
+        .append(&[record(1, NOON, "a.example")], &settings(), NOON)
+        .unwrap();
+    let written = store.usage().bytes;
+    // 写了一半的那块留在文件尾上；再把文件换成只读的，下一批写不进去 / Half a block is left at the file's end, and the
+    // file is swapped for a read-only one, so the next batch cannot be written
+    let first = segment_files(&root).remove(0);
+    {
+        use std::io::Write as _;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&first)
+            .unwrap();
+        file.write_all(&[0x25, 0x01, 0x00]).unwrap();
+    }
+    store.lock().writer.as_mut().unwrap().encoder.get_mut().file =
+        std::fs::File::open(&first).unwrap();
+    assert!(
+        store
+            .append(&[record(2, NOON + 1, "b.example")], &settings(), NOON + 1)
+            .is_err()
+    );
+    assert_eq!(std::fs::metadata(&first).unwrap().len(), written);
+    store
+        .append(&[record(3, NOON + 2, "c.example")], &settings(), NOON + 2)
+        .unwrap();
+    assert_eq!(segment_files(&root).len(), 2);
+    let page = store.read_page(&everything());
+    assert_eq!(ids(&page), [2, 1], "the failed batch took no id");
+    assert_eq!(page.items[0]["qname"], "c.example");
 }
 
 #[test]
@@ -1351,11 +1491,7 @@ fn a_kernel_record_is_written_from_its_text() {
     for static_kind in [None, Some(StaticKind::Blocked)] {
         let record = Record::Entry {
             instance: INSTANCE,
-            entry: KernelEntry::new(
-                serde_json::value::RawValue::from_string(text.to_owned()).unwrap(),
-                Some(5),
-                Some(1_792_065_600_005),
-            ),
+            entry: KernelEntry::new(text.into(), Some(5), Some(1_792_065_600_005)),
             static_kind,
         };
         let (line, order) = written(&record, 42);
@@ -1367,11 +1503,7 @@ fn a_kernel_record_is_written_from_its_text() {
     let mut out = Vec::new();
     Record::Entry {
         instance: INSTANCE,
-        entry: KernelEntry::new(
-            serde_json::value::RawValue::from_string(text.to_owned()).unwrap(),
-            Some(5),
-            None,
-        ),
+        entry: KernelEntry::new(text.into(), Some(5), None),
         static_kind: None,
     }
     .write_line(1, &mut out)

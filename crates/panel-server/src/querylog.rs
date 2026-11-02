@@ -1,23 +1,26 @@
 //! 查询日志：面板每秒从内核取走的查询，按小时分段写在数据库旁边的 `querylog/` 目录里。
 //!
-//! 每段一个文件，名字是开段时刻和第一条的编号（`{start_ms}-{first_id}.jsonl`）。正在写的那段是纯文本，
-//! 过了这个小时（或写满）就关上、压成 `.jsonl.gz`。一行一条记录，带面板自己的编号 `id`：内核的 `seq`
-//! 在内核重启后从头数，翻页和新条目的判断都用 `id`。空间上限按磁盘上的字节数算，超了先删最早的一段；
-//! 保留时间按段删，读的时候再按条过滤，所以「保留 6 小时」也是准的。
+//! 每段一个文件，名字是开段时刻和第一条的编号（`{start_ms}-{first_id}.jsonl.zst`）。写的时候就压：每取一页压好
+//! 写进去，原文每满 2 MiB 收尾一帧、另起一帧，过了这个小时（或原文写满）就关上。一行一条记录，带面板自己的编号
+//! `id`：内核的 `seq` 在内核重启后从头数，翻页和新条目的判断都用 `id`。空间上限按磁盘上的字节数算，超了先删
+//! 最早的一段；保留时间按段删，读的时候再按条过滤，所以「保留 6 小时」也是准的。旧版写下的纯文本段（`.jsonl`）
+//! 和 gzip 段（`.jsonl.gz`）照样读，纯文本的由收拾时压成 `.jsonl.zst`。
 //!
 //! The query log: the queries the panel takes from the kernel every second, written next to the
 //! database in `querylog/`, one segment per hour.
 //!
-//! Each segment is a file named by the moment it opened and its first id (`{start_ms}-{first_id}.jsonl`).
-//! The segment being written is plain text; once its hour has passed (or it is full) it is closed and
-//! compressed to `.jsonl.gz`. One record per line, carrying the panel's own `id`: the kernel's `seq`
-//! starts over when the kernel restarts, so paging and new-entry checks use `id`. The space cap counts
-//! bytes on disk and drops the oldest segment first; retention drops whole segments and is applied per
-//! record on read, so 「keep 6 hours」 holds exactly.
+//! Each segment is a file named by the moment it opened and its first id (`{start_ms}-{first_id}.jsonl.zst`).
+//! It is compressed as it is written: each page taken goes in compressed, a frame is finished and a new one begun
+//! every 2 MiB of text, and once its hour has passed (or its text is full) the segment is closed. One record per
+//! line, carrying the panel's own `id`: the kernel's `seq` starts over when the kernel restarts, so paging and
+//! new-entry checks use `id`. The space cap counts bytes on disk and drops the oldest segment first; retention drops
+//! whole segments and is applied per record on read, so 「keep 6 hours」 holds exactly. Plain segments (`.jsonl`)
+//! and gzip ones (`.jsonl.gz`) written by older versions still read, and housekeeping compresses the plain ones to
+//! `.jsonl.zst`.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
+use std::io::{self, BufReader, ErrorKind, Read, Write};
 use std::net::IpAddr;
 use std::ops::ControlFlow;
 use std::os::unix::fs::{FileExt, OpenOptionsExt, PermissionsExt};
@@ -26,11 +29,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use flate2::Compression;
 use flate2::read::GzDecoder;
-use flate2::write::GzEncoder;
 use serde::{Deserialize, Serialize};
-use serde_json::value::RawValue;
 use serde_json::{Map, Value};
 
 /// 默认保留 90 天 / Kept for 90 days by default
@@ -52,6 +52,14 @@ const MIB: u64 = 1024 * 1024;
 const HOUR_MS: u64 = 3_600_000;
 /// 正在写的一段最大多少：上限的八分之一，在 1 MiB 到 32 MiB 之间
 /// How large the segment being written may grow: an eighth of the cap, between 1 MiB and 32 MiB
+/// 压缩的级别：实测 2 级最划算。比 1 级压得小，和它一样快；再往上压不小多少，慢得多
+/// The compression level: 2 measured best. It compresses smaller than 1 at the same speed; higher levels gain
+/// little size for much more time
+const ZSTD_LEVEL: i32 = 2;
+/// 原文每满这么多就收尾一帧、另起一帧：读最新的记录只解最后一帧，收尾的帧多了压缩率只差一两个百分点
+/// A frame is finished and a new one begun every this much text: reading the newest records decodes only the last
+/// frame, and the extra frames cost a percent or two of size
+const FRAME_TEXT: u64 = 2 * MIB;
 const SEGMENT_MIN_BYTES: u64 = MIB;
 const SEGMENT_MAX_BYTES: u64 = 32 * MIB;
 /// 一次查询最多看这么多条、这么久：条件很少命中时分几次往前找，不让一次请求扫遍几十天
@@ -99,16 +107,18 @@ impl StaticKind {
 pub struct KernelEntry {
     seq: Option<u64>,
     time_unix_ms: Option<u64>,
-    /// 一个 JSON 对象的原文，没有面板自己写的 `id`、`instance`、`static_kind`
-    /// The text of one JSON object, without the `id`, `instance` and `static_kind` the panel writes itself
-    raw: Box<RawValue>,
+    /// 一个 JSON 对象的原文，校验过，没有面板自己写的 `id`、`instance`、`static_kind`
+    /// The text of one JSON object, already checked, without the `id`, `instance` and `static_kind` the panel writes
+    /// itself
+    raw: Box<str>,
 }
 
 impl KernelEntry {
-    /// 原文 `raw` 是一个对象，不带面板自己的字段名；编号和时刻是从里面读出来的
-    /// `raw` is an object without the panel's own field names; the number and time were read from it
+    /// 原文 `raw` 是校验过的一个 JSON 对象，不带面板自己的字段名；编号和时刻是从里面读出来的
+    /// `raw` is a JSON object already checked, without the panel's own field names; the number and time were read
+    /// from it
     #[must_use]
-    pub fn new(raw: Box<RawValue>, seq: Option<u64>, time_unix_ms: Option<u64>) -> Self {
+    pub fn new(raw: Box<str>, seq: Option<u64>, time_unix_ms: Option<u64>) -> Self {
         Self {
             seq,
             time_unix_ms,
@@ -123,9 +133,8 @@ impl KernelEntry {
         entry.retain(|key, _| !matches!(key.as_str(), "id" | "instance" | "static_kind"));
         let field = |key: &str| entry.get(key).and_then(Value::as_u64);
         let (seq, time_unix_ms) = (field("seq"), field("time_unix_ms"));
-        let raw = serde_json::value::to_raw_value(&entry)
-            .expect("a map of JSON values always serializes");
-        Self::new(raw, seq, time_unix_ms)
+        let raw = serde_json::to_string(&entry).expect("a map of JSON values always serializes");
+        Self::new(raw.into_boxed_str(), seq, time_unix_ms)
     }
 
     #[must_use]
@@ -143,7 +152,7 @@ impl KernelEntry {
     /// # Errors
     /// 原文不是一个 JSON 对象时 / When the text is not a JSON object
     pub fn fields(&self) -> serde_json::Result<Map<String, Value>> {
-        serde_json::from_str(self.raw.get())
+        serde_json::from_str(&self.raw)
     }
 
     /// 写成存储的一行：`id`、`instance`，内核的字段，有就再加 `static_kind`
@@ -155,7 +164,7 @@ impl KernelEntry {
         static_kind: Option<StaticKind>,
         out: &mut Vec<u8>,
     ) {
-        let object = self.raw.get();
+        let object = &*self.raw;
         let inner = object[1..object.len() - 1].trim();
         out.extend_from_slice(format!("{{\"id\":{id},\"instance\":{instance}").as_bytes());
         if !inner.is_empty() {
@@ -309,6 +318,8 @@ impl QueryLogSettings {
         })
     }
 
+    /// 一段最多写多少原文：按原文算，不按压缩后算，一段解压出来有个上界
+    /// The most text a segment takes: counted before compression, so a segment decompresses to a bounded size
     fn segment_limit(&self) -> u64 {
         (self.max_bytes / 8).clamp(SEGMENT_MIN_BYTES, SEGMENT_MAX_BYTES)
     }
@@ -724,13 +735,36 @@ pub struct Usage {
     pub oldest_start_ms: Option<u64>,
 }
 
+/// 段文件的格式 / A segment file's format
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Format {
+    /// 旧版写的纯文本，收拾时压成 zstd / Plain text written by an older version, compressed to zstd by housekeeping
+    Plain,
+    /// 旧版压的 / Compressed by an older version
+    Gzip,
+    Zstd,
+}
+
+impl Format {
+    const ALL: [Self; 3] = [Self::Plain, Self::Gzip, Self::Zstd];
+
+    fn suffix(self) -> &'static str {
+        match self {
+            Self::Plain => ".jsonl",
+            Self::Gzip => ".jsonl.gz",
+            Self::Zstd => ".jsonl.zst",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Segment {
     start_ms: u64,
     first_id: u64,
-    compressed: bool,
+    format: Format,
     /// 正在往里写 / Being written to
     open: bool,
+    /// 磁盘上的字节数；正在写的那段是写完最后一页时的 / Bytes on disk; for the segment being written, as of its last page
     bytes: u64,
 }
 
@@ -739,12 +773,93 @@ impl Segment {
         format!("{:013}-{:016}", self.start_ms, self.first_id)
     }
 
-    fn plain_name(&self) -> String {
-        format!("{}.jsonl", self.stem())
+    fn name(&self, format: Format) -> String {
+        format!("{}{}", self.stem(), format.suffix())
     }
 
-    fn gz_name(&self) -> String {
-        format!("{}.jsonl.gz", self.stem())
+    fn file_name(&self) -> String {
+        self.name(self.format)
+    }
+}
+
+/// 数着写了多少字节的文件 / A file counting the bytes written to it
+struct Counted {
+    file: File,
+    written: u64,
+}
+
+impl Write for Counted {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let written = self.file.write(bytes)?;
+        self.written += written as u64;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+}
+
+/// 正在写的那段：压缩器接在文件上，每页压好、刷到文件里，原文满 [`FRAME_TEXT`] 收尾一帧
+/// The segment being written: the compressor sits on the file, each page is compressed and flushed to the file,
+/// and a frame is finished every [`FRAME_TEXT`] of text
+struct Writer {
+    encoder: zstd::stream::write::Encoder<'static, Counted>,
+    /// 这一段写了多少原文：段按原文的多少换 / Text written into the segment: segments roll over by text
+    text: u64,
+    /// 这一帧写了多少原文 / Text written into the current frame
+    frame_text: u64,
+}
+
+impl Writer {
+    fn create(path: &Path) -> io::Result<Self> {
+        let file = OpenOptions::new()
+            .append(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)?;
+        Ok(Self {
+            encoder: zstd::stream::write::Encoder::new(Counted { file, written: 0 }, ZSTD_LEVEL)?,
+            text: 0,
+            frame_text: 0,
+        })
+    }
+
+    /// 磁盘上已经写下的字节 / The bytes on disk so far
+    fn written(&self) -> u64 {
+        self.encoder.get_ref().written
+    }
+
+    /// 写一页并刷到文件里：返回时这一页在文件里已经解得出来 / Writes a page and flushes it to the file: on return the
+    /// page decodes from the file
+    fn write(&mut self, text: &[u8]) -> io::Result<()> {
+        self.encoder.write_all(text)?;
+        self.encoder.flush()?;
+        self.text += text.len() as u64;
+        self.frame_text += text.len() as u64;
+        Ok(())
+    }
+
+    /// 这一帧够大了就收尾、另起一帧（只在一页写完的地方，记录不会跨帧）
+    /// Finishes the frame and begins another once it is large enough (only where a page ends, so no record spans two
+    /// frames)
+    fn roll(self) -> io::Result<Self> {
+        if self.frame_text < FRAME_TEXT {
+            return Ok(self);
+        }
+        let counted = self.encoder.finish()?;
+        Ok(Self {
+            encoder: zstd::stream::write::Encoder::new(counted, ZSTD_LEVEL)?,
+            text: self.text,
+            frame_text: 0,
+        })
+    }
+
+    /// 收尾最后一帧并落盘，交回磁盘上的字节数 / Finishes the last frame and syncs, handing back the bytes on disk
+    fn close(self) -> io::Result<u64> {
+        let counted = self.encoder.finish()?;
+        counted.file.sync_all()?;
+        Ok(counted.written)
     }
 }
 
@@ -756,7 +871,7 @@ struct State {
 
 struct Inner {
     segments: Vec<Segment>,
-    writer: Option<File>,
+    writer: Option<Writer>,
     next_id: u64,
     cursor: Option<Cursor>,
     /// 最新一条记录的时间（页头的「最近一条」） / The newest record's time (the page header's 最近一条)
@@ -818,28 +933,24 @@ impl QueryLogStore {
         }
         // 按编号排，不按时刻：系统时钟往回调过时，开段时刻会倒着走，编号不会
         // Ordered by id, not by time: when the clock steps back, opening times run backwards but ids never do
-        segments.sort_by_key(|segment| (segment.first_id, segment.start_ms, !segment.compressed));
+        segments.sort_by_key(|segment| {
+            (
+                segment.first_id,
+                segment.start_ms,
+                segment.format == Format::Plain,
+            )
+        });
         // 压缩到一半断电：压好的在、纯文本也还在，留压好的 / Power lost mid-compression: keep the compressed copy
         segments.dedup_by(|later, earlier| {
             let same = later.start_ms == earlier.start_ms && later.first_id == earlier.first_id;
-            if same && !later.compressed {
-                let _ = fs::remove_file(root.join(later.plain_name()));
+            if same && later.format == Format::Plain {
+                let _ = fs::remove_file(root.join(later.file_name()));
             }
             same
         });
-        let mut writer = None;
-        if let Some(last) = segments.last_mut().filter(|last| !last.compressed) {
-            let path = root.join(last.plain_name());
-            match reopen_for_append(&path) {
-                Ok((bytes, file)) => {
-                    last.bytes = bytes;
-                    last.open = true;
-                    writer = Some(file);
-                }
-                // 接不上就当它已经关上，下一批开新的一段 / If it cannot be continued it counts as closed and the next batch opens a new segment
-                Err(error) => tracing::warn!(error = ?error, "查询日志最后一段接不上，另开一段"),
-            }
-        }
+        // 上次没关的那段不再接着写：压缩器的状态没了，接不上。它照样能读，能解多少读多少，下一页开新的一段
+        // The segment left open last time is not continued: the compressor's state is gone. It still reads, as far as
+        // it decodes, and the next page opens a new segment
         let state = read_state(&root);
         let mut last = None;
         for segment in segments.iter().rev() {
@@ -877,7 +988,7 @@ impl QueryLogStore {
             root: Arc::new(root),
             inner: Arc::new(Mutex::new(Inner {
                 segments,
-                writer,
+                writer: None,
                 next_id: (last_id + 1).max(state.next_id).max(past_segments),
                 cursor,
                 newest_ms: last
@@ -901,9 +1012,11 @@ impl QueryLogStore {
         self.lock().cursor
     }
 
-    /// 接着写一批：换了小时或者写满了就先开新的一段。写到一半出错时把这一段截回写之前，不留半行。
-    /// Appends a batch: a new segment opens first when the hour changed or the current one is full. A failed
-    /// write cuts the segment back to where it was, leaving no half line.
+    /// 接着写一批：换了小时或者原文写满了就先开新的一段。这一批压好、刷进文件才返回。写到一半出错时把这一段截回
+    /// 写之前、关上，下一批开新的一段。
+    /// Appends a batch: a new segment opens first when the hour changed or the current one's text is full. It returns
+    /// once the batch is compressed and flushed to the file. A failed write cuts the segment back to where it was and
+    /// closes it, and the next batch opens a new segment.
     ///
     /// # Errors
     ///
@@ -926,25 +1039,26 @@ impl QueryLogStore {
             .fold(now_ms, u64::max);
         let mut inner = self.lock();
         let limit = settings.segment_limit();
-        if inner.segments.last().is_some_and(|last| {
-            last.open && (hour(last.start_ms) != hour(stamp) || last.bytes >= limit)
-        }) {
+        let full = inner
+            .writer
+            .as_ref()
+            .is_some_and(|writer| writer.text >= limit);
+        if inner
+            .segments
+            .last()
+            .is_some_and(|last| last.open && (hour(last.start_ms) != hour(stamp) || full))
+        {
             self.close_open(&mut inner);
         }
         if !inner.segments.last().is_some_and(|last| last.open) {
             let segment = Segment {
                 start_ms: stamp,
                 first_id: inner.next_id,
-                compressed: false,
+                format: Format::Zstd,
                 open: true,
                 bytes: 0,
             };
-            let file = OpenOptions::new()
-                .append(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(self.root.join(segment.plain_name()))?;
-            inner.writer = Some(file);
+            inner.writer = Some(Writer::create(&self.root.join(segment.file_name()))?);
             inner.segments.push(segment);
         }
         let mut buffer = Vec::with_capacity(records.len() * 1_024);
@@ -956,18 +1070,15 @@ impl QueryLogStore {
             id += 1;
             cursor = record.cursor().or(cursor);
         }
-        let before = inner.segments.last().map_or(0, |last| last.bytes);
-        let written = inner
-            .writer
-            .as_mut()
-            .ok_or_else(|| io::Error::other("查询日志没有打开"))
-            .and_then(|writer| writer.write_all(&buffer));
-        if let Err(error) = written {
-            if let Some(writer) = inner.writer.as_mut() {
-                let _ = writer.set_len(before);
-            }
+        let Some(writer) = inner.writer.as_mut() else {
+            return Err(io::Error::other("查询日志没有打开"));
+        };
+        let before = writer.written();
+        if let Err(error) = writer.write(&buffer) {
+            self.abandon_open(&mut inner, before);
             return Err(error);
         }
+        let written = writer.written();
         inner.next_id = id;
         inner.cursor = cursor;
         inner.cursor_dirty = false;
@@ -975,9 +1086,47 @@ impl QueryLogStore {
             inner.newest_ms = Some(inner.newest_ms.map_or(newest, |before| before.max(newest)));
         }
         if let Some(last) = inner.segments.last_mut() {
-            last.bytes += buffer.len() as u64;
+            last.bytes = written;
+        }
+        // 这一批已经在文件里了：收尾那一帧出错，只把这一段关上，不算这一批没写成
+        // The batch is in the file already: should finishing the frame fail, the segment is just closed, and the
+        // batch still counts as written
+        if let Some(writer) = inner.writer.take() {
+            match writer.roll() {
+                Ok(writer) => inner.writer = Some(writer),
+                Err(error) => {
+                    tracing::warn!(%error, "查询日志收尾一帧失败，另开一段");
+                    self.abandon_open(&mut inner, written);
+                }
+            }
         }
         Ok(())
+    }
+
+    /// 正在写的那段出了错：截回 `keep` 字节（最后一页写完的地方，前面的都解得出来）、关上，下一批开新的一段
+    /// The segment being written failed: it is cut back to `keep` bytes (where its last whole page ended, all of which
+    /// decodes), closed, and the next batch opens a new segment
+    fn abandon_open(&self, inner: &mut Inner, keep: u64) {
+        inner.writer = None;
+        let Some(last) = inner.segments.last_mut().filter(|last| last.open) else {
+            return;
+        };
+        last.open = false;
+        last.bytes = keep;
+        let path = self.root.join(last.file_name());
+        if keep == 0 {
+            let _ = fs::remove_file(path);
+            inner.segments.pop();
+            return;
+        }
+        if let Err(error) = OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .and_then(|file| file.set_len(keep))
+        {
+            tracing::warn!(%error, "查询日志截回失败");
+        }
+        self.save_state_or_warn(inner);
     }
 
     /// 没写进文件也要记住的游标（这一批全被忽略了，或者内核换了进程）；下次收拾时落盘
@@ -991,15 +1140,23 @@ impl QueryLogStore {
         }
     }
 
-    /// 关上正在写的那段；一条也没写的空段直接删掉。关上时把编号落盘：这一段之后读不了，编号也不会往回走
-    /// Closes the segment being written; an empty one is simply removed. Closing puts the ids on disk, so even if the
-    /// segment later becomes unreadable, ids never go backwards
+    /// 关上正在写的那段：收尾最后一帧、落盘；一条也没写的空段直接删掉。关上时把编号落盘：这一段之后读不了，
+    /// 编号也不会往回走。收尾出错时这一段照样能读到最后写完的那一页
+    /// Closes the segment being written: its last frame is finished and synced; an empty one is simply removed.
+    /// Closing puts the ids on disk, so even if the segment later becomes unreadable, ids never go backwards. Should
+    /// finishing fail, the segment still reads up to its last whole page
     fn close_open(&self, inner: &mut Inner) {
-        inner.writer = None;
+        let writer = inner.writer.take();
         if let Some(last) = inner.segments.last_mut().filter(|last| last.open) {
             last.open = false;
+            if let Some(writer) = writer {
+                match writer.close() {
+                    Ok(written) => last.bytes = written,
+                    Err(error) => tracing::warn!(%error, "查询日志的一段没能收尾"),
+                }
+            }
             if last.bytes == 0 {
-                let _ = fs::remove_file(self.root.join(last.plain_name()));
+                let _ = fs::remove_file(self.root.join(last.file_name()));
                 inner.segments.pop();
             } else {
                 self.save_state_or_warn(inner);
@@ -1007,17 +1164,17 @@ impl QueryLogStore {
         }
     }
 
-    /// 收拾：过了小时的那段关上，关上的压缩，再按保留时间和空间上限删最早的，最后把挪过的游标落盘。
-    /// 哪一步出错都不挡后面几步：磁盘满了压缩不了，照样要删旧的腾地方。
-    /// Housekeeping: a segment whose hour has passed is closed, closed ones are compressed, the oldest are dropped by
-    /// retention and by the space cap, and a moved cursor reaches disk. No failing step stops the later ones: with a
-    /// full disk nothing compresses, and old segments must still go to make room.
+    /// 收拾：过了小时的那段关上，旧版留下的纯文本段压成 zstd，再按保留时间和空间上限删最早的，最后把挪过的游标
+    /// 落盘。哪一步出错都不挡后面几步：磁盘满了压缩不了，照样要删旧的腾地方。
+    /// Housekeeping: a segment whose hour has passed is closed, plain segments left by an older version are compressed
+    /// to zstd, the oldest are dropped by retention and by the space cap, and a moved cursor reaches disk. No failing
+    /// step stops the later ones: with a full disk nothing compresses, and old segments must still go to make room.
     ///
     /// # Errors
     ///
     /// 返回遇到的第一个错误。 / Returns the first error met.
     pub fn maintain(&self, settings: &QueryLogSettings, now_ms: u64) -> io::Result<()> {
-        let closed: Vec<Segment> = {
+        let (closed, plain): (Vec<Segment>, Vec<Segment>) = {
             let mut inner = self.lock();
             if inner
                 .segments
@@ -1029,12 +1186,19 @@ impl QueryLogStore {
             inner
                 .segments
                 .iter()
-                .filter(|segment| !segment.open && !segment.compressed)
-                .copied()
-                .collect()
+                .filter(|segment| !segment.open)
+                .partition(|segment| segment.format != Format::Plain)
         };
-        let mut first_error = None;
+        // 文件没了（被别人删了）的段不再算空间 / A segment whose file is gone (removed by someone else) no longer counts
         for segment in closed {
+            if fs::symlink_metadata(self.root.join(segment.file_name()))
+                .is_err_and(|error| error.kind() == ErrorKind::NotFound)
+            {
+                self.forget(segment);
+            }
+        }
+        let mut first_error = None;
+        for segment in plain {
             match self.compress(segment) {
                 Ok(()) => {}
                 // 文件没了：这一段不再算 / The file is gone: the segment no longer counts
@@ -1068,27 +1232,47 @@ impl QueryLogStore {
     }
 
     fn compress(&self, segment: Segment) -> io::Result<()> {
-        let plain = self.root.join(segment.plain_name());
-        let gz = self.root.join(segment.gz_name());
-        let temporary = self.root.join(format!("{}.tmp", segment.gz_name()));
+        let plain = self.root.join(segment.file_name());
+        let zst = self.root.join(segment.name(Format::Zstd));
+        let temporary = self
+            .root
+            .join(format!("{}.tmp", segment.name(Format::Zstd)));
         let result = (|| {
-            let mut input = File::open(&plain)?;
-            let output = OpenOptions::new()
+            let text = fs::read(&plain)?;
+            let file = OpenOptions::new()
                 .write(true)
                 .create(true)
                 .truncate(true)
                 .mode(0o600)
                 .open(&temporary)?;
-            let mut encoder = GzEncoder::new(output, Compression::default());
-            io::copy(&mut input, &mut encoder)?;
-            encoder.finish()?.sync_all()?;
-            fs::rename(&temporary, &gz)
+            let mut counted = Counted { file, written: 0 };
+            // 和写的时候一样按帧分：每满 FRAME_TEXT 在行尾收尾一帧 / Framed as when written: a frame ends at the line end
+            // after every FRAME_TEXT
+            let mut rest = &text[..];
+            while !rest.is_empty() {
+                let reach = usize::try_from(FRAME_TEXT)
+                    .unwrap_or(usize::MAX)
+                    .min(rest.len());
+                let end = rest[reach..]
+                    .iter()
+                    .position(|byte| *byte == b'\n')
+                    .map_or(rest.len(), |newline| reach + newline + 1);
+                let mut encoder = zstd::stream::write::Encoder::new(&mut counted, ZSTD_LEVEL)?;
+                encoder.write_all(&rest[..end])?;
+                encoder.finish()?;
+                rest = &rest[end..];
+            }
+            counted.file.sync_all()?;
+            fs::rename(&temporary, &zst)?;
+            Ok(counted.written)
         })();
-        if let Err(error) = result {
-            let _ = fs::remove_file(&temporary);
-            return Err(error);
-        }
-        let bytes = fs::metadata(&gz)?.len();
+        let bytes = match result {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                let _ = fs::remove_file(&temporary);
+                return Err(error);
+            }
+        };
         let kept = {
             let mut inner = self.lock();
             inner
@@ -1098,14 +1282,14 @@ impl QueryLogStore {
                     entry.start_ms == segment.start_ms && entry.first_id == segment.first_id
                 })
                 .map(|entry| {
-                    entry.compressed = true;
+                    entry.format = Format::Zstd;
                     entry.bytes = bytes;
                 })
                 .is_some()
         };
         if !kept {
             // 压缩时这段已经被删了 / The segment was dropped while it was compressed
-            let _ = fs::remove_file(&gz);
+            let _ = fs::remove_file(&zst);
         }
         match fs::remove_file(&plain) {
             Err(error) if error.kind() != ErrorKind::NotFound => Err(error),
@@ -1139,15 +1323,15 @@ impl QueryLogStore {
                 total -= segment.bytes;
                 dropped.push(segment);
             }
-            // 只剩一段还超：没压缩就先关上（下回压缩），压缩了还超就整段不要
-            // Only one segment left and still over: an uncompressed one is closed (compressed next time); a
-            // compressed one still over is dropped whole
+            // 只剩一段还超：正在写的先关上，旧版的纯文本段等下回压缩，压缩了还超就整段不要
+            // Only one segment left and still over: one being written is closed first and an older version's plain
+            // one waits to be compressed next time; a compressed one still over is dropped whole
             if total > settings.max_bytes
                 && let Some(last) = inner.segments.last().copied()
             {
                 if last.open {
                     self.close_open(&mut inner);
-                } else if last.compressed {
+                } else if last.format != Format::Plain {
                     dropped.push(inner.segments.remove(0));
                 }
             }
@@ -1382,11 +1566,9 @@ fn segment_end(segment: &Segment) -> u64 {
 }
 
 fn parse_segment_name(name: &str) -> Option<Segment> {
-    let (stem, compressed) = if let Some(stem) = name.strip_suffix(".jsonl.gz") {
-        (stem, true)
-    } else {
-        (name.strip_suffix(".jsonl")?, false)
-    };
+    let (stem, format) = Format::ALL
+        .into_iter()
+        .find_map(|format| Some((name.strip_suffix(format.suffix())?, format)))?;
     let (start, first) = stem.split_once('-')?;
     if start.len() != 13 || first.len() != 16 {
         return None;
@@ -1394,46 +1576,113 @@ fn parse_segment_name(name: &str) -> Option<Segment> {
     Some(Segment {
         start_ms: start.parse().ok()?,
         first_id: first.parse().ok()?,
-        compressed,
+        format,
         open: false,
         bytes: 0,
     })
 }
 
-/// 正在写的那段从尾部一块一块往前读：翻最新一页时不用把整段读进来
-/// The segment being written is read backwards from its end in blocks: the newest page never loads the whole segment
+/// 旧版纯文本段从尾部一块一块往前读 / An older version's plain segment is read backwards from its end in blocks
 const TAIL_BLOCK: u64 = 256 * 1024;
 
-/// 从新到旧把一段里的每一行交给 `visit`，它说停就停。纯文本的那段只读到拿快照时写完的地方（不读半批）；
-/// 在读之前被压缩的换压缩后的那份，被删掉的就当没有。
-/// Hands every line of a segment, newest first, to `visit`, stopping when it says so. A plain segment is read only up
-/// to where the snapshot saw it end (never half a batch); one compressed just before the read is read from its
-/// compressed copy, and one dropped counts as empty.
+/// 从新到旧把一段里的每一行交给 `visit`，它说停就停。正在写的那段只读到拿快照时写完的地方（不读半批）；
+/// 旧版的纯文本段在读之前被压缩了就读压缩后的那份，被删掉的就当没有。
+/// Hands every line of a segment, newest first, to `visit`, stopping when it says so. The segment being written is
+/// read only up to where the snapshot saw it end (never half a batch); an older version's plain segment compressed
+/// just before the read is read from its compressed copy, and one dropped counts as empty.
 fn for_each_line_rev(
     root: &Path,
     segment: &Segment,
     mut visit: impl FnMut(&[u8]) -> ControlFlow<()>,
 ) -> io::Result<()> {
-    if !segment.compressed {
-        match File::open(root.join(segment.plain_name())) {
-            Ok(file) => return lines_from_end(&file, segment.bytes, &mut visit),
-            Err(error) if error.kind() == ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
+    match segment.format {
+        Format::Plain => match File::open(root.join(segment.file_name())) {
+            Ok(file) => lines_from_end(&file, segment.bytes, &mut visit),
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                zstd_lines_rev(&root.join(segment.name(Format::Zstd)), u64::MAX, &mut visit)
+            }
+            Err(error) => Err(error),
+        },
+        Format::Gzip => {
+            let file = match File::open(root.join(segment.file_name())) {
+                Ok(file) => file,
+                Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+                Err(error) => return Err(error),
+            };
+            let mut bytes = Vec::new();
+            GzDecoder::new(BufReader::new(file)).read_to_end(&mut bytes)?;
+            visit_lines_rev(&bytes, &mut visit);
+            Ok(())
         }
+        Format::Zstd => zstd_lines_rev(&root.join(segment.file_name()), segment.bytes, &mut visit),
     }
-    let file = match File::open(root.join(segment.gz_name())) {
+}
+
+/// 一块文字里的行，从后往前，交回 `visit` 有没有叫停。截断留下的半行解析不了，读的时候自然跳过
+/// The lines of some text, last first, saying whether `visit` stopped. A half line left by a cut does not parse and
+/// is skipped by the reader anyway
+fn visit_lines_rev(text: &[u8], visit: &mut impl FnMut(&[u8]) -> ControlFlow<()>) -> bool {
+    text.split(|byte| *byte == b'\n')
+        .rev()
+        .any(|line| !line.is_empty() && visit(line).is_break())
+}
+
+/// zstd 段里文件前 `length` 个字节的行，从后往前：一帧一帧从最后一帧解起，翻最新一页只解最后一帧。最后那帧可能
+/// 没收尾（正在写，或者写到一半断了电），能解多少读多少
+/// The lines in the first `length` bytes of a zstd segment, last first: frames are decoded from the last one back, so
+/// the newest page decodes only the last frame. The last frame may be unfinished (being written, or cut off by a power
+/// loss), and reads as far as it decodes
+fn zstd_lines_rev(
+    path: &Path,
+    length: u64,
+    visit: &mut impl FnMut(&[u8]) -> ControlFlow<()>,
+) -> io::Result<()> {
+    let file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
     };
-    let mut bytes = Vec::new();
-    GzDecoder::new(BufReader::new(file)).read_to_end(&mut bytes)?;
-    for line in bytes.split(|byte| *byte == b'\n').rev() {
-        if !line.is_empty() && visit(line).is_break() {
+    let size = usize::try_from(length.min(file.metadata()?.len())).map_err(io::Error::other)?;
+    let mut bytes = vec![0; size];
+    file.read_exact_at(&mut bytes, 0)?;
+    let mut frames = Vec::new();
+    let mut start = 0;
+    while start < bytes.len() {
+        // 收尾了的帧量得出长度；量不出的是最后那帧，剩下的都归它 / A finished frame's length can be measured; the one that
+        // cannot is the last, and takes the rest
+        match zstd::zstd_safe::find_frame_compressed_size(&bytes[start..]) {
+            Ok(length) if length > 0 => {
+                frames.push(start..start + length);
+                start += length;
+            }
+            _ => {
+                frames.push(start..bytes.len());
+                break;
+            }
+        }
+    }
+    for frame in frames.into_iter().rev() {
+        if visit_lines_rev(&decode_frame(&bytes[frame]), visit) {
             break;
         }
     }
     Ok(())
+}
+
+/// 解一帧，解到解不下去为止：没收尾或坏了的帧交回前面解出来的 / Decodes a frame as far as it goes: an unfinished or
+/// damaged frame gives back what decoded before that point
+fn decode_frame(frame: &[u8]) -> Vec<u8> {
+    let mut text = Vec::new();
+    let Ok(mut decoder) = zstd::stream::read::Decoder::with_buffer(frame) else {
+        return text;
+    };
+    let mut chunk = vec![0; 128 * 1024];
+    loop {
+        match decoder.read(&mut chunk) {
+            Ok(0) | Err(_) => return text,
+            Ok(read) => text.extend_from_slice(&chunk[..read]),
+        }
+    }
 }
 
 /// 文件前 `length` 个字节里的行，从后往前 / The lines in the first `length` bytes of a file, last first
@@ -1494,34 +1743,6 @@ fn last_record(root: &Path, segment: &Segment) -> io::Result<Option<Map<String, 
     Ok(last)
 }
 
-/// 接着往最后那段里写：断电时可能留下半行，先截到最后一个换行
-/// Continues the last segment: a power loss can leave half a line, so it is first cut back to the last newline
-fn reopen_for_append(path: &Path) -> anyhow::Result<(u64, File)> {
-    let file = OpenOptions::new()
-        .read(true)
-        .append(true)
-        .open(path)
-        .with_context(|| format!("打开查询日志失败：{}", path.display()))?;
-    let mut reader = BufReader::new(&file);
-    let mut complete = 0u64;
-    let mut line = Vec::new();
-    loop {
-        line.clear();
-        let read = reader
-            .read_until(b'\n', &mut line)
-            .context("读取查询日志失败")?;
-        if read == 0 || line.last() != Some(&b'\n') {
-            break;
-        }
-        complete += read as u64;
-    }
-    drop(reader);
-    if file.metadata().context("读取查询日志失败")?.len() != complete {
-        file.set_len(complete).context("截断查询日志失败")?;
-    }
-    Ok((complete, file))
-}
-
 fn read_state(root: &Path) -> State {
     fs::read(root.join(STATE_FILE))
         .ok()
@@ -1553,7 +1774,7 @@ fn write_state(root: &Path, state: &State) -> io::Result<()> {
 fn remove_all(root: &Path, segments: &[Segment]) -> io::Result<()> {
     let mut first_error = None;
     for segment in segments {
-        for name in [segment.plain_name(), segment.gz_name()] {
+        for name in Format::ALL.map(|format| segment.name(format)) {
             match fs::remove_file(root.join(name)) {
                 Err(error) if error.kind() != ErrorKind::NotFound => {
                     first_error.get_or_insert(error);

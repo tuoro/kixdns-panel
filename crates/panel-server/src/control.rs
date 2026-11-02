@@ -132,7 +132,7 @@ fn querylog_request(after: u64, limit: usize, waiting: Option<QueryLogWait>) -> 
 
 /// 内核查询日志的一页（`querylog_v1`）：`after` 之后的条目，按 `seq` 从小到大
 /// One page of the kernel's query log (`querylog_v1`): the entries after `after`, in ascending `seq`
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct QueryLogPage {
     pub protocol_version: u8,
     /// 这个内核进程开始记的时刻（毫秒），换了进程就变 / When this kernel process started recording (ms); a new process changes it
@@ -142,12 +142,121 @@ pub struct QueryLogPage {
     /// 游标之后已经被挤掉或清掉、取不到了的条数 / Records after the cursor that were pushed out or cleared and are gone
     pub missed: u64,
     /// 同时在处理的请求太多、没记下的累计数 / The running count of requests not recorded because too many were in flight
-    #[serde(default)]
     pub untracked: u64,
     /// 还有，马上接着取 / More are waiting; fetch again right away
     pub more: bool,
+    pub entries: QueryLogEntries,
+}
+
+/// 一页里的记录。内核把 `entries` 写在最后，这时交出整页原文和记录开始的地方，由采集的人一条条读：读面板要看的
+/// 几项时就找到了这一条的结尾，每条只扫一遍。页的样子出乎意料时，整页照常解析，交出各条的原文
+/// The records of a page. The kernel writes `entries` last, and then the page's text goes out with where the
+/// records begin, for the collector to read one by one: reading the items the panel looks at finds where each
+/// record ends, so each is scanned once. A page shaped otherwise is parsed whole as usual and each record's text
+/// goes out
+#[derive(Debug, Clone)]
+pub enum QueryLogEntries {
+    /// 整页原文，记录从 `at` 开始（`[` 之后），还没校验 / The page's text, the records beginning at `at` (after the
+    /// `[`), not yet checked
+    Text { page: String, at: usize },
     /// 各条的原文，照写下来（见 `querylog::KernelEntry`）/ Each record's text, written as it is (see `querylog::KernelEntry`)
-    pub entries: Vec<Box<serde_json::value::RawValue>>,
+    Raw(Vec<Box<serde_json::value::RawValue>>),
+}
+
+impl QueryLogEntries {
+    /// 各条的原文：整页原文先整页解析 / Each record's text, the page's text parsed whole first
+    ///
+    /// # Errors
+    ///
+    /// 整页解析不了时 / When the page does not parse
+    pub fn into_raw(self) -> serde_json::Result<Vec<Box<serde_json::value::RawValue>>> {
+        match self {
+            Self::Text { page, .. } => {
+                Ok(serde_json::from_str::<WholeQueryLogPage>(&page)?.entries)
+            }
+            Self::Raw(entries) => Ok(entries),
+        }
+    }
+}
+
+/// 整页照常解析时的样子 / A page as parsed whole
+#[derive(Deserialize)]
+struct WholeQueryLogPage {
+    protocol_version: u8,
+    instance: u64,
+    newest_seq: u64,
+    missed: u64,
+    #[serde(default)]
+    untracked: u64,
+    more: bool,
+    entries: Vec<Box<serde_json::value::RawValue>>,
+}
+
+/// `entries` 之前的那几项 / The items before `entries`
+#[derive(Deserialize)]
+struct QueryLogPageHead {
+    protocol_version: u8,
+    instance: u64,
+    newest_seq: u64,
+    missed: u64,
+    #[serde(default)]
+    untracked: u64,
+    more: bool,
+}
+
+impl QueryLogPage {
+    /// 读一页。`entries` 在最后时只读前面那几项，记录留给采集的人一条条读；否则整页解析。解析不了时连同原文交回，
+    /// 好再看是不是协议版本不对
+    /// Reads a page. With `entries` last only the items before it are read and the records are left for the
+    /// collector to read one by one; otherwise the page is parsed whole. On failure the text comes back too, to check
+    /// whether the protocol version is wrong
+    fn parse(body: Vec<u8>) -> Result<Self, (serde_json::Error, Vec<u8>)> {
+        // 前面那几项都是数字和真假，键名不会出现在字符串里 / The items before are numbers and booleans, so the key
+        // cannot sit inside a string
+        const KEY: &str = ",\"entries\":[";
+        let page = match String::from_utf8(body) {
+            Ok(page) => page,
+            Err(error) => return Self::parse_whole(error.into_bytes()),
+        };
+        let head = page
+            .get(..page.len().min(4_096))
+            .and_then(|head| head.find(KEY))
+            .and_then(|key| {
+                let head = serde_json::from_str::<QueryLogPageHead>(&format!("{}}}", &page[..key]));
+                Some((key, head.ok()?))
+            });
+        let Some((key, head)) = head else {
+            return Self::parse_whole(page.into_bytes());
+        };
+        Ok(Self {
+            protocol_version: head.protocol_version,
+            instance: head.instance,
+            newest_seq: head.newest_seq,
+            missed: head.missed,
+            untracked: head.untracked,
+            more: head.more,
+            entries: QueryLogEntries::Text {
+                at: key + KEY.len(),
+                page,
+            },
+        })
+    }
+
+    fn parse_whole(body: Vec<u8>) -> Result<Self, (serde_json::Error, Vec<u8>)> {
+        let page: WholeQueryLogPage = match serde_json::from_slice(&body) {
+            Ok(page) => page,
+            Err(error) => return Err((error, body)),
+        };
+        Ok(Self {
+            protocol_version: page.protocol_version,
+            instance: page.instance,
+            newest_seq: page.newest_seq,
+            missed: page.missed,
+            untracked: page.untracked,
+            more: page.more,
+            entries: QueryLogEntries::Raw(page.entries),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -396,14 +505,15 @@ impl ControlClient {
         let (_, body) = self
             .request_within("GET", &path, Vec::new(), timeout)
             .await?;
-        let page: QueryLogPage = serde_json::from_slice(&body).map_err(|error| {
-            match serde_json::from_slice::<ProtocolEnvelope>(&body) {
-                Ok(envelope) if envelope.protocol_version != CONTROL_PROTOCOL_VERSION => {
-                    unsupported_protocol(&path, envelope.protocol_version)
+        let page =
+            QueryLogPage::parse(body).map_err(|(error, body)| {
+                match serde_json::from_slice::<ProtocolEnvelope>(&body) {
+                    Ok(envelope) if envelope.protocol_version != CONTROL_PROTOCOL_VERSION => {
+                        unsupported_protocol(&path, envelope.protocol_version)
+                    }
+                    _ => ControlError::Protocol(format!("解析 {path} 响应失败：{error}")),
                 }
-                _ => ControlError::Protocol(format!("解析 {path} 响应失败：{error}")),
-            }
-        })?;
+            })?;
         if page.protocol_version != CONTROL_PROTOCOL_VERSION {
             return Err(unsupported_protocol(&path, page.protocol_version));
         }
@@ -1001,9 +1111,53 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        ControlError, DiagnosticTrace, Health, QueryLogWait, QueryStatsSnapshot, REQUEST_TIMEOUT,
-        decode_versioned_json, parse_metrics, querylog_request,
+        ControlError, DiagnosticTrace, Health, QueryLogEntries, QueryLogPage, QueryLogWait,
+        QueryStatsSnapshot, REQUEST_TIMEOUT, decode_versioned_json, parse_metrics,
+        querylog_request,
     };
+
+    /// 内核那样的一页（`entries` 在最后）只读前面那几项，记录原文留着；别的样子整页解析；读不了时原文交回
+    /// A page as the kernel writes it (`entries` last) is read only up to the records, whose text is kept; any other
+    /// shape is parsed whole; a page that cannot be read hands its text back
+    #[test]
+    fn a_query_log_page_leaves_its_records_to_be_read_once() {
+        let kernel = br#"{"protocol_version":1,"instance":7,"capacity":16384,"newest_seq":9,"missed":2,"untracked":3,"more":true,"entries":[{"seq":8},{"seq":9}]}"#;
+        let page = QueryLogPage::parse(kernel.to_vec()).unwrap();
+        assert_eq!(
+            (
+                page.instance,
+                page.newest_seq,
+                page.missed,
+                page.untracked,
+                page.more
+            ),
+            (7, 9, 2, 3, true)
+        );
+        let QueryLogEntries::Text { page: text, at } = &page.entries else {
+            panic!("the records are left as text");
+        };
+        assert_eq!(&text[*at..], r#"{"seq":8},{"seq":9}]}"#);
+        let raw: Vec<String> = page
+            .entries
+            .into_raw()
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.get().to_owned())
+            .collect();
+        assert_eq!(raw, [r#"{"seq":8}"#, r#"{"seq":9}"#]);
+
+        let reordered = br#"{"entries":[{"seq":1}],"protocol_version":1,"instance":7,"newest_seq":1,"missed":0,"more":false}"#;
+        let page = QueryLogPage::parse(reordered.to_vec()).unwrap();
+        assert!(matches!(&page.entries, QueryLogEntries::Raw(entries) if entries.len() == 1));
+        assert_eq!(page.untracked, 0, "an older kernel without the count");
+
+        let odd_head = br#"{"protocol_version":1,"instance":"7","newest_seq":1,"missed":0,"more":false,"entries":[]}"#;
+        assert!(QueryLogPage::parse(odd_head.to_vec()).is_err());
+
+        let newer = br#"{"protocol_version":2,"rows":[]}"#;
+        let (_, body) = QueryLogPage::parse(newer.to_vec()).unwrap_err();
+        assert_eq!(body, newer, "the text comes back for the version check");
+    }
 
     #[test]
     fn a_query_log_take_says_what_the_kernel_may_do() {
