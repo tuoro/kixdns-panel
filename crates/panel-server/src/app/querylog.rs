@@ -26,6 +26,7 @@ use crate::querylog::{
     Cursor, DEFAULT_PAGE_SIZE, Filter, KernelEntry, MAX_PAGE_SIZE, Page, PageQuery,
     QueryLogSettings, QueryLogStore, Record, RuleFilter, RuleIndex, StaticKind,
 };
+use crate::querylog_records;
 
 use super::AppState;
 
@@ -41,6 +42,9 @@ const QUERYLOG_STORED_CAPABILITY: &str = "querylog_stored_v1";
 /// The kernel can stop at a given number: neighbouring pages taken at once keep to their own ranges and never overlap,
 /// even with a stretch before them pushed out
 const QUERYLOG_UNTIL_CAPABILITY: &str = "querylog_until_v1";
+/// 内核能把编好的记录原样交出来：它不用再写 JSON，面板也不用再解析 / The kernel can hand over its encoded records as
+/// they are: it no longer writes JSON, and the panel no longer parses it
+const QUERYLOG_RECORDS_CAPABILITY: &str = "querylog_records_v1";
 const SETTINGS_KEY: &str = "querylog_settings_v1";
 /// 一次向不会等的内核要多少条：每条最多 64 步，250 条也在控制接口 8 MiB 的应答上限以内
 /// How many records to ask a kernel that cannot wait for at once: an entry has at most 64 steps, so 250 stay within
@@ -505,6 +509,9 @@ enum Handover {
     /// Also deleting only what the panel says is stored and stopping at a given number, so neighbouring pages can be
     /// taken at once (`querylog_stored_v1`, `querylog_until_v1`)
     Ranges,
+    /// 还能把编好的记录原样交出来（`querylog_records_v1`）/ Also handing over its encoded records as they are
+    /// (`querylog_records_v1`)
+    Records,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -564,7 +571,7 @@ impl Collector {
         // 已经有游标时几页同时取；面板第一次取、一页超过应答上限时照一页页的办法
         // With a cursor already, several pages are taken at once; the panel's very first take and a page over the reply
         // cap go the page-by-page way
-        if self.handover == Handover::Ranges
+        if self.handover >= Handover::Ranges
             && let Some(cursor) = store.cursor()
         {
             let (moved, too_large) = self.collect_parallel(state, store, cursor).await?;
@@ -592,6 +599,7 @@ impl Collector {
                 instance: walk.cursor.map(|cursor| cursor.instance),
                 stored: None,
                 until: None,
+                records: self.handover == Handover::Records,
                 wait: WAIT,
             });
             let mut page = match state.control.querylog(after, walk.page_size, waiting).await {
@@ -696,7 +704,16 @@ impl Collector {
                 in_flight.0.push_back((
                     next,
                     !full,
-                    fetch(state, cursor.instance, stored, next, !full),
+                    fetch(
+                        state,
+                        Take {
+                            instance: cursor.instance,
+                            stored,
+                            after: next,
+                            waits: !full,
+                            records: self.handover == Handover::Records,
+                        },
+                    ),
                 ));
                 asked += 1;
                 next += WAITING_PAGE as u64;
@@ -846,10 +863,12 @@ impl Collector {
                 Handover::None
             } else if !has(QUERYLOG_WAIT_CAPABILITY) {
                 Handover::Cursor
-            } else if has(QUERYLOG_STORED_CAPABILITY) && has(QUERYLOG_UNTIL_CAPABILITY) {
-                Handover::Ranges
-            } else {
+            } else if !(has(QUERYLOG_STORED_CAPABILITY) && has(QUERYLOG_UNTIL_CAPABILITY)) {
                 Handover::Waits
+            } else if has(QUERYLOG_RECORDS_CAPABILITY) {
+                Handover::Records
+            } else {
+                Handover::Ranges
             };
             state.querylog.support.store(
                 if self.handover > Handover::None {
@@ -1116,6 +1135,37 @@ impl Scanned {
         (page[at..].trim() == "}").then_some(entries)
     }
 
+    /// 内核编好的记录一条条写成 JSON，写的时候就读到了要看的几项；有一条读不通就算这一页读不懂
+    /// The kernel's encoded records written as JSON one by one, the items being read along the way; one that does not
+    /// read makes the page unreadable
+    fn read_records(
+        page: &[u8],
+        first: u64,
+        records: &[std::ops::Range<usize>],
+        settings: &QueryLogSettings,
+    ) -> serde_json::Result<Vec<Self>> {
+        let mut json = Vec::with_capacity(1024);
+        (first..)
+            .zip(records)
+            .map(|(seq, range)| {
+                json.clear();
+                let summary = querylog_records::write_record(seq, &page[range.clone()], &mut json)
+                    .ok_or_else(|| {
+                        serde::de::Error::custom(format!("第 {seq} 条编好的记录读不通"))
+                    })?;
+                let ignored = settings.ignores(summary.qname);
+                let candidate = Candidate::of(Some(summary.outcome), summary.rcode.as_deref());
+                let time_unix_ms = summary.time_unix_ms;
+                let text = std::str::from_utf8(&json).map_err(serde::de::Error::custom)?;
+                Ok(Self {
+                    entry: KernelEntry::new(text.into(), Some(seq), Some(time_unix_ms)),
+                    ignored,
+                    candidate,
+                })
+            })
+            .collect()
+    }
+
     /// 那几项；带了面板自己的字段名时为 None，整条解析 / The items; None with the panel's own field names, and the
     /// record is parsed whole
     fn summary(fields: &Glance<'_>, settings: &QueryLogSettings) -> Option<Summary> {
@@ -1247,24 +1297,37 @@ impl Drop for InFlight {
     }
 }
 
-/// 在后台要一页、回来就在后台线程读好。告诉内核游标是 `instance` 这个进程的、存好到 `stored`。`waits` 的那页让
-/// 内核攒不满一页先等着；别的页已知攒满了，只要到这一页的末尾
-/// Asks for a page in the background and reads it on a blocking thread once it arrives. The kernel is told the cursor
-/// belongs to process `instance` and everything up to `stored` is stored. The page that `waits` lets the kernel hold
-/// it while it has not filled; the others are known to be full and ask only up to their own end
-fn fetch(
-    state: &AppState,
+/// 要一页时说的那些：游标是哪个内核进程的、存好到哪、从哪往后取；`waits` 的那页让内核攒不满一页先等着，别的页已知
+/// 攒满了，只要到这一页的末尾；`records` 时要编好的记录
+/// What asking for a page says: the kernel process the cursor belongs to, how far is stored, where to take from.
+/// The page that `waits` lets the kernel hold it while it has not filled, and the others are known to be full and ask
+/// only up to their own end; with `records`, the encoded records are asked for
+#[derive(Clone, Copy)]
+struct Take {
     instance: u64,
     stored: u64,
     after: u64,
     waits: bool,
-) -> tokio::task::JoinHandle<Fetched> {
+    records: bool,
+}
+
+/// 在后台要一页、回来就在后台线程读好 / Asks for a page in the background and reads it on a blocking thread once it
+/// arrives
+fn fetch(state: &AppState, take: Take) -> tokio::task::JoinHandle<Fetched> {
     let control = state.control.clone();
     let settings = state.querylog.settings();
+    let Take {
+        instance,
+        stored,
+        after,
+        waits,
+        records,
+    } = take;
     let waiting = QueryLogWait {
         instance: Some(instance),
         stored: Some(stored),
         until: (!waits).then_some(after + WAITING_PAGE as u64),
+        records,
         wait: if waits { WAIT } else { Duration::ZERO },
     };
     tokio::spawn(async move {
@@ -1284,6 +1347,16 @@ fn read_entries(
     settings: &QueryLogSettings,
 ) -> serde_json::Result<Vec<Scanned>> {
     let entries = std::mem::replace(&mut page.entries, QueryLogEntries::Raw(Vec::new()));
+    // 编好的记录：写成 JSON 时顺带读出要看的几项，不用再解析 / Encoded records: writing the JSON reads the items along the
+    // way, with nothing to parse
+    if let QueryLogEntries::Records {
+        page,
+        first,
+        records,
+    } = &entries
+    {
+        return Scanned::read_records(page, *first, records, settings);
+    }
     // 整页原文一遍读完；读不下去就整页照常解析，再一条条读 / The page's text read in one pass; failing that, the page is
     // parsed whole and read record by record
     let entries = match entries {
@@ -1291,7 +1364,7 @@ fn read_entries(
             Some(entries) => return Ok(entries),
             None => QueryLogEntries::Text { page, at }.into_raw(),
         },
-        entries @ QueryLogEntries::Raw(_) => entries.into_raw(),
+        entries => entries.into_raw(),
     };
     entries?
         .into_iter()
@@ -1363,6 +1436,34 @@ mod tests {
         assert_eq!(one_pass[2].entry.fields().unwrap().get("id"), None);
         assert!(one_pass[1].ignored);
         assert!(Scanned::read_text("]}", 0, &settings).unwrap().is_empty());
+    }
+
+    /// 同一批记录，从内核编好的字节读和从 JSON 读，读出来的完全一样：编号、时刻、原文、这个域名记不记、可能不可能是规则
+    /// 直接给的回答（样本是内核生成的）
+    /// The same records read from the kernel's encoded bytes and from JSON give exactly the same: number, time, text,
+    /// whether the domain is recorded and whether a rule may have answered (the sample was generated by the kernel)
+    #[test]
+    fn encoded_records_read_as_their_text_does() {
+        const RECORDS: &[u8] = include_bytes!("../../tests/fixtures/querylog-records1.bin");
+        const TEXT: &str = include_str!("../../tests/fixtures/querylog-records1.json");
+        const KEY: &str = ",\"entries\":[";
+        let settings = ignoring("x.example");
+        let page = querylog_records::RecordsPage::read(RECORDS).unwrap();
+        let from_records =
+            Scanned::read_records(RECORDS, page.first, &page.records, &settings).unwrap();
+        let at = TEXT.find(KEY).unwrap() + KEY.len();
+        let from_text = Scanned::read_text(TEXT, at, &settings).expect("read in one pass");
+        same(&from_records, &from_text);
+        assert!(from_records.iter().any(|record| record.ignored));
+        for candidate in [Candidate::No, Candidate::Static, Candidate::Servfail] {
+            assert!(
+                from_records
+                    .iter()
+                    .any(|record| record.candidate == candidate)
+            );
+        }
+        let broken = page.records[0].start..page.records[0].end - 1;
+        assert!(Scanned::read_records(RECORDS, page.first, &[broken], &settings).is_err());
     }
 
     /// 页的样子出乎意料，或者有一条那几项的类型不对时一遍读不下去，交回去整页照常解析

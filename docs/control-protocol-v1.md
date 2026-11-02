@@ -23,6 +23,7 @@ Linux 默认地址为 `/run/kixdns/admin.sock`。协议使用 Unix Socket 上的
 - `querylog_wait_v1`：fork 内核 2026.11.02.9 起，取查询日志时可以带 `instance` 和 `wait_ms`（见下文）
 - `querylog_stored_v1`：fork 内核 2026.11.02.11 起，取查询日志时可以带 `stored`，内核只删面板说存好了的；几个等着的请求各自会被叫醒（见下文）
 - `querylog_until_v1`：fork 内核 2026.11.02.12 起，取查询日志时可以带 `until`，只交到这个序号为止（见下文）
+- `querylog_records_v1`：fork 内核 2026.11.03.4 起，取查询日志时可以带 `format=records1`，把编好的记录原样交出来（见下文）
 
 运行时能力负责当前进程的配置门控。尚未启动的目标版本使用内核包内经 SHA-256 校验的 `KIXDNS_CAPABILITIES.json` 预检，完整规则见[配置能力契约](config-capabilities.md)。
 
@@ -107,6 +108,7 @@ Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致
   - 不带：一条不删。
   - 面板拿一个远大于 `newest_seq` 的 `after` 探问是哪个进程时，不能带它；
 - `stored`（需要 `querylog_stored_v1`，和 `instance` 一起才起作用）：面板已经存好到哪一条。带了它，内核删的是 `stored` 和 `after` 里小的那个及以前的记录，于是面板可以同时取几页：后面几页的 `after` 走在前头，`stored` 停在写好的那一条。不带时照旧把 `after` 当作存好了；
+- `format`（需要 `querylog_records_v1`）：`json`（默认）或 `records1`，后者的应答见下面的「编好的记录」；
 - `wait_ms`（需要 `querylog_wait_v1`）：0–5000。`after` 之后攒不满 `limit` 条（带了 `until` 时，到它为止的还没齐）时，最多等这么久再回，攒满马上回；
 - 其他参数一律返回 400 `querylog_query_invalid`。
 
@@ -119,6 +121,8 @@ Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致
 - 写还是按 `seq` 一页接一页。整段都被挤掉了的几页，漏掉的条数并成一行，和后面的记录一起写；
 - 面板第一次取，或者有一页超过 8 MiB 的应答上限时，照一页页的办法。
 
+对声明了 `querylog_records_v1` 的内核，面板每次都带 `format=records1`，自己写成 JSON 存下。
+
 **应答**
 
 | 字段 | 含义 |
@@ -126,7 +130,7 @@ Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致
 | `instance` | 内核进程开始记的时刻（毫秒），换了进程就变 |
 | `newest_seq` | 最新一条的编号 |
 | `missed` | 游标之后已经被挤掉或清掉、取不到的条数 |
-| `untracked` | 同时在处理的请求超过上限（声明 `querylog_wait_v1` 的内核是 16384 个，之前是 4096 个）、没记下的累计数 |
+| `untracked` | 没记下的累计数：同时在处理的请求超过上限（声明 `querylog_wait_v1` 的内核是 16384 个，之前是 4096 个），或者一条记录长得放不进交接区 |
 | `more` | 这一页交到的地方之后还有，马上接着取 |
 | `entries` | 按 `seq` 从小到大的记录 |
 
@@ -159,6 +163,74 @@ Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致
 - `joined`：搭了别人的查询；
 - `upstream`：问了一个上游，`result` 是 `success`、`rejected`、`error`、`aborted`（别的上游先答了）或 `throttled`（回了限速，DoH 的 HTTP 429；`error` 里是原文）；
 - `upstream_skipped`：同一次转发里有别的上游可问，这个上游刚回过限速、还在暂停，这次没问它，带 `upstream`、`transport` 和 `reason`（目前只有 `throttled`）。它不是一次尝试，不进任何计数；不认识这一步的旧面板会跳过它。
+
+**编好的记录（`format=records1`）**
+
+内核在请求结束时就把一条记录编成一小段字节，放在交接区里。带 `format=records1` 时，这些字节原样交出来，内核不再写成 JSON。应答的类型是 `application/octet-stream`。面板写出的 JSON 和内核写的逐字节一样，由内核生成的样本 `crates/panel-server/tests/fixtures/querylog-records1.*` 保证。
+
+编法：
+- 数字是变长整数：每个字节七位，低位在前，高位为 1 表示后面还有。
+- 文字是长度（数字）加 UTF-8 原文。
+- 枚举是一个字节，编号见下表。
+- 可有可无的项：文字前面一个字节，0 没有、1 有；枚举 0 表示没有，否则是编号加一；响应码是数字，0 表示没有，否则是响应码加一。
+
+一页：
+
+| 顺序 | 内容 |
+| --- | --- |
+| 1 | `KXQL` 和一个字节的版本 `1` |
+| 2 | 数字：`protocol_version`、`instance`、`capacity`、`newest_seq`、`missed`、`untracked` |
+| 3 | 一个字节：`more`（0 或 1） |
+| 4 | 数字：第一条的 `seq`（往后一条加一）、条数 |
+| 5 | 每条：长度（数字）和编好的字节 |
+
+一条记录，顺序就是 JSON 字段的顺序（`seq` 不在记录里，由位置算出）：
+
+| 顺序 | 字段 | 编法 |
+| --- | --- | --- |
+| 1 | `time_unix_ms` | 数字 |
+| 2 | `client` | 地址：一个字节 `4` 加 4 字节，或 `6` 加 16 字节 |
+| 3 | `transport` | 可有可无的枚举 |
+| 4 | `qname` | 文字 |
+| 5 | `qtype` | 文字 |
+| 6 | `latency_us` | 数字 |
+| 7 | `status` | 枚举 |
+| 8 | `outcome` | 枚举 |
+| 9 | `rcode` | 可有可无的响应码 |
+| 10 | `answers` | 条数（数字），每条：一个字节 `4` 加 4 字节、`6` 加 16 字节，或 `0` 加文字 |
+| 11 | `error`、`pipeline`、`rule`、`upstream` | 各是可有可无的文字 |
+| 12 | `steps` | 步数（数字），每步见下 |
+| 13 | `steps_truncated` | 一个字节，非 0 表示截断了 |
+
+一步，先是 `at_us`（数字）和一个字节的种类，后面按种类：
+
+| 种类 | `kind` | 后面的内容 |
+| --- | --- | --- |
+| 0 | `pipeline` | `pipeline`（文字） |
+| 1 | `rule` | `pipeline`、`rule`（文字）；`phase`（枚举）；`matched`（一个字节：0 没有、1 否、2 是）；`decision`（可有可无的枚举）；`target`（可有可无的文字） |
+| 2 | `decision` | `pipeline`（文字）；`rule`（可有可无的文字）；`phase`、`decision`（枚举）；`target`（可有可无的文字） |
+| 3 | `cache` | `result`（可有可无的枚举，没有时是 `miss`）；`source`（可有可无的文字） |
+| 4 | `joined` | 没有 |
+| 5 | `upstream` | `upstream`（文字）；`transport`、`via`、`result`（枚举）；`latency_us`（数字）；`rcode`（可有可无的响应码）；`error`（可有可无的文字） |
+| 6 | `upstream_skipped` | `upstream`（文字）；`transport`、`reason`（枚举） |
+
+枚举的编号，从 0 数起：
+
+| 枚举 | 值 |
+| --- | --- |
+| 记录的 `transport` | `udp`、`tcp`、`doh` |
+| `status` | `completed`、`failed`、`cancelled` |
+| `outcome` | `forwarded`、`cached`、`stale`、`joined`、`static`、`failed`、`cancelled` |
+| `phase` | `request`、`response` |
+| `decision` | `static`、`forward`、`jump`、`continue` |
+| `cache` 步的 `result` | `fresh`、`stale`、`stale_timeout`、`stale_failure` |
+| `upstream` 步的 `transport`、`via` | `udp`、`tcp`、`tcp_udp`、`doh`、`dot`、`doq` |
+| `upstream` 步的 `result` | `success`、`rejected`、`error`、`aborted`、`throttled` |
+| `reason` | `throttled` |
+
+响应码写成 JSON 时：0–10 依次是 `NOERROR`、`FORMERR`、`SERVFAIL`、`NXDOMAIN`、`NOTIMP`、`REFUSED`、`YXDOMAIN`、`YXRRSET`、`NXRRSET`、`NOTAUTH`、`NOTZONE`，别的写成 `RCODE` 加数字。
+
+改了编法就要换版本：新的能力名和 `format`（`querylog_records_v2`、`records2`），开头的版本字节也跟着变。内核的测试把一页的字节写死了，改了编法那个测试会红。
 
 **什么时候记**
 
