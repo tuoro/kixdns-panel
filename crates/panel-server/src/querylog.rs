@@ -855,11 +855,10 @@ impl Writer {
         })
     }
 
-    /// 收尾最后一帧并落盘，交回磁盘上的字节数 / Finishes the last frame and syncs, handing back the bytes on disk
-    fn close(self) -> io::Result<u64> {
-        let counted = self.encoder.finish()?;
-        counted.file.sync_all()?;
-        Ok(counted.written)
+    /// 收尾最后一帧，交回磁盘上的字节数；落盘留给收拾 / Finishes the last frame, handing back the bytes on disk; syncing
+    /// is left to housekeeping
+    fn finish(self) -> io::Result<u64> {
+        Ok(self.encoder.finish()?.written)
     }
 }
 
@@ -881,6 +880,11 @@ struct Inner {
     cursor_dirty: bool,
     /// 上次写状态文件的时候 / When the state file was last written
     state_saved: Option<Instant>,
+    /// 关上了、还没落盘的段，和该写进状态文件的编号：采集写着写着换了段，不在写的路上等落盘，交给紧接着的收拾
+    /// Segments closed but not yet synced, and ids due in the state file: a segment rolled over while collecting does
+    /// not wait for disk on the writing path, and the housekeeping right after takes care of it
+    unsynced: Vec<String>,
+    state_due: bool,
 }
 
 /// 查询日志的文件：一个写的人（采集任务），随时可以读 / The query log's files: one writer (the collector), reads at any time
@@ -996,6 +1000,8 @@ impl QueryLogStore {
                     .and_then(|record| record.get("time_unix_ms").and_then(Value::as_u64)),
                 cursor_dirty: false,
                 state_saved: None,
+                unsynced: Vec::new(),
+                state_due: false,
             })),
         })
     }
@@ -1140,17 +1146,17 @@ impl QueryLogStore {
         }
     }
 
-    /// 关上正在写的那段：收尾最后一帧、落盘；一条也没写的空段直接删掉。关上时把编号落盘：这一段之后读不了，
-    /// 编号也不会往回走。收尾出错时这一段照样能读到最后写完的那一页
-    /// Closes the segment being written: its last frame is finished and synced; an empty one is simply removed.
-    /// Closing puts the ids on disk, so even if the segment later becomes unreadable, ids never go backwards. Should
-    /// finishing fail, the segment still reads up to its last whole page
+    /// 关上正在写的那段：收尾最后一帧；一条也没写的空段直接删掉。下一次收拾时这一段落盘、编号写进状态文件：这一段
+    /// 之后读不了，编号也不会往回走。收尾出错时这一段照样能读到最后写完的那一页
+    /// Closes the segment being written: its last frame is finished; an empty one is simply removed. The next
+    /// housekeeping syncs it and puts the ids in the state file, so even if the segment later becomes unreadable, ids
+    /// never go backwards. Should finishing fail, the segment still reads up to its last whole page
     fn close_open(&self, inner: &mut Inner) {
         let writer = inner.writer.take();
         if let Some(last) = inner.segments.last_mut().filter(|last| last.open) {
             last.open = false;
             if let Some(writer) = writer {
-                match writer.close() {
+                match writer.finish() {
                     Ok(written) => last.bytes = written,
                     Err(error) => tracing::warn!(%error, "查询日志的一段没能收尾"),
                 }
@@ -1159,16 +1165,19 @@ impl QueryLogStore {
                 let _ = fs::remove_file(self.root.join(last.file_name()));
                 inner.segments.pop();
             } else {
-                self.save_state_or_warn(inner);
+                let name = last.file_name();
+                inner.unsynced.push(name);
+                inner.state_due = true;
             }
         }
     }
 
-    /// 收拾：过了小时的那段关上，旧版留下的纯文本段压成 zstd，再按保留时间和空间上限删最早的，最后把挪过的游标
-    /// 落盘。哪一步出错都不挡后面几步：磁盘满了压缩不了，照样要删旧的腾地方。
+    /// 收拾：过了小时的那段关上，旧版留下的纯文本段压成 zstd，再按保留时间和空间上限删最早的，关上的段落盘，最后把
+    /// 编号和挪过的游标写进状态文件。哪一步出错都不挡后面几步：磁盘满了压缩不了，照样要删旧的腾地方。
     /// Housekeeping: a segment whose hour has passed is closed, plain segments left by an older version are compressed
-    /// to zstd, the oldest are dropped by retention and by the space cap, and a moved cursor reaches disk. No failing
-    /// step stops the later ones: with a full disk nothing compresses, and old segments must still go to make room.
+    /// to zstd, the oldest are dropped by retention and by the space cap, closed segments are synced, and the ids and a
+    /// moved cursor reach the state file. No failing step stops the later ones: with a full disk nothing compresses,
+    /// and old segments must still go to make room.
     ///
     /// # Errors
     ///
@@ -1211,12 +1220,23 @@ impl QueryLogStore {
         if let Err(error) = self.enforce(settings, now_ms) {
             first_error.get_or_insert(error);
         }
+        // 关上的段落盘；删掉了的不算错 / Closed segments are synced; one already dropped is no error
+        let unsynced = std::mem::take(&mut self.lock().unsynced);
+        for name in unsynced {
+            match File::open(self.root.join(name)).and_then(|file| file.sync_all()) {
+                Err(error) if error.kind() != ErrorKind::NotFound => {
+                    first_error.get_or_insert(error);
+                }
+                _ => {}
+            }
+        }
         {
             let mut inner = self.lock();
-            if inner.cursor_dirty
+            let cursor_due = inner.cursor_dirty
                 && inner
                     .state_saved
-                    .is_none_or(|saved| saved.elapsed() >= CURSOR_SAVE_INTERVAL)
+                    .is_none_or(|saved| saved.elapsed() >= CURSOR_SAVE_INTERVAL);
+            if (inner.state_due || cursor_due)
                 && let Err(error) = self.save_state(&mut inner)
             {
                 first_error.get_or_insert(error);
@@ -1372,6 +1392,7 @@ impl QueryLogStore {
             },
         )?;
         inner.cursor_dirty = false;
+        inner.state_due = false;
         inner.state_saved = Some(Instant::now());
         Ok(())
     }
