@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -100,6 +101,33 @@ pub struct QueryStatsSnapshot {
 pub struct StatsClearResult {
     pub protocol_version: u8,
     pub cleared: bool,
+}
+
+/// 会等着交的内核（`querylog_wait_v1`）多认的两项 / What a kernel that can wait (`querylog_wait_v1`) also takes
+#[derive(Debug, Clone, Copy)]
+pub struct QueryLogWait {
+    /// 游标是哪个内核进程的：是这个内核自己的，`after` 及以前的它就删掉（面板已经存好了）；是别的进程的，它不等、马上回
+    /// The kernel process the cursor belongs to: if it is this kernel's own, the kernel deletes everything up to
+    /// `after` (the panel has stored it); if another process's, the kernel answers at once without waiting
+    pub instance: Option<u64>,
+    /// 攒不满一页时最多等多久 / How long the kernel may wait at most while a page has not filled
+    pub wait: Duration,
+}
+
+/// 取一页查询日志的路径和时限：让内核等的那么久加在平常的时限上
+/// The path and time limit for taking a page of the query log: however long the kernel may wait is added to the usual
+/// limit
+fn querylog_request(after: u64, limit: usize, waiting: Option<QueryLogWait>) -> (String, Duration) {
+    let mut path = format!("/v1/querylog?after={after}&limit={limit}");
+    let mut timeout = REQUEST_TIMEOUT;
+    if let Some(waiting) = waiting {
+        if let Some(instance) = waiting.instance {
+            let _ = write!(path, "&instance={instance}");
+        }
+        let _ = write!(path, "&wait_ms={}", waiting.wait.as_millis());
+        timeout += waiting.wait;
+    }
+    (path, timeout)
 }
 
 /// 内核查询日志的一页（`querylog_v1`）：`after` 之后的条目，按 `seq` 从小到大
@@ -354,9 +382,20 @@ impl ControlClient {
     /// 一页可能有几 MB，只解析一遍：协议版本也从这一遍里读，解析不了时再看是不是版本不对
     /// A page may run to megabytes, so it is parsed once: the protocol version is read in the same
     /// pass, and only when that fails is the version checked on its own
-    pub async fn querylog(&self, after: u64, limit: usize) -> Result<QueryLogPage, ControlError> {
-        let path = format!("/v1/querylog?after={after}&limit={limit}");
-        let (_, body) = self.request("GET", &path, Vec::new()).await?;
+    ///
+    /// 给了 `waiting`，内核攒不满一页时最多等这么久再回，存好了的也删掉（见 [`QueryLogWait`]）
+    /// With `waiting`, a kernel short of a page waits at most that long before answering, and deletes what is stored
+    /// (see [`QueryLogWait`])
+    pub async fn querylog(
+        &self,
+        after: u64,
+        limit: usize,
+        waiting: Option<QueryLogWait>,
+    ) -> Result<QueryLogPage, ControlError> {
+        let (path, timeout) = querylog_request(after, limit, waiting);
+        let (_, body) = self
+            .request_within("GET", &path, Vec::new(), timeout)
+            .await?;
         let page: QueryLogPage = serde_json::from_slice(&body).map_err(|error| {
             match serde_json::from_slice::<ProtocolEnvelope>(&body) {
                 Ok(envelope) if envelope.protocol_version != CONTROL_PROTOCOL_VERSION => {
@@ -959,10 +998,35 @@ fn numeric_value(value: &MetricValue) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::{
-        ControlError, DiagnosticTrace, Health, QueryStatsSnapshot, decode_versioned_json,
-        parse_metrics,
+        ControlError, DiagnosticTrace, Health, QueryLogWait, QueryStatsSnapshot, REQUEST_TIMEOUT,
+        decode_versioned_json, parse_metrics, querylog_request,
     };
+
+    #[test]
+    fn a_query_log_take_says_what_the_kernel_may_do() {
+        assert_eq!(
+            querylog_request(7, 250, None),
+            ("/v1/querylog?after=7&limit=250".to_owned(), REQUEST_TIMEOUT)
+        );
+        let waiting = |instance| QueryLogWait {
+            instance,
+            wait: Duration::from_secs(1),
+        };
+        assert_eq!(
+            querylog_request(7, 2_000, Some(waiting(Some(100)))),
+            (
+                "/v1/querylog?after=7&limit=2000&instance=100&wait_ms=1000".to_owned(),
+                REQUEST_TIMEOUT + Duration::from_secs(1)
+            )
+        );
+        assert_eq!(
+            querylog_request(0, 2_000, Some(waiting(None))).0,
+            "/v1/querylog?after=0&limit=2000&wait_ms=1000"
+        );
+    }
 
     #[test]
     fn parses_and_groups_panel_metrics() {

@@ -10,7 +10,7 @@ Linux 默认地址为 `/run/kixdns/admin.sock`。协议使用 Unix Socket 上的
 
 ### `GET /v1/health`
 
-返回进程状态、上游提交、发布版本（`release_version`、`release_commit`，只有 fork 发布的内核才有，其余为 `null`）、补丁集（旧的补丁集内核才有，fork 内核报 `unknown`）、启动时间、当前配置代数和能力列表 `capabilities`。客户端只能在对应能力存在时使用端点或写入受控字段。fork 发布的内核声明下面九项，p28 没有最后一项：
+返回进程状态、上游提交、发布版本（`release_version`、`release_commit`，只有 fork 发布的内核才有，其余为 `null`）、补丁集（旧的补丁集内核才有，fork 内核报 `unknown`）、启动时间、当前配置代数和能力列表 `capabilities`。客户端只能在对应能力存在时使用端点或写入受控字段。fork 发布的内核声明下面十项，p28 没有最后两项：
 
 - 配置能力：`config_query_stats_v1`（查询统计配置字段，见下文）、`config_static_cname_response_v1`（`static_cname_response` 动作，即固定 CNAME 应答，面板的域名映射用它）
 - `stats_top_v1`：查询排行端点
@@ -20,6 +20,7 @@ Linux 默认地址为 `/run/kixdns/admin.sock`。协议使用 Unix Socket 上的
 - `metrics_upstream_precision_v1`：增强版 p21 起，`/v1/metrics` 提供 `aborted` 结果、上游耗时、响应码、实际传输、请求完成状态与过期缓存原因。面板只有看到它才计算上游健康并用剔除竞争落败的成功率公式，否则健康显示为未知
 - `metrics_upstream_response_latency_v1`：增强版 p25 起，`/v1/metrics` 另外提供只算拿到响应的上游耗时，面板用它计算平均耗时
 - `querylog_v1`：fork 内核 2026.10.14 起，查询日志端点 `GET /v1/querylog`
+- `querylog_wait_v1`：fork 内核 2026.11.02.9 起，取查询日志时可以带 `instance` 和 `wait_ms`（见下文）
 
 运行时能力负责当前进程的配置门控。尚未启动的目标版本使用内核包内经 SHA-256 校验的 `KIXDNS_CAPABILITIES.json` 预检，完整规则见[配置能力契约](config-capabilities.md)。
 
@@ -91,13 +92,21 @@ Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致
 
 ### `GET /v1/querylog`
 
-需要 `querylog_v1`。内核把查询记在内存里一个 4096 条的交接区，面板每秒按游标取走，写进自己的查询日志。
+需要 `querylog_v1`。内核把查询记在内存里的交接区，面板按游标取走，写进自己的查询日志。交接区声明 `querylog_wait_v1` 的内核是 16384 条，之前是 4096 条，满了丢最旧的。
 
 **参数**
 
 - `after`：面板已经取到的最后一条 `seq`，第一次取时为 0；
 - `limit`：1–2000，默认 2000；
+- `instance`（需要 `querylog_wait_v1`）：游标所属的内核进程，就是取到游标那一页应答里的 `instance`。
+  - 是这个内核进程的：面板已经把 `after` 及以前的记录存好了，内核把它们从交接区删掉。
+  - 是别的进程的：一条不删，也不等，马上回。
+  - 不带：一条不删。
+  - 面板拿一个远大于 `newest_seq` 的 `after` 探问是哪个进程时，不能带它；
+- `wait_ms`（需要 `querylog_wait_v1`）：0–5000。`after` 之后攒不满 `limit` 条时，最多等这么久再回，攒满马上回；
 - 其他参数一律返回 400 `querylog_query_invalid`。
+
+面板对声明了 `querylog_wait_v1` 的内核一直挂着一个请求：一页 500 条，带上 `instance` 和 `wait_ms=1000`，取到了马上接着取。对其他内核按速率来取，最长隔一秒，一页 250 条。
 
 **应答**
 
@@ -106,7 +115,7 @@ Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致
 | `instance` | 内核进程开始记的时刻（毫秒），换了进程就变 |
 | `newest_seq` | 最新一条的编号 |
 | `missed` | 游标之后已经被挤掉或清掉、取不到的条数 |
-| `untracked` | 同时在处理的请求超过 4096 个、没记下的累计数 |
+| `untracked` | 同时在处理的请求超过上限（声明 `querylog_wait_v1` 的内核是 16384 个，之前是 4096 个）、没记下的累计数 |
 | `more` | 还有没取完的，马上接着取 |
 | `entries` | 按 `seq` 从小到大的记录 |
 
@@ -143,6 +152,7 @@ Panel Server 保存配置后，只有该端点的 `sha256` 与磁盘配置一致
 **什么时候记**
 
 - 内核只在面板来取的那段时间里记：每次来取都会刷新时刻，超过 120 秒没人来取就停止记录并清空交接区，`seq` 照常往下数。面板停了一阵再回来时，按旧游标取会得到 `missed`，就是停之前没取走、后来被清掉的那些。
+- 声明 `querylog_wait_v1` 的内核一启动就开始记，开机时比面板先起来的那几秒也记下；之前的内核要等面板第一次来取才开始记。
 - 后台刷新和诊断查询不记。
 - 内核重启后 `instance` 变了、`seq` 从 1 重新数，面板要从 `after=0` 重新取。
 
