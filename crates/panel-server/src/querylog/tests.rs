@@ -886,6 +886,45 @@ fn segment_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     files
 }
 
+/// 采集写着写着换了段：写的路上不等落盘，也不写状态文件；紧接着的收拾把那段落盘、编号写进状态文件
+/// A segment rolled over while collecting: the writing path neither waits for disk nor writes the state file; the
+/// housekeeping right after syncs that segment and puts the ids in the state file
+#[test]
+fn rolling_over_while_collecting_leaves_the_disk_to_housekeeping() {
+    let directory = tempdir().unwrap();
+    let root = directory.path().join("querylog");
+    let store = QueryLogStore::open(root.clone()).unwrap();
+    store
+        .append(&[record(1, NOON, "a.example")], &settings(), NOON)
+        .unwrap();
+    store
+        .append(
+            &[record(2, NOON + HOUR_MS, "b.example")],
+            &settings(),
+            NOON + HOUR_MS,
+        )
+        .unwrap();
+    let first = segment_files(&root).remove(0);
+    let first_name = first.file_name().unwrap().to_string_lossy().into_owned();
+    {
+        let inner = store.lock();
+        assert_eq!(inner.unsynced, [first_name]);
+        assert!(inner.state_due);
+    }
+    assert!(
+        !root.join("state.json").exists(),
+        "the state file is not written on the writing path"
+    );
+    store.maintain(&settings(), NOON + HOUR_MS).unwrap();
+    {
+        let inner = store.lock();
+        assert!(inner.unsynced.is_empty() && !inner.state_due);
+    }
+    let state: Value =
+        serde_json::from_slice(&std::fs::read(root.join("state.json")).unwrap()).unwrap();
+    assert_eq!(state["next_id"], 3);
+}
+
 #[test]
 fn reopening_follows_ids_even_when_the_clock_stepped_back() {
     let directory = tempdir().unwrap();
