@@ -16,7 +16,24 @@ const CONTROL_PROTOCOL_VERSION: u8 = 1;
 pub struct ControlClient {
     #[cfg_attr(not(unix), allow(dead_code))]
     socket_path: Arc<PathBuf>,
+    /// 取查询日志用过的连接，留着接着用：积压时每秒几百页，每页都新建连接，两边都白花系统调用
+    /// The connections query log takes have used, kept for the next ones: with hundreds of pages a second while
+    /// records pile up, a new connection per page costs both sides system calls for nothing
+    #[cfg(unix)]
+    idle: Arc<std::sync::Mutex<Vec<Connection>>>,
 }
+
+/// 一条控制连接 / A control connection
+#[cfg(unix)]
+type Connection = hyper::client::conn::http1::SendRequest<http_body_util::Full<bytes::Bytes>>;
+
+/// 最多留几条用过的连接：同时取的页数之外留些余地 / The most connections kept: some room beyond the pages taken at once
+#[cfg(unix)]
+const IDLE_CONNECTIONS: usize = 8;
+
+/// 连接的时限 / The time limit for connecting
+#[cfg(unix)]
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Health {
@@ -527,6 +544,8 @@ impl ControlClient {
     pub fn new(socket_path: PathBuf) -> Self {
         Self {
             socket_path: Arc::new(socket_path),
+            #[cfg(unix)]
+            idle: Arc::default(),
         }
     }
 
@@ -572,9 +591,7 @@ impl ControlClient {
         waiting: Option<QueryLogWait>,
     ) -> Result<QueryLogPage, ControlError> {
         let (path, timeout) = querylog_request(after, limit, waiting);
-        let (_, body) = self
-            .request_within("GET", &path, Vec::new(), timeout)
-            .await?;
+        let (_, body) = self.request_reusing(&path, timeout).await?;
         let page =
             QueryLogPage::parse(body).map_err(|(error, body)| {
                 match serde_json::from_slice::<ProtocolEnvelope>(&body) {
@@ -720,21 +737,90 @@ impl ControlClient {
         body: Vec<u8>,
         timeout: Duration,
     ) -> Result<(u16, Vec<u8>), ControlError> {
-        use bytes::Bytes;
-        use http_body_util::{BodyExt, Full, Limited};
-        use hyper::Request;
+        let mut connection = self.connect().await?;
+        let response = send(&mut connection, method, path, body, timeout)
+            .await
+            .map_err(SendFailure::into_error)?;
+        read_reply(response).await
+    }
+
+    /// 取查询日志：先用留着的连接，没有才新建。留着的连接可能已经断了（内核重启、空闲太久）：断了就换下一条。这是 GET，
+    /// 再问一次不会多删什么；超时这样的真问题不重试。读完了应答的连接才放回去
+    /// Taking the query log: a kept connection first, a new one only without any. A kept one may have gone (the kernel
+    /// restarted, idle too long), in which case the next is tried. This is a GET, and asking again deletes nothing more;
+    /// real trouble such as a timeout is not retried. Only a connection whose reply was read whole goes back
+    #[cfg(unix)]
+    async fn request_reusing(
+        &self,
+        path: &str,
+        timeout: Duration,
+    ) -> Result<(u16, Vec<u8>), ControlError> {
+        while let Some(mut connection) = self.take_idle() {
+            let alive = tokio::time::timeout(CONNECT_TIMEOUT, connection.ready())
+                .await
+                .is_ok_and(|ready| ready.is_ok());
+            if !alive {
+                continue;
+            }
+            match send(&mut connection, "GET", path, Vec::new(), timeout).await {
+                Ok(response) => return self.read_and_keep(connection, response).await,
+                Err(SendFailure::Closed(_)) => {}
+                Err(failure @ SendFailure::TimedOut) => return Err(failure.into_error()),
+            }
+        }
+        let mut connection = self.connect().await?;
+        let response = send(&mut connection, "GET", path, Vec::new(), timeout)
+            .await
+            .map_err(SendFailure::into_error)?;
+        self.read_and_keep(connection, response).await
+    }
+
+    #[cfg(unix)]
+    fn take_idle(&self) -> Option<Connection> {
+        self.idle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop()
+    }
+
+    /// 读完应答；整个读完了（内核回了错误也算）连接就留着 / Reads the reply; the connection is kept once it was read
+    /// whole, a kernel's error reply included
+    #[cfg(unix)]
+    async fn read_and_keep(
+        &self,
+        connection: Connection,
+        response: hyper::Response<hyper::body::Incoming>,
+    ) -> Result<(u16, Vec<u8>), ControlError> {
+        let reply = read_reply(response).await;
+        if matches!(
+            reply,
+            Ok(_) | Err(ControlError::Rejected(_) | ControlError::Unsupported(_))
+        ) {
+            let mut idle = self
+                .idle
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if idle.len() < IDLE_CONNECTIONS {
+                idle.push(connection);
+            }
+        }
+        reply
+    }
+
+    #[cfg(unix)]
+    async fn connect(&self) -> Result<Connection, ControlError> {
         use hyper::client::conn::http1;
         use hyper_util::rt::TokioIo;
         use tokio::net::UnixStream;
 
         let stream = tokio::time::timeout(
-            Duration::from_secs(2),
+            CONNECT_TIMEOUT,
             UnixStream::connect(self.socket_path.as_ref()),
         )
         .await
         .map_err(|_| ControlError::Unavailable("连接超时".to_owned()))?
         .map_err(|error| ControlError::Unavailable(error.to_string()))?;
-        let (mut sender, connection) = http1::handshake(TokioIo::new(stream))
+        let (sender, connection) = http1::handshake(TokioIo::new(stream))
             .await
             .map_err(|error| ControlError::Unavailable(error.to_string()))?;
         tokio::spawn(async move {
@@ -742,42 +828,16 @@ impl ControlClient {
                 tracing::debug!(%error, "KixDNS 控制连接结束");
             }
         });
+        Ok(sender)
+    }
 
-        let request = Request::builder()
-            .method(method)
-            .uri(path)
-            .header("host", "localhost")
-            .header("content-type", "application/json")
-            .body(Full::new(Bytes::from(body)))
-            .map_err(|error| ControlError::Protocol(error.to_string()))?;
-        let response = tokio::time::timeout(timeout, sender.send_request(request))
-            .await
-            .map_err(|_| ControlError::Unavailable("请求超时".to_owned()))?
-            .map_err(|error| ControlError::Unavailable(error.to_string()))?;
-        let status = response.status();
-        let bytes = Limited::new(response.into_body(), MAX_RESPONSE_BYTES)
-            .collect()
-            .await
-            .map_err(|error| {
-                if error.is::<http_body_util::LengthLimitError>() {
-                    ControlError::TooLarge(format!("超过 {} MiB", MAX_RESPONSE_BYTES / 1024 / 1024))
-                } else {
-                    ControlError::Protocol(format!("读取响应失败：{error}"))
-                }
-            })?
-            .to_bytes()
-            .to_vec();
-        if !status.is_success() {
-            let message = serde_json::from_slice::<Value>(&bytes)
-                .ok()
-                .and_then(|value| value.pointer("/error/message")?.as_str().map(str::to_owned))
-                .unwrap_or_else(|| format!("HTTP {status}"));
-            if status == hyper::StatusCode::NOT_FOUND {
-                return Err(ControlError::Unsupported(message));
-            }
-            return Err(ControlError::Rejected(message));
-        }
-        Ok((status.as_u16(), bytes))
+    #[cfg(not(unix))]
+    async fn request_reusing(
+        &self,
+        path: &str,
+        timeout: Duration,
+    ) -> Result<(u16, Vec<u8>), ControlError> {
+        self.request_within("GET", path, Vec::new(), timeout).await
     }
 
     #[cfg(not(unix))]
@@ -793,6 +853,79 @@ impl ControlClient {
             "当前平台不支持 Unix Socket".to_owned(),
         ))
     }
+}
+
+/// 请求没发成：连接断了，或者等应答超时 / A request that did not go through: the connection was gone, or the reply
+/// timed out
+#[cfg(unix)]
+enum SendFailure {
+    Closed(String),
+    TimedOut,
+}
+
+#[cfg(unix)]
+impl SendFailure {
+    fn into_error(self) -> ControlError {
+        match self {
+            Self::Closed(message) => ControlError::Unavailable(message),
+            Self::TimedOut => ControlError::Unavailable("请求超时".to_owned()),
+        }
+    }
+}
+
+/// 在一条连接上发一个请求，等到应答的头 / Sends a request on a connection and waits for the head of the reply
+#[cfg(unix)]
+async fn send(
+    connection: &mut Connection,
+    method: &str,
+    path: &str,
+    body: Vec<u8>,
+    timeout: Duration,
+) -> Result<hyper::Response<hyper::body::Incoming>, SendFailure> {
+    let request = hyper::Request::builder()
+        .method(method)
+        .uri(path)
+        .header("host", "localhost")
+        .header("content-type", "application/json")
+        .body(http_body_util::Full::new(bytes::Bytes::from(body)))
+        .map_err(|error| SendFailure::Closed(error.to_string()))?;
+    tokio::time::timeout(timeout, connection.send_request(request))
+        .await
+        .map_err(|_| SendFailure::TimedOut)?
+        .map_err(|error| SendFailure::Closed(error.to_string()))
+}
+
+/// 读完应答；内核回了错误就变成错误 / Reads the whole reply; a kernel's error reply becomes an error
+#[cfg(unix)]
+async fn read_reply(
+    response: hyper::Response<hyper::body::Incoming>,
+) -> Result<(u16, Vec<u8>), ControlError> {
+    use http_body_util::{BodyExt, Limited};
+
+    let status = response.status();
+    let bytes = Limited::new(response.into_body(), MAX_RESPONSE_BYTES)
+        .collect()
+        .await
+        .map_err(|error| {
+            if error.is::<http_body_util::LengthLimitError>() {
+                ControlError::TooLarge(format!("超过 {} MiB", MAX_RESPONSE_BYTES / 1024 / 1024))
+            } else {
+                ControlError::Protocol(format!("读取响应失败：{error}"))
+            }
+        })?
+        .to_bytes()
+        .to_vec();
+    if !status.is_success() {
+        let message = serde_json::from_slice::<Value>(&bytes)
+            .ok()
+            .and_then(|value| value.pointer("/error/message")?.as_str().map(str::to_owned))
+            .unwrap_or_else(|| format!("HTTP {status}"));
+        if status == hyper::StatusCode::NOT_FOUND {
+            return Err(ControlError::Unsupported(message));
+        }
+        return Err(ControlError::Rejected(message));
+    }
+    Ok((status.as_u16(), bytes))
 }
 
 /// 普通控制请求的应答时限 / The reply limit for ordinary control requests
@@ -1178,6 +1311,11 @@ fn numeric_value(value: &MetricValue) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use super::ControlClient;
+    #[cfg(unix)]
+    use std::sync::Arc;
+
     use std::time::Duration;
 
     use super::{
@@ -1227,6 +1365,196 @@ mod tests {
         let newer = br#"{"protocol_version":2,"rows":[]}"#;
         let (_, body) = QueryLogPage::parse(newer.to_vec()).unwrap_err();
         assert_eq!(body, newer, "the text comes back for the version check");
+    }
+
+    /// 小服务器答够了以后怎么办 / What the small server does once it has answered enough
+    #[cfg(unix)]
+    #[derive(Clone, Copy)]
+    enum Then {
+        /// 马上关 / Closes at once
+        Close,
+        /// 不关，也再不答 / Stays open and never answers again
+        Silent,
+        /// 等到下一个请求，什么也不回就关 / Waits for the next request and closes without answering it
+        CloseOnRequest,
+    }
+
+    /// 一个数连接的小服务器：每条连接答 `answers` 个请求，然后照 `then` 办；每个请求回一页空的查询日志。数的是接受了几条连接
+    /// A small server counting connections: each answers `answers` requests and then does as `then` says; every
+    /// request gets an empty query log page. The count is of the connections accepted
+    #[cfg(unix)]
+    fn counting_server(
+        path: std::path::PathBuf,
+        answers: usize,
+        then: Then,
+    ) -> Arc<std::sync::atomic::AtomicUsize> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&accepted);
+        let listener = tokio::net::UnixListener::bind(path).unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let body = r#"{"protocol_version":1,"instance":7,"newest_seq":0,"missed":0,"more":false,"entries":[]}"#;
+                    let reply = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let mut request = Vec::new();
+                    for answer in 0.. {
+                        if answer == answers {
+                            match then {
+                                Then::Close => return,
+                                Then::Silent => std::future::pending::<()>().await,
+                                Then::CloseOnRequest => {
+                                    let mut chunk = [0; 1024];
+                                    let _ = stream.read(&mut chunk).await;
+                                    return;
+                                }
+                            }
+                        }
+                        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                            let mut chunk = [0; 1024];
+                            match stream.read(&mut chunk).await {
+                                Ok(0) | Err(_) => return,
+                                Ok(read) => request.extend_from_slice(&chunk[..read]),
+                            }
+                        }
+                        request.clear();
+                        if stream.write_all(reply.as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        accepted
+    }
+
+    /// 一页接一页地取，用的是同一条连接 / Page after page uses one connection
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn query_log_takes_share_a_connection() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("control.sock");
+        let accepted = counting_server(path.clone(), usize::MAX, Then::Close);
+        let client = ControlClient::new(path);
+        for _ in 0..5 {
+            client.querylog(0, 10, None).await.unwrap();
+        }
+        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// 同时取几页时各用各的连接，取完都留着接着用 / Pages taken at once use a connection each, all kept afterwards
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn query_log_takes_at_once_use_a_connection_each_and_keep_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("control.sock");
+        let accepted = counting_server(path.clone(), usize::MAX, Then::Close);
+        let client = ControlClient::new(path);
+        for _ in 0..3 {
+            let (first, second, third) = tokio::join!(
+                client.querylog(0, 10, None),
+                client.querylog(0, 10, None),
+                client.querylog(0, 10, None)
+            );
+            first.unwrap();
+            second.unwrap();
+            third.unwrap();
+        }
+        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    /// 留着的连接断了（内核重启、空闲太久）：换一条新的，调用的人看不出来
+    /// A kept connection that has gone (the kernel restarted, idle too long) is replaced, unnoticed by the caller
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_kept_connection_that_has_gone_is_replaced() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("control.sock");
+        let accepted = counting_server(path.clone(), 1, Then::Close);
+        let client = ControlClient::new(path);
+        for round in 1..=4 {
+            client.querylog(0, 10, None).await.unwrap();
+            assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), round);
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// 连接是发请求的时候才断的（看着还活着，发过去没回就关了）：也换一条新的再问一次，这一页不算失败
+    /// A connection that goes only as the request is sent (it looked alive, and closed without answering) is replaced
+    /// too and the page asked for again, which does not count as a failure
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_connection_gone_while_sending_is_replaced() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("control.sock");
+        let accepted = counting_server(path.clone(), 1, Then::CloseOnRequest);
+        let client = ControlClient::new(path);
+        client.querylog(0, 10, None).await.unwrap();
+        client.querylog(0, 10, None).await.unwrap();
+        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    /// 留着的连接有上限：同时取的再多，用完也只留这么多 / Kept connections have a limit: however many pages were taken at
+    /// once, only so many stay afterwards
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn only_so_many_connections_are_kept() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("control.sock");
+        let _accepted = counting_server(path.clone(), usize::MAX, Then::Close);
+        let client = ControlClient::new(path);
+        let takes: Vec<_> = (0..20).map(|_| client.querylog(0, 10, None)).collect();
+        for take in futures_util::future::join_all(takes).await {
+            take.unwrap();
+        }
+        assert_eq!(
+            std::iter::from_fn(|| client.take_idle()).count(),
+            super::IDLE_CONNECTIONS
+        );
+    }
+
+    /// 等应答超时是真问题，不换一条连接再问一遍，那条连接也不留 / A timed-out reply is real trouble: it is not asked again on
+    /// another connection, and that connection is not kept
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_timeout_is_not_retried_on_another_connection() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("control.sock");
+        let accepted = counting_server(path.clone(), 1, Then::Silent);
+        let client = ControlClient::new(path);
+        client.querylog(0, 10, None).await.unwrap();
+        let timed_out = client
+            .request_reusing("/v1/querylog", Duration::from_millis(50))
+            .await;
+        assert!(
+            matches!(timed_out, Err(ControlError::Unavailable(_))),
+            "{timed_out:?}"
+        );
+        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(client.take_idle().is_none());
+    }
+
+    /// 普通控制请求照旧每次新建，不占留着的连接 / Ordinary control requests still connect each time and keep nothing
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn only_query_log_takes_keep_their_connection() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("control.sock");
+        let accepted = counting_server(path.clone(), usize::MAX, Then::Close);
+        let client = ControlClient::new(path);
+        for _ in 0..2 {
+            client
+                .request_within("GET", "/v1/whatever", Vec::new(), REQUEST_TIMEOUT)
+                .await
+                .unwrap();
+        }
+        assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert!(client.take_idle().is_none());
     }
 
     #[test]
