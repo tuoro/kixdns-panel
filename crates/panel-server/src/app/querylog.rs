@@ -2,6 +2,7 @@
 //! The query log's endpoints and collector: every second the new queries are taken from the kernel into
 //! [`QueryLogStore`], and the page reads back through them with filters.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -13,16 +14,18 @@ use axum::http::HeaderMap;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use axum_extra::extract::CookieJar;
-use serde::{Deserialize, Serialize};
+use serde::de::IgnoredAny;
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
+use serde_json::value::RawValue;
 
 use crate::auth::{authenticate, unix_timestamp, verify_csrf};
 use crate::control::{ControlError, QueryLogPage as KernelPage};
 use crate::db::Database;
 use crate::error::{AppError, AppResult};
 use crate::querylog::{
-    Cursor, DEFAULT_PAGE_SIZE, Filter, MAX_PAGE_SIZE, Page, PageQuery, QueryLogSettings,
-    QueryLogStore, Record, RuleFilter, RuleIndex, StaticKind,
+    Cursor, DEFAULT_PAGE_SIZE, Filter, KernelEntry, MAX_PAGE_SIZE, Page, PageQuery,
+    QueryLogSettings, QueryLogStore, Record, RuleFilter, RuleIndex, StaticKind,
 };
 
 use super::AppState;
@@ -35,6 +38,13 @@ const SETTINGS_KEY: &str = "querylog_settings_v1";
 const KERNEL_PAGE: usize = 250;
 /// 一秒最多接着取这么多页，比内核的 4096 条交接区多 / At most this many pages a second, more than the kernel's 4096-record ring
 const PAGES_PER_TICK: usize = 20;
+/// 没有积压时多久取一次，也是收拾（保留时间、空间上限）的间隔
+/// How often to collect with nothing piling up, and how often to tidy (retention, space cap)
+const COLLECT_EVERY: Duration = Duration::from_secs(1);
+/// 两轮之间最多让内核攒这么多条：按上一轮的速率定下一轮什么时候来，内核的交接区再小也装得下
+/// At most this many records are left to pile up in the kernel between rounds: the next round is
+/// timed from the last one's rate, well within even a small hand-off ring
+const BACKLOG: u128 = 1_000;
 const CAPABILITY_RECHECK: Duration = Duration::from_secs(30);
 const RULES_RECHECK: Duration = Duration::from_secs(5);
 /// 结果的面板叫法 / The outcomes in the panel's words
@@ -390,20 +400,41 @@ fn describe_settings(settings: &QueryLogSettings) -> String {
     format!("{retention}，{cap}，{ignored}")
 }
 
-/// 每秒从内核取一次。内核停着、不支持都是常态，只在调试日志里说
-/// Takes from the kernel once a second. A stopped or unsupporting kernel is normal and only mentioned at debug level
+/// 跟着内核取：有积压就接着取，没有时按速率隔一会儿，最长一秒（见 [`next_round`]）。内核停着、不支持都是常态，
+/// 只在调试日志里说
+/// Keeps up with the kernel: while records wait it takes again at once, otherwise it waits a while
+/// set by the rate, a second at most (see [`next_round`]). A stopped or unsupporting kernel is
+/// normal and only mentioned at debug level
 pub(super) fn spawn_querylog_collector(state: AppState) {
     tokio::spawn(async move {
         let mut collector = Collector::default();
-        let mut ticker = tokio::time::interval(Duration::from_secs(1));
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            ticker.tick().await;
-            if let Err(error) = collector.tick(&state).await {
+            let pause = collector.tick(&state).await.unwrap_or_else(|error| {
                 tracing::debug!(%error, "查询日志这一轮没取到");
-            }
+                COLLECT_EVERY
+            });
+            tokio::time::sleep(pause).await;
         }
     });
+}
+
+/// 下一轮隔多久：还有没取完的就马上接着取；否则按这一轮的速率，让内核那边攒不到 [`BACKLOG`] 条，最长
+/// [`COLLECT_EVERY`]。`since` 是离上一轮开始过了多久，`taken` 是这一轮取了几条
+/// How long until the next round: at once while records remain; otherwise, by this round's rate,
+/// before the kernel piles up [`BACKLOG`], at most [`COLLECT_EVERY`]. `since` is the time since the
+/// previous round began and `taken` how many this round took
+fn next_round(taken: usize, since: Option<Duration>, more: bool) -> Duration {
+    if more {
+        return Duration::ZERO;
+    }
+    let taken = u128::try_from(taken).unwrap_or(u128::MAX);
+    match since {
+        Some(since) if taken > 0 => {
+            let millis = BACKLOG.saturating_mul(since.as_millis()) / taken;
+            Duration::from_millis(u64::try_from(millis).unwrap_or(u64::MAX)).min(COLLECT_EVERY)
+        }
+        _ => COLLECT_EVERY,
+    }
 }
 
 /// 采集任务记着的东西：内核支不支持（隔一会儿再问）、按哪份配置判断拦截、内核那边没记下的累计数从多少开始算
@@ -416,6 +447,14 @@ pub(super) struct Collector {
     rules: Option<(String, Arc<RuleIndex>)>,
     rules_checked: Option<Instant>,
     untracked: Option<(u64, u64)>,
+    /// 上一轮什么时候开始的 / When the previous round began
+    round_started: Option<Instant>,
+    /// 上次收拾是什么时候 / When the last tidying was
+    tidied: Option<Instant>,
+    /// 后台正在做的那次收拾：压缩写满的一段要一两秒，采集不能停下来等，否则内核那边的交接区会满
+    /// The tidying under way in the background: compressing a full segment takes a second or two, and
+    /// collecting must not stop to wait for it, or the kernel's hand-off ring would fill
+    tidying: Option<tokio::task::JoinHandle<()>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -429,14 +468,32 @@ pub(super) enum CollectError {
 }
 
 impl Collector {
-    pub(super) async fn tick(&mut self, state: &AppState) -> Result<(), CollectError> {
+    /// 取一轮，到了时候就收拾一次；返回下一轮隔多久（见 [`next_round`]）
+    /// Collects one round and tidies when due; returns how long until the next round (see [`next_round`])
+    pub(super) async fn tick(&mut self, state: &AppState) -> Result<Duration, CollectError> {
         let Some(store) = state.querylog.store.clone() else {
-            return Ok(());
+            return Ok(COLLECT_EVERY);
         };
         let result = self.collect(state, &store).await;
-        // 内核停着也照样按保留时间和空间上限收拾 / Retention and the cap are applied even while the kernel is stopped
-        let settings = state.querylog.settings();
-        tokio::task::spawn_blocking(move || store.maintain(&settings, now_ms())).await??;
+        // 内核停着也照样按保留时间和空间上限收拾；一直在取时也是一秒最多一次，上一次还没做完就不再起
+        // Retention and the cap are applied even while the kernel is stopped, no more than once a second
+        // while collecting goes on and on, and not again while the last one is still running
+        let due = self
+            .tidied
+            .is_none_or(|tidied| tidied.elapsed() >= COLLECT_EVERY);
+        let idle = self
+            .tidying
+            .as_ref()
+            .is_none_or(tokio::task::JoinHandle::is_finished);
+        if due && idle {
+            self.tidied = Some(Instant::now());
+            let settings = state.querylog.settings();
+            self.tidying = Some(tokio::task::spawn_blocking(move || {
+                if let Err(error) = store.maintain(&settings, now_ms()) {
+                    tracing::debug!(%error, "查询日志这一回没收拾好");
+                }
+            }));
+        }
         result
     }
 
@@ -444,10 +501,16 @@ impl Collector {
         &mut self,
         state: &AppState,
         store: &QueryLogStore,
-    ) -> Result<(), CollectError> {
+    ) -> Result<Duration, CollectError> {
         if !self.supported(state).await? {
-            return Ok(());
+            return Ok(COLLECT_EVERY);
         }
+        let started = Instant::now();
+        let since = self
+            .round_started
+            .replace(started)
+            .map(|previous| started - previous);
+        let (mut taken, mut more) = (0, false);
         let mut walk = Walk {
             cursor: store.cursor(),
             page_size: KERNEL_PAGE,
@@ -457,7 +520,7 @@ impl Collector {
         };
         while walk.pages < PAGES_PER_TICK {
             let after = walk.cursor.map_or(0, |cursor| cursor.seq);
-            let page = match state.control.querylog(after, walk.page_size).await {
+            let mut page = match state.control.querylog(after, walk.page_size).await {
                 Ok(page) => page,
                 // 一页超过 8 MiB 的应答上限：减半再取 / A page over the 8 MiB reply cap: take half as many
                 Err(ControlError::TooLarge(_)) if walk.page_size > 1 => {
@@ -488,18 +551,33 @@ impl Collector {
                 self.start_over(store, &mut walk, page.instance);
                 continue;
             }
-            let rules = if page.entries.iter().any(may_be_static) {
+            let settings = state.querylog.settings();
+            let entries = match std::mem::take(&mut page.entries)
+                .into_iter()
+                .map(|raw| Scanned::read(raw, &settings))
+                .collect::<Result<Vec<_>, _>>()
+            {
+                Ok(entries) => entries,
+                Err(error) => {
+                    self.capability_checked = None;
+                    return Err(
+                        ControlError::Protocol(format!("查询日志里有一条读不懂：{error}")).into(),
+                    );
+                }
+            };
+            taken += entries.len();
+            more = page.more;
+            let rules = if entries.iter().any(|entry| entry.candidate != Candidate::No) {
                 self.rules(state).await
             } else {
                 None
             };
-            let settings = state.querylog.settings();
             let oversized = if walk.skips_count { walk.skipped } else { 0 };
             let (records, next, untracked) = self.records(
                 &page,
+                entries,
                 walk.cursor,
                 after,
-                &settings,
                 rules.as_deref(),
                 oversized,
             );
@@ -524,7 +602,7 @@ impl Collector {
             };
             write(store, vec![gap], state.querylog.settings()).await?;
         }
-        Ok(())
+        Ok(next_round(taken, since, more))
     }
 
     /// 内核支不支持查询日志：隔一会儿问一次，结果也告诉页面 / Whether the kernel has the query log: asked now and then, the
@@ -611,9 +689,9 @@ impl Collector {
     fn records(
         &self,
         page: &KernelPage,
+        entries: Vec<Scanned>,
         cursor: Option<Cursor>,
         after: u64,
-        settings: &QueryLogSettings,
         rules: Option<&RuleIndex>,
         oversized: u64,
     ) -> (Vec<Record>, Cursor, (u64, u64)) {
@@ -632,16 +710,14 @@ impl Collector {
         // not recording yet
         let missed = if same_instance { page.missed } else { 0 };
         let gap = missed + busy + oversized;
-        let mut records = Vec::with_capacity(page.entries.len() + 1);
+        let mut records = Vec::with_capacity(entries.len() + 1);
         if gap > 0 {
             records.push(Record::Gap {
                 instance: page.instance,
                 seq: after + missed,
-                time_unix_ms: page
-                    .entries
+                time_unix_ms: entries
                     .first()
-                    .and_then(|entry| entry.get("time_unix_ms"))
-                    .and_then(Value::as_u64)
+                    .and_then(|entry| entry.entry.time_unix_ms())
                     .unwrap_or_else(now_ms),
                 count: gap,
             });
@@ -650,31 +726,35 @@ impl Collector {
             instance: page.instance,
             seq: after + page.missed,
         };
-        for entry in &page.entries {
-            if let Some(seq) = entry.get("seq").and_then(Value::as_u64) {
+        for Scanned {
+            entry,
+            ignored,
+            candidate,
+        } in entries
+        {
+            if let Some(seq) = entry.seq() {
                 next.seq = seq;
             }
-            let qname = entry
-                .get("qname")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if settings.ignores(qname) {
+            if ignored {
                 continue;
             }
-            let classified = || rules.and_then(|rules| rules.classify(entry));
-            let static_kind = match entry.get("outcome").and_then(Value::as_str) {
-                Some("static") => classified(),
+            // 只有可能是规则直接给的回答才整条解析，找定下它的那条规则
+            // Only a possible rule-given answer is parsed whole, to find the rule that decided it
+            let classified = || {
+                let fields = entry.fields().ok()?;
+                rules.and_then(|rules| rules.classify(&fields))
+            };
+            let static_kind = match candidate {
+                Candidate::Static => classified(),
                 // 「拦截 · SERVFAIL」：内核把 SERVFAIL 排在固定回答前面，记成了失败；按定下它的规则认回拦截
                 // 「Block · SERVFAIL」: the kernel ranks SERVFAIL above a fixed answer and calls it failed; the rule
                 // that decided it makes it a block again
-                Some("failed") if may_be_static(entry) => {
-                    classified().filter(|kind| *kind == StaticKind::Blocked)
-                }
-                _ => None,
+                Candidate::Servfail => classified().filter(|kind| *kind == StaticKind::Blocked),
+                Candidate::No => None,
             };
             records.push(Record::Entry {
                 instance: page.instance,
-                entry: entry.clone(),
+                entry,
                 static_kind,
             });
         }
@@ -715,11 +795,102 @@ impl Collector {
 /// 这一条可能是规则直接给的回答：内核记成 `static` 的，和记成 SERVFAIL 失败的（可能是「拦截 · SERVFAIL」）
 /// Whether this may be an answer a rule gave directly: what the kernel calls `static`, and SERVFAIL failures (which may
 /// be 「Block · SERVFAIL」)
-fn may_be_static(entry: &serde_json::Map<String, Value>) -> bool {
-    match entry.get("outcome").and_then(Value::as_str) {
-        Some("static") => true,
-        Some("failed") => entry.get("rcode").and_then(Value::as_str) == Some("SERVFAIL"),
-        _ => false,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Candidate {
+    No,
+    Static,
+    Servfail,
+}
+
+impl Candidate {
+    fn of(outcome: Option<&str>, rcode: Option<&str>) -> Self {
+        match (outcome, rcode) {
+            (Some("static"), _) => Self::Static,
+            (Some("failed"), Some("SERVFAIL")) => Self::Servfail,
+            _ => Self::No,
+        }
+    }
+}
+
+/// 内核的一条记录，读过了面板要看的几项 / A kernel record with the items the panel looks at read
+struct Scanned {
+    entry: KernelEntry,
+    /// 设置里说这个域名不记 / The settings say this domain is not recorded
+    ignored: bool,
+    candidate: Candidate,
+}
+
+impl Scanned {
+    /// 只读面板要看的几项，原文照留。带了面板自己的字段名，或者那几项的类型出乎意料时，整条解析，照原来的办法
+    /// Reads only the items the panel looks at and keeps the text. With the panel's own field names, or
+    /// those items of an unexpected type, the record is parsed whole, the old way
+    fn read(raw: Box<RawValue>, settings: &QueryLogSettings) -> serde_json::Result<Self> {
+        if let Some((seq, time_unix_ms, ignored, candidate)) = Self::glance(raw.get(), settings) {
+            return Ok(Self {
+                entry: KernelEntry::new(raw, seq, time_unix_ms),
+                ignored,
+                candidate,
+            });
+        }
+        let fields: serde_json::Map<String, Value> = serde_json::from_str(raw.get())?;
+        let text = |key: &str| fields.get(key).and_then(Value::as_str);
+        let ignored = settings.ignores(text("qname").unwrap_or_default());
+        let candidate = Candidate::of(text("outcome"), text("rcode"));
+        Ok(Self {
+            entry: KernelEntry::from_map(fields),
+            ignored,
+            candidate,
+        })
+    }
+
+    fn glance(
+        raw: &str,
+        settings: &QueryLogSettings,
+    ) -> Option<(Option<u64>, Option<u64>, bool, Candidate)> {
+        if !raw.starts_with('{') {
+            return None;
+        }
+        let fields: Glance<'_> = serde_json::from_str(raw).ok()?;
+        if fields.id.0 || fields.instance.0 || fields.static_kind.0 {
+            return None;
+        }
+        Some((
+            fields.seq,
+            fields.time_unix_ms,
+            settings.ignores(fields.qname.as_deref().unwrap_or_default()),
+            Candidate::of(fields.outcome.as_deref(), fields.rcode.as_deref()),
+        ))
+    }
+}
+
+/// 一条记录里面板要看的几项；别的字段只跳过，不解析
+/// The items of a record the panel looks at; the other fields are skipped, not parsed
+#[derive(Deserialize)]
+struct Glance<'a> {
+    seq: Option<u64>,
+    time_unix_ms: Option<u64>,
+    #[serde(borrow)]
+    qname: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    outcome: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    rcode: Option<Cow<'a, str>>,
+    #[serde(default)]
+    id: Present,
+    #[serde(default)]
+    instance: Present,
+    #[serde(default)]
+    static_kind: Present,
+}
+
+/// 有这个字段，不管值是什么 / The field is there, whatever its value
+#[derive(Default)]
+struct Present(bool);
+
+impl<'de> Deserialize<'de> for Present {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        IgnoredAny::deserialize(deserializer)?;
+        Ok(Self(true))
     }
 }
 
@@ -752,4 +923,88 @@ fn now_ms() -> u64 {
         .map_or(0, |duration| {
             u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn raw(text: &str) -> Box<RawValue> {
+        RawValue::from_string(text.to_owned()).unwrap()
+    }
+
+    fn ignoring(domain: &str) -> QueryLogSettings {
+        QueryLogSettings {
+            ignored_domains: vec![domain.to_owned()],
+            ..QueryLogSettings::default()
+        }
+    }
+
+    /// 一条记录只读面板要看的几项，原文留着：编号、时刻、该不该记、可能不可能是规则直接给的回答
+    /// A record is read for the items the panel looks at and its text kept: number, time, whether it is
+    /// recorded, whether it may be a rule-given answer
+    #[test]
+    fn a_record_is_read_without_taking_it_apart() {
+        let settings = ignoring("quiet.example");
+        let read = |text: &str| Scanned::read(raw(text), &settings).unwrap();
+        let forwarded = read(
+            r#"{"seq":5,"time_unix_ms":9,"qname":"a.example","outcome":"forwarded","rcode":"NOERROR"}"#,
+        );
+        assert_eq!(forwarded.entry.seq(), Some(5));
+        assert_eq!(forwarded.entry.time_unix_ms(), Some(9));
+        assert!(!forwarded.ignored);
+        assert_eq!(forwarded.candidate, Candidate::No);
+        assert!(read(r#"{"seq":6,"qname":"quiet.example"}"#).ignored);
+        assert_eq!(read(r#"{"outcome":"static"}"#).candidate, Candidate::Static);
+        assert_eq!(
+            read(r#"{"outcome":"failed","rcode":"SERVFAIL"}"#).candidate,
+            Candidate::Servfail
+        );
+        assert_eq!(
+            read(r#"{"outcome":"failed","rcode":"REFUSED"}"#).candidate,
+            Candidate::No
+        );
+    }
+
+    /// 那几项的类型出乎意料、带了面板自己的字段名时整条解析，结果和原来一样：读不出的编号、时刻当没有，
+    /// 不是文字的域名当空；不是对象的记录读不了
+    /// With those items of an unexpected type or the panel's own field names the record is parsed whole,
+    /// as before: an unreadable number or time counts as none and a domain that is no text as empty; a
+    /// record that is no object cannot be read
+    #[test]
+    fn odd_records_are_read_the_old_way() {
+        let settings = ignoring("quiet.example");
+        let read = |text: &str| Scanned::read(raw(text), &settings);
+        let odd = read(r#"{"seq":"5","time_unix_ms":1.5,"qname":7,"outcome":"static"}"#).unwrap();
+        assert_eq!(odd.entry.seq(), None);
+        assert_eq!(odd.entry.time_unix_ms(), None);
+        assert!(!odd.ignored);
+        assert_eq!(odd.candidate, Candidate::Static);
+        let own = read(r#"{"id":null,"seq":2,"qname":"quiet.example"}"#).unwrap();
+        assert_eq!(own.entry.seq(), Some(2));
+        assert!(own.ignored);
+        assert!(!own.entry.fields().unwrap().contains_key("id"));
+        assert!(read("[1,2]").is_err());
+        assert!(read(r#""text""#).is_err());
+    }
+
+    /// 还有没取完的马上接着取；否则按这一轮的速率，让内核攒不到 `BACKLOG` 条，最长一秒
+    /// While records remain the next round is at once; otherwise, by this round's rate, before the kernel
+    /// piles up `BACKLOG`, a second at most
+    #[test]
+    fn rounds_keep_up_with_the_rate() {
+        let second = Duration::from_secs(1);
+        assert_eq!(next_round(5_000, Some(second), true), Duration::ZERO);
+        assert_eq!(next_round(10, None, false), COLLECT_EVERY);
+        assert_eq!(next_round(0, Some(second), false), COLLECT_EVERY);
+        assert_eq!(next_round(10, Some(second), false), COLLECT_EVERY);
+        assert_eq!(
+            next_round(8_000, Some(second), false),
+            Duration::from_millis(125)
+        );
+        assert_eq!(
+            next_round(40_000, Some(second), false),
+            Duration::from_millis(25)
+        );
+    }
 }

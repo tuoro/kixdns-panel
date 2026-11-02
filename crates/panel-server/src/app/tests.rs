@@ -2440,6 +2440,88 @@ fn start_fake_querylog_kernel(
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() })
 }
 
+/// 采集一轮就会在后台收拾一次，不让采集停下来等它：上个小时还开着的那段，关上以后压缩
+/// One round of collecting sets off a tidying in the background, without collecting waiting for it:
+/// a segment still open from an hour gone by is closed and then compressed
+#[tokio::test]
+async fn collecting_sets_off_a_tidying() {
+    let directory = tempdir().unwrap();
+    std::fs::write(directory.path().join("pipeline.json"), "{}").unwrap();
+    let state = test_state(&directory).await;
+    let earlier = kernel_entry(1, "a.example", "A");
+    state
+        .querylog
+        .store
+        .as_ref()
+        .unwrap()
+        .append(
+            &[crate::querylog::Record::Entry {
+                instance: 100,
+                entry: crate::querylog::KernelEntry::from_map(earlier.as_object().unwrap().clone()),
+                static_kind: None,
+            }],
+            &crate::querylog::QueryLogSettings::default(),
+            earlier["time_unix_ms"].as_u64().unwrap(),
+        )
+        .unwrap();
+    let _kernel = start_fake_querylog_kernel(directory.path(), fake_query_log(Vec::new()));
+    super::querylog::Collector::default()
+        .tick(&state)
+        .await
+        .unwrap();
+    let compressed = || {
+        std::fs::read_dir(directory.path().join("querylog"))
+            .unwrap()
+            .any(|file| {
+                file.unwrap()
+                    .path()
+                    .to_string_lossy()
+                    .ends_with(".jsonl.gz")
+            })
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !compressed() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the segment from the hour gone by was never compressed"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+/// 记录接连到来时下一轮来得早，按速率让内核攒不了多少；没有新记录时回到一秒一次
+/// While records keep coming the next round comes early, by the rate, before the kernel piles up many;
+/// with nothing new it is back to once a second
+#[tokio::test]
+async fn the_collector_comes_back_sooner_while_records_keep_coming() {
+    let directory = tempdir().unwrap();
+    std::fs::write(directory.path().join("pipeline.json"), "{}").unwrap();
+    let state = test_state(&directory).await;
+    let log = fake_query_log(
+        (1..=4_000)
+            .map(|seq| kernel_entry(seq, "a.example", "A"))
+            .collect(),
+    );
+    let _kernel = start_fake_querylog_kernel(directory.path(), log.clone());
+    let mut collector = super::querylog::Collector::default();
+    assert_eq!(
+        collector.tick(&state).await.unwrap(),
+        std::time::Duration::from_secs(1)
+    );
+    {
+        let mut log = log.lock().unwrap();
+        log.ring
+            .extend((4_001..=8_000).map(|seq| kernel_entry(seq, "a.example", "A")));
+        log.newest = 8_000;
+    }
+    let pause = collector.tick(&state).await.unwrap();
+    assert!(pause < std::time::Duration::from_secs(1), "{pause:?}");
+    assert_eq!(
+        collector.tick(&state).await.unwrap(),
+        std::time::Duration::from_secs(1)
+    );
+}
+
 /// 内核的一条查询记录 / One kernel query record
 fn kernel_entry(seq: u64, qname: &str, qtype: &str) -> Value {
     serde_json::json!({
