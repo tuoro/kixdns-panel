@@ -2456,9 +2456,9 @@ fn start_fake_querylog_kernel(
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() })
 }
 
-/// 采集一轮就会在后台收拾一次，不让采集停下来等它：上个小时还开着的那段，关上以后压缩
+/// 采集一轮就会在后台收拾一次，不让采集停下来等它：上个小时还开着的那段被关上，最后一帧收尾
 /// One round of collecting sets off a tidying in the background, without collecting waiting for it:
-/// a segment still open from an hour gone by is closed and then compressed
+/// a segment still open from an hour gone by is closed, its last frame finished
 #[tokio::test]
 async fn collecting_sets_off_a_tidying() {
     let directory = tempdir().unwrap();
@@ -2485,21 +2485,19 @@ async fn collecting_sets_off_a_tidying() {
         .tick(&state)
         .await
         .unwrap();
-    let compressed = || {
+    // 关上了：最后一帧收了尾，整个文件解得完 / Closed: its last frame is finished and the whole file decodes
+    let closed = || {
         std::fs::read_dir(directory.path().join("querylog"))
             .unwrap()
-            .any(|file| {
-                file.unwrap()
-                    .path()
-                    .to_string_lossy()
-                    .ends_with(".jsonl.gz")
-            })
+            .map(|file| file.unwrap().path())
+            .filter(|path| path.to_string_lossy().ends_with(".jsonl.zst"))
+            .any(|path| zstd::stream::decode_all(&std::fs::read(path).unwrap()[..]).is_ok())
     };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !compressed() {
+    while !closed() {
         assert!(
             std::time::Instant::now() < deadline,
-            "the segment from the hour gone by was never compressed"
+            "the segment from the hour gone by was never closed"
         );
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }

@@ -17,10 +17,9 @@ use axum_extra::extract::CookieJar;
 use serde::de::IgnoredAny;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
-use serde_json::value::RawValue;
 
 use crate::auth::{authenticate, unix_timestamp, verify_csrf};
-use crate::control::{ControlError, QueryLogPage as KernelPage, QueryLogWait};
+use crate::control::{ControlError, QueryLogEntries, QueryLogPage as KernelPage, QueryLogWait};
 use crate::db::Database;
 use crate::error::{AppError, AppResult};
 use crate::querylog::{
@@ -466,9 +465,11 @@ pub(super) struct Collector {
     round_started: Option<Instant>,
     /// 上次收拾是什么时候 / When the last tidying was
     tidied: Option<Instant>,
-    /// 后台正在做的那次收拾：压缩写满的一段要一两秒，采集不能停下来等，否则内核那边的交接区会满
-    /// The tidying under way in the background: compressing a full segment takes a second or two, and
-    /// collecting must not stop to wait for it, or the kernel's hand-off ring would fill
+    /// 后台正在做的那次收拾：关段要落盘、过期的要删，旧版留下的纯文本段还要压缩，可能要一两秒，采集不能停下来等，
+    /// 否则内核那边的交接区会满
+    /// The tidying under way in the background: closing a segment syncs it, expired ones are removed and an older
+    /// version's plain segments are compressed, which can take a second or two, and collecting must not stop to wait
+    /// for it, or the kernel's hand-off ring would fill
     tidying: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -628,10 +629,23 @@ impl Collector {
         page: &mut KernelPage,
         settings: &QueryLogSettings,
     ) -> Result<Vec<Scanned>, CollectError> {
-        std::mem::take(&mut page.entries)
-            .into_iter()
-            .map(|raw| Scanned::read(raw, settings))
-            .collect::<Result<Vec<_>, _>>()
+        let entries = std::mem::replace(&mut page.entries, QueryLogEntries::Raw(Vec::new()));
+        // 整页原文一遍读完；读不下去就整页照常解析，再一条条读 / The page's text read in one pass; failing that, the
+        // page is parsed whole and read record by record
+        let entries = match entries {
+            QueryLogEntries::Text { page, at } => match Scanned::read_text(&page, at, settings) {
+                Some(entries) => return Ok(entries),
+                None => QueryLogEntries::Text { page, at }.into_raw(),
+            },
+            entries @ QueryLogEntries::Raw(_) => entries.into_raw(),
+        };
+        entries
+            .and_then(|entries| {
+                entries
+                    .into_iter()
+                    .map(|raw| Scanned::read(raw.into(), settings))
+                    .collect::<Result<Vec<_>, _>>()
+            })
             .map_err(|error| {
                 self.capability_checked = None;
                 ControlError::Protocol(format!("查询日志里有一条读不懂：{error}")).into()
@@ -881,37 +895,67 @@ struct Scanned {
     candidate: Candidate,
 }
 
+/// 读出来的那几项：编号、时刻、这个域名记不记、可能是不是规则直接给的回答
+/// The items read: the number, the time, whether the domain is ignored, and whether a rule may have answered
+type Summary = (Option<u64>, Option<u64>, bool, Candidate);
+
 impl Scanned {
     /// 只读面板要看的几项，原文照留。带了面板自己的字段名，或者那几项的类型出乎意料时，整条解析，照原来的办法
     /// Reads only the items the panel looks at and keeps the text. With the panel's own field names, or
     /// those items of an unexpected type, the record is parsed whole, the old way
-    fn read(raw: Box<RawValue>, settings: &QueryLogSettings) -> serde_json::Result<Self> {
-        if let Some((seq, time_unix_ms, ignored, candidate)) = Self::glance(raw.get(), settings) {
-            return Ok(Self {
-                entry: KernelEntry::new(raw, seq, time_unix_ms),
-                ignored,
-                candidate,
-            });
-        }
-        let fields: serde_json::Map<String, Value> = serde_json::from_str(raw.get())?;
-        let text = |key: &str| fields.get(key).and_then(Value::as_str);
-        let ignored = settings.ignores(text("qname").unwrap_or_default());
-        let candidate = Candidate::of(text("outcome"), text("rcode"));
-        Ok(Self {
-            entry: KernelEntry::from_map(fields),
-            ignored,
-            candidate,
-        })
+    fn read(text: Box<str>, settings: &QueryLogSettings) -> serde_json::Result<Self> {
+        let summary = text
+            .starts_with('{')
+            .then(|| serde_json::from_str::<Glance<'_>>(&text).ok())
+            .flatten()
+            .and_then(|fields| Self::summary(&fields, settings));
+        Self::with(text, summary, settings)
     }
 
-    fn glance(
-        raw: &str,
-        settings: &QueryLogSettings,
-    ) -> Option<(Option<u64>, Option<u64>, bool, Candidate)> {
-        if !raw.starts_with('{') {
-            return None;
+    /// 整页原文里的记录，一条条读：`serde_json` 读完一个值就停下、交出读到哪儿，于是读那几项时就找到了这一条的
+    /// 结尾，每条只扫一遍，也照样把整条校验了。页的样子出乎意料，或者有一条那几项的类型不对时交回 None，整页照常解析
+    /// The records in a page's text, read one by one: `serde_json` stops after one value and says how far it read, so
+    /// reading the items finds where the record ends; each is scanned once and still checked whole. A page shaped
+    /// otherwise, or a record with those items of an unexpected type, gives None, and the page is parsed whole
+    fn read_text(page: &str, at: usize, settings: &QueryLogSettings) -> Option<Vec<Self>> {
+        let skip = |at: usize| {
+            page[at..]
+                .find(|character: char| !character.is_ascii_whitespace())
+                .map_or(page.len(), |offset| at + offset)
+        };
+        let mut entries = Vec::new();
+        let mut at = skip(at);
+        if page[at..].starts_with(']') {
+            at += 1;
+        } else {
+            loop {
+                if !page[at..].starts_with('{') {
+                    return None;
+                }
+                let mut stream =
+                    serde_json::Deserializer::from_str(&page[at..]).into_iter::<Glance<'_>>();
+                let fields = stream.next()?.ok()?;
+                let end = at + stream.byte_offset();
+                let summary = Self::summary(&fields, settings);
+                entries.push(Self::with(page[at..end].into(), summary, settings).ok()?);
+                at = skip(end);
+                match page.as_bytes().get(at) {
+                    Some(b',') => at = skip(at + 1),
+                    Some(b']') => {
+                        at += 1;
+                        break;
+                    }
+                    _ => return None,
+                }
+            }
         }
-        let fields: Glance<'_> = serde_json::from_str(raw).ok()?;
+        // 记录之后只该剩下 `}` / Only `}` should follow the records
+        (page[at..].trim() == "}").then_some(entries)
+    }
+
+    /// 那几项；带了面板自己的字段名时为 None，整条解析 / The items; None with the panel's own field names, and the
+    /// record is parsed whole
+    fn summary(fields: &Glance<'_>, settings: &QueryLogSettings) -> Option<Summary> {
         if fields.id.0 || fields.instance.0 || fields.static_kind.0 {
             return None;
         }
@@ -921,6 +965,29 @@ impl Scanned {
             settings.ignores(fields.qname.as_deref().unwrap_or_default()),
             Candidate::of(fields.outcome.as_deref(), fields.rcode.as_deref()),
         ))
+    }
+
+    fn with(
+        text: Box<str>,
+        summary: Option<Summary>,
+        settings: &QueryLogSettings,
+    ) -> serde_json::Result<Self> {
+        if let Some((seq, time_unix_ms, ignored, candidate)) = summary {
+            return Ok(Self {
+                entry: KernelEntry::new(text, seq, time_unix_ms),
+                ignored,
+                candidate,
+            });
+        }
+        let fields: serde_json::Map<String, Value> = serde_json::from_str(&text)?;
+        let field = |key: &str| fields.get(key).and_then(Value::as_str);
+        let ignored = settings.ignores(field("qname").unwrap_or_default());
+        let candidate = Candidate::of(field("outcome"), field("rcode"));
+        Ok(Self {
+            entry: KernelEntry::from_map(fields),
+            ignored,
+            candidate,
+        })
     }
 }
 
@@ -992,8 +1059,66 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
 
-    fn raw(text: &str) -> Box<RawValue> {
-        RawValue::from_string(text.to_owned()).unwrap()
+    fn raw(text: &str) -> Box<str> {
+        text.into()
+    }
+
+    /// 一遍读出来的和一条条读出来的完全一样 / What one pass reads is exactly what record-by-record reading gives
+    fn same(left: &[Scanned], right: &[Scanned]) {
+        assert_eq!(left.len(), right.len());
+        for (left, right) in left.iter().zip(right) {
+            assert_eq!(left.entry.seq(), right.entry.seq());
+            assert_eq!(left.entry.time_unix_ms(), right.entry.time_unix_ms());
+            assert_eq!(left.entry.fields().unwrap(), right.entry.fields().unwrap());
+            assert_eq!(left.ignored, right.ignored);
+            assert_eq!(left.candidate, right.candidate);
+        }
+    }
+
+    /// 整页原文一遍读完：空白、字符串里的括号和转义引号、嵌套的数组都不会让它找错一条的结尾；结果和一条条读一样。
+    /// 带了面板自己字段名的那条单独整条解析
+    /// The page's text read in one pass: whitespace, brackets and escaped quotes inside strings and nested arrays do
+    /// not make it miss where a record ends, and the result equals reading record by record. A record carrying the
+    /// panel's own field names is parsed whole on its own
+    #[test]
+    fn a_page_is_read_in_one_pass_as_record_by_record_reading_would() {
+        let settings = ignoring("quiet.example");
+        let records = [
+            r#"{"seq":1,"time_unix_ms":5,"qname":"a]}.example","outcome":"forwarded","rcode":"NOERROR","steps":[{"kind":"rule","x":[1,[2]]}]}"#,
+            r#"{"seq":2,"qname":"q\"uote\\.quiet.example","outcome":"static"}"#,
+            r#"{"seq":3,"id":99,"instance":4,"qname":"b.example","outcome":"failed","rcode":"SERVFAIL"}"#,
+        ];
+        let page = format!(
+            " \n {} ,\t{},{} ]\n}}\n",
+            records[0], records[1], records[2]
+        );
+        let one_pass = Scanned::read_text(&page, 0, &settings).expect("read in one pass");
+        let one_by_one: Vec<Scanned> = records
+            .iter()
+            .map(|text| Scanned::read(raw(text), &settings).unwrap())
+            .collect();
+        same(&one_pass, &one_by_one);
+        assert_eq!(one_pass[2].entry.fields().unwrap().get("id"), None);
+        assert!(one_pass[1].ignored);
+        assert!(Scanned::read_text("]}", 0, &settings).unwrap().is_empty());
+    }
+
+    /// 页的样子出乎意料，或者有一条那几项的类型不对时一遍读不下去，交回去整页照常解析
+    /// A page shaped otherwise, or a record with those items of an unexpected type, stops the single pass and goes
+    /// back to be parsed whole
+    #[test]
+    fn an_odd_page_is_not_read_in_one_pass() {
+        let settings = QueryLogSettings::default();
+        for page in [
+            r#"{"seq":1}],"padding":"x"}"#,
+            r#"{"seq":1}]"#,
+            r#"[1],{"seq":2}]}"#,
+            r#"{"seq":"1"}]}"#,
+            r#"{"seq":1};{"seq":2}]}"#,
+            r#"{"seq":1"#,
+        ] {
+            assert!(Scanned::read_text(page, 0, &settings).is_none(), "{page}");
+        }
     }
 
     fn ignoring(domain: &str) -> QueryLogSettings {
