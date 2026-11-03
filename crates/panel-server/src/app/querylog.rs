@@ -1555,6 +1555,22 @@ mod tests {
         assert!(Scanned::read_records(RECORDS, page.first, &[broken], &settings, None).is_err());
     }
 
+    /// 内核记成失败的 SERVFAIL，定下它的规则是拦截才认回拦截，规则给的是自定义回答时还是失败；内核说是规则回答的照规则
+    /// 认；不是规则回答的、已经认好的不再问规则
+    /// A SERVFAIL the kernel calls failed is a block only when the rule that decided it blocks, and stays
+    /// failed when that rule gives a custom answer; what the kernel calls static goes by the rule; neither what
+    /// no rule answered nor what is already told asks the rule
+    #[test]
+    fn only_a_blocking_rule_makes_a_servfail_a_block() {
+        let blocked = || Some(StaticKind::Blocked);
+        let answered = || Some(StaticKind::Answered);
+        assert_eq!(Candidate::Servfail.kind(blocked), Some(StaticKind::Blocked));
+        assert_eq!(Candidate::Servfail.kind(answered), None);
+        assert_eq!(Candidate::Static.kind(answered), Some(StaticKind::Answered));
+        assert_eq!(Candidate::No.kind(blocked), None);
+        assert_eq!(Candidate::Known(None).kind(blocked), None);
+    }
+
     /// 样本里出现的每个名字都当 Pipeline、当规则，按位置给不同的回答：认错了哪条规则、哪种动作，结果就不一样
     /// Every name in the sample as a pipeline and as a rule, answering differently by position: mistaking the
     /// rule or the kind of actions gives another result
