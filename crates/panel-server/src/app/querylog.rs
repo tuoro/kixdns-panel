@@ -1144,26 +1144,31 @@ impl Scanned {
         records: &[std::ops::Range<usize>],
         settings: &QueryLogSettings,
     ) -> serde_json::Result<Vec<Self>> {
-        let mut json = Vec::with_capacity(1024);
-        (first..)
-            .zip(records)
-            .map(|(seq, range)| {
-                json.clear();
-                let summary = querylog_records::write_record(seq, &page[range.clone()], &mut json)
-                    .ok_or_else(|| {
-                        serde::de::Error::custom(format!("第 {seq} 条编好的记录读不通"))
-                    })?;
-                let ignored = settings.ignores(summary.qname);
-                let candidate = Candidate::of(Some(summary.outcome), summary.rcode.as_deref());
-                let time_unix_ms = summary.time_unix_ms;
-                let text = std::str::from_utf8(&json).map_err(serde::de::Error::custom)?;
-                Ok(Self {
-                    entry: KernelEntry::new(text.into(), Some(seq), Some(time_unix_ms)),
-                    ignored,
-                    candidate,
-                })
+        // 一页的 JSON 写进同一块内存，各条只记自己在哪一段 / A page's JSON goes into one block of memory, each record
+        // keeping only where its stretch is
+        let mut text = Vec::with_capacity(records.len() * 512);
+        let mut read = Vec::with_capacity(records.len());
+        for (seq, range) in (first..).zip(records) {
+            let start = text.len();
+            let summary = querylog_records::write_record(seq, &page[range.clone()], &mut text)
+                .ok_or_else(|| serde::de::Error::custom(format!("第 {seq} 条编好的记录读不通")))?;
+            read.push((
+                seq,
+                start..text.len(),
+                summary.time_unix_ms,
+                settings.ignores(summary.qname),
+                Candidate::of(Some(summary.outcome), summary.rcode.as_deref()),
+            ));
+        }
+        let text = Arc::new(text);
+        Ok(read
+            .into_iter()
+            .map(|(seq, range, time_unix_ms, ignored, candidate)| Self {
+                entry: KernelEntry::in_page(Arc::clone(&text), range, seq, time_unix_ms),
+                ignored,
+                candidate,
             })
-            .collect()
+            .collect())
     }
 
     /// 那几项；带了面板自己的字段名时为 None，整条解析 / The items; None with the panel's own field names, and the
