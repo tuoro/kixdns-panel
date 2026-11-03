@@ -60,14 +60,21 @@ const PAGES_PER_TICK: usize = 20;
 /// them over. While the kernel builds a page's JSON, its core answers no DNS for those milliseconds, so smaller pages
 /// keep DNS tail latency low; even forty thousand records a second take only some eighty pages
 const WAITING_PAGE: usize = 500;
+/// 内核能交编好的记录时一页取多少：一页只是复制字节，不占它那颗核几毫秒。一页大些，每条分摊的请求和系统调用就少，内核和
+/// 面板都省；再大尾延迟反而变差
+/// How many records a page holds from a kernel handing over encoded records: a page is only copied
+/// bytes and takes its core no milliseconds. With a larger page each record bears less of the request and
+/// the system calls, on the kernel and the panel alike; larger still and tail latency gets worse
+const RECORDS_PAGE: usize = 1_000;
 /// 内核会等着交时，攒不满一页最多等多久 / How long a kernel that can make the panel wait holds a page that has not filled
 const WAIT: Duration = Duration::from_secs(1);
 /// 积压时同时要着几页：每页在后台线程上读，几页一起读；写还是按编号一页接一页
 /// How many pages are asked for at once while records pile up: each is read on a blocking thread, several together;
 /// writing still goes one page after another, in order
 const IN_FLIGHT: usize = 4;
-/// 几页同时取时，一轮最多要这么多页（三万二千条），然后照常收拾一次
-/// At most this many pages a round when several are taken at once (32,000 records), then tidying comes round as usual
+/// 几页同时取时，一轮最多要这么多页（三万二千条，编好的记录六万四千条），然后照常收拾一次
+/// At most this many pages a round when several are taken at once (32,000 records, 64,000 encoded ones), then
+/// tidying comes round as usual
 const PIPELINE_PAGES: usize = 64;
 /// 没有积压时多久取一次，也是收拾（保留时间、空间上限）的间隔
 /// How often to collect with nothing piling up, and how often to tidy (retention, space cap)
@@ -514,6 +521,17 @@ enum Handover {
     Records,
 }
 
+impl Handover {
+    /// 内核会等着交时一页取多少 / How many records a page holds from a kernel that can make the panel wait
+    fn waiting_page(self) -> usize {
+        if self == Self::Records {
+            RECORDS_PAGE
+        } else {
+            WAITING_PAGE
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub(super) enum CollectError {
     #[error(transparent)]
@@ -582,7 +600,11 @@ impl Collector {
         }
         let mut more = false;
         let waits = self.handover >= Handover::Waits;
-        let full_page = if waits { WAITING_PAGE } else { KERNEL_PAGE };
+        let full_page = if waits {
+            self.handover.waiting_page()
+        } else {
+            KERNEL_PAGE
+        };
         let mut walk = Walk {
             cursor: store.cursor(),
             full_page,
@@ -681,6 +703,7 @@ impl Collector {
         mut cursor: Cursor,
     ) -> Result<(usize, bool), CollectError> {
         let mut in_flight = InFlight::default();
+        let page_size = self.handover.waiting_page();
         let (mut moved, mut asked, mut caught_up) = (0, 0, false);
         // 整页都被挤掉了、还没写下的那几页：最后一页，和更早几页漏掉的条数。游标写下时才存，中途出错的话下一轮从存下的
         // 游标重取，内核照样说漏了几条
@@ -689,14 +712,14 @@ impl Collector {
         // and the kernel tells the gap once more
         let mut gone: Option<(KernelPage, u64, u64)> = None;
         loop {
-            let mut next = in_flight.next().unwrap_or(cursor.seq);
+            let mut next = in_flight.next(page_size).unwrap_or(cursor.seq);
             while !caught_up
                 && !in_flight.waiting()
                 && in_flight.0.len() < IN_FLIGHT
                 && asked < PIPELINE_PAGES
             {
                 let full = self.newest.is_some_and(|(instance, newest)| {
-                    instance == cursor.instance && newest >= next + WAITING_PAGE as u64
+                    instance == cursor.instance && newest >= next + page_size as u64
                 });
                 // 存好的说写下了的游标：整页被挤掉、还没写下的那几页不算 / What is stored is the cursor written down:
                 // pages pushed out whole and not yet written do not count
@@ -710,13 +733,14 @@ impl Collector {
                             instance: cursor.instance,
                             stored,
                             after: next,
+                            page_size,
                             waits: !full,
                             records: self.handover == Handover::Records,
                         },
                     ),
                 ));
                 asked += 1;
-                next += WAITING_PAGE as u64;
+                next += page_size as u64;
             }
             let Some((after, _, fetching)) = in_flight.0.pop_front() else {
                 break;
@@ -1277,10 +1301,8 @@ struct InFlight(VecDeque<(u64, bool, tokio::task::JoinHandle<Fetched>)>);
 
 impl InFlight {
     /// 下一页从哪儿要；一页也没要着时为 None / Where the next page is asked from; None with no page asked for
-    fn next(&self) -> Option<u64> {
-        self.0
-            .back()
-            .map(|(after, _, _)| after + WAITING_PAGE as u64)
+    fn next(&self, page_size: usize) -> Option<u64> {
+        self.0.back().map(|(after, _, _)| after + page_size as u64)
     }
 
     /// 最后要的那页让内核等着：它回来之前不知道后面还有没有 / The last page asked for lets the kernel wait: until it
@@ -1312,6 +1334,7 @@ struct Take {
     instance: u64,
     stored: u64,
     after: u64,
+    page_size: usize,
     waits: bool,
     records: bool,
 }
@@ -1325,18 +1348,19 @@ fn fetch(state: &AppState, take: Take) -> tokio::task::JoinHandle<Fetched> {
         instance,
         stored,
         after,
+        page_size,
         waits,
         records,
     } = take;
     let waiting = QueryLogWait {
         instance: Some(instance),
         stored: Some(stored),
-        until: (!waits).then_some(after + WAITING_PAGE as u64),
+        until: (!waits).then_some(after + page_size as u64),
         records,
         wait: if waits { WAIT } else { Duration::ZERO },
     };
     tokio::spawn(async move {
-        let mut page = control.querylog(after, WAITING_PAGE, Some(waiting)).await?;
+        let mut page = control.querylog(after, page_size, Some(waiting)).await?;
         Ok(tokio::task::spawn_blocking(move || {
             let entries = read_entries(&mut page, &settings);
             (page, entries)
