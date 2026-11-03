@@ -22,7 +22,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, ErrorKind, Read, Write};
 use std::net::IpAddr;
-use std::ops::ControlFlow;
+use std::ops::{ControlFlow, Range};
 use std::os::unix::fs::{FileExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -107,10 +107,27 @@ impl StaticKind {
 pub struct KernelEntry {
     seq: Option<u64>,
     time_unix_ms: Option<u64>,
-    /// 一个 JSON 对象的原文，校验过，没有面板自己写的 `id`、`instance`、`static_kind`
-    /// The text of one JSON object, already checked, without the `id`, `instance` and `static_kind` the panel writes
-    /// itself
-    raw: Box<str>,
+    raw: RawEntry,
+}
+
+/// 一个 JSON 对象的原文，校验过或者面板自己写的，没有面板自己写的 `id`、`instance`、`static_kind`
+/// The text of one JSON object, already checked or written by the panel itself, without the `id`, `instance` and
+/// `static_kind` the panel writes itself
+#[derive(Debug, Clone)]
+enum RawEntry {
+    Own(Box<str>),
+    /// 一页的文字里的一段：一页共用一块内存，不用每条分配 / A stretch of a page's text: the page shares one block of
+    /// memory, with nothing allocated per record
+    InPage(Arc<Vec<u8>>, Range<usize>),
+}
+
+impl RawEntry {
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Own(text) => text.as_bytes(),
+            Self::InPage(page, range) => &page[range.clone()],
+        }
+    }
 }
 
 impl KernelEntry {
@@ -122,7 +139,18 @@ impl KernelEntry {
         Self {
             seq,
             time_unix_ms,
-            raw,
+            raw: RawEntry::Own(raw),
+        }
+    }
+
+    /// 原文是一页文字里的一段，由面板自己写成（见 `querylog_records`）/ The text is a stretch of a page's text, written by
+    /// the panel itself (see `querylog_records`)
+    #[must_use]
+    pub fn in_page(page: Arc<Vec<u8>>, range: Range<usize>, seq: u64, time_unix_ms: u64) -> Self {
+        Self {
+            seq: Some(seq),
+            time_unix_ms: Some(time_unix_ms),
+            raw: RawEntry::InPage(page, range),
         }
     }
 
@@ -152,7 +180,7 @@ impl KernelEntry {
     /// # Errors
     /// 原文不是一个 JSON 对象时 / When the text is not a JSON object
     pub fn fields(&self) -> serde_json::Result<Map<String, Value>> {
-        serde_json::from_str(&self.raw)
+        serde_json::from_slice(self.raw.bytes())
     }
 
     /// 写成存储的一行：`id`、`instance`，内核的字段，有就再加 `static_kind`
@@ -164,18 +192,29 @@ impl KernelEntry {
         static_kind: Option<StaticKind>,
         out: &mut Vec<u8>,
     ) {
-        let object = &*self.raw;
-        let inner = object[1..object.len() - 1].trim();
-        out.extend_from_slice(format!("{{\"id\":{id},\"instance\":{instance}").as_bytes());
+        let object = self.raw.bytes();
+        let inner = object[1..object.len() - 1].trim_ascii();
+        out.extend_from_slice(b"{\"id\":");
+        write_number(id, out);
+        out.extend_from_slice(b",\"instance\":");
+        write_number(instance, out);
         if !inner.is_empty() {
             out.push(b',');
-            out.extend_from_slice(inner.as_bytes());
+            out.extend_from_slice(inner);
         }
         if let Some(kind) = static_kind {
-            out.extend_from_slice(format!(",\"static_kind\":\"{}\"", kind.label()).as_bytes());
+            out.extend_from_slice(b",\"static_kind\":\"");
+            out.extend_from_slice(kind.label().as_bytes());
+            out.push(b'"');
         }
         out.push(b'}');
     }
+}
+
+/// 写一个数字，不经格式化那一套，也不分配 / Writes a number without the formatting machinery or an allocation
+fn write_number(number: u64, out: &mut Vec<u8>) {
+    // 写进 Vec 不会失败 / Writing into a Vec cannot fail
+    let _ = serde::Serializer::serialize_u64(&mut serde_json::Serializer::new(&mut *out), number);
 }
 
 /// 要写下的一条 / One record to write

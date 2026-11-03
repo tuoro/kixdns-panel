@@ -1523,6 +1523,22 @@ fn written(record: &Record, id: u64) -> (Map<String, Value>, Vec<String>) {
 /// 内核的一条记录照原文写下：字段、值和顺序都和原来拆开再写回去的一样，转义照原文留着
 /// A kernel record is written from its text: fields, values and order are those of the old way that
 /// took it apart and wrote it back, and its escapes stay as they came
+/// 原文两头的空白不进存储的一行：只有空白的对象也写得出合法的 JSON / Whitespace at the ends of the text stays out of the
+/// stored line, so an object of only whitespace is still written as valid JSON
+#[test]
+fn whitespace_around_a_kernel_record_is_left_out() {
+    let written = |text: &str| {
+        let mut line = Vec::new();
+        KernelEntry::new(text.into(), None, None).write_line(1, 2, None, &mut line);
+        String::from_utf8(line).unwrap()
+    };
+    assert_eq!(written("{ \n}"), r#"{"id":1,"instance":2}"#);
+    assert_eq!(
+        written("{ \"seq\":5\n}"),
+        r#"{"id":1,"instance":2,"seq":5}"#
+    );
+}
+
 #[test]
 fn a_kernel_record_is_written_from_its_text() {
     let text = r#"{"seq":5,"time_unix_ms":1792065600005,"qname":"caf\u00e9.example","outcome":"static","answers":[],"steps":[{"kind":"rule","decision":"static"}]}"#;
