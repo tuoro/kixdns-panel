@@ -2357,6 +2357,9 @@ struct FakeQueryLog {
     /// 从头来要编好的记录时交的一页（内核生成的样本）/ The page handed over when encoded records are asked for from the
     /// start (a sample the kernel generated)
     records_sample: Option<Vec<u8>>,
+    /// 给了就照要的范围交编好的记录，每条都是这一条 / When given, encoded records are handed over for the range asked,
+    /// each being this one
+    repeated_record: Option<Vec<u8>>,
     /// 来要编好的记录的次数 / How many takes asked for encoded records
     records_takes: usize,
 }
@@ -2405,13 +2408,15 @@ fn fake_query_log(ring: Vec<Value>) -> SharedQueryLog {
         slow_takes: Vec::new(),
         ignores_until: false,
         records_sample: None,
+        repeated_record: None,
         records_takes: 0,
     }))
 }
 
-/// 编好的记录那种写法的一页：从头来要时是样本，别的时候一条也没有
-/// A page in the encoded-records way: the sample when asked from the start, otherwise no records
-fn fake_records_page(log: &FakeQueryLog, after: u64) -> Vec<u8> {
+/// 编好的记录那种写法的一页：给了重复的那条就照 `page` 的范围交，否则从头来要时是样本，别的时候一条也没有
+/// A page in the encoded-records way: with the repeated record given, the range `page` holds; otherwise the
+/// sample when asked from the start, and no records at any other time
+fn fake_records_page(log: &FakeQueryLog, after: u64, page: &Value) -> Vec<u8> {
     fn number(page: &mut Vec<u8>, mut value: u64) {
         while value >= 0x80 {
             page.push(value.to_le_bytes()[0] | 0x80);
@@ -2423,6 +2428,25 @@ fn fake_records_page(log: &FakeQueryLog, after: u64) -> Vec<u8> {
         && let Some(sample) = &log.records_sample
     {
         return sample.clone();
+    }
+    if let Some(record) = &log.repeated_record {
+        let entries = page["entries"].as_array().unwrap();
+        let mut written = crate::querylog_records::MAGIC.to_vec();
+        let missed = page["missed"].as_u64().unwrap();
+        for value in [1, log.instance, 16_384, log.newest, missed, log.untracked] {
+            number(&mut written, value);
+        }
+        written.push(u8::from(page["more"].as_bool().unwrap()));
+        let first = entries
+            .first()
+            .map_or(after + 1, |entry| entry["seq"].as_u64().unwrap());
+        number(&mut written, first);
+        number(&mut written, entries.len() as u64);
+        for _ in entries {
+            number(&mut written, record.len() as u64);
+            written.extend_from_slice(record);
+        }
+        return written;
     }
     let mut page = crate::querylog_records::MAGIC.to_vec();
     for value in [1, log.instance, 16_384, log.newest, 0, log.untracked] {
@@ -2559,7 +2583,7 @@ fn start_fake_querylog_kernel(
                     let page = fake_querylog_page(&mut log, &query);
                     if records {
                         log.records_takes += 1;
-                        return fake_records_page(&log, query["after"]).into_response();
+                        return fake_records_page(&log, query["after"], &page).into_response();
                     }
                     axum::Json(page).into_response()
                 }
@@ -2889,6 +2913,71 @@ async fn a_backlog_is_taken_several_pages_at_once() {
     );
 }
 
+/// 内核能交编好的记录时，积压按一千条一页取，每页只到它自己的末尾，一条不重不漏
+/// With a kernel handing over encoded records a backlog is taken a thousand to a page, each only to its
+/// own end, with nothing twice and nothing missed
+#[tokio::test]
+async fn a_backlog_of_encoded_records_is_taken_a_thousand_to_a_page() {
+    const RECORDS: &[u8] = include_bytes!("../../tests/fixtures/querylog-records1.bin");
+    let directory = tempdir().unwrap();
+    std::fs::write(directory.path().join("pipeline.json"), "{}").unwrap();
+    let state = test_state(&directory).await;
+    let log = fake_query_log(vec![kernel_entry(1, "a.example", "A")]);
+    {
+        let mut log = log.lock().unwrap();
+        log.capabilities = RANGES
+            .iter()
+            .copied()
+            .chain(["querylog_records_v1"])
+            .collect();
+        let sample = crate::querylog_records::RecordsPage::read(RECORDS).unwrap();
+        log.repeated_record = Some(RECORDS[sample.records[0].clone()].to_vec());
+    }
+    let _kernel = start_fake_querylog_kernel(directory.path(), log.clone());
+    let mut collector = super::querylog::Collector::default();
+    collector.tick(&state).await.unwrap();
+    {
+        let mut log = log.lock().unwrap();
+        log.ring
+            .extend((2..=6_001).map(|seq| kernel_entry(seq, "a.example", "A")));
+        log.newest = 6_001;
+        log.takes.clear();
+    }
+    assert_eq!(
+        collector.tick(&state).await.unwrap(),
+        std::time::Duration::ZERO
+    );
+    let mut takes = log.lock().unwrap().takes.clone();
+    takes.sort_by_key(|take| take.after);
+    let ahead = |after, stored| FakeTake {
+        after,
+        until: Some(after + 1_000),
+        instance: Some(100),
+        stored: Some(stored),
+        wait_ms: Some(0),
+    };
+    let waiting = |after, stored| FakeTake {
+        until: None,
+        wait_ms: Some(1_000),
+        ..ahead(after, stored)
+    };
+    assert_eq!(
+        takes,
+        [
+            waiting(1, 1),
+            ahead(1_001, 1_001),
+            ahead(2_001, 1_001),
+            ahead(3_001, 1_001),
+            ahead(4_001, 1_001),
+            ahead(5_001, 2_001),
+            waiting(6_001, 3_001),
+        ]
+    );
+    let stored = querylog_trail(&state);
+    let qname = stored[0].split(' ').next().unwrap();
+    assert_eq!(stored, trail(qname, 1..=6_001).collect::<Vec<_>>());
+}
+
 /// 先要着的几页里，最前面那页拼得慢，这期间交接区前面被挤掉了一大截：它那一段整段不在了，记成一行漏记；后面那几页
 /// 早就拼好了，各管各的一段，照常写下。下一轮接着往后，整段整段不在了的并成一行漏记，和后面的记录一起写。一条不重
 /// Among the pages asked for ahead, the one in front is slow to build, and meanwhile a long stretch at the front of
@@ -3162,11 +3251,11 @@ async fn encoded_records_are_stored_as_the_kernel_writes_them() {
     collector.tick(&state).await.unwrap();
     collector.tick(&state).await.unwrap();
     let log = log.lock().unwrap();
-    assert!(
-        log.takes.iter().any(|take| take.until == Some(650)),
-        "{:?}",
-        log.takes
-    );
+    // 编好的记录一页取一千条：150 到 1150 是整页；1150 到 2000 不满一页，内核等着，不给 `until`
+    // Encoded records come a thousand to a page: 150 to 1150 is whole; 1150 to 2000 is short of a page, so
+    // the kernel waits and no `until` is given
+    let ahead: Vec<u64> = log.takes.iter().filter_map(|take| take.until).collect();
+    assert_eq!(ahead, [1_150], "{:?}", log.takes);
     assert_eq!(log.records_takes, log.takes.len());
 }
 
