@@ -13,8 +13,6 @@ on:
       - scripts/fetch-kixdns-release.sh
       - scripts/fetch-builtin-geosite.sh
       - scripts/verify-geosite.py
-      - scripts/kixdns-artifact-identity.sh
-      - scripts/lock-reference.sh
       - scripts/install.sh
       - scripts/one-click-install.sh
       - scripts/panel-online-update.sh
@@ -39,8 +37,6 @@ on:
       - scripts/fetch-kixdns-release.sh
       - scripts/fetch-builtin-geosite.sh
       - scripts/verify-geosite.py
-      - scripts/kixdns-artifact-identity.sh
-      - scripts/lock-reference.sh
       - scripts/install.sh
       - scripts/one-click-install.sh
       - scripts/panel-online-update.sh
@@ -263,35 +259,6 @@ jobs:
       - name: Verify systemd unit-name rule matches panel-server
         shell: bash
         run: bash scripts/test-unit-name-rule.sh
-
-      - name: Verify upstream lock catalog
-        shell: bash
-        run: |
-          catalog="upstreams/actions/$(jq -r .official_run_id upstream.lock.json).json"
-          cmp --silent upstream.lock.json "$catalog"
-          for architecture in x86_64 arm64; do
-            [[ "$(bash scripts/kixdns-artifact-identity.sh upstream.lock.json "$architecture")" == \
-              "$(bash scripts/kixdns-artifact-identity.sh "$catalog" "$architecture")" ]]
-          done
-
-      - name: Verify panel-only fingerprint stability
-        shell: bash
-        run: |
-          identities_before="$(
-            for architecture in x86_64 arm64; do
-              bash scripts/kixdns-artifact-identity.sh upstream.lock.json "$architecture"
-            done
-          )"
-          cargo_lock_backup="$(mktemp)"
-          cp -- Cargo.lock "$cargo_lock_backup"
-          trap 'cp -- "$cargo_lock_backup" Cargo.lock; rm -f -- "$cargo_lock_backup"' EXIT
-          printf '\n# panel-only dependency change\n' >> Cargo.lock
-          identities_after="$(
-            for architecture in x86_64 arm64; do
-              bash scripts/kixdns-artifact-identity.sh upstream.lock.json "$architecture"
-            done
-          )"
-          [[ "$identities_before" == "$identities_after" ]]
 
   build:
     name: Build Linux ${{ matrix.arch }}

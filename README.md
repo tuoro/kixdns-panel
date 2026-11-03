@@ -53,6 +53,5 @@ VITE_DEMO_MODE=true npm run dev   # 演示数据模式
 - [系统架构](docs/architecture.md)：组件边界、构建流水线与安全设计
 - [增强控制协议 v1](docs/control-protocol-v1.md)：面板与 KixDNS 之间的本机接口
 - [配置能力契约](docs/config-capabilities.md)：新配置字段的兼容规则
-- [补丁说明](patches/README.md)：v3.4.0 及更早的面板仍在用的冻结补丁集 p28
 
 许可证：GPL-3.0-only。
