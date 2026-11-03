@@ -3259,6 +3259,71 @@ async fn encoded_records_are_stored_as_the_kernel_writes_them() {
     assert_eq!(log.records_takes, log.takes.len());
 }
 
+/// 编好的记录里规则直接给的回答，按配置里那条规则认出是拦截，和走 JSON 时一样
+/// A rule's own answer among encoded records is told a block by that rule in the config, as with JSON
+#[tokio::test]
+async fn a_block_among_encoded_records_is_told_by_its_rule() {
+    const RECORDS: &[u8] = include_bytes!("../../tests/fixtures/querylog-records1.bin");
+    const TEXT: &str = include_str!("../../tests/fixtures/querylog-records1.json");
+    let text: Value = serde_json::from_str(TEXT).unwrap();
+    let (at, decided) = text["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry["outcome"] == "static")
+        .find_map(|(at, entry)| {
+            let steps = entry["steps"].as_array()?;
+            let decided = steps
+                .iter()
+                .rev()
+                .find(|step| step["decision"] == "static")?;
+            decided.get("rule").map(|_| (at, decided.clone()))
+        })
+        .expect("the sample has a rule's own answer");
+    let directory = tempdir().unwrap();
+    let deny = serde_json::json!([{"type": "deny"}]);
+    std::fs::write(
+        directory.path().join("pipeline.json"),
+        serde_json::json!({
+            "pipelines": [{"id": decided["pipeline"], "rules": [{
+                "name": decided["rule"], "matchers": [{"type": "any"}], "actions": deny,
+                "response_actions_on_match": deny, "response_actions_on_miss": deny,
+            }]}],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let state = test_state(&directory).await;
+    let log = fake_query_log(vec![kernel_entry(1, "a.example", "A")]);
+    {
+        let mut log = log.lock().unwrap();
+        log.capabilities = RANGES
+            .iter()
+            .copied()
+            .chain(["querylog_records_v1"])
+            .collect();
+        let sample = crate::querylog_records::RecordsPage::read(RECORDS).unwrap();
+        log.repeated_record = Some(RECORDS[sample.records[at].clone()].to_vec());
+    }
+    let _kernel = start_fake_querylog_kernel(directory.path(), log.clone());
+    let mut collector = super::querylog::Collector::default();
+    collector.tick(&state).await.unwrap();
+    let items = querylog_items(&state);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["outcome"], "blocked", "{:?}", items[0]);
+    // 有游标以后走几页同时取的那条路，一样认得出 / With a cursor the way of taking several pages at once tells the same
+    {
+        let mut log = log.lock().unwrap();
+        log.ring.push(kernel_entry(2, "a.example", "A"));
+        log.newest = 2;
+    }
+    collector.tick(&state).await.unwrap();
+    let items = querylog_items(&state);
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["outcome"], "blocked", "{:?}", items[0]);
+}
+
 /// 内核的一条查询记录 / One kernel query record
 fn kernel_entry(seq: u64, qname: &str, qtype: &str) -> Value {
     serde_json::json!({

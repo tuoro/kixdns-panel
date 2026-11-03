@@ -599,6 +599,7 @@ impl Collector {
             taken = moved;
         }
         let mut more = false;
+        let encoded_rules = self.encoded_rules(state).await;
         let waits = self.handover >= Handover::Waits;
         let full_page = if waits {
             self.handover.waiting_page()
@@ -656,8 +657,8 @@ impl Collector {
                 continue;
             }
             let settings = state.querylog.settings();
-            let entries =
-                read_entries(&mut page, &settings).map_err(|error| self.unreadable(&error))?;
+            let entries = read_entries(&mut page, &settings, encoded_rules.as_deref())
+                .map_err(|error| self.unreadable(&error))?;
             taken += entries.len();
             more = page.more;
             let oversized = if walk.skips_count { walk.skipped } else { 0 };
@@ -704,6 +705,7 @@ impl Collector {
     ) -> Result<(usize, bool), CollectError> {
         let mut in_flight = InFlight::default();
         let page_size = self.handover.waiting_page();
+        let encoded_rules = self.encoded_rules(state).await;
         let (mut moved, mut asked, mut caught_up) = (0, 0, false);
         // 整页都被挤掉了、还没写下的那几页：最后一页，和更早几页漏掉的条数。游标写下时才存，中途出错的话下一轮从存下的
         // 游标重取，内核照样说漏了几条
@@ -737,6 +739,7 @@ impl Collector {
                             waits: !full,
                             records: self.handover == Handover::Records,
                         },
+                        encoded_rules.clone(),
                     ),
                 ));
                 asked += 1;
@@ -824,7 +827,10 @@ impl Collector {
         cursor: Option<Cursor>,
         oversized: u64,
     ) -> Result<Cursor, CollectError> {
-        let rules = if entries.iter().any(|entry| entry.candidate != Candidate::No) {
+        let rules = if entries
+            .iter()
+            .any(|entry| entry.candidate.waits_for_rules())
+        {
             self.rules(state).await
         } else {
             None
@@ -1022,14 +1028,7 @@ impl Collector {
                 let fields = entry.fields().ok()?;
                 rules.and_then(|rules| rules.classify(&fields))
             };
-            let static_kind = match candidate {
-                Candidate::Static => classified(),
-                // 「拦截 · SERVFAIL」：内核把 SERVFAIL 排在固定回答前面，记成了失败；按定下它的规则认回拦截
-                // 「Block · SERVFAIL」: the kernel ranks SERVFAIL above a fixed answer and calls it failed; the rule
-                // that decided it makes it a block again
-                Candidate::Servfail => classified().filter(|kind| *kind == StaticKind::Blocked),
-                Candidate::No => None,
-            };
+            let static_kind = candidate.kind(classified);
             records.push(Record::Entry {
                 instance: page.instance,
                 entry,
@@ -1040,6 +1039,16 @@ impl Collector {
         // With several pages taken at once, a page written later may have been built earlier with a smaller count: it
         // is only ever raised, or the next page would count the difference again
         (records, next, (page.instance, page.untracked.max(base)))
+    }
+
+    /// 编好的记录读的时候就认规则回答，规则表要先拿到手；走 JSON 的等写的时候才要
+    /// Encoded records are told as they are read, so the rule table is needed first; JSON waits until writing
+    async fn encoded_rules(&mut self, state: &AppState) -> Option<Arc<RuleIndex>> {
+        if self.handover == Handover::Records {
+            self.rules(state).await
+        } else {
+            None
+        }
     }
 
     /// 内核正在用的配置建的规则表；内核换了配置（摘要变了）才重建，和磁盘上的对不上时不用它
@@ -1081,6 +1090,8 @@ enum Candidate {
     No,
     Static,
     Servfail,
+    /// 读的时候就按规则表认过了（编好的记录）/ Told by the rule table when it was read (encoded records)
+    Known(Option<StaticKind>),
 }
 
 impl Candidate {
@@ -1090,6 +1101,25 @@ impl Candidate {
             (Some("failed"), Some("SERVFAIL")) => Self::Servfail,
             _ => Self::No,
         }
+    }
+
+    /// 算哪种规则回答。`classified` 是定下它的那条规则给的那一种，只有可能是规则回答时才用
+    /// 「拦截 · SERVFAIL」：内核把 SERVFAIL 排在固定回答前面，记成了失败；按定下它的规则认回拦截
+    /// Which kind of a rule's answer it is. `classified` is the kind the rule that decided it gives, used
+    /// only when a rule may have answered. 「Block · SERVFAIL」: the kernel ranks SERVFAIL above a fixed answer
+    /// and calls it failed; the rule that decided it makes it a block again
+    fn kind(self, classified: impl FnOnce() -> Option<StaticKind>) -> Option<StaticKind> {
+        match self {
+            Self::No => None,
+            Self::Static => classified(),
+            Self::Servfail => classified().filter(|kind| *kind == StaticKind::Blocked),
+            Self::Known(kind) => kind,
+        }
+    }
+
+    /// 还要等规则表才认得出 / Still waiting for the rule table to tell
+    fn waits_for_rules(self) -> bool {
+        matches!(self, Self::Static | Self::Servfail)
     }
 }
 
@@ -1167,6 +1197,7 @@ impl Scanned {
         first: u64,
         records: &[std::ops::Range<usize>],
         settings: &QueryLogSettings,
+        rules: Option<&RuleIndex>,
     ) -> serde_json::Result<Vec<Self>> {
         // 一页的 JSON 写进同一块内存，各条只记自己在哪一段 / A page's JSON goes into one block of memory, each record
         // keeping only where its stretch is
@@ -1176,12 +1207,20 @@ impl Scanned {
             let start = text.len();
             let summary = querylog_records::write_record(seq, &page[range.clone()], &mut text)
                 .ok_or_else(|| serde::de::Error::custom(format!("第 {seq} 条编好的记录读不通")))?;
+            // 只有可能是规则直接给的回答才查规则表，定下它的那条规则写的时候已经读到了 / Only a possible rule-given answer
+            // goes to the rule table, the rule that decided it having been read while writing
+            let candidate = match Candidate::of(Some(summary.outcome), summary.rcode.as_deref()) {
+                Candidate::No => Candidate::No,
+                candidate => Candidate::Known(
+                    candidate.kind(|| rules?.classify_decided(summary.decided.as_ref()?)),
+                ),
+            };
             read.push((
                 seq,
                 start..text.len(),
                 summary.time_unix_ms,
                 settings.ignores(summary.qname),
-                Candidate::of(Some(summary.outcome), summary.rcode.as_deref()),
+                candidate,
             ));
         }
         let text = Arc::new(text);
@@ -1341,7 +1380,11 @@ struct Take {
 
 /// 在后台要一页、回来就在后台线程读好 / Asks for a page in the background and reads it on a blocking thread once it
 /// arrives
-fn fetch(state: &AppState, take: Take) -> tokio::task::JoinHandle<Fetched> {
+fn fetch(
+    state: &AppState,
+    take: Take,
+    rules: Option<Arc<RuleIndex>>,
+) -> tokio::task::JoinHandle<Fetched> {
     let control = state.control.clone();
     let settings = state.querylog.settings();
     let Take {
@@ -1362,7 +1405,7 @@ fn fetch(state: &AppState, take: Take) -> tokio::task::JoinHandle<Fetched> {
     tokio::spawn(async move {
         let mut page = control.querylog(after, page_size, Some(waiting)).await?;
         Ok(tokio::task::spawn_blocking(move || {
-            let entries = read_entries(&mut page, &settings);
+            let entries = read_entries(&mut page, &settings, rules.as_deref());
             (page, entries)
         })
         .await?)
@@ -1374,6 +1417,7 @@ fn fetch(state: &AppState, take: Take) -> tokio::task::JoinHandle<Fetched> {
 fn read_entries(
     page: &mut KernelPage,
     settings: &QueryLogSettings,
+    rules: Option<&RuleIndex>,
 ) -> serde_json::Result<Vec<Scanned>> {
     let entries = std::mem::replace(&mut page.entries, QueryLogEntries::Raw(Vec::new()));
     // 编好的记录：写成 JSON 时顺带读出要看的几项，不用再解析 / Encoded records: writing the JSON reads the items along the
@@ -1384,7 +1428,7 @@ fn read_entries(
         records,
     } = &entries
     {
-        return Scanned::read_records(page, *first, records, settings);
+        return Scanned::read_records(page, *first, records, settings, rules);
     }
     // 整页原文一遍读完；读不下去就整页照常解析，再一条条读 / The page's text read in one pass; failing that, the page is
     // parsed whole and read record by record
@@ -1478,21 +1522,119 @@ mod tests {
         const KEY: &str = ",\"entries\":[";
         let settings = ignoring("x.example");
         let page = querylog_records::RecordsPage::read(RECORDS).unwrap();
+        let rules = sample_rules();
         let from_records =
-            Scanned::read_records(RECORDS, page.first, &page.records, &settings).unwrap();
+            Scanned::read_records(RECORDS, page.first, &page.records, &settings, Some(&rules))
+                .unwrap();
         let at = TEXT.find(KEY).unwrap() + KEY.len();
         let from_text = Scanned::read_text(TEXT, at, &settings).expect("read in one pass");
-        same(&from_records, &from_text);
+        assert_eq!(from_records.len(), from_text.len());
+        for (encoded, text) in from_records.iter().zip(&from_text) {
+            assert_eq!(encoded.entry.seq(), text.entry.seq());
+            assert_eq!(encoded.entry.time_unix_ms(), text.entry.time_unix_ms());
+            let fields = text.entry.fields().unwrap();
+            assert_eq!(encoded.entry.fields().unwrap(), fields);
+            assert_eq!(encoded.ignored, text.ignored);
+            // 读的时候就认好的，和写的时候拿 JSON 认的一样 / What is told while reading is what JSON tells while writing
+            let told = match text.candidate {
+                Candidate::No => Candidate::No,
+                candidate => Candidate::Known(candidate.kind(|| rules.classify(&fields))),
+            };
+            assert_eq!(encoded.candidate, told);
+        }
         assert!(from_records.iter().any(|record| record.ignored));
         for candidate in [Candidate::No, Candidate::Static, Candidate::Servfail] {
-            assert!(
-                from_records
-                    .iter()
-                    .any(|record| record.candidate == candidate)
-            );
+            assert!(from_text.iter().any(|record| record.candidate == candidate));
         }
+        assert!(
+            from_records
+                .iter()
+                .any(|record| matches!(record.candidate, Candidate::Known(Some(_))))
+        );
         let broken = page.records[0].start..page.records[0].end - 1;
-        assert!(Scanned::read_records(RECORDS, page.first, &[broken], &settings).is_err());
+        assert!(Scanned::read_records(RECORDS, page.first, &[broken], &settings, None).is_err());
+    }
+
+    /// 内核记成失败的 SERVFAIL，定下它的规则是拦截才认回拦截，规则给的是自定义回答时还是失败；内核说是规则回答的照规则
+    /// 认；不是规则回答的、已经认好的不再问规则
+    /// A SERVFAIL the kernel calls failed is a block only when the rule that decided it blocks, and stays
+    /// failed when that rule gives a custom answer; what the kernel calls static goes by the rule; neither what
+    /// no rule answered nor what is already told asks the rule
+    #[test]
+    fn only_a_blocking_rule_makes_a_servfail_a_block() {
+        let blocked = || Some(StaticKind::Blocked);
+        let answered = || Some(StaticKind::Answered);
+        assert_eq!(Candidate::Servfail.kind(blocked), Some(StaticKind::Blocked));
+        assert_eq!(Candidate::Servfail.kind(answered), None);
+        assert_eq!(Candidate::Static.kind(answered), Some(StaticKind::Answered));
+        assert_eq!(Candidate::No.kind(blocked), None);
+        assert_eq!(Candidate::Known(None).kind(blocked), None);
+    }
+
+    /// 样本里出现的每个名字都当 Pipeline、当规则，按位置给不同的回答：认错了哪条规则、哪种动作，结果就不一样
+    /// Every name in the sample as a pipeline and as a rule, answering differently by position: mistaking the
+    /// rule or the kind of actions gives another result
+    fn sample_rules() -> RuleIndex {
+        let names = [
+            "main",
+            "abroad",
+            "名字",
+            "q\"uote",
+            "back\\slash",
+            "tab\tname",
+            "udp://192.0.2.53:53",
+            "https://doh.example/dns-query",
+        ];
+        let block = serde_json::json!([{"type": "deny"}]);
+        let custom = serde_json::json!([{"type": "static_ip_response", "ip": "192.0.2.9"}]);
+        let pick = |blocks: bool| if blocks { &block } else { &custom };
+        let rules: Vec<serde_json::Value> = names
+            .iter()
+            .enumerate()
+            .map(|(at, name)| {
+                serde_json::json!({
+                    "name": name,
+                    "actions": pick(at % 2 == 0),
+                    "response_actions_on_match": pick(at % 3 == 0),
+                    "response_actions_on_miss": pick(at % 3 != 0),
+                })
+            })
+            .collect();
+        let pipelines: Vec<serde_json::Value> = names
+            .iter()
+            .map(|id| serde_json::json!({"id": id, "rules": rules}))
+            .collect();
+        RuleIndex::from_config(&serde_json::json!({"pipelines": pipelines}))
+    }
+
+    /// 每一条记录（不只是规则回答）：从编好的字节读到的决定，认出来和整条解析 JSON 一样。样本里每种决定都有：规则步骤和
+    /// 单记的决定、请求阶段和回答后检查、有结论和要往前找结论的
+    /// Every record, not only rules' answers: the decision read from the encoded bytes tells what parsing the
+    /// whole JSON tells. The sample has every kind: rule steps and decisions on their own, the request phase and
+    /// answer checks, conclusions present and to be looked back for
+    #[test]
+    fn a_record_tells_what_its_json_tells() {
+        const RECORDS: &[u8] = include_bytes!("../../tests/fixtures/querylog-records1.bin");
+        const TEXT: &str = include_str!("../../tests/fixtures/querylog-records1.json");
+        let rules = sample_rules();
+        let page = querylog_records::RecordsPage::read(RECORDS).unwrap();
+        let text: serde_json::Value = serde_json::from_str(TEXT).unwrap();
+        let entries = text["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), page.records.len());
+        let (mut blocked, mut custom) = (0, 0);
+        for (range, entry) in page.records.iter().zip(entries) {
+            let mut json = Vec::new();
+            let summary =
+                querylog_records::write_record(1, &RECORDS[range.clone()], &mut json).unwrap();
+            let told = summary
+                .decided
+                .as_ref()
+                .and_then(|decided| rules.classify_decided(decided));
+            assert_eq!(told, rules.classify(entry.as_object().unwrap()), "{entry}");
+            blocked += usize::from(told == Some(StaticKind::Blocked));
+            custom += usize::from(told == Some(StaticKind::Answered));
+        }
+        assert!(blocked >= 5 && custom >= 5, "{blocked} {custom}");
     }
 
     /// 页的样子出乎意料，或者有一条那几项的类型不对时一遍读不下去，交回去整页照常解析

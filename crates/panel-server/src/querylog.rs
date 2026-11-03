@@ -33,6 +33,8 @@ use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::querylog_records::Decided;
+
 /// 默认保留 90 天 / Kept for 90 days by default
 pub const DEFAULT_RETENTION_HOURS: u32 = 2_160;
 /// 保留时间最长一年 / Retention is at most a year
@@ -600,7 +602,7 @@ pub fn static_kind_from_answer(entry: &Map<String, Value>) -> StaticKind {
 pub struct RuleIndex {
     /// 同一个列表里重名、回答又不一样的规则分不清是哪条，记成 `None`
     /// Same-named rules in one list that answer differently cannot be told apart and are kept as `None`
-    rules: HashMap<(String, String), Option<RuleStatics>>,
+    rules: HashMap<String, HashMap<String, Option<RuleStatics>>>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -613,7 +615,7 @@ struct RuleStatics {
 impl RuleIndex {
     #[must_use]
     pub fn from_config(content: &Value) -> Self {
-        let mut rules = HashMap::new();
+        let mut rules: HashMap<String, HashMap<String, Option<RuleStatics>>> = HashMap::new();
         let pipelines = content
             .get("pipelines")
             .and_then(Value::as_array)
@@ -638,8 +640,10 @@ impl RuleIndex {
                     on_miss: first_static(rule.get("response_actions_on_miss")),
                 };
                 rules
-                    .entry((id.to_owned(), name.to_owned()))
-                    .and_modify(|known: &mut Option<RuleStatics>| {
+                    .entry(id.to_owned())
+                    .or_default()
+                    .entry(name.to_owned())
+                    .and_modify(|known| {
                         if *known != Some(statics) {
                             *known = None;
                         }
@@ -671,13 +675,8 @@ impl RuleIndex {
             .find(|(_, step)| step.get("decision").and_then(Value::as_str) == Some("static"))?;
         let pipeline = field(decided, "pipeline")?;
         let rule = field(decided, "rule")?;
-        let statics = (*self.rules.get(&(pipeline.clone(), rule.clone()))?)?;
-        if field(decided, "phase").as_deref() != Some("response") {
-            return statics.actions;
-        }
-        // 回答后检查：条件命中用命中时的动作，没命中用没命中时的动作。单记的决定往前找这条规则那一步的结果
-        // Answer check: a matched condition uses the on-match actions, an unmatched one the on-miss actions. A
-        // decision recorded on its own looks back for this rule's step to learn which
+        let response = field(decided, "phase").as_deref() == Some("response");
+        // 单记的决定往前找这条规则那一步的结果 / A decision recorded on its own looks back for this rule's step
         let matched = if field(decided, "kind").as_deref() == Some("rule") {
             decided.get("matched").and_then(Value::as_bool)
         } else {
@@ -690,7 +689,25 @@ impl RuleIndex {
                 .flatten()
             })
         };
-        if matched == Some(false) {
+        self.classify_decided(&Decided {
+            pipeline: &pipeline,
+            rule: &rule,
+            response,
+            matched,
+        })
+    }
+
+    /// 定下这条 `static` 回答的规则给的是哪一种回答；找不到那条规则时为 `None`。回答后检查：条件命中用命中时的动作，
+    /// 没命中用没命中时的动作
+    /// Which kind of answer the rule that decided this `static` answer gives; `None` when the rule is not
+    /// found. An answer check: a matched condition uses the on-match actions, an unmatched one the on-miss
+    /// actions
+    #[must_use]
+    pub fn classify_decided(&self, decided: &Decided<'_>) -> Option<StaticKind> {
+        let statics = (*self.rules.get(decided.pipeline)?.get(decided.rule)?)?;
+        if !decided.response {
+            statics.actions
+        } else if decided.matched == Some(false) {
             statics.on_miss
         } else {
             statics.on_match

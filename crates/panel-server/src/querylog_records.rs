@@ -86,6 +86,29 @@ pub struct Summary<'a> {
     pub qname: &'a str,
     pub outcome: &'static str,
     pub rcode: Option<Cow<'static, str>>,
+    /// 最后一个静态决定是哪条规则定的；那一步没写规则时为 None / The rule behind the last static decision; None when
+    /// that step names no rule
+    pub decided: Option<Decided<'a>>,
+}
+
+/// 定下静态回答的那条规则 / The rule that decided a static answer
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Decided<'a> {
+    pub pipeline: &'a str,
+    pub rule: &'a str,
+    /// 是回答后检查定的 / Decided by an answer check
+    pub response: bool,
+    /// 回答后检查的结论，查不到时为 None / The answer check's conclusion, None when there is none to be found
+    pub matched: Option<bool>,
+}
+
+/// 走过各步时记下的：最后一个静态决定，和回答后检查的结论（单记的决定要往前找定下它的那条规则）
+/// What walking the steps notes: the last static decision, and the answer checks' conclusions (a decision
+/// recorded on its own looks back for its rule's)
+#[derive(Default)]
+struct DecisionTrail<'a> {
+    decided: Option<Decided<'a>>,
+    checks: Vec<(&'a str, &'a str, bool)>,
 }
 
 /// 把编好的一条记录写成一行 JSON（接在 `json` 后面），和内核写的一字不差，交回读出的几项。读不通时交回 None，
@@ -149,11 +172,12 @@ fn write_fields<'a>(seq: u64, record: &'a [u8], json: &mut Vec<u8>) -> Read<Summ
     }
     json.key("steps");
     json.raw("[");
+    let mut trail = DecisionTrail::default();
     for index in 0..input.number()? {
         if index > 0 {
             json.raw(",");
         }
-        write_step(&mut input, &mut json)?;
+        write_step(&mut input, &mut json, &mut trail)?;
     }
     json.raw("]");
     if input.byte()? != 0 {
@@ -169,6 +193,7 @@ fn write_fields<'a>(seq: u64, record: &'a [u8], json: &mut Vec<u8>) -> Read<Summ
         qname,
         outcome,
         rcode,
+        decided: trail.decided,
     })
 }
 
@@ -202,7 +227,106 @@ const TRANSPORTS: [&str; 6] = ["udp", "tcp", "tcp_udp", "doh", "dot", "doq"];
 const UPSTREAM_RESULTS: [&str; 5] = ["success", "rejected", "error", "aborted", "throttled"];
 const SKIP_REASONS: [&str; 1] = ["throttled"];
 
-fn write_step(input: &mut Decoder<'_>, json: &mut Json<'_>) -> Read<()> {
+fn write_rule_step<'a>(
+    input: &mut Decoder<'a>,
+    json: &mut Json<'_>,
+    trail: &mut DecisionTrail<'a>,
+) -> Read<()> {
+    json.label("rule");
+    json.key("pipeline");
+    let pipeline = input.text()?;
+    json.text(pipeline);
+    json.key("rule");
+    let rule = input.text()?;
+    json.text(rule);
+    json.key("phase");
+    let phase = input.label(&PHASES)?;
+    json.label(phase);
+    let response = phase == RESPONSE_PHASE;
+    let matched = match input.byte()? {
+        0 => None,
+        1 => {
+            json.key("matched");
+            json.raw("false");
+            Some(false)
+        }
+        2 => {
+            json.key("matched");
+            json.raw("true");
+            Some(true)
+        }
+        _ => return Err(Unreadable),
+    };
+    if response && let Some(matched) = matched {
+        trail.checks.push((pipeline, rule, matched));
+    }
+    if let Some(decision) = input.optional_label(&DECISIONS)? {
+        json.key("decision");
+        json.label(decision);
+        if decision == STATIC_DECISION {
+            trail.decided = Some(Decided {
+                pipeline,
+                rule,
+                response,
+                matched,
+            });
+        }
+    }
+    if let Some(target) = input.optional_text()? {
+        json.key("target");
+        json.text(target);
+    }
+    Ok(())
+}
+
+fn write_decision_step<'a>(
+    input: &mut Decoder<'a>,
+    json: &mut Json<'_>,
+    trail: &mut DecisionTrail<'a>,
+) -> Read<()> {
+    json.label("decision");
+    json.key("pipeline");
+    let pipeline = input.text()?;
+    json.text(pipeline);
+    let rule = input.optional_text()?;
+    if let Some(rule) = rule {
+        json.key("rule");
+        json.text(rule);
+    }
+    json.key("phase");
+    let phase = input.label(&PHASES)?;
+    json.label(phase);
+    json.key("decision");
+    let decision = input.label(&DECISIONS)?;
+    json.label(decision);
+    if decision == STATIC_DECISION {
+        trail.decided = rule.map(|rule| Decided {
+            pipeline,
+            rule,
+            response: phase == RESPONSE_PHASE,
+            matched: trail
+                .checks
+                .iter()
+                .rev()
+                .find(|check| check.0 == pipeline && check.1 == rule)
+                .map(|check| check.2),
+        });
+    }
+    if let Some(target) = input.optional_text()? {
+        json.key("target");
+        json.text(target);
+    }
+    Ok(())
+}
+
+const RESPONSE_PHASE: &str = "response";
+const STATIC_DECISION: &str = "static";
+
+fn write_step<'a>(
+    input: &mut Decoder<'a>,
+    json: &mut Json<'_>,
+    trail: &mut DecisionTrail<'a>,
+) -> Read<()> {
     json.raw("{\"at_us\":");
     json.number(input.number()?);
     json.key("kind");
@@ -212,52 +336,8 @@ fn write_step(input: &mut Decoder<'_>, json: &mut Json<'_>) -> Read<()> {
             json.key("pipeline");
             json.text(input.text()?);
         }
-        STEP_RULE => {
-            json.label("rule");
-            json.key("pipeline");
-            json.text(input.text()?);
-            json.key("rule");
-            json.text(input.text()?);
-            json.key("phase");
-            json.label(input.label(&PHASES)?);
-            match input.byte()? {
-                0 => {}
-                1 => {
-                    json.key("matched");
-                    json.raw("false");
-                }
-                2 => {
-                    json.key("matched");
-                    json.raw("true");
-                }
-                _ => return Err(Unreadable),
-            }
-            if let Some(decision) = input.optional_label(&DECISIONS)? {
-                json.key("decision");
-                json.label(decision);
-            }
-            if let Some(target) = input.optional_text()? {
-                json.key("target");
-                json.text(target);
-            }
-        }
-        STEP_DECISION => {
-            json.label("decision");
-            json.key("pipeline");
-            json.text(input.text()?);
-            if let Some(rule) = input.optional_text()? {
-                json.key("rule");
-                json.text(rule);
-            }
-            json.key("phase");
-            json.label(input.label(&PHASES)?);
-            json.key("decision");
-            json.label(input.label(&DECISIONS)?);
-            if let Some(target) = input.optional_text()? {
-                json.key("target");
-                json.text(target);
-            }
-        }
+        STEP_RULE => write_rule_step(input, json, trail)?,
+        STEP_DECISION => write_decision_step(input, json, trail)?,
         STEP_CACHE => {
             json.label("cache");
             json.key("result");
@@ -578,6 +658,100 @@ mod tests {
                 write_record(1, &first[..cut], &mut Vec::new()).is_none(),
                 "cut at {cut}"
             );
+        }
+    }
+
+    /// 手写一条记录：只有 `steps` 这几步，别的都是最简单的 / A record by hand: just these steps, the simplest of all else
+    fn record_with(steps: &[Vec<u8>]) -> Vec<u8> {
+        let mut record = vec![1]; // 时刻 / time
+        record.extend([ANSWER_V4, 192, 0, 2, 1]); // 客户端 / client
+        record.push(0); // 传输 / transport
+        record.extend(text("a.example"));
+        record.extend(text("A"));
+        record.push(0); // 耗时 / latency
+        record.push(0); // completed
+        record.push(4); // static
+        record.push(0); // 响应码 / rcode
+        record.push(0); // 回答 / answers
+        record.extend([0, 0, 0, 0]); // error、pipeline、rule、upstream
+        record.push(u8::try_from(steps.len()).unwrap());
+        record.extend(steps.iter().flatten());
+        record.push(0); // 没有截断 / not cut
+        record
+    }
+
+    fn text(value: &str) -> Vec<u8> {
+        let mut encoded = vec![u8::try_from(value.len()).unwrap()];
+        encoded.extend(value.as_bytes());
+        encoded
+    }
+
+    /// 回答后检查的一步，只有结论，没有决定 / An answer check's step, with its conclusion and no decision
+    fn check(pipeline: &str, rule: &str, matched: bool) -> Vec<u8> {
+        let mut step = vec![0, STEP_RULE];
+        step.extend(text(pipeline));
+        step.extend(text(rule));
+        step.extend([1, u8::from(matched) + 1, 0, 0]);
+        step
+    }
+
+    /// 单记的一步静态决定 / A static decision recorded on its own
+    fn decision(pipeline: &str, rule: &str, phase: u8) -> Vec<u8> {
+        let mut step = vec![0, STEP_DECISION];
+        step.extend(text(pipeline));
+        step.push(1);
+        step.extend(text(rule));
+        step.extend([phase, 0, 0]);
+        step
+    }
+
+    /// 单记的决定往前找同一个 Pipeline、同一条规则最近的结论，别的 Pipeline、别的规则、更早的都不算；和整条解析 JSON
+    /// 认的一样
+    /// A decision on its own looks back for the latest conclusion of the same pipeline and rule, not another
+    /// pipeline's, another rule's or an earlier one; the same as parsing the whole JSON tells
+    #[test]
+    fn a_decision_on_its_own_looks_back_for_its_rules_conclusion() {
+        const RESPONSE: u8 = 1;
+        let deny = serde_json::json!([{"type": "deny"}]);
+        let custom = serde_json::json!([{"type": "static_ip_response", "ip": "192.0.2.9"}]);
+        let rules = crate::querylog::RuleIndex::from_config(&serde_json::json!({
+            "pipelines": [{"id": "main", "rules": [{
+                "name": "r", "actions": custom,
+                "response_actions_on_match": deny, "response_actions_on_miss": custom,
+            }]}],
+        }));
+        let decided = decision("main", "r", RESPONSE);
+        for (steps, matched) in [
+            (
+                vec![check("main", "r", false), check("main", "r", true)],
+                Some(true),
+            ),
+            (
+                vec![check("main", "r", true), check("main", "r", false)],
+                Some(false),
+            ),
+            (
+                vec![check("main", "r", false), check("main", "other", true)],
+                Some(false),
+            ),
+            (
+                vec![check("main", "r", false), check("abroad", "r", true)],
+                Some(false),
+            ),
+            (vec![check("main", "other", false)], None),
+            (vec![], None),
+        ] {
+            let mut all = steps;
+            all.push(decided.clone());
+            let record = record_with(&all);
+            let mut json = Vec::new();
+            let summary = write_record(5, &record, &mut json).expect("a whole record");
+            let told = summary.decided.expect("the decision names a rule");
+            assert_eq!(told.matched, matched);
+            assert!(told.response);
+            let fields: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_slice(&json).unwrap();
+            assert_eq!(rules.classify_decided(&told), rules.classify(&fields));
         }
     }
 }
