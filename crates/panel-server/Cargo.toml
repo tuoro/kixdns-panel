@@ -23,7 +23,7 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 hickory-proto = "0.26"
 idna = "1"
 ipnet = "2"
-maxminddb = "0.27"
+maxminddb = "0.32"
 prometheus-parse = "0.2"
 regex-syntax = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
