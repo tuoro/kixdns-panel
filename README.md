@@ -1,10 +1,6 @@
 # KixDNS Panel
 
-[KixDNS](https://github.com/olicesx/kixdns) 的 Web 管理面板。内核来自 fork [tuoro/kixdns](https://github.com/tuoro/kixdns) 按日期版本发布的增强版：上游加修复，再加面板接口；面板只通过本机控制协议与 DNS 数据面通信。
-
-## 在线演示
-
-**[在线演示](https://tuoro.github.io/kixdns-panel/)**：无需安装，可以直接在浏览器里查看面板的各个页面。演示使用示例数据，修改会在刷新后还原。
+自建 DNS 的 Web 面板。用表单配分流规则和拦截列表，还能看到每一次查询走了哪条规则、谁回答的。内核是 Rust 写的 KixDNS，一条命令就能装好，也可以先[在线试用](https://tuoro.github.io/kixdns-panel/)：不用安装，用的是示例数据，修改刷新后还原。
 
 ## 能做什么
 
@@ -18,6 +14,10 @@
 - **面板自更新**：系统页一键更新到最新正式版，双重校验摘要，不动 KixDNS
 - **安全**：Argon2id 认证、HttpOnly 会话、CSRF 防护、登录限流；面板进程不以 root 运行
 - 桌面与手机均可用
+
+## 内核
+
+内核是 fork [tuoro/kixdns](https://github.com/tuoro/kixdns) 按日期版本发布的增强版：上游 [olicesx/kixdns](https://github.com/olicesx/kixdns) 加修复，再加面板接口。面板只通过本机控制协议与 DNS 数据面通信。
 
 ## 安装
 
