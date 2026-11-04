@@ -1,4 +1,6 @@
-# KixDNS 增强管理协议 v1
+# KixDNS 增强控制协议 v1
+
+**简体中文** | [English](control-protocol-v1.en.md)
 
 ## 传输
 
@@ -10,7 +12,7 @@ Linux 默认地址为 `/run/kixdns/admin.sock`。协议使用 Unix Socket 上的
 
 ### `GET /v1/health`
 
-返回进程状态、上游提交、发布版本（`release_version`、`release_commit`，只有 fork 发布的内核才有，其余为 `null`）、补丁集（旧的补丁集内核才有，fork 内核报 `unknown`）、启动时间、当前配置代数和能力列表 `capabilities`。客户端只能在对应能力存在时使用端点或写入受控字段。fork 发布的内核声明下面十项，p28 没有最后两项：
+返回进程状态、上游提交、发布版本（`release_version`、`release_commit`，只有 fork 发布的内核才有，其余为 `null`）、补丁集（旧的补丁集内核才有，fork 内核报 `unknown`）、启动时间、当前配置代数和能力列表 `capabilities`。客户端只能在对应能力存在时使用端点或写入受控字段。fork 发布的内核声明下面列的全部能力，p28 没有 `querylog_` 开头的那些：
 
 - 配置能力：`config_query_stats_v1`（查询统计配置字段，见下文）、`config_static_cname_response_v1`（`static_cname_response` 动作，即固定 CNAME 应答，面板的域名映射用它）
 - `stats_top_v1`：查询排行端点

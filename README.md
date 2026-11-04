@@ -1,5 +1,7 @@
 # KixDNS Panel
 
+**简体中文** | [English](./README.en.md)
+
 自建 DNS 的 Web 面板。用表单配分流规则和拦截列表，还能看到每一次查询走了哪条规则、谁回答的。内核是 Rust 写的 KixDNS，一条命令就能装好，也可以先[在线试用](https://tuoro.github.io/kixdns-panel/)：不用安装，用的是示例数据，修改刷新后还原。
 
 ![KixDNS Panel 概览页](docs/images/overview.png)

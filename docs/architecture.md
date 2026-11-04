@@ -1,5 +1,7 @@
 # KixDNS Panel 架构
 
+**简体中文** | [English](architecture.en.md)
+
 ## 组成
 
 KixDNS Panel 是 KixDNS 的管理面板。内核来自 fork [tuoro/kixdns](https://github.com/tuoro/kixdns)：它的 `main` 是上游加修复（修复按给上游提 PR 的标准做，准备同样提给上游），再加面板接口；发布用日期版本。面板仓库不放内核源码。
@@ -59,7 +61,7 @@ fork 的 `main` 每推进一次就发布一个日期版本 `YYYY.MM.DD`，同一
 
 **进程与权限**
 
-- Panel Server 以独立非 root 账号运行；systemd 单元启用只读系统目录、私有临时目录、能力边界和地址族限制
+- Panel Server 以独立非 root 账号运行；systemd 单元启用只读系统目录、私有临时目录和地址族限制
 - 启停和自更新经 root helper 转发：专属 Unix Socket（`0600`）+ `SO_PEERCRED` 校验 UID；只接受安装时确定的 unit 与 `start`、`stop`、`restart`，以及固定的 `panel-update`
 - 不接受任意命令或 Shell 片段；KixDNS 没有重载动作，面板也不提供
 - 控制协议只走本机 Unix Socket（`0660`），不监听网络端口

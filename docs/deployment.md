@@ -1,5 +1,7 @@
 # KixDNS Panel 部署指南
 
+**简体中文** | [English](deployment.en.md)
+
 ## 支持范围
 
 - 带 systemd 的 Linux x86_64/ARM64
@@ -251,7 +253,7 @@ v3.4.0 及更早的面板已经没有新内核可装：面板仓库不再构建 
 - 失败时系统页显示具体原因（安装器或 GitHub 请求报出的那一行），点「知道了」收起；下次发起更新，或面板以其他方式升级到目标版本后，失败提示自动消失
 - 完整输出：`journalctl -u kixdns-panel-update.service -n 200 --no-pager`。更新器以 `systemd-run --collect` 临时 unit 运行，结束后 unit 即被回收，`systemctl status` 查不到它，日志仍在
 
-升级从不需要转换配置：配置文件 `version` 一直是 `1.0`，控制协议一直是 v1，任意旧版可以直接覆盖安装。
+升级从不需要转换配置：配置文件 `version` 一直是 `1.0`，控制协议一直是 v1，除已移除的「仅安装面板」模式外，任意旧版可以直接覆盖安装。
 
 ## GitHub Token（可选）
 
