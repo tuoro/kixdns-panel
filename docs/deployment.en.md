@@ -128,7 +128,7 @@ KixDNS listens on `0.0.0.0:53` by default. Before changing the host, the install
 
 The panel listens on `0.0.0.0:5738` by default. The installer generates the access link from the private IPv4 address of the default route, such as `http://192.168.1.20:5738`. On a host with several network interfaces, if that address is unreachable, use `ip -4 address` to find another one. The first visit creates the administrator. The password must be at least 12 characters.
 
-`0.0.0.0` includes public network interfaces: **do not forward `5738` on your router**, and allow only trusted networks in the firewall or security group. If you only need a reverse proxy on the same host, change `KIXDNS_PANEL_BIND` in `/etc/kixdns-panel/panel.env` to `127.0.0.1:5738` and restart the panel. An upgrade only migrates the old default value `127.0.0.1:5738` to the new default value. Custom values stay unchanged.
+`0.0.0.0` includes public network interfaces: **do not forward `5738` on your router**, and allow only trusted networks in the firewall or security group. If you only need a reverse proxy on the same host, change `KIXDNS_PANEL_BIND` in `/etc/kixdns-panel/panel.env` to `127.0.0.1:5738` and restart the panel. Upgrades leave this setting as it is.
 
 ### Forgotten administrator password
 
