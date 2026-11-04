@@ -1088,11 +1088,8 @@ render_panel_environment() {
       print "# 完整安装包自带内核包在 GitHub 上的编号，由安装脚本填写。"
       next
     }
-    /^KIXDNS_PANEL_BIND=127\.0\.0\.1:5738$/ {
-      print "KIXDNS_PANEL_BIND=0.0.0.0:5738"
-      bind_found = 1
-      next
-    }
+    # 监听地址是用户的设置，升级不改：改成 127.0.0.1 的人就是不想让面板对外。
+    # An upgrade leaves the listen address alone: whoever set 127.0.0.1 wants the panel kept off the network.
     /^KIXDNS_PANEL_BIND=/ { bind_found = 1 }
     /^KIXDNS_CONFIG=/ { print "KIXDNS_CONFIG=" config_path; config_found = 1; next }
     /^KIXDNS_BINARY=/ { print "KIXDNS_BINARY=" binary_path; binary_found = 1; next }

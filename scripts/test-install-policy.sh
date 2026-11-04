@@ -922,7 +922,7 @@ assert_equals "${release_value}" "v1.0.0" "正式包应保留 Release 标签"
 helper_socket_value="$(awk -F= '$1 == "KIXDNS_SERVICE_HELPER_SOCKET" { print $2 }' "${environment_output}")"
 assert_equals "${helper_socket_value}" "/run/kixdns-panel/control.sock" "面板环境应写入受限 helper Socket"
 bind_value="$(awk -F= '$1 == "KIXDNS_PANEL_BIND" { print $2 }' "${environment_output}")"
-assert_equals "${bind_value}" "0.0.0.0:5738" "旧版默认监听地址应迁移为内网可访问"
+assert_equals "${bind_value}" "127.0.0.1:5738" "用户设的本机监听地址不应被升级改成对外"
 source_id_value="$(awk -F= '$1 == "KIXDNS_INSTALLED_SOURCE_ID" { print $2 }' "${environment_output}")"
 assert_equals "${source_id_value}" "42" "面板环境应记录完整包 Artifact ID"
 if grep -q 'KIXDNS_MANAGEMENT_ENABLED\|KIXDNS_UPDATE_' "${PACKAGE_ROOT}/deploy/panel.env.example"; then
@@ -976,6 +976,12 @@ render_panel_environment "${environment_source}" "${environment_output}" \
   kixdns-commit panel-commit '' 42 fork
 bind_value="$(awk -F= '$1 == "KIXDNS_PANEL_BIND" { print $2 }' "${environment_output}")"
 assert_equals "${bind_value}" "192.168.10.5:6754" "用户自定义监听地址不应被升级覆盖"
+
+printf '%s\n' 'KIXDNS_PANEL_INSTALLED_RELEASE=' > "${environment_source}"
+render_panel_environment "${environment_source}" "${environment_output}" \
+  kixdns-commit panel-commit '' 42 fork
+assert_equals "$(grep -c '^KIXDNS_PANEL_BIND=0\.0\.0\.0:5738$' "${environment_output}")" "1" \
+  "没设过监听地址时应补上默认值"
 
 is_private_ipv4 10.0.0.8
 is_private_ipv4 172.31.255.254
