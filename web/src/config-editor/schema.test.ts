@@ -21,6 +21,16 @@ describe('TCP 错误阈值不在表单里', () => {
   })
 })
 
+// 那几个数字已被智能流控替代，内核运行时自己判断，表单只留开关（配置里写了的值原样保留，但不再生效）
+// Smart flow control replaced those numbers and the kernel judges at run time, so the form keeps only the switch
+// (a value written in the config is kept as it is but has no effect)
+describe('智能流控只有一个开关', () => {
+  it('这一组里没有那几个数字', () => {
+    const flow = SETTING_SECTIONS.find((section) => section.id === 'flow-control')
+    expect(flow?.fields.map((field) => field.key)).toEqual(['flow_control_enabled'])
+  })
+})
+
 describe('高级规则的选项说面板的话', () => {
   // 允许留下的英文：协议、记录类型、响应码这些本来就这么叫的 / English allowed to stay: names that are spelled this way anyway
   const ALLOWED = new Set(['GeoSite', 'GeoIP', 'EDNS', 'TXT', 'CNAME', 'REFUSED', 'NXDOMAIN', 'TTL', 'MMDB', 'DAT'])
@@ -44,24 +54,24 @@ describe('提示条里的设置名', () => {
     expect(settingNames(['bind_udp', 'bind_tcp', 'cache_capacity', 'tcp_pool_size']))
       .toBe('UDP\u00a0监听地址、TCP\u00a0监听地址、TCP\u00a0连接池等\u00a04\u00a0项')
   })
-  it('按表单里的先后排；自动限流那几项合成一项；确认框全写', () => {
+  it('按表单里的先后排；智能流控那几项合成一项；确认框全写', () => {
     // 内核的顺序是证书、私钥、路径，表单里路径在前 / The kernel lists cert, key, path; the form has the path first
     expect(settingNames(['doh_tls_cert', 'doh_tls_key', 'doh_path'])).toBe('DoH\u00a0查询路径、DoH\u00a0TLS\u00a0证书、DoH\u00a0TLS\u00a0私钥')
-    expect(settingNames(['flow_control_latency_threshold_ms', 'bind_udp', 'flow_control_enabled'])).toBe('UDP\u00a0监听地址、自动限流')
+    expect(settingNames(['flow_control_latency_threshold_ms', 'bind_udp', 'flow_control_enabled'])).toBe('UDP\u00a0监听地址、智能流控')
     const five = ['bind_udp', 'bind_tcp', 'cache_capacity', 'tcp_pool_size', 'doq_pool_size']
     expect(settingNames(five, { all: true })).toBe('UDP\u00a0监听地址、TCP\u00a0监听地址、TCP\u00a0连接池、DoQ\u00a0连接池、缓存容量')
   })
   it('名字里的连字符后不断行 / no break after a hyphen in a name', () => {
     expect(settingNames(['doq_enable_0rtt'])).toBe('DoQ\u00a00-\u2060RTT')
   })
-  it('退回时写出每一项改回的值，带单位；没写的照表单说默认是什么；自动限流合成一项', () => {
+  it('退回时写出每一项改回的值，带单位；没写的照表单说默认是什么；智能流控合成一项', () => {
     // 名字和值粘在一起，只有长的值（路径）可以和名字分开 / Name and value stay together; only a long value (a path) may part from its name
     expect(settingValues({ bind_udp: '0.0.0.0:53', cache_capacity: null, doq_keepalive_interval_ms: 15000, doq_enable_0rtt: null, bind_doh: null, dashmap_shards: null }))
       .toBe('UDP\u00a0监听地址\u00a00.0.0.0:53、DoH\u00a0监听地址\u00a0留空、DoQ\u00a0保活间隔\u00a015000\u00a0毫秒、DoQ\u00a00-\u2060RTT\u00a0默认开启、缓存容量\u00a0默认\u00a010000\u00a0条、缓存分片数\u00a0自动')
     expect(settingValues({ doh_tls_cert: '/etc/kixdns/certs/home.pem' })).toBe('DoH\u00a0TLS\u00a0证书 /etc/kixdns/certs/home.pem')
-    expect(settingValues({ flow_control_enabled: null, flow_control_max_permits: 512 })).toBe('自动限流\u00a0默认关闭')
-    expect(settingValues({ flow_control_enabled: true })).toBe('自动限流\u00a0开启')
-    expect(settingValues({ flow_control_max_permits: 512 })).toBe('自动限流的几项数值')
+    expect(settingValues({ flow_control_enabled: null, flow_control_max_permits: 512 })).toBe('智能流控\u00a0默认关闭')
+    expect(settingValues({ flow_control_enabled: true })).toBe('智能流控\u00a0开启')
+    expect(settingValues({ flow_control_max_permits: 512 })).toBe('智能流控的几项数值')
     expect(settingValues({ doh_health_check_error_threshold: null })).toBe('DoH\u00a0错误阈值\u00a0默认值')
   })
 })
