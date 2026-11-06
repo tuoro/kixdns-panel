@@ -115,16 +115,11 @@ export const SETTING_SECTIONS: SettingSection[] = [
   },
   {
     id: 'flow-control',
-    title: '自动限流',
-    description: '同时处理的请求数、延迟阈值和调整间隔',
+    title: '智能流控',
+    description: '某台设备请求激增时，其他设备照常解析',
     tone: 'green',
     fields: [
-      { key: 'flow_control_enabled', label: '自动限流', type: 'boolean', default: false },
-      { key: 'flow_control_initial_permits', label: '同时处理的请求数（初始）', type: 'number', min: 1, unit: '个', default: 500, visibleWhen: 'flow_control_enabled' },
-      { key: 'flow_control_min_permits', label: '同时处理的请求数（最少）', type: 'number', min: 1, unit: '个', default: 100, visibleWhen: 'flow_control_enabled' },
-      { key: 'flow_control_max_permits', label: '同时处理的请求数（最多）', type: 'number', min: 1, unit: '个', default: 800, visibleWhen: 'flow_control_enabled' },
-      { key: 'flow_control_latency_threshold_ms', label: '延迟阈值 (ms)', type: 'number', min: 1, unit: '毫秒', default: 100, visibleWhen: 'flow_control_enabled' },
-      { key: 'flow_control_adjustment_interval_secs', label: '调整间隔 (s)', type: 'number', min: 1, unit: '秒', default: 5, visibleWhen: 'flow_control_enabled' },
+      { key: 'flow_control_enabled', label: '智能流控', type: 'boolean', default: false },
     ],
   },
 ]
@@ -143,12 +138,12 @@ export function settingName(key: string): string {
 
 // 一串设置名，放在句末冒号后面用（名字可能以字母开头、结尾，挨着标点就不用另外隔空格）：
 // - 按表单里的先后排，和人在表单里看到的一样；
-// - 自动限流那几项离开分组标题就看不懂（「延迟阈值」「调整间隔」），合成一项「自动限流」；
+// - 智能流控那几项离开分组标题就看不懂（「延迟阈值」「调整间隔」），合成一项「智能流控」；
 // - 提示条里三个以内都写出来，再多写前三个和一共几项；确认框（all）全写
 // A run of setting names, for use after a colon at the end of a sentence (a name may start or end with a letter, and next to
 // punctuation it needs no extra space):
 // - in the form's order, as the reader sees them there;
-// - the flow-control ones mean nothing without their group title (延迟阈值, 调整间隔), so they merge into one 自动限流;
+// - the flow-control ones mean nothing without their group title (延迟阈值, 调整间隔), so they merge into one 智能流控;
 // - a notice writes up to three, beyond that the first three and how many in all; the confirm dialog (all) writes every one
 // 名字里不断行：空格换成不换行空格，连字符后面接一个词连接符（手机上「DoQ 0-RTT」曾被拆成「DoQ 0-」「RTT」）
 // A name never breaks inside: spaces become no-break spaces and a word joiner follows each hyphen (on a phone 「DoQ 0-RTT」 was split
@@ -156,19 +151,19 @@ export function settingName(key: string): string {
 const glueName = (name: string) => name.replace(/ /g, '\u00a0').replace(/-/g, '-\u2060')
 export function settingNames(keys: readonly string[], options: { all?: boolean } = {}): string {
   const order = (key: string) => { const at = FORM_FIELDS.findIndex((field) => field.key === key); return at < 0 ? FORM_FIELDS.length : at }
-  const names = [...new Set([...keys].sort((a, b) => order(a) - order(b)).map((key) => (key.startsWith('flow_control_') ? '自动限流' : settingName(key))))]
+  const names = [...new Set([...keys].sort((a, b) => order(a) - order(b)).map((key) => (key.startsWith('flow_control_') ? '智能流控' : settingName(key))))]
     // 一个名字里不断行（手机上「UDP」和「监听地址」曾被拆到两行） / A name never breaks inside (on a phone 「UDP」 and 「监听地址」 were split across lines)
     .map(glueName)
   return names.length > 3 && !options.all ? `${names.slice(0, 3).join('、')}等\u00a0${names.length}\u00a0项` : names.join('、')
 }
 
 // 退回时说清每一项改回什么：「UDP 监听地址 0.0.0.0:53」「DoQ 保活间隔 15000 毫秒」；没写的照表单说默认是什么——有默认值的
-// 「默认 10000 条」「默认开启」，没有的照占位说「自动」「留空」。自动限流合成一项：开关在名单里时说开关改回什么，只有几项数值时
-// 说「自动限流的几项数值」。名字里、「数字 单位」里不断行；名字和值是一个读的单位，也粘在一起，只有长的值（路径、超过
+// 「默认 10000 条」「默认开启」，没有的照占位说「自动」「留空」。智能流控合成一项：开关在名单里时说开关改回什么，只有几项数值时
+// 说「智能流控的几项数值」。名字里、「数字 单位」里不断行；名字和值是一个读的单位，也粘在一起，只有长的值（路径、超过
 // 16 个字符）可以和名字分开，整段换到下一行，不从中间拆
 // When rolling back, say what each setting goes back to: 「UDP 监听地址 0.0.0.0:53」「DoQ 保活间隔 15000 毫秒」; an unset one says what
 // the default is, as the form does — 「默认 10000 条」「默认开启」 where there is one, otherwise the placeholder's 「自动」「留空」. Flow
-// control merges into one: with its switch in the list it says what the switch goes back to, with only numbers 「自动限流的几项数值」.
+// control merges into one: with its switch in the list it says what the switch goes back to, with only numbers 「智能流控的几项数值」.
 // No break inside a name or a 「number unit」; name and value are read as one and stay together too, and only a long value (a
 // path, over 16 characters) may part from its name, moving down whole instead of splitting
 export function settingValues(values: Record<string, unknown>): string {
@@ -194,7 +189,7 @@ export function settingValues(values: Record<string, unknown>): string {
       if (flowDone) continue
       flowDone = true
       const enabled = values.flow_control_enabled
-      items.push('flow_control_enabled' in values ? `自动限流\u00a0${valueOf('flow_control_enabled', enabled)}` : '自动限流的几项数值')
+      items.push('flow_control_enabled' in values ? `智能流控\u00a0${valueOf('flow_control_enabled', enabled)}` : '智能流控的几项数值')
       continue
     }
     const value = valueOf(key, values[key])

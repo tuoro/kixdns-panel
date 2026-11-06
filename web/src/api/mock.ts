@@ -753,8 +753,6 @@ const RESTART_ONLY = [
   'udp_pool_size', 'tcp_pool_size', 'doh_pool_size', 'doh_health_check_error_threshold', 'dot_pool_size', 'doq_pool_size',
   'tcp_health_check_error_threshold', 'tcp_connection_max_age_seconds', 'tcp_connection_idle_timeout_seconds',
   'doq_connection_idle_timeout_seconds', 'doq_keepalive_interval_ms', 'doq_enable_0rtt', 'flow_control_enabled',
-  'flow_control_initial_permits', 'flow_control_min_permits', 'flow_control_max_permits', 'flow_control_latency_threshold_ms',
-  'flow_control_adjustment_interval_secs',
 ]
 const settingDefault = (key: string) => SETTING_SECTIONS.flatMap((section) => section.fields).find((field) => field.key === key)?.default
 const settingsOf = (content: Record<string, unknown>) => (content.settings ?? {}) as Record<string, unknown>
