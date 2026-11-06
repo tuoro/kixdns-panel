@@ -281,3 +281,14 @@ export function settingVisible(field: SettingField, settings: GlobalSettings): b
   return true
 }
 
+
+// 设置列表上「Geo 数据」那一行：GeoIP 的 MMDB 和 DAT 配了哪个都算已配置；GeoSite 只数填了的，刚点「添加链接」还空着的
+// 那一行不算——外面说的要和点进去看到的一致
+// The 「Geo 数据」 row on the settings list: GeoIP counts as set with either the MMDB or the DAT; GeoSite counts only the paths
+// filled in, not the row 「添加链接」 has just added and left empty, so what the row says matches what opening it shows
+export function geoSummary(settings: GlobalSettings): string[] {
+  const filled = (value: unknown) => typeof value === 'string' && value.trim() !== ''
+  const geoip = filled(settings.geoip_db_path) || filled(settings.geoip_dat_path)
+  const sites = Array.isArray(settings.geosite_data_paths) ? settings.geosite_data_paths.filter(filled).length : 0
+  return [geoip ? 'GeoIP 已配置' : 'GeoIP 未配置', `GeoSite ${sites} 个文件`]
+}

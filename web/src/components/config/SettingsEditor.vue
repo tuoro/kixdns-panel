@@ -2,7 +2,7 @@
 import { ChevronLeft, ChevronRight, Plus, Search, X } from '@lucide/vue'
 import UiHelp from '../ui/UiHelp.vue'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { SETTING_SECTIONS, settingValue, settingVisible, type SettingField, type SettingSection } from '../../config-editor/schema'
+import { SETTING_SECTIONS, geoSummary, settingValue, settingVisible, type SettingField, type SettingSection } from '../../config-editor/schema'
 import type { GlobalSettings } from '../../config-editor/types'
 import GeoDataEditor from './GeoDataEditor.vue'
 import UiDotText from '../ui/UiDotText.vue'
@@ -93,7 +93,7 @@ const groups = computed(() => [
     // Counted over every setting of the group, not only the ones shown: a changed setting hidden behind a switch that is off still marks its group (audit round 4, C7)
     changed: changedAny([...(SETTING_SECTIONS.find((item) => item.id === section.id)?.fields ?? []).map((field) => field.key), ...(section.id === 'network' ? ['version'] : [])]),
   })),
-  { ...GEO_GROUP, summary: geoSummary(), changed: changedAny(GEO_KEYS) },
+  { ...GEO_GROUP, summary: geoSummary(settings.value), changed: changedAny(GEO_KEYS) },
 ])
 // 格式版本在搜索「版本」「version」时也要找得到 / The format version must turn up when searching 版本 or version
 const versionMatches = computed(() => !query.value || '格式版本 version 配置文件'.includes(query.value))
@@ -104,10 +104,6 @@ const navSections = computed(() => SETTING_SECTIONS.map((section) => ({
 })).filter((section) => section.fields.length > 0))
 const currentSection = computed(() => navSections.value.find((section) => section.id === current.value))
 const paneSections = computed(() => (query.value ? visibleSections.value : currentSection.value ? [currentSection.value] : []))
-function geoSummary(): string[] {
-  const sites = Array.isArray(settings.value.geosite_data_paths) ? settings.value.geosite_data_paths.length : 0
-  return [settings.value.geoip_db_path ? 'GeoIP 已配置' : 'GeoIP 未配置', `GeoSite ${sites} 个文件`]
-}
 // 标签去掉括号里的单位（单位写进输入框里了）；说明只留真正有话说的：字段自己的说明和「要先打开谁」。
 // Labels drop the bracketed unit (it sits inside the input now); the note keeps only what matters:
 // the field's own description and which switch it depends on.
