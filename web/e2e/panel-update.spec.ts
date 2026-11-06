@@ -41,3 +41,21 @@ test('在线更新失败时显示具体原因，收起后刷新也不再出现 @
   await expect(page.locator('.update-row').nth(1).locator('.update-row__from-to')).toContainText('v1.0.0 → v1.0.1')
   await expect(page.locator('.update-row__failure')).toHaveCount(0)
 })
+
+// 打开页面时检查更新失败（网络不通），之后点「检查更新」取到了新内核：「更新」按钮要能点，不用刷新网页。
+// 按钮装的是单独读来的内核状态里的最新版本，以前只重新检查更新、不重读内核，按钮一直灰着
+// The update check failed when the page opened (no network), and 检查更新 later found a new kernel: 更新 must
+// be clickable without reloading the page. The button installs the latest version from the kernel status read on
+// its own, which used not to be read again after the check, so the button stayed grey
+test('第一次检查更新失败，点检查更新取到新内核后「更新」按钮能点 @responsive', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('kixdns:demo-kernel-check-failed', 'true'))
+  await page.goto('/system')
+  const kernelRow = page.locator('.update-row').first()
+  await expect(kernelRow.locator('.update-row__from-to')).toContainText('检查失败')
+
+  // 网络恢复 / The network comes back
+  await page.evaluate(() => localStorage.removeItem('kixdns:demo-kernel-check-failed'))
+  await page.getByRole('button', { name: '检查更新', exact: true }).click()
+  await expect(kernelRow.getByText('有新版本')).toBeVisible()
+  await expect(kernelRow.getByRole('button', { name: '更新', exact: true })).toBeEnabled()
+})
