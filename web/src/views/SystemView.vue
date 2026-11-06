@@ -165,6 +165,19 @@ function buildTime(value: string | null): string {
 // own row while the other row carries on.
 const kixdnsNotice = computed(() => updateStatus.value?.kixdns ?? null)
 const panelNotice = computed(() => updateStatus.value?.panel ?? null)
+// 内核那一行的「有新版本」看的是更新检查的结果，「更新」按钮装的却是单独读来的内核状态里的最新版本。打开页面时网络
+// 不通，那份是空的；之后不管是点「检查更新」、顶栏每半小时的检查还是保存 Token 查到了新版本，它都还是空的，按钮一直
+// 灰着，只能刷新网页。所以每拿到一次检查结果，两边对不上就重读内核状态：服务端检查成功时已经记下最新版本，这一读不
+// 多花 GitHub 的次数
+// 更新 in the kernel row installs the latest version from the kernel status read on its own, while 有新版本 there comes
+// from the update check. With no network when the page opened that status has none, and whether 检查更新, the header's
+// half-hourly check or saving a token then found a new version, it still had none and the button stayed grey until the
+// page was reloaded. So whenever a check result arrives and the two disagree, the kernel status is read again: a
+// successful check has already cached the latest version on the server, so this read spends no GitHub call
+watch(updateStatus, (status) => {
+  const notice = status?.kixdns
+  if (notice && kernel.value?.latest?.source_id !== notice.source_id) void loadKernel(true)
+})
 
 function latestKixdnsVersion(): string {
   return kixdnsNotice.value?.release_tag ?? '未检查'
