@@ -40,7 +40,7 @@ test('操作审计里退回那一行：长的时候照常折行，不横向溢�
     await page.goto('/logs?view=audit')
     const rows = page.locator('.audit-line', { hasText: '退回原来的设置' })
     await expect(rows).toHaveCount(2)
-    await expect(rows.first()).toContainText(/UDP\s监听地址、TCP\s监听地址、TCP\s连接池、DoQ\s0-\u2060?RTT、缓存容量、自动限流，版本 #120，待应用的修改另存为版本 #121/)
+    await expect(rows.first()).toContainText(/UDP\s监听地址、TCP\s监听地址、TCP\s连接池、DoQ\s0-\u2060?RTT、缓存容量、智能流控，版本 #120，待应用的修改另存为版本 #121/)
     for (const row of await rows.all()) {
       const layout = await row.evaluate((line) => {
         // 只看这一行：行里的字不超出这一行，这一行不超出卡片（日志页工具栏在 861 宽本来就伸出卡片几像素，那是另一件事）

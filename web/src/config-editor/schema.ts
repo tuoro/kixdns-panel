@@ -138,12 +138,13 @@ export function settingName(key: string): string {
 
 // 一串设置名，放在句末冒号后面用（名字可能以字母开头、结尾，挨着标点就不用另外隔空格）：
 // - 按表单里的先后排，和人在表单里看到的一样；
-// - 智能流控那几项离开分组标题就看不懂（「延迟阈值」「调整间隔」），合成一项「智能流控」；
+// - 配置里留着的智能流控旧数字（「延迟阈值」「调整间隔」这些）离开分组标题就看不懂，和开关合成一项「智能流控」；
 // - 提示条里三个以内都写出来，再多写前三个和一共几项；确认框（all）全写
 // A run of setting names, for use after a colon at the end of a sentence (a name may start or end with a letter, and next to
 // punctuation it needs no extra space):
 // - in the form's order, as the reader sees them there;
-// - the flow-control ones mean nothing without their group title (延迟阈值, 调整间隔), so they merge into one 智能流控;
+// - the old flow-control numbers a config may still hold (延迟阈值, 调整间隔 and the like) mean nothing without their
+//   group title, so they merge with the switch into one 智能流控;
 // - a notice writes up to three, beyond that the first three and how many in all; the confirm dialog (all) writes every one
 // 名字里不断行：空格换成不换行空格，连字符后面接一个词连接符（手机上「DoQ 0-RTT」曾被拆成「DoQ 0-」「RTT」）
 // A name never breaks inside: spaces become no-break spaces and a word joiner follows each hyphen (on a phone 「DoQ 0-RTT」 was split
