@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { SETTING_SECTIONS, settingName, settingNames, settingValues } from './schema'
+import { SETTING_SECTIONS, geoSummary, settingName, settingNames, settingValues } from './schema'
 
 // 查询排行一直开着、客户端地址照原样记：基础设置里没有这两个开关
 // Rankings are always on with whole client addresses: the settings carry neither switch
@@ -73,5 +73,19 @@ describe('提示条里的设置名', () => {
     expect(settingValues({ flow_control_enabled: true })).toBe('智能流控\u00a0开启')
     expect(settingValues({ flow_control_max_permits: 512 })).toBe('智能流控的几项数值')
     expect(settingValues({ doh_health_check_error_threshold: null })).toBe('DoH\u00a0错误阈值\u00a0默认值')
+  })
+})
+
+// 设置列表上 Geo 数据那一行要和点进去看到的一致 / The Geo row on the settings list matches what opening it shows
+describe('设置列表上 Geo 数据那一行', () => {
+  it('GeoIP 的 MMDB 和 DAT 配了哪个都算已配置', () => {
+    expect(geoSummary({})).toEqual(['GeoIP 未配置', 'GeoSite 0 个文件'])
+    expect(geoSummary({ geoip_dat_path: '/var/lib/kixdns/geoip.dat' })[0]).toBe('GeoIP 已配置')
+    expect(geoSummary({ geoip_db_path: '/var/lib/kixdns/country.mmdb' })[0]).toBe('GeoIP 已配置')
+    expect(geoSummary({ geoip_db_path: '', geoip_dat_path: '  ' })[0]).toBe('GeoIP 未配置')
+  })
+  it('GeoSite 只数填了的，刚添加还空着的那一行不算', () => {
+    expect(geoSummary({ geosite_data_paths: ['/var/lib/kixdns/geosite.dat', ''] })[1]).toBe('GeoSite 1 个文件')
+    expect(geoSummary({ geosite_data_paths: 'not a list' })[1]).toBe('GeoSite 0 个文件')
   })
 })
