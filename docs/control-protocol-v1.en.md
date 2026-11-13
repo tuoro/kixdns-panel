@@ -267,7 +267,7 @@ The panel no longer offers these two switches and does not block saving, updatin
 
 ## Metric semantics
 
-- The cache hit rate is the number of `fresh + stale` hits divided by the number of cache lookups.
+- The cache hit rate is the number of `fresh + stale` hits divided by the number of cache lookups. Both count only the requests an upstream's answer is needed for: an upstream's answer kept in the cache and given straight away is a hit, and deciding to ask an upstream is a lookup that missed; what the rules answer themselves (a blocklist, a domain mapping, a static answer written in a rule), given on the spot or from the cache with `min_ttl` on, counts in neither. Kernels before 2026.11.14.2 counted every look in the cache as a lookup, so the more was blocked the lower the hit rate went, and a rule's answer kept in the cache counted as a hit.
 - A Pipeline hit means a request selected or jumped into that Pipeline.
 - A rule hit means the matcher chain result is true. `phase` is `request` or `response`.
 - An upstream attempt means one configured upstream operation. A result means the final result of that operation, not the number of Forward actions in rules. The internal TCP fallback of `tcp_udp` belongs to the same operation.
