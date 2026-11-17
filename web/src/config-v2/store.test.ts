@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { diffModels, differences } from '../config-model/diff'
-import { blocklistKey, ruleTitle, type Model } from '../config-model/model'
+import { blocklistKey, compile, ruleTitle, type Model } from '../config-model/model'
 import { exportConfig, readConfig } from '../config-model/document'
 import { LEGACY_MESSY, LEGACY_TEMPLATES, demoModel, sampleModel } from '../config-model/testing/samples'
 import { appliedModel, changeCount, changesBesidesFile, newId, placeBack, copyReplaceBlocker, discardOnLeave, draftGeneration, groupUsers, model, oldPanelCopies, rebaseApplied, replaceModel, replaceWithCopy, resetTo, sameDraftSince } from './store'
@@ -387,5 +387,23 @@ describe('只能在 JSON 里改的设置', () => {
     expect((exportConfig(back).settings as Record<string, unknown>).tcp_health_check_error_threshold).toBe(5)
     const then = { ...back, settings: { ...back.settings, tcp_health_check_error_threshold: 2 } }
     expect(diffModels(back, then).map((b) => b.title)).toEqual(['TCP 错误阈值'])
+  })
+})
+
+// JSON 视图里只改一个设置、切回表单：草稿读回来以后，保存条和「改了哪些」只有这一处。以前按内核部分重新导入，
+// 多出「加上 默认上游」「移动 域名映射的顺序」，还有两条没动过的规则标着改过、却列不出改了什么
+// Only one setting edited in the JSON view, then back to the form: with the draft read back, the save bar and the review show that one
+// change. A re-import from the kernel part used to add 「加上 默认上游」 and 「移动 域名映射的顺序」, and mark two untouched rules
+// changed with nothing to list
+describe('JSON 视图里只改了一个设置', () => {
+  it('保存条算 1 处，「改了哪些」只有缓存容量', () => {
+    const start = demoModel()
+    start.mappings[1]!.enabled = false
+    resetTo(start)
+    const kernel = JSON.parse(JSON.stringify(compile(model))) as Record<string, unknown> & { settings: Record<string, unknown> }
+    kernel.settings.cache_capacity = 50000
+    replaceModel(readConfig(kernel, model).model)
+    expect(diffModels(appliedModel.value, model).map((b) => `${b.kind} ${b.title}`)).toEqual(['改了 缓存容量'])
+    expect(changeCount.value).toBe(1)
   })
 })

@@ -244,8 +244,12 @@ describe('JSON 视图改过以后读回来：名字、备注、编号都接得�
     c.name = '测试#1'
     c.note = '丙'
     const cfg = exportConfig(m)
-    // 手改一处设置，散列对不上，按内核部分重新导入 / A hand edit to a setting breaks the hash, so the kernel part is re-imported
+    // 手改一处设置，散列对不上；只改了设置时模型原样留着（见 reimport.test.ts），所以再手改一处结构（路由器组多一个地址），按内核部分重新导入
+    // A hand edit to a setting breaks the hash; with settings alone changed the model stays as it was (see reimport.test.ts), so a structural
+    // hand edit as well (one more address on the router group) makes the kernel part re-import
     const edited = { ...cfg, settings: { ...(cfg.settings as Record<string, unknown>), cache_capacity: 4321 } }
+    const router = (cfg.pipelines as { id: string; rules: { actions: { upstream?: string }[] }[] }[]).find((p) => p.id === 'upstream-router')!
+    router.rules[0]!.actions[0]!.upstream += ', 192.168.1.2:53'
     const back = readConfig(edited, m)
     expect(back.source).toBe('imported')
     for (const r of [a, b, c]) {

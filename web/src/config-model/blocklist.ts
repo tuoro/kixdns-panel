@@ -21,6 +21,16 @@ export const BLOCKLIST_RULE = '拦截列表'
 export const MAX_OWN_RULES = 1000
 /** 最多订阅这么多个列表，和服务端一样 / The most lists one can subscribe to, as on the server */
 export const MAX_SUBSCRIPTIONS = 32
+/**
+ * settings 的 GeoSite 文件里面板合成的那个（blocklist-<sha256>.json，见服务端 is_blocklist_path）：面板写的总排在最后，几个都像时取排在最后的；
+ * 没有时为 undefined
+ * The merged file among the settings' GeoSite files (blocklist-<sha256>.json, as the server's is_blocklist_path): the panel always writes it last,
+ * so of several that look like one the last is taken; undefined when there is none
+ */
+export function mergedFileIn(settings: Record<string, unknown>): string | undefined {
+  const paths = Array.isArray(settings.geosite_data_paths) ? (settings.geosite_data_paths as unknown[]) : []
+  return [...paths].reverse().find((p): p is string => typeof p === 'string' && /(^|\/)blocklist-[0-9a-f]{64}\.json$/.test(p))
+}
 
 export type MatchKind = 'suffix' | 'exact' | 'regex'
 /** 一条规则管哪些域名：域名和子域名、只有域名本身、按正则匹配整个域名 / Which names a rule covers: a name and its subdomains, the name only, or a regex over the whole name */

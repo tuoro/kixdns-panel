@@ -1,7 +1,7 @@
-import { BLOCKLIST_PIPELINE, BLOCKLIST_RULE, ownMatcher, ownRuleText, parseOwnRules, TAG_ALLOW, TAG_ALLOW_IMPORTANT, TAG_BLOCK, TAG_BLOCK_IMPORTANT } from './blocklist'
-import { effectiveOps, normalizeAddress, type KAction, type KConfigLike, type KMatcher, type KPipelineLike, type KRuleLike, type KSelectorLike } from './kernel'
+import { BLOCKLIST_PIPELINE, BLOCKLIST_RULE, mergedFileIn, ownMatcher, ownRuleText, parseOwnRules, TAG_ALLOW, TAG_ALLOW_IMPORTANT, TAG_BLOCK, TAG_BLOCK_IMPORTANT } from './blocklist'
+import { effectiveOps, normalizeAddress, sameKernel, type KAction, type KConfigLike, type KMatcher, type KPipelineLike, type KRuleLike, type KSelectorLike } from './kernel'
 import {
-  blocklistEntries, blocklistKey, emptyBlocklists, isIp, kernelAddress, POLLUTED_CIDRS, splitList,
+  blocklistEntries, blocklistKey, emptyBlocklists, groupPipeline, isIp, kernelAddress, mappingLive, mappingRule, POLLUTED_CIDRS, ruleKernel, settingsFromKernel, splitList,
   type Blocklists, type BlockResponse, type Condition, type Ecs, type Mapping, type Model, type Outcome, type Protocol, type Remedy, type ResponseCondition,
   type ResponseHandling, type Rule, type RuleGroup, type UpstreamAddress, type UpstreamGroup, nextId as nextFreeId } from './model'
 
@@ -13,6 +13,14 @@ import {
 
 export interface ImportNote { level: 'info' | 'warn'; text: string }
 export interface ImportResult { model: Model; notes: ImportNote[]; stats: { rules: number; raw: number; groups: number; mappings: number } }
+// 读出来的规则、上游组、映射各来自内核里的哪一段：接回上一份时拿上一份编出来的样子和它比
+// Where in the kernel each rule, upstream group and mapping read back came from: carrying the previous model over compares its compiled form with it
+interface Origin {
+  // 规则：列表里的几条内核规则（拆开的几段），和它自己的转发 Pipeline（rule-编号） / A rule: its kernel rules in the list (the split parts) and its own forward pipeline (rule-<id>)
+  rules: Map<Rule, { rules: KRuleLike[]; pipeline: KPipelineLike | null }>
+  groups: Map<UpstreamGroup, KPipelineLike>
+  mappings: Map<Mapping, KRuleLike>
+}
 
 const RULE_KEYS = new Set(['name', 'matchers', 'matcher_operator', 'actions', 'response_matchers', 'response_matcher_operator', 'response_actions_on_match', 'response_actions_on_miss'])
 const PIPELINE_KEYS = new Set(['id', 'rules', 'ecs'])
@@ -167,6 +175,7 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
   const note = (text: string, level: ImportNote['level'] = 'info') => notes.push({ level, text })
   // 读回来的规则在内核里是 rule-编号时记下编号 / The id of each rule read back from a kernel name rule-<id>
   const kernelIds = new Map<Rule, number>()
+  const origin: Origin = { rules: new Map(), groups: new Map(), mappings: new Map() }
   // 新规则的编号从上一份用过的编号之后开始：页面重开以后计数从头来，会和接回来的旧编号撞上（点一条开的是另一条）
   // New rules number from above every id the previous model used: after a page reload the counter starts over and would collide with carried-over ids
   // (clicking one rule opened another)
@@ -264,6 +273,7 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
     if (p.id !== `upstream-${id}`) g.pipelineId = p.id
     groups.push(g)
     groupOfPipeline.set(p.id, g)
+    origin.groups.set(g, p)
   }
   for (const p of pipelines) {
     const g = groupOfPipeline.get(p.id)
@@ -325,7 +335,7 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
     const sameSet = (a: string[], b: string[]) => a.length === b.length && a.every((x) => b.includes(x))
     if (domains.every(Boolean) && ops.slice(1).every((o) => o === 'or') && rows.length && rows.every(Boolean) && (refs.get(p.id) ?? []).length === 1
       && sameSet(domains as string[], rows.map((r) => r!.domain))) {
-      for (const r of rows) mappings.push({ id: cid(), domain: r!.domain, target: r!.target, ttl: r!.ttl, enabled: true })
+      rows.forEach((r, i) => { const m: Mapping = { id: cid(), domain: r!.domain, target: r!.target, ttl: r!.ttl, enabled: true }; mappings.push(m); origin.mappings.set(m, p.rules![i]!) })
       if (p.id !== 'domain_mapping') mappingId = p.id
       pre = pre.slice(1)
     }
@@ -351,7 +361,7 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
       blocklists = found.blocklists
       blocklistPipeline = blId
       pre = pre.slice(leading.length)
-      if (found.file) settings.geosite_data_paths = (settings.geosite_data_paths as unknown[]).filter((p) => p !== found.file)
+      // 合成的文件从 settings 里去掉由 settingsFromKernel 做（见最后） / Taking the merged file out of settings is settingsFromKernel's job (see the end)
       if (found.file && !prev) note('配置里用着一个拦截列表文件，但没记下是哪些列表合成的；在「拦截列表」重新订阅以后才能更新它', 'warn')
     }
   }
@@ -490,6 +500,7 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
       const hasResponse = (kr.response_actions_on_match ?? []).length + (kr.response_actions_on_miss ?? []).length > 0
       const forwards = actions.filter((a) => a.type === 'forward')
       let forwardedHere = false
+      let own: KPipelineLike | null = null
       const setForward = (addrs: UpstreamAddress[], ecs: Ecs, from: KRuleLike) => {
         const g = groupFor(addrs, ecs)
         rule.outcome = { type: 'upstream', group: g.group.id }
@@ -513,7 +524,7 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
         else if (a.type === 'jump_to_pipeline') {
           const t = String(a.pipeline)
           if (groupOfPipeline.has(t)) rule.outcome = { type: 'upstream', group: groupOfPipeline.get(t)!.id }
-          else if (inline.has(t) && (consumed.get(t) ?? rule.name) === rule.name) { const f = fwd.get(t)!; setForward(f.addrs, f.ecs, f.rule); consumed.set(t, rule.name) }
+          else if (inline.has(t) && (consumed.get(t) ?? rule.name) === rule.name) { const f = fwd.get(t)!; setForward(f.addrs, f.ecs, f.rule); consumed.set(t, rule.name); own = byId.get(t)! }
           else if (ruleGroupOf.has(t)) rule.outcome = { type: 'group', group: ruleGroupOf.get(t)!.id }
           else raw(t === mainSource ? '跳回主列表' : `跳到不存在的「${t}」`)
         } else rule.outcome = staticOutcome(a) ?? raw(`动作 ${a.type} 没有对应的写法`)
@@ -524,12 +535,17 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
       }
       if (!decided) rule.outcome = { type: 'continue' }
       if (hasResponse && !forwardedHere) raw('回答后检查挂在不直接转发的规则上')
+      origin.rules.set(rule, { rules: [kr], pipeline: own })
       return rule
     } catch (e) {
       if (!(e instanceof Raw)) throw e
       rawCount++
       note(`「${base(kr.name)}」${where}放不进面板的写法（${e.message}），原样保留为高级规则`, 'warn')
-      return { ...rule, conditions: [[]], outcome: { type: 'continue' }, response: { ...rule.response, mode: 'inherit' }, ecs: 'inherit', raw: [clone(kr) as unknown as Record<string, unknown>] }
+      const kept: Rule = { ...rule, conditions: [[]], outcome: { type: 'continue' }, response: { ...rule.response, mode: 'inherit' }, ecs: 'inherit', raw: [clone(kr) as unknown as Record<string, unknown>] }
+      // 高级规则也记下来：认改名靠位置，少了它后面的都错一位 / Advanced rules are recorded too: renames are found by position, and leaving them out
+      // would shift every rule after them by one
+      origin.rules.set(kept, { rules: [kr], pipeline: null })
+      return kept
     }
   }
   const sameBehaviour = (a: Rule, b: Rule) => JSON.stringify([a.outcome, a.log, a.ecs, { ...a.response, conditions: a.response.conditions.map(fullKey) }]) === JSON.stringify([b.outcome, b.log, b.ecs, { ...b.response, conditions: b.response.conditions.map(fullKey) }])
@@ -544,8 +560,10 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
       const r = convertRule(kr, where)
       const last = rules.at(-1)
       // 新格式把一条规则拆成「名字#1、#2」写进内核，读回来合成一条 / The new format splits one rule into name#1, #2; read back as one
-      if (last && !last.raw && !r.raw && /#\d+$/.test(kr.name) && lastKernel === base(kr.name) && sameBehaviour(last, r)) last.conditions = mergeGroups([...last.conditions, ...r.conditions])
-      else {
+      if (last && !last.raw && !r.raw && /#\d+$/.test(kr.name) && lastKernel === base(kr.name) && sameBehaviour(last, r)) {
+        last.conditions = mergeGroups([...last.conditions, ...r.conditions])
+        origin.rules.get(last)?.rules.push(kr)
+      } else {
         rules.push(r)
         // 内核里叫 rule-编号的（没起名字，或者名字认不回它而改用编号）记下编号，接回上一份时按编号认 / A kernel name rule-<id> (unnamed, or named
         // but given its id because the name could not lead back to it) records the id, and the previous model is matched by it
@@ -654,13 +672,36 @@ export function importKernel(cfg: KConfigLike, prev?: Model): ImportResult {
     ...(rawPipelines.length ? { rawPipelines } : {}),
     ...(Object.keys(extra).length ? { extra } : {}),
   }
-  if (prev) model = carryOver(model, prev, kernelIds)
+  if (prev) model = carryOver(model, prev, kernelIds, origin)
+  // compile 自己加进 settings 的（按其余请求写的默认上游、拦截列表合成的文件）不收进模型 / What compile adds to settings itself (the default
+  // upstream written from 其余请求, the blocklists' merged file) is not taken into the model
+  model.settings = settingsFromKernel(model, settings, prev?.settings ?? {})
   return { model, notes, stats: { rules: allRules.length, raw: rawCount, groups: finalGroups.length, mappings: mappings.length } }
 }
 
-// 内核里没有的东西从上一份接回来：规则的编号、备注、停用的规则和映射 / What the kernel does not hold comes from the previous model:
-// rule ids, notes, disabled rules and mappings
-function carryOver(model: Model, prev: Model, kernelIds: Map<Rule, number>): Model {
+// 规则引用的组在这份模型里都在：不在的组编出来的 Pipeline 名字也可能碰巧和内核里的一样 / Every group the rule refers to is in this model: a missing
+// one can compile to the same pipeline name by chance
+function refersHere(m: Model, r: Rule): boolean {
+  const used = [r.outcome, ...(r.response.mode === 'custom' ? [r.response.then, r.response.otherwise] : [])]
+  return used.every((o) => (o.type === 'upstream' ? m.groups.some((g) => g.id === o.group) : o.type !== 'group' || m.ruleGroups.some((g) => g.id === o.group)))
+}
+
+// 内核里没有的东西从上一份接回来：规则的编号、备注、停用的规则和映射。规则、上游组、映射放进这份模型编出来和它读自的那段内核配置一样时，
+// 整个留上一份：一种内核写法导入时只能读成一种样子，面板里却有好几种写法编出来一样（「拦截 · 沿用默认」和具体的响应码，「不检查」和没有备用的
+// 组上的「沿用」……），换成另一种意思就变了（以后改默认、改组的备用和子网时跟不跟着变）
+// What the kernel does not hold comes from the previous model: rule ids, notes, disabled rules and mappings. A rule, upstream group or mapping
+// that, placed in this model, compiles to the kernel part it was read from stays the previous model's object entirely: the import can read a
+// kernel form one way only, while several panel forms compile alike (拦截 · 沿用默认 and the concrete code, 不检查 and 沿用 on a group without
+// fallback…), and swapping one for another changes the meaning (whether it follows a later change of the default, the group's fallback or subnet)
+function carryOver(model: Model, prev: Model, kernelIds: Map<Rule, number>, origin: Origin): Model {
+  // 上游组先换：规则自己的转发里写着组的地址和备用 / Groups first: a rule's own forward holds its group's addresses and fallback
+  model.groups.forEach((g, i) => {
+    const p = prev.groups.find((x) => x.id === g.id)
+    const from = origin.groups.get(g)
+    if (!p || !from) return
+    model.groups[i] = clone(p)
+    if (!sameKernel(groupPipeline(model, model.groups[i]!), from)) model.groups[i] = g
+  })
   // 「拦截 · 沿用默认」写进内核就是具体的响应码，读回来按上一份认回「沿用默认」 / 拦截 · 沿用默认 reaches the kernel as a concrete code; the previous model restores it
   const resolved = (o: Outcome) => (o.type === 'block' && o.response === 'default' ? prev.defaults.block : o.type === 'block' ? o.response : null)
   const sameBlock = (p: Outcome, r: Outcome) => p.type === 'block' && p.response === 'default' && r.type === 'block' && resolved(p) === resolved(r)
@@ -671,6 +712,20 @@ function carryOver(model: Model, prev: Model, kernelIds: Map<Rule, number>): Mod
   // Unnamed rules all have an empty name: matching on the name alone gave every one the first one's id and note. Unnamed ones must also have the same
   // conditions, and each previous rule is taken once
   const sameShape = (a: Rule, b: Rule) => (a.raw || b.raw ? JSON.stringify(a.raw ?? null) === JSON.stringify(b.raw ?? null) : condsKey(a.conditions) === condsKey(b.conditions))
+  // cand 编出来和 r 读自的内核规则、它自己的转发 Pipeline 都一样，就换到 r 的位置上；不一样留着 r。内核规则的名字不比：它只管计数和执行路径，
+  // 哪一条是哪一条已经由认回来的那一步定了，同列表里别的规则改了名也会让它的内核名跟着变
+  // cand takes r's place when it compiles to the kernel rules r was read from and to its own forward pipeline; otherwise r stays. Kernel rule
+  // names are left out of the comparison: they only drive counts and traces, which rule is which was settled by the matching, and a rename
+  // elsewhere in the list can change this rule's kernel name too
+  const unnamed = (rules: unknown[]) => (rules as Record<string, unknown>[]).map(({ name: _name, ...r }) => r)
+  const keep = (list: Rule[], r: Rule, cand: Rule): Rule => {
+    const from = origin.rules.get(r)
+    if (!from || !refersHere(model, cand)) return r
+    const k = ruleKernel(model, cand, '')
+    if (!sameKernel(unnamed(k.rules), unnamed(from.rules)) || !sameKernel(k.pipeline, from.pipeline)) return r
+    list[list.indexOf(r)] = cand
+    return cand
+  }
   for (const [now, before] of lists) {
     // 上一份的每条认回了现在的哪一条：停用的规则按它前面那条认回来的规则放回去（没起名字的规则名字都一样，按名字找会放错位置）
     // Which current rule each previous rule was matched to: a disabled rule goes back after the matched rule before it (unnamed rules share one name, so
@@ -691,6 +746,20 @@ function carryOver(model: Model, prev: Model, kernelIds: Map<Rule, number>): Mod
       if (!r.raw && !p.raw && condsKey(r.conditions) === condsKey(p.conditions)) r.conditions = p.conditions
       if (!r.raw && !p.raw && r.response.mode === 'custom' && p.response.mode === 'custom' && JSON.stringify({ ...r.response, conditions: r.response.conditions.map(fullKey).sort() }) === JSON.stringify({ ...p.response, conditions: p.response.conditions.map(fullKey).sort() })) r.response = p.response
     }
+    // 改名：还没认回来的规则和上一份启用的规则里同一位置的那条，除了名字编出来一样，就是 JSON 里改了名字：编号、备注、改动时间跟着它，名字用新的
+    // A rename: a rule still unmatched and the previous enabled rule at the same place compile alike but for the name, so the name was changed in
+    // the JSON: the id, note and edit time come along, the name is the new one
+    const read = now.filter((r) => origin.rules.has(r))
+    const live = before.filter((x) => x.enabled)
+    const matched = new Set(paired.values())
+    read.forEach((r, i) => {
+      const p = live[i]
+      if (!p || paired.has(p) || matched.has(r)) return
+      const cand = keep(now, r, { ...clone(p), name: r.name })
+      if (cand !== r) paired.set(p, cand)
+    })
+    // 认回来的规则编出来和内核里一样：整条留上一份 / A matched rule that compiles to what the kernel holds stays the previous one entirely
+    for (const [p, r] of paired) if (origin.rules.has(r)) paired.set(p, keep(now, r, clone(p)))
     // 前面那条也是停用的（已经放回去了）就接在它后面：只看认回来的规则时，连着的几条停用规则会倒过来，每手改一次换一次
     // When the rule before is disabled too (already put back) it anchors there: looking at matched rules only, consecutive disabled rules came back reversed
     // and swapped on every hand edit
@@ -701,8 +770,24 @@ function carryOver(model: Model, prev: Model, kernelIds: Map<Rule, number>): Mod
       now.splice(at, 0, p)
     })
   }
-  for (const m of model.mappings) { const p = prev.mappings.find((x) => x.domain === m.domain); if (p) m.id = p.id }
-  prev.mappings.forEach((p) => { if (!p.enabled) model.mappings.push(p) })
+  // 映射按域名认（一个域名只有一条），上一份的每条只认一次；编出来一样的整条留上一份（TTL、目标的写法）。停用的编出来什么都没有：JSON 里加回来
+  // 就是启用了它，按内核读；没加回来的照规则的办法放回原位
+  // Mappings match by domain (one mapping per domain), each previous one taken once; one that compiles alike stays the previous one entirely
+  // (its TTL, how the target is written). A disabled one compiles to nothing: added back in the JSON it was enabled and reads from the kernel;
+  // otherwise it goes back to its place as disabled rules do
+  const pairedMappings = new Map<Mapping, Mapping>()
+  model.mappings.forEach((m, i) => {
+    const p = prev.mappings.find((x) => !pairedMappings.has(x) && x.domain === m.domain)
+    if (!p) return
+    const from = origin.mappings.get(m)
+    model.mappings[i] = mappingLive(p) && from && sameKernel(mappingRule(p), from) ? clone(p) : Object.assign(m, { id: p.id })
+    pairedMappings.set(p, model.mappings[i]!)
+  })
+  prev.mappings.forEach((p, i) => {
+    if (mappingLive(p) || pairedMappings.has(p)) return
+    const anchor = prev.mappings.slice(0, i).reverse().find((x) => pairedMappings.has(x) || !mappingLive(x))
+    model.mappings.splice(anchor ? model.mappings.indexOf(pairedMappings.get(anchor) ?? anchor) + 1 : 0, 0, p)
+  })
   return model
 }
 
@@ -742,10 +827,9 @@ function readBlocklistEntries(entries: KSelectorLike[], settings: Record<string,
   }
   const order = kinds.join(',')
   if (!['own', 'important,list', 'own,important,list'].includes(order)) return null
-  const paths = Array.isArray(settings.geosite_data_paths) ? (settings.geosite_data_paths as unknown[]) : []
   // 面板合成的文件总是排在最后（见 compile）；前面还有一个的话是认不出、照原样留下的旧文件 / The panel's file always comes last (see compile); one
   // before it is an old file that could not be recognised and was kept as it was
-  const file = order.endsWith('list') ? [...paths].reverse().find((p): p is string => typeof p === 'string' && /(^|\/)blocklist-[0-9a-f]{64}\.json$/.test(p)) : null
+  const file = order.endsWith('list') ? mergedFileIn(settings) : null
   if (file === undefined) return null
   // 上一份的原文写出来和入口里的一样就用原文：注释、写法和没用上的行都留着 / The previous text when it writes what the entries hold: comments, spelling and unused lines all stay
   const prevOwn = prev ? parseOwnRules(prev.blocklists.custom).rules : []
