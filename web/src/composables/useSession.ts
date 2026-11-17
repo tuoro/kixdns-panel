@@ -1,5 +1,5 @@
 import { computed, readonly, ref } from 'vue'
-import { ApiError, apiRequest, jsonBody, setCsrfToken } from '../api/client'
+import { ApiError, apiRequest, jsonBody } from '../api/client'
 import type { AuthSession, SetupStatus, User } from '../api/types'
 
 const user = ref<User | null>(null)
@@ -7,9 +7,9 @@ const setupRequired = ref(false)
 const initialized = ref(false)
 let initialization: Promise<void> | null = null
 
+// CSRF 令牌不在这里记：写请求发出时从 Cookie 里读（见 api/client） / The CSRF token is not kept here: writes read it from the cookie when sent (see api/client)
 function acceptSession(session: AuthSession): void {
   user.value = session.user
-  setCsrfToken(session.csrf_token)
 }
 
 async function initialize(): Promise<void> {
@@ -47,7 +47,6 @@ async function logout(): Promise<void> {
 
 function expire(): void {
   user.value = null
-  setCsrfToken('')
 }
 
 export function useSession() {

@@ -18,8 +18,8 @@
 //!
 //! 起不来又不能退回时，在等的待应用版本可以直接写进正式文件再重启（`KixDNS` 不在，没法先校验）。给不给、接不接受也是
 //! 同一个判断（`writable_pending`）：那一版还不在文件里，也不是退回时带上的修改——退回以后还是起不来，原因多半在配置
-//! 外面，那笔修改等 `KixDNS` 起来再应用。退回写下的两版（只改回那几项的、带上待应用修改的）连同散列记在一处，删掉的
-//! 编号被新版本复用也认得出；页面据此不报这两版的编号。
+//! 外面，那笔修改等 `KixDNS` 起来再应用。退回写下的两版（只改回那几项的、带上待应用修改的）连同散列记在一处，升级到
+//! 编号不再复用的数据库结构以前，删掉的编号被新版本复用过也认得出；页面据此不报这两版的编号。
 //!
 //! When `KixDNS` does not come back from a restart, put the settings that were changed and took a restart back to
 //! the values it last started with. Those settings (listen addresses and the like) reload as usual while `KixDNS`
@@ -50,7 +50,8 @@
 //! (`writable_pending`): the version is not in the file yet and is not the edits a rollback carried along — still down
 //! after a rollback, the cause most likely lies outside the config, and those edits apply once `KixDNS` is up. The two
 //! versions a rollback writes (only those settings put back, and the one carrying the pending edits) are recorded with
-//! their hashes, so a deleted id reused by a new version is not mistaken for them; pages give no number for them.
+//! their hashes, so a deleted id reused by a new version before the upgrade to the schema that never reuses ids is not
+//! mistaken for them; pages give no number for them.
 
 use std::collections::BTreeMap;
 
@@ -77,7 +78,12 @@ const OLD_STARTUP_KEY: &str = "kixdns_startup_settings_v1";
 /// 最近一次退回写下的版本 / The versions the latest rollback wrote
 const ROLLED_BACK_KEY: &str = "kixdns_rollback_versions_v1";
 
-/// 一个版本的编号和散列：编号会被复用，两样一起才认得准 / A version's id and hash: ids are reused, so both are needed
+/// 一个版本的编号和散列。第 6 版数据库结构起编号不再复用，但那以前记下的记录里的编号可能已经换了内容（升级时删掉的
+/// 最新一版，编号也会再给一次），两样一起才认得准
+///
+/// A version's id and hash. Ids are no longer reused from database schema 6 on, but a record written before then may
+/// name an id that has since been given to other content (the newest version deleted before the upgrade has its id
+/// given once more), so both are needed
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Stamp {
     id: i64,

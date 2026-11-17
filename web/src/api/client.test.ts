@@ -1,14 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, PANEL_UNREACHABLE_EVENT, SESSION_EXPIRED_EVENT, apiRequest, isPanelDown, jsonBody, setCsrfToken } from './client'
+import { ApiError, PANEL_UNREACHABLE_EVENT, SESSION_EXPIRED_EVENT, apiRequest, isPanelDown, jsonBody } from './client'
 
 afterEach(() => {
-  setCsrfToken('')
   vi.unstubAllGlobals()
 })
 
 describe('API 客户端', () => {
   it('为写请求附加同源凭据、JSON 类型与 CSRF 令牌', async () => {
-    setCsrfToken('csrf-token')
+    vi.stubGlobal('document', { cookie: 'kixdns_csrf=csrf-token' })
     const fetchMock = vi.fn(async (_path: string, init?: RequestInit) => {
       const headers = new Headers(init?.headers)
       expect(init?.credentials).toBe('same-origin')
@@ -26,6 +25,31 @@ describe('API 客户端', () => {
       ...jsonBody({}),
     })).resolves.toEqual({ ok: true })
     expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
+  // 令牌只从名字正好是 kixdns_csrf 的 Cookie 里取，同名的取最后一个（服务端也取最后一个）；读请求、没有这个 Cookie 时不带
+  // The token comes only from a cookie named exactly kixdns_csrf, the last of that name (the server takes the last too);
+  // reads, and a browser without that cookie, send none
+  it('CSRF 令牌每次从 Cookie 里读', async () => {
+    const browser = { cookie: '' }
+    vi.stubGlobal('document', browser)
+    const sent: Array<string | null> = []
+    vi.stubGlobal('fetch', vi.fn(async (_path: string, init?: RequestInit) => {
+      sent.push(new Headers(init?.headers).get('x-csrf-token'))
+      return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } })
+    }))
+    const write = () => apiRequest('/api/v1/cache/flush', { method: 'POST' })
+
+    await write()
+    browser.cookie = 'theme=dark; kixdns_csrf=current; kixdns_csrf_old=stale; xkixdns_csrf=other'
+    await write()
+    await apiRequest('/api/v1/config')
+    browser.cookie = 'kixdns_csrf=earlier; kixdns_csrf=current'
+    await write()
+    browser.cookie = 'xkixdns_csrf=other; kixdns_csrf_old=stale'
+    await write()
+
+    expect(sent).toEqual([null, 'current', null, 'current', null])
   })
 
   it('保留结构化错误并广播受保护接口的会话失效', async () => {
